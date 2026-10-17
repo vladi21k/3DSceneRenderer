@@ -418,6 +418,33 @@ function patchEmissiveLevel(m, uniform, key) {
   return m;
 }
 
+/** Posters (the atlas's top row of eight, see prints.js): each instance shows its own
+ *  ones, the row rotated by a hash of the instance position, so neighbouring shelters and
+ *  kiosks never advertise the same thing. Other prints on the same atlas are untouched. */
+function patchPosterPick(m) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (s, r) {
+    if (prev) prev.call(this, s, r);
+    s.vertexShader = s.vertexShader.replace('#include <uv_vertex>', `
+      vec2 fPosterUv = uv;
+      #ifdef USE_BATCHING
+        if ( fPosterUv.y > ${(1 - LIT_ROWS / ATLAS_H + 1e-3).toFixed(4)} ) {
+          vec2 fPos = floor( getBatchingMatrix( getIndirectIndex( gl_DrawID ) )[ 3 ].xz * 2.0 );
+          float fH = fract( 52.9829189 * fract( dot( fPos, vec2( 0.06711056, 0.00583715 ) ) ) );
+          fPosterUv.x = fract( fPosterUv.x + floor( fH * 8.0 ) * 0.125 );
+        }
+      #endif
+      #undef MAP_UV
+      #define MAP_UV fPosterUv
+      #undef EMISSIVEMAP_UV
+      #define EMISSIVEMAP_UV fPosterUv
+      #include <uv_vertex>`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-poster`; };
+  m.needsUpdate = true;
+  return m;
+}
+
 /** Shelter glazing: thin clear glass whose coverage rises towards grazing angles (Fresnel),
  *  plus a decal map (safety dots, dust, water spots) that is diffuse and rougher. The
  *  output is premultiplied: reflections are never attenuated by the low opacity. */
@@ -550,7 +577,7 @@ export function createMaterials(app) {
   // prints sit a few millimetres proud of their panels; polygon offset keeps them clear
   // of the panel in the depth buffer at any distance
   const decalOffset = (m) => { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; return m; };
-  decalOffset(reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 })));
+  patchPosterPick(decalOffset(reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 }))));
   // posters glued on advertising columns: paper with wrinkles and bubbles
   decalOffset(reg('paper', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.68, metalness: 0, normalMap: T('paper', () => paperNormal(R)), normalScale: new THREE.Vector2(0.18, 0.18) })));
   // light levels (scene-linear radiance) the module sets every frame from the exposure
@@ -559,7 +586,7 @@ export function createMaterials(app) {
   const litMap = tex(T('lit', () => buildLitAtlas(atlas.canvas)), { repeat: [1, ATLAS_H / LIT_ROWS], aniso: 8 }, R);
   litMap.offset.set(0, -(1 - LIT_ROWS / ATLAS_H) * (ATLAS_H / LIT_ROWS));
   litMap.wrapS = litMap.wrapT = THREE.ClampToEdgeWrapping;
-  decalOffset(reg('printLit', patchEmissiveLevel(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: litMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.25, metalness: 0 }), out.levels.lit, 'lit')));
+  patchPosterPick(decalOffset(reg('printLit', patchEmissiveLevel(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: litMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.25, metalness: 0 }), out.levels.lit, 'lit'))));
   // LED passenger displays and touch screens (auto-dimmed like real ones)
   const disp = T('display', () => buildDisplayAtlas());
   out.display = disp;
@@ -576,7 +603,9 @@ export function createMaterials(app) {
 export function updateLightLevels(F, app) {
   const env = app.env, exp = Math.max(env?.exposure || 1.15, 1e-3), t = env?.state?.t ?? 0;
   const on = THREE.MathUtils.smoothstep(t, 0.68, 0.95);
-  F.levels.lit.value = Math.min(0.03, 0.75 / exp) * (0.4 + 0.6 * on);
+  // light boxes by day sit near the brightness of the shade round them (the print, a
+  // little lit from behind); the backlight comes up with the evening
+  F.levels.lit.value = Math.min(0.03, 0.75 / exp) * (0.1 + 0.9 * on);
   F.levels.disp.value = Math.min(0.5, 0.3 / exp);
   F.levels.lamp.value = on * 5 / exp;
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CONTACT_WIRE_HEIGHT, RAIL_CENTER } from '../../core/config.js';
+import { FONT } from './display.js';
 
 // Procedural model of the line's light-rail vehicles (the oncoming units): a 32 m,
 // 2.65 m wide, bidirectional low-floor tram in silver paint. Three bodies (two cab ends and
@@ -33,12 +34,12 @@ export const CAR = {
 
 // linear paint colours (the body material's vertex colour is the paint colour)
 const COL = {
-  silver: [0.5, 0.515, 0.53],
-  roof: [0.44, 0.452, 0.466],
+  silver: [0.36, 0.37, 0.385],
+  roof: [0.33, 0.338, 0.35],
   skirt: [0.017, 0.018, 0.019],
   black: [0.006, 0.006, 0.0065],
   bellows: [0.013, 0.013, 0.014],
-  fairing: [0.47, 0.48, 0.49],
+  fairing: [0.37, 0.378, 0.39],
   under: [0.02, 0.019, 0.018],
   insulator: [0.1, 0.055, 0.035],
   wheel: [0.035, 0.032, 0.03],
@@ -47,16 +48,17 @@ const COL = {
 
 // lamp brightness relative to the destination display (lamp mesh vertex colours, linear)
 const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17] };
+const FLEET_NO = '07';
 
 // cross-section: band edges and the rows the cab front needs
 const Y = {
   bottom: 0.18, skirt: 0.42, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
   doorGlass0: 0.8, doorGlass1: 2.1, doorTop: 2.3, doorSeam: 2.33,
   ws0: 1.18, dispBand: 2.62, shoulder: 2.86,
+  seatBack: 1.35,              // saloon glazing below this shows seat backs: it does not glow at night
 };
 const SHOULDER_R = 0.33;
 const ROOF_CROWN = 0.03;
-const WS_U = 0.92;             // windscreen wraps to this share of the half width
 const DISP_U = 0.56;           // destination display half width (share)
 const CAP_P = 2.6;             // plan shape of the front (superellipse exponent)
 // centre-line depth of the front cap ahead of the cap base, by height (side view)
@@ -64,18 +66,21 @@ const NOSE = [[0.18, 0.92], [0.42, 1.08], [0.8, 1.15], [1.18, 1.12], [1.8, 0.99]
   [2.8, 0.58], [3.0, 0.42], [3.12, 0.26], [3.19, 0.1], [3.22, 0]];
 
 const LOD_ROWS = [
-  { side: [0.2, 0.26, 0.33, 0.42, 0.55, 0.68, 0.8, 0.95, 0.98, 1.06, 1.18, 1.45, 1.75, 2.1, 2.3, 2.33, 2.42, 2.45, 2.62, 2.75, 2.86],
+  { side: [0.2, 0.26, 0.33, 0.42, 0.55, 0.62, 0.68, 0.74, 0.8, 0.95, 0.98, 1.06, 1.18, 1.35, 1.75, 2.1, 2.3, 2.33, 2.42, 2.45, 2.62, 2.75, 2.86],
     arc: [12, 25, 40, 55, 70, 82, 90], roof: [0.6, 0.3, 0] },
-  { side: [0.2, 0.33, 0.42, 0.68, 0.95, 1.18, 1.75, 2.1, 2.45, 2.62, 2.86], arc: [12, 25, 55, 90], roof: [0.45, 0] },
-  { side: [0.2, 0.42, 0.95, 1.18, 2.45, 2.62, 2.86], arc: [12, 25, 60, 90], roof: [0] },
-];
-const LOD_CAP_U = [
-  [0, 0.12, 0.24, 0.36, 0.46, 0.56, 0.64, 0.72, 0.79, 0.85, 0.89, 0.92, 0.945, 0.965, 0.98, 0.992, 1],
-  [0, 0.2, 0.4, 0.56, 0.7, 0.82, 0.92, 0.97, 1],
-  [0, 0.3, 0.56, 0.8, 0.92, 1],
+  { side: [0.2, 0.33, 0.42, 0.62, 0.72, 0.95, 1.18, 1.35, 1.75, 2.1, 2.45, 2.62, 2.86], arc: [12, 25, 55, 90], roof: [0.45, 0] },
+  { side: [0.2, 0.42, 0.62, 0.95, 1.18, 2.45, 2.62, 2.86], arc: [12, 25, 60, 90], roof: [0] },
 ];
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const _gc = [0, 0, 0];
+/** Road grime on the paint: the lower body is a little duller than the upper. */
+function grimed(col, y) {
+  if (col !== COL.silver) return col;
+  const t = clamp((y - Y.skirt) / 0.9, 0, 1), k = 0.8 + 0.2 * t * t * (3 - 2 * t);
+  _gc[0] = col[0] * k; _gc[1] = col[1] * k * 0.995; _gc[2] = col[2] * k * 0.985;
+  return _gc;
+}
 
 /** Half width of the body side at height y (below the shoulder arc). */
 function sideX(y) {
@@ -242,7 +247,7 @@ function cellMaterial(kind, y0, y1) {
     if (ym < Y.floor) return body(COL.skirt);
     if (ym > Y.doorSeam) return body(paint);
     if (ym > Y.doorTop || kind === 'dseam') return body(COL.black);
-    if (kind === 'dglass' && ym > Y.doorGlass0 && ym < Y.doorGlass1) return ['glass', COL.white];
+    if (kind === 'dglass' && ym > Y.doorGlass0 && ym < Y.doorGlass1) return [ym < Y.belt ? 'ws' : 'glass', COL.white];
     return body(COL.silver);
   }
   if (ym < Y.skirt) return body(COL.skirt);
@@ -250,7 +255,7 @@ function cellMaterial(kind, y0, y1) {
     if (kind === 'wframe') return body(COL.black);
     if (kind === 'win') {
       if (ym < Y.belt + Y.frame || ym > Y.winTop - Y.frame) return body(COL.black);
-      return ['glass', COL.white];
+      return [ym < Y.seatBack ? 'ws' : 'glass', COL.white];
     }
   }
   return body(paint);
@@ -265,10 +270,10 @@ function sideWalls(P, prof, cells) {
       const [part, col] = cellMaterial(cell.kind, a.y, b.y);
       const B = P[part];
       for (const sx of [1, -1]) {
-        const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, col, cell.z0, a.a);
-        const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, col, cell.z1, a.a);
-        const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, col, cell.z1, b.a);
-        const v3 = B.vert(sx * b.x, b.y, cell.z0, sx * b.nx, b.ny, 0, col, cell.z0, b.a);
+        const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, grimed(col, a.y), cell.z0, a.a);
+        const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, grimed(col, a.y), cell.z1, a.a);
+        const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, grimed(col, b.y), cell.z1, b.a);
+        const v3 = B.vert(sx * b.x, b.y, cell.z0, sx * b.nx, b.ny, 0, grimed(col, b.y), cell.z0, b.a);
         B.quad(v0, v1, v2, v3);
       }
     }
@@ -369,18 +374,49 @@ function fairing(B, z0, z1) {
 }
 
 // ------------------------------------------------------------------ cab front
-/** The front cap (nose, windscreen) of a cab body; the display cells are left to capLamps. */
+// The front is a dark glossy shield: the windscreen runs down into a dark glass mask that
+// narrows towards the lamps at its rounded foot; silver pillars sweep round it from the
+// roof to the nose. The destination display sits behind the top band of the glass.
+const MASK = { bottom: 0.62, round: 0.12, w0: 0.68, w1: 0.92, full: 1.9 };
+
+/** Half width of the dark mask (share of the body half width) at height y. */
+function maskW(y) {
+  const yy = clamp(y, MASK.bottom, 3.2);
+  const t = clamp((yy - MASK.bottom) / (MASK.full - MASK.bottom), 0, 1);
+  let w = MASK.w1 - (MASK.w1 - MASK.w0) * (1 - t) * (1 - t);
+  const r = (MASK.bottom + MASK.round - yy) / MASK.round;
+  if (r > 0) w *= 0.6 + 0.4 * Math.sqrt(Math.max(0, 1 - r * r));     // rounded foot
+  return w;
+}
+const dispW = (y) => Math.min(DISP_U, 0.62 * maskW(y));
+
+/** Columns across the cap per LOD: shares of the display, display-to-mask and mask-to-side spans. */
+const LOD_CAP = [
+  { disp: [0, 0.25, 0.5, 0.75, 1], mid: [0.34, 0.67, 1], out: [0.15, 0.32, 0.48, 0.63, 0.76, 0.86, 0.93, 0.97, 1] },
+  { disp: [0, 0.5, 1], mid: [0.5, 1], out: [0.3, 0.58, 0.8, 0.93, 1] },
+  { disp: [0, 1], mid: [1], out: [0.45, 0.8, 1] },
+];
+
+/** The front cap (nose, mask, windscreen) of a cab body; the display cells are left to capLamps. */
 function capFront(P, prof, lod) {
-  const U = LOD_CAP_U[lod];
-  const us = [...U.slice(1).reverse().map((u) => -u), ...U];        // −1 … 1
-  const nr = prof.length, nc = us.length;
+  const C = LOD_CAP[lod];
+  // half columns: [segment, share]; the display edge and the mask edge are grid lines
+  const half = [...C.disp.map((t) => [0, t]), ...C.mid.map((t) => [1, t]), ...C.out.map((t) => [2, t])];
+  const hD = C.disp.length - 1, hM = hD + C.mid.length;
+  const cols = [...half.slice(1).reverse().map(([g, t]) => [g, t, -1]), ...half.map(([g, t]) => [g, t, 1])];
+  const nr = prof.length, nc = cols.length, c0 = half.length - 1;   // c0: centre column
+  const uOf = (i, j) => {
+    const [g, t, sg] = cols[j], y = prof[i].y, w = maskW(y), d = dispW(y);
+    return sg * (g === 0 ? t * d : g === 1 ? d + t * (w - d) : w + t * (1 - w));
+  };
   // one indexed grid gives smooth normals across material borders
-  const pos = new Float32Array(nr * nc * 3);
+  const pos = new Float32Array(nr * nc * 3), uu = new Float32Array(nr * nc);
   for (let i = 0; i < nr; i++) {
     const p = prof[i], D = noseDepth(p.y);
     for (let j = 0; j < nc; j++) {
-      const k = (i * nc + j) * 3;
-      pos[k] = us[j] * p.x; pos[k + 1] = p.y; pos[k + 2] = CAR.capBase - D * plan(us[j]);
+      const k = i * nc + j, u = uOf(i, j);
+      uu[k] = u;
+      pos[k * 3] = u * p.x; pos[k * 3 + 1] = p.y; pos[k * 3 + 2] = CAR.capBase - D * plan(u);
     }
   }
   const idx = [];
@@ -404,53 +440,81 @@ function capFront(P, prof, lod) {
   }
   const wsTop = Y.shoulder + SHOULDER_R * Math.sin((25 * Math.PI) / 180);
   for (let i = 0; i < nr - 1; i++) {
-    const y0 = prof[i].y, y1 = prof[i + 1].y, ym = (y0 + y1) / 2;
+    const ym = (prof[i].y + prof[i + 1].y) / 2;
     for (let j = 0; j < nc - 1; j++) {
-      const um = Math.abs((us[j] + us[j + 1]) / 2);
+      const h = Math.max(Math.abs(j - c0), Math.abs(j + 1 - c0));    // outer column of the cell (from the centre)
       let part = 'body', col = COL.silver;
       if (ym < Y.skirt) col = COL.skirt;
-      else if (ym > Y.ws0 && ym < wsTop && um < WS_U) {
-        if (ym > Y.dispBand && um < DISP_U) continue;                  // display: lamp mesh
+      else if (ym > MASK.bottom && ym < wsTop && h <= hM) {
+        if (ym > Y.dispBand && h <= hD) continue;                     // display: lamp mesh
         part = 'ws'; col = COL.white;
       }
       const B = P[part];
       const corner = [i * nc + j, i * nc + j + 1, (i + 1) * nc + j + 1, (i + 1) * nc + j];
-      const v = corner.map((q) => B.vert(pos[q * 3], pos[q * 3 + 1], pos[q * 3 + 2], nrm[q * 3], nrm[q * 3 + 1], nrm[q * 3 + 2], col, pos[q * 3], pos[q * 3 + 1]));
+      const v = corner.map((q) => B.vert(pos[q * 3], pos[q * 3 + 1], pos[q * 3 + 2], nrm[q * 3], nrm[q * 3 + 1], nrm[q * 3 + 2], grimed(col, pos[q * 3 + 1]), pos[q * 3], pos[q * 3 + 1]));
       B.quad(v[0], v[1], v[2], v[3]);
     }
   }
-  return { pos, nrm, us, nr, nc, wsTop };
+  return { pos, nrm, uu, nr, nc, c0, hD, wsTop };
 }
 
 const _cp = new THREE.Vector3(), _cn = new THREE.Vector3();
-/** Flat-ish patch on the nose: ellipse (u0, y0, ru (share), ry (m)) lifted `lift` m off the cap. */
-function noseEllipse(B, u0, y0, ru, ry, lift, col, uvRect = null, seg = 16) {
+/** Flat-ish patch on the nose: superellipse (u0, y0, ru (share), ry (m)) lifted `lift` m off the cap. */
+function noseEllipse(B, u0, y0, ru, ry, lift, col, uvRect = null, seg = 16, e = 0.6) {
   capPoint(u0, y0, _cp); capNormal(u0, y0, _cn);
   const c = B.vert(_cp.x + _cn.x * lift, _cp.y + _cn.y * lift, _cp.z + _cn.z * lift, _cn.x, _cn.y, _cn.z, col,
     uvRect ? (uvRect[0] + uvRect[2]) / 2 : 0, uvRect ? (uvRect[1] + uvRect[3]) / 2 : 0);
   const rim = [];
   for (let k = 0; k < seg; k++) {
     const t = (k / seg) * Math.PI * 2, cs = Math.cos(t), sn = Math.sin(t);
-    // rounded-rectangle-ish lens (superellipse)
-    const e = 0.6, ex = Math.sign(cs) * Math.pow(Math.abs(cs), e), ey = Math.sign(sn) * Math.pow(Math.abs(sn), e);
+    const ex = Math.sign(cs) * Math.pow(Math.abs(cs), e), ey = Math.sign(sn) * Math.pow(Math.abs(sn), e);
     const u = u0 + ru * ex, y = y0 + ry * ey;
     capPoint(u, y, _cp); capNormal(u, y, _cn);
+    // seen from the front the viewer's left is +x: mirror the texture across u
     rim.push(B.vert(_cp.x + _cn.x * lift, _cp.y + _cn.y * lift, _cp.z + _cn.z * lift, _cn.x, _cn.y, _cn.z, col,
-      uvRect ? uvRect[0] + (uvRect[2] - uvRect[0]) * (0.5 + 0.5 * ex) : 0, uvRect ? uvRect[1] + (uvRect[3] - uvRect[1]) * (0.5 + 0.5 * ey) : 0));
+      uvRect ? uvRect[0] + (uvRect[2] - uvRect[0]) * (0.5 - 0.5 * ex) : 0, uvRect ? uvRect[1] + (uvRect[3] - uvRect[1]) * (0.5 + 0.5 * ey) : 0));
   }
   for (let k = 0; k < seg; k++) B.tri(c, rim[k], rim[(k + 1) % seg]);
 }
 
-/** Lamp housings (dark glass, both ends) and the windscreen wiper (LOD 0). */
+// lamps at the foot of the mask (share of the half width, height, radius m) and the number box
+const LAMPS = { y: 0.745, inner: 0.47, outer: 0.6, r: 0.048 };
+const PLATE = { u: 0.095, y0: 0.66, y1: 0.775 };
+
+/** Lamp reflectors (both ends), the fleet number box and the windscreen wiper (LOD 0). */
 function noseFittings(P, lod) {
-  const seg = lod === 0 ? 18 : lod === 1 ? 12 : 8;
+  const seg = lod === 0 ? 16 : lod === 1 ? 10 : 6;
+  const refl = [0.09, 0.09, 0.095];
   for (const s of [1, -1]) {
-    noseEllipse(P.ws, s * 0.64, 0.84, 0.165, 0.075, 0.004, COL.white, null, seg);   // headlight cluster
-    noseEllipse(P.ws, s * 0.85, 0.97, 0.06, 0.045, 0.004, COL.white, null, seg);    // tail / marker lamp
+    for (const u of [LAMPS.inner, LAMPS.outer]) {
+      const ru = (LAMPS.r * 1.25) / sideX(LAMPS.y);
+      noseEllipse(P.body, s * u, LAMPS.y, ru, LAMPS.r * 1.25, 0.004, refl, null, seg, 1);
+    }
   }
+  // number box: a white plate with the fleet number in black (LOD 0)
+  const ym = (PLATE.y0 + PLATE.y1) / 2, hy = (PLATE.y1 - PLATE.y0) / 2;
+  noseEllipse(P.body, 0, ym, PLATE.u, hy, 0.005, [0.62, 0.62, 0.6], null, lod === 0 ? 16 : 8, 0.25);
   if (lod > 0) return;
+  const B = P.body, dot = 0.0125, gw = 6 * dot, digits = FLEET_NO;
+  const x0 = (digits.length * gw - dot) / 2;
+  for (let k = 0; k < digits.length; k++) {
+    const g = FONT[digits[k]];
+    for (let r = 0; r < 7; r++) {
+      for (let b = 0; b < 5; b++) {
+        if (!(g[r] & (16 >> b))) continue;
+        // viewer's left is +x: columns run towards −x
+        const xa = x0 - k * gw - b * dot, ya = ym + 3.5 * dot - r * dot;
+        const q = [[xa, ya], [xa - dot, ya], [xa - dot, ya - dot], [xa, ya - dot]].map(([x, y]) => {
+          const u = x / sideX(y);
+          capPoint(u, y, _cp); capNormal(u, y, _cn);
+          return B.vert(_cp.x + _cn.x * 0.0065, _cp.y + _cn.y * 0.0065, _cp.z + _cn.z * 0.0065, _cn.x, _cn.y, _cn.z, COL.black);
+        });
+        B.quad(q[0], q[1], q[2], q[3]);
+      }
+    }
+  }
   // a single long wiper parked along the bottom of the windscreen
-  const B = P.body, n = 8, w = 0.016;
+  const n = 8, w = 0.016;
   let prev = null;
   for (let k = 0; k <= n; k++) {
     const t = k / n, u = 0.08 - 0.62 * t, y = Y.ws0 + 0.05 + 0.08 * t;
@@ -465,33 +529,32 @@ function noseFittings(P, lod) {
 
 /** Lit parts of a cab end: destination display (both ends), headlights (leading) or tail lamps (trailing). */
 function capLamps(B, cap, prof, lead, atlas) {
-  const { pos, nrm, us, nr, nc } = cap;
+  const { pos, nrm, uu, nr, nc, c0, hD } = cap;
   const D = atlas.display;
   for (let i = 0; i < nr - 1; i++) {
     const ym = (prof[i].y + prof[i + 1].y) / 2;
     if (!(ym > Y.dispBand && ym < cap.wsTop)) continue;
     for (let j = 0; j < nc - 1; j++) {
-      const um = (us[j] + us[j + 1]) / 2;
-      if (Math.abs(um) >= DISP_U) continue;
+      if (Math.max(Math.abs(j - c0), Math.abs(j + 1 - c0)) > hD) continue;
       const corner = [i * nc + j, i * nc + j + 1, (i + 1) * nc + j + 1, (i + 1) * nc + j];
       const v = corner.map((q) => {
         // text reads left to right seen from the front (the viewer's left is +x)
-        const su = clamp((DISP_U - us[q % nc]) / (2 * DISP_U), 0, 1);
-        const sv = clamp((pos[q * 3 + 1] - Y.dispBand) / (cap.wsTop - Y.dispBand), 0, 1);
+        const y = pos[q * 3 + 1], d = dispW(y);
+        const su = clamp((d - uu[q]) / (2 * d), 0, 1);
+        const sv = clamp((y - Y.dispBand) / (cap.wsTop - Y.dispBand), 0, 1);
         return B.vert(pos[q * 3], pos[q * 3 + 1], pos[q * 3 + 2], nrm[q * 3], nrm[q * 3 + 1], nrm[q * 3 + 2], COL.white,
           D[0] + (D[2] - D[0]) * su, D[1] + (D[3] - D[1]) * sv);
       });
       B.quad(v[0], v[1], v[2], v[3]);
     }
   }
-  const L = atlas.lens;
+  const L = atlas.lens, ru = LAMPS.r / sideX(LAMPS.y);
   for (const s of [1, -1]) {
     if (lead) {
-      // two LED projector lamps per cluster
-      noseEllipse(B, s * 0.575, 0.84, 0.05, 0.042, 0.008, LAMP.head, L, 14);
-      noseEllipse(B, s * 0.705, 0.84, 0.05, 0.042, 0.008, LAMP.head, L, 14);
+      noseEllipse(B, s * LAMPS.inner, LAMPS.y, ru, LAMPS.r, 0.008, LAMP.head, L, 14, 1);
+      noseEllipse(B, s * LAMPS.outer, LAMPS.y, ru, LAMPS.r, 0.008, LAMP.head, L, 14, 1);
     } else {
-      noseEllipse(B, s * 0.85, 0.97, 0.05, 0.036, 0.008, LAMP.tail, L, 14);
+      noseEllipse(B, s * LAMPS.outer, LAMPS.y, ru, LAMPS.r, 0.008, LAMP.tail, L, 14, 1);
     }
   }
 }

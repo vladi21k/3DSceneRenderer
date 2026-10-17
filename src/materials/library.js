@@ -35,11 +35,11 @@ const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0,
 // soiled ledges, sheltered soffits, faint vertical drip streaks
 const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 };
 
-// Granite setts: ±10 % value per sett with a slight warm / cool drift, a little banding
+// Granite setts: ±8 % value per sett with a slight warm / cool drift, a little banding
 // per course, broad wear patches (macro) and ~2.5 % odd setts: darker replacements, a
 // dirty warm one now and then, rarely a pale one.
 const PAVING_CELL = {
-  value: 0.1, hue: 0.6, rough: 0.12, row: 0.25, a: [1.03, 1.0, 0.965], b: [0.975, 0.99, 1.03],
+  value: 0.08, hue: 0.4, rough: 0.12, row: 0.25, a: [1.03, 1.0, 0.965], b: [0.975, 0.99, 1.03],
   out: { p: 0.025, fam: [[0.8, 0.8, 0.82], [0.86, 0.84, 0.8], [1.1, 1.1, 1.09]] },
 };
 const PAVING_MACRO = { f1: 1 / 4, f2: 1 / 20, albedo: 0.12, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
@@ -109,7 +109,7 @@ export const LIBRARY = {
     props: { roughness: 1, color: [1.02, 1.01, 0.99] },
     bake: 'paving',
     surf: {
-      scale: 1.25, cell: PAVING_CELL, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
+      scale: 1.25, cell: { ...PAVING_CELL, value: 0.07 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { prob: 0.14, radius: 0.011, albedo: 0.48, rough: 0.5 },
       stain: { amount: 0.18, freq: 0.5, threshold: 0.66 },
       // v = metres from the gutter: grime along the kerb edge (and ~7 m in, at the building

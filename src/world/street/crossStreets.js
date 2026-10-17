@@ -72,7 +72,7 @@ function localH(a, x, road) {
 }
 
 /** Side street c on `side` (the part built by chunk): resumable (see street.js), yields
- *  'cross' after the surface and after the wear overlays. */
+ *  'cross' between its parts. */
 export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const { route, surface, mats } = ctx;
   const m = surface.mouth(c, side);
@@ -151,7 +151,7 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
         let t = (1 + 0.08 * f.sample(x * 0.5 + 300, a * 0.5)) * (1 + 0.05 * f.sample(x * 2.1, a * 2.1 + 90));
         if (mat === mats.asphalt) {
           // weathered in broad blotches, dirt along the kerbs
-          t *= ASPHALT_TINT * (1 + 0.1 * f.sample(x * 0.11 + 57, a * 0.11 + 7)) * (1 - 0.12 * Math.exp(-(road - Math.abs(a)) / 0.3));
+          t *= ASPHALT_TINT * (1 + 0.14 * f.sample(x * 0.11 + 57, a * 0.11 + 7)) * (1 - 0.12 * Math.exp(-(road - Math.abs(a)) / 0.3));
           const wt = Math.abs(a) - road * 0.5;
           t *= 1 - 0.07 * Math.exp(-(wt * wt) / 0.4) * smooth((x - 4) / 6);  // polished wheel tracks
         }
@@ -201,9 +201,9 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   };
   const F = sideFrame(m, pt, road);
   const plan = sidePlan(c, side, m, F);
-  // wear first: the paint lies over it
-  buildSideWear(F, plan, lines);
   yield 'cross';
+  // wear first: the paint lies over it
+  yield* buildSideWear(F, plan, lines);
 
   // zebra across the carriageway near the mouth (stripes along the side street)
   const rx = -m.dirOut.z, rz = m.dirOut.x; // right of the side street direction

@@ -62,9 +62,9 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   B.box(sTrim, -o, W + o, top, top + t, -D - o, o, FACES.FRONT | FACES.BACK | FACES.LEFT | FACES.RIGHT);
   B.flat = col.map((c) => c * 0.7);    // soffit, in the slab's own shadow
   B.rectV(sTrim, -o, W + o, -D - o, o, top, -1);
-  // flat roof: grey screed
+  // flat roof: grey screed (casts: it closes the volume)
   B.flat = [0.4, 0.39, 0.38];
-  B.rectV(sinks.dark, -o, W + o, -D - o, o, top + t, 1);
+  B.rectV(sinks.paint, -o, W + o, -D - o, o, top + t, 1);
   B.flat = [1, 1, 1];
 }
 

@@ -5,9 +5,16 @@ import { isThinCaster, hasShadowHooks } from './sunShadow.js';
 // opaque mesh draws with the same depth material. The streamed chunks hold several
 // casting meshes per module (one per material), each drawn once per cascade, so the
 // sun's depth passes cost hundreds of draw calls. Once a chunk is built and shown, its
-// static casters are merged here (in the background, a slice per frame) into one
-// depth-only proxy per shadow side and thin/solid class; the cascade frustums then
-// skip the originals and draw the proxy instead.
+// static casters are merged here (in the background, a slice per frame) into depth-only
+// proxies per shadow side and thin/solid class; the cascade frustums then skip the
+// originals and draw the proxies instead.
+//
+// Two sets of proxies share each merged vertex buffer. The near cascades (fine texels,
+// short depth slices) draw cell proxies: the chunk's triangles sorted into ~13 m cells
+// along the street, so a cascade only draws the cells whose shadows can reach its slice.
+// The far cascades draw one coarse proxy per chunk without the triangles that are
+// smaller than their texels (mouldings, balusters, frames: about half the count and
+// under 1% of the shadow area); thin casters never reach them anyway.
 //
 // Proxies never draw in the main pass: their geometry's bounding sphere lies far
 // below the street, so the camera frustum culls them, and the cascade frustums test
@@ -24,6 +31,9 @@ const FAR_SPHERE = new THREE.Sphere(new THREE.Vector3(0, -1e7, 0), 1e-3);
 const SIDE_FLIP = { [THREE.FrontSide]: THREE.BackSide, [THREE.BackSide]: THREE.FrontSide, [THREE.DoubleSide]: THREE.DoubleSide };
 const MIN_SOURCES = 2;          // a group with fewer sources keeps its originals
 const MATRIX_CHECKS = 96;       // source transforms compared per frame (rolling)
+const CELL_LEN = 13.5;          // near-cascade cell length along the street (m)
+const MAX_CELLS = 6;
+const FAR_MIN_EDGE = 0.35;      // far cascades skip triangles whose longest edge is shorter (m)
 
 export class ShadowBatcher {
   constructor(app, shadow, { budgetMs = 1.0 } = {}) {
@@ -65,7 +75,7 @@ export class ShadowBatcher {
     // new, finished chunks
     for (const c of world.chunks.values()) {
       if (!c.ready || !c.group.visible || !c.group.parent) continue;
-      if (!this.records.has(c.group)) this.records.set(c.group, { group: c.group, active: false, proxies: [], sources: [], retryAt: this.frame + 2 });
+      if (!this.records.has(c.group)) this.records.set(c.group, { group: c.group, s: 0.5 * (c.s0 + c.s1), active: false, proxies: [], sources: [], retryAt: this.frame + 2 });
     }
 
     this._validate();
@@ -149,7 +159,7 @@ export class ShadowBatcher {
         ...g,
         pos: new Float32Array(g.verts * 3),
         index: g.verts > 65535 ? new Uint32Array(g.idx) : new Uint16Array(g.idx),
-        vOff: 0, iOff: 0, next: 0, snap: [],
+        vOff: 0, iOff: 0, next: 0, snap: [], done: false,
       });
     }
     if (!parts.length) { rec.building = false; rec.retryAt = Infinity; return null; }
@@ -167,10 +177,88 @@ export class ShadowBatcher {
         part.snap.push(this._append(part, o));
         if (performance.now() - t0 > this.budgetMs) return;
       }
+      if (!part.done) {
+        this._split(part, job.rec);
+        part.done = true;
+        if (performance.now() - t0 > this.budgetMs) { job.p++; return; }
+      }
       job.p++;
     }
     this.job = null;
     this._activate(job);
+  }
+
+  /**
+   * Sort a merged part's triangles into cells along the street (near cascades) and pick
+   * the triangles large enough for the far cascades. Both index the same vertices.
+   */
+  _split(part, rec) {
+    const pos = part.pos, idx = part.index, nTri = part.iOff / 3;
+    const smp = this.app.route.sample(rec.s);
+    let tx = smp.tan.x, tz = smp.tan.z;
+    const tl = Math.hypot(tx, tz) || 1;
+    tx /= tl; tz /= tl;
+    const ox = smp.pos.x, oz = smp.pos.z;
+    const u = new Float32Array(nTri);
+    let umin = Infinity, umax = -Infinity;
+    const far = part.thin ? null : new idx.constructor(idx.length);
+    let nFar = 0;
+    const m2 = FAR_MIN_EDGE * FAR_MIN_EDGE;
+    for (let t = 0; t < nTri; t++) {
+      const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+      const v = ((pos[a] + pos[b] + pos[c]) / 3 - ox) * tx + ((pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3 - oz) * tz;
+      u[t] = v;
+      if (v < umin) umin = v;
+      if (v > umax && v < Infinity) umax = v;
+      if (far) {
+        const e1 = (pos[b] - pos[a]) ** 2 + (pos[b + 1] - pos[a + 1]) ** 2 + (pos[b + 2] - pos[a + 2]) ** 2;
+        const e2 = (pos[c] - pos[a]) ** 2 + (pos[c + 1] - pos[a + 1]) ** 2 + (pos[c + 2] - pos[a + 2]) ** 2;
+        const e3 = (pos[c] - pos[b]) ** 2 + (pos[c + 1] - pos[b + 1]) ** 2 + (pos[c + 2] - pos[b + 2]) ** 2;
+        if (e1 >= m2 || e2 >= m2 || e3 >= m2) { far[nFar++] = idx[t * 3]; far[nFar++] = idx[t * 3 + 1]; far[nFar++] = idx[t * 3 + 2]; }
+      }
+    }
+    // (a source with non-finite vertices leaves the range degenerate: one cell)
+    const span = umax - umin;
+    const n = span > 0 && span < Infinity ? Math.max(1, Math.min(MAX_CELLS, Math.ceil(span / CELL_LEN))) : 1;
+    const len = Math.max((umax - umin) / n, 1e-3);
+    const cell = new Uint8Array(nTri), count = new Uint32Array(n);
+    for (let t = 0; t < nTri; t++) {
+      const k = Math.min(n - 1, Math.max(0, Math.floor((u[t] - umin) / len))) || 0;
+      cell[t] = k; count[k]++;
+    }
+    const start = new Uint32Array(n);
+    for (let k = 1; k < n; k++) start[k] = start[k - 1] + count[k - 1];
+    const near = new idx.constructor(nTri * 3), w = Uint32Array.from(start);
+    const box = Array.from({ length: n }, () => [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+    for (let t = 0; t < nTri; t++) {
+      const k = cell[t], o = w[k]++ * 3, bx = box[k];
+      for (let j = 0; j < 3; j++) {
+        const vi = idx[t * 3 + j], p = vi * 3;
+        near[o + j] = vi;
+        if (pos[p] < bx[0]) bx[0] = pos[p]; if (pos[p] > bx[3]) bx[3] = pos[p];
+        if (pos[p + 1] < bx[1]) bx[1] = pos[p + 1]; if (pos[p + 1] > bx[4]) bx[4] = pos[p + 1];
+        if (pos[p + 2] < bx[2]) bx[2] = pos[p + 2]; if (pos[p + 2] > bx[5]) bx[5] = pos[p + 2];
+      }
+    }
+    part.cells = [];
+    for (let k = 0; k < n; k++) {
+      if (!count[k]) continue;
+      const bx = box[k], sphere = new THREE.Sphere();
+      sphere.center.set((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2);
+      sphere.radius = 0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]);
+      part.cells.push({ start: start[k] * 3, count: count[k] * 3, sphere });
+    }
+    part.near = near;
+    part.far = far && nFar ? far.slice(0, nFar) : null;
+    if (part.far) {
+      const bx = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < nFar; i++) {
+        const p = part.far[i] * 3;
+        for (let j = 0; j < 3; j++) { const v = pos[p + j]; if (v < bx[j]) bx[j] = v; if (v > bx[j + 3]) bx[j + 3] = v; }
+      }
+      part.farSphere = new THREE.Sphere(new THREE.Vector3((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2),
+        0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]));
+    }
   }
 
   _append(part, o) {
@@ -234,27 +322,35 @@ export class ShadowBatcher {
       }
     }
     for (const part of job.parts) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(part.pos, 3));
-      geo.setIndex(new THREE.BufferAttribute(part.index, 1));
-      geo.computeBoundingSphere();
-      const sphere = geo.boundingSphere.clone();
-      geo.boundingSphere = FAR_SPHERE.clone();   // culled by the camera, see above
-      const mesh = new THREE.Mesh(geo, this._material(part.side));
-      mesh.name = `shadowProxy:${rec.group.name}`;
-      mesh.castShadow = true;
-      mesh.receiveShadow = false;
-      mesh.matrixAutoUpdate = false;
-      mesh.userData.shadowProxy = rec;
-      mesh.userData.shadowSphere = sphere;
-      mesh.userData.thinCaster = part.thin;
-      this.root.add(mesh);
-      rec.proxies.push(mesh);
+      const position = new THREE.BufferAttribute(part.pos, 3);
+      const near = new THREE.BufferAttribute(part.near, 1);
+      for (const c of part.cells) this._proxy(rec, part, position, near, c.start, c.count, c.sphere, false);
+      if (part.far) this._proxy(rec, part, position, new THREE.BufferAttribute(part.far, 1), 0, part.far.length, part.farSphere, true);
       for (const s of part.snap) { rec.sources.push(s); this.covered.set(s.o, rec); }
     }
     rec.active = true;
     this.stats.built++;
     this._count();
+  }
+
+  /** One depth-only proxy: a draw range of a merged part, for the near or the far cascades. */
+  _proxy(rec, part, position, index, start, count, sphere, far) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', position);
+    geo.setIndex(index);
+    geo.setDrawRange(start, count);
+    geo.boundingSphere = FAR_SPHERE.clone();   // culled by the camera, see above
+    const mesh = new THREE.Mesh(geo, this._material(part.side));
+    mesh.name = `shadowProxy:${rec.group.name}`;
+    mesh.castShadow = true;
+    mesh.receiveShadow = false;
+    mesh.matrixAutoUpdate = false;
+    mesh.userData.shadowProxy = rec;
+    mesh.userData.shadowSphere = sphere;
+    mesh.userData.thinCaster = part.thin;
+    mesh.userData.shadowFar = far;
+    this.root.add(mesh);
+    rec.proxies.push(mesh);
   }
 
   // ---------------------------------------------------------------- validation

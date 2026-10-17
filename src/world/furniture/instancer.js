@@ -18,7 +18,9 @@ import * as THREE from 'three';
 // Culling: furniture never moves, so each instance's world bounding sphere (of its most
 // detailed level) is stored when it is placed and the draw lists test those directly.
 // The view's list is built in the batch's frustum test, so a batch with nothing in view
-// is not drawn at all (transparent batches keep BatchedMesh's own sorted lists).
+// is not drawn at all (transparent batches keep BatchedMesh's own sorted lists). Every
+// pass (the view, each cascade) keeps its own indirect texture (IndirectLists), uploaded
+// only when its list changed instead of once per pass.
 //
 // Distance LOD per instance: a prototype with `lods` (switch distances in metres) gives
 // each part one geometry per level; updateLod() swaps the geometry id of live instances
@@ -32,7 +34,7 @@ const WHITE = new THREE.Color(1, 1, 1);
 const FADE_MS = 450;
 // shadows: cascade texel (m) above which at least level 1 / the coarsest level is drawn,
 // and the smallest instance (bounding radius in texels) still worth a shadow
-const SHADOW_LEVEL_TEXEL = [0.012, 0.07];
+const SHADOW_LEVEL_TEXEL = [0.012, 0.035];
 const SHADOW_MIN_TEXELS = 1.5;
 const _mat = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
@@ -55,6 +57,49 @@ function shadowFrustums(scene, cache) {
     for (let i = 0; i < n; i++) cache.map.set(sh.getFrustum(i), { shadow: sh, camera: sh.getCamera ? sh.getCamera(i) : sh.camera });
   }
   return cache.map;
+}
+
+/**
+ * Indirect textures (draw index -> instance) of a BatchedMesh, one per pass key (the view
+ * frustum, each shadow camera). three's BatchedMesh refills and re-uploads its single
+ * texture for every pass, shadow cascades included, and such an upload can block when
+ * the GPU queue is full. Here a list is written into a scratch array (begin) and
+ * commit() copies it into the pass's own texture, uploading only when it changed.
+ */
+class IndirectLists {
+  constructor(mesh) { this.mesh = mesh; this.max = -1; this.size = 0; this.scratch = null; this.tex = new Map(); }
+
+  /** Scratch array for a new list (follows the batch's instance capacity). */
+  begin() {
+    const max = this.mesh._maxInstanceCount;
+    if (max !== this.max) {
+      this.max = max;
+      this.size = Math.ceil(Math.sqrt(max));
+      this.scratch = new Uint32Array(this.size * this.size);
+      for (const t of this.tex.values()) t.dispose();
+      this.tex.clear();
+    }
+    return this.scratch;
+  }
+
+  /** The texture of pass `key` holding the first n scratch entries. */
+  commit(key, n) {
+    let t = this.tex.get(key);
+    if (!t) {
+      t = new THREE.DataTexture(new Uint32Array(this.size * this.size), this.size, this.size, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+      t.userData.n = -1;
+      this.tex.set(key, t);
+    }
+    const a = this.scratch, b = t.image.data;
+    let same = t.userData.n === n;
+    for (let i = 0; same && i < n; i++) same = a[i] === b[i];
+    if (!same) {
+      b.set(n < a.length ? a.subarray(0, n) : a);
+      t.userData.n = n;
+      t.needsUpdate = true;
+    }
+    return t;
+  }
 }
 
 /** Screen-door dither for batched furniture, driven by the batch colour alpha:
@@ -199,6 +244,7 @@ export class BatchSet {
       if (bm.sortObjects) bm.onBeforeRender = (...a) => { sync(); before(...a); };
       else bm.onBeforeRender = () => {};  // the list was built by the frustum test
       b.bm = bm;
+      b.lists = new IndirectLists(bm);
       scene.add(bm);
     }
     this._finalizeShadow(scene, sync, capacity);
@@ -234,6 +280,7 @@ export class BatchSet {
     bm.onBeforeShadow = (renderer, object, camera, shadowCamera) => { sync(); this._shadowList(scene, shadowCamera); };
     S.levels = new Int32Array(Math.max(64, bm.maxInstanceCount) * 3).fill(-1);
     S.bm = bm;
+    S.lists = new IndirectLists(bm);
     scene.add(bm);
   }
 
@@ -249,7 +296,7 @@ export class BatchSet {
   _viewList(b, frustum, write = true) {
     const m = b.bm, sp = b.sph;
     const info = m._instanceInfo, gInfo = m._geometryInfo;
-    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = write ? b.lists.begin() : null;
     const index = m.geometry.getIndex(), bpe = index ? index.array.BYTES_PER_ELEMENT : 1;
     let n = 0;
     for (let i = 0, l = info.length; i < l; i++) {
@@ -266,7 +313,7 @@ export class BatchSet {
       n++;
     }
     if (!write) return 0;
-    m._indirectTexture.needsUpdate = true;
+    m._indirectTexture = b.lists.commit(frustum, n);
     m._multiDrawCount = n;
     m._multiDrawBytesPerElement = bpe;
     return n;
@@ -282,7 +329,7 @@ export class BatchSet {
     const minLv = texel > SHADOW_LEVEL_TEXEL[1] ? 2 : texel > SHADOW_LEVEL_TEXEL[0] ? 1 : 0;
     const minR = SHADOW_MIN_TEXELS * texel;
     const info = m._instanceInfo, gInfo = m._geometryInfo, lv = S.levels, sp = S.sph;
-    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = S.lists.begin();
     const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
     let n = 0;
     for (let i = 0, l = info.length; i < l; i++) {
@@ -303,7 +350,7 @@ export class BatchSet {
       ind[n] = i;
       n++;
     }
-    m._indirectTexture.needsUpdate = true;
+    m._indirectTexture = S.lists.commit(cam, n);
     m._multiDrawCount = n;
     m._multiDrawBytesPerElement = bpe;
   }

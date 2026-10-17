@@ -84,7 +84,7 @@ void surface(vec2 m, inout Surf s) {
   vec2 cs = uTile / vec2(float(NA), float(NC));
   // ragged stroke outlines: the work surface is warped by a few millimetres
   vec2 w = m + vec2(fbm(m, 30.0, 2, 0.5, 301u), fbm(m, 30.0, 2, 0.5, 302u)) * 0.0018;
-  float best = 0.0, bestF = 1.0, bestT = 0.0;
+  float best = 0.0, bestT = 0.0;
   int j0 = int(floor(w.y / cs.y));
   for (int dj = -2 * uOne; dj <= 2 * uOne; dj++) {
     int j = j0 + dj;
@@ -108,7 +108,7 @@ void surface(vec2 m, inout Surf s) {
       float prof = max(0.0, 1.0 - x * x);
       float alo = smoothstep(-0.04, 0.12, f) * (1.0 - smoothstep(0.35, 1.0, f) * 0.85) * step(f, 1.0);
       float hs = -dep * prof * alo;
-      if (hs < best) { best = hs; bestF = f; bestT = h1; }
+      if (hs < best) { best = hs; bestT = h1; }
     }
   }
   // the pecked rough-out surface left between the strokes

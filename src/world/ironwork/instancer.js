@@ -92,11 +92,11 @@ export class InstanceCollector {
         const dx = m[i * 16 + 12] - x, dy = m[i * 16 + 13] - y, dz = m[i * 16 + 14] - z;
         r = Math.max(r, dx * dx + dy * dy + dz * dz);
       }
-      const g0 = s.levels.find(Boolean), gr = reach(g0);
+      let gr = 0;
+      for (const g of s.levels) if (g) gr = Math.max(gr, reach(g));
       const pad = s.opts.radius ?? gr;
       // clusters: runs of consecutive instances, each bounded by a sphere around its
-      // instance origins padded by the scaled geometry extent (every level lies within
-      // the full one's; 2 % margin)
+      // instance origins padded by the scaled extent of the largest level (2 % margin)
       const nc = s.runs.length, c0 = new Uint32Array(nc + 1), cs = new Float32Array(nc * 4);
       c0.set(s.runs); c0[nc] = s.n;
       for (let k = 0; k < nc; k++) {

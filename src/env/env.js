@@ -27,6 +27,7 @@ const QUALITY = {
 const _v = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const _es = new THREE.Vector3();
+const _es2 = new THREE.Vector3();
 const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];
@@ -62,9 +63,9 @@ const env = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    // a hazy Mediterranean summer afternoon: ~12x the aerosol of the clean reference
-    // atmosphere (optical depth ~0.06); URL mie= overrides it for tuning
-    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 12) });
+    // a hazy, dusty Mediterranean summer afternoon: ~20x the aerosol of the clean
+    // reference atmosphere, 2 km deep (optical depth ~0.15 above the city); URL mie= overrides it
+    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 20) });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
@@ -322,6 +323,10 @@ const env = {
       const ground = GROUND_ALB[i] * (skyH[k] * 0.62 + Es[k] * sy * floorLit) / Math.PI;
       hz.amb.setComponent(i, 0.5 * (0.45 * sky + 0.55 * wall) + 0.5 * ground);
     }
+    // dust scatters nearly greyly and the canyon light it sees is warm: by day the
+    // in-scatter source leans to a pale warm grey of the same luminance
+    const La = lum(hz.amb);
+    hz.amb.lerp(_es2.set(La * 1.07, La, La * 0.88), 0.55 * sunUp);
     // canyon bounce: mean irradiance of the sun-facing facade and of the floor, reflected
     // with the stone and paving albedo through the view factors of a ~1:1 street canyon
     const bu = this.bounce;

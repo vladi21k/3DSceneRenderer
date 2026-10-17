@@ -74,8 +74,13 @@ export function* lotSteps(B, lot, ends, q, metas) {
     // smooth: trim that casts shadows in every cascade (reveals, mouldings, parapets);
     // detail: the dressing, a thin shadow caster (its relief is a few centimetres)
     ashlar: B.sink('ashlar'), smooth: B.sink('smooth'), detail: B.sink('smoothD'), rough: B.sink('rough'),
+    // dark: the boxes behind the openings and the backstops. They cast: the shell is
+    // hollow and its walls only cast from their sides facing away from the sun, so these
+    // are what keep low sun from shining through the openings
     dark: B.sink('plaster'), paint: B.sink('plaster'), tile: B.sink('tile'),
-    metal: B.sink('plaster'),        // rooftop metalwork, small and far above the street: painted
+    // rooftop metalwork (small and far above the street: painted) in the plaster
+    // material without shadows, which would only fall on the roofs
+    metal: B.sink('dark'),
   };
   const cor = plan.cornice, par = plan.parapet;
   const vTop = cor.y + 0.06;
@@ -301,7 +306,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
     yield;
     if (plan.upper) { yield* upperVolume(B, sinks, lot, plan, orn, tint, q, orn.dirt); B.mark('upper'); }
     B.frameFromLot(f);
-    if (q.rooftop) yield* rooftop(B, sinks, lot, plan, orn, pv + 0.06, q, tint, foot, { v: pv, h: ph, solid: par.type !== 'balustrade' });
+    // rooftop equipment (heaters, tanks, head-houses...) throws its shadows on the roofs only
+    if (q.rooftop) yield* rooftop(B, { ...sinks, paint: sinks.metal, frame: sinks.metal }, lot, plan, orn, pv + 0.06, q, tint, foot, { v: pv, h: ph, solid: par.type !== 'balustrade' });
     B.mark('rooftop');
   } else {
     B.shade = null;

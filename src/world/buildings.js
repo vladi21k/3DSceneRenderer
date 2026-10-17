@@ -25,21 +25,23 @@ import { makeSlab, slabSteps } from './buildings/skyline.js';
 // GPU upload: a full-detail chunk is several megabytes of vertex data even in the compact
 // format (buildings/mesh.js), and the renderer uploads a geometry the first time it draws
 // it, all in one frame. So a finished job's vertex buffers are uploaded ahead, a few
-// hundred kilobytes per frame, through one never-drawn mesh whose geometry borrows them
-// (see preUpload); when the chunk is revealed only its index buffers are left to send.
+// hundred kilobytes per frame, through never-drawn meshes (see preUpload); when the
+// chunk is revealed only its index buffers are left to send.
 
-// sink key -> library material (smoothD: the dressing, the same stone as smooth)
+// sink key -> library material (smoothD: the dressing, the same stone as smooth; dark:
+// plaster that casts no shadow)
 const MATERIAL = {
   ashlar: 'stone.ashlar', smooth: 'stone.smooth', smoothD: 'stone.smooth', rough: 'stone.rough', plaster: 'plaster',
-  tile: 'roof.tile', glass: 'glass.window',
+  dark: 'plaster', tile: 'roof.tile', glass: 'glass.window',
 };
-const NO_SHADOW = new Set(['glass']);              // glazing inside the reveals
+// glazing inside the reveals; rooftop equipment (its shadows only fall on the roofs)
+const NO_SHADOW = new Set(['glass', 'dark']);
 const THIN = new Set(['smoothD']);                 // centimetre relief: near shadow cascades only
 // the plaster batch holds the dark boxes behind the openings and the backstops behind the
 // walls: drawn after the other opaque work, they are mostly rejected by the depth test
 const LATE = new Set(['plaster']);
 // weathered materials (aRun: per-pixel run-off); plaster and tiles share their program
-const RUNOFF = new Set(['ashlar', 'smooth', 'smoothD', 'rough', 'plaster', 'tile']);
+const RUNOFF = new Set(['ashlar', 'smooth', 'smoothD', 'rough', 'plaster', 'dark', 'tile']);
 let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
 const BASE_MS = 0.8;               // per-frame generation budget when nothing is urgent
 const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
@@ -58,7 +60,9 @@ const skyline = new Map();         // chunk index -> taller blocks well behind t
 const cost = [0.4, 0.15];          // running generation cost by detail level (ms per metre of route)
 let stepAvg = 0.25;                // running cost of one generation step (ms)
 let finishAvg = 0.3;               // running cost of closing a finished job (bounds, buffers)
-let uploader = null;               // never-drawn mesh that uploads vertex buffers ahead (preUpload)
+let uploaders = null;              // never-drawn meshes that upload vertex buffers ahead (preUpload)
+const NO_GEOMETRY = new THREE.BufferGeometry();
+NO_GEOMETRY.boundingSphere = new THREE.Sphere();
 
 const buildings = {
   name: 'buildings',
@@ -84,14 +88,11 @@ const buildings = {
         tile: grimeStone(app, 'roof.tile', [0.3, 0.4, 0.1, 0.3]),
       };
       MATS.smoothD = MATS.smooth;
+      MATS.dark = MATS.plaster;
     }
-    // (no material at all: nothing to draw or compile, but the renderer still walks it)
-    uploader = new THREE.Mesh(new THREE.BufferGeometry(), []);
-    uploader.name = 'buildings:upload';
-    uploader.frustumCulled = false;
-    uploader.geometry.boundingSphere = new THREE.Sphere();
-    uploader.matrixAutoUpdate = false;
-    app.scene.add(uploader);
+    uploaders = new THREE.Group();
+    uploaders.name = 'buildings:upload';
+    app.scene.add(uploaders);
     planBackdrops(app);
     planSkyline(app);
     indexEnds(app.layout);
@@ -179,7 +180,7 @@ const buildings = {
     for (const [job, g] of swaps) {
       runJob(app, job, budgetMs - spent());
       // swapped in once its vertex buffers are on the GPU (they go first, see preUpload)
-      if (job.done && (!job.result || !job.result.pending.length || !uploader)) {
+      if (job.done && (!job.result || !job.result.pending.length || !uploaders)) {
         swaps.delete(job); jobs.delete(jobKey(job.idx, job.lod)); swapIn(app, g, job.result);
       }
       if (spent() > budgetMs) return;
@@ -307,7 +308,8 @@ function runJob(app, job, budgetMs) {
 /**
  * A finished batch as one BufferGeometry per material key (compact vertex format, see
  * buildings/mesh.js), sharing the batch's bounds: {geoms: Map key -> geometry, pending:
- * vertex attributes not uploaded yet (preUpload), left: their bytes}.
+ * [[geometry, name, attribute]...] vertex attributes not attached yet (preUpload attaches
+ * them a few at a time), left: their bytes}.
  */
 function geometries(B) {
   const box = new THREE.Box3();
@@ -316,26 +318,29 @@ function geometries(B) {
   const geoms = new Map(), pending = [];
   for (const [key, p] of B.finish()) {
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(p.p, 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(p.n, 4, true));
-    g.setAttribute('uv', new THREE.BufferAttribute(p.t, 2));
-    g.setAttribute('color', new THREE.BufferAttribute(p.c, 4, true));
-    if (RUNOFF.has(key)) g.setAttribute('aRun', new THREE.BufferAttribute(p.r, 4));
     g.setIndex(new THREE.BufferAttribute(p.i, 1));
     g.boundingSphere = sphere.clone();
     g.boundingBox = box.clone();
     geoms.set(key, g);
-    for (const name in g.attributes) pending.push(g.attributes[name]);
+    pending.push([g, 'position', new THREE.BufferAttribute(p.p, 3)], [g, 'normal', new THREE.BufferAttribute(p.n, 4, true)],
+      [g, 'uv', new THREE.BufferAttribute(p.t, 2)], [g, 'color', new THREE.BufferAttribute(p.c, 4, true)]);
+    if (RUNOFF.has(key)) pending.push([g, 'aRun', new THREE.BufferAttribute(p.r, 4)]);
   }
-  // largest first: the remainder then packs into the per-frame budget
-  pending.sort((a, b) => a.array.byteLength - b.array.byteLength);
-  return { geoms, pending, left: pending.reduce((n, a) => n + a.array.byteLength, 0) };
+  // smallest last: popped first, so a frame's budget fills up with small ones
+  pending.sort((a, b) => b[2].array.byteLength - a[2].array.byteLength);
+  return { geoms, pending, left: pending.reduce((n, a) => n + a[2].array.byteLength, 0) };
+}
+
+/** Attach every attribute a result still holds back (the renderer uploads them when drawn). */
+function attachAll(res) {
+  for (const [g, name, a] of res.pending) g.setAttribute(name, a);
+  res.pending.length = 0;
 }
 
 /** One mesh per material from a finished job's geometry. */
 function fillGroup(app, group, res) {
   if (!res) return group;
-  res.pending.length = 0;    // drawn from now on: the renderer uploads what is left
+  attachAll(res);
   for (const [key, g] of res.geoms) {
     const mesh = new THREE.Mesh(g, MATS[key] || app.materials.get(MATERIAL[key] || 'stone.ashlar', { vertexColors: true }));
     mesh.name = `buildings:${key}`;
@@ -366,7 +371,7 @@ function coarseGroup(app, job) {
 function dropJob(job) {
   if (!job.result) return;
   job.result.pending.length = 0;
-  for (const g of job.result.geoms.values()) g.dispose();
+  for (const g of job.result.geoms.values()) g.dispose();   // (frees what preUpload sent)
   job.result = null;
 }
 
@@ -375,16 +380,18 @@ function dropJob(job) {
 /**
  * Upload vertex buffers of finished jobs ahead of their reveal, the most urgent job
  * first (stand-ins waiting for their swap, then by metres of travel until the streamer
- * needs the chunk), UPLOAD_BYTES per frame. The uploader mesh is never drawn (it has no
- * material), but the renderer still sends a visible mesh's vertex buffers when it walks
- * the scene; its geometry only borrows the attributes for one frame, and
- * the buffers stay with them (keyed by attribute) for the real geometry to draw from.
- * Index buffers can only be uploaded by a draw: they go with the reveal (2 bytes per index).
+ * needs the chunk), UPLOAD_BYTES per frame. A job's geometries start without vertex
+ * attributes; each frame attaches a few more and shows the geometries that grew to the
+ * renderer through uploader meshes, which have no material (nothing is drawn or
+ * compiled) but are visible, so the renderer sends the new vertex buffers when it walks
+ * the scene. The geometries are then known to the renderer, so disposing them frees
+ * those buffers as usual. Index buffers are only sent by a draw: they go with the reveal.
  */
 function preUpload(app, sCam) {
-  if (!uploader) return;
+  if (!uploaders) return;
   const st = buildings.stats;
-  let bytes = 0, n = 0;
+  const touched = new Set();
+  let bytes = 0;
   while (true) {
     let best = null, bestNeed = Infinity;
     for (const job of jobs.values()) {
@@ -394,22 +401,32 @@ function preUpload(app, sCam) {
       if (need < bestNeed) { bestNeed = need; best = r; }
     }
     if (!best) break;
-    const a = best.pending[best.pending.length - 1], sz = a.array.byteLength;
-    if (n && bytes + sz > UPLOAD_BYTES) break;
+    const [g, name, a] = best.pending[best.pending.length - 1], sz = a.array.byteLength;
+    if (bytes && bytes + sz > UPLOAD_BYTES) break;
     best.pending.pop();
     best.left -= sz;
-    uploader.geometry.setAttribute(`a${n++}`, a);
+    g.setAttribute(name, a);
+    touched.add(g);
     bytes += sz;
+  }
+  let i = 0;
+  for (const g of touched) {
+    let m = uploaders.children[i++];
+    if (!m) {
+      m = new THREE.Mesh(NO_GEOMETRY, []);
+      m.frustumCulled = false;
+      m.matrixAutoUpdate = false;
+      uploaders.add(m);
+    }
+    m.geometry = g;
   }
   st.preBytes = bytes;
   st.preMB = +(st.preMB + bytes / 1048576).toFixed(2);
 }
 
-/** Hand the attributes lent to the uploader last frame back (their GPU buffers stay). */
+/** Let go of the geometries shown to the renderer last frame (their GPU buffers stay). */
 function releaseUploads() {
-  if (!uploader) return;
-  const g = uploader.geometry;
-  for (const name of Object.keys(g.attributes)) g.deleteAttribute(name);
+  if (uploaders) for (const m of uploaders.children) m.geometry = NO_GEOMETRY;
 }
 
 function evict(app, sCam) {

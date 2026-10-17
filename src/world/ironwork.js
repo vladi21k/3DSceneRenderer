@@ -27,20 +27,23 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 //          then nothing once bars are thinner than ~0.8 px, foreshortening included
 //          (the cards carry on)
 //   post   finial post / plain post, same range
-//   carve  carved consoles, turned balusters, full geraniums / light levels whose
-//          omissions (~1 cm) stay under 0.6 px, so the switch does not show
+//   carve  carved consoles, turned balusters / light levels whose omissions (~1 cm)
+//          stay under 0.6 px, so the switch does not show
+//   plant  full geraniums / light ones (same rule) / far ones, a few larger cards
+//          covering as much, once the light level's leaves are under 2 px
 //   strap  planter hook straps, until they are thinner than a pixel
 //   ac     AC unit with pipes and brackets / the bare body, same rule for the pipes
 // Railing cards are always present: they fade in under the geometry and take over from
-// it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only, light
+// it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only, far
 // consoles merged into the stone mesh and the same instanced plants as near chunks.
 //
 // Draw calls: nothing is drawn per chunk. Merged geometry goes into one strip per
 // material and detail range for the whole street (ironwork/strip.js: one draw per pass,
 // culled per chunk block) and instances into one pool per family (ironwork/instancer.js:
-// one draw per detail level in use, culled per chunk). A chunk's build returns an empty
-// marker group; its blocks and instances are shown when the streamer shows the chunk and
-// released on dispose.
+// one draw per detail level in use, culled per chunk and, within it, per balcony stretch
+// or window). A chunk's build returns an empty marker group; its blocks and instances
+// are shown when the streamer shows the chunk and released on dispose. Builds are
+// prepared ahead in small steps (see prefetch and warmStart).
 // Shadows: position-only strips of light stand-ins cast them, the drawn geometry casts
 // nothing. Slabs, consoles, balustrade rails and AC bodies cast in every cascade; the
 // small and thin parts (balusters, pots, planters, chairs, poles, brackets, pipes) only

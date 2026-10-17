@@ -40,9 +40,10 @@ import { U } from '../../core/uniforms.js';
 // LOD cross-fade: the batch colour alpha of an instance is 1 when shown, in (0, 1) while
 // fading in and in (1, 2) while fading out; fragments are dithered on screen accordingly
 // (complementary patterns, so a tree never shows both or neither).
-// Depth pre-pass: the crowns are drawn twice, first by leafPre (same vertex shader with an
+// Depth pre-pass: near crowns are drawn twice, first by leafPre (same vertex shader with an
 // invariant position, coverage only, no colour), then by leaf with depth writes off, so the
 // expensive leaf lighting runs once per visible sample instead of once per layer of cards.
+// Far crowns (small on screen, see pool.js) are drawn once by leafFar (depth writes on).
 //
 // Vertex data: see treeGen.js (aVeg, aCrown, aCard; bark: aBark).
 
@@ -473,6 +474,9 @@ export function createVegMaterials(app, atlas) {
   // after the pre-pass: shade the samples it left, no depth writes (early depth test)
   leaf.depthWrite = false;
   M.register('vegetation.leaf', leaf);
+  // crowns without the pre-pass (far, small on screen): the same program with depth writes
+  const leafFar = makeLeaf('vegetation.leafFar', dbg ? { VEG_DEBUG: dbg | 0 } : {});
+  M.register('vegetation.leafFar', leafFar);
   const leafPre = makeLeaf('vegetation.leafPre', { VEG_PREPASS: '' });
   leafPre.colorWrite = false;
   M.register('vegetation.leafPre', leafPre);
@@ -482,12 +486,12 @@ export function createVegMaterials(app, atlas) {
 
   const leafDepth = makeDepth(true, params, atlas.map);
   return {
-    leaf, leafPre, bark, params, leafDepth,
+    leaf, leafPre, leafFar, bark, params, leafDepth,
     barkDepth: makeDepth(false, params, null),
     /** Swap in the painted atlas (the stand-ins are disposed). */
     setAtlas(a) {
       const old = [leaf.map, leaf.normalMap];
-      for (const m of [leaf, leafPre]) { m.map = a.map; m.normalMap = a.normalMap; }
+      for (const m of [leaf, leafPre, leafFar]) { m.map = a.map; m.normalMap = a.normalMap; }
       leafDepth.map = a.map;
       for (const t of old) if (t && t !== a.map && t !== a.normalMap) t.dispose();
     },

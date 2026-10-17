@@ -11,7 +11,8 @@ import { PATCH_PAD, patchWear } from './lines.js';
 //  - cracks: transverse thermal cracks every 4-13 m, the lane joint beside the centre
 //    line and the seams along the gutters, mostly overbanded with bitumen, some open
 //    hairlines, and short fatigue cracks in the wheel paths; repairs and covers cut them;
-//  - tyre polish along the four wheel paths, oil drips and dirt along the lane centres.
+//  - tyre polish along the four wheel paths, oil drips and dirt along the lane centres,
+//    lighter dust swept to the kerb sides.
 // Everything is placed in an orthonormal street frame (u out along the street, v across
 // it), so covers stay square and round on skewed junctions.
 
@@ -59,6 +60,9 @@ function ribbon(F, uv, along0 = 0) {
   }
   return out;
 }
+
+/** Crack path offset in [-1, 1] at t (m): a wandering course with smaller kinks. */
+const wander = (t, seed) => 0.62 * noise1(t * 0.45, seed) + 0.28 * noise1(t * 1.9, seed + 1) + 0.1 * noise1(t * 8.5, seed + 2);
 
 /** Points from (ua, va) to (ub, vb), at most `step` apart. */
 function straight(ua, va, ub, vb, step) {
@@ -154,14 +158,14 @@ export function sidePlan(c, side, m, F) {
     }
     flush();
   };
-  const sealed = () => (rng.chance(0.65) ? [rng.range(0.011, 0.022), rng.range(0.05, 0.6)] : [rng.range(0.0025, 0.004), 0]);
+  const sealed = () => (rng.chance(0.65) ? [rng.range(0.014, 0.032), rng.range(0.05, 0.6)] : [rng.range(0.0025, 0.004), 0]);
   // transverse: wandering, now and then only part of the way across
   for (let u = u0 + rng.range(3, 8); u < u1 - 1; u += rng.range(4, 13)) {
-    const seed = rng.int(1, 1e6), skew = rng.range(-0.07, 0.07), amp = rng.range(0.08, 0.3);
+    const seed = rng.int(1, 1e6), skew = rng.range(-0.08, 0.08), amp = rng.range(0.12, 0.4);
     let va = -R + 0.22, vb = R - 0.22;
     if (rng.chance(0.35)) { if (rng.chance(0.5)) vb = rng.range(-0.3, 0.6) * R; else va = rng.range(-0.6, 0.3) * R; }
     const uv = [];
-    for (let v = va; v <= vb + 1e-6; v += 0.2) uv.push(u + amp * noise1(v * 0.9, seed) + skew * v, v);
+    for (let v = va; v <= vb + 1e-6; v += 0.12) uv.push(u + amp * wander(v, seed) + skew * v, v);
     const [half, dust] = sealed();
     crack(uv, half, dust);
   }
@@ -171,24 +175,38 @@ export function sidePlan(c, side, m, F) {
     const seed = rng.int(1, 1e6);
     for (let u = uA + rng.range(0, 4); u < uB - 2;) {
       const len = rng.range(3, 15), uv = [];
-      for (let x = u; x <= Math.min(uB, u + len); x += 0.3) uv.push(x, v0 + amp * noise1(x * 0.35, seed));
+      for (let x = u; x <= Math.min(uB, u + len); x += 0.25) uv.push(x, v0 + amp * wander(x, seed));
       if (rng.chance(sealP)) crack(uv, rng.range(half0 * 0.7, half0 * 1.3), rng.range(0.1, 0.6));
       else crack(uv, rng.range(0.0025, 0.004), 0);
       u += len + rng.range(1.5, 9);
     }
   };
-  along((rng.chance(0.5) ? 1 : -1) * rng.range(0.09, 0.2), u0 + 2, u1, 0.03, 0.8, 0.018);
-  for (const k of [-1, 1]) if (rng.chance(0.6)) along(k * (R - rng.range(0.28, 0.4)), u0 + 3, u1, 0.015, 0.75, 0.014);
+  along((rng.chance(0.5) ? 1 : -1) * rng.range(0.12, 0.22), u0 + 2, u1, 0.05, 0.8, 0.024);
+  for (const k of [-1, 1]) if (rng.chance(0.45)) along(k * (R - rng.range(0.28, 0.4)), u0 + 3, u1, 0.03, 0.6, 0.018);
   // tyre polish in the wheel paths (clear of the gullies), fatigue cracks along them
   const wheels = [];
   for (const k of [-1, 1]) {
     wheels.push(k * Math.max(0.3, R / 2 - 0.8), k * Math.min(R / 2 + 0.8, R - 0.75));
   }
+  // bands along the street, broken (with a fade) where a cover lies on them
+  const band = (v, half, k, ua = 2, ub = u1 + 1) => {
+    let a = ua;
+    for (const q of covers.filter((c) => Math.abs(c.v - v) < c.r + half * 0.8).sort((x, y) => x.u - y.u)) {
+      if (q.u - q.r - 0.3 - a > 3) polish.push({ v, u0: a, u1: q.u - q.r - 0.3, half, k });
+      a = Math.max(a, q.u + q.r + 0.3);
+    }
+    if (ub - a > 3) polish.push({ v, u0: a, u1: ub, half, k });
+  };
+  for (const k of [-1, 1]) {
+    band(k * R / 2 + rng.normal(0, 0.06), 0.42, rng.range(0.45, 0.75), 5);      // oil drips
+    band(k * (R - 0.62), 0.3, -rng.range(0.5, 0.9), 4);                          // kerb dust
+  }
   for (const v of wheels) {
-    polish.push({ v, u0: 2, u1: u1 + 1, half: 0.3, k: rng.range(0.7, 1.2) });
+    band(v, 0.34, rng.range(0.8, 1.25));
     for (let i = rng.int(0, 2); i > 0; i--) {
       const ua = rng.range(8, u1 - 6), seed = rng.int(1, 1e6), uv = [];
-      for (let x = ua; x <= ua + rng.range(1.5, 5); x += 0.25) uv.push(x, v + rng.range(-0.05, 0.05) + 0.06 * noise1(x * 1.3, seed));
+      const dv = rng.range(-0.08, 0.08);
+      for (let x = ua; x <= ua + rng.range(1.5, 5); x += 0.15) uv.push(x, v + dv + 0.08 * wander(x * 2, seed));
       crack(uv, rng.range(0.0025, 0.0045), 0);
     }
   }
@@ -208,17 +226,21 @@ export function sidePlan(c, side, m, F) {
 }
 
 /** Overlays of the plan (repairs, polish, cracks) into the chunk's line writers; drawn
- *  in this order, before the paint. */
-export function buildSideWear(F, plan, lines) {
+ *  in this order, before the paint. Resumable (see street.js): yields 'cross' now and
+ *  then. */
+export function* buildSideWear(F, plan, lines) {
   for (const p of plan.patches) {
     const h = p.len / 2 + PATCH_PAD;
     const uv = p.dir === 'u' ? straight(p.u - h, p.v, p.u + h, p.v, 1.2) : straight(p.u, p.v - h, p.u, p.v + h, 0.3);
     lines.patch.add(ribbon(F, uv, -PATCH_PAD), p.half + PATCH_PAD, p.len, patchWear(p.hole, p.tone), 7);
   }
   for (const b of plan.polish) lines.polish.add(ribbon(F, straight(b.u0, b.v, b.u1, b.v, 2)), b.half, b.u1 - b.u0, b.k, 7);
+  yield 'cross';
+  let n = 0;
   for (const c of plan.cracks) {
     const pts = ribbon(F, c.uv);
-    lines.seal.add(pts, c.half, pts[pts.length - 2], c.dust, 7);
+    lines.seal.add(pts, 2 * c.half, pts[pts.length - 2], c.dust, 7);
+    if ((n += pts.length) > 2500) { n = 0; yield 'cross'; }
   }
 }
 

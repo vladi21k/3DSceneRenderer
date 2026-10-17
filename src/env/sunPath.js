@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 // Time of day → sun position. Real solar geometry for a Mediterranean city in early
 // September (latitude 31.8° N, declination +7°), with t mapped onto the afternoon:
-//   t 0 ≈ 13:05 (elev ~61°), 0.3 ≈ 15:30 (35°), 0.55 ≈ 17:15 (14°, golden hour),
+//   t 0 ≈ 13:05 (elev ~61°), 0.3 ≈ 15:30 (35°), 0.55 ≈ 17:25 (11.5°, golden hour),
 //   0.8 ≈ 18:20 (sunset, 0°), 1 ≈ 18:45 (civil twilight, −6°).
 // The compass is fixed so the main avenue runs towards azimuth ~281°: at golden hour
 // the sun sits ~11° left of the direction of travel, above the top of the telephoto
@@ -17,7 +17,7 @@ const DECL = 7.0 * DEG;
 export const AVENUE_AZIMUTH = 281; // compass azimuth (deg) of the direction of travel on the main avenue
 
 // t → hour angle (deg), monotone cubic through these keys
-const KEYS = [[0, 16.1], [0.3, 52.85], [0.55, 77.6], [0.8, 94.4], [1, 101.5]];
+const KEYS = [[0, 16.1], [0.3, 52.85], [0.55, 80.8], [0.8, 94.4], [1, 101.5]];
 
 function hermiteKeys(keys, t) {
   t = THREE.MathUtils.clamp(t, keys[0][0], keys[keys.length - 1][0]);

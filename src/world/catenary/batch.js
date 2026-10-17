@@ -19,6 +19,9 @@ import * as THREE from 'three';
 // its shadow can reach the cascade's slice of the view (the light's cascade frustum
 // decides, so cascades that are not redrawn this frame cost nothing), at no more detail
 // than the cascade's texels hold, and parts flagged thin stop casting in coarse cascades.
+// The view's list is built here too (viewList, per-instance culling). Every pass keeps
+// its own indirect texture (IndirectLists), uploaded only when its list changed instead
+// of once per pass and cascade.
 
 const _m4 = new THREE.Matrix4();
 const _c4 = new THREE.Vector4();
@@ -33,6 +36,74 @@ const WHITE = new THREE.Color(1, 1, 1);
 const NL = 4; // detail levels: hi, mid, lo, far
 /** Show modes of a record's instances (see header). */
 export const ALWAYS = 0, NEAR = 1, FAR = 2;
+
+/**
+ * Indirect textures (draw index -> instance) of a BatchedMesh, one per pass key (the view
+ * camera, each shadow camera). three's BatchedMesh refills and re-uploads its single
+ * texture for every pass, shadow cascades included, and such an upload can block when
+ * the GPU queue is full. Here a list is written into a scratch array (begin) and
+ * commit() copies it into the pass's own texture, uploading only when it changed.
+ */
+class IndirectLists {
+  constructor(mesh) { this.mesh = mesh; this.max = -1; this.size = 0; this.scratch = null; this.tex = new Map(); }
+
+  /** Scratch array for a new list (follows the batch's instance capacity). */
+  begin() {
+    const max = this.mesh._maxInstanceCount;
+    if (max !== this.max) {
+      this.max = max;
+      this.size = Math.ceil(Math.sqrt(max));
+      this.scratch = new Uint32Array(this.size * this.size);
+      for (const t of this.tex.values()) t.dispose();
+      this.tex.clear();
+    }
+    return this.scratch;
+  }
+
+  /** The texture of pass `key` holding the first n scratch entries. */
+  commit(key, n) {
+    let t = this.tex.get(key);
+    if (!t) {
+      t = new THREE.DataTexture(new Uint32Array(this.size * this.size), this.size, this.size, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+      t.userData.n = -1;
+      this.tex.set(key, t);
+    }
+    const a = this.scratch, b = t.image.data;
+    let same = t.userData.n === n;
+    for (let i = 0; same && i < n; i++) same = a[i] === b[i];
+    if (!same) {
+      b.set(n < a.length ? a.subarray(0, n) : a);
+      t.userData.n = n;
+      t.needsUpdate = true;
+    }
+    return t;
+  }
+}
+
+/** View draw list of a batch (per-instance frustum culling, no sorting). */
+const _vf = new THREE.Frustum();
+function viewList(mesh, lists, camera) {
+  const info = mesh._instanceInfo, gInfo = mesh._geometryInfo;
+  const md = mesh._matricesTexture.image.data;
+  const starts = mesh._multiDrawStarts, counts = mesh._multiDrawCounts, ind = lists.begin();
+  const index = mesh.geometry.getIndex(), bpe = index ? index.array.BYTES_PER_ELEMENT : 1;
+  _vf.setFromProjectionMatrix(_pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(mesh.matrixWorld), camera.coordinateSystem, camera.reversedDepth);
+  let n = 0;
+  for (let i = 0, l = info.length; i < l; i++) {
+    const it = info[i];
+    if (!it.visible || !it.active) continue;
+    const g = gInfo[it.geometryIndex];
+    mesh.getBoundingSphereAt(it.geometryIndex, _sph).applyMatrix4(_m4.fromArray(md, i * 16));
+    if (!_vf.intersectsSphere(_sph)) continue;
+    starts[n] = g.start * bpe;
+    counts[n] = g.count;
+    ind[n] = i;
+    n++;
+  }
+  mesh._indirectTexture = lists.commit(camera, n);
+  mesh._multiDrawCount = n;
+  mesh._multiDrawBytesPerElement = bpe;
+}
 
 /** World texel (m) of the shadow cascade a frustum belongs to (0: not a cascade). */
 const _texels = new WeakMap();
@@ -91,6 +162,7 @@ export class CatBatch {
     // are the ones used later
     if (mesh._initColorsTexture && !mesh._colorsTexture) mesh._initColorsTexture();
     this.mesh = mesh;
+    this.lists = new IndirectLists(mesh);
     this.geomIds = geometries.map((g) => mesh.addGeometry(g));
     for (const id of this.geomIds) mesh.getBoundingSphereAt(id, _sph); // cached per geometry
     this.shadowMaxTexel = shadowMaxTexel;
@@ -155,7 +227,7 @@ export class CatBatch {
   shadowList(scene, cam) {
     const m = this.mesh, c = cascadeOf(scene, cam);
     const info = m._instanceInfo, gInfo = m._geometryInfo, lod = this.lodGids;
-    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = this.lists.begin();
     const md = m._matricesTexture.image.data;
     const index = m.geometry.getIndex();
     const bpe = index ? index.array.BYTES_PER_ELEMENT : 1;
@@ -181,7 +253,7 @@ export class CatBatch {
         n++;
       }
     }
-    m._indirectTexture.needsUpdate = true;
+    m._indirectTexture = this.lists.commit(cam, n);
     m._multiDrawCount = n;
     m._multiDrawBytesPerElement = bpe;
   }
@@ -203,6 +275,7 @@ export class SlotBatch {
     mesh.perObjectFrustumCulled = true;
     mesh.sortObjects = false;
     this.mesh = mesh;
+    this.lists = new IndirectLists(mesh);
     this.maxVerts = maxVerts;
     this.maxIndex = maxIndex;
     this.free = [];
@@ -248,8 +321,7 @@ export class CatBatches {
     this.batches.push(batch);
     this.root.add(batch.mesh);
     const self = this, mesh = batch.mesh, scene = this.app.scene;
-    const proto = THREE.BatchedMesh.prototype;
-    mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
+    mesh.onBeforeRender = function (renderer, sc, camera) { self.sync(); viewList(this, batch.lists, camera); };
     if (!batch.shadowList) return batch;
     mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); batch.shadowList(scene, shadowCamera); };
     // whole-batch test on the bounds of the shown instances: the light's cascade frustum

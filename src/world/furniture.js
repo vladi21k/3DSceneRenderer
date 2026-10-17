@@ -4,7 +4,7 @@ import { createMaterials, updateLightLevels } from './furniture/materials.js';
 import { BatchSet } from './furniture/instancer.js';
 import { buildCafeProtos, placeCafes, planAllCafes, chairPose, cafeStyle } from './furniture/cafe.js';
 import { buildStreetProtos, placeStreetFurniture } from './furniture/street.js';
-import { buildPlatformProtos, placePlatforms } from './furniture/platform.js';
+import { buildPlatformProtos, placePlatforms, platformWarmupParts } from './furniture/platform.js';
 
 // Street furniture, café terraces and tram-stop platforms. Contract: docs/ARCHITECTURE.md.
 // Prototype geometry and materials are built once in init and registered into global
@@ -86,8 +86,24 @@ const furniture = {
     });
     lap('sizing', t);
     // every batch stays drawn until the programs have been compiled up front (the compile
-    // pass skips hidden objects); from then on empty batches are skipped
-    app.events.on('ready', () => { this.batches.hideEmpty = true; this.batches._showBatches(); });
+    // pass skips hidden objects); from then on empty batches are skipped. The per-site
+    // platform meshes (library materials only stations use) get stand-ins far below the
+    // street for that compile, so a station streamed in mid-ride compiles nothing.
+    const warm = new THREE.Group();
+    warm.name = 'furniture:warmup';
+    warm.position.y = -1e4;
+    for (const [mat, geo] of platformWarmupParts(app, this.F)) {
+      const m = new THREE.Mesh(geo, mat);
+      m.castShadow = m.receiveShadow = true;
+      m.frustumCulled = false;
+      warm.add(m);
+    }
+    app.scene.add(warm);
+    app.events.on('ready', () => {
+      this.batches.hideEmpty = true;
+      this.batches._showBatches();
+      app.scene.remove(warm);
+    });
     this.initMs = performance.now() - t0;
   },
 

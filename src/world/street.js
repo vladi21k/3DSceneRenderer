@@ -30,6 +30,8 @@ const MAX_JOBS = 6;
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
 //   3D grooved rails (lod 0), far-field anti-aliased rail and paint lines (all lods),
 //   crossovers, cross streets, cast-iron details, markings, and a ground slab.
+// A build is a sequence of short steps (a generator), so the chunks the streamer will
+// ask for next are built ahead a slice per frame (prefetch) and build() hands them over.
 // Exposes heightAt(s, d) so other modules can stand things on the real paving.
 
 const street = {
@@ -52,7 +54,6 @@ const street = {
       corr: M.get('paving.street', { vertexColors: true }),
       band: M.get('paving.band', { vertexColors: true }),
       walk: M.get('paving.sidewalk', { vertexColors: true }),
-      kerb: M.get('paving.band', { vertexColors: true }),
       asphalt: M.get('asphalt', { vertexColors: true }),
       grout: mortar,
       tactile: M.get('paving.tactile', { vertexColors: true }),
@@ -60,6 +61,7 @@ const street = {
       lines,
       details,
     };
+    mats.kerb = mats.band;
     mats.rail.gauge = mats.rail.lip = mats.rail.side = mats.rail.head;
     // crossover variants of the same materials: they discard the fragments that lie in
     // another rail's opening (frog flangeways, switch boxes; see crossover.js)

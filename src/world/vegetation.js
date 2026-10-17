@@ -31,6 +31,7 @@ import { createProps } from './vegetation/props.js';
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
 const _c = new THREE.Color(), _e = new THREE.Euler();
 const _yAxis = new THREE.Vector3(0, 1, 0);
+const BARK_LOD_SIZE = 0.65;  // bark picks its detail level as if the tree were this much smaller
 const _planter = { pos: new THREE.Vector3(), sx: 1, sz: 1 };
 
 const vegetation = {
@@ -60,7 +61,10 @@ const vegetation = {
     }
     for (const sh of this.shrubs) sh.leafIdx = sh.leaves.map((g) => put(leafGeoms, g));
     this.pools = new VegetationPools(app);
-    this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400, { preMaterial: this.mats.leafPre }));
+    // foliage shadows: the cascade texels hold the leaf clumps of detail level 1 even in the
+    // finest cascade (the same dapple, 40 % fewer cards)
+    this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400,
+      { preMaterial: this.mats.leafPre, farMaterial: this.mats.leafFar, shadowLevels: [0.012, 0.07] }));
     // bark: twigs and thin branches are sub-texel sooner than leaf clumps
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300, { shadowLevels: [0.012, 0.03] }));
     this.props = createProps(app, this.pools);
@@ -68,7 +72,7 @@ const vegetation = {
     // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
     const show = app.params.str('vegshow');
-    if (show === 'bark') this.leafPool.mesh.visible = false; // (the pre-pass twin follows)
+    if (show === 'bark') this.leafPool.mesh.visible = false; // (the twins follow)
     if (show === 'leaf') this.barkPool.mesh.visible = false;
     // warm-up: one throw-away chunk build so the first real chunk does not pay for JIT
     const warm = this._build({ index: app.layout.chunkIndex(app.startS), lod: 0 }, app);
@@ -177,7 +181,9 @@ const vegetation = {
       if (!P) continue;
       const T = P.T;
       this.pools.add(rec, this.leafPool, T.leafIdx, P.matrix, P.leafTint, P.pos, P.size);
-      this.pools.add(rec, this.barkPool, T.barkIdx[P.mirror], P.matrix, P.barkTint, P.pos, P.size);
+      // bark detail steps down sooner than the crown's: its twigs are sub-pixel long before
+      // the leaf clumps are (and mostly hidden by them)
+      this.pools.add(rec, this.barkPool, T.barkIdx[P.mirror], P.matrix, P.barkTint, P.pos, P.size * BARK_LOD_SIZE);
       if (!lod) props.tree(t, T, P.matrix, P.sxz, new RNG(P.seed ^ 0x2545f491));
     }
 

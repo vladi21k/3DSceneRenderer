@@ -17,25 +17,36 @@ import * as THREE from 'three';
 // instance's batch colour alpha carries the fade, see vegMaterials.js).
 //
 // A pool can draw a depth pre-pass first (preMaterial): a twin BatchedMesh that shares
-// the pool's geometry and instance data (matrices, colours, visibility, culling) and is
-// drawn before everything else, so the real material only shades what is visible.
+// the pool's geometry and instance data (matrices, colours, visibility) and is drawn
+// before everything else, so the real material only shades what is visible. The
+// pre-pass only pays off for big crowns close by: it covers the instances shown at full
+// detail within PRE_DIST, which the pool's own material (no depth writes) then shades;
+// every other instance is drawn once by a third twin with the far material (depth
+// writes on, same shader program).
 //
-// Shadow passes build their own draw list per cascade (shadowList): an instance casts
-// only where its shadow can reach the cascade's slice of the view (the light's cascade
-// frustum decides, so stale cascades that are not redrawn this frame cost nothing), at
-// no more detail than the cascade's texels can hold (SHADOW_LEVEL_TEXEL), and pools of
-// thin props stop casting in coarse cascades altogether (shadowMaxTexel).
+// Draw lists are built here, not by BatchedMesh: the view's once per frame (culled per
+// instance, front to back when the pool sorts), and the shadow passes' per cascade
+// (shadowList): an instance casts only where its shadow can reach the cascade's slice of
+// the view (the light's cascade frustum decides, so stale cascades that are not redrawn
+// this frame cost nothing), at no more detail than the cascade's texels can hold
+// (SHADOW_LEVEL_TEXEL), and pools of thin props stop casting in coarse cascades
+// altogether (shadowMaxTexel). Every pass keeps its own indirect texture (IndirectLists),
+// uploaded only when its list changed instead of once per pass and cascade.
 
 const LOD_PX = [380, 95];
 const HYST = 0.08;
 const FADE_S = 0.35;
+const PRE_DIST = 60;  // m: crowns closer than this (at full detail) get the depth pre-pass
 // cascade texel (m) above which shadows use at least detail level 1 / 2 (per pool option)
 const SHADOW_LEVEL_TEXEL = [0.025, 0.07];
 
 const _c4 = new THREE.Vector4();
 const _m4 = new THREE.Matrix4();
+const _cp = new THREE.Vector3();
+const _fw = new THREE.Vector3();
 const _sph = new THREE.Sphere();
 const _fr = new THREE.Frustum();
+const _vf = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 // stand-ins handed to the light's cascade frustum: one instance, or the whole pool
 // (an instance is presented as a shadow proxy with its world sphere, which the env's
@@ -79,8 +90,51 @@ function cascadeOf(scene, cam) {
   return c;
 }
 
+/**
+ * Indirect textures (draw index -> instance) of a BatchedMesh, one per pass key (the view
+ * lists, each shadow camera). three's BatchedMesh refills and re-uploads its single
+ * texture for every pass, shadow cascades included, and such an upload can block when
+ * the GPU queue is full. Here a list is written into a scratch array (begin) and
+ * commit() copies it into the pass's own texture, uploading only when it changed.
+ */
+export class IndirectLists {
+  constructor(mesh) { this.mesh = mesh; this.max = -1; this.size = 0; this.scratch = null; this.tex = new Map(); }
+
+  /** Scratch array for a new list (follows the batch's instance capacity). */
+  begin() {
+    const max = this.mesh._maxInstanceCount;
+    if (max !== this.max) {
+      this.max = max;
+      this.size = Math.ceil(Math.sqrt(max));
+      this.scratch = new Uint32Array(this.size * this.size);
+      for (const t of this.tex.values()) t.dispose();
+      this.tex.clear();
+    }
+    return this.scratch;
+  }
+
+  /** The texture of pass `key` holding the first n scratch entries. */
+  commit(key, n) {
+    let t = this.tex.get(key);
+    if (!t) {
+      t = new THREE.DataTexture(new Uint32Array(this.size * this.size), this.size, this.size, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+      t.userData.n = -1;
+      this.tex.set(key, t);
+    }
+    const a = this.scratch, b = t.image.data;
+    let same = t.userData.n === n;
+    for (let i = 0; same && i < n; i++) same = a[i] === b[i];
+    if (!same) {
+      b.set(n < a.length ? a.subarray(0, n) : a);
+      t.userData.n = n;
+      t.needsUpdate = true;
+    }
+    return t;
+  }
+}
+
 export class InstancePool {
-  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity, shadowLevels = SHADOW_LEVEL_TEXEL, preMaterial = null } = {}) {
+  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity, shadowLevels = SHADOW_LEVEL_TEXEL, preMaterial = null, farMaterial = null } = {}) {
     let vc = 0, ic = 0;
     for (const g of geometries) { vc += g.attributes.position.count; ic += g.index.count; }
     const mesh = new THREE.BatchedMesh(capacity, vc, ic, material);
@@ -108,35 +162,108 @@ export class InstancePool {
       const info = mesh._geometryInfo && mesh._geometryInfo[id];
       if (info && info.boundingSphere) info.boundingSphere.radius += 0.3 + (g.userData.boundsPad || 0);
     });
+    this.sort = sort;
+    this.lists = new IndirectLists(mesh);
+    this.view = { frame: -1, camera: null, near: 0, far: 0 };
+    this.twin = this.far = null;
     if (preMaterial) {
-      const twin = new THREE.BatchedMesh(1, 3, 3, preMaterial);
-      twin.name = `${name}:pre`;
-      twin.frustumCulled = false;
-      twin.perObjectFrustumCulled = true;
-      twin.sortObjects = true;          // front to back: the most occlusion for the least work
-      twin.castShadow = false;
-      twin.receiveShadow = receiveShadow; // same vertex shader as the pool's (invariant depth)
-      twin.renderOrder = -1;
-      this.twin = twin;
+      // twins: the depth pre-pass (drawn first) and the far instances (far material)
+      const twin = (suffix, mat, order) => {
+        const t = new THREE.BatchedMesh(1, 3, 3, mat);
+        t.name = `${name}:${suffix}`;
+        t.frustumCulled = false;
+        t.castShadow = false;
+        t.receiveShadow = receiveShadow; // same vertex shader as the pool's (invariant depth)
+        t.renderOrder = order;
+        return t;
+      };
+      this.twin = twin('pre', preMaterial, -1);
+      this.far = twin('far', farMaterial, 0);
       this.linkTwin();
     }
   }
 
-  /** Point the pre-pass twin at the pool's current data (buffers are replaced on growth). */
+  /** Point the twins at the pool's current data (buffers are replaced on growth). */
   linkTwin() {
-    const t = this.twin, m = this.mesh;
-    t.geometry = m.geometry;
-    t._matricesTexture = m._matricesTexture;
-    t._colorsTexture = m._colorsTexture;
-    t._indirectTexture = m._indirectTexture;
-    t._instanceInfo = m._instanceInfo;
-    t._availableInstanceIds = m._availableInstanceIds;
-    t._geometryInfo = m._geometryInfo;
-    t._geometryCount = m._geometryCount;
-    t._maxInstanceCount = m._maxInstanceCount;
-    t._multiDrawStarts = m._multiDrawStarts;
-    t._multiDrawCounts = m._multiDrawCounts;
-    t.visible = m.visible;
+    const m = this.mesh;
+    for (const t of [this.twin, this.far]) {
+      t.geometry = m.geometry;
+      t._matricesTexture = m._matricesTexture;
+      t._colorsTexture = m._colorsTexture;
+      t._instanceInfo = m._instanceInfo;
+      t._availableInstanceIds = m._availableInstanceIds;
+      t._geometryInfo = m._geometryInfo;
+      t._geometryCount = m._geometryCount;
+      t.visible = m.visible;
+    }
+    this.twin._maxInstanceCount = m._maxInstanceCount;
+    this.twin._multiDrawStarts = m._multiDrawStarts;   // the pre-pass draws the near list
+    this.twin._multiDrawCounts = m._multiDrawCounts;
+    const f = this.far;
+    if (f._maxInstanceCount !== m._maxInstanceCount) {  // the far list has its own
+      f._maxInstanceCount = m._maxInstanceCount;
+      f._multiDrawStarts = new Int32Array(m._maxInstanceCount);
+      f._multiDrawCounts = new Int32Array(m._maxInstanceCount);
+      this.farLists = new IndirectLists(m);
+    }
+  }
+
+  /**
+   * View draw lists, once per frame and camera: instances in the frustum (front to back
+   * when the pool sorts); with twins, split into the near list (full detail within
+   * PRE_DIST: pre-pass + pool material) and the far list (far twin).
+   */
+  viewLists(camera, frame) {
+    const V = this.view;
+    if (V.frame === frame && V.camera === camera) return;
+    V.frame = frame; V.camera = camera;
+    const m = this.mesh, split = !!this.far;
+    if (split) this.linkTwin();
+    const info = m._instanceInfo, gInfo = m._geometryInfo, lod = this.lodGids;
+    const md = m._matricesTexture.image.data;
+    const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
+    _vf.setFromProjectionMatrix(_pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem, camera.reversedDepth);
+    _cp.setFromMatrixPosition(camera.matrixWorld);
+    _fw.set(0, 0, -1).transformDirection(camera.matrixWorld);
+    const n = info.length;
+    if (!this._z || this._z.length < n) { this._z = new Float32Array(Math.max(64, n * 2)); this._ord = new Uint32Array(this._z.length); this._ordF = new Uint32Array(this._z.length); }
+    const z = this._z, near = this._ord, far = this._ordF;
+    let nn = 0, nf = 0;
+    for (let i = 0; i < n; i++) {
+      const it = info[i];
+      if (!it.visible || !it.active) continue;
+      const gid = it.geometryIndex;
+      _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_m4.fromArray(md, i * 16));
+      if (!_vf.intersectsSphere(_sph)) continue;
+      const d = _sph.center.sub(_cp).dot(_fw);
+      z[i] = d;
+      if (split && !(lod[i * 3] === gid && d < PRE_DIST)) far[nf++] = i; else near[nn++] = i;
+    }
+    const byDepth = (a, b) => z[a] - z[b];
+    if (this.sort) { near.subarray(0, nn).sort(byDepth); far.subarray(0, nf).sort(byDepth); }
+    const write = (order, cnt, target, lists, key) => {
+      const starts = target._multiDrawStarts, counts = target._multiDrawCounts, ind = lists.begin();
+      for (let k = 0; k < cnt; k++) {
+        const i = order[k], g = gInfo[info[i].geometryIndex];
+        starts[k] = g.start * bpe;
+        counts[k] = g.count;
+        ind[k] = i;
+      }
+      return lists.commit(key, cnt);
+    };
+    V.nearTex = write(near, nn, m, this.lists, camera);
+    V.near = nn;
+    if (split) { V.farTex = write(far, nf, this.far, this.farLists, camera); V.far = nf; }
+    V.bpe = bpe;
+  }
+
+  /** Before a view draw of the pool mesh or one of its twins: its list from viewLists. */
+  drawView(target, camera, frame) {
+    this.viewLists(camera, frame);
+    const V = this.view, isFar = target === this.far;
+    target._indirectTexture = isFar ? V.farTex : V.nearTex;
+    target._multiDrawCount = isFar ? V.far : V.near;
+    target._multiDrawBytesPerElement = V.bpe;
   }
 
   /** New hidden instance; color: THREE.Color (alpha reset to 1 = no fade). lods: the
@@ -185,7 +312,7 @@ export class InstancePool {
   shadowList(scene, cam) {
     const m = this.mesh, c = cascadeOf(scene, cam);
     const info = m._instanceInfo, gInfo = m._geometryInfo, lod = this.lodGids;
-    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = this.lists.begin();
     const md = m._matricesTexture.image.data;
     const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
     const frustum = c.frustum || c.plain;
@@ -209,9 +336,10 @@ export class InstancePool {
         n++;
       }
     }
-    m._indirectTexture.needsUpdate = true;
+    m._indirectTexture = this.lists.commit(cam, n);
     m._multiDrawCount = n;
     m._multiDrawBytesPerElement = bpe;
+    this.view.frame = -1;  // the view lists share the pool's draw arrays: rebuild them after
   }
 
   setAlpha(id, a) {
@@ -244,11 +372,12 @@ export class VegetationPools {
     this.pools.push(pool);
     this.root.add(pool.mesh);
     const self = this, mesh = pool.mesh, scene = this.app.scene;
-    const proto = THREE.BatchedMesh.prototype;
-    mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
+    const view = function (renderer, sc, camera) { self.sync(); pool.drawView(this, camera, self.app.frame); };
+    mesh.onBeforeRender = view;
     if (pool.twin) {
-      this.root.add(pool.twin);
-      pool.twin.onBeforeRender = function (...args) { self.sync(); pool.linkTwin(); return proto.onBeforeRender.apply(this, args); };
+      this.root.add(pool.twin, pool.far);
+      pool.twin.onBeforeRender = view;
+      pool.far.onBeforeRender = view;
     }
     mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); pool.shadowList(scene, shadowCamera); };
     // whole-pool test: the light's cascade frustum skips cascades it does not redraw this

@@ -42,9 +42,12 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 // Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
 // bloom: share of the blurred pyramid (veiling glare), day .. night.
 const TONE = {
-  curve: [1.16, 0.625, -1.35, 2.5], chroma: 0.5, skyChroma: 0.12,
+  curve: [1.16, 0.625, -1.35, 2.5], chroma: [0.5, 0.75], skyChroma: 0,
   meter: 0.6, target: 0.34, clamp: [0.5, 2.5], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
 };
+
+// Street-level dust haze: extinction per metre (rgb), nearly grey (coarse dust).
+const HAZE_EXT = [1.05e-3, 1.12e-3, 1.22e-3];
 
 // Lens veiling glare around the sun (fractions of the sun's illuminance per steradian):
 // a wide 1/theta^2 skirt (~1.2% of the light) and a tighter halo (~1%).
@@ -200,7 +203,7 @@ const post = {
       uSharpen: { value: TONE.sharpen },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
       uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: TONE.skyChroma },
-      uCurve: { value: new THREE.Vector4(...TONE.curve) }, uChroma: { value: TONE.chroma },
+      uCurve: { value: new THREE.Vector4(...TONE.curve) }, uChroma: { value: TONE.chroma[0] },
       uShadowTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
       uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
       uResolution: { value: new THREE.Vector2(1, 1) },
@@ -334,9 +337,10 @@ const post = {
     const night = env ? env.state.night : 0;
     const ss = THREE.MathUtils.smoothstep;
     const pu = this.prepass.material.uniforms, fu = this.final.material.uniforms;
-    // haze: a dusty summer afternoon
-    const k = THREE.MathUtils.lerp(1.25, 1.12, ss(t, 0.3, 0.8));
-    pu.uHazeExt.value.set(3.6e-4 * k, 4.0e-4 * k, 4.7e-4 * k);
+    // haze: a dusty summer afternoon (visibility ~3.5 km: distant facades wash out to a
+    // pale warm grey, about half their contrast gone at 500 m), clearing a little at dusk
+    const k = THREE.MathUtils.lerp(1.0, 0.6, ss(t, 0.5, 0.9));
+    pu.uHazeExt.value.set(HAZE_EXT[0] * k, HAZE_EXT[1] * k, HAZE_EXT[2] * k);
     pu.uHazeInscatter.value = 1.0;
     pu.uHazeGap.value = env ? env.haze.gap : 0;
     // aerosol albedo; tree canopies and awnings shade much of the street air
@@ -347,24 +351,30 @@ const post = {
     fu.uExposure.value = env ? env.exposure : 1;
     // the HDR clamp is set in exposed units
     pu.uClampHDR.value = HDR_CLAMP / Math.max(env ? env.exposure : 1, 1e-4);
-    // white balance from the illuminant (sun + sky on a horizontal surface): neutral sunlit
-    // stone and blue sky-lit shade by day; the camera corrects less and less of the
-    // evening warmth and the blue hour (plus a touch of warmth at golden hour)
+    // white balance from the illuminant (sun + sky on a horizontal surface), split into a
+    // warm-cool and a green-magenta axis. By day the camera neutralises sunlit stone (blue
+    // sky-lit shade stays a little cool); it keeps less and less of the evening warmth
+    // and the blue hour (plus a touch of warmth at golden hour), but always removes most
+    // of the green-magenta cast (the ozone-tinted twilight sky would turn stone pink)
     const wb = fu.uWB.value;
     if (env) {
       const ill = env.illuminant;
-      const l = 0.2126 * ill.x + 0.7152 * ill.y + 0.0722 * ill.z;
+      const lr = Math.log(Math.max(ill.x, 1e-9) / Math.max(ill.z, 1e-9));
+      const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
       const kc = THREE.MathUtils.lerp(0.9, 0.3, ss(t, 0.3, 0.6)) - 0.3 * ss(t, 0.6, 1.0);
-      const warm = 0.02 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
+      const kt = THREE.MathUtils.lerp(0.9, 0.8, ss(t, 0.6, 1.0));
+      const warm = 0.035 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
       const cool = 0.05 * ss(t, 0.8, 1.0);
-      const g = (c) => THREE.MathUtils.clamp(THREE.MathUtils.lerp(1, l / Math.max(c, 1e-9), kc), 0.5, 2.0);
-      wb.set(g(ill.x) * (1 + warm - cool), g(ill.y), g(ill.z) * (1 - warm + cool));
+      const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
+      wb.set(Math.exp(-er) * (1 + warm - cool), Math.exp(-eg), Math.exp(er) * (1 - warm + cool));
       // keep the overall exposure (normalise the gains to unit luminance)
       const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
       wb.multiplyScalar(1 / n);
     } else {
       wb.set(1, 1, 1);
     }
+    // more of the scene's own chroma once the light warms (low sun on stone, lamps)
+    fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, ss(t, 0.6, 0.85));
   },
 

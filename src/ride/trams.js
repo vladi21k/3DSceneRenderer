@@ -20,6 +20,7 @@ import { makeLampAtlas } from './trams/display.js';
 //    projected size, a coarse depth-only hull for the sun's shadow, lamp levels following
 //    the light (headlights by day, lit saloon windows at dusk).
 //
+// Debug: tram=<s> starts the first unit with its nose at s.
 // API: app.trams.units[] = {id, s (leading nose, route s), speed (m/s, travelling towards
 // −s), accel, dir (−1), d, length, halfWidth, state, phase, bellAt, active}.
 // Emits app.events 'tram-bell' {unit, s, d} when one of them rings.
@@ -29,8 +30,8 @@ const SCAN_DT = 0.1;              // s between scans of the people ahead
 const VIEW = [-90, 700];          // drawn while the nose is within this range of the camera (m)
 // where each unit's nose starts: m beyond the default start plus a share of the loop
 const UNITS = [
-  { ahead: 335, loop: 0, line: '1', dest: 'CENTRAL STATION' },
-  { ahead: 335, loop: 0.48, line: '1', dest: 'MARKET SQUARE' },
+  { ahead: 190, loop: 0, line: '1', dest: 'CENTRAL STATION' },
+  { ahead: 190, loop: 0.48, line: '1', dest: 'MARKET SQUARE' },
 ];
 
 const _P = Array.from({ length: 4 }, () => new THREE.Vector3());
@@ -74,8 +75,9 @@ const trams = {
     // library variants: one shader program with the rest of the vertex-coloured paint / metal / glass
     const white = new THREE.Color(1, 1, 1);
     this.mats = {
-      body: M.get('paint.frame', { vertexColors: true, color: white, metalness: 0.55, roughness: 0.75, userData: own('body') }),
-      glass: M.get('glass.shop', { vertexColors: true, emissive: [0.82, 0.88, 1.0], emissiveIntensity: 0, userData: own('glass') }),
+      // silver metallic paint, tinted glazing
+      body: M.get('paint.frame', { vertexColors: true, color: white, metalness: 0.7, roughness: 0.75, userData: own('body') }),
+      glass: M.get('glass.shop', { vertexColors: true, emissive: [1.0, 0.96, 0.9], emissiveIntensity: 0, userData: own('glass') }),
       ws: M.get('glass.shop', { vertexColors: true, userData: own('windscreen') }),
       metal: M.get('metal.galvanized', { vertexColors: true, userData: own('metal') }),
     };
@@ -83,17 +85,21 @@ const trams = {
 
     const atlases = UNITS.map((u) => makeLampAtlas(u.line, u.dest));
     this.models = buildModels(atlases[0]);           // the atlases share their layout
-    this.lampMats = atlases.map((a, i) => M.track(new THREE.MeshBasicMaterial({ name: `trams.lamps${i}`, map: a.texture, vertexColors: true })));
+    // lamps: the display and the lamp lenses have their own levels (one program for all units)
+    this.lampLv = { value: new THREE.Vector2(1, 1) };
+    this.lampMats = atlases.map((a, i) => M.track(this._lampMaterial(a, i)));
 
     // ---- units and their drivers
     const mr = mirrorRoute(route), ml = mirrorLayout(app.layout, route);
     const base = app.layout.defaultStartS ?? 0;
     const camS = app.params.view ? app.params.view[0] : app.startS;
+    const force = app.params.num('tram', null);       // debug / tests: tram=<s> puts the first unit's nose there
     this.units = UNITS.map((def, i) => {
       let s = route.wrap(base + def.ahead + def.loop * route.length);
       // never start right beside the camera: move a unit that would further down the line
       const rel = route.delta(camS, s);
       if (rel > -CAR.length - 50 && rel < 140) s = route.wrap(s + 420);
+      if (i === 0 && force != null) s = route.wrap(force);
       const bus = new Events();
       const tram = new Tram({ route: mr, layout: ml }, { s: route.wrap(-s), auto: true, events: bus });
       const unit = {
@@ -110,6 +116,22 @@ const trams = {
     });
     this._scanT = 0;
     this._place(app);
+    // stay visible until the first frame: the start-up shader compile only sees visible objects
+    for (const u of this.units) u.root.visible = true;
+  },
+
+  /** Unlit lamp material: atlas × vertex colour × level (display or lens, by atlas region). */
+  _lampMaterial(atlas, i) {
+    const m = new THREE.MeshBasicMaterial({ name: `trams.lamps${i}`, map: atlas.texture, vertexColors: true });
+    const lv = this.lampLv, split = ((atlas.display[2] + atlas.lens[0]) / 2).toFixed(4);
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uLampLv = lv;
+      sh.fragmentShader = sh.fragmentShader
+        .replace('void main() {', 'uniform vec2 uLampLv;\nvoid main() {')
+        .replace('#include <color_fragment>', `#include <color_fragment>\n\tdiffuseColor.rgb *= mix( uLampLv.x, uLampLv.y, step( ${split}, vMapUv.x ) );`);
+    };
+    m.customProgramCacheKey = () => `trams-lamps-${split}`;
+    return m;
   },
 
   /** Scene objects of one unit: three bodies, each with its LOD groups and shadow hull. */
@@ -246,13 +268,14 @@ const trams = {
     sp.radius = b.len / 2 + 2;
   },
 
-  /** Lamp levels follow the light: a daylight-readable display dimmed at dusk, headlights,
-   *  and the saloon lighting showing through the side windows once it gets dark. */
+  /** Lamp levels follow the light: a daylight-readable display dimmed at dusk, headlights
+   *  (a little lower at night), and the saloon lighting showing through the side windows
+   *  once it gets dark. */
   _lights() {
     const night = Math.min(1, Math.max(0, U.uNight.value));
-    const lvl = Math.exp(Math.log(0.12) + night * (Math.log(0.014) - Math.log(0.12)));
-    for (const m of this.lampMats) m.color.setScalar(lvl);
-    this.mats.glass.emissiveIntensity = night * 0.006 * this.gain.value;
+    const ln = (a, b) => Math.exp(Math.log(a) + night * (Math.log(b) - Math.log(a)));
+    this.lampLv.value.set(ln(0.12, 0.014), ln(0.12, 0.06));
+    this.mats.glass.emissiveIntensity = night * 0.0017 * this.gain.value;
   },
 };
 

@@ -439,8 +439,8 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
     const r0 = info.r[nodes[Math.min(1, nodes.length - 1)]];
     if (r0 < minR) continue;
     const sides = lod === 2 ? (r0 > 0.06 ? 6 : 4)
-      : lod === 1 ? (r0 > 0.06 ? 8 : r0 > 0.03 ? 6 : 4)
-      : (r0 > 0.06 ? 11 : r0 > 0.03 ? 8 : r0 > 0.015 ? 6 : r0 > 0.008 ? 4 : 3);
+      : lod === 1 ? (r0 > 0.06 ? 7 : r0 > 0.03 ? 5 : 4)
+      : (r0 > 0.06 ? 10 : r0 > 0.03 ? 7 : r0 > 0.015 ? 5 : r0 > 0.008 ? 4 : 3);
     const circ = Math.max(0.05, 2 * Math.PI * r0);
     // bark colour (multiplies the library bark, a warm grey-brown): young stems cool grey
     // with a green cast, shoots greener, old wood darker grey-brown
@@ -464,6 +464,10 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
         const cp = new THREE.Vector3().subVectors(sk.p[nodes[1]], sk.p[i]).setLength(dist).add(sk.p[i]);
         ring.push([nodes[1], cp, r1 * 1.15, true]);
       }
+    }
+    // slender chains bend gently: every other ring is enough (ends and collars kept)
+    if (r0 < [0.012, 0.03, 0.08][lod] && ring.length > 3) {
+      for (let k = ring.length - 2; k > 0; k--) if (k % 2 && !ring[k][3]) ring.splice(k, 1);
     }
     // initial frame
     T.subVectors(ring[1][1], ring[0][1]).normalize();

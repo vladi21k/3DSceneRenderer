@@ -138,22 +138,31 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         ${weather ? `
         {
           // rust blooms where the weights allow (foot of the pole, collar edges, scroll
-          // tips), with a darker lifted-paint halo; run-off streaks under the ledges
-          vec3 q = vLocal * 11.0 + vSeed;
+          // tips), with a darker lifted-paint halo; run-off streaks under the ledges.
+          // Only some standards are rusting (about 3 in 10, by position): the others were
+          // repainted and show little more than chips. Rust is a dark brown, its blooms
+          // drawn out downwards into drips (noise stretched vertically).
+          float poleH = fract(vSeed * 0.6180339 + 0.31);
+          float rusty = smoothstep(0.66, 0.72, poleH);
+          float w = vWear.x * mix(0.3, 1.0, rusty);
+          vec3 q = vLocal * vec3(11.0, 3.2, 11.0) + vSeed;
           float n = 0.62 * catN(q) + 0.28 * catN(q * 2.7 + 3.1) + 0.1 * catN(q * 7.3);
-          float on = step(0.02, vWear.x);
-          float thr = 1.0 - 0.55 * vWear.x;
+          float on = step(0.02, w);
+          float thr = 1.0 - 0.55 * w;
           catRust = smoothstep(thr, thr + 0.05, n) * on;
           float halo = smoothstep(thr - 0.09, thr, n) * on;
           // chipped paint showing the grey primer, around the rust and on worn edges
-          float chip = smoothstep(0.74, 0.77, catN(q * 3.3 + 11.0)) * on * smoothstep(0.15, 0.6, vWear.x);
-          vec3 rustCol = vec3(0.2, 0.09, 0.04) * (0.6 + 0.8 * catN(q * 4.1 + 7.0));
+          float chip = smoothstep(0.76, 0.79, catN(q * 3.3 + 11.0)) * on * smoothstep(0.15, 0.6, w);
+          vec3 rustCol = vec3(0.12, 0.06, 0.03) * (0.7 + 0.5 * catN(q * 4.1 + 7.0));
           diffuseColor.rgb *= 1.0 - 0.22 * halo;
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.195, 0.18), chip * (1.0 - catRust));
           diffuseColor.rgb = mix(diffuseColor.rgb, rustCol, catRust);
           float ang = atan(vLocal.z, vLocal.x);
           float st = catN(vec3(ang * 9.0, vLocal.y * 1.6, 0.5 + vSeed)) * catN(vec3(ang * 23.0, vLocal.y * 0.7, 2.5 + vSeed));
-          diffuseColor.rgb *= 1.0 - 0.3 * vWear.y * smoothstep(0.12, 0.42, st);
+          float run = vWear.y * smoothstep(0.12, 0.42, st);
+          diffuseColor.rgb *= 1.0 - 0.3 * run;
+          // on the rusting standards the run-off below collars and ledges is rust-stained
+          diffuseColor.rgb = mix(diffuseColor.rgb, rustCol * 1.4, 0.35 * run * rusty);
         }` : ''}
         ${coverage ? 'diffuseColor.a = catCoverage(1.0 / vInflate);' : ''}`)
       .replace('#include <normal_fragment_begin>', `roughnessFactor = mix(roughnessFactor, 0.9, catRust);

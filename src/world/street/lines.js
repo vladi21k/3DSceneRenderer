@@ -218,13 +218,15 @@ const PAINT_FRAG = /* glsl */`
 `;
 
 // Asphalt wear (side streets), x lateral and u along the ribbon (m):
-//  seal:   bitumen poured into a crack, its width and edges wavering, dust and grit worked
-//          into it (aLine.w: length; wear: dust 0..1); hairline cracks are the same at a
-//          few millimetres, so they fade to a faint darkening by pixel coverage;
+//  seal:   bitumen poured into a crack, its edges wavering and pooling, dust and grit
+//          worked into it (aLine.y: twice the nominal half width; aLine.w: length; wear:
+//          dust 0..1); hairline cracks are the same at a few millimetres, so they fade to
+//          a faint darkening by pixel coverage;
 //  patch:  saw-cut repair [-half, half] x [0, length] in a fresh dark or an aged grey mix
 //          with its own mottling, edged by a wavering sealed joint (wear: patchWear);
 //  polish: soft band in a wheel path, darker and smoother where tyres polish the
-//          binder, mottled along (wear: strength).
+//          binder, or an oil drip band, mottled along (wear: strength); with a negative
+//          strength a band of lighter dust along a kerb.
 const ASPHALT_FRAG = /* glsl */`
 {
   float x = vLine.x, u = vLine.y, len = vLine.z;
@@ -233,13 +235,18 @@ const ASPHALT_FRAG = /* glsl */`
   float grit = lnFbm( wp * 40.0 + 1.3, fpw * 40.0, 2 );
   vec3 sealCol = vec3( 0.016, 0.0155, 0.015 );
   if ( vLineStyle < ${(LINE_STYLE.seal + 0.5).toFixed(1)} ) {
-    float hw = vLineHalf * ( 0.65 + 0.5 * lnNoise( vec2( u * 2.1, 5.3 ) ) + 0.25 * lnNoise( vec2( u * 11.0, 1.9 ) ) );
-    float cov = lnCov( -hw, hw, x, w ) * lnCov( 0.0, len, u, wu ) * clamp( min( u, len - u ) / 0.15, 0.0, 1.0 );
+    // both edges waver on their own, and the sealant pooled wider here and there (the
+    // ribbon is twice the nominal half width)
+    float h = vLineHalf * 0.5;
+    float pool = smoothstep( 0.72, 0.95, lnNoise( vec2( u * 0.9, 2.2 ) ) );
+    float lo = -h * ( 0.5 + 0.45 * lnNoise( vec2( u * 2.1, 5.3 ) ) + 0.3 * lnNoise( vec2( u * 13.0, 1.9 ) ) + 0.7 * pool );
+    float hi = h * ( 0.5 + 0.45 * lnNoise( vec2( u * 1.7, 9.1 ) ) + 0.3 * lnNoise( vec2( u * 11.0, 8.4 ) ) + 0.7 * pool );
+    float cov = lnCov( lo, hi, x, w ) * lnCov( 0.0, len, u, wu ) * clamp( min( u, len - u ) / 0.12, 0.0, 1.0 );
     if ( cov < 0.002 ) discard;
-    float d = clamp( ( dust - 0.4 ) * 1.8 + vLineWear * 0.6, 0.0, 1.0 );
-    diffuseColor.rgb = sealCol * ( 1.0 + 3.0 * d ) * ( 0.8 + 0.4 * grit );
-    lnRough = mix( 0.3, 0.72, d );
-    diffuseColor.a = cov * 0.9;
+    float d = clamp( ( dust - 0.45 ) * 1.6 + vLineWear * 0.7, 0.0, 1.0 );
+    diffuseColor.rgb = sealCol * ( 1.0 + 3.5 * d ) * ( 0.8 + 0.4 * grit );
+    lnRough = mix( 0.32, 0.75, d );
+    diffuseColor.a = cov * 0.92;
   } else if ( vLineStyle < ${(LINE_STYLE.patch + 0.5).toFixed(1)} ) {
     float hx = vLineHalf - ${f(PATCH_PAD)};
     float hole = floor( vLineWear ) * 0.001;
@@ -259,8 +266,8 @@ const ASPHALT_FRAG = /* glsl */`
     }
     // fill: shifts the asphalt underneath towards fresh black binder or aged grey, mottled
     float mot = lnFbm( wp * 0.8 + 13.0, fpw * 0.8, 3 );
-    vec3 fillCol = tone < 0.0 ? vec3( 0.022, 0.021, 0.02 ) * ( 0.85 + 0.5 * grit ) : vec3( 0.19, 0.185, 0.175 ) * ( 0.8 + 0.4 * grit );
-    float aFill = cFill * abs( tone ) * ( 0.45 + 0.55 * mot );
+    vec3 fillCol = tone < 0.0 ? vec3( 0.02, 0.019, 0.018 ) : vec3( 0.2, 0.195, 0.185 );
+    float aFill = cFill * abs( tone ) * ( 0.42 + 0.33 * mot ) * ( 0.85 + 0.3 * grit );
     float aSeal = cSeal * 0.88;
     float a = aSeal + aFill * ( 1.0 - aSeal );
     if ( a < 0.002 ) discard;
@@ -273,12 +280,18 @@ const ASPHALT_FRAG = /* glsl */`
   } else {
     float q = x / vLineHalf;
     float prof = max( 0.0, 1.0 - q * q );
-    prof *= prof * smoothstep( 0.0, 5.0, u ) * smoothstep( 0.0, 5.0, len - u );
+    prof *= prof * smoothstep( 0.0, 1.5, u ) * smoothstep( 0.0, 1.5, len - u );
     float mot = lnFbm( wp * 0.55 + 23.0, fpw * 0.55, 3 );
-    float a = prof * clamp( 0.2 + 1.1 * ( mot - 0.35 ), 0.0, 1.0 ) * vLineWear * 0.45;
+    float a = prof * clamp( 0.3 + 1.2 * ( mot - 0.35 ), 0.0, 1.0 ) * abs( vLineWear ) * 0.6;
     if ( a < 0.002 ) discard;
-    diffuseColor.rgb = vec3( 0.022, 0.021, 0.02 ) * ( 0.9 + 0.2 * grit );
-    lnRough = 0.5;
+    if ( vLineWear > 0.0 ) {
+      diffuseColor.rgb = vec3( 0.022, 0.021, 0.02 ) * ( 0.9 + 0.2 * grit );
+      lnRough = 0.5;
+    } else {
+      // (negative strength) dry dust and grit swept to the kerb side
+      diffuseColor.rgb = vec3( 0.23, 0.215, 0.19 ) * ( 0.85 + 0.3 * grit );
+      lnRough = 0.95;
+    }
     diffuseColor.a = a;
   }
 }

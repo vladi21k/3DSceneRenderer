@@ -16,7 +16,11 @@ export const CAMERA_ALT_KM = 0.35;
 const RG = 6360.0, RT = 6460.0;
 const RAYLEIGH = [5.802e-3, 13.558e-3, 33.1e-3];            // per km
 const RAYLEIGH_H = 8.0;
-const MIE_SCA = 3.996e-3, MIE_EXT = 4.44e-3, MIE_H = 1.2;
+const MIE_SCA = 3.996e-3, MIE_EXT = 4.44e-3, MIE_H = 2.0;  // summer dust reaches well above the city
+// dust aerosol: extinction rises towards blue (Angstrom exponent ~1 over the sRGB primaries)
+// and the blue is absorbed a little more (single-scattering albedo 0.93 red .. 0.86 blue),
+// so a heavy load reddens the low sun and whitens the sky and the haze towards yellow-grey
+const MIE_SPEC_EXT = [0.89, 1.0, 1.19], MIE_SPEC_SCA = [0.92, 1.0, 1.14];
 const OZONE = [1.45e-3, 1.881e-3, 0.085e-3]; // red raised: sRGB red sits near the Chappuis peak (~600 nm)
 
 const f = (x) => x.toFixed(7);
@@ -31,6 +35,8 @@ export const ATMO_GLSL = /* glsl */ `
 #define ATM_PI 3.14159265
 const vec3 ATM_RAYLEIGH = ${v3(RAYLEIGH)};
 const vec3 ATM_OZONE = ${v3(OZONE)};
+const vec3 ATM_MIE_SCA = ${v3(MIE_SPEC_SCA.map((k) => k * MIE_SCA))};
+const vec3 ATM_MIE_EXT = ${v3(MIE_SPEC_EXT.map((k) => k * MIE_EXT))};
 uniform float uMieScale;
 
 float atmRaySphere(vec3 ro, vec3 rd, float R) {
@@ -40,13 +46,13 @@ float atmRaySphere(vec3 ro, vec3 rd, float R) {
   float t0 = -b - s, t1 = -b + s;
   return t0 > 0.0 ? t0 : t1;
 }
-void atmMedium(float h, out vec3 scaR, out float scaM, out vec3 ext) {
+void atmMedium(float h, out vec3 scaR, out vec3 scaM, out vec3 ext) {
   float dR = exp(-h / ${f(RAYLEIGH_H)});
   float dM = exp(-h / ${f(MIE_H)});
   float dO = max(0.0, 1.0 - abs(h - 25.0) / 15.0);
   scaR = ATM_RAYLEIGH * dR;
-  scaM = ${f(MIE_SCA)} * uMieScale * dM;
-  ext = scaR + ${f(MIE_EXT)} * uMieScale * dM + ATM_OZONE * dO;
+  scaM = ATM_MIE_SCA * (uMieScale * dM);
+  ext = scaR + ATM_MIE_EXT * (uMieScale * dM) + ATM_OZONE * dO;
 }
 float atmPhaseR(float c) { return 3.0 / (16.0 * ATM_PI) * (1.0 + c * c); }
 float atmPhaseHG(float c, float g) {
@@ -98,7 +104,7 @@ void main() {
   float dt = tMax / float(N);
   for (int i = 0; i < N; i++) {
     vec3 p = ro + rd * (float(i) + 0.5) * dt;
-    vec3 sR, ext; float sM;
+    vec3 sR, sM, ext;
     atmMedium(length(p) - ATM_RG, sR, sM, ext);
     od += ext * dt;
   }
@@ -141,9 +147,9 @@ void main() {
     vec3 T = vec3(1.0), L = vec3(0.0), F = vec3(0.0);
     for (int i = 0; i < N; i++) {
       vec3 p = ro + rd * (float(i) + 0.5) * dt;
-      vec3 sR, ext; float sM;
+      vec3 sR, sM, ext;
       atmMedium(length(p) - ATM_RG, sR, sM, ext);
-      vec3 sca = sR + vec3(sM);
+      vec3 sca = sR + sM;
       vec3 sT = exp(-ext * dt);
       vec3 S = sca * atmSunTrans(p, sunDir) / (4.0 * ATM_PI);
       L += T * (S - S * sT) / max(ext, 1e-7);
@@ -198,11 +204,11 @@ void main() {
     vec3 p = ro + rd * (tPrev + 0.5 * dt);
     tPrev = t1;
     float r = length(p);
-    vec3 sR, ext; float sM;
+    vec3 sR, sM, ext;
     atmMedium(r - ATM_RG, sR, sM, ext);
     vec3 sT = exp(-ext * dt);
     float muS = dot(p / r, sun);
-    vec3 S = (sR * pR + sM * pM) * atmSunTrans(p, sun) + (sR + vec3(sM)) * msLookup(r, muS);
+    vec3 S = (sR * pR + sM * pM) * atmSunTrans(p, sun) + (sR + sM) * msLookup(r, muS);
     L += T * (S - S * sT) / max(ext, 1e-7);
     T *= sT;
   }
@@ -279,7 +285,7 @@ export class Atmosphere {
   _ext(h) {
     const dR = Math.exp(-h / RAYLEIGH_H), dM = Math.exp(-h / MIE_H), dO = Math.max(0, 1 - Math.abs(h - 25) / 15);
     const m = MIE_EXT * this.mieScale * dM;
-    return [RAYLEIGH[0] * dR + m + OZONE[0] * dO, RAYLEIGH[1] * dR + m + OZONE[1] * dO, RAYLEIGH[2] * dR + m + OZONE[2] * dO];
+    return [0, 1, 2].map((i) => RAYLEIGH[i] * dR + m * MIE_SPEC_EXT[i] + OZONE[i] * dO);
   }
 
   /** Transmittance from the camera altitude towards a direction (y up), with a soft planet shadow. */

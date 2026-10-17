@@ -141,6 +141,14 @@ function platformBody(pl, app, F, lod) {
   return out;
 }
 
+/** [material, geometry] pairs of a platform body (the per-site meshes, see buildPlatform):
+ *  their programs are compiled up front from these (stations are often first streamed
+ *  far beyond the start-up range). */
+export function platformWarmupParts(app, F) {
+  const st = app.layout.stations[0], pl = st && st.platforms[0];
+  return pl ? platformBody(pl, app, F, 0) : [];
+}
+
 /** One side platform: cached body meshes plus instanced railing (open at the access gaps
  *  and behind the shelter). */
 export function buildPlatform(pl, app, addMesh, F, lod, fittings, inst, PP) {

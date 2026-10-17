@@ -34,6 +34,7 @@ const _c = new THREE.Vector3();
 const _near = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _far = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _corners = Array.from({ length: 8 }, () => new THREE.Vector3());
+const _axes = new Float32Array(9);   // light-space axes in world space (rows: x, y, z)
 
 // casters too fine for a coarse cascade: wrought iron, ironwork cards, lamp scrolls
 const THIN_MATERIAL = /^(ironwork\.(parts|card)|metal\.(iron|wire))|catenaryThin/;
@@ -41,6 +42,8 @@ const THIN_TEXEL = 0.05;      // cascades with texels coarser than this (m) skip
 const SUBTEXEL = 1.5;         // casters smaller than this many texels (radius) are skipped
 const MAX_FILTER_TEXELS = 16; // widest PCF kernel (texels): wider would only add noise
 const REFRESH = [1, 1, 2, 4]; // frames between redraws per cascade (far ones staggered)
+const OUTLINE_MARGIN = 1.0;   // slack for the filter footprint and normal offset (m)
+export const NEAR_CASCADES = 2; // cascades below this index draw the batcher's cell proxies, the rest its coarse ones
 
 const _thinMat = new WeakMap();
 const _origShadowHooks = [THREE.Object3D.prototype.onBeforeShadow, THREE.Object3D.prototype.onAfterShadow];
@@ -96,8 +99,9 @@ function worldSphere(object, frame) {
  * (see shadowBatch.js) are left to the proxy.
  */
 class CascadeFrustum extends THREE.Frustum {
-  constructor() {
+  constructor(index = 0) {
     super();
+    this.index = index;
     this.zNear = -Infinity;
     this.zFar = Infinity;
     this.ctx = null;
@@ -105,7 +109,50 @@ class CascadeFrustum extends THREE.Frustum {
     this.skipThin = false;
     this.minRadius = 0;
     this.acceptAll = false;
+    // the slice's outline seen from the sun (convex hull in light space) and its lowest
+    // light-space depth: a caster can only shadow the slice if its sphere, projected
+    // along the sun, overlaps the outline and it is not entirely beyond the slice
+    this.hull = new Float32Array(16);
+    this.hullN = 0;
+    this.minZ = -Infinity;
+    this.axes = null;   // light-space axes (shared): x, y, z rows
   }
+
+  /** Light-space convex hull of the slice corners (Andrew's monotone chain). */
+  setOutline(corners, axes) {
+    this.axes = axes;
+    const pts = corners.map((v) => [v.x, v.y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lower = [], upper = [];
+    for (const q of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+    for (let i = pts.length - 1; i >= 0; i--) { const q = pts[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+    const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+    this.hullN = hull.length;
+    hull.forEach((q, i) => { this.hull[i * 2] = q[0]; this.hull[i * 2 + 1] = q[1]; });
+    this.minZ = Math.min(...corners.map((v) => v.z));
+  }
+
+  /** Can a sphere (world space) shadow the slice? Outline test in light space. */
+  reachesOutline(p, r) {
+    const a = this.axes, n = this.hullN;
+    if (!a || n < 3) return true;
+    const z = p.x * a[6] + p.y * a[7] + p.z * a[8];
+    if (z + r < this.minZ - OUTLINE_MARGIN) return false;
+    const x = p.x * a[0] + p.y * a[1] + p.z * a[2], y = p.x * a[3] + p.y * a[4] + p.z * a[5];
+    const H = this.hull, rr = r + OUTLINE_MARGIN;
+    let inside = true, d2 = Infinity;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const x0 = H[i * 2], y0 = H[i * 2 + 1], ex = H[j * 2] - x0, ey = H[j * 2 + 1] - y0;
+      const px = x - x0, py = y - y0;
+      if (ex * py - ey * px < 0) inside = false;   // right of a CCW edge: outside
+      const t = Math.max(0, Math.min(1, (px * ex + py * ey) / Math.max(ex * ex + ey * ey, 1e-12)));
+      const qx = px - t * ex, qy = py - t * ey;
+      d2 = Math.min(d2, qx * qx + qy * qy);
+    }
+    return inside || d2 <= rr * rr;
+  }
+
   intersectsObject(object) {
     if (this.skip) return false;
     if (this.acceptAll) return true;
@@ -113,7 +160,8 @@ class CascadeFrustum extends THREE.Frustum {
     const ud = object.userData;
     let sphere;
     if (ud.shadowProxy) {
-      if (!ud.shadowProxy.active) return false;
+      // cell proxies serve the near cascades, the coarse ones the rest
+      if (!ud.shadowProxy.active || (ud.shadowFar === true) !== (this.index >= NEAR_CASCADES)) return false;
       sphere = ud.shadowSphere;
     } else {
       if (c && c.batcher && c.batcher.covers(object)) return false;
@@ -130,6 +178,12 @@ class CascadeFrustum extends THREE.Frustum {
       const dd = h * c.cotE * c.awayDotFwd;    // view-depth component of the top's shadow reach
       const lo = Math.min(d, d + dd) - r - 6, hi = Math.max(d, d + dd) + r + 6;
       if (hi < this.zNear || lo > this.zFar) return false;
+      // instanced sets drawn in one call (a whole LOD of figures) can publish the view-depth
+      // band of this frame's instances: userData.shadowRange = [min, max] (m along the view)
+      const band = ud.shadowRange;
+      if (band && (band[1] + Math.abs(dd) + 2 < this.zNear || band[0] - Math.abs(dd) - 2 > this.zFar)) return false;
+      if (!this.intersectsSphere(sphere)) return false;
+      return this.reachesOutline(sphere.center, r);
     }
     return this.intersectsSphere(sphere);
   }
@@ -146,7 +200,7 @@ export class StreetSunShadow extends SunLightShadow {
     for (let i = 0; i < cascades; i++) {
       this._cameras.push(new THREE.OrthographicCamera());
       this._matrices.push(new THREE.Matrix4());
-      this._frustums.push(new CascadeFrustum());
+      this._frustums.push(new CascadeFrustum(i));
       this._cascadeData.push(new THREE.Vector4());
       this._viewports.push(new THREE.Vector4());
     }
@@ -207,6 +261,7 @@ export class StreetSunShadow extends SunLightShadow {
     if (Math.abs(_up.dot(_dir)) > 0.99) _up.set(0, 0, 1);
     _m.lookAt(_c.set(0, 0, 0), _dir, _up);
     _viewToLight.copy(_m).transpose().multiply(viewCamera.matrixWorld);
+    { const e = _m.elements; _axes.set([e[0], e[1], e[2], e[4], e[5], e[6], e[8], e[9], e[10]]); }
 
     // caster culling context: view position/direction and the sun's horizontal reach
     const ctx = this._ctx;
@@ -297,6 +352,7 @@ export class StreetSunShadow extends SunLightShadow {
       f.skipThin = this.cullCasters && (i >= 2 || texel > THIN_TEXEL);
       f.minRadius = this.cullCasters && i >= 2 ? SUBTEXEL * texel : 0;
       f.acceptAll = this.warmup;
+      f.setOutline(_corners, _axes);
 
       const cam = this._cameras[i];
       cam.position.copy(_c);

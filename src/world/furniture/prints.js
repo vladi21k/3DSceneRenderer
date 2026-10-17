@@ -261,7 +261,7 @@ function photoPoster(ctx, x, y, w, h, seed) {
     for (let i = 0; i < 6; i++) {
       const x0 = w * rng.next(), hh = hue + rng.range(-60, 60);
       const g = q.createLinearGradient(x0 - w * 0.3, 0, x0 + w * 0.3, 0);
-      g.addColorStop(0, hsl(hh, 80, 50, 0)); g.addColorStop(0.5, hsl(hh, 80, 55, 0.3)); g.addColorStop(1, hsl(hh, 80, 50, 0));
+      g.addColorStop(0, hsl(hh, 60, 45, 0)); g.addColorStop(0.5, hsl(hh, 60, 48, 0.22)); g.addColorStop(1, hsl(hh, 60, 45, 0));
       q.fillStyle = g;
       q.beginPath(); q.moveTo(x0 - w * 0.02, 0); q.lineTo(x0 - w * 0.3, h * 0.8); q.lineTo(x0 + w * 0.3, h * 0.8); q.lineTo(x0 + w * 0.02, 0); q.fill();
     }

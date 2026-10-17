@@ -36,15 +36,22 @@ export function createSpillMaterial(M) {
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uEmGain = gain;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec4 aSpill;\nvarying vec4 vSpill;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSpill = aSpill;');
+      .replace('#include <common>', '#include <common>\nattribute vec4 aSpill;\nvarying vec4 vSpill;\nvarying vec2 vSpUv;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSpill = aSpill;\nvSpUv = uv;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
 uniform float uNight;
 uniform float uTime;
 uniform float uEmGain;
 varying vec4 vSpill;
-${ROOM_LIGHT_GLSL}`)
+varying vec2 vSpUv;
+${ROOM_LIGHT_GLSL}
+float spN( vec2 p ) {
+  vec2 i = floor( p ), f = fract( p ); f = f * f * ( 3.0 - 2.0 * f );
+  vec4 h = fract( sin( vec4( dot( i, vec2( 127.1, 311.7 ) ), dot( i + vec2( 1, 0 ), vec2( 127.1, 311.7 ) ),
+    dot( i + vec2( 0, 1 ), vec2( 127.1, 311.7 ) ), dot( i + vec2( 1, 1 ), vec2( 127.1, 311.7 ) ) ) ) * 43758.5453 );
+  return mix( mix( h.x, h.y, f.x ), mix( h.z, h.w, f.x ), f.y );
+}`)
       .replace('#include <opaque_fragment>', `
 float kind = floor( vSpill.y + 1e-3 ), dim = vSpill.y - kind;
 bool shop = kind > 0.5 && kind < 1.5 || kind > 2.5;
@@ -56,14 +63,17 @@ vec3 lampS = shop ? vec3( 1.0, 0.70, 0.43 ) : fRoomLampC( vSpill.x ) * fRoomLeve
 if ( !shop && fRoomTV( vSpill.x ) > 0.5 ) lampS = fTVLight( vSpill.x, uTime ) * 0.6;
 float k;
 if ( kind > 2.5 ) {
-  // pavement pool: paving albedo ~0.3 under the shop's light, no depth falloff
-  k = 0.00011 * vSpill.z;
+  // pavement pool: paving albedo ~0.3 under the shop's light (the shops' interiors sit far
+  // above the street lamps' level in the exposure, so their pools hold their own)
+  k = 0.0007 * vSpill.z;
 } else {
-  // stone albedo ~0.5 lit by the room behind the glass: strongest at the glass, ~exp(-z/0.15)
-  // towards the wall face; shops fade up their tall jambs
-  k = shop ? 0.00024 : kind > 1.5 ? 0.00008 : 0.0002;
-  k *= exp( -vSpill.z / 0.15 ) * ( 0.25 + 0.75 * smoothstep( 0.0, 0.012, vSpill.z ) );
-  k *= shop ? 1.0 - 0.6 * smoothstep( 0.35, 0.95, vSpill.w ) : 1.0 - 0.25 * smoothstep( 0.6, 1.0, vSpill.w );
+  // stone albedo ~0.5 lit by the room behind the glass: strongest at the glass, falling off
+  // exponentially towards the wall face; the tall jambs of shops fade upwards (their
+  // downlights light the floor and the goods), and the stone is uneven
+  k = shop ? 0.00016 : kind > 1.5 ? 0.00008 : 0.0002;
+  k *= exp( -vSpill.z / ( shop ? 0.1 : 0.15 ) ) * ( 0.25 + 0.75 * smoothstep( 0.0, 0.012, vSpill.z ) );
+  k *= shop ? 1.0 - 0.75 * smoothstep( 0.25, 0.85, vSpill.w ) : 1.0 - 0.3 * smoothstep( 0.6, 1.0, vSpill.w );
+  k *= 0.7 + 0.6 * spN( vSpUv * vec2( 3.1, 9.0 ) ) * ( 0.6 + 0.4 * spN( vSpUv * 23.0 ) );
 }
 gl_FragColor = vec4( lampS * k * on * uEmGain, 1.0 );`);
   };
@@ -130,7 +140,9 @@ export function groundGlow(ctx, o) {
       const s = pr.s + (ox * tx + oz * tz) / scale, d = pr.d + ox * rx + oz * rz;
       route.toWorld(s, d, 0.015, _q);
       t.v(_q.x, _q.y, _q.z, 0, 1, 0, 0, 0, 1);
-      val.push(poolFF(du, w, hw, y0, y1));
+      // the grid's rim fades to nothing (no visible edge where the pool ends)
+      const rim = i === 0 || i === nU - 1 || j === nW - 1;
+      val.push(rim ? 0 : poolFF(du, w, hw, y0, y1));
     }
   }
   for (let j = 0; j + 1 < nW; j++) {
