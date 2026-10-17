@@ -416,7 +416,8 @@ const humans = {
     // transform below is still applied every frame so camera motion stays exact
     const M = s.model || (s.model = new Float32Array(MAT_N));
     const frame = this.app.frame;
-    if (s.pose !== s.posePrev || s.lod < 2 || ((frame + i) & 1) === 0 || s.blendFrame < frame - 2 || s.blendBase !== B) {
+    // (riders: every frame until they are tiny, so the feet keep up with the pedals)
+    if (s.pose !== s.posePrev || s.lod < 2 || (s.pose === 4 && s.lod < 3) || ((frame + i) & 1) === 0 || s.blendFrame < frame - 2 || s.blendBase !== B) {
       this._blend(s, a, B, sc, M);
       s.blendFrame = frame;
       s.blendBase = B;

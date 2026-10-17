@@ -124,6 +124,7 @@ def main():
     ap.add_argument("--pre", default=None, help="JS evaluated right after ready (before settle)")
     ap.add_argument("--console", action="store_true", help="print all console messages, not only errors/warnings")
     ap.add_argument("--keep-open", action="store_true")
+    ap.add_argument("--profile", default=None, help="persistent Chrome profile dir (keeps the GPU shader cache between runs)")
     a = ap.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
@@ -138,7 +139,9 @@ def main():
             time.sleep(0.1)
 
     dbg = free_port()
-    profile = tempfile.mkdtemp(prefix="shoot-", dir=os.path.join(ROOT, ".work"))
+    profile = os.path.abspath(a.profile) if a.profile else tempfile.mkdtemp(prefix="shoot-", dir=os.path.join(ROOT, ".work"))
+    if a.profile:
+        os.makedirs(profile, exist_ok=True)
     chrome = shutil.which("google-chrome") or shutil.which("chromium") or "google-chrome"
     args = [chrome, "--headless=new", f"--remote-debugging-port={dbg}", f"--user-data-dir={profile}",
             f"--window-size={a.width},{a.height}", "--hide-scrollbars", "--mute-audio",
@@ -239,7 +242,8 @@ def main():
             proc.wait(5)
         except Exception:
             proc.kill()
-        shutil.rmtree(profile, ignore_errors=True)
+        if not a.profile:
+            shutil.rmtree(profile, ignore_errors=True)
         if server:
             server.terminate()
     return rc

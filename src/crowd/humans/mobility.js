@@ -217,7 +217,7 @@ export class Poser {
     const W = _b, E = _c, Wd = _d;
     set3(_e, G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]); norm3(_e);
     W[0] = G[0] - _e[0] * 0.09 * this.k; W[1] = G[1] - _e[1] * 0.09 * this.k + 0.02 * this.k; W[2] = G[2] - _e[2] * 0.09 * this.k;
-    for (let it = 0; it < 8; it++) {
+    for (let it = 0; it < 10; it++) {
       ik2(sh, W, this.ua, this.fa, pole, 0.985, E, Wd);
       set3(_f, E[0] - sh[0], E[1] - sh[1], E[2] - sh[2]);         // upper arm
       set3(_g, Wd[0] - E[0], Wd[1] - E[1], Wd[2] - E[2]);         // forearm
@@ -229,14 +229,16 @@ export class Poser {
       // where the hold point ends up: move the wrist target by the miss
       app3(PR, bH * 9, off[0], off[1], off[2], _q);
       const mx = G[0] - (Wd[0] + _q[0]), my = G[1] - (Wd[1] + _q[1]), mz = G[2] - (Wd[2] + _q[2]);
-      W[0] = Wd[0] + mx; W[1] = Wd[1] + my; W[2] = Wd[2] + mz;
+      // (damped after a few steps: a palm laid flat can make the plain update overshoot)
+      const g = it < 4 ? 1 : 0.6;
+      W[0] = Wd[0] + mx * g; W[1] = Wd[1] + my * g; W[2] = Wd[2] + mz * g;
       this.miss = Math.sqrt(mx * mx + my * my + mz * mz);
       if (this.miss < 3e-4) break;
     }
     if (this.missStat) {
       const R = this.missStat;
       R.max = Math.max(R.max, this.miss); R.n++;
-      if (this.miss > 0.005) { R.bad = (R.bad || 0) + 1; if (R.log && R.log.length < 12) R.log.push([s, palm, +this.miss.toFixed(3), +(Math.hypot(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa)).toFixed(2), this.rig.kind, +this.rig.H.toFixed(2)]); const d = Math.hypot(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa); R.far = Math.max(R.far || 0, d); if (d < 0.97) R.nonconv = (R.nonconv || 0) + 1; }
+      if (this.miss > 0.005) { R.bad = (R.bad || 0) + 1; const d = Math.hypot(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa); R.far = Math.max(R.far || 0, d); if (d < 0.97) R.nonconv = (R.nonconv || 0) + 1; }
     }
     PP[bF * 3] = E[0]; PP[bF * 3 + 1] = E[1]; PP[bF * 3 + 2] = E[2];
     PP[bH * 3] = Wd[0]; PP[bH * 3 + 1] = Wd[1]; PP[bH * 3 + 2] = Wd[2];
@@ -462,8 +464,8 @@ export class Mobility {
       const d = kit.variants[st.v].dims;
       st.toX = 0; st.toZ = -(d.front + d.rear) / 2 * this._rideFit(st, a).k; st.toL = 0;
     } else {
-      const fit = this._walkFit(st), k = this._rideFit(st, a).k;
-      st.toX = -fit.x * k; st.toZ = -fit.z * k; st.toL = 0.05;
+      const fit = this._walkFit(st, a);
+      st.toX = -fit.x; st.toZ = -fit.z; st.toL = 0.05;
     }
     if (st.pose !== s.pose) {
       if (st.pose >= 3 && !fresh) { st.fromX = st.offX; st.fromZ = st.offZ; st.fromL = st.offL; st.fadeT0 = time; st.fadeDur = 0.75; }
@@ -540,15 +542,43 @@ export class Mobility {
     }
   }
 
-  /** Where someone walking this bike stands (bike-local) and how they hold it. */
-  _walkFit(st) {
+  /**
+   * Where someone walking this bike stands beside it (bike-local metres, the bike at its frame size)
+   * and how they hold it: the near (right) hand on the left grip, or the left hand on that grip and
+   * the right palm on the saddle. The stance is chosen per person so that the arms reach with the
+   * elbows a little bent through the walk (cached per slot).
+   */
+  _walkFit(st, a) {
     if (st.walk) return st.walk;
-    const V = this.bikes.variants[st.v];
-    const at = this.bikes.attachments(st.v, 0, 0, 0, {});
-    // hand on the left grip: stand a forearm's length behind it, beside the bike
-    const gz = at.gripL.z, sz = at.saddle.z;
-    const z = st.hold === 0 ? gz + 0.42 : Math.min(gz + 0.36, (gz + sz) / 2 + 0.06);
-    st.walk = { x: -0.43 - (V.dims.width - 0.6) * 0.15, z };
+    const B = this.h.bases[a.body];
+    const P = this.poser(B);
+    const sc = a.height / B.info.H;
+    const k = this._rideFit(st, a).k;
+    const at = this.bikes.attachments(st.v, 0, 0, this._rideFit(st, a).saddle, {});
+    const gx = at.gripL.x * k, gy = at.gripL.y * k, gz = at.gripL.z * k;
+    const hx = at.saddleNose.x * k, hy = (at.saddleNose.y + 0.01) * k, hz = (at.saddleNose.z * 0.4 + at.saddle.z * 0.6) * k;
+    const r = P.rest;
+    const ratio = (side, px, py, pz, wx, wz, palm) => {
+      const b = BONE['arm' + side] * 3, A = P.arm[side];
+      const reach = (palm ? P.ua + P.fa + 0.062 * (HAND_SCALE[B.rig.kind] ?? 1) : A.reach) * sc;
+      return Math.hypot(px - wx - r[b] * sc, py - r[b + 1] * sc, pz - wz - r[b + 2] * sc) / reach;
+    };
+    let best = null;
+    for (const hold of st.hold === 1 ? [1, 0] : [0]) {
+      for (const wx of [-0.38, -0.42, -0.46]) {
+        for (let i = 0; i <= 24; i++) {
+          const wz = gz + 0.18 + (i / 24) * 0.5;
+          let f;
+          if (hold === 0) f = Math.abs(ratio('R', gx, gy, gz, wx, wz, false) - 0.8) + 0.02 * Math.abs(wx + 0.42);
+          else f = Math.max(ratio('L', gx, gy, gz, wx, wz, false), ratio('R', hx, hy, hz, wx, wz, true)) + 0.02 * Math.abs(wx + 0.42);
+          if (!best || f < best.f) best = { f, hold, x: wx, z: wz };
+        }
+      }
+      if (hold === 1 && best.f <= 0.86) break;       // both hands reach: keep the two-handed hold
+      if (hold === 1) best = null;
+    }
+    st.hold = best.hold;
+    st.walk = { x: best.x, z: best.z };
     return st.walk;
   }
 

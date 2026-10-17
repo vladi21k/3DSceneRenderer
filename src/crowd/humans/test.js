@@ -23,6 +23,7 @@ import { hash2 } from '../../core/rng.js';
 //             (works with grid, walk, cross, crowd; ht_mode=stroller|ride|walkbike|mobmix are walk
 //             mode with that ht_mob); ht_mode=circle rides (or pushes) round circles of radius ht_r
 //             (default 7 m) around the lineup position, for lean and steering
+//   ht_mobk = k: only every k-th figure takes the ht_mob role (e.g. 400 figures, ht_mobk=10: 40 props)
 //   ht_v    = speed (default: stroller 1.15, walking a bike 1.2, riding 4.2 m/s)
 //   ht_stop = 1: riders stand with a foot down; ht_stop=<s> (> 1): they slow to a stop and ride
 //             off again every <s> seconds
@@ -58,6 +59,7 @@ export class HumansTest {
     this.mob = p.str('ht_mob', '') || MOBM[this.mode] || '';
     if (MOBM[this.mode]) this.mode = 'walk';
     this.stop = p.num('ht_stop', 0);
+    this.mobK = p.num('ht_mobk', 0);
     this.mount = p.num('ht_mount', 0);
     this.propSeed = p.num('ht_prop', 0);
     this.radius = p.num('ht_r', 7);
@@ -74,7 +76,9 @@ export class HumansTest {
     this.figs = [];
     const chairs = this.mode === 'cafe' ? this._chairs() : [];
     for (let i = 0; i < this.n; i++) {
-      const mob = this.mob === 'mix' ? ['stroller', 'ride', 'ride', 'walkbike'][i % 4] : this.mob;
+      // (ht_mobk=k: only every k-th figure has a prop, the rest walk)
+      const mobOn = !this.mobK || i % this.mobK === 0;
+      const mob = !mobOn ? '' : this.mob === 'mix' ? ['stroller', 'ride', 'ride', 'walkbike'][(i / (this.mobK || 1)) % 4 | 0] : this.mob;
       const pose = { stroller: 3, ride: 4, walkbike: 5 }[mob] || 0;
       const app_ = this._pick(this.filters.length ? this.filters[i % this.filters.length] : null, pose);
       const f = { i: this.first + i, app: app_, phase: (i * 0.37) % 1, pose, prop: pose === 3 ? 1 : pose ? 2 : 0,
