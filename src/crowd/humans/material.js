@@ -250,6 +250,8 @@ void hSkin(out vec3 P, out vec3 N) {
   vec4 D1 = texelFetch(uBoneTex, ivec2(${BONE_DYN + 1}, brow), 0);   // look row, phone shown, hands in pockets
   int row = int(D1.x + 0.5);
   float region = aBody.x, part = aBody.y;
+  // (older builds left the eyelids untagged: they belong to the face)
+  if (region < 0.5 && part < 0.5) region = 3.0;
   vec4 L11 = hLook(row, 11);
   float bagPart = mod(L11.w, 256.0), skirtPart = floor(L11.w / 256.0 + 0.001);
   bool on = part < 0.5 || part == L11.x || part == L11.y || part == L11.z || part == bagPart
@@ -310,8 +312,17 @@ void hSkin(out vec3 P, out vec3 N) {
   } else if (part < 0.5) {
     vec4 L12 = hLook(row, 12);
     float headK = (region == 3.0 || region == 10.0 || region == 16.0 || region == 17.0 || region == 18.0) ? 0.45 : region == 2.0 ? 0.7 : 1.0;
-    pos += aMorph.xyz * uMorphScale * (L0.w > 0.0 ? L0.w * 1.4 : L0.w) * headK;
-    pos += nrm * dot(aShape, L12 * uShapeScale);
+    // (the eyes and lids keep their shape: the morph targets were measured along normals that the
+    // thin lid shells make erratic there, which would pull the eye area into spikes)
+    float eyeK = 1.0;
+    if (headK < 0.5) {
+      vec3 qe = (position - uHead.xyz) / uHead.w;
+      vec3 ec = vec3(abs(uEye.x - uHead.x), uEye.y - uHead.y, uEye.z - uHead.z) / uHead.w;
+      float erl = uEye.w / uHead.w;
+      eyeK = smoothstep(erl * 1.25, erl * 2.6, length(vec3(abs(qe.x), qe.y, qe.z) - ec));
+    }
+    pos += aMorph.xyz * uMorphScale * (L0.w > 0.0 ? L0.w * 1.4 : L0.w) * headK * eyeK;
+    pos += nrm * dot(aShape, L12 * uShapeScale) * eyeK;
     pos = hFace(pos, position, region, L0.w, hLook(row, 9).w);
 #ifndef HUMAN_DEPTH
     // clothes stand off the skin: ease grows with looseness, with a lip at hems
@@ -806,6 +817,12 @@ const FRAG_SURFACE = /* glsl */`
     vec3 g = hGarment(r, region, L2, L4, L8);
     float cover = hAA(g.y);
     float layer = g.x;
+    // a top's hem over trousers or shorts: the edge meets the next garment, not skin (an
+    // anti-aliased fade to skin drew a skin-coloured line along the hem)
+    if (layer == 1.0 && cover < 1.0 && (region == 1.0 || region == 19.0 || region == 7.0 || region == 8.0)) {
+      vec3 gb = hGarment(r - vec3(0.0, 0.004, 0.0), region, L2, L4, L8);
+      if (gb.x == 2.0 && r.y < hTopHemY(L8.y) + 0.004) cover = 1.0;
+    }
     vec3 cloth = vec3(0.0);
     float crough = 0.86;
     bool jacket = L2.w == 5.0;
@@ -1270,9 +1287,11 @@ const FRAG_SURFACE = /* glsl */`
         float pkr = (length(pq) - 1.0) * min(hw * 0.68, hh * 0.36);
         float pocketM = hAA(0.0016 - abs(pkr)) * step(hd * 0.6, lp.z);
         float pzip = hAA(0.0014 - abs(lp.y + hh * 0.42 - hh * 0.2)) * step(abs(lp.x), hw * 0.5) * step(hd * 0.9, lp.z);
-        float z = max(max(zipM, pocketM * 0.7), pzip);
-        col = mix(col, col * 0.4, z);
-        hBump += 0.0011 * z;
+        float z = max(max(zipM, pocketM * 0.6), pzip);
+        // (a zip and seams read as soft shadowed grooves, not drawn lines; gone at a distance)
+        z *= 1.0 - smoothstep(0.002, 0.006, length(fwidth(r)) + 0.0);
+        col = mix(col, col * 0.62, z);
+        hBump += 0.0009 * z;
         // the bottom is scuffed darker, the top seam piped
         col *= 1.0 - 0.14 * smoothstep(-hh * 0.75, -hh * 1.0, lp.y);
         if (vAux.y > 0.5) {
@@ -1353,6 +1372,10 @@ const FRAG_SURFACE = /* glsl */`
 #endif
 #if HUMANS_DBG == 1
   hEmit = vec3(aoV); diffuseColor.rgb = vec3(0.0);       // debug view: baked occlusion
+#elif HUMANS_DBG == 5
+  // debug view: body regions (head green, eyes red, nose / lips / ears blue, rest grey) x baked occlusion
+  hEmit = (region == 3.0 ? vec3(0.1, 0.8, 0.1) : region == 10.0 ? vec3(0.9, 0.1, 0.1) : region >= 16.0 && region <= 18.0 ? vec3(0.1, 0.2, 0.9) : vec3(0.4)) * (0.4 + 0.6 * vAO);
+  diffuseColor.rgb = vec3(0.0);
 #elif HUMANS_DBG == 2 || HUMANS_DBG == 3
   hEmit = vec3(vAux, 0.0); diffuseColor.rgb = vec3(0.0); // debug view: aux attributes (3: garment ease, 1 = 2.5 cm)
 #endif

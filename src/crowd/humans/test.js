@@ -12,7 +12,8 @@ import { hash2 } from '../../core/rng.js';
 //   ht_rot  = extra heading for grid / sit figures (deg; 180 shows their backs, 90 a profile)
 //   ht_filter = skirt | dress | hat | cap | sunhat | suit | old | oldwalk | child | beard | glasses |
 //               shorts | bag | backpack | phone | cross | pocket | long | heavy | male | female | balding |
-//               man | woman | teen | kid (4-6 body) | boy | girl | oldman | oldwoman | tee
+//               man | woman | teen | kid (4-6 body) | boy | girl | oldman | oldwoman | tee | collar | tank |
+//               scarf | longskirt
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
 //   ht_tread = 1: grid figures walk in place (a treadmill) at ht_v (default 1.3 m/s), for gait checks
@@ -330,4 +331,6 @@ const FILTERS = {
   tee: (a) => a.topType === 0 && a.bottomType !== 3 && a.bottomType !== 5,
   collar: (a) => a.topType === 1 || a.topType === 2,
   tank: (a) => a.topType === 3,
+  scarf: (a, P) => a.hairPart === P.scarf,
+  longskirt: (a) => !!a.longSkirt,
 };

@@ -341,7 +341,9 @@ def head_sdf(face, build=0.0, var=None):
         if old > 0:
             lids.append(Ellipsoid((cx, -0.0135, ez - 0.0085), (0.011, 0.0035, 0.0035 * old + 1e-4)))   # eye bags
     for l in lids:
-        l.region, l.bones = R, H
+        # (tag the leaves too: an Intersect's own tag is not seen by the per-leaf region lookup)
+        for lf in [l] + l.leaves():
+            lf.region, lf.bones = R, H
     nsc = (0.9 if fem else (1.0 - 0.42 * yg if kid else 1.0)) * (1 + 0.08 * nar - 0.04 * brd)
     N = REGION['nose']
     # (children: a short button nose with a low, flat bridge, the tip turned up so the nostrils show)
