@@ -64,10 +64,10 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA)
       const fs = new FaceShade(face, col, lot.seed + 7919 * (e + 1), { dirt: orn.dirt * 1.15, uncleaned: finish === 'plaster' ? 0.35 : 0.6, sillExt: 0.13, sillH: 0.06 });
       if (openings.length) {
         if (!sinks.glass) sinks.glass = B.sink('glass');
-        if (!sinks.frame) sinks.frame = B.sink('frame');
+        if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery
       }
       const ctx = {
-        B, sinks: { ...sinks, ashlar: sWall, smooth: sinks.smooth, rough: null }, q, fs, orn: plainOrnament(orn),
+        B, sinks: { ...sinks, ashlar: sWall, smooth: sinks.smooth, detail: sinks.detail, rough: null }, q, fs, orn: plainOrnament(orn),
         vBottom: v0, vTop: v1, rustic: null, sillExt: 0.13, ch: 0, fit: null,
       };
       const fr = sideFrame(f, W, e, w0, w1);

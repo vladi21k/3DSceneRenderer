@@ -120,13 +120,18 @@ function headProfile(o, ground) {
       archPoint(o, i / 20, _ap, T);
       a.push(_ap.u, _ap.v + (Math.abs(_ap.u - o.uc) < 0.22 ? 0.1 : 0)); // keystone
     }
+    // left to right (headTopAt walks it with u increasing)
+    if (a[0] > a[a.length - 2]) for (let i = 0, j = a.length - 2; i < j; i += 2, j -= 2) {
+      [a[i], a[j]] = [a[j], a[i]]; [a[i + 1], a[j + 1]] = [a[j + 1], a[i + 1]];
+    }
     hp.arc = a;
   }
   return hp;
 }
 
-/** Highest point of an opening's dressing at facade position u (−Infinity if clear). */
-function headTopAt(hp, u) {
+/** Highest point of an opening's dressing at facade position u (−Infinity if clear).
+ *  `seg` (optional {i}) is a cursor into the arc for calls with increasing u. */
+function headTopAt(hp, u, seg = null) {
   if (u < hp.u0 || u > hp.u1) return -Infinity;
   const L = hp.leaf;
   const lt = L && u >= L[0] && u <= L[1] ? L[2] : -Infinity;
@@ -135,24 +140,21 @@ function headTopAt(hp, u) {
   const a = hp.arc, n = a.length;
   if (u <= a[0]) return Math.max(lt, hp.jamb, a[1]);
   if (u >= a[n - 2]) return Math.max(lt, hp.jamb, a[n - 1]);
-  let v = Math.max(lt, hp.jamb);
-  for (let i = 0; i < n - 2; i += 2) {
-    const ua = a[i], ub = a[i + 2];
-    if ((u - ua) * (u - ub) <= 0) v = Math.max(v, a[i + 1] + (a[i + 3] - a[i + 1]) * ((u - ua) / ((ub - ua) || 1)));
-  }
-  return v;
+  // the segment holding u (the arc runs left to right)
+  let i = seg ? seg.i : 0;
+  while (i < n - 4 && u > a[i + 2]) i += 2;
+  if (seg) seg.i = i;
+  const ua = a[i], ub = a[i + 2];
+  return Math.max(lt, hp.jamb, a[i + 1] + (a[i + 3] - a[i + 1]) * ((u - ua) / ((ub - ua) || 1)));
 }
 
 const planHeads = new WeakMap();
-/** Head profiles of the openings on each floor of a plan (cached). */
-function headsOf(plan) {
+/** Head profiles of the openings on floor `f` of a plan (cached per plan and floor). */
+function headsOn(plan, f) {
   let h = planHeads.get(plan);
-  if (!h) {
-    h = [];
-    for (const o of plan.openings) (h[o.floor] ||= []).push(headProfile(o, o.floor === 0));
-    planHeads.set(plan, h);
-  }
-  return h;
+  if (!h) planHeads.set(plan, (h = []));
+  if (!h[f]) h[f] = plan.openings.filter((o) => o.floor === f).map((o) => headProfile(o, f === 0));
+  return h[f];
 }
 
 const consoleCache = new WeakMap(); // balcony -> placements (plans are cached)
@@ -169,24 +171,29 @@ function findConsoles(plan, bal, n, Hc) {
   const W2 = CORBEL.W / 2;
   const lo = bal.u0 + W2 + 0.03, hi = bal.u1 - W2 - 0.03;
   if (hi <= lo) return [];
-  const heads = (headsOf(plan)[bal.floor - 1] || []).filter((hp) => hp.u1 > bal.u0 - 0.5 && hp.u0 < bal.u1 + 0.5);
+  const heads = bal.floor > 0 ? headsOn(plan, bal.floor - 1).filter((hp) => hp.u1 > bal.u0 - 0.5 && hp.u0 < bal.u1 + 0.5) : [];
   const step = 0.03, N = Math.floor((hi - lo) / step) + 1;
   const top = new Float32Array(N).fill(-1e9);
   if (heads.length) {
-    // dressing height on a grid widened by a console half-width (+2 cm) either side, then
-    // the highest point under each console footprint (sliding maximum)
-    const K = Math.ceil((W2 + 0.02) / step), M = N + 2 * K;
-    const raw = new Float32Array(M);
-    for (let j = 0; j < M; j++) {
-      const u = lo + (j - K) * step;
-      let t = -1e9;
-      for (const hp of heads) { const h = headTopAt(hp, u); if (h > t) t = h; }
-      raw[j] = t;
+    // dressing height on a grid widened by a console half-width (+2 cm) either side, each
+    // head over its own span only, then the highest point under each console footprint
+    // (sliding maximum, monotone deque)
+    const K = Math.ceil((W2 + 0.02) / step), M = N + 2 * K, u0 = lo - K * step;
+    const raw = new Float32Array(M).fill(-1e9), seg = { i: 0 };
+    for (const hp of heads) {
+      seg.i = 0;
+      const j0 = Math.max(0, Math.ceil((hp.u0 - u0) / step)), j1 = Math.min(M - 1, Math.floor((hp.u1 - u0) / step));
+      for (let j = j0; j <= j1; j++) { const h = headTopAt(hp, u0 + j * step, seg); if (h > raw[j]) raw[j] = h; }
     }
-    for (let i = 0; i < N; i++) {
-      let t = -1e9;
-      for (let j = i; j <= i + 2 * K; j++) if (raw[j] > t) t = raw[j];
-      top[i] = t;
+    const q = new Int32Array(M);
+    let qh = 0, qt = 0;
+    for (let j = 0; j < M; j++) {
+      while (qt > qh && raw[q[qt - 1]] <= raw[j]) qt--;
+      q[qt++] = j;
+      const i = j - 2 * K;
+      if (i < 0) continue;
+      if (q[qh] < i) qh++;
+      top[i] = raw[q[qh]];
     }
   }
   const clear = soffit - Hc - 0.075; // knob below the console + 3 cm
@@ -271,17 +278,21 @@ const ironwork = {
       this.root.add(s.mesh);
       return s;
     };
-    const set = (tag, k) => ({
-      stone: strip(this.stoneMat, ['normal', 'uv', 'color', 'aGk'], `stone${tag}`, { instanceColor: true, vCap: 1 << 17, iCap: 1 << 17 }),
-      cards: strip(this.mats.card, ['normal', 'uv', 'color'], `cards${tag}`, { castShadow: true, thin: true, vCap: 1 << 14, iCap: 3 << 13 }),
-      parts: strip(this.amats.parts, ['normal', 'uv', 'color'], `parts${tag}`, { vCap: 1 << (15 + k), iCap: 1 << (16 + k) }),
+    // (capacities: about twice the most a dense stretch uses, so the rings rarely grow)
+    const K = 1024, set = (tag, cap) => ({
+      stone: strip(this.stoneMat, ['normal', 'uv', 'color', 'aGk'], `stone${tag}`, { instanceColor: true, vCap: cap.stone[0] * K, iCap: cap.stone[1] * K }),
+      cards: strip(this.mats.card, ['normal', 'uv', 'color'], `cards${tag}`, { castShadow: true, thin: true, vCap: 32 * K, iCap: 48 * K }),
+      parts: strip(this.amats.parts, ['normal', 'uv', 'color'], `parts${tag}`, { vCap: cap.parts[0] * K, iCap: cap.parts[1] * K }),
       // shadow casters only (the stone program, never drawn in the view)
-      shadow: strip(this.stoneMat, [], `shadow${tag}`, { shadowOnly: true, instanceColor: true, vCap: 1 << (15 + k), iCap: 1 << (16 + k) }),
+      shadow: strip(this.stoneMat, [], `shadow${tag}`, { shadowOnly: true, instanceColor: true, vCap: cap.shadow[0] * K, iCap: cap.shadow[1] * K }),
     });
-    this.strips = { near: set('', 2), far: set('Far', 0) };
+    this.strips = {
+      near: set('', { stone: [128, 256], parts: [224, 448], shadow: [64, 256] }),
+      far: set('Far', { stone: [192, 448], parts: [64, 96], shadow: [64, 256] }),
+    };
     Object.assign(this.strips.near, {
-      stains: strip(this.amats.stain, ['normal', 'uv'], 'stains', { vCap: 1 << 10, iCap: 1 << 11 }),
-      thin: strip(this.stoneMat, [], 'thinShadow', { shadowOnly: true, thin: true, instanceColor: true, vCap: 1 << 15, iCap: 1 << 16 }),
+      stains: strip(this.amats.stain, ['normal', 'uv'], 'stains', { vCap: K, iCap: 2 * K }),
+      thin: strip(this.stoneMat, [], 'thinShadow', { shadowOnly: true, thin: true, instanceColor: true, vCap: 112 * K, iCap: 512 * K }),
     });
     this.pools = new Map();
     this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root);
@@ -472,10 +483,10 @@ const ironwork = {
 
     // ---- slab (and its shadow caster)
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
-    const path = slabPath(u0, u1, D, rc);
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
-    writeSlab(ctx.stone, path, y, T, st.slabVariant, lod, dirt, D);
-    writeSlabShadow(ctx.shadow.setMatrix(F), path, y, T, st.slabVariant, lod);
+    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt, D);
+    // (rounded corners of two chords: inside the convex corner)
+    writeSlabShadow(ctx.shadow.setMatrix(F), slabPath(u0, u1, D, rc, 0.25, 2), y, T, st.slabVariant, lod);
 
     // ---- consoles, on the piers between the openings below
     if (st.corbel >= 0) {
@@ -733,7 +744,7 @@ const ironwork = {
     const ped = [path[0], path[path.length - 1]];
     if (rc <= 0.01) ped.push(path[1], path[2]);
     for (const P of ped) box(S, P[0], BALUSTRADE.PLINTH + hP / 2, P[1], 0.2, hP, 0.2, 0.85, 'ud');
-    writeBalustradeShadow(SW, path, ped);
+    writeBalustradeShadow(SW, rc > 0.01 ? slabPath(u0 + i, u1 - i, D - i, Math.max(0, rc - i * 0.5), 0.04, 2) : path, ped);
     // far: one darkened panel per run stands in for the row of balusters (at 200 m and
     // beyond they read as a mid-tone band anyway)
     if (lod) {

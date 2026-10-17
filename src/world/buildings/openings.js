@@ -24,7 +24,7 @@ export function openingMasonry(ctx, face, o) {
   const R = o.recess;
   const arched = o.top !== 'flat' && o.rise > 0.01;
   const ground = o.floor === 0;
-  const sRev = sinks.smooth;
+  const sRev = q.lod ? sinks.detail : sinks.smooth;   // far, the reveals' shadows are sub-texel
 
   // ---------------------------------------------------------------- reveals
   B.shade = (u, v, w, nu, nv, nw, out) => {
@@ -59,7 +59,7 @@ export function openingMasonry(ctx, face, o) {
 
   // ---------------------------------------------------------------- dressing
   // (run-off from the sill or balcony above streaks the dressing as it does the wall)
-  const sT = sinks.smooth;
+  const sT = sinks.detail;
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.05);
   B.run = fs.occluderAt(o.uc, yt);
   const isWin = o.kind === 'window' || o.kind === 'balconyDoor';

@@ -93,12 +93,15 @@ export function patchCanyon(m, mode = 'uv') {
  *                when lo < x < hi; f = 1 inside an interaction range (0 disables, so
  *                quads leaving a range never interpolate a stray cut);
  *   mode 'pave': (x1, lo, hi, x2): paving cut by either diverging rail's span.
- * The variant gets userData.stCut so BufSet allocates the attribute.
+ * The variant gets userData.stCut so BufSet allocates the attribute. With
+ * attribute = false the material gets the same program but no attribute: the default
+ * value (all zero) never cuts, so plain meshes share the program of the cut variant.
  */
-export function patchCut(m, mode) {
+export function patchCut(m, mode, attribute = true) {
   const prev = m.onBeforeCompile;
   const prevKey = m.customProgramCacheKey;
-  m.userData.stCut = mode;
+  if (attribute) m.userData.stCut = mode;
+  else m.defaultAttributeValues = { ...(m.defaultAttributeValues || {}), aStCut: [0, 0, 0, 0] };
   const test = mode === 'pave'
     ? 'if ( ( vStCut.x > vStCut.y && vStCut.x < vStCut.z ) || ( vStCut.w > vStCut.y && vStCut.w < vStCut.z ) ) discard;'
     : 'if ( vStCut.w > 0.999 && vStCut.x > vStCut.y && vStCut.x < vStCut.z ) discard;';

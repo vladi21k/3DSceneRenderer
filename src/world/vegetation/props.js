@@ -11,10 +11,13 @@ import { InstancePool } from './pool.js';
 //     leaf pool by vegetation.js).
 // Every prop is an instance in a BatchedMesh per material, created at init: a chunk build
 // only adds instances (no geometry is copied), and they follow the chunk's visibility
-// through the vegetation pools. Textures are painted on canvases at init.
+// through the vegetation pools. Textures are painted on canvases at init. Stakes and the
+// black rubber ties share one material (ties: dark instance colour), and the soil takes
+// the same program (white vertex colours), so the props add few shader programs.
 
 const UP = new THREE.Vector3(0, 1, 0);
 const STAKE_OFF = 0.18;     // stake axis from the stem axis (inside the 0.23 m grate opening)
+const RUBBER = new THREE.Color(0.035, 0.034, 0.033); // tie colour on the stake timber
 
 // ------------------------------------------------------------------ textures
 function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
@@ -71,7 +74,7 @@ function soilMaterial(rng) {
     ctx.fillRect(-rng.range(3, 8), -rng.range(1, 2.5), rng.range(6, 16), rng.range(2, 5));
     ctx.restore();
   }
-  return new THREE.MeshStandardMaterial({ name: 'vegetation.soil', map: tex(c, true, true), roughness: 0.95, metalness: 0 });
+  return new THREE.MeshStandardMaterial({ name: 'vegetation.soil', map: tex(c, true, true), roughness: 0.95, metalness: 0, vertexColors: true });
 }
 
 // ------------------------------------------------------------------ geometry
@@ -148,7 +151,7 @@ function planterGeometry(w, d, H) {
     return y < 0.12 ? 0.62 + 0.38 * (y / 0.12) : 1.0 - 0.06 * Math.max(0, (y - H + 0.1) / 0.1); // splash dirt, rim wear
   });
   const soilY = H - 0.065;
-  const soil = new THREE.PlaneGeometry(w - 2 * T + 0.01, d - 2 * T + 0.01);
+  const soil = withColor(new THREE.PlaneGeometry(w - 2 * T + 0.01, d - 2 * T + 0.01));
   soil.rotateX(-Math.PI / 2);
   soil.translate(0, soilY, 0);
   // metre UVs at 2x density for the 0.5 m soil tile
@@ -234,20 +237,18 @@ export function createProps(app, pools) {
     soil: M.register('vegetation.soil', soilMaterial(rng)),
     contact: M.register('vegetation.contact', decal),
     stone: M.get('stone.smooth', { vertexColors: true }),
-    rubber: M.get('rubber'),
   };
   // shared geometries
   const post = stakeGeometry(1.75, 0.032);
   const batten = withColor(new THREE.BoxGeometry(0.6, 0.065, 0.024));
-  const tie = new THREE.TorusGeometry(1, 0.12, 4, 14);
+  const tie = withColor(new THREE.TorusGeometry(1, 0.12, 4, 14));
   tie.rotateX(Math.PI / 2);
-  const strap = new THREE.BoxGeometry(1, 0.03, 0.004);
+  const strap = withColor(new THREE.BoxGeometry(1, 0.03, 0.004));
   const planters = [planterGeometry(1.5, 0.66, 0.48), planterGeometry(0.86, 0.86, 0.52)];
   const pool = (name, mat, geoms, cap, cast, shadowMaxTexel) => pools.addPool(new InstancePool(name, mat, null, geoms, cap, { castShadow: cast, receiveShadow: true, sort: false, shadowMaxTexel }));
   const P = {
     // 3 cm stakes: sub-texel (no shadow) in the coarse cascades
-    stake: pool('vegetation:stakes', mats.stake, [post, batten], 128, true, 0.05),
-    rubber: pool('vegetation:ties', mats.rubber, [tie, strap], 96, false),
+    stake: pool('vegetation:stakes', mats.stake, [post, batten, tie, strap], 224, true, 0.05),
     stone: pool('vegetation:planters', mats.stone, planters.map((p) => p.shell), 48, true),
     soil: pool('vegetation:soil', mats.soil, planters.map((p) => p.soil), 48, false),
     contact: pool('vegetation:contact', mats.contact, planters.map((p) => p.skirt), 48, false),
@@ -302,13 +303,13 @@ export function createProps(app, pools) {
           local(treeM, st.x, 1.45, st.z, _stemP);
           const rr = st.r * sxz + 0.008;
           _m.compose(_stemP, _q.identity(), _s.set(rr, 0.125, rr));
-          add(P.rubber, 0, _m, null);
+          add(P.stake, 2, _m, RUBBER);
           _tgt.copy(_mid).setY(_stemP.y);
           const len = _tgt.distanceTo(_stemP);
           if (len > 0.02) {
             _q.setFromUnitVectors(X1, _v.subVectors(_tgt, _stemP).normalize());
             _m.compose(_v.copy(_stemP).add(_tgt).multiplyScalar(0.5), _q, _s.set(len, 1, 1));
-            add(P.rubber, 1, _m, null);
+            add(P.stake, 3, _m, RUBBER);
           }
         },
         /** Planter box; returns where the shrub mound goes and its footprint scale. */

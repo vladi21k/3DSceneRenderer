@@ -182,11 +182,18 @@ function planSigns(ctx) {
     else byOpening.set(o.id, { mode: 'head', design });
   }
   // under a café awning the cassette takes the fascia band: wall signs there go (the
-  // café's name is on the valance); signs inside the arch heads stay
+  // café's name is on the valance). The sign panels in the arch heads become the café's:
+  // one colour, its name on the first only
   const aw = ctx.cafeAwning;
   if (aw) {
     for (let i = wall.length - 1; i >= 0; i--) if (aw.covers(wall[i].s.u0, wall[i].s.u1)) wall.splice(i, 1);
-    for (const [id, si] of byOpening) if (si.mode === 'valance') byOpening.delete(id);
+    let head = null;
+    for (const [id, si] of byOpening) {
+      if (si.mode === 'valance') { byOpening.delete(id); continue; }
+      si.noText = !!head;
+      head = head || { ...si.design, cell: aw.design.cell };
+      si.design = head;
+    }
   }
   return { byOpening, wall };
 }
@@ -313,7 +320,7 @@ function* buildShop(kit, ctx, o, signInfo, type) {
     const lumB = bc[0] * 0.3 + bc[1] * 0.6 + bc[2] * 0.1;
     const dsg = { ...design, type: 'letters', board: null, ink: lumB > 0.3 ? 0x1d1d1f : (design.cell % 3 ? 0xe9dfc4 : 0xd8b25a) };
     const mt = new THREE.Matrix4().copy(m).multiply(_r.makeTranslation(0, yc, -0.015 - 0.035 + 0.006));
-    addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015);
+    if (!signInfo.noText) addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015);
   }
   // awning
   if (hasAwning(ctx, o)) {
@@ -380,8 +387,8 @@ const CAFE_UNIT = 5.5;         // widest awning unit (one pair of folding arms)
 
 /**
  * Plan of the continuous retractable awning over a café terrace of the 'awning' style
- * (layout.cafes): along the front over the café's span s0..s1, interrupted only at the
- * building's entrance doors, in units of at most 5.5 m (one pair of folding arms each).
+ * (layout.cafes): along the front over the café's span s0..s1 (broken only around an
+ * entrance with a hood), in units of at most 5.5 m (one pair of folding arms each).
  * Every unit projects |dOut − dIn| over the tables, at most 4.2 m and less where a
  * street tree's crown is in the way. The cassette runs level just above the shop heads
  * and below the first-floor balcony consoles; each unit's front bar sits so that its
@@ -396,10 +403,10 @@ function planCafeAwning(ctx) {
   const sAt = (u) => cafe.s0 + ((u - uS0) / (uS1 - uS0 || 1)) * (cafe.s1 - cafe.s0);
   const u0 = Math.max(0.35, Math.min(uS0, uS1)), u1 = Math.min(plan.width - 0.35, Math.max(uS0, uS1));
   if (u1 - u0 < 2.5) return null;
-  // runs between the entrance doors
+  // runs between the entrance doors that wear a hood on consoles (buildings' masonry)
   let runs = [[u0, u1]];
   for (const o of plan.openings) {
-    if (o.floor !== 0 || o.kind !== 'door') continue;
+    if (o.floor !== 0 || o.kind !== 'door' || !(plan.relief && plan.relief.doorHood)) continue;
     const a = o.uc - o.w / 2 - 0.45, b = o.uc + o.w / 2 + 0.45;
     runs = runs.flatMap(([x0, x1]) => (b <= x0 || a >= x1 ? [[x0, x1]] : [[x0, a], [b, x1]]));
   }
@@ -516,14 +523,7 @@ function buildDoor(kit, ctx, o) {
   if (metal.grille) kit.get('metal').add(metal.grille, m, ...BLACK_IRON);
   const brass = L.color !== 'black' && r.chance(0.7);
   if (metal.handles) kit.get('hardware').add(metal.handles, m, ...(brass ? BRASS : BLACK_IRON));
-  // threshold step (the door sill stands above the paving)
-  const ground = plan.groundAt(o.uc) - o.y;
-  if (ground < -0.03) {
-    const st = new Tpl();
-    st.box(-o.w / 2 - 0.12, ground - 0.05, -0.05, o.w / 2 + 0.12, 0.0, o.recess + 0.3, 1 | 4 | 8 | 32, 0.85, 1);
-    const tint = plan.style.tint;
-    kit.get('stone').add(st.bake(), m, tint[0] * 0.92, tint[1] * 0.92, tint[2] * 0.92);
-  }
+  // (the threshold stone and any steps down to the paving are the buildings' masonry)
   if (ctx.q < 0.5) return;
   // number plaque, intercom and a wall lantern
   const side = r.chance(0.5) ? 1 : -1;
@@ -552,7 +552,9 @@ export function* buildFront(kit, ctx) {
   for (const o of plan.openings) {
     if (o.kind !== 'shop') continue;
     const si = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
-    shopTypes.set(o.id, si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
+    // the shopfronts under a café's awning are the café
+    const cafe = ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2, o.uc + o.w / 2);
+    shopTypes.set(o.id, cafe ? 'cafe' : si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
   }
   // a few facades (hotels, pensions) carry canvas hoods over the lower upper-floor windows
   const hr = RNG.from(plan.seed, 'hotel');

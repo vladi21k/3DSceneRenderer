@@ -18,13 +18,13 @@ import { LUX_PER_UNIT } from './atmosphere.js';
 const LAMP_CD = 1400;           // luminous intensity of one lantern towards the ground (cd)
 const LAMP_ANGLE = 0.95;        // half-angle of the lantern's light cone (rad)
 const LAMP_PENUMBRA = 0.4;
-const LAMP_DROP = 0.4;          // light source below the globe centre (m)
+const LAMP_DROP = 0.2;          // light source below the glass centre (m): just under the bowl (0.165 m)
 const HEAD_CD = 26000;          // two LED headlights combined (cd, beam centre)
 const QUERY = [-60, 170];       // metres along the route around the cab searched for standards
 const FADE = 22;                // width of the real-light fade (m of view-weighted distance)
 const FAR_MAX = 460;            // screen-space pools out to this distance
 export const FAR_LAMPS = 24;
-const FALLBACK_HEAD_H = 5.5;
+const FALLBACK_HEAD_H = 5.4;    // glass centre above the paving when the catenary module is absent
 
 const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
 const headColor = new THREE.Color(1.0, 0.93, 0.84);  // ~4800 K LED, linear

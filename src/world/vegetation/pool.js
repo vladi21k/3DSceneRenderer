@@ -16,6 +16,10 @@ import * as THREE from 'three';
 // geometry while both dissolve with complementary screen-space dither patterns (the
 // instance's batch colour alpha carries the fade, see vegMaterials.js).
 //
+// A pool can draw a depth pre-pass first (preMaterial): a twin BatchedMesh that shares
+// the pool's geometry and instance data (matrices, colours, visibility, culling) and is
+// drawn before everything else, so the real material only shades what is visible.
+//
 // Shadow passes build their own draw list per cascade (shadowList): an instance casts
 // only where its shadow can reach the cascade's slice of the view (the light's cascade
 // frustum decides, so stale cascades that are not redrawn this frame cost nothing), at
@@ -76,7 +80,7 @@ function cascadeOf(scene, cam) {
 }
 
 export class InstancePool {
-  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity } = {}) {
+  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity, preMaterial = null } = {}) {
     let vc = 0, ic = 0;
     for (const g of geometries) { vc += g.attributes.position.count; ic += g.index.count; }
     const mesh = new THREE.BatchedMesh(capacity, vc, ic, material);
@@ -87,6 +91,9 @@ export class InstancePool {
     mesh.frustumCulled = false;        // instances span the whole streamed street
     mesh.perObjectFrustumCulled = true;
     mesh.sortObjects = sort;
+    // colour texture from the start, so the programs compiled up front (empty pools) are
+    // the ones used later
+    if (mesh._initColorsTexture && !mesh._colorsTexture) mesh._initColorsTexture();
     this.mesh = mesh;
     this.shadowMaxTexel = shadowMaxTexel;
     this.lodGids = new Int32Array(capacity * 3).fill(-1); // per instance: geometry ids [L0, L1, L2] or -1
@@ -100,6 +107,35 @@ export class InstancePool {
       const info = mesh._geometryInfo && mesh._geometryInfo[id];
       if (info && info.boundingSphere) info.boundingSphere.radius += 0.3 + (g.userData.boundsPad || 0);
     });
+    if (preMaterial) {
+      const twin = new THREE.BatchedMesh(1, 3, 3, preMaterial);
+      twin.name = `${name}:pre`;
+      twin.frustumCulled = false;
+      twin.perObjectFrustumCulled = true;
+      twin.sortObjects = true;          // front to back: the most occlusion for the least work
+      twin.castShadow = false;
+      twin.receiveShadow = receiveShadow; // same vertex shader as the pool's (invariant depth)
+      twin.renderOrder = -1;
+      this.twin = twin;
+      this.linkTwin();
+    }
+  }
+
+  /** Point the pre-pass twin at the pool's current data (buffers are replaced on growth). */
+  linkTwin() {
+    const t = this.twin, m = this.mesh;
+    t.geometry = m.geometry;
+    t._matricesTexture = m._matricesTexture;
+    t._colorsTexture = m._colorsTexture;
+    t._indirectTexture = m._indirectTexture;
+    t._instanceInfo = m._instanceInfo;
+    t._availableInstanceIds = m._availableInstanceIds;
+    t._geometryInfo = m._geometryInfo;
+    t._geometryCount = m._geometryCount;
+    t._maxInstanceCount = m._maxInstanceCount;
+    t._multiDrawStarts = m._multiDrawStarts;
+    t._multiDrawCounts = m._multiDrawCounts;
+    t.visible = m.visible;
   }
 
   /** New hidden instance; color: THREE.Color (alpha reset to 1 = no fade). lods: the
@@ -209,6 +245,10 @@ export class VegetationPools {
     const self = this, mesh = pool.mesh, scene = this.app.scene;
     const proto = THREE.BatchedMesh.prototype;
     mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
+    if (pool.twin) {
+      this.root.add(pool.twin);
+      pool.twin.onBeforeRender = function (...args) { self.sync(); pool.linkTwin(); return proto.onBeforeRender.apply(this, args); };
+    }
     mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); pool.shadowList(scene, shadowCamera); };
     // whole-pool test: the light's cascade frustum skips cascades it does not redraw this
     // frame, as do cascades coarser than the pool's limit; any other frustum (the view)

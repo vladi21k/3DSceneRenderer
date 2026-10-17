@@ -34,6 +34,9 @@ import { U } from '../../core/uniforms.js';
 // LOD cross-fade: the batch colour alpha of an instance is 1 when shown, in (0, 1) while
 // fading in and in (1, 2) while fading out; fragments are dithered on screen accordingly
 // (complementary patterns, so a tree never shows both or neither).
+// Depth pre-pass: the crowns are drawn twice, first by leafPre (same vertex shader with an
+// invariant position, coverage only, no colour), then by leaf with depth writes off, so the
+// expensive leaf lighting runs once per visible sample instead of once per layer of cards.
 //
 // Vertex data: see treeGen.js (aVeg, aCrown, aCard; bark: aBark).
 
@@ -41,6 +44,7 @@ const LIGHT_CAP = 8.0;
 const LAMP_CAP = 18.0;
 
 const WIND_PARS = /* glsl */`
+invariant gl_Position;
 uniform float uTime;
 uniform vec2 uWind;
 uniform float uWindStrength;
@@ -227,6 +231,11 @@ function patchLeaf(mat, params) {
         diffuseColor.rgb *= vColor.rgb;
       #endif
       if ( vegFadeHidden( false ) ) discard;
+      #ifdef VEG_PREPASS
+        // depth pre-pass: coverage (alpha-to-coverage) and depth only
+        gl_FragColor = vec4( 0.0, 0.0, 0.0, diffuseColor.a );
+        return;
+      #endif
       // seen from the side the card faces away from: the paler, bluish-grey underside
       bool vegUnder = dot( vVegGN, vViewPosition ) < 0.0;
       if ( vegUnder ) {
@@ -251,6 +260,9 @@ function patchLeaf(mat, params) {
       roughnessFactor = mix( 0.72, 0.42, vegGloss );`, 'leaf normal maps');
     fs = rep(fs, '#include <lights_physical_pars_fragment>', /* glsl */`#include <lights_physical_pars_fragment>
       void RE_Direct_Leaf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
+        // the street keeps a fixed set of lamp lights (dark by day, out of range for most
+        // leaves at night): unlit ones cost nothing
+        if ( ! directLight.visible ) return;
         // the sun reaches inner leaves through the rest of the crown; lamps are local
         vec3 sunV = normalize( ( viewMatrix * vec4( uSunDirV, 0.0 ) ).xyz );
         bool isSun = dot( directLight.direction, sunV ) > 0.999;
@@ -417,31 +429,46 @@ export function createVegMaterials(app, atlas) {
     // light, diffuse of a lamp (see header)
     cap: { value: new THREE.Vector2(LIGHT_CAP, LAMP_CAP) },
   };
-  const leaf = new THREE.MeshStandardMaterial({
-    name: 'vegetation.leaf',
-    map: atlas.map,
-    normalMap: atlas.normalMap,
-    normalScale: new THREE.Vector2(0.85, 0.85),
-    side: THREE.DoubleSide,
-    alphaTest: 0,          // coverage is computed in the patched map chunk (see above)
-    alphaToCoverage: true,
-    roughness: 0.6,
-    metalness: 0,
-    vertexColors: true,
-    envMapIntensity: 0.75,
-  });
-  leaf.defines = { VEG_LEAF: '' };
+  const makeLeaf = (name, defines) => {
+    const m = new THREE.MeshStandardMaterial({
+      name,
+      map: atlas.map,
+      normalMap: atlas.normalMap,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      side: THREE.DoubleSide,
+      alphaTest: 0,          // coverage is computed in the patched map chunk (see above)
+      alphaToCoverage: true,
+      roughness: 0.6,
+      metalness: 0,
+      vertexColors: true,
+      envMapIntensity: 0.75,
+    });
+    m.defines = { VEG_LEAF: '', ...defines };
+    patchLeaf(m, params);
+    return m;
+  };
   const dbg = app.params.num('vegdbg', 0);
-  if (dbg) leaf.defines.VEG_DEBUG = dbg | 0;
-  patchLeaf(leaf, params);
+  const leaf = makeLeaf('vegetation.leaf', dbg ? { VEG_DEBUG: dbg | 0 } : {});
+  // after the pre-pass: shade the samples it left, no depth writes (early depth test)
+  leaf.depthWrite = false;
   M.register('vegetation.leaf', leaf);
+  const leafPre = makeLeaf('vegetation.leafPre', { VEG_PREPASS: '' });
+  leafPre.colorWrite = false;
+  M.register('vegetation.leafPre', leafPre);
 
   const bark = M.get('bark', { vertexColors: true });
   patchBark(bark, params);
 
+  const leafDepth = makeDepth(true, params, atlas.map);
   return {
-    leaf, bark, params,
-    leafDepth: makeDepth(true, params, atlas.map),
+    leaf, leafPre, bark, params, leafDepth,
     barkDepth: makeDepth(false, params, null),
+    /** Swap in the painted atlas (the stand-ins are disposed). */
+    setAtlas(a) {
+      const old = [leaf.map, leaf.normalMap];
+      for (const m of [leaf, leafPre]) { m.map = a.map; m.normalMap = a.normalMap; }
+      leafDepth.map = a.map;
+      for (const t of old) if (t && t !== a.map && t !== a.normalMap) t.dispose();
+    },
   };
 }

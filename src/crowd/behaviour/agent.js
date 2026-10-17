@@ -103,17 +103,22 @@ export class Agent {
     this.mob = 0;             // MOB role
     this.propSeed = 0;        // stroller / bicycle model and colour (renderer)
     this.lean = 0;            // rider lean (rad, + leans left), from the turn rate
-    this.fp0s = 0; this.fp0d = 0; this.fp1s = 0; this.fp1d = 0; this.fpR = 0; // prop capsule (route s / d)
+    this.fp0s = 0; this.fp0d = 0; this.fp1s = 0; this.fp1d = 0; this.fpR = 0; // prop capsule (metric offsets from the body)
     this.extLo = 0; this.extHi = 0; // how far the prop reaches past the body circle towards −d / +d
     this.extS = 0;            // ... and along s (either way)
     this.bikeV = 0;           // riding speed along the bicycle (m/s)
     this.yawW = 0;            // bicycle turn rate relative to the route frame (rad/s)
-    this.cOff = 0;            // cyclist: lateral passing offset (signed d) around slower people
-    this.cT = 0;              // cyclist: target d of this frame
+    this.cT = 0;              // cyclist: line (signed d) chosen last frame (passing offsets are kept steady)
     this.slowT = 0;           // cyclist: seconds spent held to walking pace (dismounts after a while)
+    this.stallT = 0;          // cyclist: seconds stopped dead (wedged)
     this.mountT = 0;          // walking a bicycle: earliest time to get back on
     this.mvS0 = 0; this.mvS1 = 0; this.mvD0 = 0; this.mvD1 = 0; this.mvOn = false; // cyclist lane change (ramp along s)
     this.mvBand = false;      // ... crossing the ride track's band
+    this.mvToBand = false;    // ... into a line inside the band (the ride track's half, tram far)
+    this.mvBIn = 0; this.mvBOut = 0; // ... where the ramp enters / leaves the band (s)
+    this.mvLane = null; this.mvOld = null; // ... the lane it leads to / came from
+    this.nearT = 0;           // cyclist: the tram counts as near until this time (latched)
+    this.clearHi = false; this.clearSpare = 0; // side and margin chosen when clearing the band
     this.prevHead = 0;        // world heading at the last output (lean)
     this.headValid = false;
   }

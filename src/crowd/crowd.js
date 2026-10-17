@@ -23,10 +23,14 @@ import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT } from './be
 //
 // Strollers and bicycles (Mobility extension): a person pushing a stroller is pose 3 /
 // prop 1, a cyclist pose 4 / prop 2, someone walking a bicycle pose 5 / prop 2; propSeed
-// picks the model and colour, and `lean` (rad, + leans left, like three.js rotations) is the
-// bicycle's lean from its turn rate, `steer` the handlebar angle (rad, + to the left). If the renderer cannot show a pose (no app.humans.supportsPose /
-// cycleLength yet) those roles are not used and everyone walks; crowd_mob=force keeps them
-// anyway (for testing the behaviour), crowd_mob=0 turns them off.
+// picks the model and colour, `lean` (rad, + leans left, like three.js rotations) is the
+// bicycle's lean from its turn rate and `steer` the handlebar angle (rad, + to the left);
+// `speed` is the riding speed and `phase` the crank turn (0..1 per revolution) for a
+// cyclist. A walked bicycle is held on the person's right. If the renderer cannot show a pose
+// (no app.humans.supportsPose(p) / cycleLength yet) those roles are not used and everyone
+// walks. Testing: crowd_mob=force keeps the roles anyway, crowd_mob=0 turns them off,
+// crowd_mobx=<k> multiplies their shares, crowd_dbg=1 outlines the footprints, crowdCheck=1
+// adds the independent swept-volume / obstacle / facade checks (props included).
 
 const PI = Math.PI;
 const _v = new THREE.Vector3();
@@ -69,7 +73,8 @@ class CrowdSim {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
     const col = new Float32Array(MAXN * SEG * 2 * 3);
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3).setUsage(THREE.DynamicDrawUsage));
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true });
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true, fog: false });
+    if (app.materials && app.materials.track) app.materials.track(mat);
     const lines = new THREE.LineSegments(geo, mat);
     lines.frustumCulled = false; lines.renderOrder = 999;
     app.scene.add(lines);

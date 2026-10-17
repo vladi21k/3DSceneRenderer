@@ -1,5 +1,5 @@
 // Shared helpers for the facade infill builders: colour palettes, polygon utilities and
-// the per-chunk "kit" (one Batch per material).
+// the per-chunk "kit" (one Batch per material, small parts folded into fewer batches).
 import { Batch, lin } from './geo.js';
 
 export const PAINT = {
@@ -53,8 +53,8 @@ export function spanAtY(pts, y) {
   return lo <= hi ? [lo, hi] : null;
 }
 
-// Batch sizes seen so far per (material key, lod): new batches start that large, so their
-// buffers rarely have to grow (and copy) while a chunk is assembled.
+// Typical batch sizes per (material key, lod), a running mean: new batches start a little
+// larger, so their buffers rarely have to grow (and copy) while a chunk is assembled.
 const hints = new Map();
 
 /**
@@ -92,8 +92,8 @@ export class Kit {
     for (const key in this.b) {
       const def = this.mats[key], batch = this.b[key];
       const hk = `${key}:${this.lod}`, h = hints.get(hk);
-      const verts = Math.max(batch.count, h ? h.verts * 0.97 : 0), idx = Math.max(batch.I.n, h ? h.idx * 0.97 : 0);
-      hints.set(hk, { verts, idx });
+      if (!h) hints.set(hk, { verts: batch.count, idx: batch.I.n });
+      else { h.verts += (batch.count - h.verts) * 0.25; h.idx += (batch.I.n - h.idx) * 0.25; }
       const m = batch.mesh(`${name}:${key}`, { castShadow: def.castShadow !== false && this.lod === 0, receiveShadow: def.receiveShadow !== false });
       if (!m) continue;
       if (def.renderOrder) m.renderOrder = def.renderOrder;

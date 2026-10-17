@@ -255,10 +255,14 @@ export function ornament(plan, rng) {
  *   surround {w, p}       smooth window surround (w 0: plain reveals); jambs u0 − w..u0, u1..u1 + w
  *   doorSurround {w, p}   entrance door surround (w 0: none)
  *   sill {h, p, ext}      window sill below o.y (h tall), overhanging the jambs by ext
- *   ring {w, p, shopW, shopP}  arch ring stones above arched heads (keystones 3 cm prouder)
- *   head {h, p}           flat heads (lintel or flat arch) above o.y + o.h; hoods add 0.15
- *   rustic {h, joint, p}  rusticated ground floor: course height, V-joint depth, flush (p 0)
- *   pier {w, p}           pilasters centred on the bay boundaries above the first string course
+ *   ring {w, p, shopW, shopP}  arch ring stones above arched heads (keystones 3 cm prouder
+ *                         and 8 cm deeper)
+ *   head {h, hGround, p}  flat heads (lintel or flat arch) above o.y + o.h on the upper floors
+ *                         and on the ground floor; keystones 3 cm prouder, hoods 0.15 + p
+ *   rustic {h, joint, p, v1}  rusticated ground floor up to v1: course height, V-joint
+ *                         depth, flush (p 0)
+ *   pier {w, p}           pilasters centred on the bay boundaries above the first string
+ *                         course (base and capital up to 7 cm prouder)
  *   quoin {long, short, p}  corner blocks
  *   plinth {h, p}         base course above the paving
  *   groundP               the deepest relief on the ground floor (door hoods excepted)
@@ -277,8 +281,8 @@ function reliefOf(plan, orn) {
     doorSurround: door,
     sill: { h: orn.sillH, p: sp + orn.sillP, ext: (sw || 0.06) + 0.07 },
     ring: { w: sw ? sw * 1.3 : orn.ring, p: sw ? sp : 0.012, shopW: orn.shopRing, shopP: orn.shopRingP },
-    head: { h: plan.coursing ? Math.min(0.45, Math.max(0.26, plan.coursing.ch)) : 0.3, p: (sw ? sp : 0.012) + 0.004 },
-    rustic: st.rusticGround ? { h: orn.rustH, joint: orn.rustC, p: 0 } : null,
+    head: { h: Math.min(0.45, Math.max(0.26, plan.coursing.ch)), hGround: orn.shopHead === 'flatArch' ? 0.42 : 0.38, p: (sw ? sp : 0.02) + 0.004 },
+    rustic: st.rusticGround && plan.courses.length ? { h: orn.rustH, joint: orn.rustC, p: 0, v1: plan.courses[0].y } : null,
     pier: st.pilasters && plan.floors.length > 2 ? { w: orn.pilW, p: orn.pilP } : null,
     quoin,
     plinth,
@@ -493,7 +497,9 @@ function followSlope(plan) {
 // plan-like object with its own facade frame (same conventions as lot.frame: u to the
 // viewer's right, v up from the main floorRef, w out of the wall) so facade infill can
 // be generated for it exactly like a front: {isReturn, end, frame, width, floors, bays,
-// openings, balconies, courses, groundAt, ...}.
+// openings, balconies, courses, groundAt, relief, ...}. Its paving (groundAt) eases from
+// the main street's level at the corner into the level side street, as the street mesh
+// does, and its ground-floor sills follow it.
 function returnPlan(lot, plan, end, cut = 0) {
   const f = lot.frame;
   const rng = RNG.from(lot.seed, 'return', end);

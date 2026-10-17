@@ -18,14 +18,18 @@ import { createSpillMaterial } from './facades/spill.js';
 //
 // Geometry is assembled per chunk into one buffer per material (facades/geo.js) from
 // per-opening templates cached by size and style (shopfronts and doors share one or two
-// designs per building): about 11 draw calls for a near chunk and 4–5 for a far one, where
-// doors, shutters, ironwork, stone and plain sign boards fold into the frame batch. Far
-// chunks (lod 1) use flat glass 2.5–3 cm proud of the infill plane with a depth-offset
-// material, procedural casings, and no small fittings. Café terraces of the 'awning' style
-// get one continuous retractable awning along the shop front. At dusk lit rooms also
-// light their stone reveals (facades/spill.js; near chunks only, not drawn by day).
-// Chunk builds are generators: prefetched a slice per frame ahead of the streamer
-// (update), or finished synchronously in build() when the prefetch missed.
+// designs per building): about 11 draw calls for a near chunk (plain sign boards join the
+// painted shutters) and 4–5 for a far one (lod 1), where doors, shutters, ironwork and
+// stone fold into the frame batch too. Far chunks use flat glass 2.5–3 cm proud of the
+// infill plane with a depth-offset material, procedural casings, and no small fittings;
+// so do the backdrops and deep side-street lots. Café terraces of the 'awning' style get
+// one continuous retractable awning along the shop front. At dusk lit rooms also light
+// their stone reveals (facades/spill.js; near chunks only, not drawn by day). Chunk
+// builds are generators: prefetched a slice per frame ahead of the streamer (update,
+// world.upcoming()), or finished synchronously in build() when the prefetch missed.
+
+// side-street lots starting this far from the main street get the far-range infill
+const SIDE_FAR = 40;
 
 // albedo of the library bakes relative to the paint of the frame batch (fold-in colours)
 const PAINT_ALB = 0.95;
@@ -40,6 +44,7 @@ const facades = {
   name: 'facades',
 
   async init(app) {
+    const t0 = performance.now();
     const M = app.materials;
     const white = new THREE.Color(1, 1, 1);
     const vc = (name) => M.get(name, { vertexColors: true, color: white });
@@ -76,10 +81,14 @@ const facades = {
     };
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
     this.handed = new Set();        // builds handed to the streamer, until it stops listing them
-    this.stats = { sync: 0, syncMs: 0, lastSync: null, prefetched: 0, prefetchMaxMs: 0 };
+    this.stats = { sync: 0, syncMs: 0, lastSync: null, prefetched: 0, prefetchMaxMs: 0, warmBuildMs: 0 };
     this.prefetchMs = 0.8;          // per-frame budget for prefetching
+    this.idle = 0;                  // frames to wait before looking for work again
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
+    const t1 = performance.now();
     await this.warmStart(app);
+    // (warm includes the other start-up tasks that run while it yields)
+    this.stats.initMs = { setup: Math.round(t1 - t0), warm: Math.round(performance.now() - t1) };
   },
 
   /**
@@ -88,6 +97,7 @@ const facades = {
    */
   async warmStart(app) {
     const n = app.layout.nChunks, L = app.route.length;
+    let yielded = performance.now();
     const around = [app.startS];
     if (app.params.view) around.push(app.params.view[0]);
     for (const s0 of around) {
@@ -98,9 +108,12 @@ const facades = {
         const key = `${idx}:${lod}`;
         if (this.jobs.has(key)) continue;
         const job = { it: this.buildGen({ index: idx, lod, s0: idx * CHUNK_LEN, s1: Math.min(L, idx * CHUNK_LEN + CHUNK_LEN) }, app) };
+        const tb = performance.now();
         try { this._pump(job, Infinity); } catch (e) { console.warn('[facades] warm start failed for chunk', idx, e); continue; }
+        this.stats.warmBuildMs += performance.now() - tb;
         this.jobs.set(key, job);
-        await new Promise((r) => setTimeout(r, 0));
+        // let the loading screen breathe now and then
+        if (performance.now() - yielded > 40) { await new Promise((r) => setTimeout(r, 0)); yielded = performance.now(); }
       }
     }
   },
@@ -119,9 +132,10 @@ const facades = {
     const kit = new Kit(this.mats, chunk.lod);
     for (const lot of lots) {
       const plan = facadePlan(lot);
-      // backdrops close the far end of a side street (30 m and more from the tram): they
-      // take the far-range infill whatever the chunk
-      const q = chunk.lod === 0 && !lot.backdrop ? 1 : 0.4;
+      // backdrops close the far end of a side street and the deeper side-street lots are
+      // only ever seen at grazing angles, 40 m and more from the tram: they take the
+      // far-range infill whatever the chunk
+      const q = chunk.lod === 0 && !lot.backdrop && !(lot.sideStreet && lot.x0 >= SIDE_FAR) ? 1 : 0.4;
       const assets = this.assets[q === 1 ? 0 : 1];
       const streetW = lot.sideStreet ? lot.cross.width : 2 * Math.abs(lot.d);
       const cafe = !lot.sideStreet && lot.cafe != null ? layout.cafes[lot.cafe] : null;
@@ -174,6 +188,8 @@ const facades = {
   prefetch(app) {
     const W = app.world;
     if (app.cameraS == null || !W || !W.upcoming) return;
+    // nothing was due last time: look again a few frames later
+    if (this.idle > 0) { this.idle--; return; }
     const t0 = performance.now(), until = t0 + this.prefetchMs;
     const cands = [], seen = new Set();
     // what the streamer will build now, and what it will want ~50 m further on
@@ -186,6 +202,7 @@ const facades = {
     }
     for (const k of this.handed) if (!seen.has(k)) this.handed.delete(k);
     cands.sort((a, b) => a.dist - b.dist);
+    this.idle = cands.length ? 0 : 5;
     const keep = new Set(cands.map((c) => c.key));
     // drop prefetched results that are no longer wanted
     for (const [k, j] of this.jobs) {

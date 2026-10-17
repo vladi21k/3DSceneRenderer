@@ -85,6 +85,9 @@ const furniture = {
       return best * 1.3 + 32;
     });
     lap('sizing', t);
+    // every batch stays drawn until the programs have been compiled up front (the compile
+    // pass skips hidden objects); from then on empty batches are skipped
+    app.events.on('ready', () => { this.batches.hideEmpty = true; this.batches._showBatches(); });
     this.initMs = performance.now() - t0;
   },
 

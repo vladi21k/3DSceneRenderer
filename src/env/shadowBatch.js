@@ -43,6 +43,7 @@ export class ShadowBatcher {
     this.frame = 0;
     this._mcursor = 0;
     this.stats = { proxies: 0, sources: 0, built: 0, dropped: 0 };
+    this._warmup();
   }
 
   /** True when an active proxy draws this mesh's shadow. */
@@ -82,9 +83,10 @@ export class ShadowBatcher {
   }
 
   /**
-   * The proxies draw with the plain depth program in each shadow side, variants the
-   * originals may not use: one empty stand-in per side joins the shadow pass's start-up
-   * warm-up (every caster in every cascade), so they compile then, not mid-ride.
+   * The proxies are plain meshes drawn with the renderer's depth material in each shadow
+   * side, combinations the originals may not use. An empty stand-in per side carries
+   * those programs from env init through the start-up compile (with the rest of the
+   * scene, in parallel) and the shadow pass's warm-up draw, so none compiles mid-ride.
    */
   _warmup() {
     const sh = this.shadow;
@@ -99,10 +101,10 @@ export class ShadowBatcher {
         this.root.add(m);
         return m;
       });
-    } else if (this._warm && !(sh && sh.warmup)) {
+    } else if (this._warm && this._warm.length && !(sh && sh.warmup)) {
       for (const m of this._warm) this.root.remove(m);
       this._warm[0].geometry.dispose();
-      this._warm = [];
+      this._warm.length = 0;
     }
   }
 

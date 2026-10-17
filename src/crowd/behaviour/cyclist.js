@@ -147,6 +147,9 @@ export function rideTarget(c, a, T) {
   // held to walking pace for a while: get off and walk (if the figures can show it)
   if (vT < 1.3 && !a.clearing) a.slowT += dt; else a.slowT = Math.max(0, a.slowT - 2 * dt);
   if (a.slowT > 1.8 && !(a.crossOK > c.time) && !a.mvOn) dismount(c, a);
+  // wedged (a pole, a crowd) next to the ride track with the tram coming: off, and walk it out
+  if (a.bikeV < 0.3 && T.v < 0.5) a.stallT = (a.stallT || 0) + dt; else a.stallT = 0;
+  if (a.stallT > 1.2 && footBandGap(a) < 0.8 && rideNear(c, a)) dismount(c, a, true);
 }
 
 /** Into / out of a side street: ride towards a point. */
@@ -557,18 +560,19 @@ export function propClear(c, a, margin = 0.08) {
 }
 
 /** Get off and walk the bicycle (a crowd, a narrow stretch). Needs the walking-a-bicycle pose. */
-export function dismount(c, a) {
+export function dismount(c, a, stuck = false) {
   if (!c.mobOK(MOB.WALKBIKE) || a.state !== ST.WALK) return false;
-  // not among the poles and trees, nor in the ride track's band
-  const ad = Math.abs(a.d);
-  if (ad > TRACK_ZONE_HALF - 0.3 && ad < c.map.bandInAt(a.s, a.d >= 0 ? 1 : -1) + 0.2) return false;
-  if (footBandGap(a) < 0.8) return false;
+  // not among the poles and trees, nor in the ride track's band (unless wedged there)
+  const ad = Math.abs(a.d), gap0 = footBandGap(a);
+  if (!stuck && ad > TRACK_ZONE_HALF - 0.3 && ad < c.map.bandInAt(a.s, a.d >= 0 ? 1 : -1) + 0.2) return false;
+  if (!stuck && gap0 < 0.8) return false;
   const r = c.rng;
   const prev = a.alpha;
   a.mob = MOB.WALKBIKE;
   updateFoot(a);
   // the bicycle moves to the person's side: not into the tram's band, a pole, a bench or a facade
-  if ((footInBand(a) && c.tram.near(a)) || !propClear(c, a)) { a.mob = MOB.CYCLE; a.alpha = prev; updateFoot(a); a.slowT = 1.0; return false; }
+  const bad = stuck ? footBandGap(a) < Math.min(gap0, 0.8) : (footInBand(a) && c.tram.near(a)) || !propClear(c, a);
+  if (bad) { a.mob = MOB.CYCLE; a.alpha = prev; updateFoot(a); a.slowT = 1.0; return false; }
   a.state = ST.WALK; a.task = TASK.NONE; a.mvOn = false; a.slowT = 0;
   a.v0 = r.range(WALKBIKE_V[0], WALKBIKE_V[1]);
   a.mountT = c.time + r.range(6, 16);

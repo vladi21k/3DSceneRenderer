@@ -10,7 +10,7 @@ import { HumansTest } from './humans/test.js';
 // Human figures: rendering + animation (crowd behaviour lives in crowd.js).
 // Contract (docs/ARCHITECTURE.md):
 //   alloc(count) -> first slot index; set(i, {x,y,z,heading,speed,phase,pose,look,appearance,visible});
-//   setVisible(i, false); strideLength(appearance, speed); heightOf(appearance)
+//   setVisible(i, false); strideLength(appearance, speed, pose); cycleLength(appearance); heightOf(appearance)
 //
 // Figures are SDF-sculpted bodies (tools/blender/humans_build.py) with LODs, drawn with
 // one instanced draw per base body (man / woman / child / young child) and LOD (the nearest LODs one
@@ -119,8 +119,25 @@ const humans = {
     }
     this.blobs = new BlobShadows(app, this.capacity);
     this.group.add(this.blobs.mesh);
+    this._precompile(app);
     this.ready = true;
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
+  },
+
+  /** Build every body's shader programs now, so the first child or woman to walk into view
+   *  does not stall a frame while its program compiles. */
+  _precompile(app) {
+    const shown = [];
+    try {
+      for (const B of Object.values(this.bases)) {
+        const m = B.draws[0] && B.draws[0].mesh;
+        if (m) { m.visible = true; shown.push(m); }
+      }
+      app.renderer.compile(this.group, app.camera, app.scene);
+    } catch (e) {
+      console.warn('[humans] shader warm-up skipped', e);
+    }
+    for (const m of shown) m.visible = false;
   },
 
   _addDraw(B, g, mat, depth, tag) {
@@ -171,8 +188,20 @@ const humans = {
 
   heightOf(appearance) { return this.appearanceOf(appearance).height; },
 
-  /** Distance covered per gait cycle (two steps) at `speed` m/s, so phase advances without foot slide. */
-  strideLength(appearance, speed) {
+  /** Metres travelled per crank revolution when riding (gear development by body size). */
+  cycleLength(appearance) {
+    const a = this.appearanceOf(appearance);
+    return a.body === 'kid' ? 2.6 : a.body === 'child' ? 3.8 : 5.2;
+  },
+
+  /** Distance covered per gait cycle (two steps) at `speed` m/s, so phase advances without foot slide.
+   *  (pose 4, riding: per crank turn; the walking poses share the walk clips' strides) */
+  strideLength(appearance, speed, pose = 0) {
+    if (pose === 4) return this.cycleLength(appearance);
+    return this._stride(appearance, speed);
+  },
+
+  _stride(appearance, speed) {
     const a = this.appearanceOf(appearance);
     const B = this.bases && this.bases[a.body];
     if (!B) return 1.48 * (0.55 + 0.32 * speed);
@@ -411,7 +440,7 @@ const humans = {
     // the mid spine, the neck and head take most of it back so the gaze stays level
     if (a.stoop > 0.005) {
       pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
-      pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, a.stoop * 0.75);
+      pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, a.stoop * 0.65);
     }
     // head turn: the neck takes a third, the head the rest, both about their own joints
     const look = Math.max(-1.25, Math.min(1.25, s.look || 0));

@@ -28,8 +28,9 @@ import { U } from '../../core/uniforms.js';
 //
 // Cost: once a pixel covers more than ~6–11 cm of the glass (a window under ~15 px wide)
 // the furniture, its contact shadows, the merchandise patterns, lamp shades, pendants and
-// the per-pane waviness are skipped; furniture fades into the surface behind it on the
-// way there, so nothing pops. Lamp light scales with the global night emissive gain.
+// the old-glass waviness are skipped; each fades out over that range, so nothing pops
+// (furniture into the surface behind it). Lamp light scales with the global night
+// emissive gain (materials.uniforms.emissiveGain).
 //
 // Per-vertex attributes (all in the facade frame of the lot, metres):
 //   aRoomP  (x, y, z, halfWinW)   ray origin in room space (x from the left wall, y up from
@@ -545,8 +546,9 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   vec3 nn = h.n;
   float fp = fFoot( h.t, rd, nn );
 
-  // ---- merchandise patterns on room walls and fittings
+  // ---- merchandise patterns on room walls and fittings (faded out with the detail)
   if ( shop && h.glow == 0.0 && h.id < 1.5 && gDet > 0.0 ) {
+    vec3 alb0 = h.alb;
     bool vert = abs( nn.y ) < 0.5;
     float along = abs( nn.x ) > 0.5 ? p.z : p.x;
     if ( vert ) {
@@ -603,6 +605,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
         h.alb = mix( h.alb, mix( vec3( 0.36, 0.30, 0.26 ), GOODS[ int( g * 7.99 ) ] * 0.6, keep ), mix( 0.45, step( 0.45, g ) * 0.8, keep ) );
       }
     }
+    h.alb = mix( alb0, h.alb, gDet ); h.glow *= gDet;
   }
 
   // ---- lighting in room space
@@ -658,7 +661,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float tl = fShade( ro, rd, lp, r, lp.y - 0.13, lp.y + 0.07, inner );
     if ( tl > 0.0 && tl < h.t ) {
       vec3 shadeDay = vec3( 0.62, 0.56, 0.46 ) * Eday * ( 0.06 + 0.05 * inner ) * RECIPROCAL_PI;
-      col = shadeDay + lampC * lit * 0.024 * ( inner > 0.5 ? 6.0 : 1.2 );
+      col = mix( col, shadeDay + lampC * lit * 0.024 * ( inner > 0.5 ? 6.0 : 1.2 ), gDet );
     }
   }
   // cafe pendants
@@ -667,7 +670,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       vec3 lq = vec3( S.x * ( 0.25 + 0.25 * float( i ) ), S.y - 0.9, 1.6 + float( i ) * 0.4 );
       float tl = dot( lq - ro, rd );
       float fpl = gPA * ( gTC + tl );
-      if ( tl > 0.0 && tl < h.t ) col += lampC * fEdge( 0.09 - length( ro + rd * tl - lq ), fpl ) * glowK * 12.0;
+      if ( tl > 0.0 && tl < h.t ) col += lampC * fEdge( 0.09 - length( ro + rd * tl - lq ), fpl ) * glowK * 12.0 * gDet;
     }
   }
 
@@ -856,12 +859,14 @@ vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + t
 // per-pane tilt and old-glass waviness, applied to the shading normal
 const FRAG_NORMAL = /* glsl */`
 #include <normal_fragment_maps>
-if ( gDet > 0.0 ) {
+{
   float leaf = step( vRoomS.x * 0.5, vRoomP.x ) + step( vFac.w - 0.02, vRoomP.y ) * 2.0;
   vec3 j = ( fh3( vWin.x * 61.0 + leaf * 7.0 ) - 0.5 ) * 0.022;
-  float wav = vnoise( vec2( vRoomP.x * 3.0, vRoomP.y * 9.0 ) + vWin.x * 50.0 ) - 0.5;
-  j.x += wav * 0.006;
-  j.y += ( vnoise( vec2( vRoomP.y * 4.0, vRoomP.x * 2.0 ) + 9.0 ) - 0.5 ) * 0.004;
+  if ( gDet > 0.0 ) {
+    // old-glass waviness (sub-pixel once the window is small)
+    j.x += ( vnoise( vec2( vRoomP.x * 3.0, vRoomP.y * 9.0 ) + vWin.x * 50.0 ) - 0.5 ) * 0.006 * gDet;
+    j.y += ( vnoise( vec2( vRoomP.y * 4.0, vRoomP.x * 2.0 ) + 9.0 ) - 0.5 ) * 0.004 * gDet;
+  }
   vec3 jv = ( viewMatrix * vec4( j.x, j.y, j.z, 0.0 ) ).xyz;
   normal = normalize( normal + jv * ( 1.0 - step( 3.5, mod( vWin.w, 8.0 ) ) ) );
 }

@@ -54,7 +54,7 @@ const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0);
 // knee flexion (bounce), trunk lean (deg), swing circumduction (m)
 const GAIT = {
   male: { stepW: 0.060, yaw: 4.2, roll: 3.0, sway: 0.016, thorax: 1.55, arm: 1.0, abd: 10, elbow: 13, wr: 1.0, bounce: 1.0, lean: 2.5, circ: 0.012 },
-  female: { stepW: 0.034, yaw: 6.5, roll: 4.8, sway: 0.021, thorax: 0.75, arm: 1.05, abd: 6.5, elbow: 18, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.022 },
+  female: { stepW: 0.042, yaw: 6.5, roll: 4.8, sway: 0.021, thorax: 0.75, arm: 1.05, abd: 6.5, elbow: 18, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.022 },
   child: { stepW: 0.052, yaw: 5.0, roll: 3.6, sway: 0.016, thorax: 1.1, arm: 1.15, abd: 10, elbow: 16, wr: 1.0, bounce: 1.6, lean: 2.5, circ: 0.014 },
   kid: { stepW: 0.060, yaw: 5.5, roll: 4.0, sway: 0.020, thorax: 1.0, arm: 1.2, abd: 13, elbow: 20, wr: 0.96, bounce: 2.2, lean: 3.0, circ: 0.016 },
 };
@@ -440,8 +440,9 @@ export class Rig {
       const br = 0.004 * Math.sin(2 * Math.PI * t * 5);
       P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.74, shY - 0.235 * k + br, zf - 0.030 * k),
         pole: new THREE.Vector3(1, -0.3, 0.5), palm: new THREE.Vector3(0.6, -0.2, 1), flex: 85 };
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.170 * k + br, zf + 0.004 * k),
-        pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(-0.5, -0.1, 0.85), flex: 30 };
+      // (the left forearm lies behind and a little above it, its hand tucked round the right arm)
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.200 * k + br, zf - 0.006 * k),
+        pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(-0.6, -0.2, 1), flex: 80 };
     } else if (variant === 3) {
       // hands in the front pockets: wrists at the pocket openings, elbows out a little (the
       // shader tucks the hands themselves inside the trousers)
@@ -472,11 +473,19 @@ export class Rig {
     P.neckQ = qEuler(-recline * 0.4 + (variant === 2 ? -6 : 0), look * 0.4, 0);
     P.headQ = qEuler(-recline * 0.5 + (variant === 2 ? -12 : 1), look * 0.6, 0);
     const thighZ = -this.l1 * 0.97;
+    // short legs (children on an adult chair) cannot reach the ground: the shins hang from the
+    // knees and the feet dangle
+    const kneeY = hipY - 0.02 * (this.H / 1.76);
+    const dangle = kneeY - this.l2 * 0.98 > this.ankleY + 0.005;
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
       const L = P.leg[s];
       const an = new THREE.Vector3(sg * (0.10 * this.H / 1.76 + 0.02), this.ankleY, thighZ + 0.06 + 0.05 + 0.05);
-      if (variant === 1 && s === 'R') {
+      if (dangle) {
+        const swing = 0.04 * Math.sin(2 * Math.PI * t * 3 + (s === 'L' ? 0 : 2.1));
+        an.set(sg * (0.085 * this.H / 1.76 + 0.012), kneeY - this.l2 * 0.96, thighZ + 0.02 + swing * this.l2);
+      }
+      if (variant === 1 && s === 'R' && !dangle) {
         // right leg crossed over the left knee
         an.set(-0.02, hipY + 0.06, thighZ - 0.12);
         L.pole = new THREE.Vector3(0.3, 0.7, -0.6).normalize();

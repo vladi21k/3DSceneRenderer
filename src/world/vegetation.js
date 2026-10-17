@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
 import { TEMPLATES, SHRUBS } from './vegetation/species.js';
-import { buildLeafAtlas } from './vegetation/leafAtlas.js';
+import { buildLeafAtlas, blankAtlas } from './vegetation/leafAtlas.js';
 import { buildTreeTemplate, buildShrubTemplate } from './vegetation/treeGen.js';
 import { createVegMaterials } from './vegetation/vegMaterials.js';
 import { InstancePool, VegetationPools } from './vegetation/pool.js';
@@ -14,6 +14,9 @@ import { createProps } from './vegetation/props.js';
 //       (bark, foliage) shared by the street, and plans every tree of the layout once:
 //       template (species zones, never the same as the previous tree on that side),
 //       mirror, scale (planned height / crown, x and z apart), lean, yaw and tint.
+//       It does not wait for the atlas: the leaf materials start on blank stand-ins (no
+//       leaves drawn, same shader programs) and take the atlas when the painting ends,
+//       in the background while the other modules start, long before the first frame.
 // build: per chunk, adds one instance per tree and per prop (stakes and ties, planter
 //       boxes; planters come from layout.furniture entries of type 'planter'). The tree
 //       grates are paving details drawn by the street module.
@@ -41,9 +44,12 @@ const vegetation = {
     this.trees = TEMPLATES.map((tpl) => buildTreeTemplate(tpl, seed));
     this.shrubs = SHRUBS.map((sh) => ({ sh, ...buildShrubTemplate(sh, seed) }));
     const t1 = performance.now();
-    this.atlas = await atlasP;
-    const t2 = performance.now();
-    this.mats = createVegMaterials(app, this.atlas);
+    this.mats = createVegMaterials(app, blankAtlas());
+    this.atlasReady = atlasP.then((atlas) => {
+      this.atlas = atlas;
+      this.mats.setAtlas(atlas);
+      if (this.stats) { this.stats.atlas = atlas.ms; this.stats.initMs.atlasDone = +(performance.now() - t0).toFixed(1); }
+    }, (e) => console.error('[vegetation] leaf atlas failed', e));
 
     // pool geometry lists: three detail levels per template (shrub L1 shares L0)
     const leafGeoms = [], barkGeoms = [];
@@ -54,22 +60,22 @@ const vegetation = {
     }
     for (const sh of this.shrubs) sh.leafIdx = sh.leaves.map((g) => put(leafGeoms, g));
     this.pools = new VegetationPools(app);
-    this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400));
+    this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400, { preMaterial: this.mats.leafPre }));
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300));
     this.props = createProps(app, this.pools);
     this.plan = this._planTrees();
     // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
     const show = app.params.str('vegshow');
-    if (show === 'bark') this.leafPool.mesh.visible = false;
+    if (show === 'bark') this.leafPool.mesh.visible = false; // (the pre-pass twin follows)
     if (show === 'leaf') this.barkPool.mesh.visible = false;
     // warm-up: one throw-away chunk build so the first real chunk does not pay for JIT
     const warm = this._build({ index: app.layout.chunkIndex(app.startS), lod: 0 }, app);
     if (warm) this.dispose(warm);
     this.stats = {
       build: [{ n: 0, total: 0, max: 0 }, { n: 0, total: 0, max: 0 }],
-      initMs: { templates: +(t1 - t0).toFixed(1), atlasWait: +(t2 - t1).toFixed(1), total: +(performance.now() - t0).toFixed(1) },
-      atlas: this.atlas.ms,
+      initMs: { templates: +(t1 - t0).toFixed(1), total: +(performance.now() - t0).toFixed(1) },
+      atlas: null,
       templates: this.trees.map((t) => ({ id: t.tpl.id, ...t.stats,
           tris: [0, 1, 2].map((l) => (t.leaves[l].index.count + t.bark[0][l].index.count) / 3) })),
     };

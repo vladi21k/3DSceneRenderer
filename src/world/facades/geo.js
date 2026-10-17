@@ -249,7 +249,7 @@ class IBuf {
 export class Batch {
   constructor(material, { color = true, extra = null, hint = null } = {}) {
     this.material = material;
-    const nv = hint ? Math.ceil(hint.verts * 1.1) + 64 : 1024, ni = hint ? Math.ceil(hint.idx * 1.1) + 192 : 3072;
+    const nv = hint ? Math.ceil(hint.verts * 1.2) + 64 : 1024, ni = hint ? Math.ceil(hint.idx * 1.2) + 192 : 3072;
     this.P = new FBuf(nv * 3); this.N = new FBuf(nv * 3); this.T = new FBuf(nv * 2);
     this.C = color ? new FBuf(nv * 3) : null;
     this.I = new IBuf(ni);
@@ -309,14 +309,15 @@ export class Batch {
   geometry() {
     if (!this.count) return null;
     const g = new THREE.BufferGeometry();
-    const view = (b) => new Float32Array(b.a.buffer, 0, b.n); // no copy: the batch is done
+    // no copy (the batch is done), unless most of the buffer would be wasted
+    const view = (b) => (b.n > b.a.length * 0.5 ? new Float32Array(b.a.buffer, 0, b.n) : b.a.slice(0, b.n));
     g.setAttribute('position', new THREE.BufferAttribute(view(this.P), 3));
     g.setAttribute('normal', new THREE.BufferAttribute(view(this.N), 3));
     g.setAttribute('uv', new THREE.BufferAttribute(view(this.T), 2));
     if (this.C) g.setAttribute('color', new THREE.BufferAttribute(view(this.C), 3));
     for (const k in this.extra) g.setAttribute(k, new THREE.BufferAttribute(view(this.extra[k].buf), this.extra[k].size));
     let idx;
-    if (this.count < 65536) { idx = new Uint16Array(this.I.n); idx.set(this.I.a.subarray(0, this.I.n)); } else idx = new Uint32Array(this.I.a.buffer, 0, this.I.n);
+    if (this.count < 65536) { idx = new Uint16Array(this.I.n); idx.set(this.I.a.subarray(0, this.I.n)); } else idx = this.I.a.slice(0, this.I.n);
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     // bounding sphere from the AABB (one pass)
     const p = this.P.a, n = this.P.n;

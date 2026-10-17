@@ -175,4 +175,6 @@ const FILTERS = {
   oldman: (a) => a.age === 'old' && !a.female,
   oldwoman: (a) => a.age === 'old' && a.female,
   tee: (a) => a.topType === 0 && a.bottomType !== 3 && a.bottomType !== 5,
+  collar: (a) => a.topType === 1 || a.topType === 2,
+  tank: (a) => a.topType === 3,
 };

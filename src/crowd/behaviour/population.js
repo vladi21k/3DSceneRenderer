@@ -86,7 +86,7 @@ export class Population {
     a.wT = r.range(4, 10); a.paceT = r.range(5, 15); a.faceJ = r.range(-0.25, 0.25);
     a.spawnHidden = false; a.seatS = 0; a.seatD = 0; a.crossOK = 0; a.bornT = c.time; a.platformOK = false;
     a.mob = MOB.NONE; a.propSeed = 0; a.lean = 0; a.fpR = 0; a.extLo = 0; a.extHi = 0; a.extS = 0;
-    a.bikeV = 0; a.yawW = 0; a.cOff = 0; a.cT = 0; a.slowT = 0; a.mountT = 0; a.mvOn = false; a.mvBand = false;
+    a.bikeV = 0; a.yawW = 0; a.cT = 0; a.slowT = 0; a.stallT = 0; a.mountT = 0; a.mvOn = false; a.mvBand = false;
     a.mvToBand = false; a.mvLane = null; a.nearT = 0; a.headValid = false; a.clearHi = false; a.clearSpare = 0;
     this.stats.spawned++;
     return a;

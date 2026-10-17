@@ -185,7 +185,8 @@ function ftube(ctx, pts, r, { flare = [0.12, 0.12], caps = null, mat = M.paintA,
     const base = r1 === null ? r : r + (r1 - r) * t;
     return base * (1 + f0 * (1 - smooth(0, fl, t)) + f1 * smooth(1 - fl, 1, t));
   };
-  const nBody = pts.length > 2 ? segsFor(curve, [0.1, 0.22, 0.45][lod], [0.12, 0.3, 1][lod]) : Math.max(1, Math.ceil(len / [0.15, 0.4, 2][lod]));
+  const bent = typeof pts.getPointAt === 'function' || pts.length > 2;
+  const nBody = bent ? segsFor(curve, [0.08, 0.2, 0.45][lod], [0.12, 0.3, 1][lod]) : Math.max(1, Math.ceil(len / [0.15, 0.4, 2][lod]));
   const set = new Set();
   for (let i = 0; i <= nBody; i++) set.add(i / nBody);
   if (f0) for (const k of [0.3, 0.6, 1]) set.add(fl * k);
@@ -223,20 +224,17 @@ function frame(ctx) {
     const dtFront = htAt(0.18);
     ftube(ctx, [dtFront, bb.clone().add(V(0, 0.012, -0.012))], r.dt, { flare: [0.1, 0.15] });
   } else if (F.type === 'step' || F.type === 'twin') {
-    // one long curved down tube sweeping low into the seat tube just above the bottom bracket
+    // one long swan-neck down tube: leaves the head tube steeply, sweeps low and runs almost
+    // level into the seat tube just above the bottom bracket
     const a = htAt(0.32);
-    const lowY = bb.y + 0.2;
-    const p1 = V(0, a.y - 0.2, a.z + 0.13);
-    const p2 = V(0, lowY + 0.02, bb.z - 0.2);
     const end = bb.clone().addScaledVector(seatDir, 0.09);
-    ftube(ctx, [a, p1, p2, end], r.dt, { flare: [0.1, 0.2] });
+    const sweep = new THREE.CubicBezierCurve3(a, a.clone().add(V(0, -0.3, 0.13)), end.clone().add(V(0, 0.03, -0.3)), end);
+    ftube(ctx, sweep, r.dt, { flare: [0.1, 0.2] });
     if (F.type === 'twin') {
       // classic roadster: a second, thinner parallel tube from the top of the head tube to the seat tube
       const a2 = htAt(0.85);
-      const q1 = V(0, a2.y - 0.17, a2.z + 0.15);
-      const q2 = V(0, bb.y + 0.39, bb.z - 0.13);
       const end2 = bb.clone().addScaledVector(seatDir, 0.33);
-      ftube(ctx, [a2, q1, q2, end2], r.tt, { flare: [0.12, 0.2] });
+      ftube(ctx, new THREE.CubicBezierCurve3(a2, a2.clone().add(V(0, -0.24, 0.12)), end2.clone().add(V(0, 0.02, -0.26)), end2), r.tt, { flare: [0.12, 0.2] });
     } else {
       // short gusset tube reinforcing the low junction
       ftube(ctx, [V(0, bb.y + 0.03, bb.z - 0.13), bb.clone().add(V(0, 0.01, -0.015))], r.dt * 0.85, { flare: [0, 0.2] });
@@ -244,11 +242,10 @@ function frame(ctx) {
   } else if (F.type === 'low') {
     // e-bike low step: one fat hydroformed tube from the head tube into the motor
     const a = htAt(0.3);
-    const p1 = V(0, a.y - 0.24, a.z + 0.13);
-    const p2 = V(0, bb.y + 0.12, bb.z - 0.19);
     const end = bb.clone().add(V(0, 0.02, -0.02));
-    ftube(ctx, [a, p1, p2, end], r.dt, { flare: [0.1, 0.1] });
-    ctx.downPath = [a, p1, p2, end];
+    const sweep = new THREE.CubicBezierCurve3(a, a.clone().add(V(0, -0.34, 0.12)), end.clone().add(V(0, 0.06, -0.3)), end);
+    ftube(ctx, sweep, r.dt, { flare: [0.1, 0.1] });
+    ctx.downPath = sweep.getSpacedPoints(12);
   }
   if (F.type === 'step' || F.type === 'twin') ctx.downPath = null;
   // chainstays (both sides) and seat stays

@@ -5,9 +5,10 @@ import { RNG } from '../../core/rng.js';
 // street at the café's offset (s scaled by route.offsetScale), y = d.
 //   1. chairs: neighbouring chairs (other tables, other chairs) are relaxed apart by small
 //      moves around their own table, with a small random turn away from the neighbour
-//   2. umbrellas: each canopy keeps clear of its neighbours (no interpenetrating fabric);
-//      the weighted base gets a footprint that clears every chair and table foot, or the
-//      pole runs through a table's centre hole; sizes step down when nothing fits
+//   2. umbrellas: each canopy keeps clear of its neighbours (no interpenetrating fabric),
+//      of the facade and of the street-tree crowns; the weighted base gets a footprint
+//      that clears every chair and table foot, or the pole runs through a table's centre
+//      hole; sizes step down when nothing fits
 //   3. menu board: a free spot along the walkway edge
 // Footprints are oriented rectangles {x, y, ux, uy, hu, hv} (u = forward axis) or circles.
 
@@ -24,6 +25,10 @@ const TOP_R = 0.32;                   // table top (+ a little air) the pole mus
 const BASE_R = { iron: 0.215, cross: 0.3, crossDark: 0.3 };
 const GAP = 0.03;                     // minimum air between footprints
 const CANOPY_GAP = 0.1;               // minimum air between neighbouring canopies
+const FACADE_GAP = 0.3;               // canopy edge to the facade line (plinths, pilasters)
+const CROWN_K = 0.85;                 // share of a tree's crown radius the canopy must clear
+const RELAX_ITERS = 40;               // chair relaxation passes
+const MAX_SHIFT = 0.32;               // furthest a chair moves from its planned spot (m)
 const VALANCE = 0.02;                 // valance flare beyond the nominal canopy size
 export const UMB_SIZES = [24, 36];    // canopy size buckets (decimetres)
 
@@ -55,13 +60,28 @@ function chairRect(ch, f) {
   return rect(ch.x, ch.y, ch.yaw, (f.z1 - f.z0) / 2, f.hx, (f.z0 + f.z1) / 2);
 }
 
-/** Collision-free café plan. Mutates nothing in the layout except chair poses (see placeChairs). */
-export function planCafe(cafe, route, seed, baseType) {
+/** Collision-free café plan. Mutates nothing in the layout except chair poses (see placeChairs).
+ *  layout (optional): facade line and street trees the canopies keep clear of. */
+export function planCafe(cafe, route, seed, baseType, layout = null) {
   const sMid = (cafe.s0 + cafe.s1) / 2;
   const dMid = (cafe.dIn + cafe.dOut) / 2;
   const k = route.offsetScale(sMid, dMid);
-  const X = (s) => route.delta(sMid, s) * k;         // s -> local metres
-  const S = (x) => sMid + x / k;                      // local metres -> s
+  // s <-> local metres along the terrace's offset line (the arc-length scale is integrated:
+  // curvature can change along a terrace)
+  const STEP = 0.25, a0 = route.delta(sMid, cafe.s0) - 6, n = Math.ceil((route.delta(cafe.s0, cafe.s1) + 12) / STEP);
+  const cum = new Float64Array(n + 1);
+  for (let i = 1; i <= n; i++) cum[i] = cum[i - 1] + STEP * route.offsetScale(sMid + a0 + (i - 0.5) * STEP, dMid);
+  const x0 = cum[Math.round(-a0 / STEP)];
+  const X = (s) => {                                  // s -> local metres
+    const f = Math.min(n, Math.max(0, (route.delta(sMid, s) - a0) / STEP)), i = Math.min(n - 1, Math.floor(f));
+    return cum[i] + (cum[i + 1] - cum[i]) * (f - i) - x0;
+  };
+  const S = (x) => {                                  // local metres -> s
+    const c = x + x0;
+    let lo = 0, hi = n;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (cum[m] <= c) lo = m; else hi = m; }
+    return sMid + a0 + (lo + (c - cum[lo]) / Math.max(1e-9, cum[lo + 1] - cum[lo])) * STEP;
+  };
   const rng = RNG.from(seed, 'cafePlan', cafe.id);
   const foot = CHAIR_FOOT[cafe.chairStyle] || CHAIR_FOOT.bistro;
   const tables = cafe.tables.map((t, ti) => ({ ti, x: X(t.s), y: t.d, src: t }));
@@ -85,12 +105,21 @@ export function planCafe(cafe, route, seed, baseType) {
     c.jit = -Math.sign(side || 1) * Math.abs(c.jit);
   }
   chairs.forEach(face);
-  for (let it = 0; it < 14; it++) {
+  // neighbour lists (chairs move at most MAX_SHIFT, so these stay complete)
+  const reach = 1.0 + 2 * MAX_SHIFT;
+  chairs.forEach((a, i) => {
+    a.nb = [];
+    for (let j = i + 1; j < chairs.length; j++) {
+      const b = chairs[j];
+      if (Math.abs(a.x - b.x) < reach && Math.abs(a.y - b.y) < reach) a.nb.push(b);
+    }
+    a.nt = tables.filter((t) => t !== a.t && Math.abs(t.x - a.x) < reach && Math.abs(t.y - a.y) < reach);
+  });
+  for (let it = 0; it < RELAX_ITERS; it++) {
     let moved = false;
     for (let i = 0; i < chairs.length; i++) {
       const a = chairs[i], ra = chairRect(a, foot);
-      for (let j = i + 1; j < chairs.length; j++) {
-        const b = chairs[j];
+      for (const b of a.nb) {
         if (Math.abs(a.x - b.x) > 1.0 || Math.abs(a.y - b.y) > 1.0) continue;
         if (!rectsOverlap(ra, chairRect(b, foot), 0.04)) continue;
         let nx = a.x - b.x, ny = a.y - b.y;
@@ -100,8 +129,8 @@ export function planCafe(cafe, route, seed, baseType) {
         moved = true;
       }
       // other tables' tops and feet
-      for (const t of tables) {
-        if (t === a.t || Math.abs(t.x - a.x) > 1.0 || Math.abs(t.y - a.y) > 1.0) continue;
+      for (const t of a.nt) {
+        if (Math.abs(t.x - a.x) > 1.0 || Math.abs(t.y - a.y) > 1.0) continue;
         const dd = rectDist(chairRect(a, foot), t.x, t.y);
         if (dd > TOP_R + 0.02) continue;
         let nx = a.x - t.x, ny = a.y - t.y;
@@ -110,14 +139,14 @@ export function planCafe(cafe, route, seed, baseType) {
         moved = true;
       }
     }
-    // keep every chair at its own table (radius 0.46..0.8) and within 0.26 m of its plan spot
+    // keep every chair at its own table (radius 0.46..0.8) and within MAX_SHIFT of its plan spot
     for (const c of chairs) {
       let dx = c.x - c.t.x, dy = c.y - c.t.y;
       const r = Math.hypot(dx, dy) || 1, rr = Math.max(0.46, Math.min(0.8, r));
       c.x = c.t.x + (dx / r) * rr; c.y = c.t.y + (dy / r) * rr;
       dx = c.x - c.x0; dy = c.y - c.y0;
       const m = Math.hypot(dx, dy);
-      if (m > 0.26) { c.x = c.x0 + (dx / m) * 0.26; c.y = c.y0 + (dy / m) * 0.26; }
+      if (m > MAX_SHIFT) { c.x = c.x0 + (dx / m) * MAX_SHIFT; c.y = c.y0 + (dy / m) * MAX_SHIFT; }
       face(c);
     }
     if (!moved) break;
@@ -144,6 +173,25 @@ export function planCafe(cafe, route, seed, baseType) {
     }
     return clear;
   };
+  // canopy keep-outs: the facade line and the crowns of the street trees on this side
+  const crowns = [];
+  if (layout) {
+    const c0 = layout.chunkIndex(cafe.s0 - 6), c1 = layout.chunkIndex(cafe.s1 + 6);
+    for (let c = c0; c <= c1; c++) {
+      for (const t of layout.inChunk('trees', c)) if (t.side === cafe.side) crowns.push({ x: X(t.s), y: t.d, r: (t.crown || 3) * 0.5 * CROWN_K });
+    }
+  }
+  const canopyFree = (x, y, half) => {
+    if (layout) {
+      const hw = Math.min(layout.halfWidth(S(x - half), cafe.side), layout.halfWidth(S(x), cafe.side), layout.halfWidth(S(x + half), cafe.side));
+      if (Math.abs(y) + half > hw - FACADE_GAP) return false;
+    }
+    for (const c of crowns) {
+      const ex = Math.max(0, Math.abs(c.x - x) - half), ey = Math.max(0, Math.abs(c.y - y) - half);
+      if (ex * ex + ey * ey < c.r * c.r) return false;
+    }
+    return true;
+  };
   const src = [...cafe.umbrellas].map((u, i) => ({ u, i, x: X(u.s) })).sort((a, b) => a.x - b.x);
   const xMin = X(cafe.s0) - 0.4, xMax = X(cafe.s1) + 0.4;  // canopy may overhang the terrace a little
   const placed = [];
@@ -169,6 +217,7 @@ export function planCafe(cafe, route, seed, baseType) {
       }
       cands.sort((a, b) => a[2] - b[2]);
       for (const [x, y] of cands) {
+        if (!canopyFree(x, y, half)) continue;
         for (const [kind, yaw] of [['slab', 0], ['slab', Math.PI / 4], ['disc', 0]]) {
           if (baseClear(x, y, kind, yaw) >= GAP) { best = { x, y, sz, half, base: kind, baseYaw: yaw }; break; }
         }
@@ -178,7 +227,7 @@ export function planCafe(cafe, route, seed, baseType) {
       // pole through the centre hole of a table inside the allowed range
       let bt = null, bd = 9;
       for (const t of tables) {
-        if (usedTable.has(t) || t.x < lo || t.x > hi || Math.abs(t.y - u.d) > 0.9) continue;
+        if (usedTable.has(t) || t.x < lo || t.x > hi || Math.abs(t.y - u.d) > 0.9 || !canopyFree(t.x, t.y, half)) continue;
         const dd = Math.abs(t.x - x0) + Math.abs(t.y - u.d);
         if (dd < bd) { bd = dd; bt = t; }
       }
@@ -254,7 +303,7 @@ export function auditPlans(plans, route) {
   for (let i = 0; i < all.length; i++) {
     for (let j = i + 1; j < all.length; j++) {
       const a = all[i], b = all[j];
-      const ds = route.delta(a.u.s, b.u.s) * route.offsetScale(a.u.s, a.u.d);
+      const ds = route.delta(a.u.s, b.u.s) * route.offsetScale(a.u.s + route.delta(a.u.s, b.u.s) / 2, (a.u.d + b.u.d) / 2);
       if (ds > 4) break;
       if (a.cafe.side !== b.cafe.side || a.u.furled || b.u.furled) continue;
       const lim = (a.u.size + b.u.size) / 2 + 2 * VALANCE;

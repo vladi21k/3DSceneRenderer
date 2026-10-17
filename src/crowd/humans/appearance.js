@@ -98,7 +98,7 @@ export function deriveAppearance(seed, parts) {
   // gait style: 0 adult, 1 senior (shorter steps, less arm swing, a slight stoop), 2 frail (walkOld)
   a.gait = a.walkOld ? 2 : old ? 1 : 0;
   // forward stoop of the upper back (radians) carried into every pose
-  a.stoop = old ? r.range(0.04, a.walkOld ? 0.16 : 0.10) : age === 'adult' ? r.range(0, 0.04) : 0;
+  a.stoop = old ? (a.walkOld ? r.range(0.10, 0.22) : r.range(0.04, 0.13)) : age === 'adult' ? r.range(0, 0.04) : 0;
 
   // --- hair & head
   if (base === 'male' || (base === 'child' && !female)) {

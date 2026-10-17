@@ -249,6 +249,13 @@ export class Atmosphere {
     this._transQuad = fsQuad(TRANS_FS, this.uniforms);
     this._msQuad = fsQuad(MS_FS, this.uniforms);
     this._skyQuad = fsQuad(SKY_FS, this.uniforms);
+  }
+
+  /** The passes this class renders (for compiling them up front). */
+  passes() { return [this._transQuad, this._msQuad, this._skyQuad]; }
+
+  /** Render the fixed LUTs (transmittance, multiple scattering): once, before first use. */
+  renderLUTs() {
     this._renderQuad(this._transQuad, this.trans);
     this._renderQuad(this._msQuad, this.ms);
   }

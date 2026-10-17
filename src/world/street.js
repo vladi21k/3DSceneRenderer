@@ -6,7 +6,7 @@ import { buildMainRails } from './street/track.js';
 import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS } from './street/constants.js';
-import { CHUNK_LEN } from '../core/config.js';
+import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js';
 import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
@@ -21,6 +21,8 @@ import { createMortarMaterial, patchCanyon, patchCut } from './street/shading.js
 // turned the sky reflection into a sparkle of specks rather than a satin sheen.
 const RAIL_HEAD = { normalScale: [0.35, 0.35], vertexColors: true };
 const RAIL_GROOVE = { vertexColors: true };
+
+const PREFETCH_MS = 0.5;   // planning ahead, per frame
 
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
@@ -37,7 +39,11 @@ const street = {
     const lines = M.register('street.line', createLineMaterial());
     const details = createDetailMaterials(app.renderer);
     for (const m of Object.values(details)) M.register(m.name, m);
-    const mortar = M.register('street.mortar', createMortarMaterial());
+    // Plain rails and mortar carry the crossover cut test too, inactive (no cut
+    // attribute: see shading.js patchCut), so they share their programs with the cut
+    // variants of crossover chunks.
+    const share = (m) => patchCut(m, 'rail', false);
+    const mortar = M.register('street.mortar', share(createMortarMaterial()));
     // rail steel reflects the street canyon, not open sky (see shading.js)
     const steel = (name, opts) => patchCanyon(M.get(name, opts));
     const mats = {
@@ -48,7 +54,7 @@ const street = {
       asphalt: M.get('asphalt', { vertexColors: true }),
       grout: mortar,
       tactile: M.get('paving.tactile', { vertexColors: true }),
-      rail: { head: steel('rail.head', RAIL_HEAD), groove: M.get('rail.groove', RAIL_GROOVE), seal: mortar },
+      rail: { head: share(steel('rail.head', RAIL_HEAD)), groove: share(M.get('rail.groove', RAIL_GROOVE)), seal: mortar },
       lines,
       details,
     };
@@ -65,7 +71,7 @@ const street = {
       mortar: mortarCut,
       corr: cut(M.get('paving.street', { vertexColors: true, stCut: 2 }), 'pave'),
       // cast floor of switch boxes and frogs (never cut), pushed behind the groove floors
-      floor: M.get('rail.groove', { ...RAIL_GROOVE, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 }),
+      floor: share(M.get('rail.groove', { ...RAIL_GROOVE, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 })),
     };
     mats.cut.gauge = mats.cut.lip = mats.cut.side = mats.cut.head;
     mats.cut.check = mats.cut.head;   // check rails: guard lip polished by wheel backs
@@ -76,7 +82,7 @@ const street = {
     this.surface = surface;
     this.ctx = { app, route: app.route, layout: app.layout, surface, mats, zonePad: 1.5, delta: surface.dl };
     // detail plans are per chunk index and also flatten the paving under covers
-    const plans = new Map();
+    const plans = this.plans = new Map();
     this.planFor = (ci) => {
       let p = plans.get(ci);
       if (!p) {
@@ -90,9 +96,10 @@ const street = {
 
     // Warm-up: build representative chunks (plain, crossover, cross street, station;
     // both lods) so streamed chunks never pay first-call JIT costs. The lod 0 ones stay
-    // in the scene, far below it (always culled), until the first frames: the start-up
-    // shader compile then covers every street program, including those first needed
-    // only when a crossover or a platform comes close (otherwise a long stall mid-ride).
+    // in the scene, far below it (always culled), until the first frames, so the
+    // start-up shader compile covers every street program, including those first
+    // needed when a crossover or a platform comes close (otherwise a long stall
+    // mid-ride: compiling at run time blocks the frame on this driver).
     const L = app.layout;
     const warm = [0, L.crossovers[0]?.s0, L.crossStreets[0]?.s, L.stations[0]?.s].filter((x) => x !== undefined).map((x) => L.chunkIndex(x));
     this.warm = new THREE.Group();
@@ -176,10 +183,27 @@ const street = {
 
   update(dt, app) {
     app.renderer.getDrawingBufferSize(LINE_SHARED.uViewport.value);
+    this.prefetch(app);
     if (this.warm && app.frame > 3) {
       app.scene.remove(this.warm);
       this.warm.traverse((o) => o.geometry && o.geometry.dispose());
       this.warm = null;
+    }
+  },
+
+  /** Plan ahead, within PREFETCH_MS a frame, what chunk builds would otherwise compute
+   *  first: the detail plans of every chunk in view range (builds read their
+   *  neighbours' too) and the plans of the crossovers in it. */
+  prefetch(app) {
+    const L = this.ctx.layout, n = L.nChunks, plans = this.plans;
+    const c0 = L.chunkIndex((app.cameraS ?? app.startS) - VIEW_BEHIND);
+    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD) / CHUNK_LEN) + 2;
+    const t0 = performance.now();
+    for (let k = 0; k < nAhead && performance.now() - t0 < PREFETCH_MS; k++) {
+      const ci = (c0 + k) % n;
+      if (plans.has(ci)) continue;
+      this.planFor(ci);
+      for (const c of L.inChunk('crossovers', ci)) crossoverPlan(c, this.ctx.delta);
     }
   },
 };

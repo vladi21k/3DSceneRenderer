@@ -24,9 +24,6 @@ const shared = {
   aoScale: { value: 1 },
 };
 
-// longest init waits for the texture bake before letting the app continue (ms)
-const BAKE_WAIT_MS = 4000;
-
 const lin = (a) => new THREE.Color().setRGB(a[0], a[1], a[2], THREE.LinearSRGBColorSpace);
 
 function setProps(m, props) {
@@ -45,8 +42,8 @@ function build(name, def) {
   setProps(m, def.props || {});
   const t = def.bake ? shared.textures.get(def.bake) : null;
   const surf = def.surf || {};
-  // the shader code is assembled per feature family (lite / stone / paving) plus the
-  // translucency, night and glass switches; everything else is uniform-driven (surface.js)
+  // the shader code is assembled per feature family (lite / full) plus the translucency,
+  // night and glass switches; everything else is uniform-driven (surface.js)
   if (t || def.night || surf.trans) {
     applySurface(m, {
       textures: t, family: familyOf(def, t?.recipe), trans: !!surf.trans, night: !!def.night, glass: !!def.glassClear,
@@ -89,18 +86,21 @@ const materials = {
     }
     const recipes = [...needed].map((n) => RECIPES[n]).filter(Boolean);
     // Targets are allocated and flat-filled now (so every material can be built at once);
-    // the procedural bake compiles in parallel and renders as each program is ready.
+    // the procedural bake compiles in parallel on the driver's threads and renders as each
+    // program is ready. init does not wait for it: the other modules' init, the first chunk
+    // builds and the scene's shader compile run meanwhile, and the maps are final long
+    // before the loading screen goes (materials.ready resolves then). While the app is not
+    // ready a recipe bakes as soon as it compiles; later ones are spread over frames.
     this.ready = Promise.resolve(null);
     const raw = app.params?.raw;
     const flat = raw?.get?.('matflat') === '1';      // debug: skip baking (A/B cost check)
     const profile = raw?.get?.('matprof') === '1';   // debug: GPU time per recipe (forced sync)
-    let startup = true;
     if (!flat) {
       try {
         const baker = new Baker(app.renderer);
         const entries = baker.prepare(recipes);
         for (const [k, v] of entries) shared.textures.set(k, v);
-        this.ready = baker.run(entries, { immediate: () => startup, profile }).then((st) => {
+        this.ready = baker.run(entries, { immediate: () => !app.ready, profile }).then((st) => {
           this.stats.bake = st;
           this.stats.textureMB = +(st.bytes / 1048576).toFixed(1);
           this.stats.bakedAfterMs = performance.now() - t0;
@@ -111,7 +111,6 @@ const materials = {
       }
     }
     shared.detail = shared.textures.get('detail')?.surface || null;
-    if (shared.detail) shared.detail.anisotropy = Math.min(4, shared.detail.anisotropy); // minified detail fades out anyway
     shared.macro = shared.textures.get('macro')?.raw || null;
 
     // every entry builds on its own: a failing one falls back to a flat material, so
@@ -140,13 +139,8 @@ const materials = {
         this.meta[name] = { tile: null, vertexColor: def.vc || 'tint', textured: false };
       }
     }
-    // Bake behind the loading screen: wait (bounded) for the maps, so the first frames and
-    // headless captures never show the flat stand-ins. Whatever is still compiling at the
-    // deadline bakes later, one recipe per frame.
-    const tw = performance.now();
-    await Promise.race([this.ready, new Promise((r) => setTimeout(r, BAKE_WAIT_MS))]);
-    startup = false;
-    this.stats.bakeWaitMs = Math.round(performance.now() - tw);
+    const wait = +(raw?.get?.('matwait') || 0);       // debug: ms init waits for the bake (A/B)
+    if (wait > 0) await Promise.race([this.ready, new Promise((r) => setTimeout(r, wait))]);
     this.stats.initMs = performance.now() - t0;
   },
 

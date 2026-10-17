@@ -231,7 +231,7 @@ const FRAG_ROUGH = /* glsl */ `
 roughnessFactor = min(1.0, roughnessFactor * (1.0 + bgGrimeK.z * bgDirt));
 `;
 
-// lit windows of the backdrop lots: warm interior glow at night, by lit share
+// lit windows (party walls, set-back storeys, skyline blocks): warm interior glow at night, by lit share
 const FRAG_GLASS_PARS = /* glsl */ `
 varying float vBgGrime;
 uniform float bgNight;

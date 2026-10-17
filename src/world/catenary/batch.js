@@ -83,6 +83,9 @@ export class CatBatch {
     mesh.perObjectFrustumCulled = true;
     mesh.sortObjects = false;
     mesh.userData.thinCaster = thin;
+    // colour texture from the start, so the programs compiled up front (empty batches)
+    // are the ones used later
+    if (mesh._initColorsTexture && !mesh._colorsTexture) mesh._initColorsTexture();
     this.mesh = mesh;
     this.geomIds = geometries.map((g) => mesh.addGeometry(g));
     for (const id of this.geomIds) mesh.getBoundingSphereAt(id, _sph); // cached per geometry

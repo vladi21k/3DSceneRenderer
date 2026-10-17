@@ -73,7 +73,8 @@ void main() {
 }
 `;
 
-function makeCloudNoise(renderer, size = 512) {
+/** Cloud noise target and the pass that fills it (rendered by Sky.initGPU). */
+function makeCloudNoise(size = 512) {
   const rt = new THREE.WebGLRenderTarget(size, size, {
     type: THREE.UnsignedByteType, format: THREE.RGBAFormat, depthBuffer: false,
     wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping,
@@ -86,12 +87,7 @@ function makeCloudNoise(renderer, size = 512) {
   });
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
   quad.frustumCulled = false;
-  const prev = renderer.getRenderTarget();
-  renderer.setRenderTarget(rt);
-  renderer.render(quad, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1));
-  renderer.setRenderTarget(prev);
-  mat.dispose(); quad.geometry.dispose();
-  return rt;
+  return { rt, quad };
 }
 
 // ------------------------------------------------------------------ sky irradiance (8x1)
@@ -334,7 +330,8 @@ export class Sky {
     this.app = app;
     this.atmo = atmo;
     this.renderer = renderer;
-    this.cloudNoise = makeCloudNoise(renderer);
+    this._noiseJob = makeCloudNoise();
+    this.cloudNoise = this._noiseJob.rt;
 
     this.irrRT = new THREE.WebGLRenderTarget(IRR_TEXELS, 1, {
       type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
@@ -412,9 +409,63 @@ export class Sky {
     this._copyQuad.frustumCulled = false;
     this.envRT = null;       // live target (scene.environment)
     this.backRT = null;      // progressive updates are filtered here, then copied over
+    this.envSize = envSize;
     this._capStep = -1;      // -1 idle, 0..2 face pairs, 3 = PMREM
     this._capTimer = 0;
     this._envDirty = false;  // another refresh was requested while one was in flight
+  }
+
+  /**
+   * Allocate the environment targets and publish scene.environment without rendering
+   * anything yet (programs are keyed on the environment's format, so it must exist
+   * before the start-up compile; the first capture fills it later).
+   */
+  allocateEnv() {
+    if (this.envRT) return;
+    const g = this.pmrem;
+    if (typeof g._setSize === 'function' && typeof g._allocateTargets === 'function') {
+      g._setSize(this.cubeRT.width);
+      this.envRT = g._allocateTargets();
+      this.backRT = g._allocateTargets();
+      this.app.scene.environment = this.envRT.texture;
+      g.compileCubemapShader();
+    }
+  }
+
+  /** The off-scene passes (for compiling them up front). */
+  passes() {
+    const out = [this._irrQuad, this._copyQuad, ...this.envScene.children];
+    if (this._noiseJob) out.push(this._noiseJob.quad);
+    const g = this.pmrem;
+    if (g._lodMeshes && g._lodMeshes.length && g._ggxMaterial) {
+      const m = new THREE.Mesh(g._lodMeshes[0].geometry, g._ggxMaterial);
+      m.frustumCulled = false;
+      out.push(m);
+    }
+    return out;
+  }
+
+  /** One draw of the swap pass (into the back target, whose content is scratch). */
+  warmCopy() {
+    if (!this.envRT || !this.backRT || this._capStep >= 0) return;
+    const r = this.renderer, rt = this.backRT, prev = r.getRenderTarget();
+    this._copyQuad.material.uniforms.tSrc.value = this.envRT.texture;
+    rt.scissorTest = false;
+    rt.viewport.set(0, 0, rt.width, rt.height);
+    r.setRenderTarget(rt);
+    r.render(this._copyQuad, this._quadCam);
+    r.setRenderTarget(prev);
+  }
+
+  /** One-time GPU work: the cloud noise texture. */
+  initGPU() {
+    if (!this._noiseJob) return;
+    const r = this.renderer, { rt, quad } = this._noiseJob, prev = r.getRenderTarget();
+    r.setRenderTarget(rt);
+    r.render(quad, this._quadCam);
+    r.setRenderTarget(prev);
+    quad.material.dispose(); quad.geometry.dispose();
+    this._noiseJob = null;
   }
 
   /**

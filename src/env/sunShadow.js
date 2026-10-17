@@ -309,6 +309,62 @@ export class StreetSunShadow extends SunLightShadow {
   }
 }
 
+const SIDE_FLIP = { [THREE.FrontSide]: THREE.BackSide, [THREE.BackSide]: THREE.FrontSide, [THREE.DoubleSide]: THREE.DoubleSide };
+
+/**
+ * Compile the programs the sun's depth passes will use, now and on the driver's threads,
+ * instead of one by one in the first shadow pass (or later, the first time a caster
+ * enters a cascade). A depth pass draws each caster with its custom depth material, or
+ * the renderer's own depth material (a per-material variant when alpha-tested), set to
+ * the caster's map, alpha test and shadow side; one representative of each such
+ * combination (and mesh kind) is compiled with that material swapped in for a moment.
+ * The renderer shares programs by key, so equivalent materials stand in for its own.
+ */
+export function precompileShadowPrograms(renderer, scene, camera, target) {
+  const shared = new THREE.MeshDepthMaterial();
+  const variants = new Map();
+  const seen = new Set();
+  const jobs = [];
+  scene.traverse((o) => {
+    if (!o.castShadow || !o.isMesh) return;
+    const m = o.material;
+    if (!m || Array.isArray(m)) return;
+    const custom = o.customDepthMaterial;
+    const variant = !custom && (m.alphaToCoverage || (m.alphaTest > 0 && (m.map || m.alphaMap)) || (m.displacementMap && m.displacementScale !== 0));
+    const side = m.shadowSide ?? SIDE_FLIP[m.side];
+    const kind = o.isBatchedMesh ? 'b' : o.isInstancedMesh ? (o.instanceColor ? 'c' : 'i') : o.isSkinnedMesh ? 's' : 'm';
+    const morph = o.geometry && o.geometry.morphAttributes.position ? o.geometry.morphAttributes.position.length : 0;
+    const at = m.alphaToCoverage ? 0.5 : m.alphaTest;
+    const sig = [custom ? custom.uuid : variant ? 'v' : 's', kind, morph, side, !!m.map, !!m.alphaMap, at > 0, !!m.displacementMap].join('|');
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    let dm = custom || shared;
+    if (variant) {
+      const k = [kind, morph, side, !!m.map, !!m.alphaMap, at > 0, !!m.displacementMap].join('|');
+      if (!variants.has(k)) variants.set(k, shared.clone());
+      dm = variants.get(k);
+    }
+    jobs.push({ o, m, dm, side, at });
+  });
+  const prev = renderer.getRenderTarget();
+  if (target) renderer.setRenderTarget(target);
+  for (const { o, m, dm, side, at } of jobs) {
+    const keep = [o.material, dm.map, dm.alphaMap, dm.alphaTest, dm.side, dm.displacementMap, dm.displacementScale];
+    dm.map = m.map; dm.alphaMap = m.alphaMap; dm.alphaTest = at; dm.side = side;
+    dm.displacementMap = m.displacementMap; dm.displacementScale = m.displacementScale;
+    o.material = dm;
+    try {
+      renderer.compile(o, camera, scene);
+    } catch (e) {
+      // a caster that cannot be compiled out of context simply compiles when first drawn
+    } finally {
+      [o.material, dm.map, dm.alphaMap, dm.alphaTest, dm.side, dm.displacementMap, dm.displacementScale] = keep;
+    }
+  }
+  renderer.setRenderTarget(prev);
+  return jobs.length;
+}
+
 /**
  * Patch the global shadow chunk: cascade count + a sun PCF with a world-space radius,
  * per-cascade normal offset and more taps. Must run before any lit material compiles.

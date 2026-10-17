@@ -6,7 +6,7 @@ import { TRACK_OFFSET } from '../core/config.js';
 import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT } from './atmosphere.js';
 import { Sky } from './sky.js';
 import { Clouds } from './clouds.js';
-import { StreetSunShadow, patchSunShadowChunk } from './sunShadow.js';
+import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms } from './sunShadow.js';
 import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
 import { StreetLights } from './lights.js';
@@ -103,9 +103,74 @@ const env = {
     this._noPost = !app.systems.post || app.params.skip.includes('post');
 
     this._lastHeading = null;
+    this._gpuReady = false;
+    this.sky.allocateEnv();
     this.setTimeOfDay(app.params.tod ?? 0.12);
     this._updateEnvFrame(true);
+    // GPU set-up (LUTs, noise textures, the first environment capture) runs once its
+    // programs have compiled in parallel, while the other modules start up; the first
+    // frame completes it at the latest
+    this._compileOffscreen([...this.atmo.passes(), ...this.sky.passes(), ...this.clouds.passes()], this.atmo.sky)
+      .then(() => this._initGPU(), () => this._initGPU());
+
+    // the depth passes' programs compile alongside the start-up compile: wait for the
+    // streamed world to be primed (it is compiled right after), then submit them
+    if (patched) {
+      const t0 = performance.now();
+      const poll = () => {
+        if (this._shadowsCompiled) return;
+        if (app.perf?.init?.prime !== undefined) this._precompileShadows();
+        else if (performance.now() - t0 < 120000) setTimeout(poll, 25);
+      };
+      setTimeout(poll, 25);
+    }
+  },
+
+  /** Compile off-scene passes on the driver's threads (resolves when they are ready). */
+  _compileOffscreen(meshes, target) {
+    const r = this.app.renderer, prev = r.getRenderTarget();
+    const scene = new THREE.Scene();
+    const parents = meshes.map((m) => m.parent);
+    for (const m of meshes) scene.add(m);
+    let done;
+    try {
+      r.setRenderTarget(target);
+      done = r.compileAsync(scene, this.app.camera);
+    } catch (e) {
+      done = Promise.reject(e);
+    } finally {
+      meshes.forEach((m, i) => { scene.remove(m); if (parents[i]) parents[i].add(m); });
+      r.setRenderTarget(prev);
+    }
+    return done;
+  },
+
+  /** One-time GPU work: fixed LUTs, noise textures, sky, irradiance, first environment map. */
+  _initGPU() {
+    if (this._gpuReady) return;
+    this._gpuReady = true;
+    this.atmo.renderLUTs();
+    this.sky.initGPU();
+    this.clouds.renderNoise();
+    this.atmo.updateSky(this.state.sunDir);
+    this.sky.updateIrradiance(false);
+    this._irrDirty = true;     // read back (asynchronously) on the next update
+    this._irrAge = 1;
     this.sky.requestEnv(true);
+  },
+
+  /** Submit the sun's depth-pass programs for compilation (once; see sunShadow.js). */
+  _precompileShadows() {
+    if (this._shadowsCompiled) return;
+    this._shadowsCompiled = true;
+    const app = this.app, t0 = performance.now();
+    try {
+      const target = app.renderer.getRenderTarget() || app.post?.hdrRT || null;
+      const n = precompileShadowPrograms(app.renderer, app.scene, app.camera, target);
+      if (app.perf) app.perf.shadowPrecompile = { casters: n, ms: Math.round(performance.now() - t0) };
+    } catch (e) {
+      console.warn('[env] shadow precompile', e);
+    }
   },
 
   /** t in [0,1]: 0 midday, 0.55 golden hour, 0.8 sunset, 1 dusk (civil twilight). */
@@ -142,12 +207,15 @@ const env = {
     U.uSunColor.value.setRGB(sunCol.r * Es, sunCol.g * Es, sunCol.b * Es);
     this.sky.uniforms.uSunGround.value.set(sunCol.r * E, sunCol.g * E, sunCol.b * E);
 
-    this.atmo.updateSky(dir);
-    // the GPU irradiance read-back stalls briefly: do it now only the first time, else
-    // defer it (update() refreshes it once the slider settles)
-    const first = !this.sky.irradiance;
-    this.sky.updateIrradiance(first);
-    this._irrDirty = !first;
+    // sky-view LUT and irradiance; the irradiance is read back (asynchronously) by
+    // update() once the time of day has settled, the CPU estimate stands in meanwhile
+    if (this._gpuReady) {
+      this.atmo.updateSky(dir);
+      this.sky.updateIrradiance(false);
+    } else {
+      this.atmo.uniforms.uSunDirA.value.copy(dir);
+    }
+    this._irrDirty = true;
     this._irrAge = 0;
     this._todStamp = (this._todStamp || 0) + 1;
 
@@ -158,7 +226,7 @@ const env = {
     Object.assign(this.state, { t, sunElevation: elev, night });
     this._updateExposure();
     this.solar = solarPosition(t);
-    if (this.sky.envRT) this.sky.requestEnv(false);
+    if (this._gpuReady) this.sky.requestEnv(false);
     app && app.events && app.events.emit('tod', { t });
   },
 
@@ -273,6 +341,8 @@ const env = {
   update(dt, app) {
     const realDt = app.realDt ?? dt;
     const time = app.time;
+    if (!this._gpuReady) this._initGPU();
+    if (!this._shadowsCompiled && this.batcher) this._precompileShadows();
 
     // deferred sky-irradiance read-back once the time of day has settled (asynchronous:
     // a synchronous read would wait for the whole frame queue)

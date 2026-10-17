@@ -4,18 +4,23 @@ import { RNG } from '../../../core/rng.js';
 // Close-up harness for the mobility props in the app's own lighting. Mount it on a running app
 // (the integrator can call it from humans.init when propstest=1, or from the console / capture tool):
 //   import('./src/crowd/humans/props/index.js').then((m) => m.mountPropsTest(window.__app))
+// or open src/crowd/humans/props/test.html?<params> (the full app with this harness mounted).
 // URL parameters (all optional):
 //   pt_mode    line | ride | lods | parked | strollers | mix   (default line)
-//   pt_kind    bike | stroller | all (line / lods)
+//              ride / mix: props moving both ways along the street (pt_n of them over pt_span m)
+//              parked: buildParkedBicycles for the chunks around pt_s (add furniture to only=)
+//   pt_kind    bike | stroller | all (line)
 //   pt_ahead   metres ahead of the view position (default 6), or pt_s = absolute route s
 //   pt_d       lateral centre of the lineup (default: the view's d), pt_sp spacing (m)
 //   pt_axis    d (row across the street, default) | s (row along the street)
-//   pt_rot     extra heading (deg): 0 = facing along the route (the camera sees their backs
-//              when it looks along the route), 180 = facing the camera, 90 = side view
+//   pt_rot     extra heading (deg); 0 = facing +s (a camera looking along the route sees their
+//              backs, one looking across the street (yaw -90 / 90) sees their sides)
 //   pt_variant variant id (city, dutch, road, hybrid, kids, ebike / pushchair, jogger, pram, umbrella)
 //   pt_lod     force a LOD (0..2); pt_t = frozen animation time (s); pt_v = riding speed (m/s)
 //   pt_steer, pt_crank (deg), pt_stand=1 (kickstand down), pt_baby=0|1, pt_seed
-// e.g. ?only=humans,street,post&view=400,1.6,1.4,0,-4&fov=30&pt_mode=line&pt_rot=90&pt_axis=s
+//   pt_attach=1  markers at the rider / pusher contact points (saddle red, grips green, pedals blue)
+// e.g. side views:  ?only=street,post&view=400,2.2,0.9,-90,-2&fov=32&pt_axis=s&pt_sp=2.2&pt_ahead=0&pt_d=5
+//      from the cab: ?only=street,post&view=400,1.6,2.75,0,-3&pt_kind=all&pt_sp=0.95&pt_ahead=14&pt_d=0.6
 
 export function mountPropsTest(app, opts = {}) {
   return import('./index.js').then((M) => new PropsTest(app, M, opts));

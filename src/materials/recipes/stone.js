@@ -42,9 +42,10 @@ vec3 limestone(vec2 m, float hc, inout float h) {
 }
 `;
 
-// shared high-frequency mineral grain (smooth stone, concrete, plaster)
+// shared high-frequency mineral grain (smooth stone, concrete, plaster); 4× anisotropy
+// is plenty, the runtime fades minified detail out anyway
 export const detail = {
-  name: 'detail', flat: [1, 1, 1, 0.8], size: 512, tile: [0.5, 0.5], ss: 2,
+  name: 'detail', flat: [1, 1, 1, 0.8], size: 512, tile: [0.5, 0.5], ss: 2, aniso: 4,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {

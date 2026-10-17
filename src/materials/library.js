@@ -5,8 +5,8 @@
 //   props    three.js material properties
 //   bake     recipe name (recipes/*.js) providing albedo + surface maps
 //   surf     runtime surface settings (see surface.js / surfaceUniforms)
-//   fx       shader feature family (surface.js FAMILY): 'lite' | 'stone' | 'paving'; by
-//            default derived from what the material uses (layout / detail / weathering)
+//   fx       shader feature family (surface.js FAMILY): 'lite' | 'full'; by default
+//            'full' when the material uses a row layout, detail, weathering or lanes
 //   vc       vertex colour meaning for get(name, {vertexColors:true}):
 //            'tint'   multiplier around 1 (per-building stone tint × baked AO)
 //            'albedo' the paint / fabric colour itself (material colour reset to white)
@@ -86,7 +86,6 @@ export const LIBRARY = {
   'paving.street': {
     props: { roughness: 1 },
     bake: 'paving',
-    fx: 'paving',
     surf: {
       swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL,
       spots: { prob: 0.08, radius: 0.011, albedo: 0.5, rough: 0.5 },
@@ -103,7 +102,6 @@ export const LIBRARY = {
   'paving.sidewalk': {
     props: { roughness: 1, color: [1.02, 1.01, 0.99] },
     bake: 'paving',
-    fx: 'paving',
     surf: {
       scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL,
       spots: { prob: 0.14, radius: 0.011, albedo: 0.48, rough: 0.5 },
@@ -115,7 +113,6 @@ export const LIBRARY = {
   'paving.band': {
     props: { roughness: 1 },
     bake: 'band',
-    fx: 'paving',
     surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.07 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.15 }, stain: { amount: 0.12, freq: 0.5, threshold: 0.72 } },
     vc: 'tint',
     meta: { slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
@@ -123,7 +120,6 @@ export const LIBRARY = {
   'paving.platform': {
     props: { roughness: 1 },
     bake: 'platform',
-    fx: 'paving',
     surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0.2, a: [1.02, 1.0, 0.98], b: [0.98, 0.99, 1.02] }, macro: PAVING_MACRO, detail: { ...STONE_DETAIL, albedo: 0.25 }, spots: { prob: 0.12, radius: 0.009, albedo: 0.62, rough: 0.55 } },
     vc: 'tint',
     meta: { slab: [0.4, 0.4], uv: 'u along the platform, v across (m)' },
@@ -131,7 +127,6 @@ export const LIBRARY = {
   'paving.tactile': {
     props: { roughness: 1 },
     bake: 'tactile',
-    fx: 'paving',
     surf: { cell: { value: 0.04, hue: 0, rough: 0.05, row: 0 }, macro: PAVING_MACRO, detail: { ...STONE_DETAIL, normal: 0.3 } },
     vc: 'tint',
     meta: { tile: [0.3, 0.3], uv: 'metres; truncated domes on a 50 mm grid (warning strip at platform edges)' },
@@ -143,7 +138,7 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.05, rough: 0.25, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Satin running band (21-30 mm, silver-grey, roughness 0.22-0.4 with lengthwise streaks and burn, never below 0.08; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075; dull grey edge, brown oxide shoulders (roughness ~0.55, metal 0.6) and dusty steel elsewhere. The base values are final: no roughness multiplier is needed (a multiplier of 1.45 makes the band ~0.3-0.45).',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Satin running band (21-30 mm, silver-grey, roughness 0.22-0.4 with lengthwise streaks and burn, never below 0.08; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075; dull grey edge, brown oxide shoulders (roughness ~0.55, metal 0.6) and dusty steel elsewhere. The base values are final: no roughness multiplier is needed (a multiplier of 1.45 makes the band ~0.32-0.58).',
       band: { centres: [0.043, 0], halfWidth: 0.0125, gaugeCorner: 0.075 },
     },
   },
@@ -360,7 +355,7 @@ export const LIBRARY = {
     bake: 'bark',
     surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.04 } },
     vc: 'tint',
-    meta: { uv: 'u around the trunk, v up (m), tile 0.8 × 1.6 m', note: 'grey-brown bark with broad interlacing furrows (normal + AO relief, up to 7 mm deep), lengthwise splits and subtle pale lenticel dashes (2-5 mm) on the ridges' },
+    meta: { uv: 'u around the trunk, v up (m), tile 0.8 × 1.6 m', note: 'grey-brown bark with broad interlacing furrows (normal + AO relief, 2.5-9 mm deep), lengthwise splits and subtle pale lenticel dashes (2-5 mm) on the ridges' },
   },
   'leaf': {
     props: { color: [0.06, 0.12, 0.028], roughness: 0.55, side: 'double' },

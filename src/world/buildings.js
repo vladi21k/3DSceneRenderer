@@ -22,14 +22,19 @@ import { makeSlab, slabSteps } from './buildings/skyline.js';
 // job is still running gets a coarse stand-in that is swapped for the real shell when
 // the job ends, instead of a long synchronous build.
 
+// sink key -> library material (smoothD: the dressing, the same stone as smooth)
 const MATERIAL = {
-  ashlar: 'stone.ashlar', smooth: 'stone.smooth', rough: 'stone.rough', plaster: 'plaster',
-  tile: 'roof.tile', metal: 'metal.galvanized', glass: 'glass.window', frame: 'paint.frame', membrane: 'roof.membrane',
+  ashlar: 'stone.ashlar', smooth: 'stone.smooth', smoothD: 'stone.smooth', rough: 'stone.rough', plaster: 'plaster',
+  tile: 'roof.tile', glass: 'glass.window',
 };
-const NO_SHADOW = new Set(['glass', 'frame']);   // joinery inside the reveals
-const RUNOFF = new Set(['ashlar', 'smooth', 'rough']);   // weathered stone: per-pixel run-off (aRun)
+const NO_SHADOW = new Set(['glass']);              // glazing inside the reveals
+const THIN = new Set(['smoothD']);                 // centimetre relief: near shadow cascades only
+// the plaster batch holds the dark boxes behind the openings and the backstops behind the
+// walls: drawn after the other opaque work, they are mostly rejected by the depth test
+const LATE = new Set(['plaster']);
+const RUNOFF = new Set(['ashlar', 'smooth', 'smoothD', 'rough']);   // weathered stone: per-pixel run-off (aRun)
 let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
-const BASE_MS = 1.5;               // per-frame generation budget when nothing is urgent
+const BASE_MS = 0.8;               // per-frame generation budget when nothing is urgent
 const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
 const LOOK_FAR = 110;              // far detail is prepared up to this far beyond the view
@@ -64,6 +69,7 @@ const buildings = {
         smooth: grimeStone(app, 'stone.smooth', [0.45, 0.55, 0.12, 0.35]),
         glass: litGlass(app, 'glass.window'),
       };
+      MATS.smoothD = MATS.smooth;
     }
     planBackdrops(app);
     planSkyline(app);
@@ -72,7 +78,8 @@ const buildings = {
     const around = [app.startS, app.startS - CHUNK_LEN / 2];   // the cab may start a little behind startS
     if (app.params.view) around.push(app.params.view[0]);
     for (const s of around) {
-      this.prefetch(app, s, Infinity);
+      // the view (chunks beyond it are prefetched while riding)
+      this.prefetch(app, s, Infinity, 0);
       // the camera starts a few metres from startS: chunks near the full-detail switch
       // get both levels, so the streamer's first build never has to generate inline
       for (const c of candidates(app, s, true)) runJob(app, jobs.get(jobKey(c.idx, c.lod)) || newJob(app, c.idx, c.lod), Infinity);
@@ -128,12 +135,13 @@ const buildings = {
   /**
    * Advance the jobs the streamer will need next, most urgent first: stand-ins on screen,
    * then by metres of travel until the streamer requests each chunk (at the far edge of
-   * the view, or at the full-detail switch). budgetMs null: adaptive (speed, urgency).
+   * the view, or at the full-detail switch). budgetMs null: adaptive (speed, urgency);
+   * lookFar: how far beyond the view to work ahead (m).
    */
-  prefetch(app, sCam, budgetMs) {
+  prefetch(app, sCam, budgetMs, lookFar = LOOK_FAR) {
     const t0 = performance.now();
     const spent = () => performance.now() - t0;
-    const cands = candidates(app, sCam);
+    const cands = candidates(app, sCam, false, lookFar);
     if (budgetMs == null) {
       const v = Math.abs(app.train?.speed ?? 10);
       // generation needed per second of travel, with headroom, spread over this frame
@@ -175,10 +183,10 @@ function lotLod(lot, chunkLod) {
  * Unfinished jobs worth advancing now, sorted by metres of travel until the streamer
  * asks for them (0 = asked for already, or will be any moment).
  */
-function candidates(app, sCam, boundary = false) {
+function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
   const W = app.world, n = app.layout.nChunks;
   const iEnd = Math.floor((sCam + VIEW_AHEAD) / CHUNK_LEN);
-  const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + VIEW_AHEAD + LOOK_FAR) / CHUNK_LEN);
+  const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + VIEW_AHEAD + lookFar) / CHUNK_LEN);
   const out = [];
   for (let i = i0; i <= i1; i++) {
     const idx = ((i % n) + n) % n;
@@ -289,6 +297,8 @@ function fillGroup(app, group, res) {
     const mesh = new THREE.Mesh(g, MATS[key] || app.materials.get(MATERIAL[key] || 'stone.ashlar', { vertexColors: true }));
     mesh.name = `buildings:${key}`;
     mesh.castShadow = !NO_SHADOW.has(key);
+    if (THIN.has(key)) mesh.userData.thinCaster = true;
+    if (LATE.has(key)) mesh.renderOrder = 1;
     mesh.receiveShadow = true;
     mesh.matrixAutoUpdate = false;
     group.add(mesh);

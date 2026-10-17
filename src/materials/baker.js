@@ -10,7 +10,8 @@ import { HASH_GLSL, LAYOUT_GLSL, NOISE_GLSL } from './glsl/common.js';
 // normal detail lost in the mips into roughness (specular anti-aliasing). Recipes with
 // `mask` store a mask there instead: 'metal' → s.metal, 'paint' → s.cover (paint
 // coverage: 0 where chips show the undercoat or bare wood).
-// `raw` recipes write pass A straight into a half-float texture (macro noise).
+// `raw` recipes write pass A straight into a half-float texture (macro noise). `aniso`
+// caps the anisotropic filtering of a map (default: the device maximum).
 
 const VERT = /* glsl */ `
 in vec3 position;
@@ -161,7 +162,7 @@ export class Baker {
       type: THREE.UnsignedByteType, format: THREE.RGBAFormat,
       wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping,
       minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: true,
-      anisotropy: this.maxAniso,
+      anisotropy: Math.min(r.aniso ?? 16, this.maxAniso),
     });
     rt.textures.forEach((t, i) => {
       t.name = `${r.name}.${r.raw ? 'raw' : i === 0 ? 'albedo' : 'surface'}`;

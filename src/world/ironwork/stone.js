@@ -27,11 +27,11 @@ export function slabProfile(T, variant, lod) {
 }
 
 /** Plan outline of a balcony slab: wall-left, front-left, front-right, wall-right, with an
- *  optional corner radius. The ends run 0.25 m into the wall so door recesses get a floor. */
-export function slabPath(u0, u1, depth, rc = 0, into = 0.25) {
+ *  optional corner radius (`n` segments per corner). The ends run 0.25 m into the wall so
+ *  door recesses get a floor. */
+export function slabPath(u0, u1, depth, rc = 0, into = 0.25, n = 5) {
   if (rc <= 0.01) return [[u0, -into], [u0, depth], [u1, depth], [u1, -into]];
   const p = [[u0, -into], [u0, depth - rc]];
-  const n = 5;
   for (let i = 1; i < n; i++) { const a = Math.PI - (i / n) * Math.PI / 2; p.push([u0 + rc + Math.cos(a) * rc, depth - rc + Math.sin(a) * rc]); }
   p.push([u0 + rc, depth], [u1 - rc, depth]);
   for (let i = 1; i < n; i++) { const a = Math.PI / 2 - (i / n) * Math.PI / 2; p.push([u1 - rc + Math.cos(a) * rc, depth - rc + Math.sin(a) * rc]); }
@@ -60,12 +60,12 @@ export function writeSlab(W, path, y, T, variant, lod, dirt = 1, depth = 1) {
   W.kind(GRIME.NONE);
 }
 
-/** Shadow-caster outline of the slab edge: points of the drawn profile only (every other
- *  point of the ovolo), so its chords lie inside the convex mouldings and the caster never
- *  stands proud of the stone it shades; the outlines differ by a few millimetres. */
+/** Shadow-caster outline of the slab edge: points of the drawn profile only (the ovolo
+ *  reduced to its chord), so the caster never stands proud of the stone it shades; the
+ *  outlines differ by a centimetre at most. */
 function slabShadowProfile(T, variant, lod) {
   const p = slabProfile(T, variant, lod);
-  return lod || variant === 1 ? p : p.filter((_, i) => i !== 4 && i !== 6);
+  return lod || variant === 1 ? p : [p[0], p[1], p[2], p[3], p[7], p[9]];
 }
 
 /** Position-only slab (shadow caster) into S (matrix = facade frame): the edge sweep with

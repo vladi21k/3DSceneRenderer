@@ -126,7 +126,7 @@ void surface(vec2 m, inout Surf s) {
   float deep = smoothstep(th + 0.008, th + 0.018, fl);
   // bead lines: paint ridges along u at irregular spacing
   float bv = m.y * 30.0 + fbm2(m, vec2(1.0, 2.0), 2, 0.5, 418u) * 0.6;
-  float bead = (1.0 - smoothstep(0.02, 0.06, abs(fract(bv) - 0.5))) * step(0.55, sfHash(ivec2(int(floor(bv)), 0), 419u));
+  float bead = (1.0 - smoothstep(0.02, 0.06, abs(fract(bv) - 0.5))) * step(0.55, sfHash(ivec2(sfMod(int(floor(bv)), 30), 0), 419u));
   vec3 paintC = vec3(0.9) * (1.0 + 0.04 * fbm(m, 10.0, 3, 0.5, 420u) + 0.02 * brush - 0.04 * dust) * (1.0 - 0.35 * crack) * (1.0 + 0.06 * bead) * (1.0 - 0.1 * lip);
   vec3 primer = vec3(0.44, 0.43, 0.4) * (1.0 + 0.04 * dust);
   vec3 wood = mix(vec3(0.42, 0.37, 0.31), vec3(0.3, 0.26, 0.21), late);  // grey weathered wood

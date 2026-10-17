@@ -33,9 +33,9 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   };
   const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.8, sillExt: 0.11, sillH: 0.06 });
   if (!sinks.glass) sinks.glass = B.sink('glass');
-  if (!sinks.frame) sinks.frame = B.sink('frame');
+  if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery
   const ctx = {
-    B, sinks: { ...sinks, ashlar: sWall, smooth: sTrim, rough: null }, q, fs, orn: plainOrnament(orn),
+    B, sinks: { ...sinks, ashlar: sWall, smooth: sTrim, detail: sTrim, rough: null }, q, fs, orn: plainOrnament(orn),
     vBottom: v0 - 0.02, vTop: top, rustic: null, sillExt: 0.11, ch: 0, fit: null,
   };
   B.frameFromLot(up.frame);

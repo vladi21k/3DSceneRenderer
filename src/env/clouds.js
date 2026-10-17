@@ -55,7 +55,8 @@ void main() {
 }
 `;
 
-function makeNoise3D(renderer, size = 64) {
+/** Tileable 3D noise target and the pass that fills it (rendered by renderNoise3D). */
+function makeNoise3D(size = 64) {
   const rt = new THREE.WebGL3DRenderTarget(size, size, size, {
     format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: false,
     minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false,
@@ -68,16 +69,19 @@ function makeNoise3D(renderer, size = 64) {
   });
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
   quad.frustumCulled = false;
+  return { rt, quad, size };
+}
+
+function renderNoise3D(renderer, { rt, quad, size }) {
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const prev = renderer.getRenderTarget();
   for (let z = 0; z < size; z++) {
-    mat.uniforms.uLayer.value = z;
+    quad.material.uniforms.uLayer.value = z;
     renderer.setRenderTarget(rt, z);
     renderer.render(quad, cam);
   }
   renderer.setRenderTarget(prev);
-  mat.dispose(); quad.geometry.dispose();
-  return rt;
+  quad.material.dispose(); quad.geometry.dispose();
 }
 
 /**
@@ -266,7 +270,8 @@ void main() {
 export class Clouds {
   constructor(renderer, skyUniforms, { steps = 44 } = {}) {
     this.renderer = renderer;
-    this.noise3D = makeNoise3D(renderer, 64);
+    this._noiseJob = makeNoise3D(64);
+    this.noise3D = this._noiseJob.rt;
     // shared with the sky (its environment capture marches the same clouds)
     if (skyUniforms.uNoise3D) skyUniforms.uNoise3D.value = this.noise3D.texture;
     this.uniforms = {
@@ -302,6 +307,16 @@ export class Clouds {
     }));
     this.resolveQuad.frustumCulled = false;
     this._rot = new THREE.Matrix4();
+  }
+
+  /** The off-scene passes (for compiling them up front). */
+  passes() { return [this.quad, this.resolveQuad, ...(this._noiseJob ? [this._noiseJob.quad] : [])]; }
+
+  /** Fill the 3D noise texture (once, before the clouds are first drawn). */
+  renderNoise() {
+    if (!this._noiseJob) return;
+    renderNoise3D(this.renderer, this._noiseJob);
+    this._noiseJob = null;
   }
 
   setSize(w, h) {

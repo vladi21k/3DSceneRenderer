@@ -24,9 +24,11 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //   N  night emissive: scaled by U.uNight × emissive gain, optional rim falloff
 //   G  thin glass: reflections are not attenuated by opacity (premultiplied blend)
 // Features come in families (FAMILY below) so that materials drawn with the same three.js
-// variant share programs: 'stone' (stone, concrete, plaster, roof tiles), 'paving' and
-// 'lite'. Inside a program everything is switched by uniforms (coherent per draw, so the
-// branches are free). surface.b is the normal moment (its mip-mapped excess becomes
+// variant share programs: 'full' (stone, paving, concrete, plaster, roof tiles) and 'lite'.
+// Two families beat finer ones: a street or facade batch mixes paving and stone, and one
+// extra program costs more to compile than the unused feature code it would save. Inside
+// a program everything is switched by uniforms (coherent per draw, so the branches are
+// free). surface.b is the normal moment (its mip-mapped excess becomes
 // roughness), a metal mask or a paint coverage mask (chips show the baked undercoat /
 // bare wood instead of the paint colour).
 
@@ -155,22 +157,19 @@ const mapLayout = (f) => /* glsl */ `
     // block tint, box-filtered along u over the pixel footprint: at distance blocks
     // blend into their neighbours instead of fading to the mean, so the patchwork of
     // block tones survives on oblique facades
-    vec3 cellT = sfTintOf(sfCh, 1.0, 1.0);
     float hw = 0.75 * sfFoot.x;
-    if (hw > 0.02 * (b1 - b0)) {
-      float L = sfTile.z / float(n);
-      float x0 = lx - hw, x1 = lx + hw;
-      float ws = max(0.0, min(x1, b1) - max(x0, b0));
-      vec3 acc = cellT * ws;
-      for (int j = -sfOne; j <= sfOne; j += 2) {
-        float lo = j < 0 ? sfSegB(r, k - 1, n, L, sfLay2) : b1;
-        float hi = j < 0 ? b0 : sfSegB(r, k + 2, n, L, sfLay2);
-        float wj = max(0.0, min(x1, hi) - max(x0, lo));
-        acc += sfTintOf(sfH2(rg, gi + j, cs), 1.0, 1.0) * wj;
-        ws += wj;
-      }
-      cellT = (acc + vec3(max(0.0, 2.0 * hw - ws))) / (2.0 * hw);
+    int jn = hw > 0.02 * (b1 - b0) ? sfOne : 0;   // near: the block itself, far: and its neighbours
+    float L = sfTile.z / float(n);
+    float x0 = lx - hw, x1 = lx + hw, ws = 0.0;
+    vec3 cellT = vec3(0.0);
+    for (int j = -jn; j <= jn; j++) {
+      float lo = j == 0 ? b0 : (j < 0 ? sfSegB(r, k - 1, n, L, sfLay2) : b1);
+      float hi = j == 0 ? b1 : (j < 0 ? b0 : sfSegB(r, k + 2, n, L, sfLay2));
+      float wj = jn == 0 ? 1.0 : max(0.0, min(x1, hi) - max(x0, lo));
+      cellT += sfTintOf(j == 0 ? sfCh : sfH2(rg, gi + j, cs), 1.0, 1.0) * wj;
+      ws += wj;
     }
+    if (jn > 0) cellT = (cellT + vec3(max(0.0, 2.0 * hw - ws))) / (2.0 * hw);
     sfTint = mix(vec3(1.0), sfTintOf(rh, sfCell.w, 0.0) * cellT, fRow);
     sfRoughMul = 1.0 + sfCell.z * (sfHf(sfH(sfCh + 5u)) * 2.0 - 1.0) * fSeg;
     vec2 cl = vec2(lx - b0, sfUv.y - rgF * rowH);
@@ -461,16 +460,14 @@ function patchVertex(src, f) {
 // when they share a family, so families are few and broad
 export const FAMILY = {
   lite: '',
-  stone: 'LJDRW',      // stone, concrete, render, roof tiles
-  paving: 'LJPDK',     // setts, slabs, bands, platforms
+  full: 'LJPDRWK',
 };
 
 /** Feature family of a library definition: explicit `fx`, else from what it uses. */
 export function familyOf(def, recipe) {
   if (def.fx) return def.fx;
   const s = def.surf || {};
-  if (s.lanes || s.spots) return 'paving';
-  return recipe?.layout || s.detail || s.weather ? 'stone' : 'lite';
+  return recipe?.layout || s.detail || s.weather || s.lanes ? 'full' : 'lite';
 }
 
 const v4 = (a = [0, 0, 0, 0]) => new THREE.Vector4(...a);
@@ -562,11 +559,11 @@ export function applySurface(mat, sf) {
   const features = (m) => {
     const surf = !!(sf.textures && m && m.map === sf.textures.albedo && m.normalMap === sf.textures.surface);
     const has = (c) => surf && fam.includes(c);
+    const layout = has('L'), detail = has('D'), lanes = has('K');
     const f = {
-      surf, layout: has('L'), joint: has('J'), spots: has('P'), detail: has('D'), dress: has('R'), weather: has('W'), lanes: has('K'),
-      trans: !!sf.trans, night: !!sf.night, glass: surf && !!sf.glass,
+      surf, layout, detail, lanes, joint: layout && has('J'), spots: layout && has('P'), dress: layout && detail && has('R'), weather: has('W'),
+      laneAttr: lanes && !!m.laneAttr, trans: !!sf.trans, night: !!sf.night, glass: surf && !!sf.glass,
     };
-    f.laneAttr = f.lanes && !!m.laneAttr;
     f.key = 'sf7' + (surf ? 'S' + fam : '') + (f.laneAttr ? 'A' : '') + (f.trans ? 'T' : '') + (f.night ? 'N' : '') + (f.glass ? 'G' : '');
     return f;
   };

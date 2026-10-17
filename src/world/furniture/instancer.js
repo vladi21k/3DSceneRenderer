@@ -5,7 +5,8 @@ import * as THREE from 'three';
 // the whole streamed range renders in about one multi-draw call per material, with
 // per-instance frustum culling. A chunk build adds instances through a writer bound to
 // the chunk's returned Object3D; instances become visible together with the chunk group
-// and are freed on dispose. A batch with nothing to show is not drawn at all.
+// and are freed on dispose. Once the app is running (hideEmpty, after the programs were
+// compiled up front), a batch with nothing to show is not drawn at all.
 //
 // Shadows: every shadow-casting part also gets a twin instance in one shared depth-only
 // BatchedMesh (furniture:shadow), so all furniture casts in one multi-draw call per
@@ -116,6 +117,7 @@ export class BatchSet {
     // depth-only twins of the shadow-casting parts (see header)
     this.shadow = { key: '|shadow', geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null };
     this._frustums = {};
+    this.hideEmpty = false;
   }
 
   /** Register every prototype found in a (nested) object/array tree. */
@@ -177,13 +179,15 @@ export class BatchSet {
       patchFade(b.mat);
       const bm = new THREE.BatchedMesh(Math.max(64, Math.ceil(capacity(b))), nv, ni, b.mat);
       for (const [g, gg] of prepared) b.geos.set(g, bm.addGeometry(gg));
+      // colour texture from the start, so the programs compiled up front (empty batches)
+      // are the ones used later
+      if (bm._initColorsTexture && !bm._colorsTexture) bm._initColorsTexture();
       bm.name = `${this.name}:${b.mat.name}`;
       bm.frustumCulled = false;            // instances span the whole route; culled per instance
       bm.perObjectFrustumCulled = true;
       bm.sortObjects = !!b.mat.transparent;
       bm.castShadow = false;               // the shadow twins cast
       bm.receiveShadow = true;
-      bm.visible = false;
       const before = bm.onBeforeRender.bind(bm);
       bm.onBeforeRender = (...a) => { sync(); before(...a); };
       b.bm = bm;
@@ -213,7 +217,6 @@ export class BatchSet {
     bm.name = `${this.name}:shadow`;
     bm.castShadow = true;
     bm.receiveShadow = false;
-    bm.visible = false;
     bm.perObjectFrustumCulled = true;
     // drawn in the light's shadow cascades only (never in the view), and only in the
     // cascades the light redraws this frame
@@ -398,6 +401,7 @@ export class BatchSet {
 
   /** Batches with nothing to show are not drawn (no empty multi-draw calls). */
   _showBatches() {
+    if (!this.hideEmpty) return;
     for (const b of this.batches.values()) if (b.bm) b.bm.visible = b.shown > 0;
     if (this.shadow.bm) this.shadow.bm.visible = this.shadow.shown > 0;
   }

@@ -195,7 +195,7 @@ export function cafeStyle(cafe, app) {
   }
   st.frameWood = rng.chance(0.4);
   st.screen = srgb(rng.pick(SCREEN_COL));
-  st.plan = planCafe(cafe, app.route, seed, st.base);
+  st.plan = planCafe(cafe, app.route, seed, st.base, app.layout);
   for (const c of st.plan.chairs) {
     const ch = cafe.tables[c.ti].chairs[c.ci];
     ch.s = c.s; ch.d = c.d; ch.yaw = c.yaw;

@@ -22,8 +22,12 @@ import { partyWalls } from './party.js';
  * where 200 m is ~5.5 cm per pixel, so the far level keeps every moulding profile, hood,
  * keystone and the baked occlusion rows (no popping at the switch) and only drops what
  * is sub-pixel there: bevels, voussoir joints, dentil and baluster geometry (replaced by
- * shaded bands), V joints, steps, reveal interiors, and the fitting of the ashlar head
- * joints to the openings (6 mm joints are far below a pixel there).
+ * shaded bands), V joints, steps, reveal interiors, the fitting of the ashlar head
+ * joints to the openings (6 mm joints are far below a pixel there), and the sides of
+ * the dressing (flat: surrounds, rings, sills and quoins are their front faces). Arched
+ * heads take the facade infill's own segment count there (archSegments). The stone's
+ * soft patches and the run-off below sills and balconies are shaded per pixel at both
+ * levels.
  */
 export const DETAIL = {
   0: { lod: 0, archSeg: 14, voussoirs: true, bevel: true, interior: true, dentils: true, modillions: true, balusters: true, rustic: true, steps: true, fit: true, flat: false, gridU: 1.6, gridV: 0.9, rooftop: true },
@@ -67,12 +71,16 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const rustH = metas.rough && (metas.rough.courseH ?? metas.rough.rowH ?? metas.rough.layout?.rowH);
   B.begin();
   const sinks = {
-    ashlar: B.sink('ashlar'), smooth: B.sink('smooth'), rough: B.sink('rough'), dark: B.sink('plaster'), paint: B.sink('plaster'),
-    tile: B.sink('tile'), metal: B.sink(q.lod ? 'plaster' : 'metal'), // far: rooftop metal joins the plaster batch
+    // smooth: trim that casts shadows in every cascade (reveals, mouldings, parapets);
+    // detail: the dressing, a thin shadow caster (its relief is a few centimetres)
+    ashlar: B.sink('ashlar'), smooth: B.sink('smooth'), detail: B.sink('smoothD'), rough: B.sink('rough'),
+    dark: B.sink('plaster'), paint: B.sink('plaster'), tile: B.sink('tile'),
+    metal: B.sink('plaster'),        // rooftop metalwork, small and far above the street: painted
   };
   const cor = plan.cornice, par = plan.parapet;
   const vTop = cor.y + 0.06;
-  const gMin = Math.min(plan.ground0, plan.ground1);
+  // lowest paving around the building (corner returns follow the side street)
+  const gMin = Math.min(plan.ground0, plan.ground1, ...(plan.returns || []).map((r) => Math.min(r.ground0, r.ground1)));
   const flatRoof = plan.roof.type !== 'tile';
   const bev = q.bevel ? 0.012 : 0;
 
@@ -172,11 +180,11 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.04);
     if (plan.style.pilasters && plan.floors.length > 2) {
       const v0 = plan.courses[0].y + plan.courses[0].h;
-      for (const b of face.bays) if (b.index > 0 && b.u0 > ctx.uMin + 0.6 && b.u0 < ctx.uMax - 0.6) pilaster(B, sinks.smooth, b.u0, orn.pilW, orn.pilP, v0, cor.y, bev, q.lod === 0);
+      for (const b of face.bays) if (b.index > 0 && b.u0 > ctx.uMin + 0.6 && b.u0 < ctx.uMax - 0.6) pilaster(B, sinks.detail, b.u0, orn.pilW, orn.pilP, v0, cor.y, bev, q.lod === 0);
     }
     // quoins on a corner return (the front's column wraps the arris; these interlock with it)
     if (!F.main && !face.isCut && plan.style.quoins) {
-      quoins(B, sinks.smooth, face.width, face.cornerAtU1 ? 1 : 0, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, false, bev, { parity: 1, seed: lot.seed + 31, flat: q.flat });
+      quoins(B, sinks.detail, face.width, face.cornerAtU1 ? 1 : 0, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, false, bev, { parity: 1, seed: lot.seed + 31, flat: q.flat });
     }
     // plinth segments between ground-floor openings
     B.mark('pilasters');
@@ -220,8 +228,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
   B.frameFromLot(f);
   B.setUV();
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.05);
-  if (cor.dentils && q.dentils) dentils(B, sinks.smooth, uMin + 0.05, uMax - 0.05, cor.y, ck.dentil, true);
-  if (orn.modillions) modillions(B, sinks.smooth, uMin + 0.25, uMax - 0.25, cor.y, cor.h, cor.proj, orn.modSpacing, q.modillions);
+  if (cor.dentils && q.dentils) dentils(B, sinks.detail, uMin + 0.05, uMax - 0.05, cor.y, ck.dentil, true);
+  if (orn.modillions) modillions(B, sinks.detail, uMin + 0.25, uMax - 0.25, cor.y, cor.h, cor.proj, orn.modSpacing, q.modillions);
   B.mark('mouldings');
 
   // quoins at the street corners
@@ -231,7 +239,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (x.cut) continue;
       const wrap = q.lod === 0 && (x.corner || !x.nb || x.front > 0.03);
       // at a street corner the return face carries its own interlocking column
-      quoins(B, sinks.smooth, W, e, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, wrap, bev, { retFace: !x.corner, seed: lot.seed, flat: q.flat });
+      quoins(B, sinks.detail, W, e, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, wrap, bev, { retFace: !x.corner, seed: lot.seed, flat: q.flat });
     }
   }
 
@@ -288,7 +296,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.sweep(sinks.ashlar, parapetProfile(0.85), [E[1].back, E[0].back], pv, [true, true]);
     // roof deck (bituminous membrane), clockwise: negative insets
     B.shade = null;
-    roofDeck(B, q.lod ? sinks.paint : B.sink('membrane'), insetPolygon(foot.flat(), -0.3), pv + 0.06, q, lot.seed);
+    roofDeck(B, sinks.paint, insetPolygon(foot.flat(), -0.3), pv + 0.06, q, lot.seed);
     B.mark('parapet');
     yield;
     if (plan.upper) { yield* upperVolume(B, sinks, lot, plan, orn, tint, q, orn.dirt); B.mark('upper'); }
@@ -422,7 +430,7 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
       if (!x.cut) continue;
       const [d0, d1] = cutDoor(x), g = face.groundAt(e ? W : 0);
       const path = e ? [d1, x.cut.T, pt(1, x.cut.cr + p)] : [pt(0, x.cut.cr + p), x.cut.S, d0];
-      B.sweep(sinks.smooth, plinthProfile(g + orn.plinthH, p, fg - 0.35), path, 0, [true, true]);
+      B.sweep(sinks.detail, plinthProfile(g + orn.plinthH, p, fg - 0.35), path, 0, [true, true]);
     }
   }
   for (let [s0, s1] of segs) {
@@ -448,7 +456,7 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
         else { const r = ret(E[1]); if (r) path.push(pt(1, r)); }
       }
     }
-    B.sweep(sinks.smooth, prof, path, 0, [true, true]);
+    B.sweep(sinks.detail, prof, path, 0, [true, true]);
   }
 }
 
@@ -577,10 +585,14 @@ function* rooftop(B, sinks, lot, plan, orn, v0, q, tint, foot, par) {
   B.flat = [1, 1, 1];
 }
 
-/** Roof deck: bituminous membrane laid in strips (per-strip tone), with drain outlets. */
+/**
+ * Roof deck: bituminous membrane laid in strips (per-strip tone), with drain outlets, in
+ * the plaster batch (darkened to the membrane's tone).
+ */
+const DECK = 0.68;
 function roofDeck(B, s, poly, v, q, seed) {
   if (poly.length !== 8) {
-    B.flat = [0.62, 0.61, 0.6].map((c) => c * (q.lod ? 0.68 : 1));
+    B.flat = [0.62, 0.61, 0.6].map((c) => c * DECK);
     B.polyV(s, poly, v);
     B.flat = [1, 1, 1];
     return;
@@ -594,14 +606,14 @@ function roofDeck(B, s, poly, v, q, seed) {
     return [x0 + (x1 - x0) * b, y0 + (y1 - y0) * b];
   };
   for (let i = 0; i < nu; i++) for (let j = 0; j < nw; j++) {
-    const k = (0.94 + 0.12 * hash3(i, j, seed)) * (q.lod ? 0.68 : 1);   // far: in the plaster batch
+    const k = (0.94 + 0.12 * hash3(i, j, seed)) * DECK;
     B.flat = [0.62 * k, 0.61 * k, 0.6 * k];
     const a = at(i / nu, j / nw), b = at((i + 1) / nu, j / nw), c = at((i + 1) / nu, (j + 1) / nw), d = at(i / nu, (j + 1) / nw);
     B.polyV(s, [a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]], v);
   }
   if (!q.lod) {
     // drain outlets near the back corners: dark stained patches
-    B.flat = [0.22, 0.22, 0.22];
+    B.flat = [0.15, 0.15, 0.15];
     for (const t of [0.12, 0.88]) {
       const c = at(t, 0.93);
       B.polyV(s, [c[0] - 0.25, c[1] + 0.25, c[0] + 0.25, c[1] + 0.25, c[0] + 0.25, c[1] - 0.25, c[0] - 0.25, c[1] - 0.25], v + 0.004);

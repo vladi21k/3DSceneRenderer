@@ -330,7 +330,9 @@ void hSkin(out vec3 P, out vec3 N) {
         // bulge there against the snug sleeve cap reads as a raglan crease). Across the back it
         // reaches up to the shoulders: the cloth spans the shoulder blades, the hollows between
         // them and the spine, and the lats, instead of showing every muscle
-        float backW = smoothstep(cz, cz + 0.03 * sc, position.z) * (1.0 - smoothstep(0.55, 0.85, abs(position.x) / uShoulder.x));
+        // (only where the skin faces backwards: on top of the shoulders the push would go upwards)
+        float backW = smoothstep(cz, cz + 0.03 * sc, position.z) * (1.0 - smoothstep(0.55, 0.85, abs(position.x) / uShoulder.x))
+          * smoothstep(0.35, 0.75, nrm.z);
         float fadeUp = mix(smoothstep(h0.x + 0.05 * sc, h0.x - 0.03 * sc, y), smoothstep(uShoulder.y + 0.01 * sc, uShoulder.y - 0.07 * sc, y), backW);
         hang *= fadeUp
           * (1.0 - smoothstep(0.62, 0.9, abs(position.x) / uShoulder.x) * smoothstep(h0.x - 0.16 * sc, h0.x - 0.04 * sc, y));

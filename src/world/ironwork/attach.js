@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GeoWriter, box, lathe, sweepBar, shared, posTemplate } from './geo.js';
+import { GeoWriter, PosWriter, box, boxPos, lathe, sweepBar, shared, posTemplate } from './geo.js';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
 import { uIronA2C } from './mats.js';
@@ -578,6 +578,17 @@ function dishTemplate() {
   return template(W, WHITE_UV);
 }
 
+/** The dish's shadow caster: an eight-sided shallow cone (both faces: the depth pass
+ *  draws back faces), the LNB and the wall arm. */
+function dishCaster() {
+  const S = new PosWriter(), R = 0.32, c = S.v(0, 0, 0), ring = [];
+  for (let j = 0; j < 8; j++) { const a = (j / 8) * Math.PI * 2; ring.push(S.v(Math.cos(a) * R, Math.sin(a) * R, 0.07)); }
+  for (let j = 0; j < 8; j++) { S.tri(c, ring[j], ring[(j + 1) % 8]); S.tri(c, ring[(j + 1) % 8], ring[j]); }
+  boxPos(S, 0, -R * 0.15, 0.32, 0.05, 0.08, 0.06);
+  boxPos(S, 0, -0.05, -0.12, 0.05, 0.05, 0.2);
+  return { P: S.P.slice(0, S.n * 3), I: S.I.slice(0, S.ni), n: S.n };
+}
+
 /** Moulded plastic balcony chair (origin at the floor, facing +z). */
 function chairTemplate() {
   const W = new GeoWriter();
@@ -663,14 +674,9 @@ export function buildAttachAssets() {
   A.cast = new Map([[A.acBody, posTemplate(A.acBody)]]);
   A.thin = new Map([A.box, A.chair, A.towel, A.pole, A.acBrackets, A.acPipes].map((t) => [t, posTemplate(t)]));
   // the pot's caster: a coarse cone through its foot, belly and rim (chords inside)
-  let W = new GeoWriter();
+  const W = new GeoWriter();
   lathe(W, [[0.084, 0], [0.118, 0.186], [0.134, 0.224], [0.0001, 0.215]], 6);
   A.thin.set(A.pot, posTemplate(W));
-  // the dish's: its rim disc, the LNB and the wall arm
-  W = new GeoWriter();
-  lathe(W, [[0.0001, 0], [0.32, 0.07]], 8);
-  W.setMatrix(new THREE.Matrix4().makeRotationX(Math.PI / 2));
-  W.P.copyWithin(0, 0, 0); // (lathe is along +y: turned to face +z below)
   A.thin.set(A.dish, dishCaster());
   return A;
 }

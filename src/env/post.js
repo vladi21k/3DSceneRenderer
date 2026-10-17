@@ -256,7 +256,7 @@ const post = {
     const bu = this.blur.material.uniforms;
     bu.tSrc.value = this.hdrRT.texture; bu.tDepth.value = this.sceneRT.depthTexture;
     this._draw(this.blur, this.dofRT);
-    if (env && env.sky && env.sky.envRT && env.sky._capStep < 0) env.sky._pmremSwap();
+    if (env && env.sky && env.sky.warmCopy) env.sky.warmCopy();
     r.setRenderTarget(prev);
   },
 

@@ -9,8 +9,9 @@ import { SIDE_LOT_START } from '../layout.js';
 // slight crown and darker wheel tracks, gullies at the kerbs, a manhole and oil stains,
 // a zebra crossing at the mouth and a dashed centre line further out. The first row reuses the exact mouth
 // points of the main sidewalk so the two surfaces meet without a seam. From there the
-// side street ramps linearly to its own level (the junction's, where the side-street
-// lots stand) over the corner returns, which end SIDE_LOT_START out.
+// side street ramps linearly, over the corner returns (which end SIDE_LOT_START out),
+// to the ground its side-street lots stand on (their frames' ground at both facade
+// lines, interpolated across the street).
 // Also the pedestrian crossing over the tram corridor at the junction (zebra stripes
 // between the rails) with tactile warning strips at both corridor edges.
 
@@ -35,6 +36,26 @@ export function sideColumns(c) {
   return [-half, -half + 0.7, -road - KERB_W, -road - 0.001, -road, -road * 0.5, 0, road * 0.5, road, road + 0.001, road + KERB_W, half - 0.7, half];
 }
 
+/** Ground of a side street at its two facade lines ([a < 0, a > 0], world y): the
+ *  frames of the first side-street lots on each edge, else `flat`. */
+function sideLevel(ctx, c, side, flat) {
+  const key = c.s * 4 + side;
+  let v = LEVELS.get(key);
+  if (!v) {
+    v = [flat, flat];
+    for (const edge of [-1, 1]) {
+      let first = null;
+      for (const lot of ctx.layout.sideLots) {
+        if (lot.cross === c && lot.side === side && lot.edge === edge && (!first || lot.x0 < first.x0)) first = lot;
+      }
+      if (first) v[edge > 0 ? 1 : 0] = Math.min(first.frame.ground0, first.frame.ground1);
+    }
+    LEVELS.set(key, v);
+  }
+  return v;
+}
+const LEVELS = new Map();
+
 /** Height profile of the side street relative to the blended base level. */
 function localH(a, x, road) {
   const ramp = smooth((x - 2.5) / 5);
@@ -53,7 +74,8 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const xStep = lod === 0 ? 6 : 15;
   for (let x = SIDE_LOT_START + xStep; x < m.len; x += xStep) xs.push(x);
   xs.push(m.len);
-  const yFlat = m.start.y + SIDEWALK_RISE;
+  const level = sideLevel(ctx, c, side, m.start.y + SIDEWALK_RISE);
+  const target = (a) => level[0] + (level[1] - level[0]) * Math.max(0, Math.min(1, (a + half) / (2 * half)));
   const cols = [-half - 0.8, ...sideColumns(c), half + 0.8];
   const nc = cols.length, nr = xs.length;
 
@@ -85,7 +107,7 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
         pz = m.start.z + m.along.z * a + m.dirOut.z * x;
       }
       P[o] = px; P[o + 2] = pz;
-      P[o + 1] = base[j] + (yFlat - base[j]) * k + localH(a, x, road);
+      P[o + 1] = base[j] + (target(a) - base[j]) * k + localH(a, x, road);
     }
   }
 
@@ -165,7 +187,7 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     while (j < nc - 2 && cols[j + 1] < a) j++;
     const t = (a - cols[j]) / (cols[j + 1] - cols[j] || 1);
     const b0 = base[j] + (base[j + 1] - base[j]) * Math.max(0, Math.min(1, t));
-    return [m.start.x + m.along.x * a + m.dirOut.x * x, b0 + (yFlat - b0) * k + localH(a, x, road) + lift, m.start.z + m.along.z * a + m.dirOut.z * x];
+    return [m.start.x + m.along.x * a + m.dirOut.x * x, b0 + (target(a) - b0) * k + localH(a, x, road) + lift, m.start.z + m.along.z * a + m.dirOut.z * x];
   };
   const rx = -m.dirOut.z, rz = m.dirOut.x; // right of the side street direction
   const nStripes = Math.max(2, Math.round((2 * road - 0.4) / 1.0));

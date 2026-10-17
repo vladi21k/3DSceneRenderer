@@ -10,10 +10,10 @@ import { arcSeg } from './mesh.js';
 // undersides). Each row is covered by runs of quads between the openings, split where
 // the run-off occluder above changes (the run-off and the soft patches of the stone are
 // shaded per pixel, see shade.js), and near a sloping pavement every gridU metres (the
-// splash zone follows the paving). Arched heads get spandrel
-// strips between the curve and the head line. Rows do not share vertices (T-junctions
-// are hidden by a dark backstop behind the wall). The ground floor may be rusticated:
-// banded courses with deep V joints in stone.rough.
+// splash zone follows the paving). Arched heads get spandrel strips between the curve
+// and the head line. Rows do not share vertices (T-junctions are hidden by a dark
+// backstop behind the wall). The ground floor may be rusticated: banded courses with
+// deep V joints in stone.rough.
 
 const EPS = 1e-4;
 

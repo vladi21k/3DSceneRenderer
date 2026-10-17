@@ -1,12 +1,11 @@
 // Vertex colour model for the masonry: per-building stone tint, baked ambient
-// occlusion (under cornices and string courses, in reveals, at the base), large soft
-// patches of stone variation, and a per-vertex grime mask (out[3], the aGrime
-// attribute) that tells the weathered stone materials (grime.js) where to put drip
-// trails, rain-wash streaks and soot crusts: under cornice and course soffits, in the
-// splash zone, and all over the facades of the few buildings that were never cleaned.
-// out[4] is the building's dirtiness. The large soft patches of the stone, and the local
-// variation of its dirtiness, are added per pixel by the stone materials.
-// Colour factors are linear multipliers on the material albedo.
+// occlusion (under cornices and string courses, in reveals, at the base), and a
+// per-vertex grime mask (out[3], the aGrime attribute) that tells the weathered stone
+// materials (grime.js) where to put drip trails, rain-wash streaks and soot crusts:
+// under cornice and course soffits, in the splash zone, and all over the facades of the
+// few buildings that were never cleaned. out[4] is the building's dirtiness. The large
+// soft patches of the stone, and the local variation of its dirtiness, are added per
+// pixel by the stone materials. Colour factors are linear multipliers on the albedo.
 //
 // Run-off below balcony slabs and window sills (soffit occlusion, soot band, streaks,
 // drip strips under the slab and sill ends) is shaded per pixel by the stone materials:
