@@ -53,9 +53,9 @@ float atmPhaseHG(float c, float g) {
   float g2 = g * g;
   return (1.0 - g2) / (4.0 * ATM_PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
 }
-// Cornette-Shanks Mie phase
+// Cornette-Shanks Mie phase (urban/continental aerosol: slightly less forward-peaked)
 float atmPhaseM(float c) {
-  const float g = 0.8; float g2 = g * g;
+  const float g = 0.76; float g2 = g * g;
   return 3.0 / (8.0 * ATM_PI) * ((1.0 - g2) * (1.0 + c * c)) / ((2.0 + g2) * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
 }
 const float ATM_H = sqrt(ATM_RT * ATM_RT - ATM_RG * ATM_RG);
@@ -243,7 +243,7 @@ export class Atmosphere {
       uSunDirA: { value: new THREE.Vector3(0, 1, 0) },
       uSunE: { value: new THREE.Vector3(1, 1, 1).multiplyScalar(SUN_E0) },
       uCamR: { value: RG + CAMERA_ALT_KM },
-      uGroundAlbedo: { value: 0.25 },
+      uGroundAlbedo: { value: 0.35 },   // a bright limestone city and dry hills
     };
     this.uniforms.uSunE.value.set(SUN_TINT.r * SUN_E0, SUN_TINT.g * SUN_E0, SUN_TINT.b * SUN_E0);
     this._transQuad = fsQuad(TRANS_FS, this.uniforms);

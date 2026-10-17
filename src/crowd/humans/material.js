@@ -1,19 +1,26 @@
 import * as THREE from 'three';
+import { U } from '../../core/uniforms.js';
 
 // Materials for the crowd figures: MeshPhysicalMaterial (so the shared lighting, shadows,
 // fog and environment all apply) patched with
-//  - GPU skinning from a per-instance bone texture (instance transform folded in on the CPU)
-//  - heavy/slim build morph, garment "ease" (clothes stand off the body), part toggling
-//  - an analytic skirt / coat shell generated from (angle, length) vertex coordinates
-//  - per-fragment clothing layout (sleeves, hems, necklines, patterns, shoes), face
-//    painting (eyes, brows, lips, stubble), hair strands, fabric sheen and folds
+//  - GPU skinning from a per-figure bone texture row (instance transform folded in on the CPU)
+//  - heavy/slim build, belly and face shape morphs, per-figure head size, part toggling
+//  - garment "ease": clothes stand off the body, hang straight from the chest, sleeves are tubes
+//  - an analytic skirt / coat shell generated from (angle, length) vertex coordinates that
+//    keeps clear of the legs, swings with the gait and drapes over the knees when seated
+//  - per-fragment clothing layout (sleeves, hems, collars, patterns, shoes), face painting
+//    (eyes, brows, lips, stubble), hair strands, fabric sheen and folds
 //  - wrapped diffuse with a warm scatter tint on skin (cheap subsurface approximation)
-// All colours / styles come from the per-agent look texture (appearance.js writeRow).
+// All colours / styles come from the per-figure look texture (appearance.js writeRow); the
+// per-frame state (gait phase, speed, seated blend, phone) sits after the bones in the bone row.
+
+export const BONE_DYN = 66;   // texel index of the per-frame state in a bone row (after 22 x 3 bone texels)
 
 const COMMON = /* glsl */`
 uniform highp sampler2D uBoneTex;
 uniform highp sampler2D uLookTex;
 uniform float uMorphScale;
+uniform vec4 uShapeScale;  // face A, face B, face old, belly morph scales (m)
 uniform vec4 uShoulder;   // shoulder joint x, y, z, arm length (shoulder -> wrist)
 uniform vec4 uArm;        // sin(abduction), cos(abduction), skirt part id, base kind (0 m, 1 f, 2 child)
 uniform vec4 uLeg;        // hip joint x, y, knee y, ankle y
@@ -23,6 +30,13 @@ uniform vec4 uSkirt0;     // waist ring: y, rx, rz, cz
 uniform vec4 uSkirt1;     // hip ring: y, rx, rz, cz
 uniform vec4 uHead;       // head centre (eye level) xyz, head scale
 uniform vec4 uEye;        // right eye centre xyz, eyeball radius
+uniform vec4 uHang0;      // straight-hang envelope rings from the chest down: y, rx, z front, z back
+uniform vec4 uHang1;
+uniform vec4 uHang2;
+uniform vec4 uHang3;
+uniform vec4 uHeadJ;      // rest head joint xyz, phone part id
+const vec3 CR_C = vec3(0.0, 0.014, 0.006);      // cranium ellipsoid of the head sculpt (head-local)
+const vec3 CR_R = vec3(0.0745, 0.096, 0.098);
 vec4 hLook(int row, int i) { return texelFetch(uLookTex, ivec2(i, row), 0); }
 float hSeg(vec3 p, vec3 a, vec3 b) { vec3 pa = p - a, ba = b - a; float t = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * t); }
 // distance from the rest-pose leg axis (hip - knee - ankle)
@@ -31,8 +45,60 @@ float hLegDist(vec3 r) {
   vec3 hip = vec3(s * uLeg.x, uLeg.y, 0.0), knee = vec3(s * uLeg2.z, uLeg.z, uLeg2.w), ank = vec3(s * uLeg2.x, uLeg.w, uLeg2.y);
   return min(hSeg(r, hip + vec3(0.0, 0.1, 0.0), knee), hSeg(r, knee, ank));
 }
+// top hem height: 0 = just below the seat, 1 = at the waist (tucked), < 0 = below the seat (jackets)
 float hTopHemY(float hem) { return uLeg.y - 0.035 + hem * (uTorso.y - uLeg.y + 0.035); }
 float hLegHemY(float hem) { return hem < 0.02 ? uLeg.w - 0.02 : mix(uLeg.w + 0.03, uTorso.x - 0.02, hem); }  // 0 = full length, breaking over the shoe
+// neckline height of a top at a rest point: a collar ring around the base of the neck that rises
+// over the shoulders and dips at the front for scoop / V necks (men's and children's tees: crew neck)
+float hNeckline(vec3 r, float topType) {
+  float sc = uTorso.w / 1.76;
+  float front = smoothstep(0.0, -0.06, r.z);
+  bool crew = uArm.w != 1.0 && (topType == 0.0 || topType == 6.0);
+  float scoop = (topType == 4.0 || topType == 7.0) ? 0.07 : topType == 3.0 ? 0.05
+    : (topType == 2.0 || topType == 1.0 || topType == 5.0) ? 0.035 : crew ? 0.004 : 0.016;
+  vec2 nr = crew ? vec2(0.076, 0.066) : vec2(0.085, 0.075);
+  float rn = length(vec2(r.x / nr.x, (r.z - 0.02 * sc) / nr.y)) / sc;
+  return uTorso.z - (crew ? 0.002 : 0.010) - scoop * front * smoothstep(0.11, 0.0, abs(r.x)) + 0.09 * smoothstep(0.9, 1.6, rn);
+}
+// jacket lapels: half width of the V opening at height y (shirt shows inside)
+float hLapel(float y) {
+  float sc = uTorso.w / 1.76, neck = uTorso.z, button = uTorso.y + 0.07 * sc;
+  return 0.058 * sc * smoothstep(button, neck - 0.06 * sc, y) * smoothstep(neck + 0.01, neck - 0.04 * sc, y) + 0.006;
+}
+// coverage of the top on the torso and neck: one continuous rule, so region boundaries of the
+// mesh never show. Returns (layer, signed distance to the edge, ease kind)
+vec3 hTopUpper(vec3 r, float topType, float topY) {
+  float y = r.y, neck = uTorso.z, sc = uTorso.w / 1.76;
+  float front = smoothstep(-0.01, -0.05, r.z);
+  float e = min(y - topY, hNeckline(r, topType) - y);
+  if (topType == 3.0) { // tank: oval arm holes leave ~3 cm straps over the shoulders
+    vec2 ah = (vec2(abs(r.x), y) - vec2(uShoulder.x + 0.005 * sc, uShoulder.y - 0.035 * sc)) / (vec2(0.088, 0.125) * sc);
+    e = min(e, (length(ah) - 1.0) * 0.09 * sc);
+  }
+  if (e > 0.0) {
+    if (topType == 5.0) {
+      float ef = abs(r.x) - hLapel(y);
+      if (ef < 0.0 && r.z < -0.02 && y > uTorso.y + 0.07 * sc) return vec3(4.0, -ef, 1.0);
+    }
+    return vec3(1.0, e, 1.0);
+  }
+  if (topType == 1.0 || topType == 2.0 || topType == 5.0) {
+    // collar band up the neck, open at the throat
+    float ct = neck + (topType == 1.0 ? 0.032 : 0.042) * sc - 0.018 * sc * front;
+    float vw = 0.008 * sc + max(0.0, ct - y) * 0.35;
+    float ec = min(min(ct - y, y - topY), mix(1.0, abs(r.x) - vw, front));
+    if (ec > 0.0) {
+      if (topType == 5.0) {
+        // the jacket collar sits below the shirt collar, which shows ~1.5 cm above it
+        float jt = neck + 0.026 * sc - 0.05 * sc * front;
+        return vec3(y < jt && abs(r.x) > hLapel(y) ? 1.0 : 4.0, ec, 1.0);
+      }
+      return vec3(1.0, ec, 1.0);
+    }
+    return vec3(0.0, min(e, ec), 0.0);
+  }
+  return vec3(0.0, e, 0.0);
+}
 // garment layout at a rest-pose point: x = layer (0 skin, 1 top, 2 bottom, 3 shoe, 4 under-shirt), y = signed
 // distance (m) to the layer boundary (> 0 inside), z = which garment ease applies (0 none, 1 top, 2 bottom)
 vec3 hGarment(vec3 r, float region, vec4 L2, vec4 L4, vec4 L8) {
@@ -41,55 +107,28 @@ vec3 hGarment(vec3 r, float region, vec4 L2, vec4 L4, vec4 L8) {
   float topY = hTopHemY(L8.y);
   float hemY = hLegHemY(L8.z);
   float waist = uTorso.y + 0.012;
-  float neck = uTorso.z;
   bool skirtLike = botType > 2.5 && botType < 3.5 || botType > 4.5;
-  if (region == 1.0 || region == 19.0 || region == 20.0) {
-    float front = smoothstep(0.0, -0.06, r.z);
-    float scoop = (topType == 4.0 || topType == 7.0) ? 0.07 : topType == 3.0 ? 0.05 : (topType == 2.0 || topType == 1.0 ? 0.035 : 0.012);
-    // neckline: a collar ring around the base of the neck, dipping at the front for scoop / V necks
-    float sc = uTorso.w / 1.76;
-    float rn = length(vec2(r.x / 0.085, (r.z - 0.02 * sc) / 0.075)) / sc;
-    float nl = neck - 0.010 - scoop * front * smoothstep(0.11, 0.0, abs(r.x)) + 0.09 * smoothstep(0.9, 1.6, rn);
-    float e = min(y - topY, nl - y);
-    if (topType == 3.0) { // tank: oval arm holes leave ~3 cm straps over the shoulders
-      vec2 ah = (vec2(abs(r.x), y) - vec2(uShoulder.x + 0.005 * sc, uShoulder.y - 0.035 * sc)) / (vec2(0.088, 0.125) * sc);
-      e = min(e, (length(ah) - 1.0) * 0.09 * sc);
-    }
-    if (e > 0.0) {
-      if (topType == 5.0) { // jacket: lapels open a V down to the button, shirt shows inside
-        float button = uTorso.y + 0.07 * sc;
-        float open = 0.058 * sc * smoothstep(button, neck - 0.06 * sc, y) * smoothstep(neck + 0.01, neck - 0.04 * sc, y) + 0.006;
-        float ef = abs(r.x) - open;
-        if (ef < 0.0 && r.z < -0.02 && y > button) return vec3(4.0, -ef, 1.0);
-      }
-      return vec3(1.0, e, 1.0);
-    }
-    if (y < waist) return vec3(2.0, waist - y, 2.0);
-    return vec3(0.0, -e, 0.0);
-  }
-  if (region == 2.0) {
-    if (topType == 2.0 || topType == 5.0 || topType == 1.0) {
-      float e = neck + (topType == 1.0 ? 0.035 : 0.045) - y - 0.02 * smoothstep(0.0, -0.05, r.z);
-      if (e > 0.0) return vec3(topType == 5.0 ? 4.0 : 1.0, e, 1.0);
-    }
-    if (topType == 6.0 && y < neck + 0.01) return vec3(1.0, neck + 0.01 - y, 1.0);
-    return vec3(0.0, 0.0, 0.0);
+  if (region == 1.0 || region == 19.0 || region == 20.0 || region == 2.0) {
+    vec3 t = hTopUpper(r, topType, topY);
+    if (t.x > 0.5) return t;
+    if (region != 2.0 && y < waist) return vec3(2.0, waist - y, 2.0);
+    return t;
   }
   if (region == 4.0 || region == 5.0 || region == 6.0) {
     float s = sign(r.x);
     vec3 sh = vec3(s * uShoulder.x, uShoulder.y, uShoulder.z);
     vec3 du = vec3(s * uArm.x, -uArm.y, 0.0);
     float t = dot(r - sh, du) / uShoulder.w;
-    float sl = L8.x * 1.02;
-    if (topType == 3.0) sl = -0.05;
-    float e = (sl - t) * uShoulder.w;
+    float e = (L8.x * 1.02 - t) * uShoulder.w;
+    // tanks: the torso's arm hole rule decides near the shoulder
+    if (topType == 3.0) e = min(hTopUpper(r, topType, hTopHemY(L8.y)).y, (0.10 - t) * uShoulder.w);
     if (region == 6.0) e = min(e, -0.001);
     if (e > 0.0) return vec3(1.0, e, 1.0);
     return vec3(0.0, e, 0.0);
   }
   if (region == 7.0 || region == 8.0) {
     float et = y - topY;
-    if (et > 0.0) return vec3(1.0, et, 1.0);   // long / untucked tops hang over the hips
+    if (et > 0.0) return vec3(1.0, et, 1.0);   // long tops and jackets hang over the hips
     if (skirtLike) return vec3(0.0, -1.0, 0.0);
     float e = y - hemY;
     if (e > 0.0) return vec3(2.0, e, 2.0);
@@ -112,6 +151,7 @@ attribute vec4 aBoneI;
 attribute vec4 aBoneW;
 attribute vec4 aMorph;
 attribute vec4 aBody;
+attribute vec4 aShape;
 varying vec3 vRest;
 flat varying vec3 vIds;
 varying float vAO;
@@ -142,13 +182,44 @@ mat4 hBone(int row, float b) {
   vec4 r2 = texelFetch(uBoneTex, ivec2(x + 2, row), 0);
   return mat4(r0.x, r1.x, r2.x, 0.0, r0.y, r1.y, r2.y, 0.0, r0.z, r1.z, r2.z, 0.0, r0.w, r1.w, r2.w, 1.0);
 }
+// rest-space shell of a skirt / dress / coat at (angle th, height y); n = outward normal
+vec3 hSkirtRing(float th, float y, vec4 L0, vec4 L9, float folds, float seatW, out vec3 n) {
+  float uh = smoothstep(0.0, 1.0, clamp((uSkirt0.x - y) / (uSkirt0.x - uSkirt1.x), 0.0, 1.0));
+  vec3 ring = mix(uSkirt0.yzw, uSkirt1.yzw, uh);
+  float below = max(0.0, uSkirt1.x - y);
+  float sc = uTorso.w / 1.76;
+  // seated: the shell wraps the thighs closely instead of standing off as a bell
+  ring.y = mix(ring.y, min(ring.y, (0.088 + 0.012 * max(L0.w, 0.0)) * sc), seatW * smoothstep(0.0, 0.06, below));
+  ring.z = mix(ring.z, 0.0, seatW * smoothstep(0.0, 0.06, below));
+  float ease = 0.014 + 0.022 * max(L0.w, 0.0);
+  float flare = (0.03 + 0.20 * L9.z) * (1.0 - 0.7 * seatW);
+  float fl = below * flare;
+  float s = sin(th), c = cos(th);
+  float f2 = floor(folds * 1.6 + 0.5);
+  float fold = below * (0.020 + 0.03 * L9.z) * (1.0 - 0.5 * seatW) * (0.6 * sin(th * folds + 1.3) + 0.4 * sin(th * f2 + 0.4));
+  float rx = ring.x + ease + fl + fold, rz = ring.y + ease + fl * 0.85 + fold;
+  n = normalize(vec3(s * rz, flare * 0.5, c * rx));
+  return vec3(s * rx, y, ring.z + c * rz);
+}
+// pushes a posed point out of a tapered leg capsule
+vec3 hPushLeg(vec3 P, vec3 a, vec3 b, float ra, float rb) {
+  vec3 ba = b - a;
+  float h = clamp(dot(P - a, ba) / dot(ba, ba), 0.0, 1.0);
+  vec3 c = a + ba * h;
+  vec3 d = P - c;
+  float l = length(d), r = mix(ra, rb, h);
+  return l < r && l > 1e-5 ? c + d * (r / l) : P;
+}
 void hSkin(out vec3 P, out vec3 N) {
-  int row = int(iRow + 0.5);
+  int brow = int(iRow + 0.5);
+  vec4 D0 = texelFetch(uBoneTex, ivec2(${BONE_DYN}, brow), 0);       // gait phase, speed, seated blend, ground y
+  vec4 D1 = texelFetch(uBoneTex, ivec2(${BONE_DYN + 1}, brow), 0);   // look row, phone shown
+  int row = int(D1.x + 0.5);
   float region = aBody.x, part = aBody.y;
   vec4 L11 = hLook(row, 11);
   float bagPart = mod(L11.w, 256.0), skirtPart = floor(L11.w / 256.0 + 0.001);
   bool on = part < 0.5 || part == L11.x || part == L11.y || part == L11.z || part == bagPart
-    || (part == skirtPart && part == uArm.z);
+    || (part == skirtPart && part == uArm.z) || (part == uHeadJ.w && D1.y > 0.5);
   vRest = position;
   vIds = vec3(region, part, float(row));
   vAO = aNrm.w;
@@ -159,31 +230,49 @@ void hSkin(out vec3 P, out vec3 N) {
   vec4 W = aBoneW;
   vec4 I = aBoneI;
   vec4 L0 = hLook(row, 0);
-  if (part == uArm.z && part > 0.5) {
+  vec4 L13 = hLook(row, 13);
+  float seatW = D0.z;
+  bool skirt = part == uArm.z && part > 0.5;
+  // seated skirt: the knee ring and the vertical fall below it (world space, set after skinning)
+  float drop = 0.0;
+  vec3 kneePos = vec3(0.0), kneeN = vec3(0.0);
+  float skirtT = 0.0;
+  if (skirt) {
     // analytic skirt / coat: position.x = angle around the body, position.y = 0 (waist) .. 1 (ankle)
     vec4 L9 = hLook(row, 9);
     float th = position.x;
     float t = min(position.y, L9.y);
-    float y = mix(uSkirt0.x, uLeg.w + 0.03, t);
-    float uh = smoothstep(0.0, 1.0, clamp((uSkirt0.x - y) / (uSkirt0.x - uSkirt1.x), 0.0, 1.0));
-    vec3 ring = mix(uSkirt0.yzw, uSkirt1.yzw, uh);
-    float below = max(0.0, uSkirt1.x - y);
-    float ease = 0.014 + 0.022 * max(L0.w, 0.0);
-    float fl = below * (0.03 + 0.20 * L9.z);
-    float s = sin(th), c = cos(th);
-    float fold = below * (0.020 + 0.03 * L9.z) * (0.6 * sin(th * 7.0 + 1.3) + 0.4 * sin(th * 11.0 + 0.4));
-    float rx = ring.x + ease + fl + fold, rz = ring.y + ease + fl * 0.85 + fold;
-    pos = vec3(s * rx, y, ring.z + c * rz);
-    nrm = normalize(vec3(s * rz, (0.03 + 0.20 * L9.z) * 0.5, c * rx));
+    float Lr = uSkirt0.x - uLeg.w - 0.03;
+    // uneven hem: soft waves that grow towards the hem
+    float y = uSkirt0.x - t * Lr + 0.012 * t * sin(th * 5.0 + L9.w * 6.28) * (1.0 - seatW);
+    vec3 n;
+    pos = hSkirtRing(th, y, L0, L9, L13.y, seatW, n);
+    nrm = n;
     vRest = pos;
     vAux = vec2(t, th);
-    // pelvis on top, each side follows its thigh lower down
-    float wt = 0.75 * smoothstep(uSkirt1.x + 0.02, uSkirt1.x - 0.30, y);
+    skirtT = t;
+    // swing with the gait: the hem trails the stride a little
+    float sp = min(D0.y, 1.6) * (1.0 - seatW);
+    float A = 0.04 * L9.y * (0.5 + L9.z) * sp;
+    pos.z -= A * sin(6.2832 * D0.x - 0.6) * t * t;
+    pos.x += 0.4 * A * sin(12.566 * D0.x) * t * t;
+    // pelvis on top, each side follows its thigh lower down (all the way when seated)
+    float wt = mix(0.75 * smoothstep(uSkirt1.x + 0.02, uSkirt1.x - 0.30, y), smoothstep(uSkirt1.x + 0.01, uSkirt1.x - 0.06, y), seatW);
+    float s = sin(th);
     float wl = wt * smoothstep(0.45, -0.45, s), wr = wt * smoothstep(-0.45, 0.45, s);
     W = vec4(1.0 - wl - wr, wl, wr, 0.0);
     I = vec4(1.0, 14.0, 18.0, 0.0);
+    if (seatW > 0.0 && y < uLeg.z) {
+      // below the knee the cloth falls straight down from the knee ring
+      vec3 kn;
+      kneePos = hSkirtRing(th, uLeg.z, L0, L9, L13.y, seatW, kn);
+      kneeN = kn;
+      drop = uLeg.z - y;
+    }
   } else if (part < 0.5) {
-    pos += aMorph.xyz * uMorphScale * L0.w;
+    vec4 L12 = hLook(row, 12);
+    pos += aMorph.xyz * uMorphScale * (L0.w > 0.0 ? L0.w * 1.4 : L0.w);
+    pos += nrm * dot(aShape, L12 * uShapeScale);
     pos = hFace(pos, position, region, L0.w, hLook(row, 9).w);
 #ifndef HUMAN_DEPTH
     // clothes stand off the skin: ease grows with looseness, with a lip at hems
@@ -193,18 +282,33 @@ void hSkin(out vec3 P, out vec3 N) {
     float ease = 0.0;
     bool isArm = region == 4.0 || region == 5.0;
     bool isLeg = region == 7.0 || region == 8.0;
+    bool jacket = L2.w == 5.0;
     if (g.z == 1.0) {
-      ease = 0.003 + 0.008 * L8.w + (L2.w == 5.0 ? 0.008 : 0.0);
+      ease = 0.003 + 0.008 * L8.w + (jacket ? 0.008 : 0.0);
       if (isArm) {
-        // sleeves hang as tubes: fill out to a sleeve radius, wider at the opening
+        // sleeves hang as tubes, filling out from the shoulder cap down (no square shoulder corner)
         float s = sign(position.x);
-        float d = length(cross(position - vec3(s * uShoulder.x, uShoulder.y, uShoulder.z), vec3(s * uArm.x, -uArm.y, 0.0)));
-        float R = (0.050 + 0.016 * L8.w) * sc * (L8.x < 0.6 ? 1.12 : 0.92);
-        ease = max(ease, R - d);
-      } else if (region != 20.0) {
-        // shirts hang straight from chest to hem instead of following the waist
-        float wy = abs(position.y - uTorso.y - 0.02) / (0.16 * sc);
-        ease += L8.w * 0.016 * sc * (1.0 - smoothstep(0.0, 1.0, wy)) * (0.3 + 0.7 * smoothstep(0.06, -0.06, position.z));
+        vec3 sh = vec3(s * uShoulder.x, uShoulder.y, uShoulder.z), du = vec3(s * uArm.x, -uArm.y, 0.0);
+        float t = dot(position - sh, du) / uShoulder.w;
+        float d = length(cross(position - sh, du));
+        float R = jacket ? (0.062 + 0.010 * L8.w) * sc * (1.0 - 0.25 * clamp(t, 0.0, 1.0))
+          : (0.050 + 0.016 * L8.w) * sc * (L8.x < 0.6 ? 1.12 : 0.92);
+        ease = max(ease, (R - d) * smoothstep(0.02, 0.18, t));
+      } else if (region == 1.0 || region == 19.0 || region == 20.0) {
+        // tops hang straight down from the chest instead of following the waist
+        float y = position.y;
+        vec4 h0 = uHang0, h1 = y > uHang1.x ? uHang0 : y > uHang2.x ? uHang1 : uHang2, h2 = y > uHang1.x ? uHang1 : y > uHang2.x ? uHang2 : uHang3;
+        vec4 hr = mix(h1, h2, clamp((h1.x - y) / max(h1.x - h2.x, 1e-3), 0.0, 1.0));
+        float cz = 0.5 * (hr.z + hr.w), rz = 0.5 * (hr.w - hr.z);
+        vec2 v = vec2(position.x, position.z - cz);
+        float lv = max(length(v), 1e-4);
+        float R = hr.y * rz / length(vec2(rz * v.x, hr.y * v.y) / lv);
+        float hang = jacket ? R - lv + 0.015 + 0.01 * L8.w : (R * (0.97 + 0.03 * L8.w) - lv) * clamp(0.25 + 0.95 * L8.w, 0.0, 1.0);
+        hang *= step(y, h0.x);
+        // tucked tops (and anything under a skirt waistband) blouse a little above the waist only
+        if (L13.z > 0.5) hang *= smoothstep(uTorso.y, uTorso.y + 0.09 * sc, y);
+        if (skirtPart == uArm.z && skirtPart > 0.5) hang *= smoothstep(uSkirt0.x, uSkirt0.x + 0.08 * sc, y);
+        ease = max(ease, hang);
       } else ease *= 0.5;
     } else if (g.z == 2.0) {
       float bt = L4.w;
@@ -217,33 +321,96 @@ void hSkin(out vec3 P, out vec3 N) {
         float Rk = (0.064 + 0.016 * L9.x) * sc;
         float Rh = (bt == 0.0 ? 0.052 + 0.010 * L9.x : 0.056 + 0.016 * L9.x) * sc;
         float R = position.y > uLeg.z ? mix(Rk, 0.098 * sc, clamp(yk, 0.0, 1.0)) : mix(Rh, Rk, clamp(yh, 0.0, 1.0));
-        if (bt == 2.0) R = (uArm.w == 0.0 ? 0.082 + 0.020 * L9.x : 0.070 + 0.012 * L9.x) * sc;
+        if (bt == 2.0) {
+          // shorts: a straight leg tapering slightly to the hem
+          float hy = hLegHemY(L8.z);
+          float u = clamp((uTorso.x - position.y) / max(uTorso.x - hy, 0.05), 0.0, 1.0);
+          R = (uArm.w == 0.0 ? 0.066 + 0.012 * L9.x : 0.060 + 0.010 * L9.x) * sc * (1.0 - 0.09 * u);
+        }
         ease = max(ease, R - d);
       }
       if (region == 1.0 || region == 19.0) ease = min(ease, 0.006);
     }
-    ease *= smoothstep(-0.004, 0.022, g.y);
+    // hems: the ease holds right to the edge (a sewn cuff), only the last millimetres roll in
+    ease *= smoothstep(-0.002, g.z == 2.0 ? 0.002 : 0.006, g.y);
     // hide the body under skirts and long coats
-    if (skirtPart == uArm.z && (region == 1.0 || region == 19.0 || isLeg)) {
+    if (skirtPart == uArm.z && skirtPart > 0.5 && (region == 1.0 || region == 19.0 || region == 20.0 || isLeg)) {
       float hemY = mix(uSkirt0.x, uLeg.w + 0.03, L9.y);
-      if (position.y < uTorso.y - 0.02 && position.y > hemY + 0.03) ease = -0.022 * sc * smoothstep(hemY + 0.03, hemY + 0.10, position.y);
+      float y = position.y;
+      if (y < uSkirt0.x - 0.012 && y > hemY + 0.03)
+        ease = -0.022 * sc * smoothstep(hemY + 0.03, hemY + 0.10, y) * smoothstep(uSkirt0.x - 0.012, uSkirt0.x - 0.03, y);
     }
     pos += nrm * ease;
 #endif
+  } else if (part == uHeadJ.w) {
+    // phone: nothing to shape
+  } else {
+    vec4 L12 = hLook(row, 12);
+    pos += nrm * dot(aShape, L12 * uShapeScale);
+    if (region == 11.0 && L11.z > 0.5) {
+      // hair under a hat: hidden inside the crown, pressed flat just below the band
+      vec3 q = (pos - uHead.xyz) / uHead.w;
+      vec3 cr = q - CR_C;
+      float k = length(cr / CR_R);
+      float lc = length(cr);
+      float off = lc * (1.0 - 1.0 / max(k, 1e-3));            // height above the cranium along the centre ray
+      float hat = L11.z;
+      float band = hat == __CAP__ ? 0.042 : hat == __SUNHAT__ ? 0.040 : 0.036;
+      float hOff = hat == __CAP__ ? __CAP_OFF__ : hat == __SUNHAT__ ? __SUNHAT_OFF__ : 0.004;
+      float back = smoothstep(0.0, 0.06, cr.z);
+      float maxOff = q.y > band ? -0.003 : hOff - 0.004 + (band - q.y) * mix(0.8, 0.45, back);
+      if (off > maxOff) {
+        q = CR_C + cr * ((lc / max(k, 1e-3) + maxOff) / lc);
+        pos = uHead.xyz + q * uHead.w;
+      }
+    }
   }
   if (region == 12.0) pos = hFace(pos, position, 3.0, L0.w, hLook(row, 9).w);
-  mat4 M = hBone(row, I.x) * W.x;
-  if (W.y > 0.0) M += hBone(row, I.y) * W.y;
-  if (W.z > 0.0) M += hBone(row, I.z) * W.z;
-  if (W.w > 0.0) M += hBone(row, I.w) * W.w;
+  // bigger heads on smaller children (and slight variety for everyone): scale about the head joint
+  if (!skirt) {
+    float wh = dot(W, vec4(equal(I, vec4(5.0))));
+    pos += (pos - uHeadJ.xyz) * (L13.x - 1.0) * wh;
+  }
+  mat4 M = hBone(brow, I.x) * W.x;
+  if (W.y > 0.0) M += hBone(brow, I.y) * W.y;
+  if (W.z > 0.0) M += hBone(brow, I.z) * W.z;
+  if (W.w > 0.0) M += hBone(brow, I.w) * W.w;
   P = (M * vec4(pos, 1.0)).xyz;
   N = normalize(mat3(M) * nrm);
+  if (skirt) {
+    float wsc = length(M[0].xyz);                    // figure scale (bones carry it)
+    if (drop > 0.0) {
+      vec3 PK = (M * vec4(kneePos, 1.0)).xyz;
+      vec3 nk = mat3(M) * kneeN;
+      nk.y = 0.0;
+      nk = normalize(nk + vec3(1e-4, 0.0, 0.0));
+      vec3 Pd = PK + nk * (0.006 + 0.03 * drop) * wsc;
+      Pd.y = max(PK.y - drop * wsc, D0.w + 0.01);
+      P = mix(P, Pd, seatW);
+      N = normalize(mix(N, nk, seatW));
+    }
+    if (seatW < 0.99 && skirtT > 0.08) {
+      // keep the shell clear of the stepping legs (posed thigh and shin capsules)
+      float bw = 1.0 + 0.25 * max(L0.w, 0.0);
+      float cl = 0.015;
+      mat4 TL = hBone(brow, 14.0), SL = hBone(brow, 15.0), TR = hBone(brow, 18.0), SR = hBone(brow, 19.0);
+      vec3 hipL = (TL * vec4(-uLeg.x, uLeg.y, 0.0, 1.0)).xyz, kneL = (TL * vec4(-uLeg2.z, uLeg.z, uLeg2.w, 1.0)).xyz;
+      vec3 ankL = (SL * vec4(-uLeg2.x, uLeg.w, uLeg2.y, 1.0)).xyz;
+      vec3 hipR = (TR * vec4(uLeg.x, uLeg.y, 0.0, 1.0)).xyz, kneR = (TR * vec4(uLeg2.z, uLeg.z, uLeg2.w, 1.0)).xyz;
+      vec3 ankR = (SR * vec4(uLeg2.x, uLeg.w, uLeg2.y, 1.0)).xyz;
+      float rh = (0.080 * bw + cl) * wsc, rk = (0.054 * bw + cl) * wsc, rc = (0.052 * bw + cl) * wsc, ra = (0.034 + cl) * wsc;
+      vec3 Q = P;
+      Q = hPushLeg(Q, hipL, kneL, rh, rk); Q = hPushLeg(Q, kneL, ankL, rc, ra);
+      Q = hPushLeg(Q, hipR, kneR, rh, rk); Q = hPushLeg(Q, kneR, ankR, rc, ra);
+      P = mix(P, Q, smoothstep(0.08, 0.2, skirtT) * (1.0 - seatW));
+    }
+  }
   vHairT = vec3(0.0);
 #ifndef HUMAN_DEPTH
   if (region == 11.0 || region == 12.0) {
-    // hair strands run away from the crown along the surface (view space for the shader)
+    // hair strands run away from the crown along the surface (beards: downwards)
     vec3 crown = uHead.xyz + vec3(0.0, 0.10, 0.03) * uHead.w;
-    vec3 d = position - crown;
+    vec3 d = region == 12.0 ? vec3(0.0, -1.0, 0.0) : position - crown;
     vec3 t = d - nrm * dot(d, nrm);
     t = dot(t, t) > 1e-8 ? normalize(t) : vec3(0.0, -1.0, 0.0);
     vHairT = normalize(mat3(viewMatrix) * (mat3(M) * t));
@@ -254,6 +421,7 @@ void hSkin(out vec3 P, out vec3 N) {
 
 const FRAG_PARS = /* glsl */`
 ${COMMON}
+uniform float uNight;
 varying vec3 vRest;
 flat varying vec3 vIds;
 varying float vAO;
@@ -261,16 +429,23 @@ varying vec2 vAux;
 varying vec3 vHairT;
 float hSkinM = 0.0;
 float hHairM = 0.0;
+float hStrand = 0.5;
+float hSilh = 1.0;
 vec3 hHairC = vec3(0.0);
-// Kajiya-Kay style strand highlights: a white primary lobe shifted towards the root and a
-// coloured, broader secondary lobe shifted towards the tip
+vec3 hEmit = vec3(0.0);
+float hLum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+// Kajiya-Kay style strand highlights: a faint, slightly tinted primary lobe shifted towards the
+// root and a coloured secondary lobe towards the tip; both shifted per strand so the highlight
+// breaks up instead of forming a ring
 vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   vec3 H = normalize(L + V);
-  vec3 t1 = normalize(T + N * 0.12), t2 = normalize(T - N * 0.18);
+  float sh = (hStrand - 0.5) * 0.25;
+  vec3 t1 = normalize(T + N * (0.10 + sh)), t2 = normalize(T - N * (0.15 - sh));
   float th1 = dot(t1, H), th2 = dot(t2, H);
-  float s1 = pow(max(0.0, sqrt(max(0.0, 1.0 - th1 * th1))), 110.0);
-  float s2 = pow(max(0.0, sqrt(max(0.0, 1.0 - th2 * th2))), 28.0);
-  return vec3(0.09) * s1 + hHairC * 0.5 * s2;
+  float s1 = pow(sqrt(max(0.0, 1.0 - th1 * th1)), 80.0);
+  float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), 20.0);
+  vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.5);
+  return (0.035 * tint * s1 + hHairC * 0.12 * s2) * vAO;
 }
 float hSpec = 1.0;
 vec3 hSheenC = vec3(0.0);
@@ -290,14 +465,14 @@ float hBand(float x, float period, float duty) {
   float w = max(fwidth(x / period) * 0.8, 1e-4);
   return smoothstep(0.5 - duty * 0.5 - w, 0.5 - duty * 0.5 + w, f) - smoothstep(0.5 + duty * 0.5 - w, 0.5 + duty * 0.5 + w, f);
 }
-// fabric: base albedo, roughness and sheen for a fabric code
+// fabric: base albedo, roughness and sheen for a fabric code (matte cottons, dull wool)
 void hFabric(float code, inout vec3 col, inout float rough) {
-  if (code < 0.5) { rough = 0.86; hSheenC = mix(col, vec3(1.0), 0.25) * 0.35; hSheenR = 0.55; }       // cotton
-  else if (code < 1.5) { rough = 0.9; hSheenC = mix(col, vec3(0.8), 0.4) * 0.25; hSheenR = 0.5; }     // denim
-  else if (code < 2.5) { rough = 0.7; hSheenC = mix(col, vec3(1.0), 0.5) * 0.55; hSheenR = 0.35; }     // wool suiting
-  else if (code < 3.5) { rough = 0.5; hSheenC = mix(col, vec3(1.0), 0.3) * 0.25; hSheenR = 0.4; hSpec = 1.0; } // synthetic
-  else if (code < 4.5) { rough = 0.9; hSheenC = mix(col, vec3(1.0), 0.3) * 0.3; hSheenR = 0.6; }      // linen
-  else { rough = 0.84; hSheenC = mix(col, vec3(1.0), 0.25) * 0.4; hSheenR = 0.5; }                      // knit
+  if (code < 0.5) { rough = 0.88; hSpec = 0.7; hSheenC = mix(col, vec3(1.0), 0.25) * 0.055; hSheenR = 0.8; }       // cotton
+  else if (code < 1.5) { rough = 0.9; hSpec = 0.7; hSheenC = mix(col, vec3(0.8), 0.4) * 0.025; hSheenR = 0.8; }     // denim
+  else if (code < 2.5) { rough = 0.78; hSpec = 0.6; hSheenC = col * 0.1 + 0.02; hSheenR = 0.7; }                     // wool suiting
+  else if (code < 3.5) { rough = 0.55; hSpec = 0.9; hSheenC = mix(col, vec3(1.0), 0.3) * 0.12; hSheenR = 0.5; }     // synthetic
+  else if (code < 4.5) { rough = 0.9; hSpec = 0.7; hSheenC = mix(col, vec3(1.0), 0.3) * 0.045; hSheenR = 0.8; }      // linen
+  else { rough = 0.86; hSpec = 0.7; hSheenC = mix(col, vec3(1.0), 0.25) * 0.06; hSheenR = 0.8; }                    // knit
 }
 vec3 hTopColor(vec3 r, vec4 L2, vec4 L3, float seed) {
   vec3 col = L2.rgb;
@@ -347,6 +522,7 @@ const FRAG_SURFACE = /* glsl */`
   float sc = uHead.w;
   vec3 q = (r - uHead.xyz) / sc;          // head-local coordinates
   float skinAmt = 0.0;
+  float aoV = vAO;
   // ---- skin with subtle mottling and warm extremities (knuckles, elbows, knees)
   vec3 skinCol = skin * (0.94 + 0.12 * hNoise(r * 55.0));
   float skinRough = 0.48;
@@ -373,6 +549,7 @@ const FRAG_SURFACE = /* glsl */`
     float layer = g.x;
     vec3 cloth = vec3(0.0);
     float crough = 0.86;
+    bool jacket = L2.w == 5.0;
     if (layer == 1.0 || layer == 4.0) {
       cloth = layer == 4.0 ? L3.rgb : hTopColor(r, L2, L3, seed);
       hFabric(layer == 4.0 ? 4.0 : topFab, cloth, crough);
@@ -380,21 +557,33 @@ const FRAG_SURFACE = /* glsl */`
       bool arm = region == 4.0 || region == 5.0;
       float drape = hNoise(vec3(r.x * 26.0, r.y * 3.0, r.z * 26.0)) - 0.5;
       float bunch = 0.0;
+      float hemY = hTopHemY(L8.y);
       if (arm) {
         float s = sign(r.x);
         float t = dot(r - vec3(s * uShoulder.x, uShoulder.y, uShoulder.z), vec3(s * uArm.x, -uArm.y, 0.0)) / uShoulder.w;
         bunch = sin(t * 95.0 + hNoise(r * 30.0) * 5.0) * (smoothstep(0.30, 0.45, t) * smoothstep(0.70, 0.52, t) + smoothstep(L8.x - 0.12, L8.x, t) * step(0.8, L8.x));
       } else {
-        // bunching just above the hem / belt, and diagonal tension folds fanning from the armpits
-        float hemY = hTopHemY(L8.y);
+        // bunching just above the hem / belt, and soft folds hanging from the chest
         bunch = sin(r.y * 150.0 + hNoise(r * 22.0) * 7.0) * smoothstep(0.09, 0.0, r.y - hemY) * smoothstep(-0.01, 0.01, r.y - hemY) * (0.4 + 0.8 * L8.w);
-        vec2 ap = vec2(abs(r.x) - uShoulder.x * 0.8, r.y - (uShoulder.y - 0.13 * sc));
-        float rad = length(ap);
-        float ang = atan(ap.y, ap.x);
-        float fan = sin(ang * 9.0 + hNoise(r * 15.0) * 3.0) * smoothstep(0.20 * sc, 0.04, rad) * smoothstep(0.0, 0.05, rad);
-        bunch += fan * 0.8;
+        bunch += (hNoise(vec3(r.x * 60.0, r.y * 6.0, r.z * 60.0)) - 0.5) * smoothstep(uTorso.y + 0.25, uTorso.y, r.y) * (0.5 + L8.w);
       }
       hBump = 0.0010 * drape + 0.0011 * bunch;
+      if (jacket && layer == 1.0) {
+        float scT = uTorso.w / 1.76;
+        // lapel roll along the V edge (a soft ridge with a shadow line), centre-back vent and seam
+        float dl = abs(r.x) - hLapel(r.y);
+        float frontJ = step(r.z, -0.02) * step(uTorso.y + 0.07 * scT, r.y) * step(r.y, uTorso.z + 0.01);
+        float roll = smoothstep(0.0, 0.004, dl) * smoothstep(0.022 * scT, 0.008 * scT, dl) * frontJ;
+        hBump += 0.0016 * roll;
+        cloth *= 1.0 - 0.35 * hAA(0.0016 - abs(dl - 0.0008)) * frontJ;
+        float vent = hAA(0.0012 - abs(r.x)) * step(0.02, r.z) * step(r.y, hemY + 0.21 * scT);
+        float seam = hAA(0.0007 - abs(r.x)) * step(0.02, r.z);
+        cloth *= 1.0 - 0.55 * vent - 0.2 * seam * (1.0 - vent);
+        // buttons: two on the closed front below the lapels
+        vec2 bp = vec2(r.x + 0.004, r.y - uTorso.y - 0.07 * scT);
+        float btn = hAA(0.0075 - min(length(bp), length(bp + vec2(0.0, 0.10 * scT)))) * step(r.z, -0.03);
+        cloth = mix(cloth, cloth * 0.35, btn);
+      }
     } else if (layer == 2.0) {
       cloth = L4.rgb;
       hFabric(botFab, cloth, crough);
@@ -416,6 +605,12 @@ const FRAG_SURFACE = /* glsl */`
       float whisk = sin(atan(cp.y, cp.x) * 14.0 + hNoise(r * 25.0) * 2.0) * smoothstep(0.17, 0.08, length(cp))
         * smoothstep(0.045, 0.08, length(cp)) * smoothstep(0.0, -0.04, r.z) * step(r.y, uTorso.x + 0.04) * step(botFab, 1.5) * step(0.5, botFab);
       hBump = 0.0013 * drape + 0.0011 * rings * (knee * (0.4 + 0.8 * back) + ankle) + 0.0008 * whisk;
+      if (L4.w == 1.0 && botFab != 1.0 && (region == 7.0 || region == 8.0)) {
+        // pressed trousers: a faint crease down the front of each leg
+        float u = clamp((uLeg.y - r.y) / (uLeg.y - uLeg.w), 0.0, 1.0);
+        float lx = mix(uLeg.x, uLeg2.x, u), lz = mix(0.0, uLeg2.y, u) - mix(0.07, 0.05, u) * uTorso.w / 1.76;
+        hBump += 0.0007 * smoothstep(0.006, 0.0, abs(abs(r.x) - lx)) * smoothstep(0.03, -0.01, r.z - lz);
+      }
       // belt / waistband
       float wb = hAA(0.018 - abs(r.y - uTorso.y + 0.006)) * step(r.y, uTorso.y + 0.04);
       if (wb > 0.0 && (region == 1.0 || region == 19.0)) {
@@ -445,6 +640,9 @@ const FRAG_SURFACE = /* glsl */`
       cloth *= 1.0 - 0.18 * lip * step(0.0, g.y);
       skinCol *= 1.0 - 0.35 * lip * step(g.y, 0.0);
     }
+    float clothCov = cover * step(0.5, layer) * (1.0 - step(2.5, layer) * step(layer, 3.5));
+    // the body's baked occlusion (armpits, neck) mostly belongs to skin: cloth bridges those creases
+    aoV = mix(vAO, 1.0, (jacket ? 0.3 : 0.6) * clothCov);
     col = mix(skinCol, cloth, cover * step(0.5, layer));
     rough = mix(0.5, crough, cover * step(0.5, layer));
     skinAmt = max(skinAmt, (1.0 - cover) + cover * step(layer, 0.5));
@@ -490,17 +688,18 @@ const FRAG_SURFACE = /* glsl */`
         float d = length(e.xy) / er;
         vec3 irisC = mix(vec3(0.05, 0.028, 0.016), vec3(0.16, 0.12, 0.06), fract(seed * 5.7));
         if (fract(seed * 11.3) > 0.88) irisC = vec3(0.10, 0.15, 0.18);
-        vec3 eye = mix(vec3(0.42, 0.38, 0.35), irisC, hAA(0.56 - d));
+        vec3 eye = mix(vec3(0.50, 0.46, 0.43), irisC, hAA(0.56 - d));
         eye = mix(eye, vec3(0.01), hAA(0.22 - d));
-        eye *= mix(0.45, 1.0, smoothstep(up, lo, e.y));    // upper lid and lashes shade the eye
+        eye *= mix(0.55, 1.0, smoothstep(up, lo, e.y));    // upper lid and lashes shade the eye
         col = mix(col, eye, lid);
         rough = mix(rough, 0.08, lid);
         skinAmt *= 1.0 - lid;
+        aoV = mix(aoV, max(aoV, 0.8), lid);
       }
       float lash = hAA(0.0011 - abs(e.y - up)) * hAA(0.016 - abs(e.x)) * step(e.z, 0.0) * step(length(e), er * 1.6);
       col = mix(col, L1.rgb * 0.4, lash * 0.85);
-      // sunglasses
-      if (L6.w > 0.5) {
+      // sunglasses (painted only when the build has no glasses part)
+      if (L6.w > 0.5 && __GLASSES__ < 0.0) {
         vec2 le = vec2((dx + 0.002) / 0.0215, (e.y + 0.0015) / 0.0165);
         float lens = hAA(1.0 - length(le) - 0.15 * le.y * le.y * step(0.0, le.y)) * step(q.z, -0.05);
         float rim = hAA(0.0018 - abs(length(le) - 1.0) * 0.02) * step(q.z, -0.05);
@@ -509,7 +708,7 @@ const FRAG_SURFACE = /* glsl */`
         float gl = max(lens, bridge);
         col = mix(col, vec3(0.010, 0.011, 0.013), gl);
         rough = mix(rough, 0.35, gl);
-        hSpec = mix(hSpec, 0.3, gl);    // tinted lenses: a faint sky sheen, never a white mirror
+        hSpec = mix(hSpec, 0.3, gl);
         skinAmt *= 1.0 - gl;
       }
     }
@@ -519,8 +718,8 @@ const FRAG_SURFACE = /* glsl */`
       float hl = th < 0.55 ? mix(0.058, 0.036, th / 0.55) : th < 1.05 ? mix(0.036, 0.022, (th - 0.55) / 0.5)
         : th < 1.33 ? mix(0.022, -0.014, (th - 1.05) / 0.28) : th < 1.58 ? mix(-0.014, 0.028, (th - 1.33) / 0.25)
         : th < 1.95 ? mix(0.028, -0.030, (th - 1.58) / 0.37) : mix(-0.030, -0.064, (th - 1.95) / 1.19);
-      float band = smoothstep(hl - 0.014, hl + 0.003, q.y) * (0.55 + 0.25 * hNoise(q * 400.0));
-      col = mix(col, L1.rgb * 0.9, band * 0.85);
+      float band = smoothstep(hl - 0.010, hl + 0.003, q.y) * (0.45 + 0.25 * hNoise(q * 400.0));
+      col = mix(col, L1.rgb * 0.9, band * 0.8);
       skinAmt *= 1.0 - band * 0.6;
     }
     // kippah on the crown
@@ -528,58 +727,78 @@ const FRAG_SURFACE = /* glsl */`
       float k = hAA(0.052 - length(q - vec3(0.0, 0.088, 0.035)));
       col = mix(col, L7.rgb, k); rough = mix(rough, 0.8, k); skinAmt *= 1.0 - k;
     }
-    // bag straps across the torso (backpack: two shoulder straps; shoulder bag: one diagonal strap)
+    // bag straps (backpack: two shoulder straps; shoulder bag: one strap from the right shoulder
+    // over the trapezius, across the chest and back to the bag on the left hip)
     float bagPart = mod(L11.w, 256.0);
-    if (bagPart > 0.5 && (region == 1.0 || region == 20.0) && uArm.w < 2.0) {
+    if (bagPart > 0.5 && (region == 1.0 || region == 20.0 || region == 19.0) && uArm.w < 2.0) {
       float st = 0.0;
+      float scT = uTorso.w / 1.76;
       if (bagPart == __BACKPACK__) st = hAA(0.018 - abs(abs(r.x) - 0.085)) * step(uTorso.y + 0.08, r.y);
       else if (bagPart == __SHOULDERBAG__) {
-        float dd = (r.x * 0.62 + (r.y - uShoulder.y) * 0.78);
-        st = hAA(0.013 - abs(dd + 0.02));
+        vec2 a0 = vec2(0.10 * scT, uShoulder.y), a1 = vec2(-0.17 * scT, uLeg.y + 0.12 * scT);
+        vec2 nn = normalize(vec2(a1.y - a0.y, a0.x - a1.x));
+        float dd = dot(r.xy - a0, nn);
+        st = hAA(0.0125 - abs(dd)) * step(r.y, uTorso.z + 0.03);
       }
       col = mix(col, L6.rgb * 0.8, st); rough = mix(rough, 0.6, st); skinAmt *= 1.0 - st; hSheenC *= 1.0 - st;
+      hBump += 0.0015 * st;
     }
   } else {
     // ---- parts
     float pr = region;
     if (pr == 11.0 || pr == 12.0) {
-      // hair / beard: strands radiate from the crown and fall; clumps, then fine strands that
-      // fade out when they get smaller than a pixel
+      // hair / beard: clumps and strands are streaks along the fall direction (fast across the
+      // strands, slow along them), fine strands fade out below a pixel
       vec3 dq = q - vec3(0.0, 0.10, 0.03);
       float az = atan(dq.x, dq.z);
       float rr = length(dq);
       float fw = length(fwidth(r));
-      float clump = hNoise(vec3(az * 13.0, rr * 28.0, 0.0));
-      float strand = hNoise(vec3(az * 60.0, rr * 110.0, 3.0));
-      float fine = mix(hNoise(vec3(r.x * 900.0, r.y * 70.0, r.z * 900.0)), 0.5, smoothstep(0.0006, 0.002, fw));
-      strand = mix(strand, 0.5, smoothstep(0.002, 0.006, fw));
-      float n = clump * 0.45 + strand * 0.35 + fine * 0.2;
-      col = L1.rgb * (0.62 + 0.75 * n);
+      float clump, strand;
+      if (pr == 11.0) {
+        clump = hNoise(vec3(az * 22.0, rr * 7.0, 0.0));
+        strand = hNoise(vec3(az * 115.0, rr * 15.0, 3.0));
+      } else {
+        clump = hNoise(vec3(q.x * 160.0, q.y * 30.0, q.z * 160.0));
+        strand = hNoise(vec3(q.x * 700.0, q.y * 90.0, q.z * 700.0));
+      }
+      strand = mix(strand, 0.5, smoothstep(0.0015, 0.005, fw));
+      float n = clump * 0.6 + strand * 0.4;
+      hStrand = strand;
+      col = L1.rgb * (0.85 + 0.3 * n);
       hHairM = part == __SCARF__ ? 0.0 : 1.0;
-      hHairC = L1.rgb * (0.8 + 0.4 * n) + 0.01;
-      rough = 0.42;
-      hSpec = 1.3;
-      hSheenC = L1.rgb * 0.8 + 0.06; hSheenR = 0.35;
-      if (part == __SCARF__) { col = L1.rgb * (0.9 + 0.15 * hNoise(r * 40.0)); rough = 0.85; hSpec = 0.8; hSheenC = col * 0.4; hSheenR = 0.55; }
+      hHairC = L1.rgb;
+      rough = 0.6;
+      hSpec = 0.35;
+      hSheenC = vec3(0.0);
+      if (part == __SCARF__) { col = L1.rgb * (0.9 + 0.15 * hNoise(r * 40.0)); rough = 0.85; hSpec = 0.6; hSheenC = col * 0.08; hSheenR = 0.8; }
       if (L7.w > 0.5 && pr == 11.0) {
         float k = hAA(0.054 - length(q - vec3(0.0, 0.092, 0.035)));
-        col = mix(col, L7.rgb, k); rough = mix(rough, 0.8, k);
+        col = mix(col, L7.rgb, k); rough = mix(rough, 0.8, k); hHairM *= 1.0 - k;
       }
     } else if (pr == 13.0) {
-      col = L7.rgb; rough = 0.72;
-      hSheenC = col * 0.6 + 0.04; hSheenR = 0.4;
+      col = L7.rgb; rough = 0.78;
+      hSheenC = col * 0.15 + 0.01; hSheenR = 0.7;
       if (part == __SUNHAT__) { col *= 0.85 + 0.25 * hBand(atan(q.x, q.z) * 0.6 + length(q.xz) * 3.0, 0.02, 0.5); rough = 0.85; hSheenC *= 0.4; }
       if (vAux.y > 0.5) { col *= 0.35; } // hat band
     } else if (pr == 14.0) {
-      col = L6.rgb * (0.92 + 0.12 * hNoise(r * 60.0)); rough = 0.55;
-      if (part == __SHOPPING__) { rough = 0.35; hSpec = 1.2; }
-      hSheenC = col * 0.2;
+      col = L6.rgb * (0.92 + 0.12 * hNoise(r * 60.0)); rough = 0.62; hSpec = 0.8;
+      if (part == __SHOPPING__) { rough = 0.6; hSpec = 0.6; col = min(col, vec3(0.7)); }
+      hSheenC = col * 0.06;
     } else if (pr == 15.0) {
       bool dress = L4.w > 4.5;
       col = dress ? hTopColor(vec3(r.x, r.y - 0.25, r.z), L2, L3, seed) : L4.rgb;
       hFabric(dress ? topFab : 4.0, col, rough);
       if (L2.w == 5.0) { col = L2.rgb; hFabric(2.0, col, rough); }
-      col *= 1.0 - 0.15 * smoothstep(0.01, 0.0, abs(vAux.x - L9.y)) * 0.0;
+      // the hem: a turned edge, a little darker
+      col *= 1.0 - 0.12 * smoothstep(0.03, 0.0, abs(vAux.x - L9.y));
+    } else if (pr == 21.0) {
+      // phone: dark aluminium back and edges, black glass face with the screen on
+      bool face = vAux.x > 0.5;
+      col = face ? vec3(0.012) : vec3(0.05, 0.05, 0.055);
+      rough = face ? 0.06 : 0.35;
+      hSpec = face ? 1.0 : 1.4;
+      hSheenC = vec3(0.0);
+      if (face) hEmit = vec3(0.55, 0.62, 0.75) * (0.04 + 0.6 * uNight) * smoothstep(1.0, 0.9, vAux.y);
     }
   }
   // wear and grime near the ground
@@ -589,16 +808,18 @@ const FRAG_SURFACE = /* glsl */`
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
   roughnessFactor = rough;
   metalnessFactor = 0.0;
-  hAO = mix(1.0, vAO * vAO, 0.75);
+  hAO = mix(1.0, aoV * aoV, 0.75);
 }
 `;
 
 const FRAG_BUMP = /* glsl */`
 {
   // silhouettes: interpolated normals can face away from the eye, where the specular
-  // visibility term blows up (half-float fireflies); bend them back towards the viewer
+  // visibility term blows up (half-float fireflies); bend them back towards the viewer.
+  // The grazing sheen lobe is faded there so dark cloth gets no glowing rim.
   vec3 vdir = normalize(vViewPosition);
   float nv = dot(normal, vdir);
+  hSilh = smoothstep(0.05, 0.2, nv);
   if (nv < 0.12) normal = normalize(normal + vdir * (0.12 - nv));
 }
 if (hBump != 0.0) {
@@ -614,20 +835,38 @@ if (hBump != 0.0) {
 }
 `;
 
-function patchVertex(shader, depthOnly) {
-  shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\n' + VERT_PARS);
-  if (depthOnly) {
-    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
-      'vec3 hP, hN; hSkin(hP, hN);\nvec3 transformed = hP;');
-  } else {
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <beginnormal_vertex>', 'vec3 hP, hN; hSkin(hP, hN);\nvec3 objectNormal = hN;')
-      .replace('#include <begin_vertex>', 'vec3 transformed = hP;');
+/**
+ * Straight-hang envelope of the torso: four rings (chest, waist, hips, seat) with the running
+ * maximum of the body's half width and front / back extent from the chest down, measured on
+ * the detailed mesh. Tops hang from it instead of following the waist.
+ */
+export function hangProfile(geo, info) {
+  const P = geo.attributes.position.array, body = geo.attributes.aBody.array;
+  const sc = info.H / 1.76;
+  const xMax = info.shoulder[0] * 0.92;
+  const ys = [info.shoulder[1] - 0.125 * sc, info.waistY, info.hip[1], info.torsoY[0] + 0.03 * sc];
+  const rings = ys.map((y) => [y, 0, 0, 0]);
+  for (let v = 0; v < P.length / 3; v++) {
+    const reg = body[v * 4], part = body[v * 4 + 1];
+    if (part !== 0 || (reg !== 1 && reg !== 19 && reg !== 20)) continue;
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (Math.abs(x) > xMax) continue;
+    for (const R of rings) {
+      if (Math.abs(y - R[0]) > 0.012 * sc) continue;
+      R[1] = Math.max(R[1], Math.abs(x));
+      R[2] = Math.min(R[2], z);
+      R[3] = Math.max(R[3], z);
+    }
   }
+  for (let i = 1; i < rings.length; i++) {
+    rings[i][1] = Math.max(rings[i][1], rings[i - 1][1]);
+    rings[i][2] = Math.min(rings[i][2], rings[i - 1][2]);
+    rings[i][3] = Math.max(rings[i][3], rings[i - 1][3]);
+  }
+  return rings.map((R) => new THREE.Vector4(...R));
 }
 
-export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
+export function makeHumanMaterials(base, partIds, bones, look, morphScale, shapeScale, hang) {
   const info = base.info;
   const sx = info.shoulder, H = info.H;
   const abd = (info.abd * Math.PI) / 180;
@@ -636,10 +875,12 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
   const waistY = info.waistY;
   const kind = info.kind === 'male' ? 0 : info.kind === 'female' ? 1 : 2;
   const s = info.sx ?? 1;
+  const headJ = base.rig.rest[5];
   const uniforms = {
     uBoneTex: { value: bones },
     uLookTex: { value: look },
     uMorphScale: { value: morphScale },
+    uShapeScale: { value: new THREE.Vector4(...(shapeScale || [0, 0, 0, 0])) },
     uShoulder: { value: new THREE.Vector4(sx[0], sx[1], sx[2], armLen) },
     uArm: { value: new THREE.Vector4(Math.sin(abd), Math.cos(abd), partIds.skirt || -1, kind) },
     uLeg: { value: new THREE.Vector4(info.hip[0], info.hip[1], info.knee[1], info.ankle[1]) },
@@ -649,15 +890,36 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
     uSkirt1: { value: new THREE.Vector4(info.hip[1] - 0.03 * s, (kind === 1 ? 0.200 : 0.190) * s, 0.136 * s, 0.024 * s) },
     uHead: { value: new THREE.Vector4(...info.headC, info.headS) },
     uEye: { value: new THREE.Vector4(...info.eyeR, info.eyeRadius) },
+    uHang0: { value: hang[0] }, uHang1: { value: hang[1] }, uHang2: { value: hang[2] }, uHang3: { value: hang[3] },
+    uHeadJ: { value: new THREE.Vector4(headJ.x, headJ.y, headJ.z, partIds.phone || -1) },
+    uNight: U.uNight,
   };
+  const hatOff = info.hatOffsets || {};
   const subst = (src) => src
     .replace(/__BACKPACK__/g, (partIds.backpack || -1).toFixed(1))
     .replace(/__SHOULDERBAG__/g, (partIds.shoulderbag || -1).toFixed(1))
     .replace(/__SCARF__/g, (partIds.scarf || -1).toFixed(1))
     .replace(/__BALDING__/g, (partIds.hair_balding || -1).toFixed(1))
     .replace(/__SUNHAT__/g, (partIds.sunhat || -1).toFixed(1))
+    .replace(/__CAP__/g, (partIds.cap || -1).toFixed(1))
+    .replace(/__CAP_OFF__/g, (hatOff.cap ?? 0.010).toFixed(4))
+    .replace(/__SUNHAT_OFF__/g, (hatOff.sunhat ?? 0.016).toFixed(4))
+    .replace(/__GLASSES__/g, (partIds.glasses || -1).toFixed(1))
     .replace(/__SHOPPING__/g, (partIds.shopping || -1).toFixed(1));
   const fragSurface = subst(FRAG_SURFACE);
+  const vertPars = subst(VERT_PARS);
+
+  const patchV = (shader, depthOnly) => {
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + vertPars);
+    if (depthOnly) {
+      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
+        'vec3 hP, hN; hSkin(hP, hN);\nvec3 transformed = hP;');
+    } else {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <beginnormal_vertex>', 'vec3 hP, hN; hSkin(hP, hN);\nvec3 objectNormal = hN;')
+        .replace('#include <begin_vertex>', 'vec3 transformed = hP;');
+    }
+  };
 
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff, roughness: 0.6, metalness: 0, sheen: 1, sheenRoughness: 0.6, sheenColor: 0x000000,
@@ -666,16 +928,17 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
   mat.name = 'humans.' + info.kind;
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    patchVertex(shader, false);
+    patchV(shader, false);
     let fs = shader.fragmentShader;
     fs = fs.replace('#include <common>', '#include <common>\n' + FRAG_PARS);
     fs = fs.replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n' + fragSurface);
     fs = fs.replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' + FRAG_BUMP);
+    fs = fs.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += hEmit;');
     fs = fs.replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
       material.specularColor *= hSpec;
       material.specularColorBlended *= hSpec;
       #ifdef USE_SHEEN
-        material.sheenColor = hSheenC;
+        material.sheenColor = hSheenC * hSilh;
         material.sheenRoughness = hSheenR;
       #endif`);
     // wrapped diffuse + warm scatter on skin (shadowed light still wraps a little at the terminator)
@@ -687,24 +950,24 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
         float dotNL = saturate( dotNLr );
         float wrapNL = saturate( ( dotNLr + 0.45 ) / 1.45 );
         vec3 irradiance = mix( vec3( dotNL ), vec3( dotNL ) * 0.7 + wrapNL * vec3( 0.38, 0.17, 0.11 ), hSkinM ) * directLight.color;
-        if ( hHairM > 0.0 && dot( vHairT, vHairT ) > 0.5 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, normalize( vHairT ) ) * saturate( dotNLr + 0.25 ) * directLight.color;`));
+        if ( hHairM > 0.0 && dot( vHairT, vHairT ) > 0.5 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, normalize( vHairT ) ) * saturate( dotNLr * 2.0 ) * directLight.color;`));
     }
     fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>
       reflectedLight.indirectDiffuse *= hAO;
-      reflectedLight.indirectSpecular *= hAO;
+      reflectedLight.indirectSpecular *= hAO * mix( 1.0, 0.3, hHairM );
       reflectedLight.directDiffuse *= mix(1.0, hAO, 0.35);`);
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => 'humans-v1-' + info.kind;
+  mat.customProgramCacheKey = () => 'humans-v2-' + info.kind;
 
   const depth = new THREE.MeshDepthMaterial();
   depth.name = 'humans.depth.' + info.kind;
   depth.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    patchVertex(shader, true);
+    patchV(shader, true);
     // shadows do not need the garment ease (sub-centimetre at shadow-map resolution)
     shader.vertexShader = '#define HUMAN_DEPTH\n' + shader.vertexShader;
   };
-  depth.customProgramCacheKey = () => 'humans-depth-v1-' + info.kind;
+  depth.customProgramCacheKey = () => 'humans-depth-v2-' + info.kind;
   return { mat, depth, uniforms };
 }

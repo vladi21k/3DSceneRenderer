@@ -3,10 +3,9 @@ import { RNG } from '../../core/rng.js';
 import { InstancePool } from './pool.js';
 
 // Static props around the street trees and the planters owned by vegetation:
-//   * cast-iron tree grates (slotted rings, mulch in the opening) in an L-section frame
-//     standing a few mm proud of the paving;
-//   * timber stakes inside the opening, a cross batten and a rubber tie on the youngest
-//     trees (fresh pine or silvered timber, darker cut tops);
+//   * timber stakes inside the tree grate's opening (the cast-iron grates themselves are
+//     paving details drawn by the street module, opening radius 0.23 m), a cross batten
+//     and a rubber tie on the youngest trees (fresh pine or silvered timber, darker cut tops);
 //   * limestone planters (bevelled trough or square box) with soil and a soft contact
 //     shadow on the paving, holding a shrub mound (the foliage itself is instanced in the
 //     leaf pool by vegetation.js).
@@ -15,33 +14,10 @@ import { InstancePool } from './pool.js';
 // through the vegetation pools. Textures are painted on canvases at init.
 
 const UP = new THREE.Vector3(0, 1, 0);
-const GRATE = 1.2;          // grate size (m)
-const GRATE_HOLE = 0.27;    // radius of the opening around the trunk
-const STAKE_OFF = 0.18;     // stake axis from the stem axis (inside the opening)
+const STAKE_OFF = 0.18;     // stake axis from the stem axis (inside the 0.23 m grate opening)
 
 // ------------------------------------------------------------------ textures
 function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
-
-/** Normal map from a height canvas (red channel), Sobel filter. */
-function normalFromHeight(hc, strength) {
-  const w = hc.width, h = hc.height;
-  const src = hc.getContext('2d').getImageData(0, 0, w, h).data;
-  const out = canvas(w, h), ctx = out.getContext('2d');
-  const img = ctx.createImageData(w, h), d = img.data;
-  const H = (x, y) => src[(((y + h) % h) * w + ((x + w) % w)) * 4] / 255;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const dx = (H(x + 1, y - 1) + 2 * H(x + 1, y) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x - 1, y) + H(x - 1, y + 1));
-      const dy = (H(x - 1, y + 1) + 2 * H(x, y + 1) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x, y - 1) + H(x + 1, y - 1));
-      let nx = -dx * strength, ny = -dy * strength, nz = 1;
-      const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
-      const k = (y * w + x) * 4;
-      d[k] = (nx * 0.5 + 0.5) * 255; d[k + 1] = (ny * 0.5 + 0.5) * 255; d[k + 2] = (nz * 0.5 + 0.5) * 255; d[k + 3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return out;
-}
 
 function tex(c, srgb, repeat = false) {
   const t = new THREE.CanvasTexture(c);
@@ -62,71 +38,7 @@ function speckle(ctx, w, h, rng, n, rMin, rMax, colorFn) {
   }
 }
 
-/**
- * Cast-iron tree grate: concentric slotted rings with radial ribs, mulch in the opening.
- * Each slot shows soil at the bottom, a lit inner wall on one side and a shadowed one on
- * the other, so it reads as a hole rather than a painted dash.
- */
-function grateMaterial(rng) {
-  const S = 1024, px = S / GRATE, c = S / 2;
-  const col = canvas(S, S), hgt = canvas(S, S), rough = canvas(S, S);
-  const cc = col.getContext('2d'), hc = hgt.getContext('2d'), rc = rough.getContext('2d');
-  // iron base: dark grey with a brown rust cast (albedo ~0.04-0.06)
-  cc.fillStyle = 'rgb(58,54,50)'; cc.fillRect(0, 0, S, S);
-  speckle(cc, S, S, rng, 1800, 3, 16, (r) => `rgba(${r.int(78, 110)},${r.int(52, 66)},${r.int(36, 44)},${r.range(0.08, 0.25)})`);
-  speckle(cc, S, S, rng, 1000, 1, 5, (r) => `rgba(${r.int(92, 124)},${r.int(90, 112)},${r.int(82, 102)},${r.range(0.1, 0.3)})`);
-  hc.fillStyle = '#fff'; hc.fillRect(0, 0, S, S);
-  rc.fillStyle = 'rgb(0,170,0)'; rc.fillRect(0, 0, S, S);
-  // slots: ring segments between radial ribs
-  const rings = [];
-  for (let r = GRATE_HOLE + 0.055; r < GRATE * 0.7; r += 0.045) rings.push(r);
-  const slotW = 0.017 * px;
-  const arc = (ctx, r, a0, a1, w, style, dy = 0) => {
-    ctx.beginPath(); ctx.arc(c, c + dy, r * px, a0, a1);
-    ctx.lineWidth = w; ctx.lineCap = 'butt'; ctx.strokeStyle = style; ctx.stroke();
-  };
-  for (const r of rings) {
-    const n = Math.max(8, Math.round((2 * Math.PI * r) / 0.11));
-    for (let k = 0; k < n; k++) {
-      const a0 = (k / n) * Math.PI * 2 + 0.035 / r, a1 = ((k + 1) / n) * Math.PI * 2 - 0.035 / r;
-      // clip to the plate (corners of the square)
-      const am = (a0 + a1) / 2, ex = c + Math.cos(am) * r * px, ey = c + Math.sin(am) * r * px;
-      if (ex < 0.06 * px || ex > S - 0.06 * px || ey < 0.06 * px || ey > S - 0.06 * px) continue;
-      // soil / leaf litter at the bottom, then the two inner walls
-      arc(cc, r, a0, a1, slotW, `rgb(${rng.int(30, 40)},${rng.int(24, 30)},${rng.int(18, 22)})`);
-      arc(cc, r, a0, a1, slotW * 0.3, 'rgba(12,10,9,0.9)', -slotW * 0.35);
-      arc(cc, r, a0, a1, slotW * 0.22, 'rgba(96,88,78,0.55)', slotW * 0.38);
-      arc(hc, r, a0, a1, slotW, '#000');
-      arc(rc, r, a0, a1, slotW, 'rgb(0,255,0)');
-    }
-  }
-  // the frame band (UV corner region used by the frame geometry): plain iron
-  // opening: mulch / soil
-  cc.save();
-  cc.beginPath(); cc.arc(c, c, GRATE_HOLE * px, 0, Math.PI * 2); cc.clip();
-  cc.fillStyle = 'rgb(46,36,28)'; cc.fillRect(0, 0, S, S);
-  speckle(cc, S, S, rng, 1400, 2, 10, (r) => `rgba(${r.int(60, 110)},${r.int(44, 78)},${r.int(30, 52)},${r.range(0.4, 0.9)})`);
-  speckle(cc, S, S, rng, 260, 1.5, 4, (r) => `rgba(${r.int(150, 180)},${r.int(140, 160)},${r.int(120, 140)},0.6)`); // grit
-  speckle(cc, S, S, rng, 40, 5, 12, (r) => `rgba(${r.int(110, 150)},${r.int(100, 130)},${r.int(50, 70)},0.7)`);   // fallen leaflets
-  cc.restore();
-  // inner rim of the opening: a thin iron lip
-  cc.beginPath(); cc.arc(c, c, GRATE_HOLE * px, 0, Math.PI * 2); cc.lineWidth = 0.012 * px; cc.strokeStyle = 'rgb(54,50,46)'; cc.stroke();
-  for (const ctx of [hc, rc]) {
-    ctx.beginPath(); ctx.arc(c, c, GRATE_HOLE * px, 0, Math.PI * 2);
-    ctx.fillStyle = ctx === hc ? 'rgb(70,70,70)' : 'rgb(0,240,0)'; ctx.fill();
-  }
-  // polished wear on the raised iron where people walk
-  cc.globalCompositeOperation = 'source-atop';
-  speckle(cc, S, S, rng, 260, 10, 40, (r) => `rgba(124,120,112,${r.range(0.03, 0.08)})`);
-  cc.globalCompositeOperation = 'source-over';
-  return new THREE.MeshStandardMaterial({
-    name: 'vegetation.grate',
-    map: tex(col, true), normalMap: tex(normalFromHeight(hgt, 3.0), false), roughnessMap: tex(rough, false),
-    roughness: 1, metalness: 0.3, vertexColors: true,
-  });
-}
-
-/** Light timber for tree stakes (u: 0.25 m around, v: 1 m along); tinted per stake. */
+/** Light timber for tree stakes (u: 0.25 m around, v: the whole stake, foot to top); tinted per stake. */
 function stakeMaterial(rng) {
   const W = 128, H = 512;
   const col = canvas(W, H), cc = col.getContext('2d');
@@ -141,10 +53,10 @@ function stakeMaterial(rng) {
     const x = rng.range(10, W - 10), y = rng.range(20, H - 20);
     cc.fillStyle = 'rgba(86,66,48,0.7)'; cc.beginPath(); cc.ellipse(x, y, 4, 7, 0, 0, Math.PI * 2); cc.fill();
   }
-  // soil stain at the foot (v = 0 at the bottom; canvas y down = v down with flipY)
-  const g = cc.createLinearGradient(0, H, 0, H - 0.25 * H);
+  // soil stain on the bottom ~20 cm (v = 0 at the foot; canvas y down = v down with flipY)
+  const g = cc.createLinearGradient(0, H, 0, H * 0.88);
   g.addColorStop(0, 'rgba(60,46,34,0.75)'); g.addColorStop(1, 'rgba(60,46,34,0)');
-  cc.fillStyle = g; cc.fillRect(0, H * 0.75, W, H * 0.25);
+  cc.fillStyle = g; cc.fillRect(0, H * 0.88, W, H * 0.12);
   return new THREE.MeshStandardMaterial({ name: 'vegetation.stake', map: tex(col, true, true), roughness: 0.85, metalness: 0, vertexColors: true });
 }
 
@@ -274,28 +186,15 @@ function stakeGeometry(len, r) {
   body.translate(0, len / 2, 0);
   const cap = new THREE.CylinderGeometry(r * 0.75, r, 0.015, 10, 1, false);
   cap.translate(0, len + 0.0075, 0);
-  for (const g of [body, cap]) {
+  // u: metres around / 0.25 m, v: 0 at the foot to 1 at the top (one texture tile per stake)
+  const circ = 2 * Math.PI * r;
+  for (const [g, v0, v1] of [[body, 0, 1], [cap, 0.98, 1]]) {
     const uv = g.attributes.uv;
-    const circ = 2 * Math.PI * r;
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * circ / 0.25, uv.getY(i) * len);
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * circ / 0.25, v0 + uv.getY(i) * (v1 - v0));
   }
   withColor(body, [1, 1, 1]);
   withColor(cap, [0.62, 0.56, 0.5]);
   return mergeSimple([body, cap]);
-}
-
-/** Grate plate (y = 4 mm) inside an L-section frame (30 mm wide, 6 mm proud, bevelled). */
-function grateGeometry() {
-  const plate = new THREE.PlaneGeometry(GRATE - 0.05, GRATE - 0.05);
-  plate.rotateX(-Math.PI / 2);
-  plate.translate(0, 0.004, 0);
-  const uv = plate.attributes.uv;
-  for (let i = 0; i < uv.count; i++) uv.setXY(i, 0.0208 + uv.getX(i) * 0.9584, 0.0208 + uv.getY(i) * 0.9584);
-  withColor(plate, [1, 1, 1]);
-  const frame = sweepRoundedRect(GRATE, GRATE, [[0, -0.01], [0, 0.003], [-0.003, 0.006], [-0.027, 0.006], [-0.03, 0.003], [-0.03, -0.004]], 0.004, () => 1.08);
-  const fuv = frame.attributes.uv;
-  for (let i = 0; i < fuv.count; i++) fuv.setXY(i, 0.008 + (fuv.getX(i) % 1) * 0.004, 0.008); // plain iron
-  return mergeSimple([plate, frame]);
 }
 
 function mergeSimple(list) {
@@ -322,8 +221,8 @@ function mergeSimple(list) {
 
 // ------------------------------------------------------------------ public
 /**
- * Prop pools. begin(rec, lod) returns the per-chunk writer: tree(...) adds a grate and
- * stakes, planter(...) a planter box (returns where its shrub mound goes).
+ * Prop pools. begin(rec, lod) returns the per-chunk writer: tree(...) adds stakes and
+ * ties to young trees, planter(...) a planter box (returns where its shrub mound goes).
  */
 export function createProps(app, pools) {
   const M = app.materials;
@@ -331,16 +230,13 @@ export function createProps(app, pools) {
   const decal = new THREE.MeshBasicMaterial({ name: 'vegetation.contact', color: 0x000000, vertexColors: true, transparent: true,
     depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
   const mats = {
-    grate: M.register('vegetation.grate', grateMaterial(rng)),
     stake: M.register('vegetation.stake', stakeMaterial(rng)),
     soil: M.register('vegetation.soil', soilMaterial(rng)),
     contact: M.register('vegetation.contact', decal),
     stone: M.get('stone.smooth', { vertexColors: true }),
     rubber: M.get('rubber'),
   };
-  mats.grate.polygonOffset = true; mats.grate.polygonOffsetFactor = -2; mats.grate.polygonOffsetUnits = -2;
   // shared geometries
-  const grate = grateGeometry();
   const post = stakeGeometry(1.75, 0.032);
   const batten = withColor(new THREE.BoxGeometry(0.6, 0.065, 0.024));
   const tie = new THREE.TorusGeometry(1, 0.12, 4, 14);
@@ -349,7 +245,6 @@ export function createProps(app, pools) {
   const planters = [planterGeometry(1.5, 0.66, 0.48), planterGeometry(0.86, 0.86, 0.52)];
   const pool = (name, mat, geoms, cap, cast) => pools.addPool(new InstancePool(name, mat, null, geoms, cap, { castShadow: cast, receiveShadow: true, sort: false }));
   const P = {
-    grate: pool('vegetation:grates', mats.grate, [grate], 128, false),
     stake: pool('vegetation:stakes', mats.stake, [post, batten], 128, true),
     rubber: pool('vegetation:ties', mats.rubber, [tie, strap], 96, false),
     stone: pool('vegetation:planters', mats.stone, planters.map((p) => p.shell), 48, true),
@@ -373,15 +268,9 @@ export function createProps(app, pools) {
       const { route } = app;
       const add = (p, g, m, c, size = 1) => pools.add(rec, p, g, m, c, _p.setFromMatrixPosition(m), size);
       return {
-        /** Grate and (young trees) stakes, ties. treeM: the tree instance matrix. */
+        /** Stakes and ties on young trees. treeM: the tree instance matrix. */
         tree(t, T, treeM, sxz, r) {
           if (lod) return; // sub-pixel beyond 200 m
-          // grate aligned with the paving grid, flush with the paving
-          const heading = route.heading(t.s);
-          route.toWorld(t.s, t.d, 0, _base);
-          _q.setFromAxisAngle(UP, heading);
-          _m.compose(_base, _q, _s.set(1, 1, 1));
-          add(P.grate, 0, _m, null);
           if (!T.tpl.stake || r.next() < 0.25) return;
           // two stakes either side of the stem along the street, inside the opening; a batten
           // across their tops on the far side from the tracks, a rubber tie stem -> batten

@@ -5,6 +5,7 @@ import { hashStr, RNG } from '../core/rng.js';
 import { SIDE_LOT_START } from './layout.js';
 import { Builder } from './buildings/mesh.js';
 import { lotSteps, coarseLot, DETAIL } from './buildings/shell.js';
+import { grimeStone, litGlass } from './buildings/grime.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -24,6 +25,7 @@ const MATERIAL = {
   tile: 'roof.tile', metal: 'metal.galvanized', glass: 'glass.window', frame: 'paint.frame',
 };
 const NO_SHADOW = new Set(['glass', 'frame']);   // joinery inside the reveals
+let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
 const BASE_MS = 1.5;               // per-frame generation budget when nothing is urgent
 const MAX_MS = 5;                  // ... when a chunk is about to be (or already is) requested
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
@@ -48,6 +50,16 @@ const buildings = {
     const fl = app.params.str ? app.params.str('blod') : null;
     if (fl === '0' || fl === '1') FORCE_LOD = +fl;
     bindLayout(app.layout);   // corner returns follow the real side-street lines
+    // weathered stone (drip trails, rain wash, soot crusts where the baked grime mask
+    // says so) and the backdrop lots' glass, lit at night
+    if (app.materials.register) {
+      MATS = {
+        ashlar: grimeStone(app, 'stone.ashlar'),
+        rough: grimeStone(app, 'stone.rough'),
+        smooth: grimeStone(app, 'stone.smooth', [0.45, 0.55, 0.12, 0.35]),
+        glass: litGlass(app, 'glass.window'),
+      };
+    }
     planBackdrops(app);
     indexEnds(app.layout);
     // everything the first frames need, before the streamer primes
@@ -245,7 +257,7 @@ function fillGroup(app, group, res) {
     g.setIndex(new THREE.BufferAttribute(p.i, 1));
     g.boundingSphere = sphere.clone();
     g.boundingBox = res.box.clone();
-    const mesh = new THREE.Mesh(g, app.materials.get(MATERIAL[key] || 'stone.ashlar', { vertexColors: true }));
+    const mesh = new THREE.Mesh(g, MATS[key] || app.materials.get(MATERIAL[key] || 'stone.ashlar', { vertexColors: true }));
     mesh.name = `buildings:${key}`;
     mesh.castShadow = !NO_SHADOW.has(key);
     mesh.receiveShadow = true;

@@ -140,12 +140,14 @@ function patchLeaf(mat, params) {
     shader.uniforms.uLeafSpec = params.spec;
     shader.uniforms.uVegA2C = params.a2c;
     shader.uniforms.uVegDensity = params.density;
+    shader.uniforms.uVegShift = params.shift;
     shader.uniforms.uSunDirV = U.uSunDir;
     let vs = shader.vertexShader;
     vs = rep(vs, '#include <common>', `#include <common>
       ${WIND_PARS}
       uniform vec3 uSunDirV;
       uniform float uVegDensity;
+      uniform float uVegShift;
       varying float vVegAO;
       varying float vVegSun;
       varying float vVegFlut;
@@ -177,7 +179,7 @@ function patchLeaf(mat, params) {
       vVegGN = normalMatrix * ( vegR * ( aCard.xyz / vegS2 ) );`, 'leaf begin_vertex');
     // the shadow lookup leaves the crown along the sun ray (external shadows only)
     vs = rep(vs, '#include <shadowmap_vertex>', `#if defined( USE_SHADOWMAP )
-        worldPosition.xyz += uSunDirV * ( vegPath + 0.3 );
+        worldPosition.xyz += uSunDirV * ( vegPath + 0.3 ) * uVegShift;
       #endif
       #include <shadowmap_vertex>`, 'leaf shadowmap_vertex');
     shader.vertexShader = vs;
@@ -270,7 +272,14 @@ function patchLeaf(mat, params) {
           reflectedLight.indirectDiffuse += getIBLIrradiance( -vegGn ) * diffuseColor.rgb * vec3( 0.75, 1.0, 0.4 ) * ( 0.55 * uLeafTrans * RECIPROCAL_PI );
         #endif
         reflectedLight.indirectDiffuse *= vVegAO;
+        #ifdef VEG_DEBUG
+          // debug view (URL vegdbg=1..4): one lighting term only
+          vec3 vegDbg = VEG_DEBUG == 1 ? reflectedLight.directDiffuse : VEG_DEBUG == 2 ? reflectedLight.directSpecular
+            : VEG_DEBUG == 3 ? reflectedLight.indirectDiffuse : reflectedLight.indirectSpecular;
+          reflectedLight = ReflectedLight( vegDbg, vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ) );
+        #endif
       }`, 'leaf lights end');
+    shader.fragmentShader = fs;
   });
 }
 
@@ -375,6 +384,7 @@ export function createVegMaterials(app, atlas) {
     spec: { value: 0.5 },       // share of the direct specular kept
     a2c: { value: 0 },
     density: { value: 0.42 },   // crown extinction (1/m): exp(-0.42 * 2 m) ~ 0.43 through a young crown
+    shift: { value: 1 },        // shadow lookup moved out of the crown along the sun ray (0 = off, debug)
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
   };
   const leaf = new THREE.MeshStandardMaterial({
@@ -391,6 +401,8 @@ export function createVegMaterials(app, atlas) {
     envMapIntensity: 0.75,
   });
   leaf.defines = { VEG_LEAF: '' };
+  const dbg = app.params.num('vegdbg', 0);
+  if (dbg) leaf.defines.VEG_DEBUG = dbg | 0;
   patchLeaf(leaf, params);
   M.register('vegetation.leaf', leaf);
 

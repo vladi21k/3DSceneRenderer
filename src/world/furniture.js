@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js';
-import { createMaterials } from './furniture/materials.js';
+import { createMaterials, updateLightLevels } from './furniture/materials.js';
 import { BatchSet } from './furniture/instancer.js';
-import { buildCafeProtos, placeCafes, planAllCafes, chairPose } from './furniture/cafe.js';
+import { buildCafeProtos, placeCafes, planAllCafes, chairPose, cafeStyle } from './furniture/cafe.js';
 import { buildStreetProtos, placeStreetFurniture } from './furniture/street.js';
 import { buildPlatformProtos, placePlatforms } from './furniture/platform.js';
 
@@ -49,13 +49,19 @@ const furniture = {
   async init(app) {
     const t0 = performance.now();
     this.app = app;
+    const T = (this.initTimes = {});
+    const lap = (k, t = performance.now()) => { T[k] = +(performance.now() - t).toFixed(1); };
+    let t = performance.now();
     this.F = createMaterials(app);
+    lap('materials', t); t = performance.now();
     const M = app.materials;
     this.P = { cafe: buildCafeProtos(M, this.F), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F) };
     this.batches = new BatchSet('furniture');
     this.batches.registerTree(this.P);
+    lap('protos', t); t = performance.now();
     // collision-free café plans (adjusted chair poses are written back for seated patrons)
     this.cafeAudit = planAllCafes(app);
+    lap('plans', t); t = performance.now();
     this.debugFoot = app.params.str('fpdebug') === '1';
     // sizing pass over the whole loop: warms the per-site caches (café styles, canopy roofs,
     // platform bodies) and sizes every batch for the busiest stretch of streamed chunks
@@ -75,6 +81,7 @@ const furniture = {
       }
       return best * 1.3 + 32;
     });
+    lap('sizing', t);
     this.initMs = performance.now() - t0;
   },
 
@@ -101,7 +108,11 @@ const furniture = {
   /** Adjusted café chair pose {s, d, yaw} (yaw: route-relative heading, faces the table). */
   chairPose(cafeId, tableIdx, chairIdx) { return chairPose(this.app, cafeId, tableIdx, chairIdx); },
 
+  /** Planned umbrellas of a café [{s, d, size, base, ...}] (inspection / debugging). */
+  cafeUmbrellas(cafeId) { const c = this.app.layout.cafes[cafeId]; return c ? cafeStyle(c, this.app).umbrellas : null; },
+
   update(dt, app) {
+    updateLightLevels(this.F, app);
     this.batches.updateLod(app.camera.position);
   },
 

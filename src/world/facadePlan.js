@@ -197,6 +197,7 @@ export function facadePlan(lot) {
     cornerU0: !!lot.cornerU0, cornerU1: !!lot.cornerU1, sideStreet: !!lot.sideStreet,
   };
   // Extensions (own RNG streams so the values above never shift):
+  coursing(plan);                          // sills aligned per floor, heads on whole ashlar courses
   followSlope(plan);                       // ground-floor sills step down with the street
   for (const o of openings) setArch(o);    // o.rise / o.spring for every opening head
   plan.returns = [];                       // street facades on the side-street returns of corner lots
@@ -271,6 +272,41 @@ export function openingOutline(o, n = 12) {
   const p = {};
   for (let i = n; i >= 0; i--) { archPoint(o, i / n, p); pts.push(p.u, p.v); }
   return pts;
+}
+
+// ------------------------------------------------------------------ coursing
+// Ashlar is laid to the openings: every typical storey holds a whole number of courses
+// (height plan.coursing.ch), window sills on one floor share a line and sit on a bed
+// joint (plan.coursing.v0 is the first-floor sill line), and the rectangular part of
+// each window (sill to spring line) is a whole number of courses, so the masonry
+// generator can put bed joints exactly at sills, spring lines and heads.
+function coursing(plan) {
+  const fl = plan.floors;
+  const typ = fl[1] ? fl[1].h : 3.5;
+  const ch = typ / Math.max(1, Math.round(typ / plan.style.courseH));
+  let v0 = null;
+  for (const f of fl) {
+    if (f.index === 0) continue;
+    const ops = plan.openings.filter((o) => o.floor === f.index && (o.kind === 'window' || o.kind === 'balconyDoor'));
+    if (!ops.length) continue;
+    const win = ops.find((o) => o.kind === 'window') || ops[0];
+    // the floor's head line from its first window; sills follow from the window height
+    const top0 = win.y + win.h;
+    let sill = win.kind === 'window' ? win.y : top0 - Math.min(f.h - 1.15, 2.2);
+    if (v0 === null) v0 = sill;
+    // whole courses between the first-floor sill line and this floor's sills
+    sill = v0 + Math.round((sill - v0) / ch) * ch;
+    const rise = win.top === 'flat' ? 0 : Math.min(archRise(win.top, win.w), Math.max(0, top0 - sill - 0.3));
+    let rect = Math.max(3 * ch, Math.round((top0 - sill - rise) / ch) * ch);
+    // keep the head (plus arch) clear of the next floor's string course
+    const maxTop = f.y + f.h - 0.2;
+    while (rect > 3 * ch && sill + rect + rise > maxTop + 1e-6) rect -= ch;
+    const top = sill + rect + rise;
+    for (const o of ops) {
+      if (o.kind === 'window') { o.y = sill; o.h = top - sill; } else o.h = top - o.y;
+    }
+  }
+  plan.coursing = { ch, v0: v0 ?? (fl[1] ? fl[1].y : 0) };
 }
 
 // ------------------------------------------------------------------ slope

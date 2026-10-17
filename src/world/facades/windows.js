@@ -231,17 +231,33 @@ function leafGeometry(t, poly, z0, z1, q) {
   if (sm) t.box(sm[0] - 0.01, mid - 0.045, z0 + 0.003, sm[1] + 0.01, mid + 0.045, z1 - 0.004, 1 | 16 | 32, 0.95, 1);
 }
 
+/** Rectangular left leaf below the spring line (arched heads whose fanlight stays glazed). */
+function springLeafPoly(o, d) {
+  const sp = springY(o) - 0.01, hw = o.w / 2;
+  return [[-0.004, d], [-0.004, sp], [-hw + d, sp], [-hw + d, d]];
+}
+
+/**
+ * Louvred shutters. state:
+ *   closed      both leaves shut in front of the casement
+ *   open        folded back flat against the wall either side (hinged at the reveal edge)
+ *   openSpring  as open, leaves only up to the spring line (the fanlight has none)
+ *   reveal      folded accordion-wise into the reveal (no room on the wall beside it)
+ */
 function buildShutters(o, state, q, standoff) {
   const t = new Tpl();
   const hw = o.w / 2;
-  const left = leafPoly(o, 0.012);
   const mirror = (poly, f) => poly.map(f).reverse();
-  if (state === 'closed') {
+  if (state === 'reveal') {
+    revealPanels(t, o, q);
+  } else if (state === 'closed') {
+    const left = leafPoly(o, 0.012);
     const z0 = FR.zf + 0.02, z1 = z0 + 0.034;
     leafGeometry(t, left, z0, z1, q);
     leafGeometry(t, mirror(left, (p) => [-p[0], p[1]]), z0, z1, q);
   } else {
     // folded back against the wall either side of the opening (hinged at the reveal edge)
+    const left = state === 'openSpring' ? springLeafPoly(o, 0.012) : leafPoly(o, 0.012);
     const gap = standoff > 0.03 ? 0.0 : 0.05;
     const z0 = o.recess + standoff, z1 = z0 + 0.034;
     leafGeometry(t, mirror(left, (p) => [-2 * hw - gap - p[0], p[1]]), z0, z1, q);
@@ -249,6 +265,35 @@ function buildShutters(o, state, q, standoff) {
   }
   t.shadeBy((x, y) => 0.8 + 0.2 * smooth(0, 0.5, y));
   return t.bake();
+}
+
+/** Leaves folded into the reveal: per side a stack of narrow louvred panels standing
+ *  square to the wall against the jamb, each no deeper than the reveal. */
+function revealPanels(t, o, q) {
+  const hw = o.w / 2, th = 0.03;
+  const room = Math.max(0.12, o.recess - 0.06);
+  const k = Math.max(2, Math.ceil((hw - 0.02) / room));
+  const wp = (hw - 0.02) / k;
+  const zA = 0.035;
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < k; i++) {
+      const xo = hw - 0.012 - i * (th + 0.003);          // outer face (towards the jamb)
+      const xi = xo - th;
+      const top = Math.min(topAt(o, xo, 0.012), topAt(o, xi, 0.012)) - 0.012;
+      if (!(top > 0.3)) continue;
+      const x0 = sx < 0 ? -xo : xi, x1 = sx < 0 ? -xi : xo;
+      const z1 = zA + wp - i * 0.01;
+      t.box(x0, 0.012, zA, x1, top, z1, 1 | 4 | 8 | 32, 0.85, 0.95);
+      if (q < 0.5) continue;
+      // louvres on the face turned towards the opening
+      const xf = sx < 0 ? x1 : x0, nx = sx < 0 ? 1 : -1;
+      for (let y = 0.07; y < top - 0.06; y += 0.052) {
+        const a = [xf + nx * 0.004, y, zA + 0.03], b = [xf + nx * 0.004, y, z1 - 0.03];
+        const c = [xf, y + 0.04, z1 - 0.03], d = [xf, y + 0.04, zA + 0.03];
+        if (nx > 0) t.quad(a, d, c, b, 0.75, 1); else t.quad(a, b, c, d, 0.75, 1);
+      }
+    }
+  }
 }
 
 // ------------------------------------------------------------------ roller shutters

@@ -39,7 +39,7 @@ class CrowdSim {
     this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
     this.out = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true };
-    this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0];
+    this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
     this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [] };
@@ -157,7 +157,7 @@ class CrowdSim {
       if (!a.active) continue;
       // platforms raise the feet
       let hT = 0;
-      if (a.noRect && a.state !== ST.SEATED) { const pl = map.platformAt(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d), -0.05); if (pl) hT = pl.h; }
+      if ((a.noRect || a.platformOK) && a.state !== ST.SEATED) hT = map.platformHeight(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d));
       a.h += Math.max(-1.5 * dt, Math.min(1.5 * dt, hT - a.h));
       if (dt === 0 || a.fresh) a.h = hT;
       route.toWorld(a.s, a.d, a.h, _v);
@@ -178,7 +178,7 @@ class CrowdSim {
         // appearances in plain view, by distance (spawns that passed a hidden test are not counted)
         a.fresh = false;
         if (this.time > 1 && (a.src === 'seat' || a.src === 'platform') && this.vis.inView(a.s, a.d)) {
-          const k = Math.abs(a.s - this.camU) < 450 ? 0 : 1;
+          const r = Math.abs(a.s - this.camU), k = r < 450 ? 0 : r < 660 ? 1 : 2;
           this.featureIn[k]++;
         }
         if (this.time > 1 && !a.spawnHidden && this.vis.inView(a.s, a.d)) {
@@ -276,7 +276,7 @@ class CrowdSim {
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked } : null,
       population: pop.stats, events: this.events,
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },
-      featureArrivalsInView: { under450m: this.featureIn[0], beyond450m: this.featureIn[1] },
+      featureArrivalsInView: { under450m: this.featureIn[0], under660m: this.featureIn[1], beyond660m: this.featureIn[2] },
       blockLog: this.check.on ? summarize(this.tram.blockLog) : null,
       visibleDespawns: { under100m: pop.popOut[0], under250m: pop.popOut[1], under450m: pop.popOut[2], beyond450m: pop.popOut[3] },
       cpuMedianMs: +this._pct(0.5).toFixed(3), cpuP95Ms: +this._pct(0.95).toFixed(3),

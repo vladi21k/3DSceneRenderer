@@ -9,7 +9,10 @@ import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, RA
 // chats. `think` runs about once a second per agent; `desired` gives the preferred
 // velocity every frame (steering adds avoidance on top).
 
-const CORR_EDGE = TRACK_ZONE_HALF + 0.38;   // where people wait before crossing the corridor
+const CORR_EDGE = TRACK_ZONE_HALF + 0.38;   // where people wait before crossing the corridor (left side)
+const RIDE_EDGE = TRACK_ZONE_HALF + 1.1;    // ... and on the ride side: clear of the passing tram, outside the pole line
+/** |d| of the spot where people wait to cross, on `side`. */
+const crossEdge = (side) => (side > 0 ? RIDE_EDGE : CORR_EDGE);
 const UTURN_T = 1.35;                       // seconds for a turn-around while walking
 const PI = Math.PI;
 const len2 = (x, y) => Math.sqrt(x * x + y * y);
@@ -32,13 +35,19 @@ function tramLane(c, a, d) {
   const tram = c.tram;
   if (!tram.near(a)) return d;
   const pd = tram.passD;
-  if (Math.abs(d - RIDE_D) >= pd) return d;
-  const dl = a.d - RIDE_D;
+  const dl = a.d - RIDE_D, tl = d - RIDE_D;
+  // the lane lies across the ride track: walk on along this side until the tram has gone by
+  const across = (dl <= -BAND && tl > -pd) || (dl >= BAND && tl < pd);
+  if (!across && Math.abs(tl) >= pd) return d;
   let hi = dl > BAND ? true : dl < -BAND ? false : d >= RIDE_D;
   if (hi && a.kind !== KIND.PASSENGER) {
     const st = c.map.stationAt(a.s) || c.map.stationAt(a.s + a.dir * 15);
-    // beside a platform: behind it, or between the tracks when still in the corridor
-    if (st) return dl > BAND ? c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3 : RIDE_D - pd - a.laneF * 1.1;
+    // beside a platform: behind it, up on it (caught at its edge), or between the tracks
+    if (st) {
+      if (dl <= BAND) return RIDE_D - pd - a.laneF * 1.1;
+      if (a.platformOK || a.d < TRACK_ZONE_HALF + PLATFORM_W - 0.3) return Math.max(RIDE_D + pd, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8;
+      return c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3;
+    }
   }
   return hi ? RIDE_D + pd + a.laneF * 0.35 : RIDE_D - pd - a.laneF * 1.1;
 }
@@ -47,6 +56,8 @@ function rawLane(c, a) {
   const side = a.side, map = c.map;
   const here = map.stationAt(a.s);
   a.bandW = 9;
+  // stepped up onto a platform to let the tram by: walk on along it to its end
+  if (a.platformOK && here) return TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4;
   // alongside a platform people in the corridor stay in it (the platform is in the way)
   if (here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25) {
     if (a.lane === LANE.CORR) return a.laneD;
@@ -175,7 +186,7 @@ export function startUturn(c, a) {
 function follow(c, a, out) {
   const L = a.leader, t = c.time;
   const lStop = L.state === ST.STAND || L.state === ST.WAIT || L.state === ST.PLATFORM;
-  let ts, td;
+  let ts, td, own = false;
   if (lStop && L.task === TASK.CHAT && a.task === TASK.CHAT) { ts = a.chatS; td = a.chatD; }
   else {
     let F = a.baseF, R = a.baseR;
@@ -196,12 +207,26 @@ function follow(c, a, out) {
     const cl = c.map.clearOfRects(ts, side, Math.abs(td), 0.35);
     if (cl >= 0 && !a.noRect) td = side * cl;
     const wall = c.map.wallAt(ts, side) - 0.1;
-    if (Math.abs(td) > wall && !c.map.mouthAt(ts, side)) td = side * wall;
+    if (Math.abs(td) > wall && !c.map.mouthAt(ts, side) && !a.inDoor) td = side * wall;
+    // with the tram near, nobody's slot is next to its track (or across it from this member)
+    const tram = c.tram;
+    if (tram.near(a) && !a.clearing) {
+      const dl = a.d - RIDE_D, tl = td - RIDE_D, pd = tram.passD;
+      const across = (dl <= -BAND && tl > -pd) || (dl >= BAND && tl < pd);
+      if (across || Math.abs(tl) < pd) {
+        // on the side of the band this member is on (never across it to join the leader)
+        const hi = dl > BAND ? true : dl < -BAND ? false : L.d > RIDE_D && !(c.map.stationAt(L.s) && a.kind !== KIND.PASSENGER);
+        td = hi ? RIDE_D + pd + 0.1 : RIDE_D - pd - 0.1;
+        own = true;
+      }
+    }
   }
+  a.gd = td;
   const es = ts - a.s, ed = td - a.d;
   const k = 0.8;
   const pace = 1 + 0.04 * noise1(t / a.paceT, a.wSeed + 7);
-  out.vs = L.vs * pace + es * k; out.vd = L.vd + ed * k;
+  // the leader's sideways motion is copied only while the member is really in its slot
+  out.vs = L.vs * pace + es * k; out.vd = (own ? 0 : L.vd) + ed * k;
   const sp = len2(out.vs, out.vd);
   const lim = Math.max(a.v0 * 1.35, len2(L.vs, L.vd) * 1.2);
   if (sp > lim) { out.vs *= lim / sp; out.vd *= lim / sp; }
@@ -227,7 +252,8 @@ function follow(c, a, out) {
 // ------------------------------------------------------------------ helpers
 
 function goTo(a, s, d, tol = 0.3) { a.state = ST.GOTO; a.gs = s; a.gd = d; a.gTol = tol; }
-function walk(a) { a.state = ST.WALK; a.task = TASK.NONE; a.step = 0; a.inDoor = false; a.laneTT = 0; a.uturnT = 0; }
+// (inDoor is cleared by the steering once the body is out of the door recess)
+function walk(a) { a.state = ST.WALK; a.task = TASK.NONE; a.step = 0; a.laneTT = 0; a.uturnT = 0; }
 function stand(a, faceA, t) { a.state = ST.STAND; a.faceA = faceA; a.timer = t; }
 const faceTowards = (fromS, fromD, toS, toD) => Math.atan2(toD - fromD, toS - fromS);
 const faceFacade = (side) => (side > 0 ? PI / 2 : -PI / 2);
@@ -250,7 +276,7 @@ function clearSpot(c, s, d, r = 0.62) {
 const CROSS_OFFSETS = [0, 1.3, -1.3, 2.6];
 function findCrossS(c, s, side) {
   for (const off of CROSS_OFFSETS) {
-    if (clearSpot(c, s + off, side * CORR_EDGE)) return s + off;
+    if (clearSpot(c, s + off, side * crossEdge(side))) return s + off;
   }
   return null;
 }
@@ -313,8 +339,10 @@ function thinkFollower(c, a) {
 
 function thinkWalk(c, a) {
   const r = c.rng, map = c.map, side = a.side;
-  if (a.uturnT > 0) return;
-  if (a.lane !== LANE.CORR) {
+  if (a.uturnT > 0 || a.inDoor) return;
+  // waiting on the far side of the ride track for the tram to pass: no sidewalk errands yet
+  const offSide = a.side > 0 ? a.d < RIDE_D + BAND : a.d > RIDE_D - BAND;
+  if (a.lane !== LANE.CORR && !offSide) {
     // cross streets just ahead
     const look = a.s + a.dir * 7;
     const mine = map.mouthAt(look, side), other = map.mouthAt(look, -side);
@@ -427,7 +455,9 @@ export function startSideOut(c, a, m) {
 
 /** Cross the track corridor at sE (diagonally), then continue with `after`. */
 export function startCross(c, a, sE, after, mouth) {
-  const map = c.map, side = a.side;
+  const map = c.map;
+  // cross from the side of the ride track the agent is really on
+  const side = a.d > RIDE_D + BAND ? 1 : a.d < RIDE_D - BAND ? -1 : a.side;
   if (map.stationAt(sE) || map.stationAt(sE + a.dir * 12)) return false;
   const s0 = findCrossS(c, sE, side);
   if (s0 === null) return false;
@@ -435,11 +465,11 @@ export function startCross(c, a, sE, after, mouth) {
   const s1 = findCrossS(c, sT, -side);
   if (s1 === null || map.stationAt(s1)) return false;
   a.task = TASK.CROSS; a.after = after; a.mouth = mouth || a.mouth;
-  a.crossS = s1;
+  a.crossS = s1; a.side = side;
   c.tally(mouth || map.mouthAt(sE, side) || map.mouthAt(sE, -side) ? 'crossAtCrossStreet' : 'crossMidBlock');
   if (Math.abs(a.d) < TRACK_ZONE_HALF) { a.step = 1; arrive(c, a); return true; } // already in the corridor
   a.step = 0;
-  goTo(a, s0, side * CORR_EDGE, 0.45);
+  goTo(a, s0, side * crossEdge(side), 0.45);
   return true;
 }
 
@@ -455,7 +485,7 @@ function startPlatform(c, a) {
   if ((endS - a.s) * a.dir < 2) return false;
   a.task = TASK.TO_PLATFORM; a.step = 0; c.population.joinPlatform(a, feat);
   c.tally('toPlatform');
-  goTo(a, endS, a.side * (TRACK_ZONE_HALF + PLATFORM_W * 0.55), 0.6);
+  goTo(a, endS, a.side * (TRACK_ZONE_HALF + PLATFORM_W * 0.6), 0.6);
   return true;
 }
 
@@ -542,11 +572,16 @@ export function arrive(c, a) {
       if (!dr) { walk(a); return; }
       if (a.step === 0) {
         a.step = 1; a.inDoor = true;
+        // children go in hand in hand with their adult
+        for (const f of a.followers) {
+          if (!f.isChild) continue;
+          f.task = TASK.ENTER; f.inDoor = true; f.door = dr; f.doorS0 = dr.s0; f.doorS1 = dr.s1;
+        }
         goTo(a, dr.s, side * (dr.o.d + dr.depth - 0.1), 0.15);
         return;
       }
       if (a.step >= 1 && a.step < 20) {
-        if (c.vis.bodyHidden(a.s, a.d, side, dr.o.d, dr.oS - dr.o.half, dr.oS + dr.o.half)) { c.population.vanish(a); return; }
+        if (groupGone(c, a, side, dr.o.d, dr.oS - dr.o.half, dr.oS + dr.o.half)) { c.population.vanish(a); return; }
         // somebody is watching: wait at the door a little, then give up
         a.step++;
         stand(a, faceFacade(side), 1.2);
@@ -554,6 +589,7 @@ export function arrive(c, a) {
       }
       a.step = 0;
       a.task = TASK.EMERGE; a.door = null;
+      for (const f of a.followers) f.task = TASK.NONE;
       goTo(a, a.s, side * (map.wallAt(a.s, side) - 0.8), 0.4);
       return;
     }
@@ -561,7 +597,7 @@ export function arrive(c, a) {
       const m = a.mouth, line = map.mouthLine(m, side);
       const ms = c.unwrap(m.s);
       if (a.step < 6) {
-        if (a.step > 0 && c.vis.bodyHidden(a.s, a.d, side, line, ms - m.width / 2, ms + m.width / 2)) { c.population.vanish(a); return; }
+        if (a.step > 0 && groupGone(c, a, side, line, ms - m.width / 2, ms + m.width / 2)) { c.population.vanish(a); return; }
         a.step++;
         const depth = Math.min(16, 3 + a.step * 2.6);
         goTo(a, ms + a.slotX, side * (line + depth), 0.5);
@@ -579,21 +615,22 @@ export function arrive(c, a) {
       return;
     case TASK.CROSS: {
       if (a.step === 0 || a.step === 1) {
-        // at the corridor edge (or already inside): wait for a safe gap
-        const tCross = (2 * BAND + 0.6) / a.v0 + 1.5;
-        if (!c.tram.canEnterBand(a.s, tCross) || !c.tram.canEnterBand(a.crossS, tCross)) {
+        // at the corridor edge (or already inside): wait for a safe gap, unless already past the band
+        const past = side > 0 ? a.d < RIDE_D - BAND : a.d > RIDE_D + BAND;
+        if (!past && (!c.tram.canEnterBand(a, a.s) || !c.tram.canEnterBand(a, a.crossS))) {
           if (a.step === 0) c.tally('waitForTram');
-          waitToCross(a, side);
+          waitToCross(c, a, side);
           return;
         }
         a.step = 2;
-        goTo(a, a.crossS, -side * CORR_EDGE, 0.5);
+        a.crossOK = past ? 0 : c.time + c.tram.timeThrough(a) + 1.5;   // committed: walks through the band
+        goTo(a, a.crossS, -side * crossEdge(-side), 0.5);
         return;
       }
       // gave up half way (stopped at the band by the tram): back to waiting on this side
       if (Math.sign(a.d) !== -side || Math.abs(a.d) < TRACK_ZONE_HALF - 0.5) {
         c.tally('crossRetry');
-        waitToCross(a, side);
+        waitToCross(c, a, side);
         return;
       }
       // reached the far side
@@ -639,6 +676,13 @@ export function arrive(c, a) {
       return;
     }
     case TASK.ALIGHT: {
+      if (a.step < 0) {
+        // stepped off the tram: away from the platform edge first, then along to the end
+        const pl = a.feature && a.feature.platform;
+        a.step = 0;
+        goTo(a, pl ? c.unwrap(pl.s0) - 1.0 : a.s - 20, TRACK_ZONE_HALF + PLATFORM_W * 0.5, 0.7);
+        return;
+      }
       if (a.step === 0) {
         a.step = 1;
         const out = map.bandInAt(a.s, side) + 0.8;
@@ -677,8 +721,23 @@ export function arrive(c, a) {
   }
 }
 
-/** Wait at the edge of the band, half turned towards the oncoming tram. */
-function waitToCross(a, side) {
+/** The leader and the children at their side are all masked by the facade around an opening
+ *  [sa, sb] in the building line lineD (children never stay behind on their own). */
+function groupGone(c, a, side, lineD, sa, sb) {
+  if (!c.vis.bodyHidden(a.s, a.d, side, lineD, sa, sb)) return false;
+  for (const f of a.followers) if (f.isChild && !c.vis.bodyHidden(f.s, f.d, side, lineD, sa, sb)) return false;
+  return true;
+}
+
+/** Wait at the edge of the band, half turned towards the oncoming tram. Too close to the ride
+ *  track (crossers that were inside the corridor): first back off to the waiting spot on the
+ *  side of the band they are on. */
+function waitToCross(c, a, side) {
+  if (Math.abs(a.d - RIDE_D) < c.tram.passD + 0.2) {
+    const cs = a.d > RIDE_D ? 1 : -1, wd = cs * crossEdge(cs);
+    // a spot clear of the poles and trees (the way there passes between them)
+    if (Math.abs(a.d - wd) > 0.4) { a.step = 0; goTo(a, findCrossS(c, a.s + a.dir * 0.5, cs) ?? a.s + a.dir * 2.2, wd, 0.45); return; }
+  }
   a.step = 1;
   a.state = ST.WAIT; a.timer = 0.35;
   a.faceA = faceStreet(side) + (side > 0 ? -0.5 : 0.5);

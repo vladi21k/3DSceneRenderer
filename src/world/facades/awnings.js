@@ -63,6 +63,24 @@ if ( vStripe.w > 0.0 ) {
   float s = smoothstep( 0.5 - fw, 0.5 + fw, f ) * ( 1.0 - smoothstep( 1.0 - fw, 1.0 + fw, f ) );
   s = mix( s, 0.5, smoothstep( 0.15, 0.25, fw ) );
   diffuseColor.rgb = mix( diffuseColor.rgb, vStripe.rgb, s );
+}
+{
+  // seams where canvas widths are sewn together (on a stripe boundary for striped cloth)
+  float sp = vStripe.w > 0.0 ? vStripe.w * max( 1.0, floor( 1.0 / vStripe.w ) ) : 0.9;
+  float su = vAwUv.x / sp;
+  float fws = fwidth( su );
+  float seam = 1.0 - smoothstep( 0.0, 0.005 / sp + fws, abs( fract( su + 0.5 ) - 0.5 ) );
+  seam *= 1.0 - smoothstep( 0.15, 0.3, fws );
+  diffuseColor.rgb *= 1.0 - 0.14 * seam;
+  // sun-faded where the cloth faces the sky, uneven grime
+  vec3 nAw = inverseTransformDirection( vNormal, viewMatrix ) * ( gl_FrontFacing ? 1.0 : -1.0 );
+  float lumA = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
+  diffuseColor.rgb = mix( diffuseColor.rgb, vec3( lumA ) * 1.08, 0.12 * smoothstep( 0.1, 0.8, nAw.y ) );
+  vec2 gq = vAwW.xz * 2.3 + vAwW.y * 4.1;
+  vec2 gi = floor( gq ), gf = fract( gq ); gf = gf * gf * ( 3.0 - 2.0 * gf );
+  float gn = mix( mix( fract( sin( dot( gi, vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), fract( sin( dot( gi + vec2( 1, 0 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), gf.x ),
+                  mix( fract( sin( dot( gi + vec2( 0, 1 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), fract( sin( dot( gi + vec2( 1, 1 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), gf.x ), gf.y );
+  diffuseColor.rgb *= 0.93 + 0.07 * gn;
 }`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 {
@@ -77,7 +95,7 @@ if ( vStripe.w > 0.0 ) {
       .replace('vStripe = aStripe;', 'vStripe = aStripe;\nvAwUv = uv;');
     shader.fragmentShader = shader.fragmentShader.replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;');
   };
-  m.customProgramCacheKey = () => prevKey + '|facades.awning.v1';
+  m.customProgramCacheKey = () => prevKey + '|facades.awning.v2';
   return m;
 }
 
@@ -113,10 +131,31 @@ function surface(t, nu, nv, P, shade = 1, flip = false) {
   }
 }
 
-/** Scallop profile: depth of the valance at arc length s. */
-function scallop(s, vh, period) {
-  const f = (s / period) % 1;
-  return vh - 0.05 * Math.sqrt(Math.max(0, 1 - (2 * f - 1) ** 2));
+/**
+ * Scalloped valance hanging from a top edge: nS semicircular lobes (radius R) of equal
+ * width with a 2 cm binding tape along the edge. Vertices land exactly on the cusps
+ * (12 per lobe near, 4 far). edge(s) → [x, y, z] of the top edge at arc length s;
+ * out(s) the outward normal in xz.
+ */
+function valance(t, total, valH, q, at) {
+  const nS = Math.max(1, Math.round(total / 0.25)), per = total / nS;
+  const R = Math.min(0.065, per * 0.42);
+  const nvu = nS * (q >= 0.5 ? 12 : 4);
+  const depth = (s) => {
+    if (q < 0.5) return valH;
+    const f = (s / per) % 1, c = 2 * f - 1;
+    return valH - R + R * Math.sqrt(Math.max(0, 1 - c * c));
+  };
+  // rows: top edge, top of the binding, binding, bottom edge
+  const rows = q >= 0.5 ? [[0, 1], [-0.022, 0.97], [-0.02, 0.72], [0, 0.72]] : [[0, 1], [0, 0.9]];
+  surface(t, nvu, rows.length - 1, (a, b) => {
+    const s = a * total, j = Math.round(b * (rows.length - 1));
+    const h = depth(s);
+    const [dy, shade] = rows[j];
+    const y = j === 0 ? 0 : -h - dy;
+    const [x, y0, z] = at(s);
+    return [x, y0 + y, z, s, 0, shade * (1 - 0.12 * Math.min(1, -y / valH))];
+  }, 0.95, true);
 }
 
 /**
@@ -125,22 +164,27 @@ function scallop(s, vh, period) {
  */
 export function slopeAwning(W, P, D, valH, q) {
   const t = new ATpl(), m = new Tpl();
-  const nu = Math.max(2, Math.round(W / (q >= 0.5 ? 0.22 : 0.8)));
-  const nv = q >= 0.5 ? 5 : 1;
+  const nu = Math.max(2, Math.round(W / (q >= 0.5 ? 0.14 : 0.8)));
+  const nv = q >= 0.5 ? 6 : 1;
   surface(t, nu, nv, (a, b) => {
     const x = -W / 2 + W * a;
+    // the cloth sags between the roller and the front bar, and creases near the cassette
     const sag = Math.sin(Math.PI * b) * 0.035 * (0.6 + 0.4 * Math.sin(Math.PI * a));
-    const y = -D * b - sag, z = P * b;
-    return [x, y, z, x + W / 2, Math.sin(Math.PI * b) * (0.4 + 0.6 * Math.sin(Math.PI * a)), 1];
+    const crease = q >= 0.5 ? 0.006 * Math.max(0, 1 - b / 0.25) * Math.sin(x * 21 + Math.sin(x * 7) * 2) : 0;
+    const y = -D * b - sag + crease, z = P * b;
+    return [x, y, z, x + W / 2, Math.sin(Math.PI * b) * (0.4 + 0.6 * Math.sin(Math.PI * a)), 1 - 0.1 * Math.max(0, 1 - b / 0.15)];
   });
+  // hem tube wrapped round the front bar
+  if (q >= 0.5) {
+    const ring = [];
+    for (let k = 0; k <= 6; k++) { const a = (k / 6) * Math.PI * 1.5 - Math.PI * 0.25; ring.push([Math.cos(a) * 0.022, Math.sin(a) * 0.022]); }
+    surface(t, Math.max(2, Math.round(W / 0.3)), ring.length - 1, (a, b) => {
+      const x = -W / 2 + W * a, [dz, dy] = ring[Math.round(b * (ring.length - 1))];
+      return [x, -D + 0.004 + dy, P - 0.012 + dz, x + W / 2, 0, 0.9];
+    });
+  }
   // valance hanging from the front bar
-  const nvu = Math.max(4, Math.round(W / (q >= 0.5 ? 0.0625 : 0.25)));
-  const per = W / Math.max(1, Math.round(W / 0.25));
-  surface(t, nvu, 1, (a, b) => {
-    const x = -W / 2 + W * a, s = x + W / 2;
-    const h = q >= 0.5 ? scallop(s, valH, per) : valH;
-    return [x, -D - h * b, P + 0.005, s, 0, 1 - 0.15 * b];
-  }, 0.95, true);
+  valance(t, W, valH, q, (s) => [-W / 2 + s, -D, P + 0.006]);
   // front bar, wall cassette and folding arms
   m.box(-W / 2 - 0.02, -D - 0.035, P - 0.03, W / 2 + 0.02, -D + 0.02, P + 0.004, 1 | 2 | 4 | 8 | 16 | 32, 0.85, 1);
   m.box(-W / 2 - 0.04, -0.02, 0, W / 2 + 0.04, 0.13, 0.14, 1 | 4 | 8 | 16 | 32, 0.8, 1);
@@ -203,13 +247,7 @@ export function domeAwning(W, R, valH, q) {
     return [xa + dx * r * Math.sin(th), R * Math.cos(th) - pleat * Math.cos(th) * 0.3, dz * r * Math.sin(th), s, 0.25 * Math.sin(th) * Math.sin(Math.PI * rib), 1 - 0.15 * Math.sin(Math.PI * rib)];
   });
   // valance along the bottom edge
-  const per = total / Math.max(1, Math.round(total / 0.25));
-  const nvu = q >= 0.5 ? Math.round(total / 0.0625) : Math.round(total / 0.3);
-  surface(t, nvu, 1, (a, b) => {
-    const s = a * total, [xa, dx, dz] = plan(s);
-    const h = q >= 0.5 ? scallop(s, valH, per) : valH;
-    return [xa + dx * (R + 0.004), -h * b, dz * (R + 0.004), s, 0, 1 - 0.15 * b];
-  }, 0.95, true);
+  valance(t, total, valH, q, (s) => { const [xa, dx, dz] = plan(s); return [xa + dx * (R + 0.004), 0, dz * (R + 0.004)]; });
   // rim bar along the bottom edge (metal) – a few short segments
   if (q >= 0.5) {
     const n = 16;

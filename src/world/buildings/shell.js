@@ -1,6 +1,6 @@
 import { RNG } from '../../core/rng.js';
 import { facadePlan } from '../facadePlan.js';
-import { FaceShade, stoneTint, trimColor, noise2 } from './shade.js';
+import { FaceShade, stoneStyle, trimColor, noise2, setBlock, hash3 } from './shade.js';
 import { insetPolygon, FACES } from './mesh.js';
 import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
@@ -87,7 +87,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const f = lot.frame, W = plan.width, D = plan.depth;
   const rng = RNG.from(lot.seed, 'shell');
   const orn = ornament(plan, rng);
-  const tint = stoneTint(plan, rng);
+  const { tint, uncleaned } = stoneStyle(plan, rng);
+  const sillExt = (plan.style.surrounds ? orn.sw : 0.06) + 0.07;   // sill overhang beyond the jambs
   const uvA = ashlarUV(plan, metas.ashlar, rng);
   const rustH = metas.rough && (metas.rough.courseH ?? metas.rough.rowH ?? metas.rough.layout?.rowH);
   B.begin();
@@ -146,7 +147,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
   for (const F of faces) {
     const face = F.face;
     B.frameFromLot(F.frame);
-    const fs = new FaceShade(face, tint, lot.seed + (F.main ? 0 : 977), { dirt: orn.dirt });
+    const fs = new FaceShade(face, tint, lot.seed + (F.main ? 0 : 977), { dirt: orn.dirt, uncleaned, sillExt });
     if (F.main) mainShade = fs;
     const fg = Math.min(face.groundAt(0), face.groundAt(face.width));
     const ops = face.openings.filter((o) => o.uc - o.w / 2 > 0.05 && o.uc + o.w / 2 < face.width - 0.05 && o.y + o.h < vTop - 0.05);
@@ -157,7 +158,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (q.rustic) for (let j = v1 - orn.rustH; j > fg + orn.plinthH + 0.15; j -= orn.rustH) joints.push(j);
       rustic = { v0: fg - 0.4, v1, joints, c: orn.rustC };
     }
-    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic };
+    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt };
     // texture: ashlar courses aligned with the storeys; rustication rows aligned with the V joints
     B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
     if (rustic) {

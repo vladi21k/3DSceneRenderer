@@ -24,7 +24,8 @@ import { cellRect } from './leafAtlas.js';
 //    (tilting out on the crown sides); low in the crown some get a crossed partner so they
 //    never all turn edge-on. Normals blend the card normal with the crown normal so the
 //    crown shades as one volume. LOD 1 keeps 60% of the same cards, 1.25x larger; LOD 2
-//    uses crossed clump cards. All levels share sites, colour and occlusion.
+//    35% of them (a subset of LOD 1), 1.6x larger, as flat quads. All levels share sites,
+//    cells, colour and occlusion, and carry about the same projected leaf area.
 //
 // Leaf vertex data (see vegMaterials.js):
 //   aVeg   = (branch phase, branch amplitude, flutter weight, interior occlusion)
@@ -320,6 +321,7 @@ function finishSkeleton(tpl, env, sk, rng) {
       const y = sk.p[i].y;
       v *= 1 + 0.1 * Math.max(0, 1 - y / Math.max(1, tpl.crownBase)); // taper of the stem
       if (y < 0.35) v *= 1 + (tpl.mature ? 0.45 : 0.12) * (1 - y / 0.35) ** 2; // root flare
+      v = Math.min(v, 0.19); // stays inside the tree grate's 0.23 m opening (at up to 1.12x scale)
     }
     r[i] = Math.max(v, 0.004);
   }
@@ -522,7 +524,7 @@ function leafSites(tpl, env, sk, info, rng) {
 /**
  * Card descriptors for every site (shared by LOD 0 and 1):
  *   { i, c: centre, d: axis (attachment -> tip), nn: card normal, size, fold, bend, cell,
- *     col, ao, keep (in LOD 1), cross (has a crossed partner) }
+ *     col, ao, keep (in LOD 1), keep2 (in LOD 2), cross (has a crossed partner) }
  */
 function cardLayout(tpl, env, sk, info, sites, rng) {
   const fol = FOLIAGE[tpl.species];
@@ -563,8 +565,9 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
     const col = [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
     // interior occlusion (sky light only), dimmer towards the crown centre and underside
     const ao = (0.6 + 0.4 * THREE.MathUtils.smoothstep(rn, 0.2, 1.0)) * (0.85 + 0.15 * (cn.y * 0.5 + 0.5));
+    const keep = rng.next() < 0.6;
     const card = { i, c, d, nn, size, fold: rng.range(0.12, 0.38), bend: rng.range(0.05, 0.2), cell: rng.pick(fol.cells),
-      col, ao, keep: rng.next() < 0.6, cross: p.y < lowY && rng.next() < 0.3 };
+      col, ao, keep, keep2: keep && rng.next() < 0.58, cross: p.y < lowY && rng.next() < 0.3 };
     cards.push(card);
     if (card.cross) {
       const nn2 = nn.clone().applyAxisAngle(d, (rng.chance(0.5) ? 1 : -1) * rng.range(1.2, 1.57));
@@ -581,98 +584,63 @@ function crownCoord(env, p, out) {
 }
 
 /**
- * Foliage for one LOD.
- *   0: folded, bent cards (3x3 vertices) for every card;
- *   1: the 60% kept cards, 1.25x larger, folded only (2x3 vertices);
- *   2: crossed clump cards (far range), same colour and occlusion.
+ * Foliage for one LOD. Every level uses the same shoot-tip cards (nested subsets, so
+ * cross-fades between levels only thin or thicken the crown, and the projected leaf area
+ * stays about the same):
+ *   0: every card, folded and bent (3x3 vertices);
+ *   1: the 60% `keep` cards, 1.25x larger, folded only (2x3 vertices);
+ *   2: the 35% `keep2` cards (a subset of `keep`), 1.6x larger, flat quads.
  */
-function foliageGeometry(tpl, env, sk, info, cards, lod, rng) {
-  const fol = FOLIAGE[tpl.species];
+const FOL_LOD = [
+  { scale: 1, rows: 2, cols: 2, bend: true, pick: () => true },
+  { scale: 1.25, rows: 1, cols: 2, bend: false, pick: (k) => k.keep },
+  { scale: 1.6, rows: 1, cols: 1, bend: false, pick: (k) => k.keep2 },
+];
+function foliageGeometry(tpl, env, sk, info, cards, lod) {
+  const L = FOL_LOD[lod];
   const b = new Buf(LEAF_SPEC);
   const side = new THREE.Vector3(), p3 = new THREE.Vector3(), vn = new THREE.Vector3(), cn = new THREE.Vector3();
   const q = new THREE.Vector3(), base = new THREE.Vector3();
   const R = env.sphere.r;
-  if (lod < 2) {
-    const rows = lod ? 1 : 2;
-    let count = 0;
-    for (const k of cards) {
-      if (lod === 1 && !k.keep) continue;
-      count++;
-      const p = sk.p[k.i];
-      env.normal(p.x, p.y, p.z, cn);
-      const size = k.size * (lod ? 1.25 : 1);
-      const { d, nn } = k;
-      side.crossVectors(d, nn).normalize();
-      const [u0, v0, u1, v1] = cellRect(k.cell);
-      base.copy(k.c).addScaledVector(d, -size * 0.5);
-      const flutterScale = Math.min(1.3, size / 0.45);
-      const bend = lod ? 0 : k.bend;
-      const vb = b.count;
-      for (let iv = 0; iv <= rows; iv++) {
-        const v = iv / rows;
-        for (let iu = 0; iu <= 2; iu++) {
-          const u = iu / 2;
-          const su = (u - 0.5) * size;
-          p3.copy(base).addScaledVector(d, v * size).addScaledVector(side, su)
-            .addScaledVector(nn, Math.abs(su) * Math.sin(k.fold) - bend * v * v * size);
-          // folded-surface normal, blended with the crown normal
-          vn.copy(nn).addScaledVector(side, -Math.sign(su) * Math.tan(k.fold)).normalize();
-          vn.multiplyScalar(0.5).addScaledVector(cn, 0.5).normalize();
-          crownCoord(env, p3, q);
-          b.vert(p3, vn, [u0 + u * (u1 - u0), v0 + (0.01 + v * 0.98) * (v1 - v0)], k.col,
-            [info.phase[info.chainOf[k.i]], info.amp[k.i], v * flutterScale, k.ao], [q.x, q.y, q.z, R], [nn.x, nn.y, nn.z, su]);
-        }
-      }
-      // winding: front face on the side the card normal points to
-      for (let iv = 0; iv < rows; iv++) {
-        for (let iu = 0; iu < 2; iu++) {
-          const a = vb + iv * 3 + iu, c2 = a + 3;
-          b.idx.push(a, a + 1, c2, a + 1, c2 + 1, c2);
-        }
+  const { rows, cols } = L, nu = cols + 1;
+  let count = 0;
+  for (const k of cards) {
+    if (!L.pick(k)) continue;
+    count++;
+    const p = sk.p[k.i];
+    env.normal(p.x, p.y, p.z, cn);
+    const size = k.size * L.scale;
+    const { d, nn } = k;
+    side.crossVectors(d, nn).normalize();
+    const [u0, v0, u1, v1] = cellRect(k.cell);
+    // larger cards keep the leaf tips inside the clearance envelope on the track side
+    base.copy(k.c);
+    base.x = Math.max(base.x, env.clearLeaf(base.y) + size * 0.5);
+    base.addScaledVector(d, -size * 0.5);
+    const flutterScale = Math.min(1.3, size / 0.45);
+    const bend = L.bend ? k.bend : 0, fold = cols > 1 ? k.fold : 0;
+    const vb = b.count;
+    for (let iv = 0; iv <= rows; iv++) {
+      const v = iv / rows;
+      for (let iu = 0; iu <= cols; iu++) {
+        const u = iu / cols;
+        const su = (u - 0.5) * size;
+        p3.copy(base).addScaledVector(d, v * size).addScaledVector(side, su)
+          .addScaledVector(nn, Math.abs(su) * Math.sin(fold) - bend * v * v * size);
+        // folded-surface normal, blended with the crown normal
+        vn.copy(nn).addScaledVector(side, -Math.sign(su) * Math.tan(fold)).normalize();
+        vn.multiplyScalar(0.5).addScaledVector(cn, 0.5).normalize();
+        crownCoord(env, p3, q);
+        b.vert(p3, vn, [u0 + u * (u1 - u0), v0 + (0.01 + v * 0.98) * (v1 - v0)], k.col,
+          [info.phase[info.chainOf[k.i]], info.amp[k.i], v * flutterScale, k.ao], [q.x, q.y, q.z, R], [nn.x, nn.y, nn.z, su]);
       }
     }
-    return { buf: b, count };
-  }
-
-  // ---- lod 2: clumps of two crossed cards (one facing out, one facing up)
-  const sites = [...new Set(cards.filter((k) => !k.partner).map((k) => k.i))];
-  const n = Math.max(6, Math.round(cards.length * (fol.card / fol.clumpCard) ** 2 * 0.9));
-  for (let i = sites.length - 1; i > 0; i--) { const j = Math.floor(rng.next() * (i + 1)); [sites[i], sites[j]] = [sites[j], sites[i]]; }
-  const byNode = new Map();
-  for (const k of cards) if (!byNode.has(k.i)) byNode.set(k.i, k);
-  const out = new THREE.Vector3(), nn = new THREE.Vector3(), d = new THREE.Vector3();
-  let count = 0;
-  for (let s = 0; s < Math.min(n, sites.length); s++) {
-    const i = sites[s], k = byNode.get(i);
-    const p = sk.p[i];
-    env.normal(p.x, p.y, p.z, cn);
-    const size = fol.clumpCard * rng.range(0.85, 1.15);
-    base.copy(p).addScaledVector(cn, -0.12);
-    base.x = Math.max(base.x, env.clearLeaf(base.y) + size * 0.5);
-    out.set(cn.x, 0, cn.z);
-    if (out.lengthSq() < 1e-4) out.set(1, 0, 0);
-    out.normalize();
-    const [u0, v0, u1, v1] = cellRect(rng.pick(fol.clumps));
-    const rot = rng.range(0, Math.PI * 2);
-    for (let c = 0; c < 2; c++) {
-      // card normal: outward and a little up / up and a little outward
-      if (c === 0) nn.copy(out).addScaledVector(UP, rng.range(0.2, 0.6)).normalize();
-      else nn.copy(UP).addScaledVector(out, rng.range(0.2, 0.6)).normalize();
-      d.set(-nn.z, 0, nn.x);
-      if (d.lengthSq() < 1e-4) d.set(1, 0, 0);
-      d.normalize().applyAxisAngle(nn, rot + c * 1.3);
-      side.crossVectors(d, nn).normalize();
-      vn.copy(nn).multiplyScalar(0.35).addScaledVector(cn, 0.65).normalize();
-      const vb = b.count;
-      for (const [cu, cv] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
-        const su = (cu - 0.5) * size;
-        p3.copy(base).addScaledVector(side, su).addScaledVector(d, (cv - 0.5) * size);
-        crownCoord(env, p3, q);
-        b.vert(p3, vn, [u0 + cu * (u1 - u0), v0 + cv * (v1 - v0)], k.col,
-          [info.phase[info.chainOf[i]], info.amp[i] * 0.8, 0, k.ao], [q.x, q.y, q.z, R], [nn.x, nn.y, nn.z, su]);
+    // winding: front face on the side the card normal points to
+    for (let iv = 0; iv < rows; iv++) {
+      for (let iu = 0; iu < cols; iu++) {
+        const a = vb + iv * nu + iu, c2 = a + nu;
+        b.idx.push(a, a + 1, c2, a + 1, c2 + 1, c2);
       }
-      b.idx.push(vb, vb + 1, vb + 2, vb + 1, vb + 3, vb + 2);
-      count++;
     }
   }
   return { buf: b, count };
@@ -693,7 +661,7 @@ export function buildTreeTemplate(tpl, seed = 1) {
   const barkBufs = [0, 1, 2].map((l) => barkGeometry(tpl, env, sk, info, l, RNG.from(seed, 'bark', l, tpl.id)));
   const sites = leafSites(tpl, env, sk, info, RNG.from(seed, 'sites', tpl.id));
   const cards = cardLayout(tpl, env, sk, info, sites, RNG.from(seed, 'cards', tpl.id));
-  const fol = [0, 1, 2].map((l) => foliageGeometry(tpl, env, sk, info, cards, l, RNG.from(seed, 'leaf', l, tpl.id)));
+  const fol = [0, 1, 2].map((l) => foliageGeometry(tpl, env, sk, info, cards, l));
   const stemNodes = [];
   for (let i = 0; i < sk.n; i++) if (sk.trunk[i]) stemNodes.push([sk.p[i].clone(), info.r[i]]);
   stemNodes.sort((a, b) => a[0].y - b[0].y);

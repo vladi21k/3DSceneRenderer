@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
-import { buildPrintAtlas, buildDisplayAtlas } from './prints.js';
+import { buildPrintAtlas, buildDisplayAtlas, buildLitAtlas, buildGlassDecal, ATLAS_H, LIT_ROWS } from './prints.js';
 
 // Furniture-specific materials and their procedural textures. Generic surfaces (painted
 // iron, timber, concrete, platform paving...) come from the shared library by name; the
@@ -349,21 +349,6 @@ function patchGlass(m) {
   return m;
 }
 
-/** Emissive that follows the night factor: k0 by day, k1 at night. */
-function patchNightEmissive(m, k0, k1) {
-  const prev = m.onBeforeCompile;
-  m.userData.nightK = { value: new THREE.Vector2(k0, k1) };
-  m.onBeforeCompile = (s, r) => {
-    prev && prev(s, r);
-    s.uniforms.uNight = U.uNight; s.uniforms.fNightK = m.userData.nightK;
-    s.fragmentShader = s.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;\nuniform vec2 fNightK;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= mix( fNightK.x, fNightK.y, uNight );');
-  };
-  m.customProgramCacheKey = () => `furniture-night-${k0}-${k1}`;
-  return m;
-}
-
 /** Ground-contact grime and occlusion for instanced furniture (prototypes have their
  *  origin on the paving, so the object-space height is the height above the ground):
  *  darker, rougher and occluded in the bottom ~0.2 m, plus low-frequency mottling. */
@@ -419,10 +404,70 @@ function patchWrap(m, w) {
   return m;
 }
 
+/** Emissive radiance scaled by a uniform the module drives every frame (see updateLightLevels). */
+function patchEmissiveLevel(m, uniform, key) {
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (s, r) => {
+    prev && prev(s, r);
+    s.uniforms.fEmLevel = uniform;
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float fEmLevel;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= fEmLevel;');
+  };
+  m.customProgramCacheKey = () => `furniture-emlevel-${key}`;
+  return m;
+}
+
+/** Shelter glazing: thin clear glass whose coverage rises towards grazing angles (Fresnel),
+ *  plus a decal map (safety dots, dust, water spots) that is diffuse and rougher. The
+ *  output is premultiplied: reflections are never attenuated by the low opacity. */
+function patchShelterGlass(m) {
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (s, r) => {
+    prev && prev(s, r);
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor, 0.55, diffuseColor.a );')
+      .replace('#include <opaque_fragment>', `{
+        float fNV = saturate( dot( normal, normalize( vViewPosition ) ) );
+        float fCov = diffuseColor.a;
+        float fFr = 0.05 + 0.8 * pow( 1.0 - fNV, 5.0 );
+        gl_FragColor = vec4( totalDiffuse * fCov + totalSpecular * ( 1.0 - 0.5 * fCov ), clamp( fCov + ( 1.0 - fCov ) * fFr, 0.0, 1.0 ) );
+      }`);
+  };
+  m.transparent = true;
+  m.depthWrite = false;
+  m.blending = THREE.CustomBlending;
+  m.blendSrc = THREE.OneFactor;
+  m.blendDst = THREE.OneMinusSrcAlphaFactor;
+  m.customProgramCacheKey = () => 'furniture-shelter-glass';
+  return m;
+}
+
+/** Paper wrinkles and glue bubbles for posters glued on advertising columns. */
+function paperNormal(renderer) {
+  const N = 256, rng = RNG.from('paper');
+  const hf = new Float32Array(N * N);
+  for (let i = 0; i < 70; i++) { // bubbles
+    const cx = rng.next() * N, cy = rng.next() * N, rx = rng.range(4, 18), ry = rng.range(3, 12), a = rng.range(0.3, 1);
+    for (let y = -ry; y <= ry; y++) for (let x = -rx; x <= rx; x++) {
+      const d = (x / rx) ** 2 + (y / ry) ** 2;
+      if (d < 1) hf[(((cy + y) | 0) + N) % N * N + ((((cx + x) | 0) % N) + N) % N] += a * (1 - d);
+    }
+  }
+  for (let i = 0; i < 30; i++) { // creases
+    let x = rng.next() * N, y = rng.next() * N;
+    const dx = rng.range(-1, 1), dy = rng.range(-1, 1), l = Math.hypot(dx, dy) || 1, len = rng.range(10, 60);
+    for (let t = 0; t < len; t++) { hf[((y | 0) % N + N) % N * N + ((x | 0) % N + N) % N] -= 0.6; x += dx / l; y += dy / l; }
+  }
+  return tex(heightToNormal(hf, N, N, 1.4), { srgb: false, repeat: [24, 12] }, renderer);
+}
+
 // ------------------------------------------------------------------ library
 export function createMaterials(app) {
   const M = app.materials, R = app.renderer;
   const out = {};
+  const tm = (out.times = {});
+  const T = (k, f) => { const t0 = performance.now(); const r = f(); tm[k] = +(performance.now() - t0).toFixed(1); return r; };
   const reg = (name, m) => { m.name = `furniture.${name}`; M.register(`furniture.${name}`, m); out[name] = m; return m; };
   const names = new Set(M.names ? M.names() : []);
   // library materials whose vertex colour is the albedo take the per-instance colour
@@ -443,18 +488,18 @@ export function createMaterials(app) {
   out.canvasPanel = albedoVariant('fabric.awning', { userData: { furniture: 'screen' } }) || reg('canvasPanel', new THREE.MeshStandardMaterial({ roughness: 0.9, side: THREE.DoubleSide }));
 
   out.weave = WEAVES.map((w, i) => {
-    const t = weaveTextures(w, R);
+    const t = T(`weave${i}`, () => weaveTextures(w, R));
     return patchGrime(reg(`weave${i}`, new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.58, metalness: 0 })), { mottle: 0.03 });
   });
   {
-    const t = wickerTextures(R);
+    const t = T('wicker', () => wickerTextures(R));
     patchGrime(reg('wicker', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.1, 1.1), roughness: 0.6, metalness: 0 })), { mottle: 0.03 });
   }
-  patchGrime(reg('rattan', new THREE.MeshStandardMaterial({ map: rattanTexture(R), roughness: 0.5, metalness: 0 })), { mottle: 0.02 });
+  patchGrime(reg('rattan', new THREE.MeshStandardMaterial({ map: T('rattan', () => rattanTexture(R)), roughness: 0.5, metalness: 0 })), { mottle: 0.02 });
   // moulded polypropylene shell chairs, coloured per instance: satin with a faint clear coat
   patchGrime(patchWrap(reg('plastic', new THREE.MeshPhysicalMaterial({
     color: 0xffffff, roughness: 0.38, metalness: 0, clearcoat: 0.1, clearcoatRoughness: 0.3,
-    normalMap: stippleNormal(R), normalScale: new THREE.Vector2(0.35, 0.35),
+    normalMap: T('stipple', () => stippleNormal(R)), normalScale: new THREE.Vector2(0.35, 0.35),
   })), 0.15), { albedo: 0.12, rough: 0.12, mottle: 0.02 });
   // painted metal (bins, kiosk, columns, painted chairs), coloured per instance: satin paint
   out.paint = albedoVariant('metal.pole', { userData: { furniture: 'paint' }, roughness: 0.62 }) || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0 }));
@@ -463,16 +508,16 @@ export function createMaterials(app) {
   out.pole = patchGrime(variant('metal.pole'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
   out.concrete = patchGrime(variant('concrete'), { albedo: 0.2, rough: 0.05, ao: 0.55, mottle: 0.06 });
   // brushed aluminium (chairs, tables, frames); the env reflection is kept moderate
-  const brushed = brushedNormal(R);
+  const brushed = T('brushed', () => brushedNormal(R));
   patchGrime(reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#c9cacb'), roughness: 0.45, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.25, 0.25), envMapIntensity: 0.75 })), { albedo: 0.12, rough: 0.1, mottle: 0.03 });
   // umbrella frames live under the canopy: little sky reaches them
   patchGrime(reg('umbFrame', new THREE.MeshStandardMaterial({ color: srgb('#c4c5c6'), roughness: 0.5, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.2, 0.2), envMapIntensity: 0.3 })), { albedo: 0.05, rough: 0.05, ao: 0.2, mottle: 0.02 });
   {
-    const t = timberTextures(R);
+    const t = T('timber', () => timberTextures(R));
     patchGrime(reg('timber', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.82, metalness: 0 })), { albedo: 0.15, rough: 0.08, mottle: 0.05 });
   }
   // stone / compact laminate table tops (tinted per instance)
-  reg('tabletop', new THREE.MeshStandardMaterial({ map: speckleTexture(R), roughness: 0.32, metalness: 0 }));
+  reg('tabletop', new THREE.MeshStandardMaterial({ map: T('speckle', () => speckleTexture(R)), roughness: 0.32, metalness: 0 }));
   reg('ceramic', new THREE.MeshStandardMaterial({ color: srgb('#f1efe9'), roughness: 0.18, metalness: 0 }));
   reg('coffee', new THREE.MeshStandardMaterial({ color: srgb('#3a2214'), roughness: 0.25, metalness: 0 }));
   out.glass = names.has('glass.clear') ? M.get('glass.clear')
@@ -482,20 +527,50 @@ export function createMaterials(app) {
     const t = tactileTextures(R);
     reg('tactile', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.2, 1.2), roughness: 0.82, metalness: 0 }));
   }
-  const atlas = buildPrintAtlas(R);
+  // platform: cut limestone coping (per-block tint in vertex colours), mortar, paving
+  out.copingStone = M.get('stone.smooth', { vertexColors: true });
+  out.mortar = M.get('concrete', { color: [0.3, 0.29, 0.28], userData: { furniture: 'mortar' } });
+  out.platformPaving = M.get('paving.platform');
+  // shelter glazing with its decal, and the green-tinted glass edges
+  {
+    const decal = tex(T('decal', () => buildGlassDecal()), { repeat: [1, 0.25], aniso: 8 }, R);
+    reg('shelterGlass', patchShelterGlass(new THREE.MeshStandardMaterial({ color: srgb('#e6e8e2'), map: decal, roughness: 0.05, metalness: 0, envMapIntensity: 1.7 })));
+    reg('glassEdge', new THREE.MeshStandardMaterial({ color: srgb('#6f9a8a'), roughness: 0.1, metalness: 0, transparent: true, opacity: 0.6, depthWrite: false, envMapIntensity: 1.5 }));
+  }
+  const atlas = T('atlas', () => buildPrintAtlas(R));
   out.atlas = atlas;
   const printMap = tex(atlas.canvas, { repeat: [1, 1], aniso: 16 }, R);
   printMap.wrapS = printMap.wrapT = THREE.ClampToEdgeWrapping;
-  reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 }));
-  // backlit advert panels: lit through the print at night
-  reg('printLit', patchNightEmissive(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: printMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.2, metalness: 0 }), 0.05, 0.1));
-  // LED passenger displays and screens: always on
-  const disp = buildDisplayAtlas();
+  // prints sit a few millimetres proud of their panels; polygon offset keeps them clear
+  // of the panel in the depth buffer at any distance
+  const decalOffset = (m) => { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; return m; };
+  decalOffset(reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 })));
+  // posters glued on advertising columns: paper with wrinkles and bubbles
+  decalOffset(reg('paper', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.68, metalness: 0, normalMap: T('paper', () => paperNormal(R)), normalScale: new THREE.Vector2(0.45, 0.45) })));
+  // light levels (scene-linear radiance) the module sets every frame from the exposure
+  out.levels = { lit: { value: 0.03 }, disp: { value: 0.3 }, lamp: { value: 0 } };
+  // backlit advert panels: laminate over a light box (emission from the lit atlas)
+  const litMap = tex(T('lit', () => buildLitAtlas(atlas.canvas)), { repeat: [1, ATLAS_H / LIT_ROWS], aniso: 8 }, R);
+  litMap.offset.set(0, -(1 - LIT_ROWS / ATLAS_H) * (ATLAS_H / LIT_ROWS));
+  litMap.wrapS = litMap.wrapT = THREE.ClampToEdgeWrapping;
+  decalOffset(reg('printLit', patchEmissiveLevel(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: litMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.25, metalness: 0 }), out.levels.lit, 'lit')));
+  // LED passenger displays and touch screens (auto-dimmed like real ones)
+  const disp = T('display', () => buildDisplayAtlas());
   out.display = disp;
   const dispMap = tex(disp.canvas, { repeat: [1, 1], aniso: 8 }, R);
   dispMap.wrapS = dispMap.wrapT = THREE.ClampToEdgeWrapping;
-  reg('display', patchNightEmissive(new THREE.MeshStandardMaterial({ color: 0x050505, emissiveMap: dispMap, emissive: 0xffffff, emissiveIntensity: 2.0, roughness: 0.25, metalness: 0 }), 1, 0.25));
-  // shelter / platform light diffusers
-  reg('light', patchNightEmissive(new THREE.MeshStandardMaterial({ color: srgb('#e8e6e0'), emissive: srgb('#fff1d6'), emissiveIntensity: 6, roughness: 0.3, metalness: 0 }), 0, 1));
+  decalOffset(reg('display', patchEmissiveLevel(new THREE.MeshStandardMaterial({ color: 0x050505, emissiveMap: dispMap, emissive: 0xffffff, emissiveIntensity: 1, roughness: 0.25, metalness: 0 }), out.levels.disp, 'disp')));
+  // shelter / platform light diffusers (on from dusk)
+  reg('light', patchEmissiveLevel(new THREE.MeshStandardMaterial({ color: srgb('#e8e6e0'), emissive: srgb('#fff1d6'), emissiveIntensity: 1, roughness: 0.3, metalness: 0 }), out.levels.lamp, 'lamp'));
   return out;
+}
+
+/** Light levels from the camera exposure: light boxes and screens behave like auto-dimmed
+ *  real ones (never clipping at dusk), luminaires switch on with the night. */
+export function updateLightLevels(F, app) {
+  const env = app.env, exp = Math.max(env?.exposure || 1.15, 1e-3), t = env?.state?.t ?? 0;
+  const on = THREE.MathUtils.smoothstep(t, 0.68, 0.95);
+  F.levels.lit.value = Math.min(0.03, 0.75 / exp) * (0.4 + 0.6 * on);
+  F.levels.disp.value = Math.min(0.5, 0.3 / exp);
+  F.levels.lamp.value = on * 5 / exp;
 }

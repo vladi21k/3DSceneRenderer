@@ -19,6 +19,7 @@ const Q_MAX = 64;           // max obstacles returned by one query
 
 const sideIx = (side) => (side > 0 ? 1 : 0);
 const RECT_REACH = 7;       // rect lookups cover this far beyond a footprint's s ends
+const PLATFORM_RAMP = 2.5;  // ramp length at each platform end (furniture/platform.js)
 
 export class StreetMap {
   /** opts.shopLayout: the shopfront layout function of the facades (door position, setback, shutter), if available. */
@@ -269,6 +270,15 @@ export class StreetMap {
       if (ds > -grow && ds < r.len + grow && ad > r.inner - grow && ad < r.outer + grow) return r.inner;
     }
     return 0;
+  }
+  /** Height of the platform surface under a body at (s, |d|) on side, with the ramps at both
+   *  ends (as built by the furniture), or 0 off the platform. */
+  platformHeight(s, side, ad) {
+    if (ad < TRACK_ZONE_HALF + 0.05) return 0;
+    const pl = this.platformAt(s, side, ad, 0);
+    if (!pl) return 0;
+    const ds = this.route.delta(pl.s0, s), len = pl.s1 - pl.s0;
+    return pl.h * Math.max(0, Math.min(1, ds / PLATFORM_RAMP, (len - ds) / PLATFORM_RAMP));
   }
   platformAt(s, side, ad, margin = 0) {
     const st = this.stationAt(s);

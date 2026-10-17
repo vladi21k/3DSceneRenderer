@@ -5,33 +5,31 @@
 // (lanceolate leaflets, oval crown with a central leader), with the odd older, denser
 // tree (hackberry/fig-like simple leaves). All sizes are metres.
 //
-// Leaf atlas: 6 x 6 cells (see leafAtlas.js). Each near cell is a shoot tip seen from
-// above, carrying a clump of leaves; the far cells are clumps composed from them.
+// Leaf atlas: 6 x 6 cells (see leafAtlas.js). Each cell is a shoot tip seen from above,
+// carrying a clump of leaves; one cell is a far-LOD clump composed from the shrub cells.
+// Trees use the same shoot-tip cells at every detail level (fewer, larger cards far away).
 
 export const ATLAS_GRID = 6;
 const seq = (a, n) => Array.from({ length: n }, (_, i) => a + i);
 export const CELL = {
-  pagoda: seq(0, 8),
-  ash: seq(8, 8),
-  dense: seq(16, 4),
+  pagoda: [...seq(0, 8), 24, 25],
+  ash: [...seq(8, 8), 26, 27],
+  dense: [...seq(16, 4), 28],
   shrub: seq(20, 2),
   pelargonium: [22],   // pelargonium leaves (flowers are separate upright cards)
   umbel: [23],         // flower umbel on its stalk, seen from the side
-  clumpPagoda: [24, 25],
-  clumpAsh: [26, 27],
-  clumpDense: [28],
-  clumpShrub: [29],
+  clumpShrub: [29],    // planter far LOD
 };
 
 /**
  * Foliage appearance per species: atlas cells, card sizes and leaf tint.
  *   card       L0 card size (m); a card carries one shoot tip with its leaf clump
- *   clumpCard  L2 clump card size (m)
+ *   clumps, clumpCard  far-LOD clump cells and card size (planter shrubs only)
  */
 export const FOLIAGE = {
-  pagoda: { cells: CELL.pagoda, clumps: CELL.clumpPagoda, card: 0.45, clumpCard: 1.1, tint: [1.0, 1.0, 1.0] },
-  ash: { cells: CELL.ash, clumps: CELL.clumpAsh, card: 0.47, clumpCard: 1.1, tint: [0.97, 0.99, 1.0] },
-  dense: { cells: CELL.dense, clumps: CELL.clumpDense, card: 0.5, clumpCard: 1.15, tint: [1.0, 1.0, 1.0] },
+  pagoda: { cells: CELL.pagoda, card: 0.45, tint: [1.0, 1.0, 1.0] },
+  ash: { cells: CELL.ash, card: 0.47, tint: [0.97, 0.99, 1.0] },
+  dense: { cells: CELL.dense, card: 0.5, tint: [1.0, 1.0, 1.0] },
   shrub: { cells: CELL.shrub, clumps: CELL.clumpShrub, card: 0.3, clumpCard: 0.6, tint: [1, 1, 1] },
 };
 

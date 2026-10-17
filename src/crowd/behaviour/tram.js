@@ -3,6 +3,7 @@ import {
   PASS_BASE, PASS_PER_V, CLEAR_T,
 } from './constants.js';
 import { KIND, ST, TASK } from './agent.js';
+import { MAX_SPEED, TRACK_ZONE_HALF } from '../../core/config.js';
 
 // Tram awareness. Everybody judges the tram by time: a person on (or about to step onto)
 // the ride track leaves its clearance band (|d − RIDE_D| < BAND) when the tram is their
@@ -14,11 +15,13 @@ import { KIND, ST, TASK } from './agent.js';
 // driver for the bell shortly before they would have to move.
 
 const REQ_HALF = 1.6;   // people this close to the ride track centre may ask for the bell
+const V_MAX = MAX_SPEED; // the tram's governed top speed (m/s)
 
 export class TramWatch {
   constructor(crowd) {
     this.c = crowd;
     this.v = 0;               // tram speed (m/s, ≥ 0)
+    this.acc = 0;             // its acceleration (m/s², ≥ 0)
     this.trainU = 0;          // cab front, unwrapped crowd frame
     this.clearAhead = 20;     // reach of the zone for the most cautious people (statistics)
     this.stopDist = 0;
@@ -28,7 +31,7 @@ export class TramWatch {
     this.reqUrgency = 0;
     this.lastReqT = -1e9;
     this.lastReqU = 0;
-    this.stats = { violations: 0, rescues: 0, blocked: 0, bellRequests: 0, bells: 0, maxUrgency: 0, sidesteps: 0 };
+    this.stats = { violations: 0, rescues: 0, blocked: 0, tramSide: 0, bellRequests: 0, bells: 0, maxUrgency: 0, sidesteps: 0 };
     this.violationLog = [];
     this.reqLog = [];
     this.rescueLog = [];
@@ -40,6 +43,7 @@ export class TramWatch {
     const tr = app.train || {};
     this.trainU = trainU;
     this.v = Math.max(0, tr.speed || 0);
+    this.acc = Math.max(0, tr.accel || 0);
     const v = this.v;
     this.stopDist = (v * v) / (2 * BRAKE_DECEL) + v * 0.8;
     this.passD = PASS_BASE + PASS_PER_V * v;
@@ -54,8 +58,9 @@ export class TramWatch {
     this.reqUrgency = 0;
   }
 
-  /** Speed at which the tram closes in on this person (m/s). */
-  closing(a) { return Math.max(0, this.v - a.vs); }
+  /** Speed at which the tram closes in on this person (m/s); a tram pulling away counts with
+   *  the speed it will have a couple of seconds from now. */
+  closing(a) { return Math.max(0, Math.min(V_MAX, this.v + 2 * this.acc) - a.vs); }
 
   /** How far ahead of the cab this person starts getting off the track: their own reaction
    *  time at the closing speed. The bell makes people move earlier. */
@@ -72,13 +77,19 @@ export class TramWatch {
     return ahead > -(TRAM_LEN + 4) && ahead < this.frontFor(a);
   }
 
-  /** May someone start crossing the band at s now, needing about tCross seconds to get through? */
-  canEnterBand(s, tCross) {
+  /** May person a start crossing the band at s now? Their time to get through it is measured
+   *  from where they stand (people waiting on the far side of the left track need longer). */
+  canEnterBand(a, s) {
     const ahead = s - this.trainU;
     if (ahead < -(TRAM_LEN + 3)) return true;
     if (ahead < NO_GO_AHEAD + 2) return false;
-    return ahead > this.v * (tCross + 2.5) + 8;
+    // where the tram could be by the time they are through, even if it pulls away meanwhile
+    const T = this.timeThrough(a) + 2;
+    return ahead > Math.min(this.v * T + 0.6 * T * T, Math.max(this.v, V_MAX) * T) + 14;
   }
+
+  /** Seconds for a to walk out of the far side of the band from where they are. */
+  timeThrough(a) { return (Math.abs(a.d - RIDE_D) + BAND + 0.3) / Math.max(0.9, a.v0) + 0.8; }
 
   /** Before steering: flag agents that must leave the band and pick the side they go to,
    *  sidesteps for the passing tram and bell requests. */
@@ -87,6 +98,12 @@ export class TramWatch {
     const c = this.c, time = c.time;
     const dl = a.d - RIDE_D, adl = Math.abs(dl);
     const ahead = a.s - this.trainU;
+    // beside a platform there is no room between the ride track and the platform edge: people
+    // caught there step up onto the platform (they leave it again along the platform)
+    if (!a.noRect) {
+      if (a.platformOK) { if (!c.map.platformAt(a.s, 1, a.d, 0.6)) a.platformOK = false; }
+      else if (dl > BAND - 0.06 && a.d < TRACK_ZONE_HALF + 0.8 && c.map.platformAt(a.s, 1, a.d, 0.35) && this.near(a)) a.platformOK = true;
+    }
     // the tram going by close: a small step away and a glance at it
     if (this.v > 3 && ahead > -6 && ahead < 12 && adl >= BAND && adl < BAND + 3 && time - a.passT > 25) {
       a.passT = time;
@@ -120,7 +137,8 @@ export class TramWatch {
       else if (going && a.gd < RIDE_D - 1 && toLo / HURRY < tta - 2) hi = false;
       // beside a platform the safe place is between the tracks (passengers are on the platform anyway)
       const toPlatform = a.kind === KIND.PASSENGER || a.task === TASK.TO_PLATFORM || a.task === TASK.BOARD;
-      if (hi && !toPlatform && (c.map.stationAt(a.s) || c.map.stationAt(a.s + 6))) hi = false;
+      // (someone already at the platform edge steps up onto it instead)
+      if (hi && !toPlatform && dl < BAND - 0.3 && (c.map.stationAt(a.s) || c.map.stationAt(a.s + 6))) hi = false;
       // step well clear when there is time, just clear when there is not
       const spare = ahead > 0 && this.v > 0.2 ? Math.min(1, Math.max(0, (ahead / this.v - 2) / 3)) : 1;
       a.clearTo = hi ? BAND_HI + 0.08 + 0.35 * spare : BAND_LO - 0.08 - 0.6 * spare;
@@ -141,15 +159,16 @@ export class TramWatch {
    *  not step over (they slow their sideways approach to zero at it). Crossers that were let
    *  through and people clearing are exempt. */
   filterDesired(a, out) {
-    if (a.clearing || out.vd === 0) return;
+    if (a.clearing || out.vd === 0 || a.crossOK > this.c.time) return;
     const dl = a.d - RIDE_D, adl = Math.abs(dl);
-    if (adl < BAND || adl > BAND + 1.5) return;
-    if (a.task === TASK.CROSS && a.step >= 2 && !this.near(a)) return;
+    if (adl < BAND || adl > BAND + 2.5) return;
     const ahead = a.s - this.trainU;
     if (ahead < -(TRAM_LEN + 3) || ahead > this.frontFor(a) + 3) return;
     const toward = -Math.sign(dl) * out.vd;      // > 0: moving towards the band
     if (toward <= 0) return;
-    const lim = Math.max(0, (adl - BAND - 0.04) * 1.6);
+    // a moving tram is given a comfortable berth; beside a standing one the band edge will do
+    const kerb = BAND + 0.04 + Math.min(1, this.v / 3) * Math.max(0, this.passD - BAND - 0.25);
+    const lim = Math.max(0, (adl - kerb) * 1.6);
     if (toward > lim) out.vd = -Math.sign(dl) * lim;
   }
 
@@ -159,9 +178,10 @@ export class TramWatch {
     if (Math.abs(dl) >= BAND) return;
     const ahead = a.s - this.trainU;
     const inZone = ahead > -(TRAM_LEN + 2) && ahead < Math.max(this.frontFor(a) - 4, SWEPT_AHEAD + 2);
-    if (inZone && Math.abs(prevD - RIDE_D) >= BAND - 1e-4) {
-      // was outside: block the step into the band
+    if (inZone && Math.abs(prevD - RIDE_D) >= BAND - 1e-4 && !(a.crossOK > this.c.time)) {
+      // was outside: block the step into the band (beside a standing tram this is just its side)
       a.d = prevD; a.vd = 0;
+      if (this.v < 0.3) { this.stats.tramSide++; return; }
       this.stats.blocked++;
       if (this.blockLog.length < 400) this.blockLog.push(`${a.state}/${a.task}/${a.step}/${a.lane}/${a.leader ? 'F' : 'L'}/${a.clearing ? 'C' : '-'}`);
       return;
@@ -173,7 +193,7 @@ export class TramWatch {
       this.stats.rescues++;
       if (this.rescueLog.length < 12) this.rescueLog.push({ t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, clr: a.clearing, lead: !!a.leader });
       a.d = dl >= 0 && !this.c.map.stationAt(a.s) ? BAND_HI + 0.01 : BAND_LO - 0.01;
-      if (a.kind === KIND.PASSENGER && dl >= 0) a.d = BAND_HI + 0.01;
+      if ((a.kind === KIND.PASSENGER || a.platformOK) && dl >= 0) a.d = BAND_HI + 0.01;
       a.vd = 0;
     }
   }

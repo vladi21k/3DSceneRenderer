@@ -108,17 +108,15 @@ export class LodInstancer {
       mesh.instanceMatrix.array.set(m.subarray(i * 16, i * 16 + 16), j * 16);
       if (s.c) { const a = mesh.instanceColor.array; a[j * 3] = s.c[i * 3]; a[j * 3 + 1] = s.c[i * 3 + 1]; a[j * 3 + 2] = s.c[i * 3 + 2]; }
     }
+    // Whole-buffer uploads (a few kB, only on level changes): partial update ranges left
+    // stale instance data on the GPU for meshes that were culled while they were repacked.
     s.meshes.forEach((mesh, k) => {
       if (!mesh) return;
       mesh.count = counts[k];
       mesh.visible = counts[k] > 0;
       if (!counts[k]) return;
-      const im = mesh.instanceMatrix;
-      im.clearUpdateRanges(); im.addUpdateRange(0, counts[k] * 16); im.needsUpdate = true;
-      if (mesh.instanceColor) {
-        const ic = mesh.instanceColor;
-        ic.clearUpdateRanges(); ic.addUpdateRange(0, counts[k] * 3); ic.needsUpdate = true;
-      }
+      mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) { mesh.instanceColor.clearUpdateRanges(); mesh.instanceColor.needsUpdate = true; }
     });
     return true;
   }

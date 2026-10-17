@@ -11,7 +11,7 @@ import { doorLayout, doorTpl, doorGlassTpl, doorMetalTpl } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { slopeAwning, domeAwning, awningColors } from './awnings.js';
-import { crownY, isArched, halfWidthAt, outlinePts } from './outline.js';
+import { crownY, springY, isArched, halfWidthAt, outlinePts } from './outline.js';
 import { paint } from './kit.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -99,8 +99,52 @@ function buildWindow(kit, ctx, o) {
     const sc = ctx.shutterRGB, ks = 0.85 + r.next() * 0.2;
     // open leaves lie on the wall face, clear of a projecting stone surround
     const standoff = plan.style.surrounds ? 0.055 : 0.012;
-    kit.get('shutter').add(shutterTpl(o, o.shutters, ctx.q, standoff), m, sc[0] * ks, sc[1] * ks, sc[2] * ks);
+    const state = o.shutters === 'open' ? fitOpenShutters(ctx, o, standoff) : o.shutters;
+    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), m, sc[0] * ks, sc[1] * ks, sc[2] * ks);
   }
+}
+
+// ------------------------------------------------------------------ shutter fit
+/**
+ * Wall relief that open shutter leaves must not cross, as (u0, u1, y0, y1) rectangles on
+ * the front: balcony slabs and the consoles under them (exact when the plan lists them,
+ * else the whole band where consoles may hang), pilasters, neighbouring openings with
+ * their dressing, and the ends of the front.
+ */
+function wallObstacles(plan) {
+  const out = [];
+  for (const b of plan.balconies || []) {
+    const T = b.slabT || 0.16, soffit = b.y - T;
+    out.push([b.u0 - 0.05, b.u1 + 0.05, soffit, b.y - 0.02]);
+    if (b.consoles) for (const c of b.consoles) out.push([c.u - 0.17, c.u + 0.17, soffit - c.h - 0.08, soffit]);
+    else out.push([b.u0, b.u1, soffit - 0.85, soffit]);
+  }
+  if (plan.style.pilasters && plan.floors.length > 2 && plan.courses?.length) {
+    const v0 = plan.courses[0].y + plan.courses[0].h;
+    for (const b of plan.bays) if (b.index > 0) out.push([b.u0 - 0.3, b.u0 + 0.3, v0, plan.totalHeight]);
+  }
+  for (const n of plan.openings) out.push([n.uc - n.w / 2 - 0.24, n.uc + n.w / 2 + 0.24, n.y - 0.1, n.y + n.h + 0.3, n]);
+  out.push([-1e3, 0.08, -1e3, 1e3], [plan.width - 0.08, 1e3, -1e3, 1e3]);
+  return out;
+}
+
+/** 'open', 'openSpring' (arched head, leaves to the spring line) or 'reveal' (folded in). */
+function fitOpenShutters(ctx, o, standoff) {
+  const obs = ctx.obstacles || (ctx.obstacles = wallObstacles(ctx.plan));
+  const hw = o.w / 2, gap = standoff > 0.03 ? 0 : 0.05;
+  const clash = (top) => {
+    const y0 = o.y + 0.01, y1 = o.y + top;
+    for (const [a, b] of [[o.uc - 2 * hw - gap - 0.03, o.uc - hw - gap], [o.uc + hw + gap, o.uc + 2 * hw + gap + 0.03]]) {
+      for (const r of obs) {
+        if (r[4] === o) continue;
+        if (a < r[1] && b > r[0] && y0 < r[3] && y1 > r[2]) { ctx.shutterClashes = (ctx.shutterClashes || 0) + 1; return true; }
+      }
+    }
+    return false;
+  };
+  if (!clash(crownY(o))) return 'open';
+  if (isArched(o) && !clash(springY(o))) return 'openSpring';
+  return 'reveal';
 }
 
 // ------------------------------------------------------------------ signs
@@ -131,8 +175,8 @@ function planSigns(ctx) {
   return { byOpening, wall };
 }
 
-function addSignText(kit, design, m, w, h, q, glow = design.glow) {
-  const tp = fasciaTpls(design, w, h, q);
+function addSignText(kit, design, m, w, h, q, glow = design.glow, z0 = 0.055) {
+  const tp = fasciaTpls(design, w, h, q, z0);
   const ink = signColor(design.ink);
   if (tp.board) {
     const bc = signColor(design.board);
@@ -244,7 +288,7 @@ function buildShop(kit, ctx, o, signInfo, type) {
     const lumB = bc[0] * 0.3 + bc[1] * 0.6 + bc[2] * 0.1;
     const dsg = { ...design, type: 'letters', board: null, ink: lumB > 0.3 ? 0x1d1d1f : (design.cell % 3 ? 0xe9dfc4 : 0xd8b25a) };
     const mt = new THREE.Matrix4().copy(m).multiply(_r.makeTranslation(0, yc, -0.015 - 0.035 + 0.006));
-    addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow);
+    addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015);
   }
   // awning
   if (o.awning) buildAwning(kit, ctx, o, r, signInfo && signInfo.mode === 'valance' ? signInfo.design : null);
@@ -293,7 +337,7 @@ function buildAwning(kit, ctx, o, r, design) {
     const dsg = { ...design, type: 'letters', board: null, ink: lum > 0.25 ? 0x2a2a2c : 0xf2efe6, glow: 0 };
     const mt = new THREE.Matrix4().copy(openingMatrix(ctx.frame, o, new THREE.Matrix4()))
       .multiply(_r.makeTranslation(0, valFront.y, valFront.z - 0.035));
-    addSignText(kit, dsg, mt, valFront.w * 0.7, valH * 0.72, ctx.q, 0);
+    addSignText(kit, dsg, mt, valFront.w * 0.7, valH * 0.72, ctx.q, 0, 0.015);
   }
 }
 
@@ -374,7 +418,7 @@ export function* buildFront(kit, ctx) {
   for (const o of plan.openings) {
     if (o.kind !== 'shop') continue;
     const si = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
-    shopTypes.set(o.id, si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
+    shopTypes.set(o.id, ctx.forceShop || (si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX)));
   }
   // a few facades (hotels, pensions) carry canvas hoods over the lower upper-floor windows
   const hr = RNG.from(plan.seed, 'hotel');

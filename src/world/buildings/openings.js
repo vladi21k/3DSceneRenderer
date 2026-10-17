@@ -54,7 +54,7 @@ export function openingMasonry(ctx, face, o) {
   const sT = sinks.smooth;
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.05);
   const isWin = o.kind === 'window' || o.kind === 'balconyDoor';
-  const surround = isWin ? (face.style.surrounds ? orn.sw : 0) : (o.kind === 'door' && orn.doorSurround ? orn.sw * 1.3 : 0);
+  const surround = surroundOf(o, face, orn);
   const sp = surround ? orn.sp : 0;
   const bev = q.bevel ? 0.012 : 0;
 
@@ -76,12 +76,11 @@ export function openingMasonry(ctx, face, o) {
     const proj = ground ? orn.shopRingP : (surround ? sp : 0.012);
     voussoirRing(ctx, sT, o, T, proj, orn.keystone || ground, bev);
   } else {
-    const ext = surround || (ground ? 0.2 : 0.12);
+    const { kind, ext, H } = flatHead(o, orn, surround, ctx.ch);
     const proj = surround ? sp : (ground ? 0.02 : 0.012);
-    const kind = ground ? orn.shopHead : orn.winHead;
-    if (kind === 'flatArch') flatArch(ctx, sT, o, ext, ground ? 0.42 : 0.3, proj, bev);
-    else if (kind === 'hood') { lintel(ctx, sT, o, ext, 0.26, proj, bev, orn.keystone); hood(ctx, sT, o, ext, yt + 0.26); }
-    else lintel(ctx, sT, o, ext, ground ? 0.38 : 0.26, proj, bev, orn.keystone && kind !== 'plain');
+    if (kind === 'flatArch') flatArch(ctx, sT, o, ext, H, proj, bev);
+    else if (kind === 'hood') { lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone); hood(ctx, sT, o, ext, yt + H); }
+    else lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone && kind !== 'plain');
   }
 
   // sill
@@ -115,6 +114,24 @@ export function openingMasonry(ctx, face, o) {
     if (o.kind === 'door' && orn.doorHood && q.lod === 0) doorHood(ctx, sT, o, surround, arched ? orn.shopRing : 0);
   }
   B.shade = null;
+}
+
+/** Width of the smooth surround around an opening (0 = none). */
+export function surroundOf(o, face, orn) {
+  const isWin = o.kind === 'window' || o.kind === 'balconyDoor';
+  return isWin ? (face.style.surrounds ? orn.sw : 0) : (o.kind === 'door' && orn.doorSurround ? orn.sw * 1.3 : 0);
+}
+
+/**
+ * Head over a flat-topped opening: lintel, flat (jack) arch or lintel with a hood; on
+ * the upper floors it is one ashlar course (ch) tall, so the courses run on above it.
+ */
+export function flatHead(o, orn, surround, ch) {
+  const ground = o.floor === 0;
+  const kind = ground ? orn.shopHead : orn.winHead;
+  const ext = surround || (ground ? 0.2 : 0.12);
+  const H = ground ? (kind === 'flatArch' ? 0.42 : 0.38) : ch ? Math.min(0.45, Math.max(0.26, ch)) : (kind === 'flatArch' ? 0.3 : 0.26);
+  return { kind, ext, H };
 }
 
 /** Curved soffit of an arched head between w0 and w1 (normals point into the opening). */

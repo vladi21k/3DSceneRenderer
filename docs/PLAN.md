@@ -31,6 +31,12 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [ ] Ride: tram dynamics, auto/manual throttle, curve speed limits, platform stop + dwell, sway/bob/joint vibration, mouse look, UI
 - [ ] Audio: synthesized bell (spatial), rumble, joints, curve squeal, motor hum, street ambience
 
+## M2b — Figures follow-up (user requests)
+- [ ] Anatomy rework: distinct male / female / child (and elderly) proportions and silhouettes, correct back view (shoulder blades, spine groove, trapezius, glutes, calves, hair from behind), sex- and age-specific gait
+- [ ] Strollers: parents pushing strollers (pose + animated stroller model)
+- [ ] Bicycles: cyclists riding (pedalling, rolling wheels), people walking bikes, parked bikes at racks
+- [ ] Crowd roles for strollers and cyclists (lanes, speeds, tram avoidance)
+
 ## M3 — Integration & performance
 - [x] Route reshaped (user request): gentle bends and S-meanders, so no street is ruler-straight; designed hills (the avenue climbs ~9 m ahead of the start, then crests)
 - [ ] Uneven ground (user request): shared `route.surface(s, d)` with sidewalk cross-fall, a slow hillside tilt across the street and settlement undulation, applied by toWorld and the paving mesh so every object sits on it

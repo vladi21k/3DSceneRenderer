@@ -8,7 +8,7 @@ import { ATLAS_GRID, CELL } from './species.js';
 // simple leaves for the dense trees). Leaves are tilted at random, so their leaflets are
 // foreshortened and the cell reads as a rounded clump rather than a flat frond. Leaflets
 // are shaded lighter at the base and darker at the tip, with a darker rim, midrib and
-// secondary veins. Far-LOD cells are clumps composed from the near cells.
+// secondary veins. The planter shrubs' far-LOD cell is a clump composed from shrub cells.
 //
 // Two passes paint the same shapes (same code, same random sequence): 'color' (sRGB
 // colour + coverage) and 'normal' (tangent-space normal x, y in R, G with z rebuilt in the
@@ -532,13 +532,9 @@ export function paintAtlas(seed, kind) {
   for (const i of CELL.shrub) cell(i, (rng) => shrubSpray(P, rng));
   cell(CELL.pelargonium[0], (rng) => pelargoniumLeaves(P, rng));
   cell(CELL.umbel[0], (rng) => umbel(P, rng));
-  // far-LOD clumps composed from the cells above
+  // planter far-LOD clump composed from the shrub cells above
   const crng = RNG.from(seed, 'clumps');
-  const place = (i, src, n) => clump(P, crng, i % ATLAS_GRID, Math.floor(i / ATLAS_GRID), src, n);
-  for (const i of CELL.clumpPagoda) place(i, CELL.pagoda, 9);
-  for (const i of CELL.clumpAsh) place(i, CELL.ash, 9);
-  for (const i of CELL.clumpDense) place(i, CELL.dense, 9);
-  for (const i of CELL.clumpShrub) place(i, [...CELL.shrub, ...CELL.shrub, CELL.pelargonium[0]], 11);
+  for (const i of CELL.clumpShrub) clump(P, crng, i % ATLAS_GRID, Math.floor(i / ATLAS_GRID), [...CELL.shrub, ...CELL.shrub, CELL.pelargonium[0]], 11);
   const T1 = performance.now();
   const img = new Uint8ClampedArray(ctx.getImageData(0, 0, SIZE, SIZE).data.buffer);
   const T2 = performance.now();

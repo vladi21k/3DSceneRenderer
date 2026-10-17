@@ -95,13 +95,15 @@ export class Rig {
         ankle: an.clone(),
       };
     }
-    // elbow hinge axes and rest flexion
+    // elbow hinge axes and rest flexion; rest palm normal (faces the thigh, as sculpted)
     this.elbow = {};
     for (const s of ['L', 'R']) {
       const sh = R[B['arm' + s]], el = R[B['fore' + s]], wr = R[B['hand' + s]];
       const du = el.clone().sub(sh).normalize(), df = wr.clone().sub(el).normalize();
       const axis = new THREE.Vector3().crossVectors(du, new THREE.Vector3(0, 0, -1)).normalize();
-      this.elbow[s] = { axis, rest: Math.acos(Math.min(1, du.dot(df))) / DEG, du };
+      const ha = df.clone().add(new THREE.Vector3(0, 0, -0.05)).normalize();
+      const pn = new THREE.Vector3().crossVectors(ha, new THREE.Vector3(0, 0, 1)).multiplyScalar(this.side[s]).normalize();
+      this.elbow[s] = { axis, rest: Math.acos(Math.min(1, du.dot(df))) / DEG, du, df, pn };
     }
   }
 
@@ -126,6 +128,7 @@ export class Rig {
     for (const s of ['L', 'R']) {
       const sg = this.side[s], A = P.arm[s];
       fk(B['clav' + s], A.clavQ);
+      if (A.ik) { this._armIK(s, A, q, p, fk); continue; }
       // upper arm direction in the thorax frame: abduction then forward flexion
       const abd = A.abd * DEG, fl = A.flex * DEG;
       const dir = new THREE.Vector3(sg * Math.sin(abd), -Math.cos(abd), 0).applyAxisAngle(X, fl);
@@ -164,6 +167,24 @@ export class Rig {
       p[B['toe' + s]].copy(R[B['toe' + s]]).sub(R[B['foot' + s]]).applyQuaternion(q[B['foot' + s]]).add(p[B['foot' + s]]);
     }
     return { q, p };
+  }
+
+  /** Arm placed by two-bone IK: wrist target, elbow pole and palm direction given in the
+   *  rest-pose thorax frame (they follow the posed chest). */
+  _armIK(s, A, q, p, fk) {
+    const R = this.rest, E = this.elbow[s];
+    const cq = q[B.spine2], cp = p[B.spine2];
+    const toModel = (v) => v.clone().sub(R[B.spine2]).applyQuaternion(cq).add(cp);
+    fk(B['arm' + s]);                                  // shoulder joint position
+    const sh = p[B['arm' + s]].clone();
+    const ik = solveIK(sh, toModel(A.ik.target), this.ua, this.fa, A.ik.pole.clone().applyQuaternion(cq), 0.985);
+    const dU = ik.mid.clone().sub(sh), dF = ik.end.clone().sub(ik.mid);
+    const nU = new THREE.Vector3().crossVectors(dU, dF).normalize();
+    q[B['arm' + s]].copy(matchFrames(E.du, E.axis, dU, nU));
+    p[B['fore' + s]].copy(ik.mid);
+    q[B['fore' + s]].copy(matchFrames(E.df, E.pn, dF, A.ik.palm.clone().applyQuaternion(cq)));
+    p[B['hand' + s]].copy(ik.end);
+    q[B['hand' + s]].copy(q[B['fore' + s]]).multiply(A.handQ || new THREE.Quaternion());
   }
 
   /** Skin matrices (12 floats per bone) for a solved pose. */
@@ -220,8 +241,8 @@ export class Rig {
     return {
       v, S, sn, old: !!clip.old,
       D: clip.old ? 0.65 : THREE.MathUtils.clamp(0.66 - 0.05 * (v - 0.75), 0.58, 0.66),
-      armAmp: (clip.old ? 9 : 6 + 13 * sn * sn) * (clip.v > 1.5 ? 1.15 : 1),
-      lean: clip.old ? 11 : 2.5 + 2.5 * (sn - 0.8),
+      armAmp: (clip.old ? 6 : 6 + 13 * sn * sn) * (clip.v > 1.5 ? 1.15 : 1),
+      lean: clip.old ? 7 : 2.5 + 2.5 * (sn - 0.8),
       stepHalfW: 0.055 * legL + (clip.old ? 0.025 : 0),
     };
   }
@@ -309,17 +330,18 @@ export class Rig {
     // thorax counter-rotates; trunk leans forward; head stabilised against everything below
     P.spine1Q = qEuler(-W.lean * 0.35, -yaw * 0.9, -roll * 0.5);
     P.spine2Q = qEuler(-W.lean * 0.45, -yaw * 1.1, -roll * 0.45);
-    P.neckQ = qEuler(W.lean * 0.45 - tilt * 0.5 + (W.old ? 4 : 0), yaw * 0.5, -roll * 0.03);
-    P.headQ = qEuler(W.lean * 0.45 + (W.old ? 3 : 1), yaw * 0.5, -roll * 0.02);
+    // (an older walker's stoop is taken back in the neck, so the gaze stays level)
+    P.neckQ = qEuler(W.lean * (W.old ? 0.6 : 0.45) - tilt * 0.5, yaw * 0.5, -roll * 0.03);
+    P.headQ = qEuler(W.lean * 0.45 + 1, yaw * 0.5, -roll * 0.02);
     // arms counter-swing with a slight lag; elbows flex more when the arm is forward
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
       const a = Math.cos(2 * Math.PI * (phase - (s === 'R' ? 0 : 0.5) - 0.06));
       const flex = -W.armAmp * a - 3;                               // right arm back at right strike
       const A = P.arm[s];
-      A.flex = flex - (W.old ? -6 : 0);
+      A.flex = flex + (W.old ? 3 : 0);
       A.abd = 8 + 2 * Math.abs(a);
-      A.elbow = 14 + Math.max(0, flex) * 0.9 + (W.old ? 16 : 0) + 4 * W.sn;
+      A.elbow = 14 + Math.max(0, flex) * 0.9 + (W.old ? 5 : 0) + 4 * W.sn;
       A.twist = -12;
       A.handQ = qAxis(X, 6 + Math.max(0, flex) * 0.15);
       A.clavQ = qAxis(X, -flex * 0.12 * sg * 0);
@@ -375,12 +397,16 @@ export class Rig {
       A.handQ = qEuler(-20, 0, 15);
       P.arm.L.elbow = 20;
     } else if (variant === 2) {
-      // arms folded across the chest
-      for (const s of ['L', 'R']) {
-        const A = P.arm[s];
-        A.flex = 40 + (s === 'R' ? 4 : 0); A.abd = 18; A.elbow = 118 + (s === 'R' ? 4 : 0); A.twist = -72;
-        A.handQ = qEuler(0, 0, 0);
-      }
+      // arms folded across the chest: the right forearm in front, its hand tucked under the
+      // left upper arm; the left forearm behind it with the hand resting on the right biceps
+      const k = this.H / 1.76, shY = this.rest[B.armR].y, shX = this.rest[B.armR].x;
+      const br = 0.004 * Math.sin(2 * Math.PI * t * 5);
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.70, shY - 0.235 * k + br, -0.155 * k),
+        pole: new THREE.Vector3(0.6, -0.7, 0.35), palm: new THREE.Vector3(0.0, -0.25, 1) };
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.200 * k + br, -0.120 * k),
+        pole: new THREE.Vector3(-0.6, -0.7, 0.35), palm: new THREE.Vector3(0.3, -0.2, 1) };
+      P.arm.R.handQ = qEuler(0, 0, -10);
+      P.arm.L.handQ = qEuler(0, 0, 20);
     } else if (variant === 3) {
       // hands in the front pockets
       for (const s of ['L', 'R']) {

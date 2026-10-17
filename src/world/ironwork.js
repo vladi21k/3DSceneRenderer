@@ -40,7 +40,9 @@ const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
 const DISH_DIR = new THREE.Vector3(-0.55, 0.64, 0.53).normalize();
 // Stone tints are relative to the cream reference, exactly as the buildings tint theirs.
-const CREAM = [0.86, 0.80, 0.68];
+// WARM shifts the dressed-stone albedo toward the mean of the ashlar blocks around it
+// (their per-block hue variation leans warm), measured on screen at equal lighting.
+const CREAM = [0.86, 0.80, 0.68], WARM = [1.02, 1.0, 0.965];
 
 const weighted = (r, w) => { let x = r.next() * w.reduce((a, b) => a + b, 0); for (let i = 0; i < w.length; i++) { x -= w[i]; if (x <= 0) return i; } return w.length - 1; };
 
@@ -72,19 +74,23 @@ function lotStyle(lot, plan) {
   const pots = r.int(0, POTS.length - 1);
   const flag = r.int(0, 3);
   const k = r.range(0.95, 1.02);
-  const tint = plan.style.tint.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k);
+  const tint = plan.style.tint.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k * WARM[i]);
   return { design, paint, railH, corbel, slabVariant, roundStone, tint, greenery, flowers, pots, flag };
 }
 
 // ---------------------------------------------------------------- clearance of openings
 // Dressing around an opening's head (surrounds, voussoir rings, keystones, hoods, door
-// portals), as the buildings module may draw it. Conservative reaches (metres).
+// portals), as the buildings module may draw it, and open shutter leaves folded back
+// against the piers either side (facades). Conservative reaches (metres).
 function headProfile(o, ground) {
   const door = o.kind === 'door';
   const arched = o.rise > 0.01;
   const reach = ground ? (door ? 0.8 : arched ? 0.62 : 0.34) : 0.4;
+  const d0 = o.uc - o.w / 2 - reach, d1 = o.uc + o.w / 2 + reach;
+  // open leaves: one leaf width beyond each jamb, up to the crown at their outer edge
+  const leaf = o.shutters === 'open' ? [o.uc - o.w - 0.09, o.uc + o.w + 0.09, o.y + o.h + 0.03] : null;
   const hp = {
-    u0: o.uc - o.w / 2 - reach, u1: o.uc + o.w / 2 + reach,
+    u0: leaf ? Math.min(d0, leaf[0]) : d0, u1: leaf ? Math.max(d1, leaf[1]) : d1, d0, d1, leaf,
     flat: o.y + o.h + (ground ? (door ? (arched ? 1.06 : 0.72) : 0.52) : 0.5),
     jamb: o.spring + 0.06, arc: null, door,
   };
@@ -102,11 +108,14 @@ function headProfile(o, ground) {
 /** Highest point of an opening's dressing at facade position u (−Infinity if clear). */
 function headTopAt(hp, u) {
   if (u < hp.u0 || u > hp.u1) return -Infinity;
-  if (hp.door || !hp.arc) return hp.flat;
+  const L = hp.leaf;
+  const lt = L && u >= L[0] && u <= L[1] ? L[2] : -Infinity;
+  if (u < hp.d0 || u > hp.d1) return lt;
+  if (hp.door || !hp.arc) return Math.max(lt, hp.flat);
   const a = hp.arc, n = a.length;
-  if (u <= a[0]) return Math.max(hp.jamb, a[1]);
-  if (u >= a[n - 2]) return Math.max(hp.jamb, a[n - 1]);
-  let v = hp.jamb;
+  if (u <= a[0]) return Math.max(lt, hp.jamb, a[1]);
+  if (u >= a[n - 2]) return Math.max(lt, hp.jamb, a[n - 1]);
+  let v = Math.max(lt, hp.jamb);
   for (let i = 0; i < n - 2; i += 2) {
     const ua = a[i], ub = a[i + 2];
     if ((u - ua) * (u - ub) <= 0) v = Math.max(v, a[i + 1] + (a[i + 3] - a[i + 1]) * ((u - ua) / ((ub - ua) || 1)));
@@ -138,10 +147,19 @@ function placeConsoles(plan, bal, n, Hc) {
   const step = 0.03, N = Math.floor((hi - lo) / step) + 1;
   const top = new Float32Array(N).fill(-1e9);
   if (heads.length) {
-    for (let i = 0; i < N; i++) {
-      const u = lo + i * step;
+    // dressing height on a grid widened by a console half-width (+2 cm) either side, then
+    // the highest point under each console footprint (sliding maximum)
+    const K = Math.ceil((W2 + 0.02) / step), M = N + 2 * K;
+    const raw = new Float32Array(M);
+    for (let j = 0; j < M; j++) {
+      const u = lo + (j - K) * step;
       let t = -1e9;
-      for (const hp of heads) for (let s = -W2 - 0.02; s <= W2 + 0.021; s += 0.05) t = Math.max(t, headTopAt(hp, u + s));
+      for (const hp of heads) { const h = headTopAt(hp, u); if (h > t) t = h; }
+      raw[j] = t;
+    }
+    for (let i = 0; i < N; i++) {
+      let t = -1e9;
+      for (let j = i; j <= i + 2 * K; j++) if (raw[j] > t) t = raw[j];
       top[i] = t;
     }
   }
@@ -230,9 +248,12 @@ const ironwork = {
     };
     for (const lot of lots) {
       // side-street facades are seen down the side street: skipped in far chunks beyond
-      // the corner, built with far-range detail deep in near ones
+      // the corner, built with far-range detail deep in near ones. Beyond the corner lots
+      // (35 m and more from any camera on the main street, at grazing angles) the floor
+      // clutter behind the railings is left out: it is hidden by the bars and the slab.
       if (chunk.lod && lot.sideStreet && lot.x0 > 24) continue;
       ctx.lod = chunk.lod || (lot.sideStreet && lot.x0 > 60) ? 1 : 0;
+      ctx.clutter = !lot.sideStreet || lot.x0 <= 24;
       const plan = facadePlan(lot);
       const st = lotStyle(lot, plan);
       _p.set(lot.frame.width / 2, plan.totalHeight / 2, 0).applyMatrix4(lot.frame.matrix);
@@ -305,7 +326,7 @@ const ironwork = {
         if (!lod && iron) writeTemplate(ctx.parts, A.hooks[outside ? 0 : 1], _m);
       }
     }
-    if (lod) return;
+    if (lod || !ctx.clutter) return;
     // pots along the front, inside the railing
     if (g > 0 && r.chance(0.15 + 0.5 * g)) {
       const n = r.int(1, Math.min(4, Math.floor(len / 0.45)));
@@ -350,9 +371,13 @@ const ironwork = {
     for (const o of plan.openings) {
       if (o.kind !== 'window') continue;
       if (o.ac) {
-        // under one side of the window, clear of the sill and its brackets
+        // under one side of the window, clear of the sill and its corbels; where the unit
+        // or its brackets reach a string course it stands off the wall in front of it
         const u = o.uc + (r.chance(0.5) ? -1 : 1) * (o.w / 2 + 0.05) * r.range(0.45, 0.9);
-        _l.makeTranslation(u, o.y - 0.32 - 0.55, -0.02);
+        const top = o.y - 0.37, bot = top - 0.55 - 0.22;
+        let w = -0.02;
+        for (const c of plan.courses) if (c.y < top && c.y + c.h > bot) w = Math.max(w, c.proj - 0.07);
+        _l.makeTranslation(u, top - 0.55, w);
         this.acUnit(ctx, _m.multiplyMatrices(F, _l), true);
       }
       if (o.flowerBox) {

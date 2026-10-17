@@ -98,7 +98,11 @@ export class Steering {
       a.d += a.vd * dt;
       // hard corrections never move anyone faster than a brisk step
       this.maxC = Math.max(0.02, 2 * Math.max(1.6, vmax) * dt);
+      const s1 = a.s, d1 = a.d;
       this._constrain(a, gathered, a.s - prevS);
+      // all corrections together stay within a brisk step too
+      const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
+      if (cl > this.maxC) { const f = this.maxC / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
       tram.constrain(a, prevD);
       // velocity from the actual motion (constraints included): the gait follows what happened
       const ms = (a.s - prevS) * k, md = a.d - prevD;
@@ -190,6 +194,7 @@ export class Steering {
     const n = map.gatherCircles(a.s, 3.5);
     const sp = len2(a.vs, a.vd);
     const es = sp > 0.1 ? a.vs / sp : 0, ed = sp > 0.1 ? a.vd / sp : 0;
+    const goalD = a.clearing ? a.clearTo : a.gd;
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
       const dx = map.qDS[q], dy = map.cD[i] - a.d, r = map.cR[i];
@@ -198,6 +203,11 @@ export class Steering {
       if (gap < 0.6 && dist > 1e-4) {
         const f = Math.min(6, 2.6 * Math.exp(-gap / 0.16));
         fs -= (dx / dist) * f; fd -= (dy / dist) * f;
+        // the way out to the side is behind this pole / trunk: slide along it to get round it
+        if (!standing && Math.abs(dx) < r + AGENT_R + 0.1 && dy * (goalD - a.d) > 0 && Math.abs(goalD - a.d) > Math.abs(dy) - r) {
+          const away = dx > 0.02 ? -1 : dx < -0.02 ? 1 : (a.dir || 1);
+          fs += away * 1.6 * (1 - Math.abs(dx) / (r + AGENT_R + 0.1) + 0.3);
+        }
       }
       if (standing || sp < 0.2) continue;
       // look ahead: an obstacle across the path is passed on the side with more room
@@ -209,9 +219,14 @@ export class Steering {
         if (lat > 0.04) side = -1;           // obstacle to the right: pass on the left
         else if (lat < -0.04) side = 1;
         else side = (a.gd - a.d) * (es >= 0 ? 1 : -1) >= 0 ? 1 : -1; // dead ahead: towards the lane
-        if (tramNear && Math.abs(map.cD[i] - RIDE_D) < BAND + 1.3 && Math.sign(es * side) === Math.sign(RIDE_D - a.d)) side = -side;
+        let brake = 0;
+        if (tramNear && Math.abs(map.cD[i] - RIDE_D) < BAND + 1.3 && Math.sign(es * side) === Math.sign(RIDE_D - a.d)) {
+          // never between a pole and the passing tram: round its far side, or wait behind it
+          side = -side;
+          if (along < 2.2) brake = 4 * (1 - along / 2.2) * (1 - Math.abs(lat) / need);
+        }
         const k = 1.5 * (1 - along / 3.8) * (1 - Math.abs(lat) / need + 0.3);
-        fs += -ed * side * k; fd += es * side * k;
+        fs += -ed * side * k - es * brake; fd += es * side * k - ed * brake;
       }
     }
     // café terraces and platforms ahead: their ends are walls across the path, passed on the
@@ -221,6 +236,7 @@ export class Steering {
       const nr = map.rectsNear(a.s, side);
       for (let q = 0; q < nr; q++) {
         const r = map.rq[q];
+        if (a.platformOK && r.kind === 'platform') continue;
         const ds = map.rectDS(r, a.s);
         // distance to the end the walker is heading for
         const along = es > 0 ? -ds : ds - r.len;
@@ -265,8 +281,17 @@ export class Steering {
       // out of the recess again (people coming out of a door): an ordinary walker
       if (a.task !== TASK.ENTER && Math.abs(a.d) < map.facadeAt(a.s, side) - 0.35) a.inDoor = false;
       else {
-        if (a.s < a.doorS0) a.s += Math.min(maxC, a.doorS0 - a.s); else if (a.s > a.doorS1) a.s -= Math.min(maxC, a.s - a.doorS1);
-        if (Math.abs(a.d) > lim) a.d = side * lim;
+        // the facade opens only at the door leaf; inside the recess the jambs bound s
+        const wall = map.wallAt(a.s, side), ad = Math.abs(a.d);
+        const inRange = a.s >= a.doorS0 - 0.02 && a.s <= a.doorS1 + 0.02;
+        if (ad > wall && !inRange) {
+          // at the corner of the opening: out through the smaller overlap (facade or jamb)
+          const ps = a.s < a.doorS0 ? a.doorS0 - a.s : a.s - a.doorS1;
+          if (ad - wall < ps) a.d = side * Math.max(wall, ad - maxC);
+          else if (a.s < a.doorS0) a.s += Math.min(maxC, ps);
+          else a.s -= Math.min(maxC, ps);
+        }
+        if (Math.abs(a.d) > lim) a.d = side * Math.max(lim, Math.abs(a.d) - maxC);
         return;
       }
     }
@@ -293,6 +318,12 @@ export class Steering {
       const r = map.rq[q];
       const ds = map.rectDS(r, a.s), ad = Math.abs(a.d);
       if (ds < -RECT_R || ds > r.len + RECT_R || ad < r.inner - RECT_R || ad > r.outer + RECT_R) continue;
+      if (a.platformOK && r.kind === 'platform') {
+        // up on the platform: only its back kerb and railing are a wall
+        const lim = r.outer - RECT_R;
+        if (ad > lim) { a.d = side * Math.max(lim, ad - maxC); if (a.vd * side > 0) a.vd = 0; }
+        continue;
+      }
       const p0 = ds + RECT_R, p1 = r.len + RECT_R - ds;          // out through the s ends
       const pIn = ad - (r.inner - RECT_R);                         // towards the track corridor
       const pOut = r.outer < 90 ? r.outer + RECT_R - ad : 1e9;     // behind a platform

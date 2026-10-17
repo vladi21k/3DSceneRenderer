@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ATMO_GLSL, SUN_TRANS_GLSL, SUN_ANGULAR_RADIUS } from './atmosphere.js';
+import { CLOUD_MARCH_GLSL } from './clouds.js';
 
 // Sky dome (per-pixel atmosphere + sun disc + cumulus and cirrus layers), the
 // tileable cloud noise it samples, a tiny sky-irradiance texture, and the HDR
@@ -93,10 +94,13 @@ function makeCloudNoise(renderer, size = 512) {
   return rt;
 }
 
-// ------------------------------------------------------------------ sky irradiance (4x1)
+// ------------------------------------------------------------------ sky irradiance (8x1)
 // texel 0: irradiance on an upward surface, 1: mean horizon radiance,
 // 2: zenith radiance, 3: irradiance on a canyon wall (vertical, azimuth-averaged,
-// from the sky above the opposite roofline only, elevation > 25°)
+// from the sky above the opposite roofline only, elevation > 25°),
+// 4: radiance 5° above the horizon towards the sun's azimuth, 5: away from it
+
+export const IRR_TEXELS = 8;
 
 const IRR_FS = /* glsl */ `
 ${ATMO_GLSL}
@@ -105,8 +109,9 @@ uniform vec3 uSunDirA;
 varying vec2 vUv;
 vec3 skyL(vec3 d) { return texture2D(uSkyLUT, atmSkyUV(d, uSunDirA)).rgb; }
 void main() {
-  int k = int(floor(vUv.x * 4.0));
+  int k = int(floor(vUv.x * 8.0));
   vec3 acc = vec3(0.0);
+  vec2 sh = length(uSunDirA.xz) > 1e-4 ? normalize(uSunDirA.xz) : vec2(1.0, 0.0);
   if (k == 0 || k == 3) {
     const int NA = 16, NE = 8;
     for (int a = 0; a < NA; a++) for (int e = 0; e < NE; e++) {
@@ -127,8 +132,11 @@ void main() {
       acc += skyL(vec3(cos(az) * 0.9997, 0.025, sin(az) * 0.9997));
     }
     acc /= 32.0;
-  } else {
+  } else if (k == 2) {
     acc = skyL(vec3(0.0, 1.0, 0.0));
+  } else if (k == 4 || k == 5) {
+    vec2 h = k == 4 ? sh : -sh;
+    acc = skyL(vec3(h.x * 0.9962, 0.0872, h.y * 0.9962));
   }
   gl_FragColor = vec4(acc, 1.0);
 }
@@ -167,6 +175,8 @@ uniform float uCirrus;
 uniform float uSunDiscScale;
 uniform float uPixelAngle;    // radians per pixel (mip selection for the cloud march)
 #ifdef ENV_CAPTURE
+precision highp sampler3D;
+uniform sampler3D uNoise3D;
 uniform vec3 uStreetRight;    // horizontal unit vector across the street (to the right of travel)
 uniform vec3 uStreetAxis;
 uniform float uHalfW;         // facade line offset
@@ -177,22 +187,16 @@ uniform float uEyeH;
 varying vec3 vDir;
 
 vec3 skyL(vec3 d) { return texture2D(uSkyLUT, atmSkyUV(d, uSunDirA)).rgb; }
-vec3 irr(float k) { return texture2D(uSkyIrr, vec2((k + 0.5) / 4.0, 0.5)).rgb; }
+vec3 irr(float k) { return texture2D(uSkyIrr, vec2((k + 0.5) / 8.0, 0.5)).rgb; }
+#ifdef ENV_CAPTURE
+${CLOUD_MARCH_GLSL}
+#endif
 
-// 2D cumulus field (environment capture only; the view uses the volumetric pass)
-float cumulus2D(vec2 p, float lod) {
-  vec2 uv = p / 13000.0;
-  float cov = uCloudCover + (textureLod(uCloudTex, p / 110000.0, 0.0).b - 0.5) * 0.5;
-  float base = textureLod(uCloudTex, uv, lod).r;
-  return clamp((base - (1.0 - cov)) / max(cov, 0.05), 0.0, 1.0);
-}
-
-// composite cirrus (and, for the environment capture, a flat cumulus layer) over L
+// composite cirrus (and, for the environment capture, the cumulus) over L
 vec3 clouds(vec3 dir, vec3 L) {
   if (dir.y < 0.004) return L;
   vec3 sunL = uSunGround;      // direct sun reaching the cloud layer (close enough to the ground value)
   vec3 ambUp = irr(0.0) / ATM_PI;
-  vec3 ambDn = (uSunGround * max(uSunDirA.y, 0.0) + irr(0.0)) * 0.12 / ATM_PI;
   float cosT = dot(dir, uSunDirA);
 
   // --- cirrus (8 km)
@@ -203,6 +207,8 @@ vec3 clouds(vec3 dir, vec3 L) {
     vec2 w = uWindDir, n = vec2(-w.y, w.x);
     vec2 q = vec2(dot(p, n), dot(p, w)) / 60000.0;
     float c = texture2D(uCloudTex, q).a;
+    // finer fibres riding on the broad streaks
+    c *= 0.62 + 0.55 * texture2D(uCloudTex, q * vec2(4.3, 3.1) + vec2(0.31, 0.17)).a;
     float cr = texture2D(uCloudTex, p / 150000.0 + 0.4).b;
     c = smoothstep(0.52, 0.9, c) * smoothstep(0.35, 0.7, cr) * uCirrus;
     float a = c * 0.55;
@@ -213,20 +219,9 @@ vec3 clouds(vec3 dir, vec3 L) {
   }
 
 #ifdef ENV_CAPTURE
-  // --- cumulus as a flat layer, lit with a cheap self-shadow (reflections and IBL only)
-  float t = (1500.0 + 400.0) / dir.y;
-  vec2 p = uCamPosW.xz + dir.xz * t + uCloudOffset;
-  float lod = max(0.0, log2(t * uPixelAngle / 25.0));
-  float d = cumulus2D(p, lod);
-  if (d <= 0.0) return L;
-  vec2 sh = length(uSunDirA.xz) > 1e-4 ? normalize(uSunDirA.xz) : vec2(1.0, 0.0);
-  float cotE = clamp(length(uSunDirA.xz) / max(uSunDirA.y, 0.03), 0.25, 6.0);
-  float tauS = (cumulus2D(p + sh * 200.0 * cotE, lod + 1.0) + cumulus2D(p + sh * 600.0 * cotE, lod + 2.0)) * 1.6 + d * 2.2;
-  float ph = mix(atmPhaseHG(cosT, 0.65), atmPhaseHG(cosT, -0.2), 0.45) * 4.0 * ATM_PI;
-  vec3 col = sunL * (exp(-tauS) * ph * 0.5 + 0.09) + ambUp * mix(1.0, 0.6, d) + ambDn * (0.4 + 0.6 * d);
-  float a = 1.0 - exp(-d * 6.0);
-  float fade = exp(-t / 28000.0) * smoothstep(0.004, 0.06, dir.y);
-  return L + a * fade * (col - L);
+  // --- cumulus: the same clouds as the view, marched coarsely (reflections and IBL)
+  vec4 cl = cloudMarch(uCamPosW, dir, 0.5, 14, 2, 0.5);
+  return L * cl.a + cl.rgb;
 #else
   return L;
 #endif
@@ -247,13 +242,19 @@ vec3 canyon(vec3 dir, vec3 skyCol) {
   vec2 sunH = length(uSunDirA.xz) > 1e-4 ? normalize(uSunDirA.xz) : vec2(0.0);
   float tanSun = uSunDirA.y / max(length(uSunDirA.xz), 1e-3);
   float sunUp = smoothstep(-0.02, 0.03, uSunDirA.y);
-  vec3 wallAlb = vec3(0.56, 0.47, 0.36);
+  vec3 wallAlb = vec3(0.55, 0.49, 0.40);
   vec3 groundAlb = vec3(0.27, 0.26, 0.245);
 
   // light reaching the canyon floor (fraction of the street width in sun)
   float sunSide = dot(sunH, uStreetRight.xz) >= 0.0 ? 1.0 : -1.0;
   float shadowLen = uBldH * abs(dot(sunH, uStreetRight.xz)) / max(tanSun, 1e-3);
   float floorLit = sunUp * clamp(1.0 - shadowLen / (2.0 * uHalfW), 0.0, 1.0);
+  // the facade that faces the sun: mean irradiance over its height (only the part
+  // above the opposite roofline's shadow is lit, none of it once the sun is down)
+  float facingS = max(abs(dot(sunH, uStreetRight.xz)), 1e-3);
+  float zShS = uBldH - 2.0 * uHalfW / facingS * tanSun;
+  float litS = sunUp * clamp((uBldH - max(zShS, 0.0)) / uBldH, 0.0, 1.0);
+  vec3 E_sunWall = E_sun * facingS * length(uSunDirA.xz) * litS;
 
   if (Dw < Dg) {
     float z = uEyeH + Dw * tanEl;
@@ -263,10 +264,12 @@ vec3 canyon(vec3 dir, vec3 skyCol) {
     float facing = max(dot(sunH, n), 1e-3);
     float zShadow = uBldH - 2.0 * uHalfW / facing * tanSun;
     float lit = cosI > 0.0 ? smoothstep(zShadow - 0.8, zShadow + 0.8, z) * sunUp : 0.0;
+    // bounce from the opposite facade only counts its sunlit share
+    float oppLit = cosI < 0.0 ? litS : 0.0;
     // irradiance: direct + sky slot + bounce from the opposite facade and the floor
     vec3 E = E_sun * max(cosI, 0.0) * lit
            + irr(3.0)
-           + (E_sun * max(-cosI, 0.0) * 0.5 * wallAlb + E_sun * max(uSunDirA.y, 0.0) * floorLit * groundAlb) * 0.35;
+           + (E_sun * max(-cosI, 0.0) * oppLit * 0.5 * wallAlb + E_sun * max(uSunDirA.y, 0.0) * floorLit * groundAlb) * 0.35;
     vec3 col = wallAlb * E / ATM_PI;
     // window grid: dark glass reflecting the sky
     float u = Dw * dot(hd / lh, uStreetAxis.xz);
@@ -280,7 +283,7 @@ vec3 canyon(vec3 dir, vec3 skyCol) {
     float distToSunWall = sunSide * uHalfW - y; // signed, towards the sun-side facade
     float lit = sunUp * smoothstep(-0.6, 0.6, abs(distToSunWall) - shadowLen);
     vec3 E = E_sun * max(uSunDirA.y, 0.0) * lit + E_sky * 0.62
-           + E_sun * max(uSunDirA.y, 0.0) * 0.12 * wallAlb;
+           + E_sunWall * 0.2 * wallAlb;
     vec3 col = groundAlb * E / ATM_PI;
     // distant floor fades into haze
     return mix(col, skyL(normalize(vec3(dir.x, 0.02, dir.z))), 1.0 - exp(-Dg / 2500.0));
@@ -333,7 +336,7 @@ export class Sky {
     this.renderer = renderer;
     this.cloudNoise = makeCloudNoise(renderer);
 
-    this.irrRT = new THREE.WebGLRenderTarget(4, 1, {
+    this.irrRT = new THREE.WebGLRenderTarget(IRR_TEXELS, 1, {
       type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
     });
     this._irrQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
@@ -347,20 +350,21 @@ export class Sky {
       ...atmo.uniforms,
       uSkyIrr: { value: this.irrRT.texture },
       uCloudTex: { value: this.cloudNoise.texture },
+      uNoise3D: { value: null },   // set by Clouds
       uSunGround: { value: new THREE.Vector3(3, 3, 3) },
       uCamPosW: { value: new THREE.Vector3() },
       uCloudOffset: { value: new THREE.Vector2(3100, -5200) },
       uCirrusOffset: { value: new THREE.Vector2(12000, 4000) },
       uWindDir: { value: new THREE.Vector2(0.8, 0.6) },
-      uCloudCover: { value: 0.6 },
-      uCirrus: { value: 0.8 },
+      uCloudCover: { value: 0.62 },
+      uCirrus: { value: 0.5 },
       uSunDiscScale: { value: 0.12 },
       uPixelAngle: { value: 0.0003 },
       // canyon model (env capture only)
       uStreetRight: { value: new THREE.Vector3(1, 0, 0) },
       uStreetAxis: { value: new THREE.Vector3(0, 0, -1) },
       uHalfW: { value: 12 },
-      uBldH: { value: 17 },
+      uBldH: { value: 20 },        // 4–6 storeys plus cornice and parapet
       uCamD: { value: 1.6 },
       uEyeH: { value: 2.2 },
     };
@@ -415,15 +419,17 @@ export class Sky {
     if (readback) this.readIrradiance();
   }
 
-  /** Synchronous read of the 4 irradiance texels (a small stall; called sparingly). */
+  /** Synchronous read of the irradiance texels (a small stall; called sparingly). */
   readIrradiance() {
     const r = this.renderer;
-    const buf = this._irrBuf || (this._irrBuf = new Uint16Array(16));
+    const buf = this._irrBuf || (this._irrBuf = new Uint16Array(IRR_TEXELS * 4));
     try {
-      r.readRenderTargetPixels(this.irrRT, 0, 0, 4, 1, buf);
+      r.readRenderTargetPixels(this.irrRT, 0, 0, IRR_TEXELS, 1, buf);
       const h = THREE.DataUtils.fromHalfFloat;
       const px = (i) => new THREE.Vector3(h(buf[i * 4]), h(buf[i * 4 + 1]), h(buf[i * 4 + 2]));
-      this.irradiance = { horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3) };
+      this.irradiance = {
+        horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3), horizonSun: px(4), horizonAnti: px(5),
+      };
     } catch (e) {
       this.irradiance = null;
     }

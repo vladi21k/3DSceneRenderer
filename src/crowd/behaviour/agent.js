@@ -89,6 +89,9 @@ export class Agent {
     this.bandW = 9;           // width of the sidewalk band around (lane walkers)
     this.dodgeD0 = 0;         // d where a standing sidestep started
     this.seatS = 0; this.seatD = 0; // seat being eased into
+    this.crossOK = 0;         // committed to crossing the band until this time
     this.guardian = null;     // adult a seated child belongs to
+    this.bornT = 0;           // crowd time of the spawn (statistics)
+    this.platformOK = false;  // a walker who stepped up onto a platform to let the tram by
   }
 }

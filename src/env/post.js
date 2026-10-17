@@ -110,14 +110,15 @@ const post = {
     this.prepass = pass(S.PREPASS_FS, {
       ...camU,
       tScene: { value: null }, tDepth: { value: null }, tAO: { value: null },
-      uSkyLUT: atmoU ? atmoU.uSkyLUT : { value: null },
       uSunDirA: atmoU ? atmoU.uSunDirA : { value: new THREE.Vector3(0, 1, 0) },
       uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() },
       uTime: { value: 0 }, uAOStrength: { value: 0.8 }, uAOSize: { value: new THREE.Vector2(1, 1) },
       uHazeExt: { value: new THREE.Vector3(4.2e-4, 4.6e-4, 5.3e-4) }, uHazeInscatter: { value: 0.85 },
       uSkyIrr: env?.sky ? { value: env.sky.irrRT.texture } : { value: null },
       uSunGround: env?.sky ? env.sky.uniforms.uSunGround : { value: new THREE.Vector3(3, 3, 3) },
-      uHazeSunVis: { value: 0.5 }, uHazeSun: { value: 1.0 },
+      uHazeAmb: { value: env?.haze ? env.haze.amb : new THREE.Vector3(0.05, 0.06, 0.08) },
+      uHazePlane: { value: env?.haze ? env.haze.plane : new THREE.Vector4(0, 0, 0, -1) },
+      uHazeGap: { value: 0 }, uHazeSun: { value: 1.0 },
       uShimmer: { value: 0 }, uResolution: { value: new THREE.Vector2(1, 1) },
       uDofK: { value: 0 }, uFocus: { value: FOCUS_M },
       uNightAir: { value: 0 },
@@ -142,8 +143,8 @@ const post = {
       uVignette: { value: 0.38 }, uCA: { value: 0.0012 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
       uSat: { value: 1.12 }, uContrast: { value: 1.08 },
-      uShadowTint: { value: new THREE.Vector3(0.985, 1.0, 1.03) },
-      uHighTint: { value: new THREE.Vector3(1.03, 1.0, 0.955) },
+      uShadowTint: { value: new THREE.Vector3(0.99, 1.0, 1.02) },
+      uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
       uResolution: { value: new THREE.Vector2(1, 1) },
     });
 
@@ -206,27 +207,40 @@ const post = {
     r.render(mesh, this.cam);
   },
 
-  /** Per-time-of-day look parameters (haze, shimmer, airlight, bloom). */
+  /** Per-time-of-day look parameters (haze, shimmer, airlight, bloom, white balance). */
   _todParams(env) {
     const t = env ? env.state.t : 0.12;
     const night = env ? env.state.night : 0;
+    const ss = THREE.MathUtils.smoothstep;
     const pu = this.prepass.material.uniforms, fu = this.final.material.uniforms;
     // haze: a dusty summer afternoon
-    const k = THREE.MathUtils.lerp(1.0, 1.12, THREE.MathUtils.smoothstep(t, 0.3, 0.8));
+    const k = THREE.MathUtils.lerp(1.0, 1.12, ss(t, 0.3, 0.8));
     pu.uHazeExt.value.set(3.6e-4 * k, 4.0e-4 * k, 4.7e-4 * k);
-    pu.uHazeInscatter.value = 1.25;
-    pu.uHazeSunVis.value = env ? env.canyonSunFraction : 0.5;
-    pu.uHazeSun.value = 1.0;
-    pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - THREE.MathUtils.smoothstep(t, 0.1, 0.4)) : 0;
+    pu.uHazeInscatter.value = 1.0;
+    pu.uHazeGap.value = env ? env.haze.gap : 0;
+    pu.uHazeSun.value = 0.25;  // aerosol albedo; tree canopies and awnings shade much of the street air
+    pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
     fu.uBloom.value = THREE.MathUtils.lerp(0.035, 0.05, night);
     fu.uExposure.value = env ? env.exposure : 1;
-    // white balance: daylight at midday, some of the evening warmth kept at golden hour,
-    // then a cooler balance into the blue hour (the camera does not neutralise twilight)
-    const warm = THREE.MathUtils.smoothstep(t, 0.25, 0.6) * (1 - THREE.MathUtils.smoothstep(t, 0.68, 0.84));
-    const cool = THREE.MathUtils.smoothstep(t, 0.72, 1.0);
-    fu.uWB.value.set(1.0 + 0.05 * warm - 0.11 * cool, 0.99 - 0.02 * cool, 0.965 - 0.06 * warm + 0.13 * cool);
-    fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, THREE.MathUtils.smoothstep(t, 0.6, 0.85));
+    // white balance from the illuminant (sun + sky on a horizontal surface): neutral sunlit
+    // stone and blue sky-lit shade by day; the camera corrects less and less of the
+    // evening warmth and the blue hour (plus a touch of warmth at golden hour)
+    const wb = fu.uWB.value;
+    if (env) {
+      const ill = env.illuminant;
+      const l = 0.2126 * ill.x + 0.7152 * ill.y + 0.0722 * ill.z;
+      const kc = THREE.MathUtils.lerp(0.9, 0.5, ss(t, 0.3, 0.55)) - 0.35 * ss(t, 0.55, 1.0);
+      const warm = 0.02 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
+      const g = (c) => THREE.MathUtils.clamp(THREE.MathUtils.lerp(1, l / Math.max(c, 1e-9), kc), 0.5, 2.0);
+      wb.set(g(ill.x) * (1 + warm), g(ill.y), g(ill.z) * (1 - warm));
+      // keep the overall exposure (normalise the gains to unit luminance)
+      const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
+      wb.multiplyScalar(1 / n);
+    } else {
+      wb.set(1, 1, 1);
+    }
+    fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, ss(t, 0.6, 0.85));
   },
 
   render(dt, app) {

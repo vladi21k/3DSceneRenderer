@@ -4,9 +4,11 @@ import * as THREE from 'three';
 // into one BufferGeometry per base body and LOD. Attribute layout (see the builder):
 //   position f32x3 · aNrm i8x4 (normal, w = baked AO) · aBoneI u8x4 · aBoneW u8x4 (norm)
 //   aMorph i8x4 (heavy-build delta / morphScale) · aBody u8x4 (region, part, aux0, aux1)
+//   aShape i8x4 (normal offsets of the face A / face B / older face / belly morphs / shapeScale)
 
 const TYPES = { f32: Float32Array, i8: Int8Array, u8: Uint8Array, u16: Uint16Array, u32: Uint32Array };
-const NAMES = { position: 'position', normal: 'aNrm', skinIndex: 'aBoneI', skinWeight: 'aBoneW', morph: 'aMorph', body: 'aBody' };
+const NAMES = { position: 'position', normal: 'aNrm', skinIndex: 'aBoneI', skinWeight: 'aBoneW', morph: 'aMorph', body: 'aBody',
+  shape: 'aShape' };
 
 export async function loadHumanAssets(baseUrl) {
   const [meta, buf] = await Promise.all([
@@ -23,6 +25,8 @@ export async function loadHumanAssets(baseUrl) {
         const arr = new T(buf, a.offset, L.count * a.size);
         g.setAttribute(NAMES[key], new THREE.BufferAttribute(arr, a.size, !!a.normalized));
       }
+      // scalar shape morphs (face A / B / old, belly) along the normal; older builds have none
+      if (!g.attributes.aShape) g.setAttribute('aShape', new THREE.BufferAttribute(new Int8Array(L.count * 4), 4, true));
       g.setAttribute('normal', g.attributes.aNrm);   // lit materials flat-shade without one
       const IT = TYPES[L.index.type];
       g.setIndex(new THREE.BufferAttribute(new IT(buf, L.index.offset, L.index.count), 1));

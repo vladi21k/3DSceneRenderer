@@ -21,6 +21,7 @@ const shared = {
   macro: null,
   night: U.uNight,
   gain: { value: 1 },
+  aoScale: { value: 1 },
 };
 
 const lin = (a) => new THREE.Color().setRGB(a[0], a[1], a[2], THREE.LinearSRGBColorSpace);
@@ -49,6 +50,15 @@ function build(name, def) {
   return m;
 }
 
+/** Flat stand-in when a definition fails to build: its colour (or the recipe mean). */
+function fallback(name, def) {
+  const p = def.props || {};
+  const flat = (def.bake && RECIPES[def.bake]?.flat) || [0.5, 0.5, 0.5, 0.7];
+  const m = new THREE.MeshStandardMaterial({ name, metalness: p.metalness ?? 0, roughness: Math.min(1, (p.roughness ?? 1) * flat[3]) });
+  m.color.copy(lin(Array.isArray(p.color) ? p.color : flat));
+  return m;
+}
+
 function stableKey(o) {
   return JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k] && o[k].isColor ? o[k].getHex() : o[k]]));
 }
@@ -59,15 +69,18 @@ const materials = {
   textures: shared.textures,
   /** per material: texture tile size and pattern metrics (see library.js meta) */
   meta: {},
-  /** global emissive gain for night materials (env / post may tune it) */
-  uniforms: { emissiveGain: shared.gain },
+  /** global emissive gain for night materials (env / post may tune it); aoScale scales the
+   *  baked small-scale AO / micro-shadowing (post may lower it while its SSAO runs) */
+  uniforms: { emissiveGain: shared.gain, aoScale: shared.aoScale },
   stats: {},
 
   async init(app) {
     this.app = app;
     const t0 = performance.now();
     const needed = new Set(['detail', 'macro']);
-    for (const d of Object.values(LIBRARY)) if (d.bake) needed.add(d.bake);
+    for (const d of Object.values(LIBRARY)) {
+      for (const n of [d.bake, d.surf?.detail?.tex, d.surf?.detail?.tool]) if (n) needed.add(n);
+    }
     const recipes = [...needed].map((n) => RECIPES[n]).filter(Boolean);
     // Targets are allocated and flat-filled now; the procedural bake compiles and renders
     // in the background (parallel shader compile) while the world streams in.
@@ -92,17 +105,31 @@ const materials = {
     if (shared.detail) shared.detail.anisotropy = Math.min(4, shared.detail.anisotropy); // minified detail fades out anyway
     shared.macro = shared.textures.get('macro')?.raw || null;
 
+    // every entry builds on its own: a failing one falls back to a flat material, so
+    // init can never throw (the app cannot start without the library)
     for (const [name, def] of Object.entries(LIBRARY)) {
-      this.register(name, build(name, def));
-      const r = def.bake && RECIPES[def.bake];
-      const sc = def.surf?.scale ?? 1;
-      this.meta[name] = {
-        tile: r ? [r.tile[0] * sc, r.tile[1] * sc] : null,
-        vertexColor: def.vc || 'tint',
-        textured: !!shared.textures.get(def.bake),
-        ...(def.meta || {}),
-      };
-      if (sc !== 1 && def.meta) for (const k of ['courseH', 'blockL']) if (def.meta[k]) this.meta[name][k] = def.meta[k] * sc;
+      let m;
+      try {
+        m = build(name, def);
+      } catch (e) {
+        console.error('[materials] build', name, e && e.stack || e);
+        m = fallback(name, def);
+      }
+      this.register(name, m);
+      try {
+        const r = def.bake && RECIPES[def.bake];
+        const sc = def.surf?.scale ?? 1;
+        this.meta[name] = {
+          tile: r ? [r.tile[0] * sc, r.tile[1] * sc] : null,
+          vertexColor: def.vc || 'tint',
+          textured: !!shared.textures.get(def.bake),
+          ...(def.meta || {}),
+        };
+        if (sc !== 1 && def.meta) for (const k of ['courseH', 'blockL']) if (def.meta[k]) this.meta[name][k] = def.meta[k] * sc;
+      } catch (e) {
+        console.error('[materials] meta', name, e && e.stack || e);
+        this.meta[name] = { tile: null, vertexColor: def.vc || 'tint', textured: false };
+      }
     }
     this.stats.initMs = performance.now() - t0;
   },

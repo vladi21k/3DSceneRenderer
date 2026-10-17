@@ -101,7 +101,6 @@ ${CAMERA_GLSL}
 uniform sampler2D tScene;
 uniform sampler2D tDepth;
 uniform sampler2D tAO;
-uniform sampler2D uSkyLUT;
 uniform vec3 uSunDirA;
 uniform mat4 uCamWorld;
 uniform vec3 uCamPos;
@@ -112,7 +111,9 @@ uniform vec3 uHazeExt;       // extinction per metre (rgb)
 uniform float uHazeInscatter;
 uniform sampler2D uSkyIrr;
 uniform vec3 uSunGround;
-uniform float uHazeSunVis;   // sunlit fraction of the air along street-level rays
+uniform vec3 uHazeAmb;       // ambient in-scatter source (mean radiance seen by the street air)
+uniform vec4 uHazePlane;     // air is sunlit where dot(p, xyz) + w > 0 (canyon shadow plane)
+uniform float uHazeGap;      // sunlit share of distant air (cross streets, lower roofs)
 uniform float uHazeSun;      // strength of the forward-scattered sun term
 uniform float uShimmer;
 uniform vec2 uResolution;
@@ -132,14 +133,6 @@ uniform vec2 uLampCos;
 varying vec2 vUv;
 
 #define ATM_PI 3.14159265
-vec2 skyUV(vec3 dir) {
-  float el = asin(clamp(dir.y, -1.0, 1.0));
-  vec2 h = dir.xz, sh = uSunDirA.xz;
-  float lh = length(h), ls = length(sh);
-  float c = (lh > 1e-5 && ls > 1e-5) ? dot(h / lh, sh / ls) : 1.0;
-  float az = acos(clamp(c, -1.0, 1.0));
-  return vec2(sqrt(az / ATM_PI), 0.5 + 0.5 * sign(el) * sqrt(abs(el) / (0.5 * ATM_PI)));
-}
 float vnoise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
   f = f * f * (3.0 - 2.0 * f);
@@ -149,6 +142,8 @@ float vnoise(vec2 p) {
   float d = fract(sin(dot(i + vec2(1, 1), vec2(127.1, 311.7))) * 43758.5453);
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
 }
+// integral of clamp(x, 0, 1)
+float rampInt(float x) { return x <= 0.0 ? 0.0 : (x < 1.0 ? 0.5 * x * x : x - 0.5); }
 // isotropic point light in-scatter along [0, T] of a ray (closed form)
 float pointAirlight(vec3 ro, vec3 rd, float T, vec3 lp) {
   vec3 w = lp - ro;
@@ -220,7 +215,7 @@ void main() {
     vec3 nv = normalize(cross(dx, dy));
     vec3 nw = normalize((uCamWorld * vec4(nv, 0.0)).xyz);
     vec3 wp = uCamPos + rd * dist;
-    vec3 Eamb = texture2D(uSkyIrr, vec2(0.5 / 4.0, 0.5)).rgb * 0.7 + 1e-7;
+    vec3 Eamb = texture2D(uSkyIrr, vec2(0.5 / 8.0, 0.5)).rgb * 0.7 + 1e-7;
     vec3 alb = clamp(col * ATM_PI / Eamb, vec3(0.03), vec3(0.6));
     float E = 0.0;
     for (int i = 0; i < NUM_FAR; i++) {
@@ -236,19 +231,21 @@ void main() {
     col += alb * E * uFarI * vec3(1.0, 0.64, 0.34) / ATM_PI;
   }
 
-  // aerial perspective: extinction plus in-scatter. The ambient part is the mean
-  // horizon sky; the forward-scattered sun part only counts the sunlit share of the
-  // canyon air (most of the street air is in shadow at low sun).
+  // aerial perspective: extinction plus in-scatter. The ambient source is the mean
+  // radiance the street air sees (sky slot, facades, paving; computed by env). The
+  // forward-scattered sun only lights the part of the ray above the canyon's shadow
+  // plane (analytic for a straight ray); far away, cross streets and lower roofs let
+  // some sun through.
   if (!sky) {
-    // canyon air sees mostly the overhead sky, so the ambient part leans on the mean
-    // upper-hemisphere radiance rather than the (sunset-dominated) horizon
-    vec3 skyMean = texture2D(uSkyIrr, vec2(0.5 / 4.0, 0.5)).rgb / ATM_PI;
-    vec3 hzMean = mix(skyMean, texture2D(uSkyIrr, vec2(1.5 / 4.0, 0.5)).rgb, 0.4);
-    vec3 hzDir = texture2D(uSkyLUT, skyUV(normalize(vec3(rd.x, 0.02, rd.z)))).rgb;
     float cosT = dot(rd, uSunDirA);
     float g = 0.72, g2 = g * g;
     float ph = (1.0 - g2) / (4.0 * ATM_PI * pow(max(1.0 + g2 - 2.0 * g * cosT, 1e-4), 1.5));
-    vec3 inscat = mix(hzMean, hzDir, 0.2) * uHazeInscatter + uSunGround * ph * uHazeSunVis * uHazeSun;
+    // soft plane: building heights vary, so the lit share ramps over ~6 m of height
+    float a = (dot(uCamPos, uHazePlane.xyz) + uHazePlane.w) / 6.0 + 0.5;
+    float b = dot(rd, uHazePlane.xyz) * dist / 6.0;
+    float lit = abs(b) < 1e-3 ? clamp(a + 0.5 * b, 0.0, 1.0) : (rampInt(a + b) - rampInt(a)) / b;
+    lit = max(lit, uHazeGap * smoothstep(80.0, 400.0, dist));
+    vec3 inscat = uHazeAmb * uHazeInscatter + uSunGround * ph * lit * uHazeSun;
     vec3 T = exp(-uHazeExt * dist);
     col = col * T + inscat * (1.0 - T);
   }

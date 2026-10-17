@@ -24,6 +24,11 @@ const QUALITY = {
 };
 
 const _v = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+const _es = new THREE.Vector3();
+const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
+const WALL_ALB = [0.55, 0.49, 0.40];
+const GROUND_ALB = [0.27, 0.26, 0.245];
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -36,7 +41,11 @@ const env = {
   name: 'env',
   state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0 },
   exposure: 1,
-  canyonSunFraction: 0.5,
+  exposureBase: 1,
+  // street haze inputs for post: ambient in-scatter source, sunlit-air plane, far gap share
+  haze: { amb: new THREE.Vector3(0.05, 0.06, 0.08), plane: new THREE.Vector4(0, 0, 0, -1), gap: 0 },
+  // scene illuminant on a horizontal surface in the open (sun + sky), for white balance
+  illuminant: new THREE.Vector3(1, 1, 1),
 
   async init(app) {
     this.app = app;
@@ -49,7 +58,8 @@ const env = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    this.atmo = new Atmosphere(renderer, { mieScale: 1.6 });
+    // a hazy Mediterranean summer afternoon: more aerosol than a clean standard atmosphere
+    this.atmo = new Atmosphere(renderer, { mieScale: 2.6 });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
@@ -139,14 +149,15 @@ const env = {
 
   /**
    * Exposure follows the horizontal illuminance with partial adaptation (a camera keeps
-   * dusk darker and bluer than midday). Sky irradiance comes from the GPU read-back;
-   * between read-backs the CPU estimate is scaled to agree with the last one.
+   * dusk darker and bluer than midday, and adapts even less once the light falls below
+   * ~1000 lux). Sky irradiance comes from the GPU read-back; between read-backs the CPU
+   * estimate is scaled to agree with the last one. update() caps it per frame so the
+   * bright horizon at the end of the street stays below clipping at dusk.
    */
   _updateExposure() {
     const elev = this.state.sunElevation ?? Math.asin(this.state.sunDir.y);
     const est = skyIrradiance(elev);
     const irr = this.sky.irradiance;
-    const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
     let Esky;
     if (irr && Number.isFinite(irr.horizontal.x) && !this._irrDirty) {
       Esky = lum(irr.horizontal);
@@ -156,8 +167,76 @@ const env = {
     }
     this.skyIrradianceH = Esky;
     const Eh = Math.max(this.sunIlluminance * Math.max(this.state.sunDir.y, 0), 0) + Esky;
-    this.exposure = 1.15 * Math.pow(3.1 / Math.max(Eh, 1e-7), 0.7);
+    const EK = 0.03; // ~1000 lux
+    const lnE = 0.7 * Math.log(3.1 / Math.max(Eh, EK)) + 0.5 * Math.log(EK / Math.min(Math.max(Eh, 1e-7), EK));
+    this.exposureBase = 1.6 * Math.exp(lnE);
+    this.exposure = this._capExposure(this.exposureBase);
     if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
+
+    // illuminant for the white balance (horizontal surface in the open)
+    const sc = U.uSunColor.value, sy = Math.max(this.state.sunDir.y, 0);
+    const sk = irr && !this._irrDirty ? irr.horizontal : null;
+    if (sk) this.illuminant.set(sc.r * sy + sk.x, sc.g * sy + sk.y, sc.b * sy + sk.z);
+    else this.illuminant.set(sc.r * sy + Esky * 0.6, sc.g * sy + Esky, sc.b * sy + Esky * 1.9);
+  },
+
+  /** Limit exposure so the horizon seen down the street maps below ~0.35 before the tone curve at dusk. */
+  _capExposure(base) {
+    const irr = this.sky.irradiance, cam = this.app && this.app.camera;
+    if (!irr || !cam || !irr.horizonSun) return base;
+    const d = this.state.sunDir;
+    cam.getWorldDirection(_fwd);
+    const h = Math.hypot(_fwd.x, _fwd.z), hs = Math.hypot(d.x, d.z);
+    const c = h > 1e-4 && hs > 1e-4 ? (_fwd.x * d.x + _fwd.z * d.z) / (h * hs) : 0;
+    const w = Math.pow(0.5 + 0.5 * c, 2);
+    const slot = THREE.MathUtils.lerp(lum(irr.horizonAnti), lum(irr.horizonSun), w);
+    // no cap in daylight (the bright sky slot is meant to be the brightest thing in frame)
+    const level = THREE.MathUtils.lerp(4.0, 0.35, THREE.MathUtils.smoothstep(this.state.t, 0.6, 0.85));
+    return Math.min(base, level / Math.max(slot, 1e-9));
+  },
+
+  /**
+   * Street haze inputs: the mean radiance the street-level air sees (half sky slot and
+   * facades above, half paving below), and the canyon's shadow plane: air at height z,
+   * x metres from the sun-side facade line, is sunlit when z + k x > cornice height.
+   */
+  _updateHaze(app) {
+    const u = this.sky.uniforms, d = this.state.sunDir, hz = this.haze;
+    const irr = this.sky.irradiance;
+    const sc = U.uSunColor.value, Es = _es.set(sc.r, sc.g, sc.b);
+    const Esky = this.skyIrradianceH ?? skyIrradiance(this.state.sunElevation);
+    const skyH = irr ? irr.horizontal : _v.set(Esky * 0.6, Esky, Esky * 1.9);
+    const skyV = irr ? irr.vertical : skyH;
+    const R = u.uStreetRight.value, hw = u.uHalfW.value, H = u.uBldH.value;
+    const h = Math.hypot(d.x, d.z);
+    const across = h > 1e-4 ? (d.x * R.x + d.z * R.z) / h : 0;
+    const facing = Math.max(Math.abs(across), 1e-3);
+    const tanSun = d.y / Math.max(h, 1e-3);
+    const sunUp = THREE.MathUtils.smoothstep(d.y, -0.02, 0.03);
+    const zSh = H - (2 * hw / facing) * tanSun;
+    const litWall = sunUp * THREE.MathUtils.clamp((H - Math.max(zSh, 0)) / H, 0, 1);
+    const floorLit = sunUp * THREE.MathUtils.clamp(1 - (H * facing / Math.max(tanSun, 1e-3)) / (2 * hw), 0, 1);
+    const sy = Math.max(d.y, 0), cw = facing * h;
+    const c = ['x', 'y', 'z'];
+    for (let i = 0; i < 3; i++) {
+      const k = c[i];
+      const sky = skyH[k] / Math.PI;
+      const wall = WALL_ALB[i] * (skyV[k] + 0.5 * Es[k] * cw * litWall) / Math.PI;
+      const ground = GROUND_ALB[i] * (skyH[k] * 0.62 + Es[k] * sy * floorLit) / Math.PI;
+      hz.amb.setComponent(i, 0.5 * (0.45 * sky + 0.55 * wall) + 0.5 * ground);
+    }
+    // shadow plane in world space: f(p) = dot(p, n) + w
+    if (d.y > 0.002) {
+      const side = across >= 0 ? 1 : -1;
+      const k = Math.min(tanSun / facing, 50);
+      const s = app.cameraS ?? app.startS;
+      const O = app.route.sample(s).pos;
+      const dO = O.x * R.x + O.z * R.z;
+      hz.plane.set(-k * side * R.x, 1, -k * side * R.z, -O.y + k * hw + k * side * dO - H);
+    } else {
+      hz.plane.set(0, 0, 0, -1);
+    }
+    hz.gap = 0.08 * sunUp;
   },
 
   /** Orient the canyon model of the environment map to the street at the camera. */
@@ -214,22 +293,13 @@ const env = {
     if (dh > 0.12 && this.sky._capStep < 0) { this._lastHeading = h; this.sky.requestEnv(false); }
     this.sky.step(realDt, 8);
 
-    // ---- share of the street-level air in sunlight (drives the sunlit part of the haze)
-    this.canyonSunFraction = this._canyonSunFraction();
+    // ---- street haze inputs and the per-frame exposure (horizon cap follows the view)
+    this._updateHaze(app);
+    this.exposure = this._capExposure(this.exposureBase);
+    if (this._noPost) app.renderer.toneMappingExposure = this.exposure;
 
     // ---- dusk lights
     this.lights.update(app, U.uNight.value);
-  },
-
-  /** Fraction of the street width in direct sun, from the canyon proportions at the camera. */
-  _canyonSunFraction() {
-    const u = this.sky.uniforms, d = this.state.sunDir;
-    const h = Math.hypot(d.x, d.z);
-    if (d.y <= 0.0) return 0;
-    const across = h > 1e-4 ? Math.abs((d.x * u.uStreetRight.value.x + d.z * u.uStreetRight.value.z) / h) : 0;
-    const shadowLen = u.uBldH.value * across * h / Math.max(d.y, 1e-3);
-    const lit = THREE.MathUtils.clamp(1 - shadowLen / (2 * u.uHalfW.value), 0, 1);
-    return THREE.MathUtils.smoothstep(d.y, -0.02, 0.05) * (0.2 + 0.8 * lit);
   },
 
   /** Horizontal illuminance (scene units) in the open for the current time of day. */

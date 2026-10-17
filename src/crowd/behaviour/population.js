@@ -1,5 +1,5 @@
 import { hash2, noise1 } from '../../core/rng.js';
-import { TRACK_ZONE_HALF } from '../../core/config.js';
+import { TRACK_ZONE_HALF, VIEW_AHEAD } from '../../core/config.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { Agent, KIND, ST, TASK, LANE } from './agent.js';
 import { laneTarget, setLane, board, doorOf } from './behaviour.js';
@@ -19,7 +19,8 @@ import {
 
 const BIN = 10;
 const BENCH_RESERVE = 12;   // seated slots kept for people on benches
-const FEATURE_AHEAD = RANGE_AHEAD + 70;   // cafés / platforms are filled this far out (deep in the haze)
+// cafés / platforms are filled as their chunk is streamed in (the far edge of the built street)
+const FEATURE_AHEAD = VIEW_AHEAD + 20;
 const BENCH_SEAT_Z = -0.02;  // body origin of a bench sitter along the bench's facing (m, bench local)
 const PI = Math.PI;
 
@@ -44,7 +45,7 @@ export class Population {
     this.walkerTarget = 0;
     this.targetT = 0;
     this.frame = 0;
-    this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
+    this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
     this.popOut = [0, 0, 0, 0];  // removals of figures in plain view, by distance
   }
 
@@ -78,7 +79,7 @@ export class Population {
     a.baseF = 0; a.baseR = 0; a.singleT = 0; a.stuckF = 0; a.bandW = 9;
     a.wSeed = hash2(this.serial, 977) & 0xffff;
     a.wT = r.range(4, 10); a.paceT = r.range(5, 15); a.faceJ = r.range(-0.25, 0.25);
-    a.spawnHidden = false; a.seatS = 0; a.seatD = 0;
+    a.spawnHidden = false; a.seatS = 0; a.seatD = 0; a.crossOK = 0; a.bornT = c.time; a.platformOK = false;
     this.stats.spawned++;
     return a;
   }
@@ -132,7 +133,9 @@ export class Population {
 
   /** Leaves the street through a door / side street / tram door: the group follows. */
   vanish(a) {
-    for (const m of a.followers) {
+    for (const m of [...a.followers]) {
+      // children go with their adult (the caller checked that they are out of sight too)
+      if (m.isChild) { m.leader = null; this.kill(m); continue; }
       m.leader = null;
       m.task = a.task; m.step = a.step; m.mouth = a.mouth; m.door = a.door; m.inDoor = a.inDoor;
       m.doorS0 = a.doorS0; m.doorS1 = a.doorS1; m.slotX = a.slotX;
@@ -592,7 +595,7 @@ export class Population {
     while (n-- > 0 && this.queue.length) {
       const q = this.queue.shift();
       if (q.type === 'seat') {
-        if (c.counts.seated >= (q.bench ? MAX_SEATED : MAX_SEATED - BENCH_RESERVE)) continue;
+        if (c.counts.seated >= (q.bench ? MAX_SEATED : MAX_SEATED - BENCH_RESERVE)) { this.stats.seatCap++; continue; }
         if (q.seat.feat.occ.has(q.seat.key)) continue;
         let guardian = null;
         if (q.role === 'child') {
@@ -801,8 +804,8 @@ export class Population {
         a.s = ds + r.range(-0.4, 0.4); a.d = TRACK_ZONE_HALF + 0.45; a.side = 1; a.noRect = true;
         if (!c.vis.hidden(a.s, a.d)) { this._unspawn(a); continue; }
         this.joinPlatform(a, feat);
-        a.task = TASK.ALIGHT; a.step = 0; a.state = ST.GOTO;
-        a.gs = s0 - 1.0; a.gd = TRACK_ZONE_HALF + PLATFORM_W * 0.5; a.gTol = 0.7;
+        a.task = TASK.ALIGHT; a.step = -1; a.state = ST.GOTO;
+        a.gs = a.s - r.range(0.8, 1.8); a.gd = TRACK_ZONE_HALF + r.range(1.2, 1.9); a.gTol = 0.4;
         a.alpha = PI; a.spawnHidden = true;
         this.stats.bySource.alight++;
       }

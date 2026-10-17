@@ -468,24 +468,22 @@ function hookTemplate(dir) {
   return template(W);
 }
 
-/** Far-range planter: the box, a squashed foliage mound and flower clumps (lathe mounds,
- *  ~40-60 triangles each, tinted on write). */
+/** Far-range planter (beyond 200 m, a dozen pixels wide): the box, a squashed foliage
+ *  mound with a lobe hanging over the front, and three flower clumps. Coarse lathes,
+ *  ~110 vertices in all, tinted on write. */
 function bloomTemplates() {
   const B = new GeoWriter(), G = new GeoWriter(), Fl = new GeoWriter();
-  gradBox(B, -0.5, 0.5, 0, 0.16, -0.085, 0.085, 0.66, 0.98, 'b');
-  const mound = [[1, 0], [0.92, 0.45], [0.62, 0.85], [0.0001, 1]];
+  gradBox(B, -0.5, 0.5, 0, 0.16, -0.085, 0.085, 0.66, 0.98, 'bd');
+  const mound = [[1, 0], [0.8, 0.62], [0.0001, 1]];
   G.color(0.11, 0.19, 0.06);
   G.setMatrix(new THREE.Matrix4().makeScale(0.54, 0.26, 0.15).setPosition(0, 0.15, 0.015));
-  lathe(G, mound, 8);
-  // two hanging lobes over the front face
-  for (const x of [-0.25, 0.22]) {
-    G.setMatrix(new THREE.Matrix4().makeRotationX(Math.PI).scale(new THREE.Vector3(0.16, 0.2, 0.05)).setPosition(x, 0.16, 0.09));
-    lathe(G, mound, 6);
-  }
+  lathe(G, mound, 6);
+  G.setMatrix(new THREE.Matrix4().makeRotationX(Math.PI).scale(new THREE.Vector3(0.36, 0.2, 0.05)).setPosition(0, 0.16, 0.09));
+  lathe(G, mound, 5);
   Fl.color(1, 1, 1);
-  for (const [x, y, z, s] of [[-0.3, 0.33, 0.03, 0.14], [0.02, 0.38, 0.0, 0.16], [0.3, 0.32, 0.04, 0.13], [-0.24, 0.02, 0.13, 0.09], [0.24, 0.05, 0.12, 0.08]]) {
+  for (const [x, y, z, s] of [[-0.28, 0.33, 0.04, 0.16], [0.04, 0.38, 0.02, 0.18], [0.3, 0.3, 0.06, 0.15]]) {
     Fl.setMatrix(new THREE.Matrix4().makeScale(s, s * 0.55, s * 0.75).setPosition(x, y - s * 0.3, z));
-    lathe(Fl, mound, 6);
+    lathe(Fl, mound, 5);
   }
   return { box: template(B), green: template(G), flowers: template(Fl) };
 }

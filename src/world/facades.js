@@ -48,6 +48,7 @@ const facades = {
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
       lamp: { material: lamp, color: false, castShadow: false },
     };
+    this.forceShop = app.params.str('fshop') || null; // development: one shop interior everywhere
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
     this.prefetchMs = 1.2;          // per-frame budget for prefetching
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
@@ -106,6 +107,7 @@ const facades = {
           plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets,
           streetW: fr.streetW,
           angle: Math.atan2(fr.frame.uDir.z, fr.frame.uDir.x),
+          forceShop: this.forceShop,
         };
         yield* buildFront(kit, ctx);
         if (this.devWall) this.devWall.add(kit, ctx);

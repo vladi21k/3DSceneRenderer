@@ -89,6 +89,7 @@ float vnoise( vec2 p ) {
 // ---- filtering
 // footprint (m) of one pixel at path length t inside the room, on a surface with normal n
 float fFoot( float t, vec3 rd, vec3 n ) { return gPA * ( gTC + t ) / max( abs( dot( rd, n ) ), 0.25 ); }
+float fp0( float t, vec3 rd ) { return gPA * ( gTC + t ) / max( rd.z, 0.25 ); }
 // 1 while a pattern of period P is resolved, fading to 0 (use its mean) near the pixel size
 float fKeep( float fp, float P ) { return 1.0 - smoothstep( 0.2, 0.5, fp / P ); }
 // box-filtered pulse train: share of [x - w/2, x + w/2] (in periods) where fract(x) >= e
@@ -114,7 +115,7 @@ vec3 fBoxN( vec3 ro, vec3 ird, vec3 bmin, vec3 bmax, float t ) {
 
 const vec3 WALLS[6] = vec3[6]( vec3( 0.74, 0.70, 0.60 ), vec3( 0.76, 0.75, 0.71 ), vec3( 0.74, 0.65, 0.48 ),
   vec3( 0.56, 0.61, 0.64 ), vec3( 0.60, 0.65, 0.55 ), vec3( 0.74, 0.60, 0.50 ) );
-const vec3 SHOPWALL[8] = vec3[8]( vec3( 0.78, 0.77, 0.74 ), vec3( 0.72, 0.70, 0.66 ), vec3( 0.55, 0.38, 0.26 ), vec3( 0.13, 0.10, 0.08 ),
+const vec3 SHOPWALL[8] = vec3[8]( vec3( 0.78, 0.77, 0.74 ), vec3( 0.72, 0.70, 0.66 ), vec3( 0.62, 0.52, 0.42 ), vec3( 0.13, 0.10, 0.08 ),
   vec3( 0.82, 0.82, 0.81 ), vec3( 0.62, 0.52, 0.42 ), vec3( 0.42, 0.30, 0.20 ), vec3( 0.66, 0.68, 0.62 ) );
 const vec3 FABRIC[8] = vec3[8]( vec3( 0.50, 0.45, 0.38 ), vec3( 0.22, 0.25, 0.30 ), vec3( 0.40, 0.13, 0.11 ), vec3( 0.18, 0.28, 0.20 ),
   vec3( 0.56, 0.52, 0.46 ), vec3( 0.11, 0.11, 0.12 ), vec3( 0.42, 0.32, 0.23 ), vec3( 0.28, 0.33, 0.45 ) );
@@ -163,6 +164,23 @@ void fCylT( inout Hit h, vec3 ro, vec3 rd, vec2 c, float r, float y0, float y1, 
   }
 }
 
+// lamp shade: open cylinder of radius r around c between y0 and y1; returns the hit t
+// (or -1), inner = 1 when the inside is seen through the open bottom or top
+float fShade( vec3 ro, vec3 rd, vec3 c, float r, float y0, float y1, out float inner ) {
+  vec2 o = ro.xz - c.xz, d = rd.xz;
+  float a = max( dot( d, d ), 1e-6 ), b = dot( o, d ), cc = dot( o, o ) - r * r;
+  float disc = b * b - a * cc;
+  inner = 0.0;
+  if ( disc < 0.0 ) return -1.0;
+  float sq = sqrt( disc );
+  float t0 = ( -b - sq ) / a, t1 = ( -b + sq ) / a;
+  float y = ro.y + rd.y * t0;
+  if ( t0 > 0.0 && y > y0 && y < y1 ) return t0;
+  y = ro.y + rd.y * t1;
+  if ( t1 > 0.0 && y > y0 && y < y1 ) { inner = 1.0; return t1; }
+  return -1.0;
+}
+
 // Fixed fittings of a room. Shop types: 0 clothing 1 general 2 cafe 3 jewellery 4 pharmacy
 // 5 shoes 6 books 7 flowers.
 void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p, vec3 n, int mode, vec3 S, float seed, bool shop, bool stair, float st ) {
@@ -172,8 +190,15 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
     if ( st < 0.5 ) {
       // clothing: island table, two garment rails mid-floor
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.65 + f1.x * 0.3, 0.0, 2.6 ), vec3( cx + 0.65 + f1.x * 0.3, 0.78, 3.4 ), vec3( 0.42, 0.34, 0.27 ) );
-      fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.18, 0.25, 1.3 ), vec3( S.x * 0.18 + 1.2, 1.45, 1.75 ), vec3( 0.5, 0.48, 0.45 ) );
-      if ( f1.z > 0.35 ) fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.82 - 1.2, 0.25, 1.6 + f2.x ), vec3( S.x * 0.82, 1.45, 2.05 + f2.x ), vec3( 0.5, 0.48, 0.45 ) );
+      vec3 r0 = vec3( S.x * 0.18, 0.0, 1.3 ), r1 = vec3( S.x * 0.82 - 1.2, 0.0, 1.7 + f2.x );
+      fBoxT( h, ao, ro, ird, p, n, mode, r0 + vec3( 0.0, 0.8, 0.0 ), r0 + vec3( 1.2, 1.6, 0.42 ), vec3( 0.5, 0.48, 0.45 ) );
+      fBoxT( h, ao, ro, ird, p, n, mode, r0 + vec3( -0.03, 0.0, 0.19 ), r0 + vec3( 0.0, 1.66, 0.23 ), vec3( 0.06 ) );
+      fBoxT( h, ao, ro, ird, p, n, mode, r0 + vec3( 1.2, 0.0, 0.19 ), r0 + vec3( 1.23, 1.66, 0.23 ), vec3( 0.06 ) );
+      if ( f1.z > 0.35 ) {
+        fBoxT( h, ao, ro, ird, p, n, mode, r1 + vec3( 0.0, 0.8, 0.0 ), r1 + vec3( 1.2, 1.6, 0.42 ), vec3( 0.5, 0.48, 0.45 ) );
+        fBoxT( h, ao, ro, ird, p, n, mode, r1 + vec3( -0.03, 0.0, 0.19 ), r1 + vec3( 0.0, 1.66, 0.23 ), vec3( 0.06 ) );
+        fBoxT( h, ao, ro, ird, p, n, mode, r1 + vec3( 1.2, 0.0, 0.19 ), r1 + vec3( 1.23, 1.66, 0.23 ), vec3( 0.06 ) );
+      }
     } else if ( st < 1.5 ) {
       // general goods: a gondola unit and the counter
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.35, 0.0, 1.6 + f1.y ), vec3( cx + 0.35, 1.45, 3.4 + f1.y ), vec3( 0.66, 0.64, 0.60 ) );
@@ -249,27 +274,30 @@ vec4 fItem( float a, float y, float r, float rowH, float cellW, float seed, floa
   float g = fh2( vec2( run, r ) + seed * 7.0 );
   float gi = fh2( vec2( c * 1.37, r + 9.0 ) + seed );
   float ih = rowH * ( books ? 0.62 + 0.3 * gi : 0.35 + 0.5 * g ) - 0.03;
-  float w0 = books ? 0.04 : 0.06 + 0.12 * fract( g * 5.3 ), w1 = books ? 0.04 : 0.06 + 0.12 * fract( g * 9.1 );
+  // gaps either side of the item, as a share of the cell
+  float gl = cellW * ( books ? 0.1 : 0.04 + 0.16 * fract( g * 5.3 ) ), gr = cellW * ( books ? 0.1 : 0.04 + 0.16 * fract( g * 9.1 ) );
   float shape = fract( g * 13.7 );
   // mean colour of a filled row, for the far range
-  vec3 mean = books ? vec3( 0.28, 0.20, 0.15 ) : st > 3.5 && st < 4.5 ? vec3( 0.62, 0.62, 0.60 ) : st > 6.5 ? vec3( 0.32, 0.36, 0.22 ) : vec3( 0.42, 0.36, 0.30 );
+  vec3 mean = books ? vec3( 0.36, 0.28, 0.22 ) : st > 3.5 && st < 4.5 ? vec3( 0.62, 0.62, 0.60 ) : st > 6.5 ? vec3( 0.32, 0.36, 0.22 ) : vec3( 0.42, 0.36, 0.30 );
   vec3 col;
   if ( books ) col = mix( GOODS[ int( gi * 7.99 ) ], vec3( 0.20, 0.14, 0.10 ), 0.45 ) * ( 0.6 + 0.5 * fh1( c * 0.71 + seed ) );
   else if ( st > 3.5 && st < 4.5 ) col = mix( vec3( 0.86, 0.86, 0.84 ), GOODS[ int( g * 7.99 ) ], step( 0.55, fract( g * 3.1 ) ) * 0.7 );
   else if ( st > 6.5 ) col = y > ih * 0.45 ? mix( vec3( 0.12, 0.30, 0.10 ), GOODS[ int( g * 7.99 ) ], step( 0.5, fract( a * 7.0 + y * 5.0 ) ) * 0.6 ) : vec3( 0.55, 0.28, 0.16 );
   else if ( st > 4.5 && st < 5.5 ) col = mix( vec3( 0.10, 0.08, 0.07 ), vec3( 0.75, 0.70, 0.62 ), step( 0.6, g ) ) * ( 0.7 + 0.5 * fract( g * 4.3 ) );
   else col = mix( vec3( 0.45, 0.42, 0.38 ), GOODS[ int( g * 7.99 ) ], st < 0.5 ? 0.55 : 0.8 ) * ( 0.65 + 0.4 * fract( g * 6.1 ) );
+  // folded stacks (clothing): fold lines every ~3 cm
+  if ( st < 0.5 ) col *= mix( 0.9, 0.8 + 0.2 * step( 0.3, fract( y / 0.03 ) ), keep );
   // labels and lids on boxes and jars
-  if ( !books && st < 6.5 ) col = mix( col, vec3( 0.85, 0.83, 0.78 ), step( ih * 0.3, y ) * step( y, ih * 0.55 ) * step( 0.6, fract( g * 2.9 ) ) * keep );
+  if ( !books && st > 0.5 && st < 6.5 ) col = mix( col, vec3( 0.85, 0.83, 0.78 ), step( ih * 0.3, y ) * step( y, ih * 0.55 ) * step( 0.6, fract( g * 2.9 ) ) * keep );
   // silhouette: box, bottle (narrow neck) or jar (rounded shoulders)
   float xa = fa * cellW, xb = cellW - xa;
-  float inX = step( w0 * 0.5, xa ) * step( w1 * 0.5, xb );
-  if ( books ) inX = step( 0.004, xa ) * step( 0.004, xb );
-  float neck = !books && shape > 0.55 && shape < 0.8 && y > ih * 0.7 ? step( abs( xa - 0.5 * ( cellW + w0 * 0.5 - w1 * 0.5 ) ), 0.12 * cellW ) : 1.0;
+  float inX = step( gl, xa ) * step( gr, xb );
+  if ( books ) inX = step( 0.003, xa ) * step( 0.003, xb );
+  float neck = !books && shape > 0.55 && shape < 0.8 && y > ih * 0.7 ? step( abs( xa - 0.5 * ( cellW + gl - gr ) ), 0.14 * ( cellW - gl - gr ) ) : 1.0;
   float empty = step( fh2( vec2( c * 0.37, r * 1.3 ) + seed ), books ? 0.04 : 0.1 );
   float hit = inX * neck * step( y, ih ) * step( 0.0, y ) * ( 1.0 - empty );
   // far: a continuous band of the mean colour, ~70% of the row
-  float hitFar = step( 0.0, y ) * step( y, rowH * 0.62 );
+  float hitFar = step( 0.0, y ) * step( y, rowH * ( books ? 0.8 : 0.62 ) );
   return vec4( mix( mean, col, keep ), mix( hitFar, hit, step( 0.5, keep ) ) );
 }
 
@@ -478,10 +506,19 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       float sseed = seed * 5.0;
       if ( h.t == tB.x && !( st > 1.5 && st < 2.5 ) ) {
         fShelfUnit( h, ro, rd, h.n, vec3( 0.0, 0.0, 1.0 ), 0.9, S.z - 0.2, spec, sseed + h.n.x, st, frameC );
-      } else if ( h.t == tB.z && ( st > 0.5 && st < 2.5 || st > 3.5 && st < 4.5 || st > 5.5 ) ) {
-        // back wall: a feature panel in the middle for general goods
-        bool panel = st > 0.5 && st < 1.5 && abs( p.x - S.x * 0.5 ) < 0.7 && p.y > 1.2 && p.y < 2.3;
-        if ( panel ) { h.alb = GOODS[ int( fh1( seed * 3.0 ) * 7.99 ) ] * 0.8 + 0.1; h.glow = 0.5; }
+      } else if ( h.t == tB.z && ( st < 2.5 || st > 3.5 && st < 4.5 || st > 5.5 ) ) {
+        // back wall: a lit feature panel in the middle for general goods and clothing
+        bool panel = st < 1.5 && abs( p.x - S.x * 0.5 ) < 0.7 && p.y > ( st < 0.5 ? 0.6 : 1.2 ) && p.y < 2.3;
+        if ( panel ) {
+          // a backlit poster: an abstract photograph in two colours inside a thin dark frame
+          vec2 q = p.xy * vec2( 1.0, 1.0 ) + seed * 31.0;
+          vec3 c1 = GOODS[ int( fh1( seed * 3.0 ) * 7.99 ) ] * 0.8, c2 = mix( vec3( 0.62, 0.55, 0.48 ), GOODS[ int( fh1( seed * 5.0 ) * 7.99 ) ], 0.6 );
+          float keep = fKeep( fp0( h.t, rd ), 0.3 );
+          float img = mix( 0.5, vnoise( q * 2.2 ) * 0.7 + vnoise( q * 6.0 ) * 0.3, keep );
+          h.alb = mix( c1, c2, smoothstep( 0.3, 0.7, img ) ) * ( 0.75 + 0.25 * mix( 0.5, vnoise( q * 11.0 ), keep ) );
+          float fr = step( 0.66, abs( p.x - S.x * 0.5 ) ) + step( 2.26, p.y ) + step( p.y, st < 0.5 ? 0.64 : 1.24 );
+          h.alb = mix( h.alb, vec3( 0.05 ), min( fr, 1.0 ) ); h.glow = 0.1 * ( 1.0 - min( fr, 1.0 ) );
+        }
         else fShelfUnit( h, ro, rd, h.n, vec3( 1.0, 0.0, 0.0 ), 0.2, S.x - 0.2, spec, sseed + 0.5, st, frameC );
       }
     }
@@ -489,6 +526,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   // ---- fittings
   float ao = 1.0;
   fFittings( h, ao, ro, rd, ird, p, h.n, 0, S, seed, shop, stair, st );
+  if ( !shop && !stair && lk > 0.5 ) fCylT( h, ro, rd, lp.xz, 0.014, 0.0, lp.y - 0.12, vec3( 0.06, 0.05, 0.045 ) );
   p = ro + rd * h.t;
   vec3 nn = h.n;
   float fp = fFoot( h.t, rd, nn );
@@ -498,15 +536,24 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     bool vert = abs( nn.y ) < 0.5;
     float along = abs( nn.x ) > 0.5 ? p.z : p.x;
     if ( vert ) {
-      if ( st < 0.5 && p.y > 0.3 && p.y < 1.6 && ( abs( nn.x ) > 0.5 || h.id > 0.5 ) ) {
-        // garments on rails (side walls and the rails mid-floor)
-        float g = floor( along / 0.07 );
-        float keep = fKeep( fp, 0.07 );
-        vec3 gc = mix( vec3( 0.5, 0.48, 0.45 ), GOODS[ int( fh1( g + seed ) * 7.99 ) ], 0.55 ) * ( 0.6 + 0.4 * fh1( g * 1.3 ) );
-        gc = mix( vec3( 0.42, 0.38, 0.36 ), gc, keep );
-        float hem = mix( 0.75, 0.5 + 0.35 * fh1( g * 2.1 + seed ), keep );
-        float fold = 1.0 + 0.12 * sin( along * 90.0 ) * fKeep( fp, 0.07 );
-        if ( p.y > hem ) h.alb = gc * fold; else h.alb *= 0.6;
+      if ( st < 0.5 && p.y > 0.3 && p.y < 1.68 && ( abs( nn.x ) > 0.5 || h.id > 0.5 && h.alb.r > 0.3 ) ) {
+        // garments hanging on rails, seen side-on: runs of the same piece in several sizes,
+        // mostly neutral colours, rounded shoulders, uneven hems, soft folds
+        const float PITCH = 0.055;
+        float g = floor( along / PITCH ), fa = fract( along / PITCH );
+        float run = floor( ( g + floor( fh1( seed * 3.0 ) * 4.0 ) ) / 4.0 );
+        float rh = fh1( run * 1.71 + seed * 9.0 );
+        vec3 gc = rh < 0.18 ? vec3( 0.035 ) : rh < 0.32 ? vec3( 0.72, 0.71, 0.68 ) : rh < 0.46 ? vec3( 0.55, 0.47, 0.36 )
+                : rh < 0.58 ? vec3( 0.10, 0.15, 0.26 ) : rh < 0.68 ? vec3( 0.30, 0.30, 0.29 ) : GOODS[ int( fh1( run + 3.3 ) * 7.99 ) ] * 0.75;
+        float keep = fKeep( fp, PITCH );
+        float len = h.id > 0.5 ? 0.8 : 0.55 + 0.6 * fh1( run * 2.3 + seed );
+        float top = 1.6 - 0.035 * 4.0 * fa * ( 1.0 - fa ) * keep;
+        float hem = mix( 1.6 - len, 1.6 - len * ( 0.94 + 0.08 * fh1( g * 2.1 ) ), keep );
+        float shade = mix( 0.82, 0.62 + 0.38 * sin( 3.14159 * fa ), keep ) * ( 1.0 + 0.05 * sin( p.y * 23.0 + g * 1.7 ) * fKeep( fp, 0.25 ) );
+        float rail = fEdge( 0.012 - abs( p.y - 1.615 ), fp );
+        if ( p.y > hem && p.y < top ) h.alb = gc * shade;
+        else if ( h.id < 0.5 ) h.alb *= 0.55 + 0.45 * smoothstep( 0.0, 0.5, hem - p.y );
+        h.alb = mix( h.alb, vec3( 0.25 ), rail );
       } else if ( st > 1.5 && st < 2.5 && nn.z < -0.5 && h.id < 0.5 && p.y > 2.25 && p.y < 2.75 && abs( p.x - S.x * 0.5 ) < S.x * 0.3 ) {
         // menu board above the shelves
         float keep = fKeep( fp, 0.06 );
@@ -568,12 +615,13 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   float glowK = 0.0;
   if ( shop ) {
     lampC = st > 3.5 && st < 4.5 ? vec3( 0.93, 0.95, 1.0 ) : st > 1.5 && st < 2.5 ? vec3( 1.0, 0.58, 0.29 )
-          : mix( vec3( 1.0, 0.76, 0.52 ), vec3( 1.0, 0.68, 0.42 ), step( 0.5, fh1( seed * 5.1 ) ) );
+          : mix( vec3( 1.0, 0.70, 0.43 ), vec3( 1.0, 0.64, 0.36 ), step( 0.5, fh1( seed * 5.1 ) ) );
     // shops are lit all day; by day the level follows the daylight outside so the
     // interior keeps its place relative to the street in the exposure
-    float I = mix( max( 0.0012, 0.022 * daylum ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
+    float I = mix( max( 0.0012, 1.25 * daylum ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
     float ex = st > 3.5 && st < 4.5 ? 2.0 : st > 2.5 && st < 3.5 ? 14.0 : 8.0;
-    Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + 0.42 * ao );
+    // downlight pools, the inter-reflected fill, and display spots on the window zone
+    Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + ( 0.42 + 0.5 * smoothstep( 2.2, 0.4, p.z ) ) * ao );
     glowK = I;
   } else if ( lit > 0.0 ) {
     float I = stair ? 0.004 : 0.0105;
@@ -584,16 +632,13 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   }
   vec3 col = h.alb * ( E + Elamp ) * RECIPROCAL_PI + h.glow * lampC * glowK;
 
-  // visible lamps: pendant shade or standing lamp, glowing when lit
+  // visible lamps: the fabric shade (open cylinder) glows when lit, brighter inside
   if ( !shop && !stair ) {
-    float tl = dot( lp - ro, rd );
+    float r = lk < 0.5 ? 0.2 : 0.17, inner;
+    float tl = fShade( ro, rd, lp, r, lp.y - 0.13, lp.y + 0.07, inner );
     if ( tl > 0.0 && tl < h.t ) {
-      vec3 q = ro + rd * tl - lp;
-      float fpl = gPA * ( gTC + tl );
-      float r = lk < 0.5 ? 0.2 : 0.17;
-      float m = fEdge( r - length( q.xz ), fpl ) * fEdge( q.y + 0.13, fpl ) * fEdge( 0.06 - q.y, fpl );
-      vec3 shadeDay = vec3( 0.55, 0.50, 0.42 ) * Eday * 0.1 * RECIPROCAL_PI;
-      col = mix( col, shadeDay + lampC * lit * 0.0105 * 2.2, m );
+      vec3 shadeDay = vec3( 0.62, 0.56, 0.46 ) * Eday * ( 0.06 + 0.05 * inner ) * RECIPROCAL_PI;
+      col = shadeDay + lampC * lit * 0.0105 * ( inner > 0.5 ? 9.0 : 1.6 );
     }
   }
   // cafe pendants
@@ -749,13 +794,15 @@ if ( fMask < 0.999 ) {
   // follow the reflected ray out of the recess and see whether it clears the opening
   {
     vec3 Rl = vec3( dot( R, T ), R.y, dot( R, N ) );
-    float depth = rec + vRoomP.z + 0.015;
+    // shopfront glass sits nearly flush with its frame: only the casing shades it
+    float shopK = abs( mod( vWin.w, 4.0 ) - 1.0 ) < 0.5 ? 0.3 : 1.0;
+    float depth = ( rec + vRoomP.z + 0.015 ) * shopK;
     float tOut = depth / max( Rl.z, 0.02 );
     vec2 e = vec2( vRoomP.x - vRoomS.x * 0.5, vRoomP.y - vFac.z ) + Rl.xy * tOut;
     float hh = vFac.w - vFac.z;
     float soft = 0.02 + 0.03 * tOut;
     float inside = smoothstep( -soft, soft, vRoomP.w - abs( e.x ) ) * smoothstep( -soft, soft, e.y ) * smoothstep( -soft, soft, hh - e.y );
-    vec3 stoneR = vec3( 0.56, 0.50, 0.41 ) * Eamb * RECIPROCAL_PI * ( e.y < 0.0 ? 0.75 : 0.42 );
+    vec3 stoneR = vec3( 0.56, 0.50, 0.41 ) * Eamb * RECIPROCAL_PI * ( e.y < 0.0 ? 0.8 : 0.55 );
     radiance = mix( stoneR, radiance, inside );
   }
   // a faint film of dust and smudges dims and greys the reflection a little
@@ -779,7 +826,9 @@ if ( fMask < 0.999 ) {
 const FRAG_OUT = /* glsl */`
 float fNV = saturate( dot( normal, normalize( vViewPosition ) ) );
 float fF = 0.04 + 0.96 * pow( 1.0 - fNV, 5.0 );
-vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * ( 1.0 - fF * fGlass );
+// transmission through both faces of the pane: (1 - F)^2
+float fT = 1.0 - fF * fGlass;
+vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * fT * fT;
 `;
 
 // per-pane tilt and old-glass waviness, applied to the shading normal

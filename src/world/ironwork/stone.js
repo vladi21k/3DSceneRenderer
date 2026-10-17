@@ -157,8 +157,9 @@ export function balusterGeometry(lod) {
     [0.058, 0.26], [0.042, 0.33], [0.03, 0.4], [0.027, 0.44], [0.034, 0.47], [0.044, 0.49], [0.044, 0.515], [0.05, 0.525], [0.05, 0.56]]
     .map(([r, y]) => [r, y * k]);
   const W = new GeoWriter();
-  // far: a square shaft is all that survives at a couple of pixels
-  if (lod) box(W, 0, h / 2, 0, 0.085, h, 0.085, 1, 'ud');
+  // light: the vase silhouette on a coarse lathe (a square shaft reads as a plain post
+  // while balusters are still several pixels wide)
+  if (lod) lathe(W, [0, 3, 5, 6, 8, 10, 12, 15].map((i) => prof[i]), 6);
   else {
     lathe(W, prof, 10);
     box(W, 0, 0.012, 0, 0.11, 0.024, 0.11); box(W, 0, h - 0.012, 0, 0.11, 0.024, 0.11);

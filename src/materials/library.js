@@ -20,47 +20,63 @@ const LIMESTONE_TINTS = {
   aged: [0.88, 0.85, 0.8],
 };
 
-const STONE_CELL = { value: 0.07, hue: 0.9, rough: 0.06, row: 0.3, a: [1.06, 0.985, 0.86], b: [0.97, 0.985, 1.01], out: [1.03, 0.94, 0.9, 0.07] };
-const STONE_MACRO = { f1: 1 / 6, f2: 1 / 17, albedo: 0.05, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
+// Block patchwork: ±12 % value per block, honey ↔ grey-white hue drift, whole courses
+// banded (row share), and 15 % outlier blocks from three families (pink, ochre, grey).
+const STONE_CELL = {
+  value: 0.12, hue: 0.9, rough: 0.06, row: 0.55, a: [1.06, 0.985, 0.86], b: [0.97, 0.985, 1.01],
+  out: { p: 0.15, fam: [[1.04, 0.93, 0.88], [1.05, 0.97, 0.82], [0.9, 0.92, 0.95]] },
+};
+const STONE_MACRO = { f1: 1 / 4, f2: 1 / 17, albedo: 0.08, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
 const STONE_DETAIL = { freq: 2.0, normal: 0.7, albedo: 0.3, rough: 0.05 };
+// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed
+const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0, albedo: 1.0, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
+// soiled ledges, sheltered soffits, faint vertical drip streaks
+const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 };
 
-const PAVING_CELL = { value: 0.11, hue: 0.6, rough: 0.12, row: 0.4, a: [1.04, 1.0, 0.95], b: [0.95, 0.98, 1.04], out: [1.18, 1.16, 1.13, 0.03] };
-const PAVING_MACRO = { f1: 1 / 9, f2: 1 / 35, albedo: 0.07, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
-const PAVING_DETAIL = { freq: 2.6, normal: 0.6, albedo: 0.3, rough: 0.08 };
+// Granite setts: tone varies in broad wear patches (macro), hardly per paver.
+const PAVING_CELL = { value: 0.05, hue: 0.2, rough: 0.1, row: 0.3, a: [1.01, 1.0, 0.99], b: [0.98, 0.99, 1.02], out: [1.1, 1.1, 1.1, 0.02] };
+const PAVING_MACRO = { f1: 1 / 4, f2: 1 / 20, albedo: 0.12, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
+// crisp crystals at close range (mica dark and glossy, feldspar pale)
+const PAVING_DETAIL = { tex: 'granite', freq: 4, normal: 0.5, albedo: 1.0, rough: -0.6, farVar: 0.004 };
 
 export const LIBRARY = {
   // ---------------------------------------------------------------- stone
   'stone.ashlar': {
     props: { roughness: 1 },
     bake: 'ashlar',
-    surf: { cell: STONE_CELL, macro: STONE_MACRO, detail: STONE_DETAIL, microShadow: 1 },
+    surf: { cell: STONE_CELL, macro: STONE_MACRO, detail: STONE_DRESS, weather: STONE_WEATHER, microShadow: 1 },
     vc: 'tint',
     meta: {
       courseH: 0.35, blockL: 0.7, blockRange: [0.36, 1.2], courses: 12, joint: 0.006,
       uv: 'u along the wall, v up (m). Course joints at v = k × courseH. Scale v by meta.courseH / plan.courseH (and u by blockL / plan.blockL) to match a building style; offset v by a random whole number of courses and u by a random amount per lot so neighbours differ.',
+      dressing: 'per block at runtime: 60 % taltish comb strokes (vertical or diagonal), 25 % pecked, 15 % rubbed; 20-35 mm finer drafted margin',
+      weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and vertical drip streaks (streak), from world normal / position. The splash zone near the paving is left to vertex colours.' },
       tints: LIMESTONE_TINTS,
     },
   },
   'stone.dirty': {
     props: { roughness: 1, color: [0.84, 0.8, 0.74] },
     bake: 'ashlar',
-    surf: { cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DETAIL, stain: { amount: 0.18, freq: 0.6, threshold: 0.66 } },
+    surf: {
+      cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DRESS,
+      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.14, soffit: 0.16 }, stain: { amount: 0.18, freq: 0.6, threshold: 0.66 },
+    },
     vc: 'tint',
     meta: { note: 'soiled variant of stone.ashlar (same layout / metrics)', tints: LIMESTONE_TINTS },
   },
   'stone.smooth': {
     props: { roughness: 1 },
     bake: 'smooth',
-    surf: { macro: STONE_MACRO, detail: { ...STONE_DETAIL, normal: 0.35 } },
+    surf: { macro: STONE_MACRO, detail: { ...STONE_DETAIL, normal: 0.35 }, weather: STONE_WEATHER },
     vc: 'tint',
-    meta: { uv: 'metres, any orientation; jointless finely dressed stone for cornices, sills, arches, string courses', tints: LIMESTONE_TINTS },
+    meta: { uv: 'metres, any orientation; jointless finely dressed stone for cornices, sills, arches, string courses', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
   },
   'stone.rough': {
     props: { roughness: 1 },
     bake: 'rustic',
-    surf: { cell: { ...STONE_CELL, value: 0.07 }, macro: STONE_MACRO, detail: STONE_DETAIL },
+    surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: { ...STONE_DETAIL, normal: 0.5 }, weather: STONE_WEATHER },
     vc: 'tint',
-    meta: { courseH: 0.5, blockL: 0.83, blockRange: [0.42, 1.36], courses: 8, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication, deep joints)', tints: LIMESTONE_TINTS },
+    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication, faceted boss, deep joints)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
   },
 
   // ---------------------------------------------------------------- paving
@@ -68,20 +84,24 @@ export const LIBRARY = {
     props: { roughness: 1 },
     bake: 'paving',
     surf: {
-      cell: PAVING_CELL, macro: PAVING_MACRO, detail: PAVING_DETAIL,
-      spots: { prob: 0.1, radius: 0.01, albedo: 0.45, rough: 0.5 },
-      stain: { amount: 0.16, freq: 0.5, threshold: 0.7 },
+      swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL,
+      spots: { prob: 0.08, radius: 0.011, albedo: 0.5, rough: 0.5 },
+      stain: { amount: 0.14, freq: 0.5, threshold: 0.7 },
+      lanes: { track: 1.6, rail: 0.7455, grime: 0.07, wear: 0.05 },
     },
     vc: 'tint',
-    meta: { paver: [0.4, 0.2], rows: 'along u', uv: 'u = metres along the street, v = metres across (ribbon UVs)' },
+    meta: {
+      paver: [0.4, 0.2], rows: 'across',
+      uv: 'u = metres along the street, v = metres across = route offset d (ribbon UVs). Courses run across the street: the continuous, nearly invisible sand-filled bed joints lie across the track and the short dark head joints read as dashes along it. v = d also places the grime along the rails (d = ±1.6 ± 0.7455).',
+    },
   },
   'paving.sidewalk': {
     props: { roughness: 1, color: [1.02, 1.01, 0.99] },
     bake: 'paving',
     surf: {
-      scale: 1.25, cell: { ...PAVING_CELL, value: 0.11 }, macro: PAVING_MACRO, detail: PAVING_DETAIL,
-      spots: { prob: 0.16, radius: 0.011, albedo: 0.42, rough: 0.5 },
-      stain: { amount: 0.2, freq: 0.5, threshold: 0.66 },
+      scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL,
+      spots: { prob: 0.14, radius: 0.011, albedo: 0.48, rough: 0.5 },
+      stain: { amount: 0.18, freq: 0.5, threshold: 0.66 },
     },
     vc: 'tint',
     meta: { paver: [0.5, 0.25], rows: 'along u', uv: 'u along the street, v across (m)' },
@@ -89,21 +109,21 @@ export const LIBRARY = {
   'paving.band': {
     props: { roughness: 1 },
     bake: 'band',
-    surf: { cell: { value: 0.06, hue: 0.4, rough: 0.08, row: 0, a: [1.04, 1.0, 0.95], b: [0.97, 0.98, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.06 }, detail: { ...PAVING_DETAIL, albedo: 0.18 }, stain: { amount: 0.12, freq: 0.5, threshold: 0.72 } },
+    surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.07 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.15 }, stain: { amount: 0.12, freq: 0.5, threshold: 0.72 } },
     vc: 'tint',
     meta: { slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
   },
   'paving.platform': {
     props: { roughness: 1 },
     bake: 'platform',
-    surf: { cell: { value: 0.06, hue: 0.3, rough: 0.08, row: 0.2, a: [1.03, 1.0, 0.96], b: [0.97, 0.99, 1.02] }, macro: PAVING_MACRO, detail: PAVING_DETAIL, spots: { prob: 0.12, radius: 0.009, albedo: 0.62, rough: 0.55 } },
+    surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0.2, a: [1.02, 1.0, 0.98], b: [0.98, 0.99, 1.02] }, macro: PAVING_MACRO, detail: { ...STONE_DETAIL, albedo: 0.25 }, spots: { prob: 0.12, radius: 0.009, albedo: 0.62, rough: 0.55 } },
     vc: 'tint',
     meta: { slab: [0.4, 0.4], uv: 'u along the platform, v across (m)' },
   },
   'paving.tactile': {
     props: { roughness: 1 },
     bake: 'tactile',
-    surf: { cell: { value: 0.04, hue: 0, rough: 0.05, row: 0 }, macro: PAVING_MACRO, detail: { ...PAVING_DETAIL, normal: 0.3 } },
+    surf: { cell: { value: 0.04, hue: 0, rough: 0.05, row: 0 }, macro: PAVING_MACRO, detail: { ...STONE_DETAIL, normal: 0.3 } },
     vc: 'tint',
     meta: { tile: [0.3, 0.3], uv: 'metres; truncated domes on a 50 mm grid (warning strip at platform edges)' },
   },
@@ -269,13 +289,13 @@ export const LIBRARY = {
   'concrete': {
     props: { roughness: 1 },
     bake: 'concrete',
-    surf: { macro: { albedo: 0.07, rough: 0.05 }, detail: { ...STONE_DETAIL, albedo: 0.18 } },
+    surf: { macro: { albedo: 0.07, rough: 0.05 }, detail: { ...STONE_DETAIL, albedo: 0.18 }, weather: { ...STONE_WEATHER, ledge: 0.18 } },
     vc: 'tint',
   },
   'plaster': {
     props: { roughness: 1 },
     bake: 'plaster',
-    surf: { macro: { ...STONE_MACRO, albedo: 0.07 }, detail: { ...STONE_DETAIL, normal: 0.35, albedo: 0.15 } },
+    surf: { macro: { ...STONE_MACRO, albedo: 0.07 }, detail: { ...STONE_DETAIL, normal: 0.35, albedo: 0.15 }, weather: STONE_WEATHER },
     vc: 'tint',
   },
   'roof.tile': {
