@@ -16,8 +16,9 @@ const REG = {
   timetable: [1536, 1280, 256, 384], tramSign: [1792, 1280, 256, 256],
   shelterInfo: [1024, 1664, 256, 320], ticketFront: [1280, 1664, 256, 384],
   magazines: [1536, 1664, 512, 256], kioskMenu: [1536, 1920, 512, 128],
-  column0: [0, 768, 2048, 512], column1: [2048, 768, 2048, 512],
+  column: [0, 768, 4096, 512],     // advertising column paper: upper tier left half, lower tier right half
   covers: [3072, 1280, 1024, 768],
+  binDecal: [1792, 1536, 128, 128], cooler: [1920, 1536, 128, 128],
 };
 for (let i = 0; i < 8; i++) REG[`poster${i}`] = [i * 512, 0, 512, 768];                         // large (light boxes, kiosk)
 for (let i = 0; i < 8; i++) REG[`small${i}`] = [2048 + (i % 4) * 256, 1280 + (i >> 2) * 384, 256, 384]; // small sheets
@@ -126,53 +127,6 @@ function bokeh(ctx, w, h, rng, n, hue) {
   }
 }
 
-/** Person silhouette (head and shoulders or full figure) with soft shading and rim light. */
-function person(ctx, cx, base, scale, rng, { full = false, skin = null, cloth = null, rim = '#fff3dc' } = {}) {
-  const sk = skin || hsl(rng.range(18, 32), rng.range(30, 55), rng.range(28, 68));
-  const cl = cloth || hsl(rng.range(0, 360), rng.range(20, 70), rng.range(18, 55));
-  const hair = hsl(rng.range(15, 35), rng.range(20, 50), rng.range(8, 35));
-  const draw = (fillSkin, fillCloth, fillHair, dx = 0, dy = 0) => {
-    const s = scale;
-    const headY = base - (full ? 1.65 : 0.62) * s;
-    // torso / body
-    ctx.fillStyle = fillCloth;
-    ctx.beginPath();
-    if (full) {
-      ctx.moveTo(cx - 0.2 * s + dx, headY + 0.2 * s + dy);
-      ctx.quadraticCurveTo(cx - 0.3 * s + dx, headY + 0.35 * s + dy, cx - 0.25 * s + dx, headY + 0.85 * s + dy);
-      ctx.lineTo(cx - 0.17 * s + dx, base + dy); ctx.lineTo(cx - 0.03 * s + dx, base + dy); ctx.lineTo(cx + dx, headY + 0.95 * s + dy);
-      ctx.lineTo(cx + 0.03 * s + dx, base + dy); ctx.lineTo(cx + 0.17 * s + dx, base + dy);
-      ctx.lineTo(cx + 0.25 * s + dx, headY + 0.85 * s + dy);
-      ctx.quadraticCurveTo(cx + 0.3 * s + dx, headY + 0.35 * s + dy, cx + 0.2 * s + dx, headY + 0.2 * s + dy);
-    } else {
-      ctx.moveTo(cx - 0.55 * s + dx, base + dy);
-      ctx.quadraticCurveTo(cx - 0.5 * s + dx, headY + 0.32 * s + dy, cx - 0.12 * s + dx, headY + 0.24 * s + dy);
-      ctx.lineTo(cx + 0.12 * s + dx, headY + 0.24 * s + dy);
-      ctx.quadraticCurveTo(cx + 0.5 * s + dx, headY + 0.32 * s + dy, cx + 0.55 * s + dx, base + dy);
-    }
-    ctx.closePath(); ctx.fill();
-    // neck + head
-    ctx.fillStyle = fillSkin;
-    ctx.fillRect(cx - 0.05 * s + dx, headY + 0.08 * s + dy, 0.1 * s, 0.16 * s);
-    ctx.beginPath(); ctx.ellipse(cx + dx, headY + dy, 0.105 * s, 0.135 * s, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = fillHair;
-    ctx.beginPath(); ctx.ellipse(cx + dx, headY - 0.05 * s + dy, 0.115 * s, 0.1 * s, 0, Math.PI, Math.PI * 2); ctx.fill();
-  };
-  ctx.save();
-  ctx.globalAlpha = 0.55;
-  draw(rim, rim, rim, scale * 0.014, -scale * 0.007); // rim light
-  ctx.globalAlpha = 0.85;
-  draw(rim, rim, rim, scale * 0.007, -scale * 0.003);
-  ctx.globalAlpha = 1;
-  draw(sk, cl, hair);
-  // key light shading across the figure
-  const g = ctx.createLinearGradient(cx - scale * 0.5, 0, cx + scale * 0.5, 0);
-  g.addColorStop(0, 'rgba(0,0,0,0.35)'); g.addColorStop(0.55, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(255,240,220,0.12)');
-  ctx.globalCompositeOperation = 'source-atop';
-  ctx.fillStyle = g; ctx.fillRect(cx - scale, base - scale * 2, scale * 2, scale * 2.1);
-  ctx.restore();
-}
-
 function product(ctx, cx, base, s, rng, hue) {
   const kind = rng.int(0, 3);
   ctx.save();
@@ -216,55 +170,123 @@ function landscape(ctx, w, h, rng) {
   }
 }
 
+/** City at dusk: skyline with lit windows under a graded sky, out-of-focus lights in front. */
+function cityDusk(ctx, w, h, rng) {
+  const sky = ctx.createLinearGradient(0, 0, 0, h * 0.75);
+  sky.addColorStop(0, hsl(rng.range(215, 235), 45, 18)); sky.addColorStop(0.65, hsl(rng.range(260, 290), 30, 38)); sky.addColorStop(1, hsl(rng.range(20, 35), 75, 62));
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
+  for (let L = 0; L < 2; L++) {
+    let x = -10;
+    while (x < w) {
+      const bw = rng.range(0.06, 0.16) * w, bh = rng.range(0.15, 0.5) * h * (L ? 0.8 : 1), top = h * 0.78 - bh;
+      ctx.fillStyle = hsl(225, 20, L ? 14 : 9);
+      ctx.fillRect(x, top, bw, h - top);
+      for (let wy = top + 6; wy < h * 0.76; wy += rng.range(7, 10)) for (let wx = x + 4; wx < x + bw - 5; wx += rng.range(6, 9)) {
+        if (rng.chance(0.35)) { ctx.fillStyle = hsl(rng.range(35, 50), 80, rng.range(55, 75), rng.range(0.5, 0.9)); ctx.fillRect(wx, wy, 3, 4); }
+      }
+      x += bw + rng.range(0, 8);
+    }
+  }
+  ctx.fillStyle = hsl(225, 25, 7); ctx.fillRect(0, h * 0.78, w, h * 0.22);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 18; i++) softDot(ctx, rng.next() * w, h * rng.range(0.7, 1), w * rng.range(0.03, 0.09), hsl(rng.pick([30, 40, 0, 200]), 80, 60, 'A'), rng.range(0.2, 0.5));
+  ctx.restore();
+}
+
+/** Coffee cup on a table, seen from above at an angle: saucer, cup, crema with a pour
+ *  pattern, steam, soft shadow, wood grain behind. */
+function coffeeShot(ctx, w, h, rng) {
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, hsl(28, 35, 22)); g.addColorStop(1, hsl(24, 40, 12));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(255,220,170,0.05)'; ctx.lineWidth = 3;
+  for (let y = 0; y < h; y += rng.range(6, 14)) { ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(w * 0.3, y + rng.range(-8, 8), w * 0.6, y + rng.range(-8, 8), w, y + rng.range(-6, 6)); ctx.stroke(); }
+  const cx = w * rng.range(0.42, 0.58), cy = h * rng.range(0.52, 0.6), r = w * 0.3;
+  softDot(ctx, cx + r * 0.25, cy + r * 0.35, r * 1.2, 'rgba(0,0,0,A)', 0.5);
+  const el = (x, y, rx, ry, fill) => { ctx.fillStyle = fill; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); };
+  const sg = ctx.createLinearGradient(cx - r, 0, cx + r, 0); sg.addColorStop(0, '#d9d4cb'); sg.addColorStop(0.4, '#f6f3ee'); sg.addColorStop(1, '#a9a49b');
+  el(cx, cy + r * 0.08, r * 1.15, r * 0.62, sg);
+  el(cx, cy + r * 0.12, r * 0.95, r * 0.5, 'rgba(0,0,0,0.08)');
+  const cg = ctx.createLinearGradient(cx - r * 0.7, 0, cx + r * 0.7, 0); cg.addColorStop(0, '#cfcac0'); cg.addColorStop(0.35, '#fbf9f5'); cg.addColorStop(1, '#8e8a83');
+  el(cx, cy, r * 0.72, r * 0.42, cg);
+  const crema = ctx.createRadialGradient(cx - r * 0.1, cy - r * 0.05, 0, cx, cy, r * 0.62);
+  crema.addColorStop(0, '#d9a56b'); crema.addColorStop(0.6, '#a0632f'); crema.addColorStop(1, '#4a2a14');
+  el(cx, cy, r * 0.6, r * 0.34, crema);
+  ctx.fillStyle = 'rgba(250,240,225,0.85)';
+  ctx.beginPath(); ctx.moveTo(cx, cy + r * 0.2); ctx.bezierCurveTo(cx - r * 0.35, cy - r * 0.05, cx - r * 0.12, cy - r * 0.25, cx, cy - r * 0.08);
+  ctx.bezierCurveTo(cx + r * 0.12, cy - r * 0.25, cx + r * 0.35, cy - r * 0.05, cx, cy + r * 0.2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) {
+    const x0 = cx + rng.range(-0.3, 0.3) * r;
+    ctx.beginPath(); ctx.moveTo(x0, cy - r * 0.4); ctx.bezierCurveTo(x0 - r * 0.3, cy - r * 0.8, x0 + r * 0.3, cy - r * 1.0, x0, cy - r * 1.4); ctx.stroke();
+  }
+}
+
+/** Draped silk backdrop (soft diagonal folds) for product shots. */
+function silk(ctx, w, h, rng, hue) {
+  ctx.fillStyle = hsl(hue, 35, 30); ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 9; i++) {
+    const x0 = rng.range(-0.3, 1.1) * w, k = rng.range(0.15, 0.4);
+    const g = ctx.createLinearGradient(x0, 0, x0 + w * k, h * k * 0.6);
+    g.addColorStop(0, hsl(hue, 35, 30, 0)); g.addColorStop(0.5, hsl(hue + rng.range(-10, 10), 40, rng.range(45, 70), 0.55)); g.addColorStop(1, hsl(hue, 35, 25, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  }
+}
+
 /** One photographic advertising poster. */
 function photoPoster(ctx, x, y, w, h, seed) {
   const rng = RNG.from('poster', seed);
   const [c, p] = off(w, h);
+  const [ic, q] = off(Math.ceil(w / 2), Math.ceil(h / 2)); // imagery layer at half resolution
+  q.scale(0.5, 0.5);
   const theme = seed % 6;
   const hue = rng.range(0, 360);
-  const bg = p.createLinearGradient(0, 0, w * 0.3, h);
+  const bg = q.createLinearGradient(0, 0, w * 0.3, h);
   bg.addColorStop(0, hsl(hue, rng.range(20, 60), rng.range(55, 80))); bg.addColorStop(1, hsl(hue + rng.range(-40, 40), rng.range(25, 60), rng.range(15, 40)));
-  p.fillStyle = bg; p.fillRect(0, 0, w, h);
-  if (theme === 0 || theme === 3) { // portrait(s)
-    bokeh(p, w, h, rng, 14, hue + 180);
-    person(p, w * rng.range(0.4, 0.6), h * 0.86, h * 0.75, rng);
-    if (theme === 3) person(p, w * 0.78, h * 0.9, h * 0.6, rng);
-  } else if (theme === 1) { // fashion: full figure on a studio sweep
-    const sw = p.createRadialGradient(w * 0.5, h * 0.45, 4, w * 0.5, h * 0.5, h * 0.7);
-    sw.addColorStop(0, hsl(hue, 15, 88)); sw.addColorStop(1, hsl(hue, 20, 48));
-    p.fillStyle = sw; p.fillRect(0, 0, w, h);
-    person(p, w * 0.5, h * 0.84, h * 0.42, rng, { full: true });
-    p.save(); p.translate(w * 0.5, h * 0.845); p.scale(1, 0.08); softDot(p, 0, 0, w * 0.2, 'rgba(0,0,0,A)', 0.35); p.restore();
+  q.fillStyle = bg; q.fillRect(0, 0, w, h);
+  if (theme === 0) coffeeShot(q, w, h, rng);
+  else if (theme === 3) cityDusk(q, w, h, rng);
+  else if (theme === 1) { // product on draped silk
+    silk(q, w, h, rng, hue);
+    product(q, w * 0.5, h * 0.72, h * 0.42, rng, hue + 160);
   } else if (theme === 2) { // product on a gradient with a light streak
-    bokeh(p, w, h, rng, 6, hue);
-    product(p, w * 0.5, h * 0.7, h * 0.5, rng, hue + 180);
+    bokeh(q, w, h, rng, 6, hue);
+    product(q, w * 0.5, h * 0.7, h * 0.5, rng, hue + 180);
   } else if (theme === 4) { // landscape / travel
-    landscape(p, w, h, rng);
+    landscape(q, w, h, rng);
   } else { // stage / concert: light beams over a crowd
-    p.fillStyle = hsl(hue, 50, 8); p.fillRect(0, 0, w, h);
-    p.save(); p.globalCompositeOperation = 'lighter';
+    q.fillStyle = hsl(hue, 50, 8); q.fillRect(0, 0, w, h);
+    q.save(); q.globalCompositeOperation = 'lighter';
     for (let i = 0; i < 6; i++) {
       const x0 = w * rng.next(), hh = hue + rng.range(-60, 60);
-      const g = p.createLinearGradient(x0 - w * 0.3, 0, x0 + w * 0.3, 0);
+      const g = q.createLinearGradient(x0 - w * 0.3, 0, x0 + w * 0.3, 0);
       g.addColorStop(0, hsl(hh, 80, 50, 0)); g.addColorStop(0.5, hsl(hh, 80, 55, 0.3)); g.addColorStop(1, hsl(hh, 80, 50, 0));
-      p.fillStyle = g;
-      p.beginPath(); p.moveTo(x0 - w * 0.02, 0); p.lineTo(x0 - w * 0.3, h * 0.8); p.lineTo(x0 + w * 0.3, h * 0.8); p.lineTo(x0 + w * 0.02, 0); p.fill();
+      q.fillStyle = g;
+      q.beginPath(); q.moveTo(x0 - w * 0.02, 0); q.lineTo(x0 - w * 0.3, h * 0.8); q.lineTo(x0 + w * 0.3, h * 0.8); q.lineTo(x0 + w * 0.02, 0); q.fill();
     }
-    p.restore();
-    p.fillStyle = '#06060a';
-    for (let i = 0; i < 26; i++) { const cx = rng.next() * w, r = rng.range(0.025, 0.045) * w; p.beginPath(); p.arc(cx, h * 0.84 - rng.next() * h * 0.03, r, 0, Math.PI * 2); p.fill(); p.fillRect(cx - r * 1.4, h * 0.84, r * 2.8, h * 0.16); }
+    q.restore();
+    q.fillStyle = '#06060a';
+    for (let i = 0; i < 26; i++) { const cx = rng.next() * w, r = rng.range(0.025, 0.045) * w; q.beginPath(); q.arc(cx, h * 0.84 - rng.next() * h * 0.03, r, 0, Math.PI * 2); q.fill(); q.fillRect(cx - r * 1.4, h * 0.84, r * 2.8, h * 0.16); }
   }
+  // photographic finish of the image: soft key light, warm light leak, upscaled (soft focus)
+  {
+    const kl = q.createRadialGradient(w * 0.25, h * 0.2, 0, w * 0.25, h * 0.2, h * 0.9);
+    kl.addColorStop(0, 'rgba(255,245,225,0.14)'); kl.addColorStop(1, 'rgba(0,0,0,0.12)');
+    q.fillStyle = kl; q.fillRect(0, 0, w, h);
+    if (rng.chance(0.4)) { q.globalCompositeOperation = 'screen'; softDot(q, w * rng.range(0.6, 1), h * rng.range(0, 0.3), w * 0.5, 'rgba(255,170,90,A)', 0.25); q.globalCompositeOperation = 'source-over'; }
+  }
+  p.imageSmoothingEnabled = true; p.imageSmoothingQuality = 'high';
+  p.drawImage(ic, 0, 0, w, h);
   // typography: a headline of 1-3 pseudo-words, sub lines, fine print, logo, date strip
   const heb = rng.chance(0.45);
-  const light = theme !== 1;
-  const fg = light ? 'rgba(250,248,240,0.95)' : 'rgba(20,20,24,0.92)';
+  const fg = 'rgba(250,248,240,0.95)';
   const top = rng.chance(0.5);
   const hy = top ? h * 0.1 : h * 0.66;
   text(p, phrase(rng, rng.int(1, 2), heb), heb ? w * 0.92 : w * 0.08, hy, h * rng.range(0.05, 0.075), { maxW: w * 0.84, align: heb ? 'right' : 'left', rtl: heb, color: fg, font: rng.chance(0.4) ? SERIF : SANS });
   smallPrint(p, w * 0.08, hy + h * 0.05, w * 0.7, rng.int(1, 3), Math.max(8, h * 0.022), fg, rng, { heb });
   // brand band
   const band = rng.chance(0.6);
-  if (band) { p.fillStyle = hsl(hue + 180, 40, light ? 18 : 92, 0.85); p.fillRect(0, h * 0.9, w, h * 0.1); }
+  if (band) { p.fillStyle = hsl(hue + 180, 40, 18, 0.85); p.fillRect(0, h * 0.9, w, h * 0.1); }
   p.fillStyle = band ? 'rgba(240,238,230,0.9)' : fg;
   p.beginPath(); p.arc(w * 0.12, h * 0.95, h * 0.022, 0, Math.PI * 2); p.fill();
   text(p, pseudoWord(rng, true), w * 0.17, h * 0.962, h * 0.03, { color: band ? 'rgba(240,238,230,0.95)' : fg, maxW: w * 0.4 });
@@ -283,7 +305,7 @@ function eventPoster(ctx, x, y, w, h, seed) {
   const pb = [w * 0.06, h * rng.range(0.08, 0.3), w * 0.88, h * 0.38];
   const [pc, pp] = off(Math.round(pb[2]), Math.round(pb[3]));
   if (rng.chance(0.5)) landscape(pp, pc.width, pc.height, rng);
-  else { pp.fillStyle = hsl(hue + 150, 30, 30); pp.fillRect(0, 0, pc.width, pc.height); bokeh(pp, pc.width, pc.height, rng, 8, hue); person(pp, pc.width * 0.5, pc.height, pc.height * 0.9, rng); }
+  else cityDusk(pp, pc.width, pc.height, rng);
   p.drawImage(pc, pb[0], pb[1]);
   const fg = rng.chance(0.5) ? '#f6f2e8' : '#141414';
   const heb = rng.chance(0.5);
@@ -306,65 +328,118 @@ function tornRect(ctx, x, y, w, h, rng, amp) {
   ctx.closePath();
 }
 
-/** Current poster sheets on a column band: [u0, v0, u1, v1] as fractions from the
- *  band's top-left. Deterministic and cheap (the geometry needs them without drawing). */
-export function columnSheetRects(seed) {
-  const rng = RNG.from('columnSheets', seed);
-  const n = 6, sw = 1 / n, out = [];
-  for (let i = 0; i < n; i++) {
-    const shW = sw * rng.range(0.82, 0.94), shH = rng.range(0.82, 0.92);
-    const x0 = i * sw + (sw - shW) / 2 + rng.range(-0.004, 0.004), y0 = 0.04 + rng.range(0, 0.06);
-    out.push([x0, y0, x0 + shW, y0 + shH]);
+/** Advertising column poster tiers [y0, y1] (metres above the paving); each tier is the
+ *  full circumference of the column (r 0.562 m) and has its own half of the 'column' region. */
+export const COLUMN_TIERS = [[1.45, 2.54], [0.36, 1.45]];
+const COL_CIRC = 2 * Math.PI * 0.562;
+
+/** Current poster sheets of a column tier: [u0, v0, u1, v1] as fractions of the tier
+ *  (u round the column, v from the top). Six slots, now and then one double-wide sheet.
+ *  Deterministic and cheap (the geometry needs them without drawing). */
+export function columnSheetRects(tier) {
+  const rng = RNG.from('columnSheets', tier);
+  const out = [];
+  for (let slot = 0; slot < 6;) {
+    const n = slot < 5 && rng.chance(0.22) ? 2 : 1;
+    const sw = n / 6, w = sw * rng.range(0.86, 0.94);
+    const x0 = slot / 6 + (sw - w) / 2 + rng.range(-0.004, 0.004);
+    const h = n > 1 ? rng.range(0.64, 0.74) : rng.range(0.76, 0.9);
+    const y0 = rng.range(0.03, 0.97 - h);
+    out.push([x0, y0, x0 + w, y0 + h]);
+    slot += n;
   }
   return out;
 }
 
-/** Band of glued posters round an advertising column. Returns the top-layer sheet rects
- *  (fractions of the band) so the geometry can raise them. The band tiles horizontally. */
-function columnBand(ctx, [x, y, w, h], seed) {
-  const rng = RNG.from('column', seed);
-  const [c, p] = off(w, h);
-  // old paper layers and remnants
-  p.fillStyle = '#d9d2c0'; p.fillRect(0, 0, w, h);
-  for (let i = 0; i < 40; i++) {
-    p.fillStyle = hsl(rng.range(20, 60), rng.range(5, 35), rng.range(55, 85), 0.6);
-    tornRect(p, rng.next() * w, rng.next() * h, rng.range(60, 300), rng.range(60, 300), rng, 10); p.fill();
+/** Glued paper round an advertising column, two tiers: older torn layers and remnants,
+ *  then the current sheets (raised 2 mm by the geometry), sun-faded, glue-stained and
+ *  peeling. Posters keep their true proportions (the region is not square in metres).
+ *  Background layers wrap round (the tier is a closed ring). */
+function columnBand(ctx, [x, y, w, h]) {
+  const tw = w / 2;
+  COLUMN_TIERS.forEach(([ty0, ty1], tier) => {
+    const rng = RNG.from('column', tier);
+    const [c, p] = off(tw, h);
+    const pxm = tw / COL_CIRC, pym = h / (ty1 - ty0);       // pixels per metre
+    const wrap = (bx, bw, fn) => { fn(0); if (bx + bw > tw) fn(-tw); if (bx < 0) fn(tw); };
+    p.fillStyle = '#d9d2c0'; p.fillRect(0, 0, tw, h);
+    for (let i = 0; i < 46; i++) {
+      const bx = rng.next() * tw, by = rng.next() * h - 40, bw = rng.range(60, 300), bh = rng.range(60, 300);
+      p.fillStyle = hsl(rng.range(20, 60), rng.range(5, 35), rng.range(55, 85), 0.6);
+      wrap(bx, bw, (dx) => { tornRect(p, bx + dx, by, bw, bh, RNG.from('torn', tier, i), 10); p.fill(); });
+    }
+    for (let i = 0; i < 10; i++) { // remnants of older posters
+      const sx = rng.next() * tw, sy = rng.range(-0.2, 0.6) * h, sw = rng.range(120, 300), sh = rng.range(150, 320);
+      wrap(sx, sw, (dx) => {
+        p.save(); tornRect(p, sx + dx, sy, sw, sh, RNG.from('rem', tier, i), 14); p.clip();
+        eventPoster(p, sx + dx, sy, 300, 420, tier * 31 + i);
+        p.fillStyle = 'rgba(235,230,215,0.45)'; p.fillRect(sx + dx, sy, 300, 420);
+        p.restore();
+      });
+    }
+    // current sheets: drawn at their true aspect, then fitted into the region
+    columnSheetRects(tier).forEach(([f0, g0, f1, g1], i) => {
+      const sx = f0 * tw, sy = g0 * h, sw = (f1 - f0) * tw, sh = (g1 - g0) * h;
+      const vw = 256, vh = Math.round(vw * (sh / pym) / (sw / pxm));
+      p.save();
+      p.translate(sx, sy);
+      p.beginPath(); p.rect(0, 0, sw, sh); p.clip();
+      p.scale(sw / vw, sh / vh);
+      if (rng.chance(0.55)) photoPoster(p, 0, 0, vw, vh, tier * 17 + i + 40); else eventPoster(p, 0, 0, vw, vh, tier * 13 + i);
+      p.restore();
+      p.fillStyle = `rgba(240,236,225,${rng.range(0.04, 0.28)})`; p.fillRect(sx, sy, sw, sh);          // sun fade
+      for (let k = 0; k < 3; k++) { p.fillStyle = 'rgba(90,80,60,0.08)'; p.fillRect(sx + rng.next() * sw, sy, rng.range(2, 6), sh * rng.range(0.2, 0.9)); } // glue runs
+      if (rng.chance(0.4)) { // peeling corner showing the paper behind
+        const cx = rng.chance(0.5) ? sx + sw : sx, cy = rng.chance(0.5) ? sy + sh : sy, q = rng.range(14, 40);
+        const dx = cx > sx ? -1 : 1, dy = cy > sy ? -1 : 1;
+        p.fillStyle = '#cfc6b0'; p.beginPath(); p.moveTo(cx, cy); p.lineTo(cx + dx * q, cy); p.lineTo(cx, cy + dy * q); p.fill();
+        p.fillStyle = 'rgba(250,248,240,0.95)'; p.beginPath(); p.moveTo(cx + dx * q, cy); p.lineTo(cx, cy + dy * q); p.lineTo(cx + dx * q * 0.75, cy + dy * q * 0.75); p.fill();
+      }
+    });
+    if (tier === 1) { // splash grime towards the plinth
+      const g = p.createLinearGradient(0, h * 0.6, 0, h);
+      g.addColorStop(0, 'rgba(60,50,40,0)'); g.addColorStop(1, 'rgba(60,50,40,0.32)');
+      p.fillStyle = g; p.fillRect(0, 0, tw, h);
+    }
+    grainVignette(p, 0, 0, tw, h, rng, 5, 0);
+    ctx.drawImage(c, x + tier * tw, y);
+  });
+}
+
+/** Small round recycling / city decal for litter bins. */
+function binDecal(ctx, [x, y, w, h]) {
+  ctx.save();
+  ctx.fillStyle = '#e9e6dc'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = '#2f6b45'; ctx.beginPath(); ctx.arc(x + w / 2, y + h * 0.42, w * 0.3, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#e9e6dc'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  for (let k = 0; k < 3; k++) { // three chasing arrows
+    const a0 = k * 2.094 - 0.5, a1 = a0 + 1.5, r = w * 0.18, cx = x + w / 2, cy = y + h * 0.42;
+    ctx.beginPath(); ctx.arc(cx, cy, r, a0, a1); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(a1) * r, cy + Math.sin(a1) * r); ctx.lineTo(cx + Math.cos(a1 - 0.35) * r * 1.35, cy + Math.sin(a1 - 0.35) * r * 1.35); ctx.stroke();
   }
-  for (let i = 0; i < 8; i++) { // remnants of older posters
-    const sx = rng.next() * w, sy = rng.next() * h * 0.5;
-    p.save(); tornRect(p, sx, sy, rng.range(120, 260), rng.range(150, 300), rng, 14); p.clip();
-    eventPoster(p, sx, sy, 260, 390, seed * 31 + i);
-    p.fillStyle = 'rgba(235,230,215,0.45)'; p.fillRect(sx, sy, 300, 400);
-    p.restore();
-  }
-  // current sheets (raised 2 mm by the column geometry): sun-faded, peeling corners
-  const sheets = columnSheetRects(seed);
-  for (let i = 0; i < sheets.length; i++) {
-    const [f0, g0, f1, g1] = sheets[i];
-    const sx = f0 * w, sy = g0 * h, shW = (f1 - f0) * w, shH = (g1 - g0) * h;
-    p.save();
-    p.translate(sx, sy);
-    p.beginPath(); p.rect(0, 0, shW, shH); p.clip();
-    p.scale(shW / 256, shH / 384);
-    if (rng.chance(0.5)) photoPoster(p, 0, 0, 256, 384, seed * 17 + i + 40); else eventPoster(p, 0, 0, 256, 384, seed * 13 + i);
-    p.restore();
-    // sun fade, glue stains, peeling corner
-    p.fillStyle = `rgba(240,236,225,${rng.range(0.05, 0.3)})`; p.fillRect(sx, sy, shW, shH);
-    for (let k = 0; k < 3; k++) { p.fillStyle = 'rgba(90,80,60,0.08)'; p.fillRect(sx + rng.next() * shW, sy, rng.range(2, 6), shH * rng.range(0.2, 0.9)); }
-    if (rng.chance(0.4)) {
-      const cx = rng.chance(0.5) ? sx + shW : sx, cy = rng.chance(0.5) ? sy + shH : sy, s = rng.range(14, 40);
-      const dx = cx > sx ? -1 : 1, dy = cy > sy ? -1 : 1;
-      p.fillStyle = '#cfc6b0'; p.beginPath(); p.moveTo(cx, cy); p.lineTo(cx + dx * s, cy); p.lineTo(cx, cy + dy * s); p.fill();
-      p.fillStyle = 'rgba(250,248,240,0.95)'; p.beginPath(); p.moveTo(cx + dx * s, cy); p.lineTo(cx, cy + dy * s); p.lineTo(cx + dx * s * 0.75, cy + dy * s * 0.75); p.fill();
+  smallPrint(ctx, x + 10, y + h * 0.86, w - 20, 1, 9, '#3b3b38', RNG.from('bindecal'), { heb: true });
+  ctx.restore();
+}
+
+/** Glass door of a drinks cooler: lit shelves of bottles and cans. */
+function coolerFront(ctx, [x, y, w, h]) {
+  const rng = RNG.from('cooler');
+  ctx.save();
+  const g = ctx.createLinearGradient(x, y, x, y + h);
+  g.addColorStop(0, '#e8f2f6'); g.addColorStop(1, '#9fb4bf');
+  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  for (let r = 0; r < 4; r++) {
+    const by = y + 8 + r * 30;
+    ctx.fillStyle = 'rgba(70,80,86,0.6)'; ctx.fillRect(x + 4, by + 26, w - 8, 3);
+    for (let bx = x + 8; bx < x + w - 12; bx += rng.range(9, 13)) {
+      const hh = rng.range(16, 25), hue = rng.pick([0, 30, 120, 210, 45, 340]);
+      ctx.fillStyle = hsl(hue, rng.range(40, 80), rng.range(30, 60));
+      ctx.fillRect(bx, by + 26 - hh, 7, hh);
+      ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(bx + 1, by + 26 - hh, 1.5, hh);
     }
   }
-  // grime towards the bottom, rain streaks
-  const g = p.createLinearGradient(0, h * 0.7, 0, h);
-  g.addColorStop(0, 'rgba(60,50,40,0)'); g.addColorStop(1, 'rgba(60,50,40,0.3)');
-  p.fillStyle = g; p.fillRect(0, 0, w, h);
-  grainVignette(p, 0, 0, w, h, rng, 5, 0);
-  ctx.drawImage(c, x, y);
-  return sheets;
+  ctx.strokeStyle = '#2a2d2f'; ctx.lineWidth = 6; ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+  ctx.restore();
 }
 
 // ------------------------------------------------------------------ magazines
@@ -377,7 +452,12 @@ function magazineCovers(ctx, [x, y, w, h], seed) {
     const g = p.createLinearGradient(0, 0, 0, H);
     g.addColorStop(0, hsl(hue, 30, rng.range(60, 85))); g.addColorStop(1, hsl(hue + 30, 35, rng.range(25, 55)));
     p.fillStyle = g; p.fillRect(0, 0, W, H);
-    if (rng.chance(0.7)) person(p, W * rng.range(0.4, 0.6), H, H * 0.85, rng); else product(p, W * 0.5, H * 0.85, H * 0.6, rng, hue + 160);
+    const kind = rng.int(0, 4);
+    if (kind === 0) coffeeShot(p, W, H, rng);
+    else if (kind === 1) cityDusk(p, W, H, rng);
+    else if (kind === 2) landscape(p, W, H, rng);
+    else if (kind === 3) { silk(p, W, H, rng, hue); product(p, W * 0.5, H * 0.85, H * 0.6, rng, hue + 160); }
+    else product(p, W * 0.5, H * 0.85, H * 0.6, rng, hue + 160);
     text(p, pseudoWord(rng, true).toUpperCase(), W * 0.5, H * 0.15, H * 0.13, { align: 'center', maxW: W * 0.92, color: rng.chance(0.5) ? '#c0141e' : '#f8f6f0', font: rng.chance(0.5) ? SERIF : SANS });
     smallPrint(p, W * 0.06, H * 0.55, W * 0.4, 4, Math.max(5, H * 0.035), '#fbfbf6', rng);
     grainVignette(p, 0, 0, W, H, rng, 4, 0.08);
@@ -619,7 +699,9 @@ export function buildPrintAtlas() {
   for (let i = 0; i < 8; i++) photoPoster(ctx, ...REG[`poster${i}`], i);
   for (let i = 0; i < 8; i++) (i % 2 ? eventPoster : photoPoster)(ctx, ...REG[`small${i}`], 100 + i);
   magazineCovers(ctx, REG.covers, 0);
-  columnBand(ctx, REG.column0, 0); columnBand(ctx, REG.column1, 1);
+  columnBand(ctx, REG.column);
+  binDecal(ctx, REG.binDecal);
+  coolerFront(ctx, REG.cooler);
   mapBoard(ctx, REG.map0, 0); mapBoard(ctx, REG.map1, 1);
   chalkBoard(ctx, REG.chalk0, 0); chalkBoard(ctx, REG.chalk1, 1);
   tramSign(ctx, REG.tramSign);
@@ -715,28 +797,35 @@ export function displayUV(name) {
   return [(x + 1) / W, 1 - (y + h - 1) / H, (x + w - 1) / W, 1 - (y + 1) / H];
 }
 
-function dotMatrix(ctx, [x, y, w, h], lines, color) {
+/** LED dot-matrix text: glyphs rasterised at the panel's dot resolution, then each dot
+ *  drawn as an anti-aliased disc straight into pixels (lit amber, unlit faintly visible). */
+function dotMatrix(ctx, [x, y, w, h], lines, rgb) {
   const cw = 128, ch = 32;
   const o = mkCanvas(cw, ch).getContext('2d');
   o.fillStyle = '#000'; o.fillRect(0, 0, cw, ch);
   o.fillStyle = '#fff'; o.font = 'bold 13px monospace'; o.textBaseline = 'top';
   lines.forEach((ln, i) => { o.textAlign = 'left'; o.fillText(ln[0], 2, 2 + i * 15); o.textAlign = 'right'; o.fillText(ln[1], cw - 2, 2 + i * 15); });
   const px = o.getImageData(0, 0, cw, ch).data;
-  ctx.fillStyle = '#050505'; ctx.fillRect(x, y, w, h);
-  const sx = w / cw, sy = h / ch;
-  for (let j = 0; j < ch; j++) for (let i = 0; i < cw; i++) {
-    const on = px[(j * cw + i) * 4] > 110;
-    ctx.fillStyle = on ? color : 'rgba(60,40,10,0.35)';
-    ctx.beginPath(); ctx.arc(x + (i + 0.5) * sx, y + (j + 0.5) * sy, Math.min(sx, sy) * 0.36, 0, Math.PI * 2); ctx.fill();
+  const img = ctx.createImageData(w, h), d = img.data;
+  const sx = w / cw, sy = h / ch, r = Math.min(sx, sy) * 0.36;
+  const bg = [5, 5, 5], off = [24, 17, 7];
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const ci = (i / sx) | 0, cj = (j / sy) | 0;
+    const dist = Math.hypot(i + 0.5 - (ci + 0.5) * sx, j + 0.5 - (cj + 0.5) * sy);
+    const cov = Math.min(1, Math.max(0, r + 0.5 - dist));
+    const c = px[(cj * cw + ci) * 4] > 110 ? rgb : off, k = (j * w + i) * 4;
+    for (let q = 0; q < 3; q++) d[k + q] = bg[q] + (c[q] - bg[q]) * cov;
+    d[k + 3] = 255;
   }
+  ctx.putImageData(img, x, y);
 }
 
 export function buildDisplayAtlas() {
   const c = mkCanvas(1024, 256);
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 1024, 256);
-  dotMatrix(ctx, DREG.stop, [['1 >>', '2 min'], ['1 >>', '9 min']], '#ffb23a');
-  dotMatrix(ctx, DREG.shelter, [['1', '1 min'], ['1', '7 min']], '#ffb23a');
+  dotMatrix(ctx, DREG.stop, [['1 >>', '2 min'], ['1 >>', '9 min']], [255, 178, 58]);
+  dotMatrix(ctx, DREG.shelter, [['1', '1 min'], ['1', '7 min']], [255, 178, 58]);
   // ticket machine touch screen: dark navy UI with light text rows and buttons
   const rng = RNG.from('screen');
   const [x, y, w, h] = DREG.screen;

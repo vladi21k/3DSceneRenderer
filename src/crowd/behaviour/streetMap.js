@@ -233,6 +233,18 @@ export class StreetMap {
   }
   /** Max |d| an agent centre may reach on this side at s (wall clearance applied). */
   wallAt(s, side) { return this.facadeAt(s, side) - WALL_GAP; }
+  /** Lowest wallAt over [s − half, s + half] (facades of neighbouring lots may step forward). */
+  wallMin(s, side, half) {
+    let w = this.wallAt(s, side);
+    for (let x = -half; x <= half; x += 0.5) w = Math.min(w, this.wallAt(s + x, side));
+    return w;
+  }
+  /** Max |d| of a walkable spot at unwrapped s: into a side street only inside its opening. */
+  reachAt(s, side, unwrap) {
+    const m = this.mouthAt(s, side);
+    if (m && Math.abs(s - unwrap(m.s)) < m.width / 2 - 0.55) return this.mouthLine(m, side) + 22;
+    return Math.min(this.wallAt(s, side), m ? this.mouthLine(m, side) - WALL_GAP : 99);
+  }
   /** Building line |d| at the corners of a cross street mouth on `side`. */
   mouthLine(c, side) {
     const key = side > 0 ? '_crowdLineR' : '_crowdLineL';
@@ -325,7 +337,8 @@ export class StreetMap {
     // the facade plan may carry the door decision; otherwise ask the shopfront layout itself
     let L = o.shopDoor || null;
     if (!L && this.shopLayout) {
-      try { L = this.shopLayout(o, RNG.from(o.id, 'shop')); } catch (e) { L = null; }
+      // same arguments as the facades use, so the decisions (door position, setback, shutter) match
+      try { L = this.shopLayout(o, RNG.from(o.id, 'shop'), o.backDepth ?? 0.4); } catch (e) { L = null; }
     }
     if (!L || !(L.doorW > 0.6) || L.shutterDown > 0) return null;
     return { s: sc + (L.dx || 0) * us, half: (L.doorW / 2) * Math.abs(us), depth: recess + (L.setback || 0) };

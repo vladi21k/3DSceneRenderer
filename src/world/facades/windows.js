@@ -268,7 +268,7 @@ function buildShutters(o, state, q, standoff) {
     // folded back against the wall either side of the opening (hinged at the reveal edge)
     const left = state === 'openSpring' ? springLeafPoly(o, 0.012) : leafPoly(o, 0.012);
     const gap = standoff > 0.03 ? 0.0 : 0.05;
-    const z0 = o.recess + standoff, z1 = z0 + 0.034;
+    const z0 = standoff, z1 = z0 + 0.034;   // relative to the wall face (the caller adds the recess)
     leafGeometry(t, mirror(left, (p) => [-2 * hw - gap - p[0], p[1]]), z0, z1, q);
     leafGeometry(t, left.map((p) => [2 * hw + gap + p[0], p[1]]), z0, z1, q); // two mirrors keep the winding
   }
@@ -371,10 +371,16 @@ export function openLimit(o, v, depth) {
 }
 /** Local z of far-range (lod 1) window glass. */
 export const GLASS_Z_FAR = 0.03;
+/** Shutters; open states are relative to the wall face (add with the opening matrix moved out by o.recess). */
 export function shutterTpl(o, state, q, standoff = 0.012) {
-  return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${standoff}|${q}`, () => buildShutters(o, state, q, standoff));
+  if (state === 'reveal') {
+    // panels fit the reveal depth: quantise it so windows of a facade share them
+    const rq = Math.round(o.recess / 0.03) * 0.03;
+    return cached(`S|${okey(o)}|reveal|${rq.toFixed(2)}|${q}`, () => buildShutters({ ...o, recess: rq }, state, q, standoff));
+  }
+  return cached(`S|${okey(o)}|${state}|${standoff}|${q}`, () => buildShutters(o, state, q, standoff));
 }
 export function rollerTpl(o, down, q) {
-  const d = Math.round(down * 20) / 20;
-  return cached(`R|${okey(o)}|${o.recess.toFixed(3)}|${d}|${q}`, () => buildRoller(o, d, q));
+  const d = Math.round(down * 20) / 20, rq = Math.round(o.recess / 0.03) * 0.03;
+  return cached(`R|${okey(o)}|${rq.toFixed(2)}|${d}|${q}`, () => buildRoller({ ...o, recess: rq }, d, q));
 }

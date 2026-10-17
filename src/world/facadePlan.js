@@ -197,9 +197,11 @@ export function facadePlan(lot) {
     cornerU0: !!lot.cornerU0, cornerU1: !!lot.cornerU1, sideStreet: !!lot.sideStreet,
   };
   // Extensions (own RNG streams so the values above never shift):
+  massing(plan, lot);                      // low buildings, set-back penthouses and additions
   coursing(plan);                          // sills aligned per floor, heads on whole ashlar courses
   followSlope(plan);                       // ground-floor sills step down with the street
-  for (const o of openings) setArch(o);    // o.rise / o.spring for every opening head
+  for (const o of plan.openings) setArch(o); // o.rise / o.spring for every opening head
+  if (plan.upper) for (const o of plan.upper.openings) setArch(o);
   plan.returns = [];                       // street facades on the side-street returns of corner lots
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
@@ -272,6 +274,75 @@ export function openingOutline(o, n = 12) {
   const p = {};
   for (let i = n; i >= 0; i--) { archPoint(o, i / n, p); pts.push(p.u, p.v); }
   return pts;
+}
+
+// ------------------------------------------------------------------ massing
+// The street is not one even cornice line: a few old two- or three-storey buildings
+// stand between the taller ones, and many flat roofs carry a later set-back storey (a
+// penthouse behind a terrace) or a whole set-back addition of several storeys.
+//   plan.upper = {setback, u0, u1, width, depth, v0, floorH, floors, material, color,
+//                 openings, frame, selfDressed: true}
+// The upper volume has its own facade frame (same conventions as lot.frame, front at
+// w = −setback, u from its left end) and plan-like openings; the buildings module
+// glazes them itself (selfDressed), so other modules may ignore plan.upper.
+function massing(plan, lot) {
+  const rng = RNG.from(lot.seed, 'massing');
+  const nF = plan.floors.length;
+  if (!lot.backdrop && nF >= 4 && rng.chance(0.13)) lowerTo(plan, rng.chance(0.45) ? 2 : 3);
+  const roll = rng.next();
+  if (plan.roof.type !== 'flat' || plan.depth < 9 || plan.width < 6) return;
+  const addition = roll < 0.1, pent = !addition && roll < 0.42;
+  if (!addition && !pent) return;
+  const floors = addition ? rng.int(2, plan.floors.length >= 5 ? 3 : 4) : 1;
+  const setback = addition ? rng.range(2.6, 4.5) : rng.range(1.6, 2.8);
+  const in0 = rng.chance(0.55) ? 0 : rng.range(0.6, 2.2), in1 = rng.chance(0.55) ? 0 : rng.range(0.6, 2.2);
+  const width = plan.width - in0 - in1;
+  const depth = Math.min(plan.depth - setback - 1.2, rng.range(6, 12));
+  if (width < 4 || depth < 4) return;
+  const floorH = rng.range(2.85, 3.15);
+  const material = rng.chance(addition ? 0.45 : 0.65) ? 'plaster' : 'stone';
+  const color = rng.pick([[0.93, 0.9, 0.84], [0.9, 0.86, 0.78], [0.86, 0.85, 0.82], [0.95, 0.93, 0.89]]);
+  const v0 = plan.parapet.y;
+  const f = lot.frame;
+  const origin = f.origin.clone().addScaledVector(f.uDir, in0).addScaledVector(f.nDir, -setback);
+  const matrix = f.matrix.clone().makeBasis(f.uDir, f.up, f.nDir).setPosition(origin);
+  const frame = { origin, uDir: f.uDir.clone(), nDir: f.nDir.clone(), up: f.up.clone(), width, ground0: f.floorRef + v0, ground1: f.floorRef + v0, floorRef: f.floorRef, matrix };
+  const nb = Math.max(1, Math.round((width - 1.2) / rng.range(2.5, 3.3)));
+  const bw = (width - 1.2) / nb;
+  const openings = [];
+  for (let k = 0; k < floors; k++) {
+    const fy = v0 + k * floorH;
+    for (let b = 0; b < nb; b++) {
+      const uc = 0.6 + bw * (b + 0.5);
+      // the penthouse opens onto its terrace through glazed doors; additions have windows
+      const door = !addition && rng.chance(0.55);
+      const w = door ? Math.min(bw - 0.6, rng.range(1.4, 2.2)) : Math.min(bw - 0.7, rng.range(1.1, 1.6));
+      const y = door ? fy + 0.05 : fy + rng.range(0.85, 0.95);
+      const h = door ? 2.2 : Math.min(floorH - 1.3, rng.range(1.3, 1.5));
+      openings.push({
+        id: `${lot.id}:u${k}b${b}`, floor: nF + k, bay: b, uc, w, y, h, top: 'flat', kind: door ? 'balconyDoor' : 'window',
+        recess: rng.range(0.1, 0.16), shutters: rng.chance(0.2) ? 'closed' : null, lit: rng.next(), curtain: rng.chance(0.5),
+      });
+    }
+  }
+  plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition };
+}
+
+/** Cut a plan down to its first n floors (cornice, parapet and everything above follow). */
+function lowerTo(plan, n) {
+  if (plan.floors.length <= n) return;
+  plan.floors = plan.floors.slice(0, n);
+  const last = plan.floors[n - 1];
+  last.kind = 'top';
+  const y = last.y + last.h;
+  plan.cornice.y = y;
+  plan.parapet.y = y + plan.cornice.h;
+  plan.totalHeight = plan.parapet.y + plan.parapet.h;
+  plan.openings = plan.openings.filter((o) => o.floor < n);
+  // balconies are listed floor by floor, so this drops a tail and keeps o.balcony indices
+  plan.balconies = plan.balconies.filter((b) => b.floor < n);
+  plan.courses = plan.courses.filter((c) => c.y < y - 0.5);
+  for (const fl of plan.flags) fl.y = plan.floors[Math.min(2, n - 1)].y + 1.6;
 }
 
 // ------------------------------------------------------------------ coursing

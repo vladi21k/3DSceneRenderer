@@ -234,3 +234,18 @@ export function shopRecessTpl(o, L) {
   t.box(d0, -0.03, -L.setback - 0.02, d1, 0.004, 0.0, 32 | 1, 0.78, 0.92);
   return t.bake();
 }
+
+// Shopfront templates shared by the same-size shops of one design (key: lot seed and
+// design variant); the cache is bounded.
+const cache = new Map();
+/** {frame, glass, shutter, recess} templates for shopfront o with layout L. */
+export function shopTpls(design, o, L, q) {
+  const key = `${design}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${o.recess.toFixed(2)}|${q}`;
+  let v = cache.get(key);
+  if (!v) {
+    if (cache.size > 600) cache.clear();
+    v = { frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, L, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null };
+    cache.set(key, v);
+  }
+  return v;
+}

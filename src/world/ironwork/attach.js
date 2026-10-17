@@ -435,11 +435,11 @@ function gradBox(W, x0, x1, y0, y1, z0, z1, bot, top, skip = '') {
 function potTemplate() {
   const W = new GeoWriter();
   W.color(0.78, 0.78, 0.78); // water-stained foot
-  lathe(W, [[0.084, 0], [0.1, 0.09]], 10);
+  lathe(W, [[0.084, 0], [0.1, 0.09]], 9);
   W.color(1, 1, 1);
-  lathe(W, [[0.1, 0.09], [0.118, 0.186], [0.135, 0.19], [0.134, 0.224], [0.119, 0.21]], 10);
+  lathe(W, [[0.1, 0.09], [0.118, 0.186], [0.135, 0.19], [0.134, 0.224], [0.119, 0.21]], 9);
   W.color(...SOIL);
-  lathe(W, [[0.119, 0.2], [0.0001, 0.205]], 10);
+  lathe(W, [[0.119, 0.2], [0.0001, 0.205]], 9);
   return template(W);
 }
 
@@ -460,10 +460,12 @@ function hookTemplate(dir) {
   const W = new GeoWriter();
   W.color(0.05, 0.05, 0.05);
   const zb = -0.09 * dir, zf = -0.162 * dir;
+  // faces against the box, the rail or the next strap are left out
+  const toBox = dir > 0 ? 'f' : 'b', toRail = dir > 0 ? 'f' : 'b';
   for (const x of [-0.32, 0.32]) {
-    box(W, x, 0.105, zb, 0.026, 0.21, 0.005, 1, 'd');                         // up the box back
-    box(W, x, 0.207, (zb + zf) / 2, 0.026, 0.005, Math.abs(zf - zb) + 0.005);  // over the handrail
-    box(W, x, 0.18, zf, 0.026, 0.055, 0.005, 1, 'u');                          // down the far side
+    box(W, x, 0.105, zb, 0.026, 0.21, 0.005, 1, 'du' + toBox);                 // up the box back
+    box(W, x, 0.207, (zb + zf) / 2, 0.026, 0.005, Math.abs(zf - zb) + 0.005, 1, 'lrd'); // over the handrail
+    box(W, x, 0.18, zf, 0.026, 0.055, 0.005, 1, 'ud' + toRail);                // down the far side
   }
   return template(W);
 }

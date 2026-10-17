@@ -148,7 +148,6 @@ export function buildPlatform(pl, app, addMesh, F, lod, fittings, inst, PP) {
   const sgn = pl.side, dE = sgn > 0 ? pl.d0 : pl.d1, W = pl.d1 - pl.d0, top = pl.h;
   const s0 = pl.s0, s1 = pl.s1;
   for (const s of [s0 + RAMP + 1.2, s1 - RAMP - 1.2]) inst.add(PP.lightColumn, placeMatrix(route, s, dE + sgn * (W - 0.25), top, sgn > 0 ? -Math.PI / 2 : Math.PI / 2, _m));
-  if (lod) return;
   const xr = W - 0.09;
   const gaps = [[0.27, 0.33], [0.67, 0.73]].map(([a, b]) => [s0 + (s1 - s0) * a, s0 + (s1 - s0) * b]);
   for (const f of fittings) if (f.type === 'shelter') gaps.push([f.s - 2.75, f.s + 2.75]);
@@ -290,11 +289,12 @@ export function buildPlatformProtos(M, F) {
   P.lightColumn = proto('lightColumn', [{ geo: lc.pole, mat: pole }, { geo: lc.lamp, mat: F.light }]);
   const tm = ticketMachine();
   P.ticket = proto('ticketMachine', [{ geo: tm.paint, mat: F.paint, tint: true }, { geo: tm.print, mat: F.print }, { geo: tm.disp, mat: F.display },
-    { geo: tm.dark, mat: M.get('rubber') }, { geo: tm.conc, mat: F.concrete }]);
-  const unitTube = (r) => merge([tube([V(0, 0, 0), V(0, 0, 1)], r, { radial: 8, bend: 0, caps: false })]);
-  P.rail = proto('rail', [{ geo: unitTube(0.024), mat: pole }]);
-  P.railMid = proto('railMid', [{ geo: unitTube(0.015), mat: pole }]);
-  P.post = proto('railPost', [{ geo: merge([tube([V(0, -0.02, 0), V(0, 1.02, 0)], 0.022, { radial: 8, bend: 0 }), lathe([[0.055, 0], [0.055, 0.012], [0.03, 0.02], [0, 0.02]], 10)]), mat: pole }]);
+    { geo: tm.dark, mat: F.rubber }, { geo: tm.conc, mat: F.concrete }]);
+  const unitTube = (r, radial) => merge([tube([V(0, 0, 0), V(0, 0, 1)], r, { radial, bend: 0, caps: false })]);
+  P.rail = proto('rail', [{ geo: [unitTube(0.024, 8), unitTube(0.024, 4)], mat: pole }], [50]);
+  P.railMid = proto('railMid', [{ geo: [unitTube(0.015, 8), unitTube(0.015, 4)], mat: pole }], [50]);
+  P.post = proto('railPost', [{ geo: [merge([tube([V(0, -0.02, 0), V(0, 1.02, 0)], 0.022, { radial: 8, bend: 0 }), lathe([[0.055, 0], [0.055, 0.012], [0.03, 0.02], [0, 0.02]], 10)]),
+    merge([tube([V(0, 0, 0), V(0, 1.02, 0)], 0.022, { radial: 4, bend: 0, caps: false })])], mat: pole }], [50]);
   const sp = stopPole();
   P.stop = proto('stopPole', [{ geo: sp.pole, mat: pole }, { geo: sp.print, mat: F.print }, { geo: sp.disp, mat: F.display }]);
   return P;

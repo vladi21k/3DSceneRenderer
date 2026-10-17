@@ -134,13 +134,13 @@ function surface(t, nu, nv, P, shade = 1, flip = false) {
 /**
  * Scalloped valance hanging from a top edge: nS semicircular lobes (radius R) of equal
  * width with a 2 cm binding tape along the edge. Vertices land exactly on the cusps
- * (12 per lobe near, 4 far). edge(s) → [x, y, z] of the top edge at arc length s;
+ * (8 per lobe near, 4 far). edge(s) → [x, y, z] of the top edge at arc length s;
  * out(s) the outward normal in xz.
  */
 function valance(t, total, valH, q, at) {
   const nS = Math.max(1, Math.round(total / 0.25)), per = total / nS;
   const R = Math.min(0.065, per * 0.42);
-  const nvu = nS * (q >= 0.5 ? 12 : 4);
+  const nvu = nS * (q >= 0.5 ? 8 : 4);
   const depth = (s) => {
     if (q < 0.5) return valH;
     const f = (s / per) % 1, c = 2 * f - 1;
@@ -164,8 +164,8 @@ function valance(t, total, valH, q, at) {
  */
 export function slopeAwning(W, P, D, valH, q) {
   const t = new ATpl(), m = new Tpl();
-  const nu = Math.max(2, Math.round(W / (q >= 0.5 ? 0.14 : 0.8)));
-  const nv = q >= 0.5 ? 6 : 1;
+  const nu = Math.max(2, Math.round(W / (q >= 0.5 ? 0.2 : 0.8)));
+  const nv = q >= 0.5 ? 5 : 1;
   surface(t, nu, nv, (a, b) => {
     const x = -W / 2 + W * a;
     // the cloth sags between the roller and the front bar, and creases near the cassette
@@ -177,7 +177,7 @@ export function slopeAwning(W, P, D, valH, q) {
   // hem tube wrapped round the front bar
   if (q >= 0.5) {
     const ring = [];
-    for (let k = 0; k <= 6; k++) { const a = (k / 6) * Math.PI * 1.5 - Math.PI * 0.25; ring.push([Math.cos(a) * 0.022, Math.sin(a) * 0.022]); }
+    for (let k = 0; k <= 4; k++) { const a = (k / 4) * Math.PI * 1.5 - Math.PI * 0.25; ring.push([Math.cos(a) * 0.022, Math.sin(a) * 0.022]); }
     surface(t, Math.max(2, Math.round(W / 0.3)), ring.length - 1, (a, b) => {
       const x = -W / 2 + W * a, [dz, dy] = ring[Math.round(b * (ring.length - 1))];
       return [x, -D + 0.004 + dy, P - 0.012 + dz, x + W / 2, 0, 0.9];
@@ -235,8 +235,8 @@ export function domeAwning(W, R, valH, q) {
     return [straight / 2, Math.cos(a), Math.sin(a)];
   };
   const ribs = Math.max(4, Math.round(total / 0.42));
-  const nu = q >= 0.5 ? ribs * 4 : ribs;
-  const nv = q >= 0.5 ? 8 : 3;
+  const nu = q >= 0.5 ? ribs * 3 : ribs;
+  const nv = q >= 0.5 ? 6 : 3;
   surface(t, nu, nv, (a, b) => {
     const s = a * total, [xa, dx, dz] = plan(s);
     const th = (b * Math.PI) / 2;           // 0 at the wall (top), π/2 at the bottom edge
@@ -257,6 +257,26 @@ export function domeAwning(W, R, valH, q) {
     }
   }
   return { canvas: t.bake(), metal: m.bake() };
+}
+
+// Templates are shared between awnings of the same (quantised) size.
+const cache = new Map();
+const q2 = (x, step) => Math.round(x / step) * step;
+/** Cached slopeAwning with dimensions quantised to 1–5 cm. */
+export function slopeAwningT(W, P, D, valH, q) {
+  W = q2(W, 0.02); P = q2(P, 0.05); D = q2(D, 0.05); valH = q2(valH, 0.02);
+  const k = `S|${W.toFixed(2)}|${P.toFixed(2)}|${D.toFixed(2)}|${valH.toFixed(2)}|${q}`;
+  let v = cache.get(k);
+  if (!v) { if (cache.size > 400) cache.clear(); v = slopeAwning(W, P, D, valH, q); cache.set(k, v); }
+  return v;
+}
+/** Cached domeAwning with dimensions quantised to 1–2 cm. */
+export function domeAwningT(W, R, valH, q) {
+  W = q2(W, 0.02); R = q2(R, 0.01); valH = q2(valH, 0.02);
+  const k = `D|${W.toFixed(2)}|${R.toFixed(2)}|${valH.toFixed(2)}|${q}`;
+  let v = cache.get(k);
+  if (!v) { if (cache.size > 400) cache.clear(); v = domeAwning(W, R, valH, q); cache.set(k, v); }
+  return v;
 }
 
 export function awningColors(rng) {

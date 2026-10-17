@@ -129,6 +129,7 @@ uniform sampler2D tClouds;
 uniform int uUseClouds;
 uniform vec4 uFarLamp[NUM_FAR];
 uniform float uFarI;
+uniform float uFarMin;       // the real lights cover everything nearer than this (m)
 uniform vec2 uLampCos;
 varying vec2 vUv;
 
@@ -204,7 +205,7 @@ void main() {
 
   // distant lamp pools (beyond the real lights): relight the surface with an albedo
   // estimated from its ambient-lit colour, depth-reconstructed normal, lantern cone
-  if (uFarI > 0.0 && !sky && dist > 55.0) {
+  if (uFarI > 0.0 && !sky && dist > uFarMin) {
     vec2 px = 1.0 / uResolution;
     float zl = linearZ(texture2D(tDepth, vUv - vec2(px.x, 0.0)).r), zr = linearZ(texture2D(tDepth, vUv + vec2(px.x, 0.0)).r);
     float zd = linearZ(texture2D(tDepth, vUv - vec2(0.0, px.y)).r), zu = linearZ(texture2D(tDepth, vUv + vec2(0.0, px.y)).r);
@@ -224,7 +225,7 @@ void main() {
       vec3 lv = L.xyz - wp;
       float d2 = max(dot(lv, lv), 0.25);
       vec3 ld = lv * inversesqrt(d2);
-      float cone = smoothstep(uLampCos.x, uLampCos.y, -ld.y);
+      float cone = smoothstep(uLampCos.x, uLampCos.y, ld.y);   // surface below the lantern
       float win = clamp(1.0 - d2 * d2 / (32.0 * 32.0 * 32.0 * 32.0), 0.0, 1.0);
       E += L.w * cone * max(dot(nw, ld), 0.0) * win * win / d2;
     }
@@ -391,6 +392,7 @@ uniform vec3 uWB;             // white balance gains (linear)
 uniform float uSat;
 uniform float uContrast;
 uniform vec3 uShadowTint, uHighTint;
+uniform float uSkyChroma;
 uniform vec2 uResolution;
 varying vec2 vUv;
 
@@ -456,6 +458,14 @@ void main() {
   col *= mix(uShadowTint, uHighTint, hl);
 
   col = agx(col);
+  // AgX's log-domain curve greys bright blues: give bright cool colours (the sky) back
+  // some chroma, scaling around the luminance so the hue stays put
+  {
+    float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    float cool = smoothstep(0.02, 0.3, (col.b - col.r) / max(col.b, 1e-4));
+    float k = 1.0 + uSkyChroma * cool * smoothstep(0.05, 0.4, l);
+    col = max(vec3(0.0), l + (col - l) * k);
+  }
   col = srgbOETF(col);
   // fine film grain, strongest in the mid tones, plus dither
   float g = (hash(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) + hash(gl_FragCoord.xy * 1.37 + fract(uTime * 3.17) * 71.0) - 1.0);

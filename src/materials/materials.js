@@ -24,6 +24,9 @@ const shared = {
   aoScale: { value: 1 },
 };
 
+// longest init waits for the texture bake before letting the app continue (ms)
+const BAKE_WAIT_MS = 4000;
+
 const lin = (a) => new THREE.Color().setRGB(a[0], a[1], a[2], THREE.LinearSRGBColorSpace);
 
 function setProps(m, props) {
@@ -82,16 +85,19 @@ const materials = {
       for (const n of [d.bake, d.surf?.detail?.tex, d.surf?.detail?.tool]) if (n) needed.add(n);
     }
     const recipes = [...needed].map((n) => RECIPES[n]).filter(Boolean);
-    // Targets are allocated and flat-filled now; the procedural bake compiles and renders
-    // in the background (parallel shader compile) while the world streams in.
+    // Targets are allocated and flat-filled now (so every material can be built at once);
+    // the procedural bake compiles in parallel and renders as each program is ready.
     this.ready = Promise.resolve(null);
-    const flat = app.params?.raw?.get?.('matflat') === '1'; // debug: skip baking (A/B cost check)
+    const raw = app.params?.raw;
+    const flat = raw?.get?.('matflat') === '1';      // debug: skip baking (A/B cost check)
+    const profile = raw?.get?.('matprof') === '1';   // debug: GPU time per recipe (forced sync)
+    let startup = true;
     if (!flat) {
       try {
         const baker = new Baker(app.renderer);
         const entries = baker.prepare(recipes);
         for (const [k, v] of entries) shared.textures.set(k, v);
-        this.ready = baker.run(entries).then((st) => {
+        this.ready = baker.run(entries, { immediate: () => startup, profile }).then((st) => {
           this.stats.bake = st;
           this.stats.textureMB = +(st.bytes / 1048576).toFixed(1);
           this.stats.bakedAfterMs = performance.now() - t0;
@@ -131,6 +137,13 @@ const materials = {
         this.meta[name] = { tile: null, vertexColor: def.vc || 'tint', textured: false };
       }
     }
+    // Bake behind the loading screen: wait (bounded) for the maps, so the first frames and
+    // headless captures never show the flat stand-ins. Whatever is still compiling at the
+    // deadline bakes later, one recipe per frame.
+    const tw = performance.now();
+    await Promise.race([this.ready, new Promise((r) => setTimeout(r, BAKE_WAIT_MS))]);
+    startup = false;
+    this.stats.bakeWaitMs = Math.round(performance.now() - tw);
     this.stats.initMs = performance.now() - t0;
   },
 

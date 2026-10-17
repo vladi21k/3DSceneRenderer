@@ -1,7 +1,7 @@
 import { RNG, hash2 } from '../../core/rng.js';
 import { CHUNK_LEN } from '../../core/config.js';
 import { IRON_REGIONS } from './textures.js';
-import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN, GROUT_W } from './constants.js';
+import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } from './constants.js';
 import { colInfo, Z_CORR } from './surface.js';
 
 // Street details per chunk, planned deterministically from the chunk index so the
@@ -26,9 +26,19 @@ export function planDetails(ctx, ci) {
   const rng = RNG.from(layout.seed, 'street-details', ci);
   const obstacles = layout.obstaclesNear((s0 + s1) / 2, CHUNK_LEN);
   const items = [];
+  // obstacles bucketed by 2 m of s around the chunk (rects go to every bucket they span)
+  const B0 = s0 - 4, NB = Math.ceil((s1 - s0 + 8) / 2);
+  const buckets = Array.from({ length: NB }, () => []);
+  const bi = (s) => Math.floor(delta(B0, s) / 2);
+  for (const o of obstacles) {
+    const a = o.kind === 'circle' ? o.s - o.r - 1.6 : o.s0 - 1.6, b = o.kind === 'circle' ? o.s + o.r + 1.6 : o.s1 + 1.6;
+    const i0 = Math.max(0, bi(a)), i1 = Math.min(NB - 1, bi(b));
+    for (let i = i0; i <= i1; i++) buckets[i].push(o);
+  }
 
   const blocked = (s, d, r) => {
-    for (const o of obstacles) {
+    const i = bi(s);
+    for (const o of buckets[Math.max(0, Math.min(NB - 1, i))]) {
       if (o.kind === 'circle') {
         const ds = delta(o.s, s), dd = d - o.d;
         if (ds * ds + dd * dd < (r + o.r + 0.25) ** 2) return true;
@@ -69,18 +79,15 @@ export function planDetails(ctx, ci) {
     if (!blocked(s, d, 0.6)) add('drain', s, d, Math.PI / 2);
   }
 
-  // round manholes: sidewalks, sometimes between the tracks
+  // round manholes on the sidewalks (the strip between the tracks carries the worn
+  // centre line, so covers there are the slotted drains in the four-foot only)
   const nMan = rng.weighted([[0, 0.3], [1, 0.5], [2, 0.2]]);
   for (let i = 0; i < nMan; i++) {
     for (let tries = 0; tries < 6; tries++) {
       const s = rng.range(s0 + 1.2, s1 - 1.2);
-      let d;
-      if (rng.chance(0.28)) d = 0;
-      else {
-        const side = rng.chance(0.5) ? 1 : -1;
-        const hw = layout.halfWidth(s, side);
-        d = side * rng.range(GUTTER_OUT + 1.0, Math.max(GUTTER_OUT + 1.2, hw - 1.3));
-      }
+      const side = rng.chance(0.5) ? 1 : -1;
+      const hw = layout.halfWidth(s, side);
+      const d = side * rng.range(GUTTER_OUT + 1.0, Math.max(GUTTER_OUT + 1.2, hw - 1.3));
       if (!blocked(s, d, 0.42)) { add('manhole', s, d, rng.range(0, Math.PI * 2)); break; }
     }
   }
@@ -148,7 +155,14 @@ export function planDetails(ctx, ci) {
     }
   }
 
-  const spots = items.map((it) => ({ s: it.s, d: it.d, r: it.r + 0.05, tree: !!it.tree }));
+  // flat spots for the surface: covers (with dishing towards them), tree pits, and the
+  // footprints of street furniture and café floors (objects stand at h = 0)
+  const spots = items.map((it) => ({ s: it.s, d: it.d, r: it.r + 0.05, tree: !!it.tree, dish: !it.tree }));
+  for (const o of layout.inChunk('obstacles', ci)) {
+    if (o.platform !== undefined) continue;
+    if (o.kind === 'circle') spots.push({ s: o.s, d: o.d, r: o.r + 0.1 });
+    else spots.push({ rect: true, s: (o.s0 + o.s1) / 2, hs: (o.s1 - o.s0) / 2 + 0.1, r: (o.s1 - o.s0) / 2 + 0.1, d0: o.d0 - 0.1, d1: o.d1 + 0.1 });
+  }
   return { items, spots, stains, leaves, joints };
 }
 
@@ -245,14 +259,15 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
     lf.quad(first, first + 3, first + 2, first + 1);
   }
 
-  // --- transverse joints (dark lines across the corridor between the rails)
+  // --- transverse joints (intermittent sealant lines across the corridor between the rails)
   if (jointLines) {
     for (const s of plan.joints) {
       route.sample(s, smp);
       surface.rowInfo(s, ri);
+      // across the setts and the mortar strips, up to the rail seals
       const free = [];
       let x = -BAND_IN;
-      for (const r of MAIN_RAILS) { free.push([x, r.lo - GROUT_W]); x = r.hi + GROUT_W; }
+      for (const r of MAIN_RAILS) { free.push([x, r.lo]); x = r.hi; }
       free.push([x, BAND_IN]);
       // the line runs towards +d: its right vector is -tangent
       const rx = -smp.tanH.x, rz = -smp.tanH.z;

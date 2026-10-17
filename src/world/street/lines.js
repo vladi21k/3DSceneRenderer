@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W } from './constants.js';
+import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W, MORTAR_ALBEDO, SEAL_TONE } from './constants.js';
+import { patchCanyon } from './shading.js';
 
 // Pixel-width-aware line ribbons with analytic coverage.
 //
@@ -17,20 +18,23 @@ export const LINE_SHARED = {
 };
 
 const VERT_PARS = /* glsl */`
-attribute vec3 aRight;
+attribute vec3 aRight;  // xz: lateral unit vector; y: per-line wear factor (paint)
 attribute vec4 aLine;   // x: side (-1|1), y: real half width, z: along (m), w: segment length / offset
 uniform vec2 uViewport;
 uniform float uMinPx;
 varying vec4 vLine;     // x: lateral (m), y: along (m), z: aLine.w, w: pixels per metre (lateral)
 varying vec3 vLineWorld;
+varying vec3 vLineRightW; // world lateral unit vector of the ribbon
 varying float vLineHalf; // real half width (m)
+varying float vLineWear; // per-line wear factor
 `;
 
 const VERT_MAIN = /* glsl */`
 vec3 transformed = vec3( position );
 {
   vec4 wp = modelMatrix * vec4( position, 1.0 );
-  vec3 wr = normalize( mat3( modelMatrix ) * aRight );
+  vec3 wr = normalize( mat3( modelMatrix ) * vec3( aRight.x, 0.0, aRight.z ) );
+  vLineWear = aRight.y;
   vec4 c0 = projectionMatrix * viewMatrix * wp;
   vec4 c1 = projectionMatrix * viewMatrix * vec4( wp.xyz + wr * 0.05, 1.0 );
   float pxPerM = 1e4;
@@ -45,6 +49,7 @@ vec3 transformed = vec3( position );
   transformed += aRight * ( aLine.x * hw );
   vLine = vec4( aLine.x * hw, aLine.z, aLine.w, pxPerM );
   vLineHalf = aLine.y;
+  vLineRightW = wr;
   vLineWorld = wp.xyz + wr * ( aLine.x * hw );
 }
 `;
@@ -52,7 +57,9 @@ vec3 transformed = vec3( position );
 const FRAG_PARS = /* glsl */`
 varying vec4 vLine;
 varying vec3 vLineWorld;
+varying vec3 vLineRightW;
 varying float vLineHalf;
+varying float vLineWear;
 float lnCov( float a, float b, float x, float w ) {
   return clamp( ( min( b, x + 0.5 * w ) - max( a, x - 0.5 * w ) ) / w, 0.0, 1.0 );
 }
@@ -82,6 +89,7 @@ float lnFbm( vec2 p, float fp, int oct ) {
 // mortar | field seal | rusty field bevel | polished head (incl. gauge corner) | groove |
 // lip | gauge seal | mortar
 const f = (v) => v.toFixed(4);
+const v3 = (a, k = 1) => `vec3( ${f(a[0] * k)}, ${f(a[1] * k)}, ${f(a[2] * k)} )`;
 const RAIL_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
 {
@@ -98,7 +106,9 @@ float lnRough = 0.5, lnMetal = 0.0;
   float cov = cSeal + cCorner + cBand + cGroove + cLip + cGrout;
   float fade = 1.0, core = 0.0;
   #ifdef LINE_NEAR_FADE
-    fade = 1.0 - smoothstep( 2.6, 5.0, 0.056 * vLine.w );   // real rails take over close up
+    // the real rails take over once their narrowest bands (12-13 mm seals and lip) span a
+    // few pixels; further out the 3D bands would alias into dash trains
+    fade = 1.0 - smoothstep( 1.5, 3.0, 0.012 * vLine.w );
     // the 3D rail is rasterized under every pixel centre inside the rail span, so cover
     // those pixels fully (the uncovered part of their footprint is paving, filled in
     // below); otherwise the sub-pixel 3D groove and seals leak through as dotted edges
@@ -106,26 +116,27 @@ float lnRough = 0.5, lnMetal = 0.0;
   #endif
   float alpha = mix( cov, 1.0, core ) * fade;
   if ( alpha < 0.002 ) discard;
-  // values follow the library rail materials (rail.head / rail.side / rail.groove / rubber)
-  vec3 aSeal = vec3( 0.024, 0.023, 0.022 );
+  // effective albedos of the 3D rail (materials × cavity AO), so the hand-over is seamless
+  vec3 aSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.88)};               // bitumen seal
   vec3 aCorner = vec3( 0.13, 0.068, 0.035 ) * ( 0.8 + 0.4 * wear );
   vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
-  vec3 aGroove = vec3( 0.074, 0.052, 0.034 );                       // sand, rust scale, grime
-  vec3 aLip = vec3( 0.36, 0.336, 0.30 ) * ( 0.85 + 0.2 * wear );   // dull, dusty guard lip
-  vec3 aGrout = vec3( 0.16, 0.152, 0.14 );                          // dusty mortar strip
-  vec3 aPave = vec3( 0.22, 0.217, 0.21 );                           // grimy setts beside it
+  vec3 aGroove = vec3( 0.021, 0.018, 0.015 );                       // dark slot (grime × AO)
+  vec3 aLip = vec3( 0.34, 0.33, 0.315 ) * ( 0.88 + 0.16 * wear );  // dull, dusty guard lip
+  vec3 aGrout = ${v3(MORTAR_ALBEDO, 0.95)};                          // mortar bed
+  vec3 aPave = vec3( 0.215, 0.217, 0.22 );                          // grimy setts beside it
   float cPave = core * max( 0.0, 1.0 - cov );
   float inv = 1.0 / max( cov + cPave, 1e-4 );
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
   diffuseColor.rgb = aSeal * wSeal + aCorner * wCorner + aBand * wBand + aGroove * wGroove + aLip * wLip + aPave * wPave + aGrout * wGrout;
-  lnMetal = wCorner * 0.2 + wBand + wLip;
-  lnRough = wSeal * 0.95 + wCorner * 0.85 + wBand * ( 0.34 + 0.1 * wear ) + wGroove * 0.75 + wLip * 0.58 + wPave * 0.7 + wGrout * 0.9;
+  lnMetal = wCorner * 0.2 + wBand + wLip * 0.5;
+  lnRough = wSeal * 0.85 + wCorner * 0.85 + wBand * ( 0.2 + 0.08 * wear ) + wGroove * 0.75 + wLip * 0.6 + wPave * 0.7 + wGrout * 0.9;
   diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
 `;
 
 // Paint / joint stripe: lateral band of real half width aLine.y, either a dashed
-// pattern along the line (uDash: period, duty) or a finite segment [0, aLine.w].
+// pattern along the line (uDash: period, duty; jittered so sealant seams are irregular)
+// or a finite segment [0, aLine.w].
 const PAINT_FRAG = /* glsl */`
 float lnRough = uPaintRough, lnMetal = 0.0;
 {
@@ -134,32 +145,39 @@ float lnRough = uPaintRough, lnMetal = 0.0;
   float u = vLine.y;
   float wu = max( length( vec2( dFdx( u ), dFdy( u ) ) ), 1e-5 );
   float cov = lnCov( -vLineHalf, vLineHalf, x, w );
+  float ends = 1.0;
   #ifdef LINE_DASH
     // box-filtered square wave: F(t) = floor(t)*duty + min(fract(t), duty)
     float P = uDash.x, duty = uDash.y;
-    float t0 = ( u - 0.5 * wu ) / P, t1 = ( u + 0.5 * wu ) / P;
+    float uj = u + ( lnNoise( vec2( u * 2.3, 4.1 ) ) - 0.5 ) * 0.8 * P;
+    float t0 = ( uj - 0.5 * wu ) / P, t1 = ( uj + 0.5 * wu ) / P;
     float F0 = floor( t0 ) * duty + min( fract( t0 ), duty );
     float F1 = floor( t1 ) * duty + min( fract( t1 ), duty );
     cov *= clamp( ( F1 - F0 ) * P / wu, 0.0, 1.0 );
   #else
-    cov *= lnCov( 0.0, vLine.z > 0.0 ? vLine.z : 1e9, u, wu );
+    float segLen = vLine.z > 0.0 ? vLine.z : 1e9;
+    cov *= lnCov( 0.0, segLen, u, wu );
+    ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );   // dirt towards stripe ends
   #endif
-  // wear: worn-through patches with ragged, flaking edges. Rotated multi-octave noise
-  // (no grid-aligned blocks); octaves finer than the pixel footprint fade to their mean,
-  // so distant paint shows its average coverage instead of sparkling.
+  // Wear: the paint is cut only by grain-sized flecks (aggregate showing through, 20-40
+  // per metre) with a soft threshold; larger walked-on patches only thin it, so worn
+  // lines stay continuous instead of breaking into dashes. Octaves finer than the pixel
+  // footprint fade to their mean, so distant paint shows its average coverage.
   vec2 wp = vLineWorld.xz;
   float fpw = max( length( fwidth( wp ) ), 1e-4 );               // metres per pixel
-  float big = lnFbm( wp * 0.4 + 17.0, fpw * 0.4, 3 );             // walked-off patches
-  float fine = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 5 );             // flakes and pores
-  // flaking follows the fine field; walked-on patches only thin the paint out
-  float field = 0.5 + ( ( big - 0.5 ) * 0.35 + ( fine - 0.5 ) * 0.8 ) * 2.6;
-  float keep = smoothstep( uWear - 0.07, uWear + 0.07, field ) * ( 1.0 - 0.4 * smoothstep( 0.42, 0.25, big ) );
-  keep = mix( keep, 1.0 - 0.55 * uWear, smoothstep( 0.03, 0.12, fpw ) );   // far: mean coverage
+  float wear = uWear * ( vLineWear > 0.0 ? vLineWear : 1.0 );
+  float big = lnFbm( wp * 0.4 + 17.0, fpw * 0.4, 3 );             // walked-on patches
+  float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );              // thinner blotches
+  float grain = lnFbm( wp * 30.0 + 9.0, fpw * 30.0, 2 );          // flecks
+  float field = 0.5 + ( grain - 0.5 ) * 2.4 + ( mid - 0.5 ) * 0.9;
+  float keep = smoothstep( wear - 0.1, wear + 0.1, field );
+  keep *= mix( 0.72, 1.0, smoothstep( 0.3, 0.6, big ) ) * ( 1.0 - 0.25 * wear * ends );
+  keep = mix( keep, ( 1.0 - 0.7 * wear ) * 0.88, smoothstep( 0.012, 0.04, fpw ) );   // far: mean
   cov *= keep;
   if ( cov < 0.002 ) discard;
-  // dirt ground into the paint where it is walked on most
+  // dirt ground into the paint where it is walked on most, and towards the ends
   float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.4, 0.0, 1.0 );
-  diffuseColor.rgb = uPaintColor * ( 0.93 - 0.17 * dirt ) * ( 0.96 + 0.08 * fine );
+  diffuseColor.rgb = uPaintColor * ( 0.93 - 0.17 * dirt - 0.12 * ends ) * ( 0.96 + 0.08 * mid );
   diffuseColor.a = cov * uPaintOpacity;
 }
 `;
@@ -204,14 +222,14 @@ function makeLineMaterial(kind, opts = {}) {
 /** Creates the shared line materials. */
 export function createLineMaterials() {
   return {
-    railNear: makeLineMaterial('rail', { nearFade: true, name: 'street.line.rail' }),
-    railFar: makeLineMaterial('rail', { nearFade: false, name: 'street.line.railFar' }),
-    // worn white line between the tracks (continuous, patchy with wear)
-    centre: makeLineMaterial('paint', { color: 0xd8d6ce, roughness: 0.62, wear: 0.34, opacity: 0.86, name: 'street.line.centre' }),
+    railNear: patchCanyon(makeLineMaterial('rail', { nearFade: true, name: 'street.line.rail' }), 'line'),
+    railFar: patchCanyon(makeLineMaterial('rail', { nearFade: false, name: 'street.line.railFar' }), 'line'),
+    // worn white line between the tracks (continuous, uniformly scuffed)
+    centre: makeLineMaterial('paint', { color: 0xd8d6ce, roughness: 0.62, wear: 0.15, opacity: 0.86, name: 'street.line.centre' }),
     // zebra stripes and stop lines (segments)
     stripe: makeLineMaterial('paint', { color: 0xdedcd5, roughness: 0.58, wear: 0.3, opacity: 0.87, name: 'street.line.stripe' }),
-    // bitumen-filled expansion joints across the corridor
-    joint: makeLineMaterial('paint', { color: 0x161513, roughness: 0.5, wear: 0.12, opacity: 0.9, minPx: 1.2, name: 'street.line.joint' }),
+    // sealant-filled expansion joints across the corridor: grey-brown, intermittent
+    joint: makeLineMaterial('paint', { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, minPx: 1.2, dash: [0.18, 0.65], name: 'street.line.joint' }),
   };
 }
 
@@ -242,8 +260,9 @@ export class LineBuf {
     this.idx = idx;
     this.cap = cap;
   }
-  /** pts: flat array [x,y,z, rx,rz, along, ...] (6 per point) */
-  add(pts, halfW, extra) {
+  /** pts: flat array [x,y,z, rx,rz, along, ...] (6 per point); wear scales the paint
+   *  material's wear for this line. */
+  add(pts, halfW, extra, wear = 1) {
     const np = pts.length / 6;
     if (this.n + np * 2 > this.cap) this._grow(Math.max(this.cap * 2, this.n + np * 2 + 64));
     let prev = -1;
@@ -252,7 +271,7 @@ export class LineBuf {
       for (let k = 0; k < 2; k++) {
         const j = v + k;
         this.pos[j * 3] = pts[o]; this.pos[j * 3 + 1] = pts[o + 1]; this.pos[j * 3 + 2] = pts[o + 2];
-        this.right[j * 3] = pts[o + 3]; this.right[j * 3 + 1] = 0; this.right[j * 3 + 2] = pts[o + 4];
+        this.right[j * 3] = pts[o + 3]; this.right[j * 3 + 1] = wear; this.right[j * 3 + 2] = pts[o + 4];
         this.line[j * 4] = k ? 1 : -1; this.line[j * 4 + 1] = halfW; this.line[j * 4 + 2] = pts[o + 5]; this.line[j * 4 + 3] = extra;
       }
       this.n += 2;

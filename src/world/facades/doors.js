@@ -171,3 +171,17 @@ export function doorMetalTpl(o, L, q) {
 }
 
 export const DOOR_FW = FW;
+
+// Door templates shared by the same-size doors of one building.
+const cache = new Map();
+/** {door, glass, metal} templates for door o with layout L. */
+export function doorTpls(design, o, L, q) {
+  const key = `${design}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${q}`;
+  let v = cache.get(key);
+  if (!v) {
+    if (cache.size > 400) cache.clear();
+    v = { door: doorTpl(o, L, q), glass: doorGlassTpl(o, L, q), metal: doorMetalTpl(o, L, q) };
+    cache.set(key, v);
+  }
+  return v;
+}

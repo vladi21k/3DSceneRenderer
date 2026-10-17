@@ -192,8 +192,11 @@ export class Steering {
     // with the tram near, obstacles by the ride track are passed on the side away from it
     const tramNear = c.tram.near(a);
     const n = map.gatherCircles(a.s, 3.5);
-    const sp = len2(a.vs, a.vd);
-    const es = sp > 0.1 ? a.vs / sp : 0, ed = sp > 0.1 ? a.vd / sp : 0;
+    const sp = len2(a.vs, a.vd), des = this.des, dsp = len2(des.vs, des.vd);
+    // heading for the look-ahead: the actual motion, or where they want to go when (nearly) stopped
+    let es = 0, ed = 0;
+    if (sp > 0.2) { es = a.vs / sp; ed = a.vd / sp; } else if (dsp > 0.2) { es = des.vs / dsp; ed = des.vd / dsp; }
+    const heading = sp > 0.2 || dsp > 0.2;
     const goalD = a.clearing ? a.clearTo : a.gd;
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
@@ -209,7 +212,7 @@ export class Steering {
           fs += away * 1.6 * (1 - Math.abs(dx) / (r + AGENT_R + 0.1) + 0.3);
         }
       }
-      if (standing || sp < 0.2) continue;
+      if (standing || !heading) continue;
       // look ahead: an obstacle across the path is passed on the side with more room
       const along = dx * es + dy * ed;
       const lat = -dx * ed + dy * es;  // + = obstacle to the walker's right
@@ -220,10 +223,11 @@ export class Steering {
         else if (lat < -0.04) side = 1;
         else side = (a.gd - a.d) * (es >= 0 ? 1 : -1) >= 0 ? 1 : -1; // dead ahead: towards the lane
         let brake = 0;
-        if (tramNear && Math.abs(map.cD[i] - RIDE_D) < BAND + 1.3 && Math.sign(es * side) === Math.sign(RIDE_D - a.d)) {
+        if (tramNear && !a.clearing && Math.abs(map.cD[i] - RIDE_D) < BAND + 1.3 && Math.sign(es * side) === Math.sign(RIDE_D - a.d)) {
           // never between a pole and the passing tram: round its far side, or wait behind it
+          // (people getting off the track are never held back)
           side = -side;
-          if (along < 2.2) brake = 4 * (1 - along / 2.2) * (1 - Math.abs(lat) / need);
+          if (along < 1.8) brake = (a.v0 / TAU) * Math.min(1.15, (1.8 - along) / 0.9);
         }
         const k = 1.5 * (1 - along / 3.8) * (1 - Math.abs(lat) / need + 0.3);
         fs += -ed * side * k - es * brake; fd += es * side * k - ed * brake;
@@ -302,7 +306,7 @@ export class Steering {
       const ms = c.unwrap(m.s), half = m.width / 2 - 0.55;
       if (Math.abs(a.d) > line - WALL_GAP && Math.abs(a.s - ms) < half + 0.4) {
         if (a.s < ms - half) a.s += Math.min(maxC, ms - half - a.s); else if (a.s > ms + half) a.s -= Math.min(maxC, a.s - ms - half);
-        if (Math.abs(a.d) > line + 22) a.d = side * (line + 22);
+        if (Math.abs(a.d) > line + 22) a.d = side * Math.max(line + 22, Math.abs(a.d) - maxC);
         return;
       }
     }

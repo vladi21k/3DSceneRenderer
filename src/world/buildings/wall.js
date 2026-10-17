@@ -1,5 +1,6 @@
 import { archPoint } from '../facadePlan.js';
 import { runoffSplits, SILL_RUN, BAL_RUN } from './shade.js';
+import { arcSeg } from './mesh.js';
 
 // Wall field of one facade face: the plane w = 0 between the paving and the cornice,
 // with the openings cut out exactly along their outlines.
@@ -135,7 +136,7 @@ export function* wallField(ctx, face, openings) {
   };
 
   for (let r = 0; r < nr; r++) {
-    if (r % 12 === 11) yield;
+    if (r % 8 === 7) yield;
     const va = V[r], vc = V[r + 1], vm = (va + vc) / 2;
     // rustication: is this row inside the rusticated zone, and is it half of a V joint?
     let rough = false, groove = 0;
@@ -198,7 +199,7 @@ export function* wallField(ctx, face, openings) {
     const rough = rus && o.spring < rus.v1 && o.spring > rus.v0;
     const s = rough ? sRough : sAsh;
     const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
-    const n = q.archSeg;
+    const n = arcSeg(q, o);
     let pu = 0, pv = 0;
     for (let c = 0; c <= n; c++) {
       archPoint(o, c / n, _p);

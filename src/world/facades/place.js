@@ -6,16 +6,17 @@ import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
-import { shopLayout, shopFrameTpl, shopGlassTpl, shopShutterTpl, shopRecessTpl, SHOP_FW } from './shops.js';
-import { doorLayout, doorTpl, doorGlassTpl, doorMetalTpl } from './doors.js';
+import { shopLayout, shopTpls, SHOP_FW } from './shops.js';
+import { doorLayout, doorTpls } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
-import { slopeAwning, domeAwning, awningColors } from './awnings.js';
+import { spillTpl, spillAttrs } from './spill.js';
+import { slopeAwningT as slopeAwning, domeAwningT as domeAwning, awningColors } from './awnings.js';
 import { crownY, springY, isArched, halfWidthAt, outlinePts } from './outline.js';
 import { paint } from './kit.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-const _m = new THREE.Matrix4(), _t = new THREE.Matrix4(), _r = new THREE.Matrix4();
+const _m = new THREE.Matrix4(), _t = new THREE.Matrix4(), _r = new THREE.Matrix4(), _ms = new THREE.Matrix4();
 
 const SHOP_FRAMES = [0x1e1f20, 0x34373a, 0x2a3d30, 0x3b2f25, 0x585c5d, 0xcfcdc5, 0x23303d];
 const DOOR_COLORS = { brown: 0x4a2e1c, varnish: 0x5e3b20, green: 0x283f30, blue: 0x2b5068, black: 0x1d1d1e, red: 0x561c19 };
@@ -37,6 +38,12 @@ function openingMatrix(frame, o, out = _m) {
 /** Matrix for a point on the wall face (u, v). */
 function wallMatrix(frame, u, v, out = _m) {
   return out.copy(frame.matrix).multiply(_t.makeTranslation(u, v, 0));
+}
+
+/** Warm light from the room onto the reveal of opening o (night only, see spill.js). */
+function addSpill(kit, o, m, lit, kind) {
+  const sp = spillTpl(o);
+  kit.get('spill').add(sp.tpl, m, 1, 1, 1, spillAttrs(lit, kind, sp.R));
 }
 
 /** Interior glass attributes for an opening with glass at local depth zRef. */
@@ -87,6 +94,7 @@ function buildWindow(kit, ctx, o) {
   const gt = glassTpl(o, v, ctx.q, open);
   kit.get('glass').add(gt.glass, m, 1, 1, 1, ga);
   if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, winCode(0, true)] }); // no glass: open aperture
+  if (o.shutters !== 'closed') addSpill(kit, o, m, o.lit, 0);
   // external roller shutters on flat heads (modern and some Mandate facades)
   const rollerP = v.type === 'alu' ? 0.75 : plan.style.era === 'mandate' ? 0.18 : 0.04;
   if (!o.shutters && o.top === 'flat' && o.recess > 0.15 && r.next() < rollerP) {
@@ -100,7 +108,9 @@ function buildWindow(kit, ctx, o) {
     // open leaves lie on the wall face, clear of a projecting stone surround
     const standoff = plan.style.surrounds ? 0.055 : 0.012;
     const state = o.shutters === 'open' ? fitOpenShutters(ctx, o, standoff) : o.shutters;
-    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), m, sc[0] * ks, sc[1] * ks, sc[2] * ks);
+    // open leaves are built relative to the wall face (shared by windows of any recess)
+    const ms = state === 'open' || state === 'openSpring' ? _ms.copy(m).multiply(_r.makeTranslation(0, 0, o.recess)) : m;
+    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), ms, sc[0] * ks, sc[1] * ks, sc[2] * ks);
   }
 }
 
@@ -142,9 +152,9 @@ function fitOpenShutters(ctx, o, standoff) {
     }
     return false;
   };
-  if (!clash(crownY(o))) return 'open';
-  if (isArched(o) && !clash(springY(o))) return 'openSpring';
-  return 'reveal';
+  const state = !clash(crownY(o)) ? 'open' : isArched(o) && !clash(springY(o)) ? 'openSpring' : 'reveal';
+  if (ctx.stats) (ctx.stats[state] ||= []).push([ctx.lot.id, o.id]);
+  return state;
 }
 
 // ------------------------------------------------------------------ signs
@@ -235,33 +245,40 @@ function buildBlade(kit, ctx, s, shopTypes) {
 }
 
 // ------------------------------------------------------------------ shops
-function buildShop(kit, ctx, o, signInfo, type) {
+/** Generator: yields between its stages so a chunk build can be time-sliced finely. */
+function* buildShop(kit, ctx, o, signInfo, type) {
   const plan = ctx.plan;
   const r = RNG.from(o.id, 'shop');
-  const L = shopLayout(o, r, backDepth(o));
-  if (signInfo && signInfo.mode === 'head') {
+  // a building's shopfronts follow one of two joinery designs (shared templates); the
+  // fit-outs still differ in colour, goods and lighting
+  const variant = r.int(0, 1);
+  const headSign = !!(signInfo && signInfo.mode === 'head');
+  const L = shopLayout(o, RNG.from(plan.seed, 'shopfront', variant), backDepth(o));
+  if (headSign) {
     // flat heads: a sign band ~0.55 m tall under the lintel, display glass below it
     if (!isArched(o)) { L.yT = Math.max(2.5, o.h - SHOP_FW - 0.62); L.doorH = Math.min(L.doorH, L.yT - 0.06); }
     L.head = 'panel'; L.headSign = true;
   }
+  const T = shopTpls(`${plan.seed}|${variant}|${headSign}`, o, L, ctx.q);
   const m = openingMatrix(ctx.frame, o, new THREE.Matrix4());
   const fc = L.timber ? paint(plan.style.frameColor) : lin(SHOP_FRAMES[r.int(0, SHOP_FRAMES.length - 1)]);
-  kit.get('frame').add(shopFrameTpl(o, L, ctx.q), m, fc[0], fc[1], fc[2]);
+  kit.get('frame').add(T.frame, m, fc[0], fc[1], fc[2]);
   // interior
   const f0 = plan.floors[0];
   const roomY0 = o.y;
   const W = Math.max(4, o.w + 1.6);
   const H = Math.max(3, f0.y + f0.h - roomY0 - 0.3);
   const D = 6.5 + r.next() * 3;
-  kit.get('glass').add(shopGlassTpl(o, L, ctx.q), m, 1, 1, 1,
+  kit.get('glass').add(T.glass, m, 1, 1, 1,
     glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit }));
   // floor of a recessed entrance (the buildings' dark box behind it is unlit)
-  const rt = ctx.q >= 0.5 ? shopRecessTpl(o, L) : null;
-  if (rt) { const tint = plan.style.tint; kit.get('stone').add(rt, m, tint[0] * 0.8, tint[1] * 0.78, tint[2] * 0.74); }
+  addSpill(kit, o, m, o.lit, 1);
+  if (T.recess) { const tint = plan.style.tint; kit.get('stone').add(T.recess, m, tint[0] * 0.8, tint[1] * 0.78, tint[2] * 0.74); }
+  yield;
   // roller-shutter box and guides
   if (L.box) {
     const rc = lin(r.pick(ROLLER));
-    kit.get('frame').add(shopShutterTpl(o, L, ctx.q), m, rc[0], rc[1], rc[2]);
+    kit.get('frame').add(T.shutter, m, rc[0], rc[1], rc[2]);
   }
   // door push bar / handle
   if (ctx.q >= 0.5) {
@@ -291,6 +308,7 @@ function buildShop(kit, ctx, o, signInfo, type) {
     addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015);
   }
   // awning
+  if (o.awning) yield;
   if (o.awning) buildAwning(kit, ctx, o, r, signInfo && signInfo.mode === 'valance' ? signInfo.design : null);
 }
 
@@ -373,14 +391,17 @@ function buildUpperAwning(kit, ctx, o) {
 function buildDoor(kit, ctx, o) {
   const plan = ctx.plan;
   const r = RNG.from(o.id, 'door');
-  const L = doorLayout(o, r);
+  // the entrances of one building share their joinery (one design per building)
+  const L = doorLayout(o, RNG.from(plan.seed, 'doorDesign'));
+  const T = doorTpls(`${plan.seed}`, o, L, ctx.q);
   const m = openingMatrix(ctx.frame, o, new THREE.Matrix4());
   const dc = lin(DOOR_COLORS[L.color]);
   const k = 0.9 + r.next() * 0.15;
-  kit.get('door').add(doorTpl(o, L, ctx.q), m, dc[0] * k, dc[1] * k, dc[2] * k);
-  kit.get('glass').add(doorGlassTpl(o, L, ctx.q), m, 1, 1, 1,
+  kit.get('door').add(T.door, m, dc[0] * k, dc[1] * k, dc[2] * k);
+  kit.get('glass').add(T.glass, m, 1, 1, 1,
     glassAttrs(ctx, o, { W: 2.6, H: 3.4, D: 3.5, roomY0: o.y, seed: r.next(), drape: 0, kind: 2, zRef: -0.015, lit: Math.min(o.lit ?? 0.5, 0.35) }));
-  const metal = doorMetalTpl(o, L, ctx.q);
+  addSpill(kit, o, m, Math.min(o.lit ?? 0.5, 0.35), 2);
+  const metal = T.metal;
   if (metal.grille) kit.get('metal').add(metal.grille, m, ...BLACK_IRON);
   const brass = L.color !== 'black' && r.chance(0.7);
   if (metal.handles) kit.get('hardware').add(metal.handles, m, ...(brass ? BRASS : BLACK_IRON));
@@ -430,7 +451,7 @@ export function* buildFront(kit, ctx) {
       buildWindow(kit, ctx, o);
       if (hotel && o.kind === 'window' && !o.shutters && !o.ac && o.floor >= 1 && o.floor <= 2) buildUpperAwning(kit, ctx, o);
     }
-    else if (o.kind === 'shop') buildShop(kit, ctx, o, signs.byOpening.get(o.id), shopTypes.get(o.id));
+    else if (o.kind === 'shop') yield* buildShop(kit, ctx, o, signs.byOpening.get(o.id), shopTypes.get(o.id));
     else if (o.kind === 'door') buildDoor(kit, ctx, o);
     yield;
   }

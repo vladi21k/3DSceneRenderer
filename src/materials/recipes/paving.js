@@ -43,7 +43,7 @@ void surface(vec2 m, inout Surf s) {
 // with just an eased arris; the head joints between the setts of a course are 3-4 mm,
 // dark and chamfered, so they read as short dashes. Lippage between setts, worn tops.
 export const paving = {
-  name: 'paving', flat: [0.29, 0.295, 0.305, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
+  name: 'paving', flat: [0.285, 0.292, 0.308, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
   joint: 0.0018,
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.04 },
@@ -75,7 +75,7 @@ void surface(vec2 m, inout Surf s) {
   float hJ = head ? -0.006 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0012 : -0.0012;
   float st = min(sH, sB);
   s.height = mix(hJ, max(hFace, hJ), st);
-  vec3 g = granite(m, vec3(0.3, 0.305, 0.315));
+  vec3 g = granite(m, vec3(0.288, 0.298, 0.32));
   g *= mix(0.9, 1.0, tH);                         // a little grime in the chamfers
   g *= 1.0 - 0.12 * chip;
   vec3 joint = head ? g * 0.35 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : g * vec3(0.86, 0.85, 0.83);

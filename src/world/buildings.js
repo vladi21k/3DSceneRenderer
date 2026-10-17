@@ -7,6 +7,7 @@ import { Builder } from './buildings/mesh.js';
 import { lotSteps, coarseLot, DETAIL } from './buildings/shell.js';
 import { grimeStone, litGlass } from './buildings/grime.js';
 import { rowLayout } from './buildings/coursing.js';
+import { makeSlab, slabSteps } from './buildings/skyline.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -23,12 +24,12 @@ import { rowLayout } from './buildings/coursing.js';
 
 const MATERIAL = {
   ashlar: 'stone.ashlar', smooth: 'stone.smooth', rough: 'stone.rough', plaster: 'plaster',
-  tile: 'roof.tile', metal: 'metal.galvanized', glass: 'glass.window', frame: 'paint.frame',
+  tile: 'roof.tile', metal: 'metal.galvanized', glass: 'glass.window', frame: 'paint.frame', membrane: 'roof.membrane',
 };
 const NO_SHADOW = new Set(['glass', 'frame']);   // joinery inside the reveals
 let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
 const BASE_MS = 1.5;               // per-frame generation budget when nothing is urgent
-const MAX_MS = 5;                  // ... when a chunk is about to be (or already is) requested
+const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
 const LOOK_FAR = 110;              // far detail is prepared up to this far beyond the view
 
@@ -38,8 +39,10 @@ const swaps = new Map();           // job -> group showing a coarse stand-in unt
 const ends = new Map();            // lotId -> [end0, end1] (lazy)
 let endIndex = null;               // spatial hash of facade end points
 const backdrops = new Map();       // chunk index -> pseudo-lots closing the far end of side streets
+const skyline = new Map();         // chunk index -> taller blocks well behind the frontage
 const cost = [0.4, 0.15];          // running generation cost by detail level (ms per metre of route)
 let stepAvg = 0.25;                // running cost of one generation step (ms)
+let finishAvg = 0.3;               // running cost of closing a finished job (bounds, buffers)
 
 const buildings = {
   name: 'buildings',
@@ -62,11 +65,17 @@ const buildings = {
       };
     }
     planBackdrops(app);
+    planSkyline(app);
     indexEnds(app.layout);
     // everything the first frames need, before the streamer primes
-    const around = [app.startS];
+    const around = [app.startS, app.startS - CHUNK_LEN / 2];   // the cab may start a little behind startS
     if (app.params.view) around.push(app.params.view[0]);
-    for (const s of around) this.prefetch(app, s, Infinity);
+    for (const s of around) {
+      this.prefetch(app, s, Infinity);
+      // the camera starts a few metres from startS: chunks near the full-detail switch
+      // get both levels, so the streamer's first build never has to generate inline
+      for (const c of candidates(app, s, true)) runJob(app, jobs.get(jobKey(c.idx, c.lod)) || newJob(app, c.idx, c.lod), Infinity);
+    }
   },
 
   build(chunk, app) {
@@ -82,7 +91,7 @@ const buildings = {
       swaps.set(job, group);
       this.stats.coarse++;
     } else {
-      if (!job.done) { this.stats.inline++; runJob(app, job, Infinity); }
+      if (!job.done) { this.stats.inline++; this.stats.lastInline = [chunk.index, chunk.lod, Math.round(app.cameraS ?? -1), app.frame]; runJob(app, job, Infinity); }
       jobs.delete(k);
       group = new THREE.Group();
       fillGroup(app, group, job.result);
@@ -165,7 +174,7 @@ function lotLod(lot, chunkLod) {
  * Unfinished jobs worth advancing now, sorted by metres of travel until the streamer
  * asks for them (0 = asked for already, or will be any moment).
  */
-function candidates(app, sCam) {
+function candidates(app, sCam, boundary = false) {
   const W = app.world, n = app.layout.nChunks;
   const iEnd = Math.floor((sCam + VIEW_AHEAD) / CHUNK_LEN);
   const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + VIEW_AHEAD + LOOK_FAR) / CHUNK_LEN);
@@ -176,7 +185,11 @@ function candidates(app, sCam) {
     const dist = Math.max(0, Math.abs(mid - sCam) - CHUNK_LEN / 2);
     const c = W && W.chunks ? W.chunks.get(idx) : null;
     let lod, mtn;
-    if (!c) {
+    if (boundary) {
+      // both levels of the chunks within a chunk of the full-detail switch
+      if (Math.abs(dist - LOD0_DIST) > CHUNK_LEN) continue;
+      lod = dist < LOD0_DIST ? 1 : 0; mtn = 0;
+    } else if (!c) {
       // created when it enters the view, at the level for its distance then
       lod = dist < LOD0_DIST ? 0 : 1;
       mtn = i <= iEnd ? 0 : i * CHUNK_LEN - (sCam + VIEW_AHEAD);
@@ -196,7 +209,7 @@ function candidates(app, sCam) {
 
 function newJob(app, idx, lod) {
   const { layout } = app;
-  const lots = [...layout.inChunk('lots', idx), ...layout.inChunk('sideLots', idx), ...(backdrops.get(idx) || [])];
+  const lots = [...layout.inChunk('lots', idx), ...layout.inChunk('sideLots', idx), ...(backdrops.get(idx) || []), ...(skyline.get(idx) || [])];
   const job = { idx, lod, lots, next: 0, iter: null, B: null, ms: 0, done: false, result: null, s: idx * CHUNK_LEN + CHUNK_LEN / 2 };
   jobs.set(jobKey(idx, lod), job);
   buildings.stats.jobs++;
@@ -231,7 +244,10 @@ function runJob(app, job, budgetMs) {
   while (job.iter || job.next < job.lots.length) {
     const el = performance.now() - t0;
     if (el > 0.02 && el + stepAvg > budgetMs) break;
-    if (!job.iter) { const lot = job.lots[job.next++]; job.iter = lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas); }
+    if (!job.iter) {
+      const lot = job.lots[job.next++];
+      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[job.lod]) : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas);
+    }
     const ts = performance.now();
     if (job.iter.next().done) job.iter = null;
     const d = performance.now() - ts;
@@ -241,11 +257,16 @@ function runJob(app, job, budgetMs) {
   }
   job.ms += performance.now() - t0;
   if (job.iter || job.next < job.lots.length) return;
+  // closing the job (bounds over every vertex, handing the buffers over) is a step too
+  const el = performance.now() - t0;
+  if (el > 0.02 && el + finishAvg > budgetMs) return;
+  const tf = performance.now();
   const box = new THREE.Box3();
   for (const sk of B.sinks.values()) if (sk.vc) sk.bounds(box);
   job.result = { parts: B.finish(), box };
   job.B = null;
   job.done = true;
+  finishAvg = finishAvg * 0.9 + (performance.now() - tf) * 0.1;
   cost[job.lod] = cost[job.lod] * 0.8 + (job.ms / CHUNK_LEN) * 0.2;
 }
 
@@ -282,7 +303,7 @@ function swapIn(app, group, res) {
 /** Coarse stand-in for the lots of a job (see shell.coarseLot). */
 function coarseGroup(app, job) {
   const B = new Builder();
-  for (const lot of job.lots) coarseLot(B, lot);
+  for (const lot of job.lots) if (!lot.slab) coarseLot(B, lot);
   const box = new THREE.Box3();
   for (const sk of B.sinks.values()) if (sk.vc) sk.bounds(box);
   return fillGroup(app, new THREE.Group(), { parts: B.finish(), box });
@@ -344,6 +365,58 @@ function planBackdrops(app) {
         u += width;
       }
     }
+  }
+}
+
+// ------------------------------------------------------------------ skyline
+
+/**
+ * Taller blocks 40–110 m behind the frontage, every 150–300 m, on alternating sides
+ * (see buildings/skyline.js). A site is used only when the whole footprint keeps well
+ * clear of the street (anywhere on the loop) and of every side street and its lots.
+ */
+function planSkyline(app) {
+  const { route, layout } = app;
+  const L = route.length, up = new THREE.Vector3(0, 1, 0);
+  const rng = RNG.from('buildings', 'skyline', layout.seed ?? 0);
+  // street centre line samples, and side-street axes (from the mouth to beyond the backdrop)
+  const pts = [];
+  for (let s = 0; s < L; s += 6) { const p = route.toWorld(s, 0, 0); pts.push(p.x, p.z); }
+  const sides = [];
+  for (const c of layout.crossStreets) {
+    for (const side of c.side === 0 ? [-1, 1] : [c.side]) {
+      const dir = route.sample(c.s).right.clone().multiplyScalar(side).applyAxisAngle(up, c.angle || 0);
+      const a = route.toWorld(c.s, side * layout.halfWidth(c.s, side), 0);
+      const len = c.depth + SIDE_LOT_START + 30;
+      sides.push({ ax: a.x, az: a.z, dx: dir.x, dz: dir.z, len, clear: c.width / 2 + 24 });
+    }
+  }
+  const clearOf = (x, z, r) => {
+    for (let i = 0; i < pts.length; i += 2) if ((pts[i] - x) ** 2 + (pts[i + 1] - z) ** 2 < (r + 34) ** 2) return false;
+    for (const q of sides) {
+      const t = Math.max(0, Math.min(q.len, (x - q.ax) * q.dx + (z - q.az) * q.dz));
+      if (Math.hypot(q.ax + q.dx * t - x, q.az + q.dz * t - z) < r + q.clear) return false;
+    }
+    return true;
+  };
+  let side = rng.chance(0.5) ? 1 : -1;
+  for (let s = rng.range(60, 200); s < L - 60; s += rng.range(150, 300), side = rng.chance(0.7) ? -side : side) {
+    const W = rng.range(18, 30), back = rng.range(40, 110), D = 16;
+    const smp = route.sample(s);
+    const hw = layout.halfWidth(s, side);
+    const nDir = smp.right.clone().multiplyScalar(-side);                 // towards the street
+    const uDir = new THREE.Vector3().crossVectors(up, nDir).normalize();
+    const front = route.toWorld(s, side * (hw + back), 0);
+    const cx = front.x - nDir.x * D / 2, cz = front.z - nDir.z * D / 2;
+    if (!clearOf(cx, cz, Math.hypot(W, D) / 2)) continue;
+    const origin = front.clone().addScaledVector(uDir, -W / 2);
+    origin.y = Math.min(origin.y, route.elevation(s));
+    const matrix = new THREE.Matrix4().makeBasis(uDir, up, nDir).setPosition(origin);
+    const frame = { origin, uDir, nDir, up: up.clone(), width: W, ground0: origin.y, ground1: origin.y, floorRef: origin.y, matrix };
+    const sl = makeSlab(`K${Math.round(s)}_${side}`, frame, RNG.from('buildings', 'slab', Math.round(s)));
+    const idx = layout.chunkIndex(s);
+    if (!skyline.has(idx)) skyline.set(idx, []);
+    skyline.get(idx).push(sl);
   }
 }
 

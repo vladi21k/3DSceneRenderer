@@ -1,6 +1,6 @@
 import { archPoint } from '../facadePlan.js';
-import { FACES } from './mesh.js';
-import { trimColor } from './shade.js';
+import { FACES, arcSeg } from './mesh.js';
+import { trimColor, setBlock, hash3 } from './shade.js';
 
 // Masonry around each opening. The opening itself stays empty for the facade infill
 // (frames, glass, shopfronts, doors at w = −recess). Here:
@@ -32,7 +32,7 @@ export function openingMasonry(ctx, face, o) {
   B.rectU(sRev, u1, y0, ys, -R, 0, -1);
   B.rectV(sRev, u0, u1, -R, 0, y0, 1);
   if (!arched) B.rectV(sRev, u0, u1, -R, 0, yt, -1);
-  else soffit(B, sRev, o, -R, 0, q.archSeg);
+  else soffit(B, sRev, o, -R, 0, arcSeg(q, o));
 
   // ---------------------------------------------------------------- dark interior
   const sD = sinks.dark;
@@ -43,10 +43,10 @@ export function openingMasonry(ctx, face, o) {
     B.rectU(sD, u1, y0, ys, -Ri, -R, -1);
     B.rectV(sD, u0, u1, -Ri, -R, y0, 1);
     if (!arched) B.rectV(sD, u0, u1, -Ri, -R, yt, -1);
-    else soffit(B, sD, o, -Ri, -R, Math.max(4, q.archSeg >> 1));
-    backFace(B, sD, o, -Ri, Math.max(4, q.archSeg >> 1));
+    else soffit(B, sD, o, -Ri, -R, Math.max(4, arcSeg(q, o) >> 1));
+    backFace(B, sD, o, -Ri, Math.max(4, arcSeg(q, o) >> 1));
   } else {
-    backFace(B, sD, o, -R - 0.02, Math.max(3, q.archSeg >> 1));
+    backFace(B, sD, o, -R - 0.02, Math.max(3, arcSeg(q, o) >> 1));
   }
   B.flat = [1, 1, 1];
 
@@ -59,9 +59,18 @@ export function openingMasonry(ctx, face, o) {
   const bev = q.bevel ? 0.012 : 0;
 
   // jambs of the surround
+  const seed = ((o.uc * 1000) | 0) + ((o.y * 100) | 0) * 7919 + (fs.seed | 0);
   if (surround) {
-    B.bevelBox(sT, u0 - surround, u0, y0, ys, 0, sp, bev, FACES.ALL & ~FACES.BOTTOM);
-    B.bevelBox(sT, u1, u1 + surround, y0, ys, 0, sp, bev, FACES.ALL & ~FACES.BOTTOM);
+    // each jamb is a few dressed stones (tone, tooling and face plane differ a little)
+    const nj = (ys - y0) > 1.3 && q.lod === 0 ? 2 : 1, hj = (ys - y0) / nj;
+    for (let j = 0; j < nj; j++) {
+      const a = y0 + j * hj + (j ? 0.002 : 0), b = y0 + (j + 1) * hj - (j < nj - 1 ? 0.002 : 0);
+      for (const [p0, p1, side] of [[u0 - surround, u0, 0], [u1, u1 + surround, 1]]) {
+        const h = block(B, seed, j * 2 + side);
+        B.bevelBox(sT, p0, p1, a, b, 0, sp + (h - 0.5) * 0.004, bev, FACES.ALL);
+      }
+    }
+    endBlocks(B);
     // crossettes: the architrave steps out sideways just below the head
     if (orn.ears && isWin && !arched && q.lod === 0) {
       const eh = Math.min(0.22, (ys - y0) * 0.12), ew = 0.08;
@@ -74,13 +83,13 @@ export function openingMasonry(ctx, face, o) {
   if (arched) {
     const T = ground ? orn.shopRing : (surround ? surround * 1.3 : orn.ring);
     const proj = ground ? orn.shopRingP : (surround ? sp : 0.012);
-    voussoirRing(ctx, sT, o, T, proj, orn.keystone || ground, bev);
+    voussoirRing(ctx, sT, o, T, proj, orn.keystone || ground, bev, seed);
   } else {
     const { kind, ext, H } = flatHead(o, orn, surround, ctx.ch);
     const proj = surround ? sp : (ground ? 0.02 : 0.012);
-    if (kind === 'flatArch') flatArch(ctx, sT, o, ext, H, proj, bev);
-    else if (kind === 'hood') { lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone); hood(ctx, sT, o, ext, yt + H); }
-    else lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone && kind !== 'plain');
+    if (kind === 'flatArch') flatArch(ctx, sT, o, ext, H, proj, bev, seed);
+    else if (kind === 'hood') { lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone, seed); hood(ctx, sT, o, ext, yt + H); }
+    else lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone && kind !== 'plain', seed);
   }
 
   // sill
@@ -173,8 +182,60 @@ function backFace(B, s, o, w, n) {
   B.tri(s, c, prev, a);
 }
 
+/** Start a dressed stone: its own tone and texture offset (see shade.setBlock). */
+function block(B, seed, k) {
+  const h = hash3(seed, k, 0x51ed);
+  setBlock(h);
+  B.setUV(1, h * 7.3, 1, h * 5.1);
+  return h;
+}
+function endBlocks(B) { setBlock(-1); B.setUV(); }
+
+const _t0 = {}, _t1 = {};
+/**
+ * One curved ring stone between head parameters ta and tb: intrados on the opening's
+ * curve, extrados `ext` further out, front face at w = proj with a drafted margin
+ * (chamfer `bev`), intrados, extrados and joint faces back to the wall. nSub arc
+ * samples per stone keep it on the curve (the facade infill follows the same curve).
+ */
+function ringStone(B, s, o, ta, tb, ext, proj, nSub, bev) {
+  const I = [], X = [];
+  for (let i = 0; i <= nSub; i++) {
+    const t = ta + ((tb - ta) * i) / nSub;
+    archPoint(o, t, _t0, 0); archPoint(o, t, _t1, ext);
+    I.push([_t0.u, _t0.v, _t0.ru, _t0.rv]); X.push([_t1.u, _t1.v, _t1.ru, _t1.rv]);
+  }
+  const wb = bev > 0 ? proj - bev : proj;
+  // front-face points, inset by the margin (radially, and along the curve at the joints)
+  const inset = (P, k, sgn) => {
+    const [u, v, ru, rv] = P[k];
+    let du = ru * bev * sgn, dv = rv * bev * sgn;
+    if (k === 0) { du += rv * bev; dv -= ru * bev; }           // tangent (rv, −ru) points along +t
+    if (k === nSub) { du -= rv * bev; dv += ru * bev; }
+    return [u + du, v + dv, proj];
+  };
+  const at = (P, k, w) => [P[k][0], P[k][1], w];
+  for (let k = 0; k < nSub; k++) {
+    // front
+    B.quadOut(s, inset(I, k, 1), inset(I, k + 1, 1), inset(X, k + 1, -1), inset(X, k, -1), 0, 0, 1);
+    // intrados (faces into the opening) and extrados (faces away from it)
+    B.quadOut(s, at(I, k, 0), at(I, k + 1, 0), at(I, k + 1, wb), at(I, k, wb), -I[k][2], -I[k][3], 0);
+    B.quadOut(s, at(X, k, 0), at(X, k + 1, 0), at(X, k + 1, wb), at(X, k, wb), X[k][2], X[k][3], 0);
+    if (bev > 0) {
+      B.quadOut(s, at(I, k, wb), at(I, k + 1, wb), inset(I, k + 1, 1), inset(I, k, 1), -I[k][2], -I[k][3], 1);
+      B.quadOut(s, at(X, k, wb), at(X, k + 1, wb), inset(X, k + 1, -1), inset(X, k, -1), X[k][2], X[k][3], 1);
+    }
+  }
+  // joint faces at both ends (normals along ∓ the curve)
+  for (const [k, sg] of [[0, -1], [nSub, 1]]) {
+    const tu = I[k][3] * sg, tv = -I[k][2] * sg;
+    B.quadOut(s, at(I, k, 0), at(X, k, 0), at(X, k, wb), at(I, k, wb), tu, tv, 0);
+    if (bev > 0) B.quadOut(s, at(I, k, wb), at(X, k, wb), inset(X, k, -1), inset(I, k, 1), tu, tv, 1);
+  }
+}
+
 /** Ring of voussoirs around an arched head; odd count with a keystone at the crown. */
-function voussoirRing(ctx, s, o, T, proj, keystone, bev) {
+function voussoirRing(ctx, s, o, T, proj, keystone, bev, seed) {
   const { B, q } = ctx;
   // arc length estimate
   let L = 0, pu = 0, pv = 0;
@@ -186,44 +247,30 @@ function voussoirRing(ctx, s, o, T, proj, keystone, bev) {
   const shares = n + 0.5;
   const tk0 = mid / shares, tk1 = (mid + 1.5) / shares;
   if (!q.voussoirs) {
-    // far detail: the ring as two smooth bands either side of the same keystone as near
-    const hasKey = keystone;
-    const bands = hasKey ? [[0, tk0], [tk1, 1]] : [[0, 1]];
-    for (const [a, b] of bands) {
-      const m = Math.max(2, Math.round(q.archSeg * (b - a)));
-      for (let k = 0; k < m; k++) {
-        const ta = a + ((b - a) * k) / m, tb = a + ((b - a) * (k + 1)) / m;
-        archPoint(o, ta, _p); archPoint(o, tb, _q); archPoint(o, tb, _r, T); archPoint(o, ta, _s, T);
-        B.prism(s, [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v], 0, proj, 0, k === 0 || k === m - 1);
-      }
-    }
-    if (hasKey) {
-      archPoint(o, tk0, _p); archPoint(o, tk1, _q); archPoint(o, tk1, _r, T + 0.08); archPoint(o, tk0, _s, T + 0.08);
-      B.prism(s, [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v], 0, proj + 0.03, 0, true);
-    }
+    // far detail: the ring as two smooth curved bands either side of the same keystone as near
+    const bands = keystone ? [[0, tk0], [tk1, 1]] : [[0, 1]];
+    for (const [a, b] of bands) ringStone(B, s, o, a, b, T, proj, Math.max(2, Math.round(q.archSeg * (b - a))), 0);
+    if (keystone) ringStone(B, s, o, tk0, tk1, T + 0.08, proj + 0.03, 2, 0);
     return;
   }
   const joint = 0.006 / Math.max(0.5, L);
+  const mb = bev ? Math.max(bev, 0.02) : 0;   // drafted margin of ring stones
   let t = 0;
   for (let k = 0; k < n; k++) {
     const isKey = keystone && k === mid;
     const dt = (k === mid ? 1.5 : 1) / shares;
     const ta = t + (k ? joint : 0), tb = t + dt - (k < n - 1 ? joint : 0);
     t += dt;
-    const ext = isKey ? T + 0.08 : T;
-    archPoint(o, ta, _p); archPoint(o, tb, _q); archPoint(o, tb, _r, ext); archPoint(o, ta, _s, ext);
-    const pts = [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v];
-    if (isKey) {
-      // keystone: tapered, projecting a little further, with dressed edges
-      B.prism(s, pts, 0, proj + 0.03, bev ? bev * 1.2 : 0, true);
-    } else {
-      B.prism(s, pts, 0, proj, 0, true);
-    }
+    const h = block(B, seed, 100 + k);
+    // keystone: projecting a little further and rising above the ring
+    if (isKey) ringStone(B, s, o, ta, tb, T + 0.08, proj + 0.03, 2, mb);
+    else ringStone(B, s, o, ta, tb, T, proj + (h - 0.5) * 0.005, 2, mb);
   }
+  endBlocks(B);
 }
 
 /** Flat (jack) arch: voussoirs fanning from a point below the head, keystone in the middle. */
-function flatArch(ctx, s, o, ext, H, proj, bev) {
+function flatArch(ctx, s, o, ext, H, proj, bev, seed) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext, yt = o.y + o.h;
   const cy = yt - o.w * 1.1; // fan centre
@@ -242,20 +289,25 @@ function flatArch(ctx, s, o, ext, H, proj, bev) {
     // the outermost voussoirs are cut vertical at the ends of the head
     if (k === 0) pts[6] = Math.max(pts[6], u0 - 0.06);
     if (k === n - 1) pts[4] = Math.min(pts[4], u1 + 0.06);
-    B.prism(s, pts, 0, key ? proj + 0.025 : proj, key && bev ? bev : 0, true);
+    const h = block(B, seed, 200 + k);
+    B.prism(s, pts, 0, key ? proj + 0.025 : proj + (h - 0.5) * 0.004, key && bev ? bev : 0, true);
   }
+  endBlocks(B);
 }
 
 /** Plain lintel block across the head, optional raised keystone. */
-function lintel(ctx, s, o, ext, H, proj, bev, keystone) {
+function lintel(ctx, s, o, ext, H, proj, bev, keystone, seed) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext, yt = o.y + o.h;
+  block(B, seed, 300);
   B.bevelBox(s, u0, u1, yt, yt + H, 0, proj + 0.004, bev, FACES.ALL & ~FACES.BOTTOM);
+  block(B, seed, 301);
   B.rectV(s, o.uc - o.w / 2, o.uc + o.w / 2, 0, proj + 0.004, yt, -1);
   if (keystone) {
     const kw = Math.min(0.32, o.w * 0.22);
     B.prism(s, [o.uc - kw * 0.4, yt - 0.04, o.uc + kw * 0.4, yt - 0.04, o.uc + kw * 0.55, yt + H + 0.05, o.uc - kw * 0.55, yt + H + 0.05], 0, proj + 0.03, bev, true);
   }
+  endBlocks(B);
 }
 
 /** Small cornice hood over a head (window or door). */
@@ -270,10 +322,28 @@ const HOOD = [[0, 0], [0.04, 0], [0.05, 0.03], [0.09, 0.07], [0.13, 0.09], [0.13
 function doorHood(ctx, s, o, surround, ring) {
   const { B } = ctx;
   const yt = ring ? o.y + o.h + ring + 0.14 : o.y + o.h + 0.38;
-  const cw = 0.16, off = ring ? ring + 0.06 : (surround || 0.12) + 0.08;
+  const cw = 0.24, off = ring ? ring + 0.06 : (surround || 0.12) + 0.08;
   const ua = o.uc - o.w / 2 - off - cw, ub = o.uc + o.w / 2 + off;
-  for (const cu of [ua, ub]) B.sweep(s, CONSOLE, [[cu, 0], [cu + cw, 0]], yt - 0.62, [true, true]);
+  for (const cu of [ua, ub]) {
+    // carved scroll console: the full S profile on the outside, a sunk side panel inside
+    B.sweep(s, CONSOLE, [[cu, 0], [cu + 0.035, 0]], yt - CONSOLE_H, [true, true]);
+    B.sweep(s, CONSOLE_IN, [[cu + 0.035, 0], [cu + cw - 0.035, 0]], yt - CONSOLE_H, [false, false]);
+    B.sweep(s, CONSOLE, [[cu + cw - 0.035, 0], [cu + cw, 0]], yt - CONSOLE_H, [true, true]);
+  }
   B.extrudeU(s, DOOR_HOOD, ua - 0.08, ub + cw + 0.08, yt, [true, true]);
 }
-const CONSOLE = [[0, 0], [0.06, 0.02], [0.1, 0.12], [0.12, 0.3], [0.2, 0.48], [0.26, 0.56], [0.27, 0.62], [0, 0.62]];
+// S-scroll console profile [out, up], bottom to top: small lower volute, cyma body
+// swelling out, a large upper volute under the hood (0.36 m projection, 0.7 m tall)
+const CONSOLE_H = 0.7;
+const CONSOLE = (() => {
+  const pts = [[0, 0], [0.05, 0.0], [0.085, 0.025], [0.09, 0.06], [0.07, 0.09], [0.075, 0.13]];
+  // cyma body: from the lower volute out to the upper one
+  for (let i = 1; i <= 6; i++) { const t = i / 6; pts.push([0.075 + 0.2 * (t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.8), 0.13 + 0.38 * t]); }
+  // upper volute rolling out under the hood
+  for (let i = 1; i <= 5; i++) { const a = -Math.PI / 2 + (i / 5) * Math.PI * 0.9; pts.push([0.29 + 0.07 * Math.cos(a), 0.58 + 0.07 * Math.sin(a) + 0.03]); }
+  pts.push([0.36, CONSOLE_H - 0.02], [0.35, CONSOLE_H], [0, CONSOLE_H]);
+  return pts;
+})();
+/** The sunk middle of the console: the same profile set back 2 cm. */
+const CONSOLE_IN = CONSOLE.map(([o, v]) => [Math.max(0, o - 0.02), v]);
 const DOOR_HOOD = [[0, 0], [0.24, 0], [0.26, 0.03], [0.3, 0.06], [0.3, 0.17], [0.34, 0.2], [0.36, 0.26], [0.36, 0.3], [0, 0.32]];

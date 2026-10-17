@@ -289,6 +289,14 @@ export class Builder {
     this.quadIdx(s, a, b, c, d);
   }
 
+  /** quadAuto with the winding chosen so the face looks along the hint (nu, nv, nw). */
+  quadOut(s, P0, P1, P2, P3, nu, nv, nw) {
+    const ax = P1[0] - P0[0], ay = P1[1] - P0[1], az = P1[2] - P0[2];
+    const bx = P3[0] - P0[0], by = P3[1] - P0[1], bz = P3[2] - P0[2];
+    const cu = ay * bz - az * by, cv = az * bx - ax * bz, cw = ax * by - ay * bx;
+    if (cu * nu + cv * nv + cw * nw < 0) this.quadAuto(s, P0, P3, P2, P1); else this.quadAuto(s, P0, P1, P2, P3);
+  }
+
   /** Quad from four points with the normal computed from the geometry. */
   quadAuto(s, P0, P1, P2, P3) {
     const ax = P1[0] - P0[0], ay = P1[1] - P0[1], az = P1[2] - P0[2];
@@ -484,6 +492,9 @@ export class Builder {
     return out;
   }
 }
+
+/** Head segments for an opening's arch: finer for wide openings at full detail. */
+export function arcSeg(q, o) { return q.lod ? q.archSeg : o.w > 2 ? 24 : q.archSeg; }
 
 /** Polygon inset by d (convex polygons; flat array CCW). */
 export function insetPolygon(pts, d) {

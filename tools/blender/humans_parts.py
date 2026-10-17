@@ -14,19 +14,23 @@ PART_IDS = {
     'hair_short': 1, 'hair_buzz': 2, 'hair_medium': 3, 'hair_curly': 4, 'hair_balding': 5,
     'hair_long': 6, 'hair_ponytail': 7, 'hair_bun': 8, 'hair_bob': 9, 'hair_pixie': 10, 'scarf': 11,
     'beard_full': 12, 'beard_short': 13, 'cap': 14, 'fedora': 15, 'sunhat': 16,
-    'backpack': 17, 'shoulderbag': 18, 'shopping': 19, 'hair_side': 20, 'hair_receding': 21,
+    'backpack': 17, 'shoulderbag': 18, 'shopping': 19, 'hair_side': 20, 'hair_receding': 21, 'glasses': 22,
 }
+# hat crowns stand this far off the cranium (head-local m); the runtime presses hair under
+# them (material.js) and the build checks the result (humans_build.check_hats)
+HAT_OFFSETS = {'cap': 0.016, 'sunhat': 0.020}
+HAT_BANDS = {'cap': 0.042, 'sunhat': 0.040, 'fedora': 0.036}
 PER_BASE = {
     'male': ['hair_short', 'hair_buzz', 'hair_medium', 'hair_curly', 'hair_balding', 'hair_side', 'hair_receding',
              'beard_full', 'beard_short',
-             'cap', 'fedora', 'sunhat', 'backpack', 'shoulderbag', 'shopping'],
+             'cap', 'fedora', 'sunhat', 'backpack', 'shoulderbag', 'shopping', 'glasses'],
     'female': ['hair_long', 'hair_ponytail', 'hair_bun', 'hair_bob', 'hair_pixie', 'scarf', 'sunhat', 'cap',
-               'backpack', 'shoulderbag', 'shopping'],
+               'backpack', 'shoulderbag', 'shopping', 'glasses'],
     'child': ['hair_short', 'hair_long', 'hair_ponytail', 'hair_bob', 'cap', 'backpack'],
 }
 # triangles per LOD; 0 = the part is dropped at that LOD (too small to matter on screen)
-LOD_TRIS = {'hair': (1400, 200, 50, 16), 'long': (2200, 300, 80, 26), 'beard': (900, 110, 24, 0),
-            'hat': (1200, 150, 40, 16), 'bag': (700, 90, 24, 12)}
+LOD_TRIS = {'hair': (1400, 600, 200, 50, 16), 'long': (2200, 900, 300, 80, 26), 'beard': (900, 320, 110, 24, 0),
+            'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'glasses': (900, 260, 70, 0, 0)}
 
 # cranium of the head sculpt (humans_body.head_sdf)
 CR_C = np.array([0.0, 0.014, 0.006])
@@ -176,40 +180,49 @@ def beard_part(name):
                   Ellipsoid((0, -0.058, -0.070), (0.034, 0.030, 0.028))], k=0.02)
     full = name == 'beard_full'
 
-    def off(P):
-        down = np.clip((-0.05 - P[:, 1]) / 0.07, 0, 1)
-        base = (0.004 + 0.012 * down) if full else (0.0028 + 0.002 * down)
-        return base + (0.0015 if full else 0.0004) * clump_noise(P, 21, 160.0)
-    shell = Fn(lambda P: face.eval(P) - off(P), face.lo - 0.05, face.hi + 0.05)
-    if full:
-        chin = Union([RoundCone((0, -0.098, -0.066), (0, -0.150, -0.060), 0.030, 0.026),
-                      RoundCone((0, -0.150, -0.060), (0, -0.190, -0.050), 0.026, 0.016)], k=0.02)
-        shell = Union([shell, chin], k=0.025)
-
     # region: cheek line from the sideburns down to the corners of the moustache
     def reg(P):
         th = _theta(P)
         top = np.interp(th, [0, 0.30, 0.55, 0.95, 1.30, 1.55], [-0.041, -0.044, -0.040, -0.024, -0.008, 0.012])
         return np.maximum(P[:, 1] - top, (th - 1.58) * 0.05)
+
+    def taper(P):
+        # the beard thins out over the last ~6 mm to its (ragged) edge: no hard ledge on the cheek
+        return sstep(0.0, 0.006, -reg(P) + 0.0025 * clump_noise(P, 31, 260.0))
+
+    def off(P):
+        down = np.clip((-0.05 - P[:, 1]) / 0.07, 0, 1)
+        base = (0.004 + 0.011 * down) if full else (0.0028 + 0.002 * down)
+        return 0.0006 + (base + (0.0016 if full else 0.0005) * clump_noise(P, 21, 160.0)) * taper(P)
+    shell = Fn(lambda P: face.eval(P) - off(P), face.lo - 0.05, face.hi + 0.05)
+    if full:
+        chin = Union([RoundCone((0, -0.098, -0.066), (0, -0.132, -0.062), 0.028, 0.022),
+                      RoundCone((0, -0.132, -0.062), (0, -0.150, -0.056), 0.022, 0.012)], k=0.02)
+        shell = Union([shell, chin], k=0.022)
     b = Intersect(shell, Fn(reg, (-0.2, -0.3, -0.2), (0.2, 0.2, 0.2)), k=0.003)
     mouth = Ellipsoid((0, -0.0605, -0.096), (0.020, 0.0055, 0.03))
     b = Subtract(b, mouth, k=0.003)
-    return _tag(b, REGION['beard'], H)
+    b = _tag(b, REGION['beard'], H)
+    b.edge = taper           # per-vertex edge fade for the shader (aux0)
+    return b
 
 
 def hat_part(name):
     H = {'head': 1}
     R = REGION['hat']
     if name == 'cap':
-        crown = Fn(lambda P: Ellipsoid(CR_C, CR_R).eval(P) - 0.010, CR_C - CR_R - 0.03, CR_C + CR_R + 0.03)
-        band = Fn(lambda P: 0.042 - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2))
+        # crown over the hair, a little taller than the head (a soft six-panel cap)
+        co = HAT_OFFSETS['cap']
+        crown = Fn(lambda P: Ellipsoid(CR_C + np.array([0, 0.004, 0]), CR_R + np.array([0, 0.004, 0])).eval(P) - co,
+                   CR_C - CR_R - 0.04, CR_C + CR_R + 0.04)
+        band = Fn(lambda P: HAT_BANDS['cap'] - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2))
         dome = Intersect(crown, band, k=0.004)
-        brim = RoundBox((0, 0.040, -0.120), (0.060, 0.0025, 0.040), 0.002, R=rot_xyz(-8, 0, 0))
-        brim = Intersect(brim, Ellipsoid((0, 0.04, -0.095), (0.085, 0.05, 0.075)), k=0.003)
+        brim = RoundBox((0, 0.040, -0.126), (0.062, 0.0025, 0.042), 0.002, R=rot_xyz(-8, 0, 0))
+        brim = Intersect(brim, Ellipsoid((0, 0.04, -0.100), (0.088, 0.05, 0.078)), k=0.003)
         n = Union([dome, brim], k=0.006)
     elif name == 'fedora':
-        crown = Loft((0, 0.035, 0.008), (0, 0.155, 0.012), (1, 0, 0),
-                     [(0, 0.083, 0.098, 0, 0), (0.7, 0.078, 0.092, 0, 0), (1.0, 0.060, 0.074, 0, 0)], n=2.0, capr=0.4)
+        crown = Loft((0, 0.035, 0.008), (0, 0.158, 0.012), (1, 0, 0),
+                     [(0, 0.087, 0.104, 0, 0), (0.7, 0.082, 0.097, 0, 0), (1.0, 0.063, 0.078, 0, 0)], n=2.0, capr=0.4)
         dent = Ellipsoid((0, 0.165, 0.01), (0.03, 0.03, 0.065))
         crown = Subtract(crown, dent, k=0.012)
         brim = Fn(lambda P: np.maximum(np.abs(P[:, 1] - 0.038 - 0.020 * (np.abs(P[:, 0]) / 0.16) ** 2) - 0.0035,
@@ -217,14 +230,47 @@ def hat_part(name):
                   (-0.18, 0.0, -0.2), (0.18, 0.09, 0.2))
         n = Union([crown, brim], k=0.008)
     else:  # sunhat
-        crown = Fn(lambda P: Ellipsoid(CR_C, CR_R).eval(P) - 0.016, CR_C - CR_R - 0.03, CR_C + CR_R + 0.03)
-        crown = Intersect(crown, Fn(lambda P: 0.040 - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2)), k=0.004)
+        so = HAT_OFFSETS['sunhat']
+        crown = Fn(lambda P: Ellipsoid(CR_C, CR_R).eval(P) - so, CR_C - CR_R - 0.04, CR_C + CR_R + 0.04)
+        crown = Intersect(crown, Fn(lambda P: HAT_BANDS['sunhat'] - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2)), k=0.004)
         brim = Fn(lambda P: np.maximum(np.abs(P[:, 1] - 0.042 + 0.035 * np.clip(np.hypot(P[:, 0], P[:, 2] - 0.006) - 0.09, 0, 1)) - 0.003,
                                        np.hypot(P[:, 0], P[:, 2] - 0.006) - 0.20),
                   (-0.22, -0.05, -0.22), (0.22, 0.09, 0.22))
         n = Union([crown, brim], k=0.010)
     # solid: the head fills the inside, only the outer surface is ever seen
     return _tag(n, R, H)
+
+
+def glasses_part():
+    """Sunglasses: two slightly wrapped dark lenses in thin rims, a bridge arching over the
+    nose and temples running back over the ears (head-local)."""
+    H = {'head': 1}
+    R = REGION['glasses']
+    lz, ly, lx, a, b = -0.1000, -0.0010, 0.0330, 0.0240, 0.0180
+    lenses, rims = [], []
+    for s in (-1, 1):
+        c = np.array([s * lx, ly, lz + 0.0015])
+        Rr = rot_xyz(0, -s * 9, 0)
+        lenses.append(Ellipsoid(c, (a, b, 0.0011), R=Rr, region=R, bones=H))
+
+        def ring(P, c=c, Rr=Rr):
+            q = (P - c) @ Rr
+            e = (np.sqrt((q[:, 0] / a) ** 2 + (q[:, 1] / b) ** 2) - 1.0) * b
+            return np.sqrt(e * e + q[:, 2] ** 2) - 0.00135
+        rims.append(Fn(ring, c - 0.04, c + 0.04, region=R, bones=H))
+    bridge = RoundCone((-0.0095, 0.0045, lz + 0.0005), (0.0095, 0.0045, lz + 0.0005), 0.0013, 0.0013, region=R, bones=H)
+    bridge = Union([bridge, Ellipsoid((0, 0.0062, lz - 0.0012), (0.006, 0.0018, 0.0016), region=R, bones=H)], k=0.002)
+    temples = []
+    for s in (-1, 1):
+        pts = [(s * 0.0570, 0.0050, lz + 0.0035), (s * 0.0715, 0.0045, -0.075), (s * 0.0770, 0.0030, -0.035),
+               (s * 0.0790, 0.0000, 0.004), (s * 0.0770, -0.0080, 0.016)]
+        for p0, p1 in zip(pts[:-1], pts[1:]):
+            temples.append(RoundCone(p0, p1, 0.0012, 0.0012, region=R, bones=H))
+    frame = Union(rims + [bridge] + temples, k=0.0012)
+    n = Union([frame] + lenses, k=0.0008)
+    n.lens = Union(lenses)
+    n.frame = frame
+    return n
 
 
 def bag_part(name, T):
@@ -245,8 +291,12 @@ def bag_part(name, T):
     if name == 'shoulderbag':
         hipY = T['hip'][1]
         c = (-0.205 * sx, hipY + 0.04 * sy, 0.01 * sz)
-        b = RoundBox(c, (0.028 * sx, 0.095 * sy, 0.125 * sz), 0.018, R=rot_xyz(0, 0, -6),
+        # soft leather bag: well rounded, sagging a little at the bottom
+        b = RoundBox(c, (0.020 * sx, 0.085 * sy, 0.112 * sz), 0.026, R=rot_xyz(0, 0, -6),
                      region=R, bones={'pelvis': 0.7, 'spine1': 0.3})
+        sag = Ellipsoid((c[0], c[1] - 0.07 * sy, c[2]), (0.040 * sx, 0.04 * sy, 0.13 * sz),
+                        region=R, bones={'pelvis': 0.7, 'spine1': 0.3})
+        b = Union([b, sag], k=0.02)
         flap = RoundBox((c[0] - 0.026 * sx, c[1] + 0.045 * sy, c[2]), (0.006, 0.05 * sy, 0.12 * sz), 0.006,
                         region=R, bones={'pelvis': 0.7, 'spine1': 0.3})
         return Union([b, flap], k=0.006)
@@ -284,6 +334,10 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
             node, group, hres = Xform(beard_part(name), hs, hc), 'beard', res * 0.7
         elif name in ('cap', 'fedora', 'sunhat'):
             node, group, hres = Xform(hat_part(name), hs, hc), 'hat', res * 0.7
+        elif name == 'glasses':
+            g = glasses_part()
+            node, group, hres = Xform(g, hs, hc), 'glasses', 0.00045
+            lens_n, frame_n = Xform(g.lens, hs, hc), Xform(g.frame, hs, hc)
         else:
             node, group, hres = bag_part(name, T), 'bag', res
         lo, hi = node.lo - 0.01, node.hi + 0.01
@@ -297,12 +351,20 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
             if not targets[li]:
                 lod_attrs.append(None)
                 continue
-            a = attr_fn(node, body, Vl, Tl)
+            a = attr_fn(node, body, Vl, Tl, head=group != 'bag')
             if name in ('cap', 'fedora', 'sunhat'):
                 # hat band (dark ribbon above the brim) for the shader
                 y = (Vl[:, 1] - hc[1]) / hs
                 band = ((y > 0.042) & (y < 0.062)) if name == 'fedora' else np.zeros(len(Vl), bool)
                 a['aux'] = np.stack([np.zeros(len(Vl)), band.astype(float)], 1)
+            elif name == 'glasses':
+                P32 = a['P'].astype(np.float32)
+                lens = lens_n.eval(P32) < frame_n.eval(P32) - 0.0002
+                a['aux'] = np.stack([lens.astype(float), np.zeros(len(Vl))], 1)
+            elif name.startswith('beard'):
+                # edge fade (0 at the beard's edge) in head-local coordinates
+                ql = ((a['P'] - hc) / hs).astype(np.float32)
+                a['aux'] = np.stack([np.clip(node.child.edge(ql), 0, 1), np.zeros(len(Vl))], 1)
             lod_attrs.append((a, Tl))
         out.append({'id': PART_IDS[name], 'name': name, 'kind': group, 'lods': lod_attrs})
     return out

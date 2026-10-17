@@ -103,7 +103,8 @@ export class Rig {
       const axis = new THREE.Vector3().crossVectors(du, new THREE.Vector3(0, 0, -1)).normalize();
       const ha = df.clone().add(new THREE.Vector3(0, 0, -0.05)).normalize();
       const pn = new THREE.Vector3().crossVectors(ha, new THREE.Vector3(0, 0, 1)).multiplyScalar(this.side[s]).normalize();
-      this.elbow[s] = { axis, rest: Math.acos(Math.min(1, du.dot(df))) / DEG, du, df, pn };
+      const wd = new THREE.Vector3().crossVectors(ha, pn).normalize();   // wrist flexion axis (fingers -> palm)
+      this.elbow[s] = { axis, rest: Math.acos(Math.min(1, du.dot(df))) / DEG, du, df, pn, wd };
     }
   }
 
@@ -185,6 +186,7 @@ export class Rig {
     q[B['fore' + s]].copy(matchFrames(E.df, E.pn, dF, A.ik.palm.clone().applyQuaternion(cq)));
     p[B['hand' + s]].copy(ik.end);
     q[B['hand' + s]].copy(q[B['fore' + s]]).multiply(A.handQ || new THREE.Quaternion());
+    if (A.ik.flex) q[B['hand' + s]].multiply(qAxis(E.wd, A.ik.flex));
   }
 
   /** Skin matrices (12 floats per bone) for a solved pose. */
@@ -391,22 +393,22 @@ export class Rig {
       A.twist = -10;
     }
     if (variant === 1) {
-      // looking at a phone held in the right hand, left hand loose
-      const A = P.arm.R;
-      A.flex = 14; A.abd = 4; A.elbow = 96; A.twist = -62;
-      A.handQ = qEuler(-20, 0, 15);
+      // looking at a phone held in the right hand in front of the chest, palm (and screen)
+      // turned up towards the face; left hand loose
+      const k = this.H / 1.76, shY = this.rest[B.armR].y, shX = this.rest[B.armR].x;
+      P.arm.R.ik = { target: new THREE.Vector3(shX * 0.32, shY - 0.27 * k, -0.27 * k),
+        pole: new THREE.Vector3(0.8, -0.5, 0.3), palm: new THREE.Vector3(-0.3, 0.75, 0.6) };
+      P.arm.R.handQ = qEuler(0, 0, 0);
       P.arm.L.elbow = 20;
     } else if (variant === 2) {
       // arms folded across the chest: the right forearm in front, its hand tucked under the
       // left upper arm; the left forearm behind it with the hand resting on the right biceps
       const k = this.H / 1.76, shY = this.rest[B.armR].y, shX = this.rest[B.armR].x;
       const br = 0.004 * Math.sin(2 * Math.PI * t * 5);
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.70, shY - 0.235 * k + br, -0.155 * k),
-        pole: new THREE.Vector3(0.6, -0.7, 0.35), palm: new THREE.Vector3(0.0, -0.25, 1) };
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.200 * k + br, -0.120 * k),
-        pole: new THREE.Vector3(-0.6, -0.7, 0.35), palm: new THREE.Vector3(0.3, -0.2, 1) };
-      P.arm.R.handQ = qEuler(0, 0, -10);
-      P.arm.L.handQ = qEuler(0, 0, 20);
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.62, shY - 0.245 * k + br, -0.175 * k),
+        pole: new THREE.Vector3(1, -0.3, 0.5), palm: new THREE.Vector3(0.0, -0.3, 1), flex: 55 };
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.74, shY - 0.175 * k + br, -0.135 * k),
+        pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(0.0, -0.2, 1), flex: 40 };
     } else if (variant === 3) {
       // hands in the front pockets
       for (const s of ['L', 'R']) {

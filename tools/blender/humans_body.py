@@ -7,10 +7,11 @@ its right side is +X ("R" bones), left side -X ("L" bones). Rest pose: arms abdu
 ~20 degrees with slightly bent elbows, legs slightly apart.
 
 `build_body(kind, build)` returns (sdf_node, skeleton, info). `build` > 0 makes the heavy
-variant used to derive the per-vertex "build" morph.
+variant used to derive the per-vertex "build" morph; `belly` and `face_var` make the targets
+of the scalar shape morphs (a belly; long / broad / older faces).
 """
 import numpy as np
-from humans_sdf import (Ellipsoid, RoundCone, Loft, RoundBox, Union, Subtract, Intersect, HalfSpace,
+from humans_sdf import (Ellipsoid, RoundCone, Loft, RoundBox, Union, Subtract, Intersect, HalfSpace, Fn,
                         Xform, normalize, rot_xyz, v3)
 
 BONES = ['root', 'pelvis', 'spine1', 'spine2', 'neck', 'head',
@@ -24,7 +25,7 @@ PARENT = {'root': None, 'pelvis': 'root', 'spine1': 'pelvis', 'spine2': 'spine1'
 
 REGION = {'torso': 1, 'neck': 2, 'head': 3, 'uarm': 4, 'farm': 5, 'hand': 6, 'thigh': 7, 'shin': 8,
           'foot': 9, 'eye': 10, 'hair': 11, 'beard': 12, 'hat': 13, 'bag': 14, 'skirt': 15, 'ear': 16,
-          'lips': 17, 'nose': 18, 'butt': 19, 'breast': 20}
+          'lips': 17, 'nose': 18, 'butt': 19, 'breast': 20, 'phone': 21, 'glasses': 22}
 
 
 def sstep(a, b, x):
@@ -124,45 +125,89 @@ TEMPLATES = {'male': MALE, 'female': FEMALE, 'child': child_template()}
 
 # ----------------------------------------------------------------------------- pieces
 
-def head_sdf(face, build=0.0):
+def head_sdf(face, build=0.0, var=None):
     """Head in local coordinates (origin at eye level on the mid plane, facing -Z).
 
     Built like a sculpt: cranium + a wide shallow facial mask, then jaw, chin, cheekbones,
-    brow, muzzle (maxilla), nose, lips, ears. The eyeballs sit flush under the brow in
-    shallow sockets; eyelids / iris / lash line are painted by the runtime shader."""
+    brow, muzzle (maxilla), nose, lips, ears. The eyeballs sit under the brow in shallow
+    sockets, framed by thin upper and lower lids (the lid opening matches the one the
+    runtime shader paints iris / lash line into). `var` weights the face variants:
+    'narrow' (long, narrow face), 'broad' (wide, round face), 'old' (sagging cheeks, jowls,
+    nasolabial folds, eye bags); the cranium never changes, so hair and hats still fit."""
+    var = var or {}
+    nar, brd, old = var.get('narrow', 0.0), var.get('broad', 0.0), var.get('old', 0.0)
     fem = face == 'female'
     kid = face == 'child'
-    jaw = 0.86 if fem else (0.80 if kid else 1.0)
-    full = build * 0.006
+    jaw = (0.86 if fem else (0.80 if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
+    full = build * 0.006 + 0.003 * brd
+    fw = 1 - 0.07 * nar + 0.07 * brd          # face width
+    chin_dy = -0.010 * nar + 0.005 * brd       # longer / shorter lower face
     H = {'head': 1}
     R = REGION['head']
     cr = Ellipsoid((0, 0.014, 0.006), (0.0745, 0.096, 0.098) if not kid else (0.077, 0.099, 0.101), region=R, bones=H)
-    mask = Ellipsoid((0, -0.022, -0.044), (0.064 + full, 0.083, 0.051), region=R, bones=H)
+    mask = Ellipsoid((0, -0.022 + chin_dy * 0.4, -0.044), (0.064 * fw + full, 0.083 - chin_dy * 0.4, 0.051), region=R, bones=H)
     jw = []
     for s in (-1, 1):
-        gon = (s * (0.052 * jaw + 0.004 + full), -0.068 + (1 - jaw) * 0.01, 0.004)
-        jw.append(RoundCone((s * (0.057 + full), -0.012, 0.012), gon, 0.014 + full, 0.013 + full, region=R, bones=H))
-        jw.append(RoundCone(gon, (s * 0.022 * (jaw + 0.1), -0.099 + (1 - jaw) * 0.01, -0.066), 0.013 + full, 0.012,
+        gon = (s * (0.052 * jaw + 0.004 + full), -0.068 + (1 - jaw) * 0.01 + chin_dy * 0.5 - 0.006 * old, 0.004)
+        jw.append(RoundCone((s * (0.057 * fw + full), -0.012, 0.012), gon, 0.014 + full, 0.013 + full, region=R, bones=H))
+        jw.append(RoundCone(gon, (s * 0.022 * (jaw + 0.1), -0.099 + (1 - jaw) * 0.01 + chin_dy, -0.066), 0.013 + full, 0.012,
                             region=R, bones=H))
-    chin = Ellipsoid((0, -0.097 + (1 - jaw) * 0.01, -0.0745), (0.019 * jaw + 0.004, 0.018, 0.020), region=R, bones=H)
-    cheeks = [Ellipsoid((s * 0.047, -0.016, -0.060), (0.021, 0.015 + full, 0.022 + full), region=R, bones=H)
+    chin = Ellipsoid((0, -0.097 + (1 - jaw) * 0.01 + chin_dy, -0.0745), (0.019 * jaw + 0.004, 0.018, 0.020), region=R, bones=H)
+    cheeks = [Ellipsoid((s * 0.046 * fw, -0.016 - 0.009 * old, -0.058), (0.020, 0.015 + full, 0.021 + full), region=R, bones=H)
               for s in (-1, 1)]
-    muzzle = Ellipsoid((0, -0.058, -0.070), (0.034 + full * 0.5, 0.030, 0.028), region=R, bones=H)
+    muzzle = Ellipsoid((0, -0.058, -0.070), (0.034 * fw + full * 0.5, 0.030, 0.028), region=R, bones=H)
     bh = 0.0 if (fem or kid) else 0.002
     brow = Ellipsoid((0, 0.025, -0.074 - bh), (0.054, 0.0165, 0.0165 + bh), region=R, bones=H)
-    skull = Union([cr, mask] + jw + [chin] + cheeks + [muzzle], k=0.022)
+    # zygomatic arches and temples bridge the cranium and the face (no crease in front of the ears)
+    zyg = [Ellipsoid((s * 0.059 * fw, -0.010, -0.024), (0.0135, 0.011, 0.030), region=R, bones=H) for s in (-1, 1)]
+    tmp = [Ellipsoid((s * 0.060, 0.022, -0.036), (0.012, 0.026, 0.030), region=R, bones=H) for s in (-1, 1)]
+    parts = [cr, mask] + jw + [chin] + cheeks + [muzzle] + zyg + tmp
+    if old > 0:
+        # jowls just below the mouth corners along the jaw line
+        parts += [Ellipsoid((s * 0.040, -0.083, -0.052), (0.014, 0.012, 0.013 * old), region=R, bones=H) for s in (-1, 1)]
+    skull = Union(parts, k=0.024)
     skull = Union([skull, brow], k=0.024)
+    if old > 0:
+        # nasolabial folds from the nose wings down past the mouth corners, slightly hollow temples
+        folds = Union([RoundCone((s * 0.017, -0.036, -0.089), (s * 0.029, -0.068, -0.079), 0.0022 * old, 0.0016 * old)
+                       for s in (-1, 1)])
+        skull = Subtract(skull, folds, k=0.004)
+        temples = Union([Ellipsoid((s * 0.074, 0.03, -0.045), (0.006, 0.016, 0.014)) for s in (-1, 1)])
+        skull = Subtract(skull, temples, k=0.01 * old + 1e-4)
     ez = -0.0745
-    sockets = Union([Ellipsoid((s * 0.0320, 0.002, ez - 0.0185), (0.0175, 0.0125, 0.0120)) for s in (-1, 1)])
-    skull = Subtract(skull, sockets, k=0.009)
-    eyes = [Ellipsoid((s * 0.0320, 0.0, ez), (0.0118, 0.0118, 0.0118), region=REGION['eye'], bones=H) for s in (-1, 1)]
-    nsc = 0.9 if fem else (0.78 if kid else 1.0)
+    er = 0.0118
+    # shallow sockets: the eye sits ~5 mm behind the brow, the hollow does not swallow it
+    sockets = Union([Ellipsoid((s * 0.0320, 0.001, ez - 0.0125), (0.0155, 0.011, 0.009)) for s in (-1, 1)])
+    skull = Subtract(skull, sockets, k=0.010)
+    eyes = [Ellipsoid((s * 0.0320, 0.0, ez), (er, er, er), region=REGION['eye'], bones=H) for s in (-1, 1)]
+    # lids: shells over the eyeball outside the almond opening (upper lid thicker), so the eye
+    # reads as an object set in the face rather than a painted socket
+    lids = []
+    for s in (-1, 1):
+        cx = s * 0.0320
+
+        def up(P, cx=cx):
+            dx = P[:, 0] - cx
+            return 0.0043 - 9.0 * dx * dx - P[:, 1]
+
+        def lo(P, cx=cx):
+            dx = P[:, 0] - cx
+            return P[:, 1] - (-0.0036 + 7.0 * dx * dx)
+        box = ((cx - 0.02, -0.02, ez - 0.02), (cx + 0.02, 0.02, ez + 0.01))
+        upper = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0019, er + 0.0019, er + 0.0019)), Fn(up, *box), k=0.0008)
+        lower = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0011, er + 0.0011, er + 0.0011)), Fn(lo, *box), k=0.0008)
+        lids += [upper, lower]
+        if old > 0:
+            lids.append(Ellipsoid((cx, -0.0135, ez - 0.0085), (0.011, 0.0035, 0.0035 * old + 1e-4)))   # eye bags
+    for l in lids:
+        l.region, l.bones = R, H
+    nsc = (0.9 if fem else (0.78 if kid else 1.0)) * (1 + 0.08 * nar - 0.04 * brd)
     N = REGION['nose']
     nose = Union([
         Loft((0, 0.016, -0.0880), (0, -0.031, -0.0880 - 0.026 * nsc), (1, 0, 0),
              [(0.0, 0.0072, 0.0060, 0, 0.0), (0.45, 0.0074 * nsc + 0.0008, 0.0068, 0, 0.0),
               (1.0, 0.0105 * nsc + 0.001, 0.0085 * nsc, 0, 0.0)], region=N, bones=H),
-        Ellipsoid((0, -0.0305, -0.0865 - 0.022 * nsc), (0.0108 * nsc, 0.0092 * nsc, 0.0100 * nsc), region=N, bones=H),
+        Ellipsoid((0, -0.0305, -0.0865 - 0.022 * nsc), (0.0108 * nsc * (1 + 0.1 * brd), 0.0092 * nsc, 0.0100 * nsc), region=N, bones=H),
         Ellipsoid((-0.0128 * nsc, -0.0345, -0.0965 + (1 - nsc) * 0.006), (0.0080, 0.0070, 0.0085), region=N, bones=H),
         Ellipsoid((0.0128 * nsc, -0.0345, -0.0965 + (1 - nsc) * 0.006), (0.0080, 0.0070, 0.0085), region=N, bones=H),
     ], k=0.005)
@@ -182,7 +227,8 @@ def head_sdf(face, build=0.0):
     head = Union([skull, nose], k=0.009)
     head = Union([head, lips], k=0.005)
     head = Union([head] + ears, k=0.007)
-    head = Union([head] + eyes, k=0.0045)
+    head = Union([head] + eyes, k=0.002)
+    head = Union([head] + lids, k=0.0025)
     return head
 
 
@@ -200,18 +246,22 @@ def hand_sdf(T, s, wrist, a, scale):
                     region=REGION['hand'], bones=bw)
     knuck = wrist + a * 0.090 * sc
     fingers = []
-    for off, ln, r in ((0.026, 0.074, 0.0088), (0.0085, 0.081, 0.0090), (-0.0095, 0.076, 0.0086), (-0.026, 0.060, 0.0078)):
+    # relaxed hand: fingers flexed at the knuckles and more at the middle joints (a loose,
+    # half-closed hand, the little finger curling most), thumb resting against the index
+    for i, (off, ln, r) in enumerate(((0.026, 0.074, 0.0088), (0.0085, 0.081, 0.0090), (-0.0095, 0.076, 0.0086),
+                                      (-0.026, 0.060, 0.0078))):
         b0 = knuck + wd * off * sc - pn * 0.001 + a * (0.004 if abs(off) > 0.02 else 0.0) * sc
-        d1 = normalize(a + pn * 0.30 - wd * off * 1.5)
-        d2 = normalize(a + pn * 0.95 - wd * off * 2.0)
-        b1 = b0 + d1 * ln * 0.55 * sc
+        curl = 1.0 + 0.12 * i
+        d1 = normalize(a + pn * 0.55 * curl - wd * off * 1.5)
+        d2 = normalize(a + pn * 1.4 * curl - wd * off * 2.0)
+        b1 = b0 + d1 * ln * 0.52 * sc
         b2 = b1 + d2 * ln * 0.45 * sc
         fingers.append(RoundCone(b0, b1, r * sc, r * 0.93 * sc, region=REGION['hand'], bones=bw))
         fingers.append(RoundCone(b1, b2, r * 0.92 * sc, r * 0.80 * sc, region=REGION['hand'], bones=bw))
-    t0 = wrist + (a * 0.022 + wd * 0.026 + pn * 0.006) * sc
-    td = normalize(a * 0.75 + wd * 0.45 + pn * 0.35)
+    t0 = wrist + (a * 0.022 + wd * 0.024 + pn * 0.008) * sc
+    td = normalize(a * 0.80 + wd * 0.30 + pn * 0.45)
     t1 = t0 + td * 0.042 * sc
-    t2 = t1 + normalize(a * 0.85 + wd * 0.2 + pn * 0.5) * 0.033 * sc
+    t2 = t1 + normalize(a * 0.80 + wd * 0.05 + pn * 0.65) * 0.031 * sc
     thumb = [RoundCone(t0, t1, 0.0125 * sc, 0.0105 * sc, region=REGION['hand'], bones=bw),
              RoundCone(t1, t2, 0.0100 * sc, 0.0082 * sc, region=REGION['hand'], bones=bw)]
     return Union([palm, Union(fingers + thumb, k=0.0)], k=0.007)
@@ -255,7 +305,7 @@ def _zsign(A, B, hint):
     return float(np.sign(rot_frame(np.asarray(B) - np.asarray(A), hint)[2][2]) or 1.0)
 
 
-def build_body(kind='male', build=0.0):
+def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
     T = TEMPLATES[kind]
     b = build
     fem = kind == 'female'
@@ -309,6 +359,10 @@ def build_body(kind='male', build=0.0):
     if b > 0:
         tparts.append(Ellipsoid((0, T['hip'][1] + 0.17 * sy, -0.05 * sz), (0.12 * sx, 0.12 * sy, (0.085 * b + 0.02) * sz),
                                 region=REGION['torso'], bones={'pelvis': 0.4, 'spine1': 0.6}))
+    if belly > 0:
+        # a round gut that sits on the belt line (the "belly" shape morph)
+        tparts.append(Ellipsoid((0, T['hip'][1] + 0.16 * sy, -0.045 * sz), (0.125 * sx, 0.125 * sy, (0.10 * belly) * sz),
+                                region=REGION['torso'], bones={'pelvis': 0.4, 'spine1': 0.6}))
     torso = Union(tparts, k=0.035 * sy)
 
     # ---- neck, trapezius slope
@@ -338,7 +392,7 @@ def build_body(kind='male', build=0.0):
     body = Union([torso, neck], k=0.03)
 
     # ---- head
-    head = Xform(head_sdf(T['face'], b), T['headS'], T['headC'])
+    head = Xform(head_sdf(T['face'], b, face_var), T['headS'], T['headC'])
     body = Union([body, head], k=0.022 * T['headS'])
 
     # ---- arms (A-pose)

@@ -393,7 +393,7 @@ float fLamp( vec3 p, vec3 n, vec3 lp, float lk ) {
   float d2 = max( dot( dl, dl ), 0.15 );
   vec3 w = dl * inversesqrt( d2 );
   float down = max( -w.y, 0.0 ), up = max( w.y, 0.0 );
-  float I = lk < 0.5 ? 0.2 + 0.8 * down * down + 1.4 * pow( up, 5.0 ) : 0.32 + 0.5 * down + 1.1 * up * up;
+  float I = lk < 0.5 ? 0.16 + 0.84 * down * down + 1.6 * pow( up, 5.0 ) : 0.28 + 0.5 * down + 1.3 * up * up;
   return I * max( dot( n, -w ), 0.0 ) / d2;
 }
 // recessed downlights on a grid (cell, in xz) under the ceiling, cos^ex lobes
@@ -618,14 +618,16 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
           : mix( vec3( 1.0, 0.70, 0.43 ), vec3( 1.0, 0.64, 0.36 ), step( 0.5, fh1( seed * 5.1 ) ) );
     // shops are lit all day; by day the level follows the daylight outside so the
     // interior keeps its place relative to the street in the exposure
+    // seen from the daylit street the warm light reads less orange than at night
+    lampC = mix( lampC, vec3( 1.0, 0.86, 0.72 ), 0.45 * ( 1.0 - uNight ) );
     float I = mix( max( 0.0012, 1.25 * daylum ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
     float ex = st > 3.5 && st < 4.5 ? 2.0 : st > 2.5 && st < 3.5 ? 14.0 : 8.0;
     // downlight pools, the inter-reflected fill, and display spots on the window zone
     Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + ( 0.42 + 0.5 * smoothstep( 2.2, 0.4, p.z ) ) * ao );
     glowK = I;
   } else if ( lit > 0.0 ) {
-    float I = stair ? 0.006 : 0.02;
-    Elamp = lampC * lit * I * ( fLamp( p, nn, lp, lk ) * ( 0.7 + 0.3 * ao ) + 0.07 * ao );
+    float I = stair ? 0.006 : 0.024;
+    Elamp = lampC * lit * I * ( fLamp( p, nn, lp, lk ) * ( 0.7 + 0.3 * ao ) + 0.035 * ao );
     // a television's cool flicker in a few rooms
     if ( fh1( seed * 9.7 ) < 0.1 ) Elamp += vec3( 0.25, 0.35, 0.6 ) * lit * 0.0007 * ( 0.6 + 0.4 * sin( uTime * 7.0 + seed * 40.0 ) * sin( uTime * 2.3 ) ) * ao;
     glowK = I * lit;
@@ -638,7 +640,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float tl = fShade( ro, rd, lp, r, lp.y - 0.13, lp.y + 0.07, inner );
     if ( tl > 0.0 && tl < h.t ) {
       vec3 shadeDay = vec3( 0.62, 0.56, 0.46 ) * Eday * ( 0.06 + 0.05 * inner ) * RECIPROCAL_PI;
-      col = shadeDay + lampC * lit * 0.02 * ( inner > 0.5 ? 6.0 : 1.2 );
+      col = shadeDay + lampC * lit * 0.024 * ( inner > 0.5 ? 6.0 : 1.2 );
     }
   }
   // cafe pendants
@@ -663,7 +665,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       float xr = c.x - S.x * 0.5;
       vec3 dc = DRAPES[ int( fh1( seed * 4.1 ) * 5.99 ) ];
       vec3 pc = vec3( c, zc );
-      vec3 back = lit > 0.0 ? lampC * lit * 0.02 * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.07 ) : vec3( 0.0 );
+      vec3 back = lit > 0.0 ? lampC * lit * 0.024 * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.035 ) : vec3( 0.0 );
       vec3 front = Eday * 0.45;
       if ( dtype < 1.5 ) {
         // curtains drawn to the sides
@@ -741,7 +743,8 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 E
   vec3 winAlb = wk < 0.5 ? vec3( 0.07, 0.075, 0.08 ) : wk < 0.8 ? vec3( 0.42, 0.40, 0.36 ) : vec3( 0.10, 0.16, 0.12 );
   float lit = step( fh2( floor( cell ) + 5.0 ), uNight * 0.5 );
   vec3 winC = winAlb * E * RECIPROCAL_PI + lit * vec3( 1.0, 0.62, 0.32 ) * 0.0012;
-  vec3 shopC = vec3( 0.12, 0.11, 0.10 ) * E * RECIPROCAL_PI + vec3( 1.0, 0.74, 0.48 ) * 0.0016 * uNight;
+  // (shop glass over there mirrors this side of the street: mid grey rather than black)
+  vec3 shopC = vec3( 0.26, 0.25, 0.24 ) * E * RECIPROCAL_PI + vec3( 1.0, 0.74, 0.48 ) * 0.0016 * uNight;
   col = mix( col, winC, isWin * 0.9 );
   col = mix( col, shopC, shopBand * 0.85 );
   // street trees between us and the opposite facade
@@ -758,6 +761,10 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 E
     col = mix( col, leaf, tree );
     cov = max( cov, tree );
   }
+  // far along the street (grazing reflections) the ray meets a jumble of sunlit facades,
+  // people and trees towards the vanishing point: fade to their average
+  vec3 farAvg = mix( vec3( 0.52, 0.47, 0.39 ) * ( Eamb * 0.9 + sunC * 0.35 ) * RECIPROCAL_PI, sky, 0.25 );
+  col = mix( col, farAvg, smoothstep( 45.0, 140.0, tO ) * step( 0.0, R.y + 0.02 ) );
   return vec4( col, cov );
 }
 `;

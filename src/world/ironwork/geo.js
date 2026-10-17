@@ -21,6 +21,13 @@ export class GeoWriter {
     this.r = 1; this.g = 1; this.b = 1;
   }
   get count() { return this.n; }
+  /** Empties the writer for reuse; its grown buffers are kept. */
+  reset() {
+    this.n = 0; this.ni = 0; this.k = 0;
+    this.m = this.nm = null;
+    this.r = this.g = this.b = 1;
+    return this;
+  }
   /** Transform for subsequent vertices (copied, so the caller may reuse its matrix). */
   setMatrix(m) {
     if (!m) { this.m = this.nm = null; return this; }
@@ -72,15 +79,17 @@ export class GeoWriter {
   }
   /** Quad a-b-c-d counter-clockwise (front-facing). */
   quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
-  toGeometry({ colors = true, bounds = true } = {}) {
-    // views into the writer's buffers (no copies); the writer is discarded afterwards
+  /** copy: false hands the writer's buffers to the geometry as views (the writer is then
+   *  discarded); true copies the used part, so the writer can be reset and reused. */
+  toGeometry({ colors = true, bounds = true, copy = false } = {}) {
     const g = new THREE.BufferGeometry(), n = this.n;
-    g.setAttribute('position', new THREE.BufferAttribute(this.P.subarray(0, n * 3), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(this.N.subarray(0, n * 3), 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(this.T.subarray(0, n * 2), 2));
-    if (colors) g.setAttribute('color', new THREE.BufferAttribute(this.C.subarray(0, n * 3), 3));
-    if (this.K) g.setAttribute('aGk', new THREE.BufferAttribute(this.K.subarray(0, n), 1));
-    const idx = n > 65535 ? this.I.subarray(0, this.ni) : new Uint16Array(this.I.subarray(0, this.ni));
+    const a = (arr, k) => (copy ? arr.slice(0, n * k) : arr.subarray(0, n * k));
+    g.setAttribute('position', new THREE.BufferAttribute(a(this.P, 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(a(this.N, 3), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(a(this.T, 2), 2));
+    if (colors) g.setAttribute('color', new THREE.BufferAttribute(a(this.C, 3), 3));
+    if (this.K) g.setAttribute('aGk', new THREE.BufferAttribute(a(this.K, 1), 1));
+    const idx = n > 65535 ? (copy ? this.I.slice(0, this.ni) : this.I.subarray(0, this.ni)) : new Uint16Array(this.I.subarray(0, this.ni));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     if (bounds) g.computeBoundingSphere();
     return g;

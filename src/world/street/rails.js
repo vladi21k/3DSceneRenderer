@@ -1,4 +1,4 @@
-import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W } from './constants.js';
+import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W, SEAL_TONE } from './constants.js';
 
 // Embedded grooved rails.
 //  - sweepRail(): true 3D cross-section (rubber seals, bevelled head with a polished
@@ -7,14 +7,14 @@ import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_O
 //    used inside crossovers where rails cross, split and merge.
 //  - railLinePoints(): centre-line points for the far-field anti-aliased overlay.
 
-// --- precomputed profile segments with smoothed normals
-const SEGS = (() => {
-  const P = RAIL_PROFILE;
+// --- precomputed profile segments with smoothed normals, grouped into runs: consecutive
+// same-kind segments joined by smoothed normals share vertices
+function buildRuns(profile) {
   const segs = [];
-  for (let j = 1; j < P.length; j++) {
-    const [x0, h0] = P[j - 1], [x1, h1, kind] = P[j];
+  for (let j = 1; j < profile.length; j++) {
+    const [x0, h0, , ao0, t0] = profile[j - 1], [x1, h1, kind, ao1, t1] = profile[j];
     const dx = x1 - x0, dh = h1 - h0, l = Math.hypot(dx, dh);
-    segs.push({ x0, h0, x1, h1, kind, nx: -dh / l, nh: dx / l, v0: 0, v1: 0 });
+    segs.push({ x0, h0, x1, h1, kind, ao0, ao1, t0, t1, nx: -dh / l, nh: dx / l, v0: 0, v1: 0 });
   }
   // smooth normals across gentle corners
   const cosLim = Math.cos((50 * Math.PI) / 180);
@@ -28,48 +28,74 @@ const SEGS = (() => {
       a.n1 = [x, h]; b.n0 = [x, h];
     }
   }
+  // texture v: arc length from the field-side paving edge, unless the profile pins it
+  // (head top and gauge corner are mapped onto the rail.head texture's polished bands)
   let acc = 0;
-  for (const s of segs) { s.v0 = acc; acc += Math.hypot(s.x1 - s.x0, s.h1 - s.h0); s.v1 = acc; }
-  return segs;
-})();
-
-// runs of consecutive same-material segments joined by smoothed normals share vertices
-const RUNS = (() => {
+  for (const s of segs) {
+    s.v0 = acc; acc += Math.hypot(s.x1 - s.x0, s.h1 - s.h0); s.v1 = acc;
+    if (s.kind === 'head' || s.kind === 'gauge') { s.v0 = s.t0 ?? s.v0; s.v1 = s.t1 ?? s.v1; }
+  }
   const runs = [];
   let cur = null;
-  for (let j = 0; j < SEGS.length; j++) {
-    const sg = SEGS[j];
-    if (cur && cur.kind === sg.kind && SEGS[j - 1].n1 === sg.n0) cur.segs.push(sg);
+  for (let j = 0; j < segs.length; j++) {
+    const sg = segs[j];
+    if (cur && cur.kind === sg.kind && segs[j - 1].n1 === sg.n0) cur.segs.push(sg);
     else { cur = { kind: sg.kind, segs: [sg] }; runs.push(cur); }
   }
   for (const r of runs) {
-    r.pts = [{ x: r.segs[0].x0, h: r.segs[0].h0, n: r.segs[0].n0, v: r.segs[0].v0 }];
-    for (const sg of r.segs) r.pts.push({ x: sg.x1, h: sg.h1, n: sg.n1, v: sg.v1 });
+    // vertex colour = cavity AO (× the bitumen tone on the seals, drawn with the mortar)
+    const tone = r.kind === 'seal' ? SEAL_TONE : 1;
+    const s0 = r.segs[0];
+    r.pts = [{ x: s0.x0, h: s0.h0, n: s0.n0, v: s0.v0, c: s0.ao0 * tone }];
+    for (const sg of r.segs) r.pts.push({ x: sg.x1, h: sg.h1, n: sg.n1, v: sg.v1, c: sg.ao1 * tone });
   }
   return runs;
-})();
+}
+
+/** Plain grooved rail. */
+export const RUNS_MAIN = buildRuns(RAIL_PROFILE);
+
+/** Stock rail along a switch tongue lying in its flangeway: the guard lip is machined
+ *  away, so the groove runs on (widened) to the gauge-side seal. */
+export const RUNS_SWITCH = buildRuns(RAIL_PROFILE.map((p) => {
+  if (p[0] > 0.085 && p[0] < 0.086) return [p[0], p[1], 'groove', 0.65];   // far groove wall
+  if (p[0] < 0.0697 || p[0] > 0.083) return p;
+  return [p[0], -0.028 - 0.004 * Math.sin(((p[0] - 0.0698) / 0.013) * Math.PI), 'groove', 0.4];
+}));
 
 /**
- * Sweep the 3D profile of rail (c, g) through the paving rows listed in `rowIdx`
- * (indices into samples from buildPaving). mats: { head, lip, side, groove, seal }.
+ * Sweep a grooved-rail profile through the paving rows listed in `rowIdx` (indices into
+ * samples from buildPaving). mats: { head, gauge, lip, side, groove, seal }.
+ * Main rails: centre line d = c, gauge direction g. With opts.at(row) => {c, dd, y} the
+ * rail follows its own path through the rows instead (crossover rails): the profile is
+ * laid along each row, stretched by sqrt(1 + dd²) so its true width is kept, and shifted
+ * by y vertically. opts.runs selects the profile (RUNS_MAIN by default).
  */
-export function sweepRail(out, mats, samples, rowIdx, c, g) {
+export function sweepRail(out, mats, samples, rowIdx, c, g, opts = {}) {
   if (rowIdx.length < 2) return;
-  for (const run of RUNS) {
-    const b = out.get(mats[run.kind], false);
+  const runs = opts.runs || RUNS_MAIN, at = opts.at;
+  for (const run of runs) {
+    const b = out.get(mats[run.kind], true);
     const P = run.pts, np = P.length;
     let prev = -1;
     for (const r of rowIdx) {
       const S = samples[r];
+      let cc = c, k = 1, y = 0, px = S.rx, pz = S.rz;
+      if (at) {
+        const q = at(r);
+        cc = q.c; y = q.y; k = Math.sqrt(1 + q.dd * q.dd);
+        // the rail's own horizontal perpendicular (normals)
+        px = (S.rx - S.tx * q.dd) / k; pz = (S.rz - S.tz * q.dd) / k;
+      }
       const first = b.n;
-      for (let k = 0; k < np; k++) {
-        const p = P[k];
-        const d = c + g * p.x, nx = g * p.n[0];
-        b.v(S.px + S.rx * d, S.py + p.h, S.pz + S.rz * d, S.rx * nx, p.n[1], S.rz * nx, S.s, p.v);
+      for (let j = 0; j < np; j++) {
+        const p = P[j];
+        const d = cc + g * p.x * k, nx = g * p.n[0];
+        b.v(S.px + S.rx * d, S.py + p.h + y, S.pz + S.rz * d, px * nx, p.n[1], pz * nx, S.u ?? S.s, p.v, p.c, p.c, p.c);
       }
       if (prev >= 0) {
-        for (let k = 0; k < np - 1; k++) {
-          const a0 = prev + k, a1 = prev + k + 1, b0 = first + k, b1 = first + k + 1;
+        for (let j = 0; j < np - 1; j++) {
+          const a0 = prev + j, a1 = prev + j + 1, b0 = first + j, b1 = first + j + 1;
           if (g > 0) b.quad(a0, a1, b1, b0);
           else b.quad(a1, a0, b0, b1);
         }

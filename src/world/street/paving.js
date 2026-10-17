@@ -1,16 +1,17 @@
 import {
-  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W,
+  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W, railDist,
 } from './constants.js';
 import { colInfo } from './surface.js';
 
 // Paving grid for one chunk: corridor (with gaps for the rails and, at lod 0, dark
 // mortar strips along them), light stone edge bands, dished gutters and sidewalks out
 // under the facades. One height per grid vertex from the Surface; normals by central
-// differences on the grid (with ghost rows beyond the chunk ends so neighbouring
-// chunks shade seamlessly).
+// differences of the Surface's shading height on the grid (with ghost rows beyond the
+// chunk ends so neighbouring chunks shade seamlessly). UVs: u = periodic street
+// coordinate, v = d (corridor: the material places its rail grime by d), or metres from
+// the gutter edge on the sidewalks so a full course runs along the gutter.
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
-const GROUT_TINT = [1.75, 1.74, 1.78];     // dusty bitumen mortar (asphalt material, ~0.15 albedo)
 const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
 
 /** Interior column offsets between a and b, denser next to rails. */
@@ -119,24 +120,26 @@ export function buildPaving(ctx, chunk, rows, out) {
 
   // column offsets and heights per (ghost-extended) row
   const D = new Float32Array(NR * nc);
-  const H = new Float32Array(NR * nc);
+  const H = new Float32Array(NR * nc);     // geometric heights
+  const HS = new Float32Array(NR * nc);    // shading heights (normals)
   const ciw = {};
+  const kW = surface.kW;
   for (let r = 0; r < NR; r++) {
     const ri = infos[r];
     const o = r * nc;
     const eL = ri.edgeL, eR = ri.edgeR;
     for (let k = 0; k < nL; k++) {
       const d = eL + ((-GUTTER_OUT - eL) * k) / nL;
-      D[o + k] = d; H[o + k] = surface.height(ri, d, colInfo(d, ciw));
+      D[o + k] = d; H[o + k] = surface.height(ri, d, colInfo(d, ciw)); HS[o + k] = surface.hShade;
     }
     for (let k = 0; k < nFixed; k++) {
       let d = fx.d[k];
-      if (fx.jit[k]) d += GROUT_WAVE * surface.fH.sample(ri.s * 1.7, fx.jit[k] * 9.3);
-      D[o + nL + k] = d; H[o + nL + k] = surface.height(ri, d, fx.ci[k]);
+      if (fx.jit[k]) d += GROUT_WAVE * surface.fH.sample(ri.sp * kW, fx.jit[k] * 9.3);
+      D[o + nL + k] = d; H[o + nL + k] = surface.height(ri, d, fx.ci[k]); HS[o + nL + k] = surface.hShade;
     }
     for (let k = 1; k <= nR; k++) {
       const c = nL + nFixed - 1 + k, d = GUTTER_OUT + ((eR - GUTTER_OUT) * k) / nR;
-      D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw));
+      D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw)); HS[o + c] = surface.hShade;
     }
   }
   // interval kinds (nc-1 intervals)
@@ -153,7 +156,7 @@ export function buildPaving(ctx, chunk, rows, out) {
   for (let r = 0; r < nr; r++) {
     route.sample(rows[r], smp);
     samples.push({
-      s: rows[r], px: smp.pos.x, py: smp.pos.y, pz: smp.pos.z, rx: smp.right.x, rz: smp.right.z,
+      s: rows[r], u: surface.sp(rows[r]), px: smp.pos.x, py: smp.pos.y, pz: smp.pos.z, rx: smp.right.x, rz: smp.right.z,
       tx: smp.tanH.x, tz: smp.tanH.z, grade: smp.grade, curv: smp.curvature, ri: infos[r + 1],
     });
   }
@@ -177,20 +180,27 @@ export function buildPaving(ctx, chunk, rows, out) {
     const o = R * nc + c;
     const d = D[o], h = H[o];
     const S = samples[r];
-    // central differences
+    // central differences of the shading height
     const cl = c > 0 ? c - 1 : c, cr = c < nc - 1 ? c + 1 : c;
-    const hd = (H[R * nc + cr] - H[R * nc + cl]) / Math.max(1e-4, D[R * nc + cr] - D[R * nc + cl]);
-    const hs = (H[(R + 1) * nc + c] - H[(R - 1) * nc + c]) / Math.max(1e-4, rowS[R + 1] - rowS[R - 1]);
+    const hd = (HS[R * nc + cr] - HS[R * nc + cl]) / Math.max(1e-4, D[R * nc + cr] - D[R * nc + cl]);
+    const hs = (HS[(R + 1) * nc + c] - HS[(R - 1) * nc + c]) / Math.max(1e-4, rowS[R + 1] - rowS[R - 1]);
     // N = Td x Ts with Td = (rx, hd, rz), Ts = (tx, grade + hs, tz)
     const ax = S.rx, ay = hd, az = S.rz, bx = S.tx, by = S.grade + hs, bz = S.tz;
     let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
     const il = 1 / Math.hypot(nx, ny, nz);
     nx *= il; ny *= il; nz *= il;
     const fc = c - nL;
-    surface.tone(S.ri, d, tone, 0, fc >= 0 && fc < nFixed ? fx.ci[fc] : colInfo(d, ciw));
-    if (k === K_GROUT) { tone[0] *= GROUT_TINT[0]; tone[1] *= GROUT_TINT[1]; tone[2] *= GROUT_TINT[2]; }
+    const ci = fc >= 0 && fc < nFixed ? fx.ci[fc] : colInfo(d, ciw);
+    surface.tone(S.ri, d, tone, 0, ci);
+    if (k === K_GROUT) {
+      // mortar keeps the tone variation but not the paving's rail grime; it is a little
+      // darker where it meets the setts (dirt collects along the joint)
+      const m = ((railDist(d) < 0.02 ? 1.0 : 0.88) / ci.v) * (tone[0] + tone[1] + tone[2]) / 3;
+      tone[0] = m; tone[1] = m; tone[2] = m;
+    }
     const b = bufs[k];
-    v = b.v(S.px + S.rx * d, S.py + h, S.pz + S.rz * d, nx, ny, nz, S.s, d, tone[0], tone[1], tone[2]);
+    const vv = k === K_WALK ? (d < 0 ? -d : d) - GUTTER_OUT : d;
+    v = b.v(S.px + S.rx * d, S.py + h, S.pz + S.rz * d, nx, ny, nz, S.u, vv, tone[0], tone[1], tone[2]);
     vmap[bi][key] = v;
     return v;
   };
@@ -231,8 +241,9 @@ export function buildSlab(ctx, chunk, out) {
     if (k > 1e-5) dl = Math.min(dl, 0.85 / k);
     if (k < -1e-5) dr = Math.min(dr, 0.85 / -k);
     const y = smp.pos.y + SLAB_H;
-    const a = b.v(smp.pos.x - smp.right.x * dl, y, smp.pos.z - smp.right.z * dl, 0, 1, 0, s, -dl);
-    b.v(smp.pos.x + smp.right.x * dr, y, smp.pos.z + smp.right.z * dr, 0, 1, 0, s, dr);
+    const u = ctx.surface.sp(s);
+    const a = b.v(smp.pos.x - smp.right.x * dl, y, smp.pos.z - smp.right.z * dl, 0, 1, 0, u, -dl);
+    b.v(smp.pos.x + smp.right.x * dr, y, smp.pos.z + smp.right.z * dr, 0, 1, 0, u, dr);
     if (prev >= 0) b.quad(prev, prev + 1, a + 1, a);
     prev = a;
   }

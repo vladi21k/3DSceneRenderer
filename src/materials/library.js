@@ -133,7 +133,10 @@ export const LIBRARY = {
     props: { metalness: 1, roughness: 1 },
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.05, rough: 0.25, an1: [0.3, 3], an2: [0.2, 2] } },
-    meta: { uv: 'u along the rail (m), v across the head (m)' },
+    meta: {
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Polished running band (21-30 mm, roughness ~0.15, metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075; dull grey edge, brown oxide shoulders (roughness ~0.55, metal 0.6) and dusty steel elsewhere. The base values are final: no roughness multiplier is needed.',
+      band: { centres: [0.043, 0], halfWidth: 0.0125, gaugeCorner: 0.075 },
+    },
   },
   'rail.side': {
     props: { metalness: 1, roughness: 1 },
@@ -203,9 +206,15 @@ export const LIBRARY = {
     meta: { note: 'transparent thin glass (premultiplied): full-strength Fresnel reflections, for glazing with something modelled behind it' },
   },
   'glass.lamp': {
-    props: { color: [0.72, 0.7, 0.65], roughness: 0.32, emissive: [1.0, 0.7, 0.42], emissiveIntensity: 8 },
+    // milky diffuser body under a glossy outer skin: a sharp sky reflection by day; at
+    // night a warm glow, brightest where we look through the diffuser at the lamp and
+    // falling off towards the rim (moderate intensity so the hue survives the tone curve;
+    // bloom supplies the glow)
+    kind: 'physical',
+    props: { color: [0.55, 0.545, 0.52], roughness: 0.45, clearcoat: 1, clearcoatRoughness: 0.08, emissive: [1.0, 0.6, 0.28], emissiveIntensity: 3.5 },
     night: true,
-    meta: { note: 'frosted lantern glass; emissive scales with U.uNight × materials.uniforms.emissiveGain' },
+    surf: { emis: { rim: 0.65, exp: 0.6 } },
+    meta: { note: 'frosted lantern glass (clearcoated); emissive scales with U.uNight × materials.uniforms.emissiveGain, with a core-to-rim falloff' },
   },
   'emissive.warm': {
     props: { color: [0, 0, 0], roughness: 0.6, emissive: [1.0, 0.75, 0.48], emissiveIntensity: 3 },
@@ -247,18 +256,18 @@ export const LIBRARY = {
   },
   'wood.door': {
     kind: 'physical',
-    props: { color: [0.36, 0.28, 0.22], roughness: 1, clearcoat: 0.25, clearcoatRoughness: 0.4 },
+    props: { color: [0.36, 0.28, 0.22], roughness: 1, clearcoat: 0.6, clearcoatRoughness: 0.25 },
     bake: 'wood',
     surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.06, rough: 0.06 } },
     vc: 'tint',
-    meta: { uv: 'grain along v (vertical boards)', note: 'varnished hardwood' },
+    meta: { uv: 'grain along v (vertical boards)', note: 'varnished hardwood (clearcoat), no weathering checks' },
   },
   'wood.bench': {
     props: { color: [0.78, 0.74, 0.68], roughness: 1.15 },
-    bake: 'wood',
+    bake: 'woodweathered',
     surf: { swap: true, macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.06 } },
     vc: 'tint',
-    meta: { uv: 'grain along u (slats)', note: 'weathered timber' },
+    meta: { uv: 'grain along u (slats)', note: 'weathered timber with grain-aligned checks' },
   },
   'paint.frame': {
     props: { color: [0.03, 0.055, 0.042], roughness: 1 },

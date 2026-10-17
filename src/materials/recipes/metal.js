@@ -1,20 +1,49 @@
 // Metals, rail steel, paint, plastic and glass recipes.
 
-// Polished running band of the rail head: bright steel with longitudinal wheel streaks
-// and scattered dark oxide pits. Tile 2 m along the rail (u), 0.25 m across (v).
+// Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). A narrow
+// polished running band (21-30 mm, drifting slowly along the rail) with fine longitudinal
+// wheel scratches; a dull grey contact edge; dark brown oxidised shoulders; dusty dull
+// steel further out (guard lip). Rare oxide pits, only outside the band.
+// The band sits where the street geometry puts the head top (see meta.uv of rail.head):
+//   swept rail     v = arc length along the profile from the field-side paving edge,
+//                  head top centre (x = 0) at v = 0.043, flange-polished gauge corner ~0.075
+//   flat inlays    v = rail-local x, head centre at v = 0 (wraps to 0.25)
+// Surface map b = metal mask (oxide is only partly metallic).
 export const railhead = {
-  name: 'railhead', flat: [0.6, 0.6, 0.6, 0.22], size: [512, 64], tile: [2.0, 0.25], ss: 2,
+  name: 'railhead', flat: [0.34, 0.3, 0.27, 0.42], size: [512, 256], tile: [2.0, 0.25], ss: 2, metalMask: true,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  float streak = fbm2(m, vec2(1.5, 160.0), 4, 0.6, 131u);
-  float fine = fbm2(m, vec2(6.0, 700.0), 2, 0.5, 132u);
+  float wander = fbm2(m, vec2(0.6, 1.0), 3, 0.5, 134u) * 0.004;
+  float hw = 0.0125 + 0.0022 * fbm2(m, vec2(1.3, 1.0), 2, 0.5, 135u);
+  float d1 = m.y - 0.043 - wander;                                // swept rail
+  float d0 = (m.y < 0.5 * uTile.y ? m.y : m.y - uTile.y) - wander;  // inlay strips
+  float dB = min(abs(d1), abs(d0));
+  float band = 1.0 - smoothstep(hw - 0.0025, hw + 0.0025, dB);
+  band = max(band, 0.5 * (1.0 - smoothstep(0.002, 0.005, abs(m.y - 0.075))));   // gauge corner
+  float e = dB - hw;                                              // distance outside the band
+  float edge = smoothstep(0.0, 0.002, e) * (1.0 - smoothstep(0.003, 0.006, e));
+  float ox = smoothstep(0.003, 0.006, e) * (1.0 - smoothstep(0.03, 0.05, e));
+  // running band: polished, scratched along the rail, patches of duller wheel burn
+  float streak = fbm2(m, vec2(0.5, 300.0), 3, 0.5, 131u);
+  float fine = fbm2(m, vec2(2.0, 450.0), 2, 0.5, 132u);
+  float burn = smoothstep(0.2, 0.7, fbm2(m, vec2(3.0, 20.0), 3, 0.5, 136u));
+  vec3 bandC = vec3(0.62, 0.615, 0.6) * (1.0 + 0.05 * streak + 0.02 * fine) * (1.0 - 0.12 * burn);
+  float bandR = 0.15 + 0.03 * streak + 0.02 * fine + 0.08 * burn;
+  // oxide shoulders and dusty steel
+  float g = fbm(m, 30.0, 3, 0.5, 137u);
+  vec3 oxC = vec3(0.2, 0.15, 0.11) * (1.0 + 0.25 * g);
+  vec3 dustC = vec3(0.3, 0.29, 0.275) * (1.0 + 0.12 * g);
+  vec3 dull = mix(mix(dustC, oxC, ox), vec3(0.36, 0.35, 0.34), edge);
+  float dullR = mix(mix(0.6, 0.55, ox), 0.42, edge) + 0.08 * g;
+  float dullM = mix(mix(0.85, 0.6, ox), 0.9, edge);
   vec4 pit = voro(m, vec2(90.0, 90.0), 133u, 1.0);
-  float ox = smoothstep(0.25, 0.08, pit.x) * step(0.85, pit.z);
-  s.albedo = vec3(0.6, 0.6, 0.6) * (1.0 + 0.05 * streak + 0.02 * fine);
-  s.albedo = mix(s.albedo, vec3(0.16, 0.12, 0.1), ox);
-  s.rough = clamp(0.2 + 0.08 * streak + 0.04 * fine + 0.4 * ox, 0.08, 1.0);
-  s.height = fine * 0.00004 + streak * 0.00006 - ox * 0.0002;
+  float p = smoothstep(0.25, 0.08, pit.x) * step(0.98, pit.z) * (1.0 - band);
+  dull = mix(dull, vec3(0.09, 0.07, 0.055), p);
+  s.albedo = mix(dull, bandC, band);
+  s.rough = clamp(mix(dullR + 0.25 * p, bandR, band), 0.08, 1.0);
+  s.metal = mix(dullM * (1.0 - 0.5 * p), 1.0, band);
+  s.height = mix(g * 0.00012, fine * 0.00003 + streak * 0.00005, band) - p * 0.0002;
 }
 `,
 };
@@ -22,7 +51,7 @@ void surface(vec2 m, inout Surf s) {
 // Rusty rail web / foot and old iron: layered rust with patches of bare dark steel.
 export const railside = {
   name: 'railside', flat: [0.2, 0.1, 0.05, 0.85], size: 256, tile: [1.0, 1.0], ss: 2, metalMask: true,
-  pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.3 },
+  pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.06 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float r1 = fbm(warp(m, 3.0, 0.05, 141u), 6.0, 5, 0.6, 142u);
@@ -38,19 +67,24 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Flangeway groove: compacted grime, wet-looking dirt, sand grains and debris.
+// Flangeway groove: near-black compacted grime with faint rust-brown streaks along the
+// rail, damp low spots, and a few clustered sand grains (about 3 % of the area).
 export const railgroove = {
-  name: 'railgroove', flat: [0.06, 0.055, 0.05, 0.75], size: 256, tile: [1.0, 1.0], ss: 2,
-  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.4 },
+  name: 'railgroove', flat: [0.038, 0.032, 0.027, 0.7], size: 256, tile: [1.0, 1.0], ss: 2,
+  pass: { normal: 1.0, ao: 0.4, aoRadius: 0.005, cavity: 0.05 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float g = fbm(m, 8.0, 4, 0.55, 151u);
   vec4 v = voro(m, vec2(120.0), 152u, 1.0);
-  float sand = step(0.7, v.z) * smoothstep(0.5, 0.2, v.x);
-  vec3 grime = vec3(0.045, 0.04, 0.034) * (1.0 + 0.3 * g);
-  s.albedo = mix(grime, vec3(0.24, 0.21, 0.17), sand * 0.8);
-  s.rough = mix(0.6 + 0.2 * g, 0.9, sand);
-  s.height = g * 0.0008 + sand * 0.0006;
+  float cluster = smoothstep(0.55, 0.75, 0.5 + 0.5 * fbm(m, 3.0, 3, 0.5, 153u));
+  float sand = step(0.93, v.z) * smoothstep(0.5, 0.2, v.x) * cluster;
+  float rust = smoothstep(0.1, 0.7, fbm2(m, vec2(0.5, 40.0), 3, 0.5, 154u));
+  float damp = smoothstep(0.25, 0.65, fbm(m, 2.0, 3, 0.5, 155u));
+  vec3 grime = vec3(0.037, 0.032, 0.027) * (1.0 + 0.3 * g);
+  grime = mix(grime, vec3(0.055, 0.034, 0.022), 0.55 * rust) * mix(1.0, 0.8, damp);
+  s.albedo = mix(grime, vec3(0.11, 0.1, 0.085), sand);
+  s.rough = mix(mix(0.72 + 0.15 * g, 0.35, damp), 0.9, sand);
+  s.height = g * 0.0008 + sand * 0.0004;
 }
 `,
 };
@@ -73,9 +107,12 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Hot-dip galvanized steel: spangle crystals with individual sheen and tilt, dull patches.
+// Weathered hot-dip galvanized steel (street furniture, rooftop metal): a dull grey zinc
+// patina over most of the surface with the spangle crystals faintly showing through, and
+// whitish zinc-carbonate blooms. Surface map b = metal mask (the patina is partly
+// dielectric). Large patches come from the runtime macro layer.
 export const galv = {
-  name: 'galv', flat: [0.56, 0.57, 0.58, 0.4], size: 512, tile: [0.5, 0.5], ss: 2,
+  name: 'galv', flat: [0.53, 0.54, 0.545, 0.6], size: 512, tile: [0.5, 0.5], ss: 2, metalMask: true,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -83,25 +120,28 @@ void surface(vec2 m, inout Surf s) {
   vec4 v = voroV(warp(m, 6.0, 0.006, 171u), vec2(70.0), 172u, 1.0, tc);   // 7 mm spangles
   float k = v.z;
   vec2 tilt = vec2(fract(k * 13.1), fract(k * 7.7)) - 0.5;
-  s.height = dot(-tc, tilt) * 0.03;                     // each crystal is a slightly tilted facet
-  float dull = smoothstep(0.3, 0.8, fbm(m, 24.0, 3, 0.55, 173u)) * 0.6;   // fine white-rust bloom (large patches come from macro)
-  s.albedo = vec3(0.56, 0.57, 0.58) * (0.94 + 0.1 * k) * mix(1.0, 0.85, dull);
-  s.rough = mix(0.24 + 0.22 * fract(k * 5.7), 0.6, dull);
-  s.rough *= 1.0 - 0.3 * smoothstep(0.05, 0.0, v.w);
+  s.height = dot(-tc, tilt) * 0.02;                     // each crystal is a slightly tilted facet
+  float dull = 0.45 + 0.35 * smoothstep(-0.3, 0.6, fbm(m, 24.0, 3, 0.55, 173u));
+  float bloom = 0.7 * smoothstep(0.35, 0.75, fbm(m, 9.0, 4, 0.55, 174u));
+  vec3 zinc = vec3(0.56, 0.57, 0.58) * (0.94 + 0.1 * k);
+  s.albedo = mix(mix(zinc, vec3(0.5, 0.51, 0.51), dull), vec3(0.62), bloom);
+  s.rough = mix(mix(0.45 + 0.12 * fract(k * 5.7), 0.62, dull), 0.8, bloom);
+  s.rough *= 1.0 - 0.15 * smoothstep(0.05, 0.0, v.w);
+  s.metal = mix(1.0, 0.85, dull) * mix(1.0, 0.3, bloom);
 }
 `,
 };
 
-// Brushed stainless steel: fine directional brushing along u.
+// Brushed stainless steel: fine directional brushing along u, fingerprint smudges.
 export const brushed = {
-  name: 'brushed', flat: [0.55, 0.555, 0.56, 0.32], size: 256, tile: [0.4, 0.4], ss: 2,
+  name: 'brushed', flat: [0.55, 0.555, 0.56, 0.4], size: 256, tile: [0.4, 0.4], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float b = fbm2(m, vec2(3.0, 500.0), 3, 0.6, 181u);
   float smudge = fbm(m, 30.0, 3, 0.5, 182u);
   s.albedo = vec3(0.55, 0.555, 0.56) * (1.0 + 0.04 * b);
-  s.rough = 0.3 + 0.06 * b + 0.06 * smudge;
+  s.rough = 0.38 + 0.05 * b + 0.08 * smudge;
   s.height = b * 0.00002;
 }
 `,

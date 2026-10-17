@@ -459,7 +459,7 @@ function paperNormal(renderer) {
     const dx = rng.range(-1, 1), dy = rng.range(-1, 1), l = Math.hypot(dx, dy) || 1, len = rng.range(10, 60);
     for (let t = 0; t < len; t++) { hf[((y | 0) % N + N) % N * N + ((x | 0) % N + N) % N] -= 0.6; x += dx / l; y += dy / l; }
   }
-  return tex(heightToNormal(hf, N, N, 1.4), { srgb: false, repeat: [24, 12] }, renderer);
+  return tex(heightToNormal(hf, N, N, 1.4), { srgb: false, repeat: [12, 6] }, renderer);
 }
 
 // ------------------------------------------------------------------ library
@@ -505,6 +505,13 @@ export function createMaterials(app) {
   out.paint = albedoVariant('metal.pole', { userData: { furniture: 'paint' }, roughness: 0.62 }) || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0 }));
   patchGrime(out.paint, { albedo: 0.2, rough: 0.12, mottle: 0.05 });
   out.iron = patchGrime(variant('metal.iron'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
+  // furniture-owned variants of other library surfaces (patched locally: grime, LOD fade)
+  out.rubber = variant('rubber');
+  out.galv = patchGrime(variant('metal.galvanized'), { albedo: 0.12, rough: 0.1, mottle: 0.04 });
+  out.steel = variant('metal.steel');
+  out.stone = patchGrime(variant('stone.smooth'), { albedo: 0.18, rough: 0.05, ao: 0.5, mottle: 0.06 });
+  reg('interior', new THREE.MeshStandardMaterial({ color: srgb('#1e1d1b'), roughness: 0.9, metalness: 0 }));
+  reg('pages', new THREE.MeshStandardMaterial({ color: srgb('#e4dfd3'), roughness: 0.75, metalness: 0 }));
   out.pole = patchGrime(variant('metal.pole'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
   out.concrete = patchGrime(variant('concrete'), { albedo: 0.2, rough: 0.05, ao: 0.55, mottle: 0.06 });
   // brushed aluminium (chairs, tables, frames); the env reflection is kept moderate
@@ -546,7 +553,7 @@ export function createMaterials(app) {
   const decalOffset = (m) => { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; return m; };
   decalOffset(reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 })));
   // posters glued on advertising columns: paper with wrinkles and bubbles
-  decalOffset(reg('paper', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.68, metalness: 0, normalMap: T('paper', () => paperNormal(R)), normalScale: new THREE.Vector2(0.45, 0.45) })));
+  decalOffset(reg('paper', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.68, metalness: 0, normalMap: T('paper', () => paperNormal(R)), normalScale: new THREE.Vector2(0.18, 0.18) })));
   // light levels (scene-linear radiance) the module sets every frame from the exposure
   out.levels = { lit: { value: 0.03 }, disp: { value: 0.3 }, lamp: { value: 0 } };
   // backlit advert panels: laminate over a light box (emission from the lit atlas)

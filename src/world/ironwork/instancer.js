@@ -79,15 +79,22 @@ export class LodInstancer {
     return out;
   }
 
+  /** True when the camera has moved far enough since the last partition of `s` (with
+   *  the same limits) that some instance may have crossed a limit. */
+  static stale(s, cam) {
+    return !s.cam || s.cam.distanceToSquared(cam) >= s.slack * s.slack;
+  }
+
   /** Assigns every instance of `s` to a level by its distance from `cam` and repacks the
-   *  level meshes if anything changed. Returns true when it repacked. */
+   *  level meshes if anything changed. Returns true when it repacked. Records the
+   *  slack: how far the camera can move before any instance can change level. */
   static partition(s, cam, limits) {
     const L = limits.length, m = s.m;
     // whole set beyond the last limit (or inside the first): skip the per-instance pass
     const dc = _v.copy(s.sphere.center).distanceTo(cam);
-    let uniform = -1;
-    if (dc - s.sphere.radius >= limits[L - 1]) uniform = L;
-    else if (dc + s.sphere.radius < limits[0]) uniform = 0;
+    let uniform = -1, slack = Infinity;
+    if (dc - s.sphere.radius >= limits[L - 1]) { uniform = L; slack = dc - s.sphere.radius - limits[L - 1]; }
+    else if (dc + s.sphere.radius < limits[0]) { uniform = 0; slack = limits[0] - dc - s.sphere.radius; }
     let changed = false;
     for (let i = 0; i < s.n; i++) {
       let k = uniform;
@@ -96,9 +103,13 @@ export class LodInstancer {
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
         k = 0;
         while (k < L && d >= limits[k]) k++;
+        const gap = Math.min(k > 0 ? d - limits[k - 1] : Infinity, k < L ? limits[k] - d : Infinity);
+        if (gap < slack) slack = gap;
       }
       if (k !== s.lvl[i]) { s.lvl[i] = k; changed = true; }
     }
+    (s.cam ||= new THREE.Vector3()).copy(cam);
+    s.slack = slack;
     if (!changed) return false;
     const counts = s.meshes.map(() => 0);
     for (let i = 0; i < s.n; i++) {

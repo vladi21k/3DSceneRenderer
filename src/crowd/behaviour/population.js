@@ -45,7 +45,7 @@ export class Population {
     this.walkerTarget = 0;
     this.targetT = 0;
     this.frame = 0;
-    this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
+    this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, vanishSeen: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
     this.popOut = [0, 0, 0, 0];  // removals of figures in plain view, by distance
   }
 
@@ -89,15 +89,16 @@ export class Population {
     const H = this.c.humans;
     let seed = hash2(this.serial, this.c.seed * 7919 + 13) >>> 0;
     if (!H || !H.appearanceOf) return seed;
+    let roleOk = -1;   // first seed of the right role, should nothing fit the extra wishes
     for (let k = 0; k < 48; k++) {
       const ap = H.appearanceOf(seed);
-      const child = ap.base === 'child';
-      const ok = (role === 'any' || (role === 'child') === child)
-        && (!opt || ((!opt.maxH || ap.height <= opt.maxH) && (!opt.noCross || ap.sit !== 1)));
-      if (ok) break;
+      if (role === 'any' || (role === 'child') === (ap.base === 'child')) {
+        if (!opt || ((!opt.maxH || ap.height <= opt.maxH) && (!opt.noCross || ap.sit !== 1))) return seed;
+        if (roleOk < 0) roleOk = seed;
+      }
       seed = hash2(seed, k + 101) >>> 0;
     }
-    return seed;
+    return roleOk >= 0 ? roleOk : seed;
   }
 
   /** Remove from the street (slot returns to the pool). reason 'recycle' counts removals in plain view. */
@@ -144,6 +145,9 @@ export class Population {
     }
     a.followers.length = 0; a.nFollow = 0;
     this.stats.vanished++;
+    // statistics: leaving through a door or into a side street happens behind the building line
+    const side = a.d >= 0 ? 1 : -1, c = this.c;
+    if (c.vis.inView(a.s, a.d) && !c.map.mouthAt(a.s, side) && Math.abs(a.d) < c.map.facadeAt(a.s, side) - 0.2 && !this._occluded(a)) this.stats.vanishSeen++;
     this.kill(a);
   }
 
@@ -225,6 +229,8 @@ export class Population {
     const c = this.c, r = c.rng;
     const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src, 'adult', opts.maxH ? { maxH: opts.maxH } : null);
     if (!a) return null;
+    // hidden behind a figure: only someone shorter than it
+    if (opts.maxH && a.height > opts.maxH) { this._unspawn(a); this.stats.spawnFail++; return null; }
     a.s = sU; a.side = side; a.dir = dir;
     a.d = side * (c.map.bandInAt(sU, side) + 1); // provisional (lane choice looks at where the agent is)
     setLane(c, a, r);
@@ -284,7 +290,7 @@ export class Population {
     const ahead = a.s - c.tram.trainU;
     if (Math.abs(a.d - RIDE_D) < BAND + 0.1 && ahead > -TRAM_LEN - 4 && ahead < c.tram.clearAhead + 30) return false;
     if (!a.noRect && map.rectInner(a.s, side, ad, AGENT_R * 0.5)) return false;
-    if (!a.inDoor && ad > map.wallAt(a.s, side) && !map.mouthAt(a.s, side)) return false;
+    if (!a.inDoor && ad > map.reachAt(a.s, side, (x) => c.unwrap(x))) return false;
     map.gatherCircles(a.s, 2);
     for (let k = 0; k < map.qN; k++) {
       const i = map.qI[k], ds = map.qDS[k], dd = map.cD[i] - a.d;
@@ -518,7 +524,7 @@ export class Population {
       if (!a) return null;
       a.inDoor = true; a.door = dr; a.doorS0 = dr.s0; a.doorS1 = dr.s1;
       a.task = TASK.EMERGE; a.state = ST.GOTO;
-      a.gs = dr.s + a.dir * r.range(0.3, 1.2); a.gd = side * (map.wallAt(dr.s, side) - r.range(0.6, 1.2)); a.gTol = 0.4;
+      a.gs = dr.s + a.dir * r.range(0.3, 1.2); a.gd = side * (map.wallMin(dr.s, side, 2) - r.range(0.6, 1.2)); a.gTol = 0.4;
       a.alpha = side > 0 ? -PI / 2 : PI / 2; a.vs = 0; a.spawnHidden = true;
       return a;
     }
@@ -821,7 +827,8 @@ export class Population {
         a.s = ds + r.range(-0.4, 0.4); a.d = TRACK_ZONE_HALF + 0.45; a.side = 1; a.noRect = true;
         if (!c.vis.hidden(a.s, a.d)) { this._unspawn(a); continue; }
         this.joinPlatform(a, feat);
-        a.task = TASK.ALIGHT; a.step = -1; a.state = ST.GOTO;
+        // most head for the rear end of the platform, some walk on past the cab
+        a.task = TASK.ALIGHT; a.step = -1; a.state = ST.GOTO; a.after = r.chance(0.35) ? 1 : -1;
         a.gs = a.s - r.range(0.8, 1.8); a.gd = TRACK_ZONE_HALF + r.range(1.2, 1.9); a.gTol = 0.4;
         a.alpha = PI; a.spawnHidden = true;
         this.stats.bySource.alight++;

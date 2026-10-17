@@ -45,7 +45,7 @@ function tramLane(c, a, d) {
     // beside a platform: behind it, up on it (caught at its edge), or between the tracks
     if (st) {
       if (dl <= BAND) return RIDE_D - pd - a.laneF * 1.1;
-      if (a.platformOK || a.d < TRACK_ZONE_HALF + PLATFORM_W - 0.3) return Math.max(RIDE_D + pd, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8;
+      if (a.platformOK || a.d < TRACK_ZONE_HALF + 0.8) return Math.max(RIDE_D + pd, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8;
       return c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3;
     }
   }
@@ -590,7 +590,7 @@ export function arrive(c, a) {
       a.step = 0;
       a.task = TASK.EMERGE; a.door = null;
       for (const f of a.followers) f.task = TASK.NONE;
-      goTo(a, a.s, side * (map.wallAt(a.s, side) - 0.8), 0.4);
+      goTo(a, a.s, side * (map.wallMin(a.s, side, 2) - 0.8), 0.4);
       return;
     }
     case TASK.SIDE_OUT: {
@@ -677,10 +677,11 @@ export function arrive(c, a) {
     }
     case TASK.ALIGHT: {
       if (a.step < 0) {
-        // stepped off the tram: away from the platform edge first, then along to the end
+        // stepped off the tram: away from the platform edge first, then along to an end
         const pl = a.feature && a.feature.platform;
         a.step = 0;
-        goTo(a, pl ? c.unwrap(pl.s0) - 1.0 : a.s - 20, TRACK_ZONE_HALF + PLATFORM_W * 0.5, 0.7);
+        const end = !pl ? a.s - 20 : a.after > 0 ? c.unwrap(pl.s1) + 1.0 : c.unwrap(pl.s0) - 1.0;
+        goTo(a, end, TRACK_ZONE_HALF + PLATFORM_W * (a.after > 0 ? 0.62 : 0.5), 0.7);
         return;
       }
       if (a.step === 0) {

@@ -52,7 +52,9 @@ const humans = {
     this.app = app;
     let assets;
     try {
-      assets = await loadHumanAssets(new URL('../../assets/humans/', import.meta.url).href);
+      // humans_dir=<repo-relative dir> loads a trial build instead of assets/humans/ (testing)
+      const dir = app.params.str('humans_dir', 'assets/humans').replace(/^\/+|\/+$/g, '');
+      assets = await loadHumanAssets(new URL(`../../${dir}/`, import.meta.url).href);
     } catch (e) {
       console.warn('[humans] figure assets unavailable, figures disabled', e);
       return;

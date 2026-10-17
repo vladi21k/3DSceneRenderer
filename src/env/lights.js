@@ -2,23 +2,33 @@ import * as THREE from 'three';
 import { TRACK_OFFSET } from '../core/config.js';
 import { LUX_PER_UNIT } from './atmosphere.js';
 
-// Dusk lighting: a small pool of real lights reassigned every frame to the lamp heads
-// nearest the cab (fading in/out at the ends of the range so nothing pops), and the
-// tram headlight, a spot light just ahead of the cab aimed down the rails. Lanterns
-// throw their light downwards, so the pool uses wide spot lights pointing at the
-// ground rather than point lights (no glowing canopies above the lamps).
+// Dusk lighting: a small pool of real lights reassigned every frame to the lamp
+// standards nearest the view, and the tram headlight, a spot light just ahead of the
+// cab aimed down the rails. Lanterns throw their light downwards, so the pool uses
+// spot lights pointing at the ground (discrete pools under each standard).
+//
+// One real light per lamp standard (its lanterns merged at their centroid), so the
+// pool covers about four pole stations. Each standard's weight is a smooth function
+// of its view-weighted distance and of the distance of the last one that still gets
+// a light (an order statistic, so it changes continuously): nothing pops when the
+// ranking changes. Standards beyond that are lit in screen space by post with the
+// complementary weight, so the two systems always overlap exactly.
 // The light count never changes, so switching day/night never recompiles shaders.
 
 const LAMP_CD = 1400;           // luminous intensity of one lantern towards the ground (cd)
-const LAMP_ANGLE = 1.22;        // half-angle of the lantern's light cone (rad)
+const LAMP_ANGLE = 0.95;        // half-angle of the lantern's light cone (rad)
+const LAMP_PENUMBRA = 0.4;
+const LAMP_DROP = 0.4;          // light source below the globe centre (m)
 const HEAD_CD = 26000;          // two LED headlights combined (cd, beam centre)
-const LAMP_RANGE = [-14, 92];   // metres along the route relative to the cab (real lights)
-const FAR_RANGE = [70, 460];    // lamps lit in screen space by post (beyond the real lights)
+const QUERY = [-60, 170];       // metres along the route around the cab searched for standards
+const FADE = 22;                // width of the real-light fade (m of view-weighted distance)
+const FAR_MAX = 460;            // screen-space pools out to this distance
 export const FAR_LAMPS = 24;
 const FALLBACK_HEAD_H = 5.5;
 
 const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
 const headColor = new THREE.Color(1.0, 0.93, 0.84);  // ~4800 K LED, linear
+const ss = THREE.MathUtils.smoothstep;
 
 export class StreetLights {
   constructor(app, count = 8) {
@@ -26,7 +36,7 @@ export class StreetLights {
     this.count = count;
     this.pool = [];
     for (let i = 0; i < count; i++) {
-      const l = new THREE.SpotLight(lampColor, 0, 32, LAMP_ANGLE, 0.75, 2);
+      const l = new THREE.SpotLight(lampColor, 0, 24, LAMP_ANGLE, LAMP_PENUMBRA, 2);
       l.castShadow = false;
       l.name = `lampLight${i}`;
       app.scene.add(l, l.target);
@@ -46,35 +56,46 @@ export class StreetLights {
       headI: 0,
       headCos: [Math.cos(0.26), Math.cos(0.26 * 0.35)],
     };
-    // distant lamps, relit in screen space by post: xyz world position, w intensity (scene units)
+    // distant standards, relit in screen space by post: xyz world position, w weight
     this.farLamps = Array.from({ length: FAR_LAMPS }, () => new THREE.Vector4());
-    this._farTimer = 0;
     this.farIntensity = 0;
-    this.lampCos = [Math.cos(LAMP_ANGLE), Math.cos(LAMP_ANGLE * 0.25)];
-    this._heads = [];
-    this._tmp = new THREE.Vector3();
+    this.farMinDist = 60;               // post relights only beyond this distance (m)
+    this.lampCos = [Math.cos(LAMP_ANGLE), Math.cos(LAMP_ANGLE * (1 - LAMP_PENUMBRA))];
+    this._standards = new Map();        // pole key → merged standard (cached)
+    this._list = [];
+    this._smp = { pos: new THREE.Vector3(), tan: new THREE.Vector3(), right: new THREE.Vector3(), tanH: new THREE.Vector3() };
     this._p = new THREE.Vector3();
+    this._fwd = new THREE.Vector3();
   }
 
-  /** Lamp heads within [sMin, sMax]: from the catenary module when available, else the pole plan. */
-  _lampHeads(sMin, sMax) {
-    const app = this.app, out = this._heads;
+  /**
+   * Lamp standards within [sMin, sMax]: lanterns from the catenary module (else the pole
+   * plan) merged per pole. A walk-side lantern inside or next to a tree crown gives its
+   * light to the track-side lantern (a light among leaves would blow them out).
+   */
+  _standardsIn(sMin, sMax) {
+    const app = this.app, out = this._list;
     out.length = 0;
     const cat = app.systems.catenary;
+    let heads = null;
     if (cat && !cat.disabled && typeof cat.getLampHeads === 'function') {
-      try {
-        const list = cat.getLampHeads(sMin, sMax);
-        if (list && list.length) {
-          for (const it of list) {
-            const v = it.isVector3 ? it : (it.pos || it.position || it.world || it);
-            if (v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)) {
-              out.push({ x: v.x, y: v.y, z: v.z, s: Number.isFinite(it.s) ? it.s : null });
-            }
-          }
-          if (out.length) return out;
-        }
-      } catch (e) { /* fall back to the plan */ }
+      try { heads = cat.getLampHeads(sMin, sMax); } catch (e) { heads = null; }
     }
+    const seen = new Set();
+    if (heads && heads.length) {
+      for (const it of heads) {
+        const v = it.isVector3 ? it : (it.position || it.pos || it.world);
+        if (!v || !Number.isFinite(v.x) || !Number.isFinite(it.s)) continue;
+        const key = `${Math.round(it.s * 2)}:${it.side ?? Math.sign(it.d || 1)}`;
+        let st = this._standards.get(key);
+        if (!st) { st = this._newStandard(it.s, it.side ?? Math.sign(it.d || 1)); this._standards.set(key, st); }
+        if (!seen.has(key)) { seen.add(key); st.heads.length = 0; out.push(st); }
+        st.heads.push(v);
+      }
+      for (const st of out) this._resolve(st);
+      return out;
+    }
+    // fallback: one lantern per lamp pole from the plan
     const { layout, route } = app;
     const i0 = layout.chunkIndex(sMin), n = Math.ceil((sMax - sMin) / 40) + 1;
     for (let k = 0; k <= n; k++) {
@@ -82,56 +103,111 @@ export class StreetLights {
         if (!p.lamp) continue;
         const ds = route.delta(sMin, p.s);
         if (ds < 0 || ds > sMax - sMin) continue;
-        route.toWorld(p.s, p.d * 0.84, FALLBACK_HEAD_H, this._p);
-        out.push({ x: this._p.x, y: this._p.y, z: this._p.z, s: p.s });
+        const key = `${Math.round(p.s * 2)}:${p.side}`;
+        let st = this._standards.get(key);
+        if (!st) {
+          st = this._newStandard(p.s, p.side);
+          st.pos.copy(route.toWorld(p.s, p.d * 0.84, FALLBACK_HEAD_H - LAMP_DROP, this._p));
+          st.n = 1; st.resolved = true;
+          this._standards.set(key, st);
+        }
+        out.push(st);
       }
     }
     return out;
+  }
+
+  _newStandard(s, side) {
+    if (this._standards.size > 400) this._standards.clear(); // keep the cache bounded
+    return { s, side, heads: [], pos: new THREE.Vector3(), n: 1, resolved: false, w: 0 };
+  }
+
+  /** Merge a standard's lanterns into one light position (once; lanterns never move). */
+  _resolve(st) {
+    if (st.resolved || !st.heads.length) return;
+    const { route, layout } = this.app;
+    const smp = route.sample(st.s, this._smp);
+    // lateral offset of each lantern; the outermost one of a pair is on the walk side
+    const lat = st.heads.map((v) => (v.x - smp.pos.x) * smp.right.x + (v.z - smp.pos.z) * smp.right.z);
+    let drop = -1;
+    if (st.heads.length > 1) {
+      let walk = 0;
+      for (let i = 1; i < lat.length; i++) if (Math.abs(lat[i]) > Math.abs(lat[walk])) walk = i;
+      // a tree crown around the walk-side lantern?
+      const i0 = layout.chunkIndex(st.s - 8), i1 = layout.chunkIndex(st.s + 8);
+      for (let c = i0; c <= i1 && drop < 0; c++) {
+        for (const t of layout.inChunk('trees', c)) {
+          if (t.side !== st.side) continue;
+          const r = Math.max(2.0, (t.crown || 3) * 0.5 + 0.8);
+          if (Math.hypot(route.delta(st.s, t.s), lat[walk] - t.d) < r) { drop = walk; break; }
+        }
+      }
+    }
+    st.pos.set(0, 0, 0);
+    let m = 0;
+    st.heads.forEach((v, i) => { if (i !== drop) { st.pos.add(v); m++; } });
+    st.pos.multiplyScalar(1 / Math.max(m, 1));
+    st.pos.y -= LAMP_DROP;
+    st.n = st.heads.length;      // a dropped lantern's flux goes to the remaining one
+    st.resolved = true;
   }
 
   update(app, night) {
     const s = app.cameraS ?? app.train?.s ?? app.startS;
     const { route } = app;
     const on = night > 0.001;
-    const air = this.airlight;
+    const air = this.airlight, N = this.count;
+    const unitI = LAMP_CD / LUX_PER_UNIT;
 
-    // ---- lamps
-    let heads = [];
-    if (on) heads = this._lampHeads(s + LAMP_RANGE[0], s + LAMP_RANGE[1]);
-    const scored = heads.map((h) => {
-      const ds = h.s != null ? route.delta(s, h.s) : this._tmp.set(h.x, h.y, h.z).distanceTo(app.camera.position);
-      return { h, ds };
-    }).sort((a, b) => Math.abs(a.ds - 18) - Math.abs(b.ds - 18));
-    for (let i = 0; i < this.count; i++) {
-      const l = this.pool[i], sc = scored[i];
-      if (!sc) { l.intensity = 0; air.lampI[i] = 0; continue; }
-      const w = THREE.MathUtils.smoothstep(sc.ds, LAMP_RANGE[0], LAMP_RANGE[0] + 9)
-        * (1 - THREE.MathUtils.smoothstep(sc.ds, LAMP_RANGE[1] - 22, LAMP_RANGE[1]));
-      l.position.set(sc.h.x, sc.h.y - 0.25, sc.h.z);
-      l.target.position.set(sc.h.x, sc.h.y - 10, sc.h.z);
+    // ---- lamp standards ranked by view-weighted distance (standards behind the view count
+    // as farther, so looking back lights the ones behind)
+    let D = 0;
+    let list = [];
+    if (on) {
+      list = this._standardsIn(s + QUERY[0], s + QUERY[1]);
+      const smp = route.sample(s, this._smp);
+      app.camera.getWorldDirection(this._fwd);
+      const c = THREE.MathUtils.clamp(this._fwd.x * smp.tan.x + this._fwd.z * smp.tan.z, -1, 1);
+      for (const st of list) {
+        const ds = route.delta(s, st.s);
+        st.ds = ds;
+        st.score = ds >= 0 ? ds * (1 + 3 * Math.max(0, -c)) : -ds * (1 + 3 * Math.max(0, c));
+      }
+      list.sort((a, b) => a.score - b.score);
+      // the N-th smallest score: continuous in time, and every standard with a nonzero
+      // weight is guaranteed a light
+      D = list.length >= N ? list[N - 1].score : QUERY[1];
+    }
+    for (let i = 0; i < N; i++) {
+      const l = this.pool[i], st = list[i];
+      const w = st ? 1 - ss(st.score, D - FADE, D) : 0;
+      if (!st || w <= 0) { l.intensity = 0; air.lampI[i] = 0; continue; }
+      l.position.copy(st.pos);
+      l.target.position.set(st.pos.x, st.pos.y - 10, st.pos.z);
       l.target.updateMatrixWorld();
-      l.intensity = (LAMP_CD / LUX_PER_UNIT) * night * w;
+      l.intensity = unitI * st.n * night * w;
       air.lampPos[i].copy(l.position);
       air.lampI[i] = l.intensity;
     }
 
-    // ---- distant lamps for the screen-space pools (refreshed a few times a second)
-    if (on && (this._farTimer -= app.realDt ?? 0.016) <= 0) {
-      this._farTimer = 0.15;
-      const far = this._lampHeads(s + FAR_RANGE[0], s + FAR_RANGE[1]).map((h) => ({
-        h, ds: h.s != null ? route.delta(s, h.s) : this._tmp.set(h.x, h.y, h.z).distanceTo(app.camera.position),
-      })).sort((a, b) => a.ds - b.ds);
-      for (let i = 0; i < FAR_LAMPS; i++) {
-        const f = far[i], v = this.farLamps[i];
-        if (!f) { v.set(0, -1e4, 0, 0); continue; }
-        // hand over from the real lights as they fade out; fade at the far end
-        const w = THREE.MathUtils.smoothstep(f.ds, LAMP_RANGE[1] - 22, LAMP_RANGE[1])
-          * (1 - THREE.MathUtils.smoothstep(f.ds, FAR_RANGE[1] - 60, FAR_RANGE[1]));
-        v.set(f.h.x, f.h.y - 0.25, f.h.z, w);
+    // ---- distant standards for the screen-space pools: the complementary weight of the
+    // real lights' fade, out to FAR_MAX
+    this.farMinDist = Math.max(0, D - FADE - 15);
+    if (on) {
+      const far = this._standardsIn(s + Math.max(0, D - FADE - 2), s + FAR_MAX);
+      let k = 0;
+      for (const st of far) {
+        if (k >= FAR_LAMPS) break;
+        const ds = route.delta(s, st.s);
+        if (ds < 0) continue;
+        const w = ss(ds, D - FADE, D) * (1 - ss(ds, FAR_MAX - 60, FAR_MAX));
+        if (w <= 0) continue;
+        this.farLamps[k++].set(st.pos.x, st.pos.y, st.pos.z, w * st.n);
       }
+      for (; k < FAR_LAMPS; k++) this.farLamps[k].set(0, -1e4, 0, 0);
     }
-    // intensity of one far lamp (the per-lamp hand-over weight is in w)
-    this.farIntensity = on ? (LAMP_CD / LUX_PER_UNIT) * night : 0;
+    // intensity of one far lantern (the per-standard weight × lantern count is in w)
+    this.farIntensity = on ? unitI * night : 0;
 
     // ---- headlight: just ahead of the cab, 0.9 m up, aimed ~45 m down the ride track
     const hp = route.toWorld(s + 0.4, TRACK_OFFSET, 0.9, this.head.position);

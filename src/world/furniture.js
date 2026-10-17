@@ -71,6 +71,8 @@ const furniture = {
       this._place({ index: i, s0: i * CHUNK_LEN, s1: (i + 1) * CHUNK_LEN, lod: 0 }, app, w, () => {});
       per.push(w.counts);
     }
+    // far-range builds too (warms the lod-1 platform bodies so no chunk pays for them later)
+    for (let i = 0; i < n; i++) this._place({ index: i, s0: i * CHUNK_LEN, s1: (i + 1) * CHUNK_LEN, lod: 1 }, app, this.batches.countingWriter(), () => {});
     const win = Math.ceil((VIEW_AHEAD + VIEW_BEHIND) / CHUNK_LEN) + 2;
     this.batches.finalize(app.scene, app.renderer, (b) => {
       let best = 0;

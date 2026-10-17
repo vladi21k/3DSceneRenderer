@@ -252,10 +252,15 @@ const MAP = /* glsl */ `
     #endif
     vec3 sfNW = inverseTransformDirection(sfVN, viewMatrix);
     float sfMb = texture(sfMacroTex, vSfWorld.xz * 0.23 + vSfWorld.y * 0.05).b;
+    float sfMf = texture(sfMacroTex, vSfWorld.xz * 1.7 + vec2(0.41, 0.13)).g;
     float sfLedge = smoothstep(0.55, 0.9, sfNW.y);
     float sfSoffit = smoothstep(-0.55, -0.9, sfNW.y);
-    sfAlb *= 1.0 - sfWeather.x * sfLedge * (0.5 + sfMb) - sfWeather.w * sfSoffit * (0.6 + 0.8 * sfMb);
-    sfRough = min(sfRough * (1.0 + 0.06 * sfLedge), 1.0);
+    // ledge tops collect grey dust and soot (darker and desaturated, patchy)
+    float sfLd = sfWeather.x * sfLedge * (0.35 + sfMb) * (0.6 + 0.8 * sfMf);
+    vec3 sfDust = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.6, 0.6, 0.62);
+    sfAlb = mix(sfAlb, sfDust, min(2.2 * sfLd, 0.85));
+    sfAlb *= 1.0 - sfWeather.w * sfSoffit * (0.6 + 0.8 * sfMb);
+    sfRough = min(sfRough * (1.0 + 0.08 * sfLedge), 1.0);
     vec3 sfTW = normalize(vec3(-sfNW.z, 0.0, sfNW.x) + 1e-5);
     float sfAl = dot(vSfWorld, sfTW);
     float sfS1 = texture(sfMacroTex, vec2(sfAl * 2.4, vSfWorld.y * 0.1) + vec2(0.71, 0.29)).g;

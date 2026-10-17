@@ -98,7 +98,10 @@ function windScreen(detail) {
   frame.push(xf(rbox(W, 0.04, 0.045, r, 1), [0, H + 0.01, 0]), xf(rbox(W - 0.08, 0.03, 0.03, r, 1), [0, 0.43, 0]));
   frame.push(xf(rbox(W - 0.08, 0.025, 0.03, r, 1), [0, 0.06, 0]));
   canvas.push(xf(rbox(W - 0.08, 0.36, 0.006, 0, 1), [0, 0.245, 0]));
-  glass.push(xf(rbox(W - 0.08, H - 0.47, 0.008, 0, 1), [0, 0.445 + (H - 0.47) / 2, 0]));
+  // glass UVs: v = height above the paving (the glazing decal puts its bands at true heights)
+  const gy = 0.445 + (H - 0.47) / 2, gl = rbox(W - 0.08, H - 0.47, 0.008, 0, 1), guv = gl.attributes.uv;
+  for (let i = 0; i < guv.count; i++) guv.setY(i, guv.getY(i) + gy);
+  glass.push(xf(gl, [0, gy, 0]));
   return { frame: merge(frame), glass: merge(glass), canvas: merge(canvas), feet: merge(feet) };
 }
 
@@ -118,7 +121,7 @@ export function buildCafeProtos(M, F) {
   const C = buildChairGeometry();
   const col = (lv, key) => lv.map((g) => g[key] || null);
   P.chair.bistro = F.weave.map((w, i) => proto(`chairBistro${i}`, [{ geo: col(C.bistro, 'frame'), mat: F.rattan }, { geo: col(C.bistro, 'weave'), mat: w }], LOD_CHAIR));
-  P.chair.plastic = proto('chairPlastic', [{ geo: col(C.plastic, 'shell'), mat: F.plastic, tint: true }, { geo: col(C.plastic, 'glides'), mat: M.get('rubber'), cast: false }], LOD_CHAIR);
+  P.chair.plastic = proto('chairPlastic', [{ geo: col(C.plastic, 'shell'), mat: F.plastic, tint: true }, { geo: col(C.plastic, 'glides'), mat: F.rubber, cast: false }], LOD_CHAIR);
   P.chair.metal = proto('chairMetal', [{ geo: col(C.metal, 'frame'), mat: F.aluminium }], LOD_CHAIR);
   P.chair.metalPaint = proto('chairMetalPaint', [{ geo: col(C.metal, 'frame'), mat: F.paint, tint: true }], LOD_CHAIR);
   P.chair.wicker = proto('chairWicker', [{ geo: col(C.wicker, 'body'), mat: F.wicker, tint: true }, { geo: col(C.wicker, 'legs'), mat: F.rattan },
@@ -144,7 +147,7 @@ export function buildCafeProtos(M, F) {
     };
   }
   const slab = [umbrellaBase('slab', 0), umbrellaBase('slab', 1)];
-  P.umb.slab = proto('umbrellaBase', [{ geo: slab.map((b) => b.conc), mat: F.concrete }, { geo: slab.map((b) => b.steel), mat: M.get('metal.galvanized') }], LOD_TABLE);
+  P.umb.slab = proto('umbrellaBase', [{ geo: slab.map((b) => b.conc), mat: F.concrete }, { geo: slab.map((b) => b.steel), mat: F.galv }], LOD_TABLE);
   P.umb.disc = proto('umbrellaDisc', [{ geo: [umbrellaBase('disc', 0).iron, umbrellaBase('disc', 1).iron], mat: F.iron }], LOD_TABLE);
   P.umb.furled = proto('umbrellaFurled', [{ geo: [furledGeo(0), furledGeo(1)], mat: F.canopy, tint: true }], LOD_TABLE);
   P.umb.furledPole = proto('umbrellaFurledPole', [{ geo: merge([lathe([[0.024, 0], [0.024, 2.9], [0.03, 2.93], [0.028, 2.98], [0, 2.99]], 8)]), mat: F.umbFrame }]);
@@ -153,14 +156,14 @@ export function buildCafeProtos(M, F) {
   P.misc.cup = proto('cup', [{ geo: [cs[0].cer, cs[1].cer, null], mat: F.ceramic, cast: false }, { geo: [cs[0].cof, cs[1].cof, null], mat: F.coffee, cast: false }], [14, 30]);
   P.misc.glass = proto('glass', [{ geo: [waterGlass(0), waterGlass(1), null], mat: F.drinkGlass, cast: false }], [14, 30]);
   const nh = napkinHolder();
-  P.misc.napkin = proto('napkin', [{ geo: [nh.steel, null], mat: M.get('metal.steel'), cast: true }, { geo: [nh.paper, null], mat: F.ceramic, cast: false }], [30]);
+  P.misc.napkin = proto('napkin', [{ geo: [nh.steel, null], mat: F.steel, cast: true }, { geo: [nh.paper, null], mat: F.ceramic, cast: false }], [30]);
   for (const v of [0, 1]) {
     const mb = [menuBoard(v, 0), menuBoard(v, 1)];
     P.misc[`menu${v}`] = proto('menuBoard', [{ geo: mb.map((m) => m.wood), mat: F.timber, cast: true }, { geo: mb.map((m) => m.face), mat: F.print, cast: false }], [40]);
   }
   const ws = [windScreen(0), windScreen(1)];
-  P.misc.screen = proto('windScreen', [{ geo: ws.map((w) => w.frame), mat: F.aluminium }, { geo: ws.map((w) => w.glass), mat: F.glass, cast: false },
-    { geo: ws.map((w) => w.canvas), mat: F.canvasPanel, tint: true }, { geo: ws.map((w) => w.feet), mat: M.get('metal.galvanized') }], [60]);
+  P.misc.screen = proto('windScreen', [{ geo: ws.map((w) => w.frame), mat: F.aluminium }, { geo: ws.map((w) => w.glass), mat: F.shelterGlass, cast: false },
+    { geo: ws.map((w) => w.canvas), mat: F.canvasPanel, tint: true }, { geo: ws.map((w) => w.feet), mat: F.galv }], [60]);
   return P;
 }
 

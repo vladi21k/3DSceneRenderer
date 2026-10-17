@@ -9,6 +9,18 @@ import { makeDelta } from './fast.js';
 // the rails, dished gutters, sidewalk cross-fall, millimetre unevenness) and a dirt /
 // wear multiplier used as paving vertex colour. Rail tops are at h = 0 and the paving
 // meets them exactly, so the rail edges are pinned to zero.
+//
+// Ground contract: the large-scale ground shape outside the corridor is the shared
+// route.surface(s, d) (applied by route.toWorld to everything placed on the street), so
+// the paving adds it too. The street's own geometric relief stays within a few
+// millimetres on the sidewalks and is flattened under cafés and street furniture, so
+// objects placed at h = 0 neither sink nor float. The visible unevenness (settlement
+// along the rails, dishing at gullies, undulating sheen) lives in a separate shading
+// height that only drives the paving normals.
+//
+// Periodic street coordinate: textures and noise along the street use sp = s·Lp/L with
+// Lp a multiple of 256 m that every noise table and paving tile divides, so the loop
+// wraps from s = L to 0 without a seam.
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
@@ -22,6 +34,15 @@ export class Surface {
     // dirt / tone variation: broad patches and finer blotches
     this.fG = new PeriodicField(23, { octaves: [[64, 1], [32, 0.6], [16, 0.35], [8, 0.2], [4, 0.1]] });
     this.fD = new PeriodicField(37, { cell: 0.1, octaves: [[64, 1], [32, 0.6], [16, 0.4], [8, 0.25], [4, 0.15], [2, 0.08]] });
+    // periodic coordinate and the lookup ratios that keep every noise field periodic in it
+    const L = route.length;
+    this.Lp = 256 * Math.max(1, Math.round(L / 256));
+    this.kP = this.Lp / L;
+    const per = (x, period) => Math.round((x * this.Lp) / period) / (this.Lp / period);
+    this.kH = [per(0.613, 128), per(0.11, 128)];
+    this.kD = [per(0.71, 25.6), per(0.13, 25.6)];
+    this.kW = per(1.7, 128);
+    this.hShade = 0;       // shading height of the last height() call
     this.spotCache = new Map();
     this.planner = null;     // (chunkIndex) => [{s, d, r}], set by the street module
     this._ri = {};
@@ -58,6 +79,7 @@ export class Surface {
       xo = Math.max(xo, smooth(Math.min(a + 4.5, 4.5 - b) / 2));
     }
     out.s = s;
+    out.sp = s * this.kP;
     out.xo = xo;
     out.hwL = L.halfWidth(s, -1);
     out.hwR = L.halfWidth(s, 1);
@@ -72,7 +94,7 @@ export class Surface {
       for (let i = 0; i < sp.length; i++) {
         const p = sp[i];
         const ds = dl(p.s, s);
-        if (ds < p.r + 0.6 && ds > -p.r - 0.6) list.push(p, ds);
+        if (ds < p.r + 0.7 && ds > -p.r - 0.7) list.push(p, ds);
       }
     }
     return out;
@@ -133,28 +155,42 @@ export class Surface {
   }
 
   // ------------------------------------------------------------------ height
-  noiseH(s, d) {
-    return 0.68 * this.fH.sample(s, d) + 0.32 * this.fH.sample(s * 0.613 + d * 0.11 + 71.3, d * 0.613 - s * 0.11 + 13.7);
+  /** Periodic street coordinate of route s (for UVs along the street). */
+  sp(s) { return s * this.kP; }
+
+  noiseH(sp, d) {
+    const k = this.kH;
+    return 0.68 * this.fH.sample(sp, d) + 0.32 * this.fH.sample(sp * k[0] + d * 0.11 + 71.3, d * 0.613 - sp * k[1] + 13.7);
   }
 
-  /** Height above the route elevation at lateral offset d for the row `ri`.
+  /** Height above the route elevation at lateral offset d for the row `ri`; also sets
+   *  this.hShade (the height the paving normals are computed from).
    *  ci: colInfo(d) when the caller has it precomputed. */
   height(ri, d, ci = colInfo(d, this._ci || (this._ci = {}))) {
-    let h = ci.h0, amp = ci.amp, mask = ci.mask;
-    if (ci.zone === Z_CORR) { h *= 1 - ri.xo; amp *= 1 - ri.xo; }
+    let h = ci.h0, amp = ci.amp, mask = ci.mask, trough = ci.trough, sa = ci.shadeAmp;
+    if (ci.zone === Z_CORR) { const k = 1 - ri.xo; h *= k; amp *= k; trough *= k; sa *= k; }
     else if (ci.zone === Z_WALK) {
       const edge = d > 0 ? ri.edgeR : -ri.edgeL;
       mask *= smooth((edge - FACADE_OVERLAP * 0.5 - (d < 0 ? -d : d)) / 1.6);
     }
-    if (mask > 0 && amp > 0) {
-      const sp = ri.spots;
-      for (let i = 0; i < sp.length; i += 2) {
-        const p = sp[i], ds = sp[i + 1], dd = d - p.d;
-        const q = Math.sqrt(ds * ds + dd * dd) - p.r;
-        if (q < 0.5) mask *= smooth(q / 0.5);
-      }
-      if (mask > 0) h += amp * mask * this.noiseH(ri.s, d);
+    // flat spots (covers, tree pits, furniture, café floors) and dishing towards drains
+    let dish = 0;
+    const sp = ri.spots;
+    for (let i = 0; i < sp.length; i += 2) {
+      const p = sp[i], ds = sp[i + 1];
+      let q;
+      if (p.rect) q = Math.max(ds < 0 ? -ds - p.hs : ds - p.hs, p.d0 - d, d - p.d1);
+      else { const dd = d - p.d; q = Math.sqrt(ds * ds + dd * dd) - p.r; }
+      if (q < 0.5) mask *= smooth(q / 0.5);
+      if (p.dish && q < 0.6) dish = Math.max(dish, 1 - smooth(q / 0.6));
     }
+    let n = 0;
+    if (mask > 0 && (amp > 0 || sa > 0)) n = this.noiseH(ri.sp, d);
+    h += amp * mask * n;
+    // mortar settlement trough along the rails, deeper in places
+    const hs = sa * mask * n + trough * (0.65 + 0.35 * n) - 0.005 * dish;
+    if (this.route.surfaceEnabled) h += this.route.surface(ri.s, d);
+    this.hShade = h + hs;
     return h;
   }
 
@@ -164,20 +200,22 @@ export class Surface {
   // ------------------------------------------------------------------ dirt / tone
   /** Writes a paving colour multiplier for (row, d) into out[o..o+2]. */
   tone(ri, d, out, o, ci = colInfo(d, this._ci || (this._ci = {}))) {
-    const s = ri.s;
+    const s = ri.sp, k = this.kD;
     const n1 = this.fG.sample(s * 0.5, d * 0.5 + 40);
-    // fine blotches: two incommensurate lookups so the 25.6 m table period never shows
-    const n2 = 0.62 * this.fD.sample(s, d) + 0.38 * this.fD.sample(s * 0.71 + d * 0.13 + 37.7, d * 0.71 - s * 0.13 + 11.3);
-    let v = (1 + 0.075 * n1) * (1 + 0.06 * n2) * ci.v;
+    // fine blotches: two differently scaled lookups so the 25.6 m table period never shows
+    const n2 = 0.62 * this.fD.sample(s, d) + 0.38 * this.fD.sample(s * k[0] + d * 0.13 + 37.7, d * 0.71 - s * k[1] + 11.3);
+    let v = (1 + 0.11 * n1) * (1 + 0.09 * n2) * ci.v;
     let warm = ci.warm;
     if (ci.zone === Z_CORR) {
       v *= (1 - ci.drip * (0.6 + 0.4 * n2)) * (1 - ri.xo * ci.xoTone);
     } else if (ci.zone === Z_GUTTER) {
-      v *= 1 + 0.05 * n2;
+      // damp, dirty streaks along the channel
+      v *= (1 + 0.05 * n2) * (1 - 0.15 * smooth((n2 - 0.3) / 0.3));
     } else if (ci.zone === Z_WALK) {
       const a = d < 0 ? -d : d;
       const edge = d > 0 ? ri.edgeR : -ri.edgeL;
-      v *= 1 - 0.14 * Math.exp(-Math.max(0, edge - FACADE_OVERLAP - a) / 0.35);
+      // grime along the facades, heavier in patches (doorways, shop fronts)
+      v *= 1 - (0.12 + 0.12 * smooth(n1 + 0.2)) * Math.exp(-Math.max(0, edge - FACADE_OVERLAP - a) / 0.45);
       // soil and leaf litter around tree pits
       const sp = ri.spots;
       for (let i = 0; i < sp.length; i += 2) {
@@ -202,7 +240,7 @@ export const Z_CORR = 0, Z_BAND = 1, Z_GUTTER = 2, Z_WALK = 3;
  *  static dirt factors (grime along the rails, oil drips, dark gutter). */
 export function colInfo(d, out = {}) {
   const a = d < 0 ? -d : d;
-  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1;
+  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1; out.trough = 0;
   if (a < BAND_IN) {
     const e = railDist(d);
     const g1 = Math.exp(-e / 0.045), g2 = Math.exp(-e / 0.22);
@@ -210,7 +248,10 @@ export function colInfo(d, out = {}) {
     out.zone = Z_CORR;
     out.h0 = 0.0035 * smooth(e / 0.45);
     out.amp = 0.0022;
+    out.shadeAmp = 0.011;
     out.mask = smooth(e / 0.28);
+    // settled setts 0.1-0.4 m beside the mortar strips (shading only)
+    out.trough = -0.0045 * smooth((e - 0.07) / 0.09) * (1 - smooth((e - 0.24) / 0.3));
     out.v = 1 - 0.24 * g1 - 0.08 * g2;
     out.warm = 0.05 * g1 + 0.02 * g2;
     out.drip = 0.07 * Math.exp(-(dc * dc) / 0.05);
@@ -220,18 +261,21 @@ export function colInfo(d, out = {}) {
     out.zone = Z_BAND;
     out.h0 = 0.0035 - 0.0055 * t;
     out.amp = 0.001;
+    out.shadeAmp = 0.004;
     out.v = 1 - 0.1 * smooth(t);
   } else if (a < GUTTER_OUT) {
     const t = ((a - CORRIDOR) / GUTTER_W) * 2 - 1;
     out.zone = Z_GUTTER;
     out.h0 = -0.006 + 0.004 * t * t;       // shallow V towards the gully grates
     out.amp = 0.0008;
+    out.shadeAmp = 0.004;
     out.v = 0.7 + 0.08 * t * t;
     out.warm = 0.02;
   } else {
     out.zone = Z_WALK;
     out.h0 = -0.002 + (SIDEWALK_RISE + 0.002) * smooth((a - GUTTER_OUT) / 4.4);
-    out.amp = 0.0042;
+    out.amp = 0.0015;      // geometric: objects stand at h = 0 within ±1.5 mm
+    out.shadeAmp = 0.012;  // the visible unevenness is in the normals
     out.v = 1 - 0.06 * Math.exp(-(a - GUTTER_OUT) / 0.25);
   }
   return out;

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RNG, hash2 } from '../core/rng.js';
+import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
 import { facadePlan, archPoint } from './facadePlan.js';
 import { disposeObject } from './streaming.js';
 import { DESIGNS, RAIL_H } from './ironwork/patterns.js';
@@ -29,6 +30,9 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
 const _c4 = new THREE.Matrix4(), _ap = {};
+
+/** Time slice (ms per frame) for preparing upcoming chunks in update(). */
+const PREFETCH_MS = 0.5;
 
 // Linear albedo palettes for balcony gardening (geranium reds and pinks dominate).
 const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0.5, 0.02, 0.17], [0.85, 0.2, 0.1], [0.8, 0.78, 0.74]];
@@ -135,10 +139,16 @@ function headsOf(plan) {
   return h;
 }
 
+const consoleCache = new WeakMap(); // balcony -> placements (plans are cached)
 /** Console positions for a balcony: n evenly spread consoles, each moved to the nearest
  *  pier where it clears the dressing of the openings below; where no pier is wide
  *  enough it is shortened to stop above the head, or left out. → [{u, h}] */
 function placeConsoles(plan, bal, n, Hc) {
+  let out = consoleCache.get(bal);
+  if (!out) consoleCache.set(bal, (out = findConsoles(plan, bal, n, Hc)));
+  return out;
+}
+function findConsoles(plan, bal, n, Hc) {
   const soffit = bal.y - bal.slabT, len = bal.u1 - bal.u0;
   const W2 = CORBEL.W / 2;
   const lo = bal.u0 + W2 + 0.03, hi = bal.u1 - W2 - 0.03;
@@ -224,44 +234,147 @@ const ironwork = {
     };
     this.att = buildAttachAssets();
     this.amats = makeAttachMaterials(app);
+    this.app = app;
     this.live = new Set();
+    this.jobs = new Map(); // chunk index * 2 + lod -> build job (see prefetch)
+    this.pool = [];        // spare merged-mesh writer sets
     this.uniforms = { uIronPx, uIronA2C, uIronCardK }; // for inspection / debugging
-    this.lastCam = new THREE.Vector3(1e9, 0, 0);
     this.lastPx = 0;
   },
 
-  build(chunk, app) {
-    const { layout } = app;
-    const lots = [...layout.inChunk('lots', chunk.index), ...layout.inChunk('sideLots', chunk.index)];
-    if (!lots.length) return null;
+  // ---------------------------------------------------------------- chunk jobs
+  // A chunk is built in small steps (one balcony, or one facade's attachments) into a
+  // job. update() advances the jobs of the chunks the streamer is about to ask for (the
+  // next detail upgrades and the far horizon) within a time slice per frame, so build()
+  // mostly hands over a finished group; a chunk nobody prepared is built in full on the
+  // spot. The content is identical either way (everything is seeded per lot).
+
+  /** New build job for chunk `index` at detail `lod`. */
+  job(index, lod) {
+    const L = this.app.layout;
+    let lots = [...L.inChunk('lots', index), ...L.inChunk('sideLots', index)];
+    // side-street facades are seen down the side street: left out of far chunks beyond
+    // the corner lots
+    if (lod) lots = lots.filter((l) => !(l.sideStreet && l.x0 > 24));
+    if (!lots.length) return { index, lod, steps: null, ctx: null, group: null };
     const ctx = {
-      lod: chunk.lod,       // detail level of the lot being built (may drop below the chunk's)
-      chunkLod: chunk.lod,
+      lod,                // detail level of the lot being built (may drop below the chunk's)
+      chunkLod: lod,
+      clutter: true,
       inst: new LodInstancer(),
-      stone: new GeoWriter(4096, { kind: true }),
-      cards: new GeoWriter(),
-      parts: new GeoWriter(),
-      ac: new GeoWriter(),
-      stains: new GeoWriter(256),
+      w: this.writers(),
       flags: [],
-      bounds: [],           // facade centres (x, y, z, r): culling sphere of the merged meshes
+      bounds: [],         // facade centres (x, y, z, r): culling sphere of the merged meshes
     };
+    Object.assign(ctx, ctx.w); // ctx.stone, ctx.cards, ctx.parts, ctx.ac, ctx.stains
+    return { index, lod, steps: this.steps(ctx, lots), ctx, group: undefined };
+  },
+
+  /** Merged-mesh writers. The geometries of a chunk keep views of their buffers; when the
+   *  chunk is disposed the writers come back here, already grown to chunk size, so
+   *  builds rarely allocate. */
+  writers() {
+    return this.pool.pop() || {
+      stone: new GeoWriter(16384, { kind: true }), cards: new GeoWriter(4096), parts: new GeoWriter(32768),
+      ac: new GeoWriter(1024), stains: new GeoWriter(256),
+    };
+  },
+
+  recycle(w) {
+    if (w && this.pool.length < 4) { for (const k in w) w[k].reset(); this.pool.push(w); }
+  },
+
+  /** The build steps of a chunk: one per balcony, one per facade's attachments. */
+  * steps(ctx, lots) {
     for (const lot of lots) {
-      // side-street facades are seen down the side street: skipped in far chunks beyond
-      // the corner, built with far-range detail deep in near ones. Beyond the corner lots
-      // (35 m and more from any camera on the main street, at grazing angles) the floor
-      // clutter behind the railings is left out: it is hidden by the bars and the slab.
-      if (chunk.lod && lot.sideStreet && lot.x0 > 24) continue;
-      ctx.lod = chunk.lod || (lot.sideStreet && lot.x0 > 60) ? 1 : 0;
+      // deep side-street lots get far-range detail; beyond the corner lots (35 m and
+      // more from any camera on the main street, at grazing angles) the floor clutter
+      // behind the railings is left out: it is hidden by the bars and the slab
+      ctx.lod = ctx.chunkLod || (lot.sideStreet && lot.x0 > 60) ? 1 : 0;
       ctx.clutter = !lot.sideStreet || lot.x0 <= 24;
       const plan = facadePlan(lot);
       const st = lotStyle(lot, plan);
       _p.set(lot.frame.width / 2, plan.totalHeight / 2, 0).applyMatrix4(lot.frame.matrix);
       ctx.bounds.push(_p.x, _p.y, _p.z, Math.max(lot.frame.width, plan.totalHeight) / 2);
-      plan.balconies.forEach((bal, i) => this.balcony(ctx, lot, plan, st, bal, i));
+      for (let i = 0; i < plan.balconies.length; i++) {
+        this.balcony(ctx, lot, plan, st, plan.balconies[i], i);
+        yield;
+      }
       this.facadeAttachments(ctx, lot, plan, st);
+      yield;
     }
-    return this.finish(ctx);
+  },
+
+  /** Advances a job until `deadline` (performance.now() ms); true once its group is made. */
+  runJob(j, deadline) {
+    if (j.group !== undefined) return true;
+    if (j.steps) {
+      for (;;) {
+        if (performance.now() > deadline) return false;
+        if (j.steps.next().done) break;
+      }
+      j.steps = null;
+    }
+    // making the meshes is one step of up to ~0.5 ms: it waits for a fresh slice
+    if (performance.now() > deadline - PREFETCH_MS * 0.7) return false;
+    j.group = this.finish(j.ctx);
+    if (j.group) Object.assign(j.group.userData, { index: j.index, lod: j.lod });
+    j.ctx = null;
+    return true;
+  },
+
+  /** Drops a job that will not be asked for. */
+  dropJob(j) {
+    if (j.group) this.dispose(j.group);
+    else if (j.ctx) this.recycle(j.ctx.w);
+  },
+
+  build(chunk, app) {
+    const key = chunk.index * 2 + (chunk.lod ? 1 : 0);
+    let j = this.jobs.get(key);
+    if (j) this.jobs.delete(key);
+    else j = this.job(chunk.index, chunk.lod);
+    this.runJob(j, Infinity);
+    const g = j.group;
+    if (!g) return null;
+    this.live.add(g);
+    // pick the detail levels now, so the first frame already draws the instances
+    const L = this.limits(this.lastPx || uIronPx.value);
+    for (const s of g.userData.sets) if (s.cls) LodInstancer.partition(s, app.camera.position, L[s.cls]);
+    g.userData.fresh = false;
+    return g;
+  },
+
+  /** Prepares the chunks the streamer will ask for next, within a per-frame time slice:
+   *  nearest first, chunks inside LOD0_DIST + 80 m at full detail, the next two chunks
+   *  beyond the far horizon at far detail. Jobs no longer wanted are dropped. */
+  prefetch(app) {
+    const s = app.cameraS;
+    if (s == null) return;
+    const n = app.layout.nChunks;
+    const have = new Map(); // chunk index -> finest detail level built
+    for (const g of this.live) {
+      const { index, lod } = g.userData;
+      if (!(have.get(index) <= lod)) have.set(index, lod);
+    }
+    const want = [];
+    const i0 = Math.floor((s - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((s + VIEW_AHEAD) / CHUNK_LEN);
+    for (let i = i0; i <= i1 + 2; i++) {
+      const idx = ((i % n) + n) % n;
+      const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s) - CHUNK_LEN / 2);
+      const lod = dist < LOD0_DIST + 80 ? 0 : 1;
+      if (have.get(idx) <= lod) continue;
+      want.push({ key: idx * 2 + lod, idx, lod, dist });
+    }
+    const keep = new Set(want.map((w) => w.key));
+    for (const [k, j] of this.jobs) if (!keep.has(k)) { this.dropJob(j); this.jobs.delete(k); }
+    want.sort((a, b) => a.dist - b.dist);
+    const deadline = performance.now() + PREFETCH_MS;
+    for (const w of want) {
+      let j = this.jobs.get(w.key);
+      if (!j) { j = this.job(w.idx, w.lod); this.jobs.set(w.key, j); }
+      if (!this.runJob(j, deadline)) break;
+    }
   },
 
   /** One balcony: slab, consoles, railing, then what the residents put on it. */
@@ -274,21 +387,17 @@ const ironwork = {
     const tint = st.tint;
     const dirt = r.range(0.88, 1.0);
 
-    const __P = globalThis.__iwP, __t0 = performance.now();
     // ---- slab
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
     writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt, D);
 
-    const __t1 = performance.now(); if (__P) __P.slab = (__P.slab || 0) + __t1 - __t0;
     // ---- consoles, on the piers between the openings below
     if (st.corbel >= 0) {
       const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
       const sz = (D - 0.07) / CORBEL.D;
       const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
-      const __pc = placeConsoles(plan, bal, Math.max(2, bal.corbels | 0), Hc);
-      if (__P) __P.place = (__P.place || 0) + performance.now() - __t1;
-      for (const { u, h } of __pc) {
+      for (const { u, h } of placeConsoles(plan, bal, Math.max(2, bal.corbels | 0), Hc)) {
         // shortened consoles over a high head become the stepped (tiered) kind
         const variant = h < Hc * 0.8 ? 1 : st.corbel;
         _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
@@ -298,7 +407,6 @@ const ironwork = {
       }
     }
 
-    if (__P) __P.cons = (__P.cons || 0) + performance.now() - __t1;
     // ---- railing
     // (the balustrade draws from its own stream so far/near builds place contents alike)
     if (isStone) this.balustrade(ctx, F, bal, rc, tint, new RNG(hash2(lot.seed, 4111 + index)));
@@ -604,15 +712,17 @@ const ironwork = {
       group.add(mesh);
     }
     const sets = ctx.inst.build(group);
-    if (!group.children.length) return null;
-    Object.assign(group.userData, { sets, fresh: true, lod: ctx.chunkLod });
-    this.live.add(group);
+    if (!group.children.length) { this.recycle(ctx.w); return null; }
+    // the geometries view the writers' buffers: they are recycled with the chunk
+    Object.assign(group.userData, { sets, fresh: true, lod: ctx.chunkLod, writers: ctx.w });
     return group;
   },
 
   dispose(obj) {
     this.live.delete(obj);
     disposeObject(obj);
+    this.recycle(obj.userData.writers);
+    obj.userData.writers = null;
   },
 
   /** Distance limits per detail class for the current projection (see header). */
@@ -631,14 +741,16 @@ const ironwork = {
     const post = app.post;
     uIronA2C.value = post && !post.disabled && post.sceneRT && post.sceneRT.samples > 0 ? 1 : 0;
     const cam = app.camera.position;
-    const moved = cam.distanceToSquared(this.lastCam) > 0.04 || Math.abs(px - this.lastPx) > 0.01 * px;
-    if (moved) { this.lastCam.copy(cam); this.lastPx = px; }
-    const L = this.limits(px);
+    // a zoom changes every limit; otherwise a set is revisited once the camera has moved
+    // further than the slack its last partition left
+    const zoomed = Math.abs(px - this.lastPx) > 0.01 * px;
+    if (zoomed) this.lastPx = px;
+    const L = this.limits(this.lastPx);
+    this.prefetch(app);
     for (const g of this.live) {
-      const u = g.userData;
-      if (!moved && !u.fresh) continue;
+      const u = g.userData, force = zoomed || u.fresh;
       u.fresh = false;
-      for (const s of u.sets) if (s.cls) LodInstancer.partition(s, cam, L[s.cls]);
+      for (const s of u.sets) if (s.cls && (force || LodInstancer.stale(s, cam))) LodInstancer.partition(s, cam, L[s.cls]);
     }
   },
 };

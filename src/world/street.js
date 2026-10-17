@@ -10,16 +10,21 @@ import { buildCrossover } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
+import { createMortarMaterial, patchCanyon } from './street/shading.js';
 
 // Rail steel finishes (variants of the library rail.head): the running band is polished
-// but finely scratched by the wheels (roughness ~0.3); the guard lip has no wheel
-// contact and stays dull, dusty steel.
-const RAIL_HEAD = { roughness: 1.9 };
-const RAIL_LIP = { color: [0.6, 0.56, 0.5], roughness: 2.7 };
-// rust on the field-side bevel and lip edge: dark, dirty brown rather than fresh orange
-const RAIL_RUST = { color: [0.62, 0.68, 0.78] };
-// flangeway: compacted sand, rust scale and grime (browner than the library grime)
-const RAIL_GROOVE = { color: [1.65, 1.28, 0.98] };
+// and finely scratched by the wheels (roughness ~0.18-0.28); the guard lip has no wheel
+// contact and stays dull, dusty steel, only slightly darker than the head.
+// All rail variants take vertex colours: the swept profile writes its cavity AO there.
+// The baked micro relief is toned down (normalScale): at grazing angles it turned the
+// sky reflection into a sparkle of specks rather than a satin sheen.
+const RAIL_HEAD = { roughness: 1.45, normalScale: [0.35, 0.35], vertexColors: true };
+// dust is a dielectric film: lower metalness than bare steel
+const RAIL_LIP = { color: [0.95, 0.93, 0.9], roughness: 1.05, metalness: 0.55, normalScale: [0.5, 0.5], vertexColors: true };
+// rust on the narrow field-side bevel: dark, dirty brown rather than fresh orange
+const RAIL_RUST = { color: [0.62, 0.68, 0.78], vertexColors: true };
+// flangeway: near-black compacted grime (the library bake), slightly browner
+const RAIL_GROOVE = { color: [1.0, 0.95, 0.9], vertexColors: true };
 
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
@@ -37,6 +42,9 @@ const street = {
     for (const m of Object.values(lines)) M.register(m.name, m);
     const details = createDetailMaterials(app.renderer);
     for (const m of Object.values(details)) M.register(m.name, m);
+    const mortar = M.register('street.mortar', createMortarMaterial());
+    // rail steel reflects the street canyon, not open sky (see shading.js)
+    const steel = (name, opts) => patchCanyon(M.get(name, opts));
     const mats = {
       corr: M.get('paving.street', { vertexColors: true }),
       band: M.get('paving.band', { vertexColors: true }),
@@ -44,14 +52,15 @@ const street = {
       slab: M.get('concrete'),
       kerb: M.get('paving.band', { vertexColors: true }),
       asphalt: M.get('asphalt', { vertexColors: true }),
-      grout: M.get('asphalt', { vertexColors: true }),
+      grout: mortar,
       tactile: M.get('paving.tactile', { vertexColors: true }),
-      rail: { head: M.get('rail.head', RAIL_HEAD), lip: M.get('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove', RAIL_GROOVE), seal: M.get('rubber') },
+      rail: { head: steel('rail.head', RAIL_HEAD), gauge: null, lip: steel('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove', RAIL_GROOVE), seal: mortar },
       lines,
       details,
     };
+    mats.rail.gauge = mats.rail.head;
     // coplanar inlay layers for crossovers (higher layers win the depth test)
-    const layer = (name, k, extra = {}) => M.get(name, { polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -2 * k, ...extra });
+    const layer = (name, k, extra = {}) => M.get(name, { polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -2 * k, ...extra, vertexColors: false });
     mats.inlay = {
       grout: layer('asphalt', 0.5, { color: [1.5, 1.5, 1.53] }),   // mortar along diverging rails
       plate: layer('rail.groove', 1, { color: [1.55, 1.5, 1.45] }),   // grimy cast steel blocks
@@ -155,18 +164,21 @@ const street = {
     mark('meshes');
 
     for (const rl of MAIN_RAILS) {
-      const pts = samples.map((S) => ({ px: S.px + S.rx * rl.c, py: S.py, pz: S.pz + S.rz * rl.c, rx: S.rx, rz: S.rz, along: S.s }));
+      const pts = samples.map((S) => ({ px: S.px + S.rx * rl.c, py: S.py, pz: S.pz + S.rz * rl.c, rx: S.rx, rz: S.rz, along: S.u }));
       const [arr, half, cOff] = railLinePoints(pts, rl.g);
       L.rail.add(arr, half, cOff);
     }
 
-    // worn centre line between the tracks (interrupted at crossovers and crossings)
+    // worn centre line between the tracks (interrupted at crossovers, crossings and any
+    // cover lying on it)
     let run = [];
     const flush = () => { if (run.length > 6 * 3) L.centre.add(run, 0.055, 0); run = []; };
     const crossings = ctx.layout.crossStreets.filter((c) => Math.abs(ctx.delta(c.s, (chunk.s0 + chunk.s1) / 2)) < 30);
+    const onLine = chunk.lod === 0 ? this.planFor(chunk.index).items.filter((it) => Math.abs(it.d) < it.r + 0.1) : [];
     for (const S of samples) {
-      if (inInlayZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.delta(c.s, S.s)) < 2.6)) { flush(); continue; }
-      run.push(S.px, S.py + ctx.surface.height(S.ri, 0), S.pz, S.rx, S.rz, S.s);
+      if (inInlayZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.delta(c.s, S.s)) < 2.6)
+        || onLine.some((it) => Math.abs(ctx.delta(it.s, S.s)) < it.r + 0.15)) { flush(); continue; }
+      run.push(S.px, S.py + ctx.surface.height(S.ri, 0), S.pz, S.rx, S.rz, S.u);
     }
     flush();
 

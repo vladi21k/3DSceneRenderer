@@ -4,7 +4,7 @@
 // material / vertex colour. Tile 0.2 m.
 export const canvas = {
   name: 'canvas', flat: [0.92, 0.92, 0.92, 0.83], size: 512, tile: [0.2, 0.2], ss: 2,
-  pass: { normal: 0.6, ao: 0.5, aoRadius: 0.0008, cavity: 0.25 },
+  pass: { normal: 0.6, ao: 0.5, aoRadius: 0.0008, cavity: 0.08 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   const float P = 0.001;                                   // yarn pitch (200 per tile)
@@ -27,33 +27,64 @@ void surface(vec2 m, inout Surf s) {
 };
 
 // Natural wood, grain along v (boards / door stiles). Warm mid-tone; materials tint it.
-export const wood = {
-  name: 'wood', flat: [0.4, 0.26, 0.15, 0.66], size: 512, tile: [0.5, 1.0], ss: 2,
-  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.002, cavity: 0.3 },
-  glsl: /* glsl */ `
+// CHECKS = 1 adds weathering splits: thin cracks that follow the grain, 5-20 cm long,
+// tapering at both ends, on a few of the grain lines across the board.
+const woodGlsl = (checks) => /* glsl */ `
+const float CHECKS = ${checks ? '1.0' : '0.0'};
+float checks(vec2 m, float wx) {
+  const int NX = 43;                                    // candidate grain lines ~11.6 mm apart
+  const int NV = 8;                                     // ~12.5 cm segments along the grain
+  float cw = uTile.x / float(NX), L = uTile.y / float(NV);
+  int ci = int(floor(wx / cw));
+  float res = 0.0;
+  for (int j = -uOne; j <= uOne; j++) {
+    int c = sfMod(ci + j, NX);
+    if (sfHash(ivec2(c, 0), 228u) < 0.85) continue;
+    float xc = (float(ci + j) + 0.25 + 0.5 * sfHash(ivec2(c, 1), 228u)) * cw;
+    float yv = m.y + sfHash(ivec2(c, 2), 228u) * uTile.y;
+    int sg = int(floor(yv / L));
+    ivec2 key = ivec2(c, sfMod(sg, NV) + 3);
+    if (sfHash(key, 229u) < 0.45) continue;
+    float t = (yv / L - float(sg)) / (0.4 + 0.6 * sfHash(key, 230u));
+    if (t > 1.0) continue;
+    float hw = (0.00015 + 0.00025 * sfHash(key, 231u)) * sin(3.14159 * t);
+    res = max(res, 1.0 - smoothstep(hw, hw + 0.0004, abs(wx - xc)));
+  }
+  return res;
+}
 void surface(vec2 m, inout Surf s) {
   // growth rings: warped, with varying ring width and figure across the board
   vec2 w = m + vec2(fbm2(m, vec2(3.0, 0.8), 4, 0.5, 221u) * 0.025, 0.0);
   float rings = w.x * 70.0 + fbm2(m, vec2(4.0, 1.0), 3, 0.5, 222u) * 4.0 + fbm2(m, vec2(1.0, 2.0), 2, 0.5, 226u) * 6.0;
   float late = smoothstep(0.5, 0.95, fract(rings)) * (0.6 + 0.4 * fbm2(m, vec2(2.0, 3.0), 2, 0.5, 227u));
   float pores = smoothstep(0.6, 1.0, fbm2(m, vec2(300.0, 12.0), 2, 0.5, 223u));
-  // weathering checks: thin splits along the grain in some Voronoi cells
-  vec4 ck = voro(m, vec2(24.0, 3.0), 224u, 1.0);
-  float check = smoothstep(0.035, 0.0, ck.w) * step(0.72, ck.z);
+  float check = CHECKS > 0.5 ? checks(m, w.x) : 0.0;
   vec3 early = vec3(0.47, 0.32, 0.19), lateC = vec3(0.29, 0.175, 0.095);
   s.albedo = mix(early, lateC, late) * (1.0 - 0.15 * pores) * (1.0 + 0.08 * fbm(m, 3.0, 3, 0.5, 225u));
-  s.albedo *= 1.0 - 0.45 * check;
-  s.height = late * 0.00012 - pores * 0.00008 - check * 0.0007;
-  s.rough = 0.6 + 0.12 * late + 0.2 * check;
+  s.albedo *= 1.0 - 0.5 * check;
+  s.height = late * 0.00012 - pores * 0.00008 - check * 0.0008;
+  s.rough = 0.6 + 0.12 * late + 0.25 * check;
 }
-`,
+`;
+
+export const wood = {
+  name: 'wood', flat: [0.4, 0.26, 0.15, 0.66], size: 512, tile: [0.5, 1.0], ss: 2,
+  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.002, cavity: 0.06 },
+  glsl: woodGlsl(false),
+};
+
+// Weathered timber (benches): the same wood with grain-aligned checks.
+export const woodweathered = {
+  name: 'woodweathered', flat: [0.4, 0.26, 0.15, 0.68], size: 512, tile: [0.5, 1.0], ss: 2,
+  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.002, cavity: 0.06 },
+  glsl: woodGlsl(true),
 };
 
 // Painted timber (louvred shutters): grain telegraphs through the paint, cracked and
 // slightly peeling paint. Grain along u. Albedo near white (paint colour from material).
 export const paintwood = {
   name: 'paintwood', flat: [0.88, 0.88, 0.88, 0.55], size: 512, tile: [0.5, 0.5], ss: 2,
-  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.003, cavity: 0.3 },
+  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.003, cavity: 0.06 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float rings = m.y * 80.0 + fbm2(m, vec2(1.0, 6.0), 3, 0.5, 231u) * 3.0;
@@ -74,7 +105,7 @@ void surface(vec2 m, inout Surf s) {
 export const rooftile = {
   name: 'rooftile', flat: [0.36, 0.12, 0.055, 0.78], size: 512, tile: [1.92, 1.98], ss: 2,
   layout: { rowH: 0.33, rows: 6, seg: [8, 8], jitter: 0.0, seed: 17, shift: false },
-  pass: { normal: 1.0, ao: 1.0, aoRadius: 0.03, cavity: 0.45 },
+  pass: { normal: 1.0, ao: 0.7, aoRadius: 0.015, cavity: 0.08 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
@@ -101,7 +132,7 @@ void surface(vec2 m, inout Surf s) {
 // Roof membrane: granulated bitumen cap sheet, 1 m laps along v.
 export const membrane = {
   name: 'membrane', flat: [0.28, 0.275, 0.26, 0.9], size: 512, tile: [2.0, 2.0], ss: 2,
-  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.01, cavity: 0.3 },
+  pass: { normal: 1.0, ao: 0.5, aoRadius: 0.008, cavity: 0.06 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   vec4 g = voro(m, vec2(220.0), 251u, 1.0);
@@ -120,7 +151,7 @@ void surface(vec2 m, inout Surf s) {
 // Cast concrete: cement clouding, fine aggregate, bug holes.
 export const concrete = {
   name: 'concrete', flat: [0.39, 0.38, 0.36, 0.87], size: 512, tile: [2.0, 2.0], ss: 2,
-  pass: { normal: 1.0, ao: 0.7, aoRadius: 0.006, cavity: 0.4 },
+  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.06 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float cl = fbm(m, 2.0, 5, 0.6, 261u);
@@ -138,7 +169,7 @@ void surface(vec2 m, inout Surf s) {
 // Lime render: trowel undulation, sand texture, hairline cracks, soft soiling.
 export const plaster = {
   name: 'plaster', flat: [0.65, 0.61, 0.53, 0.9], size: 512, tile: [2.0, 2.0], ss: 2,
-  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.35 },
+  pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.05 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float trowel = fbm(warp(m, 1.5, 0.15, 271u), 2.5, 4, 0.5, 272u);
@@ -153,20 +184,29 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Asphalt: dark binder with exposed aggregate, worn and dusty.
+// Asphalt / bituminous mortar: angular crushed-stone chips (5-14 mm and finer grit) in a
+// dark binder, worn so the chip tops are exposed; dust settles in the voids. Low contrast:
+// from a few metres it reads as an even dark grey with a fine grain.
 export const asphalt = {
-  name: 'asphalt', flat: [0.1, 0.1, 0.1, 0.88], size: 512, tile: [1.5, 1.5], ss: 2,
-  pass: { normal: 1.0, ao: 0.8, aoRadius: 0.006, cavity: 0.4 },
+  name: 'asphalt', flat: [0.085, 0.084, 0.082, 0.86], size: 512, tile: [1.5, 1.5], ss: 2,
+  pass: { normal: 1.0, ao: 0.5, aoRadius: 0.004, cavity: 0.05 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  vec4 a = voro(m, vec2(90.0), 281u, 0.9);
-  float stone = smoothstep(0.62, 0.35, a.x);
-  float dust = smoothstep(-0.2, 0.6, fbm(m, 2.0, 4, 0.55, 282u));
-  s.height = stone * 0.0015 * (0.6 + 0.4 * a.z) + fbm(m, 200.0, 2, 0.5, 283u) * 0.0002;
-  vec3 binder = vec3(0.045, 0.045, 0.045);
-  vec3 agg = vec3(0.16, 0.155, 0.15) * (0.7 + 0.6 * a.z);
-  s.albedo = mix(binder, agg, stone * 0.85) * (1.0 + 0.35 * dust);
-  s.rough = mix(0.92, 0.78, stone);
+  vec2 w = warp(m, 30.0, 0.003, 284u);
+  vec4 a = voro(w, vec2(75.0), 281u, 1.0);                    // coarse chips (~13 mm cells)
+  vec4 b = voro(w + 0.37, vec2(170.0), 285u, 1.0);            // fine grit (~6 mm cells)
+  // polygonal chips: Voronoi cells shrunk from their edges (F2 - F1), not round blobs
+  float chipA = smoothstep(0.06, 0.16, a.w) * step(0.45, a.z);
+  float chipB = smoothstep(0.05, 0.14, b.w) * step(0.4, b.z) * (1.0 - chipA);
+  float chip = chipA + chipB;
+  float tone = chipA > 0.0 ? fract(a.z * 7.31) : fract(b.z * 5.17);
+  float dust = smoothstep(-0.3, 0.6, fbm(m, 2.0, 4, 0.55, 282u));
+  float grit = fbm(m, 260.0, 2, 0.5, 283u);
+  vec3 binder = vec3(0.05, 0.05, 0.05) * (1.0 + 0.15 * grit) * (1.0 + 0.4 * dust);
+  vec3 agg = mix(vec3(0.1, 0.1, 0.098), vec3(0.15, 0.143, 0.133), tone) * (1.0 + 0.15 * dust);
+  s.albedo = mix(binder, agg, chip * 0.85);
+  s.height = chipA * 0.0011 + chipB * 0.0006 + grit * 0.00015;
+  s.rough = mix(0.92, 0.8, chip);
 }
 `,
 };
@@ -175,7 +215,7 @@ void surface(vec2 m, inout Surf s) {
 // u around the trunk, v up. Tile 0.8 x 1.6 m.
 export const bark = {
   name: 'bark', flat: [0.18, 0.155, 0.125, 0.88], size: 512, tile: [0.8, 1.6], ss: 2,
-  pass: { normal: 1.0, ao: 0.8, aoRadius: 0.006, cavity: 0.45 },
+  pass: { normal: 1.0, ao: 0.7, aoRadius: 0.006, cavity: 0.08 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   vec2 w = warp(m, 2.0, 0.04, 291u);

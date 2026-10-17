@@ -1,8 +1,6 @@
 import * as THREE from 'three';
 import { TRACK_OFFSET, EYE_HEIGHT, DEFAULT_VFOV } from '../core/config.js';
 import { RNG, noise1, hash2 } from '../core/rng.js';
-import { U } from '../core/uniforms.js';
-import { MeshBatcher } from '../core/geom.js';
 import { input } from './input.js';
 
 // Cab camera: the driver's eye in the cab body, EYE_HEIGHT above the rail top.
@@ -23,9 +21,8 @@ import { input } from './input.js';
 //  - mouse look (drag) with soft limits, easing back to centre when released;
 //  - zoom (Z / X / wheel / UI) between 12° and 60° vertical FOV, smoothed in log space;
 //    portrait screens keep the landscape horizontal view;
-//  - motion data for a shutter blur in post: previous view-projection, cut flag;
-//  - zoomed out (wide lens), the cab itself: console with its defroster grille, A-pillars,
-//    the blind housing and a windscreen whose dust and wiper streaks light up against the sun.
+//  - motion data for a shutter blur in post: previous view-projection, cut flag.
+// The tram itself is never rendered: no cab, console or windscreen in view at any zoom.
 // Simulation-driven motion uses the train clock, so it stands still while frozen or held.
 
 const DEG = Math.PI / 180;
@@ -129,192 +126,6 @@ function nextIndex(F, x) {
   return lo % F.length;
 }
 
-// ---------------------------------------------------------------- cab interior
-// Body-local metres from the driver's eye: x right, y up, -z forward. Only what a wide
-// lens sees from the seat; everything is hidden at the default telephoto framing.
-const CAB = {
-  halfW: 1.25,              // console half width (inner cab width ~2.5 m)
-  wrap: 0.32,               // the windscreen wraps back by this much at the sides
-  glassBot: [-1.13, -0.43], // (z, y) windscreen bottom edge (behind the console lip)
-  glassTop: [-0.86, 0.47],  // (z, y) windscreen top edge
-  showFov: 27,              // vertical FOV above which the cab can be in view
-};
-const wrapZ = (x) => CAB.wrap * (x / CAB.halfW) ** 2;
-
-/** Sweep a (z, y) profile across x (n segments); u = x, v = profile length (metres). */
-function sweepX(profile, x0, x1, n) {
-  const m = profile.length, pos = [], uv = [], idx = [];
-  const L = [0];
-  for (let k = 1; k < m; k++) L[k] = L[k - 1] + Math.hypot(profile[k][0] - profile[k - 1][0], profile[k][1] - profile[k - 1][1]);
-  for (let i = 0; i <= n; i++) {
-    const x = x0 + ((x1 - x0) * i) / n, dz = wrapZ(x);
-    for (let k = 0; k < m; k++) { pos.push(x, profile[k][1], profile[k][0] + dz); uv.push(x, L[k]); }
-  }
-  for (let i = 0; i < n; i++) {
-    for (let k = 0; k < m - 1; k++) {
-      const a = i * m + k, b = a + m;
-      idx.push(a, b, a + 1, b, b + 1, a + 1);     // faces up / back towards the eye
-    }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(idx);
-  g.computeVertexNormals();
-  return g;
-}
-
-/** Rounded trim from a to b: an elliptic section (radius r0 at a, r1 at b, `flat` times
- *  deeper than wide), turned by `roll` about its axis. */
-function trimBar(a, b, r0, r1, flat = 1.5, roll = 0) {
-  const dir = new THREE.Vector3().subVectors(b, a), len = dir.length();
-  const g = new THREE.CylinderGeometry(r1, r0, len, 14, 1);
-  g.scale(1, 1, flat);
-  g.rotateY(roll);
-  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()));
-  g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
-  return g;
-}
-
-const GLASS_VS = /* glsl */`
-varying vec2 vUv;
-varying vec3 vWorld;
-void main() {
-  vUv = uv;
-  vec4 w = modelMatrix * vec4(position, 1.0);
-  vWorld = w.xyz;
-  gl_Position = projectionMatrix * viewMatrix * w;
-}`;
-
-// Dust, grime and dried specks on the outside of the windscreen, cleaner where the
-// wiper sweeps (with fine arc streaks). Dust scatters sunlight that reaches the glass,
-// most strongly forwards, so it glows when the tram runs towards the sun. Additive.
-const GLASS_FS = /* glsl */`
-uniform vec3 uSunDir;
-uniform vec3 uSunColor;
-uniform vec3 uGlassN;
-uniform float uNight;
-uniform float uFade;
-varying vec2 vUv;
-varying vec3 vWorld;
-float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float vn(vec2 p) {
-  vec2 i = floor(p), f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y);
-}
-void main() {
-  vec2 p = vUv;                                   // x across, y up along the glass (m)
-  vec2 q = p - vec2(0.08, -0.16);                 // wiper pivot below the glass
-  float r = length(q), ang = atan(q.y, q.x);
-  float swept = smoothstep(0.24, 0.3, r) * (1.0 - smoothstep(0.98, 1.06, r)) * smoothstep(-0.02, 0.06, q.y);
-  float grime = 0.55 * vn(p * 38.0) + 0.3 * vn(p * 95.0 + 3.1) + 0.15 * vn(p * 230.0 + 7.7);
-  float blot = 0.7 * vn(p * 3.1 + 7.0) + 0.3 * vn(p * 7.3 + 1.9);
-  float edge = smoothstep(0.6, 1.08, abs(p.x)) + smoothstep(0.32, 0.0, p.y) + 0.5 * smoothstep(0.7, 0.9, p.y);
-  float dust = (0.2 + 0.8 * blot) * (0.4 + 0.6 * grime) * (0.45 + 0.8 * edge);
-  float streak = 0.5 + 0.5 * sin(r * 380.0 + 6.0 * vn(vec2(r * 30.0, 0.5)));
-  dust *= mix(1.0, 0.2 + 0.45 * streak * vn(vec2(r * 55.0, ang * 4.0)), swept);
-  vec2 cell = floor(p * 24.0), fc = fract(p * 24.0) - 0.5;
-  vec2 off = vec2(h21(cell + 1.7), h21(cell + 5.3)) - 0.5;
-  float speck = step(0.94, h21(cell + 9.1)) * smoothstep(0.16, 0.04, length(fc - off * 0.6));
-  dust += speck * 1.2 * (1.0 - 0.7 * swept);
-  vec3 V = normalize(vWorld - cameraPosition);
-  float c = max(dot(V, uSunDir), 0.0);
-  float phase = 0.1 + 1.4 * pow(c, 6.0) + 9.0 * pow(c, 60.0);
-  float lit = smoothstep(-0.05, 0.25, dot(uSunDir, uGlassN)) * (1.0 - uNight);
-  gl_FragColor = vec4(uSunColor * (dust * phase * lit * 0.01 * uFade), 1.0);
-}`;
-
-/** Console plastic: dark, satin, with a light dust film and the defroster grille slots
- *  just behind the front lip (uv: x metres, v metres along the profile). */
-function consoleMaterial(lipV) {
-  const m = new THREE.MeshStandardMaterial({ name: 'cab.console', color: new THREE.Color(0.028, 0.029, 0.031), roughness: 0.6 });
-  m.onBeforeCompile = (sh) => {
-    sh.uniforms.uLipV = { value: lipV };
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec2 vCabUv;')
-      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvCabUv = uv;');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>
-varying vec2 vCabUv;
-uniform float uLipV;
-float cabH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float cabN(vec2 p) {
-  vec2 i = floor(p), f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(cabH(i), cabH(i + vec2(1.0, 0.0)), f.x), mix(cabH(i + vec2(0.0, 1.0)), cabH(i + vec2(1.0, 1.0)), f.x), f.y);
-}`)
-      .replace('#include <color_fragment>', `#include <color_fragment>
-  float cabDv = uLipV - vCabUv.y;
-  float cabSlot = step(0.03, cabDv) * step(cabDv, 0.075) * step(0.5, fract(vCabUv.x / 0.012));
-  float cabDust = smoothstep(0.35, 0.95, 0.6 * cabN(vCabUv * vec2(5.0, 8.0)) + 0.4 * cabN(vCabUv * 29.0));
-  diffuseColor.rgb = diffuseColor.rgb * mix(1.0, 0.45, cabSlot) + vec3(0.014, 0.013, 0.012) * cabDust;`)
-      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-  roughnessFactor = clamp(roughnessFactor + 0.25 * cabDust + 0.25 * cabSlot, 0.0, 1.0);`);
-  };
-  m.customProgramCacheKey = () => 'cab.console';
-  return m;
-}
-
-function buildCab(app) {
-  const mats = app.materials;
-  const T = (x, y, z) => new THREE.Vector3(x, y, z);
-
-  // console: near part (out of view) up to a rounded front lip, then down to the glass
-  const lipZ = -1.05, lipY = -0.4;
-  const prof = [[-0.55, -0.62], [-0.72, -0.47], [-0.93, -0.414], [lipZ + 0.035, lipY - 0.002], [lipZ, lipY],
-    [lipZ - 0.02, lipY - 0.008], [lipZ - 0.032, lipY - 0.03], [lipZ - 0.045, lipY - 0.14]];
-  let lipV = 0;
-  for (let k = 1; k <= 4; k++) lipV += Math.hypot(prof[k][0] - prof[k - 1][0], prof[k][1] - prof[k - 1][1]);
-  const consoleMat = mats.track(consoleMaterial(lipV));
-  const trim = mats.track(new THREE.MeshStandardMaterial({ name: 'cab.trim', color: new THREE.Color(0.024, 0.025, 0.027), roughness: 0.72 }));
-  const group = new THREE.Group();
-  group.name = 'cab';
-  const dash = new THREE.Mesh(sweepX(prof, -CAB.halfW, CAB.halfW, 32), consoleMat);
-  dash.receiveShadow = true;
-  group.add(dash);
-
-  // A-pillars where the wrapped windscreen meets the side windows, the side walls with
-  // their window sills, the blind housing over the windscreen and the ceiling
-  const batch = new MeshBatcher();
-  const W = CAB.halfW;
-  for (const sx of [-1, 1]) {
-    const pb = T(sx * (W - 0.03), CAB.glassBot[1] + 0.02, CAB.glassBot[0] + CAB.wrap - 0.02);
-    const pt = T(sx * (W - 0.13), CAB.glassTop[1] + 0.05, CAB.glassTop[0] + CAB.wrap * 0.75);
-    batch.add(trim, trimBar(pb, pt, 0.06, 0.042, 2.0, sx * 0.6));
-    batch.add(trim, trimBar(T(sx * (W - 0.01), -0.385, pb.z), T(sx * (W - 0.01), -0.385, 0.8), 0.026, 0.026, 1.6));
-    batch.add(trim, new THREE.BoxGeometry(0.05, 0.8, 0.8 - pb.z).translate(sx * (W + 0.01), -0.79, (0.8 + pb.z) / 2));
-  }
-  batch.add(trim, trimBar(T(-W + 0.1, 0.47, -0.8), T(W - 0.1, 0.47, -0.8), 0.06, 0.06, 1.0));
-  batch.add(trim, new THREE.BoxGeometry(2 * W + 0.1, 0.04, 1.6).translate(0, 0.56, 0.0));
-  for (const m of batch.build({ castShadow: false, receiveShadow: true, name: 'cab' }).children.slice()) group.add(m);
-  // the roof shades the console from a high sun
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(2 * W + 0.2, 0.08, 1.9).translate(0, 0.64, -0.05), trim);
-  roof.castShadow = true;
-  group.add(roof);
-
-  // windscreen dust layer
-  const glassMat = new THREE.ShaderMaterial({
-    name: 'cab.glass',
-    vertexShader: GLASS_VS,
-    fragmentShader: GLASS_FS,
-    uniforms: {
-      uSunDir: U.uSunDir, uSunColor: U.uSunColor, uNight: U.uNight,
-      uGlassN: { value: new THREE.Vector3(0, 0.3, -1).normalize() }, uFade: { value: 0 },
-    },
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-  });
-  mats.track(glassMat);
-  const mid = [(CAB.glassBot[0] + CAB.glassTop[0]) / 2, (CAB.glassBot[1] + CAB.glassTop[1]) / 2];
-  const glass = new THREE.Mesh(sweepX([CAB.glassBot, mid, CAB.glassTop], -W + 0.04, W - 0.04, 20), glassMat);
-  glass.renderOrder = 2;
-  glass.frustumCulled = false;
-  group.add(glass);
-  group.userData.glass = glassMat;
-  group.visible = false;
-  return group;
-}
-
 const cameraRig = {
   name: 'cameraRig',
   yaw: 0,            // look offset (rad, + = left)
@@ -358,15 +169,6 @@ const cameraRig = {
     this.F = null;             // track features (resolved on the first update: audio inits later)
     this._cursor = new Int32Array(AXLES.length / 2).fill(-1);
     this.board = null;         // boarding movements while the doors are open
-
-    // the cab, seen when zoomed out (fixed to the body, not to the head)
-    try {
-      this.cab = buildCab(app);
-      app.scene.add(this.cab);
-    } catch (e) {
-      console.warn('[cameraRig] cab not built', e);
-      this.cab = null;
-    }
 
     // mouse look state
     this.look = { rawYaw: 0, rawPitch: 0, vy: 0, vp: 0 };
@@ -457,21 +259,6 @@ const cameraRig = {
       this.roll.x + hv.roll, 'YXZ'));
     this._qHead.setFromEuler(this._e.set(RIG.basePitch + this._tallPitch + this.headP.x + this.pitch, this.head.x + this.yaw, 0, 'YXZ'));
     camera.quaternion.copy(this._qBody).multiply(this._qHead);
-    this._placeCab(camera, app);
-  },
-
-  /** The cab follows the body; it is shown only when a wide view or a look around can see it. */
-  _placeCab(camera, app) {
-    const cab = this.cab;
-    if (!cab) return;
-    const show = !app.params.view && (camera.fov > CAB.showFov || Math.abs(this.pitch) > 6 * DEG || Math.abs(this.yaw) > 18 * DEG);
-    cab.visible = show;
-    if (!show) return;
-    cab.position.copy(camera.position);
-    cab.quaternion.copy(this._qBody);
-    const g = cab.userData.glass.uniforms;
-    g.uFade.value = smoothstep(CAB.showFov, CAB.showFov + 13, camera.fov);
-    g.uGlassN.value.set(0, 0.3, -1).normalize().applyQuaternion(this._qBody);
   },
 
   _body(dt, t, s, v, acc, tr, route, app) {

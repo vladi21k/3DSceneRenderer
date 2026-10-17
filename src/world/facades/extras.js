@@ -22,8 +22,8 @@ export function createLampGlass(M) {
       .replace('#include <common>', '#include <common>\nuniform float uNight;')
       .replace('#include <opaque_fragment>', `
 float fNVl = saturate( abs( dot( normal, normalize( vViewPosition ) ) ) );
-float aGl = 0.05 + 0.6 * pow( 1.0 - fNVl, 5.0 );
-vec3 hazeL = vec3( 1.0, 0.62, 0.32 ) * 0.0012 * smoothstep( 0.15, 0.7, uNight );
+float aGl = 0.09 + 0.6 * pow( 1.0 - fNVl, 5.0 );
+vec3 hazeL = vec3( 1.0, 0.62, 0.32 ) * 0.0008 * smoothstep( 0.15, 0.7, uNight );
 gl_FragColor = vec4( totalDiffuse * 0.04 + totalSpecular + hazeL, aGl );`)
       .replace('#include <premultiplied_alpha_fragment>', '');
   };
@@ -48,7 +48,7 @@ export function createBulbMaterial() {
 
 /** Small faceted sphere (radius r) around c. */
 function bulb(t, c, r) {
-  const n = 8, rings = 4;
+  const n = 12, rings = 5;
   const P = (i, j) => {
     const th = Math.PI * (0.14 + (0.86 * j) / rings), ph = (2 * Math.PI * i) / n; // open at the cap
     return [c[0] + r * Math.sin(th) * Math.cos(ph), c[1] + r * Math.cos(th), c[2] + r * Math.sin(th) * Math.sin(ph)];

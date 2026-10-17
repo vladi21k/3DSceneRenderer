@@ -1,5 +1,5 @@
 import { archPoint, openingOutline } from '../facadePlan.js';
-import { FACES } from './mesh.js';
+import { FACES, arcSeg } from './mesh.js';
 
 // Self-contained opening infill for buildings-only lots (the facades closing the far end
 // of side streets), which the facades module does not dress. Seen from 60–120 m, so it is
@@ -37,7 +37,7 @@ export function openingInfill(ctx, face, o, rng) {
   // glazing (the whole outline; doors and shutters cover parts of it)
   B.flat = [1, 1, 1];
   B.grime = shop ? 0.9 : (o.lit != null && o.lit < 0.32 ? 0.75 : 0);
-  pane(B, sinks.glass, o, w0 - 0.012, arched ? q.archSeg : 1);
+  pane(B, sinks.glass, o, w0 - 0.012, arched ? arcSeg(q, o) : 1);
   B.grime = 0;
 
   // frame: jambs, sill / head rails, arched head ring
@@ -48,7 +48,7 @@ export function openingInfill(ctx, face, o, rng) {
   B.box(sF, u1 - fw, u1, o.y, ys, wb, wf, FACES.FRONT | FACES.LEFT);
   B.box(sF, u0 + fw, u1 - fw, o.y, o.y + fw * 1.3, wb, wf, FACES.FRONT | FACES.TOP);
   if (!arched) B.box(sF, u0 + fw, u1 - fw, yt - fw, yt, wb, wf, FACES.FRONT | FACES.BOTTOM);
-  else archRing(B, sF, o, fw, wb, wf, q.archSeg);
+  else archRing(B, sF, o, fw, wb, wf, arcSeg(q, o));
 
   // transom and mullions
   const top = arched ? ys : yt - fw;

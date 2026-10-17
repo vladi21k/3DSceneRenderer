@@ -1,4 +1,5 @@
 import { FACES } from './mesh.js';
+import { setBlock, hash3 } from './shade.js';
 
 // Moulding profiles (pairs [out, up] ordered bottom → top, out measured in front of
 // the wall face) and the small repeated stone details that go with them.
@@ -118,7 +119,8 @@ function modillionProfile(H, P) {
  * an angled corner return interlocks with the front's).
  */
 export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev, opts = {}) {
-  const p = q.proj, joint = 0.012;
+  const joint = 0.012, seed = opts.seed | 0;
+  const mb = bev > 0 ? Math.max(bev, 0.022) : 0;   // drafted margin
   const retFace = wrap && opts.retFace !== false;
   let v = v0, i = opts.parity || 0;
   while (v + qh * 0.6 < v1) {
@@ -126,6 +128,12 @@ export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev, opts = {}) {
     const long = i % 2 === 0;
     const fw = long ? q.long : q.short;      // width on the front face
     const sw = long ? q.short : q.long;      // depth on the return face
+    // each block its own tone, tooling and (by a few millimetres) face plane
+    const h = hash3(seed, i, side);
+    setBlock(h);
+    B.setUV(1, h * 7.3, 1, h * 5.1);
+    const p = q.proj + (h - 0.5) * 0.006;
+    bev = mb;
     if (side === 0) {
       B.bevelBox(s, -(wrap ? p : 0), fw, v, top, 0, p, bev, FACES.ALL & ~FACES.BACK);
       if (retFace) B.box(s, -p, 0, v, top, -sw, 0, FACES.LEFT | FACES.TOP | FACES.BOTTOM | FACES.BACK);
@@ -135,6 +143,8 @@ export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev, opts = {}) {
     }
     v += qh; i++;
   }
+  setBlock(-1);
+  B.setUV();
 }
 
 /** Pilaster: shaft with base and a small moulded capital. */

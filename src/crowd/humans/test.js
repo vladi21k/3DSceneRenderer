@@ -9,6 +9,9 @@ import { hash2 } from '../../core/rng.js';
 //   ht_seed = appearance seed offset, ht_v = fixed walking speed (m/s), ht_look = head yaw (rad)
 //   ht_c    = lateral centre of the lineup (route d, metres), ht_sp = grid spacing (m)
 //   ht_rot  = extra heading for grid / sit figures (deg; 180 shows their backs, 90 a profile)
+//   ht_filter = skirt | dress | hat | cap | sunhat | suit | old | oldwalk | child | beard | glasses |
+//               shorts | bag | backpack | phone | cross | long | heavy | male | female
+//   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
 // e.g. ?only=humans&humanstest=1&ht_mode=grid&view=400,1.6,1.7,0,0&fov=17
 
@@ -26,6 +29,9 @@ export class HumansTest {
     this.c = p.num('ht_c', 0);
     this.sp = p.num('ht_sp', 0.85);
     this.rot = (p.num('ht_rot', 0) * Math.PI) / 180;
+    this.firstFig = p.num('ht_first', 0);       // skip this many figures of the seed's sequence
+    this.filter = p.str('ht_filter', null);
+    this.nextK = this.firstFig;
     this.poseT = p.num('ht_pose', 0);
     this.s0 = (p.view ? p.view[0] : app.startS) + this.d0;
     this.first = humans.alloc(this.n);
@@ -33,7 +39,7 @@ export class HumansTest {
     this.figs = [];
     const chairs = this.mode === 'cafe' ? this._chairs() : [];
     for (let i = 0; i < this.n; i++) {
-      const app_ = hash2(this.seed * 7919 + i, 4242) >>> 0;
+      const app_ = this._pick(i);
       const f = { i: this.first + i, app: app_, phase: (i * 0.37) % 1 };
       const mode = this.mode === 'mix' ? ['walk', 'walk', 'cross', 'grid', 'sit'][i % 5] : this.mode;
       f.mode = mode;
@@ -97,6 +103,16 @@ export class HumansTest {
     }
   }
 
+  /** Appearance seed of the next figure of the sequence that passes ht_filter. */
+  _pick() {
+    const want = FILTERS[this.filter];
+    for (let tries = 0; tries < 5000; tries++) {
+      const seed = hash2(this.seed * 7919 + this.nextK++, 4242) >>> 0;
+      if (!want || want(this.h.appearanceOf(seed), this.h.parts)) return seed;
+    }
+    return hash2(this.seed * 7919, 4242) >>> 0;
+  }
+
   /** Chairs of the cafés around the lineup position, with the heading that faces their table. */
   _chairs() {
     const { route, layout } = this.app;
@@ -117,3 +133,27 @@ export class HumansTest {
 }
 
 function i0(f) { return f.i; }
+
+// ht_filter: only figures of one kind
+const FILTERS = {
+  skirt: (a) => a.skirtPart > 0 && a.topType !== 5,
+  dress: (a) => a.topType === 7,
+  hat: (a) => a.hatPart > 0,
+  cap: (a, P) => a.hatPart === P.cap,
+  sunhat: (a, P) => a.hatPart === P.sunhat,
+  suit: (a) => a.topType === 5,
+  old: (a) => a.age === 'old',
+  oldwalk: (a) => a.walkOld,
+  child: (a) => a.age === 'child',
+  beard: (a) => a.beardPart > 0,
+  glasses: (a) => a.glasses > 0,
+  shorts: (a) => a.bottomType === 2,
+  bag: (a, P) => a.bagPart === P.shoulderbag,
+  backpack: (a, P) => a.bagPart === P.backpack,
+  phone: (a) => a.phoneWalk,
+  cross: (a) => a.idle === 2,
+  long: (a, P) => a.hairPart === P.hair_long || a.hairPart === P.hair_ponytail,
+  heavy: (a) => a.build > 0.5 || a.belly > 0.5,
+  male: (a) => a.base === 'male',
+  female: (a) => a.base === 'female',
+};

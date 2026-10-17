@@ -219,13 +219,25 @@ export class Baker {
 
   /**
    * Compile every recipe in parallel (KHR_parallel_shader_compile) and bake each one into
-   * its prepared target as soon as its program is ready. Runs in the background; the
-   * returned promise resolves with timing stats once every map is final.
+   * its prepared target once its program is ready. While `opts.immediate()` is true
+   * (startup, behind the loading screen) a recipe bakes as soon as it compiles; after
+   * that the remaining ones are queued and baked one per animation frame, largest first,
+   * so bakes never pile up in one frame. `opts.profile` measures each bake's GPU time with
+   * a forced sync (stats only). Note: a program's first draw also pays the driver's deferred
+   * compile (often 10× the steady-state cost of the bake itself, e.g. ashlar ~200 ms vs
+   * 8 ms), which is why startup bakes everything before the first frame.
+   * Resolves with timing stats once every map is final.
    */
-  async run(entries) {
+  async run(entries, opts = {}) {
     const t0 = performance.now();
     const R = this.renderer;
-    const timings = {};
+    const px = new Uint8Array(4);
+    // a 1-pixel read-back is the only reliable full GPU sync (gl.finish may return early)
+    const sync = (target) => R.readRenderTargetPixels(target, 0, 0, 1, 1, px);
+    const immediate = opts.immediate || (() => true);
+    const timings = {}, gpuMs = {}, bakedAt = {};
+    const queue = [];
+    let pumping = false, queued = 0;
     const compile = (mat) => {
       const sc = new THREE.Scene();
       const m = new THREE.Mesh(this.geometry, mat);
@@ -233,29 +245,50 @@ export class Baker {
       sc.add(m);
       return R.compileAsync(sc, this.camera).catch(() => null);
     };
-    const passBReady = compile(this.passB);
-    const jobs = [...entries.values()].map((e) => {
+    const bake = ({ e, mat, done }) => {
       const r = e.recipe;
-      const mat = this.passA(r);
-      return Promise.all([compile(mat), passBReady]).then(() => {
-        if (!this.runnable(mat) || (!r.raw && !this.runnable(this.passB))) {
-          console.warn(`[materials] bake recipe ${r.name} did not compile; keeping flat values`);
-        } else {
-          const tb = performance.now();
-          this.bakeOne(e, mat);
-          e.baked = true;
-          timings[r.name] = +(performance.now() - tb).toFixed(2);
-        }
-        mat.dispose();
+      if (!this.runnable(mat) || (!r.raw && !this.runnable(this.passB))) {
+        console.warn(`[materials] bake recipe ${r.name} did not compile; keeping flat values`);
+      } else {
+        if (opts.profile) sync(e.target);
+        const tb = performance.now();
+        this.bakeOne(e, mat);
+        if (opts.profile) { sync(e.target); gpuMs[r.name] = +(performance.now() - tb).toFixed(2); }
+        else timings[r.name] = +(performance.now() - tb).toFixed(2);
+        bakedAt[r.name] = Math.round(performance.now() - t0);
+        e.baked = true;
+      }
+      mat.dispose();
+      done();
+    };
+    const pump = () => {
+      queue.sort((a, b) => b.cost - a.cost);
+      if (queue.length) bake(queue.shift());
+      if (queue.length) requestAnimationFrame(pump);
+      else pumping = false;
+    };
+    const passBReady = compile(this.passB);
+    const jobs = [...entries.values()].map((e) => new Promise((done) => {
+      const mat = this.passA(e.recipe);
+      Promise.all([compile(mat), passBReady]).then(() => {
+        const [w, h] = sizeOf(e.recipe);
+        const job = { e, mat, done, cost: w * h * (e.recipe.ss ?? 2) };
+        if (immediate()) { bake(job); return; }
+        queue.push(job);
+        queued++;
+        if (!pumping) { pumping = true; requestAnimationFrame(pump); }
       });
-    });
+    }));
     await Promise.all(jobs);
     for (const t of this.temps.values()) t.dispose();
     this.temps.clear();
     this.passB.dispose();
     this.geometry.dispose();
+    const sum = (o) => +Object.values(o).reduce((a, b) => a + b, 0).toFixed(1);
     this.stats = {
-      totalMs: performance.now() - t0, timings,
+      totalMs: performance.now() - t0, queued, bakedAt,
+      // CPU submission time per recipe, or (profile) GPU time per recipe and in total
+      ...(opts.profile ? { gpuMs, gpuTotalMs: sum(gpuMs) } : { timings }),
       bytes: [...entries.values()].reduce((a, b) => a + texBytes(b), 0),
     };
     return this.stats;
@@ -273,7 +306,7 @@ export class Baker {
     u.uRes.value.set(w, h);
     u.uTexM.value.set(r.tile[0] / w, r.tile[1] / h);
     const nb = r.pass || {};
-    u.uNB.value.set(nb.normal ?? 1, nb.ao ?? 0.6, nb.aoRadius ?? 0.02, nb.cavity ?? 0.25);
+    u.uNB.value.set(nb.normal ?? 1, nb.ao ?? 0.6, nb.aoRadius ?? 0.008, nb.cavity ?? 0.05);
     u.uMetalOut.value = r.metalMask ? 1 : 0;
     this.draw(this.passB, e.target);
   }

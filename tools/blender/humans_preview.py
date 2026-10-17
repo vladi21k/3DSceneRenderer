@@ -1,7 +1,7 @@
 """Clay preview renders of a body mesh (OBJ) from several angles, for sculpting checks.
 
   tools/dk blender -b --factory-startup -P tools/blender/humans_preview.py -- in.obj out_prefix [zoom]
-zoom: 'body' (default), 'head', 'hand', 'foot'
+zoom: 'body' (default), 'head', 'face', 'hand', 'foot'
 """
 import sys
 import math
@@ -38,7 +38,7 @@ sun.rotation_euler = (math.radians(50), math.radians(10), math.radians(35))
 scn.collection.objects.link(sun)
 
 # Blender is Z-up after import: runtime (x, y, z) -> blender (x, -z, y)
-targets = {'body': ((0, 0, 0.9), 4.6, 26), 'head': ((0, 0.0, 1.62), 0.9, 22),
+targets = {'body': ((0, 0, 0.9), 4.6, 26), 'head': ((0, 0.0, 1.62), 0.9, 22), 'face': ((0, 0.0, 1.615), 0.5, 26),
            'hand': ((0.42, 0, 0.85), 0.8, 22), 'foot': ((0.1, 0, 0.08), 0.9, 24)}
 tgt, dist, lens_fov = targets[zoom]
 if len(argv) > 3:

@@ -224,23 +224,35 @@ function roundCap(B, s, a, b, r) {
 // Direction the solar collectors face (towards the midday sun), world xz.
 const SUN_X = -0.34, SUN_Z = -0.94;
 
-/** Flat-plate solar water heater: two tilted collectors on a galvanised frame and a horizontal tank. */
-export function solarHeater(B, sinks, frameYaw, q, rng) {
-  // the glazing goes in the metal batch as a dark, smooth metallic surface (saves a draw call)
-  const sM = sinks.metal, sG = sinks.metal, sP = sinks.paint;
+/**
+ * Footprint radius of a solar heater (collectors, tank and frame) for placement, from
+ * the same random draws solarHeater() makes first.
+ */
+export function heaterRadius(n) {
+  const totalW = n * 0.95 + (n - 1) * 0.06, run = 2.0 * Math.cos((42 * Math.PI) / 180);
+  return Math.hypot(totalW / 2, run / 2 + 0.3 + 0.1) + 0.05;
+}
+
+/**
+ * Flat-plate solar water heater: one or two tilted glazed collectors on a galvanised
+ * angle frame, with the horizontal storage tank above their top edge. stand > 0 raises
+ * the whole rig on taller legs with braces (common, so the tank clears the parapet).
+ */
+export function solarHeater(B, sinks, frameYaw, q, rng, stand = 0, n = rng.chance(0.7) ? 2 : 1) {
+  const sM = sinks.metal, sG = sinks.glass || sinks.metal, sP = sinks.paint;
   const tilt = (rng.range(38, 46) * Math.PI) / 180;
-  const panelW = 0.95, panelL = 2.0, n = rng.chance(0.7) ? 2 : 1;
+  const panelW = 0.95, panelL = 2.0;
   const totalW = n * panelW + (n - 1) * 0.06;
   const c = Math.cos(tilt), sn = Math.sin(tilt);
   // local frame of the heater: u across, w towards the sun (front), v up
-  const foot = 0.25;
+  const foot = 0.25 + stand;
   const run = panelL * c, rise = panelL * sn;
   // collectors: tilted slab from (w = +run/2, v = foot) up to (w = -run/2, v = foot + rise)
   for (let i = 0; i < n; i++) {
     const a = -totalW / 2 + i * (panelW + 0.06), b = a + panelW;
     const wf = run / 2, wb = -run / 2, vf = foot, vb = foot + rise, th = 0.09;
     // glazing (top surface): dark blue-black absorber seen through the glass
-    B.flat = [0.07, 0.08, 0.1];
+    B.flat = sinks.glass ? [1, 1, 1] : [0.07, 0.08, 0.1];
     B._quad4(sG, a, vf + th * c, wf + th * sn, b, vf + th * c, wf + th * sn, b, vb + th * c, wb + th * sn, a, vb + th * c, wb + th * sn, 0, c, sn);
     // aluminium casing sides and underside
     B.flat = [0.85, 0.86, 0.88];
@@ -255,6 +267,13 @@ export function solarHeater(B, sinks, frameYaw, q, rng) {
   const tv = foot + rise + tankR + 0.12, tw = -run / 2 - 0.05;
   B.flat = rng.chance(0.75) ? [0.88, 0.88, 0.86] : [0.55, 0.56, 0.58];
   B.cylinderU(sP, -tankL / 2, tankL / 2, tv, tw, tankR, q.lod ? 8 : 14, true);
+  if (q.lod === 0) {
+    // rolled end rims and the strap bands of the tank
+    const f = B.flat;
+    B.flat = f.map((x) => x * 0.8);
+    for (const x of [-tankL / 2 + 0.02, tankL / 2 - 0.05, -0.35, 0.32]) B.cylinderU(sP, x, x + 0.03, tv, tw, tankR + 0.008, 12, false);
+    B.flat = f;
+  }
   // frame: legs and rails (galvanised angle)
   B.flat = [0.8, 0.8, 0.8];
   const leg = 0.035;
@@ -267,6 +286,12 @@ export function solarHeater(B, sinks, frameYaw, q, rng) {
     }
   }
   B.box(sM, -totalW / 2, totalW / 2, 0, 0.06, -run / 2 - 0.05, run / 2 + 0.05, FACES.TOP | FACES.FRONT | FACES.BACK | FACES.LEFT | FACES.RIGHT);
+  if (stand > 0.3) {
+    // braces of a raised stand: rails front to back and across, half way up
+    const y = stand * 0.55;
+    for (const x of [-totalW / 2 + 0.05, totalW / 2 - 0.05]) B.box(sM, x - 0.02, x + 0.02, y - 0.02, y + 0.02, -run / 2, run / 2, FACES.SIDES);
+    B.box(sM, -totalW / 2 + 0.05, totalW / 2 - 0.05, y - 0.02, y + 0.02, -run / 2 - 0.02, -run / 2 + 0.02, FACES.FRONT | FACES.BACK | FACES.TOP | FACES.BOTTOM);
+  }
   void frameYaw;
 }
 
@@ -338,7 +363,50 @@ export function headHouse(B, sinks, q, rng, tint) {
   B.box(s, -w / 2, w / 2, 0, h, -d / 2, d / 2, FACES.ALL & ~FACES.BOTTOM);
   B.box(s, -w / 2 - 0.08, w / 2 + 0.08, h, h + 0.14, -d / 2 - 0.08, d / 2 + 0.08, FACES.ALL);
   if (q.lod === 0) {
-    B.flat = [0.16, 0.17, 0.18];
-    B.rectW(sinks.metal, -0.45, 0.45, 0.02, 2.0, d / 2 + 0.01, 1);
+    // painted steel door in a shallow reveal
+    const dd = d / 2;
+    B.flat = [tint[0] * k * 0.7, tint[1] * k * 0.7, tint[2] * k * 0.7];
+    B.rectU(s, -0.45, 0.02, 2.0, dd - 0.06, dd, 1);
+    B.rectU(s, 0.45, 0.02, 2.0, dd - 0.06, dd, -1);
+    B.rectV(s, -0.45, 0.45, dd - 0.06, dd, 2.0, -1);
+    const door = rng.pick([[0.16, 0.2, 0.17], [0.3, 0.3, 0.29], [0.12, 0.07, 0.05], [0.42, 0.4, 0.36]]);
+    B.flat = door;
+    B.rectW(sinks.frame || s, -0.45, 0.45, 0.02, 2.0, dd - 0.06, 1);
+    B.flat = door.map((x) => x * 0.6);
+    B.box(sinks.frame || s, 0.3, 0.36, 0.98, 1.02, dd - 0.06, dd - 0.02, FACES.FRONT | FACES.TOP);
   }
+}
+
+/**
+ * Satellite dish on a short bracket: a shallow paraboloid facing +w, tilted up by
+ * `elev` (radians), feed arm under the rim. Two-sided (front and back faces).
+ */
+export function satelliteDish(B, s, q, rng, elev = 0.75) {
+  const R = rng.range(0.3, 0.42), depth = R * 0.22, h = rng.range(0.35, 0.6);
+  const ce = Math.cos(elev), se = Math.sin(elev);
+  // dish axis a (u, v, w) = (0, se, ce); e1 = u axis; e2 = a × e1 = (0, ce, -se)
+  const cv = h + 0.05, cw = 0.12;
+  const P = (r, t) => {
+    const x = r * Math.cos(t), y = r * Math.sin(t), z = depth * (r / R) * (r / R);
+    return [x, cv + y * ce + z * se, cw + -y * se + z * ce];
+  };
+  B.flat = rng.chance(0.8) ? [0.78, 0.78, 0.76] : [0.3, 0.3, 0.31];
+  const nr = 2, nt = q.lod ? 6 : 10;
+  for (let i = 0; i < nr; i++) {
+    const r0 = (R * i) / nr, r1 = (R * (i + 1)) / nr;
+    for (let j = 0; j < nt; j++) {
+      const t0 = (j / nt) * Math.PI * 2, t1 = ((j + 1) / nt) * Math.PI * 2;
+      const a = P(r0, t0), b = P(r1, t0), c = P(r1, t1), d = P(r0, t1);
+      B.quadAuto(s, a, b, c, d);
+      B.quadAuto(s, a, d, c, b);
+    }
+  }
+  // feed arm from the rim bottom to the focus, and the mounting bracket
+  B.flat = [0.35, 0.35, 0.35];
+  const rimB = P(R, -Math.PI / 2), focus = [0, cv + (R * 0.9) * se, cw + (R * 0.9) * ce];
+  const e = 0.012;
+  B.quadAuto(s, [rimB[0] - e, rimB[1], rimB[2]], [rimB[0] + e, rimB[1], rimB[2]], [focus[0] + e, focus[1], focus[2]], [focus[0] - e, focus[1], focus[2]]);
+  B.box(s, -0.03, 0.03, focus[1] - 0.04, focus[1] + 0.04, focus[2] - 0.05, focus[2] + 0.03, FACES.ALL);
+  B.box(s, -0.02, 0.02, 0, cv, cw - 0.12, cw - 0.08, FACES.SIDES | FACES.FRONT | FACES.BACK);
+  B.box(s, -0.08, 0.08, 0, 0.02, cw - 0.2, cw, FACES.TOP | FACES.FRONT | FACES.BACK | FACES.LEFT | FACES.RIGHT);
 }

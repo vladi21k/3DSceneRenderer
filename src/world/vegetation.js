@@ -14,13 +14,16 @@ import { createProps } from './vegetation/props.js';
 //       (bark, foliage) shared by the street, and plans every tree of the layout once:
 //       template (species zones, never the same as the previous tree on that side),
 //       mirror, scale (planned height / crown, x and z apart), lean, yaw and tint.
-// build: per chunk, adds one instance per tree and per prop (grates, stakes and ties,
-//       planter boxes; planters come from layout.furniture entries of type 'planter').
+// build: per chunk, adds one instance per tree and per prop (stakes and ties, planter
+//       boxes; planters come from layout.furniture entries of type 'planter'). The tree
+//       grates are paving details drawn by the street module.
 // per frame (pool.js): instance visibility follows the chunk group, detail level follows
 //       the tree's projected size on screen (cross-faded).
 // dispose: removes the chunk's instances.
 //
-// Debug URL switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf.
+// Debug URL switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf,
+// vegdbg=1..4 shows one leaf lighting term (direct diffuse / specular, indirect diffuse /
+// specular).
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
 const _c = new THREE.Color(), _e = new THREE.Euler();

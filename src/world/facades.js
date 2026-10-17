@@ -7,6 +7,7 @@ import { createSignMaterials } from './facades/signs.js';
 import { createAwningMaterial } from './facades/awnings.js';
 import { lanternTpls, signLampTpls, intercomTpl, createLampGlass, createBulbMaterial } from './facades/extras.js';
 import { buildFront } from './facades/place.js';
+import { createSpillMaterial } from './facades/spill.js';
 
 // Facade infill: windows, shopfronts, doors, shutters, signage, awnings and small wall
 // fittings for every opening of facadePlan(lot): main-street lots, side-street lots and
@@ -15,7 +16,12 @@ import { buildFront } from './facades/place.js';
 // (facades/outline.js mirrors facadePlan.archPoint).
 //
 // Geometry is assembled per chunk into one buffer per material (facades/geo.js) from
-// per-opening templates cached by size and style, so a chunk costs ~12 draw calls.
+// per-opening templates cached by size and style (shopfronts and doors share one or two
+// designs per building), so a chunk costs ~14 draw calls. Far chunks (lod 1) use flat
+// glass 2.5–3 cm proud of the infill plane with a depth-offset material, procedural
+// casings, and no small fittings. At dusk lit rooms also light their stone reveals
+// (facades/spill.js). Chunk builds are generators: prefetched a slice per frame ahead
+// of the streamer (update), or finished synchronously in build() when the prefetch missed.
 
 const facades = {
   name: 'facades',
@@ -34,6 +40,7 @@ const facades = {
     const awning = M.register('facades.awning', createAwningMaterial(M));
     const lamp = M.register('facades.lampGlass', createLampGlass(M));
     const bulb = M.register('facades.bulb', createBulbMaterial());
+    const spill = M.register('facades.spill', createSpillMaterial());
     this.mats = {
       // joinery sits inside the reveals, which already shade it: no shadow casting
       frame: { material: vc('paint.frame'), castShadow: false },
@@ -49,9 +56,16 @@ const facades = {
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
       lamp: { material: lamp, color: false, castShadow: false, receiveShadow: false, renderOrder: 3 },
       bulb: { material: bulb, color: false, castShadow: false },
+      spill: { material: spill, color: false, extra: { aSpill: 3 }, castShadow: false, receiveShadow: false, renderOrder: 1 },
     };
-    this.forceShop = app.params.str('fshop') || null; // development: one shop interior everywhere
+    // development aids: fshop=<type> puts one shop interior everywhere, flod=0|1 forces a
+    // detail level, debugStats = {} collects the open-shutter fits (see place.js)
+    this.forceShop = app.params.str('fshop') || null;
+    this.debugStats = null;
+    const fl = app.params.str('flod');
+    this.forceLod = fl === '0' || fl === '1' ? +fl : null;
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
+    this.stats = { sync: 0, syncMs: 0, lastSync: null, prefetched: 0, prefetchMaxMs: 0 };
     this.prefetchMs = 1.2;          // per-frame budget for prefetching
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
     if (app.params.str('fwall')) {
@@ -90,6 +104,7 @@ const facades = {
    */
   *buildGen(chunk, app) {
     const { layout } = app;
+    if (this.forceLod !== null) chunk = { ...chunk, lod: this.forceLod };
     // main and side-street lots, plus the buildings' side-street backdrops unless they
     // carry their own (simpler, far-range) infill
     const extra = (app.systems.buildings?.extraLots?.(chunk.index) ?? []).filter((l) => !l.selfDressed);
@@ -110,6 +125,7 @@ const facades = {
           streetW: fr.streetW,
           angle: Math.atan2(fr.frame.uDir.z, fr.frame.uDir.x),
           forceShop: this.forceShop,
+          stats: this.debugStats || null,
         };
         yield* buildFront(kit, ctx);
         if (this.devWall) this.devWall.add(kit, ctx);
@@ -126,7 +142,11 @@ const facades = {
     let job = this.jobs.get(key);
     if (job) this.jobs.delete(key);
     else job = { it: this.buildGen(chunk, app) };
+    const t0 = performance.now(), ready = job.done;
     if (!job.done) this._pump(job, Infinity);
+    // misses of the prefetch (built here, synchronously) for the perf overlay / tests
+    if (!ready) { const st = this.stats; st.sync++; st.syncMs = Math.max(st.syncMs, performance.now() - t0); st.lastSync = key; }
+    else this.stats.prefetched++;
     return job.result;
   },
 
@@ -185,6 +205,7 @@ const facades = {
         }
       }
     }
+    this.stats.prefetchMaxMs = Math.max(this.stats.prefetchMaxMs * 0.995, performance.now() - t0);
   },
 };
 

@@ -58,8 +58,9 @@ const env = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    // a hazy Mediterranean summer afternoon: more aerosol than a clean standard atmosphere
-    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 2.6) });
+    // a hazy Mediterranean summer afternoon: ~12x the aerosol of the clean reference
+    // atmosphere (optical depth ~0.06); URL mie= overrides it for tuning
+    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 12) });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });

@@ -130,7 +130,7 @@ const post = {
       uMist: { value: 2.5e-3 },
       tClouds: { value: null }, uUseClouds: { value: 0 },
       uFarLamp: { value: env?.lights?.farLamps ?? Array.from({ length: 24 }, () => new THREE.Vector4()) },
-      uFarI: { value: 0 }, uLampCos: { value: new THREE.Vector2(0.34, 0.95) },
+      uFarI: { value: 0 }, uFarMin: { value: 60 }, uLampCos: { value: new THREE.Vector2(0.58, 0.88) },
     }, { NUM_LAMPS: nLamps, NUM_FAR: env?.lights?.farLamps?.length ?? 24, ...(q.ao ? { USE_AO: 1 } : {}) });
 
     this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
@@ -142,7 +142,7 @@ const post = {
       uExposure: { value: 1 }, uAutoExp: { value: 0.22 }, uBloom: { value: 0.035 },
       uVignette: { value: 0.38 }, uCA: { value: 0.0012 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
-      uSat: { value: 1.12 }, uContrast: { value: 1.08 },
+      uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: 0.45 },
       uShadowTint: { value: new THREE.Vector3(0.99, 1.0, 1.02) },
       uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
       uResolution: { value: new THREE.Vector2(1, 1) },
@@ -231,10 +231,11 @@ const post = {
     if (env) {
       const ill = env.illuminant;
       const l = 0.2126 * ill.x + 0.7152 * ill.y + 0.0722 * ill.z;
-      const kc = THREE.MathUtils.lerp(0.9, 0.5, ss(t, 0.3, 0.55)) - 0.35 * ss(t, 0.55, 1.0);
+      const kc = THREE.MathUtils.lerp(0.9, 0.5, ss(t, 0.3, 0.55)) - 0.5 * ss(t, 0.55, 1.0);
       const warm = 0.02 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
+      const cool = 0.05 * ss(t, 0.8, 1.0);
       const g = (c) => THREE.MathUtils.clamp(THREE.MathUtils.lerp(1, l / Math.max(c, 1e-9), kc), 0.5, 2.0);
-      wb.set(g(ill.x) * (1 + warm), g(ill.y), g(ill.z) * (1 - warm));
+      wb.set(g(ill.x) * (1 + warm - cool), g(ill.y), g(ill.z) * (1 - warm + cool));
       // keep the overall exposure (normalise the gains to unit luminance)
       const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
       wb.multiplyScalar(1 / n);
@@ -304,6 +305,7 @@ const post = {
     if (air) { pu.uHeadI.value = air.headI; pu.uHeadCos.value.set(air.headCos[0], air.headCos[1]); }
     const L = env?.lights;
     pu.uFarI.value = L ? L.farIntensity : 0;
+    pu.uFarMin.value = L ? L.farMinDist : 60;
     if (L) pu.uLampCos.value.set(L.lampCos[0], L.lampCos[1]);
     // thin-lens circle of confusion, in pixels
     const fovR = THREE.MathUtils.degToRad(camera.fov);

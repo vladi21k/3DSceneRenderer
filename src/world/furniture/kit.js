@@ -247,9 +247,11 @@ export function quad(w, h, rect = [0, 0, 1, 1]) {
   return g;
 }
 
-/** Transform a geometry in place: p = [x, y, z], r = [rx, ry, rz] (radians, XYZ), s = scalar or [sx, sy, sz]. */
-export function xf(g, p = [0, 0, 0], r = [0, 0, 0], s = 1) {
-  _e.set(r[0], r[1], r[2]);
+/** Transform a geometry in place: p = [x, y, z], r = [rx, ry, rz] (radians, Euler `order`,
+ *  default XYZ), s = scalar or [sx, sy, sz]. Use order 'YXZ' to tilt an item in its own
+ *  frame before turning it (yaw applied last). */
+export function xf(g, p = [0, 0, 0], r = [0, 0, 0], s = 1, order = 'XYZ') {
+  _e.set(r[0], r[1], r[2], order);
   _q.setFromEuler(_e);
   const sc = Array.isArray(s) ? _w.set(s[0], s[1], s[2]) : _w.set(s, s, s);
   _m.compose(_v.set(p[0], p[1], p[2]), _q, sc);
