@@ -261,7 +261,10 @@ void hSkin(out vec3 P, out vec3 N) {
   vIds = vec3(region, part, float(row));
   vAO = aNrm.w;
   vAux = aBody.zw / 255.0;
-  if (!on) { P = vec3(0.0, -500.0, 0.0); N = vec3(0.0, 1.0, 0.0); return; }
+  // parts the figure does not wear collapse into its own hips (inside the body): the coarse far
+  // levels share some vertices between parts, and a far-away collapse point would stretch those
+  // triangles into long streaks across the street
+  if (!on) { P = hBone(brow, 0.0)[3].xyz; N = vec3(0.0, 1.0, 0.0); return; }
   vec3 pos = position;
   vec3 nrm = aNrm.xyz;
   vec4 W = aBoneW;

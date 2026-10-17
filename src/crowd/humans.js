@@ -526,6 +526,10 @@ const humans = {
       c.heading = s.heading;
       c.speed = 0; c.phase = 0; c.pose = 2; c.look = 0; c.visible = true;
       c.prop = 0; c.holdWith = -1; c.hold = null;
+      // far away the child is a few pixels inside the canopy: skip the coarse levels, whose
+      // seated toddler shells stretch into streaks
+      const px = (c.a.height / Math.max(0.5, Math.hypot(c.x - this._camPos.x, c.y - this._camPos.y, c.z - this._camPos.z))) * this._pxPerM;
+      if (px <= this.lodPx[Math.min(2, this.lodPx.length - 1)]) { c.visible = false; c.lod = -1; continue; }
       this._emit(ci, c, c.a, B, c.a.height / B.info.H, false);
     }
     for (let k = 0; k < TODDLER_POOL; k++) {
