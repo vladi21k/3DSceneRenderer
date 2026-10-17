@@ -428,7 +428,6 @@ export class Sky {
       this.envRT = g._allocateTargets();
       this.backRT = g._allocateTargets();
       this.app.scene.environment = this.envRT.texture;
-      g.compileCubemapShader();
     }
   }
 

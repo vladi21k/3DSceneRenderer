@@ -26,6 +26,7 @@ import { hash2 } from '../../core/rng.js';
 //   ht_v    = speed (default: stroller 1.15, walking a bike 1.2, riding 4.2 m/s)
 //   ht_stop = 1: riders stand with a foot down; ht_stop=<s> (> 1): they slow to a stop and ride
 //             off again every <s> seconds
+//   ht_mount = <s>: cyclists get off and walk their bicycle, then ride on, every <s> seconds
 //   ht_prop = prop seed offset (picks bike / stroller models); ht_var / ht_svar = force a bicycle /
 //             stroller variant index (bikes: 0 city, 1 roadster, 2 road, 3 hybrid, 4 kids, 5 e-bike;
 //             strollers: 0 pushchair, 1 jogger, 2 pram, 3 umbrella)
@@ -57,6 +58,7 @@ export class HumansTest {
     this.mob = p.str('ht_mob', '') || MOBM[this.mode] || '';
     if (MOBM[this.mode]) this.mode = 'walk';
     this.stop = p.num('ht_stop', 0);
+    this.mount = p.num('ht_mount', 0);
     this.propSeed = p.num('ht_prop', 0);
     this.radius = p.num('ht_r', 7);
     this.axisS = p.str('ht_axis', 'd') === 's';
@@ -154,6 +156,12 @@ export class HumansTest {
       if (f.pose) {
         pose = f.pose;
         if (f.mode === 'grid' && !this.tread) speed = 0;
+        if (this.mount > 0 && (pose === 4 || pose === 5)) {
+          // ht_mount=T: get off and walk the bicycle, then ride on again, every T seconds
+          const u = ((this.t + i0(f) * 1.3) % (2 * this.mount)) / this.mount;
+          pose = u < 1 ? 4 : 5;
+          if (f.mode !== 'grid' || this.tread) speed = pose === 4 ? Math.max(1.2, f.v * Math.min(1, u / 0.4)) : 1.2;
+        }
         if (pose === 4 && this.stop) {
           // ht_stop=1: standing with a foot down; ht_stop=T: brake to a stop and ride off every T s
           if (this.stop <= 1) speed = 0;
@@ -197,7 +205,8 @@ export class HumansTest {
    *  mobility pose: pushers are adults, riders teens or adults without a skirt or long coat). */
   _pick(filter, pose = 0) {
     const want = FILTERS[filter];
-    const role = ROLE[pose];
+    // (children only ride in the harness: ht_filter=child / kid / boy / girl skips the crowd's roles)
+    const role = filter && /^(child|kid|boy|girl)$/.test(filter) ? null : ROLE[pose];
     for (let tries = 0; tries < 5000; tries++) {
       const seed = hash2(this.seed * 7919 + this.nextK++, 4242) >>> 0;
       const a = this.h.appearanceOf(seed);

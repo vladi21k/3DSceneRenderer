@@ -41,6 +41,8 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 const GLARE = { k1: 4.8e-4, theta0: 0.006, k2: 4.0, theta1: 0.02 };
 const _sv = new THREE.Vector3();
 const _vp = new THREE.Matrix4();
+const _p0 = new THREE.Vector3();
+const _p1 = new THREE.Vector3();
 
 function target(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
@@ -404,16 +406,22 @@ const post = {
     const rig = app.cameraRig;
     if (!rig || rig.disabled || rig.cut || !rig.prevViewProj || !(app.dt > 0) || !(app.realDt > 0)) return false;
     const u = this.blur.material.uniforms;
+    const shutter = Math.min((rig.shutterSec ?? 1 / 50) / app.realDt, 2);
+    // skip when the view barely moved: probe the frame corners 3 m ahead of the camera
     _vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    // skip when nothing moved by more than a fraction of a pixel (corners of a 100 m plane)
-    const a = _vp.elements, b = rig.prevViewProj.elements;
+    const P = camera.projectionMatrix.elements;
     let d = 0;
-    for (let i = 0; i < 16; i++) d = Math.max(d, Math.abs(a[i] - b[i]) * (i % 4 === 3 ? 1 : 100));
-    if (d * this.size.y * 0.5 < 0.25) return false;
+    for (let i = 0; i < 4; i++) {
+      _p0.set((i & 1 ? 3 : -3) / P[0], (i & 2 ? 3 : -3) / P[5], -3).applyMatrix4(camera.matrixWorld);
+      _p1.copy(_p0).applyMatrix4(rig.prevViewProj);
+      _p0.applyMatrix4(_vp);
+      d = Math.max(d, Math.abs(_p0.x - _p1.x) * this.size.x, Math.abs(_p0.y - _p1.y) * this.size.y);
+    }
+    if (d * 0.5 * shutter < 0.25) return false;
     u.uPrevViewProj.value.copy(rig.prevViewProj);
     u.uCamWorld.value.copy(camera.matrixWorld);
     u.uCamPos.value.copy(camera.position);
-    u.uShutter.value = Math.min((rig.shutterSec ?? 1 / 50) / app.realDt, 2);
+    u.uShutter.value = shutter;
     u.uMaxPx.value = BLUR_MAX_PX * this.size.y / 1080;
     return true;
   },

@@ -28,25 +28,32 @@ const FALLBACK_HEAD_H = 5.4;    // glass centre above the paving when the catena
 
 /**
  * The light pool has a fixed size (a changing light count would recompile every lit
- * material), so by day every lit fragment would still evaluate nine dark spot lights.
- * Patch the shared light loop to skip a spot light whose colour is zero (a uniform, so
- * the branch is coherent), and its BRDF where the fragment lies outside the cone or
- * range. Must run before any lit material compiles.
+ * material), so by day every lit fragment would still evaluate nine dark spot lights,
+ * and at dusk the sun (dark below the skyline) and its shadow lookups. Patch the shared
+ * light loops to skip a light whose colour is zero (a uniform, so the branch is
+ * coherent), and a spot light's BRDF where the fragment lies outside its cone or range.
+ * Must run before any lit material compiles.
  */
-export function patchSpotLightLoop() {
+export function patchLightLoops() {
   const SC = THREE.ShaderChunk;
-  const src = SC.lights_fragment_begin;
-  const a = src.indexOf('#if ( NUM_SPOT_LIGHTS > 0 ) && defined( RE_Direct )');
-  const b = src.indexOf('#pragma unroll_loop_end', a);
-  const head = 'spotLight = spotLights[ i ];';
+  let src = SC.lights_fragment_begin;
   const call = 'RE_Direct( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );';
-  if (a < 0 || b < 0) return false;
-  let block = src.slice(a, b);
-  if (block.split(head).length !== 2 || block.split(call).length !== 2) return false;
-  block = block.replace(head, `${head}\n\t\tif ( spotLight.color.r + spotLight.color.g + spotLight.color.b > 0.0 ) {`);
-  block = block.replace(call, `if ( directLight.visible ) ${call}\n\t\t}`);
-  SC.lights_fragment_begin = src.slice(0, a) + block + src.slice(b);
-  return true;
+  const guard = (begin, head, visible) => {
+    const a = src.indexOf(begin);
+    const b = src.indexOf('#pragma unroll_loop_end', a);
+    if (a < 0 || b < 0) return false;
+    let block = src.slice(a, b);
+    if (block.split(head).length !== 2 || block.split(call).length !== 2) return false;
+    const v = head.split(' = ')[0];
+    block = block.replace(head, `${head}\n\t\tif ( ${v}.color.r + ${v}.color.g + ${v}.color.b > 0.0 ) {`);
+    block = block.replace(call, `${visible ? 'if ( directLight.visible ) ' : ''}${call}\n\t\t}`);
+    src = src.slice(0, a) + block + src.slice(b);
+    return true;
+  };
+  const spot = guard('#if ( NUM_SPOT_LIGHTS > 0 ) && defined( RE_Direct )', 'spotLight = spotLights[ i ];', true);
+  const sun = guard('#if ( NUM_SUN_LIGHTS > 0 ) && defined( RE_Direct )', 'sunLight = sunLights[ i ];', false);
+  SC.lights_fragment_begin = src;
+  return spot && sun;
 }
 
 const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear

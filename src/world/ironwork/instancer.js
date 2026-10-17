@@ -10,7 +10,9 @@ import { shadowOnly } from './strip.js';
 // bay, a console, a plant…) is assigned to exactly one level by its own distance to the
 // camera; an entry is revisited once the camera has moved further than the slack its
 // last partition left, and the level meshes are repacked only when some instance
-// changed level. A long balcony therefore refines bay by bay as the camera approaches.
+// changed level or an entry (one chunk's instances of the family) entered or left the
+// view: entries outside the view frustum are not packed at all. A long balcony
+// therefore refines bay by bay as the camera approaches.
 //
 // Distance classes ('cls') name the limit table passed to partition(): limits[k] is the
 // distance up to which level k is used; beyond the last limit the instance is not drawn.

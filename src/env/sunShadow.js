@@ -61,11 +61,16 @@ export function hasShadowHooks(object) {
   return object.onBeforeShadow !== _origShadowHooks[0] || object.onAfterShadow !== _origShadowHooks[1];
 }
 
-/** World bounding sphere of a caster, computed once per frame and shared by the cascades. */
+/**
+ * World bounding sphere of a caster, computed once per frame and shared by the cascades.
+ * Plain stand-in objects (modules that cull their own instances pass one object with a
+ * changing sphere) are never cached.
+ */
 const SPHERE = Symbol('sunShadowSphere');
+const _tmp = { f: -1, ok: false, s: new THREE.Sphere() };
 function worldSphere(object, frame) {
-  let c = object[SPHERE];
-  if (c && c.f === frame) return c.ok ? c.s : null;
+  let c = object.isObject3D ? object[SPHERE] : _tmp;
+  if (c && c !== _tmp && c.f === frame) return c.ok ? c.s : null;
   if (!c) c = object[SPHERE] = { f: -1, ok: false, s: new THREE.Sphere() };
   c.f = frame;
   let bs = null;

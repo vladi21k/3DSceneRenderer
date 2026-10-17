@@ -24,7 +24,8 @@ import { Mobility } from './humans/mobility.js';
 // texture; visible figures are packed into the first rows so only those are uploaded. The
 // vertex shader skins from it. Clothing, skin and hair are shaded per fragment from a
 // per-figure "look" row (appearance.js).
-// Testing: humanstest=1 (humans/test.js); humans_dir=<dir> loads a trial asset build;
+// Testing: humanstest=1 (humans/test.js, including ht_mob= for strollers / cyclists / walked bikes);
+// propstest=1 (humans/props/test.js); humans_dir=<dir> loads a trial asset build;
 // humans_dbg=1|2|3 shows baked occlusion / aux attributes / garment ease instead of shading.
 
 const BASES = ['male', 'female', 'child', 'kid'];
@@ -142,6 +143,8 @@ const humans = {
     this._precompile(app);
     this.ready = true;
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
+    // propstest=1: the props' own close-up harness (humans/props/test.js, pt_* parameters)
+    if (this.props && app.params.num('propstest', 0)) this.props.mountPropsTest(app).catch((e) => console.warn('[humans] props test', e));
   },
 
   /** Build every body's shader programs now, so the first child or woman to walk into view
@@ -153,6 +156,8 @@ const humans = {
         const m = B.draws[0] && B.draws[0].mesh;
         if (m) { m.visible = true; shown.push(m); }
       }
+      // (and the bicycle / stroller material)
+      if (this.mob) for (const m of this.mob.warmMeshes()) { m.visible = true; shown.push(m); }
       app.renderer.compile(this.group, app.camera, app.scene);
     } catch (e) {
       console.warn('[humans] shader warm-up skipped', e);
@@ -469,7 +474,7 @@ const humans = {
       phone = a.idle === 1 ? 1 : 0;
       pocket = a.idle === 3 ? 1 : 0;
     } else if (mobP && s.pose === 4) {
-      this.mob.pose(s, a, B, M, t);
+      this.mob.pose(s, a, B, M);
     } else {
       const g = gaitBlend(B, a, s.speed, sc, mobP ? 0 : a.idle);
       addClip(M, bk, g.a, s.phase, g.wa);
@@ -488,7 +493,7 @@ const humans = {
       pitchBones(M, B.rig.rest, LEAN_BONES, BONE.spine1, -lean);
       if (a.stoop > 0.005) pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
       pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, (lean + a.stoop) * 0.65);
-      this.mob.pose(s, a, B, M, t);
+      this.mob.pose(s, a, B, M);
     }
     let w = 1;
     if (s.fadeDur > 0) {

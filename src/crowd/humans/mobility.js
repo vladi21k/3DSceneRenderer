@@ -141,6 +141,8 @@ export class Poser {
     this.isch = [this.hipC[0], this.hipC[1] - 0.088 * this.k, this.hipC[2] + 0.035 * this.k];
     this.hipHalf = Math.abs(hR.x - hL.x) / 2;
     this.legLen = this.l1 + this.l2;
+    this.miss = 0;
+    this.missStat = null;      // testing: {max, n} of the hand's distance from its hold point (model units)
   }
 
   /** FK of one bone from its parent (rotation local to the parent's world rotation). */
@@ -192,7 +194,7 @@ export class Poser {
 
   /** Trunk lean (rad) for a rider sitting at `sit` so both hands reach the grips with the elbows
    *  a little bent; at least `hint` (the bike's riding posture). */
-  solveLean(sit, gripL, gripR, hint, pelvisK, want = 0.9) {
+  solveLean(sit, gripL, gripR, hint, pelvisK, want = 0.93) {
     const ratio = (lean) => { this._torso(sit, lean, pelvisK, 0, 0, 0); return Math.max(this._reachRatio('L', gripL), this._reachRatio('R', gripR)); };
     if (ratio(hint) <= want) return hint;
     let lo = hint, hi = 1.25;
@@ -215,7 +217,7 @@ export class Poser {
     const W = _b, E = _c, Wd = _d;
     set3(_e, G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]); norm3(_e);
     W[0] = G[0] - _e[0] * 0.09 * this.k; W[1] = G[1] - _e[1] * 0.09 * this.k + 0.02 * this.k; W[2] = G[2] - _e[2] * 0.09 * this.k;
-    for (let it = 0; it < 3; it++) {
+    for (let it = 0; it < 8; it++) {
       ik2(sh, W, this.ua, this.fa, pole, 0.985, E, Wd);
       set3(_f, E[0] - sh[0], E[1] - sh[1], E[2] - sh[2]);         // upper arm
       set3(_g, Wd[0] - E[0], Wd[1] - E[1], Wd[2] - E[2]);         // forearm
@@ -228,7 +230,13 @@ export class Poser {
       app3(PR, bH * 9, off[0], off[1], off[2], _q);
       const mx = G[0] - (Wd[0] + _q[0]), my = G[1] - (Wd[1] + _q[1]), mz = G[2] - (Wd[2] + _q[2]);
       W[0] = Wd[0] + mx; W[1] = Wd[1] + my; W[2] = Wd[2] + mz;
-      if (mx * mx + my * my + mz * mz < 1e-7) break;
+      this.miss = Math.sqrt(mx * mx + my * my + mz * mz);
+      if (this.miss < 3e-4) break;
+    }
+    if (this.missStat) {
+      const R = this.missStat;
+      R.max = Math.max(R.max, this.miss); R.n++;
+      if (this.miss > 0.005) { R.bad = (R.bad || 0) + 1; if (R.log && R.log.length < 12) R.log.push([s, palm, +this.miss.toFixed(3), +(Math.hypot(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa)).toFixed(2), this.rig.kind, +this.rig.H.toFixed(2)]); const d = Math.hypot(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa); R.far = Math.max(R.far || 0, d); if (d < 0.97) R.nonconv = (R.nonconv || 0) + 1; }
     }
     PP[bF * 3] = E[0]; PP[bF * 3 + 1] = E[1]; PP[bF * 3 + 2] = E[2];
     PP[bH * 3] = Wd[0]; PP[bH * 3 + 1] = Wd[1]; PP[bH * 3 + 2] = Wd[2];
@@ -256,6 +264,13 @@ export class Poser {
     app3(PR, bF * 9, r[bX * 3] - r[bF * 3], r[bX * 3 + 1] - r[bF * 3 + 1], r[bX * 3 + 2] - r[bF * 3 + 2], _p);
     PP[bX * 3] = _d[0] + _p[0]; PP[bX * 3 + 1] = _d[1] + _p[1]; PP[bX * 3 + 2] = _d[2] + _p[2];
     return ratio;
+  }
+
+  /** Distance from side s's hip joint (scratch pose pelvis) to point q. */
+  hipDist(s, q) {
+    const b = this.leg[s].b[0] * 3, r = this.rest;
+    app3(PR, 9, r[b] - r[3], r[b + 1] - r[4], r[b + 2] - r[5], _p);
+    return Math.hypot(q[0] - PP[3] - _p[0], q[1] - PP[4] - _p[1], q[2] - PP[5] - _p[2]);
   }
 
   /** Ankle target for the sole under the ball of the foot at `ball` with foot rotation Rf. */
@@ -334,14 +349,18 @@ const _satt = {};
 const _X = new Float64Array(9), _t = v3();
 const _G = [v3(), v3()], _I = [v3(), v3()], _pole = v3(), _ball = v3(), _ank = v3();
 const _RF = new Float64Array(18), _RG = new Float64Array(9);
+const _hold = { x: 0, y: 0, z: 0 };
+const _ropt = { roll: 0, crank: 0, steer: 0, saddle: 0 }, _sopt = { roll: 0, swivel: 0 };
+const SIDES = [['L', 0], ['R', 1]];
+const M3 = [0, 1, 2, 4, 5, 6, 8, 9, 10];     // the 3x3 part of a Matrix4's elements
 const POLE_KNEE = [norm3([-0.1, 0.15, -1]), norm3([0.1, 0.15, -1])];   // L, R
 
 /** Per-slot state of a figure with a mobility prop. */
 function newMob() {
-  return { key: '', prop: 0, kit: null, v: 0, look: null, roll: 0, crankOff: 0, crank: 0, steer: 0, lean: 0, pitch: 0,
-    omega: 0, swivel: 0, stopW: 0, px: 0, py: 0, pz: 0, ph: 0, valid: false, offX: 0, offZ: 0, offL: 0,
-    fromX: 0, fromZ: 0, fromL: 0, fadeT0: -1, fadeDur: 0, pose: -1, saddle: 0, leanR: 0, leanS: 0, pk: 0.5,
-    sitR: v3(), sitS: v3(), footSide: -1, hold: 0, walkZ: 0, walkX: 0, pushOff: 0.4 };
+  return { key: '', prop: 0, kit: null, v: 0, look: null, ride: null, walk: null, roll: 0, crankOff: 0, crank: 0, steer: 0,
+    lean: 0, pitch: 0, omega: 0, swivel: 0, stopW: 0, px: 0, py: 0, pz: 0, ph: 0, valid: false,
+    offX: 0, offZ: 0, offL: 0, toX: 0, toZ: 0, toL: 0, fromX: 0, fromZ: 0, fromL: 0, fadeT0: -1, fadeDur: 0, pose: -1,
+    sitR: v3(), sitS: v3(), footSide: -1, hold: 0, pushOff: 0.4 };
 }
 
 export class Mobility {
@@ -351,13 +370,15 @@ export class Mobility {
     this.P = P;
     this.bikes = P.bicycleKit(app);
     this.strollers = P.strollerKit(app);
-    this.bikeInst = this.bikes.createInstancer({ capacity: 64, name: 'humans.bicycles' });
+    // (far bicycles, a few pixels of spokes and tubes, cast no shadow; strollers always do)
+    this.bikeInst = this.bikes.createInstancer({ capacity: 64, name: 'humans.bicycles', shadowLod: 1 });
     this.strollerInst = this.strollers.createInstancer({ capacity: 48, name: 'humans.strollers' });
     this.object = new THREE.Group();
     this.object.name = 'humans.props';
     this.object.add(this.bikeInst.object, this.strollerInst.object);
     this.posers = new Map();
     this.time = 0;
+    this.reachStat = null;
     // test harness: force a bicycle / stroller variant (ht_var / ht_svar)
     const fv = app.params.num('ht_var', -1), fs = app.params.num('ht_svar', -1);
     this.forceV = fv >= 0 ? fv : null;
@@ -368,6 +389,11 @@ export class Mobility {
     let p = this.posers.get(B);
     if (!p) { p = new Poser(B.rig); this.posers.set(B, p); }
     return p;
+  }
+
+  /** One mesh of each kit (created now), for the shader warm-up at start-up. */
+  warmMeshes() {
+    return [this.bikeInst._slot(0, 2).mesh, this.strollerInst._slot(0, 2).mesh];
   }
 
   begin(camera, renderer) {
@@ -398,7 +424,8 @@ export class Mobility {
       st.look = prop === 1 ? kit.pick(s.propSeed | 0, { variant: this.forceS })
         : kit.pick(s.propSeed | 0, { riderHeight: a.height, child: a.age === 'child', variant: this.forceV });
       st.v = st.look.variant;
-      st.ride = null;           // rider fit (saddle, lean) is solved on first use
+      st.ride = null;           // rider fit (frame size, saddle, lean) and walking stance are solved on first use
+      st.walk = null;
       const h = hash2(s.propSeed | 0, 0x2b1d) >>> 0;
       st.footSide = (h & 3) === 0 ? 1 : -1;          // most riders put the left foot down
       st.hold = ((h >> 4) % 100) < 62 ? 0 : 1;       // walking a bike: near hand on the grip / grip + saddle
@@ -433,10 +460,10 @@ export class Mobility {
     if (prop === 1) { st.toX = 0; st.toZ = -st.pushOff; st.toL = 0; }
     else if (s.pose === 4) {
       const d = kit.variants[st.v].dims;
-      st.toX = 0; st.toZ = -(d.front + d.rear) / 2; st.toL = 0;
+      st.toX = 0; st.toZ = -(d.front + d.rear) / 2 * this._rideFit(st, a).k; st.toL = 0;
     } else {
-      const fit = this._walkFit(st);
-      st.toX = -fit.x; st.toZ = -fit.z; st.toL = 0.05;
+      const fit = this._walkFit(st), k = this._rideFit(st, a).k;
+      st.toX = -fit.x * k; st.toZ = -fit.z * k; st.toL = 0.05;
     }
     if (st.pose !== s.pose) {
       if (st.pose >= 3 && !fresh) { st.fromX = st.offX; st.fromZ = st.offZ; st.fromL = st.offL; st.fadeT0 = time; st.fadeDur = 0.75; }
@@ -473,7 +500,8 @@ export class Mobility {
       } else {
         // walked: no pedalling; the front wheel follows the turn, the bike leans in a little
         st.stopW = 0;
-        st.steer = Math.max(-0.5, Math.min(0.5, Math.atan((wb * st.omega) / Math.max(0.5, v)) * 0.8));
+        // (the hand on the grip steers: walkers keep the bars nearly straight)
+        st.steer = Math.max(-0.25, Math.min(0.25, Math.atan((wb * st.omega) / Math.max(0.5, v)) * 0.6));
         st.lean = st.offL;
       }
     } else {
@@ -495,11 +523,19 @@ export class Mobility {
     const ox = s.x + ch * st.offX + sh * st.offZ, oz = s.z - sh * st.offX + ch * st.offZ;
     if (st.prop === 1) {
       kit.matrix(_M4, ox, s.y, oz, s.heading, 0, st.pitch);
-      kit.anim(_anim, st.v, { roll: st.roll, swivel: st.swivel });
+      _sopt.roll = st.roll; _sopt.swivel = st.swivel;
+      kit.anim(_anim, st.v, _sopt);
       this.strollerInst.add(st.v, _M4, _anim, st.look.look);
     } else {
+      const fit = this._rideFit(st, s.a);
       kit.matrix(_M4, ox, s.y, oz, s.heading, st.lean, st.pitch);
-      kit.anim(_anim, st.v, { roll: st.roll, crank: st.crank, steer: st.steer, saddle: this._rideFit(st, s.a).saddle });
+      if (fit.k !== 1) {
+        // frame size: the model scaled about its ground point (wheels roll on the smaller radius)
+        const e = _M4.elements;
+        for (const i of M3) e[i] *= fit.k;
+      }
+      _ropt.roll = st.roll / fit.k; _ropt.crank = st.crank; _ropt.steer = st.steer; _ropt.saddle = fit.saddle;
+      kit.anim(_anim, st.v, _ropt);
       this.bikeInst.add(st.v, _M4, _anim, st.look.look);
     }
   }
@@ -516,57 +552,74 @@ export class Mobility {
     return st.walk;
   }
 
-  /** Rider fit for this bike and body: saddle height, trunk lean, sit points (cached per slot). */
+  /**
+   * Rider fit for this bike and body (cached per slot): frame size, saddle height, trunk lean.
+   * Bikes come in frame sizes: the shared model is scaled per rider (k, about 0.85-1.05; a small
+   * frame on smaller wheels for a short rider) and the seat post set so the knee stays a little
+   * bent with the pedal at its lowest. All attachment points are bike-local x k.
+   */
   _rideFit(st, a) {
     if (st.ride) return st.ride;
     const B = this.h.bases[a.body];
     const P = this.poser(B);
     const kit = this.bikes, v = st.v, V = kit.variants[v];
     const sc = a.height / B.info.H;
-    const fit = { saddle: kit.saddleFor(v, a.height), lean: 0, leanStop: 0, pk: 0.5, sc, P };
+    const fit = { saddle: kit.saddleFor(v, a.height), lean: 0, pk: 0.5, sc, k: 1, kk: 1 / sc, P };
     const sit = v3(), gL = v3(), gR = v3();
     const hint = (V.dims.riderLean ?? 0.3) + (a.stoop || 0) * 0.5 + ((hash2(a.seed | 0, 77) >>> 0) % 100) / 100 * 0.08;
     fit.pk = 0.42 + 0.2 * Math.min(1, hint / 0.8);
-    const toM = (p, o) => set3(o, p.x / sc, p.y / sc, p.z / sc);
+    const toM = (p, o) => set3(o, p.x * fit.kk, p.y * fit.kk, p.z * fit.kk);
     const lean = () => {
       kit.attachments(v, 0, 0, fit.saddle, _att);
       toM(_att.saddle, sit); toM(_att.gripL, gL); toM(_att.gripR, gR);
       return P.solveLean(sit, gL, gR, hint, fit.pk);
     };
-    // saddle height: the leg is still a little bent with the pedal at its lowest (knee ~28 deg)
-    const maxReach = (saddle) => {
+    // largest hip -> ankle distance over the crank turn (x leg length), trunk lean l
+    const maxReach = (saddle, l) => {
       fit.saddle = saddle;
-      const l = lean();
+      kit.attachments(v, 0, 0, saddle, _att);
+      toM(_att.saddle, sit);
       P._torso(sit, l, fit.pk, 0, 0, 0);
       let m = 0;
       for (let i = 0; i < 12; i++) {
         const c = (i / 12) * TAU;
         kit.attachments(v, c, 0, saddle, _att);
         footRot(_RF, 9, 1, pedalPitch(c), 0, 0);
-        toM(_att.pedalR, _ball); _ball[1] += 0.013 / sc;
+        toM(_att.pedalR, _ball); _ball[1] += 0.013 * fit.kk;
         P.ankleFor('R', _ball, _RF, 9, _ank);
-        const hb = BONE.thighR * 3, r = P.rest;
-        app3(PR, 9, r[hb] - r[3], r[hb + 1] - r[4], r[hb + 2] - r[5], _p);
-        m = Math.max(m, Math.hypot(_ank[0] - PP[3] - _p[0], _ank[1] - PP[4] - _p[1], _ank[2] - PP[5] - _p[2]));
+        m = Math.max(m, P.hipDist('R', _ank));
       }
       return m / P.legLen;
     };
-    const [r0, r1] = V.dims.saddleRange;
-    let lo = r0 - 0.06, hi = r1 + 0.08;
+    // seat post: as low as the frame allows (clamp 3 cm above the seat tube) up to a long post
+    const L = V.layout;
+    const post = (V.spec.saddleH - L.saddleT - L.stTop.y) / L.seatDir.y;
+    const lo0 = Math.max(V.dims.saddleRange[0] - 0.08, -(post - 0.03)), hi0 = V.dims.saddleRange[1] + 0.1;
     const want = 0.955;
-    if (maxReach(hi) <= want) fit.saddle = hi;
-    else if (maxReach(lo) >= want) fit.saddle = lo;
-    else {
-      for (let i = 0; i < 12; i++) { const m = (lo + hi) / 2; if (maxReach(m) > want) hi = m; else lo = m; }
-      fit.saddle = lo;
+    const solve = (k) => {
+      fit.k = k; fit.kk = k / sc;
+      fit.saddle = kit.saddleFor(v, a.height / k);
+      const l = lean();
+      let lo = lo0, hi = hi0;
+      if (maxReach(hi, l) <= want) return { saddle: hi, r: maxReach(hi, l) };
+      const rl = maxReach(lo, l);
+      if (rl >= want) return { saddle: lo, r: rl };
+      for (let i = 0; i < 10; i++) { const m = (lo + hi) / 2; if (maxReach(m, l) > want) hi = m; else lo = m; }
+      return { saddle: lo, r: want };
+    };
+    // frame size: the standard frame unless the rider cannot reach (short) or sits far too low (tall)
+    let res = solve(1);
+    if (res.r > want + 0.01) {
+      for (const k of [0.95, 0.9, 0.86]) { res = solve(k); if (res.r <= want + 0.01) break; }
+    } else if (res.saddle >= hi0 - 1e-3 && res.r < 0.93) {
+      res = solve(1.04);
     }
+    fit.saddle = res.saddle;
     fit.lean = lean();
     st.sitR.set(sit);
     // standing astride with a foot down: off the saddle's nose, trunk more upright
     kit.attachments(v, 0, 0, fit.saddle, _att);
-    const k = V.dims;
-    void k;
-    set3(st.sitS, st.footSide * 0.05 / sc, 0, (_att.saddleNose.z - 0.1) / sc);
+    set3(st.sitS, st.footSide * 0.05 / sc, 0, _att.saddleNose.z * fit.kk - 0.1 / sc);
     st.ride = fit;
     return fit;
   }
@@ -575,14 +628,12 @@ export class Mobility {
    * Pose a figure in a mobility pose into M (model-space skin matrices). For walking poses M
    * already holds the blended walk; for riding it is overwritten. Returns false if nothing was done.
    */
-  pose(s, a, B, M, time) {
+  pose(s, a, B, M) {
     const st = s.mob;
     if (!st) return false;
     const P = this.poser(B);
     const sc = a.height / B.info.H;
-    const ch = Math.cos(st.offL), sl = Math.sin(st.offL);
-    void ch; void sl;
-    if (s.pose === 4) return this._ride(s, a, B, M, st, P, sc, time);
+    if (s.pose === 4) return this._ride(s, a, M, st, P, sc);
     const flexGrip = -14 * D2R;
     if (s.pose === 3) {
       const kit = this.strollers;
@@ -594,7 +645,7 @@ export class Mobility {
         set3(_G[i], (st.offX + g.x) / sc, (cp * g.y - sp * g.z) / sc, (st.offZ + sp * g.y + cp * g.z) / sc);
         set3(_I[i], i ? -1 : 1, 0, 0);
       }
-      for (const [s_, i] of [['L', 0], ['R', 1]]) {
+      for (const [s_, i] of SIDES) {
         const sg = i ? 1 : -1;
         set3(_pole, sg * 0.45, -0.55, 0.6); norm3(_pole);
         P.armOnto(M, s_, _G[i], _I[i], _pole, flexGrip, 7 * D2R);
@@ -604,11 +655,12 @@ export class Mobility {
     // walking a bike: near (right) hand on the bike's left grip; some hold the grip with the left
     // hand and rest the right on the saddle
     const kit = this.bikes;
-    kit.attachments(st.v, st.crank, st.steer, this._rideFit(st, a).saddle, _att);
+    const fit = this._rideFit(st, a), k = fit.k;
+    kit.attachments(st.v, st.crank, st.steer, fit.saddle, _att);
     const toFig = (p, o) => {
-      // bike-local -> figure model space: offset + Rz(lean) p (pitch ignored for the hands)
-      const c = Math.cos(st.lean), sn = Math.sin(st.lean);
-      return set3(o, (st.offX + c * p.x - sn * p.y) / sc, (sn * p.x + c * p.y) / sc, (st.offZ + p.z) / sc);
+      // bike-local -> figure model space: offset + Rz(lean) k p (pitch ignored for the hands)
+      const c = Math.cos(st.lean) * k, sn = Math.sin(st.lean) * k;
+      return set3(o, (st.offX + c * p.x - sn * p.y) / sc, (sn * p.x + c * p.y) / sc, (st.offZ + k * p.z) / sc);
     };
     if (st.hold === 0) {
       toFig(_att.gripL, _G[1]);
@@ -620,23 +672,24 @@ export class Mobility {
       set3(_I[0], -_att.gripDirL.x, -_att.gripDirL.y, -_att.gripDirL.z);
       set3(_pole, -0.5, -0.55, 0.55); norm3(_pole);
       P.armOnto(M, 'L', _G[0], _I[0], _pole, flexGrip, 6 * D2R);
-      // right palm on the saddle top, fingers forward
-      const sp = _att.saddle;
-      _q[0] = sp.x; _q[1] = sp.y + 0.012; _q[2] = sp.z - 0.06;
-      toFig({ x: _q[0], y: _q[1], z: _q[2] }, _G[1]);
-      set3(_I[1], -0.3, 0, -1); norm3(_I[1]);
-      set3(_pole, 0.6, -0.3, 0.6); norm3(_pole);
-      P.armOnto(M, 'R', _G[1], _I[1], _pole, -30 * D2R, 0, true);
+      // right palm on the front of the saddle, fingers forward, the arm hanging down to it
+      const sp = _att.saddle, sn = _att.saddleNose;
+      _hold.x = sn.x; _hold.y = sn.y + 0.01; _hold.z = sn.z * 0.4 + sp.z * 0.6;
+      toFig(_hold, _G[1]);
+      set3(_I[1], -0.35, 0, -1); norm3(_I[1]);
+      set3(_pole, 0.35, -0.75, 0.55); norm3(_pole);
+      P.armOnto(M, 'R', _G[1], _I[1], _pole, -25 * D2R, 0, true);
     }
     return true;
   }
 
-  _ride(s, a, B, M, st, P, sc, time) {
+  _ride(s, a, M, st, P, sc) {
     const kit = this.bikes, v = st.v, V = kit.variants[v];
     const fit = this._rideFit(st, a);
     const crank = st.crank;
     kit.attachments(v, crank, st.steer, fit.saddle, _att);
-    const toM = (p, o) => set3(o, p.x / sc, p.y / sc, p.z / sc);
+    const kk = fit.kk;
+    const toM = (p, o) => set3(o, p.x * kk, p.y * kk, p.z * kk);
     const w = smooth01(st.stopW);
     // pelvis: riding (sit bones on the saddle) -> standing astride (off the nose)
     const sitR = _c; toM(_att.saddle, sitR);
@@ -646,10 +699,11 @@ export class Mobility {
     const sway = (1 - w) * Math.min(1, s.speed / 1.5);
     // (standing astride, the body stays upright while the bike tips towards the foot that is down)
     const roll = sway * 1.6 * D2R * Math.sin(crank) * (1.2 - 0.5 * Math.min(1, fit.lean)) - w * st.lean;
-    const yaw = sway * 1.2 * D2R * Math.cos(crank);
+    // the shoulders turn with the bars (the far grip comes back towards the rider)
+    const yaw = sway * 1.2 * D2R * Math.cos(crank) + st.steer * 0.5;
     // bike-local ground under the foot that goes down (the bike leans by st.lean)
     const fs = st.footSide;                        // -1 left foot down
-    const sideK = fs < 0 ? 'L' : 'R', pedK = fs < 0 ? 'R' : 'L';
+    const sideK = fs < 0 ? 'L' : 'R';
     const tl = Math.tan(st.lean), tp = Math.tan(st.pitch);
     const sit = _e;
     if (w > 0.001) {
@@ -671,12 +725,12 @@ export class Mobility {
     P._torso(sit, lean, pk, roll, yaw, Math.max(-1.1, Math.min(1.1, s.look || 0)));
     // hands on the grips
     const drop = V.spec.bar.type === 'drop';
-    for (const [k, i] of [['L', 0], ['R', 1]]) {
+    for (const [k, i] of SIDES) {
       const g = i ? _att.gripR : _att.gripL, gd = i ? _att.gripDirR : _att.gripDirL;
       const sg = i ? 1 : -1;
       if (drop) {
         // on the hoods (handshake grip): the palm rests on the hood's top inner side, thumb up and in
-        set3(_G[i], (g.x - sg * 0.004) / sc, (g.y + 0.004) / sc, g.z / sc);
+        set3(_G[i], g.x * kk - sg * 0.004 / sc, g.y * kk + 0.004 / sc, g.z * kk);
         set3(_I[i], -sg * 0.8, 0.6, 0); norm3(_I[i]);
         set3(_pole, sg * 0.45, -0.75, 0.35); norm3(_pole);
         P._armTo(k, _G[i], _I[i], _pole, -8 * D2R, true);
@@ -689,12 +743,25 @@ export class Mobility {
       }
     }
     // legs: the ball of each foot on its pedal, the ankle working through the stroke
-    for (const [k, i] of [['L', 0], ['R', 1]]) {
+    for (const [k, i] of SIDES) {
       const ped = i ? _att.pedalR : _att.pedalL;
       const ca = i ? crank : crank + Math.PI;        // this foot's crank angle (0 = up)
       footRot(_RF, i * 9, i ? 1 : -1, pedalPitch(ca), 0, 0);
-      toM(ped, _ball); _ball[1] += 0.013 / sc; _ball[2] += 0.008 / sc;
+      toM(ped, _ball); _ball[1] += 0.013 * kk; _ball[2] += 0.008 * kk;
       P.ankleFor(k, _ball, _RF, i * 9, _ank);
+      // a rider whose leg is short for this bike even with the saddle right down points the toes
+      // further at the bottom of the stroke instead of straightening the knee off the pedal
+      if (P.hipDist(k, _ank) > 0.972 * P.legLen) {
+        let lo = 0, hi = 0.7;
+        for (let it = 0; it < 7; it++) {
+          const m = (lo + hi) / 2;
+          footRot(_RF, i * 9, i ? 1 : -1, pedalPitch(ca) - m, 0, 0);
+          P.ankleFor(k, _ball, _RF, i * 9, _ank);
+          if (P.hipDist(k, _ank) > 0.972 * P.legLen) lo = m; else hi = m;
+        }
+        footRot(_RF, i * 9, i ? 1 : -1, pedalPitch(ca) - hi, 0, 0);
+        P.ankleFor(k, _ball, _RF, i * 9, _ank);
+      }
       if (k === sideK && w > 0.001) {
         // the foot leaves its pedal and steps down beside the bike (lifted clear on the way)
         const gx = fs * (0.27 + 0.05 * (V.dims.width - 0.55)), gz = st.sitS[2] * sc - 0.05;
@@ -707,14 +774,15 @@ export class Mobility {
         blendRot(_RF, i * 9, _RG, 0, u);
       }
       set3(_pole, POLE_KNEE[i][0], POLE_KNEE[i][1], POLE_KNEE[i][2]);
-      P._legTo(k, _ank, _pole, _RF, i * 9);
+      const reach = P._legTo(k, _ank, _pole, _RF, i * 9);
+      // (testing: leg reach statistics, hip-to-ankle over leg length; >= 0.999 would straighten the knee)
+      const R = this.reachStat;
+      if (R && w < 0.001) { R.min = Math.min(R.min, reach); R.max = Math.max(R.max, reach); R.n++; }
     }
-    void pedK;
     // into the figure's model space: X = Rx(pitch) Rz(lean), t = prop offset / sc
     setRx(_X, 0, st.pitch); setRz(_m9, 0, st.lean); mul3(_X, 0, _m9, 0, _X, 0);
     set3(_t, st.offX / sc, 0, st.offZ / sc);
     P._write(M, _X, _t);
-    void time;
     return true;
   }
 }
