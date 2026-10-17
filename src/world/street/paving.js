@@ -1,7 +1,8 @@
 import {
-  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W, railDist,
+  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W, RAIL_X0, RAIL_X1, railDist,
 } from './constants.js';
 import { colInfo } from './surface.js';
+import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 
 // Paving grid for one chunk: corridor (with gaps for the rails and, at lod 0, dark
 // mortar strips along them), light stone edge bands, dished gutters and sidewalks out
@@ -10,6 +11,8 @@ import { colInfo } from './surface.js';
 // chunk ends so neighbouring chunks shade seamlessly). UVs: u = periodic street
 // coordinate, v = d (corridor: the material places its rail grime by d), or metres from
 // the gutter edge on the sidewalks so a full course runs along the gutter.
+// Inside crossover zones the setts and the main rails' mortar go into cut variants
+// (crossover.js): the diverging rails, swept with their own mortar, open the paving.
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
 const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
@@ -134,7 +137,8 @@ export function buildPaving(ctx, chunk, rows, out) {
     }
     for (let k = 0; k < nFixed; k++) {
       let d = fx.d[k];
-      if (fx.jit[k]) d += GROUT_WAVE * surface.fH.sample(ri.sp * kW, fx.jit[k] * 9.3);
+      // (straight inside crossover zones, where swept mortar strips meet these edges)
+      if (fx.jit[k]) d += GROUT_WAVE * (1 - ri.xo) * surface.fH.sample(ri.sp * kW, fx.jit[k] * 9.3);
       D[o + nL + k] = d; H[o + nL + k] = surface.height(ri, d, fx.ci[k]); HS[o + nL + k] = surface.hShade;
     }
     for (let k = 1; k <= nR; k++) {
@@ -167,12 +171,17 @@ export function buildPaving(ctx, chunk, rows, out) {
   bufs[K_GUTTER] = bufs[K_CORR];
   bufs[K_RAIL] = bufs[K_CORR];
   if (lod === 0) bufs[K_GROUT] = out.get(mats.grout, true, nr * 16 + 32);
-  const vmap = [new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1)];
+  // vertex maps per buffer: corridor (+ gutters, rails), band, walk, grout, and the cut
+  // variants of corridor and grout inside crossover zones
+  const vmap = [];
+  for (let i = 0; i < 6; i++) vmap.push(new Int32Array(nr * nc).fill(-1));
   const bufIndex = [0, 0, 1, 0, 2, 3];    // gutters: darker corridor setts
   const tone = [1, 1, 1];
+  const cut4 = [0, 0, 0, 0];
 
-  const vert = (r, c, k) => {
-    const bi = bufIndex[k];
+  const vert = (r, c, k, plan) => {
+    const zoned = plan && (k === K_CORR || k === K_GROUT);
+    const bi = zoned ? (k === K_CORR ? 4 : 5) : bufIndex[k];
     const key = r * nc + c;
     let v = vmap[bi][key];
     if (v >= 0) return v;
@@ -198,29 +207,59 @@ export function buildPaving(ctx, chunk, rows, out) {
       const m = ((railDist(d) < 0.02 ? 1.0 : 0.88) / ci.v) * (tone[0] + tone[1] + tone[2]) / 3;
       tone[0] = m; tone[1] = m; tone[2] = m;
     }
-    const b = bufs[k];
+    let b = bufs[k];
+    if (zoned) {
+      if (k === K_CORR) {
+        paveCut(plan, S.s, d, cut4);
+        // grime along the diverging rails, as along the main ones
+        const e = Math.max(0, Math.min(railOut(cut4[0]), railOut(cut4[3])));
+        const g = 1 - 0.24 * Math.exp(-e / 0.045) - 0.08 * Math.exp(-e / 0.22);
+        tone[0] *= g; tone[1] *= g; tone[2] *= g;
+        b = out.get(mats.cut.corr, true);
+      } else {
+        const m = nearestRail(d);
+        mainCut(plan, m, S.s, d, 'mortar', m.g * (d - m.c), cut4);
+        b = out.get(mats.cut.mortar, true);
+      }
+    }
     const vv = k === K_WALK ? (d < 0 ? -d : d) - GUTTER_OUT : d;
     v = b.v(S.px + S.rx * d, S.py + h, S.pz + S.rz * d, nx, ny, nz, S.u, vv, tone[0], tone[1], tone[2]);
+    if (zoned) b.setCut(v, cut4[0], cut4[1], cut4[2], cut4[3]);
     vmap[bi][key] = v;
     return v;
   };
 
   for (let r = 0; r < nr - 1; r++) {
-    const fillRails = lod > 0 || inInlayZone(ctx, (rows[r] + rows[r + 1]) / 2);
+    // lod 1 has no 3D rails: the paving runs under the far-field rail lines
+    const fillRails = lod > 0;
+    const zc = lod === 0 ? inCrossoverZone(ctx, (rows[r] + rows[r + 1]) / 2) : null;
+    const plan = zc ? crossoverPlan(zc, ctx.delta) : null;
     for (let c = 0; c < nc - 1; c++) {
       const k = kind[c];
       if (k === K_RAIL && !fillRails) continue;
-      const a = vert(r, c, k), b = vert(r, c + 1, k), cc = vert(r + 1, c + 1, k), d = vert(r + 1, c, k);
-      bufs[k].quad(a, b, cc, d);
+      const a = vert(r, c, k, plan), b = vert(r, c + 1, k, plan), cc = vert(r + 1, c + 1, k, plan), d = vert(r + 1, c, k, plan);
+      const zoned = plan && (k === K_CORR || k === K_GROUT);
+      (zoned ? out.get(k === K_CORR ? mats.cut.corr : mats.cut.mortar, true) : bufs[k]).quad(a, b, cc, d);
     }
   }
   return samples;
 }
 
-/** Inside a crossover's inlay zone (rails drawn as inlays over continuous paving). */
-export function inInlayZone(ctx, s) {
+/** Distance (m) outside a diverging rail's span from its rail-local coordinate. */
+const railOut = (x) => (x < RAIL_X0 ? RAIL_X0 - x : x > RAIL_X1 ? x - RAIL_X1 : 0);
+
+/** Main rail nearest to offset d. */
+function nearestRail(d) {
+  let best = MAIN_RAILS[0], e = 1e9;
+  for (const m of MAIN_RAILS) { const v = Math.abs(d - m.c); if (v < e) { e = v; best = m; } }
+  return best;
+}
+
+/** The crossover whose zone (its length plus ctx.zonePad at both ends) contains s, where
+ *  rails and paving carry cut attributes. */
+export function inCrossoverZone(ctx, s) {
   for (const c of ctx.layout.crossovers) {
-    if (ctx.delta(c.s0 - ctx.inlayPad, s) >= 0 && ctx.delta(c.s1 + ctx.inlayPad, s) <= 0) return c;
+    if (ctx.delta(c.s0 - ctx.zonePad, s) >= 0 && ctx.delta(c.s1 + ctx.zonePad, s) <= 0) return c;
   }
   return null;
 }

@@ -228,7 +228,8 @@ function silk(ctx, w, h, rng, hue) {
   for (let i = 0; i < 9; i++) {
     const x0 = rng.range(-0.3, 1.1) * w, k = rng.range(0.15, 0.4);
     const g = ctx.createLinearGradient(x0, 0, x0 + w * k, h * k * 0.6);
-    g.addColorStop(0, hsl(hue, 35, 30, 0)); g.addColorStop(0.5, hsl(hue + rng.range(-10, 10), 40, rng.range(45, 70), 0.55)); g.addColorStop(1, hsl(hue, 35, 25, 0));
+    const lit = rng.chance(0.6);
+    g.addColorStop(0, hsl(hue, 35, 30, 0)); g.addColorStop(0.5, hsl(hue + rng.range(-10, 10), 40, lit ? rng.range(50, 75) : rng.range(8, 16), lit ? 0.8 : 0.6)); g.addColorStop(1, hsl(hue, 35, 25, 0));
     ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
   }
 }
@@ -248,7 +249,7 @@ function photoPoster(ctx, x, y, w, h, seed) {
   else if (theme === 3) cityDusk(q, w, h, rng);
   else if (theme === 1) { // product on draped silk
     silk(q, w, h, rng, hue);
-    product(q, w * 0.5, h * 0.72, h * 0.42, rng, hue + 160);
+    product(q, w * 0.5, h * 0.74, h * 0.58, rng, hue + 160);
   } else if (theme === 2) { // product on a gradient with a light streak
     bokeh(q, w, h, rng, 6, hue);
     product(q, w * 0.5, h * 0.7, h * 0.5, rng, hue + 180);
@@ -291,7 +292,7 @@ function photoPoster(ctx, x, y, w, h, seed) {
   p.beginPath(); p.arc(w * 0.12, h * 0.95, h * 0.022, 0, Math.PI * 2); p.fill();
   text(p, pseudoWord(rng, true), w * 0.17, h * 0.962, h * 0.03, { color: band ? 'rgba(240,238,230,0.95)' : fg, maxW: w * 0.4 });
   smallPrint(p, w * 0.56, h * 0.94, w * 0.36, 2, Math.max(6, h * 0.012), band ? 'rgba(230,230,225,0.8)' : fg, rng);
-  grainVignette(p, 0, 0, w, h, rng);
+  grainVignette(p, 0, 0, w, h, rng, 4);
   ctx.drawImage(c, x, y);
 }
 
@@ -401,7 +402,6 @@ function columnBand(ctx, [x, y, w, h]) {
       g.addColorStop(0, 'rgba(60,50,40,0)'); g.addColorStop(1, 'rgba(60,50,40,0.32)');
       p.fillStyle = g; p.fillRect(0, 0, tw, h);
     }
-    grainVignette(p, 0, 0, tw, h, rng, 5, 0);
     ctx.drawImage(c, x + tier * tw, y);
   });
 }

@@ -74,6 +74,7 @@ function grooveCap(B, s, u, dir, va, vc, groove, c) {
 export function* wallField(ctx, face, openings) {
   const { B, q, fs } = ctx;
   const W = face.width;
+  const uMin = ctx.uMin ?? 0, uMax = ctx.uMax ?? W;   // part of the face that is walled (chamfered corners)
   const v0 = ctx.vBottom, v1 = ctx.vTop;
   const vb = [v0, v1];
   const holes = [];
@@ -148,7 +149,7 @@ export function* wallField(ctx, face, openings) {
     const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
     const rg = fit ? fit.row(vm) : 0;
     // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
-    let a = 0, aJamb = false;
+    let a = uMin, aJamb = false;
     const runs = [], jamb = [];
     for (const h of holes) {
       if (vm <= h.y || vm >= h.top) continue;
@@ -156,7 +157,7 @@ export function* wallField(ctx, face, openings) {
       if (h.u0 - a > EPS) { runs.push(a, h.u0); jamb.push(aJamb, j); }
       a = Math.max(a, h.u1); aJamb = j;
     }
-    if (W - a > EPS) { runs.push(a, W); jamb.push(aJamb, false); }
+    if (uMax - a > EPS) { runs.push(a, uMax); jamb.push(aJamb, false); }
     for (let i = 0; i < runs.length; i += 2) {
       const ra = runs[i], rb = runs[i + 1];
       const P = fit ? fit.pieces(rg, ra, rb, _pcs) : null;

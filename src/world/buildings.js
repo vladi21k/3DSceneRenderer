@@ -445,6 +445,7 @@ function indexEnds(layout) {
     endPoints(lot).forEach((p, e) => add(p, { lot, e, p, uDir: f.uDir }));
     // the far ends of corner returns stand next to the first side-street lots
     for (const r of lot.cornerU0 || lot.cornerU1 ? facadePlan(lot).returns || [] : []) {
+      if (r.isCut) continue;
       const rf = r.frame;
       const p = new THREE.Vector3(rf.origin.x, rf.floorRef, rf.origin.z);
       if (!r.cornerAtU1) p.addScaledVector(rf.uDir, r.width);

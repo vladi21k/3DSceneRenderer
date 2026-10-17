@@ -1,6 +1,6 @@
 import { RNG } from '../../core/rng.js';
 import { facadePlan } from '../facadePlan.js';
-import { FaceShade, stoneStyle, trimColor, noise2, setBlock, hash3 } from './shade.js';
+import { FaceShade, stoneStyle, trimColor, noise2, hash3 } from './shade.js';
 import { insetPolygon, FACES } from './mesh.js';
 import { wallField } from './wall.js';
 import { openingMasonry, surroundOf, flatHead } from './openings.js';
@@ -114,14 +114,20 @@ export function* lotSteps(B, lot, ends, q, metas) {
   // `len` metres to the back corner. The footprint is the quad front + the two back corners.
   const E = ends.map((e, k) => {
     const front = e.nb ? Math.max(0, -e.dw) : 0;
-    const ret = e.corner ? (plan.returns || []).find((r) => r.end === k) : null;
+    const ret = e.corner ? (plan.returns || []).find((r) => r.end === k && !r.isCut) : null;
+    const cut = e.corner ? (plan.cuts || []).find((c) => c.end === k) || null : null;
     const P = [k ? W : 0, 0];
-    const dir = ret ? ret.dir : [0, -1], len = ret ? ret.width : D;
-    return { ...e, front, nbBack: e.nb ? e.dw - e.nbDepth : 0, ret, P, dir, len, back: [P[0] + dir[0] * len, dir[1] * len] };
+    const dir = ret ? ret.dir : [0, -1], len = ret ? (ret.cut || 0) + ret.width : D;
+    return { ...e, front, nbBack: e.nb ? e.dw - e.nbDepth : 0, ret, cut, P, dir, len, back: [P[0] + dir[0] * len, dir[1] * len] };
   });
   /** Point `r` metres back from the front corner at end e (along that end's wall). */
   const pt = (e, r) => [E[e].P[0] + E[e].dir[0] * r, E[e].dir[1] * r];
-  const foot = [[0, 0], [W, 0], E[1].back, E[0].back];   // clockwise in (u, w): faces up
+  /** The street corner at end e as path points (two where the corner is chamfered). */
+  const cornerPts = (e) => (E[e].cut ? [E[e].cut.S, E[e].cut.T] : [[e ? W : 0, 0]]);
+  const foot = [...cornerPts(0), ...cornerPts(1), E[1].back, E[0].back];   // clockwise in (u, w): faces up
+  // the main front's extent between chamfers
+  const uMin = E[0].cut ? E[0].cut.c : 0, uMax = E[1].cut ? W - E[1].cut.c : W;
+  const minRet = (e) => (E[e].cut ? E[e].cut.cr + 0.01 : 0.01);
   /** Return length of a moulding whose top is at vTopM around end e (0 = none). */
   const retLen = (e, vTopM, proj) => {
     const x = E[e];
@@ -136,9 +142,9 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const mPath = (vTopM, proj) => {
     const r0 = retLen(0, vTopM, proj), r1 = retLen(1, vTopM, proj);
     const path = [];
-    if (r0 > 0.01) path.push(pt(0, r0));
-    path.push([0, 0], [W, 0]);
-    if (r1 > 0.01) path.push(pt(1, r1));
+    if (r0 > minRet(0)) path.push(pt(0, r0));
+    path.push(...cornerPts(0), ...cornerPts(1));
+    if (r1 > minRet(1)) path.push(pt(1, r1));
     return path;
   };
 
@@ -160,7 +166,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (q.rustic) for (let j = v1 - orn.rustH; j > fg + orn.plinthH + 0.15; j -= orn.rustH) joints.push(j);
       rustic = { v0: fg - 0.4, v1, joints, c: orn.rustC };
     }
-    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt, ch: plan.coursing.ch, fit: null };
+    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt, ch: plan.coursing.ch, fit: null, uMin: F.main ? uMin : 0, uMax: F.main ? uMax : face.width };
     // texture: ashlar courses aligned with the storeys; rustication rows aligned with the V
     // joints; head joints fitted to the jambs, surrounds, pilasters and quoins per course
     B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
@@ -195,22 +201,22 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.04);
     if (plan.style.pilasters && plan.floors.length > 2) {
       const v0 = plan.courses[0].y + plan.courses[0].h;
-      for (const b of face.bays) if (b.index > 0) pilaster(B, sinks.smooth, b.u0, orn.pilW, orn.pilP, v0, cor.y, bev, q.lod === 0);
+      for (const b of face.bays) if (b.index > 0 && b.u0 > ctx.uMin + 0.6 && b.u0 < ctx.uMax - 0.6) pilaster(B, sinks.smooth, b.u0, orn.pilW, orn.pilP, v0, cor.y, bev, q.lod === 0);
     }
     // quoins on a corner return (the front's column wraps the arris; these interlock with it)
-    if (!F.main && plan.style.quoins) {
+    if (!F.main && !face.isCut && plan.style.quoins) {
       quoins(B, sinks.smooth, face.width, face.cornerAtU1 ? 1 : 0, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, false, bev, { parity: 1, seed: lot.seed + 31 });
     }
     // plinth segments between ground-floor openings
     B.mark('pilasters');
-    plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt);
+    if (!face.isCut) plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx);
     B.mark('plinth');
     yield;
     B.frameFromLot(F.frame);
     // backstop just behind the wall, in a mid stone tone: any sub-pixel crack in the
     // wall mesh shows this instead of the sky
     B.shade = null; B.flat = [tint[0] * 0.45, tint[1] * 0.42, tint[2] * 0.38];
-    B.rectW(sinks.dark, 0, face.width, fg - 0.35, vTop, -0.92, 1);
+    B.rectW(sinks.dark, ctx.uMin, ctx.uMax, fg - 0.35, vTop, -0.92, 1);
     B.flat = [1, 1, 1];
   }
 
@@ -238,14 +244,15 @@ export function* lotSteps(B, lot, ends, q, metas) {
   B.frameFromLot(f);
   B.setUV();
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.05);
-  if (cor.dentils && q.dentils) dentils(B, sinks.smooth, 0.05, W - 0.05, cor.y, ck.dentil, true);
-  if (orn.modillions) modillions(B, sinks.smooth, 0.25, W - 0.25, cor.y, cor.h, cor.proj, orn.modSpacing, q.modillions);
+  if (cor.dentils && q.dentils) dentils(B, sinks.smooth, uMin + 0.05, uMax - 0.05, cor.y, ck.dentil, true);
+  if (orn.modillions) modillions(B, sinks.smooth, uMin + 0.25, uMax - 0.25, cor.y, cor.h, cor.proj, orn.modSpacing, q.modillions);
   B.mark('mouldings');
 
   // quoins at the street corners
   if (plan.style.quoins) {
     for (const e of [0, 1]) {
       const x = E[e];
+      if (x.cut) continue;
       const wrap = q.lod === 0 && (x.corner || !x.nb || x.front > 0.03);
       // at a street corner the return face carries its own interlocking column
       quoins(B, sinks.smooth, W, e, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, wrap, bev, { retFace: !x.corner, seed: lot.seed });
@@ -293,13 +300,13 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (r1) B.sweep(sinks.smooth, parapetProfile(0.9), [pt(1, 0.3), pt(1, r1)], pv, [true, true]);
     } else {
       const path = [];
-      if (r0) path.push(pt(0, r0));
-      path.push([0, 0], [W, 0]);
-      if (r1) path.push(pt(1, r1));
+      if (r0 > minRet(0)) path.push(pt(0, r0));
+      path.push(...cornerPts(0), ...cornerPts(1));
+      if (r1 > minRet(1)) path.push(pt(1, r1));
       B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
       B.sweep(sinks.ashlar, parapetProfile(ph), path, pv, [true, true]);
       B.setUV();
-      if (par.type === 'crenel') merlons(B, sinks.smooth, 0.3, W - 0.3, pv + ph, rng.range(0.9, 1.3), rng.range(0.45, 0.6), rng.range(0.35, 0.5));
+      if (par.type === 'crenel') merlons(B, sinks.smooth, uMin + 0.3, uMax - 0.3, pv + ph, rng.range(0.9, 1.3), rng.range(0.45, 0.6), rng.range(0.35, 0.5));
     }
     // back parapet (plain)
     B.sweep(sinks.ashlar, parapetProfile(0.85), [E[1].back, E[0].back], pv, [true, true]);
@@ -409,13 +416,13 @@ function plainStone(fs, tint, u, v, out, k, top) {
 }
 
 /** Plinth (base course) along each face between ground-floor openings, wrapping exposed corners. */
-function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt) {
-  const W = face.width;
+function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
+  const W = face.width, uMin = ctx.uMin, uMax = ctx.uMax;
   const gr = ops.filter((o) => o.floor === 0).map((o) => [o.uc - o.w / 2, o.uc + o.w / 2]).sort((a, b) => a[0] - b[0]);
   const segs = [];
-  let a = 0;
+  let a = uMin;
   for (const [o0, o1] of gr) { if (o0 - a > 0.08) segs.push([a, o0]); a = Math.max(a, o1); }
-  if (W - a > 0.08) segs.push([a, W]);
+  if (uMax - a > 0.08) segs.push([a, uMax]);
   const p = orn.plinthP;
   // base course: a slightly greyer, harder stone
   B.shade = (u, v, w, nu, nv, nw, out) => {
@@ -423,6 +430,22 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt) {
     const l = (out[0] + out[1] + out[2]) / 3;
     out[0] += (l - out[0]) * 0.35; out[1] += (l - out[1]) * 0.35; out[2] += (l * 1.02 - out[2]) * 0.35;
   };
+  // a chamfered corner: the plinth runs along the cut face to its door, and from the
+  // door's far side round the corner into the return (points in the main frame)
+  const cutDoor = (x) => {
+    const c = x.cut, o = c.face.openings.find((q) => q.floor === 0), L = c.face.width;
+    const at = (d) => [c.S[0] + (c.T[0] - c.S[0]) * (d / L), c.S[1] + (c.T[1] - c.S[1]) * (d / L)];
+    return o ? [at(o.uc - o.w / 2), at(o.uc + o.w / 2)] : [at(L / 2), at(L / 2)];
+  };
+  if (F.main) {
+    for (const e of [0, 1]) {
+      const x = E[e];
+      if (!x.cut) continue;
+      const [d0, d1] = cutDoor(x), g = face.groundAt(e ? W : 0);
+      const path = e ? [d1, x.cut.T, pt(1, x.cut.cr + p)] : [pt(0, x.cut.cr + p), x.cut.S, d0];
+      B.sweep(sinks.smooth, plinthProfile(g + orn.plinthH, p, fg - 0.35), path, 0, [true, true]);
+    }
+  }
   for (let [s0, s1] of segs) {
     const top = Math.max(face.groundAt(s0), face.groundAt(s1)) + orn.plinthH;
     const prof = plinthProfile(top, p, fg - 0.35);
@@ -434,10 +457,17 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt) {
     }
     const path = [[s0, 0], [s1, 0]];
     if (F.main) {
-      // wrap around exposed ends and street corners of the main front
+      // wrap around exposed ends and street corners of the main front (along a chamfer
+      // as far as its door)
       const ret = (x) => (x.corner ? p : !x.nb ? p + 0.1 : x.front > 0.03 ? Math.max(x.front, p + 0.08) : 0);
-      if (s0 < 0.01) { const r = ret(E[0]); if (r) path.unshift(pt(0, r)); }
-      if (s1 > W - 0.01) { const r = ret(E[1]); if (r) path.push(pt(1, r)); }
+      if (s0 < uMin + 0.01) {
+        if (E[0].cut) path.unshift(cutDoor(E[0])[1]);
+        else { const r = ret(E[0]); if (r) path.unshift(pt(0, r)); }
+      }
+      if (s1 > uMax - 0.01) {
+        if (E[1].cut) path.push(cutDoor(E[1])[0]);
+        else { const r = ret(E[1]); if (r) path.push(pt(1, r)); }
+      }
     }
     B.sweep(sinks.smooth, prof, path, 0, [true, true]);
   }
@@ -565,6 +595,12 @@ function* rooftop(B, sinks, lot, plan, orn, v0, q, tint, foot, par) {
 
 /** Roof deck: bituminous membrane laid in strips (per-strip tone), with drain outlets. */
 function roofDeck(B, s, poly, v, q, seed) {
+  if (poly.length !== 8) {
+    B.flat = [0.62, 0.61, 0.6].map((c) => c * (q.lod ? 0.68 : 1));
+    B.polyV(s, poly, v);
+    B.flat = [1, 1, 1];
+    return;
+  }
   const [P0, P1, P2, P3] = [0, 1, 2, 3].map((k) => [poly[k * 2], poly[k * 2 + 1]]);
   const L = Math.hypot(P1[0] - P0[0], P1[1] - P0[1]), Dd = Math.hypot(P3[0] - P0[0], P3[1] - P0[1]);
   const nu = q.lod ? 1 : Math.max(1, Math.round(L / 2.6)), nw = q.lod ? 1 : Math.max(1, Math.round(Dd / 3));

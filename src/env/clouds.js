@@ -89,7 +89,7 @@ export const CLOUD_MARCH_GLSL = /* glsl */ `
 #define CB ${CB.toFixed(1)}
 #define CT ${CT.toFixed(1)}
 #define CLOUD_SIGMA 0.045     // extinction per metre at density 1
-#define MS_BOOST 1.5
+#define MS_BOOST 1.9
 
 float cloudDensity(vec3 p, float detail) {
   float hf = (p.y - CB) / CT;
@@ -104,11 +104,11 @@ float cloudDensity(vec3 p, float detail) {
   float thr = 1.0 - cov * sqrt(max(1.0 - hf, 0.0)) * smoothstep(0.0, 0.05, hf);
   // dense bodies: the density saturates over the outer part of each cell, so the
   // erosion below carves the boundary into billows instead of hollowing the core
-  float d = clamp((shape - thr) / max(0.3 * (1.0 - thr), 1e-3), 0.0, 1.0);
+  float d = clamp((shape - thr) / max(0.2 * (1.0 - thr), 1e-3), 0.0, 1.0);
   if (d <= 0.0 || detail <= 0.0) return d;
   // cauliflower edges: billowy Worley erosion, strongest at the base
-  float e = textureLod(uNoise3D, vec3(q.x, p.y, q.y) / 800.0 + vec3(0.37, 0.11, 0.73), 0.0).g;
-  float ero = (1.0 - e) * mix(0.55, 0.3, hf) * detail;
+  float e = textureLod(uNoise3D, vec3(q.x, p.y, q.y) / 520.0 + vec3(0.37, 0.11, 0.73), 0.0).g;
+  float ero = (1.0 - e) * mix(0.5, 0.28, hf) * detail;
   return clamp((d - ero) / max(1.0 - ero, 1e-3), 0.0, 1.0);
 }
 

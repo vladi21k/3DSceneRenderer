@@ -308,7 +308,8 @@ function kiosk(detail) {
  *  pasted on it 2 mm proud (raised edges), a ribbed cornice and a domed cap with finial. */
 function advertColumn(lod) {
   if (lod >= 2) {
-    return { iron: merge([lathe([[0.66, 0], [0.6, 0.3], [0.556, 0.33], [0.556, 2.57], [0.66, 2.7], [0.5, 2.95], [0.05, 3.19], [0, 3.33]], 8)]), band: null, sheets: null, edges: null };
+    const band = COLUMN_TIERS.map(([y0, y1], tier) => cylPatch(0.562, 0, Math.PI * 2, y0, y1, uvSub('column', tier * 0.5, 0, tier * 0.5 + 0.5, 1), 8));
+    return { iron: merge([lathe([[0.66, 0], [0.6, 0.3], [0.556, 0.33], [0.556, 2.57], [0.66, 2.7], [0.5, 2.95], [0.05, 3.19], [0, 3.33]], 8)]), band: merge(band), sheets: null, edges: null };
   }
   const seg = lod ? 16 : 48;
   const iron = lathe([[0.66, 0], [0.66, 0.08], [0.62, 0.12], [0.6, 0.24], [0.565, 0.3], [0.556, 0.33], [0.556, 0.355], [0.552, 0.36], [0.552, 2.54], [0.556, 2.545], [0.556, 2.57], [0.6, 2.6], [0.655, 2.65], [0.66, 2.72], [0.6, 2.76], [0.58, 2.8],

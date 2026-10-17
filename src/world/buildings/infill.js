@@ -14,6 +14,7 @@ const PAINT = {
 const STALL = [0.05, 0.05, 0.048];
 const ROLLER = [0.3, 0.3, 0.29];
 const DOOR = [0.09, 0.05, 0.03];
+const GOODS = [[0.16, 0.11, 0.07], [0.08, 0.09, 0.12], [0.19, 0.16, 0.11], [0.1, 0.12, 0.08], [0.22, 0.19, 0.16], [0.14, 0.05, 0.04]];
 const _p = {}, _q = {};
 
 /** Paint colour by plan colour name (linear albedo). */
@@ -67,6 +68,17 @@ export function openingInfill(ctx, face, o, rng) {
   }
 
   if (shop) {
+    // the shop seen through the glass (from these distances a flat picture is enough):
+    // dim warm back wall and ceiling above, shelves of goods below
+    const wi = w0 - 0.006, gTop = o.y + Math.min(1.7, (lowTop - o.y) * 0.62);
+    B.flat = [0.2, 0.165, 0.13].map((c) => c * rng.range(0.8, 1.2));
+    B.rectW(sF, u0 + fw, u1 - fw, gTop, lowTop, wi, 1);
+    for (let u = u0 + fw, k = 0; u < u1 - fw - 0.01; k++) {
+      const du = Math.min(u1 - fw - u, rng.range(0.25, 0.6));
+      B.flat = rng.pick(GOODS).map((c) => c * rng.range(0.7, 1.15));
+      B.rectW(sF, u, u + du, o.y + 0.42, gTop, wi, 1);
+      u += du;
+    }
     // stall riser, and some shops closed by a roller shutter
     B.flat = STALL;
     B.box(sF, u0 + fw, u1 - fw, o.y, o.y + 0.42, wb, wf - 0.005, FACES.FRONT | FACES.TOP);

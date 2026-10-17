@@ -316,6 +316,7 @@ def build_base(kind, res, pk):
         variants['old'] = B.build_body(kind, 0.0, face_var={'old': 1.0})[0]
         variants['belly'] = B.build_body(kind, 0.0, belly=1.0)[0]
     info['hatOffsets'] = PARTS.HAT_OFFSETS
+    info['hairline'] = {'front': PARTS.MALE_FRONT, 'temple': PARTS.MALE_TEMPLE}
     H = info['H']
     sc = H / 1.76
     lo = np.array([-0.62 * sc, -0.004, -0.27 * sc])

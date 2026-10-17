@@ -87,7 +87,8 @@ const humans = {
     app.scene.add(this.group);
     for (const B of Object.values(this.bases)) {
       const hang = hangProfile(B.lods[0], B.info);
-      const { mat, depth, uniforms } = makeHumanMaterials(B, this.parts, this.boneTex, this.lookTex, this.morphScale, this.shapeScale, hang);
+      const { mat, depth, uniforms } = makeHumanMaterials(B, this.parts, this.boneTex, this.lookTex, this.morphScale, this.shapeScale, hang,
+        app.params.num('humans_dbg', 0));
       app.materials.register('humans.' + B.name, mat);
       app.materials.track(mat);
       B.mat = mat;
@@ -344,10 +345,10 @@ const humans = {
       out[o + 7] += y0;
       out[o + 11] += s.z;
     }
-    // state texels: gait phase, speed, seated blend, ground height | look row, phone shown
+    // state texels: gait phase, speed, seated blend, ground height | look row, phone shown, hands in pockets
     const o = base + BONE_DYN * 4;
     out[o] = s.phase; out[o + 1] = s.pose === 0 ? s.speed : 0; out[o + 2] = s.seatW; out[o + 3] = s.y;
-    out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = 0; out[o + 7] = 0;
+    out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = s.pocketW; out[o + 7] = 0;
   },
 
   _blend(s, a, B, sc, M) {
@@ -361,6 +362,7 @@ const humans = {
         s.fadeT0 = t;
         s.fadeDur = s.pose === 2 || s.posePrev === 2 ? FADE.sit : FADE.stand;
         s.fromPhone = s.phoneW;
+        s.fromPocket = s.pocketW;
         s.fromSeat = s.seatW;
       } else {
         s.fadeDur = 0;
@@ -368,12 +370,13 @@ const humans = {
       s.posePrev = s.pose;
     }
     M.fill(0);
-    let phone = 0;
+    let phone = 0, pocket = 0;
     if (s.pose === 2) {
       addClip(M, bk, CLIP.sit + a.sit, t / 11 + a.seedT, 1);
     } else if (s.pose === 1) {
       addClip(M, bk, CLIP.idle + a.idle, t / 9.5 + a.seedT, 1);
       phone = a.idle === 1 ? 1 : 0;
+      pocket = a.idle === 3 ? 1 : 0;
     } else {
       const g = gaitBlend(B, a, s.speed, sc);
       addClip(M, bk, g.a, s.phase, g.wa);
@@ -382,6 +385,7 @@ const humans = {
       if (a.phoneWalk) { overrideBones(M, B.phone, PHONE_BONES, 1); phone = 1; }
       else if (a.carry) overrideBones(M, B.hang, CARRY_BONES, 0.65);
       else if (a.idle === 1 && g.b >= CLIP.idle) phone = g.wb;
+      if (a.idle === 3 && g.b >= CLIP.idle) pocket = g.wb;
     }
     rigidify(M, B.rig.rest);
     let w = 1;
@@ -392,9 +396,11 @@ const humans = {
         for (let k = 0; k < MAT_N; k++) M[k] = F[k] + (M[k] - F[k]) * w;
         rigidify(M, B.rig.rest);
         phone = s.fromPhone + (phone - s.fromPhone) * w;
+        pocket = s.fromPocket + (pocket - s.fromPocket) * w;
       } else s.fadeDur = 0;
     }
     s.phoneW = phone;
+    s.pocketW = pocket;
     s.phoneOn = phone > 0.5;
     const seat = s.pose === 2 ? 1 : 0;
     s.seatW = s.fadeDur > 0 ? s.fromSeat + (seat - s.fromSeat) * w : seat;
@@ -495,7 +501,8 @@ function rigidify(M, rest) {
 function newSlot() {
   return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,
     lod: -1, blendFrame: -10, blendBase: null, model: null, bagHidden: false,     // model: pose before the figure transform
-    posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false };
+    posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
+    pocketW: 0, fromPocket: 0 };
 }
 
 function newRowAttr(n) {

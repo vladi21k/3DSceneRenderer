@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { Surface } from './street/surface.js';
-import { buildPaving, buildSlab, inInlayZone } from './street/paving.js';
-import { sweepRail, railLinePoints } from './street/rails.js';
+import { buildPaving, buildSlab, inCrossoverZone } from './street/paving.js';
+import { railLinePoints } from './street/rails.js';
+import { buildMainRails } from './street/track.js';
 import { createLineMaterials, LineBuf, LINE_SHARED } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS } from './street/constants.js';
@@ -10,7 +11,7 @@ import { buildCrossover } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
-import { createMortarMaterial, patchCanyon } from './street/shading.js';
+import { createMortarMaterial, patchCanyon, patchCut } from './street/shading.js';
 
 // Rail steel finishes (variants of the library rail.head): the running band is polished
 // and finely scratched by the wheels (roughness ~0.18-0.28); the guard lip has no wheel
@@ -59,32 +60,25 @@ const street = {
       details,
     };
     mats.rail.gauge = mats.rail.head;
-    // coplanar inlay layers for crossovers (higher layers win the depth test)
-    const layer = (name, k, extra = {}) => M.get(name, { polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -2 * k, ...extra, vertexColors: false });
-    mats.inlay = {
-      grout: layer('asphalt', 0.5, { color: [1.5, 1.5, 1.53] }),   // mortar along diverging rails
-      plate: layer('rail.groove', 1, { color: [1.55, 1.5, 1.45] }),   // grimy cast steel blocks
-      seal: layer('rubber', 2),
-      side: layer('rail.side', 3, RAIL_RUST),
-      head: layer('rail.head', 3, RAIL_HEAD),
-      lip: layer('rail.head', 3, RAIL_LIP),
-      groove: layer('rail.groove', 4, RAIL_GROOVE),
-      flange: layer('rail.groove', 5, RAIL_GROOVE),
-      check: layer('rail.head', 5, RAIL_HEAD),
-      tongueSide: layer('rail.side', 6, RAIL_RUST),
-      tongueHead: layer('rail.head', 6, RAIL_HEAD),
+    // crossover variants of the same materials: they discard the fragments that lie in
+    // another rail's opening (frog flangeways, switch boxes; see crossover.js)
+    const cut = (m, mode = 'rail') => patchCut(m, mode);
+    const mortarCut = M.register('street.mortar.cut', cut(createMortarMaterial()));
+    mortarCut.name = 'street.mortar.cut';
+    mats.cut = {
+      head: cut(steel('rail.head', { ...RAIL_HEAD, stCut: 1 })),
+      lip: cut(steel('rail.head', { ...RAIL_LIP, stCut: 1 })),
+      side: cut(M.get('rail.side', { ...RAIL_RUST, stCut: 1 })),
+      groove: cut(M.get('rail.groove', { ...RAIL_GROOVE, stCut: 1 })),
+      seal: mortarCut,
+      mortar: mortarCut,
+      corr: cut(M.get('paving.street', { vertexColors: true, stCut: 2 }), 'pave'),
+      floor: mats.rail.groove,     // cast floor of switch boxes and frogs (never cut)
     };
+    mats.cut.gauge = mats.cut.head;
+    mats.cut.check = mats.cut.head;   // check rails: guard lip polished by wheel backs
     this.surface = surface;
-    const I = mats.inlay;
-    const inlayBufs = (bufs) => {
-      const main = { grout: bufs.get(I.grout), seal: bufs.get(I.seal), side: bufs.get(I.side), head: bufs.get(I.head), lip: bufs.get(I.lip), groove: bufs.get(I.groove) };
-      return {
-        main,
-        tongue: { seal: main.seal, groove: main.groove, side: bufs.get(I.tongueSide), head: bufs.get(I.tongueHead), lip: main.lip },
-        plate: bufs.get(I.plate), flange: bufs.get(I.flange), check: bufs.get(I.check),
-      };
-    };
-    this.ctx = { app, route: app.route, layout: app.layout, surface, mats, inlayPad: 1.5, inlayBufs, delta: surface.dl };
+    this.ctx = { app, route: app.route, layout: app.layout, surface, mats, zonePad: 1.5, delta: surface.dl };
     // detail plans are per chunk index and also flatten the paving under covers
     const plans = new Map();
     this.planFor = (ci) => {
@@ -128,28 +122,14 @@ const street = {
     buildSlab(ctx, chunk, bufs);
     mark('paving');
 
-    // 3D rails outside crossover inlay zones (every other row on gentle alignments)
-    if (chunk.lod === 0) {
-      const kmax = Math.max(...samples.map((S) => Math.abs(S.curv)));
-      const minGap = kmax < 1 / 400 ? 2.4 : kmax < 1 / 150 ? 1.2 : 0.9;
-      let run = [];
-      const flush = () => { if (run.length > 1) for (const rl of MAIN_RAILS) sweepRail(bufs, ctx.mats.rail, samples, run, rl.c, rl.g); run = []; };
-      for (let r = 0; r < rows.length; r++) {
-        const open = r < rows.length - 1 && !inInlayZone(ctx, (rows[r] + rows[r + 1]) / 2);
-        const last = run.length ? rows[run[run.length - 1]] : -1e9;
-        if (open || run.length) {
-          // keep a row when the gap is large enough, at run ends, and at mouth / zone rows
-          if (!run.length || !open || rows[r] - last >= minGap || r === rows.length - 1) run.push(r);
-        }
-        if (!open) flush();
-      }
-      flush();
-    }
+    // 3D main rails (through crossovers too)
+    if (chunk.lod === 0) buildMainRails(ctx, chunk, rows, samples, bufs);
     mark('rails3d');
     // line overlays: rails (far-field AA), paint, joints
     const L = this.lineBufs || (this.lineBufs = { rail: new LineBuf(), centre: new LineBuf(), stripe: new LineBuf(), joint: new LineBuf() });
     for (const k in L) L[k].reset();
-    for (const c of ctx.layout.inChunk('crossovers', chunk.index)) buildCrossover(ctx, c, chunk, bufs, L.rail);
+    // crossovers overlapping the chunk (each builds only its part inside the chunk)
+    for (const c of ctx.surface.near.xo) buildCrossover(ctx, c, chunk, bufs, L.rail);
     for (const c of ctx.layout.inChunk('crossStreets', chunk.index)) {
       for (const side of c.side === 0 ? [-1, 1] : [c.side]) buildCrossStreet(ctx, c, side, chunk, bufs, L);
       buildCorridorCrossing(ctx, c, chunk, bufs, L);
@@ -164,7 +144,7 @@ const street = {
     mark('meshes');
 
     for (const rl of MAIN_RAILS) {
-      const pts = samples.map((S) => ({ px: S.px + S.rx * rl.c, py: S.py, pz: S.pz + S.rz * rl.c, rx: S.rx, rz: S.rz, along: S.u }));
+      const pts = samples.map((S) => ({ px: S.px + S.rx * rl.c, py: S.py, pz: S.pz + S.rz * rl.c, rx: S.rx, rz: S.rz, u: S.u }));
       const [arr, half, cOff] = railLinePoints(pts, rl.g);
       L.rail.add(arr, half, cOff);
     }
@@ -176,7 +156,7 @@ const street = {
     const crossings = ctx.layout.crossStreets.filter((c) => Math.abs(ctx.delta(c.s, (chunk.s0 + chunk.s1) / 2)) < 30);
     const onLine = chunk.lod === 0 ? this.planFor(chunk.index).items.filter((it) => Math.abs(it.d) < it.r + 0.1) : [];
     for (const S of samples) {
-      if (inInlayZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.delta(c.s, S.s)) < 2.6)
+      if (inCrossoverZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.delta(c.s, S.s)) < 2.6)
         || onLine.some((it) => Math.abs(ctx.delta(it.s, S.s)) < it.r + 0.15)) { flush(); continue; }
       run.push(S.px, S.py + ctx.surface.height(S.ri, 0), S.pz, S.rx, S.rz, S.u);
     }
@@ -195,7 +175,7 @@ const street = {
 };
 
 /** Row positions (route s) for a chunk: regular steps plus exact rows at crossover
- *  inlay zone ends and cross-street mouth edges. */
+ *  crossover zone ends, switch toes and cross-street mouth edges. */
 function makeRows(ctx, chunk) {
   const { route, layout } = ctx;
   const s0 = chunk.s0, s1 = chunk.s1, len = s1 - s0;
@@ -210,20 +190,38 @@ function makeRows(ctx, chunk) {
     const l = ctx.delta(s0, e);
     if (l > 0.05 && l < len - 0.05) extra.push(s0 + l);
   };
-  for (const c of layout.crossovers) { addAt(c.s0 - ctx.inlayPad); addAt(c.s1 + ctx.inlayPad); }
+  // crossover zone ends and switch toes
+  for (const c of layout.crossovers) { addAt(c.s0 - ctx.zonePad); addAt(c.s0); addAt(c.s1); addAt(c.s1 + ctx.zonePad); }
   const mouths = [];
   for (const c of layout.crossStreets) {
     if (Math.abs(ctx.delta(c.s, (s0 + s1) / 2)) > len / 2 + c.width) continue;
     for (const a of sideColumns(c)) addAt(c.s + a);
     mouths.push(c);
   }
-  if (!extra.length) return base;
+  if (!extra.length) return densify(ctx, chunk, base);
   // inside a mouth the side-street columns are the rows; elsewhere keep the regular ones
   const inMouth = (s) => mouths.some((c) => Math.abs(ctx.delta(c.s, s)) < c.width / 2 - 0.05);
   const all = base.filter((s) => s === s0 || s === s1 || (!inMouth(s) && !extra.some((e) => Math.abs(e - s) < 0.3)));
   for (const e of extra) all.push(e);
   all.sort((a, b) => a - b);
-  return all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02);
+  return densify(ctx, chunk, all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02));
+}
+
+/** Dense rows (<= 0.5 m) inside crossover zones at lod 0: the cut attributes are
+ *  interpolated between rows and must follow the curved diverging rails to a fraction
+ *  of a millimetre. */
+function densify(ctx, chunk, out) {
+  if (chunk.lod > 0) return out;
+  const dense = [out[0]];
+  for (let i = 1; i < out.length; i++) {
+    const a = out[i - 1], b = out[i];
+    if (inCrossoverZone(ctx, (a + b) / 2)) {
+      const n = Math.ceil((b - a) / 0.5 - 1e-6);
+      for (let k = 1; k < n; k++) dense.push(a + ((b - a) * k) / n);
+    }
+    dense.push(b);
+  }
+  return dense;
 }
 
 /** Generous bounding sphere for everything a chunk builds (cross streets included). */

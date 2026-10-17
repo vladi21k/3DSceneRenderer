@@ -96,7 +96,7 @@ function wickerTextures(renderer) {
   const hf = new Float32Array(N * N);
   const S = 16, stake = 32;
   const rowJ = Array.from({ length: 64 }, () => 0.8 + rng.next() * 0.35);
-  const base = srgb('#c29a68');
+  const base = srgb('#ab8a62'); // natural honey cane, slightly greyed by sun
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const j = (y / S) | 0, fy = (y % S + 0.5) / S;
     const si = (x / stake) | 0, fx = (x % stake + 0.5) / stake;
@@ -500,7 +500,7 @@ export function createMaterials(app) {
   patchGrime(patchWrap(reg('plastic', new THREE.MeshPhysicalMaterial({
     color: 0xffffff, roughness: 0.38, metalness: 0, clearcoat: 0.1, clearcoatRoughness: 0.3,
     normalMap: T('stipple', () => stippleNormal(R)), normalScale: new THREE.Vector2(0.35, 0.35),
-  })), 0.15), { albedo: 0.12, rough: 0.12, mottle: 0.02 });
+  })), 0.15), { albedo: 0.06, rough: 0.1, mottle: 0.02 });
   // painted metal (bins, kiosk, columns, painted chairs), coloured per instance: satin paint
   out.paint = albedoVariant('metal.pole', { userData: { furniture: 'paint' }, roughness: 0.62 }) || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0 }));
   patchGrime(out.paint, { albedo: 0.2, rough: 0.12, mottle: 0.05 });
@@ -527,8 +527,6 @@ export function createMaterials(app) {
   reg('tabletop', new THREE.MeshStandardMaterial({ map: T('speckle', () => speckleTexture(R)), roughness: 0.32, metalness: 0 }));
   reg('ceramic', new THREE.MeshStandardMaterial({ color: srgb('#f1efe9'), roughness: 0.18, metalness: 0 }));
   reg('coffee', new THREE.MeshStandardMaterial({ color: srgb('#3a2214'), roughness: 0.25, metalness: 0 }));
-  out.glass = names.has('glass.clear') ? M.get('glass.clear')
-    : reg('glass', patchGlass(new THREE.MeshStandardMaterial({ color: srgb('#c9d6d2'), roughness: 0.04, metalness: 0, opacity: 0.16 })));
   reg('drinkGlass', patchGlass(new THREE.MeshStandardMaterial({ color: srgb('#e3ece9'), roughness: 0.03, metalness: 0, opacity: 0.12 })));
   if (names.has('paving.tactile')) out.tactile = M.get('paving.tactile'); else {
     const t = tactileTextures(R);
@@ -538,6 +536,7 @@ export function createMaterials(app) {
   out.copingStone = M.get('stone.smooth', { vertexColors: true });
   out.mortar = M.get('concrete', { color: [0.3, 0.29, 0.28], userData: { furniture: 'mortar' } });
   out.platformPaving = M.get('paving.platform');
+  out.bandStone = M.get('stone.smooth', { color: [0.42, 0.42, 0.41], userData: { furniture: 'band' } });
   // shelter glazing with its decal, and the green-tinted glass edges
   {
     const decal = tex(T('decal', () => buildGlassDecal()), { repeat: [1, 0.25], aniso: 8 }, R);

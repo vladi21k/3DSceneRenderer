@@ -145,10 +145,11 @@ def head_sdf(face, build=0.0, var=None):
     H = {'head': 1}
     R = REGION['head']
     cr = Ellipsoid((0, 0.014, 0.006), (0.0745, 0.096, 0.098) if not kid else (0.077, 0.099, 0.101), region=R, bones=H)
-    mask = Ellipsoid((0, -0.022 + chin_dy * 0.4, -0.044), (0.064 * fw + full, 0.083 - chin_dy * 0.4, 0.051), region=R, bones=H)
+    mask = Ellipsoid((0, -0.022 + chin_dy * 0.4, -0.044), (0.061 * fw + full, 0.083 - chin_dy * 0.4, 0.051), region=R, bones=H)
     jw = []
     for s in (-1, 1):
-        gon = (s * (0.052 * jaw + 0.004 + full), -0.068 + (1 - jaw) * 0.01 + chin_dy * 0.5 - 0.006 * old, 0.004)
+        # gonion ~5 cm off the mid plane (bigonial width ~10-11 cm): the jaw narrower than the cheekbones
+        gon = (s * (0.047 * jaw + 0.004 + full), -0.068 + (1 - jaw) * 0.01 + chin_dy * 0.5 - 0.006 * old, 0.004)
         jw.append(RoundCone((s * (0.057 * fw + full), -0.012, 0.012), gon, 0.014 + full, 0.013 + full, region=R, bones=H))
         jw.append(RoundCone(gon, (s * 0.022 * (jaw + 0.1), -0.099 + (1 - jaw) * 0.01 + chin_dy, -0.066), 0.013 + full, 0.012,
                             region=R, bones=H))
@@ -194,8 +195,8 @@ def head_sdf(face, build=0.0, var=None):
             dx = P[:, 0] - cx
             return P[:, 1] - (-0.0036 + 7.0 * dx * dx)
         box = ((cx - 0.02, -0.02, ez - 0.02), (cx + 0.02, 0.02, ez + 0.01))
-        upper = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0019, er + 0.0019, er + 0.0019)), Fn(up, *box), k=0.0008)
-        lower = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0011, er + 0.0011, er + 0.0011)), Fn(lo, *box), k=0.0008)
+        upper = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0016, er + 0.0016, er + 0.0016)), Fn(up, *box), k=0.0008)
+        lower = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0007, er + 0.0007, er + 0.0007)), Fn(lo, *box), k=0.0008)
         lids += [upper, lower]
         if old > 0:
             lids.append(Ellipsoid((cx, -0.0135, ez - 0.0085), (0.011, 0.0035, 0.0035 * old + 1e-4)))   # eye bags
@@ -228,7 +229,7 @@ def head_sdf(face, build=0.0, var=None):
     head = Union([head, lips], k=0.005)
     head = Union([head] + ears, k=0.007)
     head = Union([head] + eyes, k=0.002)
-    head = Union([head] + lids, k=0.0025)
+    head = Union([head] + lids, k=0.0032)
     return head
 
 

@@ -13,9 +13,17 @@ const QUALITY = {
   high: { msaa: 4, ao: 12, dof: true, levels: 6, shimmer: true, lamps: 8 },
 };
 
-const F_NUMBER = 3.5;          // lens aperture for the depth of field
-const FOCUS_M = 55;            // focus distance (m)
+// Depth of field: daylight footage at this focal length is shot stopped down (f/8,
+// sharp front to back); the lens opens up as the light fades, so only dusk gets a
+// hint of shallow focus. Focus sits ~80 m down the street.
+const F_DAY = 8, F_DUSK = 4;
+const FOCUS_M = 80;            // focus distance (m)
 const SENSOR_H_MM = 24;
+
+// Lens veiling glare around the sun (fractions of the sun's illuminance per steradian):
+// a wide 1/theta^2 skirt (~1.2% of the light) and a tighter halo (~1%).
+const GLARE = { k1: 4.8e-4, theta0: 0.006, k2: 4.0, theta1: 0.02 };
+const _sv = new THREE.Vector3();
 
 function target(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
@@ -131,8 +139,15 @@ const post = {
       tClouds: { value: null }, uUseClouds: { value: 0 },
       uFarLamp: { value: env?.lights?.farLamps ?? Array.from({ length: 24 }, () => new THREE.Vector4()) },
       uFarI: { value: 0 }, uFarMin: { value: 60 }, uLampCos: { value: new THREE.Vector2(0.58, 0.88) },
+      tSunVis: { value: null }, uGlareE: { value: new THREE.Vector3() },
+      uGlare: { value: new THREE.Vector4(GLARE.k1, GLARE.theta0 * GLARE.theta0, GLARE.k2, GLARE.theta1) },
     }, { NUM_LAMPS: nLamps, NUM_FAR: env?.lights?.farLamps?.length ?? 24, ...(q.ao ? { USE_AO: 1 } : {}) });
 
+    this.sunVis = pass(S.SUNVIS_FS, {
+      tDepth: { value: null }, tClouds: { value: null }, uUseClouds: { value: 0 },
+      uSunUV: { value: new THREE.Vector2() }, uSunR: { value: new THREE.Vector2() }, uFade: { value: 0 },
+    });
+    this.sunVisRT = target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.down = pass(S.DOWN_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uKaris: { value: 0 }, uClamp: { value: 1e4 } });
     this.up = pass(S.UP_FS, { tLow: { value: null }, tHigh: { value: null }, uTexel: { value: new THREE.Vector2() }, uScatter: { value: 0.68 } });
@@ -142,7 +157,7 @@ const post = {
       uExposure: { value: 1 }, uAutoExp: { value: 0.22 }, uBloom: { value: 0.035 },
       uVignette: { value: 0.38 }, uCA: { value: 0.0012 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
-      uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: 0.45 },
+      uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: 0.45 }, uShoulder: { value: 1 },
       uShadowTint: { value: new THREE.Vector3(0.99, 1.0, 1.02) },
       uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
       uResolution: { value: new THREE.Vector2(1, 1) },
@@ -231,7 +246,7 @@ const post = {
     if (env) {
       const ill = env.illuminant;
       const l = 0.2126 * ill.x + 0.7152 * ill.y + 0.0722 * ill.z;
-      const kc = THREE.MathUtils.lerp(0.9, 0.5, ss(t, 0.3, 0.55)) - 0.5 * ss(t, 0.55, 1.0);
+      const kc = THREE.MathUtils.lerp(0.9, 0.3, ss(t, 0.3, 0.6)) - 0.3 * ss(t, 0.6, 1.0);
       const warm = 0.02 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
       const cool = 0.05 * ss(t, 0.8, 1.0);
       const g = (c) => THREE.MathUtils.clamp(THREE.MathUtils.lerp(1, l / Math.max(c, 1e-9), kc), 0.5, 2.0);
@@ -245,7 +260,39 @@ const post = {
     fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, ss(t, 0.6, 0.85));
   },
 
+  /** Project the sun into the frame and measure its visible share (1x1 pass). */
+  _sunGlare(env, camera, P, clouds) {
+    const pu = this.prepass.material.uniforms;
+    pu.tSunVis.value = this.sunVisRT.texture;
+    const sunE = env && !env.disabled && env.sky ? env.sky.uniforms.uSunGround.value : null;
+    _sv.copy(env ? env.state.sunDir : _sv.set(0, 1, 0)).transformDirection(camera.matrixWorldInverse);
+    if (!sunE || _sv.z > -0.05 || env.state.sunDir.y < -0.02) { pu.uGlareE.value.set(0, 0, 0); return; }
+    const nx = P[0] * _sv.x / -_sv.z, ny = P[5] * _sv.y / -_sv.z;
+    // a sun just outside the frame still veils it a little
+    const ox = Math.max(Math.abs(nx) - 1, 0) / P[0], oy = Math.max(Math.abs(ny) - 1, 0) / P[5];
+    const fade = Math.exp(-Math.hypot(ox, oy) / 0.02);
+    if (fade < 0.01) { pu.uGlareE.value.set(0, 0, 0); return; }
+    const u = this.sunVis.material.uniforms;
+    u.tDepth.value = this.sceneRT.depthTexture;
+    u.tClouds.value = clouds ? pu.tClouds.value : null;
+    u.uUseClouds.value = clouds ? 1 : 0;
+    u.uSunUV.value.set(nx * 0.5 + 0.5, ny * 0.5 + 0.5);
+    u.uSunR.value.set(P[0] * 0.5 * 0.00465, P[5] * 0.5 * 0.00465);
+    u.uFade.value = fade;
+    this._draw(this.sunVis, this.sunVisRT);
+    pu.uGlareE.value.copy(sunE);
+  },
+
   render(dt, app) {
+    // renderer.info accumulates over the whole frame (scene, shadow passes and post),
+    // so stats() reports real draw calls and triangles rather than the last quad
+    const info = app.renderer.info;
+    info.autoReset = false;
+    info.reset();
+    try { this._render(dt, app); } finally { info.autoReset = true; }
+  },
+
+  _render(dt, app) {
     const { renderer: r, scene, camera } = app;
     const env = app.systems.env;
     const pr = r.getDrawingBufferSize(this._dbs || (this._dbs = new THREE.Vector2()));
@@ -253,10 +300,13 @@ const post = {
 
     const prof = this.prof;
     if (prof) { prof.collect(); prof.begin('scene'); }
+    const info = r.info;
     // ---- 1. HDR scene
     r.setRenderTarget(this.sceneRT);
     r.clear();
     r.render(scene, camera);
+    const perf = app.perf;
+    if (perf) { perf.sceneCalls = info.render.calls; perf.sceneTris = info.render.triangles; }
 
     // camera uniforms
     const P = camera.projectionMatrix.elements;
@@ -293,6 +343,9 @@ const post = {
     }
     pu.uUseClouds.value = clouds ? 1 : 0;
 
+    // ---- 3b. how much of the sun disc is visible (drives the lens glare)
+    this._sunGlare(env, camera, P, clouds);
+
     // ---- 4. scene prepass
     if (prof) prof.begin('prepass');
     pu.tScene.value = this.sceneRT.texture;
@@ -310,7 +363,9 @@ const post = {
     // thin-lens circle of confusion, in pixels
     const fovR = THREE.MathUtils.degToRad(camera.fov);
     const fmm = (SENSOR_H_MM / 2) / Math.tan(fovR / 2), fm = fmm / 1000;
-    pu.uDofK.value = this.q.dof ? (fmm / F_NUMBER) * fm / (FOCUS_M - fm) * (this.size.y / SENSOR_H_MM) : 0;
+    const fNum = THREE.MathUtils.lerp(F_DAY, F_DUSK, THREE.MathUtils.smoothstep(env ? env.state.t : 0, 0.3, 0.95));
+    pu.uDofK.value = this.q.dof ? (fmm / fNum) * fm / (FOCUS_M - fm) * (this.size.y / SENSOR_H_MM) : 0;
+    pu.uFocus.value = FOCUS_M;
     this._draw(this.prepass, this.hdrRT);
 
     // ---- 5. depth of field (gather, full res)

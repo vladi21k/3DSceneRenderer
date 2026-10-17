@@ -13,7 +13,7 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const RAMP = 2.5;        // ramp length at each end (inside the platform extent)
 const COPING = 0.35;     // stone edge width
 const TACTILE = [0.35, 0.75];
-const BAND = 0.09;       // contrasting band behind the tactile strip
+const BAND = 0.12;       // contrasting band behind the tactile strip (dark granite, flat part only)
 const JOINT = 0.004;     // coping block joints
 
 // ------------------------------------------------------------------ platform body
@@ -127,12 +127,13 @@ function platformBody(pl, app, F, lod) {
   const tactile = [[TACTILE[1], top], [TACTILE[0], top]];
   out = [
     [F.copingStone, merge(stone)],
-    [F.mortar, merge([strip(all, mortar), strip(all, [[TACTILE[1] + BAND, top], [TACTILE[1], top]], { uvMode: 'd' })])],
-    // walking surface; tactile warning strip along the flat part, plain paving on the ramps
+    [F.mortar, merge([strip(all, mortar)])],
+    [F.bandStone, merge([strip(flat, [[TACTILE[1] + BAND, top], [TACTILE[1], top]], { uvMode: 'd' })])],
+    // walking surface; tactile warning strip and band along the flat part, plain paving on the ramps
     [F.platformPaving, merge([
       strip(all, [[xb - 0.26, top], [TACTILE[1] + BAND, top]], { uvMode: 'd' }),
-      strip(rampA, tactile, { uvMode: 'd' }),
-      strip(rampB, tactile, { uvMode: 'd' }),
+      strip(rampA, [[TACTILE[1] + BAND, top], [TACTILE[0], top]], { uvMode: 'd' }),
+      strip(rampB, [[TACTILE[1] + BAND, top], [TACTILE[0], top]], { uvMode: 'd' }),
     ])],
     [F.tactile, merge([strip(flat, tactile, { uvMode: 'd' })])],
   ];

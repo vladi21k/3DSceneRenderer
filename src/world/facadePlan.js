@@ -205,6 +205,7 @@ export function facadePlan(lot) {
   plan.returns = [];                       // street facades on the side-street returns of corner lots
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
+  cornerCut(plan, lot);                    // some street corners are chamfered (an extra face)
   cache.set(lot.id, plan);
   return plan;
 }
@@ -404,7 +405,7 @@ function followSlope(plan) {
 // viewer's right, v up from the main floorRef, w out of the wall) so facade infill can
 // be generated for it exactly like a front: {isReturn, end, frame, width, floors, bays,
 // openings, balconies, courses, groundAt, ...}.
-function returnPlan(lot, plan, end) {
+function returnPlan(lot, plan, end, cut = 0) {
   const f = lot.frame;
   const rng = RNG.from(lot.seed, 'return', end);
   // The return runs from the street corner of the front to the near end of the first
@@ -425,15 +426,16 @@ function returnPlan(lot, plan, end) {
   }
   const uDir = end === 0 ? dir.clone().negate() : dir.clone();
   const nDir = new f.uDir.constructor().crossVectors(uDir, f.up).normalize();
-  const origin = end === 0 ? corner.clone().addScaledVector(dir, depth) : corner.clone();
+  // a chamfered corner (cornerCut) takes the first `cut` metres of the return
+  const origin = end === 0 ? corner.clone().addScaledVector(dir, depth) : corner.clone().addScaledVector(dir, cut);
   // far end of the return and its direction in the front's (u, w) frame (for the shell)
   const du = dir.x * f.uDir.x + dir.z * f.uDir.z, dw = dir.x * f.nDir.x + dir.z * f.nDir.z;
   const back = [(end === 0 ? 0 : f.width) + du * depth, dw * depth];
   const up = f.up.clone();
   const matrix = f.matrix.clone().makeBasis(uDir, up, nDir).setPosition(origin);
   const g = end === 0 ? plan.ground0 : plan.ground1;
-  const frame = { origin, uDir, nDir, up, width: depth, ground0: g + f.floorRef, ground1: g + f.floorRef, floorRef: f.floorRef, matrix };
-  const width = depth;
+  const width = depth - cut;
+  const frame = { origin, uDir, nDir, up, width, ground0: g + f.floorRef, ground1: g + f.floorRef, floorRef: f.floorRef, matrix };
   // the street corner is at u = width for end 0 and u = 0 for end 1
   const cornerAtU1 = end === 0;
   const pierCorner = rng.range(1.1, 1.6), pierBack = rng.range(0.9, 1.4);
@@ -474,10 +476,90 @@ function returnPlan(lot, plan, end) {
   return {
     isReturn: true, end, lotId: lot.id, id, seed: lot.seed ^ (end ? 0x5bd1e995 : 0x27d4eb2f), frame, width, depth: plan.width,
     groundAt: () => g, ground0: g, ground1: g, cornerAtU1,
-    back, dir: [du, dw],      // far end and direction (from the corner) in the front's (u, w) frame
+    back, dir: [du, dw], cut, // far end and direction (from the corner) in the front's (u, w) frame; chamfer leg
     floors: plan.floors, bays, pierL, pierR, openings, balconies: [], courses: plan.courses, cornice: plan.cornice, parapet: plan.parapet,
     roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, totalHeight: plan.totalHeight,
   };
+}
+
+// ------------------------------------------------------------------ chamfered corners
+// About a third of the corner buildings have their street corner cut off by a narrow
+// diagonal face, with the corner shop's entrance on it and a window per floor above.
+// The cut face is appended to plan.returns as a return-shaped facade (isCut: true,
+// own frame) so infill and attachments dress it like any other front; the main front
+// and the side-street return lose their openings, balconies and signs in the cut zone.
+//   plan.cuts = [{end, c (leg along the front), cr (leg along the return), face}]
+function cornerCut(plan, lot) {
+  plan.cuts = [];
+  if (plan.roof.type !== 'flat' || plan.parapet.type === 'balustrade') return;
+  const f = lot.frame, W = plan.width;
+  for (const r of plan.returns.slice()) {
+    const rng = RNG.from(lot.seed, 'cut', r.end);
+    if (!rng.chance(0.35)) continue;
+    const e = r.end, c = rng.range(1.5, 2.3), cr = c;
+    if (W < c + 4.5 || r.width < cr + 4.5) continue;
+    // a set-back storey must stay behind the cut
+    if (plan.upper && (e ? W - plan.upper.u1 : plan.upper.u0) + plan.upper.setback < c + 0.4) continue;
+    // the return now starts at the cut
+    const ri = plan.returns.indexOf(r);
+    plan.returns[ri] = returnPlan(lot, plan, e, cr);
+    // the cut segment S → T in the front's (u, w) frame, in path order (end 0: from the return)
+    const P = [e ? W : 0, 0], [du, dw] = r.dir;
+    const A = [e ? W - c : c, 0], Bp = [P[0] + du * cr, dw * cr];
+    const S = e ? A : Bp, T = e ? Bp : A;
+    const L = Math.hypot(T[0] - S[0], T[1] - S[1]);
+    const tu = (T[0] - S[0]) / L, tw = (T[1] - S[1]) / L;
+    const uDir = f.uDir.clone().multiplyScalar(tu).addScaledVector(f.nDir, tw).normalize();
+    const nDir = new f.uDir.constructor().crossVectors(uDir, f.up).normalize();
+    const origin = f.origin.clone().addScaledVector(f.uDir, S[0]).addScaledVector(f.nDir, S[1]);
+    const matrix = f.matrix.clone().makeBasis(uDir, f.up, nDir).setPosition(origin);
+    const g = e ? plan.ground1 : plan.ground0;
+    const frame = { origin, uDir, nDir, up: f.up.clone(), width: L, ground0: g + f.floorRef, ground1: g + f.floorRef, floorRef: f.floorRef, matrix };
+    const id = `${lot.id}:c${e}`;
+    const openings = [];
+    const gf = plan.floors[0];
+    const so = { id: `${id}:g0`, floor: 0, bay: 0, uc: L / 2, w: Math.min(L - 0.9, 2.1), y: g + 0.03, h: gf.h - rng.range(0.8, 1.0) - (g + 0.03),
+      top: plan.style.shopTop, kind: 'shop', recess: rng.range(0.25, 0.35), awning: null, lit: rng.range(0.6, 1.0) };
+    setArch(so); openings.push(so);
+    for (const fl of plan.floors) {
+      if (fl.index === 0) continue;
+      const tpl = plan.openings.find((o) => o.floor === fl.index && o.kind === 'window');
+      if (!tpl) continue;
+      const o = { id: `${id}:f${fl.index}`, floor: fl.index, bay: 0, uc: L / 2, w: Math.min(tpl.w, L - 1.1), y: tpl.y, h: tpl.h, top: tpl.top, paired: false,
+        kind: 'window', recess: tpl.recess, shutters: rng.chance(0.25) ? 'closed' : null, lit: rng.next(), curtain: rng.chance(0.5), ac: false, flowerBox: rng.chance(0.1) };
+      setArch(o); openings.push(o);
+    }
+    const face = {
+      isReturn: true, isCut: true, end: e, lotId: lot.id, id, seed: lot.seed ^ (e ? 0x3c6ef372 : 0x1b873593), frame, width: L, depth: plan.width,
+      groundAt: () => g, ground0: g, ground1: g, cornerAtU1: false, back: null, dir: null,
+      floors: plan.floors, bays: [{ index: 0, u0: 0.25, u1: L - 0.25, uc: L / 2, w: L - 0.5 }], pierL: 0.25, pierR: 0.25,
+      openings, balconies: [], courses: plan.courses, cornice: plan.cornice, parapet: plan.parapet,
+      roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, totalHeight: plan.totalHeight,
+    };
+    plan.returns.push(face);
+    plan.cuts.push({ end: e, c, cr, S, T, face });
+    // clear the cut zone of the front: openings, balconies (clipped), signs and flags
+    const lim = e ? W - c - 0.3 : c + 0.3;
+    const out = (a, b) => (e ? b > lim : a < lim);
+    plan.openings = plan.openings.filter((o) => !out(o.uc - o.w / 2 - 0.15, o.uc + o.w / 2 + 0.15));
+    const keep = [], remap = new Map();
+    plan.balconies.forEach((b, i) => {
+      if (out(b.u0, b.u1)) { if (e) b.u1 = Math.min(b.u1, lim); else b.u0 = Math.max(b.u0, lim); }
+      if (b.u1 - b.u0 < 1.2) return;
+      remap.set(i, keep.length); keep.push(b);
+    });
+    plan.balconies = keep;
+    for (const o of plan.openings) {
+      if (o.balcony === undefined) continue;
+      if (remap.has(o.balcony)) { o.balcony = remap.get(o.balcony); continue; }
+      // its balcony is gone: back to a window with a sill
+      const fl = plan.floors[o.floor], top = o.y + o.h;
+      delete o.balcony;
+      o.kind = 'window'; o.y = fl.y + 0.9; o.h = top - o.y;
+    }
+    plan.signs = plan.signs.filter((sg) => !(sg.kind === 'blade' ? out(sg.u - 0.4, sg.u + 0.4) : out(sg.u0, sg.u1)));
+    plan.flags = plan.flags.filter((fl) => !out(fl.u - 0.5, fl.u + 0.5));
+  }
 }
 
 /** World position (floor height ignored) of the near end of the first side-street lot at end e, or null. */

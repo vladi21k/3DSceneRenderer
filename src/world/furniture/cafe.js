@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
-import { lathe, tube, bar, rbox, xf, merge, quad } from './kit.js';
+import { lathe, tube, bar, rbox, xf, merge, quad, boxUV } from './kit.js';
 import { proto, placeMatrix } from './instancer.js';
 import { uvRect } from './prints.js';
 import { buildChairGeometry } from './chairs.js';
@@ -18,7 +18,8 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 function tableTop(shape, lod) {
   if (shape === 'round') {
     const r = 0.3;
-    return merge([lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 10 : 24)]);
+    // planar UVs: grain and speckle run straight across the top, not round it
+    return merge([boxUV(lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 10 : 24))]);
   }
   return merge([xf(rbox(0.62, 0.028, 0.62, lod ? 0 : 0.006, 1), [0, 0.736, 0])]);
 }
@@ -187,7 +188,7 @@ export function cafeStyle(cafe, app) {
     }
     case 'metal': st.paint = rng.chance(0.35) ? srgb(rng.pick(['#e9e7e1', '#3b3e41', '#6f7a72'])) : null; st.top = rng.pick(['alu', 'stone']); st.base = 'cross'; st.topTint = srgb('#d6d3cc'); break;
     default:
-      st.wicker = srgb(rng.pick(['#ffffff', '#ffffff', '#e2d2bd', '#d5cfc6']));
+      st.wicker = srgb(rng.pick(['#ffffff', '#ece6dc', '#d3cdc4', '#bdb5aa']));
       st.cushion = srgb(rng.pick(CUSHION));
       st.top = rng.pick(['stone', 'wood']); st.base = rng.pick(['iron', 'crossDark']); st.topTint = srgb(rng.pick(['#2f2f2e', '#e9e6df']));
       break;

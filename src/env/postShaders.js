@@ -131,6 +131,9 @@ uniform vec4 uFarLamp[NUM_FAR];
 uniform float uFarI;
 uniform float uFarMin;       // the real lights cover everything nearer than this (m)
 uniform vec2 uLampCos;
+uniform sampler2D tSunVis;
+uniform vec3 uGlareE;        // sun illuminance (rgb); 0 disables the glare
+uniform vec4 uGlare;         // veiling glare: k1 / (theta^2 + theta0^2) + k2 exp(-theta / theta1)
 varying vec2 vUv;
 
 #define ATM_PI 3.14159265
@@ -251,6 +254,16 @@ void main() {
     col = col * T + inscat * (1.0 - T);
   }
 
+  // lens veiling glare around a visible sun (scattering in the glass and barrel),
+  // independent of the clamped bloom so the sun blows out as it does in any camera
+  if (uGlareE.x + uGlareE.y + uGlareE.z > 0.0) {
+    float vis = texture2D(tSunVis, vec2(0.5)).r;
+    if (vis > 0.0) {
+      float th = 2.0 * asin(clamp(length(rd - uSunDirA) * 0.5, 0.0, 1.0));
+      col += uGlareE * vis * (uGlare.x / (th * th + uGlare.y) + uGlare.z * exp(-th / uGlare.w));
+    }
+  }
+
   // dusk airlight: haze around the lamps and the headlight beam
   if (uNightAir > 0.0) {
     float Tm = min(dist, 160.0);
@@ -278,6 +291,31 @@ void main() {
 }
 `;
 
+
+// ---------------------------------------------------------------- sun visibility (1x1)
+// share of the sun disc seen through geometry and clouds, for the lens glare
+export const SUNVIS_FS = /* glsl */ `
+uniform sampler2D tDepth;
+uniform sampler2D tClouds;
+uniform int uUseClouds;
+uniform vec2 uSunUV;         // sun centre in screen uv (may lie a little off screen)
+uniform vec2 uSunR;          // sun angular radius in uv units
+uniform float uFade;         // falloff for a sun just outside the frame
+varying vec2 vUv;
+void main() {
+  float v = 0.0;
+  const float GA = 2.39996323;
+  for (int i = 0; i < 16; i++) {
+    float fi = float(i) + 0.5;
+    vec2 uv = uSunUV + vec2(cos(fi * GA), sin(fi * GA)) * sqrt(fi / 16.0) * uSunR;
+    uv = clamp(uv, vec2(0.001), vec2(0.999));
+    float t = step(1.0, texture2D(tDepth, uv).r);
+    if (uUseClouds > 0) { float a = texture2D(tClouds, uv).a; t *= a > 1.5 ? 0.0 : clamp(a, 0.0, 1.0); }
+    v += t;
+  }
+  gl_FragColor = vec4(v / 16.0 * uFade, 0.0, 0.0, 1.0);
+}
+`;
 
 // ---------------------------------------------------------------- depth of field (full res gather)
 export const DOF_FS = /* glsl */ `
@@ -393,6 +431,7 @@ uniform float uSat;
 uniform float uContrast;
 uniform vec3 uShadowTint, uHighTint;
 uniform float uSkyChroma;
+uniform float uShoulder;      // 0 AgX's long film shoulder .. 1 a camera-JPEG-like shoulder
 uniform vec2 uResolution;
 varying vec2 vUv;
 
@@ -458,6 +497,17 @@ void main() {
   col *= mix(uShadowTint, uHighTint, hl);
 
   col = agx(col);
+  // AgX keeps sunlit stone, clouds and the sky slot well below white (scene 1.0 lands
+  // at ~0.56 display-linear); a camera's JPEG curve reaches white about 2.5 stops above
+  // mid grey. Lift the upper range on luminance (toe and mid tones untouched) and let
+  // overflow desaturate towards white with its hue kept.
+  {
+    float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    float lt = mix(l, 1.0 - pow(max(1.0 - l, 0.0), 1.7), smoothstep(0.2, 0.56, l) * uShoulder);
+    col *= lt / max(l, 1e-5);
+    float m = max(col.r, max(col.g, col.b));
+    if (m > 1.0) col = lt + (col - lt) * (1.0 - lt) / max(m - lt, 1e-5);
+  }
   // AgX's log-domain curve greys bright blues: give bright cool colours (the sky) back
   // some chroma, scaling around the luminance so the hue stays put
   {

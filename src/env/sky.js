@@ -356,9 +356,9 @@ export class Sky {
       uCloudOffset: { value: new THREE.Vector2(3100, -5200) },
       uCirrusOffset: { value: new THREE.Vector2(12000, 4000) },
       uWindDir: { value: new THREE.Vector2(0.8, 0.6) },
-      uCloudCover: { value: 0.62 },
+      uCloudCover: { value: 0.66 },
       uCirrus: { value: 0.5 },
-      uSunDiscScale: { value: 0.12 },
+      uSunDiscScale: { value: 1.0 },   // physical disc radiance (the environment capture omits the disc)
       uPixelAngle: { value: 0.0003 },
       // canyon model (env capture only)
       uStreetRight: { value: new THREE.Vector3(1, 0, 0) },
@@ -402,9 +402,11 @@ export class Sky {
       return c;
     });
     this.pmrem = new THREE.PMREMGenerator(renderer);
-    this.envRT = null;
+    this.envRT = null;       // live target (scene.environment)
+    this.backRT = null;      // progressive updates are filtered here, then copied over
     this._capStep = -1;      // -1 idle, 0..2 face pairs, 3 = PMREM
     this._capTimer = 0;
+    this._envDirty = false;  // another refresh was requested while one was in flight
   }
 
   /**
@@ -435,15 +437,22 @@ export class Sky {
     }
   }
 
-  /** Start a fresh environment capture; `immediate` does all of it now. */
+  /**
+   * Request a fresh environment capture; `immediate` does all of it now. A progressive
+   * capture already in flight is never restarted (a dragged time-of-day slider would
+   * otherwise keep it from ever finishing): it completes, then another one follows.
+   */
   requestEnv(immediate = false) {
     if (immediate || !this.envRT) {
       for (let i = 0; i < 6; i++) this._renderFace(i);
       this._runPMREM();
       this._capStep = -1;
+      this._pmremQueue = null;
+      this._envDirty = false;
       return;
     }
-    this._capStep = 0;
+    if (this._capStep >= 0) this._envDirty = true;
+    else this._capStep = 0;
   }
 
   _renderFace(i) {
@@ -464,21 +473,43 @@ export class Sky {
     const tex = this.cubeRT.texture;
     if (!this.envRT) {
       this.envRT = this.pmrem.fromCubemap(tex);
+      this.backRT = this.pmrem.fromCubemap(tex);
       this.app.scene.environment = this.envRT.texture;
     } else {
       this.pmrem.fromCubemap(tex, this.envRT);
     }
   }
 
+  /** Publish a finished progressive update: one full-target copy into the live map. */
+  _pmremSwap() {
+    const r = this.renderer, rt = this.envRT, prev = r.getRenderTarget();
+    if (!this._copyQuad) {
+      this._copyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+        uniforms: { tSrc: { value: null } },
+        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        fragmentShader: 'uniform sampler2D tSrc; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tSrc, vUv); }',
+        depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+      }));
+      this._copyQuad.frustumCulled = false;
+    }
+    this._copyQuad.material.uniforms.tSrc.value = this.backRT.texture;
+    rt.scissorTest = false;
+    rt.viewport.set(0, 0, rt.width, rt.height);
+    r.setRenderTarget(rt);
+    r.render(this._copyQuad, this._quadCam);
+    r.setRenderTarget(prev);
+  }
+
   /**
-   * Queue a progressive PMREM update: the cube is projected into the existing target,
-   * then the GGX roughness levels are filtered a couple per frame (each level reads the
-   * previous one). Relies on PMREMGenerator internals of the vendored three.js; falls
-   * back to a one-shot update if they are missing.
+   * Queue a progressive PMREM update: the cube is projected into the back target, then
+   * the GGX roughness levels are filtered a couple per frame (each level reads the
+   * previous one), and the finished set is copied into the live target in one go, so
+   * reflections never mix old and new lighting. Relies on PMREMGenerator internals of
+   * the vendored three.js; falls back to a one-shot update if they are missing.
    */
   _pmremBegin() {
     const g = this.pmrem;
-    if (!this.envRT || typeof g._applyGGXFilter !== 'function' || typeof g._textureToCubeUV !== 'function' || !g._lodMeshes) {
+    if (!this.envRT || !this.backRT || typeof g._applyGGXFilter !== 'function' || typeof g._textureToCubeUV !== 'function' || !g._lodMeshes) {
       this._runPMREM();
       return false;
     }
@@ -488,7 +519,7 @@ export class Sky {
   }
 
   _pmremStep(maxSteps) {
-    const g = this.pmrem, r = this.renderer, rt = this.envRT;
+    const g = this.pmrem, r = this.renderer, rt = this.backRT;
     const prev = r.getRenderTarget(), ac = r.autoClear;
     r.autoClear = false;
     rt.scissorTest = true;
@@ -502,7 +533,9 @@ export class Sky {
     rt.scissor.set(0, 0, rt.width, rt.height);
     r.autoClear = ac;
     r.setRenderTarget(prev);
-    return this._pmremQueue.length === 0;
+    if (this._pmremQueue.length) return false;
+    this._pmremSwap();
+    return true;
   }
 
   /** Progressive capture: two cube faces per frame for three frames, then PMREM two levels per frame. */
@@ -515,9 +548,11 @@ export class Sky {
       this._renderFace(this._capStep * 2);
       this._renderFace(this._capStep * 2 + 1);
       this._capStep++;
-      if (this._capStep === 3 && !this._pmremBegin()) this._capStep = -1;
+      if (this._capStep === 3 && !this._pmremBegin()) { this._capStep = -1; this._envDirty = false; }
     } else if (this._pmremStep(2)) {
       this._capStep = -1;
+      // a refresh requested meanwhile starts right away
+      if (this._envDirty) { this._envDirty = false; this._capStep = 0; }
     }
   }
 }

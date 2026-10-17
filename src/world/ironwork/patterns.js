@@ -104,7 +104,14 @@ const rot90 = (pts) => pts.map(([x, y]) => [y, -x]);
 const SLIM_C = { r0: 0.02, c: 0.2, te: 0.25, q: 30 };
 const STD = { r0: 0.02, c: 0.25, te: 0.3, q: 20 };
 
-/** Design library: {id, W (bay width), strokes}. Bays repeat along each railing run. */
+/** Design library: {id, W (bay width), strokes, widen}. Bays repeat along each railing
+ *  run. `widen` = [kV, kH, kC, p] describes how the far card's coverage grows when the
+ *  railing is seen at an angle (see the card shader in mats.js): added cover per unit
+ *  view shift for vertical, horizontal and curved members, and how regular the pattern
+ *  is (p: 1 a lattice that closes linearly, large p a scatter that overlaps at random).
+ *  The values were fitted (rms error under 2 % coverage) to the exact footprint of the
+ *  real members (strokes swept through their depth along the view shift), sampled for
+ *  shifts of 0.25 to 8 along the run and 0 to 2 vertically. Refit if strokes change. */
 export const DESIGNS = [
   // 0: back-to-back C scrolls ")(" bound by a collar, ring frieze above
   (() => {
@@ -114,7 +121,7 @@ export const DESIGNS = [
     s.push(curve(fit(C, [W / 2, y0, W - 0.022, y1], { flipX: true })));
     s.push(collar(W / 2, (y0 + y1) / 2));
     s.push(ring(W / 2, BAND_C, BAND_R));
-    return { id: 'lyre', W, strokes: s };
+    return { id: 'lyre', W, strokes: s, widen: [2.0, 0.3, 0.7, 4] };
   })(),
   // 1: mirrored S scroll pair forming a vase, C pair and rosette in the frieze
   (() => {
@@ -127,7 +134,7 @@ export const DESIGNS = [
     const C = scroll('C', SLIM_C);
     s.push(curve(fit(rot90(C), [0.03, UNDER + UNDER_T + 0.004, W / 2 - 0.035, HAND.y0 - 0.004])));
     s.push(curve(fit(rot90(C), [W / 2 + 0.035, UNDER + UNDER_T + 0.004, W - 0.03, HAND.y0 - 0.004], { flipX: true })));
-    return { id: 'vase', W, strokes: s };
+    return { id: 'vase', W, strokes: s, widen: [1.9, 0.3, 0.75, 10] };
   })(),
   // 2: Mandate-era bars with ring friezes top and bottom
   (() => {
@@ -135,7 +142,7 @@ export const DESIGNS = [
     for (const x of [0.11, 0.22]) s.push({ k: 'bar', x, y0: BOT[0], y1: HAND.y0, s: BAR * 0.9 });
     const rb = (0.22 - BOT[1]) / 2 - 0.001, cb = (0.22 + BOT[1]) / 2;
     for (const x of [0.055, 0.165, 0.275]) { s.push(ring(x, BAND_C, BAND_R)); s.push(ring(x, cb, Math.min(rb, 0.05))); }
-    return { id: 'rings', W, strokes: s };
+    return { id: 'rings', W, strokes: s, widen: [0.55, 0.1, 1.05, 2] };
   })(),
   // 3: twisted balusters with collars, C-scroll pairs under the handrail, rings at the foot
   (() => {
@@ -148,7 +155,7 @@ export const DESIGNS = [
       s.push(curve(fit(C, [x0 + 0.014, UNDER + UNDER_T + 0.003, x0 + W / 2 - 0.014, HAND.y0 - 0.003])));
       s.push(ring(x0 + W / 4, 0.15, 0.048));
     }
-    return { id: 'twist', W, strokes: s };
+    return { id: 'twist', W, strokes: s, widen: [0.7, 0.2, 0.55, 2.5] };
   })(),
   // 4: Ottoman panel: ring medallion with rosette, J scrolls to the corners, ring frieze
   (() => {
@@ -163,12 +170,12 @@ export const DESIGNS = [
     s.push(curve(fit(J, [cx, BOT[1] + 0.01, W - 0.025, cy - r + 0.01])));
     s.push(collar(cx, cy + r)); s.push(collar(cx, cy - r));
     s.push(ring(W / 4, BAND_C, BAND_R)); s.push(ring(3 * W / 4, BAND_C, BAND_R));
-    return { id: 'medallion', W, strokes: s };
+    return { id: 'medallion', W, strokes: s, widen: [1.9, 0.7, 0.55, 10] };
   })(),
   // 5: plain square bars (later / modern buildings)
   (() => {
     const W = 0.11, s = frame(W, { under: null });
-    return { id: 'bars', W, strokes: s };
+    return { id: 'bars', W, strokes: s, widen: [1.0, 0.3, 0.3, 1.5] };
   })(),
   // 6: bars with a ring band at mid height, collars and a ring frieze
   (() => {
@@ -181,7 +188,7 @@ export const DESIGNS = [
       s.push(ring(x + 0.06, BAND_C, BAND_R));
       s.push(collar(x, 0.2)); s.push(collar(x, 0.68));
     }
-    return { id: 'band', W, strokes: s };
+    return { id: 'band', W, strokes: s, widen: [0.6, 0.2, 0.7, 2] };
   })(),
 ];
 

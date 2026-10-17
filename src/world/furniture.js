@@ -10,7 +10,8 @@ import { buildPlatformProtos, placePlatforms } from './furniture/platform.js';
 // Prototype geometry and materials are built once in init and registered into global
 // BatchedMeshes (one per material); a chunk build only adds instances at the layout
 // positions (layout.cafes / layout.furniture / layout.stations). Unique per-site geometry
-// (platform bodies, café canopy roofs) is built once, cached and shared.
+// (platform bodies) is built once, cached and shared. Far chunks keep every item at its
+// far detail level; level switches cross-fade (instancer.js).
 
 /** Debug overlay (fpdebug=1): café footprints as lines just above the paving. */
 function footprintLines(cafe, st, app) {
@@ -63,8 +64,8 @@ const furniture = {
     this.cafeAudit = planAllCafes(app);
     lap('plans', t); t = performance.now();
     this.debugFoot = app.params.str('fpdebug') === '1';
-    // sizing pass over the whole loop: warms the per-site caches (café styles, canopy roofs,
-    // platform bodies) and sizes every batch for the busiest stretch of streamed chunks
+    // sizing pass over the whole loop: warms the per-site caches (café styles, platform
+    // bodies) and sizes every batch for the busiest stretch of streamed chunks
     const n = app.layout.nChunks, per = [];
     for (let i = 0; i < n; i++) {
       const w = this.batches.countingWriter();

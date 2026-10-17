@@ -186,8 +186,18 @@ export function postGeometry(lod = 0) {
 
 // ---------------------------------------------------------------- card atlas
 // One row per design (u = one bay, wrapping), plus the post sprite in the last row.
+// Channels hold the coverage of the iron by stroke orientation, so the card shader can
+// widen each kind by the depth of the real members seen at an angle (a railing seen
+// along the facade closes into a dark band):
+//   R vertical members (bars, posts)   G horizontal members (rails)
+//   B curved and small parts (scrolls, rings, collars, rosettes)   A all iron (union)
 export const ATLAS = { TW: 128, ROW: 256, PAD: 24, ROWS: 8, POST_ROW: 7, POST_W: 0.1 };
 const ATLAS_H = ATLAS.ROW * ATLAS.ROWS;
+
+/** Widening constants per atlas row (patterns.js `widen`); the post sprite is an
+ *  isolated square bar with a collar and a ball. */
+export const WIDEN = Array.from({ length: ATLAS.ROWS }, (_, i) => (
+  i === ATLAS.POST_ROW ? [1, 0, 1, 1] : DESIGNS[i] ? DESIGNS[i].widen : [1, 0.3, 0.7, 2]));
 
 /** Texture v for design row `row` at railing height y (0..RAIL_H + PAD). */
 export function atlasV(row, y) {
@@ -195,9 +205,14 @@ export function atlasV(row, y) {
   return (row * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD - y * S) / ATLAS_H;
 }
 
-/** Draw one bay of a design in metres with the current canvas transform (y up). */
-export function drawStrokes(ctx, d) {
+/** Orientation class of a stroke: 'v', 'h' or 'c' (see the channel table above). */
+const strokeClass = (st) => (st.k === 'bar' ? 'v' : st.k === 'rail' ? 'h' : 'c');
+
+/** Draw one bay of a design in metres with the current canvas transform (y up); only
+ *  the strokes of class `cls` when given. */
+export function drawStrokes(ctx, d, cls = null) {
   for (const st of d.strokes) {
+    if (cls && strokeClass(st) !== cls) continue;
     switch (st.k) {
       case 'rail': ctx.fillRect(st.x0, st.y0, st.x1 - st.x0, st.y1 - st.y0); break;
       case 'bar': {
@@ -219,31 +234,33 @@ export function drawStrokes(ctx, d) {
   }
 }
 
-function drawDesign(ctx, d, row) {
+function drawDesign(ctx, d, row, cls) {
   const S = (ATLAS.ROW - 2 * ATLAS.PAD) / RAIL_H;
   for (const shift of [-d.W, 0, d.W]) {
     ctx.setTransform(ATLAS.TW / d.W, 0, 0, -S, (shift * ATLAS.TW) / d.W, row * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD);
-    drawStrokes(ctx, d);
+    drawStrokes(ctx, d, cls);
   }
 }
 
 /** Post sprite (matches postGeometry): bar, collar and ball finial, centred in a
  *  POST_W wide tile. */
-function drawPost(ctx) {
+function drawPost(ctx, cls) {
   const S = (ATLAS.ROW - 2 * ATLAS.PAD) / RAIL_H, W = ATLAS.POST_W;
   ctx.setTransform(ATLAS.TW / W, 0, 0, -S, 0, ATLAS.POST_ROW * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD);
   const c = W / 2;
-  ctx.fillRect(c - 0.013, 0, 0.026, RAIL_H + 0.02);
+  if (!cls || cls === 'v') ctx.fillRect(c - 0.013, 0, 0.026, RAIL_H + 0.02);
+  if (cls && cls !== 'c') return;
   ctx.fillRect(c - 0.019, RAIL_H + 0.02, 0.038, 0.012);
   ctx.fillRect(c - 0.009, RAIL_H + 0.03, 0.018, 0.015);
   ctx.beginPath(); ctx.ellipse(c, RAIL_H + 0.068, 0.027, 0.027, 0, 0, Math.PI * 2); ctx.fill();
 }
 
-/** Box-filtered mip chain: each texel's alpha is the exact fraction of iron it covers,
- *  so the card's coverage (through alpha-to-coverage) matches the geometry at every
- *  distance. Row boundaries are multiples of every block size, so rows never mix. */
+/** Box-filtered mip chain of a coverage plane: each texel holds the exact fraction of
+ *  iron it covers, so the card's coverage (through alpha-to-coverage) matches the
+ *  geometry at every distance. Row boundaries are multiples of every block size, so
+ *  rows never mix. */
 function boxMips(alpha0, w0, h0, levels) {
-  const out = [{ a: alpha0, w: w0, h: h0 }];
+  const out = [alpha0];
   let cur = alpha0, w = w0, h = h0;
   for (let L = 1; L < levels; L++) {
     const nw = w >> 1, nh = h >> 1, nxt = new Float32Array(nw * nh);
@@ -251,30 +268,37 @@ function boxMips(alpha0, w0, h0, levels) {
       const i = 2 * y * w + 2 * x;
       nxt[y * nw + x] = (cur[i] + cur[i + 1] + cur[i + w] + cur[i + w + 1]) * 0.25;
     }
-    out.push({ a: nxt, w: nw, h: nh });
+    out.push(nxt);
     cur = nxt; w = nw; h = nh;
   }
   return out;
 }
 
-/** Builds the railing atlas DataTexture (RGBA: white, alpha = iron coverage) with mips. */
+/** Builds the railing atlas DataTexture (RGBA coverage planes, see above) with mips. */
 export function buildAtlas() {
   const cv = document.createElement('canvas');
   cv.width = ATLAS.TW; cv.height = ATLAS_H;
   const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  DESIGNS.forEach((d, i) => drawDesign(ctx, d, i));
-  drawPost(ctx);
-  const img = ctx.getImageData(0, 0, ATLAS.TW, ATLAS_H).data;
-  const a0 = new Float32Array(ATLAS.TW * ATLAS_H);
-  for (let i = 0; i < a0.length; i++) a0[i] = img[i * 4 + 3] / 255;
-  const levels = boxMips(a0, ATLAS.TW, ATLAS_H, 6);
-  const mipmaps = levels.map(({ a, w, h }) => {
-    const data = new Uint8Array(w * h * 4);
-    for (let i = 0; i < w * h; i++) { data[i * 4] = 255; data[i * 4 + 1] = 255; data[i * 4 + 2] = 255; data[i * 4 + 3] = Math.round(a[i] * 255); }
-    return { data, width: w, height: h };
+  const LEVELS = 6;
+  // one coverage plane per class, then the union
+  const planes = ['v', 'h', 'c', null].map((cls) => {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, ATLAS.TW, ATLAS_H);
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    DESIGNS.forEach((d, i) => drawDesign(ctx, d, i, cls));
+    drawPost(ctx, cls);
+    const img = ctx.getImageData(0, 0, ATLAS.TW, ATLAS_H).data;
+    const a0 = new Float32Array(ATLAS.TW * ATLAS_H);
+    for (let i = 0; i < a0.length; i++) a0[i] = img[i * 4 + 3] / 255;
+    return boxMips(a0, ATLAS.TW, ATLAS_H, LEVELS);
   });
+  const mipmaps = [];
+  for (let L = 0, w = ATLAS.TW, h = ATLAS_H; L < LEVELS; L++, w >>= 1, h >>= 1) {
+    const data = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) for (let c = 0; c < 4; c++) data[i * 4 + c] = Math.round(planes[c][L][i] * 255);
+    mipmaps.push({ data, width: w, height: h });
+  }
   const tex = new THREE.DataTexture(mipmaps[0].data, ATLAS.TW, ATLAS_H, THREE.RGBAFormat);
   tex.mipmaps = mipmaps;
   tex.generateMipmaps = false;
@@ -285,6 +309,5 @@ export function buildAtlas() {
   tex.anisotropy = 8;
   tex.colorSpace = THREE.NoColorSpace;
   tex.needsUpdate = true;
-  tex.userData.canvas = cv;
   return tex;
 }

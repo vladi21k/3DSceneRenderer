@@ -51,7 +51,7 @@ const CANYON_APPLY = (lat) => /* glsl */`
 /**
  * Add canyon occlusion to a material.
  * mode 'uv':   the street axis is the direction of increasing uv.x (route s / along the
- *              rail), found from screen-space derivatives (swept rails, inlays);
+ *              rail), found from screen-space derivatives (swept rails);
  * mode 'line': the line ribbon shader provides the world lateral vector vLineRightW.
  */
 export function patchCanyon(m, mode = 'uv') {
@@ -81,6 +81,37 @@ export function patchCanyon(m, mode = 'uv') {
       .replace('#include <lights_fragment_maps>', CANYON_APPLY(lat));
   };
   m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stCanyon-${mode}`; };
+  m.needsUpdate = true;
+  return m;
+}
+
+/**
+ * Crossover cuts. Where rails cross or split (frogs, switch boxes) each surface carries a
+ * per-vertex attribute aStCut and discards the fragments that lie inside another rail's
+ * opening, so flangeways run through heads and tongues lie in grooves with true depth:
+ *   mode 'rail': (x, lo, hi, f): x = lateral coordinate in the other rail's frame, cut
+ *                when lo < x < hi; f = 1 inside an interaction range (0 disables, so
+ *                quads leaving a range never interpolate a stray cut);
+ *   mode 'pave': (x1, lo, hi, x2): paving cut by either diverging rail's span.
+ * The variant gets userData.stCut so BufSet allocates the attribute.
+ */
+export function patchCut(m, mode) {
+  const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey;
+  m.userData.stCut = mode;
+  const test = mode === 'pave'
+    ? 'if ( ( vStCut.x > vStCut.y && vStCut.x < vStCut.z ) || ( vStCut.w > vStCut.y && vStCut.w < vStCut.z ) ) discard;'
+    : 'if ( vStCut.w > 0.999 && vStCut.x > vStCut.y && vStCut.x < vStCut.z ) discard;';
+  m.onBeforeCompile = function (sh, r) {
+    if (prev) prev.call(this, sh, r);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute vec4 aStCut;\nvarying vec4 vStCut;')
+      .replace(/void\s+main\s*\(\s*\)\s*\{/, (s) => `${s}\n  vStCut = aStCut;`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec4 vStCut;')
+      .replace(/void\s+main\s*\(\s*\)\s*\{/, (s) => `${s}\n  ${test}`);
+  };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stCut-${mode}`; };
   m.needsUpdate = true;
   return m;
 }

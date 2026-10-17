@@ -159,8 +159,9 @@ export class StreetLights {
     const air = this.airlight, N = this.count;
     const unitI = LAMP_CD / LUX_PER_UNIT;
 
-    // ---- lamp standards ranked by view-weighted distance (standards behind the view count
-    // as farther, so looking back lights the ones behind)
+    // ---- lamp standards ranked by view-weighted distance. Standards behind the view count
+    // as much farther (their pools are out of frame), so looking ahead the whole pool
+    // covers the stations in front, and looking back lights the ones behind.
     let D = 0;
     let list = [];
     if (on) {
@@ -171,7 +172,7 @@ export class StreetLights {
       for (const st of list) {
         const ds = route.delta(s, st.s);
         st.ds = ds;
-        st.score = ds >= 0 ? ds * (1 + 3 * Math.max(0, -c)) : -ds * (1 + 3 * Math.max(0, c));
+        st.score = ds >= 0 ? ds * (1 + 12 * Math.max(0, -c)) : -ds * (1 + 12 * Math.max(0, c));
       }
       list.sort((a, b) => a.score - b.score);
       // the N-th smallest score: continuous in time, and every standard with a nonzero

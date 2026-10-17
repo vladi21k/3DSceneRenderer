@@ -78,7 +78,8 @@ const env = {
     sh.camera.far = 700;
     sh.bias = patched ? -0.00002 : -0.0002;
     sh.normalBias = patched ? 1.2 : 0.05;
-    sh.radius = patched ? 0.13 : 2;
+    // widest penumbra half-width (m): a cornice ~80 m up-sun (sun radius 0.27°, x1.5 filter)
+    sh.radius = patched ? 0.5 : 2;
     scene.add(this.sun);
 
     this.lights = new StreetLights(app, q.lamps);
@@ -124,9 +125,9 @@ const env = {
     this.sun.color.copy(sunCol);
     this.sun.intensity = Es;
     this.sun.position.copy(dir);
-    // keep the light (a changing light count would recompile every material); below the
-    // horizon its colour is ~0 and the shadow pass is skipped
-    const up = dir.y > -0.02;
+    // keep the light (a changing light count would recompile every material); once the
+    // skyline hides the sun its light is zero and the shadow passes are skipped
+    const up = Es > 1e-4;
     const sh = this.sun.shadow;
     // (the atlas must exist even when the sun is down: lit shaders sample it)
     if ((up && !sh.autoUpdate) || !sh.map) sh.needsUpdate = true;

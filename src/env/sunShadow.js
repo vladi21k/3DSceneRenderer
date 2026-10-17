@@ -13,8 +13,11 @@ import { SunLightShadow } from 'three/addons/lights/SunLightShadow.js';
 //   shadow.bias       small constant depth bias
 //   cascade.w         floor(depth range of the cascade camera, m) + world texel size (m)
 // Penumbrae harden towards contact: a small blocker search compares the receiver at
-// three depth offsets (0, 1 m, 6 m towards the sun) to estimate how far the blocker
-// is, and the filter radius follows the sun's angular size (0.53°).
+// five depth offsets (0, 1, 6, 25 and 80 m towards the sun) to estimate how far the
+// blocker is, and the filter radius follows the sun's angular size (0.53°), so a
+// cornice 60 m up-sun throws a ~0.3 m soft edge while a bench leg stays crisp.
+// Coarse cascades filter over at least two texels with more taps (no stair steps),
+// and skip thin casters (railings, lamp scrolls) that a 0.1–0.3 m texel cannot hold.
 
 const _m = new THREE.Matrix4();
 const _viewToLight = new THREE.Matrix4();
@@ -26,6 +29,17 @@ const _far = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _corners = Array.from({ length: 8 }, () => new THREE.Vector3());
 
 const _sphere = new THREE.Sphere();
+
+// casters too fine for a coarse cascade: wrought iron, ironwork cards, lamp scrolls
+const THIN_MATERIAL = /^(ironwork\.(parts|card)|metal\.(iron|wire))|catenaryThin/;
+const THIN_TEXEL = 0.05;      // cascades with texels coarser than this (m) skip them
+const MAX_FILTER_TEXELS = 16; // widest PCF kernel (texels): wider would only add noise
+
+function isThinCaster(object) {
+  if (object.userData.thinCaster !== undefined) return !!object.userData.thinCaster;
+  const m = Array.isArray(object.material) ? object.material[0] : object.material;
+  return !!m && (m.userData.thinCaster === true || THIN_MATERIAL.test(m.name || ''));
+}
 
 /**
  * Cascade frustum that also rejects casters whose shadow cannot reach the cascade's
@@ -40,9 +54,11 @@ class CascadeFrustum extends THREE.Frustum {
     this.zFar = Infinity;
     this.ctx = null;
     this.skip = false;
+    this.skipThin = false;
   }
   intersectsObject(object) {
     if (this.skip) return false;
+    if (this.skipThin && isThinCaster(object)) return false;
     const c = this.ctx;
     if (c && c.enabled) {
       const g = object.geometry;
@@ -194,7 +210,7 @@ export class StreetSunShadow extends SunLightShadow {
       // inset each tile by the filter footprint so PCF never reads the neighbouring tile
       let radius = Math.sqrt(r2);
       const texelGuess = (2 * radius) / tile;
-      const insetTexels = Math.ceil(Math.max(this.radius / texelGuess, 1) * 1.2 + this.normalBias) + 2;
+      const insetTexels = Math.ceil(Math.min(Math.max(this.radius / texelGuess, 2), MAX_FILTER_TEXELS) * 1.2 + this.normalBias) + 2;
       const inset = Math.min(0.2, insetTexels / tile);
       const col = i % cols, row = Math.floor(i / cols);
       this._viewports[i].set(col + inset, row + inset, 1 - 2 * inset, 1 - 2 * inset);
@@ -213,6 +229,7 @@ export class StreetSunShadow extends SunLightShadow {
       // the slice's view depths (corners of the frustum reach a little further than the split)
       this._frustums[i].zNear = i === 0 ? -Infinity : cNear * 0.97 - 2;
       this._frustums[i].zFar = cFar + 2;
+      this._frustums[i].skipThin = this.cullCasters && texel > THIN_TEXEL;
 
       const cam = this._cameras[i];
       cam.position.copy(_c);
@@ -254,41 +271,54 @@ export function patchSunShadowChunk(cascades, taps = 10) {
 			#else
 				sampler2D shadowMap,
 			#endif
-			vec2 atlasSize, float bias, float texel, float range, float maxRadius, vec4 coord ) {
+			vec2 atlasSize, float bias, float texel, float range, float maxRadius, int cascade, vec4 coord ) {
 			coord.xyz /= coord.w;
 			coord.z += bias;
 			if ( coord.z > 1.0 ) return 1.0;
 			#if defined( SHADOWMAP_TYPE_PCF )
 				vec2 tx = 1.0 / atlasSize;
 				float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+				// coarse cascades always filter over two texels or more (no stair steps)
+				float minR = cascade >= 2 ? 2.0 : 1.0;
+				float maxR = clamp( maxRadius / texel, minR, ${MAX_FILTER_TEXELS.toFixed(1)} );
 				// blocker search over the widest penumbra
-				float sr = max( maxRadius / texel, 1.0 );
 				vec2 so[ 5 ];
 				so[ 0 ] = vec2( 0.0 );
 				float f0 = 1.0 - texture( shadowMap, coord.xyz );
 				for ( int k = 1; k < 5; k ++ ) {
-					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * sr * tx;
+					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * maxR * tx;
 					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z ) );
 				}
 				f0 *= 0.2;
 				if ( f0 <= 0.0 ) return 1.0;
 				if ( f0 >= 1.0 ) return 0.0;
-				// how far the blockers are: still blocked with the receiver moved 1 m / 6 m towards the sun?
-				float d1 = 1.0 / range, d2 = 6.0 / range, f1 = 0.0, f2 = 0.0;
-				for ( int k = 0; k < 5; k ++ ) {
-					f1 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z - d1 ) );
-					f2 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z - d2 ) );
+				// how far are the blockers? Probe whether the receiver, moved 1, 6, 25 and
+				// 80 m towards the sun, is still blocked (stop once nothing is left)
+				float fd[ 4 ];
+				float dm[ 4 ];
+				dm[ 0 ] = 1.0; dm[ 1 ] = 6.0; dm[ 2 ] = 25.0; dm[ 3 ] = 80.0;
+				float prev = f0;
+				for ( int j = 0; j < 4; j ++ ) {
+					float f = 0.0;
+					if ( prev > 0.0 ) {
+						for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z - dm[ j ] / range ) );
+						f *= 0.2;
+					}
+					fd[ j ] = f; prev = f;
 				}
-				f1 *= 0.2; f2 *= 0.2;
-				float dEst = ( 0.45 * ( f0 - f1 ) + 2.8 * ( f1 - f2 ) + 14.0 * f2 ) / f0;
+				float dEst = ( 0.45 * ( f0 - fd[ 0 ] ) + 2.8 * ( fd[ 0 ] - fd[ 1 ] ) + 13.0 * ( fd[ 1 ] - fd[ 2 ] )
+					+ 45.0 * ( fd[ 2 ] - fd[ 3 ] ) + 110.0 * fd[ 3 ] ) / f0;
 				// penumbra half-width from the sun's angular radius (x1.5 for the filter shape)
-				float rt = clamp( dEst * 0.0047 * 1.5, texel * 1.0, max( maxRadius, texel ) ) / texel;
+				float rt = clamp( dEst * 0.0047 * 1.5 / texel, minR, maxR );
 				vec2 r = rt * tx;
+				// wide kernels and coarse cascades get more taps
+				int n = ( cascade >= 2 || rt > 3.0 ) ? 16 : SUN_PCF_TAPS;
 				float s = 0.0;
-				for ( int k = 0; k < SUN_PCF_TAPS; k ++ ) {
-					s += texture( shadowMap, vec3( coord.xy + vogelDiskSample( k, SUN_PCF_TAPS, phi + 1.3 ) * r, coord.z ) );
+				for ( int k = 0; k < 16; k ++ ) {
+					if ( k >= n ) break;
+					s += texture( shadowMap, vec3( coord.xy + vogelDiskSample( k, n, phi + 1.3 ) * r, coord.z ) );
 				}
-				return s / float( SUN_PCF_TAPS );
+				return s / float( n );
 			#else
 				return step( coord.z, texture2D( shadowMap, coord.xy ).r );
 			#endif
@@ -311,7 +341,7 @@ export function patchSunShadowChunk(cascades, taps = 10) {
 					float texel = fract( cascade.w );
 					float range = floor( cascade.w );
 					vec4 wp = vec4( vSunShadowWorldPosition.xyz + vSunShadowWorldNormal * ( sunLightShadow.shadowNormalBias * texel ), 1.0 );
-					float cs = sunShadowTap( shadowMap, sunLightShadow.shadowMapSize, sunLightShadow.shadowBias, texel, range, sunLightShadow.shadowRadius, sunShadowMatrix[ cascadeOffset + i ] * wp );
+					float cs = sunShadowTap( shadowMap, sunLightShadow.shadowMapSize, sunLightShadow.shadowBias, texel, range, sunLightShadow.shadowRadius, i, sunShadowMatrix[ cascadeOffset + i ] * wp );
 					cs = mix( 1.0, cs, sunLightShadow.shadowIntensity );
 					shadow = mix( cs, shadow, smoothstep( cascade.z, cascade.y, viewDepth ) );
 				}

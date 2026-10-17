@@ -10,7 +10,7 @@ import { hash2 } from '../../core/rng.js';
 //   ht_c    = lateral centre of the lineup (route d, metres), ht_sp = grid spacing (m)
 //   ht_rot  = extra heading for grid / sit figures (deg; 180 shows their backs, 90 a profile)
 //   ht_filter = skirt | dress | hat | cap | sunhat | suit | old | oldwalk | child | beard | glasses |
-//               shorts | bag | backpack | phone | cross | long | heavy | male | female
+//               shorts | bag | backpack | phone | cross | pocket | long | heavy | male | female | balding
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
 // e.g. ?only=humans&humanstest=1&ht_mode=grid&view=400,1.6,1.7,0,0&fov=17
@@ -152,8 +152,10 @@ const FILTERS = {
   backpack: (a, P) => a.bagPart === P.backpack,
   phone: (a) => a.phoneWalk,
   cross: (a) => a.idle === 2,
+  pocket: (a) => a.idle === 3,
   long: (a, P) => a.hairPart === P.hair_long || a.hairPart === P.hair_ponytail,
   heavy: (a) => a.build > 0.5 || a.belly > 0.5,
   male: (a) => a.base === 'male',
   female: (a) => a.base === 'female',
+  balding: (a, P) => a.hairPart === P.hair_balding || a.hairPart === P.hair_receding,
 };

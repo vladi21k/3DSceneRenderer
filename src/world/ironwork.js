@@ -10,7 +10,7 @@ import {
 } from './ironwork/stone.js';
 import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
 import { LodInstancer } from './ironwork/instancer.js';
-import { makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, geoLimit } from './ironwork/mats.js';
+import { makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit } from './ironwork/mats.js';
 import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwork/attach.js';
 
 // Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
@@ -238,7 +238,7 @@ const ironwork = {
     this.live = new Set();
     this.jobs = new Map(); // chunk index * 2 + lod -> build job (see prefetch)
     this.pool = [];        // spare merged-mesh writer sets
-    this.uniforms = { uIronPx, uIronA2C, uIronCardK }; // for inspection / debugging
+    this.uniforms = { uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden }; // for inspection / debugging
     this.lastPx = 0;
   },
 
@@ -739,7 +739,7 @@ const ironwork = {
     const px = 0.5 * _sz.y * app.camera.projectionMatrix.elements[5];
     uIronPx.value = px;
     const post = app.post;
-    uIronA2C.value = post && !post.disabled && post.sceneRT && post.sceneRT.samples > 0 ? 1 : 0;
+    uIronA2C.value = post && !post.disabled && post.sceneRT ? post.sceneRT.samples | 0 : 0;
     const cam = app.camera.position;
     // a zoom changes every limit; otherwise a set is revisited once the camera has moved
     // further than the slack its last partition left

@@ -32,6 +32,10 @@ PER_BASE = {
 LOD_TRIS = {'hair': (1400, 600, 200, 50, 16), 'long': (2200, 900, 300, 80, 26), 'beard': (900, 320, 110, 24, 0),
             'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'glasses': (900, 260, 70, 0, 0)}
 
+# hairline (head-local y at the front / temples) of the men's and boys' short styles: a forehead
+# of ~5 cm above the brows. The runtime paints the soft edge with the same numbers (material.js)
+MALE_FRONT, MALE_TEMPLE = 0.066, 0.046
+
 # cranium of the head sculpt (humans_body.head_sdf)
 CR_C = np.array([0.0, 0.014, 0.006])
 CR_R = np.array([0.0745, 0.096, 0.098])
@@ -109,26 +113,29 @@ def _tag(node, region, bones):
 def hair_part(name):
     H = {'head': 1}
     R = REGION['hair']
+    mf, mt = MALE_FRONT, MALE_TEMPLE
     if name == 'hair_short':
-        n = cap_hair(0.014, 0.0055, R, noise=0.0014)
-        n = Union([n, Ellipsoid((0.006, 0.072, -0.050), (0.052, 0.022, 0.032))], k=0.018)
+        # the front edge thins out over ~2 cm (no bowl-cut ledge); a little lift on top
+        n = cap_hair(0.013, 0.0055, R, front=mf, temple=mt, noise=0.0014, fade=0.02)
+        n = Union([n, Ellipsoid((0.006, 0.086, -0.040), (0.050, 0.019, 0.032))], k=0.018)
     elif name == 'hair_buzz':
-        n = cap_hair(0.0042, 0.0032, R, fade=0.006)
+        n = cap_hair(0.0042, 0.0032, R, front=mf, temple=mt, fade=0.006)
     elif name == 'hair_medium':
-        n = cap_hair(0.020, 0.010, R, front=0.050, noise=0.0025, seed=3)
-        n = Union([n, Ellipsoid((0.012, 0.075, -0.055), (0.050, 0.028, 0.030))], k=0.02)
+        n = cap_hair(0.019, 0.010, R, front=mf - 0.004, temple=mt - 0.003, noise=0.0025, seed=3, fade=0.02)
+        n = Union([n, Ellipsoid((0.012, 0.086, -0.048), (0.050, 0.024, 0.030))], k=0.02)
     elif name == 'hair_curly':
-        n = cap_hair(0.028, 0.016, R, front=0.052, noise=0.006, seed=7)
+        n = cap_hair(0.026, 0.016, R, front=mf - 0.004, temple=mt - 0.003, noise=0.006, seed=7, fade=0.016)
     elif name == 'hair_side':
         # side parting: fuller top swept to one side, short back and sides
-        n = cap_hair(0.017, 0.006, R, front=0.054, noise=0.0016, seed=13)
-        sweep = Ellipsoid((0.022, 0.078, -0.035), (0.060, 0.026, 0.060), R=rot_xyz(0, 0, -12))
+        n = cap_hair(0.016, 0.006, R, front=mf - 0.002, temple=mt, noise=0.0016, seed=13, fade=0.02)
+        sweep = Ellipsoid((0.022, 0.086, -0.032), (0.058, 0.022, 0.058), R=rot_xyz(0, 0, -12))
         n = Union([n, sweep], k=0.02)
     elif name == 'hair_receding':
         n = cap_hair(0.010, 0.006, R, front=0.074, temple=0.066, noise=0.0012, seed=17)
     elif name == 'hair_balding':
-        base = cap_hair(0.006, 0.006, R, fade=0.01)
-        crown = Ellipsoid((0, 0.11, -0.01), (0.07, 0.07, 0.085))
+        # a horseshoe fringe over the ears and round the back; nothing in front of the temples
+        base = cap_hair(0.007, 0.006, R, front=0.15, temple=0.13, fade=0.01)
+        crown = Ellipsoid((0, 0.115, -0.025), (0.075, 0.072, 0.095))
         n = Subtract(base, crown, k=0.02)
     elif name == 'hair_pixie':
         n = cap_hair(0.022, 0.012, R, front=0.052, noise=0.0035, seed=5, back=-0.055)
@@ -171,11 +178,12 @@ def hair_part(name):
 
 def beard_part(name):
     H = {'head': 1}
-    face = Union([Ellipsoid((0, -0.022, -0.044), (0.064, 0.083, 0.051)),
-                  RoundCone((0.057, -0.012, 0.012), (0.052, -0.068, 0.004), 0.014, 0.013),
-                  RoundCone((-0.057, -0.012, 0.012), (-0.052, -0.068, 0.004), 0.014, 0.013),
-                  RoundCone((0.052, -0.068, 0.004), (0.024, -0.099, -0.066), 0.013, 0.012),
-                  RoundCone((-0.052, -0.068, 0.004), (-0.024, -0.099, -0.066), 0.013, 0.012),
+    # (the male face of humans_body.head_sdf)
+    face = Union([Ellipsoid((0, -0.022, -0.044), (0.061, 0.083, 0.051)),
+                  RoundCone((0.057, -0.012, 0.012), (0.051, -0.068, 0.004), 0.014, 0.013),
+                  RoundCone((-0.057, -0.012, 0.012), (-0.051, -0.068, 0.004), 0.014, 0.013),
+                  RoundCone((0.051, -0.068, 0.004), (0.024, -0.099, -0.066), 0.013, 0.012),
+                  RoundCone((-0.051, -0.068, 0.004), (-0.024, -0.099, -0.066), 0.013, 0.012),
                   Ellipsoid((0, -0.097, -0.0745), (0.023, 0.018, 0.020)),
                   Ellipsoid((0, -0.058, -0.070), (0.034, 0.030, 0.028))], k=0.02)
     full = name == 'beard_full'
@@ -230,13 +238,21 @@ def hat_part(name):
                   (-0.18, 0.0, -0.2), (0.18, 0.09, 0.2))
         n = Union([crown, brim], k=0.008)
     else:  # sunhat
+        # straw sun hat: a rounded crown ~10 cm tall over the band, a brim that droops ~2.5 cm
+        # over its 7-8 cm width
         so = HAT_OFFSETS['sunhat']
-        crown = Fn(lambda P: Ellipsoid(CR_C, CR_R).eval(P) - so, CR_C - CR_R - 0.04, CR_C + CR_R + 0.04)
-        crown = Intersect(crown, Fn(lambda P: HAT_BANDS['sunhat'] - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2)), k=0.004)
-        brim = Fn(lambda P: np.maximum(np.abs(P[:, 1] - 0.042 + 0.035 * np.clip(np.hypot(P[:, 0], P[:, 2] - 0.006) - 0.09, 0, 1)) - 0.003,
-                                       np.hypot(P[:, 0], P[:, 2] - 0.006) - 0.20),
-                  (-0.22, -0.05, -0.22), (0.22, 0.09, 0.22))
-        n = Union([crown, brim], k=0.010)
+        crown = Loft((0, 0.030, 0.006), (0, 0.100, 0.006), (1, 0, 0),
+                     [(0, 0.0745 + so, 0.098 + so, 0, 0), (0.6, 0.0725 + so, 0.095 + so, 0, 0),
+                      (1.0, 0.080, 0.100, 0, 0)], n=2.0, capr=0.45)
+        crown = Union([crown, Fn(lambda P: Ellipsoid(CR_C, CR_R).eval(P) - so, CR_C - CR_R - 0.04, CR_C + CR_R + 0.04)], k=0.01)
+        crown = Intersect(crown, Fn(lambda P: 0.030 - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2)), k=0.003)
+
+        def brim_f(P):
+            rr = np.hypot(P[:, 0] / 1.0, (P[:, 2] - 0.006) / 1.06)
+            y0 = 0.040 - 0.33 * np.clip(rr - 0.092, 0, None) ** 1.15
+            return np.maximum(np.abs(P[:, 1] - y0) - 0.0024, rr - 0.172)
+        brim = Fn(brim_f, (-0.2, -0.04, -0.2), (0.2, 0.08, 0.2))
+        n = Union([crown, brim], k=0.008)
     # solid: the head fills the inside, only the outer surface is ever seen
     return _tag(n, R, H)
 

@@ -3,14 +3,18 @@ import * as THREE from 'three';
 // Minimal growable vertex buffer: chunk builders write vertices straight into typed
 // arrays (no per-geometry merge step), one buffer per material.
 //
+// Optional per-vertex cut attribute (aStCut, vec4): crossover surfaces discard the
+// fragments that lie inside another rail's opening (see shading.js patchCut).
+//
 // Buffers are scratch space recycled through a small pool: a chunk build borrows them,
 // and BufSet.build() copies the written range into exact-size arrays for the
 // geometry, then returns them. Steady-state builds therefore allocate only what the
 // GPU upload needs (no zero-filled oversized arrays, no growth copies, less GC).
 
 export class MeshBuf {
-  constructor({ color = false, cap = 1024 } = {}) {
+  constructor({ color = false, cut = false, cap = 1024 } = {}) {
     this.hasColor = color;
+    this.hasCut = cut;
     this.n = 0;
     this.ni = 0;
     this._alloc(cap, cap * 6);
@@ -23,6 +27,7 @@ export class MeshBuf {
       this.nor = grow(this.nor, vc * 3);
       this.uv = grow(this.uv, vc * 2);
       if (this.hasColor) this.col = grow(this.col, vc * 3);
+      if (this.hasCut) this.cut = grow(this.cut, vc * 4);
       this.cap = vc;
     }
     if (ic !== this.icap) {
@@ -53,6 +58,12 @@ export class MeshBuf {
     return i;
   }
 
+  /** Cut attribute of vertex i. */
+  setCut(i, a, b, c, d) {
+    const k = i * 4, x = this.cut;
+    x[k] = a; x[k + 1] = b; x[k + 2] = c; x[k + 3] = d;
+  }
+
   tri(a, b, c) {
     if (this.ni + 3 > this.icap) this._alloc(this.cap, this.icap * 2);
     const x = this.idx;
@@ -80,6 +91,7 @@ export class MeshBuf {
     g.setAttribute('normal', new THREE.BufferAttribute(this.nor.slice(0, n * 3), 3));
     g.setAttribute('uv', new THREE.BufferAttribute(this.uv.slice(0, n * 2), 2));
     if (this.hasColor) g.setAttribute('color', new THREE.BufferAttribute(this.col.slice(0, n * 3), 3));
+    if (this.hasCut) g.setAttribute('aStCut', new THREE.BufferAttribute(this.cut.slice(0, n * 4), 4));
     const src = this.idx.subarray(0, this.ni);
     g.setIndex(new THREE.BufferAttribute(n <= 65535 ? new Uint16Array(src) : src.slice(), 1));
     if (sphere) g.boundingSphere = sphere.clone();
@@ -88,27 +100,29 @@ export class MeshBuf {
   }
 }
 
-// scratch buffers waiting to be borrowed, by colour layout
-const POOL = [[], []];
+// scratch buffers waiting to be borrowed, by attribute layout (colour, cut)
+const POOL = [[], [], [], []];
+const layout = (color, cut) => (color ? 1 : 0) + (cut ? 2 : 0);
 
-function borrow(color, cap) {
-  const list = POOL[color ? 1 : 0];
-  return list.length ? list.pop().reset() : new MeshBuf({ color, cap });
+function borrow(color, cut, cap) {
+  const list = POOL[layout(color, cut)];
+  return list.length ? list.pop().reset() : new MeshBuf({ color, cut, cap });
 }
 
 function giveBack(b) {
-  const list = POOL[b.hasColor ? 1 : 0];
+  const list = POOL[layout(b.hasColor, b.hasCut)];
   if (list.length < 48) list.push(b.reset());
 }
 
 /** One MeshBuf per material; build() returns meshes added to a group. */
 export class BufSet {
   constructor() { this.map = new Map(); }
-  /** Buffer for `material`; cap pre-sizes it (vertices) when it is created. */
+  /** Buffer for `material`; cap pre-sizes it (vertices) when it is created. A material
+   *  patched with patchCut gets a buffer with the cut attribute. */
   get(material, color = false, cap = 1024) {
     let b = this.map.get(material);
     if (!b) {
-      b = borrow(color, cap);
+      b = borrow(color, !!material.userData.stCut, cap);
       if (cap > b.cap) b.reserve(cap, cap * 6);
       this.map.set(material, b);
     }

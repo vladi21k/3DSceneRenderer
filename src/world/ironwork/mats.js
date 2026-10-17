@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WIDEN, ATLAS } from './railings.js';
 
 // Materials owned by the ironwork module.
 //
@@ -12,18 +13,23 @@ import * as THREE from 'three';
 //   CARD_LO .. GEO_LO px        card + geometry fading out
 //   below GEO_LO px             card only
 // Fades are written into alpha and resolved by alpha-to-coverage on the MSAA scene
-// target. Without MSAA (no post pass, low quality) alpha falls back to a 0.5 cut.
+// target. Alpha is rounded to whole samples first: some drivers dither fractional
+// coverage over a 2x2 pixel pattern, which would print a screen-fixed checkerboard on
+// the iron; a whole number of samples covers every pixel alike, exactly like geometry
+// edges under MSAA. Without MSAA (no post pass, low quality) alpha is a 0.5 cut.
 
 export const FADE = { BAR: 0.016, GEO_LO: 0.8, GEO_HI: 1.3, CARD_LO: 1.3, CARD_HI: 2.2 };
 /** Pixels per metre at 1 m distance: 0.5 * drawing-buffer height * projection[1][1]. */
 export const uIronPx = { value: 1800 };
-/** 1 when the scene renders into a multisampled target (alpha-to-coverage works). */
+/** MSAA sample count of the scene target (alpha-to-coverage works when > 0). */
 export const uIronA2C = { value: 0 };
 /** Debug: scales the cards' bar width (0.01 forces cards on everywhere). */
 export const uIronCardK = { value: 1 };
+/** Debug: scales the geometry's bar width (100 keeps solid geometry at every distance). */
+export const uIronGeoK = { value: 1 };
 
 /** Distance beyond which the railing geometry has faded out completely. */
-export function geoLimit() { return (FADE.BAR * uIronPx.value) / FADE.GEO_LO; }
+export function geoLimit() { return (FADE.BAR * uIronPx.value * uIronGeoK.value) / FADE.GEO_LO; }
 
 const f = (x) => x.toFixed(4);
 
@@ -50,6 +56,7 @@ function chain(mat, tag, patch) {
     sh.uniforms.uIronPx = uIronPx;
     sh.uniforms.uIronA2C = uIronA2C;
     sh.uniforms.uIronCardK = uIronCardK;
+    sh.uniforms.uIronGeoK = uIronGeoK;
     patch(sh);
   };
   mat.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + tag; };
@@ -61,7 +68,16 @@ const VERT_DIST = (sh, extra = '') => {
     .replace('#include <common>', '#include <common>\nvarying float vIronDist;' + extra)
     .replace('#include <project_vertex>', '#include <project_vertex>\n\tvIronDist = length( mvPosition.xyz );');
 };
-const FRAG_HEAD = '\nvarying float vIronDist;\nuniform float uIronPx;\nuniform float uIronA2C;\nuniform float uIronCardK;';
+const FRAG_HEAD = `
+varying float vIronDist;
+uniform float uIronPx;
+uniform float uIronA2C;
+uniform float uIronCardK;
+uniform float uIronGeoK;
+// coverage alpha for alpha-to-coverage: whole samples (see header), or a 0.5 cut
+float iwCoverage( float a ) {
+	return uIronA2C < 0.5 ? step( 0.5, a ) : floor( a * uIronA2C + 0.5 ) / uIronA2C;
+}`;
 
 /** Near railing geometry: fades out by projected bar width; rust at the feet and in
  *  patches (amount: 0 none .. 1 neglected paint). */
@@ -83,9 +99,8 @@ float iwRust = 0.0;
 float iwRn = 0.0;
 ${NOISE}`)
       .replace('#include <alphatest_fragment>', `{
-		float ironPx = ${f(FADE.BAR)} * uIronPx / max( vIronDist, 0.01 );
-		float a = smoothstep( ${f(FADE.GEO_LO)}, ${f(FADE.GEO_HI)}, ironPx );
-		if ( uIronA2C < 0.5 ) a = step( 0.5, a );
+		float ironPx = ${f(FADE.BAR)} * uIronPx * uIronGeoK / max( vIronDist, 0.01 );
+		float a = iwCoverage( smoothstep( ${f(FADE.GEO_LO)}, ${f(FADE.GEO_HI)}, ironPx ) );
 		if ( a <= 0.0 ) discard;
 		diffuseColor.a = a;
 	}
@@ -106,27 +121,45 @@ ${NOISE}`)
   });
 }
 
-/** Far railing cards: coverage alpha (boosted at grazing angles, where real bars overlap)
- *  faded in by projected bar width; dull, darker at grazing (no Fresnel sheen). */
+/** Far railing cards: coverage alpha faded in by projected bar width. Seen at an angle
+ *  the real members show their depth as well as their face: each orientation plane of
+ *  the atlas (railings.js) adds cover in proportion to the sideways shift of the view
+ *  per unit depth, and the added cover fills the open part of the bay as the design's
+ *  fitted constants say (patterns.js `widen`). Toward grazing angles the railing closes
+ *  into a dark band, as real ones do. Dull, a little darker at grazing (no Fresnel). */
+export const uIwWiden = { value: WIDEN.map((w) => new THREE.Vector4(...w)) };
+
 function cardPatch(mat) {
   return chain(mat, '|ironCard', (sh) => {
     VERT_DIST(sh);
+    sh.uniforms.uIwWiden = uIwWiden;
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>' + FRAG_HEAD)
+      .replace('#include <common>', `#include <common>${FRAG_HEAD}
+uniform vec4 uIwWiden[ ${ATLAS.ROWS} ];`)
+      // the atlas holds coverage planes, not colour (colour is per vertex)
+      .replace('#include <map_fragment>', 'vec4 iwCov = texture2D( map, vMapUv );')
       .replace('#include <alphatest_fragment>', `{
+		vec3 V = normalize( vViewPosition ), N = normalize( vNormal );
+		vec3 Up = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+		vec3 Tu = normalize( cross( Up, N ) );
+		float nv = abs( dot( V, N ) ), vn = max( nv, 0.02 );
+		// view shift across the card per unit depth, along the run (u) and up (v)
+		float su = abs( dot( V, Tu ) ) / vn, sv = abs( dot( V, Up ) ) / vn;
+		vec4 k = uIwWiden[ int( clamp( floor( vMapUv.y * ${ATLAS.ROWS}.0 ), 0.0, ${ATLAS.ROWS - 1}.0 ) ) ];
+		float added = dot( iwCov.rgb, vec3( k.x * su, k.y * sv, k.z * length( vec2( su, sv ) ) ) );
+		float open = 1.0 - iwCov.a;
+		float fill = 1.0 - pow( max( 1.0 - added / ( max( open, 0.001 ) * k.w ), 0.0 ), k.w );
+		float cov = iwCov.a + open * fill;
 		float ironPx = ${f(FADE.BAR)} * uIronPx * uIronCardK / max( vIronDist, 0.01 );
-		float nv = abs( dot( normalize( vNormal ), normalize( vViewPosition ) ) );
-		float a = diffuseColor.a * ( 1.0 - smoothstep( ${f(FADE.CARD_LO)}, ${f(FADE.CARD_HI)}, ironPx ) );
-		a = min( a * clamp( 1.0 / max( nv, 0.2 ), 1.0, 3.5 ), 1.0 );
-		if ( uIronA2C < 0.5 ) a = step( 0.5, a );
-		if ( a < 0.004 ) discard;
+		float a = iwCoverage( cov * ( 1.0 - smoothstep( ${f(FADE.CARD_LO)}, ${f(FADE.CARD_HI)}, ironPx ) ) );
+		if ( a <= 0.0 ) discard;
 		diffuseColor.a = a;
 		diffuseColor.rgb *= mix( 1.0, 0.7, 1.0 - nv );
 	}`)
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
-	material.specularF90 = 0.3;
-	material.specularColor *= 0.6;
-	material.specularColorBlended *= 0.6;`);
+	// a lattice of bars facing every way has no Fresnel rise toward the card's grazing
+	// angles: reflectance stays at the paint's normal-incidence value
+	material.specularF90 = 0.04;`);
   });
 }
 

@@ -29,7 +29,7 @@ export function shopLayout(o, rng, back = 0.4) {
   const narrow = o.w < 1.9;
   const pos = narrow ? 0 : rng.weighted([[-1, 0.3], [1, 0.3], [0, 0.4]]);
   const dx = pos === 0 ? 0 : pos * (hwI - doorW / 2 - rng.range(0.0, 0.35));
-  let setback = rng.chance(0.45) && !narrow ? rng.range(0.45, 0.9) : 0;
+  let setback = rng.chance(0.45) && !narrow ? rng.range(0.22, 0.6) : 0;
   setback = Math.min(setback, back - 0.07);
   if (setback < 0.18) setback = 0;
   // the head is glazed (sunburst bars under arches); a solid panel only carries a sign

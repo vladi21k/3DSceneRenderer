@@ -169,9 +169,11 @@ roughnessFactor = min(1.0, roughnessFactor * (1.0 + bgGrimeK.z * bgDirt));
 const FRAG_GLASS_PARS = /* glsl */ `
 varying float vBgGrime;
 uniform float bgNight;
+uniform float bgGain;
 `;
+// a dim warm room behind the pane (curtains, a lamp somewhere inside), not a light box
 const FRAG_GLASS = /* glsl */ `
-totalEmissiveRadiance += vec3(1.0, 0.68, 0.4) * 1.6 * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.6 + 0.4 * vBgGrime);
+totalEmissiveRadiance += vec3(1.0, 0.66, 0.38) * 0.005 * bgGain * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.6 + 0.4 * vBgGrime);
 `;
 const VERT_GLASS_PARS = 'attribute float aGrime;\nvarying float vBgGrime;\n';
 const VERT_GLASS_MAIN = 'vBgGrime = aGrime;\n';
@@ -214,10 +216,12 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
 
 /** Window glass of the self-dressed lots, lit at night by the lit share in aGrime. */
 export function litGlass(app, name = 'glass.window') {
+  const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };
   const m = app.materials.get(name, { vertexColors: true }).clone();
   m.name = `buildings:${name}`;
   chain(m, 'bgG1', (shader) => {
     shader.uniforms.bgNight = U.uNight;
+    shader.uniforms.bgGain = gain;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_GLASS_PARS)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_GLASS_MAIN);

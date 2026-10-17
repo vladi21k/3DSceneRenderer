@@ -1,17 +1,39 @@
-import { TRACK_OFFSET, RAIL_CENTER, MAIN_RAILS, RAIL_X0, RAIL_X1, HEAD_HALF, GROOVE_OUT, LIP_OUT } from './constants.js';
-import { samplePath, inlayStrip, inlayRail, railLinePoints } from './rails.js';
+import { TRACK_OFFSET, RAIL_CENTER, MAIN_RAILS, RAIL_X0, RAIL_X1, HEAD_HALF, GROOVE_OUT, GROUT_W } from './constants.js';
+import {
+  RUNS_MAIN, RUNS_CHECK, MORTAR_FIELD, MORTAR_GAUGE, SEP_A, tongueRuns, tongueW, tongueDrop, sweepRuns, railLinePoints,
+} from './rails.js';
 
-// Single crossover between the two tracks: a reverse curve (two circular arcs of
-// radius R joined by a straight) carrying the diverging track from one track centre to
-// the other over the planned length, with
-//  - switch blades: tapered tongues leaving the stock rails at both ends,
-//  - two frogs where the diverging rails cross the main rails (flangeways cut through
-//    the heads), on cast manganese-steel plates,
-//  - check rails opposite each frog.
-// Everything inside the crossover is drawn as coplanar inlays over flat paving using
-// polygon-offset layers: plates < seals/heads < flangeways < switch tongues.
+// Single crossover between the two tracks, built from real 3D grooved rails.
+//
+// The diverging track is a reverse curve (two circular arcs of radius ~70 m joined by a
+// straight) from one track centre to the other. Its two rails are swept with the full
+// grooved profile along their own path, bedded in their own mortar strips. Where rails
+// meet they interact through per-vertex cut attributes (shading.js patchCut):
+//  - switches (both ends): one rail continues as the stock rail S; the other, the
+//    tongue T, is born at the toe as a tapered head lying in S's groove, 1.5 mm below
+//    the stock head, and widens into a full rail as it moves away. S keeps its head
+//    while its groove wall, lip and seal open up wherever T (and T's flangeway) lies;
+//    between the stock head and the tongue an open slot shows the switch-box floor.
+//  - frogs (where a diverging rail crosses a main rail): the crossing flangeway is cut
+//    through the main rail's head; the diverging rail's head and lip stop at the main
+//    rail, its groove runs through.
+//  - check rails opposite each frog: the guard lip raised and polished.
+// A dark cast floor below the groove floors fills every opening.
 
 const SPACING = 2 * TRACK_OFFSET;
+const RANGE = 0.36;              // rails interact (cuts, floors) while closer than this
+const CHECK_HALF = 2.4;          // check rails reach this far either side of a frog
+export const FLOOR_H = -0.0372;  // cast floor of switch boxes and frogs (below the grooves)
+const FLOOR_HALF = 0.45;
+
+const FULL = [RAIL_X0 - GROUT_W, RAIL_X1 + GROUT_W];    // rail + mortar strips
+const SPAN = [RAIL_X0, RAIL_X1];                        // rail incl. seals
+const FLANGE = [HEAD_HALF, GROOVE_OUT];                 // flangeway
+const NONE = [1, -1];
+export const PAVE_CUT = [RAIL_X0 + 0.001, RAIL_X1 - 0.001]; // paving under the swept mortar
+
+const RUNS_DIV = [...RUNS_MAIN, MORTAR_FIELD, MORTAR_GAUGE];
+const RUNS_DIV_CHECK = [...RUNS_CHECK, MORTAR_FIELD, MORTAR_GAUGE];
 
 /** Reverse-curve centre line y(x) (lateral offset from the start track, 0..SPACING). */
 function solveCurve(L, Y) {
@@ -49,152 +71,288 @@ function solveCurve(L, Y) {
   return { R, phi, y, dy, x1 };
 }
 
+/** Root of f on [a, b] (f(a), f(b) of opposite sign). */
+function bisect(f, a, b) {
+  let fa = f(a);
+  for (let k = 0; k < 48; k++) {
+    const m = (a + b) / 2, fm = f(m);
+    if ((fm < 0) === (fa < 0)) { a = m; fa = fm; } else b = m;
+  }
+  return (a + b) / 2;
+}
+
 const cache = new Map();
 
-/** Geometry description of a crossover (cached). */
-export function crossoverPlan(c) {
+/**
+ * Geometry and interactions of a crossover (cached).
+ * rails[]: the two diverging rails: { g, at(x), xAt(s), local(s, d), ia[], checks[] }
+ *   with ia = interaction ranges along the path parameter x (switch / frog).
+ * mainIa: Map(main rail -> [{kind, s0, s1, rail, role, sA}]), mainChecks: Map(-> [[s0, s1]]).
+ */
+export function crossoverPlan(c, dl) {
   let p = cache.get(c);
   if (p) return p;
   const L = c.len;
-  const d0 = c.from * TRACK_OFFSET, sgn = -c.from; // start track centre, direction of travel in d
+  const d0 = c.from * TRACK_OFFSET, sgn = -c.from;   // start track centre, direction of travel in d
   const cv = solveCurve(L, SPACING);
-  const centre = (x) => ({ s: c.s0 + x, d: d0 + sgn * cv.y(x), dd: sgn * cv.dy(x) });
-  // diverging rails: perpendicular offsets o (path right), gauge towards the path centre
   const rails = [-1, 1].map((side) => {
     const o = side * RAIL_CENTER;
-    const fn = (x) => {
-      const q = centre(x);
-      const n = Math.sqrt(1 + q.dd * q.dd);
-      return { s: q.s - (o * q.dd) / n, d: q.d + o / n, dd: q.dd };
+    const r = { side, o, g: -side, dStart: d0 + o, dEnd: -d0 + o, ia: [], checks: [] };
+    // point of the rail at path parameter x (straight beyond both ends)
+    r.at = (x, out = {}) => {
+      const xc = x < 0 ? 0 : x > L ? L : x;
+      const dd = sgn * cv.dy(xc), n = 1 / Math.sqrt(1 + dd * dd);
+      out.x = x; out.s = c.s0 + x - o * dd * n; out.d = d0 + sgn * cv.y(xc) + o * n; out.dd = dd; out.n = n;
+      return out;
     };
-    return { side, o, g: -side, fn, dStart: d0 + o, dEnd: -d0 + o };
+    // path parameter at route s (inverts s(x))
+    r.xAt = (s) => {
+      const x0 = dl(c.s0, s);
+      let x = x0;
+      for (let k = 0; k < 3; k++) {
+        const xc = x < 0 ? 0 : x > L ? L : x;
+        const dd = sgn * cv.dy(xc);
+        x = x0 + (o * dd) / Math.sqrt(1 + dd * dd);
+      }
+      return x;
+    };
+    // lateral coordinate of route point (s, d) in the rail's frame (+ towards its gauge)
+    const q = {};
+    let lastS = NaN;
+    r.local = (s, d) => {
+      if (s !== lastS) { r.at(r.xAt(s), q); lastS = s; }
+      return r.g * (d - q.d) * q.n;
+    };
+    return r;
   });
-  // frogs: diverging rail crossing a main rail
+
+  const tmp = {};
+  const mainIa = new Map(MAIN_RAILS.map((m) => [m, []]));
+  const mainChecks = new Map(MAIN_RAILS.map((m) => [m, []]));
   const frogs = [];
   for (const r of rails) {
-    for (const m of MAIN_RAILS) {
-      // skip the rails it starts / ends on
-      if (Math.abs(m.c - r.dStart) < 0.01 || Math.abs(m.c - r.dEnd) < 0.01) continue;
-      // bisection on x for d_rail(x) = m.c
-      const f = (x) => r.fn(x).d - m.c;
-      let a = 0, b = L;
-      if (Math.sign(f(a)) === Math.sign(f(b))) continue;
-      for (let k = 0; k < 50; k++) { const mid = (a + b) / 2; if (Math.sign(f(mid)) === Math.sign(f(a))) a = mid; else b = mid; }
-      const x = (a + b) / 2;
-      frogs.push({ x, s: r.fn(x).s, rail: r, main: m });
+    const sep = (ref) => (x) => Math.abs(r.at(x, tmp).d - ref);
+    const mS = MAIN_RAILS.find((m) => Math.abs(m.c - r.dStart) < 0.01);
+    const mE = MAIN_RAILS.find((m) => Math.abs(m.c - r.dEnd) < 0.01);
+    // switches: the diverging rail is the tongue when it moves towards the main rail's
+    // gauge side (into its groove); otherwise it is the stock rail and the main rail
+    // becomes the tongue
+    {
+      const f = sep(mS.c);
+      const xR = bisect((x) => f(x) - RANGE, 0, L / 2), xA = bisect((x) => f(x) - SEP_A, 0, L / 2);
+      const role = sgn === mS.g ? 'T' : 'S';
+      r.ia.push({ kind: 'switch', x0: 0, x1: xR, xA, tongue: [0, xA], main: mS, role });
+      mainIa.get(mS).push({ kind: 'switch', s0: c.s0, s1: r.at(xR, tmp).s, tongue: [c.s0, r.at(xA, tmp).s], rail: r, role: role === 'T' ? 'S' : 'T' });
     }
+    {
+      const f = sep(mE.c);
+      const xR = bisect((x) => f(x) - RANGE, L / 2, L), xA = bisect((x) => f(x) - SEP_A, L / 2, L);
+      const role = -sgn === mE.g ? 'T' : 'S';
+      r.ia.push({ kind: 'switch', x0: xR, x1: L, xA, tongue: [xA, L], main: mE, role });
+      mainIa.get(mE).push({ kind: 'switch', s0: r.at(xR, tmp).s, s1: c.s1, tongue: [r.at(xA, tmp).s, c.s1], rail: r, role: role === 'T' ? 'S' : 'T' });
+    }
+    // frogs: crossings of the other main rails
+    for (const m of MAIN_RAILS) {
+      if (m === mS || m === mE) continue;
+      const f = (x) => r.at(x, tmp).d - m.c;
+      if ((f(0) < 0) === (f(L) < 0)) continue;
+      const xf = bisect(f, 0, L);
+      const q = r.at(xf, {});
+      const dx = (RANGE + 0.2) / Math.abs(q.dd);
+      r.ia.push({ kind: 'frog', x0: xf - dx, x1: xf + dx, main: m });
+      mainIa.get(m).push({ kind: 'frog', s0: q.s - dx, s1: q.s + dx, rail: r });
+      frogs.push({ rail: r, main: m, s: q.s });
+    }
+    r.ia.sort((a, b) => a.x0 - b.x0);
   }
-  p = { c, L, d0, sgn, cv, centre, rails, frogs };
+  // check rails opposite each frog, on both routes
+  for (const f of frogs) {
+    const oppMain = MAIN_RAILS.find((m) => m.track === f.main.track && m !== f.main);
+    mainChecks.get(oppMain).push([f.s - CHECK_HALF, f.s + CHECK_HALF]);
+    const oppRail = rails.find((r) => r !== f.rail);
+    const xc = oppRail.xAt(f.s);
+    oppRail.checks.push([xc - CHECK_HALF, xc + CHECK_HALF]);
+  }
+  p = { c, L, rails, mainIa, mainChecks, dl };
   cache.set(c, p);
   return p;
 }
 
+// ------------------------------------------------------------------ cut rules
+
+/** Band (in the other rail's frame) that cuts a surface of `kind` (rail-local x) for a
+ *  rail playing `role` ('S' stock, 'T' tongue, 'FM' main at a frog, 'FD' diverging rail
+ *  at a frog). sep: separation of the switch rails (S role). */
+function band(role, kind, x, sep) {
+  switch (role) {
+    case 'S':
+      // the stock head stays; its groove wall, lip, seal and mortar open where the
+      // tongue (head + flangeway + lip + seal) lies
+      if (kind === 'head' || kind === 'gauge' || kind === 'side' || kind === 'check') return NONE;
+      return [sep < SEP_A ? -tongueW(sep) / 2 : RAIL_X0, RAIL_X1];
+    case 'T':
+      // the tongue and its gauge side replace the stock rail's; its field side (once it
+      // has one) and its mortar give way to the stock rail
+      if (kind === 'mortar') return FULL;
+      if (kind === 'side' || (kind === 'seal' && x < 0)) return SPAN;
+      return NONE;
+    case 'FM':
+      return kind === 'mortar' ? SPAN : FLANGE;
+    case 'FD':
+      if (kind === 'groove') return FLANGE;
+      return kind === 'mortar' ? FULL : SPAN;
+    default:
+      return NONE;
+  }
+}
+
+function setCut(out, xo, b) { out[0] = xo; out[1] = b[0]; out[2] = b[1]; out[3] = 1; }
+
+/** Interaction of main rail m at route s, or null. */
+function mainIaAt(p, m, s) {
+  const list = p.mainIa.get(m);
+  for (let i = 0; i < list.length; i++) {
+    const ia = list[i];
+    if (p.dl(ia.s0, s) >= 0 && p.dl(ia.s1, s) <= 0) return ia;
+  }
+  return null;
+}
+
+/** Cut attribute of a main-rail surface vertex (route s, d; rail-local x; run kind). */
+export function mainCut(p, m, s, d, kind, x, out) {
+  out[3] = 0;
+  const ia = mainIaAt(p, m, s);
+  if (!ia) return;
+  const r = ia.rail;
+  const sep = ia.kind === 'switch' ? Math.abs(r.at(r.xAt(s), _q).d - m.c) : 0;
+  setCut(out, r.local(s, d), band(ia.kind === 'frog' ? 'FM' : ia.role, kind, x, sep));
+}
+const _q = {};
+
+/** Cut attribute of a diverging-rail surface vertex. q: the rail's path sample. */
+function railCut(r, q, kind, x, sv, dv, out) {
+  out[3] = 0;
+  const ia = q.ia;
+  if (!ia) return;
+  const m = ia.main;
+  const sep = ia.kind === 'switch' ? Math.abs(q.d - m.c) : 0;
+  setCut(out, m.g * (dv - m.c), band(ia.kind === 'frog' ? 'FD' : ia.role, kind, x, sep));
+}
+
+/** Paving cut: lateral coordinates in both diverging rails' frames (band PAVE_CUT). */
+export function paveCut(p, s, d, out) {
+  out[0] = p.rails[0].local(s, d);
+  out[1] = PAVE_CUT[0]; out[2] = PAVE_CUT[1];
+  out[3] = p.rails[1].local(s, d);
+}
+
+/** Profile class of a main rail at s: 'T' tongue, 'C' check rail, 'F' plain. */
+export function mainClass(p, m, s) {
+  for (const ia of p.mainIa.get(m)) {
+    if (ia.kind === 'switch' && ia.role === 'T' && p.dl(ia.tongue[0], s) >= 0 && p.dl(ia.tongue[1], s) <= 0) return 'T';
+  }
+  for (const [a, b] of p.mainChecks.get(m)) if (p.dl(a, s) >= 0 && p.dl(b, s) <= 0) return 'C';
+  return 'F';
+}
+
+/** Profile runs of a main rail at s for its class. */
+export function mainRuns(p, m, s, cls) {
+  if (cls === 'C') return RUNS_CHECK;
+  if (cls !== 'T') return RUNS_MAIN;
+  const ia = mainIaAt(p, m, s);
+  const r = ia ? ia.rail : null;
+  const sep = r ? Math.abs(r.at(r.xAt(s), _q).d - m.c) : 0;
+  return tongueRuns(tongueW(sep), tongueDrop(sep), FLOOR_H);
+}
+
+// ------------------------------------------------------------------ build
+
+/** Samples of a diverging rail over path parameters [x0, x1] (world centre line, own
+ *  right vector, texture u, route coordinates). */
+function railSamples(ctx, p, r, x0, x1, step) {
+  const { route, surface } = ctx;
+  const n = Math.max(1, Math.ceil((x1 - x0) / step));
+  const smp = {};
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const x = x0 + ((x1 - x0) * i) / n;
+    const q = r.at(x, {});
+    route.sample(q.s, smp);
+    // world tangent of the rail: tanH + right * dd (per metre of s)
+    let tx = smp.tanH.x + smp.right.x * q.dd, tz = smp.tanH.z + smp.right.z * q.dd;
+    const tl = Math.hypot(tx, tz); tx /= tl; tz /= tl;
+    q.px = smp.pos.x + smp.right.x * q.d; q.py = smp.pos.y; q.pz = smp.pos.z + smp.right.z * q.d;
+    q.rx = -tz; q.rz = tx;
+    q.u = surface.sp(p.c.s0) + x;
+    pts.push(q);
+  }
+  return pts;
+}
+
 /**
- * Build the crossover inlays (lod 0) and its far-field rail lines (all lods).
- * ctx.inlayBufs(bufs) supplies the layered buffers: plate, main {seal, side, head,
- * groove}, tongue {side, head}, flange, check.
+ * Build the parts of crossover c that fall inside the chunk: diverging rails (lod 0) and
+ * their far-field lines (all lods), and the cast floor under the switches and frogs.
+ * The main rails and the paving are built by the track / paving builders with the cut
+ * attributes from mainCut / paveCut.
  */
 export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
+  const p = crossoverPlan(c, ctx.delta);
+  const mats = ctx.mats.cut;
+  for (const r of p.rails) {
+    const xa = Math.max(0, r.xAt(chunk.s0)), xb = Math.min(p.L, r.xAt(chunk.s1));
+    if (xb - xa < 1e-3) continue;
+    const line = railSamples(ctx, p, r, xa, xb, chunk.lod === 0 ? 0.5 : 1.5);
+    lineBuf.add(...railLinePoints(line, r.g));
+    if (chunk.lod > 0) continue;
+
+    // segments with one profile class each: tongue / check / plain
+    const br = [xa, xb];
+    const addBreak = (x) => { if (x > xa + 1e-4 && x < xb - 1e-4) br.push(x); };
+    for (const ia of r.ia) { addBreak(ia.x0); addBreak(ia.x1); if (ia.tongue) { addBreak(ia.tongue[0]); addBreak(ia.tongue[1]); } }
+    for (const [a, b] of r.checks) { addBreak(a); addBreak(b); }
+    br.sort((a, b) => a - b);
+    for (let k = 0; k < br.length - 1; k++) {
+      const x0 = br[k], x1 = br[k + 1];
+      if (x1 - x0 < 1e-3) continue;
+      const mid = (x0 + x1) / 2;
+      const iaMid = r.ia.find((ia) => mid >= ia.x0 && mid <= ia.x1) || null;
+      const tongue = iaMid && iaMid.kind === 'switch' && iaMid.role === 'T' && mid >= iaMid.tongue[0] && mid <= iaMid.tongue[1];
+      const check = !tongue && r.checks.some(([a, b]) => mid >= a && mid <= b);
+      const pts = railSamples(ctx, p, r, x0, x1, tongue ? 0.2 : 0.3);
+      for (const q of pts) q.ia = iaMid;
+      const runsAt = tongue
+        ? (i) => {
+          const sep = Math.abs(pts[i].d - iaMid.main.c);
+          return [...tongueRuns(tongueW(sep), tongueDrop(sep), FLOOR_H), MORTAR_GAUGE];
+        }
+        : check ? () => RUNS_DIV_CHECK : () => RUNS_DIV;
+      sweepRuns(bufs, mats, pts, r.g, runsAt, (i, kind, x, sv, dv, out) => railCut(r, pts[i], kind, x, sv, dv, out));
+    }
+  }
+  if (chunk.lod === 0) buildFloors(ctx, p, chunk, bufs);
+}
+
+/** Dark cast floor (switch boxes, frogs) under every interaction range in the chunk. */
+function buildFloors(ctx, p, chunk, bufs) {
   const { route } = ctx;
-  const p = crossoverPlan(c);
-  const pad = ctx.inlayPad;
-  const L = p.L;
-
-  // --- far-field overlay lines for the two diverging rails
-  for (const r of p.rails) {
-    const pts = samplePath(route, null, r.fn, 0.4, L - 0.4, chunk.lod === 0 ? 0.5 : 1.5);
-    const [arr, half, cOff] = railLinePoints(pts, r.g);
-    lineBuf.add(arr, half, cOff);
+  const b = bufs.get(ctx.mats.cut.floor, true);
+  const smp = {};
+  const dl = ctx.delta;
+  for (const [m, list] of p.mainIa) {
+    for (const ia of list) {
+      const a = Math.max(0, dl(chunk.s0, ia.s0)), e = Math.min(chunk.s1 - chunk.s0, dl(chunk.s0, ia.s1));
+      if (e - a < 1e-3) continue;
+      const n = Math.max(1, Math.ceil(e - a));
+      let prev = -1;
+      for (let i = 0; i <= n; i++) {
+        const s = chunk.s0 + a + ((e - a) * i) / n;
+        route.sample(s, smp);
+        const y = smp.pos.y + FLOOR_H;
+        const v = b.v(smp.pos.x + smp.right.x * (m.c - FLOOR_HALF), y, smp.pos.z + smp.right.z * (m.c - FLOOR_HALF), 0, 1, 0, s, 0, 0.32, 0.32, 0.32);
+        b.v(smp.pos.x + smp.right.x * (m.c + FLOOR_HALF), y, smp.pos.z + smp.right.z * (m.c + FLOOR_HALF), 0, 1, 0, s, 2 * FLOOR_HALF, 0.32, 0.32, 0.32);
+        if (prev >= 0) b.quad(prev, prev + 1, v + 1, v);
+        prev = v;
+      }
+    }
   }
-  if (chunk.lod > 0) return;
-
-  const B = ctx.inlayBufs(bufs);
-
-  // --- main rails as inlays over the whole zone (paving is continuous here)
-  for (const m of MAIN_RAILS) {
-    const fn = (x) => ({ s: c.s0 + x, d: m.c, dd: 0 });
-    const pts = samplePath(route, null, fn, -pad, L + pad, 2.0);   // straight: coarse is exact
-    inlayRail(B.main, pts, m.g, { grout: false });   // the paving grid has their mortar
-  }
-
-  // --- diverging rails: tongues near the ends, full profile once clear of the stock rail
-  for (const r of p.rails) {
-    const sepAt = (x) => {
-      const d = r.fn(x).d;
-      return Math.min(Math.abs(d - r.dStart), Math.abs(d - r.dEnd));
-    };
-    const pts = samplePath(route, null, r.fn, 0, L, 0.4);
-    for (const q of pts) q.sep = sepAt(q.t);
-    const clear = (q) => q.sep > 0.115;
-    // full rail where clear of the stock rail
-    inlayRail(B.main, pts, r.g, { mask: (q) => (clear(q) ? 1 : 0) });
-    // tongue: tapered head lying against / in the stock rail's groove
-    inlayRail(B.tongue, pts, r.g, {
-      mask: (q, band) => {
-        if (clear(q)) return 0;
-        if (band !== 'head' && band !== 'cornerF') return 0;
-        return Math.min(1, 0.15 + q.sep / 0.05);
-      },
-    });
-    // cast switch plate under the tongue
-    plateAlong(B.plate, (q) => q.sep < 0.2, pts, r);
-  }
-
-  // --- frogs: cast plates, flangeways over both heads, check rails opposite
-  for (const f of p.frogs) {
-    const half = 1.3;
-    const fnMain = (x) => ({ s: c.s0 + x, d: f.main.c, dd: 0 });
-    const ptsM = samplePath(route, null, fnMain, f.x - half, f.x + half, 0.325);
-    // cast block: spans the main rail and the crossing rail (both with their seals)
-    const span = (q) => {
-      const dc = f.rail.fn(q.t).d - f.main.c;
-      const a = dc + f.rail.g * RAIL_X0, b = dc + f.rail.g * RAIL_X1;
-      const m0 = f.main.lo - f.main.c, m1 = f.main.hi - f.main.c;
-      return [Math.min(m0, a, b) - 0.03, Math.max(m1, a, b) + 0.03];
-    };
-    inlayStrip(B.plate, ptsM, (q) => span(q)[0], (q) => span(q)[1]);
-    // flangeway of the main rail cut through the crossing rail's head (above heads)
-    const ptsG = samplePath(route, null, fnMain, f.x - half, f.x + half, 1.3);
-    inlayStrip(B.flange, ptsG, () => (f.main.g > 0 ? HEAD_HALF : -GROOVE_OUT), () => (f.main.g > 0 ? GROOVE_OUT : -HEAD_HALF));
-    const ptsR = samplePath(route, null, f.rail.fn, f.x - half, f.x + half, 0.65);
-    inlayStrip(B.flange, ptsR, () => (f.rail.g > 0 ? HEAD_HALF : -GROOVE_OUT), () => (f.rail.g > 0 ? GROOVE_OUT : -HEAD_HALF));
-    // check rails: widened polished guard on the opposite rails of both routes
-    const oppMain = MAIN_RAILS.find((m) => m.track === f.main.track && m !== f.main);
-    const oppRail = p.rails.find((r) => r !== f.rail);
-    checkRail(B.check, samplePath(route, null, (x) => ({ s: c.s0 + x, d: oppMain.c, dd: 0 }), f.x - 2.4, f.x + 2.4, 0.4), oppMain.g, f.x);
-    checkRail(B.check, samplePath(route, null, oppRail.fn, f.x - 2.4, f.x + 2.4, 0.4), oppRail.g, f.x);
-  }
-}
-
-/** Cast plate under a switch tongue: spans the stock rail and the tongue while `test`
- *  holds (one run at each end of the crossover). */
-function plateAlong(buf, test, pts, r) {
-  const stockA = MAIN_RAILS.find((m) => Math.abs(m.c - r.dStart) < 0.01);
-  const stockB = MAIN_RAILS.find((m) => Math.abs(m.c - r.dEnd) < 0.01);
-  const tlo = r.g > 0 ? RAIL_X0 : -RAIL_X1, thi = r.g > 0 ? RAIL_X1 : -RAIL_X0;
-  const ext = (q) => {
-    const m = Math.abs(q.d - r.dStart) < Math.abs(q.d - r.dEnd) ? stockA : stockB;
-    return [Math.min(tlo, m.lo - q.d) - 0.025, Math.max(thi, m.hi - q.d) + 0.025];
-  };
-  const runs = [];
-  let cur = [];
-  for (const q of pts) {
-    if (test(q)) cur.push(q);
-    else if (cur.length) { runs.push(cur); cur = []; }
-  }
-  if (cur.length) runs.push(cur);
-  for (const run of runs) if (run.length > 1) inlayStrip(buf, run, (q) => ext(q)[0], (q) => ext(q)[1]);
-}
-
-/** Check rail: a wider, polished guard face along the lip, flared at both ends. */
-function checkRail(buf, pts, g, xc) {
-  inlayStrip(buf, pts, (q) => {
-    const e = Math.min(1, (2.4 - Math.abs(q.t - xc)) / 0.5);
-    const a = GROOVE_OUT - 0.004 * e, b = LIP_OUT + 0.012 * e;
-    return g > 0 ? a : -b;
-  }, (q) => {
-    const e = Math.min(1, (2.4 - Math.abs(q.t - xc)) / 0.5);
-    const a = GROOVE_OUT - 0.004 * e, b = LIP_OUT + 0.012 * e;
-    return g > 0 ? b : -a;
-  });
 }
