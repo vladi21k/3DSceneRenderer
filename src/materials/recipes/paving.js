@@ -39,14 +39,17 @@ void surface(vec2 m, inout Surf s) {
 };
 
 // Street / sidewalk setts: 0.40 × 0.20 m (lengths 0.29–0.52) in courses. The continuous
-// bed joints between courses are tight (~2 mm), sand filled and a little sunk under eased
-// arrises, so they read as fine grey lines; the head joints between the setts of a course
-// are 3-4 mm, dark and chamfered, so they read as short dashes. Lippage, worn tops.
+// bed joints between courses are tight (~2 mm) and filled with pale sand almost to the
+// top under eased arrises, so they read as faint light lines; the head joints between the
+// setts of a course are 3-4 mm, sand filled a couple of millimetres down under a small
+// chamfer, so they read as soft grey dashes (from metres away the joints all but vanish,
+// as in the photographs: no cobble outline that would crawl at ride speed). Lippage, worn
+// tops. Mid-grey granite with a cool cast (the street is a little darker than the facades).
 export const paving = {
-  name: 'paving', flat: [0.285, 0.292, 0.308, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
+  name: 'paving', flat: [0.205, 0.211, 0.229, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
   joint: 0.0018,
-  pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.04 },
+  pass: { normal: 1.0, ao: 0.45, aoRadius: 0.005, cavity: 0.03 },
   glsl: GRANITE + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
@@ -54,41 +57,48 @@ void surface(vec2 m, inout Surf s) {
   float eH = min(c.ed.x, c.ed.y) + wob;          // to the head joints (dashes)
   float eB = min(c.ed.z, c.ed.w) + wob * 0.5;    // to the bed joints (continuous)
   const float JH = 0.0017, JB = 0.0009;          // half widths
-  const float CH = 0.003;                         // chamfer on the head ends
+  const float CH = 0.0015;                        // chamfer on the head ends
   const float CB = 0.0018;                        // eased arris along the beds
   // lippage: each sett sits a little proud or low and slightly tilted; corners rock
   vec2 q = c.lp - 0.5 * c.size;
-  float lip = (cellRand(c, 1u) - 0.5) * 0.0024
-            + dot(q, vec2(cellRand(c, 2u) - 0.5, cellRand(c, 3u) - 0.5)) * 0.01;
+  float lip = (cellRand(c, 1u) - 0.5) * 0.002
+            + dot(q, vec2(cellRand(c, 2u) - 0.5, cellRand(c, 3u) - 0.5)) * 0.008;
   // flamed / honed face micro relief, polished by wear on the high spots
   float relief = fbm(m, 35.0, 3, 0.5, 92u) * 0.00035;
   float wear = smoothstep(-0.2, 0.6, fbm(m + vec2(c.h * 9.0), 3.0, 3, 0.5, 93u));
   float tH = clamp((eH - JH) / CH, 0.0, 1.0);
   float tB = clamp((eB - JB) / CB, 0.0, 1.0);
-  float hFace = lip + relief * (1.0 - 0.6 * wear) - CH * (1.0 - tH) - 0.0009 * (1.0 - tB) * (1.0 - tB);
+  // shallow chamfer (~30°) and eased bed arrises: they catch less raking light
+  float hFace = lip + relief * (1.0 - 0.6 * wear) - 0.6 * CH * (1.0 - tH) * (1.0 - tH) - 0.0007 * (1.0 - tB) * (1.0 - tB);
   // edge chips (mostly at the sett ends)
   vec4 cv = voro(m, vec2(22.0), 94u, 1.0);
   float chip = smoothstep(0.45, 0.1, cv.x) * step(0.8, cv.z) * (1.0 - smoothstep(0.0, 0.016, eH));
-  hFace -= chip * 0.004;
+  hFace -= chip * 0.003;
   float sH = smoothstep(JH - 0.0006, JH + 0.0006, eH);
   float sB = smoothstep(JB - 0.0004, JB + 0.0004, eB);
   bool head = eH - JH < eB - JB;
-  float hJ = head ? -0.006 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0012 : -0.0022 + fbm(m, 150.0, 2, 0.5, 97u) * 0.0005;
+  float hJ = head ? -0.0025 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0006 : -0.0012 + fbm(m, 150.0, 2, 0.5, 97u) * 0.0004;
   float st = min(sH, sB);
   s.height = mix(hJ, max(hFace, hJ), st);
-  vec3 g = granite(m, vec3(0.288, 0.298, 0.32));
-  g *= mix(0.9, 1.0, tH) * mix(0.94, 1.0, tB);   // a little grime in the chamfers / arrises
-  g *= 1.0 - 0.12 * chip;
-  vec3 joint = head ? g * 0.35 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : g * vec3(0.66, 0.65, 0.63) * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
+  vec3 g = granite(m, vec3(0.205, 0.212, 0.232));
+  g *= mix(0.95, 1.0, tH) * mix(0.97, 1.0, tB);  // a little grime in the chamfers / arrises
+  g *= 1.0 - 0.1 * chip;
+  // joint sand: grey-beige, darker and dirtier down the head joints, paler where it
+  // fills the bed joints to the top
+  vec3 sand = vec3(0.255, 0.24, 0.215);
+  vec3 joint = head ? sand * 0.62 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : sand * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
   s.albedo = mix(joint, g, st);
-  s.rough = mix(head ? 0.95 : 0.9, mix(0.74, 0.56, wear), st);
+  s.rough = mix(head ? 0.95 : 0.92, mix(0.74, 0.56, wear), st);
 }
 `,
 };
 
-// Light stone edge band of the track corridor: honed slabs 0.6–0.9 m, no lengthwise joints.
+// Light stone edge band of the track corridor: honed slabs 0.6–0.9 m, no lengthwise
+// joints. Pale grey stone, only a little lighter than the setts (as in the photographs:
+// a subtle light stripe, not a painted line), visibly speckled and mottled, the slab
+// joints holding a line of grime.
 export const band = {
-  name: 'band', flat: [0.45, 0.435, 0.4, 0.62], size: 512, tile: [2.4, 2.4], ss: 2,
+  name: 'band', flat: [0.272, 0.27, 0.262, 0.62], size: 512, tile: [2.4, 2.4], ss: 2,
   layout: { rowH: 2.4, rows: 1, seg: [3, 4], jitter: 0.3, seed: 8, shift: false, rowJoints: false },
   joint: 0.0026,
   pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.05 },
@@ -102,13 +112,17 @@ void surface(vec2 m, inout Surf s) {
   float hFace = lip + fbm(m, 30.0, 3, 0.5, 102u) * 0.0002 - 0.003 * (1.0 - t);
   float stone = smoothstep(JW - 0.0005, JW + 0.0005, e);
   s.height = mix(-0.005, max(hFace, -0.005), stone);
-  // pale limestone / light granite mix: soft, with sparse fine speckle
-  vec3 base = vec3(0.47, 0.455, 0.42) * (1.0 + 0.05 * fbm(m, 3.0, 4, 0.55, 103u) + 0.03 * fbm(m, 18.0, 2, 0.5, 104u));
+  // pale grey limestone / light granite: soft clouding and a visible fine speckle
+  vec3 base = vec3(0.276, 0.274, 0.266) * (1.0 + 0.08 * fbm(m, 3.0, 4, 0.55, 103u) + 0.04 * fbm(m, 18.0, 2, 0.5, 104u));
+  base *= 1.0 + 0.05 * (cellRand(c, 5u) - 0.5) * 2.0;                       // slab tone
   vec4 g = voro(m, vec2(220.0), 105u, 1.0);
-  base *= 1.0 - 0.18 * step(0.86, g.z) * smoothstep(0.45, 0.2, g.x);
-  base *= mix(0.78, 1.0, smoothstep(0.0, 0.01, e - JW));
-  s.albedo = mix(vec3(0.12, 0.115, 0.105), base, stone);
-  s.rough = mix(0.95, 0.6 + 0.06 * fbm(m, 4.0, 2, 0.5, 106u), stone);
+  base *= 1.0 - 0.3 * step(0.84, g.z) * smoothstep(0.45, 0.2, g.x);
+  vec4 g2 = voro(m, vec2(140.0), 107u, 1.0);
+  base *= 1.0 + 0.12 * step(0.9, g2.z) * smoothstep(0.4, 0.15, g2.x);       // pale feldspar
+  // grime along the slab joints, fading over a few centimetres
+  base *= mix(0.72, 1.0, smoothstep(0.0, 0.012, e - JW)) * mix(0.93, 1.0, smoothstep(0.0, 0.05, e - JW));
+  s.albedo = mix(vec3(0.085, 0.082, 0.078), base, stone);
+  s.rough = mix(0.95, 0.62 + 0.06 * fbm(m, 4.0, 2, 0.5, 106u), stone);
 }
 `,
 };

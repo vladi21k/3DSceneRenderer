@@ -35,17 +35,19 @@ const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0,
 // soiled ledges, sheltered soffits, faint vertical drip streaks
 const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 };
 
-// Granite setts: ±8 % value per sett with a slight warm / cool drift, a little banding
-// per course, broad wear patches (macro) and ~2.5 % odd setts: darker replacements, a
-// dirty warm one now and then, rarely a pale one.
+// Granite setts: ±14 % value per sett (std ~8 %) with a visible beige ↔ blue-grey drift,
+// a little banding per course, 1-4 m mottling and broad wear patches (macro) and ~6 % odd
+// setts: darker replacements, warmer beige and cooler blue-grey ones.
 const PAVING_CELL = {
-  value: 0.08, hue: 0.4, rough: 0.12, row: 0.25, a: [1.03, 1.0, 0.965], b: [0.975, 0.99, 1.03],
-  out: { p: 0.025, fam: [[0.8, 0.8, 0.82], [0.86, 0.84, 0.8], [1.1, 1.1, 1.09]] },
+  value: 0.14, hue: 0.85, rough: 0.14, row: 0.25, a: [1.06, 1.0, 0.93], b: [0.95, 0.99, 1.06],
+  out: { p: 0.06, fam: [[0.78, 0.78, 0.8], [1.08, 1.0, 0.88], [0.9, 0.95, 1.05]] },
 };
-const PAVING_MACRO = { f1: 1 / 4, f2: 1 / 20, albedo: 0.12, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
+const PAVING_MACRO = { f1: 1 / 2.5, f2: 1 / 20, albedo: 0.16, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
 // crystals at close range (mica darker and glossy, feldspar pale), low contrast: fine
 // grey granite, not terrazzo
-const PAVING_DETAIL = { tex: 'granite', freq: 4, normal: 0.5, albedo: 0.5, rough: -0.6, farVar: 0.004 };
+const PAVING_DETAIL = { tex: 'granite', freq: 4, normal: 0.5, albedo: 0.35, rough: -0.6, farVar: 0.004 };
+// cool grey granite (the baked map is already blue-grey; the street is a touch cooler)
+const PAVING_TINT = [0.98, 1.0, 1.03];
 
 export const LIBRARY = {
   // ---------------------------------------------------------------- stone
@@ -89,14 +91,14 @@ export const LIBRARY = {
 
   // ---------------------------------------------------------------- paving
   'paving.street': {
-    props: { roughness: 1 },
+    props: { roughness: 1, color: PAVING_TINT },
     bake: 'paving',
     surf: {
       swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL, mirror: 0.75,
-      spots: { prob: 0.08, radius: 0.011, albedo: 0.5, rough: 0.5 },
-      stain: { amount: 0.14, freq: 0.5, threshold: 0.7 },
+      spots: { prob: 0.2, radius: 0.011, albedo: 0.36, rough: 0.4 },
+      stain: { amount: 0.2, freq: 0.5, threshold: 0.66 },
       // soft grime either side of each rail's mortar strip, a paler polished lane mid-track
-      lanes: { track: 1.6, rail: 0.7455, grime: 0.13, wear: 0.05, grimeBand: [0.08, 0.36], laneBand: [0.18, 0.42] },
+      lanes: { track: 1.6, rail: 0.7455, grime: 0.16, wear: 0.05, grimeBand: [0.08, 0.36], laneBand: [0.18, 0.42] },
     },
     vc: 'tint',
     meta: {
@@ -106,12 +108,12 @@ export const LIBRARY = {
     },
   },
   'paving.sidewalk': {
-    props: { roughness: 1, color: [1.02, 1.01, 0.99] },
+    props: { roughness: 1, color: PAVING_TINT },
     bake: 'paving',
     surf: {
-      scale: 1.25, cell: { ...PAVING_CELL, value: 0.07 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
-      spots: { prob: 0.14, radius: 0.011, albedo: 0.48, rough: 0.5 },
-      stain: { amount: 0.18, freq: 0.5, threshold: 0.66 },
+      scale: 1.25, cell: { ...PAVING_CELL, value: 0.12 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
+      spots: { prob: 0.36, radius: 0.011, albedo: 0.34, rough: 0.4 },
+      stain: { amount: 0.22, freq: 0.5, threshold: 0.64 },
       // v = metres from the gutter: grime along the kerb edge (and ~7 m in, at the building
       // line), a darker trodden pedestrian lane round 3.6 m
       lanes: { track: 3.6, rail: 3.6, grime: 0.06, wear: -0.045, grimeBand: [0.1, 0.6], laneBand: [0.7, 2.0] },
@@ -122,7 +124,7 @@ export const LIBRARY = {
   'paving.band': {
     props: { roughness: 1 },
     bake: 'band',
-    surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.07 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.15 }, stain: { amount: 0.12, freq: 0.5, threshold: 0.72 } },
+    surf: { cell: { value: 0.085, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.1 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.2 }, stain: { amount: 0.16, freq: 0.5, threshold: 0.68 } },
     vc: 'tint',
     meta: { slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
   },
@@ -143,12 +145,14 @@ export const LIBRARY = {
 
   // ---------------------------------------------------------------- rail
   'rail.head': {
-    props: { metalness: 1, roughness: 1 },
+    // envMapIntensity < 1: the running band must not mirror the open sky at grazing angles
+    // (the street canyon around it reflects far less light than the sky dome)
+    props: { metalness: 1, roughness: 1, envMapIntensity: 0.6 },
     bake: 'railhead',
-    surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.05, rough: 0.25, an1: [0.3, 3], an2: [0.2, 2] } },
+    surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Satin running band (21-30 mm, silver-grey, roughness 0.22-0.4 with lengthwise streaks and burn, never below 0.08; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075; dull grey edge, brown oxide shoulders (roughness ~0.55, metal 0.6) and dusty steel elsewhere. The base values are final: no roughness multiplier is needed (a multiplier of 1.45 makes the band ~0.32-0.58).',
-      band: { centres: [0.043, 0], halfWidth: 0.0125, gaugeCorner: 0.075 },
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Running band (21-30 mm, bright satin steel, roughness 0.27-0.5 in fine lengthwise streaks with burn patches, never a mirror; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075 (roughness ~0.3); dull grey contact edge, dark brown oxide on the field bevel and shoulders, and a dull dusty oxide guard lip at v 0.1-0.13 (albedo ~0.15, roughness ~0.7, metal 0.4). The base values are final: no roughness multiplier is needed. envMapIntensity 0.6.',
+      band: { centres: [0.043, 0], halfWidth: 0.0125, gaugeCorner: 0.075, lip: [0.1, 0.13] },
     },
   },
   'rail.side': {

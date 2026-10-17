@@ -97,6 +97,7 @@ const buildings = {
     app.scene.add(uploaders);
     planBackdrops(app);
     planSkyline(app);
+    this.debug = { skyline, backdrops, vistas };   // (inspection from the console / tests)
     indexEnds(app.layout);
     // everything the first frames need, before the streamer primes
     const around = [app.startS, app.startS - CHUNK_LEN / 2];   // the cab may start a little behind startS

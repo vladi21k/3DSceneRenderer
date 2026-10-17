@@ -570,7 +570,7 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
     const h = rng.range(-0.06, 0.06) + 0.04 * Math.max(0, cn.y);
     const col = [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
     // interior occlusion (sky light only), dimmer towards the crown centre and underside
-    const ao = (0.6 + 0.4 * THREE.MathUtils.smoothstep(rn, 0.2, 1.0)) * (0.85 + 0.15 * (cn.y * 0.5 + 0.5));
+    const ao = (0.78 + 0.22 * THREE.MathUtils.smoothstep(rn, 0.2, 1.0)) * (0.9 + 0.1 * (cn.y * 0.5 + 0.5));
     const keep = rng.next() < 0.6;
     const card = { i, c, d, nn, size, fold: rng.range(0.12, 0.38), bend: rng.range(0.05, 0.2), cell: rng.pick(fol.cells),
       col, ao, keep, keep2: keep && rng.next() < 0.58, cross: p.y < lowY && rng.next() < 0.3 };

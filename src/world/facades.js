@@ -33,16 +33,17 @@ import { createSpillMaterial } from './facades/spill.js';
 // side-street lots starting this far from the main street get the far-range infill
 const SIDE_FAR = 40;
 
-// albedo of the library bakes relative to the paint of the frame batch (fold-in colours):
-// frames paint.frameDetail, shutters wood.shutterDetail, sign boards sign.panel
-const FRAME_ALB = 0.88, SHUTTER_ALB = 0.87, SIGN_ALB = 0.95;
+// albedo of the library bakes relative to the paint of the joinery batch (fold-in
+// colours): historic frames paint.frameDetail, shutters wood.shutterDetail, sign boards
+// sign.panel, shopfronts / shutters / boards paint.frame (the far range folds into it)
+const FRAME_ALB = 0.88, SHUTTER_ALB = 0.87, SIGN_ALB = 0.95, PAINT_ALB = 0.95;
 const k3 = (x) => [x, x, x];
 const FOLD = {
-  wood: [0.4 / FRAME_ALB, 0.26 / FRAME_ALB, 0.15 / FRAME_ALB],      // wood.door (tint over the wood bake)
-  paintwood: k3(SHUTTER_ALB / FRAME_ALB),                          // shutters
-  stone: [0.61 / FRAME_ALB, 0.555 / FRAME_ALB, 0.44 / FRAME_ALB],   // stone.smooth (tint)
-  board: k3(SIGN_ALB / SHUTTER_ALB),                               // sign.panel paint → painted timber
-  boardFar: k3(SIGN_ALB / FRAME_ALB),
+  wood: [0.4 / PAINT_ALB, 0.26 / PAINT_ALB, 0.15 / PAINT_ALB],      // wood.door (tint over the wood bake)
+  paintwood: k3(SHUTTER_ALB / PAINT_ALB),                          // shutters
+  frame: k3(FRAME_ALB / PAINT_ALB),                                // historic joinery
+  stone: [0.61 / PAINT_ALB, 0.555 / PAINT_ALB, 0.44 / PAINT_ALB],   // stone.smooth (tint)
+  board: k3(SIGN_ALB / PAINT_ALB),                                 // sign.panel paint → enamelled board
 };
 
 const facades = {
@@ -66,20 +67,25 @@ const facades = {
     const spill = M.register('facades.spill', createSpillMaterial(M));
     this.mats = {
       // joinery sits inside the reveals, which already shade it: no shadow casting
-      // close-range painted joinery bakes (brush marks, chips), offset per opening
-      frame: { material: vc('paint.frameDetail'), castShadow: false },
-      shutter: { material: vc('wood.shutterDetail'), thin: true, far: { key: 'frame', k: FOLD.paintwood } },
-      door: { material: vc('wood.door'), castShadow: false, far: { key: 'frame', k: FOLD.wood } },
+      // historic timber windows: close-range painted joinery bakes (brush marks, chips),
+      // offset per opening
+      frame: { material: vc('paint.frameDetail'), castShadow: false, far: { key: 'joinery', k: FOLD.frame } },
+      // shopfronts, roller shutters with their boxes, window rollers and sign boards:
+      // powder-coated / anodised metal and enamelled boards, which do not flake (plain
+      // paint bake: orange peel, a satin sheen); the far range folds everything into it
+      joinery: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }), castShadow: false },
+      shutter: { material: vc('wood.shutterDetail'), thin: true, far: { key: 'joinery', k: FOLD.paintwood } },
+      door: { material: vc('wood.door'), castShadow: false, far: { key: 'joinery', k: FOLD.wood } },
       glass: { material: glass, color: false, extra: GLASS_ATTRS, castShadow: false, far: { key: 'glassFar' } },
       glassFar: { material: glassFar, color: false, extra: GLASS_ATTRS, castShadow: false },
       // grilles, brackets and arms: thin casters (fine shadow cascades only)
-      metal: { material: vc('metal.iron'), thin: true, far: { key: 'frame' } },
+      metal: { material: vc('metal.iron'), thin: true, far: { key: 'joinery' } },
       hardware: { material: vc('metal.steel'), castShadow: false },
-      stone: { material: M.get('stone.smooth', { vertexColors: true }), castShadow: false, far: { key: 'frame', k: FOLD.stone } },
+      stone: { material: M.get('stone.smooth', { vertexColors: true }), castShadow: false, far: { key: 'joinery', k: FOLD.stone } },
       awning: { material: awning, extra: { aStripe: 4, aFlex: 1 } },
-      // sign boards that glow (light boxes); plain painted boards join the shutters' timber
+      // sign boards that glow (light boxes); plain painted boards join the joinery batch
       signBoard: { material: sign.board, extra: { aGlow: 1 }, thin: true },
-      board: { near: { key: 'shutter', k: FOLD.board }, far: { key: 'frame', k: FOLD.boardFar } },
+      board: { near: { key: 'joinery', k: FOLD.board }, far: { key: 'joinery', k: FOLD.board } },
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
       lamp: { material: lamp, color: false, castShadow: false, receiveShadow: false, renderOrder: 3 },
       bulb: { material: bulb, color: false, castShadow: false },
@@ -148,9 +154,10 @@ const facades = {
       const fronts = [{ plan, frame: lot.frame, streetW, cafe: cafe && cafe.style === 'awning' ? cafe : null }];
       // corner returns face the side street
       for (const r of plan.returns || []) fronts.push({ plan: r, frame: r.frame, streetW: 10, cafe: null });
+      const lotState = {};   // per building, across its fronts (closed shutters, ...)
       for (const fr of fronts) {
         const ctx = {
-          plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets, app,
+          plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets, app, lotState,
           streetW: fr.streetW, cafe: fr.cafe,
           angle: Math.atan2(fr.frame.uDir.z, fr.frame.uDir.x),
         };

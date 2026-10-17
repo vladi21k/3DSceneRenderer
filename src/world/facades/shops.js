@@ -41,7 +41,7 @@ export function shopLayout(o, rng, back = 0.4) {
     riser: rng.range(0.3, 0.55),
     head,
     box: rng.chance(0.75),                     // roller-shutter box + guides
-    shutterDown: rng.chance(0.08) ? rng.range(0.25, 1.0) : 0, // fraction the roller shutter is down
+    shutterDown: 0,                            // fraction the roller shutter is down (per opening: shutterState)
     mullions: Math.max(0, Math.round((hwI * 2 - doorW) / 1.25) - 1),
     timber: rng.chance(0.3),
   };
@@ -244,5 +244,22 @@ const cache = new TplCache(600);
 /** {frame, glass, shutter, recess} templates for shopfront o with layout L. */
 export function shopTpls(design, o, L, q) {
   const key = `${design}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${o.recess.toFixed(2)}|${q}`;
-  return cache.get(key, () => ({ frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, L, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null }));
+  const T = cache.get(key, () => ({ frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, { ...L, shutterDown: 0 }, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null }));
+  if (!L.box || !(L.shutterDown > 0)) return T;
+  // a lowered curtain belongs to one opening: its own template (by how far it is down)
+  const sh = cache.get(`${key}|down${L.shutterDown.toFixed(2)}`, () => ({ shutter: shopShutterTpl(o, L, q) }));
+  return { ...T, shutter: sh.shutter };
+}
+
+/**
+ * Roller shutter of one shop by day (per opening, independent of its neighbours): about
+ * one shop in twelve is closed, at most one per building, and mostly only part way down
+ * (a late opening, a delivery, a shop half closed against the sun). Returns the fraction
+ * the curtain is down, rounded so the templates are shared.
+ */
+export function shutterState(rng, lotState) {
+  if (lotState.closed || !rng.chance(0.09)) return 0;
+  lotState.closed = true;
+  const f = rng.chance(0.75) ? rng.range(0.3, 0.6) : rng.range(0.88, 1.0);
+  return Math.round(f * 20) / 20;
 }

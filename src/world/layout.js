@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RNG, loopNoise1 } from '../core/rng.js';
 import { CHUNK_LEN, TRACK_ZONE_HALF, TRACK_OFFSET } from '../core/config.js';
+import { facadePlan, bindLayout } from './facadePlan.js';
 
 // Deterministic master plan of the whole loop. Every generator reads its placements
 // from here so modules never overlap each other and the crowd knows the obstacles.
@@ -312,25 +313,42 @@ export class Layout {
 
   // ------------------------------------------------------------------ cafes
   _planCafes() {
+    // A terrace belongs to one shop: 5–12 m of sidewalk in front of a shopfront (or the
+    // entrance) of the lot, one loose row of tables (sometimes two), at most ten tables,
+    // with irregular spacing and the odd gap, as street cafés really spread out.
     this.cafes = [];
     const rng = RNG.from(this.seed, 'cafes');
+    bindLayout(this);   // plans for corner lots follow the side-street lines (buildings binds the same layout)
     for (const lot of this.lots) {
       if (lot.len < 10 || this.isInStation((lot.s0 + lot.s1) / 2, 6)) continue;
-      if (!rng.chance(0.27)) continue;
+      if (!rng.chance(0.22)) continue;
       const side = lot.side;
-      const s0 = lot.s0 + 1.2, s1 = lot.s1 - 1.2;
+      const len = Math.min(lot.len - 2.4, rng.range(5, 12));
+      // centre on a ground-floor shop (else the door) of the facade behind
+      const ground = facadePlan(lot).openings.filter((o) => o.floor === 0 && (o.kind === 'shop' || o.kind === 'door'));
+      const shops = ground.filter((o) => o.kind === 'shop');
+      const o = shops.length ? rng.pick(shops) : ground.length ? rng.pick(ground) : null;
+      const uFrac = o ? o.uc / lot.frame.width : 0.5;   // u runs from the viewer-left end of the front
+      const sC = side > 0 ? lot.s1 - uFrac * lot.len : lot.s0 + uFrac * lot.len;
+      const lo = lot.s0 + 1.2, hi = lot.s1 - 1.2;
+      const s0 = Math.max(lo, Math.min(hi - len, sC - len / 2)), s1 = s0 + len;
       const dFacade = lot.d - 0.6;
-      const rows = rng.int(1, 3);
+      const rows = rng.chance(0.7) ? 1 : 2;
       const style = rng.weighted([['umbrella', 0.6], ['open', 0.2], ['awning', 0.2]]);
       const chairStyle = rng.pick(['bistro', 'plastic', 'wicker', 'metal']);
       const tables = [];
-      for (let row = 0; row < rows; row++) {
+      const MAX_TABLES = 10;
+      for (let row = 0; row < rows && tables.length < MAX_TABLES; row++) {
         const dd = dFacade - 1.3 - row * 1.55;
         if (dd < TREE_D + 1.2) break;
-        const step = rng.range(1.8, 2.3);
-        for (let s = s0 + 0.9; s < s1 - 0.6; s += step) {
-          const ts = s + rng.range(-0.15, 0.15);
-          const td = side * (dd + rng.range(-0.12, 0.12));
+        const step = rng.range(1.9, 2.4);
+        let prev = -Infinity;
+        for (let s = s0 + 0.9 + (row ? step * 0.5 : 0); s < s1 - 0.6 && tables.length < MAX_TABLES; s += step) {
+          if (rng.chance(0.15)) continue;   // an empty slot
+          const ts = Math.min(s1 - 0.6, Math.max(prev + 1.65, s + rng.range(-0.35, 0.35)));
+          if (ts > s1 - 0.5) break;
+          prev = ts;
+          const td = side * (dd + rng.range(-0.18, 0.18));
           const nCh = rng.weighted([[2, 0.5], [3, 0.2], [4, 0.3]]);
           const chairs = [];
           const rot0 = rng.range(0, Math.PI * 2);
@@ -346,8 +364,10 @@ export class Layout {
       const umbrellas = [];
       if (style === 'umbrella') {
         const us = rng.range(2.8, 3.6);
-        for (let s = s0 + us / 2; s < s1 - us / 2 + 0.5; s += us + 0.2) {
-          umbrellas.push({ s, d: side * (dFacade - 1.3 - (rows - 1) * 0.78), size: us, color: rng.pick(['cream', 'cream', 'white', 'navy', 'burgundy', 'sand']) });
+        const n = Math.max(1, Math.round((s1 - s0 + 0.2) / (us + 0.2)));
+        const pitch = (s1 - s0) / n;
+        for (let i = 0; i < n; i++) {
+          umbrellas.push({ s: s0 + pitch * (i + 0.5), d: side * (dFacade - 1.3 - (rows - 1) * 0.78), size: us, color: rng.pick(['cream', 'cream', 'white', 'navy', 'burgundy', 'sand']) });
         }
       }
       this.cafes.push({ id: this.cafes.length, lot: lot.id, side, s0, s1, dIn: side * (dFacade - 1.3 - rows * 1.55 - 0.2), dOut: side * dFacade, style, chairStyle, tables, umbrellas });

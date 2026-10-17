@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
-import { shopLayout, shopTpls, SHOP_FW } from './shops.js';
+import { shopLayout, shopTpls, shutterState, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
@@ -115,7 +115,7 @@ function buildWindow(kit, ctx, o) {
     const rr = r.next();
     const down = rr < 0.35 ? 0 : rr < 0.8 ? 0.15 + r.next() * 0.5 : 1;
     const rc = lin([0xd9d6cc, 0xc9c2b2, 0x9a9a96, 0xe6e3da][Math.floor(r.next() * 4)]);
-    kit.get('frame').add(rollerTpl(o, down, ctx.q), m, rc[0], rc[1], rc[2]);
+    kit.get('joinery').add(rollerTpl(o, down, ctx.q), m, rc[0], rc[1], rc[2]);
   }
   if (o.shutters) {
     const sc = weather(ctx.shutterRGB, r, 1.3);
@@ -282,6 +282,8 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   const variant = r.int(0, 1);
   const headSign = !!(signInfo && signInfo.mode === 'head');
   const L = shopLayout(o, RNG.from(plan.seed, 'shopfront', variant), backDepth(o));
+  // the roller shutter's state is the opening's own (not the design's)
+  if (L.box) L.shutterDown = shutterState(RNG.from(o.id, 'shutterDown'), ctx.lotState || (ctx.lotState = {}));
   if (headSign) {
     // flat heads: a sign band ~0.55 m tall under the lintel, display glass below it
     if (!isArched(o)) { L.yT = Math.max(2.5, o.h - SHOP_FW - 0.62); L.doorH = Math.min(L.doorH, L.yT - 0.06); }
@@ -292,7 +294,7 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   // timber shopfronts are painted like the building's joinery, the others steel or
   // aluminium from the shopfitters' range
   const fc = weather(L.timber ? ctx.frameRGB : swatch('shop', RNG.from(o.id, 'shopColour')), r, 0.7);
-  kit.get('frame').add(T.frame, m, fc[0], fc[1], fc[2], null, r.next(), 0.3 + 0.4 * r.next());
+  kit.get('joinery').add(T.frame, m, fc[0], fc[1], fc[2], null, r.next(), 0.3 + 0.4 * r.next());
   // interior
   const f0 = plan.floors[0];
   const roomY0 = o.y;
@@ -313,10 +315,11 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   // roller-shutter box and guides
   if (L.box) {
     const rc = lin(r.pick(ROLLER));
-    kit.get('frame').add(T.shutter, m, rc[0], rc[1], rc[2]);
+    kit.get('joinery').add(T.shutter, m, rc[0], rc[1], rc[2]);
   }
-  // door push bar / handle
-  if (ctx.q >= 0.5) {
+  // door push bar / handle (behind a lowered shutter curtain: none)
+  const shutterFoot = L.shutterDown > 0 ? ((L.arched ? L.yT : o.h - SHOP_FW) - 0.22) * (1 - L.shutterDown) : 0;
+  if (ctx.q >= 0.5 && (!(L.shutterDown > 0) || shutterFoot > 1.4)) {
     const hd = new Tpl();
     const dx = L.dx + (L.dx >= 0 ? -1 : 1) * (L.doorW / 2 - 0.12), z = -L.setback + 0.04;
     hd.box(dx - 0.015, 0.85, z, dx + 0.015, 1.35, z + 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);

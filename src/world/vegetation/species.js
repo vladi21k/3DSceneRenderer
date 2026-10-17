@@ -28,7 +28,7 @@ export const CELL = {
  */
 export const FOLIAGE = {
   pagoda: { cells: CELL.pagoda, card: 0.45, tint: [1.03, 1.0, 0.9] },
-  ash: { cells: CELL.ash, card: 0.47, tint: [0.93, 0.98, 1.05] },
+  ash: { cells: CELL.ash, card: 0.47, tint: [0.97, 1.0, 0.98] },
   dense: { cells: CELL.dense, card: 0.5, tint: [0.97, 0.97, 0.95] },
   shrub: { cells: CELL.shrub, clumps: CELL.clumpShrub, card: 0.3, clumpCard: 0.6, tint: [1, 1, 1] },
 };

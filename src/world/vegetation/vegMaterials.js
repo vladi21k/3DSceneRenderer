@@ -21,10 +21,11 @@ import { U } from '../../core/uniforms.js';
 //     transmittance exp(-density * path), dithered per card into sun flecks.
 // Sky light is occluded the same way: a leaf sees the sky through the crown above it and
 // around it (path to the crown surface straight up and radially out), so the crown core
-// and its underside sit at about a quarter of the sky light of the top shell. That
+// and its underside sit at about half the sky light of the top shell (light also comes
+// in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):
-// a fraction (uLeafTrans, ~0.3) of what the lit face would show, a little more looking
+// a fraction (uLeafTrans, ~0.45) of what the lit face would show, a little more looking
 // into the light and on the thin outer shell (rim-lit edges), and through the crown like
 // the direct term. Sky light from the far side passes through the same way.
 //
@@ -272,7 +273,7 @@ function patchLeaf(mat, params) {
         vegGloss = vegNm.b;
       #endif
       // thick, older leaves are glossier
-      roughnessFactor = mix( 0.72, 0.42, vegGloss );`, 'leaf normal maps');
+      roughnessFactor = mix( 0.62, 0.36, vegGloss );`, 'leaf normal maps');
     fs = rep(fs, '#include <lights_physical_pars_fragment>', /* glsl */`#include <lights_physical_pars_fragment>
       void RE_Direct_Leaf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
         // the street keeps a fixed set of lamp lights (dark by day, out of range for most
@@ -314,7 +315,7 @@ function patchLeaf(mat, params) {
         float into = saturate( dot( -geometryViewDir, directLight.direction ) );
         float fwd = pow( into, 4.0 );
         float rim = smoothstep( 0.85, 1.05, vVegRim ) * fwd;
-        float tThrough = isSun ? mix( 0.06, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
+        float tThrough = isSun ? mix( 0.12, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
         vec3 tc = material.diffuseColor * vec3( 1.12, 1.08, 0.55 );
         reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT * back * ( 1.0 + 0.5 * fwd + 0.4 * rim ) * RECIPROCAL_PI );
       }
@@ -447,11 +448,11 @@ export function createVegMaterials(app, atlas) {
   const M = app.materials;
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
-    trans: { value: 0.3 },      // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.55, 0.15) }, // sky occlusion by the crown: extinction (1/m), floor
+    trans: { value: 0.45 },     // leaf transmission: share of the lit face's radiance passed through
+    sky: { value: new THREE.Vector2(0.4, 0.45) },  // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.5 },       // share of the direct specular kept
     a2c: { value: 0 },
-    density: { value: 0.8 },    // crown extinction (1/m): exp(-0.8 * 2 m) ~ 0.2 through a young crown
+    density: { value: 0.55 },   // crown extinction (1/m): exp(-0.55 * 2 m) ~ 0.33 through a young crown
     shift: { value: 1 },        // shadow lookup moved out of the crown along the sun ray (0 = off, debug)
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
     // per-light caps in units of the sky's irradiance: transmission + specular of any
@@ -470,7 +471,7 @@ export function createVegMaterials(app, atlas) {
       roughness: 0.6,
       metalness: 0,
       vertexColors: true,
-      envMapIntensity: 0.5,
+      envMapIntensity: 0.8,
     });
     m.defines = { VEG_LEAF: '', ...defines };
     patchLeaf(m, params);

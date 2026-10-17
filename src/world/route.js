@@ -67,6 +67,18 @@ function meander(plan) {
   return out;
 }
 
+/** 0 → 1 over t ∈ [0, 1] with a constant slope in the middle; the slope eases in and out
+ *  (smoothstep) over the first and last share `e`, so grade changes are vertical curves. */
+function easedRamp(t, e) {
+  let v;
+  if (t <= 0) v = 0;
+  else if (t < e) { const u = t / e; v = e * (u * u * u - (u * u * u * u) / 2); }
+  else if (t < 1 - e) v = e / 2 + (t - e);
+  else if (t < 1) { const u = (1 - t) / e; v = 1 - e - e * (u * u * u - (u * u * u * u) / 2); }
+  else v = 1 - e;
+  return v / (1 - e);
+}
+
 function curvatureProfile(plan) {
   // returns array of {s0, s1, k0, k1, seg} (linear curvature pieces) and total length
   const pieces = [];
@@ -176,16 +188,23 @@ export class Route {
       s = s1;
     }
 
-    // elevation: gentle periodic rolling plus designed hills (periodic bumps), grades ≲ 4 %.
-    // The main avenue climbs ~10 m ahead of the default start and crests about 470 m on.
+    // elevation: gentle periodic rolling, designed hills (periodic bumps) and mesas (an eased
+    // climb at a steady grade, a level top, an eased descent). Grades stay ≤ 6.5 %.
+    // The default start sits in a shallow sag at the foot of the main avenue; from about 100 m
+    // ahead the street climbs ~20 m at 5–6 % (a visible rising ramp of paving down the long
+    // lens, as in the reference views) and levels off at ~560 m, where the first stop is.
     const L = length;
     this.elevTerms = [
       { a: 1.6, k: 2, p: 0.35 },
       { a: 0.9, k: 5, p: 2.1 },
       { a: 0.3, k: 13, p: 4.0 },
     ];
+    this.mesas = [
+      // climb s0→s1, level top, descend s2→s3; h metres; e = eased share of each ramp
+      { s0: 100, s1: 560, s2: 720, s3: 1300, h: 20, e: 0.25 },
+    ];
     this.hills = [
-      { c: 470, a: 10.5, w: 215 },
+      { c: 30, a: -1.2, w: 55 },     // the sag the default start stands in
       { c: 1650, a: -5.5, w: 260 },
       { c: 2700, a: 6.5, w: 240 },
       { c: 3900, a: -4.5, w: 300 },
@@ -204,6 +223,12 @@ export class Route {
       // periodic (von Mises) bump of width ≈ w metres
       const kappa = (L / (2 * Math.PI * h.w)) ** 2;
       y += h.a * Math.exp(kappa * (Math.cos((2 * Math.PI * (s - h.c)) / L) - 1));
+    }
+    for (const m of this.mesas) {
+      // evaluated at the copy of s nearest the mesa so the loop has no seam (net rise is zero)
+      const c = (m.s0 + m.s3) / 2;
+      const x = c + ((((s - c) % L) + L * 1.5) % L) - L / 2;
+      y += m.h * (easedRamp((x - m.s0) / (m.s1 - m.s0), m.e) - easedRamp((x - m.s2) / (m.s3 - m.s2), m.e));
     }
     return y;
   }

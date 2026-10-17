@@ -33,17 +33,20 @@ export const CAR = {
   roof: 3.22,
 };
 
-// linear paint colours (the body material's vertex colour is the paint colour)
+// linear paint colours (the body material's vertex colour is the paint colour; the body
+// shader makes the bright ones metallic silver paint and the dark ones plain dielectric
+// trim, see trams/materials.js). Glass parts: white = glazing, black = black frit.
 const COL = {
-  silver: [0.42, 0.432, 0.448],
-  roof: [0.38, 0.39, 0.4],
+  silver: [0.6, 0.615, 0.64],
+  roof: [0.54, 0.55, 0.565],
   skirt: [0.017, 0.018, 0.019],
   black: [0.006, 0.006, 0.0065],
   bellows: [0.013, 0.013, 0.014],
-  fairing: [0.42, 0.43, 0.44],
+  fairing: [0.56, 0.57, 0.585],
   under: [0.02, 0.019, 0.018],
   insulator: [0.1, 0.055, 0.035],
   wheel: [0.035, 0.032, 0.03],
+  panto: [0.05, 0.052, 0.055],     // dark grey painted pantograph frame
   white: [1, 1, 1],
 };
 
@@ -181,12 +184,14 @@ class Part {
   }
 }
 
-/** Per-material parts of one body at one level of detail. */
+/** Per-material parts of one body at one level of detail: body paint / trim, side glazing
+ *  (upper: lit saloon at night; ws: the lower panes and door glass), the cab front glass
+ *  (windscreen and dark mask, drawn analytically from uv = (u share, height)) and metal. */
 class Parts {
-  constructor() { this.body = new Part(); this.glass = new Part(); this.ws = new Part(); this.metal = new Part(); }
+  constructor() { this.body = new Part(); this.glass = new Part(); this.ws = new Part(); this.front = new Part(); this.metal = new Part(); }
   geometries() {
     const o = {};
-    for (const k of ['body', 'glass', 'ws', 'metal']) o[k] = this[k].geometry();
+    for (const k of ['body', 'glass', 'ws', 'front', 'metal']) o[k] = this[k].geometry();
     return o;
   }
 }

@@ -1,18 +1,22 @@
 // Metals, rail steel, paint, plastic and glass recipes.
 
 // Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). A narrow
-// running band (21-30 mm, drifting slowly along the rail) of satin polished steel: wheel
-// contact leaves lengthwise streaks and duller burn patches, not a mirror (roughness
-// 0.22-0.4; never under 0.08, which would make GGX fireflies). A dull grey contact
-// edge, dark brown oxidised shoulders and dusty dull steel further out (guard lip), with
-// the same lengthwise streaks and burn and no isotropic specks.
+// running band (21-30 mm, drifting slowly along the rail) of bright but rough steel:
+// wheel contact leaves fine lengthwise streaks (roughness alternating 0.24-0.42 across
+// the band, so the reflection smears along the rail like a brushed, anisotropic finish)
+// and duller burn patches; never a mirror. The gauge corner is flange-polished
+// (roughness ~0.3). Everything off the wheel path is dull: a dark brown oxide on the
+// field-side bevel and the shoulders, and a dull dusty oxide on the guard lip (albedo
+// ~0.12-0.16, roughness 0.6-0.75, only partly metallic), so every rail reads as one bright
+// line, not two.
 // The band sits where the street geometry puts the head top (see meta.uv of rail.head):
 //   swept rail     v = arc length along the profile from the field-side paving edge,
-//                  head top centre (x = 0) at v = 0.043, flange-polished gauge corner ~0.075
+//                  head top centre (x = 0) at v = 0.043, flange-polished gauge corner ~0.075,
+//                  guard lip 0.106-0.127
 //   flat inlays    v = rail-local x, head centre at v = 0 (wraps to 0.25)
 // Surface map b = metal mask (oxide is only partly metallic).
 export const railhead = {
-  name: 'railhead', flat: [0.34, 0.3, 0.27, 0.42], size: [512, 256], tile: [2.0, 0.25], ss: 2, mask: 'metal',
+  name: 'railhead', flat: [0.3, 0.27, 0.24, 0.45], size: [512, 256], tile: [2.0, 0.25], ss: 2, mask: 'metal',
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -22,27 +26,40 @@ void surface(vec2 m, inout Surf s) {
   float d0 = (m.y < 0.5 * uTile.y ? m.y : m.y - uTile.y) - wander;  // inlay strips
   float dB = min(abs(d1), abs(d0));
   float band = 1.0 - smoothstep(hw - 0.0025, hw + 0.0025, dB);
-  band = max(band, 0.5 * (1.0 - smoothstep(0.002, 0.005, abs(m.y - 0.075))));   // gauge corner
+  float gauge = 1.0 - smoothstep(0.002, 0.005, abs(m.y - 0.075));
   float e = dB - hw;                                              // distance outside the band
   float edge = smoothstep(0.0, 0.002, e) * (1.0 - smoothstep(0.003, 0.006, e));
   float ox = smoothstep(0.003, 0.006, e) * (1.0 - smoothstep(0.03, 0.05, e));
+  float lipZ = smoothstep(0.098, 0.104, m.y) * (1.0 - smoothstep(0.13, 0.136, m.y));   // guard lip
   // lengthwise wheel streaks (fine in the band, coarser outside) and duller burn patches
   float streak = fbm2(m, vec2(0.5, 300.0), 3, 0.5, 131u);
+  float streakF = fbm2(m, vec2(0.25, 700.0), 2, 0.5, 137u);
   float streakC = fbm2(m, vec2(1.5, 90.0), 3, 0.5, 132u);
   float burn = smoothstep(0.2, 0.7, fbm2(m, vec2(3.0, 20.0), 3, 0.5, 136u));
-  // running band: satin silver-grey
-  vec3 bandC = vec3(0.6, 0.598, 0.588) * (1.0 + 0.05 * streak) * (1.0 - 0.1 * burn);
-  float bandR = 0.22 + 0.06 * abs(streak) + 0.12 * burn;
-  // dull contact edge, oxide shoulders and dusty steel
-  vec3 oxC = vec3(0.2, 0.15, 0.11) * (1.0 + 0.2 * streakC) * (1.0 - 0.15 * burn);
-  vec3 dustC = vec3(0.3, 0.29, 0.275) * (1.0 + 0.1 * streakC) * (1.0 - 0.1 * burn);
-  vec3 dull = mix(mix(dustC, oxC, ox), vec3(0.36, 0.35, 0.34) * (1.0 + 0.04 * streak), edge);
-  float dullR = mix(mix(0.6, 0.55, ox), 0.42, edge) + 0.06 * streakC + 0.05 * burn;
-  float dullM = mix(mix(0.85, 0.6, ox), 0.9, edge);
-  s.albedo = mix(dull, bandC, band);
-  s.rough = clamp(mix(dullR, bandR, band), 0.08, 1.0);
-  s.metal = mix(dullM, 1.0, band);
-  s.height = mix(streakC * 0.0001, streak * 0.00005, band);
+  // running band: bright satin steel, rough and streaky
+  vec3 bandC = vec3(0.54, 0.535, 0.525) * (1.0 + 0.06 * streak + 0.03 * streakF) * (1.0 - 0.12 * burn);
+  float bandR = 0.27 + 0.1 * smoothstep(-0.3, 0.6, streak) + 0.05 * streakF + 0.1 * burn;
+  // flange-polished gauge corner
+  vec3 gaugeC = vec3(0.46, 0.45, 0.44) * (1.0 + 0.05 * streakC);
+  float gaugeR = 0.3 + 0.06 * abs(streakC) + 0.06 * burn;
+  // dull contact edge, oxide shoulders and bevel, dusty lip
+  vec3 oxC = vec3(0.15, 0.115, 0.085) * (1.0 + 0.2 * streakC) * (1.0 - 0.15 * burn);
+  vec3 dustC = vec3(0.16, 0.145, 0.125) * (1.0 + 0.12 * streakC) * (1.0 - 0.1 * burn);
+  vec3 edgeC = vec3(0.3, 0.29, 0.28) * (1.0 + 0.04 * streak);
+  vec3 dull = mix(mix(dustC, oxC, ox), edgeC, edge);
+  float dullR = mix(mix(0.68, 0.64, ox), 0.48, edge) + 0.05 * streakC + 0.05 * burn;
+  float dullM = mix(mix(0.4, 0.4, ox), 0.75, edge);
+  // the lip: dusty oxide whatever the band distance says
+  dull = mix(dull, dustC * (1.0 + 0.1 * streak), lipZ);
+  dullR = mix(dullR, 0.7 + 0.05 * streakC, lipZ);
+  dullM = mix(dullM, 0.4, lipZ);
+  vec3 polC = mix(gaugeC, bandC, band);
+  float polR = mix(gaugeR, bandR, band);
+  float pol = max(band, 0.85 * gauge) * (1.0 - lipZ);
+  s.albedo = mix(dull, polC, pol);
+  s.rough = clamp(mix(dullR, polR, pol), 0.2, 1.0);
+  s.metal = mix(dullM, 1.0, pol);
+  s.height = mix(streakC * 0.0001, (streak + 0.5 * streakF) * 0.00005, pol);
 }
 `,
 };
