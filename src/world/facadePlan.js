@@ -344,6 +344,18 @@ export function archPoint(o, t, out = {}, offset = 0) {
   return out;
 }
 
+/**
+ * Head segments of an opening's outline at detail q (1 near, 0.4 far): the count the
+ * facade infill uses (facades/outline.js headSegments), so masonry holes cut with it
+ * meet the glazing exactly. Pointed heads get an even count (the apex is a vertex).
+ */
+export function archSegments(o, q = 1) {
+  if (o.top === 'flat' || !o.rise) return 1;
+  const base = o.top === 'segment' ? 6 : o.top === 'pointed' ? 10 : 12;
+  const n = Math.max(2, Math.round(base * q * Math.min(1.6, Math.max(0.7, o.w / 1.2))));
+  return o.top === 'pointed' ? 2 * Math.max(1, Math.round(n / 2)) : n;
+}
+
 /** Outline of an opening as a flat [u, v, ...] array, CCW seen from the street, `n` head segments. */
 export function openingOutline(o, n = 12) {
   const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2;

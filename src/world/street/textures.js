@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
-import { ATLAS, IRON_REGIONS, canvas, makeNoise, generateIronAtlas } from './ironAtlas.js';
+import { ATLAS, IRON_REGIONS, canvas, makeNoise, generateIronAtlas, writeLeaves } from './ironAtlas.js';
 
 // Procedural textures for street details:
 //  - cast-iron atlas (albedo / normal / ORM): round manhole cover with concentric
 //    rings, square tree grate with radial slots over soil, gully grate, slotted track
-//    drain cover, chequer-plate utility cover and a small valve cover. Generated in a
-//    worker (ironAtlas.js) so start-up is not blocked; neutral iron until it arrives;
-//  - stain atlas (alpha blotches, gum spots, drip marks);
-//  - fallen leaf atlas.
+//    drain cover, chequer-plate utility cover, a small valve cover and four fallen-leaf
+//    cut-outs (drawn with the iron, tinted by vertex colour). Generated in a worker
+//    (ironAtlas.js) so start-up is not blocked; neutral iron until it arrives;
+//  - stain atlas (alpha blotches, gum spots, drip marks).
 
 export { IRON_REGIONS };
 
@@ -23,7 +23,7 @@ function dataTex(data, w, h, srgb, aniso) {
   return t;
 }
 
-// ------------------------------------------------------------------ stains / leaves
+// ------------------------------------------------------------------ stains
 function drawStains() {
   // grey levels on black (alphaMap reads the green channel); blobs accumulate additively
   const S = 512, c = canvas(S, S), C = c.getContext('2d');
@@ -68,33 +68,6 @@ function drawStains() {
   return t;
 }
 
-function drawLeaves() {
-  const S = 256, c = canvas(S, S), C = c.getContext('2d');
-  C.clearRect(0, 0, S, S);
-  const rng = RNG.from('street-leaves');
-  for (let k = 0; k < 4; k++) {
-    const cx = (k % 2) * 128 + 64, cy = Math.floor(k / 2) * 128 + 64;
-    C.save(); C.translate(cx, cy); C.rotate(rng.range(-0.3, 0.3));
-    const L = 50 + rng.range(-6, 6), W = k === 3 ? 30 : 18 + rng.range(-3, 5);
-    // blade
-    C.fillStyle = 'rgb(235,235,235)';
-    C.beginPath(); C.moveTo(-L, 0);
-    C.bezierCurveTo(-L * 0.4, -W, L * 0.4, -W * 0.9, L, 0);
-    C.bezierCurveTo(L * 0.4, W * (k === 1 ? 0.6 : 0.9), -L * 0.4, W, -L, 0);
-    C.fill();
-    // darker edge curl and midrib
-    C.strokeStyle = 'rgb(170,170,170)'; C.lineWidth = 2.5; C.stroke();
-    C.strokeStyle = 'rgb(200,200,200)'; C.lineWidth = 2; C.beginPath(); C.moveTo(-L - 8, 0); C.lineTo(L * 0.9, 0); C.stroke();
-    C.lineWidth = 1;
-    for (let i = -3; i <= 3; i++) { C.beginPath(); C.moveTo(i * 12, 0); C.lineTo(i * 12 + 10, -W * 0.6); C.moveTo(i * 12, 0); C.lineTo(i * 12 + 10, W * 0.6); C.stroke(); }
-    C.restore();
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 4;
-  return t;
-}
-
 /** Creates all detail materials (registered and tracked by the caller). */
 export function createDetailMaterials(renderer) {
   const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
@@ -105,6 +78,7 @@ export function createDetailMaterials(renderer) {
   new Uint32Array(alb.buffer).fill(rgba(78, 76, 73));
   new Uint32Array(nor.buffer).fill(rgba(128, 128, 255));
   new Uint32Array(orm.buffer).fill(rgba(255, 200, 60));
+  writeLeaves({ alb, nor, orm });   // leaves stay invisible until the atlas arrives
   const tAlb = dataTex(alb, ATLAS, ATLAS, true, aniso), tNor = dataTex(nor, ATLAS, ATLAS, false, aniso), ormTex = dataTex(orm, ATLAS, ATLAS, false, aniso);
   const fill = (res) => {
     alb.set(res.alb); nor.set(res.nor); orm.set(res.orm);
@@ -122,9 +96,10 @@ export function createDetailMaterials(renderer) {
   } catch (e) { started = false; }
   if (!started) fill(generateIronAtlas());
 
+  // cast iron and the fallen leaves (alpha-tested cut-outs, tinted by vertex colour)
   const iron = new THREE.MeshStandardMaterial({
     map: tAlb, normalMap: tNor, roughnessMap: ormTex, metalnessMap: ormTex,
-    roughness: 1, metalness: 1,
+    roughness: 1, metalness: 1, vertexColors: true, alphaTest: 0.5,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
   });
   iron.name = 'street.castIron';
@@ -135,10 +110,5 @@ export function createDetailMaterials(renderer) {
   });
   stain.name = 'street.stain';
 
-  const leaf = new THREE.MeshStandardMaterial({
-    map: drawLeaves(), vertexColors: true, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.75,
-    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6,
-  });
-  leaf.name = 'street.fallenLeaf';
-  return { iron, stain, leaf };
+  return { iron, stain };
 }

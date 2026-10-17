@@ -4,6 +4,7 @@ import { propMaterials, packColor, packLook, FLAG } from './shading.js';
 import { BIKE_SPECS, makeBikeVariant, bikeAttachments } from './bicycle.js';
 import { STROLLER_SPECS, makeStrollerVariant, strollerAttachments } from './stroller.js';
 import { PropInstancer, propMatrix, pxPerMetre, LOD_PX } from './instancer.js';
+import { setParkedKit } from './parked.js';
 
 // Mobility props for the figures: bicycles and strollers (geometry, materials, animation
 // pivots, rider / pusher attachment points) plus parked bicycles per chunk.
@@ -115,7 +116,19 @@ export function createBicycleKit(THREE_ = THREE, materials = null, rngSeed = 1) 
     createInstancer(opts = {}) { return new PropInstancer(kit, { name: 'bicycles', ...opts }); },
   };
   kit.buildMs = performance.now() - t0;
+  scheduleLod0(variants);
   return kit;
+}
+
+/** Build the close-up LODs in the background, one variant per idle slice. */
+function scheduleLod0(variants) {
+  let i = 0;
+  const step = () => {
+    if (i >= variants.length) return;
+    try { variants[i++].ensureLod0(); } catch (e) { console.warn('[props] close-up LOD build failed', e); }
+    setTimeout(step, 30);
+  };
+  setTimeout(step, 200);
 }
 
 /**
@@ -167,6 +180,7 @@ export function createStrollerKit(THREE_ = THREE, materials = null, rngSeed = 1)
     createInstancer(opts = {}) { return new PropInstancer(kit, { name: 'strollers', ...opts }); },
   };
   kit.buildMs = performance.now() - t0;
+  scheduleLod0(variants);
   return kit;
 }
 
@@ -185,5 +199,6 @@ export function strollerKit(app) {
   return k.stroller;
 }
 
-export { buildParkedBicycles, disposeParkedBicycles, parkedBicycleFootprints } from './parked.js';
+setParkedKit(bicycleKit);
+export { buildParkedBicycles, disposeParkedBicycles, parkedBicycleFootprints, parkedBicyclePlan } from './parked.js';
 export { mountPropsTest } from './test.js';

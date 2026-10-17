@@ -589,7 +589,7 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), 24.0);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.5);
   // a narrow, faint sheen: dark hair stays dark (a few times its diffuse at most), never silvery
-  return (0.012 * tint * s1 + hHairC * 0.06 * s2) * vAO;
+  return (0.030 * tint * s1 + hHairC * 0.18 * s2) * vAO;
 }
 float hSpec = 1.0;
 vec3 hSheenC = vec3(0.0);
@@ -1133,6 +1133,8 @@ if (hBump != 0.0) {
 function glslVec3(v) { return `vec3(${v.map((x) => (+x).toFixed(5)).join(', ')})`; }
 
 export function hangProfile(geo, info) {
+  // measured on the sculpt by the build (newer assets); else sampled from the detailed mesh
+  if (info.hang) return info.hang.map((R) => new THREE.Vector4(...R));
   const P = geo.attributes.position.array, body = geo.attributes.aBody.array;
   const sc = info.H / 1.76;
   const xMax = info.shoulder[0] * 0.92;

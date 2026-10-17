@@ -27,6 +27,8 @@ import { makeDelta } from './fast.js';
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 // cover beds blend back into the ground over this distance outside the cover (m)
 const BED_BLEND = 0.45;
+// the paving meets each building's ground line over this distance before its facade (m)
+const FACADE_BLEND = 0.9;
 
 export class Surface {
   constructor(route, layout) {
@@ -50,8 +52,9 @@ export class Surface {
     this.spotCache = new Map();
     this.planner = null;     // (chunkIndex) => [{s, d, r}], set by the street module
     this._ri = {};
-    // mouth geometry per (cross street, side)
+    // mouth geometry per (cross street, side), facade lines per lot
     this.mouths = new Map();
+    this.lotLines = new Map();
   }
 
   // ------------------------------------------------------------------ per-row context
@@ -89,6 +92,8 @@ export class Surface {
     out.hwR = L.halfWidth(s, 1);
     out.edgeL = this.edgeD(s, -1, out.hwL, lists.cs);
     out.edgeR = this.edgeD(s, 1, out.hwR, lists.cs);
+    out.fL = this.facadeAt(s, -1, out.fL || (out.fL = {}));
+    out.fR = this.facadeAt(s, 1, out.fR || (out.fR = {}));
     // flat spots (tree pits, covers) whose span overlaps this row
     const ci = L.chunkIndex(s);
     const list = out.spots || (out.spots = []);
@@ -149,7 +154,45 @@ export class Surface {
     return this.mouthD(this.mouth(c, side), s);
   }
 
-  /** Signed lateral offset where the cross-section at s meets the mouth line. */
+  // ------------------------------------------------------------------ facades
+  /** Facade line of a main-street lot: its frame's chord and ground at both ends. */
+  lotLine(lot) {
+    let f = this.lotLines.get(lot);
+    if (!f) {
+      const F = lot.frame;
+      f = { start: F.origin, along: F.uDir, width: F.width, g0: F.ground0, g1: F.ground1 };
+      if (this.lotLines.size > 512) this.lotLines.delete(this.lotLines.keys().next().value);
+      this.lotLines.set(lot, f);
+    }
+    return f;
+  }
+
+  /** Where the cross-section at s meets the facade of the lot fronting the street on
+   *  `side`: out.d (signed lateral offset) and out.g (the building's own ground line
+   *  there, above the route elevation: facades stand their thresholds on it); out.d is
+   *  NaN in mouths and gaps. */
+  facadeAt(s, side, out = {}) {
+    const L = this.layout, ci = L.chunkIndex(s), dl = this.dl;
+    out.d = NaN;
+    for (let k = -1; k <= 1; k++) {
+      for (const lot of L.inChunk('lots', ci + k)) {
+        if (lot.side !== side) continue;
+        const a = dl(lot.s0, s);
+        if (a < 0 || a > lot.len) continue;
+        const f = this.lotLine(lot);
+        const d = this.mouthD(f, s), smp = this._smp;
+        const u = (smp.pos.x + smp.right.x * d - f.start.x) * f.along.x + (smp.pos.z + smp.right.z * d - f.start.z) * f.along.z;
+        const t = Math.max(0, Math.min(1, u / f.width));
+        out.d = d;
+        out.g = f.g0 + (f.g1 - f.g0) * t - smp.pos.y;
+        return out;
+      }
+    }
+    return out;
+  }
+
+  /** Signed lateral offset where the cross-section at s meets the line through m.start
+   *  along m.along (a mouth line or a facade chord). */
   mouthD(m, s) {
     const smp = this.route.sample(s, this._smp || (this._smp = {}));
     const bx = m.start.x - smp.pos.x, bz = m.start.z - smp.pos.z;
@@ -199,11 +242,24 @@ export class Surface {
     // mortar settlement trough along the rails, deeper in places
     const hs = sa * mask * n + trough * (0.65 + 0.35 * n) - 0.005 * dish;
     if (this.route.surfaceEnabled) {
-      const g = this.route.surface(ri.s, d);
-      h += bedW > 0 ? g + (bedH - g) * bedW : g;
+      let g = this.ground(ri.s, d, ri);
+      if (bedW > 0) g += (bedH - g) * bedW;
+      h += g;
     }
     this.hShade = h + hs;
     return h;
+  }
+
+  /** The shared ground (route.surface) at (s, d), meeting each building's own ground
+   *  line over the last FACADE_BLEND metres before (and under) its facade. ri: the row
+   *  context of s when the caller has it. */
+  ground(s, d, ri = null) {
+    const g = this.route.surface(s, d);
+    if (d > -GUTTER_OUT && d < GUTTER_OUT) return g;
+    const f = ri ? (d > 0 ? ri.fR : ri.fL) : this.facadeAt(s, d > 0 ? 1 : -1, this._fa || (this._fa = {}));
+    if (!(f.d === f.d)) return g;    // NaN: mouth or gap
+    const x = (d > 0 ? d - f.d : f.d - d) + FACADE_BLEND;
+    return x <= 0 ? g : g + (f.g - g) * smooth(x / FACADE_BLEND);
   }
 
   /** Height of the shared ground (route.surface) on the planar bed of cover spot p, at
@@ -212,12 +268,12 @@ export class Surface {
   bedAt(p, ds, d) {
     let b = p.plane;
     if (!b) {
-      const r = this.route, e = Math.max(0.3, p.r * 0.7);
-      const g0 = r.surface(p.s, p.d);
+      const e = Math.max(0.3, p.r * 0.7);
+      const g0 = this.ground(p.s, p.d);
       b = p.plane = [
         g0,
-        (r.surface(p.s + e, p.d) - r.surface(p.s - e, p.d)) / (2 * e),
-        (r.surface(p.s, p.d + e) - r.surface(p.s, p.d - e)) / (2 * e),
+        (this.ground(p.s + e, p.d) - this.ground(p.s - e, p.d)) / (2 * e),
+        (this.ground(p.s, p.d + e) - this.ground(p.s, p.d - e)) / (2 * e),
       ];
     }
     return b[0] + b[1] * ds + b[2] * (d - p.d);

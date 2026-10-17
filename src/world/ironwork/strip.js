@@ -23,9 +23,10 @@ const STREAMS = { position: ['P', 3], normal: ['N', 3], uv: ['T', 2], color: ['C
 
 // A shadow pass culls blocks with its light's own cascade frustum when there is one: it
 // knows which slice of the view the cascade serves, how far shadows reach toward it, and
-// which casters are too thin for its texels (sunShadow.js). Stand-in object per test.
+// which casters are too thin for its texels (sunShadow.js). Each block is tested through
+// a stand-in object of its own (the frustum may cache per-object data for the frame).
 const _frustumOf = new WeakMap();
-const _one = { geometry: { boundingSphere: null }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+const IDENTITY = new THREE.Matrix4();
 
 /** The shadow frustum of `camera` (a light's shadow camera in `scene`), or null. */
 function shadowFrustum(scene, camera) {
@@ -110,6 +111,7 @@ export class Strip {
       a.needsUpdate = true;
     }
     const block = { v0, nv, i0, ni, rel: W.I.slice(0, ni), sphere: sphere.clone(), active: false };
+    block.proxy = { geometry: { boundingSphere: block.sphere }, matrixWorld: IDENTITY, userData: this.mesh.userData };
     this.blocks.push(block);
     return block;
   }
@@ -162,12 +164,9 @@ export class Strip {
       _m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       _f.setFromProjectionMatrix(_m, camera.coordinateSystem, camera.reversedDepth);
     }
-    _one.userData.thinCaster = this.mesh.userData.thinCaster;
     let lo = Infinity, hi = -1;
     for (const b of this.blocks) {
-      if (!b.active) continue;
-      if (lf) { _one.geometry.boundingSphere = b.sphere; if (!lf.intersectsObject(_one)) continue; }
-      else if (!_f.intersectsSphere(b.sphere)) continue;
+      if (!b.active || !(lf ? lf.intersectsObject(b.proxy) : _f.intersectsSphere(b.sphere))) continue;
       if (b.i0 < lo) lo = b.i0;
       if (b.i0 + b.ni > hi) hi = b.i0 + b.ni;
     }

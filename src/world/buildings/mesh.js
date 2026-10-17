@@ -1,5 +1,6 @@
 import { ShapeUtils, Vector2 } from 'three';
 import { runAttr } from './shade.js';
+import { archSegments } from '../facadePlan.js';
 
 // Low-level mesh emitter for the building shells.
 //
@@ -256,9 +257,12 @@ export class Builder {
     if (faces & F_BOTTOM) this.rectV(s, u0, u1, w0, w1, v0, -1);
   }
 
-  /** Box whose front edges are chamfered by `b` (a dressed stone block). Back face omitted. */
-  bevelBox(s, u0, u1, v0, v1, w0, w1, b, faces = 63) {
-    if (b <= 0.001 || u1 - u0 < 3 * b || v1 - v0 < 3 * b) { this.box(s, u0, u1, v0, v1, w0, w1, faces & ~F_BACK); return; }
+  /**
+   * Box whose front edges are chamfered by `b` (a dressed stone block). Back face omitted.
+   * `hidden`: sides covered by neighbouring work, left out (their chamfers stay).
+   */
+  bevelBox(s, u0, u1, v0, v1, w0, w1, b, faces = 63, hidden = 0) {
+    if (b <= 0.001 || u1 - u0 < 3 * b || v1 - v0 < 3 * b) { this.box(s, u0, u1, v0, v1, w0, w1, faces & ~F_BACK & ~hidden); return; }
     const wf = w1 - b;
     this.rectW(s, u0 + b, u1 - b, v0 + b, v1 - b, w1, 1);
     // chamfers (45°)
@@ -269,10 +273,11 @@ export class Builder {
     if (faces & F_LEFT) this._quad4(s, u0, v0, wf, u0 + b, v0 + b, w1, u0 + b, v1 - b, w1, u0, v1, wf, -k, 0, k);
     if (faces & F_RIGHT) this._quad4(s, u1 - b, v0 + b, w1, u1, v0, wf, u1, v1, wf, u1 - b, v1 - b, w1, k, 0, k);
     // corner triangles where two chamfers meet are tiny; the four chamfer quads overlap at the corners instead
-    if (faces & F_LEFT) this.rectU(s, u0, v0, v1, w0, wf, -1);
-    if (faces & F_RIGHT) this.rectU(s, u1, v0, v1, w0, wf, 1);
-    if (faces & F_TOP) this.rectV(s, u0, u1, w0, wf, v1, 1);
-    if (faces & F_BOTTOM) this.rectV(s, u0, u1, w0, wf, v0, -1);
+    const sides = faces & ~hidden;
+    if (sides & F_LEFT) this.rectU(s, u0, v0, v1, w0, wf, -1);
+    if (sides & F_RIGHT) this.rectU(s, u1, v0, v1, w0, wf, 1);
+    if (sides & F_TOP) this.rectV(s, u0, u1, w0, wf, v1, 1);
+    if (sides & F_BOTTOM) this.rectV(s, u0, u1, w0, wf, v0, -1);
   }
 
   /** Quad from four local points (CCW seen from the normal side) with a flat normal. UV planar on the dominant axis. */
@@ -497,8 +502,11 @@ export class Builder {
   }
 }
 
-/** Head segments for an opening's arch: finer for wide openings at full detail. */
-export function arcSeg(q, o) { return q.lod ? q.archSeg : o.w > 2 ? 24 : q.archSeg; }
+/**
+ * Head segments for an opening's arch: finer for wide openings at full detail; far, the
+ * infill's own count (archSegments), so the hole and the glazing share their outline.
+ */
+export function arcSeg(q, o) { return q.lod ? archSegments(o, 0.4) : o.w > 2 ? 18 : q.archSeg; }
 
 /** Polygon inset by d (convex polygons; flat array CCW). */
 export function insetPolygon(pts, d) {

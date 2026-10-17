@@ -148,7 +148,7 @@ export function buildPlatform(pl, app, addMesh, F, lod, fittings, inst, PP) {
   const { route } = app;
   const sgn = pl.side, dE = sgn > 0 ? pl.d0 : pl.d1, W = pl.d1 - pl.d0, top = pl.h;
   const s0 = pl.s0, s1 = pl.s1;
-  for (const s of [s0 + RAMP + 1.2, s1 - RAMP - 1.2]) inst.add(PP.lightColumn, placeMatrix(route, s, dE + sgn * (W - 0.25), top, sgn > 0 ? -Math.PI / 2 : Math.PI / 2, _m));
+  for (const s of [s0 + RAMP + 1.2, s1 - RAMP - 1.2]) inst.add(PP.lightColumn, placeMatrix(route, s, dE + sgn * (W - 0.25), top, sgn > 0 ? -Math.PI / 2 : Math.PI / 2, _m, 0.15));
   const xr = W - 0.09;
   const gaps = [[0.27, 0.33], [0.67, 0.73]].map(([a, b]) => [s0 + (s1 - s0) * a, s0 + (s1 - s0) * b]);
   for (const f of fittings) if (f.type === 'shelter') gaps.push([f.s - 2.75, f.s + 2.75]);
@@ -318,8 +318,8 @@ export function placePlatforms(chunk, app, inst, addMesh, P, F) {
     const h = f.h ?? 0.3, out = f.yaw + Math.PI / 2; // out: away from the tracks
     const side = f.d > 0 ? 1 : -1;
     switch (f.type) {
-      case 'shelter': inst.add(P.shelter, placeMatrix(route, f.s, f.d, h, out + Math.PI, _m)); break;
-      case 'ticketMachine': inst.add(P.ticket, placeMatrix(route, f.s, f.d, h, out + Math.PI, _m), TICKET_COL); break;
+      case 'shelter': inst.add(P.shelter, placeMatrix(route, f.s, f.d, h, out + Math.PI, _m, 1.8)); break;
+      case 'ticketMachine': inst.add(P.ticket, placeMatrix(route, f.s, f.d, h, out + Math.PI, _m, 0.35), TICKET_COL); break;
       case 'stopSign': inst.add(P.stop, placeMatrix(route, f.s, f.d, h, side > 0 ? Math.PI : 0, _m)); break;
       default: break;
     }

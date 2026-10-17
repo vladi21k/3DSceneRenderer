@@ -26,14 +26,17 @@ const WHITE = new THREE.Color(1, 1, 1);
 const FADE_MS = 450;
 // shadows: cascade texel (m) above which at least level 1 / the coarsest level is drawn,
 // and the smallest instance (bounding radius in texels) still worth a shadow
-const SHADOW_LEVEL_TEXEL = [0.025, 0.07];
+const SHADOW_LEVEL_TEXEL = [0.012, 0.07];
 const SHADOW_MIN_TEXELS = 1.5;
 const _mat = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
 const _fr = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 // stand-ins handed to the light's cascade frustum: one instance, or the whole batch
-const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+// (an instance is presented as a shadow proxy with its world sphere, which the env's
+// cascade frustums test as is: slice, sub-texel and box; a plain frustum reads the
+// geometry's sphere with an identity transform)
+const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false, shadowProxy: { active: true }, shadowSphere: _sph } };
 const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
 
 /** Shadow cascades of the scene's shadow-casting lights: frustum -> {shadow, index}. */
@@ -478,17 +481,28 @@ export class BatchSet {
 const _smp = {}, _p = new THREE.Vector3(), _f = new THREE.Vector3(), _x = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 
+/** How far an upright item with a footprint of radius `foot` (m) must sink at (s, d) so
+ *  that no part of its base floats above the sloping paving (grade, cross-fall, tilt). */
+export function groundSink(route, s, d, foot) {
+  if (!(foot > 0)) return 0;
+  const gs = route.groundY(s + 0.25, d) - route.groundY(s - 0.25, d);
+  const gd = route.groundY(s, d + 0.25) - route.groundY(s, d - 0.25);
+  return foot * 2 * Math.hypot(gs, gd);
+}
+
 /**
  * World matrix of an item standing upright at route coordinate (s, d, h). `yaw` is the
  * item's facing in the (s, d) plane: forward = tangent·cos(yaw) + right·sin(yaw), i.e.
  * 0 faces along travel, +π/2 faces right (+d). The item's local +Z is its front.
+ * `foot`: radius of its base (m); the item sinks into the paving by groundSink so its
+ * downhill edge still touches the ground.
  */
-export function placeMatrix(route, s, d, h, yaw, out = new THREE.Matrix4()) {
+export function placeMatrix(route, s, d, h, yaw, out = new THREE.Matrix4(), foot = 0) {
   route.sample(s, _smp);
   const c = Math.cos(yaw), sn = Math.sin(yaw);
   _f.set(_smp.tanH.x * c + _smp.right.x * sn, 0, _smp.tanH.z * c + _smp.right.z * sn).normalize();
   _x.crossVectors(_up, _f);
-  route.toWorld(s, d, h, _p);
+  route.toWorld(s, d, h - groundSink(route, s, d, foot), _p);
   out.makeBasis(_x, _up, _f);
   out.setPosition(_p);
   return out;

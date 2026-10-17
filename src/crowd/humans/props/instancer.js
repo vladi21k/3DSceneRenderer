@@ -9,7 +9,7 @@ import * as THREE from 'three';
 //   inst.begin(camera, renderer);  inst.add(variant, matrixWorld, anim, look);  inst.end();
 // LOD per instance from its projected size in pixels (prop height x pixels per metre / distance).
 
-export const LOD_PX = [470, 72];        // projected prop height (px) above which LOD 0 / 1 are used
+export const LOD_PX = [470, 120];        // projected prop height (px) above which LOD 0 / 1 are used
 const _frustum = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
@@ -88,6 +88,8 @@ export class PropInstancer {
   }
 
   _slot(v, lod) {
+    // a close-up model still being built in the background: use the next level meanwhile
+    while (lod < 2 && !this.kit.variants[v].lods[lod]) lod++;
     const key = v * 4 + lod;
     let s = this.slots.get(key);
     if (!s) {

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Props Close-up</title>
+  <link rel="stylesheet" href="../../../style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../../../../vendor/three/build/three.module.js",
+      "three/addons/": "../../../../vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <!-- The full app with the mobility-props harness mounted once it is ready (see test.js for the
+       pt_* parameters), e.g. test.html?only=street,furniture,post&view=400,-1,1.2,-45,-8&pt_mode=line&pt_s=402 -->
+  <canvas id="view"></canvas>
+  <div id="ui-root"></div>
+  <div id="loading"><div class="loading-inner"><div class="loading-track"><div id="loading-bar"></div></div></div></div>
+  <script type="module">
+    import '../../../main.js';
+    const wait = () => (window.__app && window.__app.ready ? Promise.resolve() : new Promise((r) => setTimeout(() => r(wait()), 100)));
+    wait().then(() => import('./index.js')).then((m) => m.mountPropsTest(window.__app)).catch((e) => console.error('[propstest]', e));
+  </script>
+</body>
+</html>

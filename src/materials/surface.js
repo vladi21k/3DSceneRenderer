@@ -509,7 +509,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
   const toolTex = (d?.tool && shared.textures.get(d.tool)?.surface) || null;
   const [o1, o2, o3, op] = outliers(c.out);
   return {
-    sfFlags: { value: v4([(r?.mask === 'metal' || r?.metalMask) ? 1 : 0, cfg.swap ? 1 : 0, r?.mask === 'paint' ? 1 : 0, 0]) },
+    sfFlags: { value: v4([r?.mask === 'metal' ? 1 : 0, cfg.swap ? 1 : 0, r?.mask === 'paint' ? 1 : 0, 0]) },
     sfTrans: { value: new THREE.Vector3(...(cfg.trans || [0, 0, 0])) },
     sfNight: shared.night,
     sfEmGain: shared.gain,

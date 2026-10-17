@@ -1,17 +1,22 @@
 import { MAIN_RAILS, BAND_IN, GUTTER_OUT, SIDEWALK_RISE, GROUT_W } from './constants.js';
 import { IRON_REGIONS } from './textures.js';
 import { RNG } from '../../core/rng.js';
+import { SIDE_LOT_START } from '../layout.js';
 
 // Cross streets: the side street from the main facade line out to depth + 16 m (+30 m
 // run-out): sidewalks, granite kerbs dropped to a ramp at the mouth (the side street is
 // closed by bollards behind a light granite edge strip), an asphalt carriageway with a
 // slight crown and darker wheel tracks, gullies at the kerbs, a manhole and oil stains,
 // a zebra crossing at the mouth and a dashed centre line further out. The first row reuses the exact mouth
-// points of the main sidewalk so the two surfaces meet without a seam.
+// points of the main sidewalk so the two surfaces meet without a seam. From there the
+// side street ramps linearly to its own level (the junction's, where the side-street
+// lots stand) over the corner returns, which end SIDE_LOT_START out.
 // Also the pedestrian crossing over the tram corridor at the junction (zebra stripes
 // between the rails) with tactile warning strips at both corridor edges.
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+/** Blend from the mouth heights (x = 0) to the side-street level, x metres out. */
+const ramp = (x) => Math.min(1, x / SIDE_LOT_START);
 const KERB_W = 0.16;
 const KERB_H = 0.12;
 const EDGE_X = 0.36;          // granite edge strip across the carriageway at the mouth
@@ -44,9 +49,9 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const m = surface.mouth(c, side);
   const { half, road } = dims(c);
   const lod = chunk.lod;
-  const xs = [0, EDGE_X, 1.5, 3, 4.5, 6, 7.5, 9, 12];
+  const xs = [0, EDGE_X, 1.5, 3, 4.5, 6, 7.5, 9, 12, SIDE_LOT_START];
   const xStep = lod === 0 ? 6 : 15;
-  for (let x = 12 + xStep; x < m.len; x += xStep) xs.push(x);
+  for (let x = SIDE_LOT_START + xStep; x < m.len; x += xStep) xs.push(x);
   xs.push(m.len);
   const yFlat = m.start.y + SIDEWALK_RISE;
   const cols = [-half - 0.8, ...sideColumns(c), half + 0.8];
@@ -60,14 +65,16 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     const a = Math.max(-half, Math.min(half, cols[j]));
     const s = c.s + a;
     const d = surface.mouthD(m, s);
-    const h = surface.heightAt(s, d);
-    const p = route.toWorld(s, d, h);
+    // the main paving's own vertex there (heightAt already holds the shared ground, so
+    // it is added to the route elevation, not passed to toWorld as a height above it)
+    const p = route.toWorld(s, d, 0);
+    p.y = route.elevation(s) + surface.heightAt(s, d);
     mouthPts.push(p);
     base[j] = p.y;
   }
   for (let i = 0; i < nr; i++) {
     const x = xs[i];
-    const k = smooth(x / 12);
+    const k = ramp(x);
     for (let j = 0; j < nc; j++) {
       const a = cols[j];
       const o = (i * nc + j) * 3;
@@ -152,7 +159,7 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   if (lod > 0 || !lines) return;
   // zebra across the carriageway near the mouth (stripes along the side street)
   const pt = (a, x, lift = 0.002) => {
-    const k = smooth(x / 12);
+    const k = ramp(x);
     // interpolate base height between columns
     let j = 0;
     while (j < nc - 2 && cols[j + 1] < a) j++;
@@ -175,7 +182,7 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     lines.stripe.add(arr, Math.min(0.25, sw * 0.27), 3.0, wr.range(0.75, 1.1) + 1.6 * w);
   }
   // dashed centre line further out
-  for (let x0 = 14; x0 + 3 < m.len - 4; x0 += 9) {
+  for (let x0 = SIDE_LOT_START + 1; x0 + 3 < m.len - 4; x0 += 9) {
     const arr = [];
     for (let x = x0; x <= x0 + 3.01; x += 1.5) { const p = pt(0, x); arr.push(p[0], p[1], p[2], rx, rz, x - x0); }
     lines.stripe.add(arr, 0.06, 3.0);
@@ -193,7 +200,7 @@ function sideStreetDetails(ctx, c, side, m, road, bufs, at) {
   const ox = m.dirOut.x, oz = m.dirOut.z, axx = m.along.x, axz = m.along.z;
   // flat covers in the mouth frame (u along dirOut, v along `along`; u→v turns
   // counter-clockwise seen from above on the right-hand side, clockwise on the left)
-  const iron = bufs.get(mats.details.iron, false);
+  const iron = bufs.get(mats.details.iron, true);
   const cover = (type, a, x, rot = 0) => {
     const R = IRON_REGIONS[type];
     const ca = Math.cos(rot), sa = Math.sin(rot);

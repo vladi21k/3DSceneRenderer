@@ -156,6 +156,37 @@ export function posTemplate(src) {
   return { P: new Float32Array(out), I: new Uint32Array(idx), n: out.length / 3 };
 }
 
+/** Welds a template {P, N, T, C, I, n}: coincident vertices whose normals are within
+ *  `maxAngle` of the first one met are merged (normal averaged, smooth shading across
+ *  facets of a curve; uv and colour of the first). Sharper edges stay split. */
+export function weldTemplate(t, maxAngle = 0.7) {
+  const cosT = Math.cos(maxAngle), groups = new Map(), remap = new Uint32Array(t.n);
+  const P = [], N = [], T = [], C = [];
+  for (let i = 0; i < t.n; i++) {
+    const x = t.P[i * 3], y = t.P[i * 3 + 1], z = t.P[i * 3 + 2];
+    const nx = t.N[i * 3], ny = t.N[i * 3 + 1], nz = t.N[i * 3 + 2];
+    const key = `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(z * 1e4)}`;
+    let list = groups.get(key);
+    if (!list) groups.set(key, (list = []));
+    let j = -1;
+    for (const [k, fx, fy, fz] of list) if (fx * nx + fy * ny + fz * nz > cosT) { j = k; break; }
+    if (j < 0) {
+      j = P.length / 3;
+      list.push([j, nx, ny, nz]);
+      P.push(x, y, z); N.push(0, 0, 0); T.push(t.T[i * 2], t.T[i * 2 + 1]); C.push(t.C[i * 3], t.C[i * 3 + 1], t.C[i * 3 + 2]);
+    }
+    N[j * 3] += nx; N[j * 3 + 1] += ny; N[j * 3 + 2] += nz;
+    remap[i] = j;
+  }
+  for (let j = 0; j < N.length; j += 3) {
+    const l = Math.hypot(N[j], N[j + 1], N[j + 2]) || 1;
+    N[j] /= l; N[j + 1] /= l; N[j + 2] /= l;
+  }
+  const I = new Uint32Array(t.I.length);
+  for (let i = 0; i < I.length; i++) I[i] = remap[t.I[i]];
+  return { P: new Float32Array(P), N: new Float32Array(N), T: new Float32Array(T), C: new Float32Array(C), I, n: P.length / 3 };
+}
+
 /** Writes a position template into a PosWriter with `matrix` (THREE.Matrix4). */
 export function writePos(S, t, matrix) {
   S.reserve(t.n, t.I.length);
@@ -275,6 +306,20 @@ export function box(W, cx, cy, cz, sx, sy, sz, shadeBottom = 1, skip = '') {
   if (!skip.includes('l')) F(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, [-1, 0, 0], [[z0, y0], [z1, y0], [z1, y1], [z0, y1]]);
   if (!skip.includes('u')) F(x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, [0, 1, 0], [[x0, z1], [x1, z1], [x1, z0], [x0, z0]]);
   if (!skip.includes('d')) F(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, [0, -1, 0], [[x0, z0], [x1, z0], [x1, z1], [x0, z1]], shadeBottom);
+}
+
+/** Position-only box (8 shared corners, same faces and winding as box()). */
+export function boxPos(S, cx, cy, cz, sx, sy, sz, skip = '') {
+  const x0 = cx - sx / 2, x1 = cx + sx / 2, y0 = cy - sy / 2, y1 = cy + sy / 2, z0 = cz - sz / 2, z1 = cz + sz / 2;
+  const b = S.count;
+  // corner k: bit 0 = x1, bit 1 = y1, bit 2 = z1
+  for (let k = 0; k < 8; k++) S.v(k & 1 ? x1 : x0, k & 2 ? y1 : y0, k & 4 ? z1 : z0);
+  if (!skip.includes('f')) S.quad(b + 4, b + 5, b + 7, b + 6);
+  if (!skip.includes('b')) S.quad(b + 1, b + 0, b + 2, b + 3);
+  if (!skip.includes('r')) S.quad(b + 5, b + 1, b + 3, b + 7);
+  if (!skip.includes('l')) S.quad(b + 0, b + 4, b + 6, b + 2);
+  if (!skip.includes('u')) S.quad(b + 6, b + 7, b + 3, b + 2);
+  if (!skip.includes('d')) S.quad(b + 0, b + 1, b + 5, b + 4);
 }
 
 /** Surface of revolution around +Y. profile: [[r, y], ...] from bottom to top. */

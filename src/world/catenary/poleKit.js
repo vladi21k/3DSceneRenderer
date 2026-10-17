@@ -67,7 +67,12 @@ function shaftWear(i, x, y, z, nx, ny) {
   return [rust, streak, 0];
 }
 
-function baseProfile() {
+function baseProfile(far = false) {
+  if (far) {
+    // outline of the cast base for standards a few pixels wide
+    return [[0.215, 0.0], [0.215, 0.05, true], [0.19, 0.075], [0.2, 0.11], [0.166, 0.14, true], [0.15, 0.24], [0.158, 0.27, true],
+      [0.15, 0.31, true], [0.14, 1.09, true], [0.152, 1.11, true], [0.152, 1.135, true], [0.118, 1.225], [0.096, 1.3, true]];
+  }
   const P = [];
   P.push([0.215, 0.0], [0.215, 0.045, true], [0.2, 0.062, true]);
   // torus moulding
@@ -84,7 +89,16 @@ function baseProfile() {
   return P;
 }
 
-function shaftProfile(step) {
+function shaftProfile(step, far = false) {
+  const t = POLE_TOP;
+  if (far) {
+    // tapered shaft with the two bracket collars, cap and finial (beads and clamp bands
+    // are below a pixel at this distance)
+    const P = [[shaftRadius(1.28), 1.28]];
+    for (const cy of COLLARS) P.push([shaftRadius(cy - 0.06), cy - 0.06, true], [0.1, cy - 0.04, true], [0.1, cy + 0.04, true], [shaftRadius(cy + 0.06), cy + 0.06, true]);
+    P.push([shaftRadius(t - 0.12), t - 0.12, true], [0.09, t - 0.11, true], [0.09, t - 0.065, true], [0.05, t - 0.03], [0.034, t + 0.03], [0.0, t + 0.13]);
+    return P;
+  }
   const bands = [];
   // bead rings
   for (const ry of [2.45, 7.15]) bands.push({ y0: ry - 0.03, y1: ry + 0.03, P: [
@@ -106,7 +120,6 @@ function shaftProfile(step) {
   // weathering weights resolve
   const P = [[shaftRadius(1.28), 1.28]];
   let y = 1.28;
-  const t = POLE_TOP;
   const fill = (y1) => {
     if (step) for (let yy = y + step; yy < y1 - step * 0.5; yy += step) P.push([shaftRadius(yy), yy]);
   };
@@ -119,15 +132,17 @@ function shaftProfile(step) {
   return P;
 }
 
-// Detail levels: hi (near), mid (rest of the full-detail range), lo (far chunks). All
-// levels keep every scroll so the silhouette never pops; only tessellation drops.
+// Detail levels by distance: hi (near), mid, lo, far (a bracket a few dozen pixels wide;
+// the thin-part shader keeps sub-pixel bars visible). All levels keep every scroll so
+// the silhouette never pops; only tessellation drops.
 const LEVELS = {
   hi: { base: 48, shaft: 20, lantern: 24, tube: 8, bar: 8, ang: 5.5, len: 0.05, caps: true, flutes: true, hardware: true, step: 0.25 },
   mid: { base: 14, shaft: 10, lantern: 12, tube: 5, bar: 4, ang: 11, len: 0.11, caps: false, flutes: false, hardware: true, step: 0.6 },
   lo: { base: 8, shaft: 7, lantern: 8, tube: 4, bar: 4, ang: 18, len: 0.18, caps: false, flutes: false, hardware: false, step: 0 },
+  far: { base: 6, shaft: 5, lantern: 6, tube: 3, bar: 4, ang: 32, len: 0.6, caps: false, flutes: false, hardware: false, step: 0, outline: true },
 };
 
-/** Build the shared geometries. Returns {hi|mid|lo: {shaft, arm, glass}, info}. */
+/** Build the shared geometries. Returns {hi|mid|lo|far: {shaft, arm, glass}, info}. */
 export function buildPoleKit() {
   const design = armDesign(ARM_REACH);
   const hang = design.hang;
@@ -135,8 +150,8 @@ export function buildPoleKit() {
   const make = (L) => {
     // ---- shaft
     const sb = new GeoBuilder();
-    lathe(sb, baseProfile(), L.base, { flutes: L.flutes ? { count: 16, depth: 0.075, y0: 0.32, y1: 1.06 } : null });
-    lathe(sb, shaftProfile(L.step), L.shaft);
+    lathe(sb, baseProfile(!!L.outline), L.base, { flutes: L.flutes ? { count: 16, depth: 0.075, y0: 0.32, y1: 1.06 } : null });
+    lathe(sb, shaftProfile(L.step, !!L.outline), L.shaft);
     if (L.hardware) {
       // eye bolt for the span wire (towards the street), feeder lug on the sidewalk side
       rod(sb, [shaftRadius(SPAN_Y), SPAN_Y, 0], [SPAN_EYE_X - 0.01, SPAN_Y, 0], 0.011, 6);
@@ -164,7 +179,7 @@ export function buildPoleKit() {
     // stem from the volute down to the lantern
     rod(ab, [hang[0], hang[1] + 0.012, 0], [hang[0], hang[1] - STEM_LEN + 0.015, 0], 0.011, Math.min(6, L.tube), false);
     const lb = new GeoBuilder();
-    lathe(lb, lanternMetalProfile(!L.hardware), L.lantern, { tube: 0.06 });
+    lathe(lb, lanternMetalProfile(L.outline ? 'far' : !L.hardware), L.lantern, { tube: 0.06 });
     // hood: rust along the rolled brim and the top of the cone, run-off below the lip,
     // and the underside lit by the lamp at night
     lb.paintWear(0, (i, x, y, z, nx, ny) => {
@@ -190,6 +205,7 @@ export function buildPoleKit() {
     hi: make(LEVELS.hi),
     mid: make(LEVELS.mid),
     lo: make(LEVELS.lo),
+    far: make(LEVELS.far),
     info: {
       hang,
       glassCentre: new THREE.Vector3(hang[0], hang[1] + GLASS_CENTRE, 0), // arm-local

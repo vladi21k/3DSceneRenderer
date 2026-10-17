@@ -2,7 +2,7 @@
 // glass over a stall riser, a (sometimes recessed) glazed door, transom bar, fanlight or
 // sign panel in the head, roller-shutter box and guides. Glass is interior-mapped
 // (shop kind: shelves, goods, ceiling lights).
-import { Tpl } from './geo.js';
+import { Tpl, TplCache } from './geo.js';
 import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, topAt } from './outline.js';
 import { rectRing } from './kit.js';
 
@@ -29,7 +29,8 @@ export function shopLayout(o, rng, back = 0.4) {
   const narrow = o.w < 1.9;
   const pos = narrow ? 0 : rng.weighted([[-1, 0.3], [1, 0.3], [0, 0.4]]);
   const dx = pos === 0 ? 0 : pos * (hwI - doorW / 2 - rng.range(0.0, 0.35));
-  let setback = rng.chance(0.45) && !narrow ? rng.range(0.22, 0.6) : 0;
+  // deeper lobbies where the box behind the shopfront allows (up to ~1.1 m)
+  let setback = rng.chance(0.45) && !narrow ? rng.range(0.22, Math.max(0.6, Math.min(1.1, back - 0.1))) : 0;
   setback = Math.min(setback, back - 0.07);
   if (setback < 0.18) setback = 0;
   // the head is glazed (sunburst bars under arches); a solid panel only carries a sign
@@ -227,8 +228,8 @@ export const SHOP_GLASS_Z_FAR = 0.025;
  * returns' plinths between the street front and the set-back door. Stone batch.
  */
 export function shopRecessTpl(o, L) {
-  const t = new Tpl();
   if (!L.setback) return null;
+  const t = new Tpl();
   const d0 = L.dx - L.doorW / 2 - 0.06, d1 = L.dx + L.doorW / 2 + 0.06;
   // floor slab, slightly lower in the middle where it is worn
   t.box(d0, -0.03, -L.setback - 0.02, d1, 0.004, 0.0, 32 | 1, 0.78, 0.92);
@@ -237,15 +238,9 @@ export function shopRecessTpl(o, L) {
 
 // Shopfront templates shared by the same-size shops of one design (key: lot seed and
 // design variant); the cache is bounded.
-const cache = new Map();
+const cache = new TplCache(600);
 /** {frame, glass, shutter, recess} templates for shopfront o with layout L. */
 export function shopTpls(design, o, L, q) {
   const key = `${design}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${o.recess.toFixed(2)}|${q}`;
-  let v = cache.get(key);
-  if (!v) {
-    if (cache.size > 600) cache.clear();
-    v = { frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, L, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null };
-    cache.set(key, v);
-  }
-  return v;
+  return cache.get(key, () => ({ frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, L, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null }));
 }

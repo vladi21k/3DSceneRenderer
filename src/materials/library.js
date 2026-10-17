@@ -5,6 +5,8 @@
 //   props    three.js material properties
 //   bake     recipe name (recipes/*.js) providing albedo + surface maps
 //   surf     runtime surface settings (see surface.js / surfaceUniforms)
+//   fx       shader feature family (surface.js FAMILY): 'lite' | 'stone' | 'paving'; by
+//            default derived from what the material uses (layout / detail / weathering)
 //   vc       vertex colour meaning for get(name, {vertexColors:true}):
 //            'tint'   multiplier around 1 (per-building stone tint × baked AO)
 //            'albedo' the paint / fabric colour itself (material colour reset to white)
@@ -36,8 +38,9 @@ const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 }
 // Granite setts: tone varies in broad wear patches (macro), hardly per paver.
 const PAVING_CELL = { value: 0.05, hue: 0.2, rough: 0.1, row: 0.3, a: [1.01, 1.0, 0.99], b: [0.98, 0.99, 1.02], out: [1.1, 1.1, 1.1, 0.02] };
 const PAVING_MACRO = { f1: 1 / 4, f2: 1 / 20, albedo: 0.12, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
-// crisp crystals at close range (mica dark and glossy, feldspar pale)
-const PAVING_DETAIL = { tex: 'granite', freq: 4, normal: 0.5, albedo: 1.0, rough: -0.6, farVar: 0.004 };
+// crystals at close range (mica darker and glossy, feldspar pale), low contrast: fine
+// grey granite, not terrazzo
+const PAVING_DETAIL = { tex: 'granite', freq: 4, normal: 0.5, albedo: 0.5, rough: -0.6, farVar: 0.004 };
 
 export const LIBRARY = {
   // ---------------------------------------------------------------- stone
@@ -83,6 +86,7 @@ export const LIBRARY = {
   'paving.street': {
     props: { roughness: 1 },
     bake: 'paving',
+    fx: 'paving',
     surf: {
       swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL,
       spots: { prob: 0.08, radius: 0.011, albedo: 0.5, rough: 0.5 },
@@ -93,11 +97,13 @@ export const LIBRARY = {
     meta: {
       paver: [0.4, 0.2], rows: 'across',
       uv: 'u = metres along the street, v = metres across = route offset d (ribbon UVs). Courses run across the street: the continuous, nearly invisible sand-filled bed joints lie across the track and the short dark head joints read as dashes along it. v = d also places the grime along the rails (d = ±1.6 ± 0.7455).',
+      laneAttr: 'get(\'paving.street\', {vertexColors: true, laneAttr: true}) takes the rail-lane grime position from a float vertex attribute aLaneD (route offset d, m) instead of v, so v can be set out freely (e.g. courses started from the rail mortar strips). One extra program.',
     },
   },
   'paving.sidewalk': {
     props: { roughness: 1, color: [1.02, 1.01, 0.99] },
     bake: 'paving',
+    fx: 'paving',
     surf: {
       scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL,
       spots: { prob: 0.14, radius: 0.011, albedo: 0.48, rough: 0.5 },
@@ -109,6 +115,7 @@ export const LIBRARY = {
   'paving.band': {
     props: { roughness: 1 },
     bake: 'band',
+    fx: 'paving',
     surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.07 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.15 }, stain: { amount: 0.12, freq: 0.5, threshold: 0.72 } },
     vc: 'tint',
     meta: { slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
@@ -116,6 +123,7 @@ export const LIBRARY = {
   'paving.platform': {
     props: { roughness: 1 },
     bake: 'platform',
+    fx: 'paving',
     surf: { cell: { value: 0.05, hue: 0.3, rough: 0.08, row: 0.2, a: [1.02, 1.0, 0.98], b: [0.98, 0.99, 1.02] }, macro: PAVING_MACRO, detail: { ...STONE_DETAIL, albedo: 0.25 }, spots: { prob: 0.12, radius: 0.009, albedo: 0.62, rough: 0.55 } },
     vc: 'tint',
     meta: { slab: [0.4, 0.4], uv: 'u along the platform, v across (m)' },
@@ -123,6 +131,7 @@ export const LIBRARY = {
   'paving.tactile': {
     props: { roughness: 1 },
     bake: 'tactile',
+    fx: 'paving',
     surf: { cell: { value: 0.04, hue: 0, rough: 0.05, row: 0 }, macro: PAVING_MACRO, detail: { ...STONE_DETAIL, normal: 0.3 } },
     vc: 'tint',
     meta: { tile: [0.3, 0.3], uv: 'metres; truncated domes on a 50 mm grid (warning strip at platform edges)' },
@@ -134,7 +143,7 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.05, rough: 0.25, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Polished running band (21-30 mm, roughness ~0.15, metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075; dull grey edge, brown oxide shoulders (roughness ~0.55, metal 0.6) and dusty steel elsewhere. The base values are final: no roughness multiplier is needed.',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Satin running band (21-30 mm, silver-grey, roughness 0.22-0.4 with lengthwise streaks and burn, never below 0.08; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075; dull grey edge, brown oxide shoulders (roughness ~0.55, metal 0.6) and dusty steel elsewhere. The base values are final: no roughness multiplier is needed (a multiplier of 1.45 makes the band ~0.3-0.45).',
       band: { centres: [0.043, 0], halfWidth: 0.0125, gaugeCorner: 0.075 },
     },
   },
@@ -158,11 +167,11 @@ export const LIBRARY = {
     meta: { note: 'black painted wrought / cast iron (balconies, railings, lamp scrolls)' },
   },
   'metal.pole': {
-    props: { color: [0.062, 0.067, 0.071], roughness: 1.15 },
+    props: { color: [0.125, 0.152, 0.148], roughness: 1.3 },
     bake: 'paint',
     surf: { macro: { albedo: 0.1, rough: 0.12, f1: 1 / 2, f2: 1 / 7 } },
     vc: 'albedo',
-    meta: { note: 'dark grey painted steel (lamp / catenary poles)' },
+    meta: { note: 'grey-green satin street-iron paint (lamp / catenary poles): linear (0.125, 0.152, 0.148), effective roughness ~0.5 (the roughness property multiplies the baked paint roughness ~0.4: pass 1.3 or omit it, not 0.5)' },
   },
   'metal.galvanized': {
     props: { metalness: 1, roughness: 1 },
@@ -254,6 +263,16 @@ export const LIBRARY = {
     vc: 'albedo',
     meta: { uv: 'grain along u (louvres horizontal)', note: 'painted timber; vertex colour = paint colour' },
   },
+  'wood.shutterDetail': {
+    props: { color: [0.035, 0.085, 0.055], roughness: 1 },
+    bake: 'paintwooddetail',
+    surf: { macro: { f1: 1 / 1.2, f2: 1 / 3, albedo: 0.08, rough: 0.1 } },
+    vc: 'albedo',
+    meta: {
+      uv: 'metres, grain along u (louvres horizontal), tile 1 m; offset u / v randomly per shutter',
+      note: 'close-range painted timber: grain telegraphing, brush marks and paint cracks along the grain, elongated chips showing primer / grey weathered wood (not tinted by the paint colour), faint lighter bead lines along u. Vertex colour = paint colour.',
+    },
+  },
   'wood.door': {
     kind: 'physical',
     props: { color: [0.36, 0.28, 0.22], roughness: 1, clearcoat: 0.6, clearcoatRoughness: 0.25 },
@@ -275,6 +294,16 @@ export const LIBRARY = {
     surf: { scale: 0.5, macro: { albedo: 0.06, rough: 0.1 } },
     vc: 'albedo',
     meta: { note: 'painted window / shop frames; vertex colour = paint colour' },
+  },
+  'paint.frameDetail': {
+    props: { color: [0.03, 0.055, 0.042], roughness: 1 },
+    bake: 'paintdetail',
+    surf: { macro: { f1: 1 / 1.3, f2: 1 / 3.5, albedo: 0.06, rough: 0.1 } },
+    vc: 'albedo',
+    meta: {
+      uv: 'metres (tile 1 m)',
+      note: 'close-range painted joinery: brush marks (stroke along u or v in patches), chipped paint showing pale primer and, in deeper chips, grey weathered wood (not tinted by the paint colour), a lighter putty fillet at v 0-10 mm and a bead line at v ≈ 18 mm of every 1 m tile row: lay frame UVs out as u along the member and v = metres from the glass edge to put them at the glass, and offset u by a random amount per opening so neighbours differ. Vertex colour = paint colour.',
+    },
   },
   'plastic.chair': {
     props: { color: [0.2, 0.42, 0.62], roughness: 1.05 },
@@ -331,7 +360,7 @@ export const LIBRARY = {
     bake: 'bark',
     surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.04 } },
     vc: 'tint',
-    meta: { uv: 'u around the trunk, v up (m)' },
+    meta: { uv: 'u around the trunk, v up (m), tile 0.8 × 1.6 m', note: 'grey-brown bark with broad interlacing furrows (normal + AO relief, up to 7 mm deep), lengthwise splits and subtle pale lenticel dashes (2-5 mm) on the ridges' },
   },
   'leaf': {
     props: { color: [0.06, 0.12, 0.028], roughness: 0.55, side: 'double' },

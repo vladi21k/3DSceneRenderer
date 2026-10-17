@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { lathe, tube, bar, rbox, xf, merge, quad, boxUV } from './kit.js';
-import { proto, placeMatrix } from './instancer.js';
+import { proto, placeMatrix, groundSink } from './instancer.js';
 import { uvRect } from './prints.js';
 import { buildChairGeometry } from './chairs.js';
 import { canopyGeo, umbrellaFrame, umbrellaBase, furledGeo } from './umbrella.js';
@@ -225,6 +225,9 @@ export function chairPose(app, cafeId, ti, ci) {
 }
 
 const _m = new THREE.Matrix4(), _c = new THREE.Color();
+// base radius (m) of each item for the sink into sloping paving (see groundSink)
+const FOOT = { chair: 0.28, table: 0.25, slab: 0.38, disc: 0.23, menu: 0.3 };
+const TABLE_H = 0.75;
 
 /** Add all cafés anchored in this chunk to the instancer. */
 export function placeCafes(chunk, app, inst, P, debug = null) {
@@ -235,7 +238,7 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
     const rng = RNG.from(layout.seed, 'cafeItems', cafe.id);
     cafe.tables.forEach((t, ti) => {
       for (const ch of t.chairs) {
-        placeMatrix(route, ch.s, ch.d, 0, ch.yaw, _m);
+        placeMatrix(route, ch.s, ch.d, 0, ch.yaw, _m, FOOT.chair);
         switch (cafe.chairStyle) {
           case 'bistro': inst.add(P.chair.bistro[st.weave], _m); break;
           case 'plastic': inst.add(P.chair.plastic, _m, _c.copy(st.plastic[rng.chance(0.5) ? 0 : 1]).multiplyScalar(rng.range(0.95, 1.03))); break;
@@ -244,14 +247,15 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
         }
       }
       const tyaw = t.shape === 'square' ? rng.range(-0.08, 0.08) : rng.range(0, 6.28);
-      placeMatrix(route, t.s, t.d, 0, tyaw, _m);
+      placeMatrix(route, t.s, t.d, 0, tyaw, _m, FOOT.table);
       inst.add(P.top[`${t.shape}${st.top}`], _m, _c.copy(st.topTint).multiplyScalar(rng.range(0.95, 1.04)));
       inst.add(P.base[st.base], _m);
       if (lod === 0) placeTableware(route, t, rng, inst, P, st.throughTable.has(ti));
     });
     for (const u of st.umbrellas) {
-      placeMatrix(route, u.s, u.d, 0, u.yaw, _m);
-      if (u.base === 'slab') inst.add(P.umb.slab, u.baseYaw ? placeMatrix(route, u.s, u.d, 0, u.yaw + u.baseYaw, new THREE.Matrix4()) : _m);
+      const uf = FOOT[u.base] ?? FOOT.table;
+      placeMatrix(route, u.s, u.d, 0, u.yaw, _m, uf);
+      if (u.base === 'slab') inst.add(P.umb.slab, u.baseYaw ? placeMatrix(route, u.s, u.d, 0, u.yaw + u.baseYaw, new THREE.Matrix4(), uf) : _m);
       else if (u.base === 'disc') inst.add(P.umb.disc, _m);
       if (u.furled && u.base !== 'table') {
         inst.add(P.umb.furledPole, _m);
@@ -263,7 +267,7 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
       }
     }
     if (st.menu) {
-      placeMatrix(route, st.menu.s, st.menu.d, 0, (cafe.side > 0 ? -Math.PI / 2 : Math.PI / 2) + st.menu.yaw, _m);
+      placeMatrix(route, st.menu.s, st.menu.d, 0, (cafe.side > 0 ? -Math.PI / 2 : Math.PI / 2) + st.menu.yaw, _m, FOOT.menu);
       inst.add(P.misc[`menu${st.menu.v}`], _m);
     }
     if (cafe.style === 'awning') placeScreens(cafe, st, app, inst, P);
@@ -273,8 +277,12 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
 
 function placeTableware(route, t, rng, inst, P, pole) {
   if (rng.chance(0.35)) return;
+  // on the (level) table top, whatever the paving does under each item
+  const topY = route.groundY(t.s, t.d) - groundSink(route, t.s, t.d, FOOT.table) + TABLE_H;
+  const onTop = (s, d) => topY - route.groundY(s, d);
   if (!pole && rng.chance(0.55)) {
-    placeMatrix(route, t.s + rng.range(-0.04, 0.04), t.d + rng.range(-0.04, 0.04), 0.75, rng.range(0, 3.14), _m);
+    const s = t.s + rng.range(-0.04, 0.04), d = t.d + rng.range(-0.04, 0.04);
+    placeMatrix(route, s, d, onTop(s, d), rng.range(0, 3.14), _m);
     inst.add(P.misc.napkin, _m);
   }
   for (const ch of t.chairs) {
@@ -282,7 +290,7 @@ function placeTableware(route, t, rng, inst, P, pole) {
     const dx = ch.s - t.s, dd = ch.d - t.d, l = Math.hypot(dx, dd) || 1;
     const r = rng.range(0.15, 0.2), side = rng.range(-0.08, 0.08);
     const s = t.s + (dx / l) * r - (dd / l) * side, d = t.d + (dd / l) * r + (dx / l) * side;
-    placeMatrix(route, s, d, 0.75, rng.range(0, 6.28), _m);
+    placeMatrix(route, s, d, onTop(s, d), rng.range(0, 6.28), _m);
     inst.add(rng.chance(0.6) ? P.misc.cup : P.misc.glass, _m);
   }
 }
@@ -303,7 +311,7 @@ function placeScreens(cafe, st, app, inst, P) {
   const gapAt = Math.floor(n / 2);
   for (let i = 0, x = x0; i < n; i++) {
     if (i === gapAt) x += door;
-    inst.add(P.misc.screen, placeMatrix(route, sMid + (x + pitch / 2) / k, dEdge, 0, side > 0 ? -Math.PI / 2 : Math.PI / 2, _m), st.screen);
+    inst.add(P.misc.screen, placeMatrix(route, sMid + (x + pitch / 2) / k, dEdge, 0, side > 0 ? -Math.PI / 2 : Math.PI / 2, _m, SCREEN_W / 2), st.screen);
     x += pitch;
   }
   // end returns towards the facade (1 m left free along the wall)
@@ -311,7 +319,7 @@ function placeScreens(cafe, st, app, inst, P) {
   for (const xe of [x0 - 0.03, x0 + run + 0.03]) {
     for (let i = 0; i < nr; i++) {
       const d = dEdge + side * (0.06 + pitch / 2 + i * pitch);
-      inst.add(P.misc.screen, placeMatrix(route, sMid + xe / k, d, 0, 0, _m), st.screen);
+      inst.add(P.misc.screen, placeMatrix(route, sMid + xe / k, d, 0, 0, _m, SCREEN_W / 2), st.screen);
     }
   }
 }

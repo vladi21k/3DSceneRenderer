@@ -23,8 +23,8 @@ import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT } from './be
 //
 // Strollers and bicycles (Mobility extension): a person pushing a stroller is pose 3 /
 // prop 1, a cyclist pose 4 / prop 2, someone walking a bicycle pose 5 / prop 2; propSeed
-// picks the model and colour, and `lean` (rad, + to the rider's right) is the bicycle's
-// lean from its turn rate, `steer` the handlebar angle (rad, + to the right). If the renderer cannot show a pose (no app.humans.supportsPose /
+// picks the model and colour, and `lean` (rad, + leans left, like three.js rotations) is the
+// bicycle's lean from its turn rate, `steer` the handlebar angle (rad, + to the left). If the renderer cannot show a pose (no app.humans.supportsPose /
 // cycleLength yet) those roles are not used and everyone walks; crowd_mob=force keeps them
 // anyway (for testing the behaviour), crowd_mob=0 turns them off.
 
@@ -53,7 +53,7 @@ class CrowdSim {
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
     this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [],
-      propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propWall: 0 };
+      propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propWall: 0, propWallLog: [] };
     // renderer slots; alloc may hand back the first index of our block
     const base = this.humans && this.humans.alloc ? this.humans.alloc(MAX_AGENTS) : 0;
     this.base = Number.isInteger(base) ? base : 0;
@@ -274,7 +274,7 @@ class CrowdSim {
         if (a.headValid && dt > 0) {
           let dh = a.heading - a.prevHead;
           dh = ((dh + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
-          lean = Math.atan((a.bikeV * (-dh / dt)) / 9.81);
+          lean = Math.atan((a.bikeV * (dh / dt)) / 9.81);   // + leans left (into a left turn)
           lean = Math.max(-0.45, Math.min(0.45, lean));
           a.lean += (lean - a.lean) * Math.min(1, dt * 6);
         }
@@ -286,8 +286,8 @@ class CrowdSim {
       const shown = a.mob && this.poseOK[a.mob];
       o.pose = shown ? MOB_POSE[a.mob] : a.pose;
       o.prop = shown ? MOB_PROP[a.mob] : 0; o.propSeed = a.propSeed; o.lean = shown ? a.lean : 0;
-      // handlebar angle (rad, + to the right) of a bicycle following its turn: tan δ = wheelbase · ω / v
-      o.steer = shown && a.mob === MOB.CYCLE ? Math.max(-0.5, Math.min(0.5, Math.atan((1.05 * a.yawW) / Math.max(0.8, a.bikeV)))) : 0;
+      // handlebar angle (rad, + to the left) of a bicycle following its turn: tan δ = wheelbase · ω / v
+      o.steer = shown && a.mob === MOB.CYCLE ? Math.max(-0.5, Math.min(0.5, Math.atan((1.05 * -a.yawW) / Math.max(0.8, a.bikeV)))) : 0;
       o.look = a.look; o.appearance = a.appearance; o.visible = true;
       H.set(this.base + a.slot, o);
     }
@@ -305,7 +305,7 @@ class CrowdSim {
       // (seated patrons sit where the layout put the chairs)
       if (a.state !== ST.SEATED && !a.inDoor && !map.mouthAt(a.s, side) && ad > map.wallAt(a.s, side) + 0.02) {
         ck.wall++;
-        if (ck.wallLog.length < 8) ck.wallLog.push({ s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), wall: +map.wallAt(a.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], kind: KIND_NAMES[a.kind], src: a.src });
+        if (ck.wallLog.length < 8) ck.wallLog.push({ s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), wall: +map.wallAt(a.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], kind: KIND_NAMES[a.kind], mob: a.mob, src: a.src });
       }
       if (a.state !== ST.SEATED && a.kind !== KIND.PASSENGER) {
         const n = map.gatherCircles(a.s, 1);
@@ -348,7 +348,10 @@ class CrowdSim {
     // facade
     for (const p of pts) {
       const side = p.d >= 0 ? 1 : -1;
-      if (!a.inDoor && !map.mouthAt(p.s, side) && Math.abs(p.d) + F.r > map.facadeAt(p.s, side) + 0.02) ck.propWall++;
+      if (!a.inDoor && !map.mouthAt(p.s, side) && Math.abs(p.d) + F.r > map.facadeAt(p.s, side) + 0.02) {
+        ck.propWall++;
+        if (ck.propWallLog.length < 6) ck.propWallLog.push({ t: +this.time.toFixed(1), mob: MOB_NAMES[a.mob], s: +route.wrap(p.s).toFixed(1), d: +p.d.toFixed(2), fac: +map.facadeAt(p.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], lead: !!a.leader });
+      }
     }
     // poles / trunks (mid point too)
     const ms = (pts[0].s + pts[1].s) / 2, md = (pts[0].d + pts[1].d) / 2;
@@ -419,7 +422,7 @@ class CrowdSim {
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked,
-        prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, wall: ck.propWall } } : null,
+        prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, wall: ck.propWall, wallLog: ck.propWallLog } } : null,
       population: pop.stats, events: this.events,
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },
       featureArrivalsInView: { under450m: this.featureIn[0], under660m: this.featureIn[1], beyond660m: this.featureIn[2] },

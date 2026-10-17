@@ -71,6 +71,8 @@ export class TramWatch {
   frontFor(a) {
     const vc = this.closing(a);
     let f = Math.max(SWEPT_AHEAD + 6, vc * a.clearT + 4);
+    // a tram gathering speed is noticed a little earlier (it will be faster than it looks)
+    if (this.acc > 0.2) f = Math.max(f, 12 + vc * 2.4);
     if (a.bellT > this.c.time) f = Math.max(f, vc * (a.clearT + 2.5) + 10);
     return f;
   }
@@ -148,13 +150,21 @@ export class TramWatch {
       const going = a.state === ST.GOTO;
       if (going && a.gd > RIDE_D + 1 && toHi / HURRY < tta - 2) hi = true;
       else if (going && a.gd < RIDE_D - 1 && toLo / HURRY < tta - 2) hi = false;
+      // a group steps off to the same side as its leader when there is time (families stay together)
+      const L = a.leader;
+      if (L && L.active && Math.abs(L.d - a.d) < 3.5) {
+        // (a leader crossing the street is headed for its far side)
+        const lHi = L.clearing ? L.clearTo > RIDE_D : L.task === TASK.CROSS && L.state === ST.GOTO ? L.gd > RIDE_D : L.d > RIDE_D;
+        const dist = lHi ? toHi : toLo;
+        if (dist / HURRY < tta - 1.5) hi = lHi;
+      }
       // beside a platform the safe place is between the tracks (passengers are on the platform anyway)
       const toPlatform = a.kind === KIND.PASSENGER || a.task === TASK.TO_PLATFORM || a.task === TASK.BOARD;
       // (someone already at the platform edge steps up onto it instead)
       if (hi && !toPlatform && dl < BAND - 0.3 && (c.map.stationAt(a.s) || c.map.stationAt(a.s + 6))) hi = false;
       // cyclists cannot get out through the pole line: they always leave towards the other track
       // (one crossing the street keeps going the way it is crossing)
-      if (a.mob === MOB.CYCLE) hi = a.state === ST.GOTO ? a.gd > a.d : a.mvOn && a.mvBand ? a.mvD1 > a.d : dl > 0 && footBandGap(a) > -0.25 && !c.map.stationAt(a.s);
+      if (a.mob === MOB.CYCLE) hi = a.state === ST.GOTO ? a.gd > a.d : a.mvOn && a.mvBand ? a.mvD1 > a.d : false;
       // step well clear when there is time, just clear when there is not
       const spare = ahead > 0 && this.v > 0.2 ? Math.min(1, Math.max(0, (ahead / this.v - 2) / 3)) : 1;
       a.clearHi = hi; a.clearSpare = spare;

@@ -281,7 +281,9 @@ export class Steering {
         fs -= (dx / dist) * f; fd -= (dy / dist) * f;
         // the way out to the side is behind this pole / trunk: slide along it to get round it
         if (!standing && Math.abs(dx) < r + AGENT_R + 0.1 && dy * (goalD - a.d) > 0 && Math.abs(goalD - a.d) > Math.abs(dy) - r) {
-          const away = dx > 0.02 ? -1 : dx < -0.02 ? 1 : (a.dir || 1);
+          // (a group member held back slides the way it wants to go: away from a dead end)
+          const held = a.leader && (a.singleT > c.time || a.stuckF > 0.3) && Math.abs(des.vs) > 0.1;
+          const away = held ? Math.sign(des.vs) : dx > 0.02 ? -1 : dx < -0.02 ? 1 : (a.dir || 1);
           fs += away * 1.6 * (1 - Math.abs(dx) / (r + AGENT_R + 0.1) + 0.3);
         }
       }
@@ -362,7 +364,6 @@ export class Steering {
           const pdist = Math.sqrt(pd2) || 1e-3;
           const push = Math.min(maxC, min - pdist);
           a.s -= ((dx - _foot.s) / pdist) * push; a.d -= ((dy - _foot.d) / pdist) * push;
-          if (c.dbgProp && push > 0.015 && c.dbgProp.length < 40) c.dbgProp.push({ slot: a.slot, t: +c.time.toFixed(2), mob: a.mob, push: +push.toFixed(3), d: +a.d.toFixed(2), od: +map.cD[i].toFixed(2), r: r, ods: +dx.toFixed(2), alpha: +a.alpha.toFixed(2), st: a.state, task: a.task, lane: a.lane, laneT: +a.laneT.toFixed(2), gd: +a.gd.toFixed(2), vs: +a.vs.toFixed(2), vd: +a.vd.toFixed(2), lead: !!a.leader, nf: a.nFollow });
         }
       }
     }
@@ -405,9 +406,13 @@ export class Steering {
     if (Math.abs(a.d) > wall) { a.d = side * Math.max(wall, Math.abs(a.d) - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
     // the prop is kept off the facade as well
     if (a.mob && a.fpR > 0) {
-      const out = side > 0 ? Math.max(a.fp0d, a.fp1d) : -Math.min(a.fp0d, a.fp1d);
-      const lim = map.facadeAt(a.s, side) - 0.06 - a.fpR;
-      const over = Math.abs(a.d) + out - lim;
+      // (at the prop's own s: facades step forward at lot boundaries)
+      let over = 0;
+      for (let e = 0; e < 2; e++) {
+        const ps = a.s + (e ? a.fp1s : a.fp0s), pd = side * (a.d + (e ? a.fp1d : a.fp0d));
+        if (map.mouthAt(ps, side)) continue;
+        over = Math.max(over, pd + a.fpR - (map.facadeAt(ps, side) - 0.06));
+      }
       if (over > 0) a.d -= side * Math.min(Math.max(maxC, 0.06), over);
     }
   }

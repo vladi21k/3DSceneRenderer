@@ -87,11 +87,15 @@ float iwCoverage( float a ) {
 }`;
 
 /** Near railing geometry: fades out by projected bar width (with the view-angle factor
- *  for bays, whose instance z axis is the railing normal); rust at the feet and in
- *  patches (amount: 0 none .. 1 neglected paint). */
+ *  for bays, whose instance z axis is the railing normal: angle 1; posts 0); rust at
+ *  the feet and in patches (amount: 0 none .. 1 neglected paint). Both are uniforms, so
+ *  black and painted bays and posts all share one program. */
 function nearPatch(mat, rust, angle) {
-  return chain(mat, `|ironNear${rust}${angle ? 'a' : ''}`, (sh) => {
-    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;');
+  const uIwRust = { value: rust }, uIwAngle = { value: angle ? 1 : 0 };
+  return chain(mat, '|ironNear', (sh) => {
+    sh.uniforms.uIwRust = uIwRust;
+    sh.uniforms.uIwAngle = uIwAngle;
+    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;\nuniform float uIwAngle;');
     sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
 	#ifdef USE_INSTANCING
 		vIwW = ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz;
@@ -100,13 +104,14 @@ function nearPatch(mat, rust, angle) {
 		vIwW = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 		vec3 iwN = normalize( mat3( modelMatrix ) * vec3( 0.0, 0.0, 1.0 ) );
 	#endif
-	vIwK = ${angle ? ANGLE_GLSL('abs( dot( iwN, normalize( cameraPosition - vIwW ) ) )') : '1.0'};
+	vIwK = mix( 1.0, ${ANGLE_GLSL('abs( dot( iwN, normalize( cameraPosition - vIwW ) ) )')}, uIwAngle );
 	vIwY = transformed.y;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>${FRAG_HEAD}
 varying vec3 vIwW;
 varying float vIwY;
 varying float vIwK;
+uniform float uIwRust;
 float iwRust = 0.0;
 float iwRn = 0.0;
 ${NOISE}`)
@@ -124,7 +129,7 @@ ${NOISE}`)
 		iwRn = iwNoise( q * 13.0 ) * 0.6 + iwNoise( q * 41.0 ) * 0.4;
 		float foot = 1.0 - smoothstep( 0.0, 0.2, vIwY );
 		float m = iwRn + 0.2 * foot - 0.66;
-		iwRust = ${f(rust)} * smoothstep( 0.0, 0.12, m );
+		iwRust = uIwRust * smoothstep( 0.0, 0.12, m );
 		vec3 rc = mix( vec3( 0.075, 0.032, 0.016 ), vec3( 0.2, 0.085, 0.035 ), iwNoise( q * 97.0 ) );
 		diffuseColor.rgb = mix( diffuseColor.rgb, rc, iwRust );
 	}`)
@@ -195,7 +200,8 @@ export function makeMaterials(app, atlas) {
   const lib = M.get('metal.iron');
 
   // clones keep the library surface patch (baked paint maps, macro wear, specular AA);
-  // bays and posts differ only in the view-angle factor (see header)
+  // bays and posts differ only in the view-angle factor (see header). All four share a
+  // program: their instances always carry a colour (white on black iron).
   const near = (name, rust, angle, painted) => {
     const m = nearPatch(lib.clone(), rust, angle);
     m.name = name;

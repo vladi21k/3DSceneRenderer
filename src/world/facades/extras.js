@@ -5,6 +5,9 @@ import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
 import { Tpl } from './geo.js';
 
+/** Global night emissive gain of the material library (1 when unavailable). */
+export const emissiveGain = (M) => (M && M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
+
 /**
  * Clear lantern glass: mostly transparent (premultiplied blending: the reflection is added
  * at full strength while what lies behind is only dimmed by the Fresnel share), so the
@@ -16,39 +19,43 @@ export function createLampGlass(M) {
     transparent: true, premultipliedAlpha: true, depthWrite: false,
   });
   m.name = 'facades.lampGlass';
+  const gain = emissiveGain(M);
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = U.uNight;
+    shader.uniforms.uEmGain = gain;
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;')
+      .replace('#include <common>', '#include <common>\nuniform float uNight;\nuniform float uEmGain;')
       .replace('#include <opaque_fragment>', `
 float fNVl = saturate( abs( dot( normal, normalize( vViewPosition ) ) ) );
 float aGl = 0.09 + 0.6 * pow( 1.0 - fNVl, 5.0 );
-vec3 hazeL = vec3( 1.0, 0.62, 0.32 ) * 0.0008 * smoothstep( 0.15, 0.7, uNight );
+vec3 hazeL = vec3( 1.0, 0.62, 0.32 ) * 0.0008 * smoothstep( 0.15, 0.7, uNight ) * uEmGain;
 gl_FragColor = vec4( totalDiffuse * 0.04 + totalSpecular + hazeL, aGl );`)
       .replace('#include <premultiplied_alpha_fragment>', '');
   };
-  m.customProgramCacheKey = () => 'facades.lampGlass.v2';
+  m.customProgramCacheKey = () => 'facades.lampGlass.v3';
   return m;
 }
 
 /** Lamp bulbs (frosted, ~2700 K) and the lit undersides of sign lamps: emissive from dusk. */
-export function createBulbMaterial() {
+export function createBulbMaterial(M) {
   const m = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.85, 0.84, 0.8), roughness: 0.35, metalness: 0 });
   m.name = 'facades.bulb';
   m.emissive = new THREE.Color(1.0, 0.62, 0.31);
+  const gain = emissiveGain(M);
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = U.uNight;
+    shader.uniforms.uEmGain = gain;
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;')
-      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 0.03;');
+      .replace('#include <common>', '#include <common>\nuniform float uNight;\nuniform float uEmGain;')
+      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 0.03 * uEmGain;');
   };
-  m.customProgramCacheKey = () => 'facades.bulb.v1';
+  m.customProgramCacheKey = () => 'facades.bulb.v2';
   return m;
 }
 
 /** Small faceted sphere (radius r) around c. */
 function bulb(t, c, r) {
-  const n = 12, rings = 5;
+  const n = 8, rings = 3;
   const P = (i, j) => {
     const th = Math.PI * (0.14 + (0.86 * j) / rings), ph = (2 * Math.PI * i) / n; // open at the cap
     return [c[0] + r * Math.sin(th) * Math.cos(ph), c[1] + r * Math.cos(th), c[2] + r * Math.sin(th) * Math.sin(ph)];
@@ -144,7 +151,7 @@ export function intercomTpl(q, rows = 4) {
     for (let r = 0; r < rows; r++) {
       const y = h / 2 - 0.085 - r * 0.035;
       t.box(-0.045, y - 0.01, 0.02, 0.025, y + 0.01, 0.023, 1, 0.75, 0.75);       // name strip
-      t.box(0.032, y - 0.009, 0.02, 0.05, y + 0.009, 0.028, 1 | 4 | 8 | 16 | 32, 1, 1); // button
+      t.box(0.032, y - 0.009, 0.02, 0.05, y + 0.009, 0.028, 1 | 32, 1, 1);             // button
     }
   }
   return t.bake();

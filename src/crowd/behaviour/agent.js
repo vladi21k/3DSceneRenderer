@@ -102,7 +102,7 @@ export class Agent {
     // mobility (strollers, bicycles)
     this.mob = 0;             // MOB role
     this.propSeed = 0;        // stroller / bicycle model and colour (renderer)
-    this.lean = 0;            // rider lean (rad, + to the right), from the turn rate
+    this.lean = 0;            // rider lean (rad, + leans left), from the turn rate
     this.fp0s = 0; this.fp0d = 0; this.fp1s = 0; this.fp1d = 0; this.fpR = 0; // prop capsule (route s / d)
     this.extLo = 0; this.extHi = 0; // how far the prop reaches past the body circle towards −d / +d
     this.extS = 0;            // ... and along s (either way)

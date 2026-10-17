@@ -402,6 +402,14 @@ export class Sky {
       return c;
     });
     this.pmrem = new THREE.PMREMGenerator(renderer);
+    // copies a finished progressive update into the live target (compiled up front)
+    this._copyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+      uniforms: { tSrc: { value: null } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: 'uniform sampler2D tSrc; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tSrc, vUv); }',
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false,
+    }));
+    this._copyQuad.frustumCulled = false;
     this.envRT = null;       // live target (scene.environment)
     this.backRT = null;      // progressive updates are filtered here, then copied over
     this._capStep = -1;      // -1 idle, 0..2 face pairs, 3 = PMREM
@@ -421,20 +429,39 @@ export class Sky {
     if (readback) this.readIrradiance();
   }
 
-  /** Synchronous read of the irradiance texels (a small stall; called sparingly). */
+  /** Synchronous read of the irradiance texels (a GPU stall: start-up only). */
   readIrradiance() {
     const r = this.renderer;
     const buf = this._irrBuf || (this._irrBuf = new Uint16Array(IRR_TEXELS * 4));
     try {
       r.readRenderTargetPixels(this.irrRT, 0, 0, IRR_TEXELS, 1, buf);
-      const h = THREE.DataUtils.fromHalfFloat;
-      const px = (i) => new THREE.Vector3(h(buf[i * 4]), h(buf[i * 4 + 1]), h(buf[i * 4 + 2]));
-      this.irradiance = {
-        horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3), horizonSun: px(4), horizonAnti: px(5),
-      };
+      this._decodeIrradiance(buf);
     } catch (e) {
       this.irradiance = null;
     }
+  }
+
+  /**
+   * Asynchronous read (pixel-pack buffer + fence, no stall); resolves true once
+   * this.irradiance holds the values of the texture as it was when called.
+   */
+  readIrradianceAsync() {
+    const r = this.renderer;
+    if (this._irrPending) return this._irrPending;
+    const buf = new Uint16Array(IRR_TEXELS * 4);
+    this._irrPending = r.readRenderTargetPixelsAsync(this.irrRT, 0, 0, IRR_TEXELS, 1, buf)
+      .then(() => { this._decodeIrradiance(buf); return true; })
+      .catch(() => { this.readIrradiance(); return true; })
+      .finally(() => { this._irrPending = null; });
+    return this._irrPending;
+  }
+
+  _decodeIrradiance(buf) {
+    const h = THREE.DataUtils.fromHalfFloat;
+    const px = (i) => new THREE.Vector3(h(buf[i * 4]), h(buf[i * 4 + 1]), h(buf[i * 4 + 2]));
+    this.irradiance = {
+      horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3), horizonSun: px(4), horizonAnti: px(5),
+    };
   }
 
   /**
@@ -483,15 +510,6 @@ export class Sky {
   /** Publish a finished progressive update: one full-target copy into the live map. */
   _pmremSwap() {
     const r = this.renderer, rt = this.envRT, prev = r.getRenderTarget();
-    if (!this._copyQuad) {
-      this._copyQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
-        uniforms: { tSrc: { value: null } },
-        vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-        fragmentShader: 'uniform sampler2D tSrc; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tSrc, vUv); }',
-        depthTest: false, depthWrite: false, blending: THREE.NoBlending,
-      }));
-      this._copyQuad.frustumCulled = false;
-    }
     this._copyQuad.material.uniforms.tSrc.value = this.backRT.texture;
     rt.scissorTest = false;
     rt.viewport.set(0, 0, rt.width, rt.height);

@@ -2,15 +2,15 @@ import * as THREE from 'three';
 import { RNG, hash2 } from '../core/rng.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
 import { facadePlan, archPoint } from './facadePlan.js';
-import { disposeObject } from './streaming.js';
 import { DESIGNS, RAIL_H } from './ironwork/patterns.js';
 import { bayGeometry, postGeometry, buildAtlas, atlasV, ATLAS, TOL } from './ironwork/railings.js';
 import {
-  slabPath, writeSlab, corbelGeometry, corbelTemplate, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE,
-  makeStoneMaterial, GRIME,
+  slabPath, writeSlab, writeSlabShadow, corbelGeometry, corbelTemplate, CORBEL, balusterGeometry, plinthProfile, copingProfile,
+  BALUSTRADE, makeStoneMaterial, GRIME, shadowTemplates, writeBalustradeShadow,
 } from './ironwork/stone.js';
-import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
-import { LodInstancer } from './ironwork/instancer.js';
+import { GeoWriter, PosWriter, writePos, sweepPath, box } from './ironwork/geo.js';
+import { InstanceCollector, InstancePool, FlagPool } from './ironwork/instancer.js';
+import { Strip } from './ironwork/strip.js';
 import {
   makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK,
 } from './ironwork/mats.js';
@@ -32,10 +32,19 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 // Railing cards are always present: they fade in under the geometry and take over from
 // it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only, light
 // consoles merged into the stone mesh and the same instanced plants as near chunks.
+//
+// Draw calls: nothing is drawn per chunk. Merged geometry goes into one strip per
+// material for the whole street (ironwork/strip.js: one draw per pass, culled per chunk
+// block) and instances into one pool per family (ironwork/instancer.js: one draw per
+// detail level in use). A chunk's build returns an empty marker group; its blocks and
+// instances are shown when the streamer shows the chunk and released on dispose.
+// Shadows come from two position-only strips of light stand-ins (slabs, consoles,
+// balusters, solid parts; and the thin parts, which only fine cascades draw), the
+// railing cards and the flags: the drawn consoles, balusters and railings cast nothing.
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
-const _c4 = new THREE.Matrix4(), _ap = {};
+const _c4 = new THREE.Matrix4(), _ap = {}, _pm = new THREE.Matrix4(), _fr = new THREE.Frustum();
 
 /** Time slice (ms per frame) for preparing upcoming chunks in update(). */
 const PREFETCH_MS = 0.5;
@@ -45,6 +54,7 @@ const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0
 const FLOWER_W = [0.3, 0.24, 0.2, 0.12, 0.08, 0.06];
 const POTS = [[0.42, 0.16, 0.08], [0.32, 0.11, 0.05], [0.36, 0.14, 0.06], [0.2, 0.1, 0.055], [0.07, 0.11, 0.07], [0.42, 0.41, 0.38]];
 const CHAIRS = [[0.75, 0.75, 0.72], [0.07, 0.2, 0.1], [0.5, 0.5, 0.48]];
+const WHITE = [1, 1, 1];
 const LEAFY = [0.09, 0.16, 0.05];
 const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 0.12, 0.1], [0.3, 0.45, 0.35], [0.75, 0.65, 0.2]];
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
@@ -238,15 +248,43 @@ const ironwork = {
       corbel: [[corbelGeometry(0, 0), corbelGeometry(0, 1)], [corbelGeometry(1, 0), corbelGeometry(1, 1)]],
       corbelFar: [corbelTemplate(0), corbelTemplate(1)],
       baluster: [balusterGeometry(0), balusterGeometry(1)],
+      shadow: shadowTemplates(),
     };
     this.att = buildAttachAssets();
     this.amats = makeAttachMaterials(app);
     this.app = app;
-    this.live = new Set();
-    this.jobs = new Map(); // chunk index * 2 + lod -> build job (see prefetch)
-    this.pool = [];        // spare merged-mesh writer sets
+    this.live = new Set();     // marker groups handed to the streamer
+    this.pending = new Set();  // ... whose chunk is not shown yet
+    this.jobs = new Map();     // chunk index * 2 + lod -> build job (see prefetch)
+    this.spare = [];           // spare writer sets
     this.uniforms = { uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden }; // for inspection / debugging
     this.lastPx = 0;
+
+    // street-wide meshes: merged strips per material, instance pools per family, flags
+    this.root = new THREE.Group();
+    this.root.name = 'ironwork';
+    app.scene.add(this.root);
+    // Near (lod 0) and far (lod 1) chunks fill separate strips: each ring then holds its
+    // chunks in route order, so the blocks a pass sees form a tight index span.
+    const strip = (mat, streams, name, opts) => {
+      const s = new Strip(mat, streams, { scene: app.scene, name: `ironwork:${name}`, ...opts });
+      this.root.add(s.mesh);
+      return s;
+    };
+    const set = (tag, k) => ({
+      stone: strip(this.stoneMat, ['normal', 'uv', 'color', 'aGk'], `stone${tag}`, { instanceColor: true, vCap: 1 << 17, iCap: 1 << 17 }),
+      cards: strip(this.mats.card, ['normal', 'uv', 'color'], `cards${tag}`, { castShadow: true, thin: true, vCap: 1 << 14, iCap: 3 << 13 }),
+      parts: strip(this.amats.parts, ['normal', 'uv', 'color'], `parts${tag}`, { vCap: 1 << (15 + k), iCap: 1 << (16 + k) }),
+      // shadow casters only (the stone program, never drawn in the view)
+      shadow: strip(this.stoneMat, [], `shadow${tag}`, { shadowOnly: true, instanceColor: true, vCap: 1 << (15 + k), iCap: 1 << (16 + k) }),
+    });
+    this.strips = { near: set('', 2), far: set('Far', 0) };
+    Object.assign(this.strips.near, {
+      stains: strip(this.amats.stain, ['normal', 'uv'], 'stains', { vCap: 1 << 10, iCap: 1 << 11 }),
+      thin: strip(this.stoneMat, [], 'thinShadow', { shadowOnly: true, thin: true, instanceColor: true, vCap: 1 << 15, iCap: 1 << 16 }),
+    });
+    this.pools = new Map();
+    this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root);
   },
 
   // ---------------------------------------------------------------- chunk jobs
@@ -268,27 +306,26 @@ const ironwork = {
       lod,                // detail level of the lot being built (may drop below the chunk's)
       chunkLod: lod,
       clutter: true,
-      inst: new LodInstancer(),
+      inst: new InstanceCollector(),
       w: this.writers(),
       flags: [],
-      bounds: [],         // facade centres (x, y, z, r): culling sphere of the merged meshes
+      bounds: [],         // facade centres (x, y, z, r): culling sphere of the chunk's blocks
     };
-    Object.assign(ctx, ctx.w); // ctx.stone, ctx.cards, ctx.parts, ctx.ac, ctx.stains
+    Object.assign(ctx, ctx.w); // ctx.stone, ctx.cards, ctx.parts, ctx.stains, ctx.shadow, ctx.thin
     return { index, lod, steps: this.steps(ctx, lots), ctx, group: undefined };
   },
 
-  /** Merged-mesh writers. The geometries of a chunk keep views of their buffers; when the
-   *  chunk is disposed the writers come back here, already grown to chunk size, so
-   *  builds rarely allocate. */
+  /** Writers of a chunk's merged geometry (one per strip). Their contents are copied into
+   *  the strips when the chunk is finished, so a few sets, grown to chunk size, are reused. */
   writers() {
-    return this.pool.pop() || {
+    return this.spare.pop() || {
       stone: new GeoWriter(16384, { kind: true }), cards: new GeoWriter(4096), parts: new GeoWriter(32768),
-      ac: new GeoWriter(1024), stains: new GeoWriter(256),
+      stains: new GeoWriter(256), shadow: new PosWriter(16384), thin: new PosWriter(2048),
     };
   },
 
   recycle(w) {
-    if (w && this.pool.length < 4) { for (const k in w) w[k].reset(); this.pool.push(w); }
+    if (w && this.spare.length < 4) { for (const k in w) w[k].reset(); this.spare.push(w); }
   },
 
   /** The build steps of a chunk: one per balcony, one per facade's attachments. */
@@ -342,7 +379,7 @@ const ironwork = {
     else if (j.ctx) this.recycle(j.ctx.w);
   },
 
-  build(chunk, app) {
+  build(chunk) {
     const key = chunk.index * 2 + (chunk.lod ? 1 : 0);
     let j = this.jobs.get(key);
     if (j) this.jobs.delete(key);
@@ -350,12 +387,45 @@ const ironwork = {
     this.runJob(j, Infinity);
     const g = j.group;
     if (!g) return null;
+    // drawn from the moment the streamer shows the chunk (see update / dispose)
     this.live.add(g);
-    // pick the detail levels now, so the first frame already draws the instances
-    const L = this.limits(this.lastPx || uIronPx.value);
-    for (const s of g.userData.sets) if (s.cls) LodInstancer.partition(s, app.camera.position, L[s.cls]);
-    g.userData.fresh = false;
+    this.pending.add(g);
     return g;
+  },
+
+  /** True once the streamer shows the chunk group a marker belongs to. */
+  shown(g) {
+    const c = g.parent;
+    return !!(c && c.visible && c.parent);
+  },
+
+  /** Starts drawing a chunk's blocks, instances and flags. */
+  activate(g) {
+    this.pending.delete(g);
+    const u = g.userData;
+    u.active = true;
+    for (const [strip, b] of u.blocks) strip.activate(b);
+    for (const [pool, e] of u.entries) pool.attach(e);
+    if (u.flags) this.flagPool.attach(u.flags);
+  },
+
+  /** Brings the instance pools and flags up to date (view culling per chunk, levels,
+   *  packing) for this frame's camera (final once cameraRig has run). */
+  refresh(force = false) {
+    const camera = this.app.camera;
+    camera.updateMatrixWorld();
+    _pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _fr.setFromProjectionMatrix(_pm, camera.coordinateSystem, camera.reversedDepth);
+    const L = this.limits(this.lastPx || uIronPx.value), cam = camera.position;
+    for (const p of this.pools.values()) p.update(cam, p.cls ? L[p.cls] : null, force, _fr);
+    this.flagPool.flush();
+  },
+
+  /** The pool of an instance family (created with its first entry). */
+  poolOf(e) {
+    let p = this.pools.get(e.key);
+    if (!p) this.pools.set(e.key, (p = new InstancePool(e.key, e.levels, e.material, e.opts, this.root)));
+    return p;
   },
 
   /** Prepares the chunks the streamer will ask for next, within a per-frame time slice:
@@ -400,10 +470,12 @@ const ironwork = {
     const tint = st.tint;
     const dirt = r.range(0.88, 1.0);
 
-    // ---- slab
+    // ---- slab (and its shadow caster)
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
+    const path = slabPath(u0, u1, D, rc);
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
-    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt, D);
+    writeSlab(ctx.stone, path, y, T, st.slabVariant, lod, dirt, D);
+    writeSlabShadow(ctx.shadow.setMatrix(F), path, y, T, st.slabVariant, lod);
 
     // ---- consoles, on the piers between the openings below
     if (st.corbel >= 0) {
@@ -415,9 +487,11 @@ const ironwork = {
         const variant = h < Hc * 0.8 ? 1 : st.corbel;
         _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
         _m.multiplyMatrices(F, _l);
-        // far chunks: merged into the stone mesh; near: instanced, carved or light per instance
+        // far chunks: merged into the stone mesh; near: instanced, carved or light per
+        // instance. The light console casts the shadow either way.
         if (lod) writeTemplate(ctx.stone.kind(GRIME.NONE), this.geo.corbelFar[variant], _m, c);
         else inst.add(`corbel${variant}`, this.geo.corbel[variant], this.stoneMat, _m, c, { cls: 'carve', radius: 1 });
+        writePos(ctx.shadow, this.geo.shadow.corbel[variant], _m);
       }
     }
 
@@ -450,7 +524,7 @@ const ironwork = {
         _l.makeScale(0.82, 1, 1).setPosition(THREE.MathUtils.clamp(u, u0 + 0.45, u1 - 0.45), top - 0.19, w);
         _m.multiplyMatrices(F, _l);
         this.planter(ctx, _m, potCol, flower());
-        if (!lod && iron) writeTemplate(ctx.parts, A.hooks[outside ? 0 : 1], _m);
+        if (!lod && iron) this.part(ctx, A.hooks[outside ? 0 : 1], _m);
       }
     }
     if (lod || !ctx.clutter) return;
@@ -462,7 +536,7 @@ const ironwork = {
         const w = D - r.range(0.25, 0.32);
         const s = r.range(0.8, 1.2);
         _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y, w);
-        writeTemplate(ctx.parts, A.pot, _m.multiplyMatrices(F, _l), r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)]);
+        this.part(ctx, A.pot, _m.multiplyMatrices(F, _l), r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)]);
         _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y + 0.2 * s, w);
         // not every pot is in bloom: a green tint turns the umbels into more foliage
         this.plant(ctx, 0, _m.multiplyMatrices(F, _l), r.chance(0.75) ? flower() : LEAFY);
@@ -471,7 +545,7 @@ const ironwork = {
     // a plastic chair
     if (r.chance(0.1) && D > 0.75) {
       _l.makeRotationY(r.range(-0.6, 0.6) + (r.chance(0.5) ? 0 : Math.PI)).setPosition(u0 + len * r.range(0.2, 0.8), y, D * 0.5);
-      writeTemplate(ctx.parts, A.chair, _m.multiplyMatrices(F, _l), CHAIRS[r.int(0, CHAIRS.length - 1)]);
+      this.part(ctx, A.chair, _m.multiplyMatrices(F, _l), CHAIRS[r.int(0, CHAIRS.length - 1)]);
     }
     // an AC unit standing on the balcony floor beside the door
     const door = plan.openings.find((o) => o.balcony === index);
@@ -484,7 +558,7 @@ const ironwork = {
     // a towel or rug airing over the front rail
     if (iron && r.chance(0.04)) {
       _l.makeScale(r.range(0.5, 0.9), 1, 1).setPosition(u0 + len * r.range(0.25, 0.75), top, D - 0.05);
-      writeTemplate(ctx.parts, A.towel, _m.multiplyMatrices(F, _l), TOWELS[r.int(0, TOWELS.length - 1)]);
+      this.part(ctx, A.towel, _m.multiplyMatrices(F, _l), TOWELS[r.int(0, TOWELS.length - 1)]);
     }
     // a flag on the front corner post
     if (iron && r.chance(0.012)) this.flag(ctx, F, r.chance(0.5) ? u0 + 0.05 : u1 - 0.05, y + 0.85, D - 0.05, st, r, 0.6);
@@ -526,7 +600,7 @@ const ironwork = {
         const k = r.int(1, plan.bays.length - 1);
         _p.set(plan.bays[k].u0, fl.y + r.range(1.1, 1.8), 0.42).applyMatrix4(F);
         _l.lookAt(_c.set(0, 0, 0), _q.copy(DISH_DIR).negate(), _b.set(0, 1, 0)).setPosition(_p);
-        writeTemplate(ctx.parts, A.dish, _l, [1, 1, 1]);
+        this.part(ctx, A.dish, _l);
       }
     }
   },
@@ -536,7 +610,7 @@ const ironwork = {
    *  when a chunk is rebuilt at full detail. */
   planter(ctx, m, potCol, flowerCol) {
     const A = this.att;
-    writeTemplate(ctx.parts, A.box, m, potCol);
+    this.part(ctx, A.box, m, potCol);
     // the plant geometry is 0.8 m long, the box template 1 m: rescale to the box length
     _l.makeScale(1 / 0.8, 1, 1).setPosition(0, 0.16, 0);
     this.plant(ctx, 1, _c4.multiplyMatrices(m, _l), flowerCol);
@@ -545,18 +619,29 @@ const ironwork = {
   /** Instanced geranium (kind 0 pot, 1 planter): full and light versions per instance. */
   plant(ctx, kind, m, tint) {
     const P = this.att.plants;
-    ctx.inst.add(`plant${kind}`, [P[0][kind], P[1][kind]], this.amats.plant, m, tint, { cls: 'carve', castShadow: false });
+    ctx.inst.add(`plant${kind}`, [P[0][kind], P[1][kind]], this.amats.plant, m, tint, { cls: 'carve' });
+  },
+
+  /** A part template into the merged parts mesh, and its stand-in into the shadow caster
+   *  it belongs to (solid, or small / thin for the fine cascades). Far chunks' parts cast
+   *  no shadow (planters and AC bodies a few pixels tall). */
+  part(ctx, t, m, tint = WHITE) {
+    writeTemplate(ctx.parts, t, m, tint);
+    if (ctx.chunkLod) return;
+    const c = this.att.cast.get(t);
+    if (c) writePos(ctx.shadow, c, m);
+    else { const th = this.att.thin.get(t); if (th) writePos(ctx.thin, th, m); }
   },
 
   /** Split AC unit (matrix: unit frame on the wall): textured body, pipes, brackets and
    *  the wall stain (the body alone in far chunks). */
   acUnit(ctx, m, wallMounted) {
     const A = this.att;
-    writeTemplate(ctx.ac, A.acBody, m, wallMounted ? [1, 1, 1] : [0.92, 0.92, 0.92]);
+    this.part(ctx, A.acBody, m, wallMounted ? WHITE : [0.92, 0.92, 0.92]);
     if (ctx.lod) return; // pipes and brackets are sub-pixel beyond 200 m
-    writeTemplate(ctx.parts, A.acPipes, m);
+    this.part(ctx, A.acPipes, m);
     if (wallMounted) {
-      writeTemplate(ctx.parts, A.acBrackets, m);
+      this.part(ctx, A.acBrackets, m);
       writeTemplate(ctx.stains, A.acStain, m);
     }
   },
@@ -571,7 +656,7 @@ const ironwork = {
     // pole (template is along +y); a 3 cm pole is sub-pixel in far chunks
     _c.crossVectors(p, q);
     _l.makeBasis(q, p, _c).setPosition(base);
-    if (!ctx.lod) writeTemplate(ctx.parts, this.att.pole, _l, [1, 1, 1]);
+    if (!ctx.lod) this.part(ctx, this.att.pole, _l);
     // cloth: local x = fly (q), y = along the pole (p), hoist top at 1.85 m up the pole
     const s = size;
     _m.makeBasis(_q.copy(q).multiplyScalar(s), _a.copy(p).multiplyScalar(s), _c.clone().multiplyScalar(s)).setPosition(base.clone().addScaledVector(p, 1.85));
@@ -587,7 +672,8 @@ const ironwork = {
     const painted = st.paint >= 0;
     const mat = painted ? this.mats.paint : this.mats.iron;
     const postMat = painted ? this.mats.paintPost : this.mats.ironPost;
-    const color = painted ? PAINTS[st.paint] : null;
+    // (black iron instances are white: every railing pool has instance colours)
+    const color = painted ? PAINTS[st.paint] : WHITE;
     const hs = st.railH;
     const i = 0.05; // railing centre line inset from the slab edge
     const rp = [[u0 + i, 0], [u0 + i, D - i], [u1 - i, D - i], [u1 - i, 0]];
@@ -606,7 +692,7 @@ const ironwork = {
         for (let b = 0; b < nb; b++) {
           const o = b * design.W * sx;
           _l.set(tu * sx, 0, -tw, A[0] + tu * o, 0, hs, 0, y, tw * sx, 0, tu, A[1] + tw * o, 0, 0, 0, 1);
-          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, { cls: 'rail', castShadow: false, radius: 0.8, angle: true });
+          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, { cls: 'rail', radius: 0.8, angle: true });
         }
       }
       // card for this run (also casts the railing shadow at every distance)
@@ -626,7 +712,7 @@ const ironwork = {
       }
       if (!lod) {
         _l.makeScale(1, hs, 1).setPosition(P[0], y, P[1]);
-        inst.add(`post${painted ? 'p' : ''}`, this.geo.post, postMat, _m.multiplyMatrices(F, _l), color, { cls: 'post', castShadow: false, radius: 1.2 });
+        inst.add(`post${painted ? 'p' : ''}`, this.geo.post, postMat, _m.multiplyMatrices(F, _l), color, { cls: 'post', radius: 1.2 });
       }
     }
   },
@@ -636,8 +722,9 @@ const ironwork = {
     const { y, depth: D, u0, u1 } = bal;
     const i = 0.13;
     const path = slabPath(u0 + i, u1 - i, D - i, Math.max(0, rc - i * 0.5), 0.04);
-    const S = ctx.stone;
+    const S = ctx.stone, SW = ctx.shadow;
     S.setMatrix(_m.multiplyMatrices(F, _l.makeTranslation(0, y, 0)));
+    SW.setMatrix(_m);
     S.color(tint[0], tint[1], tint[2]);
     sweepPath(S, path, plinthProfile(), { shadeFn: (o, v) => (v < 0.02 ? 0.8 : 0.95) });
     sweepPath(S, path, copingProfile(lod), { shadeFn: (o, v) => (v < BALUSTRADE.H - BALUSTRADE.COPING + 0.01 ? 0.75 : 1) });
@@ -646,6 +733,7 @@ const ironwork = {
     const ped = [path[0], path[path.length - 1]];
     if (rc <= 0.01) ped.push(path[1], path[2]);
     for (const P of ped) box(S, P[0], BALUSTRADE.PLINTH + hP / 2, P[1], 0.2, hP, 0.2, 0.85, 'ud');
+    writeBalustradeShadow(SW, path, ped);
     // far: one darkened panel per run stands in for the row of balusters (at 200 m and
     // beyond they read as a mid-tone band anyway)
     if (lod) {
@@ -660,6 +748,9 @@ const ironwork = {
           const c = S.v(B[0], y1, B[1], nx * sg, 0, nz * sg, l, y1), d = S.v(A[0], y1, A[1], nx * sg, 0, nz * sg, 0, y1);
           if (sg > 0) S.quad(a, b, c, d); else S.quad(b, a, d, c);
         }
+        // its shadow: the balusters' half-open row as one panel
+        const a = SW.v(A[0], y0, A[1]), b = SW.v(B[0], y0, B[1]), c = SW.v(B[0], y1, B[1]), d = SW.v(A[0], y1, A[1]);
+        SW.quad(a, b, c, d); SW.quad(b, a, d, c);
       }
       return;
     }
@@ -678,63 +769,53 @@ const ironwork = {
         if (j === n && k < path.length - 2) continue; // shared with the next segment
         _l.makeRotationY(r.range(0, Math.PI)).setPosition(u, y + BALUSTRADE.PLINTH, w);
         inst.add('baluster', this.geo.baluster, this.stoneMat, _m.multiplyMatrices(F, _l), col, { cls: 'carve' });
+        writePos(ctx.thin, this.geo.shadow.baluster, _m);
       }
     }
   },
 
+  /** Hands a finished chunk's geometry to the strips (inactive blocks: vertex data is
+   *  uploaded now, drawing starts on activate) and returns its marker group, or null. */
   finish(ctx) {
-    const group = new THREE.Group();
-    group.name = 'ironwork';
-    const add = (W, mat, name, shadow, colors = true) => {
-      if (!W.count) return;
-      const mesh = new THREE.Mesh(W.toGeometry({ bounds: false, colors }), mat);
-      mesh.castShadow = shadow; mesh.receiveShadow = true;
-      mesh.name = `ironwork:${name}`;
-      group.add(mesh);
-    };
-    add(ctx.stone, this.stoneMat, 'stone', true);
-    add(ctx.cards, this.mats.card, 'cards', true);
-    add(ctx.parts, this.amats.parts, 'parts', !ctx.chunkLod);
-    add(ctx.ac, this.amats.ac, 'ac', !ctx.chunkLod);
-    add(ctx.stains, this.amats.stain, 'stains', false, false);
-    // one conservative sphere for all merged meshes (cheaper than scanning their vertices)
+    // one conservative sphere for all of the chunk's blocks (cheaper than scanning vertices)
     const sphere = boundsOf(ctx.bounds);
-    for (const m of group.children) m.geometry.boundingSphere = sphere.clone();
-    if (ctx.flags.length) {
-      // per-chunk copy of the cloth grid carrying the per-flag design / phase attribute
-      // (copied, not shared: disposing a chunk frees its geometry's GL buffers)
-      const src = this.att.flag, geo = new THREE.BufferGeometry();
-      for (const k of ['position', 'normal', 'uv']) geo.setAttribute(k, src.attributes[k].clone());
-      geo.setIndex(src.index.clone());
-      const n = ctx.flags.length, fa = new Float32Array(n * 3);
-      const mesh = new THREE.InstancedMesh(geo, this.amats.flag, n);
-      const fb = new THREE.Box3();
-      ctx.flags.forEach((f, i) => {
-        mesh.setMatrixAt(i, f.m);
-        fa[i * 3] = f.uv[0]; fa[i * 3 + 1] = f.uv[1]; fa[i * 3 + 2] = f.phase;
-        fb.expandByPoint(_p.setFromMatrixPosition(f.m));
-      });
-      geo.setAttribute('aFlag', new THREE.InstancedBufferAttribute(fa, 3));
-      // the cloth hangs and moves up to ~1.5 m from the hoist: pad the culling sphere
-      mesh.boundingSphere = fb.getBoundingSphere(new THREE.Sphere());
-      mesh.boundingSphere.radius += 1.8;
-      mesh.customDepthMaterial = this.amats.flagDepth;
-      mesh.castShadow = mesh.receiveShadow = true;
-      mesh.name = 'ironwork:flags';
-      group.add(mesh);
+    const blocks = [], S = ctx.chunkLod ? this.strips.far : this.strips.near;
+    for (const k in S) {
+      const b = S[k].alloc(ctx.w[k], sphere);
+      if (b) blocks.push([S[k], b]);
     }
-    const sets = ctx.inst.build(group);
-    if (!group.children.length) { this.recycle(ctx.w); return null; }
-    // the geometries view the writers' buffers: they are recycled with the chunk
-    Object.assign(group.userData, { sets, fresh: true, lod: ctx.chunkLod, writers: ctx.w });
-    return group;
+    const entries = ctx.inst.entries().map((e) => [this.poolOf(e), e]);
+    let flags = null;
+    if (ctx.flags.length) {
+      // matrices plus the per-flag design offset and wave phase
+      const n = ctx.flags.length;
+      flags = { n, m: new Float32Array(n * 16), a: new Float32Array(n * 3), box: new THREE.Box3() };
+      ctx.flags.forEach((f, i) => {
+        f.m.toArray(flags.m, i * 16);
+        flags.a[i * 3] = f.uv[0]; flags.a[i * 3 + 1] = f.uv[1]; flags.a[i * 3 + 2] = f.phase;
+        flags.box.expandByPoint(_p.setFromMatrixPosition(f.m));
+      });
+    }
+    this.recycle(ctx.w);
+    if (!blocks.length && !entries.length && !flags) return null;
+    const g = new THREE.Group();
+    g.name = 'ironwork';
+    Object.assign(g.userData, { blocks, entries, flags, active: false, lod: ctx.chunkLod });
+    return g;
   },
 
-  dispose(obj) {
-    this.live.delete(obj);
-    disposeObject(obj);
-    this.recycle(obj.userData.writers);
-    obj.userData.writers = null;
+  /** Releases a chunk's blocks, instances and flags. When an upgraded chunk replaces this
+   *  one, the streamer has just shown it: it starts drawing in the same frame. */
+  dispose(g) {
+    this.live.delete(g);
+    this.pending.delete(g);
+    const u = g.userData;
+    for (const [strip, b] of u.blocks || []) strip.free(b);
+    for (const [pool, e] of u.entries || []) pool.detach(e);
+    if (u.flags) this.flagPool.detach(u.flags);
+    u.blocks = u.entries = null; u.flags = null;
+    for (const p of this.pending) if (p.userData.index === u.index && this.shown(p)) this.activate(p);
+    this.refresh();
   },
 
   /** Distance limits per detail class for the current projection (see header). The
@@ -753,18 +834,13 @@ const ironwork = {
     uIronPx.value = px;
     const post = app.post;
     uIronA2C.value = post && !post.disabled && post.sceneRT ? post.sceneRT.samples | 0 : 0;
-    const cam = app.camera.position;
-    // a zoom changes every limit; otherwise a set is revisited once the camera has moved
-    // further than the slack its last partition left
+    // a zoom changes every limit; otherwise an entry is revisited once the camera has
+    // moved further than the slack its last partition left
     const zoomed = Math.abs(px - this.lastPx) > 0.01 * px;
     if (zoomed) this.lastPx = px;
-    const L = this.limits(this.lastPx);
     this.prefetch(app);
-    for (const g of this.live) {
-      const u = g.userData, force = zoomed || u.fresh;
-      u.fresh = false;
-      for (const s of u.sets) if (s.cls && (force || LodInstancer.stale(s, cam))) LodInstancer.partition(s, cam, L[s.cls]);
-    }
+    for (const g of this.pending) if (this.shown(g)) this.activate(g);
+    this.refresh(zoomed);
   },
 };
 

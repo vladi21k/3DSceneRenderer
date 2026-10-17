@@ -10,10 +10,10 @@ export function parapetProfile(h, t = 0.3) {
 export function balustradeBase(h) { return [[0.02, 0], [0.02, h - 0.03], [0, h], [-0.3, h], [-0.3, 0]]; }
 export function balustradeRail(h) { return [[0.03, 0], [0.05, 0.02], [0.05, h - 0.03], [0.02, h], [-0.33, h], [-0.35, h - 0.03], [-0.35, 0.02], [-0.33, 0]]; }
 
-/** Turned baluster (vase shape), radius profile [[r, y]] for a lathe, height h. */
+/** Turned baluster (vase shape), radius profile [[r, y]] for a lathe, height h (the top ends under the rail). */
 export function balusterProfile(h) {
   const f = (r, y) => [r, y * h];
-  return [f(0.065, 0), f(0.05, 0.1), f(0.085, 0.3), f(0.075, 0.48), f(0.035, 0.74), f(0.065, 0.86), f(0.065, 0.97), f(0.0, 1.0)];
+  return [f(0.065, 0), f(0.05, 0.1), f(0.085, 0.3), f(0.075, 0.48), f(0.035, 0.74), f(0.065, 0.86), f(0.065, 1.0)];
 }
 
 /** Front balustrade: base, turned balusters, dies at the ends and every few metres, rail. */
@@ -57,7 +57,7 @@ export function balustrade(B, s, path, v0, h, q) {
       const n = Math.max(1, Math.round((b - a) / 0.27));
       for (let j = 0; j <= n; j++) {
         const t = a + (b - a) * (j / n);
-        B.lathe(s, prof, ua + du * t + ow, wa + dw * t + oww, v0 + baseH, 6);
+        B.lathe(s, prof, ua + du * t + ow, wa + dw * t + oww, v0 + baseH, 5);
       }
     }
   }
@@ -265,26 +265,22 @@ export function solarHeater(B, sinks, frameYaw, q, rng, stand = 0, n = rng.chanc
   // tank above the top edge of the collectors
   const tankR = rng.range(0.24, 0.3), tankL = Math.max(1.3, totalW * 0.85);
   const tv = foot + rise + tankR + 0.12, tw = -run / 2 - 0.05;
+  // (seen from the street far below: no rims or strap bands, and far away no frame tops,
+  // base rails or braces)
   B.flat = rng.chance(0.75) ? [0.88, 0.88, 0.86] : [0.55, 0.56, 0.58];
-  B.cylinderU(sP, -tankL / 2, tankL / 2, tv, tw, tankR, q.lod ? 8 : 14, true);
-  if (q.lod === 0) {
-    // rolled end rims and the strap bands of the tank
-    const f = B.flat;
-    B.flat = f.map((x) => x * 0.8);
-    for (const x of [-tankL / 2 + 0.02, tankL / 2 - 0.05, -0.35, 0.32]) B.cylinderU(sP, x, x + 0.03, tv, tw, tankR + 0.008, 12, false);
-    B.flat = f;
-  }
+  B.cylinderU(sP, -tankL / 2, tankL / 2, tv, tw, tankR, q.lod ? 6 : 12, true);
   // frame: legs and rails (galvanised angle)
   B.flat = [0.8, 0.8, 0.8];
-  const leg = 0.035;
+  const leg = 0.035, legF = FACES.LEFT | FACES.RIGHT | FACES.FRONT | FACES.BACK;
   for (const x of [-totalW / 2 + 0.05, totalW / 2 - 0.05]) {
-    B.box(sM, x - leg, x + leg, 0, foot + rise + 0.05, -run / 2 - leg, -run / 2 + leg, FACES.SIDES & ~FACES.BOTTOM | FACES.FRONT | FACES.BACK);
-    B.box(sM, x - leg, x + leg, 0, foot, run / 2 - leg, run / 2 + leg, FACES.ALL & ~FACES.BOTTOM);
+    B.box(sM, x - leg, x + leg, 0, foot + rise + 0.05, -run / 2 - leg, -run / 2 + leg, legF);
+    B.box(sM, x - leg, x + leg, 0, foot, run / 2 - leg, run / 2 + leg, legF);
     if (q.lod === 0) {
       // tank cradle
-      B.box(sM, x - leg, x + leg, foot + rise + 0.02, tv - tankR * 0.6, tw - tankR * 0.8, tw + tankR * 0.8, FACES.ALL & ~FACES.BOTTOM);
+      B.box(sM, x - leg, x + leg, foot + rise + 0.02, tv - tankR * 0.6, tw - tankR * 0.8, tw + tankR * 0.8, legF | FACES.BOTTOM);
     }
   }
+  if (q.lod) return;
   B.box(sM, -totalW / 2, totalW / 2, 0, 0.06, -run / 2 - 0.05, run / 2 + 0.05, FACES.TOP | FACES.FRONT | FACES.BACK | FACES.LEFT | FACES.RIGHT);
   if (stand > 0.3) {
     // braces of a raised stand: rails front to back and across, half way up

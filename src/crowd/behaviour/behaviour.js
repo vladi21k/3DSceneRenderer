@@ -55,6 +55,11 @@ function tramLane(c, a, d) {
       return c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3;
     }
   }
+  // a stroller / walked bicycle on the ride side waits on the sidewalk proper, not among the poles
+  if (hi && a.mob) {
+    const bi = c.map.bandInAt(a.s, 1), bo = c.map.bandOutAt(a.s, 1);
+    if (bo - bi > 1.3) return Math.max(RIDE_D + pdHi, bi + 0.75);
+  }
   return hi ? RIDE_D + pdHi + a.laneF * 0.35 : RIDE_D - pdLo - a.laneF * 1.1;
 }
 
@@ -113,6 +118,8 @@ export function desired(c, a, out) {
         out.vs = vs * cj - vd * sj; out.vd = vs * sj + vd * cj;
         a.gd = a.laneT;
         if (a.uturnT > 0) uturn(c, a, out);
+        // a child fallen behind: slow down and wait for them, looking back
+        if (a.nFollow) waitForChild(c, a, out);
         break;
       }
       case ST.GOTO: {
@@ -139,6 +146,20 @@ export function desired(c, a, out) {
     out.vmax = Math.max(out.vmax, sp * 1.1);
     a.moving = true;
   } else c.tram.filterDesired(a, out);
+}
+
+/** Parents wait for a child that has fallen behind (a pole, a crowd, a corner). */
+function waitForChild(c, a, out) {
+  let far = 0, who = null;
+  for (const f of a.followers) {
+    if (!f.isChild) continue;
+    const dd = Math.hypot(f.s - a.s, f.d - a.d);
+    if (dd > far) { far = dd; who = f; }
+  }
+  if (far < 2.6) return;
+  const k = Math.max(0, 1 - (far - 2.6) / 1.6);
+  out.vs *= k; out.vd *= k;
+  if (who) a.lookGoal = Math.max(-1.1, Math.min(1.1, (Math.sign((who.d - a.d) * (a.dir || 1)) || 1) * 1.0));
 }
 
 /** Standing: no motion, except a short sidestep (the tram passing, the bell). */
@@ -193,6 +214,8 @@ export function startUturn(c, a) {
  *  group goes single file where the sidewalk is narrow or a member gets stuck. */
 function follow(c, a, out) {
   const L = a.leader, t = c.time;
+  // a leader committed to crossing the ride track takes the group across with it
+  if (L.crossOK > t && a.crossOK < L.crossOK && Math.abs(a.d - L.d) < 3) a.crossOK = L.crossOK;
   const lStop = L.state === ST.STAND || L.state === ST.WAIT || L.state === ST.PLATFORM;
   let ts, td, own = false;
   if (lStop && L.task === TASK.CHAT && a.task === TASK.CHAT) { ts = a.chatS; td = a.chatD; }
@@ -210,6 +233,14 @@ function follow(c, a, out) {
     const th = L.state === ST.WALK ? ((L.uturnT > 0 ? L.uturnDir : L.dir) > 0 ? 0 : PI) : L.alpha;
     const cf = Math.cos(th), sf = Math.sin(th);
     ts = L.s + cf * F - sf * R; td = L.d + sf * F + cf * R;
+    // still inside a side street: out through its opening first (not into the corner)
+    {
+      const as = a.d >= 0 ? 1 : -1, m = c.map.mouthAt(a.s, as);
+      if (m && !a.inDoor && Math.abs(a.d) > c.map.mouthLine(m, as) + 0.15) {
+        const ms = c.unwrap(m.s), half = Math.max(0.3, m.width / 2 - 1.6);
+        if (Math.abs(a.s - ms) < m.width / 2) ts = Math.max(ms - half, Math.min(ms + half, ts));
+      }
+    }
     // keep the slot out of café / platform footprints and off the walls
     const side = td >= 0 ? 1 : -1;
     const cl = c.map.clearOfRects(ts, side, Math.abs(td), 0.35);
@@ -353,6 +384,9 @@ function thinkWalk(c, a) {
   const mob = a.mob;
   // walking a bicycle: back on it where the way is free
   if (mob === MOB.WALKBIKE && maybeMount(c, a)) return;
+  // a stroller / bicycle does not fit between packed café tables and the poles: the far half of
+  // the corridor (left side), over to the other side, or back the way they came
+  if (mob && a.lane === LANE.SIDE && !a.leader && avoidNarrow(c, a)) return;
   // waiting on the far side of the ride track for the tram to pass: no sidewalk errands yet
   const offSide = a.side > 0 ? a.d < RIDE_D + BAND : a.d > RIDE_D - BAND;
   if (a.lane !== LANE.CORR && !offSide) {
@@ -396,6 +430,22 @@ function thinkWalk(c, a) {
   else if (r.chance(0.2)) a.lookGoal = 0;
 }
 
+/** A narrow sidewalk (café terrace up to the tree line) ahead of a stroller / walked bicycle. */
+function avoidNarrow(c, a) {
+  const map = c.map, side = a.side, r = c.rng;
+  map.bandAhead(a.s, side, a.dir * 16, tmpBand);
+  if (tmpBand.hi - tmpBand.lo > 1.3) return false;
+  if (side < 0) {
+    a.lane = LANE.CORR; a.laneD = -r.range(1.0, TRACK_ZONE_HALF - 0.6); a.laneTT = 0;
+    c.tally('mobToCorridor');
+    return true;
+  }
+  if (startCross(c, a, a.s - a.dir * 2, TASK.NONE, null)) { c.tally('mobCrossNarrow'); return true; }
+  startUturn(c, a);
+  c.tally('mobTurnNarrow');
+  return a.uturnT > 0;
+}
+
 /** Pick a lane for a walker on its current side. */
 export function setLane(c, a, r, forceSide = false) {
   const p = r.next();
@@ -431,7 +481,7 @@ function startBrowse(c, a) {
     if (map.bandOutAt(sO, side) < wall - 0.9) continue;
     // with a stroller: a step back, the stroller between them and the window
     const back = a.mob === MOB.STROLLER ? 1.4 : 0.3;
-    const gs = sO + c.rng.range(-0.5, 0.5) * o.half, gd = side * (wall - back);
+    const gs = sO + c.rng.range(-0.5, 0.5) * o.half, gd = side * ((a.mob ? map.wallMin(sO, side, 1.5) : wall) - back);
     if (!clearSpot(c, gs, gd, 0.45)) continue;
     a.task = TASK.BROWSE; a.step = 0;
     goTo(a, gs, gd, 0.3);

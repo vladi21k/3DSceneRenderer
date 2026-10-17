@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
-import { Tpl, lin } from './geo.js';
+import { Tpl, TplCache, lin } from './geo.js';
 
 // Canvas awnings: sloped (retractable, on folding arms) or dutch / dome (ribbed hoods,
 // domes over arched openings). Scalloped valance, solid or striped canvas (stripes are
@@ -127,20 +127,20 @@ function surface(t, nu, nv, P, shade = 1, flip = false) {
   }
   for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
     const a = base + j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1;
-    if (flip) t.ix(a, b, c, b, d, c); else t.ix(a, c, b, b, c, d);
+    if (flip) t.ix6(a, b, c, b, d, c); else t.ix6(a, c, b, b, c, d);
   }
 }
 
 /**
  * Scalloped valance hanging from a top edge: nS semicircular lobes (radius R) of equal
  * width with a 2 cm binding tape along the edge. Vertices land exactly on the cusps
- * (8 per lobe near, 4 far). edge(s) → [x, y, z] of the top edge at arc length s;
+ * (6 per lobe near, 4 far). edge(s) → [x, y, z] of the top edge at arc length s;
  * out(s) the outward normal in xz.
  */
 function valance(t, total, valH, q, at) {
   const nS = Math.max(1, Math.round(total / 0.25)), per = total / nS;
   const R = Math.min(0.065, per * 0.42);
-  const nvu = nS * (q >= 0.5 ? 8 : 4);
+  const nvu = nS * (q >= 0.5 ? 6 : 4);
   const depth = (s) => {
     if (q < 0.5) return valH;
     const f = (s / per) % 1, c = 2 * f - 1;
@@ -260,23 +260,19 @@ export function domeAwning(W, R, valH, q) {
 }
 
 // Templates are shared between awnings of the same (quantised) size.
-const cache = new Map();
+const cache = new TplCache(400);
 const q2 = (x, step) => Math.round(x / step) * step;
 /** Cached slopeAwning with dimensions quantised to 1–5 cm. */
 export function slopeAwningT(W, P, D, valH, q) {
   W = q2(W, 0.02); P = q2(P, 0.05); D = q2(D, 0.05); valH = q2(valH, 0.02);
   const k = `S|${W.toFixed(2)}|${P.toFixed(2)}|${D.toFixed(2)}|${valH.toFixed(2)}|${q}`;
-  let v = cache.get(k);
-  if (!v) { if (cache.size > 400) cache.clear(); v = slopeAwning(W, P, D, valH, q); cache.set(k, v); }
-  return v;
+  return cache.get(k, () => slopeAwning(W, P, D, valH, q));
 }
 /** Cached domeAwning with dimensions quantised to 1–2 cm. */
 export function domeAwningT(W, R, valH, q) {
   W = q2(W, 0.02); R = q2(R, 0.01); valH = q2(valH, 0.02);
   const k = `D|${W.toFixed(2)}|${R.toFixed(2)}|${valH.toFixed(2)}|${q}`;
-  let v = cache.get(k);
-  if (!v) { if (cache.size > 400) cache.clear(); v = domeAwning(W, R, valH, q); cache.set(k, v); }
-  return v;
+  return cache.get(k, () => domeAwning(W, R, valH, q));
 }
 
 export function awningColors(rng) {

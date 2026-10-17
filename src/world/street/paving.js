@@ -17,6 +17,7 @@ import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
 const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
 const SLAB_TONE = 0.3;                     // ground slab: dark, seen only through cracks
+const SLAB_FAR = -1.2;                     // slab depth under the blocks (m)
 
 /** Interior column offsets between a and b, denser next to rails. */
 function fill(out, a, b, nearA, nearB, maxStep) {
@@ -296,7 +297,9 @@ export function inCrossoverZone(ctx, s) {
 }
 
 /** Cheap ground slab under the whole street and the building blocks (crack catcher).
- *  It is drawn with the sidewalk (dark tone): no draw call or material of its own. */
+ *  It is drawn with the sidewalk (dark tone): no draw call or material of its own.
+ *  SLAB_H below the street, falling to SLAB_FAR under the blocks, so it stays below
+ *  side streets that climb or fall away from the junction. */
 export function buildSlab(ctx, chunk, out) {
   const { route, layout, mats } = ctx;
   const b = out.get(mats.walk, true);
@@ -304,19 +307,23 @@ export function buildSlab(ctx, chunk, out) {
   const step = 4;
   const n = Math.max(1, Math.ceil((chunk.s1 - chunk.s0) / step));
   const smp = {};
+  const D = [0, 0, 0, 0], Y = [SLAB_FAR, SLAB_H, SLAB_H, SLAB_FAR];
   let prev = -1;
   for (let i = 0; i <= n; i++) {
     const s = chunk.s0 + ((chunk.s1 - chunk.s0) * i) / n;
     route.sample(s, smp);
     const k = smp.curvature;
-    let dl = layout.halfWidth(s, -1) + 45, dr = layout.halfWidth(s, 1) + 45;
+    const hl = layout.halfWidth(s, -1), hr = layout.halfWidth(s, 1);
+    let dl = hl + 45, dr = hr + 45;
     if (k > 1e-5) dl = Math.min(dl, 0.85 / k);
     if (k < -1e-5) dr = Math.min(dr, 0.85 / -k);
-    const y = smp.pos.y + SLAB_H;
+    D[0] = -dl; D[1] = -Math.min(hl + 2, dl - 1); D[2] = Math.min(hr + 2, dr - 1); D[3] = dr;
     const u = ctx.surface.sp(s);
-    const a = b.v(smp.pos.x - smp.right.x * dl, y, smp.pos.z - smp.right.z * dl, 0, 1, 0, u, -dl, T, T, T);
-    b.v(smp.pos.x + smp.right.x * dr, y, smp.pos.z + smp.right.z * dr, 0, 1, 0, u, dr, T, T, T);
-    if (prev >= 0) b.quad(prev, prev + 1, a + 1, a);
+    const a = b.n;
+    for (let j = 0; j < 4; j++) {
+      b.v(smp.pos.x + smp.right.x * D[j], smp.pos.y + Y[j], smp.pos.z + smp.right.z * D[j], 0, 1, 0, u, D[j], T, T, T);
+    }
+    if (prev >= 0) for (let j = 0; j < 3; j++) b.quad(prev + j, prev + j + 1, a + j + 1, a + j);
     prev = a;
   }
 }

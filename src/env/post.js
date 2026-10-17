@@ -2,28 +2,45 @@ import * as THREE from 'three';
 import * as S from './postShaders.js';
 
 // Post-processing: HDR scene (HalfFloat, MSAA) → half-res SSAO → half-res volumetric
-// clouds → scene prepass (clouds over the sky, AO,
-// aerial perspective, heat shimmer, dusk airlight, circle of confusion) → blur pyramid
-// → depth-of-field gather → bloom pyramid → metered exposure → AgX tone map, grade, lens.
+// clouds → scene prepass (clouds over the sky, AO, aerial perspective, heat shimmer,
+// dusk airlight, circle of confusion; NaN / Inf scrubbed and the range clamped) →
+// depth-of-field gather → camera motion blur → bloom pyramid → metered exposure →
+// AgX tone map, grade, lens.
 // Contract in docs/ARCHITECTURE.md: render(dt, app), setSize(w, h).
 
 const QUALITY = {
-  low: { msaa: 0, ao: 0, dof: false, levels: 5, shimmer: false, lamps: 4 },
-  med: { msaa: 4, ao: 8, dof: true, levels: 6, shimmer: true, lamps: 6 },
-  high: { msaa: 4, ao: 12, dof: true, levels: 6, shimmer: true, lamps: 8 },
+  low: { msaa: 0, ao: 0, dof: false, levels: 5, shimmer: false, lamps: 4, blur: false },
+  med: { msaa: 4, ao: 8, dof: true, levels: 6, shimmer: true, lamps: 6, blur: true },
+  high: { msaa: 4, ao: 12, dof: true, levels: 6, shimmer: true, lamps: 8, blur: true },
 };
 
-// Depth of field: daylight footage at this focal length is shot stopped down (f/8,
-// sharp front to back); the lens opens up as the light fades, so only dusk gets a
-// hint of shallow focus. Focus sits ~80 m down the street.
-const F_DAY = 8, F_DUSK = 4;
-const FOCUS_M = 80;            // focus distance (m)
-const SENSOR_H_MM = 24;
+// Depth of field, for a 1"-type sensor (a typical cab-ride camcorder: deep focus at
+// these focal lengths). Daylight is shot stopped down (f/8, sharp front to back); the
+// lens opens up as the light fades. Focus sits well down the street while riding and
+// pulls in when the tram stands at a stop (people on the platform), and in daylight the
+// blur of anything nearer is capped at a soft couple of pixels.
+const F_DAY = 8, F_DUSK = 2.8;
+const SENSOR_H_MM = 8.8;
+const FOCUS_RIDE = 45, FOCUS_STOP = 22;   // focus distance (m) at speed / standing
+const COC_MAX = [2.5, 8];                  // largest circle of confusion (px): day, dusk
+
+// Camera motion blur: at most this many pixels of streak (1080p), and none below
+// half a pixel (the pass is skipped when the camera is still).
+const BLUR_MAX_PX = 32;
+
+// HDR clamp before the blur chains: far above white after any exposure, but it keeps a
+// single specular spark from ringing through the bloom pyramid.
+const HDR_CLAMP = 64;
+
+// Screen-space AO: world radius and strength; the baked AO in the materials is scaled
+// down while it runs so contact darkening isn't counted twice.
+const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 
 // Lens veiling glare around the sun (fractions of the sun's illuminance per steradian):
 // a wide 1/theta^2 skirt (~1.2% of the light) and a tighter halo (~1%).
 const GLARE = { k1: 4.8e-4, theta0: 0.006, k2: 4.0, theta1: 0.02 };
 const _sv = new THREE.Vector3();
+const _vp = new THREE.Matrix4();
 
 function target(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
@@ -80,7 +97,7 @@ class SectionTimer {
 function pass(fragmentShader, uniforms, defines = {}) {
   const material = new THREE.ShaderMaterial({
     vertexShader: S.QUAD_VS, fragmentShader, uniforms, defines,
-    depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+    depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false,
   });
   const mesh = new THREE.Mesh(TRI, material);
   mesh.frustumCulled = false;
@@ -98,6 +115,7 @@ const post = {
     this.size = new THREE.Vector2();
     this.firstFrame = true;
     this.lumPing = 0;
+    this.focus = FOCUS_RIDE;
     const env = app.systems.env;
     const air = env?.lights?.airlight;
     const nLamps = air ? air.lampPos.length : q.lamps;
@@ -110,7 +128,7 @@ const post = {
     this.depthDown = pass(S.DEPTH_DOWN_FS, { ...camU, tDepth: { value: null } });
     this.aoPass = pass(S.AO_FS, {
       ...camU, tZ: { value: null }, uTexel: { value: new THREE.Vector2() },
-      uRadius: { value: 0.75 }, uIntensity: { value: 0.9 }, uFocalPx: { value: 500 },
+      uRadius: { value: AO.radius }, uIntensity: { value: AO.intensity }, uFocalPx: { value: 500 },
     }, { AO_SAMPLES: Math.max(q.ao, 4) });
     this.aoBlur = pass(S.AO_BLUR_FS, { tAO: { value: null }, uDir: { value: new THREE.Vector2() } });
 
@@ -120,7 +138,7 @@ const post = {
       tScene: { value: null }, tDepth: { value: null }, tAO: { value: null },
       uSunDirA: atmoU ? atmoU.uSunDirA : { value: new THREE.Vector3(0, 1, 0) },
       uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() },
-      uTime: { value: 0 }, uAOStrength: { value: 0.8 }, uAOSize: { value: new THREE.Vector2(1, 1) },
+      uTime: { value: 0 }, uAOStrength: { value: AO.strength }, uAOSize: { value: new THREE.Vector2(1, 1) },
       uHazeExt: { value: new THREE.Vector3(4.2e-4, 4.6e-4, 5.3e-4) }, uHazeInscatter: { value: 0.85 },
       uSkyIrr: env?.sky ? { value: env.sky.irrRT.texture } : { value: null },
       uSunGround: env?.sky ? env.sky.uniforms.uSunGround : { value: new THREE.Vector3(3, 3, 3) },
@@ -128,8 +146,8 @@ const post = {
       uHazePlane: { value: env?.haze ? env.haze.plane : new THREE.Vector4(0, 0, 0, -1) },
       uHazeGap: { value: 0 }, uHazeSun: { value: 1.0 },
       uShimmer: { value: 0 }, uResolution: { value: new THREE.Vector2(1, 1) },
-      uDofK: { value: 0 }, uFocus: { value: FOCUS_M },
-      uNightAir: { value: 0 },
+      uDofK: { value: 0 }, uFocus: { value: FOCUS_RIDE }, uCocMax: { value: COC_MAX[0] },
+      uNightAir: { value: 0 }, uClampHDR: { value: HDR_CLAMP },
       uLampPos: { value: air ? air.lampPos : Array.from({ length: nLamps }, () => new THREE.Vector3()) },
       uLampI: { value: air ? air.lampI : new Float32Array(nLamps) },
       uHeadPos: { value: air ? air.headPos : new THREE.Vector3() },
@@ -149,19 +167,29 @@ const post = {
     });
     this.sunVisRT = target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    this.blur = pass(S.MBLUR_FS, {
+      ...camU, tSrc: { value: null }, tDepth: { value: null },
+      uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() },
+      uPrevViewProj: { value: new THREE.Matrix4() }, uResolution: { value: new THREE.Vector2(1, 1) },
+      uShutter: { value: 1 }, uMaxPx: { value: BLUR_MAX_PX },
+    });
     this.down = pass(S.DOWN_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uKaris: { value: 0 }, uClamp: { value: 1e4 } });
     this.up = pass(S.UP_FS, { tLow: { value: null }, tHigh: { value: null }, uTexel: { value: new THREE.Vector2() }, uScatter: { value: 0.68 } });
     this.lum = pass(S.LUM_FS, { tSmall: { value: null }, tPrev: { value: null }, uSize: { value: new THREE.Vector2() }, uRate: { value: 1 } });
     this.final = pass(S.FINAL_FS, {
       tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
       uExposure: { value: 1 }, uAutoExp: { value: 0.22 }, uBloom: { value: 0.035 },
-      uVignette: { value: 0.38 }, uCA: { value: 0.0012 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
+      uVignette: { value: 0.38 }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
       uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: 0.45 }, uShoulder: { value: 1 },
       uShadowTint: { value: new THREE.Vector3(0.99, 1.0, 1.02) },
       uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
       uResolution: { value: new THREE.Vector2(1, 1) },
     });
+
+    // the materials' baked AO is scaled down while the screen-space AO runs
+    const mu = app.materials?.uniforms;
+    if (mu && mu.aoScale) mu.aoScale.value = q.ao ? AO.bakedScale : 1;
 
     // opt-in profiler; the core frame timer is paused while it runs (queries cannot nest)
     this.prof = app.params.raw.get('prof') === '1' ? new SectionTimer(app.renderer.getContext()) : null;
@@ -183,6 +211,53 @@ const post = {
     const v = new THREE.Vector2();
     app.renderer.getSize(v);
     this.setSize(v.x, v.y);
+    this._precompile();
+  },
+
+  /**
+   * Start compiling every pass program now, on the driver's threads where supported, so
+   * they are ready by the first frame (or by the first time a pass is needed, like the
+   * sun glare) instead of stalling it. Programs depend on the output target's colour
+   * space: the final pass draws to the screen, everything else into float targets.
+   */
+  _precompile() {
+    const r = this.app.renderer, env = this.app.systems.env;
+    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.dof, this.blur, this.down, this.up, this.lum];
+    for (const m of env?.passes?.() || []) into.push(m);
+    const prev = r.getRenderTarget();
+    const group = (meshes, rt) => {
+      const scene = new THREE.Scene();
+      for (const m of meshes) scene.add(m);
+      r.setRenderTarget(rt);
+      const done = r.compileAsync(scene, this.cam).catch(() => {});
+      for (const m of meshes) scene.remove(m);
+      return done;
+    };
+    try {
+      this.compiled = Promise.all([group(into, this.hdrRT), group([this.final], null)]).then(() => this._warm());
+    } catch (e) {
+      console.warn('[post] precompile', e);
+    }
+    r.setRenderTarget(prev);
+  },
+
+  /**
+   * One draw of each pass that isn't used every frame (sun glare, motion blur, the
+   * environment map swap): the driver finishes a program on its first draw, which would
+   * otherwise stall the frame that first needs it.
+   */
+  _warm() {
+    const r = this.app.renderer, env = this.app.systems.env;
+    if (!this.sceneRT || !this.dofRT) return;
+    const prev = r.getRenderTarget();
+    const su = this.sunVis.material.uniforms;
+    su.tDepth.value = this.sceneRT.depthTexture; su.tClouds.value = null; su.uUseClouds.value = 0;
+    this._draw(this.sunVis, this.sunVisRT);
+    const bu = this.blur.material.uniforms;
+    bu.tSrc.value = this.hdrRT.texture; bu.tDepth.value = this.sceneRT.depthTexture;
+    this._draw(this.blur, this.dofRT);
+    if (env && env.sky && env.sky.envRT && env.sky._capStep < 0) env.sky._pmremSwap();
+    r.setRenderTarget(prev);
   },
 
   setSize() {
@@ -198,7 +273,8 @@ const post = {
     depthTexture.magFilter = THREE.NearestFilter;
     this.sceneRT = target(W, H, { depthBuffer: true, samples: q.msaa, depthTexture });
     this.hdrRT = target(W, H);
-    this.dofRT = q.dof ? target(W, H) : null;
+    // DOF and motion blur ping-pong between hdrRT and this one
+    this.dofRT = q.dof || q.blur ? target(W, H) : null;
     const hw = Math.ceil(W / 2), hh = Math.ceil(H / 2);
     if (q.ao) {
       this.zRT = target(hw, hh, { type: THREE.FloatType, format: THREE.RedFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
@@ -216,6 +292,7 @@ const post = {
     this.final.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uAOSize.value.set(hw, hh);
+    this.blur.material.uniforms.uResolution.value.set(W, H);
     this.firstFrame = true;
   },
 
@@ -249,6 +326,8 @@ const post = {
     pu.uNightAir.value = night;
     fu.uBloom.value = THREE.MathUtils.lerp(0.035, 0.05, night);
     fu.uExposure.value = env ? env.exposure : 1;
+    // the HDR clamp is set in exposed units
+    pu.uClampHDR.value = HDR_CLAMP / Math.max(env ? env.exposure : 1, 1e-4);
     // white balance from the illuminant (sun + sky on a horizontal surface): neutral sunlit
     // stone and blue sky-lit shade by day; the camera corrects less and less of the
     // evening warmth and the blue hour (plus a touch of warmth at golden hour)
@@ -268,6 +347,24 @@ const post = {
       wb.set(1, 1, 1);
     }
     fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, ss(t, 0.6, 0.85));
+  },
+
+  /** Thin-lens depth of field: circle of confusion scale (px), focus distance and blur cap. */
+  _dofParams(env, camera, rdt) {
+    const pu = this.prepass.material.uniforms;
+    if (!this.q.dof) { pu.uDofK.value = 0; return; }
+    const ss = THREE.MathUtils.smoothstep, t = env ? env.state.t : 0.12;
+    // focus pulls in as the tram slows for a stop and back out as it leaves (~1.5 s)
+    const tr = this.app.train;
+    const v = tr && !tr.disabled ? Math.abs(tr.speed || 0) : 10;
+    const want = THREE.MathUtils.lerp(FOCUS_STOP, FOCUS_RIDE, ss(v, 1, 8));
+    this.focus += (want - this.focus) * (this.firstFrame ? 1 : 1 - Math.exp(-rdt / 1.5));
+    const fovR = THREE.MathUtils.degToRad(camera.fov);
+    const fmm = (SENSOR_H_MM / 2) / Math.tan(fovR / 2), fm = fmm / 1000;
+    const fNum = THREE.MathUtils.lerp(F_DAY, F_DUSK, ss(t, 0.3, 0.95));
+    pu.uDofK.value = (fmm / fNum) * fm / Math.max(this.focus - fm, 0.1) * (this.size.y / SENSOR_H_MM);
+    pu.uFocus.value = this.focus;
+    pu.uCocMax.value = THREE.MathUtils.lerp(COC_MAX[0], COC_MAX[1], ss(t, 0.55, 0.95));
   },
 
   /** Project the sun into the frame and measure its visible share (1x1 pass). */
@@ -293,6 +390,30 @@ const post = {
     pu.uGlareE.value.copy(sunE);
   },
 
+  /**
+   * Camera motion blur for this frame, or false: streaks follow each pixel's reprojected
+   * motion since the last frame, scaled to the shutter time. Off for a cut (jump, zoom,
+   * inspection view), while frozen, and when the camera barely moved.
+   */
+  _blurParams(app, camera) {
+    if (!this.q.blur) return false;
+    const rig = app.cameraRig;
+    if (!rig || rig.disabled || rig.cut || !rig.prevViewProj || !(app.dt > 0) || !(app.realDt > 0)) return false;
+    const u = this.blur.material.uniforms;
+    _vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    // skip when nothing moved by more than a fraction of a pixel (corners of a 100 m plane)
+    const a = _vp.elements, b = rig.prevViewProj.elements;
+    let d = 0;
+    for (let i = 0; i < 16; i++) d = Math.max(d, Math.abs(a[i] - b[i]) * (i % 4 === 3 ? 1 : 100));
+    if (d * this.size.y * 0.5 < 0.25) return false;
+    u.uPrevViewProj.value.copy(rig.prevViewProj);
+    u.uCamWorld.value.copy(camera.matrixWorld);
+    u.uCamPos.value.copy(camera.position);
+    u.uShutter.value = Math.min((rig.shutterSec ?? 1 / 50) / app.realDt, 2);
+    u.uMaxPx.value = BLUR_MAX_PX * this.size.y / 1080;
+    return true;
+  },
+
   render(dt, app) {
     // renderer.info accumulates over the whole frame (scene, shadow passes and post),
     // so stats() reports real draw calls and triangles rather than the last quad
@@ -311,7 +432,7 @@ const post = {
     const prof = this.prof;
     if (prof) { prof.collect(); prof.begin('scene'); }
     const info = r.info;
-    // ---- 1. HDR scene
+    // ---- 1. HDR scene (plus the shadow passes inside it)
     r.setRenderTarget(this.sceneRT);
     r.clear();
     r.render(scene, camera);
@@ -370,17 +491,12 @@ const post = {
     pu.uFarI.value = L ? L.farIntensity : 0;
     pu.uFarMin.value = L ? L.farMinDist : 60;
     if (L) pu.uLampCos.value.set(L.lampCos[0], L.lampCos[1]);
-    // thin-lens circle of confusion, in pixels
-    const fovR = THREE.MathUtils.degToRad(camera.fov);
-    const fmm = (SENSOR_H_MM / 2) / Math.tan(fovR / 2), fm = fmm / 1000;
-    const fNum = THREE.MathUtils.lerp(F_DAY, F_DUSK, THREE.MathUtils.smoothstep(env ? env.state.t : 0, 0.3, 0.95));
-    pu.uDofK.value = this.q.dof ? (fmm / fNum) * fm / (FOCUS_M - fm) * (this.size.y / SENSOR_H_MM) : 0;
-    pu.uFocus.value = FOCUS_M;
+    this._dofParams(env, camera, app.realDt ?? dt);
     this._draw(this.prepass, this.hdrRT);
 
     // ---- 5. depth of field (gather, full res)
     let img = this.hdrRT;
-    if (this.dofRT) {
+    if (this.q.dof) {
       if (prof) prof.begin('dof');
       const fu0 = this.dof.material.uniforms;
       fu0.tSrc.value = this.hdrRT.texture;
@@ -389,7 +505,18 @@ const post = {
       img = this.dofRT;
     }
 
-    // ---- 6. blur pyramid for bloom
+    // ---- 6. camera motion blur (full res)
+    if (this._blurParams(app, camera)) {
+      if (prof) prof.begin('blur');
+      const bu = this.blur.material.uniforms;
+      bu.tSrc.value = img.texture;
+      bu.tDepth.value = this.sceneRT.depthTexture;
+      const dst = img === this.hdrRT ? this.dofRT : this.hdrRT;
+      this._draw(this.blur, dst);
+      img = dst;
+    }
+
+    // ---- 7. blur pyramid for bloom
     if (prof) prof.begin('pyramid');
     const du = this.down.material.uniforms;
     let src = img;
@@ -411,7 +538,7 @@ const post = {
       low = this.ups[i];
     }
 
-    // ---- 7. metered exposure (1x1, adapted over time)
+    // ---- 8. metered exposure (1x1, adapted over time)
     const lu = this.lum.material.uniforms;
     const small = this.downs[this.downs.length - 1];
     lu.tSmall.value = small.texture;
@@ -421,7 +548,7 @@ const post = {
     this.lumPing ^= 1;
     this._draw(this.lum, this.lumRT[this.lumPing]);
 
-    // ---- 8. final
+    // ---- 9. final
     if (prof) prof.begin('final');
     const fu = this.final.material.uniforms;
     fu.tHDR.value = img.texture;

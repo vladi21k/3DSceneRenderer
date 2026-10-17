@@ -330,6 +330,27 @@ def skirt_rings(node, info):
     return out
 
 
+def hang_rings(node, info):
+    """Straight-hang envelope of the torso for tops (material.js hangProfile): rings at the chest,
+    waist, hips and seat with the running maximum of the half width and the front / back extent
+    from the chest down."""
+    sc = info['H'] / 1.76
+    xmax = info['shoulder'][0] * 0.92
+    ys = [info['shoulder'][1] - 0.125 * sc, info['waistY'], info['hip'][1], info['torsoY'][0] + 0.03 * sc]
+    rings = []
+    for y in ys:
+        rx = min(xmax, max(_half_width(node, y, z) for z in np.linspace(-0.08, 0.08, 9) * sc))
+        xs = np.linspace(-rx * 0.9, rx * 0.9, 13)
+        zf = min(B.surface_z(node, x, y, -1) for x in xs)
+        zb = max(B.surface_z(node, x, y, +1) for x in xs)
+        rings.append([float(y), float(rx), float(zf), float(zb)])
+    for i in range(1, len(rings)):
+        rings[i][1] = max(rings[i][1], rings[i - 1][1])
+        rings[i][2] = min(rings[i][2], rings[i - 1][2])
+        rings[i][3] = max(rings[i][3], rings[i - 1][3])
+    return rings
+
+
 def _half_width(node, y, z):
     xs = np.arange(0.0, 0.35, 0.002)
     v = node.eval(np.stack([xs, np.full_like(xs, y), np.full_like(xs, z)], 1).astype(np.float32))
@@ -373,6 +394,7 @@ def build_base(kind, res, pk):
     info['hatOffsets'] = PARTS.HAT_OFFSETS
     info['hairline'] = {'front': PARTS.MALE_FRONT, 'temple': PARTS.MALE_TEMPLE}
     info['skirt'] = skirt_rings(node, info)
+    info['hang'] = hang_rings(node, info)
     info['clothNormals'] = True       # body vertices: aux = octahedral garment drape normal
     H = info['H']
     sc = H / 1.76

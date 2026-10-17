@@ -34,8 +34,27 @@ const _sph = new THREE.Sphere();
 const _fr = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 // stand-ins handed to the light's cascade frustum: one instance, or the whole pool
-const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+// (an instance is presented as a shadow proxy with its world sphere, which the env's
+// cascade frustums test as is: slice, sub-texel and box; a plain frustum reads the
+// geometry's sphere with an identity transform)
+const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false, shadowProxy: { active: true }, shadowSphere: _sph } };
 const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+
+/** World texel (m) of the shadow cascade a frustum belongs to (0: not a cascade). */
+const _texels = new WeakMap();
+function cascadeTexel(scene, f) {
+  let cam = _texels.get(f);
+  if (cam === undefined) {
+    cam = null;
+    for (const o of scene.children) {
+      const sh = o.isLight && o.castShadow && o.shadow;
+      if (!sh || !sh.getFrustum || !sh.getCamera) continue;
+      for (let i = 0, n = sh.getViewportCount(); i < n; i++) if (sh.getFrustum(i) === f) cam = { cam: sh.getCamera(i), shadow: sh };
+    }
+    _texels.set(f, cam);
+  }
+  return cam && cam.cam.isOrthographicCamera ? (cam.cam.right - cam.cam.left) / Math.max(1, cam.shadow.mapSize.x) : 0;
+}
 
 /** {frustum, texel} of a shadow camera: the light's own (slice-aware) cascade frustum when
  *  it has one, else a plain frustum of the camera. Cached per camera. */
@@ -192,9 +211,10 @@ export class VegetationPools {
     mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
     mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); pool.shadowList(scene, shadowCamera); };
     // whole-pool test: the light's cascade frustum skips cascades it does not redraw this
-    // frame; any other frustum (the view) keeps the pool (instances are culled per pass)
+    // frame, as do cascades coarser than the pool's limit; any other frustum (the view)
+    // keeps the pool (instances are culled per pass)
     mesh.frustumCulled = true;
-    mesh.intersectsFrustum = (f) => f.intersectsObject(_all);
+    mesh.intersectsFrustum = (f) => f.intersectsObject(_all) && (pool.shadowMaxTexel === Infinity || cascadeTexel(scene, f) <= pool.shadowMaxTexel);
     return pool;
   }
 

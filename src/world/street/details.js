@@ -229,7 +229,7 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
   const bed = route.surfaceEnabled ? (p, ds, d) => surface.bedAt(p, ds, d) : () => 0;
 
   // --- cast iron
-  const iron = bufs.get(mats.details.iron, false);
+  const iron = bufs.get(mats.details.iron, true);
   for (const it of plan.items) {
     const R = IRON_REGIONS[it.type];
     const [mw, mh] = SIZES[it.type];
@@ -313,22 +313,22 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
     }
   }
 
-  // --- fallen leaves
-  const lf = bufs.get(mats.details.leaf, true);
+  // --- fallen leaves (cut-outs in the iron atlas, tinted by vertex colour)
+  const LR = IRON_REGIONS.leaves, cw = LR.w / 2 / ATLAS, chh = LR.h / 2 / ATLAS;
   for (const l of plan.leaves) {
     route.sample(l.s, smp);
     const ca = Math.cos(l.yaw), sa = Math.sin(l.yaw);
     const h0 = pave(l.s, l.d) + 0.004;
     const tint = LEAF_TINTS[l.tint];
-    const col = l.cell % 2, row = Math.floor(l.cell / 2);
-    const first = lf.n;
+    const u0 = LR.x / ATLAS + (l.cell % 2) * cw, v0 = LR.y / ATLAS + Math.floor(l.cell / 2) * chh;
+    const first = iron.n;
     for (const [lu, lv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
       const ds = lu * l.size * ca - lv * l.size * sa, dd = lu * l.size * sa + lv * l.size * ca;
       const d = l.d + dd;
-      lf.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + h0 + lu * l.tilt * l.size * 0.4 + 0.006 * (lv + 1), smp.pos.z + smp.tanH.z * ds + smp.right.z * d,
-        0, 1, 0, col * 0.5 + (lu * 0.5 + 0.5) * 0.5, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5, tint[0], tint[1], tint[2]);
+      iron.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + h0 + lu * l.tilt * l.size * 0.4 + 0.006 * (lv + 1), smp.pos.z + smp.tanH.z * ds + smp.right.z * d,
+        0, 1, 0, u0 + (lu * 0.5 + 0.5) * cw, v0 + (lv * 0.5 + 0.5) * chh, tint[0], tint[1], tint[2]);
     }
-    lf.quad(first, first + 3, first + 2, first + 1);
+    iron.quad(first, first + 3, first + 2, first + 1);
   }
 
   // --- transverse joints (intermittent sealant lines across the corridor between the rails)

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { normalizeAttributes } from '../../core/geom.js';
-import { GeoWriter, sweepPath, insetPath, capPolygon, sweepBar, box, lathe, shared } from './geo.js';
+import { GeoWriter, sweepPath, sweepPathPos, insetPath, capPolygon, sweepBar, box, boxPos, lathe, shared, posTemplate, weldTemplate } from './geo.js';
 
 // Carved limestone parts of a balcony: the moulded slab, the scroll consoles (corbels)
 // that carry it, and the turned-baluster stone balustrade alternative.
@@ -58,6 +58,23 @@ export function writeSlab(W, path, y, T, variant, lod, dirt = 1, depth = 1) {
   W.kind(GRIME.SOFFIT);
   capPolygon(W, insetPath(path, botO), y - T, -1, (u, w) => (0.55 + 0.3 * Math.min(1, Math.max(0, w / depth))) * dirt);
   W.kind(GRIME.NONE);
+}
+
+/** Shadow-caster outline of the slab edge: points of the drawn profile only (every other
+ *  point of the ovolo), so its chords lie inside the convex mouldings and the caster never
+ *  stands proud of the stone it shades; the outlines differ by a few millimetres. */
+function slabShadowProfile(T, variant, lod) {
+  const p = slabProfile(T, variant, lod);
+  return lod || variant === 1 ? p : p.filter((_, i) => i !== 4 && i !== 6);
+}
+
+/** Position-only slab (shadow caster) into S (matrix = facade frame): the edge sweep with
+ *  one ring per path point, top and soffit fans on its first and last profile points. */
+export function writeSlabShadow(S, path, y, T, variant, lod) {
+  const prof = slabShadowProfile(T, variant, lod).map(([o, v]) => [o, y + v]);
+  const rings = sweepPathPos(S, path, prof), m = prof.length, n = path.length;
+  for (let i = 1; i < n - 1; i++) S.tri(rings[0], rings[i], rings[i + 1]);
+  for (let i = 1; i < n - 1; i++) S.tri(rings[0] + m - 1, rings[i + 1] + m - 1, rings[i] + m - 1);
 }
 
 // ---------------------------------------------------------------- consoles
@@ -150,7 +167,8 @@ export function corbelGeometry(variant, lod) {
 
 /** The light console as a template for the merged stone mesh of far chunks (no draw call
  *  of its own): soot low on the scroll baked into its colour, as the near consoles get it
- *  from the grime shader (their streaks are sub-pixel at that range). */
+ *  from the grime shader (their streaks are sub-pixel at that range). Welded: the
+ *  extrusion's facets along the scroll share smooth vertices (a third of the count). */
 export function corbelTemplate(variant) {
   const g = corbelGeometry(variant, 1);
   const n = g.attributes.position.count, C = g.attributes.color.array.slice(), P = g.attributes.position.array;
@@ -159,7 +177,7 @@ export function corbelTemplate(variant) {
     C[i * 3] *= soot; C[i * 3 + 1] *= soot; C[i * 3 + 2] *= soot;
   }
   const I = g.index ? g.index.array.slice() : Uint32Array.from({ length: n }, (_, i) => i);
-  return { P: P.slice(), N: g.attributes.normal.array.slice(), T: g.attributes.uv.array.slice(), C, I, n };
+  return weldTemplate({ P: P.slice(), N: g.attributes.normal.array.slice(), T: g.attributes.uv.array.slice(), C, I, n });
 }
 
 // ---------------------------------------------------------------- stone balustrade
@@ -189,6 +207,33 @@ export function balusterGeometry(lod) {
     col.setXYZ(i, ao, ao, ao);
   }
   return shared(g);
+}
+
+/** Shadow casters of the stone parts (welded positions): consoles [variant] and the
+ *  baluster, coarse. The console's outline keeps two segments per curve: chords lie
+ *  inside the convex roll (lit), outside only the coves underneath, which face away
+ *  from the sun and sit in the console's own shade anyway. */
+export function shadowTemplates() {
+  const corbel = [0, 1].map((variant) => {
+    const { shape } = corbelShape(variant, CORBEL.D, CORBEL.H);
+    const g = new THREE.ExtrudeGeometry(shape, { depth: CORBEL.W, bevelEnabled: false, curveSegments: 2 });
+    g.rotateY(-Math.PI / 2);
+    g.translate(CORBEL.W / 2, 0, 0);
+    return posTemplate(g);
+  });
+  // baluster: a coarse vase through the drawn profile's waists and bulges (chords inside)
+  const h = BALUSTRADE.H - BALUSTRADE.PLINTH - BALUSTRADE.COPING, k = h / 0.56;
+  const W = new GeoWriter();
+  lathe(W, [[0.05, 0], [0.036, 0.065], [0.066, 0.2], [0.027, 0.44], [0.05, 0.56]].map(([r, y]) => [r, y * k]), 6);
+  return { corbel, baluster: posTemplate(W) };
+}
+
+/** Position-only balustrade rails (plinth, light coping) and pedestals along `path`. */
+export function writeBalustradeShadow(S, path, ped) {
+  sweepPathPos(S, path, plinthProfile());
+  sweepPathPos(S, path, copingProfile(1));
+  const hP = BALUSTRADE.H - BALUSTRADE.PLINTH - BALUSTRADE.COPING;
+  for (const P of ped) boxPos(S, P[0], BALUSTRADE.PLINTH + hP / 2, P[1], 0.2, hP, 0.2, 'ud');
 }
 
 /** Plinth and coping profiles [o, v] across the balustrade centre line. */

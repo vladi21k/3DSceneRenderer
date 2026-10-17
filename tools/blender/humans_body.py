@@ -312,38 +312,58 @@ def head_sdf(face, build=0.0, var=None):
 
 
 def hand_sdf(T, s, wrist, a, scale):
-    """Relaxed hand hanging from the wrist along axis a; palm facing the thigh."""
+    """Relaxed hand hanging from the wrist along axis a, palm facing the thigh: a palm that widens
+    from the wrist to the knuckles with the thenar pad at the thumb's root, four three-jointed
+    fingers curled a little more at each joint (the little finger most) and the thumb resting
+    along the index finger."""
     a = normalize(a)
     pn = normalize(s * np.cross(a, [0, 0, 1.0]))     # palm normal (medial)
     wd = np.array([0, 0, -1.0])
     wd = normalize(wd - a * (wd @ a) - pn * (wd @ pn))  # towards the thumb (forward)
     side = 'R' if s > 0 else 'L'
     bw = {'hand' + side: 1}
-    R = np.stack([pn, a, wd], axis=1)
+    HR = REGION['hand']
     sc = scale
-    palm = RoundBox(wrist + a * 0.046 * sc, (0.0080 * sc, 0.040 * sc, 0.034 * sc), 0.0098 * sc, R=R,
-                    region=REGION['hand'], bones=bw)
-    knuck = wrist + a * 0.090 * sc
+    slim = 0.92 if T['sex'] == 'f' else 0.95 if T['sex'] == 'c' else 1.0
+    # palm: a loft from the wrist to the knuckle line (frame x across the hand, towards the thumb)
+    zs = _zsign(wrist, wrist + a, wd)
+    pk = [(0.0, 0.025, 0.0135, 0.0, 0.0), (0.35, 0.032, 0.0138, 0.002, 0.0015), (0.75, 0.038, 0.0122, 0.0, 0.0015),
+          (1.0, 0.037, 0.0108, -0.001, 0.0)]
+    pk = [(t, rx * sc * slim, rz * sc * slim, ox * sc, oz * sc * zs) for t, rx, rz, ox, oz in pk]
+    palm = Loft(wrist - a * 0.004 * sc, wrist + a * 0.090 * sc, wd, pk, n=2.5, region=HR, bones=bw)
+    # thenar pad at the root of the thumb, hypothenar along the outer edge (both on the palm side)
+    Rh = np.stack([wd, a, pn], axis=1)
+    then = Ellipsoid(wrist + (a * 0.034 + wd * 0.019 + pn * 0.006) * sc, np.array([0.015, 0.025, 0.011]) * sc * slim, R=Rh,
+                     region=HR, bones=bw)
+    hypo = Ellipsoid(wrist + (a * 0.042 - wd * 0.022 + pn * 0.004) * sc, np.array([0.011, 0.030, 0.009]) * sc * slim, R=Rh,
+                     region=HR, bones=bw)
     fingers = []
-    # relaxed hand: fingers flexed at the knuckles and more at the middle joints (a loose,
-    # half-closed hand, the little finger curling most), thumb resting against the index
-    for i, (off, ln, r) in enumerate(((0.026, 0.074, 0.0088), (0.0085, 0.081, 0.0090), (-0.0095, 0.076, 0.0086),
-                                      (-0.026, 0.060, 0.0078))):
-        b0 = knuck + wd * off * sc - pn * 0.001 + a * (0.004 if abs(off) > 0.02 else 0.0) * sc
-        curl = 1.0 + 0.12 * i
-        d1 = normalize(a + pn * 0.55 * curl - wd * off * 1.5)
-        d2 = normalize(a + pn * 1.4 * curl - wd * off * 2.0)
-        b1 = b0 + d1 * ln * 0.52 * sc
-        b2 = b1 + d2 * ln * 0.45 * sc
-        fingers.append(RoundCone(b0, b1, r * sc, r * 0.93 * sc, region=REGION['hand'], bones=bw))
-        fingers.append(RoundCone(b1, b2, r * 0.92 * sc, r * 0.80 * sc, region=REGION['hand'], bones=bw))
-    t0 = wrist + (a * 0.022 + wd * 0.024 + pn * 0.008) * sc
-    td = normalize(a * 0.80 + wd * 0.30 + pn * 0.45)
-    t1 = t0 + td * 0.042 * sc
-    t2 = t1 + normalize(a * 0.80 + wd * 0.05 + pn * 0.65) * 0.031 * sc
-    thumb = [RoundCone(t0, t1, 0.0125 * sc, 0.0105 * sc, region=REGION['hand'], bones=bw),
-             RoundCone(t1, t2, 0.0100 * sc, 0.0082 * sc, region=REGION['hand'], bones=bw)]
-    return Union([palm, Union(fingers + thumb, k=0.0)], k=0.007)
+    # (offset across the hand, knuckle position along it, phalanx lengths, radius, curl factor)
+    spec = ((0.025, 0.000, (0.042, 0.025, 0.020), 0.0088, 0.85), (0.0085, 0.004, (0.046, 0.028, 0.021), 0.0091, 1.0),
+            (-0.0085, 0.000, (0.043, 0.027, 0.020), 0.0086, 1.1), (-0.024, -0.008, (0.034, 0.021, 0.018), 0.0076, 1.3))
+    for off, da, lens, r, curl in spec:
+        r = r * slim
+        p = wrist + (a * (0.088 + da) + wd * off + pn * 0.001) * sc
+        ang = 0.0
+        rr = r
+        for k, (ln, f) in enumerate(zip(lens, (18.0, 34.0, 18.0))):
+            ang += np.radians(f * curl)
+            d = normalize(a * np.cos(ang) + pn * np.sin(ang) - wd * off * 0.9)
+            q = p + d * ln * sc
+            r1 = rr * (0.93 if k < 2 else 0.80)
+            fingers.append(RoundCone(p, q, rr * sc, r1 * sc, region=HR, bones=bw))
+            p, rr = q, r1 * 0.98
+    # thumb: metacarpal from the wrist's radial side, then two phalanges lying along the index finger
+    t0 = wrist + (a * 0.014 + wd * 0.020 + pn * 0.004) * sc
+    t1 = t0 + normalize(a * 0.72 + wd * 0.42 + pn * 0.40) * 0.044 * sc
+    t2 = t1 + normalize(a * 0.80 + wd * 0.12 + pn * 0.55) * 0.032 * sc
+    t3 = t2 + normalize(a * 0.70 - wd * 0.05 + pn * 0.70) * 0.025 * sc
+    thumb = [RoundCone(t0, t1, 0.0135 * sc * slim, 0.0105 * sc * slim, region=HR, bones=bw),
+             RoundCone(t1, t2, 0.0100 * sc * slim, 0.0090 * sc * slim, region=HR, bones=bw),
+             RoundCone(t2, t3, 0.0088 * sc * slim, 0.0072 * sc * slim, region=HR, bones=bw)]
+    body = Union([palm, then, hypo], k=0.010 * sc)
+    body = Union([body] + thumb, k=0.008 * sc)
+    return Union([body, Union(fingers, k=0.0015 * sc)], k=0.006 * sc)
 
 
 def shoe_sdf(T, s, ankle, scale):

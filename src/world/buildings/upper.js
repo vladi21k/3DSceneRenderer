@@ -31,7 +31,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
     floors: [...plan.floors, ...Array.from({ length: up.floors }, (_, k) => ({ index: plan.floors.length + k, y: v0 + k * up.floorH, h: up.floorH }))],
     style: { ...plan.style, surrounds: false },
   };
-  const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.8, sillExt: 0.11 });
+  const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.8, sillExt: 0.11, sillH: 0.06 });
   if (!sinks.glass) sinks.glass = B.sink('glass');
   if (!sinks.frame) sinks.frame = B.sink('frame');
   const ctx = {

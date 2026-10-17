@@ -1,11 +1,12 @@
 import { archPoint, openingOutline } from '../facadePlan.js';
 import { FACES, arcSeg } from './mesh.js';
 
-// Self-contained opening infill for buildings-only lots (the facades closing the far end
-// of side streets), which the facades module does not dress. Seen from 60–120 m, so it is
-// kept simple but complete: glazing at w = −recess, painted frames with mullion and
-// transom, closed shutters on some windows, shopfronts with stall risers or roller
-// shutters, panelled doors with fanlights. Linear albedo colours (vertex colour = paint).
+// Self-contained opening infill for the openings the facades module does not dress (the
+// small windows of exposed party walls and the set-back upper storeys, which are not in
+// the shared plan's fronts). Kept simple but complete: glazing at w = −recess, painted
+// frames with mullion and transom, closed shutters on some windows, shopfronts with stall
+// risers or roller shutters, panelled doors with fanlights. Linear albedo colours (vertex
+// colour = paint).
 
 const PAINT = {
   darkgreen: [0.025, 0.06, 0.04], brown: [0.075, 0.042, 0.026], white: [0.58, 0.58, 0.56],

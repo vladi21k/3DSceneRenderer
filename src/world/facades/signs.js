@@ -173,19 +173,20 @@ function ring(g, x, y, c) {
   g.fillStyle = c; g.beginPath(); g.moveTo(x + 128, y + 50); g.lineTo(x + 150, y + 80); g.lineTo(x + 128, y + 95); g.lineTo(x + 106, y + 80); g.closePath(); g.fill();
 }
 
-/** Glow attribute support: emissive = albedo × aGlow × (day level + night boost). */
-function addGlow(m, key) {
+/** Glow attribute support: emissive = albedo × aGlow × (day level + night boost × gain). */
+function addGlow(m, key, gain) {
   const prev = m.onBeforeCompile;
   const prevKey = m.customProgramCacheKey ? m.customProgramCacheKey() : '';
   m.onBeforeCompile = (shader, r) => {
     if (prev) prev.call(m, shader, r);
     shader.uniforms.uNight = U.uNight;
+    shader.uniforms.uEmGain = gain;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying float vGlow;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.04 * ( 1.0 - uNight ) + 0.012 * uNight );');
+      .replace('#include <common>', '#include <common>\nuniform float uNight;\nuniform float uEmGain;\nvarying float vGlow;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.04 * ( 1.0 - uNight ) + 0.012 * uNight * uEmGain );');
   };
   m.customProgramCacheKey = () => prevKey + '|' + key;
   return m;
@@ -195,13 +196,14 @@ export function createSignMaterials(M) {
   if (!atlas) atlas = buildAtlas();
   // a private variant of the library panel (keeps its baked surface), plus the glow hook
   const board = M.get('sign.panel', { vertexColors: true, color: new THREE.Color(1, 1, 1), userData: { owner: 'facades.signBoard' } });
-  addGlow(board, 'facades.signBoard.v1');
+  const gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
+  addGlow(board, 'facades.signBoard.v2', gain);
   const text = new THREE.MeshStandardMaterial({
     map: atlas.tex, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.4, metalness: 0,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
   text.name = 'facades.signText';
-  addGlow(text, 'facades.signText.v1');
+  addGlow(text, 'facades.signText.v2', gain);
   return { board, text, atlas };
 }
 
@@ -216,7 +218,7 @@ function cellQuad(t, cell, cx, cy, w, h, z, normalZ = 1) {
   const xa = s > 0 ? x0 : x1, xb = s > 0 ? x1 : x0;
   t.v(xa, y0, z, 0, 0, s, uA, cell.v0); t.v(xb, y0, z, 0, 0, s, uB, cell.v0);
   t.v(xb, y1, z, 0, 0, s, uB, cell.v1); t.v(xa, y1, z, 0, 0, s, uA, cell.v1);
-  t.ix(b, b + 1, b + 2, b, b + 2, b + 3);
+  t.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
 }
 
 /** Crop a text cell to its inked width so the quad keeps the glyph aspect. */
@@ -225,10 +227,16 @@ function inkCell(cell) {
   return { u0: cell.u0 + du, u1: cell.u1 - du, v0: cell.v0, v1: cell.v1, aspect: cell.aspect * cell.ink };
 }
 
-export function signDesign(seed, kindHint) {
+/** Sign design for seed; kindHint forces board / lightbox / letters, shop a shop type's words. */
+export function signDesign(seed, kindHint, shop = null) {
   const r = new RNG(seed);
   const type = kindHint || r.weighted([['board', 0.45], ['lightbox', 0.3], ['letters', 0.25]]);
-  const cell = r.int(0, WORDS.length - 1);
+  let cell = r.int(0, WORDS.length - 1);
+  if (shop) {
+    const ok = [];
+    WORDS.forEach(([, t], i) => { if (t === shop) ok.push(i); });
+    if (ok.length) cell = ok[cell % ok.length];
+  }
   let board, ink, glow;
   if (type === 'board') {
     board = r.pick(SIGN_PALETTE.boards);
@@ -304,7 +312,7 @@ export function bladeTpls(faceIndex, w, h, q) {
     const uA = sx > 0 ? face.u0 : face.u0, uB = sx > 0 ? face.u1 : face.u1;
     tt.v(x, 0.02, zA, sx, 0, 0, uA, face.v0); tt.v(x, 0.02, zB, sx, 0, 0, uB, face.v0);
     tt.v(x, h - 0.02, zB, sx, 0, 0, uB, face.v1); tt.v(x, h - 0.02, zA, sx, 0, 0, uA, face.v1);
-    tt.ix(b, b + 1, b + 2, b, b + 2, b + 3);
+    tt.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
   };
   quad(1); quad(-1);
   // bracket: wall plate and two arms (metal batch)

@@ -1,7 +1,7 @@
 // Upper-floor windows and balcony (French) doors: painted timber casements, slim steel
 // windows (Mandate era) or aluminium sliders (modern), with transoms, glazing bars and
 // sunburst fanlights in arched heads; interior-mapped glass; louvred shutters.
-import { Tpl } from './geo.js';
+import { Tpl, TplCache } from './geo.js';
 import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, crownY, topAt } from './outline.js';
 import { FR, rectRing, insetPoly, spanAtY } from './kit.js';
 
@@ -129,6 +129,7 @@ function buildJoinery(o, v, q, open) {
       sash(leaf, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
       const hx = open.side < 0 ? x0 : x1;
       t.appendRotY(leaf, hx, P.zgb, open.side < 0 ? open.angle : -open.angle);
+      leaf.free();
     } else sash(t, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
   }
 
@@ -190,6 +191,7 @@ function buildGlass(o, v, q, open) {
     pane.quad([x0 + 0.04, y0 + 0.06, P.zs - 0.03], [x1 - 0.04, y0 + 0.06, P.zs - 0.03], [x1 - 0.04, y1 - 0.04, P.zs - 0.03], [x0 + 0.04, y1 - 0.04, P.zs - 0.03]);
     const hx = open.side < 0 ? x0 + 0.005 : x1 - 0.005;
     t.appendRotY(pane, hx, P.zgb, open.side < 0 ? open.angle : -open.angle);
+    pane.free();
   }
   if (L.yT !== null) {
     const yH = L.yT;
@@ -293,7 +295,8 @@ function revealPanels(t, o, q) {
       const x0 = sx < 0 ? -xo : xi, x1 = sx < 0 ? -xi : xo;
       const z1 = zA + wp - i * 0.01;
       t.box(x0, 0.012, zA, x1, top, z1, 1 | 4 | 8 | 32, 0.85, 0.95);
-      if (q < 0.5) continue;
+      // the other panels of the stack face their neighbour 3 mm away: louvres hidden
+      if (q < 0.5 || i < k - 1) continue;
       // louvres on the face turned towards the opening
       const xf = sx < 0 ? x1 : x0, nx = sx < 0 ? 1 : -1;
       for (let y = 0.07; y < top - 0.06; y += 0.052) {
@@ -339,15 +342,8 @@ function buildRoller(o, down, q) {
 }
 
 // ------------------------------------------------------------------ cache
-const cache = new Map();
-function cached(key, fn) {
-  let v = cache.get(key);
-  if (!v) {
-    if (cache.size > 1500) cache.clear();
-    v = fn(); cache.set(key, v);
-  }
-  return v;
-}
+const cache = new TplCache(2000);
+const cached = (key, fn) => cache.get(key, fn);
 const okey = (o) => `${o.kind}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}`;
 
 const openKey = (open) => (open ? `${open.side}:${open.angle.toFixed(2)}` : '-');

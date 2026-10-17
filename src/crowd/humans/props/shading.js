@@ -218,7 +218,7 @@ const FRAG_COLOR = /* glsl */`
   float pLink = 0.0;
   if (pCh == 12.0) {
     // roller chain: bright pin heads every half inch, dark gaps at the plate waists
-    float ph = (vPUv.x - vPChain) / 0.0127;
+    float ph = (vPUv.x + vPChain) / 0.0127;   // links run towards -u (top run forwards) when pedalling
     float wave = cos(ph * 6.2832);
     float k = pFade(vec2(ph), 1.0);
     pLink = wave * k;
@@ -276,10 +276,6 @@ const FRAG_LIGHT = /* glsl */`
     material.sheenColor = vec3(pSheen * 0.55) * (diffuseColor.rgb * 0.7 + 0.3);
     material.sheenRoughness = 0.6;
   #endif
-  if (pCh == 11.0) {
-    // reflectors: retro-reflective cube corners return light towards the viewer
-    material.specularColor = vec3(0.5);
-  }
 `;
 
 const FRAG_AO = /* glsl */`

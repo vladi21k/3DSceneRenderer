@@ -4,7 +4,8 @@
 // attribute) that tells the weathered stone materials (grime.js) where to put drip
 // trails, rain-wash streaks and soot crusts: under cornice and course soffits, in the
 // splash zone, and all over the facades of the few buildings that were never cleaned.
-// out[4] is the building's local dirtiness (scales the grime mask).
+// out[4] is the building's dirtiness. The large soft patches of the stone, and the local
+// variation of its dirtiness, are added per pixel by the stone materials.
 // Colour factors are linear multipliers on the material albedo.
 //
 // Run-off below balcony slabs and window sills (soffit occlusion, soot band, streaks,
@@ -157,20 +158,15 @@ export class FaceShade {
     const t = this.tint;
     let i = ((v - this.vMin) / this.step) | 0;
     if (i < 0) i = 0; else if (i >= this.n) i = this.n - 1;
-    const a = this.ao[i];
+    let a = this.ao[i];
     let g = this.gm[i];
-    // large soft patches (stone batches, cleaning, sun bleaching)
-    const n1 = noise2(u * 0.35, v * 0.28, this.seed);
-    const p = n1 - 0.5 + 0.35 * (noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5);
-    let r = t[0] * (1 + 0.10 * p), gg = t[1] * (1 + 0.10 * p), b = t[2] * (1 + 0.11 * p);
+    let r = t[0], gg = t[1], b = t[2];
     // splash zone near the paving: darker, greyer
     const hg = v - this.groundAt(u);
     const gz = hg < 3 ? Math.exp(-Math.max(0, hg) / 0.7) : 0;
     a *= 1 - 0.20 * Math.exp(-Math.max(0, hg) / 0.3);
     g += 0.55 * Math.exp(-Math.max(0, hg) / 0.5);
-    // building-scale variation of how dirty the stone is
-    const dirtK = this.dirt * (0.6 + 0.8 * n1);
-    g *= dirtK;
+    g *= this.dirt;
     const grey = Math.min(0.7, 0.45 * gz * this.dirt + 0.35 * this.unc);
     const lum = (r + gg + b) / 3;
     r += (lum * 0.9 - r) * grey; gg += (lum * 0.9 - gg) * grey; b += (lum * 0.93 - b) * grey;
@@ -178,8 +174,8 @@ export class FaceShade {
     const sootK = this.unc ? 1 - this.unc * (0.12 + 0.12 * Math.min(1, Math.max(0, v / this.corniceY))) : 1;
     const dk = a * (1 - 0.18 * gz * this.dirt) * sootK;
     out[0] = r * dk; out[1] = gg * dk; out[2] = b * dk;
-    out[3] = Math.min(1, g);
-    out[4] = dirtK;
+    out[3] = g;
+    out[4] = this.dirt;
   }
 }
 
@@ -190,12 +186,14 @@ const _cand = [];
 
 /**
  * aRun attribute of a vertex at facade (u, v) shaded by occluder `it` (null: none):
- * (a − u, line − v, dirtiness, code). Both offsets are affine in the position, so they
- * interpolate exactly over any face; code = ±(⌊width·64⌋ + s/2), + balcony, − sill.
+ * (a − u, line − v, building dirtiness, code). Both offsets are affine in the position,
+ * so they interpolate exactly over any face; code = ±(⌊width·64⌋ + s/2), + balcony
+ * slab, − window sill, 0 none.
  */
-export function runAttr(it, u, v, dirtK, out, k) {
-  if (!it) { out[k] = 0; out[k + 1] = 0; out[k + 2] = 0; out[k + 3] = 0; return; }
-  out[k] = it.a - u; out[k + 1] = it.y - v; out[k + 2] = dirtK; out[k + 3] = it.code;
+export function runAttr(it, u, v, dirt, out, k) {
+  out[k + 2] = dirt;
+  if (!it) { out[k] = 0; out[k + 1] = 0; out[k + 3] = 0; return; }
+  out[k] = it.a - u; out[k + 1] = it.y - v; out[k + 3] = it.code;
 }
 
 /**

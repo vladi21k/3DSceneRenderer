@@ -165,30 +165,12 @@ function axisAtY(L, y) { return L.p0.clone().addScaledVector(L.axis, (y - L.p0.y
 
 // ------------------------------------------------------------------ LOD settings
 const LODS = [
-  { tube: (r) => Math.max(8, Math.min(16, Math.round(r * 900))), small: 6, wheelSeg: 72, tyreProf: 9, spokes: 'geo', chain: 'links', step: 0.12, saddle: [16, 14], detail: 2 },
-  { tube: (r) => Math.max(6, Math.min(9, Math.round(r * 520))), small: 4, wheelSeg: 40, tyreProf: 6, spokes: 'cone', chain: 'smooth', step: 0.22, saddle: [10, 9], detail: 1 },
-  { tube: (r) => (r > 0.012 ? 5 : 4), small: 3, wheelSeg: 18, tyreProf: 4, spokes: 'cone', chain: 'strip', step: 0.5, saddle: [6, 6], detail: 0 },
+  { tube: (r) => Math.max(8, Math.min(16, Math.round(r * 900))), small: 6, wheelSeg: 72, tyreProf: 9, spokes: 'geo', chainStep: 0.006, step: 0.12, saddle: [16, 14], hubSeg: 24, coneSeg: 0, fender: [40, 7] },
+  { tube: (r) => Math.max(5, Math.min(8, Math.round(r * 420))), small: 4, wheelSeg: 32, tyreProf: 5, spokes: 'cone', chainStep: 0.02, step: 0.3, saddle: [9, 8], hubSeg: 10, coneSeg: 28, fender: [16, 3] },
+  { tube: (r) => (r > 0.015 ? 5 : 4), small: 3, wheelSeg: 16, tyreProf: 3, spokes: 'cone', chainStep: 0.05, step: 0.6, saddle: [5, 6], hubSeg: 6, coneSeg: 14, fender: [7, 2] },
 ];
 
 // ------------------------------------------------------------------ builders
-
-/** Build one bicycle variant at one LOD. Returns {geometry, layout}. */
-export function buildBicycle(spec, lod = 0) {
-  const L = bikeLayout(spec);
-  const Q = LODS[lod];
-  const b = new Builder();
-  const ctx = { b, spec, L, Q, lod };
-  frame(ctx);
-  fork(ctx);
-  cockpit(ctx);
-  wheels(ctx);
-  drivetrain(ctx);
-  seat(ctx);
-  extras(ctx);
-  const geometry = b.build();
-  geometry.name = `bike.${spec.id}.lod${lod}`;
-  return { geometry, layout: L };
-}
 
 function tubeSeg(ctx, r) { return ctx.Q.tube(r); }
 
@@ -470,9 +452,11 @@ function wheel(ctx, hub, front) {
     const wallMat = W.wall === 'tan' ? M.tanWall : M.tyreWall;
     const rightWall = sec(tBead, Math.PI / 2 - tTr, Math.max(2, nP - 2));
     const leftWall = sec(Math.PI / 2 + tTr, Math.PI - tBead, Math.max(2, nP - 2));
-    b.with(wallMat, () => {
-      b.revolveX(hub, rightWall.map(([x, r]) => [x, r]), segA);
-      b.revolveX(hub, leftWall.map(([x, r]) => [x, r]), segA);
+    if (lod === 2) {
+      b.with(wallMat, () => b.revolveX(hub, sec(tBead, Math.PI - tBead, 4), segA));
+    } else b.with(wallMat, () => {
+      b.revolveX(hub, rightWall, segA);
+      b.revolveX(hub, leftWall, segA);
     });
     if (W.wall === 'stripe' && lod < 2) {
       // reflective band on both sidewalls
@@ -489,7 +473,7 @@ function wheel(ctx, hub, front) {
     const arc = [0];
     for (let j = 1; j < tread.length; j++) arc.push(arc[j - 1] + Math.hypot(tread[j][0] - tread[j - 1][0], tread[j][1] - tread[j - 1][1]));
     const half = arc[arc.length - 1] / 2;
-    b.with({ ...M.rubber, ch: CH.TREAD, w: W.tread, col: [0.03, 0.03, 0.03], rough: 0.76 }, () => {
+    if (lod < 2) b.with({ ...M.rubber, ch: CH.TREAD, w: W.tread, col: [0.03, 0.03, 0.03], rough: 0.76 }, () => {
       b.revolveX(hub, tread, segA, { uv: (I, J) => [(I / segA) * C, arc[Math.min(J, arc.length - 1)] - half] });
     });
     // ---- rim: two braking flanks + inner bed (hard edges between)
@@ -500,7 +484,9 @@ function wheel(ctx, hub, front) {
       if (lod < 2) {
         b.revolveX(hub, [[rw, bead - 0.002], [rw, bead + 0.0035], [rw - 0.0016, bead + 0.0045]], segA);
         b.revolveX(hub, [[-rw + 0.0016, bead + 0.0045], [-rw, bead + 0.0035], [-rw, bead - 0.002]], segA);
-        b.revolveX(hub, [[rw * 0.995, bead - 0.002], [rw * 0.93, inner + rd * 0.35], [rw * 0.55, inner], [0, inner - 0.0008], [-rw * 0.55, inner], [-rw * 0.93, inner + rd * 0.35], [-rw * 0.995, bead - 0.002]].reverse(), segA);
+        const bed = lod === 0 ? [[rw * 0.995, bead - 0.002], [rw * 0.93, inner + rd * 0.35], [rw * 0.55, inner], [0, inner - 0.0008], [-rw * 0.55, inner], [-rw * 0.93, inner + rd * 0.35], [-rw * 0.995, bead - 0.002]]
+          : [[rw * 0.995, bead - 0.002], [rw * 0.6, inner], [-rw * 0.6, inner], [-rw * 0.995, bead - 0.002]];
+        b.revolveX(hub, bed.reverse(), segA);
       } else {
         b.revolveX(hub, [[rw, bead + 0.004], [rw * 0.8, inner], [-rw * 0.8, inner], [-rw, bead + 0.004]].reverse(), segA);
       }
@@ -518,9 +504,12 @@ function wheel(ctx, hub, front) {
     const fR = W.flangeR[fi], fX = W.flangeX[fi];
     const old2 = W.old[fi] / 2;
     const kind = front ? W.hubF : W.hubR;
-    const hs = lod === 0 ? 24 : lod === 1 ? 12 : 8;
+    const hs = Q.hubSeg;
     let prof;
-    if (kind === 'dynamo') {
+    if (lod === 2) {
+      const big = kind === 'dynamo' || kind === 'igh' ? 0.034 : 0.015;
+      prof = [[old2, 0.006], [fX, fR], [0, big], [-fX, fR], [-old2, 0.006]];
+    } else if (kind === 'dynamo') {
       prof = [[old2, 0.005], [old2, 0.009], [old2 - 0.006, 0.0095], [fX + 0.004, 0.012], [fX + 0.002, fR], [fX - 0.002, fR], [fX - 0.004, 0.026], [0.018, 0.034], [0, 0.036], [-0.018, 0.034], [-fX + 0.004, 0.026], [-fX + 0.002, fR], [-fX - 0.002, fR], [-fX - 0.004, 0.012], [-old2 + 0.006, 0.0095], [-old2, 0.009], [-old2, 0.005]];
     } else if (kind === 'igh' || kind === 'coaster') {
       const big = kind === 'igh';
@@ -557,7 +546,7 @@ function wheel(ctx, hub, front) {
       // spokes as two alpha-to-coverage cones (one per flange), mapped to the spoke atlas
       const cell = W.cell;
       const conM = spokeMat.col[0] < 0.1 ? M.spokeConeBlack : M.spokeCone;
-      const n = lod === 1 ? 40 : 20;
+      const n = Q.coneSeg;
       for (const sx of [1, -1]) {
         const rot = sx > 0 ? Math.PI / nS : 0;
         const prof = [[sx * fX, fR * 0.9], [sx * 0.002, rimHoleR]];
@@ -640,8 +629,9 @@ function drivetrain(ctx) {
   const pulleys = deraill ? [{ c: [hubR.y - 0.075, hubR.z + 0.018], r: 0.016 }, { c: [hubR.y - 0.13, hubR.z - 0.005], r: 0.016 }] : null;
   const loop = chainLoop(bb, rf + 0.002, hubR, rr + 0.002, pulleys);
   if (lod < 2 || spec.extras.guard !== 'full') {
-    const pts = loop.map((p) => p.clone().setX(xc));
-    const prof = roundRect(0.0037, 0.0043, 0.0016, lod === 0 ? 2 : lod === 1 ? 1 : 0);
+    const pts = [];
+    for (const p of loop) if (!pts.length || p.distanceTo(pts[pts.length - 1]) >= Q.chainStep) pts.push(p.clone().setX(xc));
+    const prof = lod === 2 ? [[0.0037, 0], [0, 0.0043], [-0.0037, 0], [0, -0.0043]] : roundRect(0.0037, 0.0043, 0.0016, lod === 0 ? 2 : 0);
     // links are drawn by the shader, scrolling with the crank (aMat.w = chainring pitch radius)
     b.with({ ...M.chain, ch: lod < 2 ? CH.CHAIN : CH.PLAIN, w: rf }, () => b.sweep(pts, prof, { closedPath: true, N0: V(1, 0, 0) }));
   }
@@ -705,7 +695,7 @@ function drivetrain(ctx) {
     b.with(ringMat, () => ringAt(xc));
     // spider + right crank arm (pointing up at crank angle 0), left arm pointing down
     b.with(spec.id === 'road' || spec.id === 'ebike' || spec.id === 'hybrid' ? M.anodBlack : M.alloyPolish, () => {
-      if (lod < 2) {
+      if (lod === 0) {
         for (let k = 0; k < 5; k++) {
           const a = (k / 5) * Math.PI * 2 + 0.3;
           const p0 = V(xc + 0.006, bb.y + Math.cos(a) * 0.012, bb.z - Math.sin(a) * 0.012);
@@ -716,10 +706,11 @@ function drivetrain(ctx) {
       for (const sx of [1, -1]) {
         const x0 = sx * (sx > 0 ? xc + 0.012 : crankX - 0.012), x1 = sx * crankX;
         const p0 = V(x0, bb.y, bb.z), p1 = V(x1, bb.y + sx * spec.crank, bb.z);
-        b.sweep([p0, p0.clone().lerp(p1, 0.15).setX(x1), p1], roundRect(0.0065, 0.013, 0.004, lod ? 1 : 2), {
-          n: lod === 2 ? 2 : 6, N0: V(1, 0, 0), scale: (t) => [1, 1.25 - 0.45 * t], caps: ['round', 'round'] });
+        const arm = lod === 2 ? [[0.0065, 0], [0, 0.013], [-0.0065, 0], [0, -0.013]] : roundRect(0.0065, 0.013, 0.004, lod ? 1 : 2);
+        b.sweep([p0, p0.clone().lerp(p1, 0.15).setX(x1), p1], arm, {
+          n: lod === 0 ? 6 : 2, N0: V(1, 0, 0), scale: (t) => [1, 1.25 - 0.45 * t], caps: lod === 0 ? ['round', 'round'] : null });
         // spindle boss
-        if (lod < 2) b.tube([V(x1 * 0.98, bb.y, bb.z), V(x1 + sx * 0.006, bb.y, bb.z)], 0.012, 8, { n: 1, caps: [null, 'flat'] });
+        if (lod === 0) b.tube([V(x1 * 0.98, bb.y, bb.z), V(x1 + sx * 0.006, bb.y, bb.z)], 0.012, 8, { n: 1, caps: [null, 'flat'] });
       }
     });
     // bottom bracket axle visible between
@@ -817,7 +808,10 @@ function seat(ctx) {
       for (const sx of [-1, 1]) {
         const r0 = V(sx * 0.02, clamp.y + 0.004, clamp.z - 0.1), r1 = V(sx * 0.022, clamp.y + 0.002, clamp.z), r2 = V(sx * 0.035, clamp.y + 0.01, clamp.z + 0.075);
         b.with(M.steel, () => b.tube([r0.clone().add(V(0, 0.022, -0.02)), r0, r1, r2], 0.0035, 5, { n: 8 }));
-        if (spec.saddle === 'sprung') {
+        if (spec.saddle === 'sprung' && lod === 1) {
+          const base = V(sx * 0.05, clamp.y - 0.004, clamp.z + 0.085);
+          b.with(M.chrome, () => b.tube([base, base.clone().add(V(0, saddleT - 0.012, 0))], 0.012, 6, { n: 1 }));
+        } else if (spec.saddle === 'sprung') {
           // coil springs under the back of a sprung saddle
           const base = V(sx * 0.05, clamp.y - 0.004, clamp.z + 0.085);
           const top = base.clone().add(V(0, saddleT - 0.012, 0));
@@ -843,11 +837,10 @@ function seat(ctx) {
 
 function fenderArc(ctx, hub, a0, a1, rad, width, matB, front) {
   const { b, lod, L } = ctx;
-  const n = lod === 0 ? 40 : lod === 1 ? 22 : 10;
+  const [n, m] = ctx.Q.fender;
   const prof = [];
   const w2 = width / 2, dep = 0.012, th = 0.0016;
   // C-section: outer skin over the tyre, rolled edges, inner skin (thin closed profile)
-  const m = lod === 0 ? 7 : 4;
   for (let i = 0; i <= m; i++) { const t = i / m; prof.push([w2 * (1 - 2 * t), rad + dep * Math.sin(Math.PI * t) * 0.6 - dep * 0.4 * (1 - Math.sin(Math.PI * t))]); }
   for (let i = m; i >= 0; i--) { const t = i / m; prof.push([w2 * (1 - 2 * t) * 0.97, rad - th + dep * Math.sin(Math.PI * t) * 0.6 - dep * 0.4 * (1 - Math.sin(Math.PI * t))]); }
   const rows = [];
@@ -990,7 +983,7 @@ function extras(ctx) {
     });
   }
   // ---- kickstand (left, behind the bottom bracket)
-  if (X.stand) {
+  if (X.stand && lod < 2) {
     const piv = V(-0.045, bb.y + 0.012, bb.z + 0.075);
     const down = V(-0.19, 0.03, bb.z + 0.2);
     const up = V(-0.058, bb.y + 0.035, bb.z + 0.29);
@@ -1157,41 +1150,52 @@ export function bikeAttachments(rec, crank = 0, steer = 0, saddle = 0, out = {})
   return out;
 }
 
-/** Build a variant record (all LOD geometries + rider data). */
-export function makeBikeVariant(spec) {
-  const lods = [];
-  let attach = null;
-  let layout = null;
-  for (let lod = 0; lod < 3; lod++) {
-    const L = bikeLayout(spec);
-    const b = new Builder();
-    const ctx = { b, spec, L, Q: LODS[lod], lod };
-    frame(ctx); fork(ctx); cockpit(ctx); wheels(ctx); drivetrain(ctx); seat(ctx); extras(ctx);
-    const g = b.build();
-    g.name = `bike.${spec.id}.lod${lod}`;
-    lods.push(g);
-    if (lod === 1) {
-      layout = L;
-      attach = {
-        gripL: ctx.grips[-1].p.clone(), gripR: ctx.grips[1].p.clone(),
-        gripDirL: ctx.grips[-1].dir.clone(), gripDirR: ctx.grips[1].dir.clone(),
-        saddle: ctx.saddleTop.clone(), saddleNose: ctx.saddleNose.clone(),
-        pedalX: ctx.crankX + 0.006 + 0.058,
-      };
-    }
-  }
+function buildLod(spec, lod) {
+  const L = bikeLayout(spec);
+  const b = new Builder();
+  const ctx = { b, spec, L, Q: LODS[lod], lod };
+  frame(ctx); fork(ctx); cockpit(ctx); wheels(ctx); drivetrain(ctx); seat(ctx); extras(ctx);
+  const g = b.build();
+  g.name = `bike.${spec.id}.lod${lod}`;
+  return { g, ctx, L };
+}
+
+/**
+ * Build a variant record: LOD 1 and 2 geometries now, LOD 0 (the close-up model with real
+ * spokes) on demand via ensureLod0() (the kit builds them in the background after start-up).
+ */
+export function makeBikeVariant(spec, { lod0 = false } = {}) {
+  const lods = [null, null, null];
+  const r1 = buildLod(spec, 1);
+  lods[1] = r1.g;
+  lods[2] = buildLod(spec, 2).g;
+  const ctx = r1.ctx;
+  const layout = r1.L;
+  const attach = {
+    gripL: ctx.grips[-1].p.clone(), gripR: ctx.grips[1].p.clone(),
+    gripDirL: ctx.grips[-1].dir.clone(), gripDirR: ctx.grips[1].dir.clone(),
+    saddle: ctx.saddleTop.clone(), saddleNose: ctx.saddleNose.clone(),
+    pedalX: ctx.crankX + 0.006 + 0.058,
+  };
   const L = layout;
   const circumference = 2 * Math.PI * L.R;
   const lenF = L.hubF.z - L.R - (spec.extras.fenders ? 0.01 : 0) - (spec.extras.basket ? 0.02 : 0);
   const lenR = L.hubR.z + L.R + (spec.extras.rack ? 0.04 : 0);
-  return {
+  const rec = {
     spec, id: spec.id, label: spec.label, lods, layout: L, attach,
+    ensureLod0() { if (!lods[0]) lods[0] = buildLod(spec, 0).g; return lods[0]; },
     dims: {
       wheelRadius: L.R, wheelbase: spec.frame.wb, length: lenR - lenF, front: lenF, rear: lenR,
       width: Math.max(spec.bar.width + 0.06, 0.4), height: Math.max(spec.saddleH, spec.bar.h) + 0.03,
       bbHeight: L.bb.y, saddleHeight: spec.saddleH, barHeight: spec.bar.h, crankLength: spec.crank,
       metersPerCrankRev: circumference * spec.gear, saddleRange: [-0.07, 0.09], riderHeight: spec.rider,
+      // rider posture hint: forward lean of the torso from vertical (rad) for this bar / frame
+      riderLean: { city: 0.12, dutch: 0.08, road: 0.85, hybrid: 0.42, kids: 0.22, ebike: 0.22 }[spec.id] ?? 0.3,
+      // walking the bike: the walker's root relative to the bike origin (on its left side), hands on the left grip and the saddle
+      walkBeside: new THREE.Vector3(-0.42, 0, -0.12),
     },
     size: Math.max(spec.saddleH, spec.bar.h) + 0.05,   // for screen-size LOD
   };
+  if (lod0) rec.ensureLod0();
+  return rec;
 }

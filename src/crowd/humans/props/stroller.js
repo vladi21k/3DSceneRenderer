@@ -48,7 +48,7 @@ export const STROLLER_SPECS = [
 const LODQ = [
   { tube: (r) => Math.max(8, Math.min(14, Math.round(r * 800))), around: 48, prof: 12, spokes: 'geo', shell: [20, 16] },
   { tube: () => 6, around: 28, prof: 7, spokes: 'cone', shell: [12, 10] },
-  { tube: () => 4, around: 14, prof: 4, spokes: 'cone', shell: [7, 6] },
+  { tube: () => 4, around: 10, prof: 3, spokes: 'cone', shell: [5, 5] },
 ];
 
 // ------------------------------------------------------------------ parts
@@ -254,7 +254,8 @@ function toddler(ctx, p, recline = 0.25, lying = false) {
   const piv = [p.x, p.y, p.z];
   const seg = lod === 0 ? 14 : lod === 1 ? 9 : 6;
   const ring = lod === 0 ? 9 : lod === 1 ? 6 : 4;
-  b.with({ piece: PIECE.BABY, piv }, () => {
+  // under a canopy most of the sky is hidden: the child gets little ambient light
+  b.with({ piece: PIECE.BABY, piv, ao: lying ? 0.8 : 0.6 }, () => {
     if (lying) {
       // baby lying under a blanket in the bassinet, head towards the hood (+Z)
       b.with(M.skin, () => b.ellipsoid(V(p.x, p.y + 0.05, p.z + 0.2), 0.058, 0.055, 0.064, seg, ring));
@@ -291,9 +292,19 @@ function toddler(ctx, p, recline = 0.25, lying = false) {
     b.with(M.skin, () => {
       b.tube([neck.clone().addScaledVector(up, -0.03), neck.clone().addScaledVector(up, 0.03)], 0.032, 6, { n: 1 });
       b.ellipsoid(head, 0.068, 0.076, 0.074, seg, ring);
-      // ears
-      if (lod < 2) for (const sx of [-1, 1]) b.ellipsoid(head.clone().add(V(sx * 0.066, -0.005, 0.005)), 0.01, 0.018, 0.012, 6, 4);
+      if (lod < 2) {
+        // ears, full cheeks and a small nose (a toddler's face is round and low on the head)
+        for (const sx of [-1, 1]) {
+          b.ellipsoid(head.clone().add(V(sx * 0.066, -0.005, 0.005)), 0.01, 0.018, 0.012, 6, 4);
+          b.ellipsoid(head.clone().add(V(sx * 0.027, -0.03, -0.036)), 0.029, 0.026, 0.028, 8, 6);
+        }
+        b.ellipsoid(head.clone().add(V(0, -0.014, -0.071)), 0.011, 0.009, 0.01, 6, 4);
+      }
     });
+    if (lod < 2) {
+      // eyes (dark, glossy) under the brow
+      for (const sx of [-1, 1]) b.with({ col: [0.02, 0.014, 0.01], rough: 0.15, metal: 0, ch: CH.PLAIN, w: 0 }, () => b.ellipsoid(head.clone().add(V(sx * 0.024, 0.004, -0.066)), 0.008, 0.0055, 0.004, 6, 4));
+    }
     // hair (no hat) or a soft sun hat
     b.with({ piece: PIECE.BABY_HAIR, piv }, () => b.with(M.hair, () => b.ellipsoid(head.clone().add(V(0, 0.016, 0.01)), 0.07, 0.068, 0.072, seg, ring)));
     b.with({ piece: PIECE.BABY_HAT, piv }, () => b.with(M.cloth, () => {
@@ -343,14 +354,19 @@ function pushchair(ctx, jog = false) {
   }
   // seat: tub from the footrest up the seat to the backrest top
   const sy = jog ? 0.5 : 0.48, sz0 = jog ? -0.56 : -0.5;
-  const seat = [V(0, 0.3, sz0 - 0.1), V(0, sy - 0.03, sz0), V(0, sy, -0.28), V(0, sy + 0.08, -0.2), V(0, 0.92, -0.1)];
+  const seat = [V(0, 0.3, sz0 - 0.1), V(0, sy - 0.03, sz0), V(0, sy, -0.28), V(0, sy + 0.08, -0.2), V(0, 0.86, -0.13)];
   seatTub(ctx, seat, 0.32, M.fabricDark);
+  // padded back of the seat unit (closes the seat from behind, down to the seat pan)
+  {
+    const top = V(0, 0.84, -0.115), bot = V(0, sy - 0.05, -0.215);
+    b.with({ ...M.fabricDark, aoFn: (x, y, z, nx, ny, nz) => (nz > 0.3 ? 0.9 : 0.7) }, () => b.rbox(0.158, top.distanceTo(bot) / 2, 0.028, 0.022, alongY(bot, top).multiply(M4([0, top.distanceTo(bot) / 2, 0.012])), ctx.lod ? 1 : 3));
+  }
   // footrest bar, bumper bar
   tubeF(ctx, [V(-0.15, 0.29, sz0 - 0.12), V(0.15, 0.29, sz0 - 0.12)], 0.009, M.plastic);
   grip(ctx, [V(-0.21, 0.66, -0.36), V(-0.17, 0.69, -0.5), V(0.17, 0.69, -0.5), V(0.21, 0.66, -0.36)], 0.012);
   // canopy from behind the backrest over the child
-  canopy(ctx, 0.73, -0.25, 0.215, jog ? 0.36 : 0.33, -0.6, jog ? 1.05 : 1.0, 3);
-  for (const sx of [-1, 1]) b.with(M.plastic, () => b.rbox(0.012, 0.022, 0.022, 0.006, M4([sx * 0.215, 0.73, -0.25]), 1));
+  canopy(ctx, 0.79, -0.31, 0.215, jog ? 0.3 : 0.285, -1.45, jog ? 1.3 : 1.28, 3);
+  for (const sx of [-1, 1]) b.with(M.plastic, () => b.rbox(0.012, 0.022, 0.022, 0.006, M4([sx * 0.215, 0.79, -0.31]), 1));
   // shopping basket under the seat
   if (!jog || lod < 2) {
     const y0 = 0.14, y1 = 0.36, z0 = zr - 0.03, z1 = sz0 + 0.02, x0 = -0.17, x1 = 0.17;
@@ -379,7 +395,11 @@ function pram(ctx) {
   // chassis: chrome side rails with a curved C spring up to the body
   for (const sx of [-1, 1]) {
     tubeF(ctx, [V(sx * (xw - 0.03), r, zr), V(sx * 0.2, 0.24, zr - 0.08), V(sx * 0.2, 0.24, zf + 0.08), V(sx * (xw - 0.03), r, zf)], 0.011, M.chrome);
-    for (const z of [zr - 0.12, zf + 0.12]) tubeF(ctx, [V(sx * 0.2, 0.24, z), V(sx * 0.19, 0.38, z - 0.04 * Math.sign(z - (zr + zf) / 2)), V(sx * 0.17, 0.5, z)], 0.008, M.chrome);
+    // C springs from the chassis rails up to the body
+    for (const z of [zr - 0.14, zf + 0.14]) {
+      const o = Math.sign(z - (zr + zf) / 2);
+      tubeF(ctx, [V(sx * 0.2, 0.24, z), V(sx * 0.2, 0.34, z + o * 0.06), V(sx * 0.16, 0.48, z + o * 0.05), V(sx * 0.12, 0.6, z)], 0.008, M.chrome);
+    }
     wheel(ctx, V(sx * xw, r, zr), r, 0.03, 'wire', { piece: PIECE.RWHEEL, piv: [0, r, zr] });
     wheel(ctx, V(sx * xw, r, zf), r, 0.03, 'wire', { piece: PIECE.FWHEEL_S, piv: [0, r, zf] });
     // handle arms from the chassis to the handle
@@ -390,7 +410,7 @@ function pram(ctx) {
   // bassinet body: boat-shaped tub (loft of rounded sections), rim at y 0.86
   const nL = lod === 2 ? 6 : 14, nR = lod === 2 ? 8 : 18;
   const rings = [];
-  const zA = -0.12, zB = -0.9, top = 0.88, bot = 0.6;
+  const zA = -0.12, zB = -0.9, top = 0.86, bot = 0.58;
   for (let i = 0; i <= nL; i++) {
     const t = i / nL;
     const z = zA + (zB - zA) * t;
@@ -437,7 +457,7 @@ function pram(ctx) {
 function umbrella(ctx) {
   const { b, lod, spec } = ctx;
   const H = spec.handleH;
-  const r = 0.075, zr = -0.17, zf = -0.62, xw = 0.2;
+  const r = 0.075, zr = -0.17, zf = -0.68, xw = 0.2;
   const tr = 0.0095;
   for (const sx of [-1, 1]) {
     // J handle: hook bending back at the top, foam grip on the hook
@@ -470,28 +490,33 @@ function umbrella(ctx) {
     rows.push(row);
   }
   b.with(M.fabric, () => b.surface(rows, { twoSided: true }));
-  canopy(ctx, 0.86, -0.17, 0.2, 0.22, -0.5, 0.95, 2);
+  canopy(ctx, 0.84, -0.2, 0.2, 0.22, -0.95, 1.1, 2);
   toddler(ctx, V(0, 0.45, -0.33), 0.38);
   return { grips: [V(-xw, H - 0.005, 0.03), V(xw, H - 0.005, 0.03)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.45, -0.33) };
 }
 
 const BUILD = { pushchair: (c) => pushchair(c, false), jogger: (c) => pushchair(c, true), pram, umbrella };
 
-export function makeStrollerVariant(spec) {
-  const lods = [];
-  let info = null;
-  for (let lod = 0; lod < 3; lod++) {
-    const b = new Builder();
-    const ctx = { b, spec, Q: LODQ[lod], lod };
-    const r = BUILD[spec.id](ctx);
-    if (!info) info = r;
-    const g = b.build();
-    g.name = `stroller.${spec.id}.lod${lod}`;
-    lods.push(g);
-  }
+function buildLod(spec, lod) {
+  const b = new Builder();
+  const ctx = { b, spec, Q: LODQ[lod], lod };
+  const info = BUILD[spec.id](ctx);
+  const g = b.build();
+  g.name = `stroller.${spec.id}.lod${lod}`;
+  return { g, info };
+}
+
+/** Variant record: LOD 1 / 2 now, LOD 0 on demand (ensureLod0). */
+export function makeStrollerVariant(spec, { lod0 = false } = {}) {
+  const lods = [null, null, null];
+  const r1 = buildLod(spec, 1);
+  lods[1] = r1.g;
+  lods[2] = buildLod(spec, 2).g;
+  const info = r1.info;
   const H = spec.handleH;
-  return {
+  const rec = {
     spec, id: spec.id, label: spec.label, lods,
+    ensureLod0() { if (!lods[0]) lods[0] = buildLod(spec, 0).g; return lods[0]; },
     attach: { gripL: info.grips[0], gripR: info.grips[1], seat: info.seat },
     dims: {
       handleHeight: H, length: info.length + 0.02, width: 0.62, rearRadius: info.rearRadius, frontRadius: info.frontRadius,
@@ -499,6 +524,8 @@ export function makeStrollerVariant(spec) {
     },
     size: 1.06,
   };
+  if (lod0) rec.ensureLod0();
+  return rec;
 }
 
 /** Pusher contact points (prop-local). */
@@ -510,4 +537,3 @@ export function strollerAttachments(rec, out = {}) {
   out.pusher = (out.pusher || new THREE.Vector3()).set(0, 0, rec.dims.pushOffset);
   return out;
 }
-void alongY;

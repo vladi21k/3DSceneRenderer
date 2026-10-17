@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RNG } from '../../../core/rng.js';
 
 // Close-up harness for the mobility props in the app's own lighting. Mount it on a running app
 // (the integrator can call it from humans.init when propstest=1, or from the console / capture tool):
@@ -26,6 +27,7 @@ class PropsTest {
     const p = app.params;
     const g = (k, d) => (opts[k] !== undefined ? opts[k] : p.str('pt_' + k, d));
     const n = (k, d) => { const v = g(k, null); return v === null || v === '' || isNaN(+v) ? d : +v; };
+    this.num = n;
     this.mode = g('mode', 'line');
     this.kind = g('kind', this.mode === 'strollers' ? 'stroller' : 'bike');
     const view = p.view;
@@ -54,6 +56,12 @@ class PropsTest {
     this.M = new THREE.Matrix4();
     this.A = [0, 0, 0, 0];
     this.items = this._plan();
+    // pt_attach=1: markers at the rider / pusher contact points (saddle red, grips green, pedals blue)
+    if (this.num('attach', 0) > 0) {
+      const mk = (c) => { const m = new THREE.MeshStandardMaterial({ color: c, roughness: 0.5 }); app.materials.track(m); return m; };
+      const geo = new THREE.SphereGeometry(0.018, 10, 8);
+      this.mk = { red: mk(0xff2020), green: mk(0x20ff40), blue: mk(0x2060ff), geo, pool: [], used: 0 };
+    }
     this.t0 = performance.now();
     if (this.mode === 'parked') this._parked(M);
     const tick = () => { try { this.update(); } catch (e) { console.error('[propstest]', e); return; } requestAnimationFrame(tick); };
@@ -81,13 +89,14 @@ class PropsTest {
       });
     } else if (this.mode === 'ride' || this.mode === 'mix') {
       // riders and pushers going both ways along the street, spread over 60 m
-      for (let i = 0; i < 24; i++) {
+      const N = this.num('n', 24);
+      for (let i = 0; i < N; i++) {
         const stroller = st && i % 4 === 3;
         const kit = stroller ? 'stroller' : 'bike';
         const kitO = stroller ? st : bikes;
         const v = this.variant !== null && kitO.byId[this.variant] !== undefined ? kitO.byId[this.variant] : i % kitO.variants.length;
         const dir = i % 2 ? 1 : -1;
-        items.push({ kit, v, s: this.s0 + ((i * 7.3) % 60) - 5, d: this.d0 + (-4 + ((i * 2.9) % 8)), dir, speed: stroller ? 1.2 : this.v * (0.8 + ((i * 0.37) % 0.4)), seed: this.seed * 101 + i });
+        items.push({ kit, v, s: this.s0 + ((i * 7.3) % 60) - 5, d: this.d0 + (-4 + ((i * 2.9) % 8)), dir, speed: stroller ? 1.2 : this.v * (0.8 + ((i * 0.37) % 0.4)), seed: this.seed * 101 + i, span: this.num('span', 60) });
       }
     }
     for (const it of items) {
@@ -104,7 +113,7 @@ class PropsTest {
     this.parked = [];
     for (let i = i0; i <= i1; i++) {
       const idx = ((i % layout.nChunks) + layout.nChunks) % layout.nChunks;
-      const chunk = { index: idx, s0: idx * 40, s1: idx * 40 + 40, lod: 0, rng: (tag) => M.RNG ? M.RNG.from(layout.seed, tag, idx) : null };
+      const chunk = { index: idx, s0: idx * 40, s1: idx * 40 + 40, lod: 0, rng: (tag) => RNG.from(layout.seed, tag, idx) };
       const obj = M.buildParkedBicycles(chunk, this.app);
       if (obj) { this.app.scene.add(obj); this.parked.push(obj); }
     }
@@ -122,7 +131,7 @@ class PropsTest {
       const inst = it.kit === 'bike' ? this.bi : this.si;
       let s = it.s, heading = route.yawAt(it.s) + this.rot, roll = 0, crank = 0, steer = this.steer, lean = 0;
       if (it.dir) {
-        const span = 60;
+        const span = it.span || 60;
         const u = (((it.speed * t + it.phase * span) % span) + span) % span;
         s = it.dir > 0 ? this.s0 - 5 + u : this.s0 + 55 - u;
         heading = route.yawAt(s) + (it.dir > 0 ? 0 : Math.PI);
@@ -142,10 +151,26 @@ class PropsTest {
       if (it.kit === 'bike') kit.anim(this.A, it.v, { roll, crank, steer, saddle: 0 });
       else kit.anim(this.A, it.v, { roll, swivel: 0 });
       inst.add(it.v, this.M, this.A, it.look.look, it.lod !== undefined ? it.lod : this.lod);
+      if (this.mk) {
+        const at = it.kit === 'bike' ? kit.attachments(it.v, crank, steer, 0, it.at || (it.at = {})) : kit.attachments(it.v, it.at || (it.at = {}));
+        const list = it.kit === 'bike' ? [['saddle', 'red'], ['gripL', 'green'], ['gripR', 'green'], ['pedalL', 'blue'], ['pedalR', 'blue']] : [['gripL', 'green'], ['gripR', 'green'], ['seat', 'red'], ['pusher', 'blue']];
+        for (const [k, c] of list) this._marker(at[k], c);
+      }
     }
+    if (this.mk) { for (let i = this.mk.used; i < this.mk.pool.length; i++) this.mk.pool[i].visible = false; this.mk.used = 0; }
     this.bi.end();
     if (this.si) this.si.end();
   }
 }
+
+PropsTest.prototype._marker = function (p, c) {
+  const k = this.mk;
+  let m = k.pool[k.used];
+  if (!m) { m = new THREE.Mesh(k.geo, k[c]); this.app.scene.add(m); k.pool.push(m); }
+  m.material = k[c];
+  m.visible = true;
+  m.position.copy(p).applyMatrix4(this.M);
+  k.used++;
+};
 
 function safe(fn) { try { return fn(); } catch (e) { console.error('[propstest]', e); return null; } }

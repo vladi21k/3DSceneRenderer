@@ -9,8 +9,12 @@ import { U } from '../../core/uniforms.js';
 // atlas: thin drip trails, broad rain-wash streaks, blotches and a fine soot crust.
 // The atlas is addressed in facade metres (along the wall from the world position and
 // normal, height = world y), so it needs no extra UV set; two lookups at unrelated
-// periods hide the tiling. Also a glass variant for the self-dressed backdrop lots
-// (aGrime = lit share: warm interior light at night).
+// periods hide the tiling. Run-off below balcony slabs and window sills is shaded per
+// pixel from the aRun attribute (the occluder above, see shade.runAttr): soffit
+// occlusion and a soot band under the slab, streaks hanging from it, and water, dirt
+// and rust running down narrow strips under the slab and sill ends. Also a glass
+// variant for the openings the buildings glaze themselves (party walls, set-back
+// storeys; aGrime = lit share: warm interior light at night).
 
 const SIZE = 512;
 // atlas period in metres (u along the wall, v up); drips are long and narrow
@@ -122,43 +126,105 @@ export function grimeAtlas() {
 
 const VERT_PARS = /* glsl */ `
 attribute float aGrime;
+attribute vec4 aRun;
 varying float vBgGrime;
+varying vec4 vBgRun;
 varying vec3 vBgPos;
 varying vec3 vBgN;
 `;
 const VERT_MAIN = /* glsl */ `
 vBgGrime = aGrime;
+vBgRun = aRun;
 vBgPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vBgN = normalize(mat3(modelMatrix) * objectNormal);
 `;
 
 const FRAG_PARS = /* glsl */ `
 varying float vBgGrime;
+varying vec4 vBgRun;
 varying vec3 vBgPos;
 varying vec3 vBgN;
 uniform sampler2D bgGrimeTex;
 uniform vec4 bgGrimeK;   // darkening, greying, roughness gain, base streak share
 float bgDirt = 0.0;
+float bgHash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+float bgVN(vec2 p) {
+  vec2 i = floor(p), t = fract(p); t = t * t * (3.0 - 2.0 * t);
+  return mix(mix(bgHash(i), bgHash(i + vec2(1.0, 0.0)), t.x), mix(bgHash(i + vec2(0.0, 1.0)), bgHash(i + vec2(1.0, 1.0)), t.x), t.y);
+}
 `;
 
-// facade metres: along the wall (from the face normal) and height
+// Facade metres: along the wall (from the face normal) and height. aRun.z is the
+// building's dirtiness (also a per-building offset of the patch noise).
 const FRAG_STONE = /* glsl */ `
 {
-  vec3 bgN = normalize(vBgN);
-  float bgL = length(bgN.xz);
-  vec2 bgP = bgL > 0.35 ? vec2(dot(vBgPos.xz, vec2(-bgN.z, bgN.x) / bgL), vBgPos.y) : vBgPos.xz;
+  vec3 bgNrm = normalize(vBgN);
+  float bgL = length(bgNrm.xz);
+  vec2 bgP = bgL > 0.35 ? vec2(dot(vBgPos.xz, vec2(-bgNrm.z, bgNrm.x) / bgL), vBgPos.y) : vBgPos.xz;
+  float bgDirtB = vBgRun.z;
+  // large soft patches (stone batches, cleaning, sun bleaching), which also set how
+  // dirty the stone is locally
+  vec2 bgQ = bgP + bgDirtB * vec2(37.1, 11.3);
+  float bgN1 = bgVN(bgQ * vec2(0.35, 0.28));
+  float bgPt = bgN1 - 0.5 + 0.35 * (bgVN(bgQ * vec2(1.3, 0.9) + 7.7) - 0.5);
+  diffuseColor.rgb *= 1.0 + vec3(0.10, 0.10, 0.11) * bgPt;
+  float bgDk = 0.6 + 0.8 * bgN1;
+
+  // run-off below the occluder above: aRun = (a - u, line - v, dirtiness, code), code =
+  // +-(floor(width * 64) + s / 2): + balcony slab (line = soffit), - window sill
+  float bgRunM = 0.0, bgRunD = 0.0, bgWash = 0.0;   // grime mask, direct soot / streaks, wash
+  vec3 bgRunK = vec3(1.0);                            // occlusion and rust
+  float bgK = abs(vBgRun.w), bgD = vBgRun.y;
+  float bgFx = fwidth(vBgRun.x);                     // metres along the wall per pixel
+  if (bgK >= 1.0 && bgD > 0.0) {
+    float bgW = floor(bgK) * (1.0 / 64.0), bgS = fract(bgK) * 2.0;
+    float bgUa = -vBgRun.x, bgUb = bgW - bgUa;      // from the left / right end
+    // strips centred just inside each end: water runs off there
+    float bgE = max(0.0, 1.0 - min(abs(bgUa - 0.08), abs(bgUb - 0.08)) / 0.2);
+    if (vBgRun.w > 0.0) {
+      // balcony slab: occlusion and a soot band under the soffit, streaks hanging from
+      // it (columns of random length), water and rust down the strips under the ends
+      float bgIn = clamp(min(bgUa, bgUb) / 0.22 + 0.64, 0.0, 1.0);
+      float bgRun = bgE * bgS * exp(-bgD / 3.2) * (1.0 - smoothstep(2.8, 3.8, bgD));
+      bgRunK *= 1.0 - 0.3 * bgIn * exp(-bgD / 0.5);
+      if (bgIn > 0.0 && bgD < 3.0) {
+        float bgSeed = bgW * 7.31 + bgS * 3.7;
+        float bgLen = 0.25 + 1.6 * bgVN(vec2(bgUa * 2.3 + bgSeed, 0.5));
+        float bgSt = smoothstep(0.45, 0.8, bgVN(vec2(bgUa * 4.5 + bgSeed, bgD * 0.15)))
+          + 0.7 * smoothstep(0.55, 0.9, bgVN(vec2(bgUa * 14.0 + bgSeed, bgD * 0.5))) * (1.0 - smoothstep(0.015, 0.05, bgFx));
+        bgSt = mix(bgSt, 0.35, smoothstep(0.04, 0.15, bgFx));   // far: the mean
+        bgRunD = bgIn * min(1.5, bgDirtB * bgDk) * (0.6 * exp(-bgD / 0.2) + 0.8 * bgSt * exp(-bgD / bgLen));
+      }
+      bgRunM = bgDirtB * (0.3 * bgIn * exp(-bgD / 0.5) + 0.95 * bgRun);
+      float bgRust = 0.6 * bgRun;
+      bgRunK *= vec3(1.0 - 0.08 * bgRust, 1.0 - 0.13 * bgRust, 1.0 - 0.2 * bgRust);
+    } else {
+      // window sill: dirt under the sill and down the strips under its ends
+      float bgIn = clamp(min(bgUa, bgUb) / 0.2, 0.0, 1.0);
+      float bgRun = bgE * bgS * exp(-bgD / 2.4) * (1.0 - smoothstep(2.4, 3.4, bgD));
+      bgRunM = bgDirtB * (0.22 * bgIn * exp(-bgD / 0.7) + 0.8 * bgRun);
+      bgWash = 0.06 * bgRun;
+    }
+    float bgL0 = dot(diffuseColor.rgb, vec3(0.333));
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgL0 * 0.9), min(0.7, bgWash * 1.4)) * bgRunK * (1.0 - bgWash);
+  }
+
+  // weathering detail from the atlas: trails carry most of the dirt; blotches and the
+  // soot crust fill sheltered zones
   vec4 bgA = texture(bgGrimeTex, bgP * vec2(${(1 / PERIOD_U).toFixed(4)}, ${(1 / PERIOD_V).toFixed(4)}));
   vec4 bgB = texture(bgGrimeTex, bgP * vec2(0.1587, 0.0911) + vec2(0.37, 0.21));
   float bgDrip = max(bgA.r, bgB.r * 0.85);
   float bgBlot = bgA.g * 0.6 + bgB.g * 0.4;
-  float bgM = clamp(vBgGrime, 0.0, 1.0);
-  // trails carry most of the dirt; blotches and the soot crust fill sheltered zones
+  float bgM = clamp((vBgGrime + bgRunM) * bgDk, 0.0, 1.0);
   bgDirt = bgM * (bgGrimeK.w + (1.0 - bgGrimeK.w) * bgDrip) * (0.55 + 0.9 * bgBlot);
   bgDirt += smoothstep(0.5, 1.0, bgM) * (bgA.b * 0.6 + 0.2) * 0.6;
   bgDirt = clamp(bgDirt, 0.0, 1.0);
+  // soot and streaks under a balcony slab: greyer and darker than the grime elsewhere
+  float bgSoot = clamp(bgRunD * (0.7 + 0.6 * bgBlot), 0.0, 1.0);
   float bgLum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum) * vec3(0.97, 0.98, 1.0), bgDirt * bgGrimeK.y);
-  diffuseColor.rgb *= 1.0 - bgDirt * bgGrimeK.x;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum) * vec3(0.97, 0.98, 1.0), min(1.0, bgDirt * bgGrimeK.y + bgSoot * 0.5));
+  diffuseColor.rgb *= (1.0 - bgDirt * bgGrimeK.x) * (1.0 - 0.5 * bgSoot);
+  bgDirt = max(bgDirt, bgSoot);
 }
 `;
 const FRAG_ROUGH = /* glsl */ `
@@ -199,7 +265,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
   const m = base.clone();
   m.name = `buildings:${name}`;
   const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) } };
-  chain(m, 'bgS1', (shader) => {
+  chain(m, 'bgS3', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
@@ -214,7 +280,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
   return m;
 }
 
-/** Window glass of the self-dressed lots, lit at night by the lit share in aGrime. */
+/** Window glass the buildings put in themselves, lit at night by the lit share in aGrime. */
 export function litGlass(app, name = 'glass.window') {
   const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };
   const m = app.materials.get(name, { vertexColors: true }).clone();

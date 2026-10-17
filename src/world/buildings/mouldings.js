@@ -116,7 +116,7 @@ function modillionProfile(H, P) {
  * wrap: the blocks turn the corner (the front block reaches round the arris by its
  * projection); opts.retFace also dresses the return face (a square corner seen from the
  * side), opts.parity starts the long/short alternation on the other foot (the column on
- * an angled corner return interlocks with the front's).
+ * an angled corner return interlocks with the front's), opts.flat: front faces only (far).
  */
 export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev, opts = {}) {
   const joint = 0.012, seed = opts.seed | 0;
@@ -134,7 +134,8 @@ export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev, opts = {}) {
     B.setUV(1, h * 7.3, 1, h * 5.1);
     const p = q.proj + (h - 0.5) * 0.006;
     bev = mb;
-    if (side === 0) {
+    if (opts.flat) B.rectW(s, side ? W - fw : 0, side ? W : fw, v, top, p, 1);
+    else if (side === 0) {
       B.bevelBox(s, -(wrap ? p : 0), fw, v, top, 0, p, bev, FACES.ALL & ~FACES.BACK);
       if (retFace) B.box(s, -p, 0, v, top, -sw, 0, FACES.LEFT | FACES.TOP | FACES.BOTTOM | FACES.BACK);
     } else {

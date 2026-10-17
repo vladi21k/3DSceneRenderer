@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GeoWriter, box, lathe, sweepBar, shared } from './geo.js';
+import { GeoWriter, box, lathe, sweepBar, shared, posTemplate } from './geo.js';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
 import { uIronA2C } from './mats.js';
@@ -7,13 +7,18 @@ import { uIronA2C } from './mats.js';
 // Small facade attachments: potted and boxed geraniums, planter boxes with their rail
 // hooks, split AC units with brackets, pipes and the stains they leave on the wall,
 // satellite dishes, balcony chairs and flags on angled poles.
-// Shared shapes are built once as templates (written into per-chunk merged meshes) or as
-// instanced geometries; their textures are painted on canvases at start-up.
+// Shared shapes are built once as templates (written into the merged meshes) or as
+// instanced geometries; their textures are painted on canvases at start-up. The small
+// parts and the AC units share one material: the parts sample a white patch of the AC
+// atlas. Position-only copies of the templates are the shadow casters.
 
 // ---------------------------------------------------------------- templates
-/** Frozen copy of a GeoWriter, re-emitted many times with different transforms. */
-export function template(W) {
-  return { P: W.P.slice(0, W.n * 3), N: W.N.slice(0, W.n * 3), T: W.T.slice(0, W.n * 2), C: W.C.slice(0, W.n * 3), I: W.I.slice(0, W.ni), n: W.n };
+/** Frozen copy of a GeoWriter, re-emitted many times with different transforms; with
+ *  `uv` every vertex samples that one texel (untextured parts in a textured material). */
+export function template(W, uv = null) {
+  const T = W.T.slice(0, W.n * 2);
+  if (uv) for (let i = 0; i < W.n; i++) { T[i * 2] = uv[0]; T[i * 2 + 1] = uv[1]; }
+  return { P: W.P.slice(0, W.n * 3), N: W.N.slice(0, W.n * 3), T, C: W.C.slice(0, W.n * 3), I: W.I.slice(0, W.ni), n: W.n };
 }
 
 /** Writes a template into W with `matrix` (THREE.Matrix4) and an RGB tint (fast path:
@@ -121,8 +126,11 @@ function plantTexture() {
 const STEM_UV = [0.02, 0.04];
 
 // AC atlas (512 x 512): rows 0..352 the front (fan grille, service panel), below it the
-// side louvre panel (x < 256) and the dusty top (x >= 256).
+// side louvre panel (x < 256) and the dusty top (x >= 256); an 8 x 8 white patch in the
+// bottom-right corner (outside every face's UVs) for the untextured parts. A constant UV
+// has no derivatives, so it always samples the full-resolution patch.
 const AC_FRONT_V = 1 - 352 / 512;
+const WHITE_UV = [508 / 512, 1 - 508 / 512];
 
 /** Split AC outdoor unit: aged off-white enamel, grime at the edges and bottom. */
 function acTexture() {
@@ -184,6 +192,7 @@ function acTexture() {
     g.fillStyle = r.chance(0.7) ? `rgba(70,62,48,${r.range(0.1, 0.3)})` : `rgba(120,95,55,${r.range(0.2, 0.5)})`;
     g.fillRect(256 + r.range(0, 256), 352 + r.range(0, 160), r.range(1, 5), r.range(1, 4));
   }
+  g.fillStyle = '#fff'; g.fillRect(504, 504, 8, 8);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
@@ -277,8 +286,8 @@ export function makeAttachMaterials(app) {
   };
   plant.customProgramCacheKey = () => 'ironwork.plant';
 
-  const parts = new THREE.MeshStandardMaterial({ name: 'ironwork.parts', vertexColors: true, roughness: 0.62, metalness: 0.0 });
-  const ac = new THREE.MeshStandardMaterial({ name: 'ironwork.ac', map: acTexture(), vertexColors: true, roughness: 0.55, metalness: 0.0 });
+  // parts and AC units: AC atlas (the parts sample its white patch), colour per vertex
+  const parts = new THREE.MeshStandardMaterial({ name: 'ironwork.parts', map: acTexture(), vertexColors: true, roughness: 0.6, metalness: 0.0 });
   // stains on the wall under AC units: lit like the wall, blended over it
   const stain = new THREE.MeshStandardMaterial({
     name: 'ironwork.stain', map: stainTexture(), transparent: true, depthWrite: false, roughness: 0.92,
@@ -331,8 +340,8 @@ vec3 flagDisp( vec2 p, float ph ) {
   flagDepth.onBeforeCompile = (sh) => flutter(sh, false);
   flagDepth.customProgramCacheKey = () => 'ironwork.flagDepth';
 
-  for (const m of [plant, parts, ac, stain, flag]) M.register(m.name, m);
-  return { plant, parts, ac, stain, flag, flagDepth };
+  for (const m of [plant, parts, stain, flag]) M.register(m.name, m);
+  return { plant, parts, stain, flag, flagDepth };
 }
 
 // ---------------------------------------------------------------- plants
@@ -449,7 +458,7 @@ function potTemplate() {
   lathe(W, [[0.1, 0.09], [0.118, 0.186], [0.135, 0.19], [0.134, 0.224], [0.119, 0.21]], 9);
   W.color(...SOIL);
   lathe(W, [[0.119, 0.2], [0.0001, 0.205]], 9);
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Rectangular planter, unit length along x (scaled on write), 0.17 deep, 0.16 tall:
@@ -460,7 +469,7 @@ function boxTemplate() {
   gradBox(W, -0.51, 0.51, 0.146, 0.16, -0.095, 0.095, 1.0, 1.04, '');
   W.color(...SOIL);
   box(W, 0, 0.162, 0, 0.98, 0.006, 0.15, 1, 'fblrd');
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Two flat-bar hooks holding a planter on the handrail (box space: the rail is on the
@@ -476,7 +485,7 @@ function hookTemplate(dir) {
     box(W, x, 0.207, (zb + zf) / 2, 0.026, 0.005, Math.abs(zf - zb) + 0.005, 1, 'lrd'); // over the handrail
     box(W, x, 0.18, zf, 0.026, 0.055, 0.005, 1, 'ud' + toRail);                // down the far side
   }
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Split AC outdoor unit body: x in [-0.4, 0.4], y in [0, 0.55], z in [0.09, 0.37].
@@ -512,7 +521,7 @@ function acBracketTemplate() {
   }
   W.color(0.7, 0.68, 0.62); // condensate hose dropping down the wall
   sweepBar(W, [[0.3, 0.0], [0.32, -0.15], [0.33, -0.9]], 0.007, 0.007, { z0: 0.12 });
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Taped refrigerant pipe pair leaving the unit's side and entering the wall. */
@@ -527,7 +536,7 @@ function acPipeTemplate() {
     sweepBar(W, [[-0.16 - dz, 0], [0.02, 0]], 0.018, 0.018, {});
     W.setMatrix(null);
   }
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Wall stain quad under a wall-mounted unit (unit frame; 0.9 m wide, 1.6 m tall). */
@@ -566,7 +575,7 @@ function dishTemplate() {
   box(W, 0, -R * 0.15, 0.32, 0.05, 0.08, 0.06);                                 // LNB
   W.color(0.5, 0.5, 0.5);
   box(W, 0, -0.05, -0.12, 0.05, 0.05, 0.2);                                     // mount arm back to the wall
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Moulded plastic balcony chair (origin at the floor, facing +z). */
@@ -577,7 +586,7 @@ function chairTemplate() {
   W.setMatrix(back); box(W, 0, 0, 0, 0.44, 0.4, 0.025); W.setMatrix(null);
   for (const [x, z] of [[-0.19, -0.18], [0.19, -0.18], [-0.19, 0.18], [0.19, 0.18]]) box(W, x, 0.22, z, 0.035, 0.44, 0.035, 0.8);
   for (const x of [-0.21, 0.21]) box(W, x, 0.62, 0.0, 0.03, 0.03, 0.38);
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** A towel or rug hung over the handrail: front drop 0.45 m, back drop 0.3 m, unit width
@@ -590,7 +599,7 @@ function towelTemplate() {
   Q([[0.5, -0.45, t - 0.004], [-0.5, -0.45, t - 0.004], [-0.5, 0, t - 0.004], [0.5, 0, t - 0.004]], [0, 0, -1], 0.7);
   Q([[-0.5, 0.012, t], [0.5, 0.012, t], [0.5, 0.012, -t], [-0.5, 0.012, -t]], [0, 1, 0], 1.05);
   Q([[0.5, -0.3, -t], [-0.5, -0.3, -t], [-0.5, 0, -t], [0.5, 0, -t]], [0, 0, -1], 0.75);
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Flag pole along +y with a ball finial; wall bracket at the foot. */
@@ -602,12 +611,12 @@ function poleTemplate(len = 1.9) {
   lathe(W, [[0.0001, len], [0.02, len + 0.01], [0.03, len + 0.035], [0.02, len + 0.06], [0.0001, len + 0.068]], 8);
   W.color(0.25, 0.25, 0.25);
   box(W, 0, 0.05, 0, 0.06, 0.12, 0.06);
-  return template(W);
+  return template(W, WHITE_UV);
 }
 
 /** Flag cloth grid: x = fly 0..L, y = hoist 0..-H, z = 0. Instanced. */
-function flagGeometry() {
-  const g = new THREE.PlaneGeometry(FLAG.L, FLAG.H, 24, 16);
+function flagGeometry(sx = 24, sy = 16) {
+  const g = new THREE.PlaneGeometry(FLAG.L, FLAG.H, sx, sy);
   g.translate(FLAG.L / 2, -FLAG.H / 2, 0);
   return shared(g);
 }
@@ -630,7 +639,7 @@ export function buildAttachAssets() {
       plants[lvl].push(shared(g));
     }
   }
-  return {
+  const A = {
     plants,
     pot: potTemplate(),
     box: boxTemplate(),
@@ -644,6 +653,24 @@ export function buildAttachAssets() {
     towel: towelTemplate(),
     pole: poleTemplate(),
     flag: flagGeometry(),
+    flagShadow: flagGeometry(8, 5), // the cloth's shadow caster: same motion, coarse grid
     flagSize: FLAG,
   };
+  // shadow casters (welded positions): the AC body casts in every cascade; the small
+  // parts (pots, boxes, chairs, dishes) and the thin ones (poles, brackets, pipes) only
+  // in the fine cascades, whose texels can hold them. The planters' hook straps (2.6 cm)
+  // cast nothing.
+  A.cast = new Map([[A.acBody, posTemplate(A.acBody)]]);
+  A.thin = new Map([A.box, A.chair, A.towel, A.pole, A.acBrackets, A.acPipes].map((t) => [t, posTemplate(t)]));
+  // the pot's caster: a coarse cone through its foot, belly and rim (chords inside)
+  let W = new GeoWriter();
+  lathe(W, [[0.084, 0], [0.118, 0.186], [0.134, 0.224], [0.0001, 0.215]], 6);
+  A.thin.set(A.pot, posTemplate(W));
+  // the dish's: its rim disc, the LNB and the wall arm
+  W = new GeoWriter();
+  lathe(W, [[0.0001, 0], [0.32, 0.07]], 8);
+  W.setMatrix(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+  W.P.copyWithin(0, 0, 0); // (lathe is along +y: turned to face +z below)
+  A.thin.set(A.dish, dishCaster());
+  return A;
 }

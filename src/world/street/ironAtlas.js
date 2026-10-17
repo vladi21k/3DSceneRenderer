@@ -4,6 +4,8 @@ import { RNG } from '../../core/rng.js';
 // worker): height and mask maps drawn with Canvas 2D, then turned into albedo (sRGB),
 // tangent-space normals (Sobel) and an ORM map (roughness in G, metalness in B):
 // worn raised metal, dusty / rusty recesses, black voids, soil and mulch.
+// One corner holds four fallen-leaf cut-outs (alpha; near-white albedo tinted by vertex
+// colour), so the leaves on the paving draw with the iron in one call.
 
 export const ATLAS = 1024;
 
@@ -14,7 +16,8 @@ export const IRON_REGIONS = {
   gully: { x: 0, y: 512, w: 512, h: 256, mw: 0.62, mh: 0.31 },
   drain: { x: 0, y: 768, w: 512, h: 256, mw: 1.0, mh: 0.5 },
   plate: { x: 512, y: 512, w: 256, h: 256, mw: 0.6, mh: 0.6 },
-  valve: { x: 768, y: 512, w: 256, h: 256, mw: 0.32, mh: 0.32 },
+  valve: { x: 768, y: 512, w: 128, h: 128, mw: 0.32, mh: 0.32 },
+  leaves: { x: 896, y: 512, w: 128, h: 128 },     // 2 x 2 leaf cells
   plate2: { x: 512, y: 768, w: 512, h: 256, mw: 1.0, mh: 0.5 },
 };
 
@@ -257,9 +260,52 @@ function ironMaps(hc, mc) {
   return { alb, nor, orm };
 }
 
+/** Four leaf cut-outs (RGBA, white blade with darker edge and veins) on a canvas of
+ *  the leaves region's size. */
+function drawLeaves() {
+  const R = IRON_REGIONS.leaves, c = canvas(R.w, R.h), C = c.getContext('2d');
+  C.clearRect(0, 0, R.w, R.h);
+  const rng = RNG.from('street-leaves');
+  const k = R.w / 256;
+  for (let i = 0; i < 4; i++) {
+    const cx = ((i % 2) * 128 + 64) * k, cy = (Math.floor(i / 2) * 128 + 64) * k;
+    C.save(); C.translate(cx, cy); C.scale(k, k); C.rotate(rng.range(-0.3, 0.3));
+    const L = 50 + rng.range(-6, 6), W = i === 3 ? 30 : 18 + rng.range(-3, 5);
+    C.fillStyle = 'rgb(235,235,235)';
+    C.beginPath(); C.moveTo(-L, 0);
+    C.bezierCurveTo(-L * 0.4, -W, L * 0.4, -W * 0.9, L, 0);
+    C.bezierCurveTo(L * 0.4, W * (i === 1 ? 0.6 : 0.9), -L * 0.4, W, -L, 0);
+    C.fill();
+    // darker edge curl, midrib and veins
+    C.strokeStyle = 'rgb(170,170,170)'; C.lineWidth = 2.5; C.stroke();
+    C.strokeStyle = 'rgb(200,200,200)'; C.lineWidth = 2; C.beginPath(); C.moveTo(-L - 8, 0); C.lineTo(L * 0.9, 0); C.stroke();
+    C.lineWidth = 1;
+    for (let j = -3; j <= 3; j++) { C.beginPath(); C.moveTo(j * 12, 0); C.lineTo(j * 12 + 10, -W * 0.6); C.moveTo(j * 12, 0); C.lineTo(j * 12 + 10, W * 0.6); C.stroke(); }
+    C.restore();
+  }
+  return C.getImageData(0, 0, R.w, R.h).data;
+}
+
+/** Writes the leaf cut-outs into the maps: albedo with alpha, flat normal, dull leaf
+ *  roughness, no metal. Without leaf data (initial maps) the region is just cleared. */
+export function writeLeaves(maps, px = null) {
+  const R = IRON_REGIONS.leaves;
+  for (let y = 0; y < R.h; y++) {
+    for (let x = 0; x < R.w; x++) {
+      const o = ((R.y + y) * ATLAS + R.x + x) * 4, q = (y * R.w + x) * 4;
+      const a = px ? px[q + 3] : 0, v = px ? px[q] : 235;
+      maps.alb[o] = maps.alb[o + 1] = maps.alb[o + 2] = v; maps.alb[o + 3] = a;
+      maps.nor[o] = 128; maps.nor[o + 1] = 128; maps.nor[o + 2] = 255; maps.nor[o + 3] = 255;
+      maps.orm[o] = 255; maps.orm[o + 1] = 190; maps.orm[o + 2] = 0; maps.orm[o + 3] = 255;
+    }
+  }
+}
+
 /** Full atlas: { alb, nor, orm } RGBA8 arrays of ATLAS x ATLAS (canvas row 0 = v 0). */
 export function generateIronAtlas() {
   const hc = canvas(ATLAS, ATLAS), mc = canvas(ATLAS, ATLAS);
   drawIron(hc, mc);
-  return ironMaps(hc, mc);
+  const maps = ironMaps(hc, mc);
+  writeLeaves(maps, drawLeaves());
+  return maps;
 }

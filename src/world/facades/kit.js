@@ -53,24 +53,53 @@ export function spanAtY(pts, y) {
   return lo <= hi ? [lo, hi] : null;
 }
 
-/** Per-chunk set of batches, created on first use. Far chunks use `<key>Far` materials when defined. */
+// Batch sizes seen so far per (material key, lod): new batches start that large, so their
+// buffers rarely have to grow (and copy) while a chunk is assembled.
+const hints = new Map();
+
+/**
+ * Per-chunk set of batches, created on first use. A material definition may fold into
+ * another batch at a detail level ({near, far}: {key, k}): small parts of far chunks share
+ * the frame batch, for instance, with their vertex colours scaled by k so the albedo
+ * matches across the two library materials.
+ */
 export class Kit {
   constructor(mats, lod) {
-    this.mats = mats; this.lod = lod; this.b = {};
+    this.mats = mats; this.lod = lod; this.b = {}; this.views = {};
   }
   get(key) {
-    if (this.lod > 0 && this.mats[key + 'Far']) key += 'Far';
-    if (!this.b[key]) {
-      const def = this.mats[key];
-      this.b[key] = new Batch(def.material, { color: def.color !== false, extra: def.extra || null });
+    let v = this.views[key];
+    if (v) return v;
+    const def = this.mats[key];
+    const al = this.lod > 0 ? def.far : def.near;
+    if (!al) v = this._batch(key);
+    else {
+      const tgt = this._batch(al.key), k = al.k;
+      v = !k ? tgt : { add: (t, m, r = 1, g = 1, b = 1, ex = null) => tgt.add(t, m, r * k[0], g * k[1], b * k[2], ex) };
     }
-    return this.b[key];
+    this.views[key] = v;
+    return v;
+  }
+  _batch(key) {
+    let b = this.b[key];
+    if (!b) {
+      const def = this.mats[key];
+      b = this.b[key] = new Batch(def.material, { color: def.color !== false, extra: def.extra || null, hint: hints.get(`${key}:${this.lod}`) });
+    }
+    return b;
   }
   meshes(group, name) {
     for (const key in this.b) {
-      const def = this.mats[key];
-      const m = this.b[key].mesh(`${name}:${key}`, { castShadow: def.castShadow !== false && this.lod === 0, receiveShadow: def.receiveShadow !== false });
-      if (m) { if (def.renderOrder) m.renderOrder = def.renderOrder; group.add(m); }
+      const def = this.mats[key], batch = this.b[key];
+      const hk = `${key}:${this.lod}`, h = hints.get(hk);
+      const verts = Math.max(batch.count, h ? h.verts * 0.97 : 0), idx = Math.max(batch.I.n, h ? h.idx * 0.97 : 0);
+      hints.set(hk, { verts, idx });
+      const m = batch.mesh(`${name}:${key}`, { castShadow: def.castShadow !== false && this.lod === 0, receiveShadow: def.receiveShadow !== false });
+      if (!m) continue;
+      if (def.renderOrder) m.renderOrder = def.renderOrder;
+      // thin parts (glazing bars, grilles, louvres, brackets) only cast in the fine cascades
+      if (def.thin) m.userData.thinCaster = true;
+      group.add(m);
     }
   }
 }

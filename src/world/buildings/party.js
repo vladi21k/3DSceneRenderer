@@ -61,7 +61,7 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA)
         }
       }
       const face = { width, openings, courses: [], balconies: [], cornice: { y: v1 }, groundAt: () => gMin, floors: plan.floors, style: { ...plan.style, surrounds: false } };
-      const fs = new FaceShade(face, col, lot.seed + 7919 * (e + 1), { dirt: orn.dirt * 1.15, uncleaned: finish === 'plaster' ? 0.35 : 0.6, sillExt: 0.13 });
+      const fs = new FaceShade(face, col, lot.seed + 7919 * (e + 1), { dirt: orn.dirt * 1.15, uncleaned: finish === 'plaster' ? 0.35 : 0.6, sillExt: 0.13, sillH: 0.06 });
       if (openings.length) {
         if (!sinks.glass) sinks.glass = B.sink('glass');
         if (!sinks.frame) sinks.frame = B.sink('frame');

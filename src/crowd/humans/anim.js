@@ -94,6 +94,8 @@ export class Rig {
     const R = this.rest;
     this.H = info.H;
     this.kind = info.kind || 'male';
+    // forward extent of the chest (crossed arms rest in front of it)
+    this.chestFront = info.hang ? Math.min(info.hang[0][2], info.hang[1][2]) : -0.12 * (this.H / 1.76);
     this.style = GAIT[this.kind] || GAIT.male;
     this.side = { L: -1, R: 1 };
     this.l1 = R[B.thighR].distanceTo(R[B.shinR]);
@@ -432,11 +434,13 @@ export class Rig {
     } else if (variant === 2) {
       // arms folded across the chest: the right forearm in front, its hand tucked under the
       // left upper arm; the left forearm behind it with the hand resting on the right biceps
+      // (in front of this body's chest: its forward extent comes from the build's hang rings)
       const k = this.H / 1.76, shY = this.rest[B.armR].y, shX = this.rest[B.armR].x;
+      const zf = this.chestFront;
       const br = 0.004 * Math.sin(2 * Math.PI * t * 5);
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.74, shY - 0.235 * k + br, -0.150 * k),
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.74, shY - 0.235 * k + br, zf - 0.030 * k),
         pole: new THREE.Vector3(1, -0.3, 0.5), palm: new THREE.Vector3(0.6, -0.2, 1), flex: 85 };
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.170 * k + br, -0.120 * k),
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.170 * k + br, zf + 0.004 * k),
         pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(-0.5, -0.1, 0.85), flex: 30 };
     } else if (variant === 3) {
       // hands in the front pockets: wrists at the pocket openings, elbows out a little (the

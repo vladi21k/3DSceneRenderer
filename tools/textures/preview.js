@@ -8,6 +8,7 @@ import { U } from '../../src/core/uniforms.js';
 //   ?mode=grid | wall | street | maps | single | canopy
 //   &mat=<name>  &recipe=<bake name>  &sun=<elevDeg>,<azDeg>  &fov=<deg>
 //   &cam=x,y,z,tx,ty,tz  &night=<0..1>  &exposure=<f>  &filter=<substring>
+//   &color=r,g,b (linear; single mode: overrides the material colour, e.g. a paint)
 // Works with tools/shoot.py: --page tools/textures/preview.html --params "mode=wall"
 
 const q = new URLSearchParams(location.search);
@@ -163,11 +164,12 @@ async function main() {
     camera.updateProjectionMatrix();
   } else if (mode === 'single') {
     const n = q.get('mat') || 'stone.ashlar';
+    const mat = q.has('color') ? M.get(n, { color: vec('color') }) : M.get(n);
     const g = new THREE.PlaneGeometry(6, 4);
     uvFrom(g, (p) => [p.x + 3, p.y + 2]);
-    const pl = mesh(g, M.get(n));
+    const pl = mesh(g, mat);
     pl.position.set(0, 2, 0);
-    const s = mesh(sphere(0.6), M.get(n));
+    const s = mesh(sphere(0.6), mat);
     s.position.set(1.9, 0.6, 1.3);
     strip(-10, 10, 30, M.get('paving.sidewalk')).position.z = 15;
     const [cx, cy, cz, tx, ty, tz] = vec('cam') || [0.6, 1.8, 3.6, 0.4, 1.7, 0];

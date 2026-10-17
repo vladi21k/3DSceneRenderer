@@ -18,8 +18,14 @@ const arc = (cx, cy, r, a0, a1, n) => {
   return out;
 };
 
-/** Hood (cap, drum, cone, brim) as one closed profile, underside first. lo = coarse. */
+/** Hood (cap, drum, cone, brim) as one closed profile, underside first. lo = coarse,
+ *  'far' = outline only (brim, cone, shoulder, drum, cap) for hoods a few pixels wide. */
 export function lanternMetalProfile(lo = false) {
+  if (lo === 'far') {
+    return [[0.148, -0.448], [0.156, -0.44, true], [0.26, -0.43, true], [0.3, -0.418], [0.284, -0.401, true], [0.204, -0.341],
+      [0.168, -0.29, true], [0.172, -0.268, true], [0.128, -0.26, true], [0.128, -0.152, true], [0.136, -0.146, true],
+      [0.118, -0.14], [0.07, -0.112], [0.044, -0.1, true], [0.0, -STEM_LEN + 0.02]];
+  }
   const n = lo ? 2 : 4;
   const P = [];
   // seat ring the glass hangs in, then the flat underside of the brim

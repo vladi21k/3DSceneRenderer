@@ -714,6 +714,8 @@ export class Population {
     const s = os + behind, d = vis.rayBehind(os, od, behind);
     // a bicycle / stroller only on a clear line: the corridor or the sidewalk, not among the poles and trees
     if (mob && Math.abs(d) > TRACK_ZONE_HALF - 0.45 && Math.abs(d) < map.bandInAt(s, side) + (mob === MOB.CYCLE ? 0.5 : 0.35)) return null;
+    // (a stroller / walked bicycle in the corridor only on its far half)
+    if (mob && mob !== MOB.CYCLE && Math.abs(d) < TRACK_ZONE_HALF && d > -0.9) return null;
     if (vis.rayOffset(s, d, os, od) > Math.max(0.03, w / 2 - 0.26)) return null;
     const a = this.spawnWalker(s, side, dir, { d, force: false, group: 0, src: 'behind', maxH: maxH || undefined, laneD: Math.abs(d) < TRACK_ZONE_HALF ? d : undefined, mob });
     if (!a) return null;
@@ -724,7 +726,7 @@ export class Population {
         // ride on along a line through the spot
         if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = Math.max(-3.0, Math.min(3.0, d)); }
         else { a.lane = LANE.SIDE; a.side = side; a.laneF = 0.3; }
-      }
+      } else if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = d; }
       a.spawnHidden = true;
       return a;
     }

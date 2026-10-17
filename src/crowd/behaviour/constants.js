@@ -49,7 +49,7 @@ export const CELL = 2.0;
 export const GRID_D = 26;                          // grid covers |d| <= GRID_D
 
 // mobility roles (strollers, bicycles). Shares of the walking population, kept by spawning to the deficit.
-export const MOB_SHARE = { stroller: 0.05, cycle: 0.04, walkbike: 0.015 };
+export const MOB_SHARE = { stroller: 0.05, cycle: 0.045, walkbike: 0.015 };
 export const STROLLER_V = [0.98, 1.28];            // pushing a stroller: a little slower than walking
 export const WALKBIKE_V = [1.02, 1.32];
 export const CYCLE_V = [2.8, 5.0];                 // 10-18 km/h

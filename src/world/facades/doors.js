@@ -1,6 +1,6 @@
 // Residential entrance doors: panelled timber (or glazed iron) double doors with a
 // fanlight, lever handles and a stone threshold step.
-import { Tpl } from './geo.js';
+import { Tpl, TplCache } from './geo.js';
 import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, topAt } from './outline.js';
 import { rectRing } from './kit.js';
 
@@ -157,7 +157,7 @@ export function doorMetalTpl(o, L, q) {
       for (const y of [y0 + 0.25, (y0 + y1) / 2, y1 - 0.25]) t.box(x0, y - 0.01, 0.014, x1, y + 0.01, 0.026, 1 | 16 | 32, 0.9, 1);
     }
   }
-  if (q < 0.5) return { grille: null, handles: null };
+  if (q < 0.5) { t.free(); hd.free(); return { grille: null, handles: null }; }
   // lever handles at the meeting stiles
   const hx = L.leaves === 2 ? [-0.07, 0.07] : [hwI - 0.1];
   for (const x of hx) {
@@ -167,21 +167,16 @@ export function doorMetalTpl(o, L, q) {
     hd.box(Math.min(x, x - s * 0.12), 1.04, 0.06, Math.max(x, x - s * 0.12), 1.065, 0.08, 1 | 4 | 8 | 16 | 32, 0.9, 1); // lever
     if (q >= 0.5) hd.box(x - 0.012, 0.86, 0.02, x + 0.012, 0.9, 0.028, 1 | 16 | 32, 0.5, 0.6);          // key escutcheon
   }
-  return { grille: t.count ? t.bake() : null, handles: hd.bake() };
+  const grille = t.count ? t.bake() : (t.free(), null);
+  return { grille, handles: hd.bake() };
 }
 
 export const DOOR_FW = FW;
 
 // Door templates shared by the same-size doors of one building.
-const cache = new Map();
+const cache = new TplCache(400);
 /** {door, glass, metal} templates for door o with layout L. */
 export function doorTpls(design, o, L, q) {
   const key = `${design}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${q}`;
-  let v = cache.get(key);
-  if (!v) {
-    if (cache.size > 400) cache.clear();
-    v = { door: doorTpl(o, L, q), glass: doorGlassTpl(o, L, q), metal: doorMetalTpl(o, L, q) };
-    cache.set(key, v);
-  }
-  return v;
+  return cache.get(key, () => ({ door: doorTpl(o, L, q), glass: doorGlassTpl(o, L, q), metal: doorMetalTpl(o, L, q) }));
 }

@@ -99,6 +99,41 @@ def legacy(src, out, zoom):
         bpy.ops.render.render(write_still=True)
 
 
+def hands(a, bases, S, B):
+    """The right hand of each base alone (wrist at the origin), one row per base."""
+    views = {'front': 0, 'side': 90, 'back': 180, 'q34': 35, 'q34b': 145, 'side2': -90}
+    vlist = [v for v in a.views.split(',') if v]
+    colw, rowh = 0.18, 0.30
+    W = colw * len(vlist)
+    scn = setup_scene(int(W * 2400), int(rowh * 2400 * len(bases)), a.samples)
+    mat = clay()
+    for ri, kind in enumerate(bases):
+        T = B.TEMPLATES[kind]
+        _, sh, el, wr, du, df = B.arm_joints(T, 1)
+        node = B.hand_sdf(T, 1, wr, df + np.array([0, 0, -0.05]), T['handS'])
+        node = S.Union([node, S.RoundCone(wr - df * 0.06, wr, 0.024 * T['handS'], 0.021 * T['handS'])], k=0.008)
+        F, org = S.eval_grid(node, node.lo - 0.01, node.hi + 0.01, a.res)
+        V, Tr = S.surface_nets(F, org, a.res)
+        V = S.project(node, V.astype(np.float32), 2).astype(np.float64)
+        Tr, _ = S.fix_winding(node, V, Tr)
+        V = V - wr + np.array([0, 0.11, 0])
+        row_y = (len(bases) - 1 - ri) * rowh
+        for ci, vname in enumerate(vlist):
+            ob = mesh_object(f'h{kind}{vname}', V, Tr, mat)
+            ob.rotation_euler = (0, 0, math.radians(views[vname]) + math.pi)
+            ob.location = (ci * colw + colw / 2 - W / 2, 0, row_y)
+    cam = bpy.data.objects.new('cam', bpy.data.cameras.new('cam'))
+    scn.collection.objects.link(cam)
+    scn.camera = cam
+    cam.data.type = 'ORTHO'
+    tot_h = rowh * len(bases)
+    cam.data.ortho_scale = max(W, tot_h)
+    cam.location = (0, -10, tot_h / 2)
+    cam.rotation_euler = (math.radians(90), 0, 0)
+    scn.render.filepath = os.path.abspath(a.out)
+    bpy.ops.render.render(write_still=True)
+
+
 def main():
     if argv and not argv[0].startswith('--'):
         legacy(argv[0], argv[1], argv[2] if len(argv) > 2 else 'body')
@@ -121,6 +156,8 @@ def main():
     bases = [b for b in a.bases.split(',') if b]
     views = {'front': 0, 'side': 90, 'back': 180, 'q34': 35, 'q34b': 145, 'side2': -90}
     vlist = [v for v in a.views.split(',') if v]
+    if a.zoom == 'hand':
+        return hands(a, bases, S, B)
     zoom = {'body': (0.0, 1.0), 'head': (0.80, 1.02), 'torso': (0.45, 0.92), 'legs': (0.0, 0.58), 'upper': (0.55, 1.02)}[a.zoom]
     row_parts = a.parts.split(';')
     Hmax = max(B.TEMPLATES[b]['H'] for b in bases)

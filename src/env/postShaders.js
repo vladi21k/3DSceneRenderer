@@ -50,8 +50,13 @@ void main() {
   vec3 pd = posAt(vUv - vec2(0.0, uTexel.y)), pu = posAt(vUv + vec2(0.0, uTexel.y));
   vec3 dx = abs(pr.z - P.z) < abs(P.z - pl.z) ? pr - P : P - pl;
   vec3 dy = abs(pu.z - P.z) < abs(P.z - pd.z) ? pu - P : P - pd;
-  vec3 N = normalize(cross(dx, dy));
+  vec3 N = cross(dx, dy);
+  N *= inversesqrt(max(dot(N, N), 1e-24));
+  // the sampling disc is limited to 48 px: near the camera it covers a smaller world
+  // radius, and the range check and normalisation follow that radius (else nearby
+  // creases, like a figure's armpits, read the full radius as occluders and go black)
   float rPx = clamp(uRadius * uFocalPx / z, 1.5, 48.0);
+  float R = rPx * z / uFocalPx;
   float rot = ign(gl_FragCoord.xy) * 6.2831853;
   float ao = 0.0;
   const float GA = 2.39996323;
@@ -64,11 +69,13 @@ void main() {
     vec3 v = S - P;
     float vv = dot(v, v);
     // Alchemy AO term with a range check
-    float o = max(dot(v, N) - 0.002 * z, 0.0) / (vv + 0.01 * uRadius * uRadius);
-    o *= smoothstep(4.0 * uRadius * uRadius, 0.5 * uRadius * uRadius, vv);
+    float o = max(dot(v, N) - 0.002 * z, 0.0) / (vv + 0.01 * R * R);
+    o *= smoothstep(4.0 * R * R, 0.5 * R * R, vv);
     ao += o;
   }
-  ao = max(0.0, 1.0 - 2.0 * uIntensity * uRadius * ao / float(AO_SAMPLES));
+  // lighter close up, where small geometry (figures, furniture) fills the disc
+  float k = uIntensity * mix(0.55, 1.0, smoothstep(4.0, 16.0, z));
+  ao = max(0.0, 1.0 - 2.0 * k * R * ao / float(AO_SAMPLES));
   ao = pow(ao, 1.4);
   // fade with distance (sub-pixel detail far away)
   ao = mix(ao, 1.0, smoothstep(140.0, 320.0, z));
@@ -117,8 +124,9 @@ uniform float uHazeGap;      // sunlit share of distant air (cross streets, lowe
 uniform float uHazeSun;      // strength of the forward-scattered sun term
 uniform float uShimmer;
 uniform vec2 uResolution;
-uniform float uDofK, uFocus;
+uniform float uDofK, uFocus, uCocMax;
 uniform float uNightAir;
+uniform float uClampHDR;     // highest value passed on (scene units; ~64 after exposure)
 uniform vec3 uLampPos[NUM_LAMPS];
 uniform float uLampI[NUM_LAMPS];
 uniform vec3 uHeadPos, uHeadDir;
@@ -178,9 +186,6 @@ void main() {
     }
   }
   vec3 col = texture2D(tScene, uv).rgb;
-  // guard against NaN / Inf from upstream shading so they cannot spread through bloom
-  if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
-  col = min(col, vec3(6.0e4));
   // volumetric cumulus over the sky (rgb = in-scattered light, a = transmittance)
   if (sky && uUseClouds > 0) {
     vec4 cl = texture2D(tClouds, vUv);
@@ -286,8 +291,14 @@ void main() {
     col += air * uMist / (4.0 * ATM_PI) * uNightAir;
   }
 
+  // scrub NaN / Inf (by bit pattern: compilers may fold isnan away) and negatives, and
+  // clamp the range, so a broken pixel or a specular spark cannot spread through the
+  // DOF, motion blur and bloom chains
+  uvec3 bits = floatBitsToUint(col) & 0x7f800000u;
+  if (any(equal(bits, uvec3(0x7f800000u)))) col = vec3(0.0);
+  col = clamp(col, vec3(0.0), vec3(uClampHDR));
   float coc = uDofK * abs(1.0 - uFocus / max(dist, 0.1));
-  gl_FragColor = vec4(col, min(coc, 8.0));
+  gl_FragColor = vec4(col, min(coc, uCocMax));
 }
 `;
 
@@ -343,6 +354,46 @@ void main() {
     acc += s.rgb * w; wsum += w;
   }
   gl_FragColor = vec4(acc / wsum, coc);
+}
+`;
+
+// ---------------------------------------------------------------- camera motion blur (full res)
+// Each pixel's world position (from depth) is reprojected with last frame's camera; the
+// screen motion, scaled to the shutter time, is averaged over 10 taps centred on the
+// pixel. The sky is left alone (it is effectively at infinity).
+export const MBLUR_FS = /* glsl */ `
+${CAMERA_GLSL}
+uniform sampler2D tSrc;
+uniform sampler2D tDepth;
+uniform mat4 uCamWorld;
+uniform vec3 uCamPos;
+uniform mat4 uPrevViewProj;
+uniform vec2 uResolution;
+uniform float uShutter;      // shutter time / frame time
+uniform float uMaxPx;
+varying vec2 vUv;
+void main() {
+  vec4 c = texture2D(tSrc, vUv);
+  float d = texelFetch(tDepth, ivec2(gl_FragCoord.xy), 0).r;
+  if (d >= 1.0) { gl_FragColor = c; return; }
+  vec3 vp = viewPosFrom(vUv, linearZ(d));
+  // camera-relative world offset keeps the precision of a nearby point
+  vec3 rel = mat3(uCamWorld) * vp;
+  vec4 pc = uPrevViewProj * vec4(uCamPos + rel, 1.0);
+  if (pc.w <= 1e-4) { gl_FragColor = c; return; }
+  vec2 prevUv = pc.xy / pc.w * 0.5 + 0.5;
+  vec2 v = (vUv - prevUv) * uResolution * uShutter;
+  float len = length(v);
+  if (len < 0.5) { gl_FragColor = c; return; }
+  v *= min(len, uMaxPx) / len;
+  vec2 step = v / uResolution / 10.0;
+  float j = ign(gl_FragCoord.xy) - 0.5;
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 10; i++) {
+    float t = float(i) - 4.5 + j;
+    acc += texture2D(tSrc, vUv + step * t).rgb;
+  }
+  gl_FragColor = vec4(acc * 0.1, c.a);
 }
 `;
 
@@ -477,10 +528,19 @@ void main() {
   vec2 uv = vUv;
   vec2 q = uv - 0.5;
   float r2 = dot(q * vec2(uResolution.x / uResolution.y, 1.0), q * vec2(uResolution.x / uResolution.y, 1.0));
-  // lateral chromatic aberration, growing towards the corners
+  // lateral chromatic aberration, growing towards the corners; held back where the
+  // pixel is a thin dark line across the radial direction (iron bars, wires), which a
+  // channel shift would otherwise tear into colour fringes
   vec2 ca = q * r2 * uCA;
   vec4 c0 = texture2D(tHDR, uv);
-  vec3 col = vec3(texture2D(tHDR, uv + ca).r, c0.g, texture2D(tHDR, uv - ca).b);
+  vec3 cr = texture2D(tHDR, uv + ca).rgb, cb = texture2D(tHDR, uv - ca).rgb;
+  vec2 rd = normalize(q + 1e-6) * 1.5 / uResolution;
+  const vec3 LW = vec3(0.2126, 0.7152, 0.0722);
+  float l0 = dot(c0.rgb, LW), la = dot(texture2D(tHDR, uv + rd).rgb, LW), lb = dot(texture2D(tHDR, uv - rd).rgb, LW);
+  float edge = max(max(la, lb), max(dot(cr, LW), dot(cb, LW)));
+  float thin = smoothstep(0.85, 0.4, (l0 + 1e-5) / (max(min(la, lb), l0) + 1e-5)) + smoothstep(0.7, 0.3, (l0 + 1e-5) / (edge + 1e-5));
+  float kca = 1.0 - clamp(thin, 0.0, 1.0);
+  vec3 col = vec3(mix(c0.r, cr.r, kca), c0.g, mix(c0.b, cb.b, kca));
   col = mix(col, texture2D(tBloom, uv).rgb, uBloom);
 
   // exposure: time-of-day base, nudged by the metered scene luminance

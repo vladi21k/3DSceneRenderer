@@ -5,8 +5,10 @@ import { GLASS_TOP, GLASS_BOTTOM } from './lantern.js';
 // Shader patches for the overhead line and lamp standards.
 //  - thin(): ironwork keeps at least ~uMinPx on screen by pushing vertices out along the
 //    normal when the part (radius `aTube`) becomes sub-pixel; the widened part then
-//    carries its true coverage in alpha (alpha-to-coverage under MSAA), so far filigree
-//    fades to a light haze instead of heavy pen strokes. The same patch adds the paint
+//    carries its true coverage in alpha (alpha-to-coverage under MSAA, rounded to whole
+//    samples: some drivers dither fractional coverage over a screen-fixed 2x2 pixel
+//    pattern, a checkerboard on the iron), so far filigree fades to a light haze instead
+//    of heavy pen strokes. The same patch adds the paint
 //    weathering (rust blooms, run-off streaks; weights in `aWear`) and the lamp-lit glow
 //    of the lantern hood underside at night.
 //  - wire material: camera-facing ribbons expanded in the vertex shader; width is the
@@ -22,13 +24,24 @@ export const SU = {
   uMinPx: { value: 0.75 },      // minimum on-screen width of thin opaque parts
   uWireMinPx: { value: 1.0 },   // minimum on-screen width of wires
   uLamp: { value: 0 },          // radiance of a lit lantern bowl (scene units)
+  uA2C: { value: 0 },           // MSAA samples of the scene target (0: none), for coverage rounding
 };
+
+// coverage alpha for alpha-to-coverage: whole samples (see header); 0 discards
+const COVERAGE = /* glsl */ `
+float catCoverage( float a ) {
+  if ( uA2C < 0.5 ) return a;
+  a = floor( a * uA2C + 0.5 ) / uA2C;
+  if ( a <= 0.0 ) discard;
+  return a;
+}`;
 
 // Lit bowl radiance at full night (scene units). Dusk exposure is about three orders of
 // magnitude above midday, so this keeps the bowl a bright warm cream after tone mapping
 // (AgX desaturates towards white) instead of a clipped white disc.
 export const LAMP_RADIANCE = 0.0024;
 const WARM = 'vec3(1.0, 0.47, 0.11)'; // ~2700 K lamp seen through cream glass, linear
+const LIGHT_MIN_DIST = 1.0;            // m, see patchThin
 
 export function updateScreenUniforms(app, lampRadiance = LAMP_RADIANCE) {
   const cam = app.camera;
@@ -66,10 +79,11 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
   if (mat.userData.catenaryThin) return mat;
   mat.userData.catenaryThin = true;
   mat.alphaToCoverage = coverage;
-  return chain(mat, `catThin${coverage ? 'C' : ''}${weather ? 'W' : ''}`, (shader) => {
+  return chain(mat, `catThin2${coverage ? 'C' : ''}${weather ? 'W' : ''}`, (shader) => {
     shader.uniforms.uPxScale = SU.uPxScale;
     shader.uniforms.uMinPx = SU.uMinPx;
     shader.uniforms.uLamp = SU.uLamp;
+    shader.uniforms.uA2C = SU.uA2C;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aTube;
@@ -83,6 +97,9 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
       .replace('#include <begin_vertex>', `#include <begin_vertex>
       {
         vec4 cwp = vec4(transformed, 1.0);
+        #ifdef USE_BATCHING
+          cwp = batchingMatrix * cwp;
+        #endif
         #ifdef USE_INSTANCING
           cwp = instanceMatrix * cwp;
         #endif
@@ -95,18 +112,27 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         vLocal = position;
         // per-instance offset of the weathering noise, so no two poles rust alike
         vSeed = 0.0;
+        #ifdef USE_BATCHING
+          vSeed = fract(dot(batchingMatrix[3].xyz, vec3(0.1731, 0.0, 0.2913))) * 61.0;
+        #endif
         #ifdef USE_INSTANCING
           vSeed = fract(dot(instanceMatrix[3].xyz, vec3(0.1731, 0.0, 0.2913))) * 61.0;
         #endif
       }`);
     shader.fragmentShader = shader.fragmentShader
+      // local lights no closer than LIGHT_MIN_DIST: a lamp light standing in for both
+      // lanterns of a standard sits between the bracket scrolls, which would glow white
+      .replace('#include <lights_pars_begin>', THREE.ShaderChunk.lights_pars_begin.replace(
+        'pow( lightDistance, decayExponent )', `pow( max( lightDistance, ${LIGHT_MIN_DIST.toFixed(2)} ), decayExponent )`))
       .replace('#include <common>', `#include <common>
         uniform float uLamp;
+        uniform float uA2C;
         varying vec3 vWear;
         varying vec3 vLocal;
         varying float vInflate;
         varying float vSeed;
-        ${NOISE}`)
+        ${NOISE}
+        ${COVERAGE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         float catRust = 0.0;
         ${weather ? `
@@ -129,7 +155,7 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
           float st = catN(vec3(ang * 9.0, vLocal.y * 1.6, 0.5 + vSeed)) * catN(vec3(ang * 23.0, vLocal.y * 0.7, 2.5 + vSeed));
           diffuseColor.rgb *= 1.0 - 0.3 * vWear.y * smoothstep(0.12, 0.42, st);
         }` : ''}
-        ${coverage ? 'diffuseColor.a = 1.0 / vInflate;' : ''}`)
+        ${coverage ? 'diffuseColor.a = catCoverage(1.0 / vInflate);' : ''}`)
       .replace('#include <normal_fragment_begin>', `roughnessFactor = mix(roughnessFactor, 0.9, catRust);
         #include <normal_fragment_begin>`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
@@ -147,9 +173,10 @@ export function makeWireMaterial(coverage = false) {
   if (coverage) m.alphaToCoverage = true;
   else { m.transparent = true; m.depthWrite = false; }
   m.name = 'catenary.wire';
-  return chain(m, 'catWire', (shader) => {
+  return chain(m, coverage ? 'catWire2C' : 'catWire2', (shader) => {
     shader.uniforms.uPxScale = SU.uPxScale;
     shader.uniforms.uWireMinPx = SU.uWireMinPx;
+    shader.uniforms.uA2C = SU.uA2C;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec3 aTan;
@@ -180,13 +207,14 @@ export function makeWireMaterial(coverage = false) {
         #endif`)
       .replace('#include <begin_vertex>', `vec3 transformed = position + wS * (aWire.x * wHalf);`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vCover;\nvarying float vSide;\nvarying float vPxW;')
+      .replace('#include <common>', `#include <common>\nvarying float vCover;\nvarying float vSide;\nvarying float vPxW;\nuniform float uA2C;\n${COVERAGE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         {
           // analytic edge AA once the ribbon is several pixels wide
           float fw = max(fwidth(vSide), 1e-4);
           float edge = clamp((1.0 - abs(vSide)) / (fw * 1.2), 0.0, 1.0);
           diffuseColor.a *= vCover * mix(1.0, edge, smoothstep(2.0, 4.0, vPxW));
+          ${coverage ? 'diffuseColor.a = catCoverage(diffuseColor.a);' : ''}
         }`);
   });
 }
@@ -196,8 +224,8 @@ export function makeWireMaterial(coverage = false) {
  *  showing through where we look straight in. At night an evenly lit warm diffuser at
  *  SU.uLamp. Geometry uv = (angle around the bowl axis, height below the hang point). */
 export function makeGlassMaterial(M) {
-  const m = M.get('glass.lamp', { catenaryLantern: true, color: [0.56, 0.55, 0.5], roughness: 0.1, emissive: [0, 0, 0] });
-  return chain(m, 'catGlass2', (shader) => {
+  const m = M.get('glass.lamp', { catenaryLantern: true, color: [0.56, 0.55, 0.5], roughness: 0.1, emissive: [0, 0, 0], clearcoat: 0 });
+  return chain(m, 'catGlass3', (shader) => {
     shader.uniforms.uLamp = SU.uLamp;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vGlass;\nvarying vec3 vAxis;')
@@ -205,6 +233,9 @@ export function makeGlassMaterial(M) {
         vGlass = uv;
         {
           vec3 ax = vec3(0.0, 1.0, 0.0);
+          #ifdef USE_BATCHING
+            ax = mat3(batchingMatrix) * ax;
+          #endif
           #ifdef USE_INSTANCING
             ax = mat3(instanceMatrix) * ax;
           #endif
@@ -238,12 +269,12 @@ export function makeGlassMaterial(M) {
 
 /** Fabric with wind billow for pole banners. Banner geometry carries aBanner =
  *  (u across 0..1 from the pole, v up 0..1, phase) and the face normal in `normal`.
- *  Instanced banners carry per-instance data in the instance colour instead of a tint:
- *  r = wind phase, g = print cell (design index).
+ *  Instanced / batched banners carry per-instance data in the instance colour instead of
+ *  a tint: r = wind phase, g = print cell (design index).
  *  The billow is an analytic field, so normals follow it and the cloth shades like fabric;
  *  the sun shining through the cloth from behind adds a diffuse back-light. */
 export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
-  return chain(mat, 'catBanner2', (shader) => {
+  return chain(mat, 'catBanner3', (shader) => {
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uWind = U.uWind;
     shader.uniforms.uWindStrength = U.uWindStrength;
@@ -266,13 +297,24 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
           float ripple = sin(t * 2.7 + bu * 5.0 - bv * 2.2 + ph * 6.0) * 0.45 + sin(t * 4.3 + bu * 9.0 + bv * 4.0 + ph) * 0.2;
           return 0.45 * w * gust * belly * (push * 0.8 + ripple);
         }`)
+      .replace('#include <color_pars_vertex>', `#include <color_pars_vertex>
+        // per-instance data (see above)
+        vec4 bannerData() {
+          #if defined( USE_BATCHING_COLOR )
+            return getBatchingColor( getIndirectIndex( gl_DrawID ) );
+          #elif defined( USE_INSTANCING_COLOR )
+            return vec4( instanceColor, 1.0 );
+          #else
+            return vec4( 0.0 );
+          #endif
+        }`)
       .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
-        float bPh = aBanner.z;
-        #ifdef USE_INSTANCING_COLOR
-          bPh += instanceColor.r;
-        #endif
+        float bPh = aBanner.z + bannerData().r;
         vec3 bN = normalize(objectNormal);
         mat3 bM = mat3(modelMatrix);
+        #ifdef USE_BATCHING
+          bM = bM * mat3(batchingMatrix);
+        #endif
         #ifdef USE_INSTANCING
           bM = bM * mat3(instanceMatrix);
         #endif
@@ -287,12 +329,12 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
         transformed += bN * bD;
         transformed.y -= 0.1 * abs(bD);`)
       .replace('#include <uv_vertex>', `#include <uv_vertex>
-        #if defined(USE_INSTANCING_COLOR) && defined(USE_MAP)
-          vMapUv.x += instanceColor.g / ${cells.toFixed(1)};
+        #ifdef USE_MAP
+          vMapUv.x += bannerData().g / ${cells.toFixed(1)};
         #endif`)
       .replace('#include <color_vertex>', `#include <color_vertex>
-        #ifdef USE_INSTANCING_COLOR
-          vColor.xyz = vec3(1.0); // instance colour holds data, not a tint
+        #if defined(USE_INSTANCING_COLOR) || defined(USE_BATCHING_COLOR)
+          vColor = vec4(1.0); // instance colour holds data, not a tint
         #endif`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <map_fragment>', `

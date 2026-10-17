@@ -246,6 +246,8 @@ export function deriveAppearance(seed, parts) {
   if (!a.top2) a.top2 = srgb('#f4f4f0');
   // blouses and tees worn with a skirt are tucked into its waistband
   if (a.skirtPart && a.bottomType === BOTTOM.SKIRT) a.topHem = 1;
+  // no pockets to put the hands in on a dress or skirt
+  if (a.skirtPart && a.idle === 3) a.idle = 0;
   // crossed legs only in trousers: a skirt over a crossed knee cannot be shaped by the shell
   if (a.skirtPart && a.sit === 1) a.sit = 2;
 

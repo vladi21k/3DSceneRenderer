@@ -8,8 +8,9 @@ import { arcSeg } from './mesh.js';
 // plus extra rows where the baked occlusion changes quickly (under the cornice and
 // string courses, near the paving) and at the run-off lines (balcony soffits, sill
 // undersides). Each row is covered by runs of quads between the openings, split where
-// the run-off occluder above changes (the run-off itself is shaded per pixel, see
-// shade.runAttr) and every gridU metres for the soft patches. Arched heads get spandrel
+// the run-off occluder above changes (the run-off and the soft patches of the stone are
+// shaded per pixel, see shade.js), and near a sloping pavement every gridU metres (the
+// splash zone follows the paving). Arched heads get spandrel
 // strips between the curve and the head line. Rows do not share vertices (T-junctions
 // are hidden by a dark backstop behind the wall). The ground floor may be rusticated:
 // banded courses with deep V joints in stone.rough.
@@ -62,8 +63,12 @@ function grooveCap(B, s, u, dir, va, vc, groove, c) {
 }
 
 /**
- * ctx: {B, sinks, fs (FaceShade), q (detail), vBottom, vTop, rustic: {v0, v1, joints[], c} | null}
+ * ctx: {B, sinks, fs (FaceShade), q (detail), vBottom, vTop, rustic: {v0, v1, joints[], c} | null,
+ *       cover?: (o) => {side, head: {ext, H} | null} | null}
  * face: plan-like (width, openings, courses, balconies, cornice, groundAt)
+ * ctx.cover tells which dressing closes over the wall around an opening: surround jambs
+ * `side` wide up to the spring line, a lintel `ext` beyond the jambs and H tall above a
+ * flat head. The wall is left out under them (they are closed boxes, set into the wall).
  * A generator: yields every few rows so a large facade can be spread over frames.
  */
 export function* wallField(ctx, face, openings) {
@@ -75,8 +80,11 @@ export function* wallField(ctx, face, openings) {
   const holes = [];
   for (const o of openings) {
     const top = Math.min(v1, o.y + o.h);
-    holes.push({ u0: o.uc - o.w / 2, u1: o.uc + o.w / 2, y: o.y, spring: o.spring, top });
-    vb.push(o.y, o.spring, top);
+    const cov = ctx.cover ? ctx.cover(o) : null;
+    const side = cov ? cov.side : 0, head = cov && cov.head;
+    const hTop = head ? Math.min(v1, top + head.H) : top;
+    holes.push({ u0: o.uc - o.w / 2, u1: o.uc + o.w / 2, y: o.y, spring: o.spring, top, side, hTop, hExt: head ? head.ext : 0 });
+    vb.push(o.y, o.spring, top, hTop);
   }
   holes.sort((a, b) => a.u0 - b.u0);
   // occlusion helper rows (both detail levels keep these rows, so the baked shading does
@@ -107,7 +115,7 @@ export function* wallField(ctx, face, openings) {
   const sAsh = ctx.sinks.ashlar, sRough = ctx.sinks.rough || ctx.sinks.ashlar;
   const roughBase = sRough.uvx;
   B.shade = (u, v, w, nu, nv, nw, out) => fs.wall(u, v, out);
-  const maxRun = q.gridU;
+  const sloped = gHi - gLo > 0.02;
   const k = Math.SQRT1_2;
   /** Texture transform of a piece: the sink's own base with u replaced by the fitted (k, off). */
   const setPiece = (s, base, kk, off) => {
@@ -129,14 +137,18 @@ export function* wallField(ctx, face, openings) {
     const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
     const rg = fit ? fit.row(vm) : 0;
     const zones = fs.rowZones(va, vc), zc = zones.cuts;
+    const maxRun = sloped && va < gHi + 2.5 ? q.gridU : Infinity;
     // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
     let a = uMin, aJamb = false;
     const runs = [], jamb = [];
     for (const h of holes) {
-      if (vm <= h.y || vm >= h.top) continue;
-      const j = vm < h.spring;
-      if (h.u0 - a > EPS) { runs.push(a, h.u0); jamb.push(aJamb, j); }
-      a = Math.max(a, h.u1); aJamb = j;
+      if (vm <= h.y || vm >= h.hTop) continue;
+      // the opening (widened by its jambs below the spring line), or the lintel above it
+      const j = vm < h.spring || vm > h.top;
+      const ext = vm > h.top ? h.hExt : vm < h.spring ? h.side : 0;
+      const h0 = h.u0 - ext, h1 = h.u1 + ext;
+      if (h0 - a > EPS) { runs.push(a, h0); jamb.push(aJamb, j); }
+      a = Math.max(a, h1); aJamb = j;
     }
     if (uMax - a > EPS) { runs.push(a, uMax); jamb.push(aJamb, false); }
     for (let i = 0; i < runs.length; i += 2) {

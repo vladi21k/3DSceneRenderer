@@ -144,7 +144,10 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
   animation: ride-breathe 3.2s ease-in-out infinite;
 }
 .ride-ui .start:hover .start-title { animation-play-state: paused; opacity: 1; }
-.ride-ui .start-sub { margin-top: 14px; font-size: 13px; font-weight: 300; letter-spacing: .03em; color: var(--ink-2); }
+.ride-ui .start-sub {
+  margin-top: 14px; max-width: min(34em, calc(100vw - 48px)); font-size: 13px; font-weight: 300; line-height: 1.5;
+  letter-spacing: .03em; color: var(--ink-2); text-wrap: balance;
+}
 .ride-ui .start-sub:empty { display: none; }
 .ride-ui .start-rule { width: 44px; height: 1px; margin: 26px 0 24px; background: var(--ink-3); }
 .ride-ui .start-legend {

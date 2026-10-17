@@ -88,17 +88,26 @@ const street = {
     };
     surface.planner = (ci) => this.planFor(ci).spots;
 
-    // JIT warm-up: build and discard representative chunks (plain, crossover, cross
-    // street; both lods) so streamed chunks never pay first-call compilation costs.
+    // Warm-up: build representative chunks (plain, crossover, cross street, station;
+    // both lods) so streamed chunks never pay first-call JIT costs. The lod 0 ones stay
+    // in the scene, far below it (always culled), until the first frames: the start-up
+    // shader compile then covers every street program, including those first needed
+    // only when a crossover or a platform comes close (otherwise a long stall mid-ride).
     const L = app.layout;
-    const warm = [0, L.chunkIndex(L.crossovers[0]?.s0 ?? 0), L.chunkIndex(L.crossStreets[0]?.s ?? 0)];
-    for (const idx of warm) {
+    const warm = [0, L.crossovers[0]?.s0, L.crossStreets[0]?.s, L.stations[0]?.s].filter((x) => x !== undefined).map((x) => L.chunkIndex(x));
+    this.warm = new THREE.Group();
+    this.warm.name = 'street:warm';
+    this.warm.position.y = -1e4;
+    for (const idx of new Set(warm)) {
       for (const lod of [0, 1]) {
         const s0 = idx * CHUNK_LEN;
         const g = this.build({ index: idx, s0, s1: Math.min(app.route.length, s0 + CHUNK_LEN), lod });
-        g.traverse((o) => o.geometry && o.geometry.dispose());
+        if (lod === 0) this.warm.add(g);
+        else g.traverse((o) => o.geometry && o.geometry.dispose());
       }
     }
+    this.warm.updateMatrixWorld(true);
+    app.scene.add(this.warm);
   },
 
   /** Paving height above the route elevation at (s, d) (metres). */
@@ -167,6 +176,11 @@ const street = {
 
   update(dt, app) {
     app.renderer.getDrawingBufferSize(LINE_SHARED.uViewport.value);
+    if (this.warm && app.frame > 3) {
+      app.scene.remove(this.warm);
+      this.warm.traverse((o) => o.geometry && o.geometry.dispose());
+      this.warm = null;
+    }
   },
 };
 

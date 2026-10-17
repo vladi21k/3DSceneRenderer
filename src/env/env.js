@@ -7,6 +7,7 @@ import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT } from './atmosphere.js';
 import { Sky } from './sky.js';
 import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk } from './sunShadow.js';
+import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
 import { StreetLights } from './lights.js';
 
@@ -71,7 +72,12 @@ const env = {
     this.sun = new SunLight(0xffffff, 3);
     this.sun.name = 'sun';
     this.sun.castShadow = true;
-    if (patched) this.sun.shadow = new StreetSunShadow(q.cascades);
+    if (patched) {
+      this.sun.shadow = new StreetSunShadow(q.cascades);
+      // the chunks' static casters draw as one depth-only proxy per chunk
+      this.batcher = new ShadowBatcher(app, this.sun.shadow);
+      this.sun.shadow.batcher = this.batcher;
+    }
     const sh = this.sun.shadow;
     sh.mapSize.set(q.mapSize, q.mapSize);
     sh.camera.near = 1;
@@ -143,6 +149,7 @@ const env = {
     this.sky.updateIrradiance(first);
     this._irrDirty = !first;
     this._irrAge = 0;
+    this._todStamp = (this._todStamp || 0) + 1;
 
     // night: lamps, shop fronts and windows come on around sunset
     const night = THREE.MathUtils.smoothstep(t, 0.72, 0.86);
@@ -267,11 +274,18 @@ const env = {
     const realDt = app.realDt ?? dt;
     const time = app.time;
 
-    // deferred sky-irradiance read-back once the time of day has settled
-    if (this._irrDirty && (this._irrAge += realDt) > 0.25) {
-      this.sky.readIrradiance();
-      this._irrDirty = false;
-      this._updateExposure();
+    // deferred sky-irradiance read-back once the time of day has settled (asynchronous:
+    // a synchronous read would wait for the whole frame queue)
+    if (this._irrDirty && !this._irrReading && (this._irrAge += realDt) > 0.25) {
+      const stamp = this._todStamp;
+      this._irrReading = true;
+      this.sky.readIrradianceAsync().then(() => {
+        this._irrReading = false;
+        // a newer time of day was set meanwhile: its own read-back follows
+        if (stamp !== this._todStamp) return;
+        this._irrDirty = false;
+        this._updateExposure();
+      });
     }
 
     // ---- wind: slowly veering direction, gusty strength (deterministic in time)
@@ -292,6 +306,7 @@ const env = {
     // ---- sun light follows the camera (cascades are fitted by the shadow itself)
     app.camera.updateMatrixWorld();
     if (this.sun.shadow.isStreetSunShadow) this.sun.shadow.groundY = app.route.elevation(app.cameraS ?? app.startS);
+    if (this.batcher) this.batcher.update();
     this.sun.position.copy(this.state.sunDir);
     this.sun.updateMatrixWorld();
 
@@ -312,6 +327,14 @@ const env = {
 
     // ---- dusk lights
     this.lights.update(app, U.uNight.value);
+  },
+
+  /** Off-scene passes env renders itself (post compiles them up front with its own). */
+  passes() {
+    const out = [];
+    if (this.clouds) out.push(this.clouds.quad, this.clouds.resolveQuad);
+    if (this.sky && this.sky._copyQuad) out.push(this.sky._copyQuad);
+    return out;
   },
 
   /** Horizontal illuminance (scene units) in the open for the current time of day. */

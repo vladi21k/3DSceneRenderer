@@ -156,7 +156,7 @@ function planterGeometry(w, d, H) {
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (w - 2 * T) * 2, uv.getY(i) * (d - 2 * T) * 2);
   // contact shadow: a ring on the paving fading out over 0.16 m (rgba vertex colours)
   const skirt = contactSkirt(w - 0.04, d - 0.04, 0.16, 0.55);
-  return { shell, soil, skirt, soilY, inner: [w - 2 * T, d - 2 * T] };
+  return { shell, soil, skirt, soilY, inner: [w - 2 * T, d - 2 * T], foot: Math.hypot(w, d) / 2 };
 }
 
 /** Flat ring around a w x d footprint on the paving: alpha a0 inside, 0 at `out` metres. */
@@ -314,7 +314,10 @@ export function createProps(app, pools) {
         /** Planter box; returns where the shrub mound goes and its footprint scale. */
         planter(f, kind, yaw, out) {
           const G = planters[kind];
-          route.toWorld(f.s, f.d, 0, out.pos);
+          // sunk by the slope of the paving under its footprint, so no edge floats
+          const gs = route.groundY(f.s + 0.25, f.d) - route.groundY(f.s - 0.25, f.d);
+          const gd = route.groundY(f.s, f.d + 0.25) - route.groundY(f.s, f.d - 0.25);
+          route.toWorld(f.s, f.d, -G.foot * 2 * Math.hypot(gs, gd), out.pos);
           _q.setFromAxisAngle(UP, yaw);
           _m.compose(out.pos, _q, _s.set(1, 1, 1));
           add(P.stone, kind, _m, null);

@@ -99,9 +99,11 @@ class CascadeFrustum extends THREE.Frustum {
     this.skip = false;
     this.skipThin = false;
     this.minRadius = 0;
+    this.acceptAll = false;
   }
   intersectsObject(object) {
     if (this.skip) return false;
+    if (this.acceptAll) return true;
     const c = this.ctx;
     const ud = object.userData;
     let sphere;
@@ -158,6 +160,9 @@ export class StreetSunShadow extends SunLightShadow {
     // far cascades are redrawn on a stagger unless the view or the sun changed a lot
     this.stagger = cascades > 2;
     this.refreshed = cascades;   // cascades redrawn by the last update (a prefix of the row)
+    // the first redraw takes every caster into every cascade, so all depth-pass program
+    // variants compile at start-up rather than when a caster first enters a cascade
+    this.warmup = true;
     this._frame = 0;
     this._lastFar = { pos: new THREE.Vector3(1e9, 0, 0), fwd: new THREE.Vector3(), sun: new THREE.Vector3(), fov: 0 };
   }
@@ -286,6 +291,7 @@ export class StreetSunShadow extends SunLightShadow {
       f.zFar = cFar + 2;
       f.skipThin = this.cullCasters && (i >= 2 || texel > THIN_TEXEL);
       f.minRadius = this.cullCasters && i >= 2 ? SUBTEXEL * texel : 0;
+      f.acceptAll = this.warmup;
 
       const cam = this._cameras[i];
       cam.position.copy(_c);
@@ -299,6 +305,7 @@ export class StreetSunShadow extends SunLightShadow {
       cam.updateMatrixWorld();
       this._updateMatrix(cam, this._matrices[i], f, this._viewports[i]);
     }
+    if (this.map) this.warmup = false;
   }
 }
 

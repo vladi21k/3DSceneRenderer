@@ -1,0 +1,243 @@
+import * as THREE from 'three';
+
+// Street-wide instancing for the lamp standards, their fittings and the signals: one
+// BatchedMesh per part (shafts, brackets, lanterns...) holds every instance of the
+// streamed range, so each part costs one multi-draw call per pass instead of one draw
+// per chunk. A chunk build adds its instances to a record bound to the Object3D it
+// returns; the instances follow that group's visibility (the streamer shows a chunk
+// once all its modules are built and swaps LOD replacements atomically) and are freed
+// on dispose.
+//
+// Detail: a part with levels [hi, mid, lo, far] draws the level of its own camera
+// distance (far throughout far chunks); `near` parts (insulators, clamps...) show only while their
+// chunk is near, where they replace the chunk's ribbon stand-ins.
+//
+// Shadows: each cascade gets its own draw list (shadowList): an instance casts only where
+// its shadow can reach the cascade's slice of the view (the light's cascade frustum
+// decides, so cascades that are not redrawn this frame cost nothing), at no more detail
+// than the cascade's texels hold, and parts flagged thin stop casting in coarse cascades.
+
+const _m4 = new THREE.Matrix4();
+const _c4 = new THREE.Vector4();
+const _sph = new THREE.Sphere();
+const _fr = new THREE.Frustum();
+const _pm = new THREE.Matrix4();
+// stand-ins handed to the light's cascade frustum: one instance (presented as a shadow
+// proxy with its world sphere, which the env's cascade frustums test as is; a plain
+// frustum reads the geometry's sphere with an identity transform), or the whole batch
+const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false, shadowProxy: { active: true }, shadowSphere: _sph } };
+const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+const WHITE = new THREE.Color(1, 1, 1);
+const NL = 4; // detail levels: hi, mid, lo, far
+
+/** World texel (m) of the shadow cascade a frustum belongs to (0: not a cascade). */
+const _texels = new WeakMap();
+function cascadeTexel(scene, f) {
+  let cam = _texels.get(f);
+  if (cam === undefined) {
+    cam = null;
+    for (const o of scene.children) {
+      const sh = o.isLight && o.castShadow && o.shadow;
+      if (!sh || !sh.getFrustum || !sh.getCamera) continue;
+      for (let i = 0, n = sh.getViewportCount(); i < n; i++) if (sh.getFrustum(i) === f) cam = { cam: sh.getCamera(i), shadow: sh };
+    }
+    _texels.set(f, cam);
+  }
+  return cam && cam.cam.isOrthographicCamera ? (cam.cam.right - cam.cam.left) / Math.max(1, cam.shadow.mapSize.x) : 0;
+}
+
+/** {frustum, texel} of a shadow camera: the light's own (slice-aware) cascade frustum when
+ *  it has one, else a plain frustum of the camera. */
+const _cascades = new WeakMap();
+function cascadeOf(scene, cam) {
+  let c = _cascades.get(cam);
+  if (!c) {
+    c = { frustum: null, shadow: null };
+    for (const o of scene.children) {
+      const sh = o.isLight && o.castShadow && o.shadow;
+      if (!sh || !sh.getFrustum || !sh.getCamera) continue;
+      for (let i = 0, n = sh.getViewportCount(); i < n; i++) if (sh.getCamera(i) === cam) { c.frustum = sh.getFrustum(i); c.shadow = sh; }
+    }
+    _cascades.set(cam, c);
+  }
+  if (!c.frustum) c.plain = _fr.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, cam.reversedDepth);
+  c.texel = cam.isOrthographicCamera ? (cam.right - cam.left) / Math.max(1, c.shadow ? c.shadow.mapSize.x : 2048) : 0;
+  return c;
+}
+
+/**
+ * One part: a BatchedMesh over its geometries.
+ *   cast            casts sun shadows
+ *   thin            thin caster (coarse cascades skip it, see env)
+ *   shadowMaxTexel  no shadow in cascades with coarser texels (m)
+ *   shadowLevels    cascade texel (m) above which shadows use at least level 1 / 2 / 3
+ */
+export class CatBatch {
+  constructor(name, material, geometries, capacity = 128, { cast = false, thin = false, shadowMaxTexel = Infinity, shadowLevels = [0.025, 0.07, 0.2] } = {}) {
+    let vc = 0, ic = 0;
+    for (const g of geometries) { vc += g.attributes.position.count; ic += g.index ? g.index.count : g.attributes.position.count; }
+    const mesh = new THREE.BatchedMesh(capacity, vc, ic, material);
+    mesh.name = name;
+    mesh.castShadow = cast;
+    mesh.receiveShadow = true;
+    mesh.perObjectFrustumCulled = true;
+    mesh.sortObjects = false;
+    mesh.userData.thinCaster = thin;
+    this.mesh = mesh;
+    this.geomIds = geometries.map((g) => mesh.addGeometry(g));
+    for (const id of this.geomIds) mesh.getBoundingSphereAt(id, _sph); // cached per geometry
+    this.shadowMaxTexel = shadowMaxTexel;
+    this.shadowLevels = shadowLevels;
+    this.lodGids = new Int32Array(capacity * NL).fill(-1);
+  }
+
+  /** New hidden instance. levels: geometry index, or [hi, mid, lo, far] indices. */
+  add(levels, level, matrix, color) {
+    const m = this.mesh;
+    if (m.instanceCount >= m.maxInstanceCount) m.setInstanceCount(Math.ceil(m.maxInstanceCount * 1.5));
+    const fixed = typeof levels === 'number';
+    const id = m.addInstance(this.geomIds[fixed ? levels : levels[level]]);
+    m.setMatrixAt(id, matrix);
+    m.setColorAt(id, color || WHITE);
+    m.setVisibleAt(id, false);
+    if (id * NL + NL > this.lodGids.length) {
+      const a = new Int32Array(Math.max(id * NL + NL, this.lodGids.length * 2)).fill(-1);
+      a.set(this.lodGids);
+      this.lodGids = a;
+    }
+    for (let k = 0; k < NL; k++) this.lodGids[id * NL + k] = fixed ? -1 : this.geomIds[levels[k]];
+    return id;
+  }
+
+  setLevel(id, level) {
+    const g = this.lodGids[id * NL + level];
+    if (g >= 0) this.mesh.setGeometryIdAt(id, g);
+  }
+
+  /** Shadow pass draw list for one cascade (replaces BatchedMesh's own culling). */
+  shadowList(scene, cam) {
+    const m = this.mesh, c = cascadeOf(scene, cam);
+    const info = m._instanceInfo, gInfo = m._geometryInfo, lod = this.lodGids;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const md = m._matricesTexture.image.data;
+    const index = m.geometry.getIndex();
+    const bpe = index ? index.array.BYTES_PER_ELEMENT : 1;
+    const frustum = c.frustum || c.plain;
+    const L = this.shadowLevels, minLv = c.texel > L[2] ? 3 : c.texel > L[1] ? 2 : c.texel > L[0] ? 1 : 0;
+    let n = 0;
+    if (c.texel <= this.shadowMaxTexel) {
+      for (let i = 0, l = info.length; i < l; i++) {
+        const it = info[i];
+        if (!it.visible || !it.active) continue;
+        let gid = it.geometryIndex;
+        if (minLv && lod[i * NL] >= 0) {
+          let cur = 0;
+          while (cur < NL - 1 && lod[i * NL + cur] !== gid) cur++;
+          gid = lod[i * NL + Math.max(cur, minLv)];
+        }
+        _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_m4.fromArray(md, i * 16).premultiply(m.matrixWorld));
+        if (!frustum.intersectsObject(_one)) continue;
+        const g = gInfo[gid];
+        starts[n] = g.start * bpe;
+        counts[n] = g.count;
+        ind[n] = i;
+        n++;
+      }
+    }
+    m._indirectTexture.needsUpdate = true;
+    m._multiDrawCount = n;
+    m._multiDrawBytesPerElement = bpe;
+  }
+}
+
+/** The parts of the street, the per-chunk records and their visibility / detail level. */
+export class CatBatches {
+  constructor(app) {
+    this.app = app;
+    this.batches = [];
+    this.records = new Set();
+    this._frame = -1;
+    this.root = new THREE.Group();
+    this.root.name = 'catenary:batches';
+    app.scene.add(this.root);
+  }
+
+  add(batch) {
+    this.batches.push(batch);
+    this.root.add(batch.mesh);
+    const self = this, mesh = batch.mesh, scene = this.app.scene;
+    const proto = THREE.BatchedMesh.prototype;
+    mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
+    mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); batch.shadowList(scene, shadowCamera); };
+    // whole-batch test: the light's cascade frustum skips cascades it does not redraw this
+    // frame (and thin parts in coarse ones), as do cascades coarser than the part's limit;
+    // the view keeps it (culled per instance)
+    const all = { ..._all, userData: { thinCaster: !!mesh.userData.thinCaster } };
+    mesh.frustumCulled = true;
+    mesh.intersectsFrustum = (f) => f.intersectsObject(all) && (batch.shadowMaxTexel === Infinity || cascadeTexel(scene, f) <= batch.shadowMaxTexel);
+    return batch;
+  }
+
+  /** New record for a chunk; `marker` is the Object3D returned to the streamer. far:
+   *  every part at the far level. */
+  record(marker, far) {
+    const rec = { marker, entries: [], visible: false, far, near: false };
+    marker.userData.catRecord = rec;
+    this.records.add(rec);
+    return rec;
+  }
+
+  /** Add an instance to a record. levels: geometry index or [hi, mid, lo] (the detail
+   *  follows the instance's distance, see updateLevels); near: shown only while the
+   *  record is near. */
+  put(rec, batch, levels, matrix, color = null, near = false) {
+    const lv = rec.far ? NL - 1 : 1;
+    const id = batch.add(levels, lv, matrix, color);
+    const e = matrix.elements;
+    rec.entries.push({ batch, id, near, lv: typeof levels === 'number' ? -1 : lv, x: e[12], z: e[14] });
+  }
+
+  release(rec) {
+    if (!rec || !this.records.has(rec)) return;
+    for (const e of rec.entries) e.batch.mesh.deleteInstance(e.id);
+    rec.entries.length = 0;
+    this.records.delete(rec);
+  }
+
+  /** Whether the near parts of a record show (instead of its stand-ins). */
+  setNear(rec, near) {
+    if (rec.near === near) return;
+    rec.near = near;
+    for (const e of rec.entries) if (e.near) e.batch.mesh.setVisibleAt(e.id, rec.visible && near);
+  }
+
+  /** Detail level of every full-detail instance by its distance from `eye` (m): level k
+   *  below dist[k], the last one beyond (8 % hysteresis against the current level). */
+  updateLevels(eye, dist) {
+    const d2s = dist.map((d) => d * d);
+    for (const rec of this.records) {
+      if (rec.far) continue;
+      for (const e of rec.entries) {
+        if (e.lv < 0) continue;
+        const dx = e.x - eye.x, dz = e.z - eye.z, d2 = dx * dx + dz * dz;
+        let lv = 0;
+        while (lv < d2s.length && d2 >= d2s[lv] * (e.lv > lv ? 0.85 : 1.17)) lv++;
+        if (lv !== e.lv) { e.lv = lv; e.batch.setLevel(e.id, lv); }
+      }
+    }
+  }
+
+  /** Once per frame: instance visibility from the chunk groups. */
+  sync() {
+    const frame = this.app.frame;
+    if (frame === this._frame) return;
+    this._frame = frame;
+    for (const rec of this.records) {
+      const g = rec.marker.parent;
+      const vis = !!(g && g.visible && g.parent);
+      if (vis === rec.visible) continue;
+      rec.visible = vis;
+      for (const e of rec.entries) e.batch.mesh.setVisibleAt(e.id, vis && (!e.near || rec.near));
+    }
+  }
+}

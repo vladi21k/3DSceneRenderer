@@ -27,6 +27,7 @@ const MATERIAL = {
   tile: 'roof.tile', metal: 'metal.galvanized', glass: 'glass.window', frame: 'paint.frame', membrane: 'roof.membrane',
 };
 const NO_SHADOW = new Set(['glass', 'frame']);   // joinery inside the reveals
+const RUNOFF = new Set(['ashlar', 'smooth', 'rough']);   // weathered stone: per-pixel run-off (aRun)
 let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
 const BASE_MS = 1.5;               // per-frame generation budget when nothing is urgent
 const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
@@ -281,6 +282,7 @@ function fillGroup(app, group, res) {
     g.setAttribute('uv', new THREE.BufferAttribute(p.t, 2));
     g.setAttribute('color', new THREE.BufferAttribute(p.c, 3));
     g.setAttribute('aGrime', new THREE.BufferAttribute(p.g, 1));
+    if (RUNOFF.has(key)) g.setAttribute('aRun', new THREE.BufferAttribute(p.r, 4));
     g.setIndex(new THREE.BufferAttribute(p.i, 1));
     g.boundingSphere = sphere.clone();
     g.boundingBox = res.box.clone();

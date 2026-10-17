@@ -1,16 +1,18 @@
 // Metals, rail steel, paint, plastic and glass recipes.
 
 // Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). A narrow
-// polished running band (21-30 mm, drifting slowly along the rail) with fine longitudinal
-// wheel scratches; a dull grey contact edge; dark brown oxidised shoulders; dusty dull
-// steel further out (guard lip). Rare oxide pits, only outside the band.
+// running band (21-30 mm, drifting slowly along the rail) of satin polished steel: wheel
+// contact leaves lengthwise streaks and duller burn patches, not a mirror (roughness
+// 0.22-0.4; never under 0.08, which would make GGX fireflies). A dull grey contact
+// edge, dark brown oxidised shoulders and dusty dull steel further out (guard lip), with
+// the same lengthwise streaks and burn and no isotropic specks.
 // The band sits where the street geometry puts the head top (see meta.uv of rail.head):
 //   swept rail     v = arc length along the profile from the field-side paving edge,
 //                  head top centre (x = 0) at v = 0.043, flange-polished gauge corner ~0.075
 //   flat inlays    v = rail-local x, head centre at v = 0 (wraps to 0.25)
 // Surface map b = metal mask (oxide is only partly metallic).
 export const railhead = {
-  name: 'railhead', flat: [0.34, 0.3, 0.27, 0.42], size: [512, 256], tile: [2.0, 0.25], ss: 2, metalMask: true,
+  name: 'railhead', flat: [0.34, 0.3, 0.27, 0.42], size: [512, 256], tile: [2.0, 0.25], ss: 2, mask: 'metal',
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -24,33 +26,30 @@ void surface(vec2 m, inout Surf s) {
   float e = dB - hw;                                              // distance outside the band
   float edge = smoothstep(0.0, 0.002, e) * (1.0 - smoothstep(0.003, 0.006, e));
   float ox = smoothstep(0.003, 0.006, e) * (1.0 - smoothstep(0.03, 0.05, e));
-  // running band: polished, scratched along the rail, patches of duller wheel burn
+  // lengthwise wheel streaks (fine in the band, coarser outside) and duller burn patches
   float streak = fbm2(m, vec2(0.5, 300.0), 3, 0.5, 131u);
-  float fine = fbm2(m, vec2(2.0, 450.0), 2, 0.5, 132u);
+  float streakC = fbm2(m, vec2(1.5, 90.0), 3, 0.5, 132u);
   float burn = smoothstep(0.2, 0.7, fbm2(m, vec2(3.0, 20.0), 3, 0.5, 136u));
-  vec3 bandC = vec3(0.62, 0.615, 0.6) * (1.0 + 0.05 * streak + 0.02 * fine) * (1.0 - 0.12 * burn);
-  float bandR = 0.15 + 0.03 * streak + 0.02 * fine + 0.08 * burn;
-  // oxide shoulders and dusty steel
-  float g = fbm(m, 30.0, 3, 0.5, 137u);
-  vec3 oxC = vec3(0.2, 0.15, 0.11) * (1.0 + 0.25 * g);
-  vec3 dustC = vec3(0.3, 0.29, 0.275) * (1.0 + 0.12 * g);
-  vec3 dull = mix(mix(dustC, oxC, ox), vec3(0.36, 0.35, 0.34), edge);
-  float dullR = mix(mix(0.6, 0.55, ox), 0.42, edge) + 0.08 * g;
+  // running band: satin silver-grey
+  vec3 bandC = vec3(0.6, 0.598, 0.588) * (1.0 + 0.05 * streak) * (1.0 - 0.1 * burn);
+  float bandR = 0.22 + 0.06 * abs(streak) + 0.12 * burn;
+  // dull contact edge, oxide shoulders and dusty steel
+  vec3 oxC = vec3(0.2, 0.15, 0.11) * (1.0 + 0.2 * streakC) * (1.0 - 0.15 * burn);
+  vec3 dustC = vec3(0.3, 0.29, 0.275) * (1.0 + 0.1 * streakC) * (1.0 - 0.1 * burn);
+  vec3 dull = mix(mix(dustC, oxC, ox), vec3(0.36, 0.35, 0.34) * (1.0 + 0.04 * streak), edge);
+  float dullR = mix(mix(0.6, 0.55, ox), 0.42, edge) + 0.06 * streakC + 0.05 * burn;
   float dullM = mix(mix(0.85, 0.6, ox), 0.9, edge);
-  vec4 pit = voro(m, vec2(90.0, 90.0), 133u, 1.0);
-  float p = smoothstep(0.25, 0.08, pit.x) * step(0.98, pit.z) * (1.0 - band);
-  dull = mix(dull, vec3(0.09, 0.07, 0.055), p);
   s.albedo = mix(dull, bandC, band);
-  s.rough = clamp(mix(dullR + 0.25 * p, bandR, band), 0.08, 1.0);
-  s.metal = mix(dullM * (1.0 - 0.5 * p), 1.0, band);
-  s.height = mix(g * 0.00012, fine * 0.00003 + streak * 0.00005, band) - p * 0.0002;
+  s.rough = clamp(mix(dullR, bandR, band), 0.08, 1.0);
+  s.metal = mix(dullM, 1.0, band);
+  s.height = mix(streakC * 0.0001, streak * 0.00005, band);
 }
 `,
 };
 
 // Rusty rail web / foot and old iron: layered rust with patches of bare dark steel.
 export const railside = {
-  name: 'railside', flat: [0.2, 0.1, 0.05, 0.85], size: 256, tile: [1.0, 1.0], ss: 2, metalMask: true,
+  name: 'railside', flat: [0.2, 0.1, 0.05, 0.85], size: 256, tile: [1.0, 1.0], ss: 2, mask: 'metal',
   pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.06 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -107,12 +106,58 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
+// Painted joinery up close (window and shop frames), tile 1 m at 1 mm/texel. Gloss enamel over
+// primer over timber: brush marks (fine ridges along the stroke, which runs along u or v
+// in patches), orange peel and dust; chips where the paint has flaked, clustered where
+// the frame is worn, showing the pale primer and, in the deeper ones, grey weathered
+// wood; a lighter putty fillet (v 0-10 mm) and a bead line (v ≈ 18 mm) along u at the
+// start of every tile row, so frames whose v is metres from the glass edge get them at
+// the glass (tile 1 m: wider members never reach the next row). Albedo near white where painted (the vertex colour is the paint);
+// surface.b = paint coverage (0 shows the baked primer / wood / putty colour as is).
+export const paintdetail = {
+  name: 'paintdetail', flat: [0.88, 0.88, 0.88, 0.42], size: 1024, tile: [1.0, 1.0], ss: 2, mask: 'paint',
+  pass: { normal: 1.0, ao: 0.4, aoRadius: 0.002, cavity: 0.04 },
+  glsl: /* glsl */ `
+void surface(vec2 m, inout Surf s) {
+  vec4 pc = voro(m, vec2(12.0), 401u, 1.0);                      // ~8 cm stroke patches
+  vec2 bm = pc.z < 0.5 ? m : m.yx;                               // stroke (and grain) along u or v
+  float brush = fbm2(bm, vec2(5.0, 140.0), 3, 0.55, 402u);
+  float peel = fbm(m, 220.0, 2, 0.5, 403u);
+  float dust = fbm(m, 30.0, 3, 0.5, 404u);
+  // flaking: ragged patches where a warped fractal noise passes a threshold that drops in
+  // the sparse worn areas; primer inside, bare wood where it flaked deeper
+  float wearM = smoothstep(0.3, 0.85, 0.5 + 0.5 * fbm(m, 3.0, 3, 0.5, 405u));
+  float fl = 0.5 + 0.5 * fbm(warp(m, 30.0, 0.004, 406u), 22.0, 5, 0.6, 407u);
+  float th = 0.84 - 0.22 * wearM;
+  float chip = smoothstep(th, th + 0.012, fl);
+  float lip = smoothstep(th - 0.035, th, fl) * (1.0 - chip);
+  float deep = smoothstep(th + 0.015, th + 0.025, fl);
+  // putty fillet (sloping down to the glass at v = 0, hairline cracks across) and bead line
+  float putty = 1.0 - smoothstep(0.0095, 0.0105, m.y);
+  float crack = smoothstep(0.03, 0.0, voro(m, vec2(60.0, 6.0), 408u, 1.0).w) * putty;
+  float bead = 1.0 - smoothstep(0.0012, 0.0022, abs(m.y - 0.018));
+  float grain = fbm2(bm, vec2(3.0, 70.0), 3, 0.5, 409u);
+  vec3 paintC = vec3(0.9) * (1.0 + 0.02 * brush - 0.04 * dust) * (1.0 + 0.08 * bead) * (1.0 - 0.1 * lip);
+  vec3 primer = vec3(0.52, 0.5, 0.45) * (1.0 + 0.04 * dust);
+  vec3 wood = vec3(0.33, 0.29, 0.235) * (1.0 + 0.18 * grain);
+  vec3 puttyC = vec3(0.56, 0.54, 0.48) * (1.0 + 0.05 * dust) * (1.0 - 0.45 * crack);
+  vec3 bare = mix(primer, wood, deep);
+  s.albedo = mix(mix(paintC, bare, chip), puttyC, putty);
+  s.cover = mix(1.0 - chip, 0.25, putty);
+  s.rough = mix(mix(0.36 + 0.05 * brush + 0.08 * dust, mix(0.75, 0.86, deep), chip), 0.72, putty);
+  s.height = brush * 0.00002 + peel * 0.00001 + lip * 0.00003 - chip * 0.00015 - deep * 0.00015
+           + bead * 0.0003 - putty * (0.002 * (0.0105 - m.y) / 0.0105 + crack * 0.0003);
+  s.ao = 1.0 - 0.3 * crack;
+}
+`,
+};
+
 // Weathered hot-dip galvanized steel (street furniture, rooftop metal): a dull grey zinc
 // patina over most of the surface with the spangle crystals faintly showing through, and
 // whitish zinc-carbonate blooms. Surface map b = metal mask (the patina is partly
 // dielectric). Large patches come from the runtime macro layer.
 export const galv = {
-  name: 'galv', flat: [0.53, 0.54, 0.545, 0.6], size: 512, tile: [0.5, 0.5], ss: 2, metalMask: true,
+  name: 'galv', flat: [0.53, 0.54, 0.545, 0.6], size: 512, tile: [0.5, 0.5], ss: 2, mask: 'metal',
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {

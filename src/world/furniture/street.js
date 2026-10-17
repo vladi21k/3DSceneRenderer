@@ -156,6 +156,36 @@ function bollardStone(detail) {
 }
 
 // ------------------------------------------------------------------ kiosk
+/** Rectangular hip roof sitting on a w x d slab top at y0: a vertical lip, four sloped
+ *  faces (flat shaded) up to a ridge along x at y0 + lip + rise. UVs in metres. */
+function hipRoof(w, d, y0, lip, rise) {
+  const pos = [], nor = [], uv = [], idx = [];
+  const hw = w / 2, hd = d / 2, r = Math.max(0, hw - hd), yL = y0 + lip, yR = yL + rise;
+  const face = (pts) => {
+    // planar polygon, outward normal (away from the roof centre)
+    const [a, b, c] = pts;
+    const n = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a)).normalize();
+    const cen = pts.reduce((m, q) => m.add(q), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+    if (n.dot(cen.clone().sub(V(0, y0, 0))) < 0) { n.negate(); pts = pts.slice().reverse(); }
+    // uv: metres in the face plane (u horizontal, v up the slope)
+    const ux = new THREE.Vector3(-n.z, 0, n.x).normalize(), vx = new THREE.Vector3().crossVectors(n, ux);
+    const base = pos.length / 3;
+    for (const q of pts) { pos.push(q.x, q.y, q.z); nor.push(n.x, n.y, n.z); uv.push(q.dot(ux), q.dot(vx)); }
+    for (let i = 1; i < pts.length - 1; i++) idx.push(base, base + i, base + i + 1);
+  };
+  const C = [V(hw, 0, hd), V(-hw, 0, hd), V(-hw, 0, -hd), V(hw, 0, -hd)];
+  for (let i = 0; i < 4; i++) { // lip
+    const a = C[i], b = C[(i + 1) % 4];
+    face([V(a.x, y0, a.z), V(b.x, y0, b.z), V(b.x, yL, b.z), V(a.x, yL, a.z)]);
+  }
+  const R0 = V(-r, yR, 0), R1 = V(r, yR, 0), at = (q) => V(q.x, yL, q.z);
+  face([at(C[0]), at(C[1]), R0, R1]);     // front slope (+z)
+  face([at(C[2]), at(C[3]), R1, R0]);     // back slope (-z)
+  face([at(C[3]), at(C[0]), R1]);         // right hip (+x)
+  face([at(C[1]), at(C[2]), R0]);         // left hip (-x)
+  return makeGeo(pos, nor, uv, idx);
+}
+
 /** Magazines standing in a rack row: thin boxes (pages) with photographic covers, each
  *  slightly offset and turned, leaning back by `lean` about their bottom edge.
  *  Local frame: x along the row, y up, +z out of the rack; row base at the origin. */
@@ -181,7 +211,7 @@ function kiosk(detail) {
   if (detail >= 2) {
     return {
       paint: merge([B0(W, TOP - Y0, D, 0, (TOP + Y0) / 2, 0), B0(W + 0.4, 0.1, D + 0.4, 0, 2.52, 0)]),
-      zinc: merge([lathe([[1.62, 2.57], [0, 2.82]], 4, { phi0: Math.PI / 4 })]),
+      zinc: merge([hipRoof(W + 0.39, D + 0.39, 2.57, 0.03, 0.2)]),
       stone: merge([B0(W + 0.12, Y0, D + 0.12, 0, Y0 / 2, 0)]),
     };
   }
@@ -252,7 +282,7 @@ function kiosk(detail) {
   paint.push(R(W + 0.4, 0.1, D + 0.4, 0, 2.52, 0, 0.015));
   paint.push(R(W + 0.44, 0.03, D + 0.44, 0, 2.465, 0, 0.004));
   for (const sz of [-1, 1]) zinc.push(xf(lathe([[0.045, 0], [0.045, W + 0.4], [0, W + 0.4]], 8, { phi0: 0, phiLen: Math.PI }), [-(W + 0.4) / 2, 2.55, sz * (D / 2 + 0.23)], [0, 0, -Math.PI / 2]));
-  zinc.push(lathe([[1.62, 2.57], [1.62, 2.6], [0.25, 2.8], [0, 2.82]], 4, { phi0: Math.PI / 4 }));
+  zinc.push(hipRoof(W + 0.39, D + 0.39, 2.57, 0.03, 0.2));     // on the slab, eaves flush with its edge
   zinc.push(xf(lathe([[0.03, 0], [0.03, 2.43], [0, 2.43]], 8), [-W / 2 - 0.15, 0.12, -D / 2 - 0.2]));
   // signs and posters: name band on the back, framed posters, menu on the left side
   const zb = -D / 2 + 0.01;                  // back wall face
@@ -415,31 +445,31 @@ export function placeStreetFurniture(chunk, app, inst, P) {
     const out = f.yaw + Math.PI / 2; // facing away from the tracks
     switch (f.type) {
       case 'bench':
-        inst.add(P.bench, placeMatrix(route, f.s, f.d, 0, out + rng.range(-0.02, 0.02), _m));
+        inst.add(P.bench, placeMatrix(route, f.s, f.d, 0, out + rng.range(-0.02, 0.02), _m, 0.9));
         break;
       case 'bin': {
         const hooded = rng.chance(0.55);
-        inst.add(hooded ? P.binHooded : P.binPost, placeMatrix(route, f.s, f.d, 0, out + rng.range(-0.3, 0.3), _m),
+        inst.add(hooded ? P.binHooded : P.binPost, placeMatrix(route, f.s, f.d, 0, out + rng.range(-0.3, 0.3), _m, 0.22),
           _c.copy(srgb(rng.pick(hooded ? PAINT.bin : PAINT.binPost))).multiplyScalar(rng.range(0.9, 1.05)));
         break;
       }
       case 'bollard': {
         const cs = Math.round(f.s / 25) * 2 + (f.d > 0 ? 1 : 0); // one style per street mouth
         const stone = RNG.from(layout.seed, 'bollardStyle', cs).chance(0.35);
-        inst.add(stone ? P.bollardStone : P.bollardIron, placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m));
+        inst.add(stone ? P.bollardStone : P.bollardIron, placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m, 0.14));
         break;
       }
       case 'kiosk':
-        inst.add(P.kiosk, placeMatrix(route, f.s, f.d, 0, out, _m), _c.copy(srgb(rng.pick(PAINT.kiosk))));
+        inst.add(P.kiosk, placeMatrix(route, f.s, f.d, 0, out, _m, 1.6), _c.copy(srgb(rng.pick(PAINT.kiosk))));
         break;
       case 'advertColumn':
-        inst.add(P.column, placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m), _c.copy(srgb(rng.pick(PAINT.column))));
+        inst.add(P.column, placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m, 0.66), _c.copy(srgb(rng.pick(PAINT.column))));
         break;
       case 'bikeRack':
-        inst.add(P.bikeRack, placeMatrix(route, f.s, f.d, 0, out, _m));
+        inst.add(P.bikeRack, placeMatrix(route, f.s, f.d, 0, out, _m, 0.5));
         break;
       case 'infoBoard':
-        inst.add(P.infoBoard, placeMatrix(route, f.s, f.d, 0, out + Math.PI / 2, _m), _c.copy(srgb(rng.pick(PAINT.board))));
+        inst.add(P.infoBoard, placeMatrix(route, f.s, f.d, 0, out + Math.PI / 2, _m, 0.5), _c.copy(srgb(rng.pick(PAINT.board))));
         break;
       default: break; // planters (vegetation) and platform fittings (platform.js)
     }
