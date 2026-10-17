@@ -32,10 +32,10 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [x] Audio: synthesized bell (spatial), rumble, joints, curve squeal, motor hum, street ambience
 
 ## M2b — Figures follow-up (user requests)
-- [ ] Anatomy rework: distinct male / female / child (and elderly) proportions and silhouettes, correct back view (shoulder blades, spine groove, trapezius, glutes, calves, hair from behind), sex- and age-specific gait
-- [ ] Strollers: parents pushing strollers (pose + animated stroller model)
-- [ ] Bicycles: cyclists riding (pedalling, rolling wheels), people walking bikes, parked bikes at racks
-- [ ] Crowd roles for strollers and cyclists (lanes, speeds, tram avoidance)
+- [x] Anatomy rework: distinct male / female / child (and elderly) proportions and silhouettes, correct back view (shoulder blades, spine groove, trapezius, glutes, calves, hair from behind), sex- and age-specific gait
+- [x] Strollers: parents pushing strollers (pose + animated stroller model)
+- [x] Bicycles: cyclists riding (pedalling, rolling wheels), people walking bikes, parked bikes at racks
+- [x] Crowd roles for strollers and cyclists (lanes, speeds, tram avoidance)
 
 ## M3 — Integration & performance
 - [x] M3 workflow: 8 area agents (cross-module requests, budgets), then a full-app photoreal critic (5.5/10) plus perf/QA review, then owner fixes (18 agents)
