@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
-import { ATLAS, IRON_REGIONS, canvas, makeNoise, generateIronAtlas, writeLeaves } from './ironAtlas.js';
+import { ATLAS, IRON_REGIONS, canvas, ctx2d, makeNoise, generateIronAtlas, writeLeaves } from './ironAtlas.js';
 
 // Procedural textures for street details:
 //  - cast-iron atlas (albedo / normal / ORM): round manhole cover with concentric
@@ -26,7 +26,7 @@ function dataTex(data, w, h, srgb, aniso) {
 // ------------------------------------------------------------------ stains
 function drawStains() {
   // grey levels on black (alphaMap reads the green channel); blobs accumulate additively
-  const S = 512, c = canvas(S, S), C = c.getContext('2d');
+  const S = 512, c = canvas(S, S), C = ctx2d(c);
   C.fillStyle = '#000'; C.fillRect(0, 0, S, S);
   C.globalCompositeOperation = 'lighter';
   const rng = RNG.from('street-stains');

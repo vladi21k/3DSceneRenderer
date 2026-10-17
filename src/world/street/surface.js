@@ -16,9 +16,10 @@ import { makeDelta } from './fast.js';
 // millimetres on the sidewalks and is flattened under cafés and street furniture, so
 // objects placed at h = 0 neither sink nor float. Cast-iron covers and tree grates lie
 // on a planar bed (the ground's mean slope over the cover), blended back into the
-// ground just outside them. The visible unevenness (settlement
-// along the rails, dishing at gullies, undulating sheen) lives in a separate shading
-// height that only drives the paving normals.
+// ground just outside them, and over the last FACADE_BLEND metres the sidewalk meets
+// each building's own ground line (its frame's chord), so facades stand on it exactly.
+// The visible unevenness (settlement along the rails, dishing at gullies, undulating
+// sheen) lives in a separate shading height that only drives the paving normals.
 //
 // Periodic street coordinate: textures and noise along the street use sp = s·Lp/L with
 // Lp a multiple of 256 m that every noise table and paving tile divides, so the loop
@@ -90,10 +91,12 @@ export class Surface {
     out.xo = xo;
     out.hwL = L.halfWidth(s, -1);
     out.hwR = L.halfWidth(s, 1);
-    out.edgeL = this.edgeD(s, -1, out.hwL, lists.cs);
-    out.edgeR = this.edgeD(s, 1, out.hwR, lists.cs);
-    out.fL = this.facadeAt(s, -1, out.fL || (out.fL = {}));
-    out.fR = this.facadeAt(s, 1, out.fR || (out.fR = {}));
+    // facades, and the sidewalks' outer edges: under the facades (which can stand
+    // beyond halfWidth, e.g. where it widens at stations), or along a mouth line
+    const fL = out.fL = this.facadeAt(s, -1, out.fL || {});
+    const fR = out.fR = this.facadeAt(s, 1, out.fR || {});
+    out.edgeL = this.edgeD(s, -1, fL.d === fL.d ? Math.max(out.hwL, -fL.d) : out.hwL, lists.cs);
+    out.edgeR = this.edgeD(s, 1, fR.d === fR.d ? Math.max(out.hwR, fR.d) : out.hwR, lists.cs);
     // flat spots (tree pits, covers) whose span overlaps this row
     const ci = L.chunkIndex(s);
     const list = out.spots || (out.spots = []);

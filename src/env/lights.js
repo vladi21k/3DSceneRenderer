@@ -26,6 +26,29 @@ const FAR_MAX = 460;            // screen-space pools out to this distance
 export const FAR_LAMPS = 24;
 const FALLBACK_HEAD_H = 5.4;    // glass centre above the paving when the catenary module is absent
 
+/**
+ * The light pool has a fixed size (a changing light count would recompile every lit
+ * material), so by day every lit fragment would still evaluate nine dark spot lights.
+ * Patch the shared light loop to skip a spot light whose colour is zero (a uniform, so
+ * the branch is coherent), and its BRDF where the fragment lies outside the cone or
+ * range. Must run before any lit material compiles.
+ */
+export function patchSpotLightLoop() {
+  const SC = THREE.ShaderChunk;
+  const src = SC.lights_fragment_begin;
+  const a = src.indexOf('#if ( NUM_SPOT_LIGHTS > 0 ) && defined( RE_Direct )');
+  const b = src.indexOf('#pragma unroll_loop_end', a);
+  const head = 'spotLight = spotLights[ i ];';
+  const call = 'RE_Direct( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );';
+  if (a < 0 || b < 0) return false;
+  let block = src.slice(a, b);
+  if (block.split(head).length !== 2 || block.split(call).length !== 2) return false;
+  block = block.replace(head, `${head}\n\t\tif ( spotLight.color.r + spotLight.color.g + spotLight.color.b > 0.0 ) {`);
+  block = block.replace(call, `if ( directLight.visible ) ${call}\n\t\t}`);
+  SC.lights_fragment_begin = src.slice(0, a) + block + src.slice(b);
+  return true;
+}
+
 const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
 const headColor = new THREE.Color(1.0, 0.93, 0.84);  // ~4800 K LED, linear
 const ss = THREE.MathUtils.smoothstep;

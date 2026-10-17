@@ -22,25 +22,30 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 // facade frame (u along the wall, v up, w out of the wall). Contract: docs/ARCHITECTURE.md.
 //
 // Level of detail is chosen per INSTANCE (each railing bay, post, console, baluster,
-// plant) in update(), from projected sizes, so it follows the FOV:
+// plant, planter strap, AC unit) in update(), from projected sizes, so it follows the FOV:
 //   rail   bay tessellation level whose chord error stays under 0.4 px (railings.js TOL),
 //          then nothing once bars are thinner than ~0.8 px, foreshortening included
 //          (the cards carry on)
 //   post   finial post / plain post, same range
 //   carve  carved consoles, turned balusters, full geraniums / light levels whose
 //          omissions (~1 cm) stay under 0.6 px, so the switch does not show
+//   strap  planter hook straps, until they are thinner than a pixel
+//   ac     AC unit with pipes and brackets / the bare body, same rule for the pipes
 // Railing cards are always present: they fade in under the geometry and take over from
 // it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only, light
 // consoles merged into the stone mesh and the same instanced plants as near chunks.
 //
 // Draw calls: nothing is drawn per chunk. Merged geometry goes into one strip per
-// material for the whole street (ironwork/strip.js: one draw per pass, culled per chunk
-// block) and instances into one pool per family (ironwork/instancer.js: one draw per
-// detail level in use). A chunk's build returns an empty marker group; its blocks and
-// instances are shown when the streamer shows the chunk and released on dispose.
-// Shadows come from two position-only strips of light stand-ins (slabs, consoles,
-// balusters, solid parts; and the thin parts, which only fine cascades draw), the
-// railing cards and the flags: the drawn consoles, balusters and railings cast nothing.
+// material and detail range for the whole street (ironwork/strip.js: one draw per pass,
+// culled per chunk block) and instances into one pool per family (ironwork/instancer.js:
+// one draw per detail level in use, culled per chunk). A chunk's build returns an empty
+// marker group; its blocks and instances are shown when the streamer shows the chunk and
+// released on dispose.
+// Shadows: position-only strips of light stand-ins cast them, the drawn geometry casts
+// nothing. Slabs, consoles, balustrade rails and AC bodies cast in every cascade; the
+// small and thin parts (balusters, pots, planters, chairs, poles, brackets, pipes) only
+// in the fine cascades, whose texels can hold them (userData.thinCaster). The railing
+// cards (thin) and a coarse twin of the flags cast the rest.
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -54,9 +59,13 @@ const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0
 const FLOWER_W = [0.3, 0.24, 0.2, 0.12, 0.08, 0.06];
 const POTS = [[0.42, 0.16, 0.08], [0.32, 0.11, 0.05], [0.36, 0.14, 0.06], [0.2, 0.1, 0.055], [0.07, 0.11, 0.07], [0.42, 0.41, 0.38]];
 const CHAIRS = [[0.75, 0.75, 0.72], [0.07, 0.2, 0.1], [0.5, 0.5, 0.48]];
-const WHITE = [1, 1, 1];
 const LEAFY = [0.09, 0.16, 0.05];
 const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 0.12, 0.1], [0.3, 0.45, 0.35], [0.75, 0.65, 0.2]];
+const WHITE = [1, 1, 1];
+// instance families (constant keys and options: one lookup per family and chunk)
+const CORBEL_KEYS = ['corbel0', 'corbel1'], PLANT_KEYS = ['plant0', 'plant1'];
+const CARVE = { cls: 'carve' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
+const BAY_OPTS = { cls: 'rail', radius: 0.8, angle: true, thin: true }, POST_OPTS = { cls: 'post', radius: 1.2, thin: true };
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
 const DISH_DIR = new THREE.Vector3(-0.55, 0.64, 0.53).normalize();
 // Stone tints are relative to the cream reference, exactly as the buildings tint theirs.
@@ -282,20 +291,20 @@ const ironwork = {
     const K = 1024, set = (tag, cap) => ({
       stone: strip(this.stoneMat, ['normal', 'uv', 'color', 'aGk'], `stone${tag}`, { instanceColor: true, vCap: cap.stone[0] * K, iCap: cap.stone[1] * K }),
       cards: strip(this.mats.card, ['normal', 'uv', 'color'], `cards${tag}`, { castShadow: true, thin: true, vCap: 32 * K, iCap: 48 * K }),
-      parts: strip(this.amats.parts, ['normal', 'uv', 'color'], `parts${tag}`, { vCap: cap.parts[0] * K, iCap: cap.parts[1] * K }),
+      parts: strip(this.amats.parts, ['normal', 'uv', 'color'], `parts${tag}`, { instanceColor: true, vCap: cap.parts[0] * K, iCap: cap.parts[1] * K }),
       // shadow casters only (the stone program, never drawn in the view)
       shadow: strip(this.stoneMat, [], `shadow${tag}`, { shadowOnly: true, instanceColor: true, vCap: cap.shadow[0] * K, iCap: cap.shadow[1] * K }),
     });
     this.strips = {
-      near: set('', { stone: [128, 256], parts: [224, 448], shadow: [64, 256] }),
-      far: set('Far', { stone: [192, 448], parts: [64, 96], shadow: [64, 256] }),
+      near: set('', { stone: [128, 256], parts: [64, 96], shadow: [128, 512] }),
+      far: set('Far', { stone: [192, 448], parts: [16, 32], shadow: [64, 256] }),
     };
     Object.assign(this.strips.near, {
       stains: strip(this.amats.stain, ['normal', 'uv'], 'stains', { vCap: K, iCap: 2 * K }),
       thin: strip(this.stoneMat, [], 'thinShadow', { shadowOnly: true, thin: true, instanceColor: true, vCap: 112 * K, iCap: 512 * K }),
     });
     this.pools = new Map();
-    this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root);
+    this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root, app.scene);
   },
 
   // ---------------------------------------------------------------- chunk jobs
@@ -501,7 +510,7 @@ const ironwork = {
         // far chunks: merged into the stone mesh; near: instanced, carved or light per
         // instance. The light console casts the shadow either way.
         if (lod) writeTemplate(ctx.stone.kind(GRIME.NONE), this.geo.corbelFar[variant], _m, c);
-        else inst.add(`corbel${variant}`, this.geo.corbel[variant], this.stoneMat, _m, c, { cls: 'carve', radius: 1 });
+        else inst.add(CORBEL_KEYS[variant], this.geo.corbel[variant], this.stoneMat, _m, c, CORBEL_OPTS);
         writePos(ctx.shadow, this.geo.shadow.corbel[variant], _m);
       }
     }
@@ -630,29 +639,33 @@ const ironwork = {
   /** Instanced geranium (kind 0 pot, 1 planter): full and light versions per instance. */
   plant(ctx, kind, m, tint) {
     const P = this.att.plants;
-    ctx.inst.add(`plant${kind}`, [P[0][kind], P[1][kind]], this.amats.plant, m, tint, { cls: 'carve' });
+    ctx.inst.add(PLANT_KEYS[kind], P.levels[kind], this.amats.plant, m, tint, CARVE);
   },
 
-  /** A part template into the merged parts mesh, and its stand-in into the shadow caster
-   *  it belongs to (solid, or small / thin for the fine cascades). Far chunks' parts cast
-   *  no shadow (planters and AC bodies a few pixels tall). */
+  /** A part into the merged parts mesh (or its instance pool), and its stand-in into the
+   *  shadow caster it belongs to (solid, or small / thin for the fine cascades). Far
+   *  chunks' parts cast no shadow (planters and AC bodies a few pixels tall). */
   part(ctx, t, m, tint = WHITE) {
-    writeTemplate(ctx.parts, t, m, tint);
+    const A = this.att, pooled = A.pooled.get(t);
+    if (pooled) ctx.inst.add(pooled.key, pooled.levels, this.amats.parts, m, tint, pooled);
+    else writeTemplate(ctx.parts, t, m, tint);
     if (ctx.chunkLod) return;
-    const c = this.att.cast.get(t);
+    const c = A.cast.get(t);
     if (c) writePos(ctx.shadow, c, m);
-    else { const th = this.att.thin.get(t); if (th) writePos(ctx.thin, th, m); }
+    else { const th = A.thin.get(t); if (th) writePos(ctx.thin, th, m); }
   },
 
-  /** Split AC unit (matrix: unit frame on the wall): textured body, pipes, brackets and
-   *  the wall stain (the body alone in far chunks). */
+  /** Split AC unit (matrix: unit frame on the wall): textured body, pipes, brackets
+   *  (instanced, see attach.js), their shadow stand-ins and the wall stain. */
   acUnit(ctx, m, wallMounted) {
-    const A = this.att;
-    this.part(ctx, A.acBody, m, wallMounted ? WHITE : [0.92, 0.92, 0.92]);
+    const A = this.att, P = A.pooled.get(wallMounted ? 'acWall' : 'acFloor');
+    ctx.inst.add(P.key, P.levels, this.amats.parts, m, wallMounted ? WHITE : [0.92, 0.92, 0.92], P);
+    if (ctx.chunkLod) return;
+    writePos(ctx.shadow, A.cast.get(A.acBody), m);
     if (ctx.lod) return; // pipes and brackets are sub-pixel beyond 200 m
-    this.part(ctx, A.acPipes, m);
+    writePos(ctx.thin, A.thin.get(A.acPipes), m);
     if (wallMounted) {
-      this.part(ctx, A.acBrackets, m);
+      writePos(ctx.thin, A.thin.get(A.acBrackets), m);
       writeTemplate(ctx.stains, A.acStain, m);
     }
   },
@@ -692,7 +705,7 @@ const ironwork = {
     const cc = painted ? color : this.mats.ironColor();
     cw.color(cc[0], cc[1], cc[2]);
     const vb = atlasV(st.design, 0), vt = atlasV(st.design, RAIL_H);
-    const bayKey = `bay${st.design}${painted ? 'p' : ''}`;
+    const bayKey = `bay${st.design}${painted ? 'p' : ''}`, postKey = painted ? 'postp' : 'post';
     for (let k = 0; k < rp.length - 1; k++) {
       const A = rp[k], B = rp[k + 1];
       const du = B[0] - A[0], dw = B[1] - A[1], len = Math.sqrt(du * du + dw * dw);
@@ -703,7 +716,7 @@ const ironwork = {
         for (let b = 0; b < nb; b++) {
           const o = b * design.W * sx;
           _l.set(tu * sx, 0, -tw, A[0] + tu * o, 0, hs, 0, y, tw * sx, 0, tu, A[1] + tw * o, 0, 0, 0, 1);
-          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, { cls: 'rail', radius: 0.8, angle: true });
+          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, BAY_OPTS);
         }
       }
       // card for this run (also casts the railing shadow at every distance)
@@ -723,7 +736,7 @@ const ironwork = {
       }
       if (!lod) {
         _l.makeScale(1, hs, 1).setPosition(P[0], y, P[1]);
-        inst.add(`post${painted ? 'p' : ''}`, this.geo.post, postMat, _m.multiplyMatrices(F, _l), color, { cls: 'post', radius: 1.2 });
+        inst.add(postKey, this.geo.post, postMat, _m.multiplyMatrices(F, _l), color, POST_OPTS);
       }
     }
   },
@@ -759,10 +772,9 @@ const ironwork = {
           const c = S.v(B[0], y1, B[1], nx * sg, 0, nz * sg, l, y1), d = S.v(A[0], y1, A[1], nx * sg, 0, nz * sg, 0, y1);
           if (sg > 0) S.quad(a, b, c, d); else S.quad(b, a, d, c);
         }
-        // its shadow: the balusters' half-open row as one panel
-        const a = SW.v(A[0], y0, A[1]), b = SW.v(B[0], y0, B[1]), c = SW.v(B[0], y1, B[1]), d = SW.v(A[0], y1, A[1]);
-        SW.quad(a, b, c, d); SW.quad(b, a, d, c);
       }
+      // (no shadow for the panel: balusters are thin casters, and what it would shade
+      // lies behind it)
       return;
     }
     // balusters along the path, kept clear of the pedestals
@@ -779,7 +791,7 @@ const ironwork = {
         if (ped.some((P) => Math.hypot(P[0] - u, P[1] - w) < 0.17)) continue;
         if (j === n && k < path.length - 2) continue; // shared with the next segment
         _l.makeRotationY(r.range(0, Math.PI)).setPosition(u, y + BALUSTRADE.PLINTH, w);
-        inst.add('baluster', this.geo.baluster, this.stoneMat, _m.multiplyMatrices(F, _l), col, { cls: 'carve' });
+        inst.add('baluster', this.geo.baluster, this.stoneMat, _m.multiplyMatrices(F, _l), col, BALUSTER_OPTS);
         writePos(ctx.thin, this.geo.shadow.baluster, _m);
       }
     }
@@ -835,7 +847,11 @@ const ironwork = {
     const geo = geoLimit() + 0.5;
     const d1 = (TOL[1] * px) / 0.4, d2 = (TOL[2] * px) / 0.4;
     const carve = (0.01 * px) / 0.6; // what the light levels leave out (~1 cm) is under 0.6 px
-    return { rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity] };
+    // planter hook straps (2.6 cm) and AC pipes (3.6 cm) go once they are under a pixel
+    return {
+      rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity],
+      strap: [0.026 * px], ac: [0.036 * px, Infinity],
+    };
   },
 
   update(dt, app) {

@@ -61,7 +61,8 @@ const vegetation = {
     for (const sh of this.shrubs) sh.leafIdx = sh.leaves.map((g) => put(leafGeoms, g));
     this.pools = new VegetationPools(app);
     this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400, { preMaterial: this.mats.leafPre }));
-    this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300));
+    // bark: twigs and thin branches are sub-texel sooner than leaf clumps
+    this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300, { shadowLevels: [0.012, 0.03] }));
     this.props = createProps(app, this.pools);
     this.plan = this._planTrees();
     // debug switches (see header)

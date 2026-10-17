@@ -9,7 +9,7 @@ import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms } from './sunShadow.js';
 import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
-import { StreetLights } from './lights.js';
+import { StreetLights, patchSpotLightLoop } from './lights.js';
 
 // Environment: physically based sky and sun, cascaded sun shadows, HDR image-based
 // lighting, wind, time of day and the dusk lights. Contract in docs/ARCHITECTURE.md.
@@ -56,6 +56,7 @@ const env = {
 
     // shadows: built-in sun light with our cascade layout (patch before anything compiles)
     const patched = patchSunShadowChunk(q.cascades, q.taps);
+    if (!patchSpotLightLoop()) console.warn('[env] light loop layout changed; spot lights not guarded');
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 

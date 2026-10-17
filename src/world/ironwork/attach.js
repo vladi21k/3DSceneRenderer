@@ -650,6 +650,8 @@ export function buildAttachAssets() {
       plants[lvl].push(shared(g));
     }
   }
+  // the detail levels of each kind, as an instance pool takes them
+  plants.levels = [0, 1].map((kind) => [plants[0][kind], plants[1][kind]]);
   const A = {
     plants,
     pot: potTemplate(),
@@ -678,5 +680,26 @@ export function buildAttachAssets() {
   lathe(W, [[0.084, 0], [0.118, 0.186], [0.134, 0.224], [0.0001, 0.215]], 6);
   A.thin.set(A.pot, posTemplate(W));
   A.thin.set(A.dish, dishCaster());
+  // the most numerous parts are instanced (module-wide pools, ironwork/instancer.js)
+  // rather than written into the merged mesh: planter boxes, their hook straps, pots and
+  // AC units (pipes and brackets dropped at range: the light level is the bare body)
+  const body = templateGeometry([A.acBody]);
+  A.pooled = new Map([
+    [A.box, { key: 'box', levels: [templateGeometry([A.box])] }],
+    [A.hooks[0], { key: 'hook0', levels: [templateGeometry([A.hooks[0]])], cls: 'strap', thin: true }],
+    [A.hooks[1], { key: 'hook1', levels: [templateGeometry([A.hooks[1]])], cls: 'strap', thin: true }],
+    [A.pot, { key: 'pot', levels: [templateGeometry([A.pot])] }],
+    ['acWall', { key: 'acWall', levels: [templateGeometry([A.acBody, A.acPipes, A.acBrackets]), body], cls: 'ac' }],
+    ['acFloor', { key: 'acFloor', levels: [templateGeometry([A.acBody, A.acPipes]), body], cls: 'ac' }],
+  ]);
   return A;
 }
+
+/** Shared geometry of one or more templates (instanced parts). */
+function templateGeometry(ts) {
+  const W = new GeoWriter();
+  for (const t of ts) writeTemplate(W, t, IDENTITY);
+  const g = W.toGeometry({ copy: true });
+  return shared(g);
+}
+const IDENTITY = new THREE.Matrix4();

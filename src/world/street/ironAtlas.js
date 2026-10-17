@@ -28,6 +28,10 @@ export function canvas(w, h) {
   return c;
 }
 
+/** 2D context of a canvas whose pixels are read back: CPU-backed, so getImageData never
+ *  waits for the GPU (at start-up it is busy baking the material library). */
+export const ctx2d = (c) => c.getContext('2d', { willReadFrequently: true });
+
 /** Small tileable value-noise lookup for per-pixel variation. */
 export function makeNoise(seed, n = 64) {
   const rng = RNG.from('street-tex', seed);
@@ -45,7 +49,7 @@ export function makeNoise(seed, n = 64) {
 
 // ------------------------------------------------------------------ drawing
 function drawIron(hc, mc) {
-  const H = hc.getContext('2d'), M = mc.getContext('2d');
+  const H = ctx2d(hc), M = ctx2d(mc);
   H.fillStyle = 'rgb(128,128,128)'; H.fillRect(0, 0, ATLAS, ATLAS);
   M.fillStyle = 'rgb(0,0,0)'; M.fillRect(0, 0, ATLAS, ATLAS);
   const gray = (v) => `rgb(${v},${v},${v})`;
@@ -203,8 +207,8 @@ function lattice(seed) {
 
 function ironMaps(hc, mc) {
   const W = ATLAS, Hh = ATLAS;
-  const hd = hc.getContext('2d').getImageData(0, 0, W, Hh).data;
-  const md = mc.getContext('2d').getImageData(0, 0, W, Hh).data;
+  const hd = ctx2d(hc).getImageData(0, 0, W, Hh).data;
+  const md = ctx2d(mc).getImageData(0, 0, W, Hh).data;
   const h = new Float32Array(W * Hh);
   for (let i = 0; i < h.length; i++) h[i] = hd[i * 4] * (1 / 255);
   const alb = new Uint8Array(W * Hh * 4), nor = new Uint8Array(W * Hh * 4), orm = new Uint8Array(W * Hh * 4);
@@ -263,7 +267,7 @@ function ironMaps(hc, mc) {
 /** Four leaf cut-outs (RGBA, white blade with darker edge and veins) on a canvas of
  *  the leaves region's size. */
 function drawLeaves() {
-  const R = IRON_REGIONS.leaves, c = canvas(R.w, R.h), C = c.getContext('2d');
+  const R = IRON_REGIONS.leaves, c = canvas(R.w, R.h), C = ctx2d(c);
   C.clearRect(0, 0, R.w, R.h);
   const rng = RNG.from('street-leaves');
   const k = R.w / 256;

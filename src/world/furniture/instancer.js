@@ -10,10 +10,15 @@ import * as THREE from 'three';
 //
 // Shadows: every shadow-casting part also gets a twin instance in one shared depth-only
 // BatchedMesh (furniture:shadow), so all furniture casts in one multi-draw call per
-// cascade. Its draw list is built per cascade (shadowList): an instance casts only where
+// cascade. Its draw list is built per cascade (_shadowList): an instance casts only where
 // its shadow can reach the cascade's slice of the view (the light's cascade frustum
 // decides, so cascades that are not redrawn this frame cost nothing), at no more detail
 // than the cascade's texels hold, and not at all once it is smaller than a few texels.
+//
+// Culling: furniture never moves, so each instance's world bounding sphere (of its most
+// detailed level) is stored when it is placed and the draw lists test those directly.
+// The view's list is built in the batch's frustum test, so a batch with nothing in view
+// is not drawn at all (transparent batches keep BatchedMesh's own sorted lists).
 //
 // Distance LOD per instance: a prototype with `lods` (switch distances in metres) gives
 // each part one geometry per level; updateLod() swaps the geometry id of live instances
@@ -40,7 +45,7 @@ const _pm = new THREE.Matrix4();
 const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false, shadowProxy: { active: true }, shadowSphere: _sph } };
 const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
 
-/** Shadow cascades of the scene's shadow-casting lights: frustum -> {shadow, index}. */
+/** Shadow cascades of the scene's shadow-casting lights: frustum -> {shadow, camera}. */
 function shadowFrustums(scene, cache) {
   const lights = scene.children.filter((o) => o.isLight && o.castShadow && o.shadow && o.shadow.getFrustum);
   if (cache.map && lights.length === cache.n && lights.every((l, i) => cache.shadows[i] === l.shadow)) return cache.map;
@@ -115,7 +120,7 @@ export class BatchSet {
     this.syncFrame = -1;
     this.fades = new Map();            // id + batch key -> active fade
     // depth-only twins of the shadow-casting parts (see header)
-    this.shadow = { key: '|shadow', geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null };
+    this.shadow = { key: '|shadow', geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null, sph: new Float32Array(256) };
     this._frustums = {};
     this.hideEmpty = false;
   }
@@ -134,7 +139,7 @@ export class BatchSet {
     for (const part of p.parts) {
       const key = part.mat.uuid;
       let b = this.batches.get(key);
-      if (!b) { b = { key: `|${this.batches.size}`, mat: part.mat, geos: new Map(), bm: null, live: 0, free: [], shown: 0, dirty: false }; this.batches.set(key, b); }
+      if (!b) { b = { key: `|${this.batches.size}`, mat: part.mat, geos: new Map(), bm: null, live: 0, free: [], shown: 0, dirty: false, sph: new Float32Array(256) }; this.batches.set(key, b); }
       for (const g of part.geos) if (g && !b.geos.has(g)) b.geos.set(g, -1);
       part.batch = b;
       part.cast = part.cast !== false;
@@ -183,13 +188,16 @@ export class BatchSet {
       // are the ones used later
       if (bm._initColorsTexture && !bm._colorsTexture) bm._initColorsTexture();
       bm.name = `${this.name}:${b.mat.name}`;
-      bm.frustumCulled = false;            // instances span the whole route; culled per instance
       bm.perObjectFrustumCulled = true;
       bm.sortObjects = !!b.mat.transparent;
       bm.castShadow = false;               // the shadow twins cast
       bm.receiveShadow = true;
+      // instances span the whole route: the batch is culled by its instances (see header)
+      bm.frustumCulled = true;
+      bm.intersectsFrustum = (f) => { sync(); return this._viewList(b, f, !bm.sortObjects) > 0; };
       const before = bm.onBeforeRender.bind(bm);
-      bm.onBeforeRender = (...a) => { sync(); before(...a); };
+      if (bm.sortObjects) bm.onBeforeRender = (...a) => { sync(); before(...a); };
+      else bm.onBeforeRender = () => {};  // the list was built by the frustum test
       b.bm = bm;
       scene.add(bm);
     }
@@ -229,6 +237,41 @@ export class BatchSet {
     scene.add(bm);
   }
 
+  /** Store the world bounding sphere of instance `id` (geometry id `gid` under `matrix`). */
+  _setSphere(b, id, gid, matrix) {
+    if (id * 4 + 4 > b.sph.length) { const a = new Float32Array(Math.max(id * 4 + 4, b.sph.length * 2)); a.set(b.sph); b.sph = a; }
+    b.bm.getBoundingSphereAt(gid, _sph).applyMatrix4(matrix);
+    b.sph[id * 4] = _sph.center.x; b.sph[id * 4 + 1] = _sph.center.y; b.sph[id * 4 + 2] = _sph.center.z; b.sph[id * 4 + 3] = _sph.radius;
+  }
+
+  /** Draw list of a batch for a view frustum from the stored spheres (no sorting); with
+   *  write false only counts. Returns the number of instances in view. */
+  _viewList(b, frustum, write = true) {
+    const m = b.bm, sp = b.sph;
+    const info = m._instanceInfo, gInfo = m._geometryInfo;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const index = m.geometry.getIndex(), bpe = index ? index.array.BYTES_PER_ELEMENT : 1;
+    let n = 0;
+    for (let i = 0, l = info.length; i < l; i++) {
+      const it = info[i];
+      if (!it.visible || !it.active) continue;
+      _sph.center.set(sp[i * 4], sp[i * 4 + 1], sp[i * 4 + 2]);
+      _sph.radius = sp[i * 4 + 3];
+      if (!frustum.intersectsSphere(_sph)) continue;
+      if (!write) return 1;
+      const g = gInfo[it.geometryIndex];
+      starts[n] = g.start * bpe;
+      counts[n] = g.count;
+      ind[n] = i;
+      n++;
+    }
+    if (!write) return 0;
+    m._indirectTexture.needsUpdate = true;
+    m._multiDrawCount = n;
+    m._multiDrawBytesPerElement = bpe;
+    return n;
+  }
+
   /** Shadow pass draw list for one cascade (replaces BatchedMesh's own culling). */
   _shadowList(scene, cam) {
     const S = this.shadow, m = S.bm;
@@ -238,23 +281,22 @@ export class BatchSet {
     const texel = cam.isOrthographicCamera ? (cam.right - cam.left) / Math.max(1, cascade ? cascade.shadow.mapSize.x : 2048) : 0;
     const minLv = texel > SHADOW_LEVEL_TEXEL[1] ? 2 : texel > SHADOW_LEVEL_TEXEL[0] ? 1 : 0;
     const minR = SHADOW_MIN_TEXELS * texel;
-    const info = m._instanceInfo, gInfo = m._geometryInfo, lv = S.levels;
+    const info = m._instanceInfo, gInfo = m._geometryInfo, lv = S.levels, sp = S.sph;
     const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
-    const md = m._matricesTexture.image.data;
     const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
     let n = 0;
     for (let i = 0, l = info.length; i < l; i++) {
       const it = info[i];
-      if (!it.visible || !it.active) continue;
+      if (!it.visible || !it.active || sp[i * 4 + 3] < minR) continue;
+      _sph.center.set(sp[i * 4], sp[i * 4 + 1], sp[i * 4 + 2]);
+      _sph.radius = sp[i * 4 + 3];
+      if (!frustum.intersectsObject(_one)) continue;
       let gid = it.geometryIndex;
       if (minLv) {
         // coarsest of the instance's own level and the cascade's (levels: up to 3, -1 = none)
         const cur = gid === lv[i * 3] ? 0 : gid === lv[i * 3 + 1] ? 1 : 2;
         for (let k = Math.max(cur, minLv); k >= cur; k--) if (lv[i * 3 + k] >= 0) { gid = lv[i * 3 + k]; break; }
       }
-      _mat.fromArray(md, i * 16);
-      _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_mat);
-      if (_sph.radius < minR || !frustum.intersectsObject(_one)) continue;
       const g = gInfo[gid];
       starts[n] = g.start * bpe;
       counts[n] = g.count;
@@ -307,6 +349,7 @@ export class BatchSet {
     if (sid * 3 + 3 > S.levels.length) { const a = new Int32Array(Math.max(sid * 3 + 3, S.levels.length * 2)).fill(-1); a.set(S.levels); S.levels = a; }
     S.levels.set(gids, sid * 3);
     S.bm.setMatrixAt(sid, matrix);
+    this._setSphere(S, sid, first, matrix);
     if (lvGeo) S.bm.setGeometryIdAt(sid, S.geos.get(lvGeo));
     return sid;
   }
@@ -333,6 +376,7 @@ export class BatchSet {
           const b = part.batch, bm = b.bm;
           const id = this._alloc(b, b.geos.get(g || anyGeo(part)));
           bm.setMatrixAt(id, matrix);
+          this._setSphere(b, id, b.geos.get(anyGeo(part)), matrix);
           const c = part.tintKey ? colors?.[part.tintKey] : color;
           bm.setColorAt(id, part.tint && c ? c : WHITE);
           this._alpha(b, id, 1);
@@ -431,6 +475,8 @@ export class BatchSet {
           if (gOld && wasShown) { // old level fades out on a temporary copy of the instance
             const tid = this._alloc(b, b.geos.get(gOld));
             bm.getMatrixAt(id, _mat); bm.setMatrixAt(tid, _mat);
+            if (tid * 4 + 4 > b.sph.length) { const a = new Float32Array(Math.max(tid * 4 + 4, b.sph.length * 2)); a.set(b.sph); b.sph = a; }
+            b.sph.copyWithin(tid * 4, id * 4, id * 4 + 4);
             const cd = bm._colorsTexture.image.data;
             cd[tid * 4] = cd[id * 4]; cd[tid * 4 + 1] = cd[id * 4 + 1]; cd[tid * 4 + 2] = cd[id * 4 + 2];
             this._alpha(b, tid, -1e-4);

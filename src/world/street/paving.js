@@ -1,5 +1,5 @@
 import {
-  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W, RAIL_X0, RAIL_X1, railDist,
+  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W, RAIL_X0, RAIL_X1, FACADE_OVERLAP, railDist,
 } from './constants.js';
 import { colInfo } from './surface.js';
 import { crossoverPlan, paveCut, mainCut } from './crossover.js';
@@ -114,12 +114,15 @@ export function buildPaving(ctx, chunk, rows, out) {
   const rowS = [rows[0] - (rows[1] - rows[0]), ...rows, rows[nr - 1] + (rows[nr - 1] - rows[nr - 2])];
   for (let i = 0; i < rowS.length; i++) {
     const ri = surface.rowInfo(rowS[i], {});
+    ri.facL = facadeCol(ri, -1); ri.facR = facadeCol(ri, 1);
     infos.push(ri);
-    maxL = Math.max(maxL, -ri.edgeL - GUTTER_OUT);
-    maxR = Math.max(maxR, ri.edgeR - GUTTER_OUT);
+    maxL = Math.max(maxL, ri.facL - GUTTER_OUT);
+    maxR = Math.max(maxR, ri.facR - GUTTER_OUT);
   }
-  const nL = Math.max(2, Math.ceil(maxL / walkStep));
-  const nR = Math.max(2, Math.ceil(maxR / walkStep));
+  // per side: the outer edge, a column on the facade line (where the paving meets the
+  // building's own ground line exactly), then even columns in to the gutter
+  const nL = 1 + Math.max(2, Math.ceil(maxL / walkStep));
+  const nR = 1 + Math.max(2, Math.ceil(maxR / walkStep));
   const nc = nL + nFixed + nR; // left walk cols (excluding -GUTTER_OUT) + fixed + right walk cols
   const NR = rowS.length;
 
@@ -134,7 +137,7 @@ export function buildPaving(ctx, chunk, rows, out) {
     const o = r * nc;
     const eL = ri.edgeL, eR = ri.edgeR;
     for (let k = 0; k < nL; k++) {
-      const d = eL + ((-GUTTER_OUT - eL) * k) / nL;
+      const d = k === 0 ? eL : -(ri.facL + ((GUTTER_OUT - ri.facL) * (k - 1)) / (nL - 1));
       D[o + k] = d; H[o + k] = surface.height(ri, d, colInfo(d, ciw)); HS[o + k] = surface.hShade;
     }
     for (let k = 0; k < nFixed; k++) {
@@ -144,7 +147,7 @@ export function buildPaving(ctx, chunk, rows, out) {
       D[o + nL + k] = d; H[o + nL + k] = surface.height(ri, d, fx.ci[k]); HS[o + nL + k] = surface.hShade;
     }
     for (let k = 1; k <= nR; k++) {
-      const c = nL + nFixed - 1 + k, d = GUTTER_OUT + ((eR - GUTTER_OUT) * k) / nR;
+      const c = nL + nFixed - 1 + k, d = k === nR ? eR : GUTTER_OUT + ((ri.facR - GUTTER_OUT) * k) / (nR - 1);
       D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw)); HS[o + c] = surface.hShade;
     }
   }
@@ -275,6 +278,14 @@ export function pavingHeight(grid, s, d, dl) {
   const Ha = H[oa + c], Hb = H[oa + c + 1], Hc = H[ob + c + 1], Hd = H[ob + c];
   // quads are split a-b-c / a-c-d (a = row lo, column c; c = row hi, column c+1)
   return u >= t ? Ha + (Hb - Ha) * u + (Hc - Hb) * t : Ha + (Hc - Hd) * u + (Hd - Ha) * t;
+}
+
+/** |d| of the sidewalk column on the facade line of the row (side -1 | 1); in mouths and
+ *  gaps, FACADE_OVERLAP inside the outer edge. */
+function facadeCol(ri, side) {
+  const e = side < 0 ? -ri.edgeL : ri.edgeR, f = side < 0 ? ri.fL : ri.fR;
+  const a = f.d === f.d ? Math.abs(f.d) : e - FACADE_OVERLAP;
+  return Math.min(e - 0.05, Math.max(GUTTER_OUT + 0.3, a));
 }
 
 /** Distance (m) outside a diverging rail's span from its rail-local coordinate. */

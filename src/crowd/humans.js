@@ -6,11 +6,15 @@ import { makeHumanMaterials, hangProfile, BONE_DYN } from './humans/material.js'
 import { makeSkirtPart, makePhonePart, appendPart, partRanges, subGeometry } from './humans/parts.js';
 import { BlobShadows } from './humans/blobs.js';
 import { HumansTest } from './humans/test.js';
+import { Mobility } from './humans/mobility.js';
 
 // Human figures: rendering + animation (crowd behaviour lives in crowd.js).
 // Contract (docs/ARCHITECTURE.md):
 //   alloc(count) -> first slot index; set(i, {x,y,z,heading,speed,phase,pose,look,appearance,visible});
 //   setVisible(i, false); strideLength(appearance, speed, pose); cycleLength(appearance); heightOf(appearance)
+//   Mobility (poses 3 stroller / 4 riding / 5 walking a bicycle, set() fields prop, propSeed, lean,
+//   steer): supportsPose(p); the props are drawn by humans/mobility.js with the kits in humans/props/;
+//   build(chunk) returns the chunk's parked bicycles.
 //
 // Figures are SDF-sculpted bodies (tools/blender/humans_build.py) with LODs, drawn with
 // one instanced draw per base body (man / woman / child / young child) and LOD (the nearest LODs one
@@ -52,6 +56,13 @@ const humans = {
 
   async init(app) {
     this.app = app;
+    // mobility props (bicycles, strollers; also the parked bicycles of build()): optional
+    try {
+      this.props = await import('./humans/props/index.js');
+    } catch (e) {
+      console.warn('[humans] mobility props unavailable', e);
+      this.props = null;
+    }
     let assets;
     try {
       // humans_dir=<repo-relative dir> loads a trial build instead of assets/humans/ (testing)
@@ -119,6 +130,15 @@ const humans = {
     }
     this.blobs = new BlobShadows(app, this.capacity);
     this.group.add(this.blobs.mesh);
+    if (this.props) {
+      try {
+        this.mob = new Mobility(app, this, this.props);
+        this.group.add(this.mob.object);
+      } catch (e) {
+        console.warn('[humans] mobility props disabled', e);
+        this.mob = null;
+      }
+    }
     this._precompile(app);
     this.ready = true;
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
@@ -181,21 +201,47 @@ const humans = {
       s.appearance = o.appearance;
       s.a = null;
     }
+    // mobility: prop kind / seed, the bicycle's lean and handlebar angle (rad, + left; derived from
+    // the turn when not given)
+    if (o.prop !== undefined) s.prop = o.prop | 0;
+    if (o.propSeed !== undefined) s.propSeed = o.propSeed | 0;
+    s.leanIn = Number.isFinite(o.lean) ? o.lean : null;
+    s.steerIn = Number.isFinite(o.steer) ? o.steer : null;
     s.visible = o.visible !== false;
+  },
+
+  /** Poses this renderer can show: 0-2 always, 3-5 (stroller, riding, walking a bicycle) with the props. */
+  supportsPose(p) { return p >= 0 && p <= 2 ? true : p >= 3 && p <= 5 ? !!(this.ready && this.mob) : false; },
+
+  /** Parked bicycles of a chunk (racks, leaning on poles / trees), or null. */
+  build(chunk, app) {
+    if (!this.props) return null;
+    try {
+      return this.props.buildParkedBicycles(chunk, app);
+    } catch (e) {
+      if (!this._parkWarned) { this._parkWarned = true; console.warn('[humans] parked bicycles failed', e); }
+      return null;
+    }
+  },
+
+  dispose(obj) {
+    if (this.props && obj) this.props.disposeParkedBicycles(obj);
   },
 
   setVisible(i, v) { const s = this.slots[i]; if (s) s.visible = !!v; },
 
   heightOf(appearance) { return this.appearanceOf(appearance).height; },
 
-  /** Metres travelled per crank revolution when riding (gear development by body size). */
+  /** Metres travelled per crank revolution when riding: the gearing of the bikes this person
+   *  rides (kids' 20-inch bikes for children, city / commuter gearing for everyone else). */
   cycleLength(appearance) {
     const a = this.appearanceOf(appearance);
-    return a.body === 'kid' ? 2.6 : a.body === 'child' ? 3.8 : 5.2;
+    return a.age === 'child' || a.height < 1.45 ? 3.05 : 4.4;
   },
 
   /** Distance covered per gait cycle (two steps) at `speed` m/s, so phase advances without foot slide.
-   *  (pose 4, riding: per crank turn; the walking poses share the walk clips' strides) */
+   *  Pose 4 (riding): per crank turn. Poses 3 and 5 (pushing a stroller, walking a bicycle) walk
+   *  on the same clips as everyone else, so they share the walk stride. */
   strideLength(appearance, speed, pose = 0) {
     if (pose === 4) return this.cycleLength(appearance);
     return this._stride(appearance, speed);
@@ -252,6 +298,8 @@ const humans = {
     this.time += dt;
     if (this.test) this.test.update(dt);
     const cam = app.camera;
+    const mob = this.mob;
+    if (mob) mob.begin(cam, app.renderer);
     _m.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     _frustum.setFromProjectionMatrix(_m);
     const camPos = cam.position;
@@ -275,8 +323,9 @@ const humans = {
         lookDirty = true;
       }
       const a = s.a;
-      // seated people put their bags down (bags would hover behind the chair)
-      const hideBag = s.pose === 2 && a.bagPart > 0;
+      // seated people put their bags down (bags would hover behind the chair); a shopping bag
+      // does not stay in a hand that holds a stroller or a bicycle
+      const hideBag = (s.pose === 2 || (s.pose >= 3 && a.carry)) && a.bagPart > 0;
       if (hideBag !== s.bagHidden) {
         look.image.data[(i * ROW_TEXELS + 11) * 4 + 3] = (hideBag ? 0 : a.bagPart) + a.skirtPart * 256;
         s.bagHidden = hideBag;
@@ -285,6 +334,11 @@ const humans = {
       }
       const B = this.bases[a.body];
       const sc = a.height / B.info.H;
+      // mobility props follow their figure (culled and LOD'd by their own instancers)
+      if (mob && s.pose >= 3) {
+        const st = mob.track(s, a, dt, this.time);
+        if (st && s.prop) mob.draw(s, st);
+      } else if (s.mob) s.mob.valid = false;
       _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
       _sph.radius = 0.62 * a.height + 0.3;
       if (!_frustum.intersectsSphere(_sph)) { s.lod = -1; continue; }
@@ -340,6 +394,7 @@ const humans = {
       });
     }
     this.blobs.end(app);
+    if (mob) mob.end();
     // only the rows of this frame's figures are uploaded (see dataTexture)
     if (n > 0) {
       this.boneTex.userData.rows = n;
@@ -379,7 +434,8 @@ const humans = {
     }
     // state texels: gait phase, speed, seated blend, ground height | look row, phone shown, hands in pockets
     const o = base + BONE_DYN * 4;
-    out[o] = s.phase; out[o + 1] = s.pose === 0 ? s.speed : 0; out[o + 2] = s.seatW; out[o + 3] = s.y;
+    // (hair, skirts and bags swing with the walking poses only: riders pass no speed)
+    out[o] = s.phase; out[o + 1] = s.pose === 0 || s.pose === 3 || s.pose === 5 ? s.speed : 0; out[o + 2] = s.seatW; out[o + 3] = s.y;
     out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = s.pocketW; out[o + 7] = 0;
   },
 
@@ -403,23 +459,37 @@ const humans = {
     }
     M.fill(0);
     let phone = 0, pocket = 0;
+    // mobility poses (props shown): 3 pushing a stroller and 5 walking a bicycle re-pose the arms
+    // of the walk; 4 riding is solved whole (humans/mobility.js)
+    const mobP = !!(this.mob && s.mob && s.mob.valid && s.prop && s.pose >= 3 && s.pose <= 5);
     if (s.pose === 2) {
       addClip(M, bk, CLIP.sit + a.sit, t / 11 + a.seedT, 1);
     } else if (s.pose === 1) {
       addClip(M, bk, CLIP.idle + a.idle, t / 9.5 + a.seedT, 1);
       phone = a.idle === 1 ? 1 : 0;
       pocket = a.idle === 3 ? 1 : 0;
+    } else if (mobP && s.pose === 4) {
+      this.mob.pose(s, a, B, M, t);
     } else {
-      const g = gaitBlend(B, a, s.speed, sc);
+      const g = gaitBlend(B, a, s.speed, sc, mobP ? 0 : a.idle);
       addClip(M, bk, g.a, s.phase, g.wa);
       if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / 9.5 + a.seedT : s.phase, g.wb);
-      // upper-body variations carried by the walking chest
-      if (a.phoneWalk) { overrideBones(M, B.phone, PHONE_BONES, 1); phone = 1; }
+      // upper-body variations carried by the walking chest (not while the hands hold a prop)
+      if (mobP) { /* hands on the stroller / bicycle below */ }
+      else if (a.phoneWalk) { overrideBones(M, B.phone, PHONE_BONES, 1); phone = 1; }
       else if (a.carry) overrideBones(M, B.hang, CARRY_BONES, 0.65);
       else if (a.idle === 1 && g.b >= CLIP.idle) phone = g.wb;
-      if (a.idle === 3 && g.b >= CLIP.idle) pocket = g.wb;
+      if (!mobP && a.idle === 3 && g.b >= CLIP.idle) pocket = g.wb;
     }
-    rigidify(M, B.rig.rest);
+    if (!(mobP && s.pose === 4)) rigidify(M, B.rig.rest);
+    if (mobP && s.pose !== 4) {
+      // pushing leans the trunk in a little from the hips; stoop as usual; then hands on the prop
+      const lean = (s.pose === 3 ? 5.5 : 2) * Math.PI / 180;
+      pitchBones(M, B.rig.rest, LEAN_BONES, BONE.spine1, -lean);
+      if (a.stoop > 0.005) pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
+      pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, (lean + a.stoop) * 0.65);
+      this.mob.pose(s, a, B, M, t);
+    }
     let w = 1;
     if (s.fadeDur > 0) {
       w = smooth01((t - s.fadeT0) / s.fadeDur);
@@ -438,12 +508,13 @@ const humans = {
     s.seatW = s.fadeDur > 0 ? s.fromSeat + (seat - s.fromSeat) * w : seat;
     // older people's rounded upper back: the chest and everything it carries tip forward about
     // the mid spine, the neck and head take most of it back so the gaze stays level
-    if (a.stoop > 0.005) {
+    if (a.stoop > 0.005 && !mobP) {
       pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
       pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, a.stoop * 0.65);
     }
     // head turn: the neck takes a third, the head the rest, both about their own joints
-    const look = Math.max(-1.25, Math.min(1.25, s.look || 0));
+    // (a rider's head turn is part of the riding pose)
+    const look = mobP && s.pose === 4 ? 0 : Math.max(-1.25, Math.min(1.25, s.look || 0));
     if (look > 1e-3 || look < -1e-3) {
       rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, look * 0.35);
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
@@ -466,10 +537,8 @@ const humans = {
       }
     }
     return { draws, instances: inst, triangles: Math.round(tris), figures: this.perf.figures, lods,
-      blobs: this.blobs ? this.blobs.count : 0, cpuMs: +this.perf.ms.toFixed(3) };
+      blobs: this.blobs ? this.blobs.count : 0, cpuMs: +this.perf.ms.toFixed(3), props: this.mob ? this.mob.stats() : null };
   },
-
-  dispose() {},
 };
 
 function pushDraw(d, i) { if (d) d.list[d.count++] = i; }
@@ -478,6 +547,7 @@ const PHONE_BONES = [BONE.armR, BONE.foreR, BONE.handR, BONE.neck, BONE.head];
 const STOOP_BONES = [BONE.spine2, BONE.neck, BONE.head, BONE.clavL, BONE.armL, BONE.foreL, BONE.handL,
   BONE.clavR, BONE.armR, BONE.foreR, BONE.handR];
 const HEAD_BONES = [BONE.neck, BONE.head];
+const LEAN_BONES = [BONE.spine1, ...STOOP_BONES];
 const CARRY_BONES = [BONE.armR, BONE.foreR, BONE.handR];
 const _T = new Float32Array(12), _inv = new Float32Array(12), _tmp = new Float32Array(12);
 
@@ -543,7 +613,7 @@ function newSlot() {
   return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,
     lod: -1, blendFrame: -10, blendBase: null, model: null, bagHidden: false,     // model: pose before the figure transform
     posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
-    pocketW: 0, fromPocket: 0 };
+    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: null, steerIn: null, mob: null };
 }
 
 function newRowAttr(n) {
@@ -590,11 +660,11 @@ function addClip(M, bk, clip, time, w) {
 }
 
 /** Which clips play at a speed: walk clips bracket the body-normalised speed, slow walking blends into standing. */
-function gaitBlend(B, a, speed, sc) {
+function gaitBlend(B, a, speed, sc, idleVar = a.idle) {
   const vb = speed / Math.sqrt(Math.max(0.3, sc));
   const V = B.walkV;
   const out = _gait;
-  const idle = CLIP.idle + a.idle;          // standing still in pose 0 is the same as pose 1
+  const idle = CLIP.idle + idleVar;         // standing still in pose 0 is the same as pose 1
   out.a = CLIP.walk; out.b = -1; out.wa = 1; out.wb = 0; out.idle = 0; out.extra = 1;
   if (a.walkOld || a.gait === 1) {
     // frail and senior walkers: one clip of their own; faster walking only quickens the steps

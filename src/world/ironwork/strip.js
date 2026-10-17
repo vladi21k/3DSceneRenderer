@@ -6,15 +6,15 @@ import * as THREE from 'three';
 // chunks stream in ahead and out behind, so blocks are freed roughly in the order they
 // were allocated and the ring reuses the space without compaction (a full ring grows and
 // compacts once). Vertex data is uploaded when a block is allocated (often while the
-// chunk is prefetched); the block is drawn once activated, when its indices are written
-// (inactive and freed ranges hold zeros: degenerate triangles).
+// chunk is prefetched); the block is drawn once activated, when its indices are copied
+// in (inactive and freed ranges hold zeros: degenerate triangles).
 //
 // Every pass draws one index range: the span of the active blocks whose bounding
 // spheres meet that camera's frustum (main view or shadow cascade), so a strip costs
 // one draw call per pass and still culls per chunk. A strip is an InstancedMesh of one
 // identity instance so it shares its program with the material's instanced sets, and
 // so it can skip a pass outright (count 0). Shadow-only strips (light stand-ins of the
-// casters) skip the main pass.
+// casters) are culled from every view that is not a light's shadow frustum.
 
 const _m = new THREE.Matrix4(), _f = new THREE.Frustum(), _b = new THREE.Box3(), _bb = new THREE.Box3();
 
@@ -28,19 +28,37 @@ const STREAMS = { position: ['P', 3], normal: ['N', 3], uv: ['T', 2], color: ['C
 const _frustumOf = new WeakMap();
 const IDENTITY = new THREE.Matrix4();
 
-/** The shadow frustum of `camera` (a light's shadow camera in `scene`), or null. */
-function shadowFrustum(scene, camera) {
-  let f = _frustumOf.get(camera);
-  if (f !== undefined) return f;
+const _shadowFrusta = new WeakMap(); // frustum -> true for a light's shadow frustum
+
+/** Registers the shadow cameras and frusta of the lights in `scene`. */
+function scanLights(scene) {
   for (const l of scene ? scene.children : []) {
     const sh = l.isLight && l.castShadow ? l.shadow : null;
     if (!sh || !sh.getFrustum || !sh.getCamera) continue;
     const n = sh.getViewportCount ? sh.getViewportCount() : 1;
-    for (let i = 0; i < n; i++) _frustumOf.set(sh.getCamera(i), sh.getFrustum(i));
+    for (let i = 0; i < n; i++) { _frustumOf.set(sh.getCamera(i), sh.getFrustum(i)); _shadowFrusta.set(sh.getFrustum(i), true); }
   }
+}
+
+/** The shadow frustum of `camera` (a light's shadow camera in `scene`), or null. */
+function shadowFrustum(scene, camera) {
+  let f = _frustumOf.get(camera);
+  if (f !== undefined) return f;
+  scanLights(scene);
   f = _frustumOf.get(camera) || null;
   _frustumOf.set(camera, f);
   return f;
+}
+
+/** Makes `mesh` a shadow caster only: the view (any frustum that is not a light's shadow
+ *  frustum) culls it before it costs a draw or even a program. */
+export function shadowOnly(mesh, scene) {
+  mesh.intersectsFrustum = function (frustum) {
+    let s = _shadowFrusta.get(frustum);
+    if (s === undefined) { scanLights(scene); s = _shadowFrusta.get(frustum) || false; _shadowFrusta.set(frustum, s); }
+    return s && frustum.intersectsObject(this);
+  };
+  return mesh;
 }
 
 export class Strip {
@@ -65,16 +83,18 @@ export class Strip {
     this.mesh.userData.thinCaster = !!opts.thin;
     this.mesh.boundingSphere = new THREE.Sphere();
     this.mesh.visible = false;
-    this.mesh.onBeforeRender = (r, scene, camera) => {
-      if (opts.shadowOnly) this.mesh.count = 0;
-      else this._cull(camera, null);
-    };
+    if (opts.shadowOnly) shadowOnly(this.mesh, opts.scene);
+    else this.mesh.onBeforeRender = (r, scene, camera) => this._cull(camera, null);
     this.mesh.onBeforeShadow = (r, obj, camera, shadowCamera) => this._cull(shadowCamera, shadowFrustum(opts.scene, shadowCamera));
   }
 
   _geometry() {
     const g = new THREE.BufferGeometry();
     for (const s of this.streams) g.setAttribute(s, new THREE.BufferAttribute(this.arrays[s], STREAMS[s][1]));
+    // a position-only caster still declares normals, aliased to its positions (one buffer,
+    // never read by the depth pass): programs are keyed on their presence, and the scene
+    // precompile would otherwise build the material a second program just for this mesh
+    if (!g.attributes.normal) g.setAttribute('normal', g.attributes.position);
     g.setIndex(new THREE.BufferAttribute(this.index, 1));
     g.setDrawRange(0, 0);
     return g;
@@ -110,7 +130,10 @@ export class Strip {
       a.addUpdateRange(v0 * k, nv * k);
       a.needsUpdate = true;
     }
-    const block = { v0, nv, i0, ni, rel: W.I.slice(0, ni), sphere: sphere.clone(), active: false };
+    // the block's indices, already offset (activation is then a plain copy)
+    const idx = new Uint32Array(ni), WI = W.I;
+    for (let k = 0; k < ni; k++) idx[k] = WI[k] + v0;
+    const block = { v0, nv, i0, ni, idx, sphere: sphere.clone(), active: false };
     block.proxy = { geometry: { boundingSphere: block.sphere }, matrixWorld: IDENTITY, userData: this.mesh.userData };
     this.blocks.push(block);
     return block;
@@ -119,9 +142,8 @@ export class Strip {
   /** Starts drawing a block. */
   activate(block) {
     if (!block || block.active) return;
-    const I = this.index, R = block.rel, o = block.v0;
-    for (let k = 0; k < block.ni; k++) I[block.i0 + k] = R[k] + o;
-    block.rel = null;
+    this.index.set(block.idx, block.i0);
+    block.idx = null;
     block.active = true;
     this.active++;
     this._indexRange(block);
@@ -189,6 +211,7 @@ export class Strip {
         arrays[s].set(this.arrays[s].subarray(b.v0 * k, (b.v0 + b.nv) * k), v * k);
       }
       if (b.active) for (let q = 0; q < b.ni; q++) index[i + q] = this.index[b.i0 + q] - b.v0 + v;
+      else for (let q = 0; q < b.ni; q++) b.idx[q] += v - b.v0;
       b.v0 = v; b.i0 = i;
       v += b.nv; i += b.ni;
     }

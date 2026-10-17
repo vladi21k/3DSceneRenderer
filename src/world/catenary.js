@@ -8,19 +8,22 @@ import { patchThin, makeWireMaterial, makeGlassMaterial, patchBanner, updateScre
 import { buildBannerBracket, buildBannerCloth, buildBannerAtlas, BANNER_DESIGNS, BANNER_X0, BANNER_X1, BANNER_Y0, BANNER_Y1 } from './catenary/banners.js';
 import { buildSignalKit, signalPlacements, buildAspectAtlas, MOUNT_X } from './catenary/signals.js';
 import { buildStickers, buildStickerAtlas } from './catenary/wear.js';
-import { CatBatch, CatBatches } from './catenary/batch.js';
+import { CatBatch, CatBatches, SlotBatch, NEAR, FAR } from './catenary/batch.js';
 
 // Lamp standards, overhead contact line, pole banners and traffic signals.
 // Contract: docs/ARCHITECTURE.md. Placements come from layout.poles (pole pairs are kept
 // out of cross-street mouths by the layout) and layout.crossStreets.
 //
-// Standards, banners, fittings and signals are instances in street-wide BatchedMeshes
-// (catenary/batch.js: one multi-draw call per part and pass); per chunk there is one
-// ribbon mesh for every wire, the ribbon stand-ins of the fittings and merged stickers.
-// Full-detail chunks switch their standards between the hi, mid and lo tessellations by
-// camera distance (near ones show the fittings instead of their stand-ins); far chunks
-// use the lo kit. Brackets, scrolls and wires are thin casters; shafts stop casting in the
-// coarsest cascade. Everything heavy is built once in init().
+// Everything is instanced street-wide (catenary/batch.js: one multi-draw call per part
+// and pass): standards, banners, fittings and signals as instances of shared geometry;
+// each chunk's wire ribbons (every wire plus the ribbon stand-ins of the fittings) and
+// merged stickers in geometry slots of their own batches.
+// Each standard draws the hi, mid, lo or far (outline) tessellation by its camera
+// distance (far chunks: far); near chunks show the fittings instead of their stand-ins.
+// Brackets, scrolls and wires are thin casters; shafts stop casting in the coarsest
+// cascade. Everything heavy is built once in init().
+//
+// Debug URL switch: catslots=0 keeps per-chunk wire and sticker meshes.
 
 // detail by distance (m at the 17° default lens, scaled by the field of view so it
 // follows the size on screen): hi / mid / lo standards below these, far beyond (per
@@ -138,7 +141,15 @@ const catenary = {
       insulators: B.add(new CatBatch('catenary:insulators', this.insulatorMat, [this.insSpanGeo, this.insDropGeo], 64)),
       signals: B.add(new CatBatch('catenary:signals', this.signalMat, [SK.tramHead, SK.tramPost, SK.tramMount, SK.pedBody], 32, { cast: true, shadowMaxTexel: 0.07 })),
       aspects: B.add(new CatBatch('catenary:signalAspects', this.aspectMat, [SK.tramGo, SK.tramStop, SK.pedLit], 32)),
+      // per-chunk wire ribbons (and their fitting stand-ins) and pole stickers
+      wires: B.add(new SlotBatch('catenary:wires', this.wireMat, slotTemplate({ position: 3, aTan: 3, aWire: 2, color: 3 }), 72, 640, 1536)),
+      stickers: B.add(new SlotBatch('catenary:stickers', this.stickerMat, slotTemplate({ position: 3, normal: 3, uv: 2, color: 3 }), 40, 256, 512)),
     };
+    // the batch spans the street, so its sort position means nothing: blended wires (no
+    // MSAA) go after the other transparent surfaces
+    this.parts.wires.mesh.renderOrder = this.wireMat.transparent ? 10 : 2;
+    this.parts.wires.mesh.userData.thinCaster = true;
+    if (app.params.str('catslots') === '0') this.parts.wires.free.length = this.parts.stickers.free.length = 0;
     // geometry indices within the parts
     this.SIG = { tramHead: 0, tramPost: 1, tramMount: 2, pedBody: 3, tramGo: 0, tramStop: 1, pedLit: 2 };
   },
@@ -210,18 +221,21 @@ const catenary = {
     }
     if (!far && poles.length) {
       const st = buildStickers(poles, (p, out) => out.copy(this.fixtures.get(p).matrix), layout.seed);
-      if (st) { const mesh = new THREE.Mesh(st, this.stickerMat); mesh.name = 'stickers'; mesh.receiveShadow = true; group.add(mesh); }
+      if (st && !B.putSlot(rec, P.stickers, st)) { const mesh = new THREE.Mesh(st, this.stickerMat); mesh.name = 'stickers'; mesh.receiveShadow = true; group.add(mesh); }
     }
 
     // ---- overhead line
     const oh = buildOverheadChunk(app, this.plan, chunk);
-    if (oh.wires) group.add(wireMesh(oh.wires, this.wireMat, 'wires'));
-    for (const m of oh.spanInsulators) B.put(rec, P.insulators, 0, m, null, true);
-    for (const m of oh.dropInsulators) B.put(rec, P.insulators, 1, m, null, true);
-    for (const m of oh.arms) B.put(rec, P.fittings, 0, m, null, true);
-    for (const m of oh.clamps) B.put(rec, P.fittings, 1, m, null, true);
-    const ribbons = oh.detailRibbons ? wireMesh(oh.detailRibbons, this.wireMat, 'overheadFar') : null;
-    if (ribbons) group.add(ribbons);
+    if (oh.wires && !B.putSlot(rec, P.wires, oh.wires)) group.add(wireMesh(oh.wires, this.wireMat, 'wires'));
+    for (const m of oh.spanInsulators) B.put(rec, P.insulators, 0, m, null, NEAR);
+    for (const m of oh.dropInsulators) B.put(rec, P.insulators, 1, m, null, NEAR);
+    for (const m of oh.arms) B.put(rec, P.fittings, 0, m, null, NEAR);
+    for (const m of oh.clamps) B.put(rec, P.fittings, 1, m, null, NEAR);
+    let ribbons = null;
+    if (oh.detailRibbons && !B.putSlot(rec, P.wires, oh.detailRibbons, FAR)) {
+      ribbons = wireMesh(oh.detailRibbons, this.wireMat, 'overheadFar');
+      group.add(ribbons);
+    }
 
     // ---- signals at cross streets
     const cs = layout.inChunk('crossStreets', chunk.index);
@@ -314,6 +328,14 @@ function groundSink(route, s, d, r) {
   const gs = route.groundY(s + 0.25, d) - route.groundY(s - 0.25, d);
   const gd = route.groundY(s, d + 0.25) - route.groundY(s, d - 0.25);
   return r * 2 * Math.hypot(gs, gd);
+}
+
+/** Minimal geometry with the attribute layout {name: itemSize} of a slot batch. */
+function slotTemplate(layout) {
+  const g = new THREE.BufferGeometry();
+  for (const [k, n] of Object.entries(layout)) g.setAttribute(k, new THREE.BufferAttribute(new Float32Array(3 * n), n));
+  g.setIndex([0, 1, 2]);
+  return g;
 }
 
 function wireMesh(geo, mat, name) {

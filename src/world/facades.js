@@ -188,7 +188,6 @@ const facades = {
   prefetch(app) {
     const W = app.world;
     if (app.cameraS == null || !W || !W.upcoming) return;
-    // nothing was due last time: look again a few frames later
     if (this.idle > 0) { this.idle--; return; }
     const t0 = performance.now(), until = t0 + this.prefetchMs;
     const cands = [], seen = new Set();
@@ -202,7 +201,6 @@ const facades = {
     }
     for (const k of this.handed) if (!seen.has(k)) this.handed.delete(k);
     cands.sort((a, b) => a.dist - b.dist);
-    this.idle = cands.length ? 0 : 5;
     const keep = new Set(cands.map((c) => c.key));
     // drop prefetched results that are no longer wanted
     for (const [k, j] of this.jobs) {
@@ -227,6 +225,8 @@ const facades = {
         }
       }
     }
+    // nothing left to build ahead: look again a few frames later
+    this.idle = cands.some((c) => !this.jobs.get(c.key)?.done) ? 0 : 5;
     this.stats.prefetchMaxMs = Math.max(this.stats.prefetchMaxMs * 0.995, performance.now() - t0);
   },
 };

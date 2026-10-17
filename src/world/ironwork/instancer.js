@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { shadowOnly } from './strip.js';
 
 // Module-wide instancing with per-INSTANCE level of detail.
 //
@@ -22,17 +23,18 @@ const _v = new THREE.Vector3(), _b = new THREE.Box3(), _bb = new THREE.Box3();
 
 /** Per-chunk instance lists, one per key. */
 export class InstanceCollector {
-  constructor() { this.sets = new Map(); }
+  constructor() { this.sets = new Map(); this.last = null; }
 
   /** levels: geometry per detail level (null = nothing drawn at that level).
-   *  color: [r, g, b] or null. opts: {cls, radius, angle} (first add wins; radius pads
-   *  the bounding sphere, default from the level-0 geometry). */
+   *  color: [r, g, b] or null. opts: {cls, radius, angle, thin} (first add wins; radius
+   *  pads the bounding sphere, default from the level-0 geometry). */
   add(key, levels, material, matrix, color = null, opts = {}) {
-    let s = this.sets.get(key);
+    let s = this.last && this.last.key === key ? this.last : this.sets.get(key);
     if (!s) {
       s = { key, levels, material, opts, n: 0, m: new Float32Array(64 * 16), c: color ? new Float32Array(64 * 3) : null };
       this.sets.set(key, s);
     }
+    this.last = s;
     if ((s.n + 1) * 16 > s.m.length) {
       const m = new Float32Array(s.m.length * 2); m.set(s.m); s.m = m;
       if (s.c) { const c = new Float32Array(s.c.length * 2); c.set(s.c); s.c = c; }
@@ -68,6 +70,7 @@ export class InstanceCollector {
       });
     }
     this.sets.clear();
+    this.last = null;
     return out;
   }
 }
@@ -131,6 +134,7 @@ export class InstancePool {
       mesh.visible = false;
       mesh.castShadow = false;
       mesh.receiveShadow = true;
+      mesh.userData.thinCaster = !!this.opts.thin; // (should it ever cast)
       mesh.boundingSphere = this.sphere;
       mesh.name = `ironwork:${this.key}:${k}`;
       this.group.add(mesh);
@@ -196,17 +200,19 @@ export class InstancePool {
   repack() {
     this.dirty = false;
     const counts = this.meshes.map(() => 0);
+    const M = this.meshes.map((m) => m && m.instanceMatrix.array), C = this.meshes.map((m) => m && m.instanceColor && m.instanceColor.array);
     for (const e of this.entries) {
       if (!e.vis) continue;
+      const em = e.m, ec = e.c;
       for (let i = 0; i < e.n; i++) {
-        const k = e.lvl[i], mesh = this.meshes[k];
-        if (!mesh) continue;
+        const k = e.lvl[i], a = M[k];
+        if (!a) continue;
         const j = counts[k]++;
-        mesh.instanceMatrix.array.set(e.m.subarray(i * 16, i * 16 + 16), j * 16);
-        if (mesh.instanceColor) {
-          const a = mesh.instanceColor.array;
-          if (e.c) { a[j * 3] = e.c[i * 3]; a[j * 3 + 1] = e.c[i * 3 + 1]; a[j * 3 + 2] = e.c[i * 3 + 2]; }
-          else { a[j * 3] = a[j * 3 + 1] = a[j * 3 + 2] = 1; }
+        for (let q = 0, o = j * 16, p = i * 16; q < 16; q++) a[o + q] = em[p + q];
+        const c = C[k];
+        if (c) {
+          if (ec) { c[j * 3] = ec[i * 3]; c[j * 3 + 1] = ec[i * 3 + 1]; c[j * 3 + 2] = ec[i * 3 + 2]; }
+          else { c[j * 3] = c[j * 3 + 1] = c[j * 3 + 2] = 1; }
         }
       }
     }
@@ -226,7 +232,8 @@ export class InstancePool {
  *  A twin on a coarse grid, sharing the instance buffers, casts the shadows (the depth
  *  material moves it like the cloth) and is never drawn in the view. */
 export class FlagPool {
-  constructor(geometry, shadowGeometry, material, depthMaterial, group) {
+  constructor(geometry, shadowGeometry, material, depthMaterial, group, scene) {
+    this.scene = scene;
     this.src = geometry;
     this.srcShadow = shadowGeometry;
     this.material = material;
@@ -294,8 +301,7 @@ export class FlagPool {
     this.shadow = make(this.srcShadow, 'ironwork:flagShadow');
     this.shadow.castShadow = true;
     this.shadow.receiveShadow = false;
-    this.shadow.onBeforeRender = () => { this.shadow.count = 0; };
-    this.shadow.onBeforeShadow = () => { this.shadow.count = this.n; };
+    shadowOnly(this.shadow, this.scene);
     this.cap = cap;
   }
 }

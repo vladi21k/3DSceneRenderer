@@ -41,7 +41,7 @@ import { U } from '../../core/uniforms.js';
 // Vertex data: see treeGen.js (aVeg, aCrown, aCard; bark: aBark).
 
 const LIGHT_CAP = 8.0;
-const LAMP_CAP = 18.0;
+const LAMP_CAP = 30.0;
 
 const WIND_PARS = /* glsl */`
 invariant gl_Position;

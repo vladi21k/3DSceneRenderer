@@ -62,6 +62,7 @@ class SectionTimer {
     this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     this.pending = [];
     this.timings = {};
+    this.samples = {};      // raw recent samples per section (for minima under contention)
     this.open = null;
   }
   begin(name) {
@@ -86,6 +87,9 @@ class SectionTimer {
         const ms = gl.getQueryParameter(p.q, gl.QUERY_RESULT) / 1e6;
         const o = this.timings[p.name];
         this.timings[p.name] = o === undefined ? ms : o * 0.95 + ms * 0.05;
+        const a = this.samples[p.name] || (this.samples[p.name] = []);
+        a.push(ms);
+        if (a.length > 600) a.shift();
       }
       gl.deleteQuery(p.q);
       this.pending.shift();
@@ -202,7 +206,7 @@ const post = {
         if (!lights.length || !prof.open || prof.open.name !== 'scene') return render.call(this, lights, scene, camera);
         prof.begin('shadow');
         render.call(this, lights, scene, camera);
-        prof.begin('scene');
+        prof.begin('main');
       };
     }
 
@@ -561,7 +565,7 @@ const post = {
       prof.end();
       const t = prof.timings;
       t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.final || 0);
-      t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.envmap || 0);
+      t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.main || 0) + (t.envmap || 0);
       app.perf.gpuMs = t.total;
     }
     this.firstFrame = false;

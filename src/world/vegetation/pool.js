@@ -29,7 +29,7 @@ import * as THREE from 'three';
 const LOD_PX = [380, 95];
 const HYST = 0.08;
 const FADE_S = 0.35;
-// cascade texel (m) above which shadows use at least detail level 1 / 2
+// cascade texel (m) above which shadows use at least detail level 1 / 2 (per pool option)
 const SHADOW_LEVEL_TEXEL = [0.025, 0.07];
 
 const _c4 = new THREE.Vector4();
@@ -80,7 +80,7 @@ function cascadeOf(scene, cam) {
 }
 
 export class InstancePool {
-  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity, preMaterial = null } = {}) {
+  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity, shadowLevels = SHADOW_LEVEL_TEXEL, preMaterial = null } = {}) {
     let vc = 0, ic = 0;
     for (const g of geometries) { vc += g.attributes.position.count; ic += g.index.count; }
     const mesh = new THREE.BatchedMesh(capacity, vc, ic, material);
@@ -96,6 +96,7 @@ export class InstancePool {
     if (mesh._initColorsTexture && !mesh._colorsTexture) mesh._initColorsTexture();
     this.mesh = mesh;
     this.shadowMaxTexel = shadowMaxTexel;
+    this.shadowLevels = shadowLevels;
     this.lodGids = new Int32Array(capacity * 3).fill(-1); // per instance: geometry ids [L0, L1, L2] or -1
     this.geomIds = geometries.map((g) => mesh.addGeometry(g));
     // Per-instance culling uses each geometry's bounding sphere, computed from its vertices.
@@ -188,7 +189,7 @@ export class InstancePool {
     const md = m._matricesTexture.image.data;
     const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
     const frustum = c.frustum || c.plain;
-    const minLv = c.texel > SHADOW_LEVEL_TEXEL[1] ? 2 : c.texel > SHADOW_LEVEL_TEXEL[0] ? 1 : 0;
+    const L = this.shadowLevels, minLv = c.texel > L[1] ? 2 : c.texel > L[0] ? 1 : 0;
     let n = 0;
     if (c.texel <= this.shadowMaxTexel) {
       for (let i = 0, l = info.length; i < l; i++) {

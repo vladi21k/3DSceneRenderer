@@ -36,9 +36,10 @@ export function sideColumns(c) {
   return [-half, -half + 0.7, -road - KERB_W, -road - 0.001, -road, -road * 0.5, 0, road * 0.5, road, road + 0.001, road + KERB_W, half - 0.7, half];
 }
 
-/** Ground of a side street at its two facade lines ([a < 0, a > 0], world y): the
- *  frames of the first side-street lots on each edge, else `flat`. */
-function sideLevel(ctx, c, side, flat) {
+/** Ground of a side street at its two facade lines ([a < 0, a > 0], world y): where the
+ *  first side-street lot on each edge starts (its frame's ground at the end nearer the
+ *  junction `start`), else `flat`. */
+function sideLevel(ctx, c, side, start, flat) {
   const key = c.s * 4 + side;
   let v = LEVELS.get(key);
   if (!v) {
@@ -48,7 +49,11 @@ function sideLevel(ctx, c, side, flat) {
       for (const lot of ctx.layout.sideLots) {
         if (lot.cross === c && lot.side === side && lot.edge === edge && (!first || lot.x0 < first.x0)) first = lot;
       }
-      if (first) v[edge > 0 ? 1 : 0] = Math.min(first.frame.ground0, first.frame.ground1);
+      if (!first) continue;
+      const F = first.frame, o = F.origin;
+      const d0 = Math.hypot(o.x - start.x, o.z - start.z);
+      const d1 = Math.hypot(o.x + F.uDir.x * F.width - start.x, o.z + F.uDir.z * F.width - start.z);
+      v[edge > 0 ? 1 : 0] = d0 <= d1 ? F.ground0 : F.ground1;
     }
     LEVELS.set(key, v);
   }
@@ -74,7 +79,7 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const xStep = lod === 0 ? 6 : 15;
   for (let x = SIDE_LOT_START + xStep; x < m.len; x += xStep) xs.push(x);
   xs.push(m.len);
-  const level = sideLevel(ctx, c, side, m.start.y + SIDEWALK_RISE);
+  const level = sideLevel(ctx, c, side, m.start, m.start.y + SIDEWALK_RISE);
   const target = (a) => level[0] + (level[1] - level[0]) * Math.max(0, Math.min(1, (a + half) / (2 * half)));
   const cols = [-half - 0.8, ...sideColumns(c), half + 0.8];
   const nc = cols.length, nr = xs.length;

@@ -8,9 +8,12 @@ import * as THREE from 'three';
 // once all its modules are built and swaps LOD replacements atomically) and are freed
 // on dispose.
 //
+// Per-chunk geometry that is unique to the chunk (wire ribbons, stickers) goes into
+// SlotBatches: fixed-size geometry slots reused as chunks come and go, one instance each.
+//
 // Detail: a part with levels [hi, mid, lo, far] draws the level of its own camera
-// distance (far throughout far chunks); `near` parts (insulators, clamps...) show only while their
-// chunk is near, where they replace the chunk's ribbon stand-ins.
+// distance (far throughout far chunks); NEAR parts (insulators, clamps...) show only
+// while their chunk is near, FAR ones (their ribbon stand-ins) only while it is not.
 //
 // Shadows: each cascade gets its own draw list (shadowList): an instance casts only where
 // its shadow can reach the cascade's slice of the view (the light's cascade frustum
@@ -22,13 +25,14 @@ const _c4 = new THREE.Vector4();
 const _sph = new THREE.Sphere();
 const _fr = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
-// stand-ins handed to the light's cascade frustum: one instance (presented as a shadow
+// stand-in handed to the light's cascade frustum for one instance (presented as a shadow
 // proxy with its world sphere, which the env's cascade frustums test as is; a plain
-// frustum reads the geometry's sphere with an identity transform), or the whole batch
+// frustum reads the geometry's sphere with an identity transform)
 const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false, shadowProxy: { active: true }, shadowSphere: _sph } };
-const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
 const WHITE = new THREE.Color(1, 1, 1);
 const NL = 4; // detail levels: hi, mid, lo, far
+/** Show modes of a record's instances (see header). */
+export const ALWAYS = 0, NEAR = 1, FAR = 2;
 
 /** World texel (m) of the shadow cascade a frustum belongs to (0: not a cascade). */
 const _texels = new WeakMap();
@@ -92,6 +96,26 @@ export class CatBatch {
     this.shadowMaxTexel = shadowMaxTexel;
     this.shadowLevels = shadowLevels;
     this.lodGids = new Int32Array(capacity * NL).fill(-1);
+    // bounds of the shown instances (whole-batch culling: no empty draws), kept lazily
+    this.bounds = { boundingSphere: new THREE.Sphere(), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: thin }, dirty: true };
+  }
+
+  /** The batch's bounds proxy for frustum tests (recomputed after visibility changes). */
+  boundsProxy() {
+    const b = this.bounds;
+    if (b.dirty) {
+      b.dirty = false;
+      const m = this.mesh, info = m._instanceInfo, md = m._matricesTexture.image.data, gInfo = m._geometryInfo;
+      const bs = b.boundingSphere.makeEmpty();
+      for (let i = 0; i < info.length; i++) {
+        const it = info[i];
+        if (!it.visible || !it.active) continue;
+        _sph.copy(gInfo[it.geometryIndex].boundingSphere).applyMatrix4(_m4.fromArray(md, i * 16));
+        if (bs.isEmpty()) bs.copy(_sph); else bs.union(_sph);
+      }
+      if (bs.isEmpty()) bs.set(_sph.center.set(0, -1e7, 0), 0); // nothing shown: never intersects
+    }
+    return b;
   }
 
   /** New hidden instance. levels: geometry index, or [hi, mid, lo, far] indices. */
@@ -103,6 +127,7 @@ export class CatBatch {
     m.setMatrixAt(id, matrix);
     m.setColorAt(id, color || WHITE);
     m.setVisibleAt(id, false);
+    this.bounds.dirty = true;
     if (id * NL + NL > this.lodGids.length) {
       const a = new Int32Array(Math.max(id * NL + NL, this.lodGids.length * 2)).fill(-1);
       a.set(this.lodGids);
@@ -115,6 +140,15 @@ export class CatBatch {
   setLevel(id, level) {
     const g = this.lodGids[id * NL + level];
     if (g >= 0) this.mesh.setGeometryIdAt(id, g);
+  }
+
+  remove(id) { this.mesh.deleteInstance(id); this.bounds.dirty = true; }
+
+  setVisible(id, v) {
+    const m = this.mesh;
+    if (m._instanceInfo[id].visible === v) return;
+    m.setVisibleAt(id, v);
+    this.bounds.dirty = true;
   }
 
   /** Shadow pass draw list for one cascade (replaces BatchedMesh's own culling). */
@@ -153,6 +187,51 @@ export class CatBatch {
   }
 }
 
+/**
+ * Street-wide batch of per-chunk geometry: `slots` geometry slots of up to maxVerts /
+ * maxIndex each (template: a geometry with the attribute layout), one identity instance
+ * per filled slot. add() returns -1 when no slot is free or the geometry does not fit
+ * (the caller keeps its own mesh then).
+ */
+export class SlotBatch {
+  constructor(name, material, template, slots, maxVerts, maxIndex) {
+    const mesh = new THREE.BatchedMesh(slots, slots * maxVerts, slots * maxIndex, material);
+    mesh.name = name;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
+    mesh.perObjectFrustumCulled = true;
+    mesh.sortObjects = false;
+    this.mesh = mesh;
+    this.maxVerts = maxVerts;
+    this.maxIndex = maxIndex;
+    this.free = [];
+    for (let i = 0; i < slots; i++) this.free.push(mesh.addGeometry(template, maxVerts, maxIndex));
+    this.free.reverse();
+    this.slotOf = new Map();  // instance id -> geometry slot
+  }
+
+  add(geometry) {
+    const m = this.mesh;
+    if (!this.free.length || geometry.attributes.position.count > this.maxVerts || geometry.index.count > this.maxIndex) return -1;
+    const gid = this.free.pop();
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    m.setGeometryAt(gid, geometry);
+    const id = m.addInstance(gid);
+    m.setVisibleAt(id, false);
+    this.slotOf.set(id, gid);
+    return id;
+  }
+
+  remove(id) {
+    this.mesh.deleteInstance(id);
+    this.free.push(this.slotOf.get(id));
+    this.slotOf.delete(id);
+  }
+
+  setVisible(id, v) { this.mesh.setVisibleAt(id, v); }
+}
+
 /** The parts of the street, the per-chunk records and their visibility / detail level. */
 export class CatBatches {
   constructor(app) {
@@ -171,13 +250,13 @@ export class CatBatches {
     const self = this, mesh = batch.mesh, scene = this.app.scene;
     const proto = THREE.BatchedMesh.prototype;
     mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
+    if (!batch.shadowList) return batch;
     mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); batch.shadowList(scene, shadowCamera); };
-    // whole-batch test: the light's cascade frustum skips cascades it does not redraw this
-    // frame (and thin parts in coarse ones), as do cascades coarser than the part's limit;
-    // the view keeps it (culled per instance)
-    const all = { ..._all, userData: { thinCaster: !!mesh.userData.thinCaster } };
+    // whole-batch test on the bounds of the shown instances: the light's cascade frustum
+    // also skips cascades it does not redraw this frame (and thin parts in coarse ones),
+    // as do cascades coarser than the part's limit
     mesh.frustumCulled = true;
-    mesh.intersectsFrustum = (f) => f.intersectsObject(all) && (batch.shadowMaxTexel === Infinity || cascadeTexel(scene, f) <= batch.shadowMaxTexel);
+    mesh.intersectsFrustum = (f) => { self.sync(); return f.intersectsObject(batch.boundsProxy()) && (batch.shadowMaxTexel === Infinity || cascadeTexel(scene, f) <= batch.shadowMaxTexel); };
     return batch;
   }
 
@@ -190,28 +269,37 @@ export class CatBatches {
     return rec;
   }
 
-  /** Add an instance to a record. levels: geometry index or [hi, mid, lo] (the detail
-   *  follows the instance's distance, see updateLevels); near: shown only while the
-   *  record is near. */
-  put(rec, batch, levels, matrix, color = null, near = false) {
+  /** Add an instance to a record. levels: geometry index or [hi, mid, lo, far] (the
+   *  detail follows the instance's distance, see updateLevels); mode: ALWAYS, NEAR, FAR. */
+  put(rec, batch, levels, matrix, color = null, mode = ALWAYS) {
     const lv = rec.far ? NL - 1 : 1;
     const id = batch.add(levels, lv, matrix, color);
     const e = matrix.elements;
-    rec.entries.push({ batch, id, near, lv: typeof levels === 'number' ? -1 : lv, x: e[12], z: e[14] });
+    rec.entries.push({ batch, id, mode, lv: typeof levels === 'number' ? -1 : lv, x: e[12], z: e[14] });
+  }
+
+  /** Put a chunk geometry into a slot batch; false when it has to stay a mesh of its own. */
+  putSlot(rec, slots, geometry, mode = ALWAYS) {
+    const id = slots.add(geometry);
+    if (id < 0) return false;
+    rec.entries.push({ batch: slots, id, mode, lv: -1, x: 0, z: 0 });
+    return true;
   }
 
   release(rec) {
     if (!rec || !this.records.has(rec)) return;
-    for (const e of rec.entries) e.batch.mesh.deleteInstance(e.id);
+    for (const e of rec.entries) e.batch.remove(e.id);
     rec.entries.length = 0;
     this.records.delete(rec);
   }
+
+  _shows(rec, e) { return rec.visible && (e.mode === ALWAYS || (e.mode === NEAR) === rec.near); }
 
   /** Whether the near parts of a record show (instead of its stand-ins). */
   setNear(rec, near) {
     if (rec.near === near) return;
     rec.near = near;
-    for (const e of rec.entries) if (e.near) e.batch.mesh.setVisibleAt(e.id, rec.visible && near);
+    for (const e of rec.entries) if (e.mode !== ALWAYS) e.batch.setVisible(e.id, this._shows(rec, e));
   }
 
   /** Detail level of every full-detail instance by its distance from `eye` (m): level k
@@ -240,7 +328,7 @@ export class CatBatches {
       const vis = !!(g && g.visible && g.parent);
       if (vis === rec.visible) continue;
       rec.visible = vis;
-      for (const e of rec.entries) e.batch.mesh.setVisibleAt(e.id, vis && (!e.near || rec.near));
+      for (const e of rec.entries) e.batch.setVisible(e.id, this._shows(rec, e));
     }
   }
 }
