@@ -1,0 +1,64 @@
+// Pedestrian record. Positions are route coordinates: `s` is unwrapped (continuous
+// across the loop seam, in the same frame as Crowd.camU), `d` is the lateral offset.
+// Velocities are metric (m/s) along the route tangent (vs) and to the right (vd).
+// alpha is the body facing relative to the route tangent (rad, + turns to the right).
+
+export const KIND = { WALKER: 0, SEATED: 1, PASSENGER: 2, STANDER: 3 };
+export const ST = { WALK: 0, GOTO: 1, STAND: 2, WAIT: 3, SEATED: 4, PLATFORM: 5 };
+export const TASK = {
+  NONE: 0, BROWSE: 1, ENTER: 2, CROSS: 3, SIDE_OUT: 4, EMERGE: 5, TO_PLATFORM: 6,
+  BOARD: 7, ALIGHT: 8, SIT: 9, LEAVE_SEAT: 10, CHAT: 11, PAUSE: 12,
+};
+export const LANE = { SIDE: 0, EDGE: 1, CORR: 2 };
+
+export const STATE_NAMES = Object.fromEntries(Object.entries(ST).map(([k, v]) => [v, k.toLowerCase()]));
+export const TASK_NAMES = Object.fromEntries(Object.entries(TASK).map(([k, v]) => [v, k.toLowerCase()]));
+export const KIND_NAMES = Object.fromEntries(Object.entries(KIND).map(([k, v]) => [v, k.toLowerCase()]));
+
+export class Agent {
+  constructor(slot) {
+    this.slot = slot;
+    this.active = false;
+    this.serial = 0;          // spawn counter, changes on every reuse of the slot
+    this.kind = KIND.WALKER;
+    this.state = ST.WALK;
+    this.task = TASK.NONE;
+    this.step = 0;            // progress inside a multi-step task
+    this.s = 0; this.d = 0;   // position (route coords, s unwrapped)
+    this.vs = 0; this.vd = 0; // velocity (m/s)
+    this.side = 1;            // sidewalk side the agent belongs to (+1 right, −1 left)
+    this.dir = 1;             // walking direction along s
+    this.v0 = 1.35;           // preferred walking speed
+    this.vmax = 1.6;
+    this.lane = LANE.SIDE; this.laneF = 0.5; this.laneD = 0;
+    this.gs = 0; this.gd = 0; // goal of GOTO
+    this.gTol = 0.25;
+    this.timer = 0;           // generic countdown (stand / wait durations)
+    this.thinkT = 0;          // countdown to the next decision
+    this.faceA = 0;           // facing to hold while standing
+    this.alpha = 0;           // current body facing
+    this.leader = null;       // group leader (followers only)
+    this.nFollow = 0;         // followers (leaders only)
+    this.slotF = 0; this.slotR = 0;
+    this.appearance = 0; this.phase = 0; this.pose = 0;
+    this.look = 0; this.lookGoal = 0; this.lookT = 0; this.tramLookT = 0;
+    this.clearing = false; this.clearTo = 0;
+    this.noRect = false;      // may enter café / platform footprints (patrons, passengers)
+    this.inDoor = false;      // inside a shop doorway recess (no facade clamp)
+    this.doorS0 = 0; this.doorS1 = 0;
+    this.mouth = null;        // cross street used by SIDE_OUT / EMERGE
+    this.after = 0;           // follow-up task after crossing
+    this.feature = null;      // café chair / platform this agent belongs to
+    this.stuckT = 0;
+    this.h = 0;               // height above paving (platforms)
+    this.simple = false;      // far: kinematics only
+    this.x = 0; this.y = 0; this.z = 0; this.heading = 0; this.speed = 0;
+    this.next = -1;           // grid linked list
+    this.followers = [];      // group members (leaders only)
+    this.door = null;         // shop opening used by ENTER
+    this.slotX = 0;           // lateral position inside a side street
+    this.crossS = 0;          // s where a crossing reaches the far side
+    this.tramLookS = 0;       // window in which the agent looks at the tram
+    this.bellT = 0;           // reacting to the bell until this time
+  }
+}

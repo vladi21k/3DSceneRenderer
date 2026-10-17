@@ -1,0 +1,246 @@
+// Upper-floor windows and balcony (French) doors: painted timber casements, slim steel
+// windows (Mandate era) or aluminium sliders (modern), with transoms, glazing bars and
+// sunburst fanlights in arched heads; interior-mapped glass; louvred shutters.
+import { Tpl } from './geo.js';
+import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, crownY, topAt } from './outline.js';
+import { FR, rectRing, insetPoly, spanAtY } from './kit.js';
+
+// ------------------------------------------------------------------ variants
+/** Lot-wide window joinery style (deterministic per facade). */
+export function joineryStyle(plan, rng) {
+  const era = plan.style.era;
+  const type = era === 'modern' ? 'alu' : era === 'mandate' ? (rng.chance(0.45) ? 'steel' : 'timber') : 'timber';
+  return {
+    type,
+    rows: type === 'steel' ? rng.int(3, 4) : rng.int(2, 3),
+    cols: type === 'steel' ? 2 : 1,
+    transom: type !== 'alu' && rng.chance(0.55),
+    sunburst: rng.chance(0.75),
+  };
+}
+
+const PROFILE = {
+  timber: { fw: 0.075, sw: 0.052, swB: 0.075, g: 0.024, zs: 0.012, zgb: -0.03 },
+  steel: { fw: 0.05, sw: 0.034, swB: 0.04, g: 0.016, zs: 0.016, zgb: -0.02 },
+  alu: { fw: 0.055, sw: 0.045, swB: 0.05, g: 0, zs: 0.014, zgb: -0.03 },
+};
+
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+// ------------------------------------------------------------------ joinery template
+function glazingProfile(g, zs) {
+  return [[-g / 2, -0.02], [-g / 2, zs - 0.012], [-g / 4, zs - 0.004], [g / 4, zs - 0.004], [g / 2, zs - 0.012], [g / 2, -0.02]];
+}
+function railProfile(tw, zf, zb, ch) {
+  return [[-tw / 2, zb], [-tw / 2, zf - ch], [-tw / 2 + ch, zf], [tw / 2 - ch, zf], [tw / 2, zf - ch], [tw / 2, zb]];
+}
+
+/** Sash (casement leaf) frame lofted round a rectangle, with optional glazing bars. */
+function sash(t, x0, y0, x1, y1, P, zOff, rows, cols, panelTop) {
+  const { sw, swB, zs, zgb, g } = P;
+  const c2 = 0.008;
+  const zf = zs + zOff, zb = zgb + zOff;
+  const ins = (k) => [sw * k, swB * k, sw * k, sw * k];
+  t.loft([rectRing(x0, y0, x1, y1, [0, 0, 0, 0], zf), rectRing(x0, y0, x1, y1, ins((sw - c2) / sw), zf)], true, 1);
+  t.loft([rectRing(x0, y0, x1, y1, ins((sw - c2) / sw), zf), rectRing(x0, y0, x1, y1, ins(1), zf - c2)], true, 0.95);
+  t.loft([rectRing(x0, y0, x1, y1, ins(1), zf - c2), rectRing(x0, y0, x1, y1, ins(1), zb)], true, 0.8);
+  const xi0 = x0 + sw, xi1 = x1 - sw, yi1 = y1 - sw;
+  let yi0 = y0 + swB;
+  if (panelTop) {
+    // solid lower panel with a raised field and a mid rail (French doors)
+    const yp = Math.min(panelTop, yi1 - 0.4);
+    t.box(xi0 - 0.005, yi0 - 0.005, zb, xi1 + 0.005, yp, zf - 0.016, 1, 0.82, 0.95);
+    t.box(xi0 + 0.05, yi0 + 0.05, zf - 0.016, xi1 - 0.05, yp - 0.05, zf - 0.006, 1 | 4 | 8 | 16 | 32, 0.92, 1);
+    t.bar([xi0 - 0.01, yp + 0.035], [xi1 + 0.01, yp + 0.035], railProfile(0.07, zf, zb, c2), 1);
+    yi0 = yp + 0.07;
+  }
+  if (!g) return;
+  const gp = glazingProfile(g, zf);
+  for (let r = 1; r < rows; r++) {
+    const y = yi0 + ((yi1 - yi0) * r) / rows;
+    t.bar([xi0 - 0.004, y], [xi1 + 0.004, y], gp, 0.95);
+  }
+  for (let c = 1; c < cols; c++) {
+    const x = xi0 + ((xi1 - xi0) * c) / cols;
+    t.bar([x, yi0 - 0.004], [x, yi1 + 0.004], gp, 0.95);
+  }
+}
+
+/** Point where a ray from (cx, cy) at angle a leaves the outline inset by d. */
+function rayToOutline(o, cx, cy, a, d) {
+  let lo = 0, hi = Math.max(o.w, o.h);
+  const dx = Math.cos(a), dy = Math.sin(a);
+  for (let i = 0; i < 18; i++) {
+    const r = (lo + hi) / 2, x = cx + dx * r, y = cy + dy * r;
+    const top = topAt(o, x, d);
+    if (Number.isFinite(top) && y < top && y > d) lo = r; else hi = r;
+  }
+  return [cx + dx * lo, cy + dy * lo];
+}
+
+function buildJoinery(o, v, q) {
+  const P = PROFILE[v.type];
+  const t = new Tpl();
+  const fw = P.fw, { zf, zb, ch } = FR;
+  const n = headSegments(o, q);
+  const ring = (d, z) => outlinePts(o, d, n).map((p) => [p[0], p[1], z]);
+  // casing round the whole opening
+  const r0 = ring(0, zf), r1 = ring(fw - ch, zf), r2 = ring(fw, zf - ch), r3 = ring(fw, zb);
+  t.loft([r0, r1], true, 1);
+  t.loft([r1, r2], true, 0.95);
+  t.loft([r2, r3], true, 0.78);
+
+  const arched = isArched(o);
+  const hwI = o.w / 2 - fw;
+  const tw = v.type === 'steel' ? 0.05 : 0.07;
+  let yT = null;
+  if (arched) yT = Math.max(fw + 0.6, springY(o) - (o.top === 'segment' ? 0.04 : 0));
+  else if (v.transom && o.h > 1.9) yT = o.h - fw - (o.kind === 'balconyDoor' ? 0.5 : 0.42);
+  const sashTop = yT !== null ? yT - tw / 2 : o.h - fw;
+  if (yT !== null) {
+    const hw = halfWidthAt(o, yT + tw / 2, fw) + 0.01;
+    t.bar([-hw, yT], [hw, yT], railProfile(tw, zf - 0.005, zb, ch), 1);
+  }
+  if (q < 0.5) {
+    // coarse: a single central meeting stile
+    if (o.w > 0.75) t.bar([0, fw], [0, sashTop], railProfile(0.09, zf - 0.01, zb, ch), 1);
+    t.shadeBy((x, y) => 0.86 + 0.14 * smooth(0, 0.3, y));
+    return t.bake();
+  }
+
+  // sashes
+  const nL = v.type === 'alu' ? 2 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
+  const lw = (2 * hwI) / nL;
+  const panelTop = o.kind === 'balconyDoor' ? 0.85 : 0;
+  for (let i = 0; i < nL; i++) {
+    let x0 = -hwI + i * lw, x1 = x0 + lw, zOff = 0;
+    if (v.type === 'alu') { // sliding panes overlap and sit on two tracks
+      if (i === 0) x1 += 0.03; else { x0 -= 0.03; zOff = -0.035; }
+    }
+    sash(t, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
+  }
+
+  // fanlight / top light
+  if (yT !== null) {
+    const gp = glazingProfile(P.g || 0.022, P.zs);
+    const y0 = yT + tw / 2;
+    if (arched && o.top !== 'segment' && v.sunburst && v.type !== 'alu') {
+      const [cx, cy] = headCentre(o);
+      const rh = Math.min(0.13, (crownY(o, fw) - cy) * 0.28);
+      const nb = o.w > 1.5 ? 7 : o.w > 1.05 ? 5 : 3;
+      for (let k = 1; k <= nb; k++) {
+        const a = (Math.PI * k) / (nb + 1);
+        const e = rayToOutline(o, cx, cy, a, fw - 0.01);
+        t.bar([cx + Math.cos(a) * rh, cy + Math.sin(a) * rh], e, gp, 0.95);
+      }
+      // hub: a small half ring
+      const arc = (r, z) => { const pts = []; for (let k = 0; k <= 8; k++) { const a = (Math.PI * k) / 8; pts.push([cx + Math.cos(a) * r, Math.max(y0 - 0.005, cy + Math.sin(a) * r), z]); } return pts; };
+      t.loft([arc(rh + 0.03, P.zs - 0.004), arc(rh, P.zs - 0.004), arc(rh, -0.02)], false, 0.95);
+    } else {
+      // vertical bars continuing the leaf joints
+      const nV = o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
+      for (let i = 1; i < nV; i++) {
+        const x = -hwI + (2 * hwI * i) / nV;
+        const yt = topAt(o, x, fw - 0.01);
+        if (yt > y0 + 0.05) t.bar([x, y0 - 0.005], [x, yt], gp, 0.95);
+      }
+    }
+  }
+  // dirt collects on the lower rails
+  t.shadeBy((x, y) => 0.84 + 0.16 * smooth(0, 0.35, y));
+  return t.bake();
+}
+
+function buildGlass(o, v) {
+  const P = PROFILE[v.type];
+  const t = new Tpl();
+  t.poly(outlinePts(o, P.fw - 0.012, headSegments(o)), -0.012);
+  return t.bake();
+}
+
+// ------------------------------------------------------------------ louvred shutters
+/** CCW polygon of the left shutter leaf at inset d. */
+function leafPoly(o, d) {
+  const pts = outlinePts(o, d, headSegments(o, 0.7));
+  const left = pts.filter((p) => p[0] < -1e-5);
+  const crown = crownY(o, d);
+  // left = [bottom-left, ...head points from apex side down to the left spring]
+  const head = left.slice(1);
+  return [[-0.004, d], [-0.004, crown], ...head, left[0]];
+}
+
+function leafGeometry(t, poly, z0, z1, q) {
+  const fwS = 0.06, ch = 0.008;
+  const inner = insetPoly(poly, fwS);
+  const ring = (pp, z) => pp.map((p) => [p[0], p[1], z]);
+  const pc = insetPoly(poly, ch);
+  t.loft([ring(poly, z0), ring(poly, z1 - ch)], true, 0.8);       // outer edge
+  t.loft([ring(poly, z1 - ch), ring(pc, z1)], true, 0.9);         // chamfer
+  t.loft([ring(pc, z1), ring(inner, z1)], true, 1);               // stiles and rails
+  t.loft([ring(inner, z1), ring(inner, z0 + 0.005)], true, 0.7);  // inner edge round the louvres
+  let yMin = Infinity, yMax = -Infinity;
+  for (const p of inner) { yMin = Math.min(yMin, p[1]); yMax = Math.max(yMax, p[1]); }
+  if (q < 0.5) {
+    // far: a flat louvre panel, slightly recessed and darker
+    const span = spanAtY(inner, (yMin + yMax) / 2);
+    if (span) t.box(span[0], yMin, z0 + 0.004, span[1], yMax - 0.05, z0 + 0.014, 1, 0.62, 0.62);
+    return;
+  }
+  const mid = yMin + (yMax - yMin) * 0.42;
+  const pitch = 0.052, zF = z1 - 0.012, zB = z0 + 0.008;
+  for (let y = yMin + 0.012; y < yMax - 0.03; y += pitch) {
+    if (Math.abs(y - mid) < 0.05) continue;
+    const s0 = spanAtY(inner, y), s1 = spanAtY(inner, y + 0.042);
+    if (!s0 || !s1) continue;
+    const x0 = Math.max(s0[0], s1[0]) - 0.003, x1 = Math.min(s0[1], s1[1]) + 0.003;
+    if (x1 - x0 < 0.05) continue;
+    // slat sheds water towards the street: outer edge low and forward
+    t.quad([x0, y, zF], [x1, y, zF], [x1, y + 0.042, zB], [x0, y + 0.042, zB], 0.88, 1);
+    t.quad([x1, y, zF], [x0, y, zF], [x0, y + 0.042, zB], [x1, y + 0.042, zB], 0.55, 0.6);
+  }
+  // mid rail
+  const sm = spanAtY(inner, mid);
+  if (sm) t.box(sm[0] - 0.01, mid - 0.045, z0 + 0.003, sm[1] + 0.01, mid + 0.045, z1 - 0.004, 1 | 16 | 32, 0.95, 1);
+}
+
+function buildShutters(o, state, q) {
+  const t = new Tpl();
+  const hw = o.w / 2;
+  const left = leafPoly(o, 0.012);
+  const mirror = (poly, f) => poly.map(f).reverse();
+  if (state === 'closed') {
+    const z0 = FR.zf + 0.02, z1 = z0 + 0.034;
+    leafGeometry(t, left, z0, z1, q);
+    leafGeometry(t, mirror(left, (p) => [-p[0], p[1]]), z0, z1, q);
+  } else {
+    // folded back against the wall either side of the opening (hinged at the reveal edge)
+    const gap = 0.05;
+    const z0 = o.recess + 0.012, z1 = z0 + 0.034;
+    leafGeometry(t, mirror(left, (p) => [-2 * hw - gap - p[0], p[1]]), z0, z1, q);
+    leafGeometry(t, left.map((p) => [2 * hw + gap + p[0], p[1]]), z0, z1, q); // two mirrors keep the winding
+  }
+  t.shadeBy((x, y) => 0.8 + 0.2 * smooth(0, 0.5, y));
+  return t.bake();
+}
+
+// ------------------------------------------------------------------ cache
+const cache = new Map();
+function cached(key, fn) {
+  let v = cache.get(key);
+  if (!v) {
+    if (cache.size > 4000) cache.clear();
+    v = fn(); cache.set(key, v);
+  }
+  return v;
+}
+const okey = (o) => `${o.kind}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}`;
+
+export function joineryTpl(o, v, q) {
+  return cached(`J|${okey(o)}|${v.type}|${v.rows}|${v.cols}|${v.transom}|${v.sunburst}|${q}`, () => buildJoinery(o, v, q));
+}
+export function glassTpl(o, v) {
+  return cached(`G|${okey(o)}|${v.type}`, () => buildGlass(o, v));
+}
+export function shutterTpl(o, state, q) {
+  return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${q}`, () => buildShutters(o, state, q));
+}

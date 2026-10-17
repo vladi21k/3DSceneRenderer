@@ -1,0 +1,400 @@
+import * as THREE from 'three';
+import { U } from '../../core/uniforms.js';
+
+// Interior-mapped window glass.
+//
+// A standard PBR glass surface (F0 0.04, near-mirror roughness) whose reflections are
+// completed by an analytic "street" model (opposite facades with their windows, the
+// paving and the street trees, falling back to the sky / environment map above the
+// rooflines), and whose transmitted light is a fake room traced per pixel:
+// a box ~4 m deep (homes) or ~7 m (shops) with painted walls, floor, ceiling, a few
+// furniture boxes, curtains / sheers / blinds just behind the glass, a daylight falloff
+// with depth, sun patches through the aperture, and warm lamps at dusk.
+//
+// Per-vertex attributes (all in the facade frame of the lot, metres):
+//   aRoomP  (x, y, z, halfWinW)   ray origin in room space (x from the left wall, y up from
+//                                 the room floor, z depth behind the glass), window half width
+//   aRoomS  (W, H, D, baseH)      room size, and height of the room floor above the paving
+//   aWin    (seed, lit, drape, kind)  kind: 0 home, 1 shop, 2 stairwell/door; +4 = no glass
+//   aFac    (angle, streetW, winY0, winY1)  facade tangent angle (world), distance to the
+//                                 opposite facade, window sill / head heights in room space
+
+const VERT_PARS = /* glsl */`
+attribute vec4 aRoomP;
+attribute vec4 aRoomS;
+attribute vec4 aWin;
+attribute vec4 aFac;
+varying vec4 vRoomP;
+varying vec4 vRoomS;
+varying vec4 vWin;
+varying vec4 vFac;
+varying vec3 vFW;
+`;
+
+const VERT_MAIN = /* glsl */`
+vRoomP = aRoomP; vRoomS = aRoomS; vWin = aWin; vFac = aFac;
+vFW = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+`;
+
+const FRAG_PARS = /* glsl */`
+uniform float uTime;
+uniform float uNight;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+varying vec4 vRoomP;
+varying vec4 vRoomS;
+varying vec4 vWin;
+varying vec4 vFac;
+varying vec3 vFW;
+
+float fh1( float p ) { p = fract( p * 0.1031 ); p *= p + 33.33; p *= p + p; return fract( p ); }
+float fh2( vec2 p ) { vec3 p3 = fract( vec3( p.xyx ) * 0.1031 ); p3 += dot( p3, p3.yzx + 33.33 ); return fract( ( p3.x + p3.y ) * p3.z ); }
+vec3 fh3( float p ) { return vec3( fh1( p ), fh1( p + 17.13 ), fh1( p + 41.71 ) ); }
+float vnoise( vec2 p ) {
+  vec2 i = floor( p ), f = fract( p ); f = f * f * ( 3.0 - 2.0 * f );
+  return mix( mix( fh2( i ), fh2( i + vec2( 1, 0 ) ), f.x ), mix( fh2( i + vec2( 0, 1 ) ), fh2( i + vec2( 1, 1 ) ), f.x ), f.y );
+}
+
+// ray / AABB, returns (tNear, tFar)
+vec2 fBox( vec3 ro, vec3 ird, vec3 bmin, vec3 bmax ) {
+  vec3 t0 = ( bmin - ro ) * ird, t1 = ( bmax - ro ) * ird;
+  vec3 tn = min( t0, t1 ), tf = max( t0, t1 );
+  return vec2( max( max( tn.x, tn.y ), tn.z ), min( min( tf.x, tf.y ), tf.z ) );
+}
+vec3 fBoxN( vec3 ro, vec3 ird, vec3 bmin, vec3 bmax, float t ) {
+  vec3 t0 = ( bmin - ro ) * ird, t1 = ( bmax - ro ) * ird;
+  vec3 tn = min( t0, t1 );
+  vec3 s = -sign( ird );
+  if ( t == tn.x ) return vec3( s.x, 0.0, 0.0 );
+  if ( t == tn.y ) return vec3( 0.0, s.y, 0.0 );
+  return vec3( 0.0, 0.0, s.z );
+}
+
+const vec3 WALLS[6] = vec3[6]( vec3( 0.78, 0.74, 0.64 ), vec3( 0.80, 0.79, 0.76 ), vec3( 0.80, 0.71, 0.52 ),
+  vec3( 0.60, 0.66, 0.70 ), vec3( 0.64, 0.70, 0.60 ), vec3( 0.80, 0.65, 0.55 ) );
+const vec3 FABRIC[8] = vec3[8]( vec3( 0.55, 0.50, 0.42 ), vec3( 0.25, 0.28, 0.33 ), vec3( 0.42, 0.14, 0.12 ), vec3( 0.20, 0.30, 0.22 ),
+  vec3( 0.60, 0.56, 0.50 ), vec3( 0.12, 0.12, 0.13 ), vec3( 0.45, 0.35, 0.25 ), vec3( 0.30, 0.36, 0.48 ) );
+const vec3 DRAPES[6] = vec3[6]( vec3( 0.82, 0.79, 0.70 ), vec3( 0.86, 0.85, 0.82 ), vec3( 0.72, 0.62, 0.46 ),
+  vec3( 0.50, 0.16, 0.14 ), vec3( 0.46, 0.50, 0.36 ), vec3( 0.66, 0.60, 0.55 ) );
+const vec3 GOODS[8] = vec3[8]( vec3( 0.75, 0.12, 0.10 ), vec3( 0.10, 0.25, 0.55 ), vec3( 0.85, 0.75, 0.20 ), vec3( 0.12, 0.45, 0.20 ),
+  vec3( 0.85, 0.85, 0.82 ), vec3( 0.08, 0.08, 0.09 ), vec3( 0.80, 0.45, 0.15 ), vec3( 0.55, 0.35, 0.55 ) );
+
+struct Hit { float t; vec3 n; vec3 alb; float glow; };
+
+// The fake room. ro/rd in room space (rd.z > 0 goes into the room).
+vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Eday, vec3 sunR, vec3 sunC ) {
+  float seed = win.x;
+  float kind = mod( win.w, 4.0 );
+  bool shop = kind > 0.5 && kind < 1.5;
+  bool stair = kind > 1.5;
+  vec3 ird = 1.0 / rd;
+  vec3 tB = ( step( 0.0, rd ) * S - ro ) * ird;
+  Hit h;
+  h.t = min( min( tB.x, tB.y ), tB.z );
+  vec3 p = ro + rd * h.t;
+  h.glow = 0.0;
+  vec3 rnd = fh3( seed * 97.0 + 3.0 );
+  vec3 wall = WALLS[ int( rnd.x * 5.99 ) ];
+  if ( shop ) wall = mix( vec3( 0.82, 0.80, 0.76 ), WALLS[ int( rnd.x * 5.99 ) ], 0.35 );
+  if ( stair ) wall = vec3( 0.74, 0.70, 0.62 );
+
+  if ( h.t == tB.z ) {
+    // back wall
+    h.n = vec3( 0, 0, -1 );
+    h.alb = wall * 0.92;
+    float dx = mix( 0.3, S.x - 1.2, rnd.y );
+    if ( !shop && p.x > dx && p.x < dx + 0.9 && p.y < 2.1 ) h.alb = vec3( 0.10, 0.09, 0.08 ); // doorway
+    float px = mix( 0.4, S.x - 1.4, rnd.z );
+    if ( !shop && !stair && p.x > px && p.x < px + 0.7 && p.y > 1.35 && p.y < 1.85 ) {
+      vec3 pc = fh3( seed * 13.0 + 5.0 );
+      h.alb = ( p.x - px < 0.04 || px + 0.7 - p.x < 0.04 || p.y - 1.35 < 0.04 || 1.85 - p.y < 0.04 ) ? vec3( 0.12, 0.09, 0.06 ) : pc * 0.6 + 0.1;
+    }
+  } else if ( h.t == tB.x ) {
+    h.n = vec3( -sign( rd.x ), 0, 0 );
+    h.alb = wall * 0.85;
+  } else if ( rd.y > 0.0 ) {
+    h.n = vec3( 0, -1, 0 );
+    h.alb = vec3( 0.80, 0.79, 0.76 );
+    if ( shop ) {
+      // ceiling light panels
+      vec2 c = fract( p.xz / vec2( 1.2, 1.5 ) ) - 0.5;
+      float panel = step( abs( c.x ), 0.22 ) * step( abs( c.y ), 0.18 );
+      h.glow = panel * 3.0;
+    }
+  } else {
+    h.n = vec3( 0, 1, 0 );
+    float ft = fh1( seed * 7.0 + 11.0 );
+    if ( shop ) {
+      vec2 g = fract( p.xz / 0.6 );
+      float grout = step( 0.97, max( g.x, g.y ) );
+      h.alb = mix( vec3( 0.62, 0.60, 0.56 ), vec3( 0.30, 0.28, 0.26 ), grout );
+    } else if ( ft < 0.5 ) {
+      // patterned cement tiles
+      vec2 g = p.xz / 0.2;
+      vec2 f = fract( g ) - 0.5;
+      float motif = step( length( f ), 0.32 ) * step( 0.5, fh2( floor( g * 0.5 ) + seed ) );
+      h.alb = mix( vec3( 0.52, 0.48, 0.42 ), vec3( 0.30, 0.22, 0.18 ), motif * 0.6 );
+      h.alb *= 0.85 + 0.15 * step( 0.04, min( abs( f.x ), abs( f.y ) ) );
+    } else {
+      // wooden parquet
+      vec2 g = vec2( p.x / 0.09, p.z / 0.6 + floor( p.x / 0.09 ) * 0.37 );
+      h.alb = vec3( 0.36, 0.23, 0.13 ) * ( 0.75 + 0.35 * fh2( floor( g ) ) );
+    }
+  }
+
+  // furniture / fittings: up to three boxes
+  if ( !stair ) {
+    vec3 f1 = fh3( seed * 31.0 + 1.0 ), f2 = fh3( seed * 53.0 + 2.0 );
+    vec3 b0min, b0max, b1min, b1max, b2min, b2max, c0, c1, c2;
+    if ( shop ) {
+      // back counter, display table near the glass, wall shelving
+      b0min = vec3( S.x * 0.15, 0.0, S.z - 2.6 ); b0max = vec3( S.x * 0.85, 1.0, S.z - 2.0 );
+      b1min = vec3( S.x * 0.5 - 0.7 + f1.x * 0.4, 0.0, 0.7 ); b1max = b1min + vec3( 1.1, 0.75 + f1.y * 0.25, 0.8 );
+      b2min = vec3( 0.0, 0.0, 1.0 ); b2max = vec3( 0.45, 2.3, S.z - 0.5 );
+      if ( f1.z > 0.5 ) { b2min.x = S.x - 0.45; b2max.x = S.x; }
+      c0 = vec3( 0.35, 0.27, 0.20 ); c1 = vec3( 0.80, 0.78, 0.74 ); c2 = vec3( 0.55, 0.50, 0.44 );
+    } else {
+      // sofa / bed / sideboard against the back wall, cabinet on a side wall, table
+      float len = 1.4 + f1.x * 0.9;
+      b0min = vec3( mix( 0.2, S.x - len - 0.2, f1.y ), 0.0, S.z - 0.9 ); b0max = b0min + vec3( len, 0.75 + f1.z * 0.35, 0.9 );
+      float side = step( 0.5, f2.x );
+      b1min = vec3( side * ( S.x - 0.55 ), 0.0, 0.9 + f2.y * 1.2 ); b1max = b1min + vec3( 0.55, 1.8 + f2.z * 0.4, 1.0 );
+      b2min = vec3( S.x * 0.5 - 0.6 + f2.y * 0.3, 0.72, 1.6 + f1.x * 0.8 ); b2max = b2min + vec3( 1.2, 0.04, 0.8 );
+      c0 = FABRIC[ int( f1.z * 7.99 ) ]; c1 = vec3( 0.20, 0.13, 0.08 ) * ( 0.7 + f2.z ); c2 = vec3( 0.28, 0.18, 0.11 );
+    }
+    vec2 r0 = fBox( ro, ird, b0min, b0max );
+    if ( r0.x < r0.y && r0.x > 0.0 && r0.x < h.t ) { h.t = r0.x; h.n = fBoxN( ro, ird, b0min, b0max, r0.x ); h.alb = c0; h.glow = 0.0; }
+    vec2 r1 = fBox( ro, ird, b1min, b1max );
+    if ( r1.x < r1.y && r1.x > 0.0 && r1.x < h.t ) { h.t = r1.x; h.n = fBoxN( ro, ird, b1min, b1max, r1.x ); h.alb = c1; h.glow = 0.0; }
+    vec2 r2 = fBox( ro, ird, b2min, b2max );
+    if ( r2.x < r2.y && r2.x > 0.0 && r2.x < h.t ) { h.t = r2.x; h.n = fBoxN( ro, ird, b2min, b2max, r2.x ); h.alb = c2; h.glow = 0.0; }
+    p = ro + rd * h.t;
+  }
+
+  // shop goods on wall shelving (walls and shelf unit faces)
+  if ( shop && h.glow == 0.0 && ( abs( h.n.x ) > 0.5 || h.n.z < -0.5 ) && p.y > 0.25 && p.y < 2.3 ) {
+    float along = abs( h.n.x ) > 0.5 ? p.z : p.x;
+    float row = floor( ( p.y - 0.25 ) / 0.42 );
+    float fy = fract( ( p.y - 0.25 ) / 0.42 );
+    float cell = floor( along / 0.16 );
+    float hs = fh2( vec2( cell, row ) + seed * 7.0 );
+    vec3 gc = GOODS[ int( hs * 7.99 ) ] * ( 0.7 + 0.3 * fh1( cell + row * 3.1 ) );
+    float filled = step( fy, 0.35 + 0.55 * fh1( cell * 1.7 + row + seed ) ) * step( 0.06, fy ) * step( 0.18, hs + 0.1 );
+    h.alb = fy < 0.06 ? vec3( 0.55, 0.52, 0.48 ) : mix( h.alb * 0.55, gc, filled );
+  }
+
+  // ---- lighting in room space
+  vec3 nn = h.n;
+  float depth = p.z;
+  // daylight through the window: strong near the glass, fading with depth
+  float faceK = nn.y > 0.5 ? 1.25 : ( nn.y < -0.5 ? 0.55 : ( nn.z < -0.5 ? 0.75 : 0.9 ) );
+  vec3 L = Eday * ( 0.05 + 0.32 * exp( -depth * 0.55 ) ) * faceK;
+  // sun patch: project the point back to the window plane along the sun direction
+  if ( sunR.z < -0.05 ) {
+    float tw = -depth / sunR.z;
+    vec2 q = p.xy + sunR.xy * tw;
+    float inX = step( abs( q.x - S.x * 0.5 ), halfWin );
+    float inY = step( fac.z, q.y ) * step( q.y, fac.w );
+    float ndl = max( dot( nn, sunR ), 0.0 );
+    L += sunC * inX * inY * ndl * 0.75;
+  }
+  // artificial light
+  float litT = uNight * 0.72;
+  float lit = 1.0 - smoothstep( litT - 0.03, litT + 0.03, win.y );
+  if ( win.y < 0.035 ) lit = max( lit, 0.6 ); // a few rooms with the lights on during the day
+  vec3 lampC = mix( vec3( 1.0, 0.70, 0.42 ), vec3( 1.0, 0.86, 0.70 ), fh1( seed * 3.3 ) );
+  if ( shop ) {
+    lampC = mix( vec3( 1.0, 0.86, 0.68 ), vec3( 0.95, 0.97, 1.0 ), step( 0.6, fh1( seed * 5.1 ) ) );
+    float shopI = 0.9 + 0.6 * uNight;
+    L += lampC * shopI * ( 0.65 + 0.35 * exp( -abs( p.y - S.y ) * 0.5 ) );
+  } else if ( lit > 0.0 ) {
+    vec3 lp = vec3( S.x * 0.5, S.y - 0.45, S.z * 0.5 );
+    vec3 dl = lp - p;
+    float d2 = dot( dl, dl );
+    float ndl = max( dot( nn, normalize( dl ) ), 0.0 ) * 0.7 + 0.3;
+    L += lampC * lit * ( stair ? 0.8 : 1.4 ) * ndl / ( 1.0 + d2 * 0.45 );
+    // TV flicker in some rooms
+    if ( fh1( seed * 9.7 ) < 0.12 ) L += vec3( 0.25, 0.35, 0.6 ) * lit * ( 0.6 + 0.4 * sin( uTime * 7.0 + seed * 40.0 ) * sin( uTime * 2.3 ) ) / ( 1.0 + d2 );
+  }
+  vec3 col = h.alb * L * RECIPROCAL_PI * 1.6 + h.glow * lampC * 0.6;
+
+  // pendant lamp shade (visible when lit)
+  if ( !shop && lit > 0.0 ) {
+    vec3 lp = vec3( S.x * 0.5, S.y - 0.45, S.z * 0.5 );
+    float tl = dot( lp - ro, rd );
+    if ( tl > 0.0 && tl < h.t ) {
+      float dd = length( ro + rd * tl - lp );
+      col += lampC * lit * smoothstep( 0.16, 0.10, dd ) * 2.5;
+    }
+  }
+
+  // ---- drapes just behind the glass
+  float dtype = floor( win.z ), damt = fract( win.z );
+  if ( dtype > 0.5 && rd.z > 1e-3 ) {
+    float zc = 0.12;
+    float tc = ( zc - ro.z ) / rd.z;
+    vec2 c = ro.xy + rd.xy * tc;
+    float xr = c.x - S.x * 0.5;
+    vec3 dc = DRAPES[ int( fh1( seed * 4.1 ) * 5.99 ) ];
+    vec3 back = lampC * lit * 0.9 + ( shop ? lampC : vec3( 0.0 ) );
+    vec3 front = Eday * 0.42;
+    if ( dtype < 1.5 ) {
+      // side curtains with folds
+      float cover = halfWin * ( 1.0 - damt );
+      if ( abs( xr ) > cover && tc < h.t ) {
+        float fold = 0.72 + 0.28 * sin( c.x * 38.0 + seed * 20.0 ) * sin( c.x * 11.0 );
+        col = dc * fold * ( front + back * 0.55 ) * RECIPROCAL_PI * 1.6;
+      }
+    } else if ( dtype < 2.5 ) {
+      // sheer net curtain over the whole window
+      float fold = 0.8 + 0.2 * sin( c.x * 45.0 + seed * 10.0 );
+      vec3 sheer = vec3( 0.86, 0.85, 0.80 ) * fold * ( front + back * 0.8 ) * RECIPROCAL_PI * 1.6;
+      col = mix( col, sheer, 0.55 + 0.25 * damt );
+    } else if ( dtype < 3.5 ) {
+      // roller blind pulled down from the head
+      float edge = mix( fac.w, fac.z, damt );
+      if ( c.y > edge && tc < h.t ) col = dc * ( front * 0.8 + back * 0.5 ) * RECIPROCAL_PI * 1.6 * ( c.y - edge < 0.04 ? 0.6 : 1.0 );
+    } else {
+      // venetian blind, slats half open
+      float edge = mix( fac.w, fac.z, damt );
+      float slat = step( 0.35, fract( c.y / 0.05 ) );
+      if ( c.y > edge && tc < h.t && slat > 0.5 ) col = vec3( 0.75, 0.74, 0.70 ) * ( front * 0.7 + back * 0.4 ) * RECIPROCAL_PI * 1.6 * ( 0.8 + 0.2 * fract( c.y / 0.05 ) );
+    }
+  }
+  return col;
+}
+
+// Reflection of the street: opposite facades (with windows), paving, trees; returns
+// rgb + coverage (0 = only sky).
+vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 Eamb, vec3 sky ) {
+  float rn = max( dot( R, N ), 0.02 );
+  float tO = streetW / rn;
+  float hy = baseH + R.y * tO;
+  float hx = dot( P, T ) + dot( R, T ) * tO;
+  vec3 sunC = uSunColor;
+  vec3 col;
+  float cov;
+  // ground
+  if ( R.y < 0.0 && baseH / -R.y < tO ) {
+    float tg = baseH / -R.y;
+    vec2 gp = P.xz + R.xz * tg;
+    float sh = 0.55 + 0.45 * vnoise( gp * 0.15 );
+    vec3 E = Eamb + sunC * max( uSunDir.y, 0.0 ) * sh;
+    col = vec3( 0.27, 0.26, 0.24 ) * E * RECIPROCAL_PI;
+    return vec4( col, 1.0 );
+  }
+  // opposite facade: varying roof heights per building
+  float bid = floor( hx / 13.0 );
+  float roofH = 15.0 + 8.0 * fh1( bid * 1.37 + 0.5 );
+  float blur = 0.04 * tO + 0.05;
+  cov = 1.0 - smoothstep( roofH - blur, roofH + blur, hy );
+  vec3 stone = mix( vec3( 0.62, 0.55, 0.43 ), vec3( 0.66, 0.60, 0.50 ), fh1( bid * 2.1 ) );
+  float sunF = max( dot( -N, uSunDir ), 0.0 ) * ( 0.35 + 0.65 * step( 0.45, fh1( bid * 3.7 ) ) );
+  vec3 E = Eamb * 0.9 + sunC * sunF;
+  col = stone * E * RECIPROCAL_PI;
+  // window grid on the opposite facade
+  vec2 cell = vec2( hx / 3.4, ( hy - 4.8 ) / 3.6 );
+  vec2 f = fract( cell );
+  float isWin = step( 0.0, cell.y ) * step( 0.3, f.x ) * step( f.x, 0.7 ) * step( 0.22, f.y ) * step( f.y, 0.82 );
+  float shopBand = step( hy, 4.2 ) * step( 0.6, hy ) * step( 0.12, fract( hx / 3.4 ) ) * step( fract( hx / 3.4 ), 0.88 );
+  float lit = step( fh2( floor( cell ) + 5.0 ), uNight * 0.6 );
+  col = mix( col, vec3( 0.02 ) * E + lit * vec3( 1.0, 0.7, 0.4 ) * 0.6, max( isWin, shopBand ) * 0.85 );
+  // street trees between us and the opposite facade
+  float tT = ( streetW * 0.5 - 5.2 ) / rn;
+  if ( tT > 0.0 ) {
+    float ty = baseH + R.y * tT;
+    float tx = dot( P, T ) + dot( R, T ) * tT;
+    float crown = smoothstep( 2.6, 3.4, ty ) * smoothstep( 7.5, 6.2, ty + vnoise( vec2( tx * 0.8, ty ) ) * 1.2 );
+    float gaps = smoothstep( 0.35, 0.6, vnoise( vec2( tx * 0.55, ty * 0.9 ) ) );
+    float tree = crown * gaps * step( 0.25, fract( tx / 10.0 + 0.1 ) );
+    vec3 leaf = vec3( 0.10, 0.14, 0.06 ) * ( Eamb + sunC * 0.4 ) * RECIPROCAL_PI;
+    col = mix( col, leaf, tree );
+    cov = max( cov, tree );
+  }
+  return vec4( col, cov );
+}
+`;
+
+// Injected after lights_fragment_maps: replaces the sky-only reflection by the street
+// model, and computes the transmitted interior.
+const FRAG_LIGHT = /* glsl */`
+#include <lights_fragment_maps>
+vec3 fInterior = vec3( 0.0 );
+float fGlass = 1.0 - step( 3.5, vWin.w );
+{
+  float ang = vFac.x;
+  vec3 T = vec3( cos( ang ), 0.0, sin( ang ) );
+  vec3 N = vec3( -T.z, 0.0, T.x );
+  vec3 Vw = normalize( vFW - cameraPosition );
+  vec3 Nw = inverseTransformDirection( normal, viewMatrix );
+  vec3 R = reflect( Vw, Nw );
+  vec3 Eamb = irradiance + iblIrradiance;
+  // sky radiance: environment when available, else a simple gradient from the ambient light
+  vec3 skyFallback = Eamb * RECIPROCAL_PI * mix( vec3( 1.15, 1.12, 1.08 ), vec3( 0.75, 0.9, 1.25 ), clamp( R.y, 0.0, 1.0 ) ) * 1.4;
+  #if defined( USE_ENVMAP )
+    vec3 skyR = radiance;
+  #else
+    vec3 skyR = skyFallback;
+  #endif
+  vec4 st = fStreet( R, N, T, vFW, vRoomS.w + vRoomP.y, vFac.y, Eamb, skyR );
+  radiance = mix( skyR, st.rgb, st.a );
+
+  // interior: camera ray expressed in room space
+  vec3 rd = vec3( dot( Vw, T ), Vw.y, -dot( Vw, N ) );
+  rd.z = max( rd.z, 1e-3 );
+  rd.x = abs( rd.x ) < 1e-4 ? 1e-4 : rd.x;
+  rd.y = abs( rd.y ) < 1e-4 ? 1e-4 : rd.y;
+  vec3 sunR = vec3( dot( uSunDir, T ), uSunDir.y, -dot( uSunDir, N ) );
+  vec3 ro = clamp( vRoomP.xyz, vec3( 0.001 ), vRoomS.xyz - 0.001 );
+  fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, vRoomP.w, Eamb, sunR, uSunColor * step( 0.0, uSunDir.y ) );
+  if ( fGlass < 0.5 ) radiance = vec3( 0.0 );
+}
+`;
+
+const FRAG_OUT = /* glsl */`
+float fNV = saturate( dot( normal, normalize( vViewPosition ) ) );
+float fF = 0.04 + 0.96 * pow( 1.0 - fNV, 5.0 );
+vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * fGlass + totalEmissiveRadiance + fInterior * ( 1.0 - fF * fGlass );
+`;
+
+// per-pane tilt and old-glass waviness, applied to the shading normal
+const FRAG_NORMAL = /* glsl */`
+#include <normal_fragment_maps>
+{
+  float leaf = step( vRoomS.x * 0.5, vRoomP.x ) + step( vFac.w - 0.02, vRoomP.y ) * 2.0;
+  vec3 j = ( fh3( vWin.x * 61.0 + leaf * 7.0 ) - 0.5 ) * 0.022;
+  float wav = vnoise( vec2( vRoomP.x * 3.0, vRoomP.y * 9.0 ) + vWin.x * 50.0 ) - 0.5;
+  j.x += wav * 0.012;
+  j.y += ( vnoise( vec2( vRoomP.y * 4.0, vRoomP.x * 2.0 ) + 9.0 ) - 0.5 ) * 0.008;
+  vec3 jv = ( viewMatrix * vec4( j.x, j.y, j.z, 0.0 ) ).xyz;
+  normal = normalize( normal + jv * ( 1.0 - step( 3.5, vWin.w ) ) );
+}
+`;
+
+export function createInteriorGlass() {
+  const m = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0.018, 0.018, 0.018), // dust film on the glass
+    roughness: 0.035,
+    metalness: 0,
+    envMapIntensity: 1,
+  });
+  m.name = 'facades.glassInterior';
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = U.uTime;
+    shader.uniforms.uNight = U.uNight;
+    shader.uniforms.uSunDir = U.uSunDir;
+    shader.uniforms.uSunColor = U.uSunColor;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n' + VERT_PARS)
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
+      .replace('#include <normal_fragment_maps>', FRAG_NORMAL)
+      .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
+      .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
+  };
+  m.customProgramCacheKey = () => 'facades.glassInterior.v1';
+  return m;
+}
+
+export const GLASS_ATTRS = { aRoomP: 4, aRoomS: 4, aWin: 4, aFac: 4 };

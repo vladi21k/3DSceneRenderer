@@ -184,6 +184,155 @@ export function facadePlan(lot) {
     signs, flags, style, totalHeight,
     cornerU0: !!lot.cornerU0, cornerU1: !!lot.cornerU1, sideStreet: !!lot.sideStreet,
   };
+  // Extensions (own RNG streams so the values above never shift):
+  followSlope(plan);                       // ground-floor sills step down with the street
+  for (const o of openings) setArch(o);    // o.rise / o.spring for every opening head
+  plan.returns = [];                       // street facades on the side-street returns of corner lots
+  if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
+  if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
   cache.set(lot.id, plan);
   return plan;
+}
+
+// ------------------------------------------------------------------ arches (shared geometry)
+// An opening spans u ∈ [uc − w/2, uc + w/2], v ∈ [y, y + h]. Its head is an arch of
+// `rise` above the spring line `spring = y + h − rise`:
+//   flat     rise 0
+//   segment  rise ≈ 0.17 w (arc of a large circle centred below the spring line)
+//   round    rise = w / 2 (semicircle)
+//   pointed  rise ≈ 0.62 w (two-centred arch, centres 0.134 w either side of the axis)
+
+const POINTED_C = 0.1344, POINTED_RISE = 0.62, SEGMENT_RISE = 0.17;
+
+export function archRise(top, w) {
+  return top === 'round' ? w / 2 : top === 'pointed' ? w * POINTED_RISE : top === 'segment' ? w * SEGMENT_RISE : 0;
+}
+
+function setArch(o) {
+  o.rise = Math.min(archRise(o.top, o.w), Math.max(0, o.h - 0.3));
+  if (o.rise < archRise(o.top, o.w) - 1e-6 && o.top !== 'flat') o.top = o.rise > o.w * 0.3 ? o.top : 'segment';
+  o.spring = o.y + o.h - o.rise;
+}
+
+/**
+ * Point on an opening's head at t ∈ [0, 1] (0 = left spring, 0.5 = apex, 1 = right spring).
+ * Writes {u, v, ru, rv} where (ru, rv) is the outward radial direction (unit), used for
+ * voussoir joints and soffit normals. `offset` moves the point outwards along the radial.
+ */
+export function archPoint(o, t, out = {}, offset = 0) {
+  const w = o.w, uc = o.uc, ys = o.spring;
+  let cu, cv, R, a;
+  if (o.top === 'round') {
+    R = w / 2; cu = uc; cv = ys; a = Math.PI * (1 - t);
+  } else if (o.top === 'segment') {
+    const r = o.rise || w * SEGMENT_RISE;
+    R = (w * w / 4 + r * r) / (2 * r); cu = uc; cv = ys + r - R;
+    const al = Math.asin(Math.min(1, (w / 2) / R));
+    a = Math.PI / 2 + al * (1 - 2 * t);
+  } else if (o.top === 'pointed') {
+    const c = POINTED_C * w; R = w / 2 + c;
+    const th = Math.acos(-c / R);
+    if (t <= 0.5) { cu = uc + c; cv = ys; a = Math.PI + (th - Math.PI) * (t / 0.5); }
+    else { cu = uc - c; cv = ys; a = (Math.PI - th) * (1 - (t - 0.5) / 0.5); }
+  } else {
+    out.u = uc - w / 2 + w * t; out.v = ys + offset; out.ru = 0; out.rv = 1;
+    return out;
+  }
+  const ca = Math.cos(a), sa = Math.sin(a);
+  out.u = cu + (R + offset) * ca; out.v = cv + (R + offset) * sa; out.ru = ca; out.rv = sa;
+  return out;
+}
+
+/** Outline of an opening as a flat [u, v, ...] array, CCW seen from the street, `n` head segments. */
+export function openingOutline(o, n = 12) {
+  const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2;
+  const pts = [u0, o.y, u1, o.y];
+  if (o.top === 'flat' || !o.rise) { pts.push(u1, o.y + o.h, u0, o.y + o.h); return pts; }
+  const p = {};
+  for (let i = n; i >= 0; i--) { archPoint(o, i / n, p); pts.push(p.u, p.v); }
+  return pts;
+}
+
+// ------------------------------------------------------------------ slope
+// The paving drops along sloping facades (groundAt(u) < 0 at the low end). Ground-floor
+// openings keep their heads aligned but their sills step down to the local paving, as
+// real shopfronts on a sloping street do.
+function followSlope(plan) {
+  for (const o of plan.openings) {
+    if (o.floor !== 0) continue;
+    const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2;
+    const gHigh = Math.max(plan.groundAt(u0), plan.groundAt(u1));
+    const sill = gHigh + (o.kind === 'door' ? 0.14 : 0.03);   // threshold / shop sill above the paving
+    if (sill < o.y - 0.005) {
+      const top = o.y + o.h;
+      o.y = sill;
+      o.h = top - sill;
+    }
+  }
+}
+
+// ------------------------------------------------------------------ corner returns
+// Corner lots turn the corner into the side street. The return is described as a
+// plan-like object with its own facade frame (same conventions as lot.frame: u to the
+// viewer's right, v up from the main floorRef, w out of the wall) so facade infill can
+// be generated for it exactly like a front: {isReturn, end, frame, width, floors, bays,
+// openings, balconies, courses, groundAt, ...}.
+function returnPlan(lot, plan, end) {
+  const f = lot.frame, depth = lot.depth;
+  const rng = RNG.from(lot.seed, 'return', end);
+  // Return frame axes in world space. End 0 (u = 0): the wall faces −uDir and its own
+  // u runs along +nDir (back → street). End 1 (u = width): faces +uDir, u runs along −nDir.
+  const uDir = end === 0 ? f.nDir.clone() : f.nDir.clone().negate();
+  const nDir = end === 0 ? f.uDir.clone().negate() : f.uDir.clone();
+  const origin = f.origin.clone()
+    .addScaledVector(f.uDir, end === 0 ? 0 : f.width)
+    .addScaledVector(f.nDir, end === 0 ? -depth : 0);
+  const up = f.up.clone();
+  const matrix = f.matrix.clone().makeBasis(uDir, up, nDir).setPosition(origin);
+  const g = end === 0 ? plan.ground0 : plan.ground1;
+  const frame = { origin, uDir, nDir, up, width: depth, ground0: g + f.floorRef, ground1: g + f.floorRef, floorRef: f.floorRef, matrix };
+  const width = depth;
+  // the street corner is at u = width for end 0 and u = 0 for end 1
+  const cornerAtU1 = end === 0;
+  const pierCorner = rng.range(1.1, 1.6), pierBack = rng.range(0.9, 1.4);
+  const pierL = cornerAtU1 ? pierBack : pierCorner, pierR = cornerAtU1 ? pierCorner : pierBack;
+  const inner = Math.max(1, width - pierL - pierR);
+  const nBays = Math.max(1, Math.round(inner / rng.range(3.1, 3.9)));
+  const bayW = inner / nBays;
+  const bays = [];
+  for (let i = 0; i < nBays; i++) { const u0 = pierL + i * bayW; bays.push({ index: i, u0, u1: u0 + bayW, uc: u0 + bayW / 2, w: bayW }); }
+  const id = `${lot.id}:r${end}`;
+  const openings = [];
+  const ground = plan.floors[0];
+  const doorBay = nBays > 2 ? rng.int(0, nBays - 1) : -1;
+  for (const b of bays) {
+    const isDoor = b.index === doorBay;
+    const w = isDoor ? Math.min(1.5, b.w - 0.9) : Math.max(1.2, b.w - rng.range(0.7, 1.1));
+    const top = isDoor ? 'flat' : plan.style.shopTop;
+    const sill = g + (isDoor ? 0.14 : 0.03);
+    const head = isDoor ? Math.min(ground.h - 0.9, 3.2) : ground.h - rng.range(0.8, 1.1);
+    const o = { id: `${id}:g${b.index}`, floor: 0, bay: b.index, uc: b.uc, w, y: sill, h: head - sill, top, kind: isDoor ? 'door' : 'shop',
+      recess: rng.range(0.25, 0.4), awning: null, lit: rng.range(0.6, 1.0) };
+    setArch(o); openings.push(o);
+  }
+  const winTpl = plan.openings.filter((o) => o.kind === 'window' || o.kind === 'balconyDoor');
+  for (const fl of plan.floors) {
+    if (fl.index === 0) continue;
+    const tpl = winTpl.find((o) => o.floor === fl.index && o.kind === 'window') || winTpl.find((o) => o.floor === fl.index);
+    if (!tpl) continue;
+    const y = tpl.kind === 'window' ? tpl.y : fl.y + rng.range(0.8, 0.95);
+    const h = tpl.kind === 'window' ? tpl.h : Math.min(fl.h - 1.15, 2.1);
+    for (const b of bays) {
+      const o = { id: `${id}:f${fl.index}b${b.index}`, floor: fl.index, bay: b.index, uc: b.uc, w: Math.min(tpl.w, b.w - 0.8), y, h, top: tpl.top, paired: false,
+        kind: 'window', recess: rng.range(0.18, 0.28), shutters: rng.chance(0.25) ? (rng.chance(0.5) ? 'open' : 'closed') : null,
+        lit: rng.next(), curtain: rng.chance(0.5), ac: rng.chance(0.06), flowerBox: false };
+      setArch(o); openings.push(o);
+    }
+  }
+  return {
+    isReturn: true, end, lotId: lot.id, id, seed: lot.seed ^ (end ? 0x5bd1e995 : 0x27d4eb2f), frame, width, depth: plan.width,
+    groundAt: () => g, ground0: g, ground1: g, cornerAtU1,
+    floors: plan.floors, bays, pierL, pierR, openings, balconies: [], courses: plan.courses, cornice: plan.cornice, parapet: plan.parapet,
+    roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, totalHeight: plan.totalHeight,
+  };
 }

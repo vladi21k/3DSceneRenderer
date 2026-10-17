@@ -1,0 +1,80 @@
+import { RAIL_CENTER, TRACK_OFFSET, TRACK_ZONE_HALF, EDGE_BAND_W, RAIL_HEAD_W, RAIL_GROOVE_W } from '../../core/config.js';
+
+// Street cross-section and grooved-rail geometry (metres).
+//
+// Rail-local coordinate x runs across the rail and is positive towards the gauge side
+// (towards the track centre); h is height above the rail top / paving (h = 0).
+// A rail with centre line c and gauge direction g maps x to street offset d = c + g·x.
+
+export const HEAD_HALF = RAIL_HEAD_W / 2;                // 0.028 running head half width
+export const GROOVE_IN = HEAD_HALF;                      // groove starts at the head's gauge face
+export const GROOVE_OUT = HEAD_HALF + RAIL_GROOVE_W;     // 0.070 (42 mm flangeway)
+export const LIP_OUT = GROOVE_OUT + 0.013;               // 0.083 guard lip
+export const SEAL_W = 0.018;                             // rubber / bitumen sealing strip
+export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.046 field-side paving edge
+export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.101 gauge-side paving edge
+export const GROOVE_DEPTH = 0.0365;
+
+// The four running rails of the two main tracks: centre line d and gauge direction g.
+export const MAIN_RAILS = [];
+for (const t of [-1, 1]) {
+  MAIN_RAILS.push({ track: t, c: t * TRACK_OFFSET - RAIL_CENTER, g: +1 });
+  MAIN_RAILS.push({ track: t, c: t * TRACK_OFFSET + RAIL_CENTER, g: -1 });
+}
+MAIN_RAILS.sort((a, b) => a.c - b.c);
+for (const r of MAIN_RAILS) {
+  const a = r.c + r.g * RAIL_X0, b = r.c + r.g * RAIL_X1;
+  r.lo = Math.min(a, b); r.hi = Math.max(a, b);
+}
+
+/** Distance (m) from street offset d to the nearest main rail span (0 inside a span). */
+export function railDist(d) {
+  let e = 1e9;
+  for (let i = 0; i < 4; i++) {
+    const r = MAIN_RAILS[i];
+    const v = d < r.lo ? r.lo - d : d > r.hi ? d - r.hi : 0;
+    if (v < e) e = v;
+  }
+  return e;
+}
+
+export const CORRIDOR = TRACK_ZONE_HALF;                 // 3.4
+export const BAND_IN = TRACK_ZONE_HALF - EDGE_BAND_W;    // 3.1 inner edge of the light stone band
+export const GUTTER_W = 0.26;                            // dished drainage channel outside the band
+export const GUTTER_OUT = TRACK_ZONE_HALF + GUTTER_W;    // 3.66
+export const SIDEWALK_RISE = 0.022;                      // sidewalk cross-fall rise at the facades
+export const FACADE_OVERLAP = 1.0;                       // sidewalk runs this far under the facades
+export const SLAB_H = -0.30;                             // ground slab below everything
+
+// Grooved rail cross-section, from the field-side paving edge to the gauge-side one.
+// Each point carries the surface kind of the segment that ends at it.
+export const RAIL_PROFILE = [
+  [RAIL_X0, 0.0, null],
+  [-0.0425, -0.0026, 'seal'],
+  [-0.0287, -0.0040, 'seal'],
+  [-0.0283, -0.0019, 'side'],
+  [-0.0268, -0.0006, 'side'],
+  [-0.0242, 0.0, 'side'],
+  [-0.0165, 0.0, 'side'],
+  [0.0150, 0.0, 'head'],
+  [0.0212, -0.0002, 'side'],
+  [0.0252, -0.0017, 'side'],
+  [0.0274, -0.0044, 'side'],
+  [0.0281, -0.0090, 'side'],
+  [0.0286, -0.0290, 'side'],
+  [0.0318, -0.0342, 'groove'],
+  [0.0395, -GROOVE_DEPTH, 'groove'],
+  [0.0585, -GROOVE_DEPTH, 'groove'],
+  [0.0658, -0.0338, 'groove'],
+  [0.0690, -0.0280, 'groove'],
+  [0.0700, -0.0042, 'side'],
+  [0.0712, -0.0019, 'side'],
+  [0.0742, -0.0012, 'lip'],
+  [0.0800, -0.0014, 'lip'],
+  [0.0828, -0.0040, 'side'],
+  [0.0872, -0.0046, 'seal'],
+  [0.0978, -0.0030, 'seal'],
+  [RAIL_X1, 0.0, 'seal'],
+];
+
+export { TRACK_OFFSET, RAIL_CENTER, TRACK_ZONE_HALF, EDGE_BAND_W };

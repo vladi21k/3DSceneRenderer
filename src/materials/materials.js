@@ -1,78 +1,135 @@
 import * as THREE from 'three';
+import { U } from '../core/uniforms.js';
+import { Baker } from './baker.js';
+import { RECIPES } from './recipes/index.js';
+import { LIBRARY } from './library.js';
+import { applySurface, surfaceUniforms } from './surface.js';
 
-// Material library (PLACEHOLDER — flat colours). Contract in docs/ARCHITECTURE.md.
-// All library geometry uses UVs in metres (1 UV unit = 1 m); materials own the scale.
-
-const DEFS = {
-  'stone.ashlar': { color: 0xd8c8a8, roughness: 0.85 },
-  'stone.smooth': { color: 0xe0d2b4, roughness: 0.7 },
-  'stone.rough': { color: 0xcbb994, roughness: 0.95 },
-  'paving.street': { color: 0x8e8e8a, roughness: 0.9 },
-  'paving.sidewalk': { color: 0x9a9893, roughness: 0.9 },
-  'paving.band': { color: 0xc9c5bb, roughness: 0.8 },
-  'paving.platform': { color: 0xa6a39c, roughness: 0.85 },
-  'rail.head': { color: 0xd0d0d4, roughness: 0.25, metalness: 1 },
-  'rail.side': { color: 0x4a3a30, roughness: 0.7, metalness: 0.6 },
-  'rail.groove': { color: 0x2a2622, roughness: 0.9 },
-  'metal.iron': { color: 0x1a1a1a, roughness: 0.55, metalness: 0.6 },
-  'metal.pole': { color: 0x3b3e40, roughness: 0.5, metalness: 0.5 },
-  'metal.galvanized': { color: 0x9a9d9f, roughness: 0.45, metalness: 1 },
-  'metal.steel': { color: 0xb8bbbe, roughness: 0.3, metalness: 1 },
-  'metal.wire': { color: 0x5a4a3a, roughness: 0.4, metalness: 1 },
-  'glass.shop': { color: 0x203038, roughness: 0.05, metalness: 0.2 },
-  'glass.window': { color: 0x1a2228, roughness: 0.08, metalness: 0.3 },
-  'glass.lamp': { color: 0xf2efe6, roughness: 0.2, emissive: 0x000000 },
-  'fabric.awning': { color: 0xb5402e, roughness: 0.9 },
-  'fabric.umbrella': { color: 0xe9e2d0, roughness: 0.9 },
-  'fabric.flag': { color: 0xf0f0f0, roughness: 0.85, side: THREE.DoubleSide },
-  'wood.shutter': { color: 0x3c5a3a, roughness: 0.7 },
-  'wood.door': { color: 0x4a3020, roughness: 0.6 },
-  'wood.bench': { color: 0x7a5534, roughness: 0.75 },
-  'paint.frame': { color: 0x2d3a30, roughness: 0.5 },
-  'plastic.chair': { color: 0x9fb8c8, roughness: 0.6 },
-  'concrete': { color: 0xa09a90, roughness: 0.9 },
-  'roof.tile': { color: 0xa5532f, roughness: 0.8 },
-  'roof.membrane': { color: 0x8a8580, roughness: 0.9 },
-  'plaster': { color: 0xd8cfc0, roughness: 0.9 },
-  'bark': { color: 0x5a4a3c, roughness: 0.95 },
-  'leaf': { color: 0x4a6a2a, roughness: 0.7, side: THREE.DoubleSide },
-  'rubber': { color: 0x202020, roughness: 0.9 },
-  'asphalt': { color: 0x3a3a3a, roughness: 0.95 },
-  'sign.panel': { color: 0x203a5a, roughness: 0.5 },
-  'emissive.warm': { color: 0x000000, emissive: 0xffd9a0, emissiveIntensity: 0 },
-};
+// Physically based material library (contract: docs/ARCHITECTURE.md).
+// At init every tileable texture set is baked procedurally on the GPU (baker.js), then
+// the library materials are created with the runtime surface patch (surface.js) that
+// removes tiling (per-row shifts, per-cell colour), adds macro / detail variation and
+// specular anti-aliasing. All geometry UVs are metres; materials own the scale.
 
 const lib = new Map();
 const variants = new Map();
 const listeners = new Set();
 const tracked = new Set();
+const shared = {
+  textures: new Map(),
+  detail: null,
+  macro: null,
+  night: U.uNight,
+  gain: { value: 1 },
+};
 
-function make(name) {
-  const d = DEFS[name];
-  if (!d) {
-    console.warn('[materials] unknown material', name);
-    return new THREE.MeshStandardMaterial({ color: 0xff00ff });
+const lin = (a) => new THREE.Color().setRGB(a[0], a[1], a[2], THREE.LinearSRGBColorSpace);
+
+function setProps(m, props) {
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'side') m.side = v === 'double' ? THREE.DoubleSide : v === 'back' ? THREE.BackSide : v === 'front' ? THREE.FrontSide : v;
+    else if (m[k] && m[k].isColor) Array.isArray(v) ? m[k].copy(lin(v)) : m[k].set(v);
+    else if (m[k] && m[k].isVector2 && Array.isArray(v)) m[k].fromArray(v);
+    else m[k] = v;
   }
-  const m = new THREE.MeshStandardMaterial(d);
+}
+
+/** Build a library material from its definition. */
+function build(name, def) {
+  const m = def.kind === 'physical' ? new THREE.MeshPhysicalMaterial() : new THREE.MeshStandardMaterial();
   m.name = name;
+  setProps(m, def.props || {});
+  const t = def.bake ? shared.textures.get(def.bake) : null;
+  const surf = def.surf || {};
+  const defines = {};
+  if (t) {
+    defines.SURF = '';
+    if (t.recipe.layout && surf.rows !== false) defines.SURF_ROWS = '';
+    if (surf.detail && shared.detail) defines.SURF_DETAIL = '';
+    if ((surf.macro || surf.stain) && shared.macro) defines.SURF_MACRO = '';
+    if (surf.spots && defines.SURF_ROWS !== undefined) defines.SURF_SPOTS = '';
+    if (t.recipe.metalMask) defines.SURF_METALMASK = '';
+    if (surf.swap) defines.SURF_SWAP = '';
+    if (def.glassClear) defines.SURF_GLASS = '';
+  }
+  if (surf.trans) defines.SURF_TRANS = '';
+  if (def.night) defines.SURF_NIGHT = '';
+  if (Object.keys(defines).length) {
+    applySurface(m, { defines, textures: t, uniforms: surfaceUniforms(surf, t, shared), def });
+  }
   return m;
+}
+
+/** Copy a library material into a variant, keeping the surface patch and its uniforms. */
+function cloneLib(base) {
+  const m = base.clone();
+  const sf = base.userData.sf;
+  if (sf) applySurface(m, sf);
+  return m;
+}
+
+function stableKey(o) {
+  return JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k] && o[k].isColor ? o[k].getHex() : o[k]]));
 }
 
 const materials = {
   name: 'materials',
-  textures: new Map(),
+  /** baked texture sets by recipe name: {albedo, surface, raw, recipe} */
+  textures: shared.textures,
+  /** per material: texture tile size and pattern metrics (see library.js meta) */
+  meta: {},
+  /** global emissive gain for night materials (env / post may tune it) */
+  uniforms: { emissiveGain: shared.gain },
+  stats: {},
+
   async init(app) {
     this.app = app;
-    for (const k of Object.keys(DEFS)) this.register(k, make(k));
+    const t0 = performance.now();
+    const needed = new Set(['detail', 'macro']);
+    for (const d of Object.values(LIBRARY)) if (d.bake) needed.add(d.bake);
+    const recipes = [...needed].map((n) => RECIPES[n]).filter(Boolean);
+    let baked = new Map();
+    try {
+      const baker = new Baker(app.renderer);
+      baked = await baker.bake(recipes);
+      this.stats.bake = baker.stats;
+    } catch (e) {
+      console.warn('[materials] texture bake failed, using flat materials', e);
+    }
+    for (const [k, v] of baked) shared.textures.set(k, v);
+    shared.detail = shared.textures.get('detail')?.surface || null;
+    shared.macro = shared.textures.get('macro')?.raw || null;
+
+    for (const [name, def] of Object.entries(LIBRARY)) {
+      this.register(name, build(name, def));
+      const r = def.bake && RECIPES[def.bake];
+      const sc = def.surf?.scale ?? 1;
+      this.meta[name] = {
+        tile: r ? [r.tile[0] * sc, r.tile[1] * sc] : null,
+        vertexColor: def.vc || 'tint',
+        textured: !!shared.textures.get(def.bake),
+        ...(def.meta || {}),
+      };
+      if (sc !== 1 && def.meta) for (const k of ['courseH', 'blockL']) if (def.meta[k]) this.meta[name][k] = def.meta[k] * sc;
+    }
+    this.stats.initMs = performance.now() - t0;
+    this.stats.textureMB = +((this.stats.bake?.bytes || 0) / 1048576).toFixed(1);
   },
-  /** Shared material by name. opts: {vertexColors:true} returns a cached variant. */
+
+  /** Shared material by name. opts (e.g. {vertexColors:true}, {side: THREE.DoubleSide}) returns a cached variant. */
   get(name, opts) {
-    if (!lib.has(name)) this.register(name, make(name));
+    if (!lib.has(name)) {
+      console.warn('[materials] unknown material', name);
+      this.register(name, new THREE.MeshStandardMaterial({ color: 0xff00ff, name }));
+    }
     if (!opts || !Object.keys(opts).length) return lib.get(name);
-    const key = name + JSON.stringify(opts);
+    const key = name + stableKey(opts);
     if (!variants.has(key)) {
-      const m = lib.get(name).clone();
-      Object.assign(m, opts);
+      const base = lib.get(name);
+      const m = cloneLib(base);
+      setProps(m, opts);
+      // 'albedo' materials: the vertex colour IS the paint colour
+      if (opts.vertexColors && this.meta[name]?.vertexColor === 'albedo') m.color.setRGB(1, 1, 1);
       m.name = key;
       m.needsUpdate = true;
       variants.set(key, m);

@@ -1,0 +1,194 @@
+// Street one-shots and beds: birds, footsteps on stone, café clinks, distant city
+// traffic, a far-off car horn.
+import { arng, Biquad, SlowNoise, addMode, noiseGen, normalize, normalizeRms, makeLoop, fadeEnds, clamp } from '../dsp.js';
+
+const TAU = Math.PI * 2;
+
+/** Bird phrases. kind: 'sparrow' | 'bulbul' | 'swift' | 'pigeon'. */
+export function birdCall(sr, kind, k) {
+  const rng = arng('bird', kind, k);
+  const nz = noiseGen(rng);
+  const notes = [];
+  if (kind === 'sparrow') {
+    let t = 0.01;
+    const count = rng.int(3, 8);
+    const base = rng.range(3100, 4100);
+    for (let c = 0; c < count; c++) {
+      const d = rng.range(0.05, 0.1);
+      const fA = base * rng.range(0.93, 1.07), fP = fA + rng.range(500, 1500), fE = fA - rng.range(200, 900);
+      notes.push({ t, d, f: (u) => (u < 0.3 ? fA + (fP - fA) * (u / 0.3) : fP + (fE - fP) * ((u - 0.3) / 0.7)), h: [1, 0.32, 0.1], amp: rng.range(0.6, 1), shape: 1.5 });
+      t += d + rng.range(0.05, 0.18);
+    }
+  } else if (kind === 'bulbul') {
+    let t = 0.01;
+    const count = rng.int(3, 5);
+    for (let c = 0; c < count; c++) {
+      const d = rng.range(0.1, 0.26);
+      const f0 = rng.range(1400, 2700), f1 = f0 * rng.range(0.75, 1.35);
+      const vib = rng.range(18, 30);
+      notes.push({ t, d, f: (u, tt) => (f0 + (f1 - f0) * u) * (1 + 0.018 * Math.sin(TAU * vib * tt)), h: [1, 0.09, 0.03], amp: rng.range(0.7, 1), shape: 0.7 });
+      t += d + rng.range(0.035, 0.12);
+    }
+  } else if (kind === 'swift') {
+    const birds = rng.int(2, 4);
+    for (let b = 0; b < birds; b++) {
+      const d = rng.range(0.35, 0.8), fc = rng.range(6300, 8400), fm = rng.range(36, 50), dev = rng.range(500, 900);
+      notes.push({ t: rng.range(0, 0.45), d, f: (u, tt) => fc * (1 - 0.06 * u) + dev * (2 * ((fm * tt) % 1) - 1), h: [1, 0.12], amp: rng.range(0.5, 1), shape: 0.5, am: fm, noise: 0.35 });
+    }
+  } else { // pigeon coo: "hoo-hrroo-hoo"
+    const f0 = rng.range(400, 470);
+    const parts = [[0.0, 0.26, f0, f0 * 1.08, 0.6], [0.36, 0.62, f0 * 1.12, f0 * 1.02, 1], [1.08, 0.3, f0 * 1.02, f0 * 0.94, 0.55]];
+    for (const [t, d, a, b, amp] of parts) notes.push({ t, d, f: (u) => a + (b - a) * u, h: [1, 0.35, 0.12, 0.05], amp, shape: 0.8, am: 27, amDepth: 0.55, noise: 0.08 });
+  }
+  const dur = Math.max(...notes.map((x) => x.t + x.d)) + 0.05;
+  const n = Math.floor(dur * sr);
+  const out = new Float32Array(n);
+  const bp = new Biquad(sr, 'bandpass', 7000, 2);
+  for (const nt of notes) {
+    const i0 = Math.floor(nt.t * sr), m = Math.floor(nt.d * sr);
+    let ph = 0;
+    bp.set('bandpass', nt.f(0.5, 0), 3);
+    for (let i = 0; i < m && i0 + i < n; i++) {
+      const u = i / m, tt = i / sr;
+      const f = nt.f(u, tt);
+      ph += f / sr;
+      let env = Math.pow(Math.sin(Math.PI * u), nt.shape);
+      if (nt.am) env *= 1 - (nt.amDepth ?? 0.4) * (0.5 + 0.5 * Math.sin(TAU * nt.am * tt));
+      let x = 0;
+      for (let h = 0; h < nt.h.length; h++) if (f * (h + 1) < sr * 0.45) x += Math.sin(TAU * ph * (h + 1)) * nt.h[h];
+      if (nt.noise) x += bp.run(nz()) * nt.noise * 3;
+      out[i0 + i] += x * env * nt.amp;
+    }
+  }
+  if (kind === 'pigeon') new Biquad(sr, 'lowpass', 1600, 0.7).process(out);
+  fadeEnds(out, sr, 0.002, 0.02);
+  normalize(out, 0.8);
+  return out;
+}
+
+/** One footfall on stone paving. k % 3: hard sole, trainer, heeled shoe. */
+export function footstep(sr, k) {
+  const rng = arng('step', k);
+  const type = k % 3;
+  const n = Math.floor(0.2 * sr);
+  const out = new Float32Array(n);
+  const nz = noiseGen(rng);
+  const body = new Biquad(sr, 'bandpass', type === 1 ? rng.range(700, 1000) : rng.range(1100, 1800), type === 1 ? 0.8 : 1.6);
+  const click = new Biquad(sr, 'highpass', type === 2 ? 3000 : 2200, 0.7);
+  const thud = new Biquad(sr, 'lowpass', 220, 0.8);
+  const scuff = new Biquad(sr, 'bandpass', rng.range(1600, 2600), 0.7);
+  const toeAt = Math.floor(rng.range(0.04, 0.075) * sr);
+  for (let i = 0; i < n; i++) {
+    const t = i / sr;
+    let x = 0;
+    if (type === 1) {
+      x += scuff.run(nz()) * Math.sin(Math.PI * Math.min(1, t / 0.05)) * Math.exp(-t / 0.03) * 0.5;
+      x += thud.run(nz()) * Math.exp(-t / 0.02) * 1.2;
+    } else {
+      x += click.run(nz()) * Math.exp(-t / (type === 2 ? 0.0012 : 0.002)) * 0.9;
+      x += body.run(nz()) * Math.exp(-t / 0.012) * 0.8;
+      x += thud.run(nz()) * Math.exp(-t / 0.018) * 0.8;
+    }
+    if (i >= toeAt) {
+      const tt = (i - toeAt) / sr;
+      x += body.run(nz()) * Math.exp(-tt / 0.01) * 0.35 + scuff.run(nz()) * Math.exp(-tt / 0.02) * 0.15;
+    }
+    out[i] = x;
+  }
+  if (type === 2) addMode(out, sr, 0, rng.range(3000, 4200), 0.08, 0.05);
+  fadeEnds(out, sr, 0.0003, 0.02);
+  normalize(out, 0.8);
+  return out;
+}
+
+/** Café tableware: cup on saucer, spoon in cup, glass, cutlery on a plate. */
+export function clink(sr, k) {
+  const rng = arng('clink', k);
+  const kind = k % 4;
+  const n = Math.floor(0.7 * sr);
+  const out = new Float32Array(n);
+  const nz = noiseGen(rng);
+  const hits = kind === 1 ? rng.int(3, 6) : rng.int(1, 2);
+  let t = 0.005;
+  const f0 = kind === 2 ? rng.range(2600, 3600) : kind === 3 ? rng.range(3800, 5200) : rng.range(2200, 3300);
+  const ratios = kind === 2 ? [1, 2.32, 4.1] : kind === 3 ? [1, 1.41, 2.73, 3.9] : [1, 1.62, 2.41, 3.33];
+  const t60 = kind === 2 ? 0.55 : kind === 3 ? 0.18 : 0.22;
+  for (let h = 0; h < hits; h++) {
+    const i0 = Math.floor(t * sr), g = rng.range(0.5, 1) * (kind === 1 ? 0.6 : 1);
+    ratios.forEach((r, j) => addMode(out, sr, i0, f0 * r * rng.range(0.995, 1.005), g / (1 + j * 0.8), t60 / (1 + j * 0.6), 0.0002));
+    const hp = new Biquad(sr, 'highpass', 3000, 0.7);
+    for (let i = 0; i < 0.004 * sr; i++) out[i0 + i] += hp.run(nz()) * Math.exp(-i / (0.0007 * sr)) * 0.3 * g;
+    t += kind === 1 ? rng.range(0.07, 0.12) : rng.range(0.12, 0.3);
+  }
+  fadeEnds(out, sr, 0.0002, 0.05);
+  normalize(out, 0.7);
+  return out;
+}
+
+/** Distant car horn (two-tone, sometimes a double tap). */
+export function carHorn(sr, k) {
+  const rng = arng('horn', k);
+  const f1 = rng.range(370, 450), f2 = f1 * rng.range(1.2, 1.27);
+  const taps = rng.chance(0.5) ? [[0, rng.range(0.12, 0.2)], [0.26, rng.range(0.15, 0.35)]] : [[0, rng.range(0.3, 0.6)]];
+  const dur = taps[taps.length - 1][0] + taps[taps.length - 1][1] + 0.1;
+  const n = Math.floor(dur * sr);
+  const out = new Float32Array(n);
+  for (const [t0, d] of taps) {
+    const i0 = Math.floor(t0 * sr), m = Math.floor(d * sr);
+    for (let i = 0; i < m; i++) {
+      const t = i / sr, env = Math.min(1, t / 0.012) * Math.min(1, (d - t) / 0.03);
+      let x = 0;
+      for (const f of [f1, f2]) for (let h = 1; h <= 9; h += 2) x += Math.sin(TAU * f * h * t) / h;
+      out[i0 + i] += x * env;
+    }
+  }
+  new Biquad(sr, 'lowpass', 2200, 0.7).process(out);
+  new Biquad(sr, 'peaking', 900, 1, 4).process(out);
+  fadeEnds(out, sr, 0.001, 0.05);
+  normalize(out, 0.7);
+  return out;
+}
+
+/** Distant city traffic: low rumble with cars passing on far streets. Stereo, seamless. */
+export function trafficBed(sr, seconds = 21) {
+  const rng = arng('traffic');
+  const n = Math.floor(seconds * sr), fade = Math.floor(1.0 * sr), N = n + fade;
+  const L = new Float32Array(N), R = new Float32Array(N);
+  const nz = noiseGen(rng);
+  // continuous far rumble
+  const lp1 = new Biquad(sr, 'lowpass', 260, 0.6), lp2 = new Biquad(sr, 'lowpass', 260, 0.6);
+  const sw = new SlowNoise(sr, 0.12, nz);
+  let b1 = 0, b2 = 0;
+  for (let i = 0; i < N; i++) {
+    b1 = (b1 + 0.02 * nz()) / 1.02; b2 = (b2 + 0.02 * nz()) / 1.02;
+    const g = Math.max(0.2, 1 + 0.3 * sw.run());
+    L[i] += lp1.run(b1) * 3 * g; R[i] += lp2.run(b2) * 3 * g;
+  }
+  // individual vehicles passing on cross streets
+  const passes = Math.round(seconds / 2.6);
+  for (let p = 0; p < passes; p++) {
+    const tc = rng.range(0, seconds + 1), w = rng.range(1.2, 2.8), amp = rng.range(0.25, 0.8);
+    const fe = rng.range(26, 46), heavy = rng.chance(0.18);
+    const p0 = rng.range(-1, 1), p1 = clamp(p0 + rng.range(-1.2, 1.2), -1, 1);
+    const tyre = new Biquad(sr, 'bandpass', rng.range(550, 900), 0.6);
+    const eng = new Biquad(sr, 'lowpass', heavy ? 380 : 520, 0.7);
+    const dist = new Biquad(sr, 'lowpass', rng.range(1300, 2400), 0.6);
+    const i0 = Math.max(0, Math.floor((tc - 3 * w) * sr)), i1 = Math.min(N, Math.floor((tc + 3 * w) * sr));
+    let ph = 0;
+    for (let i = i0; i < i1; i++) {
+      const t = i / sr, u = (t - tc) / w;
+      const env = Math.exp(-0.5 * u * u) * amp;
+      const f = (heavy ? fe * 0.7 : fe) * (1 + 0.04 * Math.tanh(-u)); // slight Doppler drop
+      ph += f / sr;
+      let e = 0;
+      for (let h = 1; h <= 6; h++) e += Math.sin(TAU * ph * h + h) / (h * (heavy ? 0.8 : 1.3));
+      const x = dist.run(tyre.run(nz()) * 0.9 + eng.run(e) * (heavy ? 0.35 : 0.18)) * env;
+      const pan = p0 + (p1 - p0) * clamp((u + 2) / 4, 0, 1);
+      L[i] += x * Math.cos((pan + 1) * Math.PI / 4);
+      R[i] += x * Math.sin((pan + 1) * Math.PI / 4);
+    }
+  }
+  const chans = [makeLoop(L, n, fade), makeLoop(R, n, fade)];
+  normalizeRms(chans, 0.15);
+  return chans;
+}
