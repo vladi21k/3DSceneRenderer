@@ -30,6 +30,8 @@ const _es = new THREE.Vector3();
 const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];
+// canyon bounce view factors: walls seen from the floor (up), floor and walls seen from below (down)
+const BOUNCE = { up: 0.4, down: 0.55 };
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -90,6 +92,17 @@ const env = {
     scene.add(this.sun);
 
     this.lights = new StreetLights(app, q.lamps);
+
+    // street-canyon bounce: sunlit stone and paving relight everything around them (warm
+    // fill in the shade, glowing soffits). A hemisphere light along the vertical: its sky
+    // colour is the light reflected down by the sunlit facades, its ground colour the
+    // light reflected up by the sunlit floor; facades get the mean of the two. The
+    // environment map holds the sky and the canyon as seen from the camera; this adds the
+    // interreflection a single capture point under-represents.
+    this.bounce = new THREE.HemisphereLight(0x000000, 0x000000, 1);
+    this.bounce.name = 'canyonBounce';
+    this.bounce.position.set(0, 1, 0);
+    scene.add(this.bounce);
 
     // avenue frame used to orient the sun path
     const ref = app.route.sample(app.layout.defaultStartS);
@@ -308,6 +321,20 @@ const env = {
       const wall = WALL_ALB[i] * (skyV[k] + 0.5 * Es[k] * cw * litWall) / Math.PI;
       const ground = GROUND_ALB[i] * (skyH[k] * 0.62 + Es[k] * sy * floorLit) / Math.PI;
       hz.amb.setComponent(i, 0.5 * (0.45 * sky + 0.55 * wall) + 0.5 * ground);
+    }
+    // canyon bounce: mean irradiance of the sun-facing facade and of the floor, reflected
+    // with the stone and paving albedo through the view factors of a ~1:1 street canyon
+    const bu = this.bounce;
+    if (bu) {
+      const up = [0, 0, 0], dn = [0, 0, 0];
+      for (let i = 0; i < 3; i++) {
+        const k = c[i];
+        const Ew = Es[k] * cw * litWall, Ef = Es[k] * sy * floorLit;
+        up[i] = BOUNCE.up * WALL_ALB[i] * Ew;
+        dn[i] = BOUNCE.down * (GROUND_ALB[i] * Ef + 0.5 * WALL_ALB[i] * Ew);
+      }
+      bu.color.setRGB(up[0], up[1], up[2]);
+      bu.groundColor.setRGB(dn[0], dn[1], dn[2]);
     }
     // shadow plane in world space: f(p) = dot(p, n) + w
     if (d.y > 0.002) {

@@ -15,6 +15,7 @@ import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 // (crossover.js): the diverging rails, swept with their own mortar, open the paving.
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
+const ROWS_PER_STEP = 8;                   // buildPaving yields after this many rows
 const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
 const SLAB_TONE = 0.3;                     // ground slab: dark, seen only through cracks
 const SLAB_FAR = -1.2;                     // slab depth under the blocks (m)
@@ -96,11 +97,12 @@ export function fixedColumns(lod) {
 const FIXED = [fixedColumns(0), fixedColumns(1)];
 
 /**
- * Build the paving of a chunk.
+ * Build the paving of a chunk (a resumable step sequence: it yields 'paving' every
+ * ROWS_PER_STEP rows, see street.js).
  * rows: sorted s values (first = chunk s0, last = chunk s1).
  * Returns per-row samples (reused by rails and details).
  */
-export function buildPaving(ctx, chunk, rows, out) {
+export function* buildPaving(ctx, chunk, rows, out) {
   const { route, surface, mats } = ctx;
   const lod = chunk.lod;
   const fx = FIXED[lod];
@@ -150,6 +152,7 @@ export function buildPaving(ctx, chunk, rows, out) {
       const c = nL + nFixed - 1 + k, d = k === nR ? eR : GUTTER_OUT + ((ri.facR - GUTTER_OUT) * k) / (nR - 1);
       D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw)); HS[o + c] = surface.hShade;
     }
+    if (r % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield 'paving';
   }
   // interval kinds (nc-1 intervals)
   const kind = new Uint8Array(nc - 1);
@@ -249,6 +252,7 @@ export function buildPaving(ctx, chunk, rows, out) {
       const zoned = plan && (k === K_CORR || k === K_GROUT);
       (zoned ? out.get(k === K_CORR ? mats.cut.corr : mats.cut.mortar, true) : bufs[k]).quad(a, b, cc, d);
     }
+    if (r % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield 'paving';
   }
   return samples;
 }

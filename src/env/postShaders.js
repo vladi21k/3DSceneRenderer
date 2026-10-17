@@ -466,23 +466,32 @@ void main() {
 `;
 
 // ---------------------------------------------------------------- final: lens, tone map, grade
+// Tone: a camera's JPEG response sets the luminance (mid grey 0.18 → ~0.47, white about
+// 3 stops above it, a crushed toe: true blacks), AgX sets hue and chroma (its log-domain
+// curve keeps bright saturated colours from skewing), blended towards the scene's own
+// ratios so warm low sun on stone keeps its colour. Luma-only sharpening stands in for
+// in-camera sharpening.
 export const FINAL_FS = /* glsl */ `
 uniform sampler2D tHDR;
 uniform sampler2D tBloom;
 uniform sampler2D tLum;
 uniform float uExposure;      // base exposure for the time of day
 uniform float uAutoExp;       // strength of the auto-exposure correction
+uniform float uMeterTarget;   // metered (log-average) luminance the correction aims for
+uniform vec2 uMeterClamp;     // range of the auto-exposure correction
 uniform float uBloom;
 uniform float uVignette;
 uniform float uCA;
 uniform float uGrain;
+uniform float uSharpen;       // unsharp mask amount (luma, ~1 px radius)
 uniform float uTime;
 uniform vec3 uWB;             // white balance gains (linear)
 uniform float uSat;
 uniform float uContrast;
 uniform vec3 uShadowTint, uHighTint;
 uniform float uSkyChroma;
-uniform float uShoulder;      // 0 AgX's long film shoulder .. 1 a camera-JPEG-like shoulder
+uniform vec4 uCurve;          // camera tone curve: A, s, e0, q (see below)
+uniform float uChroma;        // 0 AgX's chroma .. 1 the scene's colour ratios
 uniform vec2 uResolution;
 varying vec2 vUv;
 
@@ -519,6 +528,13 @@ vec3 agx(vec3 color) {
   color = PP_REC2020_TO_SRGB * color;
   return clamp(color, 0.0, 1.0);
 }
+// display value (sRGB-encoded) of a scene luminance: a generalised logistic in stops
+// from mid grey, y = min(1, A / (1 + exp(-s (e - e0)))^q)
+float cameraCurve(float Y) {
+  float e = log2(max(Y, 1e-8) / 0.18);
+  return min(1.0, uCurve.x / pow(1.0 + exp(-uCurve.y * (e - uCurve.z)), uCurve.w));
+}
+float srgbToLinear(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 vec3 srgbOETF(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
@@ -541,42 +557,52 @@ void main() {
   float thin = smoothstep(0.85, 0.4, (l0 + 1e-5) / (max(min(la, lb), l0) + 1e-5)) + smoothstep(0.7, 0.3, (l0 + 1e-5) / (edge + 1e-5));
   float kca = 1.0 - clamp(thin, 0.0, 1.0);
   vec3 col = vec3(mix(c0.r, cr.r, kca), c0.g, mix(c0.b, cb.b, kca));
+  // in-camera sharpening: luma unsharp mask in log space (exposure independent), the
+  // boost limited to a third of a stop and faded out across strong edges (no halos)
+  if (uSharpen > 0.0) {
+    ivec2 p = ivec2(gl_FragCoord.xy), mx = ivec2(uResolution) - 1;
+    float n = dot(texelFetch(tHDR, clamp(p + ivec2(1, 0), ivec2(0), mx), 0).rgb, LW)
+            + dot(texelFetch(tHDR, clamp(p - ivec2(1, 0), ivec2(0), mx), 0).rgb, LW)
+            + dot(texelFetch(tHDR, clamp(p + ivec2(0, 1), ivec2(0), mx), 0).rgb, LW)
+            + dot(texelFetch(tHDR, clamp(p - ivec2(0, 1), ivec2(0), mx), 0).rgb, LW);
+    float d = log2((l0 + 1e-4) / (0.25 * n + 1e-4));
+    float k = uSharpen * (1.0 - smoothstep(0.8, 2.5, abs(d)));
+    col *= exp2(clamp(k * d, -0.33, 0.33));
+  }
   col = mix(col, texture2D(tBloom, uv).rgb, uBloom);
 
   // exposure: time-of-day base, nudged by the metered scene luminance
   float avgLog = texture2D(tLum, vec2(0.5)).r;
   float metered = exp2(avgLog) * uExposure;
-  float corr = clamp(pow(0.16 / max(metered, 1e-6), uAutoExp), 0.75, 1.3);
+  float corr = clamp(pow(uMeterTarget / max(metered, 1e-6), uAutoExp), uMeterClamp.x, uMeterClamp.y);
   col *= uExposure * corr;
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);
   // white balance and split toning in scene-linear
   col *= uWB;
-  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  float hl = smoothstep(0.05, 0.6, lum);
-  col *= mix(uShadowTint, uHighTint, hl);
+  float lum = dot(col, LW);
+  col *= mix(uShadowTint, uHighTint, smoothstep(0.05, 0.6, lum));
+  lum = dot(col, LW);
+  vec3 sc = max(col, 0.0);
 
   col = agx(col);
-  // AgX keeps sunlit stone, clouds and the sky slot well below white (scene 1.0 lands
-  // at ~0.56 display-linear); a camera's JPEG curve reaches white about 2.5 stops above
-  // mid grey. Lift the upper range on luminance (toe and mid tones untouched) and let
-  // overflow desaturate towards white with its hue kept.
+  // camera tone response on luminance; overflow desaturates towards white, hue kept
   {
-    float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    float lt = mix(l, 1.0 - pow(max(1.0 - l, 0.0), 1.7), smoothstep(0.2, 0.56, l) * uShoulder);
-    col *= lt / max(l, 1e-5);
+    float lt = srgbToLinear(cameraCurve(lum));
+    float la = dot(col, LW);
+    col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), uChroma);
     float m = max(col.r, max(col.g, col.b));
     if (m > 1.0) col = lt + (col - lt) * (1.0 - lt) / max(m - lt, 1e-5);
   }
   // AgX's log-domain curve greys bright blues: give bright cool colours (the sky) back
   // some chroma, scaling around the luminance so the hue stays put
-  {
-    float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  if (uSkyChroma > 0.0) {
+    float l = dot(col, LW);
     float cool = smoothstep(0.02, 0.3, (col.b - col.r) / max(col.b, 1e-4));
     float k = 1.0 + uSkyChroma * cool * smoothstep(0.05, 0.4, l);
     col = max(vec3(0.0), l + (col - l) * k);
   }
-  col = srgbOETF(col);
+  col = srgbOETF(clamp(col, 0.0, 1.0));
   // fine film grain, strongest in the mid tones, plus dither
   float g = (hash(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) + hash(gl_FragCoord.xy * 1.37 + fract(uTime * 3.17) * 71.0) - 1.0);
   float lm = dot(col, vec3(0.333));

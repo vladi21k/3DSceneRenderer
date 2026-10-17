@@ -15,6 +15,16 @@ import { archSegments } from '../facadePlan.js';
 // baked ambient occlusion, weathering), a UV in metres, optionally remapped by the
 // current UV transform (used to line ashlar courses up with the floors), and the
 // run-off occluder above it (Builder.run, see shade.runAttr).
+//
+// Vertex format (36 bytes; the GPU upload of a chunk is what costs, see buildings.js):
+//   p  position   float32 × 3, world space
+//   n  normal     snorm8 × 4 (w unused, keeps the attribute 4-byte aligned)
+//   t  uv         float32 × 2, metres
+//   c  colour     unorm8 × 4: rgb = sqrt(colour / COLOR_SCALE) (dark paints keep their
+//                 precision), a = grime (or lit share) / COLOR_SCALE; decoded per vertex by
+//                 the buildings materials (grime.js)
+//   r  run-off    int16 × 4 (see shade.runAttr)
+//   i  index      uint16 when the batch has fewer than 65536 vertices, else uint32
 
 const F_FRONT = 1, F_BACK = 2, F_LEFT = 4, F_RIGHT = 8, F_TOP = 16, F_BOTTOM = 32;
 export const FACES = { FRONT: F_FRONT, BACK: F_BACK, LEFT: F_LEFT, RIGHT: F_RIGHT, TOP: F_TOP, BOTTOM: F_BOTTOM, ALL: 63, SIDES: F_LEFT | F_RIGHT | F_TOP | F_BOTTOM };
@@ -22,6 +32,17 @@ export const FACES = { FRONT: F_FRONT, BACK: F_BACK, LEFT: F_LEFT, RIGHT: F_RIGH
 // Recent batch sizes per sink key, so fresh buffers rarely need to grow (each batch's
 // arrays are handed over to the GPU geometry as they are, see Sink.detach).
 const HINT = new Map();
+
+/** Colours and grime are stored relative to COLOR_SCALE in unorm8 (0..2 representable). */
+export const COLOR_SCALE = 2;
+const C8 = 255 / COLOR_SCALE, CS = 1 / COLOR_SCALE;
+
+function alloc(v, i) {
+  return {
+    p: new Float32Array(v * 3), n: new Int8Array(v * 4), t: new Float32Array(v * 2),
+    c: new Uint8ClampedArray(v * 4), r: new Int16Array(v * 4), i: new Uint32Array(i),
+  };
+}
 
 export class Sink {
   constructor(key) {
@@ -33,9 +54,11 @@ export class Sink {
   }
   reserve(nv, ni) {
     if ((this.vc + nv) * 3 > this.p.length) {
-      const cap = Math.max((this.vc + nv) * 2, 4096);
-      const grow = (A, k) => { const b = new A.constructor(cap * k); b.set(A.subarray(0, this.vc * k)); return b; };
-      this.p = grow(this.p, 3); this.n = grow(this.n, 3); this.t = grow(this.t, 2); this.c = grow(this.c, 3); this.g = grow(this.g, 1); this.r = grow(this.r, 4);
+      const cap = Math.max((this.vc + nv) * 2, 4096), vc = this.vc;
+      const b = alloc(cap, 0);
+      b.p.set(this.p.subarray(0, vc * 3)); b.n.set(this.n.subarray(0, vc * 4)); b.t.set(this.t.subarray(0, vc * 2));
+      b.c.set(this.c.subarray(0, vc * 4)); b.r.set(this.r.subarray(0, vc * 4));
+      this.p = b.p; this.n = b.n; this.t = b.t; this.c = b.c; this.r = b.r;
     }
     if (this.ic + ni > this.i.length) {
       const b = new Uint32Array(Math.max((this.ic + ni) * 2, 8192));
@@ -44,19 +67,21 @@ export class Sink {
     }
   }
   /**
-   * The used part as views (no copy). The sink then lets go of its buffers, so the next
-   * batch writes into fresh arrays sized from this one, and the views stay valid.
+   * The used part as views (no copy, except the index, narrowed to uint16 when it fits).
+   * The sink then lets go of its buffers, so the next batch writes into fresh arrays
+   * sized from this one, and the views stay valid.
    */
   detach() {
     const vc = this.vc, ic = this.ic;
+    const idx = this.i.subarray(0, ic);
     const out = {
       key: this.key, vc, ic,
-      p: this.p.subarray(0, vc * 3), n: this.n.subarray(0, vc * 3), t: this.t.subarray(0, vc * 2), c: this.c.subarray(0, vc * 3),
-      g: this.g.subarray(0, vc), r: this.r.subarray(0, vc * 4), i: this.i.subarray(0, ic),
+      p: this.p.subarray(0, vc * 3), n: this.n.subarray(0, vc * 4), t: this.t.subarray(0, vc * 2), c: this.c.subarray(0, vc * 4),
+      r: this.r.subarray(0, vc * 4), i: vc <= 65536 ? new Uint16Array(idx) : idx,
     };
     const h = HINT.get(this.key) || [0, 0];
     HINT.set(this.key, [Math.max(vc, h[0] * 0.9), Math.max(ic, h[1] * 0.9)]);
-    this.p = this.n = this.t = this.c = this.g = this.r = this.i = null;
+    this.p = this.n = this.t = this.c = this.r = this.i = null;
     this.vc = 0; this.ic = 0;
     return out;
   }
@@ -65,9 +90,8 @@ export class Sink {
     this.vc = 0; this.ic = 0;
     if (this.p) return;
     const h = HINT.get(this.key) || [0, 0];
-    const v = Math.max(1024, Math.ceil(h[0] * 1.15)), i = Math.max(3072, Math.ceil(h[1] * 1.15));
-    this.p = new Float32Array(v * 3); this.n = new Float32Array(v * 3); this.t = new Float32Array(v * 2);
-    this.c = new Float32Array(v * 3); this.g = new Float32Array(v); this.r = new Float32Array(v * 4); this.i = new Uint32Array(i);
+    const b = alloc(Math.max(1024, Math.ceil(h[0] * 1.15)), Math.max(3072, Math.ceil(h[1] * 1.15)));
+    this.p = b.p; this.n = b.n; this.t = b.t; this.c = b.c; this.r = b.r; this.i = b.i;
   }
   /** Axis-aligned bounds of the used vertices, merged into box {min, max} (Vector3-like). */
   bounds(box) {
@@ -153,21 +177,22 @@ export class Builder {
   /** Emit one vertex; returns its index. tu/tv in metres before the UV transform. */
   v(s, u, v, w, nu, nv, nw, tu, tv) {
     const k = s.vc++;
-    const p = s.p, n = s.n, t = s.t, c = s.c, i3 = k * 3;
+    const p = s.p, n = s.n, t = s.t, c = s.c, i3 = k * 3, i4 = k * 4;
     p[i3] = this.ox + this.ux * u + this.nx * w;
     p[i3 + 1] = this.oy + v;
     p[i3 + 2] = this.oz + this.uz * u + this.nz * w;
-    n[i3] = this.ux * nu + this.nx * nw;
-    n[i3 + 1] = nv;
-    n[i3 + 2] = this.uz * nu + this.nz * nw;
+    const nx = this.ux * nu + this.nx * nw, nz = this.uz * nu + this.nz * nw;
+    const l2 = nx * nx + nv * nv + nz * nz;
+    const q = l2 > 0.9998 && l2 < 1.0002 ? 127 : 127 / Math.sqrt(l2 || 1);
+    n[i4] = Math.round(nx * q); n[i4 + 1] = Math.round(nv * q); n[i4 + 2] = Math.round(nz * q);
     const uv = s.uvx || this.uv;
     t[k * 2] = tu * uv[0] + uv[1];
     t[k * 2 + 1] = tv * uv[2] + uv[3];
     let col = this.flat, gr = this.grime;
     if (this.shade) { col = this.col; col[3] = gr; col[4] = 1; this.shade(u, v, w, nu, nv, nw, col); gr = col[3]; }
-    c[i3] = col[0]; c[i3 + 1] = col[1]; c[i3 + 2] = col[2];
-    s.g[k] = gr;
-    runAttr(this.run, u, v, this.shade ? col[4] : 1, s.r, k * 4);
+    c[i4] = 255 * Math.sqrt(col[0] * CS); c[i4 + 1] = 255 * Math.sqrt(col[1] * CS); c[i4 + 2] = 255 * Math.sqrt(col[2] * CS);
+    c[i4 + 3] = gr * C8;
+    runAttr(this.run, u, v, this.shade ? col[4] : 1, s.r, i4);
     return k;
   }
   tri(s, a, b, c) { const i = s.i, k = s.ic; i[k] = a; i[k + 1] = b; i[k + 2] = c; s.ic += 3; }
@@ -494,7 +519,7 @@ export class Builder {
     this._lastT = now;
   }
 
-  /** Collect the sinks' contents: Map key -> {p, n, t, c, g, i} views (see Sink.detach). */
+  /** Collect the sinks' contents: Map key -> {p, n, t, c, r, i} views (see Sink.detach). */
   finish() {
     const out = new Map();
     for (const [k, s] of this.sinks) { if (s.vc && s.p) out.set(k, s.detach()); else if (s.p) { s.vc = 0; s.ic = 0; } }

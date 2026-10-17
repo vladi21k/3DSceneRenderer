@@ -35,8 +35,13 @@ const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0,
 // soiled ledges, sheltered soffits, faint vertical drip streaks
 const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 };
 
-// Granite setts: tone varies in broad wear patches (macro), hardly per paver.
-const PAVING_CELL = { value: 0.05, hue: 0.2, rough: 0.1, row: 0.3, a: [1.01, 1.0, 0.99], b: [0.98, 0.99, 1.02], out: [1.1, 1.1, 1.1, 0.02] };
+// Granite setts: ±10 % value per sett with a slight warm / cool drift, a little banding
+// per course, broad wear patches (macro) and ~2.5 % odd setts: darker replacements, a
+// dirty warm one now and then, rarely a pale one.
+const PAVING_CELL = {
+  value: 0.1, hue: 0.6, rough: 0.12, row: 0.25, a: [1.03, 1.0, 0.965], b: [0.975, 0.99, 1.03],
+  out: { p: 0.025, fam: [[0.8, 0.8, 0.82], [0.86, 0.84, 0.8], [1.1, 1.1, 1.09]] },
+};
 const PAVING_MACRO = { f1: 1 / 4, f2: 1 / 20, albedo: 0.12, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
 // crystals at close range (mica darker and glossy, feldspar pale), low contrast: fine
 // grey granite, not terrazzo
@@ -47,7 +52,7 @@ export const LIBRARY = {
   'stone.ashlar': {
     props: { roughness: 1 },
     bake: 'ashlar',
-    surf: { cell: STONE_CELL, macro: STONE_MACRO, detail: STONE_DRESS, weather: STONE_WEATHER, microShadow: 1 },
+    surf: { cell: STONE_CELL, macro: STONE_MACRO, detail: STONE_DRESS, weather: STONE_WEATHER, microShadow: 1, mirror: 0.75 },
     vc: 'tint',
     meta: {
       courseH: 0.35, blockL: 0.7, blockRange: [0.36, 1.2], courses: 12, joint: 0.006,
@@ -61,7 +66,7 @@ export const LIBRARY = {
     props: { roughness: 1, color: [0.84, 0.8, 0.74] },
     bake: 'ashlar',
     surf: {
-      cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DRESS,
+      cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DRESS, mirror: 0.75,
       weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.14, soffit: 0.16 }, stain: { amount: 0.18, freq: 0.6, threshold: 0.66 },
     },
     vc: 'tint',
@@ -77,9 +82,9 @@ export const LIBRARY = {
   'stone.rough': {
     props: { roughness: 1 },
     bake: 'rustic',
-    surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: { ...STONE_DETAIL, normal: 0.5 }, weather: STONE_WEATHER },
+    surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: { ...STONE_DETAIL, normal: 0.5 }, weather: STONE_WEATHER, mirror: 0.75 },
     vc: 'tint',
-    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication, faceted boss, deep joints)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
+    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication, faceted boss, deep joints; each block\'s boss differs, and its relief is mirrored at random per block at runtime)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
   },
 
   // ---------------------------------------------------------------- paving
@@ -87,10 +92,11 @@ export const LIBRARY = {
     props: { roughness: 1 },
     bake: 'paving',
     surf: {
-      swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL,
+      swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { prob: 0.08, radius: 0.011, albedo: 0.5, rough: 0.5 },
       stain: { amount: 0.14, freq: 0.5, threshold: 0.7 },
-      lanes: { track: 1.6, rail: 0.7455, grime: 0.07, wear: 0.05 },
+      // soft grime either side of each rail's mortar strip, a paler polished lane mid-track
+      lanes: { track: 1.6, rail: 0.7455, grime: 0.13, wear: 0.05, grimeBand: [0.08, 0.36], laneBand: [0.18, 0.42] },
     },
     vc: 'tint',
     meta: {
@@ -103,12 +109,15 @@ export const LIBRARY = {
     props: { roughness: 1, color: [1.02, 1.01, 0.99] },
     bake: 'paving',
     surf: {
-      scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL,
+      scale: 1.25, cell: PAVING_CELL, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { prob: 0.14, radius: 0.011, albedo: 0.48, rough: 0.5 },
       stain: { amount: 0.18, freq: 0.5, threshold: 0.66 },
+      // v = metres from the gutter: grime along the kerb edge (and ~7 m in, at the building
+      // line), a darker trodden pedestrian lane round 3.6 m
+      lanes: { track: 3.6, rail: 3.6, grime: 0.06, wear: -0.045, grimeBand: [0.1, 0.6], laneBand: [0.7, 2.0] },
     },
     vc: 'tint',
-    meta: { paver: [0.5, 0.25], rows: 'along u', uv: 'u along the street, v across (m)' },
+    meta: { paver: [0.5, 0.25], rows: 'along u', uv: 'u along the street, v across (m): metres from the gutter edge on the main sidewalks (places the kerb grime and the trodden lane)' },
   },
   'paving.band': {
     props: { roughness: 1 },

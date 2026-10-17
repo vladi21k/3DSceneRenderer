@@ -8,8 +8,9 @@ import { inCrossoverZone } from './paving.js';
 // kept and the rails take the crossover's profiles (switch tongues, check rails) and
 // cut attributes (flangeways crossing at the frogs, opened stock rails at the switches).
 
-/** samples: per-row route samples from buildPaving (rows: their s values). */
-export function buildMainRails(ctx, chunk, rows, samples, bufs) {
+/** samples: per-row route samples from buildPaving (rows: their s values). Resumable
+ *  (see street.js): yields 'rails3d' after each rail and each crossover segment. */
+export function* buildMainRails(ctx, chunk, rows, samples, bufs) {
   let kmax = 0;
   for (const S of samples) kmax = Math.max(kmax, Math.abs(S.curv));
   const minGap = kmax < 1 / 400 ? 2.4 : kmax < 1 / 150 ? 1.2 : 0.9;
@@ -50,9 +51,14 @@ export function buildMainRails(ctx, chunk, rows, samples, bufs) {
     for (let r = 0; r < nr - 1; r++) {
       const p = zone[r];
       const k = p ? mainClass(p, rl, (rows[r] + rows[r + 1]) / 2) : 'n';
-      if (k !== key || p !== plan) { flush(); seg = [r]; key = k; plan = p; }
+      if (k !== key || p !== plan) {
+        const swept = plan && seg.length > 1;
+        flush(); seg = [r]; key = k; plan = p;
+        if (swept) yield 'rails3d';     // crossover segments are the heavy ones
+      }
       seg.push(r + 1);
     }
     flush();
+    yield 'rails3d';
   }
 }

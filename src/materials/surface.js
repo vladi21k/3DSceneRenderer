@@ -11,13 +11,16 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //      plain tiling lookups.
 //   L  row layout: analytic rows/segments with a random per-row u shift (no 2D
 //      repetition), per-cell / per-row colour + roughness variation (the cell tint is
-//      box-filtered over the pixel footprint, so it survives at distance)
-//   J  grazing-angle joint masking (with L)
+//      box-filtered over the pixel footprint, so it survives at distance), and per-block
+//      mirrored map lookups (u, v or both: four relief variants of every baked block)
+//   J  grazing-angle joint masking (with L), only below ~10° elevation
 //   P  random irregular spots inside some cells, e.g. chewing gum (with L)
 //   D  detail map: high-frequency grain that fades out through its own mips
-//   R  dressing (with L and D): the detail is chosen and rotated per block (chisel dressing)
+//   R  dressing (with L and D): the detail is chosen, rotated, offset and scaled per block
+//      (chisel dressing)
 //   W  weathering: soiled ledges and soffits, vertical drip streaks (world orientation)
-//   K  lanes: grime along the rails / worn track lanes (street ribbons, v = d)
+//   K  lanes: grime bands along the rails / kerbs and worn lanes (street ribbons: v = d,
+//      sidewalks: v = metres from the gutter)
 //   A  (with K) lane offset d from the aLaneD vertex attribute instead of uv.y: set
 //      `laneAttr: true` on the material (materials.get(name, {laneAttr: true}))
 //   T  translucency: diffuse transmission for thin fabric and leaves (all light types)
@@ -56,6 +59,7 @@ uniform vec4 sfCellOut;  // outlier family 1 multiplier rgb, total probability
 uniform vec3 sfCellOut2; // outlier families 2 and 3
 uniform vec3 sfCellOut3;
 uniform vec4 sfJoint;    // grazing joint masking amount, joint half width (m)
+uniform float sfMirror;  // share of blocks whose map lookup is mirrored (u, v or both)
 uniform vec4 sfSpots;    // probability per cell, radius (m), albedo mult, roughness
 vec3 sfTintOf(uint h, float amp, float outliers) {
   float h0 = sfHf(h), h1 = sfHf(sfH(h + 1u)), h2 = sfHf(sfH(h + 2u)), h3 = sfHf(sfH(h + 3u)), h4 = sfHf(sfH(h + 4u));
@@ -80,7 +84,8 @@ uniform vec4 sfWeather;  // ledge soiling, streak amount, streak threshold, soff
 `;
 
 const LANES_PARS = /* glsl */ `
-uniform vec4 sfLanes;    // track offset, rail offset (m), rail grime, worn lane
+uniform vec4 sfLanes;    // lane centre offset, grime line offset from it (m), grime, lane wear (< 0: trodden darker)
+uniform vec4 sfLanes2;   // grime band: full / clear at (m from its line); lane: full / clear at (m from its centre)
 `;
 
 // plain tiling lookup (hardware derivatives)
@@ -94,16 +99,18 @@ const MAP_PLAIN = /* glsl */ `
 
 // Grazing-angle joint masking: seen at a low angle across a recessed joint, the near
 // arris hides it and the eye lands on the far stone. The footprint anisotropy tells
-// which way we look (along u hides head joints, along v hides bed joints).
+// which way we look (along u hides head joints, along v hides bed joints). Only truly
+// grazing views (anisotropy 5-10, i.e. below ~10° elevation): above that both joint
+// directions stay visible, as in the photographs.
 const MAP_JOINT = /* glsl */ `
     if (sfJoint.x > 0.0) {
       float ax = sfFoot.x / max(sfFoot.y, 1e-7);
-      float hU = smoothstep(1.6, 4.0, ax), hV = smoothstep(1.6, 4.0, 1.0 / ax);
+      float hU = smoothstep(5.0, 10.0, ax), hV = smoothstep(5.0, 10.0, 1.0 / ax);
       float dU = min(cl.x, b1 - b0 - cl.x), dV = min(cl.y, rowH - cl.y);
       float inU = (1.0 - smoothstep(sfJoint.y, sfJoint.y + sfFoot.x, dU)) * hU;
       float inV = (1.0 - smoothstep(sfJoint.y, sfJoint.y + sfFoot.y, dV)) * hV * sfLay2.w;
-      if (inU >= inV) sfOff = vec2((cl.x < 0.5 * (b1 - b0) ? 1.0 : -1.0) * (sfJoint.y + sfFoot.x), 0.0);
-      else sfOff = vec2(0.0, (cl.y < 0.5 * rowH ? 1.0 : -1.0) * (sfJoint.y + sfFoot.y));
+      if (inU >= inV) sfOff = vec2((cl.x < 0.5 * (b1 - b0) ? 1.0 : -1.0) * (sfJoint.y + sfFoot.x) * sfFl.x, 0.0);
+      else sfOff = vec2(0.0, (cl.y < 0.5 * rowH ? 1.0 : -1.0) * (sfJoint.y + sfFoot.y) * sfFl.y);
       sfHide = sfJoint.x * max(inU, inV);
     }
 `;
@@ -138,6 +145,8 @@ const mapLayout = (f) => /* glsl */ `
   uint sfCh = 0u;            // block hash
   vec2 sfCl = vec2(0.0);     // position inside the block (m)
   vec2 sfCs = vec2(1.0);     // block size (m)
+  vec2 sfFl = vec2(1.0);     // mirrored lookup (-1) along u / v
+  vec2 sfFo = vec2(0.0);     // lookup offset of the mirror (m)
   if (sfLay.y > 0.5) {
     float rowH = sfLay.x;
     float rgF = floor(sfUv.y / rowH);
@@ -175,13 +184,21 @@ const mapLayout = (f) => /* glsl */ `
     vec2 cl = vec2(lx - b0, sfUv.y - rgF * rowH);
     sfCl = cl;
     sfCs = vec2(b1 - b0, rowH);
+    // mirror the block's lookup in u, v or both: joints and margins map onto themselves,
+    // the relief and mottling inside the block read as another block
+    uint mh = sfH(sfCh + 41u);
+    if (sfHf(mh) < sfMirror) {
+      uint mk = sfH(mh) % 3u;
+      sfFl = vec2(mk == 1u ? 1.0 : -1.0, mk == 0u ? 1.0 : -1.0);
+      sfFo = vec2(sfFl.x < 0.0 ? b0 + b1 - 2.0 * lx : 0.0, sfFl.y < 0.0 ? rowH - 2.0 * cl.y : 0.0);
+    }
 ${f.joint ? MAP_JOINT : ''}${f.spots ? MAP_SPOTS : ''}  }
-  vec2 sfT = sfP * sfTile.xy;
-  vec2 sfTx = sfGx * sfTile.xy, sfTy = sfGy * sfTile.xy;
+  vec2 sfT = (sfP + sfFo) * sfTile.xy;
+  vec2 sfTx = sfGx * sfFl * sfTile.xy, sfTy = sfGy * sfFl * sfTile.xy;
   vec4 sfA = textureGrad(map, sfT, sfTx, sfTy);
   vec4 sfS = textureGrad(normalMap, sfT, sfTx, sfTy);
   if (sfHide > 0.002) {
-    vec2 sfT2 = (sfP + sfOff) * sfTile.xy;
+    vec2 sfT2 = (sfP + sfFo + sfOff) * sfTile.xy;
     sfA = mix(sfA, textureGrad(map, sfT2, sfTx, sfTy), sfHide);
     sfS = mix(sfS, textureGrad(normalMap, sfT2, sfTx, sfTy), sfHide);
   }
@@ -189,8 +206,9 @@ ${f.joint ? MAP_JOINT : ''}${f.spots ? MAP_SPOTS : ''}  }
   float sfRough = sfA.a * sfRoughMul;
 `;
 
-// dressing: each block gets its own dressing (taltish comb strokes from the tool map,
-// pecked or rubbed from the detail map), rotated per block, finer on the drafted margin
+// dressing: each block gets its own dressing (taltish strokes from the tool map, pecked or
+// rubbed from the detail map), rotated, offset and scaled (±12 %) per block, finer on the
+// drafted margin
 const MAP_DRESS = /* glsl */ `
     if (sfDetail2.y > 0.0 && sfLay.y > 0.5) {
       float hd = sfHf(sfH(sfCh + 21u)), ha = sfHf(sfH(sfCh + 22u));
@@ -198,8 +216,9 @@ const MAP_DRESS = /* glsl */ `
       float ang = dTool ? (ha < 0.4 ? 1.5708 : (ha < 0.7 ? 0.85 : 2.29)) + (sfHf(sfH(sfCh + 23u)) - 0.5) * 0.35 : ha * 6.2832;
       float ca = cos(ang), sa = sin(ang);
       sfDR = mat2(ca, sa, -sa, ca);
-      dq = sfDR * sfCl * sfDetail.x + vec2(sfHf(sfH(sfCh + 24u)), sfHf(sfH(sfCh + 25u)));
-      dgx = sfDR * dgx; dgy = sfDR * dgy;
+      float dsc = 0.88 + 0.24 * sfHf(sfH(sfCh + 27u));
+      dq = sfDR * sfCl * (sfDetail.x * dsc) + vec2(sfHf(sfH(sfCh + 24u)), sfHf(sfH(sfCh + 25u)));
+      dgx = sfDR * dgx * dsc; dgy = sfDR * dgy * dsc;
       bool rubbed = !dTool && hd > sfDetail2.y + (1.0 - sfDetail2.y) * 0.6;
       dAmp = rubbed ? 0.3 : 1.0;
       dFar = dTool ? 0.955 : (rubbed ? 1.0 : 0.97);   // mean self-shadowing of the tooling
@@ -260,17 +279,20 @@ const MAP_MACRO = /* glsl */ `
   }
 `;
 
-// street ribbons: grime along the rails, lighter worn lanes (d = lateral route offset)
+// lanes across ribbons (v = lateral offset): soft grime bands either side of a lane
+// centre (the rails of a track, a sidewalk's kerb and building line), patchy along them,
+// and a worn lane round the centre (paler and polished, or trodden darker if wear < 0)
 const mapLanes = (attr) => /* glsl */ `
-  if (sfLanes.z + sfLanes.w > 0.0) {
+  if (sfLanes.z + abs(sfLanes.w) > 0.0) {
     float sfLd = ${attr ? 'vSfLaneD' : 'vMapUv.y'};
-    float sfLn = texture(sfMacroTex, vec2(vMapUv.x, sfLd) * vec2(0.11, 0.9)).g - 0.5;
+    vec4 sfLm = texture(sfMacroTex, vec2(vMapUv.x, sfLd) * vec2(0.11, 0.9));
+    float sfLn = sfLm.g - 0.5;
     float dT = abs(abs(sfLd) - sfLanes.x);
-    float dR = abs(dT - sfLanes.y) + 0.05 * sfLn;
-    float grime = 1.0 - smoothstep(0.05, 0.24, dR);
-    float lane = 1.0 - smoothstep(0.18, 0.42, dT + 0.08 * sfLn);
+    float dR = abs(dT - sfLanes.y) + 0.26 * (sfLanes2.y - sfLanes2.x) * sfLn;
+    float grime = (1.0 - smoothstep(sfLanes2.x, sfLanes2.y, dR)) * (0.4 + 1.2 * sfLm.r);
+    float lane = 1.0 - smoothstep(sfLanes2.z, sfLanes2.w, dT + 0.35 * (sfLanes2.w - sfLanes2.z) * sfLn);
     sfAlb *= (1.0 - sfLanes.z * grime) * (1.0 + sfLanes.w * lane);
-    sfRough = max(sfRough - 0.08 * lane * step(0.001, sfLanes.w), 0.05);
+    sfRough = max(sfRough - 0.08 * lane * step(0.001, abs(sfLanes.w)), 0.05);
   }
 `;
 
@@ -351,7 +373,7 @@ const NORMAL_DETAIL = /* glsl */ `
 `;
 
 const normalChunk = (f) => /* glsl */ `
-  vec2 sfN = sfS.rg * 2.0 - 1.0;
+  vec2 sfN = (sfS.rg * 2.0 - 1.0)${f.layout ? ' * sfFl' : ''};
   float sfVar = max(sfS.b - dot(sfN, sfN) - 0.004, 0.0) * (1.0 - max(sfFlags.x, sfFlags.z));
 ${f.detail ? NORMAL_DETAIL : ''}  if (sfFlags.y > 0.5) sfN = sfN.yx;
   sfN *= normalScale * sfMisc.x;
@@ -528,9 +550,11 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfMisc: { value: v4([cfg.normal ?? 1, cfg.ao ?? 1, cfg.variance ?? 2, cfg.microShadow ?? 1]) },
     sfSpots: { value: v4([L ? sp.prob ?? 0 : 0, sp.radius ?? 0.01, sp.albedo ?? 1, sp.rough ?? 0.5]) },
     sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, 0]) },
-    sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.7 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
+    sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
+    sfMirror: { value: L ? cfg.mirror ?? 0 : 0 },
     sfWeather: { value: v4(shared.macro ? [w.ledge ?? 0, w.streak ?? 0, w.threshold ?? 0.62, w.soffit ?? 0] : [0, 0, 0, 0]) },
     sfLanes: { value: v4(shared.macro ? [ln.track ?? 1.6, ln.rail ?? 0.7455, ln.grime ?? 0, ln.wear ?? 0] : [0, 0, 0, 0]) },
+    sfLanes2: { value: v4([...(ln.grimeBand || [0.05, 0.24]), ...(ln.laneBand || [0.18, 0.42])]) },
     sfDetailTex: { value: detailTex || null },
     sfToolTex: { value: toolTex || detailTex || null },
     sfMacroTex: { value: shared.macro || null },

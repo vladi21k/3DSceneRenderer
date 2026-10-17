@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RNG } from '../core/rng.js';
+import { RNG, loopNoise1 } from '../core/rng.js';
 import { TEMPLATES, SHRUBS } from './vegetation/species.js';
 import { buildLeafAtlas, blankAtlas } from './vegetation/leafAtlas.js';
 import { buildTreeTemplate, buildShrubTemplate } from './vegetation/treeGen.js';
@@ -77,6 +77,7 @@ const vegetation = {
       build: [{ n: 0, total: 0, max: 0 }, { n: 0, total: 0, max: 0 }],
       initMs: { templates: +(t1 - t0).toFixed(1), total: +(performance.now() - t0).toFixed(1) },
       atlas: null,
+      mature: +([...this.plan.values()].filter((p) => p.mature).length / Math.max(1, this.plan.size)).toFixed(3),
       templates: this.trees.map((t) => ({ id: t.tpl.id, ...t.stats,
           tris: [0, 1, 2].map((l) => (t.leaves[l].index.count + t.bark[0][l].index.count) / 3) })),
     };
@@ -85,34 +86,42 @@ const vegetation = {
   /**
    * Plan every tree once (deterministic, independent of chunk build order): template,
    * mirror, instance matrix, tints and LOD size. Species come in zones of a few hundred
-   * metres, mostly one species; a tree never repeats the template of the previous tree on
-   * its side, nor the template + mirror of the one before.
+   * metres, each side of the street planted on its own (mostly one species, some of the
+   * others mixed in); a tree never repeats the template of the previous tree on its side,
+   * nor the template + mirror of the one before. About a third of the trees are old
+   * (8-11 m, crowns up to the second floor): the layout's mature trees plus some of its
+   * young ones, in loose runs of older planting.
    */
   _planTrees() {
     const { route, layout } = this.app;
     const plan = new Map();
     const last = { '-1': [], '1': [] };
     const trees = layout.trees.slice().sort((a, b) => a.side - b.side || a.s - b.s);
+    const L = route.length;
     for (const t of trees) {
       const zone = Math.floor(route.wrap(t.s) / 330);
-      const zr = RNG.from(layout.seed, 'vegzone', zone);
-      const dominant = zr.chance(0.62) ? 'pagoda' : 'ash';
-      const other = dominant === 'pagoda' ? 'ash' : 'pagoda';
+      const zr = RNG.from(layout.seed, 'vegzone', zone, t.side);
+      const dominant = zr.weighted([['pagoda', 0.45], ['ash', 0.33], ['dense', 0.22]]);
       const r = new RNG(t.seed ^ 0x5bd1e995);
+      // older planting: the layout's mature trees, and young ones promoted in loose runs
+      const run = loopNoise1(route.wrap(t.s), L, 90, layout.seed + (t.side > 0 ? 17 : 29));
+      const mature = t.mature || r.chance(THREE.MathUtils.clamp(0.21 + 0.32 * run, 0, 0.5));
+      const height = mature && !t.mature ? r.range(8.2, 10.8) : t.height;
+      const crown = mature && !t.mature ? r.range(4.8, 6.4) : t.crown;
       const prev = last[t.side];
       let T = null, mirror = 0;
       for (let tries = 0; tries < 8; tries++) {
         let cand;
-        if (t.mature) {
-          const id = r.weighted(dominant === 'pagoda'
-            ? [['pagodaM', 0.5], ['denseM', 0.35], ['ashM', 0.15]]
-            : [['ashM', 0.5], ['denseM', 0.35], ['pagodaM', 0.15]]);
+        if (mature) {
+          const id = r.weighted(dominant === 'pagoda' ? [['pagodaM', 0.55], ['denseM', 0.25], ['ashM', 0.2]]
+            : dominant === 'ash' ? [['ashM', 0.55], ['denseM', 0.25], ['pagodaM', 0.2]]
+              : [['denseM', 0.55], ['pagodaM', 0.25], ['ashM', 0.2]]);
           cand = this.trees.find((x) => x.tpl.id === id);
         } else {
-          const species = r.chance(0.86) ? dominant : other;
+          const species = r.chance(0.75) ? dominant : r.pick(['pagoda', 'ash', 'dense'].filter((x) => x !== dominant));
           const cands = this.trees.filter((x) => !x.tpl.mature && x.tpl.species === species);
           // prefer templates close to the planned size, keep some randomness
-          cand = r.weighted(cands.map((x) => [x, 1 / (0.35 + Math.abs(x.tpl.height - t.height))]));
+          cand = r.weighted(cands.map((x) => [x, 1 / (0.35 + Math.abs(x.tpl.height - height))]));
         }
         const mir = r.chance(0.5) ? 1 : 0;
         T = cand; mirror = mir;
@@ -125,17 +134,18 @@ const vegetation = {
       const heading = route.heading(t.s);
       // the pruned (clearance) side of the template faces the tracks; some yaw jitter
       const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.25);
-      const sy = THREE.MathUtils.clamp(t.height / tpl.height, 0.82, 1.22);
-      const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (t.crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.12 : 1.2);
+      const sy = THREE.MathUtils.clamp(height / tpl.height, 0.82, 1.22);
+      const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.12 : 1.2);
       const sx = sxz * r.range(0.9, 1.1), sz = sxz * r.range(0.9, 1.1) * (mirror ? -1 : 1);
       // lean: mostly away from the tracks (local +x), a little along the street
       _e.set(r.range(-0.035, 0.035), 0, r.range(-0.045, 0.015));
       route.toWorld(t.s, t.d, 0, _p);
       _q.setFromAxisAngle(_yAxis, yaw).multiply(_q2.setFromEuler(_e));
       const matrix = new THREE.Matrix4().compose(_p, _q, _s.set(sx, sy, sz));
-      // per-tree tint: vigour / light differences between individual trees
-      const v = r.range(0.9, 1.07), h = r.range(-0.05, 0.05), bv = r.range(0.88, 1.08);
-      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sxz,
+      // per-tree tint: vigour / light differences between individual trees (value about
+      // ±8 %, hue about ±6°)
+      const v = r.range(0.92, 1.08), h = r.range(-0.14, 0.14), bv = r.range(0.88, 1.08);
+      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sxz, mature,
         leafTint: new THREE.Color(v * (1 + h), v, v * (1 - 2 * h)), barkTint: new THREE.Color(bv, bv, bv), seed: t.seed };
       plan.set(t, p);
       prev.push(p);

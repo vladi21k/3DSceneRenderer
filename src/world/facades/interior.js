@@ -43,23 +43,52 @@ import { U } from '../../core/uniforms.js';
 //                                 recess (fraction), window sill / head heights in room space
 //   aFrame  (r, g, b, on)         far range: procedural casing colour
 
+/** Share of the rooms lit at full night (uNight = 1); closed shutters hide ~1/5 of them. */
+export const LIT_SHARE = 0.5;
+
+/**
+ * Character of a lit room from its lit threshold (aWin.y), shared by the rooms and their
+ * reveal spill (spill.js): lamp colour 2700–4000 K (mostly warm, a few cool LED rooms),
+ * level ×0.6–1.4, and ~7% of the rooms lit only by a television.
+ */
+export const ROOM_LIGHT_GLSL = /* glsl */`
+#define LIT_SHARE ${LIT_SHARE.toFixed(3)}
+vec3 fRoomLampC( float lit ) {
+  float c = fract( lit * 13.71 + 0.37 );
+  vec3 warm = vec3( 1.0, 0.56, 0.27 ), mid = vec3( 1.0, 0.68, 0.42 ), cool = vec3( 1.0, 0.80, 0.62 );
+  return c < 0.55 ? mix( warm, mid, c / 0.55 ) : c < 0.9 ? mix( mid, cool, ( c - 0.55 ) / 0.35 ) : vec3( 0.95, 0.9, 0.84 );
+}
+float fRoomLevel( float lit ) { return 0.6 + 0.8 * fract( lit * 7.13 + 0.5 ); }
+float fRoomTV( float lit ) { return step( fract( lit * 31.17 + 0.11 ), 0.07 ); }
+// television light: cool, its level jumping at every cut and drifting within a shot
+vec3 fTVLight( float lit, float t ) {
+  float cut = floor( t * 0.45 + lit * 17.0 );
+  float a = fract( sin( cut * 12.9898 + lit * 78.233 ) * 43758.5453 );
+  float b = fract( sin( cut * 39.346 + lit * 11.135 ) * 24634.6345 );
+  float drift = 0.85 + 0.15 * sin( t * 2.1 + lit * 40.0 ) * sin( t * 0.7 );
+  return mix( vec3( 0.55, 0.7, 1.0 ), vec3( 0.95, 0.9, 0.85 ), b * 0.6 ) * ( 0.35 + 0.65 * a ) * drift;
+}
+`;
+
 /** Shop interior types, in shader order. */
 export const SHOP_TYPES = ['clothing', 'general', 'cafe', 'jewellery', 'pharmacy', 'shoes', 'books', 'flowers'];
 export const shopTypeIndex = (name) => Math.max(0, SHOP_TYPES.indexOf(name));
 /** Pack aWin.w. */
 export const winCode = (kind, noGlass = false, type = 0) => kind + (noGlass ? 4 : 0) + 8 * type;
 
+// Per-window values are flat: an interpolated constant carries ~1e-7 of rounding noise,
+// which the hashes below amplify into per-pixel speckle (goods, furniture sizes).
 const VERT_PARS = /* glsl */`
 attribute vec4 aRoomP;
 attribute vec4 aRoomS;
 attribute vec4 aWin;
 attribute vec4 aFac;
 attribute vec4 aFrame;
-varying vec4 vFrame;
+flat varying vec4 vFrame;
 varying vec4 vRoomP;
-varying vec4 vRoomS;
-varying vec4 vWin;
-varying vec4 vFac;
+flat varying vec4 vRoomS;
+flat varying vec4 vWin;
+flat varying vec4 vFac;
 varying vec3 vFW;
 `;
 
@@ -70,15 +99,19 @@ vFW = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 
 const FRAG_PARS = /* glsl */`
 uniform float uTime;
+${ROOM_LIGHT_GLSL}
+// shop lighting by day, relative to the daylight irradiance on the glass: interiors read
+// at ~10–20% of the street's luminance, so the glass is dominated by its reflection
+#define SHOP_DAY 0.16
 uniform float uNight;
 uniform float uEmGain;
 uniform vec3 uSunDir;
 uniform vec3 uSunColor;
-varying vec4 vFrame;
+flat varying vec4 vFrame;
 varying vec4 vRoomP;
-varying vec4 vRoomS;
-varying vec4 vWin;
-varying vec4 vFac;
+flat varying vec4 vRoomS;
+flat varying vec4 vWin;
+flat varying vec4 vFac;
 varying vec3 vFW;
 
 // pixel angle (radians) and camera distance to the glass, set per pixel before tracing;
@@ -627,31 +660,34 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float inY = fEdge( q.y - fac.z, pen ) * fEdge( fac.w - q.y, pen );
     E += sunC * inX * inY * max( dot( nn, sunR ), 0.0 ) * 0.72;
   }
-  // artificial light, colour by kind: ~2700 K homes (±10%), cafes ~2500 K, shops 3000–3500 K
-  float litT = uNight * 0.58;
+  // artificial light, colour by kind: homes 2700–4000 K by room (shared with the reveal
+  // spill), cafes ~2500 K, shops 3000–3500 K, pharmacies cool
+  float litT = uNight * LIT_SHARE;
   float lit = 1.0 - smoothstep( litT - 0.03, litT + 0.03, win.y );
   if ( win.y < 0.035 ) lit = max( lit, 0.6 ); // a few rooms with the lights on during the day
-  vec3 lampC = vec3( 1.0, 0.60, 0.31 ) * ( vec3( 1.0 ) + ( fh3( seed * 3.3 ) - 0.5 ) * vec3( 0.0, 0.12, 0.16 ) ) * gEm;
+  bool tv = !shop && !stair && fRoomTV( win.y ) > 0.5;
+  vec3 lampC = ( stair ? vec3( 1.0, 0.62, 0.33 ) : fRoomLampC( win.y ) * fRoomLevel( win.y ) ) * gEm;
+  float Ih = stair ? 0.006 : tv ? 0.0025 : 0.024;
   vec3 Elamp = vec3( 0.0 );
   float glowK = 0.0;
   if ( shop ) {
     lampC = st > 3.5 && st < 4.5 ? vec3( 0.93, 0.95, 1.0 ) : st > 1.5 && st < 2.5 ? vec3( 1.0, 0.58, 0.29 )
           : mix( vec3( 1.0, 0.70, 0.43 ), vec3( 1.0, 0.64, 0.36 ), step( 0.5, fh1( seed * 5.1 ) ) );
-    // shops are lit all day; by day the level follows the daylight outside so the
-    // interior keeps its place relative to the street in the exposure
-    // seen from the daylit street the warm light reads less orange than at night
+    // shops are lit all day; seen from the daylit street the warm light reads less orange
     lampC = mix( lampC, vec3( 1.0, 0.86, 0.72 ), 0.45 * ( 1.0 - uNight ) ) * gEm;
-    float I = mix( max( 0.0012, 1.25 * daylum ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
+    float I = mix( SHOP_DAY * daylum * ( 0.7 + 0.6 * fh1( seed * 8.3 ) ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
     float ex = st > 3.5 && st < 4.5 ? 2.0 : st > 2.5 && st < 3.5 ? 14.0 : 8.0;
     // downlight pools, the inter-reflected fill, and display spots on the window zone
     Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + ( 0.42 + 0.5 * smoothstep( 2.2, 0.4, p.z ) ) * ao );
     glowK = I;
   } else if ( lit > 0.0 ) {
-    float I = stair ? 0.006 : 0.024;
-    Elamp = lampC * lit * I * ( fLamp( p, nn, lp, lk ) * ( 0.7 + 0.3 * ao ) + 0.035 * ao );
-    // a television's cool flicker in a few rooms
-    if ( fh1( seed * 9.7 ) < 0.1 ) Elamp += vec3( 0.25, 0.35, 0.6 ) * lit * 0.0007 * ( 0.6 + 0.4 * sin( uTime * 7.0 + seed * 40.0 ) * sin( uTime * 2.3 ) ) * ao;
-    glowK = I * lit;
+    Elamp = lampC * lit * Ih * ( fLamp( p, nn, lp, lk ) * ( 0.7 + 0.3 * ao ) + 0.035 * ao );
+    if ( tv ) {
+      // lit by a television on the side wall: cool, flickering with the picture
+      vec3 tp = vec3( rnd.y < 0.5 ? S.x - 0.1 : 0.1, 0.95, S.z * 0.55 );
+      Elamp += fTVLight( win.y, uTime ) * gEm * lit * 0.006 * ( fLamp( p, nn, tp, 1.0 ) * ( 0.6 + 0.4 * ao ) + 0.03 * ao );
+    }
+    glowK = Ih * lit;
   }
   vec3 col = h.alb * ( E + Elamp ) * RECIPROCAL_PI + h.glow * lampC * glowK;
 
@@ -661,7 +697,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float tl = fShade( ro, rd, lp, r, lp.y - 0.13, lp.y + 0.07, inner );
     if ( tl > 0.0 && tl < h.t ) {
       vec3 shadeDay = vec3( 0.62, 0.56, 0.46 ) * Eday * ( 0.06 + 0.05 * inner ) * RECIPROCAL_PI;
-      col = mix( col, shadeDay + lampC * lit * 0.024 * ( inner > 0.5 ? 6.0 : 1.2 ), gDet );
+      col = mix( col, shadeDay + lampC * lit * Ih * ( inner > 0.5 ? 6.0 : 1.2 ), gDet );
     }
   }
   // cafe pendants
@@ -686,7 +722,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       float xr = c.x - S.x * 0.5;
       vec3 dc = DRAPES[ int( fh1( seed * 4.1 ) * 5.99 ) ];
       vec3 pc = vec3( c, zc );
-      vec3 back = lit > 0.0 ? lampC * lit * 0.024 * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.035 ) : vec3( 0.0 );
+      vec3 back = lit > 0.0 ? lampC * lit * Ih * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.035 ) : vec3( 0.0 );
       vec3 front = Eday * 0.45;
       if ( dtype < 1.5 ) {
         // curtains drawn to the sides

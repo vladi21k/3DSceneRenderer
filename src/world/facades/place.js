@@ -10,13 +10,14 @@ import { shopLayout, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
-import { spillTpl, spillAttrs } from './spill.js';
+import { spillTpl, spillAttrs, groundGlow } from './spill.js';
 import { slopeAwningT as slopeAwning, domeAwningT as domeAwning, awningColors } from './awnings.js';
 import { crownY, springY, isArched, halfWidthAt, outlinePts } from './outline.js';
 import { paint } from './kit.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const _m = new THREE.Matrix4(), _t = new THREE.Matrix4(), _r = new THREE.Matrix4(), _ms = new THREE.Matrix4();
+const IDENT = new THREE.Matrix4();
 
 const SHOP_FRAMES = [0x1e1f20, 0x34373a, 0x2a3d30, 0x3b2f25, 0x585c5d, 0xcfcdc5, 0x23303d];
 const DOOR_COLORS = { brown: 0x4a2e1c, varnish: 0x5e3b20, green: 0x283f30, blue: 0x2b5068, black: 0x1d1d1e, red: 0x561c19 };
@@ -41,10 +42,10 @@ function wallMatrix(frame, u, v, out = _m) {
 }
 
 /** Warm light from the room onto the reveal of opening o (night only, near range, see spill.js). */
-function addSpill(kit, ctx, o, m, lit, kind) {
+function addSpill(kit, ctx, o, m, lit, kind, dim = 0) {
   if (ctx.q < 0.5) return;
   const sp = spillTpl(o);
-  kit.get('spill').add(sp.tpl, m, 1, 1, 1, spillAttrs(lit, kind, sp.R));
+  kit.get('spill').add(sp.tpl, m, 1, 1, 1, spillAttrs(lit, kind, dim, sp));
 }
 
 /** Interior glass attributes for an opening with glass at local depth zRef. */
@@ -59,6 +60,18 @@ export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 
     aFac: [ctx.angle, Math.floor(ctx.streetW) + Math.min(0.95, o.recess), winY0, winY1], // street width + recess packed
     aFrame: [0, 0, 0, 0],
   };
+}
+
+/**
+ * Share of a lit room's light held back from its reveals by the drapes (type + amount,
+ * see interior.js): curtains and blinds pass ~40–60% of the light through the fabric.
+ */
+function drapeDim(drape) {
+  const type = Math.floor(drape), amt = drape - type;
+  if (type === 1 || type === 3) return amt * 0.6;     // curtains closed by amt / blind down by amt
+  if (type === 2) return 0.4 + 0.15 * amt;            // sheers over the whole window
+  if (type === 4) return amt * 0.5;                   // venetian blind
+  return 0;
 }
 
 // ------------------------------------------------------------------ windows
@@ -95,7 +108,7 @@ function buildWindow(kit, ctx, o) {
   const gt = glassTpl(o, v, ctx.q, open);
   kit.get('glass').add(gt.glass, m, 1, 1, 1, ga);
   if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, winCode(0, true)] }); // no glass: open aperture
-  if (o.shutters !== 'closed') addSpill(kit, ctx, o, m, o.lit, 0);
+  if (o.shutters !== 'closed') addSpill(kit, ctx, o, m, o.lit, 0, drapeDim(drape));
   // external roller shutters on flat heads (modern and some Mandate facades)
   const rollerP = v.type === 'alu' ? 0.75 : plan.style.era === 'mandate' ? 0.18 : 0.04;
   if (!o.shutters && o.top === 'flat' && o.recess > 0.15 && r.next() < rollerP) {
@@ -286,8 +299,13 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   const D = 6.5 + r.next() * 3;
   kit.get('glass').add(T.glass, m, 1, 1, 1,
     glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit }));
-  // floor of a recessed entrance (the buildings' dark box behind it is unlit)
   addSpill(kit, ctx, o, m, o.lit, 1);
+  // its light on the pavement in front (main-street fronts)
+  if (ctx.q >= 0.5 && !ctx.lot.sideStreet && !ctx.plan.isReturn && !ctx.lot.backdrop) {
+    const gg = groundGlow(ctx, o);
+    if (gg) kit.get('spill').add(gg.tpl, IDENT, 1, 1, 1, gg.attrs);
+  }
+  // floor of a recessed entrance (the buildings' dark box behind it is unlit)
   if (T.recess) { const tint = plan.style.tint; kit.get('stone').add(T.recess, m, tint[0] * 0.8, tint[1] * 0.78, tint[2] * 0.74); }
   yield;
   // roller-shutter box and guides

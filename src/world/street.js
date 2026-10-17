@@ -6,7 +6,7 @@ import { buildMainRails } from './street/track.js';
 import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS } from './street/constants.js';
-import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js';
+import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
 import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
@@ -22,7 +22,9 @@ import { createMortarMaterial, patchCanyon, patchCut } from './street/shading.js
 const RAIL_HEAD = { normalScale: [0.35, 0.35], vertexColors: true };
 const RAIL_GROOVE = { vertexColors: true };
 
-const PREFETCH_MS = 0.5;   // planning ahead, per frame
+const PREFETCH_MS = 0.6;   // planning and building ahead, per frame
+const LEAD = 48;           // chunks are built ahead this many metres before the streamer needs them
+const MAX_JOBS = 6;
 
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
@@ -81,6 +83,8 @@ const street = {
     mats.cutDiv = { ...mats.cut, mortar: mortarDiv };
     this.surface = surface;
     this.ctx = { app, route: app.route, layout: app.layout, surface, mats, zonePad: 1.5, delta: surface.dl };
+    this.jobs = new Map();     // chunk index * 2 + lod -> build in progress (see prefetch)
+    this.linePool = [];        // LineBuf scratch, one per build in progress
     // detail plans are per chunk index and also flatten the paving under covers
     const plans = this.plans = new Map();
     this.planFor = (ci) => {
@@ -120,42 +124,76 @@ const street = {
   /** Paving height above the route elevation at (s, d) (metres). */
   heightAt(s, d) { return this.surface ? this.surface.heightAt(s, d) : 0; },
 
+  /** The street of a chunk. Chunks the streamer is about to ask for are usually built
+   *  already, a slice per frame (see prefetch); otherwise all steps run now. */
   build(chunk) {
+    const key = chunk.index * 2 + chunk.lod;
+    let job = this.jobs.get(key);
+    if (job) this.jobs.delete(key);
+    else job = this.startJob(chunk);
+    while (!this.stepJob(job));
+    return job.group;
+  },
+
+  startJob(chunk) {
+    const c = { index: chunk.index, s0: chunk.s0, s1: chunk.s1, lod: chunk.lod };
+    const job = { chunk: c, bufs: new BufSet(), lines: this.linePool.pop() || new LineBuf(), group: null };
+    job.it = this.steps(c, job);
+    return job;
+  },
+
+  /** Run the next step of a job (true once it has its group). Each step re-focuses the
+   *  surface on the job's chunk, since other builds may run between its steps. */
+  stepJob(job) {
+    if (job.group) return true;
+    const t0 = this.timing ? performance.now() : 0;
+    this.ctx.surface.focus(job.chunk.s0, job.chunk.s1);
+    const r = job.it.next();
+    if (this.timing) {
+      const k = r.done ? 'meshes' : r.value;
+      this.timing[k] = (this.timing[k] || 0) + performance.now() - t0;
+    }
+    if (!r.done) return false;
+    job.group = r.value;
+    this.linePool.push(job.lines.reset());
+    job.lines = null;
+    return true;
+  },
+
+  /** Drop a pre-built job the streamer never asked for. */
+  dropJob(job) {
+    if (job.group) job.group.traverse((o) => o.geometry && o.geometry.dispose());
+    else { job.it.return(); job.bufs.release(); this.linePool.push(job.lines.reset()); }
+  },
+
+  /** The build as a sequence of steps of well under a millisecond each (it yields the
+   *  phase just done, for the debug timings); returns the chunk's group. */
+  *steps(chunk, { bufs, lines: LB }) {
     const ctx = this.ctx;
-    const T = this.timing ? [performance.now()] : null;   // phase timings (debug only)
-    const mark = T ? (k) => { const t = performance.now(); this.timing[k] = (this.timing[k] || 0) + t - T[0]; T[0] = t; } : () => {};
-    const group = new THREE.Group();
-    group.name = 'street';
-    ctx.surface.focus(chunk.s0, chunk.s1);
     const rows = makeRows(ctx, chunk);
-    const bufs = new BufSet();
-    mark('rows');
-    const samples = buildPaving(ctx, chunk, rows, bufs);
+    yield 'rows';
+    const samples = yield* buildPaving(ctx, chunk, rows, bufs);
     buildSlab(ctx, chunk, bufs);
-    mark('paving');
+    yield 'paving';
 
     // 3D main rails (through crossovers too)
-    if (chunk.lod === 0) buildMainRails(ctx, chunk, rows, samples, bufs);
-    mark('rails3d');
+    if (chunk.lod === 0) yield* buildMainRails(ctx, chunk, rows, samples, bufs);
     // line overlays (one mesh): rails (far-field AA), paint, joints
-    const LB = (this.lineBuf || (this.lineBuf = new LineBuf())).reset();
     const L = {
       rail: LB.style(chunk.lod === 0 ? LINE_STYLE.railNear : LINE_STYLE.railFar),
       centre: LB.style(LINE_STYLE.centre), stripe: LB.style(LINE_STYLE.stripe), joint: LB.style(LINE_STYLE.joint),
+      seal: LB.style(LINE_STYLE.seal), patch: LB.style(LINE_STYLE.patch), polish: LB.style(LINE_STYLE.polish),
     };
     // crossovers overlapping the chunk (each builds only its part inside the chunk)
-    for (const c of ctx.surface.near.xo) buildCrossover(ctx, c, chunk, bufs, L.rail);
+    for (const c of ctx.surface.near.xo) yield* buildCrossover(ctx, c, chunk, bufs, L.rail);
     for (const c of ctx.layout.inChunk('crossStreets', chunk.index)) {
-      for (const side of c.side === 0 ? [-1, 1] : [c.side]) buildCrossStreet(ctx, c, side, chunk, bufs, L);
+      for (const side of c.side === 0 ? [-1, 1] : [c.side]) yield* buildCrossStreet(ctx, c, side, chunk, bufs, L);
       buildCorridorCrossing(ctx, c, chunk, bufs, L);
     }
     if (chunk.lod === 0) {
       buildPlatformTactile(ctx, chunk, bufs);
-      buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L.joint, samples.grid);
+      yield* buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L.joint, samples.grid);
     }
-    mark('special');
-    bufs.build(group, 'street');
-    mark('meshes');
 
     for (const rl of MAIN_RAILS) {
       const pts = samples.map((S) => ({ px: S.px + S.rx * rl.c, py: S.py, pz: S.pz + S.rz * rl.c, rx: S.rx, rz: S.rz, u: S.u }));
@@ -175,9 +213,16 @@ const street = {
       run.push(S.px, S.py + ctx.surface.height(S.ri, 0), S.pz, S.rx, S.rz, S.u);
     }
     flush();
+    yield 'lines';
 
+    const group = new THREE.Group();
+    group.name = 'street';
+    // a step per few thousand vertices of meshes
+    let nv = 0;
+    for (const n of bufs.meshes(group, 'street')) {
+      if ((nv += n) > 6000) { nv = 0; yield 'meshes'; }
+    }
     if (!LB.empty) group.add(LB.mesh(ctx.mats.lines, 'street:lines'));
-    mark('lines');
     return group;
   },
 
@@ -191,20 +236,56 @@ const street = {
     }
   },
 
-  /** Plan ahead, within PREFETCH_MS a frame, what chunk builds would otherwise compute
-   *  first: the detail plans of every chunk in view range (builds read their
-   *  neighbours' too) and the plans of the crossovers in it. */
+  /** Work ahead, within PREFETCH_MS a frame: plan what chunk builds would otherwise
+   *  compute first (the detail plans of every chunk in view range, which builds read
+   *  for their neighbours too, and the plans of the crossovers in it), then build, step
+   *  by step, the chunks the streamer will ask for next: lod 0 rebuilds about to come
+   *  within LOD0_DIST and new lod 1 chunks about to come within VIEW_AHEAD (the
+   *  streamer's chunk distances). Its build() then only hands the group over. */
   prefetch(app) {
     const L = this.ctx.layout, n = L.nChunks, plans = this.plans;
-    const c0 = L.chunkIndex((app.cameraS ?? app.startS) - VIEW_BEHIND);
-    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD) / CHUNK_LEN) + 2;
+    const sCam = app.cameraS ?? app.startS;
     const t0 = performance.now();
-    for (let k = 0; k < nAhead && performance.now() - t0 < PREFETCH_MS; k++) {
+    const c0 = L.chunkIndex(sCam - VIEW_BEHIND);
+    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD) / CHUNK_LEN) + 2;
+    for (let k = 0; k < nAhead && performance.now() - t0 < PREFETCH_MS * 0.5; k++) {
       const ci = (c0 + k) % n;
       if (plans.has(ci)) continue;
       this.planFor(ci);
       for (const c of L.inChunk('crossovers', ci)) crossoverPlan(c, this.ctx.delta);
     }
+
+    const jobs = this.jobs, len = app.route.length;
+    const ahead = (lo, hi, lod) => {
+      for (let i = Math.floor((sCam + lo) / CHUNK_LEN); i <= Math.floor((sCam + hi) / CHUNK_LEN) + 1; i++) {
+        const dist = i * CHUNK_LEN - sCam;
+        if (dist < lo || dist >= hi) continue;
+        const index = ((i % n) + n) % n, key = index * 2 + lod;
+        if (jobs.has(key)) continue;
+        const s0 = index * CHUNK_LEN;
+        jobs.set(key, this.startJob({ index, s0, s1: Math.min(len, s0 + CHUNK_LEN), lod }));
+      }
+    };
+    ahead(LOD0_DIST, LOD0_DIST + LEAD, 0);
+    ahead(VIEW_AHEAD + 1e-6, VIEW_AHEAD + LEAD, 1);
+    // forget jobs whose chunk the streamer has long since built (or will not want)
+    for (const [key, job] of jobs) {
+      const dist = this.ctx.delta(sCam, job.chunk.s0), edge = job.chunk.lod === 0 ? LOD0_DIST : VIEW_AHEAD;
+      if (dist < edge - 2 * CHUNK_LEN || dist > edge + LEAD + 2 * CHUNK_LEN || jobs.size > MAX_JOBS) {
+        this.dropJob(job);
+        jobs.delete(key);
+      }
+    }
+    // nearest first: a step a frame, more while well inside the budget (a step takes
+    // 0.1-0.5 ms)
+    let next = null;
+    do {
+      next = null;
+      for (const job of jobs.values()) {
+        if (!job.group && (!next || this.ctx.delta(sCam, job.chunk.s0) < this.ctx.delta(sCam, next.chunk.s0))) next = job;
+      }
+      if (next) this.stepJob(next);
+    } while (next && performance.now() - t0 < PREFETCH_MS * 0.5);
   },
 };
 

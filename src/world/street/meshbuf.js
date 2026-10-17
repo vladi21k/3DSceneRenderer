@@ -123,7 +123,7 @@ function giveBack(b) {
   if (list.length < 48) list.push(b.reset());
 }
 
-/** One MeshBuf per material; build() returns meshes added to a group. */
+/** One MeshBuf per material; build() adds their meshes to a group. */
 export class BufSet {
   constructor() { this.map = new Map(); }
   /** Buffer for `material`; cap pre-sizes it (vertices) when it is created. A material
@@ -137,18 +137,28 @@ export class BufSet {
     }
     return b;
   }
-  build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0 } = {}) {
+  build(group, name, opts) {
+    for (const _ of this.meshes(group, name, opts));
+  }
+  /** build() one mesh at a time: yields after each mesh (for builds spread over frames). */
+  *meshes(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0 } = {}) {
     for (const [mat, b] of this.map) {
-      if (!b.empty) {
-        const m = new THREE.Mesh(b.geometry(), mat);
-        m.name = `${name}:${mat.name}`;
-        m.castShadow = castShadow; m.receiveShadow = receiveShadow;
-        m.renderOrder = renderOrder;
-        m.matrixAutoUpdate = false;
-        group.add(m);
-      }
+      if (b.empty) { giveBack(b); this.map.delete(mat); continue; }
+      const m = new THREE.Mesh(b.geometry(), mat);
+      m.name = `${name}:${mat.name}`;
+      m.castShadow = castShadow; m.receiveShadow = receiveShadow;
+      m.renderOrder = renderOrder;
+      m.matrixAutoUpdate = false;
+      group.add(m);
+      const n = b.n;
       giveBack(b);
+      this.map.delete(mat);
+      yield n;
     }
+  }
+  /** Return every buffer to the pool unbuilt (an abandoned build). */
+  release() {
+    for (const b of this.map.values()) giveBack(b);
     this.map.clear();
   }
 }

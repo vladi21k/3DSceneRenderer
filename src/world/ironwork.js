@@ -308,6 +308,29 @@ const ironwork = {
     this.pools = new Map();
     for (const f of this.families()) this.poolOf(f);
     this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root, app.scene);
+    await this.warmStart(app);
+  },
+
+  /** Prepares the chunks the streamer asks for first (around the start position and the
+   *  inspection view) while the loading screen is up, so the start-up builds and the
+   *  first frames' far chunks hand over finished groups. */
+  async warmStart(app) {
+    const n = app.layout.nChunks, around = [app.startS];
+    if (app.params.view) around.push(app.params.view[0]);
+    let yielded = performance.now();
+    for (const s of around) {
+      for (let i = Math.floor((s - VIEW_BEHIND) / CHUNK_LEN); i <= Math.floor((s + VIEW_AHEAD) / CHUNK_LEN); i++) {
+        const idx = ((i % n) + n) % n;
+        const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s) - CHUNK_LEN / 2);
+        const lod = dist < LOD0_DIST ? 0 : 1, key = idx * 2 + lod;
+        if (this.jobs.has(key)) continue;
+        const j = this.job(idx, lod);
+        this.runJob(j, Infinity);
+        this.jobs.set(key, j);
+        // let the loading screen breathe now and then
+        if (performance.now() - yielded > 40) { await new Promise((r) => setTimeout(r, 0)); yielded = performance.now(); }
+      }
+    }
   },
 
   /** Every instance family the builds add to: {key, levels, material, opts}. */
@@ -466,9 +489,10 @@ const ironwork = {
     return p;
   },
 
-  /** Prepares the chunks the streamer will ask for next, within a per-frame time slice:
-   *  nearest first, chunks inside LOD0_DIST + 80 m at full detail, the next two chunks
-   *  beyond the far horizon at far detail. Jobs no longer wanted are dropped. */
+  /** Prepares the chunks the streamer will ask for next, within a per-frame time slice,
+   *  nearest first: a chunk not built yet at the detail the streamer builds it at (full
+   *  inside LOD0_DIST), the full-detail upgrade inside LOD0_DIST + 80 m, the next two
+   *  chunks beyond the far horizon. Jobs no longer wanted are dropped. */
   prefetch(app) {
     const s = app.cameraS;
     if (s == null) return;
@@ -483,13 +507,13 @@ const ironwork = {
     for (let i = i0; i <= i1 + 2; i++) {
       const idx = ((i % n) + n) % n;
       const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s) - CHUNK_LEN / 2);
-      const lod = dist < LOD0_DIST + 80 ? 0 : 1;
-      if (have.get(idx) <= lod) continue;
-      want.push({ key: idx * 2 + lod, idx, lod, dist });
+      const h = have.get(idx), first = dist < LOD0_DIST ? 0 : 1;
+      if (h === undefined) want.push({ key: idx * 2 + first, idx, lod: first, dist });
+      if (dist < LOD0_DIST + 80 && (h ?? first) > 0) want.push({ key: idx * 2, idx, lod: 0, dist });
     }
     const keep = new Set(want.map((w) => w.key));
     for (const [k, j] of this.jobs) if (!keep.has(k)) { this.dropJob(j); this.jobs.delete(k); }
-    want.sort((a, b) => a.dist - b.dist);
+    want.sort((a, b) => a.dist - b.dist); // (stable: a chunk's first build before its upgrade)
     const deadline = performance.now() + PREFETCH_MS;
     for (const w of want) {
       let j = this.jobs.get(w.key);
@@ -867,9 +891,10 @@ const ironwork = {
     const geo = geoLimit() + 0.5;
     const d1 = (TOL[1] * px) / 0.4, d2 = (TOL[2] * px) / 0.4;
     const carve = (0.01 * px) / 0.6; // what the light levels leave out (~1 cm) is under 0.6 px
-    // planter hook straps (2.6 cm) and AC pipes (3.6 cm) go once they are under a pixel
+    // far plants once the light level's leaves (14 cm) are under 2 px; planter hook
+    // straps (2.6 cm) and AC pipes (3.6 cm) go once they are under a pixel
     return {
-      rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity], plant: [carve, Infinity],
+      rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity], plant: [carve, 0.07 * px, Infinity],
       strap: [0.026 * px], ac: [0.036 * px, Infinity],
     };
   },

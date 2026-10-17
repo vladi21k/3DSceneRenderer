@@ -1,9 +1,9 @@
 // Street tree species and the procedural templates built from them.
 //
 // The street is planted with young pagoda trees (Styphnolobium-like, ovate leaflets,
-// open rounded crown splitting into a few scaffold limbs) and narrow-leaved ash
-// (lanceolate leaflets, oval crown with a central leader), with the odd older, denser
-// tree (hackberry/fig-like simple leaves). All sizes are metres.
+// open rounded crown splitting into a few scaffold limbs), narrow-leaved ash
+// (lanceolate leaflets, oval crown with a central leader) and hackberry/fig-like trees
+// (simple leaves, dark compact crown), young and old. All sizes are metres.
 //
 // Leaf atlas: 6 x 6 cells (see leafAtlas.js). Each cell is a shoot tip seen from above,
 // carrying a clump of leaves; one cell is a far-LOD clump composed from the shrub cells.
@@ -27,9 +27,9 @@ export const CELL = {
  *   clumps, clumpCard  far-LOD clump cells and card size (planter shrubs only)
  */
 export const FOLIAGE = {
-  pagoda: { cells: CELL.pagoda, card: 0.45, tint: [1.0, 1.0, 1.0] },
-  ash: { cells: CELL.ash, card: 0.47, tint: [0.97, 0.99, 1.0] },
-  dense: { cells: CELL.dense, card: 0.5, tint: [1.0, 1.0, 1.0] },
+  pagoda: { cells: CELL.pagoda, card: 0.45, tint: [1.03, 1.0, 0.9] },
+  ash: { cells: CELL.ash, card: 0.47, tint: [0.93, 0.98, 1.05] },
+  dense: { cells: CELL.dense, card: 0.5, tint: [0.97, 0.97, 0.95] },
   shrub: { cells: CELL.shrub, clumps: CELL.clumpShrub, card: 0.3, clumpCard: 0.6, tint: [1, 1, 1] },
 };
 
@@ -61,6 +61,8 @@ export const TEMPLATES = [
   { ...young, id: 'ashB', species: 'ash', height: 7.1, crownBase: 2.6, crownR: 1.8, shape: 'oval', trunkR: 0.07, leader: true, scaffolds: 0, attractors: 1200, droop: 0.07, stake: false },
   { ...young, id: 'ashC', species: 'ash', height: 5.8, crownBase: 2.3, crownR: 1.5, shape: 'round', trunkR: 0.055, leader: true, scaffolds: 0, attractors: 850, droop: 0.06, stake: true },
   { ...young, id: 'ashD', species: 'ash', height: 6.8, crownBase: 2.5, crownR: 1.7, shape: 'vase', trunkR: 0.065, leader: false, scaffolds: 3, attractors: 1100, droop: 0.08, stake: false },
+  { ...young, id: 'denseA', species: 'dense', height: 6.4, crownBase: 2.4, crownR: 1.9, shape: 'round', trunkR: 0.07, leader: false, scaffolds: 4, attractors: 1150, droop: 0.06, stake: false, cardsPerTip: 2.2 },
+  { ...young, id: 'denseB', species: 'dense', height: 7.4, crownBase: 2.7, crownR: 2.2, shape: 'broad', trunkR: 0.085, leader: false, scaffolds: 3, attractors: 1350, droop: 0.08, stake: false, cardsPerTip: 2.2 },
   { id: 'pagodaM', species: 'pagoda', mature: true, height: 9.6, crownBase: 3.3, crownR: 2.9, shape: 'broad', trunkR: 0.15,
     leader: false, scaffolds: 4, attractors: 2600, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 1.7, droop: 0.15, stake: false },
   { id: 'denseM', species: 'dense', mature: true, height: 10.4, crownBase: 3.5, crownR: 3.0, shape: 'round', trunkR: 0.17,

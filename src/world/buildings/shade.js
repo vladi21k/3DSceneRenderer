@@ -1,6 +1,6 @@
 // Vertex colour model for the masonry: per-building stone tint, baked ambient
 // occlusion (under cornices and string courses, in reveals, at the base), and a
-// per-vertex grime mask (out[3], the aGrime attribute) that tells the weathered stone
+// per-vertex grime mask (out[3], the colour attribute's alpha) that tells the weathered stone
 // materials (grime.js) where to put drip trails, rain-wash streaks and soot crusts:
 // under cornice and course soffits, in the splash zone, and all over the facades of the
 // few buildings that were never cleaned. out[4] is the building's dirtiness. The large
@@ -95,7 +95,9 @@ export class FaceShade {
     this.occ = [];
     const add = (bal, a, b, y, sv) => {
       const s = Math.min(1.98, Math.max(0.02, sv));
-      this.occ.push({ bal, a, b, y, s, run: bal ? BAL_RUN : SILL_RUN, code: (bal ? 1 : -1) * (Math.max(1, Math.floor((b - a) * 64)) + 0.5 * s) });
+      // attribute codes (see runAttr): signed width in 1/64 m, strength in 1/63
+      const wq = Math.min(32767, Math.max(1, Math.floor((b - a) * 64)));
+      this.occ.push({ bal, a, b, y, s, run: bal ? BAL_RUN : SILL_RUN, wq: bal ? wq : -wq, sq: Math.round(s * 63) });
     };
     for (const b of face.balconies || []) add(true, b.u0, b.u1, b.y - (b.slabT || 0.16), 0.7 + 0.6 * hash1(b.u0 * 31 + b.y * 5, seed));
     const ext = opts.sillExt ?? 0.15, sh = opts.sillH ?? 0.12;
@@ -184,15 +186,21 @@ const NO_ZONES = { cuts: [], occ: [null] };
 const _cand = [];
 
 /**
- * aRun attribute of a vertex at facade (u, v) shaded by occluder `it` (null: none):
- * (a − u, line − v, building dirtiness, code). Both offsets are affine in the position,
- * so they interpolate exactly over any face; code = ±(⌊width·64⌋ + s/2), + balcony
- * slab, − window sill, 0 none.
+ * aRun attribute (int16 × 4) of a vertex at facade (u, v) shaded by occluder `it` (null:
+ * none): ((a − u) · 256, (line − v) · 256, ⌊dirtiness · 128⌉ · 128 + ⌊s · 63⌉, ±⌊width · 64⌋),
+ * + balcony slab, − window sill, 0 none. Both offsets are affine in the position, so they
+ * interpolate exactly over any face (4 mm steps, ±128 m); the shader (grime.js) decodes
+ * the last two into the building's dirtiness and the occluder code.
  */
 export function runAttr(it, u, v, dirt, out, k) {
-  out[k + 2] = dirt;
-  if (!it) { out[k] = 0; out[k + 1] = 0; out[k + 3] = 0; return; }
-  out[k] = it.a - u; out[k + 1] = it.y - v; out[k + 3] = it.code;
+  const dq = Math.round(dirt * 128);
+  const z = (dq < 0 ? 0 : dq > 255 ? 255 : dq) * 128;
+  if (!it) { out[k] = 0; out[k + 1] = 0; out[k + 2] = z; out[k + 3] = 0; return; }
+  const x = (it.a - u) * 256, y = (it.y - v) * 256;
+  out[k] = x > 32767 ? 32767 : x < -32767 ? -32767 : Math.round(x);
+  out[k + 1] = y > 32767 ? 32767 : y < -32767 ? -32767 : Math.round(y);
+  out[k + 2] = z + it.sq;
+  out[k + 3] = it.wq;
 }
 
 /**

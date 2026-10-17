@@ -39,9 +39,9 @@ void surface(vec2 m, inout Surf s) {
 };
 
 // Street / sidewalk setts: 0.40 × 0.20 m (lengths 0.29–0.52) in courses. The continuous
-// bed joints between courses are tight (~1 mm) and sand filled, nearly the stone's tone,
-// with just an eased arris; the head joints between the setts of a course are 3-4 mm,
-// dark and chamfered, so they read as short dashes. Lippage between setts, worn tops.
+// bed joints between courses are tight (~2 mm), sand filled and a little sunk under eased
+// arrises, so they read as fine grey lines; the head joints between the setts of a course
+// are 3-4 mm, dark and chamfered, so they read as short dashes. Lippage, worn tops.
 export const paving = {
   name: 'paving', flat: [0.285, 0.292, 0.308, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
@@ -53,8 +53,9 @@ void surface(vec2 m, inout Surf s) {
   float wob = fbm(m, 20.0, 2, 0.5, 91u) * 0.0007;
   float eH = min(c.ed.x, c.ed.y) + wob;          // to the head joints (dashes)
   float eB = min(c.ed.z, c.ed.w) + wob * 0.5;    // to the bed joints (continuous)
-  const float JH = 0.0017, JB = 0.0005;          // half widths
+  const float JH = 0.0017, JB = 0.0009;          // half widths
   const float CH = 0.003;                         // chamfer on the head ends
+  const float CB = 0.0018;                        // eased arris along the beds
   // lippage: each sett sits a little proud or low and slightly tilted; corners rock
   vec2 q = c.lp - 0.5 * c.size;
   float lip = (cellRand(c, 1u) - 0.5) * 0.0024
@@ -63,8 +64,8 @@ void surface(vec2 m, inout Surf s) {
   float relief = fbm(m, 35.0, 3, 0.5, 92u) * 0.00035;
   float wear = smoothstep(-0.2, 0.6, fbm(m + vec2(c.h * 9.0), 3.0, 3, 0.5, 93u));
   float tH = clamp((eH - JH) / CH, 0.0, 1.0);
-  float tB = clamp((eB - JB) / 0.0015, 0.0, 1.0);
-  float hFace = lip + relief * (1.0 - 0.6 * wear) - CH * (1.0 - tH) - 0.0005 * (1.0 - tB);
+  float tB = clamp((eB - JB) / CB, 0.0, 1.0);
+  float hFace = lip + relief * (1.0 - 0.6 * wear) - CH * (1.0 - tH) - 0.0009 * (1.0 - tB) * (1.0 - tB);
   // edge chips (mostly at the sett ends)
   vec4 cv = voro(m, vec2(22.0), 94u, 1.0);
   float chip = smoothstep(0.45, 0.1, cv.x) * step(0.8, cv.z) * (1.0 - smoothstep(0.0, 0.016, eH));
@@ -72,13 +73,13 @@ void surface(vec2 m, inout Surf s) {
   float sH = smoothstep(JH - 0.0006, JH + 0.0006, eH);
   float sB = smoothstep(JB - 0.0004, JB + 0.0004, eB);
   bool head = eH - JH < eB - JB;
-  float hJ = head ? -0.006 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0012 : -0.0012;
+  float hJ = head ? -0.006 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0012 : -0.0022 + fbm(m, 150.0, 2, 0.5, 97u) * 0.0005;
   float st = min(sH, sB);
   s.height = mix(hJ, max(hFace, hJ), st);
   vec3 g = granite(m, vec3(0.288, 0.298, 0.32));
-  g *= mix(0.9, 1.0, tH);                         // a little grime in the chamfers
+  g *= mix(0.9, 1.0, tH) * mix(0.94, 1.0, tB);   // a little grime in the chamfers / arrises
   g *= 1.0 - 0.12 * chip;
-  vec3 joint = head ? g * 0.35 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : g * vec3(0.86, 0.85, 0.83);
+  vec3 joint = head ? g * 0.35 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : g * vec3(0.66, 0.65, 0.63) * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
   s.albedo = mix(joint, g, st);
   s.rough = mix(head ? 0.95 : 0.9, mix(0.74, 0.56, wear), st);
 }

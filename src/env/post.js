@@ -36,6 +36,16 @@ const HDR_CLAMP = 64;
 // down while it runs so contact darkening isn't counted twice.
 const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 
+// Camera response (final pass). curve: display value of a scene luminance, a generalised
+// logistic in stops from mid grey fitted to a camera JPEG (0.18 → 0.47, −3 stops → 0.04,
+// +2 → 0.87, white ~3 stops up); chroma: AgX's colour (0) .. the scene's ratios (1).
+// Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
+// bloom: share of the blurred pyramid (veiling glare), day .. night.
+const TONE = {
+  curve: [1.16, 0.625, -1.35, 2.5], chroma: 0.5, skyChroma: 0.12,
+  meter: 0.6, target: 0.34, clamp: [0.5, 2.5], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
+};
+
 // Lens veiling glare around the sun (fractions of the sun's illuminance per steradian):
 // a wide 1/theta^2 skirt (~1.2% of the light) and a tighter halo (~1%).
 const GLARE = { k1: 4.8e-4, theta0: 0.006, k2: 4.0, theta1: 0.02 };
@@ -184,11 +194,14 @@ const post = {
     this.lum = pass(S.LUM_FS, { tSmall: { value: null }, tPrev: { value: null }, uSize: { value: new THREE.Vector2() }, uRate: { value: 1 } });
     this.final = pass(S.FINAL_FS, {
       tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
-      uExposure: { value: 1 }, uAutoExp: { value: 0.22 }, uBloom: { value: 0.035 },
-      uVignette: { value: 0.38 }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
+      uExposure: { value: 1 }, uAutoExp: { value: TONE.meter }, uMeterTarget: { value: TONE.target },
+      uMeterClamp: { value: new THREE.Vector2(...TONE.clamp) }, uBloom: { value: TONE.bloom[0] },
+      uVignette: { value: TONE.vignette }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
+      uSharpen: { value: TONE.sharpen },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
-      uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: 0.45 }, uShoulder: { value: 1 },
-      uShadowTint: { value: new THREE.Vector3(0.99, 1.0, 1.02) },
+      uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: TONE.skyChroma },
+      uCurve: { value: new THREE.Vector4(...TONE.curve) }, uChroma: { value: TONE.chroma },
+      uShadowTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
       uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
       uResolution: { value: new THREE.Vector2(1, 1) },
     });
@@ -330,7 +343,7 @@ const post = {
     pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1);
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
-    fu.uBloom.value = THREE.MathUtils.lerp(0.035, 0.05, night);
+    fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
     fu.uExposure.value = env ? env.exposure : 1;
     // the HDR clamp is set in exposed units
     pu.uClampHDR.value = HDR_CLAMP / Math.max(env ? env.exposure : 1, 1e-4);

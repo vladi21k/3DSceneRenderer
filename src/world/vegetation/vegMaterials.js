@@ -254,7 +254,7 @@ function patchLeaf(mat, params) {
       bool vegUnder = dot( vVegGN, vViewPosition ) < 0.0;
       if ( vegUnder ) {
         float l = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
-        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.14 ) * 1.04;
+        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.1 ) * 1.04;
       }`, 'leaf color_fragment');
     // crown normals are authored to point out of the crown on both faces: no flip
     fs = rep(fs, '#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin
@@ -283,6 +283,12 @@ function patchLeaf(mat, params) {
         float through = isSun ? vVegSun : 1.0;
         vec3 gn = normalize( vVegGN );
         float facing = abs( dot( gn, geometryViewDir ) );
+        if ( dot( gn, geometryViewDir ) < 0.0 ) gn = -gn;  // card normal on the viewer's side
+        // a leaf reflects a light only on the face the light falls on: seen from the other
+        // side (a sunlit crown from below) it mostly transmits. A card is a clump of leaves
+        // turned every way, so its far side still shows some lit faces (no sheen though).
+        float vegLit = dot( gn, directLight.direction );
+        float sameSide = smoothstep( -0.2, 0.25, vegLit );
         ReflectedLight leafRL = ReflectedLight( vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ) );
         RE_Direct_Physical( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, leafRL );
         // strong light: transmission and sheen capped at a few times the sky's irradiance,
@@ -290,14 +296,13 @@ function patchLeaf(mat, params) {
         float vegE = dot( directLight.color, vec3( 0.2126, 0.7152, 0.0722 ) );
         float vegCapT = vegSkyE > 0.0 ? min( 1.0, uVegCap.x * vegSkyE / max( vegE, 1e-9 ) ) : 1.0;
         float vegCapD = isSun || vegSkyE <= 0.0 ? 1.0 : min( 1.0, uVegCap.y * vegSkyE / max( vegE, 1e-9 ) );
-        reflectedLight.directDiffuse += leafRL.directDiffuse * ( through * vegCapD );
+        reflectedLight.directDiffuse += leafRL.directDiffuse * ( through * vegCapD * mix( 0.4, 1.0, sameSide ) );
         // waxy but small and curled leaves: part of the specular; none on edge-on cards
-        reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) * vegCapT * vegCapD );
+        reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) * vegCapT * vegCapD * sameSide );
         // transmission: only light arriving on the far side of the card (backlit leaves), a
         // fraction of what the lit face shows; a little more looking into the light and on
         // the thin outer shell (rim-lit edges); through the crown like the direct light
-        if ( dot( gn, geometryViewDir ) < 0.0 ) gn = -gn;
-        float back = saturate( -dot( gn, directLight.direction ) );
+        float back = saturate( -vegLit );
         float into = saturate( dot( -geometryViewDir, directLight.direction ) );
         float fwd = pow( into, 4.0 );
         float rim = smoothstep( 0.85, 1.05, vVegRim ) * fwd;
@@ -457,7 +462,7 @@ export function createVegMaterials(app, atlas) {
       roughness: 0.6,
       metalness: 0,
       vertexColors: true,
-      envMapIntensity: 0.75,
+      envMapIntensity: 0.5,
     });
     m.defines = { VEG_LEAF: '', ...defines };
     patchLeaf(m, params);

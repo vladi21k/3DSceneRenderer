@@ -117,11 +117,12 @@ export function corbelGeometry(variant, lod) {
   const { D, H: Hc, W: Wc } = CORBEL;
   const { shape, roll } = corbelShape(variant, D, Hc);
   // the light level drops the 12 mm bevel and the carved volutes (sub-pixel where it is
-  // used) but keeps the silhouette: 4 segments per curve hold the big roll within ~5 mm
+  // used) but keeps the silhouette: 4 segments per curve hold the big roll within ~5 mm;
+  // the far level (merged into far chunks, 200 m and more away) has 2, within ~2.5 cm
   const bev = lod ? 0 : 0.012;
   const ext = new THREE.ExtrudeGeometry(shape, {
     depth: Wc - 2 * bev, bevelEnabled: !lod, bevelThickness: bev, bevelSize: bev, bevelSegments: 1,
-    curveSegments: lod ? 4 : 6,
+    curveSegments: lod > 1 ? 2 : lod ? 4 : 6,
   });
   let parts = [ext];
   if (roll && !lod) {
@@ -165,12 +166,12 @@ export function corbelGeometry(variant, lod) {
   return shared(g);
 }
 
-/** The light console as a template for the merged stone mesh of far chunks (no draw call
+/** The far console as a template for the merged stone mesh of far chunks (no draw call
  *  of its own): soot low on the scroll baked into its colour, as the near consoles get it
  *  from the grime shader (their streaks are sub-pixel at that range). Welded: the
  *  extrusion's facets along the scroll share smooth vertices (a third of the count). */
 export function corbelTemplate(variant) {
-  const g = corbelGeometry(variant, 1);
+  const g = corbelGeometry(variant, 2);
   const n = g.attributes.position.count, C = g.attributes.color.array.slice(), P = g.attributes.position.array;
   for (let i = 0; i < n; i++) {
     const y = P[i * 3 + 1], t = Math.min(1, Math.max(0, (y + 0.6) / 0.35)), soot = 1 - 0.1 * (1 - t * t * (3 - 2 * t));

@@ -299,9 +299,10 @@ function railSamples(ctx, p, r, x0, x1, step) {
  * Build the parts of crossover c that fall inside the chunk: diverging rails (lod 0) and
  * their far-field lines (all lods), and the cast floor under the switches and frogs.
  * The main rails and the paving are built by the track / paving builders with the cut
- * attributes from mainCut / paveCut.
+ * attributes from mainCut / paveCut. Resumable (see street.js): yields 'crossover' after
+ * each diverging rail.
  */
-export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
+export function* buildCrossover(ctx, c, chunk, bufs, lineBuf) {
   const p = crossoverPlan(c, ctx.delta);
   const mats = ctx.mats.cutDiv;
   for (const r of p.rails) {
@@ -335,6 +336,7 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
         : check ? () => RUNS_DIV_CHECK : () => RUNS_DIV;
       sweepRuns(bufs, mats, pts, r.g, runsAt, (i, kind, x, sv, dv, out) => railCut(r, pts[i], kind, x, sv, dv, out));
     }
+    yield 'crossover';
   }
   if (chunk.lod === 0) buildFloors(ctx, p, chunk, bufs);
 }

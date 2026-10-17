@@ -77,7 +77,7 @@ const facades = {
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
       lamp: { material: lamp, color: false, castShadow: false, receiveShadow: false, renderOrder: 3 },
       bulb: { material: bulb, color: false, castShadow: false },
-      spill: { material: spill, color: false, extra: { aSpill: 3 }, castShadow: false, receiveShadow: false, renderOrder: 1 },
+      spill: { material: spill, color: false, extra: { aSpill: 4 }, castShadow: false, receiveShadow: false, renderOrder: 1 },
     };
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
     this.handed = new Set();        // builds handed to the streamer, until it stops listing them

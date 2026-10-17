@@ -45,11 +45,12 @@ function ncol(nx, ny, nz, gloss = 0.5) {
   return `rgb(${clamp255((nx / l * 0.5 + 0.5) * 255)},${clamp255((ny / l * 0.5 + 0.5) * 255)},${clamp255(gloss * 255)})`;
 }
 
-// Leaf palettes (sRGB). Real leaf albedo is low: green channel ~0.15-0.22 linear.
+// Leaf palettes (sRGB). Real leaf albedo is low: green channel ~0.1-0.2 linear; olive
+// rather than lime (the young, yellower leaves are few).
 const PAL = {
-  pagoda: { leaf: [90, 134, 42], dark: [68, 108, 34], young: [122, 160, 54], rib: [158, 180, 104], twig: [96, 108, 62] },
-  ash: { leaf: [76, 118, 44], dark: [58, 96, 36], young: [104, 142, 52], rib: [142, 164, 100], twig: [104, 100, 78] },
-  dense: { leaf: [62, 98, 36], dark: [46, 76, 28], young: [88, 124, 42], rib: [120, 142, 82], twig: [96, 88, 70] },
+  pagoda: { leaf: [92, 128, 38], dark: [66, 100, 30], young: [118, 150, 48], rib: [150, 170, 98], twig: [96, 108, 62] },
+  ash: { leaf: [72, 110, 42], dark: [54, 88, 34], young: [98, 132, 50], rib: [136, 156, 96], twig: [104, 100, 78] },
+  dense: { leaf: [62, 94, 34], dark: [46, 74, 28], young: [84, 116, 40], rib: [118, 138, 80], twig: [96, 88, 70] },
   shrub: { leaf: [54, 88, 40], dark: [40, 66, 30], young: [80, 114, 48], rib: [108, 130, 80], twig: [84, 76, 58] },
 };
 

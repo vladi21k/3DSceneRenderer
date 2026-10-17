@@ -9,8 +9,9 @@
 // applies per block with a random rotation and dressing type (see surface.js).
 
 // common limestone body colour, mottling, pores, fossil fragments and patina. `cloud`
-// scales the soft 4-50 cm clouding: full on the tooled ashlar (the dressing breaks it up),
-// lower on rock-faced and rubbed stone, where it would read as marble veining.
+// scales the soft 4-50 cm clouding, the iron flushes and the clay seams: full on the tooled
+// ashlar (the dressing breaks them up), lower on rock-faced and rubbed stone, where they
+// would read as cloudy marble.
 const limestone = (cloud = 1) => /* glsl */ `
 vec3 limestone(vec2 m, float hc, inout float h) {
   vec3 base = vec3(0.6, 0.54, 0.43);                                     // pale cream (linear)
@@ -37,9 +38,9 @@ vec3 limestone(vec2 m, float hc, inout float h) {
   c *= 1.0 - 0.08 * patch_;
   // iron-oxide flushes (pink / ochre) and grey clay seams
   float fe = smoothstep(0.35, 0.8, fbm(m, 1.6, 4, 0.6, 19u)) * step(0.6, fract(hc * 7.31));
-  c = mix(c, c * vec3(1.05, 0.9, 0.78), fe * 0.6);
+  c = mix(c, c * vec3(1.05, 0.9, 0.78), fe * ${(0.6 * cloud).toFixed(3)});
   float seam = smoothstep(0.75, 0.95, 1.0 - abs(fbm2(m + vec2(hc * 4.0), vec2(1.2, 6.0), 3, 0.5, 24u)));
-  c = mix(c, c * vec3(0.86, 0.87, 0.88), seam * 0.5 * step(0.5, fract(hc * 3.7)));
+  c = mix(c, c * vec3(0.86, 0.87, 0.88), seam * ${(0.5 * cloud).toFixed(3)} * step(0.5, fract(hc * 3.7)));
   return c;
 }
 `;
@@ -205,8 +206,10 @@ void surface(vec2 m, inout Surf s) {
 // Rock-faced rustication ("tubzeh"): a broken boss 25-45 mm proud inside a flat drafted
 // margin of 25-40 mm (fine chisel lines), a steep pitched break between the two, and deep
 // recessed joints. Courses 0.5 m; 4 × 2 m tile at 2 mm/texel so the fracture facets stay
-// sharp. The fracture relief is the upper envelope of randomly tilted, slightly domed
-// facets at three scales: continuous, with hard creases that self-shadow under raking sun.
+// sharp. The fracture relief is the lower envelope of randomly tilted, shallow dished
+// scars at three scales: continuous, with hard creases that self-shadow under raking sun.
+// Every block is pitched differently: flake size, relief depth, a boss tilted to one side
+// and an off-centre lump (the runtime also mirrors the relief at random per block).
 export const rustic = {
   name: 'rustic', flat: [0.58, 0.53, 0.42, 0.9], size: [2048, 1024], tile: [4.0, 2.0], ss: 2,
   layout: { rowH: 0.5, rows: 4, seg: [4, 6], jitter: 0.36, seed: 23, shift: true },
@@ -242,18 +245,24 @@ void surface(vec2 m, inout Surf s) {
   // pitched edge: the boss breaks away steeply 6-10 mm inside the margin, irregularly
   float brk = margin + 0.005 * fbm(m, 14.0, 3, 0.5, 59u) + 0.004 * cellRand(c, 4u);
   float rise = smoothstep(brk, brk + 0.006 + 0.004 * cellRand(c, 5u), e);
-  // boss: high and flattish in the middle, falling off towards the pitched edge
+  // boss: high and flattish in the middle, falling off towards the pitched edge, tilted
+  // to one side and with an off-centre lump, both per block
   vec2 q = (c.lp - 0.5 * c.size) / (0.5 * c.size);
   float dome = 1.0 - pow(max(abs(q.x), abs(q.y)), 3.0);
-  float crown = 0.022 + 0.018 * cellRand(c, 3u);
-  // fracture relief: large flakes, smaller conchoidal scars, fine spalls
+  vec2 tilt = vec2(cellRand(c, 11u), cellRand(c, 12u)) - 0.5;
+  vec2 pk = (vec2(cellRand(c, 13u), cellRand(c, 14u)) - 0.5) * 1.2;
+  float lump = exp(-2.5 * dot(q - pk, q - pk)) * (0.003 + 0.012 * cellRand(c, 15u));
+  float crown = (0.02 + 0.018 * cellRand(c, 3u)) * (1.0 + 0.7 * dot(q, tilt));
+  // fracture relief: large flakes, smaller conchoidal scars, fine spalls; flake size and
+  // relief depth per block
   vec2 mw = m + vec2(c.h * 5.3, c.h * 2.1);
+  float fs = 0.7 + 0.65 * cellRand(c, 9u), fd = 0.75 + 0.5 * cellRand(c, 10u);
   float i1, i2, i3;
-  float f1 = scars(mw, 0.17, 0.3, 0.4, 53u, i1);
-  float f2 = scars(mw, 0.07, 0.3, 0.7, 54u, i2);
+  float f1 = scars(mw, 0.17 * fs, 0.3, 0.3, 53u, i1);
+  float f2 = scars(mw, 0.07 * fs, 0.3, 0.5, 54u, i2);
   float f3 = scars(mw, 0.028, 0.25, 0.6, 55u, i3);
   float bulge = 0.008 * fbm(mw, 4.0, 2, 0.5, 52u);
-  float rock = crown * (0.3 + 0.7 * dome) + bulge + f1 + 0.5 * f2 + 0.3 * f3 + 0.0004 * fbm(m, 60.0, 3, 0.5, 56u);
+  float rock = crown * (0.3 + 0.7 * dome) + lump * (0.4 + 0.6 * dome) + bulge + fd * (f1 + 0.5 * f2) + 0.3 * f3 + 0.0004 * fbm(m, 60.0, 3, 0.5, 56u);
   float hRock = (0.006 + log(1.0 + exp((rock - 0.006) / 0.003)) * 0.003) * rise;   // soft floor
   // drafted margin: flat band with fine parallel chisel lines (3 mm pitch) across it
   float dirL = min(c.ed.x, c.ed.y) < min(c.ed.z, c.ed.w) ? m.y : m.x;

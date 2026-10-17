@@ -213,8 +213,8 @@ const LEAF_TINTS = [[0.36, 0.34, 0.08], [0.2, 0.11, 0.04], [0.42, 0.3, 0.14], [0
 
 /** Build the details of a chunk into the BufSet (iron, stains, leaves) and joints into a
  *  LineBuf. grid: the chunk's paving grid (buildPaving), which covers, stains and leaves
- *  follow exactly. */
-export function buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
+ *  follow exactly. Resumable (see street.js): yields 'details' after each kind. */
+export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
   const { route, surface, mats } = ctx;
   const pave = (s, d) => pavingHeight(grid, s, d, ctx.delta);
   const smp = {};
@@ -285,6 +285,8 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
     }
   }
 
+  yield 'details';
+
   // --- stains (alpha decals): a small grid draped over the paving (the ground undulates
   // by a few centimetres over a couple of metres on the sidewalks)
   const st = bufs.get(mats.details.stain, false);
@@ -330,6 +332,8 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
     }
     iron.quad(first, first + 3, first + 2, first + 1);
   }
+
+  yield 'details';
 
   // --- transverse joints (intermittent sealant lines across the corridor between the rails)
   if (jointLines) {

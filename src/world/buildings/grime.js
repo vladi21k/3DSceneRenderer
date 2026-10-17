@@ -3,7 +3,7 @@ import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
 
 // Weathering for the masonry: buildings-owned variants of the stone materials that
-// darken and grey the albedo where the per-vertex grime mask (attribute aGrime, baked
+// darken and grey the albedo where the per-vertex grime mask (colour alpha, baked
 // by FaceShade: under sill ends and balcony slabs, below cornices and string courses,
 // the splash zone, uncleaned facades) is high, with the detail coming from a procedural
 // atlas: thin drip trails, broad rain-wash streaks, blotches and a fine soot crust.
@@ -14,7 +14,11 @@ import { U } from '../../core/uniforms.js';
 // occlusion and a soot band under the slab, streaks hanging from it, and water, dirt
 // and rust running down narrow strips under the slab and sill ends. Also a glass
 // variant for the openings the buildings glaze themselves (party walls, set-back
-// storeys; aGrime = lit share: warm interior light at night).
+// storeys; colour alpha = lit share: warm interior light at night).
+//
+// Every buildings material reads the compact vertex format of buildings/mesh.js: the
+// colour attribute is unorm8 × 4 (rgb = sqrt(colour / 2), a = grime / 2), decoded per
+// vertex (COLOR_DECODE), and aRun is int16 × 4 (decoded in VERT_MAIN, see shade.runAttr).
 
 const SIZE = 512;
 // atlas period in metres (u along the wall, v up); drips are long and narrow
@@ -124,17 +128,28 @@ export function grimeAtlas() {
   return t;
 }
 
+// colour attribute (unorm8 × 4): rgb = sqrt(colour / 2), a = grime / 2 (lit share on glass)
+const COLOR_DECODE = /* glsl */ `
+float bgA = vColor.a * 2.0;
+vColor = vec4(vColor.rgb * vColor.rgb * 2.0, 1.0);
+`;
+
 const VERT_PARS = /* glsl */ `
-attribute float aGrime;
 attribute vec4 aRun;
 varying float vBgGrime;
 varying vec4 vBgRun;
 varying vec3 vBgPos;
 varying vec3 vBgN;
 `;
+// aRun (int16): ((a - u) * 256, (line - v) * 256, dirtiness * 128 * 128 + s * 63, +-width * 64)
+// to (a - u, line - v, dirtiness, code) with code = +-(floor(width * 64) + s / 2), as
+// the fragment code reads it
 const VERT_MAIN = /* glsl */ `
-vBgGrime = aGrime;
-vBgRun = aRun;
+{
+  float bgZ = aRun.z + 0.5, bgZq = floor(bgZ * (1.0 / 128.0));
+  float bgS = (bgZ - bgZq * 128.0 - 0.5) * (1.0 / 63.0);
+  vBgRun = vec4(aRun.xy * (1.0 / 256.0), bgZq * (1.0 / 128.0), sign(aRun.w) * (abs(aRun.w) + clamp(bgS * 0.5, 0.01, 0.99)));
+}
 vBgPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vBgN = normalize(mat3(modelMatrix) * objectNormal);
 `;
@@ -241,8 +256,7 @@ uniform float bgGain;
 const FRAG_GLASS = /* glsl */ `
 totalEmissiveRadiance += vec3(1.0, 0.66, 0.38) * 0.005 * bgGain * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.6 + 0.4 * vBgGrime);
 `;
-const VERT_GLASS_PARS = 'attribute float aGrime;\nvarying float vBgGrime;\n';
-const VERT_GLASS_MAIN = 'vBgGrime = aGrime;\n';
+const VERT_GLASS_PARS = 'varying float vBgGrime;\n';
 
 /** Chain a patch after the material's existing onBeforeCompile and extend its cache key. */
 function chain(m, key, patch) {
@@ -265,10 +279,11 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
   const m = base.clone();
   m.name = `buildings:${name}`;
   const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) } };
-  chain(m, 'bgS3', (shader) => {
+  chain(m, 'bgS4', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
+      .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\n')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + VERT_MAIN);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
@@ -280,17 +295,17 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
   return m;
 }
 
-/** Window glass the buildings put in themselves, lit at night by the lit share in aGrime. */
+/** Window glass the buildings put in themselves, lit at night by the lit share (colour alpha). */
 export function litGlass(app, name = 'glass.window') {
   const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };
   const m = app.materials.get(name, { vertexColors: true }).clone();
   m.name = `buildings:${name}`;
-  chain(m, 'bgG1', (shader) => {
+  chain(m, 'bgG2', (shader) => {
     shader.uniforms.bgNight = U.uNight;
     shader.uniforms.bgGain = gain;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_GLASS_PARS)
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_GLASS_MAIN);
+      .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\n');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + FRAG_GLASS_PARS)
       .replace('#include <lights_physical_fragment>', FRAG_GLASS + '#include <lights_physical_fragment>');
@@ -298,3 +313,4 @@ export function litGlass(app, name = 'glass.window') {
   app.materials.register(m.name, m);
   return m;
 }
+

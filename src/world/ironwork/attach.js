@@ -390,8 +390,10 @@ function umbel(W, r, x, y, z, s, lite) {
 
 /** Geranium planting over an area L (x) by D (z), origin at the soil centre: a leafy
  *  mound `height` tall, umbels standing out of it, and `trail` ivy-geranium strands
- *  hanging over the front (+z) edge, 0.2 - 0.5 m long. */
-function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 0, height = 0.3, lite = false }) {
+ *  hanging over the front (+z) edge, 0.2 - 0.5 m long. The light levels have fewer,
+ *  larger cards (`ks`: size factors of leaves, umbels, trailing leaves and umbels) and
+ *  `steps` leaves per strand. */
+function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 0, height = 0.3, lite = false, ks = [1, 1, 1, 1], steps = 3 }) {
   const ax = L * 0.5 + 0.03, az = D * 0.5 + 0.05;
   const centre = new THREE.Vector3(0, -0.04, 0);
   const dome = (x, z) => Math.sqrt(Math.max(0, 1 - (x / ax) ** 2 - (z / az) ** 2));
@@ -404,29 +406,29 @@ function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 
     const x = sx * ax * k, y = 0.015 + sy * height * k, z = sz * az * k;
     const nrm = [sx / ax + r.range(-3, 3), sy / height * 0.6 + r.range(-1, 2), sz / az + r.range(-3, 3)];
     W.color(...[0.95, 1, 0.92].map((c) => c * r.range(0.68, 1.08) * (0.8 + 0.2 * sy)));
-    card(W, [x, y, z], nrm, lite ? r.range(0.12, 0.16) : r.range(0.065, 0.1), r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.5);
+    card(W, [x, y, z], nrm, (lite ? r.range(0.12, 0.16) : r.range(0.065, 0.1)) * ks[0], r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.5);
   }
   // umbels on top, standing just out of the foliage
   for (let i = 0; i < flowers; i++) {
     const x = r.range(-0.92, 0.92) * ax * 0.85, z = r.range(-0.8, 0.8) * az * 0.8;
     const y = 0.015 + dome(x, z) * height + r.range(0.02, 0.08);
-    umbel(W, r, x, y, z, r.range(0.11, 0.15) * (lite ? 1.2 : 1), lite);
+    umbel(W, r, x, y, z, r.range(0.11, 0.15) * (lite ? 1.2 : 1) * ks[1], lite);
   }
   // trailing strands over the front edge: chains of leaves, a flower or two on each
   for (let i = 0; i < trail; i++) {
     const x0 = r.range(-0.48, 0.48) * L, len = r.range(0.2, 0.5);
-    const steps = lite ? 3 : Math.max(4, Math.round(len / 0.055));
+    const n = lite ? steps : Math.max(4, Math.round(len / 0.055));
     const out = r.range(0.03, 0.09), sway = r.range(-0.08, 0.08);
-    for (let k = 0; k < steps; k++) {
-      const t = (k + 0.5) / steps;
+    for (let j = 0; j < n; j++) {
+      const t = (j + 0.5) / n;
       const x = x0 + sway * t + r.range(-0.02, 0.02), y = 0.02 - len * t, z = D * 0.5 + 0.02 + out * Math.sin(t * 1.8);
       W.color(r.range(0.66, 0.9), r.range(0.76, 1.0), r.range(0.66, 0.88));
-      card(W, [x, y, z], [r.range(-0.5, 0.5), r.range(-0.2, 0.6), 1], lite ? r.range(0.1, 0.13) : r.range(0.055, 0.08), r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
+      card(W, [x, y, z], [r.range(-0.5, 0.5), r.range(-0.2, 0.6), 1], (lite ? r.range(0.1, 0.13) : r.range(0.055, 0.08)) * ks[2], r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
     }
     const nf = lite ? 1 : r.int(1, 2);
-    for (let k = 0; k < nf; k++) {
+    for (let j = 0; j < nf; j++) {
       const t = r.range(0.35, 1);
-      umbel(W, r, x0 + sway * t, 0.04 - len * t, D * 0.5 + 0.04 + out, r.range(0.08, 0.11) * (lite ? 1.2 : 1), true);
+      umbel(W, r, x0 + sway * t, 0.04 - len * t, D * 0.5 + 0.04 + out, r.range(0.08, 0.11) * (lite ? 1.2 : 1) * ks[3], true);
     }
   }
 }
@@ -634,24 +636,29 @@ function flagGeometry(sx = 24, sy = 16) {
 
 export function buildAttachAssets() {
   // [detail level][pot geranium, box geranium (0.8 m, trailing)]; level 1 is the light
-  // stand-in used beyond carving distance
-  const plants = [[], []];
+  // stand-in used beyond carving distance, level 2 the far one (leaves of a few pixels):
+  // fewer cards, each kind scaled so the planting covers the same area
+  const plants = [[], [], []];
   const r = new RNG(9001);
   const kinds = [
-    [{ L: 0.3, D: 0.28, leaves: 16, flowers: 9, height: 0.26 }, { L: 0.3, D: 0.28, leaves: 7, flowers: 5, height: 0.26 }],
-    [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 }],
+    [{ L: 0.3, D: 0.28, leaves: 16, flowers: 9, height: 0.26 }, { L: 0.3, D: 0.28, leaves: 7, flowers: 5, height: 0.26 },
+      { L: 0.3, D: 0.28, leaves: 4, flowers: 3, height: 0.26, ks: [Math.sqrt(7 / 4), Math.sqrt(5 / 3), 1, 1] }],
+    [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
+      { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), Math.sqrt(2)] }],
   ];
-  for (const [full, lite] of kinds) {
-    for (const [lvl, opts] of [[0, full], [1, lite]]) {
+  // (the far levels draw from a stream of their own: the near ones stay as they were)
+  const rFar = new RNG(9002);
+  for (const levels of kinds) {
+    levels.forEach((opts, lvl) => {
       const W = new GeoWriter();
-      geranium(W, r, { ...opts, lite: lvl === 1 });
+      geranium(W, lvl < 2 ? r : rFar, { ...opts, lite: lvl > 0 });
       const g = W.toGeometry();
       g.computeBoundingSphere();
       plants[lvl].push(shared(g));
-    }
+    });
   }
   // the detail levels of each kind, as an instance pool takes them
-  plants.levels = [0, 1].map((kind) => [plants[0][kind], plants[1][kind]]);
+  plants.levels = [0, 1].map((kind) => plants.map((lvl) => lvl[kind]));
   const A = {
     plants,
     pot: potTemplate(),

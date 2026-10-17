@@ -57,6 +57,7 @@ export const DRIVE = {
   aCoastRestrict: 0.4,     // gentler curve that decides when to shut off power before a limit
   reqHold: 3.0,            // s a pedestrian request keeps its urgency (the crowd repeats every ~2.5 s)
   bellToGo: 1.2,           // s from the departure bell to moving off
+  obstacleGap: 5,          // m short of an obstacle on the track where the tram stops
 };
 
 /** Master controller positions, brake (left) to power (right). */
@@ -134,6 +135,7 @@ export class Tram {
     this._departT = -1e9;
     this.req = { u: 0, lastT: -1e9, persist: 0 };
     this.caution = 0;
+    this.obstacle = Infinity;   // m to something standing on the track ahead (set by the owner)
     this.limit = Infinity;      // current speed restriction at the cab (m/s)
     this.vRef = 0;
     this.coasting = false;
@@ -413,10 +415,19 @@ export class Tram {
       if (r.v < vRef) { vRef = r.v; aFF = r.a; }
       if (vStop < vRef) { vRef = vStop; aFF = -STOP_CURVE.decel(vStop); }
       if (ns.station && vStop <= cruise) this.assist = ns.station.id;   // committed to the stop
+      // something on the track ahead: brake to stop short of it (emergency brake if need be)
+      const ob = this.obstacle - DRIVE.obstacleGap;
+      let emergency = false;
+      if (ob < DRIVE.scanAhead) {
+        const vObs = STOP_CURVE.speed(Math.max(0, ob - shiftS));
+        if (vObs < vRef) { vRef = vObs; aFF = -STOP_CURVE.decel(vObs); }
+        emergency = v > 0.5 && (v * v) / (2 * Math.max(0.5, ob + 2)) > VEHICLE.aService;
+      }
       aCmd = this._control(vRef, aFF);
       if (coast) aCmd = Math.min(aCmd, 0);
       if (ns.station && this.assist === ns.station.id) aCmd = this._finalStop(aCmd, ns.distance);
-      this.emergency = false;
+      if (emergency) aCmd = -VEHICLE.aEmergency;
+      this.emergency = emergency;
     } else {
       this.coasting = false;
       if (r.v < vRef) { vRef = r.v; aFF = r.a; }
@@ -528,6 +539,8 @@ const train = {
   t: 0,               // simulation clock (s): stands still while the ride is held
   holding: true,      // the ride has not started yet (world loading / start overlay)
   coasting: false,
+  _trams: null,       // oncoming units started from here (see _oncoming)
+  _tramErrors: 0,
 
   async init(app) {
     this.app = app;
@@ -550,6 +563,22 @@ const train = {
     input.on('auto', (e) => { if (!e.repeat) { this.setAuto(!this.auto); } });
     input.on('bell', (e) => { if (!e.repeat) this.ringBell(); });
     this.sync();
+    await this._oncoming(app);
+  },
+
+  /** The oncoming units (./trams.js) are a module of their own; while the registry does not
+   *  list it, the train starts it and drives its update (it honours only= / skip=). */
+  async _oncoming(app) {
+    const p = app.params;
+    if (app.systems.trams || p.skip.includes('trams') || (p.only && !p.only.includes('trams'))) return;
+    try {
+      const m = (await import('./trams.js')).default;
+      app.systems.trams = m;
+      await m.init(app);
+      this._trams = m;
+    } catch (e) {
+      console.error('[train] oncoming trams unavailable', e);
+    }
   },
 
   update(dt, app) {
@@ -560,6 +589,13 @@ const train = {
     this.tram.step(this.holding ? 0 : dt);
     this.sync();
     U.uSpeed.value = this.speed;
+    const tm = this._trams;
+    if (tm && !tm.disabled) {
+      try { tm.update(dt, app); } catch (e) {
+        console.error('[train] trams.update failed', e);
+        if (++this._tramErrors > 5) tm.disabled = true;
+      }
+    }
   },
 
   sync() {
