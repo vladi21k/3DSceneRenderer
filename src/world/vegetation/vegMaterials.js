@@ -111,6 +111,7 @@ function patchLeaf(mat, params) {
   chain(mat, 'veg-leaf-v1', (shader) => {
     windUniforms(shader);
     shader.uniforms.uLeafTrans = params.trans;
+    shader.uniforms.uLeafSpec = params.spec;
     shader.uniforms.uSunDirV = U.uSunDir;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${WIND_PARS}\nvarying float vVegAO;\nuniform vec3 uSunDirV;`)
@@ -122,7 +123,7 @@ function patchLeaf(mat, params) {
       #endif
       #include <shadowmap_vertex>`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying float vVegAO;\nuniform float uLeafTrans;\n${MIP_FN}`)
+      .replace('#include <common>', `#include <common>\nvarying float vVegAO;\nuniform float uLeafTrans;\nuniform float uLeafSpec;\n${MIP_FN}`)
       .replace('#include <map_fragment>', /* glsl */`
         #ifdef USE_MAP
           vec4 vegTex = texture2D( map, vMapUv );
@@ -134,7 +135,7 @@ function patchLeaf(mat, params) {
         // leaf undersides are paler and slightly bluish-grey
         if ( ! gl_FrontFacing ) {
           float l = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
-          diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.3 ) * 1.12;
+          diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.2 ) * 1.06;
         }`)
       // crown normals are authored to point out of the crown on both faces: no flip
       .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin
@@ -144,7 +145,11 @@ function patchLeaf(mat, params) {
         // tinted yellow-green, strongest when looking towards the light. Added per light,
         // after the shadow term, so leaves in shadow do not glow.
         void RE_Direct_Leaf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
-          RE_Direct_Physical( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
+          // leaves are waxy but small and curled: keep only part of the direct specular
+          ReflectedLight leafRL = ReflectedLight( vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ) );
+          RE_Direct_Physical( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, leafRL );
+          reflectedLight.directDiffuse += leafRL.directDiffuse;
+          reflectedLight.directSpecular += leafRL.directSpecular * uLeafSpec;
           float back = saturate( -dot( geometryNormal, directLight.direction ) );
           float fwd = pow( saturate( dot( -geometryViewDir, directLight.direction ) ), 5.0 );
           vec3 tc = material.diffuseColor * vec3( 1.5, 1.8, 0.5 );
@@ -205,7 +210,7 @@ function makeDepth(leaf) {
  */
 export function createVegMaterials(app, atlas) {
   const M = app.materials;
-  const params = { trans: { value: 0.85 } };
+  const params = { trans: { value: 0.85 }, spec: { value: 0.45 } };
   const leaf = new THREE.MeshStandardMaterial({
     name: 'vegetation.leaf',
     map: atlas.map,
@@ -214,10 +219,10 @@ export function createVegMaterials(app, atlas) {
     side: THREE.DoubleSide,
     alphaTest: 0.5,
     alphaToCoverage: true,
-    roughness: 0.52,
+    roughness: 0.62,
     metalness: 0,
     vertexColors: true,
-    envMapIntensity: 0.9,
+    envMapIntensity: 0.6,
   });
   patchLeaf(leaf, params);
   M.register('vegetation.leaf', leaf);

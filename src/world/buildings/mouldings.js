@@ -69,21 +69,21 @@ export function corniceProfile(H, P, simple = false) {
   return r;
 }
 
-/** Row of dentils under the corona along u ∈ [u0, u1] (front face only). */
-export function dentils(B, s, u0, u1, y, d) {
+/** Row of dentils under the corona along u ∈ [u0, u1] (front face only; `full` adds the sides). */
+export function dentils(B, s, u0, u1, y, d, full = true) {
   const step = 0.17, w = 0.095;
   const n = Math.floor((u1 - u0 - 0.1) / step);
   const off = u0 + (u1 - u0 - n * step) / 2;
   s.reserve(n * 16, n * 24);
   for (let i = 0; i <= n; i++) {
     const a = off + i * step - w / 2;
-    B.box(s, a, a + w, y + d.v0, y + d.v1, d.w0 - 0.01, d.w1, FACES.FRONT | FACES.LEFT | FACES.RIGHT | FACES.BOTTOM);
+    B.box(s, a, a + w, y + d.v0, y + d.v1, d.w0 - 0.01, d.w1, full ? FACES.FRONT | FACES.LEFT | FACES.RIGHT | FACES.BOTTOM : FACES.FRONT | FACES.BOTTOM);
   }
 }
 
 /** Scroll consoles (modillions) under the corona soffit. */
-export function modillions(B, s, u0, u1, y, H, P, spacing) {
-  const prof = modillionProfile(H, P);
+export function modillions(B, s, u0, u1, y, H, P, spacing, full = true) {
+  const prof = full ? modillionProfile(H, P) : modillionSimple(H, P);
   const n = Math.max(1, Math.round((u1 - u0) / spacing));
   const st = (u1 - u0) / n, w = Math.min(0.16, st * 0.35);
   for (let i = 0; i <= n; i++) {
@@ -91,6 +91,15 @@ export function modillions(B, s, u0, u1, y, H, P, spacing) {
     if (c - w / 2 < u0 - 0.01 || c + w / 2 > u1 + 0.01) continue;
     B.sweep(s, prof, [[c - w / 2, 0], [c + w / 2, 0]], y, [true, true]);
   }
+}
+function modillionSimple(H, P) {
+  const k = keyOf('ms', H, P);
+  let pr = profileCache.get(k);
+  if (pr) return pr;
+  const b = 0.24 * P + 0.05, e = 0.84 * P;
+  pr = [[b, 0.36 * H], [b + (e - b) * 0.6, 0.45 * H], [e, 0.55 * H], [b, 0.6 * H]];
+  profileCache.set(k, pr);
+  return pr;
 }
 function modillionProfile(H, P) {
   const k = keyOf('m', H, P);

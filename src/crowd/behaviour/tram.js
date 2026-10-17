@@ -10,6 +10,8 @@ import { KIND, ST } from './agent.js';
 // final projection guarantees the cab's swept volume stays empty. Pedestrians close
 // to the track inside the stopping distance ask the driver for the bell.
 
+const REQ_HALF = 1.6;   // people this close to the ride track centre ask for the bell
+
 export class TramWatch {
   constructor(crowd) {
     this.c = crowd;
@@ -25,6 +27,9 @@ export class TramWatch {
     this.lastReqU = 0;
     this.stats = { violations: 0, rescues: 0, blocked: 0, bellRequests: 0, bells: 0, maxUrgency: 0 };
     this.violationLog = [];
+    this.reqLog = [];
+    this.rescueLog = [];
+    this.reqWho = null; this.reqAhead = 0; this.reqDl = 0;
   }
 
   update(app, trainU) {
@@ -47,7 +52,15 @@ export class TramWatch {
   }
 
   /** Is the clearance band at `ahead` metres in front of the cab currently closed to pedestrians? */
-  zone(ahead) { return ahead > -(TRAM_LEN + 2) && ahead < this.clearAhead; }
+  zone(ahead, front = 0) { return ahead > -(TRAM_LEN + 2) && ahead < this.clearAhead + front; }
+
+  /** How far ahead of the cab this person starts getting off the track. A few are absorbed in
+   *  their phone and react late (the driver then rings); the bell makes everyone move. */
+  frontFor(a) {
+    if (a.bellT > this.c.time) return this.clearAhead * 1.6 + 4;
+    if (a.dreamy) return Math.max(this.v * 3.2 + 12, this.reqReach * 0.55);
+    return this.clearAhead + 4;
+  }
 
   /** May someone start crossing the band at s now, needing about tCross seconds to get through? */
   canEnterBand(s, tCross) {
@@ -63,16 +76,16 @@ export class TramWatch {
     const dl = a.d - RIDE_D;
     const ahead = a.s - this.trainU;
     // bell request: someone on or right by the track within the stopping distance
-    if (ahead > 2 && this.v > 0.5 && Math.abs(dl) < SWEPT_HALF + 0.1 + AGENT_R) {
+    if (ahead > 2 && this.v > 0.5 && Math.abs(dl) < REQ_HALF) {
       const reach = this.reqReach;
       if (ahead < reach) {
         const inGauge = Math.abs(dl) < 0.9 ? 1 : 0.65;
         const u = Math.min(1, (1 - ahead / reach) * 1.25) * inGauge;
-        if (u > this.reqUrgency) this.reqUrgency = u;
+        if (u > this.reqUrgency) { this.reqUrgency = u; this.reqWho = a; this.reqAhead = ahead; this.reqDl = dl; }
       }
     }
-    const front = this.clearAhead + 4 + (a.bellT > this.c.time ? this.clearAhead * 0.6 : 0); // the bell makes people move early
-    if (Math.abs(dl) >= BAND + 0.02 || ahead < -(TRAM_LEN + 2) || ahead > front) { a.clearing = false; return; }
+    const front = this.frontFor(a);
+    if (Math.abs(dl) >= BAND + 0.02 || ahead < -(TRAM_LEN + 7) || ahead > front) { a.clearing = false; return; }
     if (!a.clearing) {
       a.clearing = true;
       const toHi = BAND_HI - a.d, toLo = a.d - BAND_LO;
@@ -82,9 +95,11 @@ export class TramWatch {
       const going = a.state === ST.GOTO;
       if (going && a.gd > RIDE_D + 1 && toHi / HURRY < tta - 2) hi = true;
       else if (going && a.gd < RIDE_D - 1 && toLo / HURRY < tta - 2) hi = false;
-      // beside a platform the safe place is between the tracks (unless boarding passengers)
-      if (hi && a.kind !== KIND.PASSENGER && this.c.map.stationAt(a.s) && toHi > 0.35) hi = false;
-      a.clearTo = hi ? BAND_HI + 0.06 : BAND_LO - 0.06;
+      // beside a platform the safe place is between the tracks (passengers are on the platform anyway)
+      if (hi && a.kind !== KIND.PASSENGER && (this.c.map.stationAt(a.s) || this.c.map.stationAt(a.s + 6))) hi = false;
+      // step well clear when there is time, just clear when there is not
+      const spare = ahead > 0 && this.v > 0.2 ? Math.min(1, Math.max(0, (ahead / this.v - 3) / 4)) : 1;
+      a.clearTo = hi ? BAND_HI + 0.06 + 0.25 * spare : BAND_LO - 0.06 - 0.45 * spare;
     }
   }
 
@@ -102,7 +117,7 @@ export class TramWatch {
     const dl = a.d - RIDE_D;
     if (Math.abs(dl) >= BAND) return;
     const ahead = a.s - this.trainU;
-    if (!this.zone(ahead)) return;
+    if (ahead < -(TRAM_LEN + 2) || ahead > this.frontFor(a) - 4) return;
     if (Math.abs(prevD - RIDE_D) >= BAND - 1e-4) {
       // was outside: block the step into the band
       a.d = prevD; a.vd = 0;
@@ -113,6 +128,7 @@ export class TramWatch {
       // emergency: should never happen if the behaviour above works. Count and project out.
       if (ahead > -AGENT_R && ahead < SWEPT_AHEAD + AGENT_R && Math.abs(dl) < SWEPT_HALF + AGENT_R) this._violation(a, ahead, dl);
       this.stats.rescues++;
+      if (this.rescueLog.length < 12) this.rescueLog.push({ t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, clr: a.clearing, lead: !!a.leader });
       a.d = dl >= 0 && !this.c.map.stationAt(a.s) ? BAND_HI + 0.01 : BAND_LO - 0.01;
       if (a.kind === KIND.PASSENGER && dl >= 0) a.d = BAND_HI + 0.01;
       a.vd = 0;
@@ -135,6 +151,8 @@ export class TramWatch {
     if (time - this.lastReqT > 2.5 || u > this.lastReqU + 0.3) {
       this.lastReqT = time; this.lastReqU = u;
       this.stats.bellRequests++;
+      const w = this.reqWho;
+      if (this.reqLog.length < 12 && w) this.reqLog.push({ t: +time.toFixed(1), u: +u.toFixed(2), ahead: +this.reqAhead.toFixed(1), dl: +this.reqDl.toFixed(2), st: w.state, task: w.task, step: w.step, kind: w.kind, clr: w.clearing, lane: w.lane, lead: !!w.leader });
       app.events.emit('bell-request', { urgency: +u.toFixed(2) });
     } else if (time - this.lastReqT > 1) this.lastReqU = Math.min(this.lastReqU, u);
   }

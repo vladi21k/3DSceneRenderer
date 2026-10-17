@@ -47,14 +47,25 @@ export class BatchSet {
       const cast = part.cast !== false;
       const key = `${part.mat.uuid}|${cast}`;
       let b = this.batches.get(key);
-      if (!b) { b = { mat: part.mat, cast, geos: new Map(), tinted: false, bm: null, live: 0 }; this.batches.set(key, b); }
+      if (!b) { b = { mat: part.mat, cast, geos: new Map(), tinted: false, bm: null, live: 0, free: [] }; this.batches.set(key, b); }
       if (!b.geos.has(part.geo)) b.geos.set(part.geo, -1);
       if (part.tint) b.tinted = true;
       part.batch = b;
     }
   }
 
-  finalize(scene, renderer) {
+  /** Writer that only counts instances per batch (sizing pass). */
+  countingWriter() {
+    const counts = new Map();
+    return {
+      add: (p) => { if (p) for (const part of p.parts) counts.set(part.batch, (counts.get(part.batch) || 0) + 1); },
+      count: () => 0,
+      counts,
+    };
+  }
+
+  /** Create the BatchedMeshes. capacity(batch) -> initial instance capacity. */
+  finalize(scene, renderer, capacity = () => 1024) {
     const sync = () => {
       const f = renderer.info.render.frame;
       if (f === this.syncFrame) return;
@@ -71,7 +82,7 @@ export class BatchSet {
         prepared.push([g, gg]);
         nv += gg.attributes.position.count; ni += gg.index.count;
       }
-      const bm = new THREE.BatchedMesh(512, nv, ni, b.mat);
+      const bm = new THREE.BatchedMesh(Math.max(64, Math.ceil(capacity(b))), nv, ni, b.mat);
       for (const [g, gg] of prepared) b.geos.set(g, bm.addGeometry(gg));
       bm.name = `${this.name}:${b.mat.name}`;
       bm.frustumCulled = false;            // instances span the whole route; culled per instance
@@ -96,9 +107,13 @@ export class BatchSet {
       add: (p, matrix, color = null) => {
         if (!p) return;
         for (const part of p.parts) {
-          const b = part.batch, bm = b.bm;
-          if (b.live >= bm.maxInstanceCount) bm.setInstanceCount(bm.maxInstanceCount * 2);
-          const id = bm.addInstance(b.geos.get(part.geo));
+          const b = part.batch, bm = b.bm, gid = b.geos.get(part.geo);
+          // recycle our own hidden instances (BatchedMesh re-sorts its free list on every add)
+          let id;
+          if (b.free.length) { id = b.free.pop(); bm.setGeometryIdAt(id, gid); } else {
+            if (b.live >= bm.maxInstanceCount) bm.setInstanceCount(bm.maxInstanceCount * 2);
+            id = bm.addInstance(gid);
+          }
           b.live++;
           bm.setMatrixAt(id, matrix);
           if (b.tinted) bm.setColorAt(id, part.tint && color ? color : WHITE);
@@ -113,7 +128,12 @@ export class BatchSet {
   release(obj) {
     const rec = obj && obj.userData.batchRecord;
     if (!rec) return;
-    for (let i = 0; i < rec.ids.length; i += 2) { rec.ids[i].bm.deleteInstance(rec.ids[i + 1]); rec.ids[i].live--; }
+    for (let i = 0; i < rec.ids.length; i += 2) {
+      const b = rec.ids[i], id = rec.ids[i + 1];
+      b.bm.setVisibleAt(id, false);
+      b.free.push(id);
+      b.live--;
+    }
     rec.ids.length = 0;
     this.records.delete(rec);
     obj.userData.batchRecord = null;
@@ -163,4 +183,17 @@ export function scaleMatrix(m, sx, sy = sx, sz = sx) {
   e[4] *= sy; e[5] *= sy; e[6] *= sy;
   e[8] *= sz; e[9] *= sz; e[10] *= sz;
   return m;
+}
+
+const _a = new THREE.Vector3(), _z = new THREE.Vector3(), _y = new THREE.Vector3();
+/** Matrix mapping a unit segment prototype (local z from 0 to 1) onto world points A -> B. */
+export function segmentMatrix(A, B, out = new THREE.Matrix4()) {
+  _z.subVectors(B, A);
+  const len = _z.length();
+  _a.copy(_z).divideScalar(len || 1);
+  _x.crossVectors(Math.abs(_a.y) > 0.95 ? _f.set(1, 0, 0) : _up, _a).normalize();
+  _y.crossVectors(_a, _x).normalize();
+  out.makeBasis(_x, _y, _z);
+  out.setPosition(A);
+  return out;
 }

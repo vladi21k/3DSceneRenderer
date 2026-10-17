@@ -90,7 +90,14 @@ export function lathe(b, profile, segs, opts = {}) {
       if (Math.abs(mx) + Math.abs(my) + Math.abs(mz) < 1e-9) { mx = 0; my = 1; mz = 0; }
       // normal = tangent x meridian (outward for a bottom-to-top profile)
       let nx = ty * mz - tz * my, ny = tz * mx - tx * mz, nz = tx * my - ty * mx;
-      const l = Math.hypot(nx, ny, nz) || 1;
+      let l = Math.hypot(nx, ny, nz);
+      if (l < 1e-9) {
+        // on the axis (r = 0) the circumferential tangent vanishes: use the profile normal
+        const a = rings[prev], c = rings[next];
+        const dr = c.r - a.r, dy = c.y - a.y;
+        nx = dy * Math.cos(th); ny = -dr; nz = -dy * Math.sin(th);
+        l = Math.hypot(nx, ny, nz) || 1;
+      }
       nx /= l; ny /= l; nz /= l;
       b.vert(p[0], p[1], p[2], nx, ny, nz, (j / segs) * Math.PI * 2 * Math.max(0.05, rings[i].r), p[1], opts.tube ?? Math.max(rings[i].r, 0.004));
     }
@@ -175,8 +182,13 @@ function sectionRing(section, segs) {
     }
     return out;
   }
-  // rounded rectangle: corner radius rr, 2 points per corner
   const hw = section.w / 2, ht = section.t / 2;
+  if (segs <= 4) {
+    // coarse levels: plain box with diagonal (smooth) normals
+    const s = Math.SQRT1_2;
+    return [[hw, ht, s, s], [-hw, ht, -s, s], [-hw, -ht, -s, -s], [hw, -ht, s, -s]].map(([a, b, na, nb], i) => ({ a, b, na, nb, v: i * 0.01 }));
+  }
+  // rounded rectangle: corner radius rr, 2 points per corner
   const rr = Math.min(hw, ht) * 0.45;
   const corners = [[hw - rr, ht - rr, 0], [-hw + rr, ht - rr, 1], [-hw + rr, -ht + rr, 2], [hw - rr, -ht + rr, 3]];
   const per = Math.max(1, Math.round(segs / 4) - 1);

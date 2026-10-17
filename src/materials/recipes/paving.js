@@ -8,9 +8,9 @@ vec3 granite(vec2 m, vec3 base) {
   vec4 g = voro(m, vec2(300.0), 81u, 1.0);          // ~3 mm grains
   float k = g.z;
   vec3 c = base;
-  c = mix(c, base * 0.32, step(k, 0.24));            // dark mica
-  c = mix(c, base * 1.55, step(0.8, k));             // pale quartz / feldspar
-  c *= 1.0 + 0.06 * fbm(m, 9.0, 3, 0.5, 82u);         // soft clouding
+  c = mix(c, base * 0.5, step(k, 0.2));              // dark mica
+  c = mix(c, base * 1.32, step(0.84, k));            // pale quartz / feldspar
+  c *= 1.0 + 0.05 * fbm(m, 9.0, 3, 0.5, 82u);         // soft clouding
   return c;
 }
 `;
@@ -18,15 +18,16 @@ vec3 granite(vec2 m, vec3 base) {
 // Street / sidewalk setts: 0.40 × 0.20 m (lengths 0.29–0.52), 4 mm sanded joints,
 // 3 mm chamfers, lippage between pavers, worn honed tops.
 export const paving = {
-  name: 'paving', size: 1024, tile: [3.2, 3.2], ss: 2,
+  name: 'paving', flat: [0.24, 0.24, 0.235, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
+  joint: 0.0027,
   pass: { normal: 1.0, ao: 0.8, aoRadius: 0.01, cavity: 0.4 },
   glsl: GRANITE + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
   float e = c.e + fbm(m, 20.0, 2, 0.5, 91u) * 0.0008;
-  const float JW = 0.002;
-  const float CH = 0.0035;
+  const float JW = 0.0017;
+  const float CH = 0.003;
   // lippage: each paver sits a little proud or low and slightly tilted; corners rock
   vec2 q = c.lp - 0.5 * c.size;
   float lip = (cellRand(c, 1u) - 0.5) * 0.003
@@ -45,9 +46,9 @@ void surface(vec2 m, inout Surf s) {
   s.height = mix(hJoint, max(hFace, hJoint), stone);
   vec3 g = granite(m, vec3(0.25, 0.25, 0.245));
   // grime in the chamfers and towards the joints
-  g *= mix(0.72, 1.0, smoothstep(0.0, 0.012, e - JW));
+  g *= mix(0.8, 1.0, smoothstep(0.0, 0.01, e - JW));
   g *= 1.0 - 0.15 * chip;
-  vec3 joint = vec3(0.105, 0.098, 0.088) * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u));
+  vec3 joint = vec3(0.13, 0.128, 0.122) * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u));
   s.albedo = mix(joint, g, stone);
   s.rough = mix(0.95, mix(0.74, 0.56, wear), stone);
 }
@@ -56,8 +57,9 @@ void surface(vec2 m, inout Surf s) {
 
 // Light stone edge band of the track corridor: honed slabs 0.6–0.9 m, no lengthwise joints.
 export const band = {
-  name: 'band', size: 512, tile: [2.4, 2.4], ss: 2,
+  name: 'band', flat: [0.45, 0.435, 0.4, 0.62], size: 512, tile: [2.4, 2.4], ss: 2,
   layout: { rowH: 2.4, rows: 1, seg: [3, 4], jitter: 0.3, seed: 8, shift: false, rowJoints: false },
+  joint: 0.0026,
   pass: { normal: 1.0, ao: 0.7, aoRadius: 0.008, cavity: 0.35 },
   glsl: GRANITE + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -82,8 +84,9 @@ void surface(vec2 m, inout Surf s) {
 
 // Platform: 0.40 m square concrete-stone slabs, stack bond, exposed fine aggregate.
 export const platform = {
-  name: 'platform', size: 512, tile: [2.4, 2.4], ss: 2,
+  name: 'platform', flat: [0.35, 0.34, 0.32, 0.74], size: 512, tile: [2.4, 2.4], ss: 2,
   layout: { rowH: 0.4, rows: 6, seg: [6, 6], jitter: 0.0, seed: 9, shift: false },
+  joint: 0.003,
   pass: { normal: 1.0, ao: 0.7, aoRadius: 0.01, cavity: 0.35 },
   glsl: GRANITE + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -107,7 +110,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Tactile warning tiles: 0.30 m tiles with truncated domes on a 50 mm grid.
 export const tactile = {
-  name: 'tactile', size: 256, tile: [0.6, 0.6], ss: 2,
+  name: 'tactile', flat: [0.46, 0.44, 0.39, 0.75], size: 256, tile: [0.6, 0.6], ss: 2,
   layout: { rowH: 0.3, rows: 2, seg: [2, 2], jitter: 0.0, seed: 3, shift: false },
   pass: { normal: 1.0, ao: 0.8, aoRadius: 0.012, cavity: 0.3 },
   glsl: /* glsl */ `

@@ -23,7 +23,7 @@ export class Sink {
     this.p = new Float32Array(3 * 2048);
     this.n = new Float32Array(3 * 2048);
     this.t = new Float32Array(2 * 2048);
-    this.c = new Uint8Array(3 * 2048);
+    this.c = new Float32Array(3 * 2048);
     this.i = new Uint32Array(6144);
     this.uvx = null; // optional per-sink UV transform overriding the builder's
   }
@@ -48,6 +48,19 @@ export class Sink {
       i: vc < 65536 ? Uint16Array.from(this.i.subarray(0, ic)) : this.i.slice(0, ic),
     };
   }
+  /** Axis-aligned bounds of the used vertices, merged into box {min, max} (Vector3-like). */
+  bounds(box) {
+    const a = this.p, n = this.vc * 3;
+    let x0 = box.min.x, y0 = box.min.y, z0 = box.min.z, x1 = box.max.x, y1 = box.max.y, z1 = box.max.z;
+    for (let i = 0; i < n; i += 3) {
+      const x = a[i], y = a[i + 1], z = a[i + 2];
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    box.min.set(x0, y0, z0); box.max.set(x1, y1, z1);
+    return box;
+  }
 }
 
 const capCache = new WeakMap();
@@ -63,7 +76,20 @@ export class Builder {
     this.flat = [1, 1, 1];           // colour used when shade is null
   }
 
-  reset() { this.sinks.clear(); this.frames.length = 0; this.uv = [1, 0, 1, 0]; this.shade = null; }
+  /** Start a new batch: sinks are pooled and only rewound, so their buffers are reused. */
+  reset() {
+    for (const s of this.sinks.values()) { s.vc = 0; s.ic = 0; }
+    this.begin();
+  }
+  /** Start a new object inside the current batch (keeps what the sinks already hold). */
+  begin() {
+    for (const s of this.sinks.values()) s.uvx = null;
+    let t = 0;
+    for (const s of this.sinks.values()) t += s.ic;
+    this._lastMark = t;
+    this._lastT = this.profile ? performance.now() : 0;
+    this.frames.length = 0; this.uv = [1, 0, 1, 0]; this.shade = null; this.flat = [1, 1, 1];
+  }
 
   sink(key) {
     let s = this.sinks.get(key);
@@ -115,9 +141,7 @@ export class Builder {
     t[k * 2 + 1] = tv * uv[2] + uv[3];
     let col = this.flat;
     if (this.shade) { col = this.col; this.shade(u, v, w, nu, nv, nw, col); }
-    c[i3] = col[0] >= 1 ? 255 : col[0] <= 0 ? 0 : (col[0] * 255 + 0.5) | 0;
-    c[i3 + 1] = col[1] >= 1 ? 255 : col[1] <= 0 ? 0 : (col[1] * 255 + 0.5) | 0;
-    c[i3 + 2] = col[2] >= 1 ? 255 : col[2] <= 0 ? 0 : (col[2] * 255 + 0.5) | 0;
+    c[i3] = col[0]; c[i3 + 1] = col[1]; c[i3 + 2] = col[2];
     return k;
   }
   tri(s, a, b, c) { const i = s.i, k = s.ic; i[k] = a; i[k + 1] = b; i[k + 2] = c; s.ic += 3; }
@@ -381,11 +405,22 @@ export class Builder {
     for (let k = 0; k < seg; k++) this.tri(s, c0, b0 + ((k + 1) % seg), b0 + k);
   }
 
+  /** Optional profiling: attribute triangles emitted since the last mark to `label`. */
+  mark(label) {
+    if (!this.profile) return;
+    let t = 0;
+    for (const s of this.sinks.values()) t += s.ic;
+    this.profile[label] = (this.profile[label] || 0) + (t - (this._lastMark || 0)) / 3;
+    this._lastMark = t;
+    const now = performance.now();
+    if (this._lastT) this.profile[label + 'Ms'] = (this.profile[label + 'Ms'] || 0) + now - this._lastT;
+    this._lastT = now;
+  }
+
   /** Collect the sinks as compact arrays: Map key -> trimmed sink. */
   finish() {
     const out = new Map();
-    for (const [k, s] of this.sinks) if (s.vc) out.set(k, s.trim());
-    this.sinks.clear();
+    for (const [k, s] of this.sinks) { if (s.vc) out.set(k, s.trim()); s.vc = 0; s.ic = 0; }
     return out;
   }
 }

@@ -19,7 +19,7 @@ export class StopLayer {
     this.sqHp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 800, Q: 0.7 });
     this.sq.connect(this.sqG).connect(this.sqHp).connect(e.bus.brakes);
     this.sq.start();
-    this.under = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 9000, Q: 0.5 });
+    this.under = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 6000, Q: 0.5 });
     this.under.connect(e.bus.brakes);
 
     // doors and chime are spatialised inside / beside the car body
@@ -50,7 +50,7 @@ export class StopLayer {
     if (braking && !this.creaked && v > 0.05 && v < 1.0) {
       const tts = v / Math.max(0.3, -st.accel);
       if (tts < 1.05) {
-        e.shot('creak' + (this.stops % 2), this.under, now + Math.max(0, tts - 1.0), 0.4);
+        e.shot('creak' + (this.stops % 2), this.under, now + Math.max(0, tts - 1.0), 0.2);
         this.creaked = true;
       }
     }
@@ -58,17 +58,17 @@ export class StopLayer {
     if (this.moving && v < 0.02) {
       this.moving = false;
       this.released = false;
-      e.shot('hissStop' + (this.stops % 2), this.under, now + 0.45, 0.32);
+      e.shot('hissStop' + (this.stops % 2), this.under, now + 0.45, 0.17);
       this.stops++;
       this.fS = 1650 + 600 * ((this.stops * 0.618) % 1);
     } else if (!this.moving && v > 0.06) {
       this.moving = true;
       this.creaked = false;
-      if (!this.released) e.shot('hissRelease' + (this.stops % 2), this.under, now, 0.22);
+      if (!this.released) e.shot('hissRelease' + (this.stops % 2), this.under, now, 0.13);
       this.released = true;
     }
     if (!this.moving && !this.released && st.throttle > 0.05) {
-      e.shot('hissRelease' + (this.stops % 2), this.under, now, 0.22);
+      e.shot('hissRelease' + (this.stops % 2), this.under, now, 0.13);
       this.released = true;
     }
 

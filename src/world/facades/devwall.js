@@ -31,7 +31,7 @@ export class DevWall {
     const b = t.count;
     for (let i = 0; i < pos.count; i++) t.v(pos.getX(i), pos.getY(i), 0, 0, 0, 1, uv.getX(i), uv.getY(i), 1);
     const idx = g.index.array;
-    for (let i = 0; i < idx.length; i++) t.i.push(idx[i] + b);
+    for (let i = 0; i < idx.length; i += 3) t.ix(idx[i] + b, idx[i + 1] + b, idx[i + 2] + b);
     void nor; g.dispose();
     const tint = plan.style.tint;
     kit.get('devwall').add(t.bake(), frame.matrix, tint[0] * 0.75, tint[1] * 0.75, tint[2] * 0.75);

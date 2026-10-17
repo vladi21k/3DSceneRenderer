@@ -3,7 +3,7 @@
 // the in-thread fallback. Yields {name, chans: Float32Array[], rate}.
 import { bellStrike } from './bell.js';
 import { streetIR } from './reverb.js';
-import { rollingTexture, clack, frog, scrape, brakeCreak } from './rail.js';
+import { rollingTexture, clack, frog, scrape, brakeCreak, rattle } from './rail.js';
 import { airHiss, doorMotion, doorChime, doorBeep, compressorLoop, fanLoop } from './vehicle.js';
 import { babbleBed, voiceShot } from './voice.js';
 import { birdCall, footstep, clink, carHorn, trafficBed } from './street.js';
@@ -24,6 +24,7 @@ export async function* synthJobs(sr) {
   for (let k = 0; k < 8; k++) yield item('clack' + k, clack(sr, k));
   for (let k = 0; k < 3; k++) yield item('frog' + k, frog(sr, k));
   for (let k = 0; k < 2; k++) yield item('scrape' + k, scrape(sr, k));
+  for (let k = 0; k < 4; k++) yield item('rattle' + k, rattle(sr, k));
   yield item('rolling', rollingTexture(sr));
   yield item('fan', fanLoop(lo), lo);
   yield item('compressor', compressorLoop(lo), lo);

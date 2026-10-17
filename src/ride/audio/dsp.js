@@ -130,6 +130,45 @@ export function normalizeRms(chans, rms = 0.2) {
 }
 
 /**
+ * Feed-forward compressor applied in place (linked channels). threshold is linear
+ * amplitude; attack/release in seconds. Used to tame the crest factor of beds.
+ */
+export function compress(chans, sr, { threshold = 0.3, ratio = 3, attack = 0.005, release = 0.12 } = {}) {
+  const list = Array.isArray(chans) ? chans : [chans];
+  const ka = 1 - Math.exp(-1 / (attack * sr)), kr = 1 - Math.exp(-1 / (release * sr));
+  let env = 0;
+  for (let i = 0; i < list[0].length; i++) {
+    let a = 0;
+    for (const c of list) a = Math.max(a, Math.abs(c[i]));
+    env += (a > env ? ka : kr) * (a - env);
+    if (env > threshold) {
+      const g = Math.pow(env / threshold, 1 / ratio - 1);
+      for (const c of list) c[i] *= g;
+    }
+  }
+  return list;
+}
+
+/**
+ * Look-ahead peak limiter applied in place: the gain never lets |x| exceed `ceiling`,
+ * ramps down ahead of each peak (attack) and recovers smoothly (release).
+ */
+export function limit(chans, sr, ceiling = 0.5, attack = 0.002, release = 0.06) {
+  const list = Array.isArray(chans) ? chans : [chans];
+  const n = list[0].length, g = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let a = 0;
+    for (const c of list) a = Math.max(a, Math.abs(c[i]));
+    g[i] = a > ceiling ? ceiling / a : 1;
+  }
+  const ka = 1 - Math.exp(-1 / (attack * sr)), kr = 1 - Math.exp(-1 / (release * sr));
+  for (let i = n - 2; i >= 0; i--) g[i] = Math.min(g[i], g[i + 1] + (1 - g[i + 1]) * ka);
+  for (let i = 1; i < n; i++) g[i] = Math.min(g[i], g[i - 1] + (1 - g[i - 1]) * kr);
+  for (const c of list) for (let i = 0; i < n; i++) c[i] *= g[i];
+  return list;
+}
+
+/**
  * Turn a buffer that is `fade` samples longer than wanted into a seamless loop of
  * length n: the overshoot is cross-faded (equal power) over the first `fade` samples.
  */

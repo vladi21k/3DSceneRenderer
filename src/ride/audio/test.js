@@ -3,10 +3,10 @@
 // clock first, which schedules all automation), once per solo'd bus plus the full
 // mix, and reports levels. Usage from tools/shoot.py:
 //   --eval "window.__app.audio.test({scenario:'cruise', speed:30, seconds:6})"
-// Options: scenario cruise|accel|stop|depart|curve|crossover|bell|station,
+// Options: scenario cruise|accel|stop|depart|ride|curve|crossover|bell|station,
 //   seconds, speed (km/h), throttle, s (start position), layers (array of bus names
 //   or 'none'), raw (skip compressor/limiter), wav (return the mix as base64 WAV),
-//   bands (octave-band levels per layer), sampleRate.
+//   bands (octave-band levels per layer), solo (bus for the 'mix' render / WAV), sampleRate.
 import { EYE_HEIGHT, TRACK_OFFSET } from '../../core/config.js';
 import { Bank } from './bank.js';
 import { AudioEngine, BUSES } from './engine.js';
@@ -46,6 +46,13 @@ function scenario(app, o) {
     acc = (t) => (t > t0 && A * (t - t0) < vmax ? A : 0);
     thr = (t) => (t > t0 - 0.3 && A * (t - t0) < vmax ? 1 : 0);
     ev.push({ t: 0.1, type: 'doors', data: { open: false } });
+  } else if (name === 'ride') {
+    // doors close, pull away, cruise (bell), brake to the next stop, doors open
+    const tA = 3.2, vmax = kmh(o.speed ?? 35), tAe = tA + vmax / A, tB = tAe + 7, tS = tB + vmax / A;
+    v = (t) => (t < tA ? 0 : t < tAe ? A * (t - tA) : t < tB ? vmax : Math.max(0, vmax - A * (t - tB)));
+    acc = (t) => (t > tA && t < tAe ? A : t > tB && t < tS ? -A : 0);
+    thr = (t) => (t > tA - 0.3 && t < tAe ? 1 : t >= tAe && t < tB ? 0.12 : t >= tB && t < tS ? -0.9 : 0);
+    ev.push({ t: 0.2, type: 'doors', data: { open: false } }, { t: tAe + 1.5, type: 'bell', data: {} }, { t: tS + 1.3, type: 'doors', data: { open: true } });
   } else if (name === 'station') {
     v = () => 0; thr = () => 0; acc = () => 0;
     ev.push({ t: 0.5, type: 'doors', data: { open: true } });
@@ -166,7 +173,7 @@ export async function runAudioTest(app, opts = {}) {
     const r = await renderOnce(app, bank, sc, o, name);
     report.layers[name] = measure(r.buf, !!o.bands);
   }
-  const mix = await renderOnce(app, bank, sc, o, null);
+  const mix = await renderOnce(app, bank, sc, o, o.solo || null);
   report.mix = measure(mix.buf, true, o.window ?? 0.5);
   report.mix.renderMs = Math.round(mix.ms);
   report.endS = +mix.endS.toFixed(1);

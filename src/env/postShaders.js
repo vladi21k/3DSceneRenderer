@@ -110,6 +110,10 @@ uniform float uAOStrength;
 uniform vec2 uAOSize;
 uniform vec3 uHazeExt;       // extinction per metre (rgb)
 uniform float uHazeInscatter;
+uniform sampler2D uSkyIrr;
+uniform vec3 uSunGround;
+uniform float uHazeSunVis;   // sunlit fraction of the air along street-level rays
+uniform float uHazeSun;      // strength of the forward-scattered sun term
 uniform float uShimmer;
 uniform vec2 uResolution;
 uniform float uDofK, uFocus;
@@ -120,6 +124,8 @@ uniform vec3 uHeadPos, uHeadDir;
 uniform float uHeadI;
 uniform vec2 uHeadCos;
 uniform float uMist;         // scattering coefficient for the airlight (1/m)
+uniform sampler2D tClouds;
+uniform int uUseClouds;
 varying vec2 vUv;
 
 #define ATM_PI 3.14159265
@@ -170,6 +176,14 @@ void main() {
     }
   }
   vec3 col = texture2D(tScene, uv).rgb;
+  // guard against NaN / Inf from upstream shading so they cannot spread through bloom
+  if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
+  col = min(col, vec3(6.0e4));
+  // volumetric cumulus over the sky (rgb = in-scattered light, a = transmittance)
+  if (sky && uUseClouds > 0) {
+    vec4 cl = texture2D(tClouds, vUv);
+    col = col * min(cl.a, 1.0) + cl.rgb;
+  }
 
 #ifdef USE_AO
   if (!sky) {
@@ -190,11 +204,18 @@ void main() {
   }
 #endif
 
-  // aerial perspective: extinction plus in-scatter of the horizon sky in this azimuth
+  // aerial perspective: extinction plus in-scatter. The ambient part is the mean
+  // horizon sky; the forward-scattered sun part only counts the sunlit share of the
+  // canyon air (most of the street air is in shadow at low sun).
   if (!sky) {
-    vec3 hz = texture2D(uSkyLUT, skyUV(normalize(vec3(rd.x, 0.02, rd.z)))).rgb;
+    vec3 hzMean = texture2D(uSkyIrr, vec2(1.5 / 4.0, 0.5)).rgb;
+    vec3 hzDir = texture2D(uSkyLUT, skyUV(normalize(vec3(rd.x, 0.02, rd.z)))).rgb;
+    float cosT = dot(rd, uSunDirA);
+    float g = 0.72, g2 = g * g;
+    float ph = (1.0 - g2) / (4.0 * ATM_PI * pow(max(1.0 + g2 - 2.0 * g * cosT, 1e-4), 1.5));
+    vec3 inscat = mix(hzMean, hzDir, 0.2) * uHazeInscatter + uSunGround * ph * uHazeSunVis * uHazeSun;
     vec3 T = exp(-uHazeExt * dist);
-    col = col * T + hz * uHazeInscatter * (1.0 - T);
+    col = col * T + inscat * (1.0 - T);
   }
 
   // dusk airlight: haze around the lamps and the headlight beam
@@ -224,7 +245,37 @@ void main() {
 }
 `;
 
-// ---------------------------------------------------------------- bloom / DOF pyramid
+
+// ---------------------------------------------------------------- depth of field (full res gather)
+export const DOF_FS = /* glsl */ `
+uniform sampler2D tSrc;      // rgb + CoC (px) in alpha
+uniform vec2 uTexel;
+varying vec2 vUv;
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+void main() {
+  vec4 c = texture2D(tSrc, vUv);
+  float coc = c.a;
+  if (coc < 0.55) { gl_FragColor = c; return; }
+  float R = coc * 0.5;
+  float rot = ign(gl_FragCoord.xy) * 6.2831853;
+  vec3 acc = c.rgb;
+  float wsum = 1.0;
+  const float GA = 2.39996323;
+  for (int i = 0; i < 16; i++) {
+    float fi = float(i) + 0.5;
+    float r = sqrt(fi / 16.0) * R;
+    float a = fi * GA + rot;
+    vec2 o = vec2(cos(a), sin(a)) * r;
+    vec4 s = texture2D(tSrc, vUv + o * uTexel);
+    // a sample only spreads as far as its own circle of confusion reaches
+    float w = clamp(s.a * 0.5 - r + 0.75, 0.0, 1.0);
+    acc += s.rgb * w; wsum += w;
+  }
+  gl_FragColor = vec4(acc / wsum, coc);
+}
+`;
+
+// ---------------------------------------------------------------- bloom pyramid
 // 13-tap dual-filter downsample (optionally Karis-weighted against fireflies)
 export const DOWN_FS = /* glsl */ `
 uniform sampler2D tSrc;
@@ -295,8 +346,6 @@ void main() {
 // ---------------------------------------------------------------- final: lens, tone map, grade
 export const FINAL_FS = /* glsl */ `
 uniform sampler2D tHDR;
-uniform sampler2D tDof1;
-uniform sampler2D tDof2;
 uniform sampler2D tBloom;
 uniform sampler2D tLum;
 uniform float uExposure;      // base exposure for the time of day
@@ -359,18 +408,12 @@ void main() {
   vec2 ca = q * r2 * uCA;
   vec4 c0 = texture2D(tHDR, uv);
   vec3 col = vec3(texture2D(tHDR, uv + ca).r, c0.g, texture2D(tHDR, uv - ca).b);
-  // depth of field from the blur pyramid, by circle of confusion
-#ifdef USE_DOF
-  float coc = c0.a;
-  col = mix(col, texture2D(tDof1, uv).rgb, smoothstep(0.7, 2.0, coc));
-  col = mix(col, texture2D(tDof2, uv).rgb, smoothstep(2.4, 5.0, coc));
-#endif
   col = mix(col, texture2D(tBloom, uv).rgb, uBloom);
 
   // exposure: time-of-day base, nudged by the metered scene luminance
   float avgLog = texture2D(tLum, vec2(0.5)).r;
   float metered = exp2(avgLog) * uExposure;
-  float corr = clamp(pow(0.16 / max(metered, 1e-5), uAutoExp), 0.7, 1.45);
+  float corr = clamp(pow(0.16 / max(metered, 1e-6), uAutoExp), 0.75, 1.3);
   col *= uExposure * corr;
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);

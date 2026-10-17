@@ -3,7 +3,7 @@
 // Acrylic canvas, plain weave ~1 mm yarns. Albedo near white: colour comes from the
 // material / vertex colour. Tile 0.2 m.
 export const canvas = {
-  name: 'canvas', size: 512, tile: [0.2, 0.2], ss: 2,
+  name: 'canvas', flat: [0.92, 0.92, 0.92, 0.83], size: 512, tile: [0.2, 0.2], ss: 2,
   pass: { normal: 0.6, ao: 0.5, aoRadius: 0.0008, cavity: 0.25 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -28,7 +28,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Natural wood, grain along v (boards / door stiles). Warm mid-tone; materials tint it.
 export const wood = {
-  name: 'wood', size: 512, tile: [0.5, 1.0], ss: 2,
+  name: 'wood', flat: [0.4, 0.26, 0.15, 0.66], size: 512, tile: [0.5, 1.0], ss: 2,
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.002, cavity: 0.3 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -49,7 +49,7 @@ void surface(vec2 m, inout Surf s) {
 // Painted timber (louvred shutters): grain telegraphs through the paint, cracked and
 // slightly peeling paint. Grain along u. Albedo near white (paint colour from material).
 export const paintwood = {
-  name: 'paintwood', size: 512, tile: [0.5, 0.5], ss: 2,
+  name: 'paintwood', flat: [0.88, 0.88, 0.88, 0.55], size: 512, tile: [0.5, 0.5], ss: 2,
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.003, cavity: 0.3 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -69,7 +69,7 @@ void surface(vec2 m, inout Surf s) {
 // Marseille-style interlocking terracotta tiles: 0.24 m wide, 0.33 m exposed courses,
 // two rolls per tile, overlap step at each course, grime in the channels, sparse lichen.
 export const rooftile = {
-  name: 'rooftile', size: 512, tile: [1.92, 1.98], ss: 2,
+  name: 'rooftile', flat: [0.36, 0.12, 0.055, 0.78], size: 512, tile: [1.92, 1.98], ss: 2,
   layout: { rowH: 0.33, rows: 6, seg: [8, 8], jitter: 0.0, seed: 17, shift: false },
   pass: { normal: 1.0, ao: 1.0, aoRadius: 0.03, cavity: 0.45 },
   glsl: /* glsl */ `
@@ -97,7 +97,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Roof membrane: granulated bitumen cap sheet, 1 m laps along v.
 export const membrane = {
-  name: 'membrane', size: 512, tile: [2.0, 2.0], ss: 2,
+  name: 'membrane', flat: [0.28, 0.275, 0.26, 0.9], size: 512, tile: [2.0, 2.0], ss: 2,
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.01, cavity: 0.3 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -116,7 +116,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Cast concrete: cement clouding, fine aggregate, bug holes.
 export const concrete = {
-  name: 'concrete', size: 512, tile: [2.0, 2.0], ss: 2,
+  name: 'concrete', flat: [0.39, 0.38, 0.36, 0.87], size: 512, tile: [2.0, 2.0], ss: 2,
   pass: { normal: 1.0, ao: 0.7, aoRadius: 0.006, cavity: 0.4 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -134,7 +134,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Lime render: trowel undulation, sand texture, hairline cracks, soft soiling.
 export const plaster = {
-  name: 'plaster', size: 512, tile: [2.0, 2.0], ss: 2,
+  name: 'plaster', flat: [0.65, 0.61, 0.53, 0.9], size: 512, tile: [2.0, 2.0], ss: 2,
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.35 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -152,7 +152,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Asphalt: dark binder with exposed aggregate, worn and dusty.
 export const asphalt = {
-  name: 'asphalt', size: 512, tile: [1.5, 1.5], ss: 2,
+  name: 'asphalt', flat: [0.1, 0.1, 0.1, 0.88], size: 512, tile: [1.5, 1.5], ss: 2,
   pass: { normal: 1.0, ao: 0.8, aoRadius: 0.006, cavity: 0.4 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -171,7 +171,7 @@ void surface(vec2 m, inout Surf s) {
 // Young street-tree bark: smooth grey-brown with fine vertical fissures, lenticels, lichen.
 // u around the trunk, v up. Tile 0.5 × 1 m.
 export const bark = {
-  name: 'bark', size: 512, tile: [0.5, 1.0], ss: 2,
+  name: 'bark', flat: [0.18, 0.155, 0.125, 0.88], size: 512, tile: [0.5, 1.0], ss: 2,
   pass: { normal: 1.0, ao: 0.8, aoRadius: 0.006, cavity: 0.45 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {

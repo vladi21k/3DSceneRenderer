@@ -184,6 +184,17 @@ def vertex_attributes(node, heavy, P, T, sigma, detail_regions=None):
     return dict(P=P, N=N, ao=ao, si=si, sw=sw, region=region, M=M)
 
 
+def part_attributes(node, body, P, T):
+    """Attributes of an accessory part: its own SDF for shape and weights, body + part for AO."""
+    P = S.project(node, P.astype(np.float32), 2).astype(np.float64)
+    N = S.normals(node, P.astype(np.float32))
+    ao = S.sdf_ao(S.Union([body, node]), P, N)
+    E, deg = adjacency(T, len(P))
+    W, region = skin_weights(node, P, T, 0.01)
+    si, sw = quantize_weights(W, E, deg, 1)
+    return dict(P=P, N=N, ao=ao, si=si, sw=sw, region=region, M=np.zeros_like(P))
+
+
 # ----------------------------------------------------------------------------- packing
 
 class Packer:
@@ -258,7 +269,9 @@ def build_base(kind, res, pk):
     face = (V[:, 2] < -0.03 * sc) & (np.abs(V[:, 1] - hy + 0.03 * sc) < 0.085 * sc)
     detail[face] = np.maximum(detail[face], 0.9)
     lods_mesh = blender_decimate(V, T, LOD_TRIS['body'], detail)
-    parts = PARTS.build_parts(kind, node, info, res)
+    parts = PARTS.build_parts(kind, node, info, res, mesh_fn=mesh_sdf,
+                              decimate_fn=lambda V_, T_, tg: blender_decimate(V_, T_, tg, None, symmetric=False),
+                              attr_fn=part_attributes)
     sigma = 0.010 * sc
     lods = []
     for li, (Vl, Tl) in enumerate(lods_mesh):

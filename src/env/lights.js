@@ -2,12 +2,15 @@ import * as THREE from 'three';
 import { TRACK_OFFSET } from '../core/config.js';
 import { LUX_PER_UNIT } from './atmosphere.js';
 
-// Dusk lighting: a small pool of real point lights reassigned every frame to the lamp
-// heads nearest the cab (fading in/out at the ends of the range so nothing pops), and
-// the tram headlight, a spot light just ahead of the cab aimed down the rails.
+// Dusk lighting: a small pool of real lights reassigned every frame to the lamp heads
+// nearest the cab (fading in/out at the ends of the range so nothing pops), and the
+// tram headlight, a spot light just ahead of the cab aimed down the rails. Lanterns
+// throw their light downwards, so the pool uses wide spot lights pointing at the
+// ground rather than point lights (no glowing canopies above the lamps).
 // The light count never changes, so switching day/night never recompiles shaders.
 
-const LAMP_CD = 650;            // luminous intensity of one lantern (cd), mostly downwards
+const LAMP_CD = 1400;           // luminous intensity of one lantern towards the ground (cd)
+const LAMP_ANGLE = 1.22;        // half-angle of the lantern's light cone (rad)
 const HEAD_CD = 26000;          // two LED headlights combined (cd, beam centre)
 const LAMP_RANGE = [-14, 92];   // metres along the route relative to the cab
 const FALLBACK_HEAD_H = 5.5;
@@ -21,10 +24,10 @@ export class StreetLights {
     this.count = count;
     this.pool = [];
     for (let i = 0; i < count; i++) {
-      const l = new THREE.PointLight(lampColor, 0, 30, 2);
+      const l = new THREE.SpotLight(lampColor, 0, 32, LAMP_ANGLE, 0.75, 2);
       l.castShadow = false;
       l.name = `lampLight${i}`;
-      app.scene.add(l);
+      app.scene.add(l, l.target);
       this.pool.push(l);
     }
     this.head = new THREE.SpotLight(headColor, 0, 160, 0.26, 0.65, 2);
@@ -98,6 +101,8 @@ export class StreetLights {
       const w = THREE.MathUtils.smoothstep(sc.ds, LAMP_RANGE[0], LAMP_RANGE[0] + 9)
         * (1 - THREE.MathUtils.smoothstep(sc.ds, LAMP_RANGE[1] - 22, LAMP_RANGE[1]));
       l.position.set(sc.h.x, sc.h.y - 0.25, sc.h.z);
+      l.target.position.set(sc.h.x, sc.h.y - 10, sc.h.z);
+      l.target.updateMatrixWorld();
       l.intensity = (LAMP_CD / LUX_PER_UNIT) * night * w;
       air.lampPos[i].copy(l.position);
       air.lampI[i] = l.intensity;

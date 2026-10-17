@@ -34,27 +34,31 @@ const vegetation = {
     const t2 = performance.now();
     this.mats = createVegMaterials(app, this.atlas);
 
-    // geometry order in the pools: trees [lod0, lod1] per template, then shrubs
+    // pool geometry lists: three detail levels per template (shrub L1 shares L0)
     const leafGeoms = [], barkGeoms = [];
-    this.trees.forEach((t, i) => {
-      t.leafIdx = [leafGeoms.push(t.leaves[0]) - 1, leafGeoms.push(t.leaves[1]) - 1];
-      t.barkIdx = [barkGeoms.push(t.bark[0]) - 1, barkGeoms.push(t.bark[1]) - 1];
-      t.index = i;
-    });
-    this.shrubs.forEach((s) => { s.leafIdx = [leafGeoms.push(s.leaves[0]) - 1, leafGeoms.push(s.leaves[1]) - 1]; });
+    const put = (list, g) => { const i = list.indexOf(g); return i >= 0 ? i : list.push(g) - 1; };
+    for (const t of this.trees) {
+      t.leafIdx = t.leaves.map((g) => put(leafGeoms, g));
+      t.barkIdx = t.bark.map((g) => put(barkGeoms, g));
+    }
+    for (const sh of this.shrubs) sh.leafIdx = sh.leaves.map((g) => put(leafGeoms, g));
     this.pools = new VegetationPools(app);
     this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400));
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300));
     this.props = createProps(app);
-    // debug switches: veglod=0|1 forces a LOD, vegshow=bark|leaf hides the other pool
-    this.forceLod = app.params.num('veglod', null);
+    // debug switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf hides the other pool
+    this.pools.forceLod = app.params.num('veglod', null);
     const show = app.params.str('vegshow');
     if (show === 'bark') this.leafPool.mesh.visible = false;
     if (show === 'leaf') this.barkPool.mesh.visible = false;
+    // warm-up: one throw-away chunk build so the first real chunk does not pay for JIT
+    const warm = this._build({ index: app.layout.chunkIndex(app.startS), lod: 0 }, app);
+    if (warm) this.dispose(warm);
     this.stats = {
+      build: [{ n: 0, total: 0, max: 0 }, { n: 0, total: 0, max: 0 }],
       atlasMs: +(t1 - t0).toFixed(1), templatesMs: +(t2 - t1).toFixed(1),
       templates: this.trees.map((t) => ({ id: t.tpl.id, ...t.stats,
-        tris0: (t.leaves[0].index.count + t.bark[0].index.count) / 3, tris1: (t.leaves[1].index.count + t.bark[1].index.count) / 3 })),
+          tris: [0, 1, 2].map((l) => (t.leaves[l].index.count + t.bark[l].index.count) / 3) })),
     };
   },
 
@@ -79,8 +83,16 @@ const vegetation = {
   },
 
   build(chunk, app) {
+    const t0 = performance.now();
+    const obj = this._build(chunk, app);
+    const b = this.stats.build[chunk.lod ? 1 : 0], dt = performance.now() - t0;
+    b.n++; b.total += dt; b.max = Math.max(b.max, dt);
+    return obj;
+  },
+
+  _build(chunk, app) {
     const { route, layout } = app;
-    const lod = this.forceLod ?? chunk.lod;
+    const lod = chunk.lod; // props only: trees and shrubs pick their detail per frame
     const trees = layout.inChunk('trees', chunk.index);
     const planters = layout.inChunk('furniture', chunk.index).filter((f) => f.type === 'planter');
     if (!trees.length && !planters.length) return null;
@@ -94,7 +106,8 @@ const vegetation = {
       const tpl = T.tpl;
       const r = new RNG(t.seed);
       const heading = route.heading(t.s);
-      const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.2 : 0.4);
+      // the pruned (clearance) side of the template faces the tracks; a little yaw jitter only
+      const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.2);
       const sy = THREE.MathUtils.clamp(t.height / tpl.height, 0.82, 1.22);
       const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (t.crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.12 : 1.2);
       route.toWorld(t.s, t.d, 0, _p);
@@ -104,10 +117,11 @@ const vegetation = {
       // per-tree tint: vigour / light differences between individual trees
       const v = r.range(0.9, 1.07), h = r.range(-0.05, 0.05);
       _c.setRGB(v * (1 + h), v, v * (1 - 2 * h));
-      rec.entries.push([this.leafPool, this.leafPool.add(T.leafIdx[lod ? 1 : 0], _m, _c)]);
+      const size = tpl.height * sy;
+      this.pools.add(rec, this.leafPool, T.leafIdx, _m, _c, _p, size);
       const bv = r.range(0.85, 1.1);
       _c.setRGB(bv, bv, bv);
-      rec.entries.push([this.barkPool, this.barkPool.add(T.barkIdx[lod ? 1 : 0], _m, _c)]);
+      this.pools.add(rec, this.barkPool, T.barkIdx, _m, _c, _p, size);
       props.tree(t, T, _m, yaw, sy, sxz, r);
     }
 
@@ -122,7 +136,7 @@ const vegetation = {
       _s.set(top.sx, 1, top.sz);
       _m.compose(top.pos, _q, _s);
       _c.setRGB(1, 1, 1);
-      rec.entries.push([this.leafPool, this.leafPool.add(S.leafIdx[lod ? 1 : 0], _m, _c)]);
+      this.pools.add(rec, this.leafPool, S.leafIdx, _m, _c, top.pos, 1.4);
     }
 
     const mesh = props.build();

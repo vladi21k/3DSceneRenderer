@@ -109,32 +109,25 @@ export function makeWireMaterial() {
   });
 }
 
-/** Opal lantern glass, lit at night. */
-export function makeGlassMaterial(base) {
-  const m = new THREE.MeshStandardMaterial({
-    // env units: 1.0 = 33,000 cd/m²; an opal street-lamp globe is ~0.3 at its brightest
-    color: 0xd9d4c8, roughness: 0.3, metalness: 0.0,
-    emissive: 0xffcf99, emissiveIntensity: 0.36,
-  });
-  if (base && base.color) m.color.copy(base.color).lerp(new THREE.Color(0xd9d4c8), 0.5);
-  m.name = 'catenary.lanternGlass';
+/** Opal lantern glass: a private variant of the library 'glass.lamp' (whose emission
+ *  follows U.uNight and the shared emissive gain), plus a brighter core where the bowl
+ *  faces the eye, as a lit opal globe looks. */
+export function makeGlassMaterial(M) {
+  const m = M.get('glass.lamp', { catenaryLantern: true });
   return chain(m, 'catGlass', (shader) => {
-    shader.uniforms.uNight = U.uNight;
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;')
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         {
-          // lamps switch on through dusk; the opal bowl glows brightest where it faces the eye
-          float lampOn = smoothstep(0.15, 0.6, uNight);
           float facing = clamp(dot(normalize(vNormal), normalize(vViewPosition)), 0.0, 1.0);
-          totalEmissiveRadiance *= lampOn * (0.45 + 0.8 * facing * facing);
+          totalEmissiveRadiance *= 0.5 + 0.75 * facing * facing;
         }`);
   });
 }
 
 /** Fabric with wind billow for pole banners. Banner geometry carries aBanner =
- *  (u across 0..1 from the pole, v up 0..1, phase) and the face normal in `normal`. */
-export function patchBanner(mat) {
+ *  (u across 0..1 from the pole, v up 0..1, phase) and the face normal in `normal`.
+ *  The billow is an analytic field, so normals follow it and the cloth shades like fabric. */
+export function patchBanner(mat, size = [0.6, 1.6]) {
   return chain(mat, 'catBanner', (shader) => {
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uWind = U.uWind;
@@ -144,27 +137,26 @@ export function patchBanner(mat) {
         attribute vec3 aBanner;
         uniform float uTime;
         uniform vec2 uWind;
-        uniform float uWindStrength;`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-        {
-          // held by rods at top and bottom, free edge away from the pole billows most
-          float bu = aBanner.x, bv = aBanner.y, ph = aBanner.z;
-          vec3 wn = normalize(mat3(modelMatrix) * objectNormal);
-          float push = dot(normalize(vec3(uWind.x, 0.0, uWind.y)), wn);
+        uniform float uWindStrength;
+        // displacement along the face normal: held by rods at top and bottom, the free
+        // edge away from the pole billows most; push = wind component through the cloth
+        float bannerDisp(float bu, float bv, float ph, float push) {
           float t = uTime;
           float gust = 0.6 + 0.4 * sin(t * 0.37 + ph * 3.1) * sin(t * 0.61 + ph);
           float belly = sin(3.14159 * bv) * (0.35 + 0.65 * bu);
           float ripple = sin(t * 2.7 + bu * 5.0 - bv * 2.2 + ph * 6.0) * 0.45 + sin(t * 4.3 + bu * 9.0 + bv * 4.0 + ph) * 0.2;
-          float amp = 0.16 * uWindStrength * gust;
-          transformed += objectNormal * (amp * belly * (push * 0.8 + ripple));
-          transformed.y -= amp * 0.1 * belly * abs(ripple);
-        }`);
+          return 0.32 * uWindStrength * gust * belly * (push * 0.8 + ripple);
+        }`)
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+        vec3 bN = normalize(objectNormal);
+        float bPush = dot(normalize(vec3(uWind.x, 0.0, uWind.y)), normalize(mat3(modelMatrix) * bN));
+        float bD = bannerDisp(aBanner.x, aBanner.y, aBanner.z, bPush);
+        float bDu = (bannerDisp(aBanner.x + 0.02, aBanner.y, aBanner.z, bPush) - bD) / (0.02 * ${size[0].toFixed(3)});
+        float bDv = (bannerDisp(aBanner.x, aBanner.y + 0.02, aBanner.z, bPush) - bD) / (0.02 * ${size[1].toFixed(3)});
+        vec3 bTu = cross(bN, vec3(0.0, 1.0, 0.0)); // direction of increasing u (away from the pole)
+        objectNormal = normalize(bN - bTu * bDu - vec3(0.0, 1.0, 0.0) * bDv);`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        transformed += bN * bD;
+        transformed.y -= 0.1 * abs(bD);`);
   });
-}
-
-/** Signal lamp lenses: constant bright emission (day-visible LED aspects). */
-export function makeLensMaterial(color, intensity = 6) {
-  const m = new THREE.MeshStandardMaterial({ color: 0x0b0b0b, roughness: 0.25, metalness: 0, emissive: color, emissiveIntensity: intensity });
-  m.name = 'catenary.signalLens';
-  return m;
 }

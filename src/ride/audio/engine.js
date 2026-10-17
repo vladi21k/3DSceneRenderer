@@ -2,7 +2,7 @@
 // drives the speakers (AudioContext) and the offline test harness
 // (OfflineAudioContext, with update() stepped on a virtual clock before rendering).
 //
-//   layer buses ─┬─────────────────────────────► mix ─► master ─► compressor ─► limiter ─► soft clip ─► out
+//   layer buses ─┬─────────────────────────────► mix ─► compressor ─► limiter ─► soft clip ─► volume ─► out
 //                └─ sends ─► street reverb (convolution) ─┘
 import { RNG } from '../../core/rng.js';
 import { glide, softClipCurve, clamp } from './dsp.js';
@@ -17,7 +17,7 @@ import { AmbienceLayer } from './layers/ambience.js';
 /** Mixer buses, also the units the test harness reports levels for. */
 export const BUSES = ['bell', 'rolling', 'joints', 'squeal', 'traction', 'aux', 'brakes', 'doors', 'ambience'];
 
-const REVERB_SEND = { bell: 0.55, joints: 0.04, brakes: 0.05, doors: 0.12, ambience: 0.22 };
+const REVERB_SEND = { bell: 0.32, joints: 0.03, brakes: 0.04, doors: 0.08, ambience: 0.15 };
 
 export class AudioEngine {
   /**
@@ -37,18 +37,17 @@ export class AudioEngine {
     this.doorsOpen = false;
     this._v = { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; } };
 
-    // ---- master chain
-    this.mix = new GainNode(ctx, { gain: 1 });
+    // ---- master chain. Dynamics come before the volume so turning the volume down
+    // doesn't change the mix's character. (The compressor applies its own makeup gain.)
+    this.mix = new GainNode(ctx, { gain: 0.7 });
     this.master = new GainNode(ctx, { gain: opts.raw ? 1 : 0 });
-    this.mix.connect(this.master);
     if (opts.raw) {
-      this.master.connect(ctx.destination);
+      this.mix.connect(this.master).connect(ctx.destination);
     } else {
-      this.comp = new DynamicsCompressorNode(ctx, { threshold: -20, knee: 10, ratio: 2.5, attack: 0.008, release: 0.3 });
-      this.makeup = new GainNode(ctx, { gain: 1.25 });
-      this.limiter = new DynamicsCompressorNode(ctx, { threshold: -3, knee: 0, ratio: 20, attack: 0.0015, release: 0.12 });
+      this.comp = new DynamicsCompressorNode(ctx, { threshold: -24, knee: 10, ratio: 2.5, attack: 0.008, release: 0.3 });
+      this.limiter = new DynamicsCompressorNode(ctx, { threshold: -4, knee: 0, ratio: 20, attack: 0.001, release: 0.12 });
       this.clip = new WaveShaperNode(ctx, { curve: softClipCurve(4096, 0.84), oversample: '2x' });
-      this.master.connect(this.comp).connect(this.makeup).connect(this.limiter).connect(this.clip).connect(ctx.destination);
+      this.mix.connect(this.comp).connect(this.limiter).connect(this.clip).connect(this.master).connect(ctx.destination);
     }
 
     // ---- buses (solo mutes everything else, for per-layer measurements)
@@ -126,10 +125,10 @@ export class AudioEngine {
     return src;
   }
 
-  /** HRTF panner for a point source in world space. */
-  panner(ref = 2, rolloff = 1) {
+  /** Panner for a point source in world space (HRTF unless model = 'equalpower'). */
+  panner(ref = 2, rolloff = 1, model = 'HRTF') {
     return new PannerNode(this.ctx, {
-      panningModel: 'HRTF', distanceModel: 'inverse', refDistance: ref, rolloffFactor: rolloff,
+      panningModel: model, distanceModel: 'inverse', refDistance: ref, rolloffFactor: rolloff,
       maxDistance: 10000, coneInnerAngle: 360, coneOuterAngle: 360,
     });
   }

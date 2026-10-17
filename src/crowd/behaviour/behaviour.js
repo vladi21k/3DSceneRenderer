@@ -1,7 +1,7 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE } from './agent.js';
-import { EDGE_LANE, RIDE_D, BAND_LO, BAND_HI, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, WALL_GAP } from './constants.js';
+import { EDGE_LANE, RIDE_D, BAND_LO, BAND_HI, TRAM_LEN, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, WALL_GAP } from './constants.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
 // entering shops, side streets, crossing the tracks, joining a platform, café seats,
@@ -10,28 +10,42 @@ import { EDGE_LANE, RIDE_D, BAND_LO, BAND_HI, STANDER_TARGET, MAX_SEATED, MAX_PA
 
 const CORR_EDGE = TRACK_ZONE_HALF + 0.38;   // where people wait before crossing the corridor
 const PI = Math.PI;
+const len2 = (x, y) => Math.sqrt(x * x + y * y);
 const tmpBand = { lo: 0, hi: 0 };
 
 // ------------------------------------------------------------------ lanes
 
 /** Lateral target (signed d) for a lane-following walker. */
 export function laneTarget(c, a) {
-  if (a.lane === LANE.CORR) {
-    // while the tram is near, corridor walkers keep off the ride track
-    if (Math.abs(a.laneD - RIDE_D) < BAND_HI - RIDE_D + 0.3 && c.tram.zone(a.s - c.tram.trainU - 15)) {
-      return a.laneD < RIDE_D || c.map.stationAt(a.s) ? BAND_LO - 0.35 : BAND_HI + 0.12;
-    }
-    return a.laneD;
+  const d = rawLane(c, a);
+  // while the tram is near, nobody aims for the ride track's clearance band
+  const ahead = a.s - c.tram.trainU;
+  if (d > BAND_LO - 0.3 && d < BAND_HI + 0.1 && ahead > -(TRAM_LEN + 4) && ahead < c.tram.frontFor(a) + 15) {
+    const lo = d < RIDE_D || c.map.stationAt(a.s) || c.map.stationAt(a.s + a.dir * 15);
+    return lo ? BAND_LO - 0.35 - a.laneF * 1.3 : BAND_HI + 0.1 + a.laneF * 0.3;
   }
+  return d;
+}
+
+function rawLane(c, a) {
   const side = a.side, map = c.map;
-  const st = map.stationAt(a.s) || map.stationAt(a.s + a.dir * 20);
+  const here = map.stationAt(a.s);
+  // alongside a platform people in the corridor stay in it (the platform is in the way)
+  if (here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25) {
+    if (a.lane === LANE.CORR) return a.laneD;
+    return -(0.7 + a.laneF * (TRACK_ZONE_HALF - 1.2));
+  }
+  if (a.lane === LANE.CORR) return a.laneD;
+  const st = here || map.stationAt(a.s + a.dir * 20);
   if (a.lane === LANE.EDGE && !st) return side * (TRACK_ZONE_HALF - 0.12 + 0.42 * a.laneF);
   map.bandAhead(a.s, side, a.dir * 7, tmpBand);
   const w = tmpBand.hi - tmpBand.lo;
   if (w < 0.7) {
-    // café furniture fills the sidewalk: walk along the corridor edge instead
+    // café furniture fills the sidewalk: people spread over what is left, the strip by the
+    // trees and (on the far side of the ride track) the track corridor itself
     if (st) return side * (tmpBand.lo + 0.2);
-    return side * (EDGE_LANE + 0.05);
+    if (side > 0) return EDGE_LANE + a.laneF * 1.15;
+    return -(0.9 + a.laneF * (EDGE_LANE + 0.5 - 0.9));
   }
   return side * (tmpBand.lo + 0.3 + (w - 0.6) * a.laneF);
 }
@@ -53,7 +67,7 @@ export function desired(c, a, out) {
     }
     case ST.GOTO: {
       const ds = a.gs - a.s, dd = a.gd - a.d;
-      const dist = Math.hypot(ds, dd);
+      const dist = len2(ds, dd);
       if (dist < a.gTol) { out.vs = 0; out.vd = 0; arrive(c, a); break; }
       const sp = Math.min(a.v0, dist * 1.3 + 0.25);
       out.vs = (ds / dist) * sp; out.vd = (dd / dist) * sp;
@@ -78,14 +92,14 @@ function follow(c, a, out) {
   const es = ts - a.s, ed = td - a.d;
   const k = 1.1;
   out.vs = L.vs + es * k; out.vd = L.vd + ed * k;
-  const sp = Math.hypot(out.vs, out.vd);
-  const lim = Math.max(a.v0 * 1.35, Math.hypot(L.vs, L.vd) * 1.2);
+  const sp = len2(out.vs, out.vd);
+  const lim = Math.max(a.v0 * 1.35, len2(L.vs, L.vd) * 1.2);
   if (sp > lim) { out.vs *= lim / sp; out.vd *= lim / sp; }
   out.vmax = lim;
   // mirror the leader's stops
   const lStop = L.state === ST.STAND || L.state === ST.WAIT || L.state === ST.PLATFORM;
   a.state = lStop ? (L.state === ST.WAIT ? ST.WAIT : ST.STAND) : ST.WALK;
-  if (lStop && Math.hypot(es, ed) < 0.45) {
+  if (lStop && len2(es, ed) < 0.45) {
     out.vs = 0; out.vd = 0;
     if (L.task !== TASK.CHAT) a.faceA = L.faceA;
   }
@@ -119,8 +133,9 @@ function clearSpot(c, s, d, r = 0.62) {
   return ok;
 }
 
+const CROSS_OFFSETS = [0, 1.3, -1.3, 2.6];
 function findCrossS(c, s, side) {
-  for (const off of [0, 1.3, -1.3, 2.6]) {
+  for (const off of CROSS_OFFSETS) {
     if (clearSpot(c, s + off, side * CORR_EDGE)) return s + off;
   }
   return null;
@@ -155,17 +170,17 @@ function thinkWalk(c, a) {
     if (mine && mine !== a.mouth) {
       a.mouth = mine;
       if (r.chance(0.28) && startSideOut(c, a, mine)) return;
-      if (mine.side === 0 && r.chance(0.3) && startCross(c, a, mine.s + r.range(-1, 1) * mine.width * 0.3, TASK.SIDE_OUT, mine)) return;
+      if (mine.side === 0 && r.chance(0.3) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.SIDE_OUT, mine)) return;
     } else if (other && other !== a.mouth) {
       a.mouth = other;
-      if (r.chance(0.3) && startCross(c, a, other.s + r.range(-1, 1) * other.width * 0.3, r.chance(0.5) ? TASK.SIDE_OUT : TASK.NONE, other)) return;
+      if (r.chance(0.3) && startCross(c, a, c.unwrap(other.s) + r.range(-1, 1) * other.width * 0.3, r.chance(0.5) ? TASK.SIDE_OUT : TASK.NONE, other)) return;
     }
     if (a.lane === LANE.SIDE) {
       if (r.chance(0.016) && startBrowse(c, a)) return;
       if (r.chance(0.006) && startEnter(c, a)) return;
-      if (r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
+      if (a.nFollow === 0 && r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
     }
-    if (r.chance(0.06) && startPlatform(c, a)) return;
+    if (a.nFollow === 0 && r.chance(0.06) && startPlatform(c, a)) return;
   }
   if (r.chance(0.0045) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
   if (a.nFollow > 0 && r.chance(0.02) && c.counts.stand < STANDER_TARGET && startChat(c, a)) return;
@@ -182,7 +197,7 @@ function thinkWalk(c, a) {
 export function setLane(c, a, r, forceSide = false) {
   const p = r.next();
   if (forceSide || p < 0.66) { a.lane = LANE.SIDE; a.laneF = r.range(0.04, 0.96); }
-  else if (p < 0.84) { a.lane = LANE.EDGE; a.laneF = r.next(); }
+  else if (p < 0.89) { a.lane = LANE.EDGE; a.laneF = r.next(); }
   else {
     a.lane = LANE.CORR;
     // the shared track corridor; the ride track's half is cleared whenever the tram comes

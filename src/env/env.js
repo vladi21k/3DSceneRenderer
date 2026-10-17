@@ -4,6 +4,7 @@ import { U } from '../core/uniforms.js';
 import { noise1 } from '../core/rng.js';
 import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT } from './atmosphere.js';
 import { Sky } from './sky.js';
+import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk } from './sunShadow.js';
 import { sunDirection, solarPosition } from './sunPath.js';
 import { StreetLights } from './lights.js';
@@ -16,9 +17,9 @@ import { StreetLights } from './lights.js';
 // Emissive materials should use these units (lit shop window ≈ 0.01–0.03).
 
 const QUALITY = {
-  low: { cascades: 3, mapSize: 1024, taps: 6, lamps: 4, envSize: 128 },
-  med: { cascades: 4, mapSize: 2048, taps: 8, lamps: 6, envSize: 192 },
-  high: { cascades: 5, mapSize: 2048, taps: 10, lamps: 8, envSize: 256 },
+  low: { cascades: 2, mapSize: 1536, taps: 6, lamps: 4, envSize: 128 },
+  med: { cascades: 3, mapSize: 2048, taps: 8, lamps: 6, envSize: 192 },
+  high: { cascades: 4, mapSize: 2048, taps: 10, lamps: 8, envSize: 256 },
 };
 
 const _v = new THREE.Vector3();
@@ -36,6 +37,7 @@ const env = {
   name: 'env',
   state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0 },
   exposure: 1,
+  canyonSunFraction: 0.5,
 
   async init(app) {
     this.app = app;
@@ -51,6 +53,7 @@ const env = {
     this.atmo = new Atmosphere(renderer, { mieScale: 2.4 });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
+    this.clouds = new Clouds(renderer, this.sky.uniforms);
     scene.background = null;
     scene.fog = null;
     scene.environmentIntensity = 1.0;
@@ -119,9 +122,13 @@ const env = {
 
     // exposure follows the horizontal illuminance with partial adaptation (a camera
     // keeps dusk darker and bluer than midday)
-    const Eh = Math.max(this.sunIlluminance * Math.max(dir.y, 0), 0) + skyIrradiance(elev);
+    const irr = this.sky.irradiance;
+    const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
+    const Esky = irr && Number.isFinite(irr.horizontal.x) ? lum(irr.horizontal) : skyIrradiance(elev);
+    this.skyIrradianceH = Esky;
+    const Eh = Math.max(this.sunIlluminance * Math.max(dir.y, 0), 0) + Esky;
     const Eref = 3.1;
-    this.exposure = 1.15 * Math.pow(Eref / Math.max(Eh, 1e-6), 0.74);
+    this.exposure = 1.15 * Math.pow(Eref / Math.max(Eh, 1e-7), 0.7);
     if (this._noPost && app) {
       app.renderer.toneMappingExposure = this.exposure;
     }
@@ -165,6 +172,7 @@ const env = {
     su.uCloudOffset.value.addScaledVector(U.uWind.value, -this.cloudSpeed * dt);
     su.uCirrusOffset.value.addScaledVector(U.uWind.value, -this.cloudSpeed * 2.2 * dt);
     su.uCamPosW.value.copy(app.camera.position);
+    su.uPixelAngle.value = THREE.MathUtils.degToRad(app.camera.fov) / Math.max(app.renderer.domElement.height, 1);
 
     // ---- sun light follows the camera (cascades are fitted by the shadow itself)
     app.camera.updateMatrixWorld();
@@ -178,8 +186,22 @@ const env = {
     if (dh > 0.12 && this.sky._capStep < 0) { this._lastHeading = h; this.sky.requestEnv(false); }
     this.sky.step(realDt, 8);
 
+    // ---- share of the street-level air in sunlight (drives the sunlit part of the haze)
+    this.canyonSunFraction = this._canyonSunFraction();
+
     // ---- dusk lights
     this.lights.update(app, U.uNight.value);
+  },
+
+  /** Fraction of the street width in direct sun, from the canyon proportions at the camera. */
+  _canyonSunFraction() {
+    const u = this.sky.uniforms, d = this.state.sunDir;
+    const h = Math.hypot(d.x, d.z);
+    if (d.y <= 0.0) return 0;
+    const across = h > 1e-4 ? Math.abs((d.x * u.uStreetRight.value.x + d.z * u.uStreetRight.value.z) / h) : 0;
+    const shadowLen = u.uBldH.value * across * h / Math.max(d.y, 1e-3);
+    const lit = THREE.MathUtils.clamp(1 - shadowLen / (2 * u.uHalfW.value), 0, 1);
+    return THREE.MathUtils.smoothstep(d.y, -0.02, 0.05) * (0.2 + 0.8 * lit);
   },
 
   /** Horizontal illuminance estimate (scene units) for the current time of day. */

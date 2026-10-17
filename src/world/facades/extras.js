@@ -1,7 +1,27 @@
 // Small wall fittings: iron wall lanterns beside entrances, gooseneck lamps over shop
 // signs, intercom panels. Built once (shared templates) in local coordinates with the
 // wall face at z = 0.
+import * as THREE from 'three';
+import { U } from '../../core/uniforms.js';
 import { Tpl } from './geo.js';
+
+/** Lantern glass: lightly frosted by day, warm glow from dusk (driven by uNight). */
+export function createLampGlass(M) {
+  const m = M.get('glass.lamp').clone();
+  m.name = 'facades.lampGlass';
+  m.color = new THREE.Color(0.62, 0.6, 0.55);
+  m.roughness = 0.3; m.metalness = 0;
+  m.emissive = new THREE.Color(1.0, 0.66, 0.36);
+  m.emissiveIntensity = 1;
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = U.uNight;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uNight;')
+      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 9.0;');
+  };
+  m.customProgramCacheKey = () => 'facades.lampGlass.v1';
+  return m;
+}
 
 function tube(t, a, b, s, shade = 0.9) {
   // square tube between 3D points a and b (side s), used for small iron arms

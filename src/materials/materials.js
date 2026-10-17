@@ -3,7 +3,7 @@ import { U } from '../core/uniforms.js';
 import { Baker } from './baker.js';
 import { RECIPES } from './recipes/index.js';
 import { LIBRARY } from './library.js';
-import { applySurface, surfaceUniforms } from './surface.js';
+import { applySurface, surfaceUniforms, surfaceOf } from './surface.js';
 
 // Physically based material library (contract: docs/ARCHITECTURE.md).
 // At init every tileable texture set is baked procedurally on the GPU (baker.js), then
@@ -41,21 +41,12 @@ function build(name, def) {
   setProps(m, def.props || {});
   const t = def.bake ? shared.textures.get(def.bake) : null;
   const surf = def.surf || {};
+  // only two defines alter the code; all other features are uniform-driven (see surface.js)
   const defines = {};
-  if (t) {
-    defines.SURF = '';
-    if (t.recipe.layout && surf.rows !== false) defines.SURF_ROWS = '';
-    if (surf.detail && shared.detail) defines.SURF_DETAIL = '';
-    if ((surf.macro || surf.stain) && shared.macro) defines.SURF_MACRO = '';
-    if (surf.spots && defines.SURF_ROWS !== undefined) defines.SURF_SPOTS = '';
-    if (t.recipe.metalMask) defines.SURF_METALMASK = '';
-    if (surf.swap) defines.SURF_SWAP = '';
-    if (def.glassClear) defines.SURF_GLASS = '';
-  }
-  if (surf.trans) defines.SURF_TRANS = '';
-  if (def.night) defines.SURF_NIGHT = '';
-  if (Object.keys(defines).length) {
-    applySurface(m, { defines, textures: t, uniforms: surfaceUniforms(surf, t, shared), def });
+  if (t) defines.SURF = '';
+  if (t && def.glassClear) defines.SURF_GLASS = '';
+  if (t || def.night || surf.trans) {
+    applySurface(m, { defines, textures: t, uniforms: surfaceUniforms(surf, def, t, shared) });
   }
   return m;
 }
@@ -63,7 +54,7 @@ function build(name, def) {
 /** Copy a library material into a variant, keeping the surface patch and its uniforms. */
 function cloneLib(base) {
   const m = base.clone();
-  const sf = base.userData.sf;
+  const sf = surfaceOf.get(base);
   if (sf) applySurface(m, sf);
   return m;
 }
@@ -88,15 +79,25 @@ const materials = {
     const needed = new Set(['detail', 'macro']);
     for (const d of Object.values(LIBRARY)) if (d.bake) needed.add(d.bake);
     const recipes = [...needed].map((n) => RECIPES[n]).filter(Boolean);
-    let baked = new Map();
-    try {
-      const baker = new Baker(app.renderer);
-      baked = await baker.bake(recipes);
-      this.stats.bake = baker.stats;
-    } catch (e) {
-      console.warn('[materials] texture bake failed, using flat materials', e);
+    // Targets are allocated and flat-filled now; the procedural bake compiles and renders
+    // in the background (parallel shader compile) while the world streams in.
+    this.ready = Promise.resolve(null);
+    const flat = app.params?.raw?.get?.('matflat') === '1'; // debug: skip baking (A/B cost check)
+    if (!flat) {
+      try {
+        const baker = new Baker(app.renderer);
+        const entries = baker.prepare(recipes);
+        for (const [k, v] of entries) shared.textures.set(k, v);
+        this.ready = baker.run(entries).then((st) => {
+          this.stats.bake = st;
+          this.stats.textureMB = +(st.bytes / 1048576).toFixed(1);
+          this.stats.bakedAfterMs = performance.now() - t0;
+          return st;
+        }).catch((e) => { console.warn('[materials] texture bake failed', e); return null; });
+      } catch (e) {
+        console.warn('[materials] texture bake unavailable, using flat materials', e);
+      }
     }
-    for (const [k, v] of baked) shared.textures.set(k, v);
     shared.detail = shared.textures.get('detail')?.surface || null;
     shared.macro = shared.textures.get('macro')?.raw || null;
 
@@ -113,7 +114,6 @@ const materials = {
       if (sc !== 1 && def.meta) for (const k of ['courseH', 'blockL']) if (def.meta[k]) this.meta[name][k] = def.meta[k] * sc;
     }
     this.stats.initMs = performance.now() - t0;
-    this.stats.textureMB = +((this.stats.bake?.bytes || 0) / 1048576).toFixed(1);
   },
 
   /** Shared material by name. opts (e.g. {vertexColors:true}, {side: THREE.DoubleSide}) returns a cached variant. */

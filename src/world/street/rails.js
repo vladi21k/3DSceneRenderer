@@ -1,4 +1,4 @@
-import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, GROOVE_OUT, LIP_OUT } from './constants.js';
+import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT } from './constants.js';
 
 // Embedded grooved rails.
 //  - sweepRail(): true 3D cross-section (rubber seals, bevelled head with a polished
@@ -33,26 +33,48 @@ const SEGS = (() => {
   return segs;
 })();
 
+// runs of consecutive same-material segments joined by smoothed normals share vertices
+const RUNS = (() => {
+  const runs = [];
+  let cur = null;
+  for (let j = 0; j < SEGS.length; j++) {
+    const sg = SEGS[j];
+    if (cur && cur.kind === sg.kind && SEGS[j - 1].n1 === sg.n0) cur.segs.push(sg);
+    else { cur = { kind: sg.kind, segs: [sg] }; runs.push(cur); }
+  }
+  for (const r of runs) {
+    r.pts = [{ x: r.segs[0].x0, h: r.segs[0].h0, n: r.segs[0].n0, v: r.segs[0].v0 }];
+    for (const sg of r.segs) r.pts.push({ x: sg.x1, h: sg.h1, n: sg.n1, v: sg.v1 });
+  }
+  return runs;
+})();
+
 /**
- * Sweep the 3D profile of rail (c, g) over rows[r0..r1] (samples from buildPaving).
- * mats: { head, side, groove, seal } materials; out: BufSet.
+ * Sweep the 3D profile of rail (c, g) through the paving rows listed in `rowIdx`
+ * (indices into samples from buildPaving). mats: { head, lip, side, groove, seal }.
  */
-export function sweepRail(out, mats, samples, r0, r1, c, g) {
-  if (r1 <= r0) return;
-  for (const sg of SEGS) {
-    const b = out.get(mats[sg.kind], false);
+export function sweepRail(out, mats, samples, rowIdx, c, g) {
+  if (rowIdx.length < 2) return;
+  for (const run of RUNS) {
+    const b = out.get(mats[run.kind], false);
+    const P = run.pts, np = P.length;
     let prev = -1;
-    for (let r = r0; r <= r1; r++) {
+    for (const r of rowIdx) {
       const S = samples[r];
-      const d0 = c + g * sg.x0, d1 = c + g * sg.x1;
-      const n0x = g * sg.n0[0], n1x = g * sg.n1[0];
-      const a = b.v(S.px + S.rx * d0, S.py + sg.h0, S.pz + S.rz * d0, S.rx * n0x, sg.n0[1], S.rz * n0x, S.s, sg.v0);
-      b.v(S.px + S.rx * d1, S.py + sg.h1, S.pz + S.rz * d1, S.rx * n1x, sg.n1[1], S.rz * n1x, S.s, sg.v1);
-      if (prev >= 0) {
-        if (g > 0) b.quad(prev, prev + 1, a + 1, a);
-        else b.quad(prev + 1, prev, a, a + 1);
+      const first = b.n;
+      for (let k = 0; k < np; k++) {
+        const p = P[k];
+        const d = c + g * p.x, nx = g * p.n[0];
+        b.v(S.px + S.rx * d, S.py + p.h, S.pz + S.rz * d, S.rx * nx, p.n[1], S.rz * nx, S.s, p.v);
       }
-      prev = a;
+      if (prev >= 0) {
+        for (let k = 0; k < np - 1; k++) {
+          const a0 = prev + k, a1 = prev + k + 1, b0 = first + k, b1 = first + k + 1;
+          if (g > 0) b.quad(a0, a1, b1, b0);
+          else b.quad(a1, a0, b0, b1);
+        }
+      }
+      prev = first;
     }
   }
 }
@@ -101,15 +123,14 @@ export function inlayStrip(buf, pts, fx0, fx1, uScale = 1) {
 /** Bands of the grooved rail (rail-local x, + towards gauge). */
 export const BANDS = {
   sealF: [RAIL_X0, -HEAD_HALF],
-  cornerF: [-HEAD_HALF, -0.0165],
-  head: [-0.0165, 0.015],
-  cornerG: [0.015, HEAD_HALF],
+  cornerF: [-HEAD_HALF, HEAD_DULL],
+  head: [HEAD_DULL, HEAD_HALF],
   groove: [HEAD_HALF, GROOVE_OUT],
   lip: [GROOVE_OUT, LIP_OUT],
   sealG: [LIP_OUT, RAIL_X1],
 };
 
-const HEADISH = { head: 1, cornerF: 1, cornerG: 1 };
+const HEADISH = { head: 1, cornerF: 1 };
 
 /**
  * Inlay a whole rail (all bands) along pts (path centre = rail centre line).
@@ -137,7 +158,6 @@ export function inlayRail(bufs, pts, g, opts = {}) {
   put(bufs.seal, BANDS.sealF, 'sealF');
   put(bufs.seal, BANDS.sealG, 'sealG');
   put(bufs.side, BANDS.cornerF, 'cornerF');
-  put(bufs.side, BANDS.cornerG, 'cornerG');
   put(bufs.head, BANDS.head, 'head');
   put(bufs.head, BANDS.lip, 'lip');
   put(bufs.groove, BANDS.groove, 'groove');

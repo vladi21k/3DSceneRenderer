@@ -139,7 +139,10 @@ function ring(g, x, y, c) {
 
 /** Glow attribute support: emissive = albedo × aGlow × (day level + night boost). */
 function addGlow(m, key) {
-  m.onBeforeCompile = (shader) => {
+  const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey ? m.customProgramCacheKey() : '';
+  m.onBeforeCompile = (shader, r) => {
+    if (prev) prev.call(m, shader, r);
     shader.uniforms.uNight = U.uNight;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
@@ -148,16 +151,14 @@ function addGlow(m, key) {
       .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying float vGlow;')
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.12 + uNight * 2.2 );');
   };
-  m.customProgramCacheKey = () => key;
+  m.customProgramCacheKey = () => prevKey + '|' + key;
   return m;
 }
 
 export function createSignMaterials(M) {
   if (!atlas) atlas = buildAtlas();
-  const board = M.get('sign.panel').clone();
-  board.vertexColors = true; board.color = new THREE.Color(1, 1, 1);
-  board.roughness = 0.45; board.metalness = 0;
-  board.name = 'facades.signBoard';
+  // a private variant of the library panel (keeps its baked surface), plus the glow hook
+  const board = M.get('sign.panel', { vertexColors: true, color: new THREE.Color(1, 1, 1), userData: { owner: 'facades.signBoard' } });
   addGlow(board, 'facades.signBoard.v1');
   const text = new THREE.MeshStandardMaterial({
     map: atlas.tex, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.4, metalness: 0,
@@ -179,7 +180,7 @@ function cellQuad(t, cell, cx, cy, w, h, z, normalZ = 1) {
   const xa = s > 0 ? x0 : x1, xb = s > 0 ? x1 : x0;
   t.v(xa, y0, z, 0, 0, s, uA, cell.v0); t.v(xb, y0, z, 0, 0, s, uB, cell.v0);
   t.v(xb, y1, z, 0, 0, s, uB, cell.v1); t.v(xa, y1, z, 0, 0, s, uA, cell.v1);
-  t.i.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  t.ix(b, b + 1, b + 2, b, b + 2, b + 3);
 }
 
 /** Crop a text cell to its inked width so the quad keeps the glyph aspect. */
@@ -258,7 +259,7 @@ export function bladeTpls(seed, w, h, q) {
     const uA = sx > 0 ? face.u0 : face.u0, uB = sx > 0 ? face.u1 : face.u1;
     tt.v(x, 0.02, zA, sx, 0, 0, uA, face.v0); tt.v(x, 0.02, zB, sx, 0, 0, uB, face.v0);
     tt.v(x, h - 0.02, zB, sx, 0, 0, uB, face.v1); tt.v(x, h - 0.02, zA, sx, 0, 0, uA, face.v1);
-    tt.i.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    tt.ix(b, b + 1, b + 2, b, b + 2, b + 3);
   };
   quad(1); quad(-1);
   // bracket: wall plate and two arms (metal batch)

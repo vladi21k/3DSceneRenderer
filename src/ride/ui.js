@@ -242,7 +242,7 @@ const ui = {
       this.$mark.style.opacity = manual ? '1' : '0';
       if (manual) this.$mark.style.left = `${(tr.notch / (n - 1)) * 100}%`;
       const notchText = manual ? (tr.notchId || 'N') + (tr.assisting ? ' · stop' : '')
-        : tr.throttle > 0.06 ? 'Power' : tr.throttle < -0.06 ? 'Brake' : 'Coast';
+        : tr.throttle > 0.06 ? 'Power' : tr.speed < 0.05 ? 'Hold' : tr.throttle < -0.06 ? 'Brake' : 'Coast';
       this._set('notch', this.$notch, notchText);
       this._set('mode', this.$mode, tr.auto ? 'Auto' : 'Manual');
       this.$mode.classList.toggle('manual', manual);
@@ -254,6 +254,7 @@ const ui = {
       else if (ph === 'doors-open') { k = 'Doors open'; v = ''; }
       else if (ph === 'doors-closing') { k = 'Doors closing'; v = ''; }
       else if (ph === 'departing') { k = 'Departing'; v = ''; }
+      else if (ph === 'ready') { k = 'Ready'; v = 'W to depart'; }
       else if (!ns.station) { k = ''; v = ''; }
       else if (ns.distance < 160 && tr.state === 'brake') k = 'Stopping in';
       this._set('stopK', this.$stopK, k);

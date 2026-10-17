@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import * as S from './postShaders.js';
 
-// Post-processing: HDR scene (HalfFloat, MSAA) → half-res SSAO → scene prepass (AO,
+// Post-processing: HDR scene (HalfFloat, MSAA) → half-res SSAO → half-res volumetric
+// clouds → scene prepass (clouds over the sky, AO,
 // aerial perspective, heat shimmer, dusk airlight, circle of confusion) → blur pyramid
-// (bloom + depth of field) → metered exposure → AgX tone map, grade, lens effects.
+// → depth-of-field gather → bloom pyramid → metered exposure → AgX tone map, grade, lens.
 // Contract in docs/ARCHITECTURE.md: render(dt, app), setSize(w, h).
 
 const QUALITY = {
@@ -114,6 +115,9 @@ const post = {
       uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() },
       uTime: { value: 0 }, uAOStrength: { value: 0.8 }, uAOSize: { value: new THREE.Vector2(1, 1) },
       uHazeExt: { value: new THREE.Vector3(4.2e-4, 4.6e-4, 5.3e-4) }, uHazeInscatter: { value: 0.85 },
+      uSkyIrr: env?.sky ? { value: env.sky.irrRT.texture } : { value: null },
+      uSunGround: env?.sky ? env.sky.uniforms.uSunGround : { value: new THREE.Vector3(3, 3, 3) },
+      uHazeSunVis: { value: 0.5 }, uHazeSun: { value: 1.0 },
       uShimmer: { value: 0 }, uResolution: { value: new THREE.Vector2(1, 1) },
       uDofK: { value: 0 }, uFocus: { value: FOCUS_M },
       uNightAir: { value: 0 },
@@ -123,21 +127,23 @@ const post = {
       uHeadDir: { value: air ? air.headDir : new THREE.Vector3(0, 0, -1) },
       uHeadI: { value: 0 }, uHeadCos: { value: new THREE.Vector2(0.96, 0.995) },
       uMist: { value: 2.5e-3 },
+      tClouds: { value: null }, uUseClouds: { value: 0 },
     }, { NUM_LAMPS: nLamps, ...(q.ao ? { USE_AO: 1 } : {}) });
 
+    this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.down = pass(S.DOWN_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uKaris: { value: 0 }, uClamp: { value: 1e4 } });
     this.up = pass(S.UP_FS, { tLow: { value: null }, tHigh: { value: null }, uTexel: { value: new THREE.Vector2() }, uScatter: { value: 0.68 } });
     this.lum = pass(S.LUM_FS, { tSmall: { value: null }, tPrev: { value: null }, uSize: { value: new THREE.Vector2() }, uRate: { value: 1 } });
     this.final = pass(S.FINAL_FS, {
-      tHDR: { value: null }, tDof1: { value: null }, tDof2: { value: null }, tBloom: { value: null }, tLum: { value: null },
-      uExposure: { value: 1 }, uAutoExp: { value: 0.3 }, uBloom: { value: 0.035 },
+      tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
+      uExposure: { value: 1 }, uAutoExp: { value: 0.22 }, uBloom: { value: 0.035 },
       uVignette: { value: 0.55 }, uCA: { value: 0.0022 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
       uSat: { value: 1.12 }, uContrast: { value: 1.08 },
       uShadowTint: { value: new THREE.Vector3(0.985, 1.0, 1.03) },
       uHighTint: { value: new THREE.Vector3(1.03, 1.0, 0.955) },
       uResolution: { value: new THREE.Vector2(1, 1) },
-    }, q.dof ? { USE_DOF: 1 } : {});
+    });
 
     // opt-in profiler; the core frame timer is paused while it runs (queries cannot nest)
     this.prof = app.params.raw.get('prof') === '1' ? new SectionTimer(app.renderer.getContext()) : null;
@@ -164,6 +170,7 @@ const post = {
     depthTexture.magFilter = THREE.NearestFilter;
     this.sceneRT = target(W, H, { depthBuffer: true, samples: q.msaa, depthTexture });
     this.hdrRT = target(W, H);
+    this.dofRT = q.dof ? target(W, H) : null;
     const hw = Math.ceil(W / 2), hh = Math.ceil(H / 2);
     if (q.ao) {
       this.zRT = target(hw, hh, { type: THREE.FloatType, format: THREE.RedFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
@@ -177,6 +184,7 @@ const post = {
       this.downs.push(target(w, h));
       this.ups.push(i > 0 && i < q.levels - 1 ? target(w, h) : null);
     }
+    this.app.systems.env?.clouds?.setSize(W, H);
     this.final.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uAOSize.value.set(hw, hh);
@@ -184,7 +192,7 @@ const post = {
   },
 
   _disposeTargets() {
-    for (const k of ['sceneRT', 'hdrRT', 'zRT', 'aoRT', 'aoRT2']) {
+    for (const k of ['sceneRT', 'hdrRT', 'dofRT', 'zRT', 'aoRT', 'aoRT2']) {
       if (this[k]) { if (this[k].depthTexture) this[k].depthTexture.dispose(); this[k].dispose(); this[k] = null; }
     }
     for (const t of [...(this.downs || []), ...(this.ups || [])]) t && t.dispose();
@@ -201,14 +209,19 @@ const post = {
     const t = env ? env.state.t : 0.12;
     const night = env ? env.state.night : 0;
     const pu = this.prepass.material.uniforms, fu = this.final.material.uniforms;
-    // haze: a dusty summer afternoon; slightly denser and warmer towards evening
-    const k = THREE.MathUtils.lerp(1.0, 1.35, THREE.MathUtils.smoothstep(t, 0.3, 0.8));
-    pu.uHazeExt.value.set(4.0e-4 * k, 4.4e-4 * k, 5.1e-4 * k);
-    pu.uHazeInscatter.value = 0.8;
+    // haze: a dusty summer afternoon
+    const k = THREE.MathUtils.lerp(1.0, 1.12, THREE.MathUtils.smoothstep(t, 0.3, 0.8));
+    pu.uHazeExt.value.set(3.6e-4 * k, 4.0e-4 * k, 4.7e-4 * k);
+    pu.uHazeInscatter.value = 0.9;
+    pu.uHazeSunVis.value = env ? env.canyonSunFraction : 0.5;
+    pu.uHazeSun.value = 1.0;
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - THREE.MathUtils.smoothstep(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
     fu.uBloom.value = THREE.MathUtils.lerp(0.035, 0.05, night);
     fu.uExposure.value = env ? env.exposure : 1;
+    // white balance: daylight at midday, the camera keeps some of the evening warmth
+    const warm = THREE.MathUtils.smoothstep(t, 0.25, 0.65) * (1 - 0.6 * night);
+    fu.uWB.value.set(1.0 + 0.05 * warm, 0.99, 0.965 - 0.07 * warm);
   },
 
   render(dt, app) {
@@ -249,9 +262,19 @@ const post = {
       this._draw(this.aoBlur, this.aoRT);
     }
 
-    // ---- 3. scene prepass
-    if (prof) prof.begin('prepass');
+    // ---- 3. volumetric clouds (half res, sky pixels only)
     const pu = this.prepass.material.uniforms;
+    const clouds = env && !env.disabled ? env.clouds : null;
+    if (clouds) {
+      if (prof) prof.begin('clouds');
+      pu.tClouds.value = clouds.render(camera, this.sceneRT.depthTexture, app.frame);
+    } else {
+      pu.tClouds.value = null;
+    }
+    pu.uUseClouds.value = clouds ? 1 : 0;
+
+    // ---- 4. scene prepass
+    if (prof) prof.begin('prepass');
     pu.tScene.value = this.sceneRT.texture;
     pu.tDepth.value = this.sceneRT.depthTexture;
     pu.tAO.value = this.aoRT ? this.aoRT.texture : null;
@@ -266,10 +289,21 @@ const post = {
     pu.uDofK.value = this.q.dof ? (fmm / F_NUMBER) * fm / (FOCUS_M - fm) * (this.size.y / SENSOR_H_MM) : 0;
     this._draw(this.prepass, this.hdrRT);
 
-    // ---- 4. blur pyramid (DOF levels 0/1, bloom from level 1 down)
+    // ---- 5. depth of field (gather, full res)
+    let img = this.hdrRT;
+    if (this.dofRT) {
+      if (prof) prof.begin('dof');
+      const fu0 = this.dof.material.uniforms;
+      fu0.tSrc.value = this.hdrRT.texture;
+      fu0.uTexel.value.set(1 / this.size.x, 1 / this.size.y);
+      this._draw(this.dof, this.dofRT);
+      img = this.dofRT;
+    }
+
+    // ---- 6. blur pyramid for bloom
     if (prof) prof.begin('pyramid');
     const du = this.down.material.uniforms;
-    let src = this.hdrRT;
+    let src = img;
     for (let i = 0; i < this.downs.length; i++) {
       du.tSrc.value = src.texture;
       du.uTexel.value.set(1 / src.width, 1 / src.height);
@@ -288,7 +322,7 @@ const post = {
       low = this.ups[i];
     }
 
-    // ---- 5. metered exposure (1x1, adapted over time)
+    // ---- 7. metered exposure (1x1, adapted over time)
     const lu = this.lum.material.uniforms;
     const small = this.downs[this.downs.length - 1];
     lu.tSmall.value = small.texture;
@@ -298,12 +332,10 @@ const post = {
     this.lumPing ^= 1;
     this._draw(this.lum, this.lumRT[this.lumPing]);
 
-    // ---- 6. final
+    // ---- 8. final
     if (prof) prof.begin('final');
     const fu = this.final.material.uniforms;
-    fu.tHDR.value = this.hdrRT.texture;
-    fu.tDof1.value = this.downs[0].texture;
-    fu.tDof2.value = this.downs[1].texture;
+    fu.tHDR.value = img.texture;
     fu.tBloom.value = low.texture;
     fu.tLum.value = this.lumRT[this.lumPing].texture;
     fu.uTime.value = app.time + app.frame * 0.618;
@@ -312,7 +344,7 @@ const post = {
     if (prof) {
       prof.end();
       const t = prof.timings;
-      t.post = (t.ao || 0) + (t.prepass || 0) + (t.pyramid || 0) + (t.final || 0);
+      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.dof || 0) + (t.pyramid || 0) + (t.final || 0);
       t.total = t.post + (t.scene || 0);
       app.perf.gpuMs = t.total;
     }

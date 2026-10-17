@@ -55,7 +55,10 @@ export function doorTpl(o, L, q) {
     const x0 = -hwI + i * lw + 0.004, x1 = x0 + lw - 0.008, y0 = 0.01, y1 = leafTop;
     const sw = Math.min(0.13, lw * 0.18), bw = 0.22, tw = 0.13, lock = 1.0;
     // leaf frame with chamfered inner edge
-    t.loft([rectRing(x0, y0, x1, y1, [0, 0, 0, 0], zf), rectRing(x0, y0, x1, y1, [sw, bw, sw, tw], zf)], true, 1);
+    const c = 0.01, ins = [sw, bw, sw, tw], insC = ins.map((v) => v - c);
+    t.loft([rectRing(x0, y0, x1, y1, [0, 0, 0, 0], zf), rectRing(x0, y0, x1, y1, insC, zf)], true, 1);
+    t.loft([rectRing(x0, y0, x1, y1, insC, zf), rectRing(x0, y0, x1, y1, ins, zf - c)], true, 0.92);
+    t.loft([rectRing(x0, y0, x1, y1, ins, zf - c), rectRing(x0, y0, x1, y1, ins, zb)], true, 0.7);
     t.box(x0, y0, zb, x1, y1, zf, 4 | 8 | 32, 0.85, 0.9);
     const xi0 = x0 + sw, xi1 = x1 - sw, yi0 = y0 + bw, yi1 = y1 - tw;
     if (L.style === 'plank') {

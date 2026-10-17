@@ -155,30 +155,35 @@ export function atlasV(row, y) {
   return (row * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD - y * S) / ATLAS_H;
 }
 
+/** Draw one bay of a design in metres with the current canvas transform (y up). */
+export function drawStrokes(ctx, d) {
+  for (const st of d.strokes) {
+    switch (st.k) {
+      case 'rail': ctx.fillRect(st.x0, st.y0, st.x1 - st.x0, st.y1 - st.y0); break;
+      case 'bar': {
+        const w = st.twist ? st.s * 1.2 : st.s;
+        ctx.fillRect(st.x - w / 2, st.y0, w, st.y1 - st.y0);
+        break;
+      }
+      case 'collar': ctx.fillRect(st.x - st.w / 2, st.y - st.h / 2, st.w, st.h); break;
+      case 'rosette': ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill(); break;
+      case 'curve': {
+        ctx.lineWidth = st.w * 1.15;
+        ctx.beginPath();
+        st.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        if (st.closed) ctx.closePath();
+        ctx.stroke();
+        break;
+      }
+    }
+  }
+}
+
 function drawDesign(ctx, d, row) {
   const S = (ATLAS.ROW - 2 * ATLAS.PAD) / RAIL_H;
   for (const shift of [-d.W, 0, d.W]) {
     ctx.setTransform(ATLAS.TW / d.W, 0, 0, -S, (shift * ATLAS.TW) / d.W, row * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD);
-    for (const st of d.strokes) {
-      switch (st.k) {
-        case 'rail': ctx.fillRect(st.x0, st.y0, st.x1 - st.x0, st.y1 - st.y0); break;
-        case 'bar': {
-          const w = st.twist ? st.s * 1.2 : st.s;
-          ctx.fillRect(st.x - w / 2, st.y0, w, st.y1 - st.y0);
-          break;
-        }
-        case 'collar': ctx.fillRect(st.x - st.w / 2, st.y - st.h / 2, st.w, st.h); break;
-        case 'rosette': ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill(); break;
-        case 'curve': {
-          ctx.lineWidth = st.w * 1.15;
-          ctx.beginPath();
-          st.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-          if (st.closed) ctx.closePath();
-          ctx.stroke();
-          break;
-        }
-      }
-    }
+    drawStrokes(ctx, d);
   }
 }
 

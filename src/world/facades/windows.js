@@ -203,7 +203,7 @@ function leafGeometry(t, poly, z0, z1, q) {
   if (sm) t.box(sm[0] - 0.01, mid - 0.045, z0 + 0.003, sm[1] + 0.01, mid + 0.045, z1 - 0.004, 1 | 16 | 32, 0.95, 1);
 }
 
-function buildShutters(o, state, q) {
+function buildShutters(o, state, q, standoff) {
   const t = new Tpl();
   const hw = o.w / 2;
   const left = leafPoly(o, 0.012);
@@ -214,8 +214,8 @@ function buildShutters(o, state, q) {
     leafGeometry(t, mirror(left, (p) => [-p[0], p[1]]), z0, z1, q);
   } else {
     // folded back against the wall either side of the opening (hinged at the reveal edge)
-    const gap = 0.05;
-    const z0 = o.recess + 0.012, z1 = z0 + 0.034;
+    const gap = standoff > 0.03 ? 0.0 : 0.05;
+    const z0 = o.recess + standoff, z1 = z0 + 0.034;
     leafGeometry(t, mirror(left, (p) => [-2 * hw - gap - p[0], p[1]]), z0, z1, q);
     leafGeometry(t, left.map((p) => [2 * hw + gap + p[0], p[1]]), z0, z1, q); // two mirrors keep the winding
   }
@@ -228,7 +228,7 @@ const cache = new Map();
 function cached(key, fn) {
   let v = cache.get(key);
   if (!v) {
-    if (cache.size > 4000) cache.clear();
+    if (cache.size > 1500) cache.clear();
     v = fn(); cache.set(key, v);
   }
   return v;
@@ -241,6 +241,6 @@ export function joineryTpl(o, v, q) {
 export function glassTpl(o, v) {
   return cached(`G|${okey(o)}|${v.type}`, () => buildGlass(o, v));
 }
-export function shutterTpl(o, state, q) {
-  return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${q}`, () => buildShutters(o, state, q));
+export function shutterTpl(o, state, q, standoff = 0.012) {
+  return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${standoff}|${q}`, () => buildShutters(o, state, q, standoff));
 }

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Material Preview</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #202224; overflow: hidden; font: 12px/1.3 system-ui, sans-serif; color: #ddd; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #labels { position: fixed; inset: 0; pointer-events: none; }
+    #labels div { position: absolute; transform: translate(-50%, 0); white-space: nowrap; text-shadow: 0 1px 2px #000; }
+    #info { position: fixed; left: 8px; bottom: 6px; opacity: 0.8; }
+  </style>
+  <script type="importmap">
+  { "imports": { "three": "../../vendor/three/build/three.module.js", "three/addons/": "../../vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="labels"></div>
+  <div id="info"></div>
+  <script type="module" src="./preview.js"></script>
+</body>
+</html>

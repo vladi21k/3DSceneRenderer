@@ -49,7 +49,7 @@ function synthRoll(sr, n, tag, period) {
   for (let i = 0; i < n; i++) {
     const t = i / sr;
     // wheel out-of-roundness modulates the rumble once (and twice) per revolution
-    const wheel = 1 + 0.22 * Math.sin(6.2832 * fw * t + ph1) + 0.08 * Math.sin(12.566 * fw * t + ph2);
+    const wheel = 1 + 0.13 * Math.sin(6.2832 * fw * t + ph1) + 0.05 * Math.sin(12.566 * fw * t + ph2);
     const drift = Math.max(0.3, 1 + 0.18 * slow.run());
     const w = nz();
     const sb = s2.run(s1.run(w)) * 2.4 * wheel;
@@ -159,5 +159,25 @@ export function brakeCreak(sr, k) {
   }
   fadeEnds(out, sr, 0.01, 0.04);
   normalize(out, 0.85);
+  return out;
+}
+
+/** Cab fittings rattling after a hard knock: a few tiny buzzy contacts of a loose panel. */
+export function rattle(sr, k) {
+  const rng = arng('rattle', k);
+  const n = Math.floor(0.16 * sr);
+  const out = new Float32Array(n);
+  const nz = noiseGen(rng);
+  const modes = [rng.range(1300, 2100), rng.range(2600, 3600), rng.range(4200, 5600)];
+  const hits = rng.int(3, 7);
+  let t = 0.002;
+  for (let h = 0; h < hits && t < 0.1; h++) {
+    const i0 = Math.floor(t * sr), g = rng.range(0.4, 1) * Math.exp(-t / 0.05);
+    modes.forEach((f, j) => addMode(out, sr, i0, f * rng.range(0.98, 1.02), g * [1, 0.6, 0.3][j], rng.range(0.02, 0.05), 0.0002));
+    for (let i = 0; i < 0.002 * sr && i0 + i < n; i++) out[i0 + i] += nz() * g * 0.3 * Math.exp(-i / (0.0004 * sr));
+    t += rng.range(0.008, 0.025);
+  }
+  fadeEnds(out, sr, 0.0002, 0.02);
+  normalize(out, 0.8);
   return out;
 }

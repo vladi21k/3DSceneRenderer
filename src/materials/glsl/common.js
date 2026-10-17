@@ -48,6 +48,7 @@ uniform vec2 uTile;   // tile size (m)
 uniform vec2 uRes;    // target size (px)
 uniform vec4 uLay;    // row layout (see LAYOUT_GLSL)
 uniform vec4 uLay2;
+uniform int uOne;     // = 1; loop bounds use it so drivers keep loops rolled (fast compile)
 
 ivec2 sfMod2(ivec2 a, ivec2 m) { return ivec2(sfMod(a.x, m.x), sfMod(a.y, m.y)); }
 vec2 sfGrad(ivec2 p, uint s) { float a = sfHash(p, s) * 6.2831853; return vec2(cos(a), sin(a)); }
@@ -72,8 +73,7 @@ float noiseM(vec2 m, vec2 freq, uint s) { ivec2 per = sfPer(freq); return gnoise
 // fbm in metres, freq = base cycles per metre (per axis), ~[-1, 1]
 float fbm2(vec2 m, vec2 freq, int oct, float gain, uint s) {
   float a = 1.0, sum = 0.0, norm = 0.0;
-  for (int i = 0; i < 8; i++) {
-    if (i >= oct) break;
+  for (int i = 0; i < oct * uOne; i++) {
     sum += a * noiseM(m, freq, s + uint(i) * 1013u);
     norm += a; freq *= 2.0; a *= gain;
   }
@@ -82,8 +82,7 @@ float fbm2(vec2 m, vec2 freq, int oct, float gain, uint s) {
 float fbm(vec2 m, float freq, int oct, float gain, uint s) { return fbm2(m, vec2(freq), oct, gain, s); }
 float ridged(vec2 m, vec2 freq, int oct, uint s) {
   float a = 1.0, sum = 0.0, norm = 0.0;
-  for (int i = 0; i < 8; i++) {
-    if (i >= oct) break;
+  for (int i = 0; i < oct * uOne; i++) {
     sum += a * (1.0 - abs(noiseM(m, freq, s + uint(i) * 977u)));
     norm += a; freq *= 2.0; a *= 0.5;
   }
@@ -96,7 +95,7 @@ vec4 voro(vec2 m, vec2 freq, uint s, float jit) {
   vec2 i = floor(x), f = x - i;
   ivec2 p = ivec2(i);
   float F1 = 8.0, F2 = 8.0, id = 0.0;
-  for (int y = -1; y <= 1; y++) for (int xx = -1; xx <= 1; xx++) {
+  for (int y = -uOne; y <= uOne; y++) for (int xx = -uOne; xx <= uOne; xx++) {
     ivec2 cw = sfMod2(p + ivec2(xx, y), per);
     vec2 o = hash22(cw, s) * jit + 0.5 * (1.0 - jit);
     vec2 d = vec2(float(xx), float(y)) + o - f;
@@ -115,7 +114,7 @@ vec4 voroV(vec2 m, vec2 freq, uint s, float jit, out vec2 toC) {
   ivec2 p = ivec2(i);
   float F1 = 8.0, F2 = 8.0, id = 0.0;
   toC = vec2(0.0);
-  for (int y = -1; y <= 1; y++) for (int xx = -1; xx <= 1; xx++) {
+  for (int y = -uOne; y <= uOne; y++) for (int xx = -uOne; xx <= uOne; xx++) {
     ivec2 cw = sfMod2(p + ivec2(xx, y), per);
     vec2 o = hash22(cw, s) * jit + 0.5 * (1.0 - jit);
     vec2 d = vec2(float(xx), float(y)) + o - f;

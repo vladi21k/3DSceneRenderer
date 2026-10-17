@@ -31,7 +31,7 @@ export class BellLayer {
   }
 
   update(dt, st, now) {
-    // gong position: centre of the cab front, bumper height
+    // gong under the cab nose: just ahead of and below the driver
     const p = this.e.at(st.s + 1.6, TRACK_OFFSET, 1.1);
     this.e.setPos(this.panner, p.x, p.y, p.z, now);
   }

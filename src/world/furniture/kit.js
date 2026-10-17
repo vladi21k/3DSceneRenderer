@@ -65,7 +65,7 @@ function polyNormals(pts, closed, crease) {
  * Surface of revolution around +Y. profile = [[r, y], ...] listed bottom to top along the
  * outside (normals point outward). Creases are automatic (angle > crease).
  */
-export function lathe(profile, segs = 16, { crease = 0.6, phi0 = 0, phiLen = Math.PI * 2 } = {}) {
+export function lathe(profile, segs = 16, { crease = 0.6, phi0 = 0, phiLen = Math.PI * 2, rmod = null } = {}) {
   const prof = polyNormals(profile, false, crease);
   const rMax = Math.max(...profile.map((p) => p[0]), 0.01);
   const pos = [], nor = [], uv = [], idx = [];
@@ -74,7 +74,8 @@ export function lathe(profile, segs = 16, { crease = 0.6, phi0 = 0, phiLen = Mat
     for (let i = 0; i <= segs; i++) {
       const ph = phi0 + (phiLen * i) / segs;
       const s = Math.sin(ph), c = Math.cos(ph);
-      pos.push(pp.p[0] * s, pp.p[1], pp.p[0] * c);
+      const r = rmod ? pp.p[0] * rmod(ph, pp.p[1]) : pp.p[0];
+      pos.push(r * s, pp.p[1], r * c);
       nor.push(pp.n[0] * s, pp.n[1], pp.n[0] * c);
       uv.push(ph * rMax, pp.t);
     }
@@ -86,7 +87,9 @@ export function lathe(profile, segs = 16, { crease = 0.6, phi0 = 0, phiLen = Mat
       idx.push(a, b, c, b, d, c);
     }
   }
-  return makeGeo(pos, nor, uv, idx);
+  const g = makeGeo(pos, nor, uv, idx);
+  if (rmod) g.computeVertexNormals();
+  return g;
 }
 
 export function circleProfile(r, n = 8) {

@@ -4,9 +4,9 @@ import * as THREE from 'three';
 // geometry near the camera and alpha-tested cards further away. Both materials share a
 // screen-space cross-fade keyed on the projected bar width in pixels, with complementary
 // dither masks, so exactly one representation covers each pixel and thin iron never
-// shimmers: geometry while bars are wider than ~1.8 px, cards once they drop below ~1.25 px.
+// shimmers: geometry while bars are wider than ~2.4 px, cards once they drop below ~1.6 px.
 
-export const FADE = { BAR: 0.016, LO: 1.25, HI: 1.8 };
+export const FADE = { BAR: 0.016, LO: 1.6, HI: 2.4 };
 /** Pixels per metre at 1 m distance: 0.5 * drawing-buffer height * projection[1][1]. */
 export const uIronPx = { value: 1800 };
 
@@ -68,18 +68,20 @@ export function makeMaterials(app, atlas) {
   syncFrom(iron, lib);
   const paint = addFade(new THREE.MeshStandardMaterial({ name: 'ironwork.paint', color: 0xffffff, roughness: 0.42, metalness: 0 }), true);
 
-  const cardOpts = { map: atlas, alphaTest: 0.5, alphaToCoverage: true, side: THREE.DoubleSide, vertexColors: true };
-  const ironCard = addFade(new THREE.MeshStandardMaterial({ name: 'ironwork.ironCard', ...cardOpts }), false);
-  syncFrom(ironCard, lib, { maps: false });
-  const paintCard = addFade(new THREE.MeshStandardMaterial({ name: 'ironwork.paintCard', ...cardOpts, roughness: 0.42, metalness: 0 }), false);
+  // one card material for black and painted iron (paint colour per vertex); at card
+  // distances the metal/paint difference is invisible, so it is a dark dielectric
+  const card = addFade(new THREE.MeshStandardMaterial({
+    name: 'ironwork.card', map: atlas, alphaTest: 0.5, alphaToCoverage: true, side: THREE.DoubleSide,
+    vertexColors: true, roughness: 0.45, metalness: 0,
+  }), false);
 
-  for (const m of [iron, paint, ironCard, paintCard]) M.register(m.name, m);
+  for (const m of [iron, paint, card]) M.register(m.name, m);
 
   return {
-    iron, paint, ironCard, paintCard,
+    iron, paint, card,
     stone: M.get('stone.smooth', { vertexColors: true }),
-    /** Keep derived materials in step with the library iron (textures may land later). */
-    sync() { syncFrom(iron, lib); syncFrom(ironCard, lib, { maps: false }); },
+    /** Keep the derived iron in step with the library iron (textures may land later). */
+    sync() { syncFrom(iron, lib); },
     ironColor: () => [lib.color.r, lib.color.g, lib.color.b],
   };
 }

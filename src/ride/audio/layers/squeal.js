@@ -2,7 +2,7 @@
 // wheels stick-slip laterally and an axial wheel mode rings: a narrowband tone in
 // the 2-6 kHz range, slowly wandering, often hopping between two modes, coming and
 // going in bursts. Intensity follows curvature x speed. A broadband flange-rubbing
-// hiss accompanies any noticeable curve. Emitted from the front bogie (HRTF).
+// hiss accompanies any noticeable curve. Emitted from the front bogie's outer wheel.
 import { noise1, hash2 } from '../../../core/rng.js';
 import { TRACK_OFFSET } from '../../../core/config.js';
 import { glide, clamp, smoothstep, periodicWave } from '../dsp.js';
@@ -17,7 +17,8 @@ export class SquealLayer {
     const wave = periodicWave(ctx, [1, 0.22, 0.07, 0.03]);
     this.out = new GainNode(ctx, { gain: 1 });
     this.hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 1200, Q: 0.7 });
-    this.panner = e.panner(2, 1);
+    // equal-power: a loud narrowband tone from below would be coloured unpredictably by HRTF notches
+    this.panner = e.panner(2, 1, 'equalpower');
     this.out.connect(this.hp).connect(this.panner).connect(e.bus.squeal);
 
     // two competing wheel modes, each with a slow vibrato LFO at audio rate

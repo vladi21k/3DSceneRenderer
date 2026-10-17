@@ -36,10 +36,10 @@ const FLAT_N = ncol(0, 0, 1);
 
 // Leaf palettes (sRGB). Real leaf albedo is low: green channel ~0.12-0.18 linear.
 const PAL = {
-  pagoda: { leaf: [82, 114, 46], dark: [64, 94, 40], young: [104, 132, 54], rib: [146, 162, 96], twig: [88, 94, 58] },
-  ash: { leaf: [72, 102, 50], dark: [56, 84, 42], young: [96, 124, 58], rib: [136, 152, 98], twig: [100, 94, 74] },
-  dense: { leaf: [60, 88, 40], dark: [44, 68, 32], young: [84, 110, 46], rib: [116, 132, 80], twig: [92, 84, 66] },
-  shrub: { leaf: [54, 82, 42], dark: [40, 62, 32], young: [80, 106, 52], rib: [108, 126, 80], twig: [80, 72, 56] },
+  pagoda: { leaf: [86, 130, 36], dark: [62, 102, 30], young: [112, 150, 44], rib: [150, 172, 96], twig: [88, 94, 58] },
+  ash: { leaf: [74, 116, 42], dark: [56, 94, 34], young: [98, 136, 48], rib: [138, 160, 96], twig: [100, 94, 74] },
+  dense: { leaf: [60, 96, 34], dark: [44, 74, 26], young: [84, 120, 40], rib: [116, 138, 78], twig: [92, 84, 66] },
+  shrub: { leaf: [52, 84, 38], dark: [38, 64, 28], young: [78, 110, 46], rib: [106, 128, 78], twig: [80, 72, 56] },
 };
 
 // ------------------------------------------------------------------ painter
@@ -184,12 +184,12 @@ function pinnateSpray(P, rng, kind) {
       for (const side of [1, -1]) leaves.push([px, py, dir + side * rng.range(0.55, 1.0), CS * rng.range(0.36, 0.46)]);
     }
   } else {
-    const n = rng.int(7, 9);
+    const n = rng.int(9, 11);
     for (let i = 0; i < n; i++) {
-      const t = 0.08 + (i / n) * 0.9;
+      const t = 0.06 + (i / n) * 0.92;
       const [px, py, dir] = along(twig, t);
       const side = i % 2 ? 1 : -1;
-      leaves.push([px, py, dir + side * rng.range(0.6, 1.25) * (1 - t * 0.35), CS * rng.range(0.32, 0.42) * (1 - t * 0.2)]);
+      leaves.push([px, py, dir + side * rng.range(0.55, 1.35) * (1 - t * 0.35), CS * rng.range(0.3, 0.42) * (1 - t * 0.2)]);
     }
   }
   const e = twig[twig.length - 1], e0 = twig[twig.length - 2];
@@ -198,7 +198,7 @@ function pinnateSpray(P, rng, kind) {
     const len = fitLen(px, py, a, l);
     const o = ash
       ? { pairs: rng.int(3, 5), lfLen: len * 0.3, lfWid: len * 0.055, shape: 1, droop: 0.35, serrate: 0.1, angle: 0.95 }
-      : { pairs: rng.int(5, 7), lfLen: len * 0.17, lfWid: len * 0.068, shape: 0, droop: 0.5, serrate: 0, angle: 1.12 };
+      : { pairs: rng.int(6, 8), lfLen: len * 0.15, lfWid: len * 0.062, shape: 0, droop: 0.45, serrate: 0, angle: 1.1 };
     pinnateLeaf(P, rng, px, py, a, len, pal, o);
   }
 }

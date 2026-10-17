@@ -180,8 +180,8 @@ function sweepRoundedRect(w, d, prof, cr, colorFn) {
           col.push(c, c, c * 0.98);
         }
       }
-      // vertices: 0 = A/p0, 1 = A/p1, 2 = B/p0, 3 = B/p1 (path runs counter-clockwise from above)
-      idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      // vertices: 0 = A/p0, 1 = A/p1, 2 = B/p0, 3 = B/p1; front faces point along the profile normal
+      idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
       v += len;
     }
     u += du;
@@ -302,7 +302,7 @@ export function createProps(app) {
           const stemBase = local(treeM, st0.x, 0, st0.z).clone();
           const ends = [];
           for (const side of [-1, 1]) {
-            const base = stemBase.clone().addScaledVector(az, side * 0.4).addScaledVector(ax, 0.05);
+            const base = stemBase.clone().addScaledVector(az, side * 0.4).addScaledVector(ax, T.stem(0.5).r * sxz + 0.04);
             base.y -= 0.02;
             _e.set(r.range(-0.03, 0.03), r.range(0, 6.28), r.range(-0.03, 0.03));
             _q.setFromEuler(_e);
@@ -310,7 +310,8 @@ export function createProps(app) {
             b.add(mats.stake, post, _m);
             ends.push(base);
           }
-          const mid = ends[0].clone().add(ends[1]).multiplyScalar(0.5).addScaledVector(ax, 0.045);
+          const clear = T.stem(1.6).r * sxz + 0.03; // batten passes behind the stem, never through it
+          const mid = ends[0].clone().add(ends[1]).multiplyScalar(0.5).addScaledVector(ax, clear);
           mid.y += 1.62;
           const span = _v.subVectors(ends[1], ends[0]).setY(0);
           const spanLen = span.length();
@@ -342,7 +343,13 @@ export function createProps(app) {
           const shrubW = kind === 0 ? 1.3 : 0.68, shrubD = kind === 0 ? 0.5 : 0.68;
           return { pos: top, sx: (P.inner[0] / shrubW) * 0.98, sz: (P.inner[1] / shrubD) * 0.98, kind };
         },
-        build() { return b.map.size ? b.build({ name: 'vegetation:props', castShadow: true, receiveShadow: true }) : null; },
+        build() {
+          if (!b.map.size) return null;
+          const g = b.build({ name: 'vegetation:props', castShadow: true, receiveShadow: true });
+          // flat or tiny parts do not need to be drawn into the shadow cascades
+          for (const m of g.children) if (m.material === mats.grate || m.material === mats.soil || m.material === mats.rubber) m.castShadow = false;
+          return g;
+        },
       };
     },
   };

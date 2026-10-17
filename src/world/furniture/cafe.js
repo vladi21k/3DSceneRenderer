@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { lathe, sweep, tube, bar, rbox, extrude, xf, merge, makeGeo, rectProfile, quad, profileWall } from './kit.js';
-import { proto, placeMatrix } from './instancer.js';
+import { proto, placeMatrix, segmentMatrix } from './instancer.js';
 import { uvRect } from './prints.js';
 
 // Café terraces: chairs (woven bistro, plastic shell, aluminium, wicker), bistro tables,
@@ -26,8 +26,8 @@ function roundedRectShape(w, d, rf, rb, taper = 0) {
 }
 
 /** Flat panel from a shape lying in XZ (shape y = item +z), top at height y. */
-function seatPanel(shape, thick, y, bevel = 0.004) {
-  const g = extrude(shape, thick, { bevel, bevelSegs: 2, curveSegs: 6 });
+function seatPanel(shape, thick, y, bevel = 0.004, curveSegs = 4) {
+  const g = extrude(shape, thick, { bevel, bevelSegs: 1, curveSegs });
   // rotate +90° about X: extrusion axis -> vertical, shape y -> item +z (front)
   xf(g, [0, y - thick / 2, 0], [Math.PI / 2, 0, 0]);
   return g;
@@ -64,12 +64,12 @@ function farChair(style) {
 /** Parisian woven bistro armchair: rattan frame, woven seat and curved back band. */
 function bistroChair(lod) {
   if (lod) return farChair('bistro');
-  const rad = 6, R = 0.0135;
+  const rad = 5, R = 0.0135;
   const frame = [], weave = [];
   const seat = roundedRectShape(0.44, 0.41, 0.07, 0.04, 0.035);
-  weave.push(seatPanel(seat, 0.026, SEAT_H - 0.004));
+  weave.push(seatPanel(seat, 0.026, SEAT_H - 0.004, 0.004, 3));
   // seat rim
-  const outline = seat.getSpacedPoints(28).slice(0, -1).map((p) => V(p.x * 1.02, SEAT_H - 0.01, p.y * 1.02));
+  const outline = seat.getSpacedPoints(18).slice(0, -1).map((p) => V(p.x * 1.02, SEAT_H - 0.01, p.y * 1.02));
   frame.push(tube(outline, R * 0.95, { radial: rad, closed: true, bend: 0.03 }));
   // legs (slight splay), rear legs rise into the back uprights
   for (const sx of [-1, 1]) {
@@ -82,8 +82,8 @@ function bistroChair(lod) {
   if (!lod) {
     for (const sx of [-1, 1]) {
       const c = [];
-      for (let i = 0; i <= 10; i++) { const a = (i / 10) * Math.PI * 1.6; c.push(V(sx * (0.13 - 0.035 * Math.sin(a)), SEAT_H - 0.04 - 0.035 * (1 - Math.cos(a)), 0.19)); }
-      frame.push(tube(c, R * 0.6, { radial: 5, bend: 0 }));
+      for (let i = 0; i <= 6; i++) { const a = (i / 6) * Math.PI * 1.6; c.push(V(sx * (0.13 - 0.035 * Math.sin(a)), SEAT_H - 0.04 - 0.035 * (1 - Math.cos(a)), 0.19)); }
+      frame.push(tube(c, R * 0.6, { radial: 4, bend: 0 }));
     }
   }
   // back + arms: continuous double rail from front leg tops round the back
@@ -92,10 +92,10 @@ function bistroChair(lod) {
     V(-0.17 * k, y + 0.12, -0.24), V(0, y + 0.15, -0.285), V(0.17 * k, y + 0.12, -0.24), V(0.24 * k, y, -0.12),
     V(0.235 * k, 0.665, 0.07), V(0.215, 0.6, 0.15), V(0.2, SEAT_H - 0.01, 0.16),
   ];
-  frame.push(tube(back(0.675), R, { radial: rad, bend: 0.09, bendSegs: 3 }));
-  frame.push(tube(back(0.645, 0.985).slice(2, -2), R * 0.8, { radial: rad, bend: 0.09, bendSegs: 3 }));
+  frame.push(tube(back(0.675), R, { radial: rad, bend: 0.09, bendSegs: 2 }));
+  frame.push(tube(back(0.645, 0.985).slice(2, -2), R * 0.8, { radial: 4, bend: 0.09, bendSegs: 2 }));
   // woven back band under the rail: highest at the centre, following the rail in plan
-  const band = profileWall(lod ? 6 : 16, (t) => {
+  const band = profileWall(10, (t) => {
     const a = THREE.MathUtils.lerp(-0.95, 0.95, t);
     return [Math.sin(a) * 0.225, -0.04 - Math.cos(a) * 0.205, Math.sin(a), -Math.cos(a)];
   }, (t) => {
@@ -111,7 +111,7 @@ function bistroChair(lod) {
 function plasticChair(lod) {
   if (lod) return farChair('plastic');
   const parts = [];
-  const seat = seatPanel(roundedRectShape(0.45, 0.43, 0.06, 0.05, 0.01), 0.018, SEAT_H, lod ? 0 : 0.005);
+  const seat = seatPanel(roundedRectShape(0.45, 0.43, 0.06, 0.05, 0.01), 0.018, SEAT_H, 0.005, 4);
   { // dish + waterfall front
     const p = seat.attributes.position;
     for (let i = 0; i < p.count; i++) {
@@ -123,12 +123,12 @@ function plasticChair(lod) {
   parts.push(seat);
   const backS = new THREE.Shape();
   { const w = 0.42, h = 0.3, r = 0.06; backS.moveTo(-w / 2 + r, 0); backS.lineTo(w / 2 - r, 0); backS.quadraticCurveTo(w / 2, 0, w / 2, r); backS.lineTo(w / 2 + 0.01, h - r); backS.quadraticCurveTo(w / 2 + 0.01, h, w / 2 - r, h); backS.lineTo(-w / 2 + r, h); backS.quadraticCurveTo(-w / 2 - 0.01, h, -w / 2 - 0.01, h - r); backS.lineTo(-w / 2, r); backS.quadraticCurveTo(-w / 2, 0, -w / 2 + r, 0); }
-  const backG = extrude(backS, 0.016, { bevel: lod ? 0 : 0.005, curveSegs: lod ? 2 : 6 });
+  const backG = extrude(backS, 0.016, { bevel: 0.005, bevelSegs: 1, curveSegs: 4 });
   xf(backG, [0, 0.54, -0.235], [-0.2, 0, 0]);
   wrapBack(backG, 0.75, 0.0, 0.01);
   parts.push(backG);
   // legs: tapered rounded bars, rear legs continue up as the back uprights
-  const legP = rectProfile(0.03, 0.024, 0.008, lod ? 1 : 2);
+  const legP = rectProfile(0.03, 0.024, 0.008, 1);
   const taper = (t) => 1 - 0.25 * (1 - t);
   for (const sx of [-1, 1]) {
     parts.push(sweep([V(sx * 0.225, 0, 0.235), V(sx * 0.2, SEAT_H - 0.01, 0.17)], legP, { bend: 0, scales: (t) => taper(t) }));
@@ -155,7 +155,7 @@ function metalChair(lod) {
     parts.push(bar([V(-0.225, SEAT_H - 0.004, z), V(0.225, SEAT_H - 0.004, z)], 0.006, lod ? 0.1 : 0.042, { r: 0.002, up: [0, 1, 0], bend: 0 }));
   }
   // curved back slats + top rail
-  const backRow = (y, zc) => { const pts = []; for (let i = 0; i <= 8; i++) { const x = THREE.MathUtils.lerp(-0.228, 0.228, i / 8); pts.push(V(x, y, zc - 0.07 * (1 - (x / 0.228) ** 2))); } return pts; };
+  const backRow = (y, zc) => { const pts = []; for (let i = 0; i <= 6; i++) { const x = THREE.MathUtils.lerp(-0.228, 0.228, i / 6); pts.push(V(x, y, zc - 0.07 * (1 - (x / 0.228) ** 2))); } return pts; };
   parts.push(tube(backRow(0.835, -0.255), R, { radial: rad, bend: 0 }));
   const nB = lod ? 1 : 3;
   for (let i = 0; i < nB; i++) {
@@ -171,17 +171,17 @@ function wickerChair(lod) {
   const parts = [];
   // horseshoe wall whose height rises from the arms to the back
   const ang = (t) => THREE.MathUtils.lerp(-2.25, 2.25, t);
-  parts.push(profileWall(lod ? 8 : 26, (t) => {
+  parts.push(profileWall(18, (t) => {
     const a = ang(t);
     return [Math.sin(a) * 0.255, -0.03 - Math.cos(a) * 0.235, Math.sin(a), -Math.cos(a) * (0.235 / 0.255)];
   }, (t) => {
     const H = 0.66 + 0.15 * Math.pow(Math.cos((ang(t) / 2.25) * Math.PI / 2), 1.6);
     return [[0.026, 0.36], [0.026, H - 0.03], [0.018, H - 0.006], [0, H + 0.004], [-0.018, H - 0.006], [-0.026, H - 0.03], [-0.026, SEAT_H + 0.03]];
   }));
-  parts.push(xf(rbox(0.46, 0.07, 0.42, 0.025, lod ? 1 : 3), [0, SEAT_H - 0.035, 0.01]));
+  parts.push(xf(rbox(0.46, 0.07, 0.42, 0.025, 1), [0, SEAT_H - 0.035, 0.01]));
   // legs wrapped in wicker
   for (const [x, z] of [[-0.2, 0.17], [0.2, 0.17], [-0.19, -0.2], [0.19, -0.2]]) {
-    parts.push(tube([V(x * 1.08, 0, z * 1.1), V(x, 0.4, z)], 0.017, { radial: lod ? 5 : 8, bend: 0 }));
+    parts.push(tube([V(x * 1.08, 0, z * 1.1), V(x, 0.4, z)], 0.017, { radial: 6, bend: 0 }));
   }
   return { body: merge(parts) };
 }
@@ -190,15 +190,15 @@ function wickerChair(lod) {
 function tableTop(shape, lod) {
   if (shape === 'round') {
     const r = 0.3;
-    return merge([lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 8 : 28)]);
+    return merge([lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 8 : 20)]);
   }
   return merge([xf(rbox(0.62, 0.028, 0.62, lod ? 0.002 : 0.006, lod ? 1 : 2), [0, 0.736, 0])]);
 }
 
 function tableBase(type, lod) {
-  const seg = lod ? 6 : 14;
+  const seg = lod ? 6 : 12;
   if (type === 'iron') { // cast-iron pedestal with a domed round foot
-    return merge([lathe([[0.215, 0], [0.215, 0.012], [0.2, 0.022], [0.14, 0.036], [0.075, 0.06], [0.042, 0.09], [0.034, 0.12], [0.046, 0.13], [0.046, 0.15], [0.03, 0.165],
+    return merge([lathe([[0.215, 0], [0.215, 0.012], [0.19, 0.024], [0.11, 0.042], [0.05, 0.075], [0.034, 0.12], [0.046, 0.13], [0.046, 0.15], [0.03, 0.165],
       [0.026, 0.6], [0.04, 0.615], [0.04, 0.645], [0.03, 0.66], [0.032, 0.7], [0.11, 0.705], [0.11, 0.72], [0, 0.722]], seg)]);
   }
   // cross base: column + four flat feet with glides
@@ -270,8 +270,8 @@ function canopyGeo(size, lod) {
   }
   // wind vent cap over the apex
   {
-    const vb = pos.length / 3, vr = Math.max(0.28, a * 0.2), vy = apex + 0.1;
-    push([0, vy + vr * 0.25, 0], 0, 0, 1, 0.05);
+    const vb = pos.length / 3, vr = Math.max(0.2, a * 0.14), vy = apex + 0.075;
+    push([0, vy + vr * 0.32, 0], 0, 0, 1, 0.05);
     for (let k = 0; k <= 8; k++) {
       const ang = (k * Math.PI) / 4, c = Math.cos(ang), s = Math.sin(ang), m = Math.max(Math.abs(c), Math.abs(s));
       push([(c / m) * vr, vy, (s / m) * vr], (c / m) * vr, (s / m) * vr, 1, 0.1);
@@ -281,7 +281,7 @@ function canopyGeo(size, lod) {
     for (let k = 0; k <= 8; k++) {
       const ang = (k * Math.PI) / 4, c = Math.cos(ang), s = Math.sin(ang), m = Math.max(Math.abs(c), Math.abs(s));
       push([(c / m) * vr, vy, (s / m) * vr], k * vr, 0, 1, 0.2);
-      push([(c / m) * vr * 1.01, vy - 0.07, (s / m) * vr * 1.01], k * vr, -0.07, 0.9, 0.6);
+      push([(c / m) * vr * 1.01, vy - 0.05, (s / m) * vr * 1.01], k * vr, -0.05, 0.9, 0.6);
     }
     for (let k = 0; k < 8; k++) { const a0 = vs + k * 2; idx.push(a0, a0 + 2, a0 + 1, a0 + 2, a0 + 3, a0 + 1); }
   }
@@ -293,7 +293,7 @@ function canopyGeo(size, lod) {
 function umbrellaFrame(size, lod, canopy) {
   const { apex, surf } = canopy;
   const parts = [];
-  const seg = lod ? 6 : 14;
+  const seg = lod ? 6 : 10;
   // pole with top hub, runner, finial
   const run = apex - 0.78;
   parts.push(lathe([[0.024, 0.0], [0.024, run - 0.05], [0.036, run - 0.045], [0.04, run], [0.04, run + 0.06], [0.026, run + 0.07],
@@ -416,14 +416,19 @@ export function buildCafeProtos(M, F) {
     P.umb[`furled${lod}`] = proto('umbrellaFurled', [{ geo: furledGeo(lod), mat: F.canopy, tint: true, cast: true }]);
     P.umb[`furledPole${lod}`] = proto('umbrellaFurledPole', [{ geo: merge([lathe([[0.024, 0], [0.024, 2.9], [0.03, 2.93], [0.028, 2.98], [0, 2.99]], lod ? 6 : 12)]), mat: F.aluminium, cast }]);
   }
+  const pole = M.get('metal.pole');
+  const unit = (w, h) => merge([bar([V(0, 0, 0), V(0, 0, 1)], w, h, { up: [0, 1, 0], r: 0.006, bend: 0 })]);
+  P.misc.post = proto('canopyPost', [{ geo: unit(0.07, 0.07), mat: pole }]);
+  P.misc.rafter = proto('canopyRafter', [{ geo: unit(0.1, 0.05), mat: pole }]);
+  P.misc.beam = proto('canopyBeam', [{ geo: unit(0.1, 0.06), mat: pole }]);
   const cs = cupSet();
   P.misc.cup = proto('cup', [{ geo: cs.cer, mat: F.ceramic, cast: false }, { geo: cs.cof, mat: F.coffee, cast: false }]);
   P.misc.glass = proto('glass', [{ geo: waterGlass(), mat: F.drinkGlass, cast: false }]);
   const nh = napkinHolder();
-  P.misc.napkin = proto('napkin', [{ geo: nh.steel, mat: M.get('metal.steel'), cast: false }, { geo: nh.paper, mat: F.ceramic, cast: false }]);
+  P.misc.napkin = proto('napkin', [{ geo: nh.steel, mat: M.get('metal.steel'), cast: true }, { geo: nh.paper, mat: F.ceramic, cast: false }]);
   for (const v of [0, 1]) {
     const mb = menuBoard(v);
-    P.misc[`menu${v}`] = proto('menuBoard', [{ geo: mb.wood, mat: M.get('wood.bench'), cast: true }, { geo: mb.face, mat: F.print, cast: false }]);
+    P.misc[`menu${v}`] = proto('menuBoard', [{ geo: mb.wood, mat: M.get('wood.bench'), cast: true }, { geo: mb.face, mat: F.print, cast: true }]);
   }
   return P;
 }
@@ -448,6 +453,8 @@ function cafeStyle(cafe, seed) {
   }
   st.frameWood = rng.chance(0.4);
   // umbrella poles: dodge chairs and tables by sliding along the street
+  // one fabric colour per terrace (as cafés buy matching sets); a few mix two
+  const mixed = rng.chance(0.12);
   st.umbrellas = cafe.umbrellas.map((u, i) => {
     let best = u.s, bestScore = -1;
     for (let k = 0; k <= 16; k++) {
@@ -461,7 +468,8 @@ function cafeStyle(cafe, seed) {
       if (clear > 0.12) break;
     }
     const r2 = RNG.from(seed, 'umb', cafe.id, i);
-    return { s: best, d: u.d, size: u.size, color: srgb(UMB_COL[u.color] || UMB_COL.cream), furled: r2.chance(0.07), yaw: r2.range(-0.03, 0.03) };
+    const col = mixed ? u.color : cafe.umbrellas[0].color;
+    return { s: best, d: u.d, size: u.size, color: srgb(UMB_COL[col] || UMB_COL.cream).multiplyScalar(r2.range(0.96, 1.02)), furled: r2.chance(0.07), yaw: r2.range(-0.03, 0.03) };
   });
   // menu board: a free spot along the walkway edge or the café ends
   {
@@ -548,31 +556,37 @@ function placeTableware(route, t, rng, inst, P) {
   }
 }
 
-/** Freestanding canopy over an 'awning' style terrace: steel posts, sagging fabric roof, valance. */
-export function buildCafeCanopy(cafe, app, batcher, F) {
+/** Freestanding canopy over an 'awning' style terrace: steel posts and rafters (instanced),
+ *  a fabric roof sagging between the rafters with a valance (merged, cached per café). */
+const roofCache = new Map();
+export function buildCafeCanopy(cafe, app, addMesh, F, inst, P) {
+  const { route, layout } = app;
+  const s0 = cafe.s0 - 0.1, s1 = cafe.s1 + 0.1, dIn = cafe.dIn, dOut = cafe.dOut;
+  const hIn = 2.55, hOut = 2.95;
+  const nBays = Math.max(1, Math.round((s1 - s0) / 3.2));
+  const pt = (s, d, h) => route.toWorld(s, d, h, new THREE.Vector3());
+  for (let i = 0; i <= nBays; i++) {
+    const s = s0 + ((s1 - s0) * i) / nBays;
+    inst.add(P.misc.post, segmentMatrix(pt(s, dIn, 0), pt(s, dIn, hIn), _m));
+    if (i === 0 || i === nBays) inst.add(P.misc.post, segmentMatrix(pt(s, dOut, 0), pt(s, dOut, hOut), _m));
+    inst.add(P.misc.rafter, segmentMatrix(pt(s, dIn, hIn), pt(s, dOut, hOut), _m));
+  }
+  inst.add(P.misc.beam, segmentMatrix(pt(s0, dIn, hIn - 0.05), pt(s1, dIn, hIn - 0.05), _m));
+  inst.add(P.misc.beam, segmentMatrix(pt(s0, dOut, hOut - 0.05), pt(s1, dOut, hOut - 0.05), _m));
+  let g = roofCache.get(cafe);
+  if (!g) {
+    g = canopyRoof(cafe, app, s0, s1, dIn, dOut, hIn, hOut, nBays);
+    roofCache.set(cafe, g);
+  }
+  addMesh(g, F.canopy);
+}
+
+function canopyRoof(cafe, app, s0, s1, dIn, dOut, hIn, hOut, nBays) {
   const { route, layout } = app;
   const rng = RNG.from(layout.seed, 'cafeCanopy', cafe.id);
   const side = cafe.side;
-  const s0 = cafe.s0 - 0.1, s1 = cafe.s1 + 0.1;
-  const dIn = cafe.dIn, dOut = cafe.dOut;
-  const hIn = 2.55, hOut = 2.95;
   const color = srgb(rng.pick(['#e6dcc4', '#efede6', '#5d2a2c', '#2f3f37', '#cdb894']));
-  const nBays = Math.max(1, Math.round((s1 - s0) / 3.2));
-  const steel = [];
   const p = new THREE.Vector3();
-  const pt = (s, d, h) => route.toWorld(s, d, h, new THREE.Vector3());
-  // posts on the street side (and both ends at the facade side)
-  for (let i = 0; i <= nBays; i++) {
-    const s = s0 + ((s1 - s0) * i) / nBays;
-    steel.push(bar([pt(s, dIn, 0), pt(s, dIn, hIn)], 0.07, 0.07, { r: 0.006, up: [1, 0, 0], bend: 0, caps: true }));
-    if (i === 0 || i === nBays) steel.push(bar([pt(s, dOut, 0), pt(s, dOut, hOut)], 0.07, 0.07, { r: 0.006, up: [1, 0, 0], bend: 0 }));
-    // rafter
-    steel.push(bar([pt(s, dIn, hIn), pt(s, dOut, hOut)], 0.1, 0.05, { r: 0.004, bend: 0 }));
-  }
-  steel.push(bar([pt(s0, dIn, hIn - 0.05), pt(s1, dIn, hIn - 0.05)], 0.1, 0.06, { r: 0.004, bend: 0 }));
-  steel.push(bar([pt(s0, dOut, hOut - 0.05), pt(s1, dOut, hOut - 0.05)], 0.1, 0.06, { r: 0.004, bend: 0 }));
-  for (const g of steel) batcher.add(app.materials.get('metal.pole'), g);
-  // fabric roof: grid in (s, d) with sag between rafters
   const ns = nBays * 6, nd = 6;
   const pos = [], uv = [], col = [], flex = [], idx = [];
   const c = [color.r, color.g, color.b];
@@ -603,6 +617,7 @@ export function buildCafeCanopy(cafe, app, batcher, F) {
   }
   const g = makeGeo(pos, new Array(pos.length).fill(0), uv, idx, { color: { array: col, size: 3 }, aFlex: { array: flex, size: 1 } });
   g.computeVertexNormals();
-  batcher.add(F.canopy, g);
+  g.computeBoundingSphere();
+  g.userData.shared = true;
+  return g;
 }
-

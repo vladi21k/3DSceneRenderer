@@ -38,10 +38,12 @@ class CrowdSim {
     this.time = 0;
     this.camU = null; this.camW = 0;
     this.out = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true };
-    this.perf = { ms: 0, acc: 0, n: 0, max: 0 };
-    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [] };
+    this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0 };
+    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, overlap: 0, agentFrames: 0 };
     this.humans = app.humans && !app.humans.disabled ? app.humans : null;
-    if (this.humans && this.humans.alloc) this.humans.alloc(MAX_AGENTS);
+    // renderer slots; alloc may hand back the first index of our block
+    const base = this.humans && this.humans.alloc ? this.humans.alloc(MAX_AGENTS) : 0;
+    this.base = Number.isInteger(base) ? base : 0;
     this.debug = null;
     if (app.params.num('crowdDebug', 0) === 1) {
       import('./behaviour/debugView.js').then((m) => { this.debug = new m.DebugView(app, MAX_AGENTS); });
@@ -53,7 +55,7 @@ class CrowdSim {
   /** Wrapped route s → unwrapped s in the crowd frame (nearest copy to the camera). */
   unwrap(s) { return this.camU + this.route.delta(this.camW, s); }
 
-  onKill(a) { if (this.humans && this.humans.setVisible) this.humans.setVisible(a.slot, false); }
+  onKill(a) { if (this.humans && this.humans.setVisible) this.humans.setVisible(this.base + a.slot, false); }
 
   /** Everyone in front of the tram turns to look; people by the track hurry off it. */
   onBell() {
@@ -91,7 +93,7 @@ class CrowdSim {
     else {
       const dd = route.delta(this.camW, camS);
       if (Math.abs(dd) > 150) { // teleport: start over around the new position
-        for (const a of this.population.agents) if (a.active) this.population.kill(a);
+        this.population.reset();
         first = true;
       }
       this.camU += dd; this.camW = route.wrap(camS);
@@ -104,18 +106,31 @@ class CrowdSim {
     if (dt > 0) {
       this.time += dt;
       this._count();
+      const t1 = performance.now();
       this.population.maintain(dt);
+      const t2 = performance.now();
       this.steering.step(dt);
+      const t3 = performance.now();
       this.tram.flushRequests(app, this.time);
+      this._lap(1, t2 - t1); this._lap(2, t3 - t2);
     }
+    const t4 = performance.now();
     this._output(dt);
+    this._lap(3, performance.now() - t4);
+    this._lap(0, performance.now() - t0);
     if (this.check.on) this._selfCheck(app);
     if (this.debug) this.debug.update(this.population.agents);
+  }
 
-    const ms = performance.now() - t0;
+  /** CPU time per part: 0 total, 1 population, 2 steering, 3 output (averaged over 60 frames, max after warm-up). */
+  _lap(k, ms) {
     const p = this.perf;
-    p.acc += ms; p.n++; p.max = Math.max(p.max, ms);
-    if (p.n >= 60) { p.ms = p.acc / p.n; p.acc = 0; p.n = 0; }
+    p.acc[k] += ms;
+    if (this.time > 2) { p.max[k] = Math.max(p.max[k], ms); if (k === 0 && ms > 1.5) p.over++; }
+    if (k === 0 && ++p.n >= 60) {
+      for (let i = 0; i < 4; i++) { p.avg[i] = p.acc[i] / p.n; p.acc[i] = 0; }
+      p.n = 0;
+    }
   }
 
   _count() {
@@ -146,7 +161,7 @@ class CrowdSim {
       o.x = a.x; o.y = a.y; o.z = a.z;
       o.heading = a.heading; o.speed = a.speed; o.phase = a.phase; o.pose = a.pose;
       o.look = a.look; o.appearance = a.appearance; o.visible = true;
-      H.set(a.slot, o);
+      H.set(this.base + a.slot, o);
     }
   }
 
@@ -154,8 +169,20 @@ class CrowdSim {
   _selfCheck(app) {
     const ck = this.check, route = this.route, tr = app.train;
     if (!tr) return;
+    const map = this.map;
     for (const a of this.population.agents) {
       if (!a.active) continue;
+      // walls and obstacles (route coordinates)
+      const side = a.d >= 0 ? 1 : -1, ad = Math.abs(a.d);
+      if (!a.inDoor && !map.mouthAt(a.s, side) && ad > map.wallAt(a.s, side) + 0.02) ck.wall++;
+      if (a.state !== ST.SEATED && a.kind !== KIND.PASSENGER) {
+        const n = map.gatherCircles(a.s, 1);
+        for (let q = 0; q < n; q++) {
+          const i = map.qI[q], ds = map.qDS[q], dd = map.cD[i] - a.d;
+          if (ds * ds + dd * dd < (map.cR[i] + AGENT_R * 0.5) ** 2) { ck.overlap++; break; }
+        }
+      }
+      ck.agentFrames++;
       if (Math.abs(a.s - this.tram.trainU) > 20) continue;
       const p = route.project(a.x, a.z, route.wrap(a.s), 4);
       const ahead = route.delta(tr.s, p.s);
@@ -174,6 +201,7 @@ class CrowdSim {
   stats() {
     const byState = {}, byTask = {}, byKind = {};
     let active = 0, clearing = 0, simple = 0, followers = 0, corridor = 0;
+    const lanes = [0, 0, 0], band = [0, 0, 0, 0];
     for (const a of this.population.agents) {
       if (!a.active) continue;
       active++;
@@ -184,15 +212,23 @@ class CrowdSim {
       if (a.simple) simple++;
       if (a.leader) followers++;
       if (Math.abs(a.d) < 3.4) corridor++;
+      if (a.state === ST.WALK && !a.leader) lanes[a.lane]++;
+      if (a.s - this.camU > 30 && a.s - this.camU < 250) {
+        const k = a.d < -3.4 ? 0 : a.d < -0.2 ? 1 : a.d < 3.4 ? 2 : 3;
+        band[k]++;
+      }
     }
     const ck = this.check;
     return {
       active, walkerTarget: Math.round(this.population.walkerTarget), byKind, byState, byTask, clearing, simple, followers, corridor,
+      lanes: { side: lanes[0], edge: lanes[1], corridor: lanes[2] },
+      crossSection30to250m: { leftWalk: band[0], leftTrack: band[1], rideTrack: band[2], rightWalk: band[3] },
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
-      violationLog: this.tram.violationLog.slice(0, 5),
-      check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5) } : null,
+      violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
+      check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, obstacleOverlap: ck.overlap } : null,
       population: this.population.stats,
-      cpuMs: +this.perf.ms.toFixed(3), cpuMaxMs: +this.perf.max.toFixed(3),
+      cpuMs: +this.perf.avg[0].toFixed(3), cpuMaxMs: +this.perf.max[0].toFixed(3), framesOver1_5ms: this.perf.over,
+      cpuParts: { population: [+this.perf.avg[1].toFixed(3), +this.perf.max[1].toFixed(2)], steering: [+this.perf.avg[2].toFixed(3), +this.perf.max[2].toFixed(2)], output: [+this.perf.avg[3].toFixed(3), +this.perf.max[3].toFixed(2)] },
     };
   }
 }

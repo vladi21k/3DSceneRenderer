@@ -74,100 +74,112 @@ function circle(cx, cy, r, n = 20) {
 }
 
 // Member sections (metres): scroll flat bar seen on edge, square bars, rails.
-const SCROLL_W = 0.010, SCROLL_D = 0.018;
-const BAR = 0.016;
-const HAND = { y0: H - 0.035, y1: H, d: 0.046 };
-const UNDER = 0.84, UNDER_T = 0.018;                     // under-rail closing the frieze band
+const SCROLL_W = 0.013, SCROLL_D = 0.02;
+const BAR = 0.018;
+const HAND = { y0: H - 0.04, y1: H, d: 0.05 };
+const UNDER = 0.83, UNDER_T = 0.02;                        // under-rail closing the frieze band
 const BAND_C = (UNDER + UNDER_T + HAND.y0) / 2;            // frieze band centre
 const BAND_R = (HAND.y0 - UNDER - UNDER_T) / 2 - 0.001;    // ring radius touching both rails
+const BOT = [0.05, 0.085];                                 // bottom rail
 
 /** Common frame: handrail, optional under-rail (frieze band), bottom rail, and the bay bar at x = 0. */
-function frame(W, { under = UNDER, bottom = [0.055, 0.085], mid = null } = {}) {
+function frame(W, { under = UNDER, mid = null } = {}) {
   const s = [];
   s.push({ k: 'rail', x0: 0, x1: W, y0: HAND.y0, y1: HAND.y1, d: HAND.d, hand: true });
-  if (under) s.push({ k: 'rail', x0: 0, x1: W, y0: under, y1: under + UNDER_T, d: 0.014 });
-  if (mid) s.push({ k: 'rail', x0: 0, x1: W, y0: mid, y1: mid + 0.016, d: 0.014 });
-  s.push({ k: 'rail', x0: 0, x1: W, y0: bottom[0], y1: bottom[1], d: 0.014 });
-  s.push({ k: 'bar', x: 0, y0: bottom[0], y1: HAND.y0, s: BAR });
+  if (under) s.push({ k: 'rail', x0: 0, x1: W, y0: under, y1: under + UNDER_T, d: 0.016 });
+  if (mid) s.push({ k: 'rail', x0: 0, x1: W, y0: mid, y1: mid + 0.018, d: 0.016 });
+  s.push({ k: 'rail', x0: 0, x1: W, y0: BOT[0], y1: BOT[1], d: 0.016 });
+  s.push({ k: 'bar', x: 0, y0: BOT[0], y1: HAND.y0, s: BAR });
   return s;
 }
 
 const curve = (pts, closed = false, w = SCROLL_W, d = SCROLL_D) => ({ k: 'curve', pts, closed, w, d });
-const collar = (x, y, vertical = true) => ({ k: 'collar', x, y, w: vertical ? 0.032 : 0.022, h: vertical ? 0.022 : 0.032, d: 0.024 });
-const rosette = (x, y, r = 0.028) => ({ k: 'rosette', x, y, r });
+const collar = (x, y, vertical = true) => ({ k: 'collar', x, y, w: vertical ? 0.034 : 0.024, h: vertical ? 0.024 : 0.034, d: 0.026 });
+const rosette = (x, y, r = 0.03) => ({ k: 'rosette', x, y, r });
+const ring = (x, y, r) => curve(circle(x, y, r), true);
+const rot90 = (pts) => pts.map(([x, y]) => [y, -x]);
 
 const SLIM_C = { r0: 0.02, c: 0.2, te: 0.25, q: 30 };
 const STD = { r0: 0.02, c: 0.25, te: 0.3, q: 20 };
 
-/** Design library. Each returns {id, W, strokes}. */
+/** Design library: {id, W (bay width), strokes}. Bays repeat along each railing run. */
 export const DESIGNS = [
   // 0: back-to-back C scrolls ")(" bound by a collar, ring frieze above
   (() => {
-    const W = 0.44, s = frame(W);
-    const box = [0.10, 0.80];
-    const C = scroll('C', SLIM_C);
-    s.push(curve(fit(C, [0.03, box[0], W / 2, box[1]])));
-    s.push(curve(fit(C, [W / 2, box[0], W - 0.03, box[1]], { flipX: true })));
-    s.push(collar(W / 2, (box[0] + box[1]) / 2));
-    s.push(curve(circle(W / 2, BAND_C, BAND_R), true));
+    const W = 0.32, s = frame(W);
+    const C = scroll('C', SLIM_C), y0 = BOT[1] + 0.012, y1 = UNDER - 0.012;
+    s.push(curve(fit(C, [0.022, y0, W / 2, y1])));
+    s.push(curve(fit(C, [W / 2, y0, W - 0.022, y1], { flipX: true })));
+    s.push(collar(W / 2, (y0 + y1) / 2));
+    s.push(ring(W / 2, BAND_C, BAND_R));
     return { id: 'lyre', W, strokes: s };
   })(),
-  // 1: mirrored S scroll pair forming a vase, rosette between the eyes
+  // 1: mirrored S scroll pair forming a vase, C pair and rosette in the frieze
   (() => {
-    const W = 0.40, s = frame(W);
-    const S = scroll('S', STD);
-    s.push(curve(fit(S, [0.03, 0.10, W / 2, 0.81])));
-    s.push(curve(fit(S, [W / 2, 0.10, W - 0.03, 0.81], { flipX: true })));
-    s.push(collar(W / 2, 0.455));
-    s.push(rosette(W / 2, BAND_C, 0.03));
-    s.push(curve(fit(scroll('C', SLIM_C), [W / 2 - 0.15, UNDER + 0.022, W / 2 - 0.045, HAND.y0 - 0.004])));
-    s.push(curve(fit(scroll('C', SLIM_C), [W / 2 + 0.045, UNDER + 0.022, W / 2 + 0.15, HAND.y0 - 0.004], { flipX: true })));
+    const W = 0.34, s = frame(W);
+    const S = scroll('S', STD), y0 = BOT[1] + 0.012, y1 = UNDER - 0.012;
+    s.push(curve(fit(S, [0.02, y0, W / 2, y1])));
+    s.push(curve(fit(S, [W / 2, y0, W - 0.02, y1], { flipX: true })));
+    s.push(collar(W / 2, (y0 + y1) / 2));
+    s.push(rosette(W / 2, BAND_C, 0.028));
+    const C = scroll('C', SLIM_C);
+    s.push(curve(fit(rot90(C), [0.03, UNDER + UNDER_T + 0.004, W / 2 - 0.035, HAND.y0 - 0.004])));
+    s.push(curve(fit(rot90(C), [W / 2 + 0.035, UNDER + UNDER_T + 0.004, W - 0.03, HAND.y0 - 0.004], { flipX: true })));
     return { id: 'vase', W, strokes: s };
   })(),
   // 2: Mandate-era bars with ring friezes top and bottom
   (() => {
-    const W = 0.36, s = frame(W, { mid: 0.215 });
-    for (const x of [0.12, 0.24]) s.push({ k: 'bar', x, y0: 0.055, y1: HAND.y0, s: BAR * 0.85 });
-    for (const x of [0.06, 0.18, 0.30]) {
-      s.push(curve(circle(x, BAND_C, BAND_R), true));
-      s.push(curve(circle(x, 0.15, 0.05), true));
-    }
+    const W = 0.33, s = frame(W, { mid: 0.22 });
+    for (const x of [0.11, 0.22]) s.push({ k: 'bar', x, y0: BOT[0], y1: HAND.y0, s: BAR * 0.9 });
+    const rb = (0.22 - BOT[1]) / 2 - 0.001, cb = (0.22 + BOT[1]) / 2;
+    for (const x of [0.055, 0.165, 0.275]) { s.push(ring(x, BAND_C, BAND_R)); s.push(ring(x, cb, Math.min(rb, 0.05))); }
     return { id: 'rings', W, strokes: s };
   })(),
-  // 3: twisted balusters with collars and small C arches under the frieze
+  // 3: twisted balusters with collars, C-scroll pairs under the handrail, rings at the foot
   (() => {
-    const W = 0.27, s = frame(W, { under: 0.80 });
-    s.find((m) => m.k === 'bar').twist = [0.3, 0.62, 2]; // the bay bar at x = 0 is twisted too
-    s.push({ k: 'bar', x: W / 2, y0: 0.055, y1: HAND.y0, s: BAR, twist: [0.3, 0.62, 2] });
-    for (const x of [0, W / 2]) { s.push(collar(x, 0.29)); s.push(collar(x, 0.63)); }
-    const J = scroll('J', STD);
+    const W = 0.24, s = frame(W);
+    s.find((m) => m.k === 'bar').twist = [0.3, 0.6, 2]; // the bay bar at x = 0 is twisted too
+    s.push({ k: 'bar', x: W / 2, y0: BOT[0], y1: HAND.y0, s: BAR, twist: [0.3, 0.6, 2] });
+    for (const x of [0, W / 2]) { s.push(collar(x, 0.29)); s.push(collar(x, 0.61)); }
+    const C = rot90(scroll('C', SLIM_C));
     for (const x0 of [0, W / 2]) {
-      s.push(curve(fit(J, [x0 + 0.012, 0.822, x0 + W / 4, 0.958], { flipY: true })));
-      s.push(curve(fit(J, [x0 + W / 4, 0.822, x0 + W / 2 - 0.012, 0.958], { flipX: true, flipY: true })));
-      s.push(curve(circle(x0 + W / 4, 0.16, 0.045), true));
+      s.push(curve(fit(C, [x0 + 0.014, UNDER + UNDER_T + 0.003, x0 + W / 2 - 0.014, HAND.y0 - 0.003])));
+      s.push(ring(x0 + W / 4, 0.15, 0.048));
     }
     return { id: 'twist', W, strokes: s };
   })(),
-  // 4: Ottoman panel: large ring with rosette, J scrolls to the corners
+  // 4: Ottoman panel: ring medallion with rosette, J scrolls to the corners, ring frieze
   (() => {
-    const W = 0.56, s = frame(W);
-    const cx = W / 2, cy = 0.47, r = 0.13;
+    const W = 0.46, s = frame(W);
+    const cx = W / 2, cy = 0.46, r = 0.12;
     s.push(curve(circle(cx, cy, r, 28), true));
     s.push(rosette(cx, cy, 0.045));
     const J = scroll('J', STD);
-    s.push(curve(fit(J, [0.03, cy + r - 0.01, cx, 0.82], { flipX: true })));
-    s.push(curve(fit(J, [cx, cy + r - 0.01, W - 0.03, 0.82])));
-    s.push(curve(fit(J, [0.03, 0.10, cx, cy - r + 0.01], { flipX: true, flipY: true })));
-    s.push(curve(fit(J, [cx, 0.10, W - 0.03, cy - r + 0.01], { flipY: true })));
+    s.push(curve(fit(J, [0.025, cy + r - 0.01, cx, UNDER - 0.01], { flipX: true, flipY: true })));
+    s.push(curve(fit(J, [cx, cy + r - 0.01, W - 0.025, UNDER - 0.01], { flipY: true })));
+    s.push(curve(fit(J, [0.025, BOT[1] + 0.01, cx, cy - r + 0.01], { flipX: true })));
+    s.push(curve(fit(J, [cx, BOT[1] + 0.01, W - 0.025, cy - r + 0.01])));
     s.push(collar(cx, cy + r)); s.push(collar(cx, cy - r));
-    s.push(curve(circle(W / 4, BAND_C, BAND_R), true));
-    s.push(curve(circle(3 * W / 4, BAND_C, BAND_R), true));
+    s.push(ring(W / 4, BAND_C, BAND_R)); s.push(ring(3 * W / 4, BAND_C, BAND_R));
     return { id: 'medallion', W, strokes: s };
   })(),
   // 5: plain square bars (later / modern buildings)
   (() => {
-    const W = 0.12, s = frame(W, { under: null });
+    const W = 0.11, s = frame(W, { under: null });
     return { id: 'bars', W, strokes: s };
+  })(),
+  // 6: bars with a ring band at mid height, collars and a ring frieze
+  (() => {
+    const W = 0.36, s = frame(W, { mid: 0.38 });
+    s.push({ k: 'rail', x0: 0, x1: W, y0: 0.505, y1: 0.523, d: 0.016 });
+    for (const x of [0.12, 0.24]) s.push({ k: 'bar', x, y0: BOT[0], y1: HAND.y0, s: BAR * 0.9 });
+    const rm = (0.505 - 0.398) / 2 - 0.001;
+    for (const x of [0, 0.12, 0.24]) {
+      s.push(ring(x + 0.06, (0.505 + 0.398) / 2, rm));
+      s.push(ring(x + 0.06, BAND_C, BAND_R));
+      s.push(collar(x, 0.2)); s.push(collar(x, 0.68));
+    }
+    return { id: 'band', W, strokes: s };
   })(),
 ];
 

@@ -20,11 +20,11 @@ const LIMESTONE_TINTS = {
   aged: [0.88, 0.85, 0.8],
 };
 
-const STONE_CELL = { value: 0.085, hue: 0.9, rough: 0.06, row: 0.35, a: [1.07, 1.0, 0.85], b: [0.95, 0.97, 1.03], out: [1.1, 1.08, 1.04, 0.06] };
+const STONE_CELL = { value: 0.07, hue: 0.9, rough: 0.06, row: 0.3, a: [1.06, 0.985, 0.86], b: [0.97, 0.985, 1.01], out: [1.03, 0.94, 0.9, 0.07] };
 const STONE_MACRO = { f1: 1 / 6, f2: 1 / 17, albedo: 0.05, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
-const STONE_DETAIL = { freq: 2.0, normal: 0.5, albedo: 0.22, rough: 0.05 };
+const STONE_DETAIL = { freq: 2.0, normal: 0.7, albedo: 0.3, rough: 0.05 };
 
-const PAVING_CELL = { value: 0.13, hue: 0.7, rough: 0.12, row: 0.4, a: [1.05, 1.0, 0.94], b: [0.93, 0.97, 1.06], out: [1.3, 1.27, 1.22, 0.035] };
+const PAVING_CELL = { value: 0.11, hue: 0.6, rough: 0.12, row: 0.4, a: [1.04, 1.0, 0.95], b: [0.95, 0.98, 1.04], out: [1.18, 1.16, 1.13, 0.03] };
 const PAVING_MACRO = { f1: 1 / 9, f2: 1 / 35, albedo: 0.07, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
 const PAVING_DETAIL = { freq: 2.6, normal: 0.6, albedo: 0.3, rough: 0.08 };
 

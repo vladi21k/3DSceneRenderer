@@ -109,7 +109,7 @@ export class Tram {
     this.throttle = 0;
     this.emergency = false;
     this.state = 'run';
-    this.phase = null;          // HUD hint: arriving | doors-open | doors-closing | departing
+    this.phase = null;          // HUD hint: arriving | doors-open | doors-closing | departing | ready
     this.seq = null;            // station dwell / standing-start timeline
     this.served = -1;           // station just served (ignored until left behind)
     this.skipped = -1;          // station passed without stopping
@@ -215,7 +215,8 @@ export class Tram {
       if (d < -2) continue;
       if (d < bestD) { bestD = d; best = st; }
     }
-    this.nextStop = { station: best, distance: bestD };
+    this.nextStop.station = best;                     // updated in place (no per-frame garbage)
+    this.nextStop.distance = bestD;
     return this.nextStop;
   }
 
@@ -236,13 +237,14 @@ export class Tram {
   _runSeq() {
     const q = this.seq, t = this.t - q.t0;
     if (q.kind === 'station') {
-      if (!q.opened && t >= 1.1) { q.opened = true; this.events.emit('doors', { open: true }); }
-      if (!q.closed && t >= q.dur - 4.2) { q.closed = true; this.events.emit('doors', { open: false }); }
+      if (!q.opened && t >= 1.1) { q.opened = true; this.events.emit('doors', { open: true, station: q.station }); }
+      if (!q.closed && t >= q.dur - 4.2) { q.closed = true; this.events.emit('doors', { open: false, station: q.station }); }
       if (!q.belled && t >= q.dur - 1.5) { q.belled = true; this.ringBell(true, true); }
       this.phase = !q.opened ? 'arriving' : !q.closed ? 'doors-open' : 'doors-closing';
     } else {
-      if (!q.belled && t >= 0.9 && (this.auto || this.notch > N_INDEX)) { q.belled = true; this.ringBell(true, true); }
-      this.phase = 'departing';
+      const go = this.auto || this.notch > N_INDEX;   // manual: waits for the driver to notch up
+      if (!q.belled && t >= 0.9 && go) { q.belled = true; this.ringBell(true, true); }
+      this.phase = go ? 'departing' : 'ready';
     }
     if (t >= q.dur && (q.kind === 'station' || q.belled)) {
       if (q.kind === 'station') {

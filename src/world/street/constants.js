@@ -10,9 +10,10 @@ export const HEAD_HALF = RAIL_HEAD_W / 2;                // 0.028 running head h
 export const GROOVE_IN = HEAD_HALF;                      // groove starts at the head's gauge face
 export const GROOVE_OUT = HEAD_HALF + RAIL_GROOVE_W;     // 0.070 (42 mm flangeway)
 export const LIP_OUT = GROOVE_OUT + 0.013;               // 0.083 guard lip
-export const SEAL_W = 0.018;                             // rubber / bitumen sealing strip
-export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.046 field-side paving edge
-export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.101 gauge-side paving edge
+export const SEAL_W = 0.012;                             // rubber / bitumen sealing strip
+export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.040 field-side paving edge
+export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.095 gauge-side paving edge
+export const HEAD_DULL = -0.024;                         // rusty field-side bevel ends here
 export const GROOVE_DEPTH = 0.0365;
 
 // The four running rails of the two main tracks: centre line d and gauge direction g.
@@ -50,16 +51,16 @@ export const SLAB_H = -0.30;                             // ground slab below ev
 // Each point carries the surface kind of the segment that ends at it.
 export const RAIL_PROFILE = [
   [RAIL_X0, 0.0, null],
-  [-0.0425, -0.0026, 'seal'],
-  [-0.0287, -0.0040, 'seal'],
+  [-0.0378, -0.0024, 'seal'],
+  [-0.0287, -0.0038, 'seal'],
   [-0.0283, -0.0019, 'side'],
   [-0.0268, -0.0006, 'side'],
-  [-0.0242, 0.0, 'side'],
-  [-0.0165, 0.0, 'side'],
-  [0.0150, 0.0, 'head'],
-  [0.0212, -0.0002, 'side'],
-  [0.0252, -0.0017, 'side'],
-  [0.0274, -0.0044, 'side'],
+  [HEAD_DULL, -0.0002, 'side'],
+  [0.0000, 0.0, 'head'],           // slightly crowned, polished running surface
+  [0.0160, -0.0001, 'head'],
+  [0.0215, -0.0003, 'head'],
+  [0.0252, -0.0017, 'head'],       // gauge corner, polished by the flanges
+  [0.0274, -0.0044, 'head'],
   [0.0281, -0.0090, 'side'],
   [0.0286, -0.0290, 'side'],
   [0.0318, -0.0342, 'groove'],
@@ -72,8 +73,8 @@ export const RAIL_PROFILE = [
   [0.0742, -0.0012, 'lip'],
   [0.0800, -0.0014, 'lip'],
   [0.0828, -0.0040, 'side'],
-  [0.0872, -0.0046, 'seal'],
-  [0.0978, -0.0030, 'seal'],
+  [0.0858, -0.0043, 'seal'],
+  [0.0925, -0.0027, 'seal'],
   [RAIL_X1, 0.0, 'seal'],
 ];
 

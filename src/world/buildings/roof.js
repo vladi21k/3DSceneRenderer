@@ -13,7 +13,7 @@ export function balustradeRail(h) { return [[0.03, 0], [0.05, 0.02], [0.05, h - 
 /** Turned baluster (vase shape), radius profile [[r, y]] for a lathe, height h. */
 export function balusterProfile(h) {
   const f = (r, y) => [r, y * h];
-  return [f(0.07, 0), f(0.07, 0.07), f(0.05, 0.1), f(0.06, 0.18), f(0.085, 0.32), f(0.08, 0.45), f(0.05, 0.62), f(0.035, 0.75), f(0.04, 0.82), f(0.065, 0.88), f(0.065, 0.95), f(0.0, 1.0)];
+  return [f(0.065, 0), f(0.05, 0.1), f(0.085, 0.3), f(0.075, 0.48), f(0.035, 0.74), f(0.065, 0.86), f(0.065, 0.97), f(0.0, 1.0)];
 }
 
 /** Front balustrade: base, turned balusters, dies at the ends and every few metres, rail. */
@@ -161,7 +161,8 @@ const SUN_X = -0.34, SUN_Z = -0.94;
 
 /** Flat-plate solar water heater: two tilted collectors on a galvanised frame and a horizontal tank. */
 export function solarHeater(B, sinks, frameYaw, q, rng) {
-  const sM = sinks.metal, sG = sinks.glass, sP = sinks.paint;
+  // the glazing goes in the metal batch as a dark, smooth metallic surface (saves a draw call)
+  const sM = sinks.metal, sG = sinks.metal, sP = sinks.paint;
   const tilt = (rng.range(38, 46) * Math.PI) / 180;
   const panelW = 0.95, panelL = 2.0, n = rng.chance(0.7) ? 2 : 1;
   const totalW = n * panelW + (n - 1) * 0.06;
@@ -173,8 +174,8 @@ export function solarHeater(B, sinks, frameYaw, q, rng) {
   for (let i = 0; i < n; i++) {
     const a = -totalW / 2 + i * (panelW + 0.06), b = a + panelW;
     const wf = run / 2, wb = -run / 2, vf = foot, vb = foot + rise, th = 0.09;
-    // glazing (top surface)
-    B.flat = [1, 1, 1];
+    // glazing (top surface): dark blue-black absorber seen through the glass
+    B.flat = [0.07, 0.08, 0.1];
     B._quad4(sG, a, vf + th * c, wf + th * sn, b, vf + th * c, wf + th * sn, b, vb + th * c, wb + th * sn, a, vb + th * c, wb + th * sn, 0, c, sn);
     // aluminium casing sides and underside
     B.flat = [0.85, 0.86, 0.88];

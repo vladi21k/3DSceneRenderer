@@ -108,32 +108,16 @@ export class Surface {
     return 0.68 * this.fH.sample(s, d) + 0.32 * this.fH.sample(s * 0.613 + d * 0.11 + 71.3, d * 0.613 - s * 0.11 + 13.7);
   }
 
-  /** Height above the route elevation at lateral offset d for the row `ri`. */
-  height(ri, d) {
-    const a = d < 0 ? -d : d;
-    let h, amp, mask = 1;
-    if (a < BAND_IN) {
-      const e = railDist(d);
-      h = 0.0035 * smooth(e / 0.45) * (1 - ri.xo);
-      amp = 0.0022 * (1 - ri.xo);
-      mask = smooth(e / 0.28);
-    } else if (a < CORRIDOR) {
-      const t = (a - BAND_IN) / (CORRIDOR - BAND_IN);
-      h = 0.0035 - 0.0055 * t;
-      amp = 0.0010;
-    } else if (a < GUTTER_OUT) {
-      const t = ((a - CORRIDOR) / GUTTER_W) * 2 - 1;
-      h = -0.011 + 0.009 * t * t;
-      amp = 0.0008;
-    } else {
-      const x = a - GUTTER_OUT;
-      const rise = SIDEWALK_RISE + 0.002;
-      h = -0.002 + rise * smooth(x / 4.4);
-      amp = 0.0042;
+  /** Height above the route elevation at lateral offset d for the row `ri`.
+   *  ci: colInfo(d) when the caller has it precomputed. */
+  height(ri, d, ci = colInfo(d, this._ci || (this._ci = {}))) {
+    let h = ci.h0, amp = ci.amp, mask = ci.mask;
+    if (ci.zone === Z_CORR) { h *= 1 - ri.xo; amp *= 1 - ri.xo; }
+    else if (ci.zone === Z_WALK) {
       const edge = d > 0 ? ri.edgeR : -ri.edgeL;
-      mask = smooth((edge - FACADE_OVERLAP * 0.5 - a) / 1.6);
+      mask *= smooth((edge - FACADE_OVERLAP * 0.5 - (d < 0 ? -d : d)) / 1.6);
     }
-    if (mask > 0) {
+    if (mask > 0 && amp > 0) {
       const sp = ri.spots;
       for (let i = 0; i < sp.length; i += 2) {
         const p = sp[i], ds = sp[i + 1], dd = d - p.d;
@@ -150,32 +134,20 @@ export class Surface {
 
   // ------------------------------------------------------------------ dirt / tone
   /** Writes a paving colour multiplier for (row, d) into out[o..o+2]. */
-  tone(ri, d, out, o) {
-    const s = ri.s, a = d < 0 ? -d : d;
+  tone(ri, d, out, o, ci = colInfo(d, this._ci || (this._ci = {}))) {
+    const s = ri.s;
     const n1 = this.fG.sample(s * 0.5, d * 0.5 + 40);
     const n2 = this.fD.sample(s, d);
-    let v = (1 + 0.075 * n1) * (1 + 0.06 * n2);
-    let warm = 0;
-    if (a < BAND_IN) {
-      const e = railDist(d);
-      const g1 = Math.exp(-e / 0.045), g2 = Math.exp(-e / 0.22);
-      v *= 1 - 0.24 * g1 - 0.08 * g2;
-      warm += 0.05 * g1 + 0.02 * g2;
-      // oil drips along the middle of each track
-      const dc = Math.abs(a - TRACK_OFFSET);
-      v *= 1 - 0.07 * Math.exp(-(dc * dc) / 0.05) * (0.6 + 0.4 * n2);
-      v *= 1 - 0.1 * ri.xo * Math.exp(-e / 0.1);
-    } else if (a < CORRIDOR) {
-      v *= 1 - 0.1 * smooth((a - BAND_IN) / (CORRIDOR - BAND_IN));
-    } else if (a < GUTTER_OUT) {
-      const t = ((a - CORRIDOR) / GUTTER_W) * 2 - 1;
-      v *= 0.68 + 0.12 * t * t + 0.05 * n2;
-      warm += 0.02;
-    } else {
+    let v = (1 + 0.075 * n1) * (1 + 0.06 * n2) * ci.v;
+    let warm = ci.warm;
+    if (ci.zone === Z_CORR) {
+      v *= (1 - ci.drip * (0.6 + 0.4 * n2)) * (1 - ri.xo * ci.xoTone);
+    } else if (ci.zone === Z_GUTTER) {
+      v *= 1 + 0.05 * n2;
+    } else if (ci.zone === Z_WALK) {
+      const a = d < 0 ? -d : d;
       const edge = d > 0 ? ri.edgeR : -ri.edgeL;
-      const toFacade = edge - FACADE_OVERLAP - a;
-      v *= 1 - 0.14 * Math.exp(-Math.max(0, toFacade) / 0.35);
-      v *= 1 - 0.06 * Math.exp(-(a - GUTTER_OUT) / 0.25);
+      v *= 1 - 0.14 * Math.exp(-Math.max(0, edge - FACADE_OVERLAP - a) / 0.35);
       // soil and leaf litter around tree pits
       const sp = ri.spots;
       for (let i = 0; i < sp.length; i += 2) {
@@ -191,6 +163,48 @@ export class Surface {
     out[o + 1] = v * (1 + warm * 0.25);
     out[o + 2] = v * (1 - hue - warm * 0.8);
   }
+}
+
+export const Z_CORR = 0, Z_BAND = 1, Z_GUTTER = 2, Z_WALK = 3;
+
+/** The s-independent part of the cross-section at d: base height (camber, crown between
+ *  the rails, dished gutter, sidewalk cross-fall), noise amplitude and mask, and the
+ *  static dirt factors (grime along the rails, oil drips, dark gutter). */
+export function colInfo(d, out = {}) {
+  const a = d < 0 ? -d : d;
+  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1;
+  if (a < BAND_IN) {
+    const e = railDist(d);
+    const g1 = Math.exp(-e / 0.045), g2 = Math.exp(-e / 0.22);
+    const dc = a - TRACK_OFFSET;
+    out.zone = Z_CORR;
+    out.h0 = 0.0035 * smooth(e / 0.45);
+    out.amp = 0.0022;
+    out.mask = smooth(e / 0.28);
+    out.v = 1 - 0.24 * g1 - 0.08 * g2;
+    out.warm = 0.05 * g1 + 0.02 * g2;
+    out.drip = 0.07 * Math.exp(-(dc * dc) / 0.05);
+    out.xoTone = 0.1 * Math.exp(-e / 0.1);
+  } else if (a < CORRIDOR) {
+    const t = (a - BAND_IN) / (CORRIDOR - BAND_IN);
+    out.zone = Z_BAND;
+    out.h0 = 0.0035 - 0.0055 * t;
+    out.amp = 0.001;
+    out.v = 1 - 0.1 * smooth(t);
+  } else if (a < GUTTER_OUT) {
+    const t = ((a - CORRIDOR) / GUTTER_W) * 2 - 1;
+    out.zone = Z_GUTTER;
+    out.h0 = -0.006 + 0.004 * t * t;       // shallow V towards the gully grates
+    out.amp = 0.0008;
+    out.v = 0.7 + 0.08 * t * t;
+    out.warm = 0.02;
+  } else {
+    out.zone = Z_WALK;
+    out.h0 = -0.002 + (SIDEWALK_RISE + 0.002) * smooth((a - GUTTER_OUT) / 4.4);
+    out.amp = 0.0042;
+    out.v = 1 - 0.06 * Math.exp(-(a - GUTTER_OUT) / 0.25);
+  }
+  return out;
 }
 
 export { CHUNK_LEN };

@@ -1,6 +1,7 @@
 import {
   MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H,
 } from './constants.js';
+import { colInfo } from './surface.js';
 
 // Paving grid for one chunk: corridor (with gaps for the rails), light stone edge
 // bands, dished gutters and sidewalks out under the facades. One height per grid
@@ -11,7 +12,7 @@ const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4;
 
 /** Interior column offsets between a and b, denser next to rails. */
 function fill(out, a, b, nearA, nearB, maxStep) {
-  const near = [0.022, 0.07, 0.16, 0.3];
+  const near = [0.03, 0.12, 0.3];
   const pts = [];
   const span = b - a;
   if (nearA) for (const o of near) if (o < span * 0.45) pts.push(a + o);
@@ -31,10 +32,10 @@ function fill(out, a, b, nearA, nearB, maxStep) {
 export function fixedColumns(lod) {
   const d = [], kind = [];
   const push = (x, k) => { d.push(x); kind.push(k); };
-  const corrStep = lod === 0 ? 0.42 : 0.9;
+  const corrStep = lod === 0 ? 0.6 : 0.9;
   // left gutter + band
   const gutter = (a, b) => {
-    const n = lod === 0 ? 4 : 2;
+    const n = lod === 0 ? 3 : 2;
     for (let i = 0; i < n; i++) push(a + ((b - a) * i) / n, K_GUTTER);
   };
   gutter(-GUTTER_OUT, -CORRIDOR);
@@ -63,7 +64,7 @@ export function fixedColumns(lod) {
   if (lod === 0) push((CORRIDOR + BAND_IN) / 2, K_BAND);
   gutter(CORRIDOR, GUTTER_OUT);
   push(GUTTER_OUT, K_WALK); // last fixed column: its interval kind is set per row assembly
-  return { d, kind };
+  return { d, kind, ci: d.map((x) => colInfo(x)) };
 }
 
 const FIXED = [fixedColumns(0), fixedColumns(1)];
@@ -81,7 +82,7 @@ export function buildPaving(ctx, chunk, rows, out) {
   const nr = rows.length;
 
   // sidewalk column counts (fixed per chunk so rows line up)
-  const walkStep = lod === 0 ? 0.62 : 1.6;
+  const walkStep = lod === 0 ? 0.9 : 1.8;
   const infos = [];
   let maxL = 0, maxR = 0;
   const rowS = [rows[0] - (rows[1] - rows[0]), ...rows, rows[nr - 1] + (rows[nr - 1] - rows[nr - 2])];
@@ -99,14 +100,20 @@ export function buildPaving(ctx, chunk, rows, out) {
   // column offsets and heights per (ghost-extended) row
   const D = new Float32Array(NR * nc);
   const H = new Float32Array(NR * nc);
+  const ciw = {};
   for (let r = 0; r < NR; r++) {
     const ri = infos[r];
     const o = r * nc;
     const eL = ri.edgeL, eR = ri.edgeR;
-    for (let k = 0; k < nL; k++) D[o + k] = eL + ((-GUTTER_OUT - eL) * k) / nL;
-    for (let k = 0; k < nFixed; k++) D[o + nL + k] = fx.d[k];
-    for (let k = 1; k <= nR; k++) D[o + nL + nFixed - 1 + k] = GUTTER_OUT + ((eR - GUTTER_OUT) * k) / nR;
-    for (let c = 0; c < nc; c++) H[o + c] = surface.height(ri, D[o + c]);
+    for (let k = 0; k < nL; k++) {
+      const d = eL + ((-GUTTER_OUT - eL) * k) / nL;
+      D[o + k] = d; H[o + k] = surface.height(ri, d, colInfo(d, ciw));
+    }
+    for (let k = 0; k < nFixed; k++) { D[o + nL + k] = fx.d[k]; H[o + nL + k] = surface.height(ri, fx.d[k], fx.ci[k]); }
+    for (let k = 1; k <= nR; k++) {
+      const c = nL + nFixed - 1 + k, d = GUTTER_OUT + ((eR - GUTTER_OUT) * k) / nR;
+      D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw));
+    }
   }
   // interval kinds (nc-1 intervals)
   const kind = new Uint8Array(nc - 1);
@@ -128,10 +135,10 @@ export function buildPaving(ctx, chunk, rows, out) {
   }
 
   // buffers
-  const bufs = [out.get(mats.corr, true), null, out.get(mats.band, true), out.get(mats.band, true), out.get(mats.walk, true)];
+  const bufs = [out.get(mats.corr, true), null, out.get(mats.band, true), out.get(mats.corr, true), out.get(mats.walk, true)];
   bufs[K_RAIL] = bufs[K_CORR];
   const vmap = [new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1)];
-  const bufIndex = [0, 0, 1, 1, 2];
+  const bufIndex = [0, 0, 1, 0, 2];       // gutters: darker corridor setts
   const tone = [1, 1, 1];
 
   const vert = (r, c, k) => {
@@ -152,7 +159,8 @@ export function buildPaving(ctx, chunk, rows, out) {
     let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
     const il = 1 / Math.hypot(nx, ny, nz);
     nx *= il; ny *= il; nz *= il;
-    surface.tone(S.ri, d, tone, 0);
+    const fc = c - nL;
+    surface.tone(S.ri, d, tone, 0, fc >= 0 && fc < nFixed ? fx.ci[fc] : colInfo(d, ciw));
     const b = bufs[k];
     v = b.v(S.px + S.rx * d, S.py + h, S.pz + S.rz * d, nx, ny, nz, S.s, d, tone[0], tone[1], tone[2]);
     vmap[bi][key] = v;

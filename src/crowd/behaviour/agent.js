@@ -60,5 +60,6 @@ export class Agent {
     this.crossS = 0;          // s where a crossing reaches the far side
     this.tramLookS = 0;       // window in which the agent looks at the tram
     this.bellT = 0;           // reacting to the bell until this time
+    this.dreamy = false;      // absorbed (phone, conversation): notices the tram late
   }
 }

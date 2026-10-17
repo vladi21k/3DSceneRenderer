@@ -32,9 +32,8 @@ layout(location = 1) out vec4 o1;
 const vec2 SSO[4] = vec2[4](vec2(0.375, 0.125), vec2(0.875, 0.375), vec2(0.125, 0.625), vec2(0.625, 0.875));
 void main() {
   vec4 a0 = vec4(0.0), a1 = vec4(0.0);
-  int ns = uSS > 1.5 ? 4 : 1;
-  for (int j = 0; j < 4; j++) {
-    if (j >= ns) break;
+  int ns = uSS > 1.5 ? 4 * uOne : uOne;
+  for (int j = 0; j < ns; j++) {
     vec2 off = ns == 1 ? vec2(0.5) : SSO[j];
     vec2 m = (floor(gl_FragCoord.xy) + off) / uRes * uTile;
     Surf s = Surf(vec3(0.5), 0.8, 0.0, 1.0, 0.0);
@@ -131,6 +130,7 @@ export class Baker {
         uLay: { value: new THREE.Vector4(L.rowH ?? 1, L.rows ?? 1, L.seg?.[0] ?? 1, L.seg?.[1] ?? 1) },
         uLay2: { value: new THREE.Vector4(L.jitter ?? 0, L.seed ?? 1, L.shift ? 1 : 0, L.rowJoints === false ? 0 : 1) },
         uSS: { value: r.ss ?? 2 },
+        uOne: { value: 1 },
       },
       depthTest: false, depthWrite: false,
     });
@@ -163,84 +163,119 @@ export class Baker {
     return rt;
   }
 
-  /** Bake every recipe. Returns Map name → {albedo, surface, raw, recipe}. Failed recipes are skipped. */
-  async bake(recipes) {
+  /** Render `material` (full-screen) into `target`, preserving renderer state. */
+  draw(material, target) {
     const R = this.renderer;
-    const t0 = performance.now();
-    const meshes = recipes.map((r) => {
-      const m = new THREE.Mesh(this.geometry, this.passA(r));
-      m.frustumCulled = false;
-      return m;
-    });
-    const pb = new THREE.Mesh(this.geometry, this.passB);
-    pb.frustumCulled = false;
-    // parallel shader compilation (KHR_parallel_shader_compile) for every pass
-    this.scene.add(pb, ...meshes);
-    try { await R.compileAsync(this.scene, this.camera); } catch (e) { console.warn('[materials] compileAsync failed, compiling lazily', e); }
-    this.scene.clear();
-    const tCompile = performance.now();
-
-    const prevTarget = R.getRenderTarget();
-    const prevAutoClear = R.autoClear;
-    const prevXr = R.xr.enabled;
+    const prev = R.getRenderTarget(), prevAutoClear = R.autoClear, prevXr = R.xr.enabled;
     R.autoClear = false;
     R.xr.enabled = false;
-    const out = new Map();
-    const timings = {};
-    for (let i = 0; i < recipes.length; i++) {
-      const r = recipes[i], mesh = meshes[i];
-      if (!this.runnable(mesh.material) || !this.runnable(this.passB)) {
-        console.warn(`[materials] bake recipe ${r.name} did not compile; material falls back to flat values`);
-        continue;
-      }
-      const tb = performance.now();
-      const [w, h] = sizeOf(r);
-      const final = this.finalTarget(r);
-      this.scene.add(mesh);
-      if (r.raw) {
-        R.setRenderTarget(final);
-        R.render(this.scene, this.camera);
-      } else {
-        const tmp = this.temp(w, h);
-        R.setRenderTarget(tmp);
-        R.render(this.scene, this.camera);
-        const u = this.passB.uniforms;
-        u.tA.value = tmp.textures[0];
-        u.tB.value = tmp.textures[1];
-        u.uRes.value.set(w, h);
-        u.uTexM.value.set(r.tile[0] / w, r.tile[1] / h);
-        const nb = r.pass || {};
-        u.uNB.value.set(nb.normal ?? 1, nb.ao ?? 0.6, nb.aoRadius ?? 0.02, nb.cavity ?? 0.25);
-        u.uMetalOut.value = r.metalMask ? 1 : 0;
-        this.scene.remove(mesh);
-        this.scene.add(pb);
-        R.setRenderTarget(final);
-        R.render(this.scene, this.camera);
-        this.scene.remove(pb);
-      }
-      this.scene.clear();
-      timings[r.name] = performance.now() - tb;
-      out.set(r.name, {
-        recipe: r, target: final,
-        albedo: r.raw ? null : final.textures[0],
-        surface: r.raw ? null : final.textures[1],
-        raw: r.raw ? final.textures[0] : null,
-      });
-    }
-    R.setRenderTarget(prevTarget);
+    this.quad.material = material;
+    R.setRenderTarget(target);
+    R.render(this.scene, this.camera);
+    R.setRenderTarget(prev);
     R.autoClear = prevAutoClear;
     R.xr.enabled = prevXr;
-    // pass-A programs and scratch targets are no longer needed
-    for (const m of meshes) m.material.dispose();
+  }
+
+  /**
+   * Allocate the final texture targets for every recipe and fill them with flat mean
+   * values (one trivial shader), so materials can be built immediately.
+   * Returns Map name → {recipe, target, albedo, surface, raw, baked:false}.
+   */
+  prepare(recipes) {
+    this.quad = new THREE.Mesh(this.geometry, this.passB);
+    this.quad.frustumCulled = false;
+    this.scene.add(this.quad);
+    const fill = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3, vertexShader: VERT, depthTest: false, depthWrite: false,
+      fragmentShader: `precision highp float; uniform vec4 uA; uniform vec4 uS;
+        layout(location = 0) out vec4 o0; layout(location = 1) out vec4 o1;
+        void main() { o0 = uA; o1 = uS; }`,
+      uniforms: { uA: { value: new THREE.Vector4() }, uS: { value: new THREE.Vector4(0.5, 0.5, 0, 1) } },
+    });
+    const fillRaw = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3, vertexShader: VERT, depthTest: false, depthWrite: false,
+      fragmentShader: 'precision highp float; layout(location = 0) out vec4 o0; void main() { o0 = vec4(0.5); }',
+    });
+    const out = new Map();
+    for (const r of recipes) {
+      const target = this.finalTarget(r);
+      if (r.raw) this.draw(fillRaw, target);
+      else {
+        fill.uniforms.uA.value.fromArray(r.flat || [0.5, 0.5, 0.5, 0.7]);
+        this.draw(fill, target);
+      }
+      out.set(r.name, {
+        recipe: r, target, baked: false,
+        albedo: r.raw ? null : target.textures[0],
+        surface: r.raw ? null : target.textures[1],
+        raw: r.raw ? target.textures[0] : null,
+      });
+    }
+    fill.dispose();
+    fillRaw.dispose();
+    return out;
+  }
+
+  /**
+   * Compile every recipe in parallel (KHR_parallel_shader_compile) and bake each one into
+   * its prepared target as soon as its program is ready. Runs in the background; the
+   * returned promise resolves with timing stats once every map is final.
+   */
+  async run(entries) {
+    const t0 = performance.now();
+    const R = this.renderer;
+    const timings = {};
+    const compile = (mat) => {
+      const sc = new THREE.Scene();
+      const m = new THREE.Mesh(this.geometry, mat);
+      m.frustumCulled = false;
+      sc.add(m);
+      return R.compileAsync(sc, this.camera).catch(() => null);
+    };
+    const passBReady = compile(this.passB);
+    const jobs = [...entries.values()].map((e) => {
+      const r = e.recipe;
+      const mat = this.passA(r);
+      return Promise.all([compile(mat), passBReady]).then(() => {
+        if (!this.runnable(mat) || (!r.raw && !this.runnable(this.passB))) {
+          console.warn(`[materials] bake recipe ${r.name} did not compile; keeping flat values`);
+        } else {
+          const tb = performance.now();
+          this.bakeOne(e, mat);
+          e.baked = true;
+          timings[r.name] = +(performance.now() - tb).toFixed(2);
+        }
+        mat.dispose();
+      });
+    });
+    await Promise.all(jobs);
     for (const t of this.temps.values()) t.dispose();
     this.temps.clear();
     this.passB.dispose();
     this.geometry.dispose();
     this.stats = {
-      compileMs: tCompile - t0, totalMs: performance.now() - t0, timings,
-      bytes: [...out.values()].reduce((a, b) => a + texBytes(b), 0),
+      totalMs: performance.now() - t0, timings,
+      bytes: [...entries.values()].reduce((a, b) => a + texBytes(b), 0),
     };
-    return out;
+    return this.stats;
+  }
+
+  bakeOne(e, mat) {
+    const r = e.recipe;
+    if (r.raw) { this.draw(mat, e.target); return; }
+    const [w, h] = sizeOf(r);
+    const tmp = this.temp(w, h);
+    this.draw(mat, tmp);
+    const u = this.passB.uniforms;
+    u.tA.value = tmp.textures[0];
+    u.tB.value = tmp.textures[1];
+    u.uRes.value.set(w, h);
+    u.uTexM.value.set(r.tile[0] / w, r.tile[1] / h);
+    const nb = r.pass || {};
+    u.uNB.value.set(nb.normal ?? 1, nb.ao ?? 0.6, nb.aoRadius ?? 0.02, nb.cavity ?? 0.25);
+    u.uMetalOut.value = r.metalMask ? 1 : 0;
+    this.draw(this.passB, e.target);
   }
 
   runnable(mat) {

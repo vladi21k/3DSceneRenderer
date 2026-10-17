@@ -63,7 +63,7 @@ float lnNoise( vec2 p ) {
 `;
 
 // Rail cross-section bands in rail-local x (+ towards the gauge side):
-// field seal | dull field corner | polished running band | gauge corner | groove | lip | gauge seal
+// field seal | rusty field bevel | polished head (incl. gauge corner) | groove | lip | gauge seal
 const RAIL_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
 {
@@ -71,28 +71,29 @@ float lnRough = 0.5, lnMetal = 0.0;
   float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
   float along = vLine.y;
   float wear = lnNoise( vec2( along * 0.35, 3.1 ) ) * 0.6 + lnNoise( vec2( along * 2.7, 7.7 ) ) * 0.4;
-  float cSeal = lnCov( -0.046, -0.028, x, w ) + lnCov( 0.083, 0.101, x, w );
-  float cCorner = lnCov( -0.028, -0.0165, x, w ) + lnCov( 0.015, 0.028, x, w );
-  float cBand = lnCov( -0.0165, 0.015, x, w );
+  float cSeal = lnCov( -0.040, -0.028, x, w ) + lnCov( 0.083, 0.095, x, w );
+  float cCorner = lnCov( -0.028, -0.024, x, w );
+  float cBand = lnCov( -0.024, 0.028, x, w );
   float cGroove = lnCov( 0.028, 0.070, x, w );
   float cLip = lnCov( 0.070, 0.083, x, w );
   float cov = cSeal + cCorner + cBand + cGroove + cLip;
-  float headPx = 0.056 * vLine.w;
+  float fade = 1.0;
   #ifdef LINE_NEAR_FADE
-    cov *= 1.0 - smoothstep( 2.6, 5.0, headPx );
+    fade = 1.0 - smoothstep( 2.6, 5.0, 0.056 * vLine.w );   // real rails take over close up
   #endif
-  if ( cov < 0.002 ) discard;
-  vec3 aSeal = vec3( 0.028, 0.026, 0.024 );
-  vec3 aCorner = vec3( 0.30, 0.25, 0.21 ) * ( 0.8 + 0.3 * wear );
-  vec3 aBand = vec3( 0.80, 0.79, 0.77 ) * ( 0.86 + 0.16 * wear );
-  vec3 aGroove = vec3( 0.022, 0.019, 0.017 );
-  vec3 aLip = vec3( 0.60, 0.57, 0.54 ) * ( 0.8 + 0.2 * wear );
+  if ( cov * fade < 0.002 ) discard;
+  // values follow the library rail materials (rail.head / rail.side / rail.groove / rubber)
+  vec3 aSeal = vec3( 0.024, 0.023, 0.022 );
+  vec3 aCorner = vec3( 0.21, 0.10, 0.045 ) * ( 0.8 + 0.4 * wear );
+  vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
+  vec3 aGroove = vec3( 0.045, 0.040, 0.034 );
+  vec3 aLip = vec3( 0.55 ) * ( 0.85 + 0.15 * wear );
   float inv = 1.0 / max( cov, 1e-4 );
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv;
   diffuseColor.rgb = aSeal * wSeal + aCorner * wCorner + aBand * wBand + aGroove * wGroove + aLip * wLip;
-  lnMetal = wCorner * 0.75 + wBand + wLip * 0.95;
-  lnRough = wSeal * 0.85 + wCorner * 0.55 + wBand * ( 0.2 + 0.08 * wear ) + wGroove * 0.95 + wLip * 0.32;
-  diffuseColor.a = clamp( cov, 0.0, 1.0 );
+  lnMetal = wCorner * 0.2 + wBand + wLip;
+  lnRough = wSeal * 0.95 + wCorner * 0.85 + wBand * ( 0.2 + 0.08 * wear ) + wGroove * 0.75 + wLip * 0.28;
+  diffuseColor.a = clamp( cov * fade, 0.0, 1.0 );
 }
 `;
 
@@ -170,8 +171,8 @@ export function createLineMaterials() {
   return {
     railNear: makeLineMaterial('rail', { nearFade: true, name: 'street.line.rail' }),
     railFar: makeLineMaterial('rail', { nearFade: false, name: 'street.line.railFar' }),
-    // worn white centre line between the tracks: long dashes
-    centre: makeLineMaterial('paint', { dash: [7.5, 0.72], color: 0xe9e7e0, roughness: 0.62, wear: 0.42, opacity: 0.92, name: 'street.line.centre' }),
+    // worn white line between the tracks (continuous, patchy with wear)
+    centre: makeLineMaterial('paint', { color: 0xe4e2db, roughness: 0.62, wear: 0.4, opacity: 0.9, name: 'street.line.centre' }),
     // zebra stripes and stop lines (segments)
     stripe: makeLineMaterial('paint', { color: 0xecebe6, roughness: 0.58, wear: 0.3, opacity: 0.95, name: 'street.line.stripe' }),
     // bitumen-filled expansion joints across the corridor

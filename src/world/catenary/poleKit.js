@@ -107,17 +107,25 @@ function lanternGlassProfile() {
   return [[0.0, -0.575], [0.045, -0.568], [0.095, -0.545], [0.137, -0.508], [0.166, -0.46], [0.178, -0.405], [0.177, -0.36], [0.17, -0.33], [0.13, -0.322]];
 }
 
-/** Build the shared geometries. Returns {lod0: {shaft, arm, glass}, lod1: {...}, info}. */
+// Detail levels: hi (near), mid (rest of the full-detail range), lo (far chunks). All
+// levels keep every scroll so the silhouette never pops; only tessellation drops.
+const LEVELS = {
+  hi: { base: 48, shaft: 20, lantern: 22, collar: 16, tube: 8, bar: 8, ang: 5.5, len: 0.055, caps: true, flutes: true, hardware: true },
+  mid: { base: 14, shaft: 10, lantern: 10, collar: 8, tube: 5, bar: 4, ang: 12, len: 0.12, caps: false, flutes: false, hardware: true },
+  lo: { base: 8, shaft: 7, lantern: 7, collar: 6, tube: 4, bar: 4, ang: 20, len: 0.2, caps: false, flutes: false, hardware: false },
+};
+
+/** Build the shared geometries. Returns {hi|mid|lo: {shaft, arm, glass}, info}. */
 export function buildPoleKit() {
   const design = armDesign(ARM_REACH);
   const hang = design.hang;
 
-  const make = (lo) => {
+  const make = (L) => {
     // ---- shaft
     const sb = new GeoBuilder();
-    lathe(sb, baseProfile(), lo ? 12 : 64, { flutes: lo ? null : { count: 16, depth: 0.075, y0: 0.32, y1: 1.06 } });
-    lathe(sb, shaftProfile(), lo ? 10 : 28);
-    if (!lo) {
+    lathe(sb, baseProfile(), L.base, { flutes: L.flutes ? { count: 16, depth: 0.075, y0: 0.32, y1: 1.06 } : null });
+    lathe(sb, shaftProfile(), L.shaft);
+    if (L.hardware) {
       // eye bolt for the span wire (towards the street), feeder lug on the sidewalk side
       rod(sb, [shaftRadius(SPAN_Y), SPAN_Y, 0], [SPAN_EYE_X - 0.01, SPAN_Y, 0], 0.011, 6);
       torusRing(sb, [SPAN_EYE_X, SPAN_Y, 0], 0.02, 0.0065, 'z');
@@ -128,35 +136,34 @@ export function buildPoleKit() {
     // ---- arm (+ collar sleeves, stem, lantern hood)
     const ab = new GeoBuilder();
     for (const e of design.elements) {
-      if (lo && !['main', 'tie', 'foot'].includes(e.name)) continue;
-      const pts = simplifyPath(e.pts, lo ? 14 : 5, lo ? 0.12 : 0.05);
+      const pts = simplifyPath(e.pts, L.ang, L.len);
       const sec = e.prof === 'tube' ? { kind: 'round', r: e.r } : { kind: 'bar', w: e.w, t: e.t };
-      sweepPlanar(ab, pts, sec, (x, y, z) => [x, y, z], lo ? (e.prof === 'tube' ? 5 : 4) : (e.prof === 'tube' ? 10 : 8), !lo);
+      sweepPlanar(ab, pts, sec, (x, y, z) => [x, y, z], e.prof === 'tube' ? L.tube : L.bar, L.caps);
     }
     for (const cy of design.collars) {
       const r = 0.097;
-      lathe(ab, [[r - 0.01, cy - 0.055], [r, cy - 0.045, true], [r + 0.004, cy - 0.03], [r + 0.004, cy + 0.03], [r, cy + 0.045, true], [r - 0.01, cy + 0.055]], lo ? 8 : 20);
+      lathe(ab, [[r - 0.01, cy - 0.055], [r, cy - 0.045, true], [r + 0.004, cy - 0.03], [r + 0.004, cy + 0.03], [r, cy + 0.045, true], [r - 0.01, cy + 0.055]], L.collar);
     }
     // stem from the crook down to the lantern, lantern hood
-    rod(ab, [hang[0], hang[1] + 0.02, 0], [hang[0], hang[1] - 0.07, 0], 0.009, lo ? 4 : 6, false);
+    rod(ab, [hang[0], hang[1] + 0.02, 0], [hang[0], hang[1] - 0.07, 0], 0.009, Math.min(6, L.tube), false);
     const lb = new GeoBuilder();
-    lathe(lb, lanternMetalProfile(lo), lo ? 10 : 28, { tube: 0.05 });
+    lathe(lb, lanternMetalProfile(!L.hardware), L.lantern, { tube: 0.05 });
     ab.append(lb, new THREE.Matrix4().makeTranslation(hang[0], hang[1], 0));
     const arm = ab.toGeometry(armColor);
 
     // ---- glass
     const gb = new GeoBuilder();
-    lathe(gb, lanternGlassProfile(), lo ? 10 : 28, { tube: 0.15 });
-    const glassG = new GeoBuilder().append(gb, new THREE.Matrix4().makeTranslation(hang[0], hang[1], 0));
-    const glass = glassG.toGeometry();
+    lathe(gb, lanternGlassProfile(), L.lantern, { tube: 0.15 });
+    const glass = new GeoBuilder().append(gb, new THREE.Matrix4().makeTranslation(hang[0], hang[1], 0)).toGeometry();
 
     for (const g of [shaft, arm, glass]) g.userData.shared = true;
     return { shaft, arm, glass };
   };
 
   return {
-    lod0: make(false),
-    lod1: make(true),
+    hi: make(LEVELS.hi),
+    mid: make(LEVELS.mid),
+    lo: make(LEVELS.lo),
     info: {
       hang,
       glassCentre: new THREE.Vector3(hang[0], hang[1] + LANTERN_GLASS_Y, 0), // arm-local

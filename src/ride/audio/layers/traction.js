@@ -68,7 +68,7 @@ export class TractionLayer {
     this.fanG.connect(this.fanLp).connect(aux);
     this.fan = null;
     this.conv = new OscillatorNode(ctx, { frequency: 4270 });
-    this.convG = new GainNode(ctx, { gain: 0.0016 });
+    this.convG = new GainNode(ctx, { gain: 0.00035 });
     this.hum = new OscillatorNode(ctx, { frequency: 100 });
     this.hum.setPeriodicWave(periodicWave(ctx, [1, 0.5, 0.3, 0.1]));
     this.humG = new GainNode(ctx, { gain: 0.006 });

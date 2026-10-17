@@ -26,7 +26,8 @@ export function shopLayout(o, rng) {
   const pos = narrow ? 0 : rng.weighted([[-1, 0.3], [1, 0.3], [0, 0.4]]);
   const dx = pos === 0 ? 0 : pos * (hwI - doorW / 2 - rng.range(0.0, 0.35));
   const setback = rng.chance(0.45) && !narrow ? rng.range(0.45, 0.9) : 0;
-  const head = arched ? (rng.chance(0.7) ? 'fan' : 'panel') : yT < o.h - FW - 0.2 ? rng.weighted([['glass', 0.55], ['panel', 0.45]]) : 'none';
+  // the head is glazed (sunburst bars under arches); a solid panel only carries a sign
+  const head = arched ? 'fan' : yT < o.h - FW - 0.2 ? 'glass' : 'none';
   return {
     hwI, yT, arched, doorW, dx, setback,
     doorH: Math.min(yT - 0.06, rng.range(2.2, 2.4)),
@@ -167,9 +168,10 @@ export function shopShutterTpl(o, L, q) {
   const t = new Tpl();
   const { hwI, yT } = L;
   const top = L.arched ? yT : o.h - FW;
-  const boxH = 0.3, z0 = ZF, z1 = ZF + Math.min(0.26, o.recess - 0.06);
+  const boxH = 0.22, z0 = ZF - 0.02, z1 = z0 + Math.min(0.16, o.recess - 0.08);
   const hw = halfWidthAt(o, top, FW) + 0.02;
   t.box(-hw, top - boxH, z0, hw, top, z1, 1 | 16 | 4 | 8, 0.85, 1);
+  if (q >= 0.5) t.box(-hw, top - boxH - 0.012, z0, hw, top - boxH, z1 - 0.03, 1 | 16, 0.6, 0.7); // slot lip
   // guide channels down the jambs
   for (const s of [-1, 1]) {
     const x = s * (hwI + FW - 0.035);

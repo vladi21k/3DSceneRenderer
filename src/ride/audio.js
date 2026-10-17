@@ -32,6 +32,7 @@ const audio = {
   ctx: null,
   engine: null,
   bank: null,
+  updateMs: 0,
 
   async init(app) {
     this.app = app;
@@ -50,16 +51,17 @@ const audio = {
     ev.on('start', () => this.start());
     ev.on('bell', (d) => this._event('bell', d));
     ev.on('doors', (d) => this._event('doors', d));
+    // M toggles mute (matched on the printed key, like the ride controls)
     window.addEventListener('keydown', (e) => {
-      if (e.code !== 'KeyM' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      if ((e.key || '').toLowerCase() !== 'm' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target;
-      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'range' && t.type !== 'checkbox'))) return;
       this.toggleMute();
     });
     document.addEventListener('visibilitychange', () => {
       if (!this.ctx) return;
       if (document.hidden) this.ctx.suspend().catch(() => {});
-      else this.ctx.resume().catch(() => {});
+      else if (!this.muted) this.ctx.resume().catch(() => {});
     });
     if (this.forced) ev.on('ready', () => this.start());
     // no UI module to emit 'start': fall back to the first user gesture
@@ -75,10 +77,12 @@ const audio = {
     if (this.capture) return;
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;
-    if (this.ctx) { this.ctx.resume().catch(() => {}); return; }
+    if (this.ctx) { if (!this.muted) this.ctx.resume().catch(() => {}); return; }
     let ctx;
     try {
-      ctx = new Ctx({ latencyHint: 'interactive' });
+      // headless verification (capture + audio=1) renders without an output device
+      const sink = this.forced && params.capture ? { sinkId: { type: 'none' } } : {};
+      ctx = new Ctx({ latencyHint: 'interactive', ...sink });
     } catch (e) {
       console.warn('[audio] AudioContext unavailable', e);
       return;
@@ -90,15 +94,19 @@ const audio = {
     this.engine = new AudioEngine(ctx, this.bank, { route: this.app.route, layout: this.app.layout, features: this.features });
     this.started = true;
     this._applyLevel(2.0);
+    if (this.muted) ctx.suspend().catch(() => {});
     this.bank.build().catch((e) => console.error('[audio] synthesis failed', e));
   },
 
   update(dt, app) {
-    if (!this.engine) return;
+    // nothing to schedule while the clock stands still (muted, hidden tab, not started)
+    if (!this.engine || this.ctx.state !== 'running') return;
     const rdt = app.realDt ?? dt;
+    const t0 = performance.now();
     const st = this._gather(app, rdt);
     try {
       this.engine.update(rdt, st, this.ctx.currentTime);
+      this.updateMs += (performance.now() - t0 - this.updateMs) * 0.05;
     } catch (e) {
       // keep the rest of the app running; report once
       if (!this._warned) { console.error('[audio] update failed', e); this._warned = true; }
@@ -132,7 +140,7 @@ const audio = {
   },
 
   _event(type, data) {
-    if (!this.engine) return;
+    if (!this.engine || this.ctx.state !== 'running') return;
     try { this.engine.event(type, data, this.ctx.currentTime + 0.01); } catch (e) { console.error('[audio] event failed', e); }
   },
 
@@ -152,7 +160,18 @@ const audio = {
   mute(on = true) {
     this.muted = !!on;
     savePrefs({ volume: this.volume, muted: this.muted });
-    this._applyLevel(0.03);
+    if (this.ctx) {
+      if (this.muted) {
+        this._applyLevel(0.03);
+        // fade, then stop the audio thread altogether
+        clearTimeout(this._suspendT);
+        this._suspendT = setTimeout(() => { if (this.muted) this.ctx.suspend().catch(() => {}); }, 250);
+      } else {
+        clearTimeout(this._suspendT);
+        this.ctx.resume().catch(() => {});
+        this._applyLevel(0.05);
+      }
+    }
     this.app?.events.emit('audio', { volume: this.volume, muted: this.muted });
   },
 
@@ -164,14 +183,12 @@ const audio = {
     if (!e) return null;
     if (!this._an) {
       this._an = {};
-      for (const [k, bus] of Object.entries(e.bus)) {
-        const an = new AnalyserNode(this.ctx, { fftSize: 4096 });
-        bus.connect(an);
-        this._an[k] = an;
-      }
-      const out = new AnalyserNode(this.ctx, { fftSize: 4096 });
-      (e.clip || e.master).connect(out);
-      this._an.out = out;
+      // analysers are pulled through a silent path so every browser renders them
+      const sink = new GainNode(this.ctx, { gain: 0 });
+      sink.connect(this.ctx.destination);
+      const tap = (src, k) => { const an = new AnalyserNode(this.ctx, { fftSize: 4096 }); src.connect(an).connect(sink); this._an[k] = an; };
+      for (const [k, bus] of Object.entries(e.bus)) tap(bus, k);
+      tap(e.master, 'out');
       return { pending: true };
     }
     const buf = new Float32Array(4096), res = {};
@@ -184,6 +201,7 @@ const audio = {
     res.state = this.ctx.state;
     res.bankReady = this.bank.ready;
     res.bankMs = Math.round(this.bank.ms);
+    res.updateMs = +this.updateMs.toFixed(3);
     return res;
   },
 

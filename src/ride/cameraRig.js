@@ -58,6 +58,19 @@ const alignment = (s) => 0.0055 * noise1(s / 9.5, 11) + 0.0022 * noise1(s / 3.3,
 const level = (s) => 0.0035 * noise1(s / 7.5, 21) + 0.0012 * noise1(s / 2.4, 22);
 const crossLevel = (s) => 0.0007 * noise1(s / 12, 31) + 0.0003 * noise1(s / 4.1, 32);
 
+/** Critically damped follow of an angle with target-rate feed-forward (no lag on a
+ *  steadily turning target, soft response to changes of turn rate). */
+function followAngle(g, target, dt) {
+  const w = 2 * Math.PI * RIG.gazeFreq;
+  const tv = wrapAngle(target - g.target) / dt;
+  g.target = target;
+  const n = Math.ceil(dt / (1 / 120)), h = dt / n;
+  for (let i = 0; i < n; i++) {
+    g.v += (w * w * wrapAngle(g.target - g.x) + 2 * w * (tv - g.v)) * h;
+    g.x += g.v * h;
+  }
+}
+
 /** Soft limit: linear up to 70 % of the limit, then eases asymptotically into it. */
 function soft(x, lim) {
   const k = 0.7 * lim, ax = Math.abs(x);
@@ -147,17 +160,8 @@ const cameraRig = {
       this.gazePitch = { x: chordP, v: 0, target: chordP };
     }
     if (dt > 0) {
-      const w = 2 * Math.PI * RIG.gazeFreq;
-      for (const [g, t] of [[this.gaze, chordH], [this.gazePitch, chordP]]) {
-        const tv = wrapAngle(t - g.target) / dt;       // target rate (feed-forward)
-        g.target = t;
-        const n = Math.ceil(dt / (1 / 120)), h = dt / n;
-        for (let i = 0; i < n; i++) {
-          const err = wrapAngle(g.target - g.x);
-          g.v += (w * w * err + 2 * w * (tv - g.v)) * h;
-          g.x += g.v * h;
-        }
-      }
+      followAngle(this.gaze, chordH, dt);
+      followAngle(this.gazePitch, chordP, dt);
     }
 
     // ---- car body dynamics

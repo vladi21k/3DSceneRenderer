@@ -13,6 +13,7 @@ const TAU = 0.45;              // relaxation time towards the preferred velocity
 const R2 = AGENT_R * 2;
 const PI = Math.PI;
 
+const len2 = (x, y) => Math.sqrt(x * x + y * y);
 const wrapAngle = (x) => { x = (x + PI) % (2 * PI); if (x < 0) x += 2 * PI; return x - PI; };
 
 export class Steering {
@@ -70,7 +71,7 @@ export class Steering {
         fs += this.fs; fd += this.fd;
       }
       a.vs += fs * dt; a.vd += fd * dt;
-      const sp = Math.hypot(a.vs, a.vd);
+      const sp = len2(a.vs, a.vd);
       const vmax = standing ? 0.6 : des.vmax;
       if (sp > vmax) { a.vs *= vmax / sp; a.vd *= vmax / sp; }
 
@@ -83,7 +84,7 @@ export class Steering {
 
       // goals that cannot be reached (blocked by a crowd or a wall): give up after a while
       if (a.state === ST.GOTO) {
-        const moved = Math.hypot(a.s - prevS, a.d - prevD);
+        const moved = len2(a.s - prevS, a.d - prevD);
         if (moved < 0.12 * dt) { a.stuckT += dt; if (a.stuckT > 4) { a.stuckT = 0; arrive(c, a); } } else a.stuckT = Math.max(0, a.stuckT - dt);
       }
     }
@@ -93,7 +94,7 @@ export class Steering {
   _social(a, standing) {
     let fs = 0, fd = 0;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
-    const sp = Math.hypot(a.vs, a.vd);
+    const sp = len2(a.vs, a.vd);
     const es = sp > 0.1 ? a.vs / sp : Math.cos(a.alpha), ed = sp > 0.1 ? a.vd / sp : Math.sin(a.alpha);
     const agents = this.c.population.agents;
     const L = a.leader || a;
@@ -128,7 +129,7 @@ export class Steering {
           const tc = (dx * rvs + dy * rvd) / vv;
           if (tc <= 0 || tc > 3) continue;
           const cx = dx - rvs * tc, cy = dy - rvd * tc;   // b relative to a at closest approach
-          const cd = Math.hypot(cx, cy);
+          const cd = len2(cx, cy);
           if (cd > 0.85) continue;
           const k = 1.7 * (1 - tc / 3) * (0.85 - cd) / 0.85;
           if (cd < 0.08) { fs += -ed * k; fd += es * k; } // dead ahead: step to the right
@@ -147,12 +148,12 @@ export class Steering {
     const map = this.c.map;
     let fs = 0, fd = 0;
     const n = map.gatherCircles(a.s, 3.5);
-    const sp = Math.hypot(a.vs, a.vd);
+    const sp = len2(a.vs, a.vd);
     const es = sp > 0.1 ? a.vs / sp : 0, ed = sp > 0.1 ? a.vd / sp : 0;
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
       const dx = map.qDS[q], dy = map.cD[i] - a.d, r = map.cR[i];
-      const dist = Math.hypot(dx, dy);
+      const dist = len2(dx, dy);
       const gap = dist - r - AGENT_R;
       if (gap < 0.6 && dist > 1e-4) {
         const f = Math.min(6, 2.6 * Math.exp(-gap / 0.16));
@@ -228,7 +229,7 @@ export class Steering {
   // ---------------------------------------------------------------- facing, gait, gaze
   animate(a, dt, humans) {
     const c = this.c;
-    const sp = Math.hypot(a.vs, a.vd);
+    const sp = len2(a.vs, a.vd);
     a.speed = sp;
     const still = a.state === ST.SEATED || a.state === ST.PLATFORM || a.state === ST.STAND || a.state === ST.WAIT;
     let target = a.alpha;

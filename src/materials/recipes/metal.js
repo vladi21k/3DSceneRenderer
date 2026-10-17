@@ -3,7 +3,7 @@
 // Polished running band of the rail head: bright steel with longitudinal wheel streaks
 // and scattered dark oxide pits. Tile 2 m along the rail (u), 0.25 m across (v).
 export const railhead = {
-  name: 'railhead', size: [512, 64], tile: [2.0, 0.25], ss: 2,
+  name: 'railhead', flat: [0.6, 0.6, 0.6, 0.22], size: [512, 64], tile: [2.0, 0.25], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -21,7 +21,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Rusty rail web / foot and old iron: layered rust with patches of bare dark steel.
 export const railside = {
-  name: 'railside', size: 256, tile: [1.0, 1.0], ss: 2, metalMask: true,
+  name: 'railside', flat: [0.2, 0.1, 0.05, 0.85], size: 256, tile: [1.0, 1.0], ss: 2, metalMask: true,
   pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.3 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -40,7 +40,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Flangeway groove: compacted grime, wet-looking dirt, sand grains and debris.
 export const railgroove = {
-  name: 'railgroove', size: 256, tile: [1.0, 1.0], ss: 2,
+  name: 'railgroove', flat: [0.06, 0.055, 0.05, 0.75], size: 256, tile: [1.0, 1.0], ss: 2,
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.006, cavity: 0.4 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -58,7 +58,7 @@ void surface(vec2 m, inout Surf s) {
 // Paint over metal or wood (iron, poles, frames, signs): orange peel, dust, sparse chips.
 // Albedo is near white: the material colour (or vertex colour) is the paint colour.
 export const paint = {
-  name: 'paint', size: 512, tile: [1.0, 1.0], ss: 2,
+  name: 'paint', flat: [0.95, 0.95, 0.95, 0.4], size: 512, tile: [1.0, 1.0], ss: 2,
   pass: { normal: 1.0, ao: 0.4, aoRadius: 0.004, cavity: 0.2 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -76,7 +76,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Hot-dip galvanized steel: spangle crystals with individual sheen and tilt, dull patches.
 export const galv = {
-  name: 'galv', size: 512, tile: [0.5, 0.5], ss: 2,
+  name: 'galv', flat: [0.56, 0.57, 0.58, 0.4], size: 512, tile: [0.5, 0.5], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -95,7 +95,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Brushed stainless steel: fine directional brushing along u.
 export const brushed = {
-  name: 'brushed', size: 256, tile: [0.4, 0.4], ss: 2,
+  name: 'brushed', flat: [0.55, 0.555, 0.56, 0.32], size: 256, tile: [0.4, 0.4], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -110,7 +110,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Moulded plastic (cafe chairs, rubber parts): fine stipple, scuffs. Near-white albedo.
 export const plastic = {
-  name: 'plastic', size: 256, tile: [0.25, 0.25], ss: 2,
+  name: 'plastic', flat: [0.93, 0.93, 0.93, 0.48], size: 256, tile: [0.25, 0.25], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
@@ -126,7 +126,7 @@ void surface(vec2 m, inout Surf s) {
 // Window glass: dust and smudges (rougher), slight waviness of old drawn glass.
 // Albedo near white: the material colour sets the dark interior tone.
 export const glass = {
-  name: 'glass', size: 256, tile: [1.2, 1.2], ss: 1,
+  name: 'glass', flat: [1, 1, 1, 0.06], size: 256, tile: [1.2, 1.2], ss: 1,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {

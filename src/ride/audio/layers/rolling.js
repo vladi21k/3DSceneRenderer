@@ -19,10 +19,11 @@ export class RollingLayer {
     this.e = e;
     const ctx = e.ctx;
     this.body = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 420, Q: 1.3, gain: 3.5 });
-    this.lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 900, Q: 0.5 });
+    this.floor = new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 140, gain: 5 });
+    this.lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 900, Q: 0.6 });
     this.hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 24, Q: 0.7 });
     this.gain = new GainNode(ctx, { gain: 0 });
-    this.body.connect(this.lp).connect(this.hp).connect(this.gain).connect(e.bus.rolling);
+    this.body.connect(this.floor).connect(this.lp).connect(this.hp).connect(this.gain).connect(e.bus.rolling);
     this.src = null;
 
     // impacts: near bogie bright-ish, the far bogies dull and quiet
@@ -43,7 +44,7 @@ export class RollingLayer {
     const g = 0.42 * Math.pow(vn, 1.5) * rough * xo * smoothstep(0.02, 0.7, v);
     glide(this.gain.gain, g, now, 0.08);
     if (this.src) glide(this.src.playbackRate, clamp(v / ROLL_VREF, 0.06, 2.2), now, 0.06);
-    glide(this.lp.frequency, 520 + 2000 * clamp(vn, 0, 1.2) ** 1.2, now, 0.1);
+    glide(this.lp.frequency, 450 + 1100 * clamp(vn, 0, 1.2) ** 1.2, now, 0.1);
     this._impacts(st, now);
   }
 
@@ -82,5 +83,10 @@ export class RollingLayer {
     // harder hits sound a little brighter
     const rate = (0.92 + 0.1 * clamp(v / VMAX, 0, 1)) * jitter;
     e.shot(buf, dest, when, gain, rate);
+    // a hard knock under the cab sets some fitting rattling
+    if (!ax.far && f.sev * vf > 0.45 && e.rng.chance(0.4)) {
+      const r = e.bank.variants('rattle');
+      if (r.length) e.shot(e.rng.pick(r), this.jNear, when + 0.004, 0.05 * f.sev * vf, 1 + e.rng.range(-0.05, 0.05));
+    }
   }
 }

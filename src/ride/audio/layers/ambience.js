@@ -6,7 +6,7 @@
 // Everything outside passes through a "cab" filter that opens up when the tram
 // stands (driver's window open) and fully when the doors open.
 import { RNG, noise1 } from '../../../core/rng.js';
-import { glide, clamp, smoothstep } from '../dsp.js';
+import { glide, clamp } from '../dsp.js';
 
 const POOL = 7;
 
@@ -60,7 +60,7 @@ export class AmbienceLayer {
     if (!this.wind.src) this.wind.src = e.loop('noiseP', this.wind.bp, { rate: 0.93 });
 
     // ---- how open the cab is to the street
-    const target = e.doorsOpen ? 1 : v < 0.3 ? 0.78 : 0.52;
+    const target = e.doorsOpen ? 1 : v < 0.3 ? 0.78 : 0.42;
     this.open += (target - this.open) * (1 - Math.exp(-dt / 0.8));
     glide(this.cabLp.frequency, 1500 * Math.pow(2, this.open * 3.3), now, 0.1);
     glide(this.cabG.gain, 0.35 + 0.65 * this.open, now, 0.1, 1e-3);
@@ -69,8 +69,8 @@ export class AmbienceLayer {
     if (st.t - this.densT > 0.5 || st.t < this.densT) { this.densT = st.t; this._survey(st); }
     const day = 1 - clamp(st.night || 0, 0, 1);
     const people = 0.3 + 0.7 * day;
-    glide(this.bedL.g.gain, 0.3 * this.dens[0] * people, now, 1.2, 1e-3);
-    glide(this.bedR.g.gain, 0.3 * this.dens[1] * people, now, 1.2, 1e-3);
+    glide(this.bedL.g.gain, 0.27 * this.dens[0] * people, now, 1.2, 1e-3);
+    glide(this.bedR.g.gain, 0.27 * this.dens[1] * people, now, 1.2, 1e-3);
     glide(this.traffic.g.gain, 0.1 * (0.6 + 0.4 * day), now, 1.5, 1e-3);
     const wind = clamp(st.wind ?? 0.35, 0, 1);
     const gust = 0.6 + 0.4 * noise1(st.t * 0.35, 9);
@@ -202,9 +202,10 @@ export class AmbienceLayer {
     const buf = r.pick(vs);
     const sl = this._slot(now, buf.duration);
     if (!sl) return;
+    // on the pavement or at a café; calls carry from further up the street
     const side = r.chance(0.5) ? 1 : -1;
-    const far = kind === 'call' ? r.range(12, 35) : r.range(5, 16);
-    const p = e.at(st.s + r.range(-10, far * 1.5) + st.speed, side * r.range(4.5, 10.5), r.range(1.45, 1.7));
+    const ahead = kind === 'call' ? r.range(10, 50) : r.range(-10, 24);
+    const p = e.at(st.s + ahead + st.speed, side * r.range(4.5, 10.5), r.range(1.45, 1.7));
     const g = kind === 'call' ? r.range(0.4, 0.6) : kind === 'laugh' ? r.range(0.25, 0.4) : r.range(0.2, 0.32);
     this._place(sl, p, st, now, g, 4);
     e.shot(buf, sl.g, now + 0.02, 1, 1 + r.range(-0.03, 0.03));

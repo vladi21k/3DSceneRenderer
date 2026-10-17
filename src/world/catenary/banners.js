@@ -11,6 +11,16 @@ export const BANNER_Y0 = 2.55, BANNER_Y1 = 4.15;
 export const BANNER_X0 = 0.13, BANNER_X1 = 0.73;   // distance from the pole axis (sidewalk side)
 const DESIGNS = 4;
 
+// generic event phrases (Hebrew title, English subtitle)
+const EVENTS = [
+  ['פסטיבל קיץ', 'SUMMER FESTIVAL'],
+  ['שבוע הספר', 'BOOK WEEK'],
+  ['תרבות ואמנות', 'CULTURE & ART'],
+  ['לילה לבן', 'WHITE NIGHT'],
+  ['מוזיקה ברחוב', 'MUSIC IN THE STREET'],
+  ['בית פתוח', 'OPEN HOUSE'],
+];
+
 export function buildBannerBracket() {
   const b = new GeoBuilder();
   for (const y of [BANNER_Y0 - 0.03, BANNER_Y1 + 0.03]) {
@@ -103,21 +113,22 @@ export function buildBannerAtlas(seed = 7) {
       g.restore();
       g.fillStyle = p.ac; g.beginPath(); g.arc(cx, 270, 30, 0, Math.PI * 2); g.fill();
     }
-    // lines of lettering (abstract blocks)
-    g.fillStyle = p.fg;
-    let y = 430;
-    for (let line = 0; line < 4; line++) {
-      const big = line === 0;
-      let x = x0 + 24;
-      const hh = big ? 26 : 12;
-      while (x < x0 + W - 40) {
-        const w = big ? rng.range(26, 46) : rng.range(14, 34);
-        if (x + w > x0 + W - 24) break;
-        g.fillRect(x, y, w, hh);
-        x += w + (big ? 10 : 7);
-      }
-      y += big ? 46 : 24;
-    }
+    // lettering in the street's bilingual sign convention: a generic event title in Hebrew,
+    // an English subtitle and a date line in numerals
+    const [he, en] = EVENTS[(k + Math.floor(rng.next() * EVENTS.length)) % EVENTS.length];
+    const fit = (text, weight, size, maxW) => {
+      const f = (px) => `${weight} ${px}px "Noto Sans Hebrew", "Liberation Sans", Arial, sans-serif`;
+      g.font = f(size);
+      const w = g.measureText(text).width;
+      if (w > maxW) g.font = f(Math.floor((size * maxW) / w));
+    };
+    g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    g.fillStyle = p.fg; fit(he, 700, 50, W - 36); g.fillText(he, cx, 470);
+    g.fillStyle = p.fg; fit(en, 600, 22, W - 44); g.fillText(en, cx, 504);
+    const d1 = rng.int(1, 14), d2 = d1 + rng.int(3, 14), mo = String(rng.int(4, 10)).padStart(2, '0');
+    const date = `${d1}\u2013${d2}.${mo}`;
+    g.fillStyle = p.ac; fit(date, 700, 34, W - 60); g.fillText(date, cx, 552);
+    g.fillStyle = p.fg; g.fillRect(cx - 40, 570, 80, 3);
     // weave and fading: fine noise, slightly sun-bleached top
     const img = g.getImageData(x0, 0, W, H);
     const d = img.data;

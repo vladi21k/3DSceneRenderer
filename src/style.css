@@ -39,7 +39,7 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
 .ride-ui .spd { display: flex; align-items: flex-end; gap: 10px; line-height: .8; }
 .ride-ui .spd-v {
   font-size: 64px; font-weight: 200; letter-spacing: -.03em; color: var(--ink);
-  min-width: 1.15em; font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums;
 }
 .ride-ui .spd-side { display: flex; flex-direction: column; gap: 6px; padding-bottom: 3px; }
 .ride-ui .spd-u, .ride-ui .spd-limit, .ride-ui .stop, .ride-ui .ctl-meta, .ride-ui .sl-head {
@@ -151,6 +151,19 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
   color: rgba(255, 255, 255, .8); text-shadow: 0 1px 2px rgba(0, 0, 0, .7);
 }
 
+@media (max-width: 1180px) {
+  .ride-ui .hint { bottom: auto; top: 22px; transform: translate(-50%, -6px); gap: 16px; }
+  .ride-ui .hint.show { transform: translate(-50%, 0); }
+}
+@media (max-height: 520px) {
+  .ride-ui .hud-left, .ride-ui .hud-right { bottom: 18px; }
+  .ride-ui .spd-v { font-size: 46px; }
+  .ride-ui .ctl { margin-top: 12px; }
+  .ride-ui .hud-right { gap: 10px; }
+  .ride-ui .start-title { font-size: 32px; margin-top: 8px; }
+  .ride-ui .start-rule { margin: 14px 0 12px; }
+  .ride-ui .start-legend { row-gap: 5px; }
+}
 @media (max-width: 720px) {
   .ride-ui .hud-left { left: 18px; bottom: 22px; }
   .ride-ui .hud-right { right: 18px; bottom: 22px; width: 150px; }

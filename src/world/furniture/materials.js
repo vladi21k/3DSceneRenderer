@@ -90,33 +90,34 @@ function weaveTextures(spec, renderer) {
 
 // ------------------------------------------------------------------ wicker (natural basket weave)
 function wickerTextures(renderer) {
+  // flat synthetic-rattan weavers (~7 mm) over vertical stakes, tile = 0.12 m
   const N = 256, rng = RNG.from('wicker');
   const col = canvas(N, N), ctx = col.getContext('2d'), img = ctx.createImageData(N, N);
   const hf = new Float32Array(N * N);
-  const S = 6, stake = 32; // weaver strand 6 px (≈ 2.7 mm at 0.11 m per tile), stakes every 32 px
-  const rowJ = Array.from({ length: 64 }, () => 0.82 + rng.next() * 0.3);
-  const base = srgb('#b8935e');
+  const S = 16, stake = 32;
+  const rowJ = Array.from({ length: 64 }, () => 0.8 + rng.next() * 0.35);
+  const base = srgb('#a27a4c');
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const j = (y / S) | 0, fy = (y % S + 0.5) / S;
     const si = (x / stake) | 0, fx = (x % stake + 0.5) / stake;
     const over = (si + j) % 2 === 0;
-    const bulge = over ? Math.sin(Math.PI * fx) : 0.35 + 0.2 * Math.cos(Math.PI * 2 * fx);
-    const prof = Math.sin(Math.PI * fy);
-    const gap = sm(0, 0.15, fy) * sm(1, 0.85, fy);
-    const stakeVis = !over && Math.abs(fx - 0.5) < 0.12 ? 1 : 0; // stake peeks out where the weaver dives
-    const streak = 0.92 + 0.08 * Math.sin(x * 0.9 + j * 7.1);
-    let shade = (0.45 + 0.55 * prof * (0.55 + 0.45 * bulge)) * (0.3 + 0.7 * gap) * rowJ[j % 64] * streak;
-    if (stakeVis) shade *= 0.7;
+    const bulge = over ? Math.sin(Math.PI * fx) : 0.2 + 0.25 * (1 - Math.cos(Math.PI * 2 * fx)) * 0.5;
+    const prof = Math.pow(Math.sin(Math.PI * fy), 0.6);
+    const gap = sm(0, 0.16, fy) * sm(1, 0.84, fy);
+    const stakeVis = !over && Math.abs(fx - 0.5) < 0.16 ? 1 : 0; // stake shows where the weaver dives
+    const streak = 0.9 + 0.1 * Math.sin(x * 0.7 + j * 7.1) * Math.sin(x * 0.13 + j);
+    let shade = (0.35 + 0.65 * prof * (0.5 + 0.5 * bulge)) * (0.12 + 0.88 * gap) * rowJ[j % 64] * streak;
+    if (stakeVis) shade *= 0.55;
     const k = (y * N + x) * 4;
     img.data[k] = Math.pow(Math.min(1, base.r * shade), 1 / 2.2) * 255;
     img.data[k + 1] = Math.pow(Math.min(1, base.g * shade), 1 / 2.2) * 255;
     img.data[k + 2] = Math.pow(Math.min(1, base.b * shade), 1 / 2.2) * 255;
     img.data[k + 3] = 255;
-    hf[y * N + x] = prof * gap * (0.5 + 0.5 * bulge);
+    hf[y * N + x] = prof * gap * (0.4 + 0.6 * bulge);
   }
   ctx.putImageData(img, 0, 0);
-  const rep = [1 / 0.11, 1 / 0.11];
-  return { map: tex(col, { repeat: rep }, renderer), normalMap: tex(heightToNormal(hf, N, N, 2.5), { srgb: false, repeat: rep }, renderer) };
+  const rep = [1 / 0.12, 1 / 0.12];
+  return { map: tex(col, { repeat: rep }, renderer), normalMap: tex(heightToNormal(hf, N, N, 2.0), { srgb: false, repeat: rep }, renderer) };
 }
 
 // ------------------------------------------------------------------ rattan cane (bistro chair frames)
@@ -124,7 +125,7 @@ function rattanTexture(renderer) {
   const W = 64, H = 512, rng = RNG.from('rattan'); // u: 0.08 m around, v: 0.8 m along
   const c = canvas(W, H), ctx = c.getContext('2d');
   const g = ctx.createLinearGradient(0, 0, W, 0);
-  g.addColorStop(0, '#9c6c3a'); g.addColorStop(0.5, '#b88a52'); g.addColorStop(1, '#9c6c3a');
+  g.addColorStop(0, '#866243'); g.addColorStop(0.5, '#a88660'); g.addColorStop(1, '#866243');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   // fine longitudinal fibres
   for (let i = 0; i < 160; i++) {

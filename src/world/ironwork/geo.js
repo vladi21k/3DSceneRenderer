@@ -1,55 +1,70 @@
 import * as THREE from 'three';
 
+const len2 = (a, b) => Math.sqrt(a * a + b * b);
+
 // Low-level geometry writers for the ironwork module. Everything writes straight into
 // flat arrays (no intermediate BufferGeometry clones) so chunk builds stay cheap.
 // UVs are in metres, like every library material expects.
 
-/** Accumulates an indexed triangle mesh: position, normal, uv, color. An optional
- *  matrix transforms positions (and normals) as they are written. */
+/** Accumulates an indexed triangle mesh: position, normal, uv, color, in growable typed
+ *  arrays. An optional matrix transforms positions (and normals) as they are written. */
 export class GeoWriter {
-  constructor() {
-    this.pos = []; this.nor = []; this.uv = []; this.col = []; this.idx = [];
+  constructor(cap = 2048) {
+    this.n = 0; this.ni = 0;
+    this.P = new Float32Array(cap * 3); this.N = new Float32Array(cap * 3);
+    this.T = new Float32Array(cap * 2); this.C = new Float32Array(cap * 3);
+    this.I = new Uint32Array(cap * 3);
     this.m = null; this.nm = null;
     this.r = 1; this.g = 1; this.b = 1;
   }
-  get count() { return this.pos.length / 3; }
+  get count() { return this.n; }
   setMatrix(m) {
     this.m = m ? m.elements.slice() : null;
     this.nm = m ? new THREE.Matrix3().getNormalMatrix(m).elements : null;
     return this;
   }
   color(r, g, b) { this.r = r; this.g = g; this.b = b; return this; }
+  _grow() {
+    const cap = this.P.length / 3 * 2;
+    const g = (a, k) => { const b = new a.constructor(cap * k); b.set(a); return b; };
+    this.P = g(this.P, 3); this.N = g(this.N, 3); this.T = g(this.T, 2); this.C = g(this.C, 3);
+  }
   /** Adds a vertex, returns its index. Optional per-vertex shade multiplies the current colour. */
   v(x, y, z, nx, ny, nz, u, w, shade = 1) {
-    const m = this.m;
+    if (this.n * 3 >= this.P.length) this._grow();
+    const i3 = this.n * 3, P = this.P, N = this.N, m = this.m;
     if (m) {
-      const X = m[0] * x + m[4] * y + m[8] * z + m[12];
-      const Y = m[1] * x + m[5] * y + m[9] * z + m[13];
-      const Z = m[2] * x + m[6] * y + m[10] * z + m[14];
+      P[i3] = m[0] * x + m[4] * y + m[8] * z + m[12];
+      P[i3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+      P[i3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
       const n = this.nm;
-      let NX = n[0] * nx + n[3] * ny + n[6] * nz;
-      let NY = n[1] * nx + n[4] * ny + n[7] * nz;
-      let NZ = n[2] * nx + n[5] * ny + n[8] * nz;
-      const l = Math.hypot(NX, NY, NZ) || 1;
-      this.pos.push(X, Y, Z); this.nor.push(NX / l, NY / l, NZ / l);
+      const NX = n[0] * nx + n[3] * ny + n[6] * nz;
+      const NY = n[1] * nx + n[4] * ny + n[7] * nz;
+      const NZ = n[2] * nx + n[5] * ny + n[8] * nz;
+      const l = 1 / (Math.sqrt(NX * NX + NY * NY + NZ * NZ) || 1);
+      N[i3] = NX * l; N[i3 + 1] = NY * l; N[i3 + 2] = NZ * l;
     } else {
-      this.pos.push(x, y, z); this.nor.push(nx, ny, nz);
+      P[i3] = x; P[i3 + 1] = y; P[i3 + 2] = z;
+      N[i3] = nx; N[i3 + 1] = ny; N[i3 + 2] = nz;
     }
-    this.uv.push(u, w);
-    this.col.push(this.r * shade, this.g * shade, this.b * shade);
-    return this.pos.length / 3 - 1;
+    this.T[this.n * 2] = u; this.T[this.n * 2 + 1] = w;
+    this.C[i3] = this.r * shade; this.C[i3 + 1] = this.g * shade; this.C[i3 + 2] = this.b * shade;
+    return this.n++;
   }
-  tri(a, b, c) { this.idx.push(a, b, c); }
+  tri(a, b, c) {
+    if (this.ni + 3 > this.I.length) { const b2 = new Uint32Array(this.I.length * 2); b2.set(this.I); this.I = b2; }
+    const I = this.I; I[this.ni++] = a; I[this.ni++] = b; I[this.ni++] = c;
+  }
   /** Quad a-b-c-d counter-clockwise (front-facing). */
-  quad(a, b, c, d) { this.idx.push(a, b, c, a, c, d); }
+  quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
   toGeometry({ colors = true } = {}) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    if (colors) g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    const n = this.pos.length / 3;
-    g.setIndex(n > 65535 ? new THREE.Uint32BufferAttribute(this.idx, 1) : new THREE.Uint16BufferAttribute(this.idx, 1));
+    const g = new THREE.BufferGeometry(), n = this.n;
+    g.setAttribute('position', new THREE.BufferAttribute(this.P.slice(0, n * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.N.slice(0, n * 3), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(this.T.slice(0, n * 2), 2));
+    if (colors) g.setAttribute('color', new THREE.BufferAttribute(this.C.slice(0, n * 3), 3));
+    const idx = n > 65535 ? this.I.slice(0, this.ni) : new Uint16Array(this.I.subarray(0, this.ni));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
     g.computeBoundingSphere();
     return g;
   }
@@ -64,7 +79,7 @@ export function simplify(pts, maxTurn = 0.26, maxLen = 0.08) {
   let acc = 0;
   for (let i = 1; i < pts.length - 1; i++) {
     const p = pts[i], q = pts[i + 1];
-    acc += Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]);
+    acc += len2(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]);
     const dir = Math.atan2(q[1] - p[1], q[0] - p[0]);
     let turn = Math.abs(dir - lastDir); if (turn > Math.PI) turn = 2 * Math.PI - turn;
     if (turn > maxTurn || acc > maxLen) { out.push(p); lastDir = dir; acc = 0; }
@@ -86,7 +101,7 @@ export function sweepBar(W, pts, hw, hd, { closed = false, caps = true, z0 = 0, 
   const segN = [];
   for (let i = 0; i < segs; i++) {
     const a = pts[i], b = pts[(i + 1) % n];
-    const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+    const dx = b[0] - a[0], dy = b[1] - a[1], l = len2(dx, dy) || 1;
     segN.push([-dy / l, dx / l]);
   }
   for (let i = 0; i < n; i++) {
@@ -94,13 +109,13 @@ export function sweepBar(W, pts, hw, hd, { closed = false, caps = true, z0 = 0, 
     if (closed) { A = segN[(i - 1 + segs) % segs]; B = segN[i % segs]; }
     else { A = segN[Math.max(0, i - 1)]; B = segN[Math.min(segs - 1, i)]; }
     let mx = A[0] + B[0], my = A[1] + B[1];
-    const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
+    const ml = len2(mx, my) || 1; mx /= ml; my /= ml;
     const d = Math.max(0.35, mx * A[0] + my * A[1]);
     nx[i] = mx; ny[i] = my; sc[i] = 1 / d;
   }
   // arc length for uv
   const len = new Float32Array(n);
-  for (let i = 1; i < n; i++) len[i] = len[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  for (let i = 1; i < n; i++) len[i] = len[i - 1] + len2(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
   const ring = (i) => {
     const p = pts[i], ox = nx[i] * hw * sc[i], oy = ny[i] * hw * sc[i], L = len[i];
     // 4 faces x 2 verts: front (+z), side +n, back (-z), side -n
@@ -132,7 +147,7 @@ export function sweepBar(W, pts, hw, hd, { closed = false, caps = true, z0 = 0, 
 function capEnd(W, pts, i, nx, ny, sc, hw, hd, z0, dirSign) {
   const p = pts[i], q = pts[i + (dirSign > 0 ? -1 : 1)];
   let tx = p[0] - q[0], ty = p[1] - q[1];
-  const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+  const l = len2(tx, ty) || 1; tx /= l; ty /= l;
   const ox = nx[i] * hw * sc[i], oy = ny[i] * hw * sc[i];
   const a = W.v(p[0] + ox, p[1] + oy, z0 + hd, tx, ty, 0, 0, 0);
   const b = W.v(p[0] - ox, p[1] - oy, z0 + hd, tx, ty, 0, 1, 0);
@@ -173,11 +188,11 @@ export function lathe(W, profile, segments = 16, { cx = 0, cy = 0, cz = 0, phase
   for (let j = 0; j < m; j++) {
     const a = profile[Math.max(0, j - 1)], b = profile[Math.min(m - 1, j + 1)];
     let dr = b[0] - a[0], dy = b[1] - a[1];
-    const l = Math.hypot(dr, dy) || 1; dr /= l; dy /= l;
+    const l = len2(dr, dy) || 1; dr /= l; dy /= l;
     pn.push([dy, -dr]); // outward for a profile going up
   }
   const vlen = [0];
-  for (let j = 1; j < m; j++) vlen.push(vlen[j - 1] + Math.hypot(profile[j][0] - profile[j - 1][0], profile[j][1] - profile[j - 1][1]));
+  for (let j = 1; j < m; j++) vlen.push(vlen[j - 1] + len2(profile[j][0] - profile[j - 1][0], profile[j][1] - profile[j - 1][1]));
   const base = W.count;
   for (let i = 0; i <= segments; i++) {
     const t = phase + (i / segments) * Math.PI * 2, c = Math.cos(t), s = Math.sin(t);
@@ -218,25 +233,25 @@ export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9 }
   const segN = [];
   for (let i = 0; i < n - 1; i++) {
     const a = path[i], b = path[i + 1];
-    const du = b[0] - a[0], dw = b[1] - a[1], l = Math.hypot(du, dw) || 1;
+    const du = b[0] - a[0], dw = b[1] - a[1], l = len2(du, dw) || 1;
     segN.push([-dw / l, du / l]);
   }
   const mit = [];
   for (let i = 0; i < n; i++) {
     const A = segN[Math.max(0, i - 1)], B = segN[Math.min(n - 2, i)];
     let mu = A[0] + B[0], mw = A[1] + B[1];
-    const l = Math.hypot(mu, mw) || 1; mu /= l; mw /= l;
+    const l = len2(mu, mw) || 1; mu /= l; mw /= l;
     mit.push([mu, mw, 1 / Math.max(0.3, mu * A[0] + mw * A[1])]);
   }
   // corners are hard: duplicate rings at interior path points (flat across the mitre)
   const plen = [0];
-  for (let i = 1; i < n; i++) plen.push(plen[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
+  for (let i = 1; i < n; i++) plen.push(plen[i - 1] + len2(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
   // profile edge normals (per edge) in (o, v)
   const en = [];
   const vacc = [0];
   for (let j = 0; j < m - 1; j++) {
     const dO = profile[j + 1][0] - profile[j][0], dV = profile[j + 1][1] - profile[j][1];
-    const l = Math.hypot(dO, dV) || 1;
+    const l = len2(dO, dV) || 1;
     en.push([-dV / l, dO / l]);
     vacc.push(vacc[j] + l);
   }
@@ -254,7 +269,7 @@ export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9 }
           if (j + e > 0 && j + e < m - 1 && j + e >= smoothFrom) {
             const a = en[j + e - 1], b = en[Math.min(m - 2, j + e)];
             no = (a[0] + b[0]) / 2; nv = (a[1] + b[1]) / 2;
-            const l = Math.hypot(no, nv) || 1; no /= l; nv /= l;
+            const l = len2(no, nv) || 1; no /= l; nv /= l;
           }
           const x = P[0] + M[0] * o * M[2], z = P[1] + M[1] * o * M[2];
           const shade = shadeFn ? shadeFn(o, v) : 1;
@@ -275,13 +290,13 @@ export function insetPath(path, o) {
   const segN = [];
   for (let i = 0; i < n - 1; i++) {
     const a = path[i], b = path[i + 1];
-    const du = b[0] - a[0], dw = b[1] - a[1], l = Math.hypot(du, dw) || 1;
+    const du = b[0] - a[0], dw = b[1] - a[1], l = len2(du, dw) || 1;
     segN.push([-dw / l, du / l]);
   }
   return path.map((P, i) => {
     const A = segN[Math.max(0, i - 1)], B = segN[Math.min(n - 2, i)];
     let mu = A[0] + B[0], mw = A[1] + B[1];
-    const l = Math.hypot(mu, mw) || 1; mu /= l; mw /= l;
+    const l = len2(mu, mw) || 1; mu /= l; mw /= l;
     const s = 1 / Math.max(0.3, mu * A[0] + mw * A[1]);
     return [P[0] + mu * o * s, P[1] + mw * o * s];
   });

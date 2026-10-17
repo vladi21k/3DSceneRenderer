@@ -20,13 +20,16 @@ export function noise2(x, y, seed = 0) {
 }
 export function hash1(x, seed = 0) { return ihash(x | 0, 0x3c6ef372, seed); }
 
-/** Per-building stone tint relative to the library albedo (the texture carries the base colour). */
+/**
+ * Per-building stone tint as a multiplier around 1 on the library albedo (the baked
+ * texture carries the limestone colour). The plan's absolute tints are taken relative
+ * to the cream reference, so cream = 1, honey/golden warmer, pale/grey cooler.
+ */
+const CREAM = [0.86, 0.80, 0.68];
 export function stoneTint(plan, rng) {
   const t = plan.style.tint;
-  const mx = Math.max(t[0], t[1], t[2]);
-  const k = 0.55; // how much of the plan hue to apply on top of the texture
-  const bright = rng.range(0.9, 1.0);
-  return [t[0] / mx, t[1] / mx, t[2] / mx].map((c) => (1 - k + k * c) * bright);
+  const bright = rng.range(0.93, 1.04);
+  return [0, 1, 2].map((i) => Math.pow(t[i] / CREAM[i], 0.85) * bright);
 }
 
 /**
@@ -57,14 +60,20 @@ export class FaceShade {
       ao[i] = a;
     }
     this.ao = ao; this.vMin = vMin; this.step = step; this.n = n;
-    // balconies (soffit occlusion) binned per metre of v
-    this.balc = [];
-    for (const b of face.balconies || []) this.balc.push({ u0: b.u0 - 0.15, u1: b.u1 + 0.15, y: b.y - 0.02, d: b.depth || 0.9 });
-    // sills (streaks below)
-    this.sills = [];
+    // local occluders binned per metre of v: balconies (soffit occlusion over 2.5 m below)
+    // and window sills (dirt streaks over 3 m below)
+    this.bins = [];
+    const bin = (y0, y1, item) => {
+      for (let i = Math.max(0, Math.floor(y0 - vMin)); i <= Math.floor(y1 - vMin); i++) (this.bins[i] || (this.bins[i] = [])).push(item);
+    };
+    for (const b of face.balconies || []) {
+      const it = { bal: true, u0: b.u0 - 0.55, u1: b.u1 + 0.55, y: b.y - 0.02, d: b.depth || 0.9 };
+      bin(it.y - 2.5, it.y, it);
+    }
     for (const o of face.openings || []) {
       if (o.kind !== 'window') continue;
-      this.sills.push({ u0: o.uc - o.w / 2 - 0.05, u1: o.uc + o.w / 2 + 0.05, y: o.y - 0.12, s: 0.6 + 0.8 * hash1(o.uc * 13 + o.y * 7, seed) });
+      const it = { bal: false, u0: o.uc - o.w / 2 - 0.05, u1: o.uc + o.w / 2 + 0.05, y: o.y - 0.12, s: 0.6 + 0.8 * hash1(o.uc * 13 + o.y * 7, seed) };
+      bin(it.y - 3, it.y, it);
     }
     this.dirt = opts.dirt ?? 1;
   }
@@ -75,27 +84,28 @@ export class FaceShade {
     let i = ((v - this.vMin) / this.step) | 0;
     if (i < 0) i = 0; else if (i >= this.n) i = this.n - 1;
     let a = this.ao[i];
-    // balcony soffits
-    for (let k = 0; k < this.balc.length; k++) {
-      const b = this.balc[k];
-      const d = b.y - v;
-      if (d < 0 || d > 2.5 || u < b.u0 - 0.4 || u > b.u1 + 0.4) continue;
-      const e = Math.min(1, (u - (b.u0 - 0.4)) / 0.4, ((b.u1 + 0.4) - u) / 0.4);
-      a *= 1 - 0.30 * e * Math.exp(-d / (0.55 * b.d));
+    let streak = 0;
+    const list = this.bins[Math.floor(v - this.vMin)];
+    if (list) {
+      for (let k = 0; k < list.length; k++) {
+        const it = list[k];
+        if (u < it.u0 || u > it.u1) continue;
+        const d = it.y - v;
+        if (d < 0) continue;
+        if (it.bal) {
+          // balcony soffit shadow, fading out over 0.4 m past the slab ends
+          const e = Math.min(1, (u - it.u0) / 0.4, (it.u1 - u) / 0.4);
+          if (d < 2.5) a *= 1 - 0.30 * e * Math.exp(-d / (0.55 * it.d));
+        } else if (d < 3) {
+          // dirt washed down from the sill
+          const e = Math.min(1, (u - it.u0) / 0.25, (it.u1 - u) / 0.25);
+          streak += 0.09 * it.s * e * Math.exp(-d / 1.3);
+        }
+      }
     }
     // large soft patches (stone batches, cleaning, sun bleaching)
-    const p = noise2(u * 0.35, v * 0.28, this.seed) - 0.5;
-    const p2 = noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5;
-    let r = t[0] * (1 + 0.10 * p + 0.04 * p2), g = t[1] * (1 + 0.10 * p + 0.04 * p2), b = t[2] * (1 + 0.11 * p + 0.04 * p2);
-    // streaks below sills
-    let streak = 0;
-    for (let k = 0; k < this.sills.length; k++) {
-      const s = this.sills[k];
-      const d = s.y - v;
-      if (d < 0 || d > 3 || u < s.u0 || u > s.u1) continue;
-      const e = Math.min(1, (u - s.u0) / 0.25, (s.u1 - u) / 0.25);
-      streak += 0.09 * s.s * e * Math.exp(-d / 1.3);
-    }
+    const p = noise2(u * 0.35, v * 0.28, this.seed) - 0.5 + 0.35 * (noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5);
+    let r = t[0] * (1 + 0.10 * p), g = t[1] * (1 + 0.10 * p), b = t[2] * (1 + 0.11 * p);
     // dirt dripping below the cornice
     const dc = this.corniceY - v;
     if (dc > 0 && dc < 6) streak += 0.07 * Math.exp(-dc / 2.2) * (0.4 + noise2(u * 1.7, 0.5, this.seed + 3));

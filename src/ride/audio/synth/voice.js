@@ -4,7 +4,7 @@
 // intonation and declination, aspiration noise, a cascade of three formant
 // resonators gliding between vowel targets at syllable rate, plus fricative and
 // stop-burst noise. Distance is applied as level, air absorption and stereo position.
-import { arng, Biquad, Resonator, OnePole, noiseGen, normalize, normalizeRms, makeLoop, yieldTask, clamp } from '../dsp.js';
+import { arng, Biquad, Resonator, OnePole, SlowNoise, noiseGen, normalize, normalizeRms, makeLoop, compress, limit, yieldTask, clamp } from '../dsp.js';
 
 // adult male formant targets (Hz)
 const VOWELS = [
@@ -79,9 +79,9 @@ export function renderUtterance(rng, sr, sp, seconds, style = 'talk') {
   const nz = noiseGen(rng);
   const R = [new Resonator(sr), new Resonator(sr), new Resonator(sr)];
   const BW = [80, 110, 170];
-  const fr = new Resonator(sr), frHp = new Biquad(sr, 'highpass', 1200, 0.7);
+  const fr = new Resonator(sr), frHp = new Biquad(sr, 'highpass', 1700, 0.7), frHp2 = new Biquad(sr, 'highpass', 1700, 0.7);
   const tilt = new OnePole(sr, 900), dcb = new Biquad(sr, 'highpass', 70, 0.7);
-  const env = new OnePole(sr, 60), nenv = new OnePole(sr, 120), fsm = new OnePole(sr, 40);
+  const env = new OnePole(sr, 28), nenv = new OnePole(sr, 45), fsm = new OnePole(sr, 7);
   const F = [500 * sp.scale, 1500 * sp.scale, 2500 * sp.scale];
   const fTarget = F.slice();
   let ph = 0, f0 = sp.f0, jitter = 1;
@@ -111,9 +111,10 @@ export function renderUtterance(rng, sr, sp, seconds, style = 'talk') {
       const ne = nenv.run(nAmp);
       const asp = nz() * sp.breath * e;
       const y = R[2].run(R[1].run(R[0].run(glot * e + asp)));
-      let x = 0;
-      if (ne > 1e-4) x += frHp.run(fr.run(nz() * ne)) * 0.12;
-      if (sg.kind === 's' && j >= burstAt) x += frHp.run(fr.run(nz() * sg.amp * Math.exp(-(j - burstAt) / (0.003 * sr)))) * 0.25;
+      // frication and stop bursts: band-limited noise, well below the vowels
+      let nx = ne > 1e-4 ? nz() * ne * 0.045 : 0;
+      if (sg.kind === 's' && j >= burstAt) nx += nz() * sg.amp * Math.exp(-(j - burstAt) / (0.004 * sr)) * 0.06;
+      const x = frHp2.run(frHp.run(fr.run(nx)));
       out[i] = y + x;
     }
   }
@@ -130,9 +131,9 @@ export async function babbleBed(sr, seconds, seed, voices = 10) {
   const L = new Float32Array(n + fade), Rr = new Float32Array(n + fade);
   for (let v = 0; v < voices; v++) {
     const sp = makeSpeaker(rng);
-    const dist = 4 + Math.pow(rng.next(), 0.8) * 26;
+    const dist = 6 + Math.pow(rng.next(), 0.7) * 28;
     const pan = rng.range(-1, 1);
-    const g = 3 / dist;
+    const g = 6 / dist;
     // air absorption and bodies in the way: darker with distance
     const lpL = new Biquad(sr, 'lowpass', clamp(9000 * Math.pow(4 / dist, 0.55), 1800, 9000), 0.7);
     const lpR = new Biquad(sr, 'lowpass', clamp(9000 * Math.pow(4 / dist, 0.55), 1800, 9000), 0.7);
@@ -151,9 +152,23 @@ export async function babbleBed(sr, seconds, seed, voices = 10) {
     }
     await yieldTask();
   }
+  // the far crowd: many more voices than we model, heard as a speech-shaped hubbub
+  // with a gentle syllabic flutter
+  normalizeRms([L, Rr], 0.1);
+  const nz = noiseGen(rng);
+  const hub = [[new Biquad(sr, 'bandpass', 520, 0.6), new Biquad(sr, 'highshelf', 1400, 0.7, -6)], [new Biquad(sr, 'bandpass', 520, 0.6), new Biquad(sr, 'highshelf', 1400, 0.7, -6)]];
+  const syl = new SlowNoise(sr, 4.5, nz), drift = new SlowNoise(sr, 0.15, nz);
+  for (let i = 0; i < L.length; i++) {
+    const m = 0.07 * Math.max(0.2, 1 + 0.35 * syl.run() + 0.25 * drift.run());
+    L[i] += hub[0][1].run(hub[0][0].run(nz())) * m;
+    Rr[i] += hub[1][1].run(hub[1][0].run(nz())) * m;
+  }
+  // individual nearby voices must not poke out of the bed
+  compress([L, Rr], sr, { threshold: 0.2, ratio: 4, attack: 0.004, release: 0.15 });
   const chans = [makeLoop(L, n, fade), makeLoop(Rr, n, fade)];
   normalizeRms(chans, 0.12);
-  normalize(chans, Math.min(0.95, Math.max(...chans.map((c) => c.reduce((m, x) => Math.max(m, Math.abs(x)), 0)))));
+  limit(chans, sr, 0.12 * 3.2);
+  normalizeRms(chans, 0.12);
   return chans;
 }
 
@@ -175,6 +190,8 @@ export function voiceShot(sr, kind, k) {
   }
   const lp = new Biquad(sr, 'lowpass', 7000, 0.7);
   lp.process(out);
+  normalizeRms(out, 0.12);
+  limit(out, sr, 0.12 * 4.5); // natural speech crest factor (~13 dB)
   normalize(out, 0.8);
   return out;
 }

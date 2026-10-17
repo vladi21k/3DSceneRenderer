@@ -49,6 +49,7 @@ export class Population {
     a.thinkT = r.range(0.2, 1.5); a.simple = false; a.gTol = 0.3;
     a.v0 = Math.min(WALK_MAX, Math.max(WALK_MIN, r.normal(WALK_MEAN, WALK_SD)));
     a.dir = 1; a.side = 1; a.lane = LANE.SIDE; a.laneF = 0.5; a.laneD = 0;
+    a.dreamy = r.chance(0.08); a.bellT = 0; a.tramLookS = 0;
     this.stats.spawned++;
     return a;
   }
@@ -88,6 +89,13 @@ export class Population {
     this.kill(a);
   }
 
+  /** Empty street (after a jump of the camera). */
+  reset() {
+    for (const a of this.agents) if (a.active) this.kill(a);
+    this.cafes.clear();
+    this.stations.clear();
+  }
+
   groupOf(a) {
     const L = a.leader || a;
     return [L, ...L.followers];
@@ -98,10 +106,12 @@ export class Population {
   density(sU, side) {
     const c = this.c, map = c.map;
     let m = 1;
-    if (map.cafeAtS(sU, side)) m += 0.45;
     if (map.mouthAt(sU, side) || map.mouthAt(sU + 8, side) || map.mouthAt(sU - 8, side)) m += 0.35;
-    if (map.stationAt(sU) || map.stationAt(sU + 20) || map.stationAt(sU - 20)) m += 0.4;
+    if (map.stationAt(sU) || map.stationAt(sU + 20) || map.stationAt(sU - 20)) m += 0.15;
     m *= 0.75 + 0.5 * (0.5 + 0.5 * noise1(c.route.wrap(sU) / 70, side > 0 ? 401 : 403));
+    // spend the budget where the cab view sees individuals: thin behind and beside the cab
+    const rel = sU - c.camU;
+    m *= rel < 0 ? 0.55 : rel < 35 ? 0.6 + 0.6 * (rel / 35) : rel < 230 ? 1.2 : rel < 360 ? 1.0 : 0.85;
     return WALKER_DENSITY * m;
   }
 
@@ -186,7 +196,7 @@ export class Population {
         // some of them are standing talking
         if (r.chance(0.07) && c.counts.stand < STANDER_TARGET) {
           const n = this.spawnChat(sU, side);
-          if (n) { want -= n; continue; }
+          if (n) { want -= n; c.counts.stand += n; continue; }
         }
         const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1);
         if (a) { want -= 1 + a.nFollow; this.stats.bySource.init += 1 + a.nFollow; }
@@ -274,9 +284,11 @@ export class Population {
     const side = r.chance(0.5) ? 1 : -1;
     let a = null, src = '';
     if (sRel > RANGE_AHEAD - FAR_SPAWN_BAND) {
-      a = this.spawnWalker(sU, side, r.chance(c.tram.v > 2 ? 0.5 : 0.65) ? -1 : 1); src = 'far';
+      // at the far end of the range: preferably out of a doorway / side street, else just there
+      if (r.chance(0.5)) { a = this._spawnFromDoor(sU, side); src = 'door'; }
+      if (!a) { a = this.spawnWalker(sU, side, r.chance(0.5) ? -1 : 1); src = 'far'; }
     } else if (sRel < 45) {
-      a = this.spawnWalker(sU, side, r.chance(0.6) ? 1 : -1);
+      a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1);
       if (a && !this._groupHidden(a)) { this._killGroup(a); a = null; }
       src = 'near';
     } else if (r.chance(0.45)) {
@@ -430,6 +442,7 @@ export class Population {
         a.faceA = this.passengerFacing(pl.side, r); a.alpha = a.faceA;
         a.timer = r.range(20, 240);
         a.feature = feat; feat.count++;
+        c.counts.passenger++;
       }
     }
     void initial;

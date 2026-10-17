@@ -66,7 +66,9 @@ void main() {
   vec2 cu = uv + wq * vec2(0.04, 0.12);
   float ci = pfbm(cu, vec2(2.0, 16.0), 5) * 0.5 + 0.5;
   ci *= pfbm(uv + 0.29, vec2(3.0), 3) * 0.5 + 0.6;
-  gl_FragColor = vec4(pw, det, cov, ci);
+  // stretch each channel to use the full range (measured distributions)
+  gl_FragColor = vec4(clamp((pw - 0.07) / 0.57, 0.0, 1.0), clamp((det - 0.05) / 0.93, 0.0, 1.0),
+                      clamp((cov - 0.29) / 0.42, 0.0, 1.0), clamp((ci - 0.13) / 0.40, 0.0, 1.0));
 }
 `;
 
@@ -164,6 +166,7 @@ uniform float uCloudCover;
 uniform float uCirrus;
 uniform float uSunDiscScale;
 uniform float uCamR;
+uniform float uPixelAngle;    // radians per pixel (mip selection for the cloud march)
 #ifdef ENV_CAPTURE
 uniform vec3 uStreetRight;    // horizontal unit vector across the street (to the right of travel)
 uniform vec3 uStreetAxis;
@@ -177,14 +180,12 @@ varying vec3 vDir;
 vec3 skyL(vec3 d) { return texture2D(uSkyLUT, atmSkyUV(d, uSunDirA)).rgb; }
 vec3 irr(float k) { return texture2D(uSkyIrr, vec2((k + 0.5) / 4.0, 0.5)).rgb; }
 
-float cumulusDensity(vec2 p, float lodBias) {
-  vec2 uv = p / 16000.0;
-  float cov = uCloudCover + (texture2D(uCloudTex, p / 110000.0).b - 0.5) * 0.55;
-  float base = texture2D(uCloudTex, uv, lodBias).r;
-  float d = clamp((base - (1.0 - cov)) / max(cov, 0.05), 0.0, 1.0);
-  float det = texture2D(uCloudTex, uv * 4.3 + vec2(0.31, 0.67), lodBias).g;
-  d = clamp((d - (1.0 - det) * 0.42) / 0.58, 0.0, 1.0);
-  return d;
+// 2D cumulus field (environment capture only; the view uses the volumetric pass)
+float cumulus2D(vec2 p, float lod) {
+  vec2 uv = p / 13000.0;
+  float cov = uCloudCover + (textureLod(uCloudTex, p / 110000.0, 0.0).b - 0.5) * 0.5;
+  float base = textureLod(uCloudTex, uv, lod).r;
+  return clamp((base - (1.0 - cov)) / max(cov, 0.05), 0.0, 1.0);
 }
 
 // composite clouds over radiance L along direction dir
@@ -213,32 +214,25 @@ vec3 clouds(vec3 dir, vec3 L, out float occl) {
     L += a * fade * (col - L);
   }
 
-  // --- fair-weather cumulus (base ~1.8 km)
-  float t = 1800.0 / dir.y;
+#ifdef ENV_CAPTURE
+  // --- cumulus as a flat layer, lit with a cheap self-shadow (reflections and IBL only)
+  float t = (1500.0 + 400.0) / dir.y;
   vec2 p = uCamPosW.xz + dir.xz * t + uCloudOffset;
-  float d = cumulusDensity(p, 0.0);
+  float lod = max(0.0, log2(t * uPixelAngle / 25.0));
+  float d = cumulus2D(p, lod);
   if (d <= 0.0) return L;
   vec2 sh = length(uSunDirA.xz) > 1e-4 ? normalize(uSunDirA.xz) : vec2(1.0, 0.0);
   float cotE = clamp(length(uSunDirA.xz) / max(uSunDirA.y, 0.03), 0.25, 6.0);
-  float tauS = 0.0;
-  tauS += cumulusDensity(p + sh * 110.0 * cotE, 1.0);
-  tauS += cumulusDensity(p + sh * 330.0 * cotE, 1.5);
-  tauS += cumulusDensity(p + sh * 750.0 * cotE, 2.0);
-  tauS = tauS * 1.6 + d * 2.2;
-  float beer = exp(-tauS);
-  float powder = 1.0 - exp(-2.0 * (d + 0.15));
+  float tauS = (cumulus2D(p + sh * 200.0 * cotE, lod + 1.0) + cumulus2D(p + sh * 600.0 * cotE, lod + 2.0)) * 1.6 + d * 2.2;
   float ph = mix(atmPhaseHG(cosT, 0.65), atmPhaseHG(cosT, -0.2), 0.45) * 4.0 * ATM_PI;
-  vec3 direct = sunL * (beer * ph * powder * 0.55 + beer * 0.08);
-  // multiple scattering: lifts the shadowed body, keeps it warm-grey not black
-  vec3 ms = sunL * 0.085 * exp(-tauS * 0.25) * (0.6 + 0.4 * ph);
-  vec3 amb = ambUp * mix(1.05, 0.65, d) + ambDn * (0.4 + 0.6 * d);
-  vec3 col = direct + ms + amb;
-  float a = 1.0 - exp(-d * 9.0);
-  float fade = exp(-t / 28000.0);
-  // horizon fade: distant clouds sink into the haze
-  fade *= smoothstep(0.004, 0.06, dir.y);
-  occl = a * smoothstep(0.004, 0.06, dir.y);
+  vec3 col = sunL * (exp(-tauS) * ph * 0.5 + 0.09) + ambUp * mix(1.0, 0.6, d) + ambDn * (0.4 + 0.6 * d);
+  float a = 1.0 - exp(-d * 6.0);
+  float fade = exp(-t / 28000.0) * smoothstep(0.004, 0.06, dir.y);
+  occl = a;
   return L + a * fade * (col - L);
+#else
+  return L;
+#endif
 }
 
 #ifdef ENV_CAPTURE
@@ -366,9 +360,10 @@ export class Sky {
       uCloudOffset: { value: new THREE.Vector2(3100, -5200) },
       uCirrusOffset: { value: new THREE.Vector2(12000, 4000) },
       uWindDir: { value: new THREE.Vector2(0.8, 0.6) },
-      uCloudCover: { value: 0.36 },
+      uCloudCover: { value: 0.6 },
       uCirrus: { value: 0.8 },
       uSunDiscScale: { value: 0.12 },
+      uPixelAngle: { value: 0.0003 },
       // canyon model (env capture only)
       uStreetRight: { value: new THREE.Vector3(1, 0, 0) },
       uStreetAxis: { value: new THREE.Vector3(0, 0, -1) },
@@ -416,12 +411,24 @@ export class Sky {
     this._capTimer = 0;
   }
 
-  /** Recompute the sky-irradiance texture (after the sky-view LUT changed). */
+  /**
+   * Recompute the sky-irradiance texture (after the sky-view LUT changed) and read
+   * it back (4 texels; only on time-of-day changes) for exposure and lighting.
+   */
   updateIrradiance() {
     const r = this.renderer, prev = r.getRenderTarget();
     r.setRenderTarget(this.irrRT);
     r.render(this._irrQuad, this._quadCam);
     r.setRenderTarget(prev);
+    const buf = this._irrBuf || (this._irrBuf = new Uint16Array(16));
+    try {
+      r.readRenderTargetPixels(this.irrRT, 0, 0, 4, 1, buf);
+      const h = THREE.DataUtils.fromHalfFloat;
+      const px = (i) => new THREE.Vector3(h(buf[i * 4]), h(buf[i * 4 + 1]), h(buf[i * 4 + 2]));
+      this.irradiance = { horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3) };
+    } catch (e) {
+      this.irradiance = null;
+    }
   }
 
   /** Start a fresh environment capture; `immediate` does all of it now. */
@@ -440,8 +447,11 @@ export class Sky {
     const prev = r.getRenderTarget();
     const prevXr = r.xr.enabled;
     r.xr.enabled = false;
+    const pa = this.uniforms.uPixelAngle.value;
+    this.uniforms.uPixelAngle.value = (Math.PI / 2) / this.cubeRT.width;
     r.setRenderTarget(this.cubeRT, i);
     r.render(this.envScene, this.cubeCams[i]);
+    this.uniforms.uPixelAngle.value = pa;
     r.setRenderTarget(prev);
     r.xr.enabled = prevXr;
   }
@@ -456,7 +466,42 @@ export class Sky {
     }
   }
 
-  /** Progressive capture: two cube faces per frame, then PMREM on the fourth frame. */
+  /**
+   * Queue a progressive PMREM update: the cube is projected into the existing target,
+   * then the GGX roughness levels are filtered a couple per frame (each level reads the
+   * previous one). Relies on PMREMGenerator internals of the vendored three.js; falls
+   * back to a one-shot update if they are missing.
+   */
+  _pmremBegin() {
+    const g = this.pmrem;
+    if (!this.envRT || typeof g._applyGGXFilter !== 'function' || typeof g._textureToCubeUV !== 'function' || !g._lodMeshes) {
+      this._runPMREM();
+      return false;
+    }
+    this._pmremQueue = [];
+    for (let i = 0; i < g._lodMeshes.length; i++) this._pmremQueue.push(i);
+    return true;
+  }
+
+  _pmremStep(maxSteps) {
+    const g = this.pmrem, r = this.renderer, rt = this.envRT;
+    const prev = r.getRenderTarget(), ac = r.autoClear;
+    r.autoClear = false;
+    rt.scissorTest = true;
+    for (let n = 0; n < maxSteps && this._pmremQueue.length; n++) {
+      const i = this._pmremQueue.shift();
+      if (i === 0) g._textureToCubeUV(this.cubeRT.texture, rt);
+      else g._applyGGXFilter(rt, i - 1, i);
+    }
+    rt.scissorTest = false;
+    rt.viewport.set(0, 0, rt.width, rt.height);
+    rt.scissor.set(0, 0, rt.width, rt.height);
+    r.autoClear = ac;
+    r.setRenderTarget(prev);
+    return this._pmremQueue.length === 0;
+  }
+
+  /** Progressive capture: two cube faces per frame for three frames, then PMREM two levels per frame. */
   step(dt, refreshEvery = 6) {
     this._capTimer += dt;
     if (this._capStep < 0 && this._capTimer > refreshEvery) this._capStep = 0;
@@ -466,8 +511,8 @@ export class Sky {
       this._renderFace(this._capStep * 2);
       this._renderFace(this._capStep * 2 + 1);
       this._capStep++;
-    } else {
-      this._runPMREM();
+      if (this._capStep === 3 && !this._pmremBegin()) this._capStep = -1;
+    } else if (this._pmremStep(2)) {
       this._capStep = -1;
     }
   }

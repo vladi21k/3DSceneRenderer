@@ -17,15 +17,12 @@ export const STRIPES = [
 ];
 
 export function createAwningMaterial(M) {
-  const m = M.get('fabric.awning').clone();
-  m.vertexColors = true;
-  m.color = new THREE.Color(1, 1, 1);
-  m.side = THREE.DoubleSide;
-  m.roughness = Math.max(0.85, m.roughness ?? 0.9);
-  m.name = 'facades.awning';
+  // private variant of the library canvas (keeps its baked weave), patched below
+  const m = M.get('fabric.awning', { vertexColors: true, color: new THREE.Color(1, 1, 1), side: THREE.DoubleSide, userData: { owner: 'facades.awning' } });
   const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey ? m.customProgramCacheKey() : '';
   m.onBeforeCompile = (shader, r) => {
-    if (prev) prev(shader, r);
+    if (prev) prev.call(m, shader, r);
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uWind = U.uWind;
     shader.uniforms.uWindStrength = U.uWindStrength;
@@ -80,7 +77,7 @@ if ( vStripe.w > 0.0 ) {
       .replace('vStripe = aStripe;', 'vStripe = aStripe;\nvAwUv = uv;');
     shader.fragmentShader = shader.fragmentShader.replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;');
   };
-  m.customProgramCacheKey = () => 'facades.awning.v1' + (prev ? prev.toString().length : '');
+  m.customProgramCacheKey = () => prevKey + '|facades.awning.v1';
   return m;
 }
 
@@ -112,7 +109,7 @@ function surface(t, nu, nv, P, shade = 1, flip = false) {
   }
   for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
     const a = base + j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1;
-    if (flip) t.i.push(a, b, c, b, d, c); else t.i.push(a, c, b, b, c, d);
+    if (flip) t.ix(a, b, c, b, d, c); else t.ix(a, c, b, b, c, d);
   }
 }
 

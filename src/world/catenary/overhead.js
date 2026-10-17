@@ -62,7 +62,8 @@ export function planOverhead(app) {
 }
 
 /** Insulator (rod with sheds, galvanised end fittings) along +Y, centred, 0.38 m long. */
-export function buildInsulatorGeometry(lo = false) {
+export function buildInsulatorGeometry() {
+  const lo = false;
   const b = new GeoBuilder();
   const P = [];
   const L = 0.38, h = L / 2;
@@ -74,7 +75,7 @@ export function buildInsulatorGeometry(lo = false) {
     P.push([0.012, y - 0.012, true], [R, y - 0.004], [R, y + 0.002, true], [0.012, y + 0.008, true]);
   }
   P.push([0.012, h - 0.055, true], [0.016, h - 0.05, true], [0.016, h, true], [0.012, h + 0.018], [0.0, h + 0.02]);
-  lathe(b, P, lo ? 6 : 12, { tube: 0.012 });
+  lathe(b, P, 9, { tube: 0.012 });
   const g = b.toGeometry((x, y) => (Math.abs(y) > h - 0.056 ? [1.6, 1.6, 1.6] : [1, 1, 1]));
   g.userData.shared = true;
   return g;
@@ -109,19 +110,23 @@ function spanEye(route, pole, out = new THREE.Vector3()) {
   return out;
 }
 
-/** Builds the overhead line of one chunk: {wires: BufferGeometry, insulators: Matrix4[], clamps: Matrix4[]}. */
+/** Builds the overhead line of one chunk:
+ *  {wires, insulatorRibbons, insulators: Matrix4[], clamps: Matrix4[]}. Far chunks fold the
+ *  insulator stand-ins (short thick ribbons) into `wires`; full-detail chunks return them
+ *  separately so they can replace the real insulators beyond the near range. */
 export function buildOverheadChunk(app, plan, chunk) {
   const { route, layout } = app;
   const lo = chunk.lod > 0;
   const wb = new WireBuilder();
+  const ib = lo ? wb : new WireBuilder();
   const insulators = [], clamps = [];
   const spans = plan.byChunk.get(chunk.index) || [];
 
-  // rod insulator: real geometry near, a short thick light segment far away
+  // rod insulator: real geometry near, a short thick segment further away
   const addInsulator = (p, dir) => {
-    if (!lo) { insulators.push(alongMatrix(p, dir)); return; }
+    if (!lo) insulators.push(alongMatrix(p, dir));
     const d = dir.clone().normalize().multiplyScalar(0.18);
-    wb.add([p.clone().sub(d), p.clone().add(d)], 0.03, WIRE_COLORS.insulator);
+    ib.add([p.clone().sub(d), p.clone().add(d)], 0.03, WIRE_COLORS.insulator);
   };
 
   for (const sp of spans) {
@@ -200,5 +205,5 @@ export function buildOverheadChunk(app, plan, chunk) {
     wb.add(pts, CONTACT_R, WIRE_COLORS.contact);
   }
 
-  return { wires: wb.toGeometry(), insulators, clamps };
+  return { wires: wb.toGeometry(), insulatorRibbons: lo ? null : ib.toGeometry(), insulators, clamps };
 }

@@ -47,17 +47,18 @@ export class MeshBuf {
 
   get empty() { return this.ni === 0; }
 
-  geometry() {
+  /** BufferGeometry over the written range (views, no copies). Bounds come from the
+   *  caller (chunk sphere) when given, which avoids a pass over every vertex. */
+  geometry(sphere = null) {
     const g = new THREE.BufferGeometry();
     const n = this.n;
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, n * 3), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(this.nor.slice(0, n * 3), 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(this.uv.slice(0, n * 2), 2));
-    if (this.hasColor) g.setAttribute('color', new THREE.BufferAttribute(this.col.slice(0, n * 3), 3));
-    const idx = n < 65536 ? new Uint16Array(this.idx.subarray(0, this.ni)) : this.idx.slice(0, this.ni);
-    g.setIndex(new THREE.BufferAttribute(idx, 1));
-    g.computeBoundingSphere();
-    g.computeBoundingBox();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos.subarray(0, n * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.nor.subarray(0, n * 3), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(this.uv.subarray(0, n * 2), 2));
+    if (this.hasColor) g.setAttribute('color', new THREE.BufferAttribute(this.col.subarray(0, n * 3), 3));
+    g.setIndex(new THREE.BufferAttribute(this.idx.subarray(0, this.ni), 1));
+    if (sphere) g.boundingSphere = sphere.clone();
+    else g.computeBoundingSphere();
     return g;
   }
 }
@@ -70,10 +71,10 @@ export class BufSet {
     if (!b) { b = new MeshBuf({ color }); this.map.set(material, b); }
     return b;
   }
-  build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0 } = {}) {
+  build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0, sphere = null } = {}) {
     for (const [mat, b] of this.map) {
       if (b.empty) continue;
-      const m = new THREE.Mesh(b.geometry(), mat);
+      const m = new THREE.Mesh(b.geometry(sphere), mat);
       m.name = `${name}:${mat.name}`;
       m.castShadow = castShadow; m.receiveShadow = receiveShadow;
       m.renderOrder = renderOrder;

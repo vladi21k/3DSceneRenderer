@@ -29,26 +29,44 @@ class IBuf {
 
 const _n = new THREE.Vector3(), _e1 = new THREE.Vector3(), _e2 = new THREE.Vector3();
 
-/** Template mesh in local coordinates. */
+/** Template mesh in local coordinates (typed growable buffers: little garbage). */
 export class Tpl {
-  constructor() { this.p = []; this.nr = []; this.t = []; this.s = []; this.i = []; }
-  get count() { return this.p.length / 3; }
+  constructor() { this.P = new FBuf(768); this.N = new FBuf(768); this.T = new FBuf(512); this.S = new FBuf(256); this.I = new IBuf(512); }
+  get count() { return this.P.n / 3; }
   v(x, y, z, nx, ny, nz, u, w, shade = 1) {
-    this.p.push(x, y, z); this.nr.push(nx, ny, nz); this.t.push(u, w); this.s.push(shade);
-    return this.p.length / 3 - 1;
+    const P = this.P, N = this.N, T = this.T, S = this.S;
+    P.ensure(3); N.ensure(3); T.ensure(2); S.ensure(1);
+    const k = P.n;
+    P.a[k] = x; P.a[k + 1] = y; P.a[k + 2] = z; P.n = k + 3;
+    N.a[k] = nx; N.a[k + 1] = ny; N.a[k + 2] = nz; N.n = k + 3;
+    T.a[T.n] = u; T.a[T.n + 1] = w; T.n += 2;
+    S.a[S.n++] = shade;
+    return k / 3;
   }
-  tri(a, b, c) { this.i.push(a, b, c); }
+  /** Push triangle indices (any multiple of three). */
+  ix(...idx) {
+    const I = this.I; I.ensure(idx.length);
+    for (let k = 0; k < idx.length; k++) I.a[I.n++] = idx[k];
+  }
+  tri(a, b, c) { this.ix(a, b, c); }
   /** Planar quad (CCW seen from the front). UVs projected on the dominant plane. */
   quad(p0, p1, p2, p3, shade = 1, shadeTop = shade) {
-    _e1.set(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
-    _e2.set(p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]);
-    _n.crossVectors(_e1, _e2).normalize();
-    const ax = Math.abs(_n.x), ay = Math.abs(_n.y), az = Math.abs(_n.z);
-    const uvOf = (p) => (az >= ax && az >= ay ? [p[0], p[1]] : ax >= ay ? [p[2], p[1]] : [p[0], p[2]]);
+    const ax_ = p1[0] - p0[0], ay_ = p1[1] - p0[1], az_ = p1[2] - p0[2];
+    const bx = p3[0] - p0[0], by = p3[1] - p0[1], bz = p3[2] - p0[2];
+    let nx = ay_ * bz - az_ * by, ny = az_ * bx - ax_ * bz, nz = ax_ * by - ay_ * bx;
+    const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    nx /= l; ny /= l; nz /= l;
+    const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+    const mode = az >= ax && az >= ay ? 0 : ax >= ay ? 1 : 2;
     const b = this.count;
-    const sh = [shade, shade, shadeTop, shadeTop];
-    [p0, p1, p2, p3].forEach((p, k) => { const uv = uvOf(p); this.v(p[0], p[1], p[2], _n.x, _n.y, _n.z, uv[0], uv[1], sh[k]); });
-    this.i.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    for (let k = 0; k < 4; k++) {
+      const q = k === 0 ? p0 : k === 1 ? p1 : k === 2 ? p2 : p3;
+      const u = mode === 1 ? q[2] : q[0], w = mode === 2 ? q[2] : q[1];
+      this.v(q[0], q[1], q[2], nx, ny, nz, u, w, k < 2 ? shade : shadeTop);
+    }
+    const I = this.I; I.ensure(6);
+    const a = I.a; let n = I.n;
+    a[n] = b; a[n + 1] = b + 1; a[n + 2] = b + 2; a[n + 3] = b; a[n + 4] = b + 2; a[n + 5] = b + 3; I.n = n + 6;
   }
   /** Axis-aligned box; faces: bit mask 1 front(+z) 2 back(-z) 4 left(-x) 8 right(+x) 16 bottom 32 top. */
   box(x0, y0, z0, x1, y1, z1, faces = 1 | 4 | 8 | 16 | 32, shade = 1, shadeTop = shade) {
@@ -91,16 +109,17 @@ export class Tpl {
         // tangent along the outline, profile direction across
         const tx = A[jp][0] - A[jm][0], ty = A[jp][1] - A[jm][1], tz = A[jp][2] - A[jm][2];
         const px = B[j][0] - A[j][0], py = B[j][1] - A[j][1], pz = B[j][2] - A[j][2];
-        _n.set(ty * pz - tz * py, tz * px - tx * pz, tx * py - ty * px).normalize();
+        let nx = ty * pz - tz * py, ny = tz * px - tx * pz, nz = tx * py - ty * px;
+        const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= l; ny /= l; nz /= l;
         if (j > 0) acc += Math.hypot(A[j][0] - A[j - 1][0], A[j][1] - A[j - 1][1]);
-        const pl = Math.hypot(px, py, pz);
-        this.v(A[j][0], A[j][1], A[j][2], _n.x, _n.y, _n.z, acc, 0, shade);
-        this.v(B[j][0], B[j][1], B[j][2], _n.x, _n.y, _n.z, acc, pl, shade);
+        const pl = Math.sqrt(px * px + py * py + pz * pz);
+        this.v(A[j][0], A[j][1], A[j][2], nx, ny, nz, acc, 0, shade);
+        this.v(B[j][0], B[j][1], B[j][2], nx, ny, nz, acc, pl, shade);
       }
       for (let j = 0; j < segs; j++) {
         const j1 = (j + 1) % m;
         const a = base + j * 2, b = base + j1 * 2;
-        this.i.push(a, b, a + 1, b, b + 1, a + 1);
+        this.ix(a, b, a + 1, b, b + 1, a + 1);
       }
     }
   }
@@ -112,22 +131,17 @@ export class Tpl {
     const c = this.v(cx, cy, z, 0, 0, 1, cx, cy, shade);
     const b = this.count;
     for (const p of pts) this.v(p[0], p[1], z, 0, 0, 1, p[0], p[1], shade);
-    for (let k = 0; k < pts.length; k++) this.i.push(c, b + k, b + ((k + 1) % pts.length));
-  }
-  append(t, ox = 0, oy = 0, oz = 0) {
-    const b = this.count;
-    for (let k = 0; k < t.p.length; k += 3) this.p.push(t.p[k] + ox, t.p[k + 1] + oy, t.p[k + 2] + oz);
-    this.nr.push(...t.nr); this.t.push(...t.t); this.s.push(...t.s);
-    for (const i of t.i) this.i.push(i + b);
+    for (let k = 0; k < pts.length; k++) this.ix(c, b + k, b + ((k + 1) % pts.length));
   }
   /** Multiply the per-vertex shade by fn(x, y, z). */
   shadeBy(fn) {
-    for (let k = 0; k < this.s.length; k++) this.s[k] *= fn(this.p[k * 3], this.p[k * 3 + 1], this.p[k * 3 + 2]);
+    const P = this.P.a, S = this.S.a;
+    for (let k = 0; k < this.S.n; k++) S[k] *= fn(P[k * 3], P[k * 3 + 1], P[k * 3 + 2]);
     return this;
   }
-  /** Freeze into typed arrays for fast appending. */
+  /** Freeze into compact typed arrays for fast appending. */
   bake() {
-    return { p: new Float32Array(this.p), n: new Float32Array(this.nr), t: new Float32Array(this.t), s: new Float32Array(this.s), i: new Uint32Array(this.i), count: this.count };
+    return { p: this.P.view(), n: this.N.view(), t: this.T.view(), s: this.S.view(), i: this.I.a.slice(0, this.I.n), count: this.count };
   }
 }
 
@@ -185,13 +199,23 @@ export class Batch {
   geometry() {
     if (!this.count) return null;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(this.P.view(), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(this.N.view(), 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(this.T.view(), 2));
-    if (this.C) g.setAttribute('color', new THREE.BufferAttribute(this.C.view(), 3));
-    for (const k in this.extra) g.setAttribute(k, new THREE.BufferAttribute(this.extra[k].buf.view(), this.extra[k].size));
-    g.setIndex(new THREE.BufferAttribute(this.I.a.slice(0, this.I.n), 1));
-    g.computeBoundingSphere();
+    const view = (b) => new Float32Array(b.a.buffer, 0, b.n); // no copy: the batch is done
+    g.setAttribute('position', new THREE.BufferAttribute(view(this.P), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(view(this.N), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(view(this.T), 2));
+    if (this.C) g.setAttribute('color', new THREE.BufferAttribute(view(this.C), 3));
+    for (const k in this.extra) g.setAttribute(k, new THREE.BufferAttribute(view(this.extra[k].buf), this.extra[k].size));
+    const idx = this.count < 65536 ? Uint16Array.from(this.I.a.subarray(0, this.I.n)) : new Uint32Array(this.I.a.buffer, 0, this.I.n);
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    // bounding sphere from the AABB (one pass)
+    const p = this.P.a, n = this.P.n;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let k = 0; k < n; k += 3) {
+      const x = p[k], y = p[k + 1], z = p[k + 2];
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), Math.hypot(x1 - x0, y1 - y0, z1 - z0) / 2);
+    g.boundingBox = new THREE.Box3(new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x1, y1, z1));
     return g;
   }
   mesh(name, { castShadow = true, receiveShadow = true } = {}) {
