@@ -624,7 +624,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + ( 0.42 + 0.5 * smoothstep( 2.2, 0.4, p.z ) ) * ao );
     glowK = I;
   } else if ( lit > 0.0 ) {
-    float I = stair ? 0.004 : 0.0105;
+    float I = stair ? 0.006 : 0.02;
     Elamp = lampC * lit * I * ( fLamp( p, nn, lp, lk ) * ( 0.7 + 0.3 * ao ) + 0.07 * ao );
     // a television's cool flicker in a few rooms
     if ( fh1( seed * 9.7 ) < 0.1 ) Elamp += vec3( 0.25, 0.35, 0.6 ) * lit * 0.0007 * ( 0.6 + 0.4 * sin( uTime * 7.0 + seed * 40.0 ) * sin( uTime * 2.3 ) ) * ao;
@@ -638,7 +638,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float tl = fShade( ro, rd, lp, r, lp.y - 0.13, lp.y + 0.07, inner );
     if ( tl > 0.0 && tl < h.t ) {
       vec3 shadeDay = vec3( 0.62, 0.56, 0.46 ) * Eday * ( 0.06 + 0.05 * inner ) * RECIPROCAL_PI;
-      col = shadeDay + lampC * lit * 0.0105 * ( inner > 0.5 ? 9.0 : 1.6 );
+      col = shadeDay + lampC * lit * 0.02 * ( inner > 0.5 ? 6.0 : 1.2 );
     }
   }
   // cafe pendants
@@ -663,7 +663,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       float xr = c.x - S.x * 0.5;
       vec3 dc = DRAPES[ int( fh1( seed * 4.1 ) * 5.99 ) ];
       vec3 pc = vec3( c, zc );
-      vec3 back = lit > 0.0 ? lampC * lit * 0.0105 * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.07 ) : vec3( 0.0 );
+      vec3 back = lit > 0.0 ? lampC * lit * 0.02 * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.07 ) : vec3( 0.0 );
       vec3 front = Eday * 0.45;
       if ( dtype < 1.5 ) {
         // curtains drawn to the sides

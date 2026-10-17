@@ -54,16 +54,23 @@ function rowJoints(lay, rg) {
   return J;
 }
 
-/** The `n` joints of row rg nearest to texture position T (unwrapped). */
+/** The `n` joints of row rg nearest to texture position T (unwrapped), nearest first. */
 function nearest(lay, J, T, n, out) {
+  const W = lay.W, m = J.length;
+  const base = Math.floor(T / W) * W, t = T - base;
+  let lo = 0, hi = m;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (J[mid] < t) lo = mid + 1; else hi = mid; }
+  // walk outwards from t over the periodic joint list (index k → J[k mod m] + ⌊k/m⌋ W)
+  const at = (k) => base + J[((k % m) + m) % m] + Math.floor(k / m) * W;
+  let r = lo, l = lo - 1;
   out.length = 0;
-  const W = lay.W, base = Math.floor(T / W) * W;
-  for (let m = -1; m <= 1; m++) for (const x of J) out.push(base + m * W + x);
-  out.sort((a, b) => Math.abs(a - T) - Math.abs(b - T));
-  out.length = Math.min(n, out.length);
+  while (out.length < n) {
+    const xr = at(r), xl = at(l);
+    if (xr - T <= T - xl) { out.push(xr); r++; } else { out.push(xl); l--; }
+  }
   return out;
 }
-const _ca = [], _cb = [], _cc = [];
+const _ca = [], _cb = [], _cc = [], _cd = [];
 
 /**
  * Per-face joint fitter. uvx: the face's base transform [su, ou, sv, ov] (tu = u su + ou,
@@ -120,7 +127,7 @@ export class JointFitter {
     // the other well clear of the nearest joint (no sliver)
     const len = b - a, Ta = a * su + ou;
     let best = Infinity;
-    for (const xa of nearest(lay, J, Ta, 4, _ca).slice()) {
+    for (const xa of nearest(lay, J, Ta, 4, _cd)) {
       const drift = Math.abs(xa - Ta) * 0.02;
       for (const xb of nearest(lay, J, xa + len * su, 3, _cb)) {
         if (xb <= xa + 0.05) continue;

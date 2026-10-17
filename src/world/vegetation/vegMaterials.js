@@ -200,8 +200,11 @@ function patchLeaf(mat, params) {
     fs = rep(fs, '#include <map_fragment>', /* glsl */`
       #ifdef USE_MAP
         vec4 vegTex = texture2D( map, vMapUv );  // straight sRGB colour, decoded by the sampler
-        // coverage: sharpened around 0.5 (crisp, anti-aliased edges with alpha-to-coverage)
-        float vegA = vegTex.a;
+        // coverage: sharpened around 0.5 (crisp, anti-aliased edges with alpha-to-coverage).
+        // Cards seen nearly edge-on show their clump foreshortened: the leaves thin out
+        // instead of smearing into streaks.
+        float vegFace = abs( dot( normalize( vVegGN ), normalize( vViewPosition ) ) );
+        float vegA = vegTex.a * mix( 0.45, 1.0, smoothstep( 0.03, 0.2, vegFace ) );
         float vegCov = uVegA2C > 0.5 ? clamp( ( vegA - 0.5 ) / max( fwidth( vegA ), 1e-4 ) + 0.5, 0.0, 1.0 ) : step( 0.5, vegA );
         if ( vegCov < 0.02 ) discard;
         diffuseColor.rgb *= vegTex.rgb;
@@ -325,8 +328,9 @@ function patchBark(mat, params) {
         float e = length( vec2( dd.x / hl, dd.y / 0.00055 ) );
         float px = max( fwidth( bu.x ), fwidth( bu.y ) );
         float detail = 1.0 - smoothstep( 0.0012, 0.0035, px );
-        float lent = ( 1.0 - smoothstep( 0.55, 1.0, e ) ) * step( 0.3, h2 ) * detail * vBarkYouth;
-        float stria = ( barkHash( vec2( floor( bu.x / 0.005 ), 3.1 ) ) - 0.5 ) * 0.1 * ( 1.0 - smoothstep( 0.0008, 0.0025, px ) ) * vBarkYouth;
+        float youth = smoothstep( 0.5, 1.0, vBarkYouth );  // old, fissured bark has none
+        float lent = ( 1.0 - smoothstep( 0.55, 1.0, e ) ) * step( 0.3, h2 ) * detail * youth;
+        float stria = ( barkHash( vec2( floor( bu.x / 0.005 ), 3.1 ) ) - 0.5 ) * 0.1 * ( 1.0 - smoothstep( 0.0008, 0.0025, px ) ) * youth;
         diffuseColor.rgb *= 1.0 + stria;
         diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.36, 0.33, 0.27 ), lent * 0.65 );
       }`, 'bark color_fragment');

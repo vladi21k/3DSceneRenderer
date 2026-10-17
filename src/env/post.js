@@ -218,7 +218,8 @@ const post = {
     pu.uHazeExt.value.set(3.6e-4 * k, 4.0e-4 * k, 4.7e-4 * k);
     pu.uHazeInscatter.value = 1.0;
     pu.uHazeGap.value = env ? env.haze.gap : 0;
-    pu.uHazeSun.value = 0.25;  // aerosol albedo; tree canopies and awnings shade much of the street air
+    // aerosol albedo; tree canopies and awnings shade much of the street air
+    pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1);
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
     fu.uBloom.value = THREE.MathUtils.lerp(0.035, 0.05, night);

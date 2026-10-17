@@ -5,7 +5,7 @@ import { Kit } from './facades/kit.js';
 import { createInteriorGlass, GLASS_ATTRS } from './facades/interior.js';
 import { createSignMaterials } from './facades/signs.js';
 import { createAwningMaterial } from './facades/awnings.js';
-import { lanternTpls, signLampTpls, intercomTpl, createLampGlass } from './facades/extras.js';
+import { lanternTpls, signLampTpls, intercomTpl, createLampGlass, createBulbMaterial } from './facades/extras.js';
 import { buildFront } from './facades/place.js';
 
 // Facade infill: windows, shopfronts, doors, shutters, signage, awnings and small wall
@@ -33,6 +33,7 @@ const facades = {
     M.register('facades.signText', sign.text);
     const awning = M.register('facades.awning', createAwningMaterial(M));
     const lamp = M.register('facades.lampGlass', createLampGlass(M));
+    const bulb = M.register('facades.bulb', createBulbMaterial());
     this.mats = {
       // joinery sits inside the reveals, which already shade it: no shadow casting
       frame: { material: vc('paint.frame'), castShadow: false },
@@ -46,7 +47,8 @@ const facades = {
       awning: { material: awning, extra: { aStripe: 4, aFlex: 1 } },
       signBoard: { material: sign.board, extra: { aGlow: 1 } },
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
-      lamp: { material: lamp, color: false, castShadow: false },
+      lamp: { material: lamp, color: false, castShadow: false, receiveShadow: false, renderOrder: 3 },
+      bulb: { material: bulb, color: false, castShadow: false },
     };
     this.forceShop = app.params.str('fshop') || null; // development: one shop interior everywhere
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"

@@ -38,6 +38,7 @@ function railProfile(tw, zf, zb, ch) {
 /** Sash (casement leaf) frame lofted round a rectangle, with optional glazing bars. */
 function sash(t, x0, y0, x1, y1, P, zOff, rows, cols, panelTop) {
   const { sw, swB, zs, zgb, g } = P;
+  t.piece();
   const c2 = 0.008;
   const zf = zs + zOff, zb = zgb + zOff;
   const ins = (k) => [sw * k, swB * k, sw * k, sw * k];
@@ -102,6 +103,7 @@ function buildJoinery(o, v, q, open) {
   const n = headSegments(o, q);
   const ring = (d, z) => outlinePts(o, d, n).map((p) => [p[0], p[1], z]);
   // casing round the whole opening
+  t.piece(0.04);
   const r0 = ring(0, zf), r1 = ring(fw - ch, zf), r2 = ring(fw, zf - ch), r3 = ring(fw, zb);
   t.loft([r0, r1], true, 1);
   t.loft([r1, r2], true, 0.95);
@@ -111,7 +113,7 @@ function buildJoinery(o, v, q, open) {
   const { hwI, tw, yT, sashTop, nL, lw } = sashLayout(o, v);
   if (yT !== null) {
     const hw = halfWidthAt(o, yT + tw / 2, fw) + 0.01;
-    t.bar([-hw, yT], [hw, yT], railProfile(tw, zf - 0.005, zb, ch), 1);
+    t.piece().bar([-hw, yT], [hw, yT], railProfile(tw, zf - 0.005, zb, ch), 1);
   }
   // sashes
   const panelTop = o.kind === 'balconyDoor' ? 0.85 : 0;
@@ -156,8 +158,15 @@ function buildJoinery(o, v, q, open) {
       }
     }
   }
-  // dirt collects on the lower rails
-  t.shadeBy((x, y) => 0.84 + 0.16 * smooth(0, 0.35, y));
+  // dirt collects on the lower rails, under the transom and in the casing's inner corners
+  const hwC = o.w / 2 - fw;
+  t.shadeBy((x, y) => {
+    let k = 0.82 + 0.18 * smooth(0, 0.35, y);
+    if (yT !== null && y < yT) k *= 0.92 + 0.08 * smooth(0, 0.3, yT - y);
+    const dx = hwC - Math.abs(x);
+    if (dx > -0.01 && dx < 0.08) k *= 0.9 + 0.1 * smooth(-0.01, 0.08, dx);
+    return k;
+  });
   return t.bake();
 }
 

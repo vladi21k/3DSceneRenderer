@@ -5,22 +5,60 @@ import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
 import { Tpl } from './geo.js';
 
-/** Lantern glass: lightly frosted by day, warm glow from dusk (driven by uNight). */
+/**
+ * Clear lantern glass: mostly transparent (premultiplied blending: the reflection is added
+ * at full strength while what lies behind is only dimmed by the Fresnel share), so the
+ * bulb, the holder and the far-side bars show through. A faint warm haze at dusk.
+ */
 export function createLampGlass(M) {
-  const m = M.get('glass.lamp').clone();
+  const m = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0.9, 0.9, 0.88), roughness: 0.05, metalness: 0,
+    transparent: true, premultipliedAlpha: true, depthWrite: false,
+  });
   m.name = 'facades.lampGlass';
-  m.color = new THREE.Color(0.62, 0.6, 0.55);
-  m.roughness = 0.3; m.metalness = 0;
-  m.emissive = new THREE.Color(1.0, 0.66, 0.36);
-  m.emissiveIntensity = 1;
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = U.uNight;
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uNight;')
-      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 0.04;');
+      .replace('#include <opaque_fragment>', `
+float fNVl = saturate( abs( dot( normal, normalize( vViewPosition ) ) ) );
+float aGl = 0.05 + 0.6 * pow( 1.0 - fNVl, 5.0 );
+vec3 hazeL = vec3( 1.0, 0.62, 0.32 ) * 0.0012 * smoothstep( 0.15, 0.7, uNight );
+gl_FragColor = vec4( totalDiffuse * 0.04 + totalSpecular + hazeL, aGl );`)
+      .replace('#include <premultiplied_alpha_fragment>', '');
   };
-  m.customProgramCacheKey = () => 'facades.lampGlass.v1';
+  m.customProgramCacheKey = () => 'facades.lampGlass.v2';
   return m;
+}
+
+/** Lamp bulbs (frosted, ~2700 K) and the lit undersides of sign lamps: emissive from dusk. */
+export function createBulbMaterial() {
+  const m = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.85, 0.84, 0.8), roughness: 0.35, metalness: 0 });
+  m.name = 'facades.bulb';
+  m.emissive = new THREE.Color(1.0, 0.62, 0.31);
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = U.uNight;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uNight;')
+      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 0.03;');
+  };
+  m.customProgramCacheKey = () => 'facades.bulb.v1';
+  return m;
+}
+
+/** Small faceted sphere (radius r) around c. */
+function bulb(t, c, r) {
+  const n = 8, rings = 4;
+  const P = (i, j) => {
+    const th = Math.PI * (0.14 + (0.86 * j) / rings), ph = (2 * Math.PI * i) / n; // open at the cap
+    return [c[0] + r * Math.sin(th) * Math.cos(ph), c[1] + r * Math.cos(th), c[2] + r * Math.sin(th) * Math.sin(ph)];
+  };
+  for (let j = 0; j < rings; j++) {
+    for (let i = 0; i < n; i++) {
+      const a = P(i, j), b = P(i + 1, j), cc = P(i + 1, j + 1), d = P(i, j + 1);
+      t.quad(a, b, cc, d, 1, 1);
+    }
+  }
 }
 
 function tube(t, a, b, s, shade = 0.9) {
@@ -70,7 +108,12 @@ export function lanternTpls(q) {
   g.quad(P(1, yB, -1, w1), P(-1, yB, -1, w1), P(-1, yT, -1, w0), P(1, yT, -1, w0));
   g.quad(P(1, yB, 1, w1), P(1, yB, -1, w1), P(1, yT, -1, w0), P(1, yT, 1, w0));
   g.quad(P(-1, yB, -1, w1), P(-1, yB, 1, w1), P(-1, yT, 1, w0), P(-1, yT, -1, w0));
-  return { metal: m.bake(), glass: g.bake() };
+  // lamp holder hanging from the cap, and the bulb
+  const b = new Tpl();
+  const yc = top - 0.15;
+  m.box(-0.012, yc + 0.03, cz - 0.012, 0.012, top - 0.04, cz + 0.012, 1 | 2 | 4 | 8, 0.8, 0.9);
+  bulb(b, [0, yc, cz], q >= 0.5 ? 0.028 : 0.035);
+  return { metal: m.bake(), glass: g.bake(), bulb: b.bake() };
 }
 
 /** Gooseneck sign lamp: arm from the wall curving forward and down. */

@@ -613,22 +613,39 @@ export class Population {
     const r = c.featureRng('cafe', cafe.id);
     const feat = { type: 'cafe', cafe, occ: new Set(), seats: [], adults: [] };
     this.cafes.set(cafe.id, feat);
-    const busy = r.range(0.35, 0.8);
+    // the seating budget is shared by every terrace in range: some are busier than others
+    const busy = Math.min(0.9, this._seatShare() * r.range(0.45, 1.6));
     cafe.tables.forEach((t, ti) => {
-      const used = r.chance(busy);
+      const used = r.chance(Math.min(0.92, busy * 1.45));
       let first = true;
       t.chairs.forEach((ch, ci) => {
         const key = ti * 8 + ci;
         const s = c.unwrap(ch.s), ts = c.unwrap(t.s);
         const seat = { type: 'seat', cafe, feat, key, s, d: ch.d, side: cafe.side, faceA: Math.atan2(t.d - ch.d, ts - s), exitD: cafe.side * (cafe._crowdInner - 0.5) };
         feat.seats.push(seat);
-        if (!used || !r.chance(0.72)) return;
+        if (!used || !r.chance(0.7)) return;
         // children only at a table where an adult already sits
         const role = !first && r.chance(0.14) ? 'child' : 'adult';
         this.queue.push({ type: 'seat', seat, role, table: ti });
         if (role === 'adult') first = false;
       });
     });
+  }
+
+  /** Fraction of the café chairs in the populated range that the seating budget can fill
+   *  (re-counted every 25 m of travel). */
+  _seatShare() {
+    const c = this.c;
+    if (this._shareU === undefined || Math.abs(c.camU - this._shareU) > 25) {
+      this._shareU = c.camU;
+      let chairs = 0;
+      for (const cafe of c.layout.cafes) {
+        const rel = c.unwrap((cafe.s0 + cafe.s1) / 2) - c.camU;
+        if (rel > -RANGE_BEHIND && rel < FEATURE_AHEAD) for (const t of cafe.tables) chairs += t.chairs.length;
+      }
+      this._share = Math.min(0.6, Math.max(0.06, (0.85 * (MAX_SEATED - BENCH_RESERVE)) / Math.max(1, chairs)));
+    }
+    return this._share;
   }
 
   /** People resting on the street benches, facing the way the bench faces. */

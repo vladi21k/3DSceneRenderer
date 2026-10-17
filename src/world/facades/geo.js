@@ -31,8 +31,18 @@ const _n = new THREE.Vector3(), _e1 = new THREE.Vector3(), _e2 = new THREE.Vecto
 
 /** Template mesh in local coordinates (typed growable buffers: little garbage). */
 export class Tpl {
-  constructor() { this.P = new FBuf(768); this.N = new FBuf(768); this.T = new FBuf(512); this.S = new FBuf(256); this.I = new IBuf(512); }
+  constructor() {
+    this.P = new FBuf(768); this.N = new FBuf(768); this.T = new FBuf(512); this.S = new FBuf(256); this.I = new IBuf(512);
+    this.k = 1;        // shade multiplier for the piece being added (per-piece value jitter)
+    this._piece = 0;
+  }
   get count() { return this.P.n / 3; }
+  /** Start a new piece: its shade varies by ±amp around 1 (deterministic per template). */
+  piece(amp = 0.06) {
+    const h = Math.sin(++this._piece * 127.1 + this.P.n * 0.013) * 43758.5453;
+    this.k = 1 + amp * (2 * (h - Math.floor(h)) - 1);
+    return this;
+  }
   v(x, y, z, nx, ny, nz, u, w, shade = 1) {
     const P = this.P, N = this.N, T = this.T, S = this.S;
     P.ensure(3); N.ensure(3); T.ensure(2); S.ensure(1);
@@ -40,7 +50,7 @@ export class Tpl {
     P.a[k] = x; P.a[k + 1] = y; P.a[k + 2] = z; P.n = k + 3;
     N.a[k] = nx; N.a[k + 1] = ny; N.a[k + 2] = nz; N.n = k + 3;
     T.a[T.n] = u; T.a[T.n + 1] = w; T.n += 2;
-    S.a[S.n++] = shade;
+    S.a[S.n++] = shade * this.k;
     return k / 3;
   }
   /** Push triangle indices (any multiple of three). */

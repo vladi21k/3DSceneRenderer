@@ -10,7 +10,7 @@ const FW = 0.085;           // shopfront casing width
 const ZF = 0.04, ZB = -0.07, CH = 0.01;
 
 function rail(t, a, b, w, zf, zb, shade = 1) {
-  t.bar(a, b, [[-w / 2, zb], [-w / 2, zf - CH], [-w / 2 + CH, zf], [w / 2 - CH, zf], [w / 2, zf - CH], [w / 2, zb]], shade);
+  t.piece(0.05).bar(a, b, [[-w / 2, zb], [-w / 2, zf - CH], [-w / 2 + CH, zf], [w / 2 - CH, zf], [w / 2, zf - CH], [w / 2, zb]], shade);
 }
 
 /**
@@ -147,7 +147,9 @@ export function shopFrameTpl(o, L, q) {
     const poly = [[-hw, yH], [hw, yH], ...pts];
     t.poly(poly, -0.02, 0.9);
   }
-  t.shadeBy((x, y) => 0.8 + 0.2 * Math.min(1, y / 0.5));
+  // grime: darkest at the riser where pavement splash and kicks reach, a dirty band
+  // under the transom bar
+  t.shadeBy((x, y) => (0.74 + 0.26 * Math.min(1, y / 0.6)) * (y < yT && y > yT - 0.35 ? 0.94 + 0.06 * (yT - y) / 0.35 : 1));
   return t.bake();
 }
 

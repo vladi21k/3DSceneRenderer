@@ -3,7 +3,8 @@ import { facadePlan } from '../facadePlan.js';
 import { FaceShade, stoneStyle, trimColor, noise2, setBlock, hash3 } from './shade.js';
 import { insetPolygon, FACES } from './mesh.js';
 import { wallField } from './wall.js';
-import { openingMasonry } from './openings.js';
+import { openingMasonry, surroundOf, flatHead } from './openings.js';
+import { JointFitter } from './coursing.js';
 import { courseProfile, plinthProfile, corniceProfile, dentils, modillions, quoins, pilaster } from './mouldings.js';
 import { parapetProfile, balustrade, merlons, pitchedRoof, solarHeater, sunYaw, waterTank, acUnit, antenna, headHouse } from './roof.js';
 import { openingInfill } from './infill.js';
@@ -55,15 +56,13 @@ function ornament(plan, rng) {
 }
 
 function ashlarUV(plan, meta, rng) {
-  const typ = plan.floors[1] ? plan.floors[1].h : 3.5;
-  const n = Math.max(1, Math.round(typ / plan.style.courseH));
-  const ch = typ / n;                                  // course height so a storey holds whole courses
+  const ch = plan.coursing.ch;                         // a storey holds whole courses (facadePlan)
   const mCH = meta && (meta.courseH ?? meta.rowH ?? meta.layout?.rowH);
   const mBL = meta && (meta.blockL ?? meta.blockLength);
   const sv = mCH ? mCH / ch : 1;
   const su = mBL ? mBL / plan.style.blockL : sv;
-  const g = plan.floors[1] ? plan.floors[1].y : 0;
-  // joints on the first-floor line, plus a random whole number of texture courses so
+  const g = plan.coursing.v0;
+  // bed joints on the window sill lines, plus a random whole number of texture courses so
   // neighbouring buildings do not show the same blocks
   const shift = mCH ? mCH * rng.int(0, (meta.courses || 12) - 1) : 0;
   return [su, rng.range(0, 40), sv, -g * sv + shift];
@@ -158,12 +157,20 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (q.rustic) for (let j = v1 - orn.rustH; j > fg + orn.plinthH + 0.15; j -= orn.rustH) joints.push(j);
       rustic = { v0: fg - 0.4, v1, joints, c: orn.rustC };
     }
-    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt };
-    // texture: ashlar courses aligned with the storeys; rustication rows aligned with the V joints
+    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt, ch: plan.coursing.ch, fit: null };
+    // texture: ashlar courses aligned with the storeys; rustication rows aligned with the V
+    // joints; head joints fitted to the jambs, surrounds, pilasters and quoins per course
     B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
     if (rustic) {
       const sv = rustH ? rustH / orn.rustH : 1;
       sinks.rough.uvx = [sv, uvA[1], sv, -rustic.v1 * sv];
+    }
+    if (metas.ashlarLay || metas.roughLay) {
+      const rects = fitRects(plan, face, ops, orn, F.main);
+      ctx.fit = {
+        ashlar: metas.ashlarLay ? new JointFitter(metas.ashlarLay, uvA, face.width, rects) : null,
+        rough: rustic && metas.roughLay ? new JointFitter(metas.roughLay, sinks.rough.uvx, face.width, rects) : null,
+      };
     }
     yield* wallField(ctx, face, ops);
     sinks.rough.uvx = null;
@@ -306,9 +313,56 @@ export function* lotSteps(B, lot, ends, q, metas) {
   B.shade = null;
 }
 
-/** Quoin column start (above the plinth or the rusticated ground floor) and block height. */
-const quoinV0 = (plan, orn) => (plan.style.rusticGround && plan.courses.length ? plan.courses[0].y + plan.courses[0].h : Math.max(plan.ground0, plan.ground1) + orn.plinthH);
-const quoinH = (plan) => Math.max(0.5, plan.style.courseH * 2);
+/**
+ * Quoin column start (the first bed joint above the plinth or the rusticated ground
+ * floor) and block height (two courses), so quoin blocks course in with the walling.
+ */
+function quoinV0(plan, orn) {
+  const v = plan.style.rusticGround && plan.courses.length ? plan.courses[0].y + plan.courses[0].h : Math.max(plan.ground0, plan.ground1) + orn.plinthH;
+  const { ch, v0 } = plan.coursing;
+  return v0 + Math.ceil((v - v0) / ch - 1e-3) * ch;
+}
+const quoinH = (plan) => 2 * plan.coursing.ch;
+
+/**
+ * Areas of a face the walling stops against, for fitting the ashlar head joints:
+ * openings widened by their surrounds (up to the spring line; above it the stones are
+ * cut to the arch), flat heads, aprons, pilaster shafts and quoin blocks.
+ */
+function fitRects(plan, face, ops, orn, main) {
+  const R = [];
+  for (const o of ops) {
+    const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2, yt = o.y + o.h;
+    const sw = surroundOf(o, face, orn);
+    R.push({ a: u0 - sw, b: u1 + sw, v0: o.y, v1: o.spring });
+    if (o.top === 'flat' || !o.rise) {
+      const h = flatHead(o, orn, sw, plan.coursing.ch);
+      const fan = h.kind === 'flatArch' ? 0.04 : 0;
+      R.push({ a: u0 - h.ext - fan, b: u1 + h.ext + fan, v0: yt, v1: yt + h.H });
+    }
+    if (o.kind === 'window' && orn.apron && o.floor > 0) {
+      const top = o.y - orn.sillH, ah = Math.min(0.7, top - (face.floors[o.floor].y + 0.25));
+      if (ah > 0.25) R.push({ a: u0, b: u1, v0: top - ah, v1: top - 0.02 });
+    }
+  }
+  const cor = plan.cornice;
+  if (plan.style.pilasters && plan.floors.length > 2) {
+    const v0 = plan.courses[0].y + plan.courses[0].h;
+    for (const b of face.bays) if (b.index > 0) R.push({ a: b.u0 - orn.pilW / 2, b: b.u0 + orn.pilW / 2, v0, v1: cor.y });
+  }
+  if (plan.style.quoins) {
+    const W = face.width, qh = quoinH(plan), q = orn.quoin;
+    const sides = main ? [0, 1] : [face.cornerAtU1 ? 1 : 0];
+    for (const side of sides) {
+      let i = main ? 0 : 1;
+      for (let v = quoinV0(plan, orn); v + qh * 0.6 < cor.y; v += qh, i++) {
+        const fw = i % 2 === 0 ? q.long : q.short;
+        R.push(side ? { a: W - fw, b: W + 1, v0: v, v1: v + qh } : { a: -1, b: fw, v0: v, v1: v + qh });
+      }
+    }
+  }
+  return R;
+}
 
 /** True when (u, w) lies inside the clockwise footprint quad with `margin` to every edge. */
 function insideFoot(foot, u, w, margin) {

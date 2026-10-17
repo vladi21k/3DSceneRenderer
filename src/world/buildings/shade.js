@@ -134,7 +134,8 @@ export class FaceShade {
       }
     }
     // large soft patches (stone batches, cleaning, sun bleaching)
-    const p = noise2(u * 0.35, v * 0.28, this.seed) - 0.5 + 0.35 * (noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5);
+    const n1 = noise2(u * 0.35, v * 0.28, this.seed);
+    const p = n1 - 0.5 + 0.35 * (noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5);
     let r = t[0] * (1 + 0.10 * p), gg = t[1] * (1 + 0.10 * p), b = t[2] * (1 + 0.11 * p);
     // splash zone near the paving: darker, greyer
     const hg = v - this.groundAt(u);
@@ -142,7 +143,7 @@ export class FaceShade {
     a *= 1 - 0.20 * Math.exp(-Math.max(0, hg) / 0.3);
     g += 0.55 * Math.exp(-Math.max(0, hg) / 0.5);
     // building-scale variation of how dirty the stone is
-    g *= this.dirt * (0.7 + 0.6 * noise2(u * 0.15, v * 0.12, this.seed + 11));
+    g *= this.dirt * (0.6 + 0.8 * n1);
     const grey = Math.min(0.7, 0.45 * gz * this.dirt + wash * 1.4 + 0.35 * this.unc);
     const lum = (r + gg + b) / 3;
     r += (lum * 0.9 - r) * grey; gg += (lum * 0.9 - gg) * grey; b += (lum * 0.93 - b) * grey;

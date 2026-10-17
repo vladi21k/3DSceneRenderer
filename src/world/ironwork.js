@@ -274,17 +274,21 @@ const ironwork = {
     const tint = st.tint;
     const dirt = r.range(0.88, 1.0);
 
+    const __P = globalThis.__iwP, __t0 = performance.now();
     // ---- slab
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
     writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt, D);
 
+    const __t1 = performance.now(); if (__P) __P.slab = (__P.slab || 0) + __t1 - __t0;
     // ---- consoles, on the piers between the openings below
     if (st.corbel >= 0) {
       const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
       const sz = (D - 0.07) / CORBEL.D;
       const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
-      for (const { u, h } of placeConsoles(plan, bal, Math.max(2, bal.corbels | 0), Hc)) {
+      const __pc = placeConsoles(plan, bal, Math.max(2, bal.corbels | 0), Hc);
+      if (__P) __P.place = (__P.place || 0) + performance.now() - __t1;
+      for (const { u, h } of __pc) {
         // shortened consoles over a high head become the stepped (tiered) kind
         const variant = h < Hc * 0.8 ? 1 : st.corbel;
         _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
@@ -294,6 +298,7 @@ const ironwork = {
       }
     }
 
+    if (__P) __P.cons = (__P.cons || 0) + performance.now() - __t1;
     // ---- railing
     // (the balustrade draws from its own stream so far/near builds place contents alike)
     if (isStone) this.balustrade(ctx, F, bal, rc, tint, new RNG(hash2(lot.seed, 4111 + index)));

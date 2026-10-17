@@ -1,11 +1,15 @@
+import * as THREE from 'three';
 import { hash2 } from '../../core/rng.js';
 
 // Figure test harness (humanstest=1, best with only=humans):
-//   ht_mode = grid | walk | cross | sit | mix   (default mix)
+//   ht_mode = grid | walk | cross | sit | cafe | crowd | mix   (default mix)
+//             cafe: seated at the café chairs nearest the lineup position (add furniture to only=)
 //   ht_n    = number of figures (default 24)
 //   ht_d    = metres ahead of the start position (default 30)
 //   ht_seed = appearance seed offset, ht_v = fixed walking speed (m/s), ht_look = head yaw (rad)
 //   ht_c    = lateral centre of the lineup (route d, metres), ht_sp = grid spacing (m)
+//   ht_rot  = extra heading for grid / sit figures (deg; 180 shows their backs, 90 a profile)
+//   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
 // e.g. ?only=humans&humanstest=1&ht_mode=grid&view=400,1.6,1.7,0,0&fov=17
 
 export class HumansTest {
@@ -21,16 +25,23 @@ export class HumansTest {
     this.lookYaw = p.num('ht_look', 0);
     this.c = p.num('ht_c', 0);
     this.sp = p.num('ht_sp', 0.85);
+    this.rot = (p.num('ht_rot', 0) * Math.PI) / 180;
+    this.poseT = p.num('ht_pose', 0);
     this.s0 = (p.view ? p.view[0] : app.startS) + this.d0;
     this.first = humans.alloc(this.n);
     this.t = 0;
     this.figs = [];
+    const chairs = this.mode === 'cafe' ? this._chairs() : [];
     for (let i = 0; i < this.n; i++) {
       const app_ = hash2(this.seed * 7919 + i, 4242) >>> 0;
       const f = { i: this.first + i, app: app_, phase: (i * 0.37) % 1 };
       const mode = this.mode === 'mix' ? ['walk', 'walk', 'cross', 'grid', 'sit'][i % 5] : this.mode;
       f.mode = mode;
       if (mode === 'grid') { f.d = this.c - ((this.n - 1) * 0.5) * this.sp + i * this.sp; f.s = this.s0; }
+      else if (mode === 'cafe') {
+        const ch = chairs[i % Math.max(1, chairs.length)];
+        if (ch) { f.s = ch.s; f.d = ch.d; f.heading = ch.heading; } else { f.s = this.s0; f.d = 0; }
+      }
       else if (mode === 'sit') { f.d = -3 + (i % 6) * 1.2; f.s = this.s0 + 2 + Math.floor(i / 6) * 1.5; }
       else if (mode === 'cross') { f.d = -9 + ((i * 3.7) % 18); f.s = this.s0 - 6 + ((i * 2.3) % 14); f.dir = i % 2 ? 1 : -1; }
       else if (mode === 'crowd') {
@@ -54,6 +65,9 @@ export class HumansTest {
       } else if (f.mode === 'sit') {
         heading = route.yawAt(s) + Math.PI;
         pose = 2;
+      } else if (f.mode === 'cafe') {
+        heading = f.heading ?? route.yawAt(s);
+        pose = 2;
       } else if (f.mode === 'cross') {
         speed = f.v; pose = 0;
         const span = 18;
@@ -67,6 +81,13 @@ export class HumansTest {
         s = f.dir > 0 ? this.s0 - 10 + u : this.s0 + span - 10 - u;
         heading = route.yawAt(s) + (f.dir > 0 ? 0 : Math.PI);
       }
+      if (f.mode === 'grid' || f.mode === 'sit') heading += this.rot;
+      if (this.poseT > 0 && f.mode === 'grid') {
+        // cycle walk-in-place -> stand -> sit to exercise the pose cross-fades
+        const k = Math.floor((this.t + i0(f) * 0.37) / this.poseT) % 3;
+        pose = k === 0 ? 0 : k === 1 ? 1 : 2;
+        speed = k === 0 ? 1.2 : 0;
+      }
       if (speed > 0) f.phase = (f.phase + (speed * dt) / h.strideLength(f.app, speed)) % 1;
       const p = route.toWorld(s, d, 0);
       o.x = p.x; o.y = p.y; o.z = p.z;
@@ -75,4 +96,24 @@ export class HumansTest {
       h.set(f.i, o);
     }
   }
+
+  /** Chairs of the cafés around the lineup position, with the heading that faces their table. */
+  _chairs() {
+    const { route, layout } = this.app;
+    const out = [];
+    const a = new THREE.Vector3(), b = new THREE.Vector3();
+    for (const cafe of layout.cafes || []) {
+      for (const t of cafe.tables) {
+        if (Math.abs(route.delta(this.s0, t.s)) > 25) continue;
+        route.toWorld(t.s, t.d, 0, b);
+        for (const ch of t.chairs) {
+          route.toWorld(ch.s, ch.d, 0, a);
+          out.push({ s: ch.s, d: ch.d, heading: Math.atan2(-(b.x - a.x), -(b.z - a.z)), dist: Math.abs(route.delta(this.s0, ch.s)) });
+        }
+      }
+    }
+    return out.sort((p, q) => p.dist - q.dist);
+  }
 }
+
+function i0(f) { return f.i; }

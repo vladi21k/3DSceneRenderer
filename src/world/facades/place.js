@@ -197,7 +197,7 @@ function buildWallSign(kit, ctx, ws) {
       const u = s.u0 + (w * (i + 0.5)) / n;
       const ml = wallMatrix(ctx.frame, u, y + h + 0.06, new THREE.Matrix4());
       kit.get('metal').add(ctx.assets.signLamp.metal, ml, ...BLACK_IRON);
-      kit.get('lamp').add(ctx.assets.signLamp.glass, ml);
+      kit.get('bulb').add(ctx.assets.signLamp.glass, ml);
     }
   }
 }
@@ -402,6 +402,7 @@ function buildDoor(kit, ctx, o) {
     const ml = wallMatrix(ctx.frame, uP, o.y + 2.5, new THREE.Matrix4());
     kit.get('metal').add(ctx.assets.lantern.metal, ml, ...BLACK_IRON);
     kit.get('lamp').add(ctx.assets.lantern.glass, ml);
+    kit.get('bulb').add(ctx.assets.lantern.bulb, ml);
   }
 }
 

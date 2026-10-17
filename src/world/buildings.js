@@ -6,6 +6,7 @@ import { SIDE_LOT_START } from './layout.js';
 import { Builder } from './buildings/mesh.js';
 import { lotSteps, coarseLot, DETAIL } from './buildings/shell.js';
 import { grimeStone, litGlass } from './buildings/grime.js';
+import { rowLayout } from './buildings/coursing.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -220,7 +221,12 @@ function runJob(app, job, budgetMs) {
   const t0 = performance.now();
   if (!job.B) job.B = new Builder();
   const B = job.B;
-  const metas = { ashlar: metaOf(app.materials, 'stone.ashlar'), rough: metaOf(app.materials, 'stone.rough') };
+  const M = app.materials, uni = (n) => (M.uniformsOf ? M.uniformsOf(n) : null);
+  const metas = {
+    ashlar: metaOf(M, 'stone.ashlar'), rough: metaOf(M, 'stone.rough'),
+    // the textures' block layouts, for fitting head joints to the openings
+    ashlarLay: rowLayout(uni('stone.ashlar')), roughLay: rowLayout(uni('stone.rough')),
+  };
   const st = buildings.stats;
   while (job.iter || job.next < job.lots.length) {
     const el = performance.now() - t0;

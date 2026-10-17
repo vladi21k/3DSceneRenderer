@@ -43,7 +43,7 @@ const env = {
   exposure: 1,
   exposureBase: 1,
   // street haze inputs for post: ambient in-scatter source, sunlit-air plane, far gap share
-  haze: { amb: new THREE.Vector3(0.05, 0.06, 0.08), plane: new THREE.Vector4(0, 0, 0, -1), gap: 0 },
+  haze: { amb: new THREE.Vector3(0.05, 0.06, 0.08), plane: new THREE.Vector4(0, 0, 0, -1), gap: 0, sun: 1 },
   // scene illuminant on a horizontal surface in the open (sun + sky), for white balance
   illuminant: new THREE.Vector3(1, 1, 1),
 
@@ -59,7 +59,7 @@ const env = {
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
     // a hazy Mediterranean summer afternoon: more aerosol than a clean standard atmosphere
-    this.atmo = new Atmosphere(renderer, { mieScale: 2.6 });
+    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 2.6) });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
@@ -113,9 +113,15 @@ const env = {
     const T = this.atmo.transmittance(dir, undefined, _v);
     const sunCol = new THREE.Color(SUN_TINT.r * T.x, SUN_TINT.g * T.y, SUN_TINT.b * T.z);
     const E = SUN_E0;
-    this.sunIlluminance = E * (0.2126 * sunCol.r + 0.7152 * sunCol.g + 0.0722 * sunCol.b);
+    // the city skyline beyond the modelled streets (and beyond the shadow range) hides
+    // a sun within a few degrees of the horizon from street level; the sky and the
+    // clouds still see it
+    const skyline = THREE.MathUtils.smoothstep(elev / (Math.PI / 180), 0.0, 3.0);
+    this.skyline = skyline;
+    const Es = E * skyline;
+    this.sunIlluminance = Es * (0.2126 * sunCol.r + 0.7152 * sunCol.g + 0.0722 * sunCol.b);
     this.sun.color.copy(sunCol);
-    this.sun.intensity = E;
+    this.sun.intensity = Es;
     this.sun.position.copy(dir);
     // keep the light (a changing light count would recompile every material); below the
     // horizon its colour is ~0 and the shadow pass is skipped
@@ -125,7 +131,7 @@ const env = {
     if ((up && !sh.autoUpdate) || !sh.map) sh.needsUpdate = true;
     sh.autoUpdate = up;
     U.uSunDir.value.copy(dir);
-    U.uSunColor.value.setRGB(sunCol.r * E, sunCol.g * E, sunCol.b * E);
+    U.uSunColor.value.setRGB(sunCol.r * Es, sunCol.g * Es, sunCol.b * Es);
     this.sky.uniforms.uSunGround.value.set(sunCol.r * E, sunCol.g * E, sunCol.b * E);
 
     this.atmo.updateSky(dir);
@@ -191,7 +197,7 @@ const env = {
     const w = Math.pow(0.5 + 0.5 * c, 2);
     const slot = THREE.MathUtils.lerp(lum(irr.horizonAnti), lum(irr.horizonSun), w);
     // no cap in daylight (the bright sky slot is meant to be the brightest thing in frame)
-    const level = THREE.MathUtils.lerp(4.0, 0.35, THREE.MathUtils.smoothstep(this.state.t, 0.6, 0.85));
+    const level = THREE.MathUtils.lerp(4.0, 0.35, THREE.MathUtils.smoothstep(this.state.t, 0.6, 0.88));
     return Math.min(base, level / Math.max(slot, 1e-9));
   },
 
@@ -237,6 +243,7 @@ const env = {
       hz.plane.set(0, 0, 0, -1);
     }
     hz.gap = 0.08 * sunUp;
+    hz.sun = this.skyline ?? 1;
   },
 
   /** Orient the canyon model of the environment map to the street at the camera. */
