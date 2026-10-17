@@ -140,10 +140,10 @@ function facadeFace(G, f, width, vBot0, vBot1, vTop, openings, wall, skipBand = 
 
 /** Colour and night glow of an opening. */
 function openingLook(o, shutterCol, wall) {
-  if (o.kind === 'shop') return [mul(wall, 0.2), 0.3 + 0.3 * (o.lit ?? 0.5)];
+  if (o.kind === 'shop') return [mul(wall, 0.2), 0.15 + 0.15 * (o.lit ?? 0.5)];
   if (o.kind === 'door') return [DOOR, 0];
   if (o.shutters === 'closed') return [shutterCol, 0];
-  const lit = (o.lit ?? 0) > 0.8 ? 0.35 + 0.4 * o.lit : 0;   // about one window in five
+  const lit = (o.lit ?? 0) > 0.86 ? 0.3 + 0.3 * o.lit : 0;   // about one window in seven
   return [GLASS, lit];
 }
 

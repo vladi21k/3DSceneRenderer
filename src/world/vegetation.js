@@ -186,7 +186,7 @@ const vegetation = {
       const T = P.T;
       // sky occlusion under the crown: open young crowns hide less of the sky
       const sy = P.size / T.tpl.height;
-      shade.push({ s: t.s, d: t.d, side: t.side, r: T.tpl.crownR * P.sxz, h: 0.5 * (T.tpl.crownBase + T.tpl.height) * sy, k: P.mature ? 0.42 : 0.28 });
+      shade.push({ s: t.s, d: t.d, side: t.side, r: T.tpl.crownR * P.sxz, h: 0.5 * (T.tpl.crownBase + T.tpl.height) * sy, k: P.mature ? 0.36 : 0.22 });
       this.pools.add(rec, this.leafPool, T.leafIdx, P.matrix, P.leafTint, P.pos, P.size);
       // bark detail steps down sooner than the crown's: its twigs are sub-pixel long before
       // the leaf clumps are (and mostly hidden by them)

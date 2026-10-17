@@ -4,6 +4,7 @@ import { FACES } from './mesh.js';
 import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
 import { openingInfill } from './infill.js';
+import { sideFrame } from './party.js';
 
 // Set-back upper volume on a flat roof (plan.upper, see facadePlan massing): a
 // penthouse storey behind its terrace, or a later addition of several storeys, in
@@ -36,7 +37,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery
   const ctx = {
     B, sinks: { ...sinks, ashlar: sWall, smooth: sTrim, detail: sTrim, rough: null }, q, fs, orn: plainOrnament(orn),
-    vBottom: v0 - 0.02, vTop: top, rustic: null, sillExt: 0.11, ch: 0, fit: null,
+    vBottom: v0 - 0.02, vTop: top, rustic: null, sillExt: 0.11, ch: 0, fit: null, rollerCol: [0.62, 0.6, 0.55],
   };
   B.frameFromLot(up.frame);
   B.setUV();
@@ -50,11 +51,45 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   }
   yield;
   B.frameFromLot(up.frame);
-  // sides and back (plain walls, shaded like the front's field)
+  // sides and back (plain walls, shaded like the front's field); a tower's sides have
+  // windows, or a painted mural on the side facing back down the street
   B.shade = (u, v, w, nu, nv, nw, out) => { fs.wall(u - w * 0.37, v, out); out[0] *= 0.96; out[1] *= 0.96; out[2] *= 0.96; };
-  B.gridU(sWall, 0, v0 - 0.02, top, -D, 0, -1, 2);
-  B.gridU(sWall, W, v0 - 0.02, top, -D, 0, 1, 2);
+  if (!up.sides) {
+    B.gridU(sWall, 0, v0 - 0.02, top, -D, 0, -1, 2);
+    B.gridU(sWall, W, v0 - 0.02, top, -D, 0, 1, 2);
+  }
   B.rectW(sWall, 0, W, v0 - 0.02, top, -D, -1);
+  if (up.sides) {
+    for (const e of [0, 1]) {
+      const fr = sideFrame(up.frame, W, e, -D, 0);
+      const ops = up.sides[e], m = up.mural && up.mural.e === e ? up.mural : null;
+      const sface = { ...face, width: D, openings: ops };
+      const sfs = new FaceShade(sface, col.map((c) => c * 0.97), lot.seed + 4241 + 31 * (e + 1), { dirt: dirt * 0.9, sillExt: 0.11, sillH: 0.06 });
+      const sctx = { ...ctx, fs: sfs };
+      B.frameFromLot(fr);
+      B.setUV(1, 7.3 * e, 1, 0);
+      const holes = m ? [...ops, { uc: (m.u0 + m.u1) / 2, w: m.u1 - m.u0, y: m.v0, h: m.v1 - m.v0, top: 'flat', rise: 0, spring: m.v1 }] : ops;
+      yield* wallField(sctx, sface, holes);
+      B.setUV();
+      B.frameFromLot(fr);
+      if (m) {
+        const sm = B.sink(`mural${m.k}`);
+        B.shade = null; B.flat = [1, 1, 1];
+        sm.reserve(4, 6);
+        const a = B.v(sm, m.u0, m.v0, 0, 0, 0, 1, 0, 0), b = B.v(sm, m.u1, m.v0, 0, 0, 0, 1, 1, 0);
+        const c = B.v(sm, m.u1, m.v1, 0, 0, 0, 1, 1, 1), d = B.v(sm, m.u0, m.v1, 0, 0, 0, 1, 0, 1);
+        B.quadIdx(sm, a, b, c, d);
+      }
+      const srng = RNG.from(lot.seed, 'upperSide', e);
+      for (let i = 0; i < ops.length; i++) {
+        openingMasonry(sctx, sface, ops[i]);
+        openingInfill(sctx, sface, ops[i], srng);
+        if (i % 4 === 3) { yield; B.frameFromLot(fr); }
+      }
+      yield;
+    }
+    B.frameFromLot(up.frame);
+  }
   // roof slab: a thin projecting concrete-and-render slab with a drip edge
   const o = 0.3, t = 0.2;
   B.shade = null;

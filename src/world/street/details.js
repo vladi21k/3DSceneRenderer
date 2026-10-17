@@ -87,8 +87,8 @@ export function planDetails(ctx, ci) {
     if (!blocked(s, d, 0.6)) add('drain', s, d, Math.PI / 2);
   }
 
-  // round manholes on the sidewalks (the strip between the tracks carries the worn
-  // centre line, so covers there are the slotted drains in the four-foot only)
+  // round manholes on the sidewalks (between the tracks the covers are the slotted
+  // drains in the four-foot only)
   const nMan = rng.weighted([[0, 0.3], [1, 0.5], [2, 0.2]]);
   for (let i = 0; i < nMan; i++) {
     for (let tries = 0; tries < 6; tries++) {
@@ -184,7 +184,7 @@ export function planDetails(ctx, ci) {
   // middle of the decal: TREE_RING_SIZE is scaled to its 1.24 m frame)
   for (const t of layout.inChunk('trees', ci)) {
     const tr = RNG.from('tree-ring', t.seed);
-    stains.push({ s: t.s, d: t.d, kind: 4, size: TREE_RING_SIZE, aspect: 1, yaw: 0, op: tr.range(1.15, 1.35), warm: tr.range(0.55, 0.85) });
+    stains.push({ s: t.s, d: t.d, kind: 4, size: TREE_RING_SIZE, aspect: 1, yaw: 0, op: tr.range(1.15, 1.35), warm: tr.range(0.3, 0.5) });
   }
 
   // fallen leaves around trees and in the gutters

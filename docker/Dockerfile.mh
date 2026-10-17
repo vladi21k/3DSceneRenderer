@@ -1,14 +1,12 @@
 # Human-figure generation image: the tools image plus MPFB2 (MakeHuman for Blender, GPLv3 code)
 # and the MakeHuman CC0 system assets (body, skins, eyes, hair, clothes). Only generated output
 # (CC0) is shipped in assets/; nothing from this image is redistributed.
+# The two archives are fetched by tools/mh_fetch.sh into docker/mh/ (git-ignored).
 FROM tramline-tools:latest
-ARG MPFB_URL="https://extensions.blender.org/download/sha256:c075b3e9b94b8e5556a5f03f4653602d02ea306de08126e8f55ed6dee28a2dad/add-on-mpfb-v2.0.18.zip?repository=%2Fapi%2Fv1%2Fextensions%2F&blender_version_min=4.2.0"
-ARG ASSETS_URL="http://files.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip"
 RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /opt/mh && curl -fsSL "$MPFB_URL" -o /opt/mh/mpfb.zip \
- && curl -fsSL "$ASSETS_URL" -o /opt/mh/system_assets.zip
-# install MPFB as a Blender extension for any user (HOME=/tmp at runtime) and pre-stage the assets
+COPY mh/mpfb.zip mh/system_assets.zip /opt/mh/
 ENV BLENDER_USER_RESOURCES=/opt/mh/blender_user
-RUN mkdir -p /opt/mh/blender_user && chmod -R 777 /opt/mh \
+RUN mkdir -p /opt/mh/blender_user /opt/mh/system_assets \
+ && unzip -q /opt/mh/system_assets.zip -d /opt/mh/system_assets && rm /opt/mh/system_assets.zip \
  && HOME=/tmp blender -b --factory-startup --python-expr "import bpy; bpy.ops.extensions.package_install_files(filepath='/opt/mh/mpfb.zip', repo='user_default', enable_on_install=True); bpy.ops.wm.save_userpref()" \
- && chmod -R 777 /opt/mh
+ && chmod -R a+rwX /opt/mh

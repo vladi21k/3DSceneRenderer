@@ -1,4 +1,5 @@
 import { RNG } from '../core/rng.js';
+import { TRACK_OFFSET, EYE_HEIGHT } from '../core/config.js';
 
 // Facade plan: the architectural description of one building front, shared by the
 // building shell generator (masonry) and the facade infill/attachment generators
@@ -25,17 +26,24 @@ const STONE_TINTS = [
 
 const cache = new Map();
 let layoutRef = null;
+let termini = new Map();   // lot id -> true: the lot closes the view down the street (see findTermini)
 
 /**
  * Give the plan generator access to the layout (cross streets and side lots), so corner
- * returns follow the real side-street building line. Plans made before binding are
- * dropped from the cache. Without a layout, returns are perpendicular to the front.
+ * returns follow the real side-street building line, and find the lots that close the
+ * view down the street (they get a taller set-back block, see tower()). Plans made
+ * before binding are dropped from the cache. Without a layout, returns are
+ * perpendicular to the front.
  */
 export function bindLayout(layout) {
   if (layoutRef === layout) return;
   layoutRef = layout;
   cache.clear();
+  termini = findTermini(layout);
 }
+
+/** Ids of the lots that close the view down the street (inspection, tests). */
+export function terminusLots() { return [...termini.keys()]; }
 
 export function facadePlan(lot) {
   if (cache.has(lot.id)) return cache.get(lot.id);
@@ -211,6 +219,7 @@ export function facadePlan(lot) {
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
   cornerCut(plan, lot);                    // some street corners are chamfered (an extra face)
+  if (termini.has(lot.id)) tower(plan, lot); // closes the view down the street: a taller block
   for (const f of [plan, ...plan.returns, ...(plan.upper ? [plan.upper] : [])]) for (const o of f.openings) o.backDepth = backDepthOf(o);
   cache.set(lot.id, plan);
   return plan;
@@ -704,4 +713,134 @@ function sideLotStart(lot, end, corner) {
     }
   }
   return best;
+}
+
+// ------------------------------------------------------------------ view terminators
+// Down the long lens the street ends where the line of sight leaves it: on the outer
+// side of a bend, beyond a crest. In the photographs that spot is often closed by a
+// taller, plainer block rising behind the frontage (an orange or ochre rendered one, a
+// white 1960s one, one with a big mural on its gable). findTermini() casts the cab's
+// lines of sight every 20 m along the route (a fan around the gaze, which the telephoto
+// framing turns towards the track some 80 m ahead), takes the deepest one, and marks the
+// lot where it leaves the street (outer frontage, 140–700 m out; corner lots and
+// side-street mouths excepted; at most one per 90 m of frontage; 60 % of them).
+
+function findTermini(layout) {
+  const out = new Map(), route = layout && layout.route;
+  if (!route || !layout.lots) return out;
+  const L = route.length, step = 3, n = Math.ceil(L / step);
+  const F = [new Float32Array(n * 2), new Float32Array(n * 2)];
+  for (let i = 0; i < n; i++) {
+    const sm = route.sample(i * step);
+    [-1, 1].forEach((side, k) => {
+      const hw = layout.halfWidth(i * step, side);
+      F[k][i * 2] = sm.pos.x + sm.right.x * hw * side;
+      F[k][i * 2 + 1] = sm.pos.z + sm.right.z * hw * side;
+    });
+  }
+  const exit = (s0, ox, oz, dx, dz) => {
+    let best = null;
+    const i0 = Math.floor(s0 / step), i1 = i0 + Math.ceil(760 / step);
+    for (let k = 0; k < 2; k++) {
+      const P = F[k];
+      for (let i = i0; i < i1; i++) {
+        const a = ((i % n) + n) % n, b = (a + 1) % n;
+        const ax = P[a * 2], az = P[a * 2 + 1], ex = P[b * 2] - ax, ez = P[b * 2 + 1] - az;
+        const den = dx * ez - dz * ex;
+        if (Math.abs(den) < 1e-9) continue;
+        const qx = ax - ox, qz = az - oz, t = (qx * ez - qz * ex) / den, u = (qx * dz - qz * dx) / den;
+        if (u < 0 || u > 1 || t < 30 || t > 720) continue;
+        if (!best || t < best.t) best = { t, s: route.wrap((i + u) * step), side: k ? 1 : -1 };
+        break;
+      }
+    }
+    return best;
+  };
+  const bySide = new Map([[-1, []], [1, []]]);
+  for (const l of layout.lots) bySide.get(l.side > 0 ? 1 : -1).push(l);
+  const chosen = [];
+  for (let sc = 0; sc < L; sc += 20) {
+    const eye = route.toWorld(sc, TRACK_OFFSET, EYE_HEIGHT), ahead = route.toWorld(sc + 80, TRACK_OFFSET, 0);
+    const tan = route.sample(sc).tanH;
+    let gx = ahead.x - eye.x, gz = ahead.z - eye.z;
+    const gl = Math.hypot(gx, gz) || 1;
+    gx = tan.x * 0.3 + (gx / gl) * 0.7; gz = tan.z * 0.3 + (gz / gl) * 0.7;
+    let hit = null;
+    for (let a = -12; a <= 12; a += 0.5) {
+      const c = Math.cos((a * Math.PI) / 180), sn = Math.sin((a * Math.PI) / 180);
+      const rx = gx * c - gz * sn, rz = gx * sn + gz * c, rl = Math.hypot(rx, rz) || 1;
+      const h = exit(sc, eye.x, eye.z, rx / rl, rz / rl);
+      if (h && (!hit || h.t > hit.t)) hit = h;
+    }
+    if (!hit || hit.t < 140 || hit.t > 700) continue;
+    if (layout.isInCrossStreet && layout.isInCrossStreet(hit.s, hit.side, 6)) continue;
+    const lot = bySide.get(hit.side).find((l) => route.delta(l.s0 - 1, hit.s) >= 0 && route.delta(hit.s, l.s1 + 1) >= 0);
+    if (!lot || lot.cornerU0 || lot.cornerU1 || lot.len < 9) continue;
+    if (chosen.some((c) => c.side === hit.side && Math.abs(route.delta(c.s, hit.s)) < 90)) continue;
+    chosen.push({ side: hit.side, s: hit.s });
+    if (RNG.from(lot.seed, 'terminus').chance(0.6)) out.set(lot.id, true);
+  }
+  return out;
+}
+
+// render colours (multipliers on the plaster albedo, × 0.9 as the upper volumes store them)
+const TOWER_RENDER = [
+  [1.17, 0.9, 0.47], [1.19, 0.97, 0.56], [1.22, 0.7, 0.38], [1.17, 0.65, 0.36],   // ochre, yellow, orange
+  [1.02, 1.03, 1.06], [1.0, 1.0, 0.98], [1.04, 1.0, 0.92],                         // white, off-white, cream
+];
+
+/**
+ * A view-terminating lot becomes a taller block: the street front keeps its storeys and
+ * a plain modern block of several more rises set back behind it (plan.upper with
+ * tower: true), rendered (ochre, orange, white) or stone-clad, with a window in every
+ * bay of its front and sides, some shuttered, and on some a big painted mural covering
+ * the side that faces back down the street.
+ */
+function tower(plan, lot) {
+  if (plan.cornerU0 || plan.cornerU1 || plan.width < 8 || plan.depth < 12) return;
+  const rng = RNG.from(lot.seed, 'tower');
+  if (plan.roof.type !== 'flat') plan.roof = { type: 'flat' };
+  const nF = plan.floors.length;
+  const floors = Math.max(3, rng.int(9, 12) - nF);
+  const setback = rng.range(2.4, 4.5);
+  const in0 = rng.chance(0.5) ? 0 : rng.range(0.4, 1.2), in1 = rng.chance(0.5) ? 0 : rng.range(0.4, 1.2);
+  const width = plan.width - in0 - in1;
+  const depth = Math.min(plan.depth - setback - 1.0, rng.range(10, 14));
+  if (width < 7 || depth < 6) return;
+  const floorH = rng.range(2.95, 3.15);
+  const material = rng.chance(0.7) ? 'plaster' : 'stone';
+  const color = material === 'plaster' ? rng.pick(TOWER_RENDER) : [0.93, 0.9, 0.84];
+  const v0 = plan.parapet.y;
+  const f = lot.frame;
+  const origin = f.origin.clone().addScaledVector(f.uDir, in0).addScaledVector(f.nDir, -setback);
+  const matrix = f.matrix.clone().makeBasis(f.uDir, f.up, f.nDir).setPosition(origin);
+  const frame = { origin, uDir: f.uDir.clone(), nDir: f.nDir.clone(), up: f.up.clone(), width, ground0: f.floorRef + v0, ground1: f.floorRef + v0, floorRef: f.floorRef, matrix };
+  const shutterKind = material === 'plaster' && color[2] < 0.7 ? 'louvre' : 'roller';
+  // a window per bay and storey: some roller shutters part or all the way down, or
+  // louvred leaves (closed, or folded back on the warm-coloured blocks)
+  const row = (len, tag) => {
+    const ops = [];
+    const nb = Math.max(1, Math.floor((len - 1.2) / rng.range(2.7, 3.2))), bw = (len - 1.2) / nb;
+    const ww = Math.min(bw - 0.9, rng.range(1.2, 1.5)), wh = rng.range(1.4, 1.55);
+    for (let k = 0; k < floors; k++) {
+      const y = v0 + k * floorH + rng.range(0.85, 0.92);
+      for (let b = 0; b < nb; b++) {
+        const h = rng.next();
+        const shutters = h < 0.4 ? (shutterKind === 'roller' ? 'roller' : h < 0.15 ? 'closed' : 'open') : 'none';
+        ops.push({ id: `${lot.id}:t${tag}${k}b${b}`, floor: nF + k, bay: b, uc: 0.6 + bw * (b + 0.5), w: ww, y, h: wh, top: 'flat', kind: 'window',
+          recess: rng.range(0.14, 0.2), shutters, roller: rng.range(0.25, 1), lit: rng.next(), curtain: rng.chance(0.5) });
+      }
+    }
+    return ops;
+  };
+  const openings = row(width, 'f');
+  // the side facing back down the street (the oncoming tram): u = 0 on the left of the
+  // street (side < 0), u = width on the right
+  const eFace = lot.side < 0 ? 0 : 1;
+  const mural = material === 'plaster' && rng.chance(0.4)
+    ? { e: eFace, k: rng.int(0, 3), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
+    : null;
+  const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`)));
+  plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind };
+  for (const o of [...openings, ...sides[0], ...sides[1]]) setArch(o);
 }

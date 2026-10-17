@@ -51,6 +51,7 @@ import { U } from '../../core/uniforms.js';
 const LIGHT_CAP = 8.0;
 const LAMP_CAP = 14.0;
 const LAMP_TRANS = 0.3;
+const SUN_MULTI = 0.3;   // share of the sunlight stopped by a crown that lights its inner leaves
 
 const WIND_PARS = /* glsl */`
 invariant gl_Position;
@@ -318,6 +319,10 @@ function patchLeaf(mat, params) {
         float tThrough = isSun ? mix( 0.12, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
         vec3 tc = material.diffuseColor * vec3( 1.12, 1.08, 0.55 );
         reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT * back * ( 1.0 + 0.5 * fwd + 0.4 * rim ) * RECIPROCAL_PI );
+        // green light inside the crown: the sunlight the outer leaves stop is partly
+        // scattered on (reflected and transmitted, about twice the leaf albedo) and lights
+        // the leaves within, as a saturated green glow
+        if ( isSun ) reflectedLight.directDiffuse += directLight.color * ( 1.0 - vVegSun ) * vegCapT * ${SUN_MULTI.toFixed(3)} * 2.0 * material.diffuseColor * BRDF_Lambert( material.diffuseColor );
       }
       #undef RE_Direct
       #define RE_Direct RE_Direct_Leaf`, 'leaf lights pars');
@@ -342,7 +347,9 @@ function patchLeaf(mat, params) {
           if ( dot( vegGn, geometryViewDir ) < 0.0 ) vegGn = -vegGn;
           reflectedLight.indirectDiffuse += getIBLIrradiance( -vegGn ) * diffuseColor.rgb * vec3( 1.0, 1.04, 0.6 ) * ( 0.8 * uLeafTrans * RECIPROCAL_PI );
         #endif
-        reflectedLight.indirectDiffuse *= vVegAO;
+        // the sky light the crown hides reaches the leaf partly after scattering in other
+        // leaves (reflected and transmitted, about twice the leaf albedo): green, not lost
+        reflectedLight.indirectDiffuse *= vVegAO + ( 1.0 - vVegAO ) * min( vec3( 1.0 ), 2.0 * diffuseColor.rgb );
         #ifdef VEG_DEBUG
           // debug view (URL vegdbg=1..4): one lighting term only
           vec3 vegDbg = VEG_DEBUG == 1 ? reflectedLight.directDiffuse : VEG_DEBUG == 2 ? reflectedLight.directSpecular

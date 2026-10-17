@@ -18,15 +18,18 @@ import { createSpillMaterial } from './facades/spill.js';
 //
 // Geometry is assembled per chunk into one buffer per material (facades/geo.js) from
 // per-opening templates cached by size and style (shopfronts and doors share one or two
-// designs per building): about 11 draw calls for a near chunk (plain sign boards join the
-// painted shutters) and 4–5 for a far one (lod 1), where doors, shutters, ironwork and
-// stone fold into the frame batch too. Far chunks use flat glass 2.5–3 cm proud of the
+// designs per building): about 12 draw calls for a near chunk (historic timber windows on
+// the chipped-paint bakes; shopfronts, roller shutters and plain sign boards in one
+// powder-coat / enamel batch) and 4–5 for a far one (lod 1), where doors, shutters,
+// ironwork and stone fold into that batch too. Far chunks use flat glass 2.5–3 cm proud of the
 // infill plane with a depth-offset material, procedural casings, and no small fittings;
 // so do the backdrops and deep side-street lots. Café terraces of the 'awning' style get
 // one continuous retractable awning along the shop front. At dusk lit rooms also light
 // their stone reveals and shops the pavement in front (facades/spill.js; not drawn by
-// day). Joinery takes a colour per building from a weighted palette (facades/kit.js),
-// weathered per opening, on the close-range paint bakes offset per opening. Chunk
+// day). Shops are dressed (facades/dressing.js): posters, price cards and stickers on the
+// glass, goods hung on the piers. Joinery takes a colour per building from a weighted
+// palette (facades/kit.js), weathered per opening, on the close-range paint bakes offset
+// per opening. Chunk
 // builds are generators: prefetched a slice per frame ahead of the streamer (update,
 // world.upcoming()), or finished synchronously in build() when the prefetch missed.
 

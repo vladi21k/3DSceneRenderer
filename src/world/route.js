@@ -190,9 +190,10 @@ export class Route {
 
     // elevation: gentle periodic rolling, designed hills (periodic bumps) and mesas (an eased
     // climb at a steady grade, a level top, an eased descent). Grades stay ≤ 6.5 %.
-    // The default start sits in a shallow sag at the foot of the main avenue; from about 100 m
-    // ahead the street climbs ~20 m at 5–6 % (a visible rising ramp of paving down the long
-    // lens, as in the reference views) and levels off at ~560 m, where the first stop is.
+    // The default start sits in a shallow sag at the foot of the main avenue; from about 130 m
+    // ahead the street climbs 21 m, at ~5.8 % from 240 m to 510 m (a rising ramp of paving that
+    // fills ~15 % of the frame down the long lens, as in the reference views), and levels off
+    // at ~600 m, where the first stop is.
     const L = length;
     this.elevTerms = [
       { a: 1.6, k: 2, p: 0.35 },
@@ -201,7 +202,7 @@ export class Route {
     ];
     this.mesas = [
       // climb s0→s1, level top, descend s2→s3; h metres; e = eased share of each ramp
-      { s0: 100, s1: 560, s2: 720, s3: 1300, h: 20, e: 0.25 },
+      { s0: 150, s1: 600, s2: 740, s3: 1300, h: 21, e: 0.2 },
     ];
     this.hills = [
       { c: 30, a: -1.2, w: 55 },     // the sag the default start stands in

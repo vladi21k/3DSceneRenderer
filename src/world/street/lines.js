@@ -34,7 +34,7 @@ export const patchWear = (hole, tone) => Math.round(hole * 1000) + 0.02 + 0.96 *
 const PAINT = [
   null, null,
   { color: 0xd8d6ce, roughness: 0.62, wear: 0.18, opacity: 0.8 },                         // centre
-  { color: 0xdedcd5, roughness: 0.58, wear: 0.36, opacity: 0.87 },                         // stripe
+  { color: 0xdedcd5, roughness: 0.58, wear: 0.24, opacity: 0.87 },                         // stripe
   { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, dash: [0.18, 0.65], minPx: 1.2 }, // joint
 ];
 
@@ -148,10 +148,10 @@ const RAIL_FRAG = /* glsl */`
   vec3 aSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.88)};               // bitumen seal
   vec3 aCorner = vec3( 0.2, 0.15, 0.11 ) * ( 0.85 + 0.3 * wear );  // oxidised field bevel
   vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
-  vec3 aGroove = vec3( 0.05, 0.045, 0.037 );                        // grit-filled slot (grit floor, dark walls)
+  vec3 aGroove = vec3( 0.04, 0.036, 0.03 );                         // grit-filled slot (grit floor, dark walls)
   vec3 aLip = vec3( 0.3, 0.29, 0.275 ) * ( 0.9 + 0.14 * wear );    // dusty guard lip
   vec3 aGrout = ${v3(MORTAR_ALBEDO, 0.95)};                          // mortar bed
-  vec3 aPave = vec3( 0.245, 0.241, 0.236 );                         // brake-dusted setts beside it
+  vec3 aPave = vec3( 0.135, 0.136, 0.14 );                          // brake-dusted setts beside it
   float cPave = core * max( 0.0, 1.0 - cov );
   float inv = 1.0 / max( cov + cPave, 1e-4 );
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;

@@ -515,6 +515,7 @@ uniform vec2 uResolution;
 uniform float uVeil;          // veiling glare: share of the frame's mean light spread evenly over it
 uniform vec3 uVeilSun;        // plus light from a sun just outside the frame, scattered by the front glass
 uniform vec2 uHiComp;         // highlight recovery: knee (stops over mid grey), log slope above it
+uniform vec2 uCurveSlope;     // contrast in stops around a pivot (stops over mid grey): slope, pivot
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -554,6 +555,7 @@ vec3 agx(vec3 color) {
 // from mid grey, y = min(1, A / (1 + exp(-s (e - e0)))^q)
 float cameraCurve(float Y) {
   float e = log2(max(Y, 1e-8) / 0.18);
+  e = uCurveSlope.y + (e - uCurveSlope.y) * uCurveSlope.x;
   return min(1.0, uCurve.x / pow(1.0 + exp(-uCurve.y * (e - uCurve.z)), uCurve.w));
 }
 float srgbToLinear(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }

@@ -150,7 +150,7 @@ const trams = {
         lg.matrixAutoUpdate = false;
         lg.name = `trams:${kind}:lod${lod}`;
         const parts = [['body', mats.body], ['glass', mats.glass], ['ws', mats.ws], ['front', mats.front], ['metal', mats.metal],
-          [kind === 'lead' ? 'lampLead' : 'lampTrail', lamp]];
+          [kind === 'lead' ? 'lampLead' : kind === 'mid' ? 'lampMid' : 'lampTrail', lamp]];
         for (const [k, mat] of parts) {
           const geo = m[k];
           if (!geo) continue;

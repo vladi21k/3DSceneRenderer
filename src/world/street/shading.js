@@ -165,7 +165,7 @@ float stMR = 1.0;
 // Grit fill of the flangeway: where the groove surface faces up (its floor and the foot
 // of its walls) the grime of rail.groove gives way to grey-brown grit and sand with leaf
 // fragments, patchy along the rail (packed and damp, loose and pale, swept out by the
-// flanges in places). Effective albedo ~0.04-0.09, mean ~0.06, about 0.35x the setts
+// flanges in places). Effective albedo ~0.03-0.07, mean ~0.05, about 0.3x the setts
 // (the floor's cavity AO is folded in).
 // UVs: u along the rail (m), v across the profile (m).
 const GRIT = /* glsl */`
@@ -181,15 +181,15 @@ const GRIT = /* glsl */`
   vec2 q1 = mat2( 0.8, 0.6, -0.6, 0.8 ) * pw * 310.0, q2 = mat2( 0.47, -0.88, 0.88, 0.47 ) * pw * 170.0 + 3.1;
   float grain = mix( 0.5, stNoise( q1 ) * 0.55 + stNoise( q2 ) * 0.45, kFi );
   float stone = kFi * smoothstep( 0.68, 0.8, stNoise( q2 * 0.55 + 9.0 ) );
-  vec3 g = vec3( 0.086, 0.078, 0.065 ) * ( 0.6 + 0.8 * pa ) * ( 0.7 + 0.6 * grain ) * ( 1.0 + 0.35 * stone );
+  vec3 g = vec3( 0.066, 0.06, 0.05 ) * ( 0.6 + 0.8 * pa ) * ( 0.7 + 0.6 * grain ) * ( 1.0 + 0.35 * stone );
   // pale dry sand drifts and dark damp stretches
   float sand = smoothstep( 0.62, 0.82, stNoise( vec2( p.x * 0.9, 2.3 ) + 4.0 ) );
   float damp = smoothstep( 0.6, 0.85, stNoise( vec2( p.x * 0.45, 5.1 ) + 13.0 ) );
-  g = mix( g, vec3( 0.115, 0.105, 0.086 ) * ( 0.85 + 0.3 * grain ), 0.6 * sand ) * ( 1.0 - 0.38 * damp );
+  g = mix( g, vec3( 0.09, 0.083, 0.068 ) * ( 0.85 + 0.3 * grain ), 0.6 * sand ) * ( 1.0 - 0.38 * damp );
   // leaf fragments caught in the slot: a few centimetres each, in loose clusters
   float lc = smoothstep( 0.55, 0.8, stNoise( vec2( p.x * 1.7, 0.5 ) + 41.0 ) );
   float leaf = lc * smoothstep( 0.7, 0.82, stNoise( vec2( pw.x * 24.0, pw.y * 70.0 ) + 31.0 ) );
-  g = mix( g, vec3( 0.105, 0.072, 0.042 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
+  g = mix( g, vec3( 0.085, 0.058, 0.034 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
     g *= mix( 0.78, 1.0, smoothstep( 0.2, 0.5, vColor.g ) );
   #endif

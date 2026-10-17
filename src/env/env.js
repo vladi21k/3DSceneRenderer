@@ -49,9 +49,9 @@ const BOUNCE = { up: 0.15, down: 0.2 };
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
 // exposed value of the horizon slot down the street the camera holds once the sun is low
-// (sunset onwards; ~3 stops over mid grey, which post's highlight recovery brings down to
+// (sunset onwards; ~4.5 stops over mid grey, which post's highlight recovery brings down to
 // the shoulder with its colour), by time of day
-const HORIZON_LEVEL = [[0.6, 64], [0.8, 1.5]];
+const HORIZON_LEVEL = [[0.6, 64], [0.8, 4.5]];
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -85,9 +85,10 @@ const env = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    // a hazy, dusty Mediterranean summer afternoon: ~20x the aerosol of the clean
-    // reference atmosphere, 2 km deep (optical depth ~0.15 above the city); URL mie= overrides it
-    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 20) });
+    // a hazy, dusty Mediterranean summer afternoon: ~12x the aerosol of the clean
+    // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue
+    // sky, a milky horizon, deep blue only overhead); URL mie= overrides it
+    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 12) });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });

@@ -17,10 +17,11 @@ const RG = 6360.0, RT = 6460.0;
 const RAYLEIGH = [5.802e-3, 13.558e-3, 33.1e-3];            // per km
 const RAYLEIGH_H = 8.0;
 const MIE_SCA = 3.996e-3, MIE_EXT = 4.44e-3, MIE_H = 2.0;  // summer dust reaches well above the city
-// dust aerosol: extinction rises towards blue (Angstrom exponent ~1 over the sRGB primaries)
-// and the blue is absorbed a little more (single-scattering albedo 0.93 red .. 0.86 blue),
-// so a heavy load reddens the low sun and whitens the sky and the haze towards yellow-grey
-const MIE_SPEC_EXT = [0.89, 1.0, 1.19], MIE_SPEC_SCA = [0.92, 1.0, 1.14];
+// dust aerosol: extinction rises a little towards blue (Angstrom exponent ~0.6 over the
+// sRGB primaries) and the blue is absorbed a little more (single-scattering albedo 0.93
+// red .. 0.89 blue), so the load reddens the low sun and whitens the sky near the horizon
+// while the sky away from the sun stays a pale blue
+const MIE_SPEC_EXT = [0.93, 1.0, 1.11], MIE_SPEC_SCA = [0.96, 1.0, 1.07];
 const OZONE = [1.45e-3, 1.881e-3, 0.085e-3]; // red raised: sRGB red sits near the Chappuis peak (~600 nm)
 
 const f = (x) => x.toFixed(7);

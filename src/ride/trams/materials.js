@@ -68,7 +68,8 @@ export function makeGlassMaterial(name, interior, glow = false) {
       .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTramUv = uv;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vTramUv;')
-      // saloon lighting (uv: x = m along the car, y = m up the side from the sill): the lit
+      // saloon lighting (uv: x = m along the car, y = m up the side profile from the body's
+      // lower edge, about the height above the rail less 0.13 m): the lit
       // ceiling shows brightest at the top of the panes, standing passengers and seat rows
       // break the light up along the car; the frit stays dark
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
@@ -81,15 +82,18 @@ export function makeGlassMaterial(name, interior, glow = false) {
 		float lit = ( 0.42 + 0.58 * smoothstep( 1.55, 2.15, gy ) ) * mix( 1.0, 0.4 + 0.45 * crowd, body );
 		totalEmissiveRadiance *= vColor.g * lit;
 	}`)
-      // the environment cube's street has no trees, poles, people or traffic: what a side
-      // pane mirrors near the horizon (down the street) is darker than its bare facades
+      // the environment cube's street is bare stone: no trees, poles, people, shade or
+      // traffic. What a side pane mirrors at and below the horizon (the street, the shop
+      // fronts opposite) is darker and less saturated than those bare sunlit facades
       .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
 	{
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
-		radiance *= mix( 0.55, 1.0, smoothstep( 0.04, 0.4, abs( tramR.y ) ) );
+		float tramSky = smoothstep( 0.05, 0.45, tramR.y );
+		vec3 tramStreet = mix( radiance, vec3( dot( radiance, vec3( 0.2126, 0.7152, 0.0722 ) ) ), 0.35 ) * 0.5;
+		radiance = mix( tramStreet, radiance, tramSky );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.glass.v4';
+  m.customProgramCacheKey = () => 'trams.glass.v5';
   return m;
 }
 

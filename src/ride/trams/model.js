@@ -15,9 +15,12 @@ import { FONT } from './display.js';
 // The trailing cab reuses the leading cab's geometry turned round, so only its lamp mesh
 // differs. Three levels of detail share the generators: LOD 0 (door seams, window frames,
 // wheels, corrugated bellows, wiper), LOD 1 (plain glazing) and LOD 2 (coarse, for the
-// far end of the street). One part per material: body (paint, vertex colour = paint
-// colour), glass (side glazing, lit from inside at night), windscreen glass, metal
-// (pantograph) and lamps (unlit, from the display / lens atlas).
+// far end of the street). One part per material (trams/materials.js): body (silver
+// paint and dark trim, vertex colour = paint colour), glass (upper side glazing, lit from
+// inside at night) and ws (lower panes, door glass), both with black frit over the
+// pillars so the glazing reads as one flush band, front (windscreen, trim and dark mask,
+// drawn per pixel), metal (pantograph) and lamps (unlit, from the display / lens atlas:
+// display, head / tail lamps, door indicators).
 
 export const CAR = {
   length: 32,
@@ -51,12 +54,12 @@ const COL = {
 };
 
 // lamp brightness relative to the destination display (lamp mesh vertex colours, linear)
-const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17] };
+const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17], door: [5, 0.55, 0.12] };
 const FLEET_NO = '07';
 
 // cross-section: band edges and the rows the cab front needs
 const Y = {
-  bottom: 0.18, skirt: 0.42, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
+  bottom: 0.18, skirt: 0.3, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
   doorGlass0: 0.8, doorGlass1: 2.1, doorTop: 2.3, doorSeam: 2.33,
   ws0: 1.18, dispBand: 2.62, shoulder: 2.86, noseSkirt: 0.3,
   seatBack: 1.35,              // saloon glazing below this shows seat backs: it does not glow at night
@@ -577,6 +580,26 @@ function capLamps(B, cap, prof, lead, atlas) {
   }
 }
 
+/** Door indicator lamps: a small red-orange lens on both sides beside each door (leading
+ *  edge, head height), lit from the lens atlas. `zs` are door centres (body frame). */
+function doorLamps(B, zs, atlas, lod) {
+  if (lod > 1) return;
+  const L = atlas.lens, y = 1.95, r = 0.03, seg = 10, x = sideX(y) + 0.004;
+  const uc = (L[0] + L[2]) / 2, vc = (L[1] + L[3]) / 2, hu = (L[2] - L[0]) / 2, hv = (L[3] - L[1]) / 2;
+  for (const c of zs) {
+    const z = c - CAR.doorW / 2 - 0.075;
+    for (const sx of [1, -1]) {
+      const ctr = B.vert(sx * x, y, z, sx, 0, 0, LAMP.door, uc, vc);
+      const rim = [];
+      for (let k = 0; k < seg; k++) {
+        const t = (k / seg) * Math.PI * 2, cs = Math.cos(t), sn = Math.sin(t);
+        rim.push(B.vert(sx * x, y + r * sn, z + r * cs, sx, 0, 0, LAMP.door, uc + hu * cs, vc + hv * sn));
+      }
+      for (let k = 0; k < seg; k++) B.tri(ctr, rim[k], rim[(k + 1) % seg]);
+    }
+  }
+}
+
 // ------------------------------------------------------------------ running gear, pantograph
 function runningGear(B, z0, z1, bogieZ) {
   // dark underfloor (closes the shell above the bogies)
@@ -666,6 +689,7 @@ export function buildModels(atlas) {
       const lampLead = new Part(), lampTrail = new Part();
       capLamps(lampLead, cap, prof, true, atlas);
       capLamps(lampTrail, cap, prof, false, atlas);
+      for (const B of [lampLead, lampTrail]) doorLamps(B, doors, atlas, lod);
       out.cab.push({ ...P.geometries(), lampLead: lampLead.geometry(), lampTrail: lampTrail.geometry() });
     }
     // ---- centre body: articulation at z = 0 and z = midLen, bellows on both
@@ -684,7 +708,9 @@ export function buildModels(atlas) {
       pantograph(P, pz, lod);
       if (lod === 0) runningGear(P.body, z0, z1, pz);
       else if (lod === 1) runningGear(P.body, z0, z1, null);
-      out.mid.push(P.geometries());
+      const lampMid = new Part();
+      doorLamps(lampMid, doors, atlas, lod);
+      out.mid.push({ ...P.geometries(), lampMid: lampMid.geometry() });
     }
   }
   out.hull = { cab: hull(cabLen - gapH, true), mid: hull(midLen - gapH, false) };

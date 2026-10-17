@@ -42,19 +42,22 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 
 // Camera response (final pass). curve: display value of a scene luminance, a generalised
 // logistic in stops from mid grey fitted to a camera JPEG's long toe and soft shoulder
-// (−5 stops → 0.04, −3 → 0.12, −2 → 0.19, 0 → 0.47, +2 → 0.85, +3 → 0.975, white at
+// (−5 stops → 0.03, −3 → 0.10, −2 → 0.18, 0 → 0.47, +2 → 0.85, +3 → 0.98, white at
 // +3.5); chroma: AgX's colour (0) .. the scene's ratios (1).
 // Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
 // bloom: share of the blurred pyramid (glare around bright things), day .. night.
 // veil: share of the frame's mean light the lens spreads evenly (lifts the blacks), plus
 // `veilSun` of the sun's illuminance when it shines on the lens from just outside the frame.
 const TONE = {
-  curve: [1.1126, 0.8528, 1.344, 0.6039], chroma: [0.5, 0.9],
+  curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.5, 0.9],
   meter: 0.6, target: 0.34, clamp: [0.5, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
-  veil: 0.012, veilSun: 0.004,
+  veil: 0.006, veilSun: 0.004,
   // highlight recovery from golden hour on: knee (stops over mid grey) and the log slope
   // above it at golden hour, sunset and dusk
-  hiKnee: 1.5, hiSlope: [0.8, 0.55, 0.7],
+  hiKnee: 1.2, hiSlope: [0.8, 0.38, 0.6],
+  // the hard light of midday is shot with a little more contrast (log slope about a pivot
+  // just above mid grey), easing off towards golden hour
+  midday: 1.14, pivot: 0.4,
 };
 
 // Street-level dust haze: extinction per metre (rgb), nearly grey (coarse dust).
@@ -221,6 +224,7 @@ const post = {
       uResolution: { value: new THREE.Vector2(1, 1) },
       uVeil: { value: TONE.veil }, uVeilSun: { value: new THREE.Vector3() },
       uHiComp: { value: new THREE.Vector2(TONE.hiKnee, 1) },
+      uCurveSlope: { value: new THREE.Vector2(1, TONE.pivot) },
     });
 
     // the materials' baked AO is scaled down while the screen-space AO runs
@@ -379,12 +383,12 @@ const post = {
       const wSun = sun && sun.x > 1e-6 && sun.z > 1e-6 ? 1 - ss(t, 0.3, 0.6) : 0;
       const lr = wSun > 0 ? THREE.MathUtils.lerp(lrAll, Math.log(sun.x / sun.z), wSun) : lrAll;
       const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
-      // warm-cool correction: ~3/4 of the sun's cast by day, a little at golden hour,
+      // warm-cool correction: about half the sun's cast by day, a little at golden hour,
       // about a third of the blue cast after sunset, none once the lamps set the balance
-      const kc = THREE.MathUtils.lerp(THREE.MathUtils.lerp(0.75, 0.18, ss(t, 0.3, 0.55)), 0.3, ss(t, 0.62, 0.75)) * (1 - ss(t, 0.84, 0.98));
+      const kc = THREE.MathUtils.lerp(THREE.MathUtils.lerp(0.55, 0.18, ss(t, 0.3, 0.55)), 0.3, ss(t, 0.62, 0.75)) * (1 - ss(t, 0.84, 0.98));
       // green-magenta: the ozone-tinted twilight is only partly corrected (fully, it would
       // turn the stone olive), and once the lamps dominate hardly at all
-      const kt = THREE.MathUtils.lerp(1.0, 0.45, ss(t, 0.62, 0.78)) - 0.2 * ss(t, 0.84, 1.0);
+      const kt = THREE.MathUtils.lerp(1.0, 0.6, ss(t, 0.62, 0.78)) - 0.35 * ss(t, 0.84, 1.0);
       const warm = 0.035 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
       const cool = 0.12 * ss(t, 0.82, 1.0);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
@@ -400,6 +404,7 @@ const post = {
     fu.uHiComp.value.y = t < 0.8
       ? THREE.MathUtils.lerp(THREE.MathUtils.lerp(1, hs[0], ss(t, 0.3, 0.55)), hs[1], ss(t, 0.6, 0.8))
       : THREE.MathUtils.lerp(hs[1], hs[2], ss(t, 0.85, 1.0));
+    fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
     // a faint warm lift of the highlights in the low sun only
     const hiW = 0.015 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.7, 0.85));
     fu.uHighTint.value.set(1 + hiW, 1, 1 - hiW);

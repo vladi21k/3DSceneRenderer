@@ -260,8 +260,11 @@ export function* lotSteps(B, lot, ends, q, metas) {
     const vb = gMin - 0.35;
     if (!x.nb) { rects[e].push([-D, 0, vb, sideTop]); continue; }
     if (x.front > 0.01) rects[e].push([-x.front, 0, vb, sideTop]);
-    if (x.nbBack > -D + 0.01) rects[e].push([-D, x.nbBack, vb, Math.min(sideTop, x.nbTop)]);
-    if (x.nbTop < sideTop) rects[e].push([Math.max(-D, x.nbBack), Math.min(0, -x.front), Math.max(vb, x.nbTop), sideTop]);
+    // behind a shallower neighbour the whole height shows; above it, everything over its
+    // roof deck (its parapet stands clear of this wall)
+    if (x.nbBack > -D + 0.01) rects[e].push([-D, x.nbBack, vb, sideTop]);
+    const deck = Math.min(x.nbTop, x.nbDeck ?? x.nbTop);
+    if (deck < sideTop - 0.05) rects[e].push([Math.max(-D, x.nbBack), Math.min(0, -x.front), Math.max(vb, deck), sideTop]);
   }
   yield* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA);
   B.frameFromLot(f);

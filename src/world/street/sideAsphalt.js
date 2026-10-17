@@ -1,5 +1,5 @@
 import { RNG, noise1 } from '../../core/rng.js';
-import { IRON_REGIONS } from './textures.js';
+import { IRON_REGIONS, STAIN_COLS } from './textures.js';
 import { PATCH_PAD, patchWear } from './lines.js';
 
 // The worn asphalt of a side street, planned once per street (and side) and built at lod 0:
@@ -274,15 +274,16 @@ export function buildSideIron(F, plan, bufs, mats) {
       iron.quad(a0, a3, a2, a1);
     }
   }
-  const st = bufs.get(mats.details.stain, false);
+  // (vertex colour: opacity, warmth; see textures.js)
+  const st = bufs.get(mats.details.stain, true);
   for (const sn of plan.stains) {
     const hx = sn.size / 2, hy = (sn.size * sn.aspect) / 2;
     const ca = Math.cos(sn.rot), sa = Math.sin(sn.rot);
-    const col = sn.kind % 2, row = Math.floor(sn.kind / 2);
+    const col = sn.kind % STAIN_COLS, row = Math.floor(sn.kind / STAIN_COLS);
     const first = st.n;
     for (const [lu, lv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
       const p = F.P(sn.u + lu * hx * ca - lv * hy * sa, sn.v + lu * hx * sa + lv * hy * ca, LIFT);
-      st.v(p[0], p[1], p[2], 0, 1, 0, col * 0.5 + (lu * 0.5 + 0.5) * 0.5, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5);
+      st.v(p[0], p[1], p[2], 0, 1, 0, (col + lu * 0.5 + 0.5) / STAIN_COLS, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5, 1, 0, 0);
     }
     st.quad(first, first + 3, first + 2, first + 1);
   }

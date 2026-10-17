@@ -17,8 +17,9 @@ import { createMortarMaterial, patchCanyon, patchCut, patchGrit } from './street
 // gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
 // texture carries each finish on its own band of v (see constants.js RAIL_PROFILE); the
 // flangeway is rail.groove, its floor filled with grit (shading.js patchGrit). Both take
-// vertex colours: the swept profile writes its cavity AO there. The baked micro relief is toned down (normalScale): at grazing angles it
-// turned the sky reflection into a sparkle of specks rather than a satin sheen.
+// vertex colours: the swept profile writes its cavity AO there. The baked micro relief
+// is toned down (normalScale): at grazing angles it turned the sky reflection into a
+// sparkle of specks rather than a satin sheen.
 const RAIL_HEAD = { normalScale: [0.35, 0.35], vertexColors: true };
 const RAIL_GROOVE = { vertexColors: true };
 

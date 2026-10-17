@@ -31,7 +31,7 @@ const STONE = [[0.86, 0.80, 0.68], [0.84, 0.74, 0.58], [0.88, 0.83, 0.74], [0.80
 const RENDER = {
   ochre: [[1.3, 1.0, 0.52], [1.32, 1.08, 0.62], [1.26, 0.95, 0.5]],
   orange: [[1.36, 0.78, 0.42], [1.3, 0.72, 0.4]],
-  white: [[1.24, 1.27, 1.34], [1.2, 1.22, 1.26], [1.22, 1.22, 1.2]],
+  white: [[1.13, 1.15, 1.19], [1.1, 1.11, 1.13], [1.12, 1.11, 1.08]],
 };
 const ROLLER = [[0.62, 0.6, 0.55], [0.5, 0.5, 0.48], [0.7, 0.7, 0.68], [0.4, 0.33, 0.27]];
 
@@ -206,12 +206,12 @@ export function* slabSteps(B, sl, q0) {
         acUnit(B, { paint: sinks.paint, metal: sinks.metal }, q, RNG.from(sl.seed, 'ac', k, i));
         B.popFrame();
       }
-      if (i % 6 === 5) { yield; B.frameFromLot(fr); }
+      if (i % 4 === 3) { yield; B.frameFromLot(fr); }
     }
     B.shade = null;
     yield;
     B.frameFromLot(fr);
-    balconies(B, sinks, face, fs, sl, q);
+    yield* balconies(B, sinks, face, fs, sl, q, fr);
     if (face.mural) muralPanel(B, face.mural, sl.mural.k);
     if (!k && sl.canopy && q.lod === 0) {
       // concrete canopy over the shop floor (its shadow line marks the base of the block)
@@ -242,9 +242,11 @@ export function* slabSteps(B, sl, q0) {
 }
 
 /** Cantilevered balconies of a face: slab, solid parapet or steel railing. */
-function balconies(B, sinks, face, fs, sl, q) {
+function* balconies(B, sinks, face, fs, sl, q, fr) {
   const sW = sinks.ashlar === sinks.paint ? sinks.paint : sinks.detail;
+  let n = 0;
   for (const b of face.balconies) {
+    if (n++ % 5 === 4) { yield; B.frameFromLot(fr); }
     const { u0, u1, y, depth: d, slabT: t } = b;
     B.shade = (u, v, w, nu, nv, nw, out) => { fs.wall(u, v, out); const s = nv < -0.5 ? 0.72 : 1.0; out[0] *= s; out[1] *= s; out[2] *= s; };
     B.box(sW, u0, u1, y - t, y, 0, d, FACES.FRONT | FACES.TOP | FACES.BOTTOM | FACES.LEFT | FACES.RIGHT);

@@ -56,7 +56,7 @@ export const RIG = {
   vib: { pitch: 0.035 * DEG, yaw: 0.014 * DEG, roll: 0.017 * DEG },   // RMS buzz at 45 km/h
   // body hunting: the car body's yaw / lateral oscillation on its secondary suspension
   // (wheelset hunting coupled through the bogies), 1.1-1.6 Hz with a drifting frequency
-  // and amplitude; RMS at huntRef, growing with the square of speed (capped)
+  // and amplitude; the RMS given at `ref` m/s, growing with the square of speed (capped)
   hunt: { yaw: 0.032 * DEG, lat: 0.003, ref: 7.5, max: 1.4, freq: [1.1, 1.6] },
   dipKick: 1.5,             // dipped / insulated joints knock harder than the welds
   shutterDay: 1 / 160,      // s, exposure in daylight (camera motion blur in post)...

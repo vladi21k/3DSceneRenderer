@@ -2,3 +2,4 @@
 node_modules/
 *.blend1
 __pycache__/
+docker/mh/*.zip

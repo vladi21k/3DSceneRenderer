@@ -2,10 +2,12 @@ import * as THREE from 'three';
 import { lathe, tube, bar, rbox, xf, merge, makeGeo } from './kit.js';
 
 // Large square market umbrellas: 8 ribs (corners and side middles), fabric panels that
-// sag between the ribs in a catenary, seams over the ribs, a hemmed valance, a cloth vent
-// hood over the top opening, the pole with hub, runner and stretchers, and the bases.
-// Canopies carry 'aFlex' (0 rigid .. 1 free hem) for the wind flutter and vertex colours
-// for seams, hem piping and grime.
+// sag 2-4 cm between the ribs in a catenary, with tension wrinkles fanning out from the
+// rib-tip pockets, seams over the ribs and a 3 cm double-fabric hem, a soft valance that
+// hangs in shallow waves and bellies a little between the rib tips (rolled hem at the
+// bottom), a cloth vent hood over the top opening, the pole with hub, runner and
+// stretchers, and the bases. Canopies carry 'aFlex' (0 rigid .. 1 free hem) for the wind
+// flutter and vertex colours for seams, hem piping and grime.
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 export const UMB_EDGE_H = 2.38;          // hem height of the canopy
@@ -23,28 +25,44 @@ export function canopyShape(size) {
     tips.push([(c / m) * a, (s / m) * a]);
   }
   const ribY = (rr) => apex - rise * rr + 0.028 * (size / 3.2) * Math.sin(Math.PI * rr); // ribs bow up under tension
-  const surf = (k, r, t) => {
+  /** Fabric surface of panel k (between ribs k and k + 1) at r (0 vent .. 1 hem) and t
+   *  (0 rib k .. 1 rib k + 1). fine: add the tension wrinkles (canopy cloth only). */
+  const surf = (k, r, t, fine = false) => {
     const A = tips[k], B = tips[(k + 1) % 8];
     const ox = A[0] + (B[0] - A[0]) * t, oz = A[1] + (B[1] - A[1]) * t;
     const L = Math.hypot(ox, oz), r0 = R_VENT / L;
     const rr = r0 + r * (1 - r0);
-    const chord = Math.hypot(B[0] - A[0], B[1] - A[1]) * rr;
-    // panels sag between the ribs (catenary across), most in mid-panel; the hem is tensioned
-    const sag = (0.034 * chord * Math.pow(Math.sin(Math.PI * Math.min(1, rr * 1.1)), 0.75) + 0.005 * rr) * cat(t);
+    const hemChord = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    const chord = hemChord * rr;
+    // panels sag between the ribs (catenary across), most in mid-panel (2-4 cm on a 3 m
+    // umbrella); the hem is tensioned and droops only a little between the rib tips
+    let sag = (0.05 * chord * Math.pow(Math.sin(Math.PI * Math.min(1, rr * 1.1)), 0.6) + 0.008 * rr) * cat(t);
+    if (fine) {
+      // tension wrinkles: the rib tips pull the cloth into their pockets, so shallow folds
+      // fan out from each tip into the panel (none on the ribs or along the hem)
+      for (const [tt, ph] of [[t, 0.3], [1 - t, 1.7]]) {
+        const dr = (1 - rr) * L, dl = tt * hemChord;
+        const rho = Math.hypot(dr, dl), th = Math.atan2(dl, dr);
+        sag += 0.0045 * Math.exp(-rho / 0.3) * Math.min(1, rho / 0.05) * Math.sin(2 * th) * Math.sin(9 * th + ph);
+      }
+    }
     return [ox * rr, ribY(rr) - sag, oz * rr];
   };
   return { a, rise, apex, tips, surf, ribY };
 }
 
-const RS = [16, 6, 2];
+// radial rows (0 vent .. 1 hem); the finest level has a row at the 3 cm hem seam
+const RS = [[...Array.from({ length: 16 }, (_, i) => i / 16), 0.982, 1], [0, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6, 1], [0, 0.5, 1]];
 const TS = [[0, 0.012, 0.04, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.96, 0.988, 1], [0, 0.04, 0.25, 0.5, 0.75, 0.96, 1], [0, 0.5, 1]];
-const VROWS = [[0, 0.04, 0.3, 0.62, 0.88, 0.96, 1], [0, 0.85, 1], [0, 1]];
+const VROWS = [[0, 0.04, 0.2, 0.4, 0.6, 0.8, 0.9, 0.96, 1], [0, 0.85, 1], [0, 1]];
+// valance columns: fine enough for its waves (~4.5 cm apart on a 3 m umbrella)
+const VTS = [Array.from({ length: 33 }, (_, i) => i / 32), TS[1], TS[2]];
 
 /** Canopy geometry (fabric) at a detail level 0..2. */
 export function canopyGeo(size, detail) {
   const S = canopyShape(size);
   const { a, apex, tips, surf } = S;
-  const nr = RS[detail], ts = TS[detail], nt = ts.length - 1;
+  const rs = RS[detail], nr = rs.length - 1, ts = TS[detail], nt = ts.length - 1;
   const pos = [], uv = [], col = [], flex = [], nor = [], idx = [];
   const push = (p, u, v, c, f, n = null) => {
     pos.push(p[0], p[1], p[2]); uv.push(u, v); col.push(c, c, c); flex.push(f);
@@ -56,10 +74,12 @@ export function canopyGeo(size, detail) {
   for (let k = 0; k < 8; k++) {
     const base = pos.length / 3;
     for (let i = 0; i <= nr; i++) for (let j = 0; j <= nt; j++) {
-      const r = i / nr, t = ts[j];
-      const p = surf(k, r, t);
+      const r = rs[i], t = ts[j];
+      const p = surf(k, r, t, detail === 0);
       const grime = 1 - 0.05 * r * r;
-      push(p, p[0], p[2], seamCol(t) * grime, 0.12 * Math.sin(Math.PI * t) * r);
+      // the hem is a double layer of cloth: a touch darker (more so seen against the light)
+      const hem = detail === 0 && r > 0.98 ? 0.9 : 1;
+      push(p, p[0], p[2], seamCol(t) * grime * hem, 0.12 * Math.sin(Math.PI * t) * r);
     }
     for (let i = 0; i < nr; i++) for (let j = 0; j < nt; j++) {
       const a0 = base + i * (nt + 1) + j, b0 = a0 + 1, c0 = a0 + nt + 1, d0 = c0 + 1;
@@ -76,16 +96,37 @@ export function canopyGeo(size, detail) {
     const sgn = nx * (A[0] + B[0]) + nz * (A[1] + B[1]) > 0 ? 1 : -1;
     const ox = nx * sgn, oz = nz * sgn;
     const vb = pos.length / 3;
-    for (const vv of rows) for (let j = 0; j <= nt; j++) {
-      const t = ts[j], e = surf(k, 1, t);
+    // soft cloth: shallow waves growing towards the free bottom edge, a slight belly between
+    // the rib tips (the hem sags a centimetre or so), and a rolled hem that curls in
+    const valPos = (vv, t) => {
+      const e = surf(k, 1, t);
       const along = t * el + k * a;
-      const wave = detail ? 0 : 0.004 * Math.sin((along / 0.31) * Math.PI * 2) * vv;
-      const out = 0.016 * vv + wave - (vv > 0.99 ? 0.003 : 0);
-      const n = new THREE.Vector3(ox, 0.07, oz).normalize();
-      push([e[0] + ox * out, e[1] - VALANCE_H * vv, e[2] + oz * out], along, -VALANCE_H * vv, vv > 0.93 ? 0.78 : vv < 0.05 ? 0.9 : 1, Math.min(1, 0.15 + vv), [n.x, n.y, n.z]);
+      const ends = THREE.MathUtils.smoothstep(t, 0, 0.08) * THREE.MathUtils.smoothstep(1 - t, 0, 0.08); // held at the rib tips
+      const wave = detail ? 0 : (0.009 * Math.sin((along / 0.27) * Math.PI * 2 + 0.6 * k) + 0.004 * Math.sin((along / 0.47) * Math.PI * 2 + 1.3 * k)) * Math.pow(vv, 1.3) * ends;
+      const belly = cat(t) * vv;
+      const roll = detail ? 0 : THREE.MathUtils.smoothstep(vv, 0.86, 1);
+      const out = 0.016 * vv + wave + 0.01 * belly - 0.009 * roll;
+      return [e[0] + ox * out, e[1] - VALANCE_H * vv - 0.012 * belly + 0.004 * roll * roll, e[2] + oz * out];
+    };
+    const dt = 0.01, dv = 0.02, n = new THREE.Vector3(), tu = new THREE.Vector3(), tv = new THREE.Vector3();
+    const vts = VTS[detail], nvt = vts.length - 1;
+    for (const vv of rows) for (let j = 0; j <= nvt; j++) {
+      const t = vts[j], P = valPos(vv, t);
+      const along = t * el + k * a;
+      if (detail) n.set(ox, 0.07, oz).normalize();
+      else {
+        // normal of the waved cloth (finite differences), turned outwards
+        const t0 = Math.max(0, t - dt), t1 = Math.min(1, t + dt), v0 = Math.max(0, vv - dv), v1 = Math.min(1, vv + dv);
+        const pa = valPos(vv, t0), pb = valPos(vv, t1), pc = valPos(v0, t), pd = valPos(v1, t);
+        tu.set(pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]);
+        tv.set(pd[0] - pc[0], pd[1] - pc[1], pd[2] - pc[2]);
+        n.crossVectors(tu, tv).normalize();
+        if (n.x * ox + n.z * oz < 0) n.negate();
+      }
+      push(P, along, -VALANCE_H * vv, vv > 0.93 ? 0.78 : vv < 0.05 ? 0.9 : 1, Math.min(1, 0.15 + vv), [n.x, n.y, n.z]);
     }
-    const nc = nt + 1;
-    for (let i = 0; i < rows.length - 1; i++) for (let j = 0; j < nt; j++) {
+    const nc = nvt + 1;
+    for (let i = 0; i < rows.length - 1; i++) for (let j = 0; j < nvt; j++) {
       const a0 = vb + i * nc + j, b0 = a0 + 1, c0 = a0 + nc, d0 = c0 + 1;
       valIdx.push(a0, b0, c0, b0, d0, c0);
     }

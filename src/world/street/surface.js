@@ -316,11 +316,12 @@ export class Surface {
       // street, else the line FACADE_OVERLAP inside the sidewalk's outer edge)
       const fd = f && f.d === f.d ? (f.d < 0 ? -f.d : f.d) : (d > 0 ? ri.edgeR : -ri.edgeL) - FACADE_OVERLAP;
       const x = Math.max(0, fd - a);
-      // dirt collected along the facade base: a band ~0.3 m wide, patchy (doorways, shop
-      // fronts, corners), with a softer tail further out
+      // dirt collected along the building line (in front of plinths, steps and shop
+      // fronts, which stand up to ~0.4 m proud of the facade line): a band ~0.6 m wide,
+      // patchy, with a softer tail further out
       const pb = Math.max(0, Math.min(1, 0.55 + 1.1 * n2 + 0.6 * n1));
-      const band = 1 - smooth((x - 0.3) / 0.5);
-      v *= 1 - (0.11 + 0.13 * pb) * band - (0.04 + 0.05 * smooth(n1 + 0.2)) * Math.exp(-x / 1.1);
+      const band = 1 - smooth((x - 0.5) / 0.6);
+      v *= 1 - (0.14 + 0.15 * pb) * band - (0.04 + 0.05 * smooth(n1 + 0.2)) * Math.exp(-x / 1.1);
       warm += 0.025 * band;
       // soil and leaf litter around tree pits
       const sp = ri.spots;

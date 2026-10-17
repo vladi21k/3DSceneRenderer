@@ -287,7 +287,7 @@ export function pavingHeight(grid, s, d, dl) {
 
 // the facade's dirt band columns stand this far in front of the facade line (m), less
 // where the sidewalk is narrow
-const FB1 = 0.3, FB2 = 0.6;
+const FB1 = 0.5, FB2 = 1.0;
 
 /** |d| of sidewalk column j (0 = on the facade line, 1-2 = the facade band columns, then
  *  nEven columns evenly in towards the gutter edge; GUTTER_OUT itself is a fixed column). */

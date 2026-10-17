@@ -58,10 +58,12 @@ export const SLAB_H = -0.30;                             // ground slab below ev
 //   gauge  gauge corner and upper gauge face, polished by the flanges (v ≈ 0.075)
 //   lip    guard lip top and both its edges: dusty steel, no wheel contact (v 0.106-0.127)
 //   side   narrow field-side bevel: brown oxide (v ≈ 0.02)
-//   groove compacted grime in the flangeway and on its walls (rail.groove)
+//   groove grime on the flangeway walls, grit and leaf debris on its floor (rail.groove
+//          with the grit fill of shading.js patchGrit)
 //   seal   bitumen sealing strip against the paving
 // The AO darkens the cavity (groove floor 0.25, walls 0.45, lower gauge face 0.6), so
-// the flangeway reads as a dark slot rather than a lit channel.
+// the flangeway reads as a dark slot rather than a lit channel (the grit fill folds the
+// floor's AO into its own tone).
 export const RAIL_PROFILE = [
   [RAIL_X0, 0.0, null, 1],
   [-0.0378, -0.0024, 'seal', 0.92],
@@ -96,7 +98,7 @@ export const RAIL_PROFILE = [
 // dirty cement grey at about 0.7x the setts (paving.street ~0.165), so they visually
 // reach the seal; the seal is drawn with the mortar material at SEAL_TONE of its colour
 // (dark bitumen, ~0.055).
-export const MORTAR_ALBEDO = [0.122, 0.118, 0.112];
-export const SEAL_TONE = 0.47;
+export const MORTAR_ALBEDO = [0.114, 0.112, 0.108];
+export const SEAL_TONE = 0.49;
 
 export { TRACK_OFFSET, RAIL_CENTER, TRACK_ZONE_HALF, EDGE_BAND_W };
