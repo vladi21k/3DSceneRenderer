@@ -1,0 +1,244 @@
+import * as THREE from 'three';
+
+// The tram line: a closed loop through the city built from straights, clothoid
+// transitions and circular arcs, with gentle grades. Everything in the world is
+// positioned in route coordinates (s, d, h):
+//   s  distance along the street centre line (metres, wraps at route.length)
+//   d  lateral offset, + to the right of the direction of travel
+//   h  height above the street surface at that point
+// The street surface is level across its width (no superelevation) and the rail
+// tops are flush with the paving, so h = 0 is the rail-top / paving level.
+//
+// Heading convention: tangent T(θ) = (cos θ, 0, -sin θ); θ grows when turning
+// left; curvature κ > 0 means a left-hand curve. right = (−Tz, 0, Tx).
+
+const DS = 0.5; // table resolution (m)
+
+// Plan of the loop. turn in degrees (+ left), radius in metres, trans = clothoid length.
+// The two straights flagged `adjust` absorb the closure error.
+const PLAN = [
+  { type: 'straight', len: 520, adjust: true, name: 'main avenue' },
+  { type: 'curve', turn: 8, radius: 900, trans: 30 },
+  { type: 'straight', len: 160 },
+  { type: 'curve', turn: -8, radius: 900, trans: 30 },
+  { type: 'straight', len: 240 },
+  { type: 'curve', turn: 60, radius: 230, trans: 35 },
+  { type: 'straight', len: 330 },
+  { type: 'curve', turn: 6, radius: 700, trans: 25 },
+  { type: 'straight', len: 120 },
+  { type: 'curve', turn: 54, radius: 150, trans: 30 },
+  { type: 'straight', len: 420, adjust: true },
+  { type: 'curve', turn: 60, radius: 58, trans: 18, junction: true },
+  { type: 'straight', len: 380 },
+  { type: 'curve', turn: -7, radius: 650, trans: 25 },
+  { type: 'straight', len: 140 },
+  { type: 'curve', turn: 7, radius: 650, trans: 25 },
+  { type: 'straight', len: 200 },
+  { type: 'curve', turn: 60, radius: 260, trans: 35 },
+  { type: 'straight', len: 460 },
+  { type: 'curve', turn: 60, radius: 180, trans: 30 },
+  { type: 'straight', len: 300 },
+  { type: 'curve', turn: 60, radius: 120, trans: 28 },
+  { type: 'straight', len: 260 },
+];
+
+function curvatureProfile(plan) {
+  // returns array of {s0, s1, k0, k1, seg} (linear curvature pieces) and total length
+  const pieces = [];
+  let s = 0;
+  plan.forEach((seg, i) => {
+    if (seg.type === 'straight') {
+      pieces.push({ s0: s, s1: s + seg.len, k0: 0, k1: 0, seg: i });
+      s += seg.len;
+    } else {
+      const th = (seg.turn * Math.PI) / 180;
+      const sign = Math.sign(th);
+      const R = seg.radius;
+      let Lt = seg.trans;
+      // arc body length; transitions each contribute Lt/(2R) of turn
+      let body = R * Math.abs(th) - Lt;
+      if (body < 0) { Lt = R * Math.abs(th); body = 0; }
+      const k = sign / R;
+      pieces.push({ s0: s, s1: s + Lt, k0: 0, k1: k, seg: i, part: 'in' }); s += Lt;
+      if (body > 0) { pieces.push({ s0: s, s1: s + body, k0: k, k1: k, seg: i, part: 'arc' }); s += body; }
+      pieces.push({ s0: s, s1: s + Lt, k0: k, k1: 0, seg: i, part: 'out' }); s += Lt;
+    }
+  });
+  return { pieces, length: s };
+}
+
+function integrate(pieces, length) {
+  const n = Math.ceil(length / DS) + 1;
+  const x = new Float64Array(n), z = new Float64Array(n), th = new Float64Array(n), k = new Float64Array(n);
+  let pi = 0;
+  const kAt = (s) => {
+    while (pi < pieces.length - 1 && s > pieces[pi].s1) pi++;
+    const p = pieces[pi];
+    const t = p.s1 > p.s0 ? Math.min(1, Math.max(0, (s - p.s0) / (p.s1 - p.s0))) : 0;
+    return p.k0 + (p.k1 - p.k0) * t;
+  };
+  let cx = 0, cz = 0, ct = 0;
+  const sub = 4, h = DS / sub;
+  for (let i = 0; i < n; i++) {
+    const s = i * DS;
+    x[i] = cx; z[i] = cz; th[i] = ct; k[i] = kAt(Math.min(s, length));
+    for (let j = 0; j < sub; j++) {
+      const sa = s + j * h;
+      const ka = kAt(Math.min(sa, length)), km = kAt(Math.min(sa + h / 2, length)), kb = kAt(Math.min(sa + h, length));
+      const t0 = ct, tm = ct + (ka + km) * 0.25 * h, t1 = ct + (ka + 4 * km + kb) / 6 * h;
+      // Simpson on the tangent
+      cx += (Math.cos(t0) + 4 * Math.cos(tm) + Math.cos(t1)) / 6 * h;
+      cz += (-Math.sin(t0) - 4 * Math.sin(tm) - Math.sin(t1)) / 6 * h;
+      ct = t1;
+    }
+  }
+  return { x, z, th, k, n };
+}
+
+export class Route {
+  constructor() {
+    let plan = PLAN.map((p) => ({ ...p }));
+    // closure: adjust two straights so the loop closes exactly
+    for (let iter = 0; iter < 3; iter++) {
+      const { pieces, length } = curvatureProfile(plan);
+      const t = integrate(pieces, length);
+      const ex = t.x[t.n - 1] - t.x[0], ez = t.z[t.n - 1] - t.z[0];
+      const adj = plan.map((p, i) => (p.adjust ? i : -1)).filter((i) => i >= 0);
+      const dirs = adj.map((i) => {
+        const piece = pieces.find((pc) => pc.seg === i);
+        const j = Math.min(t.n - 1, Math.round(piece.s0 / DS));
+        return [Math.cos(t.th[j]), -Math.sin(t.th[j])];
+      });
+      // solve a*dirA + b*dirB = -E
+      const [A, B] = dirs;
+      const det = A[0] * B[1] - A[1] * B[0];
+      const a = (-ex * B[1] + ez * B[0]) / det;
+      const b = (-A[0] * ez + A[1] * ex) / det;
+      plan[adj[0]].len += a;
+      plan[adj[1]].len += b;
+      if (Math.hypot(ex, ez) < 0.01) break;
+    }
+    const { pieces, length } = curvatureProfile(plan);
+    this.plan = plan;
+    this.pieces = pieces;
+    this.length = length;
+    const t = integrate(pieces, length);
+    this.n = t.n;
+    this.x = t.x; this.z = t.z; this.th = t.th; this.k = t.k;
+
+    // segments in s for layout decisions
+    this.segments = [];
+    let s = 0;
+    for (let i = 0; i < plan.length; i++) {
+      const ps = pieces.filter((p) => p.seg === i);
+      const s0 = ps[0].s0, s1 = ps[ps.length - 1].s1;
+      this.segments.push({ index: i, type: plan[i].type, s0, s1, radius: plan[i].radius || Infinity, turn: plan[i].turn || 0, junction: !!plan[i].junction });
+      s = s1;
+    }
+
+    // elevation: periodic sum of sines (exactly periodic over the loop), grades ≤ ~3%
+    const L = length;
+    this.elevTerms = [
+      { a: 4.2, k: 2, p: 0.35 },
+      { a: 1.8, k: 5, p: 2.1 },
+      { a: 0.45, k: 13, p: 4.0 },
+    ];
+    this.y = new Float64Array(this.n);
+    for (let i = 0; i < this.n; i++) this.y[i] = this.elevationRaw(i * DS);
+    void L;
+  }
+
+  elevationRaw(s) {
+    let y = 0;
+    for (const e of this.elevTerms) y += e.a * Math.sin((2 * Math.PI * e.k * s) / this.length + e.p);
+    return y;
+  }
+
+  wrap(s) { const L = this.length; return ((s % L) + L) % L; }
+
+  /** Shortest signed distance along the loop from a to b (b - a). */
+  delta(a, b) { const L = this.length; let d = this.wrap(b) - this.wrap(a); if (d > L / 2) d -= L; if (d < -L / 2) d += L; return d; }
+
+  _idx(s) {
+    s = this.wrap(s);
+    const f = s / DS;
+    const i = Math.min(this.n - 2, Math.floor(f));
+    return [i, f - i];
+  }
+
+  heading(s) { const [i, f] = this._idx(s); return this.th[i] + (this.th[i + 1] - this.th[i]) * f; }
+  curvature(s) { const [i, f] = this._idx(s); return this.k[i] + (this.k[i + 1] - this.k[i]) * f; }
+  elevation(s) { const [i, f] = this._idx(s); return this.y[i] + (this.y[i + 1] - this.y[i]) * f; }
+  grade(s) { return (this.elevation(s + 0.5) - this.elevation(s - 0.5)); }
+
+  /** Writes the centre-line sample into `out` (allocation free). */
+  sample(s, out = {}) {
+    const [i, f] = this._idx(s);
+    const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
+    const tx = Math.cos(th), tz = -Math.sin(th);
+    const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
+    const g = this.grade(s);
+    out.s = this.wrap(s);
+    out.pos = (out.pos || new THREE.Vector3()).set(this.x[i] + (this.x[i + 1] - this.x[i]) * f, y, this.z[i] + (this.z[i + 1] - this.z[i]) * f);
+    out.tanH = (out.tanH || new THREE.Vector3()).set(tx, 0, tz);
+    out.tan = (out.tan || new THREE.Vector3()).set(tx, g, tz).normalize();
+    out.right = (out.right || new THREE.Vector3()).set(-tz, 0, tx);
+    out.heading = th;
+    out.curvature = this.k[i] + (this.k[i + 1] - this.k[i]) * f;
+    out.grade = g;
+    return out;
+  }
+
+  /** World position of route coordinate (s, d, h). */
+  toWorld(s, d = 0, h = 0, out = new THREE.Vector3()) {
+    const [i, f] = this._idx(s);
+    const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
+    const tx = Math.cos(th), tz = -Math.sin(th);
+    const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
+    return out.set(
+      this.x[i] + (this.x[i + 1] - this.x[i]) * f - tz * d,
+      y + h,
+      this.z[i] + (this.z[i + 1] - this.z[i]) * f + tx * d,
+    );
+  }
+
+  /** Arc-length scale of an offset line: ds_offset = (1 + κ·d) ds. */
+  offsetScale(s, d) { return 1 + this.curvature(s) * d; }
+
+  /** rotation.y that makes an object's local -Z axis point along the route at s
+   *  (its local +X then points to the right, d+). Use heading(s) itself to align local +X with travel. */
+  yawAt(s) { return this.heading(s) - Math.PI / 2; }
+
+  /** Nearest route coordinate to a world xz point, searching around sHint (±range). */
+  project(x, z, sHint, range = 30) {
+    let best = sHint, bestD = Infinity;
+    for (let ds = -range; ds <= range; ds += 1) {
+      const p = this.toWorld(sHint + ds, 0, 0, _v);
+      const dd = (p.x - x) ** 2 + (p.z - z) ** 2;
+      if (dd < bestD) { bestD = dd; best = sHint + ds; }
+    }
+    // refine
+    let step = 0.5;
+    for (let it = 0; it < 12; it++) {
+      for (const c of [best - step, best + step]) {
+        const p = this.toWorld(c, 0, 0, _v);
+        const dd = (p.x - x) ** 2 + (p.z - z) ** 2;
+        if (dd < bestD) { bestD = dd; best = c; }
+      }
+      step *= 0.5;
+    }
+    const smp = this.sample(best, _smp);
+    const d = (x - smp.pos.x) * smp.right.x + (z - smp.pos.z) * smp.right.z;
+    return { s: this.wrap(best), d };
+  }
+
+  /** Segment info at s. */
+  segmentAt(s) {
+    s = this.wrap(s);
+    for (const seg of this.segments) if (s >= seg.s0 && s < seg.s1) return seg;
+    return this.segments[this.segments.length - 1];
+  }
+}
+
+const _v = new THREE.Vector3();
+const _smp = {};

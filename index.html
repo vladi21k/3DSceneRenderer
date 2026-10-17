@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tramline — Cab Ride</title>
+  <link rel="stylesheet" href="./src/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/build/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="ui-root"></div>
+  <div id="loading"><div class="loading-inner"><div class="loading-track"><div id="loading-bar"></div></div></div></div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,215 @@
+import * as THREE from 'three';
+import { params } from './core/params.js';
+import { U } from './core/uniforms.js';
+import { Events } from './core/events.js';
+import { DEFAULT_VFOV, EYE_HEIGHT, TRACK_OFFSET, LOD0_DIST } from './core/config.js';
+import { Route } from './world/route.js';
+import { Layout } from './world/layout.js';
+import { World } from './world/streaming.js';
+import { GpuTimer } from './core/gpuTimer.js';
+
+// Module registry. Each module is loaded with a dynamic import so a broken module is
+// reported and skipped instead of taking the whole app down. Contracts: docs/ARCHITECTURE.md
+const MODULES = [
+  ['materials', './materials/materials.js'],
+  ['env', './env/env.js'],
+  ['post', './env/post.js'],
+  ['street', './world/street.js'],
+  ['buildings', './world/buildings.js'],
+  ['facades', './world/facades.js'],
+  ['ironwork', './world/ironwork.js'],
+  ['vegetation', './world/vegetation.js'],
+  ['catenary', './world/catenary.js'],
+  ['furniture', './world/furniture.js'],
+  ['humans', './crowd/humans.js'],
+  ['crowd', './crowd/crowd.js'],
+  ['train', './ride/train.js'],
+  ['cameraRig', './ride/cameraRig.js'],
+  ['ui', './ride/ui.js'],
+  ['audio', './ride/audio.js'],
+];
+const CORE = new Set(['materials', 'env', 'train', 'cameraRig']);
+
+const loadingEl = document.getElementById('loading');
+const barEl = document.getElementById('loading-bar');
+const setProgress = (f) => { if (barEl) barEl.style.transform = `scaleX(${Math.max(0, Math.min(1, f))})`; };
+
+function fatal(msg, e) {
+  console.error(msg, e);
+  window.__fatal = String(msg) + (e ? `: ${e.stack || e}` : '');
+}
+
+async function main() {
+  const canvas = document.getElementById('view');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, params.quality === 'low' ? 1 : 1.5));
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(params.fov ?? DEFAULT_VFOV, window.innerWidth / window.innerHeight, 0.3, 2500);
+  scene.add(camera);
+
+  const route = new Route();
+  const layout = new Layout(route, params.seed);
+  const events = new Events();
+
+  const app = {
+    THREE, renderer, scene, camera, canvas, params, U, events, route, layout,
+    systems: {}, time: 0, dt: 0, frame: 0, ready: false,
+    startS: params.s ?? layout.defaultStartS,
+    gpuTimer: new GpuTimer(renderer),
+    perf: { fps: 0, frameMs: 0, cpuMs: 0, gpuMs: 0 },
+  };
+  window.__app = app;
+
+  // ---- load modules
+  const enabled = MODULES.filter(([name]) => (!params.only || params.only.includes(name) || CORE.has(name) || name === 'post' && params.only.includes('post')) && !params.skip.includes(name));
+  const loaded = await Promise.allSettled(enabled.map(([, path]) => import(path)));
+  const mods = [];
+  loaded.forEach((r, i) => {
+    const [name] = enabled[i];
+    if (r.status === 'fulfilled' && r.value.default) {
+      const m = r.value.default;
+      m.name = m.name || name;
+      mods.push(m);
+      app.systems[m.name] = m;
+    } else {
+      console.error(`[main] module ${name} failed to load`, r.reason);
+    }
+  });
+  Object.assign(app, {
+    materials: app.systems.materials, env: app.systems.env, post: app.systems.post,
+    train: app.systems.train, cameraRig: app.systems.cameraRig, crowd: app.systems.crowd,
+    humans: app.systems.humans, audio: app.systems.audio, ui: app.systems.ui,
+  });
+  setProgress(0.05);
+
+  // ---- init (sequential: materials and env first, in registry order)
+  for (const m of mods) {
+    if (!m.init) continue;
+    try {
+      await m.init(app);
+    } catch (e) {
+      console.error(`[main] ${m.name}.init failed — module disabled`, e);
+      m.disabled = true;
+    }
+  }
+  if (!app.materials || app.materials.disabled) { fatal('materials module unavailable'); return; }
+  setProgress(0.2);
+
+  // ---- world streaming
+  const builders = mods.filter((m) => m.build && !m.disabled);
+  app.world = new World(app, builders);
+  const s0 = app.startS;
+  placeCamera(app, s0);
+  await app.world.prime(s0, Math.min(LOD0_DIST, 240), (f) => setProgress(0.2 + 0.7 * f));
+
+  // warm up shaders
+  try { renderer.compile(scene, camera); } catch (e) { console.warn('compile', e); }
+  setProgress(1);
+
+  // ---- loop
+  const timer = new THREE.Timer();
+  timer.connect(document);
+  let fpsAcc = 0, fpsN = 0, fpsT = 0;
+  const updaters = mods.filter((m) => m.update && !m.disabled);
+  const order = ['train', 'cameraRig'];
+  updaters.sort((a, b) => (order.includes(b.name) ? 1 : 0) - (order.includes(a.name) ? 1 : 0) || order.indexOf(a.name) - order.indexOf(b.name));
+
+  function frame(ts) {
+    const t0 = performance.now();
+    timer.update(ts);
+    const realDt = Math.min(timer.getDelta(), 0.1);
+    const dt = params.freeze ? 0 : realDt;
+    app.dt = dt; app.realDt = realDt; app.time += dt; app.frame++;
+    U.uTime.value = app.time;
+
+    for (const m of updaters) {
+      if (m.disabled) continue;
+      try { m.update(dt, app); } catch (e) {
+        console.error(`[main] ${m.name}.update failed`, e);
+        m.updateErrors = (m.updateErrors || 0) + 1;
+        if (m.updateErrors > 5) { m.disabled = true; console.error(`[main] ${m.name} disabled`); }
+      }
+      if (m.name === 'cameraRig') applyInspectionView(app);
+    }
+    if (!app.cameraRig || app.cameraRig.disabled) { placeCamera(app, app.train?.s ?? app.startS); applyInspectionView(app); }
+    camera.updateMatrixWorld();
+    U.uCameraPos.value.copy(camera.position);
+    app.world.update(app.cameraS ?? app.train?.s ?? app.startS);
+
+    app.gpuTimer.begin();
+    if (app.post && !app.post.disabled && app.post.render) {
+      try { app.post.render(realDt, app); } catch (e) { console.error('[main] post.render failed — falling back', e); app.post.disabled = true; }
+    } else {
+      renderer.render(scene, camera);
+    }
+    app.gpuTimer.end();
+
+    const cpu = performance.now() - t0;
+    fpsAcc += realDt; fpsN++; fpsT += cpu;
+    if (fpsAcc > 0.5) {
+      app.perf.fps = fpsN / fpsAcc; app.perf.frameMs = (fpsAcc / fpsN) * 1000; app.perf.cpuMs = fpsT / fpsN;
+      fpsAcc = 0; fpsN = 0; fpsT = 0;
+    }
+    app.perf.gpuMs = app.gpuTimer.ms;
+
+    if (!app.ready && app.frame > 3 && app.world.readyAround(app.cameraS ?? s0, 160)) {
+      app.ready = true;
+      if (loadingEl) loadingEl.classList.add('done');
+      events.emit('ready', {});
+      setTimeout(() => { window.__ready = true; }, 300);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    if (app.post && app.post.setSize) app.post.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  app.stats = () => ({
+    fps: +app.perf.fps.toFixed(1), frameMs: +app.perf.frameMs.toFixed(2), cpuMs: +app.perf.cpuMs.toFixed(2), gpuMs: +app.perf.gpuMs.toFixed(2),
+    calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+    geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs?.length,
+    chunks: app.world.chunks.size, queue: app.world.stats.queue, buildMsByModule: app.world.stats.buildMsByModule,
+    s: +(app.cameraS ?? 0).toFixed(1), speedKmh: +((app.train?.speed ?? 0) * 3.6).toFixed(1),
+    modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
+  });
+}
+
+/** Fallback / initial camera: on the ride track at s, looking along the route. */
+function placeCamera(app, s) {
+  const { route, camera } = app;
+  const p = route.toWorld(s, TRACK_OFFSET, EYE_HEIGHT);
+  const t = route.toWorld(s + 60, TRACK_OFFSET, EYE_HEIGHT * 0.9);
+  camera.position.copy(p);
+  camera.lookAt(t);
+  app.cameraS = s;
+}
+
+/** view=s,d,h,yaw,pitch : free inspection camera in route coordinates (degrees, yaw + = left). */
+function applyInspectionView(app) {
+  const v = app.params.view;
+  if (!v) return;
+  const [s, d = TRACK_OFFSET, h = EYE_HEIGHT, yaw = 0, pitch = 0] = v;
+  const { route, camera } = app;
+  const p = route.toWorld(s, d, h);
+  const th = route.heading(s) + (yaw * Math.PI) / 180;
+  const pr = (pitch * Math.PI) / 180;
+  const dir = new THREE.Vector3(Math.cos(th) * Math.cos(pr), Math.sin(pr), -Math.sin(th) * Math.cos(pr));
+  camera.position.copy(p);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(p.clone().add(dir));
+  app.cameraS = s;
+}
+
+main().catch((e) => fatal('startup failed', e));
