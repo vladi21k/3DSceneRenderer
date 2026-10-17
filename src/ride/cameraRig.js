@@ -13,7 +13,8 @@ import { input } from './input.js';
 //    the cab points across the bend (the track sweeps towards the inside of the frame
 //    and the outer facades fill it); the eye sits 1.7 m behind the cab front on that
 //    axis. The driver's head turns a little towards where the track goes;
-//  - body on its suspension: lateral sway and yaw hunting from track alignment, vertical
+//  - body on its suspension: lateral sway and yaw from track alignment, a 1.1-1.6 Hz body
+//    hunting oscillation growing with speed², vertical
 //    bob and pitch from track level, roll from cross level and an outward roll in
 //    curves (v²κ), pitch from traction / braking with a spring-back at the stop;
 //  - framing: at the telephoto default (DEFAULT_VFOV) the gaze settles far down the line,
@@ -52,7 +53,12 @@ export const RIG = {
   pitchPerAcc: 0.42 * DEG,  // body pitch per m/s² of longitudinal acceleration
   rollArm: 2.0,             // m, eye height above the roll centre
   stopSpring: 3.4 * DEG,    // pitch-rate kick per m/s² of final braking when the tram comes to rest
-  vib: { pitch: 0.025 * DEG, yaw: 0.014 * DEG, roll: 0.017 * DEG },   // RMS buzz at 45 km/h
+  vib: { pitch: 0.035 * DEG, yaw: 0.014 * DEG, roll: 0.017 * DEG },   // RMS buzz at 45 km/h
+  // body hunting: the car body's yaw / lateral oscillation on its secondary suspension
+  // (wheelset hunting coupled through the bogies), 1.1-1.6 Hz with a drifting frequency
+  // and amplitude; RMS at huntRef, growing with the square of speed (capped)
+  hunt: { yaw: 0.032 * DEG, lat: 0.003, ref: 7.5, max: 1.4, freq: [1.1, 1.6] },
+  dipKick: 1.5,             // dipped / insulated joints knock harder than the welds
   shutterDay: 1 / 160,      // s, exposure in daylight (camera motion blur in post)...
   shutterNight: 1 / 50,     // ...opening up towards dusk (U.uNight), interpolated in stops
   blurMaxPx: 32,            // streak cap (px at 1080 lines) at the night shutter, scaled with the shutter
@@ -78,7 +84,7 @@ class Spring {
 }
 
 // Track geometry irregularities (metres / radians) as smooth functions of route position.
-const alignment = (s) => 0.011 * noise1(s / 9.5, 11) + 0.0022 * noise1(s / 3.3, 12);
+const alignment = (s) => 0.02 * noise1(s / 9.5, 11) + 0.0022 * noise1(s / 3.3, 12);
 const level = (s) => 0.0035 * noise1(s / 7.5, 21) + 0.0012 * noise1(s / 2.4, 22);
 const crossLevel = (s) => 0.0007 * noise1(s / 12, 31) + 0.0003 * noise1(s / 4.1, 32);
 
@@ -147,7 +153,8 @@ const cameraRig = {
   blurMaxPx: RIG.blurMaxPx * RIG.shutterDay / RIG.shutterNight,  // streak cap, px at 1080 lines
   cut: true,         // the view jumped this frame: no motion blur
   prevViewProj: null, // last frame's projection × view matrix (for the shutter blur in post)
-  _hf: { pitch: 0, yaw: 0, roll: 0 },   // current body buzz (rad)
+  _hf: { pitch: 0, yaw: 0, roll: 0, lat: 0 },   // current body buzz / hunting (rad, m)
+  _huntPh: 0,         // hunting oscillator phase (rad)
   _tallPitch: 0,      // extra downward tilt on tall (portrait) screens
 
   async init(app) {
@@ -265,7 +272,7 @@ const cameraRig = {
 
     // ---- compose: body pose, then the head inside it
     const hv = this._hf;
-    const right = this.lat.x - this.roll.x * RIG.rollArm;
+    const right = this.lat.x + hv.lat - this.roll.x * RIG.rollArm;
     const up = EYE_HEIGHT + this.vert.x + this.tick.x;
     const rx = -ax.z, rz = ax.x, rl = Math.hypot(rx, rz) || 1;    // body right (horizontal)
     camera.position.set(eye.x + (rx / rl) * right, eye.y + up, eye.z + (rz / rl) * right);
@@ -312,6 +319,15 @@ const cameraRig = {
     hv.yaw = RIG.vib.yaw * k * buzz(t, 111);
     hv.roll = RIG.vib.roll * k * buzz(t, 121);
 
+    // body hunting: a drifting 1.1-1.6 Hz yaw / sway (sine of unit RMS, amplitude wandering
+    // ±40 %), lateral motion a quarter period behind the yaw
+    const H = RIG.hunt;
+    const fh = H.freq[0] + (H.freq[1] - H.freq[0]) * (0.5 + 0.5 * noise1(t * 0.13, 141));
+    this._huntPh = (this._huntPh + 2 * Math.PI * fh * dt) % (2 * Math.PI * 64);
+    const ah = Math.min(H.max, (v / H.ref) ** 2) * Math.SQRT2 * (1 + 0.4 * noise1(t * 0.31, 143));
+    hv.yaw += H.yaw * ah * Math.sin(this._huntPh);
+    hv.lat = H.lat * ah * Math.sin(this._huntPh - Math.PI / 2);
+
     const n = Math.ceil(dt / (1 / 240)), h = dt / n;
     for (let i = 0; i < n; i++) {
       this.lat.step(latT, h);
@@ -343,7 +359,7 @@ const cameraRig = {
         if (v < 0.3) continue;
         const w = axle.weight * strength;
         // welds are barely there, dipped joints knock, the frog nose hits hardest
-        const sev = ft.sev < 0.25 ? ft.sev * 0.25 : ft.sev;
+        const sev = ft.sev < 0.25 ? ft.sev * 0.25 : ft.sev * (ft.kind === 'joint' ? RIG.dipKick : 1);
         const k = ft.kind === 'frog' ? 1.8 : ft.kind === 'check' ? 0.5 : 1;
         this.tick.v -= 0.04 * w * sev * k;
         this.vert.v -= 0.004 * w * sev * k;

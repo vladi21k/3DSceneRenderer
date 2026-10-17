@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
-import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
+import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, VIEW_FAR, LOD0_DIST } from '../core/config.js';
 
 // Streams the route in CHUNK_LEN pieces around the camera. Each chunk holds one
 // Object3D per chunk-building module. Builds are time-sliced (a few ms per frame),
@@ -11,6 +11,14 @@ import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js
 // programs are compiled in the background (compileAsync) and its module parts are then
 // revealed a few per frame under a GPU-upload byte budget, swapping each replacement
 // part with the old part of the same module, so no single frame uploads a whole chunk.
+//
+// Detail levels: lod 0 within LOD0_DIST, lod 1 out to VIEW_AHEAD, and lod 2 (the far
+// field) from there to VIEW_FAR. A builder is asked for the levels in its `lods` list
+// (default [0, 1]); the far field (core/farfield.js) builds lod 2 only. A lod 2 chunk
+// coming within VIEW_AHEAD is upgraded like any other: the full chunk is built and
+// revealed, then the far-field part is dropped.
+
+const DEFAULT_LODS = [0, 1];
 
 export class World {
   constructor(app, builders) {
@@ -26,21 +34,29 @@ export class World {
     this.revealing = [];               // chunks compiled and waiting to be revealed
     this.stats = { built: 0, disposed: 0, lastBuildMs: 0, queue: 0, buildMsByModule: {}, revealBytes: 0 };
     this._ride = {};                   // module -> recent ride-time build durations (ms)
+    this.viewFar = VIEW_FAR;
+    // (debug: ffnear=<m> starts the far field nearer, to compare it with the real thing)
+    this.viewAhead = Math.min(VIEW_AHEAD, app.params?.num ? app.params.num('ffnear', VIEW_AHEAD) : VIEW_AHEAD);
+    this.farBuilders = this.buildersFor(2).length;
   }
 
   wanted(sCam) {
-    const L = this.app.route.length, n = this.app.layout.nChunks;
+    const n = this.app.layout.nChunks;
     const out = [];
-    const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + VIEW_AHEAD) / CHUNK_LEN);
-    for (let i = i0; i <= i1; i++) {
+    const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + this.viewAhead) / CHUNK_LEN);
+    // the far field only while some builder serves it, and never wrapping onto the near range
+    const i2 = this.farBuilders ? Math.min(Math.floor((sCam + this.viewFar) / CHUNK_LEN), i0 + n - 1) : i1;
+    for (let i = i0; i <= i2; i++) {
       const idx = ((i % n) + n) % n;
       const mid = i * CHUNK_LEN + CHUNK_LEN / 2;
       const dist = Math.max(0, Math.abs(mid - sCam) - CHUNK_LEN / 2);
-      out.push({ idx, dist, lod: dist < LOD0_DIST ? 0 : 1 });
+      out.push({ idx, dist, lod: i > i1 ? 2 : dist < LOD0_DIST ? 0 : 1 });
     }
-    void L;
     return out;
   }
+
+  /** Builders asked for chunks of detail level `lod`. */
+  buildersFor(lod) { return this.builders.filter((b) => (b.lods || DEFAULT_LODS).includes(lod)); }
 
   makeChunk(idx, lod) {
     const L = this.app.route.length;
@@ -51,15 +67,16 @@ export class World {
     return {
       index: idx, s0, s1, lod, group,
       parts: new Map(),        // module name -> Object3D
-      pending: [...this.builders.map((b) => b.name)],
+      pending: this.buildersFor(lod).map((b) => b.name),
       ready: false,
       rng: (tag) => RNG.from(this.app.layout.seed, tag, idx),
     };
   }
 
-  /** Synchronously build every wanted chunk within `dist` (used at start-up). */
-  async prime(sCam, dist, onProgress) {
-    const want = this.wanted(sCam).filter((w) => w.dist <= dist).sort((a, b) => a.dist - b.dist);
+  /** Synchronously build every wanted chunk within `dist` (used at start-up); `lods`
+   *  limits it to those detail levels (the far field is primed apart, it is cheap). */
+  async prime(sCam, dist, onProgress, lods = null) {
+    const want = this.wanted(sCam).filter((w) => w.dist <= dist && (!lods || lods.includes(w.lod))).sort((a, b) => a.dist - b.dist);
     let done = 0;
     for (const w of want) {
       let c = this.chunks.get(w.idx);
@@ -134,6 +151,12 @@ export class World {
       const c = this.revealing[0];
       if (c.dead) { this.revealing.shift(); continue; }
       const name = c.toReveal.shift();
+      if (c.replaces && !c.orphansHidden) {
+        // parts of the old chunk with no counterpart here (the far field under a full
+        // chunk) go with the first reveal, so they never overlap the new geometry
+        c.orphansHidden = true;
+        for (const [n, o] of c.replaces.parts) if (!c.parts.has(n)) o.visible = false;
+      }
       if (name !== undefined) {
         const obj = c.parts.get(name);
         obj.visible = true;
@@ -224,6 +247,7 @@ export class World {
     const steps = lookAhead > 0 ? [0, lookAhead] : [0];
     for (const ahead of steps) {
       for (const w of this.wanted(sCam + ahead)) {
+        if (w.lod > 1) continue;   // the far field is core's own (no module prefetches it)
         const key = `${w.idx}:${w.lod}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -247,7 +271,7 @@ export class World {
 
   /** True when every chunk within `dist` metres of sCam is built. */
   readyAround(sCam, dist) {
-    return this.wanted(sCam).filter((w) => w.dist <= dist).every((w) => this.chunks.get(w.idx)?.ready);
+    return this.wanted(sCam).filter((w) => w.dist <= dist && w.lod < 2).every((w) => this.chunks.get(w.idx)?.ready);
   }
 }
 

@@ -15,7 +15,7 @@ export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.040 field-side pa
 export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.095 gauge-side paving edge
 export const HEAD_DULL = -0.0270;                        // rusty field-side bevel ends here (< 2 mm)
 export const GROOVE_DEPTH = 0.0365;
-export const GROUT_W = 0.07;                             // dark mortar strip bedding each rail into the setts
+export const GROUT_W = 0.02;                             // narrow mortar strip between the bitumen seal and the setts
 
 // The four running rails of the two main tracks: centre line d and gauge direction g.
 export const MAIN_RAILS = [];
@@ -92,9 +92,11 @@ export const RAIL_PROFILE = [
   [RAIL_X1, 0.0, 'seal', 1],
 ];
 
-// Effective albedo of the bitumen seal and of the mortar bed (linear). The seal is drawn
-// with the mortar material at SEAL_TONE of its colour.
-export const MORTAR_ALBEDO = [0.13, 0.128, 0.124];
-export const SEAL_TONE = 0.42;
+// Effective albedo of the bitumen seal and of the mortar bed (linear). The mortar is a
+// dirty cement grey at about 0.7x the setts (paving.street ~0.165), so they visually
+// reach the seal; the seal is drawn with the mortar material at SEAL_TONE of its colour
+// (dark bitumen, ~0.055).
+export const MORTAR_ALBEDO = [0.122, 0.118, 0.112];
+export const SEAL_TONE = 0.47;
 
 export { TRACK_OFFSET, RAIL_CENTER, TRACK_ZONE_HALF, EDGE_BAND_W };

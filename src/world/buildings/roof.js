@@ -374,34 +374,77 @@ export function headHouse(B, sinks, q, rng, tint) {
 }
 
 /**
- * Satellite dish on a short bracket: a shallow paraboloid facing +w, tilted up by
- * `elev` (radians), feed arm under the rim. Two-sided (front and back faces).
+ * Satellite dish on a short bracket: a shallow paraboloid shell facing +w, tilted up by
+ * `elev` (radians), feed arm under the rim. The bowl is a thin shell: the concave face
+ * and, 8 mm behind it along the axis, the convex back, each with the surface's own
+ * normals, a fan at the centre, and a rim band joining them.
  */
 export function satelliteDish(B, s, q, rng, elev = 0.75) {
   const R = rng.range(0.3, 0.42), depth = R * 0.22, h = rng.range(0.35, 0.6);
   const ce = Math.cos(elev), se = Math.sin(elev);
-  // dish axis a (u, v, w) = (0, se, ce); e1 = u axis; e2 = a × e1 = (0, ce, -se)
-  const cv = h + 0.05, cw = 0.12;
-  const P = (r, t) => {
-    const x = r * Math.cos(t), y = r * Math.sin(t), z = depth * (r / R) * (r / R);
-    return [x, cv + y * ce + z * se, cw + -y * se + z * ce];
-  };
+  const cv = h + 0.05, cw = 0.12, K = depth / (R * R), T = 0.008;
+  // dish space (x across, y up the dish, z along the axis) to the local frame (u, v, w)
+  const pos = (x, y, z) => [x, cv + y * ce + z * se, cw - y * se + z * ce];
+  const dir = (x, y, z) => [x, y * ce + z * se, -y * se + z * ce];
   B.flat = rng.chance(0.8) ? [0.78, 0.78, 0.76] : [0.3, 0.3, 0.31];
-  const nr = 2, nt = q.lod ? 6 : 10;
-  for (let i = 0; i < nr; i++) {
-    const r0 = (R * i) / nr, r1 = (R * (i + 1)) / nr;
-    for (let j = 0; j < nt; j++) {
-      const t0 = (j / nt) * Math.PI * 2, t1 = ((j + 1) / nt) * Math.PI * 2;
-      const a = P(r0, t0), b = P(r1, t0), c = P(r1, t1), d = P(r0, t1);
-      B.quadAuto(s, a, b, c, d);
-      B.quadAuto(s, a, d, c, b);
+  const nr = q.lod ? 2 : 3, nt = q.lod ? 8 : 14;
+  for (const back of [0, 1]) {
+    // concave face looks along +axis; the back face is the same surface moved T behind
+    const zo = back ? -T : 0, sg = back ? -1 : 1;
+    s.reserve(1 + nr * nt, nt * 3 + (nr - 1) * nt * 6);
+    const P = pos(0, 0, zo), N = dir(0, 0, sg);
+    const c0 = B.v(s, P[0], P[1], P[2], N[0], N[1], N[2], 0, 0);
+    const base = s.vc;
+    for (let i = 1; i <= nr; i++) {
+      const r = (R * i) / nr;
+      for (let j = 0; j < nt; j++) {
+        const t = (j / nt) * Math.PI * 2, x = r * Math.cos(t), y = r * Math.sin(t);
+        const p = pos(x, y, K * r * r + zo);
+        const l = Math.hypot(2 * K * x, 2 * K * y, 1);
+        const n = dir((-2 * K * x * sg) / l, (-2 * K * y * sg) / l, sg / l);
+        B.v(s, p[0], p[1], p[2], n[0], n[1], n[2], x, y);
+      }
     }
+    // (x, y) runs counter-clockwise seen from +z: front faces keep that order, the back reverses it
+    for (let j = 0; j < nt; j++) {
+      const a = base + j, b = base + ((j + 1) % nt);
+      if (back) B.tri(s, c0, b, a); else B.tri(s, c0, a, b);
+    }
+    for (let i = 0; i < nr - 1; i++) {
+      for (let j = 0; j < nt; j++) {
+        const a = base + i * nt + j, b = base + i * nt + ((j + 1) % nt), c = b + nt, d = a + nt;
+        if (back) B.quadIdx(s, a, d, c, b); else B.quadIdx(s, a, b, c, d);
+      }
+    }
+  }
+  // rim band between the two faces (normals pointing out radially)
+  s.reserve(nt * 2, nt * 6);
+  const rb = s.vc;
+  for (let j = 0; j < nt; j++) {
+    const t = (j / nt) * Math.PI * 2, x = R * Math.cos(t), y = R * Math.sin(t);
+    const n = dir(Math.cos(t), Math.sin(t), 0);
+    const pf = pos(x, y, K * R * R), pb = pos(x, y, K * R * R - T);
+    B.v(s, pf[0], pf[1], pf[2], n[0], n[1], n[2], t * R, 0);
+    B.v(s, pb[0], pb[1], pb[2], n[0], n[1], n[2], t * R, T);
+  }
+  for (let j = 0; j < nt; j++) {
+    const a = rb + j * 2, b = rb + ((j + 1) % nt) * 2;
+    B.quadIdx(s, a, a + 1, b + 1, b);
   }
   // feed arm from the rim bottom to the focus, and the mounting bracket
   B.flat = [0.35, 0.35, 0.35];
-  const rimB = P(R, -Math.PI / 2), focus = [0, cv + (R * 0.9) * se, cw + (R * 0.9) * ce];
+  const rimB = pos(0, -R, K * R * R), focus = [0, cv + (R * 0.9) * se, cw + (R * 0.9) * ce];
   const e = 0.012;
-  B.quadAuto(s, [rimB[0] - e, rimB[1], rimB[2]], [rimB[0] + e, rimB[1], rimB[2]], [focus[0] + e, focus[1], focus[2]], [focus[0] - e, focus[1], focus[2]]);
+  // (a square tube from the rim to the feed: four long faces wound to face outwards)
+  const av = focus[1] - rimB[1], aw = focus[2] - rimB[2], al = Math.hypot(av, aw) || 1;
+  const pv = (-aw / al) * e, pw = (av / al) * e;
+  const ring = (p) => [[p[0] - e, p[1] - pv, p[2] - pw], [p[0] + e, p[1] - pv, p[2] - pw], [p[0] + e, p[1] + pv, p[2] + pw], [p[0] - e, p[1] + pv, p[2] + pw]];
+  const A = ring(rimB), F = ring(focus);
+  for (let k = 0; k < 4; k++) {
+    const k1 = (k + 1) % 4;
+    const hu = (A[k][0] + A[k1][0]) / 2 - rimB[0], hv = (A[k][1] + A[k1][1]) / 2 - rimB[1], hw = (A[k][2] + A[k1][2]) / 2 - rimB[2];
+    B.quadOut(s, A[k], A[k1], F[k1], F[k], hu, hv, hw);
+  }
   B.box(s, -0.03, 0.03, focus[1] - 0.04, focus[1] + 0.04, focus[2] - 0.05, focus[2] + 0.03, FACES.ALL);
   B.box(s, -0.02, 0.02, 0, cv, cw - 0.12, cw - 0.08, FACES.SIDES | FACES.FRONT | FACES.BACK);
   B.box(s, -0.08, 0.08, 0, 0.02, cw - 0.2, cw, FACES.TOP | FACES.FRONT | FACES.BACK | FACES.LEFT | FACES.RIGHT);

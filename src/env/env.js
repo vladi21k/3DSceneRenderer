@@ -41,10 +41,17 @@ const WEATHER = {
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];
-// canyon bounce view factors: walls seen from the floor (up), floor and walls seen from below (down)
-const BOUNCE = { up: 0.4, down: 0.55 };
-// exposed value of sun-facing stone that low-sun highlight protection holds (~2 stops over mid grey)
-const LIT_STONE = 0.8;
+// canyon bounce: the share of the interreflection the environment map's single capture
+// point misses (its canyon model already holds the sunlit facades and floor), as view
+// factors of the walls seen from the floor (up) and of the floor and walls from below (down)
+const BOUNCE = { up: 0.15, down: 0.2 };
+// exposed value of sun-facing stone that low-sun highlight protection holds: on the
+// tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
+const LIT_STONE = 1.5;
+// exposed value of the horizon slot down the street the camera holds once the sun is low
+// (sunset onwards; ~3 stops over mid grey, which post's highlight recovery brings down to
+// the shoulder with its colour), by time of day
+const HORIZON_LEVEL = [[0.6, 64], [0.8, 1.5]];
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -63,6 +70,8 @@ const env = {
   haze: { amb: new THREE.Vector3(0.05, 0.06, 0.08), plane: new THREE.Vector4(0, 0, 0, -1), gap: 0, sun: 1 },
   // scene illuminant on a horizontal surface in the open (sun + sky), for white balance
   illuminant: new THREE.Vector3(1, 1, 1),
+  // the direct sun's illuminance (rgb, normal incidence, zero below the skyline)
+  sunIlluminant: new THREE.Vector3(1, 1, 1),
 
   async init(app) {
     this.app = app;
@@ -289,36 +298,51 @@ const env = {
     const EK = 0.03; // ~1000 lux
     const lnE = 0.7 * Math.log(3.1 / Math.max(Eh, EK)) + 0.5 * Math.log(EK / Math.min(Math.max(Eh, 1e-7), EK));
     this.exposureBase = 1.6 * Math.exp(lnE);
-    this.exposure = this._capExposure(this.exposureBase);
     // highlight protection for a low sun: whatever the metering does for the shaded
-    // canyon, stone facing the sun (albedo ~0.55) stays below the shoulder, so the
-    // golden light keeps its colour instead of clipping to cream
+    // canyon, stone facing the sun (albedo ~0.55) stays on the shoulder, so the golden
+    // light keeps its colour instead of clipping to cream (half-way in log terms: the
+    // camera still exposes for the street, as the golden-hour photographs do)
     const sh = Math.max(this.state.sunDir.y, 0);
     const litStone = 0.55 * this.sunIlluminance * Math.sqrt(1 - sh * sh) / Math.PI;
     const w = THREE.MathUtils.smoothstep(this.state.t, 0.35, 0.55);
-    this.exposureMax = litStone > 1e-6 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(LIT_STONE / litStone), w)) : 1e4;
-    if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
+    this._litCap = litStone > 1e-6 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(LIT_STONE / litStone), 0.5 * w)) : 1e4;
+    this._applyCaps();
 
-    // illuminant for the white balance (horizontal surface in the open)
+    // illuminant for the white balance (horizontal surface in the open), and the direct
+    // sun alone (a daylight preset balances on it)
     const sc = U.uSunColor.value, sy = Math.max(this.state.sunDir.y, 0);
     const sk = irr && !this._irrDirty ? irr.horizontal : null;
     if (sk) this.illuminant.set(sc.r * sy + sk.x, sc.g * sy + sk.y, sc.b * sy + sk.z);
     else this.illuminant.set(sc.r * sy + Esky * 0.6, sc.g * sy + Esky, sc.b * sy + Esky * 1.9);
+    this.sunIlluminant.set(sc.r, sc.g, sc.b);
   },
 
-  /** Limit exposure so the horizon seen down the street maps below ~0.35 before the tone curve at dusk. */
-  _capExposure(base) {
+  /**
+   * Exposure ceiling (post applies it to the metered exposure) and the nominal exposure:
+   * the low-sun highlight protection, and from sunset on the horizon slot down the street
+   * held below the shoulder, so the afterglow keeps its colour however dark the canyon.
+   */
+  _applyCaps() {
+    this.exposureMax = Math.min(this._litCap ?? 1e4, this._horizonCap());
+    this.exposure = Math.min(this.exposureBase, this.exposureMax);
+    if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
+  },
+
+  /** Highest exposure that keeps the horizon seen down the street at HORIZON_LEVEL. */
+  _horizonCap() {
     const irr = this.sky.irradiance, cam = this.app && this.app.camera;
-    if (!irr || !cam || !irr.horizonSun) return base;
+    if (!irr || !cam || !irr.horizonSun) return 1e4;
+    const [[t0, l0], [t1, l1]] = HORIZON_LEVEL;
+    const k = THREE.MathUtils.smoothstep(this.state.t, t0, t1);
+    if (k <= 0) return 1e4;
     const d = this.state.sunDir;
     cam.getWorldDirection(_fwd);
     const h = Math.hypot(_fwd.x, _fwd.z), hs = Math.hypot(d.x, d.z);
     const c = h > 1e-4 && hs > 1e-4 ? (_fwd.x * d.x + _fwd.z * d.z) / (h * hs) : 0;
     const w = Math.pow(0.5 + 0.5 * c, 2);
     const slot = THREE.MathUtils.lerp(lum(irr.horizonAnti), lum(irr.horizonSun), w);
-    // no cap in daylight (the bright sky slot is meant to be the brightest thing in frame)
-    const level = THREE.MathUtils.lerp(4.0, 0.35, THREE.MathUtils.smoothstep(this.state.t, 0.6, 0.88));
-    return Math.min(base, level / Math.max(slot, 1e-9));
+    const level = Math.exp(THREE.MathUtils.lerp(Math.log(l0), Math.log(l1), k));
+    return level / Math.max(slot, 1e-9);
   },
 
   /**
@@ -354,7 +378,7 @@ const env = {
     // dust scatters nearly greyly and the canyon light it sees is warm: by day the
     // in-scatter source leans to a pale warm grey of the same luminance
     const La = lum(hz.amb);
-    hz.amb.lerp(_es2.set(La * 1.07, La, La * 0.88), 0.55 * sunUp);
+    hz.amb.lerp(_es2.set(La * 1.07, La, La * 0.88), 0.2 * sunUp);
     // canyon bounce: mean irradiance of the sun-facing facade and of the floor, reflected
     // with the stone and paving albedo through the view factors of a ~1:1 street canyon
     const bu = this.bounce;
@@ -453,8 +477,7 @@ const env = {
 
     // ---- street haze inputs and the per-frame exposure (horizon cap follows the view)
     this._updateHaze(app);
-    this.exposure = this._capExposure(this.exposureBase);
-    if (this._noPost) app.renderer.toneMappingExposure = this.exposure;
+    this._applyCaps();
 
     // ---- dusk lights
     this.lights.update(app, U.uNight.value);

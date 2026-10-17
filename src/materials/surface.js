@@ -221,7 +221,7 @@ const MAP_DRESS = /* glsl */ `
       dgx = sfDR * dgx * dsc; dgy = sfDR * dgy * dsc;
       bool rubbed = !dTool && hd > sfDetail2.y + (1.0 - sfDetail2.y) * 0.6;
       dAmp = rubbed ? 0.3 : 1.0;
-      dFar = dTool ? 0.955 : (rubbed ? 1.0 : 0.97);   // mean self-shadowing of the tooling
+      dFar = dTool ? 0.985 : (rubbed ? 1.0 : 0.97);   // mean self-shadowing of the tooling
       float e = min(min(sfCl.x, sfCs.x - sfCl.x), min(sfCl.y, sfCs.y - sfCl.y));
       float mg = sfDetail2.z * (0.7 + 0.6 * sfHf(sfH(sfCh + 26u)));
       float inner = smoothstep(mg, mg + 0.005, e);

@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import { MORTAR_ALBEDO } from './constants.js';
 
 // Street-owned shading pieces:
-//  - the mortar bed along the rails (hand-trowelled cement / bitumen mix): a smooth dark
-//    band with lighter cement patches and trowel streaks along the rail, no aggregate;
+//  - the mortar bed along the rails (hand-trowelled cement): a narrow dirty grey strip
+//    with fbm dirt mottling, lighter cement patches and trowel streaks along the rail;
+//  - grit in the rail grooves: the flangeway floor is filled with grey-brown grit, sand
+//    and leaf debris (patchy, damp in places) instead of a uniform black slot;
 //  - street-canyon specular occlusion for the rail steel. The sky environment map knows
 //    nothing about the buildings, so a polished rail would reflect open sky in every
 //    direction and glow even in shade or at dusk. The canyon is modelled analytically:
@@ -139,17 +141,92 @@ float stMR = 1.0;
   // lighter cement patches 0.3-1 m long, stretched along the rail
   float pa = stNoise( vec2( p.x * 1.4, p.y * 6.0 ) + 11.0 ) * 0.65 + stNoise( vec2( p.x * 3.7, p.y * 13.0 ) + 3.0 ) * 0.35;
   float lighter = smoothstep( 0.6, 0.76, pa );
+  // dirt worked into it: fbm mottling, darker stretches where grit and water collect
+  float df = stNoise( vec2( p.x * 0.8, p.y * 4.0 ) + 21.0 ) * 0.5 + stNoise( vec2( p.x * 2.9, p.y * 14.0 ) + 2.0 ) * 0.3
+           + stNoise( vec2( p.x * 9.0, p.y * 40.0 ) + 8.0 ) * 0.2;
+  float dirt = smoothstep( 0.38, 0.78, df );
   // trowel streaks along the strip and fine pores, faded once unresolved
   float kTr = 1.0 - smoothstep( 0.004, 0.014, fw );
   float kFi = 1.0 - smoothstep( 0.0015, 0.005, fw );
-  float tr = ( stNoise( vec2( p.x * 7.0, p.y * 120.0 ) ) - 0.5 ) * kTr;
-  float fi = ( stNoise( p * 260.0 ) - 0.5 ) * kFi;
+  vec2 pw = vec2( mod( p.x, 64.0 ), p.y );    // fine octaves: keep the float precision
+  float tr = ( stNoise( vec2( pw.x * 7.0, pw.y * 120.0 ) ) - 0.5 ) * kTr;
+  float fi = ( stNoise( pw * 260.0 ) - 0.5 ) * kFi;
   float tone = stNoise( vec2( p.x * 0.35, p.y * 2.0 ) + 5.0 ) - 0.5;
-  diffuseColor.rgb *= ( 1.0 + 0.32 * lighter ) * ( 1.0 + 0.16 * tone ) * ( 1.0 + 0.12 * tr ) * ( 1.0 + 0.2 * fi );
+  diffuseColor.rgb *= ( 1.0 + 0.16 * lighter ) * ( 1.0 + 0.14 * tone ) * ( 1.0 + 0.12 * tr ) * ( 1.0 + 0.2 * fi );
+  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.66, 0.62, 0.57 ), dirt );
   stMR = 1.0 - 0.07 * lighter + 0.06 * fi;
 }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= stMR;');
   };
-  m.customProgramCacheKey = () => 'street-mortar-1';
+  m.customProgramCacheKey = () => 'street-mortar-2';
+  return m;
+}
+
+// Grit fill of the flangeway: where the groove surface faces up (its floor and the foot
+// of its walls) the grime of rail.groove gives way to grey-brown grit and sand with leaf
+// fragments, patchy along the rail (packed and damp, loose and pale, swept out by the
+// flanges in places). Effective albedo ~0.04-0.09, mean ~0.06, about 0.35x the setts
+// (the floor's cavity AO is folded in).
+// UVs: u along the rail (m), v across the profile (m).
+const GRIT = /* glsl */`
+{
+  vec3 stNw = normalize( ( vec4( vNormal, 0.0 ) * viewMatrix ).xyz );
+  stGrit = smoothstep( 0.45, 0.85, stNw.y );
+  vec2 p = vStGritUv;
+  float fw = max( length( fwidth( p ) ), 1e-5 );
+  float kFi = 1.0 - smoothstep( 0.002, 0.007, fw );
+  float pa = stNoise( vec2( p.x * 2.1, p.y * 18.0 ) + 7.0 ) * 0.6 + stNoise( vec2( p.x * 6.3, p.y * 40.0 ) + 1.0 ) * 0.4;
+  // sand grains and small stones: two rotated octaves, so no lattice shows
+  vec2 pw = vec2( mod( p.x, 64.0 ), p.y );    // fine octaves: keep the float precision
+  vec2 q1 = mat2( 0.8, 0.6, -0.6, 0.8 ) * pw * 310.0, q2 = mat2( 0.47, -0.88, 0.88, 0.47 ) * pw * 170.0 + 3.1;
+  float grain = mix( 0.5, stNoise( q1 ) * 0.55 + stNoise( q2 ) * 0.45, kFi );
+  float stone = kFi * smoothstep( 0.68, 0.8, stNoise( q2 * 0.55 + 9.0 ) );
+  vec3 g = vec3( 0.086, 0.078, 0.065 ) * ( 0.6 + 0.8 * pa ) * ( 0.7 + 0.6 * grain ) * ( 1.0 + 0.35 * stone );
+  // pale dry sand drifts and dark damp stretches
+  float sand = smoothstep( 0.62, 0.82, stNoise( vec2( p.x * 0.9, 2.3 ) + 4.0 ) );
+  float damp = smoothstep( 0.6, 0.85, stNoise( vec2( p.x * 0.45, 5.1 ) + 13.0 ) );
+  g = mix( g, vec3( 0.115, 0.105, 0.086 ) * ( 0.85 + 0.3 * grain ), 0.6 * sand ) * ( 1.0 - 0.38 * damp );
+  // leaf fragments caught in the slot: a few centimetres each, in loose clusters
+  float lc = smoothstep( 0.55, 0.8, stNoise( vec2( p.x * 1.7, 0.5 ) + 41.0 ) );
+  float leaf = lc * smoothstep( 0.7, 0.82, stNoise( vec2( pw.x * 24.0, pw.y * 70.0 ) + 31.0 ) );
+  g = mix( g, vec3( 0.105, 0.072, 0.042 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
+  #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+    g *= mix( 0.78, 1.0, smoothstep( 0.2, 0.5, vColor.g ) );
+  #endif
+  diffuseColor.rgb = mix( diffuseColor.rgb, g, stGrit );
+  stGritR = mix( 0.97, 0.7, damp ) - 0.08 * leaf;
+}
+`;
+
+// value noise on an integer hash (no sin(): stays random at large coordinates)
+const GNOISE = /* glsl */`
+float stGHash( vec2 p ) {
+  uvec2 q = uvec2( ivec2( p ) ) * uvec2( 1597334673u, 3812015801u );
+  uint n = ( q.x ^ q.y ) * 1597334673u;
+  return float( n >> 8 ) * ( 1.0 / 16777216.0 );
+}
+float stGNoise( vec2 p ) {
+  vec2 i = floor( p ), f = fract( p );
+  vec2 u = f * f * ( 3.0 - 2.0 * f );
+  return mix( mix( stGHash( i ), stGHash( i + vec2( 1, 0 ) ), u.x ), mix( stGHash( i + vec2( 0, 1 ) ), stGHash( i + vec2( 1, 1 ) ), u.x ), u.y );
+}
+`;
+
+/** Patch a rail.groove variant with the grit fill (chains any existing hook). */
+export function patchGrit(m) {
+  const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (sh, r) {
+    if (prev) prev.call(this, sh, r);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vStGritUv;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStGritUv = uv;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec2 vStGritUv;\n${GNOISE}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>\nfloat stGrit = 0.0, stGritR = 1.0;\n${GRIT.replace(/stNoise/g, 'stGNoise')}`)
+      .replace('#include <normal_fragment_begin>', 'roughnessFactor = mix( roughnessFactor, stGritR, stGrit );\nmetalnessFactor *= 1.0 - stGrit;\n#include <normal_fragment_begin>');
+  };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|stGrit'; };
+  m.needsUpdate = true;
   return m;
 }

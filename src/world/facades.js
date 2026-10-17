@@ -154,10 +154,9 @@ const facades = {
       const fronts = [{ plan, frame: lot.frame, streetW, cafe: cafe && cafe.style === 'awning' ? cafe : null }];
       // corner returns face the side street
       for (const r of plan.returns || []) fronts.push({ plan: r, frame: r.frame, streetW: 10, cafe: null });
-      const lotState = {};   // per building, across its fronts (closed shutters, ...)
       for (const fr of fronts) {
         const ctx = {
-          plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets, app, lotState,
+          plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets, app,
           streetW: fr.streetW, cafe: fr.cafe,
           angle: Math.atan2(fr.frame.uDir.z, fr.frame.uDir.x),
         };

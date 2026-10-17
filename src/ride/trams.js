@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { TRACK_OFFSET } from '../core/config.js';
+import { TRACK_OFFSET, TRACK_ZONE_HALF } from '../core/config.js';
 import { U } from '../core/uniforms.js';
 import { Events } from '../core/events.js';
-import { Tram } from './train.js';
+import { Tram, DRIVE } from './train.js';
 import { CAR, buildModels } from './trams/model.js';
 import { makeLampAtlas } from './trams/display.js';
+import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial } from './trams/materials.js';
 
 // Oncoming trams: the other units of the line, on the left track (d = −TRACK_OFFSET),
 // running the loop the other way. The cab tram itself is never rendered.
@@ -71,15 +72,15 @@ const trams = {
     this.app = app;
     app.trams = this;
     const M = app.materials, route = app.route;
-    const own = (k) => ({ owner: `trams.${k}` });
-    // library variants: one shader program with the rest of the vertex-coloured paint / metal / glass
-    const white = new THREE.Color(1, 1, 1);
+    // own materials (trams/materials.js): clear-coated metallic silver paint, flush tinted
+    // glazing with black frit, the cab front glass and the pantograph paint
+    const interior = new THREE.Color(0.03, 0.033, 0.036);       // the saloon seen through the tint
     this.mats = {
-      // silver metallic paint, tinted glazing
-      body: M.get('paint.frame', { vertexColors: true, color: white, metalness: 0.5, roughness: 0.75, userData: own('body') }),
-      glass: M.get('glass.shop', { vertexColors: true, emissive: [1.0, 0.96, 0.9], emissiveIntensity: 0, userData: own('glass') }),
-      ws: M.get('glass.shop', { vertexColors: true, userData: own('windscreen') }),
-      metal: M.get('metal.galvanized', { vertexColors: true, userData: own('metal') }),
+      body: M.track(makeBodyMaterial()),
+      glass: M.track(makeGlassMaterial('trams.glass', interior, true)),
+      ws: M.track(makeGlassMaterial('trams.glassLow', interior, false)),
+      front: M.track(makeFrontMaterial()),
+      metal: M.track(makeMetalMaterial()),
     };
     this.gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
 
@@ -148,7 +149,7 @@ const trams = {
         const lg = new THREE.Group();
         lg.matrixAutoUpdate = false;
         lg.name = `trams:${kind}:lod${lod}`;
-        const parts = [['body', mats.body], ['glass', mats.glass], ['ws', mats.ws], ['metal', mats.metal],
+        const parts = [['body', mats.body], ['glass', mats.glass], ['ws', mats.ws], ['front', mats.front], ['metal', mats.metal],
           [kind === 'lead' ? 'lampLead' : 'lampTrail', lamp]];
         for (const [k, mat] of parts) {
           const geo = m[k];
@@ -189,6 +190,10 @@ const trams = {
       this._scanT -= h;
       if (this._scanT <= 0) { this._scanT = SCAN_DT; this._scan(app); }
     }
+    // pedestrian load of each unit's corridor ahead sets its driver's cruise (as for the
+    // cab tram): every second while running, taken at once until the ride starts
+    this._loadT = (this._loadT || 0) - h;
+    if (h === 0 || this._loadT <= 0) { this._loadT = 1; this._loads(app, h === 0); }
     for (const u of this.units) {
       const t = u.tram;
       t.obstacle = u.obs;
@@ -203,6 +208,23 @@ const trams = {
     }
     this._place(app);
     this._lights();
+  },
+
+  /** Weighted people in each unit's track corridor 5-200 m ahead of its nose -> Tram.load. */
+  _loads(app, immediate) {
+    const sim = app.crowd && !app.crowd.disabled ? app.crowd.sim : null;
+    const agents = sim && sim.population && sim.population.agents;
+    if (!agents || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
+    const route = app.route, n = this.units.map(() => 0);
+    for (const a of agents) {
+      if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF)) continue;
+      const s = route.wrap(sim.camW + (a.s - sim.camU)), w = a.d < 0.2 ? 1 : 0.6;
+      for (let i = 0; i < this.units.length; i++) {
+        const ahead = route.delta(s, this.units[i].s);
+        if (ahead > 5 && ahead < 200) n[i] += w;
+      }
+    }
+    for (let i = 0; i < this.units.length; i++) this.units[i].tram.setLoad(n[i] / DRIVE.busyPeople, immediate);
   },
 
   /** People on (or stepping onto) a unit's track ahead of its nose: distance to the nearest. */
@@ -279,7 +301,7 @@ const trams = {
     const night = Math.min(1, Math.max(0, U.uNight.value));
     const ln = (a, b) => Math.exp(Math.log(a) + night * (Math.log(b) - Math.log(a)));
     this.lampLv.value.set(ln(0.12, 0.014), ln(0.12, 0.06));
-    this.mats.glass.emissiveIntensity = night * 0.0017 * this.gain.value;
+    this.mats.glass.emissiveIntensity = night * 0.0005 * this.gain.value;
   },
 };
 

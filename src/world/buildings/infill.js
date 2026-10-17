@@ -101,6 +101,12 @@ export function openingInfill(ctx, face, o, rng) {
     for (const [a, b] of [[u0 + fw + 0.08, o.uc - 0.08], [o.uc + 0.08, u1 - fw - 0.08]]) {
       if (b - a > 0.15) B.box(sF, a, b, o.y + 0.25, o.y + 0.25 + (dt - o.y) * 0.38, w0 + 0.02, w0 + 0.035, FACES.FRONT | FACES.TOP);
     }
+  } else if (o.shutters === 'roller') {
+    rollerShutter(B, sF, o, w0, yt, ctx.rollerCol || ROLLER, q);
+  } else if (o.shutters === 'open') {
+    openLeaves(B, sF, o, face, q);
+  } else if (o.shutters === 'none') {
+    // (bare glazing)
   } else if (o.shutters === 'closed' || rng.chance(0.35)) {
     // closed louvred shutters over the rectangular part (fanlights stay glazed)
     const col = paint(face.style.shutterColor);
@@ -115,6 +121,50 @@ export function openingInfill(ctx, face, o, rng) {
     }
   }
   B.flat = [1, 1, 1];
+}
+
+/**
+ * Roller shutter let down o.roller (0..1) of the opening from the head, in front of the
+ * glazing, in its guide rails: slats in bands of slightly different tone (one face far).
+ */
+function rollerShutter(B, s, o, w0, yt, col, q) {
+  const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2;
+  const down = Math.max(0.12, Math.min(1, o.roller ?? 0.5) * o.h);
+  const yb = yt - down, ws = w0 + 0.07;
+  if (q.lod) {
+    B.flat = col;
+    B.rectW(s, u0 + 0.01, u1 - 0.01, yb, yt, ws, 1);
+  } else {
+    const n = Math.max(1, Math.round(down / 0.16));
+    for (let k = 0; k < n; k++) {
+      const c = 0.93 + 0.07 * ((k * 5) % 3) / 2;
+      B.flat = col.map((x) => x * c);
+      B.rectW(s, u0 + 0.01, u1 - 0.01, yt - ((k + 1) * down) / n, yt - (k * down) / n, ws, 1);
+    }
+    // bottom rail, catching the light
+    B.flat = col.map((x) => x * 0.75);
+    B.box(s, u0 + 0.01, u1 - 0.01, yb, yb + 0.04, ws - 0.01, ws + 0.012, FACES.FRONT | FACES.BOTTOM);
+    B.flat = col.map((x) => x * 0.85);
+    for (const u of [u0, u1 - 0.03]) B.box(s, u, u + 0.03, o.y, yt, ws - 0.02, ws + 0.015, FACES.FRONT | FACES.LEFT | FACES.RIGHT);
+  }
+}
+
+/** Louvred shutter leaves folded back against the wall either side of the opening. */
+function openLeaves(B, s, o, face, q) {
+  const col = paint(face.style.shutterColor);
+  const lw = o.w / 2, yb = o.y, yt = o.y + o.h - (o.rise || 0);
+  for (const [a, b] of [[o.uc - o.w / 2 - lw - 0.02, o.uc - o.w / 2 - 0.02], [o.uc + o.w / 2 + 0.02, o.uc + o.w / 2 + lw + 0.02]]) {
+    B.flat = col.map((x) => x * 0.8);
+    B.box(s, a, b, yb, yt, 0.004, 0.035, q.lod ? FACES.FRONT : FACES.FRONT | FACES.LEFT | FACES.RIGHT | FACES.TOP | FACES.BOTTOM);
+    if (q.lod) continue;
+    // louvres: lighter slat faces between darker gaps, inside a stile frame
+    const nb = Math.max(4, Math.round((yt - yb - 0.16) / 0.09));
+    for (let k = 0; k < nb; k++) {
+      const v0 = yb + 0.08 + ((yt - yb - 0.16) * k) / nb, v1 = v0 + ((yt - yb - 0.16) / nb) * 0.62;
+      B.flat = col.map((x) => x * (0.95 + 0.05 * (k % 2)));
+      B.rectW(s, a + 0.05, b - 0.05, v0, v1, 0.037, 1);
+    }
+  }
 }
 
 /** Flat polygon of the opening outline at depth w (fan; outlines are convex). */

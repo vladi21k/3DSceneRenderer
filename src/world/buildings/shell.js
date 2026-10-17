@@ -312,9 +312,14 @@ export function* lotSteps(B, lot, ends, q, metas) {
   } else {
     B.shade = null;
     // eaves overhang the cornice; exposed ends are hipped, ends against a neighbour gabled
+    // an end against a neighbour lower than the ridge is hipped too (a gable would stand
+    // above it as a bare stone triangle); its eaves overhang only a neighbour below them
+    const v0r = cor.y + cor.h, wbr = Math.min(E[0].back[1], E[1].back[1]) - 0.25, wfr = cor.proj + 0.4;
+    const ridge = v0r + ((wfr - wbr) / 2) * Math.tan((plan.roof.pitch * Math.PI) / 180);
     const ends = E.map((x) => {
-      const hip = x.corner || !x.nb;
-      return { dir: x.dir, hip, over: hip ? cor.proj + 0.3 : 0 };
+      const open = x.corner || !x.nb;
+      const hip = open || x.nbTop < ridge - 0.4;
+      return { dir: x.dir, hip, over: open || x.nbTop < v0r - 0.3 ? cor.proj + 0.3 : 0 };
     });
     B.flat = plan.roof.color === 'darkred' ? [0.78, 0.66, 0.64] : [1, 1, 1];
     B.setUV();
@@ -417,11 +422,15 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
   for (const [o0, o1] of gr) { if (o0 - a > 0.08) segs.push([a, o0]); a = Math.max(a, o1); }
   if (uMax - a > 0.08) segs.push([a, uMax]);
   const p = orn.plinthP;
-  // base course: a slightly greyer, harder stone
+  // base course: a darker, greyer, harder stone; the splash zone darkens it from 0.78 at
+  // the paving to clean stone 0.8 m up, with a dirt line along its foot and grime
   B.shade = (u, v, w, nu, nv, nw, out) => {
-    trimColor(fs, u, v, nv, out, 0.9);
-    const l = (out[0] + out[1] + out[2]) / 3;
-    out[0] += (l - out[0]) * 0.35; out[1] += (l - out[1]) * 0.35; out[2] += (l * 1.02 - out[2]) * 0.35;
+    const g = face.groundAt(u), hg = v - g;
+    trimColor(fs, u, Math.max(v, g + 0.6), nv, out, 0.86);
+    const t = Math.min(1, Math.max(0, hg / 0.8)), k = (0.78 + 0.22 * t * t * (3 - 2 * t)) * (hg < 0.06 ? 0.86 : 1);
+    const l = (out[0] + out[1] + out[2]) / 3, gr = 0.4 + 0.25 * (1 - t);
+    out[0] = (out[0] + (l - out[0]) * gr) * k; out[1] = (out[1] + (l - out[1]) * gr) * k; out[2] = (out[2] + (l * 1.02 - out[2]) * gr) * k;
+    out[3] = Math.min(1.2, out[3] + 0.5 * Math.exp(-Math.max(0, hg) / 0.3));
   };
   // a chamfered corner: the plinth runs along the cut face to its door, and from the
   // door's far side round the corner into the return (points in the main frame)
@@ -436,12 +445,12 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
       if (!x.cut) continue;
       const [d0, d1] = cutDoor(x), g = face.groundAt(e ? W : 0);
       const path = e ? [d1, x.cut.T, pt(1, x.cut.cr + p)] : [pt(0, x.cut.cr + p), x.cut.S, d0];
-      B.sweep(sinks.detail, plinthProfile(g + orn.plinthH, p, fg - 0.35), path, 0, [true, true]);
+      B.sweep(sinks.detail, plinthProfile(g + orn.plinthH, p, fg - 0.35, g), path, 0, [true, true]);
     }
   }
   for (let [s0, s1] of segs) {
-    const top = Math.max(face.groundAt(s0), face.groundAt(s1)) + orn.plinthH;
-    const prof = plinthProfile(top, p, fg - 0.35);
+    const gs = Math.min(face.groundAt(s0), face.groundAt(s1)), top = Math.max(face.groundAt(s0), face.groundAt(s1)) + orn.plinthH;
+    const prof = plinthProfile(top, p, fg - 0.35, gs);
     if (!F.main) {
       // a corner return leaves the street corner to the front's plinth, which wraps it
       if (face.cornerAtU1 && s1 > W - 0.01) s1 = W - p;

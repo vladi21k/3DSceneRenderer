@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { facadePlan, bindLayout } from './facadePlan.js';
-import { CHUNK_LEN, LOD0_DIST, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js';
+import { CHUNK_LEN, LOD0_DIST, VIEW_AHEAD, VIEW_BEHIND, TRACK_OFFSET, EYE_HEIGHT } from '../core/config.js';
 import { hashStr, RNG } from '../core/rng.js';
 import { SIDE_LOT_START } from './layout.js';
 import { Builder } from './buildings/mesh.js';
@@ -9,6 +9,7 @@ import { grimeStone, litGlass } from './buildings/grime.js';
 import { rowLayout } from './buildings/coursing.js';
 import { makeSlab, slabSteps } from './buildings/skyline.js';
 import { laneSteps } from './buildings/lane.js';
+import { muralMaterials } from './buildings/mural.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -59,6 +60,7 @@ const backdrops = new Map();       // chunk index -> pseudo-lots closing the far
 const lanes = new Map();           // chunk index -> asphalt aprons of the lanes in front of them
 const vistas = [];                 // side-street ends (sites for a taller block behind the backdrop)
 const skyline = new Map();         // chunk index -> taller blocks well behind the frontage
+const termStats = { none: 0, range: 0, cross: 0, dup: 0, prob: 0, clear: 0, apart: 0, cand: [] };
 const cost = [0.4, 0.15];          // running generation cost by detail level (ms per metre of route)
 let stepAvg = 0.25;                // running cost of one generation step (ms)
 let finishAvg = 0.3;               // running cost of closing a finished job (bounds, buffers)
@@ -91,13 +93,15 @@ const buildings = {
       };
       MATS.smoothD = MATS.smooth;
       MATS.dark = MATS.plaster;
+      // painted murals on a few gables (buildings/mural.js)
+      muralMaterials(app).forEach((m, k) => { MATS[`mural${k}`] = m; });
     }
     uploaders = new THREE.Group();
     uploaders.name = 'buildings:upload';
     app.scene.add(uploaders);
     planBackdrops(app);
     planSkyline(app);
-    this.debug = { skyline, backdrops, vistas };   // (inspection from the console / tests)
+    this.debug = { skyline, backdrops, vistas, termStats };   // (inspection from the console / tests)
     indexEnds(app.layout);
     // everything the first frames need, before the streamer primes
     const around = [app.startS, app.startS - CHUNK_LEN / 2];   // the cab may start a little behind startS
@@ -515,7 +519,8 @@ function planBackdrops(app) {
 // ------------------------------------------------------------------ skyline
 
 /**
- * Taller blocks 40–110 m behind the frontage, every 150–300 m, on alternating sides
+ * Taller blocks 40–110 m behind the frontage, every 150–300 m, on alternating sides, at
+ * the far end of side streets and where the line of sight down the street leaves it
  * (see buildings/skyline.js). A site is used only when the whole footprint keeps well
  * clear of the street (anywhere on the loop) and of every side street and its lots.
  */
@@ -569,15 +574,15 @@ function planSkyline(app) {
   }
 
   // Vista blocks (8–12 storeys): set back behind the backdrop at the end of some side
-  // streets, and where a long straight runs into a bend, on its line of sight beyond
-  // the outer frontage, so the view ends on a taller modern block as in the photographs.
-  const add = (id, x, z, y, nDir, W, D, s, rr) => {
+  // streets, and on the main street's lines of sight (below), so the view ends on a
+  // taller block as in the photographs.
+  const add = (id, x, z, y, nDir, W, D, s, rr, floors = [8, 12], opts = {}) => {
     const uDir = new THREE.Vector3().crossVectors(up, nDir).normalize();
     // front-left corner: the centre is D / 2 behind the front
     const origin = new THREE.Vector3(x + nDir.x * D / 2 - uDir.x * W / 2, y, z + nDir.z * D / 2 - uDir.z * W / 2);
     const matrix = new THREE.Matrix4().makeBasis(uDir, up, nDir).setPosition(origin);
     const frame = { origin, uDir, nDir: nDir.clone(), up: up.clone(), width: W, ground0: y, ground1: y, floorRef: y, matrix };
-    const sl = makeSlab(id, frame, rr, [8, 12]);
+    const sl = makeSlab(id, frame, rr, floors, opts);
     sl.D = D;                        // the depth this footprint was placed (and cleared) with
     const idx = layout.chunkIndex(s);
     if (!skyline.has(idx)) skyline.set(idx, []);
@@ -595,25 +600,153 @@ function planSkyline(app) {
     if (!clearOf(x, z, r, i) || !apart(x, z, r)) return;
     add(`V${Math.round(v.c.s)}_${v.side}`, x, z, v.start.y - 1, v.nDir, W, D, v.c.s, rr);
   });
-  // bends at the end of a long straight: the incoming line of sight
-  const STEP = 10, K_BEND = 1 / 700, K_STRAIGHT = 1 / 1500;
-  for (let s = 200; s < L; s += STEP) {
-    if (Math.abs(route.curvature(s)) < K_BEND || Math.abs(route.curvature(s - STEP)) >= K_BEND) continue;
-    let straight = true;
-    for (let t = s - 200; t < s - 20 && straight; t += STEP) straight = Math.abs(route.curvature(t)) < K_STRAIGHT;
-    if (!straight) continue;
-    const smp = route.sample(s), p = route.toWorld(s, 0, 0);
-    const out = Math.sign(route.curvature(s));          // + left bend: the outside is on the right
-    const rr = RNG.from('buildings', 'bend', Math.round(s));
-    const W = rr.range(20, 30), D = rr.range(12, 16), lat = rr.range(0, 8) * out, r = Math.hypot(W, D) / 2;
-    for (let t = 100; t <= 400; t += STEP) {
-      const x = p.x + smp.tanH.x * t + smp.right.x * lat, z = p.z + smp.tanH.z * t + smp.right.z * lat;
-      if (!clearOf(x, z, r) || !apart(x, z, r)) continue;
-      const y = Math.min(route.elevation(s), route.elevation(route.wrap(s + t))) - 1;
-      add(`B${Math.round(s)}`, x, z, y, smp.tanH.clone().negate(), W, D, route.wrap(s + Math.min(t, 120)), rr);
+  // View terminators: from cab positions every 20 m, follow the gaze (the telephoto
+  // framing turns towards the track some 80 m ahead) until it leaves the street between
+  // the frontages. Where that happens 120–650 m out (the outer side of a bend, beyond a
+  // crest), a taller plain block stands on that line of sight just behind the frontage
+  // (parallel to the street, its gable turned down the street), tall enough to rise
+  // above the roofs in front of it: stone-clad, or rendered in ochre, orange or white,
+  // some with a painted mural on that gable. A site is used once.
+  const facade = facadeLines(route, layout);
+  const tried = [];
+  const TS = termStats;
+  // every point of the footprint keeps clear of the street and the lots along it (on
+  // each side: half the street plus the depth of the lots there, and a gap), of the side
+  // streets and their lots, and of other blocks
+  const nP = pts.length / 2, req = [new Float32Array(nP), new Float32Array(nP)], rgt = new Float32Array(nP * 2);
+  for (let k = 0; k < nP; k++) {
+    const sk = k * 6, smp = route.sample(sk);
+    rgt[k * 2] = smp.right.x; rgt[k * 2 + 1] = smp.right.z;
+    req[0][k] = layout.halfWidth(sk, -1) + 6; req[1][k] = layout.halfWidth(sk, 1) + 6;
+  }
+  for (const l of layout.lots) {
+    const e = l.side > 0 ? 1 : 0;
+    for (let sk = l.s0 - 6; sk <= l.s1 + 6; sk += 3) {
+      const k = ((Math.round(route.wrap(sk) / 6) % nP) + nP) % nP;
+      req[e][k] = Math.max(req[e][k], layout.halfWidth(sk, l.side) + l.depth + 2);
+    }
+  }
+  const FC = {};
+  const footClear = (cx, cz, ux, uz, nx, nz, W, D) => {
+    const nu = Math.ceil(W / 4), nw = Math.ceil(D / 4);
+    for (let i = 0; i <= nu; i++) for (let j = 0; j <= nw; j++) {
+      const a = (i / nu - 0.5) * W, b = (j / nw - 0.5) * D;
+      const x = cx + ux * a + nx * b, z = cz + uz * a + nz * b;
+      for (let k = 0; k < nP; k++) {
+        const ox = x - pts[k * 2], oz = z - pts[k * 2 + 1], d2 = ox * ox + oz * oz;
+        if (d2 > 1600) continue;
+        const q = req[ox * rgt[k * 2] + oz * rgt[k * 2 + 1] > 0 ? 1 : 0][k];
+        if (d2 < q * q) { FC.why = ['st', k * 6, Math.round(Math.sqrt(d2)), Math.round(q)]; return false; }
+      }
+      for (const q of sides) {
+        const t = Math.max(0, Math.min(q.len, (x - q.ax) * q.dx + (z - q.az) * q.dz));
+        if (Math.hypot(q.ax + q.dx * t - x, q.az + q.dz * t - z) < q.clear - 4) { FC.why = ['side', Math.round(q.ax), Math.round(q.az)]; return false; }
+      }
+    }
+    return true;
+  };
+  for (let sc = 0; sc < L; sc += 20) {
+    const eye = route.toWorld(sc, TRACK_OFFSET, EYE_HEIGHT);
+    const ahead = route.toWorld(sc + 80, TRACK_OFFSET, 0);
+    const tan = route.sample(sc).tanH;
+    let gx = ahead.x - eye.x, gz = ahead.z - eye.z;
+    const gl = Math.hypot(gx, gz) || 1;
+    let dx = tan.x * 0.3 + (gx / gl) * 0.7, dz = tan.z * 0.3 + (gz / gl) * 0.7;
+    const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
+    const hit = rayExit(facade, sc, eye.x, eye.z, dx, dz, 700);
+    if (!hit) { TS.none++; continue; }
+    if (hit.t < 120 || hit.t > 650) { TS.range++; continue; }
+    if (layout.isInCrossStreet(hit.s, hit.side, 4)) { TS.cross++; continue; }
+    const hx = eye.x + dx * hit.t, hz = eye.z + dz * hit.t;
+    if (tried.some(([x, z]) => Math.hypot(x - hx, z - hz) < 80)) { TS.dup++; continue; }
+    tried.push([hx, hz]);
+    const rr = RNG.from('buildings', 'terminus', Math.round(sc));
+    if (!rr.chance(0.7)) { TS.prob++; continue; }
+    TS.cand.push([sc, Math.round(hit.t), Math.round(hit.s), hit.side]);
+    const mural = rr.chance(0.35);
+    const W = rr.range(16, 26), D = mural ? rr.range(14, 18) : rr.range(12, 16), r = Math.hypot(W, D) / 2;
+    // the first spot along the line of sight where the whole footprint is clear, pushed
+    // back from the street by up to a few degrees of the view where the line of sight
+    // only grazes the frontage (gentle bends)
+    let sHint = hit.s, spot = null;
+    for (let t = hit.t + 6; t < Math.min(hit.t + 240, 700) && !spot; t += 6) {
+      const x0 = eye.x + dx * t, z0 = eye.z + dz * t;
+      const pr = route.project(x0, z0, sHint, 40);
+      sHint = pr.s;
+      const side = pr.d >= 0 ? 1 : -1;
+      if (side !== hit.side) break;
+      const rgt = route.sample(pr.s).right;
+      const nx = -rgt.x * side, nz = -rgt.z * side;               // towards the street
+      const ux = nz, uz = -nx;                                    // up × n
+      for (let push = 0; push <= Math.min(45, 0.09 * t) && !spot; push += 3) {
+        const x = x0 - nx * push, z = z0 - nz * push;
+        if (!footClear(x, z, ux, uz, nx, nz, W, D)) { TS.clear++; continue; }
+        if (!apart(x, z, r)) { TS.apart++; continue; }
+        spot = { t, x, z, nx, nz, s: pr.s, side };
+      }
+    }
+    if (!spot) continue;
+    {
+      const { t, x, z, nx, nz, side } = spot, pr = { s: spot.s };
+      // tall enough to rise above the frontage in front of it
+      let hf = 0;
+      for (let ci = -1; ci <= 1; ci++) {
+        for (const l of layout.inChunk('lots', layout.chunkIndex(hit.s) + ci)) {
+          if (l.side !== hit.side || Math.abs(route.delta(hit.s, (l.s0 + l.s1) / 2)) > 30) continue;
+          const pl = facadePlan(l);
+          hf = Math.max(hf, l.frame.floorRef + (pl.upper ? pl.upper.v0 + pl.upper.floors * pl.upper.floorH : pl.totalHeight));
+        }
+      }
+      const yBase = Math.min(route.elevation(pr.s), route.groundY(pr.s, side * (layout.halfWidth(pr.s, side) + 1))) - 1.5;
+      const need = eye.y + (Math.max(hf, yBase + 16) - eye.y) * (t - D / 2) / hit.t - yBase + 3;
+      const floors = Math.min(13, Math.max(7, Math.ceil((need - 4.2) / 3.1)));
+      const finish = rr.weighted([['stone', 0.35], ['ochre', 0.25], ['orange', 0.15], ['white', 0.25]]);
+      add(`T${Math.round(sc)}`, x, z, yBase, new THREE.Vector3(nx, 0, nz), W, D, pr.s, rr, [floors, Math.min(14, floors + 1)],
+        { finish, D, mural, muralFace: side < 0 ? 3 : 1 });
+      TS.placed = (TS.placed || 0) + 1;
+    }
+  }
+}
+
+/**
+ * Both facade lines of the street as polylines sampled every 3 m: {n, step, x, z (per
+ * side: [left, right]), side}. Used to find where a line of sight leaves the street.
+ */
+function facadeLines(route, layout) {
+  const step = 3, n = Math.ceil(route.length / step);
+  const L = [new Float32Array(n * 2), new Float32Array(n * 2)];
+  for (let i = 0; i < n; i++) {
+    const s = i * step, smp = route.sample(s);
+    [-1, 1].forEach((side, k) => {
+      const hw = layout.halfWidth(s, side);
+      L[k][i * 2] = smp.pos.x + smp.right.x * hw * side;
+      L[k][i * 2 + 1] = smp.pos.z + smp.right.z * hw * side;
+    });
+  }
+  return { n, step, L };
+}
+
+/** First crossing of a ray (from ox, oz along dx, dz) with either facade line ahead of s0: {t, s, side} or null. */
+function rayExit(fl, s0, ox, oz, dx, dz, maxT) {
+  const { n, step, L } = fl;
+  const i0 = Math.floor(s0 / step), i1 = i0 + Math.ceil((maxT + 60) / step);
+  let best = null;
+  for (let k = 0; k < 2; k++) {
+    const P = L[k];
+    for (let i = i0; i < i1; i++) {
+      const a = ((i % n) + n) % n, b = (a + 1) % n;
+      const ax = P[a * 2], az = P[a * 2 + 1], bx = P[b * 2], bz = P[b * 2 + 1];
+      const ex = bx - ax, ez = bz - az;
+      const den = dx * ez - dz * ex;
+      if (Math.abs(den) < 1e-9) continue;
+      const qx = ax - ox, qz = az - oz;
+      const t = (qx * ez - qz * ex) / den, u = (qx * dz - qz * dx) / den;
+      if (u < 0 || u > 1 || t < 30 || t > maxT) continue;
+      if (!best || t < best.t) best = { t, s: (i + u) * step, side: k ? 1 : -1 };
       break;
     }
   }
+  return best;
 }
 
 // ------------------------------------------------------------------ neighbours

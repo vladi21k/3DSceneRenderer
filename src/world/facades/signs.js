@@ -4,14 +4,17 @@ import { RNG } from '../../core/rng.js';
 import { Tpl, lin } from './geo.js';
 
 // Shop signage: a canvas atlas of invented generic shop words (English and Hebrew), house
-// number plaques and blade-sign faces, plus the geometry for fascia boards, light boxes,
-// individual letters and projecting blade signs. Text quads are white glyphs tinted by
-// vertex colour; `aGlow` makes light boxes and neon letters glow at dusk.
+// number plaques, blade-sign faces and the shop window dressing (sale posters, price
+// cards, door stickers), plus the geometry for fascia boards, light boxes, individual
+// letters, projecting blade signs and the cards stuck to the glass. Text quads are white
+// glyphs tinted by vertex colour (full-colour cells take white); `aGlow` makes light boxes
+// and neon letters glow at dusk.
 
-const W = 2048, H = 2304;
+const W = 2048, H = 3328;
 const CELL_W = 512, CELL_H = 128, TEXT_ROWS = 12;          // text cells: rows 0..11
 const PLAQUE = 128, PLAQUE_Y = TEXT_ROWS * CELL_H;        // 2 rows of 16 number plaques
 const BLADE_W = 256, BLADE_H = 256, BLADE_Y = PLAQUE_Y + 2 * PLAQUE; // 2 rows of 8 blade faces
+const DRESS_Y = BLADE_Y + 2 * BLADE_H;                     // 3 rows of 8 (posters, price cards, stickers), 1 of 4 banners
 
 // Shop words and the interior each one implies (see interior.js SHOP_TYPES).
 const WORDS = [
@@ -39,9 +42,9 @@ const FONTS = [
 ];
 
 export const SIGN_PALETTE = {
-  boards: [0x1f3a2c, 0x1b2b45, 0x5a1a1c, 0x1d1d1f, 0xd9cfb6, 0xe8e4da, 0x6b4a2a, 0x24464a],
-  letters: [0xd8b25a, 0xf2efe6, 0xe9dfc4, 0x1a1a1a, 0xb3261e],
-  boxes: [0xf4f1e8, 0xf2d24a, 0xc8231c, 0x1f5fa8, 0x2a7a3a, 0xf4f1e8],
+  boards: [0x1f3a2c, 0x1b2b45, 0x5a1a1c, 0x1d1d1f, 0xd9cfb6, 0xe8e4da, 0x6b4a2a, 0x24464a, 0xb8261e, 0xe8b820, 0x1f5f8a, 0x2f6e3a],
+  letters: [0xd8b25a, 0xf2efe6, 0xe9dfc4, 0x1a1a1a, 0xb3261e, 0xf2c230],
+  boxes: [0xf4f1e8, 0xf2d24a, 0xc8231c, 0x1f5fa8, 0x2a7a3a, 0xf4f1e8, 0xe8701c, 0x1e8a8a],
 };
 
 let atlas = null;
@@ -105,12 +108,115 @@ function buildAtlas() {
     g.save(); g.beginPath(); g.rect(x, y, BLADE_W, BLADE_H); g.clip(); fn(g, x, y); g.restore();
     blades.push({ u0: (x + 4) / W, v0: 1 - (y + BLADE_H - 4) / H, u1: (x + BLADE_W - 4) / W, v1: 1 - (y + 4) / H });
   });
+  // window dressing: each draws a card of aspect a (w / h) centred in its 256 px cell
+  const dress = { posters: [], prices: [], stickers: [], banners: [] };
+  const D = 256;
+  [['posters', POSTERS, D], ['prices', PRICES, D], ['stickers', STICKERS, D], ['banners', BANNERS, 2 * D]].forEach(([key, list, CW], row) => {
+    list.forEach(([fn, a], i) => {
+      const cx = i * CW, cy = DRESS_Y + row * D;
+      const w = Math.min(CW - 12, (D - 12) * a), h = w / a;
+      const x = cx + (CW - w) / 2, y = cy + (D - h) / 2;
+      g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h); g.restore();
+      dress[key].push({ u0: (x + 1) / W, v0: 1 - (y + h - 1) / H, u1: (x + w - 1) / W, v1: 1 - (y + 1) / H, aspect: w / h });
+    });
+  });
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
-  return { tex, cells, plaques, blades };
+  return { tex, cells, plaques, blades, dress };
+}
+
+// ------------------------------------------------------------------ window dressing
+const SANS = (px, wt = 700) => `${wt} ${px}px "Liberation Sans", "Noto Sans Hebrew", "DejaVu Sans", Arial, sans-serif`;
+/** Text fitted into maxW, centred at (cx, cy). */
+function fit(g, str, cx, cy, maxW, px, color, wt = 700) {
+  g.fillStyle = color; g.font = SANS(px, wt);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  const m = g.measureText(str), sx = Math.min(1, maxW / Math.max(1, m.width));
+  g.save(); g.translate(cx, cy); g.scale(sx, 1); g.fillText(str, 0, 0); g.restore();
+}
+function lines(g, x, y, w, n, color, lh) {
+  g.fillStyle = color;
+  for (let i = 0; i < n; i++) g.fillRect(x, y + i * lh, w * (0.5 + 0.5 * (((i * 37) % 7) / 6)), Math.max(2, lh * 0.35));
+}
+/** Paper card: a white margin and a slight sheen gradient (printed poster stock). */
+function paper(g, x, y, w, h, bg) {
+  g.fillStyle = bg; g.fillRect(x, y, w, h);
+  const gr = g.createLinearGradient(x, y, x + w, y + h);
+  gr.addColorStop(0, 'rgba(255,255,255,0.10)'); gr.addColorStop(0.5, 'rgba(255,255,255,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.08)');
+  g.fillStyle = gr; g.fillRect(x, y, w, h);
+}
+// Sale posters (portrait ~A2) for the display windows.
+const POSTERS = [
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#c8201a'); fit(g, 'SALE', x + w / 2, y + h * 0.38, w * 0.86, h * 0.26, '#fff'); fit(g, 'UP TO 50%', x + w / 2, y + h * 0.62, w * 0.8, h * 0.09, '#fff'); lines(g, x + w * 0.2, y + h * 0.8, w * 0.6, 2, 'rgba(255,255,255,0.7)', h * 0.04); }, 0.7],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4d01c'); fit(g, 'מבצע', x + w / 2, y + h * 0.36, w * 0.86, h * 0.26, '#c8201a'); fit(g, '%', x + w / 2, y + h * 0.66, w * 0.5, h * 0.24, '#1a1a1a'); }, 0.7],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, '-30%', x + w / 2, y + h * 0.42, w * 0.86, h * 0.24, '#d01e1a'); fit(g, 'הנחה', x + w / 2, y + h * 0.7, w * 0.6, h * 0.12, '#1a1a1a'); }, 0.7],
+  [(g, x, y, w, h) => {
+    // fashion poster: a figure against a coloured studio backdrop, a word below
+    const gr = g.createLinearGradient(x, y, x, y + h); gr.addColorStop(0, '#d9b9a0'); gr.addColorStop(1, '#8a6a5a');
+    g.fillStyle = gr; g.fillRect(x, y, w, h);
+    g.fillStyle = '#2a2224'; g.beginPath(); g.ellipse(x + w * 0.5, y + h * 0.2, w * 0.09, h * 0.07, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#e8e2d8'; g.beginPath(); g.moveTo(x + w * 0.32, y + h * 0.3); g.lineTo(x + w * 0.68, y + h * 0.3); g.lineTo(x + w * 0.74, y + h * 0.78); g.lineTo(x + w * 0.26, y + h * 0.78); g.closePath(); g.fill();
+    fit(g, 'NEW COLLECTION', x + w / 2, y + h * 0.88, w * 0.86, h * 0.06, '#fff');
+  }, 0.7],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#e86a1a'); fit(g, '1+1', x + w / 2, y + h * 0.4, w * 0.8, h * 0.28, '#fff'); fit(g, 'על כל החנות', x + w / 2, y + h * 0.7, w * 0.8, h * 0.08, '#fff'); }, 0.7],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#1a1a1c'); fit(g, 'NEW', x + w / 2, y + h * 0.38, w * 0.8, h * 0.22, '#f2efe6'); fit(g, 'ARRIVALS', x + w / 2, y + h * 0.58, w * 0.8, h * 0.09, '#d8b25a'); }, 0.7],
+  [(g, x, y, w, h) => {
+    // a food photograph: a cup on a saucer under warm light
+    const gr = g.createRadialGradient(x + w * 0.5, y + h * 0.45, 5, x + w * 0.5, y + h * 0.45, w * 0.7); gr.addColorStop(0, '#6a4a30'); gr.addColorStop(1, '#2a1a12');
+    g.fillStyle = gr; g.fillRect(x, y, w, h);
+    g.fillStyle = '#f2ece2'; g.beginPath(); g.ellipse(x + w * 0.5, y + h * 0.56, w * 0.32, h * 0.06, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#ece6dc'; g.fillRect(x + w * 0.33, y + h * 0.36, w * 0.34, h * 0.18);
+    g.fillStyle = '#5a3218'; g.beginPath(); g.ellipse(x + w * 0.5, y + h * 0.36, w * 0.17, h * 0.03, 0, 0, Math.PI * 2); g.fill();
+    fit(g, 'קפה', x + w / 2, y + h * 0.8, w * 0.6, h * 0.12, '#f2d27a');
+  }, 0.7],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#1e5fa0'); fit(g, 'SALE', x + w / 2, y + h * 0.3, w * 0.8, h * 0.18, '#f4d01c'); fit(g, '70%', x + w / 2, y + h * 0.56, w * 0.86, h * 0.26, '#fff'); }, 0.7],
+];
+// Price cards and boards (fluorescent card, big numerals).
+const PRICES = [
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f6d21c'); fit(g, '69', x + w / 2, y + h * 0.52, w * 0.86, h * 0.72, '#c8201a'); }, 0.8],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f6d21c'); fit(g, '29.90', x + w / 2, y + h * 0.5, w * 0.9, h * 0.45, '#111'); }, 1.3],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#d01e1a'); fit(g, '99', x + w / 2, y + h * 0.52, w * 0.86, h * 0.7, '#fff'); }, 0.8],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#ff8a1c'); fit(g, '19.90', x + w / 2, y + h * 0.5, w * 0.9, h * 0.45, '#111'); }, 1.3],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, '10', x + w / 2, y + h * 0.45, w * 0.8, h * 0.6, '#c8201a'); fit(g, 'בלבד', x + w / 2, y + h * 0.84, w * 0.6, h * 0.14, '#111'); }, 0.8],
+  [(g, x, y, w, h) => { g.fillStyle = '#c8201a'; g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill(); fit(g, '50%', x + w / 2, y + h * 0.52, w * 0.7, h * 0.36, '#fff'); }, 1],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#b8e02a'); fit(g, '49', x + w / 2, y + h * 0.52, w * 0.86, h * 0.7, '#111'); }, 0.8],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f6d21c'); fit(g, '5.90', x + w / 2, y + h * 0.5, w * 0.9, h * 0.5, '#1e3f9a'); }, 1.3],
+];
+// Door and window stickers.
+const STICKERS = [
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#c8201a'); fit(g, 'OPEN', x + w / 2, y + h * 0.52, w * 0.8, h * 0.6, '#fff'); }, 2.2],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'פתוח', x + w / 2, y + h * 0.52, w * 0.7, h * 0.6, '#1e6a2a'); }, 2.2],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'שעות פתיחה', x + w / 2, y + h * 0.14, w * 0.8, h * 0.09, '#111'); lines(g, x + w * 0.15, y + h * 0.3, w * 0.7, 7, 'rgba(20,20,20,0.75)', h * 0.085); }, 0.72],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#1e3f7a'); g.fillStyle = '#f4f2ec'; g.fillRect(x + w * 0.2, y + h * 0.25, w * 0.6, h * 0.36); g.fillStyle = '#1e3f7a'; g.fillRect(x + w * 0.2, y + h * 0.33, w * 0.6, h * 0.07); fit(g, 'CARDS', x + w / 2, y + h * 0.8, w * 0.7, h * 0.16, '#f4f2ec'); }, 1],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'WiFi', x + w / 2, y + h * 0.55, w * 0.7, h * 0.4, '#1e5fa0'); }, 1],
+  [(g, x, y, w, h) => { g.fillStyle = '#f4d01c'; g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill(); fit(g, 'SALE', x + w / 2, y + h * 0.52, w * 0.7, h * 0.3, '#c8201a'); }, 1],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); g.strokeStyle = '#c8201a'; g.lineWidth = w * 0.08; g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w * 0.36, h * 0.36, 0, 0, Math.PI * 2); g.stroke(); g.beginPath(); g.moveTo(x + w * 0.25, y + h * 0.25); g.lineTo(x + w * 0.75, y + h * 0.75); g.stroke(); g.fillStyle = '#111'; g.fillRect(x + w * 0.3, y + h * 0.47, w * 0.4, h * 0.07); }, 1],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#111'); fit(g, 'כניסה', x + w / 2, y + h * 0.52, w * 0.8, h * 0.55, '#f2efe6'); }, 2.2],
+];
+
+// Sale banners run along the top of a display window.
+const BANNERS = [
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#c8201a'); fit(g, 'SALE  ·  SALE  ·  SALE', x + w / 2, y + h * 0.54, w * 0.92, h * 0.62, '#fff'); }, 4],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4d01c'); fit(g, 'מבצע  ·  מבצע  ·  מבצע', x + w / 2, y + h * 0.54, w * 0.92, h * 0.6, '#c8201a'); }, 4],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#151517'); fit(g, 'END OF SEASON SALE', x + w / 2, y + h * 0.54, w * 0.9, h * 0.5, '#f4d01c'); }, 4],
+  [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, '-50%   -50%   -50%', x + w / 2, y + h * 0.54, w * 0.92, h * 0.62, '#d01e1a'); }, 4],
+];
+
+/** Window-dressing cells: kind 'posters' | 'prices' | 'stickers' | 'banners', index i (wraps). */
+export function dressCell(kind, i) {
+  const list = atlas.dress[kind];
+  return list[((i % list.length) + list.length) % list.length];
+}
+
+/**
+ * A card of height h stuck to glass (or a wall) at local (x, y), facing +z at depth z: a
+ * text-batch quad in full colour (vertex colour white).
+ */
+export function cardTpl(t, cell, x, y, h, z) {
+  cellQuad(t, cell, x, y, h * cell.aspect, h, z);
 }
 
 // Blade sign faces (draw function, shop type they advertise; null = not a shop).

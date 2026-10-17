@@ -273,7 +273,7 @@ function patchLeaf(mat, params) {
         vegGloss = vegNm.b;
       #endif
       // thick, older leaves are glossier
-      roughnessFactor = mix( 0.62, 0.36, vegGloss );`, 'leaf normal maps');
+      roughnessFactor = mix( 0.66, 0.4, vegGloss );`, 'leaf normal maps');
     fs = rep(fs, '#include <lights_physical_pars_fragment>', /* glsl */`#include <lights_physical_pars_fragment>
       void RE_Direct_Leaf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
         // the street keeps a fixed set of lamp lights (dark by day, out of range for most
@@ -331,7 +331,11 @@ function patchLeaf(mat, params) {
       {
         // grazing cards pick up no sky sheen
         float vegFacing = smoothstep( 0.0, 0.4, abs( dot( normalize( vVegGN ), geometryViewDir ) ) );
-        reflectedLight.indirectSpecular *= vVegAO * vegFacing;
+        // (the waxy sheen of a leaf is broken up by its curl, hairs and veins: a little over
+        // half of a smooth dielectric's, so the sky does not grey the foliage; a mirror
+        // direction needs a clear view of the sky, so the crown hides it more than it hides
+        // the diffuse sky light)
+        reflectedLight.indirectSpecular *= vVegAO * vVegAO * vegFacing * 0.6;
         // sky light from the far side of the card, transmitted through the leaf
         #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
           vec3 vegGn = normalize( vVegGN );
@@ -406,28 +410,40 @@ function patchBark(mat, params) {
   });
 }
 
-/** Shadow-pass material with the same wind (and coverage / fade for leaves). */
+/**
+ * Shadow-pass material with the same wind (and coverage / fade for leaves). Leaf shadows
+ * are thinner than the leaves seen by the camera: a share of the cards (uVegHoles, picked
+ * per card) casts nothing and the leaves' coverage is cut a little tighter, so a crown
+ * throws dappled shade full of sun flecks, as the gaps of a real crown do, instead of a
+ * solid blot (its own shading does not use the shadow map, see the header).
+ */
 function makeDepth(leaf, params, map) {
   const m = new THREE.MeshDepthMaterial();
   m.name = leaf ? 'vegetation.leafDepth' : 'vegetation.barkDepth';
   if (leaf) {
     m.defines = { VEG_LEAF: '' };
     m.map = map;
-    m.alphaTest = 0.5;
+    m.alphaTest = 0.56;
   }
-  chain(m, leaf ? 'veg-leaf-depth-v2' : 'veg-bark-depth-v2', (shader) => {
+  chain(m, leaf ? 'veg-leaf-depth-v3' : 'veg-bark-depth-v2', (shader) => {
     windUniforms(shader, params);
+    if (leaf) shader.uniforms.uVegHoles = params.holes;
     let vs = shader.vertexShader;
-    vs = rep(vs, '#include <common>', `#include <common>\n${WIND_PARS}\nvarying float vVegFade;`, 'depth common');
+    vs = rep(vs, '#include <common>', `#include <common>\n${WIND_PARS}\nvarying float vVegFade;\nvarying float vVegHole;`, 'depth common');
     vs = rep(vs, '#include <begin_vertex>', `#include <begin_vertex>
       ${BATCH_MATRIX}
       float vegFl;
       transformed = vegWind( transformed, vegBM, vegFl );
+      #ifdef VEG_LEAF
+        vVegHole = vegHash( aCard.xyz * 1.37 + 0.71 );  // one value per card
+      #else
+        vVegHole = 1.0;
+      #endif
       ${FADE_VARY}`, 'depth begin_vertex');
     shader.vertexShader = vs;
     let fs = shader.fragmentShader;
-    fs = rep(fs, '#include <common>', `#include <common>\n${FADE_FN}`, 'depth frag common');
-    fs = rep(fs, '#include <map_fragment>', leaf ? `if ( vegFadeHidden( true ) ) discard;
+    fs = rep(fs, '#include <common>', `#include <common>\n${FADE_FN}\nvarying float vVegHole;\nuniform float uVegHoles;`, 'depth frag common');
+    fs = rep(fs, '#include <map_fragment>', leaf ? `if ( vegFadeHidden( true ) || vVegHole < uVegHoles ) discard;
       #ifdef USE_MAP
         // coverage-preserving mips; the level is capped so far cascades keep their holes
         vec2 vegSz = vec2( textureSize( map, 0 ) );
@@ -455,6 +471,7 @@ export function createVegMaterials(app, atlas) {
     density: { value: 0.55 },   // crown extinction (1/m): exp(-0.55 * 2 m) ~ 0.33 through a young crown
     shift: { value: 1 },        // shadow lookup moved out of the crown along the sun ray (0 = off, debug)
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
+    holes: { value: 0.3 },      // share of the leaf cards that cast no shadow (sun flecks)
     // per-light caps in units of the sky's irradiance: transmission + specular of any
     // light, diffuse of a lamp (see header)
     cap: { value: new THREE.Vector2(LIGHT_CAP, LAMP_CAP) },
@@ -471,7 +488,7 @@ export function createVegMaterials(app, atlas) {
       roughness: 0.6,
       metalness: 0,
       vertexColors: true,
-      envMapIntensity: 0.8,
+      envMapIntensity: 0.85,
     });
     m.defines = { VEG_LEAF: '', ...defines };
     patchLeaf(m, params);

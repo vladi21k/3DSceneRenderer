@@ -18,12 +18,18 @@ export function courseProfile(h, p) {
   return pr;
 }
 
-/** Plinth / base course: plain projecting block with a chamfered wash on top. */
-export function plinthProfile(top, p, bottom) {
-  const k = keyOf('p', top, p, bottom);
+/**
+ * Plinth / base course: plain projecting block with a chamfered wash on top. `ground`
+ * (the paving height, optional) adds rows to the front face just above it, so the
+ * splash-zone shading and the dirt line at its foot (per vertex) stay sharp.
+ */
+export function plinthProfile(top, p, bottom, ground = null) {
+  const k = keyOf('p', top, p, bottom, ground ?? 'n');
   let pr = profileCache.get(k);
   if (!pr) {
-    pr = [[p, bottom], [p, top - 0.05], [p - 0.04, top - 0.01], [0.01, top], [0, top + 0.005]];
+    pr = [[p, bottom]];
+    if (ground !== null) for (const d of [0.05, 0.18, 0.4]) if (ground + d > bottom + 0.01 && ground + d < top - 0.07) pr.push([p, ground + d]);
+    pr.push([p, top - 0.045], [p - 0.028, top - 0.012], [0.01, top], [0, top + 0.005]);
     profileCache.set(k, pr);
   }
   return pr;

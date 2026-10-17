@@ -7,6 +7,7 @@ import { Route } from './world/route.js';
 import { Layout } from './world/layout.js';
 import { World } from './world/streaming.js';
 import { GpuTimer } from './core/gpuTimer.js';
+import farfield from './core/farfield.js';
 
 // Module registry. Each module is loaded with a dynamic import so a broken module is
 // reported and skipped instead of taking the whole app down. Contracts: docs/ARCHITECTURE.md
@@ -92,6 +93,9 @@ async function main() {
       console.error(`[main] module ${name} failed to load`, r.reason);
     }
   });
+  // the far field (core): the city beyond the streamed range, after every module's init
+  const farOn = (!params.only || params.only.includes('farfield')) && !params.skip.includes('farfield');
+  if (farOn) { mods.push(farfield); app.systems.farfield = farfield; }
   Object.assign(app, {
     materials: app.systems.materials, env: app.systems.env, post: app.systems.post,
     train: app.systems.train, cameraRig: app.systems.cameraRig, crowd: app.systems.crowd,
@@ -124,6 +128,7 @@ async function main() {
   app.perf.init.modulesTotal = Math.round(performance.now() - tStart);
   const tPrime = performance.now();
   await app.world.prime(s0, Math.min(LOD0_DIST, 240), (f) => setProgress(0.2 + 0.7 * f));
+  await app.world.prime(s0, Infinity, null, [2]);   // far field: a few ms in all
   app.perf.init.prime = Math.round(performance.now() - tPrime);
 
   // warm up shaders

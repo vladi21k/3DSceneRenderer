@@ -1,4 +1,4 @@
-import { MAX_SPEED } from '../core/config.js';
+import { MAX_SPEED, TRACK_ZONE_HALF } from '../core/config.js';
 import { RNG, noise1, hash2 } from '../core/rng.js';
 import { U } from '../core/uniforms.js';
 import { input } from './input.js';
@@ -13,7 +13,10 @@ import { input } from './input.js';
 //  - Effort (motor/brake acceleration) is jerk limited with a softened onset, so every
 //    change of throttle or brake ramps in smoothly like a real traction controller.
 //  - Master controller notches: EB, B4..B1, N, P1..P4 (W / S step through them).
-//  - Auto driver: cruise 40-45 km/h, curve limit sqrt(aLat R), 25 km/h over crossovers
+//  - Auto driver: cruise 40-45 km/h where the track corridor ahead is clear, easing down to
+//    23-28 km/h (walking-plus pace) as more people walk in it (Tram.load: the corridor
+//    count 5-200 m ahead, sampled every second and smoothed over ~5 s; the oncoming units
+//    get theirs from trams.js), curve limit sqrt(aLat R), 25 km/h over crossovers
 //    (until the rear of the tram has cleared), braking curves to every restriction and a
 //    station stop with the cab front at station.stopS that ends firmly (~0.4 m/s², no
 //    creeping), dwell 12-18 s with door events, bell, departure.
@@ -49,6 +52,9 @@ export const VEHICLE = {
 
 export const DRIVE = {
   cruiseKmh: [40, 45],
+  busyKmh: [23, 28],       // cruise through a crowded pedestrian mall (load 1)
+  busyPeople: 20,          // corridor people ahead (weighted) for a full load
+  loadTau: 5,              // s, smoothing of the load
   aLat: 0.9,               // m/s² lateral comfort limit in curves
   crossoverKmh: 25,
   aStop: 0.85,             // planned station braking
@@ -143,6 +149,9 @@ export class Tram {
     this.limit = Infinity;      // current speed restriction at the cab (m/s)
     this.vRef = 0;
     this.coasting = false;
+    this.load = 0;              // pedestrian load of the corridor ahead (0..1, smoothed): lowers the cruise
+    this.loadTarget = 0;
+    this._givenSpeed = opts.speed != null;
     this._rung = new Set();
     this._visits = 0;
     this._lim = new Float32Array(512);
@@ -196,10 +205,27 @@ export class Tram {
   _resist(v) { return v > 0.01 ? 0.011 + 0.0004 * v + 0.00011 * v * v : 0; }
   _gradeAcc() { return (G * this.route.grade(this.s)) / VEHICLE.rotMass; }
 
-  /** Cruise speed for the section (40-45 km/h, varying smoothly along the line). */
+  /** Cruise speed for the section (40-45 km/h, varying smoothly along the line), eased
+   *  down towards 23-28 km/h by the pedestrian load of the corridor ahead. */
   cruise(s) {
-    const [a, b] = DRIVE.cruiseKmh;
-    return ((a + b) / 2 + ((b - a) / 2) * noise1(this.route.wrap(s) / 380, 77)) * KMH;
+    const n = noise1(this.route.wrap(s) / 380, 77);
+    const [a, b] = DRIVE.cruiseKmh, [c, d] = DRIVE.busyKmh;
+    const free = (a + b) / 2 + ((b - a) / 2) * n, busy = (c + d) / 2 + ((d - c) / 2) * n;
+    return (free + (busy - free) * this.load) * KMH;
+  }
+
+  /** Pedestrian load ahead (0..1). Smoothed over DRIVE.loadTau while running; `immediate`
+   *  sets it at once and, before the first step, starts the tram at the cruise it gives
+   *  (unless an initial speed was asked for), so a ride never opens with a slow-down. */
+  setLoad(x, immediate = false) {
+    this.loadTarget = clamp(+x || 0, 0, 1);
+    if (!immediate) return;
+    this.load = this.loadTarget;
+    if (this.t > 0 || this._givenSpeed || this.seq || this.speed < 0.05) return;
+    const v = Math.min(this.speed, this.cruise(this.s));
+    if (v >= this.speed) return;
+    this.speed = v;
+    this.aMotor = clamp(this._resist(v) + this._gradeAcc(), -VEHICLE.aService, this._tracMax(v));
   }
 
   // ------------------------------------------------------------------ restrictions
@@ -469,6 +495,7 @@ export class Tram {
     }
     dt = Math.min(dt, 0.1);
     this.t += dt;
+    this.load += (this.loadTarget - this.load) * (1 - Math.exp(-dt / DRIVE.loadTau));
     this._updateStop();
 
     let aCmd;
@@ -533,6 +560,23 @@ export class Tram {
   }
 }
 
+/**
+ * Weighted count of the people in the track corridor (|d| ≤ TRACK_ZONE_HALF), read from
+ * the crowd: weight(u, d) with u = metres ahead of the camera along the route. Null
+ * without a crowd.
+ */
+export function corridorPeople(app, weight) {
+  const cr = app.crowd, sim = cr && !cr.disabled ? cr.sim : null;
+  const agents = sim && sim.population && sim.population.agents;
+  if (!agents || typeof sim.camU !== 'number') return null;
+  let n = 0;
+  for (const a of agents) {
+    if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF)) continue;
+    n += weight(a.s - sim.camU, a.d);
+  }
+  return n;
+}
+
 // ---------------------------------------------------------------------- module
 const train = {
   name: 'train',
@@ -544,6 +588,10 @@ const train = {
   holding: true,      // the ride has not started yet (world loading / start overlay)
   coasting: false,
   _trams: null,       // oncoming units started from here (see _oncoming)
+  corridorCount: 0,   // weighted people in the track corridor ahead (last sample)
+  pedLoad: 0,         // the driver's smoothed pedestrian load (0..1)
+  _loadT: 0,
+  _loadInit: false,
   _tramErrors: 0,
 
   async init(app) {
@@ -589,6 +637,7 @@ const train = {
     // nothing moves until the world is ready and (in the app) the rider has clicked to start
     const ui = app.ui;
     this.holding = !app.ready || !!(ui && !ui.disabled && ui.holding);
+    this._sampleLoad(app, dt);
     this.tram.overrideHeld = input.held('notchUp');
     this.tram.step(this.holding ? 0 : dt);
     this.sync();
@@ -602,6 +651,23 @@ const train = {
     }
   },
 
+  /** People in the track corridor ahead set the driver's cruise (Tram.load): every second
+   *  while riding; every frame (taken at once) until the ride starts, so it opens at the
+   *  pace the street allows. */
+  _sampleLoad(app, dt) {
+    if (!this.holding && this._loadInit) {
+      this._loadT -= dt;
+      if (this._loadT > 0) return;
+    }
+    this._loadT = 1;
+    const n = corridorPeople(app, (u, d) => (u > 5 && u < 200 ? (d > -0.2 ? 1 : 0.6) : 0));
+    if (n == null) return;
+    this.corridorCount = n;
+    const x = n / DRIVE.busyPeople;
+    if (this.holding || !this._loadInit) { this.tram.setLoad(x, true); this._loadInit = !this.holding; }
+    else this.tram.setLoad(x);
+  },
+
   sync() {
     const t = this.tram;
     this.s = t.s; this.speed = t.speed; this.accel = t.accel; this.throttle = t.throttle;
@@ -609,6 +675,7 @@ const train = {
     this.bellAt = t.bellAt; this.notch = t.notch; this.notchId = NOTCHES[t.notch].id;
     this.emergency = t.emergency; this.limit = t.limit; this.phase = t.phase; this.caution = t.caution;
     this.assisting = t.assisting; this.coasting = t.coasting; this.cruise = t.cruise(t.s); this.t = t.t;
+    this.pedLoad = t.load;
   },
 
   // controls used by the UI

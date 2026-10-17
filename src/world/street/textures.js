@@ -8,7 +8,8 @@ import { ATLAS, IRON_REGIONS, canvas, ctx2d, makeNoise, generateIronAtlas, write
 //    drain cover, chequer-plate utility cover, a small valve cover and four fallen-leaf
 //    cut-outs (drawn with the iron, tinted by vertex colour). Generated in a worker
 //    (ironAtlas.js) so start-up is not blocked; neutral iron until it arrives;
-//  - stain atlas (alpha blotches, gum spots, drip marks).
+//  - stain atlas (alpha blotches, gum spots, drip marks, soil rings round tree grates,
+//    mottled trodden-in dirt).
 
 export { IRON_REGIONS };
 
@@ -24,44 +25,95 @@ function dataTex(data, w, h, srgb, aniso) {
 }
 
 // ------------------------------------------------------------------ stains
+/** Stain atlas layout: STAIN_COLS x 2 cells of 256 px; kind k sits in column k % 3, row
+ *  floor(k / 3) (row 0 at the top of the canvas = texture v 0.5..1). */
+export const STAIN_COLS = 3;
+
 function drawStains() {
   // grey levels on black (alphaMap reads the green channel); blobs accumulate additively
-  const S = 512, c = canvas(S, S), C = ctx2d(c);
-  C.fillStyle = '#000'; C.fillRect(0, 0, S, S);
+  const cell = 256, W = cell * STAIN_COLS, H = cell * 2, c = canvas(W, H), C = ctx2d(c);
+  C.fillStyle = '#000'; C.fillRect(0, 0, W, H);
   C.globalCompositeOperation = 'lighter';
   const rng = RNG.from('street-stains');
-  const cell = S / 2;
-  // 0: broad water / dirt stain, 1: oil drip patch, 2: gum spots, 3: streaky drip trail
-  const blob = (cx, cy, r, a) => {
-    const g = C.createRadialGradient(cx, cy, 0, cx, cy, r);
+  // 0: broad water / dirt stain, 1: oil drip patch, 2: gum spots, 3: streaky drip trail,
+  // 4: soil and litter ring round a tree grate (the grate covers the middle 41%),
+  // 5: mottled trodden-in dirt (café floors, benches)
+  const cx = (k) => (k % STAIN_COLS + 0.5) * cell, cy = (k) => (Math.floor(k / STAIN_COLS) + 0.5) * cell;
+  const blob = (x, y, r, a) => {
+    const g = C.createRadialGradient(x, y, 0, x, y, r);
     g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(0.6, `rgba(255,255,255,${a * 0.6})`); g.addColorStop(1, 'rgba(255,255,255,0)');
-    C.fillStyle = g; C.beginPath(); C.arc(cx, cy, r, 0, Math.PI * 2); C.fill();
+    C.fillStyle = g; C.beginPath(); C.arc(x, y, r, 0, Math.PI * 2); C.fill();
   };
-  for (let i = 0; i < 40; i++) blob(cell * 0.5 + rng.normal(0, 26), cell * 0.5 + rng.normal(0, 26), rng.range(14, 46), 0.12);
-  for (let i = 0; i < 26; i++) blob(cell * 1.5 + rng.normal(0, 20), cell * 0.5 + rng.normal(0, 14), rng.range(8, 30), 0.2);
-  for (let i = 0; i < 6; i++) blob(cell * 1.5 + rng.normal(0, 8), cell * 0.5 + rng.normal(0, 8), rng.range(6, 12), 0.35);
+  for (let i = 0; i < 40; i++) blob(cx(0) + rng.normal(0, 26), cy(0) + rng.normal(0, 26), rng.range(14, 46), 0.12);
+  for (let i = 0; i < 26; i++) blob(cx(1) + rng.normal(0, 20), cy(1) + rng.normal(0, 14), rng.range(8, 30), 0.2);
+  for (let i = 0; i < 6; i++) blob(cx(1) + rng.normal(0, 8), cy(1) + rng.normal(0, 8), rng.range(6, 12), 0.35);
   for (let i = 0; i < 70; i++) {
-    const x = cell * 0.5 + rng.normal(0, 40), y = cell * 1.5 + rng.normal(0, 40), r = rng.range(1.6, 4.5);
+    const x = cx(2) + rng.normal(0, 40), y = cy(2) + rng.normal(0, 40), r = rng.range(1.6, 4.5);
     C.fillStyle = `rgba(255,255,255,${rng.range(0.55, 0.9)})`; C.beginPath(); C.ellipse(x, y, r, r * rng.range(0.7, 1), rng.range(0, 3), 0, Math.PI * 2); C.fill();
   }
   for (let i = 0; i < 90; i++) {
     const t = rng.next();
-    blob(cell * 1.5 + rng.normal(0, 7), cell + 12 + t * (cell - 24), rng.range(4, 12), 0.16 + 0.12 * (1 - Math.abs(t - 0.5) * 2));
+    blob(cx(3) + rng.normal(0, 7), cy(3) - cell / 2 + 12 + t * (cell - 24), rng.range(4, 12), 0.16 + 0.12 * (1 - Math.abs(t - 0.5) * 2));
   }
   // break the soft blobs up with noise so they read as stains, not shadows
   C.globalCompositeOperation = 'source-over';
-  const img = C.getImageData(0, 0, S, S), px = img.data;
-  const na = makeNoise(11), nb = makeNoise(12);
-  for (let y = 0; y < S; y++) {
-    for (let x = 0; x < S; x++) {
-      const o = (y * S + x) * 4;
+  const img = C.getImageData(0, 0, W, H), px = img.data;
+  const na = makeNoise(11), nb = makeNoise(12), nc = makeNoise(13), nd = makeNoise(14);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
       if (px[o + 1] === 0) continue;
       const n = na(x / 14, y / 14) * 0.65 + nb(x / 4, y / 4) * 0.35;
       const v = (px[o + 1] / 255) * Math.max(0, Math.min(1, (n - 0.28) * 2.2));
       px[o] = px[o + 1] = px[o + 2] = v * 255;
     }
   }
-  C.putImageData(img, 0, 0);
+  const sm = (a, b, t) => { const u = Math.max(0, Math.min(1, (t - a) / (b - a))); return u * u * (3 - 2 * u); };
+  const put = (x, y, v) => { const o = (y * W + x) * 4; px[o] = px[o + 1] = px[o + 2] = Math.max(0, Math.min(255, v * 255)); };
+  // 4: soil washed out of the pit and trodden round the grate, densest at its edge (a
+  // rounded square), ragged further out
+  {
+    const x0 = cx(4) - cell / 2, y0 = cy(4) - cell / 2;
+    for (let y = 0; y < cell; y++) {
+      for (let x = 0; x < cell; x++) {
+        const qx = Math.abs(x + 0.5 - cell / 2), qy = Math.abs(y + 0.5 - cell / 2);
+        const q = Math.pow(qx ** 4 + qy ** 4, 0.25) * 0.7 + Math.hypot(qx, qy) * 0.3;
+        const n = na((x0 + x) / 11, (y0 + y) / 11) * 0.55 + nb((x0 + x) / 3.5, (y0 + y) / 3.5) * 0.3 + nc((x0 + x) / 30, (y0 + y) / 30) * 0.15;
+        const reach = 70 + 46 * nc((x0 + x) / 24 + 7, (y0 + y) / 24);       // ragged outer edge
+        let v = sm(48, 55, q) * Math.pow(1 - sm(56, reach, q), 0.7) * Math.max(0, Math.min(1, 0.3 + (n - 0.25) * 1.7));
+        v = Math.max(v, sm(48, 54, q) * (1 - sm(54, 64, q)) * (0.45 + 0.4 * n));   // grime in the joint round the frame
+        if (v > 0) put(x0 + x, y0 + y, v * 0.95);
+      }
+    }
+    C.putImageData(img, 0, 0);
+    // crumbs of soil and leaf fragments
+    for (let i = 0; i < 160; i++) {
+      const a = rng.range(0, Math.PI * 2), r = 58 + Math.abs(rng.normal(0, 24));
+      const x = cx(4) + Math.cos(a) * r, y = cy(4) + Math.sin(a) * r, rr = rng.range(0.8, 2.6);
+      C.fillStyle = `rgba(255,255,255,${rng.range(0.5, 0.95)})`; C.beginPath(); C.ellipse(x, y, rr, rr * rng.range(0.4, 1), rng.range(0, 3), 0, Math.PI * 2); C.fill();
+    }
+  }
+  // 5: mottled, trodden-in dirt: soft-edged, blotchy inside, with darker spots
+  {
+    const im2 = C.getImageData(0, 0, W, H), p2 = im2.data;
+    const x0 = cx(5) - cell / 2, y0 = cy(5) - cell / 2;
+    for (let y = 0; y < cell; y++) {
+      for (let x = 0; x < cell; x++) {
+        const qx = (x + 0.5) / cell * 2 - 1, qy = (y + 0.5) / cell * 2 - 1;
+        const r = Math.hypot(qx, qy) + 0.22 * (nd((x0 + x) / 40, (y0 + y) / 40) - 0.5);
+        const edge = 1 - sm(0.45, 0.95, r);
+        const n = nd((x0 + x) / 18, (y0 + y) / 18) * 0.5 + na((x0 + x) / 7, (y0 + y) / 7) * 0.3 + nb((x0 + x) / 2.5, (y0 + y) / 2.5) * 0.2;
+        const v = edge * (0.35 + 0.65 * sm(0.36, 0.66, n));
+        const o = ((y0 + y) * W + x0 + x) * 4;
+        if (v > 0) p2[o] = p2[o + 1] = p2[o + 2] = Math.min(255, v * 0.95 * 255);
+      }
+    }
+    C.putImageData(im2, 0, 0);
+    for (let i = 0; i < 26; i++) {
+      const x = cx(5) + rng.normal(0, 45), y = cy(5) + rng.normal(0, 45), r = rng.range(1.5, 4);
+      C.fillStyle = `rgba(255,255,255,${rng.range(0.5, 0.85)})`; C.beginPath(); C.ellipse(x, y, r, r * rng.range(0.7, 1), rng.range(0, 3), 0, Math.PI * 2); C.fill();
+    }
+  }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.NoColorSpace;
   t.anisotropy = 4;
@@ -104,11 +156,20 @@ export function createDetailMaterials(renderer) {
   });
   iron.name = 'street.castIron';
 
+  // stains: dark grime decals; vertex colour r = opacity, g = warmth (soil, brake dust)
   const stain = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0.075, 0.068, 0.06), alphaMap: drawStains(), transparent: true, depthWrite: false, opacity: 0.7,
-    roughness: 0.6, metalness: 0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6,
+    roughness: 0.6, metalness: 0, vertexColors: true, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6,
   });
   stain.name = 'street.stain';
+  stain.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', /* glsl */`
+#if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 1.5, 1.08, 0.7 ), vColor.g );
+  diffuseColor.a *= vColor.r;
+#endif`);
+  };
+  stain.customProgramCacheKey = () => 'street-stain-2';
 
   return { iron, stain };
 }

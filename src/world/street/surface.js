@@ -1,6 +1,6 @@
 import { CHUNK_LEN } from '../../core/config.js';
 import {
-  railDist, BAND_IN, CORRIDOR, GUTTER_OUT, GUTTER_W, SIDEWALK_RISE, FACADE_OVERLAP, TRACK_OFFSET,
+  railDist, BAND_IN, CORRIDOR, GUTTER_OUT, GUTTER_W, SIDEWALK_RISE, FACADE_OVERLAP, TRACK_OFFSET, RAIL_CENTER, GROUT_W,
 } from './constants.js';
 import { PeriodicField } from './noise.js';
 import { makeDelta } from './fast.js';
@@ -49,6 +49,7 @@ export class Surface {
     this.kH = [per(0.613, 128), per(0.11, 128)];
     this.kD = [per(0.71, 25.6), per(0.13, 25.6)];
     this.kW = per(1.7, 128);
+    this.kB = [per(0.37, 25.6), per(0.29, 25.6)];
     this.hShade = 0;       // shading height of the last height() call
     this.spotCache = new Map();
     this.planner = null;     // (chunkIndex) => [{s, d, r}], set by the street module
@@ -294,6 +295,15 @@ export class Surface {
     const n2 = 0.62 * this.fD.sample(s, d) + 0.38 * this.fD.sample(s * k[0] + d * 0.13 + 37.7, d * 0.71 - s * k[1] + 11.3);
     let v = (1 + 0.11 * n1) * (1 + 0.09 * n2) * ci.v;
     let warm = ci.warm;
+    if (ci.grime > 0) {
+      // placement grime (brake dust along the rails, dirt across the four-foot), broken up
+      // into heavier and lighter stretches so the bands never read as painted stripes
+      const kb = this.kB;
+      const nb = this.fD.sample(s * kb[0] + 51.3, d * 0.37 + 17.9) * 0.6 + this.fG.sample(s * kb[1] * 0.5 + 9.1, d * 0.29 + 3.3) * 0.4;
+      const b = Math.max(0.25, Math.min(1.6, 0.95 + 1.3 * nb));
+      v *= 1 - ci.grime * b;
+      warm += ci.grimeWarm * b;
+    }
     if (ci.zone === Z_CORR) {
       v *= (1 - ci.drip * (0.6 + 0.4 * n2)) * (1 - ri.xo * ci.xoTone);
     } else if (ci.zone === Z_GUTTER) {
@@ -301,9 +311,17 @@ export class Surface {
       v *= (1 + 0.05 * n2) * (1 - 0.15 * smooth((n2 - 0.3) / 0.3));
     } else if (ci.zone === Z_WALK) {
       const a = d < 0 ? -d : d;
-      const edge = d > 0 ? ri.edgeR : -ri.edgeL;
-      // grime along the facades, heavier in patches (doorways, shop fronts)
-      v *= 1 - (0.12 + 0.12 * smooth(n1 + 0.2)) * Math.exp(-Math.max(0, edge - FACADE_OVERLAP - a) / 0.45);
+      const f = d > 0 ? ri.fR : ri.fL;
+      // distance in front of the facade (its true line where a building fronts the
+      // street, else the line FACADE_OVERLAP inside the sidewalk's outer edge)
+      const fd = f && f.d === f.d ? (f.d < 0 ? -f.d : f.d) : (d > 0 ? ri.edgeR : -ri.edgeL) - FACADE_OVERLAP;
+      const x = Math.max(0, fd - a);
+      // dirt collected along the facade base: a band ~0.3 m wide, patchy (doorways, shop
+      // fronts, corners), with a softer tail further out
+      const pb = Math.max(0, Math.min(1, 0.55 + 1.1 * n2 + 0.6 * n1));
+      const band = 1 - smooth((x - 0.3) / 0.5);
+      v *= 1 - (0.11 + 0.13 * pb) * band - (0.04 + 0.05 * smooth(n1 + 0.2)) * Math.exp(-x / 1.1);
+      warm += 0.025 * band;
       // soil and leaf litter around tree pits
       const sp = ri.spots;
       for (let i = 0; i < sp.length; i += 2) {
@@ -311,7 +329,7 @@ export class Surface {
         if (!p.tree) continue;
         const ds = sp[i + 1], dd = d - p.d;
         const q = Math.sqrt(ds * ds + dd * dd) - p.r;
-        if (q < 1.2) { const k = 1 - smooth(q / 1.2); v *= 1 - 0.1 * k; warm += 0.04 * k; }
+        if (q < 1.6) { const k = 1 - smooth(q / 1.6); v *= 1 - 0.12 * k; warm += 0.05 * k; }
       }
     }
     const hue = 0.014 * n1;
@@ -321,6 +339,10 @@ export class Surface {
   }
 }
 
+/** Brake dust and dirt along a rail at distance e (m) from its span (seals included):
+ *  full over the mortar and the first setts, gone ~0.35 m out. */
+export const railGrime = (e) => 1 - smooth((e - 0.05) / 0.3);
+
 export const Z_CORR = 0, Z_BAND = 1, Z_GUTTER = 2, Z_WALK = 3;
 
 /** The s-independent part of the cross-section at d: base height (camber, crown between
@@ -328,20 +350,24 @@ export const Z_CORR = 0, Z_BAND = 1, Z_GUTTER = 2, Z_WALK = 3;
  *  static dirt factors (grime along the rails, oil drips, dark gutter). */
 export function colInfo(d, out = {}) {
   const a = d < 0 ? -d : d;
-  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1; out.trough = 0;
+  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1; out.trough = 0; out.grime = 0; out.grimeWarm = 0;
   if (a < BAND_IN) {
     const e = railDist(d);
-    const g1 = Math.exp(-e / 0.045), g2 = Math.exp(-e / 0.22);
+    const g1 = Math.exp(-e / 0.045);
     const dc = a - TRACK_OFFSET;
+    // four-foot: the paving between the two rails of a track (brake dust, drips, dirt)
+    const four = 1 - smooth(((dc < 0 ? -dc : dc) - (RAIL_CENTER - 0.22)) / 0.2);
     out.zone = Z_CORR;
     out.h0 = 0.0035 * smooth(e / 0.45);
     out.amp = 0.0022;
     out.shadeAmp = 0.011;
     out.mask = smooth(e / 0.28);
-    // settled setts 0.1-0.4 m beside the mortar strips (shading only)
-    out.trough = -0.0045 * smooth((e - 0.07) / 0.09) * (1 - smooth((e - 0.24) / 0.3));
-    out.v = 1 - 0.24 * g1 - 0.08 * g2;
-    out.warm = 0.05 * g1 + 0.02 * g2;
+    // settled setts 0.05-0.35 m beside the mortar strips (shading only)
+    out.trough = -0.0045 * smooth((e - GROUT_W) / 0.09) * (1 - smooth((e - 0.19) / 0.3));
+    out.v = 1 - 0.07 * g1;
+    out.grime = 0.2 * railGrime(e) + 0.08 * four;
+    out.grimeWarm = 0.09 * railGrime(e) + 0.04 * four;
+    out.warm = 0.03 * g1;
     out.drip = 0.07 * Math.exp(-(dc * dc) / 0.05);
     out.xoTone = 0.1 * Math.exp(-e / 0.1);
   } else if (a < CORRIDOR) {
@@ -350,7 +376,9 @@ export function colInfo(d, out = {}) {
     out.h0 = 0.0035 - 0.0055 * t;
     out.amp = 0.001;
     out.shadeAmp = 0.004;
-    out.v = 1 - 0.1 * smooth(t);
+    // a little lighter than the setts (a strip of different stone), dirtier towards the
+    // gutter
+    out.v = 1.05 - 0.07 * smooth(t);
   } else if (a < GUTTER_OUT) {
     const t = ((a - CORRIDOR) / GUTTER_W) * 2 - 1;
     out.zone = Z_GUTTER;

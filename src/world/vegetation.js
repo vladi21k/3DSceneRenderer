@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import { RNG, loopNoise1 } from '../core/rng.js';
+import { RNG } from '../core/rng.js';
 import { TEMPLATES, SHRUBS } from './vegetation/species.js';
 import { buildLeafAtlas, blankAtlas } from './vegetation/leafAtlas.js';
 import { buildTreeTemplate, buildShrubTemplate } from './vegetation/treeGen.js';
 import { createVegMaterials } from './vegetation/vegMaterials.js';
 import { InstancePool, VegetationPools } from './vegetation/pool.js';
 import { createProps } from './vegetation/props.js';
+import { createGroundShade } from './vegetation/groundShade.js';
 
 // Street trees and planters. Contract: docs/ARCHITECTURE.md
 //
@@ -19,7 +20,8 @@ import { createProps } from './vegetation/props.js';
 //       in the background while the other modules start, long before the first frame.
 // build: per chunk, adds one instance per tree and per prop (stakes and ties, planter
 //       boxes; planters come from layout.furniture entries of type 'planter'). The tree
-//       grates are paving details drawn by the street module.
+//       grates are paving details drawn by the street module. The chunk's trees also get
+//       a soft sky-occlusion disc on the paving under their crowns (groundShade.js).
 // per frame (pool.js): instance visibility follows the chunk group, detail level follows
 //       the tree's projected size on screen (cross-faded).
 // dispose: removes the chunk's instances.
@@ -68,6 +70,7 @@ const vegetation = {
     // bark: twigs and thin branches are sub-texel sooner than leaf clumps
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300, { shadowLevels: [0.012, 0.03] }));
     this.props = createProps(app, this.pools);
+    this.groundShade = createGroundShade(app);
     this.plan = this._planTrees();
     // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
@@ -92,29 +95,26 @@ const vegetation = {
    * mirror, instance matrix, tints and LOD size. Species come in zones of a few hundred
    * metres, each side of the street planted on its own (mostly one species, some of the
    * others mixed in); a tree never repeats the template of the previous tree on its side,
-   * nor the template + mirror of the one before. About a third of the trees are old
-   * (8-11 m, crowns up to the second floor): the layout's mature trees plus some of its
-   * young ones, in loose runs of older planting.
+   * nor the template + mirror of the one before. Most trees are young, small and open
+   * (about 4.5-6 m, crowns under 3 m across), so the facades, balconies and lamps carry the
+   * street; about one in seven is old (7.5-10.5 m): most of the layout's mature trees.
    */
   _planTrees() {
     const { route, layout } = this.app;
     const plan = new Map();
     const last = { '-1': [], '1': [] };
     const trees = layout.trees.slice().sort((a, b) => a.side - b.side || a.s - b.s);
-    const L = route.length;
     for (const t of trees) {
       const zone = Math.floor(route.wrap(t.s) / 330);
       const zr = RNG.from(layout.seed, 'vegzone', zone, t.side);
-      const dominant = zr.weighted([['pagoda', 0.45], ['ash', 0.33], ['dense', 0.22]]);
+      const dominant = zr.weighted([['pagoda', 0.5], ['ash', 0.35], ['dense', 0.15]]);
       const r = new RNG(t.seed ^ 0x5bd1e995);
-      // older planting: the layout's mature trees, and young ones promoted in loose runs
-      // (not over café terraces: their umbrellas were planned round the young crowns)
-      const run = loopNoise1(route.wrap(t.s), L, 90, layout.seed + (t.side > 0 ? 17 : 29));
-      const promote = r.chance(THREE.MathUtils.clamp(0.21 + 0.32 * run, 0, 0.5));
-      const mature = t.mature || (promote && !layout.cafes.some((c) => c.side === t.side
-        && route.delta(c.s0, t.s) > -4 && route.delta(c.s0, t.s) < route.delta(c.s0, c.s1) + 4));
-      const height = mature && !t.mature ? r.range(8.2, 10.8) : t.height;
-      const crown = mature && !t.mature ? r.range(4.8, 6.4) : t.crown;
+      // older planting: most of the layout's mature trees (some were replanted young)
+      const mature = t.mature && r.chance(0.85);
+      // planned sizes: young trees are kept small and open (the layout plans them a little
+      // bigger), old ones a little lower and narrower than the layout's
+      const height = mature ? t.height * 0.95 : (t.mature ? r.range(5.0, 7.2) : t.height) * 0.88;
+      const crown = mature ? t.crown * 0.85 : (t.mature ? r.range(2.6, 3.8) : t.crown) * 0.78;
       const prev = last[t.side];
       let T = null, mirror = 0;
       for (let tries = 0; tries < 8; tries++) {
@@ -178,11 +178,15 @@ const vegetation = {
     marker.name = 'vegetation';
     const rec = this.pools.record(marker);
     const props = this.props.begin(rec, lod);
+    const shade = [];
 
     for (const t of trees) {
       const P = this.plan.get(t);
       if (!P) continue;
       const T = P.T;
+      // sky occlusion under the crown: open young crowns hide less of the sky
+      const sy = P.size / T.tpl.height;
+      shade.push({ s: t.s, d: t.d, side: t.side, r: T.tpl.crownR * P.sxz, h: 0.5 * (T.tpl.crownBase + T.tpl.height) * sy, k: P.mature ? 0.42 : 0.28 });
       this.pools.add(rec, this.leafPool, T.leafIdx, P.matrix, P.leafTint, P.pos, P.size);
       // bark detail steps down sooner than the crown's: its twigs are sub-pixel long before
       // the leaf clumps are (and mostly hidden by them)
@@ -206,6 +210,8 @@ const vegetation = {
       _c.setRGB(v * (1 + h), v, v * (1 - 2 * h));
       this.pools.add(rec, this.leafPool, S.leafIdx, _m, _c, top.pos, 1.4);
     }
+    const ground = this.groundShade.build(shade);
+    if (ground) marker.add(ground);
     return marker;
   },
 
@@ -217,6 +223,7 @@ const vegetation = {
 
   dispose(obj) {
     this.pools.release(obj.userData.vegRecord);
+    for (const c of obj.children) if (c.geometry) c.geometry.dispose();
   },
 };
 

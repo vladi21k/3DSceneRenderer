@@ -2,6 +2,7 @@
 // glass over a stall riser, a (sometimes recessed) glazed door, transom bar, fanlight or
 // sign panel in the head, roller-shutter box and guides. Glass is interior-mapped
 // (shop kind: shelves, goods, ceiling lights).
+import { RNG } from '../../core/rng.js';
 import { Tpl, TplCache } from './geo.js';
 import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, topAt } from './outline.js';
 import { rectRing } from './kit.js';
@@ -252,14 +253,35 @@ export function shopTpls(design, o, L, q) {
 }
 
 /**
- * Roller shutter of one shop by day (per opening, independent of its neighbours): about
- * one shop in twelve is closed, at most one per building, and mostly only part way down
- * (a late opening, a delivery, a shop half closed against the sun). Returns the fraction
- * the curtain is down, rounded so the templates are shared.
+ * The shopfront decisions for shop opening o of front plan, exactly as the facades build
+ * them (place.js): the building's joinery design (one of two per building) and the
+ * opening's own roller-shutter state. Door position, width and setback are in L (dx,
+ * doorW, setback); L.shutterDown > 0 means the curtain is (partly) down.
  */
-export function shutterState(rng, lotState) {
-  if (lotState.closed || !rng.chance(0.09)) return 0;
-  lotState.closed = true;
-  const f = rng.chance(0.75) ? rng.range(0.3, 0.6) : rng.range(0.88, 1.0);
-  return Math.round(f * 20) / 20;
+export function shopDecision(plan, o) {
+  const variant = RNG.from(o.id, 'shop').int(0, 1);
+  const L = shopLayout(o, RNG.from(plan.seed, 'shopfront', variant), o.backDepth ?? 0.4);
+  L.variant = variant;
+  L.shutterDown = L.box ? shutterDown(plan, o) : 0;
+  return L;
+}
+
+/**
+ * Roller shutter of one shop by day, drawn per opening (independent of its neighbours'
+ * design): about one shop in eleven is closed, at most one per front, and mostly only
+ * part way down (a late opening, a delivery, a shop half closed against the sun). The
+ * fraction the curtain is down, rounded so the templates are shared.
+ */
+function shutterDown(plan, o) {
+  for (const x of plan.openings) {
+    if (x.kind !== 'shop') continue;
+    const r = RNG.from(x.id, 'shutterDown');
+    if (r.chance(0.1)) {
+      if (x !== o) return 0;
+      const f = r.chance(0.75) ? r.range(0.3, 0.6) : r.range(0.88, 1.0);
+      return Math.round(f * 20) / 20;
+    }
+    if (x === o) return 0;
+  }
+  return 0;
 }

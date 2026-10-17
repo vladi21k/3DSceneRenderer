@@ -61,10 +61,11 @@ function makeEnvelope(tpl, rng) {
   for (let i = 0; i < 6; i++) lobes.push([rng.int(2, 5), rng.range(0, Math.PI * 2), rng.range(0.07, 0.15), rng.range(1, 3), rng.range(0, Math.PI * 2)]);
   // a few random gaps in the crown: attraction points are not placed inside them
   const holes = [];
-  const nHoles = Math.round(tpl.crownR * 2.2);
+  // (young street trees are open: sky and facades show through their crowns)
+  const nHoles = Math.round(tpl.crownR * 3) + 1;
   for (let i = 0; i < nHoles; i++) {
-    const a = rng.range(0, Math.PI * 2), t = rng.range(0.2, 0.85), rr = rng.range(0.55, 1.0);
-    holes.push([Math.cos(a) * R * rr, y0 + (y1 - y0) * t, Math.sin(a) * R * rr, (rng.range(0.3, 0.5) * R) ** 2]);
+    const a = rng.range(0, Math.PI * 2), t = rng.range(0.15, 0.85), rr = rng.range(0.5, 1.0);
+    holes.push([Math.cos(a) * R * rr, y0 + (y1 - y0) * t, Math.sin(a) * R * rr, (rng.range(0.32, 0.52) * R) ** 2]);
   }
   const cy = (y0 + y1) / 2, hy = (y1 - y0) / 2;
   const env = {

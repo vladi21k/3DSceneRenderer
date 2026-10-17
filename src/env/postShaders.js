@@ -156,12 +156,27 @@ float vnoise(vec2 p) {
 }
 // integral of clamp(x, 0, 1)
 float rampInt(float x) { return x <= 0.0 ? 0.0 : (x < 1.0 ? 0.5 * x * x : x - 0.5); }
-// isotropic point light in-scatter along [0, T] of a ray (closed form)
+// in-scatter phase of the dry street air: a small isotropic share (molecules) and a
+// forward lobe (dust), so a lamp's glow stays close to the line of sight to it
+float airPhase(float c) {
+  const float g = 0.72, g2 = g * g;
+  return 0.25 / (4.0 * ATM_PI) + 0.75 * (1.0 - g2) / (4.0 * ATM_PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
+}
+// point light in-scatter along [0, T] of a ray: substituting t - tc = h tan(phi) turns
+// the integral into (1/h) * integral of phase(-sin phi) dphi (6-point Gauss-Legendre)
 float pointAirlight(vec3 ro, vec3 rd, float T, vec3 lp) {
   vec3 w = lp - ro;
   float tc = dot(w, rd);
   float h = max(length(w - rd * tc), 0.05);
-  return (atan((T - tc) / h) - atan(-tc / h)) / h;
+  float a0 = atan(-tc / h), a1 = atan((T - tc) / h);
+  float m = 0.5 * (a0 + a1), r = 0.5 * (a1 - a0);
+  const vec3 X = vec3(0.2386191861, 0.6612093865, 0.9324695142);
+  const vec3 W = vec3(0.4679139346, 0.3607615730, 0.1713244924);
+  float s = 0.0;
+  for (int i = 0; i < 3; i++) {
+    s += W[i] * (airPhase(-sin(m + X[i] * r)) + airPhase(-sin(m - X[i] * r)));
+  }
+  return s * r / h;
 }
 
 void main() {
@@ -287,8 +302,8 @@ void main() {
       float cs = dot(v * inversesqrt(r2), uHeadDir);
       hb += smoothstep(uHeadCos.x, uHeadCos.y, cs) / r2;
     }
-    air += vec3(1.0, 0.84, 0.68) * uHeadI * hb * Th / 12.0;
-    col += air * uMist / (4.0 * ATM_PI) * uNightAir;
+    air += vec3(1.0, 0.84, 0.68) * uHeadI * hb * Th / 12.0 / (4.0 * ATM_PI);
+    col += air * uMist * uNightAir;
   }
 
   // scrub NaN / Inf (by bit pattern: compilers may fold isnan away) and negatives, and
@@ -444,8 +459,11 @@ uniform sampler2D tPrev;
 uniform vec2 uSize;        // small mip size in texels
 uniform float uRate;       // 0..1 blend towards the new value
 varying vec2 vUv;
+// r: weighted log-average luminance (metering); gba: plain mean colour of the frame (the
+// light the lens scatters into a uniform veil)
 void main() {
   float acc = 0.0, wsum = 0.0;
+  vec3 mean = vec3(0.0);
   int W = int(uSize.x), H = int(uSize.y);
   for (int y = 0; y < 64; y++) {
     if (y >= H) break;
@@ -457,17 +475,18 @@ void main() {
       vec2 q = uv - 0.5;
       float w = 1.0 - 1.6 * dot(q, q) + (uv.y < 0.5 ? 0.25 : 0.0);  // centre and lower half weigh more
       acc += log2(l + 1e-6) * w; wsum += w;
+      mean += c;
     }
   }
-  float v = acc / max(wsum, 1e-4);
-  float prev = texture2D(tPrev, vec2(0.5)).r;
-  gl_FragColor = vec4(mix(prev, v, uRate), 0.0, 0.0, 1.0);
+  vec4 v = vec4(acc / max(wsum, 1e-4), mean / max(float(W * H), 1.0));
+  vec4 prev = texture2D(tPrev, vec2(0.5));
+  gl_FragColor = mix(prev, v, uRate);
 }
 `;
 
 // ---------------------------------------------------------------- final: lens, tone map, grade
 // Tone: a camera's JPEG response sets the luminance (mid grey 0.18 → ~0.47, white about
-// 3 stops above it, a crushed toe: true blacks), AgX sets hue and chroma (its log-domain
+// 3.5 stops above it, a long toe: −3 stops still reads as dark grey), AgX sets hue and chroma (its log-domain
 // curve keeps bright saturated colours from skewing), blended towards the scene's own
 // ratios so warm low sun on stone keeps its colour. Luma-only sharpening stands in for
 // in-camera sharpening.
@@ -493,6 +512,9 @@ uniform vec3 uShadowTint, uHighTint;
 uniform vec4 uCurve;          // camera tone curve: A, s, e0, q (see below)
 uniform float uChroma;        // 0 AgX's chroma .. 1 the scene's colour ratios
 uniform vec2 uResolution;
+uniform float uVeil;          // veiling glare: share of the frame's mean light spread evenly over it
+uniform vec3 uVeilSun;        // plus light from a sun just outside the frame, scattered by the front glass
+uniform vec2 uHiComp;         // highlight recovery: knee (stops over mid grey), log slope above it
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -571,8 +593,13 @@ void main() {
   }
   col = mix(col, texture2D(tBloom, uv).rgb, uBloom);
 
+  // veiling glare: every lens (and the cab's glass in front of it) scatters a little of
+  // the light it receives evenly over the frame, which lifts the deepest shadows off black
+  vec4 lumv = texture2D(tLum, vec2(0.5));
+  col += uVeil * lumv.gba + uVeilSun;
+
   // exposure: time-of-day base, nudged by the metered scene luminance
-  float avgLog = texture2D(tLum, vec2(0.5)).r;
+  float avgLog = lumv.r;
   float metered = exp2(avgLog) * uExposure;
   float corr = clamp(pow(uMeterTarget / max(metered, 1e-6), uAutoExp), uMeterClamp.x, uMeterClamp.y);
   col *= min(uExposure * corr, uExposureMax);
@@ -583,6 +610,15 @@ void main() {
   float lum = dot(col, LW);
   col *= mix(uShadowTint, uHighTint, smoothstep(0.05, 0.6, lum));
   lum = dot(col, LW);
+  // highlight recovery (as a raw developer or a phone's tone mapping does): luminance
+  // above the knee is compressed in log terms with a soft knee, so a bright evening sky
+  // keeps its colour while the street stays exposed
+  if (uHiComp.y < 1.0) {
+    float e = 3.0 * (log2(max(lum, 1e-8) / 0.18) - uHiComp.x);
+    float sp = (e > 20.0 ? e : log2(1.0 + exp2(e))) / 3.0;
+    float k = exp2(-(1.0 - uHiComp.y) * sp);
+    col *= k; lum *= k;
+  }
   vec3 sc = max(col, 0.0);
 
   col = agx(col);

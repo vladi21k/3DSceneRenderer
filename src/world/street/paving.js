@@ -1,12 +1,13 @@
 import {
   MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W, RAIL_X0, RAIL_X1, FACADE_OVERLAP, railDist,
 } from './constants.js';
-import { colInfo } from './surface.js';
+import { colInfo, railGrime } from './surface.js';
 import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 
-// Paving grid for one chunk: corridor (with gaps for the rails and, at lod 0, dark
+// Paving grid for one chunk: corridor (with gaps for the rails and, at lod 0, narrow
 // mortar strips along them), light stone edge bands, dished gutters and sidewalks out
-// under the facades. One height per grid vertex from the Surface; normals by central
+// under the facades (with two extra columns in front of each facade, so the dirt band
+// along its base stays sharp). One height per grid vertex from the Surface; normals by central
 // differences of the Surface's shading height on the grid (with ghost rows beyond the
 // chunk ends so neighbouring chunks shade seamlessly). UVs: u = periodic street
 // coordinate, v = d (corridor: the material places its rail grime by d), or metres from
@@ -16,7 +17,7 @@ import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
 const ROWS_PER_STEP = 8;                   // buildPaving yields after this many rows
-const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
+const GROUT_WAVE = 0.006;                  // hand-finished mortar edge wanders by ±6 mm
 const SLAB_TONE = 0.3;                     // ground slab: dark, seen only through cracks
 const SLAB_FAR = -1.2;                     // slab depth under the blocks (m)
 
@@ -122,9 +123,10 @@ export function* buildPaving(ctx, chunk, rows, out) {
     maxR = Math.max(maxR, ri.facR - GUTTER_OUT);
   }
   // per side: the outer edge, a column on the facade line (where the paving meets the
-  // building's own ground line exactly), then even columns in to the gutter
-  const nL = 1 + Math.max(2, Math.ceil(maxL / walkStep));
-  const nR = 1 + Math.max(2, Math.ceil(maxR / walkStep));
+  // building's own ground line exactly), two columns of the facade's dirt band (FB1 and
+  // FB2 in front of it), then even columns in to the gutter
+  const eL = Math.max(2, Math.ceil(maxL / walkStep)), eR = Math.max(2, Math.ceil(maxR / walkStep));
+  const nL = 3 + eL, nR = 3 + eR;
   const nc = nL + nFixed + nR; // left walk cols (excluding -GUTTER_OUT) + fixed + right walk cols
   const NR = rowS.length;
 
@@ -137,9 +139,8 @@ export function* buildPaving(ctx, chunk, rows, out) {
   for (let r = 0; r < NR; r++) {
     const ri = infos[r];
     const o = r * nc;
-    const eL = ri.edgeL, eR = ri.edgeR;
     for (let k = 0; k < nL; k++) {
-      const d = k === 0 ? eL : -(ri.facL + ((GUTTER_OUT - ri.facL) * (k - 1)) / (nL - 1));
+      const d = k === 0 ? ri.edgeL : -walkCol(ri.facL, k - 1, eL);
       D[o + k] = d; H[o + k] = surface.height(ri, d, colInfo(d, ciw)); HS[o + k] = surface.hShade;
     }
     for (let k = 0; k < nFixed; k++) {
@@ -149,7 +150,7 @@ export function* buildPaving(ctx, chunk, rows, out) {
       D[o + nL + k] = d; H[o + nL + k] = surface.height(ri, d, fx.ci[k]); HS[o + nL + k] = surface.hShade;
     }
     for (let k = 1; k <= nR; k++) {
-      const c = nL + nFixed - 1 + k, d = k === nR ? eR : GUTTER_OUT + ((ri.facR - GUTTER_OUT) * k) / (nR - 1);
+      const c = nL + nFixed - 1 + k, d = k === nR ? ri.edgeR : walkCol(ri.facR, nR - 1 - k, eR);
       D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw)); HS[o + c] = surface.hShade;
     }
     if (r % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield 'paving';
@@ -210,10 +211,10 @@ export function* buildPaving(ctx, chunk, rows, out) {
     const ci = fc >= 0 && fc < nFixed ? fx.ci[fc] : colInfo(d, ciw);
     surface.tone(S.ri, d, tone, 0, ci);
     if (k === K_GROUT) {
-      // mortar keeps the tone variation but not the paving's rail grime; it is a little
-      // darker where it meets the setts (dirt collects along the joint)
-      const m = ((railDist(d) < 0.02 ? 1.0 : 0.88) / ci.v) * (tone[0] + tone[1] + tone[2]) / 3;
-      tone[0] = m; tone[1] = m; tone[2] = m;
+      // mortar takes the tone and grime of the setts beside it, a little darker where it
+      // meets them (dirt collects along the joint)
+      const m = railDist(d) < GROUT_W * 0.5 ? 1.0 : 0.9;
+      tone[0] *= m; tone[1] *= m; tone[2] *= m;
     }
     let b = bufs[k];
     if (zoned) {
@@ -221,7 +222,7 @@ export function* buildPaving(ctx, chunk, rows, out) {
         paveCut(plan, S.s, d, cut4);
         // grime along the diverging rails, as along the main ones
         const e = Math.max(0, Math.min(railOut(cut4[0]), railOut(cut4[3])));
-        const g = 1 - 0.24 * Math.exp(-e / 0.045) - 0.08 * Math.exp(-e / 0.22);
+        const g = 1 - 0.14 * railGrime(e) - 0.05 * Math.exp(-e / 0.045);
         tone[0] *= g; tone[1] *= g; tone[2] *= g;
         b = out.get(mats.cut.corr, true);
       } else {
@@ -282,6 +283,21 @@ export function pavingHeight(grid, s, d, dl) {
   const Ha = H[oa + c], Hb = H[oa + c + 1], Hc = H[ob + c + 1], Hd = H[ob + c];
   // quads are split a-b-c / a-c-d (a = row lo, column c; c = row hi, column c+1)
   return u >= t ? Ha + (Hb - Ha) * u + (Hc - Hb) * t : Ha + (Hc - Hd) * u + (Hd - Ha) * t;
+}
+
+// the facade's dirt band columns stand this far in front of the facade line (m), less
+// where the sidewalk is narrow
+const FB1 = 0.3, FB2 = 0.6;
+
+/** |d| of sidewalk column j (0 = on the facade line, 1-2 = the facade band columns, then
+ *  nEven columns evenly in towards the gutter edge; GUTTER_OUT itself is a fixed column). */
+function walkCol(fac, j, nEven) {
+  const room = fac - GUTTER_OUT;
+  if (j === 0) return fac;
+  const f1 = fac - Math.min(FB1, room * 0.25);
+  if (j === 1) return f1;
+  const f2 = fac - Math.min(FB2, room * 0.5);
+  return f2 + ((GUTTER_OUT - f2) * (j - 2)) / nEven;
 }
 
 /** |d| of the sidewalk column on the facade line of the row (side -1 | 1); in mouths and

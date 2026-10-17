@@ -11,13 +11,13 @@ import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
-import { createMortarMaterial, patchCanyon, patchCut } from './street/shading.js';
+import { createMortarMaterial, patchCanyon, patchCut, patchGrit } from './street/shading.js';
 
 // Rail steel: every steel face of the profile (polished running band, flange-polished
 // gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
 // texture carries each finish on its own band of v (see constants.js RAIL_PROFILE); the
-// flangeway is rail.groove. Both take vertex colours: the swept profile writes its cavity
-// AO there. The baked micro relief is toned down (normalScale): at grazing angles it
+// flangeway is rail.groove, its floor filled with grit (shading.js patchGrit). Both take
+// vertex colours: the swept profile writes its cavity AO there. The baked micro relief is toned down (normalScale): at grazing angles it
 // turned the sky reflection into a sparkle of specks rather than a satin sheen.
 const RAIL_HEAD = { normalScale: [0.35, 0.35], vertexColors: true };
 const RAIL_GROOVE = { vertexColors: true };
@@ -28,7 +28,7 @@ const MAX_JOBS = 6;
 
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
-//   3D grooved rails (lod 0), far-field anti-aliased rail and paint lines (all lods),
+//   3D grooved rails (lod 0), far-field anti-aliased rail lines (all lods),
 //   crossovers, cross streets, cast-iron details, markings, and a ground slab.
 // A build is a sequence of short steps (a generator), so the chunks the streamer will
 // ask for next are built ahead a slice per frame (prefetch) and build() hands them over.
@@ -50,6 +50,7 @@ const street = {
     const mortar = M.register('street.mortar', share(createMortarMaterial()));
     // rail steel reflects the street canyon, not open sky (see shading.js)
     const steel = (name, opts) => patchCanyon(M.get(name, opts));
+    const groove = (opts) => patchGrit(M.get('rail.groove', opts));
     const mats = {
       corr: M.get('paving.street', { vertexColors: true }),
       band: M.get('paving.band', { vertexColors: true }),
@@ -57,7 +58,7 @@ const street = {
       asphalt: M.get('asphalt', { vertexColors: true }),
       grout: mortar,
       tactile: M.get('paving.tactile', { vertexColors: true }),
-      rail: { head: share(steel('rail.head', RAIL_HEAD)), groove: share(M.get('rail.groove', RAIL_GROOVE)), seal: mortar },
+      rail: { head: share(steel('rail.head', RAIL_HEAD)), groove: share(groove(RAIL_GROOVE)), seal: mortar },
       lines,
       details,
     };
@@ -70,12 +71,12 @@ const street = {
     mortarCut.name = 'street.mortar.cut';
     mats.cut = {
       head: cut(steel('rail.head', { ...RAIL_HEAD, stCut: 1 })),
-      groove: cut(M.get('rail.groove', { ...RAIL_GROOVE, stCut: 1 })),
+      groove: cut(groove({ ...RAIL_GROOVE, stCut: 1 })),
       seal: mortarCut,
       mortar: mortarCut,
       corr: cut(M.get('paving.street', { vertexColors: true, stCut: 2 }), 'pave'),
       // cast floor of switch boxes and frogs (never cut), pushed behind the groove floors
-      floor: share(M.get('rail.groove', { ...RAIL_GROOVE, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 })),
+      floor: share(groove({ ...RAIL_GROOVE, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 })),
     };
     mats.cut.gauge = mats.cut.lip = mats.cut.side = mats.cut.head;
     mats.cut.check = mats.cut.head;   // check rails: guard lip polished by wheel backs
@@ -183,7 +184,7 @@ const street = {
     // line overlays (one mesh): rails (far-field AA), paint, joints
     const L = {
       rail: LB.style(chunk.lod === 0 ? LINE_STYLE.railNear : LINE_STYLE.railFar),
-      centre: LB.style(LINE_STYLE.centre), stripe: LB.style(LINE_STYLE.stripe), joint: LB.style(LINE_STYLE.joint),
+      stripe: LB.style(LINE_STYLE.stripe), joint: LB.style(LINE_STYLE.joint),
       seal: LB.style(LINE_STYLE.seal), patch: LB.style(LINE_STYLE.patch), polish: LB.style(LINE_STYLE.polish),
     };
     // crossovers overlapping the chunk (each builds only its part inside the chunk)
@@ -203,18 +204,8 @@ const street = {
       L.rail.add(arr, half, cOff);
     }
 
-    // worn centre line between the tracks (interrupted at crossovers, crossings and any
-    // cover lying on it)
-    let run = [];
-    const flush = () => { if (run.length > 6 * 3) L.centre.add(run, 0.055, 0); run = []; };
-    const crossings = ctx.layout.crossStreets.filter((c) => Math.abs(ctx.delta(c.s, (chunk.s0 + chunk.s1) / 2)) < 30);
-    const onLine = chunk.lod === 0 ? this.planFor(chunk.index).items.filter((it) => Math.abs(it.d) < it.r + 0.1) : [];
-    for (const S of samples) {
-      if (inCrossoverZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.delta(c.s, S.s)) < 2.6)
-        || onLine.some((it) => Math.abs(ctx.delta(it.s, S.s)) < it.r + 0.15)) { flush(); continue; }
-      run.push(S.px, S.py + ctx.surface.height(S.ri, 0), S.pz, S.rx, S.rz, S.u);
-    }
-    flush();
+    // (no painted centre line between the tracks: the setts run through, as in the
+    // photographs; transverse joints are drawn with the details)
     yield 'lines';
 
     const group = new THREE.Group();

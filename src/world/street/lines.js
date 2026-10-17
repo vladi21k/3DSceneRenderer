@@ -148,10 +148,10 @@ const RAIL_FRAG = /* glsl */`
   vec3 aSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.88)};               // bitumen seal
   vec3 aCorner = vec3( 0.2, 0.15, 0.11 ) * ( 0.85 + 0.3 * wear );  // oxidised field bevel
   vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
-  vec3 aGroove = vec3( 0.022, 0.019, 0.016 );                       // dark slot (grime × AO)
+  vec3 aGroove = vec3( 0.05, 0.045, 0.037 );                        // grit-filled slot (grit floor, dark walls)
   vec3 aLip = vec3( 0.3, 0.29, 0.275 ) * ( 0.9 + 0.14 * wear );    // dusty guard lip
   vec3 aGrout = ${v3(MORTAR_ALBEDO, 0.95)};                          // mortar bed
-  vec3 aPave = vec3( 0.215, 0.217, 0.22 );                          // grimy setts beside it
+  vec3 aPave = vec3( 0.245, 0.241, 0.236 );                         // brake-dusted setts beside it
   float cPave = core * max( 0.0, 1.0 - cov );
   float inv = 1.0 / max( cov + cPave, 1e-4 );
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;

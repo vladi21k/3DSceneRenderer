@@ -5,7 +5,7 @@ import { U } from '../../src/core/uniforms.js';
 
 // Material preview: lit sample spheres / panels, a facade wall, a street ground plane at the
 // tram's eye height, and the raw baked maps.
-//   ?mode=grid | wall | street | maps | single | canopy
+//   ?mode=grid | wall | street | maps | single | canopy | trunk
 //   &mat=<name>  &recipe=<bake name>  &sun=<elevDeg>,<azDeg>  &fov=<deg>
 //   &cam=x,y,z,tx,ty,tz  &night=<0..1>  &exposure=<f>  &filter=<substring>
 //   &color=r,g,b (linear; single mode: overrides the material colour, e.g. a paint)
@@ -173,6 +173,21 @@ async function main() {
     s.position.set(1.9, 0.6, 1.3);
     strip(-10, 10, 30, M.get('paving.sidewalk')).position.z = 15;
     const [cx, cy, cz, tx, ty, tz] = vec('cam') || [0.6, 1.8, 3.6, 0.4, 1.7, 0];
+    camera.position.set(cx, cy, cz);
+    camera.lookAt(tx, ty, tz);
+  } else if (mode === 'trunk') {
+    // two trunks (u around the trunk in metres, v up): &mat=bark (left) &mat2=bark.smooth
+    // (right), radii &r=0.14,0.08
+    const [r1, r2] = vec('r') || [0.14, 0.08];
+    [[q.get('mat') || 'bark', r1, -0.45], [q.get('mat2') || 'bark.smooth', r2, 0.45]].forEach(([n, r, x]) => {
+      const g = new THREE.CylinderGeometry(r, r * 1.08, 4, 64, 8, true);
+      const p = g.attributes.position, uv = g.attributes.uv;
+      for (let i = 0; i < p.count; i++) uv.setXY(i, uv.getX(i) * 2 * Math.PI * r, p.getY(i) + 2);
+      const t = mesh(g, M.get(n));
+      t.position.set(x, 2, 0);
+    });
+    strip(-10, 10, 30, M.get('paving.sidewalk')).position.z = 15;
+    const [cx, cy, cz, tx, ty, tz] = vec('cam') || [0, 1.5, 1.6, 0, 1.4, 0];
     camera.position.set(cx, cy, cz);
     camera.lookAt(tx, ty, tz);
   } else if (mode === 'canopy') {

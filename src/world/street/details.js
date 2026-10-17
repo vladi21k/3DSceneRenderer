@@ -1,6 +1,6 @@
 import { RNG, hash2 } from '../../core/rng.js';
 import { CHUNK_LEN } from '../../core/config.js';
-import { IRON_REGIONS } from './textures.js';
+import { IRON_REGIONS, STAIN_COLS } from './textures.js';
 import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } from './constants.js';
 import { colInfo, Z_CORR } from './surface.js';
 import { pavingHeight } from './paving.js';
@@ -10,7 +10,9 @@ import { facadePlan } from '../facadePlan.js';
 // surface can flatten the paving under covers before it is built:
 //   cast-iron covers (round manholes, chequer plates, valve caps), gully grates in the
 //   gutters, slotted drain covers between the rails, tree grates around every tree,
-//   stains / gum spots / drip trails, fallen leaves, and transverse expansion joints.
+//   stains / gum spots / drip trails, soil rings and leaf litter round the tree grates,
+//   trodden-in dirt under café tables and at benches, fallen leaves, and transverse
+//   expansion joints.
 
 const ATLAS = 1024;
 const SIZES = {
@@ -19,6 +21,7 @@ const SIZES = {
 };
 const ROUND = { manhole: 1, valve: 1 };
 const COVER_LIFT = 0.003;      // covers stand this proud of their (planar) bed
+const TREE_RING_SIZE = 3.0;    // soil ring decal round a 1.24 m tree grate (stain kind 4)
 // chance of a gum / dirt spot by street furniture where people linger
 const LINGER = { bench: 0.9, bin: 0.8, shelter: 0.9, ticketMachine: 0.8, stopSign: 0.6, kiosk: 0.8, infoBoard: 0.5, advertColumn: 0.4 };
 const u01 = (a, b) => hash2(a | 0, b | 0) / 4294967296;
@@ -126,22 +129,34 @@ export function planDetails(ctx, ci) {
       d = side * rng.range(GUTTER_OUT + 0.3, layout.halfWidth(s, side) - 0.4);
     }
     const size = kind === 3 ? rng.range(1.4, 2.6) : kind === 2 ? rng.range(0.8, 1.5) : rng.range(0.6, 1.8);
-    stains.push({ s, d, kind, size, yaw: kind === 3 ? Math.PI / 2 + rng.normal(0, 0.05) : rng.range(0, Math.PI * 2), aspect: kind === 3 ? 0.45 : rng.range(0.7, 1.2) });
+    stains.push({ s, d, kind, size, yaw: kind === 3 ? Math.PI / 2 + rng.normal(0, 0.05) : rng.range(0, Math.PI * 2), aspect: kind === 3 ? 0.45 : rng.range(0.7, 1.2), op: 1, warm: kind === 1 ? 0 : 0.15 });
   }
 
   // where people linger the paving collects more: gum and dark spots around benches,
   // bins and stops, along café terraces, and trodden-in grime at shop doors and entrances
   const lg = RNG.from(layout.seed, 'street-linger', ci);
   const onWalk = (s, d) => s > s0 + 0.3 && s < s1 - 0.3 && Math.abs(d) > GUTTER_OUT + 0.25 && Math.abs(d) < layout.halfWidth(s, d < 0 ? -1 : 1) - 0.1;
-  const stain = (s, d, kind, size, aspect, yaw) => {
-    if (onWalk(s, d)) stains.push({ s, d, kind, size, yaw, aspect });
+  const stain = (s, d, kind, size, aspect, yaw, op = 1, warm = 0.15) => {
+    if (onWalk(s, d)) stains.push({ s, d, kind, size, yaw, aspect, op, warm });
   };
   for (const f of layout.inChunk('furniture', ci)) {
     if (!LINGER[f.type] || !lg.chance(LINGER[f.type])) continue;
     const a = lg.range(0, Math.PI * 2), r = lg.range(0.5, 1.3);
     stain(f.s + Math.cos(a) * r, f.d + Math.sin(a) * r, lg.chance(0.7) ? 2 : 0, lg.range(0.7, 1.3), lg.range(0.7, 1.2), lg.range(0, 6.28));
   }
+  for (const f of layout.inChunk('furniture', ci)) {
+    // benches: the paving in front of them is trodden darker
+    if (f.type !== 'bench') continue;
+    const side = f.d < 0 ? -1 : 1;
+    stain(f.s + lg.range(-0.2, 0.2), f.d - side * lg.range(0.3, 0.5), 5, lg.range(1.6, 2.2), lg.range(0.55, 0.75), lg.range(-0.15, 0.15), lg.range(0.8, 1.15), 0.3);
+  }
   for (const c of layout.inChunk('cafes', ci)) {
+    // mottled darkening under the tables and chairs (spills, crumbs, scraped chair legs),
+    // here and there a cluster of spots
+    for (const t of c.tables) {
+      stain(t.s + lg.range(-0.15, 0.15), t.d + lg.range(-0.15, 0.15), 5, lg.range(1.5, 2.1), lg.range(0.8, 1.15), lg.range(0, 6.28), lg.range(0.8, 1.2), 0.3);
+      if (lg.chance(0.35)) stain(t.s + lg.range(-0.5, 0.5), t.d + lg.range(-0.5, 0.5), 2, lg.range(0.5, 0.9), lg.range(0.7, 1.2), lg.range(0, 6.28), 0.8, 0.4);
+    }
     const n = lg.int(1, 3);
     for (let i = 0; i < n; i++) {
       // mostly along the terrace's street-side edge, where waiters and passers-by walk
@@ -165,10 +180,26 @@ export function planDetails(ctx, ci) {
     }
   }
 
+  // soil washed out of the tree pits and trodden round the grates (the grate covers the
+  // middle of the decal: TREE_RING_SIZE is scaled to its 1.24 m frame)
+  for (const t of layout.inChunk('trees', ci)) {
+    const tr = RNG.from('tree-ring', t.seed);
+    stains.push({ s: t.s, d: t.d, kind: 4, size: TREE_RING_SIZE, aspect: 1, yaw: 0, op: tr.range(1.15, 1.35), warm: tr.range(0.55, 0.85) });
+  }
+
   // fallen leaves around trees and in the gutters
   const leaves = [];
   for (const t of layout.inChunk('trees', ci)) {
     const lr = RNG.from('leaves', t.seed);
+    // litter caught against the grate frame: small, mostly dry leaves and fragments
+    const nl = lr.int(5, 12);
+    for (let i = 0; i < nl; i++) {
+      const edge = lr.int(0, 3), along = lr.range(-0.75, 0.75), out = 0.66 + Math.abs(lr.normal(0, 0.14));
+      const ds = edge < 2 ? (edge ? out : -out) : along, dd = edge < 2 ? along : (edge === 2 ? out : -out);
+      const s = t.s + ds, d = t.d + dd;
+      if (!inside(s, 0.1)) continue;
+      leaves.push({ s, d, yaw: lr.range(0, 6.28), size: lr.range(0.035, 0.07), cell: lr.int(0, 3), tint: lr.weighted([[1, 0.4], [2, 0.3], [4, 0.2], [0, 0.1]]), tilt: lr.range(-0.2, 0.2) });
+    }
     const n = lr.int(3, 10);
     for (let i = 0; i < n; i++) {
       const a = lr.range(0, Math.PI * 2), r = lr.range(0.75, 2.6);
@@ -289,12 +320,13 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
 
   // --- stains (alpha decals): a small grid draped over the paving (the ground undulates
   // by a few centimetres over a couple of metres on the sidewalks)
-  const st = bufs.get(mats.details.stain, false);
+  const st = bufs.get(mats.details.stain, true);
   for (const sn of plan.stains) {
     route.sample(sn.s, smp);
     const hx = sn.size / 2, hy = (sn.size * sn.aspect) / 2;
     const ca = Math.cos(sn.yaw), sa = Math.sin(sn.yaw);
-    const col = sn.kind % 2, row = Math.floor(sn.kind / 2);
+    const col = sn.kind % STAIN_COLS, row = Math.floor(sn.kind / STAIN_COLS);
+    const op = sn.op ?? 1, warm = sn.warm ?? 0;
     const nu = Math.min(3, Math.ceil(hx / 0.4)), nv = Math.min(3, Math.ceil(hy / 0.4));
     const first = st.n;
     for (let j = 0; j <= nv; j++) {
@@ -304,7 +336,7 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
         const d = sn.d + dd;
         const h = pave(sn.s + ds, d) + 0.0015;
         st.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + smp.grade * ds + h, smp.pos.z + smp.tanH.z * ds + smp.right.z * d,
-          0, 1, 0, col * 0.5 + (lu * 0.5 + 0.5) * 0.5, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5);
+          0, 1, 0, (col + lu * 0.5 + 0.5) / STAIN_COLS, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5, op, warm, 0);
       }
     }
     for (let j = 0; j < nv; j++) {

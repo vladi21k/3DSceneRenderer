@@ -37,12 +37,12 @@ export const CAR = {
 // shader makes the bright ones metallic silver paint and the dark ones plain dielectric
 // trim, see trams/materials.js). Glass parts: white = glazing, black = black frit.
 const COL = {
-  silver: [0.6, 0.615, 0.64],
-  roof: [0.54, 0.55, 0.565],
+  silver: [0.38, 0.395, 0.42],
+  roof: [0.34, 0.35, 0.37],
   skirt: [0.017, 0.018, 0.019],
   black: [0.006, 0.006, 0.0065],
   bellows: [0.013, 0.013, 0.014],
-  fairing: [0.56, 0.57, 0.585],
+  fairing: [0.36, 0.37, 0.39],
   under: [0.02, 0.019, 0.018],
   insulator: [0.1, 0.055, 0.035],
   wheel: [0.035, 0.032, 0.03],
@@ -58,7 +58,7 @@ const FLEET_NO = '07';
 const Y = {
   bottom: 0.18, skirt: 0.42, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
   doorGlass0: 0.8, doorGlass1: 2.1, doorTop: 2.3, doorSeam: 2.33,
-  ws0: 1.18, dispBand: 2.62, shoulder: 2.86,
+  ws0: 1.18, dispBand: 2.62, shoulder: 2.86, noseSkirt: 0.3,
   seatBack: 1.35,              // saloon glazing below this shows seat backs: it does not glow at night
 };
 const SHOULDER_R = 0.33;
@@ -206,6 +206,8 @@ function sideLayout(z0, z1, doors, lod, firstWin = null) {
   const cells = [];
   const PILLAR = 0.14, FR = lod === 0 ? Y.frame : 0;
   const wall = (a, b) => { if (b > a + 1e-4) cells.push({ z0: a, z1: b, kind: 'wall' }); };
+  // between panes the glazing band carries on as black frit (flush glazing)
+  const pillar = (a, b) => { if (b > a + 1e-4) cells.push({ z0: a, z1: b, kind: 'pillar' }); };
   const window = (a, b) => {
     if (FR) { cells.push({ z0: a, z1: a + FR, kind: 'wframe' }, { z0: a + FR, z1: b - FR, kind: 'win' }, { z0: b - FR, z1: b, kind: 'wframe' }); }
     else cells.push({ z0: a, z1: b, kind: 'win' });
@@ -217,7 +219,7 @@ function sideLayout(z0, z1, doors, lod, firstWin = null) {
     for (let k = 0; k < n; k++) {
       const s = a + k * (w + PILLAR);
       window(s, s + w);
-      if (k < n - 1) wall(s + w, s + w + PILLAR);
+      if (k < n - 1) pillar(s + w, s + w + PILLAR);
     }
   };
   const door = (c) => {
@@ -229,13 +231,13 @@ function sideLayout(z0, z1, doors, lod, firstWin = null) {
       [c + 0.01 + F, c + h - S - F, 'dglass'], [c + h - S - F, c + h - S, 'dleaf'], [c + h - S, c + h, 'dseam']]) cells.push({ z0: a, z1: b, kind: k });
   };
   let z = z0;
-  if (firstWin) { wall(z, firstWin[0]); window(firstWin[0], firstWin[1]); z = firstWin[1]; wall(z, z + PILLAR); z += PILLAR; }
+  if (firstWin) { wall(z, firstWin[0]); window(firstWin[0], firstWin[1]); z = firstWin[1]; pillar(z, z + PILLAR); z += PILLAR; }
   for (const c of doors) {
     if (c - CAR.doorW / 2 < z0 || c + CAR.doorW / 2 > z1) continue;
     windows(z, c - CAR.doorW / 2 - 0.05);
-    wall(c - CAR.doorW / 2 - 0.05, c - CAR.doorW / 2);
+    pillar(c - CAR.doorW / 2 - 0.05, c - CAR.doorW / 2);
     door(c);
-    wall(c + CAR.doorW / 2, c + CAR.doorW / 2 + 0.05);
+    pillar(c + CAR.doorW / 2, c + CAR.doorW / 2 + 0.05);
     z = c + CAR.doorW / 2 + 0.05;
   }
   windows(z, z1 - 0.15);
@@ -243,25 +245,32 @@ function sideLayout(z0, z1, doors, lod, firstWin = null) {
   return cells;
 }
 
-/** What a side-wall cell shows between two profile rows: [part, colour] or null. */
+/** What a side-wall cell shows between two profile rows: [part, colour] or null. The
+ *  glazing band (belt to window head) is continuous: panes, black frit over the pillars
+ *  and frames (glass parts, vertex colour black), door leaves glazed in black surrounds. */
 function cellMaterial(kind, y0, y1) {
   const ym = (y0 + y1) / 2;
   const paint = ym > Y.shoulder + 0.02 ? COL.roof : COL.silver;
   const body = (c) => ['body', c];
+  const pane = () => [ym < Y.seatBack ? 'ws' : 'glass', COL.white];
+  const frit = () => [ym < Y.seatBack ? 'ws' : 'glass', COL.black];
   if (kind === 'fairing') return body(COL.fairing);
   if (kind === 'dseam' || kind === 'dleaf' || kind === 'dglass') {
     if (ym < Y.floor) return body(COL.skirt);
     if (ym > Y.doorSeam) return body(paint);
-    if (ym > Y.doorTop || kind === 'dseam') return body(COL.black);
-    if (kind === 'dglass' && ym > Y.doorGlass0 && ym < Y.doorGlass1) return [ym < Y.belt ? 'ws' : 'glass', COL.white];
+    if (kind === 'dseam' || ym > Y.doorTop) return body(COL.black);
+    if (ym > Y.doorGlass0) {
+      if (kind === 'dglass' && ym < Y.doorGlass1) return [ym < Y.belt ? 'ws' : 'glass', COL.white];
+      return frit();
+    }
     return body(COL.silver);
   }
   if (ym < Y.skirt) return body(COL.skirt);
   if (ym > Y.belt && ym < Y.winTop) {
-    if (kind === 'wframe') return body(COL.black);
+    if (kind === 'wframe' || kind === 'pillar') return frit();
     if (kind === 'win') {
-      if (ym < Y.belt + Y.frame || ym > Y.winTop - Y.frame) return body(COL.black);
-      return [ym < Y.seatBack ? 'ws' : 'glass', COL.white];
+      if (ym < Y.belt + Y.frame || ym > Y.winTop - Y.frame) return frit();
+      return pane();
     }
   }
   return body(paint);
@@ -450,14 +459,17 @@ function capFront(P, prof, lod) {
     for (let j = 0; j < nc - 1; j++) {
       const h = Math.max(Math.abs(j - c0), Math.abs(j + 1 - c0));    // outer column of the cell (from the centre)
       let part = 'body', col = COL.silver;
-      if (ym < Y.skirt) col = COL.skirt;
+      if (ym < Y.noseSkirt) col = COL.skirt;              // the nose is silver nearly to the rails
       else if (ym > MASK.bottom && ym < wsTop && h <= hM) {
         if (ym > Y.dispBand && h <= hD) continue;                     // display: lamp mesh
-        part = 'ws'; col = COL.white;
+        part = 'front'; col = COL.white;
       }
-      const B = P[part];
+      const B = P[part], front = part === 'front';
       const corner = [i * nc + j, i * nc + j + 1, (i + 1) * nc + j + 1, (i + 1) * nc + j];
-      const v = corner.map((q) => B.vert(pos[q * 3], pos[q * 3 + 1], pos[q * 3 + 2], nrm[q * 3], nrm[q * 3 + 1], nrm[q * 3 + 2], grimed(col, pos[q * 3 + 1]), pos[q * 3], pos[q * 3 + 1]));
+      // front glass: uv = (u share of the half width, height): the windscreen outline, its
+      // trim and the dark mask are drawn per pixel (trams/materials.js)
+      const v = corner.map((q) => B.vert(pos[q * 3], pos[q * 3 + 1], pos[q * 3 + 2], nrm[q * 3], nrm[q * 3 + 1], nrm[q * 3 + 2], grimed(col, pos[q * 3 + 1]),
+        front ? uu[q] : pos[q * 3], pos[q * 3 + 1]));
       B.quad(v[0], v[1], v[2], v[3]);
     }
   }
@@ -589,7 +601,7 @@ function pantograph(P, z, lod) {
   const M = P.metal, B = P.body, y0 = CAR.roof;
   const sides = lod === 0 ? 8 : 5;
   const thick = lod === 0 ? 1 : lod === 1 ? 1.4 : 2.2;        // members stay ≥ ~1 px far away
-  const col = COL.white;
+  const col = COL.panto;
   // insulators and base frame
   for (const sx of [1, -1]) {
     for (const dz of [-0.55, 0.55]) {

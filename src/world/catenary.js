@@ -91,11 +91,16 @@ const catenary = {
       const rng = RNG.from(layout.seed, 'poleFix', Math.round(route.wrap(p.s) * 10), p.side);
       const type = rng.weighted([['double', 0.6], ['track', 0.32], ['walk', 0.08]]);
       const v = 1 + rng.range(-0.08, 0.08), h = rng.range(-1, 1);
+      // banners: only about a third of the poles the layout offers carry one (a few runs of
+      // an event's banners, not a festival street), each faded by its own months of sun
+      const br = RNG.from(layout.seed, 'poleBanner', Math.round(route.wrap(p.s) * 10), p.side);
       this.fixtures.set(p, {
         type,
         tint: new THREE.Color(v * (1 - 0.015 * h), v, v * (1 + 0.03 * h)),
         design: Math.floor(rng.next() * BANNER_DESIGNS),
         phase: rng.next(),
+        banner: !!p.banner && br.chance(0.34),
+        fade: br.range(0.1, 0.45),
         // raked away from the span load, plus a small random lean
         rake: rng.range(0.3, 0.8) * DEG, leanX: rng.range(-0.15, 0.15) * DEG, leanZ: rng.range(-0.15, 0.15) * DEG,
         glass: [rng.range(0.95, 1.05), rng.range(-1, 1), rng.range(0.95, 1.05), rng.range(-1, 1)],
@@ -213,10 +218,10 @@ const catenary = {
         B.put(rec, P.brackets, STD, am, f.tint);
         B.put(rec, P.lanterns, STD, am, _c.setRGB(g[2 * k] * (1 + 0.03 * g[2 * k + 1]), g[2 * k], g[2 * k] * (1 - 0.04 * g[2 * k + 1])));
       });
-      if (p.banner) {
+      if (f.banner) {
         B.put(rec, P.brackets, 4, f.matrix, f.tint);
-        // per-instance wind phase and print cell (read by the banner shader)
-        B.put(rec, P.banners, 0, f.matrix, _c.setRGB(f.phase, f.design, 0));
+        // per-instance wind phase, print cell and fading (read by the banner shader)
+        B.put(rec, P.banners, 0, f.matrix, _c.setRGB(f.phase, f.design, f.fade));
       }
     }
     if (!far && poles.length) {

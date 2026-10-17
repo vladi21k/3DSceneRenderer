@@ -46,7 +46,7 @@ void surface(vec2 m, inout Surf s) {
 // as in the photographs: no cobble outline that would crawl at ride speed). Lippage, worn
 // tops. Mid-grey granite with a cool cast (the street is a little darker than the facades).
 export const paving = {
-  name: 'paving', flat: [0.205, 0.211, 0.229, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
+  name: 'paving', flat: [0.16, 0.167, 0.186, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
   joint: 0.0018,
   pass: { normal: 1.0, ao: 0.45, aoRadius: 0.005, cavity: 0.03 },
@@ -80,15 +80,15 @@ void surface(vec2 m, inout Surf s) {
   float hJ = head ? -0.0025 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0006 : -0.0012 + fbm(m, 150.0, 2, 0.5, 97u) * 0.0004;
   float st = min(sH, sB);
   s.height = mix(hJ, max(hFace, hJ), st);
-  vec3 g = granite(m, vec3(0.205, 0.212, 0.232));
+  vec3 g = granite(m, vec3(0.16, 0.168, 0.188));
   g *= mix(0.95, 1.0, tH) * mix(0.97, 1.0, tB);  // a little grime in the chamfers / arrises
   g *= 1.0 - 0.1 * chip;
   // joint sand: grey-beige, darker and dirtier down the head joints, paler where it
   // fills the bed joints to the top
-  vec3 sand = vec3(0.255, 0.24, 0.215);
+  vec3 sand = vec3(0.205, 0.192, 0.172);
   vec3 joint = head ? sand * 0.62 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : sand * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
   s.albedo = mix(joint, g, st);
-  s.rough = mix(head ? 0.95 : 0.92, mix(0.74, 0.56, wear), st);
+  s.rough = mix(head ? 0.95 : 0.92, mix(0.74, 0.64, wear), st);
 }
 `,
 };
@@ -98,7 +98,7 @@ void surface(vec2 m, inout Surf s) {
 // a subtle light stripe, not a painted line), visibly speckled and mottled, the slab
 // joints holding a line of grime.
 export const band = {
-  name: 'band', flat: [0.272, 0.27, 0.262, 0.62], size: 512, tile: [2.4, 2.4], ss: 2,
+  name: 'band', flat: [0.214, 0.213, 0.207, 0.62], size: 512, tile: [2.4, 2.4], ss: 2,
   layout: { rowH: 2.4, rows: 1, seg: [3, 4], jitter: 0.3, seed: 8, shift: false, rowJoints: false },
   joint: 0.0026,
   pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.05 },
@@ -113,7 +113,7 @@ void surface(vec2 m, inout Surf s) {
   float stone = smoothstep(JW - 0.0005, JW + 0.0005, e);
   s.height = mix(-0.005, max(hFace, -0.005), stone);
   // pale grey limestone / light granite: soft clouding and a visible fine speckle
-  vec3 base = vec3(0.276, 0.274, 0.266) * (1.0 + 0.08 * fbm(m, 3.0, 4, 0.55, 103u) + 0.04 * fbm(m, 18.0, 2, 0.5, 104u));
+  vec3 base = vec3(0.218, 0.217, 0.211) * (1.0 + 0.08 * fbm(m, 3.0, 4, 0.55, 103u) + 0.04 * fbm(m, 18.0, 2, 0.5, 104u));
   base *= 1.0 + 0.05 * (cellRand(c, 5u) - 0.5) * 2.0;                       // slab tone
   vec4 g = voro(m, vec2(220.0), 105u, 1.0);
   base *= 1.0 - 0.3 * step(0.84, g.z) * smoothstep(0.45, 0.2, g.x);
@@ -129,7 +129,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Platform: 0.40 m square concrete-stone slabs, stack bond, exposed fine aggregate.
 export const platform = {
-  name: 'platform', flat: [0.35, 0.34, 0.32, 0.74], size: 512, tile: [2.4, 2.4], ss: 2,
+  name: 'platform', flat: [0.27, 0.264, 0.252, 0.74], size: 512, tile: [2.4, 2.4], ss: 2,
   layout: { rowH: 0.4, rows: 6, seg: [6, 6], jitter: 0.0, seed: 9, shift: false },
   joint: 0.003,
   pass: { normal: 1.0, ao: 0.5, aoRadius: 0.006, cavity: 0.05 },
@@ -144,7 +144,7 @@ void surface(vec2 m, inout Surf s) {
   float hFace = lip - 0.004 * (1.0 - t) + (0.5 - ag.x) * 0.0004;
   float stone = smoothstep(JW - 0.0005, JW + 0.0005, e);
   s.height = mix(-0.006, max(hFace, -0.006), stone);
-  vec3 base = vec3(0.37, 0.36, 0.34) * (1.0 + 0.05 * fbm(m, 4.0, 3, 0.5, 113u));
+  vec3 base = vec3(0.285, 0.278, 0.265) * (1.0 + 0.05 * fbm(m, 4.0, 3, 0.5, 113u));   // a little lighter than the setts
   base *= mix(0.85, 1.12, ag.z);                       // aggregate stones
   base *= mix(0.8, 1.0, smoothstep(0.0, 0.01, e - JW));
   s.albedo = mix(vec3(0.11, 0.105, 0.1), base, stone);

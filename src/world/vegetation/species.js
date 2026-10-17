@@ -51,25 +51,25 @@ export const FOLIAGE = {
  *   droop        how much slender shoots and leaf clumps hang
  *   stake        young tree still tied to stakes
  */
-const young = { mature: false, step: 0.19, infl: 0.95, kill: 0.3, spurs: 0.9, cardsPerTip: 2.6 };
+const young = { mature: false, step: 0.19, infl: 0.95, kill: 0.3, spurs: 0.9, cardsPerTip: 2.7 };
 export const TEMPLATES = [
-  { ...young, id: 'pagodaA', species: 'pagoda', height: 6.0, crownBase: 2.35, crownR: 1.75, shape: 'round', trunkR: 0.06, leader: false, scaffolds: 4, attractors: 1000, droop: 0.12, stake: true },
-  { ...young, id: 'pagodaB', species: 'pagoda', height: 6.7, crownBase: 2.55, crownR: 1.95, shape: 'vase', trunkR: 0.07, leader: false, scaffolds: 3, attractors: 1150, droop: 0.15, stake: false },
-  { ...young, id: 'pagodaC', species: 'pagoda', height: 5.3, crownBase: 2.2, crownR: 1.45, shape: 'round', trunkR: 0.05, leader: false, scaffolds: 3, attractors: 750, droop: 0.1, stake: true },
-  { ...young, id: 'pagodaD', species: 'pagoda', height: 6.3, crownBase: 2.45, crownR: 1.7, shape: 'oval', trunkR: 0.065, leader: false, scaffolds: 5, attractors: 1050, droop: 0.13, stake: false },
-  { ...young, id: 'pagodaE', species: 'pagoda', height: 5.7, crownBase: 2.3, crownR: 1.8, shape: 'broad', trunkR: 0.06, leader: false, scaffolds: 3, attractors: 950, droop: 0.16, stake: true },
-  { ...young, id: 'ashA', species: 'ash', height: 6.4, crownBase: 2.4, crownR: 1.55, shape: 'oval', trunkR: 0.06, leader: true, scaffolds: 0, attractors: 1000, droop: 0.05, stake: true },
-  { ...young, id: 'ashB', species: 'ash', height: 7.1, crownBase: 2.6, crownR: 1.8, shape: 'oval', trunkR: 0.07, leader: true, scaffolds: 0, attractors: 1200, droop: 0.07, stake: false },
-  { ...young, id: 'ashC', species: 'ash', height: 5.8, crownBase: 2.3, crownR: 1.5, shape: 'round', trunkR: 0.055, leader: true, scaffolds: 0, attractors: 850, droop: 0.06, stake: true },
-  { ...young, id: 'ashD', species: 'ash', height: 6.8, crownBase: 2.5, crownR: 1.7, shape: 'vase', trunkR: 0.065, leader: false, scaffolds: 3, attractors: 1100, droop: 0.08, stake: false },
-  { ...young, id: 'denseA', species: 'dense', height: 6.4, crownBase: 2.4, crownR: 1.9, shape: 'round', trunkR: 0.07, leader: false, scaffolds: 4, attractors: 1150, droop: 0.06, stake: false, cardsPerTip: 2.2 },
-  { ...young, id: 'denseB', species: 'dense', height: 7.4, crownBase: 2.7, crownR: 2.2, shape: 'broad', trunkR: 0.085, leader: false, scaffolds: 3, attractors: 1350, droop: 0.08, stake: false, cardsPerTip: 2.2 },
-  { id: 'pagodaM', species: 'pagoda', mature: true, height: 9.6, crownBase: 3.3, crownR: 2.9, shape: 'broad', trunkR: 0.15,
-    leader: false, scaffolds: 4, attractors: 2600, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.15, stake: false },
-  { id: 'denseM', species: 'dense', mature: true, height: 10.4, crownBase: 3.5, crownR: 3.0, shape: 'round', trunkR: 0.17,
-    leader: false, scaffolds: 3, attractors: 3000, step: 0.24, infl: 1.15, kill: 0.34, spurs: 0.85, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.06, stake: false },
-  { id: 'ashM', species: 'ash', mature: true, height: 9.2, crownBase: 3.2, crownR: 2.5, shape: 'oval', trunkR: 0.14,
-    leader: true, scaffolds: 0, attractors: 2400, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.08, stake: false },
+  { ...young, id: 'pagodaA', species: 'pagoda', height: 5.4, crownBase: 2.25, crownR: 1.35, shape: 'round', trunkR: 0.06, leader: false, scaffolds: 4, attractors: 590, droop: 0.12, stake: true },
+  { ...young, id: 'pagodaB', species: 'pagoda', height: 6.0, crownBase: 2.4, crownR: 1.5, shape: 'vase', trunkR: 0.07, leader: false, scaffolds: 3, attractors: 680, droop: 0.15, stake: false },
+  { ...young, id: 'pagodaC', species: 'pagoda', height: 4.8, crownBase: 2.1, crownR: 1.15, shape: 'round', trunkR: 0.05, leader: false, scaffolds: 3, attractors: 450, droop: 0.1, stake: true },
+  { ...young, id: 'pagodaD', species: 'pagoda', height: 5.7, crownBase: 2.35, crownR: 1.32, shape: 'oval', trunkR: 0.065, leader: false, scaffolds: 5, attractors: 610, droop: 0.13, stake: false },
+  { ...young, id: 'pagodaE', species: 'pagoda', height: 5.1, crownBase: 2.2, crownR: 1.4, shape: 'broad', trunkR: 0.06, leader: false, scaffolds: 3, attractors: 560, droop: 0.16, stake: true },
+  { ...young, id: 'ashA', species: 'ash', height: 5.8, crownBase: 2.3, crownR: 1.2, shape: 'oval', trunkR: 0.06, leader: true, scaffolds: 0, attractors: 590, droop: 0.05, stake: true },
+  { ...young, id: 'ashB', species: 'ash', height: 6.4, crownBase: 2.45, crownR: 1.4, shape: 'oval', trunkR: 0.07, leader: true, scaffolds: 0, attractors: 700, droop: 0.07, stake: false },
+  { ...young, id: 'ashC', species: 'ash', height: 5.2, crownBase: 2.2, crownR: 1.15, shape: 'round', trunkR: 0.055, leader: true, scaffolds: 0, attractors: 500, droop: 0.06, stake: true },
+  { ...young, id: 'ashD', species: 'ash', height: 6.1, crownBase: 2.4, crownR: 1.32, shape: 'vase', trunkR: 0.065, leader: false, scaffolds: 3, attractors: 650, droop: 0.08, stake: false },
+  { ...young, id: 'denseA', species: 'dense', height: 5.8, crownBase: 2.3, crownR: 1.48, shape: 'round', trunkR: 0.07, leader: false, scaffolds: 4, attractors: 680, droop: 0.06, stake: false, cardsPerTip: 2.1 },
+  { ...young, id: 'denseB', species: 'dense', height: 6.6, crownBase: 2.55, crownR: 1.7, shape: 'broad', trunkR: 0.085, leader: false, scaffolds: 3, attractors: 790, droop: 0.08, stake: false, cardsPerTip: 2.1 },
+  { id: 'pagodaM', species: 'pagoda', mature: true, height: 9.1, crownBase: 3.3, crownR: 2.45, shape: 'broad', trunkR: 0.15,
+    leader: false, scaffolds: 4, attractors: 1750, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 2.1, cardScale: 1.15, droop: 0.15, stake: false },
+  { id: 'denseM', species: 'dense', mature: true, height: 9.8, crownBase: 3.5, crownR: 2.55, shape: 'round', trunkR: 0.17,
+    leader: false, scaffolds: 3, attractors: 2000, step: 0.24, infl: 1.15, kill: 0.34, spurs: 0.85, cardsPerTip: 2.1, cardScale: 1.15, droop: 0.06, stake: false },
+  { id: 'ashM', species: 'ash', mature: true, height: 8.8, crownBase: 3.2, crownR: 2.15, shape: 'oval', trunkR: 0.14,
+    leader: true, scaffolds: 0, attractors: 1650, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 2.1, cardScale: 1.15, droop: 0.08, stake: false },
 ];
 
 /** Shrub templates for planters (no trunk, a mound of shoots), footprint in metres. */

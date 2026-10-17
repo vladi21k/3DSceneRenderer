@@ -14,6 +14,7 @@ export const CONTACT_WIRE_HEIGHT = 6.0;   // trolley wire above rail top
 
 export const CHUNK_LEN = 40;              // streaming granularity along the route
 export const VIEW_AHEAD = 680;            // metres of route kept built ahead of the camera
+export const VIEW_FAR = 1400;             // far field (lod 2: core/farfield.js) runs on to here
 export const VIEW_BEHIND = 60;            // metres kept behind
 export const LOD0_DIST = 200;             // chunks closer than this are built at full detail
 

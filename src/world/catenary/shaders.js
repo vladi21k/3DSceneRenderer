@@ -279,11 +279,12 @@ export function makeGlassMaterial(M) {
 /** Fabric with wind billow for pole banners. Banner geometry carries aBanner =
  *  (u across 0..1 from the pole, v up 0..1, phase) and the face normal in `normal`.
  *  Instanced / batched banners carry per-instance data in the instance colour instead of
- *  a tint: r = wind phase, g = print cell (design index).
+ *  a tint: r = wind phase, g = print cell (design index), b = sun fading (0 fresh, 1 the
+ *  dyes washed out towards a pale warm grey).
  *  The billow is an analytic field, so normals follow it and the cloth shades like fabric;
  *  the sun shining through the cloth from behind adds a diffuse back-light. */
 export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
-  return chain(mat, 'catBanner3', (shader) => {
+  return chain(mat, 'catBanner4', (shader) => {
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uWind = U.uWind;
     shader.uniforms.uWindStrength = U.uWindStrength;
@@ -296,6 +297,7 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
         uniform vec2 uWind;
         uniform float uWindStrength;
         varying vec3 vBackN;
+        varying float vBannerFade;
         // displacement along the face normal: held by rods at top and bottom, the free
         // edge away from the pole billows most; push = wind component through the cloth
         float bannerDisp(float bu, float bv, float ph, float push) {
@@ -319,6 +321,7 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
         }`)
       .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
         float bPh = aBanner.z + bannerData().r;
+        vBannerFade = bannerData().b;
         vec3 bN = normalize(objectNormal);
         mat3 bM = mat3(modelMatrix);
         #ifdef USE_BATCHING
@@ -355,11 +358,17 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
           if (!gl_FrontFacing) bUv.x = (2.0 * bCell + 1.0) / ${cells.toFixed(1)} - bUv.x;
           diffuseColor *= texture2D(map, bUv);
         }
-        #endif`)
+        #endif
+        {
+          // sun-faded dyes: towards a pale, slightly warm grey
+          float bL = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bL) * vec3(1.03, 1.0, 0.95) + 0.035, vBannerFade);
+        }`)
       .replace('#include <common>', `#include <common>
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;
-        varying vec3 vBackN;`)
+        varying vec3 vBackN;
+        varying float vBannerFade;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         {
           // thin printed fabric: sunlight from behind the visible face glows through

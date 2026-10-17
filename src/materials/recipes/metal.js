@@ -2,10 +2,10 @@
 
 // Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). A narrow
 // running band (21-30 mm, drifting slowly along the rail) of bright but rough steel:
-// wheel contact leaves fine lengthwise streaks (roughness alternating 0.24-0.42 across
+// wheel contact leaves fine lengthwise streaks (roughness alternating 0.3-0.55 across
 // the band, so the reflection smears along the rail like a brushed, anisotropic finish)
 // and duller burn patches; never a mirror. The gauge corner is flange-polished
-// (roughness ~0.3). Everything off the wheel path is dull: a dark brown oxide on the
+// (roughness ~0.35). Everything off the wheel path is dull: a dark brown oxide on the
 // field-side bevel and the shoulders, and a dull dusty oxide on the guard lip (albedo
 // ~0.12-0.16, roughness 0.6-0.75, only partly metallic), so every rail reads as one bright
 // line, not two.
@@ -37,11 +37,11 @@ void surface(vec2 m, inout Surf s) {
   float streakC = fbm2(m, vec2(1.5, 90.0), 3, 0.5, 132u);
   float burn = smoothstep(0.2, 0.7, fbm2(m, vec2(3.0, 20.0), 3, 0.5, 136u));
   // running band: bright satin steel, rough and streaky
-  vec3 bandC = vec3(0.54, 0.535, 0.525) * (1.0 + 0.06 * streak + 0.03 * streakF) * (1.0 - 0.12 * burn);
-  float bandR = 0.27 + 0.1 * smoothstep(-0.3, 0.6, streak) + 0.05 * streakF + 0.1 * burn;
+  vec3 bandC = vec3(0.5, 0.495, 0.485) * (1.0 + 0.06 * streak + 0.03 * streakF) * (1.0 - 0.12 * burn);
+  float bandR = 0.32 + 0.12 * smoothstep(-0.3, 0.6, streak) + 0.05 * streakF + 0.1 * burn;
   // flange-polished gauge corner
   vec3 gaugeC = vec3(0.46, 0.45, 0.44) * (1.0 + 0.05 * streakC);
-  float gaugeR = 0.3 + 0.06 * abs(streakC) + 0.06 * burn;
+  float gaugeR = 0.34 + 0.06 * abs(streakC) + 0.06 * burn;
   // dull contact edge, oxide shoulders and bevel, dusty lip
   vec3 oxC = vec3(0.15, 0.115, 0.085) * (1.0 + 0.2 * streakC) * (1.0 - 0.15 * burn);
   vec3 dustC = vec3(0.16, 0.145, 0.125) * (1.0 + 0.12 * streakC) * (1.0 - 0.1 * burn);
@@ -236,7 +236,7 @@ void surface(vec2 m, inout Surf s) {
   float lower = smoothstep(0.6, 0.0, fract(m.y / 1.2));       // grime collects low on panes
   s.height = wave * 0.00035;
   s.albedo = vec3(1.0) * (1.0 - 0.08 * dust * lower);
-  s.rough = 0.035 + 0.12 * dust * (0.4 + 0.6 * lower);
+  s.rough = 0.03 + 0.07 * dust * (0.4 + 0.6 * lower);     // clean float glass ~0.03, dusty low corners ~0.1
 }
 `,
 };

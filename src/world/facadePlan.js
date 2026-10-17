@@ -243,7 +243,7 @@ export function ornament(plan, rng) {
     ears: era !== 'modern' && rng.chance(0.35),        // crossettes: surround corners stepping out at the head
     apron: rng.chance(0.3),                            // raised panel under each sill
     doorSurround: rng.chance(0.7), doorHood: era !== 'modern' && rng.chance(0.55),
-    plinthH: rng.range(0.35, 0.8), plinthP: rng.range(0.04, 0.08),
+    plinthH: rng.range(0.32, 0.6), plinthP: rng.range(0.03, 0.055),
     rustH: rng.range(0.45, 0.6), rustC: rng.range(0.025, 0.04),
     quoin: { long: rng.range(0.75, 0.95), short: rng.range(0.42, 0.55), proj: rng.range(0.02, 0.035) },
     pilW: rng.range(0.42, 0.56), pilP: rng.range(0.06, 0.1),

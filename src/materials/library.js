@@ -32,6 +32,8 @@ const STONE_MACRO = { f1: 1 / 4, f2: 1 / 17, albedo: 0.08, rough: 0.05, an1: [1,
 const STONE_DETAIL = { freq: 2.0, normal: 0.7, albedo: 0.3, rough: 0.05 };
 // chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed
 const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0, albedo: 1.0, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
+// rock-faced bosses: pitched facets at close range, per block, faded on the drafted margin
+const STONE_PITCH = { tex: 'pitch', tool: 'pitch', freq: 2.0, normal: 1.0, albedo: 0.6, rough: 0.05, share: 1.0, margin: 0.035, farVar: 0.02 };
 // soiled ledges, sheltered soffits, faint vertical drip streaks
 const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 };
 
@@ -39,7 +41,7 @@ const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 }
 // a little banding per course, 1-4 m mottling and broad wear patches (macro) and ~6 % odd
 // setts: darker replacements, warmer beige and cooler blue-grey ones.
 const PAVING_CELL = {
-  value: 0.14, hue: 0.85, rough: 0.14, row: 0.25, a: [1.06, 1.0, 0.93], b: [0.95, 0.99, 1.06],
+  value: 0.14, hue: 0.65, rough: 0.08, row: 0.25, a: [1.06, 1.0, 0.93], b: [0.95, 0.99, 1.06],
   out: { p: 0.06, fam: [[0.78, 0.78, 0.8], [1.08, 1.0, 0.88], [0.9, 0.95, 1.05]] },
 };
 const PAVING_MACRO = { f1: 1 / 2.5, f2: 1 / 20, albedo: 0.16, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
@@ -47,7 +49,7 @@ const PAVING_MACRO = { f1: 1 / 2.5, f2: 1 / 20, albedo: 0.16, rough: 0.12, an1: 
 // grey granite, not terrazzo
 const PAVING_DETAIL = { tex: 'granite', freq: 4, normal: 0.5, albedo: 0.35, rough: -0.6, farVar: 0.004 };
 // cool grey granite (the baked map is already blue-grey; the street is a touch cooler)
-const PAVING_TINT = [0.98, 1.0, 1.03];
+const PAVING_TINT = [0.98, 1.0, 1.02];
 
 export const LIBRARY = {
   // ---------------------------------------------------------------- stone
@@ -84,9 +86,9 @@ export const LIBRARY = {
   'stone.rough': {
     props: { roughness: 1 },
     bake: 'rustic',
-    surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: { ...STONE_DETAIL, normal: 0.5 }, weather: STONE_WEATHER, mirror: 0.75 },
+    surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: STONE_PITCH, weather: STONE_WEATHER, mirror: 0.75 },
     vc: 'tint',
-    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication, faceted boss, deep joints; each block\'s boss differs, and its relief is mirrored at random per block at runtime)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
+    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication, faceted boss inside a 25-40 mm drafted margin, deep joints; each block\'s boss differs, and its relief is mirrored at random per block at runtime; 2-6 cm pitched facets added per block within ~6 m)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
   },
 
   // ---------------------------------------------------------------- paving
@@ -102,6 +104,7 @@ export const LIBRARY = {
     },
     vc: 'tint',
     meta: {
+      albedo: [0.157, 0.168, 0.192], // mean linear albedo (setts + joints, before vertex tint): cool mid-grey granite
       paver: [0.4, 0.2], rows: 'across',
       uv: 'u = metres along the street, v = metres across = route offset d (ribbon UVs). Courses run across the street: the continuous, nearly invisible sand-filled bed joints lie across the track and the short dark head joints read as dashes along it. v = d also places the grime along the rails (d = ±1.6 ± 0.7455).',
       laneAttr: 'get(\'paving.street\', {vertexColors: true, laneAttr: true}) takes the rail-lane grime position from a float vertex attribute aLaneD (route offset d, m) instead of v, so v can be set out freely (e.g. courses started from the rail mortar strips). One extra program.',
@@ -119,14 +122,14 @@ export const LIBRARY = {
       lanes: { track: 3.6, rail: 3.6, grime: 0.06, wear: -0.045, grimeBand: [0.1, 0.6], laneBand: [0.7, 2.0] },
     },
     vc: 'tint',
-    meta: { paver: [0.5, 0.25], rows: 'along u', uv: 'u along the street, v across (m): metres from the gutter edge on the main sidewalks (places the kerb grime and the trodden lane)' },
+    meta: { albedo: [0.157, 0.168, 0.192], paver: [0.5, 0.25], rows: 'along u', uv: 'u along the street, v across (m): metres from the gutter edge on the main sidewalks (places the kerb grime and the trodden lane)' },
   },
   'paving.band': {
     props: { roughness: 1 },
     bake: 'band',
     surf: { cell: { value: 0.085, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.1 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.2 }, stain: { amount: 0.16, freq: 0.5, threshold: 0.68 } },
     vc: 'tint',
-    meta: { slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
+    meta: { albedo: [0.214, 0.213, 0.207], slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
   },
   'paving.platform': {
     props: { roughness: 1 },
@@ -151,7 +154,7 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Running band (21-30 mm, bright satin steel, roughness 0.27-0.5 in fine lengthwise streaks with burn patches, never a mirror; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075 (roughness ~0.3); dull grey contact edge, dark brown oxide on the field bevel and shoulders, and a dull dusty oxide guard lip at v 0.1-0.13 (albedo ~0.15, roughness ~0.7, metal 0.4). The base values are final: no roughness multiplier is needed. envMapIntensity 0.6.',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Running band (21-30 mm, bright satin steel, roughness 0.32-0.6 in fine lengthwise streaks with burn patches, never a mirror; metal 1) centred at v = 0.043 (swept profile: arc length from the field-side paving edge, head top centre) and at v = 0 (flat inlays: rail-local x); flange-polished gauge corner at v ~0.075 (roughness ~0.35); dull grey contact edge, dark brown oxide on the field bevel and shoulders, and a dull dusty oxide guard lip at v 0.1-0.13 (albedo ~0.15, roughness ~0.7, metal 0.4). The base values are final: no roughness multiplier is needed. envMapIntensity 0.6.',
       band: { centres: [0.043, 0], halfWidth: 0.0125, gaugeCorner: 0.075, lip: [0.1, 0.13] },
     },
   },
@@ -213,7 +216,7 @@ export const LIBRARY = {
     props: { color: [0.03, 0.034, 0.036], roughness: 1, envMapIntensity: 1 },
     bake: 'glass',
     surf: { scale: 2.5, normal: 0.35, ao: 0, microShadow: 0, variance: 0 },
-    meta: { note: 'opaque dark reflective plate glass' },
+    meta: { note: 'opaque dark reflective plate glass: dielectric F0 0.04, roughness ~0.03 (dust up to ~0.1 low on the pane), full environment reflection with no AO or micro-shadowing on the specular path; the diffuse colour stands for the dim interior behind it' },
   },
   'glass.clear': {
     props: { color: [0.6, 0.62, 0.62], roughness: 1, transparent: true, opacity: 0.06, premultipliedAlpha: true, depthWrite: false },
@@ -368,7 +371,14 @@ export const LIBRARY = {
     bake: 'bark',
     surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.04 } },
     vc: 'tint',
-    meta: { uv: 'u around the trunk, v up (m), tile 0.8 × 1.6 m', note: 'grey-brown bark with broad interlacing furrows (normal + AO relief, 2.5-9 mm deep), lengthwise splits and subtle pale lenticel dashes (2-5 mm) on the ridges' },
+    meta: { uv: 'u around the trunk, v up (m), tile 0.8 × 1.6 m', note: 'grey-brown bark with long, shallow, interlacing vertical fissures (normal + AO relief, 6-18 mm wide, 1.5-5 mm deep; lens-shaped plates 4-10 cm across, 0.3-1 m long), fine cracks on the ridges, pale lenticel dashes and grey-green lichen patches. For trunks under ~25 cm and branches, bark.smooth.' },
+  },
+  'bark.smooth': {
+    props: { roughness: 1 },
+    bake: 'barksmooth',
+    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.04 } },
+    vc: 'tint',
+    meta: { uv: 'as bark', note: 'smooth grey young bark: faint vertical striation, a few long shallow splits, horizontal lenticel dashes (3-8 mm), lichen patches (young street trees, branches)' },
   },
   'leaf': {
     props: { color: [0.06, 0.12, 0.028], roughness: 0.55, side: 'double' },

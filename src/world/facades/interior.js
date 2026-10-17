@@ -64,6 +64,12 @@ vec3 fRoomLampC( float lit ) {
   vec3 warm = vec3( 1.0, 0.56, 0.27 ), mid = vec3( 1.0, 0.68, 0.42 ), cool = vec3( 1.0, 0.80, 0.62 );
   return c < 0.55 ? mix( warm, mid, c / 0.55 ) : c < 0.9 ? mix( mid, cool, ( c - 0.55 ) / 0.35 ) : vec3( 0.95, 0.9, 0.84 );
 }
+// lamp colour at K kelvin under the street's daylight white balance (red = 1)
+vec3 fKelvin( float K ) {
+  vec3 a = vec3( 1.0, 0.58, 0.28 ), b = vec3( 1.0, 0.66, 0.37 ), c = vec3( 1.0, 0.74, 0.50 ), d = vec3( 1.0, 0.81, 0.62 ), e = vec3( 1.0, 0.90, 0.80 );
+  K = clamp( K, 2700.0, 5000.0 );
+  return K < 3000.0 ? mix( a, b, ( K - 2700.0 ) / 300.0 ) : K < 3500.0 ? mix( b, c, ( K - 3000.0 ) / 500.0 ) : K < 4000.0 ? mix( c, d, ( K - 3500.0 ) / 500.0 ) : mix( d, e, ( K - 4000.0 ) / 1000.0 );
+}
 float fRoomLevel( float lit ) { return 0.6 + 0.8 * fract( lit * 7.13 + 0.5 ); }
 float fRoomTV( float lit ) { return step( fract( lit * 31.17 + 0.11 ), 0.07 ); }
 // television light: cool, its level jumping at every cut and drifting within a shot
@@ -107,10 +113,12 @@ const FRAG_PARS = /* glsl */`
 uniform float uTime;
 ${ROOM_LIGHT_GLSL}
 // shop lighting by day, relative to the daylight irradiance on the glass: interiors read
-// at ~10–20% of the street's luminance, so the glass is dominated by its reflection
-#define SHOP_DAY 0.16
+// at ~5–15% of the shaded street's luminance (a few hundred lux against tens of
+// thousands outside), so the glass is dominated by its reflection wherever that shows
+// anything bright, and the goods lit by the window spots read through it
+#define SHOP_DAY 0.075
 // share of the glass's sky irradiance that the street canyon passes into the rooms
-#define CANYON 0.55
+#define CANYON 0.42
 uniform sampler2D uGoods;
 #define GOODS_PAD ${GOODS_PAD.toFixed(5)}
 uniform float uNight;
@@ -156,6 +164,16 @@ float fPulse( float x, float e, float w ) {
 }
 // filtered 0..1 edge: 1 for x > 0, softened over the footprint
 float fEdge( float x, float fp ) { return clamp( x / max( fp, 1e-4 ) + 0.5, 0.0, 1.0 ); }
+// float glass (n = 1.52) seen at cos(incidence) c, unpolarised light: reflectance and
+// transmittance of the pane, both faces with their inter-reflections (exact Fresnel per
+// polarisation: Schlick underestimates the 50–75° range from which shop windows are seen)
+vec2 fGlassRT( float c ) {
+  c = clamp( c, 1e-3, 1.0 );
+  float s2 = ( 1.0 - c * c ) / ( 1.52 * 1.52 ), ct = sqrt( max( 1.0 - s2, 0.0 ) );
+  float rs = ( c - 1.52 * ct ) / ( c + 1.52 * ct ), rp = ( ct - 1.52 * c ) / ( ct + 1.52 * c );
+  rs *= rs; rp *= rp;
+  return vec2( rs / ( 1.0 + rs ) + rp / ( 1.0 + rp ), 0.5 * ( ( 1.0 - rs ) / ( 1.0 + rs ) + ( 1.0 - rp ) / ( 1.0 + rp ) ) );
+}
 
 // ray / AABB, returns (tNear, tFar)
 vec2 fBox( vec3 ro, vec3 ird, vec3 bmin, vec3 bmax ) {
@@ -183,13 +201,22 @@ const vec3 DRAPES[6] = vec3[6]( vec3( 0.78, 0.74, 0.64 ), vec3( 0.82, 0.81, 0.77
 const vec3 GOODS[8] = vec3[8]( vec3( 0.62, 0.11, 0.09 ), vec3( 0.10, 0.22, 0.48 ), vec3( 0.76, 0.66, 0.20 ), vec3( 0.12, 0.40, 0.19 ),
   vec3( 0.80, 0.79, 0.76 ), vec3( 0.07, 0.07, 0.08 ), vec3( 0.72, 0.40, 0.14 ), vec3( 0.48, 0.32, 0.48 ) );
 
-struct Hit { float t; vec3 n; vec3 alb; float glow; float id; };   // id 0 room, 1 furniture, 2 shelving
+// id 0 room, 1 furniture, 2 shelving, 3 mannequin; m: furniture finish (FIN_*) and the
+// box it hit (b0, b1) for the bevels and grain
+struct Hit { float t; vec3 n; vec3 alb; float glow; float id; float m; vec3 b0; vec3 b1; };
+#define FIN_PAINT 0.0
+#define FIN_WOOD 1.0
+#define FIN_STONE 2.0
+#define FIN_METAL 3.0
+#define FIN_FABRIC 4.0
+// finish of the boxes traced next (set by fFittings before each group)
+float gFin = 0.0;
 
 // ---- furniture: trace (mode 0) or contact occlusion at p (mode 1)
 void fBoxT( inout Hit h, inout float ao, vec3 ro, vec3 ird, vec3 p, vec3 n, int mode, vec3 bmin, vec3 bmax, vec3 alb ) {
   if ( mode == 0 ) {
     vec2 r = fBox( ro, ird, bmin, bmax );
-    if ( r.x < r.y && r.x > 0.0 && r.x < h.t ) { h.t = r.x; h.n = fBoxN( ro, ird, bmin, bmax, r.x ); h.alb = alb; h.glow = 0.0; h.id = 1.0; }
+    if ( r.x < r.y && r.x > 0.0 && r.x < h.t ) { h.t = r.x; h.n = fBoxN( ro, ird, bmin, bmax, r.x ); h.alb = alb; h.glow = 0.0; h.id = 1.0; h.m = gFin; h.b0 = bmin; h.b1 = bmax; }
   } else {
     vec3 c = 0.5 * ( bmin + bmax ), e = 0.5 * ( bmax - bmin );
     if ( n.y > 0.5 ) {
@@ -214,12 +241,12 @@ void fCylT( inout Hit h, vec3 ro, vec3 rd, vec2 c, float r, float y0, float y1, 
   if ( disc < 0.0 ) return;
   float t = ( -b - sqrt( disc ) ) / a;
   float y = ro.y + rd.y * t;
-  if ( t > 0.0 && t < h.t && y > y0 && y < y1 ) { h.t = t; vec2 n = normalize( o + d * t ); h.n = vec3( n.x, 0.0, n.y ); h.alb = alb; h.glow = 0.0; h.id = 1.0; }
+  if ( t > 0.0 && t < h.t && y > y0 && y < y1 ) { h.t = t; vec2 n = normalize( o + d * t ); h.n = vec3( n.x, 0.0, n.y ); h.alb = alb; h.glow = 0.0; h.id = 1.0; h.m = FIN_PAINT; h.b0 = vec3( -1e3 ); h.b1 = vec3( 1e3 ); }
   else if ( rd.y < 0.0 ) {
     // open top (bucket / pot contents)
     float tt = ( y1 - ro.y ) / rd.y;
     vec2 q = ro.xz + rd.xz * tt - c;
-    if ( tt > 0.0 && tt < h.t && dot( q, q ) < r * r ) { h.t = tt; h.n = vec3( 0.0, 1.0, 0.0 ); h.alb = alb; h.glow = 0.0; h.id = 1.0; }
+    if ( tt > 0.0 && tt < h.t && dot( q, q ) < r * r ) { h.t = tt; h.n = vec3( 0.0, 1.0, 0.0 ); h.alb = alb; h.glow = 0.0; h.id = 1.0; h.m = FIN_PAINT; h.b0 = vec3( -1e3 ); h.b1 = vec3( 1e3 ); }
   }
 }
 
@@ -240,6 +267,51 @@ float fShade( vec3 ro, vec3 rd, vec3 c, float r, float y0, float y1, out float i
   return -1.0;
 }
 
+
+// ellipsoid of radii e centred at c (mannequin parts); the normal from its gradient
+void fEllT( inout Hit h, vec3 ro, vec3 rd, vec3 c, vec3 e, vec3 alb, float id ) {
+  vec3 o = ( ro - c ) / e, d = rd / e;
+  float a = dot( d, d ), b = dot( o, d ), cc = dot( o, o ) - 1.0;
+  float disc = b * b - a * cc;
+  if ( disc < 0.0 ) return;
+  float t = ( -b - sqrt( disc ) ) / a;
+  if ( t > 0.0 && t < h.t ) {
+    vec3 q = ( ro + rd * t - c ) / ( e * e );
+    h.t = t; h.n = normalize( q ); h.alb = alb; h.glow = 0.0; h.id = id; h.m = FIN_FABRIC;
+  }
+}
+// A display mannequin standing at c (xz) in the window zone: head, neck, shoulders and
+// torso dressed in a top, hips and legs in trousers or a skirt, on a rod and base plate.
+// Sizes and the outfit vary by seed; the finish is the dummy's (white, grey or black).
+void fMannequin( inout Hit h, vec3 ro, vec3 rd, vec2 c, float seed ) {
+  vec3 r = fh3( seed * 17.3 + 4.0 ), q = fh3( seed * 29.1 + 9.0 );
+  // cheap reject: the ray against the figure's bounding cylinder
+  vec2 o = ro.xz - c, d = rd.xz;
+  float a = max( dot( d, d ), 1e-6 ), b = dot( o, d ), cc = dot( o, o ) - 0.09;
+  if ( b * b - a * cc < 0.0 ) return;
+  vec3 skin = r.x < 0.45 ? vec3( 0.80, 0.79, 0.76 ) : r.x < 0.8 ? vec3( 0.06, 0.06, 0.065 ) : vec3( 0.52, 0.50, 0.47 );
+  vec3 top = q.x < 0.25 ? vec3( 0.75, 0.73, 0.68 ) : q.x < 0.45 ? vec3( 0.05, 0.05, 0.055 ) : GOODS[ int( q.y * 7.99 ) ] * 0.8 + 0.03;
+  vec3 low = q.z < 0.3 ? vec3( 0.10, 0.14, 0.24 ) : q.z < 0.55 ? vec3( 0.55, 0.47, 0.36 ) : q.z < 0.75 ? vec3( 0.06 ) : GOODS[ int( fract( q.y * 7.0 ) * 7.99 ) ] * 0.7 + 0.04;
+  bool skirt = r.y < 0.4;
+  float s = 0.94 + 0.1 * r.z;
+  vec3 C = vec3( c.x, 0.0, c.y );
+  fEllT( h, ro, rd, C + vec3( 0.0, 1.665 * s, 0.0 ), vec3( 0.082, 0.108, 0.094 ) * s, skin, 3.0 );                 // head
+  fEllT( h, ro, rd, C + vec3( 0.0, 1.535 * s, 0.0 ), vec3( 0.042, 0.07, 0.042 ) * s, skin, 3.0 );                  // neck
+  fEllT( h, ro, rd, C + vec3( 0.0, 1.43 * s, 0.0 ), vec3( 0.195, 0.075, 0.098 ) * s, top, 3.0 );                   // shoulders
+  fEllT( h, ro, rd, C + vec3( 0.0, 1.19 * s, 0.0 ), vec3( 0.162, 0.33, 0.104 ) * s, top, 3.0 );                    // torso
+  fEllT( h, ro, rd, C + vec3( 0.0, 0.93 * s, 0.0 ), vec3( 0.168, 0.13, 0.108 ) * s, low, 3.0 );                    // hips
+  if ( skirt ) fEllT( h, ro, rd, C + vec3( 0.0, 0.66 * s, 0.0 ), vec3( 0.215, 0.33, 0.16 ) * s, low, 3.0 );       // skirt
+  else {
+    fEllT( h, ro, rd, C + vec3( -0.08, 0.50 * s, 0.0 ), vec3( 0.068, 0.44, 0.07 ) * s, low, 3.0 );                // legs
+    fEllT( h, ro, rd, C + vec3( 0.08, 0.50 * s, 0.0 ), vec3( 0.068, 0.44, 0.07 ) * s, low, 3.0 );
+  }
+  vec3 armC = r.y > 0.7 ? skin : top;
+  fEllT( h, ro, rd, C + vec3( -0.205, 1.14 * s, 0.01 ), vec3( 0.042, 0.29, 0.046 ) * s, armC, 3.0 );              // arms
+  fEllT( h, ro, rd, C + vec3( 0.205, 1.14 * s, 0.01 ), vec3( 0.042, 0.29, 0.046 ) * s, armC, 3.0 );
+  if ( skirt ) fEllT( h, ro, rd, C + vec3( 0.0, 0.18, 0.0 ), vec3( 0.013, 0.18, 0.013 ), vec3( 0.55 ), 3.0 );    // rod
+  fEllT( h, ro, rd, C + vec3( 0.0, 0.0, 0.0 ), vec3( 0.17, 0.02, 0.17 ), vec3( 0.06 ), 3.0 );                     // base plate
+}
+
 // Fixed fittings of a room. Shop types: 0 clothing 1 general 2 cafe 3 jewellery 4 pharmacy
 // 5 shoes 6 books 7 flowers.
 void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p, vec3 n, int mode, vec3 S, float seed, bool shop, bool stair, float st ) {
@@ -247,53 +319,80 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
   float cx = S.x * 0.5;
   if ( shop ) {
     if ( st < 0.5 ) {
-      // clothing: island table, two garment rails mid-floor
+      // clothing: island table, two garment rails mid-floor, mannequins in the window
+      gFin = FIN_WOOD;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.65 + f1.x * 0.3, 0.0, 2.6 ), vec3( cx + 0.65 + f1.x * 0.3, 0.78, 3.4 ), vec3( 0.42, 0.34, 0.27 ) );
+      gFin = FIN_FABRIC;
       vec3 r0 = vec3( S.x * 0.18, 0.0, 1.3 ), r1 = vec3( S.x * 0.82 - 1.2, 0.0, 1.7 + f2.x );
       fBoxT( h, ao, ro, ird, p, n, mode, r0 + vec3( 0.0, 0.8, 0.0 ), r0 + vec3( 1.2, 1.6, 0.42 ), vec3( 0.5, 0.48, 0.45 ) );
+      gFin = FIN_METAL;
       fBoxT( h, ao, ro, ird, p, n, mode, r0 + vec3( -0.03, 0.0, 0.19 ), r0 + vec3( 0.0, 1.66, 0.23 ), vec3( 0.06 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, r0 + vec3( 1.2, 0.0, 0.19 ), r0 + vec3( 1.23, 1.66, 0.23 ), vec3( 0.06 ) );
+      if ( mode == 0 ) {
+        fMannequin( h, ro, rd, vec2( S.x * 0.22 + 0.2 * f2.z, 0.75 + 0.25 * f1.y ), seed );
+        if ( f2.y > 0.3 ) fMannequin( h, ro, rd, vec2( S.x * 0.72 - 0.2 * f1.x, 0.8 + 0.3 * f2.z ), seed + 0.37 );
+      }
       if ( f1.z > 0.35 ) {
+        gFin = FIN_FABRIC;
         fBoxT( h, ao, ro, ird, p, n, mode, r1 + vec3( 0.0, 0.8, 0.0 ), r1 + vec3( 1.2, 1.6, 0.42 ), vec3( 0.5, 0.48, 0.45 ) );
+        gFin = FIN_METAL;
         fBoxT( h, ao, ro, ird, p, n, mode, r1 + vec3( -0.03, 0.0, 0.19 ), r1 + vec3( 0.0, 1.66, 0.23 ), vec3( 0.06 ) );
         fBoxT( h, ao, ro, ird, p, n, mode, r1 + vec3( 1.2, 0.0, 0.19 ), r1 + vec3( 1.23, 1.66, 0.23 ), vec3( 0.06 ) );
       }
     } else if ( st < 1.5 ) {
       // general goods: a gondola unit and the counter with its till
+      gFin = FIN_PAINT;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.35, 0.0, 1.6 + f1.y ), vec3( cx + 0.35, 1.45, 3.4 + f1.y ), vec3( 0.66, 0.64, 0.60 ) );
+      gFin = FIN_WOOD;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( 0.9, 0.0, S.z - 1.6 ), vec3( 0.9 + 1.6, 0.95, S.z - 1.0 ), vec3( 0.36, 0.26, 0.18 ) );
+      gFin = FIN_METAL;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( 1.25, 0.95, S.z - 1.4 ), vec3( 1.6, 1.22, S.z - 1.2 ), vec3( 0.05, 0.05, 0.055 ) );
     } else if ( st < 2.5 ) {
       // cafe / bakery: counter with a lit display, two tables
+      gFin = FIN_WOOD;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.12, 0.0, S.z - 2.4 ), vec3( S.x * 0.88, 1.05, S.z - 1.75 ), vec3( 0.30, 0.20, 0.13 ) );
+      gFin = FIN_STONE;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.14, 1.05, S.z - 2.35 ), vec3( S.x * 0.55, 1.38, S.z - 1.95 ), vec3( 0.80, 0.66, 0.44 ) );
+      gFin = FIN_WOOD;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.22, 0.72, 1.3 ), vec3( S.x * 0.22 + 0.7, 0.76, 2.0 ), vec3( 0.24, 0.16, 0.10 ) );
-      fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.22 + 0.33, 0.0, 1.62 ), vec3( S.x * 0.22 + 0.37, 0.72, 1.68 ), vec3( 0.08 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.64, 0.72, 1.6 ), vec3( S.x * 0.64 + 0.7, 0.76, 2.3 ), vec3( 0.24, 0.16, 0.10 ) );
+      gFin = FIN_METAL;
+      fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.22 + 0.33, 0.0, 1.62 ), vec3( S.x * 0.22 + 0.37, 0.72, 1.68 ), vec3( 0.08 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.64 + 0.33, 0.0, 1.92 ), vec3( S.x * 0.64 + 0.37, 0.72, 1.98 ), vec3( 0.08 ) );
     } else if ( st < 3.5 ) {
       // jewellery / optics: display cases along the walls and in the window
+      gFin = FIN_WOOD;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( 0.0, 0.0, 1.0 ), vec3( 0.55, 1.0, S.z - 1.0 ), vec3( 0.20, 0.14, 0.10 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x - 0.55, 0.0, 1.0 ), vec3( S.x, 1.0, S.z - 1.0 ), vec3( 0.20, 0.14, 0.10 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.5, 0.0, 0.5 ), vec3( cx + 0.5, 1.1, 0.95 ), vec3( 0.20, 0.14, 0.10 ) );
     } else if ( st < 4.5 ) {
       // pharmacy: counter at the back (a darker worktop, two tills), a central gondola
+      gFin = FIN_PAINT;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.2, 0.0, S.z - 2.2 ), vec3( S.x * 0.8, 0.96, S.z - 1.7 ), vec3( 0.80, 0.80, 0.78 ) );
+      gFin = FIN_STONE;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.2 - 0.03, 0.96, S.z - 2.23 ), vec3( S.x * 0.8 + 0.03, 1.0, S.z - 1.7 ), vec3( 0.30, 0.31, 0.32 ) );
+      gFin = FIN_METAL;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.3, 1.0, S.z - 2.0 ), vec3( S.x * 0.3 + 0.32, 1.3, S.z - 1.84 ), vec3( 0.05, 0.05, 0.055 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x * 0.62, 1.0, S.z - 2.0 ), vec3( S.x * 0.62 + 0.32, 1.3, S.z - 1.84 ), vec3( 0.05, 0.05, 0.055 ) );
+      gFin = FIN_PAINT;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.35, 0.0, 1.4 ), vec3( cx + 0.35, 1.5, 2.8 ), vec3( 0.84, 0.84, 0.82 ) );
     } else if ( st < 5.5 ) {
-      // shoes: low benches and a stepped central display
+      // shoes: an upholstered bench and a stepped display in the window, its finish the
+      // shop's (oiled oak, white lacquer, travertine or black)
+      gFin = FIN_FABRIC;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.8, 0.0, 2.0 ), vec3( cx + 0.8, 0.45, 2.55 ), vec3( 0.25, 0.20, 0.17 ) );
-      fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.45, 0.0, 0.7 ), vec3( cx + 0.45, 0.6, 1.2 ), vec3( 0.78, 0.76, 0.72 ) );
-      fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.3, 0.6, 0.85 ), vec3( cx + 0.3, 1.0, 1.15 ), vec3( 0.78, 0.76, 0.72 ) );
+      vec3 dc = f2.z < 0.35 ? vec3( 0.46, 0.33, 0.21 ) : f2.z < 0.6 ? vec3( 0.74, 0.73, 0.70 ) : f2.z < 0.82 ? vec3( 0.62, 0.55, 0.45 ) : vec3( 0.05 );
+      gFin = f2.z < 0.35 ? FIN_WOOD : f2.z < 0.6 ? FIN_PAINT : f2.z < 0.82 ? FIN_STONE : FIN_PAINT;
+      fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.45, 0.0, 0.7 ), vec3( cx + 0.45, 0.6, 1.2 ), dc );
+      fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.3, 0.6, 0.85 ), vec3( cx + 0.3, 1.0, 1.15 ), dc );
     } else if ( st < 6.5 ) {
       // books: a table of new titles and the till
+      gFin = FIN_WOOD;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( cx - 0.7, 0.0, 1.5 + f1.y * 0.5 ), vec3( cx + 0.7, 0.8, 2.4 + f1.y * 0.5 ), vec3( 0.30, 0.20, 0.13 ) );
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( S.x - 1.9, 0.0, S.z - 1.4 ), vec3( S.x - 0.6, 0.95, S.z - 0.9 ), vec3( 0.28, 0.19, 0.12 ) );
     } else {
       // flowers: buckets on the floor near the window, a work table
+      gFin = FIN_WOOD;
       for ( int i = 0; i < 4; i++ ) {
         vec3 b = fh3( seed * 7.0 + float( i ) * 3.3 );
         if ( mode == 0 ) fCylT( h, ro, rd, vec2( 0.5 + float( i ) * ( S.x - 1.0 ) / 3.0, 0.6 + b.x * 0.5 ), 0.17, 0.0, 0.42 + b.y * 0.15, GOODS[ int( b.z * 7.99 ) ] * 0.8 + 0.05 );
@@ -302,11 +401,13 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
     }
   } else if ( !stair ) {
     // sofa / bed / sideboard against the back wall, cabinet on a side wall, a table
+    gFin = FIN_FABRIC;
     float len = 1.4 + f1.x * 0.9;
     vec3 a0 = vec3( mix( 0.2, S.x - len - 0.2, f1.y ), 0.0, S.z - 0.9 );
     fBoxT( h, ao, ro, ird, p, n, mode, a0, a0 + vec3( len, 0.72 + f1.z * 0.3, 0.9 ), FABRIC[ int( f1.z * 7.99 ) ] );
     float side = step( 0.5, f2.x );
     vec3 a1 = vec3( side * ( S.x - 0.5 ), 0.0, 0.9 + f2.y * 1.2 );
+    gFin = FIN_WOOD;
     fBoxT( h, ao, ro, ird, p, n, mode, a1, a1 + vec3( 0.5, 1.8 + f2.z * 0.4, 1.0 ), vec3( 0.20, 0.13, 0.08 ) * ( 0.7 + f2.z ) );
     vec3 a2 = vec3( cx - 0.6 + f2.y * 0.3, 0.72, 1.6 + f1.x * 0.8 );
     fBoxT( h, ao, ro, ird, p, n, mode, a2, a2 + vec3( 1.2, 0.04, 0.8 ), vec3( 0.28, 0.18, 0.11 ) );
@@ -363,12 +464,28 @@ vec4 fItem( float a, float y, float r, float rowH, float cellW, float seed, floa
   vec4 far = vec4( fItemMean( st ) * hitFar, hitFar );
   if ( keep <= 0.0 ) return far;
   vec4 res;
-  if ( books || plants ) {
-    vec3 col = books ? mix( GOODS[ int( gi * 7.99 ) ], vec3( 0.20, 0.14, 0.10 ), 0.45 ) * ( 0.6 + 0.5 * fh1( c * 0.71 + seed ) )
-             : y > ih * 0.45 ? mix( vec3( 0.12, 0.30, 0.10 ), GOODS[ int( g * 7.99 ) ], step( 0.5, fract( a * 7.0 + y * 5.0 ) ) * 0.6 ) : vec3( 0.55, 0.28, 0.16 );
+  if ( plants ) {
+    // a potted plant: a terracotta (or glazed) pot with a rim, a rounded mass of leaves
+    // over it, lit from above and shaded into its core, flowers dotted over some
+    float cx = xa - cellW * 0.5, pw = cellW * ( 0.28 + 0.08 * fract( g * 3.1 ) ), ph = ih * 0.36;
+    vec3 potC = fract( g * 7.7 ) < 0.6 ? vec3( 0.50, 0.24, 0.14 ) : fract( g * 7.7 ) < 0.8 ? vec3( 0.78, 0.76, 0.70 ) : vec3( 0.12, 0.20, 0.30 );
+    float pot = step( abs( cx ), pw * ( 0.82 + 0.18 * y / ph ) ) * step( 0.0, y ) * step( y, ph );
+    float rim = step( abs( cx ), pw * 1.06 ) * step( ph - 0.025, y ) * step( y, ph );
+    vec2 lq = vec2( cx / ( cellW * 0.48 ), ( y - ph - ( ih - ph ) * 0.45 ) / ( ( ih - ph ) * 0.62 ) );
+    float lr = length( lq );
+    float nz = vnoise( vec2( a, y ) * 38.0 + seed ) * keep + 0.5 * ( 1.0 - keep );
+    float leaf = step( lr, 0.8 + 0.35 * nz ) * step( ph - 0.01, y );
+    vec3 lc = mix( vec3( 0.05, 0.14, 0.04 ), vec3( 0.16, 0.34, 0.10 ), clamp( 0.5 + 0.6 * lq.y - 0.4 * lr + 0.4 * ( nz - 0.5 ), 0.0, 1.0 ) );
+    float bloom = step( 0.55, fract( g * 13.3 ) ) * step( 0.72, vnoise( vec2( a, y ) * 60.0 + seed * 3.0 ) ) * keep;
+    lc = mix( lc, GOODS[ int( fract( g * 5.9 ) * 7.99 ) ] * 1.1 + 0.08, bloom );
+    vec3 col = rim > 0.5 ? potC * 1.15 : pot > 0.5 ? potC * ( 0.7 + 0.3 * smoothstep( pw, -pw * 0.3, cx ) ) : lc;
+    float hit = max( max( pot, rim ), leaf ) * ( 1.0 - empty ) * step( y, ih );
+    res = vec4( col * hit, hit );
+  } else if ( books ) {
+    vec3 col = mix( GOODS[ int( gi * 7.99 ) ], vec3( 0.20, 0.14, 0.10 ), 0.45 ) * ( 0.6 + 0.5 * fh1( c * 0.71 + seed ) );
     // spines: a title block and gilt bands
-    if ( books ) col = mix( col, col * 1.6 + 0.05, ( step( ih * 0.55, y ) * step( y, ih * 0.75 ) + step( ih * 0.9, y ) * step( y, ih * 0.93 ) ) * keep );
-    float inX = books ? step( 0.003, xa ) * step( 0.003, xb ) : step( gl, xa ) * step( gr, xb );
+    col = mix( col, col * 1.6 + 0.05, ( step( ih * 0.55, y ) * step( y, ih * 0.75 ) + step( ih * 0.9, y ) * step( y, ih * 0.93 ) ) * keep );
+    float inX = step( 0.003, xa ) * step( 0.003, xb );
     float hit = inX * step( y, ih ) * step( 0.0, y ) * ( 1.0 - empty );
     res = vec4( col * hit, hit );
   } else {
@@ -505,7 +622,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   vec3 tB = ( step( 0.0, rd ) * S - ro ) * ird;
   Hit h;
   h.t = min( min( tB.x, tB.y ), tB.z );
-  h.glow = 0.0; h.id = 0.0;
+  h.glow = 0.0; h.id = 0.0; h.m = 0.0; h.b0 = vec3( 0.0 ); h.b1 = vec3( 0.0 );
   vec3 p = ro + rd * h.t;
   vec3 rnd = fh3( seed * 97.0 + 3.0 );
   vec3 wall = shop ? SHOPWALL[ int( st ) ] : stair ? vec3( 0.70, 0.66, 0.58 ) : WALLS[ int( rnd.x * 5.99 ) ];
@@ -537,6 +654,14 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     h.alb = vec3( 0.80, 0.79, 0.76 );
     if ( shop ) {
       float fpc = fFoot( h.t, rd, h.n );
+      // ceilings: a suspended tile grid (general stores, pharmacies, shoe shops), dark
+      // painted soffits in cafes, book and jewellery shops, plaster elsewhere
+      float ce = fh1( seed * 6.7 );
+      if ( st > 0.5 && st < 1.5 || st > 3.5 && st < 5.5 ) {
+        float kg = fKeep( fpc, 0.6 );
+        float grid = max( fPulse( p.x / 0.6 + 0.5, 0.97, fpc / 0.6 ), fPulse( p.z / 0.6 + 0.5, 0.97, fpc / 0.6 ) );
+        h.alb = mix( vec3( 0.78, 0.78, 0.76 ) * ( 0.96 + 0.06 * mix( 0.5, fh2( floor( p.xz / 0.6 ) + seed ), kg ) ), vec3( 0.55, 0.55, 0.54 ), grid );
+      } else if ( st > 1.5 && st < 3.5 || st > 5.5 && st < 6.5 ) h.alb = ce < 0.5 ? vec3( 0.16, 0.15, 0.14 ) : vec3( 0.30, 0.24, 0.18 );
       vec2 c = ( fract( p.xz / cell ) - 0.5 ) * cell;
       if ( st > 3.5 && st < 4.5 ) {
         // pharmacy: light panels
@@ -621,7 +746,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     vec3 albBehind = h.alb;
     fFittings( h, ao, ro, rd, ird, p, h.n, 0, S, seed, shop, stair, st );
     if ( !shop && !stair && lk > 0.5 ) fCylT( h, ro, rd, lp.xz, 0.014, 0.0, lp.y - 0.12, vec3( 0.06, 0.05, 0.045 ) );
-    if ( h.id > 0.5 && h.id < 1.5 ) h.alb = mix( albBehind, h.alb, gDet );
+    if ( h.id > 0.5 && h.id < 1.5 || h.id > 2.5 ) h.alb = mix( albBehind, h.alb, gDet );
   }
   p = ro + rd * h.t;
   vec3 nn = h.n;
@@ -692,12 +817,44 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   }
 
   // fitted furniture: a recessed dark plinth and panel joints (resolved close up only)
-  if ( h.id > 0.5 && h.id < 1.5 && abs( nn.y ) < 0.5 && gDet > 0.0 ) {
+  if ( h.id > 0.5 && h.id < 1.5 && abs( nn.y ) < 0.5 && gDet > 0.0 && h.m < FIN_METAL - 0.5 ) {
     float kf = fKeep( fp, 0.06 ) * gDet;
     float along = abs( nn.x ) > 0.5 ? p.z : p.x;
     float plinth = fEdge( 0.08 - p.y, fp ) * step( p.y, 0.5 );
-    float joint = fPulse( along / 0.6 + 0.5, 0.985, fp / 0.6 );
+    float joint = fPulse( along / 0.6 + 0.5, 0.985, fp / 0.6 ) * step( h.m, FIN_PAINT + 0.5 );
     h.alb *= mix( 1.0, ( 1.0 - 0.65 * plinth ) * ( 1.0 - 0.5 * joint ), kf );
+  }
+  // furniture finishes: wood grain along the piece, stone veining, a quiet mottle on
+  // lacquer and cloth; eased edges catching the light along every arris, and the floor's
+  // shadow creeping up the sides (contact occlusion)
+  if ( h.id > 0.5 && h.id < 1.5 && gDet > 0.0 ) {
+    vec3 ext = h.b1 - h.b0;
+    // in-face coordinates: (a) along the longer horizontal axis, (b) the other one in the face
+    vec2 fq = abs( nn.x ) > 0.5 ? vec2( p.z, p.y ) : abs( nn.y ) > 0.5 ? ( ext.x > ext.z ? p.xz : p.zx ) : vec2( p.x, p.y );
+    float kf = gDet;
+    if ( h.m > FIN_WOOD - 0.5 && h.m < FIN_WOOD + 0.5 ) {
+      float kg = fKeep( fp, 0.012 );
+      float grain = vnoise( vec2( fq.x * 2.0, fq.y * 46.0 ) + h.b0.xz * 7.0 ) * 0.6 + vnoise( vec2( fq.x * 0.6, fq.y * 9.0 ) ) * 0.4;
+      h.alb *= mix( 1.0, 0.82 + 0.34 * grain, kf * mix( 0.4, 1.0, kg ) );
+    } else if ( h.m > FIN_STONE - 0.5 && h.m < FIN_STONE + 0.5 ) {
+      float vein = smoothstep( 0.04, 0.0, abs( vnoise( fq * 3.0 + h.b0.xz ) - 0.5 ) ) * fKeep( fp, 0.02 );
+      h.alb *= mix( 1.0, ( 0.92 + 0.12 * vnoise( fq * 9.0 ) ) * ( 1.0 - 0.25 * vein ), kf );
+    } else if ( h.m < FIN_METAL - 0.5 || h.m > FIN_METAL + 0.5 ) {
+      h.alb *= mix( 1.0, 0.95 + 0.08 * vnoise( fq * 5.0 + h.b0.xz * 3.0 ), kf );
+    }
+    if ( h.b1.x - h.b0.x < 900.0 ) {
+      // distance to the face's edges (m)
+      vec3 dl = min( p - h.b0, h.b1 - p );
+      float e = abs( nn.x ) > 0.5 ? min( dl.y, dl.z ) : abs( nn.y ) > 0.5 ? min( dl.x, dl.z ) : min( dl.x, dl.y );
+      float bev = ( 1.0 - smoothstep( 0.0, 0.009 + fp, e ) ) * fKeep( fp, 0.02 );
+      // top arrises catch the downlights and the sky, the lower ones go dark
+      h.alb *= 1.0 + kf * bev * ( nn.y > 0.5 || p.y > h.b1.y - 0.012 ? 0.35 : -0.25 );
+      if ( abs( nn.y ) < 0.5 ) h.alb *= mix( 1.0, 0.55 + 0.45 * smoothstep( 0.0, 0.22, p.y - h.b0.y ) * step( h.b0.y, 0.02 ) + 0.45 * step( 0.02, h.b0.y ), kf );
+    }
+  }
+  // mannequins: matte finish, a faint seam at the neck, darker under the chin and arms
+  if ( h.id > 2.5 && gDet > 0.0 ) {
+    h.alb *= mix( 1.0, 0.75 + 0.25 * smoothstep( -0.6, 0.4, nn.y ), gDet );
   }
 
   // ---- lighting in room space
@@ -734,15 +891,19 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   vec3 Elamp = vec3( 0.0 );
   float glowK = 0.0;
   if ( shop ) {
-    lampC = st > 3.5 && st < 4.5 ? vec3( 0.93, 0.95, 1.0 ) : st > 1.5 && st < 2.5 ? vec3( 1.0, 0.58, 0.29 )
-          : mix( vec3( 1.0, 0.70, 0.43 ), vec3( 1.0, 0.64, 0.36 ), step( 0.5, fh1( seed * 5.1 ) ) );
+    // colour temperature per shop, 2700–5000 K: cafes warm, pharmacies cool white, the
+    // rest spread with most at 3000–4000 K
+    float kr = fh1( seed * 5.1 );
+    float K = st > 1.5 && st < 2.5 ? mix( 2700.0, 3000.0, kr ) : st > 3.5 && st < 4.5 ? mix( 4000.0, 5000.0, kr )
+            : kr < 0.15 ? 2700.0 + 300.0 * kr / 0.15 : kr < 0.85 ? mix( 3000.0, 4000.0, ( kr - 0.15 ) / 0.7 ) : mix( 4000.0, 5000.0, ( kr - 0.85 ) / 0.15 );
+    lampC = fKelvin( K );
     // shops are lit all day; seen from the daylit street the warm light reads less orange
     lampC = mix( lampC, vec3( 1.0, 0.86, 0.72 ), 0.45 * ( 1.0 - uNight ) ) * gEm;
     float I = mix( SHOP_DAY * daylum * ( 0.7 + 0.6 * fh1( seed * 8.3 ) ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
     float ex = st > 3.5 && st < 4.5 ? 2.0 : st > 2.5 && st < 3.5 ? 14.0 : 8.0;
     // downlight pools, the inter-reflected fill (falling off up the walls: the light goes
     // down onto the floor and the goods) and display spots on the low window zone
-    float fill = 0.42 * mix( 1.0, 0.45, smoothstep( 0.9, S.y, p.y ) ) + 0.5 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 0.7, 2.0, p.y ) );
+    float fill = 0.42 * mix( 1.0, 0.45, smoothstep( 0.9, S.y, p.y ) ) + 1.3 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 0.7, 2.0, p.y ) );
     Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
     glowK = I;
   } else if ( lit > 0.0 ) {
@@ -831,20 +992,41 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
 }
 
 // Reflection of the street, traced against a stand-in of its far side: the opposite
-// facade row at streetW (buildings of varied height and stone, a shop band of dark glass
-// under awnings, storeys of windows with dark glass, curtains or shutters, iron balconies,
-// cornice shadows, the sun / shade line cast by this side's roofs), the paving and both
-// rows of street trees. Being traced, it is parallax-correct for every pixel. Each pattern
-// is box-filtered over the pixel's footprint on the far facade, which grows as 1 / cos
-// towards grazing angles: there the bays and buildings average out while the storeys,
-// cornices and the roofline against the sky still read, as in a real shop window seen
-// along the street. Returns rgb + coverage (0 = sky).
+// facade row at streetW (buildings 10–16 m wide of varied height and limestone tint, a
+// shop band of dark display glass between stone piers under coloured awnings and fascia
+// signs, storeys of windows with stone surrounds, dark glass, sheers or open shutters,
+// iron balconies, string courses and a cornice with their shadows, the sun / shade line
+// cast by this side's roofs), the paving and both rows of street trees. Being traced, it
+// is parallax-correct for every pixel. Every pattern is box-filtered over the pixel's
+// footprint on the far facade (up it, and along it, 1 / cos towards grazing), so window
+// and bay edges are antialiased analytically at any distance; at grazing angles the
+// bays average out while the storeys, cornices and the roofline against the sky still
+// read, as in a real shop window seen along the street. Returns rgb + coverage (0 = sky).
+
+// box-filtered rectangle [a, b] at x (filter width w)
+float fRect( float x, float a, float b, float w ) {
+  w = max( w, 1e-4 );
+  return clamp( ( min( x + 0.5 * w, b ) - max( x - 0.5 * w, a ) ) / w, 0.0, 1.0 );
+}
+// box-filtered periodic window pattern: share of [x - w/2, x + w/2] inside [a, b] of
+// every period P (a, b in metres within the period)
+float fRectP( float x, float P, float a, float b, float w ) {
+  return fPulse( ( x - b ) / P, 1.0 - ( b - a ) / P, w / P );
+}
+vec3 fStoneTint( float k ) {
+  return k < 0.35 ? vec3( 0.62, 0.56, 0.44 ) : k < 0.6 ? vec3( 0.64, 0.54, 0.40 ) : k < 0.85 ? vec3( 0.63, 0.60, 0.53 ) : vec3( 0.53, 0.48, 0.40 );
+}
+
 vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float streetW, vec3 Eamb, vec3 sky, out float tHit ) {
   float rn = max( dot( R, N ), 0.02 );
   float tO = streetW / rn;
   float hy = baseH + R.y * tO;
   float hx = px + dot( R, T ) * tO;
   vec3 sunC = uSunColor * step( 0.0, uSunDir.y );
+  // the far side's ambient: its own sky light (about the glass's: both vertical, facing
+  // each other across the canyon) plus the warm bounce off the sunlit stone and paving
+  float sunUp = max( uSunDir.y, 0.0 );
+  vec3 bounce = sunC * sunUp * vec3( 0.55, 0.50, 0.42 ) * 0.16;
   vec3 col;
   // ground: sidewalks, the darker track corridor down the middle, and the shadow cast
   // across the street by the roofs on the sun's side (~18 m)
@@ -857,79 +1039,114 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
     float roof = 18.0 + 4.0 * ( vnoise( vec2( gx / 13.0, 0.5 ) ) - 0.5 );
     float shadeL = sn < 0.0 ? roof * -sn / sy - acr : roof * sn / sy - ( streetW - acr );
     float sunG = 1.0 - smoothstep( -0.3 - fpG, 0.3 + fpG, shadeL );
-    float sh = ( 0.6 + 0.4 * vnoise( gp * 0.15 ) ) * sunG;
-    vec3 E = Eamb + sunC * max( uSunDir.y, 0.0 ) * sh;
+    // tree shadows dapple the sunlit paving
+    float sh = ( 0.55 + 0.45 * vnoise( gp * 0.35 ) ) * sunG;
+    vec3 E = Eamb * 0.9 + bounce * 0.5 + sunC * sunUp * sh;
     float trk = 1.0 - smoothstep( 3.2 - fpG, 3.6 + fpG, abs( acr - streetW * 0.5 ) );
-    col = mix( vec3( 0.29, 0.28, 0.26 ), vec3( 0.2, 0.2, 0.2 ), trk ) * E * RECIPROCAL_PI;
+    col = mix( vec3( 0.40, 0.39, 0.37 ), vec3( 0.30, 0.30, 0.30 ), trk ) * E * RECIPROCAL_PI;
     tHit = tg;
     return vec4( mix( col, sky, 1.0 - exp( -tg / 900.0 ) ), 1.0 );
   }
   tHit = tO;
   // footprint of the pixel on the far facade: up it, and along it (1 / cos at grazing);
-  // never sharper than the slight waviness of real glass blurs the reflection
-  float fpY = max( gPA * ( gTC + tO ), 0.02 + 0.004 * tO );
+  // float glass is flat: the reflection is nearly as sharp as the view itself
+  float fpY = max( gPA * ( gTC + tO ), 0.006 + 0.0012 * tO );
   float fpX = fpY / rn;
-  // buildings ~13 m wide: their height, stone, storey height and dressing
-  float kB = 1.0 - smoothstep( 3.0, 9.0, fpX );
-  float bid = floor( hx / 13.0 );
-  vec3 b1 = fh3( bid * 1.37 + 0.5 ), b2 = fh3( bid * 2.91 + 7.0 );
-  float roofH = mix( 19.0, 15.0 + 8.0 * b1.x, kB );
-  float soft = fpY + ( 1.0 - kB ) * 3.5;
-  float cov = 1.0 - smoothstep( roofH - soft, roofH + soft, hy );
-  vec3 stone = mix( vec3( 0.54, 0.48, 0.38 ), mix( vec3( 0.47, 0.42, 0.34 ), vec3( 0.62, 0.56, 0.45 ), b1.y ), kB );
-  float fh = mix( 3.6, 3.3 + 0.6 * b1.z, kB ), g0 = mix( 4.6, 4.2 + 0.8 * b2.x, kB );
+  // buildings 10–16 m wide, the party walls jittered: height, stone, storeys, dressing
+  float kB = 1.0 - smoothstep( 4.0, 10.0, fpX );
+  float k0 = floor( hx / 13.0 );
+  float bid = hx < k0 * 13.0 + ( fh1( k0 * 0.71 + 3.0 ) - 0.5 ) * 6.0 ? k0 - 1.0 : k0;
+  vec3 b1 = fh3( bid * 1.37 + 0.5 ), b2 = fh3( bid * 2.91 + 7.0 ), b3 = fh3( bid * 4.13 + 1.0 );
+  float roofH = mix( 18.5, 14.0 + 9.0 * b1.x, kB );
+  vec3 stone = mix( vec3( 0.60, 0.54, 0.43 ), fStoneTint( b1.y ), kB );
+  float fh = mix( 3.6, 3.4 + 0.5 * b1.z, kB ), g0 = mix( 4.6, 4.2 + 0.8 * b2.x, kB );
+  float bw = mix( 3.4, 3.0 + 0.9 * b2.y, kB ), ww = mix( 1.25, 1.1 + 0.3 * b3.x, kB );
+  float softR = fpY + ( 1.0 - kB ) * 3.0;
+  float cov = 1.0 - smoothstep( roofH - softR, roofH + softR, hy );
   // sun on the far facade above the shadow line of this side's roofs (~16–22 m)
   float sN = dot( uSunDir, -N );
   float lit = 0.0;
   if ( sN > 0.02 ) {
     float tS = streetW / sN;
     float ourRoof = 16.0 + 6.0 * fh1( floor( ( hx - dot( uSunDir, T ) * tS ) / 13.0 ) * 1.91 + 3.0 );
-    lit = smoothstep( -0.4 - fpY, 0.4 + fpY, hy + uSunDir.y * tS - ourRoof ) * sN;
+    lit = smoothstep( -0.3 - fpY, 0.3 + fpY, hy + uSunDir.y * tS - ourRoof ) * sN;
   }
-  vec3 E = Eamb * 0.9 + sunC * lit;
-  // storeys above the shop band: window columns every 3.4 m, sill to head 22–82% of a storey
-  float fy = ( hy - g0 ) / fh;
-  float wy = ( fPulse( fy, 0.22, fpY / fh ) - fPulse( fy, 0.82, fpY / fh ) ) * step( 0.0, fy );
-  float wxW = fpX / 3.4;
-  float wx = fPulse( hx / 3.4 + 0.5 * b2.y, 0.3, wxW ) - fPulse( hx / 3.4 + 0.5 * b2.y, 0.7, wxW );
-  // cornice / string course shadow just under each storey line, balcony slab and railing
-  float cor = fPulse( fy, 0.93, fpY / fh ) * step( 1.0, fy );
-  float balc = step( 0.5, b2.z ) * kB;
-  float rail = balc * ( fPulse( fy, 0.0, fpY / fh ) - fPulse( fy, 0.27, fpY / fh ) ) * step( 1.0, fy ) * mix( 0.35, 1.0, kB );
-  col = stone * E * RECIPROCAL_PI * ( 1.0 - 0.45 * cor );
-  // what the windows show: dark glass mirroring the sky, curtains, painted shutters
-  vec2 cell = floor( vec2( hx / 3.4 + 0.5 * b2.y, fy ) );
+  vec3 E = Eamb * 0.9 + bounce + sunC * lit;
+  float sunK = lit / max( sN, 0.02 );                 // 0 shade .. 1 sunlit (for shadows of relief)
+  // relief: string course over the shop band, a cornice under the roofline (each a lit
+  // top and a shadow under it), a slab shadow under every storey's balconies
+  float x = hx + bw * 0.5 * b2.z, fy = ( hy - g0 ) / fh;
+  float course = fRect( hy, g0 - 0.05, g0 + 0.25, fpY );
+  float courseSh = fRect( hy, g0 - 0.35, g0 - 0.05, fpY ) * mix( 0.25, 0.55, sunK );
+  float cornice = fRect( hy, roofH - 0.9, roofH - 0.35, fpY ), corSh = fRect( hy, roofH - 1.4, roofH - 0.9, fpY ) * mix( 0.3, 0.6, sunK );
+  col = stone * E * RECIPROCAL_PI * ( 1.0 + 0.08 * ( course + cornice ) ) * ( 1.0 - courseSh - corSh );
+  // storeys above the shop band: windows with a stone surround, sill 0.9 m, 2.1 m tall
+  float above = smoothstep( g0 + 0.3 - fpY, g0 + 0.3 + fpY, hy ) * ( 1.0 - smoothstep( roofH - 1.5 - fpY, roofH - 1.5 + fpY, hy ) );
+  float yIn = fract( fy ) * fh;
+  float wy = fRectP( hy - g0, fh, 0.9, 3.0, fpY ), wx = fRectP( x, bw, 0.5 * ( bw - ww ), 0.5 * ( bw + ww ), fpX );
+  float sy = fRectP( hy - g0, fh, 0.78, 3.12, fpY ), sxs = fRectP( x, bw, 0.5 * ( bw - ww ) - 0.14, 0.5 * ( bw + ww ) + 0.14, fpX );
+  float kW = 1.0 - smoothstep( 0.3, 0.7, fpX / bw );
+  // surround: a slightly paler dressed band, its head casting a thin shadow onto the glass
+  col *= 1.0 + 0.06 * ( sy * sxs - wx * wy ) * above;
+  vec2 cell = vec2( floor( x / bw ), floor( fy ) );
   float wk = fh2( cell + 11.0 + bid );
-  float kW = 1.0 - smoothstep( 0.3, 0.6, wxW );
-  vec3 winAlb = mix( vec3( 0.12, 0.12, 0.12 ), wk < 0.45 ? vec3( 0.05, 0.055, 0.06 ) : wk < 0.7 ? vec3( 0.45, 0.42, 0.37 )
-              : mix( vec3( 0.11, 0.2, 0.14 ), vec3( 0.28, 0.2, 0.13 ), step( 0.5, b1.y ) ), kW );
+  vec3 winAlb = wk < 0.5 ? vec3( 0.045, 0.05, 0.055 ) : wk < 0.72 ? vec3( 0.50, 0.48, 0.43 ) : wk < 0.86 ? vec3( 0.07, 0.06, 0.05 )
+              : mix( vec3( 0.12, 0.22, 0.15 ), vec3( 0.30, 0.21, 0.13 ), step( 0.5, b1.y ) );
+  winAlb = mix( vec3( 0.13 ), winAlb, kW );
   float litW = step( fh2( cell + 5.0 ), uNight * 0.5 ) * kW + uNight * 0.25 * ( 1.0 - kW );
-  vec3 winC = winAlb * E * RECIPROCAL_PI * 0.8 + sky * 0.08 * ( 1.0 - step( 0.45, wk ) * kW ) + litW * vec3( 1.0, 0.58, 0.28 ) * 0.0008 * gEm;
-  col = mix( col, winC, wx * wy * 0.9 );
-  col = mix( col, vec3( 0.03, 0.03, 0.032 ) * E * RECIPROCAL_PI, rail * 0.75 );
-  // shop band: dark display glass between stone piers, awnings over some
-  float sb = fPulse( hy / 4.0, 0.0, fpY / 4.0 ) - fPulse( hy / 4.0, ( g0 - 0.6 ) / 4.0, fpY / 4.0 );
-  sb *= step( 0.0, hy ) * step( hy, g0 );
-  float pier = fPulse( hx / 4.3, 0.18, fpX / 4.3 ) - fPulse( hx / 4.3, 0.86, fpX / 4.3 );
-  float shopI = fh1( floor( hx / 4.3 ) * 3.1 + 2.0 );
-  vec3 shopC = vec3( 0.07, 0.07, 0.075 ) * E * RECIPROCAL_PI + sky * 0.05 + vec3( 1.0, 0.74, 0.48 ) * 0.0016 * uNight * gEm;
-  col = mix( col, shopC, sb * pier * 0.9 );
-  float aw = ( fPulse( hy, g0 - 1.35, fpY ) - fPulse( hy, g0 - 0.55, fpY ) ) * pier * step( 0.55, shopI ) * kW;
-  vec3 awC = fh1( shopI * 7.0 ) < 0.5 ? vec3( 0.62, 0.55, 0.40 ) : fh1( shopI * 9.0 ) < 0.5 ? vec3( 0.14, 0.24, 0.16 ) : vec3( 0.36, 0.11, 0.1 );
-  col = mix( col, awC * ( Eamb * 0.7 + sunC * lit * 0.8 ) * RECIPROCAL_PI, aw );
+  // dark glass shows a little sky (seen from below: the sky above our roofs)
+  vec3 winC = winAlb * E * RECIPROCAL_PI * 0.75 * ( 1.0 - 0.35 * fRect( yIn, 2.75, 3.0, fpY ) * sunK )
+            + sky * 0.06 * step( wk, 0.5 ) + litW * vec3( 1.0, 0.58, 0.28 ) * 0.0008 * gEm;
+  col = mix( col, winC, wx * wy * above );
+  // open shutters either side of some windows (painted timber, louvres averaged)
+  float shut = step( 0.55, b3.y ) * kW * above;
+  if ( shut > 0.0 ) {
+    float sl = fRectP( x, bw, 0.5 * ( bw - ww ) - ww * 0.5 - 0.05, 0.5 * ( bw - ww ) - 0.05, fpX ) + fRectP( x, bw, 0.5 * ( bw + ww ) + 0.05, 0.5 * ( bw + ww ) + ww * 0.5 + 0.05, fpX );
+    vec3 sc = b3.z < 0.4 ? vec3( 0.13, 0.24, 0.16 ) : b3.z < 0.7 ? vec3( 0.32, 0.22, 0.14 ) : vec3( 0.40, 0.42, 0.40 );
+    col = mix( col, sc * E * RECIPROCAL_PI * 0.85, sl * wy * shut );
+  }
+  // iron balconies on some buildings: the railing (a dark see-through band), the slab
+  // and its shadow on the wall below
+  float balc = step( 0.45, b2.z ) * above;
+  if ( balc > 0.0 ) {
+    float bx = fRectP( x, bw, 0.5 * ( bw - ww ) - 0.45, 0.5 * ( bw + ww ) + 0.45, fpX );
+    float rail = fRectP( hy - g0, fh, 0.0, 1.0, fpY ) * bx;
+    float slab = fRectP( hy - g0, fh, fh - 0.2, fh, fpY ) * bx;
+    float slabSh = fRectP( hy - g0, fh, fh - 0.75, fh - 0.2, fpY ) * bx * mix( 0.2, 0.45, sunK );
+    col *= 1.0 - slabSh;
+    col = mix( col, stone * E * RECIPROCAL_PI * 0.8, slab );
+    col = mix( col, vec3( 0.03, 0.03, 0.032 ) * E * RECIPROCAL_PI, rail * 0.6 * mix( 0.6, 1.0, kB ) );
+  }
+  // shop band: dark display glass between stone piers (goods catching the light low in
+  // the windows), awnings over some, fascia boards over others
+  float sp = 4.3, shopI = fh1( floor( hx / sp ) * 3.1 + 2.0 + bid );
+  float pier = fRectP( hx, sp, 0.55, sp - 0.25, fpX );
+  float sb = fRect( hy, 0.0, g0 - 0.5, fpY ) * pier;
+  vec3 gc = mix( vec3( 0.07, 0.065, 0.06 ), mix( vec3( 0.35, 0.30, 0.25 ), vec3( fh1( shopI * 5.0 ), fh1( shopI * 7.0 ), fh1( shopI * 9.0 ) ) * 0.6, 0.5 ), 0.35 * fRect( hy, 0.4, 2.0, fpY ) * kW );
+  vec3 shopC = gc * E * RECIPROCAL_PI * 0.5 + sky * 0.04 + vec3( 1.0, 0.74, 0.48 ) * 0.0016 * uNight * gEm;
+  col = mix( col, shopC, sb );
+  float hasAw = step( 0.5, shopI ) * kW;
+  float aw = fRect( hy, g0 - 1.5, g0 - 0.55, fpY ) * pier * hasAw;
+  vec3 awC = fh1( shopI * 7.0 ) < 0.4 ? vec3( 0.62, 0.55, 0.40 ) : fh1( shopI * 9.0 ) < 0.5 ? vec3( 0.14, 0.24, 0.16 ) : fh1( shopI * 3.0 ) < 0.5 ? vec3( 0.42, 0.10, 0.09 ) : vec3( 0.12, 0.16, 0.30 );
+  // canvas: the valance in the facade's light, the cloth glowing with the sun on its top
+  col = mix( col, awC * ( Eamb * 0.8 + bounce + sunC * ( lit + 0.25 * sunUp ) ) * RECIPROCAL_PI, aw );
+  float fas = fRect( hy, g0 - 0.5, g0 - 0.05, fpY ) * pier * ( 1.0 - hasAw ) * step( 0.3, fh1( shopI * 13.0 ) ) * kW;
+  vec3 fasC = fh1( shopI * 17.0 ) < 0.5 ? vec3( 0.08, 0.10, 0.14 ) : fh1( shopI * 19.0 ) < 0.5 ? vec3( 0.55, 0.12, 0.10 ) : vec3( 0.70, 0.60, 0.25 );
+  col = mix( col, fasC * E * RECIPROCAL_PI, fas );
   // street trees: the far side's row before its facades, then this side's row
   for ( int k = 0; k < 2; k++ ) {
     float tT = ( streetW * 0.5 + ( k == 0 ? 5.2 : -5.2 ) ) / rn;
     if ( tT <= 0.0 ) continue;
     float ty = baseH + R.y * tT;
     float tx = px + dot( R, T ) * tT;
-    // soft, out-of-focus crowns: a band with gentle density variation, trunks below
+    // soft crowns: a band with gentle density variation, sunlit on top, trunks below
     float crown = smoothstep( 2.6, 3.8, ty ) * smoothstep( 8.4, 5.8, ty );
     float fpT = gPA * ( gTC + tT ) / rn;
     float dens = mix( 0.42, 0.3 + 0.35 * vnoise( vec2( tx * 0.35, ty * 0.6 ) + float( k ) * 9.0 ), 1.0 - smoothstep( 1.0, 4.0, fpT ) );
     float gap = mix( 0.75, smoothstep( 0.0, 0.25, fract( tx / 10.0 + 0.1 ) ) * smoothstep( 1.0, 0.8, fract( tx / 10.0 + 0.1 ) ), 1.0 - smoothstep( 2.0, 6.0, fpT ) );
     float tree = crown * dens * gap;
-    vec3 leaf = vec3( 0.07, 0.10, 0.05 ) * ( Eamb + sunC * 0.35 ) * RECIPROCAL_PI;
+    float top = smoothstep( 4.5, 7.5, ty );
+    vec3 leaf = vec3( 0.07, 0.10, 0.05 ) * ( Eamb + sunC * sunUp * ( 0.15 + 0.5 * top ) ) * RECIPROCAL_PI;
     // composite over (facade, coverage)
     float nc = cov + tree * ( 1.0 - cov );
     col = ( cov * ( 1.0 - tree ) * col + tree * leaf ) / max( nc, 1e-4 );
@@ -976,7 +1193,11 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
       float kp = 1.0 - smoothstep( 0.5, 1.5, fx / 1.1 );
       cover = mix( 0.33 * 0.34 * ( 1.0 - smoothstep( 1.6, 1.8, yc ) ), body, kp );
       vec3 cl = fh3( cid * 7.1 + float( k ) + step( 0.47, yr ) * 3.0 );
-      alb = mix( vec3( 0.12, 0.11, 0.1 ), mix( vec3( dot( cl, vec3( 0.33 ) ) ), cl, 0.45 ) * 0.42 + 0.03, kp );
+      alb = mix( vec3( dot( cl, vec3( 0.33 ) ) ), cl, 0.45 ) * 0.42 + 0.03;
+      // a face and hair, the body rounded (darker at its sides)
+      if ( yr > 0.87 ) alb = yr > 0.95 ? vec3( 0.05, 0.04, 0.03 ) : mix( vec3( 0.52, 0.36, 0.26 ), vec3( 0.20, 0.13, 0.09 ), hp.x * 3.0 );
+      alb *= 0.6 + 0.4 * ( 1.0 - min( du * du / ( wh * wh ), 1.0 ) );
+      alb = mix( vec3( 0.12, 0.11, 0.1 ), alb, kp );
     } else if ( k == 2 || k == 5 ) {
       cover = fPulse( xc / 10.0 + 0.1, 0.975, fx / 10.0 ) * step( yc, 2.8 );   // tree trunks
       alb = vec3( 0.12, 0.1, 0.08 );
@@ -997,6 +1218,7 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
 const FRAG_LIGHT = /* glsl */`
 #include <lights_fragment_maps>
 vec3 fInterior = vec3( 0.0 );
+vec2 fRT = vec2( 0.08, 0.92 );
 float fNoGlass = step( 3.5, mod( vWin.w, 8.0 ) );
 float fGlass = ( 1.0 - fNoGlass ) * ( 1.0 - fMask );
 if ( fMask < 0.999 ) {
@@ -1035,10 +1257,12 @@ if ( fMask < 0.999 ) {
     vec3 stoneR = vec3( 0.56, 0.50, 0.41 ) * Eamb * RECIPROCAL_PI * ( e.y < 0.0 ? 0.8 : 0.55 );
     radiance = mix( stoneR, radiance, inside );
   }
-  // a faint film of dust and smudges dims and greys the reflection a little; both faces of
-  // the pane reflect, ~2F / (1 + F) of what the single-face BRDF applies
+  // both faces of the pane reflect: the exact two-face reflectance of float glass (in
+  // place of the single-face estimate the indirect specular applies: ~15% at 60°, ~27% at
+  // 70°, ~36% at 75° of incidence); a faint film of dust and smudges dims it a little
   float fNVr = saturate( dot( normal, normalize( vViewPosition ) ) );
-  radiance *= fSmudge * 2.0 / ( 1.04 + 0.96 * pow( 1.0 - fNVr, 5.0 ) );
+  fRT = fGlassRT( fNVr );
+  radiance *= fSmudge * fRT.x / max( 0.04 * material.dfg.x + material.dfg.y, 1e-3 );
 
   // interior: camera ray expressed in room space
   vec3 rd = vec3( dot( Vw, T ), Vw.y, -dot( Vw, N ) );
@@ -1056,11 +1280,9 @@ if ( fMask < 0.999 ) {
 `;
 
 const FRAG_OUT = /* glsl */`
-float fNV = saturate( dot( normal, normalize( vViewPosition ) ) );
-float fF = 0.04 + 0.96 * pow( 1.0 - fNV, 5.0 );
-// transmission through both faces of the pane: (1 - F)^2
-float fT = 1.0 - fF * fGlass;
-vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * fT * fT;
+// transmission through both faces of the pane (with their inter-reflections)
+float fT = mix( 1.0, fRT.y, fGlass );
+vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * fT;
 `;
 
 // per-pane tilt and old-glass waviness, applied to the shading normal
@@ -1140,7 +1362,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v5';
+  m.customProgramCacheKey = () => 'facades.glassInterior.v6';
   return m;
 }
 

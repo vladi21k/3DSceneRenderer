@@ -6,11 +6,12 @@ import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
-import { shopLayout, shopTpls, shutterState, SHOP_FW } from './shops.js';
+import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow } from './spill.js';
+import { dressWindow, hangGoods } from './dressing.js';
 import { slopeAwningT as slopeAwning, domeAwningT as domeAwning, awningColors } from './awnings.js';
 import { crownY, springY, isArched, halfWidthAt, outlinePts } from './outline.js';
 import { swatch, weather } from './kit.js';
@@ -281,9 +282,8 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   // fit-outs still differ in colour, goods and lighting
   const variant = r.int(0, 1);
   const headSign = !!(signInfo && signInfo.mode === 'head');
-  const L = shopLayout(o, RNG.from(plan.seed, 'shopfront', variant), backDepth(o));
-  // the roller shutter's state is the opening's own (not the design's)
-  if (L.box) L.shutterDown = shutterState(RNG.from(o.id, 'shutterDown'), ctx.lotState || (ctx.lotState = {}));
+  // (the roller shutter's state is the opening's own, not the design's)
+  const L = shopDecision(plan, o);
   if (headSign) {
     // flat heads: a sign band ~0.55 m tall under the lintel, display glass below it
     if (!isArched(o)) { L.yT = Math.max(2.5, o.h - SHOP_FW - 0.62); L.doorH = Math.min(L.doorH, L.yT - 0.06); }
@@ -308,6 +308,22 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   if (ctx.q >= 0.5 && !ctx.lot.sideStreet && !ctx.plan.isReturn && !ctx.lot.backdrop) {
     const gg = groundGlow(ctx, o);
     if (gg) kit.get('spill').add(gg.tpl, IDENT, 1, 1, 1, gg.attrs);
+  }
+  // the shop's dressing: posters and price cards on the glass, stickers on the door, the
+  // name in vinyl letters on the head glass, goods hung on the piers (near range)
+  if (ctx.q >= 0.5 && !ctx.lot.backdrop) {
+    if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type);
+    const rv = RNG.from(o.id, 'vinyl');
+    if (L.head === 'glass' && !headSign && rv.chance(0.35)) {
+      const yH = L.yT + 0.05, top = crownY(o, SHOP_FW);
+      const band = Math.min(0.24, (top - yH) * 0.5);
+      if (band > 0.1) {
+        const dsg = { ...signDesign(rv.int(0, 1 << 30), 'letters', type), board: null, ink: rv.pick([0xf2efe6, 0xf2efe6, 0xd8b25a, 0xe9dfc4]), glow: 0 };
+        const mt = new THREE.Matrix4().copy(m).multiply(_r.makeTranslation(0, (yH + top) / 2, 0));
+        addSignText(kit, dsg, mt, L.hwI * 1.4, band, ctx.q, 0, -0.036);
+      }
+    }
+    if (!ctx.plan.isReturn && !(ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2 - 1.2, o.uc + o.w / 2 + 1.2))) hangGoods(kit, ctx, o, type);
   }
   // floor of a recessed entrance (the buildings' dark box behind it is unlit)
   if (T.recess) { const tint = plan.style.tint; kit.get('stone').add(T.recess, m, tint[0] * 0.8, tint[1] * 0.78, tint[2] * 0.74); }
