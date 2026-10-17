@@ -50,7 +50,7 @@ export class TractionLayer {
       this.sidebands = [[1, 0, 0.25], [1, -2, 1], [1, 2, 1], [1, -4, 0.5], [1, 4, 0.5], [2, -1, 0.3], [2, 1, 0.3], [2, -3, 0.3], [2, 3, 0.3], [3, -2, 0.15], [3, 2, 0.15]];
       for (const [, , w] of this.sidebands) {
         const o = new OscillatorNode(ctx, { frequency: 740 });
-        const g = new GainNode(ctx, { gain: 0.02 * w });
+        const g = new GainNode(ctx, { gain: 0.06 * w });
         o.connect(g).connect(this.invOut);
         this.osc.push(o);
       }
@@ -75,10 +75,19 @@ export class TractionLayer {
 
     // ---- auxiliaries
     const aux = e.bus.aux;
+    // HVAC / cooling fans, live: broadband blower noise with a slow wobble and the
+    // blade-pass hum (both shift with the fan speed)
     this.fanG = new GainNode(ctx, { gain: 0 });
     this.fanLp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 2800, Q: 0.5 });
     this.fanG.connect(this.fanLp).connect(aux);
-    this.fan = null;
+    this.fanBp = new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 560, Q: 0.45 });
+    const fanLp2 = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 2600, Q: 0.6 });
+    const wob = new GainNode(ctx, { gain: 0.9 }), wobD = new GainNode(ctx, { gain: 0.07 });
+    e.drift(0.6).connect(wobD).connect(wob.gain);
+    e.noise().connect(this.fanBp).connect(fanLp2).connect(wob).connect(this.fanG);
+    this.fanHum = new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 186, Q: 31 });
+    const humG = new GainNode(ctx, { gain: 3 });
+    e.noise().connect(this.fanHum).connect(humG).connect(this.fanG);
     this.conv = new OscillatorNode(ctx, { frequency: 4270 });
     this.convG = new GainNode(ctx, { gain: 0.00035 });
     this.hum = new OscillatorNode(ctx, { frequency: 100 });
@@ -146,11 +155,11 @@ export class TractionLayer {
     glide(this.gearG.gain, 0.022 * Math.pow(clamp(v / VMAX, 0, 1.2), 1.2) * (0.4 + 0.6 * eff) * smoothstep(0.2, 1.5, v), now, 0.08, 1e-3);
 
     // ---- auxiliaries
-    if (!this.fan) this.fan = e.loop('fan', this.fanG);
     // HVAC switches between two fan speeds every minute or so
     const fanSpeed = noise1(st.t / 70, 31) > 0.1 ? 1 : 0.72;
     glide(this.fanG.gain, 0.05 * fanSpeed, now, 1.5, 1e-3);
-    if (this.fan) glide(this.fan.playbackRate, 0.9 + 0.1 * fanSpeed, now, 1.5);
+    glide(this.fanBp.frequency, 560 * (0.9 + 0.1 * fanSpeed), now, 1.5);
+    glide(this.fanHum.frequency, 186 * (0.9 + 0.1 * fanSpeed), now, 1.5);
 
     // compressor: cuts in for ~15 s at a time while the tram stands
     this.stillT = v < 0.05 ? this.stillT + dt : 0;

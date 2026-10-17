@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
 import { disposeObject } from './streaming.js';
-import { buildPoleKit, TRACK_ARM_Y, WALK_ARM_Y } from './catenary/poleKit.js';
+import { buildPoleKit, ARM_Y as TRACK_ARM_Y, ARM_Y as WALK_ARM_Y } from './catenary/poleKit.js';
 import { planOverhead, buildOverheadChunk, buildInsulatorGeometry, buildClampGeometry } from './catenary/overhead.js';
 import { patchThin, makeWireMaterial, makeGlassMaterial, patchBanner, updateScreenUniforms } from './catenary/shaders.js';
 import { buildBannerBracket, buildBannerCloth, buildBannerAtlas, BANNER_DESIGNS, BANNER_X0, BANNER_X1, BANNER_Y0, BANNER_Y1 } from './catenary/banners.js';

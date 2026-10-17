@@ -156,7 +156,7 @@ export class RollingLayer {
     if (f.kind === 'joint' && f.sev < 0.25) {
       // a weld: only a low thump through the floor
       const buf = e.bank.get('thump' + (f.v % 4));
-      if (buf) e.shot(buf, this.jNear, when, 0.9 * f.sev * ax.w * vf, jitter);
+      if (buf) e.shot(buf, this.jNear, when, 0.25 * f.sev * ax.w * vf, jitter);
       return;
     }
     const buf = e.bank.get((f.kind === 'frog' ? 'frog' : 'clack') + f.v);

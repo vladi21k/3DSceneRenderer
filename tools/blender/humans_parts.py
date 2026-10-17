@@ -14,10 +14,11 @@ PART_IDS = {
     'hair_short': 1, 'hair_buzz': 2, 'hair_medium': 3, 'hair_curly': 4, 'hair_balding': 5,
     'hair_long': 6, 'hair_ponytail': 7, 'hair_bun': 8, 'hair_bob': 9, 'hair_pixie': 10, 'scarf': 11,
     'beard_full': 12, 'beard_short': 13, 'cap': 14, 'fedora': 15, 'sunhat': 16,
-    'backpack': 17, 'shoulderbag': 18, 'shopping': 19,
+    'backpack': 17, 'shoulderbag': 18, 'shopping': 19, 'hair_side': 20, 'hair_receding': 21,
 }
 PER_BASE = {
-    'male': ['hair_short', 'hair_buzz', 'hair_medium', 'hair_curly', 'hair_balding', 'beard_full', 'beard_short',
+    'male': ['hair_short', 'hair_buzz', 'hair_medium', 'hair_curly', 'hair_balding', 'hair_side', 'hair_receding',
+             'beard_full', 'beard_short',
              'cap', 'fedora', 'sunhat', 'backpack', 'shoulderbag', 'shopping'],
     'female': ['hair_long', 'hair_ponytail', 'hair_bun', 'hair_bob', 'hair_pixie', 'scarf', 'sunhat', 'cap',
                'backpack', 'shoulderbag', 'shopping'],
@@ -114,6 +115,13 @@ def hair_part(name):
         n = Union([n, Ellipsoid((0.012, 0.075, -0.055), (0.050, 0.028, 0.030))], k=0.02)
     elif name == 'hair_curly':
         n = cap_hair(0.028, 0.016, R, front=0.052, noise=0.006, seed=7)
+    elif name == 'hair_side':
+        # side parting: fuller top swept to one side, short back and sides
+        n = cap_hair(0.017, 0.006, R, front=0.054, noise=0.0016, seed=13)
+        sweep = Ellipsoid((0.022, 0.078, -0.035), (0.060, 0.026, 0.060), R=rot_xyz(0, 0, -12))
+        n = Union([n, sweep], k=0.02)
+    elif name == 'hair_receding':
+        n = cap_hair(0.010, 0.006, R, front=0.074, temple=0.066, noise=0.0012, seed=17)
     elif name == 'hair_balding':
         base = cap_hair(0.006, 0.006, R, fade=0.01)
         crown = Ellipsoid((0, 0.11, -0.01), (0.07, 0.07, 0.085))
@@ -145,8 +153,10 @@ def hair_part(name):
             bun = Ellipsoid((0, 0.045, 0.110), (0.040, 0.036, 0.034))
             n = Union([capn, bun], k=0.012)
         elif name == 'hair_bob':
-            bulb = Ellipsoid((0, 0.0, 0.012), (0.095, 0.115, 0.115))
-            low = Fn(lambda P: (-0.078 + 0.012 * (1 - np.cos(_theta(P)))) - P[:, 1], (-0.2, -0.3, -0.2), (0.2, 0.3, 0.2))
+            bulb = Ellipsoid((0, -0.004, 0.012), (0.092, 0.110, 0.112))
+            # uneven, clumpy cut line rather than a perfect helmet rim
+            low = Fn(lambda P: (-0.078 + 0.012 * (1 - np.cos(_theta(P))) + 0.005 * np.sin(_theta(P) * 11.0 + 0.7)
+                                + 0.003 * np.sin(_theta(P) * 23.0)) - P[:, 1], (-0.2, -0.3, -0.2), (0.2, 0.3, 0.2))
             bob = Intersect(bulb, low, k=0.006)
             # open the face generously: thin curtains near the eyes bridge into sheets when decimated
             bob = Subtract(bob, Ellipsoid((0, -0.028, -0.095), (0.078, 0.092, 0.095)), k=0.008)

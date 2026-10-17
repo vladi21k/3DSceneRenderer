@@ -232,8 +232,7 @@ const post = {
   render(dt, app) {
     const { renderer: r, scene, camera } = app;
     const env = app.systems.env;
-    if (this.size.x === 0) this.setSize();
-    const pr = r.getDrawingBufferSize(new THREE.Vector2());
+    const pr = r.getDrawingBufferSize(this._dbs || (this._dbs = new THREE.Vector2()));
     if (pr.x !== this.size.x || pr.y !== this.size.y) this.setSize();
 
     const prof = this.prof;

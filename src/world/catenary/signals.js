@@ -2,18 +2,22 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { TRACK_ZONE_HALF } from '../../core/config.js';
 
-// Tram signals (white bar aspects in a black three-lens head on a bordered backboard) at
-// the approach to every cross street, and two-aspect pedestrian lights at both ends of
-// the crossing over the tracks. Two materials only: a vertex-coloured body (post, housing,
-// visors, border, dark lenses) and one emissive atlas for every lit aspect; every part is
-// instanced per chunk, so building a junction costs nothing on the CPU.
-// Local frame: origin on the paving, +Y up, lenses face +Z.
+// Tram signals (a compact black square head with a white border and one lit white bar:
+// vertical = proceed, horizontal = stop) at the approach to every cross street, mounted on
+// the nearest catenary pole at about 3.2 m or, failing that, on a short post of their own;
+// and two-aspect pedestrian lights at both ends of the crossing over the tracks.
+// Two materials only: a vertex-coloured body (post, housing, visors, border, dark lenses)
+// and one emissive atlas for every lit aspect; every part is instanced per chunk, so
+// building a junction costs nothing on the CPU.
+// Local frame: origin on the paving (or at the mount height for 'head' parts), +Y up,
+// lenses face +Z.
 
-const TRAM_POLE_H = 3.35;
+const TRAM_HEAD_Y = 3.2;            // centre of the tram signal head above the paving
 const PED_POLE_H = 2.75;
+export const MOUNT_X = 0.3;         // pole axis to head centre (pole-mounted heads)
 
 // albedo (linear) of the body parts
-const C_POST = [0.05, 0.053, 0.055], C_HOUSING = [0.022, 0.022, 0.022], C_BORDER = [0.62, 0.62, 0.58], C_LENS = [0.008, 0.008, 0.008];
+const C_POST = [0.08, 0.088, 0.088], C_HOUSING = [0.022, 0.022, 0.022], C_BORDER = [0.62, 0.62, 0.58], C_LENS = [0.008, 0.008, 0.008];
 
 // emissive atlas cells (u ranges): white bar, red standing figure, green walking figure
 const CELL = { white: 0, red: 1, green: 2 };
@@ -53,6 +57,7 @@ function litDisc(r, cell, x, y, z) {
 }
 
 function litBar(w, h, x, y, z) {
+  // LED bar aspect, uv into the white cell
   const g = new THREE.PlaneGeometry(w, h);
   const uv = g.attributes.uv;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, (CELL.white + 0.25 + uv.getX(i) * 0.5) / CELLS, 0.25 + uv.getY(i) * 0.5);
@@ -60,33 +65,35 @@ function litBar(w, h, x, y, z) {
   return g;
 }
 
-/** Shared signal geometries: {tramBody, tramGo, tramStop, pedBody, pedLit}. */
+/** Shared signal geometries: {tramHead, tramPost, tramMount, tramGo, tramStop, pedBody, pedLit}.
+ *  Tram parts are in the head frame (origin on the paving below the head centre). */
 export function buildSignalKit() {
   const kit = {};
-  // --- tram head: housing, backboard with white border, three visored lenses
-  const body = [postGeometry(TRAM_POLE_H - 0.3)];
-  const head = new RoundedBoxGeometry(0.3, 0.82, 0.14, 2, 0.025); head.translate(0, TRAM_POLE_H + 0.1, 0);
-  body.push(colored(head, C_HOUSING));
-  const board = new RoundedBoxGeometry(0.42, 0.94, 0.02, 2, 0.008); board.translate(0, TRAM_POLE_H + 0.1, -0.08);
-  body.push(colored(board, C_HOUSING));
-  const border = new RoundedBoxGeometry(0.47, 0.99, 0.012, 2, 0.005); border.translate(0, TRAM_POLE_H + 0.1, -0.093);
-  body.push(colored(border, C_BORDER));
-  const lensY = [TRAM_POLE_H + 0.36, TRAM_POLE_H + 0.1, TRAM_POLE_H - 0.16];
-  for (const y of lensY) {
-    const v = visor(0.105, 0.16); v.translate(0, y, 0.07); body.push(colored(v, C_HOUSING));
-    const l = new THREE.CircleGeometry(0.095, 20); l.translate(0, y, 0.071); body.push(colored(l, C_LENS));
-  }
-  kit.tramBody = merge(body);
-  // lit aspects: bottom vertical bar = proceed, top horizontal bar = stop
-  kit.tramGo = merge([litBar(0.03, 0.14, 0, lensY[2], 0.073)]);
-  kit.tramStop = merge([litBar(0.14, 0.03, 0, lensY[0], 0.073)]);
+  const y = TRAM_HEAD_Y;
+  // --- tram head: housing, white-bordered backboard, hooded aspect
+  const head = new RoundedBoxGeometry(0.27, 0.27, 0.11, 2, 0.02); head.translate(0, y, 0);
+  const board = new RoundedBoxGeometry(0.33, 0.33, 0.016, 2, 0.006); board.translate(0, y, -0.062);
+  const border = new RoundedBoxGeometry(0.37, 0.37, 0.01, 2, 0.005); border.translate(0, y, -0.073);
+  const v = visor(0.115, 0.1); v.translate(0, y, 0.055);
+  const lens = new THREE.CircleGeometry(0.105, 24); lens.translate(0, y, 0.056);
+  kit.tramHead = merge([colored(head, C_HOUSING), colored(board, C_HOUSING), colored(border, C_BORDER), colored(v, C_HOUSING), colored(lens, C_LENS)]);
+  kit.tramPost = merge([postGeometry(y - 0.2)]);
+  // pole mount: a short tube from the back of the head to a clamp band around the pole,
+  // which stands MOUNT_X to the head's +X side
+  const tube = new THREE.CylinderGeometry(0.022, 0.022, MOUNT_X - 0.16, 10); tube.rotateZ(Math.PI / 2); tube.translate(0.08 + (MOUNT_X - 0.16) / 2, y, -0.03);
+  const band = new THREE.CylinderGeometry(0.1, 0.1, 0.07, 18, 1, true); band.translate(MOUNT_X, y, 0);
+  const plate = new RoundedBoxGeometry(0.1, 0.16, 0.03, 2, 0.008); plate.translate(0.1, y, -0.04);
+  kit.tramMount = merge([colored(tube, C_POST), colored(band, C_POST), colored(plate, C_POST)]);
+  // lit aspects (one bar each, inside the hood)
+  kit.tramGo = merge([litBar(0.034, 0.17, 0, y, 0.058)]);
+  kit.tramStop = merge([litBar(0.17, 0.034, 0, y, 0.058)]);
 
   // --- pedestrian head: two lenses (red standing figure lit, green walking dark)
   const pb = [postGeometry(PED_POLE_H - 0.23)];
   const ph = new RoundedBoxGeometry(0.26, 0.56, 0.15, 2, 0.02); ph.translate(0, PED_POLE_H + 0.05, 0);
   pb.push(colored(ph, C_HOUSING));
   const pedY = [PED_POLE_H + 0.18, PED_POLE_H - 0.08];
-  for (const y of pedY) { const v = visor(0.1, 0.13); v.translate(0, y, 0.075); pb.push(colored(v, C_HOUSING)); }
+  for (const yy of pedY) { const vv = visor(0.1, 0.13); vv.translate(0, yy, 0.075); pb.push(colored(vv, C_HOUSING)); }
   kit.pedBody = merge(pb);
   kit.pedLit = merge([litDisc(0.09, CELL.red, 0, pedY[0], 0.076), litDisc(0.09, CELL.green, 0, pedY[1], 0.076)]);
   for (const k of Object.keys(kit)) kit[k].userData.shared = true;
@@ -141,22 +148,39 @@ export function buildAspectAtlas() {
   return t;
 }
 
-/** Placements for the signals of one cross street: [{kind, s, d, face}] with face the
- *  direction the lenses look towards ('back' = towards -s, 'fwd', 'left', 'right'). */
-export function signalPlacements(c, layout) {
+/** Placements for the signals of one cross street: [{kind, s, d, face, pole?}] with face
+ *  the direction the lenses look towards ('back' = towards -s, 'fwd', 'left', 'right').
+ *  Tram heads go on the nearest catenary pole on their side within 6 m before the
+ *  junction (pole = that rendered pole); otherwise on their own post, kept clear of the
+ *  street-tree crowns and of the poles. */
+export function signalPlacements(c, layout, poles) {
   const out = [];
+  const route = layout.route;
   const dEdge = TRACK_ZONE_HALF + 0.38;
   const ci = layout.chunkIndex(c.s);
-  const near = [...layout.inChunk('poles', ci - 1), ...layout.inChunk('poles', ci), ...layout.inChunk('poles', ci + 1)];
-  const clearOfPoles = (s, d) => !near.some((p) => Math.sign(p.d) === Math.sign(d) && Math.abs(layout.route.delta(p.s, s)) < 1.4);
+  const near = [...poles(ci - 1), ...poles(ci), ...poles(ci + 1)];
+  const trees = [...layout.inChunk('trees', ci - 1), ...layout.inChunk('trees', ci), ...layout.inChunk('trees', ci + 1)];
+  const clear = (s, d) => !near.some((p) => Math.sign(p.d) === Math.sign(d) && Math.abs(route.delta(p.s, s)) < 1.4)
+    && !trees.some((t) => Math.sign(t.d) === Math.sign(d) && Math.abs(route.delta(t.s, s)) < t.crown * 0.5 + 0.5);
   const place = (s, d, kind, face) => {
     let ss = s;
-    for (let k = 0; k < 4 && !clearOfPoles(ss, d); k++) ss += (face === 'back' ? -1.5 : 1.5);
+    for (let k = 0; k < 6 && !clear(ss, d); k++) {
+      ss = face === 'back' ? s - 1.2 * (k + 1) : face === 'fwd' ? s + 1.2 * (k + 1) : s + (k % 2 ? -1 : 1) * 0.6 * (k + 1);
+    }
     out.push({ kind, s: ss, d, face });
   };
   // tram signals before the junction for each direction of travel
-  place(c.s - c.width / 2 - 3.5, +dEdge, 'tram', 'back');
-  place(c.s + c.width / 2 + 3.5, -dEdge, 'tram', 'fwd');
+  for (const [dir, side, face] of [[-1, +1, 'back'], [+1, -1, 'fwd']]) {
+    const sIdeal = c.s + dir * (c.width / 2 + 3.5);
+    let best = null, bestD = 6;
+    for (const p of near) {
+      if (Math.sign(p.d) !== side) continue;
+      const ds = route.delta(sIdeal, p.s) * -dir; // >= 0: pole further from the junction
+      if (ds > -1.5 && Math.abs(ds) < bestD) { best = p; bestD = Math.abs(ds); }
+    }
+    if (best) out.push({ kind: 'tram', s: best.s, d: best.d, face, pole: best });
+    else place(sIdeal, side * dEdge, 'tram', face);
+  }
   // pedestrian lights at both kerbs of the crossing, facing across the tracks
   place(c.s + 1.6, +dEdge, 'ped', 'left');
   place(c.s - 1.6, -dEdge, 'ped', 'right');

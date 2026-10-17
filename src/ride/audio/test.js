@@ -8,7 +8,8 @@
 //   or 'none'), raw (skip compressor/limiter), wav (return the mix as base64 WAV),
 //   bands (octave-band levels per layer), solo (bus for the 'mix' render / WAV),
 //   sampleRate, night (0..1), tod (0..1), wind, events ([{t, type, data}]),
-//   worklet (false: force the buffer-noise fallback), ambMute (ambience parts to mute).
+//   worklet (false: force the buffer-noise fallback), ambMute (ambience parts to mute),
+//   updateHz (engine update rate on the virtual clock, default 60).
 import { EYE_HEIGHT, TRACK_OFFSET } from '../../core/config.js';
 import { Bank } from './bank.js';
 import { AudioEngine, BUSES } from './engine.js';
@@ -97,7 +98,7 @@ async function renderOnce(app, bank, sc, o, solo) {
   await AudioEngine.prepare(ctx);
   const eng = new AudioEngine(ctx, bank, { route: app.route, layout: app.layout, features: app.audio.features }, { solo, raw: o.raw, seed: o.seed ?? 1, ambMute: o.ambMute });
   eng.setLevel(1, 0, 0.001);
-  const dt = 1 / 60;
+  const dt = 1 / (o.updateHz || 60);
   const st = { t: 0, s: sc.s0, speed: 0, accel: 0, throttle: 0, state: 'run', night: o.night ?? 0, tod: o.tod ?? 0, wind: o.wind ?? 0.35, listener: {} };
   let s = sc.s0, k = 0;
   for (let t = 0; t < T; t += dt) {

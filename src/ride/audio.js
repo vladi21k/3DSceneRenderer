@@ -220,7 +220,7 @@ const audio = {
     res.buffers = this.bank.map.size;
     res.worklet = e.worklet;
     res.open = +e.open.toFixed(2);
-    res.ambience = { ...e.layers.ambience.debug };
+    res.amb = { ...e.layers.ambience.debug };
     res.updateMs = +this.updateMs.toFixed(3);
     return res;
   },

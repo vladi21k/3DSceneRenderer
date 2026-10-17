@@ -1,9 +1,12 @@
-import { MAIN_RAILS, BAND_IN, GUTTER_OUT, SIDEWALK_RISE } from './constants.js';
+import { MAIN_RAILS, BAND_IN, GUTTER_OUT, SIDEWALK_RISE, GROUT_W } from './constants.js';
+import { IRON_REGIONS } from './textures.js';
+import { RNG } from '../../core/rng.js';
 
 // Cross streets: the side street from the main facade line out to depth + 16 m (+30 m
 // run-out): sidewalks, granite kerbs dropped to a ramp at the mouth (the side street is
-// closed by bollards), an asphalt carriageway with a slight crown, a zebra crossing at
-// the mouth and a dashed centre line further out. The first row reuses the exact mouth
+// closed by bollards behind a light granite edge strip), an asphalt carriageway with a
+// slight crown and darker wheel tracks, gullies at the kerbs, a manhole and oil stains,
+// a zebra crossing at the mouth and a dashed centre line further out. The first row reuses the exact mouth
 // points of the main sidewalk so the two surfaces meet without a seam.
 // Also the pedestrian crossing over the tram corridor at the junction (zebra stripes
 // between the rails) with tactile warning strips at both corridor edges.
@@ -11,6 +14,8 @@ import { MAIN_RAILS, BAND_IN, GUTTER_OUT, SIDEWALK_RISE } from './constants.js';
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 const KERB_W = 0.16;
 const KERB_H = 0.12;
+const EDGE_X = 0.36;          // granite edge strip across the carriageway at the mouth
+const ATLAS = 1024;
 
 function dims(c) {
   const w = c.width;
@@ -39,7 +44,7 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const m = surface.mouth(c, side);
   const { half, road } = dims(c);
   const lod = chunk.lod;
-  const xs = [0, 1.5, 3, 4.5, 6, 7.5, 9, 12];
+  const xs = [0, EDGE_X, 1.5, 3, 4.5, 6, 7.5, 9, 12];
   const xStep = lod === 0 ? 6 : 15;
   for (let x = 12 + xStep; x < m.len; x += xStep) xs.push(x);
   xs.push(m.len);
@@ -80,18 +85,21 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   // strips [j0, j1, material]: sidewalk | kerb top | carriageway | kerb top | sidewalk
   const jKbL = cols.indexOf(-road - KERB_W), jKfL = cols.indexOf(-road - 0.001), jRL = cols.indexOf(-road);
   const jRR = cols.indexOf(road), jKfR = cols.indexOf(road + 0.001), jKbR = cols.indexOf(road + KERB_W);
+  // [j0, j1, material, i0, i1]: the carriageway starts with the granite edge strip
   const strips = [
-    [0, jKbL, mats.walk],
-    [jKbL, jKfL, mats.kerb],
-    [jRL, jRR, mats.asphalt],
-    [jKfR, jKbR, mats.kerb],
-    [jKbR, nc - 1, mats.walk],
+    [0, jKbL, mats.walk, 0, nr - 1],
+    [jKbL, jKfL, mats.kerb, 0, nr - 1],
+    [jRL, jRR, mats.band, 0, 1],
+    [jRL, jRR, mats.asphalt, 1, nr - 1],
+    [jKfR, jKbR, mats.kerb, 0, nr - 1],
+    [jKbR, nc - 1, mats.walk, 0, nr - 1],
   ];
   const f = surface.fG;
-  for (const [j0, j1, mat] of strips) {
+  for (const [j0, j1, mat, i0, i1] of strips) {
     const b = bufs.get(mat, true);
-    const idx = new Int32Array(nr * (j1 - j0 + 1));
-    for (let i = 0; i < nr; i++) {
+    const W = j1 - j0 + 1;
+    const idx = new Int32Array(nr * W);
+    for (let i = i0; i <= i1; i++) {
       for (let j = j0; j <= j1; j++) {
         const o = (i * nc + j) * 3;
         // normal from grid neighbours (within the strip)
@@ -104,15 +112,18 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
         const il2 = 1 / (Math.hypot(nx, ny, nz) || 1);
         const x = xs[i], a = cols[j];
         let t = (1 + 0.08 * f.sample(x * 0.5 + 300, a * 0.5)) * (1 + 0.05 * f.sample(x * 2.1, a * 2.1 + 90));
-        if (mat === mats.asphalt) t *= 1 - 0.12 * Math.exp(-(road - Math.abs(a)) / 0.3);  // dirt along the kerbs
+        if (mat === mats.asphalt) {
+          t *= 1 - 0.12 * Math.exp(-(road - Math.abs(a)) / 0.3);            // dirt along the kerbs
+          const wt = Math.abs(a) - road * 0.5;
+          t *= 1 - 0.07 * Math.exp(-(wt * wt) / 0.4) * smooth((x - 4) / 6);  // polished wheel tracks
+        }
         if (mat === mats.walk) t *= 1 - 0.12 * Math.exp(-Math.max(0, half - Math.abs(a)) / 0.4);
         idx[i * (j1 - j0 + 1) + (j - j0)] = b.v(P[o], P[o + 1], P[o + 2], nx * il2, ny * il2, nz * il2, x, a, t, t * 0.995, t * 0.985);
       }
     }
-    const W = j1 - j0 + 1;
     // winding: a runs along `along`; dirOut is the extrusion. Choose the front face up.
     const flip = side > 0 ? false : true;
-    for (let i = 0; i < nr - 1; i++) {
+    for (let i = i0; i < i1; i++) {
       for (let j = 0; j < W - 1; j++) {
         const q0 = idx[i * W + j], q1 = idx[i * W + j + 1], q2 = idx[(i + 1) * W + j + 1], q3 = idx[(i + 1) * W + j];
         if (flip) b.quad(q0, q1, q2, q3); else b.quad(q0, q3, q2, q1);
@@ -164,6 +175,64 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     for (let x = x0; x <= x0 + 3.01; x += 1.5) { const p = pt(0, x); arr.push(p[0], p[1], p[2], rx, rz, x - x0); }
     lines.stripe.add(arr, 0.06, 3.0);
   }
+  sideStreetDetails(ctx, c, side, m, road, bufs, pt);
+}
+
+/**
+ * Cast-iron covers and oil stains on a side street (mouth frame: a along the mouth, x
+ * out along the side street). at(a, x, lift) gives the surface point.
+ */
+function sideStreetDetails(ctx, c, side, m, road, bufs, at) {
+  const { mats } = ctx;
+  const rng = RNG.from('side-street', Math.round(c.s * 10), side);
+  const ox = m.dirOut.x, oz = m.dirOut.z, axx = m.along.x, axz = m.along.z;
+  // flat covers in the mouth frame (u along dirOut, v along `along`; u→v turns
+  // counter-clockwise seen from above on the right-hand side, clockwise on the left)
+  const iron = bufs.get(mats.details.iron, false);
+  const cover = (type, a, x, rot = 0) => {
+    const R = IRON_REGIONS[type];
+    const ca = Math.cos(rot), sa = Math.sin(rot);
+    const vert = (lu, lv) => {
+      const du = lu * ca - lv * sa, dv = lu * sa + lv * ca;
+      const p = at(a + dv, x + du, 0.003);
+      return iron.v(p[0], p[1], p[2], 0, 1, 0, (R.x + (lu / R.mw + 0.5) * R.w) / ATLAS, (R.y + (lv / R.mh + 0.5) * R.h) / ATLAS);
+    };
+    if (type === 'manhole') {
+      const n = 20, r = R.mw / 2, c0 = vert(0, 0), first = iron.n;
+      for (let k = 0; k < n; k++) { const t = (k / n) * Math.PI * 2; vert(Math.cos(t) * r, Math.sin(t) * r); }
+      for (let k = 0; k < n; k++) {
+        if (side > 0) iron.tri(c0, first + k, first + ((k + 1) % n));
+        else iron.tri(c0, first + ((k + 1) % n), first + k);
+      }
+    } else {
+      const a0 = vert(-R.mw / 2, -R.mh / 2), a1 = vert(R.mw / 2, -R.mh / 2), a2 = vert(R.mw / 2, R.mh / 2), a3 = vert(-R.mw / 2, R.mh / 2);
+      if (side > 0) iron.quad(a0, a1, a2, a3); else iron.quad(a0, a3, a2, a1);
+    }
+  };
+  // gullies in both gutters just past the ramp, a manhole further out
+  for (const k of [-1, 1]) cover('gully', k * (road - 0.2), 8.2 + rng.range(-0.6, 0.6));
+  if (rng.chance(0.75)) cover('manhole', rng.range(-0.4, 0.4) * road, rng.range(15, Math.min(28, m.len - 6)), rng.range(0, 6.28));
+
+  // oil drips along the lane centres and dirt patches (alpha decals)
+  const st = bufs.get(mats.details.stain, false);
+  const n = rng.int(3, 6);
+  for (let i = 0; i < n; i++) {
+    const kind = rng.weighted([[1, 0.45], [3, 0.3], [0, 0.25]]);
+    const a = (rng.chance(0.5) ? 1 : -1) * road * 0.5 + rng.normal(0, 0.25);
+    const x = rng.range(9, Math.min(40, m.len - 4));
+    const size = kind === 3 ? rng.range(1.6, 2.8) : rng.range(0.7, 1.6);
+    const hx = size / 2, hy = (size * (kind === 3 ? 0.4 : rng.range(0.7, 1.1))) / 2;
+    const rot = kind === 3 ? rng.normal(0, 0.05) : rng.range(0, 6.28);
+    const ca = Math.cos(rot), sa = Math.sin(rot);
+    const col = kind % 2, row = Math.floor(kind / 2);
+    const first = st.n;
+    for (const [lu, lv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const du = lu * hx * ca - lv * hy * sa, dv = lu * hx * sa + lv * hy * ca;
+      const p = at(a + dv, x + du, 0.0015);
+      st.v(p[0], p[1], p[2], 0, 1, 0, col * 0.5 + (lu * 0.5 + 0.5) * 0.5, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5);
+    }
+    if (side > 0) st.quad(first, first + 1, first + 2, first + 3); else st.quad(first, first + 3, first + 2, first + 1);
+  }
 }
 
 /** Pedestrian crossing over the tram corridor at a cross street. */
@@ -172,10 +241,11 @@ export function buildCorridorCrossing(ctx, c, chunk, bufs, lines) {
   const { route, surface } = ctx;
   const L = 4.0;
   const sA = c.s - L / 2;
-  // free lateral intervals between rails (5 cm clear of the rail seals)
+  // free lateral intervals between rails (3 cm clear of the mortar strips)
   const free = [];
+  const clear = GROUT_W + 0.03;
   let x = -BAND_IN + 0.12;
-  for (const r of MAIN_RAILS) { free.push([x, r.lo - 0.05]); x = r.hi + 0.05; }
+  for (const r of MAIN_RAILS) { free.push([x, r.lo - clear]); x = r.hi + clear; }
   free.push([x, BAND_IN - 0.12]);
   const smp = {};
   const rowsS = [];

@@ -166,7 +166,8 @@ export class Surface {
   tone(ri, d, out, o, ci = colInfo(d, this._ci || (this._ci = {}))) {
     const s = ri.s;
     const n1 = this.fG.sample(s * 0.5, d * 0.5 + 40);
-    const n2 = this.fD.sample(s, d);
+    // fine blotches: two incommensurate lookups so the 25.6 m table period never shows
+    const n2 = 0.62 * this.fD.sample(s, d) + 0.38 * this.fD.sample(s * 0.71 + d * 0.13 + 37.7, d * 0.71 - s * 0.13 + 11.3);
     let v = (1 + 0.075 * n1) * (1 + 0.06 * n2) * ci.v;
     let warm = ci.warm;
     if (ci.zone === Z_CORR) {

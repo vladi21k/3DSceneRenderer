@@ -17,11 +17,14 @@ const DS = 0.5; // table resolution (m)
 // Plan of the loop. turn in degrees (+ left), radius in metres, trans = clothoid length.
 // Two straights (chosen automatically) absorb the closure error; `min` bounds them.
 const PLAN = [
-  { type: 'straight', len: 560, min: 520, name: 'main avenue' },
-  { type: 'curve', turn: 8, radius: 900, trans: 30 },
-  { type: 'straight', len: 160 },
-  { type: 'curve', turn: -8, radius: 900, trans: 30 },
-  { type: 'straight', len: 240 },
+  // main avenue (default start): the tracks bend gently right, then left, while the street climbs a hill
+  { type: 'straight', len: 150, min: 110, keep: true, name: 'main avenue' },
+  { type: 'curve', turn: -6, radius: 1100, trans: 40 },
+  { type: 'straight', len: 110, keep: true },
+  { type: 'curve', turn: 11, radius: 750, trans: 40 },
+  { type: 'straight', len: 170 },
+  { type: 'curve', turn: -5, radius: 900, trans: 30 },
+  { type: 'straight', len: 200 },
   { type: 'curve', turn: 60, radius: 230, trans: 35 },
   { type: 'straight', len: 330 },
   { type: 'curve', turn: 6, radius: 700, trans: 25 },
@@ -41,6 +44,25 @@ const PLAN = [
   { type: 'curve', turn: 60, radius: 120, trans: 28 },
   { type: 'straight', len: 260 },
 ];
+
+// Long straights get a gentle S-meander (net zero turn) so no street is ruler-straight.
+function meander(plan) {
+  const out = [];
+  let k = 0;
+  for (const seg of plan) {
+    if (seg.type !== 'straight' || seg.keep || seg.len < 230) { out.push(seg); continue; }
+    const turn = (k++ % 2 ? -1 : 1) * (2.5 + (k % 3) * 0.8);
+    const R = 1400 + (k % 4) * 250, trans = 30;
+    const arc = R * Math.abs(turn) * Math.PI / 180; // length of each bend
+    const rest = Math.max(40, seg.len - 2 * arc);
+    out.push({ ...seg, len: rest * 0.35 });
+    out.push({ type: 'curve', turn, radius: R, trans });
+    out.push({ type: 'straight', len: rest * 0.3, min: 20 });
+    out.push({ type: 'curve', turn: -turn, radius: R, trans });
+    out.push({ type: 'straight', len: rest * 0.35, min: 20 });
+  }
+  return out;
+}
 
 function curvatureProfile(plan) {
   // returns array of {s0, s1, k0, k1, seg} (linear curvature pieces) and total length
@@ -97,7 +119,7 @@ function integrate(pieces, length) {
 
 export class Route {
   constructor() {
-    let plan = PLAN.map((p) => ({ ...p }));
+    let plan = meander(PLAN.map((p) => ({ ...p })));
     // Closure: pick the pair of straights whose length change closes the loop with the
     // smallest total adjustment while respecting minimum lengths (heading closes by design).
     {
@@ -150,12 +172,20 @@ export class Route {
       s = s1;
     }
 
-    // elevation: periodic sum of sines (exactly periodic over the loop), grades ≤ ~3%
+    // elevation: gentle periodic rolling plus designed hills (periodic bumps), grades ≲ 4 %.
+    // The main avenue climbs ~10 m ahead of the default start and crests about 470 m on.
     const L = length;
     this.elevTerms = [
-      { a: 4.2, k: 2, p: 0.35 },
-      { a: 1.8, k: 5, p: 2.1 },
-      { a: 0.45, k: 13, p: 4.0 },
+      { a: 1.6, k: 2, p: 0.35 },
+      { a: 0.9, k: 5, p: 2.1 },
+      { a: 0.3, k: 13, p: 4.0 },
+    ];
+    this.hills = [
+      { c: 470, a: 10.5, w: 215 },
+      { c: 1650, a: -5.5, w: 260 },
+      { c: 2700, a: 6.5, w: 240 },
+      { c: 3900, a: -4.5, w: 300 },
+      { c: 5000, a: 5.0, w: 230 },
     ];
     this.y = new Float64Array(this.n);
     for (let i = 0; i < this.n; i++) this.y[i] = this.elevationRaw(i * DS);
@@ -163,8 +193,14 @@ export class Route {
   }
 
   elevationRaw(s) {
+    const L = this.length;
     let y = 0;
-    for (const e of this.elevTerms) y += e.a * Math.sin((2 * Math.PI * e.k * s) / this.length + e.p);
+    for (const e of this.elevTerms) y += e.a * Math.sin((2 * Math.PI * e.k * s) / L + e.p);
+    for (const h of this.hills) {
+      // periodic (von Mises) bump of width ≈ w metres
+      const kappa = (L / (2 * Math.PI * h.w)) ** 2;
+      y += h.a * Math.exp(kappa * (Math.cos((2 * Math.PI * (s - h.c)) / L) - 1));
+    }
     return y;
   }
 

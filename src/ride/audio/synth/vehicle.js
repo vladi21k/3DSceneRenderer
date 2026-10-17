@@ -1,6 +1,6 @@
 // Vehicle one-shots and loops: brake air, doors, passenger chimes and the
-// auxiliary compressor.
-import { arng, Biquad, Resonator, SlowNoise, addMode, noiseGen, normalize, normalizeRms, fadeEnds, makeLoop } from '../dsp.js';
+// auxiliary compressor (the HVAC fans are synthesized live in layers/traction.js).
+import { arng, Biquad, Resonator, SlowNoise, addMode, noiseGen, normalize, normalizeRms, fadeEnds } from '../dsp.js';
 
 /** Pneumatic exhaust. kind 'stop' (holding brake applied) or 'release' (short pfft). */
 export function airHiss(sr, kind = 'stop', k = 0) {
@@ -135,25 +135,3 @@ export function compressorLoop(sr) {
   normalizeRms(out, 0.2);
   return out;
 }
-
-/** Long fan/blower noise loop (HVAC + traction cooling fans): stereo, seamless. */
-export function fanLoop(sr) {
-  const n = Math.floor(5.3 * sr), fade = Math.floor(0.3 * sr);
-  const chans = [];
-  for (let ch = 0; ch < 2; ch++) {
-    const rng = arng('fan', ch);
-    const nz = noiseGen(rng);
-    const x = new Float32Array(n + fade);
-    const bp = new Biquad(sr, 'bandpass', 560, 0.45), lp = new Biquad(sr, 'lowpass', 2600, 0.6);
-    const hum = new Resonator(sr).set(186, 6);
-    const wob = new SlowNoise(sr, 0.6, nz);
-    for (let i = 0; i < x.length; i++) {
-      const w = 1 + 0.08 * wob.run();
-      x[i] = lp.run(bp.run(nz())) * w + hum.run(nz()) * 0.06;
-    }
-    chans.push(makeLoop(x, n, fade));
-  }
-  normalizeRms(chans, 0.2);
-  return chans;
-}
-

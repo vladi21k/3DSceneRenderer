@@ -92,3 +92,29 @@ export function lowestAfter(pts, fromIndex = 0) {
   for (let i = fromIndex; i < pts.length; i++) if (pts[i][1] < best[1]) best = pts[i];
   return best;
 }
+
+/** Offset a polyline sideways: dist(s) metres along its left normal at arc length s. */
+export function offsetPath(pts, dist) {
+  const out = [];
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) {
+    if (i > 0) s += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+    const h = Math.atan2(b[1] - a[1], b[0] - a[0]);
+    const d = dist(s);
+    out.push([pts[i][0] - Math.sin(h) * d, pts[i][1] + Math.cos(h) * d]);
+  }
+  return out;
+}
+
+/** Point at arc length s along a polyline, measured from index i0. */
+export function pointAt(pts, i0, s) {
+  let acc = 0;
+  for (let i = i0 + 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (acc + l >= s) { const t = (s - acc) / (l || 1); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; }
+    acc += l;
+  }
+  return [...pts[pts.length - 1]];
+}

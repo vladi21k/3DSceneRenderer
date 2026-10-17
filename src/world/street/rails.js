@@ -1,4 +1,4 @@
-import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT } from './constants.js';
+import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W } from './constants.js';
 
 // Embedded grooved rails.
 //  - sweepRail(): true 3D cross-section (rubber seals, bevelled head with a polished
@@ -122,6 +122,8 @@ export function inlayStrip(buf, pts, fx0, fx1, uScale = 1) {
 
 /** Bands of the grooved rail (rail-local x, + towards gauge). */
 export const BANDS = {
+  groutF: [RAIL_X0 - GROUT_W, RAIL_X0],
+  groutG: [RAIL_X1, RAIL_X1 + GROUT_W],
   sealF: [RAIL_X0, -HEAD_HALF],
   cornerF: [-HEAD_HALF, HEAD_DULL],
   head: [HEAD_DULL, HEAD_HALF],
@@ -137,7 +139,8 @@ const HEADISH = { head: 1, cornerF: 1 };
  * g: gauge direction relative to the path's right vector. layer: material set
  * { seal, side, head, lip, groove } with increasing polygon offsets.
  * opts.mask(p, band) -> 0..1 (0 skips the sample; for the head bands it also scales
- * the width about the rail centre, which tapers switch blades).
+ * the width about the rail centre, which tapers switch blades). opts.grout = false
+ * leaves out the mortar strips (where the paving grid already has them).
  */
 export function inlayRail(bufs, pts, g, opts = {}) {
   const mask = opts.mask || (() => 1);
@@ -155,6 +158,10 @@ export function inlayRail(bufs, pts, g, opts = {}) {
       return HEADISH[name] ? b * k : b;
     });
   };
+  if (bufs.grout && opts.grout !== false) {
+    put(bufs.grout, BANDS.groutF, 'groutF');
+    put(bufs.grout, BANDS.groutG, 'groutG');
+  }
   put(bufs.seal, BANDS.sealF, 'sealF');
   put(bufs.seal, BANDS.sealG, 'sealG');
   put(bufs.side, BANDS.cornerF, 'cornerF');
@@ -164,10 +171,10 @@ export function inlayRail(bufs, pts, g, opts = {}) {
 }
 
 /** Points for a LineBuf ribbon centred on the rail profile (offset so the ribbon covers
- *  [RAIL_X0, RAIL_X1]); returns [flat array, halfWidth, centreOffset]. The ribbon's
- *  right vector points to the gauge side. */
+ *  the rail and its mortar strips); returns [flat array, halfWidth, centreOffset]. The
+ *  ribbon's right vector points to the gauge side. */
 export function railLinePoints(pts, g) {
-  const cOff = (RAIL_X0 + RAIL_X1) / 2, half = (RAIL_X1 - RAIL_X0) / 2;
+  const cOff = (RAIL_X0 + RAIL_X1) / 2, half = (RAIL_X1 - RAIL_X0) / 2 + GROUT_W;
   const n = pts.length;
   const arr = new Array(n * 6);
   for (let i = 0; i < n; i++) {

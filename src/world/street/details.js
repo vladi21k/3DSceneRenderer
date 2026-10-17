@@ -1,7 +1,7 @@
 import { RNG, hash2 } from '../../core/rng.js';
 import { CHUNK_LEN } from '../../core/config.js';
 import { IRON_REGIONS } from './textures.js';
-import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } from './constants.js';
+import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN, GROUT_W } from './constants.js';
 import { colInfo, Z_CORR } from './surface.js';
 
 // Street details per chunk, planned deterministically from the chunk index so the
@@ -252,7 +252,7 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
       surface.rowInfo(s, ri);
       const free = [];
       let x = -BAND_IN;
-      for (const r of MAIN_RAILS) { free.push([x, r.lo - 0.005]); x = r.hi + 0.005; }
+      for (const r of MAIN_RAILS) { free.push([x, r.lo - GROUT_W]); x = r.hi + GROUT_W; }
       free.push([x, BAND_IN]);
       // the line runs towards +d: its right vector is -tangent
       const rx = -smp.tanH.x, rz = -smp.tanH.z;

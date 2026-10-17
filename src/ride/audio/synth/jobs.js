@@ -6,13 +6,13 @@
 import { bellStrike } from './bell.js';
 import { streetIR, cabIR } from './reverb.js';
 import { grit, thump, clack, frog, scrape, brakeCreak, rattle } from './rail.js';
-import { airHiss, doorMotion, doorChime, doorBeep, compressorLoop, fanLoop } from './vehicle.js';
+import { airHiss, doorMotion, doorChime, doorBeep, compressorLoop } from './vehicle.js';
 import { utterance, voiceShot, SPEAKERS, UTT_PER } from './voice.js';
-import { birdNote, birdCall, NOTES, footstep, clink, carHorn, trafficBed } from './street.js';
+import { birdNote, birdCall, NOTES, footstep, clink, carHorn, carPass } from './street.js';
 
 export const LOW_SR = 24000;   // beds with little content above ~10 kHz are synthesized at a lower rate
 export const VOICE_SR = 16000; // distant voices (air absorption and the cab take the top end anyway)
-export const BANK_VERSION = 'tram-audio-3';
+export const BANK_VERSION = 'tram-audio-5';
 
 const as = (chans) => (Array.isArray(chans) ? chans : [chans]);
 
@@ -29,11 +29,10 @@ export async function* synthJobs(sr, part = 'all') {
     for (let k = 0; k < 12; k++) yield item('grit' + k, grit(sr, k));
     for (let k = 0; k < 4; k++) yield item('thump' + k, thump(sr, k));
     for (let k = 0; k < 8; k++) yield item('clack' + k, clack(sr, k));
-    yield item('fan', fanLoop(lo), lo);
     for (let k = 0; k < 3; k++) yield item('frog' + k, frog(sr, k));
     for (let k = 0; k < 2; k++) yield item('scrape' + k, scrape(sr, k));
     for (let k = 0; k < 4; k++) yield item('rattle' + k, rattle(sr, k));
-    yield item('traffic', trafficBed(lo, 21), lo);
+    for (let k = 0; k < 10; k++) yield item('carpass' + k, carPass(lo, k), lo);
     yield item('compressor', compressorLoop(lo), lo);
     for (let k = 0; k < 2; k++) {
       yield item('hissStop' + k, airHiss(sr, 'stop', k));

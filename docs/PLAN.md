@@ -32,6 +32,8 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [ ] Audio: synthesized bell (spatial), rumble, joints, curve squeal, motor hum, street ambience
 
 ## M3 — Integration & performance
+- [x] Route reshaped (user request): gentle bends and S-meanders, so no street is ruler-straight; designed hills (the avenue climbs ~9 m ahead of the start, then crests)
+- [ ] Uneven ground (user request): shared `route.surface(s, d)` with sidewalk cross-fall, a slow hillside tilt across the street and settlement undulation, applied by toWorld and the paving mesh so every object sits on it
 - [ ] All modules running together, clean console
 - [ ] 60 fps at 1920×1080 target; draw calls / triangles / chunk build time within budget
 - [ ] Progressive loading: first frame quickly, then streaming

@@ -114,7 +114,7 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
   for (const m of MAIN_RAILS) {
     const fn = (x) => ({ s: c.s0 + x, d: m.c, dd: 0 });
     const pts = samplePath(route, null, fn, -pad, L + pad, 2.0);   // straight: coarse is exact
-    inlayRail(B.main, pts, m.g);
+    inlayRail(B.main, pts, m.g, { grout: false });   // the paving grid has their mortar
   }
 
   // --- diverging rails: tongues near the ends, full profile once clear of the stock rail

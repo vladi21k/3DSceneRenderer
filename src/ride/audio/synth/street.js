@@ -1,6 +1,6 @@
-// Street one-shots and beds: bird notes (phrases are assembled at runtime) and calls,
-// footsteps on stone, café clinks, distant city traffic, a far-off car horn.
-import { arng, Biquad, SlowNoise, addMode, noiseGen, normalize, normalizeRms, makeLoop, fadeEnds, clamp } from '../dsp.js';
+// Street one-shots: bird notes (phrases are assembled at runtime) and calls,
+// footsteps on stone, café clinks, cars passing on distant streets, a far-off horn.
+import { arng, Biquad, addMode, noiseGen, normalize, normalizeRms, fadeEnds } from '../dsp.js';
 
 export const NOTES = { sparrow: 18, bulbul: 12 };
 
@@ -180,46 +180,31 @@ export function carHorn(sr, k) {
   return out;
 }
 
-/** Distant city traffic: low rumble with cars passing on far streets. Stereo, seamless. */
-export function trafficBed(sr, seconds = 21) {
-  const rng = arng('traffic');
-  const n = Math.floor(seconds * sr), fade = Math.floor(1.0 * sr), N = n + fade;
-  const L = new Float32Array(N), R = new Float32Array(N);
+/**
+ * One vehicle passing on a distant cross street (mono; the ambience layer schedules
+ * these at random with their own pan sweep, over a live far-traffic rumble): tyre
+ * roar and engine harmonics under a Gaussian pass envelope with a slight Doppler drop.
+ */
+export function carPass(sr, k) {
+  const rng = arng('carpass', k);
+  const w = rng.range(1.2, 2.8), heavy = k % 5 === 4;
+  const fe = rng.range(26, 46) * (heavy ? 0.7 : 1);
+  const n = Math.floor(6 * w * sr), tc = 3 * w;
+  const out = new Float32Array(n);
   const nz = noiseGen(rng);
-  // continuous far rumble
-  const lp1 = new Biquad(sr, 'lowpass', 260, 0.6), lp2 = new Biquad(sr, 'lowpass', 260, 0.6);
-  const sw = new SlowNoise(sr, 0.12, nz);
-  let b1 = 0, b2 = 0;
-  for (let i = 0; i < N; i++) {
-    b1 = (b1 + 0.02 * nz()) / 1.02; b2 = (b2 + 0.02 * nz()) / 1.02;
-    const g = Math.max(0.2, 1 + 0.3 * sw.run());
-    L[i] += lp1.run(b1) * 3 * g; R[i] += lp2.run(b2) * 3 * g;
+  const tyre = new Biquad(sr, 'bandpass', rng.range(550, 900), 0.6);
+  const eng = new Biquad(sr, 'lowpass', heavy ? 380 : 520, 0.7);
+  const dist = new Biquad(sr, 'lowpass', rng.range(1300, 2400), 0.6);
+  let ph = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / sr, u = (t - tc) / w;
+    const env = Math.exp(-0.5 * u * u);
+    ph += (fe * (1 + 0.04 * Math.tanh(-u))) / sr;
+    let e = 0;
+    for (let h = 1; h <= 6; h++) e += Math.sin(TAU * ph * h + h) / (h * (heavy ? 0.8 : 1.3));
+    out[i] = dist.run(tyre.run(nz()) * 0.9 + eng.run(e) * (heavy ? 0.35 : 0.18)) * env;
   }
-  // individual vehicles passing on cross streets
-  const passes = Math.round(seconds / 2.6);
-  for (let p = 0; p < passes; p++) {
-    const tc = rng.range(0, seconds + 1), w = rng.range(1.2, 2.8), amp = rng.range(0.25, 0.8);
-    const fe = rng.range(26, 46), heavy = rng.chance(0.18);
-    const p0 = rng.range(-1, 1), p1 = clamp(p0 + rng.range(-1.2, 1.2), -1, 1);
-    const tyre = new Biquad(sr, 'bandpass', rng.range(550, 900), 0.6);
-    const eng = new Biquad(sr, 'lowpass', heavy ? 380 : 520, 0.7);
-    const dist = new Biquad(sr, 'lowpass', rng.range(1300, 2400), 0.6);
-    const i0 = Math.max(0, Math.floor((tc - 3 * w) * sr)), i1 = Math.min(N, Math.floor((tc + 3 * w) * sr));
-    let ph = 0;
-    for (let i = i0; i < i1; i++) {
-      const t = i / sr, u = (t - tc) / w;
-      const env = Math.exp(-0.5 * u * u) * amp;
-      const f = (heavy ? fe * 0.7 : fe) * (1 + 0.04 * Math.tanh(-u)); // slight Doppler drop
-      ph += f / sr;
-      let e = 0;
-      for (let h = 1; h <= 6; h++) e += Math.sin(TAU * ph * h + h) / (h * (heavy ? 0.8 : 1.3));
-      const x = dist.run(tyre.run(nz()) * 0.9 + eng.run(e) * (heavy ? 0.35 : 0.18)) * env;
-      const pan = p0 + (p1 - p0) * clamp((u + 2) / 4, 0, 1);
-      L[i] += x * Math.cos((pan + 1) * Math.PI / 4);
-      R[i] += x * Math.sin((pan + 1) * Math.PI / 4);
-    }
-  }
-  const chans = [makeLoop(L, n, fade), makeLoop(R, n, fade)];
-  normalizeRms(chans, 0.15);
-  return chans;
+  fadeEnds(out, sr, 0.05, 0.05);
+  normalize(out, 0.8);
+  return out;
 }

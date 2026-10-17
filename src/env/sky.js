@@ -157,7 +157,6 @@ uniform sampler2D uSkyLUT;
 uniform sampler2D uSkyIrr;
 uniform sampler2D uCloudTex;
 uniform vec3 uSunDirA;
-uniform vec3 uSunE;
 uniform vec3 uSunGround;      // sun illuminance at ground level (rgb, scene units)
 uniform vec3 uCamPosW;
 uniform vec2 uCloudOffset;
@@ -166,7 +165,6 @@ uniform vec2 uWindDir;
 uniform float uCloudCover;
 uniform float uCirrus;
 uniform float uSunDiscScale;
-uniform float uCamR;
 uniform float uPixelAngle;    // radians per pixel (mip selection for the cloud march)
 #ifdef ENV_CAPTURE
 uniform vec3 uStreetRight;    // horizontal unit vector across the street (to the right of travel)
@@ -189,9 +187,8 @@ float cumulus2D(vec2 p, float lod) {
   return clamp((base - (1.0 - cov)) / max(cov, 0.05), 0.0, 1.0);
 }
 
-// composite clouds over radiance L along direction dir
-vec3 clouds(vec3 dir, vec3 L, out float occl) {
-  occl = 0.0;
+// composite cirrus (and, for the environment capture, a flat cumulus layer) over L
+vec3 clouds(vec3 dir, vec3 L) {
   if (dir.y < 0.004) return L;
   vec3 sunL = uSunGround;      // direct sun reaching the cloud layer (close enough to the ground value)
   vec3 ambUp = irr(0.0) / ATM_PI;
@@ -229,7 +226,6 @@ vec3 clouds(vec3 dir, vec3 L, out float occl) {
   vec3 col = sunL * (exp(-tauS) * ph * 0.5 + 0.09) + ambUp * mix(1.0, 0.6, d) + ambDn * (0.4 + 0.6 * d);
   float a = 1.0 - exp(-d * 6.0);
   float fade = exp(-t / 28000.0) * smoothstep(0.004, 0.06, dir.y);
-  occl = a;
   return L + a * fade * (col - L);
 #else
   return L;
@@ -238,8 +234,7 @@ vec3 clouds(vec3 dir, vec3 L, out float occl) {
 
 #ifdef ENV_CAPTURE
 // street canyon seen from the capture point: facades, paving and the sky between them
-vec3 canyon(vec3 dir, vec3 skyCol, out bool hit) {
-  hit = false;
+vec3 canyon(vec3 dir, vec3 skyCol) {
   vec3 E_sun = uSunGround;
   vec3 E_sky = irr(0.0);
   vec2 hd = dir.xz;
@@ -263,7 +258,6 @@ vec3 canyon(vec3 dir, vec3 skyCol, out bool hit) {
   if (Dw < Dg) {
     float z = uEyeH + Dw * tanEl;
     if (z > uBldH + 1.5 * sin(Dw * dot(hd / lh, uStreetAxis.xz) * 0.11)) return skyCol;
-    hit = true;
     vec2 n = -side * uStreetRight.xz;
     float cosI = dot(vec3(n.x, 0.0, n.y), uSunDirA);
     float facing = max(dot(sunH, n), 1e-3);
@@ -282,7 +276,6 @@ vec3 canyon(vec3 dir, vec3 skyCol, out bool hit) {
     return col;
   }
   if (dir.y < 0.0) {
-    hit = true;
     float y = uCamD + Dg * sp;                  // lateral offset of the floor point
     float distToSunWall = sunSide * uHalfW - y; // signed, towards the sun-side facade
     float lit = sunUp * smoothstep(-0.6, 0.6, abs(distToSunWall) - shadowLen);
@@ -316,11 +309,9 @@ void main() {
     L += uSunGround / omega * limb * edge * uSunDiscScale;
   }
 #endif
-  float occl;
-  L = clouds(d, L, occl);
+  L = clouds(d, L);
 #ifdef ENV_CAPTURE
-  bool hit;
-  L = canyon(dir, L, hit);
+  L = canyon(dir, L);
 #endif
   gl_FragColor = vec4(L, 1.0);
   // only active when drawn straight to the screen (no post-processing)

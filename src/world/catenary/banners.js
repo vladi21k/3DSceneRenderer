@@ -5,7 +5,8 @@ import { GeoBuilder, lathe, rod } from './geo.js';
 // Vertical fabric banners hung between two short brackets on the sidewalk side of a pole.
 // The banner plane contains the pole and the bracket, so it faces along the street and
 // reads face-on from the tram. Prints are abstract city-festival designs painted into a
-// small canvas atlas (4 designs side by side).
+// small canvas atlas (4 designs side by side), printed through (read correctly from both
+// sides).
 
 export const BANNER_Y0 = 2.55, BANNER_Y1 = 4.15;
 export const BANNER_X0 = 0.13, BANNER_X1 = 0.73;   // distance from the pole axis (sidewalk side)
@@ -39,32 +40,68 @@ export function buildBannerBracket() {
   return g;
 }
 
-/** Banner cloth in pole-local space (x towards the street centre, so the cloth is at -x). */
-export function buildBannerCloth(design, phase) {
-  const nu = 6, nv = 12;
-  const pos = [], nor = [], uv = [], ab = [], idx = [];
+/** Banner cloth in pole-local space (x towards the street centre, so the cloth is at -x),
+ *  shared by every banner: the print cell is chosen per instance (aDesign) and the wind
+ *  phase per instance (aPhase). Hem sleeves wrap the two rods; a static drape adds gathers
+ *  near the rods, tension wrinkles from the pole-side corners and a curl on the free edge. */
+export function buildBannerCloth() {
+  const nu = 10, nv = 20;
+  const RS = 0.016;                                   // sleeve radius around the 12 mm rods
+  const yTop = BANNER_Y1 + 0.03, yBot = BANNER_Y0 - 0.03;
+  const y0 = yBot + RS, y1 = yTop - RS;               // flat part between the sleeves
+  const W = BANNER_X1 - BANNER_X0, H = y1 - y0;
   const cell = 1 / DESIGNS;
-  for (let j = 0; j <= nv; j++) {
+  // rows: bottom sleeve (wrapping under the rod), flat part, top sleeve (over the rod)
+  const rows = [];
+  for (const a of [120, 180, 250, 320, 390]) rows.push({ sleeve: -1, a: (a * Math.PI) / 180 });
+  for (let j = 0; j <= nv; j++) rows.push({ v: j / nv });
+  for (const a of [-30, 0, 60, 120, 200]) rows.push({ sleeve: 1, a: (a * Math.PI) / 180 });
+  const drape = (u, v) => {
+    const nearRod = Math.exp(-v * H / 0.16) + Math.exp(-(1 - v) * H / 0.16);
+    let z = (0.012 * nearRod + 0.003) * Math.sin(3 * Math.PI * u + 0.7);
+    // tension wrinkles running diagonally from the pole-side corners
+    for (const [cv, sg] of [[0, 1], [1, -1]]) {
+      const du = u * W, dv = Math.abs(v - cv) * H;
+      const r = Math.hypot(du, dv);
+      z += 0.005 * Math.sin((du * sg * (cv ? -1 : 1) + dv) / 0.05) * Math.exp(-r / 0.3) * Math.min(1, r / 0.05);
+    }
+    // free edge curls towards +z
+    const e = THREE.MathUtils.smoothstep(u, 0.72, 1.0);
+    z += 0.05 * e * e * (0.45 + 0.55 * Math.sin(Math.PI * v));
+    return z;
+  };
+  const pos = [], uv = [], ab = [], idx = [];
+  for (const row of rows) {
     for (let i = 0; i <= nu; i++) {
-      const u = i / nu, v = j / nv;
-      const x = -(BANNER_X0 + (BANNER_X1 - BANNER_X0) * u);
-      // hem pockets wrap the rods: pull the top and bottom rows onto them
-      const y = BANNER_Y0 + (BANNER_Y1 - BANNER_Y0) * v;
-      pos.push(x, y, 0); nor.push(0, 0, 1);
-      uv.push((design + 0.02 + u * 0.96) * cell, v);
-      ab.push(u, v, phase);
+      const u = i / nu;
+      const x = -(BANNER_X0 + W * u);
+      let y, z, v, bv;
+      if (row.sleeve) {
+        const yc = row.sleeve > 0 ? yTop : yBot;
+        y = yc + Math.sin(row.a) * RS; z = Math.cos(row.a) * RS;
+        v = row.sleeve > 0 ? 0.985 : 0.015; bv = row.sleeve > 0 ? 1 : 0;
+      } else {
+        v = row.v; bv = v;
+        y = y0 + H * v; z = drape(u, v);
+      }
+      pos.push(x, y, z);
+      uv.push((0.02 + u * 0.96) * cell, v);
+      ab.push(u, bv, 0);
     }
   }
-  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+  for (let j = 0; j < rows.length - 1; j++) for (let i = 0; i < nu; i++) {
     const a = j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1;
     idx.push(a, c, b, b, c, d);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setAttribute('aBanner', new THREE.Float32BufferAttribute(ab, 3));
   g.setIndex(idx);
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  g.boundingSphere.radius += 0.4; // wind billow
+  g.userData.shared = true;
   return g;
 }
 

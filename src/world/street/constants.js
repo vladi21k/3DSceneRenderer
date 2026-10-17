@@ -15,6 +15,7 @@ export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.040 field-side pa
 export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.095 gauge-side paving edge
 export const HEAD_DULL = -0.024;                         // rusty field-side bevel ends here
 export const GROOVE_DEPTH = 0.0365;
+export const GROUT_W = 0.07;                             // dark mortar strip bedding each rail into the setts
 
 // The four running rails of the two main tracks: centre line d and gauge direction g.
 export const MAIN_RAILS = [];

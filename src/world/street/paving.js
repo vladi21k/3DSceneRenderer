@@ -1,18 +1,21 @@
 import {
-  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H,
+  MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_OUT, SLAB_H, GROUT_W,
 } from './constants.js';
 import { colInfo } from './surface.js';
 
-// Paving grid for one chunk: corridor (with gaps for the rails), light stone edge
-// bands, dished gutters and sidewalks out under the facades. One height per grid
-// vertex from the Surface; normals by central differences on the grid (with ghost rows
-// beyond the chunk ends so neighbouring chunks shade seamlessly).
+// Paving grid for one chunk: corridor (with gaps for the rails and, at lod 0, dark
+// mortar strips along them), light stone edge bands, dished gutters and sidewalks out
+// under the facades. One height per grid vertex from the Surface; normals by central
+// differences on the grid (with ghost rows beyond the chunk ends so neighbouring
+// chunks shade seamlessly).
 
-const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4;
+const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
+const GROUT_TINT = [0.58, 0.56, 0.53];     // dusty mortar on the concrete material
+const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
 
 /** Interior column offsets between a and b, denser next to rails. */
 function fill(out, a, b, nearA, nearB, maxStep) {
-  const near = [0.03, 0.12, 0.3];
+  const near = [0.05, 0.14, 0.32];
   const pts = [];
   const span = b - a;
   if (nearA) for (const o of near) if (o < span * 0.45) pts.push(a + o);
@@ -30,8 +33,9 @@ function fill(out, a, b, nearA, nearB, maxStep) {
 
 /** Fixed columns from -GUTTER_OUT to +GUTTER_OUT with the kind of each interval. */
 export function fixedColumns(lod) {
-  const d = [], kind = [];
-  const push = (x, k) => { d.push(x); kind.push(k); };
+  const d = [], kind = [], jit = [];
+  // jit: 0, or a seed for the per-row wander of a mortar strip's outer edge
+  const push = (x, k, j = 0) => { d.push(x); kind.push(k); jit.push(j); };
   const corrStep = lod === 0 ? 0.6 : 0.9;
   // left gutter + band
   const gutter = (a, b) => {
@@ -44,27 +48,43 @@ export function fixedColumns(lod) {
   // corridor with rails
   let x = -BAND_IN;
   let prevRail = false;
-  for (const r of MAIN_RAILS) {
+  for (let i = 0; i < MAIN_RAILS.length; i++) {
+    const r = MAIN_RAILS[i];
     const tmp = [];
-    if (lod === 0) fill(tmp, x, r.lo, prevRail, true, corrStep);
-    else fill(tmp, x, r.lo, false, false, corrStep);
-    push(x, K_CORR);
-    for (const t of tmp) push(t, K_CORR);
+    if (lod === 0) {
+      // [mortar after the previous rail] setts [mortar before this rail]
+      const a = prevRail ? x + GROUT_W : x, b = r.lo - GROUT_W;
+      if (prevRail) push(x, K_GROUT);
+      fill(tmp, a, b, prevRail, true, corrStep);
+      push(a, K_CORR, prevRail ? 2 * i : 0);
+      for (const t of tmp) push(t, K_CORR);
+      push(b, K_GROUT, 2 * i + 1);
+    } else {
+      fill(tmp, x, r.lo, false, false, corrStep);
+      push(x, K_CORR);
+      for (const t of tmp) push(t, K_CORR);
+    }
     push(r.lo, K_RAIL);
     x = r.hi;
     prevRail = true;
   }
   {
     const tmp = [];
-    fill(tmp, x, BAND_IN, lod === 0, false, corrStep);
-    push(x, K_CORR);
+    if (lod === 0) {
+      push(x, K_GROUT);
+      fill(tmp, x + GROUT_W, BAND_IN, true, false, corrStep);
+      push(x + GROUT_W, K_CORR, 2 * MAIN_RAILS.length);
+    } else {
+      fill(tmp, x, BAND_IN, false, false, corrStep);
+      push(x, K_CORR);
+    }
     for (const t of tmp) push(t, K_CORR);
   }
   push(BAND_IN, K_BAND);
   if (lod === 0) push((CORRIDOR + BAND_IN) / 2, K_BAND);
   gutter(CORRIDOR, GUTTER_OUT);
   push(GUTTER_OUT, K_WALK); // last fixed column: its interval kind is set per row assembly
-  return { d, kind, ci: d.map((x) => colInfo(x)) };
+  return { d, kind, jit, ci: d.map((x) => colInfo(x)) };
 }
 
 const FIXED = [fixedColumns(0), fixedColumns(1)];
@@ -109,7 +129,11 @@ export function buildPaving(ctx, chunk, rows, out) {
       const d = eL + ((-GUTTER_OUT - eL) * k) / nL;
       D[o + k] = d; H[o + k] = surface.height(ri, d, colInfo(d, ciw));
     }
-    for (let k = 0; k < nFixed; k++) { D[o + nL + k] = fx.d[k]; H[o + nL + k] = surface.height(ri, fx.d[k], fx.ci[k]); }
+    for (let k = 0; k < nFixed; k++) {
+      let d = fx.d[k];
+      if (fx.jit[k]) d += GROUT_WAVE * surface.fH.sample(ri.s * 1.7, fx.jit[k] * 9.3);
+      D[o + nL + k] = d; H[o + nL + k] = surface.height(ri, d, fx.ci[k]);
+    }
     for (let k = 1; k <= nR; k++) {
       const c = nL + nFixed - 1 + k, d = GUTTER_OUT + ((eR - GUTTER_OUT) * k) / nR;
       D[o + c] = d; H[o + c] = surface.height(ri, d, colInfo(d, ciw));
@@ -136,11 +160,12 @@ export function buildPaving(ctx, chunk, rows, out) {
 
   // buffers
   const nCorr = nFixed + 4;
-  const bufs = [out.get(mats.corr, true, nr * nCorr + 64), null, out.get(mats.band, true, nr * 8 + 32), null, out.get(mats.walk, true, nr * (nL + nR + 4) + 64)];
+  const bufs = [out.get(mats.corr, true, nr * nCorr + 64), null, out.get(mats.band, true, nr * 8 + 32), null, out.get(mats.walk, true, nr * (nL + nR + 4) + 64), null];
   bufs[K_GUTTER] = bufs[K_CORR];
   bufs[K_RAIL] = bufs[K_CORR];
-  const vmap = [new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1)];
-  const bufIndex = [0, 0, 1, 0, 2];       // gutters: darker corridor setts
+  if (lod === 0) bufs[K_GROUT] = out.get(mats.grout, true, nr * 16 + 32);
+  const vmap = [new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1)];
+  const bufIndex = [0, 0, 1, 0, 2, 3];    // gutters: darker corridor setts
   const tone = [1, 1, 1];
 
   const vert = (r, c, k) => {
@@ -163,6 +188,7 @@ export function buildPaving(ctx, chunk, rows, out) {
     nx *= il; ny *= il; nz *= il;
     const fc = c - nL;
     surface.tone(S.ri, d, tone, 0, fc >= 0 && fc < nFixed ? fx.ci[fc] : colInfo(d, ciw));
+    if (k === K_GROUT) { tone[0] *= GROUT_TINT[0]; tone[1] *= GROUT_TINT[1]; tone[2] *= GROUT_TINT[2]; }
     const b = bufs[k];
     v = b.v(S.px + S.rx * d, S.py + h, S.pz + S.rz * d, nx, ny, nz, S.s, d, tone[0], tone[1], tone[2]);
     vmap[bi][key] = v;
@@ -212,4 +238,4 @@ export function buildSlab(ctx, chunk, out) {
   }
 }
 
-export { K_CORR, K_RAIL, K_BAND, K_GUTTER, K_WALK };
+export { K_CORR, K_RAIL, K_BAND, K_GUTTER, K_WALK, K_GROUT };

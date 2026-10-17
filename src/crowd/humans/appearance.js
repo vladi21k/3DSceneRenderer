@@ -22,8 +22,8 @@ const C = (list) => list.map((x) => (Array.isArray(x) ? [srgb(x[0]), x[1]] : [sr
 const lin = (r, g, b) => new THREE.Color().setRGB(r, g, b);
 const SKIN = [[lin(0.60, 0.45, 0.37), 7], [lin(0.55, 0.40, 0.31), 16], [lin(0.50, 0.36, 0.27), 22], [lin(0.44, 0.31, 0.22), 20],
   [lin(0.37, 0.25, 0.17), 14], [lin(0.27, 0.17, 0.11), 9], [lin(0.17, 0.10, 0.065), 7], [lin(0.095, 0.058, 0.042), 4]];
-const HAIR = C([['#120d0a', 30], ['#22170f', 30], ['#3a2717', 14], ['#5a3e26', 8], ['#7a5a38', 5],
-  ['#a3834f', 5], ['#5b2a17', 3], ['#2b2420', 5]]);
+const HAIR = C([['#1c1511', 28], ['#2a1d14', 30], ['#3d2a1b', 14], ['#5a3e26', 9], ['#7a5a38', 5],
+  ['#a3834f', 5], ['#5b2a17', 3], ['#332a24', 6]]);
 const HAIR_OLD = C([['#9b958c', 3], ['#bdb7ad', 4], ['#d6d1c8', 3], ['#6f6860', 2]]);
 
 const TEE = C([['#f2f1ec', 16], ['#16171a', 12], ['#2a3346', 7], ['#8c9196', 6], ['#b9bcbd', 4], ['#8fb6d9', 6],
@@ -86,7 +86,7 @@ export function deriveAppearance(seed, parts) {
     shoes: null, sole: srgb('#ece9e2'), shoeType: SHOE.SNEAKER,
     bag: srgb('#18181a'), hat: srgb('#18181a'), glasses: 0, kippah: 0, beardAmt: 0,
     fabricTop: FABRIC.COTTON, fabricBottom: FABRIC.DENIM, wear: r.range(0, 1),
-    walkOld: false, idle: r.chance(0.3) ? 1 : 0, sit: r.int(0, 2), armSwing: r.range(0.85, 1.15),
+    walkOld: false, idle: r.weighted([[0, 45], [1, 25], [2, 15], [3, 15]]), sit: r.int(0, 2),
   };
   const old = age === 'old';
   a.hair = old && r.chance(0.8) ? jitter(pick(r, HAIR_OLD), r) : jitter(pick(r, HAIR), r);
@@ -94,8 +94,8 @@ export function deriveAppearance(seed, parts) {
 
   // --- hair & head
   if (base === 'male' || (base === 'child' && !female)) {
-    const st = old ? r.weighted([['hair_balding', 5], ['hair_short', 4], ['hair_buzz', 2]])
-      : r.weighted([['hair_short', 10], ['hair_buzz', 4], ['hair_medium', 4], ['hair_curly', 2]]);
+    const st = base === 'child' ? 'hair_short' : old ? r.weighted([['hair_balding', 5], ['hair_receding', 4], ['hair_short', 2], ['hair_buzz', 2]])
+      : r.weighted([['hair_short', 8], ['hair_side', 6], ['hair_buzz', 3], ['hair_medium', 3], ['hair_curly', 2], ['hair_receding', 2]]);
     a.hairPart = P(st);
     if (age !== 'child' && age !== 'teen') {
       if (r.chance(old ? 0.35 : 0.3)) a.beardPart = P(r.chance(0.55) ? 'beard_short' : 'beard_full');
@@ -110,7 +110,10 @@ export function deriveAppearance(seed, parts) {
   }
 
   // --- outfit
-  const shoesDefault = () => { a.shoes = jitter(pick(r, SHOES), r); a.shoeType = r.weighted([[SHOE.SNEAKER, 6], [SHOE.LEATHER, 3], [SHOE.SANDAL, 2]]); };
+  const shoesDefault = () => {
+    a.shoes = jitter(pick(r, SHOES), r);
+    a.shoeType = r.weighted([[SHOE.SNEAKER, 7], [SHOE.LEATHER, 3], [SHOE.SANDAL, female ? 2 : 0.6]]);
+  };
   shoesDefault();
   const setTop = (type, pal, sleeve, opts = {}) => {
     a.topType = type; a.top = jitter(pick(r, pal), r); a.sleeve = sleeve;
@@ -136,7 +139,7 @@ export function deriveAppearance(seed, parts) {
     if (o === 'teeJeans' || o === 'tee') { setTop(TOP.TEE, TEE, 0.30); patternMaybe(0.3); setBottom(BOTTOM.JEANS, JEANS, 0, { fabric: FABRIC.DENIM }); }
     else if (o === 'teeShorts') {
       setTop(TOP.TEE, TEE, 0.30); patternMaybe(0.3); setBottom(BOTTOM.SHORTS, SHORTS, r.range(0.40, 0.62), { loose: r.range(0.5, 1) });
-      if (r.chance(0.4)) a.shoeType = SHOE.SANDAL;
+      if (r.chance(0.2)) a.shoeType = SHOE.SANDAL;
     } else if (o === 'polo') {
       setTop(TOP.POLO, POLO, 0.30, { fabric: FABRIC.KNIT }); setBottom(BOTTOM.TROUSERS, TROUSERS, 0);
     } else if (o === 'shirt') {
@@ -183,7 +186,7 @@ export function deriveAppearance(seed, parts) {
       a.skirtPart = P('skirt'); a.skirtLen = r.range(0.42, 0.85); a.skirtFlare = r.range(0.3, 1.0);
       a.shoeType = r.weighted([[SHOE.SANDAL, 4], [SHOE.FLAT, 3], [SHOE.SNEAKER, 2]]);
     } else if (o === 'tankShorts') {
-      setTop(r.chance(0.6) ? TOP.TANK : TOP.TEE, TEE, r.chance(0.6) ? 0 : 0.18); setBottom(BOTTOM.SHORTS, r.chance(0.5) ? JEANS : SHORTS, r.range(0.55, 0.7), { loose: 0.6 });
+      setTop(r.chance(0.6) ? TOP.TANK : TOP.TEE, TEE, r.chance(0.6) ? 0 : 0.18); setBottom(BOTTOM.SHORTS, r.chance(0.5) ? JEANS : SHORTS, r.range(0.72, 0.88), { loose: r.range(0.1, 0.5) });
       a.shoeType = r.chance(0.6) ? SHOE.SANDAL : SHOE.SNEAKER;
     } else if (o === 'topLeggings') {
       setTop(r.chance(0.5) ? TOP.TEE : TOP.TANK, TEE, r.range(0, 0.32), { hem: r.range(0, 0.15) }); patternMaybe(0.2);
@@ -225,6 +228,9 @@ export function deriveAppearance(seed, parts) {
     a.glasses = r.chance(0.16) ? 1 : 0;
   }
   if (a.topType === TOP.JACKET && a.bagPart === P('shopping')) a.bagPart = 0;
+  // walking variations: carrying a shopping bag damps the right arm; some walk looking at a phone
+  a.carry = a.bagPart > 0 && a.bagPart === P('shopping');
+  a.phoneWalk = !a.carry && (age === 'adult' || age === 'teen') && r.chance(age === 'teen' ? 0.22 : 0.1);
   if (!a.top2) a.top2 = srgb('#f4f4f0');
   if (a.shoeType === SHOE.SANDAL) a.sole = srgb('#3a2c22');
   else if (a.shoeType === SHOE.LEATHER) a.sole = srgb('#2a2220');

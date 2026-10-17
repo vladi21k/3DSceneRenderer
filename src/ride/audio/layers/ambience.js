@@ -55,8 +55,20 @@ export class AmbienceLayer {
       e.noise().connect(bp).connect(hs).connect(mod).connect(g).connect(pan).connect(this.pre);
       return { g, side };
     });
-    this.traffic = { g: new GainNode(ctx, { gain: 0 }), src: null };
+    // ---- distant traffic: a live far rumble, plus cars passing on far streets (random
+    // one-shots with their own pan sweeps)
+    this.traffic = { g: new GainNode(ctx, { gain: 0 }) };
     this.traffic.g.connect(this.pre);
+    this.rumble = new GainNode(ctx, { gain: 1 });
+    const rd = new GainNode(ctx, { gain: 0.3 });
+    e.drift(0.12).connect(rd).connect(this.rumble.gain);
+    this.rumble.connect(this.traffic.g);
+    for (const side of [-1, 1]) {
+      const lp1 = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 110, Q: 0.5 });
+      const lp2 = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 260, Q: 0.6 });
+      const g = new GainNode(ctx, { gain: 0.6 });
+      e.noise().connect(lp1).connect(lp2).connect(g).connect(new StereoPannerNode(ctx, { pan: side * 0.7 })).connect(this.rumble);
+    }
     this.leaves = { bp: new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 4800, Q: 0.5 }), g: new GainNode(ctx, { gain: 0 }) };
     e.noise().connect(this.leaves.bp).connect(this.leaves.g).connect(this.pre);
 
@@ -94,14 +106,13 @@ export class AmbienceLayer {
 
   update(dt, st, now, tick) {
     const e = this.e, v = st.speed;
-    if (!this.traffic.src) this.traffic.src = e.loop('traffic', this.traffic.g, { fadeIn: 3 });
-    if (st.t - this.surveyT > 0.5 || st.t < this.surveyT) { this.surveyT = st.t; this._survey(st, now); }
+    if (st.t - this.surveyT > 0.5 || st.t < this.surveyT) { this.surveyT = st.t; this._survey(st); }
 
     const day = 1 - clamp(st.night || 0, 0, 1);
     // people near the line pause and step back while the tram rolls past
     const duck = 1 / (1 + v / 16);
-    for (const h of this.hub) glide(h.g.gain, 0.12 * this.dens[h.side > 0 ? 1 : 0] * duck, now, 1.2, 1e-3);
-    glide(this.talkBus.gain, 1.05 * duck, now, 0.8, 1e-3);
+    for (const h of this.hub) glide(h.g.gain, 0.14 * this.dens[h.side > 0 ? 1 : 0] * duck, now, 1.2, 1e-3);
+    glide(this.talkBus.gain, 1.25 * duck, now, 0.8, 1e-3);
     glide(this.traffic.g.gain, 0.07 * (0.6 + 0.4 * day), now, 1.5, 1e-3);
     const wind = clamp(st.wind ?? 0.35, 0, 1);
     const gust = 0.6 + 0.4 * noise1(st.t * 0.35, 9);
@@ -123,13 +134,14 @@ export class AmbienceLayer {
       if (still && e.doorsOpen && P(0.03 * crowd)) this._voice('laugh', st, now);
       if (P(0.012 * crowd)) this._voice('call', st, now);
       if (this.cafe && P(0.35 * this.cafe.w * crowd)) this._clink(st, now);
+      if (P(1 / 2.6)) this._carPass(now);
       if (P(1 / 75)) this._horn(st, now);
     }
   }
 
   // ------------------------------------------------------------------ surroundings
 
-  _survey(st, now) {
+  _survey(st) {
     const { layout, route } = this.e;
     const s = st.s, ci = layout.chunkIndex(s);
     let cafe = null;
@@ -183,7 +195,6 @@ export class AmbienceLayer {
     this.people = 0.5 * (this.dens[0] + this.dens[1]);
     this.debug.still = this.still.length;
     this.debug.walkers = this.walkers.length;
-    void now;
   }
 
   _agents() {
@@ -204,9 +215,9 @@ export class AmbienceLayer {
     if (dt > 0 && active < target && r.next() < 4 * dt) this._startTalk(st, now);
     if (!tick) return;
     for (const t of this.talkers) {
-      if (t.end < now - 0.2 || !t.pos) continue;
-      if (t.who && !t.who.virtual && (t.who.serial !== t.serial || !t.who.active)) { // walked off / recycled
-        glide(t.lvl.gain, 0, now, 0.15, 0); t.pos = null; continue;
+      if (t.end < now - 0.2 || !t.who) continue;
+      if (!t.who.virtual && (t.who.serial !== t.serial || !t.who.active)) { // walked off / recycled
+        glide(t.lvl.gain, 0, now, 0.15, 0); t.who = null; continue;
       }
       this._aim(t, now, 0.12);
     }
@@ -452,6 +463,21 @@ export class AmbienceLayer {
     const p = e.at(tb.s + r.range(-0.4, 0.4), tb.d + r.range(-0.4, 0.4), 0.78);
     this._place(sl, { x: p.x, y: p.y, z: p.z }, st, now, r.range(0.12, 0.25), 1.5);
     e.shot(buf, sl.g, now + 0.02, 1, 1 + r.range(-0.02, 0.02));
+  }
+
+  /** A car passing on a distant street: its own level, speed and pan sweep. */
+  _carPass(now) {
+    const e = this.e, r = this.rng;
+    const vs = e.bank.variants('carpass');
+    if (!vs.length) return;
+    const buf = r.pick(vs), rate = r.range(0.9, 1.1), dur = buf.duration / rate, t0 = now + 0.05;
+    const pan = new StereoPannerNode(e.ctx, { pan: 0 });
+    const p0 = r.range(-1, 1), p1 = clamp(p0 + r.range(-1.2, 1.2), -1, 1);
+    pan.pan.setValueAtTime(p0, t0 + dur * 0.33);
+    pan.pan.linearRampToValueAtTime(p1, t0 + dur * 0.67);
+    pan.connect(this.traffic.g);
+    const src = e.shot(buf, pan, t0, r.range(0.25, 0.8), rate);
+    if (src) src.addEventListener('ended', () => { try { pan.disconnect(); } catch { /* gone */ } });
   }
 
   _horn(st, now) {

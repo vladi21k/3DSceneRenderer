@@ -42,6 +42,7 @@ const street = {
       slab: M.get('concrete'),
       kerb: M.get('paving.band', { vertexColors: true }),
       asphalt: M.get('asphalt', { vertexColors: true }),
+      grout: M.get('concrete', { vertexColors: true }),
       tactile: M.get('paving.tactile', { vertexColors: true }),
       rail: { head: M.get('rail.head', RAIL_HEAD), lip: M.get('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove'), seal: M.get('rubber') },
       lines,
@@ -50,7 +51,8 @@ const street = {
     // coplanar inlay layers for crossovers (higher layers win the depth test)
     const layer = (name, k, extra = {}) => M.get(name, { polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -2 * k, ...extra });
     mats.inlay = {
-      plate: layer('rail.groove', 1, { color: [2.3, 2.2, 2.1] }),   // dark greasy cast steel
+      grout: layer('concrete', 0.5, { color: [0.45, 0.44, 0.42] }),   // mortar along diverging rails
+      plate: layer('rail.head', 1, { color: [0.4, 0.39, 0.37], roughness: 3.2 }),   // dull cast steel
       seal: layer('rubber', 2),
       side: layer('rail.side', 3, RAIL_RUST),
       head: layer('rail.head', 3, RAIL_HEAD),
@@ -64,7 +66,7 @@ const street = {
     this.surface = surface;
     const I = mats.inlay;
     const inlayBufs = (bufs) => {
-      const main = { seal: bufs.get(I.seal), side: bufs.get(I.side), head: bufs.get(I.head), lip: bufs.get(I.lip), groove: bufs.get(I.groove) };
+      const main = { grout: bufs.get(I.grout), seal: bufs.get(I.seal), side: bufs.get(I.side), head: bufs.get(I.head), lip: bufs.get(I.lip), groove: bufs.get(I.groove) };
       return {
         main,
         tongue: { seal: main.seal, groove: main.groove, side: bufs.get(I.tongueSide), head: bufs.get(I.tongueHead), lip: main.lip },

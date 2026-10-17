@@ -19,7 +19,7 @@ import { HumansTest } from './humans/test.js';
 // "look" row (appearance.js).
 
 const BASES = ['male', 'female', 'child'];
-const LOD_PX = [270, 72, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
+const LOD_PX = [220, 72, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
 const SKIRT_GRID = [[48, 22], [20, 10], [10, 5], [8, 3]];
 const BONE_W = NUM_BONES * 3;             // texels per bone row (3x4 matrix per bone)
 const MAT_N = NUM_BONES * 12;
@@ -62,7 +62,10 @@ const humans = {
       const rig = new Rig(b.skeleton, b.info);
       const baked = bakeClips(rig);
       const walkV = CLIPS.map((c) => (c.kind === 'walk' ? rig.walkParams(c).v : 0));
-      this.bases[name] = { name, info: b.info, rig, baked, walkV, lods: b.lods, meshes: [] };
+      // single frames used to re-pose the upper body while walking (phone, carried bag)
+      const frame = (clip, f) => baked.data.slice((baked.offsets[clip] + f) * MAT_N, (baked.offsets[clip] + f + 1) * MAT_N);
+      const phone = frame(CLIP.idlePhone, 0), hang = frame(CLIP.idle, 0);
+      this.bases[name] = { name, info: b.info, rig, baked, walkV, lods: b.lods, phone, hang };
     }
     if (!Object.keys(this.bases).length) return;
     this.nLod = Math.min(...Object.values(this.bases).map((B) => B.lods.length));
@@ -318,6 +321,9 @@ const humans = {
       const g = gaitBlend(B, a, s.speed, sc);
       addClip(M, bk, g.a, s.phase, g.wa);
       if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / 9.5 + a.seedT : s.phase, g.wb);
+      // upper-body variations carried by the walking chest
+      if (a.phoneWalk) overrideBones(M, B.phone, PHONE_BONES, 1);
+      else if (a.carry) overrideBones(M, B.hang, CARRY_BONES, 0.65);
     }
     // head turn: the neck takes a third, the head the rest, both about their own joints
     const look = Math.max(-1.25, Math.min(1.25, s.look || 0));
@@ -332,6 +338,38 @@ const humans = {
 };
 
 function pushDraw(d, i) { if (d) d.list[d.count++] = i; }
+
+const PHONE_BONES = [BONE.armR, BONE.foreR, BONE.handR, BONE.neck, BONE.head];
+const CARRY_BONES = [BONE.armR, BONE.foreR, BONE.handR];
+const _T = new Float32Array(12), _inv = new Float32Array(12), _tmp = new Float32Array(12);
+
+/** C = A * B for 3x4 affine matrices (row-major, implicit last row 0 0 0 1). */
+function mul34(A, ao, B2, bo, C, co) {
+  for (let r = 0; r < 3; r++) {
+    const a0 = A[ao + r * 4], a1 = A[ao + r * 4 + 1], a2 = A[ao + r * 4 + 2], a3 = A[ao + r * 4 + 3];
+    for (let c = 0; c < 4; c++) {
+      C[co + r * 4 + c] = a0 * B2[bo + c] + a1 * B2[bo + 4 + c] + a2 * B2[bo + 8 + c] + (c === 3 ? a3 : 0);
+    }
+  }
+}
+
+/** Inverse of a 3x4 affine matrix whose 3x3 part is a rotation (skin matrices of the rig). */
+function invRigid34(A, ao, out) {
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out[r * 4 + c] = A[ao + c * 4 + r];
+  for (let r = 0; r < 3; r++) out[r * 4 + 3] = -(out[r * 4] * A[ao + 3] + out[r * 4 + 1] * A[ao + 7] + out[r * 4 + 2] * A[ao + 11]);
+}
+
+/** Replace (or blend towards) bones of M with those of pose F, re-parented onto M's chest. */
+function overrideBones(M, F, bones, w) {
+  const c = BONE.spine2 * 12;
+  invRigid34(F, c, _inv);
+  mul34(M, c, _inv, 0, _T, 0);            // walking chest * inverse(source chest)
+  for (const b of bones) {
+    const o = b * 12;
+    mul34(_T, 0, F, o, _tmp, 0);
+    for (let k = 0; k < 12; k++) M[o + k] += (_tmp[k] - M[o + k]) * w;
+  }
+}
 
 function newSlot() {
   return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 import { U } from '../core/uniforms.js';
 import { noise1 } from '../core/rng.js';
+import { TRACK_OFFSET } from '../core/config.js';
 import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT } from './atmosphere.js';
 import { Sky } from './sky.js';
 import { Clouds } from './clouds.js';
@@ -17,14 +18,12 @@ import { StreetLights } from './lights.js';
 // Emissive materials should use these units (lit shop window ≈ 0.01–0.03).
 
 const QUALITY = {
-  low: { cascades: 2, mapSize: 1536, taps: 6, lamps: 4, envSize: 128 },
-  med: { cascades: 3, mapSize: 2048, taps: 8, lamps: 6, envSize: 192 },
-  high: { cascades: 4, mapSize: 2048, taps: 10, lamps: 8, envSize: 256 },
+  low: { cascades: 2, mapSize: 1536, taps: 6, lamps: 4, envSize: 128, cloudSteps: 24 },
+  med: { cascades: 3, mapSize: 2048, taps: 8, lamps: 6, envSize: 192, cloudSteps: 32 },
+  high: { cascades: 4, mapSize: 2048, taps: 10, lamps: 8, envSize: 256, cloudSteps: 44 },
 };
 
 const _v = new THREE.Vector3();
-const _fwd = new THREE.Vector3();
-const _right = new THREE.Vector3();
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -53,7 +52,7 @@ const env = {
     this.atmo = new Atmosphere(renderer, { mieScale: 1.6 });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
-    this.clouds = new Clouds(renderer, this.sky.uniforms);
+    this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
     scene.background = null;
     scene.fog = null;
     scene.environmentIntensity = 1.0;
@@ -82,11 +81,10 @@ const env = {
     this.windBase = new THREE.Vector2(-0.55, 0.83).normalize();
     this.cloudSpeed = 9; // m/s at cloud level
 
-    // without post-processing the renderer tone maps directly: give it fog and exposure
+    // without post-processing the renderer tone maps directly: drive its exposure
     this._noPost = !app.systems.post || app.params.skip.includes('post');
 
     this._lastHeading = null;
-    this._lastEnvPos = new THREE.Vector3(1e9, 0, 0);
     this.setTimeOfDay(app.params.tod ?? 0.12);
     this._updateEnvFrame(true);
     this.sky.requestEnv(true);
@@ -97,7 +95,8 @@ const env = {
     t = THREE.MathUtils.clamp(+t || 0, 0, 1);
     this.t = t;
     const app = this.app;
-    const dir = sunDirection(t, this._avenueFwd || _fwd.set(0, 0, -1), this._avenueRight || _right.set(1, 0, 0), this.state.sunDir);
+    if (!this.atmo) return; // not initialised yet
+    const dir = sunDirection(t, this._avenueFwd, this._avenueRight, this.state.sunDir);
     const elev = Math.asin(dir.y);
 
     // sun colour from the atmosphere's transmittance
@@ -133,7 +132,6 @@ const env = {
 
     Object.assign(this.state, { t, sunElevation: elev, night });
     this._updateExposure();
-    this.state.sunDir = dir;
     this.solar = solarPosition(t);
     if (this.sky.envRT) this.sky.requestEnv(false);
     app && app.events && app.events.emit('tod', { t });
@@ -171,7 +169,7 @@ const env = {
     u.uStreetAxis.value.set(smp.tan.x, 0, smp.tan.z).normalize();
     u.uStreetRight.value.set(smp.right.x, 0, smp.right.z).normalize();
     u.uHalfW.value = 0.5 * (app.layout.halfWidth(s, 1) + app.layout.halfWidth(s, -1));
-    u.uCamD.value = 1.6;
+    u.uCamD.value = TRACK_OFFSET;
     const h = Math.atan2(smp.tan.x, smp.tan.z);
     if (force) this._lastHeading = h;
     return h;
@@ -234,9 +232,9 @@ const env = {
     return THREE.MathUtils.smoothstep(d.y, -0.02, 0.05) * (0.2 + 0.8 * lit);
   },
 
-  /** Horizontal illuminance estimate (scene units) for the current time of day. */
+  /** Horizontal illuminance (scene units) in the open for the current time of day. */
   get illuminance() {
-    return this.sunIlluminance * Math.max(this.state.sunDir.y, 0) + skyIrradiance(this.state.sunElevation);
+    return this.sunIlluminance * Math.max(this.state.sunDir.y, 0) + (this.skyIrradianceH ?? skyIrradiance(this.state.sunElevation));
   },
   LUX_PER_UNIT,
 };

@@ -68,18 +68,23 @@ export class Layout {
   }
 
   // ------------------------------------------------------------------ stations
+  /** Max |curvature| over [s0, s1]. */
+  maxCurv(s0, s1, step = 4) {
+    let k = 0;
+    for (let s = s0; s <= s1; s += step) k = Math.max(k, Math.abs(this.route.curvature(s)));
+    return k;
+  }
+
   _planStations() {
     const r = this.route, rng = RNG.from(this.seed, 'stations');
     this.stations = [];
-    let last = -1e9;
-    for (const seg of r.segments) {
-      if (seg.type !== 'straight') continue;
-      const len = seg.s1 - seg.s0;
-      if (len < 180) continue;
-      const s = seg.s0 + len * (seg.index === 0 ? 0.82 : rng.range(0.45, 0.7));
-      if (s - last < 520) continue;
-      last = s;
-      this.stations.push({ id: this.stations.length, s, len: PLATFORM_LEN, stopS: s + PLATFORM_LEN / 2 - 4 });
+    // stops need nearly straight track (R > ~1000 m) for the platform plus approach
+    let s = 620;
+    while (s < this.L - 300) {
+      if (this.maxCurv(s - 70, s + 45) < 1 / 1000 && Math.abs(r.grade(s)) < 0.035) {
+        this.stations.push({ id: this.stations.length, s, len: PLATFORM_LEN, stopS: s + PLATFORM_LEN / 2 - 4 });
+        s += rng.range(620, 860);
+      } else s += 10;
     }
     // check wrap distance between last and first
     if (this.stations.length > 1 && this.L - this.stations[this.stations.length - 1].s + this.stations[0].s < 400) this.stations.pop();
@@ -98,13 +103,13 @@ export class Layout {
     this.crossovers = [];
     const add = (s0, dir) => this.crossovers.push({ s0, s1: s0 + 34, len: 34, from: dir, kind: 'single' });
     // facing points on the ride track at s0 when from = +1 (diverges right->left)
-    const avenue = this.route.segments[0];
-    add(avenue.s0 + 300, +1);
+    const straightish = (s0) => this.maxCurv(s0 - 5, s0 + 40) < 1 / 1500;
+    for (let s0 = 230; s0 < 420; s0 += 5) if (straightish(s0)) { add(s0, +1); break; }
     this.stations.forEach((st, i) => {
       if (i % 2 === 1) {
-        const s0 = st.s + st.len / 2 + 55;
-        const seg = this.route.segmentAt(s0), seg2 = this.route.segmentAt(s0 + 34);
-        if (seg.type === 'straight' && seg2 === seg) add(s0, i % 4 === 1 ? -1 : +1);
+        for (let s0 = st.s + st.len / 2 + 50; s0 < st.s + st.len / 2 + 160; s0 += 5) {
+          if (straightish(s0)) { add(s0, i % 4 === 1 ? -1 : +1); break; }
+        }
       }
     });
   }

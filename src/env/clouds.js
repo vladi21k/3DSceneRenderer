@@ -141,7 +141,7 @@ void main() {
   const float TMAX = 45000.0;
   if (t0 > TMAX) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
   t1 = min(t1, TMAX);
-  const int N = 44;
+  const int N = CLOUD_STEPS;
   float dt = (t1 - t0) / float(N);
   float jit = ign(gl_FragCoord.xy + uFrame * 5.588238);
 
@@ -228,7 +228,7 @@ void main() {
 `;
 
 export class Clouds {
-  constructor(renderer, skyUniforms) {
+  constructor(renderer, skyUniforms, { steps = 44 } = {}) {
     this.renderer = renderer;
     this.noise3D = makeNoise3D(renderer, 64);
     this.uniforms = {
@@ -242,7 +242,8 @@ export class Clouds {
     };
     this.material = new THREE.ShaderMaterial({
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: CLOUD_FS, uniforms: this.uniforms, depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+      fragmentShader: CLOUD_FS, uniforms: this.uniforms, defines: { CLOUD_STEPS: steps },
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending,
     });
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
     this.quad.frustumCulled = false;

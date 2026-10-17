@@ -32,7 +32,7 @@ float hLegDist(vec3 r) {
   return min(hSeg(r, hip + vec3(0.0, 0.1, 0.0), knee), hSeg(r, knee, ank));
 }
 float hTopHemY(float hem) { return uLeg.y - 0.035 + hem * (uTorso.y - uLeg.y + 0.035); }
-float hLegHemY(float hem) { return mix(uLeg.w + 0.032, uTorso.x - 0.02, hem); }
+float hLegHemY(float hem) { return hem < 0.02 ? uLeg.w - 0.02 : mix(uLeg.w + 0.03, uTorso.x - 0.02, hem); }  // 0 = full length, breaking over the shoe
 // garment layout at a rest-pose point: x = layer (0 skin, 1 top, 2 bottom, 3 shoe, 4 under-shirt), y = signed
 // distance (m) to the layer boundary (> 0 inside), z = which garment ease applies (0 none, 1 top, 2 bottom)
 vec3 hGarment(vec3 r, float region, vec4 L2, vec4 L4, vec4 L8) {
@@ -45,21 +45,22 @@ vec3 hGarment(vec3 r, float region, vec4 L2, vec4 L4, vec4 L8) {
   bool skirtLike = botType > 2.5 && botType < 3.5 || botType > 4.5;
   if (region == 1.0 || region == 19.0 || region == 20.0) {
     float front = smoothstep(0.0, -0.06, r.z);
-    float scoop = (topType == 4.0 || topType == 7.0 || topType == 3.0) ? 0.07 : (topType == 2.0 || topType == 1.0 ? 0.035 : 0.012);
+    float scoop = (topType == 4.0 || topType == 7.0) ? 0.07 : topType == 3.0 ? 0.05 : (topType == 2.0 || topType == 1.0 ? 0.035 : 0.012);
     // neckline: a collar ring around the base of the neck, dipping at the front for scoop / V necks
     float sc = uTorso.w / 1.76;
     float rn = length(vec2(r.x / 0.085, (r.z - 0.02 * sc) / 0.075)) / sc;
     float nl = neck - 0.010 - scoop * front * smoothstep(0.11, 0.0, abs(r.x)) + 0.09 * smoothstep(0.9, 1.6, rn);
     float e = min(y - topY, nl - y);
-    if (topType == 3.0) { // tank: arm holes
-      float strap = abs(abs(r.x) - 0.075 * uTorso.w / 1.76);
-      e = min(e, max(0.022 - strap, (uShoulder.y - 0.13) - y));
+    if (topType == 3.0) { // tank: oval arm holes leave ~3 cm straps over the shoulders
+      vec2 ah = (vec2(abs(r.x), y) - vec2(uShoulder.x + 0.005 * sc, uShoulder.y - 0.035 * sc)) / (vec2(0.088, 0.125) * sc);
+      e = min(e, (length(ah) - 1.0) * 0.09 * sc);
     }
     if (e > 0.0) {
-      if (topType == 5.0) { // jacket: open front shows the shirt
-        float open = 0.012 + 0.05 * smoothstep(neck - 0.03, neck - 0.32, y);
-        float ef = abs(r.x) - open * smoothstep(0.02, -0.06, r.z);
-        if (ef < 0.0 && r.z < 0.0 && y > uTorso.y - 0.05) return vec3(4.0, -ef, 1.0);
+      if (topType == 5.0) { // jacket: lapels open a V down to the button, shirt shows inside
+        float button = uTorso.y + 0.07 * sc;
+        float open = 0.058 * sc * smoothstep(button, neck - 0.06 * sc, y) * smoothstep(neck + 0.01, neck - 0.04 * sc, y) + 0.006;
+        float ef = abs(r.x) - open;
+        if (ef < 0.0 && r.z < -0.02 && y > button) return vec3(4.0, -ef, 1.0);
       }
       return vec3(1.0, e, 1.0);
     }
@@ -94,7 +95,11 @@ vec3 hGarment(vec3 r, float region, vec4 L2, vec4 L4, vec4 L8) {
     if (e > 0.0) return vec3(2.0, e, 2.0);
     return vec3(0.0, e, 0.0);
   }
-  if (region == 9.0) return vec3(3.0, 1.0, 0.0);
+  if (region == 9.0) {
+    // full-length trousers break over the top of the shoe
+    if (L8.z < 0.02 && !skirtLike && botType != 2.0 && y > uLeg.w - 0.004) return vec3(2.0, y - uLeg.w + 0.004, 2.0);
+    return vec3(3.0, 1.0, 0.0);
+  }
   return vec3(0.0, 0.0, 0.0);
 }
 `;
@@ -111,6 +116,25 @@ varying vec3 vRest;
 flat varying vec3 vIds;
 varying float vAO;
 varying vec2 vAux;
+varying vec3 vHairT;
+// per-figure face shape: nose length / width, jaw width, chin length, fuller cheeks (rest space)
+vec3 hFace(vec3 pos, vec3 rest, float region, float build, float seed) {
+  if (region != 3.0 && region != 17.0 && region != 18.0 && region != 16.0 && region != 10.0) return pos;
+  float hs = uHead.w;
+  vec3 q = (rest - uHead.xyz) / hs;
+  float f1 = fract(seed * 7.13) - 0.5, f2 = fract(seed * 13.7) - 0.5, f3 = fract(seed * 23.1) - 0.5, f4 = fract(seed * 31.9) - 0.5;
+  float wn = smoothstep(0.035, 0.0, length(q - vec3(0.0, -0.022, -0.10)));
+  vec3 d = vec3(0.0);
+  d.z -= f1 * 0.012 * wn;
+  d.x += q.x * f2 * 0.9 * wn;
+  float wj = smoothstep(-0.015, -0.085, q.y) * smoothstep(0.08, 0.02, q.z + 0.02);
+  d.x += q.x * (f2 * 0.16 + max(build, 0.0) * 0.06) * wj;
+  float wc = smoothstep(-0.075, -0.11, q.y) * smoothstep(0.0, -0.05, q.z);
+  d.y -= f3 * 0.016 * wc;
+  float wk = smoothstep(0.035, 0.0, length(vec2(abs(q.x) - 0.048, q.y + 0.03))) * smoothstep(-0.02, -0.06, q.z);
+  d += normalize(vec3(sign(q.x), 0.0, -0.6)) * (f4 * 0.006 + max(build, 0.0) * 0.004) * wk;
+  return pos + d * hs;
+}
 mat4 hBone(int row, float b) {
   int x = int(b + 0.5) * 3;
   vec4 r0 = texelFetch(uBoneTex, ivec2(x, row), 0);
@@ -160,6 +184,7 @@ void hSkin(out vec3 P, out vec3 N) {
     I = vec4(1.0, 14.0, 18.0, 0.0);
   } else if (part < 0.5) {
     pos += aMorph.xyz * uMorphScale * L0.w;
+    pos = hFace(pos, position, region, L0.w, hLook(row, 9).w);
 #ifndef HUMAN_DEPTH
     // clothes stand off the skin: ease grows with looseness, with a lip at hems
     vec4 L2 = hLook(row, 2), L4 = hLook(row, 4), L8 = hLook(row, 8), L9 = hLook(row, 9);
@@ -206,12 +231,24 @@ void hSkin(out vec3 P, out vec3 N) {
     pos += nrm * ease;
 #endif
   }
+  if (region == 12.0) pos = hFace(pos, position, 3.0, L0.w, hLook(row, 9).w);
   mat4 M = hBone(row, I.x) * W.x;
   if (W.y > 0.0) M += hBone(row, I.y) * W.y;
   if (W.z > 0.0) M += hBone(row, I.z) * W.z;
   if (W.w > 0.0) M += hBone(row, I.w) * W.w;
   P = (M * vec4(pos, 1.0)).xyz;
   N = normalize(mat3(M) * nrm);
+  vHairT = vec3(0.0);
+#ifndef HUMAN_DEPTH
+  if (region == 11.0 || region == 12.0) {
+    // hair strands run away from the crown along the surface (view space for the shader)
+    vec3 crown = uHead.xyz + vec3(0.0, 0.10, 0.03) * uHead.w;
+    vec3 d = position - crown;
+    vec3 t = d - nrm * dot(d, nrm);
+    t = dot(t, t) > 1e-8 ? normalize(t) : vec3(0.0, -1.0, 0.0);
+    vHairT = normalize(mat3(viewMatrix) * (mat3(M) * t));
+  }
+#endif
 }
 `;
 
@@ -221,7 +258,20 @@ varying vec3 vRest;
 flat varying vec3 vIds;
 varying float vAO;
 varying vec2 vAux;
+varying vec3 vHairT;
 float hSkinM = 0.0;
+float hHairM = 0.0;
+vec3 hHairC = vec3(0.0);
+// Kajiya-Kay style strand highlights: a white primary lobe shifted towards the root and a
+// coloured, broader secondary lobe shifted towards the tip
+vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
+  vec3 H = normalize(L + V);
+  vec3 t1 = normalize(T + N * 0.12), t2 = normalize(T - N * 0.18);
+  float th1 = dot(t1, H), th2 = dot(t2, H);
+  float s1 = pow(max(0.0, sqrt(max(0.0, 1.0 - th1 * th1))), 110.0);
+  float s2 = pow(max(0.0, sqrt(max(0.0, 1.0 - th2 * th2))), 28.0);
+  return vec3(0.09) * s1 + hHairC * 0.5 * s2;
+}
 float hSpec = 1.0;
 vec3 hSheenC = vec3(0.0);
 float hSheenR = 0.6;
@@ -316,9 +366,16 @@ const FRAG_SURFACE = /* glsl */`
         float t = dot(r - vec3(s * uShoulder.x, uShoulder.y, uShoulder.z), vec3(s * uArm.x, -uArm.y, 0.0)) / uShoulder.w;
         bunch = sin(t * 95.0 + hNoise(r * 30.0) * 5.0) * (smoothstep(0.30, 0.45, t) * smoothstep(0.70, 0.52, t) + smoothstep(L8.x - 0.12, L8.x, t) * step(0.8, L8.x));
       } else {
-        bunch = sin(r.y * 140.0 + hNoise(r * 22.0) * 6.0) * smoothstep(0.05, 0.0, abs(r.y - hTopHemY(L8.y) - 0.04)) * 0.6;
+        // bunching just above the hem / belt, and diagonal tension folds fanning from the armpits
+        float hemY = hTopHemY(L8.y);
+        bunch = sin(r.y * 150.0 + hNoise(r * 22.0) * 7.0) * smoothstep(0.09, 0.0, r.y - hemY) * smoothstep(-0.01, 0.01, r.y - hemY) * (0.4 + 0.8 * L8.w);
+        vec2 ap = vec2(abs(r.x) - uShoulder.x * 0.8, r.y - (uShoulder.y - 0.13 * sc));
+        float rad = length(ap);
+        float ang = atan(ap.y, ap.x);
+        float fan = sin(ang * 9.0 + hNoise(r * 15.0) * 3.0) * smoothstep(0.20 * sc, 0.04, rad) * smoothstep(0.0, 0.05, rad);
+        bunch += fan * 0.8;
       }
-      hBump = 0.0009 * drape + 0.0007 * bunch;
+      hBump = 0.0010 * drape + 0.0011 * bunch;
     } else if (layer == 2.0) {
       cloth = L4.rgb;
       hFabric(botFab, cloth, crough);
@@ -334,7 +391,12 @@ const FRAG_SURFACE = /* glsl */`
       float knee = smoothstep(0.09, 0.0, abs(r.y - uLeg.z - 0.02));
       float ankle = smoothstep(uLeg.w + 0.16, uLeg.w + 0.05, r.y) * step(L8.z, 0.05);
       float rings = sin(r.y * 120.0 + hNoise(r * 18.0) * 5.0);
-      hBump = 0.0016 * drape + 0.0009 * rings * (knee * 0.7 + ankle);
+      float back = smoothstep(-0.02, 0.04, r.z - uLeg2.w);      // more creasing behind the knee
+      // crotch "whiskers": short diagonal folds radiating from the fly on the upper thighs
+      vec2 cp = vec2(abs(r.x), r.y - uTorso.x);
+      float whisk = sin(atan(cp.y, cp.x) * 14.0 + hNoise(r * 25.0) * 2.0) * smoothstep(0.17, 0.08, length(cp))
+        * smoothstep(0.045, 0.08, length(cp)) * smoothstep(0.0, -0.04, r.z) * step(r.y, uTorso.x + 0.04) * step(botFab, 1.5) * step(0.5, botFab);
+      hBump = 0.0013 * drape + 0.0011 * rings * (knee * (0.4 + 0.8 * back) + ankle) + 0.0008 * whisk;
       // belt / waistband
       float wb = hAA(0.018 - abs(r.y - uTorso.y + 0.006)) * step(r.y, uTorso.y + 0.04);
       if (wb > 0.0 && (region == 1.0 || region == 19.0)) {
@@ -403,14 +465,15 @@ const FRAG_SURFACE = /* glsl */`
       vec3 e = q - ec;
       float er = uEye.w / sc;
       float dx = e.x * sign(q.x);
-      float up = 0.0052 - 9.0 * dx * dx, lo = -0.0042 + 7.0 * dx * dx;
+      float up = 0.0043 - 9.0 * dx * dx, lo = -0.0036 + 7.0 * dx * dx;
       float lid = hAA(min(up - e.y, e.y - lo)) * step(length(e), er * 1.25) * step(e.z, 0.0);
       if (lid > 0.0) {
         float d = length(e.xy) / er;
         vec3 irisC = mix(vec3(0.05, 0.028, 0.016), vec3(0.16, 0.12, 0.06), fract(seed * 5.7));
         if (fract(seed * 11.3) > 0.88) irisC = vec3(0.10, 0.15, 0.18);
-        vec3 eye = mix(vec3(0.62, 0.58, 0.54), irisC, hAA(0.45 - d));
-        eye = mix(eye, vec3(0.01), hAA(0.18 - d));
+        vec3 eye = mix(vec3(0.42, 0.38, 0.35), irisC, hAA(0.56 - d));
+        eye = mix(eye, vec3(0.01), hAA(0.22 - d));
+        eye *= mix(0.45, 1.0, smoothstep(up, lo, e.y));    // upper lid and lashes shade the eye
         col = mix(col, eye, lid);
         rough = mix(rough, 0.08, lid);
         skinAmt *= 1.0 - lid;
@@ -425,9 +488,9 @@ const FRAG_SURFACE = /* glsl */`
         lens = max(lens, rim);
         float bridge = hAA(0.0016 - abs(q.y - 0.007)) * hAA(0.011 - ax) * step(q.z, -0.07);
         float gl = max(lens, bridge);
-        col = mix(col, vec3(0.015, 0.016, 0.018), gl);
-        rough = mix(rough, 0.12, gl);
-        hSpec = mix(hSpec, 2.0, gl);
+        col = mix(col, vec3(0.012, 0.013, 0.015), gl);
+        rough = mix(rough, 0.22, gl);
+        hSpec = mix(hSpec, 0.9, gl);
         skinAmt *= 1.0 - gl;
       }
     }
@@ -473,6 +536,8 @@ const FRAG_SURFACE = /* glsl */`
       strand = mix(strand, 0.5, smoothstep(0.002, 0.006, fw));
       float n = clump * 0.45 + strand * 0.35 + fine * 0.2;
       col = L1.rgb * (0.62 + 0.75 * n);
+      hHairM = part == __SCARF__ ? 0.0 : 1.0;
+      hHairC = L1.rgb * (0.8 + 0.4 * n) + 0.01;
       rough = 0.42;
       hSpec = 1.3;
       hSheenC = L1.rgb * 0.8 + 0.06; hSheenR = 0.35;
@@ -602,7 +667,8 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
         `float dotNLr = dot( geometryNormal, directLight.direction );
         float dotNL = saturate( dotNLr );
         float wrapNL = saturate( ( dotNLr + 0.45 ) / 1.45 );
-        vec3 irradiance = mix( vec3( dotNL ), vec3( dotNL ) * 0.7 + wrapNL * vec3( 0.38, 0.17, 0.11 ), hSkinM ) * directLight.color;`));
+        vec3 irradiance = mix( vec3( dotNL ), vec3( dotNL ) * 0.7 + wrapNL * vec3( 0.38, 0.17, 0.11 ), hSkinM ) * directLight.color;
+        if ( hHairM > 0.0 && dot( vHairT, vHairT ) > 0.5 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, normalize( vHairT ) ) * saturate( dotNLr + 0.25 ) * directLight.color;`));
     }
     fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>
       reflectedLight.indirectDiffuse *= hAO;

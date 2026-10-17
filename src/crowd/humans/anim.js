@@ -22,6 +22,8 @@ export const CLIPS = [
   { name: 'walkOld', frames: 40, kind: 'walk', v: 0.95, old: true },
   { name: 'idle', frames: 64, kind: 'idle', variant: 0 },
   { name: 'idlePhone', frames: 64, kind: 'idle', variant: 1 },
+  { name: 'idleCross', frames: 64, kind: 'idle', variant: 2 },
+  { name: 'idlePocket', frames: 64, kind: 'idle', variant: 3 },
   { name: 'sit', frames: 32, kind: 'sit', variant: 0 },
   { name: 'sitBack', frames: 32, kind: 'sit', variant: 1 },
   { name: 'sitLean', frames: 32, kind: 'sit', variant: 2 },
@@ -37,7 +39,7 @@ const B = {
 export const BONE = B;
 const NB = 22;
 const DEG = Math.PI / 180;
-const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0), Z = new THREE.Vector3(0, 0, 1);
+const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0);
 
 const smooth = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
 const smoother = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * t * (t * (t * 6 - 15) + 10); };
@@ -74,7 +76,6 @@ export class Rig {
     const R = this.rest;
     this.H = info.H;
     this.side = { L: -1, R: 1 };
-    this.legLen = {};
     this.l1 = R[B.thighR].distanceTo(R[B.shinR]);
     this.l2 = R[B.shinR].distanceTo(R[B.footR]);
     this.ua = R[B.armR].distanceTo(R[B.foreR]);
@@ -343,7 +344,6 @@ export class Rig {
     const P = this.basePose();
     const w = Math.sin(2 * Math.PI * t);                // weight shift L <-> R
     const sh = 0.032 * w;
-    const sgn = Math.sign(w) || 1;
     const breath = Math.sin(2 * Math.PI * t * 5);
     P.pelvisOffset.set(sh, -0.012 - 0.008 * Math.abs(w), 0);
     P.pelvisQ = qEuler(1.5, 2.5 * Math.sin(2 * Math.PI * t + 1), -3.2 * w);
@@ -355,13 +355,12 @@ export class Rig {
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
       const f = this.foot[s];
-      // free leg (the one not carrying weight) bends and slides slightly forward
-      const free = smooth(Math.max(0, -sgn * sg * Math.abs(w)) * 1.3);
+      // feet stay planted; the unloaded knee bends as the pelvis shifts over the other leg
       const an = f.ankle.clone();
       an.x = sg * (Math.abs(f.ankle.x) + 0.012);
-      an.z = f.ankle.z - 0.04 * free * 0 + (s === 'L' ? -0.035 : 0.02);
+      an.z = f.ankle.z + (s === 'L' ? -0.035 : 0.02);
       P.leg[s].ankle = an;
-      P.leg[s].footQ = qAxis(Y, -sg * (4 + 4 * free));
+      P.leg[s].footQ = qAxis(Y, -sg * 5);
       P.leg[s].pole = new THREE.Vector3(sg * 0.15, 0, -1).normalize();
       const A = P.arm[s];
       A.abd = 10 + 1.2 * Math.sin(2 * Math.PI * t + sg);
@@ -375,6 +374,20 @@ export class Rig {
       A.flex = 14; A.abd = 4; A.elbow = 96; A.twist = -62;
       A.handQ = qEuler(-20, 0, 15);
       P.arm.L.elbow = 20;
+    } else if (variant === 2) {
+      // arms folded across the chest
+      for (const s of ['L', 'R']) {
+        const A = P.arm[s];
+        A.flex = 40 + (s === 'R' ? 4 : 0); A.abd = 18; A.elbow = 118 + (s === 'R' ? 4 : 0); A.twist = -72;
+        A.handQ = qEuler(0, 0, 0);
+      }
+    } else if (variant === 3) {
+      // hands in the front pockets
+      for (const s of ['L', 'R']) {
+        const A = P.arm[s];
+        A.flex = 8; A.abd = 15; A.elbow = 34; A.twist = -34;
+        A.handQ = qEuler(18, 0, 0);
+      }
     }
     return P;
   }

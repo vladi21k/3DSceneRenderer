@@ -29,8 +29,9 @@ export const BUSES = ['bell', 'rolling', 'joints', 'squeal', 'traction', 'aux', 
 
 // outside sources reflected by the facades (heard through the cab shell)
 const STREET_SEND = { bell: 0.3, squeal: 0.05, joints: 0.03, brakes: 0.03, ambience: 0.15 };
-// sounds inside the car body: dense small-room reflections
-const CAB_SEND = { doors: 0.3, aux: 0.08 };
+// sounds inside the car body: dense small-room reflections (doors, chime, beeps;
+// the always-running HVAC is diffuse already and would keep the convolver busy)
+const CAB_SEND = { doors: 0.3 };
 // exterior buses and the shell they are heard through
 const SHELL_OF = { bell: 'near', squeal: 'near', ambience: 'far' };
 const TICK = 1 / 25;
@@ -88,7 +89,7 @@ export class AudioEngine {
     } else {
       this.comp = new DynamicsCompressorNode(ctx, { threshold: -24, knee: 10, ratio: 2.5, attack: 0.008, release: 0.3 });
       this.limiter = new DynamicsCompressorNode(ctx, { threshold: -4, knee: 0, ratio: 20, attack: 0.001, release: 0.12 });
-      this.clip = new WaveShaperNode(ctx, { curve: softClipCurve(4096, 0.84), oversample: '2x' });
+      this.clip = new WaveShaperNode(ctx, { curve: softClipCurve(4096, 0.84) }); // above the limiter: rarely engaged
       this.mix.connect(this.comp).connect(this.limiter).connect(this.clip).connect(this.master).connect(ctx.destination);
     }
 
@@ -111,16 +112,19 @@ export class AudioEngine {
       this.bus[name] = g;
     }
 
-    // ---- street reverb: two canyon widths, crossfaded by the local facade spacing
+    // ---- street reverb: two canyon widths. The local facade spacing picks one (with
+    // hysteresis) and the switch crossfades at the convolver inputs, so the idle
+    // convolver receives silence and the browser stops processing it.
     this.reverbIn = new GainNode(ctx, { gain: 1 });
     this.revN = new ConvolverNode(ctx, { disableNormalization: true });
     this.revW = new ConvolverNode(ctx, { disableNormalization: true });
-    this.revNg = new GainNode(ctx, { gain: 0.7 });
-    this.revWg = new GainNode(ctx, { gain: 0.7 });
+    this.revNg = new GainNode(ctx, { gain: 1 });
+    this.revWg = new GainNode(ctx, { gain: 0 });
+    this.wide = false;
     this.reverbTone = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 7000, Q: 0.5 });
     this.reverbOut = new GainNode(ctx, { gain: 0.9 });
-    this.reverbIn.connect(this.revN).connect(this.revNg).connect(this.reverbTone);
-    this.reverbIn.connect(this.revW).connect(this.revWg).connect(this.reverbTone);
+    this.reverbIn.connect(this.revNg).connect(this.revN).connect(this.reverbTone);
+    this.reverbIn.connect(this.revWg).connect(this.revW).connect(this.reverbTone);
     this.reverbTone.connect(this.reverbOut).connect(this.shell.far.input);
     for (const [name, amt] of Object.entries(STREET_SEND)) this.bus[name].connect(new GainNode(ctx, { gain: amt })).connect(this.reverbIn);
 
@@ -191,15 +195,19 @@ export class AudioEngine {
     glide(N.hs.gain, seg(-6, -2, 0), now, 0.1, 2e-3);
   }
 
-  /** Street reverb: crossfade the canyon width, fewer reflections where a side opens up. */
+  /** Street reverb: the canyon width in use, fewer reflections where a side opens up. */
   _reverb(st, now) {
     if (st.t - this._revT < 0.5 && st.t >= this._revT) return;
     this._revT = st.t;
     const L = this.layout, s = st.s + 8;
     const W = L.halfWidth(s, 1) + L.halfWidth(s, -1);
-    const x = clamp((W - 21) / 7, 0, 1);
-    glide(this.revNg.gain, Math.cos(x * Math.PI / 2) * 0.95, now, 0.6, 2e-3);
-    glide(this.revWg.gain, Math.sin(x * Math.PI / 2) * 0.95, now, 0.6, 2e-3);
+    const wide = this.wide ? W > 23.8 : W > 25.2;
+    if (wide !== this.wide) {
+      this.wide = wide;
+      const at = (g, v) => { g.gain.cancelScheduledValues(now); g.gain.setTargetAtTime(v, now, 0.4); g.gain.__last = v; };
+      at(this.revNg, wide ? 0 : 1);
+      at(this.revWg, wide ? 1 : 0);
+    }
     let open = 0;
     if (L.isInCrossStreet(s, 1, 4)) open++;
     if (L.isInCrossStreet(s, -1, 4)) open++;

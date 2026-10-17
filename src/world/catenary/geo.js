@@ -2,15 +2,24 @@ import * as THREE from 'three';
 
 // Small geometry kit for the lamp standards: an accumulating builder with lathe and
 // planar-sweep primitives. Every vertex carries `aTube`, the local radius of the part it
-// belongs to, so the thin-part shader can keep sub-pixel ironwork at least ~1 px wide.
+// belongs to, so the thin-part shader can keep sub-pixel ironwork at least ~1 px wide,
+// and `aWear` (x: rust / chipping weight, y: run-off streak weight, z: lamp-lit underside).
 // UVs are in metres (u along the part, v around it).
 
 export class GeoBuilder {
-  constructor() { this.pos = []; this.nor = []; this.uv = []; this.tube = []; this.idx = []; }
+  constructor() { this.pos = []; this.nor = []; this.uv = []; this.tube = []; this.wear = []; this.idx = []; }
   get count() { return this.pos.length / 3; }
-  vert(x, y, z, nx, ny, nz, u, v, tube) {
+  vert(x, y, z, nx, ny, nz, u, v, tube, wear = null) {
     this.pos.push(x, y, z); this.nor.push(nx, ny, nz); this.uv.push(u, v); this.tube.push(tube);
+    if (wear) this.wear.push(wear[0], wear[1], wear[2]); else this.wear.push(0, 0, 0);
     return this.count - 1;
+  }
+  /** Set aWear of vertices [i0, count) from fn(i, x, y, z, nx, ny, nz, u, v) -> [rust, streak, lit]. */
+  paintWear(i0, fn) {
+    for (let i = i0; i < this.count; i++) {
+      const w = fn(i, this.pos[i * 3], this.pos[i * 3 + 1], this.pos[i * 3 + 2], this.nor[i * 3], this.nor[i * 3 + 1], this.nor[i * 3 + 2], this.uv[i * 2], this.uv[i * 2 + 1]);
+      this.wear[i * 3] = w[0]; this.wear[i * 3 + 1] = w[1]; this.wear[i * 3 + 2] = w[2];
+    }
   }
   tri(a, b, c) { this.idx.push(a, b, c); }
   /** Append another builder transformed by a Matrix4. */
@@ -21,7 +30,7 @@ export class GeoBuilder {
     for (let i = 0; i < other.count; i++) {
       v.fromArray(other.pos, i * 3); n.fromArray(other.nor, i * 3);
       if (m) { v.applyMatrix4(m); n.applyMatrix3(nm).normalize(); }
-      this.vert(v.x, v.y, v.z, n.x, n.y, n.z, other.uv[i * 2], other.uv[i * 2 + 1], other.tube[i]);
+      this.vert(v.x, v.y, v.z, n.x, n.y, n.z, other.uv[i * 2], other.uv[i * 2 + 1], other.tube[i], other.wear.slice(i * 3, i * 3 + 3));
     }
     for (const i of other.idx) this.idx.push(i + base);
     return this;
@@ -33,6 +42,7 @@ export class GeoBuilder {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
     g.setAttribute('aTube', new THREE.Float32BufferAttribute(this.tube, 1));
+    g.setAttribute('aWear', new THREE.Float32BufferAttribute(this.wear, 3));
     if (colorFn) {
       const col = new Float32Array(this.count * 3);
       for (let i = 0; i < this.count; i++) {

@@ -10,7 +10,7 @@ import { arng, Biquad, noiseGen } from '../dsp.js';
 const C = 343;
 
 export function streetIR(sr, opts = {}) {
-  const { right = 10.3, left = 13.6, seconds = 2.2 } = opts;
+  const { right = 10.3, left = 13.6, seconds = 1.6 } = opts;
   const n = Math.floor(seconds * sr);
   const rng = arng('ir', right, left);
   const L = new Float32Array(n), R = new Float32Array(n);
