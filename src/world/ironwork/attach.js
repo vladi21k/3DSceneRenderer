@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GeoWriter, box, lathe, sweepBar, shared } from './geo.js';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
+import { uIronA2C } from './mats.js';
 
 // Small facade attachments: potted and boxed geraniums, planter boxes with their rail
 // hooks, split AC units with brackets, pipes and the stains they leave on the wall,
@@ -255,14 +256,21 @@ export function makeAttachMaterials(app) {
     vertexColors: true, roughness: 0.72,
   });
   // per-instance colour tints only the flower half of the atlas (leaves keep their greens);
-  // foliage keeps its (outward-bent) normal on both faces: lit like a volume, not a sheet
+  // foliage keeps its (outward-bent) normal on both faces: lit like a volume, not a sheet;
+  // leaf-edge coverage rounded to whole MSAA samples (no driver dither, see mats.js)
   plant.onBeforeCompile = (sh) => {
+    sh.uniforms.uIronA2C = uIronA2C;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vFlowerTint;')
       .replace('#include <color_vertex>', 'vFlowerTint = vec3( 1.0 );\n' + THREE.ShaderChunk.color_vertex
         .replace('vColor.rgb *= instanceColor.rgb;', 'vFlowerTint = instanceColor.rgb;'));
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vFlowerTint;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFlowerTint;\nuniform float uIronA2C;')
+      .replace('#include <alphatest_fragment>', `#include <alphatest_fragment>
+	if ( uIronA2C > 0.5 ) {
+		diffuseColor.a = floor( diffuseColor.a * uIronA2C + 0.5 ) / uIronA2C;
+		if ( diffuseColor.a <= 0.0 ) discard;
+	}`)
       .replace('#include <map_fragment>', '#include <map_fragment>\n\tif ( vMapUv.x > 0.5 ) diffuseColor.rgb *= vFlowerTint;')
       .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''));
   };

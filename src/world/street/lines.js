@@ -46,7 +46,8 @@ vec3 transformed = vec3( position );
   // dots along thin bands), and keep at least uMinPx half width for sub-pixel lines
   float hw = aLine.y + 1.0 / pxPerM;
   hw = max( hw, min( uMinPx / pxPerM, 1.6 ) );
-  transformed += aRight * ( aLine.x * hw );
+  // widen in the horizontal plane only (aRight.y carries the wear factor)
+  transformed += vec3( aRight.x, 0.0, aRight.z ) * ( aLine.x * hw );
   vLine = vec4( aLine.x * hw, aLine.z, aLine.w, pxPerM );
   vLineHalf = aLine.y;
   vLineRightW = wr;
@@ -225,7 +226,7 @@ export function createLineMaterials() {
     railNear: patchCanyon(makeLineMaterial('rail', { nearFade: true, name: 'street.line.rail' }), 'line'),
     railFar: patchCanyon(makeLineMaterial('rail', { nearFade: false, name: 'street.line.railFar' }), 'line'),
     // worn white line between the tracks (continuous, uniformly scuffed)
-    centre: makeLineMaterial('paint', { color: 0xd8d6ce, roughness: 0.62, wear: 0.15, opacity: 0.86, name: 'street.line.centre' }),
+    centre: makeLineMaterial('paint', { color: 0xd8d6ce, roughness: 0.62, wear: 0.18, opacity: 0.8, name: 'street.line.centre' }),
     // zebra stripes and stop lines (segments)
     stripe: makeLineMaterial('paint', { color: 0xdedcd5, roughness: 0.58, wear: 0.3, opacity: 0.87, name: 'street.line.stripe' }),
     // sealant-filled expansion joints across the corridor: grey-brown, intermittent

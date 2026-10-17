@@ -380,7 +380,7 @@ def check_hats(kind, info, parts):
             continue
         q = (p['lods'][0][0]['P'] - hc) / hs
         for hat in hats:
-            band = PARTS.HAT_BANDS[hat]
+            band = PARTS.hat_band(hat, q)
             h_off = PARTS.HAT_OFFSETS.get(hat, 0.004)
             c = q - PARTS.CR_C
             k = np.linalg.norm(c / PARTS.CR_R, axis=1)

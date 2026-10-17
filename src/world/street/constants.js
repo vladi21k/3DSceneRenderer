@@ -44,7 +44,7 @@ export const CORRIDOR = TRACK_ZONE_HALF;                 // 3.4
 export const BAND_IN = TRACK_ZONE_HALF - EDGE_BAND_W;    // 3.1 inner edge of the light stone band
 export const GUTTER_W = 0.26;                            // dished drainage channel outside the band
 export const GUTTER_OUT = TRACK_ZONE_HALF + GUTTER_W;    // 3.66
-export const SIDEWALK_RISE = 0.004;                      // own cross-fall rise at the facades (the
+export const SIDEWALK_RISE = 0;                          // sidewalk level above the rail tops (the
                                                          // real ground shape comes from route.surface)
 export const FACADE_OVERLAP = 1.0;                       // sidewalk runs this far under the facades
 export const SLAB_H = -0.30;                             // ground slab below everything

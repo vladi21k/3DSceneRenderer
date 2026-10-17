@@ -1,6 +1,6 @@
 import { MAIN_RAILS } from './constants.js';
 import { RUNS_MAIN, sweepRuns } from './rails.js';
-import { crossoverPlan, mainClass, mainRuns, mainCut } from './crossover.js';
+import { crossoverPlan, mainClass, mainRuns, mainCut, mainBusy } from './crossover.js';
 import { inCrossoverZone } from './paving.js';
 
 // Main-track rails of a chunk (lod 0), swept along the paving rows. On plain track
@@ -25,18 +25,25 @@ export function buildMainRails(ctx, chunk, rows, samples, bufs) {
       px: S.px + S.rx * rl.c, py: S.py, pz: S.pz + S.rz * rl.c, rx: S.rx, rz: S.rz, u: S.u, s: S.s, d: rl.c, dd: 0, n: 1,
     }));
     let seg = [], key = null, plan = null;
+    // thin the rows on gentle alignments (keep the ends, and every row where `need`)
+    const thin = (need) => {
+      const keep = [seg[0]];
+      for (let i = 1; i < seg.length - 1; i++) {
+        const r = seg[i];
+        if (rows[r] - rows[keep[keep.length - 1]] >= minGap || need(r) || need(seg[i + 1]) || need(seg[i - 1])) keep.push(r);
+      }
+      keep.push(seg[seg.length - 1]);
+      return keep;
+    };
     const flush = () => {
       if (seg.length < 2) return;
       if (!plan) {
-        // plain rail: thin the rows on gentle alignments (keep the ends)
-        const keep = [seg[0]];
-        for (let i = 1; i < seg.length - 1; i++) if (rows[seg[i]] - rows[keep[keep.length - 1]] >= minGap) keep.push(seg[i]);
-        keep.push(seg[seg.length - 1]);
-        sweepRuns(bufs, ctx.mats.rail, keep.map((r) => pts[r]), rl.g, () => RUNS_MAIN);
+        sweepRuns(bufs, ctx.mats.rail, thin(() => false).map((r) => pts[r]), rl.g, () => RUNS_MAIN);
         return;
       }
+      // crossover zone: dense rows only where the rail interacts with a diverging one
       const p = plan, cls = key;
-      const sp = seg.map((r) => pts[r]);
+      const sp = thin((r) => mainBusy(p, rl, rows[r])).map((r) => pts[r]);
       sweepRuns(bufs, ctx.mats.cut, sp, rl.g, (i) => mainRuns(p, rl, sp[i].s, cls),
         (i, kind, x, sv, dv, out) => mainCut(p, rl, sv, dv, kind, x, out));
     };

@@ -163,11 +163,16 @@ export function buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const rx = -m.dirOut.z, rz = m.dirOut.x; // right of the side street direction
   const nStripes = Math.max(2, Math.round((2 * road - 0.4) / 1.0));
   const sw = (2 * road - 0.4) / nStripes;
+  // wheel paths (lane centres ± 0.78 m) wear the stripes they run along much faster
+  const wheels = [-road / 2 - 0.78, -road / 2 + 0.78, road / 2 - 0.78, road / 2 + 0.78];
+  const wr = RNG.from('zebra', Math.round(c.s * 10), side);
   for (let k = 0; k < nStripes; k++) {
     const a = -road + 0.2 + sw * (k + 0.5);
+    let w = 0;
+    for (const t of wheels) w = Math.max(w, Math.exp(-((a - t) ** 2) / 0.15));
     const arr = [];
     for (let x = 3.4; x <= 6.41; x += 0.5) { const p = pt(a, x); arr.push(p[0], p[1], p[2], rx, rz, x - 3.4); }
-    lines.stripe.add(arr, Math.min(0.25, sw * 0.27), 3.0);
+    lines.stripe.add(arr, Math.min(0.25, sw * 0.27), 3.0, wr.range(0.75, 1.1) + 1.6 * w);
   }
   // dashed centre line further out
   for (let x0 = 14; x0 + 3 < m.len - 4; x0 += 9) {
@@ -251,6 +256,7 @@ export function buildCorridorCrossing(ctx, c, chunk, bufs, lines) {
   const rowsS = [];
   for (let k = 0; k <= 8; k++) rowsS.push(sA + (L * k) / 8);
   const rowInfos = rowsS.map((s) => surface.rowInfo(s, {}));
+  const wr = RNG.from('corridor-zebra', Math.round(c.s * 10));
   for (const [a, b] of free) {
     const span = b - a;
     const n = Math.max(1, Math.round((span + 0.45) / 0.95));
@@ -259,13 +265,14 @@ export function buildCorridorCrossing(ctx, c, chunk, bufs, lines) {
     let d = a + (span - used) / 2 + w / 2;
     for (let k = 0; k < n; k++, d += w + 0.45) {
       if (w < 0.2) continue;
+      const wear = wr.range(0.7, 1.45);       // trodden unevenly
       const arr = [];
       for (let i = 0; i < rowsS.length; i++) {
         route.sample(rowsS[i], smp);
         const h = surface.height(rowInfos[i], d) + 0.0015;
         arr.push(smp.pos.x + smp.right.x * d, smp.pos.y + h, smp.pos.z + smp.right.z * d, smp.right.x, smp.right.z, rowsS[i] - sA);
       }
-      lines.stripe.add(arr, w / 2, L);
+      lines.stripe.add(arr, w / 2, L, wear);
     }
   }
   // tactile warning strips on both sides, just outside the gutters

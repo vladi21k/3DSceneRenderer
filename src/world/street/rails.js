@@ -103,16 +103,16 @@ export const SEP_A = 0.115;     // from here the tongue has its full head and fi
 export const tongueW = (sep) => 2 * HEAD_HALF * Math.min(1, 0.15 + sep / 0.05);
 export const tongueDrop = (sep) => 0.0015 * (1 - smooth(sep / SEP_A));
 
-// Mortar strips swept with a rail (crossovers, where the paving grid has none): flat,
-// 0.5 mm proud of the paving so their edges are geometric (anti-aliased) and cover the
-// paving's cut, overlapping the bitumen seal by 3 mm.
-export const MORTAR_LIFT = 0.0005;
+// Mortar strips swept with a rail (crossovers, where the paving grid has none): flat at
+// the paving level, overlapping the bitumen seal by 3 mm. Their material is drawn with a
+// small polygon offset, so they cover the paving's (cut, aliased) edge and their own
+// geometric, anti-aliased edges show instead, without z-fighting at any distance.
 const mortarRun = (x0, x1, c0, c1) => ({
   kind: 'mortar',
   pts: [
-    { x: x0, h: MORTAR_LIFT, n: [0, 1], v: x0, c: c0 },
-    { x: (x0 + x1) / 2, h: MORTAR_LIFT, n: [0, 1], v: (x0 + x1) / 2, c: (c0 + c1) / 2 },
-    { x: x1, h: MORTAR_LIFT, n: [0, 1], v: x1, c: c1 },
+    { x: x0, h: 0, n: [0, 1], v: x0, c: c0 },
+    { x: (x0 + x1) / 2, h: 0, n: [0, 1], v: (x0 + x1) / 2, c: (c0 + c1) / 2 },
+    { x: x1, h: 0, n: [0, 1], v: x1, c: c1 },
   ],
 });
 export const MORTAR_FIELD = mortarRun(RAIL_X0 - GROUT_W, RAIL_X0 + 0.003, 0.86, 0.97);

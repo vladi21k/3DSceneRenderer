@@ -7,7 +7,7 @@ import { createLineMaterials, LineBuf, LINE_SHARED } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS } from './street/constants.js';
 import { CHUNK_LEN } from '../core/config.js';
-import { buildCrossover } from './street/crossover.js';
+import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
@@ -73,10 +73,15 @@ const street = {
       seal: mortarCut,
       mortar: mortarCut,
       corr: cut(M.get('paving.street', { vertexColors: true, stCut: 2 }), 'pave'),
-      floor: mats.rail.groove,     // cast floor of switch boxes and frogs (never cut)
+      // cast floor of switch boxes and frogs (never cut), pushed behind the groove floors
+      floor: M.get('rail.groove', { ...RAIL_GROOVE, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 }),
     };
     mats.cut.gauge = mats.cut.head;
     mats.cut.check = mats.cut.head;   // check rails: guard lip polished by wheel backs
+    // diverging rails: their swept mortar strips lie over the paving (see rails.js)
+    const mortarDiv = M.register('street.mortar.div', cut(createMortarMaterial()));
+    Object.assign(mortarDiv, { name: 'street.mortar.div', polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+    mats.cutDiv = { ...mats.cut, mortar: mortarDiv };
     this.surface = surface;
     this.ctx = { app, route: app.route, layout: app.layout, surface, mats, zonePad: 1.5, delta: surface.dl };
     // detail plans are per chunk index and also flatten the paving under covers
@@ -207,16 +212,23 @@ function makeRows(ctx, chunk) {
   return densify(ctx, chunk, all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02));
 }
 
-/** Dense rows (<= 0.5 m) inside crossover zones at lod 0: the cut attributes are
- *  interpolated between rows and must follow the curved diverging rails to a fraction
- *  of a millimetre. */
+/** Dense rows (<= 0.75 m) where crossover rails curve, at lod 0: the cut attributes
+ *  are interpolated between rows and must follow the curved diverging rails to about a
+ *  millimetre (their mortar overlaps the paving's cut by 2 mm). Along the straight
+ *  middle of a crossover the interpolation is exact. */
 function densify(ctx, chunk, out) {
   if (chunk.lod > 0) return out;
+  const curved = (s) => {
+    const c = inCrossoverZone(ctx, s);
+    if (!c) return false;
+    const p = crossoverPlan(c, ctx.delta), x = ctx.delta(c.s0, s);
+    return x < p.arc + 1 || x > p.L - p.arc - 1;
+  };
   const dense = [out[0]];
   for (let i = 1; i < out.length; i++) {
     const a = out[i - 1], b = out[i];
-    if (inCrossoverZone(ctx, (a + b) / 2)) {
-      const n = Math.ceil((b - a) / 0.5 - 1e-6);
+    if (curved((a + b) / 2)) {
+      const n = Math.ceil((b - a) / 0.75 - 1e-6);
       for (let k = 1; k < n; k++) dense.push(a + ((b - a) * k) / n);
     }
     dense.push(b);

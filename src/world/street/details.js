@@ -3,6 +3,7 @@ import { CHUNK_LEN } from '../../core/config.js';
 import { IRON_REGIONS } from './textures.js';
 import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } from './constants.js';
 import { colInfo, Z_CORR } from './surface.js';
+import { facadePlan } from '../facadePlan.js';
 
 // Street details per chunk, planned deterministically from the chunk index so the
 // surface can flatten the paving under covers before it is built:
@@ -16,6 +17,8 @@ const SIZES = {
   plate: [0.6, 0.6], plate2: [1.0, 0.5], valve: [0.32, 0.32],
 };
 const ROUND = { manhole: 1, valve: 1 };
+// chance of a gum / dirt spot by street furniture where people linger
+const LINGER = { bench: 0.9, bin: 0.8, shelter: 0.9, ticketMachine: 0.8, stopSign: 0.6, kiosk: 0.8, infoBoard: 0.5, advertColumn: 0.4 };
 const u01 = (a, b) => hash2(a | 0, b | 0) / 4294967296;
 
 /** Deterministic plan for chunk ci: { items, spots, joints, stains, leaves }. */
@@ -122,6 +125,42 @@ export function planDetails(ctx, ci) {
     }
     const size = kind === 3 ? rng.range(1.4, 2.6) : kind === 2 ? rng.range(0.8, 1.5) : rng.range(0.6, 1.8);
     stains.push({ s, d, kind, size, yaw: kind === 3 ? Math.PI / 2 + rng.normal(0, 0.05) : rng.range(0, Math.PI * 2), aspect: kind === 3 ? 0.45 : rng.range(0.7, 1.2) });
+  }
+
+  // where people linger the paving collects more: gum and dark spots around benches,
+  // bins and stops, along café terraces, and trodden-in grime at shop doors and entrances
+  const lg = RNG.from(layout.seed, 'street-linger', ci);
+  const onWalk = (s, d) => s > s0 + 0.3 && s < s1 - 0.3 && Math.abs(d) > GUTTER_OUT + 0.25 && Math.abs(d) < layout.halfWidth(s, d < 0 ? -1 : 1) - 0.1;
+  const stain = (s, d, kind, size, aspect, yaw) => {
+    if (onWalk(s, d)) stains.push({ s, d, kind, size, yaw, aspect });
+  };
+  for (const f of layout.inChunk('furniture', ci)) {
+    if (!LINGER[f.type] || !lg.chance(LINGER[f.type])) continue;
+    const a = lg.range(0, Math.PI * 2), r = lg.range(0.5, 1.3);
+    stain(f.s + Math.cos(a) * r, f.d + Math.sin(a) * r, lg.chance(0.7) ? 2 : 0, lg.range(0.7, 1.3), lg.range(0.7, 1.2), lg.range(0, 6.28));
+  }
+  for (const c of layout.inChunk('cafes', ci)) {
+    const n = lg.int(1, 3);
+    for (let i = 0; i < n; i++) {
+      // mostly along the terrace's street-side edge, where waiters and passers-by walk
+      const d = c.dOut + Math.sign(c.dOut) * lg.range(-0.6, 0.5);
+      stain(lg.range(c.s0, c.s1), d, lg.chance(0.6) ? 2 : 0, lg.range(0.8, 1.6), lg.range(0.7, 1.2), lg.range(0, 6.28));
+    }
+  }
+  for (const lot of layout.inChunk('lots', ci)) {
+    // the frame origin's route position, then step along the facade (u runs along it)
+    const F = lot.frame;
+    const o0 = route.project(F.origin.x, F.origin.z, (lot.s0 + lot.s1) / 2);
+    if (!o0) continue;
+    const smp = route.sample(o0.s, {});
+    const k = F.uDir.x * smp.tanH.x + F.uDir.z * smp.tanH.z;
+    for (const o of facadePlan(lot).openings) {
+      if (o.floor !== 0 || !lg.chance(o.kind === 'door' ? 0.75 : 0.45)) continue;
+      // a soft band of grime just outside the threshold, elongated along the facade
+      const s = o0.s + k * o.uc;
+      const d = lot.side * (layout.halfWidth(s, lot.side) - lg.range(0.35, 0.6));
+      stain(s, d, 0, Math.min(1.8, o.w * lg.range(0.8, 1.1)), lg.range(0.45, 0.7), lg.range(-0.1, 0.1));
+    }
   }
 
   // fallen leaves around trees and in the gutters

@@ -99,10 +99,12 @@ function corbelShape(variant, D, Hc) {
 export function corbelGeometry(variant, lod) {
   const { D, H: Hc, W: Wc } = CORBEL;
   const { shape, roll } = corbelShape(variant, D, Hc);
+  // the light level drops the 12 mm bevel and the carved volutes (sub-pixel where it is
+  // used) but keeps the silhouette: 4 segments per curve hold the big roll within ~5 mm
   const bev = lod ? 0 : 0.012;
   const ext = new THREE.ExtrudeGeometry(shape, {
     depth: Wc - 2 * bev, bevelEnabled: !lod, bevelThickness: bev, bevelSize: bev, bevelSegments: 1,
-    curveSegments: lod ? 1 : 5,
+    curveSegments: lod ? 4 : 6,
   });
   let parts = [ext];
   if (roll && !lod) {

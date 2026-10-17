@@ -273,7 +273,9 @@ export function colInfo(d, out = {}) {
     out.warm = 0.02;
   } else {
     out.zone = Z_WALK;
-    out.h0 = -0.002 + (SIDEWALK_RISE + 0.002) * smooth((a - GUTTER_OUT) / 4.4);
+    // level walking surface (h = 0, where furniture, cafés and people stand), easing
+    // down into the gutter; the cross-fall itself is left to route.surface
+    out.h0 = SIDEWALK_RISE - 0.0025 * (1 - smooth((a - GUTTER_OUT) / 0.6));
     out.amp = 0.0015;      // geometric: objects stand at h = 0 within ±1.5 mm
     out.shadeAmp = 0.012;  // the visible unevenness is in the normals
     out.v = 1 - 0.06 * Math.exp(-(a - GUTTER_OUT) / 0.25);

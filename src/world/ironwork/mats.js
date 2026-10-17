@@ -12,13 +12,20 @@ import { WIDEN, ATLAS } from './railings.js';
 //   CARD_HI .. CARD_LO px       geometry + card fading in (union)
 //   CARD_LO .. GEO_LO px        card + geometry fading out
 //   below GEO_LO px             card only
+// A bay seen at a grazing angle is foreshortened until its bars and scrolls merge into a
+// band no geometry can resolve: its bar width counts as smaller by the view-angle factor
+// angleK(n.v) (bays and their cards alike; posts keep their full width), so the cards
+// take over early along the street and the geometry is spent on what can be seen.
 // Fades are written into alpha and resolved by alpha-to-coverage on the MSAA scene
 // target. Alpha is rounded to whole samples first: some drivers dither fractional
 // coverage over a 2x2 pixel pattern, which would print a screen-fixed checkerboard on
 // the iron; a whole number of samples covers every pixel alike, exactly like geometry
 // edges under MSAA. Without MSAA (no post pass, low quality) alpha is a 0.5 cut.
 
-export const FADE = { BAR: 0.016, GEO_LO: 0.8, GEO_HI: 1.3, CARD_LO: 1.3, CARD_HI: 2.2 };
+export const FADE = { BAR: 0.016, GEO_LO: 0.8, GEO_HI: 1.3, CARD_LO: 1.3, CARD_HI: 2.2, NV: 0.35, KMIN: 0.3 };
+/** View-angle factor on the bar width (|n.v| of the railing plane, see header). */
+export const angleK = (nv) => Math.min(1, Math.max(FADE.KMIN, nv / FADE.NV));
+const ANGLE_GLSL = (nv) => `clamp( ${nv} / ${FADE.NV.toFixed(3)}, ${FADE.KMIN.toFixed(3)}, 1.0 )`;
 /** Pixels per metre at 1 m distance: 0.5 * drawing-buffer height * projection[1][1]. */
 export const uIronPx = { value: 1800 };
 /** MSAA sample count of the scene target (alpha-to-coverage works when > 0). */
@@ -79,27 +86,32 @@ float iwCoverage( float a ) {
 	return uIronA2C < 0.5 ? step( 0.5, a ) : floor( a * uIronA2C + 0.5 ) / uIronA2C;
 }`;
 
-/** Near railing geometry: fades out by projected bar width; rust at the feet and in
+/** Near railing geometry: fades out by projected bar width (with the view-angle factor
+ *  for bays, whose instance z axis is the railing normal); rust at the feet and in
  *  patches (amount: 0 none .. 1 neglected paint). */
-function nearPatch(mat, rust) {
-  return chain(mat, `|ironNear${rust}`, (sh) => {
-    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;');
+function nearPatch(mat, rust, angle) {
+  return chain(mat, `|ironNear${rust}${angle ? 'a' : ''}`, (sh) => {
+    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;');
     sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
 	#ifdef USE_INSTANCING
 		vIwW = ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz;
+		vec3 iwN = normalize( mat3( modelMatrix ) * mat3( instanceMatrix ) * vec3( 0.0, 0.0, 1.0 ) );
 	#else
 		vIwW = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+		vec3 iwN = normalize( mat3( modelMatrix ) * vec3( 0.0, 0.0, 1.0 ) );
 	#endif
+	vIwK = ${angle ? ANGLE_GLSL('abs( dot( iwN, normalize( cameraPosition - vIwW ) ) )') : '1.0'};
 	vIwY = transformed.y;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>${FRAG_HEAD}
 varying vec3 vIwW;
 varying float vIwY;
+varying float vIwK;
 float iwRust = 0.0;
 float iwRn = 0.0;
 ${NOISE}`)
       .replace('#include <alphatest_fragment>', `{
-		float ironPx = ${f(FADE.BAR)} * uIronPx * uIronGeoK / max( vIronDist, 0.01 );
+		float ironPx = ${f(FADE.BAR)} * uIronPx * uIronGeoK * vIwK / max( vIronDist, 0.01 );
 		float a = iwCoverage( smoothstep( ${f(FADE.GEO_LO)}, ${f(FADE.GEO_HI)}, ironPx ) );
 		if ( a <= 0.0 ) discard;
 		diffuseColor.a = a;
@@ -135,7 +147,8 @@ function cardPatch(mat) {
     sh.uniforms.uIwWiden = uIwWiden;
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>${FRAG_HEAD}
-uniform vec4 uIwWiden[ ${ATLAS.ROWS} ];`)
+uniform vec4 uIwWiden[ ${ATLAS.ROWS} ];
+vec3 iwN;`)
       // the atlas holds coverage planes, not colour (colour is per vertex)
       .replace('#include <map_fragment>', 'vec4 iwCov = texture2D( map, vMapUv );')
       .replace('#include <alphatest_fragment>', `{
@@ -150,12 +163,18 @@ uniform vec4 uIwWiden[ ${ATLAS.ROWS} ];`)
 		float open = 1.0 - iwCov.a;
 		float fill = 1.0 - pow( max( 1.0 - added / ( max( open, 0.001 ) * k.w ), 0.0 ), k.w );
 		float cov = iwCov.a + open * fill;
-		float ironPx = ${f(FADE.BAR)} * uIronPx * uIronCardK / max( vIronDist, 0.01 );
+		// (3 % ahead of the geometry's own angle factor: the hand-over band always overlaps)
+		float ironPx = ${f(FADE.BAR)} * uIronPx * uIronCardK * 0.97 * ${ANGLE_GLSL('nv')} / max( vIronDist, 0.01 );
 		float a = iwCoverage( cov * ( 1.0 - smoothstep( ${f(FADE.CARD_LO)}, ${f(FADE.CARD_HI)}, ironPx ) ) );
 		if ( a <= 0.0 ) discard;
 		diffuseColor.a = a;
 		diffuseColor.rgb *= mix( 1.0, 0.7, 1.0 - nv );
+		// shading normal of the lattice: the bar faces we see turn toward us as the view
+		// grazes the card (round and square bars alike), not the card's own plane
+		iwN = normalize( V + 0.5 * ( dot( N, V ) < 0.0 ? -N : N ) );
 	}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+	normal = iwN;`)
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
 	// a lattice of bars facing every way has no Fresnel rise toward the card's grazing
 	// angles: reflectance stays at the paint's normal-incidence value
@@ -175,16 +194,18 @@ export function makeMaterials(app, atlas) {
   const M = app.materials;
   const lib = M.get('metal.iron');
 
-  // clones keep the library surface patch (baked paint maps, macro wear, specular AA)
-  const iron = nearPatch(lib.clone(), 0.55);
-  iron.name = 'ironwork.iron';
-  iron.alphaToCoverage = true;
-  // painted iron: same maps, colour per instance, a flatter older paint
-  const paint = nearPatch(lib.clone(), 0.85);
-  paint.name = 'ironwork.paint';
-  paint.color.setRGB(1, 1, 1);
-  paint.roughness = 1.75;
-  paint.alphaToCoverage = true;
+  // clones keep the library surface patch (baked paint maps, macro wear, specular AA);
+  // bays and posts differ only in the view-angle factor (see header)
+  const near = (name, rust, angle, painted) => {
+    const m = nearPatch(lib.clone(), rust, angle);
+    m.name = name;
+    m.alphaToCoverage = true;
+    // painted iron: same maps, colour per instance, a flatter older paint
+    if (painted) { m.color.setRGB(1, 1, 1); m.roughness = 1.75; }
+    return m;
+  };
+  const iron = near('ironwork.iron', 0.55, true, false), paint = near('ironwork.paint', 0.85, true, true);
+  const ironPost = near('ironwork.ironPost', 0.55, false, false), paintPost = near('ironwork.paintPost', 0.85, false, true);
 
   // one card material for black and painted iron (colour per vertex)
   const card = cardPatch(new THREE.MeshStandardMaterial({
@@ -192,10 +213,10 @@ export function makeMaterials(app, atlas) {
     vertexColors: true, roughness: 0.85, metalness: 0,
   }));
 
-  for (const m of [iron, paint, card]) M.register(m.name, m);
+  for (const m of [iron, paint, ironPost, paintPost, card]) M.register(m.name, m);
 
   return {
-    iron, paint, card,
+    iron, paint, ironPost, paintPost, card,
     ironColor: () => [lib.color.r, lib.color.g, lib.color.b],
   };
 }

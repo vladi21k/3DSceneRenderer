@@ -163,13 +163,13 @@ export function bayGeometry(design, lod = 0) {
 }
 
 /** Corner / end post: square bar, collar, ball finial, small foot. Local origin at the foot.
- *  lod 1 is a plain bar with a small faceted knob. */
+ *  lod 1 has a faceted finial. */
 export function postGeometry(lod = 0) {
   const W = new GeoWriter();
   const s = 0.026;
   box(W, 0, RAIL_H / 2 + 0.01, 0, s, RAIL_H + 0.02, s);
   box(W, 0, RAIL_H + 0.026, 0, 0.038, 0.012, 0.038);         // collar
-  if (!lod) box(W, 0, 0.006, 0, 0.06, 0.012, 0.06);          // foot plate
+  box(W, 0, 0.006, 0, 0.06, 0.012, 0.06, 1, 'd');            // foot plate
   const seg = lod ? 6 : 10;
   const prof = [];
   const R = 0.027, cy = RAIL_H + 0.068;

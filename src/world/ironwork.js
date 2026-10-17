@@ -10,7 +10,9 @@ import {
 } from './ironwork/stone.js';
 import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
 import { LodInstancer } from './ironwork/instancer.js';
-import { makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit } from './ironwork/mats.js';
+import {
+  makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK,
+} from './ironwork/mats.js';
 import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwork/attach.js';
 
 // Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
@@ -21,7 +23,8 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 // Level of detail is chosen per INSTANCE (each railing bay, post, console, baluster,
 // plant) in update(), from projected sizes, so it follows the FOV:
 //   rail   bay tessellation level whose chord error stays under 0.4 px (railings.js TOL),
-//          then nothing once bars are thinner than ~0.8 px (the cards carry on)
+//          then nothing once bars are thinner than ~0.8 px, foreshortening included
+//          (the cards carry on)
 //   post   finial post / plain post, same range
 //   carve  carved consoles, turned balusters, full geraniums / plain stand-ins
 // Railing cards are always present: they fade in under the geometry and take over from
@@ -402,7 +405,7 @@ const ironwork = {
         const variant = h < Hc * 0.8 ? 1 : st.corbel;
         _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
         _m.multiplyMatrices(F, _l);
-        if (lod) inst.add('corbelFar', [this.geo.corbel[0][1]], this.stoneMat, _m, c, { radius: 1 });
+        if (lod) inst.add(`corbelFar${variant}`, [this.geo.corbel[variant][1]], this.stoneMat, _m, c, { radius: 1 });
         else inst.add(`corbel${variant}`, this.geo.corbel[variant], this.stoneMat, _m, c, { cls: 'carve', radius: 1 });
       }
     }
@@ -575,6 +578,7 @@ const ironwork = {
     const design = DESIGNS[st.design];
     const painted = st.paint >= 0;
     const mat = painted ? this.mats.paint : this.mats.iron;
+    const postMat = painted ? this.mats.paintPost : this.mats.ironPost;
     const color = painted ? PAINTS[st.paint] : null;
     const hs = st.railH;
     const i = 0.05; // railing centre line inset from the slab edge
@@ -594,7 +598,7 @@ const ironwork = {
         for (let b = 0; b < nb; b++) {
           const o = b * design.W * sx;
           _l.set(tu * sx, 0, -tw, A[0] + tu * o, 0, hs, 0, y, tw * sx, 0, tu, A[1] + tw * o, 0, 0, 0, 1);
-          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, { cls: 'rail', castShadow: false, radius: 0.8 });
+          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, { cls: 'rail', castShadow: false, radius: 0.8, angle: true });
         }
       }
       // card for this run (also casts the railing shadow at every distance)
@@ -614,7 +618,7 @@ const ironwork = {
       }
       if (!lod) {
         _l.makeScale(1, hs, 1).setPosition(P[0], y, P[1]);
-        inst.add(`post${painted ? 'p' : ''}`, this.geo.post, mat, _m.multiplyMatrices(F, _l), color, { cls: 'post', castShadow: false, radius: 1.2 });
+        inst.add(`post${painted ? 'p' : ''}`, this.geo.post, postMat, _m.multiplyMatrices(F, _l), color, { cls: 'post', castShadow: false, radius: 1.2 });
       }
     }
   },
@@ -725,12 +729,13 @@ const ironwork = {
     obj.userData.writers = null;
   },
 
-  /** Distance limits per detail class for the current projection (see header). */
+  /** Distance limits per detail class for the current projection (see header). The
+   *  railing bays' last limit shrinks with the view angle (mats.js angleK). */
   limits(px) {
     const geo = geoLimit() + 0.5;
     const d1 = (TOL[1] * px) / 0.4, d2 = (TOL[2] * px) / 0.4;
-    const carve = (0.03 * px) / 3.0; // 3 cm carving still covers 3 px
-    return { rail: [d1, d2, geo], post: [d2, geo], carve: [carve, Infinity] };
+    const carve = (0.01 * px) / 0.6; // what the light levels leave out (~1 cm) is under 0.6 px
+    return { rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity] };
   },
 
   update(dt, app) {

@@ -20,6 +20,8 @@ import { HumansTest } from './humans/test.js';
 // texture; visible figures are packed into the first rows so only those are uploaded. The
 // vertex shader skins from it. Clothing, skin and hair are shaded per fragment from a
 // per-figure "look" row (appearance.js).
+// Testing: humanstest=1 (humans/test.js); humans_dir=<dir> loads a trial asset build;
+// humans_dbg=1|2|3 shows baked occlusion / aux attributes / garment ease instead of shading.
 
 const BASES = ['male', 'female', 'child'];
 // figure height on screen (px) above which each LOD is used, by number of LODs in the asset
@@ -30,7 +32,7 @@ const MAT_N = NUM_BONES * 12;
 const SKIRT_ID = 250;                     // part id of the runtime skirt / coat shell
 const PHONE_ID = 251;                     // part id of the runtime phone
 const SPLIT_LODS = 2;                     // the nearest LODs draw body and each worn part separately
-const FADE = { stand: 0.5, sit: 0.9 };    // pose cross-fade times (s)
+const FADE = { stand: 0.75, sit: 1.0 };   // pose cross-fade times (s): folding the arms or raising a phone takes a moment
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();

@@ -20,6 +20,14 @@ PART_IDS = {
 # them (material.js) and the build checks the result (humans_build.check_hats)
 HAT_OFFSETS = {'cap': 0.016, 'sunhat': 0.020}
 HAT_BANDS = {'cap': 0.042, 'sunhat': 0.040, 'fedora': 0.036}
+CAP_BACK_DROP = 0.034     # a cap sits lower at the back (down to the occiput); material.js matches
+
+
+def hat_band(name, P):
+    """Head-local height of a hat's lower edge at each point (caps slope down towards the back)."""
+    if name == 'cap':
+        return HAT_BANDS['cap'] - CAP_BACK_DROP * sstep(-0.02, 0.09, P[:, 2])
+    return np.full(len(P), HAT_BANDS[name])
 PER_BASE = {
     'male': ['hair_short', 'hair_buzz', 'hair_medium', 'hair_curly', 'hair_balding', 'hair_side', 'hair_receding',
              'beard_full', 'beard_short',
@@ -223,7 +231,7 @@ def hat_part(name):
         co = HAT_OFFSETS['cap']
         crown = Fn(lambda P: Ellipsoid(CR_C + np.array([0, 0.004, 0]), CR_R + np.array([0, 0.004, 0])).eval(P) - co,
                    CR_C - CR_R - 0.04, CR_C + CR_R + 0.04)
-        band = Fn(lambda P: HAT_BANDS['cap'] - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2))
+        band = Fn(lambda P: hat_band('cap', P) - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2))
         dome = Intersect(crown, band, k=0.004)
         brim = RoundBox((0, 0.040, -0.126), (0.062, 0.0025, 0.042), 0.002, R=rot_xyz(-8, 0, 0))
         brim = Intersect(brim, Ellipsoid((0, 0.04, -0.100), (0.088, 0.05, 0.078)), k=0.003)
@@ -233,7 +241,8 @@ def hat_part(name):
                      [(0, 0.087, 0.104, 0, 0), (0.7, 0.082, 0.097, 0, 0), (1.0, 0.063, 0.078, 0, 0)], n=2.0, capr=0.4)
         dent = Ellipsoid((0, 0.165, 0.01), (0.03, 0.03, 0.065))
         crown = Subtract(crown, dent, k=0.012)
-        brim = Fn(lambda P: np.maximum(np.abs(P[:, 1] - 0.038 - 0.020 * (np.abs(P[:, 0]) / 0.16) ** 2) - 0.0035,
+        # (the sides turn up a little; more reads as a cowboy hat edge-on)
+        brim = Fn(lambda P: np.maximum(np.abs(P[:, 1] - 0.038 - 0.011 * (np.abs(P[:, 0]) / 0.16) ** 2) - 0.0038,
                                        np.sqrt((P[:, 0] / 0.155) ** 2 + ((P[:, 2] - 0.005) / 0.170) ** 2) * 0.155 - 0.155),
                   (-0.18, 0.0, -0.2), (0.18, 0.09, 0.2))
         n = Union([crown, brim], k=0.008)

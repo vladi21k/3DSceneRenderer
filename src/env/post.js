@@ -229,7 +229,7 @@ const post = {
     const ss = THREE.MathUtils.smoothstep;
     const pu = this.prepass.material.uniforms, fu = this.final.material.uniforms;
     // haze: a dusty summer afternoon
-    const k = THREE.MathUtils.lerp(1.0, 1.12, ss(t, 0.3, 0.8));
+    const k = THREE.MathUtils.lerp(1.25, 1.12, ss(t, 0.3, 0.8));
     pu.uHazeExt.value.set(3.6e-4 * k, 4.0e-4 * k, 4.7e-4 * k);
     pu.uHazeInscatter.value = 1.0;
     pu.uHazeGap.value = env ? env.haze.gap : 0;

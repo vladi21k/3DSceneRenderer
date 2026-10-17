@@ -405,10 +405,10 @@ export class Rig {
       // left upper arm; the left forearm behind it with the hand resting on the right biceps
       const k = this.H / 1.76, shY = this.rest[B.armR].y, shX = this.rest[B.armR].x;
       const br = 0.004 * Math.sin(2 * Math.PI * t * 5);
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.62, shY - 0.245 * k + br, -0.175 * k),
-        pole: new THREE.Vector3(1, -0.3, 0.5), palm: new THREE.Vector3(0.0, -0.3, 1), flex: 55 };
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.74, shY - 0.175 * k + br, -0.135 * k),
-        pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(0.0, -0.2, 1), flex: 40 };
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.74, shY - 0.235 * k + br, -0.150 * k),
+        pole: new THREE.Vector3(1, -0.3, 0.5), palm: new THREE.Vector3(0.6, -0.2, 1), flex: 85 };
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.170 * k + br, -0.120 * k),
+        pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(-0.5, -0.1, 0.85), flex: 30 };
     } else if (variant === 3) {
       // hands in the front pockets
       for (const s of ['L', 'R']) {

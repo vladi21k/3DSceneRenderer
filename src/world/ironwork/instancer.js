@@ -11,7 +11,9 @@ import * as THREE from 'three';
 //
 // Distance classes ('cls') name the limit table the owner passes to partition():
 // limits[k] is the distance up to which level k is used; beyond the last limit the
-// instance is not drawn. A set with a single level and no class is static.
+// instance is not drawn. A set with a single level and no class is static. Sets added
+// with `angle` (railing bays: instance z axis = railing normal) scale the last limit by
+// limits.angleK(|n.v|), so foreshortened bays leave earlier.
 
 const _v = new THREE.Vector3();
 
@@ -19,8 +21,8 @@ export class LodInstancer {
   constructor() { this.sets = new Map(); }
 
   /** levels: geometry per detail level (null = nothing drawn at that level).
-   *  color: [r, g, b] or null. opts: {cls, castShadow, receiveShadow, radius} (first add
-   *  wins; radius pads the bounding sphere, default from the level-0 geometry). */
+   *  color: [r, g, b] or null. opts: {cls, castShadow, receiveShadow, radius, angle}
+   *  (first add wins; radius pads the bounding sphere, default from the level-0 geometry). */
   add(key, levels, material, matrix, color = null, opts = {}) {
     let s = this.sets.get(key);
     if (!s) {
@@ -90,6 +92,7 @@ export class LodInstancer {
    *  slack: how far the camera can move before any instance can change level. */
   static partition(s, cam, limits) {
     const L = limits.length, m = s.m;
+    const ak = s.opts.angle ? limits.angleK : null;
     // whole set beyond the last limit (or inside the first): skip the per-instance pass
     const dc = _v.copy(s.sphere.center).distanceTo(cam);
     let uniform = -1, slack = Infinity;
@@ -105,6 +108,13 @@ export class LodInstancer {
         while (k < L && d >= limits[k]) k++;
         const gap = Math.min(k > 0 ? d - limits[k - 1] : Infinity, k < L ? limits[k] - d : Infinity);
         if (gap < slack) slack = gap;
+        if (ak && k < L) {
+          // 5 % margin: the shaders fade by the angle at each vertex, not at the origin
+          const nv = Math.abs(m[i * 16 + 8] * dx + m[i * 16 + 9] * dy + m[i * 16 + 10] * dz) / (d || 1);
+          if (d >= limits[L - 1] * Math.min(1, ak(nv) * 1.05)) k = L;
+          // the view angle changes as the camera moves: revisit often
+          if (slack > 0.5) slack = 0.5;
+        }
       }
       if (k !== s.lvl[i]) { s.lvl[i] = k; changed = true; }
     }

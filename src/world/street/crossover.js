@@ -116,13 +116,15 @@ export function crossoverPlan(c, dl) {
       }
       return x;
     };
-    // lateral coordinate of route point (s, d) in the rail's frame (+ towards its gauge)
+    // rail point at route s (cached: callers ask row by row)
     const q = {};
     let lastS = NaN;
-    r.local = (s, d) => {
+    r.atS = (s) => {
       if (s !== lastS) { r.at(r.xAt(s), q); lastS = s; }
-      return r.g * (d - q.d) * q.n;
+      return q;
     };
+    // lateral coordinate of route point (s, d) in the rail's frame (+ towards its gauge)
+    r.local = (s, d) => { const a = r.atS(s); return r.g * (d - a.d) * a.n; };
     return r;
   });
 
@@ -173,7 +175,8 @@ export function crossoverPlan(c, dl) {
     const xc = oppRail.xAt(f.s);
     oppRail.checks.push([xc - CHECK_HALF, xc + CHECK_HALF]);
   }
-  p = { c, L, rails, mainIa, mainChecks, dl };
+  // arc: length of the curved part at each end (the middle is straight)
+  p = { c, L, arc: cv.x1, rails, mainIa, mainChecks, dl };
   cache.set(c, p);
   return p;
 }
@@ -224,10 +227,14 @@ export function mainCut(p, m, s, d, kind, x, out) {
   const ia = mainIaAt(p, m, s);
   if (!ia) return;
   const r = ia.rail;
-  const sep = ia.kind === 'switch' ? Math.abs(r.at(r.xAt(s), _q).d - m.c) : 0;
+  const sep = ia.kind === 'switch' ? Math.abs(r.atS(s).d - m.c) : 0;
   setCut(out, r.local(s, d), band(ia.kind === 'frog' ? 'FM' : ia.role, kind, x, sep));
 }
-const _q = {};
+
+/** Whether main rail m interacts with a diverging rail at s (cuts, tongue, check). */
+export function mainBusy(p, m, s) {
+  return !!mainIaAt(p, m, s) || mainClass(p, m, s) !== 'F';
+}
 
 /** Cut attribute of a diverging-rail surface vertex. q: the rail's path sample. */
 function railCut(r, q, kind, x, sv, dv, out) {
@@ -260,8 +267,7 @@ export function mainRuns(p, m, s, cls) {
   if (cls === 'C') return RUNS_CHECK;
   if (cls !== 'T') return RUNS_MAIN;
   const ia = mainIaAt(p, m, s);
-  const r = ia ? ia.rail : null;
-  const sep = r ? Math.abs(r.at(r.xAt(s), _q).d - m.c) : 0;
+  const sep = ia ? Math.abs(ia.rail.atS(s).d - m.c) : 0;
   return tongueRuns(tongueW(sep), tongueDrop(sep), FLOOR_H);
 }
 
@@ -297,7 +303,7 @@ function railSamples(ctx, p, r, x0, x1, step) {
  */
 export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
   const p = crossoverPlan(c, ctx.delta);
-  const mats = ctx.mats.cut;
+  const mats = ctx.mats.cutDiv;
   for (const r of p.rails) {
     const xa = Math.max(0, r.xAt(chunk.s0)), xb = Math.min(p.L, r.xAt(chunk.s1));
     if (xb - xa < 1e-3) continue;
@@ -318,7 +324,8 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
       const iaMid = r.ia.find((ia) => mid >= ia.x0 && mid <= ia.x1) || null;
       const tongue = iaMid && iaMid.kind === 'switch' && iaMid.role === 'T' && mid >= iaMid.tongue[0] && mid <= iaMid.tongue[1];
       const check = !tongue && r.checks.some(([a, b]) => mid >= a && mid <= b);
-      const pts = railSamples(ctx, p, r, x0, x1, tongue ? 0.2 : 0.3);
+      // (chord error at R 70 m: 0.45 mm for 0.5 m steps)
+      const pts = railSamples(ctx, p, r, x0, x1, tongue ? 0.25 : 0.5);
       for (const q of pts) q.ia = iaMid;
       const runsAt = tongue
         ? (i) => {
