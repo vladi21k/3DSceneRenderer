@@ -13,6 +13,7 @@ export const PLATFORM_H = 0.30;       // platform top above paving (low-floor tr
 export const PLATFORM_LEN = 52;
 export const POLE_D = TRACK_ZONE_HALF + 0.55;   // lamp / catenary pole line
 export const TREE_D = TRACK_ZONE_HALF + 1.75;   // street tree line
+export const SIDE_LOT_START = 16;                // side-street facades begin this far from the main facade line
 
 export class Layout {
   constructor(route, seed = 7) {
@@ -166,6 +167,7 @@ export class Layout {
             cornerStart: bounded && s0 === fa, cornerEnd: bounded && s1 >= fb - 1e-6,
             depth: rng.range(13, 20),
           };
+          if (lot.cornerStart || lot.cornerEnd) lot.depth = SIDE_LOT_START; // corner block meets the side-street row
           lot.frame = this.lotFrame(lot);
           // corner flags in facade coordinates (u = 0 is the viewer-left end)
           lot.cornerU0 = side > 0 ? lot.cornerEnd : lot.cornerStart;
@@ -182,9 +184,9 @@ export class Layout {
       for (const side of sides) {
         const rng = RNG.from(this.seed, 'side', Math.round(c.s), side);
         for (const edge of [-1, +1]) { // the two facades lining the side street
-          let x = 0;
-          while (x < c.depth) {
-            const len = Math.min(rng.range(10, 22), c.depth - x + 2);
+          let x = SIDE_LOT_START;
+          while (x < c.depth + SIDE_LOT_START) {
+            const len = Math.min(rng.range(10, 22), c.depth + SIDE_LOT_START - x + 2);
             const lot = { id: `X${Math.round(c.s)}_${side}_${edge}_${Math.round(x)}`, side, cross: c, edge, x0: x, x1: x + len, len, seed: (rng.next() * 4294967296) >>> 0, depth: rng.range(12, 18), sideStreet: true };
             lot.frame = this.sideLotFrame(lot);
             lot.s0 = c.s; lot.s1 = c.s;

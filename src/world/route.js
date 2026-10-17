@@ -15,9 +15,9 @@ import * as THREE from 'three';
 const DS = 0.5; // table resolution (m)
 
 // Plan of the loop. turn in degrees (+ left), radius in metres, trans = clothoid length.
-// The two straights flagged `adjust` absorb the closure error.
+// Two straights (chosen automatically) absorb the closure error; `min` bounds them.
 const PLAN = [
-  { type: 'straight', len: 520, adjust: true, name: 'main avenue' },
+  { type: 'straight', len: 560, min: 520, name: 'main avenue' },
   { type: 'curve', turn: 8, radius: 900, trans: 30 },
   { type: 'straight', len: 160 },
   { type: 'curve', turn: -8, radius: 900, trans: 30 },
@@ -27,7 +27,7 @@ const PLAN = [
   { type: 'curve', turn: 6, radius: 700, trans: 25 },
   { type: 'straight', len: 120 },
   { type: 'curve', turn: 54, radius: 150, trans: 30 },
-  { type: 'straight', len: 420, adjust: true },
+  { type: 'straight', len: 420 },
   { type: 'curve', turn: 60, radius: 58, trans: 18, junction: true },
   { type: 'straight', len: 380 },
   { type: 'curve', turn: -7, radius: 650, trans: 25 },
@@ -98,25 +98,32 @@ function integrate(pieces, length) {
 export class Route {
   constructor() {
     let plan = PLAN.map((p) => ({ ...p }));
-    // closure: adjust two straights so the loop closes exactly
-    for (let iter = 0; iter < 3; iter++) {
+    // Closure: pick the pair of straights whose length change closes the loop with the
+    // smallest total adjustment while respecting minimum lengths (heading closes by design).
+    {
       const { pieces, length } = curvatureProfile(plan);
       const t = integrate(pieces, length);
       const ex = t.x[t.n - 1] - t.x[0], ez = t.z[t.n - 1] - t.z[0];
-      const adj = plan.map((p, i) => (p.adjust ? i : -1)).filter((i) => i >= 0);
-      const dirs = adj.map((i) => {
+      const straights = plan.map((p, i) => (p.type === 'straight' ? i : -1)).filter((i) => i >= 0);
+      const dirOf = (i) => {
         const piece = pieces.find((pc) => pc.seg === i);
         const j = Math.min(t.n - 1, Math.round(piece.s0 / DS));
         return [Math.cos(t.th[j]), -Math.sin(t.th[j])];
-      });
-      // solve a*dirA + b*dirB = -E
-      const [A, B] = dirs;
-      const det = A[0] * B[1] - A[1] * B[0];
-      const a = (-ex * B[1] + ez * B[0]) / det;
-      const b = (-A[0] * ez + A[1] * ex) / det;
-      plan[adj[0]].len += a;
-      plan[adj[1]].len += b;
-      if (Math.hypot(ex, ez) < 0.01) break;
+      };
+      let best = null;
+      for (const i of straights) for (const j of straights) {
+        if (j <= i) continue;
+        const A = dirOf(i), B = dirOf(j);
+        const det = A[0] * B[1] - A[1] * B[0];
+        if (Math.abs(det) < 0.3) continue;
+        const da = (-ex * B[1] + ez * B[0]) / det;
+        const db = (-A[0] * ez + A[1] * ex) / det;
+        if (plan[i].len + da < (plan[i].min ?? 140) || plan[j].len + db < (plan[j].min ?? 140)) continue;
+        const score = Math.abs(da) + Math.abs(db);
+        if (!best || score < best.score) best = { i, j, da, db, score };
+      }
+      if (best) { plan[best.i].len += best.da; plan[best.j].len += best.db; }
+      else console.warn('[route] loop closure failed');
     }
     const { pieces, length } = curvatureProfile(plan);
     this.plan = plan;
@@ -125,6 +132,13 @@ export class Route {
     const t = integrate(pieces, length);
     this.n = t.n;
     this.x = t.x; this.z = t.z; this.th = t.th; this.k = t.k;
+    // distribute the tiny residual (table end overshoot) so the seam at s = L is exact
+    {
+      const f = length / DS, i = Math.min(t.n - 2, Math.floor(f)), u = f - i;
+      const ex = t.x[i] + (t.x[i + 1] - t.x[i]) * u - t.x[0];
+      const ez = t.z[i] + (t.z[i + 1] - t.z[i]) * u - t.z[0];
+      for (let j = 0; j < t.n; j++) { const w = (j * DS) / length; t.x[j] -= ex * w; t.z[j] -= ez * w; }
+    }
 
     // segments in s for layout decisions
     this.segments = [];

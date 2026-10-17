@@ -9,13 +9,13 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [x] Local git repository, committed at each milestone
 
 ## M1 — Core skeleton and contracts
-- [ ] Route: closed loop (~5 km), straights + clothoid curves (one tight R≈60 m curve), gentle grades
-- [ ] Layout plan: stations/platforms, crossovers (switches), cross streets, building lots, poles, trees, cafés, furniture, obstacles
-- [ ] Facade plan format shared by building modules
-- [ ] Chunk streaming (40 m chunks, time-sliced builds, LOD rebuilds, recycling behind the camera)
-- [ ] Module system: dynamic import per module, error isolation, `only=`/`skip=` switches, inspection camera `view=`
-- [ ] Placeholder renderer for every module, so the grey-box street renders end to end
-- [ ] `docs/ARCHITECTURE.md`: module contracts for the parallel build
+- [x] Route: closed loop (~5 km), straights + clothoid curves (one tight R≈60 m curve), gentle grades
+- [x] Layout plan: stations/platforms, crossovers (switches), cross streets, building lots, poles, trees, cafés, furniture, obstacles
+- [x] Facade plan format shared by building modules
+- [x] Chunk streaming (40 m chunks, time-sliced builds, LOD rebuilds, recycling behind the camera)
+- [x] Module system: dynamic import per module, error isolation, `only=`/`skip=` switches, inspection camera `view=`
+- [x] Placeholder renderer for every module, so the grey-box street renders end to end
+- [x] `docs/ARCHITECTURE.md`: module contracts for the parallel build
 
 ## M2 — Parallel subsystem build (one owner per area)
 - [ ] Materials: GPU-baked procedural PBR textures (limestone ashlar, pavers, rail steel, iron, canvas, glass, wood…)
