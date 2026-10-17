@@ -522,10 +522,10 @@ export class Rig {
       const A = P.arm[s];
       // hands in the lap <-> on the bumper bar in front
       const bar = smooth(0.5 + 0.8 * Math.sin(T + (s === 'L' ? 0.5 : 0.9)));
-      A.abd = 10 + 4 * bar;
-      A.flex = 22 + 30 * bar + 3 * Math.sin(T * 3 + sg);
-      A.elbow = 78 - 22 * bar;
-      A.twist = -32 + 10 * bar;
+      A.abd = 16 + 4 * bar;
+      A.flex = 20 + 30 * bar + 3 * Math.sin(T * 3 + sg);
+      A.elbow = 70 - 18 * bar;
+      A.twist = -18 + 6 * bar;
       A.handQ = qAxis(X, 10 - 25 * bar);
     }
     return P;

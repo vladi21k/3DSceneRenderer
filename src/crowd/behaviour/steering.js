@@ -1,7 +1,7 @@
 import { KIND, ST, TASK, MOB } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
 import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
-import { updateFoot, footGap, propPointDist2, _foot, footBlend } from './footprint.js';
+import { updateFoot, footGap, propPointDist2, _foot, footBlend, footAt } from './footprint.js';
 import { rideTarget, bikeTurnRate } from './cyclist.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
@@ -21,6 +21,7 @@ const FOOT_LAT = FOOT.map((F) => (F ? (F.l + (F.l > 0 ? F.r - AGENT_R : 0)) / 2 
 const FOOT_HALF = FOOT.map((F) => (F ? Math.max(AGENT_R, (Math.abs(F.l) + F.r + AGENT_R) / 2) : AGENT_R));
 const R2 = AGENT_R * 2;
 const SEP_GAP = 0.04;          // footprints with a stroller / bicycle are kept this far apart (hard)
+const _sw = { fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 }; // capsule of a facing being tried
 const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform edges
 const PI = Math.PI;
 
@@ -253,6 +254,36 @@ export class Steering {
     c.tram.constrain(a, prevD);
     a.vs = ((a.s - prevS) * k) / dt; a.vd = (a.d - prevD) / dt;
     a.moving = true; a.vmaxCur = 1.6;
+  }
+
+  /** Would turning a (with its stroller / bicycle) to facing na bring the prop closer into
+   *  somebody than it is now (people only step aside from a prop that moves along, not one that
+   *  sweeps round)? */
+  _swingBlocked(a, na) {
+    if (a.fpR <= 0 || a.simple) return false;
+    const agents = this.c.population.agents;
+    const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
+    const k = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);
+    const o0s = a.fp0s, o0d = a.fp0d, o1s = a.fp1s, o1d = a.fp1d;
+    footAt(a, na, _sw);
+    let blocked = false;
+    for (let x = Math.max(0, ix - 1); x <= Math.min(this.nx - 1, ix + 1) && !blocked; x++) {
+      for (let y = Math.max(0, iy - 1); y <= Math.min(this.ny - 1, iy + 1) && !blocked; y++) {
+        for (let j = this.head[x * this.ny + y]; j >= 0; j = agents[j].next) {
+          const b = agents[j];
+          if (b === a || !b.active) continue;
+          const dx = (b.s - a.s) * k, dy = b.d - a.d;
+          if (dx * dx + dy * dy > 6.25) continue;
+          a.fp0s = o0s; a.fp0d = o0d; a.fp1s = o1s; a.fp1d = o1d;
+          const g0 = footGap(a, b, dx, dy).gap;
+          a.fp0s = _sw.fp0s; a.fp0d = _sw.fp0d; a.fp1s = _sw.fp1s; a.fp1d = _sw.fp1d;
+          const g1 = footGap(a, b, dx, dy).gap;
+          if (g1 < SEP_GAP && g1 < g0 - 0.002) { blocked = true; break; }
+        }
+      }
+    }
+    a.fp0s = o0s; a.fp0d = o0d; a.fp1s = o1s; a.fp1d = o1d;
+    return blocked;
   }
 
   /** Seated: ease the last centimetres onto the chair. */
@@ -575,9 +606,10 @@ export class Steering {
       target = Math.atan2(a.vd, a.vs);
       // pushing a stroller / a bicycle one steers rather than sidesteps: along a lane the
       // facing stays near the walking direction
+      // (far off the lane, e.g. just out of a side street, they head for it at a real angle)
       if (a.mob && a.state === ST.WALK && !a.clearing && a.uturnT <= 0) {
-        const base = a.dir > 0 ? 0 : PI;
-        target = base + Math.max(-0.45, Math.min(0.45, wrapAngle(target - base)));
+        const base = a.dir > 0 ? 0 : PI, lim = Math.abs(a.laneT - a.d) > 0.9 && !a.leader ? 1.15 : 0.45;
+        target = base + Math.max(-lim, Math.min(lim, wrapAngle(target - base)));
       }
     } else if (still) target = a.faceA;
     const diff = wrapAngle(target - a.alpha);
@@ -585,8 +617,8 @@ export class Steering {
     const rate = TURN_RATE * (sp > 0.8 ? 1 : 0.7) * (a.mob ? 0.6 : 1);
     const na = wrapAngle(a.alpha + Math.max(-rate * dt, Math.min(rate * dt, diff)));
     if (a.mob) {
-      // the prop is never swung into the tram's band
-      if (!c.tram.turnBlocked(a, na)) a.alpha = na;
+      // the prop is never swung into the tram's band, nor into somebody standing or sitting there
+      if (!c.tram.turnBlocked(a, na) && !this._swingBlocked(a, na)) a.alpha = na;
       updateFoot(a);
     } else a.alpha = na;
     a.pose = a.state === ST.SEATED ? 2 : (still && !a.moving && sp < 0.6) ? 1 : 0;

@@ -181,7 +181,7 @@ TODDLER = dict(
     neck=(0, 0.630, 0.012), head=(0, 0.684, 0.006),
     clav=(0.009, 0.618, -0.004), shoulder=(0.073, 0.608, 0.010),
     Lu=0.142, Lf=0.112, abd=19.0, carry=0.06,
-    headC=(0, 0.744, 0.006), headS=0.84, face='toddler',
+    headC=(0, 0.748, 0.006), headS=0.88, face='toddler',
     torso=[(0.346, 0.054, -0.028, 0.032), (0.374, 0.074, -0.040, 0.041), (0.404, 0.082, -0.052, 0.046),
            (0.440, 0.082, -0.062, 0.042), (0.476, 0.081, -0.067, 0.038), (0.512, 0.080, -0.065, 0.040),
            (0.546, 0.079, -0.061, 0.044), (0.576, 0.078, -0.056, 0.047), (0.600, 0.073, -0.050, 0.047),
@@ -258,7 +258,7 @@ def head_sdf(face, build=0.0, var=None):
     # age of the face (0 adult .. 1 toddler): a short midface and lower face, a small chin and
     # jaw, a short upturned nose with a low flat bridge, full cheeks, a soft brow, shallow sockets
     yg = FACE_AGE.get(face, 0.0)
-    jaw = (0.86 if fem else (1.0 - 0.34 * yg if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
+    jaw = (0.86 if fem else (1.0 - 0.22 * yg if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
     full = build * 0.006 + 0.003 * brd + 0.004 * yg
     fw = 1 - 0.07 * nar + 0.07 * brd          # face width
     chin_dy = -0.010 * nar + 0.005 * brd + 0.016 * yg      # longer / shorter lower face
@@ -289,6 +289,12 @@ def head_sdf(face, build=0.0, var=None):
     zyg = [Ellipsoid((s * 0.059 * fw, -0.010, -0.024), (0.0135, 0.011, 0.030), region=R, bones=H) for s in (-1, 1)]
     tmp = [Ellipsoid((s * 0.060, 0.022, -0.036), (0.012, 0.026, 0.030), region=R, bones=H) for s in (-1, 1)]
     parts = [cr, mask] + jw + [chin] + cheeks + [muzzle] + zyg + tmp
+    if yg > 0:
+        # a child's round lower face: soft fat over the jaw from the cheeks to the chin (no sharp
+        # jaw line, no pointed chin)
+        parts += [Ellipsoid((s * 0.030, -0.060 + 0.010 * yg, -0.052), (0.024 + 0.006 * yg, 0.026, 0.026)) for s in (-1, 1)]
+        for pp in parts[-2:]:
+            pp.region, pp.bones = R, H
     if old > 0:
         # jowls just below the mouth corners along the jaw line
         parts += [Ellipsoid((s * 0.040, -0.083, -0.052), (0.014, 0.012, 0.013 * old), region=R, bones=H) for s in (-1, 1)]
@@ -383,6 +389,8 @@ def hand_sdf(T, s, wrist, a, scale):
     HR = REGION['hand']
     sc = scale
     slim = 0.92 if T['sex'] == 'f' else 0.95 if T['sex'] == 'c' else 1.0
+    # (small children: short, plump fingers on a broad little palm)
+    fl, fr = {'toddler': (0.80, 1.3), 'kid': (0.88, 1.15), 'child': (0.95, 1.05)}.get(T['kind'], (1.0, 1.0))
     # palm: a loft from the wrist to the knuckle line (frame x across the hand, towards the thumb)
     zs = _zsign(wrist, wrist + a, wd)
     pk = [(0.0, 0.025, 0.0135, 0.0, 0.0), (0.35, 0.032, 0.0138, 0.002, 0.0015), (0.75, 0.038, 0.0122, 0.0, 0.0015),
@@ -402,7 +410,8 @@ def hand_sdf(T, s, wrist, a, scale):
     spec = ((0.0235, 0.000, (0.042, 0.025, 0.020), 0.0090, 0.80), (0.0080, 0.004, (0.046, 0.028, 0.021), 0.0093, 1.0),
             (-0.0080, 0.000, (0.043, 0.027, 0.020), 0.0088, 1.1), (-0.0225, -0.008, (0.034, 0.021, 0.018), 0.0079, 1.25))
     for off, da, lens, r, curl in spec:
-        r = r * slim
+        r = r * slim * fr
+        lens = [ln * fl for ln in lens]
         p = wrist + (a * (0.088 + da) + wd * off + pn * 0.001) * sc
         ang = 0.0
         rr = r

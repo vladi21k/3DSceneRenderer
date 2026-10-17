@@ -56,6 +56,7 @@ const env = {
   state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0 },
   exposure: 1,
   exposureBase: 1,
+  exposureMax: 1e4,    // ceiling for the metered exposure (low-sun highlight protection)
   // street haze inputs for post: ambient in-scatter source, sunlit-air plane, far gap share
   haze: { amb: new THREE.Vector3(0.05, 0.06, 0.08), plane: new THREE.Vector4(0, 0, 0, -1), gap: 0, sun: 1 },
   // scene illuminant on a horizontal surface in the open (sun + sky), for white balance
@@ -287,6 +288,13 @@ const env = {
     const lnE = 0.7 * Math.log(3.1 / Math.max(Eh, EK)) + 0.5 * Math.log(EK / Math.min(Math.max(Eh, 1e-7), EK));
     this.exposureBase = 1.6 * Math.exp(lnE);
     this.exposure = this._capExposure(this.exposureBase);
+    // highlight protection for a low sun: whatever the metering does for the shaded
+    // canyon, stone facing the sun (albedo ~0.55) stays ~1.5 stops over mid grey, below
+    // the shoulder, so the golden light keeps its colour instead of clipping to cream
+    const sh = Math.max(this.state.sunDir.y, 0);
+    const litStone = 0.55 * this.sunIlluminance * Math.sqrt(1 - sh * sh) / Math.PI;
+    const w = THREE.MathUtils.smoothstep(this.state.t, 0.35, 0.55);
+    this.exposureMax = litStone > 1e-6 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(0.5 / litStone), w)) : 1e4;
     if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
 
     // illuminant for the white balance (horizontal surface in the open)

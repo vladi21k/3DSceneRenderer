@@ -525,9 +525,16 @@ export function startSideOut(c, a, m) {
   const side = a.side;
   const ms = c.unwrap(m.s);
   const line = c.map.mouthLine(m, side);
+  let slotX = c.rng.range(-1, 1) * (m.width / 2 - 1.4);
+  // with a stroller / bicycle: in through a gap in the bollards across the mouth wide enough for it
+  if (a.mob) {
+    const gx = c.population._mouthGap(ms, m, side, line, slotX, a.mob, false);
+    if (gx === null) return false;
+    slotX = gx;
+  }
   a.mouth = m; a.task = TASK.SIDE_OUT; a.step = 0;
   c.tally('intoSideStreet');
-  a.slotX = c.rng.range(-1, 1) * (m.width / 2 - 1.4);
+  a.slotX = slotX;
   goTo(a, ms + a.slotX, side * (line - 0.7), 0.6);
   return true;
 }
@@ -714,7 +721,7 @@ export function arrive(c, a) {
       }
       // reached the far side
       a.side = -side;
-      if (a.after === TASK.SIDE_OUT && a.mouth && map.mouthAt(a.mouth.s, a.side)) { startSideOut(c, a, a.mouth); return; }
+      if (a.after === TASK.SIDE_OUT && a.mouth && map.mouthAt(a.mouth.s, a.side) && startSideOut(c, a, a.mouth)) return;
       walk(a);
       setLane(c, a, r, true);
       if (r.chance(0.5)) a.dir = -a.dir;

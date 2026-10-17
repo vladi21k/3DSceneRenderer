@@ -321,7 +321,8 @@ void hSkin(out vec3 P, out vec3 N) {
     // the cloth's turned-in lip above it, not a zigzag along the triangles
     vec3 rp = position;
     {
-      float band = 0.024 * sc;
+      // (wider than the mesh's edges, so every vertex under the hem gets pulled up to it)
+      float band = 0.045 * sc + 0.012;
       float topY = hTopHemY(L8.y);
       bool trunk = region == 1.0 || region == 19.0 || region == 20.0 || region == 7.0 || region == 8.0;
       if (trunk && !skirtOn && L2.w != 7.0 && rp.y < topY && rp.y > topY - band) rp.y = topY - 0.0006;
@@ -392,9 +393,11 @@ void hSkin(out vec3 P, out vec3 N) {
         // reaches up to the shoulders: the cloth spans the shoulder blades, the hollows between
         // them and the spine, and the lats, instead of showing every muscle
         // (only where the skin faces backwards: on top of the shoulders the push would go upwards)
+        // (it fades in well below the base of the neck: the neck clamp further up would cut a
+        // crease into it at the trapezius)
         float backW = smoothstep(cz, cz + 0.03 * sc, rp.z) * (1.0 - smoothstep(0.55, 0.85, abs(rp.x) / uShoulder.x))
-          * smoothstep(0.35, 0.75, nrm.z);
-        float fadeUp = mix(smoothstep(h0.x + 0.05 * sc, h0.x - 0.03 * sc, y), smoothstep(uShoulder.y + 0.01 * sc, uShoulder.y - 0.07 * sc, y), backW);
+          * smoothstep(0.2, 0.8, nrm.z);
+        float fadeUp = mix(smoothstep(h0.x + 0.05 * sc, h0.x - 0.03 * sc, y), smoothstep(uShoulder.y - 0.02 * sc, uShoulder.y - 0.12 * sc, y), backW);
         hang *= fadeUp
           * (1.0 - smoothstep(0.62, 0.9, abs(rp.x) / uShoulder.x) * smoothstep(h0.x - 0.16 * sc, h0.x - 0.04 * sc, y));
         // tucked tops (and anything under a skirt waistband) blouse a little above the waist only
@@ -413,7 +416,9 @@ void hSkin(out vec3 P, out vec3 N) {
         vec3 eN = normalize((rp - ec) / (er * er));
         float ew = smoothstep(h0.x - 0.08 * sc, h0.x + 0.02 * sc, y) * (jacket ? 0.85 : 0.5 + 0.3 * L8.w)
           * smoothstep(uTorso.z + 0.005, uTorso.z - 0.05 * sc, y);
-        if (ew > clothW) { clothN = normalize(mix(clothN, eN, clothW > 0.0 ? 1.0 - clothW / ew : 1.0)); clothW = ew; }
+        // (a weighted blend of the two: switching between them drew a seam across the back)
+        float wsum = clothW + ew;
+        if (wsum > 1e-4) { clothN = normalize(clothN * clothW + eN * ew); clothW = max(clothW, ew); }
       } else ease *= 0.5;
     } else if (g.z == 2.0) {
       float bt = L4.w;
@@ -461,7 +466,7 @@ void hSkin(out vec3 P, out vec3 N) {
     ease = mix(ease, min(ease, 0.005), smoothstep(uTorso.z - 0.07 * sc, uTorso.z - 0.015 * sc, rp.y));
     // the neck / chest crease is concave: offsetting it would fold the surface over itself
     if (g.z == 1.0 && !isArm) ease = min(ease, mix(0.03, 0.004, smoothstep(uTorso.z - 0.10 * sc, uTorso.z - 0.035 * sc, rp.y)));
-    ease *= smoothstep(-0.002, nearNeck ? 0.02 : 0.0012, g.y);
+    ease *= smoothstep(-0.002, nearNeck ? 0.02 * sc : 0.0012, g.y);
     // hide the body under skirts and long coats
     if (skirtOn && (region == 1.0 || region == 19.0 || region == 20.0 || isLeg)) {
       float hemY = mix(uSkirt0.x, uLeg.w + 0.03, L9.y);
@@ -541,6 +546,18 @@ void hSkin(out vec3 P, out vec3 N) {
     }
   }
   if (region == 12.0) pos = hFace(pos, position, 3.0, L0.w, hLook(row, 9).w);
+#ifndef HUMAN_DEPTH
+  if (part < 0.5 && (region == 3.0 || region == 18.0)) {
+    // round the eye area off: the lids and the socket are a few millimetres of geometry that the
+    // mesh cannot hold on small heads (bruised rings, jagged lid shading); a child's eye area is
+    // full and smooth
+    vec3 qe = (position - uHead.xyz) / uHead.w;
+    float ax = abs(qe.x);
+    float we = smoothstep(0.034, 0.016, length(vec2(ax - 0.032, (qe.y + 0.002) * 1.2))) * smoothstep(-0.04, -0.07, qe.z);
+    vec3 fn = normalize(vec3(qe.x / 0.0036, (qe.y + 0.02) / 0.0081, (qe.z + 0.01) / 0.0081));
+    nrm = normalize(mix(nrm, fn, we * mix(0.35, 0.85, uFace.z)));
+  }
+#endif
   // bigger heads on smaller children (and slight variety for everyone): scale about the head joint
   if (!skirt) {
     float wh = dot(W, vec4(equal(I, vec4(5.0))));
@@ -617,7 +634,7 @@ void hSkin(out vec3 P, out vec3 N) {
       vec3 Yw = normalize(Mr[1].xyz);
       float upS = max(dot(dL, Yw), 0.0) * wLs + max(dot(dR, Yw), 0.0) * wR;
       float frontW = smoothstep(0.25, -0.65, cth), backW = smoothstep(-0.25, 0.65, cth);
-      float mv = (frontW * max(fS, 0.0) + backW * min(fS, 0.0)) * 0.8 + fS * 0.2;
+      float mv = (frontW * max(fS, 0.0) + backW * min(fS, 0.0)) * 0.5 + fS * 0.12;
       float wHem = smoothstep(0.12, 0.75, skirtT) * (1.0 - seatW);
       P += (-Zw * mv + Yw * upS * 0.35 * backW) * wHem;
       // keep the shell clear of the stepping legs (posed thigh, shin and heel capsules)
@@ -825,9 +842,12 @@ const FRAG_SURFACE = /* glsl */`
         float back = smoothstep(0.015, 0.05 * scT, r.z);
         float ax = abs(r.x);
         // shoulder seams along the top of the shoulders (set a little back of the ridge)
-        float shs = hAA(0.0011 - abs(r.z - 0.012 * scT)) * step(uShoulder.y - 0.03 * scT, r.y) * smoothstep(0.05 * scT, 0.08 * scT, ax)
-          * step(ax, uShoulder.x + 0.01);
-        cloth *= 1.0 - 0.22 * shs;
+        // (only along the ridge of the shoulder: where the trapezius slopes down the back the
+        // same depth would draw the line down the back of the neck)
+        float ridge = mix(uTorso.z + 0.012 * scT, uShoulder.y + 0.018 * scT, smoothstep(0.05 * scT, uShoulder.x, ax));
+        float shs = hAA(0.0011 - abs(r.z - 0.012 * scT)) * smoothstep(ridge - 0.02 * scT, ridge - 0.008 * scT, r.y)
+          * smoothstep(0.06 * scT, 0.09 * scT, ax) * step(ax, uShoulder.x + 0.01);
+        cloth *= 1.0 - 0.14 * shs;
         if (L2.w == 2.0) {
           // shirt back: a yoke seam across the top of the shoulder blades (a stitched seam: a
           // faint relief and a change of sheen, no drawn line) and a soft box pleat under it, a
@@ -867,8 +887,10 @@ const FRAG_SURFACE = /* glsl */`
         // turned-down collar: a raised band with a shadow line along its lower edge
         // (the collar lies round the base of the neck: its outer edge is a ring about the neck axis,
         // so it curves down the front and over the shoulders instead of cutting straight across)
-        float ce = (1.1 - hNeckRn(r, vec2(0.085, 0.075))) * 0.07;
         float ctop = hCollarTop(r, L2.w), scC = uTorso.w / 1.76;
+        // (the band is no deeper than ~4 cm: out on the sloping shoulders the ring about the neck
+        // axis would otherwise run down the back as two lines)
+        float ce = min((1.1 - hNeckRn(r, vec2(0.085, 0.075))) * 0.07, r.y - (ctop - 0.042 * scC + 4.0 * r.x * r.x / scC));
         float near = smoothstep(ctop - 0.085 * scC, ctop - 0.05 * scC, r.y);     // a band ~4 cm deep
         cloth *= 1.0 - 0.3 * hAA(0.0016 - abs(ce)) * near;
         hBump += 0.0014 * smoothstep(-0.001, 0.004, ce) * near;
@@ -1183,11 +1205,11 @@ const FRAG_SURFACE = /* glsl */`
         if (!hLongHair(part) && uSeat.y > 0.5) hAlpha = min(hAlpha, smoothstep(0.0, 0.45, he + 0.1));
         // grey and white hair of older people is thinner: the scalp shows between the strands,
         // the strands themselves vary from silver to darker grey
-        float grey = smoothstep(0.18, 0.4, hLum(L1.rgb)) * (1.0 - step(0.5, float(hLongHair(part))));
+        float grey = smoothstep(0.18, 0.4, hLum(L1.rgb)) * float(part != __HAIR_LONG__ && part != __HAIR_PONY__ && part != __HAIR_CURLYF__);
         if (grey > 0.0) {
           float cov = smoothstep(0.30, 0.62, strand * 0.55 + clump * 0.45 + 0.08) ;
           cov = mix(cov, 0.75, hFar);
-          col = mix(col, col * (0.62 + 0.55 * strand), grey * (1.0 - hFar));
+          col = mix(col, col * (0.5 + 0.7 * strand) * (0.85 + 0.3 * clump), grey * (1.0 - hFar));
           col = mix(mix(L0.rgb * 0.85, col, 0.25), col, mix(1.0, cov, grey));
           hHairM *= mix(1.0, cov, grey);
         }
@@ -1195,8 +1217,8 @@ const FRAG_SURFACE = /* glsl */`
       if (pr == 11.0 && hLongHair(part) && uSeat.y > 0.5) {
         // long hair thins out over its last few centimetres: strands of uneven length (alpha to
         // coverage), not a cut edge
-        float tipA = vAux.y * 1.35 - 0.12 + 0.55 * (strand - 0.5) + 0.35 * (clump - 0.5);
-        hAlpha = min(hAlpha, smoothstep(0.0, 0.55, tipA));
+        float tipA = vAux.y * 1.8 - 0.15 + 0.32 * (strand - 0.5) + 0.22 * (clump - 0.5);
+        hAlpha = min(hAlpha, smoothstep(0.0, 0.42, tipA));
       }
       if (part == __SCARF__) {
         // headscarf: woven cotton / viscose, plain, striped or with a small print (per person),

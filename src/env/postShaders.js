@@ -476,6 +476,7 @@ uniform sampler2D tHDR;
 uniform sampler2D tBloom;
 uniform sampler2D tLum;
 uniform float uExposure;      // base exposure for the time of day
+uniform float uExposureMax;   // ceiling of the metered exposure (low-sun highlight protection)
 uniform float uAutoExp;       // strength of the auto-exposure correction
 uniform float uMeterTarget;   // metered (log-average) luminance the correction aims for
 uniform vec2 uMeterClamp;     // range of the auto-exposure correction
@@ -575,7 +576,7 @@ void main() {
   float avgLog = texture2D(tLum, vec2(0.5)).r;
   float metered = exp2(avgLog) * uExposure;
   float corr = clamp(pow(uMeterTarget / max(metered, 1e-6), uAutoExp), uMeterClamp.x, uMeterClamp.y);
-  col *= uExposure * corr;
+  col *= min(uExposure * corr, uExposureMax);
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);
   // white balance and split toning in scene-linear

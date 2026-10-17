@@ -122,13 +122,13 @@ class CascadeFrustum extends THREE.Frustum {
     // the slice's outline seen from the sun (convex hull in light space) and its lowest
     // light-space depth: a caster can only shadow the slice if its sphere, projected
     // along the sun, overlaps the outline and it is not entirely beyond the slice
-    this.hull = new Float32Array(16);
+    this.hull = new Float64Array(24);   // per edge: outward normal x, y and offset
     this.hullN = 0;
     this.minZ = -Infinity;
     this.axes = null;   // light-space axes (shared): x, y, z rows
   }
 
-  /** Light-space convex hull of the slice corners (Andrew's monotone chain). */
+  /** Light-space convex hull of the slice corners (Andrew's monotone chain), as edge lines. */
   setOutline(corners, axes) {
     this.axes = axes;
     const pts = corners.map((v) => [v.x, v.y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -137,12 +137,24 @@ class CascadeFrustum extends THREE.Frustum {
     for (const q of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
     for (let i = pts.length - 1; i >= 0; i--) { const q = pts[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
     const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
-    this.hullN = hull.length;
-    hull.forEach((q, i) => { this.hull[i * 2] = q[0]; this.hull[i * 2 + 1] = q[1]; });
+    // outward unit normal and offset of each counter-clockwise edge: distance = n·p − c
+    let k = 0;
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i], b = hull[(i + 1) % hull.length];
+      const ex = b[0] - a[0], ey = b[1] - a[1], l = Math.hypot(ex, ey);
+      if (l < 1e-6) continue;
+      const nx = ey / l, ny = -ex / l;
+      this.hull[k++] = nx; this.hull[k++] = ny; this.hull[k++] = nx * a[0] + ny * a[1];
+    }
+    this.hullN = k / 3;
     this.minZ = Math.min(...corners.map((v) => v.z));
   }
 
-  /** Can a sphere (world space) shadow the slice? Outline test in light space. */
+  /**
+   * Can a sphere (world space) shadow the slice? Its projection along the sun must reach
+   * the outline (conservative: within r of every edge line) and it must not lie wholly
+   * beyond the slice.
+   */
   reachesOutline(p, r) {
     const a = this.axes, n = this.hullN;
     if (!a || n < 3) return true;
@@ -150,17 +162,8 @@ class CascadeFrustum extends THREE.Frustum {
     if (z + r < this.minZ - OUTLINE_MARGIN) return false;
     const x = p.x * a[0] + p.y * a[1] + p.z * a[2], y = p.x * a[3] + p.y * a[4] + p.z * a[5];
     const H = this.hull, rr = r + OUTLINE_MARGIN;
-    let inside = true, d2 = Infinity;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      const x0 = H[i * 2], y0 = H[i * 2 + 1], ex = H[j * 2] - x0, ey = H[j * 2 + 1] - y0;
-      const px = x - x0, py = y - y0;
-      if (ex * py - ey * px < 0) inside = false;   // right of a CCW edge: outside
-      const t = Math.max(0, Math.min(1, (px * ex + py * ey) / Math.max(ex * ex + ey * ey, 1e-12)));
-      const qx = px - t * ex, qy = py - t * ey;
-      d2 = Math.min(d2, qx * qx + qy * qy);
-    }
-    return inside || d2 <= rr * rr;
+    for (let i = 0; i < n * 3; i += 3) if (H[i] * x + H[i + 1] * y - H[i + 2] > rr) return false;
+    return true;
   }
 
   intersectsObject(object) {

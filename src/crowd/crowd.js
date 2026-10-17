@@ -32,7 +32,10 @@ import { footDims } from './behaviour/footprint.js';
 // (no app.humans.supportsPose(p) / cycleLength yet) those roles are not used and everyone
 // walks. Testing: crowd_mob=force keeps the roles anyway, crowd_mob=0 turns them off,
 // crowd_mobx=<k> multiplies their shares, crowd_dbg=1 outlines the footprints, crowdCheck=1
-// adds the independent swept-volume / obstacle / facade checks (props included).
+// adds the independent swept-volume / obstacle / facade checks (props included) and the
+// stroller / bicycle against people and against each other check (check.propPeople, world
+// space, within 60 m of the camera). stats().cyclists counts riders stopped for more than 5 s
+// with nobody in the way (events.cycleStall5s over the run) and riders near / crossing a rail.
 
 const PI = Math.PI;
 const _v = new THREE.Vector3();

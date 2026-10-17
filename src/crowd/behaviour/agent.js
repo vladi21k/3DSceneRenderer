@@ -133,6 +133,7 @@ export class Agent {
     this.pinned = false;
     this.waitX = 0;           // cyclist: waiting for people to clear its way across a rail (until)
     this.waitXT = 0;          // ... for how long (a lane change is given up after a while)
-    this.dmNext = 0;          // cyclist: earliest time to try getting off again after a failed try      // pushed by a fixed obstacle / wall this frame (takes no share of a separation)      // stepping off a bicycle to its left side (s left, total offset)
+    this.dmNext = 0;
+    this.askT = 0;            // cyclist: when (stopT) it last waited for people to make way          // cyclist: earliest time to try getting off again after a failed try      // pushed by a fixed obstacle / wall this frame (takes no share of a separation)      // stepping off a bicycle to its left side (s left, total offset)
   }
 }

@@ -6,7 +6,7 @@ import { laneTarget, setLane, board, doorOf } from './behaviour.js';
 import {
   MAX_AGENTS, RANGE_BEHIND, RANGE_AHEAD, FAR_TAPER, FAR_SLACK, FAR_HARD, FAR_SPAWN_BAND, WALKER_DENSITY, MAX_SEATED,
   MAX_PASSENGERS, STANDER_TARGET, WALK_MEAN, WALK_SD, WALK_MIN, WALK_MAX, RIDE_D, BAND, AGENT_R, TRAM_LEN,
-  CLEAR_T, CLEAR_T_DREAMY, MOB_SHARE, STROLLER_V, WALKBIKE_V, CYCLE_V, CYCLE_CLEAR_T,
+  CLEAR_T, CLEAR_T_DREAMY, MOB_SHARE, STROLLER_V, WALKBIKE_V, CYCLE_V, CYCLE_CLEAR_T, FOOT,
 } from './constants.js';
 import { updateFoot, footBandGap, propPointDist2, footGap } from './footprint.js';
 import { pickRideLane, rideNear, wayClear, rideLine } from './cyclist.js';
@@ -642,7 +642,15 @@ export class Population {
       const m = map.mouthAt(sU + k * 6, side);
       if (!m) continue;
       const ms = c.unwrap(m.s), line = map.mouthLine(m, side);
-      const x = r.range(-1, 1) * (m.width / 2 - (mob ? 2.0 : 1.4)), depth = r.range(5, 10) + (mob ? 2.5 : 0);
+      let x = r.range(-1, 1) * (m.width / 2 - (mob ? 2.0 : 1.4));
+      const depth = r.range(5, 10) + (mob ? 2.5 : 0);
+      // a stroller / walked bicycle comes out straight through a gap in the bollards across the
+      // mouth, if there is one wide enough
+      if (mob === MOB.STROLLER || mob === MOB.WALKBIKE) {
+        const gx = this._mouthGap(ms, m, side, line, x, mob);
+        if (gx === null) return null;
+        x = gx;
+      }
       const sp = ms + x, dp = side * (line + depth);
       const sa = ms - m.width / 2, sb = ms + m.width / 2;
       if (!c.vis.bodyHidden(sp, dp, side, line, sa, sb)) return null;
@@ -656,7 +664,7 @@ export class Population {
       }
       a.nFollow = a.followers.length;
       a.mouth = m; a.task = TASK.EMERGE; a.state = ST.GOTO;
-      a.gs = sp + r.range(-1, 1); a.gd = side * (line - 1.0); a.gTol = 0.6;
+      a.gs = mob ? sp : sp + r.range(-1, 1); a.gd = side * (line - 1.0); a.gTol = 0.6;
       a.alpha = side > 0 ? -PI / 2 : PI / 2;
       a.vs = 0; a.spawnHidden = true;
       if (mob === MOB.CYCLE) {
@@ -673,6 +681,36 @@ export class Population {
       return a;
     }
     return null;
+  }
+
+  /** Offset along the mouth (from its centre ms) at which a person with a stroller / walked
+   *  bicycle walks straight out through the bollards across it: the middle of the gap nearest
+   *  to x that the person and the prop fit through (x itself if there are no bollards), or null. */
+  _mouthGap(ms, m, side, line, x, mob, out = true) {
+    const map = this.c.map, half = m.width / 2;
+    const n = map.gatherCircles(ms, half + 1);
+    const xs = [];
+    for (let q = 0; q < n; q++) {
+      const i = map.qI[q], ad = map.cD[i] * side;
+      if (ad > line - 2.5 && ad < line + 3) xs.push([map.qDS[q] - map.cR[i], map.qDS[q] + map.cR[i]]);
+    }
+    if (!xs.length) return x;
+    xs.sort((p, q) => p[0] - q[0]);
+    // walking out (towards −d·side) the walked bicycle is on the person's right: +s on the right
+    // side of the street, −s on the left; the pair is centred that far from the person
+    // (walking in, the other way round)
+    const off = mob === MOB.WALKBIKE ? (out ? 1 : -1) * side * (FOOT[MOB.WALKBIKE].l + FOOT[MOB.WALKBIKE].r - AGENT_R) / 2 : 0;
+    const need = mob === MOB.WALKBIKE ? FOOT[MOB.WALKBIKE].l + FOOT[MOB.WALKBIKE].r + AGENT_R + 0.2 : 2 * FOOT[MOB.STROLLER].r + 0.2;
+    let best = null, bd = 1e9, lo = -half + 0.6;
+    for (let j = 0; j <= xs.length; j++) {
+      const hi = j < xs.length ? xs[j][0] : half - 0.6;
+      if (hi - lo >= need) {
+        const cx = (lo + hi) / 2 - off;
+        if (Math.abs(cx - x) < bd) { bd = Math.abs(cx - x); best = cx; }
+      }
+      if (j < xs.length) lo = Math.max(lo, xs[j][1]);
+    }
+    return best;
   }
 
   /** Out of a shop / house door (the door leaf itself, never through display glass or a shutter). */

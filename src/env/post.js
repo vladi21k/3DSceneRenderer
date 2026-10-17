@@ -46,7 +46,7 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 // Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
 // bloom: share of the blurred pyramid (veiling glare), day .. night.
 const TONE = {
-  curve: [1.19, 0.65, -1.2, 2.5], chroma: [0.5, 0.75], skyChroma: 0,
+  curve: [1.19, 0.65, -1.2, 2.5], chroma: [0.5, 0.9], skyChroma: 0,
   meter: 0.6, target: 0.34, clamp: [0.5, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
 };
 
@@ -201,7 +201,7 @@ const post = {
     this.lum = pass(S.LUM_FS, { tSmall: { value: null }, tPrev: { value: null }, uSize: { value: new THREE.Vector2() }, uRate: { value: 1 } });
     this.final = pass(S.FINAL_FS, {
       tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
-      uExposure: { value: 1 }, uAutoExp: { value: TONE.meter }, uMeterTarget: { value: TONE.target },
+      uExposure: { value: 1 }, uExposureMax: { value: 1e4 }, uAutoExp: { value: TONE.meter }, uMeterTarget: { value: TONE.target },
       uMeterClamp: { value: new THREE.Vector2(...TONE.clamp) }, uBloom: { value: TONE.bloom[0] },
       uVignette: { value: TONE.vignette }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uSharpen: { value: TONE.sharpen },
@@ -353,6 +353,7 @@ const post = {
     pu.uNightAir.value = night;
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
     fu.uExposure.value = env ? env.exposure : 1;
+    fu.uExposureMax.value = env ? env.exposureMax ?? 1e4 : 1e4;
     // the HDR clamp is set in exposed units
     pu.uClampHDR.value = HDR_CLAMP / Math.max(env ? env.exposure : 1, 1e-4);
     // white balance from the illuminant (sun + sky on a horizontal surface), split into a
@@ -366,7 +367,7 @@ const post = {
       const ill = env.illuminant;
       const lr = Math.log(Math.max(ill.x, 1e-9) / Math.max(ill.z, 1e-9));
       const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
-      const kc = THREE.MathUtils.lerp(0.9, 0.3, ss(t, 0.3, 0.6)) - 0.3 * ss(t, 0.6, 1.0);
+      const kc = THREE.MathUtils.lerp(0.9, 0.15, ss(t, 0.3, 0.6)) - 0.15 * ss(t, 0.6, 1.0);
       // (once the lamps dominate, the sky's tint no longer sets the balance)
       const kt = THREE.MathUtils.lerp(0.9, 0.25, ss(t, 0.84, 1.0));
       const warm = 0.035 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));

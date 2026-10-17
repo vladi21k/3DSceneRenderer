@@ -37,7 +37,7 @@ OUT = os.path.join(ROOT, 'assets', 'humans')
 
 LOD_TRIS = {'body': (6500, 2600, 560, 200)}     # LOD 1..4 (whole body)
 LOD0_TRIS = {'body': 12500, 'head': 5400}         # LOD 0: body below the neck cut + the fine head
-LOD_SCALE = {'male': 1.0, 'female': 1.0, 'child': 0.85, 'kid': 0.72, 'toddler': 0.62}   # smaller bodies need fewer triangles
+LOD_SCALE = {'male': 1.0, 'female': 1.0, 'child': 0.85, 'kid': 0.72, 'toddler': 0.7}   # smaller bodies need fewer triangles
 HEAD_RES = 0.0012
 MORPH_SCALE = 0.08
 SEAT_SCALE = 0.045           # aMorph.w: trouser seat bridge (m along +Z) / SEAT_SCALE
@@ -511,11 +511,12 @@ def build_base(kind, res, pk):
     ycut = nb + 0.45 * (nt - nb)
     hlo = np.array([-0.118 * hs, ycut - 0.03, hc[2] - 0.14 * hs])
     hhi = np.array([0.118 * hs, hc[1] + 0.125 * hs, hc[2] + 0.125 * hs])
-    Vh, Th = mesh_sdf(node, hlo, hhi, HEAD_RES * (0.9 if young else 1.0))
+    # (small heads: finer, so the eyelids and the nose still resolve)
+    Vh, Th = mesh_sdf(node, hlo, hhi, HEAD_RES * {'child': 0.85, 'kid': 0.75, 'toddler': 0.7}.get(kind, 1.0))
     Vb0, Tb0 = keep_tris(V, T, lambda c: c[:, 1] < ycut + 0.012)
     Vh0, Th0 = keep_tris(Vh, Th, lambda c: c[:, 1] > ycut - 0.012)
     lod0_b = blender_decimate(Vb0, Tb0, [int(LOD0_TRIS['body'] * ls)], detail_weights(node, Vb0, Tb0, info, sc))[0]
-    lod0_h = blender_decimate(Vh0, Th0, [int(LOD0_TRIS['head'] * ls)], detail_weights(node, Vh0, Th0, info, sc, True), symmetric=True)[0]
+    lod0_h = blender_decimate(Vh0, Th0, [int(LOD0_TRIS['head'] * max(ls, 0.9))], detail_weights(node, Vh0, Th0, info, sc, True), symmetric=True)[0]
     lods_mesh = [None] + blender_decimate(V, T, [int(t * ls) for t in LOD_TRIS['body']], detail_weights(node, V, T, info, sc))
     parts = PARTS.build_parts(kind, node, info, res, mesh_fn=mesh_sdf,
                               decimate_fn=lambda V_, T_, tg: blender_decimate(V_, T_, tg, None, symmetric=False),

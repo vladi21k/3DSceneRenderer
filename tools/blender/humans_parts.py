@@ -51,7 +51,7 @@ PER_BASE = {
 LONG_STYLES = ('hair_long', 'hair_bob', 'scarf', 'hair_ponytail', 'hair_curlyf')
 # triangles per LOD; 0 = the part is dropped at that LOD (too small to matter on screen)
 LOD_TRIS = {'hair': (1500, 600, 200, 50, 16), 'long': (3200, 1100, 340, 90, 30), 'beard': (900, 320, 110, 24, 0),
-            'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'pack': (1500, 560, 170, 44, 14),
+            'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'pack': (2400, 700, 170, 44, 14),
             'glasses': (900, 260, 70, 0, 0)}
 
 # hairline (head-local y at the front / temples) of the men's and boys' short styles: a forehead
@@ -589,7 +589,8 @@ def backpack_part(T, body):
     tilt = np.degrees(np.arctan2(zt - zbm, yt - yb))          # + : the top further back than the bottom
     zc = 0.5 * (zt + zbm) + hd
     Rp = rot_xyz(tilt, 0, 0)
-    bones = {'spine2': 0.85, 'spine1': 0.15}
+    # (a soft pack bends with the back: its top follows the chest, its bottom the lumbar spine)
+    bones = lambda P: (lambda w: {'spine2': w, 'spine1': 1.0 - w})(0.3 + 0.7 * sstep(yc - hh * 0.9, yc + hh * 0.5, P[:, 1]))
     up = Rp @ np.array([0.0, 1.0, 0.0])
     back = Rp @ np.array([0.0, 0.0, 1.0])
     c = np.array([0.0, yc, zc])
@@ -637,7 +638,7 @@ def backpack_part(T, body):
             nrm.append(n)
         sb = (lambda P, sd=side: (lambda w: {'spine2': 1.0 - w, 'clav' + sd: w})(
             0.35 * sstep(shY - 0.10 * sy, shY + 0.02 * sy, P[:, 1]) * sstep(0.02, -0.03, P[:, 2])))
-        straps.append(strap(pts, nrm, 0.021 * k if not young else 0.019 * k, 0.0042 * k, sb, R))
+        straps.append(strap(pts, nrm, max(0.021 * k, 0.016) if not young else max(0.019 * k, 0.015), max(0.0042 * k, 0.0038), sb, R))
     out = Union([pack] + straps, k=0.008 * k)
     # the pack's frame (centre y, z; half width, height, depth; tilt) for the runtime zips and
     # seams, and which surface is strap webbing
@@ -709,7 +710,7 @@ def part_node(kind, name, body=None):
         x = Xform(g, hs, hc)
         x.lens, x.frame = Xform(g.lens, hs, hc), Xform(g.frame, hs, hc)
         return x, 'glasses', None
-    return bag_part(name, T, body), ('pack' if name == 'backpack' else 'bag'), 1.0
+    return bag_part(name, T, body), ('pack' if name == 'backpack' else 'bag'), (0.45 if name == 'backpack' else 1.0)
 
 
 def drop_islands(V, T, frac):
@@ -767,6 +768,12 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
             V, Tr = drop_islands(V, Tr, 0.02)
         targets = LOD_TRIS[group]
         lods = decimate_fn(V, Tr, [t if t else 8 for t in targets])
+        if group == 'pack' and hasattr(node, 'pack_body'):
+            # far LODs: the pack alone (its thin straps would stall the decimation, and a few
+            # pixels of strap do not show)
+            Vb, Tb = mesh_fn(node.pack_body, node.pack_body.lo - 0.01, node.pack_body.hi + 0.01, hres * 1.6)
+            far = decimate_fn(Vb, Tb, [t if t else 8 for t in targets[3:]])
+            lods = lods[:3] + far
         lod_attrs = []
         for li, (Vl, Tl) in enumerate(lods):
             if not targets[li]:

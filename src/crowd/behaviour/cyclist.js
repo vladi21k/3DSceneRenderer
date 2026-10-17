@@ -1,6 +1,6 @@
 import { TRACK_ZONE_HALF, TRACK_OFFSET, RAIL_CENTER } from '../../core/config.js';
 import { noise1 } from '../../core/rng.js';
-import { ST, TASK, LANE, MOB } from './agent.js';
+import { ST, TASK, LANE, MOB, KIND } from './agent.js';
 import { RIDE_D, BAND, AGENT_R, CELL, GRID_D, CYCLE_V, WALKBIKE_V, TRAM_LEN, CYCLE_CLEAR_T, FOOT } from './constants.js';
 import { footBandGap, footInBand, updateFoot, propPointDist2, propMoved } from './footprint.js';
 import { startUturn } from './behaviour.js';
@@ -257,9 +257,11 @@ export function rideTarget(c, a, T) {
 /** Stopped with nobody in the way (wedged behind a kiosk, a terrace across the sidewalk, a pole
  *  on the other side): after a couple of seconds get off and walk the bicycle round it. */
 function stalled(c, a, dt) {
-  if (a.bikeV >= 0.1) { a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; return; }
+  if (a.bikeV >= 0.1) { a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.askT = 0; a.stallSeen = false; return; }
   a.stopT += dt;
   if (a.stopT < 0.8 || a.state !== ST.WALK) return;
+  // held up by people standing in the way: they notice the waiting bicycle and make room
+  if (a.stopT > 2.5 && a.stopT - a.askT > 4) { a.askT = a.stopT; askWay(c, a); }
   // nobody in the way: the counter runs; someone passing through the look-ahead only holds it
   if (!peopleAhead(c, a, 4.5, 1.4) && !(a.waitX > c.time)) a.stopNP += dt;
   if (a.stopNP > 5 && !a.stallSeen) { a.stallSeen = true; c.tally('cycleStall5s'); }
@@ -271,6 +273,31 @@ function stalled(c, a, dt) {
   // wedged by fixed things with no room to put the bicycle down beside the rider: get off anyway
   // (the bicycle is walked clear of what it touches) and turn it round, back the way they came
   if (a.stopNP >= 2.2 && a.stopT > 4 && dismount(c, a, true, true)) { startUturn(c, a); c.tally('cycleTurnBack'); }
+}
+
+/** People standing or dawdling in front of a waiting rider step aside from its line for a few
+ *  seconds. */
+function askWay(c, a) {
+  const st = c.steering, agents = c.population.agents, cs = Math.cos(a.alpha), sn = Math.sin(a.alpha), r = c.rng;
+  const ix0 = Math.max(0, Math.floor((a.s - 5 - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((a.s + 5 - st.s0) / CELL));
+  const iy0 = Math.max(0, Math.floor((a.d - 5 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((a.d + 5 + GRID_D) / CELL));
+  let n = 0;
+  for (let x = ix0; x <= ix1; x++) {
+    for (let y = iy0; y <= iy1; y++) {
+      for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
+        const b = agents[j];
+        if (b === a || b.mob || b.state === ST.SEATED || b.kind === KIND.PASSENGER || b.clearing) continue;
+        const ds = b.s - a.s, dd = b.d - a.d;
+        const xa = ds * cs + dd * sn, ya = -ds * sn + dd * cs;
+        if (xa < -0.3 || xa > 4.5 || Math.abs(ya) > 1.4) continue;
+        // away from the rider's line: the d-direction of its left / right
+        const away = (ya >= 0 ? 1 : -1) * (cs >= 0 ? 1 : -1);
+        b.dodge = away * r.range(0.5, 0.8); b.dodgeT = c.time + r.range(2.5, 4); b.dodgeD0 = b.d;
+        n++;
+      }
+    }
+  }
+  if (n) c.tally('cycleAskWay');
 }
 
 /** Is anybody within `look` metres ahead of the rider (along its heading), `lat` to either side? */
