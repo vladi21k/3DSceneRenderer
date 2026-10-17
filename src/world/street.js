@@ -5,6 +5,7 @@ import { sweepRail, railLinePoints } from './street/rails.js';
 import { createLineMaterials, LineBuf, LINE_SHARED } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS } from './street/constants.js';
+import { CHUNK_LEN } from '../core/config.js';
 import { buildCrossover } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
@@ -74,6 +75,18 @@ const street = {
       return p;
     };
     surface.planner = (ci) => this.planFor(ci).spots;
+
+    // JIT warm-up: build and discard representative chunks (plain, crossover, cross
+    // street; both lods) so streamed chunks never pay first-call compilation costs.
+    const L = app.layout;
+    const warm = [0, L.chunkIndex(L.crossovers[0]?.s0 ?? 0), L.chunkIndex(L.crossStreets[0]?.s ?? 0)];
+    for (const idx of warm) {
+      for (const lod of [0, 1]) {
+        const s0 = idx * CHUNK_LEN;
+        const g = this.build({ index: idx, s0, s1: Math.min(app.route.length, s0 + CHUNK_LEN), lod });
+        g.traverse((o) => o.geometry && o.geometry.dispose());
+      }
+    }
   },
 
   /** Paving height above the route elevation at (s, d) (metres). */
@@ -95,7 +108,7 @@ const street = {
     // 3D rails outside crossover inlay zones (every other row on gentle alignments)
     if (chunk.lod === 0) {
       const kmax = Math.max(...samples.map((S) => Math.abs(S.curv)));
-      const minGap = kmax < 1 / 400 ? 2.4 : kmax < 1 / 150 ? 1.2 : 0;
+      const minGap = kmax < 1 / 400 ? 2.4 : kmax < 1 / 150 ? 1.2 : 0.9;
       let run = [];
       const flush = () => { if (run.length > 1) for (const rl of MAIN_RAILS) sweepRail(bufs, ctx.mats.rail, samples, run, rl.c, rl.g); run = []; };
       for (let r = 0; r < rows.length; r++) {
@@ -171,12 +184,16 @@ function makeRows(ctx, chunk) {
     if (l > 0.05 && l < len - 0.05) extra.push(s0 + l);
   };
   for (const c of layout.crossovers) { addAt(c.s0 - ctx.inlayPad); addAt(c.s1 + ctx.inlayPad); }
+  const mouths = [];
   for (const c of layout.crossStreets) {
     if (Math.abs(route.delta(c.s, (s0 + s1) / 2)) > len / 2 + c.width) continue;
     for (const a of sideColumns(c)) addAt(c.s + a);
+    mouths.push(c);
   }
   if (!extra.length) return base;
-  const all = base.filter((s) => s === s0 || s === s1 || !extra.some((e) => Math.abs(e - s) < 0.3));
+  // inside a mouth the side-street columns are the rows; elsewhere keep the regular ones
+  const inMouth = (s) => mouths.some((c) => Math.abs(route.delta(c.s, s)) < c.width / 2 - 0.05);
+  const all = base.filter((s) => s === s0 || s === s1 || (!inMouth(s) && !extra.some((e) => Math.abs(e - s) < 0.3)));
   for (const e of extra) all.push(e);
   all.sort((a, b) => a - b);
   return all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02);

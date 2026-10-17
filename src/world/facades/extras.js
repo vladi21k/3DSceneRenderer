@@ -17,7 +17,7 @@ export function createLampGlass(M) {
     shader.uniforms.uNight = U.uNight;
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uNight;')
-      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 9.0;');
+      .replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * smoothstep( 0.15, 0.7, uNight ) * 0.04;');
   };
   m.customProgramCacheKey = () => 'facades.lampGlass.v1';
   return m;

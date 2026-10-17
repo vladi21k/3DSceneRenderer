@@ -14,16 +14,32 @@ export function template(W) {
   return { P: W.P.slice(0, W.n * 3), N: W.N.slice(0, W.n * 3), T: W.T.slice(0, W.n * 2), C: W.C.slice(0, W.n * 3), I: W.I.slice(0, W.ni), n: W.n };
 }
 
-/** Writes a template into W with `matrix` (THREE.Matrix4) and an RGB tint. */
+/** Writes a template into W with `matrix` (THREE.Matrix4) and an RGB tint (fast path:
+ *  straight into the writer's arrays). */
 export function writeTemplate(W, t, matrix, tint = [1, 1, 1]) {
   W.setMatrix(matrix);
-  const base = W.count;
+  W.reserve(t.n, t.I.length);
+  const base = W.count, m = W.m, nm = W.nm;
   const { P, N, T, C } = t;
+  const WP = W.P, WN = W.N, WT = W.T, WC = W.C;
+  const tr = tint[0], tg = tint[1], tb = tint[2];
   for (let i = 0; i < t.n; i++) {
-    W.color(C[i * 3] * tint[0], C[i * 3 + 1] * tint[1], C[i * 3 + 2] * tint[2]);
-    W.v(P[i * 3], P[i * 3 + 1], P[i * 3 + 2], N[i * 3], N[i * 3 + 1], N[i * 3 + 2], T[i * 2], T[i * 2 + 1]);
+    const i3 = i * 3, o3 = (base + i) * 3;
+    const x = P[i3], y = P[i3 + 1], z = P[i3 + 2];
+    WP[o3] = m[0] * x + m[4] * y + m[8] * z + m[12];
+    WP[o3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+    WP[o3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+    const nx = N[i3], ny = N[i3 + 1], nz = N[i3 + 2];
+    const X = nm[0] * nx + nm[3] * ny + nm[6] * nz, Y = nm[1] * nx + nm[4] * ny + nm[7] * nz, Z = nm[2] * nx + nm[5] * ny + nm[8] * nz;
+    const l = 1 / (Math.sqrt(X * X + Y * Y + Z * Z) || 1);
+    WN[o3] = X * l; WN[o3 + 1] = Y * l; WN[o3 + 2] = Z * l;
+    WT[(base + i) * 2] = T[i * 2]; WT[(base + i) * 2 + 1] = T[i * 2 + 1];
+    WC[o3] = C[i3] * tr; WC[o3 + 1] = C[i3 + 1] * tg; WC[o3 + 2] = C[i3 + 2] * tb;
   }
-  for (let i = 0; i < t.I.length; i += 3) W.tri(base + t.I[i], base + t.I[i + 1], base + t.I[i + 2]);
+  W.n += t.n;
+  const I = W.I, I0 = t.I;
+  for (let i = 0; i < I0.length; i++) I[W.ni + i] = base + I0[i];
+  W.ni += I0.length;
 }
 
 // ---------------------------------------------------------------- canvas textures
@@ -39,7 +55,7 @@ function plantTexture() {
     g.beginPath();
     for (let i = 0; i <= 64; i++) {
       const a = (i / 64) * Math.PI * 2 - Math.PI / 2;
-      let rr = R * (1 + 0.07 * Math.cos(a * 9));
+      let rr = R * (1 + 0.06 * Math.cos(a * 7) + 0.025 * Math.cos(a * 29));
       const da = Math.atan2(Math.sin(a + Math.PI / 2), Math.cos(a + Math.PI / 2));
       rr *= 1 - 0.55 * Math.exp(-((da / 0.2) ** 2)); // stem sinus
       const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
@@ -55,18 +71,24 @@ function plantTexture() {
     grd.addColorStop(1, `rgb(${58 * k | 0},${88 * k | 0},${36 * k | 0})`);
     g.fillStyle = grd; g.fill();
     g.strokeStyle = `rgba(20,35,12,0.5)`; g.lineWidth = 1.5; g.stroke(); // crisp leaf margin
-    g.strokeStyle = `rgba(${130 * k | 0},${165 * k | 0},${95 * k | 0},0.3)`; g.lineWidth = 1.2;
+    // palmate veins from the petiole point
+    g.strokeStyle = `rgba(${140 * k | 0},${170 * k | 0},${100 * k | 0},0.35)`; g.lineWidth = 2;
     for (let i = 0; i < 9; i++) {
-      const a = -Math.PI / 2 + Math.PI + (i - 4) * 0.36;
-      g.beginPath(); g.moveTo(0, 0); g.lineTo(Math.cos(a) * R * 0.85, Math.sin(a) * R * 0.85); g.stroke();
+      const a = Math.PI / 2 + (i - 4) * 0.62;
+      g.beginPath(); g.moveTo(0, -R * 0.1); g.quadraticCurveTo(Math.cos(a) * R * 0.4, Math.sin(a) * R * 0.4 - R * 0.05, Math.cos(a) * R * 0.88, Math.sin(a) * R * 0.88); g.stroke();
     }
     g.restore();
   };
-  // leaf cluster, back to front, darker underneath
-  for (let i = 0; i < 9; i++) {
-    const a = r.range(0, Math.PI * 2), d = i < 6 ? r.range(38, 70) : r.range(0, 30);
-    leaf(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, r.range(34, 46), r.range(0, Math.PI * 2), i < 6 ? r.range(0.62, 0.8) : r.range(0.9, 1.08));
+  // one large zonal geranium leaf (cards are single leaves)
+  leaf(128, 128, 104, Math.PI, 1);
+  // fine speckle so the blade is not flat colour
+  g.save(); g.globalCompositeOperation = 'source-atop';
+  for (let i = 0; i < 900; i++) {
+    const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 110;
+    g.fillStyle = r.chance(0.5) ? 'rgba(255,255,220,0.06)' : 'rgba(0,20,0,0.08)';
+    g.fillRect(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 2, 2);
   }
+  g.restore();
   // flower umbel: florets of five petals
   g.save(); g.translate(384, 128);
   const florets = [];
@@ -180,6 +202,13 @@ export function makeAttachMaterials(app) {
       .replace('#include <map_fragment>', '#include <map_fragment>\n\tif ( vMapUv.x > 0.5 ) diffuseColor.rgb *= vFlowerTint;');
   };
   plant.customProgramCacheKey = () => 'ironwork.plant';
+  // foliage keeps its (outward-bent) normal on both faces: lit like a volume, not a sheet
+  const prevPlant = plant.onBeforeCompile;
+  plant.onBeforeCompile = (sh, r) => {
+    prevPlant(sh, r);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>',
+      THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''));
+  };
 
   const parts = new THREE.MeshStandardMaterial({ name: 'ironwork.parts', vertexColors: true, roughness: 0.62, metalness: 0.0 });
   const ac = new THREE.MeshStandardMaterial({ name: 'ironwork.ac', map: acTexture(), vertexColors: true, roughness: 0.5, metalness: 0.05 });
@@ -246,27 +275,30 @@ function card(W, c, nrm, size, rot, uv0, uv1, centre, roundness = 0.6) {
   W.quad(idx[0], idx[1], idx[2], idx[3]);
 }
 
-const LEAF_UV = [[0.02, 0.02], [0.48, 0.98]], FLOWER_UV = [[0.52, 0.04], [0.98, 0.96]];
+const LEAF_UV = [[0.035, 0.07], [0.465, 0.93]], FLOWER_UV = [[0.52, 0.04], [0.98, 0.96]];
 
 /** Geranium foliage + umbels over an area of length L (x) and depth D (z); origin at the
  *  soil centre. trail adds leaves spilling over the front (+z) edge. */
 function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 0, height = 0.2, flowersOn = true, lite = false }) {
   const centre = new THREE.Vector3(0, -0.02, 0);
-  // foliage mound: leaf-cluster cards (each carries several 6-8 cm leaves)
-  for (let i = 0; i < leaves; i++) {
-    const x = r.range(-0.5, 0.5) * L, z = r.range(-0.5, 0.5) * D;
-    const e = 1 - Math.min(1, Math.hypot(x / (L * 0.62), z / (D * 0.62)));
-    const y = 0.03 + e * height * r.range(0.6, 1.0);
-    const nrm = [x * 3 + r.range(-0.3, 0.3), 0.5 + r.range(0, 0.7), z * 3 + r.range(-0.3, 0.3)];
-    W.color(...[0.95, 1, 0.95].map((c) => c * r.range(0.8, 1.08)));
-    card(W, [x, y, z], nrm, r.range(0.2, 0.27) * (lite ? 1.35 : 1), r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre);
+  // foliage mound: single leaves on the surface of a dome, facing out and up
+  const n = lite ? leaves : leaves * 3;
+  for (let i = 0; i < n; i++) {
+    const a = r.range(0, Math.PI * 2), e = Math.acos(r.range(0.05, 1)); // elevation biased upward
+    const sx = Math.cos(a) * Math.sin(e), sy = Math.cos(e), sz = Math.sin(a) * Math.sin(e);
+    const k = r.range(0.75, 1.05);
+    const x = sx * L * 0.5 * k, y = 0.02 + sy * height * k, z = sz * D * 0.5 * k;
+    const nrm = [sx + r.range(-0.35, 0.35), sy + 0.4 + r.range(-0.2, 0.4), sz + r.range(-0.35, 0.35)];
+    W.color(...[0.95, 1, 0.92].map((c) => c * r.range(0.72, 1.08)));
+    card(W, [x, y, z], nrm, lite ? r.range(0.13, 0.17) : r.range(0.06, 0.095), r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.5);
   }
   // trailing stems spilling over the front edge
-  for (let i = 0; i < trail; i++) {
+  const nt = lite ? trail : trail * 3;
+  for (let i = 0; i < nt; i++) {
     const x = r.range(-0.5, 0.5) * L, z = D * 0.5 + r.range(0.02, 0.07);
-    const y = -r.range(0.0, 0.26);
-    W.color(r.range(0.75, 0.95), r.range(0.8, 1.0), r.range(0.75, 0.95));
-    card(W, [x, y, z], [r.range(-0.4, 0.4), r.range(-0.1, 0.4), 1], r.range(0.17, 0.23), r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
+    const y = -r.range(0.0, 0.3) * r.range(0.4, 1);
+    W.color(r.range(0.7, 0.92), r.range(0.78, 1.0), r.range(0.7, 0.9));
+    card(W, [x, y, z], [r.range(-0.4, 0.4), r.range(-0.1, 0.5), 1], lite ? r.range(0.12, 0.16) : r.range(0.055, 0.085), r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
   }
   if (!flowersOn) return;
   // umbels: balls of four cards on short stems standing out of the foliage
@@ -304,30 +336,31 @@ const SOIL = [0.32, 0.24, 0.18];
 /** Terracotta pot (origin at its foot), soil at 0.2 m. White base colour (tinted on write). */
 function potTemplate() {
   const W = new GeoWriter();
-  lathe(W, [[0.082, 0], [0.088, 0.008], [0.118, 0.185], [0.133, 0.19], [0.136, 0.222], [0.126, 0.226], [0.119, 0.21]], 12);
+  lathe(W, [[0.084, 0], [0.118, 0.186], [0.135, 0.19], [0.134, 0.224], [0.119, 0.21]], 9);
   W.color(...SOIL);
-  lathe(W, [[0.119, 0.2], [0.0001, 0.205]], 12);
+  lathe(W, [[0.119, 0.2], [0.0001, 0.205]], 9);
   return template(W);
 }
 
 /** Rectangular planter, unit length along x (scaled on write), 0.17 deep, 0.16 tall. */
 function boxTemplate() {
   const W = new GeoWriter();
-  box(W, 0, 0.075, 0, 1, 0.15, 0.17, 0.75);
-  box(W, 0, 0.152, 0, 1.02, 0.014, 0.19);
+  box(W, 0, 0.075, 0, 1, 0.15, 0.17, 0.75, 'u');
+  box(W, 0, 0.152, 0, 1.02, 0.014, 0.19, 1, 'u');
   W.color(...SOIL);
-  box(W, 0, 0.158, 0, 0.98, 0.006, 0.15);
+  box(W, 0, 0.158, 0, 0.98, 0.006, 0.15, 1, 'fblrd');
   return template(W);
 }
 
-/** Far-range planter filling: a green mound and a few flower patches (tinted on write). */
+/** Far-range planter: a plain box, a green mound and flower patches (tinted on write). */
 function bloomTemplates() {
-  const G = new GeoWriter(), Fl = new GeoWriter();
+  const B = new GeoWriter(), G = new GeoWriter(), Fl = new GeoWriter();
+  box(B, 0, 0.08, 0, 1, 0.16, 0.17, 0.75, 'bd');
   G.color(0.11, 0.2, 0.06);
-  box(G, 0, 0.21, 0.02, 0.8, 0.1, 0.22);
+  box(G, 0, 0.21, 0.02, 0.8, 0.1, 0.22, 1, 'bd');
   Fl.color(1, 1, 1);
-  for (const x of [-0.28, -0.05, 0.2, 0.33]) box(Fl, x, 0.27, 0.06, 0.13, 0.06, 0.14);
-  return { green: template(G), flowers: template(Fl) };
+  for (const x of [-0.22, 0.2]) box(Fl, x, 0.27, 0.06, 0.24, 0.06, 0.16, 1, 'bdlr');
+  return { box: template(B), green: template(G), flowers: template(Fl) };
 }
 
 /** Split AC outdoor unit body: x in [-0.4, 0.4], y in [0, 0.55], z in [0.09, 0.37]. */
@@ -352,11 +385,10 @@ function acBracketTemplate() {
   const W = new GeoWriter();
   W.color(0.42, 0.42, 0.4);
   for (const x of [-0.3, 0.3]) {
-    box(W, x, -0.02, 0.2, 0.04, 0.04, 0.4);
+    box(W, x, -0.02, 0.2, 0.04, 0.04, 0.4, 1, 'b');
     W.setMatrix(new THREE.Matrix4().makeRotationX(-Math.atan2(0.33, 0.3)).setPosition(x, -0.19, 0.15));
-    box(W, 0, 0, 0, 0.035, 0.035, 0.44);
+    box(W, 0, 0, 0, 0.035, 0.035, 0.44, 1, 'fb');
     W.setMatrix(null);
-    box(W, x, -0.18, 0.004, 0.06, 0.4, 0.008);
   }
   W.color(0.85, 0.85, 0.85); // condensate hose dropping down the wall
   sweepBar(W, [[0.3, 0.0], [0.32, -0.15], [0.33, -0.9]], 0.007, 0.007, { z0: 0.12 });
@@ -420,6 +452,19 @@ function chairTemplate() {
   return template(W);
 }
 
+/** A towel or rug hung over the handrail: front drop 0.45 m, back drop 0.3 m, unit width
+ *  along x (scaled on write), folded over the rail at y = 0. White, tinted on write. */
+function towelTemplate() {
+  const W = new GeoWriter();
+  const t = 0.03;
+  const Q = (pts, n, s) => { const i = pts.map((p) => W.v(p[0], p[1], p[2], n[0], n[1], n[2], p[0], p[1], s)); W.quad(i[0], i[1], i[2], i[3]); };
+  Q([[-0.5, -0.45, t], [0.5, -0.45, t], [0.5, 0, t], [-0.5, 0, t]], [0, 0, 1], 1);
+  Q([[0.5, -0.45, t - 0.004], [-0.5, -0.45, t - 0.004], [-0.5, 0, t - 0.004], [0.5, 0, t - 0.004]], [0, 0, -1], 0.7);
+  Q([[-0.5, 0.012, t], [0.5, 0.012, t], [0.5, 0.012, -t], [-0.5, 0.012, -t]], [0, 1, 0], 1.05);
+  Q([[0.5, -0.3, -t], [-0.5, -0.3, -t], [-0.5, 0, -t], [0.5, 0, -t]], [0, 0, -1], 0.75);
+  return template(W);
+}
+
 /** Flag pole along +y with a ball finial; wall bracket at the foot. */
 function poleTemplate(len = 1.9) {
   const W = new GeoWriter();
@@ -467,6 +512,7 @@ export function buildAttachAssets() {
     acPipes: acPipeTemplate(),
     dish: dishTemplate(),
     chair: chairTemplate(),
+    towel: towelTemplate(),
     pole: poleTemplate(),
     flag: flagGeometry(),
   };

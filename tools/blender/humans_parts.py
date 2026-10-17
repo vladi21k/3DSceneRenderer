@@ -23,8 +23,9 @@ PER_BASE = {
                'backpack', 'shoulderbag', 'shopping'],
     'child': ['hair_short', 'hair_long', 'hair_ponytail', 'hair_bob', 'cap', 'backpack'],
 }
-LOD_TRIS = {'hair': (1400, 320, 70), 'long': (2200, 480, 110), 'beard': (900, 200, 40), 'hat': (1200, 260, 60),
-            'bag': (700, 160, 36)}
+# triangles per LOD; 0 = the part is dropped at that LOD (too small to matter on screen)
+LOD_TRIS = {'hair': (1400, 300, 50, 16), 'long': (2200, 450, 80, 26), 'beard': (900, 180, 24, 0),
+            'hat': (1200, 240, 40, 16), 'bag': (700, 150, 24, 12)}
 
 # cranium of the head sculpt (humans_body.head_sdf)
 CR_C = np.array([0.0, 0.014, 0.006])
@@ -104,7 +105,8 @@ def hair_part(name):
     H = {'head': 1}
     R = REGION['hair']
     if name == 'hair_short':
-        n = cap_hair(0.011, 0.005, R, noise=0.0012)
+        n = cap_hair(0.014, 0.0055, R, noise=0.0014)
+        n = Union([n, Ellipsoid((0.006, 0.072, -0.050), (0.052, 0.022, 0.032))], k=0.018)
     elif name == 'hair_buzz':
         n = cap_hair(0.0042, 0.0032, R, fade=0.006)
     elif name == 'hair_medium':
@@ -247,14 +249,16 @@ def bag_part(name, T):
     df = normalize(du + np.array([0.02, 0, -0.16]))
     wr = el + df * T['Lf']
     hand = wr + df * 0.08 * T['handS']
-    c = hand + np.array([0.0, -0.20, -0.01]) * sy
-    body = RoundBox(c, (0.03 * sx, 0.15 * sy, 0.16 * sz), 0.03, R=rot_xyz(0, 0, -T['abd'] * 0.6),
-                    region=R, bones={'handR': 1})
-    handle = RoundCone(hand + np.array([0, 0.01, -0.03]), c + np.array([0, 0.13 * sy, -0.05]), 0.006, 0.006,
+    # a filled plastic carrier bag: gathered at the handles, bulging towards the bottom
+    top = hand + np.array([0.004, -0.07, 0.0]) * sy
+    bot = hand + np.array([0.008, -0.40, 0.0]) * sy
+    body = Loft(top, bot, (1, 0, 0), [(0.0, 0.012, 0.050, 0, 0), (0.25, 0.035, 0.115, 0, 0), (0.7, 0.050, 0.150, 0, 0),
+                                       (1.0, 0.042, 0.140, 0, 0)], n=2.6, capr=0.35, region=R, bones={'handR': 1})
+    handle = RoundCone(hand + np.array([0, 0.005, -0.012]), top + np.array([0, 0.01, -0.035]), 0.005, 0.007,
                        region=R, bones={'handR': 1})
-    handle2 = RoundCone(hand + np.array([0, 0.01, 0.03]), c + np.array([0, 0.13 * sy, 0.05]), 0.006, 0.006,
+    handle2 = RoundCone(hand + np.array([0, 0.005, 0.012]), top + np.array([0, 0.01, 0.035]), 0.005, 0.007,
                         region=R, bones={'handR': 1})
-    return Union([body, handle, handle2], k=0.01)
+    return Union([body, handle, handle2], k=0.012)
 
 
 def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=None):
@@ -277,9 +281,13 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
         V, Tr = mesh_fn(node, lo, hi, hres)
         if len(Tr) == 0:
             continue
-        lods = decimate_fn(V, Tr, LOD_TRIS[group])
+        targets = LOD_TRIS[group]
+        lods = decimate_fn(V, Tr, [t if t else 8 for t in targets])
         lod_attrs = []
-        for (Vl, Tl) in lods:
+        for li, (Vl, Tl) in enumerate(lods):
+            if not targets[li]:
+                lod_attrs.append(None)
+                continue
             a = attr_fn(node, body, Vl, Tl)
             if name in ('cap', 'fedora', 'sunhat'):
                 # hat band (dark ribbon above the brim) for the shader

@@ -13,7 +13,7 @@ import * as THREE from 'three';
 // (so it adapts to the telephoto / wide field of view), with hysteresis against flicker:
 //   L0 > LOD_PX[0] px, L1 > LOD_PX[1] px, L2 below.
 
-const LOD_PX = [380, 130];
+const LOD_PX = [380, 95];
 const HYST = 0.08;
 
 export class InstancePool {
@@ -30,6 +30,16 @@ export class InstancePool {
     mesh.sortObjects = true;
     this.mesh = mesh;
     this.geomIds = geometries.map((g) => mesh.addGeometry(g));
+    // Per-instance culling uses each geometry's bounding sphere, computed from its vertices.
+    // Pad it for wind sway, and for billboards whose vertices all sit at the clump centres
+    // (expanded on the GPU). three r186 caches the sphere in _geometryInfo (vendored, fixed).
+    const sphere = new THREE.Sphere();
+    geometries.forEach((g, i) => {
+      const id = this.geomIds[i];
+      mesh.getBoundingSphereAt(id, sphere);
+      const info = mesh._geometryInfo && mesh._geometryInfo[id];
+      if (info && info.boundingSphere) info.boundingSphere.radius += 0.3 + (g.userData.boundsPad || 0);
+    });
   }
 
   add(geomIndex, matrix, color) {

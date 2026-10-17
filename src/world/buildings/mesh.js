@@ -182,6 +182,23 @@ export class Builder {
     if (dir > 0) this.quadIdx(s, a, b, c, d); else this.quadIdx(s, a, d, c, b);
   }
 
+  /** rectU subdivided into a grid of about `cell` metres (for vertex-colour detail). */
+  gridU(s, u, v0, v1, w0, w1, dir, cell) {
+    if (w1 < w0) { const x = w0; w0 = w1; w1 = x; }
+    const nw = Math.max(1, Math.ceil((w1 - w0) / cell)), nv = Math.max(1, Math.ceil((v1 - v0) / cell));
+    s.reserve((nw + 1) * (nv + 1), nw * nv * 6);
+    const base = s.vc;
+    for (let j = 0; j <= nv; j++) {
+      const v = v0 + ((v1 - v0) * j) / nv;
+      for (let i = 0; i <= nw; i++) { const w = w0 + ((w1 - w0) * i) / nw; this.v(s, u, v, w, dir, 0, 0, -dir * w, v); }
+    }
+    for (let j = 0; j < nv; j++) for (let i = 0; i < nw; i++) {
+      const a = base + j * (nw + 1) + i, b = a + 1, c = a + nw + 2, d = a + nw + 1;
+      // (a → d) is +v, (a → b) is +w: +v × +w = +u
+      if (dir > 0) this.quadIdx(s, a, d, c, b); else this.quadIdx(s, a, b, c, d);
+    }
+  }
+
   /** Axis-aligned box; `faces` is a FACES bit mask. */
   box(s, u0, u1, v0, v1, w0, w1, faces = 63) {
     if (faces & F_FRONT) this.rectW(s, u0, u1, v0, v1, w1, 1);

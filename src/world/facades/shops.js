@@ -45,11 +45,22 @@ export function shopFrameTpl(o, L, q) {
   const t = new Tpl();
   const n = headSegments(o, q);
   const ring = (d, z) => outlinePts(o, d, n).map((p) => [p[0], p[1], z]);
-  t.loft([ring(0, ZF), ring(FW - CH, ZF)], true, 1);
-  t.loft([ring(FW - CH, ZF), ring(FW, ZF - CH)], true, 0.95);
-  t.loft([ring(FW, ZF - CH), ring(FW, ZB)], true, 0.78);
+  if (q < 0.5) t.loft([ring(0, ZF), ring(FW, ZF)], true, 1);
+  else {
+    t.loft([ring(0, ZF), ring(FW - CH, ZF)], true, 1);
+    t.loft([ring(FW - CH, ZF), ring(FW, ZF - CH)], true, 0.95);
+    t.loft([ring(FW, ZF - CH), ring(FW, ZB)], true, 0.78);
+  }
   const { hwI, yT, doorW, dx, setback, doorH, riser } = L;
   const d0 = dx - doorW / 2, d1 = dx + doorW / 2;
+  if (q < 0.5) {
+    // far: casing, transom, risers and door posts as flat faces
+    if (yT < o.h - FW - 0.05) t.box(-hwI, yT - 0.05, -0.04, hwI, yT + 0.05, ZF - 0.005, 1, 1, 1);
+    t.box(-hwI, 0, -0.04, hwI, riser, 0.02, 1, 0.8, 0.9);
+    t.box(d0 - 0.06, 0, -0.04, d0, yT, ZF - 0.01, 1, 1, 1);
+    t.box(d1, 0, -0.04, d1 + 0.06, yT, ZF - 0.01, 1, 1, 1);
+    return t.bake();
+  }
   // transom bar
   if (yT < o.h - FW - 0.05) rail(t, [-hwI - 0.01, yT], [hwI + 0.01, yT], 0.1, ZF - 0.005, ZB);
   const yG = yT - 0.05; // top of the display glass

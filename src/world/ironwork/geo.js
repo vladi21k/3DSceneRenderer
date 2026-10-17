@@ -15,15 +15,24 @@ export class GeoWriter {
     this.T = new Float32Array(cap * 2); this.C = new Float32Array(cap * 3);
     this.I = new Uint32Array(cap * 3);
     this.m = null; this.nm = null;
+    this._m = new Float32Array(16); this._n3 = new THREE.Matrix3();
     this.r = 1; this.g = 1; this.b = 1;
   }
   get count() { return this.n; }
+  /** Transform for subsequent vertices (copied, so the caller may reuse its matrix). */
   setMatrix(m) {
-    this.m = m ? m.elements.slice() : null;
-    this.nm = m ? new THREE.Matrix3().getNormalMatrix(m).elements : null;
+    if (!m) { this.m = this.nm = null; return this; }
+    this._m.set(m.elements);
+    this.m = this._m;
+    this.nm = this._n3.getNormalMatrix(m).elements;
     return this;
   }
   color(r, g, b) { this.r = r; this.g = g; this.b = b; return this; }
+  /** Make room for `k` more vertices and `t` more indices. */
+  reserve(k, t) {
+    while ((this.n + k) * 3 > this.P.length) this._grow();
+    if (this.ni + t > this.I.length) { const b = new Uint32Array(Math.max(this.I.length * 2, this.ni + t)); b.set(this.I); this.I = b; }
+  }
   _grow() {
     const cap = this.P.length / 3 * 2;
     const g = (a, k) => { const b = new a.constructor(cap * k); b.set(a); return b; };
@@ -57,15 +66,16 @@ export class GeoWriter {
   }
   /** Quad a-b-c-d counter-clockwise (front-facing). */
   quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
-  toGeometry({ colors = true } = {}) {
+  toGeometry({ colors = true, bounds = true } = {}) {
+    // views into the writer's buffers (no copies); the writer is discarded afterwards
     const g = new THREE.BufferGeometry(), n = this.n;
-    g.setAttribute('position', new THREE.BufferAttribute(this.P.slice(0, n * 3), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(this.N.slice(0, n * 3), 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(this.T.slice(0, n * 2), 2));
-    if (colors) g.setAttribute('color', new THREE.BufferAttribute(this.C.slice(0, n * 3), 3));
-    const idx = n > 65535 ? this.I.slice(0, this.ni) : new Uint16Array(this.I.subarray(0, this.ni));
+    g.setAttribute('position', new THREE.BufferAttribute(this.P.subarray(0, n * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.N.subarray(0, n * 3), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(this.T.subarray(0, n * 2), 2));
+    if (colors) g.setAttribute('color', new THREE.BufferAttribute(this.C.subarray(0, n * 3), 3));
+    const idx = n > 65535 ? this.I.subarray(0, this.ni) : new Uint16Array(this.I.subarray(0, this.ni));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
-    g.computeBoundingSphere();
+    if (bounds) g.computeBoundingSphere();
     return g;
   }
 }
@@ -156,8 +166,9 @@ function capEnd(W, pts, i, nx, ny, sc, hw, hd, z0, dirSign) {
   if (dirSign > 0) W.quad(a, b, c, d); else W.quad(a, d, c, b);
 }
 
-/** Axis-aligned box (optionally chamfer-free) centred at (cx, cy, cz). */
-export function box(W, cx, cy, cz, sx, sy, sz, shadeBottom = 1) {
+/** Axis-aligned box centred at (cx, cy, cz). `skip` lists faces never seen, to save
+ *  vertices: f/b (+z/-z), r/l (+x/-x), u/d (+y/-y). */
+export function box(W, cx, cy, cz, sx, sy, sz, shadeBottom = 1, skip = '') {
   const x0 = cx - sx / 2, x1 = cx + sx / 2, y0 = cy - sy / 2, y1 = cy + sy / 2, z0 = cz - sz / 2, z1 = cz + sz / 2;
   const F = (ax, ay, az, bx, by, bz, cx2, cy2, cz2, dx, dy, dz, n, uvw, s = 1) => {
     const a = W.v(ax, ay, az, n[0], n[1], n[2], uvw[0][0], uvw[0][1], s);
@@ -166,18 +177,12 @@ export function box(W, cx, cy, cz, sx, sy, sz, shadeBottom = 1) {
     const d = W.v(dx, dy, dz, n[0], n[1], n[2], uvw[3][0], uvw[3][1], s);
     W.quad(a, b, c, d);
   };
-  // +z
-  F(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, [0, 0, 1], [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
-  // -z
-  F(x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, [0, 0, -1], [[x1, y0], [x0, y0], [x0, y1], [x1, y1]]);
-  // +x
-  F(x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, [1, 0, 0], [[z1, y0], [z0, y0], [z0, y1], [z1, y1]]);
-  // -x
-  F(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, [-1, 0, 0], [[z0, y0], [z1, y0], [z1, y1], [z0, y1]]);
-  // +y
-  F(x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, [0, 1, 0], [[x0, z1], [x1, z1], [x1, z0], [x0, z0]]);
-  // -y
-  F(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, [0, -1, 0], [[x0, z0], [x1, z0], [x1, z1], [x0, z1]], shadeBottom);
+  if (!skip.includes('f')) F(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, [0, 0, 1], [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+  if (!skip.includes('b')) F(x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, [0, 0, -1], [[x1, y0], [x0, y0], [x0, y1], [x1, y1]]);
+  if (!skip.includes('r')) F(x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, [1, 0, 0], [[z1, y0], [z0, y0], [z0, y1], [z1, y1]]);
+  if (!skip.includes('l')) F(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, [-1, 0, 0], [[z0, y0], [z1, y0], [z1, y1], [z0, y1]]);
+  if (!skip.includes('u')) F(x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, [0, 1, 0], [[x0, z1], [x1, z1], [x1, z0], [x0, z0]]);
+  if (!skip.includes('d')) F(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, [0, -1, 0], [[x0, z0], [x1, z0], [x1, z1], [x0, z1]], shadeBottom);
 }
 
 /** Surface of revolution around +Y. profile: [[r, y], ...] from bottom to top. */

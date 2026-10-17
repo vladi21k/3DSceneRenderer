@@ -1,7 +1,7 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE } from './agent.js';
-import { EDGE_LANE, RIDE_D, BAND_LO, BAND_HI, TRAM_LEN, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, WALL_GAP } from './constants.js';
+import { EDGE_LANE, RIDE_D, BAND_LO, BAND_HI, TRAM_LEN, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS } from './constants.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
 // entering shops, side streets, crossing the tracks, joining a platform, café seats,
@@ -58,7 +58,10 @@ export function desired(c, a, out) {
   if (a.leader && a.leader.active && (a.state === ST.WALK || a.state === ST.STAND || a.state === ST.WAIT)) return follow(c, a, out);
   switch (a.state) {
     case ST.WALK: {
-      const dt = laneTarget(c, a);
+      // the lane only changes slowly along the street: refresh it a few times a second
+      a.laneTT -= c.dt;
+      if (a.laneTT <= 0) { a.laneT = laneTarget(c, a); a.laneTT = 0.25; }
+      const dt = a.laneT;
       a.gd = dt;
       out.vs = a.dir * a.v0;
       const e = dt - a.d;
@@ -115,7 +118,7 @@ function follow(c, a, out) {
 // ------------------------------------------------------------------ helpers
 
 function goTo(a, s, d, tol = 0.3) { a.state = ST.GOTO; a.gs = s; a.gd = d; a.gTol = tol; }
-function walk(a) { a.state = ST.WALK; a.task = TASK.NONE; a.step = 0; a.inDoor = false; }
+function walk(a) { a.state = ST.WALK; a.task = TASK.NONE; a.step = 0; a.inDoor = false; a.laneTT = 0; }
 function stand(a, faceA, t) { a.state = ST.STAND; a.faceA = faceA; a.timer = t; }
 const faceTowards = (fromS, fromD, toS, toD) => Math.atan2(toD - fromD, toS - fromS);
 const faceFacade = (side) => (side > 0 ? PI / 2 : -PI / 2);
@@ -170,10 +173,11 @@ function thinkWalk(c, a) {
     if (mine && mine !== a.mouth) {
       a.mouth = mine;
       if (r.chance(0.28) && startSideOut(c, a, mine)) return;
-      if (mine.side === 0 && r.chance(0.3) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.SIDE_OUT, mine)) return;
+      if (mine.side === 0 && r.chance(0.35) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.SIDE_OUT, mine)) return;
+      if (r.chance(0.3) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.NONE, null)) return;
     } else if (other && other !== a.mouth) {
       a.mouth = other;
-      if (r.chance(0.3) && startCross(c, a, c.unwrap(other.s) + r.range(-1, 1) * other.width * 0.3, r.chance(0.5) ? TASK.SIDE_OUT : TASK.NONE, other)) return;
+      if (r.chance(0.45) && startCross(c, a, c.unwrap(other.s) + r.range(-1, 1) * other.width * 0.3, r.chance(0.5) ? TASK.SIDE_OUT : TASK.NONE, other)) return;
     }
     if (a.lane === LANE.SIDE) {
       if (r.chance(0.016) && startBrowse(c, a)) return;
@@ -182,9 +186,9 @@ function thinkWalk(c, a) {
     }
     if (a.nFollow === 0 && r.chance(0.06) && startPlatform(c, a)) return;
   }
-  if (r.chance(0.0045) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
+  if (r.chance(0.0018) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
   if (a.nFollow > 0 && r.chance(0.02) && c.counts.stand < STANDER_TARGET && startChat(c, a)) return;
-  if (a.nFollow === 0 && r.chance(0.004)) { a.task = TASK.PAUSE; stand(a, a.alpha + r.range(-1.2, 1.2), r.range(6, 24)); return; }
+  if (a.nFollow === 0 && r.chance(0.004)) { c.tally('pause'); a.task = TASK.PAUSE; stand(a, a.alpha + r.range(-1.2, 1.2), r.range(6, 24)); return; }
   // lane drift and the odd change of mind
   if (r.chance(0.05)) a.laneF = Math.min(0.97, Math.max(0.03, a.laneF + r.normal(0, 0.18)));
   if (r.chance(0.012)) setLane(c, a, r);
@@ -196,6 +200,7 @@ function thinkWalk(c, a) {
 /** Pick a lane for a walker on its current side. */
 export function setLane(c, a, r, forceSide = false) {
   const p = r.next();
+  a.laneTT = 0;
   if (forceSide || p < 0.66) { a.lane = LANE.SIDE; a.laneF = r.range(0.04, 0.96); }
   else if (p < 0.89) { a.lane = LANE.EDGE; a.laneF = r.next(); }
   else {
@@ -222,6 +227,7 @@ function startBrowse(c, a) {
     if (!clearSpot(c, gs, gd, 0.45)) continue;
     a.task = TASK.BROWSE; a.step = 0;
     goTo(a, gs, gd, 0.3);
+    c.tally('browse');
     return true;
   }
   return false;
@@ -239,6 +245,7 @@ function startEnter(c, a) {
     const wall = map.wallAt(sO, side);
     if (!clearSpot(c, sO, side * (wall - 0.3), 0.45)) continue;
     a.task = TASK.ENTER; a.step = 0;
+    c.tally('enterShop');
     a.door = o; a.doorS0 = sO - o.half + 0.3; a.doorS1 = sO + o.half - 0.3;
     goTo(a, sO, side * (wall - 0.2), 0.3);
     return true;
@@ -252,6 +259,7 @@ export function startSideOut(c, a, m) {
   const ms = c.unwrap(m.s);
   const line = c.map.mouthLine(m, side);
   a.mouth = m; a.task = TASK.SIDE_OUT; a.step = 0;
+  c.tally('intoSideStreet');
   a.slotX = c.rng.range(-1, 1) * (m.width / 2 - 1.4);
   goTo(a, ms + a.slotX, side * (line - 0.7), 0.6);
   return true;
@@ -268,6 +276,7 @@ export function startCross(c, a, sE, after, mouth) {
   if (s1 === null || map.stationAt(s1)) return false;
   a.task = TASK.CROSS; a.after = after; a.mouth = mouth || a.mouth;
   a.crossS = s1;
+  c.tally(mouth || map.mouthAt(sE, side) || map.mouthAt(sE, -side) ? 'crossAtCrossStreet' : 'crossMidBlock');
   if (Math.abs(a.d) < TRACK_ZONE_HALF) { a.step = 1; arrive(c, a); return true; } // already in the corridor
   a.step = 0;
   goTo(a, s0, side * CORR_EDGE, 0.45);
@@ -284,6 +293,7 @@ function startPlatform(c, a) {
   const endS = a.dir > 0 ? s0 - 0.9 : s1 + 0.9;
   if ((endS - a.s) * a.dir < 2) return false;
   a.task = TASK.TO_PLATFORM; a.step = 0; a.feature = feat; feat.count++;
+  c.tally('toPlatform');
   goTo(a, endS, a.side * (TRACK_ZONE_HALF + PLATFORM_W * 0.55), 0.6);
   return true;
 }
@@ -294,6 +304,7 @@ function startSit(c, a) {
   const seat = c.population.freeChair(cafe, a);
   if (!seat) return false;
   a.task = TASK.SIT; a.step = 0; a.feature = seat;
+  c.tally('takeSeat');
   goTo(a, seat.s, a.side * (cafe._crowdInner - 0.35), 0.5);
   return true;
 }
@@ -311,6 +322,7 @@ function startChat(c, a) {
     stand(m, faceTowards(m.s, m.d, cs, cd), t);
   }
   a.task = TASK.CHAT;
+  c.tally('chat');
   return true;
 }
 
@@ -321,7 +333,8 @@ function leaveSeat(c, a) {
   a.feature = null;
   a.kind = KIND.WALKER;
   a.task = TASK.LEAVE_SEAT; a.step = 0; a.noRect = true;
-  goTo(a, seat.s + c.rng.range(-0.6, 0.6), a.side * (seat.cafe._crowdInner - 0.5), 0.4);
+  c.tally('leaveSeat');
+  goTo(a, seat.s + c.rng.range(-0.6, 0.6), seat.exitD, 0.4);
 }
 
 function thinkPassenger(c, a) {
@@ -341,6 +354,7 @@ function thinkPassenger(c, a) {
 /** Passengers on the ride side board when the tram stands at their platform. */
 export function board(c, a, doorS) {
   a.task = TASK.BOARD; a.step = 0;
+  c.tally('board');
   goTo(a, doorS + c.rng.range(-0.5, 0.5), TRACK_ZONE_HALF + 0.24, 0.3);
 }
 
@@ -397,6 +411,7 @@ export function arrive(c, a) {
         // at the corridor edge (or already inside): wait for a safe gap
         const tCross = (BAND_HI - BAND_LO + 0.6) / a.v0 + 1.5;
         if (!c.tram.canEnterBand(a.s, tCross) || !c.tram.canEnterBand(a.crossS, tCross)) {
+          if (a.step === 0) c.tally('waitForTram');
           a.step = 1;
           a.state = ST.WAIT; a.timer = 0.35;
           a.faceA = faceStreet(side) + (side > 0 ? -0.5 : 0.5); // half turned towards the oncoming tram
@@ -456,7 +471,7 @@ export function arrive(c, a) {
       if (!seat) { walk(a); a.noRect = false; return; }
       a.kind = KIND.SEATED; a.state = ST.SEATED; a.task = TASK.NONE;
       a.s = seat.s; a.d = seat.d; a.vs = 0; a.vd = 0;
-      a.faceA = faceTowards(seat.s, seat.d, seat.ts, seat.td);
+      a.faceA = seat.faceA;
       a.alpha = a.faceA;
       a.timer = r.range(60, 600);
       return;
@@ -495,4 +510,3 @@ export function timerDone(c, a) {
   }
 }
 
-export { CORR_EDGE, WALL_GAP };

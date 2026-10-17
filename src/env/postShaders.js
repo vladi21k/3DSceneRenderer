@@ -208,7 +208,10 @@ void main() {
   // horizon sky; the forward-scattered sun part only counts the sunlit share of the
   // canyon air (most of the street air is in shadow at low sun).
   if (!sky) {
-    vec3 hzMean = texture2D(uSkyIrr, vec2(1.5 / 4.0, 0.5)).rgb;
+    // canyon air sees mostly the overhead sky, so the ambient part leans on the mean
+    // upper-hemisphere radiance rather than the (sunset-dominated) horizon
+    vec3 skyMean = texture2D(uSkyIrr, vec2(0.5 / 4.0, 0.5)).rgb / ATM_PI;
+    vec3 hzMean = mix(skyMean, texture2D(uSkyIrr, vec2(1.5 / 4.0, 0.5)).rgb, 0.4);
     vec3 hzDir = texture2D(uSkyLUT, skyUV(normalize(vec3(rd.x, 0.02, rd.z)))).rgb;
     float cosT = dot(rd, uSunDirA);
     float g = 0.72, g2 = g * g;

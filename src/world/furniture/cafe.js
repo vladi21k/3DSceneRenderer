@@ -61,25 +61,28 @@ function farChair(style) {
   return { shell: merge([seat, back, ...legs(0.028, true)]), frame: merge([seat, back, ...legs(0.024, true)]) };
 }
 
+// Chairs come in three detail levels: 0 close-up, 1 mid range (lighter tessellation,
+// no small ornaments), 2 far (a few boxes with the right silhouette).
+
 /** Parisian woven bistro armchair: rattan frame, woven seat and curved back band. */
-function bistroChair(lod) {
-  if (lod) return farChair('bistro');
-  const rad = 5, R = 0.0135;
+function bistroChair(detail) {
+  if (detail >= 2) return farChair('bistro');
+  const mid = detail === 1, rad = mid ? 4 : 5, R = 0.0135;
   const frame = [], weave = [];
   const seat = roundedRectShape(0.44, 0.41, 0.07, 0.04, 0.035);
-  weave.push(seatPanel(seat, 0.026, SEAT_H - 0.004, 0.004, 3));
+  weave.push(seatPanel(seat, 0.026, SEAT_H - 0.004, mid ? 0 : 0.004, mid ? 2 : 3));
   // seat rim
-  const outline = seat.getSpacedPoints(18).slice(0, -1).map((p) => V(p.x * 1.02, SEAT_H - 0.01, p.y * 1.02));
-  frame.push(tube(outline, R * 0.95, { radial: rad, closed: true, bend: 0.03 }));
+  const outline = seat.getSpacedPoints(mid ? 10 : 18).slice(0, -1).map((p) => V(p.x * 1.02, SEAT_H - 0.01, p.y * 1.02));
+  frame.push(tube(outline, R * 0.95, { radial: rad, closed: true, bend: mid ? 0 : 0.03 }));
   // legs (slight splay), rear legs rise into the back uprights
   for (const sx of [-1, 1]) {
-    frame.push(tube([V(sx * 0.195, SEAT_H - 0.02, 0.165), V(sx * 0.212, 0.2, 0.19), V(sx * 0.22, 0.0, 0.205)], R, { radial: rad, bend: 0.2 }));
-    frame.push(tube([V(sx * 0.17, 0.0, -0.245), V(sx * 0.165, 0.2, -0.215), V(sx * 0.16, SEAT_H, -0.19), V(sx * 0.17, 0.62, -0.215), V(sx * 0.18, 0.79, -0.24)], R, { radial: rad, bend: 0.25 }));
+    frame.push(tube([V(sx * 0.195, SEAT_H - 0.02, 0.165), V(sx * 0.212, 0.2, 0.19), V(sx * 0.22, 0.0, 0.205)], R, { radial: rad, bend: mid ? 0 : 0.2 }));
+    frame.push(tube([V(sx * 0.17, 0.0, -0.245), V(sx * 0.165, 0.2, -0.215), V(sx * 0.16, SEAT_H, -0.19), V(sx * 0.17, 0.62, -0.215), V(sx * 0.18, 0.79, -0.24)], R, { radial: rad, bend: mid ? 0 : 0.25 }));
   }
   // stretcher ring + decorative curls under the seat front
   const ring = [V(-0.2, 0.17, 0.185), V(0.2, 0.17, 0.185), V(0.17, 0.17, -0.222), V(-0.17, 0.17, -0.222)];
-  frame.push(tube(ring, R * 0.75, { radial: rad, closed: true, bend: 0.06 }));
-  if (!lod) {
+  frame.push(tube(ring, R * 0.75, { radial: rad, closed: true, bend: mid ? 0 : 0.06 }));
+  if (!mid) {
     for (const sx of [-1, 1]) {
       const c = [];
       for (let i = 0; i <= 6; i++) { const a = (i / 6) * Math.PI * 1.6; c.push(V(sx * (0.13 - 0.035 * Math.sin(a)), SEAT_H - 0.04 - 0.035 * (1 - Math.cos(a)), 0.19)); }
@@ -92,10 +95,10 @@ function bistroChair(lod) {
     V(-0.17 * k, y + 0.12, -0.24), V(0, y + 0.15, -0.285), V(0.17 * k, y + 0.12, -0.24), V(0.24 * k, y, -0.12),
     V(0.235 * k, 0.665, 0.07), V(0.215, 0.6, 0.15), V(0.2, SEAT_H - 0.01, 0.16),
   ];
-  frame.push(tube(back(0.675), R, { radial: rad, bend: 0.09, bendSegs: 2 }));
-  frame.push(tube(back(0.645, 0.985).slice(2, -2), R * 0.8, { radial: 4, bend: 0.09, bendSegs: 2 }));
+  frame.push(tube(back(0.675), R, { radial: rad, bend: mid ? 0 : 0.09, bendSegs: 2 }));
+  if (!mid) frame.push(tube(back(0.645, 0.985).slice(2, -2), R * 0.8, { radial: 4, bend: 0.09, bendSegs: 2 }));
   // woven back band under the rail: highest at the centre, following the rail in plan
-  const band = profileWall(10, (t) => {
+  const band = profileWall(mid ? 6 : 10, (t) => {
     const a = THREE.MathUtils.lerp(-0.95, 0.95, t);
     return [Math.sin(a) * 0.225, -0.04 - Math.cos(a) * 0.205, Math.sin(a), -Math.cos(a)];
   }, (t) => {
@@ -108,10 +111,11 @@ function bistroChair(lod) {
 }
 
 /** Moulded polypropylene stacking chair: dished seat, curved back on the rear legs. */
-function plasticChair(lod) {
-  if (lod) return farChair('plastic');
+function plasticChair(detail) {
+  if (detail >= 2) return farChair('plastic');
+  const mid = detail === 1;
   const parts = [];
-  const seat = seatPanel(roundedRectShape(0.45, 0.43, 0.06, 0.05, 0.01), 0.018, SEAT_H, 0.005, 4);
+  const seat = seatPanel(roundedRectShape(0.45, 0.43, 0.06, 0.05, 0.01), 0.018, SEAT_H, mid ? 0 : 0.005, mid ? 2 : 4);
   { // dish + waterfall front
     const p = seat.attributes.position;
     for (let i = 0; i < p.count; i++) {
@@ -123,12 +127,12 @@ function plasticChair(lod) {
   parts.push(seat);
   const backS = new THREE.Shape();
   { const w = 0.42, h = 0.3, r = 0.06; backS.moveTo(-w / 2 + r, 0); backS.lineTo(w / 2 - r, 0); backS.quadraticCurveTo(w / 2, 0, w / 2, r); backS.lineTo(w / 2 + 0.01, h - r); backS.quadraticCurveTo(w / 2 + 0.01, h, w / 2 - r, h); backS.lineTo(-w / 2 + r, h); backS.quadraticCurveTo(-w / 2 - 0.01, h, -w / 2 - 0.01, h - r); backS.lineTo(-w / 2, r); backS.quadraticCurveTo(-w / 2, 0, -w / 2 + r, 0); }
-  const backG = extrude(backS, 0.016, { bevel: 0.005, bevelSegs: 1, curveSegs: 4 });
+  const backG = extrude(backS, 0.016, { bevel: mid ? 0 : 0.005, bevelSegs: 1, curveSegs: mid ? 2 : 4 });
   xf(backG, [0, 0.54, -0.235], [-0.2, 0, 0]);
   wrapBack(backG, 0.75, 0.0, 0.01);
   parts.push(backG);
   // legs: tapered rounded bars, rear legs continue up as the back uprights
-  const legP = rectProfile(0.03, 0.024, 0.008, 1);
+  const legP = rectProfile(0.03, 0.024, mid ? 0 : 0.008, 1);
   const taper = (t) => 1 - 0.25 * (1 - t);
   for (const sx of [-1, 1]) {
     parts.push(sweep([V(sx * 0.225, 0, 0.235), V(sx * 0.2, SEAT_H - 0.01, 0.17)], legP, { bend: 0, scales: (t) => taper(t) }));
@@ -138,50 +142,53 @@ function plasticChair(lod) {
 }
 
 /** Aluminium stacking armchair: tubular frame, slatted seat and back. */
-function metalChair(lod) {
-  if (lod) return farChair('metal');
-  const R = 0.0115, rad = 6;
+function metalChair(detail) {
+  if (detail >= 2) return farChair('metal');
+  const mid = detail === 1, R = 0.0115, rad = mid ? 4 : 5;
   const parts = [];
   for (const sx of [-1, 1]) {
     const x = sx * 0.225;
-    parts.push(tube([V(x, 0, 0.215), V(x, 0.635, 0.2), V(x * 1.02, 0.665, 0.05), V(x * 1.03, 0.665, -0.13), V(x, 0.835, -0.255)], R, { radial: rad, bend: 0.06 }));
+    parts.push(tube([V(x, 0, 0.215), V(x, 0.635, 0.2), V(x * 1.02, 0.665, 0.05), V(x * 1.03, 0.665, -0.13), V(x, 0.835, -0.255)], R, { radial: rad, bend: mid ? 0 : 0.06 }));
     parts.push(tube([V(x * 1.04, 0, -0.31), V(x, SEAT_H - 0.02, -0.19)], R, { radial: rad, bend: 0 }));
   }
   // seat frame + slats
-  parts.push(tube([V(-0.225, SEAT_H - 0.02, 0.2), V(0.225, SEAT_H - 0.02, 0.2), V(0.225, SEAT_H - 0.02, -0.195), V(-0.225, SEAT_H - 0.02, -0.195)], R * 0.85, { radial: rad, closed: true, bend: 0.03 }));
-  const nS = lod ? 3 : 7;
+  if (!mid) parts.push(tube([V(-0.225, SEAT_H - 0.02, 0.2), V(0.225, SEAT_H - 0.02, 0.2), V(0.225, SEAT_H - 0.02, -0.195), V(-0.225, SEAT_H - 0.02, -0.195)], R * 0.85, { radial: rad, closed: true, bend: 0.03 }));
+  const nS = mid ? 4 : 7;
   for (let i = 0; i < nS; i++) {
     const z = THREE.MathUtils.lerp(0.175, -0.17, i / (nS - 1));
-    parts.push(bar([V(-0.225, SEAT_H - 0.004, z), V(0.225, SEAT_H - 0.004, z)], 0.006, lod ? 0.1 : 0.042, { r: 0.002, up: [0, 1, 0], bend: 0 }));
+    parts.push(bar([V(-0.225, SEAT_H - 0.004, z), V(0.225, SEAT_H - 0.004, z)], 0.006, mid ? 0.075 : 0.042, { r: 0, up: [0, 1, 0], bend: 0 }));
   }
   // curved back slats + top rail
-  const backRow = (y, zc) => { const pts = []; for (let i = 0; i <= 6; i++) { const x = THREE.MathUtils.lerp(-0.228, 0.228, i / 6); pts.push(V(x, y, zc - 0.07 * (1 - (x / 0.228) ** 2))); } return pts; };
+  const nRow = mid ? 3 : 6;
+  const backRow = (y, zc) => { const pts = []; for (let i = 0; i <= nRow; i++) { const x = THREE.MathUtils.lerp(-0.228, 0.228, i / nRow); pts.push(V(x, y, zc - 0.07 * (1 - (x / 0.228) ** 2))); } return pts; };
   parts.push(tube(backRow(0.835, -0.255), R, { radial: rad, bend: 0 }));
-  const nB = lod ? 1 : 3;
+  const nB = mid ? 2 : 3;
   for (let i = 0; i < nB; i++) {
-    const y = lod ? 0.7 : 0.6 + i * 0.075, zc = -0.215 - (y - 0.6) * 0.33;
-    parts.push(bar(backRow(y, zc), 0.007, lod ? 0.2 : 0.05, { r: 0.002, up: [0, 0.35, 1], bend: 0 }));
+    const y = 0.6 + i * (mid ? 0.11 : 0.075), zc = -0.215 - (y - 0.6) * 0.33;
+    parts.push(bar(backRow(y, zc), 0.007, mid ? 0.07 : 0.05, { r: 0, up: [0, 0.35, 1], bend: 0 }));
   }
   return { frame: merge(parts) };
 }
 
 /** Woven wicker tub armchair. */
-function wickerChair(lod) {
-  if (lod) return farChair('wicker');
+function wickerChair(detail) {
+  if (detail >= 2) return farChair('wicker');
+  const mid = detail === 1;
   const parts = [];
   // horseshoe wall whose height rises from the arms to the back
   const ang = (t) => THREE.MathUtils.lerp(-2.25, 2.25, t);
-  parts.push(profileWall(18, (t) => {
+  parts.push(profileWall(mid ? 10 : 18, (t) => {
     const a = ang(t);
     return [Math.sin(a) * 0.255, -0.03 - Math.cos(a) * 0.235, Math.sin(a), -Math.cos(a) * (0.235 / 0.255)];
   }, (t) => {
     const H = 0.66 + 0.15 * Math.pow(Math.cos((ang(t) / 2.25) * Math.PI / 2), 1.6);
-    return [[0.026, 0.36], [0.026, H - 0.03], [0.018, H - 0.006], [0, H + 0.004], [-0.018, H - 0.006], [-0.026, H - 0.03], [-0.026, SEAT_H + 0.03]];
+    return mid ? [[0.026, 0.36], [0.026, H - 0.015], [0, H + 0.004], [-0.026, H - 0.015], [-0.026, SEAT_H + 0.03]]
+      : [[0.026, 0.36], [0.026, H - 0.03], [0.018, H - 0.006], [0, H + 0.004], [-0.018, H - 0.006], [-0.026, H - 0.03], [-0.026, SEAT_H + 0.03]];
   }));
-  parts.push(xf(rbox(0.46, 0.07, 0.42, 0.025, 1), [0, SEAT_H - 0.035, 0.01]));
+  parts.push(xf(rbox(0.46, 0.07, 0.42, mid ? 0 : 0.025, 1), [0, SEAT_H - 0.035, 0.01]));
   // legs wrapped in wicker
   for (const [x, z] of [[-0.2, 0.17], [0.2, 0.17], [-0.19, -0.2], [0.19, -0.2]]) {
-    parts.push(tube([V(x * 1.08, 0, z * 1.1), V(x, 0.4, z)], 0.017, { radial: 6, bend: 0 }));
+    parts.push(tube([V(x * 1.08, 0, z * 1.1), V(x, 0.4, z)], 0.017, { radial: mid ? 4 : 6, bend: 0 }));
   }
   return { body: merge(parts) };
 }
@@ -190,13 +197,13 @@ function wickerChair(lod) {
 function tableTop(shape, lod) {
   if (shape === 'round') {
     const r = 0.3;
-    return merge([lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 8 : 20)]);
+    return merge([lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 10 : 20)]);
   }
-  return merge([xf(rbox(0.62, 0.028, 0.62, lod ? 0.002 : 0.006, lod ? 1 : 2), [0, 0.736, 0])]);
+  return merge([xf(rbox(0.62, 0.028, 0.62, lod ? 0 : 0.006, 1), [0, 0.736, 0])]);
 }
 
 function tableBase(type, lod) {
-  const seg = lod ? 6 : 12;
+  const seg = lod ? 7 : 12;
   if (type === 'iron') { // cast-iron pedestal with a domed round foot
     return merge([lathe([[0.215, 0], [0.215, 0.012], [0.19, 0.024], [0.11, 0.042], [0.05, 0.075], [0.034, 0.12], [0.046, 0.13], [0.046, 0.15], [0.03, 0.165],
       [0.026, 0.6], [0.04, 0.615], [0.04, 0.645], [0.03, 0.66], [0.032, 0.7], [0.11, 0.705], [0.11, 0.72], [0, 0.722]], seg)]);
@@ -217,9 +224,9 @@ const UMB_EDGE_H = 2.38;
 
 /** Square market umbrella canopy (8 ribs, sag between ribs, drooping edges, valance,
  *  wind vent), with an 'aFlex' attribute for flutter and seam darkening in vertex colours. */
-function canopyGeo(size, lod) {
+function canopyGeo(size, detail) {
   const a = size / 2, rise = 0.27 * a, apex = UMB_EDGE_H + rise;
-  const nr = lod ? 2 : 8, nt = lod ? 2 : 6, val = 0.2;
+  const nr = [8, 4, 2][detail], nt = [6, 3, 2][detail], val = 0.2;
   const pos = [], uv = [], col = [], flex = [], idx = [];
   const tips = [];
   for (let k = 0; k < 8; k++) {
@@ -254,7 +261,7 @@ function canopyGeo(size, lod) {
     }
     // valance: hangs from the edge, slight outward flare, darker piping at the hem
     const vb = pos.length / 3;
-    const rows = lod ? [0, 1] : [0, 0.45, 0.88, 1];
+    const rows = detail ? [0, 0.88, 1] : [0, 0.45, 0.88, 1];
     for (const vv of rows) for (let j = 0; j <= nt; j++) {
       const t = j / nt, e = surf(k, 1, t);
       const A = tips[k], B = tips[(k + 1) % 8];
@@ -290,20 +297,21 @@ function canopyGeo(size, lod) {
   return { geo: merge([g]), apex, rise, tips, surf };
 }
 
-function umbrellaFrame(size, lod, canopy) {
+function umbrellaFrame(size, detail, canopy) {
   const { apex, surf } = canopy;
   const parts = [];
-  const seg = lod ? 6 : 10;
+  const seg = detail ? 6 : 10;
   // pole with top hub, runner, finial
   const run = apex - 0.78;
   parts.push(lathe([[0.024, 0.0], [0.024, run - 0.05], [0.036, run - 0.045], [0.04, run], [0.04, run + 0.06], [0.026, run + 0.07],
     [0.024, apex - 0.09], [0.05, apex - 0.08], [0.05, apex + 0.0], [0.024, apex + 0.01], [0.022, apex + 0.12], [0.03, apex + 0.15], [0.028, apex + 0.19], [0, apex + 0.2]], seg));
-  if (lod) return merge(parts);
+  if (detail >= 2) return merge(parts);
   // ribs under the fabric + stretchers from the runner
   for (let k = 0; k < 8; k++) {
-    const pts = [];
-    for (let i = 0; i <= 4; i++) { const p = surf(k, Math.max(0.02, i / 4), 0); pts.push(V(p[0], p[1] - 0.018, p[2])); }
-    parts.push(bar(pts, 0.016, 0.022, { r: 0.004, up: [0, 1, 0], bend: 0 }));
+    const pts = [], n = detail ? 2 : 4;
+    for (let i = 0; i <= n; i++) { const p = surf(k, Math.max(0.02, i / n), 0); pts.push(V(p[0], p[1] - 0.018, p[2])); }
+    parts.push(bar(pts, 0.016, 0.022, { r: 0, up: [0, 1, 0], bend: 0 }));
+    if (detail) continue;
     const m = surf(k, 0.46, 0);
     const ang = (k * Math.PI) / 4;
     parts.push(tube([V(Math.cos(ang) * 0.04, run + 0.03, Math.sin(ang) * 0.04), V(m[0], m[1] - 0.03, m[2])], 0.0075, { radial: 5, bend: 0 }));
@@ -313,7 +321,7 @@ function umbrellaFrame(size, lod, canopy) {
 
 function umbrellaBase(lod) {
   return merge([
-    xf(rbox(0.56, 0.11, 0.56, 0.012, lod ? 1 : 2), [0, 0.055, 0]),
+    xf(rbox(0.56, 0.11, 0.56, 0.012, 1), [0, 0.055, 0]),
     lathe([[0.05, 0.11], [0.05, 0.3], [0.04, 0.31], [0.033, 0.31], [0, 0.31]], lod ? 6 : 14),
   ]);
 }
@@ -341,17 +349,18 @@ function furledGeo(lod) {
 }
 
 // ------------------------------------------------------------------ tableware & menu boards
-function cupSet() {
+function cupSet(detail) {
+  const seg = detail ? 6 : 12;
   const cer = merge([
-    lathe([[0, 0], [0.05, 0], [0.068, 0.01], [0.066, 0.013], [0.048, 0.005], [0, 0.005]], 12),
-    lathe([[0, 0.006], [0.025, 0.006], [0.036, 0.02], [0.04, 0.06], [0.037, 0.062], [0.034, 0.025], [0, 0.02]], 12),
-    tube([V(0.038, 0.05, 0), V(0.058, 0.048, 0), V(0.058, 0.025, 0), V(0.037, 0.022, 0)], 0.004, { radial: 5, bend: 0.01 }),
+    lathe([[0, 0], [0.05, 0], [0.068, 0.01], [0.066, 0.013], [0.048, 0.005], [0, 0.005]], seg),
+    lathe(detail ? [[0, 0.006], [0.036, 0.008], [0.04, 0.06], [0, 0.06]] : [[0, 0.006], [0.025, 0.006], [0.036, 0.02], [0.04, 0.06], [0.037, 0.062], [0.034, 0.025], [0, 0.02]], seg),
+    detail ? null : tube([V(0.038, 0.05, 0), V(0.058, 0.048, 0), V(0.058, 0.025, 0), V(0.037, 0.022, 0)], 0.004, { radial: 5, bend: 0.01 }),
   ]);
-  const cof = merge([xf(new THREE.CircleGeometry(0.034, 14), [0, 0.054, 0], [-Math.PI / 2, 0, 0])]);
+  const cof = merge([xf(new THREE.CircleGeometry(0.034, seg), [0, detail ? 0.0605 : 0.054, 0], [-Math.PI / 2, 0, 0])]);
   return { cer, cof };
 }
-function waterGlass() {
-  return merge([lathe([[0, 0], [0.03, 0], [0.036, 0.105], [0.0335, 0.105], [0.028, 0.004], [0, 0.004]], 12)]);
+function waterGlass(detail) {
+  return merge([lathe([[0, 0], [0.03, 0], [0.036, 0.105], [0.0335, 0.105], [0.028, 0.004], [0, 0.004]], detail ? 6 : 12)]);
 }
 function napkinHolder() {
   return {
@@ -382,48 +391,50 @@ const PLASTIC_PAIRS = [[0, 1], [0, 0], [2, 2], [3, 3], [4, 4], [5, 1], [1, 1]];
 const UMB_COL = { cream: '#e6dcc4', white: '#efede6', navy: '#28324a', burgundy: '#6c2531', sand: '#cdb894' };
 const srgb = (h) => new THREE.Color().setStyle(h, THREE.SRGBColorSpace);
 
+// switch distances (m) between detail levels; chairs stay crisp to ~35 m at the 17° default lens
+const LOD_CHAIR = [35, 130], LOD_TABLE = [45], LOD_UMB = [55, 170];
+
 export function buildCafeProtos(M, F) {
   const P = { chair: {}, top: {}, base: {}, umb: {}, misc: {} };
-  for (const lod of [0, 1]) {
-    const cast = true;
-    const b = bistroChair(lod);
-    P.chair[`bistro${lod}`] = F.weave.map((w, i) => proto(`chairBistro${i}`, [{ geo: b.frame, mat: F.rattan, cast }, { geo: b.weave, mat: w, cast }]));
-    P.chair[`plastic${lod}`] = proto('chairPlastic', [{ geo: plasticChair(lod).shell, mat: F.plastic, tint: true, cast }]);
-    const mc = metalChair(lod).frame;
-    P.chair[`metal${lod}`] = proto('chairMetal', [{ geo: mc, mat: F.aluminium, cast }]);
-    P.chair[`metalPaint${lod}`] = proto('chairMetalPaint', [{ geo: mc, mat: F.paint, tint: true, cast }]);
-    P.chair[`wicker${lod}`] = proto('chairWicker', [{ geo: wickerChair(lod).body, mat: F.wicker, tint: true, cast }]);
-    for (const shape of ['round', 'square']) {
-      const g = tableTop(shape, lod);
-      P.top[`${shape}stone${lod}`] = proto('tableTopStone', [{ geo: g, mat: F.tabletop, tint: true, cast }]);
-      P.top[`${shape}alu${lod}`] = proto('tableTopAlu', [{ geo: g, mat: F.aluminium, cast }]);
-      P.top[`${shape}wood${lod}`] = proto('tableTopWood', [{ geo: g, mat: M.get('wood.bench'), cast }]);
-    }
-    P.base[`iron${lod}`] = proto('tableBaseIron', [{ geo: tableBase('iron', lod), mat: M.get('metal.iron'), cast }]);
-    P.base[`cross${lod}`] = proto('tableBaseCross', [{ geo: tableBase('cross', lod), mat: F.aluminium, cast }]);
-    P.base[`crossDark${lod}`] = proto('tableBaseCrossDark', [{ geo: tableBase('cross', lod), mat: M.get('metal.iron'), cast }]);
-    // umbrellas: canopy geometry per size bucket (0.1 m steps)
-    for (let sz = 28; sz <= 36; sz++) {
-      const cg = canopyGeo(sz / 10, lod);
-      const fr = umbrellaFrame(sz / 10, lod, cg);
-      P.umb[`${sz}_${lod}`] = {
-        canopy: proto('umbrellaCanopy', [{ geo: cg.geo, mat: F.canopy, tint: true, cast: true }]),
-        alu: proto('umbrellaFrameAlu', [{ geo: fr, mat: F.aluminium, cast }]),
-        wood: proto('umbrellaFrameWood', [{ geo: fr, mat: M.get('wood.bench'), cast }]),
-      };
-    }
-    P.umb[`base${lod}`] = proto('umbrellaBase', [{ geo: umbrellaBase(lod), mat: M.get('concrete'), cast }]);
-    P.umb[`furled${lod}`] = proto('umbrellaFurled', [{ geo: furledGeo(lod), mat: F.canopy, tint: true, cast: true }]);
-    P.umb[`furledPole${lod}`] = proto('umbrellaFurledPole', [{ geo: merge([lathe([[0.024, 0], [0.024, 2.9], [0.03, 2.93], [0.028, 2.98], [0, 2.99]], lod ? 6 : 12)]), mat: F.aluminium, cast }]);
+  const levels = (fn, key) => [0, 1, 2].map((d) => fn(d)[key]);
+  const bistro = [0, 1, 2].map((d) => bistroChair(d));
+  P.chair.bistro = F.weave.map((w, i) => proto(`chairBistro${i}`, [{ geo: bistro.map((b) => b.frame), mat: F.rattan }, { geo: bistro.map((b) => b.weave), mat: w }], LOD_CHAIR));
+  P.chair.plastic = proto('chairPlastic', [{ geo: levels(plasticChair, 'shell'), mat: F.plastic, tint: true }], LOD_CHAIR);
+  const mc = levels(metalChair, 'frame');
+  P.chair.metal = proto('chairMetal', [{ geo: mc, mat: F.aluminium }], LOD_CHAIR);
+  P.chair.metalPaint = proto('chairMetalPaint', [{ geo: mc, mat: F.paint, tint: true }], LOD_CHAIR);
+  P.chair.wicker = proto('chairWicker', [{ geo: levels(wickerChair, 'body'), mat: F.wicker, tint: true }], LOD_CHAIR);
+  for (const shape of ['round', 'square']) {
+    const g = [tableTop(shape, 0), tableTop(shape, 1)];
+    P.top[`${shape}stone`] = proto('tableTopStone', [{ geo: g, mat: F.tabletop, tint: true }], LOD_TABLE);
+    P.top[`${shape}alu`] = proto('tableTopAlu', [{ geo: g, mat: F.aluminium }], LOD_TABLE);
+    P.top[`${shape}wood`] = proto('tableTopWood', [{ geo: g, mat: M.get('wood.bench') }], LOD_TABLE);
   }
+  const iron = [tableBase('iron', 0), tableBase('iron', 1)], cross = [tableBase('cross', 0), tableBase('cross', 1)];
+  P.base.iron = proto('tableBaseIron', [{ geo: iron, mat: M.get('metal.iron') }], LOD_TABLE);
+  P.base.cross = proto('tableBaseCross', [{ geo: cross, mat: F.aluminium }], LOD_TABLE);
+  P.base.crossDark = proto('tableBaseCrossDark', [{ geo: cross, mat: M.get('metal.iron') }], LOD_TABLE);
+  // umbrellas: canopy geometry per size bucket (0.1 m steps), three detail levels each
+  for (let sz = 28; sz <= 36; sz++) {
+    const cg = [0, 1, 2].map((d) => canopyGeo(sz / 10, d));
+    const fr = cg.map((c, d) => umbrellaFrame(sz / 10, d, c));
+    P.umb[sz] = {
+      canopy: proto('umbrellaCanopy', [{ geo: cg.map((c) => c.geo), mat: F.canopy, tint: true }], LOD_UMB),
+      alu: proto('umbrellaFrameAlu', [{ geo: fr, mat: F.aluminium }], LOD_UMB),
+      wood: proto('umbrellaFrameWood', [{ geo: fr, mat: M.get('wood.bench') }], LOD_UMB),
+    };
+  }
+  P.umb.base = proto('umbrellaBase', [{ geo: [umbrellaBase(0), umbrellaBase(1)], mat: M.get('concrete') }], LOD_TABLE);
+  P.umb.furled = proto('umbrellaFurled', [{ geo: [furledGeo(0), furledGeo(1)], mat: F.canopy, tint: true }], LOD_TABLE);
+  P.umb.furledPole = proto('umbrellaFurledPole', [{ geo: merge([lathe([[0.024, 0], [0.024, 2.9], [0.03, 2.93], [0.028, 2.98], [0, 2.99]], 8)]), mat: F.aluminium }]);
   const pole = M.get('metal.pole');
   const unit = (w, h) => merge([bar([V(0, 0, 0), V(0, 0, 1)], w, h, { up: [0, 1, 0], r: 0.006, bend: 0 })]);
   P.misc.post = proto('canopyPost', [{ geo: unit(0.07, 0.07), mat: pole }]);
   P.misc.rafter = proto('canopyRafter', [{ geo: unit(0.1, 0.05), mat: pole }]);
   P.misc.beam = proto('canopyBeam', [{ geo: unit(0.1, 0.06), mat: pole }]);
-  const cs = cupSet();
-  P.misc.cup = proto('cup', [{ geo: cs.cer, mat: F.ceramic, cast: false }, { geo: cs.cof, mat: F.coffee, cast: false }]);
-  P.misc.glass = proto('glass', [{ geo: waterGlass(), mat: F.drinkGlass, cast: false }]);
+  const cs = [cupSet(0), cupSet(1)];
+  P.misc.cup = proto('cup', [{ geo: cs.map((c) => c.cer), mat: F.ceramic, cast: false }, { geo: cs.map((c) => c.cof), mat: F.coffee, cast: false }], [25]);
+  P.misc.glass = proto('glass', [{ geo: [waterGlass(0), waterGlass(1)], mat: F.drinkGlass, cast: false }], [25]);
   const nh = napkinHolder();
   P.misc.napkin = proto('napkin', [{ geo: nh.steel, mat: M.get('metal.steel'), cast: true }, { geo: nh.paper, mat: F.ceramic, cast: false }]);
   for (const v of [0, 1]) {
@@ -505,29 +516,29 @@ export function placeCafes(chunk, app, inst, P, extra) {
         const yaw = Math.atan2(t.d - ch.d, t.s - ch.s) + rng.range(-0.12, 0.12);
         placeMatrix(route, ch.s, ch.d, 0, yaw, _m);
         switch (cafe.chairStyle) {
-          case 'bistro': inst.add(P.chair[`bistro${lod}`][st.weave], _m); break;
-          case 'plastic': inst.add(P.chair[`plastic${lod}`], _m, _c.copy(st.plastic[rng.chance(0.5) ? 0 : 1]).multiplyScalar(rng.range(0.94, 1.03))); break;
-          case 'metal': if (st.paint) inst.add(P.chair[`metalPaint${lod}`], _m, st.paint); else inst.add(P.chair[`metal${lod}`], _m); break;
-          default: inst.add(P.chair[`wicker${lod}`], _m, _c.copy(st.wicker).multiplyScalar(rng.range(0.9, 1.05)));
+          case 'bistro': inst.add(P.chair.bistro[st.weave], _m); break;
+          case 'plastic': inst.add(P.chair.plastic, _m, _c.copy(st.plastic[rng.chance(0.5) ? 0 : 1]).multiplyScalar(rng.range(0.94, 1.03))); break;
+          case 'metal': if (st.paint) inst.add(P.chair.metalPaint, _m, st.paint); else inst.add(P.chair.metal, _m); break;
+          default: inst.add(P.chair.wicker, _m, _c.copy(st.wicker).multiplyScalar(rng.range(0.9, 1.05)));
         }
       }
       // table
       const tyaw = t.shape === 'square' ? rng.range(-0.08, 0.08) : rng.range(0, 6.28);
       placeMatrix(route, t.s, t.d, 0, tyaw, _m);
-      inst.add(P.top[`${t.shape}${st.top}${lod}`], _m, _c.copy(st.topTint).multiplyScalar(rng.range(0.95, 1.04)));
-      inst.add(P.base[`${st.base}${lod}`], _m);
+      inst.add(P.top[`${t.shape}${st.top}`], _m, _c.copy(st.topTint).multiplyScalar(rng.range(0.95, 1.04)));
+      inst.add(P.base[st.base], _m);
       if (lod === 0) placeTableware(route, t, rng, inst, P);
     }
     // umbrellas
     for (const u of st.umbrellas) {
       const sz = THREE.MathUtils.clamp(Math.round(u.size * 10), 28, 36);
       placeMatrix(route, u.s, u.d, 0, u.yaw, _m);
-      inst.add(P.umb[`base${lod}`], _m);
+      inst.add(P.umb.base, _m);
       if (u.furled) {
-        inst.add(P.umb[`furledPole${lod}`], _m);
-        inst.add(P.umb[`furled${lod}`], _m, u.color);
+        inst.add(P.umb.furledPole, _m);
+        inst.add(P.umb.furled, _m, u.color);
       } else {
-        const U = P.umb[`${sz}_${lod}`];
+        const U = P.umb[sz];
         inst.add(U.canopy, _m, u.color);
         inst.add(st.frameWood ? U.wood : U.alu, _m);
       }

@@ -28,8 +28,10 @@ export function hash1(x, seed = 0) { return ihash(x | 0, 0x3c6ef372, seed); }
 const CREAM = [0.86, 0.80, 0.68];
 export function stoneTint(plan, rng) {
   const t = plan.style.tint;
-  const bright = rng.range(0.93, 1.04);
-  return [0, 1, 2].map((i) => Math.pow(t[i] / CREAM[i], 0.85) * bright);
+  // a few buildings are noticeably darker (older, never cleaned), a few freshly cleaned
+  const bright = rng.weighted([[rng.range(0.94, 1.04), 0.7], [rng.range(0.84, 0.93), 0.2], [rng.range(1.04, 1.1), 0.1]]);
+  const warm = rng.range(-0.03, 0.03);
+  return [0, 1, 2].map((i) => Math.pow(t[i] / CREAM[i], 1.1) * bright * (1 + warm * (1 - i)));
 }
 
 /**
@@ -106,18 +108,21 @@ export class FaceShade {
     // large soft patches (stone batches, cleaning, sun bleaching)
     const p = noise2(u * 0.35, v * 0.28, this.seed) - 0.5 + 0.35 * (noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5);
     let r = t[0] * (1 + 0.10 * p), g = t[1] * (1 + 0.10 * p), b = t[2] * (1 + 0.11 * p);
-    // dirt dripping below the cornice
+    // dirt washed down from the cornice: irregular vertical streaks fading downwards
     const dc = this.corniceY - v;
-    if (dc > 0 && dc < 6) streak += 0.07 * Math.exp(-dc / 2.2) * (0.4 + noise2(u * 1.7, 0.5, this.seed + 3));
+    if (dc > 0 && dc < 6) {
+      const col = noise2(u * 2.3, dc * 0.25, this.seed + 3);
+      streak += 0.11 * Math.exp(-dc / (1.2 + 1.6 * col)) * (0.25 + col * col * 1.4);
+    }
     // splash zone near the paving: darker, greyer
     const hg = v - this.groundAt(u);
-    const gz = hg < 3 ? Math.exp(-Math.max(0, hg) / 0.8) : 0;
+    const gz = hg < 3 ? Math.exp(-Math.max(0, hg) / 0.7) : 0;
     a *= 1 - 0.20 * Math.exp(-Math.max(0, hg) / 0.3);
     streak = streak * this.dirt;
-    const grey = Math.min(0.6, 0.45 * gz * this.dirt + streak * 1.4);
+    const grey = Math.min(0.7, 0.55 * gz * this.dirt + streak * 1.4);
     const lum = (r + g + b) / 3;
-    r += (lum * 0.92 - r) * grey; g += (lum * 0.92 - g) * grey; b += (lum * 0.95 - b) * grey;
-    const dk = a * (1 - streak) * (1 - 0.12 * gz * this.dirt);
+    r += (lum * 0.9 - r) * grey; g += (lum * 0.9 - g) * grey; b += (lum * 0.93 - b) * grey;
+    const dk = a * (1 - streak) * (1 - 0.2 * gz * this.dirt);
     out[0] = r * dk; out[1] = g * dk; out[2] = b * dk;
   }
 }

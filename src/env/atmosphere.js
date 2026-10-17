@@ -17,7 +17,7 @@ const RG = 6360.0, RT = 6460.0;
 const RAYLEIGH = [5.802e-3, 13.558e-3, 33.1e-3];            // per km
 const RAYLEIGH_H = 8.0;
 const MIE_SCA = 3.996e-3, MIE_EXT = 4.44e-3, MIE_H = 1.2;
-const OZONE = [0.65e-3, 1.881e-3, 0.085e-3];
+const OZONE = [1.45e-3, 1.881e-3, 0.085e-3]; // red raised: sRGB red sits near the Chappuis peak (~600 nm)
 
 const f = (x) => x.toFixed(7);
 const v3 = (a) => `vec3(${f(a[0])}, ${f(a[1])}, ${f(a[2])})`;

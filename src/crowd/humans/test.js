@@ -30,7 +30,10 @@ export class HumansTest {
       if (mode === 'grid') { f.d = -((this.n - 1) * 0.5) * 0.85 + i * 0.85; f.s = this.s0; }
       else if (mode === 'sit') { f.d = -3 + (i % 6) * 1.2; f.s = this.s0 + 2 + Math.floor(i / 6) * 1.5; }
       else if (mode === 'cross') { f.d = -9 + ((i * 3.7) % 18); f.s = this.s0 - 6 + ((i * 2.3) % 14); f.dir = i % 2 ? 1 : -1; }
-      else { f.d = -7 + ((i * 2.9) % 14); f.s = this.s0 + ((i * 5.3) % 30) - 10; f.dir = i % 3 === 0 ? 1 : -1; }
+      else if (mode === 'crowd') {
+        // spread like the street crowd: sidewalks + track zone, 10..300 m ahead
+        f.d = -10 + ((i * 7.31) % 20); f.s = this.s0 + 10 + ((i * 37.7) % 290); f.dir = i % 2 ? 1 : -1; f.mode = 'walk'; f.span = 300;
+      } else { f.d = -7 + ((i * 2.9) % 14); f.s = this.s0 + ((i * 5.3) % 30) - 10; f.dir = i % 3 === 0 ? 1 : -1; }
       f.v = this.v ?? [0.7, 1.0, 1.25, 1.4, 1.6, 1.9][i % 6];
       this.figs.push(f);
     }
@@ -56,9 +59,9 @@ export class HumansTest {
         heading = route.yawAt(s) + (f.dir > 0 ? -Math.PI / 2 : Math.PI / 2);
       } else {
         speed = f.v; pose = 0;
-        const span = 40;
+        const span = f.span || 40;
         const u = ((f.v * this.t + (f.s - this.s0 + 10)) % span + span) % span;
-        s = f.dir > 0 ? this.s0 - 10 + u : this.s0 + 30 - u;
+        s = f.dir > 0 ? this.s0 - 10 + u : this.s0 + span - 10 - u;
         heading = route.yawAt(s) + (f.dir > 0 ? 0 : Math.PI);
       }
       if (speed > 0) f.phase = (f.phase + (speed * dt) / h.strideLength(f.app, speed)) % 1;

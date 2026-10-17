@@ -2,7 +2,7 @@ import { hash2, noise1 } from '../../core/rng.js';
 import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { Agent, KIND, ST, TASK, LANE } from './agent.js';
-import { laneTarget, setLane, board, startSideOut } from './behaviour.js';
+import { laneTarget, setLane, board } from './behaviour.js';
 import {
   MAX_AGENTS, RANGE_BEHIND, RANGE_AHEAD, FAR_SPAWN_BAND, WALKER_DENSITY, MAX_SEATED, MAX_PASSENGERS, STANDER_TARGET,
   WALK_MEAN, WALK_SD, WALK_MIN, WALK_MAX, RIDE_D, BAND, AGENT_R, TRAM_LEN,
@@ -15,6 +15,7 @@ import {
 // fills platforms and hands boarding / alighting passengers to the tram.
 
 const BIN = 10;
+const BENCH_RESERVE = 12;   // seated slots kept for people on benches
 const PI = Math.PI;
 
 export class Population {
@@ -25,6 +26,8 @@ export class Population {
     for (let i = MAX_AGENTS - 1; i >= 0; i--) this.free.push(i);
     this.serial = 0;
     this.cafes = new Map();      // cafe id -> feature
+    this.benches = new Map();    // furniture id -> feature
+    this.benchList = c.layout.furniture.filter((f) => f.type === 'bench');
     this.stations = new Map();   // station id -> {right, left, served}
     this.featureT = 0;
     this.nBins = Math.ceil((RANGE_AHEAD + RANGE_BEHIND) / BIN);
@@ -35,7 +38,7 @@ export class Population {
   }
 
   // ---------------------------------------------------------------- slots
-  alloc(kind) {
+  alloc(kind, src = 'walker') {
     if (!this.free.length) return null;
     const a = this.agents[this.free.pop()];
     const c = this.c, r = c.rng;
@@ -50,6 +53,7 @@ export class Population {
     a.v0 = Math.min(WALK_MAX, Math.max(WALK_MIN, r.normal(WALK_MEAN, WALK_SD)));
     a.dir = 1; a.side = 1; a.lane = LANE.SIDE; a.laneF = 0.5; a.laneD = 0;
     a.dreamy = r.chance(0.08); a.bellT = 0; a.tramLookS = 0;
+    a.fresh = true; a.src = src; a.strideV = -1; a.afs = 0; a.afd = 0; a.laneTT = 0;
     this.stats.spawned++;
     return a;
   }
@@ -93,6 +97,7 @@ export class Population {
   reset() {
     for (const a of this.agents) if (a.active) this.kill(a);
     this.cafes.clear();
+    this.benches.clear();
     this.stations.clear();
   }
 
@@ -111,7 +116,7 @@ export class Population {
     m *= 0.75 + 0.5 * (0.5 + 0.5 * noise1(c.route.wrap(sU) / 70, side > 0 ? 401 : 403));
     // spend the budget where the cab view sees individuals: thin behind and beside the cab
     const rel = sU - c.camU;
-    m *= rel < 0 ? 0.55 : rel < 35 ? 0.6 + 0.6 * (rel / 35) : rel < 230 ? 1.2 : rel < 360 ? 1.0 : 0.85;
+    m *= rel < 0 ? 0.35 : rel < 30 ? 0.6 + 0.75 * (rel / 30) : rel < 200 ? 1.35 : rel < 300 ? 1.0 : 0.72;
     return WALKER_DENSITY * m;
   }
 
@@ -134,9 +139,10 @@ export class Population {
   /** Places a fresh walker (and maybe its group). Returns the leader or null. */
   spawnWalker(sU, side, dir, opts = {}) {
     const c = this.c, r = c.rng;
-    const a = this.alloc(opts.kind ?? KIND.WALKER);
+    const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src);
     if (!a) return null;
     a.s = sU; a.side = side; a.dir = dir;
+    a.d = side * (c.map.bandInAt(sU, side) + 1); // provisional (lane choice looks at where the agent is)
     setLane(c, a, r);
     if (opts.lane !== undefined) { a.lane = opts.lane; if (a.lane === LANE.SIDE) a.laneF = r.range(0.04, 0.96); }
     a.d = opts.d ?? laneTarget(c, a);
@@ -149,7 +155,7 @@ export class Population {
       const n = r.weighted([[1, 0.62], [2, 0.28], [3, 0.1]]);
       a.v0 = Math.max(WALK_MIN, a.v0 * 0.9);
       for (let k = 0; k < n && this.free.length > 4; k++) {
-        const f = this.alloc(a.kind);
+        const f = this.alloc(a.kind, opts.src);
         const slots = [[0.08, r.chance(0.5) ? 0.64 : -0.64], [0.0, 0], [-0.85, 0.3]];
         let [sf, sr] = slots[k];
         if (k === 1) sr = -slots[0][1];
@@ -216,7 +222,7 @@ export class Population {
     let leader = null, placed = 0;
     const dur = r.range(20, 150);
     for (let k = 0; k < n; k++) {
-      const a = this.alloc(KIND.STANDER);
+      const a = this.alloc(KIND.STANDER, 'chat');
       if (!a) break;
       const ang = a0 + (k / n) * PI * 2 + r.range(-0.25, 0.25);
       a.s = sU + Math.cos(ang) * rad; a.d = cd + Math.sin(ang) * rad;
@@ -324,7 +330,7 @@ export class Population {
       const x = r.range(-1, 1) * (m.width / 2 - 1.4), depth = r.range(5, 10);
       const sp = ms + x, dp = side * (line + depth);
       if (!c.vis.hidden(sp, dp, side, line, ms - m.width / 2, ms + m.width / 2)) return null;
-      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3 });
+      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side' });
       if (!a) return null;
       for (const f of a.followers) { f.d = dp + r.range(-0.4, 0.4); f.s = sp + (f.s - sp); }
       a.mouth = m; a.task = TASK.EMERGE; a.state = ST.GOTO;
@@ -346,7 +352,7 @@ export class Population {
     if (map.cafeAtS(sO, side)) return null;
     const dIn = side * (o.d + Math.min(o.recess - 0.12, 0.3));
     if (!c.vis.hidden(sO, dIn, side, o.d, sO - o.half, sO + o.half)) return null;
-    const a = this.spawnWalker(sO, side, r.chance(0.5) ? 1 : -1, { d: dIn, lane: LANE.SIDE, force: true, group: 0.12 });
+    const a = this.spawnWalker(sO, side, r.chance(0.5) ? 1 : -1, { d: dIn, lane: LANE.SIDE, force: true, group: 0.12, src: 'door' });
     if (!a) return null;
     for (const f of a.followers) { f.s = sO + r.range(-0.3, 0.3); f.d = dIn; f.inDoor = true; f.doorS0 = sO - o.half + 0.25; f.doorS1 = sO + o.half - 0.25; }
     a.inDoor = true; a.doorS0 = sO - o.half + 0.25; a.doorS1 = sO + o.half - 0.25;
@@ -367,6 +373,13 @@ export class Population {
       if (inRange && !f) this._populateCafe(cafe);
       else if (!inRange && f && (rel < lo - 20 || rel > hi + 30)) this.cafes.delete(cafe.id);
     }
+    for (const b of this.benchList) {
+      const rel = c.unwrap(b.s) - c.camU;
+      const inRange = rel > lo && rel < hi;
+      const f = this.benches.get(b.id);
+      if (inRange && !f) this._populateBench(b);
+      else if (!inRange && f && (rel < lo - 20 || rel > hi + 30)) this.benches.delete(b.id);
+    }
     for (const st of L.stations) {
       const rel = c.unwrap(st.s) - c.camU;
       const inRange = rel > lo - 30 && rel < hi;
@@ -386,20 +399,40 @@ export class Population {
       const used = r.chance(busy);
       t.chairs.forEach((ch, ci) => {
         const key = ti * 8 + ci;
-        const seat = { type: 'seat', cafe, feat, key, s: c.unwrap(ch.s), d: ch.d, ts: c.unwrap(t.s), td: t.d };
+        const s = c.unwrap(ch.s), ts = c.unwrap(t.s);
+        const seat = { type: 'seat', cafe, feat, key, s, d: ch.d, side: cafe.side, faceA: Math.atan2(t.d - ch.d, ts - s), exitD: cafe.side * (cafe._crowdInner - 0.5) };
         feat.seats.push(seat);
-        if (!used || !r.chance(0.72) || c.counts.seated >= MAX_SEATED) return;
+        if (!used || !r.chance(0.72) || c.counts.seated >= MAX_SEATED - BENCH_RESERVE) return;
         this._seat(seat, r);
       });
     });
   }
 
+  /** People resting on the street benches (facing the sidewalk, away from the tracks). */
+  _populateBench(b) {
+    const c = this.c;
+    const r = c.featureRng('bench', b.id);
+    const side = Math.sign(b.d) || 1;
+    const feat = { type: 'bench', occ: new Set(), seats: [] };
+    this.benches.set(b.id, feat);
+    const n = r.weighted([[0, 0.5], [1, 0.32], [2, 0.18]]);
+    const slots = [-0.55, 0, 0.55];
+    const first = r.int(0, 2);
+    for (let k = 0; k < 3; k++) {
+      const x = slots[k];
+      const seat = { type: 'seat', cafe: null, feat, key: k, s: c.unwrap(b.s) + x, d: b.d - side * 0.04, side, faceA: side > 0 ? PI / 2 : -PI / 2, exitD: b.d + side * 0.95 };
+      feat.seats.push(seat);
+    }
+    const order = n === 2 ? [0, 2] : [first];
+    for (let k = 0; k < n && c.counts.seated < MAX_SEATED; k++) this._seat(feat.seats[order[k]], r);
+  }
+
   _seat(seat, r) {
     const c = this.c;
-    const a = this.alloc(KIND.SEATED);
+    const a = this.alloc(KIND.SEATED, 'seat');
     if (!a) return null;
-    a.state = ST.SEATED; a.s = seat.s; a.d = seat.d; a.side = seat.cafe.side; a.noRect = true;
-    a.faceA = Math.atan2(seat.td - seat.d, seat.ts - seat.s) + r.range(-0.2, 0.2);
+    a.state = ST.SEATED; a.s = seat.s; a.d = seat.d; a.side = seat.side; a.noRect = true;
+    a.faceA = seat.faceA + r.range(-0.15, 0.15);
     a.alpha = a.faceA;
     a.timer = r.range(30, 900);
     a.feature = seat; seat.feat.occ.add(seat.key);
@@ -436,7 +469,7 @@ export class Population {
       for (let k = 0; k < n && c.counts.passenger < MAX_PASSENGERS; k++) {
         const spot = this.platformSpot(feat, r);
         if (!spot) continue;
-        const a = this.alloc(KIND.PASSENGER);
+        const a = this.alloc(KIND.PASSENGER, 'platform');
         if (!a) break;
         a.state = ST.PLATFORM; a.s = spot.s; a.d = spot.d; a.side = pl.side; a.noRect = true;
         a.faceA = this.passengerFacing(pl.side, r); a.alpha = a.faceA;
@@ -509,7 +542,7 @@ export class Population {
       const n = r.int(2, 7);
       for (let k = 0; k < n; k++) {
         const ds = r.pick(doors);
-        const a = this.alloc(KIND.PASSENGER);
+        const a = this.alloc(KIND.PASSENGER, 'alight');
         if (!a) break;
         a.s = ds + r.range(-0.4, 0.4); a.d = TRACK_ZONE_HALF + 0.45; a.side = 1; a.noRect = true;
         if (!c.vis.hidden(a.s, a.d)) { this.kill(a); this.stats.spawned--; continue; }
@@ -523,4 +556,3 @@ export class Population {
   }
 }
 
-export { startSideOut };

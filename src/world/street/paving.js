@@ -135,7 +135,9 @@ export function buildPaving(ctx, chunk, rows, out) {
   }
 
   // buffers
-  const bufs = [out.get(mats.corr, true), null, out.get(mats.band, true), out.get(mats.corr, true), out.get(mats.walk, true)];
+  const nCorr = nFixed + 4;
+  const bufs = [out.get(mats.corr, true, nr * nCorr + 64), null, out.get(mats.band, true, nr * 8 + 32), null, out.get(mats.walk, true, nr * (nL + nR + 4) + 64)];
+  bufs[K_GUTTER] = bufs[K_CORR];
   bufs[K_RAIL] = bufs[K_CORR];
   const vmap = [new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1), new Int32Array(nr * nc).fill(-1)];
   const bufIndex = [0, 0, 1, 0, 2];       // gutters: darker corridor setts

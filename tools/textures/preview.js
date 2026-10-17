@@ -220,9 +220,11 @@ async function main() {
   info.textContent = `init ${st.initMs?.toFixed(0)} ms · bake done after ${st.bakedAfterMs?.toFixed(0)} ms · textures ${st.textureMB} MB · ${materials.names().length} materials`;
   const labelEl = document.getElementById('labels');
   labelEl.innerHTML = labels.map((l) => `<div>${l.name}</div>`).join('');
-  let frames = 0, t0 = performance.now(), fps = 0;
+  let frames = 0, t0 = performance.now(), fps = 0, glErrors = 0;
+  const gl = renderer.getContext();
   function frame() {
     renderer.render(scene, camera);
+    if (gl.getError() !== gl.NO_ERROR) glErrors++;
     labels.forEach((l, i) => {
       const p = l.pos.clone().project(camera);
       const el = labelEl.children[i];
@@ -236,7 +238,7 @@ async function main() {
   }
   window.__app = {
     materials, renderer,
-    stats: () => ({ fps: +fps.toFixed(1), calls: renderer.info.render.calls, programs: renderer.info.programs?.length, textures: renderer.info.memory.textures, bake: materials.stats }),
+    stats: () => ({ glErrors, fps: +fps.toFixed(1), calls: renderer.info.render.calls, programs: renderer.info.programs?.length, textures: renderer.info.memory.textures, bake: materials.stats }),
   };
   frame();
 }

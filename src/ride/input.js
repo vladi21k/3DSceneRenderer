@@ -63,11 +63,11 @@ export const input = {
   /** True while a key mapped to `action` is physically held. */
   held(action) { return this.enabled && (this._held.get(action) || 0) > 0; },
 
-  /** Pointer-look delta in CSS pixels accumulated since the last call. */
-  consumeLook() {
-    const d = { dx: this._look.dx, dy: this._look.dy };
+  /** Pointer-look delta in CSS pixels accumulated since the last call (written into `out`). */
+  consumeLook(out = { dx: 0, dy: 0 }) {
+    out.dx = this._look.dx; out.dy = this._look.dy;
     this._look.dx = 0; this._look.dy = 0;
-    return d;
+    return out;
   },
 
   /** Wheel delta (pixels, + = away from the user / zoom out) since the last call. */

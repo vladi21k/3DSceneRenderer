@@ -1,6 +1,5 @@
 import { RNG } from '../../core/rng.js';
 import { facadePlan } from '../facadePlan.js';
-import { FACES } from './mesh.js';
 import { FaceShade, stoneTint, trimColor, noise2 } from './shade.js';
 import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
@@ -34,6 +33,8 @@ function ornament(plan, rng) {
     shopHead: rng.weighted([['flatArch', 0.45], ['lintel', 0.55]]),
     sillH: rng.range(0.1, 0.15), sillP: rng.range(0.06, 0.1),
     sillCorbels: rng.chance(0.35),
+    ears: era !== 'modern' && rng.chance(0.35),        // crossettes: surround corners stepping out at the head
+    apron: rng.chance(0.3),                            // raised panel under each sill
     doorSurround: rng.chance(0.7), doorHood: era !== 'modern' && rng.chance(0.55),
     plinthH: rng.range(0.35, 0.8), plinthP: rng.range(0.04, 0.08),
     rustH: rng.range(0.45, 0.6), rustC: rng.range(0.025, 0.04),
@@ -60,13 +61,20 @@ function ashlarUV(plan, meta, rng) {
   return [su, rng.range(0, 40), sv, -g * sv + shift];
 }
 
-const _c = [0, 0, 0];
+/** Generate the whole shell of `lot` into Builder B in one go (see lotSteps). */
+export function generateLot(B, lot, ends, q, metas) {
+  const it = lotSteps(B, lot, ends, q, metas);
+  while (!it.next().done);
+}
 
 /**
- * Generate the shell of `lot` into Builder B. ends[e] (e = 0 → u = 0 end, 1 → u = W end):
- * {corner, nb, dw, nbTop, nbDepth} in this lot's facade frame.
+ * Generate the shell of `lot` into Builder B, yielding between pieces of roughly
+ * 0.2–0.5 ms so the caller can spread one lot over several frames. ends[e]
+ * (e = 0 → u = 0 end, 1 → u = W end): {corner, nb, dw, nbTop, nbDepth} in this
+ * lot's facade frame. Builder state (frame, shading, UV transform) is re-established
+ * after every yield, so other work may not touch B in between.
  */
-export function generateLot(B, lot, ends, q, metas) {
+export function* lotSteps(B, lot, ends, q, metas) {
   const plan = facadePlan(lot);
   const f = lot.frame, W = plan.width, D = plan.depth;
   const rng = RNG.from(lot.seed, 'shell');
@@ -77,7 +85,7 @@ export function generateLot(B, lot, ends, q, metas) {
   B.begin();
   const sinks = {
     ashlar: B.sink('ashlar'), smooth: B.sink('smooth'), rough: B.sink('rough'), dark: B.sink('plaster'), paint: B.sink('plaster'),
-    tile: B.sink('tile'), metal: B.sink('metal'),
+    tile: B.sink('tile'), metal: B.sink(q.lod ? 'plaster' : 'metal'), // far: rooftop metal joins the plaster batch
   };
   const cor = plan.cornice, par = plan.parapet;
   const vTop = cor.y + 0.06;
@@ -139,7 +147,12 @@ export function generateLot(B, lot, ends, q, metas) {
     sinks.rough.uvx = null;
     B.setUV();
     B.mark('wall');
-    for (const o of ops) openingMasonry(ctx, face, o);
+    yield;
+    B.frameFromLot(F.frame);
+    for (let i = 0; i < ops.length; i++) {
+      openingMasonry(ctx, face, ops[i]);
+      if (i % 8 === 7) { B.mark('openings'); yield; B.frameFromLot(F.frame); }
+    }
     B.mark('openings');
 
     // pilasters between bays (giant order over the upper floors)
@@ -152,6 +165,8 @@ export function generateLot(B, lot, ends, q, metas) {
     B.mark('pilasters');
     plinth(B, sinks, F, face, ops, orn, E, fg, fs);
     B.mark('plinth');
+    yield;
+    B.frameFromLot(F.frame);
     // backstop just behind the wall, in a mid stone tone: any sub-pixel crack in the
     // wall mesh shows this instead of the sky
     B.shade = null; B.flat = [tint[0] * 0.45, tint[1] * 0.42, tint[2] * 0.38];
@@ -161,6 +176,7 @@ export function generateLot(B, lot, ends, q, metas) {
 
   // ------------------------------------------------------------- mouldings around the building (main frame)
   B.frameFromLot(f);
+  B.setUV();
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.05);
   for (const c of plan.courses) {
     B.sweep(sinks.smooth, courseProfile(c.h, c.proj), mPath(c.y + c.h, c.proj), c.y, [true, true]);
@@ -184,19 +200,22 @@ export function generateLot(B, lot, ends, q, metas) {
   }
 
   B.mark('quoins');
+  yield;
+  B.frameFromLot(f);
   // ------------------------------------------------------------- party walls (exposed sides)
   const sideTop = par.y; // top of the cornice; parapets/roofs continue above
   B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
-  B.shade = (u, v, w, nu, nv, nw, out) => plainStone(mainShade, tint, -w, v, out, 0.92);
+  B.shade = (u, v, w, nu, nv, nw, out) => plainStone(mainShade, tint, -w + u * 0.37, v, out, 0.92, sideTop);
   for (const e of [0, 1]) {
     const x = E[e];
     if (x.corner) continue;
     const u = e ? W : 0, dir = e ? 1 : -1;
     const vb = gMin - 0.35;
-    if (!x.nb) { B.rectU(sinks.ashlar, u, vb, sideTop, -D, 0, dir); continue; }
-    if (x.front > 0.01) B.rectU(sinks.ashlar, u, vb, sideTop, -x.front, 0, dir);
-    if (x.nbBack > -D + 0.01) B.rectU(sinks.ashlar, u, vb, Math.min(sideTop, x.nbTop), -D, x.nbBack, dir);
-    if (x.nbTop < sideTop) B.rectU(sinks.ashlar, u, Math.max(vb, x.nbTop), sideTop, Math.max(-D, x.nbBack), Math.min(0, -x.front), dir);
+    const cell = q.lod ? 6 : 1.6;
+    if (!x.nb) { B.gridU(sinks.ashlar, u, vb, sideTop, -D, 0, dir, cell); continue; }
+    if (x.front > 0.01) B.gridU(sinks.ashlar, u, vb, sideTop, -x.front, 0, dir, cell);
+    if (x.nbBack > -D + 0.01) B.gridU(sinks.ashlar, u, vb, Math.min(sideTop, x.nbTop), -D, x.nbBack, dir, cell);
+    if (x.nbTop < sideTop) B.gridU(sinks.ashlar, u, Math.max(vb, x.nbTop), sideTop, Math.max(-D, x.nbBack), Math.min(0, -x.front), dir, cell);
   }
   // back wall
   B.rectW(sinks.ashlar, 0, W, gMin - 0.35, sideTop, -D, -1);
@@ -229,6 +248,8 @@ export function generateLot(B, lot, ends, q, metas) {
     B.rectV(sinks.paint, 0.02, W - 0.02, -D + 0.32, -0.3, pv + 0.06, 1);
     B.flat = [1, 1, 1];
     B.mark('parapet');
+    yield;
+    B.frameFromLot(f);
     if (q.rooftop) rooftop(B, sinks, lot, plan, orn, pv + 0.06, q, tint);
     B.mark('rooftop');
   } else {
@@ -244,12 +265,19 @@ export function generateLot(B, lot, ends, q, metas) {
   B.shade = null;
 }
 
-/** Plain stone (party and back walls): tint, soft patches, darker base. */
-function plainStone(fs, tint, u, v, out, k) {
+/**
+ * Plain stone (party and back walls): tint, soft patches, darker greyer base, and rain
+ * wash: vertical streaks running down from the coping, strongest near the top.
+ */
+function plainStone(fs, tint, u, v, out, k, top) {
   const p = noise2(u * 0.3, v * 0.25, fs.seed + 5) - 0.5;
   const hg = v - Math.min(fs.groundAt(0), fs.groundAt(fs.width));
-  const a = k * (1 + 0.1 * p) * (1 - 0.2 * Math.exp(-Math.max(0, hg) / 0.4));
-  out[0] = tint[0] * a; out[1] = tint[1] * a; out[2] = tint[2] * a * 0.98;
+  const dt = Math.max(0, top - v);
+  const streak = (noise2(u * 1.1, v * 0.05, fs.seed + 9) - 0.35) * Math.exp(-dt / 6) * 0.22;
+  const a = k * (1 + 0.1 * p) * (1 - 0.2 * Math.exp(-Math.max(0, hg) / 0.4)) * (1 - Math.max(0, streak)) * (1 - 0.1 * Math.exp(-dt / 0.6));
+  const grey = Math.min(0.5, Math.max(0, streak) * 1.6 + 0.3 * Math.exp(-Math.max(0, hg) / 0.8));
+  const r = tint[0] * a, g = tint[1] * a, b = tint[2] * a * 0.98, l = (r + g + b) / 3;
+  out[0] = r + (l - r) * grey; out[1] = g + (l - g) * grey; out[2] = b + (l - b) * grey;
 }
 
 /** Plinth (base course) along each face between ground-floor openings, wrapping exposed corners. */
@@ -262,14 +290,24 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs) {
   if (W - a > 0.08) segs.push([a, W]);
   const p = orn.plinthP;
   // base course: a slightly greyer, harder stone
-  B.shade = (u, v, w, nu, nv, nw, out) => { trimColor(fs, u, v, nv, out, 0.94); out[2] *= 1.03; };
-  for (const [s0, s1] of segs) {
+  B.shade = (u, v, w, nu, nv, nw, out) => {
+    trimColor(fs, u, v, nv, out, 0.9);
+    const l = (out[0] + out[1] + out[2]) / 3;
+    out[0] += (l - out[0]) * 0.35; out[1] += (l - out[1]) * 0.35; out[2] += (l * 1.02 - out[2]) * 0.35;
+  };
+  for (let [s0, s1] of segs) {
     const top = Math.max(face.groundAt(s0), face.groundAt(s1)) + orn.plinthH;
     const prof = plinthProfile(top, p, fg - 0.35);
+    if (!F.main) {
+      // a corner return leaves the street corner to the front's plinth, which wraps it
+      if (face.cornerAtU1 && s1 > W - 0.01) s1 = W - p;
+      if (!face.cornerAtU1 && s0 < 0.01) s0 = p;
+      if (s1 - s0 < 0.05) continue;
+    }
     const path = [[s0, 0], [s1, 0]];
     if (F.main) {
-      // wrap around exposed ends of the main front
-      const ret = (x) => (x.corner ? 0 : !x.nb ? p + 0.1 : x.front > 0.03 ? Math.max(x.front, p + 0.08) : 0);
+      // wrap around exposed ends and street corners of the main front
+      const ret = (x) => (x.corner ? p : !x.nb ? p + 0.1 : x.front > 0.03 ? Math.max(x.front, p + 0.08) : 0);
       if (s0 < 0.01) { const r = ret(E[0]); if (r) path.unshift([0, -r]); }
       if (s1 > W - 0.01) { const r = ret(E[1]); if (r) path.push([W, -r]); }
     }
@@ -311,5 +349,32 @@ function rooftop(B, sinks, lot, plan, orn, v0, q, tint) {
     }
     B.popFrame();
   });
+  // one solar water heater per flat, in rows towards the back of the roof (the
+  // characteristic skyline of the city), with the odd extra tank or mast
+  const rr = RNG.from(lot.seed, 'heaters');
+  const flats = Math.round((plan.floors.length - 1) * rr.range(0.8, 2.2));
+  const nMax = Math.min(q.lod ? 4 : 12, flats);
+  let n = 0;
+  for (let w = -D + 1.9; w < -3.2 && n < nMax; w += rr.range(2.5, 3.0)) {
+    for (let u = 1.6 + rr.range(0, 0.6); u < W - 1.6 && n < nMax; u += rr.range(2.2, 2.6)) {
+      if (!free(u, w, 1.05) || rr.chance(0.15)) continue;
+      placed.push([u, w, 1.05]);
+      const r = RNG.from(lot.seed, 'heater', n++);
+      B.enter(u, v0, w, yawSun + r.range(-0.08, 0.08));
+      solarHeater(B, sinks, 0, q, r);
+      B.popFrame();
+    }
+  }
+  for (let i = 0; i < (q.lod ? 1 : 3); i++) {
+    const r = RNG.from(lot.seed, 'extra', i);
+    if (!r.chance(0.5)) continue;
+    const u = r.range(1, W - 1), w = -r.range(1.2, D - 1.2);
+    const tank = r.chance(0.5);
+    if (!free(u, w, tank ? 0.75 : 0.4)) continue;
+    placed.push([u, w, tank ? 0.75 : 0.4]);
+    B.enter(u, v0, w, r.range(0, Math.PI));
+    if (tank) waterTank(B, sinks, q, r); else antenna(B, sinks, q, r);
+    B.popFrame();
+  }
   B.flat = [1, 1, 1];
 }

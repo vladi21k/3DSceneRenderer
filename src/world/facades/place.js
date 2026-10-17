@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, lin } from './geo.js';
-import { joineryStyle, joineryTpl, glassTpl, shutterTpl } from './windows.js';
+import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl } from './windows.js';
 import { shopLayout, shopFrameTpl, shopGlassTpl, shopShutterTpl, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpl, doorGlassTpl, doorMetalTpl } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, plaqueTpl, signColor } from './signs.js';
@@ -40,6 +40,7 @@ export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, zRef = 
     aRoomS: [W, H, D, baseH],
     aWin: [seed, lit, drape, kind],
     aFac: [ctx.angle, Math.floor(ctx.streetW) + Math.min(0.95, o.recess), winY0, winY1], // street width + recess packed
+    aFrame: [0, 0, 0, 0],
   };
 }
 
@@ -50,7 +51,8 @@ function buildWindow(kit, ctx, o) {
   const v = ctx.joinery;
   const r = RNG.from(o.id);
   const fc = ctx.frameRGB, k = 0.9 + r.next() * 0.16;
-  kit.get('frame').add(joineryTpl(o, v, ctx.q), m, fc[0] * k, fc[1] * k, fc[2] * k);
+  const jt = joineryTpl(o, v, ctx.q);
+  if (jt) kit.get('frame').add(jt, m, fc[0] * k, fc[1] * k, fc[2] * k);
   const floor = plan.floors[o.floor];
   const bay = plan.bays[o.bay];
   const roomY0 = floor.y + 0.02;
@@ -62,7 +64,17 @@ function buildWindow(kit, ctx, o) {
   const dr = r.next();
   if (o.curtain) drape = (dr < 0.33 ? 1 : dr < 0.62 ? 2 : dr < 0.84 ? 3 : 4) + 0.1 + r.next() * 0.8;
   else if (dr < 0.2) drape = 3 + 0.05 + r.next() * 0.35;
-  kit.get('glass').add(glassTpl(o, v), m, 1, 1, 1, glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind: 0 }));
+  const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind: 0 });
+  if (!jt) ga.aFrame = [fc[0] * k, fc[1] * k, fc[2] * k, 1]; // far range: procedural casing
+  kit.get('glass').add(glassTpl(o, v, ctx.q), m, 1, 1, 1, ga);
+  // external roller shutters on flat heads (modern and some Mandate facades)
+  const rollerP = v.type === 'alu' ? 0.75 : plan.style.era === 'mandate' ? 0.18 : 0.04;
+  if (!o.shutters && o.top === 'flat' && o.recess > 0.15 && r.next() < rollerP) {
+    const rr = r.next();
+    const down = rr < 0.35 ? 0 : rr < 0.8 ? 0.15 + r.next() * 0.5 : 1;
+    const rc = lin([0xd9d6cc, 0xc9c2b2, 0x9a9a96, 0xe6e3da][Math.floor(r.next() * 4)]);
+    kit.get('frame').add(rollerTpl(o, down, ctx.q), m, rc[0], rc[1], rc[2]);
+  }
   if (o.shutters) {
     const sc = ctx.shutterRGB, ks = 0.85 + r.next() * 0.2;
     // open leaves lie on the wall face, clear of a projecting stone surround
@@ -81,14 +93,19 @@ function planSigns(ctx) {
     if (s.kind !== 'fascia') continue;
     const o = plan.openings.find((x) => x.floor === 0 && x.uc > s.u0 && x.uc < s.u1);
     const design = signDesign(s.seed);
-    if (!o) { wall.push({ s, design, y: s.y, h: s.h }); continue; }
+    if (!o) { wall.push({ s, design, y: s.y, h: s.h, lamps: false }); continue; }
     if (o.kind !== 'shop') continue;
     const crown = o.y + crownY(o);
     if (o.awning) { byOpening.set(o.id, { mode: 'valance', design }); continue; }
     const archedHead = isArched(o) && o.top !== 'segment';
     if (archedHead && crown > s.y + 0.1) { byOpening.set(o.id, { mode: 'head', design }); continue; }
-    const y = Math.max(s.y, crown + 0.1), h = Math.min(s.h, ceiling - y);
-    if (h >= 0.32) wall.push({ s, design, y, h, o });
+    // keep clear of first-floor balcony slabs and their corbels
+    let top = ceiling;
+    for (const b of plan.balconies || []) {
+      if (b.floor === 1 && b.u1 > s.u0 - 0.2 && b.u0 < s.u1 + 0.2) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.62);
+    }
+    const y = Math.max(s.y, crown + 0.1), h = Math.min(s.h, top - y);
+    if (h >= 0.32) wall.push({ s, design, y, h, o, lamps: top - (y + h) > 0.3 });
     else byOpening.set(o.id, { mode: 'head', design });
   }
   return { byOpening, wall };
@@ -110,7 +127,7 @@ function buildWallSign(kit, ctx, ws) {
   const m = wallMatrix(ctx.frame, (s.u0 + s.u1) / 2, y + h / 2);
   addSignText(kit, design, m, w, h, ctx.q);
   // gooseneck lamps over painted boards
-  if (design.type === 'board' && ctx.q >= 0.5) {
+  if (design.type === 'board' && ws.lamps && ctx.q >= 0.5) {
     const n = w > 2.4 ? 3 : 2;
     for (let i = 0; i < n; i++) {
       const u = s.u0 + (w * (i + 0.5)) / n;
@@ -241,6 +258,34 @@ function buildAwning(kit, ctx, o, r, design) {
   }
 }
 
+/**
+ * Hotel-style hoods over upper-floor windows (domes over arched heads, dutch hoods over
+ * flat ones), one colour scheme per facade.
+ */
+function buildUpperAwning(kit, ctx, o) {
+  const r = RNG.from(o.id, 'hood');
+  const col = ctx.hotelColors;
+  const crown = crownY(o);
+  const arched = isArched(o) && o.top !== 'segment';
+  let tpl, y;
+  if (arched) {
+    const R = o.w / 2 + 0.1;
+    tpl = domeAwning(0, R, 0.17, ctx.q);
+    y = crown + 0.1 - R;
+  } else {
+    const R = 0.55;
+    tpl = domeAwning(o.w + 0.2, R, 0.17, ctx.q);
+    y = crown + 0.12 - R;
+  }
+  const m = new THREE.Matrix4().copy(openingMatrix(ctx.frame, o, new THREE.Matrix4())).multiply(_r.makeTranslation(0, y, o.recess + 0.02));
+  const k = 0.94 + r.next() * 0.1; // uneven fading
+  kit.get('awning').add(tpl.canvas, m, col.c1[0] * k, col.c1[1] * k, col.c1[2] * k, {
+    aStripe: [col.c2[0] * k, col.c2[1] * k, col.c2[2] * k, col.period],
+    aFlex: (i, sp, a, j) => { a[j] = tpl.canvas.f[i] * 0.6; },
+  });
+  kit.get('metal').add(tpl.metal, m, 0.06, 0.06, 0.062);
+}
+
 // ------------------------------------------------------------------ doors
 function buildDoor(kit, ctx, o) {
   const plan = ctx.plan;
@@ -255,7 +300,7 @@ function buildDoor(kit, ctx, o) {
   const metal = doorMetalTpl(o, L, ctx.q);
   if (metal.grille) kit.get('metal').add(metal.grille, m, ...BLACK_IRON);
   const brass = L.color !== 'black' && r.chance(0.7);
-  kit.get('hardware').add(metal.handles, m, ...(brass ? BRASS : BLACK_IRON));
+  if (metal.handles) kit.get('hardware').add(metal.handles, m, ...(brass ? BRASS : BLACK_IRON));
   // threshold step (the door sill stands above the paving)
   const ground = plan.groundAt(o.uc) - o.y;
   if (ground < -0.03) {
@@ -285,8 +330,15 @@ export function* buildFront(kit, ctx) {
   ctx.frameRGB = paint(ctx.joinery.type === 'alu' && /green|teal/.test(plan.style.frameColor) ? 'white' : plan.style.frameColor);
   ctx.shutterRGB = paint(plan.style.shutterColor);
   const signs = planSigns(ctx);
+  // a few facades (hotels, pensions) carry canvas hoods over the lower upper-floor windows
+  const hr = RNG.from(plan.seed, 'hotel');
+  const hotel = plan.style.era !== 'modern' && !plan.isReturn && hr.chance(0.08);
+  if (hotel) ctx.hotelColors = awningColors(hr);
   for (const o of plan.openings) {
-    if (o.kind === 'window' || o.kind === 'balconyDoor') buildWindow(kit, ctx, o);
+    if (o.kind === 'window' || o.kind === 'balconyDoor') {
+      buildWindow(kit, ctx, o);
+      if (hotel && o.kind === 'window' && !o.shutters && !o.ac && o.floor >= 1 && o.floor <= 2) buildUpperAwning(kit, ctx, o);
+    }
     else if (o.kind === 'shop') buildShop(kit, ctx, o, signs.byOpening.get(o.id));
     else if (o.kind === 'door') buildDoor(kit, ctx, o);
     yield;

@@ -149,7 +149,7 @@ function addGlow(m, key) {
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uNight;\nvarying float vGlow;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.12 + uNight * 2.2 );');
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.04 * ( 1.0 - uNight ) + 0.012 * uNight );');
   };
   m.customProgramCacheKey = () => prevKey + '|' + key;
   return m;

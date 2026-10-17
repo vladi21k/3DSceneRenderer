@@ -112,10 +112,11 @@ function patchLeaf(mat, params) {
     windUniforms(shader);
     shader.uniforms.uLeafTrans = params.trans;
     shader.uniforms.uLeafSpec = params.spec;
+    shader.uniforms.uVegA2C = params.a2c;
     shader.uniforms.uSunDirV = U.uSunDir;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\n${WIND_PARS}\nvarying float vVegAO;\nuniform vec3 uSunDirV;`)
-      .replace('#include <begin_vertex>', WIND_APPLY + '\nvVegAO = aVeg.w;')
+      .replace('#include <common>', `#include <common>\n${WIND_PARS}\nvarying float vVegAO;\nvarying float vVegBill;\nuniform vec3 uSunDirV;`)
+      .replace('#include <begin_vertex>', WIND_APPLY + '\nvVegAO = aVeg.w;\nvVegBill = aCorner.z;')
       .replace('#include <project_vertex>', PROJECT_BILLBOARD)
       // billboards take their shadow sample from the clump centre, nudged towards the sun
       .replace('#include <shadowmap_vertex>', `#if defined( USE_SHADOWMAP ) || ( NUM_SPOT_LIGHT_COORDS > 0 )
@@ -123,13 +124,26 @@ function patchLeaf(mat, params) {
       #endif
       #include <shadowmap_vertex>`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying float vVegAO;\nuniform float uLeafTrans;\nuniform float uLeafSpec;\n${MIP_FN}`)
+      .replace('#include <common>', `#include <common>\nvarying float vVegAO;\nvarying float vVegBill;\nuniform float uLeafTrans;\nuniform float uLeafSpec;\nuniform float uVegA2C;\n${MIP_FN}`)
       .replace('#include <map_fragment>', /* glsl */`
         #ifdef USE_MAP
           vec4 vegTex = texture2D( map, vMapUv );
           vegTex.rgb /= max( vegTex.a, 1e-3 );                       // atlas is premultiplied
           vegTex.rgb = sRGBTransferEOTF( vec4( vegTex.rgb, 1.0 ) ).rgb; // stored sRGB, sampled raw
-          vegTex.a = min( 1.0, vegTex.a * ( 1.0 + vegMip( vMapUv, map ) * 0.3 ) );
+          // Coverage. Magnified: crisp leaf edges (alpha sharpened around 0.5). Minified: the
+          // filtered alpha is the leaf coverage of the pixel, used directly as MSAA coverage
+          // (lightly biased up, since overlapping alpha-to-coverage layers share samples).
+          // Without a multisampled target coverage does nothing, so fall back to an alpha
+          // test with a mip-dependent boost that keeps far crowns from thinning out.
+          float vegM = vegMip( vMapUv, map );
+          float vegA = vegTex.a;
+          float vegCrisp = clamp( ( vegA - 0.5 ) / max( fwidth( vegA ), 1e-4 ) + 0.5, 0.0, 1.0 );
+          // (cards: + a small mip bias standing in for the many sub-pixel leaves of a real
+          //  crown; far clumps are pre-composed and need none)
+          float vegSoft = clamp( ( vegA - 0.5 ) * 1.5 + 0.56 + ( 1.0 - vVegBill ) * 0.05 * vegM, 0.0, 1.0 );
+          vegTex.a = uVegA2C > 0.5 ? mix( vegCrisp, vegSoft, smoothstep( 0.8, 2.5, vegM ) )
+                                   : step( 0.5, vegA * ( 1.0 + vegM * 0.3 ) );
+          if ( vegTex.a < 0.02 ) discard;
           diffuseColor *= vegTex;
         #endif
         // leaf undersides are paler and slightly bluish-grey
@@ -210,15 +224,16 @@ function makeDepth(leaf) {
  */
 export function createVegMaterials(app, atlas) {
   const M = app.materials;
-  const params = { trans: { value: 0.85 }, spec: { value: 0.45 } };
+  // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
+  const params = { trans: { value: 1.0 }, spec: { value: 0.45 }, a2c: { value: 0 } };
   const leaf = new THREE.MeshStandardMaterial({
     name: 'vegetation.leaf',
     map: atlas.map,
     normalMap: atlas.normalMap,
     normalScale: new THREE.Vector2(0.85, 0.85),
     side: THREE.DoubleSide,
-    alphaTest: 0.5,
-    alphaToCoverage: true,
+    alphaTest: 0,          // coverage is computed in the patched map chunk (see above)
+    alphaToCoverage: true, // shadows: three then alpha-tests the depth pass at 0.5
     roughness: 0.62,
     metalness: 0,
     vertexColors: true,

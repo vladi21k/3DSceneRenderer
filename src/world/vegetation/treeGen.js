@@ -5,21 +5,25 @@ import { cellRect } from './leafAtlas.js';
 
 // Procedural street trees, grown once per template at start-up.
 //
-// 1. Skeleton: space colonisation. Attraction points fill a lobed crown envelope (denser
-//    towards the shell, where the foliage of a real crown sits); a stem (ash: a central
-//    leader, pagoda: a short stem splitting into scaffold limbs) grows towards them in
-//    small steps until the crown is filled. Positions are then smoothed and the shoot
-//    tips droop a little under their own weight.
-// 2. Radii: pipe model (r^2.3 of a parent = sum over children), remapped so the trunk
-//    has the template's calliper and the shoots end at ~8 mm.
-// 3. Bark: one tapered tube per branch chain (parallel-transport frames, metre UVs).
-// 4. Foliage: folded, slightly drooping leaf cards (3x3 vertices) at the shoot tips and
-//    along thin shoots, facing up / out; normals blend the card normal with the crown
-//    normal so the crown shades as one volume. LOD 1 uses far fewer, larger camera-facing
-//    clumps with the same colour, occlusion and coverage.
+// 1. Skeleton: space colonisation. Attraction points fill a lobed crown envelope with a few
+//    random gaps (weighted towards the shell, where a crown carries its foliage); a stem
+//    (ash: a central leader, pagoda: a short stem splitting into scaffold limbs) grows
+//    towards them in small steps. Short leaf-bearing spur shoots are added along the outer
+//    branches, positions are smoothed and slender shoots droop under their own weight.
+// 2. Radii: pipe model (r^2.3 of a parent = sum over children), remapped so the trunk has
+//    the template's calliper and the shoots end at ~8 mm.
+// 3. Bark: one tapered tube per branch chain (parallel-transport frames, metre UVs), with
+//    occlusion in the crotches / crown interior and splash dirt at the base. Three LODs
+//    keep thinner and thinner branches.
+// 4. Foliage: leaf cards carrying painted sprays (leafAtlas.js). Compound leaves spread
+//    sideways and droop, so cards point outwards, face up and tilt out on the crown sides,
+//    which builds the layered tiers (lit tops, dark undersides) of the real trees. Normals
+//    blend the card normal with the crown normal so the crown shades as one volume.
+//    LOD 0: folded drooping cards; LOD 1: 40% of them, 1.5x larger; LOD 2: camera-facing
+//    clumps. All three share sites, colour, occlusion and coverage.
 //
 // Template space: origin at the trunk base on the paving, +Y up, -X towards the tracks
-// (the crown is cut back on that side for the tram's clearance envelope).
+// (branches and leaf tips are kept out of the tram's clearance envelope on that side).
 
 const _v = new THREE.Vector3(), _w = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
@@ -84,9 +88,9 @@ function makeEnvelope(tpl, rng) {
 
 // ------------------------------------------------------------------ skeleton
 class Skeleton {
-  constructor() { this.p = []; this.parent = []; this.trunk = []; this.noGrow = []; this.spur = []; }
-  add(pos, parent, trunk = false, noGrow = false, spur = false) {
-    this.p.push(pos.clone()); this.parent.push(parent); this.trunk.push(trunk); this.noGrow.push(noGrow); this.spur.push(spur);
+  constructor() { this.p = []; this.parent = []; this.trunk = []; this.noGrow = []; }
+  add(pos, parent, trunk = false, noGrow = false) {
+    this.p.push(pos.clone()); this.parent.push(parent); this.trunk.push(trunk); this.noGrow.push(noGrow);
     return this.p.length - 1;
   }
   get n() { return this.p.length; }
@@ -234,10 +238,10 @@ function addSpurs(tpl, env, sk, rng) {
     const len = rng.range(0.14, 0.3);
     q.copy(p).addScaledVector(d, len * 0.5);
     if (q.x < env.clear(q.y)) continue;
-    const a = sk.add(q, i, false, true, true);
+    const a = sk.add(q, i, false, true);
     q.addScaledVector(d, len * 0.5);
     q.y += rng.range(-0.03, 0.04);
-    sk.add(q, a, false, true, true);
+    sk.add(q, a, false, true);
   }
 }
 
@@ -521,7 +525,7 @@ function foliageGeometry(tpl, env, sk, info, sites, lod, rng) {
   }
 
   // ---- lod 2: clumps
-  const k = Math.max(6, Math.round(sites.length * (fol.card / fol.clumpCard) ** 2 * 1.6));
+  const k = Math.max(6, Math.round(sites.length * (fol.card / fol.clumpCard) ** 2 * 1.05));
   const order = sites.slice();
   for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng.next() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
   const [u0, v0, u1, v1] = cellRect(fol.clump);
@@ -533,7 +537,8 @@ function foliageGeometry(tpl, env, sk, info, sites, lod, rng) {
     base.copy(p).addScaledVector(cn, -0.15);
     const size = fol.clumpCard * rng.range(0.85, 1.15) * 0.5;
     base.x = Math.max(base.x, env.clearLeaf(base.y) + size * 0.7);
-    const col = cardColor(cn);
+    // clumps always face the viewer (no darker undersides, no edge-on cards): tone down
+    const col = cardColor(cn).map((c) => c * 0.84);
     const ao = occl(cn, rn);
     const vb = b.count;
     const rot = rng.range(0, Math.PI * 2), cr = Math.cos(rot) * size, sr = Math.sin(rot) * size;
@@ -579,7 +584,11 @@ export function buildTreeTemplate(tpl, seed = 1) {
   return {
     tpl, stem,
     bark: bark.map((x) => x.geometry()),
-    leaves: fol.map((f) => f.buf.geometry()),
+    leaves: fol.map((f, l) => {
+      const g = f.buf.geometry();
+      if (l === 2) g.userData.boundsPad = FOLIAGE[tpl.species].clumpCard * 0.6;
+      return g;
+    }),
     stats: { nodes: sk.n, cards: fol.map((f) => f.count), chains: info.chains.length,
       ms: [T1 - T0, T2 - T1, performance.now() - T2].map((x) => +x.toFixed(1)) },
   };
@@ -647,6 +656,7 @@ export function buildShrubTemplate(sh, seed = 1) {
     }
     b1.idx.push(vb, vb + 1, vb + 2, vb + 1, vb + 3, vb + 2);
   }
-  const g0 = b0.geometry();
-  return { leaves: [g0, g0, b1.geometry()] };
+  const g0 = b0.geometry(), g2 = b1.geometry();
+  g2.userData.boundsPad = fol.clumpCard * 0.4;
+  return { leaves: [g0, g0, g2] };
 }

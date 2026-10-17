@@ -70,15 +70,11 @@ function baseProfile() {
 function shaftProfile() {
   const P = [[shaftRadius(1.28), 1.28]];
   // plain tapered shaft with bead rings
-  const rings = [2.45, 7.15];
-  let y = 1.28;
-  for (const ry of rings) {
+  for (const ry of [2.45, 7.15]) {
     P.push([shaftRadius(ry - 0.03), ry - 0.03, true]);
     P.push([shaftRadius(ry) + 0.013, ry - 0.015], [shaftRadius(ry) + 0.016, ry], [shaftRadius(ry) + 0.013, ry + 0.015]);
     P.push([shaftRadius(ry + 0.03), ry + 0.03, true]);
-    y = ry;
   }
-  void y;
   // pull-off clamp band and span band
   P.push([shaftRadius(PULL_OFF_Y - 0.045), PULL_OFF_Y - 0.045, true], [shaftRadius(PULL_OFF_Y) + 0.011, PULL_OFF_Y - 0.04, true], [shaftRadius(PULL_OFF_Y) + 0.011, PULL_OFF_Y + 0.04, true], [shaftRadius(PULL_OFF_Y + 0.045), PULL_OFF_Y + 0.045, true]);
   P.push([shaftRadius(SPAN_Y - 0.06), SPAN_Y - 0.06, true], [shaftRadius(SPAN_Y) + 0.014, SPAN_Y - 0.055, true], [shaftRadius(SPAN_Y) + 0.014, SPAN_Y + 0.055, true], [shaftRadius(SPAN_Y + 0.06), SPAN_Y + 0.06, true]);

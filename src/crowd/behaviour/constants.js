@@ -11,7 +11,7 @@ export const FAR_SPAWN_BAND = 28;       // new arrivals appear in the last metre
 
 // population mix
 export const WALKER_DENSITY = 0.32;     // walkers per metre of street per side (before local multipliers)
-export const MAX_SEATED = 90;
+export const MAX_SEATED = 96;
 export const MAX_PASSENGERS = 46;
 export const STANDER_TARGET = 34;       // people standing and talking in small groups
 

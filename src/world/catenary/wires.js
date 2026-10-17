@@ -8,7 +8,7 @@ export const WIRE_COLORS = {
   contact: [0.085, 0.062, 0.048],   // hard-drawn copper, oxidised dark brown
   steel: [0.14, 0.14, 0.135],       // galvanised span / hanger strand, weathered
   feeder: [0.035, 0.035, 0.037],    // insulated feeder cable
-  insulator: [0.11, 0.1, 0.09],      // far-LOD stand-in for rod insulators (grey-brown silicone)
+  insulator: [0.16, 0.15, 0.14],     // far-LOD stand-in for rod insulators (grey-brown silicone)
 };
 
 export class WireBuilder {

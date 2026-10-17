@@ -113,7 +113,7 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
   // --- main rails as inlays over the whole zone (paving is continuous here)
   for (const m of MAIN_RAILS) {
     const fn = (x) => ({ s: c.s0 + x, d: m.c, dd: 0 });
-    const pts = samplePath(route, null, fn, -pad, L + pad, 0.5);
+    const pts = samplePath(route, null, fn, -pad, L + pad, 2.0);   // straight: coarse is exact
     inlayRail(B.main, pts, m.g);
   }
 
@@ -123,7 +123,7 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
       const d = r.fn(x).d;
       return Math.min(Math.abs(d - r.dStart), Math.abs(d - r.dEnd));
     };
-    const pts = samplePath(route, null, r.fn, 0, L, 0.25);
+    const pts = samplePath(route, null, r.fn, 0, L, 0.4);
     for (const q of pts) q.sep = sepAt(q.t);
     const clear = (q) => q.sep > 0.115;
     // full rail where clear of the stock rail
@@ -144,20 +144,20 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
   for (const f of p.frogs) {
     const half = 1.3;
     const fnMain = (x) => ({ s: c.s0 + x, d: f.main.c, dd: 0 });
-    const ptsM = samplePath(route, null, fnMain, f.x - half, f.x + half, 0.2);
+    const ptsM = samplePath(route, null, fnMain, f.x - half, f.x + half, 0.325);
     // plate: around the main rail, wide enough to hold the crossing rail
     const plateHalf = (q) => 0.1 + Math.abs(f.rail.fn(q.t).d - f.main.c) * 0.9 + 0.02 * (1 - Math.abs(q.t - f.x) / half);
     inlayStrip(B.plate, ptsM, (q) => -plateHalf(q), plateHalf);
     // flangeway of the main rail cut through the crossing rail's head (above heads)
-    const ptsG = samplePath(route, null, fnMain, f.x - half, f.x + half, 0.25);
+    const ptsG = samplePath(route, null, fnMain, f.x - half, f.x + half, 1.3);
     inlayStrip(B.flange, ptsG, () => (f.main.g > 0 ? HEAD_HALF : -GROOVE_OUT), () => (f.main.g > 0 ? GROOVE_OUT : -HEAD_HALF));
-    const ptsR = samplePath(route, null, f.rail.fn, f.x - half, f.x + half, 0.25);
+    const ptsR = samplePath(route, null, f.rail.fn, f.x - half, f.x + half, 0.65);
     inlayStrip(B.flange, ptsR, () => (f.rail.g > 0 ? HEAD_HALF : -GROOVE_OUT), () => (f.rail.g > 0 ? GROOVE_OUT : -HEAD_HALF));
     // check rails: widened polished guard on the opposite rails of both routes
     const oppMain = MAIN_RAILS.find((m) => m.track === f.main.track && m !== f.main);
     const oppRail = p.rails.find((r) => r !== f.rail);
-    checkRail(B.check, samplePath(route, null, (x) => ({ s: c.s0 + x, d: oppMain.c, dd: 0 }), f.x - 2.4, f.x + 2.4, 0.2), oppMain.g, f.x);
-    checkRail(B.check, samplePath(route, null, oppRail.fn, f.x - 2.4, f.x + 2.4, 0.2), oppRail.g, f.x);
+    checkRail(B.check, samplePath(route, null, (x) => ({ s: c.s0 + x, d: oppMain.c, dd: 0 }), f.x - 2.4, f.x + 2.4, 0.4), oppMain.g, f.x);
+    checkRail(B.check, samplePath(route, null, oppRail.fn, f.x - 2.4, f.x + 2.4, 0.4), oppRail.g, f.x);
   }
 }
 

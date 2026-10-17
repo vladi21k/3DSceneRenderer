@@ -31,7 +31,7 @@ except ImportError:             # allows dry runs of the SDF stages outside Blen
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, 'assets', 'humans')
 
-LOD_TRIS = {'body': (15000, 3200, 760)}
+LOD_TRIS = {'body': (15000, 3000, 560, 200)}
 MORPH_SCALE = 0.08
 
 
@@ -280,6 +280,8 @@ def build_base(kind, res, pk):
         items = [(a, Tl)]
         pids = [np.zeros(len(Vl), np.uint8)]
         for p in parts:
+            if p['lods'][li] is None:
+                continue
             pa, pt = p['lods'][li]
             items.append((pa, pt))
             pids.append(np.full(len(pa['P']), p['id'], np.uint8))
@@ -305,11 +307,14 @@ def main():
     t0 = time.time()
     for kind in a.bases.split(','):
         meta['bases'][kind] = build_base(kind, a.res, pk)
-    with open(os.path.join(OUT, 'humans.bin'), 'wb') as f:
-        f.write(pk.buf)
+    # write both files next to the old ones, then swap them in (the app may be running)
     meta['byteLength'] = len(pk.buf)
-    with open(os.path.join(OUT, 'humans.json'), 'w') as f:
+    with open(os.path.join(OUT, 'humans.bin.tmp'), 'wb') as f:
+        f.write(pk.buf)
+    with open(os.path.join(OUT, 'humans.json.tmp'), 'w') as f:
         json.dump(meta, f, separators=(',', ':'))
+    os.replace(os.path.join(OUT, 'humans.bin.tmp'), os.path.join(OUT, 'humans.bin'))
+    os.replace(os.path.join(OUT, 'humans.json.tmp'), os.path.join(OUT, 'humans.json'))
     log(f'wrote {len(pk.buf) / 1e6:.2f} MB in {time.time() - t0:.0f}s')
 
 

@@ -11,88 +11,88 @@ import { HumansTest } from './humans/test.js';
 //   alloc(count) -> first slot index; set(i, {x,y,z,heading,speed,phase,pose,look,appearance,visible});
 //   setVisible(i, false); strideLength(appearance, speed); heightOf(appearance)
 //
-// Figures are SDF-sculpted bodies (tools/blender/humans_build.py) in three LODs, drawn
-// with one instanced draw per base body (male / female / child) and LOD. Each frame the
-// CPU blends two baked clips per visible figure, adds the head turn, folds in the
-// figure's transform and writes 22 bone matrices into a float texture row; the vertex
-// shader skins from it. Clothing, skin and hair are shaded per fragment from a
-// per-figure "look" row (appearance.js).
+// Figures are SDF-sculpted bodies (tools/blender/humans_build.py) with LODs, drawn with
+// one instanced draw per base body (male / female / child) and LOD. Each frame the CPU
+// blends two baked clips per visible figure, adds the head turn, folds in the figure's
+// transform and writes 22 bone matrices into a float texture row; the vertex shader
+// skins from it. Clothing, skin and hair are shaded per fragment from a per-figure
+// "look" row (appearance.js).
 
 const BASES = ['male', 'female', 'child'];
-const LOD_PX = [270, 72];          // figure height on screen (px) above which LOD0 / LOD1 are used
-const BONE_W = NUM_BONES * 3;      // texels per bone row
+const LOD_PX = [270, 72, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
+const SKIRT_GRID = [[48, 22], [20, 10], [10, 5], [8, 3]];
+const BONE_W = NUM_BONES * 3;             // texels per bone row (3x4 matrix per bone)
+const MAT_N = NUM_BONES * 12;
+const SKIRT_ID = 250;                     // part id of the runtime skirt / coat shell
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
+const _gait = { a: 0, b: -1, wa: 1, wb: 0, idle: 0, extra: 1 };
+const _mat = new Float32Array(MAT_N);
 
 const humans = {
   name: 'humans',
   capacity: 0,
   used: 0,
   ready: false,
+  slots: [],
+  cache: new Map(),
+  parts: {},
+  time: 0,
+  perf: { ms: 0, figures: 0 },
 
   async init(app) {
     this.app = app;
-    this.cache = new Map();
-    this.slots = [];
-    this.parts = {};
-    this.time = 0;
-    const url = new URL('../../assets/humans/', import.meta.url).href;
     let assets;
     try {
-      assets = await loadHumanAssets(url);
+      assets = await loadHumanAssets(new URL('../../assets/humans/', import.meta.url).href);
     } catch (e) {
       console.warn('[humans] figure assets unavailable, figures disabled', e);
       return;
     }
-    const meta = assets.meta;
-    this.parts = { ...(meta.parts || {}), skirt: 250 };   // the skirt shell is generated at runtime
-    this.morphScale = meta.morphScale;
-    this.ensureCapacity(512);
+    this.parts = { ...(assets.meta.parts || {}), skirt: SKIRT_ID };
+    this.morphScale = assets.meta.morphScale;
+    this.ensureCapacity(Math.max(512, this.used));
 
     // rigs + baked motion per base body
     this.bases = {};
-    let animRows = 0;
     for (const name of BASES) {
       const b = assets.bases[name];
       if (!b) continue;
       const rig = new Rig(b.skeleton, b.info);
       const baked = bakeClips(rig);
       const walkV = CLIPS.map((c) => (c.kind === 'walk' ? rig.walkParams(c).v : 0));
-      this.bases[name] = { info: b.info, rig, baked, walkV, lods: b.lods, meshes: [] };
-      animRows += baked.total;
+      this.bases[name] = { name, info: b.info, rig, baked, walkV, lods: b.lods, meshes: [] };
     }
-    void animRows;
     if (!Object.keys(this.bases).length) return;
+    this.nLod = Math.min(...Object.values(this.bases).map((B) => B.lods.length));
 
-    // shared GPU state
     this.group = new THREE.Group();
     this.group.name = 'humans';
     app.scene.add(this.group);
-    const skirtId = this.parts.skirt;
-    for (const [name, B] of Object.entries(this.bases)) {
-      const { mat, depth, uniforms } = makeHumanMaterials(B, { ...this.parts, skirt: skirtId }, this.boneTex, this.lookTex, this.morphScale);
-      app.materials.register('humans.' + name, mat);
+    for (const B of Object.values(this.bases)) {
+      const { mat, depth, uniforms } = makeHumanMaterials(B, this.parts, this.boneTex, this.lookTex, this.morphScale);
+      app.materials.register('humans.' + B.name, mat);
       app.materials.track(mat);
       B.mat = mat;
       B.uniforms = uniforms;
-      B.lods.forEach((geo, li) => {
-        const g = appendPart(geo, makeSkirtPart([48, 20, 10][li], [22, 10, 5][li], skirtId));
-        const iRow = new THREE.InstancedBufferAttribute(new Float32Array(this.capacity), 1);
-        iRow.setUsage(THREE.DynamicDrawUsage);
-        g.setAttribute('iRow', iRow);
+      for (let li = 0; li < this.nLod; li++) {
+        const [nt, nr] = SKIRT_GRID[Math.min(li, SKIRT_GRID.length - 1)];
+        const g = appendPart(B.lods[li], makeSkirtPart(nt, nr, SKIRT_ID));
+        g.setAttribute('iRow', newRowAttr(this.capacity));
         g.instanceCount = 0;
         const mesh = new THREE.Mesh(g, mat);
-        mesh.name = `humans.${name}.lod${li}`;
-        mesh.frustumCulled = false;
+        mesh.name = `humans.${B.name}.lod${li}`;
+        mesh.frustumCulled = true;        // bounds are refit to the instances every frame
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.customDepthMaterial = depth;
         mesh.visible = false;
-        mesh.userData.count = 0;
         this.group.add(mesh);
         B.meshes.push(mesh);
-      });
+      }
+      B.lists = B.meshes.map(() => new Int32Array(this.capacity));
+      B.counts = new Int32Array(this.nLod);
     }
     this.ready = true;
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
@@ -100,44 +100,12 @@ const humans = {
 
   // ------------------------------------------------------------------ contract API
 
-  ensureCapacity(n) {
-    if (n <= this.capacity) return;
-    const cap = Math.max(64, 1 << Math.ceil(Math.log2(n)));
-    const bones = new Float32Array(cap * BONE_W * 4);
-    const look = new Float32Array(cap * ROW_TEXELS * 4);
-    if (this.boneTex) {
-      bones.set(this.boneTex.image.data);
-      look.set(this.lookTex.image.data);
-    }
-    const mk = (data, w) => {
-      const t = new THREE.DataTexture(data, w, cap, THREE.RGBAFormat, THREE.FloatType);
-      t.minFilter = t.magFilter = THREE.NearestFilter;
-      t.generateMipmaps = false;
-      t.needsUpdate = true;
-      return t;
-    };
-    const oldB = this.boneTex, oldL = this.lookTex;
-    this.boneTex = mk(bones, BONE_W);
-    this.lookTex = mk(look, ROW_TEXELS);
-    this.capacity = cap;
-    for (const B of Object.values(this.bases || {})) {
-      if (B.uniforms) { B.uniforms.uBoneTex.value = this.boneTex; B.uniforms.uLookTex.value = this.lookTex; }
-      for (const m of B.meshes) {
-        const iRow = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
-        iRow.setUsage(THREE.DynamicDrawUsage);
-        m.geometry.setAttribute('iRow', iRow);
-      }
-    }
-    oldB && oldB.dispose();
-    oldL && oldL.dispose();
-  },
-
   /** Reserve `count` figure slots; returns the first slot index. */
   alloc(count) {
     const first = this.used;
     this.used += count;
     for (let i = first; i < this.used; i++) this.slots.push(newSlot());
-    if (this.ready || this.boneTex) this.ensureCapacity(this.used);
+    if (this.boneTex) this.ensureCapacity(this.used);
     return first;
   },
 
@@ -152,23 +120,12 @@ const humans = {
     if (o.look !== undefined) s.look = o.look;
     if (o.appearance !== undefined && o.appearance !== s.appearance) {
       s.appearance = o.appearance;
-      s.look_ = null;
+      s.a = null;
     }
     s.visible = o.visible !== false;
   },
 
   setVisible(i, v) { const s = this.slots[i]; if (s) s.visible = !!v; },
-
-  appearanceOf(seed) {
-    let a = this.cache.get(seed);
-    if (!a) {
-      if (this.cache.size > 6000) this.cache.clear();
-      a = deriveAppearance(seed, this.parts);
-      if (!this.bases || !this.bases[a.base]) a.base = 'male';
-      this.cache.set(seed, a);
-    }
-    return a;
-  },
 
   heightOf(appearance) { return this.appearanceOf(appearance).height; },
 
@@ -185,108 +142,146 @@ const humans = {
     return Math.max(0.3, S * sc * g.extra);
   },
 
+  appearanceOf(seed) {
+    let a = this.cache.get(seed);
+    if (!a) {
+      if (this.cache.size > 6000) this.cache.clear();
+      a = deriveAppearance(seed, this.parts);
+      if (this.bases && !this.bases[a.base]) a.base = 'male';
+      a.seedT = (seed % 997) / 997;
+      this.cache.set(seed, a);
+    }
+    return a;
+  },
+
+  ensureCapacity(n) {
+    if (n <= this.capacity) return;
+    const cap = Math.max(64, 1 << Math.ceil(Math.log2(n)));
+    const bones = new Float32Array(cap * BONE_W * 4);
+    const look = new Float32Array(cap * ROW_TEXELS * 4);
+    if (this.boneTex) { bones.set(this.boneTex.image.data); look.set(this.lookTex.image.data); }
+    const old = [this.boneTex, this.lookTex];
+    this.boneTex = dataTexture(bones, BONE_W, cap);
+    this.lookTex = dataTexture(look, ROW_TEXELS, cap);
+    this.capacity = cap;
+    for (const B of Object.values(this.bases || {})) {
+      if (B.uniforms) { B.uniforms.uBoneTex.value = this.boneTex; B.uniforms.uLookTex.value = this.lookTex; }
+      for (const m of B.meshes) m.geometry.setAttribute('iRow', newRowAttr(cap));
+      B.lists = B.meshes.map(() => new Int32Array(cap));
+    }
+    old.forEach((t) => t && t.dispose());
+  },
+
   // ------------------------------------------------------------------ per frame
 
   update(dt, app) {
     if (!this.ready) return;
+    const t0 = performance.now();
     this.time += dt;
     if (this.test) this.test.update(dt);
     const cam = app.camera;
     _m.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     _frustum.setFromProjectionMatrix(_m);
     const camPos = cam.position;
-    const pxPerRad = (app.renderer.domElement.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360));
-    const lists = {};
-    for (const name of Object.keys(this.bases)) lists[name] = [[], [], []];
+    const pxPerM = (app.renderer.domElement.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360));
+    for (const B of Object.values(this.bases)) B.counts.fill(0);
     const bones = this.boneTex.image.data;
-    let lookDirty = false;
+    const maxLod = this.nLod - 1;
+    let lookDirty = false, n = 0;
     for (let i = 0; i < this.used; i++) {
       const s = this.slots[i];
       if (!s.visible || s.appearance === null) continue;
-      if (!s.look_) {
-        s.look_ = this.appearanceOf(s.appearance);
-        writeRow(this.lookTex.image.data, i, s.look_);
+      if (!s.a) {
+        s.a = this.appearanceOf(s.appearance);
+        writeRow(this.lookTex.image.data, i, s.a);
         lookDirty = true;
       }
-      const a = s.look_;
+      const a = s.a;
       const B = this.bases[a.base];
       const sc = a.height / B.info.H;
-      _sph.center.set(s.x, s.y + 0.9 * a.height / 1.76, s.z);
-      _sph.radius = 1.1 * sc + 0.4;
+      _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
+      _sph.radius = 0.62 * a.height + 0.3;
       if (!_frustum.intersectsSphere(_sph)) continue;
-      const dist = Math.max(0.5, _sph.center.distanceTo(camPos));
-      const px = (a.height / dist) * pxPerRad;
-      // LOD with a little hysteresis
-      const prev = s.lod;
-      let lod = px > LOD_PX[0] ? 0 : px > LOD_PX[1] ? 1 : 2;
-      if (prev >= 0 && lod !== prev) {
-        const edge = lod < prev ? LOD_PX[lod] : LOD_PX[prev];
-        if (Math.abs(px - edge) < edge * 0.08) lod = prev;
+      const px = (a.height / Math.max(0.5, _sph.center.distanceTo(camPos))) * pxPerM;
+      let lod = px > LOD_PX[0] ? 0 : px > LOD_PX[1] ? 1 : px > LOD_PX[2] ? 2 : 3;
+      if (s.lod >= 0 && lod !== s.lod) {      // hysteresis against flicker at the thresholds
+        const edge = LOD_PX[Math.min(lod, s.lod)];
+        if (Math.abs(px - edge) < edge * 0.08) lod = s.lod;
       }
       s.lod = lod;
       this._pose(i, s, a, B, sc, bones);
-      lists[a.base][lod].push(i);
+      const l = Math.min(lod, maxLod);
+      B.lists[l][B.counts[l]++] = i;
+      n++;
     }
-    for (const [name, B] of Object.entries(this.bases)) {
+    for (const B of Object.values(this.bases)) {
       B.meshes.forEach((mesh, li) => {
-        const L = lists[name][li];
+        const L = B.lists[li], cnt = B.counts[li];
         const g = mesh.geometry;
         const attr = g.attributes.iRow;
-        for (let k = 0; k < L.length; k++) attr.array[k] = L[k];
-        g.instanceCount = L.length;
-        mesh.visible = L.length > 0;
-        if (L.length) { attr.clearUpdateRanges(); attr.addUpdateRange(0, L.length); attr.needsUpdate = true; }
+        // bounds of this draw's instances, so shadow cascades can skip it entirely
+        let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+        for (let k = 0; k < cnt; k++) {
+          const s = this.slots[L[k]];
+          attr.array[k] = L[k];
+          if (s.x < x0) x0 = s.x; if (s.x > x1) x1 = s.x;
+          if (s.y < y0) y0 = s.y; if (s.y > y1) y1 = s.y;
+          if (s.z < z0) z0 = s.z; if (s.z > z1) z1 = s.z;
+        }
+        g.instanceCount = cnt;
+        mesh.visible = cnt > 0;
+        if (cnt) {
+          attr.clearUpdateRanges();
+          attr.addUpdateRange(0, cnt);
+          attr.needsUpdate = true;
+          g.boundingSphere.center.set((x0 + x1) / 2, (y0 + y1) / 2 + 0.9, (z0 + z1) / 2);
+          g.boundingSphere.radius = 0.5 * Math.hypot(x1 - x0, y1 - y0, z1 - z0) + 1.3;
+        }
       });
     }
     this.boneTex.needsUpdate = true;
     if (lookDirty) this.lookTex.needsUpdate = true;
+    this.perf.figures = n;
+    this.perf.ms = this.perf.ms * 0.95 + (performance.now() - t0) * 0.05;
   },
 
   /** Blend the baked clips for one figure and write its bone row (model -> world). */
   _pose(i, s, a, B, sc, out) {
     const bk = B.baked;
     const t = this.time;
-    const seedT = (a.seed % 997) / 997;
-    let src;
+    const M = _mat;
+    M.fill(0);
     if (s.pose === 2) {
-      src = [[CLIP.sit + a.sit, (t / 11 + seedT) % 1, 1]];
+      addClip(M, bk, CLIP.sit + a.sit, t / 11 + a.seedT, 1);
     } else if (s.pose === 1) {
-      src = [[CLIP.idle + a.idle, (t / 9.5 + seedT) % 1, 1]];
+      addClip(M, bk, CLIP.idle + a.idle, t / 9.5 + a.seedT, 1);
     } else {
       const g = gaitBlend(B, a, s.speed, sc);
-      src = [[g.a, s.phase, g.wa]];
-      if (g.b >= 0 && g.wb > 0.001) src.push([g.b, g.b >= CLIP.idle ? (t / 9.5 + seedT) % 1 : s.phase, g.wb]);
+      addClip(M, bk, g.a, s.phase, g.wa);
+      if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / 9.5 + a.seedT : s.phase, g.wb);
     }
-    const M = this._mat || (this._mat = new Float32Array(NUM_BONES * 12));
-    M.fill(0);
-    for (const [clip, time, w] of src) {
-      const n = bk.frames[clip];
-      const f = (((time % 1) + 1) % 1) * n;
-      const i0 = Math.floor(f) % n, i1 = (i0 + 1) % n, ft = f - Math.floor(f);
-      const o0 = (bk.offsets[clip] + i0) * NUM_BONES * 12, o1 = (bk.offsets[clip] + i1) * NUM_BONES * 12;
-      const w0 = w * (1 - ft), w1 = w * ft;
-      const D = bk.data;
-      for (let k = 0; k < NUM_BONES * 12; k++) M[k] += D[o0 + k] * w0 + D[o1 + k] * w1;
-    }
-    // head turn: neck takes a third, head the rest, both about their joints
+    // head turn: the neck takes a third, the head the rest, both about their own joints
     const look = Math.max(-1.25, Math.min(1.25, s.look || 0));
-    if (Math.abs(look) > 1e-3) {
-      rotateBonesY(M, B.rig.rest, [BONE.neck, BONE.head], BONE.neck, look * 0.35);
-      rotateBonesY(M, B.rig.rest, [BONE.head], BONE.head, look * 0.65);
+    if (look > 1e-3 || look < -1e-3) {
+      rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, look * 0.35);
+      rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
+      rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
     }
-    // instance transform: T(x, y, z) * Ry(heading) * S(sc)
+    // figure transform: T(x, y, z) * Ry(heading) * S(sc); seated figures keep the seat height
     const c = Math.cos(s.heading) * sc, sn = Math.sin(s.heading) * sc;
-    let y0 = s.y;
-    if (s.pose === 2) y0 += SEAT_HEIGHT * (1 - sc);
+    const y0 = s.pose === 2 ? s.y + SEAT_HEIGHT * (1 - sc) : s.y;
     const base = i * BONE_W * 4;
-    for (let b = 0; b < NUM_BONES; b++) {
-      const k = b * 12, o = base + b * 12;
+    for (let k = 0; k < MAT_N; k += 12) {
+      const o = base + k;
       for (let col = 0; col < 4; col++) {
         const m0 = M[k + col], m1 = M[k + 4 + col], m2 = M[k + 8 + col];
-        out[o + col] = c * m0 + sn * m2 + (col === 3 ? s.x : 0);
-        out[o + 4 + col] = sc * m1 + (col === 3 ? y0 : 0);
-        out[o + 8 + col] = -sn * m0 + c * m2 + (col === 3 ? s.z : 0);
+        out[o + col] = c * m0 + sn * m2;
+        out[o + 4 + col] = sc * m1;
+        out[o + 8 + col] = -sn * m0 + c * m2;
       }
+      out[o + 3] += s.x;
+      out[o + 7] += y0;
+      out[o + 11] += s.z;
     }
   },
 
@@ -294,14 +289,41 @@ const humans = {
 };
 
 function newSlot() {
-  return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, look_: null, lod: -1 };
+  return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null, lod: -1 };
+}
+
+function newRowAttr(n) {
+  const a = new THREE.InstancedBufferAttribute(new Float32Array(n), 1);
+  a.setUsage(THREE.DynamicDrawUsage);
+  return a;
+}
+
+function dataTexture(data, w, h) {
+  const t = new THREE.DataTexture(data, w, h, THREE.RGBAFormat, THREE.FloatType);
+  t.minFilter = t.magFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return t;
+}
+
+/** Accumulate w * clip(time) (frames linearly interpolated) into M. */
+function addClip(M, bk, clip, time, w) {
+  const n = bk.frames[clip];
+  const f = (((time % 1) + 1) % 1) * n;
+  const fi = Math.floor(f);
+  const i0 = fi % n, i1 = (i0 + 1) % n, ft = f - fi;
+  const o0 = (bk.offsets[clip] + i0) * MAT_N, o1 = (bk.offsets[clip] + i1) * MAT_N;
+  const w0 = w * (1 - ft), w1 = w * ft;
+  const D = bk.data;
+  for (let k = 0; k < MAT_N; k++) M[k] += D[o0 + k] * w0 + D[o1 + k] * w1;
 }
 
 /** Which clips play at a speed: walk clips bracket the body-normalised speed, slow walking blends into standing. */
 function gaitBlend(B, a, speed, sc) {
   const vb = speed / Math.sqrt(Math.max(0.3, sc));
   const V = B.walkV;
-  const out = { a: CLIP.walk, b: -1, wa: 1, wb: 0, idle: 0, extra: 1 };
+  const out = _gait;
+  out.a = CLIP.walk; out.b = -1; out.wa = 1; out.wb = 0; out.idle = 0; out.extra = 1;
   if (a.walkOld) {
     out.a = CLIP.walkOld;
     const w = smooth01((vb - 0.08) / 0.4);
@@ -327,20 +349,21 @@ function gaitBlend(B, a, speed, sc) {
 
 function smooth01(t) { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); }
 
-/** Rotate the given bones' 3x4 matrices about the vertical through `pivotBone`'s posed joint. */
-function rotateBonesY(M, rest, bones, pivotBone, ang) {
-  const k = pivotBone * 12, r = rest[pivotBone];
+/** Rotate bone b's 3x4 matrix about the vertical through pivot bone p's posed joint. */
+function rotateBoneY(M, rest, b, p, ang) {
+  const k = p * 12, r = rest[p];
   const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
   const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
   const c = Math.cos(ang), s = Math.sin(ang);
-  for (const b of bones) {
-    const o = b * 12;
-    for (let col = 0; col < 4; col++) {
-      const x = M[o + col] - (col === 3 ? px : 0), z = M[o + 8 + col] - (col === 3 ? pz : 0);
-      M[o + col] = c * x + s * z + (col === 3 ? px : 0);
-      M[o + 8 + col] = -s * x + c * z + (col === 3 ? pz : 0);
-    }
+  const o = b * 12;
+  for (let col = 0; col < 4; col++) {
+    const x = M[o + col], z = M[o + 8 + col];
+    M[o + col] = c * x + s * z;
+    M[o + 8 + col] = -s * x + c * z;
   }
+  // keep the pivot fixed
+  M[o + 3] += px - (c * px + s * pz);
+  M[o + 11] += pz - (-s * px + c * pz);
 }
 
 export default humans;

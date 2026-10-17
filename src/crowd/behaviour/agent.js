@@ -61,5 +61,10 @@ export class Agent {
     this.tramLookS = 0;       // window in which the agent looks at the tram
     this.bellT = 0;           // reacting to the bell until this time
     this.dreamy = false;      // absorbed (phone, conversation): notices the tram late
+    this.fresh = false;       // spawned this frame (for the visible-spawn statistics)
+    this.src = '';            // where it came from (statistics)
+    this.stride = 1.5; this.strideV = -1; // cached gait cycle length and the speed it was computed for
+    this.afs = 0; this.afd = 0; // avoidance force (recomputed every other frame)
+    this.laneT = 0; this.laneTT = 0; // cached lane target and its refresh countdown
   }
 }

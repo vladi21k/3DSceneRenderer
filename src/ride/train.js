@@ -19,6 +19,9 @@ import { input } from './input.js';
 //    and a speed supervisor keeps manual driving within curve / switch limits.
 //  - Bell: B / Space, on departure, at some cross streets, and on crowd 'bell-request'
 //    (rate limited); a pedestrian that stays on the track makes the tram pre-brake.
+//  - The driver coasts: no more power once a stop or a slower limit is within ~1.35x
+//    the braking distance, then a jerk-limited brake application that ends softly.
+//  - Nothing moves before the ride starts (world ready; in the app, the start click).
 
 const KMH = 1 / 3.6;
 const G = 9.81;
@@ -48,6 +51,10 @@ export const DRIVE = {
   scanAhead: 240,          // m of route scanned for restrictions
   dwell: [12, 18],         // s
   autoBellGap: 4,          // s between automatic bells
+  coastMargin: 1.35,       // coast (no traction) within this multiple of the braking distance
+  aCoastRestrict: 0.4,     // gentler curve that decides when to shut off power before a limit
+  reqHold: 3.0,            // s a pedestrian request keeps its urgency (the crowd repeats every ~2.5 s)
+  bellToGo: 1.2,           // s from the departure bell to moving off
 };
 
 /** Master controller positions, brake (left) to power (right). */
@@ -90,7 +97,10 @@ class BrakeCurve {
   }
 }
 
-const STOP_CURVE = new BrakeCurve(DRIVE.aStop, 2.4, 0.3);
+// planned stop: 0.85 m/s², easing to ~0.42 m/s² at standstill (a firm, short final stop)
+const STOP_CURVE = new BrakeCurve(DRIVE.aStop, 1.6, 0.5);
+const FINAL_STOP = [2.5, 1.0];   // m: blend into the required-rate final stop over these distances
+const STOP_LAG = 0.0;         // m, final-stop aim point beyond the mark (0: the cab front stops on it)
 
 /** Pure simulation of the vehicle and its driver (no DOM), so it can also be run
  *  offline: new Tram(app, {s, speed, events}).step(dt). */
@@ -124,11 +134,14 @@ export class Tram {
     this.caution = 0;
     this.limit = Infinity;      // current speed restriction at the cab (m/s)
     this.vRef = 0;
+    this.coasting = false;
     this._rung = new Set();
     this._visits = 0;
     this._lim = new Float32Array(512);
+    this._r = { v: 99, a: 0, w: 99, hold: 99, holdW: 99 };
     this.curvature = this.route.curvature(this.s);
     this.nextStop = { station: null, distance: Infinity };
+    this._queue = [];           // events raised before the first step (listeners may not exist yet)
 
     if (this.events && this.events.on) this.events.on('bell-request', (e) => this.onBellRequest(e));
 
@@ -150,9 +163,20 @@ export class Tram {
       this.speed = 0;
       const ns = this.nextStop;
       if (ns.station && Math.abs(ns.distance) < 3) this._beginDwell(ns.station, true);
-      else this.seq = { kind: 'start', t0: this.t, dur: 2.6, belled: false };
+      else this._beginStart();
       this.aMotor = -0.6;                              // standing on the holding brake
     }
+  }
+
+  /** Events go out from the first step on, so every listener has subscribed by then. */
+  _emit(type, data) {
+    if (this._queue) this._queue.push(type, data);
+    else this.events.emit(type, data);
+  }
+
+  /** Standing start: bell, then move off DRIVE.bellToGo later (manual: once notched up). */
+  _beginStart(belled = false, station = null) {
+    this.seq = { kind: 'start', t0: this.t, bellT: belled ? this.t - DRIVE.bellToGo : -1e9, belled, station, release: false };
   }
 
   // ------------------------------------------------------------------ vehicle model
@@ -171,7 +195,9 @@ export class Tram {
 
   // ------------------------------------------------------------------ restrictions
   /** Allowed speed now from curve / crossover limits ahead (braking curves), the
-   *  feed-forward deceleration of that curve, and the limit at the tram itself. */
+   *  feed-forward deceleration of that curve, the limit itself (w) and the gentler
+   *  coast curve (hold) below which the driver shuts off power. `shift` moves the
+   *  braking curves closer by the distance lost while the brake ramps in. */
   _restriction(shift) {
     const route = this.route, layout = this.layout, step = 2;
     const back = Math.ceil(VEHICLE.length / step), ahead = Math.ceil(DRIVE.scanAhead / step);
@@ -184,7 +210,7 @@ export class Tram {
       if (layout.isInCrossover(y, 3)) v = Math.min(v, vx);
       this._lim[i] = v;
     }
-    let best = 99, bestA = 0, here = 99, bestW = 99;
+    let best = 99, bestA = 0, here = 99, bestW = 99, hold = 99, holdW = 99;
     for (let j = 0; j + back < n; j++) {
       // limit for the cab at x = s + j·step: every part of the tram (back to its rear) must respect it
       let w = 99;
@@ -192,12 +218,17 @@ export class Tram {
       if (j === 0) here = w;
       if (w >= 99) continue;
       const dist = Math.max(0, j * step - shift);
-      const v = Math.sqrt(w * w + 2 * DRIVE.aRestrict * dist);
-      // feed-forward fades out over the last ~1.5 m/s so the brake releases onto the limit
-      if (v < best) { best = v; bestW = w; bestA = j === 0 ? 0 : -DRIVE.aRestrict * smoothstep(0, 1.5, v - w); }
+      const wt = w - 0.25;                            // drivers aim a little under the limit
+      const v = Math.sqrt(wt * wt + 2 * DRIVE.aRestrict * dist);
+      // feed-forward fades out as the tram gets down to the limit, so the brake releases onto it
+      if (v < best) { best = v; bestW = w; bestA = j === 0 ? 0 : -DRIVE.aRestrict * smoothstep(0, 0.8, Math.min(v, this.speed) - wt); }
+      const h = Math.sqrt(w * w + 2 * DRIVE.aCoastRestrict * dist);
+      if (h < hold) { hold = h; holdW = w; }
     }
     this.limit = here;
-    return { v: best, a: bestA, w: bestW };
+    const r = this._r;
+    r.v = best; r.a = bestA; r.w = bestW; r.hold = hold; r.holdW = holdW;
+    return r;
   }
 
   // ------------------------------------------------------------------ stations
@@ -231,31 +262,44 @@ export class Tram {
     this.speed = 0;
     this.emergency = false;
     if (!this.auto) this.notch = N_INDEX;
-    this.events.emit('station-arrive', { station });
+    this._emit('station-arrive', { station, visit: this._visits });
   }
 
   _runSeq() {
     const q = this.seq, t = this.t - q.t0;
     if (q.kind === 'station') {
-      if (!q.opened && t >= 1.1) { q.opened = true; this.events.emit('doors', { open: true, station: q.station }); }
-      if (!q.closed && t >= q.dur - 4.2) { q.closed = true; this.events.emit('doors', { open: false, station: q.station }); }
+      const visit = this._visits;
+      if (!q.opened && t >= 1.1) { q.opened = true; this._emit('doors', { open: true, station: q.station, visit }); }
+      if (!q.closed && t >= q.dur - 4.2) { q.closed = true; this._emit('doors', { open: false, station: q.station, visit }); }
       if (!q.belled && t >= q.dur - 1.5) { q.belled = true; this.ringBell(true, true); }
       this.phase = !q.opened ? 'arriving' : !q.closed ? 'doors-open' : 'doors-closing';
-    } else {
-      const go = this.auto || this.notch > N_INDEX;   // manual: waits for the driver to notch up
-      if (!q.belled && t >= 0.9 && go) { q.belled = true; this.ringBell(true, true); }
-      this.phase = go ? 'departing' : 'ready';
-    }
-    if (t >= q.dur && (q.kind === 'station' || q.belled)) {
-      if (q.kind === 'station') {
-        this.served = q.station.id;
-        this.events.emit('station-depart', { station: q.station });
-        if (!this.auto && this.notch <= N_INDEX) this.notch = N_INDEX + 3;   // automatic stop, automatic departure
+      q.release = t >= q.dur - 0.7;                    // brakes release just before moving off
+      if (t < q.dur) return;
+      this.served = q.station.id;
+      if (!this.auto && this.notch < N_INDEX) {
+        // the driver is holding the tram on the brake: wait until notched up
+        this._beginStart(true, q.station);
+        this.phase = 'ready';
+        return;
       }
-      this.seq = null;
-      this._departT = this.t;
-      this.state = 'depart';
+      if (!this.auto && this.notch === N_INDEX) this.notch = N_INDEX + 3;   // automatic stop, automatic departure
+      this._depart();
+      return;
     }
+    // standing start: bell, then move off a moment later (manual: waits for power)
+    const go = this.auto || this.notch > N_INDEX;
+    if (!q.belled && go && (!this.auto || t >= 0.5)) { q.belled = true; q.bellT = this.t; this.ringBell(true, true); }
+    this.phase = go ? 'departing' : 'ready';
+    q.release = go && q.belled && this.t - q.bellT >= DRIVE.bellToGo - 0.7;
+    if (go && q.belled && this.t - q.bellT >= DRIVE.bellToGo) this._depart();
+  }
+
+  _depart() {
+    const st = this.seq && this.seq.station;
+    if (st) this._emit('station-depart', { station: st });
+    this.seq = null;
+    this._departT = this.t;
+    this.state = 'depart';
   }
 
   // ------------------------------------------------------------------ bell
@@ -264,14 +308,16 @@ export class Tram {
     if (!auto && this.t - this._manualBellT < 0.25) return false;
     if (auto) this._autoBellT = this.t; else this._manualBellT = this.t;
     this.bellAt = this.t;
-    this.events.emit('bell', { auto });
+    this._emit('bell', { auto });
     return true;
   }
 
+  /** Crowd request (repeated every ~2.5 s while someone stays near the track ahead). The
+   *  urgency is held for DRIVE.reqHold s; a lower repeat lowers it only gradually. */
   onBellRequest(e) {
-    const u = clamp(+(e && e.urgency) || 0, 0, 1);
-    this.req.u = Math.max(this.req.u, u);
-    this.req.lastT = this.t;
+    const u = clamp(+(e && e.urgency) || 0, 0, 1), q = this.req;
+    q.u = Math.max(u, Math.min(q.u, u + 0.2));
+    q.lastT = this.t;
     if (u >= 0.15 && this.speed > 0.5) this.ringBell(true);
   }
 
@@ -300,44 +346,77 @@ export class Tram {
     return aDes + this._resist(this.speed) + this._gradeAcc();
   }
 
+  /** Last metres of a station stop: brake at the constant rate that ends exactly at the
+   *  mark (self-correcting, no creeping), so the stop ends firmly at ~0.4-0.5 m/s²
+   *  instead of dragging out the last half metre. */
+  _finalStop(aCmd, dist) {
+    const v = this.speed;
+    if (dist > FINAL_STOP[0] || v > 3 || v < 1e-3) return aCmd;
+    const aReq = (v * v) / (2 * Math.max(0.02, dist + STOP_LAG));
+    const w = smoothstep(FINAL_STOP[0], FINAL_STOP[1], dist);
+    return aCmd + w * (-aReq + this._resist(v) + this._gradeAcc() - aCmd);
+  }
+
+  /** Distance (m) covered while the brake still builds up to -aPlan from the present effort. */
+  _onset(v, aPlan) {
+    const need = Math.max(0, this.aMotor + aPlan);
+    return 0.5 * v * (need / VEHICLE.jerk + ((2 * VEHICLE.jerk) / VEHICLE.snap) * Math.min(1, need / aPlan));
+  }
+
   _command(dt) {
     const v = this.speed;
-    const shift = v * 0.7 * smoothstep(1.5, 5, v);  // anticipate the jerk-limited brake onset
-    const r = this._restriction(shift);
+    // braking curves are moved closer by the distance lost while the brake ramps in
+    const shiftR = this._onset(v, DRIVE.aRestrict);
+    const shiftS = this._onset(v, DRIVE.aStop);
+    const r = this._restriction(shiftR);
     const cruise = this.cruise(this.s);
 
-    // pedestrians that stay on the track ahead: pre-brake (both modes)
-    const q = this.req;
-    if (this.t - q.lastT > 0.5) q.u = Math.max(0, q.u - 0.6 * dt);
-    q.persist = q.u > 0.3 ? q.persist + dt : Math.max(0, q.persist - 2 * dt);
-    const target = smoothstep(0.3, 1, q.u) * smoothstep(0.8, 2.2, q.persist);
+    // pedestrians that stay on the track ahead: pre-brake (both modes). The crowd repeats
+    // its request every ~2.5 s, so the urgency is held between requests.
+    const q = this.req, since = this.t - q.lastT;
+    if (since > DRIVE.reqHold) {
+      q.u = Math.max(0, q.u - 0.6 * dt);
+      q.persist = Math.max(0, q.persist - 2 * dt);
+    } else if (q.u > 0.3) q.persist += dt;
+    const target = smoothstep(0.3, 1, q.u) * smoothstep(0.4, 1.6, q.persist);
     this.caution += (target - this.caution) * Math.min(1, dt * (target > this.caution ? 1.5 : 0.4));
     const vCaution = this.caution > 0.005 ? cruise * (1 - this.caution) : Infinity;
 
     // station stop
     const ns = this.nextStop;
-    let vStop = Infinity;
+    let vStop = Infinity, vCoastStop = Infinity;
     if (ns.station) {
-      vStop = STOP_CURVE.speed(Math.max(0, ns.distance + 0.25 - shift));   // +0.25: final-creep controller lag
+      vStop = STOP_CURVE.speed(Math.max(0, ns.distance + STOP_LAG - shiftS));
       if (v > vStop + 1.2 && this.assist !== ns.station.id) {   // not committed to this stop yet
         this.skipped = ns.station.id;                 // can no longer stop comfortably
         this._updateStop();
         vStop = Infinity;
-      }
+      } else vCoastStop = STOP_CURVE.speed(Math.max(0, ns.distance - shiftS) / DRIVE.coastMargin);
     }
 
     let vRef = Math.min(cruise, vCaution), aFF = 0;
-    if (r.v < vRef) { vRef = r.v; aFF = r.a; }
     let aCmd;
     let assisted = false;
     if (this.auto) {
-      // a slower limit within braking reach: no point accelerating towards it
-      if (r.v < cruise) { const hold = Math.max(r.w, v); if (hold < vRef) { vRef = hold; aFF = 0; } }
+      // a stop or a slower limit ahead: no more power than needed to get there, then roll
+      const limitAhead = r.hold < cruise && r.holdW < this.limit - 0.05;
+      const vCoast = Math.min(vCoastStop, limitAhead ? r.holdW : Infinity);
+      let coast = false;
+      if (vCoast < vRef) {
+        if (v >= vCoast - (this.coasting ? 1.0 : 0.1)) { coast = true; vRef = Math.min(vRef, v); }
+        else vRef = vCoast;
+      }
+      this.coasting = coast;
+      if (r.v < vRef) { vRef = r.v; aFF = r.a; }
       if (vStop < vRef) { vRef = vStop; aFF = -STOP_CURVE.decel(vStop); }
       if (ns.station && vStop <= cruise) this.assist = ns.station.id;   // committed to the stop
       aCmd = this._control(vRef, aFF);
+      if (coast) aCmd = Math.min(aCmd, 0);
+      if (ns.station && this.assist === ns.station.id) aCmd = this._finalStop(aCmd, ns.distance);
       this.emergency = false;
     } else {
+      this.coasting = false;
+      if (r.v < vRef) { vRef = r.v; aFF = r.a; }
       const notch = NOTCHES[this.notch];
       this.emergency = !!notch.emergency;
       aCmd = notch.emergency ? -VEHICLE.aEmergency
@@ -348,7 +427,7 @@ export class Tram {
         if (this._overrideT > 0.5) { this.skipped = ns.station.id; this.assist = -1; this._overrideT = 0; this._updateStop(); }
         else if (this.assist === ns.station.id || v + 0.3 >= vStop) {
           this.assist = ns.station.id;
-          if (!this.emergency) aCmd = Math.min(aCmd, this._control(vStop, -STOP_CURVE.decel(vStop)));
+          if (!this.emergency) aCmd = Math.min(aCmd, this._finalStop(this._control(vStop, -STOP_CURVE.decel(vStop)), ns.distance));
           assisted = true;
         }
       }
@@ -364,6 +443,12 @@ export class Tram {
   // ------------------------------------------------------------------ step
   step(dt) {
     if (!(dt > 0)) return;
+    if (this._queue) {
+      // first step of the ride: deliver what happened while setting up
+      const qu = this._queue;
+      this._queue = null;
+      for (let i = 0; i < qu.length; i += 2) this.events.emit(qu[i], qu[i + 1]);
+    }
     dt = Math.min(dt, 0.1);
     this.t += dt;
     this._updateStop();
@@ -372,7 +457,7 @@ export class Tram {
     this.phase = null;
     if (this.seq) {
       this._runSeq();
-      aCmd = -0.6;                                    // holding brake, door interlock
+      aCmd = this.seq && this.seq.release ? 0 : -0.6;   // holding brake, door interlock
     }
     if (!this.seq) {
       aCmd = this._command(dt);
@@ -437,11 +522,17 @@ const train = {
   s: 0, speed: 0, accel: 0, throttle: 0, auto: true, state: 'run',
   nextStop: { station: null, distance: Infinity }, curvature: 0, bellAt: -1e9,
   notches: NOTCHES,
+  t: 0,               // simulation clock (s): stands still while the ride is held
+  holding: true,      // the ride has not started yet (world loading / start overlay)
+  coasting: false,
 
   async init(app) {
     this.app = app;
     const p = app.params;
-    this.tram = new Tram(app, { s: app.startS, speed: p.speed == null ? null : p.speed * KMH, auto: p.auto });
+    // interactive ride without an explicit speed: a standing start once the rider clicks
+    const interactive = !p.capture && !!app.systems.ui;
+    const speed = p.speed != null ? p.speed * KMH : interactive ? 0 : null;
+    this.tram = new Tram(app, { s: app.startS, speed, auto: p.auto });
     input.attach(app.canvas);
     let lastNotchMs = 0;
     const notch = (dir, e) => {
@@ -459,11 +550,13 @@ const train = {
   },
 
   update(dt, app) {
+    // nothing moves until the world is ready and (in the app) the rider has clicked to start
+    const ui = app.ui;
+    this.holding = !app.ready || !!(ui && !ui.disabled && ui.holding);
     this.tram.overrideHeld = input.held('notchUp');
-    this.tram.step(dt);
+    this.tram.step(this.holding ? 0 : dt);
     this.sync();
     U.uSpeed.value = this.speed;
-    void app;
   },
 
   sync() {
@@ -472,7 +565,7 @@ const train = {
     this.auto = t.auto; this.state = t.state; this.nextStop = t.nextStop; this.curvature = t.curvature;
     this.bellAt = t.bellAt; this.notch = t.notch; this.notchId = NOTCHES[t.notch].id;
     this.emergency = t.emergency; this.limit = t.limit; this.phase = t.phase; this.caution = t.caution;
-    this.assisting = t.assisting; this.cruise = t.cruise(t.s);
+    this.assisting = t.assisting; this.coasting = t.coasting; this.cruise = t.cruise(t.s); this.t = t.t;
   },
 
   // controls used by the UI

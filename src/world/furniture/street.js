@@ -12,9 +12,9 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const srgb = (h) => new THREE.Color().setStyle(h, THREE.SRGBColorSpace);
 
 // ------------------------------------------------------------------ bench
-function benchEnd(x) {
+function benchEnd(x, mid = false) {
   // cast-iron end frame: swept bars in the YZ plane, 35 mm thick
-  const b = (pts, w = 0.034, h = 0.042) => bar(pts.map(([z, y]) => V(x, y, z)), w, h, { up: [1, 0, 0], r: 0.008, bend: 0.06, bendSegs: 3 });
+  const b = (pts, w = 0.034, h = 0.042) => bar(pts.map(([z, y]) => V(x, y, z)), w, h, { up: [1, 0, 0], r: mid ? 0 : 0.008, bend: mid ? 0 : 0.06, bendSegs: 2 });
   const parts = [
     b([[0.21, 0], [0.2, 0.2], [0.185, 0.42]]),                        // front leg
     b([[-0.26, 0], [-0.22, 0.2], [-0.19, 0.4]]),                      // rear leg
@@ -23,61 +23,67 @@ function benchEnd(x) {
     b([[0.185, 0.42], [0.2, 0.52], [0.19, 0.6]], 0.03, 0.036),         // arm post
   ];
   // scroll curl at the armrest end
-  const curl = [];
-  for (let i = 0; i <= 14; i++) {
-    const a = (i / 14) * Math.PI * 1.7, r = 0.055 * (1 - i / 22);
+  const curl = [], nc = mid ? 6 : 14;
+  for (let i = 0; i <= nc; i++) {
+    const a = (i / nc) * Math.PI * 1.7, r = 0.055 * (1 - i / (nc * 1.6));
     curl.push(V(x, 0.575 + Math.cos(a) * r, 0.19 + Math.sin(a) * r));
   }
-  parts.push(tube(curl, 0.016, { radial: 6, bend: 0 }));
+  parts.push(tube(curl, 0.016, { radial: mid ? 4 : 6, bend: 0 }));
   // feet pads
   parts.push(xf(rbox(0.06, 0.02, 0.07, 0.004), [x, 0.01, 0.21]), xf(rbox(0.06, 0.02, 0.07, 0.004), [x, 0.01, -0.26]));
   return parts;
 }
 
-function bench(lod) {
-  const L = 1.8;
-  if (lod) {
+function bench(detail) {
+  const L = 1.8, mid = detail === 1;
+  if (detail >= 2) {
     const B = (w, h, d, x, y, z, rx = 0) => xf(rbox(w, h, d, 0), [x, y, z], [rx, 0, 0]);
     return {
       iron: merge([B(0.04, 0.62, 0.45, -0.82, 0.31, 0), B(0.04, 0.62, 0.45, 0.82, 0.31, 0)]),
       wood: merge([B(L, 0.035, 0.42, 0, 0.43, 0), B(L, 0.3, 0.035, 0, 0.65, -0.235, -0.25)]),
     };
   }
-  const iron = [...benchEnd(-L / 2 + 0.08), ...benchEnd(L / 2 - 0.08)];
-  const wood = [];
+  const iron = [...benchEnd(-L / 2 + 0.08, mid), ...benchEnd(L / 2 - 0.08, mid)];
+  const wood = [], r = mid ? 0 : 0.007;
   const seat = [[0.215, 0.425], [0.135, 0.437], [0.055, 0.44], [-0.025, 0.437], [-0.105, 0.43], [-0.18, 0.42]];
-  for (const [z, y] of seat) wood.push(xf(rbox(L, 0.032, 0.068, 0.007, 2), [0, y + 0.016, z]));
+  for (const [z, y] of seat) wood.push(xf(rbox(L, 0.032, 0.068, r, 1), [0, y + 0.016, z]));
   for (let i = 0; i < 3; i++) {
     const t = 0.32 + i * 0.27;
     const z = -0.2 - 0.06 * t, y = 0.45 + 0.38 * t;
-    wood.push(xf(rbox(L, 0.075, 0.03, 0.007, 2), [0, y, z + 0.022], [-0.25, 0, 0]));
+    wood.push(xf(rbox(L, 0.075, 0.03, r, 1), [0, y, z + 0.022], [-0.25, 0, 0]));
   }
   return { iron: merge(iron), wood: merge(wood) };
 }
 
 // ------------------------------------------------------------------ bins
-function binHooded() {
+function binHooded(detail = 0) {
   const flutes = (ph, y) => (y > 0.13 && y < 0.72 ? 1 + 0.03 * Math.max(0, Math.cos(ph * 18)) : 1);
-  const body = lathe([[0.265, 0], [0.265, 0.045], [0.24, 0.065], [0.225, 0.1], [0.225, 0.13], [0.218, 0.72], [0.235, 0.74], [0.24, 0.79], [0.226, 0.81], [0.2, 0.812]], 36, { rmod: flutes });
-  const hood = lathe([[0.2, 0.872], [0.245, 0.874], [0.25, 0.9], [0.238, 0.95], [0.17, 0.995], [0.07, 1.025], [0.035, 1.035], [0.04, 1.055], [0.028, 1.075], [0, 1.08]], 28);
+  const body = lathe([[0.265, 0], [0.265, 0.045], [0.24, 0.065], [0.225, 0.1], [0.225, 0.13], [0.218, 0.72], [0.235, 0.74], [0.24, 0.79], [0.226, 0.81], [0.2, 0.812]], detail ? 12 : 36, { rmod: detail ? null : flutes, crease: 1.2 });
+  const hood = lathe([[0.2, 0.872], [0.245, 0.874], [0.25, 0.9], [0.238, 0.95], [0.17, 0.995], [0.07, 1.025], [0.035, 1.035], [0.04, 1.055], [0.028, 1.075], [0, 1.08]], detail ? 12 : 28);
   const posts = [0, 1, 2].map((k) => xf(rbox(0.025, 0.07, 0.02, 0.004), [Math.sin(k * 2.094) * 0.21, 0.842, Math.cos(k * 2.094) * 0.21], [0, k * 2.094, 0]));
   const liner = lathe([[0.198, 0.35], [0.198, 0.85], [0.185, 0.86], [0.0, 0.8]], 20);
   return { body: merge([body, hood, ...posts]), liner: merge([liner]) };
 }
 
+/** Open-top steel litter bin hung on a post, black bag folded over the rim. */
 function binPost() {
-  const body = xf(rbox(0.42, 0.6, 0.3, 0.035, 2), [0, 0.62, 0.05]);
-  const lid = xf(rbox(0.44, 0.05, 0.32, 0.015, 2), [0, 0.945, 0.05]);
-  const post = lathe([[0.04, 0], [0.04, 1.0], [0.032, 1.01], [0, 1.01]], 12);
-  xf(post, [0, 0, -0.14]);
-  const slot = xf(rbox(0.3, 0.08, 0.02, 0.01), [0, 0.82, 0.205]);
-  return { body: merge([body, lid, post]), liner: merge([slot]) };
+  const slots = (ph, y) => (y > 0.4 && y < 0.86 ? 1 + 0.018 * Math.max(0, Math.cos(ph * 14)) : 1);
+  const body = lathe([[0.0, 0.3], [0.17, 0.3], [0.195, 0.32], [0.2, 0.36], [0.2, 0.88], [0.212, 0.9], [0.212, 0.93], [0.2, 0.935], [0.192, 0.93], [0.192, 0.9]], 24, { rmod: slots, crease: 1.0 });
+  xf(body, [0, 0, 0.04]);
+  const post = lathe([[0.045, 0], [0.045, 0.02], [0.035, 0.03], [0.035, 1.02], [0.04, 1.03], [0, 1.05]], 10);
+  xf(post, [0, 0, -0.2]);
+  const brackets = [0.45, 0.82].map((y) => xf(rbox(0.05, 0.05, 0.08, 0.008), [0, y, -0.155]));
+  // bag: inner lining with the lip folded over the rim
+  const bag = lathe([[0.216, 0.905], [0.214, 0.938], [0.196, 0.94], [0.19, 0.9], [0.188, 0.6], [0.17, 0.45]], 16, { rmod: (ph, y) => 1 + 0.02 * Math.sin(ph * 5 + y * 30) });
+  xf(bag, [0, 0, 0.04]);
+  const inner = xf(new THREE.CircleGeometry(0.17, 12), [0, 0.6, 0.04], [-Math.PI / 2, 0, 0]);
+  return { body: merge([body, post, ...brackets]), liner: merge([bag, inner]) };
 }
 
 // ------------------------------------------------------------------ bollards
-function bollardIron() {
+function bollardIron(seg = 16) {
   return merge([lathe([[0.12, 0], [0.12, 0.02], [0.1, 0.04], [0.086, 0.09], [0.076, 0.68], [0.086, 0.7], [0.088, 0.74], [0.072, 0.755], [0.064, 0.8], [0.072, 0.845],
-    [0.062, 0.89], [0.042, 0.925], [0.047, 0.945], [0.033, 0.975], [0, 0.985]], 16)]);
+    [0.062, 0.89], [0.042, 0.925], [0.047, 0.945], [0.033, 0.975], [0, 0.985]], seg)]);
 }
 function bollardStone() {
   const post = xf(rbox(0.26, 0.52, 0.26, 0.028, 2), [0, 0.26, 0]);
@@ -112,11 +118,17 @@ function kiosk() {
   print.push(xf(quad(1.5, 1.0, uvRect('kioskMenu')), [-W / 2 - 0.002, 1.75, 0], [0, -Math.PI / 2, 0]));
   print.push(xf(quad(1.4, 0.7, uvRect('magazines')), [-W / 2 - 0.09, 0.95, 0], [-0.25, -Math.PI / 2, 0]));
   dark.push(xf(rbox(0.06, 0.75, 1.5, 0.004), [-W / 2 - 0.05, 0.86, 0]));            // rack box
-  // awning over the hatch
-  const aw = makeGeo([-1.25, 2.1, D / 2 + 0.01, 1.25, 2.1, D / 2 + 0.01, -1.25, 1.88, D / 2 + 0.75, 1.25, 1.88, D / 2 + 0.75],
-    [0, 0.95, 0.3, 0, 0.95, 0.3, 0, 0.95, 0.3, 0, 0.95, 0.3], [-1.25, 0, 1.25, 0, -1.25, 0.78, 1.25, 0.78], [0, 2, 1, 1, 2, 3]);
-  const val = xf(rbox(2.5, 0.2, 0.01, 0), [0, 1.78, D / 2 + 0.755]);
-  fabric.push(aw, val);
+  // striped canvas awning over the hatch (stripes as vertex colours)
+  const cA = new THREE.Color().setStyle('#efe6cf', THREE.SRGBColorSpace), cB = new THREE.Color().setStyle('#2c5a44', THREE.SRGBColorSpace);
+  const nS = 20, y0 = 2.14, y1 = 1.9, z0 = D / 2 + 0.01, z1 = D / 2 + 0.78, val = 0.16;
+  for (let i = 0; i < nS; i++) {
+    const xa = -1.25 + (2.5 * i) / nS, xb = -1.25 + (2.5 * (i + 1)) / nS, c = i % 2 ? cB : cA;
+    const P = [xa, y0, z0, xb, y0, z0, xa, y1, z1, xb, y1, z1, xa, y1, z1 + 0.003, xb, y1, z1 + 0.003, xa, y1 - val, z1 + 0.01, xb, y1 - val, z1 + 0.01];
+    const N = [0, 0.98, 0.2, 0, 0.98, 0.2, 0, 0.98, 0.2, 0, 0.98, 0.2, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1];
+    const UV = [xa, 0, xb, 0, xa, 0.8, xb, 0.8, xa, 0.8, xb, 0.8, xa, 0.97, xb, 0.97];
+    const col = []; for (let k = 0; k < 8; k++) col.push(c.r, c.g, c.b);
+    fabric.push(makeGeo(P, N, UV, [0, 2, 1, 1, 2, 3, 4, 6, 5, 5, 6, 7], { color: { array: col, size: 3 } }));
+  }
   return { paint: merge(paint), dark: merge(dark), print: merge(print), glass: merge(glass), stone: merge(stone), zinc: merge(zinc), fabric: merge(fabric), wood: merge(wood) };
 }
 
@@ -141,7 +153,7 @@ function bikeRack() {
   const hoops = [];
   for (let i = 0; i < 5; i++) {
     const x = -1.8 + i * 0.9;
-    hoops.push(tube([V(x, 0, -0.36), V(x, 0.78, -0.36), V(x, 0.78, 0.36), V(x, 0, 0.36)], 0.024, { radial: 8, bend: 0.2, bendSegs: 6 }));
+    hoops.push(tube([V(x, 0, -0.36), V(x, 0.78, -0.36), V(x, 0.78, 0.36), V(x, 0, 0.36)], 0.024, { radial: 7, bend: 0.2, bendSegs: 4 }));
     for (const z of [-0.36, 0.36]) hoops.push(xf(lathe([[0.05, 0], [0.05, 0.008], [0.03, 0.016], [0.026, 0.03], [0, 0.03]], 10), [x, 0, z]));
   }
   return merge(hoops);
@@ -163,21 +175,19 @@ function infoBoard() {
 export function buildStreetProtos(M, F) {
   const P = {};
   const iron = M.get('metal.iron'), pole = M.get('metal.pole');
-  for (const lod of [0, 1]) {
-    const b = bench(lod);
-    P[`bench${lod}`] = proto('bench', [{ geo: b.iron, mat: iron }, { geo: b.wood, mat: M.get('wood.bench') }]);
-  }
-  const bh = binHooded(), bp = binPost();
-  P.binHooded = proto('binHooded', [{ geo: bh.body, mat: F.paint, tint: true }, { geo: bh.liner, mat: M.get('rubber') }]);
+  const bn = [bench(0), bench(1), bench(2)];
+  P.bench = proto('bench', [{ geo: bn.map((b) => b.iron), mat: iron }, { geo: bn.map((b) => b.wood), mat: M.get('wood.bench') }], [30, 140]);
+  const bh = [binHooded(0), binHooded(1)], bp = binPost();
+  P.binHooded = proto('binHooded', [{ geo: bh.map((b) => b.body), mat: F.paint, tint: true }, { geo: bh.map((b) => b.liner), mat: M.get('rubber') }], [40]);
   P.binPost = proto('binPost', [{ geo: bp.body, mat: F.paint, tint: true }, { geo: bp.liner, mat: M.get('rubber') }]);
-  P.bollardIron = proto('bollardIron', [{ geo: bollardIron(), mat: iron }]);
+  P.bollardIron = proto('bollardIron', [{ geo: [bollardIron(16), bollardIron(8)], mat: iron }], [35]);
   P.bollardStone = proto('bollardStone', [{ geo: bollardStone(), mat: M.get('stone.smooth') }]);
   const k = kiosk();
   P.kiosk = proto('kiosk', [{ geo: k.paint, mat: F.paint, tint: true }, { geo: k.dark, mat: M.get('rubber') }, { geo: k.print, mat: F.print }, { geo: k.glass, mat: F.glass, cast: false },
-    { geo: k.stone, mat: M.get('concrete') }, { geo: k.zinc, mat: pole }, { geo: k.fabric, mat: F.canopy, tint: true }, { geo: k.wood, mat: M.get('wood.bench') }]);
-  for (const lod of [0, 1]) for (const v of [0, 1]) {
-    const c = advertColumn(v, lod);
-    P[`column${v}_${lod}`] = proto('advertColumn', [{ geo: c.iron, mat: F.paint, tint: true }, { geo: c.band, mat: F.print }]);
+    { geo: k.stone, mat: M.get('concrete') }, { geo: k.zinc, mat: pole }, { geo: k.fabric, mat: F.canopy }, { geo: k.wood, mat: M.get('wood.bench') }]);
+  for (const v of [0, 1]) {
+    const c = [advertColumn(v, 0), advertColumn(v, 1)];
+    P[`column${v}`] = proto('advertColumn', [{ geo: c.map((x) => x.iron), mat: F.paint, tint: true }, { geo: c.map((x) => x.band), mat: F.print }], [80]);
   }
   P.bikeRack = proto('bikeRack', [{ geo: bikeRack(), mat: M.get('metal.galvanized') }]);
   const ib = infoBoard();
@@ -200,7 +210,7 @@ export function placeStreetFurniture(chunk, app, inst, P) {
     const out = f.yaw + Math.PI / 2; // facing away from the tracks
     switch (f.type) {
       case 'bench':
-        inst.add(P[`bench${lod}`], placeMatrix(route, f.s, f.d, 0, out + rng.range(-0.02, 0.02), _m));
+        inst.add(P.bench, placeMatrix(route, f.s, f.d, 0, out + rng.range(-0.02, 0.02), _m));
         break;
       case 'bin': {
         if (lod) break;
@@ -220,7 +230,7 @@ export function placeStreetFurniture(chunk, app, inst, P) {
         inst.add(P.kiosk, placeMatrix(route, f.s, f.d, 0, out, _m), _c.copy(srgb(rng.pick(PAINT.kiosk))));
         break;
       case 'advertColumn':
-        inst.add(P[`column${rng.int(0, 1)}_${lod}`], placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m), _c.copy(srgb(rng.pick(PAINT.column))));
+        inst.add(P[`column${rng.int(0, 1)}`], placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m), _c.copy(srgb(rng.pick(PAINT.column))));
         break;
       case 'bikeRack':
         if (!lod) inst.add(P.bikeRack, placeMatrix(route, f.s, f.d, 0, out, _m));

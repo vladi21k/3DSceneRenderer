@@ -13,6 +13,7 @@ export async function loadHumanAssets(baseUrl) {
     fetch(baseUrl + 'humans.json').then((r) => { if (!r.ok) throw new Error('humans.json ' + r.status); return r.json(); }),
     fetch(baseUrl + 'humans.bin').then((r) => { if (!r.ok) throw new Error('humans.bin ' + r.status); return r.arrayBuffer(); }),
   ]);
+  if (meta.byteLength && meta.byteLength !== buf.byteLength) throw new Error('humans.bin does not match humans.json');
   const bases = {};
   for (const [name, base] of Object.entries(meta.bases)) {
     const lods = base.lods.map((L) => {

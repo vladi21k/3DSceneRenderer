@@ -55,7 +55,7 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// macro variation noise (raw RGBA16F): r,g soft multi-octave, b blotchy, a mid
+// macro variation noise (raw RGBA8): r,g soft multi-octave, b blotchy, a mid
 export const macro = {
   name: 'macro', size: 256, tile: [1, 1], raw: true,
   glsl: /* glsl */ `

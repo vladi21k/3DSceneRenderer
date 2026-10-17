@@ -41,11 +41,18 @@ export function doorTpl(o, L, q) {
   const t = new Tpl();
   const n = headSegments(o, q);
   const ring = (d, z) => outlinePts(o, d, n).map((p) => [p[0], p[1], z]);
+  const hwI = o.w / 2 - FW;
+  const top = L.yT ?? o.h - FW;
+  if (q < 0.5) {
+    // far: casing face, transom and flat leaves
+    t.loft([ring(0, ZF), ring(FW, ZF)], true, 1);
+    if (L.yT) t.box(-hwI, L.yT - 0.055, -0.02, hwI, L.yT + 0.055, ZF, 1, 1, 1);
+    t.box(-hwI, 0, -0.03, hwI, L.yT ? L.yT - 0.055 : top, 0.0, 1, 0.8, 0.95);
+    return t.bake();
+  }
   t.loft([ring(0, ZF), ring(FW - CH, ZF)], true, 1);
   t.loft([ring(FW - CH, ZF), ring(FW, ZF - CH)], true, 0.95);
   t.loft([ring(FW, ZF - CH), ring(FW, ZB)], true, 0.75);
-  const hwI = o.w / 2 - FW;
-  const top = L.yT ?? o.h - FW;
   if (L.yT) rail(t, [-hwI - 0.01, L.yT], [hwI + 0.01, L.yT], 0.11, ZF, ZB);
   const leafTop = L.yT ? L.yT - 0.055 : top;
   const zf = 0.02, zb = -0.035;
@@ -149,6 +156,7 @@ export function doorMetalTpl(o, L, q) {
       for (const y of [y0 + 0.25, (y0 + y1) / 2, y1 - 0.25]) t.box(x0, y - 0.01, 0.014, x1, y + 0.01, 0.026, 1 | 16 | 32, 0.9, 1);
     }
   }
+  if (q < 0.5) return { grille: null, handles: null };
   // lever handles at the meeting stiles
   const hx = L.leaves === 2 ? [-0.07, 0.07] : [hwI - 0.1];
   for (const x of hx) {

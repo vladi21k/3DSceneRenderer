@@ -9,10 +9,10 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f12; }
 /* ---------------------------------------------------------------- ride HUD */
 .ride-ui {
   --ink: rgba(255, 255, 255, .94);
-  --ink-2: rgba(255, 255, 255, .66);
-  --ink-3: rgba(255, 255, 255, .34);
+  --ink-2: rgba(255, 255, 255, .84);
+  --ink-3: rgba(255, 255, 255, .5);
   --brake: rgba(255, 150, 112, .95);
-  --shadow: 0 1px 2px rgba(0, 0, 0, .45), 0 0 18px rgba(0, 0, 0, .28);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .55), 0 0 14px rgba(0, 0, 0, .32);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
@@ -30,8 +30,15 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
 }
 
 .ride-ui .hud-left, .ride-ui .hud-right {
-  position: absolute; bottom: 34px; text-shadow: var(--shadow);
+  position: absolute; bottom: 34px; text-shadow: var(--shadow); isolation: isolate;
 }
+/* local scrims keep the small print legible over sunlit pale paving */
+.ride-ui .hud-left::before, .ride-ui .hud-right::before {
+  content: ""; position: absolute; z-index: -1; pointer-events: none; width: 400px; height: 230px; bottom: -70px;
+  background: radial-gradient(ellipse closest-side at 50% 58%, rgba(6, 8, 12, .44), rgba(6, 8, 12, .22) 55%, rgba(6, 8, 12, 0));
+}
+.ride-ui .hud-left::before { left: -110px; }
+.ride-ui .hud-right::before { right: -100px; }
 .ride-ui .hud-left { left: 40px; }
 .ride-ui .hud-right { right: 40px; width: 220px; display: flex; flex-direction: column; gap: 16px; pointer-events: auto; }
 
@@ -52,7 +59,7 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
 .ride-ui .ctl { margin-top: 18px; width: 188px; }
 .ride-ui .ctl-track { position: relative; height: 9px; }
 .ride-ui .ctl-track::before {
-  content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: var(--ink-3);
+  content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: var(--ink-3); box-shadow: 0 0 3px rgba(0, 0, 0, .35);
 }
 .ride-ui .ctl-tick { position: absolute; top: 2px; width: 1px; height: 5px; margin-left: -.5px; background: var(--ink-3); }
 .ride-ui .ctl-tick-n { top: 0; height: 9px; background: var(--ink-2); }
@@ -84,15 +91,16 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
 /* sliders */
 .ride-ui .sl { display: block; cursor: default; }
 .ride-ui .sl-head { display: flex; justify-content: space-between; color: var(--ink-2); margin-bottom: 7px; }
-.ride-ui .sl-v { color: var(--ink); letter-spacing: .06em; text-transform: none; font-size: 11.5px; }
+.ride-ui .sl-v { color: var(--ink); letter-spacing: .06em; text-transform: none; font-size: 11.5px; white-space: pre; }
+.ride-ui .lbl-short { display: none; }
 .ride-ui .sl-in {
   -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 14px; margin: 0;
   background: transparent; cursor: pointer; outline: none;
 }
-.ride-ui .sl-in::-webkit-slider-runnable-track { height: 1px; background: rgba(255, 255, 255, .42); box-shadow: 0 0 4px rgba(0, 0, 0, .35); }
-.ride-ui .sl-in::-moz-range-track { height: 1px; background: rgba(255, 255, 255, .42); }
+.ride-ui .sl-in::-webkit-slider-runnable-track { height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .6); box-shadow: 0 0 4px rgba(0, 0, 0, .4); }
+.ride-ui .sl-in::-moz-range-track { height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .6); }
 .ride-ui .sl-in::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 11px; height: 11px; margin-top: -5px; border-radius: 50%; border: 0;
+  -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4.5px; border-radius: 50%; border: 0;
   background: #fff; box-shadow: 0 0 0 4px rgba(255, 255, 255, .0), 0 1px 4px rgba(0, 0, 0, .5); transition: box-shadow .2s;
 }
 .ride-ui .sl-in::-moz-range-thumb { width: 11px; height: 11px; border-radius: 50%; border: 0; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
@@ -165,10 +173,15 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
   .ride-ui .start-legend { row-gap: 5px; }
 }
 @media (max-width: 720px) {
-  .ride-ui .hud-left { left: 18px; bottom: 22px; }
-  .ride-ui .hud-right { right: 18px; bottom: 22px; width: 150px; }
-  .ride-ui .spd-v { font-size: 48px; }
-  .ride-ui .ctl { width: 150px; }
+  .ride-ui .hud-shade { height: 150px; }
+  .ride-ui .hud-left { left: 16px; bottom: 14px; }
+  .ride-ui .hud-right { right: 16px; bottom: 14px; width: 140px; gap: 12px; }
+  .ride-ui .hud-left::before, .ride-ui .hud-right::before { width: 300px; height: 180px; bottom: -60px; }
+  .ride-ui .spd-v { font-size: 44px; }
+  .ride-ui .ctl { width: 140px; margin-top: 12px; }
+  .ride-ui .stop { margin-top: 10px; }
+  .ride-ui .lbl-long, .ride-ui .tod-phase { display: none; }
+  .ride-ui .lbl-short { display: inline; }
   .ride-ui .hint { display: none; }
   .ride-ui .start-title { font-size: 34px; }
 }

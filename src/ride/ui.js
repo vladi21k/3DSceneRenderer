@@ -62,6 +62,7 @@ const ui = {
 
     input.enabled = false;                           // until the start overlay is dismissed
     this.started = false;
+    this.holding = true;                             // the tram waits for the rider (train.js)
     this.hidden = false;
     this._last = {};
     this._build();
@@ -122,7 +123,7 @@ const ui = {
       const row = el('label', 'sl', right);
       const head = el('div', 'sl-head', row);
       el('span', 'sl-k', head, label);
-      const val = el('span', 'sl-v', head, '');
+      const val = el('span', 'sl-v', head);
       const inp = el('input', 'sl-in', row);
       Object.assign(inp, { type: 'range', min, max, step });
       // release focus after use so arrow keys go back to the master controller
@@ -130,7 +131,10 @@ const ui = {
       inp.addEventListener('change', () => inp.blur());
       return { inp, val };
     };
-    this.tod = mk('Time of day', 0, 1, 0.001);
+    this.tod = mk('<span class="lbl-long">Time of day</span><span class="lbl-short">Time</span>', 0, 1, 0.001);
+    this.tod.val.textContent = '';
+    this.$clock = el('span', 'tod-clock', this.tod.val);
+    this.$phase = el('span', 'tod-phase', this.tod.val);
     this.lens = mk('Lens', Math.log(focalOf(60)), Math.log(focalOf(12)), 0.001);
     this.tod.inp.addEventListener('input', () => this._queueTod(+this.tod.inp.value));
     this.lens.inp.addEventListener('input', () => {
@@ -173,6 +177,7 @@ const ui = {
   _start() {
     if (this.started) return;
     this.started = true;
+    this.holding = false;
     this.$overlay.classList.remove('show');
     this.$overlay.classList.add('gone');
     this.$overlay.blur();
@@ -207,13 +212,20 @@ const ui = {
   _setTod(t, force) {
     if (!this.tod) return;
     if (force || document.activeElement !== this.tod.inp) this.tod.inp.value = String(t);
-    this.tod.val.textContent = `${clockOf(t)}  ·  ${todName(t)}`;
+    this.$clock.textContent = clockOf(t);
+    this.$phase.textContent = `  ·  ${todName(t)}`;
   },
 
   _set(key, node, text) {
     if (this._last[key] === text) return;
     this._last[key] = text;
     node.textContent = text;
+  },
+
+  _style(key, node, prop, value) {
+    if (this._last[key] === value) return;
+    this._last[key] = value;
+    node.style[prop] = value;
   },
 
   update(dt, app) {
@@ -239,13 +251,16 @@ const ui = {
         this.$fill.classList.toggle('brake', th < 0);
       }
       const manual = !tr.auto;
-      this.$mark.style.opacity = manual ? '1' : '0';
-      if (manual) this.$mark.style.left = `${(tr.notch / (n - 1)) * 100}%`;
+      this._style('markO', this.$mark, 'opacity', manual ? '1' : '0');
+      if (manual) this._style('markL', this.$mark, 'left', `${(tr.notch / (n - 1)) * 100}%`);
       const notchText = manual ? (tr.notchId || 'N') + (tr.assisting ? ' · stop' : '')
         : tr.throttle > 0.06 ? 'Power' : tr.speed < 0.05 ? 'Hold' : tr.throttle < -0.06 ? 'Brake' : 'Coast';
       this._set('notch', this.$notch, notchText);
-      this._set('mode', this.$mode, tr.auto ? 'Auto' : 'Manual');
-      this.$mode.classList.toggle('manual', manual);
+      if (this._last.manual !== manual) {
+        this._last.manual = manual;
+        this.$mode.textContent = manual ? 'Manual' : 'Auto';
+        this.$mode.classList.toggle('manual', manual);
+      }
 
       // next stop / station status
       const ph = tr.phase, ns = tr.nextStop || {};
@@ -268,7 +283,7 @@ const ui = {
       const val = Math.log(f).toFixed(3);
       if (this._last.lens !== val) { this._last.lens = val; this.lens.inp.value = val; }
     }
-    if (this.lens) this._set('lensV', this.lens.val, `${Math.round(focalOf(rig?.fov ?? app.camera.fov))} mm`);
+    if (this.lens) this._set('lensV', this.lens.val, `${Math.round(focalOf(rig?.fov ?? app.camera.fov))} mm`);   // 16:9 equivalent
 
     if (this.$stats) {
       this._statT = (this._statT || 0) + (app.realDt || 0);

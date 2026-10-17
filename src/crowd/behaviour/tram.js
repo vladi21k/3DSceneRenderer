@@ -117,13 +117,14 @@ export class TramWatch {
     const dl = a.d - RIDE_D;
     if (Math.abs(dl) >= BAND) return;
     const ahead = a.s - this.trainU;
-    if (ahead < -(TRAM_LEN + 2) || ahead > this.frontFor(a) - 4) return;
-    if (Math.abs(prevD - RIDE_D) >= BAND - 1e-4) {
+    const inZone = ahead > -(TRAM_LEN + 2) && ahead < Math.max(this.frontFor(a) - 4, SWEPT_AHEAD + 2);
+    if (inZone && Math.abs(prevD - RIDE_D) >= BAND - 1e-4) {
       // was outside: block the step into the band
       a.d = prevD; a.vd = 0;
       this.stats.blocked++;
       return;
     }
+    // the cab's swept volume (and the tram body behind it) is never entered, whatever happened above
     if (ahead > -(TRAM_LEN + 1) && ahead < SWEPT_AHEAD + 0.6) {
       // emergency: should never happen if the behaviour above works. Count and project out.
       if (ahead > -AGENT_R && ahead < SWEPT_AHEAD + AGENT_R && Math.abs(dl) < SWEPT_HALF + AGENT_R) this._violation(a, ahead, dl);

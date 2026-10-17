@@ -6,11 +6,19 @@ import * as THREE from 'three';
 // material and pass, with per-instance frustum culling (shadow cascades included).
 // A chunk build adds instances through a writer bound to the chunk's returned Object3D;
 // instances become visible together with the chunk group and are freed on dispose.
+//
+// Distance LOD per instance: a prototype with `lods` (switch distances in metres) gives
+// each part one geometry per level; updateLod() swaps the geometry id of live instances
+// as the camera moves (with hysteresis), so detail follows the real distance instead of
+// the 200 m chunk LOD.
 
 const WHITE = new THREE.Color(1, 1, 1);
 
-/** Prototype: {name, parts: [{geo, mat, tint?, cast?}]}. */
-export const proto = (name, parts) => ({ name, parts: parts.filter((p) => p && p.geo) });
+/** Prototype: {name, parts: [{geo | [geoLevel0, geoLevel1, ...], mat, tint?, cast?}], lods?}. */
+export const proto = (name, parts, lods = null) => {
+  const ps = parts.filter((p) => p && p.geo).map((p) => ({ ...p, geos: Array.isArray(p.geo) ? p.geo : [p.geo] }));
+  return { name, parts: ps, lods: lods && ps.some((p) => p.geos.length > 1) ? lods : null };
+};
 
 function conform(g, names) {
   let out = g;
@@ -22,6 +30,12 @@ function conform(g, names) {
     out.setAttribute(k, new THREE.BufferAttribute(arr, ref[0]));
   }
   return out;
+}
+
+function levelFor(lods, d, cur) {
+  let lv = 0;
+  while (lv < lods.length && d > lods[lv] * (cur > lv ? 0.92 : 1.0)) lv++; // hysteresis towards the current level
+  return lv;
 }
 
 export class BatchSet {
@@ -48,7 +62,7 @@ export class BatchSet {
       const key = `${part.mat.uuid}|${cast}`;
       let b = this.batches.get(key);
       if (!b) { b = { mat: part.mat, cast, geos: new Map(), tinted: false, bm: null, live: 0, free: [] }; this.batches.set(key, b); }
-      if (!b.geos.has(part.geo)) b.geos.set(part.geo, -1);
+      for (const g of part.geos) if (!b.geos.has(g)) b.geos.set(g, -1);
       if (part.tint) b.tinted = true;
       part.batch = b;
     }
@@ -59,7 +73,6 @@ export class BatchSet {
     const counts = new Map();
     return {
       add: (p) => { if (p) for (const part of p.parts) counts.set(part.batch, (counts.get(part.batch) || 0) + 1); },
-      count: () => 0,
       counts,
     };
   }
@@ -98,16 +111,24 @@ export class BatchSet {
     }
   }
 
-  /** Writer for one chunk build: instances are tied to `obj` (the chunk part). */
-  writer(obj) {
-    const rec = { obj, ids: [], vis: false };
+  /** Writer for one chunk build: instances are tied to `obj` (the chunk part).
+   *  `eye` (world position) picks the initial LOD level. */
+  writer(obj, eye = null) {
+    const rec = { obj, ids: [], lod: [], vis: false };
     this.records.add(rec);
     obj.userData.batchRecord = rec;
     return {
       add: (p, matrix, color = null) => {
         if (!p) return;
+        const e = matrix.elements;
+        let lv = 0, item = null;
+        if (p.lods) {
+          lv = eye ? levelFor(p.lods, Math.hypot(e[12] - eye.x, e[14] - eye.z), 0) : p.lods.length;
+          item = { p, x: e[12], z: e[14], lv, ids: [] };
+          rec.lod.push(item);
+        }
         for (const part of p.parts) {
-          const b = part.batch, bm = b.bm, gid = b.geos.get(part.geo);
+          const b = part.batch, bm = b.bm, gid = b.geos.get(part.geos[Math.min(lv, part.geos.length - 1)]);
           // recycle our own hidden instances (BatchedMesh re-sorts its free list on every add)
           let id;
           if (b.free.length) { id = b.free.pop(); bm.setGeometryIdAt(id, gid); } else {
@@ -119,9 +140,9 @@ export class BatchSet {
           if (b.tinted) bm.setColorAt(id, part.tint && color ? color : WHITE);
           bm.setVisibleAt(id, false);
           rec.ids.push(b, id);
+          if (item) item.ids.push(id);
         }
       },
-      count: () => rec.ids.length / 2,
     };
   }
 
@@ -135,6 +156,7 @@ export class BatchSet {
       b.live--;
     }
     rec.ids.length = 0;
+    rec.lod.length = 0;
     this.records.delete(rec);
     obj.userData.batchRecord = null;
   }
@@ -147,6 +169,22 @@ export class BatchSet {
       if (vis === rec.vis) continue;
       rec.vis = vis;
       for (let i = 0; i < rec.ids.length; i += 2) rec.ids[i].bm.setVisibleAt(rec.ids[i + 1], vis);
+    }
+  }
+
+  /** Swap instance geometry to the level matching its distance from `eye`. */
+  updateLod(eye) {
+    for (const rec of this.records) {
+      for (const it of rec.lod) {
+        const lv = levelFor(it.p.lods, Math.hypot(it.x - eye.x, it.z - eye.z), it.lv);
+        if (lv === it.lv) continue;
+        it.lv = lv;
+        const parts = it.p.parts;
+        for (let k = 0; k < parts.length; k++) {
+          const part = parts[k], b = part.batch;
+          b.bm.setGeometryIdAt(it.ids[k], b.geos.get(part.geos[Math.min(lv, part.geos.length - 1)]));
+        }
+      }
     }
   }
 
@@ -174,15 +212,6 @@ export function placeMatrix(route, s, d, h, yaw, out = new THREE.Matrix4()) {
   out.makeBasis(_x, _up, _f);
   out.setPosition(_p);
   return out;
-}
-
-/** Uniform scale applied to a placement matrix (in place). */
-export function scaleMatrix(m, sx, sy = sx, sz = sx) {
-  const e = m.elements;
-  e[0] *= sx; e[1] *= sx; e[2] *= sx;
-  e[4] *= sy; e[5] *= sy; e[6] *= sy;
-  e[8] *= sz; e[9] *= sz; e[10] *= sz;
-  return m;
 }
 
 const _a = new THREE.Vector3(), _z = new THREE.Vector3(), _y = new THREE.Vector3();

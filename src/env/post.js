@@ -212,16 +212,19 @@ const post = {
     // haze: a dusty summer afternoon
     const k = THREE.MathUtils.lerp(1.0, 1.12, THREE.MathUtils.smoothstep(t, 0.3, 0.8));
     pu.uHazeExt.value.set(3.6e-4 * k, 4.0e-4 * k, 4.7e-4 * k);
-    pu.uHazeInscatter.value = 0.9;
+    pu.uHazeInscatter.value = 1.25;
     pu.uHazeSunVis.value = env ? env.canyonSunFraction : 0.5;
     pu.uHazeSun.value = 1.0;
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - THREE.MathUtils.smoothstep(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
     fu.uBloom.value = THREE.MathUtils.lerp(0.035, 0.05, night);
     fu.uExposure.value = env ? env.exposure : 1;
-    // white balance: daylight at midday, the camera keeps some of the evening warmth
-    const warm = THREE.MathUtils.smoothstep(t, 0.25, 0.65) * (1 - 0.6 * night);
-    fu.uWB.value.set(1.0 + 0.05 * warm, 0.99, 0.965 - 0.07 * warm);
+    // white balance: daylight at midday, some of the evening warmth kept at golden hour,
+    // then a cooler balance into the blue hour (the camera does not neutralise twilight)
+    const warm = THREE.MathUtils.smoothstep(t, 0.25, 0.6) * (1 - THREE.MathUtils.smoothstep(t, 0.68, 0.84));
+    const cool = THREE.MathUtils.smoothstep(t, 0.72, 1.0);
+    fu.uWB.value.set(1.0 + 0.05 * warm - 0.11 * cool, 0.99 - 0.02 * cool, 0.965 - 0.06 * warm + 0.13 * cool);
+    fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, THREE.MathUtils.smoothstep(t, 0.6, 0.85));
   },
 
   render(dt, app) {

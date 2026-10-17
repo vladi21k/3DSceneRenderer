@@ -13,9 +13,9 @@ import { buildStickers, buildStickerAtlas } from './catenary/wear.js';
 //
 // Per chunk: instanced shafts, brackets and lantern glass (one draw call each), one
 // ribbon mesh for every wire, instanced insulators and clamps near the camera, merged
-// banners and two meshes for the signals of a junction. Full-detail chunks carry a hi
-// and a mid tessellation of the standards and swap them by camera distance; far chunks
-// use the lo kit. Everything heavy is built once in init().
+// banners and stickers, instanced signal parts at junctions. Full-detail chunks carry a
+// hi and a mid tessellation of the standards and swap them by camera distance; far
+// chunks use the lo kit. Everything heavy is built once in init().
 
 const HI_DIST = 55;          // chunk near edge closer than this: hi tessellation
 
@@ -141,18 +141,20 @@ const catenary = {
           cloth.push(g);
         }
       }
-      const standards = (target, K, cast) => {
-        target.add(instanced(K.shaft, this.poleMat, shafts, shaftTint, 'poles', cast));
+      // every level casts (env shadows reach ~700 m; silhouettes match across levels, so
+      // nothing pops when a chunk swaps tessellation or LOD)
+      const standards = (target, K) => {
+        target.add(instanced(K.shaft, this.poleMat, shafts, shaftTint, 'poles'));
         if (arms.length) {
-          target.add(instanced(K.arm, this.poleMat, arms, armTint, 'brackets', cast));
+          target.add(instanced(K.arm, this.poleMat, arms, armTint, 'brackets'));
           target.add(instanced(K.glass, this.glassMat, arms, null, 'lanterns', false));
         }
       };
-      if (far) standards(group, this.kit.lo, false);
+      if (far) standards(group, this.kit.lo);
       else {
-        standards(hiSet, this.kit.hi, true); standards(midSet, this.kit.mid, true);
+        standards(hiSet, this.kit.hi); standards(midSet, this.kit.mid);
         const st = buildStickers(poles, (p, out) => this.poleMatrix(p, out), layout.seed);
-        if (st) { const mesh = new THREE.Mesh(st, this.stickerMat); mesh.name = 'stickers'; mesh.receiveShadow = true; hiSet.add(mesh); }
+        if (st) { const mesh = new THREE.Mesh(st, this.stickerMat); mesh.name = 'stickers'; mesh.receiveShadow = true; group.add(mesh); }
       }
       if (brackets.length) {
         group.add(instanced(this.bracketGeo, this.poleMat, brackets, bracketTint, 'bannerBrackets', !far));

@@ -4,9 +4,9 @@ import * as THREE from 'three';
 // geometry near the camera and alpha-tested cards further away. Both materials share a
 // screen-space cross-fade keyed on the projected bar width in pixels, with complementary
 // dither masks, so exactly one representation covers each pixel and thin iron never
-// shimmers: geometry while bars are wider than ~2.4 px, cards once they drop below ~1.6 px.
+// shimmers: geometry while bars are wider than ~2.7 px, cards once they drop below ~1.8 px.
 
-export const FADE = { BAR: 0.016, LO: 1.6, HI: 2.4 };
+export const FADE = { BAR: 0.016, LO: 1.8, HI: 2.7 };
 /** Pixels per metre at 1 m distance: 0.5 * drawing-buffer height * projection[1][1]. */
 export const uIronPx = { value: 1800 };
 

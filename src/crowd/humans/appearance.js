@@ -18,8 +18,10 @@ export const ROW_TEXELS = 12;
 const srgb = (hex) => new THREE.Color(hex);  // THREE.Color(hex) converts sRGB -> linear working space
 const C = (list) => list.map((x) => (Array.isArray(x) ? [srgb(x[0]), x[1]] : [srgb(x), 1]));
 
-const SKIN = C([['#f0c8ae', 7], ['#e2b291', 16], ['#d4a07c', 22], ['#c58f6b', 20], ['#b37c58', 14],
-  ['#9a6646', 9], ['#7a4c33', 7], ['#573626', 4]]);
+// skin albedo in linear RGB (measured ranges: light ~0.55 red, deep ~0.1)
+const lin = (r, g, b) => new THREE.Color().setRGB(r, g, b);
+const SKIN = [[lin(0.60, 0.45, 0.37), 7], [lin(0.55, 0.40, 0.31), 16], [lin(0.50, 0.36, 0.27), 22], [lin(0.44, 0.31, 0.22), 20],
+  [lin(0.37, 0.25, 0.17), 14], [lin(0.27, 0.17, 0.11), 9], [lin(0.17, 0.10, 0.065), 7], [lin(0.095, 0.058, 0.042), 4]];
 const HAIR = C([['#120d0a', 30], ['#22170f', 30], ['#3a2717', 14], ['#5a3e26', 8], ['#7a5a38', 5],
   ['#a3834f', 5], ['#5b2a17', 3], ['#2b2420', 5]]);
 const HAIR_OLD = C([['#9b958c', 3], ['#bdb7ad', 4], ['#d6d1c8', 3], ['#6f6860', 2]]);

@@ -8,7 +8,7 @@ export class MeshBuf {
     this.hasColor = color;
     this.n = 0;
     this.ni = 0;
-    this._alloc(cap, cap * 2);
+    this._alloc(cap, cap * 6);
   }
 
   _alloc(vc, ic) {
@@ -66,9 +66,10 @@ export class MeshBuf {
 /** One MeshBuf per material; build() returns meshes added to a group. */
 export class BufSet {
   constructor() { this.map = new Map(); }
-  get(material, color = false) {
+  /** Buffer for `material`; cap pre-sizes it (vertices) when it is created. */
+  get(material, color = false, cap = 1024) {
     let b = this.map.get(material);
-    if (!b) { b = new MeshBuf({ color }); this.map.set(material, b); }
+    if (!b) { b = new MeshBuf({ color, cap }); this.map.set(material, b); }
     return b;
   }
   build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0, sphere = null } = {}) {

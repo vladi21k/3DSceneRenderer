@@ -43,7 +43,7 @@ function handSection(y0, y1, d) {
 function twistedBar(W, x, y0, y1, s, [t0, t1, turns]) {
   const hs = s / 2;
   const ys = [y0, t0];
-  const steps = Math.max(6, Math.round(turns * 8));
+  const steps = Math.max(6, Math.round(turns * 6));
   for (let i = 1; i < steps; i++) ys.push(t0 + ((t1 - t0) * i) / steps);
   ys.push(t1, y1);
   const ang = (y) => (y <= t0 ? 0 : y >= t1 ? turns * Math.PI * 2 : ((y - t0) / (t1 - t0)) * turns * Math.PI * 2);
@@ -68,7 +68,7 @@ function twistedBar(W, x, y0, y1, s, [t0, t1, turns]) {
 
 /** Small cast rosette facing +z (petalled dome) with a flat back. */
 function rosette(W, x, y, r, z0) {
-  const seg = 32, base = W.count;
+  const seg = 16, base = W.count;
   W.v(x, y, z0 + r * 0.55, 0, 0, 1, 0, 0);
   for (let i = 0; i <= seg; i++) {
     const a = (i / seg) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
@@ -90,27 +90,28 @@ function resampleLoop(pts, n) {
   return out;
 }
 
-/** Instanced bay geometry for one design. lod 0 = full, 1 = coarse (fewer curve points). */
+/** Instanced bay geometry for one design. lod 0 = full, 1 = light, 2 = coarse (fewer curve
+ *  points, plain bars, no rosettes). */
 export function bayGeometry(design, lod = 0) {
   const W = new GeoWriter();
-  const turn = lod ? 0.9 : 0.5, segLen = lod ? 0.16 : 0.08;
+  const turn = [0.42, 0.62, 0.95][lod], segLen = [0.07, 0.12, 0.18][lod];
   for (const st of design.strokes) {
     switch (st.k) {
       case 'rail':
         if (st.hand) extrudeX(W, handSection(st.y0, st.y1, st.d), st.x0, st.x1);
-        else box(W, (st.x0 + st.x1) / 2, (st.y0 + st.y1) / 2, 0, st.x1 - st.x0, st.y1 - st.y0, st.d);
+        else box(W, (st.x0 + st.x1) / 2, (st.y0 + st.y1) / 2, 0, st.x1 - st.x0, st.y1 - st.y0, st.d, 1, 'lr'); // ends hidden by the next bay
         break;
       case 'bar':
         if (st.twist && !lod) twistedBar(W, st.x, st.y0, st.y1, st.s, st.twist);
-        else box(W, st.x, (st.y0 + st.y1) / 2, 0, st.s, st.y1 - st.y0, st.s);
+        else box(W, st.x, (st.y0 + st.y1) / 2, 0, st.s, st.y1 - st.y0, st.s, 1, 'ud'); // ends hidden in the rails
         break;
       case 'curve': {
-        const p = st.closed ? resampleLoop(st.pts, lod ? 9 : 14) : simplify(st.pts, turn, segLen);
+        const p = st.closed ? resampleLoop(st.pts, [16, 11, 8][lod]) : simplify(st.pts, turn, segLen);
         sweepBar(W, p, st.w / 2, st.d / 2, { closed: st.closed, caps: false, backFace: false });
         break;
       }
       case 'collar':
-        box(W, st.x, st.y, 0, st.w, st.h, st.d);
+        if (lod < 2) box(W, st.x, st.y, 0, st.w, st.h, st.d);
         break;
       case 'rosette':
         if (!lod) rosette(W, st.x, st.y, st.r, 0.008);
@@ -122,7 +123,8 @@ export function bayGeometry(design, lod = 0) {
   return shared(g);
 }
 
-/** Corner / end post: square bar, collar, ball finial, small foot. Local origin at the foot. */
+/** Corner / end post: square bar, collar, ball finial, small foot. Local origin at the foot.
+ *  lod 1 is a plain bar with a small faceted knob. */
 export function postGeometry(lod = 0) {
   const W = new GeoWriter();
   const s = 0.026;
@@ -131,12 +133,12 @@ export function postGeometry(lod = 0) {
     box(W, 0, 0.006, 0, 0.06, 0.012, 0.06);                    // foot plate
     box(W, 0, RAIL_H + 0.026, 0, 0.038, 0.012, 0.038);         // collar
   }
-  const seg = lod ? 6 : 8;
+  const seg = lod ? 4 : 8;
   const prof = [];
   const R = 0.027, cy = RAIL_H + 0.068;
   prof.push([0.008, RAIL_H + 0.03]);
   prof.push([0.011, RAIL_H + 0.042]);
-  const nb = lod ? 3 : 6, a0 = -Math.PI / 2 + 0.42;
+  const nb = lod ? 2 : 6, a0 = -Math.PI / 2 + 0.42;
   for (let i = 0; i <= nb; i++) {
     const a = a0 + (i / nb) * (Math.PI / 2 - a0);
     prof.push([Math.max(0.0001, Math.cos(a) * R), cy + Math.sin(a) * R]);

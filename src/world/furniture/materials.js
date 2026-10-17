@@ -203,32 +203,46 @@ function tactileTextures(renderer) {
 }
 
 // ------------------------------------------------------------------ shader patches
-/** Canopy fabric: diffuse translucency (sun and sky through the cloth) and wind flutter
- *  driven by the per-vertex 'aFlex' attribute (0 rigid .. 1 free hem). */
+/** Wind flutter for canopy fabric, driven by the per-vertex 'aFlex' attribute
+ *  (0 rigid .. 1 free hem), phased per instance. */
+function windVertex(s) {
+  s.uniforms.uTime = U.uTime; s.uniforms.uWindStrength = U.uWindStrength; s.uniforms.uWind = U.uWind;
+  s.vertexShader = s.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute float aFlex;\nuniform float uTime;\nuniform float uWindStrength;\nuniform vec2 uWind;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+    {
+      #if defined( USE_BATCHING )
+        vec3 fIp = vec3(batchingMatrix[3][0], batchingMatrix[3][1], batchingMatrix[3][2]);
+      #elif defined( USE_INSTANCING )
+        vec3 fIp = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+      #else
+        vec3 fIp = vec3(modelMatrix[3][0], modelMatrix[3][1], modelMatrix[3][2]);
+      #endif
+      float fPh = dot(fIp.xz, vec2(0.71, 0.53));
+      float gust = 0.55 + 0.45 * sin(uTime * 0.63 + fPh * 0.37) * sin(uTime * 0.29 + fPh);
+      float fl = sin(uTime * 4.7 + fPh + dot(position.xz, vec2(3.1, 2.3))) * 0.6
+               + sin(uTime * 8.3 + fPh * 1.7 + dot(position.xz, vec2(-4.3, 5.1))) * 0.4;
+      transformed += objectNormal * aFlex * fl * (0.004 + 0.022 * uWindStrength * gust);
+    }`);
+}
+
+/** Wind flutter chained onto a library fabric variant (which brings its own translucency). */
+function patchWind(m) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = (s, r) => { prev && prev.call(m, s, r); windVertex(s); };
+  m.customProgramCacheKey = () => `${prevKey ? prevKey.call(m) : ''}|furniture-wind`;
+  m.needsUpdate = true;
+  return m;
+}
+
+/** Own canopy fabric: wind flutter plus diffuse translucency (sun and sky through the cloth). */
 function patchFabric(m, translucency) {
   const prev = m.onBeforeCompile;
   m.userData.translucency = { value: translucency };
   m.onBeforeCompile = (s, r) => {
     prev && prev(s, r);
-    s.uniforms.uTime = U.uTime; s.uniforms.uWindStrength = U.uWindStrength; s.uniforms.uWind = U.uWind;
+    windVertex(s);
     s.uniforms.fTrans = m.userData.translucency;
-    s.vertexShader = s.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aFlex;\nuniform float uTime;\nuniform float uWindStrength;\nuniform vec2 uWind;')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-      {
-        #if defined( USE_BATCHING )
-          vec3 fIp = vec3(batchingMatrix[3][0], batchingMatrix[3][1], batchingMatrix[3][2]);
-        #elif defined( USE_INSTANCING )
-          vec3 fIp = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-        #else
-          vec3 fIp = vec3(modelMatrix[3][0], modelMatrix[3][1], modelMatrix[3][2]);
-        #endif
-        float fPh = dot(fIp.xz, vec2(0.71, 0.53));
-        float gust = 0.55 + 0.45 * sin(uTime * 0.63 + fPh * 0.37) * sin(uTime * 0.29 + fPh);
-        float fl = sin(uTime * 4.7 + fPh + dot(position.xz, vec2(3.1, 2.3))) * 0.6
-                 + sin(uTime * 8.3 + fPh * 1.7 + dot(position.xz, vec2(-4.3, 5.1))) * 0.4;
-        transformed += objectNormal * aFlex * fl * (0.004 + 0.022 * uWindStrength * gust);
-      }`);
     let frag = s.fragmentShader.replace('#include <lights_physical_pars_fragment>', THREE.ShaderChunk.lights_physical_pars_fragment);
     frag = frag.replace('#include <common>', '#include <common>\nuniform float fTrans;');
     frag = frag.replace('vec3 irradiance = dotNL * directLight.color;',
@@ -290,10 +304,17 @@ export function createMaterials(app) {
   const M = app.materials, R = app.renderer;
   const out = {};
   const reg = (name, m) => { m.name = `furniture.${name}`; M.register(`furniture.${name}`, m); out[name] = m; return m; };
+  // library materials whose vertex colour is the albedo take the per-instance colour
+  const names = new Set(M.names ? M.names() : []);
+  const albedoVariant = (name, extra = {}) => (names.has(name) && M.meta?.[name]?.vertexColor === 'albedo' ? M.get(name, { vertexColors: true, ...extra }) : null);
 
-  // canopy fabric (umbrellas, freestanding canopies): white base, tinted per instance
-  const canopy = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, vertexColors: true });
-  reg('canopy', patchFabric(canopy, 0.32));
+  // canopy fabric (umbrellas, canopies, awnings): library canvas when available, coloured
+  // by vertex × instance colour, plus wind flutter
+  const libFabric = albedoVariant('fabric.umbrella', { userData: { furnitureWind: 1 } });
+  if (libFabric) { patchWind(libFabric); out.canopy = libFabric; } else {
+    const canopy = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, vertexColors: true });
+    reg('canopy', patchFabric(canopy, 0.32));
+  }
 
   out.weave = WEAVES.map((w, i) => {
     const t = weaveTextures(w, R);
@@ -304,19 +325,19 @@ export function createMaterials(app) {
     reg('wicker', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.1, 1.1), roughness: 0.78, metalness: 0 }));
   }
   reg('rattan', new THREE.MeshStandardMaterial({ map: rattanTexture(R), roughness: 0.5, metalness: 0 }));
-  // polypropylene shell chairs (tinted per instance)
-  reg('plastic', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.48, metalness: 0 }));
-  // powder-coated / painted metal (tinted per instance)
-  reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0 }));
+  // polypropylene shell chairs and painted metal, coloured per instance
+  out.plastic = albedoVariant('plastic.chair') || reg('plastic', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.48, metalness: 0 }));
+  out.paint = albedoVariant('metal.pole') || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0 }));
   // brushed aluminium (chairs, table rims)
   reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#cfd2d4'), roughness: 0.36, metalness: 1 }));
   // stone / compact laminate table tops (tinted per instance)
   reg('tabletop', new THREE.MeshStandardMaterial({ map: speckleTexture(R), roughness: 0.32, metalness: 0 }));
   reg('ceramic', new THREE.MeshStandardMaterial({ color: srgb('#f1efe9'), roughness: 0.18, metalness: 0 }));
   reg('coffee', new THREE.MeshStandardMaterial({ color: srgb('#3a2214'), roughness: 0.25, metalness: 0 }));
-  reg('glass', patchGlass(new THREE.MeshStandardMaterial({ color: srgb('#c9d6d2'), roughness: 0.04, metalness: 0, opacity: 0.16 })));
+  out.glass = names.has('glass.clear') ? M.get('glass.clear')
+    : reg('glass', patchGlass(new THREE.MeshStandardMaterial({ color: srgb('#c9d6d2'), roughness: 0.04, metalness: 0, opacity: 0.16 })));
   reg('drinkGlass', patchGlass(new THREE.MeshStandardMaterial({ color: srgb('#e3ece9'), roughness: 0.03, metalness: 0, opacity: 0.12 })));
-  {
+  if (names.has('paving.tactile')) out.tactile = M.get('paving.tactile'); else {
     const t = tactileTextures(R);
     reg('tactile', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.2, 1.2), roughness: 0.82, metalness: 0 }));
   }
@@ -326,13 +347,13 @@ export function createMaterials(app) {
   printMap.wrapS = printMap.wrapT = THREE.ClampToEdgeWrapping;
   reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 }));
   // backlit advert panels: lit through the print at night
-  reg('printLit', patchNightEmissive(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: printMap, emissive: 0xffffff, emissiveIntensity: 1.6, roughness: 0.2, metalness: 0 }), 0.04, 1));
+  reg('printLit', patchNightEmissive(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: printMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.2, metalness: 0 }), 0.05, 0.2));
   // LED passenger displays and screens: always on
   const disp = buildDisplayAtlas();
   out.display = disp;
   const dispMap = tex(disp.canvas, { repeat: [1, 1], aniso: 8 }, R);
   dispMap.wrapS = dispMap.wrapT = THREE.ClampToEdgeWrapping;
-  reg('display', patchNightEmissive(new THREE.MeshStandardMaterial({ color: 0x050505, emissiveMap: dispMap, emissive: 0xffffff, emissiveIntensity: 2.2, roughness: 0.25, metalness: 0 }), 1, 0.7));
+  reg('display', patchNightEmissive(new THREE.MeshStandardMaterial({ color: 0x050505, emissiveMap: dispMap, emissive: 0xffffff, emissiveIntensity: 2.0, roughness: 0.25, metalness: 0 }), 1, 0.35));
   // shelter / platform light diffusers
   reg('light', patchNightEmissive(new THREE.MeshStandardMaterial({ color: srgb('#e8e6e0'), emissive: srgb('#fff1d6'), emissiveIntensity: 6, roughness: 0.3, metalness: 0 }), 0, 1));
   return out;

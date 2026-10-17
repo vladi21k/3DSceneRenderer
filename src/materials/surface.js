@@ -297,19 +297,35 @@ export function surfaceUniforms(cfg, def, t, shared) {
 // surface config per patched material (kept out of userData, which clone() JSON-copies)
 export const surfaceOf = new WeakMap();
 
-/** Install (or re-install after clone) the surface patch on a material. */
+/**
+ * Install the surface patch on a material (library materials, variants and clones).
+ * The patch is self-contained: `onBeforeCompile` decides from the material it is called
+ * on (`this`) whether the baked maps are attached, and injects SURF / SURF_GLASS itself.
+ * So a module that copies our onBeforeCompile onto its own material (and chains its own
+ * patch) gets the correct shading, and plain clone() keeps the patch too.
+ */
 export function applySurface(mat, sf) {
   surfaceOf.set(mat, sf);
-  mat.defines = Object.assign(mat.defines || {}, sf.defines);
   if (sf.textures) {
     mat.map = sf.textures.albedo;
     mat.normalMap = sf.textures.surface;
   }
-  mat.onBeforeCompile = (shader) => {
+  const isSurf = (m) => !!(sf.textures && m && m.map === sf.textures.albedo && m.normalMap === sf.textures.surface);
+  mat.onBeforeCompile = function (shader) {
+    const surf = isSurf(this || mat);
     Object.assign(shader.uniforms, sf.uniforms);
-    shader.fragmentShader = patchFragment(shader.fragmentShader);
+    const head = (surf ? '#define SURF\n' : '') + (surf && sf.glass ? '#define SURF_GLASS\n' : '');
+    shader.fragmentShader = head + patchFragment(shader.fragmentShader);
   };
-  mat.customProgramCacheKey = () => 'sf4';
+  mat.customProgramCacheKey = function () {
+    const surf = isSurf(this || mat);
+    return 'sf5' + (surf ? 'S' : '') + (surf && sf.glass ? 'G' : '');
+  };
+  mat.clone = function () {
+    const c = Object.getPrototypeOf(this).clone.call(this);
+    applySurface(c, sf);
+    return c;
+  };
   mat.needsUpdate = true;
   return mat;
 }

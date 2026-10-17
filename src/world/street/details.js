@@ -263,7 +263,7 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
           const d = a + ((b - a) * k) / n;
           arr.push(smp.pos.x + smp.right.x * d, smp.pos.y + surface.height(ri, d) + 0.0005, smp.pos.z + smp.right.z * d, rx, rz, d - a);
         }
-        jointLines.add(arr, 0.007, b - a);
+        jointLines.add(arr, 0.012, b - a);
       }
     }
   }

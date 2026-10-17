@@ -32,15 +32,18 @@ export const wood = {
   pass: { normal: 1.0, ao: 0.6, aoRadius: 0.002, cavity: 0.3 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  vec2 w = m + vec2(fbm2(m, vec2(3.0, 0.8), 4, 0.5, 221u) * 0.02, 0.0);
-  float rings = w.x * 90.0 + fbm2(m, vec2(6.0, 1.0), 3, 0.5, 222u) * 3.0;
-  float late = smoothstep(0.55, 0.95, fract(rings));        // dense latewood bands
+  // growth rings: warped, with varying ring width and figure across the board
+  vec2 w = m + vec2(fbm2(m, vec2(3.0, 0.8), 4, 0.5, 221u) * 0.025, 0.0);
+  float rings = w.x * 70.0 + fbm2(m, vec2(4.0, 1.0), 3, 0.5, 222u) * 4.0 + fbm2(m, vec2(1.0, 2.0), 2, 0.5, 226u) * 6.0;
+  float late = smoothstep(0.5, 0.95, fract(rings)) * (0.6 + 0.4 * fbm2(m, vec2(2.0, 3.0), 2, 0.5, 227u));
   float pores = smoothstep(0.6, 1.0, fbm2(m, vec2(300.0, 12.0), 2, 0.5, 223u));
-  float check = smoothstep(0.93, 1.0, ridged(m, vec2(30.0, 1.5), 3, 224u));   // weathering checks
-  vec3 early = vec3(0.47, 0.32, 0.19), lateC = vec3(0.3, 0.18, 0.095);
-  s.albedo = mix(early, lateC, late) * (1.0 - 0.15 * pores) * (1.0 + 0.06 * fbm(m, 4.0, 3, 0.5, 225u));
-  s.albedo *= 1.0 - 0.5 * check;
-  s.height = late * 0.00012 - pores * 0.00008 - check * 0.0008;
+  // weathering checks: thin splits along the grain in some Voronoi cells
+  vec4 ck = voro(m, vec2(24.0, 3.0), 224u, 1.0);
+  float check = smoothstep(0.035, 0.0, ck.w) * step(0.72, ck.z);
+  vec3 early = vec3(0.47, 0.32, 0.19), lateC = vec3(0.29, 0.175, 0.095);
+  s.albedo = mix(early, lateC, late) * (1.0 - 0.15 * pores) * (1.0 + 0.08 * fbm(m, 3.0, 3, 0.5, 225u));
+  s.albedo *= 1.0 - 0.45 * check;
+  s.height = late * 0.00012 - pores * 0.00008 - check * 0.0007;
   s.rough = 0.6 + 0.12 * late + 0.2 * check;
 }
 `,
@@ -122,7 +125,7 @@ export const concrete = {
 void surface(vec2 m, inout Surf s) {
   float cl = fbm(m, 2.0, 5, 0.6, 261u);
   vec4 bh = voro(m, vec2(45.0), 262u, 1.0);
-  float hole = smoothstep(0.22, 0.12, bh.x) * step(0.86, bh.z);
+  float hole = smoothstep(0.2, 0.1, bh.x) * step(0.95, bh.z) * smoothstep(0.1, 0.5, fbm(m, 1.5, 3, 0.5, 265u));
   vec4 ag = voro(m, vec2(180.0), 263u, 1.0);
   s.height = fbm(m, 20.0, 3, 0.5, 264u) * 0.0003 - hole * 0.003 + (0.5 - ag.x) * 0.0002;
   vec3 c = vec3(0.4, 0.39, 0.37) * (1.0 + 0.09 * cl) * mix(0.94, 1.06, ag.z);
@@ -169,19 +172,21 @@ void surface(vec2 m, inout Surf s) {
 };
 
 // Young street-tree bark: smooth grey-brown with fine vertical fissures, lenticels, lichen.
-// u around the trunk, v up. Tile 0.5 × 1 m.
+// u around the trunk, v up. Tile 0.8 x 1.6 m.
 export const bark = {
-  name: 'bark', flat: [0.18, 0.155, 0.125, 0.88], size: 512, tile: [0.5, 1.0], ss: 2,
+  name: 'bark', flat: [0.18, 0.155, 0.125, 0.88], size: 512, tile: [0.8, 1.6], ss: 2,
   pass: { normal: 1.0, ao: 0.8, aoRadius: 0.006, cavity: 0.45 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  float fis = ridged(warp(m, 3.0, 0.02, 291u), vec2(40.0, 3.0), 4, 292u);
-  vec4 len = voro(m * vec2(1.0, 1.0), vec2(30.0, 60.0), 293u, 1.0);
-  float lent = smoothstep(0.25, 0.1, len.x) * step(0.6, len.z);
-  float lich = smoothstep(0.6, 0.72, fbm(m, 5.0, 5, 0.6, 294u));
-  s.height = (fis - 0.7) * 0.003 + lent * 0.0004;
-  vec3 c = vec3(0.2, 0.17, 0.135) * (1.0 + 0.12 * fbm(m, 8.0, 3, 0.5, 295u));
-  c *= mix(0.6, 1.0, smoothstep(0.5, 0.85, fis));
+  vec2 w = warp(m, 2.0, 0.04, 291u);
+  vec4 pl = voro(w, vec2(14.0, 2.5), 292u, 1.0);                 // bark plates, long vertically
+  float fis = smoothstep(0.0, 0.12, pl.w) * (0.7 + 0.3 * fbm(m, 20.0, 3, 0.5, 296u));
+  vec4 len = voro(m, vec2(30.0, 55.0), 293u, 1.0);
+  float lent = smoothstep(0.25, 0.1, len.x) * step(0.65, len.z);
+  float lich = smoothstep(0.6, 0.72, fbm(m, 3.0, 5, 0.6, 294u));
+  s.height = (fis - 1.0) * 0.002 + lent * 0.0004 + fbm(m, 30.0, 3, 0.5, 297u) * 0.0003;
+  vec3 c = vec3(0.2, 0.17, 0.135) * (1.0 + 0.12 * fbm(m, 6.0, 3, 0.5, 295u)) * mix(0.9, 1.08, pl.z);
+  c *= mix(0.7, 1.0, fis);
   c = mix(c, vec3(0.32, 0.29, 0.24), lent * 0.6);
   c = mix(c, vec3(0.3, 0.33, 0.24), lich * 0.7);
   s.albedo = c;

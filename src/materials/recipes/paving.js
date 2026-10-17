@@ -18,7 +18,7 @@ vec3 granite(vec2 m, vec3 base) {
 // Street / sidewalk setts: 0.40 × 0.20 m (lengths 0.29–0.52), 4 mm sanded joints,
 // 3 mm chamfers, lippage between pavers, worn honed tops.
 export const paving = {
-  name: 'paving', flat: [0.24, 0.24, 0.235, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
+  name: 'paving', flat: [0.29, 0.287, 0.279, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
   joint: 0.0027,
   pass: { normal: 1.0, ao: 0.8, aoRadius: 0.01, cavity: 0.4 },
@@ -44,11 +44,11 @@ void surface(vec2 m, inout Surf s) {
   float stone = smoothstep(JW - 0.0006, JW + 0.0006, e);
   float hJoint = -0.006 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0012;  // sand fill
   s.height = mix(hJoint, max(hFace, hJoint), stone);
-  vec3 g = granite(m, vec3(0.25, 0.25, 0.245));
+  vec3 g = granite(m, vec3(0.305, 0.301, 0.292));
   // grime in the chamfers and towards the joints
   g *= mix(0.8, 1.0, smoothstep(0.0, 0.01, e - JW));
   g *= 1.0 - 0.15 * chip;
-  vec3 joint = vec3(0.13, 0.128, 0.122) * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u));
+  vec3 joint = vec3(0.14, 0.137, 0.13) * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u));
   s.albedo = mix(joint, g, stone);
   s.rough = mix(0.95, mix(0.74, 0.56, wear), stone);
 }

@@ -306,7 +306,7 @@ function clump(cctx, rng, col, row, srcCells, count, scale) {
     const src = rng.pick(srcCells);
     const sx = (src % ATLAS_GRID) * CS, sy = Math.floor(src / ATLAS_GRID) * CS;
     const ang = rng.range(0, Math.PI * 2);
-    const rad = CS * Math.sqrt(rng.next()) * 0.24;
+    const rad = CS * Math.sqrt(rng.next()) * 0.26;
     const s = CS * scale * rng.range(0.85, 1.1);
     cctx.save();
     cctx.translate(ox + CS / 2 + Math.cos(ang) * rad, oy + CS / 2 + Math.sin(ang) * rad);
@@ -363,10 +363,10 @@ export function buildLeafAtlas(renderer, seed = 1) {
   cell(11, (rng) => flowerSpray(P, rng));
   // far-LOD clumps composed from the sprays above
   const crng = RNG.from(seed, 'clumps');
-  clump(cctx, crng, 0, 3, [0, 1, 2, 3], 30, 0.4);
-  clump(cctx, crng, 1, 3, [4, 5, 6, 7], 30, 0.4);
-  clump(cctx, crng, 2, 3, [8, 9], 34, 0.4);
-  clump(cctx, crng, 3, 3, [10, 10, 11], 30, 0.42);
+  clump(cctx, crng, 0, 3, [0, 1, 2, 3], 13, 0.42);
+  clump(cctx, crng, 1, 3, [4, 5, 6, 7], 13, 0.42);
+  clump(cctx, crng, 2, 3, [8, 9], 15, 0.42);
+  clump(cctx, crng, 3, 3, [10, 10, 11], 22, 0.42);
   const dome = domeImage();
   for (let i = 0; i < ATLAS_GRID; i++) nctx.drawImage(dome, i * CS, (ATLAS_GRID - 1) * CS);
 

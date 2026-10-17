@@ -4,7 +4,7 @@ import { CHUNK_LEN, LOD0_DIST, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js
 import { hashStr } from '../core/rng.js';
 import { SIDE_LOT_START } from './layout.js';
 import { Builder } from './buildings/mesh.js';
-import { generateLot, DETAIL } from './buildings/shell.js';
+import { lotSteps, DETAIL } from './buildings/shell.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -24,6 +24,7 @@ const PREFETCH_MS = 2.0;           // per-frame budget for generating ahead of t
 const LOD0_AHEAD = LOD0_DIST + 90;  // full detail is prepared this far ahead
 const FAR_AHEAD = VIEW_AHEAD + 90;
 
+let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere
 const jobs = new Map();            // `${chunkIndex}|${lod}` -> job
 let active = null;                 // the job currently filling the shared builder
 const Bshared = new Builder();     // used by the active (time-sliced) job
@@ -34,10 +35,12 @@ const backdrops = new Map();       // chunk index -> pseudo-lots closing the far
 
 const buildings = {
   name: 'buildings',
-  stats: { jobs: 0, inline: 0, lotMs: 0, buildMs: 0, slow: [] },
+  stats: { jobs: 0, inline: 0, stepMs: 0, buildMs: 0 },
 
   async init(app) {
     this.app = app;
+    const fl = app.params.str ? app.params.str('blod') : null;
+    if (fl === '0' || fl === '1') FORCE_LOD = +fl;
     planBackdrops(app);
     indexEnds(app.layout);
     // everything the first frames need, before the streamer primes
@@ -77,6 +80,16 @@ const buildings = {
     group.matrixAutoUpdate = false;
     this.stats.buildMs = Math.max(this.stats.buildMs * 0.98, performance.now() - t0);
     return group;
+  },
+
+  /**
+   * Buildings-only pseudo-lots in chunk i (facades closing the far end of side streets).
+   * Same shape as layout lots (frame, seed, depth, sideStreet: true, backdrop: true), so
+   * facadePlan(lot) works and other modules may dress them like any side-street lot.
+   */
+  extraLots(i) {
+    const n = this.app.layout.nChunks;
+    return backdrops.get(((i % n) + n) % n) || [];
   },
 
   update(dt, app) {
@@ -124,6 +137,7 @@ const jobKey = (idx, lod) => `${idx}|${lod}`;
 
 /** Side-street lots deep inside the side street are only ever seen from far away. */
 function lotLod(lot, chunkLod) {
+  if (FORCE_LOD !== null) return FORCE_LOD;
   if (chunkLod) return 1;
   if (lot.sideStreet && lot.x0 > 30) return 1;
   return 0;
@@ -132,7 +146,7 @@ function lotLod(lot, chunkLod) {
 function newJob(app, idx, lod) {
   const { layout } = app;
   const lots = [...layout.inChunk('lots', idx), ...layout.inChunk('sideLots', idx), ...(backdrops.get(idx) || [])];
-  const job = { idx, lod, lots, next: 0, done: false, result: null, s: idx * CHUNK_LEN + CHUNK_LEN / 2 };
+  const job = { idx, lod, lots, next: 0, iter: null, done: false, result: null, s: idx * CHUNK_LEN + CHUNK_LEN / 2 };
   jobs.set(jobKey(idx, lod), job);
   buildings.stats.jobs++;
   return job;
@@ -153,22 +167,22 @@ function runJob(app, job, budgetMs) {
   // the shared builder belongs to the active job; any other job runs to completion on Bsync
   let B;
   if (job === active || !active || active.done) {
-    if (job !== active) { active = job; Bshared.reset(); job.next = 0; }
+    if (job !== active) { active = job; Bshared.reset(); job.next = 0; job.iter = null; }
     B = Bshared;
   } else {
     B = Bsync; Bsync.reset(); job.next = 0; budgetMs = Infinity;
   }
   const metas = { ashlar: metaOf(app.materials, 'stone.ashlar'), rough: metaOf(app.materials, 'stone.rough') };
-  while (job.next < job.lots.length) {
-    const lot = job.lots[job.next++];
-    const tl = performance.now();
-    generateLot(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas);
-    const dtl = performance.now() - tl;
-    buildings.stats.lotMs = Math.max(buildings.stats.lotMs * 0.99, dtl);
-    if (dtl > 6 && buildings.stats.slow.length < 12) buildings.stats.slow.push(`${lot.id}:${job.lod}:${dtl.toFixed(1)}`);
+  if (B === Bsync) job.iter = null;
+  // step through the lots; one step is a small piece of a lot (a face, a few openings...)
+  while (job.iter || job.next < job.lots.length) {
+    if (!job.iter) { const lot = job.lots[job.next++]; job.iter = lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas); }
+    const ts = performance.now();
+    if (job.iter.next().done) job.iter = null;
+    buildings.stats.stepMs = Math.max(buildings.stats.stepMs * 0.995, performance.now() - ts);
     if (performance.now() - t0 > budgetMs) break;
   }
-  if (job.next < job.lots.length) return;
+  if (job.iter || job.next < job.lots.length) return;
   const box = new THREE.Box3();
   for (const sk of B.sinks.values()) if (sk.vc) sk.bounds(box);
   job.result = { parts: B.finish(), box };

@@ -76,7 +76,7 @@ export function wallField(ctx, face, openings) {
   const holes = [];
   for (const o of openings) {
     const top = Math.min(v1, o.y + o.h);
-    holes.push({ u0: o.uc - o.w / 2, u1: o.uc + o.w / 2, y: o.y, top });
+    holes.push({ u0: o.uc - o.w / 2, u1: o.uc + o.w / 2, y: o.y, spring: o.spring, top });
     vb.push(o.y, o.spring, top);
   }
   holes.sort((a, b) => a.u0 - b.u0);
@@ -96,6 +96,8 @@ export function wallField(ctx, face, openings) {
       for (const u of [o.uc - o.w / 2 - 0.05, o.uc - o.w / 2 + 0.2, o.uc + o.w / 2 - 0.2, o.uc + o.w / 2 + 0.05]) splits.push({ u, v0: sy - 3, v1: sy });
     }
   }
+  // narrow columns in the band under the cornice so the rain-wash streaks can show
+  if (!q.lod) for (let u = 0.35; u < W - 0.2; u += 0.42) splits.push({ u, v0: cy - 2.6, v1: cy });
   const gHi = Math.max(face.groundAt(0), face.groundAt(W)), gLo = Math.min(face.groundAt(0), face.groundAt(W));
   for (const d of q.lod ? [0.5] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
   const rus = ctx.rustic;
@@ -124,15 +126,16 @@ export function wallField(ctx, face, openings) {
       for (const j of rus.joints) { if (vm > j - rus.c && vm < j) groove = 1; else if (vm > j && vm < j + rus.c) groove = -1; }
     }
     const s = rough ? sRough : sAsh;
-    // free intervals of this row
-    let a = 0;
-    const runs = [];
+    // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
+    let a = 0, aJamb = false;
+    const runs = [], jamb = [];
     for (const h of holes) {
       if (vm <= h.y || vm >= h.top) continue;
-      if (h.u0 - a > EPS) runs.push(a, h.u0);
-      a = Math.max(a, h.u1);
+      const j = vm < h.spring;
+      if (h.u0 - a > EPS) { runs.push(a, h.u0); jamb.push(aJamb, j); }
+      a = Math.max(a, h.u1); aJamb = j;
     }
-    if (W - a > EPS) runs.push(a, W);
+    if (W - a > EPS) { runs.push(a, W); jamb.push(aJamb, false); }
     for (let i = 0; i < runs.length; i += 2) {
       const ra = runs[i], rb = runs[i + 1];
       // cut positions inside this run
@@ -148,9 +151,9 @@ export function wallField(ctx, face, openings) {
           else { B.v(s, u, va, -rus.c, 0, -k, k, u, va); B.v(s, u, vc, 0, 0, -k, k, u, vc); }
         }
         for (let c = 0; c < n - 1; c++) { const b = base + c * 2; B.quadIdx(s, b, b + 2, b + 3, b + 1); }
-        // close the notch where the joint stops (openings, arch spandrels, corners)
-        grooveCap(B, s, ra, -1, va, vc, groove, rus.c);
-        grooveCap(B, s, rb, 1, va, vc, groove, rus.c);
+        // close the notch where the joint stops at an arch spandrel or a corner (a jamb closes it otherwise)
+        if (!jamb[i]) grooveCap(B, s, ra, -1, va, vc, groove, rus.c);
+        if (!jamb[i + 1]) grooveCap(B, s, rb, 1, va, vc, groove, rus.c);
         continue;
       }
       s.reserve(n * 2, (n - 1) * 6);

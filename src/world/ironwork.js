@@ -5,7 +5,7 @@ import { disposeObject } from './streaming.js';
 import { DESIGNS, RAIL_H } from './ironwork/patterns.js';
 import { bayGeometry, postGeometry, buildAtlas, atlasV } from './ironwork/railings.js';
 import {
-  slabPath, writeSlab, corbelGeometry, corbelPrism, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE,
+  slabPath, writeSlab, corbelGeometry, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE,
 } from './ironwork/stone.js';
 import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
 import { Instancer } from './ironwork/instancer.js';
@@ -33,8 +33,31 @@ const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0
 const POTS = [[0.42, 0.16, 0.08], [0.32, 0.11, 0.05], [0.36, 0.14, 0.06], [0.18, 0.09, 0.05], [0.06, 0.12, 0.06], [0.55, 0.55, 0.52]];
 const CHAIRS = [[0.75, 0.75, 0.72], [0.07, 0.2, 0.1], [0.5, 0.5, 0.48]];
 const LEAFY = [0.09, 0.16, 0.05];
+const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 0.12, 0.1], [0.3, 0.45, 0.35], [0.75, 0.65, 0.2]];
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
 const DISH_DIR = new THREE.Vector3(-0.55, 0.64, 0.53).normalize();
+
+/** Distance from p to the nearest anchor sphere surface (anchors: x, y, z, r, ...). */
+function nearest(a, p) {
+  let best = Infinity;
+  for (let i = 0; i < a.length; i += 4) {
+    const dx = a[i] - p.x, dy = a[i + 1] - p.y, dz = a[i + 2] - p.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - a[i + 3];
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Sphere around balcony anchors (x, y, z, r, ...) padded for attachments and flags. */
+function boundsOf(a) {
+  const box = new THREE.Box3();
+  for (let i = 0; i < a.length; i += 4) box.expandByPoint(_p.set(a[i], a[i + 1], a[i + 2]));
+  const sp = box.getBoundingSphere(new THREE.Sphere());
+  let r = 0;
+  for (let i = 0; i < a.length; i += 4) r = Math.max(r, sp.center.distanceTo(_p.set(a[i], a[i + 1], a[i + 2])) + a[i + 3]);
+  sp.radius = r + 6;
+  return sp;
+}
 
 /** Per-building ironwork style (deterministic from the lot seed). */
 function lotStyle(lot, plan) {
@@ -65,10 +88,9 @@ const ironwork = {
     this.atlas = buildAtlas();
     this.mats = makeMaterials(app, this.atlas);
     this.geo = {
-      bay: [DESIGNS.map((d) => bayGeometry(d, 0)), DESIGNS.map((d) => bayGeometry(d, 1))],
-      post: postGeometry(0),
+      bay: [0, 1, 2].map((lod) => DESIGNS.map((d) => bayGeometry(d, lod))),
+      post: [postGeometry(0), postGeometry(1)],
       corbel: [[corbelGeometry(0, 0), corbelGeometry(1, 0)], [corbelGeometry(0, 1), corbelGeometry(1, 1)]],
-      corbelPrism: [corbelPrism(0), corbelPrism(1)],
       baluster: [balusterGeometry(0), balusterGeometry(1)],
     };
     this.att = buildAttachAssets();
@@ -78,18 +100,12 @@ const ironwork = {
   },
 
   build(chunk, app) {
-    const t0 = performance.now();
-    const out = this.buildChunk(chunk, app);
-    (this.buildTimes ||= []).push([chunk.lod, +(performance.now() - t0).toFixed(2)]);
-    return out;
-  },
-
-  buildChunk(chunk, app) {
     const { layout } = app;
     const lots = [...layout.inChunk('lots', chunk.index), ...layout.inChunk('sideLots', chunk.index)];
     if (!lots.length) return null;
     const ctx = {
-      lod: chunk.lod,
+      lod: chunk.lod,       // detail level of the lot being built (may drop below the chunk's)
+      chunkLod: chunk.lod,
       inst: new Instancer(),
       stone: new GeoWriter(),
       cards: new GeoWriter(),
@@ -100,9 +116,15 @@ const ironwork = {
     };
     for (const lot of lots) {
       // deep side-street facades are invisible from the main street at far range
-      if (chunk.lod && lot.sideStreet && lot.x0 > 30) continue;
+      const deep = lot.sideStreet && lot.x0 > 30;
+      if (chunk.lod && deep) continue;
+      // deep side-street facades are only ever seen down the street: far-range detail
+      ctx.lod = chunk.lod || deep ? 1 : 0;
       const plan = facadePlan(lot);
       const st = lotStyle(lot, plan);
+      // the facade itself bounds attachments on lots without balconies
+      _p.set(lot.frame.width / 2, plan.totalHeight / 2, 0).applyMatrix4(lot.frame.matrix);
+      ctx.anchors.push(_p.x, _p.y, _p.z, Math.max(lot.frame.width, plan.totalHeight) / 2);
       plan.balconies.forEach((bal, i) => this.balcony(ctx, lot, plan, st, bal, i));
       this.facadeAttachments(ctx, lot, plan, st);
     }
@@ -136,9 +158,8 @@ const ironwork = {
         _l.makeScale(1, sy, sz).setPosition(u, y - T, 0);
         _m.multiplyMatrices(F, _l);
         if (lod) {
-          // far chunks: a plain prism written into the merged stone mesh (no extra draw)
-          ctx.stone.setMatrix(_m).color(c[0], c[1], c[2]);
-          this.geo.corbelPrism[st.corbel](ctx.stone);
+          // far chunks: one plain console shape for every building, one draw per chunk
+          inst.add('corbelFar', this.geo.corbel[1][0], this.mats.stone, _m, c);
         } else {
           inst.add(`corbel${st.corbel}`, this.geo.corbel[0][st.corbel], this.mats.stone, _m, c,
             { tag: 'carve0', alt: { geometry: this.geo.corbel[1][st.corbel], tag: 'carve1' } });
@@ -206,6 +227,11 @@ const ironwork = {
       _l.makeTranslation(u, y + 0.06, -0.06);
       this.acUnit(ctx, _m.multiplyMatrices(F, _l), false);
     }
+    // a towel or rug airing over the front rail
+    if (iron && r.chance(0.04)) {
+      _l.makeScale(r.range(0.5, 0.9), 1, 1).setPosition(u0 + len * r.range(0.25, 0.75), top, D - 0.05);
+      writeTemplate(ctx.parts, A.towel, _m.multiplyMatrices(F, _l), TOWELS[r.int(0, TOWELS.length - 1)]);
+    }
     // a flag on the front corner post
     if (iron && r.chance(0.012)) this.flag(ctx, F, r.chance(0.5) ? u0 + 0.05 : u1 - 0.05, y + 0.85, D - 0.05, st, r, 0.6);
   },
@@ -248,7 +274,7 @@ const ironwork = {
     const A = this.att;
     if (ctx.lod) {
       // far: box, green mound and flower patches merged into the parts mesh
-      writeTemplate(ctx.parts, A.box, m, potCol);
+      writeTemplate(ctx.parts, A.bloomLow.box, m, potCol);
       writeTemplate(ctx.parts, A.bloomLow.green, m);
       writeTemplate(ctx.parts, A.bloomLow.flowers, m, flowerCol);
       return;
@@ -282,10 +308,10 @@ const ironwork = {
     const p = _a.set(0, Math.sin(el), Math.cos(el)).transformDirection(F);
     const q = _b.set(0, -Math.cos(el), Math.sin(el)).transformDirection(F);
     const base = _p.set(u, v, w).applyMatrix4(F);
-    // pole (template is along +y)
+    // pole (template is along +y); a 3 cm pole is sub-pixel in far chunks
     _c.crossVectors(p, q);
     _l.makeBasis(q, p, _c).setPosition(base);
-    writeTemplate(ctx.parts, this.att.pole, _l, [1, 1, 1]);
+    if (!ctx.lod) writeTemplate(ctx.parts, this.att.pole, _l, [1, 1, 1]);
     // cloth: local x = fly (q), y = along the pole (p), hoist top at 1.85 m up the pole
     const s = size;
     _m.makeBasis(_q.copy(q).multiplyScalar(s), _a.copy(p).multiplyScalar(s), _c.clone().multiplyScalar(s)).setPosition(base.clone().addScaledVector(p, 1.85));
@@ -301,7 +327,8 @@ const ironwork = {
     const painted = st.paint >= 0;
     const mat = painted ? this.mats.paint : this.mats.iron;
     const color = painted ? PAINTS[st.paint] : null;
-    const key = `${st.design}${painted ? 'p' : ''}:${lot.id}`; // near meshes are per lot
+    // near meshes are per lot and floor, switched on their nearest balcony
+    const key = `${st.design}${painted ? 'p' : ''}:${lot.id}:${bal.floor}`;
     const hs = st.railH;
     const i = 0.05; // railing centre line inset from the slab edge
     const rp = [[u0 + i, 0], [u0 + i, D - i], [u1 - i, D - i], [u1 - i, 0]];
@@ -320,8 +347,10 @@ const ironwork = {
           const o = b * design.W * sx;
           _l.set(tu * sx, 0, -tw, A[0] + tu * o, 0, hs, 0, y, tw * sx, 0, tu, A[1] + tw * o, 0, 0, 0, 1);
           _m.multiplyMatrices(F, _l);
-          inst.add(`bay:${key}`, this.geo.bay[0][st.design], mat, _m, color,
-            { tag: 'rail0', castShadow: false, alt: { geometry: this.geo.bay[1][st.design], tag: 'rail1' } });
+          inst.add(`bay:${key}`, this.geo.bay[0][st.design], mat, _m, color, {
+            tag: 'rail0', castShadow: false, lazy: true,
+            alt: [{ geometry: this.geo.bay[1][st.design], tag: 'rail1' }, { geometry: this.geo.bay[2][st.design], tag: 'rail2' }],
+          });
         }
       }
       // card for this run (also casts the railing shadow at every distance)
@@ -333,7 +362,15 @@ const ironwork = {
     if (!lod) {
       for (const P of rp) {
         _l.makeScale(1, hs, 1).setPosition(P[0], y, P[1]);
-        inst.add(`post:${key}`, this.geo.post, mat, _m.multiplyMatrices(F, _l), color, { tag: 'rail', castShadow: false });
+        inst.add(`post:${key}`, this.geo.post[0], mat, _m.multiplyMatrices(F, _l), color,
+          { tag: 'post0', castShadow: false, lazy: true, alt: { geometry: this.geo.post[1], tag: 'post1' } });
+      }
+      // anchors every ~2.5 m along the railing so long balconies switch detail piecewise
+      const na = Math.max(1, Math.round((u1 - u0) / 2.5)), rad = (u1 - u0) / na / 2 + 0.4;
+      for (let k = 0; k < na; k++) {
+        _p.set(u0 + ((k + 0.5) * (u1 - u0)) / na, y + 0.5, D / 2).applyMatrix4(F);
+        inst.anchor(`bay:${key}`, _p.x, _p.y, _p.z, rad);
+        inst.anchor(`post:${key}`, _p.x, _p.y, _p.z, rad);
       }
     }
   },
@@ -352,7 +389,7 @@ const ironwork = {
     const hP = BALUSTRADE.H - BALUSTRADE.PLINTH - BALUSTRADE.COPING;
     const ped = [path[0], path[path.length - 1]];
     if (rc <= 0.01) ped.push(path[1], path[2]);
-    for (const P of ped) box(S, P[0], BALUSTRADE.PLINTH + hP / 2, P[1], 0.2, hP, 0.2, 0.85);
+    for (const P of ped) box(S, P[0], BALUSTRADE.PLINTH + hP / 2, P[1], 0.2, hP, 0.2, 0.85, 'ud');
     // balusters along the path, kept clear of the pedestals
     const col = [tint[0], tint[1], tint[2]];
     for (let k = 0; k < path.length - 1; k++) {
@@ -377,23 +414,23 @@ const ironwork = {
   finish(ctx) {
     const group = new THREE.Group();
     group.name = 'ironwork';
-    const tags = { rail0: [], rail1: [], rail: [], carve0: [], carve1: [] };
+    const tags = { rail0: [], rail1: [], rail2: [], post0: [], post1: [], carve0: [], carve1: [] };
     if (ctx.stone.count) {
-      const mesh = new THREE.Mesh(ctx.stone.toGeometry(), this.mats.stone);
+      const mesh = new THREE.Mesh(ctx.stone.toGeometry({ bounds: false }), this.mats.stone);
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.name = 'ironwork:stone';
       group.add(mesh);
     }
     if (ctx.cards.count) {
-      const mesh = new THREE.Mesh(ctx.cards.toGeometry(), this.mats.card);
+      const mesh = new THREE.Mesh(ctx.cards.toGeometry({ bounds: false }), this.mats.card);
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.name = 'ironwork:cards';
       group.add(mesh);
     }
     for (const [w, mat, name] of [[ctx.parts, this.amats.parts, 'parts'], [ctx.ac, this.amats.ac, 'ac']]) {
       if (!w.count) continue;
-      const mesh = new THREE.Mesh(w.toGeometry(), mat);
-      mesh.castShadow = !ctx.lod; mesh.receiveShadow = true;
+      const mesh = new THREE.Mesh(w.toGeometry({ bounds: false }), mat);
+      mesh.castShadow = !ctx.chunkLod; mesh.receiveShadow = true;
       mesh.name = `ironwork:${name}`;
       group.add(mesh);
     }
@@ -412,9 +449,13 @@ const ironwork = {
       mesh.name = 'ironwork:flags';
       group.add(mesh);
     }
-    for (const m of ctx.inst.build(group)) tags[m.userData.tag]?.push(m);
+    // one conservative sphere for all merged meshes (cheaper than scanning their vertices)
+    const sphere = boundsOf(ctx.anchors);
+    for (const m of group.children) m.geometry.boundingSphere = sphere.clone();
+    const { meshes, pending } = ctx.inst.build(group);
+    for (const m of meshes) tags[m.userData.tag]?.push(m);
     if (!group.children.length) return null;
-    Object.assign(group.userData, tags, { anchors: new Float32Array(ctx.anchors), lod: ctx.lod });
+    Object.assign(group.userData, tags, { pending, anchors: new Float32Array(ctx.anchors), lod: ctx.chunkLod });
     this.live.add(group);
     return group;
   },
@@ -430,17 +471,27 @@ const ironwork = {
     const px = 0.5 * _sz.y * app.camera.projectionMatrix.elements[5];
     uIronPx.value = px;
     const limRail = nearLimit() + 1;            // bars still above the card threshold
-    const limFull = (FADE.BAR * px) / 5.0;      // bars wider than 5 px: full scroll detail
+    const limFull = (0.05 * px) / 20.0;         // a 5 cm scroll eye spans 20+ px: full detail
+    const limMid = (0.05 * px) / 10.0;          // ... 10+ px: light detail, coarse beyond
     const limCarve = (0.03 * px) / 3.0;         // 3 cm carving still covers 3 px
     const cam = app.camera.position;
     for (const g of this.live) {
       const u = g.userData;
-      for (const m of u.rail) m.visible = m.boundingSphere.center.distanceTo(cam) - m.boundingSphere.radius < limRail;
-      for (const m of u.rail0) m.visible = m.boundingSphere.center.distanceTo(cam) - m.boundingSphere.radius < limFull;
-      for (const m of u.rail1) {
-        const d = m.boundingSphere.center.distanceTo(cam) - m.boundingSphere.radius;
-        m.visible = d >= limFull && d < limRail;
+      // railing geometry is only created once the camera first comes near it
+      for (let i = u.pending.length - 1; i >= 0; i--) {
+        const s = u.pending[i];
+        if (nearest(s.anchors, cam) > limRail + 4) continue;
+        for (const m of Instancer.materialize(s, g)) u[m.userData.tag]?.push(m);
+        u.pending.splice(i, 1);
       }
+      const band = (list, lo, hi) => {
+        for (const m of list) { const d = nearest(m.userData.anchors, cam); m.visible = d >= lo && d < hi; }
+      };
+      band(u.rail0, -Infinity, limFull);
+      band(u.rail1, limFull, limMid);
+      band(u.rail2, limMid, limRail);
+      band(u.post0, -Infinity, limFull);
+      band(u.post1, limFull, limRail);
       if (!u.carve0.length) continue;
       const a = u.anchors;
       let near = false;

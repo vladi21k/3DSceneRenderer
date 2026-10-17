@@ -228,10 +228,11 @@ export class Rig {
   walkPose(phase, W) {
     const P = this.basePose();
     const { S, D } = W;
-    const phiVert = 0.26;              // stance foot under the hip
+    const phiVert = 0.27;              // stance foot under the hip (mid-stance)
     const ffEnd = 0.07;                // heel rocker ends (foot flat)
-    const hoStart = 0.35 + 0.02 * (1 - W.sn); // heel off
-    const thHS = 15 + 3 * W.sn, thTO = -(32 + 20 * W.sn);
+    const hoStart = 0.33 + 0.02 * (1 - W.sn); // heel off: roll over the ball
+    const tbStart = hoStart + 0.62 * (D - hoStart); // then over the toe tips until toe-off
+    const thHS = 14 + 4 * W.sn, thB = -(26 + 6 * W.sn), thTO = -(50 + 12 * W.sn);
     const legs = {};
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
@@ -239,51 +240,60 @@ export class Rig {
       const phi = ((phase - (s === 'R' ? 0 : 0.5)) % 1 + 1) % 1;
       const xLat = sg * W.stepHalfW;     // feet land close to the line of progression
       const relHeel = (ph) => f.heel.z + S * (ph - phiVert);
-      const ankleFrom = (pivot, pivotRest, th) => {
-        const off = f.ankle.clone().sub(pivotRest).applyAxisAngle(X, th * DEG);
-        return pivot.clone().add(off);
+      const rot = (v, th) => v.clone().applyAxisAngle(X, th * DEG);
+      const ballAt = (ph) => new THREE.Vector3(xLat + (f.ball.x - f.heel.x), 0, relHeel(ph) + (f.ball.z - f.heel.z));
+      // ankle while rolling over the ball with toes flat, then the whole foot pivots on the toe tip
+      const ankleBall = (ph, th) => ballAt(ph).add(rot(f.ankle.clone().sub(f.ball), th));
+      const toeTip = (ph) => ballAt(ph).add(new THREE.Vector3(0, 0, f.tip.z - f.ball.z));
+      const ankleToe = (ph, th) => {
+        const a0 = ankleBall(ph, thB);       // configuration when the toe rocker starts (toes flat)
+        const tip = toeTip(ph);
+        return tip.clone().add(rot(a0.sub(tip), th - thB));
       };
       let ankle, th, toe = 0;
       if (phi < D) {
         if (phi < hoStart) {
           th = phi < ffEnd ? thHS * (1 - smooth(phi / ffEnd)) : 0;
           const heel = new THREE.Vector3(xLat, 0, relHeel(phi));
-          ankle = ankleFrom(heel, f.heel, th);
+          ankle = heel.add(rot(f.ankle.clone().sub(f.heel), th));
+        } else if (phi < tbStart) {
+          const u = (phi - hoStart) / (tbStart - hoStart);
+          th = thB * Math.pow(u, 1.3);
+          ankle = ankleBall(phi, th);
+          toe = -th;
         } else {
-          const u = (phi - hoStart) / (D - hoStart);
-          th = thTO * Math.pow(u, 1.6);
-          const ball = new THREE.Vector3(xLat + (f.ball.x - f.heel.x), 0, relHeel(phi) + (f.ball.z - f.heel.z));
-          ankle = ankleFrom(ball, f.ball, th);
-          toe = -th * 0.92;
+          const u = (phi - tbStart) / (D - tbStart);
+          th = thB + (thTO - thB) * smooth(u);
+          ankle = ankleToe(phi, th);
+          toe = -thB;
         }
       } else {
         const u = (phi - D) / (1 - D);
-        const thA = thTO, thB = thHS;
         // toe lifts quickly after toe-off, the foot is level by mid swing, heel leads at strike
-        th = u < 0.45 ? thA + (2 - thA) * smooth(u / 0.45) : 2 + (thB - 2) * smooth((u - 0.45) / 0.55);
-        toe = u < 0.3 ? -thA * 0.92 * (1 - smooth(u / 0.3)) : 0;
-        const ballTO = new THREE.Vector3(xLat + (f.ball.x - f.heel.x), 0, relHeel(D) + (f.ball.z - f.heel.z));
-        const aTO = ankleFrom(ballTO, f.ball, thA);
-        const heelHS = new THREE.Vector3(xLat, 0, relHeel(1));
-        const aHS = ankleFrom(heelHS, f.heel, thB);
-        const e = smoother(u);
-        ankle = aTO.clone().lerp(aHS, e);
-        ankle.y += (0.03 + 0.02 * W.sn) * Math.sin(Math.PI * Math.pow(u, 0.85));
+        th = u < 0.45 ? thTO + (2 - thTO) * smooth(u / 0.45) : 2 + (thHS - 2) * smooth((u - 0.45) / 0.55);
+        toe = u < 0.3 ? -thB * (1 - smooth(u / 0.3)) : 0;
+        const aTO = ankleToe(D, thTO);
+        const heelHS = new THREE.Vector3(xLat, 0, relHeel(0));   // next strike: one stride ahead of toe-off
+        const aHS = heelHS.add(rot(f.ankle.clone().sub(f.heel), thHS));
+        ankle = aTO.clone().lerp(aHS, smoother(u));
+        ankle.y += (0.03 + 0.02 * W.sn) * Math.sin(Math.PI * Math.pow(u, 0.75));
         ankle.x += sg * 0.012 * Math.sin(Math.PI * u);   // slight circumduction
       }
-      legs[s] = { ankle, th, toe, phi, stance: phi < D };
+      legs[s] = { ankle, th, toe, phi, stance: phi < D, loaded: phi < hoStart };
     }
     // pelvis height: as high as the planted legs allow (inverted pendulum), smoothed
     const hipH = (s, lg) => {
       const hipRest = this.rest[B['thigh' + s]];
       const dx = lg.ankle.x - hipRest.x, dz = lg.ankle.z - hipRest.z;
-      const L = (this.l1 + this.l2) * 0.985;
+      // effective leg length: ~8 deg knee flexion at mid-stance, ~16 deg in loading response
+      const L = (this.l1 + this.l2) * (0.997 - 0.008 * Math.exp(-(((lg.phi - 0.12) / 0.07) ** 2)));
       return lg.ankle.y + Math.sqrt(Math.max(0.01, L * L - dx * dx - dz * dz));
     };
+    // only legs on the heel / flat foot carry the pelvis; a leg rolling off its toes flexes the knee
     let yHip = Infinity;
-    for (const s of ['L', 'R']) if (legs[s].stance) yHip = Math.min(yHip, hipH(s, legs[s]));
+    for (const s of ['L', 'R']) if (legs[s].loaded) yHip = Math.min(yHip, hipH(s, legs[s]));
     if (!isFinite(yHip)) yHip = this.hipY;
-    yHip = Math.min(yHip, this.hipY - 0.006);
+    yHip = THREE.MathUtils.clamp(yHip, this.hipY - 0.055 * (this.H / 1.76), this.hipY - 0.006);
     P._yHip = yHip;
     P._legs = legs;
     // pelvis rotations
@@ -354,7 +364,7 @@ export class Rig {
       P.leg[s].footQ = qAxis(Y, -sg * (4 + 4 * free));
       P.leg[s].pole = new THREE.Vector3(sg * 0.15, 0, -1).normalize();
       const A = P.arm[s];
-      A.abd = 7 + 1.2 * Math.sin(2 * Math.PI * t + sg);
+      A.abd = 10 + 1.2 * Math.sin(2 * Math.PI * t + sg);
       A.flex = 2 + 2 * Math.sin(2 * Math.PI * t * 2 + sg);
       A.elbow = 12 + 3 * Math.sin(2 * Math.PI * t * 3);
       A.twist = -10;

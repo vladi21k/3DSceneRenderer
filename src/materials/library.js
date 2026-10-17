@@ -36,7 +36,7 @@ export const LIBRARY = {
     surf: { cell: STONE_CELL, macro: STONE_MACRO, detail: STONE_DETAIL, microShadow: 1 },
     vc: 'tint',
     meta: {
-      courseH: 0.35, blockL: 0.7, blockRange: [0.36, 1.2], courses: 12, joint: 0.007,
+      courseH: 0.35, blockL: 0.7, blockRange: [0.36, 1.2], courses: 12, joint: 0.006,
       uv: 'u along the wall, v up (m). Course joints at v = k × courseH. Scale v by meta.courseH / plan.courseH (and u by blockL / plan.blockL) to match a building style; offset v by a random whole number of courses and u by a random amount per lot so neighbours differ.',
       tints: LIMESTONE_TINTS,
     },
@@ -69,7 +69,7 @@ export const LIBRARY = {
     bake: 'paving',
     surf: {
       cell: PAVING_CELL, macro: PAVING_MACRO, detail: PAVING_DETAIL,
-      spots: { prob: 0.1, radius: 0.009, albedo: 0.6, rough: 0.55 },
+      spots: { prob: 0.1, radius: 0.01, albedo: 0.45, rough: 0.5 },
       stain: { amount: 0.16, freq: 0.5, threshold: 0.7 },
     },
     vc: 'tint',
@@ -80,7 +80,7 @@ export const LIBRARY = {
     bake: 'paving',
     surf: {
       scale: 1.25, cell: { ...PAVING_CELL, value: 0.11 }, macro: PAVING_MACRO, detail: PAVING_DETAIL,
-      spots: { prob: 0.16, radius: 0.01, albedo: 0.58, rough: 0.55 },
+      spots: { prob: 0.16, radius: 0.011, albedo: 0.42, rough: 0.5 },
       stain: { amount: 0.2, freq: 0.5, threshold: 0.66 },
     },
     vc: 'tint',

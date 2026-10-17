@@ -25,6 +25,8 @@ attribute vec4 aRoomP;
 attribute vec4 aRoomS;
 attribute vec4 aWin;
 attribute vec4 aFac;
+attribute vec4 aFrame;
+varying vec4 vFrame;
 varying vec4 vRoomP;
 varying vec4 vRoomS;
 varying vec4 vWin;
@@ -33,7 +35,7 @@ varying vec3 vFW;
 `;
 
 const VERT_MAIN = /* glsl */`
-vRoomP = aRoomP; vRoomS = aRoomS; vWin = aWin; vFac = aFac;
+vRoomP = aRoomP; vRoomS = aRoomS; vWin = aWin; vFac = aFac; vFrame = aFrame;
 vFW = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 `;
 
@@ -42,6 +44,7 @@ uniform float uTime;
 uniform float uNight;
 uniform vec3 uSunDir;
 uniform vec3 uSunColor;
+varying vec4 vFrame;
 varying vec4 vRoomP;
 varying vec4 vRoomS;
 varying vec4 vWin;
@@ -250,14 +253,18 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
           h.alb = mix( vec3( 0.04, 0.04, 0.04 ), vec3( 0.8, 0.78, 0.7 ), txt * 0.6 );
         } else h.alb = fShelves( h.alb, along, p.y, seed, 0.06, 0.3, 1.1, 1.7, 0.35, shelf );
       } else if ( stype < 3.5 ) {
-        // lit glass cases: bright bands with glints
-        if ( p.y > 0.75 && p.y < 1.0 ) { h.alb = vec3( 0.7 ); h.glow = 0.6 + 2.0 * step( 0.93, fh2( floor( vec2( along / 0.03, p.y / 0.03 ) ) + seed ) ); }
-        if ( p.y > 1.3 && p.y < 2.1 && abs( h.n.x ) > 0.5 ) { h.alb = vec3( 0.5 ); h.glow = 0.25 * step( 0.6, fract( p.y / 0.27 ) ); }
+        // dark panelled walls with small lit display niches
+        vec2 nf = fract( vec2( along / 0.7, ( p.y - 1.25 ) / 0.45 ) );
+        if ( p.y > 1.25 && p.y < 2.15 && nf.x > 0.18 && nf.x < 0.82 && nf.y > 0.18 && nf.y < 0.82 ) { h.alb = vec3( 0.62, 0.58, 0.52 ); h.glow = 0.3; }
+        else h.alb *= 0.85 + 0.15 * step( 0.04, fract( along / 0.7 ) );
       } else if ( stype < 4.5 ) {
         h.alb = fShelves( h.alb, along, p.y, seed, 0.055, 0.26, 0.2, 2.3, 0.65, shelf );
       } else {
         h.alb = fShelves( h.alb, along, p.y, seed, 0.32, 0.3, 0.3, 2.1, 0.35, shelf );
       }
+    } else if ( h.n.y > 0.5 && p.y > 0.3 && stype > 2.5 && stype < 3.5 ) {
+      // lit glass tops of the display cases, a few glints
+      h.alb = vec3( 0.5 ); h.glow = 0.35 + 1.2 * step( 0.985, fh2( floor( p.xz / 0.035 ) + seed ) );
     } else if ( h.n.y > 0.5 && p.y > 0.3 ) {
       // goods on table tops
       float g = fh2( floor( p.xz / 0.18 ) + seed );
@@ -279,23 +286,28 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float ndl = max( dot( nn, sunR ), 0.0 );
     L += sunC * inX * inY * ndl * 0.75;
   }
-  float litT = uNight * 0.72;
+  // artificial light is in scene (physical) units: daylight horizontal illuminance is
+  // ~3 here, so a lamp-lit room is ~0.005; the camera exposure rises ~900x at dusk.
+  float litT = uNight * 0.58;
   float lit = 1.0 - smoothstep( litT - 0.03, litT + 0.03, win.y );
   if ( win.y < 0.035 ) lit = max( lit, 0.6 ); // a few rooms with the lights on during the day
   vec3 lampC = mix( vec3( 1.0, 0.70, 0.42 ), vec3( 1.0, 0.86, 0.70 ), fh1( seed * 3.3 ) );
   if ( shop ) {
     lampC = stype > 3.5 && stype < 4.5 ? vec3( 0.92, 0.96, 1.0 ) : stype > 1.5 && stype < 2.5 ? vec3( 1.0, 0.74, 0.46 ) : mix( vec3( 1.0, 0.84, 0.64 ), vec3( 0.96, 0.95, 0.92 ), step( 0.6, fh1( seed * 5.1 ) ) );
-    float shopI = ( stype > 2.5 && stype < 3.5 ? 0.22 : 0.34 ) + 0.85 * uNight;
+    // by day a perceptual boost keeps the interior readable behind the glass
+    float dayK = max( 0.011, 0.15 * dot( Eday, vec3( 0.2126, 0.7152, 0.0722 ) ) ); // follows the daylight level
+    float shopI = ( stype > 2.5 && stype < 3.5 ? 0.65 : 1.0 ) * mix( dayK, 0.0085, uNight );
     L += lampC * shopI * ( 0.6 + 0.4 * exp( -abs( p.y - S.y ) * 0.5 ) );
   } else if ( lit > 0.0 ) {
     vec3 lp = vec3( S.x * 0.5, S.y - 0.45, S.z * 0.5 );
     vec3 dl = lp - p;
     float d2 = dot( dl, dl );
     float ndl = max( dot( nn, normalize( dl ) ), 0.0 ) * 0.7 + 0.3;
-    L += lampC * lit * ( stair ? 0.8 : 1.4 ) * ndl / ( 1.0 + d2 * 0.45 );
-    if ( fh1( seed * 9.7 ) < 0.12 ) L += vec3( 0.25, 0.35, 0.6 ) * lit * ( 0.6 + 0.4 * sin( uTime * 7.0 + seed * 40.0 ) * sin( uTime * 2.3 ) ) / ( 1.0 + d2 );
+    L += lampC * lit * ( stair ? 0.0035 : 0.0065 ) * ndl / ( 1.0 + d2 * 0.45 );
+    if ( fh1( seed * 9.7 ) < 0.12 ) L += vec3( 0.25, 0.35, 0.6 ) * lit * 0.003 * ( 0.6 + 0.4 * sin( uTime * 7.0 + seed * 40.0 ) * sin( uTime * 2.3 ) ) / ( 1.0 + d2 );
   }
-  vec3 col = h.alb * L * RECIPROCAL_PI * 1.6 + h.glow * lampC * ( shop ? 0.25 + 0.35 * uNight : 0.6 );
+  float glowK = shop ? mix( max( 0.007, 0.08 * dot( Eday, vec3( 0.2126, 0.7152, 0.0722 ) ) ), 0.007, uNight ) : 0.007;
+  vec3 col = h.alb * L * RECIPROCAL_PI * 1.6 + h.glow * lampC * glowK;
 
   // pendant lamp shade (visible when lit)
   if ( !shop && lit > 0.0 ) {
@@ -304,7 +316,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     if ( tl > 0.0 && tl < h.t ) {
       vec3 q = ro + rd * tl - lp;
       float shade = smoothstep( 0.2, 0.15, length( q.xz ) ) * step( -0.12, q.y ) * step( q.y, 0.05 );
-      col = mix( col, lampC * lit * 1.6, shade );
+      col = mix( col, lampC * lit * 0.02, shade );
     }
   }
   // cafe pendants
@@ -312,7 +324,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     for ( int i = 0; i < 3; i++ ) {
       vec3 lp = vec3( S.x * ( 0.25 + 0.25 * float( i ) ), S.y - 0.9, 1.6 + float( i ) * 0.4 );
       float tl = dot( lp - ro, rd );
-      if ( tl > 0.0 && tl < h.t ) col += lampC * smoothstep( 0.11, 0.07, length( ro + rd * tl - lp ) ) * ( 1.2 + 1.5 * uNight );
+      if ( tl > 0.0 && tl < h.t ) col += lampC * smoothstep( 0.11, 0.07, length( ro + rd * tl - lp ) ) * ( 0.3 * ( 1.0 - uNight ) + 0.03 * uNight );
     }
   }
 
@@ -324,7 +336,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     vec2 c = ro.xy + rd.xy * tc;
     float xr = c.x - S.x * 0.5;
     vec3 dc = DRAPES[ int( fh1( seed * 4.1 ) * 5.99 ) ];
-    vec3 back = lampC * lit * 0.9;
+    vec3 back = lampC * lit * 0.004;
     vec3 front = Eday * 0.42;
     if ( dtype < 1.5 ) {
       float cover = halfWin * ( 1.0 - damt );
@@ -383,17 +395,19 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 E
   vec2 f = fract( cell );
   float isWin = step( 0.0, cell.y ) * step( 0.3, f.x ) * step( f.x, 0.7 ) * step( 0.22, f.y ) * step( f.y, 0.82 );
   float shopBand = step( hy, 4.2 ) * step( 0.6, hy ) * step( 0.12, fract( hx / 3.4 ) ) * step( fract( hx / 3.4 ), 0.88 );
-  float lit = step( fh2( floor( cell ) + 5.0 ), uNight * 0.6 );
-  col = mix( col, vec3( 0.02 ) * E + lit * vec3( 1.0, 0.7, 0.4 ) * 0.6, max( isWin, shopBand ) * 0.85 );
+  float lit = step( fh2( floor( cell ) + 5.0 ), uNight * 0.5 );
+  col = mix( col, vec3( 0.02 ) * E + lit * vec3( 1.0, 0.7, 0.4 ) * 0.0015, max( isWin, shopBand ) * 0.85 );
   // street trees between us and the opposite facade
   float tT = ( streetW * 0.5 - 5.2 ) / rn;
   if ( tT > 0.0 ) {
     float ty = baseH + R.y * tT;
     float tx = dot( P, T ) + dot( R, T ) * tT;
-    float crown = smoothstep( 2.6, 3.4, ty ) * smoothstep( 7.5, 6.2, ty + vnoise( vec2( tx * 0.8, ty ) ) * 1.2 );
-    float gaps = smoothstep( 0.35, 0.6, vnoise( vec2( tx * 0.55, ty * 0.9 ) ) );
-    float tree = crown * gaps * step( 0.25, fract( tx / 10.0 + 0.1 ) );
-    vec3 leaf = vec3( 0.10, 0.14, 0.06 ) * ( Eamb + sunC * 0.4 ) * RECIPROCAL_PI;
+    // soft, out-of-focus crowns: a blurred band with gentle density variation
+    float crown = smoothstep( 2.4, 3.8, ty ) * smoothstep( 8.2, 5.6, ty );
+    float dens = 0.3 + 0.25 * vnoise( vec2( tx * 0.2, 0.5 ) );
+    float spacing = smoothstep( 0.0, 0.25, fract( tx / 10.0 + 0.1 ) ) * smoothstep( 1.0, 0.8, fract( tx / 10.0 + 0.1 ) );
+    float tree = crown * dens * spacing;
+    vec3 leaf = vec3( 0.09, 0.12, 0.06 ) * ( Eamb + sunC * 0.35 ) * RECIPROCAL_PI;
     col = mix( col, leaf, tree );
     cov = max( cov, tree );
   }
@@ -406,8 +420,8 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 E
 const FRAG_LIGHT = /* glsl */`
 #include <lights_fragment_maps>
 vec3 fInterior = vec3( 0.0 );
-float fGlass = 1.0 - step( 3.5, vWin.w );
-{
+float fGlass = ( 1.0 - step( 3.5, vWin.w ) ) * ( 1.0 - fMask );
+if ( fMask < 0.999 ) {
   float ang = vFac.x;
   vec3 T = vec3( cos( ang ), 0.0, sin( ang ) );
   vec3 N = vec3( -T.z, 0.0, T.x );
@@ -447,14 +461,20 @@ float fGlass = 1.0 - step( 3.5, vWin.w );
   vec3 sunR = vec3( dot( uSunDir, T ), uSunDir.y, -dot( uSunDir, N ) );
   vec3 ro = clamp( vRoomP.xyz, vec3( 0.001 ), vRoomS.xyz - 0.001 );
   fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, vRoomP.w, Eamb, sunR, uSunColor * step( 0.0, uSunDir.y ) );
-  if ( fGlass < 0.5 ) radiance = vec3( 0.0 );
+  if ( fGlass < 0.5 && fMask < 0.5 ) radiance = vec3( 0.0 );
+  fInterior *= 1.0 - fMask;
 }
 `;
 
 const FRAG_OUT = /* glsl */`
 float fNV = saturate( dot( normal, normalize( vViewPosition ) ) );
 float fF = 0.04 + 0.96 * pow( 1.0 - fNV, 5.0 );
-vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * fGlass + totalEmissiveRadiance + fInterior * ( 1.0 - fF * fGlass );
+vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * ( 1.0 - fF * fGlass );
+#if FDEBUG == 1
+outgoingLight = fInterior;
+#elif FDEBUG == 2
+outgoingLight = radiance;
+#endif
 `;
 
 // per-pane tilt and old-glass waviness, applied to the shading normal
@@ -464,10 +484,26 @@ const FRAG_NORMAL = /* glsl */`
   float leaf = step( vRoomS.x * 0.5, vRoomP.x ) + step( vFac.w - 0.02, vRoomP.y ) * 2.0;
   vec3 j = ( fh3( vWin.x * 61.0 + leaf * 7.0 ) - 0.5 ) * 0.022;
   float wav = vnoise( vec2( vRoomP.x * 3.0, vRoomP.y * 9.0 ) + vWin.x * 50.0 ) - 0.5;
-  j.x += wav * 0.012;
-  j.y += ( vnoise( vec2( vRoomP.y * 4.0, vRoomP.x * 2.0 ) + 9.0 ) - 0.5 ) * 0.008;
+  j.x += wav * 0.006;
+  j.y += ( vnoise( vec2( vRoomP.y * 4.0, vRoomP.x * 2.0 ) + 9.0 ) - 0.5 ) * 0.004;
   vec3 jv = ( viewMatrix * vec4( j.x, j.y, j.z, 0.0 ) ).xyz;
   normal = normalize( normal + jv * ( 1.0 - step( 3.5, vWin.w ) ) );
+}
+`;
+
+// Far range (lod 1): the casing, sill rail and central meeting stile are drawn here
+// instead of as geometry. fMask = 1 on the painted frame.
+const FRAG_FRAME = /* glsl */`
+#include <color_fragment>
+float fMask = 0.0;
+if ( vFrame.a > 0.5 ) {
+  float x = vRoomP.x - vRoomS.x * 0.5, y = vRoomP.y - vFac.z;
+  float hw = vRoomP.w, hh = vFac.w - vFac.z;
+  float d = min( min( hw - abs( x ), y ), hh - y );
+  float aa = fwidth( x ) * 0.75;
+  fMask = 1.0 - smoothstep( 0.075 - aa, 0.075 + aa, d );
+  if ( hw > 0.38 ) fMask = max( fMask, 1.0 - smoothstep( 0.045 - aa, 0.045 + aa, abs( x ) ) );
+  diffuseColor.rgb = mix( diffuseColor.rgb, vFrame.rgb, fMask );
 }
 `;
 
@@ -480,6 +516,7 @@ export function createInteriorGlass() {
   });
   m.name = 'facades.glassInterior';
   m.onBeforeCompile = (shader) => {
+    shader.fragmentShader = '#define FDEBUG ' + (new URLSearchParams(location.search).get('fdebug') || 0) + '\n' + shader.fragmentShader;
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uNight = U.uNight;
     shader.uniforms.uSunDir = U.uSunDir;
@@ -489,12 +526,14 @@ export function createInteriorGlass() {
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + VERT_MAIN);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
+      .replace('#include <color_fragment>', FRAG_FRAME)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor, 0.55, fMask );')
       .replace('#include <normal_fragment_maps>', FRAG_NORMAL)
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v1';
+  m.customProgramCacheKey = () => 'facades.glassInterior.v2';
   return m;
 }
 
-export const GLASS_ATTRS = { aRoomP: 4, aRoomS: 4, aWin: 4, aFac: 4 };
+export const GLASS_ATTRS = { aRoomP: 4, aRoomS: 4, aWin: 4, aFac: 4, aFrame: 4 };

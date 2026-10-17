@@ -35,21 +35,22 @@ class CrowdSim {
     this.population = new Population(this);
     this.steering = new Steering(this);
     this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0 };
-    this.time = 0;
+    this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
     this.out = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true };
+    this.popIn = [0, 0, 0, 0]; this.popSrc = {};
+    this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0 };
-    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, overlap: 0, agentFrames: 0 };
+    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0 };
     this.humans = app.humans && !app.humans.disabled ? app.humans : null;
     // renderer slots; alloc may hand back the first index of our block
     const base = this.humans && this.humans.alloc ? this.humans.alloc(MAX_AGENTS) : 0;
     this.base = Number.isInteger(base) ? base : 0;
-    this.debug = null;
-    if (app.params.num('crowdDebug', 0) === 1) {
-      import('./behaviour/debugView.js').then((m) => { this.debug = new m.DebugView(app, MAX_AGENTS); });
-    }
     app.events.on('bell', () => this.onBell());
   }
+
+  /** Event counters for the debug stats. */
+  tally(k) { this.events[k] = (this.events[k] || 0) + 1; }
 
   featureRng(...parts) { return RNG.from(this.seed, 'crowd', ...parts); }
   /** Wrapped route s → unwrapped s in the crowd frame (nearest copy to the camera). */
@@ -81,6 +82,7 @@ class CrowdSim {
     const yaw = Math.atan2(-(p.x - a.x), -(p.z - a.z));
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
+    if (Math.abs(rel) > 2.3) return Math.sign(rel) * 0.9; // tram right behind: a glance over the shoulder
     return Math.max(-1.25, Math.min(1.25, rel));
   }
 
@@ -103,6 +105,7 @@ class CrowdSim {
     this.vis.update(app.camera, this.camU, camS);
     if (first) { this._count(); this.population.fillInitial(); }
 
+    this.dt = dt;
     if (dt > 0) {
       this.time += dt;
       this._count();
@@ -119,7 +122,6 @@ class CrowdSim {
     this._lap(3, performance.now() - t4);
     this._lap(0, performance.now() - t0);
     if (this.check.on) this._selfCheck(app);
-    if (this.debug) this.debug.update(this.population.agents);
   }
 
   /** CPU time per part: 0 total, 1 population, 2 steering, 3 output (averaged over 60 frames, max after warm-up). */
@@ -156,6 +158,17 @@ class CrowdSim {
       route.toWorld(a.s, a.d, a.h, _v);
       a.x = _v.x; a.y = _v.y; a.z = _v.z;
       this.steering.animate(a, dt, H);
+      if (a.fresh) {
+        // appearances inside the view, by distance (only the far end of the range should show up here)
+        a.fresh = false;
+        const side = a.d >= 0 ? 1 : -1, m = map.mouthAt(a.s, side);
+        const behind = a.inDoor || Math.abs(a.d) > (m ? map.mouthLine(m, side) : map.facadeAt(a.s, side)) - 0.2; // masked by the facade
+        if (this.time > 1 && !behind && this.vis.inView(a.s, a.d)) {
+          const dist = Math.abs(a.s - this.camU);
+          this.popIn[dist < 100 ? 0 : dist < 250 ? 1 : dist < 400 ? 2 : 3]++;
+          if (dist < 400) this.popSrc[a.src] = (this.popSrc[a.src] || 0) + 1;
+        }
+      }
       a.heading = route.heading(a.s) - PI / 2 - a.alpha;
       if (!H || !H.set) continue;
       o.x = a.x; o.y = a.y; o.z = a.z;
@@ -174,7 +187,11 @@ class CrowdSim {
       if (!a.active) continue;
       // walls and obstacles (route coordinates)
       const side = a.d >= 0 ? 1 : -1, ad = Math.abs(a.d);
-      if (!a.inDoor && !map.mouthAt(a.s, side) && ad > map.wallAt(a.s, side) + 0.02) ck.wall++;
+      // (seated patrons sit where the layout put the chairs)
+      if (a.state !== ST.SEATED && !a.inDoor && !map.mouthAt(a.s, side) && ad > map.wallAt(a.s, side) + 0.02) {
+        ck.wall++;
+        if (ck.wallLog.length < 8) ck.wallLog.push({ s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), wall: +map.wallAt(a.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], kind: KIND_NAMES[a.kind], src: a.src });
+      }
       if (a.state !== ST.SEATED && a.kind !== KIND.PASSENGER) {
         const n = map.gatherCircles(a.s, 1);
         for (let q = 0; q < n; q++) {
@@ -225,8 +242,9 @@ class CrowdSim {
       crossSection30to250m: { leftWalk: band[0], leftTrack: band[1], rideTrack: band[2], rightWalk: band[3] },
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
-      check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, obstacleOverlap: ck.overlap } : null,
-      population: this.population.stats,
+      check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap } : null,
+      population: this.population.stats, events: this.events,
+      visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under400m: this.popIn[2], beyond400m: this.popIn[3], nearBySource: this.popSrc },
       cpuMs: +this.perf.avg[0].toFixed(3), cpuMaxMs: +this.perf.max[0].toFixed(3), framesOver1_5ms: this.perf.over,
       cpuParts: { population: [+this.perf.avg[1].toFixed(3), +this.perf.max[1].toFixed(2)], steering: [+this.perf.avg[2].toFixed(3), +this.perf.max[2].toFixed(2)], output: [+this.perf.avg[3].toFixed(3), +this.perf.max[3].toFixed(2)] },
     };

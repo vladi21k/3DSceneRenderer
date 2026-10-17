@@ -24,6 +24,7 @@ export class Steering {
     this.head = new Int32Array(this.nx * this.ny);
     this.des = { vs: 0, vd: 0, vmax: 1.6 };
     this.s0 = 0;
+    this.frame = 0;
   }
 
   _cell(a) {
@@ -48,6 +49,7 @@ export class Steering {
   step(dt) {
     const c = this.c, agents = c.population.agents, tram = c.tram, des = this.des;
     this.buildGrid(agents);
+    this.frame++;
     for (const a of agents) {
       if (!a.active) continue;
       a.timer -= dt; a.thinkT -= dt;
@@ -64,12 +66,17 @@ export class Steering {
       const standing = (a.state === ST.STAND || a.state === ST.WAIT || a.state === ST.PLATFORM) && !a.clearing;
       let fs = (des.vs - a.vs) / (standing ? 0.3 : TAU);
       let fd = (des.vd - a.vd) / (standing ? 0.3 : TAU);
-      if (!a.simple) {
+      // avoidance forces at 30 Hz per agent (alternate frames), held in between
+      let gathered = false;
+      if (a.simple) { a.afs = 0; a.afd = 0; }
+      else if (((this.frame + a.slot) & 1) === 0 || a.fresh) {
         this._social(a, standing);
-        fs += this.fs; fd += this.fd;
+        let s = this.fs, d = this.fd;
         this._obstacles(a, standing);
-        fs += this.fs; fd += this.fd;
+        a.afs = s + this.fs; a.afd = d + this.fd;
+        gathered = true;
       }
+      fs += a.afs; fd += a.afd;
       a.vs += fs * dt; a.vd += fd * dt;
       const sp = len2(a.vs, a.vd);
       const vmax = standing ? 0.6 : des.vmax;
@@ -79,7 +86,7 @@ export class Steering {
       const k = 1 + c.route.curvature(a.s) * a.d;
       a.s += (a.vs / Math.max(0.5, k)) * dt;
       a.d += a.vd * dt;
-      this._constrain(a);
+      this._constrain(a, gathered, a.s - prevS);
       tram.constrain(a, prevD);
 
       // goals that cannot be reached (blocked by a crowd or a wall): give up after a while
@@ -177,13 +184,16 @@ export class Steering {
   }
 
   // ---------------------------------------------------------------- hard constraints
-  _constrain(a) {
+  /** `gathered`: the obstacle query of this step (around the position before the move, which
+   *  was `moved` metres ago along s) is still in map.q*. */
+  _constrain(a, gathered = false, moved = 0) {
     const c = this.c, map = c.map;
     // circle obstacles: resolve overlaps
-    const n = map.gatherCircles(a.s, 1.2);
+    const n = gathered ? map.qN : map.gatherCircles(a.s, 1.2);
+    const shift = gathered ? moved : 0;
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
-      const dx = map.qDS[q], dy = map.cD[i] - a.d;
+      const dx = map.qDS[q] - shift, dy = map.cD[i] - a.d;
       const min = map.cR[i] + AGENT_R * 0.8;
       const d2 = dx * dx + dy * dy;
       if (d2 < min * min) {
@@ -240,8 +250,12 @@ export class Steering {
     a.alpha = wrapAngle(a.alpha + Math.max(-rate * dt, Math.min(rate * dt, diff)));
     // gait phase: advance by distance / stride length so feet do not slide
     if (sp > 0.02) {
-      const stride = humans && humans.strideLength ? humans.strideLength(a.appearance, sp) : fallbackStride(sp);
-      a.phase = (a.phase + (sp * dt) / Math.max(0.3, stride)) % 1;
+      // the renderer's stride for this body and speed (re-queried only when the speed changes)
+      if (Math.abs(sp - a.strideV) > 0.04) {
+        a.strideV = sp;
+        a.stride = Math.max(0.3, humans && humans.strideLength ? humans.strideLength(a.appearance, sp) : fallbackStride(sp));
+      }
+      a.phase = (a.phase + (sp * dt) / a.stride) % 1;
     }
     a.pose = a.state === ST.SEATED ? 2 : (still && sp < 0.15 && a.task !== TASK.CROSS) ? 1 : 0;
     // gaze: the tram when it rings or when waiting to cross, otherwise idle glances

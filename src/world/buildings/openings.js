@@ -62,6 +62,12 @@ export function openingMasonry(ctx, face, o) {
   if (surround) {
     B.bevelBox(sT, u0 - surround, u0, y0, ys, 0, sp, bev, FACES.ALL & ~FACES.BOTTOM);
     B.bevelBox(sT, u1, u1 + surround, y0, ys, 0, sp, bev, FACES.ALL & ~FACES.BOTTOM);
+    // crossettes: the architrave steps out sideways just below the head
+    if (orn.ears && isWin && !arched && q.lod === 0) {
+      const eh = Math.min(0.22, (ys - y0) * 0.12), ew = 0.08;
+      B.bevelBox(sT, u0 - surround - ew, u0 - surround + 0.01, ys - eh, ys, 0, sp, bev * 0.5, FACES.ALL & ~FACES.RIGHT);
+      B.bevelBox(sT, u1 + surround - 0.01, u1 + surround + ew, ys - eh, ys, 0, sp, bev * 0.5, FACES.ALL & ~FACES.LEFT);
+    }
   }
 
   // head
@@ -83,6 +89,11 @@ export function openingMasonry(ctx, face, o) {
     const ext = (surround || 0.06) + 0.07;
     const h = orn.sillH, p = sp + orn.sillP;
     B.bevelBox(sT, u0 - ext, u1 + ext, y0 - h, y0 + 0.004, 0, p, bev, FACES.ALL);
+    // raised apron panel under the sill
+    if (orn.apron && o.floor > 0) {
+      const ah = Math.min(0.7, (y0 - h) - (face.floors[o.floor].y + 0.25));
+      if (ah > 0.25) B.bevelBox(sT, u0, u1, y0 - h - ah, y0 - h - 0.02, 0, 0.018, bev * 0.6, FACES.ALL);
+    }
     if (orn.sillCorbels && q.lod === 0) {
       for (const cu of [u0 - ext + 0.05, u1 + ext - 0.17]) B.bevelBox(sT, cu, cu + 0.12, y0 - h - 0.2, y0 - h, 0, p - 0.03, bev, FACES.ALL & ~FACES.TOP);
     }
@@ -101,7 +112,7 @@ export function openingMasonry(ctx, face, o) {
         B.bevelBox(sT, u0 - 0.1, u1 + 0.1, gMin - 0.12, top, 0, 0.05 + k * tread, bev * 0.6, FACES.FRONT | FACES.TOP | FACES.LEFT | FACES.RIGHT);
       }
     }
-    if (o.kind === 'door' && orn.doorHood && q.lod === 0) doorHood(ctx, sT, o, surround);
+    if (o.kind === 'door' && orn.doorHood && q.lod === 0) doorHood(ctx, sT, o, surround, arched ? orn.shopRing : 0);
   }
   B.shade = null;
 }
@@ -235,11 +246,11 @@ function hood(ctx, s, o, ext, v0, simple) {
 const HOOD = [[0, 0], [0.04, 0], [0.05, 0.03], [0.09, 0.07], [0.13, 0.09], [0.13, 0.15], [0.15, 0.17], [0.15, 0.2], [0, 0.22]];
 const HOOD_SIMPLE = [[0, 0], [0.13, 0.08], [0.15, 0.2], [0, 0.22]];
 
-/** Entrance portal hood on two consoles. */
-function doorHood(ctx, s, o, surround) {
+/** Entrance portal hood on two consoles (clear of the voussoir ring of an arched door). */
+function doorHood(ctx, s, o, surround, ring) {
   const { B } = ctx;
-  const yt = o.y + o.h + (o.top === 'flat' ? 0.38 : 0.05);
-  const cw = 0.16, off = (surround || 0.12) + 0.08;
+  const yt = ring ? o.y + o.h + ring + 0.14 : o.y + o.h + 0.38;
+  const cw = 0.16, off = ring ? ring + 0.06 : (surround || 0.12) + 0.08;
   const ua = o.uc - o.w / 2 - off - cw, ub = o.uc + o.w / 2 + off;
   for (const cu of [ua, ub]) B.sweep(s, CONSOLE, [[cu, 0], [cu + cw, 0]], yt - 0.62, [true, true]);
   B.extrudeU(s, DOOR_HOOD, ua - 0.08, ub + cw + 0.08, yt, [true, true]);

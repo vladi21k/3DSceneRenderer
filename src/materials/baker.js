@@ -151,7 +151,7 @@ export class Baker {
     const [w, h] = sizeOf(r);
     const rt = new THREE.WebGLRenderTarget(w, h, {
       count: r.raw ? 1 : 2, depthBuffer: false,
-      type: r.raw ? THREE.HalfFloatType : THREE.UnsignedByteType, format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType, format: THREE.RGBAFormat,
       wrapS: THREE.RepeatWrapping, wrapT: THREE.RepeatWrapping,
       minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: true,
       anisotropy: this.maxAniso,
@@ -288,6 +288,5 @@ export class Baker {
 
 function texBytes(b) {
   const [w, h] = sizeOf(b.recipe);
-  const per = b.recipe.raw ? 8 : 8; // 2× RGBA8 or 1× RGBA16F
-  return Math.round(w * h * per * 4 / 3);
+  return Math.round(w * h * (b.recipe.raw ? 4 : 8) * 4 / 3); // RGBA8 (×2 for albedo + surface), +1/3 mips
 }

@@ -101,13 +101,9 @@ function alongMatrix(p, dir) {
   return _m.compose(p, _q, _s1).clone();
 }
 
-/** World position of a pole's span eye. */
+/** World position of a pole's span eye (on the street side of the shaft). */
 function spanEye(route, pole, out = new THREE.Vector3()) {
-  const smp = route.sample(pole.s);
-  const toCentre = -Math.sign(pole.d);
-  route.toWorld(pole.s, pole.d + toCentre * SPAN_EYE_X, SPAN_Y, out);
-  void smp;
-  return out;
+  return route.toWorld(pole.s, pole.d - Math.sign(pole.d) * SPAN_EYE_X, SPAN_Y, out);
 }
 
 /** Builds the overhead line of one chunk:
@@ -125,8 +121,9 @@ export function buildOverheadChunk(app, plan, chunk) {
   // rod insulator: real geometry near, a short thick segment further away
   const addInsulator = (p, dir) => {
     if (!lo) insulators.push(alongMatrix(p, dir));
-    const d = dir.clone().normalize().multiplyScalar(0.18);
-    ib.add([p.clone().sub(d), p.clone().add(d)], 0.03, WIRE_COLORS.insulator);
+    // stand-in: the average silhouette of rod + sheds, not the full shed diameter
+    const d = dir.clone().normalize().multiplyScalar(0.17);
+    ib.add([p.clone().sub(d), p.clone().add(d)], 0.017, WIRE_COLORS.insulator);
   };
 
   for (const sp of spans) {
@@ -142,12 +139,11 @@ export function buildOverheadChunk(app, plan, chunk) {
     for (let i = 0; i <= N; i++) pts.push(spanPt(dL + ((dR - dL) * i) / N));
     pts[0].copy(eL); pts[N].copy(eR);
     wb.add(pts, SPAN_R, WIRE_COLORS.steel);
-    const spanDir = new THREE.Vector3().subVectors(eR, eL).normalize();
+    // rod insulators near both poles and between the tracks (section isolation)
     for (const d of [dL + 0.75, 0, dR - 0.75]) {
       const a = spanPt(d - 0.05), b = spanPt(d + 0.05);
       addInsulator(spanPt(d), b.sub(a));
     }
-    void spanDir;
 
     for (const t of [-1, 1]) {
       const dS = t * TRACK_OFFSET + sp.off[t];
@@ -188,20 +184,17 @@ export function buildOverheadChunk(app, plan, chunk) {
     }
   }
 
-  // crossover wire between the two contact wires
+  // crossover wire between the two contact wires, easing onto the main wires at both ends
   for (const c of layout.inChunk('crossovers', chunk.index)) {
     const dA = c.from * TRACK_OFFSET, dB = -c.from * TRACK_OFFSET;
-    const A = route.toWorld(c.s0 - 4, dA, CONTACT_WIRE_HEIGHT + 0.02), B = route.toWorld(c.s1 + 4, dB, CONTACT_WIRE_HEIGHT + 0.02);
+    const sA = c.s0 - 4, len = c.s1 - c.s0 + 8;
     const pts = [];
     const n = lo ? 6 : 16;
     for (let i = 0; i <= n; i++) {
       const u = i / n;
-      const s = (c.s0 - 4) + (c.s1 - c.s0 + 8) * u;
-      // straight in the middle, easing onto the main wires at both ends
       const e = THREE.MathUtils.smoothstep(u, 0.0, 1.0);
-      pts.push(route.toWorld(s, dA + (dB - dA) * e, CONTACT_WIRE_HEIGHT + 0.02 - 0.03 * 4 * u * (1 - u)));
+      pts.push(route.toWorld(sA + len * u, dA + (dB - dA) * e, CONTACT_WIRE_HEIGHT + 0.02 - 0.03 * 4 * u * (1 - u)));
     }
-    void A; void B;
     wb.add(pts, CONTACT_R, WIRE_COLORS.contact);
   }
 

@@ -8,10 +8,13 @@ import { SunLightShadow } from 'three/addons/lights/SunLightShadow.js';
 // without per-material patches.
 //
 // Shader conventions (patched getSunShadow below):
-//   shadow.radius     PCF filter radius in metres (sun penumbra, constant in world space)
+//   shadow.radius     largest penumbra half-width in metres (blockers ~25 m away)
 //   shadow.normalBias normal offset in shadow-map texels of the cascade in use
 //   shadow.bias       small constant depth bias
-//   cascade.w         world size of one texel in that cascade (metres)
+//   cascade.w         floor(depth range of the cascade camera, m) + world texel size (m)
+// Penumbrae harden towards contact: a small blocker search compares the receiver at
+// three depth offsets (0, 1 m, 6 m towards the sun) to estimate how far the blocker
+// is, and the filter radius follows the sun's angular size (0.53°).
 
 const _m = new THREE.Matrix4();
 const _viewToLight = new THREE.Matrix4();
@@ -22,9 +25,52 @@ const _near = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _far = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _corners = Array.from({ length: 8 }, () => new THREE.Vector3());
 
+const _sphere = new THREE.Sphere();
+
+/**
+ * Cascade frustum that also rejects casters whose shadow cannot reach the cascade's
+ * slice of view depth: a shadow lies between the object and the object pushed away
+ * from the sun by (height / tan(sun elevation)). A sphere-fitted far cascade would
+ * otherwise contain, and redraw, every small object near the camera.
+ */
+class CascadeFrustum extends THREE.Frustum {
+  constructor() {
+    super();
+    this.zNear = -Infinity;
+    this.zFar = Infinity;
+    this.ctx = null;
+  }
+  intersectsObject(object) {
+    const c = this.ctx;
+    if (c && c.enabled) {
+      const g = object.geometry;
+      let bs = null;
+      if (object.isInstancedMesh) {
+        if (object.boundingSphere === null) object.computeBoundingSphere();
+        bs = object.boundingSphere;
+      } else if (g) {
+        if (g.boundingSphere === null) g.computeBoundingSphere();
+        bs = g.boundingSphere;
+      }
+      if (bs) {
+        _sphere.copy(bs).applyMatrix4(object.matrixWorld);
+        const p = _sphere.center, r = _sphere.radius;
+        const d = (p.x - c.camPos.x) * c.fwd.x + (p.y - c.camPos.y) * c.fwd.y + (p.z - c.camPos.z) * c.fwd.z;
+        const h = Math.max(0, Math.min(p.y + r - c.groundY, 60));
+        const reach = h * c.cotE;              // horizontal shadow length of the top of the object
+        const dd = reach * c.awayDotFwd;         // its component along the view direction
+        const lo = Math.min(d, d + dd) - r - 6, hi = Math.max(d, d + dd) + r + 6;
+        if (hi < this.zNear || lo > this.zFar) return false;
+      }
+    }
+    return super.intersectsObject(object);
+  }
+}
+
 export class StreetSunShadow extends SunLightShadow {
   constructor(cascades = 4) {
     super();
+    this.isStreetSunShadow = true;
     this.cascades = cascades;
     this.fade = 0.14;            // fraction of each cascade blended into the next
     this.firstSplit = 30;        // metres at the default 17° field of view
@@ -32,7 +78,7 @@ export class StreetSunShadow extends SunLightShadow {
     for (let i = 0; i < cascades; i++) {
       this._cameras.push(new THREE.OrthographicCamera());
       this._matrices.push(new THREE.Matrix4());
-      this._frustums.push(new THREE.Frustum());
+      this._frustums.push(new CascadeFrustum());
       this._cascadeData.push(new THREE.Vector4());
       this._viewports.push(new THREE.Vector4());
     }
@@ -42,6 +88,11 @@ export class StreetSunShadow extends SunLightShadow {
     this._frameExtents.set(cols, Math.ceil(cascades / cols));
     this._cascadeSplits = new Array(cascades + 1).fill(0);
     this.splits = this._cascadeSplits;
+    // caster footprint culling context, shared by the cascade frustums
+    this.cullCasters = true;
+    this._ctx = { enabled: true, camPos: new THREE.Vector3(), fwd: new THREE.Vector3(), groundY: 0, cotE: 1, awayDotFwd: 0 };
+    for (const f of this._frustums) f.ctx = this._ctx;
+    this.groundY = null; // world height of the street at the camera (set by env); null = camera.y - 3
   }
 
   copy(source) {
@@ -76,6 +127,16 @@ export class StreetSunShadow extends SunLightShadow {
     _m.lookAt(_c.set(0, 0, 0), _dir, _up);
     _viewToLight.copy(_m).transpose().multiply(viewCamera.matrixWorld);
 
+    // caster culling context: view position/direction and the sun's horizontal reach
+    const ctx = this._ctx;
+    ctx.enabled = this.cullCasters;
+    ctx.camPos.setFromMatrixPosition(viewCamera.matrixWorld);
+    ctx.fwd.set(0, 0, -1).transformDirection(viewCamera.matrixWorld);
+    ctx.groundY = this.groundY ?? ctx.camPos.y - 3;
+    const sunH = Math.hypot(_dir.x, _dir.z);              // _dir points away from the sun
+    ctx.cotE = Math.min(sunH / Math.max(-_dir.y, 0.02), 40);
+    ctx.awayDotFwd = sunH > 1e-4 ? (_dir.x * ctx.fwd.x + _dir.z * ctx.fwd.z) / sunH : 0;
+
     const inv = viewCamera.projectionMatrixInverse;
     let maxZ = -Infinity;
     for (let i = 0; i < 4; i++) {
@@ -109,7 +170,7 @@ export class StreetSunShadow extends SunLightShadow {
       // inset each tile by the filter footprint so PCF never reads the neighbouring tile
       let radius = Math.sqrt(r2);
       const texelGuess = (2 * radius) / tile;
-      const insetTexels = Math.ceil(Math.max(this.radius / texelGuess, 1) + this.normalBias) + 2;
+      const insetTexels = Math.ceil(Math.max(this.radius / texelGuess, 1) * 1.2 + this.normalBias) + 2;
       const inset = Math.min(0.2, insetTexels / tile);
       const col = i % cols, row = Math.floor(i / cols);
       this._viewports[i].set(col + inset, row + inset, 1 - 2 * inset, 1 - 2 * inset);
@@ -123,7 +184,11 @@ export class StreetSunShadow extends SunLightShadow {
       _c.z = maxZ + shadowNear;
       _c.applyMatrix4(_m);
 
-      this._cascadeData[i].set(i === 0 ? -1e10 : cNear, cFar, fadeStart, texel);
+      const range = maxZ - minZ + 2 * shadowNear;
+      this._cascadeData[i].set(i === 0 ? -1e10 : cNear, cFar, fadeStart, Math.floor(range) + Math.min(texel, 0.999));
+      // the slice's view depths (corners of the frustum reach a little further than the split)
+      this._frustums[i].zNear = i === 0 ? -Infinity : cNear * 0.97 - 2;
+      this._frustums[i].zFar = cFar + 2;
 
       const cam = this._cameras[i];
       cam.position.copy(_c);
@@ -165,16 +230,39 @@ export function patchSunShadowChunk(cascades, taps = 10) {
 			#else
 				sampler2D shadowMap,
 			#endif
-			vec2 atlasSize, float bias, float radiusTexels, vec4 coord ) {
+			vec2 atlasSize, float bias, float texel, float range, float maxRadius, vec4 coord ) {
 			coord.xyz /= coord.w;
 			coord.z += bias;
 			if ( coord.z > 1.0 ) return 1.0;
 			#if defined( SHADOWMAP_TYPE_PCF )
-				vec2 r = radiusTexels / atlasSize;
+				vec2 tx = 1.0 / atlasSize;
 				float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+				// blocker search over the widest penumbra
+				float sr = max( maxRadius / texel, 1.0 );
+				vec2 so[ 5 ];
+				so[ 0 ] = vec2( 0.0 );
+				float f0 = 1.0 - texture( shadowMap, coord.xyz );
+				for ( int k = 1; k < 5; k ++ ) {
+					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * sr * tx;
+					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z ) );
+				}
+				f0 *= 0.2;
+				if ( f0 <= 0.0 ) return 1.0;
+				if ( f0 >= 1.0 ) return 0.0;
+				// how far the blockers are: still blocked with the receiver moved 1 m / 6 m towards the sun?
+				float d1 = 1.0 / range, d2 = 6.0 / range, f1 = 0.0, f2 = 0.0;
+				for ( int k = 0; k < 5; k ++ ) {
+					f1 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z - d1 ) );
+					f2 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z - d2 ) );
+				}
+				f1 *= 0.2; f2 *= 0.2;
+				float dEst = ( 0.45 * ( f0 - f1 ) + 2.8 * ( f1 - f2 ) + 14.0 * f2 ) / f0;
+				// penumbra half-width from the sun's angular radius (x1.5 for the filter shape)
+				float rt = clamp( dEst * 0.0047 * 1.5, texel * 1.0, max( maxRadius, texel ) ) / texel;
+				vec2 r = rt * tx;
 				float s = 0.0;
 				for ( int k = 0; k < SUN_PCF_TAPS; k ++ ) {
-					s += texture( shadowMap, vec3( coord.xy + vogelDiskSample( k, SUN_PCF_TAPS, phi ) * r, coord.z ) );
+					s += texture( shadowMap, vec3( coord.xy + vogelDiskSample( k, SUN_PCF_TAPS, phi + 1.3 ) * r, coord.z ) );
 				}
 				return s / float( SUN_PCF_TAPS );
 			#else
@@ -196,10 +284,10 @@ export function patchSunShadowChunk(cascades, taps = 10) {
 			for ( int i = SUN_LIGHT_CASCADES - 1; i >= 0; i -- ) {
 				vec4 cascade = sunShadowCascade[ cascadeOffset + i ];
 				if ( viewDepth >= cascade.x && viewDepth < cascade.y ) {
-					float texel = cascade.w;
+					float texel = fract( cascade.w );
+					float range = floor( cascade.w );
 					vec4 wp = vec4( vSunShadowWorldPosition.xyz + vSunShadowWorldNormal * ( sunLightShadow.shadowNormalBias * texel ), 1.0 );
-					float rt = max( sunLightShadow.shadowRadius / texel, 0.85 );
-					float cs = sunShadowTap( shadowMap, sunLightShadow.shadowMapSize, sunLightShadow.shadowBias, rt, sunShadowMatrix[ cascadeOffset + i ] * wp );
+					float cs = sunShadowTap( shadowMap, sunLightShadow.shadowMapSize, sunLightShadow.shadowBias, texel, range, sunLightShadow.shadowRadius, sunShadowMatrix[ cascadeOffset + i ] * wp );
 					cs = mix( 1.0, cs, sunLightShadow.shadowIntensity );
 					shadow = mix( cs, shadow, smoothstep( cascade.z, cascade.y, viewDepth ) );
 				}

@@ -18,8 +18,8 @@ export function slabProfile(T, variant, lod) {
   // classical: chamfered top arris, fascia, ovolo, fillet, soffit
   const p = [[-0.012, 0], [0, -0.012], [0, -0.055], [-0.012, -0.063]];
   const rx = 0.048, ry = Math.max(0.03, T - 0.078);
-  for (let i = 1; i <= 6; i++) {
-    const a = -(i / 6) * Math.PI / 2;
+  for (let i = 1; i <= 4; i++) {
+    const a = -(i / 4) * Math.PI / 2;
     p.push([-0.06 + rx * Math.cos(a), -0.063 + ry * Math.sin(a)]);
   }
   p.push([-0.072, -T + 0.015], [-0.072, -T]);
@@ -94,7 +94,7 @@ export function corbelGeometry(variant, lod) {
   const bev = lod ? 0 : 0.012;
   const ext = new THREE.ExtrudeGeometry(shape, {
     depth: Wc - 2 * bev, bevelEnabled: !lod, bevelThickness: bev, bevelSize: bev, bevelSegments: 1,
-    curveSegments: lod ? 3 : 5,
+    curveSegments: lod ? 1 : 5,
   });
   let parts = [ext];
   if (roll && !lod) {
@@ -135,41 +135,6 @@ export function corbelGeometry(variant, lod) {
   return shared(g);
 }
 
-/** Plain console outline for the far range, written straight into the merged stone
- *  geometry (no extra draw call). Returns a writer function for the given variant. */
-export function corbelPrism(variant) {
-  const { D, H: Hc, W: Wc } = CORBEL;
-  const { shape } = corbelShape(variant, D, Hc);
-  let pts = shape.getPoints(1);
-  if (pts.length > 1 && pts[0].equals(pts[pts.length - 1])) pts.pop();
-  if (THREE.ShapeUtils.isClockWise(pts)) pts = pts.reverse();
-  const P = pts.map((p) => [p.x, p.y]); // (w, v), counter-clockwise
-  // make every cap triangle counter-clockwise too (the triangulator may flip them)
-  const tris = THREE.ShapeUtils.triangulateShape(pts, []).map(([i, j, k]) => {
-    const area = (P[j][0] - P[i][0]) * (P[k][1] - P[i][1]) - (P[k][0] - P[i][0]) * (P[j][1] - P[i][1]);
-    return area >= 0 ? [i, j, k] : [i, k, j];
-  });
-  const n = P.length, x0 = -Wc / 2, x1 = Wc / 2;
-  return (W) => {
-    for (let i = 0; i < n; i++) {
-      const A = P[i], B = P[(i + 1) % n];
-      // faces hidden against the soffit (v = 0) or the wall (w = 0) are skipped
-      if ((A[1] > -1e-3 && B[1] > -1e-3) || (A[0] < 1e-3 && B[0] < 1e-3)) continue;
-      let nw = B[1] - A[1], nv = -(B[0] - A[0]);
-      const l = Math.sqrt(nw * nw + nv * nv) || 1; nw /= l; nv /= l;
-      const sh = 0.82 + 0.18 * Math.min(1, Math.max(0, A[0] / D) + 0.3);
-      const a = W.v(x0, A[1], A[0], 0, nv, nw, A[0], A[1], sh), b = W.v(x0, B[1], B[0], 0, nv, nw, B[0], B[1], sh);
-      const c = W.v(x1, B[1], B[0], 0, nv, nw, B[0], B[1], sh), d = W.v(x1, A[1], A[0], 0, nv, nw, A[0], A[1], sh);
-      W.quad(a, d, c, b);
-    }
-    for (const [x, nx] of [[x1, 1], [x0, -1]]) {
-      const idx = P.map((p) => W.v(x, p[1], p[0], nx, 0, 0, p[0], p[1], 0.9));
-      // a counter-clockwise (w right, v up) loop is clockwise seen from +x
-      for (const [i, j, k] of tris) nx > 0 ? W.tri(idx[i], idx[k], idx[j]) : W.tri(idx[i], idx[j], idx[k]);
-    }
-  };
-}
-
 // ---------------------------------------------------------------- stone balustrade
 export const BALUSTRADE = { H: 1.0, PLINTH: 0.12, COPING: 0.12, SPACING: 0.2 };
 
@@ -181,8 +146,12 @@ export function balusterGeometry(lod) {
     [0.058, 0.26], [0.042, 0.33], [0.03, 0.4], [0.027, 0.44], [0.034, 0.47], [0.044, 0.49], [0.044, 0.515], [0.05, 0.525], [0.05, 0.56]]
     .map(([r, y]) => [r, y * k]);
   const W = new GeoWriter();
-  lathe(W, lod ? prof.filter((_, i) => i % 2 === 0 || i === prof.length - 1) : prof, lod ? 6 : 14);
-  if (!lod) { box(W, 0, 0.012, 0, 0.11, 0.024, 0.11); box(W, 0, h - 0.012, 0, 0.11, 0.024, 0.11); }
+  // far: a square shaft is all that survives at a couple of pixels
+  if (lod) box(W, 0, h / 2, 0, 0.085, h, 0.085, 1, 'ud');
+  else {
+    lathe(W, prof, 10);
+    box(W, 0, 0.012, 0, 0.11, 0.024, 0.11); box(W, 0, h - 0.012, 0, 0.11, 0.024, 0.11);
+  }
   const g = W.toGeometry();
   // occlusion: darker at the neck and near the plinth
   const pos = g.attributes.position, col = g.attributes.color;

@@ -29,7 +29,7 @@ const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a
 
 // ------------------------------------------------------------------ joinery template
 function glazingProfile(g, zs) {
-  return [[-g / 2, -0.02], [-g / 2, zs - 0.012], [-g / 4, zs - 0.004], [g / 4, zs - 0.004], [g / 2, zs - 0.012], [g / 2, -0.02]];
+  return [[-g / 2, -0.02], [-g / 2, zs - 0.008], [g / 2, zs - 0.008], [g / 2, -0.02]];
 }
 function railProfile(tw, zf, zb, ch) {
   return [[-tw / 2, zb], [-tw / 2, zf - ch], [-tw / 2 + ch, zf], [tw / 2 - ch, zf], [tw / 2, zf - ch], [tw / 2, zb]];
@@ -41,8 +41,7 @@ function sash(t, x0, y0, x1, y1, P, zOff, rows, cols, panelTop) {
   const c2 = 0.008;
   const zf = zs + zOff, zb = zgb + zOff;
   const ins = (k) => [sw * k, swB * k, sw * k, sw * k];
-  t.loft([rectRing(x0, y0, x1, y1, [0, 0, 0, 0], zf), rectRing(x0, y0, x1, y1, ins((sw - c2) / sw), zf)], true, 1);
-  t.loft([rectRing(x0, y0, x1, y1, ins((sw - c2) / sw), zf), rectRing(x0, y0, x1, y1, ins(1), zf - c2)], true, 0.95);
+  t.loft([rectRing(x0, y0, x1, y1, [0, 0, 0, 0], zf), rectRing(x0, y0, x1, y1, ins((sw - c2) / sw), zf), rectRing(x0, y0, x1, y1, ins(1), zf - c2)], true, 1);
   t.loft([rectRing(x0, y0, x1, y1, ins(1), zf - c2), rectRing(x0, y0, x1, y1, ins(1), zb)], true, 0.8);
   const xi0 = x0 + sw, xi1 = x1 - sw, yi1 = y1 - sw;
   let yi0 = y0 + swB;
@@ -79,6 +78,7 @@ function rayToOutline(o, cx, cy, a, d) {
 }
 
 function buildJoinery(o, v, q) {
+  if (q < 0.5) return null; // far range: the glass shader draws the casing and mullion
   const P = PROFILE[v.type];
   const t = new Tpl();
   const fw = P.fw, { zf, zb, ch } = FR;
@@ -101,13 +101,6 @@ function buildJoinery(o, v, q) {
     const hw = halfWidthAt(o, yT + tw / 2, fw) + 0.01;
     t.bar([-hw, yT], [hw, yT], railProfile(tw, zf - 0.005, zb, ch), 1);
   }
-  if (q < 0.5) {
-    // coarse: a single central meeting stile
-    if (o.w > 0.75) t.bar([0, fw], [0, sashTop], railProfile(0.09, zf - 0.01, zb, ch), 1);
-    t.shadeBy((x, y) => 0.86 + 0.14 * smooth(0, 0.3, y));
-    return t.bake();
-  }
-
   // sashes
   const nL = v.type === 'alu' ? 2 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
   const lw = (2 * hwI) / nL;
@@ -151,10 +144,11 @@ function buildJoinery(o, v, q) {
   return t.bake();
 }
 
-function buildGlass(o, v) {
+function buildGlass(o, v, q) {
   const P = PROFILE[v.type];
   const t = new Tpl();
-  t.poly(outlinePts(o, P.fw - 0.012, headSegments(o)), -0.012);
+  if (q < 0.5) t.poly(outlinePts(o, 0.004, headSegments(o, 0.4)), -0.012); // frame is procedural
+  else t.poly(outlinePts(o, P.fw - 0.012, headSegments(o)), -0.012);
   return t.bake();
 }
 
@@ -170,6 +164,7 @@ function leafPoly(o, d) {
 }
 
 function leafGeometry(t, poly, z0, z1, q) {
+  if (q < 0.5) { t.poly(poly, z1, 0.75); return; } // far: a flat leaf
   const fwS = 0.06, ch = 0.008;
   const inner = insetPoly(poly, fwS);
   const ring = (pp, z) => pp.map((p) => [p[0], p[1], z]);
@@ -180,12 +175,6 @@ function leafGeometry(t, poly, z0, z1, q) {
   t.loft([ring(inner, z1), ring(inner, z0 + 0.005)], true, 0.7);  // inner edge round the louvres
   let yMin = Infinity, yMax = -Infinity;
   for (const p of inner) { yMin = Math.min(yMin, p[1]); yMax = Math.max(yMax, p[1]); }
-  if (q < 0.5) {
-    // far: a flat louvre panel, slightly recessed and darker
-    const span = spanAtY(inner, (yMin + yMax) / 2);
-    if (span) t.box(span[0], yMin, z0 + 0.004, span[1], yMax - 0.05, z0 + 0.014, 1, 0.62, 0.62);
-    return;
-  }
   const mid = yMin + (yMax - yMin) * 0.42;
   const pitch = 0.052, zF = z1 - 0.012, zB = z0 + 0.008;
   for (let y = yMin + 0.012; y < yMax - 0.03; y += pitch) {
@@ -195,8 +184,8 @@ function leafGeometry(t, poly, z0, z1, q) {
     const x0 = Math.max(s0[0], s1[0]) - 0.003, x1 = Math.min(s0[1], s1[1]) + 0.003;
     if (x1 - x0 < 0.05) continue;
     // slat sheds water towards the street: outer edge low and forward
-    t.quad([x0, y, zF], [x1, y, zF], [x1, y + 0.042, zB], [x0, y + 0.042, zB], 0.88, 1);
-    t.quad([x1, y, zF], [x0, y, zF], [x0, y + 0.042, zB], [x1, y + 0.042, zB], 0.55, 0.6);
+    // only the upper face can be seen from the street; the underside faces the room
+    t.quad([x0, y, zF], [x1, y, zF], [x1, y + 0.042, zB], [x0, y + 0.042, zB], 0.8, 1);
   }
   // mid rail
   const sm = spanAtY(inner, mid);
@@ -223,6 +212,39 @@ function buildShutters(o, state, q, standoff) {
   return t.bake();
 }
 
+// ------------------------------------------------------------------ roller shutters
+/**
+ * External roller shutter of a flat-headed window (common on Mandate and modern
+ * buildings): box under the head inside the reveal, guide channels down the jambs and
+ * the slatted curtain lowered by `down` (0..1).
+ */
+function buildRoller(o, down, q) {
+  const t = new Tpl();
+  const hw = o.w / 2, top = o.h;
+  const z0 = FR.zf + 0.01, z1 = Math.min(o.recess - 0.01, z0 + 0.17);
+  const boxH = 0.2;
+  t.box(-hw, top - boxH, z0, hw, top, z1, 1 | 16, 0.85, 1);
+  for (const s of [-1, 1]) {
+    const x = s * (hw - 0.02);
+    t.box(x - 0.02, 0.0, z0 + 0.02, x + 0.02, top - boxH, z0 + 0.06, 1 | 4 | 8, 0.7, 0.85);
+  }
+  if (down > 0.02) {
+    const y0 = top - boxH - (top - boxH) * down, y1 = top - boxH;
+    const zc = z0 + 0.04;
+    if (q < 0.5) t.box(-hw + 0.02, y0, zc - 0.005, hw - 0.02, y1, zc, 1, 0.85, 0.95);
+    else {
+      const pitch = 0.05;
+      for (let y = y1; y > y0 + 1e-3; y -= pitch) {
+        const ya = Math.max(y0, y - pitch), ym = ya + (y - ya) * 0.75;
+        t.quad([-hw + 0.02, ya, zc], [hw - 0.02, ya, zc], [hw - 0.02, ym, zc + 0.008], [-hw + 0.02, ym, zc + 0.008], 0.78, 1);
+        t.quad([-hw + 0.02, ym, zc + 0.008], [hw - 0.02, ym, zc + 0.008], [hw - 0.02, y, zc], [-hw + 0.02, y, zc], 1, 0.9);
+      }
+      t.box(-hw + 0.02, y0 - 0.03, zc - 0.01, hw - 0.02, y0, zc + 0.02, 1 | 16 | 32, 0.7, 0.8); // bottom rail
+    }
+  }
+  return t.bake();
+}
+
 // ------------------------------------------------------------------ cache
 const cache = new Map();
 function cached(key, fn) {
@@ -238,9 +260,13 @@ const okey = (o) => `${o.kind}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o
 export function joineryTpl(o, v, q) {
   return cached(`J|${okey(o)}|${v.type}|${v.rows}|${v.cols}|${v.transom}|${v.sunburst}|${q}`, () => buildJoinery(o, v, q));
 }
-export function glassTpl(o, v) {
-  return cached(`G|${okey(o)}|${v.type}`, () => buildGlass(o, v));
+export function glassTpl(o, v, q = 1) {
+  return cached(`G|${okey(o)}|${v.type}|${q}`, () => buildGlass(o, v, q));
 }
 export function shutterTpl(o, state, q, standoff = 0.012) {
   return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${standoff}|${q}`, () => buildShutters(o, state, q, standoff));
+}
+export function rollerTpl(o, down, q) {
+  const d = Math.round(down * 20) / 20;
+  return cached(`R|${okey(o)}|${o.recess.toFixed(3)}|${d}|${q}`, () => buildRoller(o, d, q));
 }

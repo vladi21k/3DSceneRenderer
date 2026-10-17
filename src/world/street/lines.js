@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { MeshBuf } from './meshbuf.js';
 
 // Pixel-width-aware line ribbons with analytic coverage.
 //
@@ -119,7 +118,7 @@ float lnRough = uPaintRough, lnMetal = 0.0;
   #endif
   // wear: worn-through patches and ragged edges (only resolved close up)
   float nfine = lnNoise( vLineWorld.xz * 23.0 ) * 0.5 + lnNoise( vLineWorld.xz * 6.0 ) * 0.5;
-  float nbig = lnNoise( vLineWorld.xz * 0.9 + 17.0 );
+  float nbig = lnNoise( vLineWorld.xz * 0.33 + 17.0 ) * 0.7 + lnNoise( vLineWorld.xz * 1.1 + 5.0 ) * 0.3;
   float keep = smoothstep( uWear - 0.12, uWear + 0.12, nfine * 0.65 + nbig * 0.35 );
   float res = clamp( w * 40.0, 0.0, 1.0 );      // pixel footprint large -> average coverage instead
   cov *= mix( keep, 1.0 - uWear * 0.6, res );
@@ -172,12 +171,21 @@ export function createLineMaterials() {
     railNear: makeLineMaterial('rail', { nearFade: true, name: 'street.line.rail' }),
     railFar: makeLineMaterial('rail', { nearFade: false, name: 'street.line.railFar' }),
     // worn white line between the tracks (continuous, patchy with wear)
-    centre: makeLineMaterial('paint', { color: 0xe4e2db, roughness: 0.62, wear: 0.4, opacity: 0.9, name: 'street.line.centre' }),
+    centre: makeLineMaterial('paint', { color: 0xe4e2db, roughness: 0.62, wear: 0.34, opacity: 0.9, name: 'street.line.centre' }),
     // zebra stripes and stop lines (segments)
     stripe: makeLineMaterial('paint', { color: 0xecebe6, roughness: 0.58, wear: 0.3, opacity: 0.95, name: 'street.line.stripe' }),
     // bitumen-filled expansion joints across the corridor
-    joint: makeLineMaterial('paint', { color: 0x141312, roughness: 0.55, wear: 0.05, opacity: 0.85, minPx: 1.2, name: 'street.line.joint' }),
+    joint: makeLineMaterial('paint', { color: 0x161513, roughness: 0.5, wear: 0.12, opacity: 0.9, minPx: 1.2, name: 'street.line.joint' }),
   };
+}
+
+let UP = new Float32Array(0);
+function upNormals(n) {
+  if (UP.length < n * 3) {
+    UP = new Float32Array(Math.max(n * 3, UP.length * 2));
+    for (let i = 1; i < UP.length; i += 3) UP[i] = 1;
+  }
+  return UP.subarray(0, n * 3);
 }
 
 /**
@@ -186,32 +194,51 @@ export function createLineMaterials() {
  * real half width for dashes, segment length for segments).
  */
 export class LineBuf {
-  constructor() {
-    this.buf = new MeshBuf({ cap: 512 });
-    this.right = [];
-    this.line = [];
+  constructor(cap = 256) {
+    this.n = 0; this.ni = 0;
+    this._grow(cap);
+  }
+  _grow(cap) {
+    const g = (old, k) => { const a = new Float32Array(cap * k); if (old) a.set(old.subarray(0, this.n * k)); return a; };
+    this.pos = g(this.pos, 3); this.right = g(this.right, 3); this.line = g(this.line, 4);
+    const idx = new Uint32Array(cap * 3);
+    if (this.idx) idx.set(this.idx.subarray(0, this.ni));
+    this.idx = idx;
+    this.cap = cap;
   }
   /** pts: flat array [x,y,z, rx,rz, along, ...] (6 per point) */
   add(pts, halfW, extra) {
-    const b = this.buf;
-    const n = pts.length / 6;
+    const np = pts.length / 6;
+    if (this.n + np * 2 > this.cap) this._grow(Math.max(this.cap * 2, this.n + np * 2 + 64));
     let prev = -1;
-    for (let i = 0; i < n; i++) {
-      const o = i * 6;
-      const x = pts[o], y = pts[o + 1], z = pts[o + 2], rx = pts[o + 3], rz = pts[o + 4], u = pts[o + 5];
-      const a = b.v(x, y, z, 0, 1, 0, u, -1);
-      b.v(x, y, z, 0, 1, 0, u, 1);
-      this.right.push(rx, 0, rz, rx, 0, rz);
-      this.line.push(-1, halfW, u, extra, 1, halfW, u, extra);
-      if (prev >= 0) b.quad(prev, prev + 1, a + 1, a);
-      prev = a;
+    for (let i = 0; i < np; i++) {
+      const o = i * 6, v = this.n;
+      for (let k = 0; k < 2; k++) {
+        const j = v + k;
+        this.pos[j * 3] = pts[o]; this.pos[j * 3 + 1] = pts[o + 1]; this.pos[j * 3 + 2] = pts[o + 2];
+        this.right[j * 3] = pts[o + 3]; this.right[j * 3 + 1] = 0; this.right[j * 3 + 2] = pts[o + 4];
+        this.line[j * 4] = k ? 1 : -1; this.line[j * 4 + 1] = halfW; this.line[j * 4 + 2] = pts[o + 5]; this.line[j * 4 + 3] = extra;
+      }
+      this.n += 2;
+      if (prev >= 0) {
+        const x = this.idx;
+        x[this.ni++] = prev; x[this.ni++] = prev + 1; x[this.ni++] = v + 1;
+        x[this.ni++] = prev; x[this.ni++] = v + 1; x[this.ni++] = v;
+      }
+      prev = v;
     }
   }
-  get empty() { return this.buf.empty; }
+  get empty() { return this.ni === 0; }
   mesh(material, name) {
-    const g = this.buf.geometry();
-    g.setAttribute('aRight', new THREE.Float32BufferAttribute(this.right, 3));
-    g.setAttribute('aLine', new THREE.Float32BufferAttribute(this.line, 4));
+    const g = new THREE.BufferGeometry();
+    const n = this.n;
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos.subarray(0, n * 3), 3));
+    g.setAttribute('aRight', new THREE.BufferAttribute(this.right.subarray(0, n * 3), 3));
+    g.setAttribute('aLine', new THREE.BufferAttribute(this.line.subarray(0, n * 4), 4));
+    // flat ribbons: the up normal is constant (a view into one shared array)
+    g.setAttribute('normal', new THREE.BufferAttribute(upNormals(n), 3));
+    g.setIndex(new THREE.BufferAttribute(this.idx.subarray(0, this.ni), 1));
+    g.computeBoundingSphere();
     // ribbons widen in the vertex shader: pad the bounds so culling stays conservative
     g.boundingSphere.radius += 2;
     const m = new THREE.Mesh(g, material);

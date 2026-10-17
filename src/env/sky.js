@@ -95,7 +95,8 @@ function makeCloudNoise(renderer, size = 512) {
 
 // ------------------------------------------------------------------ sky irradiance (4x1)
 // texel 0: irradiance on an upward surface, 1: mean horizon radiance,
-// 2: zenith radiance, 3: irradiance on a vertical surface (azimuth-averaged)
+// 2: zenith radiance, 3: irradiance on a canyon wall (vertical, azimuth-averaged,
+// from the sky above the opposite roofline only, elevation > 25°)
 
 const IRR_FS = /* glsl */ `
 ${ATMO_GLSL}
@@ -108,18 +109,18 @@ void main() {
   vec3 acc = vec3(0.0);
   if (k == 0 || k == 3) {
     const int NA = 16, NE = 8;
-    float wsum = 0.0;
     for (int a = 0; a < NA; a++) for (int e = 0; e < NE; e++) {
-      float el = (float(e) + 0.5) / float(NE) * 0.5 * ATM_PI;
+      float el0 = k == 0 ? 0.0 : 0.436;
+      float el = el0 + (float(e) + 0.5) / float(NE) * (0.5 * ATM_PI - el0);
       float az = (float(a) + 0.5) / float(NA) * 2.0 * ATM_PI;
       vec3 d = vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
-      float dw = cos(el); // solid angle weight
-      float c = k == 0 ? sin(el) : max(cos(el) * cos(az), 0.0);
+      float dw = cos(el) * (0.5 * ATM_PI - el0) / (0.5 * ATM_PI); // solid angle weight (band height)
+      // vertical wall averaged over its facing direction: mean of max(cos, 0) is 1/pi
+      float c = k == 0 ? sin(el) : cos(el) / ATM_PI;
       acc += skyL(d) * c * dw;
-      wsum += dw;
     }
-    // integral over the hemisphere: (2 pi / sum(dw)) * sum(L cos dw)
-    acc *= 2.0 * ATM_PI / wsum;
+    // integral over the hemisphere: sum(L c dw) * (2 pi / sum of full-hemisphere weights)
+    acc *= 2.0 * ATM_PI / (float(NA * NE) * (2.0 / ATM_PI));
   } else if (k == 1) {
     for (int a = 0; a < 32; a++) {
       float az = (float(a) + 0.5) / 32.0 * 2.0 * ATM_PI;
@@ -270,7 +271,7 @@ vec3 canyon(vec3 dir, vec3 skyCol, out bool hit) {
     float lit = cosI > 0.0 ? smoothstep(zShadow - 0.8, zShadow + 0.8, z) * sunUp : 0.0;
     // irradiance: direct + sky slot + bounce from the opposite facade and the floor
     vec3 E = E_sun * max(cosI, 0.0) * lit
-           + irr(3.0) * 0.55
+           + irr(3.0)
            + (E_sun * max(-cosI, 0.0) * 0.5 * wallAlb + E_sun * max(uSunDirA.y, 0.0) * floorLit * groundAlb) * 0.35;
     vec3 col = wallAlb * E / ATM_PI;
     // window grid: dark glass reflecting the sky

@@ -3,7 +3,7 @@ import { U } from '../core/uniforms.js';
 import { Baker } from './baker.js';
 import { RECIPES } from './recipes/index.js';
 import { LIBRARY } from './library.js';
-import { applySurface, surfaceUniforms, surfaceOf } from './surface.js';
+import { applySurface, surfaceUniforms } from './surface.js';
 
 // Physically based material library (contract: docs/ARCHITECTURE.md).
 // At init every tileable texture set is baked procedurally on the GPU (baker.js), then
@@ -41,21 +41,11 @@ function build(name, def) {
   setProps(m, def.props || {});
   const t = def.bake ? shared.textures.get(def.bake) : null;
   const surf = def.surf || {};
-  // only two defines alter the code; all other features are uniform-driven (see surface.js)
-  const defines = {};
-  if (t) defines.SURF = '';
-  if (t && def.glassClear) defines.SURF_GLASS = '';
+  // SURF / SURF_GLASS are the only code switches (injected by the patch itself); all
+  // other features are uniform-driven (see surface.js)
   if (t || def.night || surf.trans) {
-    applySurface(m, { defines, textures: t, uniforms: surfaceUniforms(surf, def, t, shared) });
+    applySurface(m, { textures: t, glass: !!def.glassClear, uniforms: surfaceUniforms(surf, def, t, shared) });
   }
-  return m;
-}
-
-/** Copy a library material into a variant, keeping the surface patch and its uniforms. */
-function cloneLib(base) {
-  const m = base.clone();
-  const sf = surfaceOf.get(base);
-  if (sf) applySurface(m, sf);
   return m;
 }
 
@@ -125,11 +115,10 @@ const materials = {
     if (!opts || !Object.keys(opts).length) return lib.get(name);
     const key = name + stableKey(opts);
     if (!variants.has(key)) {
-      const base = lib.get(name);
-      const m = cloneLib(base);
-      setProps(m, opts);
-      // 'albedo' materials: the vertex colour IS the paint colour
+      const m = lib.get(name).clone(); // clone() keeps the surface patch and its uniforms
+      // 'albedo' materials: the vertex colour IS the paint colour (unless a colour is given)
       if (opts.vertexColors && this.meta[name]?.vertexColor === 'albedo') m.color.setRGB(1, 1, 1);
+      setProps(m, opts);
       m.name = key;
       m.needsUpdate = true;
       variants.set(key, m);

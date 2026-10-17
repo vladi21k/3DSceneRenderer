@@ -50,7 +50,7 @@ const env = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    this.atmo = new Atmosphere(renderer, { mieScale: 2.4 });
+    this.atmo = new Atmosphere(renderer, { mieScale: 1.6 });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms);
@@ -68,7 +68,7 @@ const env = {
     sh.camera.far = 700;
     sh.bias = patched ? -0.00002 : -0.0002;
     sh.normalBias = patched ? 1.2 : 0.05;
-    sh.radius = patched ? 0.075 : 2;
+    sh.radius = patched ? 0.13 : 2;
     scene.add(this.sun);
 
     this.lights = new StreetLights(app, q.lamps);
@@ -176,6 +176,7 @@ const env = {
 
     // ---- sun light follows the camera (cascades are fitted by the shadow itself)
     app.camera.updateMatrixWorld();
+    if (this.sun.shadow.isStreetSunShadow) this.sun.shadow.groundY = app.route.elevation(app.cameraS ?? app.startS);
     this.sun.position.copy(this.state.sunDir);
     this.sun.updateMatrixWorld();
 

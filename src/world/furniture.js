@@ -58,7 +58,7 @@ const furniture = {
   build(chunk, app) {
     const group = new THREE.Group();
     group.name = 'furniture';
-    const inst = this.batches.writer(group);
+    const inst = this.batches.writer(group, app.camera.position);
     // unique per-site geometry (cached, shared): one mesh per geometry
     const addMesh = (geo, mat) => {
       const m = new THREE.Mesh(geo, mat);
@@ -67,6 +67,10 @@ const furniture = {
     };
     this._place(chunk, app, inst, addMesh);
     return group;
+  },
+
+  update(dt, app) {
+    this.batches.updateLod(app.camera.position);
   },
 
   dispose(obj) {

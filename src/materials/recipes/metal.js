@@ -27,9 +27,9 @@ export const railside = {
 void surface(vec2 m, inout Surf s) {
   float r1 = fbm(warp(m, 3.0, 0.05, 141u), 6.0, 5, 0.6, 142u);
   float flake = voro(m, vec2(40.0), 143u, 1.0).x;
-  float bare = smoothstep(0.35, 0.6, fbm(m, 3.0, 4, 0.55, 144u));
-  vec3 rust = mix(vec3(0.17, 0.075, 0.035), vec3(0.28, 0.13, 0.055), sat(r1 * 0.8 + 0.5));
-  rust = mix(rust, vec3(0.07, 0.045, 0.03), smoothstep(0.1, 0.5, fbm(m, 12.0, 3, 0.5, 145u)));
+  float bare = smoothstep(0.45, 0.7, fbm(m, 4.0, 4, 0.55, 144u));
+  vec3 rust = mix(vec3(0.15, 0.07, 0.035), vec3(0.26, 0.12, 0.055), sat(r1 * 0.7 + 0.5));
+  rust = mix(rust, vec3(0.08, 0.05, 0.035), 0.5 * smoothstep(0.0, 0.7, fbm(m, 18.0, 4, 0.55, 145u)));
   s.albedo = mix(rust, vec3(0.32, 0.31, 0.3), bare);
   s.metal = bare;
   s.rough = mix(0.86 + 0.08 * r1, 0.5, bare);
@@ -55,21 +55,20 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Paint over metal or wood (iron, poles, frames, signs): orange peel, dust, sparse chips.
-// Albedo is near white: the material colour (or vertex colour) is the paint colour.
+// Paint over metal or wood (iron, poles, frames, signs): orange peel, brush/roller
+// unevenness and fine dust. Albedo is near white: the material colour (or vertex colour)
+// is the paint colour. Larger wear comes from the runtime macro layer (no repeating chips).
 export const paint = {
   name: 'paint', flat: [0.95, 0.95, 0.95, 0.4], size: 512, tile: [1.0, 1.0], ss: 2,
-  pass: { normal: 1.0, ao: 0.4, aoRadius: 0.004, cavity: 0.2 },
+  pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float peel = fbm(m, 180.0, 3, 0.5, 161u);               // orange peel
-  float mott = fbm(m, 6.0, 4, 0.55, 162u);
-  vec4 cv = voro(m, vec2(14.0), 163u, 1.0);
-  float chip = smoothstep(0.3, 0.12, cv.x) * step(0.88, cv.z) * smoothstep(0.0, 0.4, fbm(m, 30.0, 3, 0.5, 164u) + 0.2);
-  s.height = peel * 0.00003 - chip * 0.0002;
-  vec3 c = vec3(0.95) * (1.0 + 0.03 * mott);
-  s.albedo = mix(c, vec3(0.42, 0.24, 0.16), chip);          // primer / rust under the paint
-  s.rough = mix(0.36 + 0.07 * mott, 0.85, chip);
+  float brush = fbm2(m, vec2(4.0, 60.0), 3, 0.5, 162u);   // faint brush / roller marks
+  float dust = fbm(m, 40.0, 3, 0.5, 164u);
+  s.height = peel * 0.00003 + brush * 0.00002;
+  s.albedo = vec3(0.95) * (1.0 + 0.015 * brush - 0.02 * dust);
+  s.rough = 0.37 + 0.04 * brush + 0.05 * dust;
 }
 `,
 };
@@ -85,9 +84,9 @@ void surface(vec2 m, inout Surf s) {
   float k = v.z;
   vec2 tilt = vec2(fract(k * 13.1), fract(k * 7.7)) - 0.5;
   s.height = dot(-tc, tilt) * 0.03;                     // each crystal is a slightly tilted facet
-  float dull = smoothstep(0.2, 0.65, fbm(m, 5.0, 4, 0.55, 173u));
-  s.albedo = vec3(0.56, 0.57, 0.58) * (0.93 + 0.12 * k) * mix(1.0, 0.82, dull);
-  s.rough = mix(0.22 + 0.25 * fract(k * 5.7), 0.62, dull);
+  float dull = smoothstep(0.3, 0.8, fbm(m, 24.0, 3, 0.55, 173u)) * 0.6;   // fine white-rust bloom (large patches come from macro)
+  s.albedo = vec3(0.56, 0.57, 0.58) * (0.94 + 0.1 * k) * mix(1.0, 0.85, dull);
+  s.rough = mix(0.24 + 0.22 * fract(k * 5.7), 0.6, dull);
   s.rough *= 1.0 - 0.3 * smoothstep(0.05, 0.0, v.w);
 }
 `,
@@ -100,7 +99,7 @@ export const brushed = {
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float b = fbm2(m, vec2(3.0, 500.0), 3, 0.6, 181u);
-  float smudge = fbm(m, 8.0, 3, 0.5, 182u);
+  float smudge = fbm(m, 30.0, 3, 0.5, 182u);
   s.albedo = vec3(0.55, 0.555, 0.56) * (1.0 + 0.04 * b);
   s.rough = 0.3 + 0.06 * b + 0.06 * smudge;
   s.height = b * 0.00002;

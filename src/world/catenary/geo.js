@@ -73,9 +73,7 @@ export function lathe(b, profile, segs, opts = {}) {
   };
   const base = b.count;
   const cols = segs + 1;
-  let vAcc = 0;
   for (let i = 0; i < rings.length; i++) {
-    if (i > 0) vAcc += Math.hypot(rings[i].r - rings[i - 1].r, rings[i].y - rings[i - 1].y);
     // neighbour rings for the meridian tangent (respecting creases)
     const prev = rings[i].side === +1 ? i : Math.max(0, i - 1);
     const next = rings[i].side === -1 ? i : Math.min(rings.length - 1, i + 1);
@@ -109,7 +107,6 @@ export function lathe(b, profile, segs, opts = {}) {
       b.tri(a, a + 1, c); b.tri(a + 1, c + 1, c);
     }
   }
-  void vAcc;
   return b;
 }
 
@@ -120,7 +117,6 @@ export function lathe(b, profile, segs, opts = {}) {
 export function sweepPlanar(b, pts, section, place = (x, y, z) => [x, y, z], segs = 8, caps = true) {
   const ring = sectionRing(section, segs);
   const n = pts.length;
-  const base = b.count;
   const tubeR = section.kind === 'round' ? section.r : Math.min(section.w, section.t) * 0.5;
   // per point frame: tangent t, in-plane normal m = (-ty, tx), across-plane k = (0,0,1)
   const frames = [];
@@ -168,7 +164,6 @@ export function sweepPlanar(b, pts, section, place = (x, y, z) => [x, y, z], seg
       b.tri(a, bb, c); b.tri(bb, d, c);
     }
   }
-  void base;
   return b;
 }
 

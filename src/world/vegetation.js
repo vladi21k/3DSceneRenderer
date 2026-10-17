@@ -9,12 +9,17 @@ import { createProps } from './vegetation/props.js';
 
 // Street trees and planters. Contract: docs/ARCHITECTURE.md
 //
-// init: paints the foliage atlas, grows the tree / shrub templates (both LODs) and puts
-//       them into two BatchedMeshes (bark, foliage) shared by the whole street.
+// init: paints the foliage atlas, grows the tree / shrub templates (three detail levels
+//       each) and puts them into two BatchedMeshes (bark, foliage) shared by the street.
 // build: per chunk, adds one instance per tree (template picked per species zone, scaled
 //       to the planned height / crown, yawed so the pruned side faces the tracks, tinted)
 //       and merges the small static props (tree grates, stakes and ties, planter boxes).
-// dispose: removes the chunk's instances. Visibility follows the chunk group (pool.js).
+//       Planters come from layout.furniture entries of type 'planter'.
+// per frame (pool.js): instance visibility follows the chunk group, detail level follows
+//       the tree's projected size on screen.
+// dispose: removes the chunk's instances and props.
+//
+// Debug URL switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf.
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
 const _c = new THREE.Color();
@@ -46,7 +51,7 @@ const vegetation = {
     this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400));
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300));
     this.props = createProps(app);
-    // debug switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf hides the other pool
+    // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
     const show = app.params.str('vegshow');
     if (show === 'bark') this.leafPool.mesh.visible = false;
@@ -142,6 +147,12 @@ const vegetation = {
     const mesh = props.build();
     if (mesh) marker.add(mesh);
     return marker;
+  },
+
+  update(dt, app) {
+    // leaf coverage mode follows the post chain's scene target (MSAA or not)
+    const post = app.post, rt = post && !post.disabled ? post.sceneRT : null;
+    this.mats.params.a2c.value = rt && rt.samples > 0 ? 1 : 0;
   },
 
   dispose(obj) {

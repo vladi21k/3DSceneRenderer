@@ -86,25 +86,6 @@ function curlPieces(c) {
   return [[c.len, c.k0, c.k1]];
 }
 
-/** Path length of a polyline. */
-export function pathLength(pts) {
-  let L = 0;
-  for (let i = 1; i < pts.length; i++) L += dist(pts[i - 1], pts[i]);
-  return L;
-}
-
-/** Point at fraction f of the path length. */
-export function pointAt(pts, f) {
-  const L = pathLength(pts) * f;
-  let acc = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const d = dist(pts[i - 1], pts[i]);
-    if (acc + d >= L) { const u = (L - acc) / (d || 1); return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * u, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * u]; }
-    acc += d;
-  }
-  return [...pts[pts.length - 1]];
-}
-
 /** Lowest point of a polyline (used to hang lanterns from a crook). */
 export function lowestAfter(pts, fromIndex = 0) {
   let best = pts[fromIndex];

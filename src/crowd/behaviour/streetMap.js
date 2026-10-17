@@ -55,7 +55,7 @@ export class StreetMap {
       const f = lot.frame;
       const i0 = Math.floor(lot.s0), i1 = Math.ceil(lot.s1);
       for (let i = i0; i <= i1; i++) {
-        const k = ((i % this.N) + this.N) % this.N;
+        const k = this.idx(i);
         route.sample(i, smp);
         // intersect the cross-section line at s with the facade plane: dot(c + r t − o, n) = 0
         const ox = f.origin.x - smp.pos.x, oz = f.origin.z - smp.pos.z;
@@ -241,5 +241,3 @@ export class StreetMap {
     return ops;
   }
 }
-
-export { OPEN, sideIx };

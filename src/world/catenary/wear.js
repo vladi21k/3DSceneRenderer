@@ -4,7 +4,7 @@ import { shaftRadius } from './poleKit.js';
 
 // Street wear on the lamp standards: stickers, flyer remnants and taped notices at hand
 // height, all around the shaft. Each is a thin curved patch wrapped on the shaft with a
-// print from a small canvas atlas, merged per chunk; only shown near the camera.
+// print from a small canvas atlas, merged per chunk (full-detail range only).
 
 const CELLS_X = 4, CELLS_Y = 2;
 

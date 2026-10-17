@@ -31,20 +31,21 @@ const facades = {
     const awning = M.register('facades.awning', createAwningMaterial(M));
     const lamp = M.register('facades.lampGlass', createLampGlass(M));
     this.mats = {
-      frame: { material: vc('paint.frame') },
+      // joinery sits inside the reveals, which already shade it: no shadow casting
+      frame: { material: vc('paint.frame'), castShadow: false },
       shutter: { material: vc('wood.shutter') },
-      door: { material: vc('wood.door') },
+      door: { material: vc('wood.door'), castShadow: false },
       glass: { material: glass, color: false, extra: GLASS_ATTRS, castShadow: false },
       metal: { material: vc('metal.iron') },
-      hardware: { material: vc('metal.steel') },
-      stone: { material: M.get('stone.smooth', { vertexColors: true }) },
+      hardware: { material: vc('metal.steel'), castShadow: false },
+      stone: { material: M.get('stone.smooth', { vertexColors: true }), castShadow: false },
       awning: { material: awning, extra: { aStripe: 4, aFlex: 1 } },
       signBoard: { material: sign.board, extra: { aGlow: 1 } },
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
       lamp: { material: lamp, color: false, castShadow: false },
     };
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
-    this.prefetchMs = 1.6;          // per-frame budget for prefetching
+    this.prefetchMs = 1.2;          // per-frame budget for prefetching
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
     if (app.params.str('fwall')) {
       const { DevWall } = await import('./facades/devwall.js');

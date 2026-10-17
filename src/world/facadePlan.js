@@ -209,8 +209,15 @@ export function archRise(top, w) {
 }
 
 function setArch(o) {
-  o.rise = Math.min(archRise(o.top, o.w), Math.max(0, o.h - 0.3));
-  if (o.rise < archRise(o.top, o.w) - 1e-6 && o.top !== 'flat') o.top = o.rise > o.w * 0.3 ? o.top : 'segment';
+  const full = archRise(o.top, o.w);
+  o.rise = Math.min(full, Math.max(0, o.h - 0.3));
+  // a head that does not fit becomes a round arch (pointed heads) or a segmental arch of
+  // the available rise (the segment construction needs rise ≤ w/2)
+  if (o.top !== 'flat' && o.rise < full - 1e-6) {
+    if (o.rise >= o.w / 2) { o.top = 'round'; o.rise = o.w / 2; }
+    else o.top = o.rise > 0.05 ? 'segment' : 'flat';
+  }
+  if (o.top === 'flat') o.rise = 0;
   o.spring = o.y + o.h - o.rise;
 }
 
