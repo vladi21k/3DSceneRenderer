@@ -37,9 +37,10 @@ OUT = os.path.join(ROOT, 'assets', 'humans')
 
 LOD_TRIS = {'body': (6500, 2600, 560, 200)}     # LOD 1..4 (whole body)
 LOD0_TRIS = {'body': 12500, 'head': 5400}         # LOD 0: body below the neck cut + the fine head
-LOD_SCALE = {'male': 1.0, 'female': 1.0, 'child': 0.85, 'kid': 0.72}   # smaller bodies need fewer triangles
+LOD_SCALE = {'male': 1.0, 'female': 1.0, 'child': 0.85, 'kid': 0.72, 'toddler': 0.62}   # smaller bodies need fewer triangles
 HEAD_RES = 0.0012
 MORPH_SCALE = 0.08
+SEAT_SCALE = 0.045           # aMorph.w: trouser seat bridge (m along +Z) / SEAT_SCALE
 SHAPE_NAMES = ('narrow', 'broad', 'old', 'belly')
 SHAPE_SCALE = (0.02, 0.02, 0.02, 0.08)
 
@@ -216,7 +217,7 @@ def Fn_offset(node, d):
     return S.Fn(lambda P: node.eval(P) - d, node.lo - d, node.hi + d)
 
 
-def vertex_attributes(node, heavy, P, T, sigma, variants=None):
+def vertex_attributes(node, heavy, P, T, sigma, variants=None, seat=None):
     P = S.project(node, P.astype(np.float32), 2).astype(np.float64)
     N = S.normals(node, P.astype(np.float32))
     ao = S.sdf_ao(node, P, N)
@@ -230,7 +231,99 @@ def vertex_attributes(node, heavy, P, T, sigma, variants=None):
     # body vertices carry the garment drape normal in aux (octahedral)
     Nc = smooth_field(cloth_normals(node, P, N), E, deg, 2, 0.5)
     Nc /= np.maximum(np.linalg.norm(Nc, axis=1, keepdims=True), 1e-9)
-    return dict(P=P, N=N, ao=ao, si=si, sw=sw, region=region, M=M, S=Sh, aux=oct_encode(Nc))
+    Mw = np.zeros(len(P))
+    if seat is not None:
+        # trouser seat: how far the cloth stands off the skin to bridge the cleft and the fold
+        # under the buttocks (m along +Z), and the bridged surface's normal for the drape
+        dz, nh = seat.sample(P, N)
+        dz = smooth_field(dz[:, None], E, deg, 2, 0.5)[:, 0]
+        w = sstep_np(0.0004, 0.004, dz)[:, None]
+        Nc = Nc * (1 - w) + nh * w
+        Nc /= np.maximum(np.linalg.norm(Nc, axis=1, keepdims=True), 1e-9)
+        Mw = dz
+    return dict(P=P, N=N, ao=ao, si=si, sw=sw, region=region, M=M, S=Sh, aux=oct_encode(Nc), Mw=Mw)
+
+
+class SeatBridge:
+    """The surface trousers take over the seat: a height map of the body's back (z as a function
+    of x, y) dilated downwards (the cloth falls from the buttocks onto the back of the thighs,
+    bridging the gluteal fold) and, above the crotch, sideways (the cloth spans the cleft between
+    the buttocks: near the convex hull). sample() gives each vertex its stand-off along +Z and
+    the bridged surface normal."""
+
+    def __init__(self, node, info):
+        sc = info['H'] / 1.76
+        self.sc = sc
+        hipY = info['hip'][1]
+        crotch = info['torsoY'][0]
+        self.y0, self.y1 = crotch - 0.20 * sc, hipY + 0.14 * sc
+        self.x0 = -0.24 * sc
+        h = 0.004 * sc
+        self.h = h
+        xs = np.arange(self.x0, -self.x0 + h * 0.5, h)
+        ys = np.arange(self.y0, self.y1 + h * 0.5, h)
+        X, Y = np.meshgrid(xs, ys)                    # rows: y, cols: x
+        Zb = self._zback(node, X.ravel(), Y.ravel()).reshape(X.shape)
+        # dilation from above: cloth falling from a higher point drops 0.12 dy + 4 dy^2
+        H1 = Zb.copy()
+        ny = Zb.shape[0]
+        for k in range(1, int(0.15 * sc / h) + 1):
+            dy = k * h / sc
+            cand = np.full_like(Zb, -1.0)
+            cand[:ny - k] = Zb[k:] - (0.12 * dy + 4.0 * dy * dy) * sc
+            H1 = np.maximum(H1, cand)
+        # sideways (only above the crotch: each trouser leg wraps its own thigh)
+        H2 = H1.copy()
+        nx = Zb.shape[1]
+        for k in range(1, int(0.10 * sc / h) + 1):
+            dx = k * h / sc
+            drop = 1.2 * dx * dx * sc
+            a = np.full_like(H1, -1.0); b = np.full_like(H1, -1.0)
+            a[:, :nx - k] = H1[:, k:] - drop
+            b[:, k:] = H1[:, :nx - k] - drop
+            H2 = np.maximum(H2, np.maximum(a, b))
+        wy = sstep_np(crotch - 0.005 * sc, crotch + 0.045 * sc, Y)
+        H = H1 + (H2 - H1) * wy
+        # fades: nothing above the small of the back, nothing far down the thighs
+        fade = sstep_np(self.y1, self.y1 - 0.06 * sc, Y) * sstep_np(self.y0, self.y0 + 0.05 * sc, Y)
+        self.D = np.clip(H - Zb, 0.0, SEAT_SCALE) * fade
+        self.Zb = Zb
+        self.H = H
+        gy, gx = np.gradient(H, h, h)
+        Nh = np.stack([-gx, -gy, np.ones_like(H)], -1)
+        self.N = Nh / np.linalg.norm(Nh, axis=-1, keepdims=True)
+        self.shape = Zb.shape
+
+    @staticmethod
+    def _zback(node, x, y, zmax=0.4, it=24):
+        lo = np.zeros_like(x); hi = np.full_like(x, zmax)
+        inside0 = node.eval(np.stack([x, y, lo], 1).astype(np.float32)) < 0
+        for _ in range(it):
+            m = 0.5 * (lo + hi)
+            ins = node.eval(np.stack([x, y, m], 1).astype(np.float32)) < 0
+            lo = np.where(ins, m, lo); hi = np.where(ins, hi, m)
+        return np.where(inside0, 0.5 * (lo + hi), 0.0)
+
+    def sample(self, P, N):
+        fx = (P[:, 0] - self.x0) / self.h
+        fy = (P[:, 1] - self.y0) / self.h
+        ok = (fx >= 0) & (fy >= 0) & (fx < self.shape[1] - 1) & (fy < self.shape[0] - 1)
+        ix = np.clip(np.floor(fx).astype(int), 0, self.shape[1] - 2)
+        iy = np.clip(np.floor(fy).astype(int), 0, self.shape[0] - 2)
+        tx = np.clip(fx - ix, 0, 1)[:, None]
+        ty = np.clip(fy - iy, 0, 1)[:, None]
+
+        def bil(A):
+            A = A.reshape(self.shape[0], self.shape[1], -1)
+            return ((A[iy, ix] * (1 - tx) + A[iy, ix + 1] * tx) * (1 - ty) + (A[iy + 1, ix] * (1 - tx) + A[iy + 1, ix + 1] * tx) * ty)
+        d = bil(self.D)[:, 0]
+        hz = bil(self.H)[:, 0]
+        nh = bil(self.N)
+        nh /= np.maximum(np.linalg.norm(nh, axis=1, keepdims=True), 1e-9)
+        # only the skin facing backwards, on the back surface (not the inner thighs, not the front)
+        w = ok * sstep_np(0.15, 0.45, N[:, 2]) * sstep_np(-0.012, -0.002, P[:, 2] - hz + d)
+        dz = np.clip(hz - P[:, 2], 0.0, SEAT_SCALE) * w
+        return dz, nh
 
 
 def part_attributes(node, body, P, T, variants=None, head=False):
@@ -281,6 +374,8 @@ def pack_lod(pk, attrs, T, part_ids):
     nrm[:, 3] = np.clip(np.round(attrs['ao'] * 127), 0, 127)
     mor = np.zeros((n, 4), np.int8)
     mor[:, :3] = np.clip(np.round(attrs['M'] / MORPH_SCALE * 127), -127, 127)
+    if 'Mw' in attrs:
+        mor[:, 3] = np.clip(np.round(attrs['Mw'] / SEAT_SCALE * 127), 0, 127)
     body = np.zeros((n, 4), np.uint8)
     body[:, 0] = attrs['region']
     body[:, 1] = part_ids
@@ -383,7 +478,7 @@ def detail_weights(node, V, T, info, sc, head=False):
 def build_base(kind, res, pk):
     log(f'base {kind}')
     node, skel, info = B.build_body(kind, 0.0)
-    young = kind in ('child', 'kid')
+    young = kind in B.YOUNG
     heavy, _, _ = B.build_body(kind, 0.7 if young else 1.0)
     # targets of the scalar shape morphs (children: face shape only)
     variants = {'narrow': B.build_body(kind, 0.0, face_var={'narrow': 1.0})[0],
@@ -396,12 +491,16 @@ def build_base(kind, res, pk):
     info['skirt'] = skirt_rings(node, info)
     info['hang'] = hang_rings(node, info)
     info['clothNormals'] = True       # body vertices: aux = octahedral garment drape normal
+    info['seatBridge'] = SEAT_SCALE   # body vertices: aMorph.w = trouser seat stand-off / SEAT_SCALE
+    info['packStraps'] = True         # backpacks carry their straps as geometry
+    info['shoe'] = shoe_info(kind)
+    seat = SeatBridge(node, info)
     H = info['H']
     sc = H / 1.76
     ls = LOD_SCALE.get(kind, 1.0)
     lo = np.array([-0.62 * sc, -0.004, -0.27 * sc])
     hi = np.array([0.62 * sc, H + 0.01, 0.21 * sc])
-    V, T = mesh_sdf(node, lo, hi, res * (0.85 if kind == 'child' else 0.75 if kind == 'kid' else 1.0))
+    V, T = mesh_sdf(node, lo, hi, res * {'child': 0.85, 'kid': 0.75, 'toddler': 0.62}.get(kind, 1.0))
     # the head again at ~1 mm, cut in the neck where the skin follows the neck bone alone
     hs, hc = info['headS'], np.array(info['headC'], dtype=float)
     neck_y, head_y = info['neckY'], skel['joints'][B.BONES.index('head')][1]
@@ -423,13 +522,13 @@ def build_base(kind, res, pk):
     for li in range(len(lods_mesh)):
         t = time.time()
         if li == 0:
-            ab = vertex_attributes(node, heavy, lod0_b[0], lod0_b[1], sigma, variants)
+            ab = vertex_attributes(node, heavy, lod0_b[0], lod0_b[1], sigma, variants, seat)
             ah = vertex_attributes(node, heavy, lod0_h[0], lod0_h[1], sigma, variants)
             a, Tl = concat_attrs([(ab, lod0_b[1]), (ah, lod0_h[1])])
             Vl = a['P']
         else:
             Vl, Tl = lods_mesh[li]
-            a = vertex_attributes(node, heavy, Vl, Tl, sigma, variants)
+            a = vertex_attributes(node, heavy, Vl, Tl, sigma, variants, seat)
         items = [(a, Tl)]
         pids = [np.zeros(len(Vl), np.uint8)]
         for p in parts:
@@ -440,6 +539,7 @@ def build_base(kind, res, pk):
             pids.append(np.full(len(pa['P']), p['id'], np.uint8))
         for it in items:
             it[0].setdefault('aux', np.zeros((len(it[0]['P']), 2)))
+            it[0].setdefault('Mw', np.zeros(len(it[0]['P'])))
         attrs, tris = concat_attrs(items)
         lods.append(pack_lod(pk, attrs, tris, np.concatenate(pids)))
         log(f'  lod{li}: {len(attrs["P"])} verts {len(tris)} tris (body {len(Tl)}) {time.time() - t:.1f}s')
@@ -447,6 +547,14 @@ def build_base(kind, res, pk):
     check_hats(kind, info, parts)
     return {'info': info, 'skeleton': skel, 'lods': lods,
             'parts': [{k: p[k] for k in ('id', 'name', 'kind')} for p in parts]}
+
+
+def shoe_info(kind):
+    """Sole thickness at the heel / under the ball and the toe spring of this body's shoes (as
+    sculpted in humans_body.shoe_sdf, before the foot scale), for the painted sole band."""
+    T = B.TEMPLATES[kind]
+    sh, sb, spring = {'male': (0.024, 0.012, 0.010), 'female': (0.018, 0.010, 0.008)}.get(kind, (0.022, 0.017, 0.007))
+    return {'heelZ': T['heelZ'], 'toeZ': T['toeZ'], 'heel': sh * T['footS'], 'ball': sb * T['footS'], 'spring': spring * T['footS']}
 
 
 def check_hats(kind, info, parts):
@@ -503,7 +611,7 @@ def check_eyes_clear(kind, info, parts):
 def main():
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument('--bases', default='male,female,child,kid')
+    ap.add_argument('--bases', default='male,female,child,kid,toddler')
     ap.add_argument('--res', type=float, default=0.0035)
     ap.add_argument('--out', default=OUT)
     a = ap.parse_args(argv)

@@ -47,6 +47,7 @@ export const FOLIAGE = {
  *   step/infl/kill  space colonisation parameters
  *   spurs        probability of a short leaf-bearing side shoot per node
  *   cardsPerTip  leaf cards per terminal shoot; inner shoots carry fewer
+ *   cardScale    card size factor (old trees carry bigger, fuller shoot clumps)
  *   droop        how much slender shoots and leaf clumps hang
  *   stake        young tree still tied to stakes
  */
@@ -64,11 +65,11 @@ export const TEMPLATES = [
   { ...young, id: 'denseA', species: 'dense', height: 6.4, crownBase: 2.4, crownR: 1.9, shape: 'round', trunkR: 0.07, leader: false, scaffolds: 4, attractors: 1150, droop: 0.06, stake: false, cardsPerTip: 2.2 },
   { ...young, id: 'denseB', species: 'dense', height: 7.4, crownBase: 2.7, crownR: 2.2, shape: 'broad', trunkR: 0.085, leader: false, scaffolds: 3, attractors: 1350, droop: 0.08, stake: false, cardsPerTip: 2.2 },
   { id: 'pagodaM', species: 'pagoda', mature: true, height: 9.6, crownBase: 3.3, crownR: 2.9, shape: 'broad', trunkR: 0.15,
-    leader: false, scaffolds: 4, attractors: 2600, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 1.7, droop: 0.15, stake: false },
+    leader: false, scaffolds: 4, attractors: 2600, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.15, stake: false },
   { id: 'denseM', species: 'dense', mature: true, height: 10.4, crownBase: 3.5, crownR: 3.0, shape: 'round', trunkR: 0.17,
-    leader: false, scaffolds: 3, attractors: 3000, step: 0.24, infl: 1.15, kill: 0.34, spurs: 0.85, cardsPerTip: 1.7, droop: 0.06, stake: false },
+    leader: false, scaffolds: 3, attractors: 3000, step: 0.24, infl: 1.15, kill: 0.34, spurs: 0.85, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.06, stake: false },
   { id: 'ashM', species: 'ash', mature: true, height: 9.2, crownBase: 3.2, crownR: 2.5, shape: 'oval', trunkR: 0.14,
-    leader: true, scaffolds: 0, attractors: 2400, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 1.7, droop: 0.08, stake: false },
+    leader: true, scaffolds: 0, attractors: 2400, step: 0.24, infl: 1.15, kill: 0.36, spurs: 0.8, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.08, stake: false },
 ];
 
 /** Shrub templates for planters (no trunk, a mound of shoots), footprint in metres. */

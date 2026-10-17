@@ -176,11 +176,15 @@ def main():
     for ri, kind in enumerate(bases):
         node, skel, info = B.build_body(kind, a.build, a.belly)
         H = info['H']
+        # (head zoom: every row is framed on its own head, whatever the stature)
+        shift = 0.0
+        if a.zoom == 'head':
+            shift = (y0 + y1) / 2 - (info['headC'][1] - 0.02)
         lo = np.array([-0.62, -0.004, -0.3]) * max(H / 1.76, 0.6)
         hi = np.array([0.62 * max(H / 1.76, 0.6), H + 0.01, 0.3 * max(H / 1.76, 0.6)])
         if a.zoom != 'body':
-            lo[1] = max(lo[1], y0 - 0.05)
-            hi[1] = min(hi[1], y1 + 0.05)
+            lo[1] = max(lo[1], y0 - 0.05 - shift)
+            hi[1] = min(hi[1], y1 + 0.05 - shift)
         F, org = S.eval_grid(node, lo, hi, a.res)
         V, T = S.surface_nets(F, org, a.res)
         V = S.project(node, V.astype(np.float32), 2).astype(np.float64)
@@ -201,7 +205,7 @@ def main():
             for (Vm, Tm, mm) in objs:
                 ob = mesh_object(f'{kind}_{vname}', Vm, Tm, mm)
                 ob.rotation_euler = (0, 0, az + math.pi)   # front view: figure faces the camera (-Y)
-                ob.location = (ci * colw + colw / 2 - W / 2, 0, row_y - y0)
+                ob.location = (ci * colw + colw / 2 - W / 2, 0, row_y - y0 + shift)
         print('[preview]', kind, 'H', H, 'verts', len(V), flush=True)
     cam = bpy.data.objects.new('cam', bpy.data.cameras.new('cam'))
     scn.collection.objects.link(cam)

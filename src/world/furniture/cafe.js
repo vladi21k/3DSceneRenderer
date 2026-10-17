@@ -54,6 +54,20 @@ function cupSet(detail) {
 function waterGlass(detail) {
   return merge([lathe([[0, 0], [0.03, 0], [0.036, 0.105], [0.0335, 0.105], [0.028, 0.004], [0, 0.004]], detail ? 6 : 12)]);
 }
+/** Tall glass (iced coffee, cola, beer) and the drink in it. */
+function tallGlass(detail) {
+  const seg = detail ? 6 : 12;
+  return {
+    glass: merge([lathe([[0, 0], [0.032, 0], [0.038, 0.15], [0.0355, 0.15], [0.03, 0.006], [0, 0.006]], seg)]),
+    drink: merge([lathe([[0, 0.007], [0.0298, 0.007], [0.0345, 0.11], [0, 0.11]], seg)]),
+  };
+}
+function plate(detail) {
+  return merge([lathe([[0, 0], [0.075, 0], [0.09, 0.006], [0.118, 0.014], [0.121, 0.017], [0.115, 0.016], [0.088, 0.009], [0, 0.009]], detail ? 8 : 20)]);
+}
+function ashtray(detail) {
+  return merge([lathe([[0, 0], [0.045, 0], [0.05, 0.024], [0.043, 0.026], [0.036, 0.008], [0, 0.008]], detail ? 6 : 14)]);
+}
 function napkinHolder() {
   return {
     steel: merge([xf(rbox(0.1, 0.012, 0.06, 0), [0, 0.006, 0]), xf(rbox(0.004, 0.08, 0.05, 0), [-0.025, 0.05, 0]), xf(rbox(0.004, 0.08, 0.05, 0), [0.025, 0.05, 0])]),
@@ -158,6 +172,13 @@ export function buildCafeProtos(M, F) {
   P.misc.glass = proto('glass', [{ geo: [waterGlass(0), waterGlass(1), null], mat: F.drinkGlass, cast: false }], [14, 30]);
   const nh = napkinHolder();
   P.misc.napkin = proto('napkin', [{ geo: [nh.steel, null], mat: F.steel, cast: true }, { geo: [nh.paper, null], mat: F.ceramic, cast: false }], [30]);
+  const tg = [tallGlass(0), tallGlass(1)];
+  P.misc.tall = proto('tallGlass', [{ geo: [tg[0].glass, tg[1].glass, null], mat: F.drinkGlass, cast: false }, { geo: [tg[0].drink, tg[1].drink, null], mat: F.coffee, cast: false }], [14, 30]);
+  P.misc.plate = proto('plate', [{ geo: [plate(0), plate(1), null], mat: F.ceramic, cast: false }], [14, 30]);
+  P.misc.ashtray = proto('ashtray', [{ geo: [ashtray(0), ashtray(1), null], mat: F.steel, cast: false }], [14, 30]);
+  P.misc.phone = proto('phone', [{ geo: [merge([xf(rbox(0.072, 0.008, 0.152, 0.003, 1), [0, 0.004, 0])]), null], mat: F.interior, cast: false }], [20]);
+  // menu folder lying on the table: leatherette cover in the café's colour
+  P.misc.folder = proto('menuFolder', [{ geo: [merge([xf(rbox(0.235, 0.008, 0.325, 0.003, 1), [0, 0.004, 0])]), null], mat: F.paint, tint: true, cast: false }], [25]);
   for (const v of [0, 1]) {
     const mb = [menuBoard(v, 0), menuBoard(v, 1)];
     P.misc[`menu${v}`] = proto('menuBoard', [{ geo: mb.map((m) => m.wood), mat: F.timber, cast: true }, { geo: mb.map((m) => m.face), mat: F.print, cast: false }], [40]);
@@ -195,6 +216,7 @@ export function cafeStyle(cafe, app) {
   }
   st.frameWood = rng.chance(0.4);
   st.screen = srgb(rng.pick(SCREEN_COL));
+  st.folder = srgb(rng.pick(['#2a2422', '#4a1f1c', '#22302a', '#1f2533', '#5a4632']));
   st.plan = planCafe(cafe, app.route, seed, st.base, app.layout);
   for (const c of st.plan.chairs) {
     const ch = cafe.tables[c.ti].chairs[c.ci];
@@ -203,6 +225,7 @@ export function cafeStyle(cafe, app) {
   st.umbrellas = st.plan.umbrellas.map((u) => ({ ...u, color: srgb(UMB_COL[u.color] || UMB_COL.cream).multiplyScalar(u.tint) }));
   st.throughTable = new Set(st.plan.umbrellas.filter((u) => u.base === 'table').map((u) => u.table));
   st.menu = st.plan.menu;
+  cafe.tables.forEach((t, ti) => { t.dressed = wareState(wareRng(seed, cafe, ti)); });
   styleCache.set(cafe, st);
   return st;
 }
@@ -250,7 +273,7 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
       placeMatrix(route, t.s, t.d, 0, tyaw, _m, FOOT.table);
       inst.add(P.top[`${t.shape}${st.top}`], _m, _c.copy(st.topTint).multiplyScalar(rng.range(0.95, 1.04)));
       inst.add(P.base[st.base], _m);
-      if (lod === 0) placeTableware(route, t, rng, inst, P, st.throughTable.has(ti));
+      if (lod === 0) placeTableware(route, t, wareRng(layout.seed, cafe, ti), inst, P, st.throughTable.has(ti), st.folder);
     });
     for (const u of st.umbrellas) {
       const uf = FOOT[u.base] ?? FOOT.table;
@@ -275,23 +298,56 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
   }
 }
 
-function placeTableware(route, t, rng, inst, P, pole) {
-  if (rng.chance(0.35)) return;
+/** Table dressing: a table is bare, laid (napkins, a menu folder, an ashtray) or in use,
+ *  each place with its own order (espresso, water, a tall glass, a plate) and the odd phone
+ *  or folder beside it. The state is the first draw of the table's own generator, so it is
+ *  known before any chunk is built: 0 bare, 1 laid, 2 in use (cafeStyle writes it to the
+ *  layout table as `dressed`, for seated patrons to prefer the tables in use). */
+const SETTINGS = [['cup', 0.34], ['glass', 0.2], ['tall', 0.16], ['plate', 0.18], ['cupGlass', 0.12]];
+const wareRng = (seed, cafe, ti) => RNG.from(seed, 'cafeWare', cafe.id, ti);
+const wareState = (rng) => rng.weighted([[0, 0.3], [1, 0.25], [2, 0.45]]);
+function placeTableware(route, t, rng, inst, P, pole, folderCol) {
+  const state = wareState(rng);
+  if (!state) return;
   // on the (level) table top, whatever the paving does under each item
   const topY = route.groundY(t.s, t.d) - groundSink(route, t.s, t.d, FOOT.table) + TABLE_H;
   const onTop = (s, d) => topY - route.groundY(s, d);
-  if (!pole && rng.chance(0.55)) {
-    const s = t.s + rng.range(-0.04, 0.04), d = t.d + rng.range(-0.04, 0.04);
-    placeMatrix(route, s, d, onTop(s, d), rng.range(0, 3.14), _m);
-    inst.add(P.misc.napkin, _m);
-  }
-  for (const ch of t.chairs) {
-    if (!rng.chance(0.45)) continue;
+  const reachR = t.shape === 'square' ? 0.26 : 0.23;
+  const put = (p, s, d, yaw, col = null) => { placeMatrix(route, s, d, onTop(s, d), yaw, _m); inst.add(p, _m, col); };
+  // towards place ch: r from the centre, `side` across (m)
+  const at = (ch, r, side) => {
     const dx = ch.s - t.s, dd = ch.d - t.d, l = Math.hypot(dx, dd) || 1;
-    const r = rng.range(0.15, 0.2), side = rng.range(-0.08, 0.08);
-    const s = t.s + (dx / l) * r - (dd / l) * side, d = t.d + (dd / l) * r + (dx / l) * side;
-    placeMatrix(route, s, d, onTop(s, d), rng.range(0, 6.28), _m);
-    inst.add(rng.chance(0.6) ? P.misc.cup : P.misc.glass, _m);
+    r = Math.min(r, reachR);
+    return [t.s + (dx / l) * r - (dd / l) * side, t.d + (dd / l) * r + (dx / l) * side, Math.atan2(dd, dx)];
+  };
+  if (!pole && rng.chance(0.6)) put(P.misc.napkin, t.s + rng.range(-0.04, 0.04), t.d + rng.range(-0.04, 0.04), rng.range(0, 3.14));
+  if (rng.chance(state === 1 ? 0.35 : 0.25)) put(P.misc.ashtray, t.s + rng.range(-0.1, 0.1), t.d + rng.range(-0.1, 0.1), 0);
+  if (state === 1) {
+    if (rng.chance(0.6) && t.chairs.length) {
+      const [s, d, a] = at(rng.pick(t.chairs), rng.range(0.1, 0.16), rng.range(-0.06, 0.06));
+      put(P.misc.folder, s, d, a + Math.PI / 2 + rng.range(-0.4, 0.4), folderCol);
+    }
+    return;
+  }
+  let used = 0;
+  for (const ch of t.chairs) {
+    if (!rng.chance(0.62) && (used || ch !== t.chairs[t.chairs.length - 1])) continue;
+    used++;
+    const kind = rng.weighted(SETTINGS);
+    const [s, d, a] = at(ch, rng.range(0.15, 0.2), rng.range(-0.07, 0.07));
+    if (kind === 'plate') {
+      const [ps, pd] = at(ch, rng.range(0.11, 0.14), rng.range(-0.03, 0.03));
+      put(P.misc.plate, ps, pd, rng.range(0, 6.28));
+    } else if (kind === 'cupGlass') {
+      const [gs, gd] = at(ch, rng.range(0.14, 0.18), 0.09);
+      put(P.misc.cup, s, d, rng.range(0, 6.28));
+      put(P.misc.glass, gs, gd, 0);
+    } else put(P.misc[kind], s, d, rng.range(0, 6.28));
+    if (rng.chance(0.18)) { // a phone beside the place, or the menu still open
+      const [qs, qd] = at(ch, rng.range(0.12, 0.17), rng.chance(0.5) ? 0.13 : -0.13);
+      if (rng.chance(0.75)) put(P.misc.phone, qs, qd, a + rng.range(-0.5, 0.5));
+      else put(P.misc.folder, qs, qd, a + Math.PI / 2 + rng.range(-0.3, 0.3), folderCol);
+    }
   }
 }
 

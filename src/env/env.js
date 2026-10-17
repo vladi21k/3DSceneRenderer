@@ -29,6 +29,16 @@ const _fwd = new THREE.Vector3();
 const _es = new THREE.Vector3();
 const _es2 = new THREE.Vector3();
 const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
+const _tc = new THREE.Vector3();
+
+// Weather regimes (one per world seed; URL sky= picks one): a pale dust haze with faint
+// cirrus, high cirrus streaks over altocumulus patches and a few small cumulus, or a
+// field of small flat-based cumulus. cover/scale/top shape the volumetric cumulus.
+const WEATHER = {
+  streaks: { cover: 0.3, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5 },
+  cumulus: { cover: 0.52, scale: 0.5, top: 850, cirrus: 0.3, altocu: 0 },
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0 },
+};
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];
 // canyon bounce view factors: walls seen from the floor (up), floor and walls seen from below (down)
@@ -69,6 +79,12 @@ const env = {
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
+    const names = Object.keys(WEATHER);
+    const pick = app.params.raw?.get?.('sky');
+    this.weather = WEATHER[pick] ? pick : names[(Math.imul(app.params.seed | 0, 2654435761) >>> 0) % names.length];
+    const w = WEATHER[this.weather], su = this.sky.uniforms;
+    su.uCloudCover.value = w.cover; su.uCloudScale.value = w.scale; su.uCloudTop.value = w.top;
+    su.uCirrus.value = w.cirrus; su.uAltocu.value = w.altocu;
     scene.background = null;
     scene.fog = null;
     scene.environmentIntensity = 1.0;
@@ -221,6 +237,8 @@ const env = {
     U.uSunDir.value.copy(dir);
     U.uSunColor.value.setRGB(sunCol.r * Es, sunCol.g * Es, sunCol.b * Es);
     this.sky.uniforms.uSunGround.value.set(sunCol.r * E, sunCol.g * E, sunCol.b * E);
+    const Tc = this.atmo.transmittance(dir, 2.0, _tc);
+    this.sky.uniforms.uSunCloud.value.set(SUN_TINT.r * Tc.x * E, SUN_TINT.g * Tc.y * E, SUN_TINT.b * Tc.z * E);
 
     // sky-view LUT and irradiance; the irradiance is read back (asynchronously) by
     // update() once the time of day has settled, the CPU estimate stands in meanwhile

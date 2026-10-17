@@ -56,11 +56,12 @@ export const CYCLE_V = [2.8, 5.0];                 // 10-18 km/h
 export const CYCLE_CLEAR_T = [6.5, 9.5];           // cyclists leave the ride track earlier (they are faster)
 export const CYCLE_FALLBACK = 5.0;                 // m per crank revolution when the renderer gives none
 // Prop footprints as capsules in the person's frame: from f0 to f1 metres ahead of the body
-// centre, l metres to the right, radius r. A stroller reaches ~1.1 m ahead; a bicycle is
-// ~1.8 m long centred on its rider; a walked bicycle is held beside the person (on their right).
+// centre, l metres to the right, radius r. Measured on the drawn models: a stroller covers
+// 0.28-1.47 m ahead of its pusher, a ridden bicycle ±0.97 m about its rider, a walked bicycle
+// (held on the person's right) 1.06 m behind to 1.28 m ahead.
 export const FOOT = [
   null,
-  { f0: 0.42, f1: 0.80, l: 0, r: 0.31 },
-  { f0: -0.56, f1: 0.56, l: 0, r: 0.33 },
-  { f0: -0.28, f1: 0.82, l: 0.42, r: 0.30 },
+  { f0: 0.59, f1: 1.16, l: 0, r: 0.31 },
+  { f0: -0.63, f1: 0.63, l: 0, r: 0.34 },
+  { f0: -0.74, f1: 0.96, l: 0.43, r: 0.32 },
 ];

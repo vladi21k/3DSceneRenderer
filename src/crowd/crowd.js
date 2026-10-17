@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
+import { TRACK_OFFSET, RAIL_CENTER } from '../core/config.js';
 import { StreetMap } from './behaviour/streetMap.js';
 import { Visibility } from './behaviour/visibility.js';
 import { Population } from './behaviour/population.js';
 import { Steering } from './behaviour/steering.js';
 import { TramWatch } from './behaviour/tram.js';
 import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES } from './behaviour/agent.js';
-import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT } from './behaviour/constants.js';
+import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D } from './behaviour/constants.js';
 
 // Crowd behaviour: where the pedestrians of the street go and what they do. The
 // figures themselves are drawn by app.humans; this module feeds it one record per
@@ -57,7 +58,9 @@ class CrowdSim {
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
     this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [],
-      propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propWall: 0, propWallLog: [] };
+      propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propWall: 0, propWallLog: [],
+      // strollers / bicycles against people and against each other (world space, within 60 m of the camera)
+      pa: { frames: 0, agentOverlap: 0, propOverlap: 0, minAgentGap: 99, minPropGap: 99, pairs: new Set(), log: [] } };
     // renderer slots; alloc may hand back the first index of our block
     const base = this.humans && this.humans.alloc ? this.humans.alloc(MAX_AGENTS) : 0;
     this.base = Number.isInteger(base) ? base : 0;
@@ -320,7 +323,7 @@ class CrowdSim {
         }
       }
       ck.agentFrames++;
-      if (a.mob && a.state !== ST.SEATED) this._checkProp(a, tr, map);
+      if (a.mob && a.state !== ST.SEATED) { this._checkProp(a, tr, map); this._checkPropPeople(a); }
       if (Math.abs(a.s - this.tram.trainU) > 20) continue;
       const p = route.project(a.x, a.z, route.wrap(a.s), 4);
       const ahead = route.delta(tr.s, p.s);
@@ -382,6 +385,55 @@ class CrowdSim {
     }
   }
 
+  /** World-space prop capsule of a (as drawn from the heading handed to the renderer) → o = [x0, z0, x1, z1, r]. */
+  _propSeg(a, o) {
+    const F = FOOT[a.mob], h = a.heading;
+    const fx = -Math.sin(h), fz = -Math.cos(h), rx = Math.cos(h), rz = -Math.sin(h);
+    o[0] = a.x + fx * F.f0 + rx * F.l; o[1] = a.z + fz * F.f0 + rz * F.l;
+    o[2] = a.x + fx * F.f1 + rx * F.l; o[3] = a.z + fz * F.f1 + rz * F.l; o[4] = F.r;
+    return o;
+  }
+
+  /** Nobody walks through a stroller or a bicycle, and no two of them overlap: the prop's
+   *  capsule against every other body (a torso of radius 0.21 m) and every other prop, from the
+   *  positions and headings handed to the renderer, within 60 m of the camera. */
+  _checkPropPeople(a) {
+    if (!FOOT[a.mob] || Math.abs(a.s - this.camU) > 60) return;
+    const pa = this.check.pa, st = this.steering, agents = this.population.agents;
+    const P = this._propSeg(a, _sa);
+    pa.frames++;
+    const ix = Math.floor((a.s - st.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
+    let body = false, prop = false;
+    for (let x = ix - 2; x <= ix + 2; x++) {
+      if (x < 0 || x >= st.nx) continue;
+      for (let y = iy - 1; y <= iy + 1; y++) {
+        if (y < 0 || y >= st.ny) continue;
+        for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
+          const b = agents[j];
+          if (b === a || !b.active) continue;
+          const gb = Math.sqrt(segSegDist2(P[0], P[1], P[2], P[3], b.x, b.z, b.x, b.z)) - P[4] - 0.21;
+          pa.minAgentGap = Math.min(pa.minAgentGap, gb);
+          if (gb < 0) { body = true; this._paLog(a, b, 'body', gb); }
+          if (b.mob && FOOT[b.mob] && b.state !== ST.SEATED && b.slot > a.slot) {
+            const Q = this._propSeg(b, _sb);
+            const gp = Math.sqrt(segSegDist2(P[0], P[1], P[2], P[3], Q[0], Q[1], Q[2], Q[3])) - P[4] - Q[4];
+            pa.minPropGap = Math.min(pa.minPropGap, gp);
+            if (gp < 0) { prop = true; this._paLog(a, b, 'prop', gp); }
+          }
+        }
+      }
+    }
+    if (body) pa.agentOverlap++;
+    if (prop) pa.propOverlap++;
+  }
+
+  _paLog(a, b, what, gap) {
+    const pa = this.check.pa, key = `${a.slot}:${a.serial}/${b.slot}:${b.serial}/${what}`;
+    if (pa.pairs.has(key)) return;
+    pa.pairs.add(key);
+    if (pa.log.length < 10) pa.log.push({ t: +this.time.toFixed(1), what, mob: MOB_NAMES[a.mob], other: MOB_NAMES[b.mob], gap: +gap.toFixed(2), s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), bd: +b.d.toFixed(2), st: STATE_NAMES[a.state], bst: STATE_NAMES[b.state] });
+  }
+
   /** Percentile of the total update time over the last 240 frames. */
   _pct(q) {
     const p = this.perf;
@@ -394,6 +446,7 @@ class CrowdSim {
     const byState = {}, byTask = {}, byKind = {}, byMob = {};
     let active = 0, clearing = 0, simple = 0, followers = 0, corridor = 0, children = 0, childAlone = 0;
     let mobInView = 0, cycV = 0, cycN = 0, strollerKids = 0, strollerPartners = 0;
+    let cycStopped = 0, cycStall5 = 0, cycStallMax = 0, cycRail = 0, cycCrossing = 0;
     const lanes = [0, 0, 0], band = [0, 0, 0, 0];
     for (const a of this.population.agents) {
       if (!a.active) continue;
@@ -404,7 +457,15 @@ class CrowdSim {
       if (a.mob) {
         byMob[MOB_NAMES[a.mob]] = (byMob[MOB_NAMES[a.mob]] || 0) + 1;
         if (this.vis.inView(a.s, a.d)) mobInView++;
-        if (a.mob === MOB.CYCLE) { cycV += a.bikeV; cycN++; }
+        if (a.mob === MOB.CYCLE) {
+          cycV += a.bikeV; cycN++;
+          if (a.bikeV < 0.1) cycStopped++;
+          if (a.stopNP > 5) cycStall5++;
+          cycStallMax = Math.max(cycStallMax, a.stopNP);
+          if (a.rx) cycCrossing++;
+          const ad = Math.abs(a.d);
+          if (Math.abs(ad - (TRACK_OFFSET - RAIL_CENTER)) < 0.3 || Math.abs(ad - (TRACK_OFFSET + RAIL_CENTER)) < 0.3) cycRail++;
+        }
         if (a.mob === MOB.STROLLER) for (const f of a.followers) { if (f.isChild) strollerKids++; else strollerPartners++; }
       }
       if (a.clearing) clearing++;
@@ -422,12 +483,17 @@ class CrowdSim {
     return {
       active, walkerTarget: Math.round(pop.walkerTarget), byKind, byState, byTask, clearing, simple, followers, corridor, children, childAlone,
       mobility: { on: this.mobOn, poses: this.poseOK.slice(1), byMob, inView: mobInView, cycleMeanKmh: cycN ? +((cycV / cycN) * 3.6).toFixed(1) : 0, strollerKids, strollerPartners },
+      // cyclists now: stopped, stopped for more than 5 s with nobody in the way (should be 0; the
+      // event count is events.cycleStall5s), longest such stop (s), within 0.3 m of a rail, crossing one
+      cyclists: { stopped: cycStopped, stalledNoPeople5s: cycStall5, stallMaxS: +cycStallMax.toFixed(1), nearRail: cycRail, crossingRail: cycCrossing },
       lanes: { side: lanes[0], edge: lanes[1], corridor: lanes[2] },
       crossSection30to250m: { leftWalk: band[0], leftTrack: band[1], rideTrack: band[2], rightWalk: band[3] },
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked,
-        prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, wall: ck.propWall, wallLog: ck.propWallLog } } : null,
+        prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, wall: ck.propWall, wallLog: ck.propWallLog },
+        // frames (within 60 m) of a stroller / bicycle overlapping a body or another one, distinct pairs
+        propPeople: { frames: ck.pa.frames, agentOverlap: ck.pa.agentOverlap, propOverlap: ck.pa.propOverlap, pairs: ck.pa.pairs.size, minAgentGap: +ck.pa.minAgentGap.toFixed(3), minPropGap: +ck.pa.minPropGap.toFixed(3), log: ck.pa.log } } : null,
       population: pop.stats, events: this.events,
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },
       featureArrivalsInView: { under450m: this.featureIn[0], under660m: this.featureIn[1], beyond660m: this.featureIn[2] },
@@ -441,6 +507,25 @@ class CrowdSim {
 }
 
 const _pp = [{ s: 0, d: 0 }, { s: 0, d: 0 }];
+const _sa = new Float64Array(5), _sb = new Float64Array(5);
+/** Squared distance between segments p0p1 and q0q1 (2D). */
+function segSegDist2(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y) {
+  const ux = p1x - p0x, uy = p1y - p0y, vx = q1x - q0x, vy = q1y - q0y, wx = p0x - q0x, wy = p0y - q0y;
+  const a = ux * ux + uy * uy, b = ux * vx + uy * vy, c = vx * vx + vy * vy, d = ux * wx + uy * wy, e = vx * wx + vy * wy;
+  const cl = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+  let s = 0, t = 0;
+  if (a < 1e-9 && c < 1e-9) { s = 0; t = 0; }
+  else if (a < 1e-9) { s = 0; t = cl(e / c); }
+  else if (c < 1e-9) { t = 0; s = cl(-d / a); }
+  else {
+    const den = a * c - b * b;
+    s = den > 1e-9 ? cl((b * e - c * d) / den) : 0;
+    t = (b * s + e) / c;
+    if (t < 0) { t = 0; s = cl(-d / a); } else if (t > 1) { t = 1; s = cl((b - d) / a); }
+  }
+  const dx = p0x + ux * s - q0x - vx * t, dy = p0y + uy * s - q0y - vy * t;
+  return dx * dx + dy * dy;
+}
 /** Squared distance from point (px, py) to segment (ax, ay)-(bx, by). */
 function segPointDist2(ax, ay, bx, by, px, py) {
   const ux = bx - ax, uy = by - ay, l2 = ux * ux + uy * uy;

@@ -6,7 +6,7 @@
 //   engine.js    the live graph: layer buses, cab shell, street + cab reverbs,
 //                compressor/limiter, tram-local spatial frame
 //   layers/*.js  bell, rolling + joints, curve squeal, traction + auxiliaries,
-//                brakes + doors, street ambience
+//                brakes + doors, street ambience, the oncoming trams passing
 //   test.js      OfflineAudioContext harness: app.audio.test({...}) renders a scenario
 //                and reports RMS/peak per layer (optionally a WAV)
 //
@@ -52,7 +52,7 @@ const audio = {
     this.capture = params.capture && !this.forced;
     this._acc = 0;
     this._lastV = null;
-    this._st = { t: 0, s: 0, speed: 0, accel: 0, throttle: 0, state: 'run', night: 0, tod: 0, wind: 0.35, listener: { px: 0, py: 0, pz: 0, fx: 0, fy: 0, fz: -1, ux: 0, uy: 1, uz: 0 } };
+    this._st = { t: 0, s: 0, speed: 0, accel: 0, throttle: 0, state: 'run', night: 0, tod: 0, wind: 0.35, oncoming: null, listener: { px: 0, py: 0, pz: 0, fx: 0, fy: 0, fz: -1, ux: 0, uy: 1, uz: 0 } };
     this._live = false;
     if (this.capture) return; // screenshots: no sound at all
 
@@ -60,6 +60,7 @@ const audio = {
     ev.on('start', () => this._startSafe());
     ev.on('bell', (d) => this._event('bell', d));
     ev.on('doors', (d) => this._event('doors', d));
+    ev.on('tram-bell', (d) => this._event('tram-bell', d));
     // M toggles mute (matched on the printed key, like the ride controls)
     window.addEventListener('keydown', (e) => {
       if ((e.key || '').toLowerCase() !== 'm' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -161,6 +162,7 @@ const audio = {
     st.night = U.uNight.value;
     st.tod = app.env?.state?.t ?? 0;
     st.wind = U.uWindStrength.value;
+    st.oncoming = app.trams && !app.trams.disabled ? app.trams.units : null;
     // listener = camera (a direct child of the scene); orientation from its quaternion
     const cam = app.camera, L = st.listener, { x, y, z, w } = cam.quaternion;
     L.px = cam.position.x; L.py = cam.position.y; L.pz = cam.position.z;

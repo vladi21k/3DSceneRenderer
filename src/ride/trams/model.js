@@ -4,10 +4,11 @@ import { FONT } from './display.js';
 
 // Procedural model of the line's light-rail vehicles (the oncoming units): a 32 m,
 // 2.65 m wide, bidirectional low-floor tram in silver paint. Three bodies (two cab ends and
-// a centre body on its own bogie) joined by bellows; a large raked, wrapped windscreen with
-// the lit destination display behind its top band; headlight clusters low on the nose, red
-// tail lamps at the trailing end; four double plug doors a side; roof fairings and a
-// single-arm pantograph on the centre body that reaches the contact wire.
+// a centre body on its own bogie) joined by bellows; a raked windscreen running down into a
+// dark glass shield with LED lamps and the fleet number at its foot (headlights leading,
+// red tail lamps trailing) and the lit destination display behind its top band; four
+// double plug doors a side; roof fairings and a single-arm pantograph on the centre body
+// that reaches the contact wire.
 //
 // Each body is built in its own frame: x to the right, y up from the rail top, local −z
 // forward with z = 0 at the body's leading end (the nose tip, or the articulation point).
@@ -34,12 +35,12 @@ export const CAR = {
 
 // linear paint colours (the body material's vertex colour is the paint colour)
 const COL = {
-  silver: [0.36, 0.37, 0.385],
-  roof: [0.33, 0.338, 0.35],
+  silver: [0.42, 0.432, 0.448],
+  roof: [0.38, 0.39, 0.4],
   skirt: [0.017, 0.018, 0.019],
   black: [0.006, 0.006, 0.0065],
   bellows: [0.013, 0.013, 0.014],
-  fairing: [0.37, 0.378, 0.39],
+  fairing: [0.42, 0.43, 0.44],
   under: [0.02, 0.019, 0.018],
   insulator: [0.1, 0.055, 0.035],
   wheel: [0.035, 0.032, 0.03],
@@ -108,7 +109,7 @@ function profile(lod) {
     const tx = r.x - q.x, ty = r.y - q.y, l = Math.hypot(tx, ty) || 1;
     p.nx = ty / l; p.ny = -tx / l; p.a = a;
   }
-  // the crown is level, the bottom edge turns under
+  // the crown is level
   const last = pts[pts.length - 1]; last.nx = 0; last.ny = 1;
   return pts;
 }

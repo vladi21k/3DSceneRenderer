@@ -27,7 +27,7 @@ import { makeLampAtlas } from './trams/display.js';
 
 const LOD_PX = [55, 14];          // projected px per metre (1080 lines) above which LOD 0 / 1 draw
 const SCAN_DT = 0.1;              // s between scans of the people ahead
-const VIEW = [-90, 700];          // drawn while the nose is within this range of the camera (m)
+const VIEW = [-90, 650];          // drawn while the nose is within this range of the camera (m): the built street
 // where each unit's nose starts: m beyond the default start plus a share of the loop
 const UNITS = [
   { ahead: 190, loop: 0, line: '1', dest: 'CENTRAL STATION' },
@@ -76,7 +76,7 @@ const trams = {
     const white = new THREE.Color(1, 1, 1);
     this.mats = {
       // silver metallic paint, tinted glazing
-      body: M.get('paint.frame', { vertexColors: true, color: white, metalness: 0.7, roughness: 0.75, userData: own('body') }),
+      body: M.get('paint.frame', { vertexColors: true, color: white, metalness: 0.5, roughness: 0.75, userData: own('body') }),
       glass: M.get('glass.shop', { vertexColors: true, emissive: [1.0, 0.96, 0.9], emissiveIntensity: 0, userData: own('glass') }),
       ws: M.get('glass.shop', { vertexColors: true, userData: own('windscreen') }),
       metal: M.get('metal.galvanized', { vertexColors: true, userData: own('metal') }),
@@ -104,7 +104,7 @@ const trams = {
       const tram = new Tram({ route: mr, layout: ml }, { s: route.wrap(-s), auto: true, events: bus });
       const unit = {
         id: i, tram, s, speed: tram.speed, accel: 0, dir: -1, d: -TRACK_OFFSET, length: CAR.length, halfWidth: CAR.halfWidth,
-        state: tram.state, phase: null, bellAt: -1e9, active: true, obs: Infinity, lod: 2, dist: Infinity,
+        state: tram.state, phase: null, bellAt: -1e9, active: true, obs: Infinity, lod: 2, dist: Infinity, acc: 0,
         root: this._unitMeshes(i),
       };
       bus.on('bell', () => {
@@ -192,7 +192,11 @@ const trams = {
     for (const u of this.units) {
       const t = u.tram;
       t.obstacle = u.obs;
-      t.step(h);
+      // units out of sight are stepped in 0.1 s strides (the driver model's largest step)
+      u.acc += h;
+      if (u.root.visible || u.acc >= 0.1) {
+        while (u.acc > 1e-6) { const d = Math.min(0.1, u.acc); t.step(d); u.acc -= d; }
+      }
       if (h > 0 && u.obs < 45 && t.speed > 0.5) t.ringBell(true);
       u.s = app.route.wrap(-t.s);
       u.speed = t.speed; u.accel = t.accel; u.state = t.state; u.phase = t.phase;
@@ -208,7 +212,7 @@ const trams = {
     if (!cr || cr.disabled || typeof cr.agents !== 'function') return;
     const sim = cr.sim;
     if (!sim || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
-    const route = app.route, reach = CAR.halfWidth + 0.55;
+    const route = app.route, reach = CAR.halfWidth + 0.38;   // body half width + a person + a little
     for (const a of cr.agents()) {
       const dl = a.d + TRACK_OFFSET, dp = dl + (a.vd || 0) * 1.4;
       if (Math.abs(dl) > reach && Math.abs(dp) > reach && dl * dp > 0) continue;   // stays clear

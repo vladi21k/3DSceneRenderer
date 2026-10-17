@@ -171,16 +171,52 @@ KID = dict(
     sx=0.62, sy=0.625, sz=0.66,
 )
 
-TEMPLATES = {'male': MALE, 'female': FEMALE, 'child': CHILD, 'kid': KID}
+# a toddler of about two (rides in strollers): head ~1/4 of the stature, short legs, a long trunk
+# with a round belly, chubby limbs, a short thick neck, short wide feet
+TODDLER = dict(
+    kind='toddler', sex='c', H=0.86,
+    hip=(0.043, 0.378, 0.0), knee=(0.045, 0.212, -0.003), ankle=(0.047, 0.036, 0.013),
+    heelZ=0.040, toeZ=-0.094, ballT=0.66,
+    pelvis=(0, 0.402, 0.008), spine1=(0, 0.452, 0.014), spine2=(0, 0.532, 0.010),
+    neck=(0, 0.630, 0.012), head=(0, 0.684, 0.006),
+    clav=(0.009, 0.618, -0.004), shoulder=(0.073, 0.608, 0.010),
+    Lu=0.142, Lf=0.112, abd=19.0, carry=0.06,
+    headC=(0, 0.744, 0.006), headS=0.84, face='toddler',
+    torso=[(0.346, 0.054, -0.028, 0.032), (0.374, 0.074, -0.040, 0.041), (0.404, 0.082, -0.052, 0.046),
+           (0.440, 0.082, -0.062, 0.042), (0.476, 0.081, -0.067, 0.038), (0.512, 0.080, -0.065, 0.040),
+           (0.546, 0.079, -0.061, 0.044), (0.576, 0.078, -0.056, 0.047), (0.600, 0.073, -0.050, 0.047),
+           (0.618, 0.060, -0.040, 0.043), (0.634, 0.035, -0.020, 0.033)],
+    uarm=[(0.0, 0.030, 0.030, 0.002, 0.0), (0.35, 0.029, 0.030, 0.0, 0.002), (0.65, 0.027, 0.027, 0.0, 0.001),
+          (1.0, 0.022, 0.021, 0.0, 0.0)],
+    farm=[(0.0, 0.023, 0.021, 0.0, 0.001), (0.25, 0.024, 0.022, 0.001, 0.0), (0.60, 0.022, 0.019, 0.001, 0.0),
+          (1.0, 0.0165, 0.0135, 0.0, 0.0)],
+    thigh=[(0.0, 0.046, 0.048, 0.002, 0.003), (0.25, 0.045, 0.047, 0.003, 0.004), (0.55, 0.042, 0.043, 0.001, 0.003),
+           (0.85, 0.035, 0.036, -0.001, 0.000), (1.0, 0.031, 0.032, 0.0, -0.001)],
+    shin=[(0.0, 0.030, 0.029, 0.0, 0.001), (0.15, 0.030, 0.030, 0.0, 0.003), (0.40, 0.029, 0.028, -0.001, 0.003),
+          (0.70, 0.024, 0.023, 0.0, 0.001), (0.88, 0.020, 0.019, 0.0, 0.0), (1.0, 0.020, 0.020, 0.0, 0.0)],
+    calf=(0.019, 0.034, 0.016), calfL=(0.017, 0.030, 0.014),
+    glute=(0.037, 0.360, 0.036, 0.040, 0.040, 0.030), fold=0.326,
+    pec=None, breast=None, lat=0.0, erector=None,
+    scap=(0.043, 0.046, 0.025, 0.035, 0.010), trap=(0.017, 0.012), neckR=(0.034, 0.035), kidBelly=(0.072, 0.044),
+    delt=(0.017, 0.026, 0.022), handS=0.52, footS=0.50,
+    sx=0.52, sy=0.49, sz=0.58,
+)
+
+TEMPLATES = {'male': MALE, 'female': FEMALE, 'child': CHILD, 'kid': KID, 'toddler': TODDLER}
+YOUNG = ('child', 'kid', 'toddler')
 
 
 def cranium(face):
     """Cranium ellipsoid (centre, radii) of the head sculpt in head-local coordinates; hair and
     hats are built over it (humans_parts)."""
+    # children: the brain case is large against a small face, so the eyes sit at or below the
+    # middle of the head (the younger, the lower)
+    if face == 'toddler':
+        return np.array([0.0, 0.030, 0.010]), np.array([0.083, 0.111, 0.106])
     if face == 'kid':
-        return np.array([0.0, 0.018, 0.008]), np.array([0.080, 0.103, 0.104])
+        return np.array([0.0, 0.025, 0.009]), np.array([0.081, 0.108, 0.105])
     if face == 'child':
-        return np.array([0.0, 0.015, 0.007]), np.array([0.0775, 0.0995, 0.1015])
+        return np.array([0.0, 0.019, 0.008]), np.array([0.0785, 0.1030, 0.1025])
     return np.array([0.0, 0.014, 0.006]), np.array([0.0745, 0.096, 0.098])
 
 
@@ -199,6 +235,12 @@ def arm_joints(T, s):
 
 # ----------------------------------------------------------------------------- pieces
 
+# head-local heights of the nostrils and the mouth line by face age (0 adult .. 1 toddler);
+# the runtime paints the nostrils and the mouth line at the same heights (info faceY)
+FACE_Y = {'nose': lambda yg: -0.0345 + 0.006 * yg, 'mouth': lambda yg: -0.0598 + 0.010 * yg}
+FACE_AGE = {'child': 0.45, 'kid': 0.75, 'toddler': 1.0}
+
+
 def head_sdf(face, build=0.0, var=None):
     """Head in local coordinates (origin at eye level on the mid plane, facing -Z).
 
@@ -211,12 +253,15 @@ def head_sdf(face, build=0.0, var=None):
     var = var or {}
     nar, brd, old = var.get('narrow', 0.0), var.get('broad', 0.0), var.get('old', 0.0)
     fem = face == 'female'
-    kid = face in ('child', 'kid')
-    tiny = face == 'kid'
-    jaw = (0.86 if fem else (0.74 if tiny else 0.80 if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
-    full = build * 0.006 + 0.003 * brd
+    kid = face in YOUNG
+    tiny = face in ('kid', 'toddler')
+    # age of the face (0 adult .. 1 toddler): a short midface and lower face, a small chin and
+    # jaw, a short upturned nose with a low flat bridge, full cheeks, a soft brow, shallow sockets
+    yg = FACE_AGE.get(face, 0.0)
+    jaw = (0.86 if fem else (1.0 - 0.34 * yg if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
+    full = build * 0.006 + 0.003 * brd + 0.004 * yg
     fw = 1 - 0.07 * nar + 0.07 * brd          # face width
-    chin_dy = -0.010 * nar + 0.005 * brd       # longer / shorter lower face
+    chin_dy = -0.010 * nar + 0.005 * brd + 0.016 * yg      # longer / shorter lower face
     H = {'head': 1}
     R = REGION['head']
     crc, crr = cranium(face)
@@ -229,12 +274,17 @@ def head_sdf(face, build=0.0, var=None):
         jw.append(RoundCone((s * (0.057 * fw + full), -0.012, 0.012), gon, 0.014 + full, 0.013 + full, region=R, bones=H))
         jw.append(RoundCone(gon, (s * 0.022 * (jaw + 0.1), -0.099 + (1 - jaw) * 0.01 + chin_dy, -0.066), 0.013 + full, 0.012,
                             region=R, bones=H))
-    chin = Ellipsoid((0, -0.097 + (1 - jaw) * 0.01 + chin_dy, -0.0745), (0.019 * jaw + 0.004, 0.018, 0.020), region=R, bones=H)
-    cheeks = [Ellipsoid((s * 0.046 * fw, -0.016 - 0.009 * old, -0.058), (0.020, 0.015 + full, 0.021 + full), region=R, bones=H)
+    chin = Ellipsoid((0, -0.097 + (1 - jaw) * 0.01 + chin_dy, -0.0745 + 0.004 * yg),
+                     (0.019 * jaw + 0.004 - 0.002 * yg, 0.018 - 0.003 * yg, 0.020 - 0.003 * yg), region=R, bones=H)
+    # (children: rounder, fuller cheeks set lower and further forward: the "baby fat" of the face)
+    cheeks = [Ellipsoid((s * (0.046 - 0.003 * yg) * fw, -0.016 - 0.009 * old - 0.010 * yg, -0.058 - 0.004 * yg),
+                        (0.020 + 0.006 * yg, 0.015 + full + 0.004 * yg, 0.021 + full + 0.002 * yg), region=R, bones=H)
               for s in (-1, 1)]
-    muzzle = Ellipsoid((0, -0.058, -0.070), (0.034 * fw + full * 0.5, 0.030, 0.028), region=R, bones=H)
+    muzzle = Ellipsoid((0, -0.058 + 0.008 * yg, -0.070 + 0.002 * yg), (0.034 * fw + full * 0.5, 0.030 - 0.006 * yg, 0.028 - 0.002 * yg),
+                       region=R, bones=H)
     bh = 0.0 if (fem or kid) else 0.002
-    brow = Ellipsoid((0, 0.025, -0.074 - bh), (0.054, 0.0165, 0.0165 + bh), region=R, bones=H)
+    brow = Ellipsoid((0, 0.025, -0.074 - bh + 0.004 * yg), (0.054 - 0.006 * yg, 0.0165 - 0.004 * yg, 0.0165 + bh - 0.004 * yg),
+                     region=R, bones=H)
     # zygomatic arches and temples bridge the cranium and the face (no crease in front of the ears)
     zyg = [Ellipsoid((s * 0.059 * fw, -0.010, -0.024), (0.0135, 0.011, 0.030), region=R, bones=H) for s in (-1, 1)]
     tmp = [Ellipsoid((s * 0.060, 0.022, -0.036), (0.012, 0.026, 0.030), region=R, bones=H) for s in (-1, 1)]
@@ -254,8 +304,9 @@ def head_sdf(face, build=0.0, var=None):
     ez = -0.0745
     er = 0.0118
     # shallow sockets: the eye sits ~5 mm behind the brow, the hollow does not swallow it
-    sockets = Union([Ellipsoid((s * 0.0320, 0.001, ez - 0.0125), (0.0155, 0.011, 0.009)) for s in (-1, 1)])
-    skull = Subtract(skull, sockets, k=0.010)
+    # (children: barely a hollow; the eye sits almost flush under a soft brow)
+    sockets = Union([Ellipsoid((s * 0.0320, 0.001, ez - 0.0125 - 0.003 * yg), (0.0155, 0.011, 0.009 - 0.003 * yg)) for s in (-1, 1)])
+    skull = Subtract(skull, sockets, k=0.010 - 0.003 * yg)
     eyes = [Ellipsoid((s * 0.0320, 0.0, ez), (er, er, er), region=REGION['eye'], bones=H) for s in (-1, 1)]
     # lids: shells over the eyeball outside the almond opening (upper lid thicker), so the eye
     # reads as an object set in the face rather than a painted socket
@@ -278,21 +329,28 @@ def head_sdf(face, build=0.0, var=None):
             lids.append(Ellipsoid((cx, -0.0135, ez - 0.0085), (0.011, 0.0035, 0.0035 * old + 1e-4)))   # eye bags
     for l in lids:
         l.region, l.bones = R, H
-    nsc = (0.9 if fem else (0.70 if tiny else 0.78 if kid else 1.0)) * (1 + 0.08 * nar - 0.04 * brd)
+    nsc = (0.9 if fem else (1.0 - 0.42 * yg if kid else 1.0)) * (1 + 0.08 * nar - 0.04 * brd)
     N = REGION['nose']
+    # (children: a short button nose with a low, flat bridge, the tip turned up so the nostrils show)
+    ny = FACE_Y['nose'](yg)
+    bz = -0.0880 + 0.005 * yg
     nose = Union([
-        Loft((0, 0.016, -0.0880), (0, -0.031, -0.0880 - 0.026 * nsc), (1, 0, 0),
-             [(0.0, 0.0072, 0.0060, 0, 0.0), (0.45, 0.0074 * nsc + 0.0008, 0.0068, 0, 0.0),
-              (1.0, 0.0105 * nsc + 0.001, 0.0085 * nsc, 0, 0.0)], region=N, bones=H),
-        Ellipsoid((0, -0.0305, -0.0865 - 0.022 * nsc), (0.0108 * nsc * (1 + 0.1 * brd), 0.0092 * nsc, 0.0100 * nsc), region=N, bones=H),
-        Ellipsoid((-0.0128 * nsc, -0.0345, -0.0965 + (1 - nsc) * 0.006), (0.0080, 0.0070, 0.0085), region=N, bones=H),
-        Ellipsoid((0.0128 * nsc, -0.0345, -0.0965 + (1 - nsc) * 0.006), (0.0080, 0.0070, 0.0085), region=N, bones=H),
+        Loft((0, 0.016 - 0.012 * yg, bz), (0, ny + 0.0035, bz - 0.026 * nsc), (1, 0, 0),
+             [(0.0, 0.0072 - 0.001 * yg, 0.0060 - 0.002 * yg, 0, 0.0), (0.45, 0.0074 * nsc + 0.0008, 0.0068 - 0.001 * yg, 0, 0.0),
+              (1.0, 0.0105 * nsc + 0.001 + 0.001 * yg, 0.0085 * nsc, 0, 0.0)], region=N, bones=H),
+        Ellipsoid((0, ny + 0.004 + 0.002 * yg, -0.0865 - 0.022 * nsc + 0.004 * yg),
+                  (0.0108 * nsc * (1 + 0.1 * brd) + 0.0015 * yg, 0.0092 * nsc, 0.0100 * nsc), region=N, bones=H),
+        Ellipsoid((-0.0128 * nsc - 0.001 * yg, ny, -0.0965 + (1 - nsc) * 0.006 + 0.002 * yg), (0.0080, 0.0070, 0.0085), region=N, bones=H),
+        Ellipsoid((0.0128 * nsc + 0.001 * yg, ny, -0.0965 + (1 - nsc) * 0.006 + 0.002 * yg), (0.0080, 0.0070, 0.0085), region=N, bones=H),
     ], k=0.005)
-    lip = 1.15 if fem else (0.85 if tiny else 0.9 if kid else 1.0)
+    lip = 1.15 if fem else (1.0 - 0.18 * yg if kid else 1.0)
     L = REGION['lips']
+    # (children: a short philtrum, a small mouth)
+    my = FACE_Y['mouth'](yg) + 0.0598
+    lw = 1.0 - 0.16 * yg
     lips = Union([
-        Ellipsoid((0, -0.0545, -0.0955), (0.0215, 0.0058 * lip, 0.0070), region=L, bones=H),
-        Ellipsoid((0, -0.0650, -0.0935), (0.0190, 0.0068 * lip, 0.0078), region=L, bones=H),
+        Ellipsoid((0, -0.0545 + my, -0.0955 + 0.004 * yg), (0.0215 * lw, 0.0058 * lip, 0.0070), region=L, bones=H),
+        Ellipsoid((0, -0.0650 + my, -0.0935 + 0.004 * yg), (0.0190 * lw, 0.0068 * lip, 0.0078), region=L, bones=H),
     ], k=0.003)
     ears = []
     for s in (-1, 1):
@@ -339,25 +397,28 @@ def hand_sdf(T, s, wrist, a, scale):
                      region=HR, bones=bw)
     fingers = []
     # (offset across the hand, knuckle position along it, phalanx lengths, radius, curl factor)
-    spec = ((0.025, 0.000, (0.042, 0.025, 0.020), 0.0088, 0.85), (0.0085, 0.004, (0.046, 0.028, 0.021), 0.0091, 1.0),
-            (-0.0085, 0.000, (0.043, 0.027, 0.020), 0.0086, 1.1), (-0.024, -0.008, (0.034, 0.021, 0.018), 0.0076, 1.3))
+    # (relaxed: the fingers lie together, each a little more curled than the one before it,
+    # MCP ~20, PIP ~36, DIP ~16 degrees; no gaps between them)
+    spec = ((0.0235, 0.000, (0.042, 0.025, 0.020), 0.0090, 0.80), (0.0080, 0.004, (0.046, 0.028, 0.021), 0.0093, 1.0),
+            (-0.0080, 0.000, (0.043, 0.027, 0.020), 0.0088, 1.1), (-0.0225, -0.008, (0.034, 0.021, 0.018), 0.0079, 1.25))
     for off, da, lens, r, curl in spec:
         r = r * slim
         p = wrist + (a * (0.088 + da) + wd * off + pn * 0.001) * sc
         ang = 0.0
         rr = r
-        for k, (ln, f) in enumerate(zip(lens, (18.0, 34.0, 18.0))):
+        for k, (ln, f) in enumerate(zip(lens, (20.0, 36.0, 16.0))):
             ang += np.radians(f * curl)
-            d = normalize(a * np.cos(ang) + pn * np.sin(ang) - wd * off * 0.9)
+            d = normalize(a * np.cos(ang) + pn * np.sin(ang) - wd * off * 0.35)
             q = p + d * ln * sc
             r1 = rr * (0.93 if k < 2 else 0.80)
             fingers.append(RoundCone(p, q, rr * sc, r1 * sc, region=HR, bones=bw))
             p, rr = q, r1 * 0.98
-    # thumb: metacarpal from the wrist's radial side, then two phalanges lying along the index finger
-    t0 = wrist + (a * 0.014 + wd * 0.020 + pn * 0.004) * sc
-    t1 = t0 + normalize(a * 0.72 + wd * 0.42 + pn * 0.40) * 0.044 * sc
-    t2 = t1 + normalize(a * 0.80 + wd * 0.12 + pn * 0.55) * 0.032 * sc
-    t3 = t2 + normalize(a * 0.70 - wd * 0.05 + pn * 0.70) * 0.025 * sc
+    # thumb: adducted, lying along the radial side of the index finger with its pad against the
+    # index's proximal phalanx (not held out from the hand)
+    t0 = wrist + (a * 0.022 + wd * 0.019 + pn * 0.006) * sc
+    t1 = t0 + normalize(a * 0.90 + wd * 0.30 + pn * 0.10) * 0.042 * sc
+    t2 = t1 + normalize(a * 0.97 + wd * 0.05 + pn * 0.22) * 0.031 * sc
+    t3 = t2 + normalize(a * 0.96 - wd * 0.08 + pn * 0.26) * 0.024 * sc
     thumb = [RoundCone(t0, t1, 0.0135 * sc * slim, 0.0105 * sc * slim, region=HR, bones=bw),
              RoundCone(t1, t2, 0.0100 * sc * slim, 0.0090 * sc * slim, region=HR, bones=bw),
              RoundCone(t2, t3, 0.0088 * sc * slim, 0.0072 * sc * slim, region=HR, bones=bw)]
@@ -367,7 +428,11 @@ def hand_sdf(T, s, wrist, a, scale):
 
 
 def shoe_sdf(T, s, ankle, scale):
-    """Closed shoe (generic lace-up / sneaker shape); sandals are a shading choice at runtime."""
+    """Closed shoe (sandals are a shading choice at runtime), shaped per body: a raised instep
+    (~7.5 cm at the lacing on a man), a heel counter round the back of the heel, a heel block
+    under it and toe spring at the front (the sole curves up ~1 cm). Men: leather-shoe / sneaker
+    last with a 2 cm heel; women: narrower with a shorter, lower toe box (flats); children:
+    chunky sneakers with a round toe and a thick sole."""
     side = 'R' if s > 0 else 'L'
     toe_out = np.radians(6.0) * s
     heel = np.array([ankle[0] - 0.004 * s, 0.0, T['heelZ']])
@@ -376,6 +441,8 @@ def shoe_sdf(T, s, ankle, scale):
     toe = heel + fwd * L
     fs = scale
     ball = T['ballT']
+    kind = T['kind']
+    young = kind in YOUNG
 
     def bones(P):
         t = ((P - heel) @ fwd) / L
@@ -385,16 +452,32 @@ def shoe_sdf(T, s, ankle, scale):
         return {'toe' + side: w_toe, 'foot' + side: (1 - w_toe) * (1 - w_shin * 0.35),
                 'shin' + side: (1 - w_toe) * w_shin * 0.35}
 
-    keys = [(0.00, 0.031, 0.042, 0.0, 0.049), (0.10, 0.036, 0.056, 0.0, 0.058), (0.30, 0.040, 0.050, 0.0, 0.052),
-            (0.55, 0.046, 0.036, 0.004 * s, 0.038), (0.75, 0.047, 0.027, 0.004 * s, 0.029),
-            (0.92, 0.040, 0.020, 0.002 * s, 0.022), (1.00, 0.028, 0.016, 0.0, 0.019)]
+    # per-body last: width, instep and toe-box height factors, sole thickness (m, before scale)
+    # at the heel / ball, toe spring (m)
+    W, Hi, Ht, sh, sb, spring = {
+        'male': (1.0, 1.0, 1.0, 0.024, 0.012, 0.010),
+        'female': (0.93, 0.97, 0.86, 0.018, 0.010, 0.008),
+    }.get(kind, (1.07, 1.04, 1.12, 0.022, 0.017, 0.007))
+    # upper: (t, half width, half height, lateral offset, centre height) from the heel to the toe
+    keys = [(0.00, 0.031, 0.034, 0.0, 0.052), (0.06, 0.035, 0.044, 0.0, 0.060), (0.30, 0.040 * W, 0.050 * Hi, 0.0, 0.058),
+            (0.55, 0.046 * W, 0.040 * Hi, 0.004 * s, 0.046), (0.75, 0.047 * W, 0.028 * Ht, 0.004 * s, 0.033),
+            (0.90, 0.042 * W, 0.022 * Ht, 0.002 * s, 0.027), (1.00, (0.030 if not young else 0.034) * W, 0.016 * Ht, 0.0, 0.022 + spring * 0.6)]
     keys = [(t, rx * fs, rz * fs, ox * fs, oz * fs) for t, rx, rz, ox, oz in keys]
     upper = Loft(heel, toe, (1, 0, 0), keys, n=2.4, region=REGION['foot'], bones=bones)
-    skeys = [(0.0, 0.034, 0.013, 0, 0.013), (0.15, 0.037, 0.013, 0, 0.013), (0.45, 0.041, 0.012, 0.003 * s, 0.012),
-             (0.75, 0.049, 0.012, 0.004 * s, 0.012), (0.95, 0.040, 0.012, 0.002 * s, 0.013), (1.0, 0.030, 0.012, 0, 0.014)]
-    skeys = [(t, rx * fs, rz, ox * fs, oz) for t, rx, rz, ox, oz in skeys]
+    # sole: heel block (men's shoes: a distinct heel ending at the waist of the sole), thinner
+    # under the ball, then curving up at the toe (toe spring)
+    hb = sh - sb
+    skeys = [(0.0, 0.034, sh / 2, 0, sh / 2), (0.15, 0.037, sh / 2, 0, sh / 2),
+             (0.30, 0.038, (sb + hb * 0.55) / 2, 0.002 * s, (sb + hb * 0.55) / 2 + hb * 0.45),
+             (0.45, 0.041, sb / 2 + 0.0005, 0.003 * s, sb / 2 + 0.0015), (0.75, 0.049 * W, sb / 2, 0.004 * s, sb / 2),
+             (0.90, 0.044 * W, sb / 2, 0.002 * s, sb / 2 + spring * 0.35), (1.0, 0.032 * W, sb / 2, 0, sb / 2 + spring)]
+    skeys = [(t, rx * fs, rz * fs, ox * fs, oz * fs) for t, rx, rz, ox, oz in skeys]
     sole = Loft(heel - fwd * 0.004, toe + fwd * 0.004, (1, 0, 0), skeys, n=3.0, region=REGION['foot'], bones=bones)
-    shoe = Union([upper, sole], k=0.006)
+    # heel counter: the stiffened cup round the back of the heel
+    counter = Ellipsoid(heel + fwd * 0.032 * fs + np.array([0, 0.042 * fs, 0]), np.array([0.033, 0.036, 0.034]) * fs,
+                        region=REGION['foot'], bones=bones)
+    shoe = Union([upper, counter], k=0.010 * fs)
+    shoe = Union([shoe, sole], k=0.004)
     return Intersect(shoe, HalfSpace((0, 0.0, 0), (0, -1, 0)), k=0.002)
 
 
@@ -476,7 +559,8 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         # glutes: gluteus maximus, max projection a little below the hip joint; their lower edge
         # makes the gluteal fold over the hamstrings
         gx, gy, gz, rx, ry, rz = T['glute']
-        gzc = zb_at(gy, s * gx) + (0.038 if fem else 0.040 if not child else 0.024) * sz - rz + b * (0.016 if fem else 0.008) * sz
+        # (men: a flatter seat than women's)
+        gzc = zb_at(gy, s * gx) + (0.038 if fem else 0.031 if not child else 0.024) * sz - rz + b * (0.016 if fem else 0.008) * sz
         tparts.append(Ellipsoid((s * gx * (1 + 0.06 * b), gy, gzc),
                                 (rx + b * 0.014 * sx, ry + b * 0.010 * sy, rz + b * 0.014 * sz),
                                 R=rot_xyz(-8 if fem else -4, s * 10, 0), region=REGION['butt'],
@@ -538,18 +622,28 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         ws = 1 - sstep(0.0, 0.35, u)
         return {'head': wh, 'neck': np.clip(1 - wh - ws, 0, 1), 'spine2': ws}
 
-    neck = Loft(nb, nt, (1, 0, 0), [(0, nr[0] + b * 0.012, nr[1] + b * 0.012, 0, 0.006),
-                                    (0.5, nr[0] * 0.95 + b * 0.01, nr[1] * 0.96 + b * 0.012, 0, 0.0),
+    # (men: the neck flares into the trapezius at its base, wider than it is higher up)
+    flare = 0.010 if sex == 'm' else 0.004 if fem else 0.002
+    neck = Loft(nb, nt, (1, 0, 0), [(0, nr[0] + flare + b * 0.012, nr[1] + b * 0.012, 0, 0.006),
+                                    (0.3, nr[0] * 0.97 + flare * 0.3 + b * 0.011, nr[1] * 0.97 + b * 0.012, 0, 0.002),
+                                    (0.6, nr[0] * 0.94 + b * 0.01, nr[1] * 0.96 + b * 0.012, 0, 0.0),
                                     (1.0, nr[0] * 0.92 + b * 0.008, nr[1] * 0.95 + b * 0.012, 0, -0.004)],
                 region=REGION['neck'], bones=neck_bones)
     traps = []
     ta, tb = T['trap']
+    # the upper trapezius: a sloping tent from high on the back of the neck down to the acromion
+    # (about 18 degrees for men, 11 for women), so the shoulder line falls away from the neck
+    # instead of running out level to a corner
+    rise = 0.004 * sy if sex == 'm' else 0.0
     for s in (-1, 1):
         side = 'R' if s > 0 else 'L'
-        a = np.array([s * nr[0] * 0.62, J['neck'][1] + 0.002 * sy, J['neck'][2] + nr[1] * 0.30])
-        bpt = np.array([s * (T['shoulder'][0] - 0.012 * sx), sh_y + 0.006 * sy, T['shoulder'][2] - 0.002])
-        traps.append(RoundCone(a, bpt, ta + b * 0.008, tb + b * 0.006, region=TR,
-                               bones={'spine2': 0.55, 'clav' + side: 0.45}))
+        a = np.array([s * nr[0] * 0.6, J['neck'][1] + rise, J['neck'][2] + nr[1] * 0.36])
+        m = np.array([s * (nr[0] * 0.6 + 0.45 * (T['shoulder'][0] - nr[0] * 0.6)), J['neck'][1] + 0.35 * rise - 0.007 * sy,
+                      J['neck'][2] + nr[1] * 0.24])
+        bpt = np.array([s * (T['shoulder'][0] - 0.016 * sx), sh_y + 0.004 * sy, T['shoulder'][2] - 0.002])
+        tw = {'bones': {'spine2': 0.55, 'clav' + side: 0.45}}
+        traps.append(RoundCone(a, m, ta * 1.06 + b * 0.009, (ta + tb) * 0.5 + b * 0.007, region=TR, **tw))
+        traps.append(RoundCone(m, bpt, (ta + tb) * 0.5 + b * 0.007, tb + b * 0.006, region=TR, **tw))
     c7 = Ellipsoid((0, J['neck'][1] - 0.004 * sy, J['neck'][2] + nr[1] * 0.78), (0.010 * sx, 0.012 * sy, 0.010 * sz),
                    region=TR, bones={'spine2': 1})
     torso = Union([torso, Union(traps, k=0.02 * sy)], k=0.028 * sy)
@@ -573,8 +667,10 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         ua = Loft(sh + du * 0.01, el, (s, 0, 0), uk, region=REGION['uarm'], bones={'arm' + side: 1})
         # deltoid cap: its top stays ~3 cm above the joint so the shoulder line slopes below the neck
         dx, dy, dz = T['delt']
-        delt = Ellipsoid(sh + du * 0.030 + np.array([s * 0.004 * sx, -0.012 * sy, 0.002]),
-                         (dx + b * 0.008, dy, dz + b * 0.006),
+        # (the cap rounds the shoulder off below the acromion: about a third less lateral bulge
+        # than a gym-built deltoid, so sleeves drape over it instead of stepping out)
+        delt = Ellipsoid(sh + du * 0.030 + np.array([-s * 0.002 * sx, -0.012 * sy, 0.002]),
+                         (dx * 0.68 + b * 0.008, dy * 0.95, dz * 0.88 + b * 0.006),
                          R=rot_xyz(0, 0, s * T['abd']), region=REGION['uarm'],
                          bones={'arm' + side: 0.7, 'clav' + side: 0.3})
         # olecranon: the point of the elbow behind the joint
@@ -661,5 +757,7 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
             'hip': list(T['hip']), 'knee': list(T['knee']), 'ankle': list(T['ankle']), 'shoulder': list(T['shoulder']),
             'waistY': float(waist_y), 'neckY': float(J['neck'][1]), 'torsoY': [float(y0), float(y1)],
             'heelZ': T['heelZ'], 'toeZ': T['toeZ'], 'Lu': T['Lu'], 'Lf': T['Lf'], 'abd': T['abd'],
-            'cranium': [crc.tolist(), crr.tolist()]}
+            'cranium': [crc.tolist(), crr.tolist()],
+            'faceY': [FACE_Y['nose'](FACE_AGE.get(T['face'], 0.0)), FACE_Y['mouth'](FACE_AGE.get(T['face'], 0.0)),
+                      FACE_AGE.get(T['face'], 0.0)]}
     return body, skel, info

@@ -24,6 +24,10 @@ import { input } from './input.js';
 //  - The driver coasts: no more power once a stop or a slower limit is within ~1.35x
 //    the braking distance, then a jerk-limited brake application that ends softly.
 //  - Nothing moves before the ride starts (world ready; in the app, the start click).
+//  - Tram.obstacle (m to something standing on the track ahead, set by the owner: the
+//    oncoming units watch for people) brakes to stop short of it, emergency brake if need be.
+//  - The oncoming units (./trams.js) are started from here while the module registry does
+//    not list them (see _oncoming).
 
 const KMH = 1 / 3.6;
 const G = 9.81;

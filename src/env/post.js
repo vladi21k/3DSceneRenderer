@@ -354,15 +354,17 @@ const post = {
     // white balance from the illuminant (sun + sky on a horizontal surface), split into a
     // warm-cool and a green-magenta axis. By day the camera neutralises sunlit stone (blue
     // sky-lit shade stays a little cool); it keeps less and less of the evening warmth
-    // and the blue hour (plus a touch of warmth at golden hour), but always removes most
-    // of the green-magenta cast (the ozone-tinted twilight sky would turn stone pink)
+    // and the blue hour (plus a touch of warmth at golden hour), but removes most of the
+    // green-magenta cast until the lamps take over (the ozone-tinted twilight sky would
+    // turn stone pink)
     const wb = fu.uWB.value;
     if (env) {
       const ill = env.illuminant;
       const lr = Math.log(Math.max(ill.x, 1e-9) / Math.max(ill.z, 1e-9));
       const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
       const kc = THREE.MathUtils.lerp(0.9, 0.3, ss(t, 0.3, 0.6)) - 0.3 * ss(t, 0.6, 1.0);
-      const kt = THREE.MathUtils.lerp(0.9, 0.8, ss(t, 0.6, 1.0));
+      // (once the lamps dominate, the sky's tint no longer sets the balance)
+      const kt = THREE.MathUtils.lerp(0.9, 0.25, ss(t, 0.84, 1.0));
       const warm = 0.035 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
       const cool = 0.05 * ss(t, 0.8, 1.0);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);

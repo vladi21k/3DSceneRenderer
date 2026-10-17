@@ -16,10 +16,15 @@ import { LUX_PER_UNIT } from './atmosphere.js';
 // The light count never changes, so switching day/night never recompiles shaders.
 
 const LAMP_CD = 1400;           // luminous intensity of one lantern towards the ground (cd)
-const LAMP_ANGLE = 0.95;        // half-angle of the lantern's light cone (rad)
-const LAMP_PENUMBRA = 0.4;
+// a globe lantern lights the whole lower hemisphere: the cone reaches the facades 8–9 m
+// away (~58° from the vertical) and the ground floors between the shops, fading out
+// towards the horizontal
+const LAMP_ANGLE = 1.35;        // half-angle of the lantern's light cone (rad)
+const LAMP_PENUMBRA = 0.35;
 const LAMP_DROP = 0.2;          // light source below the glass centre (m): just under the bowl (0.165 m)
-const HEAD_CD = 26000;          // two LED headlights combined (cd, beam centre)
+const HEAD_CD = 15000;          // two LED headlights combined (cd, beam centre)
+const HEAD_ANGLE = 0.42;        // beam half-angle (rad); the soft penumbra covers most of it
+const HEAD_PENUMBRA = 0.85;
 const QUERY = [-60, 170];       // metres along the route around the cab searched for standards
 const FADE = 22;                // width of the real-light fade (m of view-weighted distance)
 const FAR_MAX = 460;            // screen-space pools out to this distance
@@ -57,7 +62,7 @@ export function patchLightLoops() {
 }
 
 const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
-const headColor = new THREE.Color(1.0, 0.93, 0.84);  // ~4800 K LED, linear
+const headColor = new THREE.Color(1.0, 0.84, 0.68);  // ~4300 K, linear
 const ss = THREE.MathUtils.smoothstep;
 
 export class StreetLights {
@@ -72,7 +77,7 @@ export class StreetLights {
       app.scene.add(l, l.target);
       this.pool.push(l);
     }
-    this.head = new THREE.SpotLight(headColor, 0, 160, 0.26, 0.65, 2);
+    this.head = new THREE.SpotLight(headColor, 0, 160, HEAD_ANGLE, HEAD_PENUMBRA, 2);
     this.head.castShadow = false;
     this.head.name = 'headlight';
     app.scene.add(this.head, this.head.target);
@@ -84,7 +89,7 @@ export class StreetLights {
       headPos: new THREE.Vector3(),
       headDir: new THREE.Vector3(0, 0, -1),
       headI: 0,
-      headCos: [Math.cos(0.26), Math.cos(0.26 * 0.35)],
+      headCos: [Math.cos(HEAD_ANGLE), Math.cos(HEAD_ANGLE * (1 - HEAD_PENUMBRA))],
     };
     // distant standards, relit in screen space by post: xyz world position, w weight
     this.farLamps = Array.from({ length: FAR_LAMPS }, () => new THREE.Vector4());

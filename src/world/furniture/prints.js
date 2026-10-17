@@ -801,7 +801,7 @@ export function displayUV(name) {
  *  drawn as an anti-aliased disc straight into pixels (lit amber, unlit faintly visible). */
 function dotMatrix(ctx, [x, y, w, h], lines, rgb) {
   const cw = 128, ch = 32;
-  const o = mkCanvas(cw, ch).getContext('2d');
+  const o = mkCanvas(cw, ch).getContext('2d', { willReadFrequently: true }); // read back below: CPU canvas
   o.fillStyle = '#000'; o.fillRect(0, 0, cw, ch);
   o.fillStyle = '#fff'; o.font = 'bold 13px monospace'; o.textBaseline = 'top';
   lines.forEach((ln, i) => { o.textAlign = 'left'; o.fillText(ln[0], 2, 2 + i * 15); o.textAlign = 'right'; o.fillText(ln[1], cw - 2, 2 + i * 15); });

@@ -111,7 +111,7 @@ export function buildBannerAtlas(seed = 7) {
   const W = 256, H = 640;
   const cv = document.createElement('canvas');
   cv.width = W * DESIGNS; cv.height = H;
-  const g = cv.getContext('2d');
+  const g = cv.getContext('2d', { willReadFrequently: true }); // read back below: CPU canvas, no GPU sync
   const rng = RNG.from(seed, 'bannerPrint');
   const palettes = [
     { bg: '#7a1f2b', fg: '#efe3c8', ac: '#d9a441' },

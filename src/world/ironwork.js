@@ -339,7 +339,7 @@ const ironwork = {
   /** Every instance family the builds add to: {key, levels, material, opts}. */
   families() {
     const G = this.geo, M = this.mats, A = this.att, out = [];
-    DESIGNS.forEach((d, i) => out.push(
+    DESIGNS.forEach((_, i) => out.push(
       { key: `bay${i}`, levels: G.bay[i], material: M.iron, opts: BAY_OPTS },
       { key: `bay${i}p`, levels: G.bay[i], material: M.paint, opts: BAY_OPTS }));
     out.push({ key: 'post', levels: G.post, material: M.ironPost, opts: POST_OPTS });
@@ -683,7 +683,7 @@ const ironwork = {
     this.plant(ctx, 1, _c4.multiplyMatrices(m, _l), flowerCol);
   },
 
-  /** Instanced geranium (kind 0 pot, 1 planter): full and light versions per instance. */
+  /** Instanced geranium (kind 0 pot, 1 planter): full, light and far versions per instance. */
   plant(ctx, kind, m, tint) {
     const P = this.att.plants;
     ctx.inst.add(PLANT_KEYS[kind], P.levels[kind], this.amats.plant, m, tint, PLANT_OPTS);

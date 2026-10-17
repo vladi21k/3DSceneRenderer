@@ -5,7 +5,7 @@
 //   inside buses (rolling, traction, aux, brakes, doors) ─────────────────────────┐
 //   doors ─ send ─► cab/saloon reverb (small room) ───────────────────────────────┤
 //   bell, squeal, joints ─► near shell (cab body, mild) ──────────────────────────┤
-//   ambience ─► far shell (closed cab: -15 dB, dark; window / doors open it up) ──┼─► mix ─► compressor ─► limiter ─► soft clip ─► volume ─► out
+//   ambience, passing trams ─► far shell (closed cab: -15 dB, dark; window / doors) ┼─► mix ─► compressor ─► limiter ─► soft clip ─► volume ─► out
 //   outside sources ─ sends ─► street reverb (narrow / wide canyon) ─► far shell ─┘
 //
 // Spatial frame: the listener and all panners live in a tram-local frame (x right,
@@ -23,18 +23,19 @@ import { SquealLayer } from './layers/squeal.js';
 import { TractionLayer } from './layers/traction.js';
 import { StopLayer } from './layers/stop.js';
 import { AmbienceLayer } from './layers/ambience.js';
+import { PassingLayer } from './layers/passing.js';
 
 /** Mixer buses, also the units the test harness reports levels for. */
-export const BUSES = ['bell', 'rolling', 'joints', 'squeal', 'traction', 'aux', 'brakes', 'doors', 'ambience'];
+export const BUSES = ['bell', 'rolling', 'joints', 'squeal', 'traction', 'aux', 'brakes', 'doors', 'ambience', 'passing'];
 
 // outside sources reflected by the facades (heard through the cab shell)
-const STREET_SEND = { bell: 0.3, squeal: 0.05, joints: 0.03, brakes: 0.03, ambience: 0.15 };
+const STREET_SEND = { bell: 0.3, squeal: 0.05, joints: 0.03, brakes: 0.03, ambience: 0.15, passing: 0.2 };
 // sounds inside the car body: dense small-room reflections (doors, chime, beeps;
 // the always-running HVAC is diffuse already and would keep the convolver busy)
 const CAB_SEND = { doors: 0.3 };
 // exterior buses and the shell they are heard through (wheel / rail impacts: their
 // airborne crack; the floor thump passes the near shell's low end unchanged)
-const SHELL_OF = { bell: 'near', squeal: 'near', joints: 'near', ambience: 'far' };
+const SHELL_OF = { bell: 'near', squeal: 'near', joints: 'near', ambience: 'far', passing: 'far' };
 const TICK = 1 / 25;
 
 export class AudioEngine {
@@ -147,6 +148,7 @@ export class AudioEngine {
       traction: new TractionLayer(this),
       stop: new StopLayer(this),
       ambience: new AmbienceLayer(this),
+      passing: new PassingLayer(this),
     };
   }
 
@@ -176,6 +178,7 @@ export class AudioEngine {
     const L = this.layers;
     if (type === 'bell') L.bell.ring(when, data);
     else if (type === 'doors') L.stop.doors(!!data?.open, when);
+    else if (type === 'tram-bell') L.passing.ring(when, data);
   }
 
   // ------------------------------------------------------------------ the cab shell

@@ -8,6 +8,7 @@ import { lotSteps, coarseLot, DETAIL } from './buildings/shell.js';
 import { grimeStone, litGlass } from './buildings/grime.js';
 import { rowLayout } from './buildings/coursing.js';
 import { makeSlab, slabSteps } from './buildings/skyline.js';
+import { laneSteps } from './buildings/lane.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -56,6 +57,8 @@ const swaps = new Map();           // job -> group showing a coarse stand-in unt
 const ends = new Map();            // lotId -> [end0, end1] (lazy)
 let endIndex = null;               // spatial hash of facade end points
 const backdrops = new Map();       // chunk index -> pseudo-lots closing the far end of side streets
+const lanes = new Map();           // chunk index -> asphalt aprons of the lanes in front of them
+const vistas = [];                 // side-street ends (sites for a taller block behind the backdrop)
 const skyline = new Map();         // chunk index -> taller blocks well behind the frontage
 const cost = [0.4, 0.15];          // running generation cost by detail level (ms per metre of route)
 let stepAvg = 0.25;                // running cost of one generation step (ms)
@@ -246,7 +249,7 @@ function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
 
 function newJob(app, idx, lod) {
   const { layout } = app;
-  const lots = [...layout.inChunk('lots', idx), ...layout.inChunk('sideLots', idx), ...(backdrops.get(idx) || []), ...(skyline.get(idx) || [])];
+  const lots = [...layout.inChunk('lots', idx), ...layout.inChunk('sideLots', idx), ...(backdrops.get(idx) || []), ...(lanes.get(idx) || []), ...(skyline.get(idx) || [])];
   const job = { idx, lod, lots, next: 0, iter: null, B: null, ms: 0, done: false, result: null, s: idx * CHUNK_LEN + CHUNK_LEN / 2 };
   jobs.set(jobKey(idx, lod), job);
   buildings.stats.jobs++;
@@ -283,7 +286,8 @@ function runJob(app, job, budgetMs) {
     if (el > 0.02 && el + stepAvg > budgetMs) break;
     if (!job.iter) {
       const lot = job.lots[job.next++];
-      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[job.lod]) : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas);
+      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[job.lod]) : lot.lane ? laneSteps(B, lot)
+        : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas);
     }
     const ts = performance.now();
     if (job.iter.next().done) job.iter = null;
@@ -363,7 +367,7 @@ function swapIn(app, group, res) {
 /** Coarse stand-in for the lots of a job (see shell.coarseLot). */
 function coarseGroup(app, job) {
   const B = new Builder();
-  for (const lot of job.lots) if (!lot.slab) coarseLot(B, lot);
+  for (const lot of job.lots) if (!lot.slab && !lot.lane) coarseLot(B, lot);
   return fillGroup(app, new THREE.Group(), geometries(B));
 }
 
@@ -441,32 +445,45 @@ function evict(app, sCam) {
 
 /**
  * Buildings across the far end of every side street, facing back towards the main
- * street, so looking down a side street ends on facades instead of the sky. Two or three
- * lots of different width (and so of different height and style) with small set-backs,
- * so the end of the street is never one symmetric slab. These are buildings-only
- * pseudo-lots (same plan generator and frame conventions as layout lots), published
- * through extraLots() so the facades module dresses them.
+ * street, so looking down a side street ends on facades instead of the sky. They stand
+ * across a cross lane 9–12 m beyond the last buildings of the side street (a T
+ * junction: the street seems to go on to either side), whose arms get an asphalt apron
+ * (buildings/lane.js). Two or three lots of different width (and so of different height
+ * and style) with small set-backs, so the end of the street is never one symmetric
+ * slab. These are buildings-only pseudo-lots (same plan generator and frame conventions
+ * as layout lots), published through extraLots() so the facades module dresses them.
+ * Each end is also a site for a taller block behind (planSkyline).
  */
 function planBackdrops(app) {
   const { route, layout } = app;
   const up = new THREE.Vector3(0, 1, 0);
+  // where the side-street rows end (the longer row of each side street)
+  const rowEnd = new Map();
+  for (const l of layout.sideLots) {
+    const k = `${Math.round(l.cross.s)}_${l.side}`;
+    rowEnd.set(k, Math.max(rowEnd.get(k) || 0, l.x1));
+  }
+  const push = (map, idx, item) => { if (!map.has(idx)) map.set(idx, []); map.get(idx).push(item); };
   for (const c of layout.crossStreets) {
     const sides = c.side === 0 ? [-1, 1] : [c.side];
     for (const side of sides) {
       const smp = route.sample(c.s);
       const dirOut = smp.right.clone().multiplyScalar(side).applyAxisAngle(up, c.angle || 0);
       const start = route.toWorld(c.s, side * layout.halfWidth(c.s, side), 0);
-      const dist = c.depth + SIDE_LOT_START + 2.5;
+      const base = `E${Math.round(c.s)}_${side}`;
+      const end = rowEnd.get(`${Math.round(c.s)}_${side}`) ?? c.depth + SIDE_LOT_START;
+      const lane = RNG.from(hashStr(base), 'lane').range(9, 12);
+      const dist = end + lane;
       const total = c.width + 16;
       const nDir = dirOut.clone().negate();
       const uDir = new THREE.Vector3().crossVectors(up, nDir).normalize(); // uDir × up = nDir
       const centre = start.clone().addScaledVector(dirOut, dist);
-      const base = `E${Math.round(c.s)}_${side}`;
       const rng = RNG.from(hashStr(base), 'split');
       const n = total > 25 ? 3 : 2;
       const parts = [];
       for (let k = 0; k < n; k++) parts.push(rng.range(0.65, 1.35));
       const sum = parts.reduce((a, b) => a + b, 0);
+      const idx = layout.chunkIndex(c.s);
       let u = -total / 2;
       for (let k = 0; k < n; k++) {
         const width = (parts[k] / sum) * total;
@@ -475,15 +492,17 @@ function planBackdrops(app) {
         const matrix = new THREE.Matrix4().makeBasis(uDir, up, nDir).setPosition(origin);
         const frame = { origin, uDir: uDir.clone(), nDir: nDir.clone(), up: up.clone(), width, ground0: start.y, ground1: start.y, floorRef: start.y, matrix };
         const id = `${base}_${k}`;
-        const lot = {
+        push(backdrops, idx, {
           id, side, cross: c, edge: 0, x0: dist + back, x1: dist + back, len: width, seed: hashStr(id + ':backdrop'), depth: 14,
           sideStreet: true, backdrop: true, frame, s0: c.s, s1: c.s, cornerU0: false, cornerU1: false,
-        };
-        const idx = layout.chunkIndex(c.s);
-        if (!backdrops.has(idx)) backdrops.set(idx, []);
-        backdrops.get(idx).push(lot);
+        });
         u += width;
       }
+      // the lane's apron: from under the last side-street buildings to under the backdrop,
+      // as wide as the backdrop row (frame at the mouth, w = minus the distance out)
+      const frame = { origin: new THREE.Vector3(start.x, start.y, start.z), uDir: uDir.clone(), nDir: nDir.clone(), up: up.clone(), width: total, ground0: start.y, ground1: start.y, floorRef: start.y };
+      push(lanes, idx, { id: `${base}_lane`, lane: true, frame, u0: -total / 2, u1: total / 2, w0: -(dist + 1.5), w1: -(end - 2), v: -0.03 });
+      vistas.push({ c, side, start, dirOut, nDir, uDir, back: dist + 14 });
     }
   }
 }
@@ -511,14 +530,18 @@ function planSkyline(app) {
       sides.push({ ax: a.x, az: a.z, dx: dir.x, dz: dir.z, len, clear: c.width / 2 + 24 });
     }
   }
-  const clearOf = (x, z, r) => {
+  // (skip: index of a side street to leave out, for blocks closing its own vista)
+  const clearOf = (x, z, r, skip = -1) => {
     for (let i = 0; i < pts.length; i += 2) if ((pts[i] - x) ** 2 + (pts[i + 1] - z) ** 2 < (r + 34) ** 2) return false;
-    for (const q of sides) {
+    for (let i = 0; i < sides.length; i++) {
+      if (i === skip) continue;
+      const q = sides[i];
       const t = Math.max(0, Math.min(q.len, (x - q.ax) * q.dx + (z - q.az) * q.dz));
       if (Math.hypot(q.ax + q.dx * t - x, q.az + q.dz * t - z) < r + q.clear) return false;
     }
     return true;
   };
+  const placed = [];                 // [x, z, r] of every block so far
   let side = rng.chance(0.5) ? 1 : -1;
   for (let s = rng.range(60, 200); s < L - 60; s += rng.range(150, 300), side = rng.chance(0.7) ? -side : side) {
     const W = rng.range(18, 30), back = rng.range(40, 110), D = 16;
@@ -537,6 +560,54 @@ function planSkyline(app) {
     const idx = layout.chunkIndex(s);
     if (!skyline.has(idx)) skyline.set(idx, []);
     skyline.get(idx).push(sl);
+    placed.push([cx, cz, Math.hypot(W, D) / 2]);
+  }
+
+  // Vista blocks (8–12 storeys): set back behind the backdrop at the end of some side
+  // streets, and where a long straight runs into a bend, on its line of sight beyond
+  // the outer frontage, so the view ends on a taller modern block as in the photographs.
+  const add = (id, x, z, y, nDir, W, D, s, rr) => {
+    const uDir = new THREE.Vector3().crossVectors(up, nDir).normalize();
+    // front-left corner: the centre is D / 2 behind the front
+    const origin = new THREE.Vector3(x + nDir.x * D / 2 - uDir.x * W / 2, y, z + nDir.z * D / 2 - uDir.z * W / 2);
+    const matrix = new THREE.Matrix4().makeBasis(uDir, up, nDir).setPosition(origin);
+    const frame = { origin, uDir, nDir: nDir.clone(), up: up.clone(), width: W, ground0: y, ground1: y, floorRef: y, matrix };
+    const sl = makeSlab(id, frame, rr, [8, 12]);
+    sl.D = D;
+    const idx = layout.chunkIndex(s);
+    if (!skyline.has(idx)) skyline.set(idx, []);
+    skyline.get(idx).push(sl);
+    placed.push([x, z, Math.hypot(W, D) / 2]);
+  };
+  const apart = (x, z, r) => placed.every(([px, pz, pr]) => Math.hypot(px - x, pz - z) > pr + r + 4);
+  vistas.forEach((v, i) => {
+    const rr = RNG.from('buildings', 'vista', Math.round(v.c.s), v.side);
+    if (!rr.chance(0.6)) return;
+    const W = rr.range(18, 28), D = rr.range(12, 16), gap = rr.range(5, 16), off = rr.range(-6, 6);
+    const x = v.start.x + v.dirOut.x * (v.back + gap + D / 2) + v.uDir.x * off;
+    const z = v.start.z + v.dirOut.z * (v.back + gap + D / 2) + v.uDir.z * off;
+    const r = Math.hypot(W, D) / 2;
+    if (!clearOf(x, z, r, i) || !apart(x, z, r)) return;
+    add(`V${Math.round(v.c.s)}_${v.side}`, x, z, v.start.y - 1, v.nDir, W, D, v.c.s, rr);
+  });
+  // bends at the end of a long straight: the incoming line of sight
+  const STEP = 10, K_BEND = 1 / 700, K_STRAIGHT = 1 / 1500;
+  for (let s = 200; s < L; s += STEP) {
+    if (Math.abs(route.curvature(s)) < K_BEND || Math.abs(route.curvature(s - STEP)) >= K_BEND) continue;
+    let straight = true;
+    for (let t = s - 200; t < s - 20 && straight; t += STEP) straight = Math.abs(route.curvature(t)) < K_STRAIGHT;
+    if (!straight) continue;
+    const smp = route.sample(s), p = route.toWorld(s, 0, 0);
+    const out = Math.sign(route.curvature(s));          // + left bend: the outside is on the right
+    const rr = RNG.from('buildings', 'bend', Math.round(s));
+    const W = rr.range(20, 30), D = rr.range(12, 16), lat = rr.range(0, 8) * out, r = Math.hypot(W, D) / 2;
+    for (let t = 100; t <= 400; t += STEP) {
+      const x = p.x + smp.tanH.x * t + smp.right.x * lat, z = p.z + smp.tanH.z * t + smp.right.z * lat;
+      if (!clearOf(x, z, r) || !apart(x, z, r)) continue;
+      const y = Math.min(route.elevation(s), route.elevation(route.wrap(s + t))) - 1;
+      add(`B${Math.round(s)}`, x, z, y, smp.tanH.clone().negate(), W, D, route.wrap(s + Math.min(t, 120)), rr);
+      break;
+    }
   }
 }
 

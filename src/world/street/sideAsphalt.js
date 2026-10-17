@@ -6,7 +6,7 @@ import { PATCH_PAD, patchWear } from './lines.js';
 //  - cast iron: gully grates along both kerbs every 20-32 m, one or two manholes in a lane
 //    centre or on the crown, valve caps and a utility plate near the kerbs;
 //  - saw-cut repairs: reinstatement squares around manholes and valves (the cover cut out),
-//    a trench across the carriageway or along a lane, and a few rectangular patches, in a
+//    trenches across the carriageway or along a lane, and a few rectangular patches, in a
 //    fresh black or an aged grey mix, edged by sealed joints;
 //  - cracks: transverse thermal cracks every 4-13 m, the lane joint beside the centre
 //    line and the seams along the gutters, mostly overbanded with bitumen, some open
@@ -32,6 +32,8 @@ export function sideFrame(m, at, road) {
     roadV: road * Math.abs(kA),
     /** World point on the surface (lifted) at (u, v). */
     P(u, v, lift = 0) { const a = v / kA; return at(a, u - kU * a, lift); },
+    /** (u, v) of grid point (a, x). */
+    uv(a, x) { return [x + kU * a, kA * a]; },
     H(u, v) { return F.P(u, v)[1]; },
     /** World horizontal vector of the frame direction (du, dv). */
     dir(du, dv) { return [ox * du - oz * dv, oz * du + ox * dv]; },
@@ -71,8 +73,9 @@ function straight(ua, va, ub, vb, step) {
   return out;
 }
 
-/** Deterministic wear plan of side street c on `side` (cached). m: its mouth; F: sideFrame. */
-export function sidePlan(c, side, m, F) {
+/** Deterministic wear plan of side street c on `side` (cached). m: its mouth; F: sideFrame;
+ *  edgeX: where the asphalt meets the granite edge strip across the mouth (grid x). */
+export function sidePlan(c, side, m, F, edgeX) {
   const key = c.s * 4 + side;
   let plan = PLANS.get(key);
   if (plan) return plan;
@@ -126,8 +129,8 @@ export function sidePlan(c, side, m, F) {
     if (!inCover(u, v, 1) && !inPatch(u, v, 0.5)) covers.push({ type: 'plate', u, v, rot: 0, r: 0.42 });
   }
 
-  // repairs: a trench across the carriageway (kerb to kerb), one along a lane, patches
-  if (rng.chance(0.5)) {
+  // repairs: trenches across the carriageway (kerb to kerb), one along a lane, patches
+  for (let i = rng.chance(0.65) ? rng.int(1, 2) : 0; i > 0; i--) {
     for (let t = 0; t < 6; t++) {
       const p = { u: rng.range(10, Math.max(11, u1 - 8)), v: 0, dir: 'v', len: 2 * R - 0.24, half: rng.range(0.28, 0.45), tone: freshOrAged(), hole: 0 };
       if (boxFree(box(p), 0.5)) { addPatch(p); break; }
@@ -140,7 +143,7 @@ export function sidePlan(c, side, m, F) {
       if (boxFree(box(p), 0.3)) { addPatch(p); break; }
     }
   }
-  for (let i = rng.int(1, 3); i > 0; i--) {
+  for (let i = rng.int(2, 4); i > 0; i--) {
     for (let t = 0; t < 6; t++) {
       const len = rng.range(1.2, 4.2), half = Math.min(R - 0.6, rng.range(0.45, 1.25));
       const p = { u: rng.range(8 + len / 2, Math.max(9 + len / 2, u1 - len / 2)), v: rng.range(-R + 0.5 + half, R - 0.5 - half), dir: 'u', len, half, tone: freshOrAged(), hole: 0 };
@@ -159,6 +162,13 @@ export function sidePlan(c, side, m, F) {
     flush();
   };
   const sealed = () => (rng.chance(0.65) ? [rng.range(0.014, 0.032), rng.range(0.05, 0.6)] : [rng.range(0.0025, 0.004), 0]);
+  // the sealed joint along the granite edge strip at the mouth (a straight line of the
+  // grid, skewed in the street frame)
+  {
+    const uv = [], a0 = -R / Math.abs(F.uv(1, 0)[1]) + 0.15;
+    for (let a = a0; a <= -a0 + 1e-6; a += 0.25) uv.push(...F.uv(a, edgeX + 0.025));
+    cracks.push({ uv, half: rng.range(0.016, 0.024), dust: rng.range(0.2, 0.5) });
+  }
   // transverse: wandering, now and then only part of the way across
   for (let u = u0 + rng.range(3, 8); u < u1 - 1; u += rng.range(4, 13)) {
     const seed = rng.int(1, 1e6), skew = rng.range(-0.08, 0.08), amp = rng.range(0.12, 0.4);
@@ -174,11 +184,11 @@ export function sidePlan(c, side, m, F) {
   const along = (v0, uA, uB, amp, sealP, half0) => {
     const seed = rng.int(1, 1e6);
     for (let u = uA + rng.range(0, 4); u < uB - 2;) {
-      const len = rng.range(3, 15), uv = [];
+      const len = rng.range(2, 9), uv = [];
       for (let x = u; x <= Math.min(uB, u + len); x += 0.25) uv.push(x, v0 + amp * wander(x, seed));
       if (rng.chance(sealP)) crack(uv, rng.range(half0 * 0.7, half0 * 1.3), rng.range(0.1, 0.6));
       else crack(uv, rng.range(0.0025, 0.004), 0);
-      u += len + rng.range(1.5, 9);
+      u += len + rng.range(2, 11);
     }
   };
   along((rng.chance(0.5) ? 1 : -1) * rng.range(0.12, 0.22), u0 + 2, u1, 0.05, 0.8, 0.024);

@@ -5,16 +5,17 @@ import { hash3 } from './shade.js';
 // Taller post-war blocks standing well behind the street frontage (8–14 storeys), so
 // the skyline down the street is not one even cornice line: where the street bends or
 // a frontage building is low, their upper floors show above the roofs, as in the
-// photographs. Seen only from far away, they are simple and cheap: stone-clad or
+// photographs; some close the vista of a long straight or of a side street. Seen only from far away, they are simple and cheap: stone-clad or
 // rendered boxes with a regular grid of flush dark windows (lit at random at night),
 // a darker shop band, a roof with a lift room, tanks and a mast.
 
 /**
  * Slab description in its own facade frame (same conventions as a lot frame: u along
- * the front, v up from the base, w out of the front towards the street).
+ * the front, v up from the base, w out of the front towards the street). floors: [min,
+ * max] storeys above the shop floor.
  */
-export function makeSlab(id, frame, rng) {
-  const floors = rng.int(8, 14);
+export function makeSlab(id, frame, rng, floorsRange = [8, 14]) {
+  const floors = rng.int(floorsRange[0], floorsRange[1]);
   return {
     id, frame, slab: true,
     W: frame.width, D: rng.range(12, 17), floors, floorH: rng.range(2.95, 3.2), groundH: rng.range(3.8, 4.6),
@@ -24,6 +25,9 @@ export function makeSlab(id, frame, rng) {
     balcony: rng.chance(0.35), seed: (rng.next() * 1e9) | 0,
   };
 }
+
+// roller shutter colours (one per block): beige, grey, white, brown
+const SHUTTERS = [[0.62, 0.58, 0.5], [0.5, 0.5, 0.48], [0.7, 0.7, 0.68], [0.36, 0.27, 0.2]];
 
 /** Generate one slab into B (generator: yields between faces). */
 export function* slabSteps(B, sl, q) {
@@ -43,21 +47,45 @@ export function* slabSteps(B, sl, q) {
   B.rectU(sWall, W, -2, H, -D, 0, 1);
   B.setUV();
   yield;
-  // windows: flush dark panes on a regular grid, front and sides
-  const faces = [
-    { len: W, at: (x, y, w0, w1) => B.rectW(sGlass, x - w0, x + w0, y, y + w1, 0.012, 1) },
-    { len: D, at: (x, y, w0, w1) => B.rectU(sGlass, W + 0.012, y, y + w1, -x - w0, -x + w0, 1) },
-    { len: D, at: (x, y, w0, w1) => B.rectU(sGlass, -0.012, y, y + w1, -D + x - w0, -D + x + w0, -1) },
+  // windows on a regular grid, front and sides: dark panes (some roller shutters part
+  // or all the way down), a projecting sill and, near, a lintel; split AC units under a
+  // few; on the front, solid-parapet balconies at random bays. Face-local placement:
+  // a along the face, o out of it.
+  const rect = [
+    (s, a0, a1, v0, v1, o) => B.rectW(s, a0, a1, v0, v1, o, 1),
+    (s, a0, a1, v0, v1, o) => B.rectU(s, W + o, v0, v1, -a1, -a0, 1),
+    (s, a0, a1, v0, v1, o) => B.rectU(s, -o, v0, v1, -D + a0, -D + a1, -1),
   ];
-  faces.forEach((F, fi) => {
-    const nb = Math.max(1, Math.floor((F.len - 1.2) / sl.bayW));
-    const bw = (F.len - 1.2) / nb;
+  const box = [
+    (s, a0, a1, v0, v1, o0, o1) => B.box(s, a0, a1, v0, v1, o0, o1, FACES.ALL & ~FACES.BACK),
+    (s, a0, a1, v0, v1, o0, o1) => B.box(s, W + o0, W + o1, v0, v1, -a1, -a0, FACES.ALL & ~FACES.LEFT),
+    (s, a0, a1, v0, v1, o0, o1) => B.box(s, -o1, -o0, v0, v1, -D + a0, -D + a1, FACES.ALL & ~FACES.RIGHT),
+  ];
+  const shutter = SHUTTERS[sl.seed % SHUTTERS.length];
+  const sill = t.map((c) => c * 1.06);
+  [W, D, D].forEach((len, fi) => {
+    const nb = Math.max(1, Math.floor((len - 1.2) / sl.bayW));
+    const bw = (len - 1.2) / nb, hw = sl.winW / 2, wh = sl.winH;
     for (let f = 0; f < sl.floors; f++) {
-      const y = sl.groundH + f * sl.floorH + 0.9;
+      const fy = sl.groundH + f * sl.floorH, y = fy + 0.9;
       for (let b = 0; b < nb; b++) {
-        const lit = hash3(f * 131 + b, fi, sl.seed) < 0.3;
+        const k = f * 131 + b, x = 0.6 + bw * (b + 0.5);
+        const lit = hash3(k, fi, sl.seed) < 0.3, sh = hash3(k, fi + 11, sl.seed), ex = hash3(k, fi + 23, sl.seed);
+        // shutter down to `cut` (from the head): all the way, part way or not at all
+        const cut = sh < 0.16 ? y : sh < 0.36 ? y + wh * (0.3 + 0.6 * hash3(k, fi + 37, sl.seed)) : y + wh;
         B.grime = lit ? 0.75 : 0;
-        F.at(0.6 + bw * (b + 0.5), y, sl.winW / 2, sl.winH);
+        B.flat = [1, 1, 1];
+        if (cut > y + 0.05) rect[fi](sGlass, x - hw, x + hw, y, cut, 0.012);
+        B.grime = 0;
+        if (cut < y + wh - 0.05) { B.flat = shutter; rect[fi](sDark, x - hw, x + hw, cut, y + wh, 0.016); }
+        B.flat = sill;
+        box[fi](sWall, x - hw - 0.06, x + hw + 0.06, y - 0.07, y, 0, 0.07);
+        if (!q.lod) box[fi](sWall, x - hw - 0.04, x + hw + 0.04, y + wh, y + wh + 0.14, 0, 0.025);
+        if (ex < 0.1) { B.flat = [0.84, 0.84, 0.82]; box[fi](sDark, x - 0.42, x + 0.42, y - 0.75, y - 0.15, 0.02, 0.32); }
+        else if (fi === 0 && f > 0 && !sl.balcony && ex > 0.82) {
+          B.flat = t.map((c) => c * 0.98);
+          box[0](sWall, x - hw - 0.45, x + hw + 0.45, fy - 0.15, fy + 1.0, 0, 1.15);
+        }
       }
     }
   });

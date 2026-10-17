@@ -108,8 +108,11 @@ const vegetation = {
       const dominant = zr.weighted([['pagoda', 0.45], ['ash', 0.33], ['dense', 0.22]]);
       const r = new RNG(t.seed ^ 0x5bd1e995);
       // older planting: the layout's mature trees, and young ones promoted in loose runs
+      // (not over café terraces: their umbrellas were planned round the young crowns)
       const run = loopNoise1(route.wrap(t.s), L, 90, layout.seed + (t.side > 0 ? 17 : 29));
-      const mature = t.mature || r.chance(THREE.MathUtils.clamp(0.21 + 0.32 * run, 0, 0.5));
+      const promote = r.chance(THREE.MathUtils.clamp(0.21 + 0.32 * run, 0, 0.5));
+      const mature = t.mature || (promote && !layout.cafes.some((c) => c.side === t.side
+        && route.delta(c.s0, t.s) > -4 && route.delta(c.s0, t.s) < route.delta(c.s0, c.s1) + 4));
       const height = mature && !t.mature ? r.range(8.2, 10.8) : t.height;
       const crown = mature && !t.mature ? r.range(4.8, 6.4) : t.crown;
       const prev = last[t.side];

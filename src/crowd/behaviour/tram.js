@@ -115,7 +115,8 @@ export class TramWatch {
     // caught there step up onto the platform (they leave it again along the platform)
     if (!a.noRect) {
       if (a.platformOK) { if (!c.map.platformAt(a.s, 1, a.d, 0.6)) a.platformOK = false; }
-      else if (dl > BAND - 0.06 && a.d < TRACK_ZONE_HALF + 0.8 && c.map.platformAt(a.s, 1, a.d, 0.35) && this.near(a)) a.platformOK = true;
+      // (or on the way there, clearing towards it: nobody is held in the band by the platform edge)
+      else if ((dl > BAND - 0.06 || a.clearing && a.clearHi && dl > 0.6) && a.d < TRACK_ZONE_HALF + 0.8 && c.map.platformAt(a.s, 1, a.d, 0.35) && this.near(a)) a.platformOK = true;
     }
     // the tram going by close: a small step away and a glance at it
     if (this.v > 3 && ahead > -6 && ahead < 12 && adl >= BAND && adl < BAND + 3 && time - a.passT > 25 && a.mob !== MOB.CYCLE) {
@@ -233,8 +234,9 @@ export class TramWatch {
       if (ahead > -AGENT_R - a.extS && ahead < SWEPT_AHEAD + AGENT_R + a.extS && hard) this._violation(a, ahead, dl);
       this.stats.rescues++;
       if (this.rescueLog.length < 12) this.rescueLog.push({ slot: a.slot, t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, mob: a.mob, clr: a.clearing, lead: !!a.leader });
-      let hi = dl >= 0 && !this.c.map.stationAt(a.s);
-      if ((a.kind === KIND.PASSENGER || a.platformOK) && dl >= 0) hi = true;
+      // out through the nearer edge (beside a platform: up onto its edge), never across the track
+      const hi = dl >= 0;
+      if (hi && !a.noRect && this.c.map.platformAt(a.s, 1, BAND_HI + 0.05, 0.35)) a.platformOK = true;
       a.d = hi ? BAND_HI + 0.01 + a.extLo : BAND_LO - 0.01 - a.extHi;
       a.vd = 0;
     }

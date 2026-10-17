@@ -10,7 +10,7 @@ import { RNG } from '../core/rng.js';
 //   w  out of the wall towards the street (+), into the building (−)
 // lot.frame.matrix maps (u, v, w) → world.
 //
-// Late-Ottoman / Mandate-era limestone commercial street: 4–6 storeys, ashlar
+// Late-Ottoman / Mandate-era limestone commercial street: mostly 4–6 storeys (2–8), ashlar
 // courses, arched shop openings, upper windows (flat / round / pointed tops),
 // wrought-iron balconies on stone corbels, cornice + parapet, some tiled roofs.
 
@@ -63,8 +63,11 @@ export function facadePlan(lot) {
     shutterColor: rng.pick(['darkgreen', 'brown', 'grey', 'teal', 'white']),
   };
 
-  // ---- floors
-  const nFloors = rng.weighted([[4, 0.35], [5, 0.35], [6, 0.18], [3, 0.07], [7, 0.05]]);
+  // ---- floors: mostly four to six, with low old houses and a few taller (later) blocks
+  // between them, so the cornice line steps up and down along the street
+  const nFloors = rng.weighted(era === 'modern'
+    ? [[4, 0.1], [5, 0.2], [6, 0.28], [7, 0.24], [8, 0.18]]
+    : [[2, 0.04], [3, 0.11], [4, 0.28], [5, 0.29], [6, 0.17], [7, 0.08], [8, 0.03]]);
   const groundH = rng.range(4.4, 5.4);
   const typH = era === 'modern' ? rng.range(3.0, 3.3) : rng.range(3.4, 3.9);
   const floors = [];
@@ -382,10 +385,10 @@ export function openingOutline(o, n = 12) {
 function massing(plan, lot) {
   const rng = RNG.from(lot.seed, 'massing');
   const nF = plan.floors.length;
-  if (!lot.backdrop && nF >= 4 && rng.chance(0.13)) lowerTo(plan, rng.chance(0.45) ? 2 : 3);
+  if (!lot.backdrop && nF >= 4 && rng.chance(0.08)) lowerTo(plan, rng.chance(0.45) ? 2 : 3);
   const roll = rng.next();
   if (plan.roof.type !== 'flat' || plan.depth < 9 || plan.width < 6) return;
-  const addition = roll < 0.1, pent = !addition && roll < 0.42;
+  const addition = roll < 0.1 && nF <= 6, pent = !addition && roll < 0.42;   // tall blocks: a penthouse at most
   if (!addition && !pent) return;
   const floors = addition ? rng.int(2, plan.floors.length >= 5 ? 3 : 4) : 1;
   const setback = addition ? rng.range(2.6, 4.5) : rng.range(1.6, 2.8);

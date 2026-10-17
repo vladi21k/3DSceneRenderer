@@ -646,7 +646,7 @@ export function buildAttachAssets() {
     [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
       { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), Math.sqrt(2)] }],
   ];
-  // (the far levels draw from a stream of their own: the near ones stay as they were)
+  // (the far levels draw from a random stream of their own)
   const rFar = new RNG(9002);
   for (const levels of kinds) {
     levels.forEach((opts, lvl) => {

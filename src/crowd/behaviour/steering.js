@@ -2,7 +2,7 @@ import { KIND, ST, TASK, MOB } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
 import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
 import { updateFoot, footGap, propPointDist2, _foot } from './footprint.js';
-import { rideTarget } from './cyclist.js';
+import { rideTarget, bikeTurnRate } from './cyclist.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
 // grid in route coordinates. Neighbours repel (stronger in front), people predict
@@ -20,6 +20,7 @@ const TAU = 0.45;              // relaxation time towards the preferred velocity
 const FOOT_LAT = FOOT.map((F) => (F ? (F.l + (F.l > 0 ? F.r - AGENT_R : 0)) / 2 : 0));
 const FOOT_HALF = FOOT.map((F) => (F ? Math.max(AGENT_R, (Math.abs(F.l) + F.r + AGENT_R) / 2) : AGENT_R));
 const R2 = AGENT_R * 2;
+const SEP_GAP = 0.04;          // footprints with a stroller / bicycle are kept this far apart (hard)
 const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform edges
 const PI = Math.PI;
 
@@ -32,6 +33,7 @@ export class Steering {
     this.nx = Math.ceil((SIMPLE_BEYOND + RANGE_BEHIND + 30) / CELL);
     this.ny = Math.ceil((2 * GRID_D) / CELL);
     this.head = new Int32Array(this.nx * this.ny);
+    this.propCell = new Uint8Array(this.nx * this.ny);   // a stroller / bicycle in this cell
     this.des = { vs: 0, vd: 0, vmax: 1.6 };
     this.s0 = 0;
     this.frame = 0;
@@ -46,6 +48,7 @@ export class Steering {
 
   buildGrid(agents) {
     this.head.fill(-1);
+    this.propCell.fill(0);
     this.s0 = this.c.camU - RANGE_BEHIND - 8;
     for (const a of agents) {
       a.next = -1;
@@ -54,6 +57,46 @@ export class Steering {
       if (k < 0) continue;
       a.next = this.head[k];
       this.head[k] = a.slot;
+      if (a.mob) this.propCell[k] = 1;
+    }
+  }
+
+  /** Is there a stroller / bicycle in the cells around a (where _separate has work to do)? */
+  _propAround(a) {
+    const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
+    for (let x = Math.max(0, ix - 2); x <= Math.min(this.nx - 1, ix + 2); x++) {
+      for (let y = Math.max(0, iy - 1); y <= Math.min(this.ny - 1, iy + 1); y++) if (this.propCell[x * this.ny + y]) return true;
+    }
+    return false;
+  }
+
+  /** Hard separation of footprints: a stroller or a bicycle never overlaps a body or another
+   *  stroller / bicycle (capsule against body and capsule against capsule). Each agent of an
+   *  overlapping pair takes half of the correction (all of it against someone seated), rate
+   *  limited like every hard correction; `lim` caps it (a moving bicycle is barely shoved). */
+  _separate(a, lim) {
+    if (a.simple || a.state === ST.SEATED) return;
+    if (!a.mob && !this._propAround(a)) return;
+    const agents = this.c.population.agents;
+    const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
+    const k = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);
+    let done = 0;
+    for (let x = Math.max(0, ix - 2); x <= Math.min(this.nx - 1, ix + 2); x++) {
+      for (let y = Math.max(0, iy - 1); y <= Math.min(this.ny - 1, iy + 1); y++) {
+        for (let j = this.head[x * this.ny + y]; j >= 0; j = agents[j].next) {
+          const b = agents[j];
+          if (b === a || !(a.mob || b.mob) || !b.active) continue;
+          const dx = (b.s - a.s) * k, dy = b.d - a.d;
+          if (dx * dx + dy * dy > 9) continue;
+          const g = footGap(a, b, dx, dy);
+          if (g.gap >= SEP_GAP) continue;
+          const share = b.state === ST.SEATED || b.simple ? 1 : 0.5;
+          const push = Math.min(lim - done, (SEP_GAP - g.gap) * share);
+          if (push <= 0) return;
+          a.s += (g.ns * push) / k; a.d += g.nd * push;
+          done += push;
+        }
+      }
     }
   }
 
@@ -108,6 +151,7 @@ export class Steering {
       // hard corrections never move anyone faster than a brisk step
       this.maxC = Math.max(0.02, 2 * Math.max(1.6, vmax) * dt);
       const s1 = a.s, d1 = a.d;
+      this._separate(a, this.maxC);
       this._constrain(a, gathered, a.s - prevS);
       // all corrections together stay within a brisk step too
       const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
@@ -152,9 +196,10 @@ export class Steering {
     }
     alphaT += T.avoid;
     const err = wrapAngle(alphaT - a.alpha);
-    // turn rate: lateral acceleration ≤ ~1.9 m/s², radius ≥ 2.3 m, and the rate itself changes smoothly
-    const wMax = Math.min(1.9 / vv, vv / 2.3, 1.3);
-    let w = Math.max(-wMax, Math.min(wMax, 2.4 * err));
+    // turn rate: lateral acceleration ≤ ~1.9 m/s², radius ≥ 2.3 m, and the rate itself changes
+    // smoothly; a little tighter (and slower) when turning to cross a rail steeply
+    const wMax = bikeTurnRate(vv, a.rx > 0);
+    let w = Math.max(-wMax, Math.min(wMax, (a.rx === 2 ? 4 : 2.4) * err));
     w = a.yawW + Math.max(-3.0 * dt, Math.min(3.0 * dt, w - a.yawW));
     const na = wrapAngle(a.alpha + w * dt);
     if (tram.turnBlocked(a, na)) w = 0; else a.alpha = na;
@@ -169,6 +214,7 @@ export class Steering {
     a.d += a.vd * dt;
     this.maxC = Math.max(0.02, 2 * Math.max(1.6, v) * dt);
     const s1 = a.s, d1 = a.d;
+    this._separate(a, 0.5 * this.maxC);
     this._constrain(a, false, 0);
     const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
     const lim = 0.5 * this.maxC;
@@ -234,8 +280,17 @@ export class Steering {
           const tc = (dx * rvs + dy * rvd) / vv;
           if (tc <= 0 || tc > 3) continue;
           const cx = dx - rvs * tc, cy = dy - rvd * tc;   // b relative to a at closest approach
+          if (a.mob || b.mob) {
+            // a stroller / bicycle: the gap between the whole footprints at the closest approach
+            // (facings held), passed with a margin that grows with the speed of the encounter
+            const g = footGap(a, b, cx, cy), want = 0.3 + 0.08 * Math.sqrt(vv);
+            if (g.gap > want) continue;
+            const k = 1.9 * (1 - tc / 3) * Math.min(1, (want - g.gap) / 0.55);
+            fs += g.ns * k - ed * k * 0.3; fd += g.nd * k + es * k * 0.3;
+            continue;
+          }
           const cd = len2(cx, cy);
-          const reach = 0.85 + (a.mob ? 0.3 : 0) + (b.mob ? (b.mob === MOB.CYCLE ? 0.45 : 0.3) : 0);
+          const reach = 0.85;
           if (cd > reach) continue;
           const k = 1.7 * (1 - tc / 3) * (reach - cd) / reach;
           if (cd < 0.08) { fs += -ed * k; fd += es * k; } // dead ahead: step to the right

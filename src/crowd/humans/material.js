@@ -39,6 +39,9 @@ uniform vec4 uHang3;
 uniform vec4 uHeadJ;      // rest head joint xyz, phone part id
 uniform vec4 uWrist;      // rest right wrist joint xyz
 uniform float uClothN;    // 1: body vertices carry the garment drape normal (aux)
+uniform vec4 uFace;       // head-local nostril y, mouth line y, face age (0 adult .. 1 toddler), 1: backpack straps are geometry
+uniform vec4 uFoot;       // rest heel z, toe z, sole thickness at the heel, under the ball (m)
+uniform vec4 uSeat;       // aMorph.w scale (m): trouser seat stand-off; 1: long hair carries its tip taper (aux1); dither (no MSAA); -
 const vec3 CR_C = __CR_C__;      // cranium ellipsoid of this body's head sculpt (head-local)
 const vec3 CR_R = __CR_R__;
 vec4 hLook(int row, int i) { return texelFetch(uLookTex, ivec2(i, row), 0); }
@@ -87,8 +90,9 @@ vec3 hTopUpper(vec3 r, float topType, float topY) {
     // collar band up the neck; the neck is open in a V down the placket (narrowing downwards)
     float ct = hCollarTop(r, topType);
     // (polo: two buttons open, shirt: the top button open; a narrow V, not a keyhole)
-    float vd = (topType == 1.0 ? 0.065 : topType == 2.0 ? 0.085 : 0.035) * sc;
-    float vw = (topType == 5.0 ? 0.013 : 0.021) * sc * clamp((y - neck + vd) / (vd + 0.015 * sc), 0.0, 1.0);
+    // (the open neck: a short V that widens to the collar, the placket's buttons below it)
+    float vd = (topType == 1.0 ? 0.05 : topType == 2.0 ? 0.06 : 0.035) * sc;
+    float vw = (topType == 5.0 ? 0.013 : 0.026) * sc * pow(clamp((y - neck + vd) / (vd + 0.015 * sc), 0.0, 1.0), 0.8);
     e = min(e, ct - y);
     if (r.z < 0.0) e = min(e, mix(1.0, max(abs(r.x) - vw, neck - vd - y), front));
   } else e = min(e, hNeckline(r, topType) - y);
@@ -200,7 +204,7 @@ mat4 hBone(int row, float b) {
   return mat4(r0.x, r1.x, r2.x, 0.0, r0.y, r1.y, r2.y, 0.0, r0.z, r1.z, r2.z, 0.0, r0.w, r1.w, r2.w, 1.0);
 }
 // rest-space shell of a skirt / dress / coat at (angle th, height y); n = outward normal
-vec3 hSkirtRing(float th, float y, vec4 L0, vec4 L9, float folds, float seatW, out vec3 n) {
+vec3 hSkirtRing(float th, float y, vec4 L0, vec4 L9, float folds, float seatW, float fd, out vec3 n) {
   float uh = smoothstep(0.0, 1.0, clamp((uSkirt0.x - y) / (uSkirt0.x - uSkirt1.x), 0.0, 1.0));
   vec3 ring = mix(uSkirt0.yzw, uSkirt1.yzw, uh);
   float below = max(0.0, uSkirt1.x - y);
@@ -213,10 +217,18 @@ vec3 hSkirtRing(float th, float y, vec4 L0, vec4 L9, float folds, float seatW, o
   // the lower half of a long skirt hangs nearly straight (its own weight): no lampshade cone
   float fl = flare * (below - 0.55 * max(below - 0.30, 0.0));
   float s = sin(th), c = cos(th);
+  // flute folds: vertical pipes deepening towards the hem (a radial wave round the cone, two
+  // frequencies so they are not evenly spaced), and a gentle wave along the hem; they fade out
+  // with distance (fd), where they would only alias
   float f2 = floor(folds * 1.6 + 0.5);
-  float fold = below * (0.020 + 0.03 * L9.z) * (1.0 - 0.5 * seatW) * (0.6 * sin(th * folds + 1.3) + 0.4 * sin(th * f2 + 0.4));
+  float wv = 0.62 * sin(th * folds + 1.3 + 0.35 * sin(th * 3.0)) + 0.38 * sin(th * f2 + 0.4);
+  float depth = below * (0.022 + 0.034 * L9.z) * (1.0 - 0.5 * seatW) * fd;
+  float fold = depth * wv;
   float rx = ring.x + ease + fl + fold, rz = ring.y + ease + fl * 0.85 + fold;
-  n = normalize(vec3(s * rz, flare * 0.5, c * rx));
+  // (the fold's own slope tilts the normal round the cone: the pipes shade)
+  float dfold = depth * (0.62 * folds * cos(th * folds + 1.3 + 0.35 * sin(th * 3.0)) + 0.38 * f2 * cos(th * f2 + 0.4));
+  vec3 tang = vec3(c, 0.0, -s);
+  n = normalize(vec3(s * rz, flare * 0.5, c * rx) - tang * dfold * 0.9);
   return vec3(s * rx, y, ring.z + c * rz);
 }
 // pushes a posed point out of a tapered leg capsule
@@ -265,16 +277,19 @@ void hSkin(out vec3 P, out vec3 N) {
     // uneven hem: soft waves that grow towards the hem
     float y = uSkirt0.x - t * Lr + 0.012 * t * sin(th * 5.0 + L9.w * 6.28) * (1.0 - seatW);
     vec3 n;
-    pos = hSkirtRing(th, y, L0, L9, L13.y, seatW, n);
+    // (fold depth fades out with distance: the coarse far shells cannot carry them)
+    vec3 rootW = hBone(brow, 0.0)[3].xyz;
+    float fd = smoothstep(26.0, 9.0, length(rootW - cameraPosition));
+    pos = hSkirtRing(th, y, L0, L9, L13.y, seatW, fd, n);
     nrm = n;
     vRest = pos;
     vAux = vec2(t, th);
     skirtT = t;
     // swing with the gait: the hem trails the stride a little
     float sp = min(D0.y, 1.6) * (1.0 - seatW);
-    float A = 0.04 * L9.y * (0.5 + L9.z) * sp;
+    float A = 0.028 * L9.y * (0.5 + L9.z) * sp;
     pos.z -= A * sin(6.2832 * D0.x - 0.6) * t * t;
-    pos.x += 0.4 * A * sin(12.566 * D0.x) * t * t;
+    pos.x += 0.5 * A * sin(6.2832 * D0.x + 0.9) * t * t;
     // pelvis on top, each side follows its thigh lower down (all the way when seated)
     float wt = mix(0.75 * smoothstep(uSkirt1.x + 0.02, uSkirt1.x - 0.30, y), smoothstep(uSkirt1.x + 0.01, uSkirt1.x - 0.06, y), seatW);
     float s = sin(th);
@@ -284,7 +299,7 @@ void hSkin(out vec3 P, out vec3 N) {
     if (seatW > 0.0 && y < uLeg.z) {
       // below the knee the cloth falls straight down from the knee ring
       vec3 kn;
-      kneePos = hSkirtRing(th, uLeg.z, L0, L9, L13.y, seatW, kn);
+      kneePos = hSkirtRing(th, uLeg.z, L0, L9, L13.y, seatW, fd, kn);
       kneeN = kn;
       drop = uLeg.z - y;
     }
@@ -297,9 +312,33 @@ void hSkin(out vec3 P, out vec3 N) {
 #ifndef HUMAN_DEPTH
     // clothes stand off the skin: ease grows with looseness, with a lip at hems
     vec4 L2 = hLook(row, 2), L4 = hLook(row, 4), L8 = hLook(row, 8), L9 = hLook(row, 9);
-    vec3 g = hGarment(position, region, L2, L4, L8);
     float sc = uTorso.w / 1.76;
+    bool skirtOn = skirtPart == uArm.z && skirtPart > 0.5;
+    // hems: the vertices of the layer under a hem, within a band below it, are pulled up onto the
+    // hem line, so the step from one garment to the next (or to the skin) is a straight edge with
+    // the cloth's turned-in lip above it, not a zigzag along the triangles
+    vec3 rp = position;
+    {
+      float band = 0.024 * sc;
+      float topY = hTopHemY(L8.y);
+      bool trunk = region == 1.0 || region == 19.0 || region == 20.0 || region == 7.0 || region == 8.0;
+      if (trunk && !skirtOn && L2.w != 7.0 && rp.y < topY && rp.y > topY - band) rp.y = topY - 0.0006;
+      bool skirtLikeB = (L4.w > 2.5 && L4.w < 3.5) || L4.w > 4.5;
+      float legHem = hLegHemY(L8.z);
+      if ((region == 7.0 || region == 8.0) && !skirtLikeB && !skirtOn && L8.z >= 0.02 && rp.y < legHem && rp.y > legHem - band && rp.y < topY)
+        rp.y = legHem - 0.0006;
+      if ((region == 4.0 || region == 5.0) && L2.w != 3.0 && L8.x < 0.97) {
+        float s = sign(rp.x);
+        vec3 sh = vec3(s * uShoulder.x, uShoulder.y, uShoulder.z), du = vec3(s * uArm.x, -uArm.y, 0.0);
+        float t = dot(rp - sh, du) / uShoulder.w, t0 = L8.x * 1.02;
+        if (t > t0 && t < t0 + band / uShoulder.w) rp -= du * ((t - t0) * uShoulder.w + 0.0006);
+      }
+    }
+    pos += rp - position;
+    vRest = rp;
+    vec3 g = hGarment(rp, region, L2, L4, L8);
     float ease = 0.0;
+    vec3 shift = vec3(0.0);
     vec3 clothN = vec3(0.0);
     float clothW = 0.0;
     bool isArm = region == 4.0 || region == 5.0;
@@ -308,21 +347,28 @@ void hSkin(out vec3 P, out vec3 N) {
     if (g.z == 1.0) {
       ease = 0.003 + 0.008 * L8.w + (jacket ? 0.008 : 0.0);
       if (isArm) {
-        // sleeves hang as tubes, filling out from the shoulder cap down (no square shoulder corner)
-        float s = sign(position.x);
+        // sleeves hang from the top of the arm: they rest on the shoulder cap and along the top
+        // (no stand-off there, so the shoulder line rounds off instead of stepping out like a
+        // pad), and the slack collects underneath: a tube centred below the arm's axis
+        float s = sign(rp.x);
         vec3 sh = vec3(s * uShoulder.x, uShoulder.y, uShoulder.z), du = vec3(s * uArm.x, -uArm.y, 0.0);
-        float t = dot(position - sh, du) / uShoulder.w;
-        float d = length(cross(position - sh, du));
-        float R = jacket ? (0.062 + 0.010 * L8.w) * sc * (1.0 - 0.25 * clamp(t, 0.0, 1.0))
-          : (0.050 + 0.016 * L8.w) * sc * (L8.x < 0.6 ? 1.12 : 0.92);
-        ease = max(ease, (R - d) * smoothstep(0.02, 0.18, t));
+        vec3 q = rp - sh;
+        float t = dot(q, du) / uShoulder.w;
+        vec3 rv = q - du * dot(q, du);
+        float d = length(rv);
+        vec3 upA = normalize(vec3(0.0, 1.0, 0.0) - du * dot(vec3(0.0, 1.0, 0.0), du));
+        float top = dot(rv, upA) / max(d, 1e-4);
+        float R = jacket ? (0.058 + 0.008 * L8.w) * sc * (1.0 - 0.2 * clamp(t, 0.0, 1.0))
+          : (0.047 + 0.012 * L8.w) * sc * (L8.x < 0.6 ? 1.06 : 0.94);
+        float hangW = mix(1.0, jacket ? 0.55 : 0.2, smoothstep(-0.2, 0.7, top));
+        ease = max(ease * mix(1.0, 0.5, smoothstep(0.12, 0.0, t)), (R - d) * hangW * smoothstep(0.06, 0.26, t));
       } else if (region == 1.0 || region == 19.0 || region == 20.0) {
         // tops hang straight down from the chest instead of following the waist
-        float y = position.y;
+        float y = rp.y;
         vec4 h0 = uHang0, h1 = y > uHang1.x ? uHang0 : y > uHang2.x ? uHang1 : uHang2, h2 = y > uHang1.x ? uHang1 : y > uHang2.x ? uHang2 : uHang3;
         vec4 hr = mix(h1, h2, clamp((h1.x - y) / max(h1.x - h2.x, 1e-3), 0.0, 1.0));
         float cz = 0.5 * (hr.z + hr.w), rz = 0.5 * (hr.w - hr.z);
-        vec2 v = vec2(position.x, position.z - cz);
+        vec2 v = vec2(rp.x, rp.z - cz);
         float lv = max(length(v), 1e-4);
         float R = hr.y * rz / length(vec2(rz * v.x, hr.y * v.y) / lv);
         float hang = jacket ? R - lv + 0.015 + 0.01 * L8.w : (R * (0.97 + 0.03 * L8.w) - lv) * clamp(0.25 + 0.95 * L8.w, 0.0, 1.0);
@@ -331,14 +377,14 @@ void hSkin(out vec3 P, out vec3 N) {
         // reaches up to the shoulders: the cloth spans the shoulder blades, the hollows between
         // them and the spine, and the lats, instead of showing every muscle
         // (only where the skin faces backwards: on top of the shoulders the push would go upwards)
-        float backW = smoothstep(cz, cz + 0.03 * sc, position.z) * (1.0 - smoothstep(0.55, 0.85, abs(position.x) / uShoulder.x))
+        float backW = smoothstep(cz, cz + 0.03 * sc, rp.z) * (1.0 - smoothstep(0.55, 0.85, abs(rp.x) / uShoulder.x))
           * smoothstep(0.35, 0.75, nrm.z);
         float fadeUp = mix(smoothstep(h0.x + 0.05 * sc, h0.x - 0.03 * sc, y), smoothstep(uShoulder.y + 0.01 * sc, uShoulder.y - 0.07 * sc, y), backW);
         hang *= fadeUp
-          * (1.0 - smoothstep(0.62, 0.9, abs(position.x) / uShoulder.x) * smoothstep(h0.x - 0.16 * sc, h0.x - 0.04 * sc, y));
+          * (1.0 - smoothstep(0.62, 0.9, abs(rp.x) / uShoulder.x) * smoothstep(h0.x - 0.16 * sc, h0.x - 0.04 * sc, y));
         // tucked tops (and anything under a skirt waistband) blouse a little above the waist only
         if (L13.z > 0.5) hang *= smoothstep(uTorso.y, uTorso.y + 0.09 * sc, y);
-        if (skirtPart == uArm.z && skirtPart > 0.5) hang *= smoothstep(uSkirt0.x, uSkirt0.x + 0.08 * sc, y);
+        if (skirtOn) hang *= smoothstep(uSkirt0.x, uSkirt0.x + 0.08 * sc, y);
         ease = max(ease, hang);
         // the cloth's own surface: its normal follows the hanging envelope rather than the skin
         // below it (otherwise the shading still draws the shoulder blades and the spine through it)
@@ -349,7 +395,7 @@ void hSkin(out vec3 P, out vec3 N) {
         // a smooth envelope round the upper chest and back rather than the muscles under it
         vec3 ec = vec3(0.0, uShoulder.y - 0.16 * sc, 0.5 * (h0.z + h0.w));
         vec3 er = vec3(uShoulder.x + 0.03 * sc, 0.26 * sc, 0.5 * (h0.w - h0.z) + 0.01 * sc);
-        vec3 eN = normalize((position - ec) / (er * er));
+        vec3 eN = normalize((rp - ec) / (er * er));
         float ew = smoothstep(h0.x - 0.08 * sc, h0.x + 0.02 * sc, y) * (jacket ? 0.85 : 0.5 + 0.3 * L8.w)
           * smoothstep(uTorso.z + 0.005, uTorso.z - 0.05 * sc, y);
         if (ew > clothW) { clothN = normalize(mix(clothN, eN, clothW > 0.0 ? 1.0 - clothW / ew : 1.0)); clothW = ew; }
@@ -359,68 +405,78 @@ void hSkin(out vec3 P, out vec3 N) {
       ease = bt == 0.0 ? 0.0035 : bt == 4.0 ? 0.0008 : bt == 2.0 ? 0.008 + 0.012 * L9.x : 0.004 + 0.008 * L9.x;
       if (isLeg && bt != 4.0) {
         // trouser legs fall straight from the seat: fill out to a target radius down the leg
-        float d = hLegDist(position);
-        float yk = (position.y - uLeg.z) / (uLeg.y - uLeg.z);
-        float yh = (position.y - uLeg.w) / (uLeg.z - uLeg.w);
+        float d = hLegDist(rp);
+        float yk = (rp.y - uLeg.z) / (uLeg.y - uLeg.z);
+        float yh = (rp.y - uLeg.w) / (uLeg.z - uLeg.w);
         float Rk = (0.064 + 0.016 * L9.x) * sc;
         float Rh = (bt == 0.0 ? 0.052 + 0.010 * L9.x : 0.056 + 0.016 * L9.x) * sc;
-        float R = position.y > uLeg.z ? mix(Rk, 0.098 * sc, clamp(yk, 0.0, 1.0)) : mix(Rh, Rk, clamp(yh, 0.0, 1.0));
+        float R = rp.y > uLeg.z ? mix(Rk, 0.098 * sc, clamp(yk, 0.0, 1.0)) : mix(Rh, Rk, clamp(yh, 0.0, 1.0));
         if (bt == 2.0) {
           // shorts: a straight leg tapering slightly to the hem
           float hy = hLegHemY(L8.z);
-          float u = clamp((uTorso.x - position.y) / max(uTorso.x - hy, 0.05), 0.0, 1.0);
+          float u = clamp((uTorso.x - rp.y) / max(uTorso.x - hy, 0.05), 0.0, 1.0);
           R = (uArm.w == 0.0 ? 0.066 + 0.012 * L9.x : 0.060 + 0.010 * L9.x) * sc * (1.0 - 0.09 * u);
         }
         ease = max(ease, R - d);
       }
       if (region == 1.0 || region == 19.0) ease = min(ease, 0.006);
-      if ((isLeg || region == 19.0) && bt != 4.0 && position.z > 0.0 && nrm.z > 0.2) {
-        // cloth over the seat falls from the buttocks onto the back of the thighs, bridging the
-        // gluteal fold (snug jeans less, loose trousers more)
+      if (uSeat.x <= 0.0 && (isLeg || region == 19.0) && bt != 4.0 && rp.z > 0.0 && nrm.z > 0.2) {
+        // (older builds) cloth over the seat falls from the buttocks onto the back of the thighs
         float seatZ = uSkirt1.w + uSkirt1.z - 0.024 * sc;
-        float yb = uSkirt1.x, drop = yb - position.y;
+        float yb = uSkirt1.x, drop = yb - rp.y;
         float tz = seatZ - drop * (bt == 0.0 ? 0.30 : 0.18);
         float w = smoothstep(-0.02 * sc, 0.03 * sc, drop) * smoothstep(0.22 * sc, 0.10 * sc, drop)
-          * smoothstep(0.14 * sc, 0.06 * sc, abs(abs(position.x) - 0.06 * sc));
-        ease = max(ease, (tz - position.z) * nrm.z * w * (bt == 0.0 ? 0.7 : 1.0));
+          * smoothstep(0.14 * sc, 0.06 * sc, abs(abs(rp.x) - 0.06 * sc));
+        ease = max(ease, (tz - rp.z) * nrm.z * w * (bt == 0.0 ? 0.7 : 1.0));
       }
     }
-    // hems: the ease holds right to the edge (a sewn cuff), only the last millimetres roll in;
-    // necklines hug the neck (a wide roll, so the surface never folds over itself)
-    bool nearNeck = position.y > uTorso.z - 0.07 * sc;
+    // the seat of trousers, shorts and long tops: the cloth spans the cleft between the buttocks
+    // and falls from them onto the back of the thighs (the baked bridged surface), instead of
+    // shrink-wrapping the body; leggings follow the body closely
+    if (uSeat.x > 0.0 && g.z > 0.5 && (region == 19.0 || isLeg || region == 1.0) && aMorph.w > 0.0) {
+      float kS = g.z == 1.0 ? 1.0 : L4.w == 4.0 ? 0.25 : L4.w == 0.0 ? 0.85 : 1.0;
+      shift.z += aMorph.w * uSeat.x * kS * smoothstep(-0.002, 0.004, g.y);
+    }
+    // hems: the ease holds right to the edge (a sewn hem); the band under it was pulled up onto
+    // the hem line above, so the hem's lip closes the step. Necklines hug the neck (a wide roll,
+    // so the surface never folds over itself)
+    bool nearNeck = rp.y > uTorso.z - 0.07 * sc;
     // the collar hugs the neck: a function of height (not of the mesh region), so no ledge where
     // the neck region's triangles meet the torso's
-    ease = mix(ease, min(ease, 0.005), smoothstep(uTorso.z - 0.07 * sc, uTorso.z - 0.015 * sc, position.y));
+    ease = mix(ease, min(ease, 0.005), smoothstep(uTorso.z - 0.07 * sc, uTorso.z - 0.015 * sc, rp.y));
     // the neck / chest crease is concave: offsetting it would fold the surface over itself
-    if (g.z == 1.0 && !isArm) ease = min(ease, mix(0.03, 0.004, smoothstep(uTorso.z - 0.10 * sc, uTorso.z - 0.035 * sc, position.y)));
-    ease *= smoothstep(-0.002, nearNeck ? 0.02 : g.z == 2.0 ? 0.002 : 0.006, g.y);
+    if (g.z == 1.0 && !isArm) ease = min(ease, mix(0.03, 0.004, smoothstep(uTorso.z - 0.10 * sc, uTorso.z - 0.035 * sc, rp.y)));
+    ease *= smoothstep(-0.002, nearNeck ? 0.02 : 0.0012, g.y);
     // hide the body under skirts and long coats
-    if (skirtPart == uArm.z && skirtPart > 0.5 && (region == 1.0 || region == 19.0 || region == 20.0 || isLeg)) {
+    if (skirtOn && (region == 1.0 || region == 19.0 || region == 20.0 || isLeg)) {
       float hemY = mix(uSkirt0.x, uLeg.w + 0.03, L9.y);
-      float y = position.y;
-      if (y < uSkirt0.x - 0.012 && y > hemY + 0.03)
+      float y = rp.y;
+      if (y < uSkirt0.x - 0.012 && y > hemY + 0.03) {
         ease = -0.022 * sc * smoothstep(hemY + 0.03, hemY + 0.10, y) * smoothstep(uSkirt0.x - 0.012, uSkirt0.x - 0.03, y)
           * (1.0 + 1.6 * D0.z * smoothstep(uSkirt1.x + 0.06, uSkirt1.x - 0.02, y));   // seated: hips and thighs under the drape
+        shift = vec3(0.0);
+      }
     }
-    pos += nrm * ease;
+    pos += nrm * ease + shift;
     if (uClothN > 0.5 && g.z > 0.5 && g.y > 0.0 && region != 6.0) {
-      // garments drape over the hollows of the body (shoulder blades, spine, arm pits, the fold
-      // under the seat): shade them with the baked drape normal, tight ones (tanks, leggings) less
+      // garments drape over the hollows of the body (shoulder blades, spine, arm pits, the cleft
+      // and the fold under the seat): shade them with the baked drape normal, tight ones (tanks,
+      // leggings) less; thin knits still bridge the sub-bust and pectoral creases
       vec3 cN = hOct(aBody.zw / 255.0);
-      float cw = isArm ? 0.5 : g.z == 1.0 ? (jacket ? 0.95 : L2.w == 3.0 ? 0.45 : 0.6 + 0.3 * L8.w)
-        : (L4.w == 4.0 ? 0.2 : L4.w == 0.0 ? 0.5 : 0.7);
+      float cw = isArm ? 0.5 : g.z == 1.0 ? (jacket ? 0.95 : L2.w == 3.0 ? 0.68 : 0.66 + 0.28 * L8.w)
+        : (L4.w == 4.0 ? 0.3 : L4.w == 0.0 ? 0.62 : 0.78);
       nrm = normalize(mix(nrm, cN, cw * smoothstep(0.0, 0.012, g.y)));
     }
     if (clothW > 0.0 && g.y > 0.0) nrm = normalize(mix(nrm, clothN, clothW * smoothstep(0.0, 0.01, g.y)));
     if (g.z == 1.0 && (region == 1.0 || region == 20.0) && g.y > 0.0) {
       // cloth bridges the hollows round the shoulder (the body's deltopectoral groove and arm
       // pit): shade it with a smoother, more radial normal than the skin below it
-      vec3 rd = normalize(vec3(position.x, 0.0, position.z - 0.01));
-      float w = 0.5 * smoothstep(uShoulder.y + 0.01 * sc, uShoulder.y - 0.09 * sc, position.y) * smoothstep(0.35, 0.65, abs(position.x) / uShoulder.x);
+      vec3 rd = normalize(vec3(rp.x, 0.0, rp.z - 0.01));
+      float w = 0.5 * smoothstep(uShoulder.y + 0.01 * sc, uShoulder.y - 0.09 * sc, rp.y) * smoothstep(0.35, 0.65, abs(rp.x) / uShoulder.x);
       nrm = normalize(mix(nrm, rd, w));
     }
 #if HUMANS_DBG == 3
-    vAux = vec2(ease * 40.0);
+    vAux = vec2(ease * 40.0, shift.z * 40.0);
 #endif
 #endif
   } else if (part == uHeadJ.w) {
@@ -523,18 +579,38 @@ void hSkin(out vec3 P, out vec3 N) {
       N = normalize(mix(N, nk, seatW * bl));
     }
     if (seatW < 0.99 && skirtT > 0.08) {
-      // keep the shell clear of the stepping legs (posed thigh and shin capsules)
       float bw = 1.0 + 0.25 * max(L0.w, 0.0);
       float cl = 0.015;
       mat4 TL = hBone(brow, 14.0), SL = hBone(brow, 15.0), TR = hBone(brow, 18.0), SR = hBone(brow, 19.0);
+      mat4 FL = hBone(brow, 16.0), FR = hBone(brow, 20.0);
       vec3 hipL = (TL * vec4(-uLeg.x, uLeg.y, 0.0, 1.0)).xyz, kneL = (TL * vec4(-uLeg2.z, uLeg.z, uLeg2.w, 1.0)).xyz;
       vec3 ankL = (SL * vec4(-uLeg2.x, uLeg.w, uLeg2.y, 1.0)).xyz;
       vec3 hipR = (TR * vec4(uLeg.x, uLeg.y, 0.0, 1.0)).xyz, kneR = (TR * vec4(uLeg2.z, uLeg.z, uLeg2.w, 1.0)).xyz;
       vec3 ankR = (SR * vec4(uLeg2.x, uLeg.w, uLeg2.y, 1.0)).xyz;
+      // the hem follows the legs: the leading leg pushes the front of the skirt forward, the
+      // trailing leg drags the back of it back (and with the heel up, its hem lifts a little)
+      mat4 Mr = hBone(brow, 0.0);
+      vec3 Zw = normalize(Mr[2].xyz);
+      float yr = uSkirt0.x - skirtT * (uSkirt0.x - uLeg.w - 0.03);
+      float u = clamp((uLeg.z - yr) / max(uLeg.z - uLeg.w, 0.05), 0.0, 1.0);
+      float above = smoothstep(uLeg.y, uLeg.z, yr);
+      vec3 dL = mix(kneL - (Mr * vec4(-uLeg2.z, uLeg.z, uLeg2.w, 1.0)).xyz, ankL - (Mr * vec4(-uLeg2.x, uLeg.w, uLeg2.y, 1.0)).xyz, u) * above;
+      vec3 dR = mix(kneR - (Mr * vec4(uLeg2.z, uLeg.z, uLeg2.w, 1.0)).xyz, ankR - (Mr * vec4(uLeg2.x, uLeg.w, uLeg2.y, 1.0)).xyz, u) * above;
+      float th = position.x, sth = sin(th), cth = cos(th);
+      float wR = smoothstep(-0.55, 0.55, sth), wLs = 1.0 - wR;
+      float fS = -dot(dL, Zw) * wLs - dot(dR, Zw) * wR;       // the near leg's forward travel (m)
+      vec3 Yw = normalize(Mr[1].xyz);
+      float upS = max(dot(dL, Yw), 0.0) * wLs + max(dot(dR, Yw), 0.0) * wR;
+      float frontW = smoothstep(0.25, -0.65, cth), backW = smoothstep(-0.25, 0.65, cth);
+      float mv = (frontW * max(fS, 0.0) + backW * min(fS, 0.0)) * 0.8 + fS * 0.2;
+      float wHem = smoothstep(0.12, 0.75, skirtT) * (1.0 - seatW);
+      P += (-Zw * mv + Yw * upS * 0.35 * backW) * wHem;
+      // keep the shell clear of the stepping legs (posed thigh, shin and heel capsules)
       float rh = (0.080 * bw + cl) * wsc, rk = (0.054 * bw + cl) * wsc, rc = (0.052 * bw + cl) * wsc, ra = (0.034 + cl) * wsc;
+      vec3 heelL = (FL * vec4(-uLeg2.x, 0.01, uFoot.x - 0.01, 1.0)).xyz, heelR = (FR * vec4(uLeg2.x, 0.01, uFoot.x - 0.01, 1.0)).xyz;
       vec3 Q = P;
-      Q = hPushLeg(Q, hipL, kneL, rh, rk); Q = hPushLeg(Q, kneL, ankL, rc, ra);
-      Q = hPushLeg(Q, hipR, kneR, rh, rk); Q = hPushLeg(Q, kneR, ankR, rc, ra);
+      Q = hPushLeg(Q, hipL, kneL, rh, rk); Q = hPushLeg(Q, kneL, ankL, rc, ra); Q = hPushLeg(Q, ankL, heelL, ra, ra * 0.9);
+      Q = hPushLeg(Q, hipR, kneR, rh, rk); Q = hPushLeg(Q, kneR, ankR, rc, ra); Q = hPushLeg(Q, ankR, heelR, ra, ra * 0.9);
       P = mix(P, Q, smoothstep(0.08, 0.2, skirtT) * (1.0 - seatW));
     }
   }
@@ -679,7 +755,9 @@ const FRAG_SURFACE = /* glsl */`
   float aoV = vAO;
   // ---- skin with subtle mottling and warm extremities (knuckles, elbows, knees)
   vec3 skinCol = skin * (0.94 + 0.12 * hNoise(r * 55.0));
-  float skinRough = 0.48;
+  float skinRough = 0.56;
+  // skin relief: pores and fine creases (a low cavity normal), faded before it would alias
+  float skinBump = (hNoise(r * 420.0) - 0.5) * 0.00011 + (hNoise(r * 95.0) - 0.5) * 0.00018;
   if (part < 0.5) {
     float warmX = 0.0;
     if (region == 6.0) warmX = 0.35;
@@ -694,7 +772,7 @@ const FRAG_SURFACE = /* glsl */`
     if (region == 3.0 || region == 18.0) {
       vec3 qq = (r - uHead.xyz) / uHead.w;
       float tz = smoothstep(0.03, 0.0, abs(qq.x)) * smoothstep(-0.05, -0.02, qq.y) + smoothstep(0.04, 0.06, qq.y) * smoothstep(0.09, 0.07, qq.y) * smoothstep(-0.06, -0.08, qq.z);
-      skinRough = mix(0.5, 0.36, clamp(tz, 0.0, 1.0));
+      skinRough = mix(0.56, 0.44, clamp(tz, 0.0, 1.0));
     }
   }
   if (part < 0.5) {
@@ -731,19 +809,39 @@ const FRAG_SURFACE = /* glsl */`
           * step(ax, uShoulder.x + 0.01);
         cloth *= 1.0 - 0.22 * shs;
         if (L2.w == 2.0) {
-          // shirt back: a yoke seam across the top of the shoulder blades, a box pleat under it
+          // shirt back: a yoke seam across the top of the shoulder blades (a stitched seam: a
+          // faint relief and a change of sheen, no drawn line) and a soft box pleat under it, a
+          // fold about 1.5 cm wide that fades out down the back and with distance
+          float near = 1.0 - smoothstep(0.003, 0.009, length(fwidth(r)));
           float yy = uShoulder.y - 0.085 * scT + 0.018 * scT * smoothstep(0.0, 0.16 * scT, ax);
-          float yoke = hAA(0.0011 - abs(r.y - yy)) * back;
-          float pl = step(r.y, yy) * smoothstep(yy - 0.13 * scT, yy - 0.02 * scT, r.y) * back;
-          float pleat = hAA(0.0012 - abs(ax - 0.016 * scT)) * pl;
-          cloth *= 1.0 - 0.3 * yoke - 0.28 * pleat;
-          hBump += 0.0009 * yoke + 0.0007 * hAA(0.016 * scT - ax) * pl;
+          float yoke = smoothstep(0.0025, 0.0, abs(r.y - yy)) * back;
+          float pl = smoothstep(yy + 0.004, yy - 0.004, r.y) * smoothstep(yy - 0.16 * scT, yy - 0.03 * scT, r.y) * back;
+          float fold = smoothstep(0.022 * scT, 0.008 * scT, ax);
+          hBump += (0.0005 * yoke + 0.0011 * fold * pl) * near;
+          crough = mix(crough, crough * 0.86, yoke * near);
         }
         // the back hangs from the shoulder blades over the hollow of the lower back: a few soft
         // diagonal folds run from the blades down towards the sides of the waist
         float lb = back * smoothstep(uTorso.y - 0.06 * scT, uTorso.y + 0.02 * scT, r.y) * smoothstep(uShoulder.y - 0.12 * scT, uShoulder.y - 0.26 * scT, r.y);
         float diag = sin((r.y + ax * 0.9) / scT * 70.0 + hNoise(r * 14.0) * 4.0);
         hBump += 0.0006 * diag * lb * (0.4 + 0.6 * L8.w);
+      }
+      if ((L2.w == 1.0 || L2.w == 2.0) && !arm) {
+        // button placket below the open neck: the overlapping front edge (a soft shadow on one side,
+        // a little relief) and small buttons, at low contrast
+        float scP = uTorso.w / 1.76;
+        float vd = (L2.w == 1.0 ? 0.05 : 0.06) * scP;
+        float yTop = uTorso.z - vd, yBot = L2.w == 1.0 ? yTop - 0.10 * scP : hTopHemY(L8.y);
+        float frontP = step(r.z, -0.02) * step(r.y, yTop + 0.002) * step(yBot, r.y);
+        float ex = r.x - 0.009 * scP;
+        float edge = smoothstep(0.0025, 0.0, abs(ex)) * frontP;
+        float under = smoothstep(0.0, 0.004, -ex) * smoothstep(0.012, 0.004, -ex) * frontP;
+        cloth *= 1.0 - 0.07 * edge - 0.05 * under;
+        hBump += 0.0006 * smoothstep(0.003, -0.002, ex) * smoothstep(-0.022 * scP, -0.012 * scP, ex) * frontP;
+        float by = mod(yTop - r.y - 0.022 * scP, 0.075 * scP) - 0.0375 * scP;
+        float btn = smoothstep(0.0048 * scP, 0.0032 * scP, length(vec2(r.x, by))) * frontP * step(r.y, yTop - 0.012 * scP);
+        cloth = mix(cloth, cloth * 0.86 + 0.02, btn);
+        hBump += 0.0006 * btn;
       }
       if (L2.w == 1.0 || L2.w == 2.0 || L2.w == 5.0) {
         // turned-down collar: a raised band with a shadow line along its lower edge
@@ -792,6 +890,17 @@ const FRAG_SURFACE = /* glsl */`
       float whisk = sin(atan(cp.y, cp.x) * 14.0 + hNoise(r * 25.0) * 2.0) * smoothstep(0.17, 0.08, length(cp))
         * smoothstep(0.045, 0.08, length(cp)) * smoothstep(0.0, -0.04, r.z) * step(r.y, uTorso.x + 0.04) * step(botFab, 1.5) * step(0.5, botFab);
       hBump = 0.0013 * drape + 0.0011 * rings * (knee * (0.4 + 0.8 * back) + ankle) + 0.0008 * whisk;
+      if (L4.w != 4.0 && (region == 7.0 || region == 8.0 || region == 19.0)) {
+        // the back of the leg: two or three soft drag folds hang from the seat to the back of
+        // the knee, and the cloth sags a little under the seat
+        float scL = uTorso.w / 1.76;
+        float u = clamp((uLeg.y - r.y) / max(uLeg.y - uLeg.z, 0.1), 0.0, 1.0);
+        float lx = abs(r.x) - mix(uLeg.x, uLeg2.z, u);
+        float bk = smoothstep(0.0, 0.05 * scL, r.z - mix(0.0, uLeg2.w, u)) * smoothstep(-0.06, 0.02, uLeg.y - r.y);
+        float drag = sin(lx / scL * 95.0 + 1.2 + 0.6 * sin(r.y * 9.0)) * smoothstep(0.0, 0.25, u) * smoothstep(1.0, 0.7, u);
+        float sag = smoothstep(0.03, 0.0, abs(r.y - (uLeg.y - 0.10 * scL))) * smoothstep(0.075 * scL, 0.02 * scL, abs(lx));
+        hBump += bk * (0.0010 * drag * (0.6 + 0.6 * L9.x) - 0.0012 * sag * (0.5 + L9.x));
+      }
       if (L4.w == 1.0 && botFab != 1.0 && (region == 7.0 || region == 8.0)) {
         // pressed trousers: a faint crease down the front of each leg
         float u = clamp((uLeg.y - r.y) / (uLeg.y - uLeg.w), 0.0, 1.0);
@@ -845,7 +954,9 @@ const FRAG_SURFACE = /* glsl */`
       }
     } else if (layer == 3.0) {
       // shoes: upper, sole band, laces line; sandals show skin between straps
-      float soleH = 0.024 * uTorso.w / 1.76;
+      // (heel block under the heel, thinner under the ball, curving up with the toe spring)
+      float tF = clamp((uFoot.x - r.z) / max(uFoot.x - uFoot.y, 0.05), 0.0, 1.0);
+      float soleH = mix(uFoot.z, uFoot.w, smoothstep(0.28, 0.45, tF)) + uFoot.w * 0.8 * smoothstep(0.82, 1.0, tF);
       float sole = 1.0 - hAA(r.y - soleH);
       vec3 upper = L5.rgb;
       crough = L5.w == 1.0 ? 0.38 : 0.62;
@@ -892,13 +1003,18 @@ const FRAG_SURFACE = /* glsl */`
       // lips
       float lip = region == 17.0 ? 1.0 : 0.0;
       col = mix(col, skin * vec3(0.86, 0.66, 0.64), lip * 0.6);
-      float mouth = hAA(0.0011 - abs(q.y + 0.0598)) * hAA(0.019 - ax) * front;
+      float mouth = hAA(0.0011 - abs(q.y - uFace.y)) * hAA(0.019 * (1.0 - 0.16 * uFace.z) - ax) * front;
       col *= 1.0 - 0.4 * mouth;
+      // the baked occlusion under the nose and over the upper lip reads as a moustache shadow on
+      // women and children (and as a dirty philtrum on men): keep it light; the same round the eyes
+      float band = smoothstep(uFace.x + 0.003, uFace.x - 0.004, q.y) * smoothstep(uFace.y - 0.002, uFace.y + 0.006, q.y) * front;
+      float phil = smoothstep(uArm.w == 0.0 ? 0.022 : 0.034, 0.006, ax) * band;
+      aoV = mix(aoV, max(aoV, uArm.w == 0.0 ? 0.8 : 0.93), phil);
       // cheeks / nose / ears a little warmer
       float warm = smoothstep(0.03, 0.0, length(vec2(ax - 0.045, q.y + 0.025))) * 0.5 + (region == 18.0 ? 0.35 : 0.0) + (region == 16.0 ? 0.3 : 0.0);
       col *= mix(vec3(1.0), vec3(1.06, 0.93, 0.92), warm);
       // nostrils
-      float nos = smoothstep(0.0042, 0.0018, length(vec2((ax - 0.0085) * 0.8, q.y + 0.0372))) * step(q.z, -0.085);
+      float nos = smoothstep(0.0042, 0.0018, length(vec2((ax - 0.0085 * (1.0 - 0.25 * uFace.z)) * 0.8, q.y - uFace.x + 0.0027))) * step(q.z, -0.085 + 0.006 * uFace.z);
       col *= 1.0 - 0.35 * nos;
       // stubble / beard shadow
       if (uArm.w == 0.0) {
@@ -914,7 +1030,7 @@ const FRAG_SURFACE = /* glsl */`
       vec3 e = q - ec;
       float er = uEye.w / sc;
       // the sockets' baked occlusion reads as bruised rings at distance: keep it light round the eye
-      aoV = mix(aoV, max(aoV, 0.78), smoothstep(er * 2.6, er * 1.2, length(e.xy)) * front);
+      aoV = mix(aoV, max(aoV, 0.9 + 0.05 * uFace.z), smoothstep(er * 3.2, er * 1.2, length(e.xy)) * front);
       float dx = e.x * sign(q.x);
       float up = 0.0043 - 9.0 * dx * dx, lo = -0.0036 + 7.0 * dx * dx;
       float lid = hAA(min(up - e.y, e.y - lo)) * step(length(e), er * 1.25) * step(e.z, 0.0);
@@ -922,7 +1038,8 @@ const FRAG_SURFACE = /* glsl */`
         float d = length(e.xy) / er;
         vec3 irisC = mix(vec3(0.05, 0.028, 0.016), vec3(0.16, 0.12, 0.06), fract(seed * 5.7));
         if (fract(seed * 11.3) > 0.88) irisC = vec3(0.10, 0.15, 0.18);
-        vec3 eye = mix(vec3(0.50, 0.46, 0.43), irisC, hAA(0.56 - d));
+        // (children's irises look bigger: the eye is nearly adult-sized in a smaller face)
+        vec3 eye = mix(vec3(0.50, 0.46, 0.43), irisC, hAA(0.56 + 0.08 * uFace.z - d));
         eye = mix(eye, vec3(0.01), hAA(0.22 - d));
         eye *= mix(0.55, 1.0, smoothstep(up, lo, e.y));    // upper lid and lashes shade the eye
         col = mix(col, eye, lid);
@@ -1088,7 +1205,10 @@ const FRAG_SURFACE = /* glsl */`
   // wear and grime near the ground
   col *= 1.0 - 0.10 * smoothstep(0.25, 0.0, r.y) * (0.5 + 0.5 * L9.w) * (1.0 - skinAmt);
   hSkinM = skinAmt;
-  if (skinAmt > 0.0) { rough = mix(rough, skinRough, skinAmt); hSpec = mix(hSpec, 0.7, skinAmt); hSheenC *= 1.0 - skinAmt; }
+  if (skinAmt > 0.0) {
+    rough = mix(rough, skinRough, skinAmt); hSpec = mix(hSpec, 0.52, skinAmt); hSheenC *= 1.0 - skinAmt;
+    if (part < 0.5) hBump += skinBump * skinAmt;
+  }
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
   roughnessFactor = rough;
   metalnessFactor = 0.0;
@@ -1198,6 +1318,10 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale, shape
     uWrist: { value: new THREE.Vector4(base.rig.rest[13].x, base.rig.rest[13].y, base.rig.rest[13].z, 0) },
     uNight: U.uNight,
     uClothN: { value: info.clothNormals ? 1 : 0 },
+    uFace: { value: new THREE.Vector4(...(info.faceY ? [info.faceY[0], info.faceY[1], info.faceY[2]] : [-0.0345, -0.0598, kind === 2 ? 0.6 : 0]),
+      info.packStraps ? 1 : 0) },
+    uFoot: { value: new THREE.Vector4(info.heelZ, info.toeZ, info.shoe ? info.shoe.heel : 0.024 * (H / 1.76), info.shoe ? info.shoe.ball : 0.024 * (H / 1.76)) },
+    uSeat: { value: new THREE.Vector4(info.seatBridge || 0, info.seatBridge ? 1 : 0, 0, 0) },
   };
   const hatOff = info.hatOffsets || {};
   const hairline = info.hairline || {};

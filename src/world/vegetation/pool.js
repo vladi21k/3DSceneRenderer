@@ -33,7 +33,7 @@ import * as THREE from 'three';
 // altogether (shadowMaxTexel). Every pass keeps its own indirect texture (IndirectLists),
 // uploaded only when its list changed instead of once per pass and cascade.
 
-const LOD_PX = [380, 95];
+const LOD_PX = [460, 95];
 const HYST = 0.08;
 const FADE_S = 0.35;
 const PRE_DIST = 60;  // m: crowns closer than this (at full detail) get the depth pre-pass

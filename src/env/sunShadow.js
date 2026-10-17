@@ -43,6 +43,7 @@ const SUBTEXEL = 1.5;         // casters smaller than this many texels (radius) 
 const MAX_FILTER_TEXELS = 16; // widest PCF kernel (texels): wider would only add noise
 const REFRESH = [1, 1, 2, 4]; // frames between redraws per cascade (far ones staggered)
 const OUTLINE_MARGIN = 1.0;   // slack for the filter footprint and normal offset (m)
+const MAX_REACH = 120;        // longest caster shadow considered by the cascade culling (m)
 export const NEAR_CASCADES = 2; // cascades below this index draw the batcher's cell proxies, the rest its coarse ones
 
 const _thinMat = new WeakMap();
@@ -175,7 +176,9 @@ class CascadeFrustum extends THREE.Frustum {
       const p = sphere.center;
       const d = (p.x - c.camPos.x) * c.fwd.x + (p.y - c.camPos.y) * c.fwd.y + (p.z - c.camPos.z) * c.fwd.z;
       const h = Math.max(0, Math.min(p.y + r - c.groundY, 60));
-      const dd = h * c.cotE * c.awayDotFwd;    // view-depth component of the top's shadow reach
+      // view-depth component of the top's shadow reach, capped: a low sun's shadows run for
+      // hundreds of metres, but by then the street floor is in the canyon's shadow anyway
+      const dd = Math.min(h * c.cotE, MAX_REACH) * c.awayDotFwd;
       const lo = Math.min(d, d + dd) - r - 6, hi = Math.max(d, d + dd) + r + 6;
       if (hi < this.zNear || lo > this.zFar) return false;
       // instanced sets drawn in one call (a whole LOD of figures) can publish the view-depth
@@ -452,15 +455,20 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 			#else
 				sampler2D shadowMap,
 			#endif
-			vec2 atlasSize, float bias, float texel, float range, float maxRadius, int cascade, vec4 coord ) {
+			vec2 atlasSize, float bias, float texel, float range, float maxRadius, int cascade, vec4 coord, vec2 dz ) {
 			coord.xyz /= coord.w;
 			coord.z += bias;
 			if ( coord.z > 1.0 ) return 1.0;
+			// receiver plane: every tap compares against the receiver's depth at its own offset
+			// (dz = depth gradient over the atlas), so a wide kernel on a surface the light
+			// grazes does not shadow itself in streaks
 			#if defined( SHADOWMAP_TYPE_PCF )
 				vec2 tx = 1.0 / atlasSize;
 				float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
 				// coarse cascades always filter over two texels or more (no stair steps)
-				float minR = cascade >= 2 ? 2.0 : 1.0;
+				// (and the near ones over 1.6: a contact edge filtered over a single texel shows the
+				// shadow map's stair steps as a rope pattern along sills and string courses)
+				float minR = cascade >= 2 ? 2.2 : 1.6;
 				float maxR = clamp( maxRadius / texel, minR, ${MAX_FILTER_TEXELS.toFixed(1)} );
 				// blocker search over the widest penumbra
 				vec2 so[ 5 ];
@@ -468,7 +476,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				float f0 = 1.0 - texture( shadowMap, coord.xyz );
 				for ( int k = 1; k < 5; k ++ ) {
 					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * maxR * tx;
-					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z ) );
+					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
 				}
 				f0 *= 0.2;
 				if ( f0 <= 0.0 ) return 1.0;
@@ -481,7 +489,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				for ( int j = 0; j < 3; j ++ ) {
 					if ( prev <= 0.0 ) break;
 					float f = 0.0;
-					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z - dm[ j ] ) );
+					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm[ j ] ) );
 					prev = f * 0.2;
 					fd[ j ] = prev;
 				}
@@ -494,7 +502,8 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				float s = 0.0;
 				for ( int k = 0; k < ${wide}; k ++ ) {
 					if ( k >= n ) break;
-					s += texture( shadowMap, vec3( coord.xy + vogelDiskSample( k, n, phi + 1.3 ) * r, coord.z ) );
+					vec2 o = vogelDiskSample( k, n, phi + 1.3 ) * r;
+					s += texture( shadowMap, vec3( coord.xy + o, coord.z + dot( dz, o ) ) );
 				}
 				return s / float( n );
 			#else
@@ -507,12 +516,20 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 			#else
 				sampler2D shadowMap,
 			#endif
-			SunLightShadow sunLightShadow, int index, int cascade ) {
+			SunLightShadow sunLightShadow, int index, int cascade, vec3 dpx, vec3 dpy ) {
 			vec4 data = sunShadowCascade[ index ];
 			float texel = fract( data.w );
+			mat4 M = sunShadowMatrix[ index ];
 			vec4 wp = vec4( vSunShadowWorldPosition.xyz + vSunShadowWorldNormal * ( sunLightShadow.shadowNormalBias * texel ), 1.0 );
+			// receiver depth gradient over the atlas, from the screen derivatives of the position
+			vec3 sx = ( M * vec4( dpx, 0.0 ) ).xyz, sy = ( M * vec4( dpy, 0.0 ) ).xyz;
+			float det = sx.x * sy.y - sx.y * sy.x;
+			vec2 dz = abs( det ) > 1e-14 ? vec2( sy.y * sx.z - sx.y * sy.z, sx.x * sy.z - sy.x * sx.z ) / det : vec2( 0.0 );
+			// at most 0.25 m of depth per texel (silhouettes and grazing angles give wild slopes)
+			float lim = 0.25 / max( floor( data.w ), 1.0 ) * sunLightShadow.shadowMapSize.y;
+			dz *= min( 1.0, lim / max( length( dz ), 1e-9 ) );
 			float cs = sunShadowTap( shadowMap, sunLightShadow.shadowMapSize, sunLightShadow.shadowBias, texel, floor( data.w ),
-				sunLightShadow.shadowRadius, cascade, sunShadowMatrix[ index ] * wp );
+				sunLightShadow.shadowRadius, cascade, M * wp, dz );
 			return mix( 1.0, cs, sunLightShadow.shadowIntensity );
 		}
 		float getSunShadow(
@@ -526,6 +543,8 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 		) {
 			float viewDepth = vSunShadowWorldPosition.w;
 			int base = shadowIndex * SUN_LIGHT_CASCADES;
+			// (screen derivatives taken here, in uniform control flow)
+			vec3 dpx = dFdx( vSunShadowWorldPosition.xyz ), dpy = dFdy( vSunShadowWorldPosition.xyz );
 			// the nearest cascade holding this depth; in its fade band, blend into the next
 			int ci = - 1;
 			for ( int i = 0; i < SUN_LIGHT_CASCADES; i ++ ) {
@@ -534,10 +553,10 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 			}
 			if ( ci < 0 ) return 1.0;
 			vec4 cascade = sunShadowCascade[ base + ci ];
-			float shadow = sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci, ci );
+			float shadow = sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci, ci, dpx, dpy );
 			float f = smoothstep( cascade.z, cascade.y, viewDepth );
 			if ( f > 0.0 ) {
-				float next = ci + 1 < SUN_LIGHT_CASCADES ? sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci + 1, ci + 1 ) : 1.0;
+				float next = ci + 1 < SUN_LIGHT_CASCADES ? sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci + 1, ci + 1, dpx, dpy ) : 1.0;
 				shadow = mix( shadow, next, f );
 			}
 			return shadow;

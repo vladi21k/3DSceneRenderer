@@ -287,7 +287,7 @@ void main() {
       float cs = dot(v * inversesqrt(r2), uHeadDir);
       hb += smoothstep(uHeadCos.x, uHeadCos.y, cs) / r2;
     }
-    air += vec3(1.0, 0.93, 0.84) * uHeadI * hb * Th / 12.0;
+    air += vec3(1.0, 0.84, 0.68) * uHeadI * hb * Th / 12.0;
     col += air * uMist / (4.0 * ATM_PI) * uNightAir;
   }
 

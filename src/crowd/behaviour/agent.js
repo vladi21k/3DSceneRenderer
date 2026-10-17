@@ -121,5 +121,11 @@ export class Agent {
     this.clearHi = false; this.clearSpare = 0; // side and margin chosen when clearing the band
     this.prevHead = 0;        // world heading at the last output (lean)
     this.headValid = false;
+    this.rx = 0;              // cyclist crossing a rail: 0 no, 1 swinging away first, 2 crossing
+    this.rxSgn = 1; this.rxEnd = 0; this.rxSetup = 0; this.rxT = 0; this.rxSetupT = 0; this.rxHold = 0;
+    this.stopT = 0;           // cyclist: seconds stopped
+    this.stopNP = 0;          // ... of which with nobody in the way
+    this.stallSeen = false;   // ... counted as a stall (statistics)
+    this.narrowS = null;      // cyclist: where the sidewalk ahead gets too narrow to ride (s)
   }
 }

@@ -69,7 +69,7 @@ export function buildStickerAtlas(seed = 7) {
   const S = 128;
   const cv = document.createElement('canvas');
   cv.width = S * CELLS_X; cv.height = S * CELLS_Y;
-  const g = cv.getContext('2d');
+  const g = cv.getContext('2d', { willReadFrequently: true }); // read back below: CPU canvas, no GPU sync
   const rng = RNG.from(seed, 'stickerPrint');
   const lines = (x, y, w, n, color, hgt = 5) => {
     g.fillStyle = color;

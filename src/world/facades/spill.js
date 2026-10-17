@@ -65,7 +65,7 @@ float k;
 if ( kind > 2.5 ) {
   // pavement pool: paving albedo ~0.3 under the shop's light (the shops' interiors sit far
   // above the street lamps' level in the exposure, so their pools hold their own)
-  k = 0.0007 * vSpill.z;
+  k = 0.0005 * vSpill.z;
 } else {
   // stone albedo ~0.5 lit by the room behind the glass: strongest at the glass, falling off
   // exponentially towards the wall face; the tall jambs of shops fade upwards (their

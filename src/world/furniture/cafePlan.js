@@ -4,7 +4,8 @@ import { RNG } from '../../core/rng.js';
 // collision-free placements. Works in a local metric frame per café: x = metres along the
 // street at the café's offset (s scaled by route.offsetScale), y = d.
 //   1. chairs: neighbouring chairs (other tables, other chairs) are relaxed apart by small
-//      moves around their own table, with a small random turn away from the neighbour
+//      moves around their own table, with a casual random turn (up to ~25°) away from the
+//      neighbour; about one in five is pulled out from the table and turned further
 //   2. umbrellas: each canopy keeps clear of its neighbours (no interpenetrating fabric),
 //      of the facade and of the street-tree crowns; the weighted base gets a footprint
 //      that clears every chair and table foot, or the pole runs through a table's centre
@@ -90,9 +91,12 @@ export function planCafe(cafe, route, seed, baseType, layout = null) {
   const chairs = [];
   for (const t of tables) {
     t.src.chairs.forEach((c, ci) => {
-      const x = X(c.s), y = c.d;
+      let x = X(c.s), y = c.d;
       const r = Math.hypot(x - t.x, y - t.y) || 0.62;
-      chairs.push({ t, ci, src: c, x, y, x0: x, y0: y, r0: r, jit: rng.range(-0.12, 0.12), yaw: 0 });
+      // pulled out: further from the table (the radius clamp below allows up to 0.8 m)
+      const pulled = rng.chance(0.2);
+      if (pulled) { const k = Math.min(0.8, r + rng.range(0.1, 0.18)) / r; x = t.x + (x - t.x) * k; y = t.y + (y - t.y) * k; }
+      chairs.push({ t, ci, src: c, x, y, x0: x, y0: y, r0: r, jit: pulled ? rng.range(0.25, 0.44) : rng.range(0.03, 0.3), yaw: 0 });
     });
   }
   const face = (c) => { c.yaw = Math.atan2(c.t.y - c.y, c.t.x - c.x) + c.jit; };

@@ -88,6 +88,7 @@ export class Population {
     a.mob = MOB.NONE; a.propSeed = 0; a.lean = 0; a.fpR = 0; a.extLo = 0; a.extHi = 0; a.extS = 0;
     a.bikeV = 0; a.yawW = 0; a.cT = 0; a.slowT = 0; a.stallT = 0; a.mountT = 0; a.mvOn = false; a.mvBand = false;
     a.mvToBand = false; a.mvLane = null; a.nearT = 0; a.headValid = false; a.clearHi = false; a.clearSpare = 0;
+    a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallSeen = false; a.narrowS = null;
     this.stats.spawned++;
     return a;
   }
@@ -384,15 +385,19 @@ export class Population {
         if (Math.abs(pd) > map.wallAt(ps, ps2) - a.fpR && !map.mouthAt(ps, ps2)) return false;
       }
     }
-    // not on top of someone else (a bicycle is long)
-    if (a.mob) {
-      for (const b of this.agents) {
-        if (!b.active || b === a) continue;
-        const ds = b.s - a.s, dd = b.d - a.d;
-        if (ds * ds + dd * dd < 4 && footGapOk(a, b, ds, dd) === false) return false;
-      }
+    // not on top of someone else's stroller / bicycle (nor with one's own on top of someone)
+    return !this.propClash(a);
+  }
+
+  /** Does a's footprint overlap a stroller / bicycle footprint, or a's own prop overlap anyone
+   *  (group members included: nobody is placed inside a stroller)? */
+  propClash(a, margin = 0.05) {
+    for (const b of this.agents) {
+      if (!b.active || b === a || !(a.mob || b.mob)) continue;
+      const ds = b.s - a.s, dd = b.d - a.d;
+      if (ds * ds + dd * dd < 9 && footGap(a, b, ds, dd).gap < margin) return true;
     }
-    return true;
+    return false;
   }
 
   /** Initial street: walkers over the whole range, chat groups, then the features. */
@@ -659,6 +664,10 @@ export class Population {
         if (!wayClear(c, sp, dp, a.gs, a.gd, 0.3) || !wayClear(c, a.gs, a.gd, a.gs + a.dir * 4, a.gd - side * 2.5, 0.3)) { this._killGroup(a); return null; }
       }
       if (mob) updateFoot(a);
+      // nobody placed on a stroller / bicycle, nor one placed on somebody
+      if (this.propClash(a)) { this._killGroup(a); return null; }
+      for (const f of [...a.followers]) if (this.propClash(f)) this._unspawn(f);
+      a.nFollow = a.followers.length;
       return a;
     }
     return null;
@@ -678,6 +687,7 @@ export class Population {
       if (!c.vis.bodyHidden(s, dIn, side, o.d, dr.oS - o.half, dr.oS + o.half)) continue;
       const a = this.spawnWalker(s, side, r.chance(0.5) ? 1 : -1, { d: dIn, lane: LANE.SIDE, force: true, group: 0, src: 'door' });
       if (!a) return null;
+      if (this.propClash(a)) { this._unspawn(a); return null; }
       a.inDoor = true; a.door = dr; a.doorS0 = dr.s0; a.doorS1 = dr.s1;
       a.task = TASK.EMERGE; a.state = ST.GOTO;
       a.gs = dr.s + a.dir * r.range(0.3, 1.2); a.gd = side * (map.wallMin(dr.s, side, 2) - r.range(0.6, 1.2)); a.gTol = 0.4;
@@ -1024,4 +1034,3 @@ function roleFits(role, ap) {
 }
 
 /** Footprints of a and b (b at ds, dd from a) apart? */
-function footGapOk(a, b, ds, dd) { return footGap(a, b, ds, dd).gap > 0.05; }

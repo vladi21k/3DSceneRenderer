@@ -32,12 +32,14 @@ import * as THREE from 'three';
 
 const WHITE = new THREE.Color(1, 1, 1);
 const FADE_MS = 450;
+const LOD_STEP = 0.5;   // m of eye movement between two passes over the instance levels
 // shadows: cascade texel (m) above which at least level 1 / the coarsest level is drawn,
 // and the smallest instance (bounding radius in texels) still worth a shadow
 const SHADOW_LEVEL_TEXEL = [0.012, 0.035];
 const SHADOW_MIN_TEXELS = 1.5;
 const _mat = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
+const _sph2 = new THREE.Sphere();
 const _fr = new THREE.Frustum();
 const _pm = new THREE.Matrix4();
 // stand-ins handed to the light's cascade frustum: one instance, or the whole batch
@@ -261,7 +263,12 @@ export class BatchSet {
       return d;
     };
     const prepared = [...S.geos.keys()].map((g) => { const d = depthGeo(g); nv += d.attributes.position.count; ni += d.index.count; return [g, d]; });
-    const bm = new THREE.BatchedMesh(Math.max(64, Math.ceil(capacity(S))), nv, ni, new THREE.MeshBasicMaterial({ name: 'furniture.shadow' }));
+    // never drawn in the view: its material only picks the depth variant, so it borrows a
+    // plain opaque batch material (and a colour texture like the batches), whose program the
+    // start-up compile builds anyway, instead of adding one of its own
+    const plain = [...this.batches.values()].map((b) => b.mat).find((m) => !m.transparent && m.side === THREE.FrontSide && !m.alphaTest && !m.alphaToCoverage);
+    const bm = new THREE.BatchedMesh(Math.max(64, Math.ceil(capacity(S))), nv, ni, plain || new THREE.MeshBasicMaterial({ name: 'furniture.shadow' }));
+    if (bm._initColorsTexture && !bm._colorsTexture) bm._initColorsTexture();
     for (const [g, d] of prepared) {
       const id = bm.addGeometry(d);
       S.geos.set(g, id);
@@ -332,27 +339,51 @@ export class BatchSet {
     const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = S.lists.begin();
     const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
     let n = 0;
-    for (let i = 0, l = info.length; i < l; i++) {
-      const it = info[i];
-      if (!it.visible || !it.active || sp[i * 4 + 3] < minR) continue;
-      _sph.center.set(sp[i * 4], sp[i * 4 + 1], sp[i * 4 + 2]);
-      _sph.radius = sp[i * 4 + 3];
+    // per chunk record: its bounds first (most chunks lie outside a cascade's slice)
+    for (const rec of this.records) {
+      if (!rec.vis) continue;
+      const b = rec.bound || this._recordBound(rec);
+      if (b.radius < 0) continue;
+      _sph.copy(b);
       if (!frustum.intersectsObject(_one)) continue;
-      let gid = it.geometryIndex;
-      if (minLv) {
-        // coarsest of the instance's own level and the cascade's (levels: up to 3, -1 = none)
-        const cur = gid === lv[i * 3] ? 0 : gid === lv[i * 3 + 1] ? 1 : 2;
-        for (let k = Math.max(cur, minLv); k >= cur; k--) if (lv[i * 3 + k] >= 0) { gid = lv[i * 3 + k]; break; }
+      const ids = rec.ids;
+      for (let k = 2; k < ids.length; k += 3) {
+        const i = ids[k];
+        if (i < 0) continue;
+        const it = info[i];
+        if (!it.visible || !it.active || sp[i * 4 + 3] < minR) continue;
+        _sph.center.set(sp[i * 4], sp[i * 4 + 1], sp[i * 4 + 2]);
+        _sph.radius = sp[i * 4 + 3];
+        if (!frustum.intersectsObject(_one)) continue;
+        let gid = it.geometryIndex;
+        if (minLv) {
+          // coarsest of the instance's own level and the cascade's (levels: up to 3, -1 = none)
+          const cur = gid === lv[i * 3] ? 0 : gid === lv[i * 3 + 1] ? 1 : 2;
+          for (let q = Math.max(cur, minLv); q >= cur; q--) if (lv[i * 3 + q] >= 0) { gid = lv[i * 3 + q]; break; }
+        }
+        const g = gInfo[gid];
+        starts[n] = g.start * bpe;
+        counts[n] = g.count;
+        ind[n] = i;
+        n++;
       }
-      const g = gInfo[gid];
-      starts[n] = g.start * bpe;
-      counts[n] = g.count;
-      ind[n] = i;
-      n++;
     }
     m._indirectTexture = S.lists.commit(cam, n);
     m._multiDrawCount = n;
     m._multiDrawBytesPerElement = bpe;
+  }
+
+  /** Bounding sphere of a record's shadow twins (radius -1: none), computed once. */
+  _recordBound(rec) {
+    const sp = this.shadow.sph, b = (rec.bound = new THREE.Sphere(new THREE.Vector3(), -1));
+    for (let k = 2; k < rec.ids.length; k += 3) {
+      const i = rec.ids[k];
+      if (i < 0) continue;
+      _sph2.center.set(sp[i * 4], sp[i * 4 + 1], sp[i * 4 + 2]);
+      _sph2.radius = sp[i * 4 + 3];
+      if (b.radius < 0) b.copy(_sph2); else b.union(_sph2);
+    }
+    return b;
   }
 
   /** Show / hide one instance, keeping the batch's count of shown instances. */
@@ -405,8 +436,9 @@ export class BatchSet {
    *  `eye` (world position) picks the initial LOD level. */
   writer(obj, eye = null) {
     // ids: [batch, id, shadowId (-1: none)] per part instance
-    const rec = { obj, ids: [], lod: [], hidden: new Set(), vis: false, temps: [], dead: false };
+    const rec = { obj, ids: [], lod: [], hidden: new Set(), vis: false, temps: [], dead: false, bound: null };
     this.records.add(rec);
+    this._lodDirty = true;
     obj.userData.batchRecord = rec;
     return {
       add: (p, matrix, color = null, colors = null) => {
@@ -505,7 +537,12 @@ export class BatchSet {
    *  between the levels over FADE_MS (real time). */
   updateLod(eye, now = performance.now()) {
     let shownChanged = false;
-    for (const rec of this.records) {
+    // levels are re-chosen once the eye has moved LOD_STEP (switches have 8 % hysteresis),
+    // or when chunks came or went; fades advance every frame
+    const L = this._lodEye || (this._lodEye = { x: 1e9, z: 1e9, n: -1 });
+    const recheck = Math.hypot(eye.x - L.x, eye.z - L.z) > LOD_STEP || this.records.size !== L.n || this._lodDirty;
+    if (recheck) { L.x = eye.x; L.z = eye.z; L.n = this.records.size; this._lodDirty = false; }
+    for (const rec of recheck ? this.records : []) {
       for (const it of rec.lod) {
         const lv = levelFor(it.p.lods, Math.hypot(it.x - eye.x, it.z - eye.z), it.lv);
         if (lv === it.lv) continue;

@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { ATMO_GLSL } from './atmosphere.js';
 
-// Volumetric fair-weather cumulus. A slab between CB and CB+CT metres is ray-marched
-// at half resolution after the main pass (only where the sky is visible), lit by the
-// sun with self-shadowing and a multiple-scattering approximation, and composited
-// over the sky in the post prepass. Shapes come from the 2D cloud field in sky.js
-// (where the clouds are) and a tileable 3D Perlin-Worley texture (their billows).
+// Volumetric fair-weather cumulus. A slab from CB metres up (uCloudTop thick) is
+// ray-marched at half resolution after the main pass (only where the sky is visible),
+// lit by the sun with self-shadowing and a multiple-scattering approximation, and
+// composited over the sky in the post prepass. Shapes come from the 2D cloud field in
+// sky.js (where the clouds are) and a tileable 3D Perlin-Worley texture (their billows).
+// The weather (coverage, cell size, depth) is a per-seed regime chosen by env.js.
 
-const CB = 1500.0, CT = 1300.0;
+const CB = 1500.0;
 
 const NOISE3D_FS = /* glsl */ `
 precision highp float;
@@ -86,33 +87,39 @@ function renderNoise3D(renderer, { rt, quad, size }) {
 
 /**
  * Shared cloud GLSL (view pass and environment capture). The includer declares the
- * uniforms uCloudTex, uNoise3D, uCloudOffset, uCloudCover, uSunDirA, uSunGround and
- * defines skyL(dir) and irr(k) (sky-view LUT and sky-irradiance lookups).
+ * uniforms uCloudTex, uNoise3D, uCloudOffset, uCloudCover, uCloudScale, uCloudTop,
+ * uSunDirA, uSunCloud and defines skyL(dir) and irr(k) (sky-view LUT and sky-irradiance
+ * lookups).
  */
 export const CLOUD_MARCH_GLSL = /* glsl */ `
 #define CB ${CB.toFixed(1)}
-#define CT ${CT.toFixed(1)}
 #define CLOUD_SIGMA 0.045     // extinction per metre at density 1
 #define MS_BOOST 1.9
 
 float cloudDensity(vec3 p, float detail) {
-  float hf = (p.y - CB) / CT;
-  if (hf <= 0.0 || hf >= 1.0) return 0.0;
+  float hf = (p.y - CB) / uCloudTop;
+  if (hf <= 0.0 || hf >= 1.0 || uCloudCover <= 0.0) return 0.0;
   vec2 q = p.xz + uCloudOffset;
-  float cov = clamp(uCloudCover + (texture(uCloudTex, q / 110000.0).b - 0.5) * 0.5, 0.05, 0.92);
-  // where the cells are (2D field), with 3D billows mixed in so cells stay contiguous
-  float field = textureLod(uCloudTex, q / 13000.0, 0.0).r;
-  vec4 n = textureLod(uNoise3D, vec3(q.x, p.y * 1.4, q.y) / 4500.0, 0.0);
+  float cov = clamp(uCloudCover + (texture(uCloudTex, q / 110000.0).b - 0.5) * 0.5, 0.0, 0.92);
+  // where the cells are (2D field; a smaller scale gives a field of many small cumulus),
+  // with 3D billows mixed in so cells stay contiguous
+  float field = textureLod(uCloudTex, q / (13000.0 * uCloudScale), 0.0).r;
+  vec4 n = textureLod(uNoise3D, vec3(q.x, p.y * 1.4, q.y) / (4500.0 * uCloudScale), 0.0);
   float shape = field * 0.8 + n.r * 0.2;
   // flat bases, domed tops: the threshold rises with height, so only the cores reach up
   float thr = 1.0 - cov * sqrt(max(1.0 - hf, 0.0)) * smoothstep(0.0, 0.05, hf);
   // dense bodies: the density saturates over the outer part of each cell, so the
-  // erosion below carves the boundary into billows instead of hollowing the core
-  float d = clamp((shape - thr) / max(0.2 * (1.0 - thr), 1e-3), 0.0, 1.0);
+  // erosion below carves the boundary into billows and wisps instead of hollowing it
+  float d = clamp((shape - thr) / max(0.28 * (1.0 - thr), 1e-3), 0.0, 1.0);
   if (d <= 0.0 || detail <= 0.0) return d;
-  // cauliflower edges: billowy Worley erosion, strongest at the base
+  // cauliflower edges: billowy Worley erosion, strongest at the base, plus a finer
+  // octave that frays the rims into wisps
   float e = textureLod(uNoise3D, vec3(q.x, p.y, q.y) / 520.0 + vec3(0.37, 0.11, 0.73), 0.0).g;
   float ero = (1.0 - e) * mix(0.5, 0.28, hf) * detail;
+  if (detail > 0.75) {
+    float e2 = textureLod(uNoise3D, vec3(q.x, p.y * 1.3, q.y) / 150.0 + vec3(0.71, 0.29, 0.13), 0.0).g;
+    ero += (1.0 - e2) * 0.22 * (1.0 - d);
+  }
   return clamp((d - ero) / max(1.0 - ero, 1e-3), 0.0, 1.0);
 }
 
@@ -121,15 +128,24 @@ float cloudDensity(vec3 p, float detail) {
 // nSteps <= 64; lightTaps 2 (environment capture) or 4 (view).
 vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float detail) {
   if (dir.y < 0.003) return vec4(0.0, 0.0, 0.0, 1.0);
-  float t0 = (CB - ro.y) / dir.y, t1 = (CB + CT - ro.y) / dir.y;
+  if (uCloudCover <= 0.0) return vec4(0.0, 0.0, 0.0, 1.0);
+  float t0 = (CB - ro.y) / dir.y, t1 = (CB + uCloudTop - ro.y) / dir.y;
   const float TMAX = 45000.0;
   if (t0 > TMAX) return vec4(0.0, 0.0, 0.0, 1.0);
   t1 = min(t1, TMAX);
   float dt = (t1 - t0) / float(nSteps);
 
-  vec3 sunL = uSunGround;
+  // sunlight at cloud level: it still lights the cloud bases from below for a while
+  // after it has left the street
+  vec3 sunL = uSunCloud;
   vec3 ambTop = irr(0.0) / ATM_PI * 1.15;
-  vec3 ambBot = (uSunGround * max(uSunDirA.y, 0.0) * 0.1 + irr(0.0) * 0.2) / ATM_PI;
+  vec3 ambBot = (uSunCloud * max(uSunDirA.y + 0.035, 0.0) * 0.1 + irr(0.0) * 0.2) / ATM_PI;
+  // in twilight the multiply scattered skylight keeps a cloud about as bright as the sky
+  // around it (it never reads as a dark blob against the glow)
+  float tw = 1.0 - smoothstep(-0.01, 0.12, uSunDirA.y);
+  vec3 skyHere = skyL(dir);
+  ambTop = mix(ambTop, max(ambTop, skyHere * 1.1), tw);
+  ambBot = mix(ambBot, max(ambBot, skyHere * 0.8), tw);
   float cosT = dot(dir, uSunDirA);
   // dual-lobe phase (bright silver lining towards the sun), and two softer lobes for
   // the multiple-scattering octaves
@@ -158,7 +174,7 @@ vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float d
       tau = cloudDensity(p + lsd * 120.0, 0.0) * 160.0 + cloudDensity(p + lsd * 600.0, 0.0) * 700.0;
     }
     tau *= CLOUD_SIGMA;
-    float hf = clamp((p.y - CB) / CT, 0.0, 1.0);
+    float hf = clamp((p.y - CB) / uCloudTop, 0.0, 1.0);
     float powder = 1.0 - exp(-sig * 160.0);
     // sun: single scattering plus two multiple-scattering octaves (wider, less attenuated)
     vec3 S = sunL * (exp(-tau) * ph0 + 0.5 * exp(-tau * 0.25) * ph1 + 0.25 * exp(-tau * 0.07) * ph2) * mix(1.0, powder, 0.5) * MS_BOOST
@@ -191,10 +207,12 @@ uniform sampler3D uNoise3D;
 uniform sampler2D tDepth;
 uniform vec2 uFullRes;
 uniform vec3 uSunDirA;
-uniform vec3 uSunGround;
+uniform vec3 uSunCloud;
 uniform vec3 uCamPosW;
 uniform vec2 uCloudOffset;
 uniform float uCloudCover;
+uniform float uCloudScale;
+uniform float uCloudTop;
 uniform mat4 uCamWorld;
 uniform vec2 uProjXY;
 uniform float uFrame;
@@ -276,8 +294,9 @@ export class Clouds {
     if (skyUniforms.uNoise3D) skyUniforms.uNoise3D.value = this.noise3D.texture;
     this.uniforms = {
       uSkyLUT: skyUniforms.uSkyLUT, uSkyIrr: skyUniforms.uSkyIrr, uCloudTex: skyUniforms.uCloudTex,
-      uSunDirA: skyUniforms.uSunDirA, uSunGround: skyUniforms.uSunGround, uCamPosW: skyUniforms.uCamPosW,
+      uSunDirA: skyUniforms.uSunDirA, uSunCloud: skyUniforms.uSunCloud, uCamPosW: skyUniforms.uCamPosW,
       uCloudOffset: skyUniforms.uCloudOffset, uCloudCover: skyUniforms.uCloudCover, uMieScale: skyUniforms.uMieScale,
+      uCloudScale: skyUniforms.uCloudScale, uCloudTop: skyUniforms.uCloudTop,
       uNoise3D: skyUniforms.uNoise3D || { value: null },
       tDepth: { value: null }, uFullRes: { value: new THREE.Vector2(1, 1) },
       uCamWorld: { value: new THREE.Matrix4() }, uProjXY: { value: new THREE.Vector2(1, 1) },

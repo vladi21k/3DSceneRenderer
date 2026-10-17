@@ -14,14 +14,14 @@ direction and ragged ends.
 import numpy as np
 import humans_sdf as S
 from humans_sdf import Ellipsoid, RoundCone, Loft, RoundBox, Union, Subtract, Intersect, Fn, Xform, rot_xyz, normalize
-from humans_body import REGION, TEMPLATES, sstep, cranium, arm_joints
+from humans_body import REGION, TEMPLATES, YOUNG, sstep, cranium, arm_joints, surface_z
 
 PART_IDS = {
     'hair_short': 1, 'hair_buzz': 2, 'hair_medium': 3, 'hair_curly': 4, 'hair_balding': 5,
     'hair_long': 6, 'hair_ponytail': 7, 'hair_bun': 8, 'hair_bob': 9, 'hair_pixie': 10, 'scarf': 11,
     'beard_full': 12, 'beard_short': 13, 'cap': 14, 'fedora': 15, 'sunhat': 16,
     'backpack': 17, 'shoulderbag': 18, 'shopping': 19, 'hair_side': 20, 'hair_receding': 21, 'glasses': 22,
-    'hair_curlyf': 23,
+    'hair_curlyf': 23, 'hair_wisp': 24,
 }
 # hat crowns stand this far off the cranium (head-local m); the runtime presses hair under
 # them (material.js) and the build checks the result (humans_build.check_hats)
@@ -45,11 +45,14 @@ PER_BASE = {
                'backpack', 'shoulderbag', 'shopping', 'glasses'],
     'child': ['hair_short', 'hair_curly', 'hair_long', 'hair_ponytail', 'hair_bob', 'cap', 'backpack'],
     'kid': ['hair_short', 'hair_curly', 'hair_long', 'hair_ponytail', 'hair_bob', 'cap', 'backpack'],
+    # toddlers (in strollers): fine short hair, curls, a little bob, wispy baby hair; a cotton sun hat
+    'toddler': ['hair_short', 'hair_curly', 'hair_bob', 'hair_wisp', 'sunhat'],
 }
 LONG_STYLES = ('hair_long', 'hair_bob', 'scarf', 'hair_ponytail', 'hair_curlyf')
 # triangles per LOD; 0 = the part is dropped at that LOD (too small to matter on screen)
 LOD_TRIS = {'hair': (1400, 600, 200, 50, 16), 'long': (2600, 1000, 320, 90, 30), 'beard': (900, 320, 110, 24, 0),
-            'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'glasses': (900, 260, 70, 0, 0)}
+            'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'pack': (1500, 560, 170, 44, 14),
+            'glasses': (900, 260, 70, 0, 0)}
 
 # hairline (head-local y at the front / temples) of the men's and boys' short styles: a forehead
 # of ~5 cm above the brows. The runtime paints the soft edge with the same numbers (material.js)
@@ -57,11 +60,14 @@ MALE_FRONT, MALE_TEMPLE = 0.066, 0.046
 
 # cranium of the head sculpt the parts are being built for (humans_body.cranium; set per base)
 CR_C, CR_R = cranium('male')
+SH_Y = -0.20          # head-local height of the shoulder joints of the base being built
 
 
-def set_cranium(face):
-    global CR_C, CR_R
+def set_cranium(face, sh_y=None):
+    global CR_C, CR_R, SH_Y
     CR_C, CR_R = cranium(face)
+    if sh_y is not None:
+        SH_Y = sh_y
 
 
 def _theta(P):
@@ -160,40 +166,51 @@ def local_body(body, hs, hc):
     return Fn(f, (body.lo - hc) / hs, (body.hi - hc) / hs)
 
 
-def falling_hair(bl, length, width, thick, top, seed, wave=0.0, front_z=-0.004, spread=0.03, ends='U'):
+def falling_hair(bl, length, width, thick, top, seed, wave=0.0, front_z=-0.004, spread=0.03, ends='U', sh_y=None):
     """Long hair below the crown: the column of hair that falls from the head over the nape and
-    the shoulders down to `length` (head-local y of the ends at the back), minus the body.
-    width: half width at the ears; spread: extra half width where it falls over the shoulders."""
+    down the back to `length` (head-local y of the ends at the back), minus the body.
+    width: half width at the ears; spread: extra half width where it falls on the upper back.
+    Below the shoulder line (sh_y, head-local) the hair hangs behind the shoulders (on the back
+    over the shoulder blades), never over the deltoids, so arms reaching forward stay clear of it.
+    The returned node carries .tip(P): height above the ragged ends (for the alpha taper)."""
     L = -length
     yh = CR_C[1] - 0.02
+    # (real thickness: ~2.5-3 cm of hair at the sides of the head, a full column down the back)
     keys = [(0.0, CR_R[0] + top * 0.8, CR_R[2] + top, 0, 0.0),
             (0.30, width, CR_R[2] * 0.82 + thick, 0, 0.012),
-            (0.55, width + spread * 0.7, CR_R[2] * 0.66 + thick, 0, 0.022),
-            (0.8, width + spread, CR_R[2] * 0.58 + thick * 0.9, 0, 0.030),
-            (1.0, width + spread * 0.9, CR_R[2] * 0.52 + thick * 0.7, 0, 0.032)]
+            (0.55, width + spread * 0.7, CR_R[2] * 0.68 + thick, 0, 0.024),
+            (0.8, width + spread, CR_R[2] * 0.60 + thick * 0.9, 0, 0.034),
+            (1.0, width + spread * 0.85, CR_R[2] * 0.54 + thick * 0.75, 0, 0.038)]
     # (Loft frame: x = +X, y = down, z = forward; keys' oz moves the column backwards)
     col = Loft((0, yh, CR_C[2]), (0, L, CR_C[2]), (1, 0, 0),
                [(t, rx, rz, 0, -oz) for t, rx, rz, _, oz in keys], n=2.4)
     head_env = cranium_offset(lambda P: top + 0.004 * sstep(0.0, 0.08, P[:, 1]))
     env = Union([head_env, col], k=0.03)
+    shy = -0.20 if sh_y is None else sh_y
+
+    def tipf(P):
+        ax = np.abs(P[:, 0]) / max(width + spread, 1e-3)
+        tip = L + (0.035 if ends == 'U' else 0.07) * ax ** 2 + 0.005 * clump_noise(P * np.array([1, 0.0, 1]), seed + 3, 70.0, 5)
+        return P[:, 1] - tip
 
     def shape(P):
         d = env.eval(P)
         th = _theta(P)
         # clump grooves down the outside, stronger towards the ends; gentle waves for wavy hair
-        dn = (0.0028 + 0.0028 * sstep(-0.05, -0.25, P[:, 1])) * strand_noise(P, seed)
+        dn = (0.0024 + 0.0022 * sstep(-0.05, -0.25, P[:, 1])) * strand_noise(P, seed)
         dw = wave * np.sin(P[:, 1] * 60.0 + 3.0 * np.sin(th * 3.0)) * sstep(-0.05, -0.2, P[:, 1])
-        # ragged U / V shaped ends, the sides a little shorter than the back
-        ax = np.abs(P[:, 0]) / max(width + spread, 1e-3)
-        tip = L + (0.035 if ends == 'U' else 0.07) * ax ** 2 + 0.009 * clump_noise(P * np.array([1, 0.0, 1]), seed + 3, 70.0, 5)
-        cut = tip - P[:, 1]
+        cut = -tipf(P)
         # keep in front of the ears clear of the curtain: the face and the cheeks
         fz = front_z + 0.03 * sstep(-0.02, -0.12, P[:, 1])
         front = fz - P[:, 2]
-        return np.maximum(np.maximum(d - dn - dw, cut), front * (1.0 - sstep(0.03, 0.09, P[:, 1])))
+        # below the jaw the curtain goes back behind the shoulders (more so the further out it is)
+        bz = 0.006 + 0.035 * sstep(0.06, 0.12, np.abs(P[:, 0]))
+        behind = (bz - P[:, 2]) * sstep(shy + 0.10, shy + 0.02, P[:, 1])
+        return np.maximum(np.maximum(np.maximum(d - dn - dw, cut), front * (1.0 - sstep(0.03, 0.09, P[:, 1]))), behind)
     hair = Fn(shape, np.array([-0.2, -length - 0.05, -0.15]), np.array([0.2, 0.17, 0.2]))
     # minus the body inflated a little (hair lies on the skin and the clothes over it)
-    hair = Subtract(hair, Fn(lambda P: bl.eval(P) - 0.004, bl.lo - 0.01, bl.hi + 0.01), k=0.006)
+    hair = Subtract(hair, Fn(lambda P: bl.eval(P) - 0.006, bl.lo - 0.01, bl.hi + 0.01), k=0.006)
+    hair.tip = tipf
     return hair
 
 
@@ -202,21 +219,116 @@ def face_clear(hair, kid=False):
     return hair
 
 
+def crown_volume(h):
+    """A little lift at the crown behind the top of the head, with a cowlick whorl (short cuts)."""
+    lift = Ellipsoid((0.0, CR_C[1] + CR_R[1] - 0.012, CR_C[2] + 0.030), (0.046, 0.010 + h, 0.048))
+    whorl = Ellipsoid((0.014, CR_C[1] + CR_R[1] - 0.016, CR_C[2] + 0.050), (0.016, 0.006 + h * 0.6, 0.014),
+                      R=rot_xyz(-30, 25, 0))
+    return Union([lift, whorl], k=0.012)
+
+
+def ribbon(path, width, thick, folds=0.0, seed=1, taper=0.25, tip_cut=0.6):
+    """Flat band of cloth along a polyline `path` [(x, y, z)...]: `width` (half, m) across in x,
+    `thick` (half) along the path's normal in the y-z plane; soft lengthwise folds (pleats) and a
+    slanted cut end. Used for headscarf tails."""
+    pts = np.asarray(path, dtype=np.float64)
+    seg = pts[1:] - pts[:-1]
+    segl = np.linalg.norm(seg, axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(segl)])
+    Ltot = cum[-1]
+    lo = pts.min(0) - width - 0.03
+    hi = pts.max(0) + width + 0.03
+
+    def f(P):
+        best = np.full(len(P), 1e9)
+        lat = np.zeros(len(P)); nrm = np.zeros(len(P)); u = np.zeros(len(P))
+        for i in range(len(seg)):
+            a = pts[i]
+            d = seg[i] / segl[i]
+            pa = P - a
+            t = np.clip(pa @ d, 0, segl[i])
+            c = a + np.outer(t, d)
+            q = P - c
+            # normal of the band in the y-z plane (perpendicular to the segment)
+            nyz = np.array([0.0, -d[2], d[1]])
+            nyz /= max(np.linalg.norm(nyz), 1e-9)
+            ql = q[:, 0]
+            qn = q @ nyz
+            dist = np.abs(qn) + 0.3 * np.maximum(np.abs(ql) - width, 0)
+            m = dist < best
+            best[m] = dist[m]; lat[m] = ql[m]; nrm[m] = qn[m]; u[m] = (cum[i] + t)[m]
+        uu = u / max(Ltot, 1e-6)
+        w = width * (1.0 - taper * uu)
+        # pleats: the cloth ripples across its width, more towards the end
+        fold = folds * np.sin(lat / max(width, 1e-3) * 4.2 + seed) * (0.4 + 0.6 * uu)
+        dn = np.abs(nrm - fold) - thick
+        dl = np.abs(lat) - w
+        # slanted cut end, and the start buried in the knot
+        de = (u - (Ltot - tip_cut * width * (0.5 + 0.5 * lat / max(width, 1e-3)))) 
+        dd = np.maximum(np.maximum(dn, dl), np.maximum(de, -u - 0.01))
+        return dd - 0.0015
+    return Fn(f, lo, hi)
+
+
+def tichel(body_l):
+    """Headscarf tied as a tichel: cloth over the whole head with ~2.5 cm of volume (gathered
+    folds over the crown), the hair tucked in, a gathered knot / bun of fabric at the nape and
+    two wide flat tails hanging from it down the back of the neck."""
+    R = REGION['hair']
+    base = cap_hair(0.024, 0.021, R, front=0.050, temple=0.042, burn=-0.004, back=-0.088, fade=0.006, burn_w=0.6,
+                    thick_back=0.030, noise=0.0)
+    # (cap_hair cuts round the ears; the scarf covers them: fill that back in)
+    ears = Union([Ellipsoid((s * (CR_R[0] + 0.004), -0.010, 0.012), (0.018, 0.034, 0.026)) for s in (-1, 1)])
+    base = Union([base, Intersect(ears, Fn(lambda P: hairline(P, 0.05, 0.042, 0.022, -0.004, -0.088, 0.6) - P[:, 1],
+                                           (-0.2, -0.2, -0.2), (0.2, 0.2, 0.2)), k=0.004)], k=0.008)
+    # gathered folds radiating over the crown towards the knot
+    def folds(P):
+        th = np.arctan2(P[:, 0], -(P[:, 2] - CR_C[2]))
+        return 0.0028 * np.sin(th * 9.0 + 1.3 * np.sin(P[:, 1] * 40.0)) * sstep(-0.02, 0.06, P[:, 1])
+    cap = Fn(lambda P: base.eval(P) - folds(P), base.lo - 0.01, base.hi + 0.01)
+    zb = CR_C[2] + CR_R[2]
+    knot = Ellipsoid((0, -0.040, zb + 0.016), (0.046, 0.036, 0.034))
+    knot2 = Ellipsoid((0.008, -0.020, zb + 0.008), (0.040, 0.030, 0.028), R=rot_xyz(0, 0, 18))
+    kn0 = Union([knot, knot2], k=0.012)
+    kn = Fn(lambda P: kn0.eval(P) - 0.004 * clump_noise(P, 71, 120.0), kn0.lo - 0.01, kn0.hi + 0.01)
+    tails = []
+    for s, sd in ((-1, 3.0), (1, 5.0)):
+        path = []
+        for x, y, z in ((s * 0.016, -0.050, zb + 0.020), (s * 0.024, -0.100, zb), (s * 0.030, -0.150, zb),
+                        (s * 0.036, -0.200, zb), (s * 0.040, -0.250, zb)):
+            if body_l is not None and y < -0.07:
+                # lying on the back of the neck and the upper back
+                z = surface_z(body_l, x, y, +1, z0=0.0, zmax=0.3) + 0.010
+            path.append((x, y, z))
+        tails.append(ribbon(path, 0.036, 0.005, folds=0.004, seed=sd, taper=0.2))
+    n = Union([cap, kn], k=0.012)
+    n = Union([n] + tails, k=0.010)
+    if body_l is not None:
+        n = Subtract(n, Fn(lambda P: body_l.eval(P) - 0.004, body_l.lo, body_l.hi), k=0.006)
+    return n
+
+
 def hair_part(name, body_l=None):
     H = {'head': 1}
     R = REGION['hair']
     mf, mt = MALE_FRONT, MALE_TEMPLE
     if name == 'hair_short':
-        # the front edge thins out over ~2 cm (no bowl-cut ledge); a little lift on top; a full
-        # occiput tapering to a clipper-faded nape
-        n = cap_hair(0.013, 0.0055, R, front=mf, temple=mt, noise=0.0014, fade=0.02, thick_back=0.009, back=-0.070)
+        # the front edge thins out over ~2 cm (no bowl-cut ledge); a little lift on top; volume at
+        # the crown with a cowlick whorl; a full occiput tapering to a clipper-faded nape
+        n = cap_hair(0.013, 0.0055, R, front=mf, temple=mt, noise=0.0016, fade=0.02, thick_back=0.009, back=-0.070)
         n = Union([n, Ellipsoid((0.006, 0.086, -0.040), (0.050, 0.019, 0.032))], k=0.018)
+        n = Union([n, crown_volume(0.006)], k=0.02)
     elif name == 'hair_buzz':
         n = cap_hair(0.0045, 0.0032, R, front=mf, temple=mt, fade=0.006, thick_back=0.004, back=-0.068)
     elif name == 'hair_medium':
         n = cap_hair(0.019, 0.010, R, front=mf - 0.004, temple=mt - 0.003, noise=0.0025, seed=3, fade=0.02,
                      thick_back=0.015, back=-0.078)
         n = Union([n, Ellipsoid((0.012, 0.086, -0.048), (0.050, 0.024, 0.030))], k=0.02)
+        n = Union([n, crown_volume(0.008)], k=0.02)
+    elif name == 'hair_wisp':
+        # a toddler's fine, sparse baby hair: a thin cap, a few millimetres, wispy at the edges
+        n = cap_hair(0.0065, 0.004, R, front=0.064, temple=0.048, noise=0.0018, seed=61, fade=0.016,
+                     thick_back=0.006, back=-0.062)
     elif name == 'hair_curly':
         # tight curls: an even, bumpy volume all round (children: a shorter crop)
         k = 0.65 if CR_R[0] > 0.076 else 1.0
@@ -227,7 +339,7 @@ def hair_part(name, body_l=None):
         n = cap_hair(0.016, 0.006, R, front=mf - 0.002, temple=mt, noise=0.0016, seed=13, fade=0.02,
                      thick_back=0.010, back=-0.070)
         sweep = Ellipsoid((0.022, 0.086, -0.032), (0.058, 0.022, 0.058), R=rot_xyz(0, 0, -12))
-        n = Union([n, sweep], k=0.02)
+        n = Union([n, sweep, crown_volume(0.006)], k=0.02)
     elif name == 'hair_receding':
         n = cap_hair(0.010, 0.006, R, front=0.074, temple=0.066, noise=0.0012, seed=17, thick_back=0.008)
     elif name == 'hair_balding':
@@ -238,26 +350,22 @@ def hair_part(name, body_l=None):
     elif name == 'hair_pixie':
         n = cap_hair(0.022, 0.012, R, front=0.052, noise=0.0035, seed=5, back=-0.070, thick_back=0.016)
     elif name == 'scarf':
-        n = cap_hair(0.014, 0.012, R, front=0.050, temple=0.040, burn=0.02, back=-0.07, fade=0.004, burn_w=0.0,
-                     thick_back=0.016)
-        knot = Ellipsoid((0, -0.045, CR_C[2] + CR_R[2] + 0.002), (0.040, 0.030, 0.030))
-        tail = RoundCone((0, -0.05, CR_C[2] + CR_R[2] + 0.008), (0.02, -0.15, CR_C[2] + CR_R[2]), 0.022, 0.012)
-        n = Union([n, knot, tail], k=0.015)
-        if body_l is not None:
-            n = Subtract(n, Fn(lambda P: body_l.eval(P) - 0.003, body_l.lo, body_l.hi), k=0.006)
+        n = tichel(body_l)
     elif name == 'hair_curlyf':
         # a full head of curls falling to the shoulders: big, bumpy, rounded volume
         capn = cap_hair(0.032, 0.026, R, front=0.052, temple=0.040, back=-0.060, noise=0.007, seed=29, thick_back=0.034)
-        fall = falling_hair(body_l, 0.215, CR_R[0] + 0.040, 0.034, 0.034, 31, spread=0.035, wave=0.0)
+        fall = falling_hair(body_l, 0.215, CR_R[0] + 0.040, 0.034, 0.034, 31, spread=0.030, wave=0.0, sh_y=SH_Y)
         bumps = Fn(lambda P: fall.eval(P) - 0.006 * clump_noise(P, 37, 75.0), fall.lo, fall.hi)
         n = face_clear(Union([capn, bumps], k=0.02))
+        n.tip = fall.tip
     else:
         # longer female styles share a fuller cap
         capn = cap_hair(0.021, 0.013, R, front=0.054, temple=0.040, back=-0.060, noise=0.002, seed=11, thick_back=0.020)
         if name == 'hair_long':
-            # falls past the shoulders onto the shoulder blades
-            fall = falling_hair(body_l, 0.36, CR_R[0] + 0.020, 0.022, 0.022, 41, spread=0.040, wave=0.0015)
+            # falls past the shoulders onto the shoulder blades, behind the shoulders
+            fall = falling_hair(body_l, 0.36, CR_R[0] + 0.027, 0.030, 0.024, 41, spread=0.026, wave=0.0015, sh_y=SH_Y)
             n = face_clear(Union([capn, fall], k=0.02))
+            n.tip = fall.tip
         elif name == 'hair_ponytail':
             # hair drawn back tight to a tie at the back of the crown; the tail hangs from it and
             # rests on the nape and upper back
@@ -279,9 +387,10 @@ def hair_part(name, body_l=None):
                                 thick_back=0.014), bun], k=0.012)
         elif name == 'hair_bob':
             # chin length all round: falls from the crown to just above the shoulders
-            fall = falling_hair(body_l, 0.105, CR_R[0] + 0.017, 0.020, 0.020, 53, spread=0.008, ends='U')
+            fall = falling_hair(body_l, 0.105, CR_R[0] + 0.020, 0.022, 0.022, 53, spread=0.008, ends='U', sh_y=SH_Y)
             n = face_clear(Union([capn, fall], k=0.02))
             n = Subtract(n, Ellipsoid((0, -0.028, -0.095), (0.078, 0.092, 0.095)), k=0.008)
+            n.tip = fall.tip
     return _tag(n, REGION['hair'], H)
 
 
@@ -412,21 +521,128 @@ def glasses_part():
 
 
 
-def bag_part(name, T):
+def strap(pts, nrm, width, thick, bones, region):
+    """Flat strap along a polyline: half width across (perpendicular to the path and to the
+    surface normal at each point), half thickness along the normal; rounded edges."""
+    P0 = np.asarray(pts, dtype=np.float64)
+    N0 = np.asarray(nrm, dtype=np.float64)
+    seg = P0[1:] - P0[:-1]
+    segl = np.linalg.norm(seg, axis=1)
+    lo = P0.min(0) - width - 0.02
+    hi = P0.max(0) + width + 0.02
+
+    def f(P):
+        best = np.full(len(P), 1e9, np.float64)
+        for i in range(len(seg)):
+            d = seg[i] / segl[i]
+            n = N0[i] + N0[i + 1]
+            n = n - d * (n @ d)
+            n /= max(np.linalg.norm(n), 1e-9)
+            b = np.cross(d, n)
+            pa = P - P0[i]
+            t = pa @ d
+            e = np.maximum(np.maximum(-t, t - segl[i]), 0.0)
+            qn = np.abs(pa @ n) - thick
+            qb = np.abs(pa @ b) - width
+            q = np.stack([np.maximum(qn + 0.002, 0), np.maximum(qb + 0.002, 0), e], 1)
+            dd = np.linalg.norm(q, axis=1) + np.minimum(np.maximum(qn, qb) + 0.002, 0) - 0.002
+            best = np.minimum(best, dd)
+        return best
+    return Fn(f, lo, hi, region=region, bones=bones)
+
+
+def on_surface(body, p, off, n_hint):
+    """Point on the body's surface (pushed out by off) nearest to p, and the surface normal there."""
+    q = np.asarray(p, dtype=np.float64)[None, :].astype(np.float32)
+    node = S.Fn(lambda P: body.eval(P) - off, body.lo - off, body.hi + off)
+    q = S.project(node, q, 6)
+    n = S.normals(body, q.astype(np.float32))[0]
+    if n @ np.asarray(n_hint) < 0:
+        n = -n
+    return q[0].astype(np.float64), n
+
+
+def backpack_part(T, body):
+    """Backpack fitted to this body: a soft pack (bulging back panel, sagging bottom, rounded
+    top) resting on the shoulder blades, and two padded straps from its top corners over the
+    trapezius, down the front of the chest and back under the arms to its lower corners."""
+    sx, sy, sz = T['sx'], T['sy'], T['sz']
+    R = REGION['bag']
+    shY = T['shoulder'][1]
+    shx = T['shoulder'][0]
+    k = T['H'] / 1.76
+    young = T['kind'] in YOUNG
+    # pack size: an adult day pack ~42 x 30 x 13 cm; children's school packs relatively bigger
+    hh, hw, hd = (0.185 * sy, 0.135 * sx, 0.050 * sz) if not young else (0.20 * sy, 0.15 * sx, 0.06 * sz)
+    yc = shY - 0.035 * sy - hh
+    # the back surface (with clothes) at the pack's top and bottom: the pack's front plane leans on both
+    yt, yb = yc + hh * 0.75, yc - hh * 0.8
+    zt = max(surface_z(body, x, yt, +1) for x in np.linspace(-hw * 0.7, hw * 0.7, 5)) + 0.012 * k
+    zbm = max(surface_z(body, x, yb, +1) for x in np.linspace(-hw * 0.7, hw * 0.7, 5)) + 0.012 * k
+    tilt = np.degrees(np.arctan2(zt - zbm, yt - yb))          # + : the top further back than the bottom
+    zc = 0.5 * (zt + zbm) + hd
+    Rp = rot_xyz(tilt, 0, 0)
+    bones = {'spine2': 0.85, 'spine1': 0.15}
+    up = Rp @ np.array([0.0, 1.0, 0.0])
+    back = Rp @ np.array([0.0, 0.0, 1.0])
+    c = np.array([0.0, yc, zc])
+    # soft body: a rounded box, its back panel bulging, the load sagging into the bottom
+    shell = RoundBox(c, (hw - 0.03 * k, hh - 0.03 * k, hd * 0.55), 0.034 * k, R=Rp)
+    belly = Ellipsoid(c + back * (hd * 0.30) - up * (hh * 0.15), (hw * 0.92, hh * 0.86, hd * 0.95), R=Rp)
+    sag = Ellipsoid(c - up * (hh * 0.62) + back * (hd * 0.15), (hw * 0.95, hh * 0.32, hd * 1.02), R=Rp)
+    flat = Fn(lambda P: (P - c) @ (-back) - hd * 0.92, c - 0.5, c + 0.5)          # the front panel lies flat on the back
+    pack = Union([shell, belly, sag], k=0.03 * k)
+    pack = Intersect(pack, flat, k=0.012 * k)
+    # front pocket and the grab handle at the top
+    pocket = Ellipsoid(c + back * (hd * 1.05) - up * (hh * 0.42), (hw * 0.68, hh * 0.36, hd * 0.42), R=Rp)
+    pack = Union([pack, pocket], k=0.02 * k)
+    top = c + up * (hh * 0.98) + back * (hd * 0.1)
+    handle = RoundCone(top + np.array([-0.028 * k, 0, 0]), top + np.array([0.028 * k, 0.004 * k, 0]), 0.0065 * k, 0.0065 * k)
+    pack = Union([pack, handle], k=0.006 * k)
+    pack = Fn(pack.eval, pack.lo, pack.hi, region=R, bones=bones)
+    # straps: from the top corners over the trapezius, down the chest, under the arm to the bottom
+    straps = []
+    off = 0.014 * k
+    zf_front = lambda x, y: surface_z(body, x, y, -1)
+    for s_ in (-1, 1):
+        side = 'R' if s_ > 0 else 'L'
+        xm = s_ * (shx * 0.55)
+        ctrl = [
+            (c + up * (hh * 0.86) - back * (hd * 0.6) + np.array([s_ * hw * 0.42, 0, 0]), (0, 0.3, 1)),
+            (np.array([xm, shY + 0.05 * sy, 0.05 * sz]), (0, 1, 0.4)),
+            (np.array([xm * 1.04, shY + 0.045 * sy, -0.01 * sz]), (0, 1, -0.3)),
+            (np.array([xm * 1.12, shY - 0.03 * sy, zf_front(xm * 1.12, shY - 0.03 * sy)]), (0, 0.2, -1)),
+            (np.array([xm * 1.28, shY - 0.13 * sy, zf_front(xm * 1.28, shY - 0.13 * sy)]), (s_ * 0.2, 0, -1)),
+            (np.array([s_ * shx * 0.93, shY - 0.22 * sy, -0.02 * sz]), (s_, 0, -0.2)),
+            (np.array([s_ * shx * 0.80, yc - hh * 0.55, zbm + 0.02 * sz]), (s_, 0, 0.6)),
+            (c - up * (hh * 0.78) - back * (hd * 0.5) + np.array([s_ * hw * 0.72, 0, 0]), (s_ * 0.5, 0, 1)),
+        ]
+        pts, nrm = [], []
+        for i, (p, h) in enumerate(ctrl):
+            if 0 < i < len(ctrl) - 1:
+                p, n = on_surface(body, p, off, h)
+            else:
+                n = np.asarray(h, dtype=np.float64)
+                n = n / np.linalg.norm(n)
+            pts.append(p)
+            nrm.append(n)
+        sb = (lambda P, sd=side: (lambda w: {'spine2': 1.0 - w, 'clav' + sd: w})(
+            0.35 * sstep(shY - 0.10 * sy, shY + 0.02 * sy, P[:, 1]) * sstep(0.02, -0.03, P[:, 2])))
+        straps.append(strap(pts, nrm, 0.021 * k if not young else 0.019 * k, 0.0042 * k, sb, R))
+    return Union([pack] + straps, k=0.008 * k)
+
+
+def bag_part(name, T, body=None):
     sx, sy, sz = T['sx'], T['sy'], T['sz']
     R = REGION['bag']
     shY = T['shoulder'][1]
     if name == 'backpack':
+        if body is not None:
+            return backpack_part(T, body)
         c = (0, shY - 0.20 * sy, 0.165 * sz)
-        body = RoundBox(c, (0.125 * sx, 0.175 * sy, 0.045 * sz), 0.03 * sz, R=rot_xyz(-6, 0, 0),
-                        region=R, bones={'spine2': 0.85, 'spine1': 0.15})
-        pocket = RoundBox((0, shY - 0.29 * sy, 0.225 * sz), (0.09 * sx, 0.07 * sy, 0.02 * sz), 0.015,
-                          region=R, bones={'spine2': 0.8, 'spine1': 0.2})
-        handle = RoundCone((-0.03 * sx, shY - 0.01 * sy, 0.13 * sz), (0.03 * sx, shY - 0.01 * sy, 0.13 * sz), 0.008, 0.008,
-                           region=R, bones={'spine2': 1})
-        straps = [RoundCone((s * 0.085 * sx, shY + 0.005 * sy, 0.06 * sz), (s * 0.095 * sx, shY - 0.03 * sy, -0.02 * sz),
-                            0.012, 0.012, region=R, bones={'spine2': 1}) for s in (-1, 1)]
-        return Union([body, pocket, handle] + straps, k=0.01)
+        body_ = RoundBox(c, (0.125 * sx, 0.175 * sy, 0.045 * sz), 0.03 * sz, R=rot_xyz(-6, 0, 0),
+                         region=R, bones={'spine2': 0.85, 'spine1': 0.15})
+        return body_
     if name == 'shoulderbag':
         hipY = T['hip'][1]
         c = (-0.205 * sx, hipY + 0.04 * sy, 0.01 * sz)
@@ -459,7 +675,7 @@ def part_node(kind, name, body=None):
     rests on it). Returns (node, group, meshing resolution factor)."""
     T = TEMPLATES[kind]
     hs, hc = T['headS'], np.array(T['headC'], dtype=float)
-    set_cranium(T['face'])
+    set_cranium(T['face'], (T['shoulder'][1] - hc[1]) / hs)
     if name.startswith('hair') or name == 'scarf':
         bl = local_body(body, hs, hc) if body is not None else None
         sh_l = (T['shoulder'][1] - hc[1]) / hs
@@ -478,7 +694,38 @@ def part_node(kind, name, body=None):
         x = Xform(g, hs, hc)
         x.lens, x.frame = Xform(g.lens, hs, hc), Xform(g.frame, hs, hc)
         return x, 'glasses', None
-    return bag_part(name, T), 'bag', 1.0
+    return bag_part(name, T, body), ('pack' if name == 'backpack' else 'bag'), 1.0
+
+
+def drop_islands(V, T, frac):
+    """Remove connected pieces with fewer than frac x the largest piece's triangles."""
+    n = len(V)
+    parent = np.arange(n)
+
+    def find(i):
+        r = i
+        while parent[r] != r:
+            r = parent[r]
+        while parent[i] != r:
+            parent[i], i = r, parent[i]
+        return r
+    E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]]])
+    for a, b in E:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    roots = np.array([find(i) for i in range(n)])
+    troot = roots[T[:, 0]]
+    ids, cnt = np.unique(troot, return_counts=True)
+    keep_ids = ids[cnt >= frac * cnt.max()]
+    keep = np.isin(troot, keep_ids)
+    Tk = T[keep]
+    used = np.unique(Tk)
+    remap = np.full(n, -1, np.int64)
+    remap[used] = np.arange(len(used))
+    if (~keep).any():
+        print(f'[humans]   dropped {int((~keep).sum())} tris in {len(ids) - len(keep_ids)} islands', flush=True)
+    return V[used], remap[Tk]
 
 
 def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=None):
@@ -499,6 +746,10 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
         V, Tr = mesh_fn(node, lo, hi, hres)
         if len(Tr) == 0:
             continue
+        if group in ('hair', 'long', 'pack'):
+            # no stray islands (a sliver of hair left between the curtain and the body would show
+            # as a dark blob on the clothes)
+            V, Tr = drop_islands(V, Tr, 0.02)
         targets = LOD_TRIS[group]
         lods = decimate_fn(V, Tr, [t if t else 8 for t in targets])
         lod_attrs = []
@@ -506,7 +757,7 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
             if not targets[li]:
                 lod_attrs.append(None)
                 continue
-            a = attr_fn(node, body, Vl, Tl, head=group != 'bag')
+            a = attr_fn(node, body, Vl, Tl, head=group in ('hair', 'long', 'beard', 'hat', 'glasses'))
             if name in ('cap', 'fedora', 'sunhat'):
                 # hat band (dark ribbon above the brim) for the shader
                 y = (Vl[:, 1] - hc[1]) / hs
@@ -522,9 +773,15 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
                 a['aux'] = np.stack([np.clip(node.child.edge(ql), 0, 1), np.zeros(len(Vl))], 1)
             elif group in ('hair', 'long'):
                 # aux0: how far down the hair hangs below the jaw (0 on the head .. 1 at the ends),
-                # for the runtime sway with the gait
+                # for the runtime sway with the gait; aux1: the last few centimetres above the
+                # ragged ends (0 at the very end .. 1 at 4 cm up) for the thinning alpha taper
                 yl = (a['P'][:, 1] - hc[1]) / hs
-                a['aux'] = np.stack([np.clip((-0.06 - yl) / 0.30, 0, 1), np.zeros(len(Vl))], 1)
+                tipd = np.ones(len(Vl))
+                inner = getattr(node, 'child', None)
+                if inner is not None and hasattr(inner, 'tip'):
+                    ql = ((a['P'] - hc) / hs).astype(np.float64)
+                    tipd = np.clip(inner.tip(ql) / 0.04, 0, 1)
+                a['aux'] = np.stack([np.clip((-0.06 - yl) / 0.30, 0, 1), tipd], 1)
             lod_attrs.append((a, Tl))
         out.append({'id': PART_IDS[name], 'name': name, 'kind': group, 'lods': lod_attrs})
     return out

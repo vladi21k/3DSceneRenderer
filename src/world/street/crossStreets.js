@@ -200,7 +200,7 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     return [m.start.x + m.along.x * a + m.dirOut.x * x, b0 + (target(a) - b0) * k + localH(a, x, road) + lift, m.start.z + m.along.z * a + m.dirOut.z * x];
   };
   const F = sideFrame(m, pt, road);
-  const plan = sidePlan(c, side, m, F);
+  const plan = sidePlan(c, side, m, F, EDGE_X);
   yield 'cross';
   // wear first: the paint lies over it
   yield* buildSideWear(F, plan, lines);

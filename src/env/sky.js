@@ -162,12 +162,16 @@ uniform sampler2D uSkyIrr;
 uniform sampler2D uCloudTex;
 uniform vec3 uSunDirA;
 uniform vec3 uSunGround;      // sun illuminance at ground level (rgb, scene units)
+uniform vec3 uSunCloud;       // sun illuminance at cloud level (lights them a little longer)
 uniform vec3 uCamPosW;
 uniform vec2 uCloudOffset;
 uniform vec2 uCirrusOffset;
 uniform vec2 uWindDir;
 uniform float uCloudCover;
+uniform float uCloudScale;
+uniform float uCloudTop;
 uniform float uCirrus;
+uniform float uAltocu;
 uniform float uSunDiscScale;
 uniform float uPixelAngle;    // radians per pixel (mip selection for the cloud march)
 #ifdef ENV_CAPTURE
@@ -191,9 +195,24 @@ ${CLOUD_MARCH_GLSL}
 // composite cirrus (and, for the environment capture, the cumulus) over L
 vec3 clouds(vec3 dir, vec3 L) {
   if (dir.y < 0.004) return L;
-  vec3 sunL = uSunGround;      // direct sun reaching the cloud layer (close enough to the ground value)
+  vec3 sunL = uSunCloud;       // direct sun reaching the cloud layers
   vec3 ambUp = irr(0.0) / ATM_PI;
   float cosT = dot(dir, uSunDirA);
+
+  // --- altocumulus (4 km): patches of small rounded cloudlets
+  if (uAltocu > 0.0) {
+    float t = 4200.0 / dir.y;
+    vec2 p = uCamPosW.xz + dir.xz * t + uCirrusOffset * 0.5;
+    float cell = texture2D(uCloudTex, p / 1300.0 + 0.61).r;
+    float sheet = texture2D(uCloudTex, p / 70000.0 + 0.23).b;
+    float c = smoothstep(0.5, 0.85, cell) * smoothstep(0.4, 0.75, sheet) * uAltocu;
+    float a = c * 0.75;
+    float ph = mix(atmPhaseHG(cosT, 0.6), atmPhaseHG(cosT, 0.0), 0.5) * 4.0 * ATM_PI;
+    // lit from above and the side; the shaded underside sees the sky
+    vec3 col = sunL * ph * 0.2 * (0.55 + 0.45 * cell) + ambUp * 1.05;
+    float fade = exp(-t / 40000.0);
+    L += a * fade * (col - L);
+  }
 
   // --- cirrus (8 km)
   {
@@ -353,8 +372,13 @@ export class Sky {
       uCloudOffset: { value: new THREE.Vector2(3100, -5200) },
       uCirrusOffset: { value: new THREE.Vector2(12000, 4000) },
       uWindDir: { value: new THREE.Vector2(0.8, 0.6) },
+      uSunCloud: { value: new THREE.Vector3(3, 3, 3) },
+      // weather regime (set by env from the seed): cumulus cover, cell size, depth (m), cirrus, altocumulus
       uCloudCover: { value: 0.66 },
+      uCloudScale: { value: 1 },
+      uCloudTop: { value: 1300 },
       uCirrus: { value: 0.5 },
+      uAltocu: { value: 0 },
       uSunDiscScale: { value: 1.0 },   // physical disc radiance (the environment capture omits the disc)
       uPixelAngle: { value: 0.0003 },
       // canyon model (env capture only)

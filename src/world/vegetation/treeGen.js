@@ -557,7 +557,7 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
     const nn = new THREE.Vector3().copy(UP).addScaledVector(tmp, Math.tan(tilt));
     nn.addScaledVector(d, -nn.dot(d)).normalize();
     nn.applyAxisAngle(d, rng.range(-0.35, 0.35));
-    const size = fol.card * rng.range(0.82, 1.15);
+    const size = fol.card * (tpl.cardScale || 1) * rng.range(0.82, 1.15);
     // centred on the shoot: the attachment edge sits 0.45 * size behind it
     const c = new THREE.Vector3().copy(p).addScaledVector(d, size * 0.05);
     // keep the leaf tips out of the tram's clearance envelope on the track side (-x)

@@ -267,7 +267,7 @@ const ASPHALT_FRAG = /* glsl */`
     // fill: shifts the asphalt underneath towards fresh black binder or aged grey, mottled
     float mot = lnFbm( wp * 0.8 + 13.0, fpw * 0.8, 3 );
     vec3 fillCol = tone < 0.0 ? vec3( 0.02, 0.019, 0.018 ) : vec3( 0.2, 0.195, 0.185 );
-    float aFill = cFill * abs( tone ) * ( 0.42 + 0.33 * mot ) * ( 0.85 + 0.3 * grit );
+    float aFill = cFill * abs( tone ) * ( 0.5 + 0.35 * mot ) * ( 0.85 + 0.3 * grit );
     float aSeal = cSeal * 0.88;
     float a = aSeal + aFill * ( 1.0 - aSeal );
     if ( a < 0.002 ) discard;
