@@ -1,65 +1,49 @@
-// Wheel/rail sounds: the rolling-noise texture loop and the impact family
-// (rail joints, switch frogs, check-rail scrape, brake stick-slip at standstill).
-import { arng, Biquad, Resonator, SlowNoise, addMode, noiseGen, normalize, normalizeRms, makeLoop, fadeEnds } from '../dsp.js';
+// Wheel/rail one-shots: groove grit grains, weld thumps, the impact family (rail
+// joints, switch frogs, check-rail scrape) and the brake stick-slip at standstill.
+// The rolling noise itself is synthesized live (layers/rolling.js).
+import { arng, Biquad, Resonator, SlowNoise, addMode, noiseGen, normalize, fadeEnds, smoothstep, TAU } from '../dsp.js';
 
-export const ROLL_VREF = 10;             // m/s the texture is synthesized at (playbackRate = v / VREF)
 export const WHEEL_CIRC = 2.07;          // m, 660 mm wheels
+export const CREAK_LEAD = 1.3;           // s from the start of the brake creak to standstill
 
 /**
- * Rolling noise heard in the cab at VREF. Everything in it is excitation that scales
- * with speed (roughness, corrugation, wheel out-of-roundness, grit in the groove), so
- * the live layer only changes playbackRate and level; fixed body resonances are
- * applied by live filters afterwards.
+ * Grit in the rail groove: one short crackle grain. The rolling layer fires these at
+ * random, at a rate proportional to speed, so the crackle never forms a pattern.
  */
-export function rollingTexture(sr) {
-  const period = WHEEL_CIRC / ROLL_VREF;           // one wheel revolution at VREF
-  const n = Math.round(32 * period * sr);          // loop = whole number of revolutions
-  const fade = Math.floor(0.25 * sr);
-  const chans = [];
-  const common = synthRoll(sr, n + fade, 'c', period);
-  for (let ch = 0; ch < 2; ch++) {
-    const own = synthRoll(sr, n + fade, ch, period);
-    const x = new Float32Array(n + fade);
-    for (let i = 0; i < x.length; i++) x[i] = common[i] * 0.8 + own[i] * 0.6;
-    chans.push(makeLoop(x, n, fade));
+export function grit(sr, k) {
+  const rng = arng('grit', k);
+  const n = Math.floor(0.03 * sr);
+  const out = new Float32Array(n);
+  const nz = noiseGen(rng);
+  const hp = new Biquad(sr, 'highpass', rng.range(1500, 2400), 0.7);
+  const lp = new Biquad(sr, 'lowpass', rng.range(5000, 8500), 0.7);
+  const hits = rng.int(1, 3);
+  for (let h = 0; h < hits; h++) {
+    const i0 = Math.floor(rng.range(0, 0.008) * sr), tau = rng.range(0.0008, 0.004) * sr, g = rng.range(0.4, 1);
+    for (let i = i0; i < n; i++) out[i] += nz() * g * Math.exp(-(i - i0) / tau);
   }
-  normalizeRms(chans, 0.22);
-  normalize(chans, Math.min(0.98, peakOf(chans)));
-  return chans;
+  for (let i = 0; i < n; i++) out[i] = lp.run(hp.run(out[i]));
+  fadeEnds(out, sr, 0.0002, 0.006);
+  normalize(out, 0.9);
+  return out;
 }
 
-function peakOf(chans) { let m = 0; for (const c of chans) for (let i = 0; i < c.length; i++) m = Math.max(m, Math.abs(c[i])); return m; }
-
-function synthRoll(sr, n, tag, period) {
-  const rng = arng('roll', tag);
-  const nz = noiseGen(rng);
+/** A welded rail joint: no knock, only a faint low thump through the floor (< 300 Hz). */
+export function thump(sr, k) {
+  const rng = arng('thump', k);
+  const n = Math.floor(0.25 * sr);
   const out = new Float32Array(n);
-  // structure-borne rumble (axle box -> bogie -> floor)
-  const s1 = new Biquad(sr, 'lowpass', 190, 0.9), s2 = new Biquad(sr, 'highpass', 28, 0.7);
-  // airborne rolling roar
-  const a1 = new Biquad(sr, 'bandpass', 620, 0.55), a2 = new Biquad(sr, 'lowpass', 2400, 0.7);
-  // corrugation: quasi-tonal band (lambda ~ 45 mm -> 220 Hz at VREF), with a weaker second
-  const c1 = new Resonator(sr).set(222 * rng.range(0.97, 1.03), 22);
-  const c2 = new Resonator(sr).set(445 * rng.range(0.97, 1.03), 40);
-  // grit / debris in the rail groove: sparse crackle
-  const g1 = new Biquad(sr, 'highpass', 1800, 0.7), g2 = new Biquad(sr, 'lowpass', 7000, 0.7);
-  const slow = new SlowNoise(sr, 2.5, nz);
-  const fw = 1 / period, ph1 = rng.range(0, 6.28), ph2 = rng.range(0, 6.28);
-  let grit = 0;
+  const nz = noiseGen(rng);
+  const f0 = rng.range(52, 84), tau = rng.range(0.025, 0.045);
+  const lp = new Biquad(sr, 'lowpass', rng.range(220, 300), 0.7), lp2 = new Biquad(sr, 'lowpass', 300, 0.7);
+  let ph = 0;
   for (let i = 0; i < n; i++) {
     const t = i / sr;
-    // wheel out-of-roundness modulates the rumble once (and twice) per revolution
-    const wheel = 1 + 0.13 * Math.sin(6.2832 * fw * t + ph1) + 0.05 * Math.sin(12.566 * fw * t + ph2);
-    const drift = Math.max(0.3, 1 + 0.18 * slow.run());
-    const w = nz();
-    const sb = s2.run(s1.run(w)) * 2.4 * wheel;
-    const ab = a2.run(a1.run(nz())) * 0.9 * drift;
-    const cor = (c1.run(nz()) * 0.022 + c2.run(nz()) * 0.012) * wheel;
-    if (rng.next() < 26 / sr) grit = rng.range(0.2, 1) ** 2 * 0.9;
-    grit *= 0.9965;
-    const gr = g2.run(g1.run(nz() * grit)) * 0.5;
-    out[i] = sb + ab + cor + gr;
+    ph += (TAU * f0 * (1 + 0.4 * Math.exp(-t / 0.01))) / sr;
+    out[i] = lp2.run(lp.run(Math.sin(ph) * Math.exp(-t / tau) + nz() * 0.5 * Math.exp(-t / 0.012)));
   }
+  fadeEnds(out, sr, 0.001, 0.05);
+  normalize(out, 0.9);
   return out;
 }
 
@@ -129,35 +113,50 @@ export function scrape(sr, k) {
   return out;
 }
 
-/** Brake stick-slip groan in the last metre before standstill, ending in a settle clunk. */
+/**
+ * Friction-brake stick-slip over the last metre or so before standstill: a low groan
+ * whose pulse rate (its pitch) falls with the sliding speed, turning into the slow
+ * creak of the last few centimetres, then the settle clunk as the body pitches back.
+ * Standstill is at CREAK_LEAD seconds into the buffer.
+ */
 export function brakeCreak(sr, k) {
   const rng = arng('creak', k);
-  const dur = 1.25, n = Math.floor(dur * sr);
+  const lead = CREAK_LEAD, dur = lead + 0.25, n = Math.floor(dur * sr);
   const out = new Float32Array(n);
   const nz = noiseGen(rng);
-  const freqs = [rng.range(150, 190), rng.range(380, 460), rng.range(1050, 1300)];
-  const rs = freqs.map((f, j) => new Resonator(sr).set(f, [14, 22, 45][j]));
+  // groan modes (pad / caliper / bogie frame) and the creak modes of the last centimetres
+  const gF = [rng.range(165, 200), rng.range(270, 320), rng.range(390, 450)];
+  const cF = [rng.range(150, 190), rng.range(380, 460), rng.range(1050, 1300)];
+  const gR = gF.map((f, j) => new Resonator(sr).set(f, [18, 26, 40][j]));
+  const cR = cF.map((f, j) => new Resonator(sr).set(f, [14, 22, 45][j]));
   // a unity-DC resonator rings with amplitude ~ omega, so divide that out to set the balance
-  const amps = [1.0, 0.55, 0.22].map((a, j) => a / ((6.2832 * freqs[j]) / sr));
+  const gA = [1.0, 0.7, 0.35].map((a, j) => a / ((TAU * gF[j]) / sr));
+  const cA = [1.0, 0.55, 0.22].map((a, j) => a / ((TAU * cF[j]) / sr));
+  const r0 = rng.range(170, 230);
+  const jit = new SlowNoise(sr, 30, nz);
   let ph = 0;
-  const end = Math.floor(1.0 * sr);
-  for (let i = 0; i < n; i++) {
-    const t = i / sr;
-    const rate = 34 - 22 * (t / 1.0);                    // slip events slow as the wheel stops
+  const end = Math.floor(lead * sr);
+  for (let i = 0; i < end; i++) {
+    const t = i / sr, u = t / lead;
+    // slip events per second fall with the sliding speed, with stick-slip irregularity
+    const rate = (10 + r0 * Math.pow(1 - u, 1.7)) * (1 + 0.08 * jit.run());
     ph += rate / sr;
     let pulse = 0;
-    if (ph >= 1) { ph -= 1; pulse = rng.range(0.6, 1.2); }
-    const env = i < end ? Math.pow(t / 1.0, 0.8) : 0;
+    if (ph >= 1) { ph -= 1; pulse = rng.range(0.55, 1.2); }
+    const env = Math.pow(u, 0.7) * (0.6 + 0.4 * smoothstep(0, 0.4, u));
     const x = pulse * env + nz() * 0.004 * env;
-    out[i] = rs[0].run(x) * amps[0] + rs[1].run(x) * amps[1] + rs[2].run(x) * amps[2];
+    const w = smoothstep(0.55, 0.85, u); // groan -> creak
+    let y = 0;
+    for (let j = 0; j < 3; j++) y += gR[j].run(x) * gA[j] * (1 - w) * 0.8 + cR[j].run(x) * cA[j] * w;
+    out[i] = y;
   }
   // settle clunk: the body pitches back as the tram comes to rest
   const lp = new Biquad(sr, 'lowpass', 180, 0.9);
   for (let i = 0; i < n - end; i++) {
     const t = i / sr;
-    out[end + i] += lp.run(Math.sin(6.2832 * 62 * t) * Math.exp(-t / 0.06) + nz() * 0.2 * Math.exp(-t / 0.01)) * 0.9;
+    out[end + i] += lp.run(Math.sin(TAU * 62 * t) * Math.exp(-t / 0.06) + nz() * 0.2 * Math.exp(-t / 0.01)) * 0.9;
   }
-  fadeEnds(out, sr, 0.01, 0.04);
+  fadeEnds(out, sr, 0.02, 0.04);
   normalize(out, 0.85);
   return out;
 }

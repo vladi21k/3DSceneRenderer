@@ -21,7 +21,7 @@ const u01 = (a, b) => hash2(a | 0, b | 0) / 4294967296;
 /** Deterministic plan for chunk ci: { items, spots, joints, stains, leaves }. */
 export function planDetails(ctx, ci) {
   const { layout, route } = ctx;
-  const L = route.length;
+  const L = route.length, delta = ctx.delta;
   const s0 = ci * CHUNK_LEN, s1 = Math.min(L, s0 + CHUNK_LEN);
   const rng = RNG.from(layout.seed, 'street-details', ci);
   const obstacles = layout.obstaclesNear((s0 + s1) / 2, CHUNK_LEN);
@@ -30,16 +30,16 @@ export function planDetails(ctx, ci) {
   const blocked = (s, d, r) => {
     for (const o of obstacles) {
       if (o.kind === 'circle') {
-        const ds = route.delta(o.s, s), dd = d - o.d;
+        const ds = delta(o.s, s), dd = d - o.d;
         if (ds * ds + dd * dd < (r + o.r + 0.25) ** 2) return true;
-      } else if (route.delta(o.s0 - r, s) > 0 && route.delta(o.s1 + r, s) < 0 && d > o.d0 - r && d < o.d1 + r) return true;
+      } else if (delta(o.s0 - r, s) > 0 && delta(o.s1 + r, s) < 0 && d > o.d0 - r && d < o.d1 + r) return true;
     }
     for (const it of items) {
-      const ds = route.delta(it.s, s), dd = d - it.d;
+      const ds = delta(it.s, s), dd = d - it.d;
       if (ds * ds + dd * dd < (r + it.r + 0.3) ** 2) return true;
     }
     if (layout.isInCrossover(s, 3) && Math.abs(d) < BAND_IN) return true;
-    for (const c of layout.crossStreets) if (Math.abs(route.delta(c.s, s)) < 2.6 + r && Math.abs(d) < GUTTER_OUT + 0.8) return true;
+    for (const c of layout.crossStreets) if (Math.abs(delta(c.s, s)) < 2.6 + r && Math.abs(d) < GUTTER_OUT + 0.8) return true;
     return false;
   };
   const inside = (s, r) => s - r > s0 + 0.6 && s + r < s1 - 0.6;
@@ -143,7 +143,7 @@ export function planDetails(ctx, ci) {
     for (let k = k0; k <= k1; k++) {
       const s = 12 * k + (u01(k, 911) - 0.5) * 4;
       if (s < s0 + 0.2 || s > s1 - 0.2) continue;
-      if (layout.isInCrossover(s, 3) || layout.crossStreets.some((c) => Math.abs(route.delta(c.s, s)) < 3)) continue;
+      if (layout.isInCrossover(s, 3) || layout.crossStreets.some((c) => Math.abs(delta(c.s, s)) < 3)) continue;
       joints.push(s);
     }
   }

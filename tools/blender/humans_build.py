@@ -74,10 +74,10 @@ def blender_decimate(V, T, targets, detail=None, symmetric=True):
         mod.decimate_type = 'COLLAPSE'
         mod.ratio = target / len(T)
         mod.use_collapse_triangulate = True
-        if symmetric:
+        if symmetric and target >= 1000:   # symmetry stalls very coarse targets
             mod.use_symmetry = True
             mod.symmetry_axis = 'X'
-        if detail is not None:
+        if detail is not None and target >= 1000:
             # the decimator collapses weighted vertices: weight 1 = free, lower = preserved
             vg = ob.vertex_groups.new(name='detail')
             wq = np.round(1.0 - 0.5 * np.clip(detail, 0, 1), 2)
@@ -290,8 +290,23 @@ def build_base(kind, res, pk):
         attrs, tris = concat_attrs(items)
         lods.append(pack_lod(pk, attrs, tris, np.concatenate(pids)))
         log(f'  lod{li}: {len(attrs["P"])} verts {len(tris)} tris (body {len(Tl)}) {time.time() - t:.1f}s')
+    check_eyes_clear(kind, info, parts)
     return {'info': info, 'skeleton': skel, 'lods': lods,
             'parts': [{k: p[k] for k in ('id', 'name', 'kind')} for p in parts]}
+
+
+def check_eyes_clear(kind, info, parts):
+    """Fail loudly if a hair / hat / beard part puts geometry in front of the eyes at any LOD."""
+    for p in parts:
+        for li, lod in enumerate(p['lods']):
+            if lod is None:
+                continue
+            P = lod[0]['P']
+            for eye in (info['eyeL'], info['eyeR']):
+                e = np.array(eye)
+                near = (np.abs(P[:, 0] - e[0]) < 0.016) & (np.abs(P[:, 1] - e[1]) < 0.010) & (P[:, 2] < e[2] - 0.004)
+                if near.any():
+                    raise RuntimeError(f'{kind}: part {p["name"]} lod{li} covers the eyes ({int(near.sum())} verts)')
 
 
 def main():

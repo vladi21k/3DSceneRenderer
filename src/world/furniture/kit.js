@@ -257,28 +257,6 @@ export function xf(g, p = [0, 0, 0], r = [0, 0, 0], s = 1) {
   return g;
 }
 
-/** Fill a constant vertex colour (used as baked occlusion / per-part tint in own materials). */
-export function tint(g, r, gg = r, b = r) {
-  const n = g.attributes.position.count, a = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) { a[i * 3] = r; a[i * 3 + 1] = gg; a[i * 3 + 2] = b; }
-  g.setAttribute('color', new THREE.BufferAttribute(a, 3));
-  return g;
-}
-
-/** Height-based ambient occlusion baked into vertex colours: darker towards y0 (e.g. ground). */
-export function aoByHeight(g, y0, y1, dark = 0.55) {
-  const p = g.attributes.position, n = p.count;
-  const prev = g.attributes.color;
-  const a = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const t = THREE.MathUtils.clamp((p.getY(i) - y0) / (y1 - y0), 0, 1);
-    const k = dark + (1 - dark) * Math.sqrt(t);
-    for (let c = 0; c < 3; c++) a[i * 3 + c] = (prev ? prev.array[i * 3 + c] : 1) * k;
-  }
-  g.setAttribute('color', new THREE.BufferAttribute(a, 3));
-  return g;
-}
-
 /** Merge geometries (attribute sets are normalised first). Marks the result shared. */
 export function merge(list) {
   const norm = normalizeAttributes(list.filter(Boolean));
@@ -291,10 +269,6 @@ export function merge(list) {
   return out;
 }
 
-/** Shared-flag a standalone geometry. */
-export function shared(g) { g.computeBoundingSphere(); g.userData.shared = true; return g; }
-
-export { toV };
 
 /**
  * Wall swept along a plan curve with a cross-section that may change along it.

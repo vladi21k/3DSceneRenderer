@@ -216,16 +216,11 @@ const ui = {
     this.$phase.textContent = `  ·  ${todName(t)}`;
   },
 
-  _set(key, node, text) {
-    if (this._last[key] === text) return;
-    this._last[key] = text;
-    node.textContent = text;
-  },
-
-  _style(key, node, prop, value) {
-    if (this._last[key] === value) return;
-    this._last[key] = value;
-    node.style[prop] = value;
+  /** True when the cached value for `key` changed (DOM is touched only on change). */
+  _chg(key, v) {
+    if (this._last[key] === v) return false;
+    this._last[key] = v;
+    return true;
   },
 
   update(dt, app) {
@@ -235,55 +230,62 @@ const ui = {
       // speed: lightly smoothed so the last digit does not flicker
       const kmh = tr.speed * 3.6;
       this._kmh = this._kmh == null ? kmh : this._kmh + (kmh - this._kmh) * Math.min(1, (app.realDt || 0.016) * 8);
-      this._set('spd', this.$speed, String(Math.round(this._kmh < 0.3 ? 0 : this._kmh)));
+      const spd = Math.round(this._kmh < 0.3 ? 0 : this._kmh);
+      if (this._chg('spd', spd)) this.$speed.textContent = String(spd);
       const lim = tr.limit * 3.6;
-      this._set('lim', this.$limit, lim < 46 && tr.speed > 0.1 ? `limit ${Math.round(lim / 5) * 5}` : '');
+      const limR = lim < 46 && tr.speed > 0.1 ? Math.round(lim / 5) * 5 : 0;
+      if (this._chg('lim', limR)) this.$limit.textContent = limR ? `limit ${limR}` : '';
 
       // controller strip: applied effort (fill) and selected notch (mark)
       const n = this.nNotch, xN = 5 / (n - 1), xB = 1 / (n - 1);
       const th = tr.emergency ? -1.25 : tr.throttle;
       const x = th >= 0 ? xN + th * (1 - xN) : th >= -1 ? xN + th * (xN - xB) : 0;
-      const key = `${x.toFixed(3)}|${th >= 0 ? 1 : 0}`;
-      if (this._last.fill !== key) {
-        this._last.fill = key;
+      if (this._chg('fill', Math.round(x * 500) * 2 + (th < 0 ? 1 : 0))) {
         this.$fill.style.left = `${Math.min(x, xN) * 100}%`;
         this.$fill.style.width = `${Math.abs(x - xN) * 100}%`;
         this.$fill.classList.toggle('brake', th < 0);
       }
       const manual = !tr.auto;
-      this._style('markO', this.$mark, 'opacity', manual ? '1' : '0');
-      if (manual) this._style('markL', this.$mark, 'left', `${(tr.notch / (n - 1)) * 100}%`);
-      const notchText = manual ? (tr.notchId || 'N') + (tr.assisting ? ' · stop' : '')
-        : tr.throttle > 0.06 ? 'Power' : tr.speed < 0.05 ? 'Hold' : tr.throttle < -0.06 ? 'Brake' : 'Coast';
-      this._set('notch', this.$notch, notchText);
-      if (this._last.manual !== manual) {
-        this._last.manual = manual;
+      if (this._chg('manual', manual)) {
         this.$mode.textContent = manual ? 'Manual' : 'Auto';
         this.$mode.classList.toggle('manual', manual);
+        this.$mark.style.opacity = manual ? '1' : '0';
+      }
+      if (manual && this._chg('markL', tr.notch)) this.$mark.style.left = `${(tr.notch / (n - 1)) * 100}%`;
+      // auto: what the driver is doing; manual: the selected notch
+      const code = manual ? 10 + tr.notch * 2 + (tr.assisting ? 1 : 0)
+        : tr.throttle > 0.06 ? 0 : tr.speed < 0.05 ? 1 : tr.throttle < -0.06 ? 2 : 3;
+      if (this._chg('notch', code)) {
+        this.$notch.textContent = manual ? (tr.notchId || 'N') + (tr.assisting ? ' · stop' : '')
+          : ['Power', 'Hold', 'Brake', 'Coast'][code];
       }
 
       // next stop / station status
       const ph = tr.phase, ns = tr.nextStop || {};
-      let k = 'Next stop', v = fmtDist(ns.distance);
-      if (ph === 'arriving') { k = 'At platform'; v = ''; }
-      else if (ph === 'doors-open') { k = 'Doors open'; v = ''; }
-      else if (ph === 'doors-closing') { k = 'Doors closing'; v = ''; }
-      else if (ph === 'departing') { k = 'Departing'; v = ''; }
-      else if (ph === 'ready') { k = 'Ready'; v = 'W to depart'; }
-      else if (!ns.station) { k = ''; v = ''; }
-      else if (ns.distance < 160 && tr.state === 'brake') k = 'Stopping in';
-      this._set('stopK', this.$stopK, k);
-      this._set('stopV', this.$stopV, v);
+      const d = ns.distance;
+      let k = 'Next stop', dk = !isFinite(d) ? -1 : d >= 1000 ? 1e6 + Math.round(d / 100) : d >= 100 ? Math.round(d / 10) * 10 : Math.max(0, Math.round(d));
+      if (ph === 'arriving') k = 'At platform';
+      else if (ph === 'doors-open') k = 'Doors open';
+      else if (ph === 'doors-closing') k = 'Doors closing';
+      else if (ph === 'departing') k = 'Departing';
+      else if (ph === 'ready') k = 'Ready';
+      else if (!ns.station) k = '';
+      else if (d < 160 && tr.state === 'brake') k = 'Stopping in';
+      if (k !== 'Next stop' && k !== 'Stopping in') dk = k === 'Ready' ? -2 : -3;
+      if (this._chg('stopK', k)) this.$stopK.textContent = k;
+      if (this._chg('stopV', dk)) this.$stopV.textContent = dk === -2 ? 'W to depart' : dk === -3 ? '' : fmtDist(d);
     }
 
-    // lens slider follows zoom from keys / wheel
+    // lens slider follows zoom from keys / wheel (16:9-equivalent focal length)
     const rig = app.cameraRig;
     if (rig && this.lens && document.activeElement !== this.lens.inp) {
-      const f = focalOf(rig.targetFov ?? app.camera.fov);
-      const val = Math.log(f).toFixed(3);
-      if (this._last.lens !== val) { this._last.lens = val; this.lens.inp.value = val; }
+      const lf = Math.round(Math.log(focalOf(rig.targetFov ?? app.camera.fov)) * 1000);
+      if (this._chg('lens', lf)) this.lens.inp.value = String(lf / 1000);
     }
-    if (this.lens) this._set('lensV', this.lens.val, `${Math.round(focalOf(rig?.fov ?? app.camera.fov))} mm`);   // 16:9 equivalent
+    if (this.lens) {
+      const mm = Math.round(focalOf(rig?.fov ?? app.camera.fov));
+      if (this._chg('lensV', mm)) this.lens.val.textContent = `${mm} mm`;
+    }
 
     if (this.$stats) {
       this._statT = (this._statT || 0) + (app.realDt || 0);

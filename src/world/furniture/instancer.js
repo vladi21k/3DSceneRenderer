@@ -88,6 +88,7 @@ export class BatchSet {
     for (const b of this.batches.values()) {
       const names = new Set();
       for (const g of b.geos.keys()) for (const k in g.attributes) names.add(k);
+      if (b.mat.vertexColors) names.add('color'); // vertex-colour materials need the attribute (white = neutral)
       let nv = 0, ni = 0;
       const prepared = [];
       for (const g of b.geos.keys()) {

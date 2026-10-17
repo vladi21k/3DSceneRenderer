@@ -117,12 +117,18 @@ const MAP = /* glsl */ `
   vec3 sfAlb = sfA.rgb * sfTint;
   float sfRough = sfA.a * sfRoughMul;
   float sfAO = sfS.a;
+  // detail grain: faded out (and not fetched) once a pixel covers many detail texels;
+  // its average normal variance is then kept as roughness
   vec4 sfD = vec4(0.5, 0.5, 0.0, 0.5);
+  float sfDw = 0.0;
   if (sfDetail.x > 0.0) {
-    sfD = textureGrad(sfDetailTex, sfP * sfDetail.x, sfGx * sfDetail.x, sfGy * sfDetail.x);
-    float sfDa = sfD.a * 2.0 - 1.0;
-    sfAlb *= 1.0 + sfDetail.z * sfDa;
-    sfRough *= 1.0 - sfDetail.w * sfDa;
+    sfDw = 1.0 - smoothstep(3.0, 12.0, min(sfFoot.x, sfFoot.y) * sfDetail.x * 512.0);
+    if (sfDw > 0.0) {
+      sfD = mix(sfD, textureGrad(sfDetailTex, sfP * sfDetail.x, sfGx * sfDetail.x, sfGy * sfDetail.x), sfDw);
+      float sfDa = sfD.a * 2.0 - 1.0;
+      sfAlb *= 1.0 + sfDetail.z * sfDa;
+      sfRough *= 1.0 - sfDetail.w * sfDa;
+    }
   }
   if (sfMacro.z + sfMacro.w + sfStain.x > 0.0) {
     vec4 sfM1 = texture(sfMacroTex, sfUv * sfMacroAn.xy * sfMacro.x);
@@ -167,7 +173,8 @@ const NORMAL = /* glsl */ `
   float sfVar = max(sfS.b - dot(sfN, sfN) - 0.004, 0.0) * (1.0 - sfFlags.x);
   if (sfDetail.x > 0.0) {
     vec2 sfDn = sfD.rg * 2.0 - 1.0;
-    sfVar += max(sfD.b - dot(sfDn, sfDn) - 0.004, 0.0) * sfDetail.y * sfDetail.y;
+    float sfDv = sfDw > 0.0 ? max(sfD.b - dot(sfDn, sfDn) - 0.004, 0.0) : 0.0;
+    sfVar += (sfDv + (1.0 - sfDw) * 0.006) * sfDetail.y * sfDetail.y;
     sfN += sfDn * sfDetail.y;
   }
   if (sfFlags.y > 0.5) sfN = sfN.yx;

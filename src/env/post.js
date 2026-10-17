@@ -13,7 +13,7 @@ const QUALITY = {
   high: { msaa: 4, ao: 12, dof: true, levels: 6, shimmer: true, lamps: 8 },
 };
 
-const F_NUMBER = 2.8;          // lens aperture for the depth of field
+const F_NUMBER = 3.5;          // lens aperture for the depth of field
 const FOCUS_M = 55;            // focus distance (m)
 const SENSOR_H_MM = 24;
 
@@ -128,7 +128,9 @@ const post = {
       uHeadI: { value: 0 }, uHeadCos: { value: new THREE.Vector2(0.96, 0.995) },
       uMist: { value: 2.5e-3 },
       tClouds: { value: null }, uUseClouds: { value: 0 },
-    }, { NUM_LAMPS: nLamps, ...(q.ao ? { USE_AO: 1 } : {}) });
+      uFarLamp: { value: env?.lights?.farLamps ?? Array.from({ length: 24 }, () => new THREE.Vector4()) },
+      uFarI: { value: 0 }, uLampCos: { value: new THREE.Vector2(0.34, 0.95) },
+    }, { NUM_LAMPS: nLamps, NUM_FAR: env?.lights?.farLamps?.length ?? 24, ...(q.ao ? { USE_AO: 1 } : {}) });
 
     this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.down = pass(S.DOWN_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uKaris: { value: 0 }, uClamp: { value: 1e4 } });
@@ -137,7 +139,7 @@ const post = {
     this.final = pass(S.FINAL_FS, {
       tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
       uExposure: { value: 1 }, uAutoExp: { value: 0.22 }, uBloom: { value: 0.035 },
-      uVignette: { value: 0.55 }, uCA: { value: 0.0022 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
+      uVignette: { value: 0.38 }, uCA: { value: 0.0012 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
       uSat: { value: 1.12 }, uContrast: { value: 1.08 },
       uShadowTint: { value: new THREE.Vector3(0.985, 1.0, 1.03) },
@@ -286,6 +288,9 @@ const post = {
     pu.uTime.value = app.time;
     const air = env?.lights?.airlight;
     if (air) { pu.uHeadI.value = air.headI; pu.uHeadCos.value.set(air.headCos[0], air.headCos[1]); }
+    const L = env?.lights;
+    pu.uFarI.value = L ? L.farIntensity : 0;
+    if (L) pu.uLampCos.value.set(L.lampCos[0], L.lampCos[1]);
     // thin-lens circle of confusion, in pixels
     const fovR = THREE.MathUtils.degToRad(camera.fov);
     const fmm = (SENSOR_H_MM / 2) / Math.tan(fovR / 2), fm = fmm / 1000;

@@ -119,7 +119,7 @@ def hair_part(name):
         crown = Ellipsoid((0, 0.11, -0.01), (0.07, 0.07, 0.085))
         n = Subtract(base, crown, k=0.02)
     elif name == 'hair_pixie':
-        n = cap_hair(0.018, 0.010, R, front=0.052, noise=0.003, seed=5, back=-0.055)
+        n = cap_hair(0.022, 0.012, R, front=0.052, noise=0.0035, seed=5, back=-0.055)
     elif name == 'scarf':
         n = cap_hair(0.014, 0.012, R, front=0.050, temple=0.040, burn=0.02, back=-0.07, fade=0.004, burn_w=0.0)
         knot = Ellipsoid((0, -0.045, 0.105), (0.040, 0.030, 0.030))
@@ -127,14 +127,14 @@ def hair_part(name):
         n = Union([n, knot, tail], k=0.015)
     else:
         # longer female styles share a fuller cap
-        capn = cap_hair(0.016, 0.012, R, front=0.054, temple=0.040, back=-0.060, noise=0.0015, seed=11)
+        capn = cap_hair(0.021, 0.013, R, front=0.054, temple=0.040, back=-0.060, noise=0.002, seed=11)
         if name == 'hair_long':
             back = Loft((0, 0.03, 0.055), (0, -0.25, 0.085), (1, 0, 0),
                         [(0, 0.080, 0.045, 0, 0.0), (0.35, 0.082, 0.040, 0, 0.004), (0.75, 0.090, 0.024, 0, 0.012),
                          (1.0, 0.075, 0.016, 0, 0.012)])
             sides = [RoundCone((s * 0.070, 0.02, -0.01), (s * 0.085, -0.13, 0.03), 0.020, 0.014) for s in (-1, 1)]
             n = Union([capn, back] + sides, k=0.03)
-            n = Subtract(n, Ellipsoid((0, -0.03, -0.075), (0.066, 0.085, 0.07)), k=0.01)  # keep the face clear
+            n = Subtract(n, Ellipsoid((0, -0.03, -0.085), (0.074, 0.088, 0.085)), k=0.01)  # keep the face clear
             n = Subtract(n, Ellipsoid((0, -0.10, 0.0), (0.060, 0.055, 0.075)), k=0.01)    # and the neck
         elif name == 'hair_ponytail':
             tie = Ellipsoid((0, 0.005, 0.105), (0.020, 0.020, 0.018))
@@ -148,7 +148,8 @@ def hair_part(name):
             bulb = Ellipsoid((0, 0.0, 0.012), (0.095, 0.115, 0.115))
             low = Fn(lambda P: (-0.078 + 0.012 * (1 - np.cos(_theta(P)))) - P[:, 1], (-0.2, -0.3, -0.2), (0.2, 0.3, 0.2))
             bob = Intersect(bulb, low, k=0.006)
-            bob = Subtract(bob, Ellipsoid((0, -0.03, -0.085), (0.068, 0.088, 0.075)), k=0.008)
+            # open the face generously: thin curtains near the eyes bridge into sheets when decimated
+            bob = Subtract(bob, Ellipsoid((0, -0.028, -0.095), (0.078, 0.092, 0.095)), k=0.008)
             bob = Subtract(bob, Ellipsoid((0, -0.1, 0.0), (0.058, 0.06, 0.07)), k=0.01)
             n = Union([capn, bob], k=0.015)
     return _tag(n, REGION['hair'], H)
@@ -196,7 +197,6 @@ def hat_part(name):
         brim = RoundBox((0, 0.040, -0.120), (0.060, 0.0025, 0.040), 0.002, R=rot_xyz(-8, 0, 0))
         brim = Intersect(brim, Ellipsoid((0, 0.04, -0.095), (0.085, 0.05, 0.075)), k=0.003)
         n = Union([dome, brim], k=0.006)
-        n = Subtract(n, Ellipsoid(CR_C, CR_R - 0.001), k=0.0)
     elif name == 'fedora':
         crown = Loft((0, 0.035, 0.008), (0, 0.155, 0.012), (1, 0, 0),
                      [(0, 0.083, 0.098, 0, 0), (0.7, 0.078, 0.092, 0, 0), (1.0, 0.060, 0.074, 0, 0)], n=2.0, capr=0.4)
@@ -206,7 +206,6 @@ def hat_part(name):
                                        np.sqrt((P[:, 0] / 0.155) ** 2 + ((P[:, 2] - 0.005) / 0.170) ** 2) * 0.155 - 0.155),
                   (-0.18, 0.0, -0.2), (0.18, 0.09, 0.2))
         n = Union([crown, brim], k=0.008)
-        n = Subtract(n, Ellipsoid(CR_C, CR_R + 0.002), k=0.0)
     else:  # sunhat
         crown = Fn(lambda P: Ellipsoid(CR_C, CR_R).eval(P) - 0.016, CR_C - CR_R - 0.03, CR_C + CR_R + 0.03)
         crown = Intersect(crown, Fn(lambda P: 0.040 - P[:, 1], (-0.2, -0.2, -0.2), (0.2, 0.3, 0.2)), k=0.004)
@@ -214,7 +213,7 @@ def hat_part(name):
                                        np.hypot(P[:, 0], P[:, 2] - 0.006) - 0.20),
                   (-0.22, -0.05, -0.22), (0.22, 0.09, 0.22))
         n = Union([crown, brim], k=0.010)
-        n = Subtract(n, Ellipsoid(CR_C, CR_R + 0.003), k=0.0)
+    # solid: the head fills the inside, only the outer surface is ever seen
     return _tag(n, R, H)
 
 

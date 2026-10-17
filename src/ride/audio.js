@@ -1,7 +1,10 @@
 // Audio: everything is synthesized with WebAudio (no recorded samples).
 // Contract: docs/ARCHITECTURE.md. Implementation lives in ./audio/:
-//   bank.js      offline synthesis of every buffer (bell strikes, joints, voices, ...)
-//   engine.js    the live graph: layer buses, street reverb, compressor/limiter
+//   bank.js      synthesis of every buffer (bell strikes, joints, voices, ...) in
+//                workers, cached in IndexedDB
+//   worklet.js   AudioWorklet processors: endless noise, smooth random modulation, PWM
+//   engine.js    the live graph: layer buses, cab shell, street + cab reverbs,
+//                compressor/limiter, tram-local spatial frame
 //   layers/*.js  bell, rolling + joints, curve squeal, traction + auxiliaries,
 //                brakes + doors, street ambience
 //   test.js      OfflineAudioContext harness: app.audio.test({...}) renders a scenario
@@ -44,7 +47,8 @@ const audio = {
     this.capture = params.capture && !this.forced;
     this._acc = 0;
     this._lastV = null;
-    this._st = { t: 0, s: 0, speed: 0, accel: 0, throttle: 0, state: 'run', night: 0, wind: 0.35, listener: { px: 0, py: 0, pz: 0, fx: 0, fy: 0, fz: -1, ux: 0, uy: 1, uz: 0 } };
+    this._st = { t: 0, s: 0, speed: 0, accel: 0, throttle: 0, state: 'run', night: 0, tod: 0, wind: 0.35, listener: { px: 0, py: 0, pz: 0, fx: 0, fy: 0, fz: -1, ux: 0, uy: 1, uz: 0 } };
+    this._live = false;
     if (this.capture) return; // screenshots: no sound at all
 
     const ev = app.events;
@@ -90,12 +94,17 @@ const audio = {
     this.ctx = ctx;
     ctx.resume().catch(() => {});
     const [{ Bank }, { AudioEngine }] = await Promise.all([import('./audio/bank.js'), import('./audio/engine.js')]);
-    this.bank = new Bank(ctx.sampleRate);
-    this.engine = new AudioEngine(ctx, this.bank, { route: this.app.route, layout: this.app.layout, features: this.features });
-    this.started = true;
-    this._applyLevel(2.0);
-    if (this.muted) ctx.suspend().catch(() => {});
+    this.bank = new Bank(ctx.sampleRate, { cache: params.str('audiocache') !== '0' });
     this.bank.build().catch((e) => console.error('[audio] synthesis failed', e));
+    await AudioEngine.prepare(ctx);
+    const app = this.app;
+    this.engine = new AudioEngine(ctx, this.bank, {
+      route: app.route, layout: app.layout, features: this.features,
+      crowd: () => { const c = app.crowd; return c && !c.disabled && c.agents ? c.agents() : null; },
+    });
+    this.started = true;
+    this._t0 = ctx.currentTime;
+    if (this.muted) ctx.suspend().catch(() => {});
   },
 
   update(dt, app) {
@@ -104,6 +113,11 @@ const audio = {
     const rdt = app.realDt ?? dt;
     const t0 = performance.now();
     const st = this._gather(app, rdt);
+    // fade the master in once the reverbs and the first voices exist (at most 1.5 s wait)
+    if (!this._live && ((this.bank.get('irN') && this.bank.get('utt7')) || this.ctx.currentTime - this._t0 > 1.5)) {
+      this._live = true;
+      this._applyLevel(0.5);
+    }
     try {
       this.engine.update(rdt, st, this.ctx.currentTime);
       this.updateMs += (performance.now() - t0 - this.updateMs) * 0.05;
@@ -130,6 +144,7 @@ const audio = {
       : st.accel > 0.06 ? Math.min(1, st.accel / 1.2) : st.accel < -0.06 ? Math.max(-1, st.accel / 1.3) : 0;
     st.state = tr.state || 'run';
     st.night = U.uNight.value;
+    st.tod = app.env?.state?.t ?? 0;
     st.wind = U.uWindStrength.value;
     // listener = camera (a direct child of the scene); orientation from its quaternion
     const cam = app.camera, L = st.listener, { x, y, z, w } = cam.quaternion;
@@ -145,7 +160,7 @@ const audio = {
   },
 
   _applyLevel(tc = 0.08) {
-    if (!this.engine) return;
+    if (!this.engine || !this._live) return;
     const v = this.muted ? 0 : this.volume * this.volume; // perceptual taper
     this.engine.setLevel(v, this.ctx.currentTime, tc);
   },
@@ -201,6 +216,11 @@ const audio = {
     res.state = this.ctx.state;
     res.bankReady = this.bank.ready;
     res.bankMs = Math.round(this.bank.ms);
+    res.bankSource = this.bank.source;
+    res.buffers = this.bank.map.size;
+    res.worklet = e.worklet;
+    res.open = +e.open.toFixed(2);
+    res.ambience = { ...e.layers.ambience.debug };
     res.updateMs = +this.updateMs.toFixed(3);
     return res;
   },

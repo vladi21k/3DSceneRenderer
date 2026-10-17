@@ -133,6 +133,17 @@ export class Tpl {
     for (const p of pts) this.v(p[0], p[1], z, 0, 0, 1, p[0], p[1], shade);
     for (let k = 0; k < pts.length; k++) this.ix(c, b + k, b + ((k + 1) % pts.length));
   }
+  /** Append template t rotated about the vertical axis through (px, *, pz) by angle a. */
+  appendRotY(t, px, pz, a) {
+    const c = Math.cos(a), s = Math.sin(a);
+    const b = this.count, P = t.P.a, N = t.N.a, T = t.T.a, S = t.S.a;
+    for (let k = 0; k < t.count; k++) {
+      const x = P[k * 3] - px, z = P[k * 3 + 2] - pz;
+      const nx = N[k * 3], nz = N[k * 3 + 2];
+      this.v(px + x * c + z * s, P[k * 3 + 1], pz - x * s + z * c, nx * c + nz * s, N[k * 3 + 1], -nx * s + nz * c, T[k * 2], T[k * 2 + 1], S[k]);
+    }
+    for (let k = 0; k < t.I.n; k++) { this.I.ensure(1); this.I.a[this.I.n++] = t.I.a[k] + b; }
+  }
   /** Multiply the per-vertex shade by fn(x, y, z). */
   shadeBy(fn) {
     const P = this.P.a, S = this.S.a;

@@ -31,7 +31,7 @@ const furniture = {
     const n = app.layout.nChunks, per = [];
     for (let i = 0; i < n; i++) {
       const w = this.batches.countingWriter();
-      this._place({ index: i, s0: i * 40, s1: i * 40 + 40, lod: 0 }, app, w, () => {});
+      this._place({ index: i, s0: i * CHUNK_LEN, s1: (i + 1) * CHUNK_LEN, lod: 0 }, app, w, () => {});
       per.push(w.counts);
     }
     const win = Math.ceil((VIEW_AHEAD + VIEW_BEHIND) / CHUNK_LEN) + 2;

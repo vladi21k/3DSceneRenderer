@@ -8,6 +8,7 @@ import { hash2 } from '../../core/rng.js';
 export class PeriodicField {
   /** octaves: [[wavelength in cells (must divide n), amplitude], ...] */
   constructor(seed, { n = 256, cell = 0.5, octaves = [[32, 1], [16, 0.5], [8, 0.25], [4, 0.125]] } = {}) {
+    if (n & (n - 1)) throw new Error('PeriodicField: n must be a power of two');
     this.n = n; this.cell = cell; this.inv = 1 / cell;
     const t = new Float32Array(n * n);
     let norm = 0;
@@ -39,15 +40,15 @@ export class PeriodicField {
 
   /** Bilinear sample at (x, y) metres. */
   sample(x, y) {
-    const n = this.n;
+    const n = this.n, m = n - 1;           // n is a power of two: wrap with a mask
     let fx = x * this.inv, fy = y * this.inv;
     const ix = Math.floor(fx), iy = Math.floor(fy);
     fx -= ix; fy -= iy;
-    const x0 = ((ix % n) + n) % n, y0 = ((iy % n) + n) % n;
-    const x1 = x0 + 1 === n ? 0 : x0 + 1, y1 = y0 + 1 === n ? 0 : y0 + 1;
+    const x0 = ix & m, y0 = (iy & m) * n;
+    const x1 = (x0 + 1) & m, y1 = ((iy + 1) & m) * n;
     const t = this.t;
-    const a = t[y0 * n + x0] + (t[y0 * n + x1] - t[y0 * n + x0]) * fx;
-    const b = t[y1 * n + x0] + (t[y1 * n + x1] - t[y1 * n + x0]) * fx;
+    const a = t[y0 + x0] + (t[y0 + x1] - t[y0 + x0]) * fx;
+    const b = t[y1 + x0] + (t[y1 + x1] - t[y1 + x0]) * fx;
     return a + (b - a) * fy;
   }
 }

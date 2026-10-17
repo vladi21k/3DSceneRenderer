@@ -3,7 +3,8 @@
 // listener 1.6 m right of centre), so the early part is a sparse train of facade
 // reflections (a mild flutter between the walls), each smeared by balconies, cornices
 // and openings. The late part is a diffuse, frequency-dependent decay: open to the
-// sky, so it dies away fairly quickly, faster at high frequencies.
+// sky, so it dies away fairly quickly, faster at high frequencies. The engine
+// crossfades a narrow and a wide variant by the local facade spacing.
 import { arng, Biquad, noiseGen } from '../dsp.js';
 
 const C = 343;
@@ -11,7 +12,7 @@ const C = 343;
 export function streetIR(sr, opts = {}) {
   const { right = 10.3, left = 13.6, seconds = 2.2 } = opts;
   const n = Math.floor(seconds * sr);
-  const rng = arng('ir');
+  const rng = arng('ir', right, left);
   const L = new Float32Array(n), R = new Float32Array(n);
   const W = right + left;
 
@@ -68,6 +69,42 @@ export function streetIR(sr, opts = {}) {
   for (let i = 0; i < tail; i++) { const w = i / tail; L[n - 1 - i] *= w; R[n - 1 - i] *= w; }
 
   // normalise to unit energy per channel; the sends set the level
+  for (const c of [L, R]) {
+    let e = 0; for (let i = 0; i < n; i++) e += c[i] * c[i];
+    const g = 1 / Math.sqrt(e + 1e-12);
+    for (let i = 0; i < n; i++) c[i] *= g;
+  }
+  return [L, R];
+}
+
+/**
+ * Cab / saloon impulse response: a small, furnished metal-and-glass room. Dense early
+ * reflections between 2 and 14 ms (walls, windscreen, ceiling, floor 1-3 m away),
+ * then a short diffuse decay (RT60 ~0.2 s) losing its top end to the seats.
+ */
+export function cabIR(sr) {
+  const seconds = 0.4, n = Math.floor(seconds * sr);
+  const L = new Float32Array(n), R = new Float32Array(n);
+  const rng = arng('ir-cab');
+  for (const [c, chan] of [[0, L], [1, R]]) {
+    const nz = noiseGen(arng('ir-cab', c));
+    // early reflections: ~40 taps, each a tiny smeared click, louder for shorter paths
+    for (let k = 0; k < 40; k++) {
+      const t = rng.range(0.002, 0.014);
+      const g = (0.0035 / t) * rng.range(0.3, 1) * (rng.chance(0.5) ? 1 : -1);
+      const i0 = Math.floor(t * sr), w = Math.floor(rng.range(0.0002, 0.0008) * sr);
+      for (let i = 0; i < w && i0 + i < n; i++) chan[i0 + i] += g * (1 - i / w) * (0.6 + 0.4 * nz());
+    }
+    // diffuse tail, darker as it decays
+    const lp = new Biquad(sr, 'lowpass', 5200, 0.6);
+    const k60 = -6.907755 / (0.2 * sr);
+    for (let i = Math.floor(0.004 * sr); i < n; i++) {
+      const t = i / sr, rise = Math.min(1, (t - 0.004) / 0.01);
+      chan[i] += lp.run(nz()) * Math.exp(k60 * i) * rise * 0.25;
+    }
+  }
+  const tail = Math.floor(0.02 * sr);
+  for (let i = 0; i < tail; i++) { const w = i / tail; L[n - 1 - i] *= w; R[n - 1 - i] *= w; }
   for (const c of [L, R]) {
     let e = 0; for (let i = 0; i < n; i++) e += c[i] * c[i];
     const g = 1 / Math.sqrt(e + 1e-12);

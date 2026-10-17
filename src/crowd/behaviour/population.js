@@ -34,6 +34,7 @@ export class Population {
     this.binCount = new Float32Array(this.nBins);
     this.binTarget = new Float32Array(this.nBins);
     this.walkerTarget = 0;
+    this.targetT = 0;
     this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, bySource: { far: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
   }
 
@@ -254,8 +255,9 @@ export class Population {
       if (!a.active) continue;
       if (a.s < lo || a.s > hi) { this.stats.recycled++; this.kill(a); }
     }
-    // spawn towards the target
-    this._targets();
+    // spawn towards the target (targets follow the camera slowly: refresh twice a second)
+    this.targetT -= dt;
+    if (this.targetT <= 0) { this.targetT = 0.5; this._targets(); }
     this.binCount.fill(0);
     let walkers = 0;
     for (const a of this.agents) {

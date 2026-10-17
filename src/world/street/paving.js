@@ -184,7 +184,7 @@ export function buildPaving(ctx, chunk, rows, out) {
 /** Inside a crossover's inlay zone (rails drawn as inlays over continuous paving). */
 export function inInlayZone(ctx, s) {
   for (const c of ctx.layout.crossovers) {
-    if (ctx.route.delta(c.s0 - ctx.inlayPad, s) >= 0 && ctx.route.delta(c.s1 + ctx.inlayPad, s) <= 0) return c;
+    if (ctx.delta(c.s0 - ctx.inlayPad, s) >= 0 && ctx.delta(c.s1 + ctx.inlayPad, s) <= 0) return c;
   }
   return null;
 }

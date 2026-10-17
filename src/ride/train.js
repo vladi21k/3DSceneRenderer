@@ -5,7 +5,8 @@ import { input } from './input.js';
 
 // Tram dynamics: a ~32 m, five-module low-floor light-rail vehicle on the ride track.
 // Contract (docs/ARCHITECTURE.md): app.train = {s, speed, accel, throttle, auto, state,
-// nextStop, curvature, bellAt}. `s` is the cab front along the route.
+// nextStop, curvature, bellAt}. `s` is the cab front along the route. Also t (the
+// simulation clock), holding (ride not started yet), coasting, notch, limit, phase.
 //
 //  - Traction: constant-torque up to vBase, constant power above, governor at 50 km/h.
 //    Davis running resistance and the route grade act on the vehicle.
@@ -14,7 +15,8 @@ import { input } from './input.js';
 //  - Master controller notches: EB, B4..B1, N, P1..P4 (W / S step through them).
 //  - Auto driver: cruise 40-45 km/h, curve limit sqrt(aLat R), 25 km/h over crossovers
 //    (until the rear of the tram has cleared), braking curves to every restriction and a
-//    jerk-softened station stop with the cab front at station.stopS, dwell 12-18 s.
+//    station stop with the cab front at station.stopS that ends firmly (~0.4 m/s², no
+//    creeping), dwell 12-18 s with door events, bell, departure.
 //  - Station stops are automatic in manual mode too (hold W to run through a stop),
 //    and a speed supervisor keeps manual driving within curve / switch limits.
 //  - Bell: B / Space, on departure, at some cross streets, and on crowd 'bell-request'
@@ -166,6 +168,7 @@ export class Tram {
       else this._beginStart();
       this.aMotor = -0.6;                              // standing on the holding brake
     }
+    this._updateState();
   }
 
   /** Events go out from the first step on, so every listener has subscribed by then. */

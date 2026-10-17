@@ -5,7 +5,7 @@ import { U } from '../../src/core/uniforms.js';
 
 // Material preview: lit sample spheres / panels, a facade wall, a street ground plane at the
 // tram's eye height, and the raw baked maps.
-//   ?mode=grid | wall | street | maps | single
+//   ?mode=grid | wall | street | maps | single | canopy
 //   &mat=<name>  &recipe=<bake name>  &sun=<elevDeg>,<azDeg>  &fov=<deg>
 //   &cam=x,y,z,tx,ty,tz  &night=<0..1>  &exposure=<f>  &filter=<substring>
 // Works with tools/shoot.py: --page tools/textures/preview.html --params "mode=wall"
@@ -171,6 +171,26 @@ async function main() {
     s.position.set(1.9, 0.6, 1.3);
     strip(-10, 10, 30, M.get('paving.sidewalk')).position.z = 15;
     const [cx, cy, cz, tx, ty, tz] = vec('cam') || [0.6, 1.8, 3.6, 0.4, 1.7, 0];
+    camera.position.set(cx, cy, cz);
+    camera.lookAt(tx, ty, tz);
+  } else if (mode === 'canopy') {
+    // fabric seen from below with the sun above: back-lit translucency
+    const n = q.get('mat') || 'fabric.umbrella';
+    for (const [i, x] of [[0, -1.6], [1, 1.6]]) {
+      const g = new THREE.PlaneGeometry(3, 3);
+      g.rotateX(Math.PI / 2);
+      uvFrom(g, (p) => [p.x + 1.5, p.z + 1.5]);
+      const mat = i === 0 ? M.get(n) : M.get(n, { vertexColors: true });
+      if (i === 1) {
+        const c = new Float32Array(g.attributes.position.count * 3);
+        for (let k = 0; k < c.length; k += 3) { c[k] = 0.04; c[k + 1] = 0.07; c[k + 2] = 0.2; }
+        g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+      }
+      const pl = mesh(g, mat);
+      pl.position.set(x, 2.6, 0);
+    }
+    strip(-10, 10, 30, M.get('paving.sidewalk')).position.z = 15;
+    const [cx, cy, cz, tx, ty, tz] = vec('cam') || [0, 1.5, 3.2, 0, 2.6, 0];
     camera.position.set(cx, cy, cz);
     camera.lookAt(tx, ty, tz);
   } else if (mode === 'maps') {

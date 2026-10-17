@@ -77,7 +77,24 @@ function rayToOutline(o, cx, cy, a, d) {
   return [cx + dx * lo, cy + dy * lo];
 }
 
-function buildJoinery(o, v, q) {
+/** Shared layout of a window's sashes (used by the joinery and the glass split). */
+function sashLayout(o, v) {
+  const P = PROFILE[v.type];
+  const fw = P.fw;
+  const hwI = o.w / 2 - fw;
+  const tw = v.type === 'steel' ? 0.05 : 0.07;
+  let yT = null;
+  if (isArched(o)) yT = Math.max(fw + 0.6, springY(o) - (o.top === 'segment' ? 0.04 : 0));
+  else if (v.transom && o.h > 1.9) yT = o.h - fw - (o.kind === 'balconyDoor' ? 0.5 : 0.42);
+  const sashTop = yT !== null ? yT - tw / 2 : o.h - fw;
+  const nL = v.type === 'alu' ? 2 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
+  return { P, fw, hwI, tw, yT, sashTop, nL, lw: (2 * hwI) / nL };
+}
+
+/** Index of the opened leaf for `open` = {side, angle} (side −1 left, +1 right). */
+function openLeafIndex(nL, open) { return !open ? -1 : open.side < 0 ? 0 : nL - 1; }
+
+function buildJoinery(o, v, q, open) {
   if (q < 0.5) return null; // far range: the glass shader draws the casing and mullion
   const P = PROFILE[v.type];
   const t = new Tpl();
@@ -91,26 +108,26 @@ function buildJoinery(o, v, q) {
   t.loft([r2, r3], true, 0.78);
 
   const arched = isArched(o);
-  const hwI = o.w / 2 - fw;
-  const tw = v.type === 'steel' ? 0.05 : 0.07;
-  let yT = null;
-  if (arched) yT = Math.max(fw + 0.6, springY(o) - (o.top === 'segment' ? 0.04 : 0));
-  else if (v.transom && o.h > 1.9) yT = o.h - fw - (o.kind === 'balconyDoor' ? 0.5 : 0.42);
-  const sashTop = yT !== null ? yT - tw / 2 : o.h - fw;
+  const { hwI, tw, yT, sashTop, nL, lw } = sashLayout(o, v);
   if (yT !== null) {
     const hw = halfWidthAt(o, yT + tw / 2, fw) + 0.01;
     t.bar([-hw, yT], [hw, yT], railProfile(tw, zf - 0.005, zb, ch), 1);
   }
   // sashes
-  const nL = v.type === 'alu' ? 2 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
-  const lw = (2 * hwI) / nL;
   const panelTop = o.kind === 'balconyDoor' ? 0.85 : 0;
+  const openIdx = openLeafIndex(nL, open);
   for (let i = 0; i < nL; i++) {
     let x0 = -hwI + i * lw, x1 = x0 + lw, zOff = 0;
     if (v.type === 'alu') { // sliding panes overlap and sit on two tracks
       if (i === 0) x1 += 0.03; else { x0 -= 0.03; zOff = -0.035; }
     }
-    sash(t, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
+    if (i === openIdx) {
+      // casement swung into the room about its hinge on the jamb side
+      const leaf = new Tpl();
+      sash(leaf, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
+      const hx = open.side < 0 ? x0 : x1;
+      t.appendRotY(leaf, hx, P.zgb, open.side < 0 ? open.angle : -open.angle);
+    } else sash(t, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
   }
 
   // fanlight / top light
@@ -144,12 +161,32 @@ function buildJoinery(o, v, q) {
   return t.bake();
 }
 
-function buildGlass(o, v, q) {
+function buildGlass(o, v, q, open) {
   const P = PROFILE[v.type];
   const t = new Tpl();
-  if (q < 0.5) t.poly(outlinePts(o, 0.004, headSegments(o, 0.4)), -0.012); // frame is procedural
-  else t.poly(outlinePts(o, P.fw - 0.012, headSegments(o)), -0.012);
-  return t.bake();
+  if (q < 0.5) { t.poly(outlinePts(o, 0.004, headSegments(o, 0.4)), -0.012); return { glass: t.bake(), hole: null }; } // frame is procedural
+  if (!open) { t.poly(outlinePts(o, P.fw - 0.012, headSegments(o)), -0.012); return { glass: t.bake(), hole: null }; }
+  // split: fixed parts, the open leaf's aperture (no glass) and its rotated pane
+  const L = sashLayout(o, v);
+  const hole = new Tpl();
+  const openIdx = openLeafIndex(L.nL, open);
+  const gz = -0.012, y0 = L.fw - 0.01, y1 = L.sashTop + 0.01;
+  for (let i = 0; i < L.nL; i++) {
+    const x0 = -L.hwI + i * L.lw - 0.005, x1 = x0 + L.lw + 0.01;
+    if (i !== openIdx) { t.quad([x0, y0, gz], [x1, y0, gz], [x1, y1, gz], [x0, y1, gz]); continue; }
+    hole.quad([x0, y0, gz], [x1, y0, gz], [x1, y1, gz], [x0, y1, gz]);
+    const pane = new Tpl();
+    pane.quad([x0 + 0.04, y0 + 0.06, P.zs - 0.03], [x1 - 0.04, y0 + 0.06, P.zs - 0.03], [x1 - 0.04, y1 - 0.04, P.zs - 0.03], [x0 + 0.04, y1 - 0.04, P.zs - 0.03]);
+    const hx = open.side < 0 ? x0 + 0.005 : x1 - 0.005;
+    t.appendRotY(pane, hx, P.zgb, open.side < 0 ? open.angle : -open.angle);
+  }
+  if (L.yT !== null) {
+    const yH = L.yT;
+    const pts = outlinePts(o, P.fw - 0.012).filter((p) => p[1] > yH + 0.001);
+    const hw = halfWidthAt(o, yH, P.fw - 0.012);
+    t.poly([[-hw, yH], [hw, yH], ...pts], gz);
+  }
+  return { glass: t.bake(), hole: hole.bake() };
 }
 
 // ------------------------------------------------------------------ louvred shutters
@@ -257,12 +294,16 @@ function cached(key, fn) {
 }
 const okey = (o) => `${o.kind}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}`;
 
-export function joineryTpl(o, v, q) {
-  return cached(`J|${okey(o)}|${v.type}|${v.rows}|${v.cols}|${v.transom}|${v.sunburst}|${q}`, () => buildJoinery(o, v, q));
+const openKey = (open) => (open ? `${open.side}:${open.angle.toFixed(2)}` : '-');
+export function joineryTpl(o, v, q, open = null) {
+  return cached(`J|${okey(o)}|${v.type}|${v.rows}|${v.cols}|${v.transom}|${v.sunburst}|${q}|${openKey(open)}`, () => buildJoinery(o, v, q, open));
 }
-export function glassTpl(o, v, q = 1) {
-  return cached(`G|${okey(o)}|${v.type}|${q}`, () => buildGlass(o, v, q));
+/** {glass, hole}: glazing (with the swung pane) and, for an open leaf, its glassless aperture. */
+export function glassTpl(o, v, q = 1, open = null) {
+  return cached(`G|${okey(o)}|${v.type}|${q}|${openKey(open)}`, () => buildGlass(o, v, q, open));
 }
+/** Whether a window of this joinery can have a casement swung open. */
+export function canOpen(o, v) { return v.type !== 'alu' && sashLayout(o, v).nL === 2; }
 export function shutterTpl(o, state, q, standoff = 0.012) {
   return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${standoff}|${q}`, () => buildShutters(o, state, q, standoff));
 }

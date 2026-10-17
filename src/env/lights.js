@@ -12,7 +12,9 @@ import { LUX_PER_UNIT } from './atmosphere.js';
 const LAMP_CD = 1400;           // luminous intensity of one lantern towards the ground (cd)
 const LAMP_ANGLE = 1.22;        // half-angle of the lantern's light cone (rad)
 const HEAD_CD = 26000;          // two LED headlights combined (cd, beam centre)
-const LAMP_RANGE = [-14, 92];   // metres along the route relative to the cab
+const LAMP_RANGE = [-14, 92];   // metres along the route relative to the cab (real lights)
+const FAR_RANGE = [70, 460];    // lamps lit in screen space by post (beyond the real lights)
+export const FAR_LAMPS = 24;
 const FALLBACK_HEAD_H = 5.5;
 
 const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
@@ -44,6 +46,11 @@ export class StreetLights {
       headI: 0,
       headCos: [Math.cos(0.26), Math.cos(0.26 * 0.35)],
     };
+    // distant lamps, relit in screen space by post: xyz world position, w intensity (scene units)
+    this.farLamps = Array.from({ length: FAR_LAMPS }, () => new THREE.Vector4());
+    this._farTimer = 0;
+    this.farIntensity = 0;
+    this.lampCos = [Math.cos(LAMP_ANGLE), Math.cos(LAMP_ANGLE * 0.25)];
     this._heads = [];
     this._tmp = new THREE.Vector3();
     this._p = new THREE.Vector3();
@@ -107,6 +114,24 @@ export class StreetLights {
       air.lampPos[i].copy(l.position);
       air.lampI[i] = l.intensity;
     }
+
+    // ---- distant lamps for the screen-space pools (refreshed a few times a second)
+    if (on && (this._farTimer -= app.realDt ?? 0.016) <= 0) {
+      this._farTimer = 0.15;
+      const far = this._lampHeads(s + FAR_RANGE[0], s + FAR_RANGE[1]).map((h) => ({
+        h, ds: h.s != null ? route.delta(s, h.s) : this._tmp.set(h.x, h.y, h.z).distanceTo(app.camera.position),
+      })).sort((a, b) => a.ds - b.ds);
+      for (let i = 0; i < FAR_LAMPS; i++) {
+        const f = far[i], v = this.farLamps[i];
+        if (!f) { v.set(0, -1e4, 0, 0); continue; }
+        // hand over from the real lights as they fade out; fade at the far end
+        const w = THREE.MathUtils.smoothstep(f.ds, LAMP_RANGE[1] - 22, LAMP_RANGE[1])
+          * (1 - THREE.MathUtils.smoothstep(f.ds, FAR_RANGE[1] - 60, FAR_RANGE[1]));
+        v.set(f.h.x, f.h.y - 0.25, f.h.z, w);
+      }
+    }
+    // intensity of one far lamp (the per-lamp hand-over weight is in w)
+    this.farIntensity = on ? (LAMP_CD / LUX_PER_UNIT) * night : 0;
 
     // ---- headlight: just ahead of the cab, 0.9 m up, aimed ~45 m down the ride track
     const hp = route.toWorld(s + 0.4, TRACK_OFFSET, 0.9, this.head.position);

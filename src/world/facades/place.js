@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, lin } from './geo.js';
-import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl } from './windows.js';
+import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen } from './windows.js';
 import { shopLayout, shopFrameTpl, shopGlassTpl, shopShutterTpl, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpl, doorGlassTpl, doorMetalTpl } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, plaqueTpl, signColor } from './signs.js';
@@ -51,7 +51,11 @@ function buildWindow(kit, ctx, o) {
   const v = ctx.joinery;
   const r = RNG.from(o.id);
   const fc = ctx.frameRGB, k = 0.9 + r.next() * 0.16;
-  const jt = joineryTpl(o, v, ctx.q);
+  // summer: some casements stand open, swung into the room
+  const ro = r.next();
+  const open = ctx.q >= 0.5 && o.shutters !== 'closed' && canOpen(o, v) && ro < (o.kind === 'balconyDoor' ? 0.12 : 0.08)
+    ? { side: ro < 0.04 ? -1 : 1, angle: Math.round((0.9 + r.next() * 0.55) * 10) / 10 } : null;
+  const jt = joineryTpl(o, v, ctx.q, open);
   if (jt) kit.get('frame').add(jt, m, fc[0] * k, fc[1] * k, fc[2] * k);
   const floor = plan.floors[o.floor];
   const bay = plan.bays[o.bay];
@@ -66,7 +70,9 @@ function buildWindow(kit, ctx, o) {
   else if (dr < 0.2) drape = 3 + 0.05 + r.next() * 0.35;
   const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind: 0 });
   if (!jt) ga.aFrame = [fc[0] * k, fc[1] * k, fc[2] * k, 1]; // far range: procedural casing
-  kit.get('glass').add(glassTpl(o, v, ctx.q), m, 1, 1, 1, ga);
+  const gt = glassTpl(o, v, ctx.q, open);
+  kit.get('glass').add(gt.glass, m, 1, 1, 1, ga);
+  if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, 4] }); // no glass: open aperture
   // external roller shutters on flat heads (modern and some Mandate facades)
   const rollerP = v.type === 'alu' ? 0.75 : plan.style.era === 'mandate' ? 0.18 : 0.04;
   if (!o.shutters && o.top === 'flat' && o.recess > 0.15 && r.next() < rollerP) {
@@ -97,14 +103,14 @@ function planSigns(ctx) {
     if (o.kind !== 'shop') continue;
     const crown = o.y + crownY(o);
     if (o.awning) { byOpening.set(o.id, { mode: 'valance', design }); continue; }
-    const archedHead = isArched(o) && o.top !== 'segment';
-    if (archedHead && crown > s.y + 0.1) { byOpening.set(o.id, { mode: 'head', design }); continue; }
-    // keep clear of first-floor balcony slabs and their corbels
+    // clear the voussoir ring of an arched head (or the lintel of a flat one) ...
+    const clear = crown + (isArched(o) ? 0.6 : 0.1);
+    // ... and first-floor balcony slabs with their corbels
     let top = ceiling;
     for (const b of plan.balconies || []) {
       if (b.floor === 1 && b.u1 > s.u0 - 0.2 && b.u0 < s.u1 + 0.2) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.62);
     }
-    const y = Math.max(s.y, crown + 0.1), h = Math.min(s.h, top - y);
+    const y = Math.max(s.y, clear), h = Math.min(s.h, top - y);
     if (h >= 0.32) wall.push({ s, design, y, h, o, lamps: top - (y + h) > 0.3 });
     else byOpening.set(o.id, { mode: 'head', design });
   }
@@ -161,7 +167,8 @@ function buildShop(kit, ctx, o, signInfo) {
   const r = RNG.from(o.id, 'shop');
   const L = shopLayout(o, r);
   if (signInfo && signInfo.mode === 'head') {
-    if (L.yT > o.h - SHOP_FW - 0.25 && !isArched(o)) { L.yT = Math.max(2.5, o.h - SHOP_FW - 0.62); L.doorH = Math.min(L.doorH, L.yT - 0.06); }
+    // flat heads: a sign band ~0.55 m tall under the lintel, display glass below it
+    if (!isArched(o)) { L.yT = Math.max(2.5, o.h - SHOP_FW - 0.62); L.doorH = Math.min(L.doorH, L.yT - 0.06); }
     L.head = 'panel'; L.headSign = true;
   }
   const m = openingMatrix(ctx.frame, o, new THREE.Matrix4());

@@ -40,7 +40,7 @@ class CrowdSim {
     this.out = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true };
     this.popIn = [0, 0, 0, 0]; this.popSrc = {};
     this.events = {};
-    this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0 };
+    this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
     this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0 };
     this.humans = app.humans && !app.humans.disabled ? app.humans : null;
     // renderer slots; alloc may hand back the first index of our block
@@ -128,6 +128,7 @@ class CrowdSim {
   _lap(k, ms) {
     const p = this.perf;
     p.acc[k] += ms;
+    if (k === 0) { p.ring[p.ri] = ms; p.ri = (p.ri + 1) % p.ring.length; p.rn = Math.min(p.rn + 1, p.ring.length); }
     if (this.time > 2) { p.max[k] = Math.max(p.max[k], ms); if (k === 0 && ms > 1.5) p.over++; }
     if (k === 0 && ++p.n >= 60) {
       for (let i = 0; i < 4; i++) { p.avg[i] = p.acc[i] / p.n; p.acc[i] = 0; }
@@ -152,9 +153,9 @@ class CrowdSim {
       if (!a.active) continue;
       // platforms raise the feet
       let hT = 0;
-      if (a.noRect) { const pl = map.platformAt(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d), -0.05); if (pl) hT = pl.h; }
+      if (a.noRect && a.state !== ST.SEATED) { const pl = map.platformAt(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d), -0.05); if (pl) hT = pl.h; }
       a.h += Math.max(-1.5 * dt, Math.min(1.5 * dt, hT - a.h));
-      if (dt === 0) a.h = hT;
+      if (dt === 0 || a.fresh) a.h = hT;
       route.toWorld(a.s, a.d, a.h, _v);
       a.x = _v.x; a.y = _v.y; a.z = _v.z;
       this.steering.animate(a, dt, H);
@@ -215,6 +216,14 @@ class CrowdSim {
     }
   }
 
+  /** Percentile of the total update time over the last 240 frames. */
+  _pct(q) {
+    const p = this.perf;
+    if (!p.rn) return 0;
+    const v = Array.from(p.ring.subarray(0, p.rn)).sort((a, b) => a - b);
+    return v[Math.min(v.length - 1, Math.floor(q * v.length))];
+  }
+
   stats() {
     const byState = {}, byTask = {}, byKind = {};
     let active = 0, clearing = 0, simple = 0, followers = 0, corridor = 0;
@@ -245,6 +254,7 @@ class CrowdSim {
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap } : null,
       population: this.population.stats, events: this.events,
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under400m: this.popIn[2], beyond400m: this.popIn[3], nearBySource: this.popSrc },
+      cpuMedianMs: +this._pct(0.5).toFixed(3), cpuP95Ms: +this._pct(0.95).toFixed(3),
       cpuMs: +this.perf.avg[0].toFixed(3), cpuMaxMs: +this.perf.max[0].toFixed(3), framesOver1_5ms: this.perf.over,
       cpuParts: { population: [+this.perf.avg[1].toFixed(3), +this.perf.max[1].toFixed(2)], steering: [+this.perf.avg[2].toFixed(3), +this.perf.max[2].toFixed(2)], output: [+this.perf.avg[3].toFixed(3), +this.perf.max[3].toFixed(2)] },
     };

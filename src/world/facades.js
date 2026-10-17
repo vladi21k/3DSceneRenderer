@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CHUNK_LEN } from '../core/config.js';
+import { CHUNK_LEN, LOD0_DIST, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js';
 import { facadePlan } from './facadePlan.js';
 import { Kit } from './facades/kit.js';
 import { createInteriorGlass, GLASS_ATTRS } from './facades/interior.js';
@@ -51,10 +51,25 @@ const facades = {
       const { DevWall } = await import('./facades/devwall.js');
       this.devWall = new DevWall(app);
     }
+    await this.warmStart(app);
+  },
+
+  /** Build the chunks the streamer will ask for first while the loading screen is up. */
+  async warmStart(app) {
+    const s0 = app.startS, n = app.layout.nChunks, L = app.route.length;
+    for (let i = Math.floor((s0 - VIEW_BEHIND) / CHUNK_LEN); i <= Math.floor((s0 + VIEW_AHEAD) / CHUNK_LEN); i++) {
+      const idx = ((i % n) + n) % n;
+      const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s0) - CHUNK_LEN / 2);
+      const lod = dist < LOD0_DIST ? 0 : 1;
+      const job = { it: this.buildGen({ index: idx, lod, s0: idx * CHUNK_LEN, s1: Math.min(L, idx * CHUNK_LEN + CHUNK_LEN) }, app) };
+      try { this._pump(job, Infinity); } catch (e) { console.warn('[facades] warm start failed for chunk', idx, e); continue; }
+      this.jobs.set(`${idx}:${lod}`, job);
+      await new Promise((r) => setTimeout(r, 0));
+    }
   },
 
   /**
-   * Chunk build as a generator that yields after every lot, so the same work can run
+   * Chunk build as a generator that yields after every opening, so the same work can run
    * either synchronously (build) or time-sliced ahead of need (update → prefetch).
    */
   *buildGen(chunk, app) {
@@ -106,15 +121,19 @@ const facades = {
     const W = app.world;
     if (!W || !W.wanted || app.cameraS == null) return;
     const t0 = performance.now(), until = t0 + this.prefetchMs;
-    const cands = [];
-    for (const w of W.wanted(app.cameraS + 50)) {
+    const cands = [], seen = new Set();
+    // what the streamer wants now, and what it will want ~50 m further on
+    for (const w of [...W.wanted(app.cameraS), ...W.wanted(app.cameraS + 50)]) {
+      const key = `${w.idx}:${w.lod}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const c = W.chunks.get(w.idx);
       let need = false;
       if (!c) need = true;
       else if (!c.ready && c.lod === w.lod) need = c.pending.includes('facades');
       else if (c.ready && w.lod < c.lod) need = !c.next || c.next.pending.includes('facades');
       else if (c.next && c.next.lod === w.lod) need = c.next.pending.includes('facades');
-      if (need) cands.push({ key: `${w.idx}:${w.lod}`, idx: w.idx, lod: w.lod, dist: w.dist });
+      if (need) cands.push({ key, idx: w.idx, lod: w.lod, dist: w.dist });
     }
     cands.sort((a, b) => a.dist - b.dist);
     const keep = new Set(cands.map((c) => c.key));
@@ -133,7 +152,13 @@ const facades = {
         job = { it: this.buildGen({ index: c.idx, lod: c.lod, s0, s1: Math.min(L, s0 + CHUNK_LEN) }, app) };
         this.jobs.set(c.key, job);
       }
-      if (!job.done) this._pump(job, until);
+      if (!job.done) {
+        try { this._pump(job, until); } catch (e) {
+          // a failed prefetch is dropped; build() will retry and report through the streamer
+          console.warn('[facades] prefetch failed for chunk', c.key, e);
+          this.jobs.delete(c.key);
+        }
+      }
     }
   },
 };

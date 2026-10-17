@@ -67,3 +67,27 @@ export function appendPart(geo, part) {
   g.userData.shared = true;
   return g;
 }
+
+/** Triangle ranges per part id in a merged figure geometry (index order is grouped by part). */
+export function partRanges(geo) {
+  const idx = geo.index.array, body = geo.attributes.aBody.array;
+  const ranges = new Map();
+  for (let t = 0; t < idx.length; t += 3) {
+    const pid = body[idx[t] * 4 + 1];
+    const r = ranges.get(pid);
+    if (!r) ranges.set(pid, { start: t, count: 3 });
+    else r.count = t + 3 - r.start;
+  }
+  return ranges;
+}
+
+/** Geometry sharing `geo`'s buffers but drawing only [start, start + count) of its index. */
+export function subGeometry(geo, start, count) {
+  const g = new THREE.InstancedBufferGeometry();
+  for (const [name, a] of Object.entries(geo.attributes)) if (name !== 'iRow') g.setAttribute(name, a);
+  g.setIndex(geo.index);
+  g.setDrawRange(start, count);
+  g.boundingSphere = geo.boundingSphere.clone();
+  g.userData.shared = true;
+  return g;
+}

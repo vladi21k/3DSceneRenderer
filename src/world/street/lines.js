@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT } from './constants.js';
 
 // Pixel-width-aware line ribbons with analytic coverage.
 //
@@ -37,7 +38,9 @@ vec3 transformed = vec3( position );
     vec2 sd = ( c1.xy / c1.w - c0.xy / c0.w ) * 0.5 * uViewport;
     pxPerM = max( length( sd ) / 0.05, 1e-3 );
   }
-  float hw = aLine.y;
+  // pad by a pixel so the rasterized edge never cuts the analytic coverage (no stair
+  // dots along thin bands), and keep at least uMinPx half width for sub-pixel lines
+  float hw = aLine.y + 1.0 / pxPerM;
   hw = max( hw, min( uMinPx / pxPerM, 1.6 ) );
   transformed += aRight * ( aLine.x * hw );
   vLine = vec4( aLine.x * hw, aLine.z, aLine.w, pxPerM );
@@ -63,6 +66,7 @@ float lnNoise( vec2 p ) {
 
 // Rail cross-section bands in rail-local x (+ towards the gauge side):
 // field seal | rusty field bevel | polished head (incl. gauge corner) | groove | lip | gauge seal
+const f = (v) => v.toFixed(4);
 const RAIL_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
 {
@@ -70,29 +74,36 @@ float lnRough = 0.5, lnMetal = 0.0;
   float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
   float along = vLine.y;
   float wear = lnNoise( vec2( along * 0.35, 3.1 ) ) * 0.6 + lnNoise( vec2( along * 2.7, 7.7 ) ) * 0.4;
-  float cSeal = lnCov( -0.040, -0.028, x, w ) + lnCov( 0.083, 0.095, x, w );
-  float cCorner = lnCov( -0.028, -0.024, x, w );
-  float cBand = lnCov( -0.024, 0.028, x, w );
-  float cGroove = lnCov( 0.028, 0.070, x, w );
-  float cLip = lnCov( 0.070, 0.083, x, w );
+  float cSeal = lnCov( ${f(RAIL_X0)}, ${f(-HEAD_HALF)}, x, w ) + lnCov( ${f(LIP_OUT)}, ${f(RAIL_X1)}, x, w );
+  float cCorner = lnCov( ${f(-HEAD_HALF)}, ${f(HEAD_DULL)}, x, w );
+  float cBand = lnCov( ${f(HEAD_DULL)}, ${f(HEAD_HALF)}, x, w );
+  float cGroove = lnCov( ${f(HEAD_HALF)}, ${f(GROOVE_OUT)}, x, w );
+  float cLip = lnCov( ${f(GROOVE_OUT)}, ${f(LIP_OUT)}, x, w );
   float cov = cSeal + cCorner + cBand + cGroove + cLip;
-  float fade = 1.0;
+  float fade = 1.0, core = 0.0;
   #ifdef LINE_NEAR_FADE
     fade = 1.0 - smoothstep( 2.6, 5.0, 0.056 * vLine.w );   // real rails take over close up
+    // the 3D rail is rasterized under every pixel centre inside the rail span, so cover
+    // those pixels fully (the uncovered part of their footprint is paving, filled in
+    // below); otherwise the sub-pixel 3D groove and seals leak through as dotted edges
+    core = step( ${f(RAIL_X0)}, x ) * step( x, ${f(RAIL_X1)} );
   #endif
-  if ( cov * fade < 0.002 ) discard;
+  float alpha = mix( cov, 1.0, core ) * fade;
+  if ( alpha < 0.002 ) discard;
   // values follow the library rail materials (rail.head / rail.side / rail.groove / rubber)
   vec3 aSeal = vec3( 0.024, 0.023, 0.022 );
-  vec3 aCorner = vec3( 0.21, 0.10, 0.045 ) * ( 0.8 + 0.4 * wear );
+  vec3 aCorner = vec3( 0.13, 0.068, 0.035 ) * ( 0.8 + 0.4 * wear );
   vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
   vec3 aGroove = vec3( 0.045, 0.040, 0.034 );
-  vec3 aLip = vec3( 0.55 ) * ( 0.85 + 0.15 * wear );
-  float inv = 1.0 / max( cov, 1e-4 );
-  float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv;
-  diffuseColor.rgb = aSeal * wSeal + aCorner * wCorner + aBand * wBand + aGroove * wGroove + aLip * wLip;
+  vec3 aLip = vec3( 0.36, 0.336, 0.30 ) * ( 0.85 + 0.2 * wear );   // dull, dusty guard lip
+  vec3 aPave = vec3( 0.2, 0.197, 0.19 );                            // grimy setts beside the rail
+  float cPave = core * max( 0.0, 1.0 - cov );
+  float inv = 1.0 / max( cov + cPave, 1e-4 );
+  float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv;
+  diffuseColor.rgb = aSeal * wSeal + aCorner * wCorner + aBand * wBand + aGroove * wGroove + aLip * wLip + aPave * wPave;
   lnMetal = wCorner * 0.2 + wBand + wLip;
-  lnRough = wSeal * 0.95 + wCorner * 0.85 + wBand * ( 0.2 + 0.08 * wear ) + wGroove * 0.75 + wLip * 0.28;
-  diffuseColor.a = clamp( cov * fade, 0.0, 1.0 );
+  lnRough = wSeal * 0.95 + wCorner * 0.85 + wBand * ( 0.34 + 0.1 * wear ) + wGroove * 0.75 + wLip * 0.58 + wPave * 0.7;
+  diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
 `;
 
@@ -229,15 +240,19 @@ export class LineBuf {
     }
   }
   get empty() { return this.ni === 0; }
+  /** Forget the written lines (the arrays are kept as scratch space). */
+  reset() { this.n = 0; this.ni = 0; return this; }
+  /** Mesh over exact-size copies of the written range (the buffer can be reused). */
   mesh(material, name) {
     const g = new THREE.BufferGeometry();
     const n = this.n;
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos.subarray(0, n * 3), 3));
-    g.setAttribute('aRight', new THREE.BufferAttribute(this.right.subarray(0, n * 3), 3));
-    g.setAttribute('aLine', new THREE.BufferAttribute(this.line.subarray(0, n * 4), 4));
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, n * 3), 3));
+    g.setAttribute('aRight', new THREE.BufferAttribute(this.right.slice(0, n * 3), 3));
+    g.setAttribute('aLine', new THREE.BufferAttribute(this.line.slice(0, n * 4), 4));
     // flat ribbons: the up normal is constant (a view into one shared array)
     g.setAttribute('normal', new THREE.BufferAttribute(upNormals(n), 3));
-    g.setIndex(new THREE.BufferAttribute(this.idx.subarray(0, this.ni), 1));
+    const src = this.idx.subarray(0, this.ni);
+    g.setIndex(new THREE.BufferAttribute(n <= 65535 ? new Uint16Array(src) : src.slice(), 1));
     g.computeBoundingSphere();
     // ribbons widen in the vertex shader: pad the bounds so culling stays conservative
     g.boundingSphere.radius += 2;

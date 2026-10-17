@@ -85,10 +85,12 @@ function platformBody(pl, app, F, lod) {
  *  and behind the shelter). */
 export function buildPlatform(pl, app, addMesh, F, lod, fittings, inst, PP) {
   for (const [mat, geo] of platformBody(pl, app, F, lod)) addMesh(geo, mat);
-  if (lod) return;
   const { route } = app;
   const sgn = pl.side, dE = sgn > 0 ? pl.d0 : pl.d1, W = pl.d1 - pl.d0, top = pl.h;
   const s0 = pl.s0, s1 = pl.s1;
+  // platform light columns near both ramp heads, luminaire facing the platform
+  for (const s of [s0 + RAMP + 1.2, s1 - RAMP - 1.2]) inst.add(PP.lightColumn, placeMatrix(route, s, dE + sgn * (W - 0.25), top, sgn > 0 ? -Math.PI / 2 : Math.PI / 2, _m));
+  if (lod) return;
   const xr = W - 0.09;
   const gaps = [[0.27, 0.33], [0.67, 0.73]].map(([a, b]) => [s0 + (s1 - s0) * a, s0 + (s1 - s0) * b]);
   for (const f of fittings) if (f.type === 'shelter') gaps.push([f.s - 2.75, f.s + 2.75]);
@@ -151,6 +153,15 @@ function shelter() {
   return { frame: merge(frame), glass: merge(glass), lit: merge(lit), print: merge(print), disp: merge(disp), light: merge(light), wood: merge(wood) };
 }
 
+/** Slim platform light column with a flat LED luminaire on a short outreach arm. */
+function lightColumn() {
+  const pole = [lathe([[0.075, 0], [0.075, 0.03], [0.05, 0.05], [0.045, 0.1], [0.04, 3.55], [0.045, 3.56], [0, 3.58]], 10)];
+  pole.push(bar([V(0, 3.45, 0), V(0, 3.47, 0.42)], 0.05, 0.04, { up: [0, 1, 0], r: 0.006, bend: 0 }));
+  pole.push(xf(rbox(0.22, 0.07, 0.56, 0.015), [0, 3.47, 0.6], [-0.06, 0, 0]));
+  const lamp = xf(rbox(0.17, 0.008, 0.48, 0), [0, 3.432, 0.6], [-0.06, 0, 0]);
+  return { pole: merge(pole), lamp: merge([lamp]) };
+}
+
 function ticketMachine() {
   const paint = [], print = [], disp = [], dark = [], conc = [];
   conc.push(xf(rbox(0.64, 0.08, 0.44, 0.01), [0, 0.04, 0]));
@@ -182,6 +193,8 @@ export function buildPlatformProtos(M, F) {
   const sh = shelter();
   P.shelter = proto('shelter', [{ geo: sh.frame, mat: pole }, { geo: sh.glass, mat: F.glass, cast: false }, { geo: sh.lit, mat: F.printLit },
     { geo: sh.print, mat: F.print }, { geo: sh.disp, mat: F.display }, { geo: sh.light, mat: F.light }, { geo: sh.wood, mat: M.get('wood.bench') }]);
+  const lc = lightColumn();
+  P.lightColumn = proto('lightColumn', [{ geo: lc.pole, mat: pole }, { geo: lc.lamp, mat: F.light }]);
   const tm = ticketMachine();
   P.ticket = proto('ticketMachine', [{ geo: tm.paint, mat: F.paint, tint: true }, { geo: tm.print, mat: F.print }, { geo: tm.disp, mat: F.display },
     { geo: tm.dark, mat: M.get('rubber') }, { geo: tm.conc, mat: M.get('concrete') }]);

@@ -126,6 +126,9 @@ uniform vec2 uHeadCos;
 uniform float uMist;         // scattering coefficient for the airlight (1/m)
 uniform sampler2D tClouds;
 uniform int uUseClouds;
+uniform vec4 uFarLamp[NUM_FAR];
+uniform float uFarI;
+uniform vec2 uLampCos;
 varying vec2 vUv;
 
 #define ATM_PI 3.14159265
@@ -203,6 +206,35 @@ void main() {
     col *= mix(1.0, ao, uAOStrength);
   }
 #endif
+
+  // distant lamp pools (beyond the real lights): relight the surface with an albedo
+  // estimated from its ambient-lit colour, depth-reconstructed normal, lantern cone
+  if (uFarI > 0.0 && !sky && dist > 55.0) {
+    vec2 px = 1.0 / uResolution;
+    float zl = linearZ(texture2D(tDepth, vUv - vec2(px.x, 0.0)).r), zr = linearZ(texture2D(tDepth, vUv + vec2(px.x, 0.0)).r);
+    float zd = linearZ(texture2D(tDepth, vUv - vec2(0.0, px.y)).r), zu = linearZ(texture2D(tDepth, vUv + vec2(0.0, px.y)).r);
+    vec3 pl = viewPosFrom(vUv - vec2(px.x, 0.0), zl), pr = viewPosFrom(vUv + vec2(px.x, 0.0), zr);
+    vec3 pd = viewPosFrom(vUv - vec2(0.0, px.y), zd), pu = viewPosFrom(vUv + vec2(0.0, px.y), zu);
+    vec3 dx = abs(zr - z) < abs(z - zl) ? pr - vp : vp - pl;
+    vec3 dy = abs(zu - z) < abs(z - zd) ? pu - vp : vp - pd;
+    vec3 nv = normalize(cross(dx, dy));
+    vec3 nw = normalize((uCamWorld * vec4(nv, 0.0)).xyz);
+    vec3 wp = uCamPos + rd * dist;
+    vec3 Eamb = texture2D(uSkyIrr, vec2(0.5 / 4.0, 0.5)).rgb * 0.7 + 1e-7;
+    vec3 alb = clamp(col * ATM_PI / Eamb, vec3(0.03), vec3(0.6));
+    float E = 0.0;
+    for (int i = 0; i < NUM_FAR; i++) {
+      vec4 L = uFarLamp[i];
+      if (L.w <= 0.0) continue;
+      vec3 lv = L.xyz - wp;
+      float d2 = max(dot(lv, lv), 0.25);
+      vec3 ld = lv * inversesqrt(d2);
+      float cone = smoothstep(uLampCos.x, uLampCos.y, -ld.y);
+      float win = clamp(1.0 - d2 * d2 / (32.0 * 32.0 * 32.0 * 32.0), 0.0, 1.0);
+      E += L.w * cone * max(dot(nw, ld), 0.0) * win * win / d2;
+    }
+    col += alb * E * uFarI * vec3(1.0, 0.64, 0.34) / ATM_PI;
+  }
 
   // aerial perspective: extinction plus in-scatter. The ambient part is the mean
   // horizon sky; the forward-scattered sun part only counts the sunlit share of the

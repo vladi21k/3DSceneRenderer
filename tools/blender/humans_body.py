@@ -358,8 +358,9 @@ def build_body(kind='male', build=0.0):
         uk = [(t, rx + b * 0.012 * (1 - t * 0.5), rz + b * 0.012 * (1 - t * 0.5), ox, oz * zu) for t, rx, rz, ox, oz in T['uarm']]
         fk = [(t, rx + b * 0.006 * (1 - t), rz + b * 0.006 * (1 - t), ox, oz * zf) for t, rx, rz, ox, oz in T['farm']]
         ua = Loft(sh + du * 0.01, el, (s, 0, 0), uk, region=REGION['uarm'], bones={'arm' + side: 1})
-        delt = Ellipsoid(sh + du * 0.025 + np.array([s * 0.004 * sx, 0.004 * sy, 0.0]),
-                         (0.042 * sy + b * 0.008, 0.068 * sy, 0.052 * sy + b * 0.006),
+        # deltoid cap: its top stays ~3 cm above the joint so the shoulder line slopes below the neck
+        delt = Ellipsoid(sh + du * 0.030 + np.array([s * 0.004 * sx, -0.012 * sy, 0.0]),
+                         (0.042 * sy + b * 0.008, 0.060 * sy, 0.051 * sy + b * 0.006),
                          R=rot_xyz(0, 0, s * T['abd']), region=REGION['uarm'],
                          bones={'arm' + side: 0.7, 'clav' + side: 0.3})
         fa = Loft(el, wr, (s, 0, 0), fk, region=REGION['farm'], bones={'fore' + side: 1})

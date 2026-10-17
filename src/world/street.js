@@ -11,6 +11,14 @@ import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } fro
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
 
+// Rail steel finishes (variants of the library rail.head): the running band is polished
+// but finely scratched by the wheels (roughness ~0.3); the guard lip has no wheel
+// contact and stays dull, dusty steel.
+const RAIL_HEAD = { roughness: 1.9 };
+const RAIL_LIP = { color: [0.6, 0.56, 0.5], roughness: 2.7 };
+// rust on the field-side bevel and lip edge: dark, dirty brown rather than fresh orange
+const RAIL_RUST = { color: [0.62, 0.68, 0.78] };
+
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
 //   3D grooved rails (lod 0), far-field anti-aliased rail and paint lines (all lods),
@@ -35,7 +43,7 @@ const street = {
       kerb: M.get('paving.band', { vertexColors: true }),
       asphalt: M.get('asphalt', { vertexColors: true }),
       tactile: M.get('paving.tactile', { vertexColors: true }),
-      rail: { head: M.get('rail.head'), lip: M.get('rail.head'), side: M.get('rail.side'), groove: M.get('rail.groove'), seal: M.get('rubber') },
+      rail: { head: M.get('rail.head', RAIL_HEAD), lip: M.get('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove'), seal: M.get('rubber') },
       lines,
       details,
     };
@@ -44,25 +52,26 @@ const street = {
     mats.inlay = {
       plate: layer('rail.groove', 1, { color: [2.3, 2.2, 2.1] }),   // dark greasy cast steel
       seal: layer('rubber', 2),
-      side: layer('rail.side', 3),
-      head: layer('rail.head', 3),
+      side: layer('rail.side', 3, RAIL_RUST),
+      head: layer('rail.head', 3, RAIL_HEAD),
+      lip: layer('rail.head', 3, RAIL_LIP),
       groove: layer('rail.groove', 4),
       flange: layer('rail.groove', 5),
-      check: layer('rail.head', 5),
-      tongueSide: layer('rail.side', 6),
-      tongueHead: layer('rail.head', 6),
+      check: layer('rail.head', 5, RAIL_HEAD),
+      tongueSide: layer('rail.side', 6, RAIL_RUST),
+      tongueHead: layer('rail.head', 6, RAIL_HEAD),
     };
     this.surface = surface;
     const I = mats.inlay;
     const inlayBufs = (bufs) => {
-      const main = { seal: bufs.get(I.seal), side: bufs.get(I.side), head: bufs.get(I.head), groove: bufs.get(I.groove) };
+      const main = { seal: bufs.get(I.seal), side: bufs.get(I.side), head: bufs.get(I.head), lip: bufs.get(I.lip), groove: bufs.get(I.groove) };
       return {
         main,
-        tongue: { seal: main.seal, groove: main.groove, side: bufs.get(I.tongueSide), head: bufs.get(I.tongueHead) },
+        tongue: { seal: main.seal, groove: main.groove, side: bufs.get(I.tongueSide), head: bufs.get(I.tongueHead), lip: main.lip },
         plate: bufs.get(I.plate), flange: bufs.get(I.flange), check: bufs.get(I.check),
       };
     };
-    this.ctx = { app, route: app.route, layout: app.layout, surface, mats, inlayPad: 1.5, inlayBufs };
+    this.ctx = { app, route: app.route, layout: app.layout, surface, mats, inlayPad: 1.5, inlayBufs, delta: surface.dl };
     // detail plans are per chunk index and also flatten the paving under covers
     const plans = new Map();
     this.planFor = (ci) => {
@@ -98,6 +107,7 @@ const street = {
     const mark = T ? (k) => { const t = performance.now(); this.timing[k] = (this.timing[k] || 0) + t - T[0]; T[0] = t; } : () => {};
     const group = new THREE.Group();
     group.name = 'street';
+    ctx.surface.focus(chunk.s0, chunk.s1);
     const rows = makeRows(ctx, chunk);
     const bufs = new BufSet();
     mark('rows');
@@ -124,7 +134,8 @@ const street = {
     }
     mark('rails3d');
     // line overlays: rails (far-field AA), paint, joints
-    const L = { rail: new LineBuf(), centre: new LineBuf(), stripe: new LineBuf(), joint: new LineBuf() };
+    const L = this.lineBufs || (this.lineBufs = { rail: new LineBuf(), centre: new LineBuf(), stripe: new LineBuf(), joint: new LineBuf() });
+    for (const k in L) L[k].reset();
     for (const c of ctx.layout.inChunk('crossovers', chunk.index)) buildCrossover(ctx, c, chunk, bufs, L.rail);
     for (const c of ctx.layout.inChunk('crossStreets', chunk.index)) {
       for (const side of c.side === 0 ? [-1, 1] : [c.side]) buildCrossStreet(ctx, c, side, chunk, bufs, L);
@@ -148,9 +159,9 @@ const street = {
     // worn centre line between the tracks (interrupted at crossovers and crossings)
     let run = [];
     const flush = () => { if (run.length > 6 * 3) L.centre.add(run, 0.055, 0); run = []; };
-    const crossings = ctx.layout.crossStreets.filter((c) => Math.abs(ctx.route.delta(c.s, (chunk.s0 + chunk.s1) / 2)) < 30);
+    const crossings = ctx.layout.crossStreets.filter((c) => Math.abs(ctx.delta(c.s, (chunk.s0 + chunk.s1) / 2)) < 30);
     for (const S of samples) {
-      if (inInlayZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.route.delta(c.s, S.s)) < 2.6)) { flush(); continue; }
+      if (inInlayZone(ctx, S.s) || crossings.some((c) => Math.abs(ctx.delta(c.s, S.s)) < 2.6)) { flush(); continue; }
       run.push(S.px, S.py + ctx.surface.height(S.ri, 0), S.pz, S.rx, S.rz, S.s);
     }
     flush();
@@ -180,19 +191,19 @@ function makeRows(ctx, chunk) {
   for (let i = 0; i <= n; i++) base.push(s0 + (len * i) / n);
   const extra = [];
   const addAt = (e) => {
-    const l = route.delta(s0, e);
+    const l = ctx.delta(s0, e);
     if (l > 0.05 && l < len - 0.05) extra.push(s0 + l);
   };
   for (const c of layout.crossovers) { addAt(c.s0 - ctx.inlayPad); addAt(c.s1 + ctx.inlayPad); }
   const mouths = [];
   for (const c of layout.crossStreets) {
-    if (Math.abs(route.delta(c.s, (s0 + s1) / 2)) > len / 2 + c.width) continue;
+    if (Math.abs(ctx.delta(c.s, (s0 + s1) / 2)) > len / 2 + c.width) continue;
     for (const a of sideColumns(c)) addAt(c.s + a);
     mouths.push(c);
   }
   if (!extra.length) return base;
   // inside a mouth the side-street columns are the rows; elsewhere keep the regular ones
-  const inMouth = (s) => mouths.some((c) => Math.abs(route.delta(c.s, s)) < c.width / 2 - 0.05);
+  const inMouth = (s) => mouths.some((c) => Math.abs(ctx.delta(c.s, s)) < c.width / 2 - 0.05);
   const all = base.filter((s) => s === s0 || s === s1 || (!inMouth(s) && !extra.some((e) => Math.abs(e - s) < 0.3)));
   for (const e of extra) all.push(e);
   all.sort((a, b) => a - b);

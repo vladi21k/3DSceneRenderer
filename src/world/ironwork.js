@@ -9,7 +9,7 @@ import {
 } from './ironwork/stone.js';
 import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
 import { Instancer } from './ironwork/instancer.js';
-import { makeMaterials, PAINTS, FADE, uIronPx, nearLimit } from './ironwork/mats.js';
+import { makeMaterials, PAINTS, uIronPx, nearLimit } from './ironwork/mats.js';
 import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwork/attach.js';
 
 // Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
@@ -17,12 +17,15 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 // Everything is placed from facadePlan(lot) in the lot's facade frame (u along the wall,
 // v up, w out of the wall). Contract: docs/ARCHITECTURE.md.
 //
-// Distance handling inside a lod-0 chunk (all switches are per frame in update()):
-//   rail0 / rail1  full / lighter railing bays, per lot mesh, by projected bar width
-//   rail           posts, per lot mesh, while any railing geometry shows
-//   carve0/carve1  carved consoles + turned balusters / plain stand-ins, per chunk
+// Distance handling inside a lod-0 chunk (all switches are per frame in update(), on
+// projected pixel sizes, so they follow the FOV):
+//   rail0/1/2      full / light / coarse railing bays, one mesh per lot and floor, chosen
+//                  by the nearest balcony; created lazily when the camera first comes near
+//   post0/1        corner posts with turned finials / plain posts, same grouping
+//   carve0/carve1  carved consoles, turned balusters and full geraniums / plain stand-ins,
+//                  per chunk
 // Railing cards are always drawn; their shader dithers them in exactly where the
-// geometry dithers out (see ironwork/mats.js).
+// railing geometry dithers out (see ironwork/mats.js). Far chunks (lod 1) have cards only.
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -48,7 +51,15 @@ function nearest(a, p) {
   return best;
 }
 
-/** Sphere around balcony anchors (x, y, z, r, ...) padded for attachments and flags. */
+/** Shows each mesh whose nearest anchor lies in [lo, hi) metres from the camera. */
+function showInBand(list, cam, lo, hi) {
+  for (const m of list) {
+    const d = nearest(m.userData.anchors, cam);
+    m.visible = d >= lo && d < hi;
+  }
+}
+
+/** Sphere around facade anchors (x, y, z, r, ...) padded for attachments and flags. */
 function boundsOf(a) {
   const box = new THREE.Box3();
   for (let i = 0; i < a.length; i += 4) box.expandByPoint(_p.set(a[i], a[i + 1], a[i + 2]));
@@ -112,19 +123,19 @@ const ironwork = {
       parts: new GeoWriter(),
       ac: new GeoWriter(),
       flags: [],
-      anchors: [],
+      anchors: [],          // balcony centres (x, y, z, r): carving distance switch
+      bounds: [],           // facade centres (x, y, z, r): culling sphere of the merged meshes
     };
     for (const lot of lots) {
-      // deep side-street facades are invisible from the main street at far range
-      const deep = lot.sideStreet && lot.x0 > 30;
+      // deep side-street facades are only seen looking down the side street: skipped in
+      // far chunks and built with far-range detail in near ones
+      const deep = lot.sideStreet && lot.x0 > 24;
       if (chunk.lod && deep) continue;
-      // deep side-street facades are only ever seen down the street: far-range detail
       ctx.lod = chunk.lod || deep ? 1 : 0;
       const plan = facadePlan(lot);
       const st = lotStyle(lot, plan);
-      // the facade itself bounds attachments on lots without balconies
       _p.set(lot.frame.width / 2, plan.totalHeight / 2, 0).applyMatrix4(lot.frame.matrix);
-      ctx.anchors.push(_p.x, _p.y, _p.z, Math.max(lot.frame.width, plan.totalHeight) / 2);
+      ctx.bounds.push(_p.x, _p.y, _p.z, Math.max(lot.frame.width, plan.totalHeight) / 2);
       plan.balconies.forEach((bal, i) => this.balcony(ctx, lot, plan, st, bal, i));
       this.facadeAttachments(ctx, lot, plan, st);
     }
@@ -168,7 +179,8 @@ const ironwork = {
     }
 
     // ---- railing
-    if (isStone) this.balustrade(ctx, F, bal, rc, tint, r);
+    // (the balustrade draws from its own stream so far/near builds place contents alike)
+    if (isStone) this.balustrade(ctx, F, bal, rc, tint, new RNG(hash2(lot.seed, 4111 + index)));
     else this.ironRailing(ctx, lot, bal, st);
 
     this.balconyContents(ctx, lot, plan, st, bal, index, r);
@@ -390,6 +402,23 @@ const ironwork = {
     const ped = [path[0], path[path.length - 1]];
     if (rc <= 0.01) ped.push(path[1], path[2]);
     for (const P of ped) box(S, P[0], BALUSTRADE.PLINTH + hP / 2, P[1], 0.2, hP, 0.2, 0.85, 'ud');
+    // far: one darkened panel per run stands in for the row of balusters (at 200 m and
+    // beyond they read as a mid-tone band anyway)
+    if (lod) {
+      S.color(tint[0] * 0.72, tint[1] * 0.72, tint[2] * 0.72);
+      const y0 = BALUSTRADE.PLINTH, y1 = BALUSTRADE.H - BALUSTRADE.COPING;
+      for (let k = 0; k < path.length - 1; k++) {
+        const A = path[k], B = path[k + 1];
+        const du = B[0] - A[0], dw = B[1] - A[1], l = Math.sqrt(du * du + dw * dw) || 1;
+        const nx = -dw / l, nz = du / l;
+        for (const sg of [1, -1]) {
+          const a = S.v(A[0], y0, A[1], nx * sg, 0, nz * sg, 0, y0), b = S.v(B[0], y0, B[1], nx * sg, 0, nz * sg, l, y0);
+          const c = S.v(B[0], y1, B[1], nx * sg, 0, nz * sg, l, y1), d = S.v(A[0], y1, A[1], nx * sg, 0, nz * sg, 0, y1);
+          if (sg > 0) S.quad(a, b, c, d); else S.quad(b, a, d, c);
+        }
+      }
+      return;
+    }
     // balusters along the path, kept clear of the pedestals
     const col = [tint[0], tint[1], tint[2]];
     for (let k = 0; k < path.length - 1; k++) {
@@ -404,9 +433,8 @@ const ironwork = {
         if (ped.some((P) => Math.hypot(P[0] - u, P[1] - w) < 0.17)) continue;
         if (j === n && k < path.length - 2) continue; // shared with the next segment
         _l.makeRotationY(r.range(0, Math.PI)).setPosition(u, y + BALUSTRADE.PLINTH, w);
-        _m.multiplyMatrices(F, _l);
-        if (lod) inst.add('baluster', this.geo.baluster[1], this.mats.stone, _m, col);
-        else inst.add('baluster', this.geo.baluster[0], this.mats.stone, _m, col, { tag: 'carve0', alt: { geometry: this.geo.baluster[1], tag: 'carve1' } });
+        inst.add('baluster', this.geo.baluster[0], this.mats.stone, _m.multiplyMatrices(F, _l), col,
+          { tag: 'carve0', alt: { geometry: this.geo.baluster[1], tag: 'carve1' } });
       }
     }
   },
@@ -450,7 +478,7 @@ const ironwork = {
       group.add(mesh);
     }
     // one conservative sphere for all merged meshes (cheaper than scanning their vertices)
-    const sphere = boundsOf(ctx.anchors);
+    const sphere = boundsOf(ctx.bounds);
     for (const m of group.children) m.geometry.boundingSphere = sphere.clone();
     const { meshes, pending } = ctx.inst.build(group);
     for (const m of meshes) tags[m.userData.tag]?.push(m);
@@ -472,7 +500,7 @@ const ironwork = {
     uIronPx.value = px;
     const limRail = nearLimit() + 1;            // bars still above the card threshold
     const limFull = (0.05 * px) / 20.0;         // a 5 cm scroll eye spans 20+ px: full detail
-    const limMid = (0.05 * px) / 10.0;          // ... 10+ px: light detail, coarse beyond
+    const limMid = (0.05 * px) / 13.0;          // ... 13+ px: light detail, coarse beyond
     const limCarve = (0.03 * px) / 3.0;         // 3 cm carving still covers 3 px
     const cam = app.camera.position;
     for (const g of this.live) {
@@ -484,14 +512,11 @@ const ironwork = {
         for (const m of Instancer.materialize(s, g)) u[m.userData.tag]?.push(m);
         u.pending.splice(i, 1);
       }
-      const band = (list, lo, hi) => {
-        for (const m of list) { const d = nearest(m.userData.anchors, cam); m.visible = d >= lo && d < hi; }
-      };
-      band(u.rail0, -Infinity, limFull);
-      band(u.rail1, limFull, limMid);
-      band(u.rail2, limMid, limRail);
-      band(u.post0, -Infinity, limFull);
-      band(u.post1, limFull, limRail);
+      showInBand(u.rail0, cam, -Infinity, limFull);
+      showInBand(u.rail1, cam, limFull, limMid);
+      showInBand(u.rail2, cam, limMid, limRail);
+      showInBand(u.post0, cam, -Infinity, limFull);
+      showInBand(u.post1, cam, limFull, limRail);
       if (!u.carve0.length) continue;
       const a = u.anchors;
       let near = false;

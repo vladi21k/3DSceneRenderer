@@ -3,7 +3,7 @@
 // sign panel in the head, roller-shutter box and guides. Glass is interior-mapped
 // (shop kind: shelves, goods, ceiling lights).
 import { Tpl } from './geo.js';
-import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, crownY, topAt } from './outline.js';
+import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, topAt } from './outline.js';
 import { rectRing } from './kit.js';
 
 const FW = 0.085;           // shopfront casing width

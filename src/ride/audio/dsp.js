@@ -73,6 +73,18 @@ export class Resonator {
   run(x) { const y = this.A * x + this.B * this.y1 + this.C * this.y2; this.y2 = this.y1; this.y1 = y; return y; }
 }
 
+/** Antiresonator (spectral zero), the inverse of Resonator: Klatt's nasal zero. */
+export class AntiResonator {
+  constructor(sr) { this.sr = sr; this.x1 = 0; this.x2 = 0; this.A = 1; this.B = 0; this.C = 0; }
+  set(f, bw) {
+    const r = Math.exp((-Math.PI * bw) / this.sr);
+    const C = -r * r, B = 2 * r * Math.cos((TAU * f) / this.sr), A = 1 - B - C;
+    this.A = 1 / A; this.B = -B / A; this.C = -C / A;
+    return this;
+  }
+  run(x) { const y = this.A * x + this.B * this.x1 + this.C * this.x2; this.x2 = this.x1; this.x1 = x; return y; }
+}
+
 /** One-pole lowpass (cutoff in Hz). */
 export class OnePole {
   constructor(sr, f) { this.sr = sr; this.y = 0; this.set(f); }
@@ -212,6 +224,27 @@ export function glide(param, v, now, tc = 0.05, eps = 1e-4) {
   if (last !== undefined && Math.abs(last - v) <= eps * Math.max(1, Math.abs(v))) return;
   param.__last = v;
   param.setTargetAtTime(v, now, tc);
+}
+
+/**
+ * Piecewise-linear automation for values updated at a fixed tick (positions,
+ * orientation): ramps to `v` so that it arrives at `tEnd`. The first value, a jump
+ * larger than `jump` or a call with tEnd <= now is set immediately.
+ */
+export function rampTo(param, v, now, tEnd, jump = Infinity) {
+  if (!Number.isFinite(v)) return;
+  const last = param.__last;
+  if (last === v) return;
+  param.__last = v;
+  if (last === undefined || tEnd <= now || Math.abs(v - last) > jump) {
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(v, now);
+    param.__t = now;
+    return;
+  }
+  const t = Math.max(tEnd, (param.__t ?? 0) + 0.002);
+  param.linearRampToValueAtTime(v, t);
+  param.__t = t;
 }
 
 /** Set an AudioParam immediately at `now` (and remember it for glide()). */

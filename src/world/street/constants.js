@@ -48,7 +48,12 @@ export const FACADE_OVERLAP = 1.0;                       // sidewalk runs this f
 export const SLAB_H = -0.30;                             // ground slab below everything
 
 // Grooved rail cross-section, from the field-side paving edge to the gauge-side one.
-// Each point carries the surface kind of the segment that ends at it.
+// Each point carries the surface kind of the segment that ends at it:
+//   head   polished running band, gauge corner and the flange-rubbed upper gauge face
+//   lip    guard lip top: steel dulled by dust, no wheel contact
+//   side   rusty field-side bevel and outer lip edge
+//   groove compacted grime in the flangeway and on its lower walls
+//   seal   rubber / bitumen sealing strip against the paving
 export const RAIL_PROFILE = [
   [RAIL_X0, 0.0, null],
   [-0.0378, -0.0024, 'seal'],
@@ -61,16 +66,17 @@ export const RAIL_PROFILE = [
   [0.0215, -0.0003, 'head'],
   [0.0252, -0.0017, 'head'],       // gauge corner, polished by the flanges
   [0.0274, -0.0044, 'head'],
-  [0.0281, -0.0090, 'side'],
-  [0.0286, -0.0290, 'side'],
+  [0.0281, -0.0115, 'head'],       // flange contact band on the gauge face
+  [0.0286, -0.0290, 'groove'],
   [0.0318, -0.0342, 'groove'],
   [0.0395, -GROOVE_DEPTH, 'groove'],
   [0.0585, -GROOVE_DEPTH, 'groove'],
   [0.0658, -0.0338, 'groove'],
   [0.0690, -0.0280, 'groove'],
-  [0.0700, -0.0042, 'side'],
-  [0.0712, -0.0019, 'side'],
-  [0.0742, -0.0012, 'lip'],
+  [0.0698, -0.0095, 'groove'],
+  [0.0702, -0.0040, 'lip'],        // worn inner edge of the lip
+  [0.0714, -0.0017, 'lip'],
+  [0.0742, -0.0011, 'lip'],
   [0.0800, -0.0014, 'lip'],
   [0.0828, -0.0040, 'side'],
   [0.0858, -0.0043, 'seal'],

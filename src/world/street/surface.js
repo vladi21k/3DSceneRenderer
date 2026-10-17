@@ -3,6 +3,7 @@ import {
   railDist, BAND_IN, CORRIDOR, GUTTER_OUT, GUTTER_W, SIDEWALK_RISE, FACADE_OVERLAP, TRACK_OFFSET,
 } from './constants.js';
 import { PeriodicField } from './noise.js';
+import { makeDelta } from './fast.js';
 
 // The street surface as a function of route coordinates: height (camber, crown between
 // the rails, dished gutters, sidewalk cross-fall, millimetre unevenness) and a dirt /
@@ -15,6 +16,7 @@ export class Surface {
   constructor(route, layout) {
     this.route = route;
     this.layout = layout;
+    this.dl = makeDelta(route.length);   // fast signed route distance
     // height unevenness: 16 m settlement down to 1 m undulation (cell 0.5 m, period 128 m)
     this.fH = new PeriodicField(11, { octaves: [[32, 1], [16, 0.55], [8, 0.3], [4, 0.16], [2, 0.06]] });
     // dirt / tone variation: broad patches and finer blotches
@@ -28,28 +30,49 @@ export class Surface {
   }
 
   // ------------------------------------------------------------------ per-row context
+  /** Restrict per-row lookups to the crossovers / cross streets near [s0, s1] (set at
+   *  the start of a chunk build; rows outside the window fall back to the full lists). */
+  focus(s0, s1) {
+    const dl = this.dl, L = this.layout;
+    const mid = (s0 + s1) / 2, half = (s1 - s0) / 2 + 40;
+    this.near = {
+      mid, half,
+      xo: L.crossovers.filter((c) => dl(mid, c.s0) < half + 6 && dl(mid, c.s1) > -half - 6),
+      cs: L.crossStreets.filter((c) => Math.abs(dl(mid, c.s)) < half + c.width / 2 + 2),
+    };
+  }
+
+  _lists(s) {
+    const n = this.near;
+    if (n && Math.abs(this.dl(n.mid, s)) < n.half) return n;
+    return this._all || (this._all = { xo: this.layout.crossovers, cs: this.layout.crossStreets });
+  }
+
   /** Everything that depends only on s; reuse `out` to avoid allocation. */
   rowInfo(s, out = {}) {
-    const L = this.layout, r = this.route;
+    const L = this.layout, dl = this.dl;
+    const lists = this._lists(s);
     let xo = 0;
-    for (const c of L.crossovers) {
-      const a = r.delta(c.s0, s), b = r.delta(c.s1, s);
+    for (const c of lists.xo) {
+      const a = dl(c.s0, s), b = dl(c.s1, s);
       xo = Math.max(xo, smooth(Math.min(a + 4.5, 4.5 - b) / 2));
     }
     out.s = s;
     out.xo = xo;
     out.hwL = L.halfWidth(s, -1);
     out.hwR = L.halfWidth(s, 1);
-    out.edgeL = this.edgeD(s, -1, out.hwL);
-    out.edgeR = this.edgeD(s, 1, out.hwR);
+    out.edgeL = this.edgeD(s, -1, out.hwL, lists.cs);
+    out.edgeR = this.edgeD(s, 1, out.hwR, lists.cs);
     // flat spots (tree pits, covers) whose span overlaps this row
     const ci = L.chunkIndex(s);
     const list = out.spots || (out.spots = []);
     list.length = 0;
     for (let k = -1; k <= 1; k++) {
-      for (const sp of this.spots(ci + k)) {
-        const ds = r.delta(sp.s, s);
-        if (Math.abs(ds) < sp.r + 0.6) list.push(sp, ds);
+      const sp = this.spots(ci + k);
+      for (let i = 0; i < sp.length; i++) {
+        const p = sp[i];
+        const ds = dl(p.s, s);
+        if (ds < p.r + 0.6 && ds > -p.r - 0.6) list.push(p, ds);
       }
     }
     return out;
@@ -88,8 +111,14 @@ export class Surface {
 
   /** Outer edge of the sidewalk at s on `side` (signed d): under the facades, or the
    *  straight mouth line of a cross street. */
-  edgeD(s, side, hw) {
-    const c = this.layout.isInCrossStreet(s, side, 0);
+  edgeD(s, side, hw, list = this.layout.crossStreets) {
+    // same test as layout.isInCrossStreet(s, side, 0), over a (pre-filtered) list
+    let c = null;
+    for (let i = 0; i < list.length; i++) {
+      const x = list[i];
+      if (x.side !== side && x.side !== 0) continue;
+      if (Math.abs(this.dl(x.s, s)) < x.width / 2) { c = x; break; }
+    }
     if (!c) return side * (hw + FACADE_OVERLAP);
     return this.mouthD(this.mouth(c, side), s);
   }

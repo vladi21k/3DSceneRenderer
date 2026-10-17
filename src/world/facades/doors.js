@@ -1,7 +1,7 @@
 // Residential entrance doors: panelled timber (or glazed iron) double doors with a
 // fanlight, lever handles and a stone threshold step.
 import { Tpl } from './geo.js';
-import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, crownY, topAt } from './outline.js';
+import { outlinePts, halfWidthAt, springY, headSegments, isArched, headCentre, topAt } from './outline.js';
 import { rectRing } from './kit.js';
 
 const FW = 0.1, ZF = 0.05, ZB = -0.08, CH = 0.012;

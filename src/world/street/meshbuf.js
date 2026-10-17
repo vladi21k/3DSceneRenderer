@@ -2,6 +2,11 @@ import * as THREE from 'three';
 
 // Minimal growable vertex buffer: chunk builders write vertices straight into typed
 // arrays (no per-geometry merge step), one buffer per material.
+//
+// Buffers are scratch space recycled through a small pool: a chunk build borrows them,
+// and BufSet.build() copies the written range into exact-size arrays for the
+// geometry, then returns them. Steady-state builds therefore allocate only what the
+// GPU upload needs (no zero-filled oversized arrays, no growth copies, less GC).
 
 export class MeshBuf {
   constructor({ color = false, cap = 1024 } = {}) {
@@ -13,15 +18,27 @@ export class MeshBuf {
 
   _alloc(vc, ic) {
     const grow = (old, size) => { const a = new Float32Array(size); if (old) a.set(old.subarray(0, Math.min(old.length, size))); return a; };
-    this.cap = vc;
-    this.pos = grow(this.pos, vc * 3);
-    this.nor = grow(this.nor, vc * 3);
-    this.uv = grow(this.uv, vc * 2);
-    if (this.hasColor) this.col = grow(this.col, vc * 3);
-    const idx = new Uint32Array(ic);
-    if (this.idx) idx.set(this.idx.subarray(0, this.ni));
-    this.idx = idx;
-    this.icap = ic;
+    if (vc !== this.cap) {
+      this.pos = grow(this.pos, vc * 3);
+      this.nor = grow(this.nor, vc * 3);
+      this.uv = grow(this.uv, vc * 2);
+      if (this.hasColor) this.col = grow(this.col, vc * 3);
+      this.cap = vc;
+    }
+    if (ic !== this.icap) {
+      const idx = new Uint32Array(ic);
+      if (this.idx) idx.set(this.idx.subarray(0, this.ni));
+      this.idx = idx;
+      this.icap = ic;
+    }
+  }
+
+  reset() { this.n = 0; this.ni = 0; return this; }
+
+  /** Make room for `nv` more vertices and `nIdx` more indices. */
+  reserve(nv, nIdx = nv * 6) {
+    if (this.n + nv > this.cap) this._alloc(Math.max(this.cap * 2, this.n + nv), this.icap);
+    if (this.ni + nIdx > this.icap) this._alloc(this.cap, Math.max(this.icap * 2, this.ni + nIdx));
   }
 
   /** Append a vertex, returns its index. */
@@ -43,24 +60,45 @@ export class MeshBuf {
   }
 
   /** Quad a-b-c-d (counter-clockwise seen from the front). */
-  quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+  quad(a, b, c, d) {
+    if (this.ni + 6 > this.icap) this._alloc(this.cap, this.icap * 2);
+    const x = this.idx;
+    let k = this.ni;
+    x[k++] = a; x[k++] = b; x[k++] = c;
+    x[k++] = a; x[k++] = c; x[k++] = d;
+    this.ni = k;
+  }
 
   get empty() { return this.ni === 0; }
 
-  /** BufferGeometry over the written range (views, no copies). Bounds come from the
+  /** BufferGeometry with exact-size copies of the written range. Bounds come from the
    *  caller (chunk sphere) when given, which avoids a pass over every vertex. */
   geometry(sphere = null) {
     const g = new THREE.BufferGeometry();
     const n = this.n;
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos.subarray(0, n * 3), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(this.nor.subarray(0, n * 3), 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(this.uv.subarray(0, n * 2), 2));
-    if (this.hasColor) g.setAttribute('color', new THREE.BufferAttribute(this.col.subarray(0, n * 3), 3));
-    g.setIndex(new THREE.BufferAttribute(this.idx.subarray(0, this.ni), 1));
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, n * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(this.nor.slice(0, n * 3), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(this.uv.slice(0, n * 2), 2));
+    if (this.hasColor) g.setAttribute('color', new THREE.BufferAttribute(this.col.slice(0, n * 3), 3));
+    const src = this.idx.subarray(0, this.ni);
+    g.setIndex(new THREE.BufferAttribute(n <= 65535 ? new Uint16Array(src) : src.slice(), 1));
     if (sphere) g.boundingSphere = sphere.clone();
     else g.computeBoundingSphere();
     return g;
   }
+}
+
+// scratch buffers waiting to be borrowed, by colour layout
+const POOL = [[], []];
+
+function borrow(color, cap) {
+  const list = POOL[color ? 1 : 0];
+  return list.length ? list.pop().reset() : new MeshBuf({ color, cap });
+}
+
+function giveBack(b) {
+  const list = POOL[b.hasColor ? 1 : 0];
+  if (list.length < 48) list.push(b.reset());
 }
 
 /** One MeshBuf per material; build() returns meshes added to a group. */
@@ -69,18 +107,24 @@ export class BufSet {
   /** Buffer for `material`; cap pre-sizes it (vertices) when it is created. */
   get(material, color = false, cap = 1024) {
     let b = this.map.get(material);
-    if (!b) { b = new MeshBuf({ color, cap }); this.map.set(material, b); }
+    if (!b) {
+      b = borrow(color, cap);
+      if (cap > b.cap) b.reserve(cap, cap * 6);
+      this.map.set(material, b);
+    }
     return b;
   }
   build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0, sphere = null } = {}) {
     for (const [mat, b] of this.map) {
-      if (b.empty) continue;
-      const m = new THREE.Mesh(b.geometry(sphere), mat);
-      m.name = `${name}:${mat.name}`;
-      m.castShadow = castShadow; m.receiveShadow = receiveShadow;
-      m.renderOrder = renderOrder;
-      m.matrixAutoUpdate = false;
-      group.add(m);
+      if (!b.empty) {
+        const m = new THREE.Mesh(b.geometry(sphere), mat);
+        m.name = `${name}:${mat.name}`;
+        m.castShadow = castShadow; m.receiveShadow = receiveShadow;
+        m.renderOrder = renderOrder;
+        m.matrixAutoUpdate = false;
+        group.add(m);
+      }
+      giveBack(b);
     }
     this.map.clear();
   }

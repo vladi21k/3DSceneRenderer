@@ -108,36 +108,58 @@ const env = {
     this.sun.color.copy(sunCol);
     this.sun.intensity = E;
     this.sun.position.copy(dir);
-    this.sun.visible = dir.y > -0.03;
+    // keep the light (a changing light count would recompile every material); below the
+    // horizon its colour is ~0 and the shadow pass is skipped
+    const up = dir.y > -0.02;
+    const sh = this.sun.shadow;
+    // (the atlas must exist even when the sun is down: lit shaders sample it)
+    if ((up && !sh.autoUpdate) || !sh.map) sh.needsUpdate = true;
+    sh.autoUpdate = up;
     U.uSunDir.value.copy(dir);
     U.uSunColor.value.setRGB(sunCol.r * E, sunCol.g * E, sunCol.b * E);
     this.sky.uniforms.uSunGround.value.set(sunCol.r * E, sunCol.g * E, sunCol.b * E);
 
     this.atmo.updateSky(dir);
-    this.sky.updateIrradiance();
+    // the GPU irradiance read-back stalls briefly: do it now only the first time, else
+    // defer it (update() refreshes it once the slider settles)
+    const first = !this.sky.irradiance;
+    this.sky.updateIrradiance(first);
+    this._irrDirty = !first;
+    this._irrAge = 0;
 
     // night: lamps, shop fronts and windows come on around sunset
     const night = THREE.MathUtils.smoothstep(t, 0.72, 0.86);
     U.uNight.value = night;
 
-    // exposure follows the horizontal illuminance with partial adaptation (a camera
-    // keeps dusk darker and bluer than midday)
-    const irr = this.sky.irradiance;
-    const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
-    const Esky = irr && Number.isFinite(irr.horizontal.x) ? lum(irr.horizontal) : skyIrradiance(elev);
-    this.skyIrradianceH = Esky;
-    const Eh = Math.max(this.sunIlluminance * Math.max(dir.y, 0), 0) + Esky;
-    const Eref = 3.1;
-    this.exposure = 1.15 * Math.pow(Eref / Math.max(Eh, 1e-7), 0.7);
-    if (this._noPost && app) {
-      app.renderer.toneMappingExposure = this.exposure;
-    }
-
     Object.assign(this.state, { t, sunElevation: elev, night });
+    this._updateExposure();
     this.state.sunDir = dir;
     this.solar = solarPosition(t);
     if (this.sky.envRT) this.sky.requestEnv(false);
     app && app.events && app.events.emit('tod', { t });
+  },
+
+  /**
+   * Exposure follows the horizontal illuminance with partial adaptation (a camera keeps
+   * dusk darker and bluer than midday). Sky irradiance comes from the GPU read-back;
+   * between read-backs the CPU estimate is scaled to agree with the last one.
+   */
+  _updateExposure() {
+    const elev = this.state.sunElevation ?? Math.asin(this.state.sunDir.y);
+    const est = skyIrradiance(elev);
+    const irr = this.sky.irradiance;
+    const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
+    let Esky;
+    if (irr && Number.isFinite(irr.horizontal.x) && !this._irrDirty) {
+      Esky = lum(irr.horizontal);
+      this._irrCal = Esky / Math.max(est, 1e-9);
+    } else {
+      Esky = est * (this._irrCal ?? 1);
+    }
+    this.skyIrradianceH = Esky;
+    const Eh = Math.max(this.sunIlluminance * Math.max(this.state.sunDir.y, 0), 0) + Esky;
+    this.exposure = 1.15 * Math.pow(3.1 / Math.max(Eh, 1e-7), 0.7);
+    if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
   },
 
   /** Orient the canyon model of the environment map to the street at the camera. */
@@ -158,6 +180,13 @@ const env = {
   update(dt, app) {
     const realDt = app.realDt ?? dt;
     const time = app.time;
+
+    // deferred sky-irradiance read-back once the time of day has settled
+    if (this._irrDirty && (this._irrAge += realDt) > 0.25) {
+      this.sky.readIrradiance();
+      this._irrDirty = false;
+      this._updateExposure();
+    }
 
     // ---- wind: slowly veering direction, gusty strength (deterministic in time)
     const veer = noise1(time * 0.013, 41) * 0.35;

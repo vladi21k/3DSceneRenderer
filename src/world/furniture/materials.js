@@ -347,16 +347,15 @@ export function createMaterials(app) {
   printMap.wrapS = printMap.wrapT = THREE.ClampToEdgeWrapping;
   reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 }));
   // backlit advert panels: lit through the print at night
-  reg('printLit', patchNightEmissive(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: printMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.2, metalness: 0 }), 0.05, 0.2));
+  reg('printLit', patchNightEmissive(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: printMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.2, metalness: 0 }), 0.05, 0.1));
   // LED passenger displays and screens: always on
   const disp = buildDisplayAtlas();
   out.display = disp;
   const dispMap = tex(disp.canvas, { repeat: [1, 1], aniso: 8 }, R);
   dispMap.wrapS = dispMap.wrapT = THREE.ClampToEdgeWrapping;
-  reg('display', patchNightEmissive(new THREE.MeshStandardMaterial({ color: 0x050505, emissiveMap: dispMap, emissive: 0xffffff, emissiveIntensity: 2.0, roughness: 0.25, metalness: 0 }), 1, 0.35));
+  reg('display', patchNightEmissive(new THREE.MeshStandardMaterial({ color: 0x050505, emissiveMap: dispMap, emissive: 0xffffff, emissiveIntensity: 2.0, roughness: 0.25, metalness: 0 }), 1, 0.25));
   // shelter / platform light diffusers
   reg('light', patchNightEmissive(new THREE.MeshStandardMaterial({ color: srgb('#e8e6e0'), emissive: srgb('#fff1d6'), emissiveIntensity: 6, roughness: 0.3, metalness: 0 }), 0, 1));
   return out;
 }
 
-export { WEAVES };

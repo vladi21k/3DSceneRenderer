@@ -3,7 +3,7 @@ import { loadHumanAssets } from './humans/assets.js';
 import { Rig, bakeClips, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT } from './humans/anim.js';
 import { deriveAppearance, writeRow, ROW_TEXELS } from './humans/appearance.js';
 import { makeHumanMaterials } from './humans/material.js';
-import { makeSkirtPart, appendPart } from './humans/parts.js';
+import { makeSkirtPart, appendPart, partRanges, subGeometry } from './humans/parts.js';
 import { HumansTest } from './humans/test.js';
 
 // Human figures: rendering + animation (crowd behaviour lives in crowd.js).
@@ -24,11 +24,11 @@ const SKIRT_GRID = [[48, 22], [20, 10], [10, 5], [8, 3]];
 const BONE_W = NUM_BONES * 3;             // texels per bone row (3x4 matrix per bone)
 const MAT_N = NUM_BONES * 12;
 const SKIRT_ID = 250;                     // part id of the runtime skirt / coat shell
+const SPLIT_LODS = 1;                     // the nearest LOD draws body and each worn part separately (no idle variants)
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
 const _gait = { a: 0, b: -1, wa: 1, wb: 0, idle: 0, extra: 1 };
-const _mat = new Float32Array(MAT_N);
 
 const humans = {
   name: 'humans',
@@ -76,26 +76,41 @@ const humans = {
       app.materials.track(mat);
       B.mat = mat;
       B.uniforms = uniforms;
+      // draws: near LODs get one draw per part (sharing buffers through draw ranges) so a
+      // figure only submits its own hair / hat / bag; far LODs draw everything merged and
+      // the vertex shader collapses the parts the figure does not wear
+      B.draws = [];
+      B.drawAt = [];
       for (let li = 0; li < this.nLod; li++) {
         const [nt, nr] = SKIRT_GRID[Math.min(li, SKIRT_GRID.length - 1)];
         const g = appendPart(B.lods[li], makeSkirtPart(nt, nr, SKIRT_ID));
-        g.setAttribute('iRow', newRowAttr(this.capacity));
-        g.instanceCount = 0;
-        const mesh = new THREE.Mesh(g, mat);
-        mesh.name = `humans.${B.name}.lod${li}`;
-        mesh.frustumCulled = true;        // bounds are refit to the instances every frame
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mesh.customDepthMaterial = depth;
-        mesh.visible = false;
-        this.group.add(mesh);
-        B.meshes.push(mesh);
+        const byPart = new Map();
+        if (li < SPLIT_LODS) {
+          for (const [pid, r] of partRanges(g)) byPart.set(pid, this._addDraw(B, subGeometry(g, r.start, r.count), mat, depth, `${li}.p${pid}`));
+        } else {
+          byPart.set(-1, this._addDraw(B, g, mat, depth, `${li}`));
+        }
+        B.drawAt.push(byPart);
       }
-      B.lists = B.meshes.map(() => new Int32Array(this.capacity));
-      B.counts = new Int32Array(this.nLod);
     }
     this.ready = true;
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
+  },
+
+  _addDraw(B, g, mat, depth, tag) {
+    g.setAttribute('iRow', newRowAttr(this.capacity));
+    g.instanceCount = 0;
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.name = `humans.${B.name}.lod${tag}`;
+    mesh.frustumCulled = true;        // bounds are refit to the instances every frame
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.customDepthMaterial = depth;
+    mesh.visible = false;
+    this.group.add(mesh);
+    const d = { mesh, list: new Int32Array(this.capacity), count: 0 };
+    B.draws.push(d);
+    return d;
   },
 
   // ------------------------------------------------------------------ contract API
@@ -166,8 +181,7 @@ const humans = {
     this.capacity = cap;
     for (const B of Object.values(this.bases || {})) {
       if (B.uniforms) { B.uniforms.uBoneTex.value = this.boneTex; B.uniforms.uLookTex.value = this.lookTex; }
-      for (const m of B.meshes) m.geometry.setAttribute('iRow', newRowAttr(cap));
-      B.lists = B.meshes.map(() => new Int32Array(cap));
+      for (const d of B.draws || []) { d.mesh.geometry.setAttribute('iRow', newRowAttr(cap)); d.list = new Int32Array(cap); }
     }
     old.forEach((t) => t && t.dispose());
   },
@@ -184,7 +198,7 @@ const humans = {
     _frustum.setFromProjectionMatrix(_m);
     const camPos = cam.position;
     const pxPerM = (app.renderer.domElement.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360));
-    for (const B of Object.values(this.bases)) B.counts.fill(0);
+    for (const B of Object.values(this.bases)) for (const d of B.draws) d.count = 0;
     const bones = this.boneTex.image.data;
     const maxLod = this.nLod - 1;
     let lookDirty = false, n = 0;
@@ -210,13 +224,21 @@ const humans = {
       }
       s.lod = lod;
       this._pose(i, s, a, B, sc, bones);
-      const l = Math.min(lod, maxLod);
-      B.lists[l][B.counts[l]++] = i;
+      const at = B.drawAt[Math.min(lod, maxLod)];
+      const all = at.get(-1);
+      if (all) all.list[all.count++] = i;
+      else {
+        pushDraw(at.get(0), i);
+        if (a.hairPart) pushDraw(at.get(a.hairPart), i);
+        if (a.beardPart) pushDraw(at.get(a.beardPart), i);
+        if (a.hatPart) pushDraw(at.get(a.hatPart), i);
+        if (a.bagPart) pushDraw(at.get(a.bagPart), i);
+        if (a.skirtPart) pushDraw(at.get(a.skirtPart), i);
+      }
       n++;
     }
     for (const B of Object.values(this.bases)) {
-      B.meshes.forEach((mesh, li) => {
-        const L = B.lists[li], cnt = B.counts[li];
+      B.draws.forEach(({ mesh, list: L, count: cnt }) => {
         const g = mesh.geometry;
         const attr = g.attributes.iRow;
         // bounds of this draw's instances, so shadow cascades can skip it entirely
@@ -247,25 +269,14 @@ const humans = {
 
   /** Blend the baked clips for one figure and write its bone row (model -> world). */
   _pose(i, s, a, B, sc, out) {
-    const bk = B.baked;
-    const t = this.time;
-    const M = _mat;
-    M.fill(0);
-    if (s.pose === 2) {
-      addClip(M, bk, CLIP.sit + a.sit, t / 11 + a.seedT, 1);
-    } else if (s.pose === 1) {
-      addClip(M, bk, CLIP.idle + a.idle, t / 9.5 + a.seedT, 1);
-    } else {
-      const g = gaitBlend(B, a, s.speed, sc);
-      addClip(M, bk, g.a, s.phase, g.wa);
-      if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / 9.5 + a.seedT : s.phase, g.wb);
-    }
-    // head turn: the neck takes a third, the head the rest, both about their own joints
-    const look = Math.max(-1.25, Math.min(1.25, s.look || 0));
-    if (look > 1e-3 || look < -1e-3) {
-      rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, look * 0.35);
-      rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
-      rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
+    // small far figures re-blend their clips every other frame (staggered); the
+    // transform below is still applied every frame so camera motion stays exact
+    const M = this._model(i);
+    const frame = this.app.frame;
+    if (s.lod < 2 || ((frame + i) & 1) === 0 || s.blendFrame < frame - 2 || s.blendBase !== B) {
+      this._blend(s, a, B, sc, M);
+      s.blendFrame = frame;
+      s.blendBase = B;
     }
     // figure transform: T(x, y, z) * Ry(heading) * S(sc); seated figures keep the seat height
     const c = Math.cos(s.heading) * sc, sn = Math.sin(s.heading) * sc;
@@ -285,11 +296,46 @@ const humans = {
     }
   },
 
+  /** Model-space pose cache for slot i (bone matrices before the figure transform). */
+  _model(i) {
+    if (!this.models || this.models.length < (i + 1) * MAT_N) {
+      const m = new Float32Array(Math.max(512, this.capacity) * MAT_N);
+      if (this.models) m.set(this.models);
+      this.models = m;
+    }
+    return this.models.subarray(i * MAT_N, (i + 1) * MAT_N);
+  },
+
+  _blend(s, a, B, sc, M) {
+    const bk = B.baked;
+    const t = this.time;
+    M.fill(0);
+    if (s.pose === 2) {
+      addClip(M, bk, CLIP.sit + a.sit, t / 11 + a.seedT, 1);
+    } else if (s.pose === 1) {
+      addClip(M, bk, CLIP.idle + a.idle, t / 9.5 + a.seedT, 1);
+    } else {
+      const g = gaitBlend(B, a, s.speed, sc);
+      addClip(M, bk, g.a, s.phase, g.wa);
+      if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / 9.5 + a.seedT : s.phase, g.wb);
+    }
+    // head turn: the neck takes a third, the head the rest, both about their own joints
+    const look = Math.max(-1.25, Math.min(1.25, s.look || 0));
+    if (look > 1e-3 || look < -1e-3) {
+      rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, look * 0.35);
+      rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
+      rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
+    }
+  },
+
   dispose() {},
 };
 
+function pushDraw(d, i) { if (d) d.list[d.count++] = i; }
+
 function newSlot() {
-  return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null, lod: -1 };
+  return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,
+    lod: -1, blendFrame: -10, blendBase: null };
 }
 
 function newRowAttr(n) {

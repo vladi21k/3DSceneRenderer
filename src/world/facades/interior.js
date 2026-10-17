@@ -382,7 +382,7 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 E
   // opposite facade: varying roof heights per building
   float bid = floor( hx / 13.0 );
   float roofH = 15.0 + 8.0 * fh1( bid * 1.37 + 0.5 );
-  float blur = 0.04 * tO + 0.05;
+  float blur = 0.012 * tO + 0.05;
   cov = 1.0 - smoothstep( roofH - blur, roofH + blur, hy );
   vec3 stone = mix( vec3( 0.50, 0.44, 0.35 ), vec3( 0.55, 0.50, 0.41 ), fh1( bid * 2.1 ) );
   // horizontal shadow bands under cornices and balconies
@@ -391,12 +391,24 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float baseH, float streetW, vec3 E
   vec3 E = Eamb * 0.9 + sunC * sunF;
   col = stone * E * RECIPROCAL_PI;
   // window grid on the opposite facade
+  // (soft edges: slightly imperfect glass blurs the reflection with distance)
+  float bl = 0.03 + 0.006 * tO;
   vec2 cell = vec2( hx / 3.4, ( hy - 4.8 ) / 3.6 );
   vec2 f = fract( cell );
-  float isWin = step( 0.0, cell.y ) * step( 0.3, f.x ) * step( f.x, 0.7 ) * step( 0.22, f.y ) * step( f.y, 0.82 );
-  float shopBand = step( hy, 4.2 ) * step( 0.6, hy ) * step( 0.12, fract( hx / 3.4 ) ) * step( fract( hx / 3.4 ), 0.88 );
+  vec2 bb = vec2( bl / 3.4, bl / 3.6 );
+  float wx = smoothstep( 0.3 - bb.x, 0.3 + bb.x, f.x ) * ( 1.0 - smoothstep( 0.7 - bb.x, 0.7 + bb.x, f.x ) );
+  float wy = smoothstep( 0.22 - bb.y, 0.22 + bb.y, f.y ) * ( 1.0 - smoothstep( 0.82 - bb.y, 0.82 + bb.y, f.y ) );
+  float isWin = smoothstep( -bb.y, bb.y, cell.y ) * wx * wy;
+  float fs = fract( hx / 3.4 );
+  float shopBand = smoothstep( 4.2 + bl, 4.2 - bl, hy ) * smoothstep( 0.6 - bl, 0.6 + bl, hy ) * smoothstep( 0.12 - bb.x, 0.12 + bb.x, fs ) * smoothstep( 0.88 + bb.x, 0.88 - bb.x, fs );
+  // what the opposite windows show: dark glass, pale curtains or painted shutters
+  float wk = fh2( floor( cell ) + 11.0 );
+  vec3 winAlb = wk < 0.5 ? vec3( 0.07, 0.075, 0.08 ) : wk < 0.8 ? vec3( 0.42, 0.40, 0.36 ) : vec3( 0.10, 0.16, 0.12 );
   float lit = step( fh2( floor( cell ) + 5.0 ), uNight * 0.5 );
-  col = mix( col, vec3( 0.02 ) * E + lit * vec3( 1.0, 0.7, 0.4 ) * 0.0015, max( isWin, shopBand ) * 0.85 );
+  vec3 winC = winAlb * E * RECIPROCAL_PI + lit * vec3( 1.0, 0.7, 0.4 ) * 0.0015;
+  vec3 shopC = vec3( 0.12, 0.11, 0.10 ) * E * RECIPROCAL_PI + vec3( 1.0, 0.85, 0.65 ) * 0.002 * uNight;
+  col = mix( col, winC, isWin * 0.9 );
+  col = mix( col, shopC, shopBand * 0.85 );
   // street trees between us and the opposite facade
   float tT = ( streetW * 0.5 - 5.2 ) / rn;
   if ( tT > 0.0 ) {
@@ -470,11 +482,6 @@ const FRAG_OUT = /* glsl */`
 float fNV = saturate( dot( normal, normalize( vViewPosition ) ) );
 float fF = 0.04 + 0.96 * pow( 1.0 - fNV, 5.0 );
 vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * ( 1.0 - fF * fGlass );
-#if FDEBUG == 1
-outgoingLight = fInterior;
-#elif FDEBUG == 2
-outgoingLight = radiance;
-#endif
 `;
 
 // per-pane tilt and old-glass waviness, applied to the shading normal
@@ -516,7 +523,6 @@ export function createInteriorGlass() {
   });
   m.name = 'facades.glassInterior';
   m.onBeforeCompile = (shader) => {
-    shader.fragmentShader = '#define FDEBUG ' + (new URLSearchParams(location.search).get('fdebug') || 0) + '\n' + shader.fragmentShader;
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uNight = U.uNight;
     shader.uniforms.uSunDir = U.uSunDir;

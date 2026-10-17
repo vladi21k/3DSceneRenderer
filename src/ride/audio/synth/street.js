@@ -1,35 +1,66 @@
-// Street one-shots and beds: birds, footsteps on stone, café clinks, distant city
-// traffic, a far-off car horn.
+// Street one-shots and beds: bird notes (phrases are assembled at runtime) and calls,
+// footsteps on stone, café clinks, distant city traffic, a far-off car horn.
 import { arng, Biquad, SlowNoise, addMode, noiseGen, normalize, normalizeRms, makeLoop, fadeEnds, clamp } from '../dsp.js';
+
+export const NOTES = { sparrow: 18, bulbul: 12 };
 
 const TAU = Math.PI * 2;
 
-/** Bird phrases. kind: 'sparrow' | 'bulbul' | 'swift' | 'pigeon'. */
+/**
+ * One bird note; the ambience layer strings these into phrases (random count, order
+ * and spacing), so no phrase ever repeats. 'sparrow': a buzzy "cheep" - a rising /
+ * falling sweep with fast FM, a few harmonics and ~30 % noise excited at the sweep
+ * frequency; 'bulbul': a fuller whistled note with a fast trill.
+ */
+export function birdNote(sr, kind, k) {
+  const rng = arng('bnote', kind, k);
+  const nz = noiseGen(rng);
+  let d, f, fm, dev, harm, noiseAmt, shape, q;
+  if (kind === 'sparrow') {
+    d = rng.range(0.045, 0.11);
+    const fA = rng.range(2900, 4300), fP = fA + rng.range(400, 1600), fE = fA - rng.range(200, 1100), up = rng.range(0.2, 0.45);
+    f = (u) => (u < up ? fA + (fP - fA) * (u / up) : fP + (fE - fP) * ((u - up) / (1 - up)));
+    fm = rng.range(80, 150); dev = rng.range(200, 400);
+    harm = [1, rng.range(0.2, 0.45), rng.range(0.05, 0.15)];
+    noiseAmt = rng.range(0.4, 0.6); shape = rng.range(0.8, 1.6); q = rng.range(7, 11);
+  } else {
+    d = rng.range(0.1, 0.26);
+    const f0 = rng.range(1400, 2700), f1 = f0 * rng.range(0.75, 1.35);
+    f = (u) => f0 + (f1 - f0) * u;
+    fm = rng.range(18, 30); dev = f0 * rng.range(0.012, 0.025);
+    harm = [1, rng.range(0.05, 0.12), rng.range(0.02, 0.05)];
+    noiseAmt = rng.range(0.12, 0.22); shape = rng.range(0.5, 0.9); q = 14;
+  }
+  const n = Math.floor((d + 0.01) * sr), m = Math.floor(d * sr);
+  const tone = new Float32Array(n), noise = new Float32Array(n);
+  const bp = new Biquad(sr, 'bandpass', f(0), q);
+  let ph = 0, fmPh = rng.next();
+  for (let i = 0; i < m; i++) {
+    const u = i / m;
+    fmPh += fm / sr;
+    const fi = f(u) + dev * Math.sin(2 * Math.PI * fmPh);
+    ph += fi / sr;
+    const env = Math.pow(Math.sin(Math.PI * u), shape);
+    let x = 0;
+    for (let h = 0; h < harm.length; h++) if (fi * (h + 1) < sr * 0.45) x += Math.sin(2 * Math.PI * ph * (h + 1)) * harm[h];
+    tone[i] = x * env;
+    if ((i & 15) === 0) bp.set('bandpass', fi, q);
+    noise[i] = bp.run(nz()) * env;
+  }
+  normalizeRms(tone, 1); normalizeRms(noise, 1);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = tone[i] + noise[i] * noiseAmt;
+  fadeEnds(out, sr, 0.001, 0.004);
+  normalize(out, 0.8);
+  return out;
+}
+
+/** Bird calls played whole: 'swift' (a screaming party) | 'pigeon' (a coo). */
 export function birdCall(sr, kind, k) {
   const rng = arng('bird', kind, k);
   const nz = noiseGen(rng);
   const notes = [];
-  if (kind === 'sparrow') {
-    let t = 0.01;
-    const count = rng.int(3, 8);
-    const base = rng.range(3100, 4100);
-    for (let c = 0; c < count; c++) {
-      const d = rng.range(0.05, 0.1);
-      const fA = base * rng.range(0.93, 1.07), fP = fA + rng.range(500, 1500), fE = fA - rng.range(200, 900);
-      notes.push({ t, d, f: (u) => (u < 0.3 ? fA + (fP - fA) * (u / 0.3) : fP + (fE - fP) * ((u - 0.3) / 0.7)), h: [1, 0.32, 0.1], amp: rng.range(0.6, 1), shape: 1.5 });
-      t += d + rng.range(0.05, 0.18);
-    }
-  } else if (kind === 'bulbul') {
-    let t = 0.01;
-    const count = rng.int(3, 5);
-    for (let c = 0; c < count; c++) {
-      const d = rng.range(0.1, 0.26);
-      const f0 = rng.range(1400, 2700), f1 = f0 * rng.range(0.75, 1.35);
-      const vib = rng.range(18, 30);
-      notes.push({ t, d, f: (u, tt) => (f0 + (f1 - f0) * u) * (1 + 0.018 * Math.sin(TAU * vib * tt)), h: [1, 0.09, 0.03], amp: rng.range(0.7, 1), shape: 0.7 });
-      t += d + rng.range(0.035, 0.12);
-    }
-  } else if (kind === 'swift') {
+  if (kind === 'swift') {
     const birds = rng.int(2, 4);
     for (let b = 0; b < birds; b++) {
       const d = rng.range(0.35, 0.8), fc = rng.range(6300, 8400), fm = rng.range(36, 50), dev = rng.range(500, 900);

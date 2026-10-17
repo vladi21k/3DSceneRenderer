@@ -135,7 +135,7 @@ const HEADISH = { head: 1, cornerF: 1 };
 /**
  * Inlay a whole rail (all bands) along pts (path centre = rail centre line).
  * g: gauge direction relative to the path's right vector. layer: material set
- * { seal, side, head, groove } with increasing polygon offsets.
+ * { seal, side, head, lip, groove } with increasing polygon offsets.
  * opts.mask(p, band) -> 0..1 (0 skips the sample; for the head bands it also scales
  * the width about the rail centre, which tapers switch blades).
  */
@@ -159,7 +159,7 @@ export function inlayRail(bufs, pts, g, opts = {}) {
   put(bufs.seal, BANDS.sealG, 'sealG');
   put(bufs.side, BANDS.cornerF, 'cornerF');
   put(bufs.head, BANDS.head, 'head');
-  put(bufs.head, BANDS.lip, 'lip');
+  put(bufs.lip || bufs.head, BANDS.lip, 'lip');
   put(bufs.groove, BANDS.groove, 'groove');
 }
 

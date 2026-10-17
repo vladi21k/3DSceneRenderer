@@ -3,7 +3,7 @@ import { U } from '../core/uniforms.js';
 import { Baker } from './baker.js';
 import { RECIPES } from './recipes/index.js';
 import { LIBRARY } from './library.js';
-import { applySurface, surfaceUniforms } from './surface.js';
+import { applySurface, surfaceUniforms, surfaceOf } from './surface.js';
 
 // Physically based material library (contract: docs/ARCHITECTURE.md).
 // At init every tileable texture set is baked procedurally on the GPU (baker.js), then
@@ -89,6 +89,7 @@ const materials = {
       }
     }
     shared.detail = shared.textures.get('detail')?.surface || null;
+    if (shared.detail) shared.detail.anisotropy = Math.min(4, shared.detail.anisotropy); // minified detail fades out anyway
     shared.macro = shared.textures.get('macro')?.raw || null;
 
     for (const [name, def] of Object.entries(LIBRARY)) {
@@ -132,6 +133,8 @@ const materials = {
   all() { return [...tracked]; },
   onTrack(fn) { listeners.add(fn); for (const m of tracked) fn(m); return () => listeners.delete(fn); },
   names() { return [...lib.keys()]; },
+  /** Live shader uniforms of a library material's surface patch (shared with its variants), or null. */
+  uniformsOf(name) { const m = lib.get(name); return (m && surfaceOf.get(m)?.uniforms) || null; },
 };
 
 export default materials;

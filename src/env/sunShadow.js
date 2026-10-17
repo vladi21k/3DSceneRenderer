@@ -39,8 +39,10 @@ class CascadeFrustum extends THREE.Frustum {
     this.zNear = -Infinity;
     this.zFar = Infinity;
     this.ctx = null;
+    this.skip = false;
   }
   intersectsObject(object) {
+    if (this.skip) return false;
     const c = this.ctx;
     if (c && c.enabled) {
       const g = object.geometry;
@@ -83,7 +85,9 @@ export class StreetSunShadow extends SunLightShadow {
       this._viewports.push(new THREE.Vector4());
     }
     this._viewportCount = cascades;
-    const cols = cascades <= 3 ? cascades : Math.ceil(cascades / 2);
+    // near cascades on the bottom row, far cascades above: lets the far row refresh on
+    // alternate frames (see updateMatrices)
+    const cols = cascades <= 2 ? cascades : Math.ceil(cascades / 2);
     this._cols = cols;
     this._frameExtents.set(cols, Math.ceil(cascades / cols));
     this._cascadeSplits = new Array(cascades + 1).fill(0);
@@ -93,6 +97,10 @@ export class StreetSunShadow extends SunLightShadow {
     this._ctx = { enabled: true, camPos: new THREE.Vector3(), fwd: new THREE.Vector3(), groundY: 0, cotE: 1, awayDotFwd: 0 };
     for (const f of this._frustums) f.ctx = this._ctx;
     this.groundY = null; // world height of the street at the camera (set by env); null = camera.y - 3
+    // far cascades refresh every other frame unless the view or the sun changed a lot
+    this.alternateFar = cascades > 2;
+    this._frame = 0;
+    this._lastFar = { pos: new THREE.Vector3(1e9, 0, 0), fwd: new THREE.Vector3(), sun: new THREE.Vector3() };
   }
 
   copy(source) {
@@ -137,6 +145,19 @@ export class StreetSunShadow extends SunLightShadow {
     ctx.cotE = Math.min(sunH / Math.max(-_dir.y, 0.02), 40);
     ctx.awayDotFwd = sunH > 1e-4 ? (_dir.x * ctx.fwd.x + _dir.z * ctx.fwd.z) / sunH : 0;
 
+    // refresh the far row this frame?
+    const lf = this._lastFar;
+    let updateFar = !this.alternateFar || this.map === null || (this._frame & 1) === 0
+      || lf.pos.distanceToSquared(ctx.camPos) > 9 || lf.fwd.dot(ctx.fwd) < 0.9986 || lf.sun.dot(_dir) < 0.99995
+      || lf.fov !== viewCamera.fov;
+    this._frame++;
+    if (updateFar) { lf.pos.copy(ctx.camPos); lf.fwd.copy(ctx.fwd); lf.sun.copy(_dir); lf.fov = viewCamera.fov; }
+    if (this.map) {
+      // only the rows being redrawn are cleared (the clear honours the scissor)
+      this.map.scissorTest = !updateFar;
+      this.map.scissor.set(0, 0, this.map.width, this.mapSize.y);
+    }
+
     const inv = viewCamera.projectionMatrixInverse;
     let maxZ = -Infinity;
     for (let i = 0; i < 4; i++) {
@@ -152,6 +173,9 @@ export class StreetSunShadow extends SunLightShadow {
     const shadowNear = this.camera.near;
 
     for (let i = 0; i < n; i++) {
+      // stale far cascade: keep its camera, matrix and depth range from the last refresh
+      this._frustums[i].skip = !updateFar && i >= cols;
+      if (this._frustums[i].skip) continue;
       const cNear = i === 0 ? splits[0] : this._cascadeData[i - 1].z;
       const cFar = splits[i + 1];
       const fadeStart = cFar - this.fade * (cFar - splits[i]);

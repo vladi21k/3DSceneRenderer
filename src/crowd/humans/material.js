@@ -57,7 +57,7 @@ vec3 hGarment(vec3 r, float region, vec4 L2, vec4 L4, vec4 L8) {
     }
     if (e > 0.0) {
       if (topType == 5.0) { // jacket: open front shows the shirt
-        float open = 0.018 + 0.09 * smoothstep(neck - 0.02, neck - 0.30, y);
+        float open = 0.012 + 0.05 * smoothstep(neck - 0.03, neck - 0.32, y);
         float ef = abs(r.x) - open * smoothstep(0.02, -0.06, r.z);
         if (ef < 0.0 && r.z < 0.0 && y > uTorso.y - 0.05) return vec3(4.0, -ef, 1.0);
       }
@@ -192,7 +192,7 @@ void hSkin(out vec3 P, out vec3 N) {
         float Rk = (0.064 + 0.016 * L9.x) * sc;
         float Rh = (bt == 0.0 ? 0.052 + 0.010 * L9.x : 0.056 + 0.016 * L9.x) * sc;
         float R = position.y > uLeg.z ? mix(Rk, 0.098 * sc, clamp(yk, 0.0, 1.0)) : mix(Rh, Rk, clamp(yh, 0.0, 1.0));
-        if (bt == 2.0) R = (0.084 + 0.022 * L9.x) * sc;
+        if (bt == 2.0) R = (uArm.w == 0.0 ? 0.082 + 0.020 * L9.x : 0.070 + 0.012 * L9.x) * sc;
         ease = max(ease, R - d);
       }
       if (region == 1.0 || region == 19.0) ease = min(ease, 0.006);
@@ -266,8 +266,15 @@ vec3 hTopColor(vec3 r, vec4 L2, vec4 L3, float seed) {
     float y0 = uTorso.z - 0.30 * sc, y1 = uTorso.z - 0.09 * sc;
     float e = min(min(r.y - y0, y1 - r.y), 0.085 * sc - abs(r.x));
     float on = hAA(e) * step(r.z, -0.03);
-    float n = hNoise(vec3(r.x * 60.0, r.y * 60.0, seed * 31.0));
-    col = mix(col, mix(L3.rgb, L2.rgb, step(0.55, n)), on);
+    // a simple chest print: emblem (ring / disc / bar) over a couple of lines of lettering
+    vec2 c = vec2(r.x, r.y - (y0 + y1) * 0.5 - 0.035 * sc);
+    float kind = floor(fract(seed * 17.0) * 3.0);
+    float em = kind < 1.0 ? hAA(0.006 - abs(length(c) - 0.032 * sc)) : kind < 2.0 ? hAA(0.03 * sc - length(c))
+      : hAA(0.012 * sc - abs(c.y)) * hAA(0.06 * sc - abs(c.x));
+    float ty = r.y - y0 - 0.035 * sc;
+    float txt = hAA(0.0055 - abs(ty - 0.012)) * hBand(r.x + 1.0, 0.011, 0.62) * hAA(0.05 * sc - abs(r.x))
+      + hAA(0.004 - abs(ty + 0.004)) * hBand(r.x + 1.0, 0.008, 0.6) * hAA(0.035 * sc - abs(r.x));
+    col = mix(col, L3.rgb, on * clamp(em + txt, 0.0, 1.0));
   }
   return col;
 }
@@ -302,7 +309,7 @@ const FRAG_SURFACE = /* glsl */`
       hFabric(layer == 4.0 ? 4.0 : topFab, cloth, crough);
       // folds: vertical drape on the torso, rings bunching around elbows and cuffs
       bool arm = region == 4.0 || region == 5.0;
-      float drape = hNoise(vec3(r.x * 34.0, r.y * 5.0, r.z * 34.0)) - 0.5;
+      float drape = hNoise(vec3(r.x * 26.0, r.y * 3.0, r.z * 26.0)) - 0.5;
       float bunch = 0.0;
       if (arm) {
         float s = sign(r.x);
@@ -311,7 +318,7 @@ const FRAG_SURFACE = /* glsl */`
       } else {
         bunch = sin(r.y * 140.0 + hNoise(r * 22.0) * 6.0) * smoothstep(0.05, 0.0, abs(r.y - hTopHemY(L8.y) - 0.04)) * 0.6;
       }
-      hBump = 0.0016 * drape + 0.0008 * bunch;
+      hBump = 0.0009 * drape + 0.0007 * bunch;
     } else if (layer == 2.0) {
       cloth = L4.rgb;
       hFabric(botFab, cloth, crough);
@@ -412,14 +419,27 @@ const FRAG_SURFACE = /* glsl */`
       col = mix(col, L1.rgb * 0.4, lash * 0.85);
       // sunglasses
       if (L6.w > 0.5) {
-        float lens = hAA(1.0 - length(vec2(dx / 0.025, (e.y + 0.001) / 0.019))) * step(q.z, -0.05);
-        float bridge = hAA(0.0018 - abs(q.y - 0.006)) * hAA(0.012 - ax) * step(q.z, -0.07);
+        vec2 le = vec2((dx + 0.002) / 0.0215, (e.y + 0.0015) / 0.0165);
+        float lens = hAA(1.0 - length(le) - 0.15 * le.y * le.y * step(0.0, le.y)) * step(q.z, -0.05);
+        float rim = hAA(0.0018 - abs(length(le) - 1.0) * 0.02) * step(q.z, -0.05);
+        lens = max(lens, rim);
+        float bridge = hAA(0.0016 - abs(q.y - 0.007)) * hAA(0.011 - ax) * step(q.z, -0.07);
         float gl = max(lens, bridge);
         col = mix(col, vec3(0.015, 0.016, 0.018), gl);
         rough = mix(rough, 0.12, gl);
         hSpec = mix(hSpec, 2.0, gl);
         skinAmt *= 1.0 - gl;
       }
+    }
+    // soft hairline: sparse hairs just below the edge of the hair part
+    if (region == 3.0 && L11.x > 0.5 && L11.x != __SCARF__ && L11.x != __BALDING__) {
+      float th = atan(abs(q.x), -q.z);
+      float hl = th < 0.55 ? mix(0.058, 0.036, th / 0.55) : th < 1.05 ? mix(0.036, 0.022, (th - 0.55) / 0.5)
+        : th < 1.33 ? mix(0.022, -0.014, (th - 1.05) / 0.28) : th < 1.58 ? mix(-0.014, 0.028, (th - 1.33) / 0.25)
+        : th < 1.95 ? mix(0.028, -0.030, (th - 1.58) / 0.37) : mix(-0.030, -0.064, (th - 1.95) / 1.19);
+      float band = smoothstep(hl - 0.014, hl + 0.003, q.y) * (0.55 + 0.25 * hNoise(q * 400.0));
+      col = mix(col, L1.rgb * 0.9, band * 0.85);
+      skinAmt *= 1.0 - band * 0.6;
     }
     // kippah on the crown
     if (L7.w > 0.5 && (region == 3.0)) {
@@ -441,9 +461,18 @@ const FRAG_SURFACE = /* glsl */`
     // ---- parts
     float pr = region;
     if (pr == 11.0 || pr == 12.0) {
-      // hair / beard: strands follow the rest-space downward direction
-      float n = hNoise(vec3(r.x * 900.0, r.y * 70.0, r.z * 900.0)) * 0.6 + hNoise(vec3(r.x * 300.0, r.y * 30.0, r.z * 300.0)) * 0.4;
-      col = L1.rgb * (0.72 + 0.55 * n);
+      // hair / beard: strands radiate from the crown and fall; clumps, then fine strands that
+      // fade out when they get smaller than a pixel
+      vec3 dq = q - vec3(0.0, 0.10, 0.03);
+      float az = atan(dq.x, dq.z);
+      float rr = length(dq);
+      float fw = length(fwidth(r));
+      float clump = hNoise(vec3(az * 13.0, rr * 28.0, 0.0));
+      float strand = hNoise(vec3(az * 60.0, rr * 110.0, 3.0));
+      float fine = mix(hNoise(vec3(r.x * 900.0, r.y * 70.0, r.z * 900.0)), 0.5, smoothstep(0.0006, 0.002, fw));
+      strand = mix(strand, 0.5, smoothstep(0.002, 0.006, fw));
+      float n = clump * 0.45 + strand * 0.35 + fine * 0.2;
+      col = L1.rgb * (0.62 + 0.75 * n);
       rough = 0.42;
       hSpec = 1.3;
       hSheenC = L1.rgb * 0.8 + 0.06; hSheenR = 0.35;
@@ -476,7 +505,7 @@ const FRAG_SURFACE = /* glsl */`
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
   roughnessFactor = rough;
   metalnessFactor = 0.0;
-  hAO = mix(1.0, vAO, 0.9);
+  hAO = mix(1.0, vAO * vAO, 0.75);
 }
 `;
 
@@ -541,6 +570,7 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale) {
     .replace(/__BACKPACK__/g, (partIds.backpack || -1).toFixed(1))
     .replace(/__SHOULDERBAG__/g, (partIds.shoulderbag || -1).toFixed(1))
     .replace(/__SCARF__/g, (partIds.scarf || -1).toFixed(1))
+    .replace(/__BALDING__/g, (partIds.hair_balding || -1).toFixed(1))
     .replace(/__SUNHAT__/g, (partIds.sunhat || -1).toFixed(1))
     .replace(/__SHOPPING__/g, (partIds.shopping || -1).toFixed(1));
   const fragSurface = subst(FRAG_SURFACE);

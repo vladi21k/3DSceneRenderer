@@ -184,4 +184,3 @@ export const DESIGNS = [
 ];
 
 export const RAIL_H = H;
-export const designById = (id) => DESIGNS.find((d) => d.id === id);

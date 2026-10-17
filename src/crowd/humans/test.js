@@ -5,6 +5,7 @@ import { hash2 } from '../../core/rng.js';
 //   ht_n    = number of figures (default 24)
 //   ht_d    = metres ahead of the start position (default 30)
 //   ht_seed = appearance seed offset, ht_v = fixed walking speed (m/s), ht_look = head yaw (rad)
+//   ht_c    = lateral centre of the lineup (route d, metres), ht_sp = grid spacing (m)
 // e.g. ?only=humans&humanstest=1&ht_mode=grid&view=400,1.6,1.7,0,0&fov=17
 
 export class HumansTest {
@@ -18,6 +19,8 @@ export class HumansTest {
     this.seed = p.num('ht_seed', 1);
     this.v = p.num('ht_v', null);
     this.lookYaw = p.num('ht_look', 0);
+    this.c = p.num('ht_c', 0);
+    this.sp = p.num('ht_sp', 0.85);
     this.s0 = (p.view ? p.view[0] : app.startS) + this.d0;
     this.first = humans.alloc(this.n);
     this.t = 0;
@@ -27,7 +30,7 @@ export class HumansTest {
       const f = { i: this.first + i, app: app_, phase: (i * 0.37) % 1 };
       const mode = this.mode === 'mix' ? ['walk', 'walk', 'cross', 'grid', 'sit'][i % 5] : this.mode;
       f.mode = mode;
-      if (mode === 'grid') { f.d = -((this.n - 1) * 0.5) * 0.85 + i * 0.85; f.s = this.s0; }
+      if (mode === 'grid') { f.d = this.c - ((this.n - 1) * 0.5) * this.sp + i * this.sp; f.s = this.s0; }
       else if (mode === 'sit') { f.d = -3 + (i % 6) * 1.2; f.s = this.s0 + 2 + Math.floor(i / 6) * 1.5; }
       else if (mode === 'cross') { f.d = -9 + ((i * 3.7) % 18); f.s = this.s0 - 6 + ((i * 2.3) % 14); f.dir = i % 2 ? 1 : -1; }
       else if (mode === 'crowd') {

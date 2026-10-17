@@ -13,8 +13,9 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const SEAT_H = 0.46;
 
 // ------------------------------------------------------------------ chair geometry
+/** Seat outline in the shape plane: x across, y towards the front (becomes +z); front corner
+ *  radius rf, back corner radius rb, back edge narrower by `taper` on each side. */
 function roundedRectShape(w, d, rf, rb, taper = 0) {
-  // seat outline in (x, y=-z) with front (positive z, i.e. y = -d/2... ) handled by caller
   const s = new THREE.Shape();
   const wf = w / 2, wb = w / 2 - taper;
   s.moveTo(-wb + rb, -d / 2);
@@ -326,7 +327,7 @@ function umbrellaBase(lod) {
   ]);
 }
 
-/** Furled umbrella: spindle of folded fabric with a strap. */
+/** Furled umbrella: a spindle of folded fabric (folds as a radial ripple). */
 function furledGeo(lod) {
   const segs = lod ? 6 : 24, pos = [], uv = [], idx = [], col = [], flex = [];
   const prof = [[0.026, 1.5], [0.06, 1.62], [0.1, 1.95], [0.11, 2.3], [0.085, 2.62], [0.05, 2.8], [0.03, 2.86]];

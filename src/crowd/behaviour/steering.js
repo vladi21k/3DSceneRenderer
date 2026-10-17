@@ -50,10 +50,14 @@ export class Steering {
     const c = this.c, agents = c.population.agents, tram = c.tram, des = this.des;
     this.buildGrid(agents);
     this.frame++;
+    const dt1 = dt;
     for (const a of agents) {
       if (!a.active) continue;
-      a.timer -= dt; a.thinkT -= dt;
+      // far agents (a few pixels tall, far outside the tram's zone) step at half rate
       a.simple = a.s - c.camU > SIMPLE_BEYOND;
+      dt = dt1;
+      if (a.simple) { if (((this.frame + a.slot) & 1) === 1) continue; dt = dt1 * 2; }
+      a.timer -= dt; a.thinkT -= dt;
       if (a.thinkT <= 0) think(c, a);
       if (!a.active) continue;
       if (a.state === ST.SEATED) { a.vs = 0; a.vd = 0; continue; }
@@ -224,9 +228,10 @@ export class Steering {
     }
     const m = map.mouthAt(a.s, side);
     if (m) {
+      // inside the side street opening the side walls bound s; elsewhere the facade bounds d
       const line = map.mouthLine(m, side);
-      if (Math.abs(a.d) > line - WALL_GAP) {
-        const ms = c.unwrap(m.s), half = m.width / 2 - 0.55;
+      const ms = c.unwrap(m.s), half = m.width / 2 - 0.55;
+      if (Math.abs(a.d) > line - WALL_GAP && Math.abs(a.s - ms) < half + 0.4) {
         if (a.s < ms - half) a.s = ms - half; else if (a.s > ms + half) a.s = ms + half;
         if (Math.abs(a.d) > line + 22) a.d = side * (line + 22);
         return;

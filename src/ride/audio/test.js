@@ -3,10 +3,12 @@
 // clock first, which schedules all automation), once per solo'd bus plus the full
 // mix, and reports levels. Usage from tools/shoot.py:
 //   --eval "window.__app.audio.test({scenario:'cruise', speed:30, seconds:6})"
-// Options: scenario cruise|accel|stop|depart|ride|curve|crossover|bell|station,
+// Options: scenario cruise|accel|stop|depart|ride|curve|crossover|bell|bellspam|station|idle,
 //   seconds, speed (km/h), throttle, s (start position), layers (array of bus names
 //   or 'none'), raw (skip compressor/limiter), wav (return the mix as base64 WAV),
-//   bands (octave-band levels per layer), solo (bus for the 'mix' render / WAV), sampleRate.
+//   bands (octave-band levels per layer), solo (bus for the 'mix' render / WAV),
+//   sampleRate, night (0..1), tod (0..1), wind, events ([{t, type, data}]),
+//   worklet (false: force the buffer-noise fallback), ambMute (ambience parts to mute).
 import { EYE_HEIGHT, TRACK_OFFSET } from '../../core/config.js';
 import { Bank } from './bank.js';
 import { AudioEngine, BUSES } from './engine.js';
@@ -56,6 +58,12 @@ function scenario(app, o) {
   } else if (name === 'station') {
     v = () => 0; thr = () => 0; acc = () => 0;
     ev.push({ t: 0.5, type: 'doors', data: { open: true } });
+  } else if (name === 'idle') {
+    v = () => 0; thr = () => 0; acc = () => 0;
+  } else if (name === 'bellspam') {
+    // B held down / hammered: a press every 0.25 s from 0.5 s to 3 s
+    v = () => 0; thr = () => 0; acc = () => 0;
+    for (let t = 0.5; t <= 3.001; t += 0.25) ev.push({ t, type: 'bell', data: { auto: false } });
   } else {
     const vc = kmh(o.speed ?? (name === 'curve' ? 20 : 30));
     v = () => vc; acc = () => 0; thr = () => o.throttle ?? 0;
@@ -85,10 +93,12 @@ function listenerAt(route, s, out) {
 async function renderOnce(app, bank, sc, o, solo) {
   const sr = o.sampleRate, T = o.seconds;
   const ctx = new OfflineAudioContext({ numberOfChannels: 2, length: Math.floor(sr * T), sampleRate: sr });
-  const eng = new AudioEngine(ctx, bank, { route: app.route, layout: app.layout, features: app.audio.features }, { solo, raw: o.raw, seed: o.seed ?? 1 });
+  if (o.worklet === false) ctx.__tramWorklet = false;
+  await AudioEngine.prepare(ctx);
+  const eng = new AudioEngine(ctx, bank, { route: app.route, layout: app.layout, features: app.audio.features }, { solo, raw: o.raw, seed: o.seed ?? 1, ambMute: o.ambMute });
   eng.setLevel(1, 0, 0.001);
   const dt = 1 / 60;
-  const st = { t: 0, s: sc.s0, speed: 0, accel: 0, throttle: 0, state: 'run', night: o.night ?? 0, wind: o.wind ?? 0.35, listener: {} };
+  const st = { t: 0, s: sc.s0, speed: 0, accel: 0, throttle: 0, state: 'run', night: o.night ?? 0, tod: o.tod ?? 0, wind: o.wind ?? 0.35, listener: {} };
   let s = sc.s0, k = 0;
   for (let t = 0; t < T; t += dt) {
     st.t = t; st.s = app.route.wrap(s);
@@ -100,7 +110,7 @@ async function renderOnce(app, bank, sc, o, solo) {
   }
   const t0 = performance.now();
   const buf = await ctx.startRendering();
-  return { buf, ms: performance.now() - t0, endS: app.route.wrap(s) };
+  return { buf, ms: performance.now() - t0, endS: app.route.wrap(s), eng };
 }
 
 const db = (x) => +(20 * Math.log10(Math.max(1e-9, x))).toFixed(1);
@@ -167,7 +177,7 @@ export async function runAudioTest(app, opts = {}) {
   const bank = await bankFor(o.sampleRate);
   const bankMs = Math.round(bank.ms || performance.now() - t0);
   const sc = scenario(app, o);
-  const report = { scenario: sc.name, seconds: o.seconds, s0: +sc.s0.toFixed(1), bankMs, layers: {} };
+  const report = { scenario: sc.name, seconds: o.seconds, s0: +sc.s0.toFixed(1), bankMs, bankSource: bank.source, layers: {} };
   const list = o.layers === 'none' ? [] : o.layers || BUSES;
   for (const name of list) {
     const r = await renderOnce(app, bank, sc, o, name);
@@ -177,6 +187,8 @@ export async function runAudioTest(app, opts = {}) {
   report.mix = measure(mix.buf, true, o.window ?? 0.5);
   report.mix.renderMs = Math.round(mix.ms);
   report.endS = +mix.endS.toFixed(1);
+  report.ambience = { ...mix.eng.layers.ambience.debug };
+  report.worklet = mix.eng.worklet;
   if (o.wav) report.wav = wavBase64(mix.buf);
   return report;
 }

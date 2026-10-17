@@ -413,14 +413,20 @@ export class Sky {
   }
 
   /**
-   * Recompute the sky-irradiance texture (after the sky-view LUT changed) and read
-   * it back (4 texels; only on time-of-day changes) for exposure and lighting.
+   * Recompute the sky-irradiance texture (after the sky-view LUT changed) and, unless
+   * deferred, read it back (4 texels) for exposure.
    */
-  updateIrradiance() {
+  updateIrradiance(readback = true) {
     const r = this.renderer, prev = r.getRenderTarget();
     r.setRenderTarget(this.irrRT);
     r.render(this._irrQuad, this._quadCam);
     r.setRenderTarget(prev);
+    if (readback) this.readIrradiance();
+  }
+
+  /** Synchronous read of the 4 irradiance texels (a small stall; called sparingly). */
+  readIrradiance() {
+    const r = this.renderer;
     const buf = this._irrBuf || (this._irrBuf = new Uint16Array(16));
     try {
       r.readRenderTargetPixels(this.irrRT, 0, 0, 4, 1, buf);
