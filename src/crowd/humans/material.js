@@ -548,18 +548,6 @@ void hSkin(out vec3 P, out vec3 N) {
     }
   }
   if (region == 12.0) pos = hFace(pos, position, 3.0, L0.w, hLook(row, 9).w);
-#ifndef HUMAN_DEPTH
-  if (part < 0.5 && (region == 3.0 || region == 18.0 || region == 10.0)) {
-    // round the eye area off: the lids and the socket are a few millimetres of geometry that the
-    // mesh cannot hold on small heads (bruised rings, jagged lid shading); a child's eye area is
-    // full and smooth
-    vec3 qe = (position - uHead.xyz) / uHead.w;
-    float ax = abs(qe.x);
-    float we = smoothstep(0.034, 0.016, length(vec2(ax - 0.032, (qe.y + 0.002) * 1.2))) * smoothstep(-0.04, -0.07, qe.z);
-    vec3 fn = normalize(vec3(qe.x / 0.0036, (qe.y + 0.02) / 0.0081, (qe.z + 0.01) / 0.0081));
-    nrm = normalize(mix(nrm, fn, we * mix(0.35, 0.85, uFace.z)));
-  }
-#endif
   // bigger heads on smaller children (and slight variety for everyone): scale about the head joint
   if (!skirt) {
     float wh = dot(W, vec4(equal(I, vec4(5.0))));
@@ -1339,9 +1327,12 @@ const FRAG_SURFACE = /* glsl */`
   hSkinM = skinAmt;
   if (skinAmt > 0.0) {
     rough = mix(rough, skinRough, skinAmt); hSpec = mix(hSpec, 0.52, skinAmt); hSheenC *= 1.0 - skinAmt;
-    // skin relief: pores and fine creases (a low cavity normal), only where it can resolve
-    if (part < 0.5 && length(fwidth(r)) < 0.004)
-      hBump += ((hNoise(r * 420.0) - 0.5) * 0.00011 + (hNoise(r * 95.0) - 0.5) * 0.00018) * skinAmt;
+    // skin relief: pores and fine creases (a low cavity normal), faded out with the distance
+    // (smoothly: a test on the screen-space derivatives would switch it per triangle)
+    float pxm = length(vViewPosition) * 0.0012;            // ~ metres per pixel at this distance
+    float sk = 1.0 - smoothstep(0.0006, 0.0018, pxm);
+    if (part < 0.5 && sk > 0.0)
+      hBump += ((hNoise(r * 420.0) - 0.5) * 0.00011 * (1.0 - smoothstep(0.0004, 0.0009, pxm)) + (hNoise(r * 95.0) - 0.5) * 0.00018) * skinAmt * sk;
   }
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
   if (hAlpha < 0.999) {
