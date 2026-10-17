@@ -19,3 +19,11 @@ export const LOD0_DIST = 200;             // chunks closer than this are built a
 
 export const MAX_SPEED = 50 / 3.6;        // m/s
 export const DEFAULT_VFOV = 17;           // degrees, telephoto default composition
+
+// Tram axles, measured back from the cab front, with how strongly each one is felt/heard in
+// the cab (shared by the camera rig's joint bumps and the audio's wheel-rail events).
+export const AXLES = [
+  { offset: 2.2, weight: 1.0 }, { offset: 4.05, weight: 0.92 },
+  { offset: 13.6, weight: 0.34 }, { offset: 15.45, weight: 0.31 },
+  { offset: 25.0, weight: 0.13 }, { offset: 26.85, weight: 0.12 },
+];

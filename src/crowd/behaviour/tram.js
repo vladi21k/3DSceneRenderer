@@ -2,8 +2,9 @@ import {
   RIDE_D, BAND, BAND_LO, BAND_HI, TRAM_LEN, NO_GO_AHEAD, BRAKE_DECEL, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, HURRY,
   PASS_BASE, PASS_PER_V, CLEAR_T,
 } from './constants.js';
-import { KIND, ST, TASK } from './agent.js';
+import { KIND, ST, TASK, MOB } from './agent.js';
 import { MAX_SPEED, TRACK_ZONE_HALF } from '../../core/config.js';
+import { footInBand, footBandGap, footAt } from './footprint.js';
 
 // Tram awareness. Everybody judges the tram by time: a person on (or about to step onto)
 // the ride track leaves its clearance band (|d − RIDE_D| < BAND) when the tram is their
@@ -13,7 +14,10 @@ import { MAX_SPEED, TRACK_ZONE_HALF } from '../../core/config.js';
 // small sidestep when it goes by, and a final projection guarantees the cab's swept
 // volume stays empty. A few people only notice the tram when it rings: they ask the
 // driver for the bell shortly before they would have to move.
+// Strollers and bicycles count with their whole footprint: the band test, the kerb, the
+// block and the final projection all use the body circle plus the prop capsule.
 
+const _ft = { fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 };
 const REQ_HALF = 1.6;   // people this close to the ride track centre may ask for the bell
 const V_MAX = MAX_SPEED; // the tram's governed top speed (m/s)
 
@@ -79,17 +83,23 @@ export class TramWatch {
 
   /** May person a start crossing the band at s now? Their time to get through it is measured
    *  from where they stand (people waiting on the far side of the left track need longer). */
-  canEnterBand(a, s) {
+  canEnterBand(a, s, T0 = 0) {
     const ahead = s - this.trainU;
     if (ahead < -(TRAM_LEN + 3)) return true;
     if (ahead < NO_GO_AHEAD + 2) return false;
-    // where the tram could be by the time they are through, even if it pulls away meanwhile
-    const T = this.timeThrough(a) + 2;
-    return ahead > Math.min(this.v * T + 0.6 * T * T, Math.max(this.v, V_MAX) * T) + 14;
+    // where the tram could be by the time they are through, even if it pulls away meanwhile.
+    // Parents with a stroller go only when it is clearly safe: a much bigger margin.
+    const careful = a.mob === MOB.STROLLER || a.mob === MOB.WALKBIKE;
+    const T = (T0 || this.timeThrough(a)) * (careful ? 1.6 : 1) + (careful ? 4 : 2);
+    return ahead > Math.min(this.v * T + 0.6 * T * T, Math.max(this.v, V_MAX) * T) + (careful ? 40 : 14);
   }
 
   /** Seconds for a to walk out of the far side of the band from where they are. */
-  timeThrough(a) { return (Math.abs(a.d - RIDE_D) + BAND + 0.3) / Math.max(0.9, a.v0) + 0.8; }
+  timeThrough(a) {
+    // a stroller enters the band ahead of its pusher; a walked bicycle is beside them
+    const prop = a.mob === MOB.STROLLER ? 1.2 : a.mob === MOB.WALKBIKE ? 0.9 : a.mob === MOB.CYCLE ? 1.0 : 0;
+    return (Math.abs(a.d - RIDE_D) + BAND + 0.3 + prop) / Math.max(0.9, a.v0) + 0.8;
+  }
 
   /** Before steering: flag agents that must leave the band and pick the side they go to,
    *  sidesteps for the passing tram and bell requests. */
@@ -105,7 +115,7 @@ export class TramWatch {
       else if (dl > BAND - 0.06 && a.d < TRACK_ZONE_HALF + 0.8 && c.map.platformAt(a.s, 1, a.d, 0.35) && this.near(a)) a.platformOK = true;
     }
     // the tram going by close: a small step away and a glance at it
-    if (this.v > 3 && ahead > -6 && ahead < 12 && adl >= BAND && adl < BAND + 3 && time - a.passT > 25) {
+    if (this.v > 3 && ahead > -6 && ahead < 12 && adl >= BAND && adl < BAND + 3 && time - a.passT > 25 && a.mob !== MOB.CYCLE) {
       a.passT = time;
       const r = c.rng;
       if (a.state !== ST.WAIT && r.chance(adl < this.passD + 0.6 ? 0.9 : 0.5)) {
@@ -115,7 +125,7 @@ export class TramWatch {
       if (r.chance(0.55)) { a.tramLookS = time + r.range(0, 0.3); a.tramLookT = a.tramLookS + r.range(0.6, 1.4); }
     }
     // bell request: someone on the track who has not noticed the tram, shortly before they must move
-    if (a.needsBell && !a.clearing && ahead > 2 && this.v > 0.5 && adl < REQ_HALF && ahead < this.stopDist && a.bellT <= time) {
+    if (a.needsBell && !a.mob && !a.clearing && ahead > 2 && this.v > 0.5 && adl < REQ_HALF && ahead < this.stopDist && a.bellT <= time) {
       const tta = ahead / Math.max(0.3, this.closing(a));
       const lim = a.clearT + 1;
       if (tta < lim) {
@@ -125,7 +135,9 @@ export class TramWatch {
       }
     }
     const front = this.frontFor(a);
-    if (adl >= BAND + 0.02 || ahead < -(TRAM_LEN + 7) || ahead > front) { a.clearing = false; return; }
+    const inside = a.mob ? footBandGap(a) < 0.02 : adl < BAND + 0.02;
+    if (!inside || ahead < -(TRAM_LEN + 7) - a.extS || ahead > front) { a.clearing = false; return; }
+    if (a.clearing && a.mob) { this._clearTo(a); return; }
     if (!a.clearing) {
       a.clearing = true;
       const toHi = BAND_HI - a.d, toLo = a.d - BAND_LO;
@@ -139,10 +151,23 @@ export class TramWatch {
       const toPlatform = a.kind === KIND.PASSENGER || a.task === TASK.TO_PLATFORM || a.task === TASK.BOARD;
       // (someone already at the platform edge steps up onto it instead)
       if (hi && !toPlatform && dl < BAND - 0.3 && (c.map.stationAt(a.s) || c.map.stationAt(a.s + 6))) hi = false;
+      // cyclists cannot get out through the pole line: they always leave towards the other track
+      if (a.mob === MOB.CYCLE) hi = dl > 0 && footBandGap(a) > -0.25 && !c.map.stationAt(a.s);
       // step well clear when there is time, just clear when there is not
       const spare = ahead > 0 && this.v > 0.2 ? Math.min(1, Math.max(0, (ahead / this.v - 2) / 3)) : 1;
+      a.clearHi = hi; a.clearSpare = spare;
       a.clearTo = hi ? BAND_HI + 0.08 + 0.35 * spare : BAND_LO - 0.08 - 0.6 * spare;
+      if (a.mob) this._clearTo(a);
     }
+  }
+
+  /** Clearing target of a person with a stroller / bicycle: the prop has to be out too
+   *  (its reach for the facing it will have while moving out of the band). */
+  _clearTo(a) {
+    const hi = a.clearHi, spare = a.clearSpare;
+    const f = footAt(a, hi ? 0.6 * (a.dir >= 0 ? 1 : -1) + (a.dir >= 0 ? 0 : Math.PI) : -0.6 * (a.dir >= 0 ? 1 : -1) + (a.dir >= 0 ? 0 : Math.PI), _ft);
+    const eLo = Math.max(a.extLo, f.extLo), eHi = Math.max(a.extHi, f.extHi);
+    a.clearTo = hi ? BAND_HI + 0.1 + 0.35 * spare + eLo : BAND_LO - 0.1 - 0.6 * spare - eHi;
   }
 
   /** Lateral speed needed to get out of the band in time. */
@@ -160,7 +185,9 @@ export class TramWatch {
    *  through and people clearing are exempt. */
   filterDesired(a, out) {
     if (a.clearing || out.vd === 0 || a.crossOK > this.c.time) return;
-    const dl = a.d - RIDE_D, adl = Math.abs(dl);
+    const dl = a.d - RIDE_D;
+    // distance of the footprint's near edge, in body-centre terms (|dl| for a plain body)
+    const adl = a.mob ? footBandGap(a) + BAND : Math.abs(dl);
     if (adl < BAND || adl > BAND + 2.5) return;
     const ahead = a.s - this.trainU;
     if (ahead < -(TRAM_LEN + 3) || ahead > this.frontFor(a) + 3) return;
@@ -175,10 +202,11 @@ export class TramWatch {
   /** After integration: never let anyone into the band inside the zone; hard guarantee for the swept volume. */
   constrain(a, prevD) {
     const dl = a.d - RIDE_D;
-    if (Math.abs(dl) >= BAND) return;
+    if (a.mob ? !footInBand(a) : Math.abs(dl) >= BAND) return;
     const ahead = a.s - this.trainU;
-    const inZone = ahead > -(TRAM_LEN + 2) && ahead < Math.max(this.frontFor(a) - 4, SWEPT_AHEAD + 2);
-    if (inZone && Math.abs(prevD - RIDE_D) >= BAND - 1e-4 && !(a.crossOK > this.c.time)) {
+    const inZone = ahead > -(TRAM_LEN + 2) - a.extS && ahead < Math.max(this.frontFor(a) - 4, SWEPT_AHEAD + 2) + a.extS;
+    const wasOut = a.mob ? footBandGap(a, prevD) >= -1e-4 : Math.abs(prevD - RIDE_D) >= BAND - 1e-4;
+    if (inZone && wasOut && !(a.crossOK > this.c.time)) {
       // was outside: block the step into the band (beside a standing tram this is just its side)
       a.d = prevD; a.vd = 0;
       if (this.v < 0.3) { this.stats.tramSide++; return; }
@@ -187,15 +215,29 @@ export class TramWatch {
       return;
     }
     // the cab's swept volume (and the tram body behind it) is never entered, whatever happened above
-    if (ahead > -(TRAM_LEN + 1) && ahead < SWEPT_AHEAD + 0.6) {
+    if (ahead > -(TRAM_LEN + 1) - a.extS && ahead < SWEPT_AHEAD + 0.6 + a.extS) {
       // emergency: should never happen if the behaviour above works. Count and project out.
-      if (ahead > -AGENT_R && ahead < SWEPT_AHEAD + AGENT_R && Math.abs(dl) < SWEPT_HALF + AGENT_R) this._violation(a, ahead, dl);
+      const hard = a.mob ? footBandGap(a) < -(0.03 + 1e-3) : Math.abs(dl) < SWEPT_HALF + AGENT_R;
+      if (ahead > -AGENT_R - a.extS && ahead < SWEPT_AHEAD + AGENT_R + a.extS && hard) this._violation(a, ahead, dl);
       this.stats.rescues++;
-      if (this.rescueLog.length < 12) this.rescueLog.push({ t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, clr: a.clearing, lead: !!a.leader });
-      a.d = dl >= 0 && !this.c.map.stationAt(a.s) ? BAND_HI + 0.01 : BAND_LO - 0.01;
-      if ((a.kind === KIND.PASSENGER || a.platformOK) && dl >= 0) a.d = BAND_HI + 0.01;
+      if (this.rescueLog.length < 12) this.rescueLog.push({ t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, mob: a.mob, clr: a.clearing, lead: !!a.leader });
+      let hi = dl >= 0 && !this.c.map.stationAt(a.s);
+      if ((a.kind === KIND.PASSENGER || a.platformOK) && dl >= 0) hi = true;
+      a.d = hi ? BAND_HI + 0.01 + a.extLo : BAND_LO - 0.01 - a.extHi;
       a.vd = 0;
     }
+  }
+
+  /** Would turning a person with a stroller / bicycle to `alpha` swing the prop into the band
+   *  inside the tram's zone (when it is out of it now)? */
+  turnBlocked(a, alpha) {
+    if (!a.mob || a.crossOK > this.c.time) return false;
+    const ahead = a.s - this.trainU;
+    if (ahead < -(TRAM_LEN + 3) - 1 || ahead > Math.max(this.frontFor(a), SWEPT_AHEAD + 2) + 2) return false;
+    if (footInBand(a)) return false;
+    const f = footAt(a, alpha, _ft);
+    const dl = a.d - RIDE_D;
+    return dl + f.extHi > -BAND && dl - f.extLo < BAND;
   }
 
   _violation(a, ahead, dl) {

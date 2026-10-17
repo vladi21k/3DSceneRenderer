@@ -1,14 +1,27 @@
 """Anatomical signed-distance bodies for the crowd figures.
 
-Three base bodies (adult male, adult female, child) are described with anthropometric
-numbers (metres). Each primitive carries a body region (used for clothing masks at
-runtime) and skinning bone influences. Runtime convention: +Y up, the figure faces -Z,
-its right side is +X ("R" bones), left side -X ("L" bones). Rest pose: arms abducted
-~20 degrees with slightly bent elbows, legs slightly apart.
+Four base bodies are described with anthropometric numbers (metres): an adult man, an adult
+woman, an older child (8-11 years) and a young child (4-6 years). Each is sculpted from the
+same anatomical recipe with its own proportions and sex / age features:
+  - a lofted torso core with the side-view S-curve (thoracic kyphosis, lumbar lordosis) and
+    the frontal taper (men: broad chest and latissimus V to a narrow pelvis; women: narrow
+    waist, wide hips; children: little waist, a rounder belly);
+  - the back: the trapezius slope from the neck to the acromion, shoulder blades, erector
+    columns either side of a spine furrow, the vertebra prominens, latissimus flare, glutes
+    with the cleft and gluteal folds;
+  - the front: pectorals (men) or breasts (women), the abdomen;
+  - limbs with the deltoid cap, biceps / triceps, olecranon, forearm muscle bellies tapering
+    to the wrist, the carrying angle (wider in women), thighs with the hamstring mass, the
+    patella, two-headed calves tapering into the Achilles tendon.
+Each primitive carries a body region (clothing masks at runtime) and skinning bone
+influences. Runtime convention: +Y up, the figure faces -Z, its right side is +X ("R"
+bones), left side -X ("L" bones). Rest pose: arms abducted ~17 degrees with slightly bent
+elbows, legs slightly apart.
 
 `build_body(kind, build)` returns (sdf_node, skeleton, info). `build` > 0 makes the heavy
-variant used to derive the per-vertex "build" morph; `belly` and `face_var` make the targets
-of the scalar shape morphs (a belly; long / broad / older faces).
+variant used to derive the per-vertex "build" morph (men gain at the belly and waist, women
+at the hips, thighs and seat); `belly` and `face_var` make the targets of the scalar shape
+morphs (a belly; long / broad / older faces).
 """
 import numpy as np
 from humans_sdf import (Ellipsoid, RoundCone, Loft, RoundBox, Union, Subtract, Intersect, HalfSpace, Fn,
@@ -33,94 +46,155 @@ def sstep(a, b, x):
     return t * t * (3 - 2 * t)
 
 
+def gauss(u, c, w):
+    return np.exp(-((u - c) / w) ** 2)
+
+
 # ----------------------------------------------------------------------------- templates
+# torso: (y, half width, front z, back z) of the core from below the crotch up to the neck
+# base (anatomical features are added on top); limbs: (t, half width, half depth, lateral
+# offset, back offset) along the bone from the proximal joint (offsets: + = outwards / back)
 
 MALE = dict(
-    H=1.76,
-    hip=(0.088, 0.915, 0.0), knee=(0.097, 0.500, -0.004), ankle=(0.104, 0.080, 0.024),
+    kind='male', sex='m', H=1.76,
+    hip=(0.088, 0.915, 0.0), knee=(0.094, 0.500, -0.004), ankle=(0.098, 0.080, 0.024),
     heelZ=0.082, toeZ=-0.193, ballT=0.68,
     pelvis=(0, 0.965, 0.012), spine1=(0, 1.070, 0.028), spine2=(0, 1.250, 0.020),
-    neck=(0, 1.462, 0.030), head=(0, 1.580, 0.012),
-    clav=(0.020, 1.440, -0.010), shoulder=(0.182, 1.425, 0.018),
-    Lu=0.312, Lf=0.252, abd=19.0,
-    headC=(0, 1.650, 0.0), headS=1.0, face='male',
-    # torso loft keys: y, rx, rz, cz (centre z offset)
-    torso=[(0.800, 0.095, 0.070, 0.012), (0.855, 0.150, 0.098, 0.014), (0.915, 0.168, 0.108, 0.014),
-           (0.985, 0.160, 0.104, 0.006), (1.065, 0.146, 0.100, -0.002), (1.150, 0.150, 0.104, -0.008),
-           (1.230, 0.160, 0.112, -0.012), (1.300, 0.167, 0.114, -0.008), (1.365, 0.170, 0.108, 0.000),
-           (1.410, 0.140, 0.090, 0.010), (1.455, 0.085, 0.062, 0.022)],
-    # limb keys: t, rx (lateral), rz (front-back), ox, oz
-    uarm=[(0.0, 0.050, 0.052, 0.004, 0.0), (0.30, 0.046, 0.049, 0.0, -0.004), (0.62, 0.041, 0.043, 0.0, -0.002),
-          (1.0, 0.036, 0.034, 0.0, 0.003)],
-    farm=[(0.0, 0.040, 0.037, 0.0, 0.002), (0.22, 0.042, 0.040, 0.002, 0.0), (0.62, 0.032, 0.028, 0.0, 0.0),
-          (1.0, 0.0195, 0.027, 0.0, 0.0)],
-    thigh=[(0.0, 0.086, 0.088, 0.006, 0.004), (0.25, 0.083, 0.085, 0.004, -0.006), (0.60, 0.070, 0.074, 0.0, -0.010),
-           (0.88, 0.057, 0.060, -0.002, -0.006), (1.0, 0.052, 0.054, 0.0, 0.0)],
-    shin=[(0.0, 0.052, 0.050, 0.0, 0.002), (0.18, 0.050, 0.056, 0.0, 0.012), (0.38, 0.047, 0.054, -0.002, 0.012),
-          (0.72, 0.034, 0.035, 0.0, 0.004), (1.0, 0.029, 0.031, 0.0, 0.0)],
-    calf=(0.046, 0.085, 0.036), glute=(0.074, 0.086, 0.058), handS=1.0, footS=1.0,
-    pec=(0.072, 0.052, 0.034), breast=None, belly=None, neckR=(0.058, 0.060),
+    neck=(0, 1.466, 0.030), head=(0, 1.585, 0.012),
+    clav=(0.020, 1.438, -0.010), shoulder=(0.180, 1.420, 0.018),
+    Lu=0.312, Lf=0.255, abd=17.0, carry=0.07,
+    headC=(0, 1.6467, 0.0), headS=1.03, face='male',
+    torso=[(0.800, 0.108, -0.052, 0.060), (0.855, 0.144, -0.074, 0.074), (0.915, 0.158, -0.093, 0.078),
+           (0.985, 0.152, -0.103, 0.064), (1.060, 0.145, -0.107, 0.058), (1.140, 0.149, -0.112, 0.072),
+           (1.220, 0.161, -0.124, 0.090), (1.295, 0.168, -0.129, 0.100), (1.360, 0.164, -0.117, 0.100),
+           (1.410, 0.136, -0.090, 0.090), (1.455, 0.080, -0.048, 0.072)],
+    uarm=[(0.0, 0.050, 0.052, 0.004, 0.0), (0.30, 0.047, 0.050, 0.0, 0.004), (0.55, 0.043, 0.046, 0.0, 0.002),
+          (0.80, 0.038, 0.040, 0.0, 0.0), (1.0, 0.035, 0.034, 0.0, -0.002)],
+    farm=[(0.0, 0.039, 0.036, 0.0, 0.001), (0.20, 0.043, 0.039, 0.003, 0.0), (0.45, 0.038, 0.032, 0.002, 0.0),
+          (0.75, 0.029, 0.023, 0.0, 0.0), (1.0, 0.0225, 0.0175, 0.0, 0.0)],
+    thigh=[(0.0, 0.082, 0.088, 0.002, 0.006), (0.25, 0.080, 0.084, 0.003, 0.010), (0.55, 0.071, 0.074, 0.001, 0.008),
+           (0.82, 0.060, 0.060, -0.002, 0.000), (1.0, 0.051, 0.052, 0.0, -0.002)],
+    shin=[(0.0, 0.050, 0.049, 0.0, 0.002), (0.15, 0.048, 0.050, 0.0, 0.006), (0.40, 0.045, 0.046, -0.001, 0.008),
+          (0.70, 0.032, 0.032, 0.0, 0.002), (0.88, 0.026, 0.026, 0.0, -0.001), (1.0, 0.027, 0.029, 0.0, 0.0)],
+    calf=(0.040, 0.090, 0.034), calfL=(0.034, 0.075, 0.030),
+    glute=(0.066, 0.893, 0.068, 0.080, 0.088, 0.060), fold=0.835,
+    pec=(0.070, 1.302, 0.088, 0.060, 0.016), breast=None, lat=0.040, erector=(0.026, 0.13, 0.016),
+    scap=(0.088, 0.096, 0.054, 0.080, 0.021), trap=(0.036, 0.024), neckR=(0.060, 0.062), kidBelly=None,
+    delt=(0.040, 0.058, 0.050), handS=1.0, footS=1.0,
     sx=1.0, sy=1.0, sz=1.0,
 )
 
 FEMALE = dict(
-    H=1.63,
-    hip=(0.086, 0.848, 0.0), knee=(0.086, 0.462, -0.006), ankle=(0.094, 0.074, 0.022),
+    kind='female', sex='f', H=1.63,
+    hip=(0.090, 0.845, 0.0), knee=(0.080, 0.462, -0.006), ankle=(0.088, 0.074, 0.022),
     heelZ=0.074, toeZ=-0.174, ballT=0.68,
-    pelvis=(0, 0.895, 0.014), spine1=(0, 0.990, 0.028), spine2=(0, 1.155, 0.020),
-    neck=(0, 1.352, 0.028), head=(0, 1.462, 0.012),
-    clav=(0.018, 1.330, -0.008), shoulder=(0.160, 1.318, 0.016),
-    Lu=0.288, Lf=0.230, abd=21.0,
-    headC=(0, 1.528, 0.002), headS=0.935, face='female',
-    torso=[(0.738, 0.095, 0.070, 0.014), (0.795, 0.150, 0.096, 0.016), (0.852, 0.168, 0.106, 0.018),
-           (0.915, 0.157, 0.100, 0.010), (0.990, 0.128, 0.088, 0.000), (1.062, 0.131, 0.090, -0.006),
-           (1.135, 0.139, 0.096, -0.010), (1.200, 0.144, 0.100, -0.008), (1.262, 0.148, 0.096, -0.002),
-           (1.305, 0.126, 0.082, 0.008), (1.345, 0.078, 0.056, 0.020)],
-    uarm=[(0.0, 0.044, 0.046, 0.003, 0.0), (0.30, 0.041, 0.043, 0.0, -0.002), (0.62, 0.037, 0.038, 0.0, 0.0),
-          (1.0, 0.031, 0.030, 0.0, 0.003)],
-    farm=[(0.0, 0.034, 0.032, 0.0, 0.002), (0.22, 0.036, 0.034, 0.002, 0.0), (0.62, 0.028, 0.024, 0.0, 0.0),
-          (1.0, 0.0170, 0.024, 0.0, 0.0)],
-    thigh=[(0.0, 0.092, 0.088, 0.012, 0.006), (0.25, 0.086, 0.084, 0.006, -0.004), (0.60, 0.069, 0.070, 0.0, -0.008),
-           (0.88, 0.054, 0.056, -0.002, -0.006), (1.0, 0.049, 0.050, 0.0, 0.0)],
-    shin=[(0.0, 0.048, 0.046, 0.0, 0.002), (0.18, 0.046, 0.051, 0.0, 0.011), (0.38, 0.043, 0.049, -0.002, 0.011),
-          (0.72, 0.030, 0.031, 0.0, 0.004), (1.0, 0.025, 0.027, 0.0, 0.0)],
-    calf=(0.042, 0.080, 0.033), glute=(0.074, 0.086, 0.058), handS=0.9, footS=0.91,
-    pec=None, breast=(0.058, 0.056, 0.050), belly=None, neckR=(0.050, 0.052),
+    pelvis=(0, 0.893, 0.016), spine1=(0, 0.988, 0.030), spine2=(0, 1.152, 0.020),
+    neck=(0, 1.356, 0.028), head=(0, 1.464, 0.012),
+    clav=(0.018, 1.330, -0.008), shoulder=(0.156, 1.316, 0.016),
+    Lu=0.287, Lf=0.229, abd=16.0, carry=0.12,
+    headC=(0, 1.5246, 0.002), headS=0.96, face='female',
+    torso=[(0.735, 0.116, -0.048, 0.062), (0.790, 0.153, -0.064, 0.078), (0.845, 0.164, -0.076, 0.078),
+           (0.905, 0.164, -0.088, 0.070), (0.975, 0.130, -0.094, 0.054), (1.035, 0.131, -0.097, 0.060),
+           (1.100, 0.140, -0.104, 0.074), (1.170, 0.148, -0.110, 0.086), (1.235, 0.149, -0.106, 0.090),
+           (1.290, 0.134, -0.086, 0.084), (1.345, 0.068, -0.040, 0.064)],
+    uarm=[(0.0, 0.044, 0.046, 0.003, 0.0), (0.30, 0.042, 0.045, 0.0, 0.005), (0.60, 0.038, 0.040, 0.0, 0.004),
+          (1.0, 0.030, 0.029, 0.0, -0.001)],
+    farm=[(0.0, 0.033, 0.030, 0.0, 0.001), (0.22, 0.036, 0.032, 0.002, 0.0), (0.55, 0.030, 0.025, 0.001, 0.0),
+          (1.0, 0.0195, 0.0150, 0.0, 0.0)],
+    thigh=[(0.0, 0.089, 0.090, 0.008, 0.010), (0.25, 0.085, 0.085, 0.006, 0.010), (0.55, 0.072, 0.072, 0.001, 0.006),
+           (0.85, 0.056, 0.056, -0.003, 0.000), (1.0, 0.048, 0.050, 0.0, -0.002)],
+    shin=[(0.0, 0.047, 0.046, 0.0, 0.002), (0.15, 0.045, 0.047, 0.0, 0.006), (0.40, 0.042, 0.043, -0.001, 0.007),
+          (0.70, 0.029, 0.029, 0.0, 0.002), (0.88, 0.023, 0.024, 0.0, -0.001), (1.0, 0.024, 0.026, 0.0, 0.0)],
+    calf=(0.037, 0.085, 0.031), calfL=(0.031, 0.070, 0.027),
+    glute=(0.070, 0.814, 0.068, 0.082, 0.088, 0.064), fold=0.752,
+    pec=None, breast=(0.058, 1.180, 0.057, 0.055, 0.049), lat=0.026, erector=(0.022, 0.11, 0.012),
+    scap=(0.078, 0.088, 0.048, 0.072, 0.018), trap=(0.027, 0.020), neckR=(0.049, 0.051), kidBelly=None,
+    delt=(0.033, 0.050, 0.042), handS=0.9, footS=0.91,
     sx=0.93, sy=0.926, sz=0.95,
 )
 
+CHILD = dict(
+    kind='child', sex='c', H=1.36,
+    hip=(0.064, 0.690, 0.0), knee=(0.066, 0.385, -0.004), ankle=(0.069, 0.060, 0.018),
+    heelZ=0.062, toeZ=-0.150, ballT=0.68,
+    pelvis=(0, 0.725, 0.010), spine1=(0, 0.800, 0.022), spine2=(0, 0.940, 0.016),
+    neck=(0, 1.112, 0.022), head=(0, 1.198, 0.010),
+    clav=(0.014, 1.088, -0.006), shoulder=(0.120, 1.073, 0.014),
+    Lu=0.238, Lf=0.192, abd=17.0, carry=0.08,
+    headC=(0, 1.252, 0.0), headS=0.95, face='child',
+    torso=[(0.610, 0.084, -0.040, 0.048), (0.650, 0.106, -0.054, 0.058), (0.695, 0.114, -0.064, 0.062),
+           (0.750, 0.111, -0.072, 0.054), (0.805, 0.105, -0.075, 0.050), (0.865, 0.108, -0.079, 0.058),
+           (0.930, 0.114, -0.086, 0.068), (0.995, 0.119, -0.088, 0.075), (1.045, 0.114, -0.078, 0.075),
+           (1.080, 0.094, -0.060, 0.068), (1.112, 0.052, -0.030, 0.052)],
+    uarm=[(0.0, 0.036, 0.038, 0.003, 0.0), (0.30, 0.034, 0.036, 0.0, 0.003), (0.60, 0.031, 0.032, 0.0, 0.002),
+          (1.0, 0.026, 0.025, 0.0, 0.0)],
+    farm=[(0.0, 0.028, 0.026, 0.0, 0.001), (0.22, 0.030, 0.027, 0.002, 0.0), (0.55, 0.026, 0.021, 0.001, 0.0),
+          (1.0, 0.0170, 0.0135, 0.0, 0.0)],
+    thigh=[(0.0, 0.060, 0.064, 0.002, 0.005), (0.25, 0.058, 0.061, 0.003, 0.006), (0.55, 0.052, 0.054, 0.001, 0.005),
+           (0.85, 0.043, 0.044, -0.002, 0.000), (1.0, 0.038, 0.040, 0.0, -0.001)],
+    shin=[(0.0, 0.038, 0.037, 0.0, 0.001), (0.15, 0.036, 0.038, 0.0, 0.004), (0.40, 0.034, 0.035, -0.001, 0.005),
+          (0.70, 0.025, 0.025, 0.0, 0.001), (0.88, 0.020, 0.020, 0.0, -0.001), (1.0, 0.021, 0.022, 0.0, 0.0)],
+    calf=(0.029, 0.066, 0.025), calfL=(0.025, 0.056, 0.022),
+    glute=(0.052, 0.672, 0.050, 0.060, 0.066, 0.046), fold=0.622,
+    pec=None, breast=None, lat=0.014, erector=(0.017, 0.09, 0.008),
+    scap=(0.066, 0.072, 0.040, 0.058, 0.016), trap=(0.024, 0.017), neckR=(0.041, 0.042), kidBelly=(0.072, 0.030),
+    delt=(0.028, 0.042, 0.035), handS=0.76, footS=0.77,
+    sx=0.75, sy=0.773, sz=0.76,
+)
 
-def child_template():
-    """8-10 year old: adult male body scaled down with a relatively large head."""
-    k = dict(MALE)
-    sx, sy, sz, sr = 0.70, 0.725, 0.72, 0.68
+KID = dict(
+    kind='kid', sex='c', H=1.10,
+    hip=(0.052, 0.530, 0.0), knee=(0.054, 0.298, -0.004), ankle=(0.056, 0.048, 0.016),
+    heelZ=0.050, toeZ=-0.122, ballT=0.68,
+    pelvis=(0, 0.560, 0.010), spine1=(0, 0.622, 0.020), spine2=(0, 0.735, 0.014),
+    neck=(0, 0.866, 0.018), head=(0, 0.928, 0.008),
+    clav=(0.011, 0.846, -0.005), shoulder=(0.094, 0.834, 0.012),
+    Lu=0.186, Lf=0.150, abd=18.0, carry=0.07,
+    headC=(0, 0.988, 0.004), headS=0.92, face='kid',
+    torso=[(0.465, 0.068, -0.034, 0.040), (0.500, 0.088, -0.047, 0.050), (0.535, 0.094, -0.058, 0.054),
+           (0.580, 0.093, -0.067, 0.048), (0.625, 0.092, -0.073, 0.043), (0.675, 0.093, -0.075, 0.048),
+           (0.725, 0.095, -0.074, 0.056), (0.775, 0.096, -0.069, 0.060), (0.815, 0.092, -0.060, 0.060),
+           (0.845, 0.076, -0.047, 0.054), (0.870, 0.043, -0.024, 0.043)],
+    uarm=[(0.0, 0.031, 0.032, 0.002, 0.0), (0.35, 0.030, 0.031, 0.0, 0.002), (0.65, 0.028, 0.028, 0.0, 0.001),
+          (1.0, 0.024, 0.023, 0.0, 0.0)],
+    farm=[(0.0, 0.025, 0.023, 0.0, 0.001), (0.25, 0.026, 0.024, 0.001, 0.0), (0.60, 0.023, 0.019, 0.001, 0.0),
+          (1.0, 0.0160, 0.0125, 0.0, 0.0)],
+    thigh=[(0.0, 0.050, 0.054, 0.002, 0.004), (0.25, 0.049, 0.052, 0.003, 0.005), (0.55, 0.045, 0.047, 0.001, 0.003),
+           (0.85, 0.039, 0.040, -0.001, 0.000), (1.0, 0.034, 0.036, 0.0, -0.001)],
+    shin=[(0.0, 0.034, 0.033, 0.0, 0.001), (0.15, 0.033, 0.034, 0.0, 0.003), (0.40, 0.031, 0.031, -0.001, 0.004),
+          (0.70, 0.024, 0.024, 0.0, 0.001), (0.88, 0.019, 0.019, 0.0, 0.0), (1.0, 0.019, 0.020, 0.0, 0.0)],
+    calf=(0.025, 0.050, 0.021), calfL=(0.022, 0.044, 0.019),
+    glute=(0.044, 0.512, 0.044, 0.052, 0.054, 0.040), fold=0.472,
+    pec=None, breast=None, lat=0.0, erector=None,
+    scap=(0.054, 0.058, 0.032, 0.046, 0.014), trap=(0.021, 0.015), neckR=(0.036, 0.037), kidBelly=(0.082, 0.040),
+    delt=(0.023, 0.034, 0.029), handS=0.62, footS=0.63,
+    sx=0.62, sy=0.625, sz=0.66,
+)
 
-    def P(p):
-        return (p[0] * sx, p[1] * sy, p[2] * sz)
-
-    for key in ('hip', 'knee', 'ankle', 'pelvis', 'spine1', 'spine2', 'neck', 'head', 'clav', 'shoulder'):
-        k[key] = P(MALE[key])
-    k['H'] = 1.32
-    k['heelZ'] = MALE['heelZ'] * 0.75
-    k['toeZ'] = MALE['toeZ'] * 0.74
-    k['Lu'], k['Lf'] = MALE['Lu'] * sy, MALE['Lf'] * sy
-    k['torso'] = [(y * sy, rx * sx * 0.98, rz * sz * 0.96, cz * sz) for y, rx, rz, cz in MALE['torso']]
-    for key in ('uarm', 'farm', 'thigh', 'shin'):
-        k[key] = [(t, rx * sr, rz * sr, ox * sr, oz * sr) for t, rx, rz, ox, oz in MALE[key]]
-    k['calf'] = tuple(np.array(MALE['calf']) * sr)
-    k['glute'] = tuple(np.array(MALE['glute']) * sr)
-    k['pec'] = None
-    k['neckR'] = (0.044, 0.046)
-    k['handS'], k['footS'] = 0.72, 0.74
-    k['headS'] = 0.88
-    k['headC'] = (0, 1.32 - (1.758 - 1.650) * 0.88, 0.0)
-    k['head'] = (0, k['headC'][1] - 0.07 * 0.88, 0.010)
-    k['face'] = 'child'
-    k['sx'], k['sy'], k['sz'] = sx, sy, sz
-    return k
+TEMPLATES = {'male': MALE, 'female': FEMALE, 'child': CHILD, 'kid': KID}
 
 
-TEMPLATES = {'male': MALE, 'female': FEMALE, 'child': child_template()}
+def cranium(face):
+    """Cranium ellipsoid (centre, radii) of the head sculpt in head-local coordinates; hair and
+    hats are built over it (humans_parts)."""
+    if face == 'kid':
+        return np.array([0.0, 0.018, 0.008]), np.array([0.080, 0.103, 0.104])
+    if face == 'child':
+        return np.array([0.0, 0.015, 0.007]), np.array([0.0775, 0.0995, 0.1015])
+    return np.array([0.0, 0.014, 0.006]), np.array([0.0745, 0.096, 0.098])
+
+
+def arm_joints(T, s):
+    """Rest-pose clavicle, shoulder, elbow and wrist of side s (+1 right) and the forearm axis."""
+    abd = np.radians(T['abd'])
+    sh = np.array([s * T['shoulder'][0], T['shoulder'][1], T['shoulder'][2]])
+    cl = np.array([s * T['clav'][0], T['clav'][1], T['clav'][2]])
+    du = np.array([s * np.sin(abd), -np.cos(abd), 0.0])
+    el = sh + du * T['Lu'] + np.array([0, 0, 0.012 * T['sy']])
+    # the forearm angles outwards at the elbow (carrying angle; wider in women) and a little forwards
+    df = normalize(du + np.array([s * T['carry'], 0, -0.16]))
+    wr = el + df * T['Lf']
+    return cl, sh, el, wr, du, df
 
 
 # ----------------------------------------------------------------------------- pieces
@@ -137,14 +211,16 @@ def head_sdf(face, build=0.0, var=None):
     var = var or {}
     nar, brd, old = var.get('narrow', 0.0), var.get('broad', 0.0), var.get('old', 0.0)
     fem = face == 'female'
-    kid = face == 'child'
-    jaw = (0.86 if fem else (0.80 if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
+    kid = face in ('child', 'kid')
+    tiny = face == 'kid'
+    jaw = (0.86 if fem else (0.74 if tiny else 0.80 if kid else 1.0)) * (1 - 0.10 * nar + 0.10 * brd)
     full = build * 0.006 + 0.003 * brd
     fw = 1 - 0.07 * nar + 0.07 * brd          # face width
     chin_dy = -0.010 * nar + 0.005 * brd       # longer / shorter lower face
     H = {'head': 1}
     R = REGION['head']
-    cr = Ellipsoid((0, 0.014, 0.006), (0.0745, 0.096, 0.098) if not kid else (0.077, 0.099, 0.101), region=R, bones=H)
+    crc, crr = cranium(face)
+    cr = Ellipsoid(crc, crr, region=R, bones=H)
     mask = Ellipsoid((0, -0.022 + chin_dy * 0.4, -0.044), (0.061 * fw + full, 0.083 - chin_dy * 0.4, 0.051), region=R, bones=H)
     jw = []
     for s in (-1, 1):
@@ -202,7 +278,7 @@ def head_sdf(face, build=0.0, var=None):
             lids.append(Ellipsoid((cx, -0.0135, ez - 0.0085), (0.011, 0.0035, 0.0035 * old + 1e-4)))   # eye bags
     for l in lids:
         l.region, l.bones = R, H
-    nsc = (0.9 if fem else (0.78 if kid else 1.0)) * (1 + 0.08 * nar - 0.04 * brd)
+    nsc = (0.9 if fem else (0.70 if tiny else 0.78 if kid else 1.0)) * (1 + 0.08 * nar - 0.04 * brd)
     N = REGION['nose']
     nose = Union([
         Loft((0, 0.016, -0.0880), (0, -0.031, -0.0880 - 0.026 * nsc), (1, 0, 0),
@@ -212,7 +288,7 @@ def head_sdf(face, build=0.0, var=None):
         Ellipsoid((-0.0128 * nsc, -0.0345, -0.0965 + (1 - nsc) * 0.006), (0.0080, 0.0070, 0.0085), region=N, bones=H),
         Ellipsoid((0.0128 * nsc, -0.0345, -0.0965 + (1 - nsc) * 0.006), (0.0080, 0.0070, 0.0085), region=N, bones=H),
     ], k=0.005)
-    lip = 1.15 if fem else (0.9 if kid else 1.0)
+    lip = 1.15 if fem else (0.85 if tiny else 0.9 if kid else 1.0)
     L = REGION['lips']
     lips = Union([
         Ellipsoid((0, -0.0545, -0.0955), (0.0215, 0.0058 * lip, 0.0070), region=L, bones=H),
@@ -221,9 +297,11 @@ def head_sdf(face, build=0.0, var=None):
     ears = []
     for s in (-1, 1):
         Rr = rot_xyz(0, -s * 18, s * 4)
-        e = Ellipsoid((s * 0.0755, -0.010, 0.012), (0.0075, 0.029 if not kid else 0.026, 0.0170), R=Rr,
+        e = Ellipsoid((s * (0.0755 + (0.004 if tiny else 0.002 if kid else 0.0)), -0.010, 0.012),
+                      (0.0075, 0.029 if not kid else 0.026, 0.0170), R=Rr,
                       region=REGION['ear'], bones=H)
-        concha = Ellipsoid((s * 0.0815, -0.016, 0.009), (0.0040, 0.011, 0.0070), R=Rr)
+        concha = Ellipsoid((s * (0.0815 + (0.004 if tiny else 0.002 if kid else 0.0)), -0.016, 0.009),
+                           (0.0040, 0.011, 0.0070), R=Rr)
         ears.append(Subtract(e, concha, k=0.003))
     head = Union([skull, nose], k=0.009)
     head = Union([head, lips], k=0.005)
@@ -306,67 +384,130 @@ def _zsign(A, B, hint):
     return float(np.sign(rot_frame(np.asarray(B) - np.asarray(A), hint)[2][2]) or 1.0)
 
 
+def surface_z(node, x, y, side, z0=0.0, zmax=0.35):
+    """z of the surface of `node` crossed going from (x, y, z0) towards +Z (side +1) or -Z (-1)."""
+    a, b = z0, z0 + side * zmax
+    P = lambda z: np.array([[x, y, z]], np.float32)
+    if node.eval(P(a))[0] > 0:
+        return a
+    for _ in range(40):
+        m = 0.5 * (a + b)
+        if node.eval(P(m))[0] < 0:
+            a = m
+        else:
+            b = m
+    return 0.5 * (a + b)
+
+
+def limb_keys(rows, zsign, grow=(0.0, 0.0)):
+    """Limb keys (t, rx, rz, lateral, back) -> loft keys in the segment frame (+ build growth)."""
+    g0, g1 = grow
+    return [(t, rx + g0 * (1 - t) + g1 * t, rz + g0 * (1 - t) + g1 * t, ox, oz * zsign) for t, rx, rz, ox, oz in rows]
+
+
 def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
     T = TEMPLATES[kind]
     b = build
-    fem = kind == 'female'
-    kid = kind == 'child'
+    sex = T['sex']
+    fem, child = sex == 'f', sex == 'c'
     sx, sy, sz = T['sx'], T['sy'], T['sz']
     H = T['H']
     J = {'root': np.zeros(3)}
     for k in ('pelvis', 'spine1', 'spine2', 'neck', 'head'):
         J[k] = v3(T[k])
-    shoulder_y = T['shoulder'][1]
+    sh_y = T['shoulder'][1]
+    hip_y = T['hip'][1]
 
-    # ---- torso: a lofted superellipse along +Y (frame z = +Z world, so cz is a world z offset)
+    # ---- torso core: a lofted superellipse along +Y (frame z = +Z world, so offsets are world z)
     ys = np.array([k[0] for k in T['torso']])
     y0, y1 = ys[0], ys[-1]
     keys = []
-    for y, rx, rz, cz in T['torso']:
+    for y, rx, zf, zb in T['torso']:
         u = (y - y0) / (y1 - y0)
-        g = b * (0.020 + 0.030 * np.exp(-((u - 0.40) / 0.22) ** 2))      # heavy: waist / hips fill out
-        gz = b * (0.012 + 0.045 * np.exp(-((u - 0.36) / 0.20) ** 2))     # heavy: belly forward
-        keys.append((u, rx + g * sx, rz + gz * sz, 0.0, cz - gz * 0.55))
+        if fem:     # heavy: hips, seat and thighs first, then the waist and the bust line
+            gx = b * (0.012 + 0.030 * gauss(u, 0.18, 0.18) + 0.012 * gauss(u, 0.5, 0.2))
+            gf = b * (0.010 + 0.034 * gauss(u, 0.40, 0.18))
+            gb = b * (0.008 + 0.026 * gauss(u, 0.15, 0.17))
+        else:       # heavy: belly and waist (the chest barely changes)
+            gx = b * (0.014 + 0.032 * gauss(u, 0.42, 0.22))
+            gf = b * (0.010 + 0.052 * gauss(u, 0.40, 0.20))
+            gb = b * (0.006 + 0.016 * gauss(u, 0.42, 0.22))
+        zf2, zb2 = zf - gf * sz, zb + gb * sz
+        keys.append((u, rx + gx * sx, 0.5 * (zb2 - zf2), 0.0, 0.5 * (zb2 + zf2)))
 
     def torso_bones(P):
         y = P[:, 1]
         wp = 1 - sstep(J['pelvis'][1], J['spine1'][1] + 0.03 * sy, y)
         ws2 = sstep(J['spine1'][1] + 0.06 * sy, J['spine2'][1] + 0.02 * sy, y)
         ws1 = np.clip(1 - wp - ws2, 0, 1)
-        wc = sstep(shoulder_y - 0.07 * sy, shoulder_y - 0.01 * sy, y) * sstep(0.07 * sx, 0.14 * sx, np.abs(P[:, 0])) * 0.7
+        wc = sstep(sh_y - 0.09 * sy, sh_y - 0.01 * sy, y) * sstep(0.06 * sx, 0.14 * sx, np.abs(P[:, 0])) * 0.7
         return {'pelvis': wp * (1 - wc), 'spine1': ws1 * (1 - wc), 'spine2': ws2 * (1 - wc),
                 'clavL': np.where(P[:, 0] < 0, wc, 0.0), 'clavR': np.where(P[:, 0] >= 0, wc, 0.0)}
 
-    torso = Loft((0, y0, 0), (0, y1, 0), (1, 0, 0), keys, n=2.25, region=REGION['torso'], bones=torso_bones)
-    tparts = [torso]
+    TR = REGION['torso']
+    core = Loft((0, y0, 0), (0, y1, 0), (1, 0, 0), keys, n=2.2, region=TR, bones=torso_bones)
+    zb_at = lambda y, x=0.0: surface_z(core, x, y, +1)
+    zf_at = lambda y, x=0.0: surface_z(core, x, y, -1)
+    waist_y = float(ys[4]) if not child else float(ys[4])
+    tparts = [core]
+    feats_back = []
     for s in (-1, 1):
         side = 'R' if s > 0 else 'L'
-        gx, gy, gz = T['glute']
-        tparts.append(Ellipsoid((s * 0.058 * sx * (1.05 if fem else 1.0), T['hip'][1] - 0.035 * sy, 0.060 * sz + b * 0.01),
-                                (gx + b * 0.01, gy + b * 0.01, gz + b * 0.012), region=REGION['butt'],
+        # glutes: gluteus maximus, max projection a little below the hip joint; their lower edge
+        # makes the gluteal fold over the hamstrings
+        gx, gy, gz, rx, ry, rz = T['glute']
+        gzc = zb_at(gy, s * gx) + (0.038 if fem else 0.040 if not child else 0.024) * sz - rz + b * (0.016 if fem else 0.008) * sz
+        tparts.append(Ellipsoid((s * gx * (1 + 0.06 * b), gy, gzc),
+                                (rx + b * 0.014 * sx, ry + b * 0.010 * sy, rz + b * 0.014 * sz),
+                                R=rot_xyz(-8 if fem else -4, s * 10, 0), region=REGION['butt'],
                                 bones={'pelvis': 0.65, 'thigh' + side: 0.35}))
         if T['pec']:
-            px, py, pz = T['pec']
-            tparts.append(Ellipsoid((s * 0.068, 1.300, -0.088 - b * 0.012), (px + b * 0.008, py + b * 0.01, pz + b * 0.01),
-                                    R=rot_xyz(0, 0, s * 12), region=REGION['torso'], bones={'spine2': 1}))
+            px, py, prx, pry, prz = T['pec']
+            tparts.append(Ellipsoid((s * px, py, zf_at(py, s * px) + prz - 0.0025 - b * 0.008),
+                                    (prx + b * 0.008, pry + b * 0.012, prz + b * 0.01),
+                                    R=rot_xyz(0, s * -10, s * 18), region=TR, bones={'spine2': 1}))
         if T['breast']:
-            bx, by, bz = T['breast']
-            tparts.append(Ellipsoid((s * 0.056, 1.192, -0.074 - b * 0.006), (bx + b * 0.01, by + b * 0.008, bz + b * 0.01),
-                                    R=rot_xyz(-14, s * 10, 0), region=REGION['breast'], bones={'spine2': 1}))
-        # shoulder blades
-        tparts.append(Ellipsoid((s * 0.080 * sx, shoulder_y - 0.10 * sy, 0.072 * sz * (0.92 if fem else 1.0)),
-                                (0.062 * sx, 0.085 * sy, 0.032 * sz), R=rot_xyz(0, s * 18, 0), region=REGION['torso'],
-                                bones={'spine2': 1}))
-    if b > 0:
-        tparts.append(Ellipsoid((0, T['hip'][1] + 0.17 * sy, -0.05 * sz), (0.12 * sx, 0.12 * sy, (0.085 * b + 0.02) * sz),
-                                region=REGION['torso'], bones={'pelvis': 0.4, 'spine1': 0.6}))
+            bx, by, brx, bry, brz = T['breast']
+            tparts.append(Ellipsoid((s * bx, by, zf_at(by, s * bx) + brz - 0.036 - b * 0.006),
+                                    (brx + b * 0.012, bry + b * 0.010, brz + b * 0.012),
+                                    R=rot_xyz(-14, s * 12, 0), region=REGION['breast'], bones={'spine2': 1}))
+        # shoulder blades: flat triangular plates over the ribs, the inferior angle tipped in
+        # towards the spine; they ride with the clavicle a little
+        cx, cyo, crx, cry, crz = T['scap']
+        cy = sh_y - cyo
+        feats_back.append(Ellipsoid((s * cx, cy, zb_at(cy, s * cx) - crz + 0.0045 * sz),
+                                    (crx, cry, crz), R=rot_xyz(0, s * 12, s * -10), region=TR,
+                                    bones={'spine2': 0.7, 'clav' + side: 0.3}))
+        # latissimus: the V from under the arm pit to the waist (men most)
+        if T['lat'] > 0:
+            la = T['lat']
+            ya, yb = sh_y - 0.125 * sy, waist_y + 0.07 * sy
+            xa, xb = 0.140 * sx, 0.122 * sx
+            feats_back.append(RoundCone((s * xa, ya, 0.42 * zb_at(ya, s * xa)), (s * xb, yb, 0.42 * zb_at(yb, s * xb)),
+                                        la * 1.25, la * 0.75, region=TR, bones=torso_bones))
+        # erector spinae: two columns either side of the lumbar spine
+        if T['erector']:
+            ex, eh, ez = T['erector']
+            ey = waist_y + 0.01 * sy
+            feats_back.append(Ellipsoid((s * ex * 1.25, ey, zb_at(ey, s * ex) + ez * 0.25), (ex, eh, ez),
+                                        region=TR, bones=torso_bones))
+    if T['kidBelly']:
+        kr, kz = T['kidBelly']
+        by = J['spine1'][1] - 0.02 * sy
+        tparts.append(Ellipsoid((0, by, zf_at(by) + kz * 0.9), (kr, kr * 1.15, kz), region=TR,
+                                bones={'pelvis': 0.4, 'spine1': 0.6}))
+    if b > 0 and not fem:
+        tparts.append(Ellipsoid((0, hip_y + 0.17 * sy, -0.05 * sz), (0.12 * sx, 0.12 * sy, (0.08 * b + 0.02) * sz),
+                                region=TR, bones={'pelvis': 0.4, 'spine1': 0.6}))
     if belly > 0:
         # a round gut that sits on the belt line (the "belly" shape morph)
-        tparts.append(Ellipsoid((0, T['hip'][1] + 0.16 * sy, -0.045 * sz), (0.125 * sx, 0.125 * sy, (0.10 * belly) * sz),
-                                region=REGION['torso'], bones={'pelvis': 0.4, 'spine1': 0.6}))
-    torso = Union(tparts, k=0.035 * sy)
+        tparts.append(Ellipsoid((0, hip_y + 0.16 * sy, -0.045 * sz), (0.125 * sx, 0.125 * sy, (0.10 * belly) * sz),
+                                region=TR, bones={'pelvis': 0.4, 'spine1': 0.6}))
+    torso = Union(tparts, k=0.032 * sy)
+    if feats_back:
+        torso = Union([torso] + feats_back, k=0.030 * sy)
 
-    # ---- neck, trapezius slope
+    # ---- neck, vertebra prominens, trapezius slope (neck -> acromion)
     nr = T['neckR']
     nb = J['neck'] + np.array([0, -0.02, -0.004]) * sy
     nt = J['head'] + np.array([0, 0.035, -0.012]) * T['headS']
@@ -377,50 +518,51 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         ws = 1 - sstep(0.0, 0.35, u)
         return {'head': wh, 'neck': np.clip(1 - wh - ws, 0, 1), 'spine2': ws}
 
-    neck = Loft(nb, nt, (1, 0, 0), [(0, nr[0] + b * 0.012, nr[1] + b * 0.012, 0, 0.004),
-                                    (0.5, nr[0] * 0.96 + b * 0.01, nr[1] * 0.97 + b * 0.012, 0, 0.0),
+    neck = Loft(nb, nt, (1, 0, 0), [(0, nr[0] + b * 0.012, nr[1] + b * 0.012, 0, 0.006),
+                                    (0.5, nr[0] * 0.95 + b * 0.01, nr[1] * 0.96 + b * 0.012, 0, 0.0),
                                     (1.0, nr[0] * 0.92 + b * 0.008, nr[1] * 0.95 + b * 0.012, 0, -0.004)],
                 region=REGION['neck'], bones=neck_bones)
     traps = []
+    ta, tb = T['trap']
     for s in (-1, 1):
         side = 'R' if s > 0 else 'L'
-        sh = np.array([s * T['shoulder'][0], T['shoulder'][1], T['shoulder'][2]])
-        a = np.array([s * 0.028 * sx, J['neck'][1] + 0.025 * sy, 0.035 * sz])
-        bpt = sh + np.array([-s * 0.03 * sx, 0.022 * sy, 0.0])
-        traps.append(RoundCone(a, bpt, 0.040 * sy + b * 0.008, 0.034 * sy + b * 0.006, region=REGION['torso'],
+        a = np.array([s * nr[0] * 0.62, J['neck'][1] + 0.002 * sy, J['neck'][2] + nr[1] * 0.30])
+        bpt = np.array([s * (T['shoulder'][0] - 0.012 * sx), sh_y + 0.006 * sy, T['shoulder'][2] - 0.002])
+        traps.append(RoundCone(a, bpt, ta + b * 0.008, tb + b * 0.006, region=TR,
                                bones={'spine2': 0.55, 'clav' + side: 0.45}))
-    torso = Union([torso, Union(traps, k=0.02)], k=0.03)
-    body = Union([torso, neck], k=0.03)
+    c7 = Ellipsoid((0, J['neck'][1] - 0.004 * sy, J['neck'][2] + nr[1] * 0.78), (0.010 * sx, 0.012 * sy, 0.010 * sz),
+                   region=TR, bones={'spine2': 1})
+    torso = Union([torso, Union(traps, k=0.02 * sy)], k=0.028 * sy)
+    body = Union([torso, neck], k=0.028 * sy)
+    body = Union([body, c7], k=0.010 * sy)
 
     # ---- head
     head = Xform(head_sdf(T['face'], b, face_var), T['headS'], T['headC'])
     body = Union([body, head], k=0.022 * T['headS'])
 
     # ---- arms (A-pose)
-    abd = np.radians(T['abd'])
     arms = []
     for s in (-1, 1):
         side = 'R' if s > 0 else 'L'
-        sh = np.array([s * T['shoulder'][0], T['shoulder'][1], T['shoulder'][2]])
-        cl = np.array([s * T['clav'][0], T['clav'][1], T['clav'][2]])
-        du = np.array([s * np.sin(abd), -np.cos(abd), 0.0])
-        el = sh + du * T['Lu'] + np.array([0, 0, 0.012 * sy])
-        df = normalize(du + np.array([s * 0.02, 0, -0.16]))
-        wr = el + df * T['Lf']
+        cl, sh, el, wr, du, df = arm_joints(T, s)
         J['clav' + side], J['arm' + side], J['fore' + side], J['hand' + side] = cl, sh, el, wr
         zu = _zsign(sh, el, (s, 0, 0))
         zf = _zsign(el, wr, (s, 0, 0))
-        uk = [(t, rx + b * 0.012 * (1 - t * 0.5), rz + b * 0.012 * (1 - t * 0.5), ox, oz * zu) for t, rx, rz, ox, oz in T['uarm']]
-        fk = [(t, rx + b * 0.006 * (1 - t), rz + b * 0.006 * (1 - t), ox, oz * zf) for t, rx, rz, ox, oz in T['farm']]
+        uk = limb_keys(T['uarm'], zu, (b * 0.012, b * 0.006))
+        fk = limb_keys(T['farm'], zf, (b * 0.006, 0.0))
         ua = Loft(sh + du * 0.01, el, (s, 0, 0), uk, region=REGION['uarm'], bones={'arm' + side: 1})
         # deltoid cap: its top stays ~3 cm above the joint so the shoulder line slopes below the neck
-        delt = Ellipsoid(sh + du * 0.030 + np.array([s * 0.004 * sx, -0.012 * sy, 0.0]),
-                         (0.042 * sy + b * 0.008, 0.060 * sy, 0.051 * sy + b * 0.006),
+        dx, dy, dz = T['delt']
+        delt = Ellipsoid(sh + du * 0.030 + np.array([s * 0.004 * sx, -0.012 * sy, 0.002]),
+                         (dx + b * 0.008, dy, dz + b * 0.006),
                          R=rot_xyz(0, 0, s * T['abd']), region=REGION['uarm'],
                          bones={'arm' + side: 0.7, 'clav' + side: 0.3})
+        # olecranon: the point of the elbow behind the joint
+        olec = Ellipsoid(el + np.array([0, 0.006 * sy, 0.024 * sz]), (0.017 * sx, 0.020 * sy, 0.011 * sz),
+                         region=REGION['farm'], bones={'fore' + side: 0.6, 'arm' + side: 0.4})
         fa = Loft(el, wr, (s, 0, 0), fk, region=REGION['farm'], bones={'fore' + side: 1})
         hand = hand_sdf(T, s, wr, df + np.array([0, 0, -0.05]), T['handS'])
-        arm = Union([Union([delt, ua], k=0.03 * sy), fa], k=0.008 * sy)
+        arm = Union([Union([delt, ua], k=0.03 * sy), fa, olec], k=0.010 * sy)
         arm = Union([arm, hand], k=0.008 * T['handS'])
         arms.append(arm)
     body = Union([body] + arms, k=0.022 * sy)
@@ -441,31 +583,63 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         zt = _zsign(top, kn, (s, 0, 0))
         t0 = (top[1] - hp[1]) / (top[1] - kn[1])   # thigh keys are given from the hip joint down
         zs = _zsign(kn, an, (s, 0, 0))
-        tk = [(0.0, 0.050 * sx, 0.060 * sz, 0.0, 0.0)]
-        tk += [(t0 + t * (1 - t0), rx + b * 0.022 * (1 - t * 0.7), rz + b * 0.020 * (1 - t * 0.7), ox, oz * zt)
+        r0 = T['thigh'][0]
+        tk = [(0.0, r0[1] * 0.6, r0[2] * 0.68, 0.0, 0.0)]
+        gl = (b * (0.030 if fem else 0.020), b * 0.006)
+        tk += [(t0 + t * (1 - t0), rx + gl[0] * (1 - t * 0.75), rz + gl[0] * (1 - t * 0.75), ox + (b * 0.008 if fem else 0) * (1 - t), oz * zt)
                for t, rx, rz, ox, oz in T['thigh']]
-        sk = [(t, rx + b * 0.008 * (1 - t), rz + b * 0.010 * (1 - t), ox, oz * zs) for t, rx, rz, ox, oz in T['shin']]
+        sk = limb_keys(T['shin'], zs, (b * 0.008, b * 0.002))
         th = Loft(top, kn, (s, 0, 0), tk, region=REGION['thigh'], bones={'thigh' + side: 1})
         pat = Ellipsoid(kn + np.array([0, 0.012 * sy, -0.040 * sz]), (0.026 * sx, 0.030 * sy, 0.016 * sz),
                         region=REGION['thigh'], bones={'thigh' + side: 0.45, 'shin' + side: 0.55})
+        # vastus medialis: the teardrop above the inner knee
+        vm = Ellipsoid(kn + np.array([-s * 0.022 * sx, 0.075 * sy, -0.018 * sz]), (0.030 * sx, 0.055 * sy, 0.030 * sz),
+                       region=REGION['thigh'], bones={'thigh' + side: 1})
         sh_ = Loft(kn, an + np.array([0, -0.01, 0]), (s, 0, 0), sk, region=REGION['shin'], bones={'shin' + side: 1})
+        # two-headed calf: the inner (medial) head bigger and lower than the outer one
         cx, cy, cz = T['calf']
-        calf = Ellipsoid(kn + np.array([-s * 0.006 * sx, -0.125 * sy, 0.026 * sz]), (cx + b * 0.006, cy, cz + b * 0.006),
-                         region=REGION['shin'], bones={'shin' + side: 1})
-        leg = Union([th, pat], k=0.02 * sy)
-        leg = Union([leg, Union([sh_, calf], k=0.03 * sy)], k=0.008 * sy)
+        lx, ly, lz = T['calfL']
+        Ls = kn[1] - an[1]
+        calf_m = Ellipsoid(kn + np.array([-s * 0.016 * sx, -0.30 * Ls, 0.030 * sz]), (cx + b * 0.006, cy, cz + b * 0.006),
+                           R=rot_xyz(4, 0, 0), region=REGION['shin'], bones={'shin' + side: 1})
+        calf_l = Ellipsoid(kn + np.array([s * 0.016 * sx, -0.25 * Ls, 0.026 * sz]), (lx + b * 0.005, ly, lz + b * 0.005),
+                           R=rot_xyz(4, 0, 0), region=REGION['shin'], bones={'shin' + side: 1})
+        leg = Union([th, pat, vm], k=0.02 * sy)
+        leg = Union([leg, Union([sh_, calf_m, calf_l], k=0.026 * sy)], k=0.008 * sy)
         leg = Union([leg, shoe_sdf(T, s, an, T['footS'])], k=0.008)
         legs.append(leg)
     body = Union([body, Union(legs, k=0.0)], k=0.03 * sy)
+
+    # ---- carved details: spine furrow, intergluteal cleft, gluteal folds
+    cuts = []
+    gx, gy, gz, grx, gry, grz = T['glute']
+    yA, yB = hip_y + 0.06 * sy, J['neck'][1] - 0.05 * sy
+    path_y = np.linspace(yA, yB, 7)
+    pts = []
+    for y in path_y:
+        u = (y - yA) / (yB - yA)
+        depth = (0.0032 if not child else 0.0015) * (1 - sstep(0.25, 0.7, u)) + 0.0008
+        r = 0.008 * sx
+        pts.append((np.array([0.0, y, surface_z(body, 0.0, y, +1) + r - depth]), r))
+    for (p0, r0_), (p1, r1_) in zip(pts[:-1], pts[1:]):
+        cuts.append(RoundCone(p0, p1, r0_, r1_))
+    body = Subtract(body, Union(cuts), k=0.010 * sx)
+    cuts = []
+    cleft_top, cleft_bot = gy + 0.070 * sy, T['fold'] - 0.005
+    zc = surface_z(body, 0.0, 0.5 * (cleft_top + cleft_bot), +1)
+    cuts.append(Ellipsoid((0, 0.5 * (cleft_top + cleft_bot), zc + 0.010), (0.0035 * sx, 0.5 * (cleft_top - cleft_bot), 0.018 * sz)))
+    body = Subtract(body, Union(cuts), k=0.008 * sx)
 
     skel = {'bones': BONES, 'parent': [BONES.index(PARENT[n]) if PARENT[n] else -1 for n in BONES],
             'joints': [[float(x) for x in J[n]] for n in BONES]}
     hc = np.array(T['headC'], dtype=float)
     hs = T['headS']
     eye = lambda s: (hc + hs * np.array([s * 0.0320, 0.0, -0.0745])).tolist()
+    crc, crr = cranium(T['face'])
     info = {'H': H, 'kind': kind, 'headC': hc.tolist(), 'headS': hs, 'eyeL': eye(-1), 'eyeR': eye(1),
             'eyeRadius': 0.0118 * hs, 'face': T['face'], 'sx': sx, 'sy': sy,
             'hip': list(T['hip']), 'knee': list(T['knee']), 'ankle': list(T['ankle']), 'shoulder': list(T['shoulder']),
-            'waistY': float(y0 + (y1 - y0) * keys[4][0]), 'neckY': float(J['neck'][1]), 'torsoY': [float(y0), float(y1)],
-            'heelZ': T['heelZ'], 'toeZ': T['toeZ'], 'Lu': T['Lu'], 'Lf': T['Lf'], 'abd': T['abd']}
+            'waistY': float(waist_y), 'neckY': float(J['neck'][1]), 'torsoY': [float(y0), float(y1)],
+            'heelZ': T['heelZ'], 'toeZ': T['toeZ'], 'Lu': T['Lu'], 'Lf': T['Lf'], 'abd': T['abd'],
+            'cranium': [crc.tolist(), crr.tolist()]}
     return body, skel, info

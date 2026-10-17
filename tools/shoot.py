@@ -12,7 +12,7 @@ Examples
   tools/shoot.py --params "s=300" --eval "JSON.stringify(window.__app.stats())"
 
 The page URL is http://127.0.0.1:<port>/index.html?<params>&capture=1 ; a private
-static server (python http.server) is started on a free port unless --port is given.
+static server (serve.py) is started on a free port unless --port is given.
 """
 import argparse, base64, json, os, random, shutil, socket, struct, subprocess, sys, tempfile, time, urllib.request
 
@@ -130,7 +130,7 @@ def main():
     server = None
     if not a.port:
         a.port = free_port()
-        server = subprocess.Popen([sys.executable, "-m", "http.server", str(a.port), "--bind", "127.0.0.1"],
+        server = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve.py"), str(a.port), "127.0.0.1"],
                                   cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(50):
             if port_open(a.port):

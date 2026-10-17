@@ -10,10 +10,16 @@ export const TASK = {
   BOARD: 7, ALIGHT: 8, SIT: 9, LEAVE_SEAT: 10, CHAT: 11, PAUSE: 12,
 };
 export const LANE = { SIDE: 0, EDGE: 1, CORR: 2 };
+/** Mobility role: pushing a stroller, riding a bicycle, walking beside a bicycle. */
+export const MOB = { NONE: 0, STROLLER: 1, CYCLE: 2, WALKBIKE: 3 };
+/** Renderer pose / prop codes of each role (docs/ARCHITECTURE.md, Mobility extension). */
+export const MOB_POSE = [0, 3, 4, 5];
+export const MOB_PROP = [0, 1, 2, 2];
 
 export const STATE_NAMES = Object.fromEntries(Object.entries(ST).map(([k, v]) => [v, k.toLowerCase()]));
 export const TASK_NAMES = Object.fromEntries(Object.entries(TASK).map(([k, v]) => [v, k.toLowerCase()]));
 export const KIND_NAMES = Object.fromEntries(Object.entries(KIND).map(([k, v]) => [v, k.toLowerCase()]));
+export const MOB_NAMES = Object.fromEntries(Object.entries(MOB).map(([k, v]) => [v, k.toLowerCase()]));
 
 export class Agent {
   constructor(slot) {
@@ -93,5 +99,22 @@ export class Agent {
     this.guardian = null;     // adult a seated child belongs to
     this.bornT = 0;           // crowd time of the spawn (statistics)
     this.platformOK = false;  // a walker who stepped up onto a platform to let the tram by
+    // mobility (strollers, bicycles)
+    this.mob = 0;             // MOB role
+    this.propSeed = 0;        // stroller / bicycle model and colour (renderer)
+    this.lean = 0;            // rider lean (rad, + to the right), from the turn rate
+    this.fp0s = 0; this.fp0d = 0; this.fp1s = 0; this.fp1d = 0; this.fpR = 0; // prop capsule (route s / d)
+    this.extLo = 0; this.extHi = 0; // how far the prop reaches past the body circle towards −d / +d
+    this.extS = 0;            // ... and along s (either way)
+    this.bikeV = 0;           // riding speed along the bicycle (m/s)
+    this.yawW = 0;            // bicycle turn rate relative to the route frame (rad/s)
+    this.cOff = 0;            // cyclist: lateral passing offset (signed d) around slower people
+    this.cT = 0;              // cyclist: target d of this frame
+    this.slowT = 0;           // cyclist: seconds spent held to walking pace (dismounts after a while)
+    this.mountT = 0;          // walking a bicycle: earliest time to get back on
+    this.mvS0 = 0; this.mvS1 = 0; this.mvD0 = 0; this.mvD1 = 0; this.mvOn = false; // cyclist lane change (ramp along s)
+    this.mvBand = false;      // ... crossing the ride track's band
+    this.prevHead = 0;        // world heading at the last output (lean)
+    this.headValid = false;
   }
 }

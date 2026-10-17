@@ -69,7 +69,9 @@ async function main() {
 
   // ---- load modules
   const enabled = MODULES.filter(([name]) => (!params.only || params.only.includes(name) || CORE.has(name) || name === 'post' && params.only.includes('post')) && !params.skip.includes(name));
-  const loaded = await Promise.allSettled(enabled.map(([, path]) => import(path)));
+  // a busy static server can drop a request: retry each failed import once with a fresh URL
+  const load = (path) => import(path).catch(() => new Promise((r) => setTimeout(r, 250)).then(() => import(`${path}?retry=1`)));
+  const loaded = await Promise.allSettled(enabled.map(([, path]) => load(path)));
   const mods = [];
   loaded.forEach((r, i) => {
     const [name] = enabled[i];
@@ -90,10 +92,14 @@ async function main() {
   setProgress(0.05);
 
   // ---- init (sequential: materials and env first, in registry order)
+  app.perf.init = {};
+  const tStart = performance.now();
   for (const m of mods) {
     if (!m.init) continue;
+    const t0 = performance.now();
     try {
       await m.init(app);
+      app.perf.init[m.name] = Math.round(performance.now() - t0);
     } catch (e) {
       console.error(`[main] ${m.name}.init failed — module disabled`, e);
       m.disabled = true;
@@ -107,10 +113,24 @@ async function main() {
   app.world = new World(app, builders);
   const s0 = app.startS;
   placeCamera(app, s0);
+  app.perf.init.modulesTotal = Math.round(performance.now() - tStart);
+  const tPrime = performance.now();
   await app.world.prime(s0, Math.min(LOD0_DIST, 240), (f) => setProgress(0.2 + 0.7 * f));
+  app.perf.init.prime = Math.round(performance.now() - tPrime);
 
   // warm up shaders
-  try { renderer.compile(scene, camera); } catch (e) { console.warn('compile', e); }
+  // compile every program up front, in parallel on the driver's threads where supported
+  // (KHR_parallel_shader_compile), instead of stalling the first frames one program at a time
+  const tCompile = performance.now();
+  // Programs depend on the output target (colour space, tone mapping): compile against the
+  // HDR scene target the post chain renders into, not the screen.
+  try {
+    const rt = app.post && !app.post.disabled ? app.post.sceneRT : null;
+    renderer.setRenderTarget(rt || null);
+    await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 20000))]);
+    renderer.setRenderTarget(null);
+  } catch (e) { console.warn('compile', e); }
+  app.perf.init.compile = Math.round(performance.now() - tCompile);
   setProgress(1);
 
   // ---- loop
@@ -152,6 +172,7 @@ async function main() {
     app.gpuTimer.end();
 
     const cpu = performance.now() - t0;
+    if (app.frame <= 40) (app.perf.startFrames ||= []).push([Math.round(t0), Math.round(cpu), renderer.info.programs?.length ?? 0]);
     fpsAcc += realDt; fpsN++; fpsT += cpu;
     if (fpsAcc > 0.5) {
       app.perf.fps = fpsN / fpsAcc; app.perf.frameMs = (fpsAcc / fpsN) * 1000; app.perf.cpuMs = fpsT / fpsN;
@@ -161,6 +182,7 @@ async function main() {
 
     if (!app.ready && app.frame > 3 && app.world.readyAround(app.cameraS ?? s0, 160)) {
       app.ready = true;
+      app.perf.init.firstReady = Math.round(performance.now());
       if (loadingEl) loadingEl.classList.add('done');
       events.emit('ready', {});
       setTimeout(() => { window.__ready = true; }, 300);

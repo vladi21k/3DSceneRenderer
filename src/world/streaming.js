@@ -144,6 +144,17 @@ export class World {
     this.stats.lastBuildMs = performance.now() - t0;
   }
 
+  /** Chunks the streamer will build next, nearest first: [{index, lod, dist}]. Public API for
+   *  modules that prefetch their own work ahead of build(). */
+  upcoming(sCam = this.app.cameraS ?? this.app.startS) {
+    const out = [];
+    for (const w of this.wanted(sCam)) {
+      const c = this.chunks.get(w.idx);
+      if (!c || !c.ready || (c.next && !c.next.ready) || w.lod < c.lod) out.push({ index: w.idx, lod: w.lod, dist: w.dist });
+    }
+    return out.sort((a, b) => a.dist - b.dist);
+  }
+
   /** True when every chunk within `dist` metres of sCam is built. */
   readyAround(sCam, dist) {
     return this.wanted(sCam).filter((w) => w.dist <= dist).every((w) => this.chunks.get(w.idx)?.ready);

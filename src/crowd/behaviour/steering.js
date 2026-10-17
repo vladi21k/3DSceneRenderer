@@ -1,6 +1,8 @@
-import { KIND, ST, TASK } from './agent.js';
+import { KIND, ST, TASK, MOB } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
-import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND } from './constants.js';
+import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
+import { updateFoot, footGap, propPointDist2, _foot } from './footprint.js';
+import { rideTarget } from './cyclist.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
 // grid in route coordinates. Neighbours repel (stronger in front), people predict
@@ -9,8 +11,14 @@ import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP
 // as true rectangles), facades are walls. Hard corrections are rate limited so nobody
 // ever jumps, and velocities are taken from the actual motion after the constraints, so
 // the gait (phase, speed) always matches what the body really does.
+// People with a stroller or a bicycle avoid with their whole footprint (body + prop
+// capsule); cyclists are steered by a bicycle model instead (cyclist.js chooses the line
+// and the speed, the model turns with a limited, smoothly changing yaw rate).
 
 const TAU = 0.45;              // relaxation time towards the preferred velocity
+// prop footprint in the person's frame for the look-ahead: lateral centre (+ right) and half width
+const FOOT_LAT = FOOT.map((F) => (F ? (F.l + (F.l > 0 ? F.r - AGENT_R : 0)) / 2 : 0));
+const FOOT_HALF = FOOT.map((F) => (F ? Math.max(AGENT_R, (Math.abs(F.l) + F.r + AGENT_R) / 2) : AGENT_R));
 const R2 = AGENT_R * 2;
 const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform edges
 const PI = Math.PI;
@@ -66,6 +74,7 @@ export class Steering {
       if (a.state === ST.SEATED) { this._settle(a, dt); continue; }
       if (a.timer <= 0 && (a.state === ST.STAND || a.state === ST.WAIT)) timerDone(c, a);
       if (!a.active) continue;
+      if (a.mob === MOB.CYCLE) { this._stepCycle(a, dt); continue; }
       tram.preStep(a);
       desired(c, a, des);
       if (!a.active) continue;
@@ -121,6 +130,56 @@ export class Steering {
     }
   }
 
+  /** A cyclist: cyclist.js picks the line (lane, passing offset, lane change, clearing the
+   *  tram) and the speed; a bicycle model follows it with a speed-dependent, smoothly
+   *  changing turn rate, so the path is a sequence of physically plausible arcs. */
+  _stepCycle(a, dt) {
+    const c = this.c, tram = c.tram, T = this.ride || (this.ride = { d: 0, v: 0, ang: 0.45, hard: false, alpha: null });
+    tram.preStep(a);
+    rideTarget(c, a, T);
+    if (!a.active || a.mob !== MOB.CYCLE) return;
+    // speed: gentle acceleration, firm braking when something is right in front
+    const dv = T.v - a.bikeV;
+    a.bikeV = Math.max(0, a.bikeV + Math.max(-(T.hard ? 3.6 : 1.7) * dt, Math.min(0.75 * dt, dv)));
+    const v = a.bikeV, vv = Math.max(v, 0.6);
+    // steering: pure pursuit of the target line (or a heading given directly)
+    let alphaT;
+    if (T.alpha !== null) alphaT = T.alpha;
+    else {
+      const L = Math.min(8, Math.max(2.6, 1.25 * vv + 1.6));
+      const psi = Math.max(-T.ang, Math.min(T.ang, Math.atan2(T.d - a.d, L)));
+      alphaT = a.dir > 0 ? psi : PI - psi;
+    }
+    const err = wrapAngle(alphaT - a.alpha);
+    // turn rate: lateral acceleration ≤ ~1.9 m/s², radius ≥ 2.3 m, and the rate itself changes smoothly
+    const wMax = Math.min(1.9 / vv, vv / 2.3, 1.3);
+    let w = Math.max(-wMax, Math.min(wMax, 2.4 * err));
+    w = a.yawW + Math.max(-3.0 * dt, Math.min(3.0 * dt, w - a.yawW));
+    const na = wrapAngle(a.alpha + w * dt);
+    if (tram.turnBlocked(a, na)) w = 0; else a.alpha = na;
+    a.yawW = w;
+    updateFoot(a);
+    a.vs = v * Math.cos(a.alpha); a.vd = v * Math.sin(a.alpha);
+    a.vmaxCur = Math.max(1.6, v);
+    a.moving = v > 0.05;
+    const prevD = a.d, prevS = a.s;
+    const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+    a.s += (a.vs / k) * dt;
+    a.d += a.vd * dt;
+    this.maxC = Math.max(0.02, 2 * Math.max(1.6, v) * dt);
+    const s1 = a.s, d1 = a.d;
+    this._constrain(a, false, 0);
+    const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
+    const lim = 0.5 * this.maxC;
+    if (cl > lim) { const f = lim / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
+    tram.constrain(a, prevD);
+    const ms = (a.s - prevS) * k, md = a.d - prevD;
+    a.vs = ms / dt; a.vd = md / dt;
+    // held back by a constraint: the bicycle really slows down
+    const along = (ms * Math.cos(a.alpha) + md * Math.sin(a.alpha)) / dt;
+    if (along < a.bikeV - 0.05) a.bikeV = Math.max(0, along);
+  }
+
   /** Seated: ease the last centimetres onto the chair. */
   _settle(a, dt) {
     a.vs = 0; a.vd = 0;
@@ -150,17 +209,20 @@ export class Steering {
           const d2 = dx * dx + dy * dy;
           if (d2 > 16 || d2 < 1e-6) continue;
           const dist = Math.sqrt(d2);
-          const nx = -dx / dist, ny = -dy / dist; // from b to a
+          let nx = -dx / dist, ny = -dy / dist; // from b to a
+          let gap = dist - R2;
+          // strollers and bicycles: the gap between the whole footprints
+          if ((a.mob || b.mob) && dist < 3.4) { const g = footGap(a, b, dx, dy); gap = g.gap; nx = g.ns; ny = g.nd; }
           const mate = (b.leader || b) === L;
-          if (dist < 2.2) {
+          if (gap < 1.64) {
             // body repulsion, anisotropic (people react to what is in front of them). Standing
             // people only make room for real overlaps: the walkers go round them.
             const cosPhi = -(nx * es + ny * ed);
             const w = 0.3 + 0.7 * (1 + cosPhi) * 0.5;
-            let A = mate ? 0.7 : 2.4;
-            if (standing) A = dist < R2 ? 0.5 : 0;
+            let A = mate ? 0.7 : b.mob === MOB.CYCLE ? 3.2 : 2.4;
+            if (standing) A = gap < 0 ? 0.5 : 0;
             if (b.kind === KIND.SEATED) A *= 0.6;
-            const f = A * Math.exp((R2 + 0.06 - dist) / 0.3) * w;
+            const f = A * Math.exp((0.06 - gap) / 0.3) * w;
             fs += nx * f; fd += ny * f;
           }
           if (standing || mate || sp < 0.3) continue;
@@ -172,8 +234,9 @@ export class Steering {
           if (tc <= 0 || tc > 3) continue;
           const cx = dx - rvs * tc, cy = dy - rvd * tc;   // b relative to a at closest approach
           const cd = len2(cx, cy);
-          if (cd > 0.85) continue;
-          const k = 1.7 * (1 - tc / 3) * (0.85 - cd) / 0.85;
+          const reach = 0.85 + (a.mob ? 0.3 : 0) + (b.mob ? (b.mob === MOB.CYCLE ? 0.45 : 0.3) : 0);
+          if (cd > reach) continue;
+          const k = 1.7 * (1 - tc / 3) * (reach - cd) / reach;
           if (cd < 0.08) { fs += -ed * k; fd += es * k; } // dead ahead: step to the right
           else {
             // step away, with a bias to the walker's right
@@ -198,11 +261,20 @@ export class Steering {
     if (sp > 0.2) { es = a.vs / sp; ed = a.vd / sp; } else if (dsp > 0.2) { es = des.vs / dsp; ed = des.vd / dsp; }
     const heading = sp > 0.2 || dsp > 0.2;
     const goalD = a.clearing ? a.clearTo : a.gd;
+    const mob = a.mob, F = FOOT[mob];
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
       const dx = map.qDS[q], dy = map.cD[i] - a.d, r = map.cR[i];
       const dist = len2(dx, dy);
       const gap = dist - r - AGENT_R;
+      if (mob && F) {
+        // the stroller / bicycle is kept off the pole too
+        const pd2 = propPointDist2(a, dx, dy), pdist = Math.sqrt(pd2), pg = pdist - r - a.fpR;
+        if (pg < 0.5 && pdist > 1e-4) {
+          const f = Math.min(6, 2.6 * Math.exp(-pg / 0.16));
+          fs -= ((dx - _foot.s) / pdist) * f; fd -= ((dy - _foot.d) / pdist) * f;
+        }
+      }
       if (gap < 0.6 && dist > 1e-4) {
         const f = Math.min(6, 2.6 * Math.exp(-gap / 0.16));
         fs -= (dx / dist) * f; fd -= (dy / dist) * f;
@@ -214,9 +286,10 @@ export class Steering {
       }
       if (standing || !heading) continue;
       // look ahead: an obstacle across the path is passed on the side with more room
-      const along = dx * es + dy * ed;
-      const lat = -dx * ed + dy * es;  // + = obstacle to the walker's right
-      const need = r + AGENT_R + 0.22;
+      // (measured from the front of a stroller, around the middle of a person + bicycle)
+      const along = dx * es + dy * ed - (mob && F ? Math.max(0, F.f1) * 0.85 : 0);
+      const lat = -dx * ed + dy * es - FOOT_LAT[mob];  // + = obstacle to the walker's right
+      const need = r + FOOT_HALF[mob] + 0.22;
       if (along > 0 && along < 3.8 && Math.abs(lat) < need) {
         let side;
         if (lat > 0.04) side = -1;           // obstacle to the right: pass on the left
@@ -261,6 +334,7 @@ export class Steering {
    *  was `moved` metres ago along s) is still in map.q*. Corrections are rate limited. */
   _constrain(a, gathered = false, moved = 0) {
     const c = this.c, map = c.map, maxC = this.maxC;
+    this._s0 = a.s;
     // circle obstacles: resolve overlaps
     const n = gathered ? map.qN : map.gatherCircles(a.s, 1.2);
     const shift = gathered ? moved : 0;
@@ -275,9 +349,24 @@ export class Steering {
         a.s -= (dx / dist) * push; a.d -= (dy / dist) * push;
       }
     }
+    // the stroller / bicycle: out of poles and trunks too (the person is moved with it)
+    if (a.mob && a.fpR > 0) {
+      for (let q = 0; q < n; q++) {
+        const i = map.qI[q];
+        const dx = map.qDS[q] - shift - (a.s - this._s0), dy = map.cD[i] - a.d;
+        const r = map.cR[i];
+        const pd2 = propPointDist2(a, dx, dy);
+        const min = r + a.fpR * 0.85;
+        if (pd2 < min * min) {
+          const pdist = Math.sqrt(pd2) || 1e-3;
+          const push = Math.min(maxC, min - pdist);
+          a.s -= ((dx - _foot.s) / pdist) * push; a.d -= ((dy - _foot.d) / pdist) * push;
+        }
+      }
+    }
     const side = a.d >= 0 ? 1 : -1;
     // café terraces and platforms: out through the nearest edge
-    if (!a.noRect) this._rects(a, side, maxC);
+    if (!a.noRect) { this._rects(a, side, maxC); if (a.mob && a.fpR > 0) this._propRects(a, side, maxC); }
     // facades and cross street mouths
     if (a.inDoor) {
       const dr = a.door;
@@ -312,6 +401,33 @@ export class Steering {
     }
     const wall = map.wallAt(a.s, side);
     if (Math.abs(a.d) > wall) { a.d = side * Math.max(wall, Math.abs(a.d) - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
+    // the prop is kept off the facade as well
+    if (a.mob && a.fpR > 0) {
+      const out = side > 0 ? Math.max(a.fp0d, a.fp1d) : -Math.min(a.fp0d, a.fp1d);
+      const lim = map.facadeAt(a.s, side) - 0.06 - a.fpR;
+      const over = Math.abs(a.d) + out - lim;
+      if (over > 0) a.d -= side * Math.min(Math.max(maxC, 0.06), over);
+    }
+  }
+
+  /** The ends of a stroller / bicycle against café terraces and platforms. */
+  _propRects(a, side, maxC) {
+    const map = this.c.map;
+    const nr = map.rectsNear(a.s, side);
+    const pr = a.fpR * 0.6;
+    for (let q = 0; q < nr; q++) {
+      const r = map.rq[q];
+      if (a.platformOK && r.kind === 'platform') continue;
+      for (let e = 0; e < 2; e++) {
+        const ps = a.s + (e ? a.fp1s : a.fp0s), pd = a.d + (e ? a.fp1d : a.fp0d);
+        const ds = map.rectDS(r, ps), ad = pd * side;
+        if (ds < -pr || ds > r.len + pr || ad < r.inner - pr || ad > r.outer + pr) continue;
+        const p0 = ds + pr, p1 = r.len + pr - ds, pIn = ad - (r.inner - pr), pOut = r.outer < 90 ? r.outer + pr - ad : 1e9;
+        const m = Math.min(p0, p1, pIn, pOut), step = Math.min(maxC, m);
+        if (m === p0) a.s -= step; else if (m === p1) a.s += step;
+        else if (m === pIn) a.d -= side * step; else a.d += side * step;
+      }
+    }
   }
 
   /** Push a body out of café / platform footprints through the edge of least penetration. */
@@ -351,19 +467,35 @@ export class Steering {
     if (dt === 0 || a.fresh) a.speedA = spRaw;
     const sp = a.speedA;
     a.speed = sp;
+    if (a.mob === MOB.CYCLE) {
+      // the bicycle model owns the heading; the cranks turn with the distance ridden
+      a.pose = 0;
+      if (dist > 1e-5) {
+        const cl = humans && humans.cycleLength ? humans.cycleLength(a.appearance) : CYCLE_FALLBACK;
+        a.phase = (a.phase + dist / Math.max(1, cl || CYCLE_FALLBACK)) % 1;
+      }
+      a.look += Math.max(-2.5 * dt, Math.min(2.5 * dt, (a.tramLookT > c.time ? c.lookAtTram(a) : a.lookGoal) - a.look));
+      return;
+    }
     let target = a.alpha;
     if (sp > 0.28 && !(still && !a.moving)) target = Math.atan2(a.vd, a.vs);
     else if (still) target = a.faceA;
     const diff = wrapAngle(target - a.alpha);
-    const rate = TURN_RATE * (sp > 0.8 ? 1 : 0.7);
-    a.alpha = wrapAngle(a.alpha + Math.max(-rate * dt, Math.min(rate * dt, diff)));
+    // a stroller or a bicycle at one's side turns more slowly than a body alone
+    const rate = TURN_RATE * (sp > 0.8 ? 1 : 0.7) * (a.mob ? 0.6 : 1);
+    const na = wrapAngle(a.alpha + Math.max(-rate * dt, Math.min(rate * dt, diff)));
+    if (a.mob) {
+      // the prop is never swung into the tram's band
+      if (!c.tram.turnBlocked(a, na)) a.alpha = na;
+      updateFoot(a);
+    } else a.alpha = na;
     a.pose = a.state === ST.SEATED ? 2 : (still && !a.moving && sp < 0.6) ? 1 : 0;
     // gait phase: advance by the distance actually covered / stride length, so feet do not slide
-    if (a.pose === 0 && dist > 1e-5) {
+    if ((a.pose === 0 || a.mob) && dist > 1e-5) {
       // the renderer's stride for this body and speed (re-queried only when the speed changes)
       if (Math.abs(sp - a.strideV) > 0.04) {
         a.strideV = sp;
-        a.stride = Math.max(0.3, humans && humans.strideLength ? humans.strideLength(a.appearance, Math.max(0.05, sp)) : fallbackStride(sp));
+        a.stride = Math.max(0.3, humans && humans.strideLength ? humans.strideLength(a.appearance, Math.max(0.05, sp), c.poseOf(a)) : fallbackStride(sp));
       }
       a.phase = (a.phase + dist / a.stride) % 1;
     }

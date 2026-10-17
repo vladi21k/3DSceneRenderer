@@ -3,6 +3,7 @@
 import http.server, socketserver, sys, os
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+BIND = sys.argv[2] if len(sys.argv) > 2 else ""
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -20,7 +21,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
-with socketserver.ThreadingTCPServer(("", PORT), Handler) as httpd:
+socketserver.ThreadingTCPServer.request_queue_size = 512   # the app fetches ~200 modules at once
+socketserver.ThreadingTCPServer.daemon_threads = True
+with socketserver.ThreadingTCPServer((BIND, PORT), Handler) as httpd:
     print(f"Serving on http://localhost:{PORT}/  (Ctrl+C to stop)")
     try:
         httpd.serve_forever()

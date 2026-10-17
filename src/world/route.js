@@ -15,6 +15,7 @@ import { noise1, noise2 } from '../core/rng.js';
 
 const DS = 0.5; // table resolution (m)
 const SURF_EDGE = 3.66; // ground shaping starts outside the corridor band + gutter
+const SURF_FAR = 13.0;  // ...and levels off at about the facade line
 
 // Plan of the loop. turn in degrees (+ left), radius in metres, trans = clothoid length.
 // Two straights (chosen automatically) absorb the closure error; `min` bounds them.
@@ -154,7 +155,7 @@ export class Route {
     this.pieces = pieces;
     this.length = length;
     const t = integrate(pieces, length);
-    this.surfaceEnabled = false; // switched on once the paving mesh follows route.surface
+    this.surfaceEnabled = true; // toWorld / groundY include surface(s, d); the paving mesh follows it
     this.n = t.n;
     this.x = t.x; this.z = t.z; this.th = t.th; this.k = t.k;
     // distribute the tiny residual (table end overshoot) so the seam at s = L is exact
@@ -249,13 +250,16 @@ export class Route {
    *  Fine millimetre detail (gutters, crowns) is added by the street mesh on top. */
   surface(s, d) {
     if (!this.surfaceEnabled) return 0;
-    const a = Math.abs(d) - SURF_EDGE;
+    // shaping runs from the corridor edge to about the facade line, then stays level
+    // (side streets continue at the height of their mouth)
+    const a = Math.min(Math.abs(d), SURF_FAR) - SURF_EDGE;
     if (a <= 0) return 0;
     const sw = this.wrap(s);
     const ramp = Math.min(1, a / 1.2);                       // ease in from the corridor edge
-    const fall = a * 0.017;                                  // ~1.7 % rise towards the facades
-    const tilt = Math.sign(d) * a * 0.018 * noise1(sw / 320, 101);   // hillside: ±1.8 %
-    const settle = 0.022 * noise2(sw / 6.5, d / 5.5, 7) + 0.012 * noise2(sw / 2.3, d / 2.1, 13);
+    const fall = a * 0.016;                                  // ~1.6 % rise towards the facades
+    const tilt = Math.sign(d) * a * 0.013 * noise1(sw / 320, 101);   // hillside: ±1.3 %
+    const dd = Math.sign(d) * (a + SURF_EDGE);
+    const settle = 0.02 * noise2(sw / 6.5, dd / 5.5, 7) + 0.01 * noise2(sw / 2.3, dd / 2.1, 13);
     return fall + tilt + settle * ramp * ramp;
   }
 

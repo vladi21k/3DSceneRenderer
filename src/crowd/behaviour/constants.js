@@ -47,3 +47,20 @@ export const CLEAR_T_DREAMY = [2.0, 3.0];          // absorbed people (phone, co
 // spatial hash
 export const CELL = 2.0;
 export const GRID_D = 26;                          // grid covers |d| <= GRID_D
+
+// mobility roles (strollers, bicycles). Shares of the walking population, kept by spawning to the deficit.
+export const MOB_SHARE = { stroller: 0.05, cycle: 0.04, walkbike: 0.015 };
+export const STROLLER_V = [0.98, 1.28];            // pushing a stroller: a little slower than walking
+export const WALKBIKE_V = [1.02, 1.32];
+export const CYCLE_V = [2.8, 5.0];                 // 10-18 km/h
+export const CYCLE_CLEAR_T = [6.5, 9.5];           // cyclists leave the ride track earlier (they are faster)
+export const CYCLE_FALLBACK = 5.0;                 // m per crank revolution when the renderer gives none
+// Prop footprints as capsules in the person's frame: from f0 to f1 metres ahead of the body
+// centre, l metres to the right, radius r. A stroller reaches ~1.1 m ahead; a bicycle is
+// ~1.8 m long centred on its rider; a walked bicycle is held beside the person (on their right).
+export const FOOT = [
+  null,
+  { f0: 0.42, f1: 0.80, l: 0, r: 0.31 },
+  { f0: -0.56, f1: 0.56, l: 0, r: 0.33 },
+  { f0: -0.28, f1: 0.82, l: 0.42, r: 0.30 },
+];

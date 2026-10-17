@@ -260,11 +260,29 @@ export class Layout {
         let d = POLE_D;
         const st = this.isInStation(s, 2);
         if (st) d = TRACK_ZONE_HALF + PLATFORM_W + 0.35;
-        if (this.isInCrossStreet(s, side, 1.5) && !this.isInCrossStreet(s, side, -2)) { /* corner ok */ }
         this.poles.push({ s, side, d: side * d, id: this.poles.length, lamp: true, banner: false });
       }
       s += spacing;
     }
+    // A facing pair standing in a cross-street mouth moves to the nearer corner (same s for
+    // both sides), or is dropped when that corner is already taken by another pair.
+    const kept = [];
+    for (let i = 0; i < this.poles.length; i += 2) {
+      const pair = [this.poles[i], this.poles[i + 1]];
+      const mouth = pair.map((p) => this.isInCrossStreet(p.s, p.side, 0.6)).find(Boolean);
+      if (!mouth) { kept.push(pair); continue; }
+      const half = mouth.width / 2 + 0.9, s0 = pair[0].s;
+      const cands = [mouth.s - half, mouth.s + half].sort((a, b) => Math.abs(r.delta(s0, a)) - Math.abs(r.delta(s0, b)));
+      const ok = (sn) => pair.every((p) => !this.isInCrossStreet(sn, p.side, 0.6))
+        && !!this.isInStation(sn, 2) === !!this.isInStation(s0, 2)
+        && !kept.some((q) => Math.abs(r.delta(q[0].s, sn)) < 6);
+      const sn = cands.find(ok);
+      if (sn === undefined) continue;
+      for (const p of pair) p.s = r.wrap(sn);
+      kept.push(pair);
+    }
+    this.poles = kept.flat().sort((a, b) => a.s - b.s || a.side - b.side);
+    this.poles.forEach((p, i) => { p.id = i; });
     // banners on some poles (pairs)
     const rng = RNG.from(this.seed, 'banners');
     for (const p of this.poles) if (rng.chance(0.18)) p.banner = true;
@@ -393,7 +411,11 @@ export class Layout {
     for (const p of this.poles) ob.push({ kind: 'circle', s: p.s, d: p.d, r: 0.25 });
     for (const t of this.trees) ob.push({ kind: 'circle', s: t.s, d: t.d, r: 0.45 });
     for (const f of this.furniture) {
-      const r = { bin: 0.35, bench: 0.9, bollard: 0.15, planter: 0.8, kiosk: 1.6, advertColumn: 0.7, bikeRack: 1.0, infoBoard: 0.5, shelter: 0, ticketMachine: 0.45, stopSign: 0.2 }[f.type] ?? 0.5;
+      if (f.type === 'shelter') { // glazed shelter on the platform: ~3.6 m along, ~1.4 m deep
+        ob.push({ kind: 'rect', s0: f.s - 1.8, s1: f.s + 1.8, d0: f.d - 0.7, d1: f.d + 0.7, shelter: f.station });
+        continue;
+      }
+      const r = { bin: 0.35, bench: 0.9, bollard: 0.15, planter: 0.8, kiosk: 1.6, advertColumn: 0.7, bikeRack: 1.0, infoBoard: 0.5, ticketMachine: 0.45, stopSign: 0.2 }[f.type] ?? 0.5;
       if (r > 0) ob.push({ kind: 'circle', s: f.s, d: f.d, r });
     }
     for (const c of this.cafes) ob.push({ kind: 'rect', s0: c.s0 - 0.2, s1: c.s1 + 0.2, d0: Math.min(c.dIn, c.dOut), d1: Math.max(c.dIn, c.dOut), cafe: c.id });
