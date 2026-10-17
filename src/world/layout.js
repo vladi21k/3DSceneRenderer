@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RNG, noise1 } from '../core/rng.js';
+import { RNG, loopNoise1 } from '../core/rng.js';
 import { CHUNK_LEN, TRACK_ZONE_HALF, TRACK_OFFSET } from '../core/config.js';
 
 // Deterministic master plan of the whole loop. Every generator reads its placements
@@ -38,7 +38,8 @@ export class Layout {
   /** Facade line offset magnitude (m) on `side` (+1 right, -1 left) at s. */
   halfWidth(s, side) {
     const base = 11.9;
-    const n = noise1(this.route.wrap(s) / 170, side > 0 ? 11 : 23) * 1.1 + noise1(this.route.wrap(s) / 55, side > 0 ? 5 : 9) * 0.25;
+    const sw = this.route.wrap(s), L = this.route.length;   // periodic in L: no seam at the loop wrap
+    const n = loopNoise1(sw, L, 170, side > 0 ? 11 : 23) * 1.1 + loopNoise1(sw, L, 55, side > 0 ? 5 : 9) * 0.25;
     let w = base + n;
     // keep room around platforms
     for (const st of this.stations || []) {

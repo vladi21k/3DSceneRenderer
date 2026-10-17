@@ -27,6 +27,6 @@ export class GpuTimer {
       gl.deleteQuery(q);
       this.queries.shift();
     }
-    if (this.queries.length > 8) { this.queries.forEach((q) => gl.deleteQuery(q)); this.queries = []; }
+    if (this.queries.length > 24) { this.queries.forEach((q) => gl.deleteQuery(q)); this.queries = []; }
   }
 }

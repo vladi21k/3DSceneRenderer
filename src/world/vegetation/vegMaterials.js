@@ -19,10 +19,14 @@ import { U } from '../../core/uniforms.js';
 //     shadow it; its own crown does not;
 //   * self shadow: the path length through the crown sphere towards the sun, as
 //     transmittance exp(-density * path), dithered per card into sun flecks.
-// Leaves also transmit light: sun from behind a card glows yellow-green (weakened less
-// by the crown than the direct term, thin outer leaves strongest), and sky light from the
-// far side of a card passes through it (undersides seen from below are lit by the sky).
-// Interior occlusion darkens only the sky / indirect light.
+// Sky light is occluded the same way: a leaf sees the sky through the crown above it and
+// around it (path to the crown surface straight up and radially out), so the crown core
+// and its underside sit at about a quarter of the sky light of the top shell. That
+// occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
+// Leaves also transmit light, but only light arriving on their far side (backlit cards):
+// a fraction (uLeafTrans, ~0.3) of what the lit face would show, a little more looking
+// into the light and on the thin outer shell (rim-lit edges), and through the crown like
+// the direct term. Sky light from the far side passes through the same way.
 //
 // Coverage: the atlas carries coverage-preserving alpha mips, so coverage is sharpened at
 // every distance (alpha-to-coverage edges with MSAA, alpha test without). The coverage is
@@ -31,6 +35,8 @@ import { U } from '../../core/uniforms.js';
 // Strong direct light: transmission and specular of a light are capped at LIGHT_CAP times
 // the sky's irradiance (and a lamp's diffuse at LAMP_CAP times), so low sun through a
 // backlit crown or a leaf next to a lantern glows instead of clipping to neon green.
+// Lamps pass little light through the leaves (LAMP_TRANS of the sun's share): a crown
+// under a street lamp is lit warm olive on its underside, never a green lampshade.
 // LOD cross-fade: the batch colour alpha of an instance is 1 when shown, in (0, 1) while
 // fading in and in (1, 2) while fading out; fragments are dithered on screen accordingly
 // (complementary patterns, so a tree never shows both or neither).
@@ -41,7 +47,8 @@ import { U } from '../../core/uniforms.js';
 // Vertex data: see treeGen.js (aVeg, aCrown, aCard; bark: aBark).
 
 const LIGHT_CAP = 8.0;
-const LAMP_CAP = 30.0;
+const LAMP_CAP = 9.0;
+const LAMP_TRANS = 0.3;
 
 const WIND_PARS = /* glsl */`
 invariant gl_Position;
@@ -154,6 +161,7 @@ function patchLeaf(mat, params) {
     shader.uniforms.uVegDensity = params.density;
     shader.uniforms.uVegShift = params.shift;
     shader.uniforms.uVegCap = params.cap;
+    shader.uniforms.uVegSky = params.sky;
     shader.uniforms.uSunDirV = U.uSunDir;
     let vs = shader.vertexShader;
     vs = rep(vs, '#include <common>', `#include <common>
@@ -161,6 +169,7 @@ function patchLeaf(mat, params) {
       uniform vec3 uSunDirV;
       uniform float uVegDensity;
       uniform float uVegShift;
+      uniform vec2 uVegSky;
       varying float vVegAO;
       varying float vVegSun;
       varying float vVegFlut;
@@ -189,6 +198,11 @@ function patchLeaf(mat, params) {
       float vegR0 = vegHash( aCard.xyz + 0.37 );
       vVegSun = mix( vegT, smoothstep( vegR0 - 0.22, vegR0 + 0.22, vegT ), 0.55 );  // dithered into flecks
       vVegRim = length( vegQ );
+      // sky occlusion by the crown: metres of crown above the leaf and radially outside it
+      float vegUb = vegQ.y, vegUd = vegUb * vegUb - ( dot( vegQ, vegQ ) - 1.0 );
+      float vegUp = vegUd > 0.0 ? max( 0.0, -vegUb + sqrt( vegUd ) ) : 0.0;
+      float vegDepth = ( 0.6 * vegUp + 0.4 * max( 0.0, 1.0 - vVegRim ) ) * aCrown.w;
+      vVegAO *= mix( uVegSky.y, 1.0, exp( -uVegSky.x * vegDepth ) );
       vVegGN = normalMatrix * ( vegR * ( aCard.xyz / vegS2 ) );`, 'leaf begin_vertex');
     // the shadow lookup leaves the crown along the sun ray (external shadows only)
     vs = rep(vs, '#include <shadowmap_vertex>', `#if defined( USE_SHADOWMAP )
@@ -240,7 +254,7 @@ function patchLeaf(mat, params) {
       bool vegUnder = dot( vVegGN, vViewPosition ) < 0.0;
       if ( vegUnder ) {
         float l = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
-        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.22 ) * 1.08;
+        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.14 ) * 1.04;
       }`, 'leaf color_fragment');
     // crown normals are authored to point out of the crown on both faces: no flip
     fs = rep(fs, '#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin
@@ -278,17 +292,18 @@ function patchLeaf(mat, params) {
         float vegCapD = isSun || vegSkyE <= 0.0 ? 1.0 : min( 1.0, uVegCap.y * vegSkyE / max( vegE, 1e-9 ) );
         reflectedLight.directDiffuse += leafRL.directDiffuse * ( through * vegCapD );
         // waxy but small and curled leaves: part of the specular; none on edge-on cards
-        reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) * vegCapT );
-        // transmission: light arriving on the far side of the card, strongest looking into
-        // the light; thin outer leaves pass diffused light even when partly occluded
+        reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) * vegCapT * vegCapD );
+        // transmission: only light arriving on the far side of the card (backlit leaves), a
+        // fraction of what the lit face shows; a little more looking into the light and on
+        // the thin outer shell (rim-lit edges); through the crown like the direct light
         if ( dot( gn, geometryViewDir ) < 0.0 ) gn = -gn;
         float back = saturate( -dot( gn, directLight.direction ) );
         float into = saturate( dot( -geometryViewDir, directLight.direction ) );
-        float fwd = pow( into, 5.0 );
-        float rim = smoothstep( 0.8, 1.05, vVegRim ) * smoothstep( 0.5, 0.9, into );
-        float tThrough = isSun ? mix( 0.35, 1.0, vVegSun ) : 1.0;
-        vec3 tc = material.diffuseColor * vec3( 1.5, 1.8, 0.5 );
-        reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT ) * ( back * ( 0.55 + 1.8 * fwd ) + 0.3 * fwd + 0.5 * rim ) * RECIPROCAL_PI;
+        float fwd = pow( into, 4.0 );
+        float rim = smoothstep( 0.85, 1.05, vVegRim ) * fwd;
+        float tThrough = isSun ? mix( 0.06, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
+        vec3 tc = material.diffuseColor * vec3( 1.12, 1.08, 0.55 );
+        reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT * back * ( 1.0 + 0.5 * fwd + 0.4 * rim ) * RECIPROCAL_PI );
       }
       #undef RE_Direct
       #define RE_Direct RE_Direct_Leaf`, 'leaf lights pars');
@@ -307,7 +322,7 @@ function patchLeaf(mat, params) {
         #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
           vec3 vegGn = normalize( vVegGN );
           if ( dot( vegGn, geometryViewDir ) < 0.0 ) vegGn = -vegGn;
-          reflectedLight.indirectDiffuse += getIBLIrradiance( -vegGn ) * diffuseColor.rgb * vec3( 0.75, 1.0, 0.4 ) * ( 0.55 * uLeafTrans * RECIPROCAL_PI );
+          reflectedLight.indirectDiffuse += getIBLIrradiance( -vegGn ) * diffuseColor.rgb * vec3( 1.0, 1.04, 0.6 ) * ( 0.8 * uLeafTrans * RECIPROCAL_PI );
         #endif
         reflectedLight.indirectDiffuse *= vVegAO;
         #ifdef VEG_DEBUG
@@ -419,7 +434,8 @@ export function createVegMaterials(app, atlas) {
   const M = app.materials;
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
-    trans: { value: 1.0 },      // leaf transmission strength
+    trans: { value: 0.3 },      // leaf transmission: share of the lit face's radiance passed through
+    sky: { value: new THREE.Vector2(0.55, 0.15) }, // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.5 },       // share of the direct specular kept
     a2c: { value: 0 },
     density: { value: 0.42 },   // crown extinction (1/m): exp(-0.42 * 2 m) ~ 0.43 through a young crown

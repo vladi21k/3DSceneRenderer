@@ -48,6 +48,13 @@ async function main() {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.shadowMap.enabled = true;
+  // Synchronous GL queries stall the pipeline: only check shader logs when debugging, and seed
+  // three's pixel-store cache so partial texture uploads never read UNPACK_* back from the driver.
+  renderer.debug.checkShaderErrors = params.debug;
+  {
+    const gl = renderer.getContext();
+    for (const p of [gl.UNPACK_ROW_LENGTH, gl.UNPACK_SKIP_PIXELS, gl.UNPACK_SKIP_ROWS, gl.UNPACK_IMAGE_HEIGHT, gl.UNPACK_SKIP_IMAGES]) renderer.state.pixelStorei(p, 0);
+  }
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
   const scene = new THREE.Scene();
@@ -60,7 +67,7 @@ async function main() {
 
   const app = {
     THREE, renderer, scene, camera, canvas, params, U, events, route, layout,
-    systems: {}, time: 0, dt: 0, frame: 0, ready: false,
+    systems: {}, time: 0, dt: 0, frame: 0, ready: false, touchPrograms: (r) => touchPrograms(r),
     startS: params.s ?? layout.defaultStartS,
     gpuTimer: new GpuTimer(renderer),
     perf: { fps: 0, frameMs: 0, cpuMs: 0, gpuMs: 0 },
@@ -130,6 +137,7 @@ async function main() {
     await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 20000))]);
     renderer.setRenderTarget(null);
   } catch (e) { console.warn('compile', e); }
+  touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
   app.perf.init.compile = Math.round(performance.now() - tCompile);
   setProgress(1);
 
@@ -178,10 +186,11 @@ async function main() {
       app.perf.fps = fpsN / fpsAcc; app.perf.frameMs = (fpsAcc / fpsN) * 1000; app.perf.cpuMs = fpsT / fpsN;
       fpsAcc = 0; fpsN = 0; fpsT = 0;
     }
-    app.perf.gpuMs = app.gpuTimer.ms;
+    if (app.gpuTimer.ext) app.perf.gpuMs = app.gpuTimer.ms;
 
     if (!app.ready && app.frame > 3 && app.world.readyAround(app.cameraS ?? s0, 160)) {
       app.ready = true;
+      app.world.staged = true;   // from now on chunks are compiled in the background and revealed gradually
       app.perf.init.firstReady = Math.round(performance.now());
       if (loadingEl) loadingEl.classList.add('done');
       events.emit('ready', {});
@@ -206,6 +215,14 @@ async function main() {
     s: +(app.cameraS ?? 0).toFixed(1), speedKmh: +((app.train?.speed ?? 0) * 3.6).toFixed(1),
     modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
   });
+}
+
+/** Resolve uniforms/attributes of every linked program so first use never stalls a frame. */
+export function touchPrograms(renderer) {
+  for (const p of renderer.info.programs || []) {
+    if (p.__touched) continue;
+    try { p.getUniforms(); p.getAttributes(); p.__touched = true; } catch (e) { /* not linked yet */ }
+  }
 }
 
 /** Fallback / initial camera: on the ride track at s, looking along the route. */

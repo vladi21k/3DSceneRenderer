@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { noise1, noise2 } from '../core/rng.js';
+import { loopNoise1, loopNoise2 } from '../core/rng.js';
 
 // The tram line: a closed loop through the city built from straights, clothoid
 // transitions and circular arcs, with gentle grades. Everything in the world is
@@ -257,9 +257,10 @@ export class Route {
     const sw = this.wrap(s);
     const ramp = Math.min(1, a / 1.2);                       // ease in from the corridor edge
     const fall = a * 0.016;                                  // ~1.6 % rise towards the facades
-    const tilt = Math.sign(d) * a * 0.013 * noise1(sw / 320, 101);   // hillside: ±1.3 %
+    const L = this.length;   // all noise is periodic in L so the loop has no seam
+    const tilt = Math.sign(d) * a * 0.013 * loopNoise1(sw, L, 320, 101);   // hillside: ±1.3 %
     const dd = Math.sign(d) * (a + SURF_EDGE);
-    const settle = 0.02 * noise2(sw / 6.5, dd / 5.5, 7) + 0.01 * noise2(sw / 2.3, dd / 2.1, 13);
+    const settle = 0.02 * loopNoise2(sw, dd, L, 6.5, 5.5, 7) + 0.01 * loopNoise2(sw, dd, L, 2.3, 2.1, 13);
     return fall + tilt + settle * ramp * ramp;
   }
 

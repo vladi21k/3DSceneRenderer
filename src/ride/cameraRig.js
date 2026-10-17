@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TRACK_OFFSET, EYE_HEIGHT, DEFAULT_VFOV, AXLES } from '../core/config.js';
 import { RNG, noise1, hash2 } from '../core/rng.js';
+import { U } from '../core/uniforms.js';
 import { input } from './input.js';
 
 // Cab camera: the driver's eye in the cab body, EYE_HEIGHT above the rail top.
@@ -24,7 +25,10 @@ import { input } from './input.js';
 //  - mouse look (grab and drag the view) with soft limits, easing back to centre when released;
 //  - zoom (Z / X / wheel / UI) between 12° and 60° vertical FOV, smoothed in log space;
 //    portrait screens keep the landscape horizontal view;
-//  - motion data for a shutter blur in post: previous view-projection, cut flag.
+//  - motion data for a shutter blur in post: previous view-projection, cut flag, and an
+//    exposure that follows the light like an auto-exposing camera: a short daylight shutter
+//    (crisp edges, as in daytime cab footage) opening up to 1/50 s at dusk, with the
+//    streak-length cap scaled to it and lowered at wide angles.
 // The tram itself is never rendered: no cab, console or windscreen in view at any zoom.
 // Simulation-driven motion uses the train clock, so it stands still while frozen or held.
 
@@ -49,7 +53,10 @@ export const RIG = {
   rollArm: 2.0,             // m, eye height above the roll centre
   stopSpring: 3.4 * DEG,    // pitch-rate kick per m/s² of final braking when the tram comes to rest
   vib: { pitch: 0.025 * DEG, yaw: 0.014 * DEG, roll: 0.017 * DEG },   // RMS buzz at 45 km/h
-  shutterSec: 1 / 50,       // exposure for the camera motion blur in post
+  shutterDay: 1 / 160,      // s, exposure in daylight (camera motion blur in post)...
+  shutterNight: 1 / 50,     // ...opening up towards dusk (U.uNight), interpolated in stops
+  blurMaxPx: 32,            // streak cap (px at 1080 lines) at the night shutter, scaled with the shutter
+  blurWideCut: 0.45,        // share of the cap removed at wide angles (edges move fastest there)
   yawLimit: 60 * DEG,
   pitchLimit: 25 * DEG,
   returnOmega: 5,           // 1/s, critically damped return to centre (~1 s)
@@ -136,7 +143,8 @@ const cameraRig = {
   targetFov: DEFAULT_VFOV,
   fovMin: RIG.fovMin,
   fovMax: RIG.fovMax,
-  shutterSec: RIG.shutterSec,
+  shutterSec: RIG.shutterDay,  // exposure for the shutter blur in post (follows the light)
+  blurMaxPx: RIG.blurMaxPx * RIG.shutterDay / RIG.shutterNight,  // streak cap, px at 1080 lines
   cut: true,         // the view jumped this frame: no motion blur
   prevViewProj: null, // last frame's projection × view matrix (for the shutter blur in post)
   _hf: { pitch: 0, yaw: 0, roll: 0 },   // current body buzz (rad)
@@ -253,6 +261,7 @@ const cameraRig = {
     this._look(rdt);
     this._zoom(rdt, camera);
     if (Math.abs(camera.fov - fov0) > 0.1 * fov0) this.cut = true;
+    this._exposure(camera);
 
     // ---- compose: body pose, then the head inside it
     const hv = this._hf;
@@ -345,6 +354,16 @@ const cameraRig = {
         }
       }
     }
+  },
+
+  /** Shutter time from the light (log-interpolated: the camera's auto exposure works in
+   *  stops) and the streak cap: scaled with the shutter, narrower at wide angles where the
+   *  frame edges sweep fastest. */
+  _exposure(camera) {
+    const night = clamp(U.uNight.value, 0, 1);
+    this.shutterSec = Math.exp(Math.log(RIG.shutterDay) + night * (Math.log(RIG.shutterNight) - Math.log(RIG.shutterDay)));
+    const wide = smoothstep(Math.log(RIG.teleFov[0]), Math.log(45), Math.log(camera.fov));
+    this.blurMaxPx = RIG.blurMaxPx * (this.shutterSec / RIG.shutterNight) * (1 - RIG.blurWideCut * wide);
   },
 
   _look(rdt) {

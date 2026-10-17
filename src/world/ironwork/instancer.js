@@ -18,14 +18,39 @@ import { shadowOnly } from './strip.js';
 // distance up to which level k is used; beyond the last limit the instance is not drawn.
 // Entries of sets added with `angle` (railing bays: instance z axis = railing normal)
 // scale the last limit by limits.angleK(|n.v|), so foreshortened bays leave earlier.
+// Within a chunk's entry, instances are grouped into clusters (a stretch of a balcony
+// at most CLUSTER_R long, one window's attachments: see InstanceCollector.cluster), each
+// with its own bounding sphere, culled against the view every frame: a telephoto view
+// down the street sees few of the balconies of the chunks it spans (those beside and
+// above the camera are outside it).
 // Pools never cast shadows: light stand-ins of the casters are merged per chunk into
 // the module's shadow strips.
+// A pool's level meshes exist from its creation (empty, hidden): the module creates its
+// pools at init, so the start-up shader compile covers their programs.
 
 const _v = new THREE.Vector3(), _b = new THREE.Box3(), _bb = new THREE.Box3();
 
+/** Largest distance (m) of a cluster's instance origins from its first one. */
+const CLUSTER_R = 2.5;
+
+/** Extent of a geometry from the instance origin (bounding sphere centre distance plus
+ *  radius), cached on the geometry. */
+function reach(g) {
+  if (g.userData.reach === undefined) {
+    if (!g.boundingSphere) g.computeBoundingSphere();
+    g.userData.reach = g.boundingSphere.center.length() + g.boundingSphere.radius;
+  }
+  return g.userData.reach;
+}
+
 /** Per-chunk instance lists, one per key. */
 export class InstanceCollector {
-  constructor() { this.sets = new Map(); this.last = null; }
+  constructor() { this.sets = new Map(); this.last = null; this.cid = 0; }
+
+  /** Starts a new culling cluster: the instances added from now on (of every key) are
+   *  culled apart from those added before (a cluster also ends where its instances
+   *  spread beyond CLUSTER_R). */
+  cluster() { this.cid++; }
 
   /** levels: geometry per detail level (null = nothing drawn at that level).
    *  color: [r, g, b] or null. opts: {cls, radius, angle, thin} (first add wins; radius
@@ -33,15 +58,20 @@ export class InstanceCollector {
   add(key, levels, material, matrix, color = null, opts = {}) {
     let s = this.last && this.last.key === key ? this.last : this.sets.get(key);
     if (!s) {
-      s = { key, levels, material, opts, n: 0, m: new Float32Array(64 * 16), c: color ? new Float32Array(64 * 3) : null };
+      s = { key, levels, material, opts, n: 0, m: new Float32Array(64 * 16), c: color ? new Float32Array(64 * 3) : null, runs: [], cid: -1, o: [0, 0, 0] };
       this.sets.set(key, s);
     }
     this.last = s;
+    const e = matrix.elements, so = s.o, dx = e[12] - so[0], dy = e[13] - so[1], dz = e[14] - so[2];
+    if (s.cid !== this.cid || dx * dx + dy * dy + dz * dz > CLUSTER_R * CLUSTER_R) {
+      s.cid = this.cid; s.runs.push(s.n);
+      so[0] = e[12]; so[1] = e[13]; so[2] = e[14];
+    }
     if ((s.n + 1) * 16 > s.m.length) {
       const m = new Float32Array(s.m.length * 2); m.set(s.m); s.m = m;
       if (s.c) { const c = new Float32Array(s.c.length * 2); c.set(s.c); s.c = c; }
     }
-    const e = matrix.elements, m = s.m, o = s.n * 16;
+    const m = s.m, o = s.n * 16;
     for (let k = 0; k < 16; k++) m[o + k] = e[k];
     if (s.c) { s.c[s.n * 3] = color[0]; s.c[s.n * 3 + 1] = color[1]; s.c[s.n * 3 + 2] = color[2]; }
     s.n++;
@@ -62,13 +92,33 @@ export class InstanceCollector {
         const dx = m[i * 16 + 12] - x, dy = m[i * 16 + 13] - y, dz = m[i * 16 + 14] - z;
         r = Math.max(r, dx * dx + dy * dy + dz * dz);
       }
-      const g0 = s.levels.find(Boolean);
-      if (!g0.boundingSphere) g0.computeBoundingSphere();
-      const pad = s.opts.radius ?? g0.boundingSphere.center.length() + g0.boundingSphere.radius;
+      const g0 = s.levels.find(Boolean), gr = reach(g0);
+      const pad = s.opts.radius ?? gr;
+      // clusters: runs of consecutive instances, each bounded by a sphere around its
+      // instance origins padded by the scaled geometry extent (every level lies within
+      // the full one's; 2 % margin)
+      const nc = s.runs.length, c0 = new Uint32Array(nc + 1), cs = new Float32Array(nc * 4);
+      c0.set(s.runs); c0[nc] = s.n;
+      for (let k = 0; k < nc; k++) {
+        const a = c0[k], b = c0[k + 1];
+        let cx = 0, cy = 0, cz = 0;
+        for (let i = a; i < b; i++) { cx += m[i * 16 + 12]; cy += m[i * 16 + 13]; cz += m[i * 16 + 14]; }
+        cx /= b - a; cy /= b - a; cz /= b - a;
+        let cr = 0;
+        for (let i = a; i < b; i++) {
+          const o = i * 16;
+          const sc = Math.sqrt(Math.max(m[o] * m[o] + m[o + 1] * m[o + 1] + m[o + 2] * m[o + 2],
+            m[o + 4] * m[o + 4] + m[o + 5] * m[o + 5] + m[o + 6] * m[o + 6], m[o + 8] * m[o + 8] + m[o + 9] * m[o + 9] + m[o + 10] * m[o + 10]));
+          const dx = m[o + 12] - cx, dy = m[o + 13] - cy, dz = m[o + 14] - cz;
+          cr = Math.max(cr, Math.sqrt(dx * dx + dy * dy + dz * dz) + gr * sc * 1.02);
+        }
+        cs[k * 4] = cx; cs[k * 4 + 1] = cy; cs[k * 4 + 2] = cz; cs[k * 4 + 3] = cr;
+      }
       out.push({
         key: s.key, levels: s.levels, material: s.material, opts: s.opts, n: s.n, m, c,
         sphere: new THREE.Sphere(new THREE.Vector3(x, y, z), Math.sqrt(r) + pad * 1.25),
         lvl: new Uint8Array(s.n).fill(254), cam: null, slack: 0, vis: false,
+        c0, cs, cv: new Uint8Array(nc).fill(1),
       });
     }
     this.sets.clear();
@@ -77,7 +127,25 @@ export class InstanceCollector {
   }
 }
 
-/** All active entries of one key, drawn as one InstancedMesh per detail level. */
+/** Culls the clusters of a visible entry against `frustum`; true when one changed. */
+function cullClusters(e, frustum) {
+  const P = frustum.planes, cs = e.cs, cv = e.cv;
+  let changed = false;
+  for (let k = 0; k < cv.length; k++) {
+    const x = cs[k * 4], y = cs[k * 4 + 1], z = cs[k * 4 + 2], r = -cs[k * 4 + 3];
+    let v = 1;
+    for (let j = 0; j < 6; j++) {
+      const p = P[j], n = p.normal;
+      if (n.x * x + n.y * y + n.z * z + p.constant < r) { v = 0; break; }
+    }
+    if (v !== cv[k]) { cv[k] = v; changed = true; }
+  }
+  return changed;
+}
+
+/** All active entries of one key, drawn as one InstancedMesh per detail level. Every
+ *  level mesh carries instance colours (white where an entry has none), so all pools of
+ *  a material share one program. */
 export class InstancePool {
   constructor(key, levels, material, opts, group) {
     this.key = key;
@@ -85,7 +153,6 @@ export class InstancePool {
     this.material = material;
     this.opts = opts;
     this.cls = opts.cls || null;
-    this.colors = false;
     this.group = group;
     this.entries = new Set();
     this.total = 0;
@@ -93,13 +160,13 @@ export class InstancePool {
     this.meshes = levels.map(() => null);
     this.dirty = false;
     this.sphere = new THREE.Sphere();
+    this._grow();
   }
 
   /** Adds a chunk's entry (levels are assigned on the next partition). */
   attach(e) {
     this.entries.add(e);
     this.total += e.n;
-    if (e.c) this.colors = true;
     e.lvl.fill(254);
     e.cam = null;
     e.vis = false;
@@ -131,7 +198,7 @@ export class InstancePool {
       // created empty, then given buffers of the full capacity (skips the identity fill)
       const mesh = new THREE.InstancedMesh(geo, this.material, 0);
       mesh.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(cap * 16), 16);
-      if (this.colors) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       mesh.count = 0;
       mesh.visible = false;
       mesh.castShadow = false;
@@ -145,18 +212,21 @@ export class InstancePool {
     this.cap = cap;
   }
 
-  /** Culls the entries (whole chunks) against the view `frustum`, re-partitions those the
-   *  camera has moved away from (all with `force`) and repacks the level meshes when an
-   *  entry came, went, appeared or vanished, or an instance changed level. */
+  /** Culls the entries (whole chunks) and their clusters against the view `frustum`,
+   *  re-partitions the entries the camera has moved away from (all with `force`) and
+   *  repacks the level meshes when an entry came or went, or a cluster appeared or
+   *  vanished, or an instance changed level. */
   update(cam, limits, force, frustum) {
     for (const e of this.entries) {
       const vis = !frustum || frustum.intersectsSphere(e.sphere);
       if (vis !== e.vis) { e.vis = vis; this.dirty = true; if (vis) e.cam = null; }
       if (!vis) continue; // its levels are refreshed when it comes into view
-      if (!this.cls) { if (e.lvl[0] !== 0) { e.lvl.fill(0); this.dirty = true; } continue; }
-      if (force || !e.cam || e.cam.distanceToSquared(cam) >= e.slack * e.slack) {
+      if (!this.cls) { if (e.lvl[0] !== 0) { e.lvl.fill(0); this.dirty = true; } }
+      else if (force || !e.cam || e.cam.distanceToSquared(cam) >= e.slack * e.slack) {
         if (InstancePool.partition(e, cam, limits, this.opts.angle)) this.dirty = true;
       }
+      // (an entry wholly beyond its last limit draws nothing: no cluster to cull)
+      if (frustum && !e.none && cullClusters(e, frustum)) this.dirty = true;
     }
     if (this.dirty) this.repack();
   }
@@ -194,6 +264,7 @@ export class InstancePool {
     }
     (e.cam ||= new THREE.Vector3()).copy(cam);
     e.slack = slack;
+    e.none = uniform === L;
     return changed;
   }
 
@@ -205,14 +276,15 @@ export class InstancePool {
     const M = this.meshes.map((m) => m && m.instanceMatrix.array), C = this.meshes.map((m) => m && m.instanceColor && m.instanceColor.array);
     for (const e of this.entries) {
       if (!e.vis) continue;
-      const em = e.m, ec = e.c;
-      for (let i = 0; i < e.n; i++) {
-        const k = e.lvl[i], a = M[k];
-        if (!a) continue;
-        const j = counts[k]++;
-        for (let q = 0, o = j * 16, p = i * 16; q < 16; q++) a[o + q] = em[p + q];
-        const c = C[k];
-        if (c) {
+      const em = e.m, ec = e.c, c0 = e.c0, cv = e.cv;
+      for (let q = 0; q < cv.length; q++) {
+        if (!cv[q]) continue;
+        for (let i = c0[q]; i < c0[q + 1]; i++) {
+          const k = e.lvl[i], a = M[k];
+          if (!a) continue;
+          const j = counts[k]++;
+          for (let t = 0, o = j * 16, p = i * 16; t < 16; t++) a[o + t] = em[p + t];
+          const c = C[k];
           if (ec) { c[j * 3] = ec[i * 3]; c[j * 3 + 1] = ec[i * 3 + 1]; c[j * 3 + 2] = ec[i * 3 + 2]; }
           else { c[j * 3] = c[j * 3 + 1] = c[j * 3 + 2] = 1; }
         }
@@ -232,7 +304,8 @@ export class InstancePool {
 /** Flags of every active chunk in one InstancedMesh: matrices plus a per-instance
  *  attribute (design offset in the atlas, wave phase), rebuilt when chunks come or go.
  *  A twin on a coarse grid, sharing the instance buffers, casts the shadows (the depth
- *  material moves it like the cloth) and is never drawn in the view. */
+ *  material moves it like the cloth) and is never drawn in the view. Both exist from the
+ *  start (empty, hidden), so the start-up compiles cover their programs. */
 export class FlagPool {
   constructor(geometry, shadowGeometry, material, depthMaterial, group, scene) {
     this.scene = scene;
@@ -247,6 +320,7 @@ export class FlagPool {
     this.n = 0;
     this.cap = 0;
     this.dirty = false;
+    this._grow(16);
   }
 
   attach(e) { this.entries.add(e); this.dirty = true; }
@@ -293,6 +367,7 @@ export class FlagPool {
       mesh.instanceMatrix = matrices;
       mesh.boundingSphere = sphere;
       mesh.customDepthMaterial = this.depthMaterial;
+      mesh.visible = this.n > 0;
       mesh.name = name;
       this.group.add(mesh);
       return mesh;

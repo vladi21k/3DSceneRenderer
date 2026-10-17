@@ -1,5 +1,5 @@
 // Limestone recipes: Jerusalem-style ashlar, rock-faced rustication, finely dressed trim
-// stone, the chisel-dressing detail maps (taltish comb strokes, mussamsam pecking), the
+// stone, the chisel-dressing detail maps (taltish point-chisel strokes, mussamsam pecking), the
 // shared mineral detail map and the macro variation noise.
 // GLSL functions run per texel in tile metres (see glsl/common.js, NOISE_GLSL).
 //
@@ -8,13 +8,15 @@
 // lives in its own detail maps (0.64 m tiles, 0.6-1.25 mm/texel) which the runtime
 // applies per block with a random rotation and dressing type (see surface.js).
 
-// common limestone body colour, mottling, pores, fossil fragments and patina
-const LIMESTONE = /* glsl */ `
+// common limestone body colour, mottling, pores, fossil fragments and patina. `cloud`
+// scales the soft 4-50 cm clouding: full on the tooled ashlar (the dressing breaks it up),
+// lower on rock-faced and rubbed stone, where it would read as marble veining.
+const limestone = (cloud = 1) => /* glsl */ `
 vec3 limestone(vec2 m, float hc, inout float h) {
   vec3 base = vec3(0.6, 0.54, 0.43);                                     // pale cream (linear)
   float mot = fbm(m + vec2(hc * 13.7, hc * 5.3), 2.2, 5, 0.55, 14u);   // soft clouds ~0.5 m
   float mot2 = fbm(m + vec2(hc * 2.9, 0.0), 10.0, 3, 0.6, 15u);       // 4-10 cm clouding
-  vec3 c = base * (1.0 + 0.09 * mot + 0.2 * mot2);
+  vec3 c = base * (1.0 + ${(0.09 * cloud).toFixed(4)} * mot + ${(0.2 * cloud).toFixed(4)} * mot2);
   // warmer (honey) and cooler (grey-white) drifts inside one block
   float w = fbm(m + vec2(hc * 3.1, 0.0), 3.5, 4, 0.55, 16u);
   c *= mix(vec3(0.97, 0.99, 1.03), vec3(1.05, 0.98, 0.86), smoothstep(-0.45, 0.55, w));
@@ -64,60 +66,59 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// 1D jittered partition shared by the dressing maps: cell k containing x for n cells per
-// tile period (periodic), fraction f inside it and its length.
-const CELL1 = /* glsl */ `
-float jb(int k, int n, float L, float jit, uint s) { return (float(k) + jit * (sfHash(ivec2(sfMod(k, n), 0), s) - 0.5)) * L; }
-void cell1(float x, int n, float L, float jit, uint s, out int k, out float f, out float len) {
-  int k0 = int(floor(x / L));
-  float a = jb(k0, n, L, jit, s), b = jb(k0 + 1, n, L, jit, s);
-  if (x < a) { k = k0 - 1; b = a; a = jb(k0 - 1, n, L, jit, s); }
-  else if (x >= b) { k = k0 + 1; a = b; b = jb(k0 + 2, n, L, jit, s); }
-  else k = k0;
-  len = b - a;
-  f = (x - a) / len;
-}
-`;
-
-// Taltish: rows of comb-chisel strikes. Each strike is a flat-bottomed scoop as wide as
-// the comb (12-16 mm), 25-60 mm long, 0.8-1.6 mm deep where the chisel bites in and
-// running out shallow, with the comb's five teeth scoring sharp grooves along it. Rows are
-// warped by a few mm and overlap irregularly. Strokes run along u; the runtime rotates
-// the map per block (vertical or diagonal dressing).
+// Taltish: the face is worked over with a narrow point chisel in short, irregular
+// strokes. Each stroke is a gouge 7-14 mm wide and 20-60 mm long, deepest (0.5-1.5 mm)
+// just past where the chisel bites in and running out shallow and narrower; its direction
+// scatters ±25° around the working direction (along u: the runtime rotates the map per
+// block). Strokes sit on a jittered grid of 24.6 × 10 mm cells (rows shifted at random),
+// so they overlap irregularly; the face is their lower envelope, every overlap leaving a
+// sharp little ridge, and unworked islands keep the coarse pecked surface between them.
 // Detail map format: surface = (normal.xy, moment, albedo modulation with 0.5 = neutral).
 export const tooling = {
   name: 'tooling', flat: [1, 1, 1, 0.8], size: 1024, tile: [0.64, 0.64], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
-  glsl: CELL1 + /* glsl */ `
+  glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  vec2 w = m + vec2(0.0, fbm(m, 5.0, 3, 0.5, 301u) * 0.004 + fbm(m, 22.0, 2, 0.5, 302u) * 0.0012);
-  const int NR = 46;                                     // 13.9 mm mean comb width
-  int r; float fy, ph;
-  cell1(w.y, NR, uTile.y / float(NR), 0.5, 303u, r, fy, ph);
-  int rr = sfMod(r, NR);
-  const int NS = 16;                                     // 40 mm mean strike length
-  float off = sfHash(ivec2(rr, 1), 304u) * uTile.x;
-  int k; float fx, sl;
-  cell1(m.x + off, NS, uTile.x / float(NS), 0.8, 305u + uint(rr) * 7919u, k, fx, sl);
-  int kk = sfMod(k, NS);
-  float hk = sfHash(ivec2(kk, rr), 306u), hk2 = sfHash(ivec2(kk, rr), 307u), hk3 = sfHash(ivec2(kk, rr), 311u);
-  // each strike sits a little off the row line, slightly narrower or wider and tilted
-  float fyS = (fy - 0.5) * (0.85 + 0.35 * hk3) + 0.5 + (hk2 - 0.5) * 0.25 + (fx - 0.5) * (hk - 0.5) * 0.35;
-  float depth = 0.0007 + 0.0008 * hk;
-  // rounded bite at the start of the strike, running out towards its end
-  float along = smoothstep(0.0, 0.14, fx + 0.04 * sin(fyS * 3.14159)) * (1.0 - 0.8 * fx);
-  float acr = sat(1.0 - pow(abs(2.0 * fyS - 1.0), 3.0));
-  // comb teeth: V grooves between rounded lands, shifted per strike
-  float tooth = 1.0 - pow(abs(sin(3.14159 * (fyS * 5.0 + hk2 * 3.0))), 0.4);
-  float skip = step(0.93, sfHash(ivec2(kk + 31, rr), 308u));   // occasional missed strike
-  float g = along * acr * (1.0 - 0.8 * skip);
-  float gt = g * tooth;
-  // fine pecking / mineral grain and pores
+  const int NA = 26, NC = 64;
+  vec2 cs = uTile / vec2(float(NA), float(NC));
+  // ragged stroke outlines: the work surface is warped by a few millimetres
+  vec2 w = m + vec2(fbm(m, 30.0, 2, 0.5, 301u), fbm(m, 30.0, 2, 0.5, 302u)) * 0.0018;
+  float best = 0.0, bestF = 1.0, bestT = 0.0;
+  int j0 = int(floor(w.y / cs.y));
+  for (int dj = -2 * uOne; dj <= 2 * uOne; dj++) {
+    int j = j0 + dj;
+    int jw = sfMod(j, NC);
+    float rowOff = sfHash(ivec2(jw, 7), 303u) * cs.x;
+    int i0 = int(floor((w.x - rowOff) / cs.x));
+    for (int di = -2 * uOne; di <= 2 * uOne; di++) {
+      int i = i0 + di;
+      uint h = sfH2(sfMod(i, NA), jw, 304u);
+      float h1 = sfHf(h), h2 = sfHf(sfH(h + 1u)), h3 = sfHf(sfH(h + 2u));
+      float h4 = sfHf(sfH(h + 3u)), h5 = sfHf(sfH(h + 4u)), h6 = sfHf(sfH(h + 5u));
+      vec2 c = vec2((float(i) + h1) * cs.x + rowOff, (float(j) + 0.15 + 0.7 * h2) * cs.y);
+      float ang = (h3 - 0.5) * 0.87;                    // ±25°
+      float len = 0.02 + 0.04 * h4 * (0.4 + 0.6 * h4);  // 20-60 mm, mostly short
+      float wid = 0.007 + 0.007 * h5;
+      float dep = 0.0005 + 0.001 * h6;
+      vec2 t = vec2(cos(ang), sin(ang));
+      vec2 d = w - c;
+      float f = dot(d, t) / len + 0.5;                  // 0 at the bite, 1 at the run-out
+      float x = dot(d, vec2(-t.y, t.x)) / (0.5 * wid * (1.0 - 0.45 * sat(f)));
+      float prof = max(0.0, 1.0 - x * x);
+      float alo = smoothstep(-0.04, 0.12, f) * (1.0 - smoothstep(0.35, 1.0, f) * 0.85) * step(f, 1.0);
+      float hs = -dep * prof * alo;
+      if (hs < best) { best = hs; bestF = f; bestT = h1; }
+    }
+  }
+  // the pecked rough-out surface left between the strokes
   vec4 v = voro(m, vec2(260.0), 309u, 1.0);
   float pore = smoothstep(0.2, 0.05, v.x) * step(0.9, v.z);
-  s.height = -depth * g - 0.00045 * gt + fbm(m, 120.0, 3, 0.5, 310u) * 0.00012 - pore * 0.0004;
-  // grooves hold dust (darker, rougher), lands are worn paler
-  float a = 1.07 - 0.1 * g - 0.12 * gt - 0.25 * pore + 0.04 * (v.z - 0.5);
+  float peck = smoothstep(0.5, 0.1, v.x) * step(0.55, v.z);
+  float isl = 1.0 - smoothstep(-0.0002, 0.0, best);    // inside a stroke
+  s.height = best + fbm(m, 120.0, 3, 0.5, 310u) * 0.00012 - pore * 0.0004 - (1.0 - isl) * peck * 0.00035;
+  // gouges hold dust where they are deep, fresh facets are paler; tone per stroke
+  float dn = sat(-best / 0.0013);
+  float a = 1.05 - 0.13 * dn + 0.04 * isl * (bestT - 0.5) - 0.04 * (1.0 - isl) * peck - 0.25 * pore + 0.04 * (v.z - 0.5);
   s.ao = sat(0.5 * a);
   s.albedo = vec3(1.0);
   s.rough = 0.8;
@@ -168,7 +169,7 @@ export const ashlar = {
   layout: { rowH: 0.35, rows: 12, seg: [5, 7], jitter: 0.42, seed: 11, shift: true },
   joint: 0.0055,
   pass: { normal: 1.0, ao: 0.7, aoRadius: 0.008, cavity: 0.06 },
-  glsl: LIMESTONE + /* glsl */ `
+  glsl: limestone() + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
   float hA = cellRand(c, 1u);
@@ -211,7 +212,7 @@ export const rustic = {
   layout: { rowH: 0.5, rows: 4, seg: [4, 6], jitter: 0.36, seed: 23, shift: true },
   joint: 0.01,
   pass: { normal: 1.1, ao: 0.5, aoRadius: 0.012, cavity: 0.05 },
-  glsl: LIMESTONE + /* glsl */ `
+  glsl: limestone(0.5) + /* glsl */ `
 // conchoidal scars: lower envelope of tilted dishes centred on jittered points (cell
 // size cellM, m): concave facets meeting in sharp ridges, like a hammer-pitched face
 float scars(vec2 m, float cellM, float slope, float dish, uint sd, out float id) {
@@ -277,7 +278,7 @@ void surface(vec2 m, inout Surf s) {
 export const smooth = {
   name: 'smooth', flat: [0.61, 0.555, 0.44, 0.75], size: 512, tile: [2.0, 2.0], ss: 2,
   pass: { normal: 1.0, ao: 0.4, aoRadius: 0.006, cavity: 0.05 },
-  glsl: LIMESTONE + /* glsl */ `
+  glsl: limestone(0.45) + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   float h = fbm(m, 2.5, 3, 0.5, 71u) * 0.0008 + fbm(m, 30.0, 3, 0.5, 72u) * 0.00025;
   // faint fine claw-tool striation along u

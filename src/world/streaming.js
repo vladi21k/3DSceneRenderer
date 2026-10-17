@@ -6,6 +6,11 @@ import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js
 // Object3D per chunk-building module. Builds are time-sliced (a few ms per frame),
 // nearest-first; chunks behind the camera are recycled; chunks crossing LOD0_DIST
 // are rebuilt at full detail and swapped in when ready (no popping gaps).
+//
+// Once the app is running (staged = true) a finished chunk is not shown at once: its
+// programs are compiled in the background (compileAsync) and its module parts are then
+// revealed a few per frame under a GPU-upload byte budget, swapping each replacement
+// part with the old part of the same module, so no single frame uploads a whole chunk.
 
 export class World {
   constructor(app, builders) {
@@ -16,7 +21,10 @@ export class World {
     this.root.name = 'world';
     app.scene.add(this.root);
     this.budgetMs = 7;
-    this.stats = { built: 0, disposed: 0, lastBuildMs: 0, queue: 0, buildMsByModule: {} };
+    this.uploadBudget = 4 << 20;       // bytes of new geometry revealed per frame (staged mode)
+    this.staged = false;               // main switches this on after start-up
+    this.revealing = [];               // chunks compiled and waiting to be revealed
+    this.stats = { built: 0, disposed: 0, lastBuildMs: 0, queue: 0, buildMsByModule: {}, revealBytes: 0 };
   }
 
   wanted(sCam) {
@@ -87,10 +95,60 @@ export class World {
   _finish(c) {
     c.ready = true;
     c.group.visible = true;
+    for (const obj of c.parts.values()) obj.visible = true;
     if (c.replaces) { this._dispose(c.replaces); c.replaces = null; }
   }
 
+  /** All parts built: compile in the background, then reveal under the upload budget. */
+  _stage(c) {
+    c.stage = 'compile';
+    const app = this.app, r = app.renderer;
+    const done = () => {
+      if (c.dead) return;
+      app.touchPrograms && app.touchPrograms(r);
+      c.stage = 'reveal';
+      c.toReveal = [...c.parts.keys()];
+      for (const obj of c.parts.values()) obj.visible = false;
+      c.group.visible = true;
+      this.revealing.push(c);
+    };
+    try {
+      const rt = app.post && !app.post.disabled ? app.post.sceneRT : null;
+      const prev = r.getRenderTarget();
+      r.setRenderTarget(rt || null);
+      const p = r.compileAsync(c.group, app.camera, app.scene);
+      r.setRenderTarget(prev);
+      p.then(done, done);
+    } catch (e) { done(); }
+  }
+
+  _reveal() {
+    let bytes = 0, shown = 0;
+    this.revealing.sort((a, b) => (a.dist ?? 0) - (b.dist ?? 0));
+    while (this.revealing.length && (shown === 0 || bytes < this.uploadBudget)) {
+      const c = this.revealing[0];
+      if (c.dead) { this.revealing.shift(); continue; }
+      const name = c.toReveal.shift();
+      if (name !== undefined) {
+        const obj = c.parts.get(name);
+        obj.visible = true;
+        bytes += objectBytes(obj);
+        shown++;
+        const old = c.replaces && c.replaces.parts.get(name);
+        if (old) old.visible = false;
+      }
+      if (!c.toReveal.length) {
+        this.revealing.shift();
+        c.stage = null;
+        if (c.replaces) this.chunks.set(c.index, c);
+        this._finish(c);
+      }
+    }
+    this.stats.revealBytes = bytes;
+  }
+
   _dispose(c) {
+    c.dead = true;
     for (const [name, obj] of c.parts) {
       const b = this.builders.find((x) => x.name === name);
       try {
@@ -109,7 +167,9 @@ export class World {
     // recycle
     for (const [idx, c] of this.chunks) {
       if (!wantSet.has(idx)) { this._dispose(c); if (c.next) this._dispose(c.next); this.chunks.delete(idx); }
+      else c.dist = wantSet.get(idx).dist;
     }
+    if (this.revealing.length) this._reveal();
     // create / schedule
     const queue = [];
     for (const w of want) {
@@ -131,13 +191,19 @@ export class World {
     const t0 = performance.now();
     for (const q of queue) {
       while (q.c.pending.length && performance.now() - t0 < this.budgetMs) this._buildPart(q.c);
-      if (!q.c.pending.length && !q.c.ready) {
-        if (q.upgrade) {
-          q.c.replaces = q.upgrade;
-          this.chunks.set(q.c.index, q.c);
-          q.upgrade.next = null;
+      if (!q.c.pending.length && !q.c.ready && !q.c.stage) {
+        q.c.dist = q.dist;
+        if (this.staged) {
+          if (q.upgrade) q.c.replaces = q.upgrade;   // the map switches to it once revealed
+          this._stage(q.c);
+        } else {
+          if (q.upgrade) {
+            q.c.replaces = q.upgrade;
+            this.chunks.set(q.c.index, q.c);
+            q.upgrade.next = null;
+          }
+          this._finish(q.c);
         }
-        this._finish(q.c);
       }
       if (performance.now() - t0 >= this.budgetMs) break;
     }
@@ -159,6 +225,22 @@ export class World {
   readyAround(sCam, dist) {
     return this.wanted(sCam).filter((w) => w.dist <= dist).every((w) => this.chunks.get(w.idx)?.ready);
   }
+}
+
+/** Rough GPU upload size of an object's (non-shared) geometry and instance buffers. */
+function objectBytes(obj) {
+  if (obj.userData.__bytes !== undefined) return obj.userData.__bytes;
+  let b = 0;
+  obj.traverse((o) => {
+    const g = o.geometry;
+    if (g && !g.userData?.shared) {
+      for (const k in g.attributes) b += g.attributes[k].array?.byteLength || 0;
+      if (g.index) b += g.index.array.byteLength;
+    }
+    if (o.isInstancedMesh) b += o.instanceMatrix.array.byteLength + (o.instanceColor ? o.instanceColor.array.byteLength : 0);
+  });
+  obj.userData.__bytes = b;
+  return b;
 }
 
 /** Dispose geometries under obj unless flagged shared (geometry.userData.shared). */

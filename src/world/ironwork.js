@@ -64,7 +64,7 @@ const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 
 const WHITE = [1, 1, 1];
 // instance families (constant keys and options: one lookup per family and chunk)
 const CORBEL_KEYS = ['corbel0', 'corbel1'], PLANT_KEYS = ['plant0', 'plant1'];
-const CARVE = { cls: 'carve' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
+const PLANT_OPTS = { cls: 'plant' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
 const BAY_OPTS = { cls: 'rail', radius: 0.8, angle: true, thin: true }, POST_OPTS = { cls: 'post', radius: 1.2, thin: true };
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
 const DISH_DIR = new THREE.Vector3(-0.55, 0.64, 0.53).normalize();
@@ -303,8 +303,26 @@ const ironwork = {
       stains: strip(this.amats.stain, ['normal', 'uv'], 'stains', { vCap: K, iCap: 2 * K }),
       thin: strip(this.stoneMat, [], 'thinShadow', { shadowOnly: true, thin: true, instanceColor: true, vCap: 112 * K, iCap: 512 * K }),
     });
+    // instance pools of every family and the flags: created now (empty), so the start-up
+    // compile covers their programs instead of the first frame
     this.pools = new Map();
+    for (const f of this.families()) this.poolOf(f);
     this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root, app.scene);
+  },
+
+  /** Every instance family the builds add to: {key, levels, material, opts}. */
+  families() {
+    const G = this.geo, M = this.mats, A = this.att, out = [];
+    DESIGNS.forEach((d, i) => out.push(
+      { key: `bay${i}`, levels: G.bay[i], material: M.iron, opts: BAY_OPTS },
+      { key: `bay${i}p`, levels: G.bay[i], material: M.paint, opts: BAY_OPTS }));
+    out.push({ key: 'post', levels: G.post, material: M.ironPost, opts: POST_OPTS });
+    out.push({ key: 'postp', levels: G.post, material: M.paintPost, opts: POST_OPTS });
+    CORBEL_KEYS.forEach((key, v) => out.push({ key, levels: G.corbel[v], material: this.stoneMat, opts: CORBEL_OPTS }));
+    out.push({ key: 'baluster', levels: G.baluster, material: this.stoneMat, opts: BALUSTER_OPTS });
+    PLANT_KEYS.forEach((key, k) => out.push({ key, levels: A.plants.levels[k], material: this.amats.plant, opts: PLANT_OPTS }));
+    for (const p of A.pooled.values()) out.push({ key: p.key, levels: p.levels, material: this.amats.parts, opts: p });
+    return out;
   },
 
   // ---------------------------------------------------------------- chunk jobs
@@ -484,6 +502,7 @@ const ironwork = {
   balcony(ctx, lot, plan, st, bal, index) {
     const { lod, inst } = ctx;
     const F = lot.frame.matrix;
+    inst.cluster(); // the balcony's instances are culled together
     const r = new RNG(hash2(lot.seed, 977 + index));
     const { y, slabT: T, depth: D, u0, u1 } = bal;
     const isStone = bal.railing === 'stone';
@@ -592,6 +611,7 @@ const ironwork = {
     const r = new RNG(hash2(lot.seed, 0x5eed));
     for (const o of plan.openings) {
       if (o.kind !== 'window') continue;
+      ctx.inst.cluster(); // each window's attachments are culled together
       if (o.ac) {
         // under one side of the window, clear of the sill and its corbels; where the unit
         // or its brackets reach a string course it stands off the wall in front of it
@@ -639,7 +659,7 @@ const ironwork = {
   /** Instanced geranium (kind 0 pot, 1 planter): full and light versions per instance. */
   plant(ctx, kind, m, tint) {
     const P = this.att.plants;
-    ctx.inst.add(PLANT_KEYS[kind], P.levels[kind], this.amats.plant, m, tint, CARVE);
+    ctx.inst.add(PLANT_KEYS[kind], P.levels[kind], this.amats.plant, m, tint, PLANT_OPTS);
   },
 
   /** A part into the merged parts mesh (or its instance pool), and its stand-in into the
@@ -849,7 +869,7 @@ const ironwork = {
     const carve = (0.01 * px) / 0.6; // what the light levels leave out (~1 cm) is under 0.6 px
     // planter hook straps (2.6 cm) and AC pipes (3.6 cm) go once they are under a pixel
     return {
-      rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity],
+      rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity], plant: [carve, Infinity],
       strap: [0.026 * px], ac: [0.036 * px, Infinity],
     };
   },

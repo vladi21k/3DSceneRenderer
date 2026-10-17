@@ -63,3 +63,34 @@ export function noise2(x, y, seed = 0) {
   const a = h(ix, iy), b = h(ix + 1, iy), c = h(ix, iy + 1), d = h(ix + 1, iy + 1);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
+
+const _pm = (i, n) => ((i % n) + n) % n;
+
+/** 1D value noise in [-1,1] that repeats every `period` lattice cells (period: integer ≥ 1). */
+export function noise1p(x, period, seed = 0) {
+  const i = Math.floor(x), f = x - i;
+  const a = (hash2(_pm(i, period), seed) / 4294967296) * 2 - 1;
+  const b = (hash2(_pm(i + 1, period), seed) / 4294967296) * 2 - 1;
+  const u = f * f * (3 - 2 * f);
+  return a + (b - a) * u;
+}
+
+/** 2D value noise in [-1,1], periodic in x with `periodX` lattice cells. */
+export function noise2p(x, y, periodX, seed = 0) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const h = (a, b) => (hash2(hash2(_pm(a, periodX), b), seed) / 4294967296) * 2 - 1;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = h(ix, iy), b = h(ix + 1, iy), c = h(ix, iy + 1), d = h(ix + 1, iy + 1);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+
+/** Periodic helpers for quantities along the closed route: wavelength is adjusted so a
+ *  whole number of cells fits the loop length L (no seam where s wraps). */
+export function loopNoise1(s, L, wavelength, seed = 0) {
+  const cells = Math.max(1, Math.round(L / wavelength));
+  return noise1p((s / L) * cells, cells, seed);
+}
+export function loopNoise2(s, y, L, wavelength, yScale, seed = 0) {
+  const cells = Math.max(1, Math.round(L / wavelength));
+  return noise2p((s / L) * cells, y / yScale, cells, seed);
+}
