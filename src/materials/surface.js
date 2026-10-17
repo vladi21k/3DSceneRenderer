@@ -3,40 +3,48 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 
 // Runtime shading for library materials (patched MeshStandard / MeshPhysical).
 //
-// Only two defines change the code, so every textured library material shares one
-// program per three.js variant (vertex colours, side, physical…):
-//   SURF        baked albedo(+roughness) and surface(normal.xy, moment, ao) maps, UVs in metres
-//   SURF_GLASS  thin glass: reflections are not attenuated by opacity (premultiplied blend)
-// Everything else is switched by uniforms (coherent per draw, so the branches are free):
-//   row layout     analytic rows/segments: random per-row u shift (no 2D repetition),
-//                  per-cell / per-row colour + roughness variation (the cell tint is
-//                  box-filtered over the pixel footprint, so it survives at distance),
-//                  grazing-angle joint masking, random irregular spots (chewing gum)
-//   detail map     high-frequency grain (fades out through its own mips); in dressing
-//                  mode the detail is chosen and rotated per block (chisel dressing)
-//   macro          large-scale tone / roughness variation and irregular stains
-//   weathering     soiled ledges and soffits, vertical drip streaks (world orientation)
-//   lanes          grime along the rails / worn track lanes (street ribbons, v = d)
-//   metal mask     surface.b is a metal mask instead of the normal moment
-//   swap           u/v swapped
-//   translucency   diffuse transmission for thin fabric and leaves (all light types)
-//   night          emissive scaled by U.uNight × emissive gain, optional rim falloff
-// Normal variance stored in the mips becomes roughness (specular anti-aliasing), and the
-// baked cavity AO also gives direct-light micro-shadowing.
+// The patch is assembled per feature set, so a program only carries the code its
+// materials can use. Program cache key 'sf7' + one letter per feature:
+//   S  surface maps: baked albedo(+roughness) and surface(normal.xy, moment or mask, ao),
+//      UVs in metres, macro variation and stains, specular anti-aliasing, baked AO and
+//      micro-shadowing. Alone ('lite': metals, paint, wood, fabric, glass…) the maps are
+//      plain tiling lookups.
+//   L  row layout: analytic rows/segments with a random per-row u shift (no 2D
+//      repetition), per-cell / per-row colour + roughness variation (the cell tint is
+//      box-filtered over the pixel footprint, so it survives at distance)
+//   J  grazing-angle joint masking (with L)
+//   P  random irregular spots inside some cells, e.g. chewing gum (with L)
+//   D  detail map: high-frequency grain that fades out through its own mips
+//   R  dressing (with L and D): the detail is chosen and rotated per block (chisel dressing)
+//   W  weathering: soiled ledges and soffits, vertical drip streaks (world orientation)
+//   K  lanes: grime along the rails / worn track lanes (street ribbons, v = d)
+//   A  (with K) lane offset d from the aLaneD vertex attribute instead of uv.y: set
+//      `laneAttr: true` on the material (materials.get(name, {laneAttr: true}))
+//   T  translucency: diffuse transmission for thin fabric and leaves (all light types)
+//   N  night emissive: scaled by U.uNight × emissive gain, optional rim falloff
+//   G  thin glass: reflections are not attenuated by opacity (premultiplied blend)
+// Features come in families (FAMILY below) so that materials drawn with the same three.js
+// variant share programs: 'stone' (stone, concrete, plaster, roof tiles), 'paving' and
+// 'lite'. Inside a program everything is switched by uniforms (coherent per draw, so the
+// branches are free). surface.b is the normal moment (its mip-mapped excess becomes
+// roughness), a metal mask or a paint coverage mask (chips show the baked undercoat /
+// bare wood instead of the paint colour).
 
-const PARS = /* glsl */ `
+const SURF_PARS = /* glsl */ `
+uniform vec4 sfFlags;    // metal mask, swap uv, paint mask, unused
+uniform vec4 sfTile;     // 1/W, 1/H, W, H (m)
+uniform vec4 sfMacro;    // freq1, freq2 (1/m), albedo amp, roughness amp
+uniform vec4 sfMacroAn;  // anisotropy of the two macro lookups
+uniform vec4 sfStain;    // amount, freq (1/m), threshold, unused
+uniform vec4 sfMisc;     // normal strength, ao strength, variance→roughness k, micro-shadow
+uniform float sfAOScale; // global scale of the baked AO (lowered when screen-space AO runs)
+uniform sampler2D sfMacroTex;
+`;
+
+const LAYOUT_PARS = /* glsl */ `
 ${HASH_GLSL}
 ${LAYOUT_GLSL}
-float sfMicroAO = 1.0;
-uniform vec4 sfFlags;    // metal mask, swap uv, night emissive, translucency
-uniform vec3 sfTrans;    // diffuse transmission colour (fraction of back-lit irradiance)
-uniform float sfNight;   // = U.uNight
-uniform float sfEmGain;  // global emissive gain
-uniform vec4 sfEmis;     // rim falloff (0 = flat), rim exponent
-uniform float sfAOScale; // global scale of the baked AO (lowered when screen-space AO runs)
-#ifdef SURF
-varying vec3 vSfWorld;
-uniform vec4 sfTile;     // 1/W, 1/H, W, H (m)
+uniform int sfOne;       // = 1: keeps the neighbour loop rolled (one copy of the tint code)
 uniform vec4 sfLay;      // rowH, rows (0 = no layout), segMin, segMax
 uniform vec4 sfLay2;     // jitter, seed, shiftRows, rowJoints
 uniform vec4 sfCell;     // value amp, hue amp, roughness amp, per-row share
@@ -45,20 +53,8 @@ uniform vec3 sfCellB;
 uniform vec4 sfCellOut;  // outlier family 1 multiplier rgb, total probability
 uniform vec3 sfCellOut2; // outlier families 2 and 3
 uniform vec3 sfCellOut3;
-uniform vec4 sfMacro;    // freq1, freq2 (1/m), albedo amp, roughness amp
-uniform vec4 sfMacroAn;  // anisotropy of the two macro lookups
-uniform vec4 sfDetail;   // freq (1/m, 0 = off), normal amp, albedo amp, roughness amp
-uniform vec4 sfDetail2;  // texels per detail tile, dressing share (0 = off), margin (m), faded variance
-uniform vec4 sfMisc;     // normal strength, ao strength, variance→roughness k, micro-shadow
-uniform vec4 sfSpots;    // probability per cell, radius (m), albedo mult, roughness
-uniform vec4 sfStain;    // amount, freq (1/m), threshold, unused
 uniform vec4 sfJoint;    // grazing joint masking amount, joint half width (m)
-uniform vec4 sfWeather;  // ledge soiling, streak amount, streak threshold, soffit soot
-uniform vec4 sfLanes;    // track offset, rail offset (m), rail grime, worn lane
-uniform sampler2D sfDetailTex;
-uniform sampler2D sfToolTex;
-uniform sampler2D sfMacroTex;
-mat2 sfDR = mat2(1.0);   // detail map rotation (dressing mode)
+uniform vec4 sfSpots;    // probability per cell, radius (m), albedo mult, roughness
 vec3 sfTintOf(uint h, float amp, float outliers) {
   float h0 = sfHf(h), h1 = sfHf(sfH(h + 1u)), h2 = sfHf(sfH(h + 2u)), h3 = sfHf(sfH(h + 3u)), h4 = sfHf(sfH(h + 4u));
   float v = 1.0 + amp * sfCell.x * (h0 * 2.0 - 1.0);
@@ -66,32 +62,68 @@ vec3 sfTintOf(uint h, float amp, float outliers) {
   vec3 o = h4 < 0.3334 ? sfCellOut.rgb : (h4 < 0.6667 ? sfCellOut2 : sfCellOut3);
   return mix(t, t * o, outliers * step(1.0 - sfCellOut.a, h3));
 }
-#endif
 `;
 
-const VERT_PARS = /* glsl */ `
-#ifdef SURF
+const DETAIL_PARS = /* glsl */ `
+uniform vec4 sfDetail;   // freq (1/m, 0 = off), normal amp, albedo amp, roughness amp
+uniform vec4 sfDetail2;  // texels per detail tile, dressing share (0 = off), margin (m), faded variance
+uniform sampler2D sfDetailTex;
+uniform sampler2D sfToolTex;
+mat2 sfDR = mat2(1.0);   // detail map rotation (dressing mode)
+`;
+
+const WEATHER_PARS = /* glsl */ `
 varying vec3 vSfWorld;
-#endif
+uniform vec4 sfWeather;  // ledge soiling, streak amount, streak threshold, soffit soot
 `;
 
-const VERT_WORLD = /* glsl */ `
-#ifdef SURF
-  {
-    vec4 sfWp = vec4( transformed, 1.0 );
-    #ifdef USE_BATCHING
-      sfWp = batchingMatrix * sfWp;
-    #endif
-    #ifdef USE_INSTANCING
-      sfWp = instanceMatrix * sfWp;
-    #endif
-    vSfWorld = ( modelMatrix * sfWp ).xyz;
-  }
-#endif
+const LANES_PARS = /* glsl */ `
+uniform vec4 sfLanes;    // track offset, rail offset (m), rail grime, worn lane
 `;
 
-const MAP = /* glsl */ `
-#ifdef SURF
+// plain tiling lookup (hardware derivatives)
+const MAP_PLAIN = /* glsl */ `
+  vec2 sfUv = sfFlags.y > 0.5 ? vMapUv.yx : vMapUv;
+  vec4 sfA = texture(map, sfUv * sfTile.xy);
+  vec4 sfS = texture(normalMap, sfUv * sfTile.xy);
+  vec3 sfAlb = sfA.rgb;
+  float sfRough = sfA.a;
+`;
+
+// Grazing-angle joint masking: seen at a low angle across a recessed joint, the near
+// arris hides it and the eye lands on the far stone. The footprint anisotropy tells
+// which way we look (along u hides head joints, along v hides bed joints).
+const MAP_JOINT = /* glsl */ `
+    if (sfJoint.x > 0.0) {
+      float ax = sfFoot.x / max(sfFoot.y, 1e-7);
+      float hU = smoothstep(1.6, 4.0, ax), hV = smoothstep(1.6, 4.0, 1.0 / ax);
+      float dU = min(cl.x, b1 - b0 - cl.x), dV = min(cl.y, rowH - cl.y);
+      float inU = (1.0 - smoothstep(sfJoint.y, sfJoint.y + sfFoot.x, dU)) * hU;
+      float inV = (1.0 - smoothstep(sfJoint.y, sfJoint.y + sfFoot.y, dV)) * hV * sfLay2.w;
+      if (inU >= inV) sfOff = vec2((cl.x < 0.5 * (b1 - b0) ? 1.0 : -1.0) * (sfJoint.y + sfFoot.x), 0.0);
+      else sfOff = vec2(0.0, (cl.y < 0.5 * rowH ? 1.0 : -1.0) * (sfJoint.y + sfFoot.y));
+      sfHide = sfJoint.x * max(inU, inV);
+    }
+`;
+
+// small random spots (chewing gum, drips) inside some cells: flattened blobs with a
+// ragged outline (radius modulated by macro noise sampled round a small circle)
+const MAP_SPOTS = /* glsl */ `
+    if (sfSpots.x > 0.0 && sfHf(sfH(sfCh + 9u)) < sfSpots.x) {
+      float rad = sfSpots.y * (0.6 + 0.8 * sfHf(sfH(sfCh + 12u)));
+      vec2 sp = rad * 1.4 + vec2(sfHf(sfH(sfCh + 10u)), sfHf(sfH(sfCh + 11u))) * max(sfCs - 2.8 * rad, vec2(0.0));
+      float ang = sfHf(sfH(sfCh + 13u)) * 6.2832;
+      vec2 dv = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * (cl - sp) * vec2(1.0, 1.3 + 0.6 * sfHf(sfH(sfCh + 14u)));
+      float dl = length(dv);
+      vec2 ro = vec2(sfHf(sfH(sfCh + 15u)), ang * 0.159);
+      float rr = rad * (0.6 + 0.8 * textureLod(sfMacroTex, dv / max(dl, 1e-6) * 0.07 + ro, 0.0).r);
+      float aa = max(sfFoot.x, sfFoot.y);
+      sfSpot = (1.0 - smoothstep(rr - aa, rr + aa, dl)) * (1.0 - smoothstep(0.4, 1.2, aa / rad));
+    }
+`;
+
+// row layout lookup: shifted rows need explicit gradients
+const mapLayout = (f) => /* glsl */ `
   vec2 sfUv = sfFlags.y > 0.5 ? vMapUv.yx : vMapUv;
   vec2 sfGx = dFdx(sfUv), sfGy = dFdy(sfUv);
   vec2 sfFoot = max(abs(sfGx), abs(sfGy));
@@ -127,47 +159,24 @@ const MAP = /* glsl */ `
     float hw = 0.75 * sfFoot.x;
     if (hw > 0.02 * (b1 - b0)) {
       float L = sfTile.z / float(n);
-      float bl = sfSegB(r, k - 1, n, L, sfLay2), br = sfSegB(r, k + 2, n, L, sfLay2);
       float x0 = lx - hw, x1 = lx + hw;
-      float wl = max(0.0, min(x1, b0) - max(x0, bl));
-      float wc = max(0.0, min(x1, b1) - max(x0, b0));
-      float wr = max(0.0, min(x1, br) - max(x0, b1));
-      float wo = max(0.0, 2.0 * hw - wl - wc - wr);
-      cellT = (cellT * wc + sfTintOf(sfH2(rg, gi - 1, cs), 1.0, 1.0) * wl
-             + sfTintOf(sfH2(rg, gi + 1, cs), 1.0, 1.0) * wr + vec3(wo)) / (2.0 * hw);
+      float ws = max(0.0, min(x1, b1) - max(x0, b0));
+      vec3 acc = cellT * ws;
+      for (int j = -sfOne; j <= sfOne; j += 2) {
+        float lo = j < 0 ? sfSegB(r, k - 1, n, L, sfLay2) : b1;
+        float hi = j < 0 ? b0 : sfSegB(r, k + 2, n, L, sfLay2);
+        float wj = max(0.0, min(x1, hi) - max(x0, lo));
+        acc += sfTintOf(sfH2(rg, gi + j, cs), 1.0, 1.0) * wj;
+        ws += wj;
+      }
+      cellT = (acc + vec3(max(0.0, 2.0 * hw - ws))) / (2.0 * hw);
     }
     sfTint = mix(vec3(1.0), sfTintOf(rh, sfCell.w, 0.0) * cellT, fRow);
     sfRoughMul = 1.0 + sfCell.z * (sfHf(sfH(sfCh + 5u)) * 2.0 - 1.0) * fSeg;
     vec2 cl = vec2(lx - b0, sfUv.y - rgF * rowH);
     sfCl = cl;
     sfCs = vec2(b1 - b0, rowH);
-    // Grazing-angle joint masking: seen at a low angle across a recessed joint, the near
-    // arris hides it and the eye lands on the far stone. The footprint anisotropy tells
-    // which way we look (along u hides head joints, along v hides bed joints).
-    if (sfJoint.x > 0.0) {
-      float ax = sfFoot.x / max(sfFoot.y, 1e-7);
-      float hU = smoothstep(1.6, 4.0, ax), hV = smoothstep(1.6, 4.0, 1.0 / ax);
-      float dU = min(cl.x, b1 - b0 - cl.x), dV = min(cl.y, rowH - cl.y);
-      float inU = (1.0 - smoothstep(sfJoint.y, sfJoint.y + sfFoot.x, dU)) * hU;
-      float inV = (1.0 - smoothstep(sfJoint.y, sfJoint.y + sfFoot.y, dV)) * hV * sfLay2.w;
-      if (inU >= inV) sfOff = vec2((cl.x < 0.5 * (b1 - b0) ? 1.0 : -1.0) * (sfJoint.y + sfFoot.x), 0.0);
-      else sfOff = vec2(0.0, (cl.y < 0.5 * rowH ? 1.0 : -1.0) * (sfJoint.y + sfFoot.y));
-      sfHide = sfJoint.x * max(inU, inV);
-    }
-    // small random spots (chewing gum, drips) inside some cells: flattened, ragged blobs
-    if (sfSpots.x > 0.0 && sfHf(sfH(sfCh + 9u)) < sfSpots.x) {
-      float rad = sfSpots.y * (0.6 + 0.8 * sfHf(sfH(sfCh + 12u)));
-      vec2 sp = rad * 1.4 + vec2(sfHf(sfH(sfCh + 10u)), sfHf(sfH(sfCh + 11u))) * max(sfCs - 2.8 * rad, vec2(0.0));
-      vec2 dv = cl - sp;
-      float ang = sfHf(sfH(sfCh + 13u)) * 6.2832;
-      dv = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * dv * vec2(1.0, 1.3 + 0.6 * sfHf(sfH(sfCh + 14u)));
-      float th = atan(dv.y, dv.x);
-      float ph = sfHf(sfH(sfCh + 15u)) * 6.2832;
-      float rr = rad * (1.0 + 0.22 * sin(3.0 * th + ph) + 0.12 * sin(5.0 * th + 2.0 * ph) + 0.06 * sin(9.0 * th - ph));
-      float aa = max(sfFoot.x, sfFoot.y);
-      sfSpot = (1.0 - smoothstep(rr - aa, rr + aa, length(dv))) * (1.0 - smoothstep(0.4, 1.2, aa / rad));
-    }
-  }
+${f.joint ? MAP_JOINT : ''}${f.spots ? MAP_SPOTS : ''}  }
   vec2 sfT = sfP * sfTile.xy;
   vec2 sfTx = sfGx * sfTile.xy, sfTy = sfGy * sfTile.xy;
   vec4 sfA = textureGrad(map, sfT, sfTx, sfTy);
@@ -179,17 +188,11 @@ const MAP = /* glsl */ `
   }
   vec3 sfAlb = sfA.rgb * sfTint;
   float sfRough = sfA.a * sfRoughMul;
-  float sfAO = sfS.a;
-  // detail grain: faded out (and not fetched) once a pixel covers many detail texels;
-  // its average normal variance is then kept as roughness. Dressing mode (stone): each
-  // block gets its own dressing (taltish comb strokes from the tool map, pecked or
-  // rubbed from the detail map), rotated per block, finer on the drafted margin.
-  vec4 sfD = vec4(0.5, 0.5, 0.0, 0.5);
-  float sfDw = 0.0;
-  if (sfDetail.x > 0.0) {
-    vec2 dq = sfP * sfDetail.x, dgx = sfGx * sfDetail.x, dgy = sfGy * sfDetail.x;
-    float dAmp = 1.0, dFar = 1.0;
-    bool dTool = false;
+`;
+
+// dressing: each block gets its own dressing (taltish comb strokes from the tool map,
+// pecked or rubbed from the detail map), rotated per block, finer on the drafted margin
+const MAP_DRESS = /* glsl */ `
     if (sfDetail2.y > 0.0 && sfLay.y > 0.5) {
       float hd = sfHf(sfH(sfCh + 21u)), ha = sfHf(sfH(sfCh + 22u));
       dTool = hd < sfDetail2.y;
@@ -207,16 +210,43 @@ const MAP = /* glsl */ `
       dAmp *= mix(0.3, 1.0, inner);
       dFar = mix(1.0, dFar, inner);
     }
-    sfDw = 1.0 - smoothstep(3.0, 12.0, min(sfFoot.x, sfFoot.y) * sfDetail.x * sfDetail2.x);
+`;
+
+// detail grain: faded out (and not fetched) once a pixel covers many detail texels; its
+// average normal variance is then kept as roughness
+const mapDetail = (f) => /* glsl */ `
+  vec4 sfD = vec4(0.5, 0.5, 0.0, 0.5);
+  float sfDw = 0.0;
+  if (sfDetail.x > 0.0) {
+    vec2 dq = sfP * sfDetail.x, dgx = sfGx * sfDetail.x, dgy = sfGy * sfDetail.x;
+    float dAmp = 1.0, dFar = 1.0;
+    bool dTool = false;
+${f.dress ? MAP_DRESS : ''}    sfDw = 1.0 - smoothstep(3.0, 12.0, min(sfFoot.x, sfFoot.y) * sfDetail.x * sfDetail2.x);
     sfAlb *= mix(1.0, dFar, 1.0 - sfDw);
     if (sfDw > 0.0) {
-      vec4 dt = dTool ? textureGrad(sfToolTex, dq, dgx, dgy) : textureGrad(sfDetailTex, dq, dgx, dgy);
+      vec4 dt = ${f.dress ? 'dTool ? textureGrad(sfToolTex, dq, dgx, dgy) : ' : ''}textureGrad(sfDetailTex, dq, dgx, dgy);
       sfD = mix(sfD, dt, sfDw * dAmp);
       float sfDa = sfD.a * 2.0 - 1.0;
       sfAlb *= 1.0 + sfDetail.z * sfDa;
       sfRough *= 1.0 - sfDetail.w * sfDa;
     }
   }
+`;
+
+// layout-free lookup with explicit footprint (detail without layout: smooth stone, render)
+const MAP_FOOT = /* glsl */ `
+  vec2 sfUv = sfFlags.y > 0.5 ? vMapUv.yx : vMapUv;
+  vec2 sfGx = dFdx(sfUv), sfGy = dFdy(sfUv);
+  vec2 sfFoot = max(abs(sfGx), abs(sfGy));
+  vec2 sfP = sfUv;
+  vec4 sfA = texture(map, sfUv * sfTile.xy);
+  vec4 sfS = texture(normalMap, sfUv * sfTile.xy);
+  vec3 sfAlb = sfA.rgb;
+  float sfRough = sfA.a;
+`;
+
+// large-scale tone / roughness variation and irregular stains (every surface material)
+const MAP_MACRO = /* glsl */ `
   if (sfMacro.z + sfMacro.w + sfStain.x > 0.0) {
     vec4 sfM1 = texture(sfMacroTex, sfUv * sfMacroAn.xy * sfMacro.x);
     vec4 sfM2 = texture(sfMacroTex, sfUv * sfMacroAn.zw * sfMacro.y + vec2(0.31, 0.67));
@@ -229,18 +259,25 @@ const MAP = /* glsl */ `
       sfRough = mix(sfRough, sfRough * 0.85, sfSt);
     }
   }
-  // street ribbons (v = lateral offset d): grime along the rails, lighter worn lanes
+`;
+
+// street ribbons: grime along the rails, lighter worn lanes (d = lateral route offset)
+const mapLanes = (attr) => /* glsl */ `
   if (sfLanes.z + sfLanes.w > 0.0) {
-    float sfLn = texture(sfMacroTex, vMapUv * vec2(0.11, 0.9)).g - 0.5;
-    float dT = abs(abs(vMapUv.y) - sfLanes.x);
+    float sfLd = ${attr ? 'vSfLaneD' : 'vMapUv.y'};
+    float sfLn = texture(sfMacroTex, vec2(vMapUv.x, sfLd) * vec2(0.11, 0.9)).g - 0.5;
+    float dT = abs(abs(sfLd) - sfLanes.x);
     float dR = abs(dT - sfLanes.y) + 0.05 * sfLn;
     float grime = 1.0 - smoothstep(0.05, 0.24, dR);
     float lane = 1.0 - smoothstep(0.18, 0.42, dT + 0.08 * sfLn);
     sfAlb *= (1.0 - sfLanes.z * grime) * (1.0 + sfLanes.w * lane);
     sfRough = max(sfRough - 0.08 * lane * step(0.001, sfLanes.w), 0.05);
   }
-  // weathering by world orientation: dust and soot on ledges, sheltered soffits dark,
-  // rain-washed vertical drip streaks on the walls
+`;
+
+// weathering by world orientation: dust and soot on ledges, sheltered soffits dark,
+// rain-washed vertical drip streaks on the walls
+const MAP_WEATHER = /* glsl */ `
   if (sfWeather.x + sfWeather.y + sfWeather.w > 0.0) {
     #ifdef FLAT_SHADED
       vec3 sfVN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
@@ -269,56 +306,65 @@ const MAP = /* glsl */ `
     float sfVert = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
     sfAlb *= 1.0 - sfWeather.y * sfStreak * sfVert * (0.6 + 0.8 * sfMb);
   }
+`;
+
+const SPOTS_APPLY = /* glsl */ `
   sfAlb = mix(sfAlb, sfAlb * sfSpots.z, sfSpot);
   sfRough = mix(sfRough, sfSpots.w, sfSpot);
-  sfMicroAO = mix(1.0, sfAO, sfMisc.w * sfAOScale);
+`;
+
+const MAP_END = /* glsl */ `
+  sfMicroAO = mix(1.0, sfS.a, sfMisc.w * sfAOScale);
   diffuseColor.rgb *= sfAlb;
-#else
-  #include <map_fragment>
-#endif
+`;
+
+function mapChunk(f) {
+  let s = f.layout ? mapLayout(f) : f.detail ? MAP_FOOT : MAP_PLAIN;
+  if (f.detail) s += mapDetail(f);
+  s += MAP_MACRO;
+  if (f.lanes) s += mapLanes(f.laneAttr);
+  if (f.weather) s += MAP_WEATHER;
+  if (f.spots) s += SPOTS_APPLY;
+  return s + MAP_END;
+}
+
+// paint coverage mask: chips show the baked undercoat / bare wood, not the paint colour
+// (runs after the vertex colours are applied)
+const PAINT = /* glsl */ `
+  if (sfFlags.z > 0.5) diffuseColor.rgb = mix(sfAlb, diffuseColor.rgb, sfS.b);
 `;
 
 const ROUGH = /* glsl */ `
-#ifdef SURF
   float roughnessFactor = clamp(roughness * sfRough, 0.0, 1.0);
-#else
-  #include <roughnessmap_fragment>
-#endif
 `;
 
 const METAL = /* glsl */ `
-#ifdef SURF
   float metalnessFactor = metalness * mix(1.0, sfS.b, sfFlags.x);
-#else
-  #include <metalnessmap_fragment>
-#endif
 `;
 
-const NORMAL = /* glsl */ `
-#ifdef SURF
-  vec2 sfN = sfS.rg * 2.0 - 1.0;
-  float sfVar = max(sfS.b - dot(sfN, sfN) - 0.004, 0.0) * (1.0 - sfFlags.x);
+const NORMAL_DETAIL = /* glsl */ `
   if (sfDetail.x > 0.0) {
     vec2 sfDn = (sfD.rg * 2.0 - 1.0) * sfDR;   // back from the rotated detail frame
     float sfDv = sfDw > 0.0 ? max(sfD.b - dot(sfDn, sfDn) - 0.004, 0.0) : 0.0;
     sfVar += (sfDv + (1.0 - sfDw) * sfDetail2.w) * sfDetail.y * sfDetail.y;
     sfN += sfDn * sfDetail.y;
   }
-  if (sfFlags.y > 0.5) sfN = sfN.yx;
+`;
+
+const normalChunk = (f) => /* glsl */ `
+  vec2 sfN = sfS.rg * 2.0 - 1.0;
+  float sfVar = max(sfS.b - dot(sfN, sfN) - 0.004, 0.0) * (1.0 - max(sfFlags.x, sfFlags.z));
+${f.detail ? NORMAL_DETAIL : ''}  if (sfFlags.y > 0.5) sfN = sfN.yx;
   sfN *= normalScale * sfMisc.x;
   sfVar *= sfMisc.x * sfMisc.x * normalScale.x * normalScale.x;
   normal = normalize(tbn * vec3(sfN, sqrt(max(1.0 - dot(sfN, sfN), 0.0))));
   // normal variance hidden in the mips becomes roughness (specular anti-aliasing)
   float sfA2 = roughnessFactor * roughnessFactor;
   roughnessFactor = min(sqrt(sqrt(sfA2 * sfA2 + sfMisc.z * sfVar)), 1.0);
-#else
-  #include <normal_fragment_maps>
-#endif
 `;
 
 const AO = /* glsl */ `
-#ifdef SURF
-  float ambientOcclusion = mix(1.0, sfAO, sfMisc.y * sfAOScale);
+  float ambientOcclusion = mix(1.0, sfS.a, sfMisc.y * sfAOScale);
   reflectedLight.indirectDiffuse *= ambientOcclusion;
   #if defined( USE_CLEARCOAT )
     clearcoatSpecularIndirect *= ambientOcclusion;
@@ -330,21 +376,16 @@ const AO = /* glsl */ `
     float sfDotNV = saturate( dot( geometryNormal, geometryViewDir ) );
     reflectedLight.indirectSpecular *= computeSpecularOcclusion( sfDotNV, ambientOcclusion, material.roughness );
   #endif
-#else
-  #include <aomap_fragment>
-#endif
 `;
 
 // direct light: micro-shadowing from the baked cavity AO, plus thin-surface translucency
-const LIGHT_PARS = /* glsl */ `
+const lightPars = (f) => /* glsl */ `
 void RE_Direct_Surf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
   IncidentLight sfL = directLight;
   float sfNL = dot( geometryNormal, directLight.direction );
-  sfL.color *= saturate( abs( sfNL ) + 2.0 * sfMicroAO * sfMicroAO - 1.0 );
+  ${f.surf ? 'sfL.color *= saturate( abs( sfNL ) + 2.0 * sfMicroAO * sfMicroAO - 1.0 );' : ''}
   RE_Direct_Physical( sfL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
-  if ( sfFlags.w > 0.0 ) {
-    reflectedLight.directDiffuse += saturate( - sfNL ) * directLight.color * BRDF_Lambert( material.diffuseContribution ) * sfTrans;
-  }
+  ${f.trans ? 'reflectedLight.directDiffuse += saturate( - sfNL ) * directLight.color * BRDF_Lambert( material.diffuseContribution ) * sfTrans;' : ''}
 }
 #undef RE_Direct
 #define RE_Direct RE_Direct_Surf
@@ -354,47 +395,82 @@ void RE_Direct_Surf( const in IncidentLight directLight, const in vec3 geometryP
 // lamp and falls off towards the silhouette
 const EMISSIVE = /* glsl */ `
 #include <emissivemap_fragment>
-totalEmissiveRadiance *= mix( 1.0, sfEmGain * smoothstep( 0.02, 0.85, sfNight ), sfFlags.z );
+totalEmissiveRadiance *= sfEmGain * smoothstep( 0.02, 0.85, sfNight );
 if ( sfEmis.x > 0.0 ) {
   float sfRim = pow( saturate( dot( normal, normalize( vViewPosition ) ) ), sfEmis.y );
   totalEmissiveRadiance *= mix( 1.0 - sfEmis.x, 1.0, sfRim );
 }
 `;
 
-const OPAQUE = /* glsl */ `
-#ifdef SURF_GLASS
+const OPAQUE_GLASS = /* glsl */ `
   float sfNV = saturate( dot( normal, normalize( vViewPosition ) ) );
   float sfFr = 0.04 + 0.96 * pow( 1.0 - sfNV, 5.0 );
   gl_FragColor = vec4( totalSpecular + totalDiffuse * diffuseColor.a + totalEmissiveRadiance, clamp( diffuseColor.a + ( 1.0 - diffuseColor.a ) * sfFr, 0.0, 1.0 ) );
-#else
-  #include <opaque_fragment>
-#endif
 `;
 
-const PREMUL = /* glsl */ `
-#ifndef SURF_GLASS
-  #include <premultiplied_alpha_fragment>
-#endif
-`;
-
-function patchFragment(src) {
-  return src
-    .replace('#include <common>', '#include <common>\n' + PARS)
-    .replace('#include <map_fragment>', MAP)
-    .replace('#include <roughnessmap_fragment>', ROUGH)
-    .replace('#include <metalnessmap_fragment>', METAL)
-    .replace('#include <normal_fragment_maps>', NORMAL)
-    .replace('#include <aomap_fragment>', AO)
-    .replace('#include <lights_physical_pars_fragment>', '#include <lights_physical_pars_fragment>\n' + LIGHT_PARS)
-    .replace('#include <emissivemap_fragment>', EMISSIVE)
-    .replace('#include <opaque_fragment>', OPAQUE)
-    .replace('#include <premultiplied_alpha_fragment>', PREMUL);
+function fragPars(f) {
+  let s = '\nfloat sfMicroAO = 1.0;\n';
+  if (f.trans) s += 'uniform vec3 sfTrans;    // diffuse transmission colour (fraction of back-lit irradiance)\n';
+  if (f.night) s += 'uniform float sfNight;   // = U.uNight\nuniform float sfEmGain;  // global emissive gain\nuniform vec4 sfEmis;     // rim falloff (0 = flat), rim exponent\n';
+  if (f.surf) s += SURF_PARS;
+  if (f.layout) s += LAYOUT_PARS;
+  if (f.detail) s += DETAIL_PARS;
+  if (f.weather) s += WEATHER_PARS;
+  if (f.lanes) s += LANES_PARS + (f.laneAttr ? 'varying float vSfLaneD;\n' : '');
+  return s;
 }
 
-function patchVertex(src) {
+function patchFragment(src, f) {
+  let s = src.replace('#include <common>', '#include <common>\n' + fragPars(f));
+  if (f.surf) {
+    s = s
+      .replace('#include <map_fragment>', mapChunk(f))
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + PAINT)
+      .replace('#include <roughnessmap_fragment>', ROUGH)
+      .replace('#include <metalnessmap_fragment>', METAL)
+      .replace('#include <normal_fragment_maps>', normalChunk(f))
+      .replace('#include <aomap_fragment>', AO);
+  }
+  if (f.surf || f.trans) s = s.replace('#include <lights_physical_pars_fragment>', '#include <lights_physical_pars_fragment>\n' + lightPars(f));
+  if (f.night) s = s.replace('#include <emissivemap_fragment>', EMISSIVE);
+  if (f.glass) s = s.replace('#include <opaque_fragment>', OPAQUE_GLASS).replace('#include <premultiplied_alpha_fragment>', '');
+  return s;
+}
+
+function patchVertex(src, f) {
+  if (!f.weather && !f.laneAttr) return src;
+  const pars = (f.weather ? 'varying vec3 vSfWorld;\n' : '') + (f.laneAttr ? 'attribute float aLaneD;\nvarying float vSfLaneD;\n' : '');
+  const world = /* glsl */ `
+  {
+    vec4 sfWp = vec4( transformed, 1.0 );
+    #ifdef USE_BATCHING
+      sfWp = batchingMatrix * sfWp;
+    #endif
+    #ifdef USE_INSTANCING
+      sfWp = instanceMatrix * sfWp;
+    #endif
+    vSfWorld = ( modelMatrix * sfWp ).xyz;
+  }
+`;
   return src
-    .replace('#include <common>', '#include <common>\n' + VERT_PARS)
-    .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + VERT_WORLD);
+    .replace('#include <common>', '#include <common>\n' + pars)
+    .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + (f.weather ? world : '') + (f.laneAttr ? '  vSfLaneD = aLaneD;\n' : ''));
+}
+
+// feature families: materials drawn with the same three.js variant share a program
+// when they share a family, so families are few and broad
+export const FAMILY = {
+  lite: '',
+  stone: 'LJDRW',      // stone, concrete, render, roof tiles
+  paving: 'LJPDK',     // setts, slabs, bands, platforms
+};
+
+/** Feature family of a library definition: explicit `fx`, else from what it uses. */
+export function familyOf(def, recipe) {
+  if (def.fx) return def.fx;
+  const s = def.surf || {};
+  if (s.lanes || s.spots) return 'paving';
+  return recipe?.layout || s.detail || s.weather ? 'stone' : 'lite';
 }
 
 const v4 = (a = [0, 0, 0, 0]) => new THREE.Vector4(...a);
@@ -410,7 +486,7 @@ function outliers(out) {
 
 /**
  * Uniform set for one material.
- *   cfg     library `surf` settings, def = library definition (night / trans flags)
+ *   cfg     library `surf` settings, def = library definition
  *   t       baked texture entry {albedo, surface, recipe} or null
  *   shared  {textures, detail, macro, night, gain, aoScale}
  */
@@ -433,7 +509,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
   const toolTex = (d?.tool && shared.textures.get(d.tool)?.surface) || null;
   const [o1, o2, o3, op] = outliers(c.out);
   return {
-    sfFlags: { value: v4([r?.metalMask ? 1 : 0, cfg.swap ? 1 : 0, def.night ? 1 : 0, cfg.trans ? 1 : 0]) },
+    sfFlags: { value: v4([(r?.mask === 'metal' || r?.metalMask) ? 1 : 0, cfg.swap ? 1 : 0, r?.mask === 'paint' ? 1 : 0, 0]) },
     sfTrans: { value: new THREE.Vector3(...(cfg.trans || [0, 0, 0])) },
     sfNight: shared.night,
     sfEmGain: shared.gain,
@@ -461,6 +537,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfDetailTex: { value: detailTex || null },
     sfToolTex: { value: toolTex || detailTex || null },
     sfMacroTex: { value: shared.macro || null },
+    sfOne: { value: 1 },
   };
 }
 
@@ -469,10 +546,11 @@ export const surfaceOf = new WeakMap();
 
 /**
  * Install the surface patch on a material (library materials, variants and clones).
+ *   sf = {textures, uniforms, family (FAMILY key), trans, night, glass}
  * The patch is self-contained: `onBeforeCompile` decides from the material it is called
- * on (`this`) whether the baked maps are attached, and injects SURF / SURF_GLASS itself.
- * So a module that copies our onBeforeCompile onto its own material (and chains its own
- * patch) gets the correct shading, and plain clone() keeps the patch too.
+ * on (`this`) whether the baked maps are attached and which features apply, so a module
+ * that copies our onBeforeCompile onto its own material (and chains its own patch) gets
+ * the correct shading, and plain clone() keeps the patch too.
  */
 export function applySurface(mat, sf) {
   surfaceOf.set(mat, sf);
@@ -480,18 +558,25 @@ export function applySurface(mat, sf) {
     mat.map = sf.textures.albedo;
     mat.normalMap = sf.textures.surface;
   }
-  const isSurf = (m) => !!(sf.textures && m && m.map === sf.textures.albedo && m.normalMap === sf.textures.surface);
+  const fam = FAMILY[sf.family] || '';
+  const features = (m) => {
+    const surf = !!(sf.textures && m && m.map === sf.textures.albedo && m.normalMap === sf.textures.surface);
+    const has = (c) => surf && fam.includes(c);
+    const f = {
+      surf, layout: has('L'), joint: has('J'), spots: has('P'), detail: has('D'), dress: has('R'), weather: has('W'), lanes: has('K'),
+      trans: !!sf.trans, night: !!sf.night, glass: surf && !!sf.glass,
+    };
+    f.laneAttr = f.lanes && !!m.laneAttr;
+    f.key = 'sf7' + (surf ? 'S' + fam : '') + (f.laneAttr ? 'A' : '') + (f.trans ? 'T' : '') + (f.night ? 'N' : '') + (f.glass ? 'G' : '');
+    return f;
+  };
   mat.onBeforeCompile = function (shader) {
-    const surf = isSurf(this || mat);
+    const f = features(this || mat);
     Object.assign(shader.uniforms, sf.uniforms);
-    const head = (surf ? '#define SURF\n' : '') + (surf && sf.glass ? '#define SURF_GLASS\n' : '');
-    shader.fragmentShader = head + patchFragment(shader.fragmentShader);
-    if (surf) shader.vertexShader = '#define SURF\n' + patchVertex(shader.vertexShader);
+    shader.fragmentShader = patchFragment(shader.fragmentShader, f);
+    shader.vertexShader = patchVertex(shader.vertexShader, f);
   };
-  mat.customProgramCacheKey = function () {
-    const surf = isSurf(this || mat);
-    return 'sf6' + (surf ? 'S' : '') + (surf && sf.glass ? 'G' : '');
-  };
+  mat.customProgramCacheKey = function () { return features(this || mat).key; };
   mat.clone = function () {
     const c = Object.getPrototypeOf(this).clone.call(this);
     applySurface(c, sf);

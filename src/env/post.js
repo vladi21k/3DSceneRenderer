@@ -167,6 +167,16 @@ const post = {
     this.prof = app.params.raw.get('prof') === '1' ? new SectionTimer(app.renderer.getContext()) : null;
     if (this.prof && app.gpuTimer) app.gpuTimer.ext = null;
     this.timings = this.prof ? this.prof.timings : null;
+    if (this.prof) {
+      // time the sun's shadow atlas separately from the scene pass that follows it
+      const sm = app.renderer.shadowMap, render = sm.render, prof = this.prof;
+      sm.render = function (lights, scene, camera) {
+        if (!lights.length || !prof.open || prof.open.name !== 'scene') return render.call(this, lights, scene, camera);
+        prof.begin('shadow');
+        render.call(this, lights, scene, camera);
+        prof.begin('scene');
+      };
+    }
 
     this.lumRT = [target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }),
       target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter })];
@@ -423,8 +433,8 @@ const post = {
     if (prof) {
       prof.end();
       const t = prof.timings;
-      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.dof || 0) + (t.pyramid || 0) + (t.final || 0);
-      t.total = t.post + (t.scene || 0);
+      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.final || 0);
+      t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.envmap || 0);
       app.perf.gpuMs = t.total;
     }
     this.firstFrame = false;

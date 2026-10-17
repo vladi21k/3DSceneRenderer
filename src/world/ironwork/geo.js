@@ -96,6 +96,82 @@ export class GeoWriter {
   }
 }
 
+/** Position-only indexed mesh writer (shadow casters: no normals, uvs or colours, and
+ *  vertices shared wherever the position is). Same interface as GeoWriter for the parts
+ *  that matter: setMatrix, v(x, y, z), tri, quad, reserve, reset. */
+export class PosWriter {
+  constructor(cap = 4096) {
+    this.n = 0; this.ni = 0;
+    this.P = new Float32Array(cap * 3);
+    this.I = new Uint32Array(cap * 3);
+    this.m = null; this._m = new Float32Array(16);
+  }
+  get count() { return this.n; }
+  reset() { this.n = 0; this.ni = 0; this.m = null; return this; }
+  setMatrix(m) {
+    if (!m) { this.m = null; return this; }
+    this._m.set(m.elements);
+    this.m = this._m;
+    return this;
+  }
+  reserve(k, t) {
+    if ((this.n + k) * 3 > this.P.length) { const b = new Float32Array(Math.max(this.P.length * 2, (this.n + k) * 3)); b.set(this.P); this.P = b; }
+    if (this.ni + t > this.I.length) { const b = new Uint32Array(Math.max(this.I.length * 2, this.ni + t)); b.set(this.I); this.I = b; }
+  }
+  v(x, y, z) {
+    if (this.n * 3 >= this.P.length) this.reserve(1, 0);
+    const i3 = this.n * 3, P = this.P, m = this.m;
+    if (m) {
+      P[i3] = m[0] * x + m[4] * y + m[8] * z + m[12];
+      P[i3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+      P[i3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+    } else { P[i3] = x; P[i3 + 1] = y; P[i3 + 2] = z; }
+    return this.n++;
+  }
+  tri(a, b, c) {
+    if (this.ni + 3 > this.I.length) this.reserve(0, 3);
+    const I = this.I; I[this.ni++] = a; I[this.ni++] = b; I[this.ni++] = c;
+  }
+  quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+}
+
+/** Position-only template {P, I, n} of a geometry or writer, with coincident vertices
+ *  welded (a shadow caster needs no split normals or seams). */
+export function posTemplate(src) {
+  const P = src.isBufferGeometry ? src.attributes.position.array : src.P;
+  const n = src.isBufferGeometry ? src.attributes.position.count : src.n;
+  const I = src.isBufferGeometry ? (src.index ? src.index.array : Uint32Array.from({ length: n }, (_, i) => i)) : src.I.subarray(0, src.ni);
+  const map = new Map(), remap = new Uint32Array(n), out = [];
+  for (let i = 0; i < n; i++) {
+    const key = `${Math.round(P[i * 3] * 1e4)},${Math.round(P[i * 3 + 1] * 1e4)},${Math.round(P[i * 3 + 2] * 1e4)}`;
+    let j = map.get(key);
+    if (j === undefined) { j = out.length / 3; map.set(key, j); out.push(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]); }
+    remap[i] = j;
+  }
+  const idx = [];
+  for (let i = 0; i < I.length; i += 3) {
+    const a = remap[I[i]], b = remap[I[i + 1]], c = remap[I[i + 2]];
+    if (a !== b && b !== c && a !== c) idx.push(a, b, c);
+  }
+  return { P: new Float32Array(out), I: new Uint32Array(idx), n: out.length / 3 };
+}
+
+/** Writes a position template into a PosWriter with `matrix` (THREE.Matrix4). */
+export function writePos(S, t, matrix) {
+  S.reserve(t.n, t.I.length);
+  const e = matrix.elements, P = t.P, SP = S.P, base = S.n;
+  for (let i = 0, o = base * 3; i < t.n * 3; i += 3, o += 3) {
+    const x = P[i], y = P[i + 1], z = P[i + 2];
+    SP[o] = e[0] * x + e[4] * y + e[8] * z + e[12];
+    SP[o + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
+    SP[o + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+  }
+  S.n += t.n;
+  const I = S.I, I0 = t.I;
+  for (let i = 0; i < I0.length; i++) I[S.ni + i] = base + I0[i];
+  S.ni += I0.length;
+}
+
 /** Resample a dense polyline: keep a point whenever the heading turned more than
  *  maxTurn radians or maxLen metres were travelled since the last kept point. */
 export function simplify(pts, maxTurn = 0.26, maxLen = 0.08) {
@@ -244,65 +320,99 @@ export function lathe(W, profile, segments = 16, { cx = 0, cy = 0, cz = 0, phase
   }
 }
 
+/** Plan frame of a path: segment normals (sn, 2 per segment), mitre directions and
+ *  scales at the points (mu, mw, ms), arc length (plen) and, per interior point, whether
+ *  it turns by less than `smoothTurn` radians (smooth). */
+function pathFrame(path, smoothTurn = 0) {
+  const n = path.length;
+  const sn = new Float32Array(Math.max(1, n - 1) * 2);
+  for (let i = 0; i < n - 1; i++) {
+    const du = path[i + 1][0] - path[i][0], dw = path[i + 1][1] - path[i][1], l = len2(du, dw) || 1;
+    sn[i * 2] = -dw / l; sn[i * 2 + 1] = du / l;
+  }
+  const mu = new Float32Array(n), mw = new Float32Array(n), ms = new Float32Array(n), plen = new Float32Array(n);
+  const smooth = new Uint8Array(n), cosT = Math.cos(smoothTurn);
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - 1) * 2, b = Math.min(n - 2, i) * 2;
+    let x = sn[a] + sn[b], z = sn[a + 1] + sn[b + 1];
+    const l = len2(x, z) || 1; x /= l; z /= l;
+    mu[i] = x; mw[i] = z; ms[i] = 1 / Math.max(0.3, x * sn[a] + z * sn[a + 1]);
+    if (i > 0) plen[i] = plen[i - 1] + len2(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+    smooth[i] = i > 0 && i < n - 1 && sn[a] * sn[b] + sn[a + 1] * sn[b + 1] > cosT ? 1 : 0;
+  }
+  return { n, sn, mu, mw, ms, plen, smooth };
+}
+
 /** Sweep a moulding profile along an open plan path (facade u, w plane).
  *  path: [[u, w], ...] traversed so the outside is on the left of travel when seen from
  *  above (n = (-tw, tu)). profile: [[o, v], ...] where o is the outward offset from the
  *  path (≤ 0 inside) and v the height, ordered from the top edge down to the soffit.
- *  shadeFn(o, v) returns an occlusion factor per vertex. */
-export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9 } = {}) {
-  const n = path.length, m = profile.length;
-  const segN = [];
-  for (let i = 0; i < n - 1; i++) {
-    const a = path[i], b = path[i + 1];
-    const du = b[0] - a[0], dw = b[1] - a[1], l = len2(du, dw) || 1;
-    segN.push([-dw / l, du / l]);
-  }
-  const mit = [];
-  for (let i = 0; i < n; i++) {
-    const A = segN[Math.max(0, i - 1)], B = segN[Math.min(n - 2, i)];
-    let mu = A[0] + B[0], mw = A[1] + B[1];
-    const l = len2(mu, mw) || 1; mu /= l; mw /= l;
-    mit.push([mu, mw, 1 / Math.max(0.3, mu * A[0] + mw * A[1])]);
-  }
-  // corners are hard: duplicate rings at interior path points (flat across the mitre)
-  const plen = [0];
-  for (let i = 1; i < n; i++) plen.push(plen[i - 1] + len2(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
-  // profile edge normals (per edge) in (o, v)
-  const en = [];
-  const vacc = [0];
+ *  shadeFn(o, v) returns an occlusion factor per profile point. Profile joints from
+ *  `smoothFrom` on are smooth (one shared vertex), the others hard; path corners turning
+ *  by less than `smoothTurn` radians (rounded corners) share their ring and shade
+ *  smoothly along the run, sharper corners are hard. */
+export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9, smoothTurn = 0.6 } = {}) {
+  const m = profile.length;
+  const { n, sn, mu, mw, ms, plen, smooth } = pathFrame(path, smoothTurn);
+  // profile edge normals in (o, v) and the distance along the profile (uv v)
+  const eo = new Float32Array(m - 1), ev = new Float32Array(m - 1), vacc = new Float32Array(m);
   for (let j = 0; j < m - 1; j++) {
-    const dO = profile[j + 1][0] - profile[j][0], dV = profile[j + 1][1] - profile[j][1];
-    const l = len2(dO, dV) || 1;
-    en.push([-dV / l, dO / l]);
-    vacc.push(vacc[j] + l);
+    const dO = profile[j + 1][0] - profile[j][0], dV = profile[j + 1][1] - profile[j][1], l = len2(dO, dV) || 1;
+    eo[j] = -dV / l; ev[j] = dO / l; vacc[j + 1] = vacc[j] + l;
+  }
+  // vertex slots across the profile (o, v, normal o, normal v, uv v, shade): one per
+  // smooth joint, two per hard joint; edge j runs from slot e0[j] to slot e1[j]
+  const S = [], e0 = new Int32Array(m - 1), e1 = new Int32Array(m - 1);
+  for (let j = 0; j < m; j++) {
+    const o = profile[j][0], v = profile[j][1], sh = shadeFn ? shadeFn(o, v) : 1;
+    if (j > 0 && j < m - 1 && j >= smoothFrom) {
+      let no = eo[j - 1] + eo[j], nv = ev[j - 1] + ev[j];
+      const l = len2(no, nv) || 1; no /= l; nv /= l;
+      e1[j - 1] = e0[j] = S.length / 6;
+      S.push(o, v, no, nv, vacc[j], sh);
+    } else {
+      if (j > 0) { e1[j - 1] = S.length / 6; S.push(o, v, eo[j - 1], ev[j - 1], vacc[j], sh); }
+      if (j < m - 1) { e0[j] = S.length / 6; S.push(o, v, eo[j], ev[j], vacc[j], sh); }
+    }
+  }
+  const ns = S.length / 6;
+  const ring = (i, nx, nz) => {
+    const base = W.count, px = path[i][0], pz = path[i][1], kx = mu[i] * ms[i], kz = mw[i] * ms[i], u = plen[i];
+    W.reserve(ns, 0);
+    for (let k = 0; k < ns * 6; k += 6) {
+      const o = S[k], no = S[k + 2];
+      W.v(px + kx * o, S[k + 1], pz + kz * o, nx * no, S[k + 3], nz * no, u, S[k + 4], S[k + 5]);
+    }
+    return base;
+  };
+  W.reserve(0, (n - 1) * (m - 1) * 6);
+  let prev = ring(0, sn[0], sn[1]);
+  for (let i = 0; i < n - 1; i++) {
+    const last = i + 1 === n - 1, sm = smooth[i + 1];
+    const end = sm ? ring(i + 1, mu[i + 1], mw[i + 1]) : ring(i + 1, sn[i * 2], sn[i * 2 + 1]);
+    for (let j = 0; j < m - 1; j++) W.quad(prev + e0[j], prev + e1[j], end + e1[j], end + e0[j]);
+    // a hard corner starts the next segment on a ring of its own (flat across the mitre)
+    prev = sm || last ? end : ring(i + 1, sn[(i + 1) * 2], sn[(i + 1) * 2 + 1]);
+  }
+}
+
+/** Position-only sweep of a closed or open profile along a path (shadow casters): one
+ *  ring per path point, same winding as sweepPath. Returns the ring base indices. */
+export function sweepPathPos(S, path, profile) {
+  const m = profile.length;
+  const { n, mu, mw, ms } = pathFrame(path);
+  S.reserve(n * m, (n - 1) * (m - 1) * 6);
+  const rings = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    rings[i] = S.count;
+    const px = path[i][0], pz = path[i][1], kx = mu[i] * ms[i], kz = mw[i] * ms[i];
+    for (let j = 0; j < m; j++) S.v(px + kx * profile[j][0], profile[j][1], pz + kz * profile[j][0]);
   }
   for (let i = 0; i < n - 1; i++) {
-    const segNorm = segN[i];
-    // two rings: at path i and i+1 for this segment (flat-shaded across segments)
-    const ringIdx = [[], []];
-    for (let k = 0; k < 2; k++) {
-      const pi = i + k, P = path[pi], M = mit[pi];
-      for (let j = 0; j < m - 1; j++) {
-        for (let e = 0; e < 2; e++) {
-          const [o, v] = profile[j + e];
-          // smooth profile normals for curved mouldings: average adjacent edges
-          let no = en[j][0], nv = en[j][1];
-          if (j + e > 0 && j + e < m - 1 && j + e >= smoothFrom) {
-            const a = en[j + e - 1], b = en[Math.min(m - 2, j + e)];
-            no = (a[0] + b[0]) / 2; nv = (a[1] + b[1]) / 2;
-            const l = len2(no, nv) || 1; no /= l; nv /= l;
-          }
-          const x = P[0] + M[0] * o * M[2], z = P[1] + M[1] * o * M[2];
-          const shade = shadeFn ? shadeFn(o, v) : 1;
-          ringIdx[k].push(W.v(x, v, z, segNorm[0] * no, nv, segNorm[1] * no, plen[pi], vacc[j + e], shade));
-        }
-      }
-    }
-    for (let j = 0; j < m - 1; j++) {
-      const a0 = ringIdx[0][j * 2], a1 = ringIdx[0][j * 2 + 1], b0 = ringIdx[1][j * 2], b1 = ringIdx[1][j * 2 + 1];
-      W.quad(a0, a1, b1, b0);
-    }
+    const a = rings[i], b = rings[i + 1];
+    for (let j = 0; j < m - 1; j++) S.quad(a + j, a + j + 1, b + j + 1, b + j);
   }
+  return rings;
 }
 
 /** Inset a plan path by distance o along its mitred normals (o < 0 moves inside). */

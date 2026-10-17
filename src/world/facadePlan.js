@@ -202,12 +202,89 @@ export function facadePlan(lot) {
   followSlope(plan);                       // ground-floor sills step down with the street
   for (const o of plan.openings) setArch(o); // o.rise / o.spring for every opening head
   if (plan.upper) for (const o of plan.upper.openings) setArch(o);
+  plan.relief = reliefOf(plan, ornament(plan, RNG.from(lot.seed, 'shell')));
   plan.returns = [];                       // street facades on the side-street returns of corner lots
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
   cornerCut(plan, lot);                    // some street corners are chamfered (an extra face)
+  for (const f of [plan, ...plan.returns, ...(plan.upper ? [plan.upper] : [])]) for (const o of f.openings) o.backDepth = backDepthOf(o);
   cache.set(lot.id, plan);
   return plan;
+}
+
+// ------------------------------------------------------------------ masonry relief
+// The building shell closes every opening with a dark box behind the infill plane,
+// `o.backDepth` metres deep (from w = −recess): room for recessed entrances and casements
+// swung open into the room.
+const backDepthOf = (o) => (o.kind === 'shop' || o.kind === 'door' ? 1.2 : 0.9);
+
+/**
+ * Building-only style choices of the masonry (surrounds, sills, arch rings, plinth,
+ * rustication, quoins, pilasters, rooftop...). Drawn from the stream
+ * RNG.from(lot.seed, 'shell'), which the shell generator continues after these draws.
+ */
+export function ornament(plan, rng) {
+  const era = plan.style.era;
+  return {
+    sw: rng.range(0.15, 0.22),                        // window surround width
+    sp: rng.range(0.03, 0.05),                        // surround projection
+    ring: rng.range(0.24, 0.32),                      // plain arch ring depth (no surround)
+    shopRing: rng.range(0.42, 0.56),                  // ground-floor arch voussoirs
+    shopRingP: rng.range(0.015, 0.035),
+    keystone: era !== 'modern' && rng.chance(0.75),
+    winHead: era === 'modern' ? 'plain' : rng.weighted([['lintel', 0.35], ['flatArch', 0.3], ['hood', 0.25], ['plain', 0.1]]),
+    shopHead: rng.weighted([['flatArch', 0.45], ['lintel', 0.55]]),
+    sillH: rng.range(0.1, 0.15), sillP: rng.range(0.06, 0.1),
+    sillCorbels: rng.chance(0.35),
+    ears: era !== 'modern' && rng.chance(0.35),        // crossettes: surround corners stepping out at the head
+    apron: rng.chance(0.3),                            // raised panel under each sill
+    doorSurround: rng.chance(0.7), doorHood: era !== 'modern' && rng.chance(0.55),
+    plinthH: rng.range(0.35, 0.8), plinthP: rng.range(0.04, 0.08),
+    rustH: rng.range(0.45, 0.6), rustC: rng.range(0.025, 0.04),
+    quoin: { long: rng.range(0.75, 0.95), short: rng.range(0.42, 0.55), proj: rng.range(0.02, 0.035) },
+    pilW: rng.range(0.42, 0.56), pilP: rng.range(0.06, 0.1),
+    modillions: era !== 'modern' && rng.chance(0.45), modSpacing: rng.range(0.55, 0.8),
+    headHouse: rng.chance(0.35), headU: rng.range(0.25, 0.75), headW: rng.range(0.35, 0.65),
+    dirt: rng.range(0.6, 1.3),
+  };
+}
+
+/**
+ * plan.relief: what the masonry puts on the wall face (metres; p = projection in front of
+ * the wall plane w = 0), so infill, signs and shutters can clear it:
+ *   surround {w, p}       smooth window surround (w 0: plain reveals); jambs u0 − w..u0, u1..u1 + w
+ *   doorSurround {w, p}   entrance door surround (w 0: none)
+ *   sill {h, p, ext}      window sill below o.y (h tall), overhanging the jambs by ext
+ *   ring {w, p, shopW, shopP}  arch ring stones above arched heads (keystones 3 cm prouder)
+ *   head {h, p}           flat heads (lintel or flat arch) above o.y + o.h; hoods add 0.15
+ *   rustic {h, joint, p}  rusticated ground floor: course height, V-joint depth, flush (p 0)
+ *   pier {w, p}           pilasters centred on the bay boundaries above the first string course
+ *   quoin {long, short, p}  corner blocks
+ *   plinth {h, p}         base course above the paving
+ *   groundP               the deepest relief on the ground floor (door hoods excepted)
+ *   doorHood              entrance hood on consoles (0.36 m proud, 0.7 m tall consoles)
+ * Missing features are null.
+ */
+function reliefOf(plan, orn) {
+  const st = plan.style;
+  const sw = st.surrounds ? orn.sw : 0, sp = st.surrounds ? orn.sp : 0;
+  const door = orn.doorSurround ? { w: orn.sw * 1.3, p: orn.sp } : { w: 0, p: 0 };
+  const quoin = st.quoins ? { long: orn.quoin.long, short: orn.quoin.short, p: orn.quoin.proj } : null;
+  const plinth = { h: orn.plinthH, p: orn.plinthP };
+  const keyP = orn.keystone ? 0.03 : 0;
+  return {
+    surround: { w: sw, p: sp },
+    doorSurround: door,
+    sill: { h: orn.sillH, p: sp + orn.sillP, ext: (sw || 0.06) + 0.07 },
+    ring: { w: sw ? sw * 1.3 : orn.ring, p: sw ? sp : 0.012, shopW: orn.shopRing, shopP: orn.shopRingP },
+    head: { h: plan.coursing ? Math.min(0.45, Math.max(0.26, plan.coursing.ch)) : 0.3, p: (sw ? sp : 0.012) + 0.004 },
+    rustic: st.rusticGround ? { h: orn.rustH, joint: orn.rustC, p: 0 } : null,
+    pier: st.pilasters && plan.floors.length > 2 ? { w: orn.pilW, p: orn.pilP } : null,
+    quoin,
+    plinth,
+    groundP: Math.max(plinth.p, quoin ? quoin.p : 0, orn.shopRingP + 0.03, 0.02 + keyP, door.p + keyP),
+    doorHood: !!orn.doorHood,
+  };
 }
 
 // ------------------------------------------------------------------ arches (shared geometry)
@@ -433,9 +510,13 @@ function returnPlan(lot, plan, end, cut = 0) {
   const back = [(end === 0 ? 0 : f.width) + du * depth, dw * depth];
   const up = f.up.clone();
   const matrix = f.matrix.clone().makeBasis(uDir, up, nDir).setPosition(origin);
-  const g = end === 0 ? plan.ground0 : plan.ground1;
+  // the paving along the return: the main street's at the corner, blending into the
+  // (level) side street (sideGround)
+  const gx = sideGround(lot, plan, end, far);
+  const groundAt = end === 0 ? (u) => gx(depth - u) : (u) => gx(cut + u);
   const width = depth - cut;
-  const frame = { origin, uDir, nDir, up, width, ground0: g + f.floorRef, ground1: g + f.floorRef, floorRef: f.floorRef, matrix };
+  const ga = groundAt(0), gb = groundAt(width);
+  const frame = { origin, uDir, nDir, up, width, ground0: ga + f.floorRef, ground1: gb + f.floorRef, floorRef: f.floorRef, matrix };
   // the street corner is at u = width for end 0 and u = 0 for end 1
   const cornerAtU1 = end === 0;
   const pierCorner = rng.range(1.1, 1.6), pierBack = rng.range(0.9, 1.4);
@@ -453,7 +534,7 @@ function returnPlan(lot, plan, end, cut = 0) {
     const isDoor = b.index === doorBay;
     const w = isDoor ? Math.min(1.5, b.w - 0.9) : Math.max(1.2, b.w - rng.range(0.7, 1.1));
     const top = isDoor ? 'flat' : plan.style.shopTop;
-    const sill = g + (isDoor ? 0.14 : 0.03);
+    const sill = Math.max(groundAt(b.uc - w / 2), groundAt(b.uc + w / 2)) + (isDoor ? 0.14 : 0.03);
     const head = isDoor ? Math.min(ground.h - 0.9, 3.2) : ground.h - rng.range(0.8, 1.1);
     const o = { id: `${id}:g${b.index}`, floor: 0, bay: b.index, uc: b.uc, w, y: sill, h: head - sill, top, kind: isDoor ? 'door' : 'shop',
       recess: rng.range(0.25, 0.4), awning: null, lit: rng.range(0.6, 1.0) };
@@ -475,10 +556,27 @@ function returnPlan(lot, plan, end, cut = 0) {
   }
   return {
     isReturn: true, end, lotId: lot.id, id, seed: lot.seed ^ (end ? 0x5bd1e995 : 0x27d4eb2f), frame, width, depth: plan.width,
-    groundAt: () => g, ground0: g, ground1: g, cornerAtU1,
+    groundAt, ground0: ga, ground1: gb, groundX: gx, cornerAtU1,
     back, dir: [du, dw], cut, // far end and direction (from the corner) in the front's (u, w) frame; chamfer leg
     floors: plan.floors, bays, pierL, pierR, openings, balconies: [], courses: plan.courses, cornice: plan.cornice, parapet: plan.parapet,
-    roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, totalHeight: plan.totalHeight,
+    roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, relief: plan.relief, totalHeight: plan.totalHeight,
+  };
+}
+
+/**
+ * Paving height (relative to the front's floorRef) along a corner return at distance x
+ * from the street corner: the main street's level at the corner, easing into the level
+ * side street over its first 12 m as the street mesh does (crossStreets: smooth(x / 12)).
+ * far: the first side lot's near end (sideLotStart), whose floorRef is the side street's.
+ */
+const SIDE_BLEND = 12;
+function sideGround(lot, plan, end, far) {
+  const g = end === 0 ? plan.ground0 : plan.ground1;
+  if (!far || !far.lot) return () => g;
+  const gs = far.lot.frame.floorRef - lot.frame.floorRef;
+  return (x) => {
+    const t = Math.min(1, Math.max(0, x / SIDE_BLEND));
+    return g + (gs - g) * t * t * (3 - 2 * t);
   };
 }
 
@@ -513,12 +611,16 @@ function cornerCut(plan, lot) {
     const nDir = new f.uDir.constructor().crossVectors(uDir, f.up).normalize();
     const origin = f.origin.clone().addScaledVector(f.uDir, S[0]).addScaledVector(f.nDir, S[1]);
     const matrix = f.matrix.clone().makeBasis(uDir, f.up, nDir).setPosition(origin);
-    const g = e ? plan.ground1 : plan.ground0;
-    const frame = { origin, uDir, nDir, up: f.up.clone(), width: L, ground0: g + f.floorRef, ground1: g + f.floorRef, floorRef: f.floorRef, matrix };
+    // paving: the front's at the corner end of the face, the return's at its far end
+    const gF = plan.groundAt(A[0]), gR = plan.returns[ri].groundX(cr);
+    const g0 = e ? gF : gR, g1 = e ? gR : gF;
+    const groundAt = (u) => g0 + (g1 - g0) * (u / L);
+    const frame = { origin, uDir, nDir, up: f.up.clone(), width: L, ground0: g0 + f.floorRef, ground1: g1 + f.floorRef, floorRef: f.floorRef, matrix };
     const id = `${lot.id}:c${e}`;
     const openings = [];
     const gf = plan.floors[0];
-    const so = { id: `${id}:g0`, floor: 0, bay: 0, uc: L / 2, w: Math.min(L - 0.9, 2.1), y: g + 0.03, h: gf.h - rng.range(0.8, 1.0) - (g + 0.03),
+    const sw = Math.min(L - 0.9, 2.1), sy = Math.max(groundAt(L / 2 - sw / 2), groundAt(L / 2 + sw / 2)) + 0.03;
+    const so = { id: `${id}:g0`, floor: 0, bay: 0, uc: L / 2, w: sw, y: sy, h: gf.h - rng.range(0.8, 1.0) - sy,
       top: plan.style.shopTop, kind: 'shop', recess: rng.range(0.25, 0.35), awning: null, lit: rng.range(0.6, 1.0) };
     setArch(so); openings.push(so);
     for (const fl of plan.floors) {
@@ -531,10 +633,10 @@ function cornerCut(plan, lot) {
     }
     const face = {
       isReturn: true, isCut: true, end: e, lotId: lot.id, id, seed: lot.seed ^ (e ? 0x3c6ef372 : 0x1b873593), frame, width: L, depth: plan.width,
-      groundAt: () => g, ground0: g, ground1: g, cornerAtU1: false, back: null, dir: null,
+      groundAt, ground0: g0, ground1: g1, cornerAtU1: false, back: null, dir: null,
       floors: plan.floors, bays: [{ index: 0, u0: 0.25, u1: L - 0.25, uc: L / 2, w: L - 0.5 }], pierL: 0.25, pierR: 0.25,
       openings, balconies: [], courses: plan.courses, cornice: plan.cornice, parapet: plan.parapet,
-      roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, totalHeight: plan.totalHeight,
+      roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, relief: plan.relief, totalHeight: plan.totalHeight,
     };
     plan.returns.push(face);
     plan.cuts.push({ end: e, c, cr, S, T, face });
@@ -562,7 +664,7 @@ function cornerCut(plan, lot) {
   }
 }
 
-/** World position (floor height ignored) of the near end of the first side-street lot at end e, or null. */
+/** Near end of the first side-street lot at end e: {x, z (world), lot}, or null. */
 function sideLotStart(lot, end, corner) {
   if (!layoutRef || !layoutRef.sideLots) return null;
   // u = 0 is the viewer-left end: s1 for right-hand lots, s0 for left-hand lots
@@ -576,7 +678,7 @@ function sideLotStart(lot, end, corner) {
       const x = sf.origin.x + sf.uDir.x * t, z = sf.origin.z + sf.uDir.z * t;
       const d = Math.hypot(x - corner.x, z - corner.z);
       // the near end lies roughly SIDE_START from the corner, the far end much further
-      if (Math.abs(d - SIDE_START) < bd) { bd = Math.abs(d - SIDE_START); best = { x, z }; }
+      if (Math.abs(d - SIDE_START) < bd) { bd = Math.abs(d - SIDE_START); best = { x, z, lot: sl }; }
     }
   }
   return best;

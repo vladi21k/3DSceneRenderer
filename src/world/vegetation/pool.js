@@ -15,16 +15,49 @@ import * as THREE from 'three';
 // A level change cross-fades over FADE_S: a temporary second instance keeps the old
 // geometry while both dissolve with complementary screen-space dither patterns (the
 // instance's batch colour alpha carries the fade, see vegMaterials.js).
+//
+// Shadow passes build their own draw list per cascade (shadowList): an instance casts
+// only where its shadow can reach the cascade's slice of the view (the light's cascade
+// frustum decides, so stale cascades that are not redrawn this frame cost nothing), at
+// no more detail than the cascade's texels can hold (SHADOW_LEVEL_TEXEL), and pools of
+// thin props stop casting in coarse cascades altogether (shadowMaxTexel).
 
 const LOD_PX = [380, 95];
 const HYST = 0.08;
 const FADE_S = 0.35;
+// cascade texel (m) above which shadows use at least detail level 1 / 2
+const SHADOW_LEVEL_TEXEL = [0.025, 0.07];
 
 const _c4 = new THREE.Vector4();
 const _m4 = new THREE.Matrix4();
+const _sph = new THREE.Sphere();
+const _fr = new THREE.Frustum();
+const _pm = new THREE.Matrix4();
+// stand-ins handed to the light's cascade frustum: one instance, or the whole pool
+const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+
+/** {frustum, texel} of a shadow camera: the light's own (slice-aware) cascade frustum when
+ *  it has one, else a plain frustum of the camera. Cached per camera. */
+const _cascades = new WeakMap();
+function cascadeOf(scene, cam) {
+  let c = _cascades.get(cam);
+  if (!c) {
+    c = { frustum: null, shadow: null };
+    for (const o of scene.children) {
+      const sh = o.isLight && o.castShadow && o.shadow;
+      if (!sh || !sh.getFrustum || !sh.getCamera) continue;
+      for (let i = 0, n = sh.getViewportCount(); i < n; i++) if (sh.getCamera(i) === cam) { c.frustum = sh.getFrustum(i); c.shadow = sh; }
+    }
+    _cascades.set(cam, c);
+  }
+  if (!c.frustum) c.plain = _fr.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, cam.reversedDepth);
+  c.texel = cam.isOrthographicCamera ? (cam.right - cam.left) / Math.max(1, c.shadow ? c.shadow.mapSize.x : 2048) : 0;
+  return c;
+}
 
 export class InstancePool {
-  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true } = {}) {
+  constructor(name, material, depthMaterial, geometries, capacity = 512, { castShadow = true, receiveShadow = true, sort = true, shadowMaxTexel = Infinity } = {}) {
     let vc = 0, ic = 0;
     for (const g of geometries) { vc += g.attributes.position.count; ic += g.index.count; }
     const mesh = new THREE.BatchedMesh(capacity, vc, ic, material);
@@ -36,6 +69,8 @@ export class InstancePool {
     mesh.perObjectFrustumCulled = true;
     mesh.sortObjects = sort;
     this.mesh = mesh;
+    this.shadowMaxTexel = shadowMaxTexel;
+    this.lodGids = new Int32Array(capacity * 3).fill(-1); // per instance: geometry ids [L0, L1, L2] or -1
     this.geomIds = geometries.map((g) => mesh.addGeometry(g));
     // Per-instance culling uses each geometry's bounding sphere, computed from its vertices.
     // Pad it for wind sway. three r186 caches the sphere in _geometryInfo (vendored, fixed).
@@ -48,8 +83,9 @@ export class InstancePool {
     });
   }
 
-  /** New hidden instance; color: THREE.Color (alpha reset to 1 = no fade). */
-  add(geomIndex, matrix, color) {
+  /** New hidden instance; color: THREE.Color (alpha reset to 1 = no fade). lods: the
+   *  geometry indices of its detail levels (shadow detail), or null for a fixed geometry. */
+  add(geomIndex, matrix, color, lods = null) {
     const m = this.mesh;
     if (m.instanceCount >= m.maxInstanceCount) m.setInstanceCount(Math.ceil(m.maxInstanceCount * 1.5));
     const id = m.addInstance(this.geomIds[geomIndex]);
@@ -57,17 +93,69 @@ export class InstancePool {
     _c4.set(color ? color.r : 1, color ? color.g : 1, color ? color.b : 1, 1);
     m.setColorAt(id, _c4);
     m.setVisibleAt(id, false);
+    this._setLods(id, lods);
     return id;
   }
 
-  /** Copy of an instance (same matrix and colour) with another geometry. */
+  /** Copy of an instance (same matrix, colour and levels) with another geometry. */
   clone(id, geomIndex) {
     const m = this.mesh;
     if (m.instanceCount >= m.maxInstanceCount) m.setInstanceCount(Math.ceil(m.maxInstanceCount * 1.5));
     const n = m.addInstance(this.geomIds[geomIndex]);
     m.setMatrixAt(n, m.getMatrixAt(id, _m4));
     m.setColorAt(n, m.getColorAt(id, _c4));
+    this._grow(n);
+    this.lodGids.copyWithin(n * 3, id * 3, id * 3 + 3);
     return n;
+  }
+
+  _grow(id) {
+    if (id * 3 + 3 <= this.lodGids.length) return;
+    const a = new Int32Array(Math.max(id * 3 + 3, this.lodGids.length * 2)).fill(-1);
+    a.set(this.lodGids);
+    this.lodGids = a;
+  }
+
+  _setLods(id, lods) {
+    this._grow(id);
+    for (let k = 0; k < 3; k++) this.lodGids[id * 3 + k] = lods ? this.geomIds[lods[Math.min(k, lods.length - 1)]] : -1;
+  }
+
+  /**
+   * Shadow pass draw list for one cascade (replaces BatchedMesh's own culling): instances
+   * whose shadow can reach the cascade, each at the coarsest of its current level and the
+   * level the cascade's texels can hold.
+   */
+  shadowList(scene, cam) {
+    const m = this.mesh, c = cascadeOf(scene, cam);
+    const info = m._instanceInfo, gInfo = m._geometryInfo, lod = this.lodGids;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const md = m._matricesTexture.image.data;
+    const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
+    const frustum = c.frustum || c.plain;
+    const minLv = c.texel > SHADOW_LEVEL_TEXEL[1] ? 2 : c.texel > SHADOW_LEVEL_TEXEL[0] ? 1 : 0;
+    let n = 0;
+    if (c.texel <= this.shadowMaxTexel) {
+      for (let i = 0, l = info.length; i < l; i++) {
+        const it = info[i];
+        if (!it.visible || !it.active) continue;
+        let gid = it.geometryIndex;
+        if (minLv && lod[i * 3] >= 0) {
+          const cur = gid === lod[i * 3] ? 0 : gid === lod[i * 3 + 1] ? 1 : 2;
+          gid = lod[i * 3 + Math.max(cur, minLv)];
+        }
+        _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_m4.fromArray(md, i * 16).premultiply(m.matrixWorld));
+        if (!frustum.intersectsObject(_one)) continue;
+        const g = gInfo[gid];
+        starts[n] = g.start * bpe;
+        counts[n] = g.count;
+        ind[n] = i;
+        n++;
+      }
+    }
+    m._indirectTexture.needsUpdate = true;
+    m._multiDrawCount = n;
+    m._multiDrawBytesPerElement = bpe;
   }
 
   setAlpha(id, a) {
@@ -99,10 +187,14 @@ export class VegetationPools {
   addPool(pool) {
     this.pools.push(pool);
     this.root.add(pool.mesh);
-    const self = this, mesh = pool.mesh;
+    const self = this, mesh = pool.mesh, scene = this.app.scene;
     const proto = THREE.BatchedMesh.prototype;
     mesh.onBeforeRender = function (...args) { self.sync(); return proto.onBeforeRender.apply(this, args); };
-    mesh.onBeforeShadow = function (...args) { self.sync(); return proto.onBeforeShadow.apply(this, args); };
+    mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self.sync(); pool.shadowList(scene, shadowCamera); };
+    // whole-pool test: the light's cascade frustum skips cascades it does not redraw this
+    // frame; any other frustum (the view) keeps the pool (instances are culled per pass)
+    mesh.frustumCulled = true;
+    mesh.intersectsFrustum = (f) => f.intersectsObject(_all);
     return pool;
   }
 
@@ -121,7 +213,7 @@ export class VegetationPools {
   add(rec, pool, lods, matrix, color, pos, size) {
     const fixed = typeof lods === 'number';
     const lod = fixed ? 0 : (this.forceLod ?? 2);
-    const id = pool.add(fixed ? lods : lods[lod], matrix, color);
+    const id = pool.add(fixed ? lods : lods[lod], matrix, color, fixed ? null : lods);
     rec.entries.push({ pool, id, lods, fixed, x: pos.x, y: pos.y + size * 0.5, z: pos.z, size, lod, fadeId: -1, fadeT0: 0 });
   }
 

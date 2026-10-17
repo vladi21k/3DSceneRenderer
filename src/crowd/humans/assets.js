@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 // Loads the figure meshes built by tools/blender/humans_build.py (humans.json + humans.bin)
 // into one BufferGeometry per base body and LOD. Attribute layout (see the builder):
-//   position f32x3 · aNrm i8x4 (normal, w = baked AO) · aBoneI u8x4 · aBoneW u8x4 (norm)
+//   position f32x3 or i16x3 quantised over a box ('i16q') · aNrm i8x4 (normal, w = baked AO) · aBoneI u8x4 · aBoneW u8x4 (norm)
 //   aMorph i8x4 (heavy-build delta / morphScale) · aBody u8x4 (region, part, aux0, aux1)
 //   aShape i8x4 (normal offsets of the face A / face B / older face / belly morphs / shapeScale)
 
@@ -21,9 +21,17 @@ export async function loadHumanAssets(baseUrl) {
     const lods = base.lods.map((L) => {
       const g = new THREE.InstancedBufferGeometry();
       for (const [key, a] of Object.entries(L.attributes)) {
-        const T = TYPES[a.type];
-        const arr = new T(buf, a.offset, L.count * a.size);
-        g.setAttribute(NAMES[key], new THREE.BufferAttribute(arr, a.size, !!a.normalized));
+        let arr;
+        if (a.type === 'i16q') {
+          // quantised positions: int16 per component over the box [min, min + range]
+          const q = new Int16Array(buf, a.offset, L.count * a.size);
+          arr = new Float32Array(q.length);
+          for (let i = 0; i < q.length; i++) {
+            const c = i % a.size;
+            arr[i] = a.min[c] + ((q[i] + 32767) / 65534) * a.range[c];
+          }
+        } else arr = new TYPES[a.type](buf, a.offset, L.count * a.size);
+        g.setAttribute(NAMES[key], new THREE.BufferAttribute(arr, a.size, !!a.normalized && a.type !== 'i16q'));
       }
       // scalar shape morphs (face A / B / old, belly) along the normal; older builds have none
       if (!g.attributes.aShape) g.setAttribute('aShape', new THREE.BufferAttribute(new Int8Array(L.count * 4), 4, true));

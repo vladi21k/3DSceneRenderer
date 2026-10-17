@@ -1,5 +1,5 @@
 import { RNG } from '../../core/rng.js';
-import { facadePlan } from '../facadePlan.js';
+import { facadePlan, ornament } from '../facadePlan.js';
 import { FaceShade, stoneStyle, trimColor, noise2, hash3 } from './shade.js';
 import { insetPolygon, FACES } from './mesh.js';
 import { wallField } from './wall.js';
@@ -9,7 +9,6 @@ import { courseProfile, plinthProfile, corniceProfile, dentils, modillions, quoi
 import { parapetProfile, balustrade, merlons, pitchedRoof, solarHeater, heaterRadius, sunYaw, waterTank, acUnit, antenna, headHouse, satelliteDish } from './roof.js';
 import { upperVolume, upperFootprint } from './upper.js';
 import { partyWalls } from './party.js';
-import { openingInfill } from './infill.js';
 
 // Masonry shell of one building lot, generated from its facade plan:
 // wall fields with real openings, reveals and dark closed interiors, arches with
@@ -30,33 +29,6 @@ export const DETAIL = {
   0: { lod: 0, archSeg: 14, voussoirs: true, bevel: true, interior: true, dentils: true, modillions: true, balusters: true, rustic: true, steps: true, fit: true, gridU: 1.6, gridV: 0.9, rooftop: true },
   1: { lod: 1, archSeg: 10, voussoirs: false, bevel: false, interior: false, dentils: false, modillions: false, balusters: false, rustic: false, steps: false, fit: false, gridU: 2.0, gridV: 2.4, rooftop: true },
 };
-
-/** Building-only style choices (own RNG stream, never shifts the shared plan). */
-function ornament(plan, rng) {
-  const era = plan.style.era;
-  return {
-    sw: rng.range(0.15, 0.22),                        // window surround width
-    sp: rng.range(0.03, 0.05),                        // surround projection
-    ring: rng.range(0.24, 0.32),                      // plain arch ring depth (no surround)
-    shopRing: rng.range(0.42, 0.56),                  // ground-floor arch voussoirs
-    shopRingP: rng.range(0.015, 0.035),
-    keystone: era !== 'modern' && rng.chance(0.75),
-    winHead: era === 'modern' ? 'plain' : rng.weighted([['lintel', 0.35], ['flatArch', 0.3], ['hood', 0.25], ['plain', 0.1]]),
-    shopHead: rng.weighted([['flatArch', 0.45], ['lintel', 0.55]]),
-    sillH: rng.range(0.1, 0.15), sillP: rng.range(0.06, 0.1),
-    sillCorbels: rng.chance(0.35),
-    ears: era !== 'modern' && rng.chance(0.35),        // crossettes: surround corners stepping out at the head
-    apron: rng.chance(0.3),                            // raised panel under each sill
-    doorSurround: rng.chance(0.7), doorHood: era !== 'modern' && rng.chance(0.55),
-    plinthH: rng.range(0.35, 0.8), plinthP: rng.range(0.04, 0.08),
-    rustH: rng.range(0.45, 0.6), rustC: rng.range(0.025, 0.04),
-    quoin: { long: rng.range(0.75, 0.95), short: rng.range(0.42, 0.55), proj: rng.range(0.02, 0.035) },
-    pilW: rng.range(0.42, 0.56), pilP: rng.range(0.06, 0.1),
-    modillions: era !== 'modern' && rng.chance(0.45), modSpacing: rng.range(0.55, 0.8),
-    headHouse: rng.chance(0.35), headU: rng.range(0.25, 0.75), headW: rng.range(0.35, 0.65),
-    dirt: rng.range(0.6, 1.3),
-  };
-}
 
 function ashlarUV(plan, meta, rng) {
   const ch = plan.coursing.ch;                         // a storey holds whole courses (facadePlan)
@@ -88,7 +60,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const plan = facadePlan(lot);
   const f = lot.frame, W = plan.width, D = plan.depth;
   const rng = RNG.from(lot.seed, 'shell');
-  const orn = ornament(plan, rng);
+  const orn = ornament(plan, rng);           // the same draws as plan.relief; the stream continues
   const { tint, uncleaned } = stoneStyle(plan, rng);
   const sillExt = (plan.style.surrounds ? orn.sw : 0.06) + 0.07;   // sill overhang beyond the jambs
   const uvA = ashlarUV(plan, metas.ashlar, rng);
@@ -98,10 +70,6 @@ export function* lotSteps(B, lot, ends, q, metas) {
     ashlar: B.sink('ashlar'), smooth: B.sink('smooth'), rough: B.sink('rough'), dark: B.sink('plaster'), paint: B.sink('plaster'),
     tile: B.sink('tile'), metal: B.sink(q.lod ? 'plaster' : 'metal'), // far: rooftop metal joins the plaster batch
   };
-  // buildings-only lots (side-street backdrops) carry their own glazing and joinery
-  const dress = !!lot.selfDressed;
-  if (dress) { sinks.glass = B.sink('glass'); sinks.frame = B.sink('frame'); }
-  const irng = RNG.from(lot.seed, 'infill');
   const cor = plan.cornice, par = plan.parapet;
   const vTop = cor.y + 0.06;
   const gMin = Math.min(plan.ground0, plan.ground1);
@@ -122,6 +90,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
   });
   /** Point `r` metres back from the front corner at end e (along that end's wall). */
   const pt = (e, r) => [E[e].P[0] + E[e].dir[0] * r, E[e].dir[1] * r];
+  /** u of end x's wall at depth w (< 0). */
+  const endU = (x, w) => x.P[0] + x.dir[0] * (w / Math.min(-0.2, x.dir[1]));
   /** The street corner at end e as path points (two where the corner is chamfered). */
   const cornerPts = (e) => (E[e].cut ? [E[e].cut.S, E[e].cut.T] : [[e ? W : 0, 0]]);
   const foot = [...cornerPts(0), ...cornerPts(1), E[1].back, E[0].back];   // clockwise in (u, w): faces up
@@ -155,7 +125,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
   for (const F of faces) {
     const face = F.face;
     B.frameFromLot(F.frame);
-    const fs = new FaceShade(face, tint, lot.seed + (F.main ? 0 : 977), { dirt: orn.dirt, uncleaned, sillExt });
+    const fs = new FaceShade(face, tint, lot.seed + (F.main ? 0 : 977), { dirt: orn.dirt, uncleaned, sillExt, sillH: orn.sillH });
     if (F.main) mainShade = fs;
     const fg = Math.min(face.groundAt(0), face.groundAt(face.width));
     const ops = face.openings.filter((o) => o.uc - o.w / 2 > 0.05 && o.uc + o.w / 2 < face.width - 0.05 && o.y + o.h < vTop - 0.05);
@@ -192,7 +162,6 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.frameFromLot(F.frame);
     for (let i = 0; i < ops.length; i++) {
       openingMasonry(ctx, face, ops[i]);
-      if (dress) openingInfill(ctx, face, ops[i], irng);
       if (i % 3 === 2) { B.mark('openings'); yield; B.frameFromLot(F.frame); }
     }
     B.mark('openings');
@@ -213,10 +182,13 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.mark('plinth');
     yield;
     B.frameFromLot(F.frame);
-    // backstop just behind the wall, in a mid stone tone: any sub-pixel crack in the
-    // wall mesh shows this instead of the sky
+    // backstop behind the wall and the openings' dark boxes, in a mid stone tone: any
+    // sub-pixel crack in the wall mesh shows this instead of the sky (kept inside the
+    // footprint where the ends turn back at an angle)
+    const wb = -BACKSTOP;
+    const [ba, bb] = F.main ? [Math.max(ctx.uMin, endU(E[0], wb)), Math.min(ctx.uMax, endU(E[1], wb))] : [0, face.width];
     B.shade = null; B.flat = [tint[0] * 0.45, tint[1] * 0.42, tint[2] * 0.38];
-    B.rectW(sinks.dark, ctx.uMin, ctx.uMax, fg - 0.35, vTop, -0.92, 1);
+    if (bb - ba > 0.1) B.rectW(sinks.dark, ba, bb, fg - 0.35, vTop, wb, 1);
     B.flat = [1, 1, 1];
   }
 
@@ -337,6 +309,9 @@ export function* lotSteps(B, lot, ends, q, metas) {
   }
   B.shade = null;
 }
+
+// the openings' dark boxes reach recess + backDepth (≤ 0.45 + 1.2) behind the wall face
+const BACKSTOP = 1.7;
 
 /**
  * Quoin column start (the first bed joint above the plinth or the rusticated ground

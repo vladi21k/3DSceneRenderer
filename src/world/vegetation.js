@@ -184,9 +184,9 @@ const vegetation = {
   },
 
   update(dt, app) {
-    // leaf coverage mode follows the post chain's scene target (MSAA or not)
+    // leaf coverage mode follows the post chain's scene target (its MSAA sample count, 0 = none)
     const post = app.post, rt = post && !post.disabled ? post.sceneRT : null;
-    this.mats.params.a2c.value = rt && rt.samples > 0 ? 1 : 0;
+    this.mats.params.a2c.value = rt && rt.samples > 0 ? rt.samples : 0;
   },
 
   dispose(obj) {

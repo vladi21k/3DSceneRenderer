@@ -1,18 +1,22 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { noise1 } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
-import { KIND, ST, TASK, LANE } from './agent.js';
+import { KIND, ST, TASK, LANE, MOB } from './agent.js';
 import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD } from './constants.js';
+import { thinkCycle, maybeMount } from './cyclist.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
 // entering shops, side streets, crossing the tracks, joining a platform, café seats,
 // chats. `think` runs about once a second per agent; `desired` gives the preferred
-// velocity every frame (steering adds avoidance on top).
+// velocity every frame (steering adds avoidance on top). Parents with a stroller and people
+// walking a bicycle keep to the sidewalks and the far half of the corridor and skip the
+// errands a stroller or a bicycle does not fit (café seats, doors, platforms); cyclists are
+// handled by cyclist.js.
 
 const CORR_EDGE = TRACK_ZONE_HALF + 0.38;   // where people wait before crossing the corridor (left side)
 const RIDE_EDGE = TRACK_ZONE_HALF + 1.1;    // ... and on the ride side: clear of the passing tram, outside the pole line
-/** |d| of the spot where people wait to cross, on `side`. */
-const crossEdge = (side) => (side > 0 ? RIDE_EDGE : CORR_EDGE);
+/** |d| of the spot where people wait to cross, on `side` (a stroller / bicycle a step further back). */
+const crossEdge = (side, a = null) => (side > 0 ? RIDE_EDGE : CORR_EDGE) + (a && a.mob ? 0.9 : 0);
 const UTURN_T = 1.35;                       // seconds for a turn-around while walking
 const PI = Math.PI;
 const len2 = (x, y) => Math.sqrt(x * x + y * y);
@@ -35,21 +39,23 @@ function tramLane(c, a, d) {
   const tram = c.tram;
   if (!tram.near(a)) return d;
   const pd = tram.passD;
+  // a stroller / bicycle keeps the berth with its whole footprint
+  const pdHi = pd + a.extLo, pdLo = pd + a.extHi;
   const dl = a.d - RIDE_D, tl = d - RIDE_D;
   // the lane lies across the ride track: walk on along this side until the tram has gone by
-  const across = (dl <= -BAND && tl > -pd) || (dl >= BAND && tl < pd);
-  if (!across && Math.abs(tl) >= pd) return d;
+  const across = (dl <= -BAND && tl > -pdLo) || (dl >= BAND && tl < pdHi);
+  if (!across && (tl >= pdHi || tl <= -pdLo)) return d;
   let hi = dl > BAND ? true : dl < -BAND ? false : d >= RIDE_D;
   if (hi && a.kind !== KIND.PASSENGER) {
     const st = c.map.stationAt(a.s) || c.map.stationAt(a.s + a.dir * 15);
     // beside a platform: behind it, up on it (caught at its edge), or between the tracks
     if (st) {
-      if (dl <= BAND) return RIDE_D - pd - a.laneF * 1.1;
-      if (a.platformOK || a.d < TRACK_ZONE_HALF + 0.8) return Math.max(RIDE_D + pd, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8;
+      if (dl <= BAND) return RIDE_D - pdLo - a.laneF * 1.1;
+      if (a.platformOK || a.d < TRACK_ZONE_HALF + 0.8) return Math.max(RIDE_D + pdHi, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8;
       return c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3;
     }
   }
-  return hi ? RIDE_D + pd + a.laneF * 0.35 : RIDE_D - pd - a.laneF * 1.1;
+  return hi ? RIDE_D + pdHi + a.laneF * 0.35 : RIDE_D - pdLo - a.laneF * 1.1;
 }
 
 function rawLane(c, a) {
@@ -79,7 +85,9 @@ function rawLane(c, a) {
     if (side < 0 && a.laneF < 0.45) return -(0.9 + a.laneF * 4.5);
     return side * (EDGE_LANE + 0.1 + lf * 0.45);
   }
-  return side * (tmpBand.lo + 0.3 + (w - 0.6) * lf);
+  // a stroller or a walked bicycle keeps clear of the benches and trunks along the tree line
+  const extra = a.mob ? Math.min(0.45, Math.max(0, w - 1.0)) : 0;
+  return side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra) * lf);
 }
 
 // ------------------------------------------------------------------ desired velocity
@@ -274,9 +282,9 @@ function clearSpot(c, s, d, r = 0.62) {
 }
 
 const CROSS_OFFSETS = [0, 1.3, -1.3, 2.6];
-function findCrossS(c, s, side) {
+function findCrossS(c, s, side, a = null) {
   for (const off of CROSS_OFFSETS) {
-    if (clearSpot(c, s + off, side * crossEdge(side))) return s + off;
+    if (clearSpot(c, s + off, side * crossEdge(side, a), a && a.mob ? 0.9 : 0.62)) return s + off;
   }
   return null;
 }
@@ -294,6 +302,7 @@ export function doorOf(c, o) {
 
 export function think(c, a) {
   const r = c.rng;
+  if (a.mob === MOB.CYCLE) { thinkCycle(c, a); return; }
   a.thinkT = r.range(0.7, 1.3);
   if (a.simple) { thinkFar(c, a); return; }
   switch (a.state) {
@@ -319,6 +328,7 @@ export function think(c, a) {
 /** Far away (a few pixels tall): only leaving the street beyond the populated range. */
 function thinkFar(c, a) {
   if (a.state !== ST.WALK || a.leader || a.task !== TASK.NONE || a.kind !== KIND.WALKER) return;
+  if (a.mob) { maybeMount(c, a); return; }
   if (a.s - c.camU < RANGE_AHEAD - 30 || a.dir < 0) return;
   const r = c.rng;
   const m = c.map.mouthAt(a.s + a.dir * 7, a.side);
@@ -340,6 +350,9 @@ function thinkFollower(c, a) {
 function thinkWalk(c, a) {
   const r = c.rng, map = c.map, side = a.side;
   if (a.uturnT > 0 || a.inDoor) return;
+  const mob = a.mob;
+  // walking a bicycle: back on it where the way is free
+  if (mob === MOB.WALKBIKE && maybeMount(c, a)) return;
   // waiting on the far side of the ride track for the tram to pass: no sidewalk errands yet
   const offSide = a.side > 0 ? a.d < RIDE_D + BAND : a.d > RIDE_D - BAND;
   if (a.lane !== LANE.CORR && !offSide) {
@@ -348,7 +361,7 @@ function thinkWalk(c, a) {
     const mine = map.mouthAt(look, side), other = map.mouthAt(look, -side);
     if (mine && mine !== a.mouth) {
       a.mouth = mine;
-      if (r.chance(0.28) && startSideOut(c, a, mine)) return;
+      if (r.chance(mob ? 0.2 : 0.28) && startSideOut(c, a, mine)) return;
       if (mine.side === 0 && r.chance(0.35) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.SIDE_OUT, mine)) return;
       if (r.chance(0.3) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.NONE, null)) return;
       if (r.chance(0.06)) { startUturn(c, a); return; }  // changed their mind at the corner
@@ -357,16 +370,17 @@ function thinkWalk(c, a) {
       if (r.chance(0.45) && startCross(c, a, c.unwrap(other.s) + r.range(-1, 1) * other.width * 0.3, r.chance(0.5) ? TASK.SIDE_OUT : TASK.NONE, other)) return;
     }
     if (a.lane === LANE.SIDE) {
-      if (r.chance(0.016) && startBrowse(c, a)) return;
-      if (r.chance(0.006) && startEnter(c, a)) return;
-      if (a.nFollow === 0 && r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
+      if (mob !== MOB.WALKBIKE && r.chance(0.016) && startBrowse(c, a)) return;
+      if (!mob && r.chance(0.006) && startEnter(c, a)) return;
+      if (!mob && a.nFollow === 0 && r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
       // drift over to the shop windows for a few steps, without stopping
       if (r.chance(0.02) && a.driftT < c.time) { a.driftT = c.time + r.range(3, 7); a.driftF = r.range(0.8, 0.97); a.lookGoal = (a.dir * side > 0 ? -1 : 1) * r.range(0.5, 1.0); }
     }
-    if (a.nFollow === 0 && r.chance(0.06) && startPlatform(c, a)) return;
+    if (!mob && a.nFollow === 0 && r.chance(0.06) && startPlatform(c, a)) return;
   }
-  if (r.chance(0.0018) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
-  if (a.nFollow > 0 && r.chance(0.02) && c.counts.stand < STANDER_TARGET && startChat(c, a)) return;
+  // (with a stroller: no crossing in the middle of a block)
+  if (mob !== MOB.STROLLER && r.chance(0.0018) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
+  if (!mob && a.nFollow > 0 && r.chance(0.02) && c.counts.stand < STANDER_TARGET && startChat(c, a)) return;
   if (a.nFollow === 0 && r.chance(0.004) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF) {
     c.tally('pause'); a.task = TASK.PAUSE; stand(a, a.alpha + r.range(-1.2, 1.2), r.range(6, 24)); return;
   }
@@ -386,6 +400,13 @@ function thinkWalk(c, a) {
 export function setLane(c, a, r, forceSide = false) {
   const p = r.next();
   a.laneTT = 0;
+  if (a.mob === MOB.CYCLE) return;
+  if (a.mob) {
+    // a stroller / a walked bicycle: the sidewalk, or (on the left) the far half of the corridor
+    if (forceSide || a.side > 0 || p < 0.78) { a.lane = LANE.SIDE; a.laneF = r.range(0.06, 0.9); }
+    else { a.lane = LANE.CORR; a.laneD = -r.range(1.0, TRACK_ZONE_HALF - 0.55); }
+    return;
+  }
   if (forceSide || p < 0.6) { a.lane = LANE.SIDE; a.laneF = r.range(0.04, 0.96); }
   else if (p < 0.8) { a.lane = LANE.EDGE; a.laneF = r.next(); }
   else {
@@ -408,7 +429,9 @@ function startBrowse(c, a) {
     if (map.cafeAtS(sO, side)) continue;
     const wall = map.wallAt(sO, side);
     if (map.bandOutAt(sO, side) < wall - 0.9) continue;
-    const gs = sO + c.rng.range(-0.5, 0.5) * o.half, gd = side * (wall - 0.3);
+    // with a stroller: a step back, the stroller between them and the window
+    const back = a.mob === MOB.STROLLER ? 1.4 : 0.3;
+    const gs = sO + c.rng.range(-0.5, 0.5) * o.half, gd = side * (wall - back);
     if (!clearSpot(c, gs, gd, 0.45)) continue;
     a.task = TASK.BROWSE; a.step = 0;
     goTo(a, gs, gd, 0.3);
@@ -459,17 +482,17 @@ export function startCross(c, a, sE, after, mouth) {
   // cross from the side of the ride track the agent is really on
   const side = a.d > RIDE_D + BAND ? 1 : a.d < RIDE_D - BAND ? -1 : a.side;
   if (map.stationAt(sE) || map.stationAt(sE + a.dir * 12)) return false;
-  const s0 = findCrossS(c, sE, side);
+  const s0 = findCrossS(c, sE, side, a);
   if (s0 === null) return false;
   const sT = mouth ? c.unwrap(mouth.s) + c.rng.range(-1, 1) * (mouth.width / 2 - 1.5) : s0 + a.dir * c.rng.range(0, 11);
-  const s1 = findCrossS(c, sT, -side);
+  const s1 = findCrossS(c, sT, -side, a);
   if (s1 === null || map.stationAt(s1)) return false;
   a.task = TASK.CROSS; a.after = after; a.mouth = mouth || a.mouth;
   a.crossS = s1; a.side = side;
   c.tally(mouth || map.mouthAt(sE, side) || map.mouthAt(sE, -side) ? 'crossAtCrossStreet' : 'crossMidBlock');
   if (Math.abs(a.d) < TRACK_ZONE_HALF) { a.step = 1; arrive(c, a); return true; } // already in the corridor
   a.step = 0;
-  goTo(a, s0, side * crossEdge(side), 0.45);
+  goTo(a, s0, side * crossEdge(side, a), 0.45);
   return true;
 }
 
@@ -624,7 +647,7 @@ export function arrive(c, a) {
         }
         a.step = 2;
         a.crossOK = past ? 0 : c.time + c.tram.timeThrough(a) + 1.5;   // committed: walks through the band
-        goTo(a, a.crossS, -side * crossEdge(-side), 0.5);
+        goTo(a, a.crossS, -side * crossEdge(-side, a), 0.5);
         return;
       }
       // gave up half way (stopped at the band by the tram): back to waiting on this side
@@ -735,13 +758,15 @@ function groupGone(c, a, side, lineD, sa, sb) {
  *  side of the band they are on. */
 function waitToCross(c, a, side) {
   if (Math.abs(a.d - RIDE_D) < c.tram.passD + 0.2) {
-    const cs = a.d > RIDE_D ? 1 : -1, wd = cs * crossEdge(cs);
+    const cs = a.d > RIDE_D ? 1 : -1, wd = cs * crossEdge(cs, a);
     // a spot clear of the poles and trees (the way there passes between them)
-    if (Math.abs(a.d - wd) > 0.4) { a.step = 0; goTo(a, findCrossS(c, a.s + a.dir * 0.5, cs) ?? a.s + a.dir * 2.2, wd, 0.45); return; }
+    if (Math.abs(a.d - wd) > 0.4) { a.step = 0; goTo(a, findCrossS(c, a.s + a.dir * 0.5, cs, a) ?? a.s + a.dir * 2.2, wd, 0.45); return; }
   }
   a.step = 1;
   a.state = ST.WAIT; a.timer = 0.35;
   a.faceA = faceStreet(side) + (side > 0 ? -0.5 : 0.5);
+  // a stroller or a bicycle waits alongside the corridor, not pointing into it
+  if (a.mob) a.faceA = a.dir > 0 ? 0 : PI;
 }
 
 /** Countdown expiry for standing states. */

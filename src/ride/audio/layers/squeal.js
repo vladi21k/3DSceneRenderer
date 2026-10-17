@@ -9,11 +9,11 @@
 import { noise1, hash2 } from '../../../core/rng.js';
 import { glide, clamp, smoothstep } from '../dsp.js';
 import { WHEEL_CIRC } from '../synth/rail.js';
-import { AXLES } from '../track.js';
+import { AXLES } from '../../../core/config.js';
 
 const K_MIN = 1 / 150, K_MAX = 1 / 55;
 const V_MIN = 8 / 3.6;
-const BOGIE = (AXLES[0].o + AXLES[1].o) / 2;
+const BOGIE = (AXLES[0].offset + AXLES[1].offset) / 2;
 
 export class SquealLayer {
   constructor(e) {

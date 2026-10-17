@@ -3,7 +3,7 @@
   tools/dk blender -b --factory-startup -P tools/blender/humans_build.py -- [--bases male,female,child] [--res 0.0035]
       [--out <dir>]   (default assets/humans; a trial build elsewhere loads with ?humans_dir=<dir>)
 
-Per base body (adult male, adult female, child):
+Per base body (adult man, adult woman, child of 8-11, child of 4-6):
   1. signed distance anatomy (humans_body.py) -> surface nets mesh -> Newton projection; the
      head is meshed again at ~1 mm and joined to the body through an overlap band in the neck
      (both meshes lie on the same surface and share every attribute there)
@@ -37,6 +37,7 @@ OUT = os.path.join(ROOT, 'assets', 'humans')
 
 LOD_TRIS = {'body': (6500, 2600, 560, 200)}     # LOD 1..4 (whole body)
 LOD0_TRIS = {'body': 12500, 'head': 5400}         # LOD 0: body below the neck cut + the fine head
+LOD_SCALE = {'male': 1.0, 'female': 1.0, 'child': 0.85, 'kid': 0.72}   # smaller bodies need fewer triangles
 HEAD_RES = 0.0012
 MORPH_SCALE = 0.08
 SHAPE_NAMES = ('narrow', 'broad', 'old', 'belly')
@@ -193,6 +194,28 @@ def shape_morphs(variants, P, N, E, deg):
     return smooth_field(S_, E, deg, 1, 0.5)
 
 
+def oct_encode(N):
+    """Unit normals -> octahedral coordinates in [0, 1]^2."""
+    n = N / np.maximum(np.abs(N).sum(1, keepdims=True), 1e-9)
+    x, y, z = n[:, 0], n[:, 1], n[:, 2]
+    sx, sy = np.where(x >= 0, 1.0, -1.0), np.where(y >= 0, 1.0, -1.0)
+    ox = np.where(z < 0, (1 - np.abs(y)) * sx, x)
+    oy = np.where(z < 0, (1 - np.abs(x)) * sy, y)
+    return np.stack([ox, oy], 1) * 0.5 + 0.5
+
+
+def cloth_normals(node, P, N, d=0.018):
+    """Normals of the body's offset surface d out (creases narrower than ~d are bridged): the
+    surface a garment drapes as, without the muscle relief under it (shoulder blades, spine)."""
+    Q = (P + N * d).astype(np.float32)
+    Q = S.project(Fn_offset(node, d), Q, 2)
+    return S.normals(node, Q.astype(np.float32))
+
+
+def Fn_offset(node, d):
+    return S.Fn(lambda P: node.eval(P) - d, node.lo - d, node.hi + d)
+
+
 def vertex_attributes(node, heavy, P, T, sigma, variants=None):
     P = S.project(node, P.astype(np.float32), 2).astype(np.float64)
     N = S.normals(node, P.astype(np.float32))
@@ -204,7 +227,10 @@ def vertex_attributes(node, heavy, P, T, sigma, variants=None):
     if heavy is not None:
         M = smooth_field(M, E, deg, 2, 0.5)
     Sh = shape_morphs(variants or {}, P, N, E, deg)
-    return dict(P=P, N=N, ao=ao, si=si, sw=sw, region=region, M=M, S=Sh)
+    # body vertices carry the garment drape normal in aux (octahedral)
+    Nc = smooth_field(cloth_normals(node, P, N), E, deg, 2, 0.5)
+    Nc /= np.maximum(np.linalg.norm(Nc, axis=1, keepdims=True), 1e-9)
+    return dict(P=P, N=N, ao=ao, si=si, sw=sw, region=region, M=M, S=Sh, aux=oct_encode(Nc))
 
 
 def part_attributes(node, body, P, T, variants=None, head=False):
@@ -240,6 +266,14 @@ class Packer:
         return off
 
 
+def quantize_positions(pk, P):
+    """Positions as int16 per component over their bounding box (~0.03 mm steps on a body)."""
+    lo = P.min(0)
+    rng = np.maximum(P.max(0) - lo, 1e-6)
+    q = np.clip(np.round((P - lo) / rng * 65534 - 32767), -32767, 32767).astype(np.int16)
+    return {'offset': pk.add(q), 'type': 'i16q', 'size': 3, 'min': [float(x) for x in lo], 'range': [float(x) for x in rng]}
+
+
 def pack_lod(pk, attrs, T, part_ids):
     n = len(attrs['P'])
     nrm = np.zeros((n, 4), np.int8)
@@ -259,7 +293,7 @@ def pack_lod(pk, attrs, T, part_ids):
         'count': n,
         'index': {'offset': pk.add(idx), 'count': int(len(idx)), 'type': itype},
         'attributes': {
-            'position': {'offset': pk.add(attrs['P'].astype(np.float32)), 'type': 'f32', 'size': 3},
+            'position': quantize_positions(pk, attrs['P']),
             'normal': {'offset': pk.add(nrm), 'type': 'i8', 'size': 4, 'normalized': True},
             'skinIndex': {'offset': pk.add(attrs['si']), 'type': 'u8', 'size': 4},
             'skinWeight': {'offset': pk.add(attrs['sw']), 'type': 'u8', 'size': 4, 'normalized': True},
@@ -282,6 +316,26 @@ def concat_attrs(items):
 
 
 # ----------------------------------------------------------------------------- main
+
+def skirt_rings(node, info):
+    """Waist and hip rings of the skirt / coat shell (material.js uSkirt0 / uSkirt1): y, half
+    width, half depth and centre z of the body (with a little room) at the waistband and the seat."""
+    sc = info['H'] / 1.76
+    out = []
+    for y in (info['waistY'] + 0.03 * sc, info['hip'][1] - 0.03 * sc):
+        rx = max(_half_width(node, y, z) for z in np.linspace(-0.06, 0.08, 8) * sc)
+        zf = min(B.surface_z(node, x, y, -1) for x in np.linspace(-0.08, 0.08, 9) * sc)
+        zb = max(B.surface_z(node, x, y, +1) for x in np.linspace(-0.08, 0.08, 9) * sc)
+        out.append([float(y), float(rx), float(0.5 * (zb - zf)), float(0.5 * (zb + zf))])
+    return out
+
+
+def _half_width(node, y, z):
+    xs = np.arange(0.0, 0.35, 0.002)
+    v = node.eval(np.stack([xs, np.full_like(xs, y), np.full_like(xs, z)], 1).astype(np.float32))
+    k = int(np.argmax(v > 0))
+    return xs[k]
+
 
 def keep_tris(V, T, keep):
     """Sub-mesh of the triangles whose centroid passes `keep` (compacted vertices)."""
@@ -308,20 +362,24 @@ def detail_weights(node, V, T, info, sc, head=False):
 def build_base(kind, res, pk):
     log(f'base {kind}')
     node, skel, info = B.build_body(kind, 0.0)
-    heavy, _, _ = B.build_body(kind, 1.0 if kind != 'child' else 0.7)
+    young = kind in ('child', 'kid')
+    heavy, _, _ = B.build_body(kind, 0.7 if young else 1.0)
     # targets of the scalar shape morphs (children: face shape only)
     variants = {'narrow': B.build_body(kind, 0.0, face_var={'narrow': 1.0})[0],
                 'broad': B.build_body(kind, 0.0, face_var={'broad': 1.0})[0]}
-    if kind != 'child':
+    if not young:
         variants['old'] = B.build_body(kind, 0.0, face_var={'old': 1.0})[0]
         variants['belly'] = B.build_body(kind, 0.0, belly=1.0)[0]
     info['hatOffsets'] = PARTS.HAT_OFFSETS
     info['hairline'] = {'front': PARTS.MALE_FRONT, 'temple': PARTS.MALE_TEMPLE}
+    info['skirt'] = skirt_rings(node, info)
+    info['clothNormals'] = True       # body vertices: aux = octahedral garment drape normal
     H = info['H']
     sc = H / 1.76
+    ls = LOD_SCALE.get(kind, 1.0)
     lo = np.array([-0.62 * sc, -0.004, -0.27 * sc])
     hi = np.array([0.62 * sc, H + 0.01, 0.21 * sc])
-    V, T = mesh_sdf(node, lo, hi, res * (0.85 if kind == 'child' else 1.0))
+    V, T = mesh_sdf(node, lo, hi, res * (0.85 if kind == 'child' else 0.75 if kind == 'kid' else 1.0))
     # the head again at ~1 mm, cut in the neck where the skin follows the neck bone alone
     hs, hc = info['headS'], np.array(info['headC'], dtype=float)
     neck_y, head_y = info['neckY'], skel['joints'][B.BONES.index('head')][1]
@@ -329,12 +387,12 @@ def build_base(kind, res, pk):
     ycut = nb + 0.45 * (nt - nb)
     hlo = np.array([-0.118 * hs, ycut - 0.03, hc[2] - 0.14 * hs])
     hhi = np.array([0.118 * hs, hc[1] + 0.125 * hs, hc[2] + 0.125 * hs])
-    Vh, Th = mesh_sdf(node, hlo, hhi, HEAD_RES * (0.9 if kind == 'child' else 1.0))
+    Vh, Th = mesh_sdf(node, hlo, hhi, HEAD_RES * (0.9 if young else 1.0))
     Vb0, Tb0 = keep_tris(V, T, lambda c: c[:, 1] < ycut + 0.012)
     Vh0, Th0 = keep_tris(Vh, Th, lambda c: c[:, 1] > ycut - 0.012)
-    lod0_b = blender_decimate(Vb0, Tb0, [LOD0_TRIS['body']], detail_weights(node, Vb0, Tb0, info, sc))[0]
-    lod0_h = blender_decimate(Vh0, Th0, [LOD0_TRIS['head']], detail_weights(node, Vh0, Th0, info, sc, True), symmetric=True)[0]
-    lods_mesh = [None] + blender_decimate(V, T, LOD_TRIS['body'], detail_weights(node, V, T, info, sc))
+    lod0_b = blender_decimate(Vb0, Tb0, [int(LOD0_TRIS['body'] * ls)], detail_weights(node, Vb0, Tb0, info, sc))[0]
+    lod0_h = blender_decimate(Vh0, Th0, [int(LOD0_TRIS['head'] * ls)], detail_weights(node, Vh0, Th0, info, sc, True), symmetric=True)[0]
+    lods_mesh = [None] + blender_decimate(V, T, [int(t * ls) for t in LOD_TRIS['body']], detail_weights(node, V, T, info, sc))
     parts = PARTS.build_parts(kind, node, info, res, mesh_fn=mesh_sdf,
                               decimate_fn=lambda V_, T_, tg: blender_decimate(V_, T_, tg, None, symmetric=False),
                               attr_fn=lambda n_, b_, P_, T_, head=False: part_attributes(n_, b_, P_, T_, variants, head))
@@ -374,6 +432,7 @@ def check_hats(kind, info, parts):
     inside the hat (or inside the head): no hair may show above a hat's band."""
     hs, hc = info['headS'], np.array(info['headC'], dtype=float)
     hats = [p['name'] for p in parts if p['name'] in PARTS.HAT_BANDS]
+    PARTS.set_cranium(info['face'])
     cr = PARTS.Ellipsoid(PARTS.CR_C, PARTS.CR_R)
     for p in parts:
         if not (p['name'].startswith('hair') or p['name'] == 'scarf') or p['lods'][0] is None:
@@ -422,14 +481,14 @@ def check_eyes_clear(kind, info, parts):
 def main():
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument('--bases', default='male,female,child')
+    ap.add_argument('--bases', default='male,female,child,kid')
     ap.add_argument('--res', type=float, default=0.0035)
     ap.add_argument('--out', default=OUT)
     a = ap.parse_args(argv)
     out = os.path.join(ROOT, a.out) if not os.path.isabs(a.out) else a.out
     os.makedirs(out, exist_ok=True)
     pk = Packer()
-    meta = {'version': 2, 'bones': B.BONES, 'regions': B.REGION, 'parts': PARTS.PART_IDS,
+    meta = {'version': 3, 'bones': B.BONES, 'regions': B.REGION, 'parts': PARTS.PART_IDS,
             'morphScale': MORPH_SCALE, 'shapeScale': list(SHAPE_SCALE), 'bases': {}}
     t0 = time.time()
     for kind in a.bases.split(','):

@@ -1,17 +1,17 @@
 import { archPoint } from '../facadePlan.js';
-import { runoffSplits, SILL_RUN, BAL_RUN } from './shade.js';
 import { arcSeg } from './mesh.js';
 
 // Wall field of one facade face: the plane w = 0 between the paving and the cornice,
 // with the openings cut out exactly along their outlines.
 //
 // The face is cut into horizontal rows at every opening sill, spring line and head,
-// plus extra rows where the baked occlusion changes quickly (under the cornice, string
-// courses and balconies, near the paving). Each row is covered by runs of quads
-// between the openings, split only where that row needs colour resolution (balcony
-// shadows, streaks below sills, soft patches). Arched heads get spandrel strips between
-// the curve and the head line. Rows do not share vertices (T-junctions are hidden by
-// a dark backstop placed just behind the wall). The ground floor may be rusticated:
+// plus extra rows where the baked occlusion changes quickly (under the cornice and
+// string courses, near the paving) and at the run-off lines (balcony soffits, sill
+// undersides). Each row is covered by runs of quads between the openings, split where
+// the run-off occluder above changes (the run-off itself is shaded per pixel, see
+// shade.runAttr) and every gridU metres for the soft patches. Arched heads get spandrel
+// strips between the curve and the head line. Rows do not share vertices (T-junctions
+// are hidden by a dark backstop behind the wall). The ground floor may be rusticated:
 // banded courses with deep V joints in stone.rough.
 
 const EPS = 1e-4;
@@ -35,15 +35,10 @@ function refine(a, maxStep) {
 const _p = {};
 const _cuts = [], _out = [], _pcs = [];
 
-/** Sorted cut positions across a run [ra, rb]: row splits inside it, then max spacing. */
-function runCuts(ra, rb, sp, maxRun) {
+/** Sorted cut positions across a run [ra, rb], at most maxRun apart. */
+function runCuts(ra, rb, maxRun) {
   _cuts.length = 0;
-  _cuts.push(ra);
-  if (sp) {
-    for (const u of sp) if (u > ra + 0.02 && u < rb - 0.02) _cuts.push(u);
-    if (_cuts.length > 2) _cuts.sort((x, y) => x - y);
-  }
-  _cuts.push(rb);
+  _cuts.push(ra, rb);
   _out.length = 0;
   _out.push(_cuts[0]);
   for (let i = 1; i < _cuts.length; i++) {
@@ -84,24 +79,11 @@ export function* wallField(ctx, face, openings) {
     vb.push(o.y, o.spring, top);
   }
   holes.sort((a, b) => a.u0 - b.u0);
-  // occlusion helper rows and the u-splits they need
-  const splits = [];
+  // occlusion helper rows (both detail levels keep these rows, so the baked shading does
+  // not pop at the switch), and the run-off lines
   const cy = face.cornice ? face.cornice.y : v1;
-  // (both detail levels keep these rows, so the baked shading does not pop at the switch)
   for (const d of [0.15, 0.45, 1.0, 2.0]) vb.push(cy - d);
   for (const c of face.courses || []) vb.push(c.y - 0.1, c.y - 0.35);
-  // columns for the run-off strips under balcony slab ends and sill ends (grime mask);
-  // both levels, the strips are several pixels wide at the far switch
-  for (const b of face.balconies || []) {
-    if (!q.lod) vb.push(b.y - 0.3, b.y - 0.9);
-    for (const u of runoffSplits(b.u0, b.u1)) splits.push({ u, v0: b.y - BAL_RUN, v1: b.y });
-  }
-  const ext = ctx.sillExt ?? 0.15;
-  for (const o of openings) {
-    if (o.kind !== 'window') continue;
-    const sy = o.y - 0.12;
-    for (const u of runoffSplits(o.uc - o.w / 2 - ext, o.uc + o.w / 2 + ext)) splits.push({ u, v0: sy - SILL_RUN, v1: sy });
-  }
   const gHi = Math.max(face.groundAt(0), face.groundAt(W)), gLo = Math.min(face.groundAt(0), face.groundAt(W));
   for (const d of q.lod ? [0.1, 0.4, 1.0, 2.3] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
   const rus = ctx.rustic;
@@ -115,14 +97,12 @@ export function* wallField(ctx, face, openings) {
     }
   }
 
+  // run-off lines (balcony soffits, sill undersides), unless a row boundary is close
+  const vb0 = vb.slice();
+  for (const y of fs.occluderLines()) if (vb0.every((x) => Math.abs(x - y) > 0.08)) vb.push(y);
   let V = uniqSorted(vb.filter((x) => x >= v0 - EPS && x <= v1 + EPS));
   V = refine(V, q.gridV);
   const nr = V.length - 1;
-  // splits binned per row
-  const rowSplits = new Array(nr);
-  for (const sp of splits) {
-    for (let r = 0; r < nr; r++) if (V[r + 1] > sp.v0 && V[r] < sp.v1) (rowSplits[r] || (rowSplits[r] = [])).push(sp.u);
-  }
 
   const sAsh = ctx.sinks.ashlar, sRough = ctx.sinks.rough || ctx.sinks.ashlar;
   const roughBase = sRough.uvx;
@@ -148,6 +128,7 @@ export function* wallField(ctx, face, openings) {
     const s = rough ? sRough : sAsh;
     const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
     const rg = fit ? fit.row(vm) : 0;
+    const zones = fs.rowZones(va, vc), zc = zones.cuts;
     // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
     let a = uMin, aJamb = false;
     const runs = [], jamb = [];
@@ -165,23 +146,31 @@ export function* wallField(ctx, face, openings) {
       for (let pi = 0; pi < np; pi += 4) {
         const pa = P ? P[pi] : ra, pb = P ? P[pi + 1] : rb;
         if (P) setPiece(s, base, P[pi + 2], P[pi + 3]);
-        // cut positions inside this piece
-        const cuts = runCuts(pa, pb, rowSplits[r], maxRun);
-        const n = cuts.length;
-        s.reserve(n * 2, (n - 1) * 6);
-        const b0 = s.vc;
-        if (groove) {
-          // V joint: strip from the wall face back to the joint (chamfer at 45°)
-          for (let c = 0; c < n; c++) {
-            const u = cuts[c];
-            if (groove > 0) { B.v(s, u, va, 0, 0, k, k, u, va); B.v(s, u, vc, -rus.c, 0, k, k, u, vc); }
-            else { B.v(s, u, va, -rus.c, 0, -k, k, u, va); B.v(s, u, vc, 0, 0, -k, k, u, vc); }
+        // one strip per run-off zone inside this piece
+        let zi = 0;
+        while (zi < zc.length && zc[zi] <= pa + 0.01) zi++;
+        for (let za = pa; za < pb - EPS;) {
+          const zb = zi < zc.length && zc[zi] < pb - 0.01 ? zc[zi] : pb;
+          B.run = zones.occ[zi];
+          const cuts = runCuts(za, zb, maxRun);
+          const n = cuts.length;
+          s.reserve(n * 2, (n - 1) * 6);
+          const b0 = s.vc;
+          if (groove) {
+            // V joint: strip from the wall face back to the joint (chamfer at 45°)
+            for (let c = 0; c < n; c++) {
+              const u = cuts[c];
+              if (groove > 0) { B.v(s, u, va, 0, 0, k, k, u, va); B.v(s, u, vc, -rus.c, 0, k, k, u, vc); }
+              else { B.v(s, u, va, -rus.c, 0, -k, k, u, va); B.v(s, u, vc, 0, 0, -k, k, u, vc); }
+            }
+          } else {
+            for (let c = 0; c < n; c++) { const u = cuts[c]; B.v(s, u, va, 0, 0, 0, 1, u, va); B.v(s, u, vc, 0, 0, 0, 1, u, vc); }
           }
-        } else {
-          for (let c = 0; c < n; c++) { const u = cuts[c]; B.v(s, u, va, 0, 0, 0, 1, u, va); B.v(s, u, vc, 0, 0, 0, 1, u, vc); }
+          for (let c = 0; c < n - 1; c++) { const b = b0 + c * 2; B.quadIdx(s, b, b + 2, b + 3, b + 1); }
+          za = zb; zi++;
         }
-        for (let c = 0; c < n - 1; c++) { const b = b0 + c * 2; B.quadIdx(s, b, b + 2, b + 3, b + 1); }
       }
+      B.run = null;
       // close the notch where a V joint stops at an arch spandrel or a corner (a jamb closes it otherwise)
       if (groove && !jamb[i]) grooveCap(B, s, ra, -1, va, vc, groove, rus.c);
       if (groove && !jamb[i + 1]) grooveCap(B, s, rb, 1, va, vc, groove, rus.c);
@@ -201,6 +190,7 @@ export function* wallField(ctx, face, openings) {
     const s = rough ? sRough : sAsh;
     const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
     const n = arcSeg(q, o);
+    B.run = fs.occluderAt(o.uc, top);
     let pu = 0, pv = 0;
     for (let c = 0; c <= n; c++) {
       archPoint(o, c / n, _p);
@@ -233,5 +223,6 @@ export function* wallField(ctx, face, openings) {
     }
     s.uvx = rough ? roughBase : null;
   }
+  B.run = null;
   B.shade = null;
 }

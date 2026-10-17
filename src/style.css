@@ -144,6 +144,8 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
   animation: ride-breathe 3.2s ease-in-out infinite;
 }
 .ride-ui .start:hover .start-title { animation-play-state: paused; opacity: 1; }
+.ride-ui .start-sub { margin-top: 14px; font-size: 13px; font-weight: 300; letter-spacing: .03em; color: var(--ink-2); }
+.ride-ui .start-sub:empty { display: none; }
 .ride-ui .start-rule { width: 44px; height: 1px; margin: 26px 0 24px; background: var(--ink-3); }
 .ride-ui .start-legend {
   display: grid; grid-template-columns: auto auto; column-gap: 18px; row-gap: 10px; align-items: center;
@@ -169,6 +171,7 @@ body.ride-dragging, body.ride-dragging #view { cursor: grabbing; }
   .ride-ui .ctl { margin-top: 12px; }
   .ride-ui .hud-right { gap: 10px; }
   .ride-ui .start-title { font-size: 32px; margin-top: 8px; }
+  .ride-ui .start-sub { margin-top: 8px; }
   .ride-ui .start-rule { margin: 14px 0 12px; }
   .ride-ui .start-legend { row-gap: 5px; }
 }

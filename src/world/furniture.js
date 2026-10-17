@@ -116,6 +116,7 @@ const furniture = {
 
   update(dt, app) {
     updateLightLevels(this.F, app);
+    this.batches.sync();
     this.batches.updateLod(app.camera.position);
   },
 

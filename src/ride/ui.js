@@ -4,8 +4,9 @@ import { input } from './input.js';
 //  - bottom left: speed (km/h), master controller strip (applied effort + notch),
 //    auto / manual mode, next stop distance and station status;
 //  - bottom right: time-of-day and lens (FOV) sliders;
-//  - start overlay ("Click to ride" + controls) once the world is ready: the click
-//    emits 'start' (audio starts on it) and enables keyboard / pointer controls;
+//  - start overlay ("Click to ride", the standing start, controls) once the world is
+//    ready: the click emits 'start' (audio starts on it), releases the tram (it departs
+//    from a standstill with a bell) and enables keyboard / pointer controls;
 //  - H hides / shows everything, a short controls hint fades after starting;
 //  - capture=1: no DOM at all. debug=1 adds a small stats readout.
 
@@ -36,10 +37,12 @@ function fmtDist(d) {
 
 const LEGEND = [
   ['W  S', 'Power · brake'],
-  ['A', 'Auto drive'],
+  ['A', 'Auto drive on / off'],
   ['B  Space', 'Bell'],
   ['Drag', 'Look around'],
-  ['Z  X', 'Zoom'],
+  ['Z  X  Wheel', 'Zoom'],
+  ['M', 'Sound on / off', 'audio'],
+  ['F', 'Full screen'],
   ['H', 'Hide interface'],
 ];
 
@@ -146,9 +149,11 @@ const ui = {
     this._setTod(env?.state?.t ?? env?.t ?? this.app.params.tod ?? 0, true);
 
     // ---- controls hint (after start) and hidden-UI toast
+    const sound = !!this.app.systems.audio;
     this.$hint = el('div', 'hint', this.hud,
       '<span><kbd>W</kbd><kbd>S</kbd> power · brake</span><span><kbd>A</kbd> auto</span><span><kbd>B</kbd> bell</span>'
-      + '<span>drag to look</span><span><kbd>Z</kbd><kbd>X</kbd> zoom</span><span><kbd>H</kbd> hide</span>');
+      + '<span>drag to look</span><span><kbd>Z</kbd><kbd>X</kbd> zoom</span>'
+      + (sound ? '<span><kbd>M</kbd> sound</span>' : '') + '<span><kbd>H</kbd> hide</span>');
     this.$toast = el('div', 'toast', r, 'Press <kbd>H</kbd> to show the interface');
 
     // ---- start overlay
@@ -157,9 +162,11 @@ const ui = {
     const inner = el('div', 'start-inner', this.$overlay);
     el('div', 'start-eyebrow', inner, 'Cab ride');
     el('div', 'start-title', inner, 'Click to ride');
+    this.$sub = el('div', 'start-sub', inner);
     el('div', 'start-rule', inner);
     const grid = el('div', 'start-legend', inner);
-    for (const [k, v] of LEGEND) {
+    for (const [k, v, needs] of LEGEND) {
+      if (needs && !this.app.systems[needs]) continue;
       el('span', 'lg-k', grid, k.split('  ').map((x) => `<kbd>${x}</kbd>`).join(''));
       el('span', 'lg-v', grid, v);
     }
@@ -170,6 +177,14 @@ const ui = {
 
   _showOverlay() {
     if (!this.$overlay || this.started) return;
+    // what the click does: a standing start (the default), the dwell at a platform, or
+    // a ride that was set up already moving (speed=)
+    const tr = this.app.train;
+    this.$sub.textContent = !tr || tr.disabled ? ''
+      : tr.speed > 0.1 ? 'The ride resumes when you click.'
+        : tr.state === 'dwell' ? 'At the platform: the tram departs once the doors close.'
+          : tr.auto ? 'Standing start: the tram departs with a bell when you click.'
+            : 'Standing start: take power with W to depart.';
     this.$overlay.classList.add('show');
     try { this.$overlay.focus({ preventScroll: true }); } catch { /* old browsers */ }
   },

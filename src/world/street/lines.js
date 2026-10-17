@@ -6,7 +6,7 @@ import { patchCanyon } from './shading.js';
 //
 // A rail head is 56 mm wide: at the default telephoto view it is under a pixel from
 // ~200 m on, and plain geometry breaks into crawling dashes. Each line is drawn as a
-// flat ribbon whose half width is widened in the vertex shader to at least uMinPx
+// flat ribbon whose half width is widened in the vertex shader to at least minPx
 // screen pixels; the fragment shader then integrates the real cross-section (head,
 // groove, lip, seals, or a paint stripe) over the pixel footprint (fwidth of the
 // lateral coordinate), so lines stay continuous, correctly weighted and converge
@@ -17,16 +17,28 @@ export const LINE_SHARED = {
   uViewport: { value: new THREE.Vector2(1920, 1080) },
 };
 
+// Line styles, one per ribbon (aRight.w). Every line of a chunk is one mesh with one
+// material: rails (far: analytic coverage only; near: also fade out where the 3D rails
+// are resolved), and paint (worn centre line, zebra stripes / stop lines, and the
+// sealant-filled expansion joints, dashed and irregular).
+export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint: 4 };
+const PAINT = [
+  null, null,
+  { color: 0xd8d6ce, roughness: 0.62, wear: 0.18, opacity: 0.8 },                         // centre
+  { color: 0xdedcd5, roughness: 0.58, wear: 0.36, opacity: 0.87 },                         // stripe
+  { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, dash: [0.18, 0.65], minPx: 1.2 }, // joint
+];
+
 const VERT_PARS = /* glsl */`
-attribute vec3 aRight;  // xz: lateral unit vector; y: per-line wear factor (paint)
+attribute vec4 aRight;  // xz: lateral unit vector; y: per-line wear factor (paint); w: style
 attribute vec4 aLine;   // x: side (-1|1), y: real half width, z: along (m), w: segment length / offset
 uniform vec2 uViewport;
-uniform float uMinPx;
 varying vec4 vLine;     // x: lateral (m), y: along (m), z: aLine.w, w: pixels per metre (lateral)
 varying vec3 vLineWorld;
 varying vec3 vLineRightW; // world lateral unit vector of the ribbon
 varying float vLineHalf; // real half width (m)
 varying float vLineWear; // per-line wear factor
+varying float vLineStyle;
 `;
 
 const VERT_MAIN = /* glsl */`
@@ -35,6 +47,7 @@ vec3 transformed = vec3( position );
   vec4 wp = modelMatrix * vec4( position, 1.0 );
   vec3 wr = normalize( mat3( modelMatrix ) * vec3( aRight.x, 0.0, aRight.z ) );
   vLineWear = aRight.y;
+  vLineStyle = aRight.w;
   vec4 c0 = projectionMatrix * viewMatrix * wp;
   vec4 c1 = projectionMatrix * viewMatrix * vec4( wp.xyz + wr * 0.05, 1.0 );
   float pxPerM = 1e4;
@@ -43,9 +56,10 @@ vec3 transformed = vec3( position );
     pxPerM = max( length( sd ) / 0.05, 1e-3 );
   }
   // pad by a pixel so the rasterized edge never cuts the analytic coverage (no stair
-  // dots along thin bands), and keep at least uMinPx half width for sub-pixel lines
+  // dots along thin bands), and keep at least minPx half width for sub-pixel lines
+  float minPx = aRight.w > ${(LINE_STYLE.joint - 0.5).toFixed(1)} ? ${PAINT[LINE_STYLE.joint].minPx.toFixed(2)} : 1.5;
   float hw = aLine.y + 1.0 / pxPerM;
-  hw = max( hw, min( uMinPx / pxPerM, 1.6 ) );
+  hw = max( hw, min( minPx / pxPerM, 1.6 ) );
   // widen in the horizontal plane only (aRight.y carries the wear factor)
   transformed += vec3( aRight.x, 0.0, aRight.z ) * ( aLine.x * hw );
   vLine = vec4( aLine.x * hw, aLine.z, aLine.w, pxPerM );
@@ -61,6 +75,7 @@ varying vec3 vLineWorld;
 varying vec3 vLineRightW;
 varying float vLineHalf;
 varying float vLineWear;
+varying float vLineStyle;
 float lnCov( float a, float b, float x, float w ) {
   return clamp( ( min( b, x + 0.5 * w ) - max( a, x - 0.5 * w ) ) / w, 0.0, 1.0 );
 }
@@ -87,15 +102,14 @@ float lnFbm( vec2 p, float fp, int oct ) {
 `;
 
 // Rail cross-section bands in rail-local x (+ towards the gauge side):
-// mortar | field seal | rusty field bevel | polished head (incl. gauge corner) | groove |
+// mortar | field seal | oxidised field bevel | polished head (incl. gauge corner) | groove |
 // lip | gauge seal | mortar
 const f = (v) => v.toFixed(4);
 const v3 = (a, k = 1) => `vec3( ${f(a[0] * k)}, ${f(a[1] * k)}, ${f(a[2] * k)} )`;
+const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
 const RAIL_FRAG = /* glsl */`
-float lnRough = 0.5, lnMetal = 0.0;
 {
   float x = vLine.x + vLine.z;                 // z carries the ribbon centre offset
-  float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
   float along = vLine.y;
   float wear = lnNoise( vec2( along * 0.35, 3.1 ) ) * 0.6 + lnNoise( vec2( along * 2.7, 7.7 ) ) * 0.4;
   float cSeal = lnCov( ${f(RAIL_X0)}, ${f(-HEAD_HALF)}, x, w ) + lnCov( ${f(LIP_OUT)}, ${f(RAIL_X1)}, x, w );
@@ -106,67 +120,74 @@ float lnRough = 0.5, lnMetal = 0.0;
   float cGrout = lnCov( ${f(RAIL_X0 - GROUT_W)}, ${f(RAIL_X0)}, x, w ) + lnCov( ${f(RAIL_X1)}, ${f(RAIL_X1 + GROUT_W)}, x, w );
   float cov = cSeal + cCorner + cBand + cGroove + cLip + cGrout;
   float fade = 1.0, core = 0.0;
-  #ifdef LINE_NEAR_FADE
-    // the real rails take over once their narrowest bands (12-13 mm seals and lip) span a
-    // few pixels; further out the 3D bands would alias into dash trains
+  if ( vLineStyle > 0.5 ) {
+    // near rails: the real rails take over once their narrowest bands (12-13 mm seals
+    // and lip) span a few pixels; further out the 3D bands would alias into dash trains
     fade = 1.0 - smoothstep( 1.5, 3.0, 0.012 * vLine.w );
     // the 3D rail is rasterized under every pixel centre inside the rail span, so cover
     // those pixels fully (the uncovered part of their footprint is paving, filled in
     // below); otherwise the sub-pixel 3D groove and seals leak through as dotted edges
     core = step( ${f(RAIL_X0 - GROUT_W)}, x ) * step( x, ${f(RAIL_X1 + GROUT_W)} );
-  #endif
+  }
   float alpha = mix( cov, 1.0, core ) * fade;
   if ( alpha < 0.002 ) discard;
   // effective albedos of the 3D rail (materials × cavity AO), so the hand-over is seamless
   vec3 aSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.88)};               // bitumen seal
-  vec3 aCorner = vec3( 0.13, 0.068, 0.035 ) * ( 0.8 + 0.4 * wear );
+  vec3 aCorner = vec3( 0.2, 0.15, 0.11 ) * ( 0.85 + 0.3 * wear );  // oxidised field bevel
   vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
-  vec3 aGroove = vec3( 0.021, 0.018, 0.015 );                       // dark slot (grime × AO)
-  vec3 aLip = vec3( 0.34, 0.33, 0.315 ) * ( 0.88 + 0.16 * wear );  // dull, dusty guard lip
+  vec3 aGroove = vec3( 0.022, 0.019, 0.016 );                       // dark slot (grime × AO)
+  vec3 aLip = vec3( 0.3, 0.29, 0.275 ) * ( 0.9 + 0.14 * wear );    // dusty guard lip
   vec3 aGrout = ${v3(MORTAR_ALBEDO, 0.95)};                          // mortar bed
   vec3 aPave = vec3( 0.215, 0.217, 0.22 );                          // grimy setts beside it
   float cPave = core * max( 0.0, 1.0 - cov );
   float inv = 1.0 / max( cov + cPave, 1e-4 );
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
   diffuseColor.rgb = aSeal * wSeal + aCorner * wCorner + aBand * wBand + aGroove * wGroove + aLip * wLip + aPave * wPave + aGrout * wGrout;
-  lnMetal = wCorner * 0.2 + wBand + wLip * 0.5;
-  lnRough = wSeal * 0.85 + wCorner * 0.85 + wBand * ( 0.2 + 0.08 * wear ) + wGroove * 0.75 + wLip * 0.6 + wPave * 0.7 + wGrout * 0.9;
+  lnMetal = wCorner * 0.6 + wBand + wLip * 0.85;
+  lnRough = wSeal * 0.85 + wCorner * 0.6 + wBand * ( 0.17 + 0.08 * wear ) + wGroove * 0.75 + wLip * 0.62 + wPave * 0.7 + wGrout * 0.9;
   diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
 `;
 
 // Paint / joint stripe: lateral band of real half width aLine.y, either a dashed
-// pattern along the line (uDash: period, duty; jittered so sealant seams are irregular)
-// or a finite segment [0, aLine.w].
+// pattern along the line (joints: period, duty; jittered so sealant seams are
+// irregular) or a finite segment [0, aLine.w].
+const paintConst = (st) => {
+  const P = PAINT[st];
+  return `pCol = ${v3(lin(P.color))}; pRough = ${f(P.roughness)}; pWear = ${f(P.wear)}; pOpacity = ${f(P.opacity)};`;
+};
+const J = PAINT[LINE_STYLE.joint];
 const PAINT_FRAG = /* glsl */`
-float lnRough = uPaintRough, lnMetal = 0.0;
 {
+  vec3 pCol; float pRough, pWear, pOpacity;
+  bool dash = vLineStyle > ${(LINE_STYLE.joint - 0.5).toFixed(1)};
+  if ( dash ) { ${paintConst(LINE_STYLE.joint)} }
+  else if ( vLineStyle > ${(LINE_STYLE.stripe - 0.5).toFixed(1)} ) { ${paintConst(LINE_STYLE.stripe)} }
+  else { ${paintConst(LINE_STYLE.centre)} }
+  lnRough = pRough;
   float x = vLine.x;
-  float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
   float u = vLine.y;
-  float wu = max( length( vec2( dFdx( u ), dFdy( u ) ) ), 1e-5 );
   float cov = lnCov( -vLineHalf, vLineHalf, x, w );
   float ends = 1.0;
-  #ifdef LINE_DASH
+  if ( dash ) {
     // box-filtered square wave: F(t) = floor(t)*duty + min(fract(t), duty)
-    float P = uDash.x, duty = uDash.y;
+    const float P = ${f(J.dash[0])}, duty = ${f(J.dash[1])};
     float uj = u + ( lnNoise( vec2( u * 2.3, 4.1 ) ) - 0.5 ) * 0.8 * P;
     float t0 = ( uj - 0.5 * wu ) / P, t1 = ( uj + 0.5 * wu ) / P;
     float F0 = floor( t0 ) * duty + min( fract( t0 ), duty );
     float F1 = floor( t1 ) * duty + min( fract( t1 ), duty );
     cov *= clamp( ( F1 - F0 ) * P / wu, 0.0, 1.0 );
-  #else
+  } else {
     float segLen = vLine.z > 0.0 ? vLine.z : 1e9;
     cov *= lnCov( 0.0, segLen, u, wu );
     ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );   // dirt towards stripe ends
-  #endif
+  }
   // Wear: the paint is cut only by grain-sized flecks (aggregate showing through, 20-40
   // per metre) with a soft threshold; larger walked-on patches only thin it, so worn
   // lines stay continuous instead of breaking into dashes. Octaves finer than the pixel
   // footprint fade to their mean, so distant paint shows its average coverage.
   vec2 wp = vLineWorld.xz;
-  float fpw = max( length( fwidth( wp ) ), 1e-4 );               // metres per pixel
-  float wear = uWear * ( vLineWear > 0.0 ? vLineWear : 1.0 );
+  float wear = pWear * ( vLineWear > 0.0 ? vLineWear : 1.0 );
   float big = lnFbm( wp * 0.4 + 17.0, fpw * 0.4, 3 );             // walked-on patches
   float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );              // thinner blotches
   float grain = lnFbm( wp * 30.0 + 9.0, fpw * 30.0, 2 );          // flecks
@@ -178,60 +199,40 @@ float lnRough = uPaintRough, lnMetal = 0.0;
   if ( cov < 0.002 ) discard;
   // dirt ground into the paint where it is walked on most, and towards the ends
   float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.4, 0.0, 1.0 );
-  diffuseColor.rgb = uPaintColor * ( 0.93 - 0.17 * dirt - 0.12 * ends ) * ( 0.96 + 0.08 * mid );
-  diffuseColor.a = cov * uPaintOpacity;
+  diffuseColor.rgb = pCol * ( 0.93 - 0.17 * dirt - 0.12 * ends ) * ( 0.96 + 0.08 * mid );
+  diffuseColor.a = cov * pOpacity;
 }
 `;
 
-function makeLineMaterial(kind, opts = {}) {
+// pixel footprints are taken before the style branch (derivatives in uniform control flow)
+const LINE_FRAG = /* glsl */`
+float lnRough = 0.5, lnMetal = 0.0;
+float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
+float wu = max( length( vec2( dFdx( vLine.y ), dFdy( vLine.y ) ) ), 1e-5 );
+float fpw = max( length( fwidth( vLineWorld.xz ) ), 1e-4 );     // metres per pixel
+if ( vLineStyle < ${(LINE_STYLE.centre - 0.5).toFixed(1)} ) ${RAIL_FRAG}
+else ${PAINT_FRAG}
+`;
+
+/** The shared line material (all styles; rails reflect the street canyon). */
+export function createLineMaterial() {
   const m = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.5, metalness: 0, transparent: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: opts.offsetFactor ?? -4, polygonOffsetUnits: opts.offsetUnits ?? -8,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
   });
-  m.name = opts.name || `street.line.${kind}`;
-  const defines = {};
-  if (opts.nearFade) defines.LINE_NEAR_FADE = 1;
-  if (opts.dash) defines.LINE_DASH = 1;
-  m.defines = defines;
-  const uniforms = {
-    uViewport: LINE_SHARED.uViewport,
-    uMinPx: { value: opts.minPx ?? 1.5 },
-    uDash: { value: new THREE.Vector2(opts.dash ? opts.dash[0] : 1, opts.dash ? opts.dash[1] : 1) },
-    uPaintColor: { value: new THREE.Color(opts.color ?? 0xffffff) },
-    uPaintRough: { value: opts.roughness ?? 0.6 },
-    uPaintOpacity: { value: opts.opacity ?? 1 },
-    uWear: { value: opts.wear ?? 0.25 },
-  };
-  m.userData.lineUniforms = uniforms;
-  const prev = m.onBeforeCompile;
-  m.onBeforeCompile = (sh, r) => {
-    if (prev) prev(sh, r);
-    Object.assign(sh.uniforms, uniforms);
+  m.name = 'street.line';
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uViewport = LINE_SHARED.uViewport;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>\n${VERT_PARS}`)
       .replace('#include <begin_vertex>', VERT_MAIN);
-    const body = kind === 'rail' ? RAIL_FRAG : PAINT_FRAG;
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\n${FRAG_PARS}\nuniform vec2 uDash;\nuniform vec3 uPaintColor;\nuniform float uPaintRough;\nuniform float uPaintOpacity;\nuniform float uWear;`)
-      .replace('#include <color_fragment>', `#include <color_fragment>\n${body}`)
+      .replace('#include <common>', `#include <common>\n${FRAG_PARS}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${LINE_FRAG}`)
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nroughnessFactor = lnRough;\nmetalnessFactor = lnMetal;');
   };
-  m.customProgramCacheKey = () => `street-line-${kind}-${opts.nearFade ? 1 : 0}-${opts.dash ? 1 : 0}`;
-  return m;
-}
-
-/** Creates the shared line materials. */
-export function createLineMaterials() {
-  return {
-    railNear: patchCanyon(makeLineMaterial('rail', { nearFade: true, name: 'street.line.rail' }), 'line'),
-    railFar: patchCanyon(makeLineMaterial('rail', { nearFade: false, name: 'street.line.railFar' }), 'line'),
-    // worn white line between the tracks (continuous, uniformly scuffed)
-    centre: makeLineMaterial('paint', { color: 0xd8d6ce, roughness: 0.62, wear: 0.18, opacity: 0.8, name: 'street.line.centre' }),
-    // zebra stripes and stop lines (segments)
-    stripe: makeLineMaterial('paint', { color: 0xdedcd5, roughness: 0.58, wear: 0.36, opacity: 0.87, name: 'street.line.stripe' }),
-    // sealant-filled expansion joints across the corridor: grey-brown, intermittent
-    joint: makeLineMaterial('paint', { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, minPx: 1.2, dash: [0.18, 0.65], name: 'street.line.joint' }),
-  };
+  m.customProgramCacheKey = () => 'street-line-2';
+  return patchCanyon(m, 'line');
 }
 
 let UP = new Float32Array(0);
@@ -246,7 +247,8 @@ function upNormals(n) {
 /**
  * Ribbon builder: add a polyline (world points on the surface) with a lateral unit
  * vector per point. halfW = real half width, extra = aLine.w (centre offset for rails,
- * real half width for dashes, segment length for segments).
+ * segment length for segments). All styles share one buffer; style(k) returns a writer
+ * with a fixed LINE_STYLE.
  */
 export class LineBuf {
   constructor(cap = 256) {
@@ -255,15 +257,15 @@ export class LineBuf {
   }
   _grow(cap) {
     const g = (old, k) => { const a = new Float32Array(cap * k); if (old) a.set(old.subarray(0, this.n * k)); return a; };
-    this.pos = g(this.pos, 3); this.right = g(this.right, 3); this.line = g(this.line, 4);
+    this.pos = g(this.pos, 3); this.right = g(this.right, 4); this.line = g(this.line, 4);
     const idx = new Uint32Array(cap * 3);
     if (this.idx) idx.set(this.idx.subarray(0, this.ni));
     this.idx = idx;
     this.cap = cap;
   }
   /** pts: flat array [x,y,z, rx,rz, along, ...] (6 per point); wear scales the paint
-   *  material's wear for this line. */
-  add(pts, halfW, extra, wear = 1) {
+   *  style's wear for this line. */
+  add(pts, halfW, extra, style, wear = 1) {
     const np = pts.length / 6;
     if (this.n + np * 2 > this.cap) this._grow(Math.max(this.cap * 2, this.n + np * 2 + 64));
     let prev = -1;
@@ -272,7 +274,7 @@ export class LineBuf {
       for (let k = 0; k < 2; k++) {
         const j = v + k;
         this.pos[j * 3] = pts[o]; this.pos[j * 3 + 1] = pts[o + 1]; this.pos[j * 3 + 2] = pts[o + 2];
-        this.right[j * 3] = pts[o + 3]; this.right[j * 3 + 1] = wear; this.right[j * 3 + 2] = pts[o + 4];
+        this.right[j * 4] = pts[o + 3]; this.right[j * 4 + 1] = wear; this.right[j * 4 + 2] = pts[o + 4]; this.right[j * 4 + 3] = style;
         this.line[j * 4] = k ? 1 : -1; this.line[j * 4 + 1] = halfW; this.line[j * 4 + 2] = pts[o + 5]; this.line[j * 4 + 3] = extra;
       }
       this.n += 2;
@@ -284,6 +286,10 @@ export class LineBuf {
       prev = v;
     }
   }
+  /** Writer for one style: { add(pts, halfW, extra, wear) }. */
+  style(k) {
+    return { add: (pts, halfW, extra, wear = 1) => this.add(pts, halfW, extra, k, wear) };
+  }
   get empty() { return this.ni === 0; }
   /** Forget the written lines (the arrays are kept as scratch space). */
   reset() { this.n = 0; this.ni = 0; return this; }
@@ -292,7 +298,7 @@ export class LineBuf {
     const g = new THREE.BufferGeometry();
     const n = this.n;
     g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, n * 3), 3));
-    g.setAttribute('aRight', new THREE.BufferAttribute(this.right.slice(0, n * 3), 3));
+    g.setAttribute('aRight', new THREE.BufferAttribute(this.right.slice(0, n * 4), 4));
     g.setAttribute('aLine', new THREE.BufferAttribute(this.line.slice(0, n * 4), 4));
     // flat ribbons: the up normal is constant (a view into one shared array)
     g.setAttribute('normal', new THREE.BufferAttribute(upNormals(n), 3));

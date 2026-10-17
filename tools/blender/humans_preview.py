@@ -121,15 +121,18 @@ def main():
     bases = [b for b in a.bases.split(',') if b]
     views = {'front': 0, 'side': 90, 'back': 180, 'q34': 35, 'q34b': 145, 'side2': -90}
     vlist = [v for v in a.views.split(',') if v]
-    zoom = {'body': (0.0, 1.0), 'head': (0.80, 1.02), 'torso': (0.45, 0.92), 'legs': (0.0, 0.58)}[a.zoom]
+    zoom = {'body': (0.0, 1.0), 'head': (0.80, 1.02), 'torso': (0.45, 0.92), 'legs': (0.0, 0.58), 'upper': (0.55, 1.02)}[a.zoom]
+    row_parts = a.parts.split(';')
     Hmax = max(B.TEMPLATES[b]['H'] for b in bases)
     y0, y1 = zoom[0] * Hmax - 0.03, zoom[1] * Hmax + 0.02
     colw = 0.75 if a.zoom == 'body' else 0.55
+    if a.zoom == 'upper':
+        colw = 0.6
     if a.zoom == 'head':
         colw = 0.42
     W = colw * len(vlist)
     Hh = (y1 - y0)
-    ppm = a.px if a.zoom == 'body' else a.px * 2.2
+    ppm = a.px if a.zoom == 'body' else a.px * (1.6 if a.zoom == 'upper' else 2.2)
     scn = setup_scene(int(W * ppm), int(Hh * ppm * len(bases)), a.samples)
     mat = clay()
     mat_p = clay('part', (0.18, 0.15, 0.13))
@@ -146,10 +149,8 @@ def main():
         V = S.project(node, V.astype(np.float32), 2).astype(np.float64)
         T, _ = S.fix_winding(node, V, T)
         objs = [(V, T, mat)]
-        for pname in [p for p in a.parts.split(',') if p]:
-            pn = PARTS.part_node(kind, pname)
-            if pn is None:
-                continue
+        for pname in [p for p in row_parts[min(ri, len(row_parts) - 1)].split(',') if p]:
+            pn, _, _ = PARTS.part_node(kind, pname, node)
             Fp, op = S.eval_grid(pn, pn.lo - 0.01, pn.hi + 0.01, a.res * 0.7)
             if (Fp < 0).sum() == 0:
                 continue

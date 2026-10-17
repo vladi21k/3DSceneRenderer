@@ -89,9 +89,10 @@ export class TramWatch {
     if (ahead < NO_GO_AHEAD + 2) return false;
     // where the tram could be by the time they are through, even if it pulls away meanwhile.
     // Parents with a stroller go only when it is clearly safe: a much bigger margin.
-    const careful = a.mob === MOB.STROLLER || a.mob === MOB.WALKBIKE;
-    const T = (T0 || this.timeThrough(a)) * (careful ? 1.6 : 1) + (careful ? 4 : 2);
-    return ahead > Math.min(this.v * T + 0.6 * T * T, Math.max(this.v, V_MAX) * T) + (careful ? 40 : 14);
+    // cyclists cross the ride track only with a wide margin too (they come back across often)
+    const careful = a.mob === MOB.STROLLER || a.mob === MOB.WALKBIKE, cyc = a.mob === MOB.CYCLE;
+    const T = (T0 || this.timeThrough(a)) * (careful ? 1.6 : cyc ? 1.3 : 1) + (careful ? 4 : cyc ? 3 : 2);
+    return ahead > Math.min(this.v * T + 0.6 * T * T, Math.max(this.v, V_MAX) * T) + (careful ? 40 : cyc ? 30 : 14);
   }
 
   /** Seconds for a to walk out of the far side of the band from where they are. */
@@ -152,7 +153,8 @@ export class TramWatch {
       // (someone already at the platform edge steps up onto it instead)
       if (hi && !toPlatform && dl < BAND - 0.3 && (c.map.stationAt(a.s) || c.map.stationAt(a.s + 6))) hi = false;
       // cyclists cannot get out through the pole line: they always leave towards the other track
-      if (a.mob === MOB.CYCLE) hi = dl > 0 && footBandGap(a) > -0.25 && !c.map.stationAt(a.s);
+      // (one crossing the street keeps going the way it is crossing)
+      if (a.mob === MOB.CYCLE) hi = a.state === ST.GOTO ? a.gd > a.d : a.mvOn && a.mvBand ? a.mvD1 > a.d : dl > 0 && footBandGap(a) > -0.25 && !c.map.stationAt(a.s);
       // step well clear when there is time, just clear when there is not
       const spare = ahead > 0 && this.v > 0.2 ? Math.min(1, Math.max(0, (ahead / this.v - 2) / 3)) : 1;
       a.clearHi = hi; a.clearSpare = spare;
@@ -220,7 +222,7 @@ export class TramWatch {
       const hard = a.mob ? footBandGap(a) < -(0.03 + 1e-3) : Math.abs(dl) < SWEPT_HALF + AGENT_R;
       if (ahead > -AGENT_R - a.extS && ahead < SWEPT_AHEAD + AGENT_R + a.extS && hard) this._violation(a, ahead, dl);
       this.stats.rescues++;
-      if (this.rescueLog.length < 12) this.rescueLog.push({ t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, mob: a.mob, clr: a.clearing, lead: !!a.leader });
+      if (this.rescueLog.length < 12) this.rescueLog.push({ slot: a.slot, t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, mob: a.mob, clr: a.clearing, lead: !!a.leader });
       let hi = dl >= 0 && !this.c.map.stationAt(a.s);
       if ((a.kind === KIND.PASSENGER || a.platformOK) && dl >= 0) hi = true;
       a.d = hi ? BAND_HI + 0.01 + a.extLo : BAND_LO - 0.01 - a.extHi;

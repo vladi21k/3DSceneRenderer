@@ -69,7 +69,7 @@ export function deriveAppearance(seed, parts) {
   const female = r.chance(0.5);
   const base = age === 'child' ? 'child' : female ? 'female' : 'male';
   let height;
-  if (age === 'child') height = r.range(1.05, 1.48);
+  if (age === 'child') height = r.range(1.0, 1.50);
   else if (age === 'teen') height = female ? r.range(1.50, 1.70) : r.range(1.55, 1.80);
   else height = female ? r.normal(1.63, 0.06) : r.normal(1.765, 0.068);
   if (age === 'old') height -= r.range(0.01, 0.05);
@@ -78,8 +78,11 @@ export function deriveAppearance(seed, parts) {
   let build = r.normal(0.15, 0.40) + (age === 'old' ? 0.2 : 0) - (age === 'teen' ? 0.3 : 0) - (age === 'child' ? 0.3 : 0);
   build = THREE.MathUtils.clamp(build, -0.55, 1.15);
 
+  // the mesh: young children (4-6, up to ~1.22 m) have their own body (head 1/5 of the
+  // stature, short legs, round belly); older children another (head ~1/6)
+  const body = age === 'child' ? (height < 1.22 ? 'kid' : 'child') : base;
   const a = {
-    seed, age, female, base, height, build,
+    seed, age, female, base, body, height, build,
     skin: jitter(pick(r, SKIN), r, 0.04),
     hair: null, hairPart: 0, beardPart: 0, hatPart: 0, bagPart: 0, skirtPart: 0,
     top: null, top2: null, topType: TOP.TEE, pattern: PATTERN.SOLID, sleeve: 0.3, topHem: 0, loose: 0.5,
@@ -92,10 +95,14 @@ export function deriveAppearance(seed, parts) {
   const old = age === 'old';
   a.hair = old && r.chance(0.8) ? jitter(pick(r, HAIR_OLD), r) : jitter(pick(r, HAIR), r);
   a.walkOld = old && r.chance(0.3);
+  // gait style: 0 adult, 1 senior (shorter steps, less arm swing, a slight stoop), 2 frail (walkOld)
+  a.gait = a.walkOld ? 2 : old ? 1 : 0;
+  // forward stoop of the upper back (radians) carried into every pose
+  a.stoop = old ? r.range(0.04, a.walkOld ? 0.16 : 0.10) : age === 'adult' ? r.range(0, 0.04) : 0;
 
   // --- hair & head
   if (base === 'male' || (base === 'child' && !female)) {
-    const st = base === 'child' ? 'hair_short' : old ? r.weighted([['hair_balding', 5], ['hair_receding', 4], ['hair_short', 2], ['hair_buzz', 2]])
+    const st = base === 'child' ? r.weighted([['hair_short', 6], ['hair_curly', 2]]) : old ? r.weighted([['hair_balding', 5], ['hair_receding', 4], ['hair_short', 2], ['hair_buzz', 2]])
       : r.weighted([['hair_short', 8], ['hair_side', 6], ['hair_buzz', 3], ['hair_medium', 3], ['hair_curly', 2], ['hair_receding', 2]]);
     a.hairPart = P(st);
     if (age !== 'child' && age !== 'teen') {
@@ -105,7 +112,8 @@ export function deriveAppearance(seed, parts) {
   } else {
     const st = old ? r.weighted([['hair_pixie', 6], ['hair_bob', 3], ['hair_bun', 2], ['scarf', 2]])
       : age === 'child' ? r.weighted([['hair_ponytail', 4], ['hair_long', 4], ['hair_bob', 2]])
-        : r.weighted([['hair_long', 9], ['hair_ponytail', 7], ['hair_bun', 4], ['hair_bob', 4], ['hair_pixie', 2], ['scarf', 2]]);
+        : r.weighted([['hair_long', 9], ['hair_ponytail', 7], ['hair_bun', 4], ['hair_bob', 4], ['hair_pixie', 2], ['scarf', 2],
+          ['hair_curlyf', 3]]);
     a.hairPart = P(st);
     if (st === 'scarf') a.hair = jitter(pick(r, SCARF), r);
   }
@@ -249,7 +257,9 @@ export function deriveAppearance(seed, parts) {
   a.faceOld = old ? r.range(0.55, 1.0) : mature ? r.range(0.0, 0.45) : 0;
   a.belly = grown && r.chance(old ? 0.35 : mature ? 0.3 : 0.08) ? r.range(0.35, 1.0) * (0.6 + 0.4 * Math.max(0, a.build)) : 0;
   // children have relatively bigger heads the younger (shorter) they are
-  a.headScale = age === 'child' ? Math.pow(1.32 / height, 0.45) * r.range(0.98, 1.02) : r.range(0.97, 1.03);
+  // (relative to the body mesh's own head: younger, shorter children have relatively bigger heads)
+  a.headScale = (body === 'kid' ? Math.pow(1.10 / height, 0.5) : body === 'child' ? Math.pow(1.36 / height, 0.45)
+    : age === 'teen' ? Math.pow((female ? 1.63 : 1.76) / height, 0.35) : 1) * r.range(0.97, 1.03);
   a.skirtFolds = r.int(6, 9);
   if (a.shoeType === SHOE.SANDAL) a.sole = srgb('#3a2c22');
   else if (a.shoeType === SHOE.LEATHER) a.sole = srgb('#2a2220');

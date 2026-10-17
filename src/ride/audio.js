@@ -20,6 +20,11 @@ import { trackFeatures } from './audio/track.js';
 
 const PREFS_KEY = 'tramline.audio';
 
+// The synthesis code loads lazily on the start click. A module that fails to link (a stale
+// copy from the HTTP cache that no longer matches its imports, or a dropped request) is
+// fetched once more under a fresh URL, which bypasses both the cache and the failed entry.
+const load = (path) => import(path).catch(() => import(`${path}?r=${Date.now().toString(36)}`));
+
 function loadPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') || {}; } catch { return {}; }
 }
@@ -52,7 +57,7 @@ const audio = {
     if (this.capture) return; // screenshots: no sound at all
 
     const ev = app.events;
-    ev.on('start', () => this.start());
+    ev.on('start', () => this._startSafe());
     ev.on('bell', (d) => this._event('bell', d));
     ev.on('doors', (d) => this._event('doors', d));
     // M toggles mute (matched on the printed key, like the ride controls)
@@ -67,10 +72,10 @@ const audio = {
       if (document.hidden) this.ctx.suspend().catch(() => {});
       else if (!this.muted) this.ctx.resume().catch(() => {});
     });
-    if (this.forced) ev.on('ready', () => this.start());
+    if (this.forced) ev.on('ready', () => this._startSafe());
     // no UI module to emit 'start': fall back to the first user gesture
     if (!app.systems.ui) {
-      const once = () => { window.removeEventListener('pointerdown', once); window.removeEventListener('keydown', once); this.start(); };
+      const once = () => { window.removeEventListener('pointerdown', once); window.removeEventListener('keydown', once); this._startSafe(); };
       window.addEventListener('pointerdown', once);
       window.addEventListener('keydown', once);
     }
@@ -93,7 +98,7 @@ const audio = {
     }
     this.ctx = ctx;
     ctx.resume().catch(() => {});
-    const [{ Bank }, { AudioEngine }] = await Promise.all([import('./audio/bank.js'), import('./audio/engine.js')]);
+    const [{ Bank }, { AudioEngine }] = await Promise.all([load('./audio/bank.js'), load('./audio/engine.js')]);
     this.bank = new Bank(ctx.sampleRate, { cache: params.str('audiocache') !== '0' });
     this.bank.build().catch((e) => console.error('[audio] synthesis failed', e));
     await AudioEngine.prepare(ctx);
@@ -105,6 +110,16 @@ const audio = {
     this.started = true;
     this._t0 = ctx.currentTime;
     if (this.muted) ctx.suspend().catch(() => {});
+  },
+
+  /** start() from an event: a failure is reported and leaves the ride silent (a later
+   *  start event tries again) instead of surfacing as an unhandled rejection. */
+  _startSafe() {
+    this.start().catch((e) => {
+      console.error('[audio] could not start, riding without sound', e);
+      if (this.ctx) this.ctx.close().catch(() => {});
+      this.ctx = null; this.engine = null; this.started = false;
+    });
   },
 
   update(dt, app) {

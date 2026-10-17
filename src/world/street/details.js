@@ -3,6 +3,7 @@ import { CHUNK_LEN } from '../../core/config.js';
 import { IRON_REGIONS } from './textures.js';
 import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } from './constants.js';
 import { colInfo, Z_CORR } from './surface.js';
+import { pavingHeight } from './paving.js';
 import { facadePlan } from '../facadePlan.js';
 
 // Street details per chunk, planned deterministically from the chunk index so the
@@ -17,6 +18,7 @@ const SIZES = {
   plate: [0.6, 0.6], plate2: [1.0, 0.5], valve: [0.32, 0.32],
 };
 const ROUND = { manhole: 1, valve: 1 };
+const COVER_LIFT = 0.003;      // covers stand this proud of their (planar) bed
 // chance of a gum / dirt spot by street furniture where people linger
 const LINGER = { bench: 0.9, bin: 0.8, shelter: 0.9, ticketMachine: 0.8, stopSign: 0.6, kiosk: 0.8, infoBoard: 0.5, advertColumn: 0.4 };
 const u01 = (a, b) => hash2(a | 0, b | 0) / 4294967296;
@@ -196,7 +198,8 @@ export function planDetails(ctx, ci) {
 
   // flat spots for the surface: covers (with dishing towards them), tree pits, and the
   // footprints of street furniture and café floors (objects stand at h = 0)
-  const spots = items.map((it) => ({ s: it.s, d: it.d, r: it.r + 0.05, tree: !!it.tree, dish: !it.tree }));
+  // (covers and grates lie on a planar bed, see Surface.bedAt)
+  const spots = items.map((it) => (it.spot = { s: it.s, d: it.d, r: it.r + 0.05, tree: !!it.tree, dish: !it.tree, bed: true }));
   for (const o of layout.inChunk('obstacles', ci)) {
     if (o.platform !== undefined) continue;
     if (o.kind === 'circle') spots.push({ s: o.s, d: o.d, r: o.r + 0.1 });
@@ -208,9 +211,12 @@ export function planDetails(ctx, ci) {
 // leaf tints (linear): yellowing green, brown, dry tan, green, rusty
 const LEAF_TINTS = [[0.36, 0.34, 0.08], [0.2, 0.11, 0.04], [0.42, 0.3, 0.14], [0.14, 0.2, 0.05], [0.33, 0.16, 0.05]];
 
-/** Build the details of a chunk into the BufSet (iron, stains, leaves) and joints into a LineBuf. */
-export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
+/** Build the details of a chunk into the BufSet (iron, stains, leaves) and joints into a
+ *  LineBuf. grid: the chunk's paving grid (buildPaving), which covers, stains and leaves
+ *  follow exactly. */
+export function buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
   const { route, surface, mats } = ctx;
+  const pave = (s, d) => pavingHeight(grid, s, d, ctx.delta);
   const smp = {};
   const ri = surface.rowInfo(chunk.s0, {});
   const ci = {};
@@ -219,6 +225,8 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
     const xo = ci.zone === Z_CORR ? ri.xo : 0;
     return ci.h0 * (1 - xo);
   };
+  // shared ground under a cover: its planar bed (the paving is flattened to the same plane)
+  const bed = route.surfaceEnabled ? (p, ds, d) => surface.bedAt(p, ds, d) : () => 0;
 
   // --- cast iron
   const iron = bufs.get(mats.details.iron, false);
@@ -226,13 +234,29 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
     const R = IRON_REGIONS[it.type];
     const [mw, mh] = SIZES[it.type];
     route.sample(it.s, smp);
-    surface.rowInfo(it.s, ri);
+    if (Math.abs(it.d) < GUTTER_OUT) surface.rowInfo(it.s, ri);   // (crossover blend of the camber)
     const ca = Math.cos(it.yaw), sa = Math.sin(it.yaw);
     // local (lu, lv) -> (ds, dd): u axis rotated by yaw from the street direction
+    // the cover is flat on its bed; it stands proud of the paving by at least
+    // COVER_LIFT, more where a mesh triangle reaching in from outside the bed rises
+    const bedH = (lu, lv) => {
+      const ds = lu * ca - lv * sa, d = it.d + lu * sa + lv * ca;
+      return baseH(it.s, d) + bed(it.spot, ds, d);
+    };
+    let rise = 0;
+    for (let j = 0; j <= 6; j++) {
+      for (let i = 0; i <= 6; i++) {
+        const lu = (i / 6 - 0.5) * mw, lv = (j / 6 - 0.5) * mh;
+        if (ROUND[it.type] && lu * lu + lv * lv > (mw * mw) / 4) continue;
+        const ds = lu * ca - lv * sa, d = it.d + lu * sa + lv * ca;
+        rise = Math.max(rise, pave(it.s + ds, d) - bedH(lu, lv));
+      }
+    }
+    const lift = Math.min(0.012, Math.max(COVER_LIFT, rise + 0.0015));
     const P = (lu, lv) => {
       const ds = lu * ca - lv * sa, dd = lu * sa + lv * ca;
       const d = it.d + dd;
-      const h = baseH(it.s, d) + 0.0025;
+      const h = bedH(lu, lv) + lift;
       return [
         smp.pos.x + smp.tanH.x * ds + smp.right.x * d,
         smp.pos.y + smp.grade * ds + h,
@@ -261,23 +285,32 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
     }
   }
 
-  // --- stains (alpha decals)
+  // --- stains (alpha decals): a small grid draped over the paving (the ground undulates
+  // by a few centimetres over a couple of metres on the sidewalks)
   const st = bufs.get(mats.details.stain, false);
   for (const sn of plan.stains) {
     route.sample(sn.s, smp);
-    surface.rowInfo(sn.s, ri);
     const hx = sn.size / 2, hy = (sn.size * sn.aspect) / 2;
     const ca = Math.cos(sn.yaw), sa = Math.sin(sn.yaw);
     const col = sn.kind % 2, row = Math.floor(sn.kind / 2);
+    const nu = Math.min(3, Math.ceil(hx / 0.4)), nv = Math.min(3, Math.ceil(hy / 0.4));
     const first = st.n;
-    for (const [lu, lv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-      const ds = lu * hx * ca - lv * hy * sa, dd = lu * hx * sa + lv * hy * ca;
-      const d = sn.d + dd;
-      const h = surface.height(ri, d) + 0.001;
-      st.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + smp.grade * ds + h, smp.pos.z + smp.tanH.z * ds + smp.right.z * d,
-        0, 1, 0, col * 0.5 + (lu * 0.5 + 0.5) * 0.5, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5);
+    for (let j = 0; j <= nv; j++) {
+      for (let i = 0; i <= nu; i++) {
+        const lu = (i / nu) * 2 - 1, lv = (j / nv) * 2 - 1;
+        const ds = lu * hx * ca - lv * hy * sa, dd = lu * hx * sa + lv * hy * ca;
+        const d = sn.d + dd;
+        const h = pave(sn.s + ds, d) + 0.0015;
+        st.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + smp.grade * ds + h, smp.pos.z + smp.tanH.z * ds + smp.right.z * d,
+          0, 1, 0, col * 0.5 + (lu * 0.5 + 0.5) * 0.5, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5);
+      }
     }
-    st.quad(first, first + 3, first + 2, first + 1);
+    for (let j = 0; j < nv; j++) {
+      for (let i = 0; i < nu; i++) {
+        const a = first + j * (nu + 1) + i;
+        st.quad(a, a + nu + 1, a + nu + 2, a + 1);
+      }
+    }
   }
 
   // --- fallen leaves
@@ -285,7 +318,7 @@ export function buildDetails(ctx, chunk, plan, bufs, jointLines) {
   for (const l of plan.leaves) {
     route.sample(l.s, smp);
     const ca = Math.cos(l.yaw), sa = Math.sin(l.yaw);
-    const h0 = baseH(l.s, l.d) + 0.004;
+    const h0 = pave(l.s, l.d) + 0.004;
     const tint = LEAF_TINTS[l.tint];
     const col = l.cell % 2, row = Math.floor(l.cell / 2);
     const first = lf.n;

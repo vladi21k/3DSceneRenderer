@@ -150,6 +150,7 @@ export class Steering {
       const psi = Math.max(-T.ang, Math.min(T.ang, Math.atan2(T.d - a.d, L)));
       alphaT = a.dir > 0 ? psi : PI - psi;
     }
+    alphaT += T.avoid;
     const err = wrapAngle(alphaT - a.alpha);
     // turn rate: lateral acceleration ≤ ~1.9 m/s², radius ≥ 2.3 m, and the rate itself changes smoothly
     const wMax = Math.min(1.9 / vv, vv / 2.3, 1.3);
@@ -361,6 +362,7 @@ export class Steering {
           const pdist = Math.sqrt(pd2) || 1e-3;
           const push = Math.min(maxC, min - pdist);
           a.s -= ((dx - _foot.s) / pdist) * push; a.d -= ((dy - _foot.d) / pdist) * push;
+          if (c.dbgProp && push > 0.015 && c.dbgProp.length < 40) c.dbgProp.push({ slot: a.slot, t: +c.time.toFixed(2), mob: a.mob, push: +push.toFixed(3), d: +a.d.toFixed(2), od: +map.cD[i].toFixed(2), r: r, ods: +dx.toFixed(2), alpha: +a.alpha.toFixed(2), st: a.state, task: a.task, lane: a.lane, laneT: +a.laneT.toFixed(2), gd: +a.gd.toFixed(2), vs: +a.vs.toFixed(2), vd: +a.vd.toFixed(2), lead: !!a.leader, nf: a.nFollow });
         }
       }
     }
@@ -478,8 +480,15 @@ export class Steering {
       return;
     }
     let target = a.alpha;
-    if (sp > 0.28 && !(still && !a.moving)) target = Math.atan2(a.vd, a.vs);
-    else if (still) target = a.faceA;
+    if (sp > 0.28 && !(still && !a.moving)) {
+      target = Math.atan2(a.vd, a.vs);
+      // pushing a stroller / a bicycle one steers rather than sidesteps: along a lane the
+      // facing stays near the walking direction
+      if (a.mob && a.state === ST.WALK && !a.clearing && a.uturnT <= 0) {
+        const base = a.dir > 0 ? 0 : PI;
+        target = base + Math.max(-0.45, Math.min(0.45, wrapAngle(target - base)));
+      }
+    } else if (still) target = a.faceA;
     const diff = wrapAngle(target - a.alpha);
     // a stroller or a bicycle at one's side turns more slowly than a body alone
     const rate = TURN_RATE * (sp > 0.8 ? 1 : 0.7) * (a.mob ? 0.6 : 1);

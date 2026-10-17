@@ -18,9 +18,9 @@ import * as THREE from 'three';
 export const FLAG = { STAND: 1, BABY: 2, LOAD: 4 };   // flags (look word bits 5+)
 export const FINISH = { GLOSS: 0, METALLIC: 1, MATTE: 2, SATIN: 3 };
 
-/** Look word: finish 0..3, wear 0..7, flags (FLAG bits), baby skin 0..3, baby clothes 0..7. */
-export function packLook(finish = 0, wear = 2, flags = 0, skin = 0, cloth = 0) {
-  return (finish & 3) + ((wear & 7) << 2) + ((flags & 7) << 5) + ((skin & 3) << 8) + ((cloth & 7) << 10);
+/** Look word: finish 0..3, wear 0..7, flags (FLAG bits), baby skin 0..3, baby clothes 0..7, baby hat 0/1. */
+export function packLook(finish = 0, wear = 2, flags = 0, skin = 0, cloth = 0, hat = 0) {
+  return (finish & 3) + ((wear & 7) << 2) + ((flags & 7) << 5) + ((skin & 3) << 8) + ((cloth & 7) << 10) + ((hat & 1) << 13);
 }
 
 /** sRGB colour (THREE.Color in linear, a hex number or [r, g, b] sRGB 0..1) packed into one float. */
@@ -43,6 +43,7 @@ varying vec4 vPMat;     // roughness, metalness, channel, parameter (clearcoat /
 varying vec4 vPInfo;    // occlusion, dust weight, finish, wear
 varying vec3 vPRest;    // rest-pose prop-local position (dust, wear and grain noise stick to the part)
 varying vec2 vPUv;
+varying float vPChain;  // chain travel (m) for the link pattern
 uniform vec3 uPropSkin[4];
 uniform vec3 uPropCloth[8];
 vec3 pSrgb(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
@@ -79,9 +80,11 @@ void pPiece(vec4 anim, float look, out mat3 R, out vec3 t) {
   } else if (id == 5) {
     vec3 bb = vec3(0.0, aAux.x, aAux.y);
     t = bb + pRotX(-anim.z) * (piv - bb) - piv;
-  } else if (id >= 6 && id <= 8) {
+  } else if ((id >= 6 && id <= 8) || id == 13 || id == 14) {
     float flags = pBits(look, 5.0, 3.0);
-    bool show = id == 6 ? mod(flags, 2.0) > 0.5 : (id == 7 ? mod(flags, 2.0) < 0.5 : mod(floor(flags / 2.0), 2.0) > 0.5);
+    bool baby = mod(floor(flags / 2.0), 2.0) > 0.5;
+    bool hat = pBits(look, 13.0, 1.0) > 0.5;
+    bool show = id == 6 ? mod(flags, 2.0) > 0.5 : (id == 7 ? mod(flags, 2.0) < 0.5 : (id == 8 ? baby : (id == 13 ? baby && hat : baby && !hat)));
     if (!show) { R = mat3(0.0); t = piv; }
   } else if (id == 9 || id == 10) {
     if (id == 10) { R = pRotX(-anim.y); t = aAux.xyz - R * aAux.xyz; }
@@ -141,6 +144,7 @@ const VERT_COLOR = /* glsl */`
     vPInfo = vec4(color.a, dustW, finish, wear);
     vPRest = position;
     vPUv = uv;
+    vPChain = ch == 12.0 ? pAnim.z * aMat.w : 0.0;
   }
 `;
 
@@ -149,6 +153,7 @@ varying vec4 vPMat;
 varying vec4 vPInfo;
 varying vec3 vPRest;
 varying vec2 vPUv;
+varying float vPChain;
 uniform sampler2D uSpokeTex;
 uniform float uPropDither;   // 1 when the target has no MSAA (alpha-to-coverage would be ignored)
 float pHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
@@ -210,6 +215,16 @@ const FRAG_COLOR = /* glsl */`
     if (diffuseColor.a <= ign) discard;
     diffuseColor.a = 1.0;
   }
+  float pLink = 0.0;
+  if (pCh == 12.0) {
+    // roller chain: bright pin heads every half inch, dark gaps at the plate waists
+    float ph = (vPUv.x - vPChain) / 0.0127;
+    float wave = cos(ph * 6.2832);
+    float k = pFade(vec2(ph), 1.0);
+    pLink = wave * k;
+    diffuseColor.rgb *= mix(1.0, 0.55 + 0.7 * smoothstep(-0.2, 0.9, wave), k);
+    pRough += 0.12 * (0.5 - 0.5 * wave) * k;
+  }
   if (pCh == 1.0 || pCh == 2.0) pCoat = vPMat.w;
   if (pCh == 6.0 || pCh == 7.0 || pCh == 9.0) pSheen = 1.0;
   // dust, grime and wear (Jerusalem limestone dust: pale warm grey)
@@ -219,6 +234,7 @@ const FRAG_COLOR = /* glsl */`
     float n = pNoise(vPRest * 9.0) * 0.6 + pNoise(vPRest * 37.0) * 0.4;
     float dust = clamp(wear * (0.25 + 0.75 * low) * (0.55 + 0.9 * n), 0.0, 1.0);
     if (pCh == 4.0 || pCh == 5.0) dust *= 0.5;
+    if (pCh >= 6.0 && pCh <= 9.0) dust *= 0.25;
     vec3 dustC = vec3(0.36, 0.33, 0.28);
     diffuseColor.rgb = mix(diffuseColor.rgb, dustC, dust * 0.38);
     pRough = mix(pRough, 0.85, dust * 0.55);
@@ -240,6 +256,8 @@ const FRAG_NORMAL = /* glsl */`
       float wv = (sin(vPUv.x * 6.2832 / 0.0016) * sin(vPUv.y * 6.2832 / 0.0016)) * pFade(vPUv, 1.0 / 0.0016);
       float cr = pNoise(vPRest * vec3(14.0, 22.0, 14.0)) + 0.5 * pNoise(vPRest * 41.0);
       normal = pBump(-vViewPosition, normal, wv * 0.00012 + cr * 0.0035, pFd);
+    } else if (pCh == 12.0) {
+      normal = pBump(-vViewPosition, normal, pLink * 0.0007, pFd);
     } else if (pCh == 10.0) {
       float g = pNoise(vPRest * 900.0) * pFade(vPRest.xy, 900.0) + 0.5 * pNoise(vPRest * 160.0);
       normal = pBump(-vViewPosition, normal, g * 0.00018, pFd);

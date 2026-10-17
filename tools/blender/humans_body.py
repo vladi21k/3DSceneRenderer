@@ -107,8 +107,8 @@ FEMALE = dict(
           (0.70, 0.029, 0.029, 0.0, 0.002), (0.88, 0.023, 0.024, 0.0, -0.001), (1.0, 0.024, 0.026, 0.0, 0.0)],
     calf=(0.037, 0.085, 0.031), calfL=(0.031, 0.070, 0.027),
     glute=(0.070, 0.814, 0.068, 0.082, 0.088, 0.064), fold=0.752,
-    pec=None, breast=(0.058, 1.180, 0.057, 0.055, 0.049), lat=0.026, erector=(0.022, 0.11, 0.012),
-    scap=(0.078, 0.088, 0.048, 0.072, 0.018), trap=(0.027, 0.020), neckR=(0.049, 0.051), kidBelly=None,
+    pec=None, breast=(0.058, 1.180, 0.057, 0.055, 0.049), lat=0.022, erector=(0.020, 0.10, 0.009),
+    scap=(0.078, 0.088, 0.046, 0.068, 0.014), trap=(0.027, 0.020), neckR=(0.049, 0.051), kidBelly=None,
     delt=(0.033, 0.050, 0.042), handS=0.9, footS=0.91,
     sx=0.93, sy=0.926, sz=0.95,
 )
@@ -321,7 +321,7 @@ def hand_sdf(T, s, wrist, a, scale):
     bw = {'hand' + side: 1}
     R = np.stack([pn, a, wd], axis=1)
     sc = scale
-    palm = RoundBox(wrist + a * 0.046 * sc, (0.0115 * sc, 0.040 * sc, 0.036 * sc), 0.0105 * sc, R=R,
+    palm = RoundBox(wrist + a * 0.046 * sc, (0.0080 * sc, 0.040 * sc, 0.034 * sc), 0.0098 * sc, R=R,
                     region=REGION['hand'], bones=bw)
     knuck = wrist + a * 0.090 * sc
     fingers = []
@@ -428,8 +428,8 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
             gx = b * (0.012 + 0.030 * gauss(u, 0.18, 0.18) + 0.012 * gauss(u, 0.5, 0.2))
             gf = b * (0.010 + 0.034 * gauss(u, 0.40, 0.18))
             gb = b * (0.008 + 0.026 * gauss(u, 0.15, 0.17))
-        else:       # heavy: belly and waist (the chest barely changes)
-            gx = b * (0.014 + 0.032 * gauss(u, 0.42, 0.22))
+        else:       # heavy: belly and waist (the chest barely changes, the hips little)
+            gx = b * (0.010 + 0.034 * gauss(u, 0.47, 0.20))
             gf = b * (0.010 + 0.052 * gauss(u, 0.40, 0.20))
             gb = b * (0.006 + 0.016 * gauss(u, 0.42, 0.22))
         zf2, zb2 = zf - gf * sz, zb + gb * sz
@@ -475,7 +475,7 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         # towards the spine; they ride with the clavicle a little
         cx, cyo, crx, cry, crz = T['scap']
         cy = sh_y - cyo
-        feats_back.append(Ellipsoid((s * cx, cy, zb_at(cy, s * cx) - crz + 0.0045 * sz),
+        feats_back.append(Ellipsoid((s * cx, cy, zb_at(cy, s * cx) - crz + (0.0032 if fem else 0.0045) * sz),
                                     (crx, cry, crz), R=rot_xyz(0, s * 12, s * -10), region=TR,
                                     bones={'spine2': 0.7, 'clav' + side: 0.3}))
         # latissimus: the V from under the arm pit to the waist (men most)
@@ -585,7 +585,7 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         zs = _zsign(kn, an, (s, 0, 0))
         r0 = T['thigh'][0]
         tk = [(0.0, r0[1] * 0.6, r0[2] * 0.68, 0.0, 0.0)]
-        gl = (b * (0.030 if fem else 0.020), b * 0.006)
+        gl = (b * (0.030 if fem else 0.013), b * 0.006)
         tk += [(t0 + t * (1 - t0), rx + gl[0] * (1 - t * 0.75), rz + gl[0] * (1 - t * 0.75), ox + (b * 0.008 if fem else 0) * (1 - t), oz * zt)
                for t, rx, rz, ox, oz in T['thigh']]
         sk = limb_keys(T['shin'], zs, (b * 0.008, b * 0.002))
@@ -618,7 +618,7 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
     pts = []
     for y in path_y:
         u = (y - yA) / (yB - yA)
-        depth = (0.0032 if not child else 0.0015) * (1 - sstep(0.25, 0.7, u)) + 0.0008
+        depth = (0.0032 if not child else 0.0015) * (0.7 if fem else 1.0) * (1 - sstep(0.25, 0.7, u)) + 0.0008
         r = 0.008 * sx
         pts.append((np.array([0.0, y, surface_z(body, 0.0, y, +1) + r - depth]), r))
     for (p0, r0_), (p1, r1_) in zip(pts[:-1], pts[1:]):

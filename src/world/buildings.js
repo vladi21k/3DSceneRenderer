@@ -110,7 +110,7 @@ const buildings = {
   /**
    * Buildings-only pseudo-lots in chunk i (facades closing the far end of side streets).
    * Same shape as layout lots (frame, seed, depth, sideStreet: true, backdrop: true), so
-   * facadePlan(lot) works; they carry their own infill (selfDressed: true).
+   * facadePlan(lot) works and the facades module dresses them like any other lot.
    */
   extraLots(i) {
     const n = this.app.layout.nChunks;
@@ -324,8 +324,8 @@ function evict(app, sCam) {
  * street, so looking down a side street ends on facades instead of the sky. Two or three
  * lots of different width (and so of different height and style) with small set-backs,
  * so the end of the street is never one symmetric slab. These are buildings-only
- * pseudo-lots (same plan generator and frame conventions as layout lots); the facades
- * module does not dress them, so they carry their own infill (selfDressed).
+ * pseudo-lots (same plan generator and frame conventions as layout lots), published
+ * through extraLots() so the facades module dresses them.
  */
 function planBackdrops(app) {
   const { route, layout } = app;
@@ -357,7 +357,7 @@ function planBackdrops(app) {
         const id = `${base}_${k}`;
         const lot = {
           id, side, cross: c, edge: 0, x0: dist + back, x1: dist + back, len: width, seed: hashStr(id + ':backdrop'), depth: 14,
-          sideStreet: true, backdrop: true, selfDressed: true, frame, s0: c.s, s1: c.s, cornerU0: false, cornerU1: false,
+          sideStreet: true, backdrop: true, frame, s0: c.s, s1: c.s, cornerU0: false, cornerU1: false,
         };
         const idx = layout.chunkIndex(c.s);
         if (!backdrops.has(idx)) backdrops.set(idx, []);

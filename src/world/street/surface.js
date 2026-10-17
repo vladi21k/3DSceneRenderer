@@ -14,7 +14,9 @@ import { makeDelta } from './fast.js';
 // route.surface(s, d) (applied by route.toWorld to everything placed on the street), so
 // the paving adds it too. The street's own geometric relief stays within a few
 // millimetres on the sidewalks and is flattened under cafés and street furniture, so
-// objects placed at h = 0 neither sink nor float. The visible unevenness (settlement
+// objects placed at h = 0 neither sink nor float. Cast-iron covers and tree grates lie
+// on a planar bed (the ground's mean slope over the cover), blended back into the
+// ground just outside them. The visible unevenness (settlement
 // along the rails, dishing at gullies, undulating sheen) lives in a separate shading
 // height that only drives the paving normals.
 //
@@ -23,6 +25,8 @@ import { makeDelta } from './fast.js';
 // wraps from s = L to 0 without a seam.
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+// cover beds blend back into the ground over this distance outside the cover (m)
+const BED_BLEND = 0.45;
 
 export class Surface {
   constructor(route, layout) {
@@ -173,8 +177,9 @@ export class Surface {
       const edge = d > 0 ? ri.edgeR : -ri.edgeL;
       mask *= smooth((edge - FACADE_OVERLAP * 0.5 - (d < 0 ? -d : d)) / 1.6);
     }
-    // flat spots (covers, tree pits, furniture, café floors) and dishing towards drains
-    let dish = 0;
+    // flat spots (covers, tree pits, furniture, café floors) and dishing towards drains;
+    // cast-iron covers lie on a planar bed (bedW: weight of the nearest bed)
+    let dish = 0, bedW = 0, bedH = 0;
     const sp = ri.spots;
     for (let i = 0; i < sp.length; i += 2) {
       const p = sp[i], ds = sp[i + 1];
@@ -183,15 +188,39 @@ export class Surface {
       else { const dd = d - p.d; q = Math.sqrt(ds * ds + dd * dd) - p.r; }
       if (q < 0.5) mask *= smooth(q / 0.5);
       if (p.dish && q < 0.6) dish = Math.max(dish, 1 - smooth(q / 0.6));
+      if (p.bed && q < BED_BLEND) {
+        const w = 1 - smooth(q / BED_BLEND);
+        if (w > bedW) { bedW = w; bedH = this.bedAt(p, ds, d); }
+      }
     }
     let n = 0;
     if (mask > 0 && (amp > 0 || sa > 0)) n = this.noiseH(ri.sp, d);
     h += amp * mask * n;
     // mortar settlement trough along the rails, deeper in places
     const hs = sa * mask * n + trough * (0.65 + 0.35 * n) - 0.005 * dish;
-    if (this.route.surfaceEnabled) h += this.route.surface(ri.s, d);
+    if (this.route.surfaceEnabled) {
+      const g = this.route.surface(ri.s, d);
+      h += bedW > 0 ? g + (bedH - g) * bedW : g;
+    }
     this.hShade = h + hs;
     return h;
+  }
+
+  /** Height of the shared ground (route.surface) on the planar bed of cover spot p, at
+   *  ds along the street from its centre and lateral offset d. The plane takes the
+   *  ground's mean slope over the cover, so the cast iron lies flat and flush. */
+  bedAt(p, ds, d) {
+    let b = p.plane;
+    if (!b) {
+      const r = this.route, e = Math.max(0.3, p.r * 0.7);
+      const g0 = r.surface(p.s, p.d);
+      b = p.plane = [
+        g0,
+        (r.surface(p.s + e, p.d) - r.surface(p.s - e, p.d)) / (2 * e),
+        (r.surface(p.s, p.d + e) - r.surface(p.s, p.d - e)) / (2 * e),
+      ];
+    }
+    return b[0] + b[1] * ds + b[2] * (d - p.d);
   }
 
   /** Public: paving height above the route elevation at (s, d). */

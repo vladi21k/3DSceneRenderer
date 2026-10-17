@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TRACK_OFFSET, EYE_HEIGHT, DEFAULT_VFOV } from '../core/config.js';
+import { TRACK_OFFSET, EYE_HEIGHT, DEFAULT_VFOV, AXLES } from '../core/config.js';
 import { RNG, noise1, hash2 } from '../core/rng.js';
 import { input } from './input.js';
 
@@ -15,10 +15,13 @@ import { input } from './input.js';
 //  - body on its suspension: lateral sway and yaw hunting from track alignment, vertical
 //    bob and pitch from track level, roll from cross level and an outward roll in
 //    curves (v²κ), pitch from traction / braking with a spring-back at the stop;
-//  - impacts at the same rail joints / turnout parts and the same axles the audio uses
-//    (app.audio.features), so each bump lands with its knock;
+//  - framing: at the telephoto default (DEFAULT_VFOV) the gaze settles far down the line,
+//    so the rails run to a clear vanishing point on straights and bends alike; at wide
+//    angles it is the plain body-mounted view with a slight turn into curves;
+//  - impacts at the same rail joints / turnout parts and the same axles (config AXLES)
+//    the audio uses (app.audio.features), so each bump lands with its knock;
 //  - a fine traction / running buzz, boarding movements and door shudders at stops;
-//  - mouse look (drag) with soft limits, easing back to centre when released;
+//  - mouse look (grab and drag the view) with soft limits, easing back to centre when released;
 //  - zoom (Z / X / wheel / UI) between 12° and 60° vertical FOV, smoothed in log space;
 //    portrait screens keep the landscape horizontal view;
 //  - motion data for a shutter blur in post: previous view-projection, cut flag.
@@ -34,8 +37,11 @@ export const RIG = {
   eyeBack: 1.7,             // m, driver's eye behind the cab front
   pivot1: 3.125,            // m behind the cab front: cab bogie centre (body pivot)
   pivot2: 14.525,           // second bogie centre (sets the body axis)
-  lookAhead: 10,            // m, where the driver looks along the track
+  lookAhead: 10,            // m, where the driver looks along the track (wide angle)
   headTurn: 0.22,           // share of the angle to that point the head turns (rest: body axis)
+  teleLookAhead: 80,        // m, gaze point at the telephoto default: far down the line...
+  teleHeadTurn: 0.7,        // ...and how far the view turns towards it
+  teleFov: [20, 40],        // vertical FOV range blending telephoto (≤) into wide-angle (≥) framing
   basePitch: -0.7 * DEG,    // slight downward gaze (vanishing point a little above centre)
   gazeFreq: 0.55,           // Hz, head-turn spring (critically damped)
   rollPerLat: 0.32 * DEG,   // body roll per m/s² of lateral acceleration (outward)
@@ -51,11 +57,6 @@ export const RIG = {
   fovMax: 60,
   portraitMaxFov: 50,       // portrait screens: widest automatic vertical FOV
 };
-
-// Axles measured back from the cab front and how strongly each one moves the cab body:
-// the same positions as the audio's rolling layer (three bogies), so bumps and knocks
-// coincide. Flat pairs [offset, weight] (no per-frame garbage).
-const AXLES = [2.2, 1.0, 4.05, 0.92, 13.6, 0.34, 15.45, 0.31, 25.0, 0.13, 26.85, 0.12];
 
 /** Damped oscillator x'' = w²(target - x) - 2ζw x' (+ kicks). */
 class Spring {
@@ -100,21 +101,22 @@ function softInv(y, lim) {
   return ay <= k ? y : Math.sign(y) * (k + (lim - k) * Math.atanh((ay - k) / (lim - k)));
 }
 
-/** Joints when the audio module is not running: same statistics (18 m rails, most welded,
- *  ~60 % dipped joints), not the same positions. */
+/** Joints when the audio module is not running: the audio's statistics (18 m rails, almost
+ *  all welded with sev 0.03-0.1, 12 % insulated / dipped joints with sev 0.45-1.0, the
+ *  turnout parts of each crossover flagged xo), not the same positions. */
 function fallbackFeatures(route, layout) {
   const rng = RNG.from(layout.seed ?? 7, 'rig-joints');
   const out = [];
   for (let s = rng.range(2, 18); s < route.length - 2; s += 18 + rng.range(-0.35, 0.35)) {
     if (layout.isInCrossover(s, 4)) continue;
-    const dipped = rng.chance(0.62);
-    out.push({ s, kind: 'joint', sev: dipped ? rng.range(0.45, 1.0) : rng.range(0.08, 0.22) });
+    const dipped = rng.chance(0.12);
+    out.push({ s, kind: 'joint', sev: dipped ? rng.range(0.45, 1.0) : rng.range(0.03, 0.1) });
   }
   for (const c of layout.crossovers) {
     const facing = c.from > 0, at = (x) => route.wrap(facing ? c.s0 + x : c.s1 - x);
-    out.push({ s: at(0), kind: 'joint', sev: 0.5 }, { s: at(6.4), kind: 'joint', sev: 0.75 },
-      { s: at(14), kind: 'check', sev: 0.7 }, { s: at(15.6), kind: 'frog', sev: 1 },
-      { s: at(19.2), kind: 'joint', sev: 0.7 }, { s: at(23.5), kind: 'joint', sev: 0.55 });
+    out.push({ s: at(0), kind: 'joint', sev: 0.5, xo: true }, { s: at(6.4), kind: 'joint', sev: 0.75, xo: true },
+      { s: at(14), kind: 'check', sev: 0.7, xo: true }, { s: at(15.6), kind: 'frog', sev: 1, xo: true },
+      { s: at(19.2), kind: 'joint', sev: 0.7, xo: true }, { s: at(23.5), kind: 'joint', sev: 0.55, xo: true });
   }
   return out.sort((a, b) => a.s - b.s);
 }
@@ -149,9 +151,10 @@ const cameraRig = {
     this.prevViewProj = new T.Matrix4();
     this._lookOut = { dx: 0, dy: 0 };
     app.camera.rotation.order = 'YXZ';
-    // an explicit fov= is honoured exactly (captures); user zoom stays within the limits
+    // the telephoto default unless fov= is given; an explicit fov= is honoured exactly
+    // (captures, any aspect), user zoom stays within the limits
     this.fixedFov = app.params.fov != null;
-    this.fov = this.targetFov = app.params.fov ?? clamp(app.camera.fov || DEFAULT_VFOV, RIG.fovMin, RIG.fovMax);
+    this.fov = this.targetFov = app.params.fov ?? DEFAULT_VFOV;
     this._applyFov(app.camera);
 
     // body dynamics
@@ -167,7 +170,7 @@ const cameraRig = {
     this._prevV = 0; this._prevAcc = 0;
     this._lastT = 0;
     this.F = null;             // track features (resolved on the first update: audio inits later)
-    this._cursor = new Int32Array(AXLES.length / 2).fill(-1);
+    this._cursor = new Int32Array(AXLES.length).fill(-1);
     this.board = null;         // boarding movements while the doors are open
 
     // mouse look state
@@ -227,11 +230,15 @@ const cameraRig = {
     const eye = this._eye.copy(ax).multiplyScalar(RIG.pivot1 - RIG.eyeBack).add(p1);
     app.cameraS = route.wrap(s - RIG.eyeBack);
 
-    // ---- head: turns slightly towards the track ahead (from the body axis)
-    const pa = route.toWorld(s - RIG.eyeBack + RIG.lookAhead, TRACK_OFFSET, 0, this._p3);
+    // ---- head: turns towards the track ahead (from the body axis); a long lens looks far
+    // down the line so the rails keep running to the vanishing point through bends
+    const tele = smoothstep(Math.log(RIG.teleFov[1]), Math.log(RIG.teleFov[0]), Math.log(this.fov));
+    const look = RIG.lookAhead + tele * (RIG.teleLookAhead - RIG.lookAhead);
+    const share = RIG.headTurn + tele * (RIG.teleHeadTurn - RIG.headTurn);
+    const pa = route.toWorld(s - RIG.eyeBack + look, TRACK_OFFSET, 0, this._p3);
     const dx = pa.x - eye.x, dz = pa.z - eye.z;
-    const turnT = RIG.headTurn * wrapAngle(Math.atan2(-dz, dx) - bodyH);
-    const tiltT = RIG.headTurn * (Math.atan2(pa.y - eye.y, Math.hypot(dx, dz)) - bodyP);
+    const turnT = share * wrapAngle(Math.atan2(-dz, dx) - bodyH);
+    const tiltT = share * (Math.atan2(pa.y - eye.y, Math.hypot(dx, dz)) - bodyP);
     if (!this.head) {
       this.head = { x: turnT, v: 0, target: turnT };
       this.headP = { x: tiltT, v: 0, target: tiltT };
@@ -317,15 +324,15 @@ const cameraRig = {
     if (!F.length) return;
     const jump = this._prevS === null || Math.abs(route.delta(this._prevS, s)) > 25;
     const strength = Math.min(1, v / 11) * (0.6 + 0.4 * Math.min(1, v / 14));
-    for (let a = 0; a < AXLES.length; a += 2) {
-      const sa = route.wrap(s - AXLES[a]), c = a >> 1;
+    for (let c = 0; c < AXLES.length; c++) {
+      const axle = AXLES[c], sa = route.wrap(s - axle.offset);
       if (jump || this._cursor[c] < 0) { this._cursor[c] = nextIndex(F, sa); continue; }
       for (let guard = 0; guard < 8; guard++) {
         const ft = F[this._cursor[c]];
         if (route.delta(sa, ft.s) > 0) break;          // not reached yet
         this._cursor[c] = (this._cursor[c] + 1) % F.length;
         if (v < 0.3) continue;
-        const w = AXLES[a + 1] * strength;
+        const w = axle.weight * strength;
         // welds are barely there, dipped joints knock, the frog nose hits hardest
         const sev = ft.sev < 0.25 ? ft.sev * 0.25 : ft.sev;
         const k = ft.kind === 'frog' ? 1.8 : ft.kind === 'check' ? 0.5 : 1;
@@ -345,9 +352,10 @@ const cameraRig = {
     const { dx, dy } = input.consumeLook(this._lookOut);
     if (input.dragging) {
       const H = (this.app.canvas && this.app.canvas.clientHeight) || window.innerHeight || 1080;
-      const sens = (this.app.camera.fov * DEG) / H;   // the scene follows the cursor at any zoom
-      L.rawYaw = clamp(L.rawYaw - dx * sens, -RIG.yawLimit * 1.6, RIG.yawLimit * 1.6);
-      L.rawPitch = clamp(L.rawPitch - dy * sens, -RIG.pitchLimit * 1.6, RIG.pitchLimit * 1.6);
+      // grab the view (as the cursor shows): the scene under the cursor moves with it, at any zoom
+      const sens = (this.app.camera.fov * DEG) / H;
+      L.rawYaw = clamp(L.rawYaw + dx * sens, -RIG.yawLimit * 1.6, RIG.yawLimit * 1.6);
+      L.rawPitch = clamp(L.rawPitch + dy * sens, -RIG.pitchLimit * 1.6, RIG.pitchLimit * 1.6);
       const ty = soft(L.rawYaw, RIG.yawLimit), tp = soft(L.rawPitch, RIG.pitchLimit);
       const k = 1 - Math.exp(-rdt / 0.045);
       this.yaw += (ty - this.yaw) * k;

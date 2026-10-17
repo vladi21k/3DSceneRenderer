@@ -16,6 +16,7 @@ import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
 const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
+const SLAB_TONE = 0.3;                     // ground slab: dark, seen only through cracks
 
 /** Interior column offsets between a and b, denser next to rails. */
 function fill(out, a, b, nearA, nearB, maxStep) {
@@ -229,6 +230,9 @@ export function buildPaving(ctx, chunk, rows, out) {
     return v;
   };
 
+  // the built grid, so things lying on the paving can follow the actual mesh
+  samples.grid = { rowS, nc, D, H };
+
   for (let r = 0; r < nr - 1; r++) {
     // lod 1 has no 3D rails: the paving runs under the far-field rail lines
     const fillRails = lod > 0;
@@ -243,6 +247,33 @@ export function buildPaving(ctx, chunk, rows, out) {
     }
   }
   return samples;
+}
+
+/**
+ * Height of the built paving mesh (above the route elevation, like Surface.height) at
+ * route (s, d), from the grid buildPaving kept on its samples: the same triangle split
+ * as the mesh. Rows are at constant s and columns run nearly along it, so the cell is
+ * found in (row fraction, interpolated column) space. The ghost rows extend the grid by
+ * one row at both chunk ends; beyond them the end rows clamp. dl: signed route distance.
+ */
+export function pavingHeight(grid, s, d, dl) {
+  const { rowS, nc, D, H } = grid;
+  const x = rowS[0] + dl(rowS[0], s);
+  let lo = 0, hi = rowS.length - 1;
+  if (x <= rowS[0]) hi = 1;
+  else if (x >= rowS[hi]) lo = hi - 1;
+  else while (hi - lo > 1) { const m = (lo + hi) >> 1; if (rowS[m] <= x) lo = m; else hi = m; }
+  const t = Math.max(0, Math.min(1, (x - rowS[lo]) / (rowS[hi] - rowS[lo])));
+  const oa = lo * nc, ob = hi * nc;
+  const dAt = (c) => D[oa + c] + (D[ob + c] - D[oa + c]) * t;
+  let c = 0;
+  if (d >= dAt(nc - 1)) c = nc - 2;
+  else { let a = 0, b = nc - 1; while (b - a > 1) { const m = (a + b) >> 1; if (dAt(m) <= d) a = m; else b = m; } c = a; }
+  const d0 = dAt(c), d1 = dAt(c + 1);
+  const u = Math.max(0, Math.min(1, (d - d0) / Math.max(1e-6, d1 - d0)));
+  const Ha = H[oa + c], Hb = H[oa + c + 1], Hc = H[ob + c + 1], Hd = H[ob + c];
+  // quads are split a-b-c / a-c-d (a = row lo, column c; c = row hi, column c+1)
+  return u >= t ? Ha + (Hb - Ha) * u + (Hc - Hb) * t : Ha + (Hc - Hd) * u + (Hd - Ha) * t;
 }
 
 /** Distance (m) outside a diverging rail's span from its rail-local coordinate. */
@@ -264,10 +295,12 @@ export function inCrossoverZone(ctx, s) {
   return null;
 }
 
-/** Cheap ground slab under the whole street and the building blocks (crack catcher). */
+/** Cheap ground slab under the whole street and the building blocks (crack catcher).
+ *  It is drawn with the sidewalk (dark tone): no draw call or material of its own. */
 export function buildSlab(ctx, chunk, out) {
   const { route, layout, mats } = ctx;
-  const b = out.get(mats.slab, false);
+  const b = out.get(mats.walk, true);
+  const T = SLAB_TONE;
   const step = 4;
   const n = Math.max(1, Math.ceil((chunk.s1 - chunk.s0) / step));
   const smp = {};
@@ -281,8 +314,8 @@ export function buildSlab(ctx, chunk, out) {
     if (k < -1e-5) dr = Math.min(dr, 0.85 / -k);
     const y = smp.pos.y + SLAB_H;
     const u = ctx.surface.sp(s);
-    const a = b.v(smp.pos.x - smp.right.x * dl, y, smp.pos.z - smp.right.z * dl, 0, 1, 0, u, -dl);
-    b.v(smp.pos.x + smp.right.x * dr, y, smp.pos.z + smp.right.z * dr, 0, 1, 0, u, dr);
+    const a = b.v(smp.pos.x - smp.right.x * dl, y, smp.pos.z - smp.right.z * dl, 0, 1, 0, u, -dl, T, T, T);
+    b.v(smp.pos.x + smp.right.x * dr, y, smp.pos.z + smp.right.z * dr, 0, 1, 0, u, dr, T, T, T);
     if (prev >= 0) b.quad(prev, prev + 1, a + 1, a);
     prev = a;
   }

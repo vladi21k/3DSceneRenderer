@@ -10,7 +10,8 @@ import { hash2 } from '../../core/rng.js';
 //   ht_c    = lateral centre of the lineup (route d, metres), ht_sp = grid spacing (m)
 //   ht_rot  = extra heading for grid / sit figures (deg; 180 shows their backs, 90 a profile)
 //   ht_filter = skirt | dress | hat | cap | sunhat | suit | old | oldwalk | child | beard | glasses |
-//               shorts | bag | backpack | phone | cross | pocket | long | heavy | male | female | balding
+//               shorts | bag | backpack | phone | cross | pocket | long | heavy | male | female | balding |
+//               man | woman | teen | kid (4-6 body) | boy | girl | oldman | oldwoman | tee
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
 //   ht_tread = 1: grid figures walk in place (a treadmill) at ht_v (default 1.3 m/s), for gait checks
@@ -168,7 +169,7 @@ const FILTERS = {
   man: (a) => a.base === 'male' && a.age === 'adult',
   woman: (a) => a.base === 'female' && a.age === 'adult',
   teen: (a) => a.age === 'teen',
-  kid: (a) => a.age === 'child' && a.height < 1.22,
+  kid: (a) => a.body === 'kid',
   boy: (a) => a.age === 'child' && !a.female,
   girl: (a) => a.age === 'child' && a.female,
   oldman: (a) => a.age === 'old' && !a.female,

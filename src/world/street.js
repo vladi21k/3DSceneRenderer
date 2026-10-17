@@ -3,7 +3,7 @@ import { Surface } from './street/surface.js';
 import { buildPaving, buildSlab, inCrossoverZone } from './street/paving.js';
 import { railLinePoints } from './street/rails.js';
 import { buildMainRails } from './street/track.js';
-import { createLineMaterials, LineBuf, LINE_SHARED } from './street/lines.js';
+import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS } from './street/constants.js';
 import { CHUNK_LEN } from '../core/config.js';
@@ -13,19 +13,14 @@ import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
 import { createMortarMaterial, patchCanyon, patchCut } from './street/shading.js';
 
-// Rail steel finishes (variants of the library rail.head): the running band is polished
-// and finely scratched by the wheels (roughness ~0.18-0.28); the guard lip has no wheel
-// contact and stays dull, dusty steel, only slightly darker than the head.
-// All rail variants take vertex colours: the swept profile writes its cavity AO there.
-// The baked micro relief is toned down (normalScale): at grazing angles it turned the
-// sky reflection into a sparkle of specks rather than a satin sheen.
-const RAIL_HEAD = { roughness: 1.45, normalScale: [0.35, 0.35], vertexColors: true };
-// dust is a dielectric film: lower metalness than bare steel
-const RAIL_LIP = { color: [0.95, 0.93, 0.9], roughness: 1.05, metalness: 0.55, normalScale: [0.5, 0.5], vertexColors: true };
-// rust on the narrow field-side bevel: dark, dirty brown rather than fresh orange
-const RAIL_RUST = { color: [0.62, 0.68, 0.78], vertexColors: true };
-// flangeway: near-black compacted grime (the library bake), slightly browner
-const RAIL_GROOVE = { color: [1.0, 0.95, 0.9], vertexColors: true };
+// Rail steel: every steel face of the profile (polished running band, flange-polished
+// gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
+// texture carries each finish on its own band of v (see constants.js RAIL_PROFILE); the
+// flangeway is rail.groove. Both take vertex colours: the swept profile writes its cavity
+// AO there. The baked micro relief is toned down (normalScale): at grazing angles it
+// turned the sky reflection into a sparkle of specks rather than a satin sheen.
+const RAIL_HEAD = { normalScale: [0.35, 0.35], vertexColors: true };
+const RAIL_GROOVE = { vertexColors: true };
 
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
@@ -39,8 +34,7 @@ const street = {
   async init(app) {
     const M = app.materials;
     const surface = new Surface(app.route, app.layout);
-    const lines = createLineMaterials();
-    for (const m of Object.values(lines)) M.register(m.name, m);
+    const lines = M.register('street.line', createLineMaterial());
     const details = createDetailMaterials(app.renderer);
     for (const m of Object.values(details)) M.register(m.name, m);
     const mortar = M.register('street.mortar', createMortarMaterial());
@@ -50,16 +44,15 @@ const street = {
       corr: M.get('paving.street', { vertexColors: true }),
       band: M.get('paving.band', { vertexColors: true }),
       walk: M.get('paving.sidewalk', { vertexColors: true }),
-      slab: M.get('concrete'),
       kerb: M.get('paving.band', { vertexColors: true }),
       asphalt: M.get('asphalt', { vertexColors: true }),
       grout: mortar,
       tactile: M.get('paving.tactile', { vertexColors: true }),
-      rail: { head: steel('rail.head', RAIL_HEAD), gauge: null, lip: steel('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove', RAIL_GROOVE), seal: mortar },
+      rail: { head: steel('rail.head', RAIL_HEAD), groove: M.get('rail.groove', RAIL_GROOVE), seal: mortar },
       lines,
       details,
     };
-    mats.rail.gauge = mats.rail.head;
+    mats.rail.gauge = mats.rail.lip = mats.rail.side = mats.rail.head;
     // crossover variants of the same materials: they discard the fragments that lie in
     // another rail's opening (frog flangeways, switch boxes; see crossover.js)
     const cut = (m, mode = 'rail') => patchCut(m, mode);
@@ -67,8 +60,6 @@ const street = {
     mortarCut.name = 'street.mortar.cut';
     mats.cut = {
       head: cut(steel('rail.head', { ...RAIL_HEAD, stCut: 1 })),
-      lip: cut(steel('rail.head', { ...RAIL_LIP, stCut: 1 })),
-      side: cut(M.get('rail.side', { ...RAIL_RUST, stCut: 1 })),
       groove: cut(M.get('rail.groove', { ...RAIL_GROOVE, stCut: 1 })),
       seal: mortarCut,
       mortar: mortarCut,
@@ -76,7 +67,7 @@ const street = {
       // cast floor of switch boxes and frogs (never cut), pushed behind the groove floors
       floor: M.get('rail.groove', { ...RAIL_GROOVE, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 }),
     };
-    mats.cut.gauge = mats.cut.head;
+    mats.cut.gauge = mats.cut.lip = mats.cut.side = mats.cut.head;
     mats.cut.check = mats.cut.head;   // check rails: guard lip polished by wheel backs
     // diverging rails: their swept mortar strips lie over the paving (see rails.js)
     const mortarDiv = M.register('street.mortar.div', cut(createMortarMaterial()));
@@ -130,9 +121,12 @@ const street = {
     // 3D main rails (through crossovers too)
     if (chunk.lod === 0) buildMainRails(ctx, chunk, rows, samples, bufs);
     mark('rails3d');
-    // line overlays: rails (far-field AA), paint, joints
-    const L = this.lineBufs || (this.lineBufs = { rail: new LineBuf(), centre: new LineBuf(), stripe: new LineBuf(), joint: new LineBuf() });
-    for (const k in L) L[k].reset();
+    // line overlays (one mesh): rails (far-field AA), paint, joints
+    const LB = (this.lineBuf || (this.lineBuf = new LineBuf())).reset();
+    const L = {
+      rail: LB.style(chunk.lod === 0 ? LINE_STYLE.railNear : LINE_STYLE.railFar),
+      centre: LB.style(LINE_STYLE.centre), stripe: LB.style(LINE_STYLE.stripe), joint: LB.style(LINE_STYLE.joint),
+    };
     // crossovers overlapping the chunk (each builds only its part inside the chunk)
     for (const c of ctx.surface.near.xo) buildCrossover(ctx, c, chunk, bufs, L.rail);
     for (const c of ctx.layout.inChunk('crossStreets', chunk.index)) {
@@ -141,11 +135,10 @@ const street = {
     }
     if (chunk.lod === 0) {
       buildPlatformTactile(ctx, chunk, bufs);
-      buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L.joint);
+      buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L.joint, samples.grid);
     }
     mark('special');
-    const sphere = chunkSphere(ctx, chunk);
-    bufs.build(group, 'street', { sphere });
+    bufs.build(group, 'street');
     mark('meshes');
 
     for (const rl of MAIN_RAILS) {
@@ -167,9 +160,7 @@ const street = {
     }
     flush();
 
-    const lm = ctx.mats.lines;
-    const lineMat = { rail: chunk.lod === 0 ? lm.railNear : lm.railFar, centre: lm.centre, stripe: lm.stripe, joint: lm.joint };
-    for (const k of Object.keys(L)) if (!L[k].empty) group.add(L[k].mesh(lineMat[k], `street:${k}Lines`));
+    if (!LB.empty) group.add(LB.mesh(ctx.mats.lines, 'street:lines'));
     mark('lines');
     return group;
   },
@@ -234,15 +225,6 @@ function densify(ctx, chunk, out) {
     dense.push(b);
   }
   return dense;
-}
-
-/** Generous bounding sphere for everything a chunk builds (cross streets included). */
-function chunkSphere(ctx, chunk) {
-  const mid = (chunk.s0 + chunk.s1) / 2;
-  const c = ctx.route.toWorld(mid, 0, 0);
-  let r = (chunk.s1 - chunk.s0) / 2 + 60;
-  if (ctx.layout.inChunk('crossStreets', chunk.index).length) r += 140;
-  return new THREE.Sphere(c, r);
 }
 
 /** Tactile warning strips on the sidewalk at both ends of every platform. */

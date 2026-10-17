@@ -52,20 +52,22 @@ export const SLAB_H = -0.30;                             // ground slab below ev
 // Grooved rail cross-section, from the field-side paving edge to the gauge-side one:
 // [x, h, kind of the segment that ends at this point, cavity AO at this point, rail.head
 // texture v (optional; default: arc length along the profile)].
-//   head   head top: the polished running band (rail.head texture band, v 0.031-0.054)
-//   gauge  gauge corner and upper gauge face, polished by the flanges (texture v ≈ 0.075)
-//   lip    guard lip top and both its edges: steel dulled by dust, no wheel contact
-//   side   narrow rusty field-side bevel
-//   groove compacted grime in the flangeway and on its walls
+// All steel (head, gauge, lip, side) is one rail.head surface: its texture lays out the
+// finishes across v, and the profile pins each kind onto its band:
+//   head   head top: the polished running band (v 0.031-0.054)
+//   gauge  gauge corner and upper gauge face, polished by the flanges (v ≈ 0.075)
+//   lip    guard lip top and both its edges: dusty steel, no wheel contact (v 0.106-0.127)
+//   side   narrow field-side bevel: brown oxide (v ≈ 0.02)
+//   groove compacted grime in the flangeway and on its walls (rail.groove)
 //   seal   bitumen sealing strip against the paving
 // The AO darkens the cavity (groove floor 0.25, walls 0.45, lower gauge face 0.6), so
 // the flangeway reads as a dark slot rather than a lit channel.
 export const RAIL_PROFILE = [
   [RAIL_X0, 0.0, null, 1],
   [-0.0378, -0.0024, 'seal', 0.92],
-  [-0.0287, -0.0038, 'seal', 0.8],
-  [-0.0283, -0.0019, 'side', 0.9],
-  [HEAD_DULL, -0.0006, 'side', 1],
+  [-0.0287, -0.0038, 'seal', 0.8, 0.02],
+  [-0.0283, -0.0019, 'side', 0.9, 0.021],
+  [HEAD_DULL, -0.0006, 'side', 1, 0.0235],
   [-0.0250, -0.0002, 'head', 1, 0.031],
   [0.0000, 0.0, 'head', 1, 0.0435],        // slightly crowned, polished running surface
   [0.0160, -0.0001, 'head', 1, 0.0515],
@@ -79,12 +81,12 @@ export const RAIL_PROFILE = [
   [0.0585, -GROOVE_DEPTH, 'groove', 0.25],
   [0.0658, -0.0338, 'groove', 0.3],
   [0.0690, -0.0280, 'groove', 0.45],
-  [0.0698, -0.0095, 'groove', 0.62],
-  [0.0702, -0.0040, 'lip', 0.82],          // worn inner edge of the lip
-  [0.0714, -0.0017, 'lip', 0.97],
-  [0.0742, -0.0011, 'lip', 1],
-  [0.0800, -0.0014, 'lip', 1],
-  [0.0828, -0.0040, 'lip', 0.92],
+  [0.0698, -0.0095, 'groove', 0.62, 0.106],
+  [0.0702, -0.0040, 'lip', 0.82, 0.1115],  // worn inner edge of the lip
+  [0.0714, -0.0017, 'lip', 0.97, 0.1141],
+  [0.0742, -0.0011, 'lip', 1, 0.117],
+  [0.0800, -0.0014, 'lip', 1, 0.1228],
+  [0.0828, -0.0040, 'lip', 0.92, 0.1266],
   [0.0858, -0.0043, 'seal', 0.8],
   [0.0925, -0.0027, 'seal', 0.92],
   [RAIL_X1, 0.0, 'seal', 1],

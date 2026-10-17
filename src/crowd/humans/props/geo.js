@@ -26,6 +26,8 @@ export const PIECE = {
   CASTER_WHEEL: 10,// spins about X through aAux.xyz by anim.y, then swivels about the vertical through aPiv
   SADDLE: 11,      // slides along aAux.xyz (unit) by anim.y metres (saddle height)
   FWHEEL_S: 12,    // stroller front wheel without swivel: spins about X through aPiv by anim.y
+  BABY_HAT: 13,    // shown with BABY when the look's hat bit is set
+  BABY_HAIR: 14,   // shown with BABY when the hat bit is clear
 };
 
 export const CH = {
@@ -41,6 +43,7 @@ export const CH = {
   CLOTH: 9,     // baby clothes (palette from instance flags)
   LEATHER: 10,  // grain relief (saddles, grips)
   REFLECT: 11,  // red / amber reflector (faint sparkle)
+  CHAIN: 12,    // chain: links drawn along uv.x, scrolled by the crank angle x aMat.w (chainring pitch radius)
 };
 
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -64,6 +67,7 @@ export function roundRect(hx, hy, r, cornerSeg = 2) {
   const out = [];
   const corners = [[hx - r, hy - r, 0], [-hx + r, hy - r, 1], [-hx + r, -hy + r, 2], [hx - r, -hy + r, 3]];
   for (const [cx, cy, q] of corners) {
+    if (cornerSeg <= 0) { const t = (q + 0.5) * (Math.PI / 2); out.push([cx + Math.cos(t) * r, cy + Math.sin(t) * r]); continue; }
     for (let k = 0; k <= cornerSeg; k++) {
       const t = (q + k / cornerSeg) * (Math.PI / 2);
       out.push([cx + Math.cos(t) * r, cy + Math.sin(t) * r]);
@@ -74,7 +78,7 @@ export function roundRect(hx, hy, r, cornerSeg = 2) {
 
 /** Points along a curve (THREE.Curve or array of control points through a centripetal Catmull-Rom). */
 export function curveOf(pts, closed = false) {
-  if (pts.isCurve) return pts;
+  if (typeof pts.getPointAt === "function") return pts;
   if (pts.length === 2) return new THREE.LineCurve3(pts[0], pts[1]);
   return new THREE.CatmullRomCurve3(pts, closed, 'centripetal');
 }
@@ -175,6 +179,7 @@ export class Builder {
       _c.set(nx, ny, nz).applyMatrix3(this.nxf).normalize(); nx = _c.x; ny = _c.y; nz = _c.z;
     }
     const s = this.s;
+    if (!Number.isFinite(px + py + pz + nx + ny + nz) && !Builder.nanSeen) { Builder.nanSeen = true; console.error('[props] NaN vertex', new Error().stack); }
     this.P.push(px, py, pz);
     this.N.push(nx, ny, nz);
     this.T.push(u, v);
@@ -273,11 +278,14 @@ export class Builder {
    * scale(t) -> number or [sx, sy] multiplies the profile; N0 seeds the frame normal.
    * caps: 'round' | 'flat' | null at each end ([start, end] or one value for both).
    */
-  sweep(path, profile, { n = null, scale = 1, N0 = null, caps = null, stepRad = 0.2, maxLen = 0.25, closedPath = false, twist = 0 } = {}) {
-    const curve = Array.isArray(path) && path.length > 2 && !closedPath ? curveOf(path) : (Array.isArray(path) ? null : path);
+  sweep(path, profile, { n = null, ts = null, scale = 1, N0 = null, caps = null, stepRad = 0.2, maxLen = 0.25, closedPath = false, twist = 0, raw = false } = {}) {
     let pts;
-    if (curve) pts = samplePath(curve, n || segsFor(curve, stepRad, maxLen));
-    else pts = path.map((p) => p.clone());
+    if (closedPath || raw) pts = path.map((p) => p.clone());
+    else {
+      const curve = curveOf(path);
+      if (ts) pts = ts.map((t) => curve.getPointAt(Math.min(1, Math.max(0, t))));
+      else pts = samplePath(curve, n || segsFor(curve, stepRad, maxLen));
+    }
     const fr = rmf(pts, N0, closedPath);
     const np = pts.length;
     const sc = (t) => { const s = typeof scale === 'function' ? scale(t) : scale; return Array.isArray(s) ? s : [s, s]; };
@@ -285,7 +293,6 @@ export class Builder {
     for (let i = 1; i < np; i++) L.push(L[i - 1] + pts[i].distanceTo(pts[i - 1]));
     const total = L[np - 1] || 1;
     const rows = [];
-    const centres = [];
     const ring = (C, Nf, Bf, s, ang) => {
       const ca = Math.cos(ang), sa = Math.sin(ang);
       return profile.map(([x, y]) => {
@@ -305,18 +312,18 @@ export class Builder {
         const ph = (k / K) * (Math.PI / 2);
         const f = Math.cos(ph);
         const C = pts[i].clone().addScaledVector(T, Math.sin(ph) * r * 0.85);
-        out.push({ C, row: ring(C, fr.N[i], fr.B[i], [s[0] * Math.max(f, 0.0), s[1] * Math.max(f, 0.0)], twist * (end ? 1 : 0)) });
+        out.push(ring(C, fr.N[i], fr.B[i], [s[0] * f, s[1] * f], twist * (end ? 1 : 0)));
       }
       return out;
     };
-    if (c0 === 'round') for (const r of capRings(false).reverse()) { rows.push(r.row); centres.push(r.C); }
+    if (c0 === 'round') for (const r of capRings(false).reverse()) rows.push(r);
     for (let i = 0; i < np; i++) {
       const t = L[i] / total;
       rows.push(ring(pts[i], fr.N[i], fr.B[i], sc(t), twist * t));
-      centres.push(pts[i]);
     }
-    if (c1 === 'round') for (const r of capRings(true)) { rows.push(r.row); centres.push(r.C); }
-    this.surface(rows, { wrapJ: true, wrapI: closedPath, out: (p, i) => _c.subVectors(p, centres[i]) });
+    if (c1 === 'round') for (const r of capRings(true)) rows.push(r);
+    // a counter-clockwise profile (N towards B) gives outward normals
+    this.surface(rows, { wrapJ: true, wrapI: closedPath, flip: signedArea(profile) < 0 });
     if (c0 === 'flat') this.disc(pts[0], fr.T[0].clone().negate(), ring(pts[0], fr.N[0], fr.B[0], sc(0), 0));
     if (c1 === 'flat') this.disc(pts[np - 1], fr.T[np - 1].clone(), ring(pts[np - 1], fr.N[np - 1], fr.B[np - 1], sc(1), twist));
     return { pts, frames: fr };
@@ -349,7 +356,7 @@ export class Builder {
    * Surface of revolution about the X axis through `c`. prof: [[x, r], ...] (open polyline);
    * seg around; a0..a1 angular range (default full turn). uvFn(i, j, angle, profS) optional.
    */
-  revolveX(c, prof, seg, { a0 = 0, a1 = Math.PI * 2, uv = null, out = null, twoSided = false } = {}) {
+  revolveX(c, prof, seg, { a0 = 0, a1 = Math.PI * 2, uv = null, flip = null, twoSided = false } = {}) {
     const full = Math.abs(a1 - a0 - Math.PI * 2) < 1e-6;
     const ni = full ? seg : seg + 1;
     const rows = [];
@@ -358,19 +365,23 @@ export class Builder {
       const ca = Math.cos(a), sa = Math.sin(a);
       rows.push(prof.map(([x, r]) => new THREE.Vector3(c.x + x, c.y + r * ca, c.z - r * sa)));
     }
-    this.surface(rows, { wrapI: full, out: out || ((p) => _c.set(0, p.y - c.y, p.z - c.z)), uv, twoSided });
+    // profiles are written with the outside on the RIGHT of their direction in the (x, r) plane
+    // (e.g. over the top from +x to -x); decreasing angle ranges mirror that
+    this.surface(rows, { wrapI: full, uv, twoSided, flip: flip !== null ? flip : a1 > a0 });
     return this;
   }
 
   /** Surface of revolution about the local Y axis (lathe) at c: prof [[r, y], ...]. */
-  revolveY(c, prof, seg, { out = null, uv = null } = {}) {
+  revolveY(c, prof, seg, { uv = null } = {}) {
     const rows = [];
+    let my = 0;
+    for (const [, y] of prof) my += y / prof.length;
     for (let i = 0; i < seg; i++) {
       const a = (i / seg) * Math.PI * 2;
       const ca = Math.cos(a), sa = Math.sin(a);
       rows.push(prof.map(([r, y]) => new THREE.Vector3(c.x + r * ca, c.y + y, c.z - r * sa)));
     }
-    this.surface(rows, { wrapI: true, out: out || ((p) => _c.set(p.x - c.x, 0, p.z - c.z)), uv });
+    this.surface(rows, { wrapI: true, out: (p) => _c.set(p.x - c.x, p.y - c.y - my, p.z - c.z), uv });
     return this;
   }
 
@@ -474,6 +485,15 @@ export class Builder {
     g.userData.shared = true;
     return g;
   }
+}
+
+function signedArea(profile) {
+  let a = 0;
+  for (let i = 0; i < profile.length; i++) {
+    const [x0, y0] = profile[i], [x1, y1] = profile[(i + 1) % profile.length];
+    a += x0 * y1 - x1 * y0;
+  }
+  return a / 2;
 }
 
 function profileRadius(profile) {

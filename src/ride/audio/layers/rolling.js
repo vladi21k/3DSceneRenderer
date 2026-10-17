@@ -13,7 +13,8 @@
 import { noise1 } from '../../../core/rng.js';
 import { glide, clamp, smoothstep } from '../dsp.js';
 import { WHEEL_CIRC } from '../synth/rail.js';
-import { AXLES, nextFeatureIndex } from '../track.js';
+import { AXLES } from '../../../core/config.js';
+import { nextFeatureIndex, NEAR_BOGIE_END } from '../track.js';
 
 const VMAX = 13.9;        // 50 km/h
 const VREF = 10;          // m/s at which the excitation frequencies below are given
@@ -80,7 +81,7 @@ export class RollingLayer {
     this.jFar = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 1100, Q: 0.6 });
     this.jNear.connect(e.bus.joints);
     this.jFar.connect(e.bus.joints);
-    this.axles = AXLES.map((a) => ({ ...a, next: -1 }));
+    this.axles = AXLES.map((a) => ({ ...a, far: a.offset > NEAR_BOGIE_END, next: -1 }));
     this.prevS = null;
     this.idle = false;
   }
@@ -130,7 +131,7 @@ export class RollingLayer {
     const jump = this.prevS === null || Math.abs(route.delta(this.prevS, st.s)) > 25;
     this.prevS = st.s;
     for (const ax of this.axles) {
-      const sa = route.wrap(st.s - ax.o);
+      const sa = route.wrap(st.s - ax.offset);
       if (jump || ax.next < 0) { ax.next = nextFeatureIndex(F, sa); continue; }
       for (let guard = 0; guard < 8; guard++) {
         const f = F[ax.next];
@@ -150,19 +151,19 @@ export class RollingLayer {
     const jitter = 1 + e.rng.range(-0.03, 0.03);
     if (f.kind === 'check') {
       const buf = e.bank.get('scrape' + (ax.far ? 1 : 0));
-      if (buf && v > 1) e.shot(buf, dest, when, 0.35 * f.sev * ax.w * vf, clamp(0.85 + v / 40, 0.85, 1.25));
+      if (buf && v > 1) e.shot(buf, dest, when, 0.35 * f.sev * ax.weight * vf, clamp(0.85 + v / 40, 0.85, 1.25));
       return;
     }
     if (f.kind === 'joint' && f.sev < 0.25) {
       // a weld: only a low thump through the floor
       const buf = e.bank.get('thump' + (f.v % 4));
-      if (buf) e.shot(buf, this.jNear, when, 0.25 * f.sev * ax.w * vf, jitter);
+      if (buf) e.shot(buf, this.jNear, when, 0.25 * f.sev * ax.weight * vf, jitter);
       return;
     }
     const buf = e.bank.get((f.kind === 'frog' ? 'frog' : 'clack') + f.v);
     if (!buf) return;
     // turnout parts clatter; a plain-line insulated / dipped joint is a duller knock
-    const gain = (f.kind === 'frog' ? 0.42 : f.xo ? 0.24 : 0.1) * f.sev * ax.w * vf;
+    const gain = (f.kind === 'frog' ? 0.42 : f.xo ? 0.24 : 0.1) * f.sev * ax.weight * vf;
     // harder hits sound a little brighter
     const rate = (0.92 + 0.1 * clamp(v / VMAX, 0, 1)) * jitter;
     e.shot(buf, dest, when, gain, rate);

@@ -10,13 +10,14 @@ import * as THREE from 'three';
 // and BufSet.build() copies the written range into exact-size arrays for the
 // geometry, then returns them. Steady-state builds therefore allocate only what the
 // GPU upload needs (no zero-filled oversized arrays, no growth copies, less GC).
+// Each buffer tracks the bounding box of what it holds as vertices are written, so
+// every mesh gets tight culling bounds without a pass over its vertices.
 
 export class MeshBuf {
   constructor({ color = false, cut = false, cap = 1024 } = {}) {
     this.hasColor = color;
     this.hasCut = cut;
-    this.n = 0;
-    this.ni = 0;
+    this.reset();
     this._alloc(cap, cap * 6);
   }
 
@@ -38,7 +39,11 @@ export class MeshBuf {
     }
   }
 
-  reset() { this.n = 0; this.ni = 0; return this; }
+  reset() {
+    this.n = 0; this.ni = 0;
+    this.x0 = this.y0 = this.z0 = Infinity; this.x1 = this.y1 = this.z1 = -Infinity;
+    return this;
+  }
 
   /** Make room for `nv` more vertices and `nIdx` more indices. */
   reserve(nv, nIdx = nv * 6) {
@@ -51,6 +56,9 @@ export class MeshBuf {
     if (this.n >= this.cap) this._alloc(this.cap * 2, this.icap);
     const i = this.n++, i3 = i * 3, i2 = i * 2;
     const p = this.pos, n = this.nor;
+    if (x < this.x0) this.x0 = x; if (x > this.x1) this.x1 = x;
+    if (y < this.y0) this.y0 = y; if (y > this.y1) this.y1 = y;
+    if (z < this.z0) this.z0 = z; if (z > this.z1) this.z1 = z;
     p[i3] = x; p[i3 + 1] = y; p[i3 + 2] = z;
     n[i3] = nx; n[i3 + 1] = ny; n[i3 + 2] = nz;
     this.uv[i2] = u; this.uv[i2 + 1] = w;
@@ -82,9 +90,9 @@ export class MeshBuf {
 
   get empty() { return this.ni === 0; }
 
-  /** BufferGeometry with exact-size copies of the written range. Bounds come from the
-   *  caller (chunk sphere) when given, which avoids a pass over every vertex. */
-  geometry(sphere = null) {
+  /** BufferGeometry with exact-size copies of the written range, bounded by the box of
+   *  the written vertices. */
+  geometry() {
     const g = new THREE.BufferGeometry();
     const n = this.n;
     g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, n * 3), 3));
@@ -94,8 +102,9 @@ export class MeshBuf {
     if (this.hasCut) g.setAttribute('aStCut', new THREE.BufferAttribute(this.cut.slice(0, n * 4), 4));
     const src = this.idx.subarray(0, this.ni);
     g.setIndex(new THREE.BufferAttribute(n <= 65535 ? new Uint16Array(src) : src.slice(), 1));
-    if (sphere) g.boundingSphere = sphere.clone();
-    else g.computeBoundingSphere();
+    const box = new THREE.Box3(new THREE.Vector3(this.x0, this.y0, this.z0), new THREE.Vector3(this.x1, this.y1, this.z1));
+    g.boundingBox = box;
+    g.boundingSphere = box.getBoundingSphere(new THREE.Sphere());
     return g;
   }
 }
@@ -128,10 +137,10 @@ export class BufSet {
     }
     return b;
   }
-  build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0, sphere = null } = {}) {
+  build(group, name, { castShadow = false, receiveShadow = true, renderOrder = 0 } = {}) {
     for (const [mat, b] of this.map) {
       if (!b.empty) {
-        const m = new THREE.Mesh(b.geometry(sphere), mat);
+        const m = new THREE.Mesh(b.geometry(), mat);
         m.name = `${name}:${mat.name}`;
         m.castShadow = castShadow; m.receiveShadow = receiveShadow;
         m.renderOrder = renderOrder;

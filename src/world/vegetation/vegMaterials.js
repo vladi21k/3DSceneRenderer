@@ -25,12 +25,20 @@ import { U } from '../../core/uniforms.js';
 // Interior occlusion darkens only the sky / indirect light.
 //
 // Coverage: the atlas carries coverage-preserving alpha mips, so coverage is sharpened at
-// every distance (alpha-to-coverage edges with MSAA, alpha test without).
+// every distance (alpha-to-coverage edges with MSAA, alpha test without). The coverage is
+// rounded to whole MSAA samples: some drivers dither fractional alpha-to-coverage over a
+// screen-fixed 2x2 pixel pattern, which would print a checkerboard behind the leaves.
+// Strong direct light: transmission and specular of a light are capped at LIGHT_CAP times
+// the sky's irradiance (and a lamp's diffuse at LAMP_CAP times), so low sun through a
+// backlit crown or a leaf next to a lantern glows instead of clipping to neon green.
 // LOD cross-fade: the batch colour alpha of an instance is 1 when shown, in (0, 1) while
 // fading in and in (1, 2) while fading out; fragments are dithered on screen accordingly
 // (complementary patterns, so a tree never shows both or neither).
 //
 // Vertex data: see treeGen.js (aVeg, aCrown, aCard; bark: aBark).
+
+const LIGHT_CAP = 8.0;
+const LAMP_CAP = 18.0;
 
 const WIND_PARS = /* glsl */`
 uniform float uTime;
@@ -134,13 +142,14 @@ function rep(src, from, to, what) {
 
 /** Leaf material: shared by every tree, shrub and flower card. */
 function patchLeaf(mat, params) {
-  chain(mat, 'veg-leaf-v2', (shader) => {
+  chain(mat, 'veg-leaf-v3', (shader) => {
     windUniforms(shader, params);
     shader.uniforms.uLeafTrans = params.trans;
     shader.uniforms.uLeafSpec = params.spec;
     shader.uniforms.uVegA2C = params.a2c;
     shader.uniforms.uVegDensity = params.density;
     shader.uniforms.uVegShift = params.shift;
+    shader.uniforms.uVegCap = params.cap;
     shader.uniforms.uSunDirV = U.uSunDir;
     let vs = shader.vertexShader;
     vs = rep(vs, '#include <common>', `#include <common>
@@ -195,8 +204,10 @@ function patchLeaf(mat, params) {
       uniform float uLeafSpec;
       uniform float uVegA2C;
       uniform vec3 uSunDirV;
+      uniform vec2 uVegCap;
       ${FADE_FN}
-      float vegGloss = 0.5;`, 'leaf frag common');
+      float vegGloss = 0.5;
+      float vegSkyE = 0.0;  // luminance of the sky irradiance on a level surface (set before the lights)`, 'leaf frag common');
     fs = rep(fs, '#include <map_fragment>', /* glsl */`
       #ifdef USE_MAP
         vec4 vegTex = texture2D( map, vMapUv );  // straight sRGB colour, decoded by the sampler
@@ -206,7 +217,8 @@ function patchLeaf(mat, params) {
         float vegFace = abs( dot( normalize( vVegGN ), normalize( vViewPosition ) ) );
         float vegA = vegTex.a * mix( 0.45, 1.0, smoothstep( 0.03, 0.2, vegFace ) );
         float vegCov = uVegA2C > 0.5 ? clamp( ( vegA - 0.5 ) / max( fwidth( vegA ), 1e-4 ) + 0.5, 0.0, 1.0 ) : step( 0.5, vegA );
-        if ( vegCov < 0.02 ) discard;
+        if ( uVegA2C > 0.5 ) vegCov = floor( vegCov * uVegA2C + 0.5 ) / uVegA2C;  // whole samples
+        if ( vegCov <= 0.0 ) discard;
         diffuseColor.rgb *= vegTex.rgb;
         diffuseColor.a = vegCov;
       #endif`, 'leaf map_fragment');
@@ -247,9 +259,14 @@ function patchLeaf(mat, params) {
         float facing = abs( dot( gn, geometryViewDir ) );
         ReflectedLight leafRL = ReflectedLight( vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ), vec3( 0.0 ) );
         RE_Direct_Physical( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, leafRL );
-        reflectedLight.directDiffuse += leafRL.directDiffuse * through;
+        // strong light: transmission and sheen capped at a few times the sky's irradiance,
+        // and a lamp's diffuse too (a leaf against the lantern stays a lit leaf)
+        float vegE = dot( directLight.color, vec3( 0.2126, 0.7152, 0.0722 ) );
+        float vegCapT = vegSkyE > 0.0 ? min( 1.0, uVegCap.x * vegSkyE / max( vegE, 1e-9 ) ) : 1.0;
+        float vegCapD = isSun || vegSkyE <= 0.0 ? 1.0 : min( 1.0, uVegCap.y * vegSkyE / max( vegE, 1e-9 ) );
+        reflectedLight.directDiffuse += leafRL.directDiffuse * ( through * vegCapD );
         // waxy but small and curled leaves: part of the specular; none on edge-on cards
-        reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) );
+        reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) * vegCapT );
         // transmission: light arriving on the far side of the card, strongest looking into
         // the light; thin outer leaves pass diffused light even when partly occluded
         if ( dot( gn, geometryViewDir ) < 0.0 ) gn = -gn;
@@ -259,10 +276,16 @@ function patchLeaf(mat, params) {
         float rim = smoothstep( 0.8, 1.05, vVegRim ) * smoothstep( 0.5, 0.9, into );
         float tThrough = isSun ? mix( 0.35, 1.0, vVegSun ) : 1.0;
         vec3 tc = material.diffuseColor * vec3( 1.5, 1.8, 0.5 );
-        reflectedLight.directDiffuse += directLight.color * tc * uLeafTrans * tThrough * ( back * ( 0.55 + 1.8 * fwd ) + 0.3 * fwd + 0.5 * rim ) * RECIPROCAL_PI;
+        reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT ) * ( back * ( 0.55 + 1.8 * fwd ) + 0.3 * fwd + 0.5 * rim ) * RECIPROCAL_PI;
       }
       #undef RE_Direct
       #define RE_Direct RE_Direct_Leaf`, 'leaf lights pars');
+    fs = rep(fs, '#include <lights_fragment_begin>', /* glsl */`
+      #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+        vegSkyE = dot( getIBLIrradiance( normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ) ), vec3( 0.2126, 0.7152, 0.0722 ) );
+      #endif
+      vegSkyE += dot( getAmbientLightIrradiance( ambientLightColor ), vec3( 0.2126, 0.7152, 0.0722 ) );
+      #include <lights_fragment_begin>`, 'leaf lights begin');
     fs = rep(fs, '#include <lights_fragment_end>', /* glsl */`#include <lights_fragment_end>
       {
         // grazing cards pick up no sky sheen
@@ -390,6 +413,9 @@ export function createVegMaterials(app, atlas) {
     density: { value: 0.42 },   // crown extinction (1/m): exp(-0.42 * 2 m) ~ 0.43 through a young crown
     shift: { value: 1 },        // shadow lookup moved out of the crown along the sun ray (0 = off, debug)
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
+    // per-light caps in units of the sky's irradiance: transmission + specular of any
+    // light, diffuse of a lamp (see header)
+    cap: { value: new THREE.Vector2(LIGHT_CAP, LAMP_CAP) },
   };
   const leaf = new THREE.MeshStandardMaterial({
     name: 'vegetation.leaf',

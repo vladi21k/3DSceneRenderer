@@ -1,13 +1,15 @@
 import { hash2, noise1 } from '../../core/rng.js';
 import { TRACK_ZONE_HALF, VIEW_AHEAD } from '../../core/config.js';
 import { PLATFORM_W } from '../../world/layout.js';
-import { Agent, KIND, ST, TASK, LANE } from './agent.js';
+import { Agent, KIND, ST, TASK, LANE, MOB } from './agent.js';
 import { laneTarget, setLane, board, doorOf } from './behaviour.js';
 import {
   MAX_AGENTS, RANGE_BEHIND, RANGE_AHEAD, FAR_TAPER, FAR_SLACK, FAR_HARD, FAR_SPAWN_BAND, WALKER_DENSITY, MAX_SEATED,
   MAX_PASSENGERS, STANDER_TARGET, WALK_MEAN, WALK_SD, WALK_MIN, WALK_MAX, RIDE_D, BAND, AGENT_R, TRAM_LEN,
-  CLEAR_T, CLEAR_T_DREAMY,
+  CLEAR_T, CLEAR_T_DREAMY, MOB_SHARE, STROLLER_V, WALKBIKE_V, CYCLE_V, CYCLE_CLEAR_T,
 } from './constants.js';
+import { updateFoot, footBandGap, propPointDist2, footGap } from './footprint.js';
+import { pickRideLane, rideNear, wayClear } from './cyclist.js';
 
 // Who is on the street. Keeps the density target over the populated range,
 // recycles people who fall behind the camera or walk out of range, and brings new
@@ -15,7 +17,9 @@ import {
 // streets and shop doors, or right behind somebody (or a kiosk) on the same line of
 // sight far down the street. Also seats café patrons and bench sitters, fills
 // platforms and hands boarding / alighting passengers to the tram. Children only
-// appear with an adult.
+// appear with an adult. A share of the walkers have a stroller (often with a partner or
+// a child walking alongside), ride a bicycle or walk one: spawned to keep their shares,
+// only where the whole figure with its stroller / bicycle is out of sight.
 
 const BIN = 10;
 const BENCH_RESERVE = 12;   // seated slots kept for people on benches
@@ -47,6 +51,7 @@ export class Population {
     this.frame = 0;
     this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, vanishSeen: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
     this.popOut = [0, 0, 0, 0];  // removals of figures in plain view, by distance
+    this.mobCount = [0, 0, 0, 0]; // people with a stroller / riding / walking a bicycle (by MOB)
   }
 
   // ---------------------------------------------------------------- slots
@@ -80,19 +85,26 @@ export class Population {
     a.wSeed = hash2(this.serial, 977) & 0xffff;
     a.wT = r.range(4, 10); a.paceT = r.range(5, 15); a.faceJ = r.range(-0.25, 0.25);
     a.spawnHidden = false; a.seatS = 0; a.seatD = 0; a.crossOK = 0; a.bornT = c.time; a.platformOK = false;
+    a.mob = MOB.NONE; a.propSeed = 0; a.lean = 0; a.fpR = 0; a.extLo = 0; a.extHi = 0; a.extS = 0;
+    a.bikeV = 0; a.yawW = 0; a.cOff = 0; a.cT = 0; a.slowT = 0; a.mountT = 0; a.mvOn = false; a.mvBand = false;
+    a.mvToBand = false; a.mvLane = null; a.nearT = 0; a.headValid = false; a.clearHi = false; a.clearSpare = 0;
     this.stats.spawned++;
     return a;
   }
 
-  /** Appearance seed for the role: re-hashed until the body fits (adult / child, height, sitting style). */
+  /** Appearance seed for the role: re-hashed until the body fits. Roles: 'adult' (default:
+   *  teens, adults and the elderly), 'child', 'any', 'elderly', 'parent' (an adult with free
+   *  hands, to push a stroller), 'grandparent', 'rider' (a teen or adult with free hands and no
+   *  skirt or long coat, for a bicycle). opt.maxH caps the height, opt.noCross avoids the
+   *  crossed-legs sitting variant. */
   _appearance(role, opt) {
     const H = this.c.humans;
     let seed = hash2(this.serial, this.c.seed * 7919 + 13) >>> 0;
     if (!H || !H.appearanceOf) return seed;
     let roleOk = -1;   // first seed of the right role, should nothing fit the extra wishes
-    for (let k = 0; k < 48; k++) {
+    for (let k = 0; k < 64; k++) {
       const ap = H.appearanceOf(seed);
-      if (role === 'any' || (role === 'child') === (ap.base === 'child')) {
+      if (roleFits(role, ap)) {
         if (!opt || ((!opt.maxH || ap.height <= opt.maxH) && (!opt.noCross || ap.sit !== 1))) return seed;
         if (roleOk < 0) roleOk = seed;
       }
@@ -227,23 +239,90 @@ export class Population {
   /** Places a fresh walker (and maybe its group). Returns the leader or null. */
   spawnWalker(sU, side, dir, opts = {}) {
     const c = this.c, r = c.rng;
-    const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src, 'adult', opts.maxH ? { maxH: opts.maxH } : null);
+    const mob = opts.mob || MOB.NONE;
+    const role = mob === MOB.STROLLER ? (r.chance(0.12) ? 'grandparent' : 'parent') : mob ? 'rider' : 'adult';
+    const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src, role, opts.maxH ? { maxH: opts.maxH } : null);
     if (!a) return null;
     // hidden behind a figure: only someone shorter than it
     if (opts.maxH && a.height > opts.maxH) { this._unspawn(a); this.stats.spawnFail++; return null; }
     a.s = sU; a.side = side; a.dir = dir;
     a.d = side * (c.map.bandInAt(sU, side) + 1); // provisional (lane choice looks at where the agent is)
+    if (mob) this._setMob(a, mob);
     setLane(c, a, r);
-    if (opts.lane !== undefined) { a.lane = opts.lane; if (a.lane === LANE.SIDE) a.laneF = r.range(0.04, 0.96); }
-    if (opts.laneD !== undefined) { a.lane = LANE.CORR; a.laneD = opts.laneD; }
-    a.d = opts.d ?? laneTarget(c, a);
+    if (mob === MOB.CYCLE) pickRideLane(c, a, r, opts.d !== undefined ? side : 0);
+    if (opts.lane !== undefined && mob !== MOB.CYCLE) { a.lane = opts.lane; if (a.lane === LANE.SIDE) a.laneF = r.range(0.04, 0.96); }
+    if (opts.laneD !== undefined && !mob) { a.lane = LANE.CORR; a.laneD = opts.laneD; }
+    a.d = opts.d ?? (mob === MOB.CYCLE ? this._rideLineAt(a) : laneTarget(c, a));
     if (opts.d === undefined) a.d += r.range(-0.2, 0.2);
     a.alpha = dir > 0 ? 0 : PI;
     a.vs = dir * a.v0 * (opts.still ? 0 : 1);
+    if (mob) { a.bikeV = mob === MOB.CYCLE && !opts.still ? a.v0 : 0; a.cT = a.d; updateFoot(a); }
     if (!opts.force && !this._placeOk(a)) { this._unspawn(a); this.stats.spawnFail++; return null; }
-    const groupP = opts.group ?? 0.34;
-    if (r.chance(groupP)) this._makeGroup(a, opts);
+    this.mobCount[mob]++;
+    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.34);
+    if (r.chance(groupP)) { if (mob === MOB.STROLLER) this._makeStrollerGroup(a, opts); else this._makeGroup(a, opts); }
     return a;
+  }
+
+  /** Give a fresh walker a stroller or a bicycle: pace, tram caution, model of the prop. */
+  _setMob(a, mob) {
+    const r = this.c.rng;
+    a.mob = mob;
+    a.propSeed = hash2(a.serial, 3301) & 0xffff;
+    if (mob === MOB.STROLLER) a.v0 = r.range(STROLLER_V[0], STROLLER_V[1]);
+    else if (mob === MOB.WALKBIKE) a.v0 = r.range(WALKBIKE_V[0], WALKBIKE_V[1]);
+    else {
+      a.v0 = r.range(CYCLE_V[0], CYCLE_V[1]);
+      // riders keep an eye and an ear on the tram, and get off its track early
+      a.dreamy = false; a.needsBell = false;
+      a.clearT = r.range(CYCLE_CLEAR_T[0], CYCLE_CLEAR_T[1]);
+    }
+    if (mob !== MOB.CYCLE) { a.dreamy = a.dreamy && r.chance(0.3); a.needsBell = a.dreamy; }
+    a.mountT = this.c.time + r.range(5, 20);
+  }
+
+  /** The riding line through where a cyclist is put. */
+  _rideLineAt(a) {
+    const c = this.c, map = c.map;
+    if (a.lane === LANE.CORR) {
+      // the tram near: the far side of the ride track
+      if (rideNear(c, a) && a.laneD > RIDE_D - c.tram.passD - 0.6) return RIDE_D - c.tram.passD - 0.7 - this.c.rng.range(0, 0.8);
+      return a.laneD;
+    }
+    const lo = map.bandInAt(a.s, a.side), hi = map.bandOutAt(a.s, a.side);
+    return a.side * Math.min(lo + 0.32 + Math.max(0, hi - lo - 1.1) * a.laneF, Math.max(lo + 0.32, hi - 0.45));
+  }
+
+  /** A parent with a stroller: often a partner alongside, or a child holding on beside it. */
+  _makeStrollerGroup(a, opts) {
+    const c = this.c, r = c.rng;
+    const sideA = r.chance(0.5) ? 1 : -1;                 // which side the partner walks on
+    const partner = r.chance(0.58);
+    const kids = partner ? (r.chance(0.3) ? 1 : 0) : 1;
+    const slots = [];
+    if (partner) slots.push({ role: r.chance(0.15) ? 'elderly' : 'any', F: r.range(-0.25, 0.05), R: sideA * r.range(0.68, 0.8) });
+    for (let k = 0; k < kids; k++) {
+      // beside the stroller with a hand on it, or beside the parent on the free side
+      if (r.chance(0.5)) slots.push({ role: 'child', F: r.range(0.32, 0.55), R: -sideA * r.range(0.6, 0.68), maxH: 1.35 });
+      else slots.push({ role: 'child', F: r.range(-0.12, 0.08), R: -sideA * r.range(0.44, 0.52) });
+    }
+    a.v0 = Math.max(0.95, a.v0 * (kids ? 0.94 : 1));
+    for (const sl of slots) {
+      if (this.free.length <= 4) break;
+      const f = this.alloc(a.kind, opts.src, sl.role, sl.maxH ? { maxH: sl.maxH } : null);
+      if (!f) break;
+      if (sl.role === 'any' && f.isChild) { this._unspawn(f); continue; }
+      f.baseF = sl.F; f.baseR = sl.R;
+      const th = a.dir > 0 ? 0 : PI, cf = Math.cos(th), sf = Math.sin(th);
+      f.s = a.s + cf * sl.F - sf * sl.R; f.d = a.d + sf * sl.F + cf * sl.R;
+      f.side = a.side; f.dir = a.dir; f.lane = a.lane; f.laneF = a.laneF; f.laneD = a.laneD;
+      f.v0 = a.v0 * r.range(1.0, 1.06); f.alpha = a.alpha; f.vs = a.vs;
+      f.inDoor = a.inDoor;
+      if (!opts.force && !this._placeOk(f)) { this._unspawn(f); continue; }
+      f.leader = a; a.followers.push(f);
+      f.state = a.state;
+    }
+    a.nFollow = a.followers.length;
   }
 
   /** Companions for leader a: couples side by side, threes in a loose V / U, fours in pairs,
@@ -288,13 +367,30 @@ export class Population {
     const c = this.c, map = c.map;
     const ad = Math.abs(a.d), side = Math.sign(a.d) || a.side;
     const ahead = a.s - c.tram.trainU;
-    if (Math.abs(a.d - RIDE_D) < BAND + 0.1 && ahead > -TRAM_LEN - 4 && ahead < c.tram.clearAhead + 30) return false;
+    const inBand = a.mob ? footBandGap(a) < 0.1 + (a.mob === MOB.CYCLE ? 0.6 : 0) : Math.abs(a.d - RIDE_D) < BAND + 0.1;
+    if (inBand && ahead > -TRAM_LEN - 4 - a.extS && ahead < c.tram.clearAhead + 30 + (a.mob === MOB.CYCLE ? 80 : 0)) return false;
     if (!a.noRect && map.rectInner(a.s, side, ad, AGENT_R * 0.5)) return false;
     if (!a.inDoor && ad > map.reachAt(a.s, side, (x) => c.unwrap(x))) return false;
     map.gatherCircles(a.s, 2);
     for (let k = 0; k < map.qN; k++) {
       const i = map.qI[k], ds = map.qDS[k], dd = map.cD[i] - a.d;
       if (ds * ds + dd * dd < (map.cR[i] + AGENT_R + 0.1) ** 2) return false;
+      if (a.mob && a.fpR > 0 && propPointDist2(a, ds, dd) < (map.cR[i] + a.fpR + 0.1) ** 2) return false;
+    }
+    if (a.mob && a.fpR > 0) {
+      for (let e = 0; e < 2; e++) {
+        const ps = a.s + (e ? a.fp1s : a.fp0s), pd = a.d + (e ? a.fp1d : a.fp0d), ps2 = Math.sign(pd) || side;
+        if (map.rectInner(ps, ps2, Math.abs(pd), a.fpR * 0.6)) return false;
+        if (Math.abs(pd) > map.wallAt(ps, ps2) - a.fpR && !map.mouthAt(ps, ps2)) return false;
+      }
+    }
+    // not on top of someone else (a bicycle is long)
+    if (a.mob) {
+      for (const b of this.agents) {
+        if (!b.active || b === a) continue;
+        const ds = b.s - a.s, dd = b.d - a.d;
+        if (ds * ds + dd * dd < 4 && footGapOk(a, b, ds, dd) === false) return false;
+      }
     }
     return true;
   }
@@ -302,6 +398,7 @@ export class Population {
   /** Initial street: walkers over the whole range, chat groups, then the features. */
   fillInitial() {
     const c = this.c, r = c.rng;
+    this.mobCount.fill(0);
     this._count();
     this.scanFeatures();
     this._fillQueue(1e9);
@@ -319,7 +416,7 @@ export class Population {
           const n = this.spawnChat(sU, side);
           if (n) { want -= n; c.counts.stand += n; continue; }
         }
-        const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1);
+        const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob: this._pickMob(r) });
         if (a) { want -= 1 + a.nFollow; this.stats.bySource.init += 1 + a.nFollow; }
       }
     }
@@ -378,10 +475,12 @@ export class Population {
     const k = c.counts;
     k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0;
     this.binCount.fill(0);
+    this.mobCount.fill(0);
     let walkers = 0;
     for (const a of this.agents) {
       if (!a.active) continue;
       const rel = a.s - c.camU;
+      this.mobCount[a.mob]++;
       if (a.s < lo) { this.stats.recycled++; this.kill(a, 'recycle'); continue; }
       if (rel > RANGE_AHEAD + FAR_SLACK && !a.leader && a.kind !== KIND.SEATED && a.kind !== KIND.PASSENGER) {
         // far beyond the range: leave only unseen (or, rarely, when much too far)
@@ -448,6 +547,21 @@ export class Population {
     const sU = c.camU + sRel;
     const side = r.chance(0.5) ? 1 : -1;
     let a = null, src = '';
+    // a stroller or a bicycle, to keep their shares (only where the whole figure can arrive unseen)
+    const mob = this._pickMob(r);
+    if (mob) {
+      if (sRel < 45) {
+        a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob, src: 'near' });
+        if (a && !this._groupHidden(a)) { this._killGroup(a); a = null; }
+        else if (a) a.spawnHidden = true;
+        src = 'near';
+      } else {
+        // far down the street right behind somebody, else out of a side street anywhere in range
+        if (sRel > 300) { a = this._spawnBehind(sU, side, mob); src = 'behind'; }
+        if (!a) { a = this._spawnMobSide(mob); src = 'side'; }
+      }
+      if (a) { this.stats.bySource[src] += 1 + a.nFollow; this.stats.mob = (this.stats.mob || 0) + 1; return 1 + a.nFollow; }
+    }
     if (sRel > RANGE_AHEAD - FAR_SPAWN_BAND) {
       // far down the street: out of a doorway or side street, else right behind somebody
       a = this._spawnFromDoor(sU, side); src = 'door';
@@ -473,8 +587,41 @@ export class Population {
   _groupHidden(a) {
     const vis = this.c.vis;
     if (!vis.hidden(a.s, a.d)) return false;
+    // the far end of a stroller / bicycle too
+    if (a.mob && a.fpR > 0 && (!vis.hidden(a.s + a.fp0s, a.d + a.fp0d) || !vis.hidden(a.s + a.fp1s, a.d + a.fp1d))) return false;
     for (const f of a.followers) if (!vis.hidden(f.s, f.d)) return false;
     return true;
+  }
+
+  /** Stroller / bicycle role for the next arrival, by how far each share is below its target. */
+  _pickMob(r) {
+    const c = this.c;
+    if (!c.mobOn) return MOB.NONE;
+    const W = Math.max(60, this.walkerTarget);
+    for (const [m, share] of [[MOB.CYCLE, MOB_SHARE.cycle], [MOB.STROLLER, MOB_SHARE.stroller], [MOB.WALKBIKE, MOB_SHARE.walkbike]]) {
+      if (!c.mobOK(m)) continue;
+      const want = share * W * c.mobX, def = want - this.mobCount[m];
+      if (def <= 0.5) continue;
+      if (r.chance(Math.min(0.6, (def / want) * 0.5 * Math.max(1, c.mobX)))) return m;
+    }
+    return MOB.NONE;
+  }
+
+  /** Out of any side street in the populated range whose inside the camera cannot see. */
+  _spawnMobSide(mob) {
+    const c = this.c, r = c.rng, L = c.layout.crossStreets;
+    const n = L.length, k0 = r.int(0, n - 1);
+    for (let k = 0; k < n; k++) {
+      const m = L[(k0 + k) % n];
+      const rel = c.unwrap(m.s) - c.camU;
+      if (rel < 50 || rel > RANGE_AHEAD - 10) continue;
+      const sides = m.side === 0 ? (r.chance(0.5) ? [1, -1] : [-1, 1]) : [m.side];
+      for (const side of sides) {
+        const a = this._spawnFromSideStreet(c.unwrap(m.s), side, mob);
+        if (a) return a;
+      }
+    }
+    return null;
   }
 
   _killGroup(a) {
@@ -482,17 +629,19 @@ export class Population {
     this._unspawn(a);
   }
 
-  _spawnFromSideStreet(sU, side) {
+  _spawnFromSideStreet(sU, side, mob = MOB.NONE) {
     const c = this.c, r = c.rng, map = c.map;
     for (let k = -2; k <= 2; k++) {
       const m = map.mouthAt(sU + k * 6, side);
       if (!m) continue;
       const ms = c.unwrap(m.s), line = map.mouthLine(m, side);
-      const x = r.range(-1, 1) * (m.width / 2 - 1.4), depth = r.range(5, 10);
+      const x = r.range(-1, 1) * (m.width / 2 - (mob ? 2.0 : 1.4)), depth = r.range(5, 10) + (mob ? 2.5 : 0);
       const sp = ms + x, dp = side * (line + depth);
       const sa = ms - m.width / 2, sb = ms + m.width / 2;
       if (!c.vis.bodyHidden(sp, dp, side, line, sa, sb)) return null;
-      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side' });
+      // a stroller / bicycle points out of the side street: its front must be hidden too
+      if (mob && !c.vis.bodyHidden(sp, dp - side * 1.3, side, line, sa, sb)) return null;
+      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side', mob });
       if (!a) return null;
       for (const f of [...a.followers]) {
         f.d = dp + side * r.range(0.4, 1.2); f.s = sp + r.range(-0.5, 0.5);
@@ -503,6 +652,13 @@ export class Population {
       a.gs = sp + r.range(-1, 1); a.gd = side * (line - 1.0); a.gTol = 0.6;
       a.alpha = side > 0 ? -PI / 2 : PI / 2;
       a.vs = 0; a.spawnHidden = true;
+      if (mob === MOB.CYCLE) {
+        // rides out of the side street and turns onto the main street (a way clear of the bollards)
+        a.gs = sp + r.range(-0.5, 0.5); a.gd = side * (line - 1.6); a.gTol = 1.2;
+        a.bikeV = r.range(2.0, 2.8); a.cT = a.d;
+        if (!wayClear(c, sp, dp, a.gs, a.gd, 0.3) || !wayClear(c, a.gs, a.gd, a.gs + a.dir * 4, a.gd - side * 2.5, 0.3)) { this._killGroup(a); return null; }
+      }
+      if (mob) updateFoot(a);
       return a;
     }
     return null;
@@ -533,7 +689,7 @@ export class Population {
 
   /** Far down the street: a figure that steps out from behind another (taller) figure or a kiosk
    *  on the same line of sight, a few metres further away. */
-  _spawnBehind(sU, side) {
+  _spawnBehind(sU, side, mob = MOB.NONE) {
     const c = this.c, r = c.rng, vis = c.vis, map = c.map;
     // a random occluder near sU on this side (reservoir pick over people, then street furniture)
     let occ = null, n = 0;
@@ -544,6 +700,7 @@ export class Population {
     }
     let os, od, w, maxH, dir;
     if (occ) { os = occ.s; od = occ.d; w = 0.46; maxH = occ.height - 0.03; dir = r.chance(0.6) ? occ.dir : -occ.dir; }
+    else if (mob) return null;
     else {
       for (const o of this.occluders) {
         const so = c.unwrap(o.s);
@@ -555,9 +712,22 @@ export class Population {
     }
     const behind = occ ? r.range(2.5, 8) : r.range(w / 2 + 0.6, w / 2 + 2.5);
     const s = os + behind, d = vis.rayBehind(os, od, behind);
+    // a bicycle / stroller only on a clear line: the corridor or the sidewalk, not among the poles and trees
+    if (mob && Math.abs(d) > TRACK_ZONE_HALF - 0.45 && Math.abs(d) < map.bandInAt(s, side) + (mob === MOB.CYCLE ? 0.5 : 0.35)) return null;
     if (vis.rayOffset(s, d, os, od) > Math.max(0.03, w / 2 - 0.26)) return null;
-    const a = this.spawnWalker(s, side, dir, { d, force: false, group: 0, src: 'behind', maxH: maxH || undefined, laneD: Math.abs(d) < TRACK_ZONE_HALF ? d : undefined });
+    const a = this.spawnWalker(s, side, dir, { d, force: false, group: 0, src: 'behind', maxH: maxH || undefined, laneD: Math.abs(d) < TRACK_ZONE_HALF ? d : undefined, mob });
     if (!a) return null;
+    if (mob) {
+      // the stroller / bicycle lies along the line of sight: hidden as long as it is no wider
+      if (vis.rayOffset(a.s + a.fp0s, a.d + a.fp0d, os, od) > 0.12 || vis.rayOffset(a.s + a.fp1s, a.d + a.fp1d, os, od) > 0.12) { this._killGroup(a); return null; }
+      if (mob === MOB.CYCLE) {
+        // ride on along a line through the spot
+        if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = Math.max(-3.0, Math.min(3.0, d)); }
+        else { a.lane = LANE.SIDE; a.side = side; a.laneF = 0.3; }
+      }
+      a.spawnHidden = true;
+      return a;
+    }
     // walk on from where they stand: lane chosen to match the spot
     if (a.lane !== LANE.CORR) {
       const ad = Math.abs(d), bi = map.bandInAt(s, side), bo = map.bandOutAt(s, side);
@@ -836,3 +1006,20 @@ export class Population {
     }
   }
 }
+
+/** Does an appearance suit a role (see Population._appearance)? */
+function roleFits(role, ap) {
+  const age = ap.age || (ap.base === 'child' ? 'child' : 'adult');
+  switch (role) {
+    case 'any': return true;
+    case 'child': return ap.base === 'child';
+    case 'elderly': return age === 'old';
+    case 'parent': return age === 'adult' && !ap.carry && !ap.phoneWalk;
+    case 'grandparent': return age === 'old' && !ap.walkOld && !ap.carry && !ap.phoneWalk;
+    case 'rider': return (age === 'adult' || age === 'teen') && !ap.carry && !ap.phoneWalk && !ap.skirtPart;
+    default: return ap.base !== 'child';
+  }
+}
+
+/** Footprints of a and b (b at ds, dd from a) apart? */
+function footGapOk(a, b, ds, dd) { return footGap(a, b, ds, dd).gap > 0.05; }

@@ -8,6 +8,8 @@ import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, GROOVE_DEPTH, GROUT_W, SEAL_
 //  - railLinePoints(): centre-line points for the far-field anti-aliased overlay.
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+// profile kinds drawn with rail.head, whose texture v the profile pins
+const PINNED = new Set(['head', 'gauge', 'check', 'lip', 'side']);
 
 /**
  * Profile segments grouped into runs that share vertices. Default: consecutive
@@ -34,11 +36,11 @@ function buildRuns(profile, byKind = false) {
     }
   }
   // texture v: arc length from the field-side paving edge, unless the profile pins it
-  // (head top and gauge corner are mapped onto the rail.head texture's polished bands)
+  // (the steel kinds are mapped onto their bands of the rail.head texture)
   let acc = 0;
   for (const s of segs) {
     s.v0 = acc; acc += Math.hypot(s.x1 - s.x0, s.h1 - s.h0); s.v1 = acc;
-    if (s.kind === 'head' || s.kind === 'gauge' || s.kind === 'check') { s.v0 = s.t0 ?? s.v0; s.v1 = s.t1 ?? s.v1; }
+    if (PINNED.has(s.kind)) { s.v0 = s.t0 ?? s.v0; s.v1 = s.t1 ?? s.v1; }
   }
   const runs = [];
   let cur = null;

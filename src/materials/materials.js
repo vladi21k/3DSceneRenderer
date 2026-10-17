@@ -3,7 +3,7 @@ import { U } from '../core/uniforms.js';
 import { Baker } from './baker.js';
 import { RECIPES } from './recipes/index.js';
 import { LIBRARY } from './library.js';
-import { applySurface, surfaceUniforms, surfaceOf } from './surface.js';
+import { applySurface, surfaceUniforms, surfaceOf, familyOf } from './surface.js';
 
 // Physically based material library (contract: docs/ARCHITECTURE.md).
 // At init every tileable texture set is baked procedurally on the GPU (baker.js), then
@@ -45,10 +45,13 @@ function build(name, def) {
   setProps(m, def.props || {});
   const t = def.bake ? shared.textures.get(def.bake) : null;
   const surf = def.surf || {};
-  // SURF / SURF_GLASS are the only code switches (injected by the patch itself); all
-  // other features are uniform-driven (see surface.js)
+  // the shader code is assembled per feature family (lite / stone / paving) plus the
+  // translucency, night and glass switches; everything else is uniform-driven (surface.js)
   if (t || def.night || surf.trans) {
-    applySurface(m, { textures: t, glass: !!def.glassClear, uniforms: surfaceUniforms(surf, def, t, shared) });
+    applySurface(m, {
+      textures: t, family: familyOf(def, t?.recipe), trans: !!surf.trans, night: !!def.night, glass: !!def.glassClear,
+      uniforms: surfaceUniforms(surf, def, t, shared),
+    });
   }
   return m;
 }

@@ -33,6 +33,7 @@ export function openingMasonry(ctx, face, o) {
   B.rectV(sRev, u0, u1, -R, 0, y0, 1);
   if (!arched) B.rectV(sRev, u0, u1, -R, 0, yt, -1);
   else soffit(B, sRev, o, -R, 0, arcSeg(q, o));
+  B.mark('op.reveal');
 
   // ---------------------------------------------------------------- dark interior
   const sD = sinks.dark;
@@ -49,6 +50,7 @@ export function openingMasonry(ctx, face, o) {
     backFace(B, sD, o, -R - 0.02, Math.max(3, arcSeg(q, o) >> 1));
   }
   B.flat = [1, 1, 1];
+  B.mark('op.interior');
 
   // ---------------------------------------------------------------- dressing
   const sT = sinks.smooth;
@@ -79,19 +81,22 @@ export function openingMasonry(ctx, face, o) {
     }
   }
 
+  B.mark('op.surround');
   // head
   if (arched) {
     const T = ground ? orn.shopRing : (surround ? surround * 1.3 : orn.ring);
     const proj = ground ? orn.shopRingP : (surround ? sp : 0.012);
     voussoirRing(ctx, sT, o, T, proj, orn.keystone || ground, bev, seed);
+    B.mark('op.head.ring' + (ground ? 'G' : ''));
   } else {
     const { kind, ext, H } = flatHead(o, orn, surround, ctx.ch);
     const proj = surround ? sp : (ground ? 0.02 : 0.012);
-    if (kind === 'flatArch') flatArch(ctx, sT, o, ext, H, proj, bev, seed);
+    if (kind === 'flatArch') { flatArch(ctx, sT, o, ext, H, proj, bev, seed); B.mark('op.head.flatArch'); }
     else if (kind === 'hood') { lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone, seed); hood(ctx, sT, o, ext, yt + H); }
     else lintel(ctx, sT, o, ext, H, proj, bev, orn.keystone && kind !== 'plain', seed);
   }
 
+  B.mark('op.head');
   // sill
   if (o.kind === 'window') {
     const ext = (surround || 0.06) + 0.07;
@@ -107,6 +112,7 @@ export function openingMasonry(ctx, face, o) {
     }
   }
 
+  B.mark('op.sill');
   // threshold and steps at ground openings
   if (ground) {
     const gA = face.groundAt(u0), gB = face.groundAt(u1);

@@ -1,11 +1,16 @@
 // Vertex colour model for the masonry: per-building stone tint, baked ambient
-// occlusion (under cornices, string courses and balconies, in reveals, at the base),
-// large soft patches of stone variation, and a per-vertex grime mask (out[3], the
-// aGrime attribute) that tells the weathered stone materials (grime.js) where to put
-// drip trails, rain-wash streaks and soot crusts: in strips under sill ends and
-// balcony slab ends, under cornice and course soffits, in the splash zone, and all
-// over the facades of the few buildings that were never cleaned.
+// occlusion (under cornices and string courses, in reveals, at the base), large soft
+// patches of stone variation, and a per-vertex grime mask (out[3], the aGrime
+// attribute) that tells the weathered stone materials (grime.js) where to put drip
+// trails, rain-wash streaks and soot crusts: under cornice and course soffits, in the
+// splash zone, and all over the facades of the few buildings that were never cleaned.
+// out[4] is the building's local dirtiness (scales the grime mask).
 // Colour factors are linear multipliers on the material albedo.
+//
+// Run-off below balcony slabs and window sills (soffit occlusion, soot band, streaks,
+// drip strips under the slab and sill ends) is shaded per pixel by the stone materials:
+// FaceShade lists those occluders, and every vertex carries the one above it (aRun, see
+// runAttr), so the wall needs no extra geometry for them.
 
 function ihash(x, y, seed) {
   let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(seed | 0, 0x9e3779b1);
@@ -85,54 +90,75 @@ export class FaceShade {
       ao[i] = a; gm[i] = g;
     }
     this.ao = ao; this.gm = gm; this.vMin = vMin; this.step = step; this.n = n;
-    // local occluders binned per metre of v: balconies (soffit occlusion, and water /
-    // rust running off the slab ends) and window sills (dirt running off the sill ends)
-    this.bins = [];
-    const bin = (y0, y1, item) => {
-      for (let i = Math.max(0, Math.floor(y0 - vMin)); i <= Math.floor(y1 - vMin); i++) (this.bins[i] || (this.bins[i] = [])).push(item);
+    // run-off occluders: balcony slabs (line = soffit) and window sills (line = underside),
+    // with a random strength s and the attribute code (see runAttr)
+    this.occ = [];
+    const add = (bal, a, b, y, sv) => {
+      const s = Math.min(1.98, Math.max(0.02, sv));
+      this.occ.push({ bal, a, b, y, s, run: bal ? BAL_RUN : SILL_RUN, code: (bal ? 1 : -1) * (Math.max(1, Math.floor((b - a) * 64)) + 0.5 * s) });
     };
-    for (const b of face.balconies || []) {
-      const it = { bal: true, a: b.u0, b: b.u1, y: b.y - 0.02, d: b.depth || 0.9, s: 0.7 + 0.6 * hash1(b.u0 * 31 + b.y * 5, seed) };
-      bin(it.y - BAL_RUN, it.y, it);
-    }
-    const ext = opts.sillExt ?? 0.15;
+    for (const b of face.balconies || []) add(true, b.u0, b.u1, b.y - (b.slabT || 0.16), 0.7 + 0.6 * hash1(b.u0 * 31 + b.y * 5, seed));
+    const ext = opts.sillExt ?? 0.15, sh = opts.sillH ?? 0.12;
     for (const o of face.openings || []) {
-      if (o.kind !== 'window') continue;
-      const it = { bal: false, a: o.uc - o.w / 2 - ext, b: o.uc + o.w / 2 + ext, y: o.y - 0.12, s: 0.5 + 0.8 * hash1(o.uc * 13 + o.y * 7, seed) };
-      bin(it.y - SILL_RUN, it.y, it);
+      if (o.kind === 'window') add(false, o.uc - o.w / 2 - ext, o.uc + o.w / 2 + ext, o.y - sh, 0.5 + 0.8 * hash1(o.uc * 13 + o.y * 7, seed));
     }
+    this.occ.sort((p, q) => p.y - q.y);
   }
 
-  /** Wall field colour at (u, v) into out[0..2], grime mask into out[3]. */
+  /** Lines (v) where the run-off occluder above changes: wall rows are cut there. */
+  occluderLines() { return this.occ.map((it) => it.y); }
+
+  /** The nearest run-off occluder above (u, v) whose run reaches it, or null. */
+  occluderAt(u, v) {
+    for (const it of this.occ) {
+      if (it.y < v - 1e-3 || it.y - v > it.run) continue;
+      if (u > it.a - ZONE_M && u < it.b + ZONE_M) return it;
+    }
+    return null;
+  }
+
+  /**
+   * Zones of the wall row va..vc by the occluder whose run-off shades them: the nearest
+   * one above that covers u (a line inside the row counts as above: wall rows are cut at
+   * the lines, or a few centimetres from them), else the horizontally nearest (its
+   * run-off is nil there; this keeps one zone change per gap). Returns
+   * {cuts: [u1, ...], occ: [occ0, occ1, ...]}: occ[k] holds between cuts[k-1] and cuts[k].
+   */
+  rowZones(va, vc) {
+    const cand = _cand;
+    cand.length = 0;
+    for (const it of this.occ) if (it.y > va + 1e-3 && it.y - va < it.run) cand.push(it);
+    if (!cand.length) return NO_ZONES;
+    const xs = [];
+    for (const it of cand) xs.push(it.a - ZONE_M, it.b + ZONE_M);
+    xs.sort((p, q) => p - q);
+    const pts = [xs[0]];
+    for (let i = 1; i < xs.length; i++) pts.push((xs[i - 1] + xs[i]) / 2, xs[i]);
+    const winner = (u) => {
+      let best = null, bd = Infinity;
+      for (const it of cand) {
+        const d = u < it.a - ZONE_M ? it.a - ZONE_M - u : u > it.b + ZONE_M ? u - it.b - ZONE_M : 0;
+        // covering occluders (d 0) by height, then the nearest interval
+        const key = d > 0 ? 1e3 + d : it.y;
+        if (key < bd) { bd = key; best = it; }
+      }
+      return best;
+    };
+    const cuts = [], occ = [winner(pts[0] - 1)];
+    for (let i = 0; i < pts.length; i++) {
+      const w = winner(i + 1 < pts.length ? (pts[i] + pts[i + 1]) / 2 : pts[i] + 1);
+      if (w !== occ[occ.length - 1]) { cuts.push(pts[i]); occ.push(w); }
+    }
+    return { cuts, occ };
+  }
+
+  /** Wall field colour at (u, v) into out[0..2], grime mask into out[3], dirtiness into out[4]. */
   wall(u, v, out) {
     const t = this.tint;
     let i = ((v - this.vMin) / this.step) | 0;
     if (i < 0) i = 0; else if (i >= this.n) i = this.n - 1;
-    let a = this.ao[i], g = this.gm[i];
-    let rust = 0, wash = 0;
-    const list = this.bins[Math.floor(v - this.vMin)];
-    if (list) {
-      for (let k = 0; k < list.length; k++) {
-        const it = list[k];
-        if (u < it.a - 0.25 || u > it.b + 0.25) continue;
-        const d = it.y - v;
-        if (d < 0) continue;
-        // strips centred just inside each end: water runs off there
-        const e = Math.max(tri(u - (it.a + END_IN), END_W), tri(u - (it.b - END_IN), END_W));
-        if (it.bal) {
-          const inside = Math.min(1, (u - it.a + 0.14) / 0.22, (it.b + 0.14 - u) / 0.22);
-          if (inside > 0 && d < 2.5) a *= 1 - 0.30 * inside * Math.exp(-d / (0.55 * it.d));
-          if (inside > 0) g += 0.3 * inside * Math.exp(-d / 0.5);
-          const run = e * it.s * Math.exp(-d / 3.2);
-          g += 0.95 * run; rust += 0.6 * run;
-        } else {
-          const inside = Math.min(1, (u - it.a) / 0.2, (it.b - u) / 0.2);
-          if (inside > 0) g += 0.22 * inside * Math.exp(-d / 0.7);
-          const run = e * it.s * Math.exp(-d / 2.4);
-          g += 0.8 * run; wash += 0.06 * run;
-        }
-      }
-    }
+    const a = this.ao[i];
+    let g = this.gm[i];
     // large soft patches (stone batches, cleaning, sun bleaching)
     const n1 = noise2(u * 0.35, v * 0.28, this.seed);
     const p = n1 - 0.5 + 0.35 * (noise2(u * 1.3, v * 0.9, this.seed + 7) - 0.5);
@@ -143,27 +169,34 @@ export class FaceShade {
     a *= 1 - 0.20 * Math.exp(-Math.max(0, hg) / 0.3);
     g += 0.55 * Math.exp(-Math.max(0, hg) / 0.5);
     // building-scale variation of how dirty the stone is
-    g *= this.dirt * (0.6 + 0.8 * n1);
-    const grey = Math.min(0.7, 0.45 * gz * this.dirt + wash * 1.4 + 0.35 * this.unc);
+    const dirtK = this.dirt * (0.6 + 0.8 * n1);
+    g *= dirtK;
+    const grey = Math.min(0.7, 0.45 * gz * this.dirt + 0.35 * this.unc);
     const lum = (r + gg + b) / 3;
     r += (lum * 0.9 - r) * grey; gg += (lum * 0.9 - gg) * grey; b += (lum * 0.93 - b) * grey;
     // never-cleaned stone is darker overall, more so up under the cornice
     const sootK = this.unc ? 1 - this.unc * (0.12 + 0.12 * Math.min(1, Math.max(0, v / this.corniceY))) : 1;
-    const dk = a * (1 - wash) * (1 - 0.18 * gz * this.dirt) * sootK;
-    // iron from the balcony fixings: a faint warm-brown cast in the run-off strips
-    out[0] = r * dk * (1 - 0.08 * rust); out[1] = gg * dk * (1 - 0.13 * rust); out[2] = b * dk * (1 - 0.2 * rust);
+    const dk = a * (1 - 0.18 * gz * this.dirt) * sootK;
+    out[0] = r * dk; out[1] = gg * dk; out[2] = b * dk;
     out[3] = Math.min(1, g);
+    out[4] = dirtK;
   }
 }
 
-// run-off strips: length below the sill / slab, half width, inset from the end
-const SILL_RUN = 3.4, BAL_RUN = 3.8, END_W = 0.2, END_IN = 0.08;
-/** Columns the wall field needs for the run-off strips of an occluder spanning [a, b]. */
-export function runoffSplits(a, b) {
-  return [a - 0.14, a + END_IN, a + END_IN + END_W, b - END_IN - END_W, b - END_IN, b + 0.14];
+// run-off: reach below the sill / slab line; zone margin beyond the occluder ends
+const SILL_RUN = 3.4, BAL_RUN = 3.8, ZONE_M = 0.25;
+const NO_ZONES = { cuts: [], occ: [null] };
+const _cand = [];
+
+/**
+ * aRun attribute of a vertex at facade (u, v) shaded by occluder `it` (null: none):
+ * (a − u, line − v, dirtiness, code). Both offsets are affine in the position, so they
+ * interpolate exactly over any face; code = ±(⌊width·64⌋ + s/2), + balcony, − sill.
+ */
+export function runAttr(it, u, v, dirtK, out, k) {
+  if (!it) { out[k] = 0; out[k + 1] = 0; out[k + 2] = 0; out[k + 3] = 0; return; }
+  out[k] = it.a - u; out[k + 1] = it.y - v; out[k + 2] = dirtK; out[k + 3] = it.code;
 }
-export { SILL_RUN, BAL_RUN };
-const tri = (x, w) => Math.max(0, 1 - Math.abs(x) / w);
 
 /**
  * Colour of dressed trim stone (surrounds, mouldings): slightly lighter, soffits darker

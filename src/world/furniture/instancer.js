@@ -1,22 +1,52 @@
 import * as THREE from 'three';
 
 // Instancing for street furniture. Every prototype part (shared geometry + material) is
-// registered once at init into a global BatchedMesh per (material, casts-shadow) pair, so
-// all furniture of the whole streamed range renders in about one multi-draw call per
-// material and pass, with per-instance frustum culling (shadow cascades included).
-// A chunk build adds instances through a writer bound to the chunk's returned Object3D;
-// instances become visible together with the chunk group and are freed on dispose.
+// registered once at init into a global BatchedMesh per material, so all furniture of
+// the whole streamed range renders in about one multi-draw call per material, with
+// per-instance frustum culling. A chunk build adds instances through a writer bound to
+// the chunk's returned Object3D; instances become visible together with the chunk group
+// and are freed on dispose. A batch with nothing to show is not drawn at all.
+//
+// Shadows: every shadow-casting part also gets a twin instance in one shared depth-only
+// BatchedMesh (furniture:shadow), so all furniture casts in one multi-draw call per
+// cascade. Its draw list is built per cascade (shadowList): an instance casts only where
+// its shadow can reach the cascade's slice of the view (the light's cascade frustum
+// decides, so cascades that are not redrawn this frame cost nothing), at no more detail
+// than the cascade's texels hold, and not at all once it is smaller than a few texels.
 //
 // Distance LOD per instance: a prototype with `lods` (switch distances in metres) gives
 // each part one geometry per level; updateLod() swaps the geometry id of live instances
 // as the camera moves (with hysteresis), so detail follows the real distance instead of
 // the 200 m chunk LOD. A switch is a short screen-door cross-fade: the new level dithers
 // in while a temporary instance with the old level dithers out with the complementary
-// pattern (per-instance alpha in the batch colour texture, see patchFade).
+// pattern (per-instance alpha in the batch colour texture, see patchFade). Shadow twins
+// switch at once.
 
 const WHITE = new THREE.Color(1, 1, 1);
 const FADE_MS = 450;
+// shadows: cascade texel (m) above which at least level 1 / the coarsest level is drawn,
+// and the smallest instance (bounding radius in texels) still worth a shadow
+const SHADOW_LEVEL_TEXEL = [0.025, 0.07];
+const SHADOW_MIN_TEXELS = 1.5;
 const _mat = new THREE.Matrix4();
+const _sph = new THREE.Sphere();
+const _fr = new THREE.Frustum();
+const _pm = new THREE.Matrix4();
+// stand-ins handed to the light's cascade frustum: one instance, or the whole batch
+const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
+
+/** Shadow cascades of the scene's shadow-casting lights: frustum -> {shadow, index}. */
+function shadowFrustums(scene, cache) {
+  const lights = scene.children.filter((o) => o.isLight && o.castShadow && o.shadow && o.shadow.getFrustum);
+  if (cache.map && lights.length === cache.n && lights.every((l, i) => cache.shadows[i] === l.shadow)) return cache.map;
+  cache.map = new Map(); cache.n = lights.length; cache.shadows = lights.map((l) => l.shadow);
+  for (const l of lights) {
+    const sh = l.shadow, n = sh.getViewportCount ? sh.getViewportCount() : 1;
+    for (let i = 0; i < n; i++) cache.map.set(sh.getFrustum(i), { shadow: sh, camera: sh.getCamera ? sh.getCamera(i) : sh.camera });
+  }
+  return cache.map;
+}
 
 /** Screen-door dither for batched furniture, driven by the batch colour alpha:
  *  a >= 1 opaque, 0 <= a < 1 keeps pixels whose threshold is below a (fading in),
@@ -80,6 +110,9 @@ export class BatchSet {
     this.records = new Set();
     this.syncFrame = -1;
     this.fades = new Map();            // id + batch key -> active fade
+    // depth-only twins of the shadow-casting parts (see header)
+    this.shadow = { key: '|shadow', geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null };
+    this._frustums = {};
   }
 
   /** Register every prototype found in a (nested) object/array tree. */
@@ -94,12 +127,13 @@ export class BatchSet {
 
   register(p) {
     for (const part of p.parts) {
-      const cast = part.cast !== false;
-      const key = `${part.mat.uuid}|${cast}`;
+      const key = part.mat.uuid;
       let b = this.batches.get(key);
-      if (!b) { b = { key: `|${this.batches.size}`, mat: part.mat, cast, geos: new Map(), bm: null, live: 0, free: [], dirty: false }; this.batches.set(key, b); }
+      if (!b) { b = { key: `|${this.batches.size}`, mat: part.mat, geos: new Map(), bm: null, live: 0, free: [], shown: 0, dirty: false }; this.batches.set(key, b); }
       for (const g of part.geos) if (g && !b.geos.has(g)) b.geos.set(g, -1);
       part.batch = b;
+      part.cast = part.cast !== false;
+      if (part.cast) for (const g of part.geos) if (g) this.shadow.geos.set(g, -1);
     }
   }
 
@@ -107,7 +141,13 @@ export class BatchSet {
   countingWriter() {
     const counts = new Map();
     return {
-      add: (p) => { if (p) for (const part of p.parts) counts.set(part.batch, (counts.get(part.batch) || 0) + 1); },
+      add: (p) => {
+        if (!p) return;
+        for (const part of p.parts) {
+          counts.set(part.batch, (counts.get(part.batch) || 0) + 1);
+          if (part.cast) counts.set(this.shadow, (counts.get(this.shadow) || 0) + 1);
+        }
+      },
       counts,
     };
   }
@@ -138,14 +178,94 @@ export class BatchSet {
       bm.frustumCulled = false;            // instances span the whole route; culled per instance
       bm.perObjectFrustumCulled = true;
       bm.sortObjects = !!b.mat.transparent;
-      bm.castShadow = b.cast;
+      bm.castShadow = false;               // the shadow twins cast
       bm.receiveShadow = true;
-      const before = bm.onBeforeRender.bind(bm), beforeShadow = bm.onBeforeShadow.bind(bm);
+      bm.visible = false;
+      const before = bm.onBeforeRender.bind(bm);
       bm.onBeforeRender = (...a) => { sync(); before(...a); };
-      bm.onBeforeShadow = (...a) => { sync(); beforeShadow(...a); };
       b.bm = bm;
       scene.add(bm);
     }
+    this._finalizeShadow(scene, sync, capacity);
+  }
+
+  _finalizeShadow(scene, sync, capacity) {
+    const S = this.shadow;
+    if (!S.geos.size) return;
+    let nv = 0, ni = 0;
+    const depthGeo = (g) => {
+      const d = new THREE.BufferGeometry();
+      d.setAttribute('position', g.attributes.position);
+      d.setIndex(g.index);
+      return d;
+    };
+    const prepared = [...S.geos.keys()].map((g) => { const d = depthGeo(g); nv += d.attributes.position.count; ni += d.index.count; return [g, d]; });
+    const bm = new THREE.BatchedMesh(Math.max(64, Math.ceil(capacity(S))), nv, ni, new THREE.MeshBasicMaterial({ name: 'furniture.shadow' }));
+    for (const [g, d] of prepared) {
+      const id = bm.addGeometry(d);
+      S.geos.set(g, id);
+      // radius of the geometry, for the sub-texel test
+      bm.getBoundingSphereAt(id, _sph);
+    }
+    bm.name = `${this.name}:shadow`;
+    bm.castShadow = true;
+    bm.receiveShadow = false;
+    bm.visible = false;
+    bm.perObjectFrustumCulled = true;
+    // drawn in the light's shadow cascades only (never in the view), and only in the
+    // cascades the light redraws this frame
+    const frustums = this._frustums;
+    bm.frustumCulled = true;
+    bm.intersectsFrustum = (f) => shadowFrustums(scene, frustums).has(f) && f.intersectsObject(_all);
+    bm.onBeforeShadow = (renderer, object, camera, shadowCamera) => { sync(); this._shadowList(scene, shadowCamera); };
+    S.levels = new Int32Array(Math.max(64, bm.maxInstanceCount) * 3).fill(-1);
+    S.bm = bm;
+    scene.add(bm);
+  }
+
+  /** Shadow pass draw list for one cascade (replaces BatchedMesh's own culling). */
+  _shadowList(scene, cam) {
+    const S = this.shadow, m = S.bm;
+    let cascade = null;
+    for (const [f, c] of shadowFrustums(scene, this._frustums)) if (c.camera === cam) { cascade = { frustum: f, shadow: c.shadow }; break; }
+    const frustum = cascade ? cascade.frustum : _fr.setFromProjectionMatrix(_pm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse), cam.coordinateSystem, cam.reversedDepth);
+    const texel = cam.isOrthographicCamera ? (cam.right - cam.left) / Math.max(1, cascade ? cascade.shadow.mapSize.x : 2048) : 0;
+    const minLv = texel > SHADOW_LEVEL_TEXEL[1] ? 2 : texel > SHADOW_LEVEL_TEXEL[0] ? 1 : 0;
+    const minR = SHADOW_MIN_TEXELS * texel;
+    const info = m._instanceInfo, gInfo = m._geometryInfo, lv = S.levels;
+    const starts = m._multiDrawStarts, counts = m._multiDrawCounts, ind = m._indirectTexture.image.data;
+    const md = m._matricesTexture.image.data;
+    const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
+    let n = 0;
+    for (let i = 0, l = info.length; i < l; i++) {
+      const it = info[i];
+      if (!it.visible || !it.active) continue;
+      let gid = it.geometryIndex;
+      if (minLv) {
+        // coarsest of the instance's own level and the cascade's (levels: up to 3, -1 = none)
+        const cur = gid === lv[i * 3] ? 0 : gid === lv[i * 3 + 1] ? 1 : 2;
+        for (let k = Math.max(cur, minLv); k >= cur; k--) if (lv[i * 3 + k] >= 0) { gid = lv[i * 3 + k]; break; }
+      }
+      _mat.fromArray(md, i * 16);
+      _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_mat);
+      if (_sph.radius < minR || !frustum.intersectsObject(_one)) continue;
+      const g = gInfo[gid];
+      starts[n] = g.start * bpe;
+      counts[n] = g.count;
+      ind[n] = i;
+      n++;
+    }
+    m._indirectTexture.needsUpdate = true;
+    m._multiDrawCount = n;
+    m._multiDrawBytesPerElement = bpe;
+  }
+
+  /** Show / hide one instance, keeping the batch's count of shown instances. */
+  _show(b, id, v) {
+    const info = b.bm._instanceInfo[id];
+    if (info.visible === v) return;
+    b.bm.setVisibleAt(id, v);
+    b.shown += v ? 1 : -1;
   }
 
   /** New hidden instance of geometry id `gid` (recycles our own freed ids). */
@@ -155,14 +275,14 @@ export class BatchSet {
     if (b.free.length) { id = b.free.pop(); bm.setGeometryIdAt(id, gid); } else {
       if (b.live >= bm.maxInstanceCount) bm.setInstanceCount(bm.maxInstanceCount * 2);
       id = bm.addInstance(gid);
+      bm.setVisibleAt(id, false);
     }
     b.live++;
-    bm.setVisibleAt(id, false);
     return id;
   }
 
   _free(b, id) {
-    b.bm.setVisibleAt(id, false);
+    this._show(b, id, false);
     b.free.push(id);
     b.live--;
   }
@@ -172,9 +292,23 @@ export class BatchSet {
     b.dirty = true;
   }
 
+  /** Shadow twin of a part instance: level geometries [L0, L1, L2] (-1 = none). */
+  _allocShadow(part, matrix, lvGeo) {
+    const S = this.shadow;
+    const gids = [0, 1, 2].map((k) => { const g = part.geos[Math.min(k, part.geos.length - 1)]; return g ? S.geos.get(g) : -1; });
+    const first = gids.find((g) => g >= 0);
+    const sid = this._alloc(S, first);
+    if (sid * 3 + 3 > S.levels.length) { const a = new Int32Array(Math.max(sid * 3 + 3, S.levels.length * 2)).fill(-1); a.set(S.levels); S.levels = a; }
+    S.levels.set(gids, sid * 3);
+    S.bm.setMatrixAt(sid, matrix);
+    if (lvGeo) S.bm.setGeometryIdAt(sid, S.geos.get(lvGeo));
+    return sid;
+  }
+
   /** Writer for one chunk build: instances are tied to `obj` (the chunk part).
    *  `eye` (world position) picks the initial LOD level. */
   writer(obj, eye = null) {
+    // ids: [batch, id, shadowId (-1: none)] per part instance
     const rec = { obj, ids: [], lod: [], hidden: new Set(), vis: false, temps: [], dead: false };
     this.records.add(rec);
     obj.userData.batchRecord = rec;
@@ -185,7 +319,7 @@ export class BatchSet {
         let lv = 0, item = null;
         if (p.lods) {
           lv = eye ? levelFor(p.lods, Math.hypot(e[12] - eye.x, e[14] - eye.z), 0) : p.lods.length;
-          item = { p, x: e[12], z: e[14], lv, ids: [] };
+          item = { p, x: e[12], z: e[14], lv, ids: [], sids: [] };
           rec.lod.push(item);
         }
         for (const part of p.parts) {
@@ -196,9 +330,10 @@ export class BatchSet {
           const c = part.tintKey ? colors?.[part.tintKey] : color;
           bm.setColorAt(id, part.tint && c ? c : WHITE);
           this._alpha(b, id, 1);
-          rec.ids.push(b, id);
+          const sid = part.cast && this.shadow.bm ? this._allocShadow(part, matrix, g) : -1;
+          rec.ids.push(b, id, sid);
           if (!g) rec.hidden.add(id + b.key);
-          if (item) item.ids.push(id);
+          if (item) { item.ids.push(id); item.sids.push(sid); }
         }
       },
     };
@@ -212,7 +347,7 @@ export class BatchSet {
       this._free(b, id);
     }
     rec.temps.length = 0;
-    for (let i = 0; i < rec.ids.length; i += 2) {
+    for (let i = 0; i < rec.ids.length; i += 3) {
       const b = rec.ids[i], id = rec.ids[i + 1], k = id + b.key;
       if (this.fades.has(k)) { this.fades.delete(k); this._alpha(b, id, 1); }
     }
@@ -222,29 +357,46 @@ export class BatchSet {
     const rec = obj && obj.userData.batchRecord;
     if (!rec) return;
     this._endFades(rec);
-    for (let i = 0; i < rec.ids.length; i += 2) this._free(rec.ids[i], rec.ids[i + 1]);
+    for (let i = 0; i < rec.ids.length; i += 3) {
+      this._free(rec.ids[i], rec.ids[i + 1]);
+      if (rec.ids[i + 2] >= 0) this._free(this.shadow, rec.ids[i + 2]);
+    }
     rec.ids.length = 0;
     rec.lod.length = 0;
     rec.hidden.clear();
     rec.dead = true;
     this.records.delete(rec);
     obj.userData.batchRecord = null;
+    this._showBatches();
   }
 
-  /** Show instances whose chunk group is visible and attached (called once per frame). */
+  /** Show instances whose chunk group is visible and attached: once per frame from the
+   *  module update (so batches that were empty are drawn again) and again right before
+   *  the first draw, after the streamer's changes of the frame (exact chunk swaps). */
   sync() {
+    let changed = false;
     for (const rec of this.records) {
       const p = rec.obj.parent;
       const vis = !!(p && p.visible && p.parent);
       if (vis === rec.vis) continue;
       rec.vis = vis;
+      changed = true;
       if (!vis) this._endFades(rec);
-      for (let i = 0; i < rec.ids.length; i += 2) {
-        const b = rec.ids[i], id = rec.ids[i + 1];
-        b.bm.setVisibleAt(id, vis && !(rec.hidden.size && rec.hidden.has(id + b.key)));
+      for (let i = 0; i < rec.ids.length; i += 3) {
+        const b = rec.ids[i], id = rec.ids[i + 1], sid = rec.ids[i + 2];
+        const shown = vis && !(rec.hidden.size && rec.hidden.has(id + b.key));
+        this._show(b, id, shown);
+        if (sid >= 0) this._show(this.shadow, sid, shown);
       }
     }
+    if (changed) this._showBatches();
     this._flush();
+  }
+
+  /** Batches with nothing to show are not drawn (no empty multi-draw calls). */
+  _showBatches() {
+    for (const b of this.batches.values()) if (b.bm) b.bm.visible = b.shown > 0;
+    if (this.shadow.bm) this.shadow.bm.visible = this.shadow.shown > 0;
   }
 
   _flush() {
@@ -254,12 +406,14 @@ export class BatchSet {
   /** Swap instance geometry to the level matching its distance from `eye`, cross-fading
    *  between the levels over FADE_MS (real time). */
   updateLod(eye, now = performance.now()) {
+    let shownChanged = false;
     for (const rec of this.records) {
       for (const it of rec.lod) {
         const lv = levelFor(it.p.lods, Math.hypot(it.x - eye.x, it.z - eye.z), it.lv);
         if (lv === it.lv) continue;
         const old = it.lv;
         it.lv = lv;
+        shownChanged = true;
         const parts = it.p.parts;
         for (let k = 0; k < parts.length; k++) {
           const part = parts[k], b = part.batch, bm = b.bm, id = it.ids[k];
@@ -273,21 +427,24 @@ export class BatchSet {
             const cd = bm._colorsTexture.image.data;
             cd[tid * 4] = cd[id * 4]; cd[tid * 4 + 1] = cd[id * 4 + 1]; cd[tid * 4 + 2] = cd[id * 4 + 2];
             this._alpha(b, tid, -1e-4);
-            bm.setVisibleAt(tid, true);
+            this._show(b, tid, true);
             rec.temps.push(b, tid);
             this.fades.set(tid + b.key, { rec, b, id: tid, t0: now, out: true });
           }
+          const sid = it.sids[k];
           if (gNew) {
             bm.setGeometryIdAt(id, b.geos.get(gNew));
             rec.hidden.delete(key);
+            if (sid >= 0) { this.shadow.bm.setGeometryIdAt(sid, this.shadow.geos.get(gNew)); this._show(this.shadow, sid, rec.vis); }
             if (rec.vis) {
-              bm.setVisibleAt(id, true);
+              this._show(b, id, true);
               this._alpha(b, id, 0);
               this.fades.set(key, { rec, b, id, t0: now, out: false });
             }
           } else {
             rec.hidden.add(key);
-            bm.setVisibleAt(id, false);
+            this._show(b, id, false);
+            if (sid >= 0) this._show(this.shadow, sid, false);
             if (this.fades.delete(key)) this._alpha(b, id, 1);
           }
         }
@@ -298,18 +455,21 @@ export class BatchSet {
       const t = (now - f.t0) / FADE_MS;
       if (t < 1) { this._alpha(f.b, f.id, f.out ? -t - 1e-4 : t); continue; }
       this.fades.delete(key);
+      shownChanged = true;
       if (f.out) {
         const tl = f.rec.temps;
         for (let i = 0; i < tl.length; i += 2) if (tl[i] === f.b && tl[i + 1] === f.id) { tl.splice(i, 2); break; }
         this._free(f.b, f.id);
       } else this._alpha(f.b, f.id, 1);
     }
+    if (shownChanged) this._showBatches();
     this._flush();
   }
 
   stats() {
     const out = {};
-    for (const b of this.batches.values()) out[b.bm.name + (b.cast ? '' : '(ns)')] = b.live;
+    for (const b of this.batches.values()) out[b.bm.name] = b.live;
+    if (this.shadow.bm) out[this.shadow.bm.name] = this.shadow.live;
     out.fades = this.fades.size;
     return out;
   }

@@ -1,4 +1,5 @@
 import { ShapeUtils, Vector2 } from 'three';
+import { runAttr } from './shade.js';
 
 // Low-level mesh emitter for the building shells.
 //
@@ -10,8 +11,9 @@ import { ShapeUtils, Vector2 } from 'three';
 // Frames only ever rotate about the vertical axis, so v maps straight to world Y.
 //
 // Each vertex gets a colour from the Builder's current shade callback (stone tint,
-// baked ambient occlusion, weathering) and a UV in metres, optionally remapped by
-// the current UV transform (used to line ashlar courses up with the floors).
+// baked ambient occlusion, weathering), a UV in metres, optionally remapped by the
+// current UV transform (used to line ashlar courses up with the floors), and the
+// run-off occluder above it (Builder.run, see shade.runAttr).
 
 const F_FRONT = 1, F_BACK = 2, F_LEFT = 4, F_RIGHT = 8, F_TOP = 16, F_BOTTOM = 32;
 export const FACES = { FRONT: F_FRONT, BACK: F_BACK, LEFT: F_LEFT, RIGHT: F_RIGHT, TOP: F_TOP, BOTTOM: F_BOTTOM, ALL: 63, SIDES: F_LEFT | F_RIGHT | F_TOP | F_BOTTOM };
@@ -32,7 +34,7 @@ export class Sink {
     if ((this.vc + nv) * 3 > this.p.length) {
       const cap = Math.max((this.vc + nv) * 2, 4096);
       const grow = (A, k) => { const b = new A.constructor(cap * k); b.set(A.subarray(0, this.vc * k)); return b; };
-      this.p = grow(this.p, 3); this.n = grow(this.n, 3); this.t = grow(this.t, 2); this.c = grow(this.c, 3); this.g = grow(this.g, 1);
+      this.p = grow(this.p, 3); this.n = grow(this.n, 3); this.t = grow(this.t, 2); this.c = grow(this.c, 3); this.g = grow(this.g, 1); this.r = grow(this.r, 4);
     }
     if (this.ic + ni > this.i.length) {
       const b = new Uint32Array(Math.max((this.ic + ni) * 2, 8192));
@@ -49,11 +51,11 @@ export class Sink {
     const out = {
       key: this.key, vc, ic,
       p: this.p.subarray(0, vc * 3), n: this.n.subarray(0, vc * 3), t: this.t.subarray(0, vc * 2), c: this.c.subarray(0, vc * 3),
-      g: this.g.subarray(0, vc), i: this.i.subarray(0, ic),
+      g: this.g.subarray(0, vc), r: this.r.subarray(0, vc * 4), i: this.i.subarray(0, ic),
     };
     const h = HINT.get(this.key) || [0, 0];
     HINT.set(this.key, [Math.max(vc, h[0] * 0.9), Math.max(ic, h[1] * 0.9)]);
-    this.p = this.n = this.t = this.c = this.g = this.i = null;
+    this.p = this.n = this.t = this.c = this.g = this.r = this.i = null;
     this.vc = 0; this.ic = 0;
     return out;
   }
@@ -64,7 +66,7 @@ export class Sink {
     const h = HINT.get(this.key) || [0, 0];
     const v = Math.max(1024, Math.ceil(h[0] * 1.15)), i = Math.max(3072, Math.ceil(h[1] * 1.15));
     this.p = new Float32Array(v * 3); this.n = new Float32Array(v * 3); this.t = new Float32Array(v * 2);
-    this.c = new Float32Array(v * 3); this.g = new Float32Array(v); this.i = new Uint32Array(i);
+    this.c = new Float32Array(v * 3); this.g = new Float32Array(v); this.r = new Float32Array(v * 4); this.i = new Uint32Array(i);
   }
   /** Axis-aligned bounds of the used vertices, merged into box {min, max} (Vector3-like). */
   bounds(box) {
@@ -89,8 +91,9 @@ export class Builder {
     this.frames = [];
     this.setFrame(0, 0, 0, 1, 0, 0, 1);
     this.uv = [1, 0, 1, 0];          // tu = u*su + ou, tv = v*sv + ov
-    this.shade = null;               // (u, v, w, nu, nv, nw, out[3]) -> void
-    this.col = [1, 1, 1, 0];
+    this.shade = null;               // (u, v, w, nu, nv, nw, out[5]) -> void
+    this.run = null;                 // run-off occluder above what is emitted (FaceShade.occ item)
+    this.col = [1, 1, 1, 0, 1];
     this.flat = [1, 1, 1];           // colour used when shade is null
     this.grime = 0;                  // per-vertex grime mask (shade callbacks may write out[3])
   }
@@ -107,7 +110,7 @@ export class Builder {
     for (const s of this.sinks.values()) t += s.ic;
     this._lastMark = t;
     this._lastT = this.profile ? performance.now() : 0;
-    this.frames.length = 0; this.uv = [1, 0, 1, 0]; this.shade = null; this.flat = [1, 1, 1]; this.grime = 0;
+    this.frames.length = 0; this.uv = [1, 0, 1, 0]; this.shade = null; this.run = null; this.flat = [1, 1, 1]; this.grime = 0;
   }
 
   sink(key) {
@@ -160,9 +163,10 @@ export class Builder {
     t[k * 2] = tu * uv[0] + uv[1];
     t[k * 2 + 1] = tv * uv[2] + uv[3];
     let col = this.flat, gr = this.grime;
-    if (this.shade) { col = this.col; col[3] = gr; this.shade(u, v, w, nu, nv, nw, col); gr = col[3]; }
+    if (this.shade) { col = this.col; col[3] = gr; col[4] = 1; this.shade(u, v, w, nu, nv, nw, col); gr = col[3]; }
     c[i3] = col[0]; c[i3 + 1] = col[1]; c[i3 + 2] = col[2];
     s.g[k] = gr;
+    runAttr(this.run, u, v, this.shade ? col[4] : 1, s.r, k * 4);
     return k;
   }
   tri(s, a, b, c) { const i = s.i, k = s.ic; i[k] = a; i[k + 1] = b; i[k + 2] = c; s.ic += 3; }

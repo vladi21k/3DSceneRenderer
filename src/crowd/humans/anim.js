@@ -8,7 +8,12 @@ import * as THREE from 'three';
 // and 2-bone IK solves hips and knees. The pelvis height falls out of the leg lengths
 // (inverted pendulum), giving the natural vertical bob. Pelvis rotation / list /
 // sway, thorax counter-rotation, stabilised head and counter-swinging arms with
-// elbow flexion follow published gait kinematics.
+// elbow flexion follow published gait kinematics, with a style per body (GAIT):
+// men walk on a wider base with more shoulder counter-rotation and arms swinging wide of
+// the lats; women place their feet near a line, with more pelvic rotation and list (hip
+// sway), slightly shorter steps and arms closer in; children step faster (shorter legs)
+// and bouncier with livelier arms; seniors take shorter steps with less arm swing and a
+// stoop (walkSenior), frail walkers shuffle (walkOld).
 //
 // Rest pose: every bone's rest orientation is the identity in model space (figure
 // faces -Z, right = +X), so a bone's world matrix is [R | p] and its skin matrix is
@@ -19,7 +24,9 @@ export const CLIPS = [
   { name: 'walkSlow', frames: 40, kind: 'walk', v: 0.75 },
   { name: 'walk', frames: 40, kind: 'walk', v: 1.25 },
   { name: 'walkBrisk', frames: 40, kind: 'walk', v: 1.75 },
+  { name: 'walkFast', frames: 36, kind: 'walk', v: 2.3 },
   { name: 'walkOld', frames: 40, kind: 'walk', v: 0.95, old: true },
+  { name: 'walkSenior', frames: 40, kind: 'walk', v: 1.05, senior: true },
   { name: 'idle', frames: 64, kind: 'idle', variant: 0 },
   { name: 'idlePhone', frames: 64, kind: 'idle', variant: 1 },
   { name: 'idleCross', frames: 64, kind: 'idle', variant: 2 },
@@ -40,6 +47,17 @@ export const BONE = B;
 const NB = 22;
 const DEG = Math.PI / 180;
 const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0);
+
+// gait style per base body: half step width (x leg length), pelvic rotation / list (deg) and
+// lateral sway (m), thorax counter-rotation (x pelvic rotation), arm swing gain, arm abduction
+// and elbow flexion (deg), walk ratio factor (step length at a given speed), loading-response
+// knee flexion (bounce), trunk lean (deg), swing circumduction (m)
+const GAIT = {
+  male: { stepW: 0.060, yaw: 4.2, roll: 3.0, sway: 0.016, thorax: 1.55, arm: 1.0, abd: 10, elbow: 13, wr: 1.0, bounce: 1.0, lean: 2.5, circ: 0.012 },
+  female: { stepW: 0.034, yaw: 6.5, roll: 4.8, sway: 0.021, thorax: 0.75, arm: 1.05, abd: 6.5, elbow: 18, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.022 },
+  child: { stepW: 0.052, yaw: 5.0, roll: 3.6, sway: 0.016, thorax: 1.1, arm: 1.15, abd: 10, elbow: 16, wr: 1.0, bounce: 1.6, lean: 2.5, circ: 0.014 },
+  kid: { stepW: 0.060, yaw: 5.5, roll: 4.0, sway: 0.020, thorax: 1.0, arm: 1.2, abd: 13, elbow: 20, wr: 0.96, bounce: 2.2, lean: 3.0, circ: 0.016 },
+};
 
 const smooth = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
 const smoother = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * t * (t * (t * 6 - 15) + 10); };
@@ -75,6 +93,8 @@ export class Rig {
     this.info = info;
     const R = this.rest;
     this.H = info.H;
+    this.kind = info.kind || 'male';
+    this.style = GAIT[this.kind] || GAIT.male;
     this.side = { L: -1, R: 1 };
     this.l1 = R[B.thighR].distanceTo(R[B.shinR]);
     this.l2 = R[B.shinR].distanceTo(R[B.footR]);
@@ -232,20 +252,24 @@ export class Rig {
 
   /** Walk cycle sample. phase 0 = right heel strike, 0.5 = left heel strike. */
   walkParams(clip) {
+    const G = this.style;
     const k = this.H / 1.76;                 // body scale relative to the reference adult
     const legL = (this.l1 + this.l2) / 0.835;
     const v = clip.v * Math.sqrt(k);         // dynamically similar speed for this body
-    // walk ratio model: step length = sqrt(WR * v * 60), WR scales with stature
-    const wr = 0.0065 * legL * (clip.old ? 0.82 : 1);
+    const old = !!clip.old, senior = !!clip.senior;
+    // walk ratio model: step length = sqrt(WR * v * 60), WR scales with stature (women and
+    // seniors take shorter, quicker steps at the same speed)
+    const wr = 0.0065 * legL * G.wr * (old ? 0.82 : senior ? 0.88 : 1);
     const step = Math.sqrt(wr * v * 60);
     const S = 2 * step;
     const sn = S / (1.42 * legL);            // stride relative to a normal adult walk
+    const age = old ? 1 : senior ? 0.45 : 0;
     return {
-      v, S, sn, old: !!clip.old,
-      D: clip.old ? 0.65 : THREE.MathUtils.clamp(0.66 - 0.05 * (v - 0.75), 0.58, 0.66),
-      armAmp: (clip.old ? 6 : 6 + 13 * sn * sn) * (clip.v > 1.5 ? 1.15 : 1),
-      lean: clip.old ? 7 : 2.5 + 2.5 * (sn - 0.8),
-      stepHalfW: 0.055 * legL + (clip.old ? 0.025 : 0),
+      v, S, sn, old, senior, age, G,
+      D: old ? 0.65 : THREE.MathUtils.clamp(0.66 - 0.05 * (v - 0.75), 0.58, 0.66) + 0.01 * age,
+      armAmp: (old ? 6 : (6 + 13 * sn * sn) * (senior ? 0.6 : 1)) * (clip.v > 1.5 ? 1.15 : 1) * G.arm,
+      lean: old ? 7 : senior ? 4.5 + 1.5 * (sn - 0.8) : G.lean + 2.5 * (sn - 0.8),
+      stepHalfW: (G.stepW + (old ? 0.025 : senior ? 0.012 : 0)) * legL,
     };
   }
 
@@ -300,8 +324,8 @@ export class Rig {
         const heelHS = new THREE.Vector3(xLat, 0, relHeel(0));   // next strike: one stride ahead of toe-off
         const aHS = heelHS.add(rot(f.ankle.clone().sub(f.heel), thHS));
         ankle = aTO.clone().lerp(aHS, smoother(u));
-        ankle.y += (0.03 + 0.02 * W.sn) * Math.sin(Math.PI * Math.pow(u, 0.75));
-        ankle.x += sg * 0.012 * Math.sin(Math.PI * u);   // slight circumduction
+        ankle.y += (0.03 + 0.02 * W.sn) * (1 - 0.35 * W.age) * Math.sin(Math.PI * Math.pow(u, 0.75)) * Math.sqrt(this.H / 1.76);
+        ankle.x += sg * W.G.circ * Math.sin(Math.PI * u);   // circumduction: the swing foot clears the stance foot
       }
       legs[s] = { ankle, th, toe, phi, stance: phi < D, loaded: phi < hoStart };
     }
@@ -310,7 +334,8 @@ export class Rig {
       const hipRest = this.rest[B['thigh' + s]];
       const dx = lg.ankle.x - hipRest.x, dz = lg.ankle.z - hipRest.z;
       // effective leg length: ~8 deg knee flexion at mid-stance, ~16 deg in loading response
-      const L = (this.l1 + this.l2) * (0.997 - 0.008 * Math.exp(-(((lg.phi - 0.12) / 0.07) ** 2)));
+      // (children dip further on loading: a bouncier gait)
+      const L = (this.l1 + this.l2) * (0.997 - 0.008 * W.G.bounce * Math.exp(-(((lg.phi - 0.12) / 0.07) ** 2)));
       return lg.ankle.y + Math.sqrt(Math.max(0.01, L * L - dx * dx - dz * dz));
     };
     // only legs on the heel / flat foot carry the pelvis; a leg rolling off its toes flexes the knee
@@ -321,20 +346,23 @@ export class Rig {
     P._yHip = yHip;
     P._legs = legs;
     // pelvis rotations
+    const G = W.G;
     const c2 = Math.cos(2 * Math.PI * phase);
-    const yaw = (4 + 2 * W.sn) * c2;                                   // right hip forward at right strike
-    const roll = (W.old ? 2 : 3.2) * Math.sin(2 * Math.PI * (phase + 0.15));
-    const tilt = 1.5 * Math.cos(4 * Math.PI * (phase - 0.1));
-    const sway = 0.018 * Math.sin(2 * Math.PI * (phase - 0.02)) * (W.old ? 1.5 : 1);
+    const yaw = (G.yaw + 2 * W.sn) * c2 * (1 - 0.3 * W.age);          // right hip forward at right strike
+    const roll = (W.old ? 2 : G.roll * (1 - 0.25 * W.age)) * Math.sin(2 * Math.PI * (phase + 0.15));
+    const tilt = 1.5 * Math.cos(4 * Math.PI * (phase - 0.1)) * (0.8 + 0.2 * G.bounce);
+    const sway = G.sway * Math.sin(2 * Math.PI * (phase - 0.02)) * (W.old ? 1.5 : 1 + 0.3 * W.age);
     // (rotation about +X by a negative angle pitches forward)
     P.pelvisQ = qEuler(tilt - W.lean * 0.25, yaw, roll);
     P.pelvisOffset.set(sway, 0, 0);
-    // thorax counter-rotates; trunk leans forward; head stabilised against everything below
-    P.spine1Q = qEuler(-W.lean * 0.35, -yaw * 0.9, -roll * 0.5);
-    P.spine2Q = qEuler(-W.lean * 0.45, -yaw * 1.1, -roll * 0.45);
+    // thorax counter-rotates against the pelvis (men: more shoulder rotation); trunk leans
+    // forward; head stabilised against everything below
+    const thY = yaw * G.thorax;
+    P.spine1Q = qEuler(-W.lean * 0.35, -yaw * 0.5 - thY * 0.45, -roll * 0.5);
+    P.spine2Q = qEuler(-W.lean * 0.45, -yaw * 0.5 - thY * 0.55, -roll * 0.45);
     // (an older walker's stoop is taken back in the neck, so the gaze stays level)
-    P.neckQ = qEuler(W.lean * (W.old ? 0.6 : 0.45) - tilt * 0.5, yaw * 0.5, -roll * 0.03);
-    P.headQ = qEuler(W.lean * 0.45 + 1, yaw * 0.5, -roll * 0.02);
+    P.neckQ = qEuler(W.lean * (W.old ? 0.6 : W.senior ? 0.55 : 0.45) - tilt * 0.5, thY * 0.5, -roll * 0.03);
+    P.headQ = qEuler(W.lean * 0.45 + 1, thY * 0.5, -roll * 0.02);
     // arms counter-swing with a slight lag; elbows flex more when the arm is forward
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
@@ -342,9 +370,9 @@ export class Rig {
       const flex = -W.armAmp * a - 3;                               // right arm back at right strike
       const A = P.arm[s];
       A.flex = flex + (W.old ? 3 : 0);
-      A.abd = 8 + 2 * Math.abs(a);
-      A.elbow = 14 + Math.max(0, flex) * 0.9 + (W.old ? 5 : 0) + 4 * W.sn;
-      A.twist = -12;
+      A.abd = G.abd - 2 + 2 * Math.abs(a) + 2 * W.age;
+      A.elbow = G.elbow + Math.max(0, flex) * 0.9 + (W.old ? 5 : W.senior ? 6 : 0) + 4 * W.sn;
+      A.twist = this.kind === 'female' ? -18 : -12;
       A.handQ = qAxis(X, 6 + Math.max(0, flex) * 0.15);
       A.clavQ = qAxis(X, -flex * 0.12 * sg * 0);
     }
@@ -387,9 +415,10 @@ export class Rig {
       P.leg[s].footQ = qAxis(Y, -sg * 5);
       P.leg[s].pole = new THREE.Vector3(sg * 0.15, 0, -1).normalize();
       const A = P.arm[s];
-      A.abd = 10 + 1.2 * Math.sin(2 * Math.PI * t + sg);
+      // (women hold their arms closer in, men's hang wide of the lats; children's a little out)
+      A.abd = this.style.abd + 0.5 + 1.2 * Math.sin(2 * Math.PI * t + sg);
       A.flex = 2 + 2 * Math.sin(2 * Math.PI * t * 2 + sg);
-      A.elbow = 12 + 3 * Math.sin(2 * Math.PI * t * 3);
+      A.elbow = this.style.elbow - 2 + 3 * Math.sin(2 * Math.PI * t * 3);
       A.twist = -10;
     }
     if (variant === 1) {

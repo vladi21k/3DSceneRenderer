@@ -20,7 +20,7 @@ import { StreetLights } from './lights.js';
 const QUALITY = {
   low: { cascades: 2, mapSize: 1536, taps: 6, lamps: 4, envSize: 128, cloudSteps: 24 },
   med: { cascades: 3, mapSize: 2048, taps: 8, lamps: 6, envSize: 192, cloudSteps: 32 },
-  high: { cascades: 4, mapSize: 2048, taps: 10, lamps: 8, envSize: 256, cloudSteps: 44 },
+  high: { cascades: 4, mapSize: 2048, taps: 8, lamps: 8, envSize: 256, cloudSteps: 44 },
 };
 
 const _v = new THREE.Vector3();
@@ -300,7 +300,10 @@ const env = {
     let dh = Math.abs(h - (this._lastHeading ?? h));
     if (dh > Math.PI) dh = 2 * Math.PI - dh;
     if (dh > 0.12 && this.sky._capStep < 0) { this._lastHeading = h; this.sky.requestEnv(false); }
+    const prof = app.post?.prof;
+    if (prof) prof.begin('envmap');
     this.sky.step(realDt, 8);
+    if (prof) prof.end();
 
     // ---- street haze inputs and the per-frame exposure (horizon cap follows the view)
     this._updateHaze(app);

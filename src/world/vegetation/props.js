@@ -243,9 +243,10 @@ export function createProps(app, pools) {
   tie.rotateX(Math.PI / 2);
   const strap = new THREE.BoxGeometry(1, 0.03, 0.004);
   const planters = [planterGeometry(1.5, 0.66, 0.48), planterGeometry(0.86, 0.86, 0.52)];
-  const pool = (name, mat, geoms, cap, cast) => pools.addPool(new InstancePool(name, mat, null, geoms, cap, { castShadow: cast, receiveShadow: true, sort: false }));
+  const pool = (name, mat, geoms, cap, cast, shadowMaxTexel) => pools.addPool(new InstancePool(name, mat, null, geoms, cap, { castShadow: cast, receiveShadow: true, sort: false, shadowMaxTexel }));
   const P = {
-    stake: pool('vegetation:stakes', mats.stake, [post, batten], 128, true),
+    // 3 cm stakes: sub-texel (no shadow) in the coarse cascades
+    stake: pool('vegetation:stakes', mats.stake, [post, batten], 128, true, 0.05),
     rubber: pool('vegetation:ties', mats.rubber, [tie, strap], 96, false),
     stone: pool('vegetation:planters', mats.stone, planters.map((p) => p.shell), 48, true),
     soil: pool('vegetation:soil', mats.soil, planters.map((p) => p.soil), 48, false),

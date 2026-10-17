@@ -4,20 +4,13 @@
 // joint that knocks. Plus the turnout parts of each crossover (switch toe, heel joints,
 // frog, check rail). Deterministic, so the same joint knocks the same way on every lap;
 // the camera rig reads the same list (app.audio.features) and the same axle positions,
-// so each visible jolt lands with its knock.
+// so each visible jolt lands with its knock. The axles are the shared table in
+// src/core/config.js (AXLES: offset back from the cab front, weight felt / heard in the cab).
 import { RNG } from '../../core/rng.js';
 
 const RAIL_LEN = 18;
-
-/**
- * Axles of the tram measured back from the cab front (m) and their audibility in the
- * cab: three bogies (front motor bogie under the cab, a middle and a rear one).
- */
-export const AXLES = [
-  { o: 2.2, w: 1.0, far: false }, { o: 4.05, w: 0.92, far: false },
-  { o: 13.6, w: 0.34, far: true }, { o: 15.45, w: 0.31, far: true },
-  { o: 25.0, w: 0.13, far: true }, { o: 26.85, w: 0.12, far: true },
-];
+/** Axles further back than this belong to the middle / rear bogies (dull, distant impacts). */
+export const NEAR_BOGIE_END = 8;
 
 /** Sorted features [{s, kind: 'joint'|'frog'|'check', sev, v, xo?: turnout part}] over the whole loop. */
 export function trackFeatures(route, layout) {

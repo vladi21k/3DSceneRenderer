@@ -13,7 +13,7 @@ import { HumansTest } from './humans/test.js';
 //   setVisible(i, false); strideLength(appearance, speed); heightOf(appearance)
 //
 // Figures are SDF-sculpted bodies (tools/blender/humans_build.py) with LODs, drawn with
-// one instanced draw per base body (male / female / child) and LOD (the nearest LODs one
+// one instanced draw per base body (man / woman / child / young child) and LOD (the nearest LODs one
 // draw per worn part). Each frame the CPU blends baked clips per visible figure (cross-fading
 // pose changes, keeping every bone rigid), adds the head turn, folds in the figure's
 // transform and writes 22 bone matrices plus a little per-frame state into a row of a float
@@ -23,7 +23,7 @@ import { HumansTest } from './humans/test.js';
 // Testing: humanstest=1 (humans/test.js); humans_dir=<dir> loads a trial asset build;
 // humans_dbg=1|2|3 shows baked occlusion / aux attributes / garment ease instead of shading.
 
-const BASES = ['male', 'female', 'child'];
+const BASES = ['male', 'female', 'child', 'kid'];
 // figure height on screen (px) above which each LOD is used, by number of LODs in the asset
 const LOD_PX = { 4: [300, 84, 26], 5: [480, 200, 84, 26] };
 const SKIRT_GRID = { 4: [[48, 22], [20, 10], [10, 5], [8, 3]], 5: [[48, 22], [28, 14], [16, 8], [10, 5], [8, 3]] };
@@ -174,7 +174,7 @@ const humans = {
   /** Distance covered per gait cycle (two steps) at `speed` m/s, so phase advances without foot slide. */
   strideLength(appearance, speed) {
     const a = this.appearanceOf(appearance);
-    const B = this.bases && this.bases[a.base];
+    const B = this.bases && this.bases[a.body];
     if (!B) return 1.48 * (0.55 + 0.32 * speed);
     const sc = a.height / B.info.H;
     const g = gaitBlend(B, a, speed, sc);
@@ -189,7 +189,8 @@ const humans = {
     if (!a) {
       if (this.cache.size > 6000) this.cache.clear();
       a = deriveAppearance(seed, this.parts);
-      if (this.bases && !this.bases[a.base]) a.base = 'male';
+      // the mesh this person is drawn with (a build without the young-child body uses the child one)
+      if (this.bases && !this.bases[a.body]) a.body = this.bases[a.base] ? a.base : a.base === 'child' && this.bases.child ? 'child' : 'male';
       a.seedT = (seed % 997) / 997;
       this.cache.set(seed, a);
     }
@@ -253,7 +254,7 @@ const humans = {
         if (!look.userData.fresh) look.addUpdateRange((i * ROW_TEXELS + 11) * 4, 4);
         lookDirty = true;
       }
-      const B = this.bases[a.base];
+      const B = this.bases[a.body];
       const sc = a.height / B.info.H;
       _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
       _sph.radius = 0.62 * a.height + 0.3;
@@ -406,6 +407,12 @@ const humans = {
     s.phoneOn = phone > 0.5;
     const seat = s.pose === 2 ? 1 : 0;
     s.seatW = s.fadeDur > 0 ? s.fromSeat + (seat - s.fromSeat) * w : seat;
+    // older people's rounded upper back: the chest and everything it carries tip forward about
+    // the mid spine, the neck and head take most of it back so the gaze stays level
+    if (a.stoop > 0.005) {
+      pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
+      pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, a.stoop * 0.75);
+    }
     // head turn: the neck takes a third, the head the rest, both about their own joints
     const look = Math.max(-1.25, Math.min(1.25, s.look || 0));
     if (look > 1e-3 || look < -1e-3) {
@@ -439,6 +446,9 @@ const humans = {
 function pushDraw(d, i) { if (d) d.list[d.count++] = i; }
 
 const PHONE_BONES = [BONE.armR, BONE.foreR, BONE.handR, BONE.neck, BONE.head];
+const STOOP_BONES = [BONE.spine2, BONE.neck, BONE.head, BONE.clavL, BONE.armL, BONE.foreL, BONE.handL,
+  BONE.clavR, BONE.armR, BONE.foreR, BONE.handR];
+const HEAD_BONES = [BONE.neck, BONE.head];
 const CARRY_BONES = [BONE.armR, BONE.foreR, BONE.handR];
 const _T = new Float32Array(12), _inv = new Float32Array(12), _tmp = new Float32Array(12);
 
@@ -557,14 +567,16 @@ function gaitBlend(B, a, speed, sc) {
   const out = _gait;
   const idle = CLIP.idle + a.idle;          // standing still in pose 0 is the same as pose 1
   out.a = CLIP.walk; out.b = -1; out.wa = 1; out.wb = 0; out.idle = 0; out.extra = 1;
-  if (a.walkOld) {
-    out.a = CLIP.walkOld;
+  if (a.walkOld || a.gait === 1) {
+    // frail and senior walkers: one clip of their own; faster walking only quickens the steps
+    // (stretching the stride without the clip would slide the planted foot)
+    const c = a.walkOld ? CLIP.walkOld : CLIP.walkSenior;
+    out.a = c;
     const w = smooth01((vb - 0.08) / 0.4);
     if (w < 1) { out.b = idle; out.wa = w; out.wb = 1 - w; out.idle = 1; }
-    out.extra = Math.max(1, vb / V[CLIP.walkOld]) ** 0.5;
     return out;
   }
-  const v0 = V[CLIP.walkSlow], v1 = V[CLIP.walk], v2 = V[CLIP.walkBrisk];
+  const v0 = V[CLIP.walkSlow], v1 = V[CLIP.walk], v2 = V[CLIP.walkBrisk], v3 = V[CLIP.walkFast];
   if (vb < v0) {
     const w = smooth01((vb - 0.06) / (v0 * 0.8));
     out.a = CLIP.walkSlow; out.wa = w; out.b = idle; out.wb = 1 - w; out.idle = w < 1 ? 1 : 0;
@@ -574,13 +586,41 @@ function gaitBlend(B, a, speed, sc) {
   } else if (vb < v2) {
     const w = (vb - v1) / (v2 - v1);
     out.a = CLIP.walk; out.wa = 1 - w; out.b = CLIP.walkBrisk; out.wb = w;
+  } else if (vb < v3) {
+    const w = (vb - v2) / (v3 - v2);
+    out.a = CLIP.walkBrisk; out.wa = 1 - w; out.b = CLIP.walkFast; out.wb = w;
   } else {
-    out.a = CLIP.walkBrisk; out.extra = Math.min(1.25, (vb / v2) ** 0.5);
+    out.a = CLIP.walkFast; out.extra = Math.min(1.25, (vb / v3) ** 0.5);
   }
   return out;
 }
 
 function smooth01(t) { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); }
+
+/** Pitch bones (3x4 matrices of M) about the lateral axis of pivot bone p through its posed joint (ang < 0: forward). */
+function pitchBones(M, rest, bones, p, ang) {
+  const k = p * 12, r = rest[p];
+  const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
+  const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
+  const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
+  let ax = M[k], ay = M[k + 4], az = M[k + 8];
+  const l = Math.hypot(ax, ay, az) || 1;
+  ax /= l; ay /= l; az /= l;
+  const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+  const R00 = t * ax * ax + c, R01 = t * ax * ay - s * az, R02 = t * ax * az + s * ay;
+  const R10 = t * ax * ay + s * az, R11 = t * ay * ay + c, R12 = t * ay * az - s * ax;
+  const R20 = t * ax * az - s * ay, R21 = t * ay * az + s * ax, R22 = t * az * az + c;
+  for (const b of bones) {
+    const o = b * 12;
+    for (let col = 0; col < 4; col++) {
+      let x = M[o + col], y = M[o + 4 + col], z = M[o + 8 + col];
+      if (col === 3) { x -= px; y -= py; z -= pz; }
+      M[o + col] = R00 * x + R01 * y + R02 * z + (col === 3 ? px : 0);
+      M[o + 4 + col] = R10 * x + R11 * y + R12 * z + (col === 3 ? py : 0);
+      M[o + 8 + col] = R20 * x + R21 * y + R22 * z + (col === 3 ? pz : 0);
+    }
+  }
+}
 
 /** Rotate bone b's 3x4 matrix about the vertical through pivot bone p's posed joint. */
 function rotateBoneY(M, rest, b, p, ang) {
