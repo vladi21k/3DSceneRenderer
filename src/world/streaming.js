@@ -25,6 +25,7 @@ export class World {
     this.staged = false;               // main switches this on after start-up
     this.revealing = [];               // chunks compiled and waiting to be revealed
     this.stats = { built: 0, disposed: 0, lastBuildMs: 0, queue: 0, buildMsByModule: {}, revealBytes: 0 };
+    this._ride = {};                   // module -> recent ride-time build durations (ms)
   }
 
   wanted(sCam) {
@@ -90,6 +91,10 @@ export class World {
     }
     const dt = performance.now() - t0;
     this.stats.buildMsByModule[name] = Math.max(this.stats.buildMsByModule[name] || 0, dt) * 0.98 + dt * 0.02;
+    if (this.staged) {   // ride-time samples only (start-up prime and warm-up builds excluded)
+      const w = this._ride[name] || (this._ride[name] = []);
+      w.push(dt); if (w.length > 200) w.shift();
+    }
   }
 
   _finish(c) {
@@ -212,13 +217,32 @@ export class World {
 
   /** Chunks the streamer will build next, nearest first: [{index, lod, dist}]. Public API for
    *  modules that prefetch their own work ahead of build(). */
-  upcoming(sCam = this.app.cameraS ?? this.app.startS) {
+  upcoming(sCam = this.app.cameraS ?? this.app.startS, lookAhead = 0) {
     const out = [];
-    for (const w of this.wanted(sCam)) {
-      const c = this.chunks.get(w.idx);
-      if (!c || !c.ready || (c.next && !c.next.ready) || w.lod < c.lod) out.push({ index: w.idx, lod: w.lod, dist: w.dist });
+    const seen = new Set();
+    // what is wanted now, plus what will be wanted (or upgraded to lod 0) within lookAhead metres of travel
+    const steps = lookAhead > 0 ? [0, lookAhead] : [0];
+    for (const ahead of steps) {
+      for (const w of this.wanted(sCam + ahead)) {
+        const key = `${w.idx}:${w.lod}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const c = this.chunks.get(w.idx);
+        if (!c || !c.ready || (c.next && !c.next.ready) || w.lod < c.lod) out.push({ index: w.idx, lod: w.lod, dist: w.dist + ahead, future: ahead > 0 });
+      }
     }
     return out.sort((a, b) => a.dist - b.dist);
+  }
+
+  /** Ride-time chunk build statistics per module: {name: {n, p50, p95, max}} (ms). */
+  rideBuildStats() {
+    const out = {};
+    for (const [name, w] of Object.entries(this._ride)) {
+      if (!w.length) continue;
+      const a = [...w].sort((x, y) => x - y), q = (f) => +a[Math.min(a.length - 1, Math.floor(f * a.length))].toFixed(2);
+      out[name] = { n: a.length, p50: q(0.5), p95: q(0.95), max: +a[a.length - 1].toFixed(2) };
+    }
+    return out;
   }
 
   /** True when every chunk within `dist` metres of sCam is built. */
@@ -234,8 +258,11 @@ function objectBytes(obj) {
   obj.traverse((o) => {
     const g = o.geometry;
     if (g && !g.userData?.shared) {
-      for (const k in g.attributes) b += g.attributes[k].array?.byteLength || 0;
-      if (g.index) b += g.index.array.byteLength;
+      if (g.userData?.revealBytes !== undefined) b += g.userData.revealBytes;   // module pre-uploaded part of it
+      else {
+        for (const k in g.attributes) b += g.attributes[k].array?.byteLength || 0;
+        if (g.index) b += g.index.array.byteLength;
+      }
     }
     if (o.isInstancedMesh) b += o.instanceMatrix.array.byteLength + (o.instanceColor ? o.instanceColor.array.byteLength : 0);
   });

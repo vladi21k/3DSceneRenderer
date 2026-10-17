@@ -38,13 +38,14 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [ ] Crowd roles for strollers and cyclists (lanes, speeds, tram avoidance)
 
 ## M3 — Integration & performance
-- [~] M3 workflow running: 8 area agents (cross-module requests, budgets), then a full-app photoreal critic plus perf/QA review, then owner fixes
+- [x] M3 workflow: 8 area agents (cross-module requests, budgets), then a full-app photoreal critic (5.5/10) plus perf/QA review, then owner fixes (18 agents)
+- [x] Core: periodic loop noise (no seam), background compile and byte-budgeted staged chunk reveal, program first-use during loading, oncoming trams registered, ride-time build stats, upcoming(lookAhead), contracts documented
 - [x] Startup: shaders were compiled twice (screen vs HDR target); cold start 32 s → 15 s
 - [x] Route reshaped (user request): gentle bends and S-meanders, so no street is ruler-straight; designed hills (the avenue climbs ~9 m ahead of the start, then crests)
 - [x] Uneven ground (user request): shared `route.surface(s, d)` with sidewalk cross-fall, a slow hillside tilt across the street and settlement undulation, applied by toWorld and the paving mesh so every object sits on it
-- [ ] All modules running together, clean console
+- [x] All modules running together, clean console (0 errors across views)
 - [ ] 60 fps at 1920×1080 target; draw calls / triangles / chunk build time within budget
-- [ ] Progressive loading: first frame quickly, then streaming
+- [~] Progressive loading: cold start ~15 s under load (shader compile dominates)
 
 ## M4 — Photoreal review loops
 - [ ] Screenshot review against the reference photos (default telephoto, midday, golden hour, dusk, close-ups)

@@ -46,7 +46,7 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 // Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
 // bloom: share of the blurred pyramid (veiling glare), day .. night.
 const TONE = {
-  curve: [1.19, 0.65, -1.2, 2.5], chroma: [0.5, 0.9], skyChroma: 0,
+  curve: [1.19, 0.65, -1.2, 2.5], chroma: [0.5, 0.9],
   meter: 0.6, target: 0.34, clamp: [0.5, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
 };
 
@@ -206,7 +206,7 @@ const post = {
       uVignette: { value: TONE.vignette }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uSharpen: { value: TONE.sharpen },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
-      uSat: { value: 1.12 }, uContrast: { value: 1.08 }, uSkyChroma: { value: TONE.skyChroma },
+      uSat: { value: 1.12 }, uContrast: { value: 1.08 },
       uCurve: { value: new THREE.Vector4(...TONE.curve) }, uChroma: { value: TONE.chroma[0] },
       uShadowTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
       uHighTint: { value: new THREE.Vector3(1.015, 1.0, 0.985) },
@@ -369,10 +369,13 @@ const post = {
       const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
       const kc = THREE.MathUtils.lerp(0.9, 0.15, ss(t, 0.3, 0.6)) - 0.15 * ss(t, 0.6, 1.0);
       // (once the lamps dominate, the sky's tint no longer sets the balance)
-      const kt = THREE.MathUtils.lerp(0.9, 0.25, ss(t, 0.84, 1.0));
+      const kt = THREE.MathUtils.lerp(1.0, 0.25, ss(t, 0.84, 1.0));
       const warm = 0.035 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
       const cool = 0.05 * ss(t, 0.8, 1.0);
-      const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
+      // (plus a touch of green in the late twilight: the stone keeps its hue under the
+      // pink-violet glow instead of turning rose)
+      const green = 0.05 * ss(t, 0.68, 0.8) * (1 - ss(t, 0.88, 1.0));
+      const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt - green, -0.7, 0.7);
       wb.set(Math.exp(-er) * (1 + warm - cool), Math.exp(-eg), Math.exp(er) * (1 - warm + cool));
       // keep the overall exposure (normalise the gains to unit luminance)
       const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;

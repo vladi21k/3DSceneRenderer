@@ -212,9 +212,9 @@ def cranium(face):
     # children: the brain case is large against a small face, so the eyes sit at or below the
     # middle of the head (the younger, the lower)
     if face == 'toddler':
-        return np.array([0.0, 0.030, 0.010]), np.array([0.083, 0.111, 0.106])
+        return np.array([0.0, 0.026, 0.010]), np.array([0.0855, 0.104, 0.104])
     if face == 'kid':
-        return np.array([0.0, 0.025, 0.009]), np.array([0.081, 0.108, 0.105])
+        return np.array([0.0, 0.023, 0.009]), np.array([0.0825, 0.105, 0.104])
     if face == 'child':
         return np.array([0.0, 0.019, 0.008]), np.array([0.0785, 0.1030, 0.1025])
     return np.array([0.0, 0.014, 0.006]), np.array([0.0745, 0.096, 0.098])
@@ -239,6 +239,12 @@ def arm_joints(T, s):
 # the runtime paints the nostrils and the mouth line at the same heights (info faceY)
 FACE_Y = {'nose': lambda yg: -0.0345 + 0.006 * yg, 'mouth': lambda yg: -0.0598 + 0.010 * yg}
 FACE_AGE = {'child': 0.45, 'kid': 0.75, 'toddler': 1.0}
+
+
+def EYE(yg):
+    """Eye centre x, z, eyeball radius and lid-opening scale (head-local) by face age."""
+    ek = 1.0 + 0.10 * yg
+    return 0.0320 + 0.0015 * yg, -0.0745 - 0.0025 * yg, 0.0118 * ek, ek
 
 
 def head_sdf(face, build=0.0, var=None):
@@ -307,26 +313,27 @@ def head_sdf(face, build=0.0, var=None):
         skull = Subtract(skull, folds, k=0.004)
         temples = Union([Ellipsoid((s * 0.074, 0.03, -0.045), (0.006, 0.016, 0.014)) for s in (-1, 1)])
         skull = Subtract(skull, temples, k=0.01 * old + 1e-4)
-    ez = -0.0745
-    er = 0.0118
+    # (children's eyes are nearly adult-sized in a smaller face: relatively bigger, set a little
+    # wider and further forward, the lid opening scaled with them)
+    ex, ez, er, ek = EYE(yg)
     # shallow sockets: the eye sits ~5 mm behind the brow, the hollow does not swallow it
     # (children: barely a hollow; the eye sits almost flush under a soft brow)
-    sockets = Union([Ellipsoid((s * 0.0320, 0.001, ez - 0.0125 - 0.003 * yg), (0.0155, 0.011, 0.009 - 0.003 * yg)) for s in (-1, 1)])
-    skull = Subtract(skull, sockets, k=0.010 - 0.003 * yg)
-    eyes = [Ellipsoid((s * 0.0320, 0.0, ez), (er, er, er), region=REGION['eye'], bones=H) for s in (-1, 1)]
+    sockets = Union([Ellipsoid((s * ex, 0.001, ez - 0.0125 - 0.003 * yg), (0.0155 * ek, 0.011 * ek, 0.009 - 0.004 * yg)) for s in (-1, 1)])
+    skull = Subtract(skull, sockets, k=0.010 - 0.004 * yg)
+    eyes = [Ellipsoid((s * ex, 0.0, ez), (er, er, er), region=REGION['eye'], bones=H) for s in (-1, 1)]
     # lids: shells over the eyeball outside the almond opening (upper lid thicker), so the eye
     # reads as an object set in the face rather than a painted socket
     lids = []
     for s in (-1, 1):
-        cx = s * 0.0320
+        cx = s * ex
 
         def up(P, cx=cx):
             dx = P[:, 0] - cx
-            return 0.0043 - 9.0 * dx * dx - P[:, 1]
+            return 0.0043 * ek - 9.0 * dx * dx / ek - P[:, 1]
 
         def lo(P, cx=cx):
             dx = P[:, 0] - cx
-            return P[:, 1] - (-0.0036 + 7.0 * dx * dx)
+            return P[:, 1] - (-0.0036 * ek + 7.0 * dx * dx / ek)
         box = ((cx - 0.02, -0.02, ez - 0.02), (cx + 0.02, 0.02, ez + 0.01))
         upper = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0016, er + 0.0016, er + 0.0016)), Fn(up, *box), k=0.0008)
         lower = Intersect(Ellipsoid((cx, 0.0, ez), (er + 0.0007, er + 0.0007, er + 0.0007)), Fn(lo, *box), k=0.0008)
@@ -760,10 +767,11 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
             'joints': [[float(x) for x in J[n]] for n in BONES]}
     hc = np.array(T['headC'], dtype=float)
     hs = T['headS']
-    eye = lambda s: (hc + hs * np.array([s * 0.0320, 0.0, -0.0745])).tolist()
+    ex, ez, er, _ = EYE(FACE_AGE.get(T['face'], 0.0))
+    eye = lambda s: (hc + hs * np.array([s * ex, 0.0, ez])).tolist()
     crc, crr = cranium(T['face'])
     info = {'H': H, 'kind': kind, 'headC': hc.tolist(), 'headS': hs, 'eyeL': eye(-1), 'eyeR': eye(1),
-            'eyeRadius': 0.0118 * hs, 'face': T['face'], 'sx': sx, 'sy': sy,
+            'eyeRadius': er * hs, 'face': T['face'], 'sx': sx, 'sy': sy,
             'hip': list(T['hip']), 'knee': list(T['knee']), 'ankle': list(T['ankle']), 'shoulder': list(T['shoulder']),
             'waistY': float(waist_y), 'neckY': float(J['neck'][1]), 'torsoY': [float(y0), float(y1)],
             'heelZ': T['heelZ'], 'toeZ': T['toeZ'], 'Lu': T['Lu'], 'Lf': T['Lf'], 'abd': T['abd'],

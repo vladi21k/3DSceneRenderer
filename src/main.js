@@ -21,6 +21,7 @@ const MODULES = [
   ['vegetation', './world/vegetation.js'],
   ['catenary', './world/catenary.js'],
   ['furniture', './world/furniture.js'],
+  ['trams', './ride/trams.js'],
   ['humans', './crowd/humans.js'],
   ['crowd', './crowd/crowd.js'],
   ['train', './ride/train.js'],
@@ -211,7 +212,7 @@ async function main() {
     fps: +app.perf.fps.toFixed(1), frameMs: +app.perf.frameMs.toFixed(2), cpuMs: +app.perf.cpuMs.toFixed(2), gpuMs: +app.perf.gpuMs.toFixed(2),
     calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs?.length,
-    chunks: app.world.chunks.size, queue: app.world.stats.queue, buildMsByModule: app.world.stats.buildMsByModule,
+    chunks: app.world.chunks.size, queue: app.world.stats.queue, buildMsByModule: app.world.stats.buildMsByModule, rideBuild: app.world.rideBuildStats(),
     s: +(app.cameraS ?? 0).toFixed(1), speedKmh: +((app.train?.speed ?? 0) * 3.6).toFixed(1),
     modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
   });

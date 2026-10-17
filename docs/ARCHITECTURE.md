@@ -103,7 +103,7 @@ export default {
 | sky/light/post | `src/env/**` |
 | human figures | `src/crowd/humans.js`, `src/crowd/humans/**` |
 | crowd behaviour | `src/crowd/crowd.js`, `src/crowd/behaviour/**` |
-| ride & UI | `src/ride/train.js`, `src/ride/cameraRig.js`, `src/ride/ui.js`, `src/ride/input.js`, `src/style.css` (UI part) |
+| ride & UI | `src/ride/train.js`, `src/ride/cameraRig.js`, `src/ride/ui.js`, `src/ride/input.js`, `src/ride/trams.js`, `src/ride/trams/**`, `src/style.css` (UI part) |
 | audio | `src/ride/audio.js`, `src/ride/audio/**` |
 
 Blender scripts go in `tools/blender/<area>_*.py` and generated assets in `assets/<area>/`.
@@ -114,3 +114,47 @@ If you need a change in a file you don't own, write the request into your final 
 - Draw calls under ~1500 including shadow passes. Keep triangles reasonable (under ~10 M including shadows) and avoid aliasing at all costs.
 - Per chunk per module: build under 3 ms (lod 0), under 1 ms (lod 1). Prefer instancing and merged geometry. LOD 1 (over 200 m) should be much lighter: no small details that would sub-pixel alias at that distance.
 - Thin geometry (wires, railings) must not alias or shimmer. Use pixel-width-aware shading or fade for far wires, and alpha-to-coverage or textures for fine ironwork far away.
+
+## Contract additions (M3 integration)
+**URL parameters.** `sky=streaks|cumulus|haze` picks the cloud regime; the default comes from the seed (`env.weather`). `tram=<s>` puts the first oncoming tram's nose at s. `prof=1` turns on post's per-section GPU timers.
+
+**Oncoming trams** (`src/ride/trams.js`, `src/ride/trams/**`, ride owner). `app.trams.units[]` = `{id, s, speed, accel, dir (−1), d (−TRACK_OFFSET), length (32), halfWidth (1.325), state, phase, bellAt, active}`. `s` is the leading nose on the route; the body trails towards +s, and the unit travels towards −s. They drive the same vehicle model as the cab tram, stop at the left platforms and brake for people. Event `tram-bell {unit, s, d}`. The crowd must keep the left track clear ahead of each unit, the same way it does for the cab tram. The cab tram itself is still never rendered.
+
+**Camera.** At 20° FOV or narrower the gaze turns 70% towards the track 80 m ahead (telephoto vanishing-point framing); at 40° and wider the view stays body-mounted. Drag look is grab-style. `cameraRig.blurMaxPx` is the motion-blur streak cap in px at 1080 lines. Keys: `M` mutes, `F` toggles full screen.
+
+**Ground contact.** Within 0.9 m of a facade the paving meets the building's own ground line (lot frame chord, `plan.groundAt(u)`). Objects standing against facades use `plan.groundAt` or `app.systems.street.heightAt(s, d)`, not toWorld with h = 0. Corner returns and cut faces have a varying `groundAt(u)` (`frame.ground0 ≠ frame.ground1`), eased into the side street.
+
+**facadePlan extensions.** `o.backDepth` (interior box depth behind glazing), `plan.relief`, exports `facadePlan.archSegments(o, q)` and `ornament(plan, rng)`. Backdrop lots from `buildings.extraLots()` are dressed by facades (no `selfDressed`). Buildings owns door thresholds and steps. Facades dresses café 'awning' terraces with a continuous awning (hem about 2.7 m).
+
+**Layout.** `cafes[].tables[].dressed`: 0 bare, 1 laid, 2 in use. Furniture writes it at init; the crowd seats patrons at dressed 2 first, then occasionally 1, never 0. Furniture relaxes chair and umbrella positions at init and writes them back into the layout.
+
+**Shadows (env).**
+- The sun uses 4 cascades in one atlas row. Cascades 0-1 redraw every frame, cascade 2 every 2nd frame and cascade 3 every 4th; all redraw on camera or sun moves.
+- Cascades 2-3 skip `mesh.userData.thinCaster` meshes and casters under 1.5 texels. A numeric `thinCaster` is the largest cascade texel (m) at which the caster still draws.
+- Static casters in a ready chunk are merged in the background into depth-only proxies. Set `mesh.userData.dynamicCaster = true` to keep a mesh out of merging; changes are detected automatically anyway.
+- Instanced casters may set `mesh.userData.shadowRange = [minViewDepth, maxViewDepth, margin]` each frame so cascades they cannot reach skip them.
+- The shared light loop skips dark lights (colour 0) and spot lights outside their cone or range, so permanent light slots cost nothing when off.
+- `env.skyIrradianceH` is the sky irradiance luminance on a level surface; shaders may read it instead of sampling the environment map.
+
+**Post.**
+- Camera tone curve with AgX colour, plus luma sharpening; `env.exposureMax` caps metered exposure at low sun.
+- A canyon-bounce hemisphere light, owned by env, adds warm fill from sunlit stone.
+- Camera-only motion blur uses `cameraRig.prevViewProj`, `cut`, `shutterSec` and `blurMaxPx`.
+- SSAO scales `app.materials.uniforms.aoScale` to 0.6 while it runs.
+- DOF models a 1"-type sensor: f/8 by day, f/2.8 at dusk.
+
+**Materials.**
+- Extra names: `paint.frameDetail`, `wood.shutterDetail`.
+- `paving.street` accepts a `laneAttr` option.
+- Program keys are 'sf7' plus feature letters in lite and full families; the library field `fx` overrides the family.
+- `materials.init` no longer waits for the bake; `materials.ready` resolves when the maps are final.
+- Night emission scales with `app.materials.uniforms.emissiveGain`.
+- 'ironwork.ac' no longer exists (AC units use 'ironwork.parts').
+
+**Shared-batch pattern (ironwork, reusable).** `build()` returns an empty marker group, and the meshes live in one scene-level group. A chunk's content starts drawing when its marker group becomes visible (or when it replaces an upgraded chunk) and is released on dispose. Shadow stand-ins are culled per block with the light's cascade frustum. BatchedMeshes should create their colour texture up front, so the startup compile doesn't build programs for empty batches.
+
+**Streaming.**
+- `app.world.upcoming(sCam, lookAhead)` also lists chunks that will be wanted, or upgraded to lod 0, within `lookAhead` metres of travel.
+- `stats().rideBuild` gives per-module ride-time build p50/p95/max; startup builds are excluded.
+- Parts reveal under a per-frame upload budget. A module that pre-uploads vertex data can set `geometry.userData.revealBytes` to the bytes a reveal still sends.
+- New chunks compile their programs in the background before they are shown.

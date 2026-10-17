@@ -490,7 +490,6 @@ uniform vec3 uWB;             // white balance gains (linear)
 uniform float uSat;
 uniform float uContrast;
 uniform vec3 uShadowTint, uHighTint;
-uniform float uSkyChroma;
 uniform vec4 uCurve;          // camera tone curve: A, s, e0, q (see below)
 uniform float uChroma;        // 0 AgX's chroma .. 1 the scene's colour ratios
 uniform vec2 uResolution;
@@ -594,14 +593,6 @@ void main() {
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), uChroma);
     float m = max(col.r, max(col.g, col.b));
     if (m > 1.0) col = lt + (col - lt) * (1.0 - lt) / max(m - lt, 1e-5);
-  }
-  // AgX's log-domain curve greys bright blues: give bright cool colours (the sky) back
-  // some chroma, scaling around the luminance so the hue stays put
-  if (uSkyChroma > 0.0) {
-    float l = dot(col, LW);
-    float cool = smoothstep(0.02, 0.3, (col.b - col.r) / max(col.b, 1e-4));
-    float k = 1.0 + uSkyChroma * cool * smoothstep(0.05, 0.4, l);
-    col = max(vec3(0.0), l + (col - l) * k);
   }
   col = srgbOETF(clamp(col, 0.0, 1.0));
   // fine film grain, strongest in the mid tones, plus dither

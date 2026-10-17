@@ -6,6 +6,7 @@
 //   'doors'           {open:boolean}
 //   'tod'             {t}                      time of day changed
 //   'start'           {}                       user clicked to start (audio may begin)
+//   'tram-bell'       {unit, s, d}             an oncoming tram rang its bell
 //   'ready'           {}                       initial world built
 export class Events {
   constructor() { this.map = new Map(); }

@@ -92,11 +92,13 @@ vec3 hTopUpper(vec3 r, float topType, float topY) {
     // collar band up the neck; the neck is open in a V down the placket (narrowing downwards)
     float ct = hCollarTop(r, topType);
     // (polo: two buttons open, shirt: the top button open; a narrow V, not a keyhole)
-    // (the open neck: a short V that widens to the collar, the placket's buttons below it)
-    float vd = (topType == 1.0 ? 0.05 : topType == 2.0 ? 0.06 : 0.035) * sc;
-    float vw = (topType == 5.0 ? 0.013 : 0.026) * sc * pow(clamp((y - neck + vd) / (vd + 0.015 * sc), 0.0, 1.0), 0.8);
+    // (the open neck: a V from the first button up to the collar, where the collar's points
+    // spread apart; the placket's buttons below it)
+    float vd = (topType == 1.0 ? 0.06 : topType == 2.0 ? 0.075 : 0.035) * sc;
+    float vw = (topType == 5.0 ? 0.013 : 0.040) * sc * pow(clamp((y - neck + vd) / (vd + 0.025 * sc), 0.0, 1.0), 0.9);
     e = min(e, ct - y);
-    if (r.z < 0.0) e = min(e, mix(1.0, max(abs(r.x) - vw, neck - vd - y), front));
+    // (front of the neck itself counts: the throat sits only a few centimetres forward of the axis)
+    if (r.z < 0.0) e = min(e, mix(1.0, max(abs(r.x) - vw, neck - vd - y), smoothstep(0.01, -0.02, r.z)));
   } else e = min(e, hNeckline(r, topType) - y);
   if (topType == 3.0) { // tank: oval arm holes leave ~3 cm straps over the shoulders
     vec2 ah = (vec2(abs(r.x), y) - vec2(uShoulder.x + 0.005 * sc, uShoulder.y - 0.035 * sc)) / (vec2(0.088, 0.125) * sc);
@@ -547,7 +549,7 @@ void hSkin(out vec3 P, out vec3 N) {
   }
   if (region == 12.0) pos = hFace(pos, position, 3.0, L0.w, hLook(row, 9).w);
 #ifndef HUMAN_DEPTH
-  if (part < 0.5 && (region == 3.0 || region == 18.0)) {
+  if (part < 0.5 && (region == 3.0 || region == 18.0 || region == 10.0)) {
     // round the eye area off: the lids and the socket are a few millimetres of geometry that the
     // mesh cannot hold on small heads (bruised rings, jagged lid shading); a child's eye area is
     // full and smooth
@@ -870,7 +872,7 @@ const FRAG_SURFACE = /* glsl */`
         // button placket below the open neck: the overlapping front edge (a soft shadow on one side,
         // a little relief) and small buttons, at low contrast
         float scP = uTorso.w / 1.76;
-        float vd = (L2.w == 1.0 ? 0.05 : 0.06) * scP;
+        float vd = (L2.w == 1.0 ? 0.06 : 0.075) * scP;
         float yTop = uTorso.z - vd, yBot = L2.w == 1.0 ? yTop - 0.10 * scP : hTopHemY(L8.y);
         float frontP = step(r.z, -0.02) * step(r.y, yTop + 0.002) * step(yBot, r.y);
         float ex = r.x - 0.009 * scP;
@@ -1084,8 +1086,13 @@ const FRAG_SURFACE = /* glsl */`
       // the sockets' baked occlusion reads as bruised rings at distance: keep it light round the eye
       aoV = mix(aoV, max(aoV, 0.9 + 0.05 * uFace.z), smoothstep(er * 3.2, er * 1.2, length(e.xy)) * front);
       float dx = e.x * sign(q.x);
-      float up = 0.0043 - 9.0 * dx * dx, lo = -0.0036 + 7.0 * dx * dx;
-      float lid = hAA(min(up - e.y, e.y - lo)) * step(length(e), er * 1.25) * step(e.z, 0.0);
+      // (the lid opening scales with the eye: children's eyes are relatively bigger)
+      float ek = er / 0.0118;
+      float up = 0.0043 * ek - 9.0 * dx * dx / ek, lo = -0.0036 * ek + 7.0 * dx * dx / ek;
+      // (a clean almond painted onto whatever surface lies in front of the eye: the lids and the
+      // eyeball are a few millimetres of geometry the mesh cannot always hold, so a test on the
+      // depth would draw their decimated edges as ragged patches)
+      float lid = hAA(min(up - e.y, e.y - lo)) * step(length(e.xy), er * 1.7) * step(e.z, 0.004);
       if (lid > 0.0) {
         float d = length(e.xy) / er;
         vec3 irisC = mix(vec3(0.05, 0.028, 0.016), vec3(0.16, 0.12, 0.06), fract(seed * 5.7));
@@ -1093,14 +1100,14 @@ const FRAG_SURFACE = /* glsl */`
         // (children's irises look bigger: the eye is nearly adult-sized in a smaller face)
         vec3 eye = mix(vec3(0.50, 0.46, 0.43), irisC, hAA(0.56 + 0.08 * uFace.z - d));
         eye = mix(eye, vec3(0.01), hAA(0.22 - d));
-        eye *= mix(0.55, 1.0, smoothstep(up, lo, e.y));    // upper lid and lashes shade the eye
+        eye *= mix(mix(0.55, 0.75, uFace.z), 1.0, smoothstep(up, lo, e.y));    // upper lid and lashes shade the eye
         col = mix(col, eye, lid);
         rough = mix(rough, 0.08, lid);
         skinAmt *= 1.0 - lid;
         aoV = mix(aoV, max(aoV, 0.8), lid);
       }
-      float lash = hAA(0.0011 - abs(e.y - up)) * hAA(0.016 - abs(e.x)) * step(e.z, 0.0) * step(length(e), er * 1.6);
-      col = mix(col, L1.rgb * 0.4, lash * 0.85);
+      float lash = hAA(0.0011 - abs(e.y - up)) * hAA(0.016 * ek * (1.0 - 0.12 * uFace.z) - abs(e.x)) * step(e.z, 0.004) * step(length(e.xy), er * 1.7);
+      col = mix(col, L1.rgb * 0.4, lash * mix(0.85, 0.55, uFace.z));
       // sunglasses (painted only when the build has no glasses part)
       if (L6.w > 0.5 && __GLASSES__ < 0.0) {
         vec2 le = vec2((dx + 0.002) / 0.0215, (e.y + 0.0015) / 0.0165);

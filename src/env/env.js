@@ -43,6 +43,8 @@ const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];
 // canyon bounce view factors: walls seen from the floor (up), floor and walls seen from below (down)
 const BOUNCE = { up: 0.4, down: 0.55 };
+// exposed value of sun-facing stone that low-sun highlight protection holds (~2 stops over mid grey)
+const LIT_STONE = 0.8;
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -289,12 +291,12 @@ const env = {
     this.exposureBase = 1.6 * Math.exp(lnE);
     this.exposure = this._capExposure(this.exposureBase);
     // highlight protection for a low sun: whatever the metering does for the shaded
-    // canyon, stone facing the sun (albedo ~0.55) stays ~1.5 stops over mid grey, below
-    // the shoulder, so the golden light keeps its colour instead of clipping to cream
+    // canyon, stone facing the sun (albedo ~0.55) stays below the shoulder, so the
+    // golden light keeps its colour instead of clipping to cream
     const sh = Math.max(this.state.sunDir.y, 0);
     const litStone = 0.55 * this.sunIlluminance * Math.sqrt(1 - sh * sh) / Math.PI;
     const w = THREE.MathUtils.smoothstep(this.state.t, 0.35, 0.55);
-    this.exposureMax = litStone > 1e-6 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(0.5 / litStone), w)) : 1e4;
+    this.exposureMax = litStone > 1e-6 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(LIT_STONE / litStone), w)) : 1e4;
     if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
 
     // illuminant for the white balance (horizontal surface in the open)
