@@ -1,10 +1,12 @@
 import { RNG } from '../../core/rng.js';
 import { facadePlan } from '../facadePlan.js';
 import { FaceShade, stoneTint, trimColor, noise2 } from './shade.js';
+import { insetPolygon, FACES } from './mesh.js';
 import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
 import { courseProfile, plinthProfile, corniceProfile, dentils, modillions, quoins, pilaster } from './mouldings.js';
-import { parapetProfile, balustrade, merlons, hipRoof, solarHeater, sunYaw, waterTank, acUnit, antenna, headHouse } from './roof.js';
+import { parapetProfile, balustrade, merlons, pitchedRoof, solarHeater, sunYaw, waterTank, acUnit, antenna, headHouse } from './roof.js';
+import { openingInfill } from './infill.js';
 
 // Masonry shell of one building lot, generated from its facade plan:
 // wall fields with real openings, reveals and dark closed interiors, arches with
@@ -13,10 +15,16 @@ import { parapetProfile, balustrade, merlons, hipRoof, solarHeater, sunYaw, wate
 // rustication, quoins, pilasters, corner returns, party walls where neighbours step,
 // rooftop equipment. Output: one compact vertex/index set per material key.
 
-/** Detail levels: 0 near (< 200 m), 1 far. */
+/**
+ * Detail levels: 0 near (< 200 m), 1 far (200–680 m). The default view is a 17° telephoto,
+ * where 200 m is ~5.5 cm per pixel, so the far level keeps every moulding profile, hood,
+ * keystone and the baked occlusion rows (no popping at the switch) and only drops what
+ * is sub-pixel there: bevels, voussoir joints, dentil and baluster geometry (replaced by
+ * shaded bands), V joints, steps, reveal interiors.
+ */
 export const DETAIL = {
   0: { lod: 0, archSeg: 14, voussoirs: true, bevel: true, interior: true, dentils: true, modillions: true, balusters: true, rustic: true, steps: true, gridU: 1.1, gridV: 0.9, rooftop: true },
-  1: { lod: 1, archSeg: 6, voussoirs: false, bevel: false, interior: false, dentils: false, modillions: false, balusters: false, rustic: false, steps: false, gridU: 4, gridV: 3.5, rooftop: true },
+  1: { lod: 1, archSeg: 10, voussoirs: false, bevel: false, interior: false, dentils: false, modillions: false, balusters: false, rustic: false, steps: false, gridU: 2.0, gridV: 2.4, rooftop: true },
 };
 
 /** Building-only style choices (own RNG stream, never shifts the shared plan). */
@@ -87,6 +95,10 @@ export function* lotSteps(B, lot, ends, q, metas) {
     ashlar: B.sink('ashlar'), smooth: B.sink('smooth'), rough: B.sink('rough'), dark: B.sink('plaster'), paint: B.sink('plaster'),
     tile: B.sink('tile'), metal: B.sink(q.lod ? 'plaster' : 'metal'), // far: rooftop metal joins the plaster batch
   };
+  // buildings-only lots (side-street backdrops) carry their own glazing and joinery
+  const dress = !!lot.selfDressed;
+  if (dress) { sinks.glass = B.sink('glass'); sinks.frame = B.sink('frame'); }
+  const irng = RNG.from(lot.seed, 'infill');
   const cor = plan.cornice, par = plan.parapet;
   const vTop = cor.y + 0.06;
   const gMin = Math.min(plan.ground0, plan.ground1);
@@ -94,14 +106,23 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const bev = q.bevel ? 0.012 : 0;
 
   // ------------------------------------------------------------- end exposure
-  const E = ends.map((e) => {
+  // Each end of the front turns back along `dir` (u, w): straight back (−w) for party
+  // walls, along the real side-street line for corner returns (plan.returns[].dir),
+  // `len` metres to the back corner. The footprint is the quad front + the two back corners.
+  const E = ends.map((e, k) => {
     const front = e.nb ? Math.max(0, -e.dw) : 0;
-    return { ...e, front, nbBack: e.nb ? e.dw - e.nbDepth : 0 };
+    const ret = e.corner ? (plan.returns || []).find((r) => r.end === k) : null;
+    const P = [k ? W : 0, 0];
+    const dir = ret ? ret.dir : [0, -1], len = ret ? ret.width : D;
+    return { ...e, front, nbBack: e.nb ? e.dw - e.nbDepth : 0, ret, P, dir, len, back: [P[0] + dir[0] * len, dir[1] * len] };
   });
+  /** Point `r` metres back from the front corner at end e (along that end's wall). */
+  const pt = (e, r) => [E[e].P[0] + E[e].dir[0] * r, E[e].dir[1] * r];
+  const foot = [[0, 0], [W, 0], E[1].back, E[0].back];   // clockwise in (u, w): faces up
   /** Return length of a moulding whose top is at vTopM around end e (0 = none). */
   const retLen = (e, vTopM, proj) => {
     const x = E[e];
-    if (x.corner) return D;
+    if (x.corner) return x.len;
     if (!x.nb) return proj + 0.12;
     // a return shorter than the projection would fold the mitre over; the excess
     // disappears inside the set-back neighbour
@@ -112,9 +133,9 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const mPath = (vTopM, proj) => {
     const r0 = retLen(0, vTopM, proj), r1 = retLen(1, vTopM, proj);
     const path = [];
-    if (r0 > 0.01) path.push([0, -r0]);
+    if (r0 > 0.01) path.push(pt(0, r0));
     path.push([0, 0], [W, 0]);
-    if (r1 > 0.01) path.push([W, -r1]);
+    if (r1 > 0.01) path.push(pt(1, r1));
     return path;
   };
 
@@ -143,7 +164,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
       const sv = rustH ? rustH / orn.rustH : 1;
       sinks.rough.uvx = [sv, uvA[1], sv, -rustic.v1 * sv];
     }
-    wallField(ctx, face, ops);
+    yield* wallField(ctx, face, ops);
     sinks.rough.uvx = null;
     B.setUV();
     B.mark('wall');
@@ -151,7 +172,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.frameFromLot(F.frame);
     for (let i = 0; i < ops.length; i++) {
       openingMasonry(ctx, face, ops[i]);
-      if (i % 8 === 7) { B.mark('openings'); yield; B.frameFromLot(F.frame); }
+      if (dress) openingInfill(ctx, face, ops[i], irng);
+      if (i % 3 === 2) { B.mark('openings'); yield; B.frameFromLot(F.frame); }
     }
     B.mark('openings');
 
@@ -161,9 +183,13 @@ export function* lotSteps(B, lot, ends, q, metas) {
       const v0 = plan.courses[0].y + plan.courses[0].h;
       for (const b of face.bays) if (b.index > 0) pilaster(B, sinks.smooth, b.u0, orn.pilW, orn.pilP, v0, cor.y, bev, q.lod === 0);
     }
+    // quoins on a corner return (the front's column wraps the arris; these interlock with it)
+    if (!F.main && plan.style.quoins) {
+      quoins(B, sinks.smooth, face.width, face.cornerAtU1 ? 1 : 0, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, false, bev, { parity: 1 });
+    }
     // plinth segments between ground-floor openings
     B.mark('pilasters');
-    plinth(B, sinks, F, face, ops, orn, E, fg, fs);
+    plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt);
     B.mark('plinth');
     yield;
     B.frameFromLot(F.frame);
@@ -181,21 +207,29 @@ export function* lotSteps(B, lot, ends, q, metas) {
   for (const c of plan.courses) {
     B.sweep(sinks.smooth, courseProfile(c.h, c.proj), mPath(c.y + c.h, c.proj), c.y, [true, true]);
   }
-  const ck = corniceProfile(cor.h, cor.proj, q.lod > 0);
+  const ck = corniceProfile(cor.h, cor.proj);
   const cPath = mPath(cor.y + cor.h, cor.proj);
+  if (cor.dentils && !q.dentils) {
+    // far: the dentil band reads as a darker stripe (lit blocks and shadowed gaps averaged)
+    const d = ck.dentil, va = cor.y + d.v0 - 0.002, vb = cor.y + d.v1 + 0.002, wmax = d.w0 + 0.03;
+    B.shade = (u, v, w, nu, nv, nw, out) => {
+      trimColor(mainShade, u, v, nv, out, 1.05);
+      if (v > va && v < vb && w < wmax && nw > 0.8) { out[0] *= 0.68; out[1] *= 0.67; out[2] *= 0.66; }
+    };
+  }
   B.sweep(sinks.smooth, ck.profile, cPath, cor.y, [true, true]);
-  if (cor.dentils) dentils(B, sinks.smooth, 0.05, W - 0.05, cor.y, ck.dentil, q.dentils);
+  B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.05);
+  if (cor.dentils && q.dentils) dentils(B, sinks.smooth, 0.05, W - 0.05, cor.y, ck.dentil, true);
   if (orn.modillions) modillions(B, sinks.smooth, 0.25, W - 0.25, cor.y, cor.h, cor.proj, orn.modSpacing, q.modillions);
   B.mark('mouldings');
 
   // quoins at the street corners
   if (plan.style.quoins) {
-    const v0 = plan.style.rusticGround && plan.courses.length ? plan.courses[0].y + plan.courses[0].h : Math.max(plan.ground0, plan.ground1) + orn.plinthH;
-    const qh = Math.max(0.5, plan.style.courseH * 2);
     for (const e of [0, 1]) {
       const x = E[e];
       const wrap = q.lod === 0 && (x.corner || !x.nb || x.front > 0.03);
-      quoins(B, sinks.smooth, W, e, v0, cor.y, qh, orn.quoin, wrap, bev);
+      // at a street corner the return face carries its own interlocking column
+      quoins(B, sinks.smooth, W, e, quoinV0(plan, orn), cor.y, quoinH(plan), orn.quoin, wrap, bev, { retFace: !x.corner });
     }
   }
 
@@ -211,58 +245,79 @@ export function* lotSteps(B, lot, ends, q, metas) {
     if (x.corner) continue;
     const u = e ? W : 0, dir = e ? 1 : -1;
     const vb = gMin - 0.35;
-    const cell = q.lod ? 6 : 1.6;
+    const cell = q.lod ? 3 : 1.6;
     if (!x.nb) { B.gridU(sinks.ashlar, u, vb, sideTop, -D, 0, dir, cell); continue; }
     if (x.front > 0.01) B.gridU(sinks.ashlar, u, vb, sideTop, -x.front, 0, dir, cell);
     if (x.nbBack > -D + 0.01) B.gridU(sinks.ashlar, u, vb, Math.min(sideTop, x.nbTop), -D, x.nbBack, dir, cell);
     if (x.nbTop < sideTop) B.gridU(sinks.ashlar, u, Math.max(vb, x.nbTop), sideTop, Math.max(-D, x.nbBack), Math.min(0, -x.front), dir, cell);
   }
-  // back wall
-  B.rectW(sinks.ashlar, 0, W, gMin - 0.35, sideTop, -D, -1);
+  // back wall (between the two back corners; slanted where a return follows a side street)
+  B.vwall(sinks.ashlar, E[1].back[0], E[1].back[1], E[0].back[0], E[0].back[1], gMin - 0.35, sideTop);
   B.setUV();
 
   // ------------------------------------------------------------- parapet / roof
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.03);
   if (flatRoof) {
     const pv = par.y, ph = par.h;
-    const sideRet = (e) => (E[e].corner || !E[e].nb || E[e].nbTop < pv + ph - 0.2 || E[e].front > 0.3 ? D : 0);
+    const sideRet = (e) => (E[e].corner || !E[e].nb || E[e].nbTop < pv + ph - 0.2 || E[e].front > 0.3 ? E[e].len : 0);
     const r0 = sideRet(0), r1 = sideRet(1);
     if (par.type === 'balustrade') {
       balustrade(B, sinks.smooth, [[0, 0], [W, 0]], pv, ph, q);
-      if (r0) B.sweep(sinks.smooth, parapetProfile(0.9), [[0, -D], [0, -0.3]], pv, [true, true]);
-      if (r1) B.sweep(sinks.smooth, parapetProfile(0.9), [[W, -0.3], [W, -D]], pv, [true, true]);
+      if (r0) B.sweep(sinks.smooth, parapetProfile(0.9), [pt(0, r0), pt(0, 0.3)], pv, [true, true]);
+      if (r1) B.sweep(sinks.smooth, parapetProfile(0.9), [pt(1, 0.3), pt(1, r1)], pv, [true, true]);
     } else {
       const path = [];
-      if (r0) path.push([0, -D]);
+      if (r0) path.push(pt(0, r0));
       path.push([0, 0], [W, 0]);
-      if (r1) path.push([W, -D]);
+      if (r1) path.push(pt(1, r1));
       B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
       B.sweep(sinks.ashlar, parapetProfile(ph), path, pv, [true, true]);
       B.setUV();
       if (par.type === 'crenel') merlons(B, sinks.smooth, 0.3, W - 0.3, pv + ph, rng.range(0.9, 1.3), rng.range(0.45, 0.6), rng.range(0.35, 0.5));
     }
     // back parapet (plain)
-    B.sweep(sinks.ashlar, parapetProfile(0.85), [[W, -D], [0, -D]], pv, [true, true]);
+    B.sweep(sinks.ashlar, parapetProfile(0.85), [E[1].back, E[0].back], pv, [true, true]);
     // roof deck (grey bituminous screed), in the plaster batch
     B.shade = null; B.flat = [0.42, 0.41, 0.4];
-    B.rectV(sinks.paint, 0.02, W - 0.02, -D + 0.32, -0.3, pv + 0.06, 1);
+    B.polyV(sinks.paint, insetPolygon(foot.flat(), -0.3), pv + 0.06); // clockwise: negative insets
     B.flat = [1, 1, 1];
     B.mark('parapet');
     yield;
     B.frameFromLot(f);
-    if (q.rooftop) rooftop(B, sinks, lot, plan, orn, pv + 0.06, q, tint);
+    if (q.rooftop) yield* rooftop(B, sinks, lot, plan, orn, pv + 0.06, q, tint, foot);
     B.mark('rooftop');
   } else {
     B.shade = null;
-    const pitch = plan.roof.pitch;
-    const ov = Math.min(cor.proj * 0.55, 0.3);
-    const x0 = E[0].nb && !E[0].corner ? 0 : -0.25, x1 = E[1].nb && !E[1].corner ? W : W + 0.25;
+    // eaves overhang the cornice; exposed ends are hipped, ends against a neighbour gabled
+    const ends = E.map((x) => {
+      const hip = x.corner || !x.nb;
+      return { dir: x.dir, hip, over: hip ? cor.proj + 0.3 : 0 };
+    });
     B.flat = plan.roof.color === 'darkred' ? [0.78, 0.66, 0.64] : [1, 1, 1];
-    hipRoof(B, sinks.tile, x0, x1, -D - 0.2, ov, cor.y + cor.h, pitch, q);
+    B.setUV();
+    pitchedRoof(B, sinks, {
+      W, v0: cor.y + cor.h, pitch: plan.roof.pitch, front: cor.proj + 0.4,
+      back: Math.min(E[0].back[1], E[1].back[1]) - 0.25, ends, wallBack: [E[0].back, E[1].back],
+    }, q);
     B.flat = [1, 1, 1];
     B.mark('roof');
   }
   B.shade = null;
+}
+
+/** Quoin column start (above the plinth or the rusticated ground floor) and block height. */
+const quoinV0 = (plan, orn) => (plan.style.rusticGround && plan.courses.length ? plan.courses[0].y + plan.courses[0].h : Math.max(plan.ground0, plan.ground1) + orn.plinthH);
+const quoinH = (plan) => Math.max(0.5, plan.style.courseH * 2);
+
+/** True when (u, w) lies inside the clockwise footprint quad with `margin` to every edge. */
+function insideFoot(foot, u, w, margin) {
+  for (let k = 0; k < foot.length; k++) {
+    const a = foot[k], b = foot[(k + 1) % foot.length];
+    const eu = b[0] - a[0], ew = b[1] - a[1], l = Math.hypot(eu, ew) || 1;
+    // clockwise in (u, w): the interior lies to the right of each edge
+    if (((u - a[0]) * ew - (w - a[1]) * eu) / l < margin) return false;
+  }
+  return true;
 }
 
 /**
@@ -281,7 +336,7 @@ function plainStone(fs, tint, u, v, out, k, top) {
 }
 
 /** Plinth (base course) along each face between ground-floor openings, wrapping exposed corners. */
-function plinth(B, sinks, F, face, ops, orn, E, fg, fs) {
+function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt) {
   const W = face.width;
   const gr = ops.filter((o) => o.floor === 0).map((o) => [o.uc - o.w / 2, o.uc + o.w / 2]).sort((a, b) => a[0] - b[0]);
   const segs = [];
@@ -308,18 +363,18 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs) {
     if (F.main) {
       // wrap around exposed ends and street corners of the main front
       const ret = (x) => (x.corner ? p : !x.nb ? p + 0.1 : x.front > 0.03 ? Math.max(x.front, p + 0.08) : 0);
-      if (s0 < 0.01) { const r = ret(E[0]); if (r) path.unshift([0, -r]); }
-      if (s1 > W - 0.01) { const r = ret(E[1]); if (r) path.push([W, -r]); }
+      if (s0 < 0.01) { const r = ret(E[0]); if (r) path.unshift(pt(0, r)); }
+      if (s1 > W - 0.01) { const r = ret(E[1]); if (r) path.push(pt(1, r)); }
     }
     B.sweep(sinks.smooth, prof, path, 0, [true, true]);
   }
 }
 
 /** Rooftop equipment from plan.rooftop, kept apart from each other, plus an optional stair head-house. */
-function rooftop(B, sinks, lot, plan, orn, v0, q, tint) {
+function* rooftop(B, sinks, lot, plan, orn, v0, q, tint, foot) {
   const W = plan.width, D = plan.depth;
   const placed = [];
-  const free = (u, w, r) => placed.every((p) => Math.hypot(p[0] - u, p[1] - w) > p[2] + r) && u > r + 0.4 && u < W - r - 0.4 && w < -r - 0.6 && w > -D + r + 0.6;
+  const free = (u, w, r) => placed.every((p) => Math.hypot(p[0] - u, p[1] - w) > p[2] + r) && insideFoot(foot, u, w, r + 0.5);
   if (orn.headHouse && W > 6 && D > 7) {
     const u = W * orn.headU, w = -D * orn.headW;
     if (free(u, w, 1.8)) {
@@ -375,6 +430,35 @@ function rooftop(B, sinks, lot, plan, orn, v0, q, tint) {
     B.enter(u, v0, w, r.range(0, Math.PI));
     if (tank) waterTank(B, sinks, q, r); else antenna(B, sinks, q, r);
     B.popFrame();
+  }
+  B.flat = [1, 1, 1];
+}
+
+/**
+ * Emergency stand-in for a far lot whose real shell is not generated yet (well under a
+ * millisecond): front slab with dark openings, cornice band, sides, back and roof. Shown
+ * at the far edge of the view for the few frames until the real shell is swapped in.
+ */
+export function coarseLot(B, lot) {
+  const plan = facadePlan(lot);
+  const W = plan.width, D = plan.depth, cor = plan.cornice;
+  const tint = plan.style.tint.map((c, i) => c / [0.86, 0.80, 0.68][i]);
+  const g = Math.min(plan.ground0, plan.ground1) - 0.3, top = plan.parapet.y + (plan.roof.type === 'tile' ? 0 : plan.parapet.h);
+  const s = B.sink('ashlar'), sm = B.sink('smooth'), dk = B.sink('plaster');
+  B.begin();
+  B.frameFromLot(lot.frame);
+  B.flat = tint;
+  B.rectW(s, 0, W, g, top, 0, 1);
+  B.rectU(s, 0, g, top, -D, 0, -1);
+  B.rectU(s, W, g, top, -D, 0, 1);
+  B.rectW(s, 0, W, g, top, -D, -1);
+  B.rectV(s, 0, W, -D, 0, top, 1);
+  B.flat = tint.map((c) => c * 1.03);
+  B.box(sm, -0.05, W + 0.05, cor.y, cor.y + cor.h, 0, cor.proj, FACES.FRONT | FACES.BOTTOM | FACES.TOP);
+  B.flat = [0.05, 0.048, 0.046];
+  for (const o of plan.openings) {
+    if (o.y + o.h > cor.y) continue;
+    B.rectW(dk, o.uc - o.w / 2, o.uc + o.w / 2, o.y, o.y + o.h - o.rise * 0.4, 0.01, 1);
   }
   B.flat = [1, 1, 1];
 }

@@ -77,7 +77,7 @@ export function buildSignalKit() {
   const v = visor(0.115, 0.1); v.translate(0, y, 0.055);
   const lens = new THREE.CircleGeometry(0.105, 24); lens.translate(0, y, 0.056);
   kit.tramHead = merge([colored(head, C_HOUSING), colored(board, C_HOUSING), colored(border, C_BORDER), colored(v, C_HOUSING), colored(lens, C_LENS)]);
-  kit.tramPost = merge([postGeometry(y - 0.2)]);
+  kit.tramPost = merge([postGeometry(y - 0.14)]);
   // pole mount: a short tube from the back of the head to a clamp band around the pole,
   // which stands MOUNT_X to the head's +X side
   const tube = new THREE.CylinderGeometry(0.022, 0.022, MOUNT_X - 0.16, 10); tube.rotateZ(Math.PI / 2); tube.translate(0.08 + (MOUNT_X - 0.16) / 2, y, -0.03);
@@ -175,8 +175,8 @@ export function signalPlacements(c, layout, poles) {
     let best = null, bestD = 6;
     for (const p of near) {
       if (Math.sign(p.d) !== side) continue;
-      const ds = route.delta(sIdeal, p.s) * -dir; // >= 0: pole further from the junction
-      if (ds > -1.5 && Math.abs(ds) < bestD) { best = p; bestD = Math.abs(ds); }
+      const off = route.delta(sIdeal, p.s) * dir; // > 0: pole further from the junction
+      if (off > -2.5 && off < 6 && Math.abs(off) < bestD) { best = p; bestD = Math.abs(off); }
     }
     if (best) out.push({ kind: 'tram', s: best.s, d: best.d, face, pole: best });
     else place(sIdeal, side * dEdge, 'tram', face);

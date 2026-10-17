@@ -145,9 +145,14 @@ export function buildCrossover(ctx, c, chunk, bufs, lineBuf) {
     const half = 1.3;
     const fnMain = (x) => ({ s: c.s0 + x, d: f.main.c, dd: 0 });
     const ptsM = samplePath(route, null, fnMain, f.x - half, f.x + half, 0.325);
-    // plate: around the main rail, wide enough to hold the crossing rail
-    const plateHalf = (q) => 0.1 + Math.abs(f.rail.fn(q.t).d - f.main.c) * 0.9 + 0.02 * (1 - Math.abs(q.t - f.x) / half);
-    inlayStrip(B.plate, ptsM, (q) => -plateHalf(q), plateHalf);
+    // cast block: spans the main rail and the crossing rail (both with their seals)
+    const span = (q) => {
+      const dc = f.rail.fn(q.t).d - f.main.c;
+      const a = dc + f.rail.g * RAIL_X0, b = dc + f.rail.g * RAIL_X1;
+      const m0 = f.main.lo - f.main.c, m1 = f.main.hi - f.main.c;
+      return [Math.min(m0, a, b) - 0.03, Math.max(m1, a, b) + 0.03];
+    };
+    inlayStrip(B.plate, ptsM, (q) => span(q)[0], (q) => span(q)[1]);
     // flangeway of the main rail cut through the crossing rail's head (above heads)
     const ptsG = samplePath(route, null, fnMain, f.x - half, f.x + half, 1.3);
     inlayStrip(B.flange, ptsG, () => (f.main.g > 0 ? HEAD_HALF : -GROOVE_OUT), () => (f.main.g > 0 ? GROOVE_OUT : -HEAD_HALF));

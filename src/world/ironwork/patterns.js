@@ -96,7 +96,9 @@ function frame(W, { under = UNDER, mid = null } = {}) {
 const curve = (pts, closed = false, w = SCROLL_W, d = SCROLL_D) => ({ k: 'curve', pts, closed, w, d });
 const collar = (x, y, vertical = true) => ({ k: 'collar', x, y, w: vertical ? 0.034 : 0.024, h: vertical ? 0.024 : 0.034, d: 0.026 });
 const rosette = (x, y, r = 0.03) => ({ k: 'rosette', x, y, r });
-const ring = (x, y, r) => curve(circle(x, y, r), true);
+/** Closed circle; `ring` keeps the exact centre and radius so the 3D geometry can
+ *  tessellate it to any chord tolerance. */
+const ring = (x, y, r) => ({ ...curve(circle(x, y, r, 48), true), ring: [x, y, r] });
 const rot90 = (pts) => pts.map(([x, y]) => [y, -x]);
 
 const SLIM_C = { r0: 0.02, c: 0.2, te: 0.25, q: 30 };
@@ -152,7 +154,7 @@ export const DESIGNS = [
   (() => {
     const W = 0.46, s = frame(W);
     const cx = W / 2, cy = 0.46, r = 0.12;
-    s.push(curve(circle(cx, cy, r, 28), true));
+    s.push(ring(cx, cy, r));
     s.push(rosette(cx, cy, 0.045));
     const J = scroll('J', STD);
     s.push(curve(fit(J, [0.025, cy + r - 0.01, cx, UNDER - 0.01], { flipX: true, flipY: true })));

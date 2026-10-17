@@ -14,11 +14,14 @@ import * as THREE from 'three';
 
 const WHITE = new THREE.Color(1, 1, 1);
 
-/** Prototype: {name, parts: [{geo | [geoLevel0, geoLevel1, ...], mat, tint?, cast?}], lods?}. */
+/** Prototype: {name, parts: [{geo | [geoLevel0, geoLevel1, ...], mat, tint?, cast?}], lods?}.
+ *  A null level geometry hides that part at that distance (e.g. tableware beyond 30 m). */
 export const proto = (name, parts, lods = null) => {
   const ps = parts.filter((p) => p && p.geo).map((p) => ({ ...p, geos: Array.isArray(p.geo) ? p.geo : [p.geo] }));
   return { name, parts: ps, lods: lods && ps.some((p) => p.geos.length > 1) ? lods : null };
 };
+const levelGeo = (part, lv) => part.geos[Math.min(lv, part.geos.length - 1)];
+const anyGeo = (part) => part.geos.find(Boolean);
 
 function conform(g, names) {
   let out = g;
@@ -61,8 +64,8 @@ export class BatchSet {
       const cast = part.cast !== false;
       const key = `${part.mat.uuid}|${cast}`;
       let b = this.batches.get(key);
-      if (!b) { b = { mat: part.mat, cast, geos: new Map(), tinted: false, bm: null, live: 0, free: [] }; this.batches.set(key, b); }
-      for (const g of part.geos) if (!b.geos.has(g)) b.geos.set(g, -1);
+      if (!b) { b = { key: `|${this.batches.size}`, mat: part.mat, cast, geos: new Map(), tinted: false, bm: null, live: 0, free: [] }; this.batches.set(key, b); }
+      for (const g of part.geos) if (g && !b.geos.has(g)) b.geos.set(g, -1);
       if (part.tint) b.tinted = true;
       part.batch = b;
     }
@@ -115,11 +118,11 @@ export class BatchSet {
   /** Writer for one chunk build: instances are tied to `obj` (the chunk part).
    *  `eye` (world position) picks the initial LOD level. */
   writer(obj, eye = null) {
-    const rec = { obj, ids: [], lod: [], vis: false };
+    const rec = { obj, ids: [], lod: [], hidden: new Set(), vis: false };
     this.records.add(rec);
     obj.userData.batchRecord = rec;
     return {
-      add: (p, matrix, color = null) => {
+      add: (p, matrix, color = null, colors = null) => {
         if (!p) return;
         const e = matrix.elements;
         let lv = 0, item = null;
@@ -129,7 +132,8 @@ export class BatchSet {
           rec.lod.push(item);
         }
         for (const part of p.parts) {
-          const b = part.batch, bm = b.bm, gid = b.geos.get(part.geos[Math.min(lv, part.geos.length - 1)]);
+          const g = levelGeo(part, lv);
+          const b = part.batch, bm = b.bm, gid = b.geos.get(g || anyGeo(part));
           // recycle our own hidden instances (BatchedMesh re-sorts its free list on every add)
           let id;
           if (b.free.length) { id = b.free.pop(); bm.setGeometryIdAt(id, gid); } else {
@@ -138,9 +142,13 @@ export class BatchSet {
           }
           b.live++;
           bm.setMatrixAt(id, matrix);
-          if (b.tinted) bm.setColorAt(id, part.tint && color ? color : WHITE);
+          if (b.tinted) {
+            const c = part.tintKey ? colors?.[part.tintKey] : color;
+            bm.setColorAt(id, part.tint && c ? c : WHITE);
+          }
           bm.setVisibleAt(id, false);
           rec.ids.push(b, id);
+          if (!g) rec.hidden.add(id + b.key);
           if (item) item.ids.push(id);
         }
       },
@@ -158,6 +166,7 @@ export class BatchSet {
     }
     rec.ids.length = 0;
     rec.lod.length = 0;
+    rec.hidden.clear();
     this.records.delete(rec);
     obj.userData.batchRecord = null;
   }
@@ -169,7 +178,10 @@ export class BatchSet {
       const vis = !!(p && p.visible && p.parent);
       if (vis === rec.vis) continue;
       rec.vis = vis;
-      for (let i = 0; i < rec.ids.length; i += 2) rec.ids[i].bm.setVisibleAt(rec.ids[i + 1], vis);
+      for (let i = 0; i < rec.ids.length; i += 2) {
+        const b = rec.ids[i], id = rec.ids[i + 1];
+        b.bm.setVisibleAt(id, vis && !(rec.hidden.size && rec.hidden.has(id + b.key)));
+      }
     }
   }
 
@@ -182,8 +194,14 @@ export class BatchSet {
         it.lv = lv;
         const parts = it.p.parts;
         for (let k = 0; k < parts.length; k++) {
-          const part = parts[k], b = part.batch;
-          b.bm.setGeometryIdAt(it.ids[k], b.geos.get(part.geos[Math.min(lv, part.geos.length - 1)]));
+          const part = parts[k], b = part.batch, id = it.ids[k], g = levelGeo(part, lv);
+          if (g) {
+            b.bm.setGeometryIdAt(id, b.geos.get(g));
+            if (rec.hidden.delete(id + b.key) && rec.vis) b.bm.setVisibleAt(id, true);
+          } else if (!rec.hidden.has(id + b.key)) {
+            rec.hidden.add(id + b.key);
+            b.bm.setVisibleAt(id, false);
+          }
         }
       }
     }

@@ -31,13 +31,25 @@ export function balustrade(B, s, path, v0, h, q) {
     const nd = Math.max(1, Math.round(L / 2.6));
     const dies = [];
     for (let i = 0; i <= nd; i++) dies.push(i * L / nd);
-    const ow = 0.15 * -dw, oww = 0.15 * du; // the balustrade sits 0.15 behind the face line
-    for (const t of dies) {
-      const cu = ua + du * t + ow - 0.02 * dw, cw = wa + dw * t + oww;
-      dieBlock(B, s, cu, cw, du, dw, v0 + baseH, balH);
-    }
+    // baluster axis: 0.15 behind the path, on the centre line of base and rail (the
+    // outward normal of the path is (−dw, du))
+    const ow = 0.15 * dw, oww = -0.15 * du;
+    for (const t of dies) dieBlock(B, s, ua + du * t + ow, wa + dw * t + oww, du, v0 + baseH, balH);
     if (!q.balusters) {
-      // far detail: a pierced screen reads as a darker solid band
+      // far detail: the row of balusters reads as a solid band, darker than the stone
+      // (lit balusters and shadowed gaps averaged) on the baluster axis
+      const fl = B.flat;
+      B.flat = [0.62, 0.6, 0.57];
+      const sh = B.shade;
+      if (sh) B.shade = (u, v, w, nu, nv, nw, out) => { sh(u, v, w, nu, nv, nw, out); out[0] *= 0.6; out[1] *= 0.59; out[2] *= 0.58; };
+      for (let i = 0; i < nd; i++) {
+        const a = dies[i] + 0.2, b = dies[i + 1] - 0.2;
+        if (b - a < 0.1) continue;
+        // panel in the path direction, set back to the baluster axis
+        const pa = [ua + du * a + ow, wa + dw * a + oww], pb = [ua + du * b + ow, wa + dw * b + oww];
+        B.vwall(s, pa[0], pa[1], pb[0], pb[1], v0 + baseH, v0 + baseH + balH);
+      }
+      B.flat = fl; B.shade = sh;
       continue;
     }
     for (let i = 0; i < nd; i++) {
@@ -50,12 +62,12 @@ export function balustrade(B, s, path, v0, h, q) {
     }
   }
 }
-function dieBlock(B, s, cu, cw, du, dw, v0, h) {
-  // axis-aligned in the path direction: only straight front/back paths are used, so
-  // a box in the facade frame (du = ±1 or dw = ±1) is exact
-  const hw = 0.2;
-  if (Math.abs(du) > 0.5) B.bevelBox(s, cu - hw, cu + hw, v0, v0 + h, cw - 0.38, cw + 0.18, 0.01, FACES.ALL & ~FACES.BOTTOM);
-  else B.box(s, cu - 0.18, cu + 0.38, v0, v0 + h, cw - hw, cw + hw, FACES.ALL & ~FACES.BOTTOM);
+function dieBlock(B, s, cu, cw, du, v0, h) {
+  // pedestal centred on the baluster axis, a little proud of base and rail; axis-aligned
+  // in the facade frame (balustrades only run along straight front paths)
+  const hw = 0.2, hd = 0.21;
+  if (Math.abs(du) > 0.5) B.bevelBox(s, cu - hw, cu + hw, v0, v0 + h, cw - hd, cw + hd, 0.01, FACES.ALL & ~FACES.BOTTOM);
+  else B.box(s, cu - hd, cu + hd, v0, v0 + h, cw - hw, cw + hw, FACES.ALL & ~FACES.BOTTOM);
 }
 
 /** Merlons for a crenellated parapet top (Ottoman style). */
@@ -71,59 +83,112 @@ export function merlons(B, s, u0, u1, v0, step, w, h) {
 }
 
 /**
- * Hip roof over the rectangle u ∈ [x0, x1], w ∈ [z0, z1] (z1 = street side), eaves at
- * height v0, slopes `pitch` degrees. Ridge along the longer side. Tiles via roof.tile UVs
- * (u along the eaves, v up the slope in metres); ridge and hip caps as round tiles.
+ * Pitched tile roof over the building footprint: front eave line parallel to the facade,
+ * back line parallel to it, and each end following its wall direction (straight back for
+ * party walls, along the side street for corner returns). Exposed ends are hipped; ends
+ * against a neighbour get a gable (ridge runs to the wall, stone gable triangle). Eaves
+ * overhang the cornice with a soffit, fascia board and a half-round gutter.
+ *   o: {W, v0 (eave height), pitch (deg), front (front eave w), back (back eave w),
+ *       ends: [{dir: [du, dw], hip, over}] (u = 0 and u = W ends), wallBack: w of the back wall}
  */
-export function hipRoof(B, sTile, x0, x1, z0, z1, v0, pitchDeg, q) {
-  const W = x1 - x0, D = z1 - z0, tn = Math.tan((pitchDeg * Math.PI) / 180);
-  const alongU = W >= D;
-  const half = (alongU ? D : W) / 2, H = half * tn;
-  const top = v0 + H;
-  const cs = Math.cos(Math.atan(tn)), sn = Math.sin(Math.atan(tn));
-  const P = (u, v, w) => [u, v, w];
-  let r0, r1; // ridge end points
-  if (alongU) { r0 = P(x0 + half, top, (z0 + z1) / 2); r1 = P(x1 - half, top, (z0 + z1) / 2); }
-  else { r0 = P((x0 + x1) / 2, top, z1 - half); r1 = P((x0 + x1) / 2, top, z0 + half); }
-  const c00 = P(x0, v0, z0), c10 = P(x1, v0, z0), c11 = P(x1, v0, z1), c01 = P(x0, v0, z1);
-  // planes: each slope as a quad (degenerate where the ridge collapses to a point)
-  const face = (A, Bq, C, Dq, nu, nv, nw, eaveDir) => {
-    sTile.reserve(4, 6);
-    // UV: tu along the eave, tv up the slope from the eave
-    const uvOf = (p) => {
-      const along = eaveDir === 'u' ? p[0] : eaveDir === '-u' ? -p[0] : eaveDir === 'w' ? p[2] : -p[2];
-      return [along, (p[1] - v0) / sn];
-    };
-    const ids = [A, Bq, C, Dq].map((p) => { const t = uvOf(p); return B.v(sTile, p[0], p[1], p[2], nu, nv, nw, t[0], t[1]); });
-    B.quadIdx(sTile, ids[0], ids[1], ids[2], ids[3]);
+export function pitchedRoof(B, sinks, o, q) {
+  const tn = Math.tan((o.pitch * Math.PI) / 180), sn = Math.sin((o.pitch * Math.PI) / 180);
+  const wf = o.front, wb = o.back, wm = (wf + wb) / 2, half = (wf - wb) / 2, H = half * tn;
+  // side lines: through the front wall corner along the end's wall direction, pushed out by the overhang
+  const lines = o.ends.map((e, k) => {
+    const [du, dw] = e.dir;
+    const out = k ? [-dw, du] : [dw, -du];        // outward normal (away from the building)
+    const P = [(k ? o.W : 0) + out[0] * e.over, out[1] * e.over];
+    return { P, d: [du, dw], out };
+  });
+  const at = (L, w) => { const t = (w - L.P[1]) / L.d[1]; return [L.P[0] + L.d[0] * t, w]; };
+  const FL = at(lines[0], wf), FR = at(lines[1], wf), BL = at(lines[0], wb), BR = at(lines[1], wb);
+  // ridge ends: hips sit `half` inside their side line, gables on it
+  const ridgeEnd = (k) => {
+    const L = lines[k], M = at(L, wm);
+    if (!o.ends[k].hip) return M[0];
+    // the point of the ridge line `half` inside the side line (same pitch as front and back)
+    const nu = -L.out[0], nw = -L.out[1];
+    return L.P[0] + (half - (wm - L.P[1]) * nw) / nu;
   };
-  // front (street, +w), back (−w), left (−u), right (+u)
-  if (alongU) {
-    face(c01, c11, r1, r0, 0, cs, sn, 'u');
-    face(c10, c00, r0, r1, 0, cs, -sn, '-u');
-    face(c00, c01, r0, r0, -sn, cs, 0, 'w');
-    face(c11, c10, r1, r1, sn, cs, 0, '-w');
-  } else {
-    face(c01, c11, r0, r0, 0, cs, sn, 'u');
-    face(c10, c00, r1, r1, 0, cs, -sn, '-u');
-    face(c00, c01, r0, r1, -sn, cs, 0, 'w');
-    face(c11, c10, r1, r0, sn, cs, 0, '-w');
+  let xl = ridgeEnd(0), xr = ridgeEnd(1);
+  if (xl > xr) xl = xr = (xl + xr) / 2;
+  const top = o.v0 + H;
+  const RL = [xl, top, wm], RR = [xr, top, wm];
+  const p3 = (p, v = o.v0) => [p[0], v, p[1]];
+  const s = sinks.tile;
+  // tile faces (normal from the geometry, UV: along the eave, up the slope)
+  const face = (pts, e0, e1) => {
+    const ex = e1[0] - e0[0], ez = e1[2] - e0[2], el = Math.hypot(ex, ez) || 1;
+    const P = pts;
+    const ax = P[1][0] - P[0][0], ay = P[1][1] - P[0][1], az = P[1][2] - P[0][2];
+    const bx = P[P.length - 1][0] - P[0][0], by = P[P.length - 1][1] - P[0][1], bz = P[P.length - 1][2] - P[0][2];
+    let nu = ay * bz - az * by, nv = az * bx - ax * bz, nw = ax * by - ay * bx;
+    const l = Math.hypot(nu, nv, nw) || 1; nu /= l; nv /= l; nw /= l;
+    let order = P;
+    if (nv < 0) { order = P.slice().reverse(); nu = -nu; nv = -nv; nw = -nw; }
+    s.reserve(order.length, (order.length - 2) * 3);
+    const base = s.vc;
+    for (const p of order) {
+      const tu = ((p[0] - e0[0]) * ex + (p[2] - e0[2]) * ez) / el;
+      B.v(s, p[0], p[1], p[2], nu, nv, nw, tu, (p[1] - o.v0) / sn);
+    }
+    for (let k = 1; k < order.length - 1; k++) B.tri(s, base, base + k, base + k + 1);
+  };
+  const fl = p3(FL), fr = p3(FR), bl = p3(BL), br = p3(BR);
+  face([fl, fr, RR, RL], fl, fr);
+  face([br, bl, RL, RR], br, bl);
+  if (o.ends[0].hip) face([bl, fl, RL], bl, fl);
+  if (o.ends[1].hip) face([fr, br, RR], fr, br);
+  // gable triangles in stone where the roof meets a neighbour
+  const sg = sinks.ashlar;
+  for (const k of [0, 1]) {
+    if (o.ends[k].hip) continue;
+    const a = k ? fr : bl, b = k ? br : fl, r = k ? RR : RL;   // travel so the wall faces outwards
+    const dx = b[0] - a[0], dz = b[2] - a[2], dl = Math.hypot(dx, dz) || 1;
+    const nu = -dz / dl, nw = dx / dl;
+    sg.reserve(3, 3);
+    const i0 = B.v(sg, a[0], a[1] - 0.02, a[2], nu, 0, nw, 0, a[1]);
+    const i1 = B.v(sg, b[0], b[1] - 0.02, b[2], nu, 0, nw, dl, b[1]);
+    const i2 = B.v(sg, r[0], r[1], r[2], nu, 0, nw, ((r[0] - a[0]) * dx + (r[2] - a[2]) * dz) / dl, r[1]);
+    B.tri(sg, i0, i1, i2);
   }
-  // ridge and hips: half-round capping tiles
   if (q.lod === 0) {
-    const cap = (a, b) => roundCap(B, sTile, a, b, 0.11);
-    cap(r0, r1);
-    if (alongU) { cap(c01, r0); cap(c00, r0); cap(c11, r1); cap(c10, r1); }
-    else { cap(c01, r0); cap(c11, r0); cap(c00, r1); cap(c10, r1); }
+    const cap = (a, b) => roundCap(B, s, a, b, 0.11);
+    cap(RL, RR);
+    if (o.ends[0].hip) { cap(fl, RL); cap(bl, RL); }
+    if (o.ends[1].hip) { cap(fr, RR); cap(br, RR); }
   }
-  // eave fascia (tile edge thickness) all round
-  const t = 0.06;
-  B.shade = null;
-  B.rectW(sTile, x0, x1, v0 - t, v0, z1, 1);
-  B.rectW(sTile, x0, x1, v0 - t, v0, z0, -1);
-  B.rectU(sTile, x0, v0 - t, v0, z0, z1, -1);
-  B.rectU(sTile, x1, v0 - t, v0, z0, z1, 1);
-  B.rectV(sTile, x0, x1, z0, z1, v0 - t, -1);
+  // eaves: soffit (from the wall line out to the eave), fascia board and gutter along
+  // every eave edge (gable verges get a thin fascia only)
+  const ring = [FL, FR, BR, BL];                        // clockwise in (u, w)
+  const wallRing = [[0, 0], [o.W, 0], o.wallBack[1], o.wallBack[0]];
+  const sp = sinks.paint;
+  for (let k = 0; k < 4; k++) {
+    const A = ring[k], Bp = ring[(k + 1) % 4], a = wallRing[k], b = wallRing[(k + 1) % 4];
+    const gable = (k === 3 && !o.ends[0].hip) || (k === 1 && !o.ends[1].hip);
+    const L = Math.hypot(Bp[0] - A[0], Bp[1] - A[1]);
+    if (L < 0.05) continue;
+    B.flat = [0.2, 0.16, 0.13];
+    B.vwall(sp, A[0], A[1], Bp[0], Bp[1], o.v0 - (gable ? 0.06 : 0.16), o.v0 + 0.02);
+    if (gable) continue;
+    // soffit: quad between the eave edge and the wall edge, facing down
+    B.flat = [0.42, 0.37, 0.32];
+    sp.reserve(4, 6);
+    const v = o.v0 - 0.16;
+    const i0 = B.v(sp, A[0], v, A[1], 0, -1, 0, A[0], A[1]), i1 = B.v(sp, Bp[0], v, Bp[1], 0, -1, 0, Bp[0], Bp[1]);
+    const i2 = B.v(sp, b[0], v, b[1], 0, -1, 0, b[0], b[1]), i3 = B.v(sp, a[0], v, a[1], 0, -1, 0, a[0], a[1]);
+    B.quadIdx(sp, i0, i3, i2, i1);
+    if (q.lod === 0 && k !== 2) {
+      // half-round gutter hung just outside the fascia
+      const du = (Bp[0] - A[0]) / L, dw = (Bp[1] - A[1]) / L;
+      B.enter(A[0], 0, A[1], Math.atan2(-dw, du));
+      B.flat = [0.5, 0.5, 0.49];
+      B.cylinderU(sinks.metal, 0, L, o.v0 - 0.09, 0.07, 0.065, 8, true);
+      B.popFrame();
+    }
+  }
+  B.flat = [1, 1, 1];
 }
 
 /** Half-round cap along a segment (in local coords) lying on a roof. */

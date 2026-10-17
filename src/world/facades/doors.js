@@ -121,22 +121,23 @@ export function doorTpl(o, L, q) {
   return t.bake();
 }
 
-/** Glass of a door: fanlight and (glazed doors) the upper leaf panes. */
-export function doorGlassTpl(o, L) {
+/** Glass of a door: fanlight and (glazed doors) the upper leaf panes. Far range: 1 cm proud. */
+export function doorGlassTpl(o, L, q = 1) {
   const t = new Tpl();
   const hwI = o.w / 2 - FW;
+  const zF = q < 0.5 ? 0.01 : -0.015, zG = q < 0.5 ? 0.01 : -0.02;
   if (L.yT) {
     const yH = L.yT + 0.05;
     const pts = outlinePts(o, FW - 0.01).filter((p) => p[1] > yH + 0.001);
     const hw = halfWidthAt(o, yH, FW - 0.01);
-    t.poly([[-hw, yH], [hw, yH], ...pts], -0.015);
+    t.poly([[-hw, yH], [hw, yH], ...pts], zF);
   }
   if (L.style === 'glazed') {
     const leafTop = L.yT ? L.yT - 0.055 : o.h - FW;
     const lw = (2 * hwI) / L.leaves;
     for (let i = 0; i < L.leaves; i++) {
       const x0 = -hwI + i * lw + 0.1, x1 = x0 + lw - 0.2;
-      t.quad([x0, 1.06, -0.02], [x1, 1.06, -0.02], [x1, leafTop - 0.1, -0.02], [x0, leafTop - 0.1, -0.02]);
+      t.quad([x0, 1.06, zG], [x1, 1.06, zG], [x1, leafTop - 0.1, zG], [x0, leafTop - 0.1, zG]);
     }
   }
   return t.bake();

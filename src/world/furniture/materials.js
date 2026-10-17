@@ -96,7 +96,7 @@ function wickerTextures(renderer) {
   const hf = new Float32Array(N * N);
   const S = 16, stake = 32;
   const rowJ = Array.from({ length: 64 }, () => 0.8 + rng.next() * 0.35);
-  const base = srgb('#a27a4c');
+  const base = srgb('#c29a68');
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const j = (y / S) | 0, fy = (y % S + 0.5) / S;
     const si = (x / stake) | 0, fx = (x % stake + 0.5) / stake;
@@ -106,8 +106,8 @@ function wickerTextures(renderer) {
     const gap = sm(0, 0.16, fy) * sm(1, 0.84, fy);
     const stakeVis = !over && Math.abs(fx - 0.5) < 0.16 ? 1 : 0; // stake shows where the weaver dives
     const streak = 0.9 + 0.1 * Math.sin(x * 0.7 + j * 7.1) * Math.sin(x * 0.13 + j);
-    let shade = (0.35 + 0.65 * prof * (0.5 + 0.5 * bulge)) * (0.12 + 0.88 * gap) * rowJ[j % 64] * streak;
-    if (stakeVis) shade *= 0.55;
+    let shade = (0.5 + 0.5 * prof * (0.55 + 0.45 * bulge)) * (0.35 + 0.65 * gap) * rowJ[j % 64] * streak;
+    if (stakeVis) shade *= 0.7;
     const k = (y * N + x) * 4;
     img.data[k] = Math.pow(Math.min(1, base.r * shade), 1 / 2.2) * 255;
     img.data[k + 1] = Math.pow(Math.min(1, base.g * shade), 1 / 2.2) * 255;
@@ -125,7 +125,7 @@ function rattanTexture(renderer) {
   const W = 64, H = 512, rng = RNG.from('rattan'); // u: 0.08 m around, v: 0.8 m along
   const c = canvas(W, H), ctx = c.getContext('2d');
   const g = ctx.createLinearGradient(0, 0, W, 0);
-  g.addColorStop(0, '#866243'); g.addColorStop(0.5, '#a88660'); g.addColorStop(1, '#866243');
+  g.addColorStop(0, '#94704a'); g.addColorStop(0.5, '#b8946a'); g.addColorStop(1, '#94704a');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   // fine longitudinal fibres
   for (let i = 0; i < 160; i++) {
@@ -135,10 +135,10 @@ function rattanTexture(renderer) {
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + rng.range(-2, 2), H); ctx.stroke();
   }
   // burnt "tortoiseshell" blotches typical of bistro frames
-  for (let i = 0; i < 26; i++) {
-    const x = rng.next() * W, y = rng.next() * H, r = rng.range(3, 9), l = rng.range(12, 40);
+  for (let i = 0; i < 9; i++) {
+    const x = rng.next() * W, y = rng.next() * H, r = rng.range(2, 6), l = rng.range(8, 22);
     const gr = ctx.createRadialGradient(x, y, 0, x, y, l);
-    gr.addColorStop(0, `rgba(48,26,12,${0.55 + rng.next() * 0.3})`); gr.addColorStop(1, 'rgba(48,26,12,0)');
+    gr.addColorStop(0, `rgba(58,32,14,${0.45 + rng.next() * 0.25})`); gr.addColorStop(1, 'rgba(58,32,14,0)');
     ctx.fillStyle = gr;
     ctx.save(); ctx.translate(x, y); ctx.scale(r / l, 1); ctx.translate(-x, -y);
     ctx.beginPath(); ctx.arc(x, y, l, 0, Math.PI * 2); ctx.fill(); ctx.restore();
@@ -200,6 +200,71 @@ function tactileTextures(renderer) {
   ctx.putImageData(img, 0, 0);
   const rep = [1 / 0.3, 1 / 0.3];
   return { map: tex(col, { repeat: rep }, renderer), normalMap: tex(heightToNormal(hf, N, N, 5), { srgb: false, repeat: rep }, renderer) };
+}
+
+// ------------------------------------------------------------------ plastic stipple, brushed metal, timber
+/** Fine moulded-in stipple of polypropylene shells (0.5 mm grain, 0.128 m tile). */
+function stippleNormal(renderer) {
+  const N = 256, rng = RNG.from('stipple');
+  const hf = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) hf[i] = rng.next();
+  // two box blurs: soft grains of ~2 px
+  for (let pass = 0; pass < 2; pass++) {
+    const t = new Float32Array(N * N);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      let a = 0;
+      for (let k = -1; k <= 1; k++) a += hf[y * N + ((x + k + N) % N)] + hf[((y + k + N) % N) * N + x];
+      t[y * N + x] = a / 6;
+    }
+    hf.set(t);
+  }
+  const rep = [1 / 0.128, 1 / 0.128];
+  return tex(heightToNormal(hf, N, N, 1.6), { srgb: false, repeat: rep }, renderer);
+}
+
+/** Brushed finish: fine streaks along v (tubes and bars run along v). Tile 0.1 m. */
+function brushedNormal(renderer) {
+  const N = 256, rng = RNG.from('brushed');
+  const hf = new Float32Array(N * N);
+  const col = Array.from({ length: N }, () => rng.next());
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const a = col[x] * 0.7 + col[(x + 1) % N] * 0.3;
+    hf[y * N + x] = a + 0.15 * Math.sin((y / N) * Math.PI * 2 * 3 + col[x] * 6);
+  }
+  return tex(heightToNormal(hf, N, N, 0.6), { srgb: false, repeat: [10, 10] }, renderer);
+}
+
+/** Weathered timber slats: grey-brown, straight grain along u, fine checking cracks. Tile 1 x 0.25 m. */
+function timberTextures(renderer) {
+  const W = 1024, H = 256, rng = RNG.from('timber');
+  const c = canvas(W, H), ctx = c.getContext('2d');
+  const img = ctx.createImageData(W, H);
+  const hf = new Float32Array(W * H);
+  const base = srgb('#8a7660');
+  const rowTone = Array.from({ length: H }, (_, y) => 0.9 + 0.1 * Math.sin(y * 0.21 + Math.sin(y * 0.05) * 3) + (rng.next() - 0.5) * 0.06);
+  const cracks = Array.from({ length: 14 }, () => ({ y: rng.next() * H, x0: rng.next() * W, len: rng.range(60, 260), w: rng.range(0.6, 1.4) }));
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const ring = Math.sin((y + 6 * Math.sin(x * 0.004 + y * 0.02)) * 0.55) * 0.5 + 0.5;
+    let v = rowTone[y] * (0.88 + 0.12 * ring) * (0.95 + 0.05 * Math.sin(x * 0.03 + y));
+    let h = ring * 0.4;
+    for (const k of cracks) {
+      const dx = x - k.x0;
+      if (dx < 0 || dx > k.len) continue;
+      const cy = k.y + Math.sin(dx * 0.05) * 1.5, d = Math.abs(y - cy);
+      if (d < k.w * 1.5) { v *= 0.55 + 0.45 * (d / (k.w * 1.5)); h -= 0.8 * (1 - d / (k.w * 1.5)); }
+    }
+    // silvered weathering: desaturate towards grey
+    const g = 0.5 + 0.5 * Math.sin(x * 0.011 + y * 0.03);
+    const r = base.r * v, gg = base.g * v, b = base.b * v, l = 0.3 * r + 0.59 * gg + 0.11 * b, w = 0.25 * g;
+    const k = (y * W + x) * 4;
+    img.data[k] = Math.pow(r + (l - r) * w, 1 / 2.2) * 255;
+    img.data[k + 1] = Math.pow(gg + (l - gg) * w, 1 / 2.2) * 255;
+    img.data[k + 2] = Math.pow(b + (l - b) * w, 1 / 2.2) * 255;
+    img.data[k + 3] = 255;
+    hf[y * W + x] = h;
+  }
+  ctx.putImageData(img, 0, 0);
+  return { map: tex(c, { repeat: [1, 4] }, renderer), normalMap: tex(heightToNormal(hf, W, H, 1.2), { srgb: false, repeat: [1, 4] }, renderer) };
 }
 
 // ------------------------------------------------------------------ shader patches
@@ -299,37 +364,113 @@ function patchNightEmissive(m, k0, k1) {
   return m;
 }
 
+/** Ground-contact grime and occlusion for instanced furniture (prototypes have their
+ *  origin on the paving, so the object-space height is the height above the ground):
+ *  darker, rougher and occluded in the bottom ~0.2 m, plus low-frequency mottling. */
+function patchGrime(m, { albedo = 0.16, rough = 0.15, ao = 0.45, mottle = 0.05 } = {}) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.userData.grime = { value: new THREE.Vector4(albedo, rough, ao, mottle) };
+  m.onBeforeCompile = function (s, r) {
+    prev && prev.call(this, s, r);
+    s.uniforms.fGrime = m.userData.grime;
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFurnP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFurnP = position;');
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vFurnP;
+        uniform vec4 fGrime;
+        float fHash3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+        float fNoise3(vec3 x) {
+          vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(fHash3(i), fHash3(i + vec3(1,0,0)), f.x), mix(fHash3(i + vec3(0,1,0)), fHash3(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(fHash3(i + vec3(0,0,1)), fHash3(i + vec3(1,0,1)), f.x), mix(fHash3(i + vec3(0,1,1)), fHash3(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float fLow = 1.0 - smoothstep(0.0, 0.2, vFurnP.y);
+        float fMot = fNoise3(vFurnP * vec3(7.0, 2.5, 7.0)) * 0.6 + fNoise3(vFurnP * 23.0) * 0.4;
+        diffuseColor.rgb *= (1.0 - fGrime.x * fLow * (0.6 + 0.6 * fMot)) * (1.0 + fGrime.w * (fMot - 0.5) * 2.0);`)
+      .replace('#include <normal_fragment_begin>', `roughnessFactor = min(1.0, roughnessFactor + fGrime.y * fLow);
+        #include <normal_fragment_begin>`)
+      .replace('vec3 totalDiffuse =', `reflectedLight.indirectDiffuse *= 1.0 - fGrime.z * (1.0 - smoothstep(0.0, 0.12, vFurnP.y));
+        reflectedLight.indirectSpecular *= 1.0 - 0.6 * fGrime.z * (1.0 - smoothstep(0.0, 0.12, vFurnP.y));
+        vec3 totalDiffuse =`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-grime`; };
+  m.needsUpdate = true;
+  return m;
+}
+
+/** Wrapped diffuse for thin pale plastics (light reaches a little past the terminator). */
+function patchWrap(m, w) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (s, r) {
+    prev && prev.call(this, s, r);
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <lights_physical_pars_fragment>', THREE.ShaderChunk.lights_physical_pars_fragment)
+      // diffuse only: the specular term keeps the plain dotNL (it blows up at silhouettes)
+      .replace('vec3 irradiance = dotNL * directLight.color;',
+        `vec3 irradiance = dotNL * directLight.color;
+        float fWrapNL = saturate( ( dot( geometryNormal, directLight.direction ) + ${w.toFixed(3)} ) / ${(1 + w).toFixed(3)} );
+        reflectedLight.directDiffuse += max( fWrapNL - dotNL, 0.0 ) * directLight.color * BRDF_Lambert( material.diffuseContribution );`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-wrap`; };
+  m.needsUpdate = true;
+  return m;
+}
+
 // ------------------------------------------------------------------ library
 export function createMaterials(app) {
   const M = app.materials, R = app.renderer;
   const out = {};
   const reg = (name, m) => { m.name = `furniture.${name}`; M.register(`furniture.${name}`, m); out[name] = m; return m; };
-  // library materials whose vertex colour is the albedo take the per-instance colour
   const names = new Set(M.names ? M.names() : []);
+  // library materials whose vertex colour is the albedo take the per-instance colour
   const albedoVariant = (name, extra = {}) => (names.has(name) && M.meta?.[name]?.vertexColor === 'albedo' ? M.get(name, { vertexColors: true, ...extra }) : null);
+  // furniture-only variant of a library material (own clone, so our patches stay local)
+  const variant = (name, extra = {}) => M.get(name, { userData: { furniture: name }, ...extra });
 
-  // canopy fabric (umbrellas, canopies, awnings): library canvas when available, coloured
-  // by vertex × instance colour, plus wind flutter
+  // canopy fabric (umbrellas, awnings): library canvas (weave, sheen, translucency),
+  // coloured by vertex × instance colour, plus wind flutter
   const libFabric = albedoVariant('fabric.umbrella', { userData: { furnitureWind: 1 } });
   if (libFabric) { patchWind(libFabric); out.canopy = libFabric; } else {
     const canopy = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, vertexColors: true });
     reg('canopy', patchFabric(canopy, 0.32));
   }
+  // seat cushions and wind-screen panels: canvas coloured per instance
+  out.cushion = albedoVariant('fabric.awning', { userData: { furniture: 'cushion' }, side: THREE.FrontSide }) || reg('cushion', new THREE.MeshStandardMaterial({ roughness: 0.9 }));
+  patchGrime(out.cushion, { albedo: 0.08, rough: 0.05, ao: 0.3, mottle: 0.04 });
+  out.canvasPanel = albedoVariant('fabric.awning', { userData: { furniture: 'screen' } }) || reg('canvasPanel', new THREE.MeshStandardMaterial({ roughness: 0.9, side: THREE.DoubleSide }));
 
   out.weave = WEAVES.map((w, i) => {
     const t = weaveTextures(w, R);
-    return reg(`weave${i}`, new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.58, metalness: 0 }));
+    return patchGrime(reg(`weave${i}`, new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 0.58, metalness: 0 })), { mottle: 0.03 });
   });
   {
     const t = wickerTextures(R);
-    reg('wicker', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.1, 1.1), roughness: 0.78, metalness: 0 }));
+    patchGrime(reg('wicker', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.1, 1.1), roughness: 0.6, metalness: 0 })), { mottle: 0.03 });
   }
-  reg('rattan', new THREE.MeshStandardMaterial({ map: rattanTexture(R), roughness: 0.5, metalness: 0 }));
-  // polypropylene shell chairs and painted metal, coloured per instance
-  out.plastic = albedoVariant('plastic.chair') || reg('plastic', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.48, metalness: 0 }));
-  out.paint = albedoVariant('metal.pole') || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0 }));
-  // brushed aluminium (chairs, table rims)
-  reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#cfd2d4'), roughness: 0.36, metalness: 1 }));
+  patchGrime(reg('rattan', new THREE.MeshStandardMaterial({ map: rattanTexture(R), roughness: 0.5, metalness: 0 })), { mottle: 0.02 });
+  // moulded polypropylene shell chairs, coloured per instance: satin with a faint clear coat
+  patchGrime(patchWrap(reg('plastic', new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, roughness: 0.38, metalness: 0, clearcoat: 0.1, clearcoatRoughness: 0.3,
+    normalMap: stippleNormal(R), normalScale: new THREE.Vector2(0.35, 0.35),
+  })), 0.15), { albedo: 0.12, rough: 0.12, mottle: 0.02 });
+  // painted metal (bins, kiosk, columns, painted chairs), coloured per instance: satin paint
+  out.paint = albedoVariant('metal.pole', { userData: { furniture: 'paint' }, roughness: 0.62 }) || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0 }));
+  patchGrime(out.paint, { albedo: 0.2, rough: 0.12, mottle: 0.05 });
+  out.iron = patchGrime(variant('metal.iron'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
+  out.pole = patchGrime(variant('metal.pole'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
+  out.concrete = patchGrime(variant('concrete'), { albedo: 0.2, rough: 0.05, ao: 0.55, mottle: 0.06 });
+  // brushed aluminium (chairs, tables, frames); the env reflection is kept moderate
+  const brushed = brushedNormal(R);
+  patchGrime(reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#c9cacb'), roughness: 0.45, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.25, 0.25), envMapIntensity: 0.75 })), { albedo: 0.12, rough: 0.1, mottle: 0.03 });
+  // umbrella frames live under the canopy: little sky reaches them
+  patchGrime(reg('umbFrame', new THREE.MeshStandardMaterial({ color: srgb('#c4c5c6'), roughness: 0.5, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.2, 0.2), envMapIntensity: 0.3 })), { albedo: 0.05, rough: 0.05, ao: 0.2, mottle: 0.02 });
+  {
+    const t = timberTextures(R);
+    patchGrime(reg('timber', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.82, metalness: 0 })), { albedo: 0.15, rough: 0.08, mottle: 0.05 });
+  }
   // stone / compact laminate table tops (tinted per instance)
   reg('tabletop', new THREE.MeshStandardMaterial({ map: speckleTexture(R), roughness: 0.32, metalness: 0 }));
   reg('ceramic', new THREE.MeshStandardMaterial({ color: srgb('#f1efe9'), roughness: 0.18, metalness: 0 }));
@@ -358,4 +499,3 @@ export function createMaterials(app) {
   reg('light', patchNightEmissive(new THREE.MeshStandardMaterial({ color: srgb('#e8e6e0'), emissive: srgb('#fff1d6'), emissiveIntensity: 6, roughness: 0.3, metalness: 0 }), 0, 1));
   return out;
 }
-

@@ -9,10 +9,12 @@ const len2 = (a, b) => Math.sqrt(a * a + b * b);
 /** Accumulates an indexed triangle mesh: position, normal, uv, color, in growable typed
  *  arrays. An optional matrix transforms positions (and normals) as they are written. */
 export class GeoWriter {
-  constructor(cap = 2048) {
+  /** opts.kind: also record a per-vertex float (`aGk`, set with kind()) */
+  constructor(cap = 2048, opts = {}) {
     this.n = 0; this.ni = 0;
     this.P = new Float32Array(cap * 3); this.N = new Float32Array(cap * 3);
     this.T = new Float32Array(cap * 2); this.C = new Float32Array(cap * 3);
+    this.K = opts.kind ? new Float32Array(cap) : null; this.k = 0;
     this.I = new Uint32Array(cap * 3);
     this.m = null; this.nm = null;
     this._m = new Float32Array(16); this._n3 = new THREE.Matrix3();
@@ -28,6 +30,8 @@ export class GeoWriter {
     return this;
   }
   color(r, g, b) { this.r = r; this.g = g; this.b = b; return this; }
+  /** Value of the optional per-vertex kind stream for subsequent vertices. */
+  kind(k) { this.k = k; return this; }
   /** Make room for `k` more vertices and `t` more indices. */
   reserve(k, t) {
     while ((this.n + k) * 3 > this.P.length) this._grow();
@@ -37,6 +41,7 @@ export class GeoWriter {
     const cap = this.P.length / 3 * 2;
     const g = (a, k) => { const b = new a.constructor(cap * k); b.set(a); return b; };
     this.P = g(this.P, 3); this.N = g(this.N, 3); this.T = g(this.T, 2); this.C = g(this.C, 3);
+    if (this.K) this.K = g(this.K, 1);
   }
   /** Adds a vertex, returns its index. Optional per-vertex shade multiplies the current colour. */
   v(x, y, z, nx, ny, nz, u, w, shade = 1) {
@@ -58,6 +63,7 @@ export class GeoWriter {
     }
     this.T[this.n * 2] = u; this.T[this.n * 2 + 1] = w;
     this.C[i3] = this.r * shade; this.C[i3 + 1] = this.g * shade; this.C[i3 + 2] = this.b * shade;
+    if (this.K) this.K[this.n] = this.k;
     return this.n++;
   }
   tri(a, b, c) {
@@ -73,6 +79,7 @@ export class GeoWriter {
     g.setAttribute('normal', new THREE.BufferAttribute(this.N.subarray(0, n * 3), 3));
     g.setAttribute('uv', new THREE.BufferAttribute(this.T.subarray(0, n * 2), 2));
     if (colors) g.setAttribute('color', new THREE.BufferAttribute(this.C.subarray(0, n * 3), 3));
+    if (this.K) g.setAttribute('aGk', new THREE.BufferAttribute(this.K.subarray(0, n), 1));
     const idx = n > 65535 ? this.I.subarray(0, this.ni) : new Uint16Array(this.I.subarray(0, this.ni));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     if (bounds) g.computeBoundingSphere();
@@ -307,9 +314,10 @@ export function insetPath(path, o) {
   });
 }
 
-/** Horizontal cap over a convex plan polygon [[u, w], ...] at height v, facing up (+1) or down (-1). */
+/** Horizontal cap over a convex plan polygon [[u, w], ...] at height v, facing up (+1) or
+ *  down (-1). shade: number or (u, w) => number. */
 export function capPolygon(W, poly, v, facing = 1, shade = 1) {
-  const idx = poly.map(([u, w]) => W.v(u, v, w, 0, facing, 0, u, w, shade));
+  const idx = poly.map(([u, w]) => W.v(u, v, w, 0, facing, 0, u, w, typeof shade === 'function' ? shade(u, w) : shade));
   for (let i = 1; i < idx.length - 1; i++) {
     if (facing > 0) W.tri(idx[0], idx[i], idx[i + 1]);
     else W.tri(idx[0], idx[i + 1], idx[i]);

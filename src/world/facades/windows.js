@@ -164,7 +164,9 @@ function buildJoinery(o, v, q, open) {
 function buildGlass(o, v, q, open) {
   const P = PROFILE[v.type];
   const t = new Tpl();
-  if (q < 0.5) { t.poly(outlinePts(o, 0.004, headSegments(o, 0.4)), -0.012); return { glass: t.bake(), hole: null }; } // frame is procedural
+  // far: the frame is procedural (glass shader) and the pane sits 3 cm proud of the
+  // infill plane, well clear of the buildings' far-range back plate
+  if (q < 0.5) { t.poly(outlinePts(o, 0.004, headSegments(o, 0.4)), GLASS_Z_FAR); return { glass: t.bake(), hole: null }; }
   if (!open) { t.poly(outlinePts(o, P.fw - 0.012, headSegments(o)), -0.012); return { glass: t.bake(), hole: null }; }
   // split: fixed parts, the open leaf's aperture (no glass) and its rotated pane
   const L = sashLayout(o, v);
@@ -304,6 +306,17 @@ export function glassTpl(o, v, q = 1, open = null) {
 }
 /** Whether a window of this joinery can have a casement swung open. */
 export function canOpen(o, v) { return v.type !== 'alu' && sashLayout(o, v).nL === 2; }
+/**
+ * Largest swing (radians) that keeps an opened leaf within `depth` metres behind the
+ * infill plane (the buildings close each opening with a dark box that deep).
+ */
+export function openLimit(o, v, depth) {
+  const L = sashLayout(o, v);
+  const room = depth + L.P.zgb - 0.05;   // hinge sits at zgb; keep the leaf edge 5 cm clear
+  return room <= 0 ? 0 : Math.asin(Math.min(1, room / L.lw));
+}
+/** Local z of far-range (lod 1) window glass. */
+export const GLASS_Z_FAR = 0.03;
 export function shutterTpl(o, state, q, standoff = 0.012) {
   return cached(`S|${okey(o)}|${state}|${o.recess.toFixed(3)}|${standoff}|${q}`, () => buildShutters(o, state, q, standoff));
 }

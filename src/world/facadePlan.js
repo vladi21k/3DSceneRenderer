@@ -24,6 +24,18 @@ const STONE_TINTS = [
 ];
 
 const cache = new Map();
+let layoutRef = null;
+
+/**
+ * Give the plan generator access to the layout (cross streets and side lots), so corner
+ * returns follow the real side-street building line. Plans made before binding are
+ * dropped from the cache. Without a layout, returns are perpendicular to the front.
+ */
+export function bindLayout(layout) {
+  if (layoutRef === layout) return;
+  layoutRef = layout;
+  cache.clear();
+}
 
 export function facadePlan(lot) {
   if (cache.has(lot.id)) return cache.get(lot.id);
@@ -202,6 +214,7 @@ export function facadePlan(lot) {
 //   round    rise = w / 2 (semicircle)
 //   pointed  rise ≈ 0.62 w (two-centred arch, centres 0.134 w either side of the axis)
 
+const SIDE_START = 16; // = layout SIDE_LOT_START (side-street facades start this far from the front)
 const POINTED_C = 0.1344, POINTED_RISE = 0.62, SEGMENT_RISE = 0.17;
 
 export function archRise(top, w) {
@@ -285,15 +298,30 @@ function followSlope(plan) {
 // be generated for it exactly like a front: {isReturn, end, frame, width, floors, bays,
 // openings, balconies, courses, groundAt, ...}.
 function returnPlan(lot, plan, end) {
-  const f = lot.frame, depth = lot.depth;
+  const f = lot.frame;
   const rng = RNG.from(lot.seed, 'return', end);
-  // Return frame axes in world space. End 0 (u = 0): the wall faces −uDir and its own
-  // u runs along +nDir (back → street). End 1 (u = width): faces +uDir, u runs along −nDir.
-  const uDir = end === 0 ? f.nDir.clone() : f.nDir.clone().negate();
-  const nDir = end === 0 ? f.uDir.clone().negate() : f.uDir.clone();
-  const origin = f.origin.clone()
-    .addScaledVector(f.uDir, end === 0 ? 0 : f.width)
-    .addScaledVector(f.nDir, end === 0 ? -depth : 0);
+  // The return runs from the street corner of the front to the near end of the first
+  // side-street lot, i.e. along the real (angled) side-street building line. Its frame:
+  // end 0 (u = 0) faces away from the front's u axis and its own u runs back → street;
+  // end 1 (u = width) faces along it and its u runs street → back. Without a layout (or a
+  // side lot) the return is perpendicular to the front and lot.depth long.
+  const corner = f.origin.clone().addScaledVector(f.uDir, end === 0 ? 0 : f.width);
+  const far = sideLotStart(lot, end, corner);
+  let dir, depth;
+  if (far) {
+    dir = new f.uDir.constructor(far.x - corner.x, 0, far.z - corner.z);
+    depth = dir.length();
+    dir.multiplyScalar(1 / depth);
+  } else {
+    dir = f.nDir.clone().negate();
+    depth = lot.depth;
+  }
+  const uDir = end === 0 ? dir.clone().negate() : dir.clone();
+  const nDir = new f.uDir.constructor().crossVectors(uDir, f.up).normalize();
+  const origin = end === 0 ? corner.clone().addScaledVector(dir, depth) : corner.clone();
+  // far end of the return and its direction in the front's (u, w) frame (for the shell)
+  const du = dir.x * f.uDir.x + dir.z * f.uDir.z, dw = dir.x * f.nDir.x + dir.z * f.nDir.z;
+  const back = [(end === 0 ? 0 : f.width) + du * depth, dw * depth];
   const up = f.up.clone();
   const matrix = f.matrix.clone().makeBasis(uDir, up, nDir).setPosition(origin);
   const g = end === 0 ? plan.ground0 : plan.ground1;
@@ -339,7 +367,28 @@ function returnPlan(lot, plan, end) {
   return {
     isReturn: true, end, lotId: lot.id, id, seed: lot.seed ^ (end ? 0x5bd1e995 : 0x27d4eb2f), frame, width, depth: plan.width,
     groundAt: () => g, ground0: g, ground1: g, cornerAtU1,
+    back, dir: [du, dw],      // far end and direction (from the corner) in the front's (u, w) frame
     floors: plan.floors, bays, pierL, pierR, openings, balconies: [], courses: plan.courses, cornice: plan.cornice, parapet: plan.parapet,
     roof: plan.roof, rooftop: [], signs: [], flags: [], style: plan.style, totalHeight: plan.totalHeight,
   };
+}
+
+/** World position (floor height ignored) of the near end of the first side-street lot at end e, or null. */
+function sideLotStart(lot, end, corner) {
+  if (!layoutRef || !layoutRef.sideLots) return null;
+  // u = 0 is the viewer-left end: s1 for right-hand lots, s0 for left-hand lots
+  const atS0 = lot.side > 0 ? end === 1 : end === 0;
+  const edge = atS0 ? 1 : -1;
+  let best = null, bd = 12;
+  for (const sl of layoutRef.sideLots) {
+    if (sl.side !== lot.side || sl.edge !== edge || sl.x0 > SIDE_START + 0.01 || !sl.frame) continue;
+    const sf = sl.frame;
+    for (const t of [0, sf.width]) {
+      const x = sf.origin.x + sf.uDir.x * t, z = sf.origin.z + sf.uDir.z * t;
+      const d = Math.hypot(x - corner.x, z - corner.z);
+      // the near end lies roughly SIDE_START from the corner, the far end much further
+      if (Math.abs(d - SIDE_START) < bd) { bd = Math.abs(d - SIDE_START); best = { x, z }; }
+    }
+  }
+  return best;
 }

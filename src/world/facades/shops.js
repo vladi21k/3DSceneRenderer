@@ -13,8 +13,12 @@ function rail(t, a, b, w, zf, zb, shade = 1) {
   t.bar(a, b, [[-w / 2, zb], [-w / 2, zf - CH], [-w / 2 + CH, zf], [w / 2 - CH, zf], [w / 2, zf - CH], [w / 2, zb]], shade);
 }
 
-/** Layout decisions for one shopfront (deterministic per opening). */
-export function shopLayout(o, rng) {
+/**
+ * Layout decisions for one shopfront (deterministic per opening). `back` is the depth
+ * available behind the infill plane (the buildings' dark box): a recessed entrance and
+ * its glazed returns must stay inside it.
+ */
+export function shopLayout(o, rng, back = 0.4) {
   const hwI = o.w / 2 - FW;
   const arched = isArched(o);
   const sp = springY(o);
@@ -25,7 +29,9 @@ export function shopLayout(o, rng) {
   const narrow = o.w < 1.9;
   const pos = narrow ? 0 : rng.weighted([[-1, 0.3], [1, 0.3], [0, 0.4]]);
   const dx = pos === 0 ? 0 : pos * (hwI - doorW / 2 - rng.range(0.0, 0.35));
-  const setback = rng.chance(0.45) && !narrow ? rng.range(0.45, 0.9) : 0;
+  let setback = rng.chance(0.45) && !narrow ? rng.range(0.45, 0.9) : 0;
+  setback = Math.min(setback, back - 0.07);
+  if (setback < 0.18) setback = 0;
   // the head is glazed (sunburst bars under arches); a solid panel only carries a sign
   const head = arched ? 'fan' : yT < o.h - FW - 0.2 ? 'glass' : 'none';
   return {
@@ -145,20 +151,27 @@ export function shopFrameTpl(o, L, q) {
   return t.bake();
 }
 
-/** Interior-mapped glass of the shopfront: display windows, door, top lights, head glass. */
-export function shopGlassTpl(o, L) {
+/**
+ * Interior-mapped glass of the shopfront: display windows, door, top lights, head glass.
+ * Far range (q < 0.5): one plane 2.5 cm proud of the infill plane (door included), clear
+ * of the buildings' far-range back plate.
+ */
+export function shopGlassTpl(o, L, q = 1) {
   const t = new Tpl();
-  const { hwI, yT, doorW, dx, setback, doorH, riser } = L;
+  const { hwI, yT, doorW, dx, doorH, riser } = L;
+  const far = q < 0.5;
+  const setback = far ? 0 : L.setback;
   const d0 = dx - doorW / 2, d1 = dx + doorW / 2;
-  const gz = -0.02, yG = yT - 0.05;
+  const gz = far ? SHOP_GLASS_Z_FAR : -0.02, yG = yT - 0.05;
   const rect = (x0, y0, x1, y1, z) => { if (x1 - x0 > 0.05 && y1 - y0 > 0.05) t.quad([x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]); };
   rect(-hwI, riser, d0 - 0.03, yG, gz);
   rect(d1 + 0.03, riser, hwI, yG, gz);
   // over the door (top light) — in the front plane
   rect(d0 - 0.03, doorH + 0.08, d1 + 0.03, yG, gz);
   // door glass
-  const zD = -setback - 0.005;
-  rect(d0 + 0.08, 0.3, d1 - 0.08, doorH - 0.1, zD);
+  const zD = far ? gz : -setback - 0.005;
+  if (far) rect(d0, 0.02, d1, doorH + 0.08, zD);
+  else rect(d0 + 0.08, 0.3, d1 - 0.08, doorH - 0.1, zD);
   if (setback > 0) {
     // glazed returns either side of the recessed entrance (facing into the recess)
     t.quad([d0 - 0.03, 0.25, gz], [d0 - 0.03, 0.25, -setback], [d0 - 0.03, doorH, -setback], [d0 - 0.03, doorH, gz]);
@@ -204,3 +217,18 @@ export function shopShutterTpl(o, L, q) {
 }
 
 export const SHOP_FW = FW;
+/** Local z of far-range shop glass. */
+export const SHOP_GLASS_Z_FAR = 0.025;
+
+/**
+ * Lining of a recessed entrance: a worn stone floor (threshold slab) and the reveal
+ * returns' plinths between the street front and the set-back door. Stone batch.
+ */
+export function shopRecessTpl(o, L) {
+  const t = new Tpl();
+  if (!L.setback) return null;
+  const d0 = L.dx - L.doorW / 2 - 0.06, d1 = L.dx + L.doorW / 2 + 0.06;
+  // floor slab, slightly lower in the middle where it is worn
+  t.box(d0, -0.03, -L.setback - 0.02, d1, 0.004, 0.0, 32 | 1, 0.78, 0.92);
+  return t.bake();
+}

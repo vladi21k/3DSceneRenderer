@@ -12,37 +12,37 @@ import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R } from './behaviou
 // figures themselves are drawn by app.humans; this module feeds it one record per
 // slot every frame. Contract: docs/ARCHITECTURE.md (humans / crowd).
 //
-//   behaviour/streetMap   walkable space precomputed from the layout
-//   behaviour/population  spawning where unseen, recycling, cafés, platforms
+//   behaviour/streetMap   walkable space precomputed from the layout (+ shop doors)
+//   behaviour/population  spawning where unseen, recycling, groups, cafés, benches, platforms
 //   behaviour/behaviour   decisions and tasks (browse, shops, side streets, crossings…)
 //   behaviour/steering    social-force avoidance, obstacles, walls, gait and gaze
 //   behaviour/tram        tram clearance, bell requests, swept-volume guarantee
-//   behaviour/visibility  frustum / facade occlusion tests for hidden spawns
+//   behaviour/visibility  frustum / facade / occluder tests for hidden spawns
 
 const PI = Math.PI;
 const _v = new THREE.Vector3();
 
 class CrowdSim {
-  constructor(app) {
+  constructor(app, opts = {}) {
     this.app = app;
     this.route = app.route;
     this.layout = app.layout;
     this.seed = app.layout.seed;
     this.rng = RNG.from(this.seed, 'crowd');
-    this.map = new StreetMap(app);
+    this.humans = app.humans && !app.humans.disabled ? app.humans : null;
+    this.map = new StreetMap(app, opts);
     this.vis = new Visibility(app.route);
+    this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0 };
     this.tram = new TramWatch(this);
     this.population = new Population(this);
     this.steering = new Steering(this);
-    this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0 };
     this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
     this.out = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true };
-    this.popIn = [0, 0, 0, 0]; this.popSrc = {};
+    this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
-    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0 };
-    this.humans = app.humans && !app.humans.disabled ? app.humans : null;
+    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [] };
     // renderer slots; alloc may hand back the first index of our block
     const base = this.humans && this.humans.alloc ? this.humans.alloc(MAX_AGENTS) : 0;
     this.base = Number.isInteger(base) ? base : 0;
@@ -58,22 +58,37 @@ class CrowdSim {
 
   onKill(a) { if (this.humans && this.humans.setVisible) this.humans.setVisible(this.base + a.slot, false); }
 
-  /** Everyone in front of the tram turns to look; people by the track hurry off it. */
+  /** The bell is routine on this street: people on or right beside the ride track look round
+   *  and step clear; on the sidewalks only a few glance up. */
   onBell() {
     this.tram.onBell(this.time);
-    const r = this.rng;
+    const r = this.rng, tram = this.tram;
+    const reach = Math.max(40, 1.5 * tram.stopDist);
+    let reacted = 0;
     for (const a of this.population.agents) {
-      if (!a.active) continue;
-      const ahead = a.s - this.tram.trainU;
-      if (ahead < -12 || ahead > 170 || Math.abs(a.d) > 10) continue;
-      const delay = Math.max(0, ahead) / 340 + r.range(0.15, 0.6); // sound travel + reaction
+      if (!a.active || a.state === ST.SEATED) continue;
+      const ahead = a.s - tram.trainU;
+      if (ahead < -8 || ahead > reach + 20) continue;
+      const near = Math.abs(a.d - RIDE_D) < 3.5 && ahead < reach;
+      if (!r.chance(near ? 0.85 : 0.08)) continue;
+      const delay = Math.max(0, ahead) / 340 + r.range(0.2, 1.2); // sound travel + reaction
       a.tramLookS = this.time + delay;
-      a.tramLookT = this.time + delay + r.range(1.4, 3.2);
+      a.tramLookT = a.tramLookS + (near ? r.range(1.2, 2.6) : r.range(0.4, 0.9));
+      reacted++;
+      if (!near) continue;
       a.bellT = this.time + delay + 5;
-      // step back from the corridor edge
-      if (a.state !== ST.SEATED && Math.abs(a.d) > 3 && Math.abs(a.d) < 5.2 && !a.noRect) a.vd += Math.sign(a.d) * r.range(0.4, 0.8);
+      // beside the track (not in the band): a step back, turning towards the tram
+      const dl = a.d - RIDE_D;
+      if (Math.abs(dl) > 1.9 && a.kind !== KIND.SEATED) {
+        a.dodge = Math.sign(dl) * r.range(0.35, 0.7); a.dodgeT = a.tramLookS + 2.2; a.dodgeD0 = a.d;
+        if (a.state === ST.STAND || a.state === ST.WAIT || a.state === ST.PLATFORM) a.faceA = this._faceTram(a);
+      }
     }
+    this.lastBellReact = reacted;
   }
+
+  /** Route-relative facing (alpha) towards the cab. */
+  _faceTram(a) { return Math.atan2(RIDE_D - a.d, this.tram.trainU - a.s); }
 
   /** Head yaw (relative to the body, + left) that looks at the cab. */
   lookAtTram(a) {
@@ -83,7 +98,8 @@ class CrowdSim {
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
     if (Math.abs(rel) > 2.3) return Math.sign(rel) * 0.9; // tram right behind: a glance over the shoulder
-    return Math.max(-1.25, Math.min(1.25, rel));
+    if (Math.abs(rel) < PI / 2) return Math.max(-0.7, Math.min(0.7, rel)); // in front: a turn of the head
+    return Math.max(-1.2, Math.min(1.2, rel));
   }
 
   update(dt, app) {
@@ -103,12 +119,11 @@ class CrowdSim {
     const trainU = this.camU + route.delta(camS, app.train?.s ?? camS);
     this.tram.update(app, trainU);
     this.vis.update(app.camera, this.camU, camS);
-    if (first) { this._count(); this.population.fillInitial(); }
+    if (first) this.population.fillInitial();
 
     this.dt = dt;
     if (dt > 0) {
       this.time += dt;
-      this._count();
       const t1 = performance.now();
       this.population.maintain(dt);
       const t2 = performance.now();
@@ -136,19 +151,8 @@ class CrowdSim {
     }
   }
 
-  _count() {
-    const k = this.counts;
-    k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0;
-    for (const a of this.population.agents) {
-      if (!a.active) continue;
-      if (a.kind === KIND.SEATED) k.seated++;
-      else if (a.kind === KIND.PASSENGER) k.passenger++;
-      else { k.walker++; if (a.state === ST.STAND) k.stand++; }
-    }
-  }
-
   _output(dt) {
-    const route = this.route, map = this.map, H = this.humans, o = this.out;
+    const route = this.route, map = this.map, H = this.humans, o = this.out, ck = this.check;
     for (const a of this.population.agents) {
       if (!a.active) continue;
       // platforms raise the feet
@@ -158,16 +162,33 @@ class CrowdSim {
       if (dt === 0 || a.fresh) a.h = hT;
       route.toWorld(a.s, a.d, a.h, _v);
       a.x = _v.x; a.y = _v.y; a.z = _v.z;
-      this.steering.animate(a, dt, H);
+      // distance actually covered since the last frame (drives the gait phase)
+      let dist = 0;
+      if (a.pValid && !a.fresh) {
+        const dx = a.x - a.px, dz = a.z - a.pz;
+        dist = Math.sqrt(dx * dx + dz * dz);
+        if (ck.on && dt > 0 && dist > 3 * Math.max(1.6, a.vmaxCur) * dt * (a.simple ? 2 : 1) + 0.01) {
+          ck.teleports++;
+          if (ck.teleLog.length < 10) ck.teleLog.push({ t: +this.time.toFixed(2), dist: +dist.toFixed(2), rel: +(a.s - this.camU).toFixed(1), d: +a.d.toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], lead: !!a.leader });
+        }
+      }
+      a.px = a.x; a.pz = a.z; a.pValid = true;
+      this.steering.animate(a, dt, H, dist);
       if (a.fresh) {
-        // appearances inside the view, by distance (only the far end of the range should show up here)
+        // appearances in plain view, by distance (spawns that passed a hidden test are not counted)
         a.fresh = false;
-        const side = a.d >= 0 ? 1 : -1, m = map.mouthAt(a.s, side);
-        const behind = a.inDoor || Math.abs(a.d) > (m ? map.mouthLine(m, side) : map.facadeAt(a.s, side)) - 0.2; // masked by the facade
-        if (this.time > 1 && !behind && this.vis.inView(a.s, a.d)) {
-          const dist = Math.abs(a.s - this.camU);
-          this.popIn[dist < 100 ? 0 : dist < 250 ? 1 : dist < 400 ? 2 : 3]++;
-          if (dist < 400) this.popSrc[a.src] = (this.popSrc[a.src] || 0) + 1;
+        if (this.time > 1 && (a.src === 'seat' || a.src === 'platform') && this.vis.inView(a.s, a.d)) {
+          const k = Math.abs(a.s - this.camU) < 450 ? 0 : 1;
+          this.featureIn[k]++;
+        }
+        if (this.time > 1 && !a.spawnHidden && this.vis.inView(a.s, a.d)) {
+          const side = a.d >= 0 ? 1 : -1, m = map.mouthAt(a.s, side);
+          const behind = a.inDoor || Math.abs(a.d) > (m ? map.mouthLine(m, side) : map.facadeAt(a.s, side)) - 0.2;
+          if (!behind) {
+            const dist2 = Math.abs(a.s - this.camU);
+            this.popIn[dist2 < 100 ? 0 : dist2 < 250 ? 1 : dist2 < 450 ? 2 : 3]++;
+            this.popSrc[a.src] = (this.popSrc[a.src] || 0) + 1;
+          }
         }
       }
       a.heading = route.heading(a.s) - PI / 2 - a.alpha;
@@ -226,7 +247,7 @@ class CrowdSim {
 
   stats() {
     const byState = {}, byTask = {}, byKind = {};
-    let active = 0, clearing = 0, simple = 0, followers = 0, corridor = 0;
+    let active = 0, clearing = 0, simple = 0, followers = 0, corridor = 0, children = 0, childAlone = 0;
     const lanes = [0, 0, 0], band = [0, 0, 0, 0];
     for (const a of this.population.agents) {
       if (!a.active) continue;
@@ -237,6 +258,7 @@ class CrowdSim {
       if (a.clearing) clearing++;
       if (a.simple) simple++;
       if (a.leader) followers++;
+      if (a.isChild) { children++; if (!a.leader && !a.guardian) childAlone++; }
       if (Math.abs(a.d) < 3.4) corridor++;
       if (a.state === ST.WALK && !a.leader) lanes[a.lane]++;
       if (a.s - this.camU > 30 && a.s - this.camU < 250) {
@@ -244,16 +266,19 @@ class CrowdSim {
         band[k]++;
       }
     }
-    const ck = this.check;
+    const ck = this.check, pop = this.population;
     return {
-      active, walkerTarget: Math.round(this.population.walkerTarget), byKind, byState, byTask, clearing, simple, followers, corridor,
+      active, walkerTarget: Math.round(pop.walkerTarget), byKind, byState, byTask, clearing, simple, followers, corridor, children, childAlone,
       lanes: { side: lanes[0], edge: lanes[1], corridor: lanes[2] },
       crossSection30to250m: { leftWalk: band[0], leftTrack: band[1], rideTrack: band[2], rightWalk: band[3] },
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
-      check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap } : null,
-      population: this.population.stats, events: this.events,
-      visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under400m: this.popIn[2], beyond400m: this.popIn[3], nearBySource: this.popSrc },
+      check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked } : null,
+      population: pop.stats, events: this.events,
+      visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },
+      featureArrivalsInView: { under450m: this.featureIn[0], beyond450m: this.featureIn[1] },
+      blockLog: this.check.on ? summarize(this.tram.blockLog) : null,
+      visibleDespawns: { under100m: pop.popOut[0], under250m: pop.popOut[1], under450m: pop.popOut[2], beyond450m: pop.popOut[3] },
       cpuMedianMs: +this._pct(0.5).toFixed(3), cpuP95Ms: +this._pct(0.95).toFixed(3),
       cpuMs: +this.perf.avg[0].toFixed(3), cpuMaxMs: +this.perf.max[0].toFixed(3), framesOver1_5ms: this.perf.over,
       cpuParts: { population: [+this.perf.avg[1].toFixed(3), +this.perf.max[1].toFixed(2)], steering: [+this.perf.avg[2].toFixed(3), +this.perf.max[2].toFixed(2)], output: [+this.perf.avg[3].toFixed(3), +this.perf.max[3].toFixed(2)] },
@@ -261,10 +286,21 @@ class CrowdSim {
   }
 }
 
+/** Count identical strings (debug logs). */
+function summarize(list) {
+  const m = {};
+  for (const k of list) m[k] = (m[k] || 0) + 1;
+  return Object.fromEntries(Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 8));
+}
+
 export default {
   name: 'crowd',
   async init(app) {
-    this.sim = new CrowdSim(app);
+    // the shopfront layout (where the door is in a shop opening, roller shutters) comes from the
+    // facades; without it people only use house doors
+    let shopLayout = null;
+    try { shopLayout = (await import('../world/facades/shops.js')).shopLayout || null; } catch (e) { shopLayout = null; }
+    this.sim = new CrowdSim(app, { shopLayout });
   },
   update(dt, app) { this.sim.update(dt, app); },
   /** Debug / test counters: counts by kind, state and task, tram clearance stats, cpu time. */

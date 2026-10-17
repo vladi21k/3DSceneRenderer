@@ -67,8 +67,9 @@ function grooveCap(B, s, u, dir, va, vc, groove, c) {
 /**
  * ctx: {B, sinks, fs (FaceShade), q (detail), vBottom, vTop, rustic: {v0, v1, joints[], c} | null}
  * face: plan-like (width, openings, courses, balconies, cornice, groundAt)
+ * A generator: yields every few rows so a large facade can be spread over frames.
  */
-export function wallField(ctx, face, openings) {
+export function* wallField(ctx, face, openings) {
   const { B, q, fs } = ctx;
   const W = face.width;
   const v0 = ctx.vBottom, v1 = ctx.vTop;
@@ -83,8 +84,9 @@ export function wallField(ctx, face, openings) {
   // occlusion helper rows and the u-splits they need
   const splits = [];
   const cy = face.cornice ? face.cornice.y : v1;
-  for (const d of q.lod ? [0.5] : [0.15, 0.45, 1.0, 2.0]) vb.push(cy - d);
-  for (const c of face.courses || []) { vb.push(c.y - 0.1); if (!q.lod) vb.push(c.y - 0.35); }
+  // (both detail levels keep these rows, so the baked shading does not pop at the switch)
+  for (const d of [0.15, 0.45, 1.0, 2.0]) vb.push(cy - d);
+  for (const c of face.courses || []) vb.push(c.y - 0.1, c.y - 0.35);
   if (!q.lod) {
     for (const b of face.balconies || []) {
       vb.push(b.y - 0.3, b.y - 0.9);
@@ -99,7 +101,7 @@ export function wallField(ctx, face, openings) {
   // narrow columns in the band under the cornice so the rain-wash streaks can show
   if (!q.lod) for (let u = 0.35; u < W - 0.2; u += 0.42) splits.push({ u, v0: cy - 2.6, v1: cy });
   const gHi = Math.max(face.groundAt(0), face.groundAt(W)), gLo = Math.min(face.groundAt(0), face.groundAt(W));
-  for (const d of q.lod ? [0.5] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
+  for (const d of q.lod ? [0.1, 0.4, 1.0, 2.3] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
   const rus = ctx.rustic;
   if (rus) { vb.push(rus.v0, rus.v1); for (const j of rus.joints) vb.push(j - rus.c, j, j + rus.c); }
 
@@ -118,6 +120,7 @@ export function wallField(ctx, face, openings) {
   const k = Math.SQRT1_2;
 
   for (let r = 0; r < nr; r++) {
+    if (r % 16 === 15) yield;
     const va = V[r], vc = V[r + 1], vm = (va + vc) / 2;
     // rustication: is this row inside the rusticated zone, and is it half of a V joint?
     let rough = false, groove = 0;
@@ -167,6 +170,7 @@ export function wallField(ctx, face, openings) {
     }
   }
 
+  yield;
   // arched spandrels: strips between the head curve and the head line
   for (const o of openings) {
     if (!o.rise || o.top === 'flat') continue;

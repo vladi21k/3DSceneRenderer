@@ -1,16 +1,18 @@
-import { TRACK_ZONE_HALF } from '../../core/config.js';
-import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
-import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP } from './constants.js';
+import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND } from './constants.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
 // grid in route coordinates. Neighbours repel (stronger in front), people predict
 // head-on encounters and step aside (keeping right), obstacles from the layout are
-// avoided ahead of time and resolved as hard constraints, facades are walls.
+// avoided ahead of time and resolved as hard constraints (café terraces and platforms
+// as true rectangles), facades are walls. Hard corrections are rate limited so nobody
+// ever jumps, and velocities are taken from the actual motion after the constraints, so
+// the gait (phase, speed) always matches what the body really does.
 
 const TAU = 0.45;              // relaxation time towards the preferred velocity
 const R2 = AGENT_R * 2;
+const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform edges
 const PI = Math.PI;
 
 const len2 = (x, y) => Math.sqrt(x * x + y * y);
@@ -25,6 +27,7 @@ export class Steering {
     this.des = { vs: 0, vd: 0, vmax: 1.6 };
     this.s0 = 0;
     this.frame = 0;
+    this.maxC = 0.05;          // largest hard correction of this step (m)
   }
 
   _cell(a) {
@@ -60,7 +63,7 @@ export class Steering {
       a.timer -= dt; a.thinkT -= dt;
       if (a.thinkT <= 0) think(c, a);
       if (!a.active) continue;
-      if (a.state === ST.SEATED) { a.vs = 0; a.vd = 0; continue; }
+      if (a.state === ST.SEATED) { this._settle(a, dt); continue; }
       if (a.timer <= 0 && (a.state === ST.STAND || a.state === ST.WAIT)) timerDone(c, a);
       if (!a.active) continue;
       tram.preStep(a);
@@ -75,30 +78,53 @@ export class Steering {
       if (a.simple) { a.afs = 0; a.afd = 0; }
       else if (((this.frame + a.slot) & 1) === 0 || a.fresh) {
         this._social(a, standing);
-        let s = this.fs, d = this.fd;
+        const s = this.fs, d = this.fd;
         this._obstacles(a, standing);
         a.afs = s + this.fs; a.afd = d + this.fd;
         gathered = true;
       }
       fs += a.afs; fd += a.afd;
       a.vs += fs * dt; a.vd += fd * dt;
-      const sp = len2(a.vs, a.vd);
-      const vmax = standing ? 0.6 : des.vmax;
-      if (sp > vmax) { a.vs *= vmax / sp; a.vd *= vmax / sp; }
+      let sp = len2(a.vs, a.vd);
+      const vmax = standing && !a.moving ? 0.6 : des.vmax;
+      a.vmaxCur = vmax;
+      if (sp > vmax) { a.vs *= vmax / sp; a.vd *= vmax / sp; sp = vmax; }
+      // people standing still are not shuffled around by the forces: a dead band
+      if (standing && !a.moving && sp < 0.3) { a.vs = 0; a.vd = 0; }
 
       const prevD = a.d, prevS = a.s;
-      const k = 1 + c.route.curvature(a.s) * a.d;
-      a.s += (a.vs / Math.max(0.5, k)) * dt;
+      const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+      a.s += (a.vs / k) * dt;
       a.d += a.vd * dt;
+      // hard corrections never move anyone faster than a brisk step
+      this.maxC = Math.max(0.02, 2 * Math.max(1.6, vmax) * dt);
       this._constrain(a, gathered, a.s - prevS);
       tram.constrain(a, prevD);
+      // velocity from the actual motion (constraints included): the gait follows what happened
+      const ms = (a.s - prevS) * k, md = a.d - prevD;
+      a.vs = ms / dt; a.vd = md / dt;
+      const moved = len2(ms, md);
 
       // goals that cannot be reached (blocked by a crowd or a wall): give up after a while
       if (a.state === ST.GOTO) {
-        const moved = len2(a.s - prevS, a.d - prevD);
         if (moved < 0.12 * dt) { a.stuckT += dt; if (a.stuckT > 4) { a.stuckT = 0; arrive(c, a); } } else a.stuckT = Math.max(0, a.stuckT - dt);
+      } else if (a.leader && a.state === ST.WALK) {
+        // a group member held back (a pole, a narrow passage): fall in behind the leader for a while
+        const want = len2(des.vs, des.vd);
+        if (want > 0.5 && moved < 0.35 * want * dt) { a.stuckF += dt; if (a.stuckF > 0.7) { a.stuckF = 0; a.singleT = c.time + c.rng.range(4, 7); } }
+        else a.stuckF = Math.max(0, a.stuckF - dt);
       }
     }
+  }
+
+  /** Seated: ease the last centimetres onto the chair. */
+  _settle(a, dt) {
+    a.vs = 0; a.vd = 0;
+    if (a.seatS === undefined || a.seatD === undefined) return;
+    const es = a.seatS - a.s, ed = a.seatD - a.d, e = len2(es, ed);
+    if (e < 1e-3) return;
+    const st = Math.min(1, (0.5 * dt) / e);
+    a.s += es * st; a.d += ed * st;
   }
 
   // ---------------------------------------------------------------- neighbours
@@ -123,11 +149,12 @@ export class Steering {
           const nx = -dx / dist, ny = -dy / dist; // from b to a
           const mate = (b.leader || b) === L;
           if (dist < 2.2) {
-            // body repulsion, anisotropic (people react to what is in front of them)
+            // body repulsion, anisotropic (people react to what is in front of them). Standing
+            // people only make room for real overlaps: the walkers go round them.
             const cosPhi = -(nx * es + ny * ed);
             const w = 0.3 + 0.7 * (1 + cosPhi) * 0.5;
             let A = mate ? 0.7 : 2.4;
-            if (standing) A *= 0.12;
+            if (standing) A = dist < R2 ? 0.5 : 0;
             if (b.kind === KIND.SEATED) A *= 0.6;
             const f = A * Math.exp((R2 + 0.06 - dist) / 0.3) * w;
             fs += nx * f; fd += ny * f;
@@ -156,8 +183,10 @@ export class Steering {
 
   // ---------------------------------------------------------------- obstacles
   _obstacles(a, standing) {
-    const map = this.c.map;
+    const c = this.c, map = c.map;
     let fs = 0, fd = 0;
+    // with the tram near, obstacles by the ride track are passed on the side away from it
+    const tramNear = c.tram.near(a);
     const n = map.gatherCircles(a.s, 3.5);
     const sp = len2(a.vs, a.vd);
     const es = sp > 0.1 ? a.vs / sp : 0, ed = sp > 0.1 ? a.vd / sp : 0;
@@ -180,8 +209,28 @@ export class Steering {
         if (lat > 0.04) side = -1;           // obstacle to the right: pass on the left
         else if (lat < -0.04) side = 1;
         else side = (a.gd - a.d) * (es >= 0 ? 1 : -1) >= 0 ? 1 : -1; // dead ahead: towards the lane
+        if (tramNear && Math.abs(map.cD[i] - RIDE_D) < BAND + 1.3 && Math.sign(es * side) === Math.sign(RIDE_D - a.d)) side = -side;
         const k = 1.5 * (1 - along / 3.8) * (1 - Math.abs(lat) / need + 0.3);
         fs += -ed * side * k; fd += es * side * k;
+      }
+    }
+    // café terraces and platforms ahead: their ends are walls across the path, passed on the
+    // open side (the corridor side of a terrace, whichever side is nearer for a platform)
+    if (!a.noRect && !standing && sp > 0.2 && Math.abs(es) > 0.3) {
+      const side = a.d >= 0 ? 1 : -1, ad = Math.abs(a.d);
+      const nr = map.rectsNear(a.s, side);
+      for (let q = 0; q < nr; q++) {
+        const r = map.rq[q];
+        const ds = map.rectDS(r, a.s);
+        // distance to the end the walker is heading for
+        const along = es > 0 ? -ds : ds - r.len;
+        if (along < -RECT_R || along > 4.5) continue;
+        if (ad < r.inner - RECT_R - 0.25 || ad > r.outer + RECT_R + 0.25) continue;
+        const out = r.outer < 90 && ad - r.inner > r.outer - ad;   // nearer to the platform's back edge
+        const dirD = (out ? 1 : -1) * side;                          // signed d direction to the free side
+        const k = 2.2 * (1 - Math.max(0, along) / 4.5);
+        fd += dirD * k * Math.abs(es);
+        fs -= es * 0.6 * k * (along < 0.6 ? 1 : 0.3);               // and slow down rather than press on
       }
     }
     this.fs = fs; this.fd = fd;
@@ -189,9 +238,9 @@ export class Steering {
 
   // ---------------------------------------------------------------- hard constraints
   /** `gathered`: the obstacle query of this step (around the position before the move, which
-   *  was `moved` metres ago along s) is still in map.q*. */
+   *  was `moved` metres ago along s) is still in map.q*. Corrections are rate limited. */
   _constrain(a, gathered = false, moved = 0) {
-    const c = this.c, map = c.map;
+    const c = this.c, map = c.map, maxC = this.maxC;
     // circle obstacles: resolve overlaps
     const n = gathered ? map.qN : map.gatherCircles(a.s, 1.2);
     const shift = gathered ? moved : 0;
@@ -202,29 +251,24 @@ export class Steering {
       const d2 = dx * dx + dy * dy;
       if (d2 < min * min) {
         const dist = Math.sqrt(d2) || 1e-3;
-        const push = min - dist;
+        const push = Math.min(maxC, min - dist);
         a.s -= (dx / dist) * push; a.d -= (dy / dist) * push;
       }
     }
-    const side = a.d >= 0 ? 1 : -1, ad = Math.abs(a.d);
-    // café and platform footprints
-    if (!a.noRect) {
-      const inner = map.rectInner(a.s, side, ad + AGENT_R * 0.6);
-      if (inner > 0) {
-        if (inner <= TRACK_ZONE_HALF + 0.01) {
-          // platform: walkers stay behind it, or in the corridor if they came from there
-          if (ad > TRACK_ZONE_HALF + 0.5) a.d = side * (TRACK_ZONE_HALF + PLATFORM_W + AGENT_R);
-          else a.d = side * (TRACK_ZONE_HALF - AGENT_R * 0.6);
-        } else a.d = side * (inner - AGENT_R * 0.6);
-        a.vd *= 0.3;
-      }
-    }
+    const side = a.d >= 0 ? 1 : -1;
+    // café terraces and platforms: out through the nearest edge
+    if (!a.noRect) this._rects(a, side, maxC);
     // facades and cross street mouths
     if (a.inDoor) {
-      if (a.s < a.doorS0) a.s = a.doorS0; else if (a.s > a.doorS1) a.s = a.doorS1;
-      const lim = a.door ? a.door.d + a.door.recess - 0.1 : map.facadeAt(a.s, side) + 0.25;
-      if (Math.abs(a.d) > lim) a.d = side * lim;
-      return;
+      const dr = a.door;
+      const lim = dr && dr.o ? dr.o.d + dr.depth - 0.1 : map.facadeAt(a.s, side) + 0.25;
+      // out of the recess again (people coming out of a door): an ordinary walker
+      if (a.task !== TASK.ENTER && Math.abs(a.d) < map.facadeAt(a.s, side) - 0.35) a.inDoor = false;
+      else {
+        if (a.s < a.doorS0) a.s += Math.min(maxC, a.doorS0 - a.s); else if (a.s > a.doorS1) a.s -= Math.min(maxC, a.s - a.doorS1);
+        if (Math.abs(a.d) > lim) a.d = side * lim;
+        return;
+      }
     }
     const m = map.mouthAt(a.s, side);
     if (m) {
@@ -232,37 +276,62 @@ export class Steering {
       const line = map.mouthLine(m, side);
       const ms = c.unwrap(m.s), half = m.width / 2 - 0.55;
       if (Math.abs(a.d) > line - WALL_GAP && Math.abs(a.s - ms) < half + 0.4) {
-        if (a.s < ms - half) a.s = ms - half; else if (a.s > ms + half) a.s = ms + half;
+        if (a.s < ms - half) a.s += Math.min(maxC, ms - half - a.s); else if (a.s > ms + half) a.s -= Math.min(maxC, a.s - ms - half);
         if (Math.abs(a.d) > line + 22) a.d = side * (line + 22);
         return;
       }
     }
     const wall = map.wallAt(a.s, side);
-    if (Math.abs(a.d) > wall) { a.d = side * wall; if (a.vd * side > 0) a.vd = 0; }
+    if (Math.abs(a.d) > wall) { a.d = side * Math.max(wall, Math.abs(a.d) - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
+  }
+
+  /** Push a body out of café / platform footprints through the edge of least penetration. */
+  _rects(a, side, maxC) {
+    const map = this.c.map;
+    const nr = map.rectsNear(a.s, side);
+    for (let q = 0; q < nr; q++) {
+      const r = map.rq[q];
+      const ds = map.rectDS(r, a.s), ad = Math.abs(a.d);
+      if (ds < -RECT_R || ds > r.len + RECT_R || ad < r.inner - RECT_R || ad > r.outer + RECT_R) continue;
+      const p0 = ds + RECT_R, p1 = r.len + RECT_R - ds;          // out through the s ends
+      const pIn = ad - (r.inner - RECT_R);                         // towards the track corridor
+      const pOut = r.outer < 90 ? r.outer + RECT_R - ad : 1e9;     // behind a platform
+      const m = Math.min(p0, p1, pIn, pOut);
+      const step = Math.min(maxC, m);
+      if (m === p0) { a.s -= step; if (a.vs > 0) a.vs = 0; }
+      else if (m === p1) { a.s += step; if (a.vs < 0) a.vs = 0; }
+      else if (m === pIn) { a.d -= side * step; if (a.vd * side > 0) a.vd = 0; }
+      else { a.d += side * step; if (a.vd * side < 0) a.vd = 0; }
+    }
   }
 
   // ---------------------------------------------------------------- facing, gait, gaze
-  animate(a, dt, humans) {
+  /** dist: horizontal distance the figure actually moved since the last output. */
+  animate(a, dt, humans, dist) {
     const c = this.c;
-    const sp = len2(a.vs, a.vd);
-    a.speed = sp;
     const still = a.state === ST.SEATED || a.state === ST.PLATFORM || a.state === ST.STAND || a.state === ST.WAIT;
+    // smoothed actual speed (the steering velocity is the real displacement rate)
+    const spRaw = a.state === ST.SEATED ? 0 : len2(a.vs, a.vd);
+    a.speedA += (spRaw - a.speedA) * Math.min(1, dt * 8);
+    if (dt === 0 || a.fresh) a.speedA = spRaw;
+    const sp = a.speedA;
+    a.speed = sp;
     let target = a.alpha;
-    if (sp > 0.28 && !(still && sp < 0.5)) target = Math.atan2(a.vd, a.vs);
+    if (sp > 0.28 && !(still && !a.moving)) target = Math.atan2(a.vd, a.vs);
     else if (still) target = a.faceA;
     const diff = wrapAngle(target - a.alpha);
     const rate = TURN_RATE * (sp > 0.8 ? 1 : 0.7);
     a.alpha = wrapAngle(a.alpha + Math.max(-rate * dt, Math.min(rate * dt, diff)));
-    // gait phase: advance by distance / stride length so feet do not slide
-    if (sp > 0.02) {
+    a.pose = a.state === ST.SEATED ? 2 : (still && !a.moving && sp < 0.6) ? 1 : 0;
+    // gait phase: advance by the distance actually covered / stride length, so feet do not slide
+    if (a.pose === 0 && dist > 1e-5) {
       // the renderer's stride for this body and speed (re-queried only when the speed changes)
       if (Math.abs(sp - a.strideV) > 0.04) {
         a.strideV = sp;
-        a.stride = Math.max(0.3, humans && humans.strideLength ? humans.strideLength(a.appearance, sp) : fallbackStride(sp));
+        a.stride = Math.max(0.3, humans && humans.strideLength ? humans.strideLength(a.appearance, Math.max(0.05, sp)) : fallbackStride(sp));
       }
-      a.phase = (a.phase + (sp * dt) / a.stride) % 1;
+      a.phase = (a.phase + dist / a.stride) % 1;
     }
-    a.pose = a.state === ST.SEATED ? 2 : (still && sp < 0.15 && a.task !== TASK.CROSS) ? 1 : 0;
     // gaze: the tram when it rings or when waiting to cross, otherwise idle glances
     let lookT = a.lookGoal;
     if (a.tramLookT > c.time || (a.state === ST.WAIT && a.task === TASK.CROSS)) lookT = c.lookAtTram(a);

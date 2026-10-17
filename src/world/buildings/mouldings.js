@@ -33,15 +33,13 @@ export function plinthProfile(top, p, bottom) {
  * drip and soffit, cyma recta, top fillet. H = height, P = projection.
  * Returns {profile, dentil: {v0, v1, w0, w1}, soffit: {v, w0, w1}} for the add-ons.
  */
-export function corniceProfile(H, P, simple = false) {
-  const k = keyOf('k', H, P, simple);
+export function corniceProfile(H, P) {
+  const k = keyOf('k', H, P);
   let r = profileCache.get(k);
   if (r) return r;
   const pr = [];
   const add = (o, u) => pr.push([o, u * H]);
-  if (simple) {
-    add(0, 0); add(0.03, 0); add(0.03, 0.3); add(0.25 * P, 0.48); add(0.82 * P, 0.6); add(P, 0.62); add(P, 0.9); add(P * 0.9, 1); add(0, 1);
-  } else {
+  {
     add(0, 0); add(0.035, 0); add(0.035, 0.28);              // frieze
     add(0.05, 0.3); add(0.05, 0.33);                          // fillet
     // cyma reversa bed moulding
@@ -114,22 +112,26 @@ function modillionProfile(H, P) {
 /**
  * Quoins up one vertical corner of the facade: alternating long and short dressed
  * blocks with chamfered joints. side: 0 → corner at u = 0, 1 → corner at u = W.
- * wrap: also dress the return face (corner visible from the side).
+ * wrap: the blocks turn the corner (the front block reaches round the arris by its
+ * projection); opts.retFace also dresses the return face (a square corner seen from the
+ * side), opts.parity starts the long/short alternation on the other foot (the column on
+ * an angled corner return interlocks with the front's).
  */
-export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev) {
+export function quoins(B, s, W, side, v0, v1, qh, q, wrap, bev, opts = {}) {
   const p = q.proj, joint = 0.012;
-  let v = v0, i = 0;
+  const retFace = wrap && opts.retFace !== false;
+  let v = v0, i = opts.parity || 0;
   while (v + qh * 0.6 < v1) {
     const top = Math.min(v1, v + qh) - joint;
     const long = i % 2 === 0;
     const fw = long ? q.long : q.short;      // width on the front face
-    const sw = wrap ? (long ? q.short : q.long) : 0; // depth on the return face
+    const sw = long ? q.short : q.long;      // depth on the return face
     if (side === 0) {
       B.bevelBox(s, -(wrap ? p : 0), fw, v, top, 0, p, bev, FACES.ALL & ~FACES.BACK);
-      if (wrap) B.box(s, -p, 0, v, top, -sw, 0, FACES.LEFT | FACES.TOP | FACES.BOTTOM | FACES.BACK);
+      if (retFace) B.box(s, -p, 0, v, top, -sw, 0, FACES.LEFT | FACES.TOP | FACES.BOTTOM | FACES.BACK);
     } else {
       B.bevelBox(s, W - fw, W + (wrap ? p : 0), v, top, 0, p, bev, FACES.ALL & ~FACES.BACK);
-      if (wrap) B.box(s, W, W + p, v, top, -sw, 0, FACES.RIGHT | FACES.TOP | FACES.BOTTOM | FACES.BACK);
+      if (retFace) B.box(s, W, W + p, v, top, -sw, 0, FACES.RIGHT | FACES.TOP | FACES.BOTTOM | FACES.BACK);
     }
     v += qh; i++;
   }

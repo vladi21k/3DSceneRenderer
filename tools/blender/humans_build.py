@@ -31,7 +31,7 @@ except ImportError:             # allows dry runs of the SDF stages outside Blen
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, 'assets', 'humans')
 
-LOD_TRIS = {'body': (15000, 3000, 560, 200)}
+LOD_TRIS = {'body': (15000, 2600, 560, 200)}
 MORPH_SCALE = 0.08
 
 

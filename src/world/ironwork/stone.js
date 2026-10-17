@@ -39,17 +39,25 @@ export function slabPath(u0, u1, depth, rc = 0, into = 0.25) {
   return p;
 }
 
-/** Writes one balcony slab (sweep + top + soffit) into W (matrix = facade frame). */
-export function writeSlab(W, path, y, T, variant, lod, dirt = 1) {
+/** Grime kinds recorded per vertex (attribute aGk) for the ironwork stone material. */
+export const GRIME = { NONE: 0, EDGE: 1, SOFFIT: 2, CONSOLE: 3 };
+
+/** Writes one balcony slab (sweep + top + soffit) into W (matrix = facade frame).
+ *  Baked occlusion: dirty top arris, darker lower edge, soffit dark at the wall. */
+export function writeSlab(W, path, y, T, variant, lod, dirt = 1, depth = 1) {
   const prof = slabProfile(T, variant, lod).map(([o, v]) => [o, y + v]);
   const shadeFn = (o, v) => {
     const t = (y - v) / T; // 0 top .. 1 soffit
-    return (1 - 0.18 * t * t) * (t > 0.95 ? 0.85 : 1) * dirt;
+    return (t < 0.08 ? 0.82 : 1) * (1 - 0.2 * t * t) * (t > 0.95 ? 0.8 : 1) * dirt;
   };
+  W.kind(GRIME.EDGE);
   sweepPath(W, path, prof, { shadeFn, smoothFrom: variant === 0 && !lod ? 4 : 1e9 });
   const topO = prof[0][0], botO = prof[prof.length - 1][0];
-  capPolygon(W, insetPath(path, topO), y, 1, 0.93 * dirt);
-  capPolygon(W, insetPath(path, botO), y - T, -1, 0.7 * dirt);
+  W.kind(GRIME.NONE);
+  capPolygon(W, insetPath(path, topO), y, 1, 0.92 * dirt);
+  W.kind(GRIME.SOFFIT);
+  capPolygon(W, insetPath(path, botO), y - T, -1, (u, w) => (0.55 + 0.3 * Math.min(1, Math.max(0, w / depth))) * dirt);
+  W.kind(GRIME.NONE);
 }
 
 // ---------------------------------------------------------------- consoles
@@ -123,14 +131,17 @@ export function corbelGeometry(variant, lod) {
   // shape space (x = w, y = v, z = extrusion) -> local (x = u centred, y = v, z = w)
   g.rotateY(-Math.PI / 2);
   g.translate(Wc / 2 - bev, 0, 0);
-  // baked occlusion: under the slab and against the wall
-  const pos = g.attributes.position, n = pos.count, col = new Float32Array(n * 3);
+  // baked occlusion: the junction under the slab, against the wall, and on the
+  // down-facing coves that only see the street below
+  const pos = g.attributes.position, nrm = g.attributes.normal, n = pos.count, col = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    const y = pos.getY(i), z = pos.getZ(i);
-    const ao = (1 - 0.3 * Math.exp(y / 0.05)) * (1 - 0.25 * Math.exp(-Math.max(0, z) / 0.07)) * (0.9 + 0.1 * Math.min(1, -y / Hc));
+    const y = pos.getY(i), z = pos.getZ(i), ny = nrm.getY(i);
+    let ao = (1 - 0.4 * Math.exp(y / 0.04)) * (1 - 0.3 * Math.exp(-Math.max(0, z) / 0.08)) * (0.88 + 0.12 * Math.min(1, -y / Hc));
+    if (ny < -0.3) ao *= 1 - 0.2 * Math.min(1, (-ny - 0.3) / 0.5);
     col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = ao;
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aGk', new THREE.BufferAttribute(new Float32Array(n).fill(GRIME.CONSOLE), 1));
   g.computeBoundingSphere();
   return shared(g);
 }
@@ -173,4 +184,82 @@ export function copingProfile(lod) {
   if (lod) return [[-0.09, H - C], [-0.1, H], [0.1, H], [0.09, H - C], [-0.09, H - C]];
   return [[-0.08, H - C], [-0.08, H - C + 0.04], [-0.1, H - C + 0.055], [-0.1, H - 0.012], [-0.09, H],
     [0.09, H], [0.1, H - 0.012], [0.1, H - C + 0.055], [0.08, H - C + 0.04], [0.08, H - C], [-0.08, H - C]];
+}
+
+// ---------------------------------------------------------------- weathered stone material
+// stone.smooth (with vertex tint/AO) plus balcony weathering, by grime kind (aGk):
+//   EDGE     slab front: water-borne dirt streaks down the face, a dark crust along the
+//            drip edge, now and then a rust tail where a railing post is leaded in
+//   SOFFIT   mottled soot, darker toward the wall (the gradient itself is baked)
+//   CONSOLE  streaks down the scroll faces and soot in the lower coves
+// High-frequency terms fade out as they approach pixel size, so nothing shimmers.
+const GRIME_GLSL = /* glsl */ `
+float gwH( vec2 p ) { vec3 q = fract( vec3( p.xyx ) * 0.1031 ); q += dot( q, q.yzx + 33.33 ); return fract( ( q.x + q.y ) * q.z ); }
+float gwN( vec2 p ) {
+	vec2 i = floor( p ), t = fract( p ); t = t * t * ( 3.0 - 2.0 * t );
+	return mix( mix( gwH( i ), gwH( i + vec2( 1, 0 ) ), t.x ), mix( gwH( i + vec2( 0, 1 ) ), gwH( i + vec2( 1, 1 ) ), t.x ), t.y );
+}
+// vertical streak field: x across the streaks (m), y down the face (m), pixel footprint fx
+float gwStreaks( float x, float y, float fx ) {
+	float a = gwN( vec2( x * 7.0, y * 1.3 ) ), b = gwN( vec2( x * 19.0 + 7.1, y * 2.1 ) );
+	float s = smoothstep( 0.5, 0.95, a ) * 0.65 + smoothstep( 0.55, 0.98, b ) * 0.45 * ( 1.0 - smoothstep( 0.02, 0.06, fx ) );
+	return s * ( 1.0 - smoothstep( 0.05, 0.2, fx ) );
+}`;
+
+export function makeStoneMaterial(app) {
+  const base = app.materials.get('stone.smooth', { vertexColors: true });
+  const m = base.clone(); // keeps the library surface patch
+  m.name = 'ironwork.stone';
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (sh, r) {
+    if (prev) prev.call(this, sh, r);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+attribute float aGk;
+varying float vGk;
+varying vec2 vGuv;
+varying vec3 vGl;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+	vGk = aGk;
+	vGuv = uv;
+	vGl = position;
+	#ifdef USE_INSTANCING
+		// per console: offset the pattern by the instance position
+		vGl.x += dot( instanceMatrix[ 3 ].xyz, vec3( 0.37, 0.11, 0.53 ) );
+	#endif`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+varying float vGk;
+varying vec2 vGuv;
+varying vec3 vGl;
+${GRIME_GLSL}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+	if ( vGk > 0.5 ) {
+		vec3 gTint = vec3( 1.0 );
+		float gDark = 0.0;
+		if ( vGk < 1.5 ) {
+			// slab edge: u along the front, v = depth below the slab top
+			float fx = fwidth( vGuv.x );
+			float d = vGuv.y;
+			gDark = gwStreaks( vGuv.x, d, fx ) * mix( 0.12, 0.3, smoothstep( 0.0, 0.18, d ) );
+			gDark += 0.22 * smoothstep( 0.1, 0.22, d ) * ( 0.6 + 0.4 * gwN( vec2( vGuv.x * 3.0, 1.7 ) ) );
+			float rust = smoothstep( 0.83, 0.95, gwN( vec2( vGuv.x * 4.3 + 11.0, 0.5 ) ) ) * ( 1.0 - smoothstep( 0.05, 0.2, fx ) );
+			gTint = mix( vec3( 1.0 ), vec3( 0.72, 0.52, 0.38 ), rust * 0.75 );
+		} else if ( vGk < 2.5 ) {
+			// soffit: mottled soot
+			float n = gwN( vGuv * 2.3 ) * 0.6 + gwN( vGuv * 7.1 + 3.3 ) * 0.4;
+			gDark = 0.06 + 0.2 * smoothstep( 0.35, 0.85, n );
+		} else {
+			// console: streaks down the faces, soot low on the scroll
+			float fx = fwidth( vGl.x );
+			gDark = gwStreaks( vGl.x + vGl.z * 0.7, -vGl.y, fx ) * 0.22;
+			gDark += 0.1 * ( 1.0 - smoothstep( -0.6, -0.25, vGl.y ) );
+		}
+		diffuseColor.rgb *= gTint * ( 1.0 - gDark );
+	}`);
+  };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone'; };
+  m.needsUpdate = true;
+  app.materials.register(m.name, m);
+  return m;
 }

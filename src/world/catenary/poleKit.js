@@ -58,7 +58,7 @@ function armColor(x, y, z, nx, ny, nz) {
 
 /** Rust / streak weights on the shaft (pole-local position and normal). */
 function shaftWear(i, x, y, z, nx, ny) {
-  let rust = 0.95 * (1 - smooth(y, 0.02, 0.3));                 // splash zone at the foot
+  let rust = 0.95 * (1 - smooth(y, 0.02, 0.42));                // splash zone at the foot
   if (ny < -0.35) rust = Math.max(rust, 0.5);                    // drip edges under mouldings
   if (ny > 0.6) rust = Math.max(rust, 0.4);                      // ledges where water stands
   for (const c of COLLARS) if (Math.abs(y - c) < 0.07) rust = Math.max(rust, 0.42);

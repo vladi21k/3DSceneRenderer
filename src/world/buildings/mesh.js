@@ -16,17 +16,17 @@ import { ShapeUtils, Vector2 } from 'three';
 const F_FRONT = 1, F_BACK = 2, F_LEFT = 4, F_RIGHT = 8, F_TOP = 16, F_BOTTOM = 32;
 export const FACES = { FRONT: F_FRONT, BACK: F_BACK, LEFT: F_LEFT, RIGHT: F_RIGHT, TOP: F_TOP, BOTTOM: F_BOTTOM, ALL: 63, SIDES: F_LEFT | F_RIGHT | F_TOP | F_BOTTOM };
 
+// Recent batch sizes per sink key, so fresh buffers rarely need to grow (each batch's
+// arrays are handed over to the GPU geometry as they are, see Sink.detach).
+const HINT = new Map();
+
 export class Sink {
   constructor(key) {
     this.key = key;
     this.vc = 0; this.ic = 0;
-    this.p = new Float32Array(3 * 2048);
-    this.n = new Float32Array(3 * 2048);
-    this.t = new Float32Array(2 * 2048);
-    this.c = new Float32Array(3 * 2048);
-    this.g = new Float32Array(2048);  // grime mask (buildings stone) / lit amount (glass)
-    this.i = new Uint32Array(6144);
+    this.p = null;
     this.uvx = null; // optional per-sink UV transform overriding the builder's
+    this.rewind();
   }
   reserve(nv, ni) {
     if ((this.vc + nv) * 3 > this.p.length) {
@@ -40,14 +40,31 @@ export class Sink {
       this.i = b;
     }
   }
-  /** Compact copy of the used part (for caching). */
-  trim() {
+  /**
+   * The used part as views (no copy). The sink then lets go of its buffers, so the next
+   * batch writes into fresh arrays sized from this one, and the views stay valid.
+   */
+  detach() {
     const vc = this.vc, ic = this.ic;
-    return {
+    const out = {
       key: this.key, vc, ic,
-      p: this.p.slice(0, vc * 3), n: this.n.slice(0, vc * 3), t: this.t.slice(0, vc * 2), c: this.c.slice(0, vc * 3),
-      i: vc < 65536 ? Uint16Array.from(this.i.subarray(0, ic)) : this.i.slice(0, ic),
+      p: this.p.subarray(0, vc * 3), n: this.n.subarray(0, vc * 3), t: this.t.subarray(0, vc * 2), c: this.c.subarray(0, vc * 3),
+      g: this.g.subarray(0, vc), i: this.i.subarray(0, ic),
     };
+    const h = HINT.get(this.key) || [0, 0];
+    HINT.set(this.key, [Math.max(vc, h[0] * 0.9), Math.max(ic, h[1] * 0.9)]);
+    this.p = this.n = this.t = this.c = this.g = this.i = null;
+    this.vc = 0; this.ic = 0;
+    return out;
+  }
+  /** Rewind for a new batch; allocates fresh buffers when the previous ones were detached. */
+  rewind() {
+    this.vc = 0; this.ic = 0;
+    if (this.p) return;
+    const h = HINT.get(this.key) || [0, 0];
+    const v = Math.max(1024, Math.ceil(h[0] * 1.15)), i = Math.max(3072, Math.ceil(h[1] * 1.15));
+    this.p = new Float32Array(v * 3); this.n = new Float32Array(v * 3); this.t = new Float32Array(v * 2);
+    this.c = new Float32Array(v * 3); this.g = new Float32Array(v); this.i = new Uint32Array(i);
   }
   /** Axis-aligned bounds of the used vertices, merged into box {min, max} (Vector3-like). */
   bounds(box) {
@@ -73,13 +90,14 @@ export class Builder {
     this.setFrame(0, 0, 0, 1, 0, 0, 1);
     this.uv = [1, 0, 1, 0];          // tu = u*su + ou, tv = v*sv + ov
     this.shade = null;               // (u, v, w, nu, nv, nw, out[3]) -> void
-    this.col = [1, 1, 1];
+    this.col = [1, 1, 1, 0];
     this.flat = [1, 1, 1];           // colour used when shade is null
+    this.grime = 0;                  // per-vertex grime mask (shade callbacks may write out[3])
   }
 
   /** Start a new batch: sinks are pooled and only rewound, so their buffers are reused. */
   reset() {
-    for (const s of this.sinks.values()) { s.vc = 0; s.ic = 0; }
+    for (const s of this.sinks.values()) s.rewind();
     this.begin();
   }
   /** Start a new object inside the current batch (keeps what the sinks already hold). */
@@ -89,12 +107,13 @@ export class Builder {
     for (const s of this.sinks.values()) t += s.ic;
     this._lastMark = t;
     this._lastT = this.profile ? performance.now() : 0;
-    this.frames.length = 0; this.uv = [1, 0, 1, 0]; this.shade = null; this.flat = [1, 1, 1];
+    this.frames.length = 0; this.uv = [1, 0, 1, 0]; this.shade = null; this.flat = [1, 1, 1]; this.grime = 0;
   }
 
   sink(key) {
     let s = this.sinks.get(key);
     if (!s) { s = new Sink(key); this.sinks.set(key, s); }
+    else if (!s.p) s.rewind();
     return s;
   }
 
@@ -140,9 +159,10 @@ export class Builder {
     const uv = s.uvx || this.uv;
     t[k * 2] = tu * uv[0] + uv[1];
     t[k * 2 + 1] = tv * uv[2] + uv[3];
-    let col = this.flat;
-    if (this.shade) { col = this.col; this.shade(u, v, w, nu, nv, nw, col); }
+    let col = this.flat, gr = this.grime;
+    if (this.shade) { col = this.col; col[3] = gr; this.shade(u, v, w, nu, nv, nw, col); gr = col[3]; }
     c[i3] = col[0]; c[i3 + 1] = col[1]; c[i3 + 2] = col[2];
+    s.g[k] = gr;
     return k;
   }
   tri(s, a, b, c) { const i = s.i, k = s.ic; i[k] = a; i[k + 1] = b; i[k + 2] = c; s.ic += 3; }
@@ -181,6 +201,28 @@ export class Builder {
     const c = this.v(s, u1, v, w1, 0, dir, 0, u1, w1);
     const d = this.v(s, u1, v, w0, 0, dir, 0, u1, w0);
     if (dir > 0) this.quadIdx(s, a, b, c, d); else this.quadIdx(s, a, d, c, b);
+  }
+
+  /**
+   * Vertical wall quad from (u0, w0) to (u1, w1), v0..v1, facing the right of the direction
+   * of travel seen from above (as sweep paths: travelling +u faces +w). UV = (along, v).
+   */
+  vwall(s, u0, w0, u1, w1, v0, v1) {
+    const du = u1 - u0, dw = w1 - w0, l = Math.hypot(du, dw);
+    if (l < 1e-4) return;
+    const nu = -dw / l, nw = du / l;
+    s.reserve(4, 6);
+    const a = this.v(s, u0, v0, w0, nu, 0, nw, 0, v0), b = this.v(s, u1, v0, w1, nu, 0, nw, l, v0);
+    const c = this.v(s, u1, v1, w1, nu, 0, nw, l, v1), d = this.v(s, u0, v1, w0, nu, 0, nw, 0, v1);
+    this.quadIdx(s, a, b, c, d);
+  }
+  /** Convex horizontal polygon at height v, flat [u, w, ...] clockwise in (u, w): faces up. UV = (u, w). */
+  polyV(s, pts, v) {
+    const m = pts.length >> 1;
+    s.reserve(m, (m - 2) * 3);
+    const base = s.vc;
+    for (let k = 0; k < m; k++) this.v(s, pts[k * 2], v, pts[k * 2 + 1], 0, 1, 0, pts[k * 2], pts[k * 2 + 1]);
+    for (let k = 1; k < m - 1; k++) this.tri(s, base, base + k, base + k + 1);
   }
 
   /** rectU subdivided into a grid of about `cell` metres (for vertex-colour detail). */
@@ -435,10 +477,10 @@ export class Builder {
     this._lastT = now;
   }
 
-  /** Collect the sinks as compact arrays: Map key -> trimmed sink. */
+  /** Collect the sinks' contents: Map key -> {p, n, t, c, g, i} views (see Sink.detach). */
   finish() {
     const out = new Map();
-    for (const [k, s] of this.sinks) { if (s.vc) out.set(k, s.trim()); s.vc = 0; s.ic = 0; }
+    for (const [k, s] of this.sinks) { if (s.vc && s.p) out.set(k, s.detach()); else if (s.p) { s.vc = 0; s.ic = 0; } }
     return out;
   }
 }

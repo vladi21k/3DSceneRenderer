@@ -53,12 +53,13 @@ export function spanAtY(pts, y) {
   return lo <= hi ? [lo, hi] : null;
 }
 
-/** Per-chunk set of batches, created on first use. */
+/** Per-chunk set of batches, created on first use. Far chunks use `<key>Far` materials when defined. */
 export class Kit {
   constructor(mats, lod) {
     this.mats = mats; this.lod = lod; this.b = {};
   }
   get(key) {
+    if (this.lod > 0 && this.mats[key + 'Far']) key += 'Far';
     if (!this.b[key]) {
       const def = this.mats[key];
       this.b[key] = new Batch(def.material, { color: def.color !== false, extra: def.extra || null });

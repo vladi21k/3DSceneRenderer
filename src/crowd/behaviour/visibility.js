@@ -2,8 +2,12 @@ import * as THREE from 'three';
 import { TRACK_OFFSET } from '../../core/config.js';
 
 // What the camera can see, so people only appear or vanish where nobody is looking:
-// outside the view frustum, or behind a facade (inside a doorway recess or a side
-// street) where the line of sight does not pass through the opening.
+// outside the view frustum, behind a facade (inside a doorway recess or a side street)
+// where the line of sight does not pass through the opening, or right behind a taller
+// figure or a kiosk on the same line of sight.
+
+const SHOULDER = 0.25;     // half body width tested for openings
+const BODY_R = 0.28;
 
 export class Visibility {
   constructor(route) {
@@ -49,6 +53,31 @@ export class Visibility {
     if (!this.inView(s, d)) return true;
     if (side && !this.throughOpening(s, d, side, lineD, sa, sb)) return true;
     return false;
+  }
+
+  /** A whole body (centre at (s, d), facing the street) inside an opening is hidden: its front
+   *  and both shoulders are masked by the facade around the opening [sa, sb]. */
+  bodyHidden(s, d, side, lineD, sa, sb) {
+    if (!this.inView(s, d)) return true;
+    const df = d - side * BODY_R;
+    return !this.throughOpening(s, df, side, lineD, sa, sb)
+      && !this.throughOpening(s - SHOULDER, d, side, lineD, sa, sb)
+      && !this.throughOpening(s + SHOULDER, d, side, lineD, sa, sb);
+  }
+
+  /** Lateral offset (m, measured at the occluder) between the camera rays to (s, d) and to an
+   *  occluder at (so, dO) that is nearer to the camera; Infinity when it is not in front. */
+  rayOffset(s, d, so, dO) {
+    const r = s - this.camU, ro = so - this.camU;
+    if (ro < 2 || ro > r - 0.8) return Infinity;
+    const dRay = this.camD + (d - this.camD) * (ro / r);
+    return Math.abs(dRay - dO);
+  }
+
+  /** Point on the camera ray through (so, dO) that lies `behind` metres further away (d of that point). */
+  rayBehind(so, dO, behind) {
+    const ro = so - this.camU;
+    return this.camD + (dO - this.camD) * ((ro + behind) / Math.max(1, ro));
   }
 
   distance(s) { return Math.abs(s - this.camU); }

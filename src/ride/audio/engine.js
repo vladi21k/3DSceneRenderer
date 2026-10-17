@@ -3,9 +3,9 @@
 // (OfflineAudioContext, with update() stepped on a virtual clock before rendering).
 //
 //   inside buses (rolling, traction, aux, brakes, doors) ─────────────────────────┐
-//   doors, aux ─ sends ─► cab/saloon reverb (small room) ─────────────────────────┤
+//   doors ─ send ─► cab/saloon reverb (small room) ───────────────────────────────┤
 //   bell, squeal, joints ─► near shell (cab body, mild) ──────────────────────────┤
-//   ambience ─► far shell (closed cab: -16 dB, dark; window / doors open it up) ──┼─► mix ─► compressor ─► limiter ─► soft clip ─► volume ─► out
+//   ambience ─► far shell (closed cab: -15 dB, dark; window / doors open it up) ──┼─► mix ─► compressor ─► limiter ─► soft clip ─► volume ─► out
 //   outside sources ─ sends ─► street reverb (narrow / wide canyon) ─► far shell ─┘
 //
 // Spatial frame: the listener and all panners live in a tram-local frame (x right,

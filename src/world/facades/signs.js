@@ -8,20 +8,28 @@ import { Tpl, lin } from './geo.js';
 // individual letters and projecting blade signs. Text quads are white glyphs tinted by
 // vertex colour; `aGlow` makes light boxes and neon letters glow at dusk.
 
-const W = 2048, H = 2048;
+const W = 2048, H = 2304;
 const CELL_W = 512, CELL_H = 128, TEXT_ROWS = 12;          // text cells: rows 0..11
 const PLAQUE = 128, PLAQUE_Y = TEXT_ROWS * CELL_H;        // 2 rows of 16 number plaques
-const BLADE_W = 256, BLADE_H = 256, BLADE_Y = PLAQUE_Y + 2 * PLAQUE; // 8 blade faces
+const BLADE_W = 256, BLADE_H = 256, BLADE_Y = PLAQUE_Y + 2 * PLAQUE; // 2 rows of 8 blade faces
 
+// Shop words and the interior each one implies (see interior.js SHOP_TYPES).
 const WORDS = [
-  ['CAFE'], ['BOOKS'], ['SHOES'], ['JEWELRY'], ['BAKERY'], ['PHARMACY'], ['OPTICS'], ['FLOWERS'],
-  ['GIFTS'], ['BISTRO'], ['FALAFEL'], ['PIZZA'], ['JUICE BAR'], ['FASHION'], ['BOUTIQUE'], ['TOYS'],
-  ['SWEETS'], ['MARKET'], ['EXCHANGE'], ['ESPRESSO'], ['GALLERY'], ['ICE CREAM'], ['BAGELS'], ['SOUVENIRS'],
-  ['קפה'], ['ספרים'], ['נעליים'], ['תכשיטים'], ['מאפייה'], ['בית מרקחת'], ['אופטיקה'], ['פרחים'],
-  ['מתנות'], ['פלאפל'], ['מיצים'], ['אופנה'], ['ממתקים'], ['גלידה'], ['מסעדה'], ['בגדים'],
-  ['קפה', 'CAFE'], ['ספרים', 'BOOKS'], ['תכשיטים', 'JEWELRY'], ['מאפייה', 'BAKERY'],
-  ['פרחים', 'FLOWERS'], ['נעליים', 'SHOES'], ['אופטיקה', 'OPTICS'], ['מתנות', 'GIFTS'],
+  [['CAFE'], 'cafe'], [['BOOKS'], 'books'], [['SHOES'], 'shoes'], [['JEWELRY'], 'jewellery'],
+  [['BAKERY'], 'cafe'], [['PHARMACY'], 'pharmacy'], [['OPTICS'], 'jewellery'], [['FLOWERS'], 'flowers'],
+  [['GIFTS'], 'general'], [['BISTRO'], 'cafe'], [['FALAFEL'], 'cafe'], [['PIZZA'], 'cafe'],
+  [['JUICE BAR'], 'cafe'], [['FASHION'], 'clothing'], [['BOUTIQUE'], 'clothing'], [['TOYS'], 'general'],
+  [['SWEETS'], 'general'], [['MARKET'], 'general'], [['EXCHANGE'], 'jewellery'], [['ESPRESSO'], 'cafe'],
+  [['DELI'], 'cafe'], [['ICE CREAM'], 'cafe'], [['BAGELS'], 'cafe'], [['SOUVENIRS'], 'general'],
+  [['קפה'], 'cafe'], [['ספרים'], 'books'], [['נעליים'], 'shoes'], [['תכשיטים'], 'jewellery'],
+  [['מאפייה'], 'cafe'], [['בית מרקחת'], 'pharmacy'], [['אופטיקה'], 'jewellery'], [['פרחים'], 'flowers'],
+  [['מתנות'], 'general'], [['פלאפל'], 'cafe'], [['מיצים'], 'cafe'], [['אופנה'], 'clothing'],
+  [['ממתקים'], 'general'], [['גלידה'], 'cafe'], [['מסעדה'], 'cafe'], [['בגדים'], 'clothing'],
+  [['קפה', 'CAFE'], 'cafe'], [['ספרים', 'BOOKS'], 'books'], [['תכשיטים', 'JEWELRY'], 'jewellery'], [['מאפייה', 'BAKERY'], 'cafe'],
+  [['פרחים', 'FLOWERS'], 'flowers'], [['נעליים', 'SHOES'], 'shoes'], [['אופטיקה', 'OPTICS'], 'jewellery'], [['מתנות', 'GIFTS'], 'general'],
 ];
+/** Shop type implied by a sign's word cell. */
+export const wordType = (cell) => WORDS[cell][1];
 const FONTS = [
   (px) => `700 ${px}px "Liberation Sans", "Noto Sans Hebrew", Arial, sans-serif`,
   (px) => `700 ${px}px "Liberation Serif", "Noto Serif Hebrew", Georgia, serif`,
@@ -45,7 +53,7 @@ function buildAtlas() {
   g.clearRect(0, 0, W, H);
   const cells = [];
   // text cells: white glyphs on transparent
-  WORDS.forEach((lines, i) => {
+  WORDS.forEach(([lines], i) => {
     const cx = (i % 4) * CELL_W, cy = Math.floor(i / 4) * CELL_H;
     const font = FONTS[i % FONTS.length];
     g.save();
@@ -92,19 +100,9 @@ function buildAtlas() {
   }
   // blade sign faces (full colour, generic pictograms)
   const blades = [];
-  const bladeDraw = [
-    (x, y) => { fill(g, '#f4f1e8', x, y); g.fillStyle = '#1f8a3a'; g.fillRect(x + 98, y + 48, 60, 160); g.fillRect(x + 48, y + 98, 160, 60); },
-    (x, y) => { fill(g, '#1b2b45', x, y); cup(g, x, y, '#e9dfc4'); },
-    (x, y) => { fill(g, '#5a1a1c', x, y); txt(g, 'BAR', x, y, '#e9c46a', 96); },
-    (x, y) => { fill(g, '#f2d24a', x, y); txt(g, 'קפה', x, y, '#1a1a1a', 110); },
-    (x, y) => { fill(g, '#1d1d1f', x, y); ring(g, x, y, '#d8b25a'); },
-    (x, y) => { fill(g, '#24464a', x, y); txt(g, 'HOTEL', x, y, '#f2efe6', 64); },
-    (x, y) => { fill(g, '#c8231c', x, y); txt(g, 'PIZZA', x, y, '#f4f1e8', 66); },
-    (x, y) => { fill(g, '#e8e4da', x, y); txt(g, 'ספרים', x, y, '#1b2b45', 84); },
-  ];
-  bladeDraw.forEach((fn, i) => {
-    const x = i * BLADE_W, y = BLADE_Y;
-    g.save(); g.beginPath(); g.rect(x, y, BLADE_W, BLADE_H); g.clip(); fn(x, y); g.restore();
+  BLADE_FACES.forEach(([fn], i) => {
+    const x = (i % 8) * BLADE_W, y = BLADE_Y + Math.floor(i / 8) * BLADE_H;
+    g.save(); g.beginPath(); g.rect(x, y, BLADE_W, BLADE_H); g.clip(); fn(g, x, y); g.restore();
     blades.push({ u0: (x + 4) / W, v0: 1 - (y + BLADE_H - 4) / H, u1: (x + BLADE_W - 4) / W, v1: 1 - (y + 4) / H });
   });
   const tex = new THREE.CanvasTexture(cv);
@@ -113,6 +111,44 @@ function buildAtlas() {
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   return { tex, cells, plaques, blades };
+}
+
+// Blade sign faces (draw function, shop type they advertise; null = not a shop).
+const BLADE_FACES = [
+  [(g, x, y) => { fill(g, '#f4f1e8', x, y); g.fillStyle = '#1f8a3a'; g.fillRect(x + 98, y + 48, 60, 160); g.fillRect(x + 48, y + 98, 160, 60); }, 'pharmacy'],
+  [(g, x, y) => { fill(g, '#1b2b45', x, y); cup(g, x, y, '#e9dfc4'); }, 'cafe'],
+  [(g, x, y) => { fill(g, '#5a1a1c', x, y); txt(g, 'BAR', x, y, '#e9c46a', 96); }, 'cafe'],
+  [(g, x, y) => { fill(g, '#f2d24a', x, y); txt(g, 'קפה', x, y, '#1a1a1a', 110); }, 'cafe'],
+  [(g, x, y) => { fill(g, '#1d1d1f', x, y); ring(g, x, y, '#d8b25a'); }, 'jewellery'],
+  [(g, x, y) => { fill(g, '#24464a', x, y); txt(g, 'HOTEL', x, y, '#f2efe6', 64); }, null],
+  [(g, x, y) => { fill(g, '#c8231c', x, y); txt(g, 'PIZZA', x, y, '#f4f1e8', 66); }, 'cafe'],
+  [(g, x, y) => { fill(g, '#e8e4da', x, y); txt(g, 'ספרים', x, y, '#1b2b45', 84); }, 'books'],
+  [(g, x, y) => { fill(g, '#e9e4d6', x, y); hanger(g, x, y, '#1d1d1f'); }, 'clothing'],
+  [(g, x, y) => { fill(g, '#3b2a20', x, y); shoe(g, x, y, '#e9dfc4'); }, 'shoes'],
+  [(g, x, y) => { fill(g, '#f2efe6', x, y); flower(g, x, y); }, 'flowers'],
+  [(g, x, y) => { fill(g, '#1f3a2c', x, y); txt(g, 'GIFTS', x, y, '#e9c46a', 62); }, 'general'],
+  [(g, x, y) => { fill(g, '#1b2b45', x, y); txt(g, 'BOOKS', x, y, '#f2efe6', 60); }, 'books'],
+  [(g, x, y) => { fill(g, '#f4f1e8', x, y); txt(g, 'אופנה', x, y, '#5a1a1c', 84); }, 'clothing'],
+  [(g, x, y) => { fill(g, '#24464a', x, y); txt(g, 'OPTICS', x, y, '#f2efe6', 56); }, 'jewellery'],
+  [(g, x, y) => { fill(g, '#c49a42', x, y); txt(g, 'מתנות', x, y, '#1d1d1f', 84); }, 'general'],
+];
+
+function hanger(g, x, y, c) {
+  g.strokeStyle = c; g.lineWidth = 11; g.lineJoin = 'round'; g.lineCap = 'round';
+  g.beginPath(); g.arc(x + 128, y + 82, 18, Math.PI, Math.PI * 2.25); g.stroke();
+  g.beginPath(); g.moveTo(x + 128, y + 104); g.lineTo(x + 48, y + 170); g.lineTo(x + 208, y + 170); g.closePath(); g.stroke();
+}
+function shoe(g, x, y, c) {
+  g.fillStyle = c; g.beginPath();
+  g.moveTo(x + 50, y + 170); g.lineTo(x + 50, y + 92); g.lineTo(x + 102, y + 92); g.quadraticCurveTo(x + 112, y + 128, x + 150, y + 134);
+  g.quadraticCurveTo(x + 214, y + 142, x + 210, y + 170); g.closePath(); g.fill();
+  g.fillRect(x + 46, y + 176, 168, 10);
+}
+function flower(g, x, y) {
+  g.strokeStyle = '#2d6a35'; g.lineWidth = 10; g.beginPath(); g.moveTo(x + 128, y + 128); g.lineTo(x + 128, y + 212); g.stroke();
+  g.fillStyle = '#c8231c';
+  for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; g.beginPath(); g.arc(x + 128 + Math.cos(a) * 34, y + 98 + Math.sin(a) * 34, 26, 0, Math.PI * 2); g.fill(); }
+  g.fillStyle = '#f2d24a'; g.beginPath(); g.arc(x + 128, y + 98, 22, 0, Math.PI * 2); g.fill();
 }
 
 function roundRect(g, x, y, w, h, r) {
@@ -215,27 +251,28 @@ export function signDesign(seed, kindHint) {
  * Fascia sign of width w and height h centred at the local origin (x across, y up), the
  * wall face at z = 0. Adds to the `board` and `text` batches via callbacks.
  */
-export function fasciaTpls(design, w, h, q) {
+export function fasciaTpls(design, w, h, q, z0 = 0.055) {
+  // stand-off clear of the ground-floor relief (lintels, keystones, rustication: ≤ 5 cm)
   const tb = new Tpl(), tt = new Tpl();
   const cell = inkCell(atlas.cells[design.cell]);
   let zText;
   if (design.type === 'board') {
     const d = 0.05, b = 0.03;
-    tb.box(-w / 2, -h / 2, 0.02, w / 2, h / 2, 0.02 + d, 1 | 4 | 8 | 16 | 32, 0.85, 0.95);
+    tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.85, 0.95);
     if (q >= 0.5) {
       // raised moulded border
-      tb.box(-w / 2, h / 2 - b, 0.02 + d, w / 2, h / 2, 0.02 + d + 0.012, 1 | 16 | 32, 0.9, 1);
-      tb.box(-w / 2, -h / 2, 0.02 + d, w / 2, -h / 2 + b, 0.02 + d + 0.012, 1 | 16 | 32, 0.8, 0.9);
-      tb.box(-w / 2, -h / 2 + b, 0.02 + d, -w / 2 + b, h / 2 - b, 0.02 + d + 0.012, 1 | 8, 0.85, 0.95);
-      tb.box(w / 2 - b, -h / 2 + b, 0.02 + d, w / 2, h / 2 - b, 0.02 + d + 0.012, 1 | 4, 0.85, 0.95);
+      tb.box(-w / 2, h / 2 - b, z0 + d, w / 2, h / 2, z0 + d + 0.012, 1 | 16 | 32, 0.9, 1);
+      tb.box(-w / 2, -h / 2, z0 + d, w / 2, -h / 2 + b, z0 + d + 0.012, 1 | 16 | 32, 0.8, 0.9);
+      tb.box(-w / 2, -h / 2 + b, z0 + d, -w / 2 + b, h / 2 - b, z0 + d + 0.012, 1 | 8, 0.85, 0.95);
+      tb.box(w / 2 - b, -h / 2 + b, z0 + d, w / 2, h / 2 - b, z0 + d + 0.012, 1 | 4, 0.85, 0.95);
     }
-    zText = 0.02 + d + 0.002;
+    zText = z0 + d + 0.002;
   } else if (design.type === 'lightbox') {
     const d = 0.13;
-    tb.box(-w / 2, -h / 2, 0.02, w / 2, h / 2, 0.02 + d, 1 | 4 | 8 | 16 | 32, 0.95, 1);
-    zText = 0.02 + d + 0.002;
+    tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.95, 1);
+    zText = z0 + d + 0.002;
   } else {
-    zText = 0.035;
+    zText = z0 + 0.02;   // individual letters on stand-off pins
   }
   const th = h * (design.type === 'letters' ? 0.95 : 0.78);
   const tw = Math.min(w * 0.92, th * cell.aspect);
@@ -244,10 +281,18 @@ export function fasciaTpls(design, w, h, q) {
   return { board: design.board !== null ? tb.bake() : null, text: tt.bake() };
 }
 
-/** Double-sided projecting blade sign with an iron bracket; origin on the wall face. */
-export function bladeTpls(seed, w, h, q) {
+/** Blade face index advertising shop type `type` (null: no shop below, e.g. a hotel). */
+export function bladeFace(seed, type) {
   const r = new RNG(seed);
-  const face = atlas.blades[r.int(0, atlas.blades.length - 1)];
+  const ok = [];
+  BLADE_FACES.forEach(([, t], i) => { if (t === type) ok.push(i); });
+  if (!ok.length) BLADE_FACES.forEach(([, t], i) => { if (t === null) ok.push(i); });
+  return ok[r.int(0, ok.length - 1)];
+}
+
+/** Double-sided projecting blade sign with an iron bracket; origin on the wall face. */
+export function bladeTpls(faceIndex, w, h, q) {
+  const face = atlas.blades[faceIndex];
   const tb = new Tpl(), tt = new Tpl(), tm = new Tpl();
   const z0 = 0.18, z1 = z0 + w, th = 0.06;
   // panel edge (board batch), faces carry the atlas picture (text batch)

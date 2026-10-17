@@ -25,10 +25,10 @@ export const SU = {
 };
 
 // Lit bowl radiance at full night (scene units). Dusk exposure is about three orders of
-// magnitude above midday, so this keeps the opal bowl a bright warm cream after tone
-// mapping instead of a clipped white disc.
-export const LAMP_RADIANCE = 0.0085;
-const WARM = 'vec3(1.0, 0.72, 0.45)'; // ~2900 K, linear
+// magnitude above midday, so this keeps the bowl a bright warm cream after tone mapping
+// (AgX desaturates towards white) instead of a clipped white disc.
+export const LAMP_RADIANCE = 0.0024;
+const WARM = 'vec3(1.0, 0.47, 0.11)'; // ~2700 K lamp seen through cream glass, linear
 
 export function updateScreenUniforms(app, lampRadiance = LAMP_RADIANCE) {
   const cam = app.camera;
@@ -78,7 +78,8 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         uniform float uMinPx;
         varying vec3 vWear;
         varying vec3 vLocal;
-        varying float vInflate;`)
+        varying float vInflate;
+        varying float vSeed;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
       {
         vec4 cwp = vec4(transformed, 1.0);
@@ -92,6 +93,11 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         vInflate = max(1.0, chalf / max(aTube, 1e-4));
         vWear = aWear;
         vLocal = position;
+        // per-instance offset of the weathering noise, so no two poles rust alike
+        vSeed = 0.0;
+        #ifdef USE_INSTANCING
+          vSeed = fract(dot(instanceMatrix[3].xyz, vec3(0.1731, 0.0, 0.2913))) * 61.0;
+        #endif
       }`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
@@ -99,6 +105,7 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         varying vec3 vWear;
         varying vec3 vLocal;
         varying float vInflate;
+        varying float vSeed;
         ${NOISE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         float catRust = 0.0;
@@ -106,16 +113,20 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         {
           // rust blooms where the weights allow (foot of the pole, collar edges, scroll
           // tips), with a darker lifted-paint halo; run-off streaks under the ledges
-          vec3 q = vLocal * 11.0;
+          vec3 q = vLocal * 11.0 + vSeed;
           float n = 0.62 * catN(q) + 0.28 * catN(q * 2.7 + 3.1) + 0.1 * catN(q * 7.3);
-          float thr = 1.0 - 0.46 * vWear.x;
-          catRust = smoothstep(thr, thr + 0.05, n) * step(0.02, vWear.x);
-          float halo = smoothstep(thr - 0.09, thr, n) * step(0.02, vWear.x);
-          vec3 rustCol = vec3(0.17, 0.075, 0.035) * (0.65 + 0.7 * catN(q * 4.1 + 7.0));
+          float on = step(0.02, vWear.x);
+          float thr = 1.0 - 0.55 * vWear.x;
+          catRust = smoothstep(thr, thr + 0.05, n) * on;
+          float halo = smoothstep(thr - 0.09, thr, n) * on;
+          // chipped paint showing the grey primer, around the rust and on worn edges
+          float chip = smoothstep(0.74, 0.77, catN(q * 3.3 + 11.0)) * on * smoothstep(0.15, 0.6, vWear.x);
+          vec3 rustCol = vec3(0.2, 0.09, 0.04) * (0.6 + 0.8 * catN(q * 4.1 + 7.0));
           diffuseColor.rgb *= 1.0 - 0.22 * halo;
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.195, 0.18), chip * (1.0 - catRust));
           diffuseColor.rgb = mix(diffuseColor.rgb, rustCol, catRust);
           float ang = atan(vLocal.z, vLocal.x);
-          float st = catN(vec3(ang * 9.0, vLocal.y * 1.6, 0.5)) * catN(vec3(ang * 23.0, vLocal.y * 0.7, 2.5));
+          float st = catN(vec3(ang * 9.0, vLocal.y * 1.6, 0.5 + vSeed)) * catN(vec3(ang * 23.0, vLocal.y * 0.7, 2.5 + vSeed));
           diffuseColor.rgb *= 1.0 - 0.3 * vWear.y * smoothstep(0.12, 0.42, st);
         }` : ''}
         ${coverage ? 'diffuseColor.a = 1.0 / vInflate;' : ''}`)
@@ -123,7 +134,7 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         #include <normal_fragment_begin>`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         // hood underside lit by its own lamp at night
-        totalEmissiveRadiance += vWear.z * uLamp * 0.5 * diffuseColor.rgb * ${WARM};`);
+        totalEmissiveRadiance += vWear.z * uLamp * 0.8 * diffuseColor.rgb * ${WARM};`);
   });
 }
 
@@ -185,7 +196,7 @@ export function makeWireMaterial(coverage = false) {
  *  showing through where we look straight in. At night an evenly lit warm diffuser at
  *  SU.uLamp. Geometry uv = (angle around the bowl axis, height below the hang point). */
 export function makeGlassMaterial(M) {
-  const m = M.get('glass.lamp', { catenaryLantern: true, color: [0.4, 0.385, 0.34], roughness: 0.15, emissive: [0, 0, 0] });
+  const m = M.get('glass.lamp', { catenaryLantern: true, color: [0.56, 0.55, 0.5], roughness: 0.1, emissive: [0, 0, 0] });
   return chain(m, 'catGlass2', (shader) => {
     shader.uniforms.uLamp = SU.uLamp;
     shader.vertexShader = shader.vertexShader
@@ -213,12 +224,15 @@ export function makeGlassMaterial(M) {
         }
         float gF = clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);
         float gY = clamp((vGlass.y - (${GLASS_TOP.toFixed(3)})) / (${(GLASS_BOTTOM - GLASS_TOP).toFixed(3)}), 0.0, 1.0); // 0 top .. 1 tip
-        // looking through the clear bowl: shaded hood interior and the lamp socket
-        diffuseColor.rgb *= mix(1.0, 0.3, gF * gF * (1.0 - 0.45 * gY));`)
+        // looking through the clear bowl: the shaded hood interior darkens the upper part,
+        // the frosted lamp shows as a soft lighter core, the lower part passes the light
+        // of the paving below
+        float gBulb = exp(-pow((gY - 0.36) / 0.16, 2.0)) * gF * gF * gF;
+        diffuseColor.rgb *= mix(1.0, 0.32, gF * gF * (1.0 - 0.85 * gY)) + 0.55 * gBulb;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         // lit diffuser: nearly even, a little brighter where it faces the eye and around
         // the lamp in the upper half of the bowl
-        totalEmissiveRadiance = uLamp * ${WARM} * (0.85 + 0.3 * gF) * (1.0 + 0.3 * exp(-pow((gY - 0.35) / 0.22, 2.0)) * gF);`);
+        totalEmissiveRadiance = uLamp * ${WARM} * (0.85 + 0.3 * gF) * (1.0 + 0.8 * exp(-pow((gY - 0.33) / 0.2, 2.0)) * gF * gF);`);
   });
 }
 
@@ -278,7 +292,7 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
         #endif`)
       .replace('#include <color_vertex>', `#include <color_vertex>
         #ifdef USE_INSTANCING_COLOR
-          vColor = vec3(1.0); // instance colour holds data, not a tint
+          vColor.xyz = vec3(1.0); // instance colour holds data, not a tint
         #endif`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <map_fragment>', `

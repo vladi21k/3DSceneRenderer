@@ -18,6 +18,8 @@ const RAIL_HEAD = { roughness: 1.9 };
 const RAIL_LIP = { color: [0.6, 0.56, 0.5], roughness: 2.7 };
 // rust on the field-side bevel and lip edge: dark, dirty brown rather than fresh orange
 const RAIL_RUST = { color: [0.62, 0.68, 0.78] };
+// flangeway: compacted sand, rust scale and grime (browner than the library grime)
+const RAIL_GROOVE = { color: [1.65, 1.28, 0.98] };
 
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
@@ -44,7 +46,7 @@ const street = {
       asphalt: M.get('asphalt', { vertexColors: true }),
       grout: M.get('asphalt', { vertexColors: true }),
       tactile: M.get('paving.tactile', { vertexColors: true }),
-      rail: { head: M.get('rail.head', RAIL_HEAD), lip: M.get('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove'), seal: M.get('rubber') },
+      rail: { head: M.get('rail.head', RAIL_HEAD), lip: M.get('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove', RAIL_GROOVE), seal: M.get('rubber') },
       lines,
       details,
     };
@@ -52,13 +54,13 @@ const street = {
     const layer = (name, k, extra = {}) => M.get(name, { polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -2 * k, ...extra });
     mats.inlay = {
       grout: layer('asphalt', 0.5, { color: [1.5, 1.5, 1.53] }),   // mortar along diverging rails
-      plate: layer('rail.head', 1, { color: [0.4, 0.39, 0.37], roughness: 3.2 }),   // dull cast steel
+      plate: layer('rail.groove', 1, { color: [1.55, 1.5, 1.45] }),   // grimy cast steel blocks
       seal: layer('rubber', 2),
       side: layer('rail.side', 3, RAIL_RUST),
       head: layer('rail.head', 3, RAIL_HEAD),
       lip: layer('rail.head', 3, RAIL_LIP),
-      groove: layer('rail.groove', 4),
-      flange: layer('rail.groove', 5),
+      groove: layer('rail.groove', 4, RAIL_GROOVE),
+      flange: layer('rail.groove', 5, RAIL_GROOVE),
       check: layer('rail.head', 5, RAIL_HEAD),
       tongueSide: layer('rail.side', 6, RAIL_RUST),
       tongueHead: layer('rail.head', 6, RAIL_HEAD),

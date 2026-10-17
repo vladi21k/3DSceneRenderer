@@ -25,8 +25,8 @@ PER_BASE = {
     'child': ['hair_short', 'hair_long', 'hair_ponytail', 'hair_bob', 'cap', 'backpack'],
 }
 # triangles per LOD; 0 = the part is dropped at that LOD (too small to matter on screen)
-LOD_TRIS = {'hair': (1400, 300, 50, 16), 'long': (2200, 450, 80, 26), 'beard': (900, 180, 24, 0),
-            'hat': (1200, 240, 40, 16), 'bag': (700, 150, 24, 12)}
+LOD_TRIS = {'hair': (1400, 200, 50, 16), 'long': (2200, 300, 80, 26), 'beard': (900, 110, 24, 0),
+            'hat': (1200, 150, 40, 16), 'bag': (700, 90, 24, 12)}
 
 # cranium of the head sculpt (humans_body.head_sdf)
 CR_C = np.array([0.0, 0.014, 0.006])

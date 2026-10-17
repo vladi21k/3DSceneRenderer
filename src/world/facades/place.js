@@ -5,10 +5,11 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, lin } from './geo.js';
-import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen } from './windows.js';
-import { shopLayout, shopFrameTpl, shopGlassTpl, shopShutterTpl, SHOP_FW } from './shops.js';
+import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
+import { shopLayout, shopFrameTpl, shopGlassTpl, shopShutterTpl, shopRecessTpl, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpl, doorGlassTpl, doorMetalTpl } from './doors.js';
-import { signDesign, fasciaTpls, bladeTpls, plaqueTpl, signColor } from './signs.js';
+import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
+import { winCode, shopTypeIndex } from './interior.js';
 import { slopeAwning, domeAwning, awningColors } from './awnings.js';
 import { crownY, isArched, halfWidthAt, outlinePts } from './outline.js';
 import { paint } from './kit.js';
@@ -20,6 +21,14 @@ const SHOP_FRAMES = [0x1e1f20, 0x34373a, 0x2a3d30, 0x3b2f25, 0x585c5d, 0xcfcdc5,
 const DOOR_COLORS = { brown: 0x4a2e1c, varnish: 0x5e3b20, green: 0x283f30, blue: 0x2b5068, black: 0x1d1d1e, red: 0x561c19 };
 const ROLLER = [0xb9b7b0, 0xd4d1c8, 0x8c8e8c, 0xc9bfa8];
 const BRASS = lin(0xb08a45), BLACK_IRON = [0.035, 0.035, 0.037];
+/** Shops without a sign: what they sell. */
+const SHOP_MIX = [['clothing', 0.2], ['general', 0.18], ['cafe', 0.14], ['jewellery', 0.1], ['pharmacy', 0.05], ['shoes', 0.11], ['books', 0.11], ['flowers', 0.11]];
+
+/**
+ * Depth available behind the infill plane before the back of the dark box with which
+ * the buildings close every opening (published per opening when it differs).
+ */
+export const backDepth = (o) => o.backDepth ?? 0.4;
 
 /** Matrix for an opening's local frame. */
 function openingMatrix(frame, o, out = _m) {
@@ -31,14 +40,14 @@ function wallMatrix(frame, u, v, out = _m) {
 }
 
 /** Interior glass attributes for an opening with glass at local depth zRef. */
-export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, zRef = -0.012, lit = o.lit }) {
+export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 0, zRef = -0.012, lit = o.lit }) {
   const winY0 = o.y - roomY0, winY1 = winY0 + o.h;
   const baseH = roomY0 - ctx.plan.groundAt(o.uc);
   const hw = o.w / 2;
   return {
     aRoomP: (k, sp, a, i) => { a[i] = W / 2 + sp[k * 3]; a[i + 1] = winY0 + sp[k * 3 + 1]; a[i + 2] = Math.max(0, zRef - sp[k * 3 + 2]); a[i + 3] = hw; },
     aRoomS: [W, H, D, baseH],
-    aWin: [seed, lit, drape, kind],
+    aWin: [seed, lit, drape, winCode(kind, false, type)],
     aFac: [ctx.angle, Math.floor(ctx.streetW) + Math.min(0.95, o.recess), winY0, winY1], // street width + recess packed
     aFrame: [0, 0, 0, 0],
   };
@@ -53,8 +62,13 @@ function buildWindow(kit, ctx, o) {
   const fc = ctx.frameRGB, k = 0.9 + r.next() * 0.16;
   // summer: some casements stand open, swung into the room
   const ro = r.next();
-  const open = ctx.q >= 0.5 && o.shutters !== 'closed' && canOpen(o, v) && ro < (o.kind === 'balconyDoor' ? 0.12 : 0.08)
+  let open = ctx.q >= 0.5 && o.shutters !== 'closed' && canOpen(o, v) && ro < (o.kind === 'balconyDoor' ? 0.12 : 0.08)
     ? { side: ro < 0.04 ? -1 : 1, angle: Math.round((0.9 + r.next() * 0.55) * 10) / 10 } : null;
+  if (open) {
+    // the leaf swings into the dark box behind the opening: keep it inside
+    const lim = Math.floor(openLimit(o, v, backDepth(o)) * 10) / 10;
+    if (lim < 0.35) open = null; else open.angle = Math.min(open.angle, lim);
+  }
   const jt = joineryTpl(o, v, ctx.q, open);
   if (jt) kit.get('frame').add(jt, m, fc[0] * k, fc[1] * k, fc[2] * k);
   const floor = plan.floors[o.floor];
@@ -72,7 +86,7 @@ function buildWindow(kit, ctx, o) {
   if (!jt) ga.aFrame = [fc[0] * k, fc[1] * k, fc[2] * k, 1]; // far range: procedural casing
   const gt = glassTpl(o, v, ctx.q, open);
   kit.get('glass').add(gt.glass, m, 1, 1, 1, ga);
-  if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, 4] }); // no glass: open aperture
+  if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, winCode(0, true)] }); // no glass: open aperture
   // external roller shutters on flat heads (modern and some Mandate facades)
   const rollerP = v.type === 'alu' ? 0.75 : plan.style.era === 'mandate' ? 0.18 : 0.04;
   if (!o.shutters && o.top === 'flat' && o.recess > 0.15 && r.next() < rollerP) {
@@ -144,14 +158,29 @@ function buildWallSign(kit, ctx, ws) {
   }
 }
 
-function buildBlade(kit, ctx, s) {
+/**
+ * Projecting blade sign on the pier at s.u, hung clear of first-floor balconies (slab
+ * and corbels) and of the awnings either side; its face advertises the nearest shop.
+ */
+function buildBlade(kit, ctx, s, shopTypes) {
   const plan = ctx.plan;
-  let y = s.y;
   const f1 = plan.floors[1];
-  const blocked = f1 && (plan.balconies || []).some((b) => b.floor === 1 && s.u > b.u0 - 0.9 && s.u < b.u1 + 0.9);
-  if (blocked) y = f1.y - 0.7 - s.h;
-  if (y - plan.groundAt(s.u) < 2.5) return;
-  const tp = bladeTpls(s.seed, s.w, s.h, ctx.q);
+  let top = f1 ? f1.y + 0.8 : plan.totalHeight - 0.5;   // top of sign + bracket
+  for (const b of plan.balconies || []) {
+    if (b.floor === 1 && s.u > b.u0 - 0.9 && s.u < b.u1 + 0.9) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.55);
+  }
+  let y = Math.min(s.y, top - s.h - 0.15);
+  let near = null, nd = 4;
+  for (const o of plan.openings) {
+    if (o.floor !== 0) continue;
+    if (o.kind === 'shop' && Math.abs(o.uc - s.u) < nd) { nd = Math.abs(o.uc - s.u); near = o; }
+    if (!o.awning || Math.abs(s.u - o.uc) > o.w / 2 + 0.45) continue;
+    // an awning beside the pier: hang the sign above its cassette
+    const awTop = o.y + crownY(o) + 0.35, awBot = o.y + crownY(o) - 1.2;
+    if (y < awTop && y + s.h + 0.15 > awBot) y = awTop;
+  }
+  if (y + s.h + 0.15 > top + 1e-3 || y - plan.groundAt(s.u) < 2.5) return;
+  const tp = bladeTpls(bladeFace(s.seed, near ? shopTypes.get(near.id) : null), s.w, s.h, ctx.q);
   const m = wallMatrix(ctx.frame, s.u, y);
   const r = new RNG(s.seed);
   const edge = lin(r.pick([0x1d1d1f, 0x2a2a2c, 0xd8b25a, 0xe8e4da]));
@@ -162,10 +191,10 @@ function buildBlade(kit, ctx, s) {
 }
 
 // ------------------------------------------------------------------ shops
-function buildShop(kit, ctx, o, signInfo) {
+function buildShop(kit, ctx, o, signInfo, type) {
   const plan = ctx.plan;
   const r = RNG.from(o.id, 'shop');
-  const L = shopLayout(o, r);
+  const L = shopLayout(o, r, backDepth(o));
   if (signInfo && signInfo.mode === 'head') {
     // flat heads: a sign band ~0.55 m tall under the lintel, display glass below it
     if (!isArched(o)) { L.yT = Math.max(2.5, o.h - SHOP_FW - 0.62); L.doorH = Math.min(L.doorH, L.yT - 0.06); }
@@ -180,8 +209,11 @@ function buildShop(kit, ctx, o, signInfo) {
   const W = Math.max(4, o.w + 1.6);
   const H = Math.max(3, f0.y + f0.h - roomY0 - 0.3);
   const D = 6.5 + r.next() * 3;
-  kit.get('glass').add(shopGlassTpl(o, L), m, 1, 1, 1,
-    glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, zRef: -0.02, lit: o.lit }));
+  kit.get('glass').add(shopGlassTpl(o, L, ctx.q), m, 1, 1, 1,
+    glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit }));
+  // floor of a recessed entrance (the buildings' dark box behind it is unlit)
+  const rt = ctx.q >= 0.5 ? shopRecessTpl(o, L) : null;
+  if (rt) { const tint = plan.style.tint; kit.get('stone').add(rt, m, tint[0] * 0.8, tint[1] * 0.78, tint[2] * 0.74); }
   // roller-shutter box and guides
   if (L.box) {
     const rc = lin(r.pick(ROLLER));
@@ -302,7 +334,7 @@ function buildDoor(kit, ctx, o) {
   const dc = lin(DOOR_COLORS[L.color]);
   const k = 0.9 + r.next() * 0.15;
   kit.get('door').add(doorTpl(o, L, ctx.q), m, dc[0] * k, dc[1] * k, dc[2] * k);
-  kit.get('glass').add(doorGlassTpl(o, L), m, 1, 1, 1,
+  kit.get('glass').add(doorGlassTpl(o, L, ctx.q), m, 1, 1, 1,
     glassAttrs(ctx, o, { W: 2.6, H: 3.4, D: 3.5, roomY0: o.y, seed: r.next(), drape: 0, kind: 2, zRef: -0.015, lit: Math.min(o.lit ?? 0.5, 0.35) }));
   const metal = doorMetalTpl(o, L, ctx.q);
   if (metal.grille) kit.get('metal').add(metal.grille, m, ...BLACK_IRON);
@@ -337,6 +369,13 @@ export function* buildFront(kit, ctx) {
   ctx.frameRGB = paint(ctx.joinery.type === 'alu' && /green|teal/.test(plan.style.frameColor) ? 'white' : plan.style.frameColor);
   ctx.shutterRGB = paint(plan.style.shutterColor);
   const signs = planSigns(ctx);
+  // what each shop sells: the word on its sign, else a draw (the blade signs follow it)
+  const shopTypes = new Map();
+  for (const o of plan.openings) {
+    if (o.kind !== 'shop') continue;
+    const si = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
+    shopTypes.set(o.id, si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
+  }
   // a few facades (hotels, pensions) carry canvas hoods over the lower upper-floor windows
   const hr = RNG.from(plan.seed, 'hotel');
   const hotel = plan.style.era !== 'modern' && !plan.isReturn && hr.chance(0.08);
@@ -346,10 +385,10 @@ export function* buildFront(kit, ctx) {
       buildWindow(kit, ctx, o);
       if (hotel && o.kind === 'window' && !o.shutters && !o.ac && o.floor >= 1 && o.floor <= 2) buildUpperAwning(kit, ctx, o);
     }
-    else if (o.kind === 'shop') buildShop(kit, ctx, o, signs.byOpening.get(o.id));
+    else if (o.kind === 'shop') buildShop(kit, ctx, o, signs.byOpening.get(o.id), shopTypes.get(o.id));
     else if (o.kind === 'door') buildDoor(kit, ctx, o);
     yield;
   }
   for (const ws of signs.wall) buildWallSign(kit, ctx, ws);
-  for (const s of plan.signs || []) if (s.kind === 'blade') buildBlade(kit, ctx, s);
+  for (const s of plan.signs || []) if (s.kind === 'blade') buildBlade(kit, ctx, s, shopTypes);
 }

@@ -19,12 +19,12 @@ import { HumansTest } from './humans/test.js';
 // "look" row (appearance.js).
 
 const BASES = ['male', 'female', 'child'];
-const LOD_PX = [220, 72, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
+const LOD_PX = [220, 84, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
 const SKIRT_GRID = [[48, 22], [20, 10], [10, 5], [8, 3]];
 const BONE_W = NUM_BONES * 3;             // texels per bone row (3x4 matrix per bone)
 const MAT_N = NUM_BONES * 12;
 const SKIRT_ID = 250;                     // part id of the runtime skirt / coat shell
-const SPLIT_LODS = 1;                     // the nearest LOD draws body and each worn part separately (no idle variants)
+const SPLIT_LODS = 1;                     // the nearest LOD draws body and each worn part separately (nothing collapsed)
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
@@ -91,7 +91,10 @@ const humans = {
         if (li < SPLIT_LODS) {
           for (const [pid, r] of partRanges(g)) byPart.set(pid, this._addDraw(B, subGeometry(g, r.start, r.count), mat, depth, `${li}.p${pid}`));
         } else {
-          byPart.set(-1, this._addDraw(B, g, mat, depth, `${li}`));
+          const d = this._addDraw(B, g, mat, depth, `${li}`);
+          // the farthest figures (< ~26 px tall) would only add few-pixel blobs to the coarse cascades
+          d.mesh.castShadow = li < 3;
+          byPart.set(-1, d);
         }
         B.drawAt.push(byPart);
       }
@@ -130,12 +133,13 @@ const humans = {
   set(i, o) {
     const s = this.slots[i];
     if (!s) return;
-    if (o.x !== undefined) { s.x = o.x; s.y = o.y; s.z = o.z; }
-    if (o.heading !== undefined) s.heading = o.heading;
-    if (o.speed !== undefined) s.speed = o.speed;
-    if (o.phase !== undefined) s.phase = o.phase;
-    if (o.pose !== undefined) s.pose = o.pose;
-    if (o.look !== undefined) s.look = o.look;
+    // non-finite inputs would poison the bone matrices: keep the last good value
+    if (o.x !== undefined && Number.isFinite(o.x + o.y + o.z)) { s.x = o.x; s.y = o.y; s.z = o.z; }
+    if (Number.isFinite(o.heading)) s.heading = o.heading;
+    if (Number.isFinite(o.speed)) s.speed = Math.max(0, o.speed);
+    if (Number.isFinite(o.phase)) s.phase = o.phase;
+    if (o.pose !== undefined) s.pose = o.pose | 0;
+    if (Number.isFinite(o.look)) s.look = o.look;
     if (o.appearance !== undefined && o.appearance !== s.appearance) {
       s.appearance = o.appearance;
       s.a = null;
@@ -211,9 +215,17 @@ const humans = {
       if (!s.a) {
         s.a = this.appearanceOf(s.appearance);
         writeRow(this.lookTex.image.data, i, s.a);
+        s.bagHidden = false;
         lookDirty = true;
       }
       const a = s.a;
+      // seated people put their shopping bags and backpacks down
+      const hideBag = s.pose === 2 && a.bagPart > 0 && (a.bagPart === this.parts.shopping || a.bagPart === this.parts.backpack);
+      if (hideBag !== s.bagHidden) {
+        this.lookTex.image.data[(i * ROW_TEXELS + 11) * 4 + 3] = (hideBag ? 0 : a.bagPart) + a.skirtPart * 256;
+        s.bagHidden = hideBag;
+        lookDirty = true;
+      }
       const B = this.bases[a.base];
       const sc = a.height / B.info.H;
       _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
@@ -235,7 +247,7 @@ const humans = {
         if (a.hairPart) pushDraw(at.get(a.hairPart), i);
         if (a.beardPart) pushDraw(at.get(a.beardPart), i);
         if (a.hatPart) pushDraw(at.get(a.hatPart), i);
-        if (a.bagPart) pushDraw(at.get(a.bagPart), i);
+        if (a.bagPart && !s.bagHidden) pushDraw(at.get(a.bagPart), i);
         if (a.skirtPart) pushDraw(at.get(a.skirtPart), i);
       }
       n++;
@@ -274,7 +286,7 @@ const humans = {
   _pose(i, s, a, B, sc, out) {
     // small far figures re-blend their clips every other frame (staggered); the
     // transform below is still applied every frame so camera motion stays exact
-    const M = this._model(i);
+    const M = s.model || (s.model = new Float32Array(MAT_N));
     const frame = this.app.frame;
     if (s.lod < 2 || ((frame + i) & 1) === 0 || s.blendFrame < frame - 2 || s.blendBase !== B) {
       this._blend(s, a, B, sc, M);
@@ -297,16 +309,6 @@ const humans = {
       out[o + 7] += y0;
       out[o + 11] += s.z;
     }
-  },
-
-  /** Model-space pose cache for slot i (bone matrices before the figure transform). */
-  _model(i) {
-    if (!this.models || this.models.length < (i + 1) * MAT_N) {
-      const m = new Float32Array(Math.max(512, this.capacity) * MAT_N);
-      if (this.models) m.set(this.models);
-      this.models = m;
-    }
-    return this.models.subarray(i * MAT_N, (i + 1) * MAT_N);
   },
 
   _blend(s, a, B, sc, M) {
@@ -332,6 +334,21 @@ const humans = {
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
     }
+  },
+
+  /** Submitted geometry for the main pass (draws, instances, triangles), for profiling. */
+  stats() {
+    let draws = 0, inst = 0, tris = 0;
+    for (const B of Object.values(this.bases || {})) {
+      for (const d of B.draws) {
+        if (!d.count) continue;
+        draws++;
+        inst += d.count;
+        const g = d.mesh.geometry;
+        tris += d.count * Math.min(g.drawRange.count, g.index.count) / 3;
+      }
+    }
+    return { draws, instances: inst, triangles: Math.round(tris), figures: this.perf.figures, cpuMs: +this.perf.ms.toFixed(3) };
   },
 
   dispose() {},
@@ -373,7 +390,7 @@ function overrideBones(M, F, bones, w) {
 
 function newSlot() {
   return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,
-    lod: -1, blendFrame: -10, blendBase: null };
+    lod: -1, blendFrame: -10, blendBase: null, model: null, bagHidden: false };   // model: pose before the figure transform
 }
 
 function newRowAttr(n) {

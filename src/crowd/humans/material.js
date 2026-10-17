@@ -310,8 +310,9 @@ vec3 hTopColor(vec3 r, vec4 L2, vec4 L3, float seed) {
     float a = hBand(r.x + 0.5, p, 0.4), b = hBand(r.y, p, 0.4);
     col = mix(col, L3.rgb, 0.45 * a + 0.45 * b);
   } else if (pat == 4.0) {
-    float n = hNoise(r * 38.0 + seed * 10.0) * 0.7 + hNoise(r * 90.0) * 0.3;
-    col = mix(col, L3.rgb, hAA(n - 0.62));
+    // small all-over print (floral-like motifs), softened so it reads as fabric not camouflage
+    float n = hNoise(r * 80.0 + seed * 10.0) * 0.65 + hNoise(r * 170.0 + 3.0) * 0.35;
+    col = mix(col, L3.rgb, 0.85 * hAA(n - 0.6));
   } else if (pat == 5.0) {
     float y0 = uTorso.z - 0.30 * sc, y1 = uTorso.z - 0.09 * sc;
     float e = min(min(r.y - y0, y1 - r.y), 0.085 * sc - abs(r.x));
@@ -346,8 +347,26 @@ const FRAG_SURFACE = /* glsl */`
   float sc = uHead.w;
   vec3 q = (r - uHead.xyz) / sc;          // head-local coordinates
   float skinAmt = 0.0;
-  // ---- skin with subtle mottling and warm extremities
+  // ---- skin with subtle mottling and warm extremities (knuckles, elbows, knees)
   vec3 skinCol = skin * (0.94 + 0.12 * hNoise(r * 55.0));
+  float skinRough = 0.48;
+  if (part < 0.5) {
+    float warmX = 0.0;
+    if (region == 6.0) warmX = 0.35;
+    if (region == 4.0 || region == 5.0) {
+      float sgn = sign(r.x);
+      vec3 el = vec3(sgn * uShoulder.x, uShoulder.y, uShoulder.z) + vec3(sgn * uArm.x, -uArm.y, 0.0) * uShoulder.w * 0.56;
+      warmX = 0.5 * smoothstep(0.05, 0.0, length(r - el - vec3(0.0, 0.0, 0.03)));
+    }
+    if (region == 7.0 || region == 8.0) warmX = 0.4 * smoothstep(0.06, 0.0, length(vec2(r.y - uLeg.z - 0.01, r.z - uLeg2.w + 0.045)));
+    skinCol *= mix(vec3(1.0), vec3(1.02, 0.86, 0.84), warmX);
+    // oilier T-zone on the face
+    if (region == 3.0 || region == 18.0) {
+      vec3 qq = (r - uHead.xyz) / uHead.w;
+      float tz = smoothstep(0.03, 0.0, abs(qq.x)) * smoothstep(-0.05, -0.02, qq.y) + smoothstep(0.04, 0.06, qq.y) * smoothstep(0.09, 0.07, qq.y) * smoothstep(-0.06, -0.08, qq.z);
+      skinRough = mix(0.5, 0.36, clamp(tz, 0.0, 1.0));
+    }
+  }
   if (part < 0.5) {
     vec3 g = hGarment(r, region, L2, L4, L8);
     float cover = hAA(g.y);
@@ -488,9 +507,9 @@ const FRAG_SURFACE = /* glsl */`
         lens = max(lens, rim);
         float bridge = hAA(0.0016 - abs(q.y - 0.007)) * hAA(0.011 - ax) * step(q.z, -0.07);
         float gl = max(lens, bridge);
-        col = mix(col, vec3(0.012, 0.013, 0.015), gl);
-        rough = mix(rough, 0.22, gl);
-        hSpec = mix(hSpec, 0.9, gl);
+        col = mix(col, vec3(0.010, 0.011, 0.013), gl);
+        rough = mix(rough, 0.35, gl);
+        hSpec = mix(hSpec, 0.3, gl);    // tinted lenses: a faint sky sheen, never a white mirror
         skinAmt *= 1.0 - gl;
       }
     }
@@ -566,7 +585,7 @@ const FRAG_SURFACE = /* glsl */`
   // wear and grime near the ground
   col *= 1.0 - 0.10 * smoothstep(0.25, 0.0, r.y) * (0.5 + 0.5 * L9.w) * (1.0 - skinAmt);
   hSkinM = skinAmt;
-  if (skinAmt > 0.0) { rough = mix(rough, 0.46 - 0.06 * step(2.5, region) * step(region, 3.5), skinAmt); hSpec = mix(hSpec, 0.7, skinAmt); hSheenC *= 1.0 - skinAmt; }
+  if (skinAmt > 0.0) { rough = mix(rough, skinRough, skinAmt); hSpec = mix(hSpec, 0.7, skinAmt); hSheenC *= 1.0 - skinAmt; }
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
   roughnessFactor = rough;
   metalnessFactor = 0.0;

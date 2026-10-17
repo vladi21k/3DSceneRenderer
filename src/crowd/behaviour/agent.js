@@ -66,5 +66,29 @@ export class Agent {
     this.stride = 1.5; this.strideV = -1; // cached gait cycle length and the speed it was computed for
     this.afs = 0; this.afd = 0; // avoidance force (recomputed every other frame)
     this.laneT = 0; this.laneTT = 0; // cached lane target and its refresh countdown
+    // tram awareness
+    this.clearT = 4.5;        // seconds before the tram arrives that this person leaves its track
+    this.needsBell = false;   // will only notice the tram once it rings
+    this.dodge = 0; this.dodgeT = 0; // short sidestep away from the passing tram (signed d offset, until time)
+    this.passT = -1e9;        // last time the tram passing by was noticed
+    // motion
+    this.px = 0; this.pz = 0; this.pValid = false; // world position at the previous output (actual displacement)
+    this.speedA = 0;          // smoothed actual speed (drives the gait)
+    this.moving = false;      // wants to move this frame (standing states: stepping into place)
+    this.vmaxCur = 1.6;       // speed limit of this frame (statistics)
+    this.wSeed = 0;           // personal noise seed (lane wander, pace, heading jitter)
+    this.uturnT = 0; this.uturnDir = 1; this.uturnSgn = 1; // smooth turn-around in progress
+    this.driftT = 0; this.driftF = 0.9; // drifting towards the shop windows until time
+    // groups
+    this.baseF = 0; this.baseR = 0; // slot in the leader's frame before the slow wander
+    this.singleT = 0;         // walking single file behind the leader until this time
+    this.stuckF = 0;          // follower held back by constraints (s)
+    this.chatS = 0; this.chatD = 0; // standing spot in a conversation circle
+    this.isChild = false; this.height = 1.7;
+    this.wT = 6; this.paceT = 9; this.faceJ = 0; // slot wander period, pace drift period, facing jitter
+    this.bandW = 9;           // width of the sidewalk band around (lane walkers)
+    this.dodgeD0 = 0;         // d where a standing sidestep started
+    this.seatS = 0; this.seatD = 0; // seat being eased into
+    this.guardian = null;     // adult a seated child belongs to
   }
 }

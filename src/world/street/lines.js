@@ -110,7 +110,7 @@ float lnRough = 0.5, lnMetal = 0.0;
   vec3 aSeal = vec3( 0.024, 0.023, 0.022 );
   vec3 aCorner = vec3( 0.13, 0.068, 0.035 ) * ( 0.8 + 0.4 * wear );
   vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
-  vec3 aGroove = vec3( 0.045, 0.040, 0.034 );
+  vec3 aGroove = vec3( 0.074, 0.052, 0.034 );                       // sand, rust scale, grime
   vec3 aLip = vec3( 0.36, 0.336, 0.30 ) * ( 0.85 + 0.2 * wear );   // dull, dusty guard lip
   vec3 aGrout = vec3( 0.16, 0.152, 0.14 );                          // dusty mortar strip
   vec3 aPave = vec3( 0.22, 0.217, 0.21 );                           // grimy setts beside it

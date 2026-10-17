@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
-import { FOLIAGE } from './species.js';
+import { FOLIAGE, CELL } from './species.js';
 import { cellRect } from './leafAtlas.js';
 
 // Procedural street trees, grown once per template at start-up.
@@ -9,18 +9,28 @@ import { cellRect } from './leafAtlas.js';
 //    random gaps (weighted towards the shell, where a crown carries its foliage); a stem
 //    (ash: a central leader, pagoda: a short stem splitting into scaffold limbs) grows
 //    towards them in small steps. Short leaf-bearing spur shoots are added along the outer
-//    branches, positions are smoothed and slender shoots droop under their own weight.
+//    branches and, shorter, along the inner ones. The main axis kinks away where a side
+//    branch leaves it (sympodial growth), positions are lightly smoothed and slender shoots
+//    droop under their own weight.
 // 2. Radii: pipe model (r^2.3 of a parent = sum over children), remapped so the trunk has
 //    the template's calliper and the shoots end at ~8 mm.
-// 3. Bark: one tapered tube per branch chain (parallel-transport frames, metre UVs), with
-//    occlusion in the crotches / crown interior and splash dirt at the base. Three LODs
-//    keep thinner and thinner branches.
-// 4. Foliage: leaf cards carrying painted sprays (leafAtlas.js). Compound leaves spread
-//    sideways and droop, so cards point outwards, face up and tilt out on the crown sides,
-//    which builds the layered tiers (lit tops, dark undersides) of the real trees. Normals
-//    blend the card normal with the crown normal so the crown shades as one volume.
-//    LOD 0: folded drooping cards; LOD 1: 40% of them, 1.5x larger; LOD 2: camera-facing
-//    clumps. All three share sites, colour, occlusion and coverage.
+// 3. Bark: one tapered tube per branch chain (parallel-transport frames, metre UVs) with a
+//    collar where it leaves its parent, occlusion in the crotches / crown interior and
+//    splash dirt at the base. Young bark is grey-green (the shader adds lenticels), shoots
+//    are greener. Three LODs keep thinner and thinner branches; each has a mirrored copy
+//    (reversed winding) for instances drawn with a mirrored matrix.
+// 4. Foliage: leaf cards carrying painted shoot tips (atlasPaint.js), centred on their shoot
+//    so the leaf clumps stay inside the crown outline. Cards point outwards and face up
+//    (tilting out on the crown sides); low in the crown some get a crossed partner so they
+//    never all turn edge-on. Normals blend the card normal with the crown normal so the
+//    crown shades as one volume. LOD 1 keeps 60% of the same cards, 1.25x larger; LOD 2
+//    uses crossed clump cards. All levels share sites, colour and occlusion.
+//
+// Leaf vertex data (see vegMaterials.js):
+//   aVeg   = (branch phase, branch amplitude, flutter weight, interior occlusion)
+//   aCrown = (position in the crown sphere: centre 0, shell 1 (xyz), sphere radius in m)
+//   aCard  = (unfolded card normal (xyz), lateral offset from the card axis in m)
+// Bark: aVeg (flutter weight unused), aBark = youth (1 young smooth bark, 0 old).
 //
 // Template space: origin at the trunk base on the paving, +Y up, -X towards the tracks
 // (branches and leaf tips are kept out of the tram's clearance envelope on that side).
@@ -43,7 +53,7 @@ function profile(shape, t) {
 function makeEnvelope(tpl, rng) {
   // tpl.height / tpl.crownR are the visible foliage extents: the branch envelope sits inside
   // them by the overhang of the leaf cards
-  const over = FOLIAGE[tpl.species].card * 0.55;
+  const over = FOLIAGE[tpl.species].card * 0.5;
   const R = tpl.crownR - over;
   const y0 = tpl.crownBase - 0.25, y1 = tpl.height - over * 0.9;
   const lobes = [];
@@ -55,8 +65,11 @@ function makeEnvelope(tpl, rng) {
     const a = rng.range(0, Math.PI * 2), t = rng.range(0.2, 0.85), rr = rng.range(0.55, 1.0);
     holes.push([Math.cos(a) * R * rr, y0 + (y1 - y0) * t, Math.sin(a) * R * rr, (rng.range(0.3, 0.5) * R) ** 2]);
   }
+  const cy = (y0 + y1) / 2, hy = (y1 - y0) / 2;
   const env = {
-    y0, y1, R, holes,
+    y0, y1, R, holes, cy, hy,
+    /** Light-transport sphere (centre y, radius): the crown as seen by the shader. */
+    sphere: { cy, r: (R + over + hy + over * 0.5) / 2 },
     radius(y, theta) {
       const t = (y - y0) / (y1 - y0);
       let f = 1;
@@ -73,14 +86,11 @@ function makeEnvelope(tpl, rng) {
       return Math.hypot(x, z) <= env.radius(y, Math.atan2(z, x));
     },
     /** Normalised radial position (0 centre, 1 shell) for occlusion / leaf placement. */
-    rn(x, y, z) {
-      const cy = (y0 + y1) / 2, hy = (y1 - y0) / 2;
-      return Math.hypot(x / R, (y - cy) / hy, z / R);
-    },
+    rn(x, y, z) { return Math.hypot(x / R, (y - cy) / hy, z / R); },
     /** Outward crown normal (ellipsoid gradient), written into out. */
     normal(x, y, z, out) {
-      const cy = (y0 + y1) * 0.48, hy = (y1 - y0) / 2;
-      return out.set(x / (R * R), (y - cy) / (hy * hy), z / (R * R)).normalize();
+      const c2 = (y0 + y1) * 0.48;
+      return out.set(x / (R * R), (y - c2) / (hy * hy), z / (R * R)).normalize();
     },
   };
   return env;
@@ -198,7 +208,7 @@ function growSkeleton(tpl, env, rng) {
       const pp = sk.parent[i];
       if (pp >= 0) { _w.subVectors(sk.p[i], sk.p[pp]).normalize(); v.addScaledVector(_w, 0.35); }
       v.y += 0.12;
-      v.x += rng.range(-0.12, 0.12); v.z += rng.range(-0.12, 0.12);
+      v.x += rng.range(-0.15, 0.15); v.z += rng.range(-0.15, 0.15);
       v.normalize();
       const np = sk.p[i].clone().addScaledVector(v, tpl.step);
       if (np.y < tpl.crownBase - 0.35) continue;
@@ -213,29 +223,72 @@ function growSkeleton(tpl, env, rng) {
     if (!fresh.length) break;
     for (const j of fresh) consider(j);
   }
-  addSpurs(tpl, env, sk, rng);
+  kinkSkeleton(sk, env, rng);
+  addSpurs(tpl, env, sk, rng, false);
+  addSpurs(tpl, env, sk, rng, true);
   return sk;
 }
 
 /**
- * Short leaf-bearing shoots along the outer branches. Space colonisation alone leaves long
- * bare limbs; real crowns carry their leaves on many short side shoots.
+ * Kinks: where a side branch leaves an axis, the continuing axis turns 8-15 degrees away
+ * from it (plus a random component). The whole sub-tree beyond the node rotates with it,
+ * so limbs zig-zag like real sympodial growth instead of running as smooth arcs.
  */
-function addSpurs(tpl, env, sk, rng) {
+function kinkSkeleton(sk, env, rng) {
+  const n = sk.n;
+  const kids = Array.from({ length: n }, () => []);
+  for (let i = 1; i < n; i++) if (sk.parent[i] >= 0) kids[sk.parent[i]].push(i);
+  const q = new THREE.Quaternion(), axis = new THREE.Vector3(), dm = new THREE.Vector3(), ds = new THREE.Vector3();
+  const stack = [];
+  for (let i = 0; i < n; i++) {
+    if (sk.trunk[i] || kids[i].length < 2 || sk.parent[i] < 0) continue;
+    // continuing axis = the child most aligned with the incoming direction
+    _v.subVectors(sk.p[i], sk.p[sk.parent[i]]).normalize();
+    let mainC = -1, bestD = -2;
+    for (const c of kids[i]) { const d = _w.subVectors(sk.p[c], sk.p[i]).normalize().dot(_v); if (d > bestD) { bestD = d; mainC = c; } }
+    dm.subVectors(sk.p[mainC], sk.p[i]).normalize();
+    ds.set(0, 0, 0);
+    for (const c of kids[i]) if (c !== mainC) ds.add(_w.subVectors(sk.p[c], sk.p[i]).normalize());
+    // turn away from the side branches, plus some randomness
+    axis.crossVectors(ds, dm);
+    if (axis.lengthSq() < 1e-6) axis.set(rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1));
+    axis.normalize();
+    axis.x += rng.range(-0.5, 0.5); axis.y += rng.range(-0.5, 0.5); axis.z += rng.range(-0.5, 0.5);
+    axis.normalize();
+    q.setFromAxisAngle(axis, THREE.MathUtils.degToRad(rng.range(8, 15)));
+    const pivot = sk.p[i];
+    stack.length = 0; stack.push(mainC);
+    while (stack.length) {
+      const j = stack.pop();
+      sk.p[j].sub(pivot).applyQuaternion(q).add(pivot);
+      if (sk.p[j].x < env.clear(sk.p[j].y)) sk.p[j].x = env.clear(sk.p[j].y);
+      for (const c of kids[j]) stack.push(c);
+    }
+  }
+}
+
+/**
+ * Short leaf-bearing shoots. Space colonisation alone leaves long bare limbs; real crowns
+ * carry their leaves on many short side shoots. inner: a second, shorter and sparser pass
+ * along the branches inside the crown, so the interior holds twigs and small leaf clumps.
+ */
+function addSpurs(tpl, env, sk, rng, inner) {
   const n0 = sk.n;
   const kidsN = new Uint8Array(n0);
   for (let i = 1; i < n0; i++) if (sk.parent[i] >= 0) kidsN[sk.parent[i]]++;
   const cn = new THREE.Vector3(), d = new THREE.Vector3(), q = new THREE.Vector3();
   for (let i = 1; i < n0; i++) {
-    if (sk.trunk[i] || kidsN[i] >= 3) continue;
+    if (sk.trunk[i] || kidsN[i] >= 3 || sk.noGrow[i]) continue;
     const p = sk.p[i];
     const rn = env.rn(p.x, p.y, p.z);
-    if (rn < 0.35 || rng.next() > tpl.spurs * Math.min(1, (rn - 0.25) * 1.6)) continue;
+    if (inner) {
+      if (rn > 0.6 || rng.next() > tpl.spurs * 0.5) continue;
+    } else if (rn < 0.35 || rng.next() > tpl.spurs * Math.min(1, (rn - 0.25) * 1.6)) continue;
     env.normal(p.x, p.y, p.z, cn);
-    d.subVectors(p, sk.p[sk.parent[i]]).normalize().multiplyScalar(0.4).addScaledVector(cn, 0.5);
-    d.x += rng.range(-0.5, 0.5); d.y += rng.range(-0.2, 0.45); d.z += rng.range(-0.5, 0.5);
+    d.subVectors(p, sk.p[sk.parent[i]]).normalize().multiplyScalar(0.4).addScaledVector(cn, inner ? 0.25 : 0.5);
+    d.x += rng.range(-0.6, 0.6); d.y += rng.range(-0.2, 0.45); d.z += rng.range(-0.6, 0.6);
     d.normalize();
-    const len = rng.range(0.14, 0.3);
+    const len = inner ? rng.range(0.08, 0.18) : rng.range(0.14, 0.3);
     q.copy(p).addScaledVector(d, len * 0.5);
     if (q.x < env.clear(q.y)) continue;
     const a = sk.add(q, i, false, true);
@@ -277,13 +330,13 @@ function finishSkeleton(tpl, env, sk, rng) {
     for (const c of kids[i]) if (rp[c] > br) { br = rp[c]; b = c; }
     main[i] = b;
   }
-  // smoothing of the crown structure (not the stem)
-  for (let it = 0; it < 3; it++) {
+  // one light smoothing pass of the crown structure (keeps the kinks)
+  {
     const np = sk.p.map((p) => p.clone());
     for (let i = 0; i < n; i++) {
       if (sk.trunk[i] || sk.parent[i] < 0 || main[i] < 0) continue;
       const a = sk.p[sk.parent[i]], b = sk.p[main[i]];
-      np[i].set(0.5 * sk.p[i].x + 0.25 * (a.x + b.x), 0.5 * sk.p[i].y + 0.25 * (a.y + b.y), 0.5 * sk.p[i].z + 0.25 * (a.z + b.z));
+      np[i].multiplyScalar(0.7).addScaledVector(a, 0.15).addScaledVector(b, 0.15);
     }
     sk.p = np;
   }
@@ -331,36 +384,52 @@ function finishSkeleton(tpl, env, sk, rng) {
 }
 
 // ------------------------------------------------------------------ geometry buffers
+/** Growable vertex / index lists with named attributes of fixed sizes. */
 class Buf {
-  constructor() { this.pos = []; this.nor = []; this.uv = []; this.col = []; this.veg = []; this.cor = []; this.idx = []; }
-  get count() { return this.pos.length / 3; }
-  vert(p, n, u, v, c, veg, cor = null) {
-    this.pos.push(p.x, p.y, p.z); this.nor.push(n.x, n.y, n.z); this.uv.push(u, v);
-    this.col.push(c[0], c[1], c[2]); this.veg.push(veg[0], veg[1], veg[2], veg[3]);
-    if (cor) this.cor.push(cor[0], cor[1], cor[2]); else this.cor.push(0, 0, 0);
+  constructor(spec) {
+    this.spec = spec; // { name: itemSize }
+    this.a = {};
+    for (const k of Object.keys(spec)) this.a[k] = [];
+    this.idx = [];
+    this.count = 0;
   }
-  geometry() {
+  /** Append one vertex: values in spec order (arrays or numbers). */
+  vert(...vals) {
+    let j = 0;
+    for (const k of Object.keys(this.spec)) {
+      const v = vals[j++], arr = this.a[k];
+      if (typeof v === 'number') arr.push(v);
+      else if (v.isVector3) arr.push(v.x, v.y, v.z);
+      else for (let i = 0; i < this.spec[k]; i++) arr.push(v[i]);
+    }
+    return this.count++;
+  }
+  geometry(reverse = false) {
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    g.setAttribute('aVeg', new THREE.Float32BufferAttribute(this.veg, 4));
-    g.setAttribute('aCorner', new THREE.Float32BufferAttribute(this.cor, 3));
-    g.setIndex(this.count > 65535 ? new THREE.Uint32BufferAttribute(this.idx, 1) : new THREE.Uint16BufferAttribute(this.idx, 1));
+    const names = { pos: 'position', nor: 'normal', uv: 'uv', col: 'color' };
+    for (const [k, size] of Object.entries(this.spec)) g.setAttribute(names[k] || k, new THREE.Float32BufferAttribute(this.a[k], size));
+    let idx = this.idx;
+    if (reverse) {
+      idx = idx.slice();
+      for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
+    }
+    g.setIndex(this.count > 65535 ? new THREE.Uint32BufferAttribute(idx, 1) : new THREE.Uint16BufferAttribute(idx, 1));
     g.computeBoundingBox();
     g.computeBoundingSphere();
     g.userData.shared = true;
     return g;
   }
 }
+const LEAF_SPEC = { pos: 3, nor: 3, uv: 2, col: 3, aVeg: 4, aCrown: 4, aCard: 4 };
+const BARK_SPEC = { pos: 3, nor: 3, uv: 2, col: 3, aVeg: 4, aBark: 1 };
 
 /** Tapered tubes along every chain thicker than minR. */
 function barkGeometry(tpl, env, sk, info, lod, rng) {
-  const b = new Buf();
+  const b = new Buf(BARK_SPEC);
   const minR = [0.0045, 0.015, 0.04][lod];
-  const N = new THREE.Vector3(), B = new THREE.Vector3(), T = new THREE.Vector3(), prevT = new THREE.Vector3();
-  const q = new THREE.Vector3(), cn = new THREE.Vector3();
+  const N = new THREE.Vector3(), B = new THREE.Vector3(), T = new THREE.Vector3();
+  const q = new THREE.Vector3(), cn = new THREE.Vector3(), p = new THREE.Vector3();
+  const youth = tpl.mature ? 0.25 : 1;
   for (let c = 0; c < info.chains.length; c++) {
     const ch = info.chains[c];
     const nodes = ch.nodes;
@@ -371,45 +440,58 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
       : lod === 1 ? (r0 > 0.06 ? 8 : r0 > 0.03 ? 6 : 4)
       : (r0 > 0.06 ? 11 : r0 > 0.03 ? 8 : r0 > 0.015 ? 6 : r0 > 0.008 ? 4 : 3);
     const circ = Math.max(0.05, 2 * Math.PI * r0);
-    const tint = rng.range(0.9, 1.06);
+    // bark colour (multiplies the library bark, a warm grey-brown): young stems cool grey
+    // with a green cast, shoots greener, old wood darker grey-brown
+    const tv = rng.range(0.92, 1.06);
+    const tint = tpl.mature
+      ? (r0 < 0.015 ? [0.82, 0.9, 0.84] : [0.74, 0.76, 0.8])
+      : (r0 < 0.012 ? [0.86, 1.04, 0.82] : [0.9, 1.02, 1.08]);
     const base = b.count;
     let vacc = 0;
-    // initial frame
-    T.subVectors(sk.p[nodes[1]], sk.p[nodes[0]]).normalize();
-    N.copy(Math.abs(T.y) < 0.9 ? UP : _v.set(1, 0, 0)).cross(T).normalize();
-    prevT.copy(T);
-    let rings = 0;
+    // ring list: (node, position, radius); a collar ring where a child leaves its parent
+    const ring = [];
     for (let k = 0; k < nodes.length; k++) {
       const i = nodes[k];
-      const p = sk.p[i];
-      if (k > 0) vacc += p.distanceTo(sk.p[nodes[k - 1]]);
-      const a = sk.p[nodes[Math.max(0, k - 1)]], bb = sk.p[nodes[Math.min(nodes.length - 1, k + 1)]];
+      let rr = info.r[i];
+      if (k === 0 && ch.level > 0) rr = Math.min(rr, info.r[nodes[1]] * 1.05); // child starts inside the parent
+      if (k === nodes.length - 1 && !info.kids[i].length) rr *= 0.55;
+      ring.push([i, sk.p[i], rr]);
+      if (k === 0 && ch.level > 0 && lod < 2) {
+        const r1 = info.r[nodes[1]], pr = info.r[i];
+        const dist = Math.min(pr + r1 * 1.5, sk.p[nodes[1]].distanceTo(sk.p[i]) * 0.5);
+        const cp = new THREE.Vector3().subVectors(sk.p[nodes[1]], sk.p[i]).setLength(dist).add(sk.p[i]);
+        ring.push([nodes[1], cp, r1 * 1.15, true]);
+      }
+    }
+    // initial frame
+    T.subVectors(ring[1][1], ring[0][1]).normalize();
+    N.copy(Math.abs(T.y) < 0.9 ? UP : _v.set(1, 0, 0)).cross(T).normalize();
+    for (let k = 0; k < ring.length; k++) {
+      const [i, pos, rr, collar] = ring[k];
+      p.copy(pos);
+      if (k > 0) vacc += p.distanceTo(ring[k - 1][1]);
+      const a = ring[Math.max(0, k - 1)][1], bb = ring[Math.min(ring.length - 1, k + 1)][1];
       T.subVectors(bb, a).normalize();
       // parallel transport of N
       N.addScaledVector(T, -N.dot(T)).normalize();
       B.crossVectors(T, N);
-      prevT.copy(T);
-      let rr = info.r[i];
-      if (k === 0 && ch.level > 0) rr = Math.min(rr, info.r[nodes[1]] * 1.05); // child starts inside the parent
-      if (k === nodes.length - 1 && !info.kids[i].length) rr *= 0.55;
       // occlusion: crotches, deep crown interior, paving splash at the stem base
       let ao = 1;
       if (ch.level > 0 && k === 0) ao *= 0.65;
-      else if (ch.level > 0 && k === 1) ao *= 0.85;
+      else if (ch.level > 0 && (k === 1 || collar)) ao *= 0.85;
       const rn = env.rn(p.x, p.y, p.z);
       if (!sk.trunk[i] || p.y > tpl.crownBase) ao *= 0.55 + 0.45 * THREE.MathUtils.smoothstep(rn, 0.1, 0.95);
       const dirt = p.y < 0.4 ? 0.72 + 0.28 * (p.y / 0.4) : 1;
-      const colr = [tint * dirt, tint * dirt * 0.99, tint * dirt * 0.97];
+      const colr = [tint[0] * tv * dirt, tint[1] * tv * dirt, tint[2] * tv * dirt];
       const veg = [info.phase[c], info.amp[i], 0, ao];
       for (let s = 0; s <= sides; s++) {
         const th = (s / sides) * Math.PI * 2;
         cn.copy(N).multiplyScalar(Math.cos(th)).addScaledVector(B, Math.sin(th));
         q.copy(p).addScaledVector(cn, rr);
-        b.vert(q, cn, (s / sides) * circ, vacc, colr, veg);
+        b.vert(q, cn, [(s / sides) * circ, vacc], colr, veg, youth);
       }
-      rings++;
     }
-    for (let k = 0; k < rings - 1; k++) {
+    for (let k = 0; k < ring.length - 1; k++) {
       for (let s = 0; s < sides; s++) {
         const a = base + k * (sides + 1) + s, d = a + sides + 1;
         b.idx.push(a, a + 1, d, a + 1, d + 1, d);
@@ -419,85 +501,112 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
   return b;
 }
 
-/** Leaf card sites: shoot tips and slender shoots in the outer crown (node indices). */
+/** Leaf card sites: shoot tips and slender shoots (node indices). */
 function leafSites(tpl, env, sk, info, rng) {
   const sites = [];
   for (let i = 1; i < sk.n; i++) {
     if (sk.trunk[i]) continue;
     const p = sk.p[i];
     const rn = env.rn(p.x, p.y, p.z);
-    if (rn < 0.35) continue;
+    if (rn < 0.15) continue;
     const tip = !info.kids[i].length;
     let k = 0;
-    if (tip) k = tpl.cardsPerTip;
-    else if (info.r[i] < 0.012) k = tpl.mature ? 0.5 : 0.7;
-    else if (info.r[i] < 0.022 && rn > 0.5) k = 0.12;
+    if (tip) k = tpl.cardsPerTip * (rn < 0.35 ? 0.5 : 1);
+    else if (info.r[i] < 0.012) k = rn < 0.35 ? 0.25 : tpl.mature ? 0.6 : 0.85;
+    else if (info.r[i] < 0.022 && rn > 0.5) k = 0.15;
     while (k > 0) { if (rng.next() < k) sites.push(i); k -= 1; }
   }
   return sites;
 }
 
 /**
- * Foliage for one LOD.
- *   0: folded, drooping spray cards (3x3 vertices) at every site;
- *   1: ~40% of the sites with 1.5x cards, folded only (2x3 vertices), same coverage;
- *   2: camera-facing clumps (far range), same coverage, colour and occlusion.
+ * Card descriptors for every site (shared by LOD 0 and 1):
+ *   { i, c: centre, d: axis (attachment -> tip), nn: card normal, size, fold, bend, cell,
+ *     col, ao, keep (in LOD 1), cross (has a crossed partner) }
  */
-function foliageGeometry(tpl, env, sk, info, sites, lod, rng) {
+function cardLayout(tpl, env, sk, info, sites, rng) {
   const fol = FOLIAGE[tpl.species];
-  const b = new Buf();
-  const cn = new THREE.Vector3(), d = new THREE.Vector3(), nn = new THREE.Vector3(), side = new THREE.Vector3();
-  const tmp = new THREE.Vector3(), base = new THREE.Vector3(), p3 = new THREE.Vector3(), vn = new THREE.Vector3();
+  const cards = [];
+  const cn = new THREE.Vector3(), tmp = new THREE.Vector3();
   const tint = fol.tint;
-  const cardColor = (n) => {
+  const lowY = tpl.crownBase + (tpl.height - tpl.crownBase) * 0.45;
+  for (const i of sites) {
+    const p = sk.p[i], pa = sk.p[sk.parent[i]];
+    env.normal(p.x, p.y, p.z, cn);
+    const rn = env.rn(p.x, p.y, p.z);
+    // Leaf clumps spread out sideways from the shoot: cards point outwards (horizontally,
+    // turned at random about the vertical), face up and tilt outwards on the crown sides.
+    tmp.set(cn.x, 0, cn.z);
+    if (tmp.lengthSq() < 1e-4) tmp.set(p.x - pa.x, 0, p.z - pa.z);
+    if (tmp.lengthSq() < 1e-4) tmp.set(1, 0, 0);
+    tmp.normalize();
+    const d = new THREE.Vector3().subVectors(p, pa).setY(0);
+    if (d.lengthSq() > 1e-6) d.normalize();
+    d.multiplyScalar(0.3).addScaledVector(tmp, 0.7);
+    if (d.lengthSq() < 1e-6) d.copy(tmp);
+    d.normalize().applyAxisAngle(UP, rng.range(-1.2, 1.2));
+    d.y = rng.range(-0.25, 0.15) - tpl.droop * 0.4;
+    d.normalize();
+    const tilt = rng.range(0.15, 1.0) * (0.4 + 0.6 * (1 - Math.abs(cn.y)));
+    const nn = new THREE.Vector3().copy(UP).addScaledVector(tmp, Math.tan(tilt));
+    nn.addScaledVector(d, -nn.dot(d)).normalize();
+    nn.applyAxisAngle(d, rng.range(-0.35, 0.35));
+    const size = fol.card * rng.range(0.82, 1.15);
+    // centred on the shoot: the attachment edge sits 0.45 * size behind it
+    const c = new THREE.Vector3().copy(p).addScaledVector(d, size * 0.05);
+    // keep the leaf tips out of the tram's clearance envelope on the track side (-x)
+    const lim = env.clearLeaf(p.y) + size * 0.5;
+    if (c.x < lim) c.x = lim;
     // sunny outer / upper leaves a touch lighter and yellower, plus per-card noise
-    const v = rng.range(0.86, 1.1) * (0.94 + 0.08 * Math.max(0, n.y));
-    const h = rng.range(-0.06, 0.06) + 0.04 * Math.max(0, n.y);
-    return [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
-  };
-  const occl = (n, rn) => (0.38 + 0.62 * THREE.MathUtils.smoothstep(rn, 0.2, 1.0)) * (0.78 + 0.22 * (n.y * 0.5 + 0.5));
+    const v = rng.range(0.86, 1.1) * (0.94 + 0.08 * Math.max(0, cn.y));
+    const h = rng.range(-0.06, 0.06) + 0.04 * Math.max(0, cn.y);
+    const col = [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
+    // interior occlusion (sky light only), dimmer towards the crown centre and underside
+    const ao = (0.6 + 0.4 * THREE.MathUtils.smoothstep(rn, 0.2, 1.0)) * (0.85 + 0.15 * (cn.y * 0.5 + 0.5));
+    const card = { i, c, d, nn, size, fold: rng.range(0.12, 0.38), bend: rng.range(0.05, 0.2), cell: rng.pick(fol.cells),
+      col, ao, keep: rng.next() < 0.6, cross: p.y < lowY && rng.next() < 0.3 };
+    cards.push(card);
+    if (card.cross) {
+      const nn2 = nn.clone().applyAxisAngle(d, (rng.chance(0.5) ? 1 : -1) * rng.range(1.2, 1.57));
+      cards.push({ ...card, nn: nn2, cell: rng.pick(fol.cells), size: size * rng.range(0.85, 1.0), cross: false, partner: true });
+    }
+  }
+  return cards;
+}
 
+/** Crown-sphere coordinates of a template-space point. */
+function crownCoord(env, p, out) {
+  const s = env.sphere;
+  return out.set(p.x / s.r, (p.y - s.cy) / s.r, p.z / s.r);
+}
+
+/**
+ * Foliage for one LOD.
+ *   0: folded, bent cards (3x3 vertices) for every card;
+ *   1: the 60% kept cards, 1.25x larger, folded only (2x3 vertices);
+ *   2: crossed clump cards (far range), same colour and occlusion.
+ */
+function foliageGeometry(tpl, env, sk, info, cards, lod, rng) {
+  const fol = FOLIAGE[tpl.species];
+  const b = new Buf(LEAF_SPEC);
+  const side = new THREE.Vector3(), p3 = new THREE.Vector3(), vn = new THREE.Vector3(), cn = new THREE.Vector3();
+  const q = new THREE.Vector3(), base = new THREE.Vector3();
+  const R = env.sphere.r;
   if (lod < 2) {
     const rows = lod ? 1 : 2;
     let count = 0;
-    for (const i of sites) {
-      if (lod === 1 && rng.next() > 0.4) continue;
+    for (const k of cards) {
+      if (lod === 1 && !k.keep) continue;
       count++;
-      const p = sk.p[i], pa = sk.p[sk.parent[i]];
+      const p = sk.p[k.i];
       env.normal(p.x, p.y, p.z, cn);
-      const rn = env.rn(p.x, p.y, p.z);
-      // Compound leaves spread out sideways from the shoot and droop at the tips, so the
-      // foliage forms layered tiers: lit on top, dark underneath. Cards point outwards
-      // (horizontally), face up, and tilt outwards on the sides of the crown.
-      tmp.set(cn.x, 0, cn.z);
-      if (tmp.lengthSq() < 1e-4) tmp.set(p.x - pa.x, 0, p.z - pa.z);
-      if (tmp.lengthSq() < 1e-4) tmp.set(1, 0, 0);
-      tmp.normalize();
-      d.subVectors(p, pa).setY(0);
-      if (d.lengthSq() > 1e-6) d.normalize();
-      d.multiplyScalar(0.3).addScaledVector(tmp, 0.7).normalize();
-      d.applyAxisAngle(UP, rng.range(-0.6, 0.6) * (cn.y > 0.75 ? 2.5 : 1));
-      d.y = rng.range(-0.4, 0.2) - tpl.droop * 0.8;
-      d.normalize();
-      const tilt = rng.range(0.1, 0.85) * (0.35 + 0.65 * (1 - Math.abs(cn.y)));
-      nn.copy(UP).addScaledVector(tmp, Math.tan(tilt));
-      nn.addScaledVector(d, -nn.dot(d)).normalize();
-      nn.applyAxisAngle(d, rng.range(-0.35, 0.35));
-      const size = fol.card * rng.range(0.82, 1.15) * (lod ? 1.5 : 1);
-      // keep the leaf tips out of the tram's clearance envelope on the track side (-x)
-      const lim = env.clearLeaf(p.y);
-      if (p.x + d.x * size < lim) {
-        d.x = Math.min(1, (lim - p.x) / size);
-        d.normalize();
-        nn.addScaledVector(d, -nn.dot(d)).normalize();
-      }
+      const size = k.size * (lod ? 1.25 : 1);
+      const { d, nn } = k;
       side.crossVectors(d, nn).normalize();
-      const fold = rng.range(0.12, 0.38), bend = lod ? 0 : rng.range(0.05, 0.22);
-      const [u0, v0, u1, v1] = cellRect(rng.pick(fol.cells));
-      base.copy(p).addScaledVector(d, -0.03 - (lod ? size * 0.2 : 0));
-      const col = cardColor(cn);
-      const ao = occl(cn, rn);
-      const flutterScale = Math.min(1.3, size / 0.6);
+      const [u0, v0, u1, v1] = cellRect(k.cell);
+      base.copy(k.c).addScaledVector(d, -size * 0.5);
+      const flutterScale = Math.min(1.3, size / 0.45);
+      const bend = lod ? 0 : k.bend;
       const vb = b.count;
       for (let iv = 0; iv <= rows; iv++) {
         const v = iv / rows;
@@ -505,12 +614,13 @@ function foliageGeometry(tpl, env, sk, info, sites, lod, rng) {
           const u = iu / 2;
           const su = (u - 0.5) * size;
           p3.copy(base).addScaledVector(d, v * size).addScaledVector(side, su)
-            .addScaledVector(nn, Math.abs(su) * Math.sin(fold) - bend * v * v * size);
+            .addScaledVector(nn, Math.abs(su) * Math.sin(k.fold) - bend * v * v * size);
           // folded-surface normal, blended with the crown normal
-          vn.copy(nn).addScaledVector(side, -Math.sign(su) * Math.tan(fold)).normalize();
+          vn.copy(nn).addScaledVector(side, -Math.sign(su) * Math.tan(k.fold)).normalize();
           vn.multiplyScalar(0.5).addScaledVector(cn, 0.5).normalize();
-          b.vert(p3, vn, u0 + u * (u1 - u0), v0 + (0.01 + v * 0.98) * (v1 - v0), col,
-            [info.phase[info.chainOf[i]], info.amp[i], lod ? 0 : v * flutterScale, ao]);
+          crownCoord(env, p3, q);
+          b.vert(p3, vn, [u0 + u * (u1 - u0), v0 + (0.01 + v * 0.98) * (v1 - v0)], k.col,
+            [info.phase[info.chainOf[k.i]], info.amp[k.i], v * flutterScale, k.ao], [q.x, q.y, q.z, R], [nn.x, nn.y, nn.z, su]);
         }
       }
       // winding: front face on the side the card normal points to
@@ -524,37 +634,53 @@ function foliageGeometry(tpl, env, sk, info, sites, lod, rng) {
     return { buf: b, count };
   }
 
-  // ---- lod 2: clumps
-  const k = Math.max(6, Math.round(sites.length * (fol.card / fol.clumpCard) ** 2 * 1.05));
-  const order = sites.slice();
-  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng.next() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
-  const [u0, v0, u1, v1] = cellRect(fol.clump);
-  for (let s = 0; s < Math.min(k, order.length); s++) {
-    const i = order[s];
+  // ---- lod 2: clumps of two crossed cards (one facing out, one facing up)
+  const sites = [...new Set(cards.filter((k) => !k.partner).map((k) => k.i))];
+  const n = Math.max(6, Math.round(cards.length * (fol.card / fol.clumpCard) ** 2 * 0.9));
+  for (let i = sites.length - 1; i > 0; i--) { const j = Math.floor(rng.next() * (i + 1)); [sites[i], sites[j]] = [sites[j], sites[i]]; }
+  const byNode = new Map();
+  for (const k of cards) if (!byNode.has(k.i)) byNode.set(k.i, k);
+  const out = new THREE.Vector3(), nn = new THREE.Vector3(), d = new THREE.Vector3();
+  let count = 0;
+  for (let s = 0; s < Math.min(n, sites.length); s++) {
+    const i = sites[s], k = byNode.get(i);
     const p = sk.p[i];
     env.normal(p.x, p.y, p.z, cn);
-    const rn = env.rn(p.x, p.y, p.z);
-    base.copy(p).addScaledVector(cn, -0.15);
-    const size = fol.clumpCard * rng.range(0.85, 1.15) * 0.5;
-    base.x = Math.max(base.x, env.clearLeaf(base.y) + size * 0.7);
-    // clumps always face the viewer (no darker undersides, no edge-on cards): tone down
-    const col = cardColor(cn).map((c) => c * 0.84);
-    const ao = occl(cn, rn);
-    const vb = b.count;
-    const rot = rng.range(0, Math.PI * 2), cr = Math.cos(rot) * size, sr = Math.sin(rot) * size;
-    const corners = [[-1, -1, 0, 1], [1, -1, 1, 1], [-1, 1, 0, 0], [1, 1, 1, 0]];
-    for (const [cx, cy, uu, vv] of corners) {
-      b.vert(base, cn, u0 + uu * (u1 - u0), v0 + vv * (v1 - v0), col,
-        [info.phase[info.chainOf[i]], info.amp[i] * 0.8, 0, ao], [cx * cr - cy * sr, cx * sr + cy * cr, 1]);
+    const size = fol.clumpCard * rng.range(0.85, 1.15);
+    base.copy(p).addScaledVector(cn, -0.12);
+    base.x = Math.max(base.x, env.clearLeaf(base.y) + size * 0.5);
+    out.set(cn.x, 0, cn.z);
+    if (out.lengthSq() < 1e-4) out.set(1, 0, 0);
+    out.normalize();
+    const [u0, v0, u1, v1] = cellRect(rng.pick(fol.clumps));
+    const rot = rng.range(0, Math.PI * 2);
+    for (let c = 0; c < 2; c++) {
+      // card normal: outward and a little up / up and a little outward
+      if (c === 0) nn.copy(out).addScaledVector(UP, rng.range(0.2, 0.6)).normalize();
+      else nn.copy(UP).addScaledVector(out, rng.range(0.2, 0.6)).normalize();
+      d.set(-nn.z, 0, nn.x);
+      if (d.lengthSq() < 1e-4) d.set(1, 0, 0);
+      d.normalize().applyAxisAngle(nn, rot + c * 1.3);
+      side.crossVectors(d, nn).normalize();
+      vn.copy(nn).multiplyScalar(0.35).addScaledVector(cn, 0.65).normalize();
+      const vb = b.count;
+      for (const [cu, cv] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        const su = (cu - 0.5) * size;
+        p3.copy(base).addScaledVector(side, su).addScaledVector(d, (cv - 0.5) * size);
+        crownCoord(env, p3, q);
+        b.vert(p3, vn, [u0 + cu * (u1 - u0), v0 + cv * (v1 - v0)], k.col,
+          [info.phase[info.chainOf[i]], info.amp[i] * 0.8, 0, k.ao], [q.x, q.y, q.z, R], [nn.x, nn.y, nn.z, su]);
+      }
+      b.idx.push(vb, vb + 1, vb + 2, vb + 1, vb + 3, vb + 2);
+      count++;
     }
-    b.idx.push(vb, vb + 1, vb + 2, vb + 1, vb + 3, vb + 2);
   }
-  return { buf: b, count: Math.min(k, order.length) };
+  return { buf: b, count };
 }
 
 /**
- * Grow one template. Returns { tpl, bark: [lod0..2], leaves: [lod0..2], stem, stats }.
- * stem(y) gives the stem axis position at height y (for stakes and ties).
+ * Grow one template. Returns { tpl, bark: [[lod0..2], [mirrored lod0..2]], leaves: [lod0..2],
+ * stem, stats }. stem(y) gives the stem axis position and radius at height y.
  */
 export function buildTreeTemplate(tpl, seed = 1) {
   const rng = RNG.from(seed, 'tree', tpl.id);
@@ -564,9 +690,10 @@ export function buildTreeTemplate(tpl, seed = 1) {
   const T1 = performance.now();
   const info = finishSkeleton(tpl, env, sk, rng);
   const T2 = performance.now();
-  const bark = [0, 1, 2].map((l) => barkGeometry(tpl, env, sk, info, l, RNG.from(seed, 'bark', l, tpl.id)));
+  const barkBufs = [0, 1, 2].map((l) => barkGeometry(tpl, env, sk, info, l, RNG.from(seed, 'bark', l, tpl.id)));
   const sites = leafSites(tpl, env, sk, info, RNG.from(seed, 'sites', tpl.id));
-  const fol = [0, 1, 2].map((l) => foliageGeometry(tpl, env, sk, info, sites, l, RNG.from(seed, 'leaf', l, tpl.id)));
+  const cards = cardLayout(tpl, env, sk, info, sites, RNG.from(seed, 'cards', tpl.id));
+  const fol = [0, 1, 2].map((l) => foliageGeometry(tpl, env, sk, info, cards, l, RNG.from(seed, 'leaf', l, tpl.id)));
   const stemNodes = [];
   for (let i = 0; i < sk.n; i++) if (sk.trunk[i]) stemNodes.push([sk.p[i].clone(), info.r[i]]);
   stemNodes.sort((a, b) => a[0].y - b[0].y);
@@ -583,46 +710,48 @@ export function buildTreeTemplate(tpl, seed = 1) {
   };
   return {
     tpl, stem,
-    bark: bark.map((x) => x.geometry()),
-    leaves: fol.map((f, l) => {
-      const g = f.buf.geometry();
-      if (l === 2) g.userData.boundsPad = FOLIAGE[tpl.species].clumpCard * 0.6;
-      return g;
-    }),
+    bark: [barkBufs.map((x) => x.geometry()), barkBufs.map((x) => x.geometry(true))],
+    leaves: fol.map((f) => f.buf.geometry()),
     stats: { nodes: sk.n, cards: fol.map((f) => f.count), chains: info.chains.length,
       ms: [T1 - T0, T2 - T1, performance.now() - T2].map((x) => +x.toFixed(1)) },
   };
 }
 
 /**
- * Shrub mound for a planter, in planter space (origin at the soil surface centre).
+ * Shrub mound for a planter, in planter space (origin at the soil surface centre), with
+ * flowers as upright crossed umbel cards on stalks above the leaves.
  * Returns { leaves: [lod0, lod1 (= lod0), lod2] } (no bark: the stems are hidden in the foliage).
  */
 export function buildShrubTemplate(sh, seed = 1) {
   const rng = RNG.from(seed, 'shrub', sh.id);
   const fol = FOLIAGE.shrub;
-  const b0 = new Buf(), b1 = new Buf();
+  const b0 = new Buf(LEAF_SPEC), b1 = new Buf(LEAF_SPEC);
   const p = new THREE.Vector3(), d = new THREE.Vector3(), nn = new THREE.Vector3(), side = new THREE.Vector3();
-  const p3 = new THREE.Vector3(), cn = new THREE.Vector3(), vn = new THREE.Vector3();
+  const p3 = new THREE.Vector3(), cn = new THREE.Vector3(), vn = new THREE.Vector3(), q = new THREE.Vector3();
   const hw = sh.width / 2, hd = sh.depth / 2;
-  const card = (cellIdx, size, pos, dir, normal, col, phase, ao) => {
+  const R = Math.max(hw, hd, sh.height);
+  const cc = (v) => q.set(v.x / R, (v.y - sh.height * 0.3) / R, v.z / R);
+  const card = (buf, cellIdx, size, pos, dir, normal, col, phase, ao, rows, cupped, nblend = 0.6) => {
     const [u0, v0, u1, v1] = cellRect(cellIdx);
     side.crossVectors(dir, normal).normalize();
-    const vb = b0.count;
-    for (let iv = 0; iv <= 2; iv++) {
-      const v = iv / 2;
+    const vb = buf.count;
+    for (let iv = 0; iv <= rows; iv++) {
+      const v = iv / rows;
       for (let iu = 0; iu <= 2; iu++) {
         const u = iu / 2, su = (u - 0.5) * size;
-        p3.copy(pos).addScaledVector(dir, v * size).addScaledVector(side, su).addScaledVector(normal, Math.abs(su) * 0.25 - 0.1 * v * v * size);
-        vn.copy(normal).multiplyScalar(0.4).addScaledVector(cn, 0.6).normalize();
-        b0.vert(p3, vn, u0 + u * (u1 - u0), v0 + (0.01 + v * 0.98) * (v1 - v0), col, [phase, 0.25 + 0.4 * v, v * 0.6, ao]);
+        p3.copy(pos).addScaledVector(dir, v * size).addScaledVector(side, su).addScaledVector(normal, cupped ? Math.abs(su) * 0.25 - 0.1 * v * v * size : 0);
+        vn.copy(normal).multiplyScalar(1 - nblend).addScaledVector(cn, nblend).normalize();
+        cc(p3);
+        buf.vert(p3, vn, [u0 + u * (u1 - u0), v0 + (0.01 + v * 0.98) * (v1 - v0)], col, [phase, 0.25 + 0.4 * v, cupped ? v * 0.6 : v * 0.3, ao],
+          [q.x, q.y, q.z, R], [normal.x, normal.y, normal.z, su]);
       }
     }
-    for (let iv = 0; iv < 2; iv++) for (let iu = 0; iu < 2; iu++) {
+    for (let iv = 0; iv < rows; iv++) for (let iu = 0; iu < 2; iu++) {
       const a = vb + iv * 3 + iu, c2 = a + 3;
-      b0.idx.push(a, a + 1, c2, a + 1, c2 + 1, c2);
+      buf.idx.push(a, a + 1, c2, a + 1, c2 + 1, c2);
     }
   };
+  const leafCells = sh.flowers ? [...fol.cells, CELL.pelargonium[0]] : fol.cells;
   for (let s = 0; s < sh.shoots; s++) {
     p.set(rng.range(-hw, hw) * 0.85, rng.range(-0.02, sh.height * 0.45), rng.range(-hd, hd) * 0.85);
     // mound normal: ellipsoid over the planter
@@ -634,29 +763,46 @@ export function buildShrubTemplate(sh, seed = 1) {
     nn.applyAxisAngle(d, rng.range(-0.6, 0.6));
     const v = rng.range(0.86, 1.1);
     const ao = 0.55 + 0.45 * Math.min(1, (p.y + 0.05) / (sh.height * 0.6));
-    card(fol.cells[0], fol.card * rng.range(0.8, 1.2), p, d, nn, [v, v, v], rng.range(0, 6.28), ao);
+    card(b0, rng.pick(leafCells), fol.card * rng.range(0.8, 1.2), p, d, nn, [v, v, v], rng.range(0, 6.28), ao, 2, true);
   }
+  // flowers: umbels on stalks, two upright cards crossed at 90 degrees
   for (let f = 0; f < sh.flowers; f++) {
-    p.set(rng.range(-hw, hw) * 0.8, sh.height * rng.range(0.45, 0.8), rng.range(-hd, hd) * 0.8);
+    p.set(rng.range(-hw, hw) * 0.78, sh.height * rng.range(0.35, 0.62), rng.range(-hd, hd) * 0.78);
     cn.set(p.x / (hw * hw), p.y / (sh.height * sh.height), p.z / (hd * hd)).normalize();
-    d.set(rng.range(-1, 1), 0.2, rng.range(-1, 1)).normalize();
-    nn.copy(UP).addScaledVector(d, -d.y).normalize();
-    card(11, rng.range(0.28, 0.36), p, d, nn, [1, 1, 1], rng.range(0, 6.28), 0.95);
+    const h = rng.range(0.18, 0.26);
+    d.set(rng.range(-0.12, 0.12), 1, rng.range(-0.12, 0.12)).normalize();
+    const a0 = rng.range(0, Math.PI);
+    const tint = rng.pick([[1, 1, 1], [1.05, 0.85, 1.25], [0.95, 1.1, 1.1], [1.08, 1.0, 0.9]]);
+    for (let k = 0; k < 2; k++) {
+      nn.set(Math.cos(a0 + k * Math.PI / 2), 0, Math.sin(a0 + k * Math.PI / 2));
+      nn.addScaledVector(d, -nn.dot(d)).normalize();
+      // the cell's attachment edge (v0) is the top of the umbel: build from the top down
+      p3.copy(p).addScaledVector(d, h);
+      const top = p3.clone();
+      card(b0, CELL.umbel[0], h, top, d.clone().negate(), nn.clone(), tint, rng.range(0, 6.28), 0.95, 2, false, 0.2);
+    }
   }
-  // lod 1: a few clumps over the mound
-  const [u0, v0, u1, v1] = cellRect(fol.clump);
+  // lod 2: a few crossed clumps over the mound
+  const [u0, v0, u1, v1] = cellRect(fol.clumps[0]);
   const nC = Math.max(3, Math.round((sh.width * sh.depth) / 0.12));
   for (let c = 0; c < nC; c++) {
     p.set(rng.range(-hw, hw) * 0.7, sh.height * rng.range(0.25, 0.6), rng.range(-hd, hd) * 0.6);
     cn.set(p.x, p.y + 0.2, p.z).normalize();
-    const size = fol.clumpCard * rng.range(0.4, 0.55);
-    const vb = b1.count;
-    for (const [cx, cy, uu, vv] of [[-1, -1, 0, 1], [1, -1, 1, 1], [-1, 1, 0, 0], [1, 1, 1, 0]]) {
-      b1.vert(p, cn, u0 + uu * (u1 - u0), v0 + vv * (v1 - v0), [1, 1, 1], [0, 0.2, 0, 0.85], [cx * size, cy * size, 1]);
+    const size = fol.clumpCard * rng.range(0.8, 1.1);
+    for (let k = 0; k < 2; k++) {
+      nn.copy(k ? UP : cn).addScaledVector(k ? cn : UP, 0.3).normalize();
+      d.set(-nn.z, 0, nn.x); if (d.lengthSq() < 1e-4) d.set(1, 0, 0); d.normalize().applyAxisAngle(nn, rng.range(0, 6.28));
+      side.crossVectors(d, nn).normalize();
+      const vb = b1.count;
+      for (const [cu, cv] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+        const su = (cu - 0.5) * size;
+        p3.copy(p).addScaledVector(side, su).addScaledVector(d, (cv - 0.5) * size);
+        cc(p3);
+        b1.vert(p3, cn, [u0 + cu * (u1 - u0), v0 + cv * (v1 - v0)], [1, 1, 1], [0, 0.2, 0, 0.85], [q.x, q.y, q.z, R], [nn.x, nn.y, nn.z, su]);
+      }
+      b1.idx.push(vb, vb + 1, vb + 2, vb + 1, vb + 3, vb + 2);
     }
-    b1.idx.push(vb, vb + 1, vb + 2, vb + 1, vb + 3, vb + 2);
   }
   const g0 = b0.geometry(), g2 = b1.geometry();
-  g2.userData.boundsPad = fol.clumpCard * 0.4;
   return { leaves: [g0, g0, g2] };
 }

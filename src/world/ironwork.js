@@ -1,69 +1,54 @@
 import * as THREE from 'three';
 import { RNG, hash2 } from '../core/rng.js';
-import { facadePlan } from './facadePlan.js';
+import { facadePlan, archPoint } from './facadePlan.js';
 import { disposeObject } from './streaming.js';
 import { DESIGNS, RAIL_H } from './ironwork/patterns.js';
-import { bayGeometry, postGeometry, buildAtlas, atlasV } from './ironwork/railings.js';
+import { bayGeometry, postGeometry, buildAtlas, atlasV, ATLAS, TOL } from './ironwork/railings.js';
 import {
-  slabPath, writeSlab, corbelGeometry, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE,
+  slabPath, writeSlab, corbelGeometry, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE, makeStoneMaterial,
 } from './ironwork/stone.js';
 import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
-import { Instancer } from './ironwork/instancer.js';
-import { makeMaterials, PAINTS, uIronPx, nearLimit } from './ironwork/mats.js';
+import { LodInstancer } from './ironwork/instancer.js';
+import { makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, geoLimit } from './ironwork/mats.js';
 import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwork/attach.js';
 
 // Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
-// railings (instanced geometry near, alpha-tested cards far) or stone balustrades.
-// Everything is placed from facadePlan(lot) in the lot's facade frame (u along the wall,
-// v up, w out of the wall). Contract: docs/ARCHITECTURE.md.
+// railings (instanced geometry near, coverage cards far) or stone balustrades, planters,
+// AC units, flags and dishes. Everything is placed from facadePlan(lot) in the lot's
+// facade frame (u along the wall, v up, w out of the wall). Contract: docs/ARCHITECTURE.md.
 //
-// Distance handling inside a lod-0 chunk (all switches are per frame in update(), on
-// projected pixel sizes, so they follow the FOV):
-//   rail0/1/2      full / light / coarse railing bays, one mesh per lot and floor, chosen
-//                  by the nearest balcony; created lazily when the camera first comes near
-//   post0/1        corner posts with turned finials / plain posts, same grouping
-//   carve0/carve1  carved consoles, turned balusters and full geraniums / plain stand-ins,
-//                  per chunk
-// Railing cards are always drawn; their shader dithers them in exactly where the
-// railing geometry dithers out (see ironwork/mats.js). Far chunks (lod 1) have cards only.
+// Level of detail is chosen per INSTANCE (each railing bay, post, console, baluster,
+// plant) in update(), from projected sizes, so it follows the FOV:
+//   rail   bay tessellation level whose chord error stays under 0.4 px (railings.js TOL),
+//          then nothing once bars are thinner than ~0.8 px (the cards carry on)
+//   post   finial post / plain post, same range
+//   carve  carved consoles, turned balusters, full geraniums / plain stand-ins
+// Railing cards are always present: they fade in under the geometry and take over from
+// it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only.
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
-const _c4 = new THREE.Matrix4();
+const _c4 = new THREE.Matrix4(), _ap = {};
 
-// Linear albedo palettes for balcony gardening.
+// Linear albedo palettes for balcony gardening (geranium reds and pinks dominate).
 const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0.5, 0.02, 0.17], [0.85, 0.2, 0.1], [0.8, 0.78, 0.74]];
-const POTS = [[0.42, 0.16, 0.08], [0.32, 0.11, 0.05], [0.36, 0.14, 0.06], [0.18, 0.09, 0.05], [0.06, 0.12, 0.06], [0.55, 0.55, 0.52]];
+const FLOWER_W = [0.3, 0.24, 0.2, 0.12, 0.08, 0.06];
+const POTS = [[0.42, 0.16, 0.08], [0.32, 0.11, 0.05], [0.36, 0.14, 0.06], [0.2, 0.1, 0.055], [0.07, 0.11, 0.07], [0.42, 0.41, 0.38]];
 const CHAIRS = [[0.75, 0.75, 0.72], [0.07, 0.2, 0.1], [0.5, 0.5, 0.48]];
 const LEAFY = [0.09, 0.16, 0.05];
 const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 0.12, 0.1], [0.3, 0.45, 0.35], [0.75, 0.65, 0.2]];
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
 const DISH_DIR = new THREE.Vector3(-0.55, 0.64, 0.53).normalize();
+// Stone tints are relative to the cream reference, exactly as the buildings tint theirs.
+const CREAM = [0.86, 0.80, 0.68];
 
-/** Distance from p to the nearest anchor sphere surface (anchors: x, y, z, r, ...). */
-function nearest(a, p) {
-  let best = Infinity;
-  for (let i = 0; i < a.length; i += 4) {
-    const dx = a[i] - p.x, dy = a[i + 1] - p.y, dz = a[i + 2] - p.z;
-    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - a[i + 3];
-    if (d < best) best = d;
-  }
-  return best;
-}
-
-/** Shows each mesh whose nearest anchor lies in [lo, hi) metres from the camera. */
-function showInBand(list, cam, lo, hi) {
-  for (const m of list) {
-    const d = nearest(m.userData.anchors, cam);
-    m.visible = d >= lo && d < hi;
-  }
-}
+const weighted = (r, w) => { let x = r.next() * w.reduce((a, b) => a + b, 0); for (let i = 0; i < w.length; i++) { x -= w[i]; if (x <= 0) return i; } return w.length - 1; };
 
 /** Sphere around facade anchors (x, y, z, r, ...) padded for attachments and flags. */
 function boundsOf(a) {
-  const box = new THREE.Box3();
-  for (let i = 0; i < a.length; i += 4) box.expandByPoint(_p.set(a[i], a[i + 1], a[i + 2]));
-  const sp = box.getBoundingSphere(new THREE.Sphere());
+  const bx = new THREE.Box3();
+  for (let i = 0; i < a.length; i += 4) bx.expandByPoint(_p.set(a[i], a[i + 1], a[i + 2]));
+  const sp = bx.getBoundingSphere(new THREE.Sphere());
   let r = 0;
   for (let i = 0; i < a.length; i += 4) r = Math.max(r, sp.center.distanceTo(_p.set(a[i], a[i + 1], a[i + 2])) + a[i + 3]);
   sp.radius = r + 6;
@@ -77,19 +62,133 @@ function lotStyle(lot, plan) {
   const design = era === 'modern' ? r.weighted([[5, 0.6], [2, 0.25], [6, 0.15]])
     : era === 'mandate' ? r.weighted([[2, 0.24], [6, 0.22], [3, 0.18], [0, 0.14], [5, 0.08], [1, 0.14]])
       : r.weighted([[0, 0.26], [1, 0.22], [4, 0.22], [3, 0.16], [6, 0.14]]);
-  return {
-    design,
-    paint: r.chance(0.8) ? -1 : r.int(0, PAINTS.length - 1),
-    railH: r.range(0.96, 1.07),
-    corbel: era === 'modern' ? -1 : r.chance(0.6) ? 0 : 1,
-    slabVariant: era === 'modern' || (era === 'mandate' && r.chance(0.45)) ? 1 : 0,
-    roundStone: r.chance(0.45),
-    tint: plan.style.tint,
-    greenery: r.chance(0.25) ? 0 : r.range(0.2, 1),   // how much the residents garden
-    flowers: r.int(0, FLOWERS.length - 1),
-    pots: r.int(0, POTS.length - 1),
-    flag: r.int(0, 3),
+  const paint = r.chance(0.78) ? -1 : weighted(r, PAINT_W);
+  const railH = r.range(0.96, 1.07);
+  const corbel = era === 'modern' ? -1 : r.chance(0.6) ? 0 : 1;
+  const slabVariant = era === 'modern' || (era === 'mandate' && r.chance(0.45)) ? 1 : 0;
+  const roundStone = r.chance(0.45);
+  const greenery = r.chance(0.1) ? 0 : r.range(0.25, 1);   // how much the residents garden
+  const flowers = weighted(r, FLOWER_W);
+  const pots = r.int(0, POTS.length - 1);
+  const flag = r.int(0, 3);
+  const k = r.range(0.95, 1.02);
+  const tint = plan.style.tint.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k);
+  return { design, paint, railH, corbel, slabVariant, roundStone, tint, greenery, flowers, pots, flag };
+}
+
+// ---------------------------------------------------------------- clearance of openings
+// Dressing around an opening's head (surrounds, voussoir rings, keystones, hoods, door
+// portals), as the buildings module may draw it. Conservative reaches (metres).
+function headProfile(o, ground) {
+  const door = o.kind === 'door';
+  const arched = o.rise > 0.01;
+  const reach = ground ? (door ? 0.8 : arched ? 0.62 : 0.34) : 0.4;
+  const hp = {
+    u0: o.uc - o.w / 2 - reach, u1: o.uc + o.w / 2 + reach,
+    flat: o.y + o.h + (ground ? (door ? (arched ? 1.06 : 0.72) : 0.52) : 0.5),
+    jamb: o.spring + 0.06, arc: null, door,
   };
+  if (arched) {
+    const T = ground ? 0.6 : 0.36, a = [];
+    for (let i = 0; i <= 20; i++) {
+      archPoint(o, i / 20, _ap, T);
+      a.push(_ap.u, _ap.v + (Math.abs(_ap.u - o.uc) < 0.22 ? 0.1 : 0)); // keystone
+    }
+    hp.arc = a;
+  }
+  return hp;
+}
+
+/** Highest point of an opening's dressing at facade position u (−Infinity if clear). */
+function headTopAt(hp, u) {
+  if (u < hp.u0 || u > hp.u1) return -Infinity;
+  if (hp.door || !hp.arc) return hp.flat;
+  const a = hp.arc, n = a.length;
+  if (u <= a[0]) return Math.max(hp.jamb, a[1]);
+  if (u >= a[n - 2]) return Math.max(hp.jamb, a[n - 1]);
+  let v = hp.jamb;
+  for (let i = 0; i < n - 2; i += 2) {
+    const ua = a[i], ub = a[i + 2];
+    if ((u - ua) * (u - ub) <= 0) v = Math.max(v, a[i + 1] + (a[i + 3] - a[i + 1]) * ((u - ua) / ((ub - ua) || 1)));
+  }
+  return v;
+}
+
+const planHeads = new WeakMap();
+/** Head profiles of the openings on each floor of a plan (cached). */
+function headsOf(plan) {
+  let h = planHeads.get(plan);
+  if (!h) {
+    h = [];
+    for (const o of plan.openings) (h[o.floor] ||= []).push(headProfile(o, o.floor === 0));
+    planHeads.set(plan, h);
+  }
+  return h;
+}
+
+/** Console positions for a balcony: n evenly spread consoles, each moved to the nearest
+ *  pier where it clears the dressing of the openings below; where no pier is wide
+ *  enough it is shortened to stop above the head, or left out. → [{u, h}] */
+function placeConsoles(plan, bal, n, Hc) {
+  const soffit = bal.y - bal.slabT, len = bal.u1 - bal.u0;
+  const W2 = CORBEL.W / 2;
+  const lo = bal.u0 + W2 + 0.03, hi = bal.u1 - W2 - 0.03;
+  if (hi <= lo) return [];
+  const heads = (headsOf(plan)[bal.floor - 1] || []).filter((hp) => hp.u1 > bal.u0 - 0.5 && hp.u0 < bal.u1 + 0.5);
+  const step = 0.03, N = Math.floor((hi - lo) / step) + 1;
+  const top = new Float32Array(N).fill(-1e9);
+  if (heads.length) {
+    for (let i = 0; i < N; i++) {
+      const u = lo + i * step;
+      let t = -1e9;
+      for (const hp of heads) for (let s = -W2 - 0.02; s <= W2 + 0.021; s += 0.05) t = Math.max(t, headTopAt(hp, u + s));
+      top[i] = t;
+    }
+  }
+  const clear = soffit - Hc - 0.075; // knob below the console + 3 cm
+  const inset = Math.min(0.32, len * 0.1) + W2;
+  const spacing = n > 1 ? (len - 2 * inset) / (n - 1) : len;
+  const maxShift = Math.min(0.9, Math.max(0.3, spacing * 0.45));
+  const out = [];
+  const taken = (u) => out.some((c) => Math.abs(c.u - u) < 0.42);
+  for (let k = 0; k < n; k++) {
+    const ud = n > 1 ? bal.u0 + inset + spacing * k : (bal.u0 + bal.u1) / 2;
+    const id = Math.round((Math.min(hi, Math.max(lo, ud)) - lo) / step);
+    let best = -1;
+    for (let d = 0; d * step <= maxShift && best < 0; d++) {
+      for (const i of d ? [id - d, id + d] : [id]) {
+        if (i < 0 || i >= N || top[i] >= clear || taken(lo + i * step)) continue;
+        best = i; break;
+      }
+    }
+    if (best >= 0) { out.push({ u: lo + best * step, h: Hc }); continue; }
+    // no clear pier nearby: the tallest console that still stops above the head
+    let bi = -1;
+    for (let d = 0; d * step <= 0.45; d++) {
+      for (const i of [id - d, id + d]) {
+        if (i < 0 || i >= N || taken(lo + i * step)) continue;
+        if (bi < 0 || top[i] < top[bi]) bi = i;
+      }
+    }
+    if (bi < 0) continue;
+    const h = soffit - top[bi] - 0.075;
+    if (h >= 0.2) out.push({ u: lo + bi * step, h: Math.min(Hc, h) });
+  }
+  return out;
+}
+
+/** Bracket position for a facade flag: the pier nearest the planned spot that is clear
+ *  of the windows on that floor (null if none). */
+function flagPier(plan, f) {
+  const fl = plan.floors.find((x) => f.y >= x.y && f.y < x.y + x.h) || plan.floors[plan.floors.length - 1];
+  const cands = [plan.pierL * 0.5, ...plan.bays.slice(1).map((b) => b.u0), plan.width - plan.pierR * 0.5];
+  const ops = plan.openings.filter((o) => o.floor === fl.index);
+  let best = null;
+  for (const u of cands) {
+    if (ops.some((o) => Math.abs(u - o.uc) < o.w / 2 + 0.42)) continue;
+    if (best === null || Math.abs(u - f.u) < Math.abs(best - f.u)) best = u;
+  }
+  return best;
 }
 
 const ironwork = {
@@ -98,16 +197,19 @@ const ironwork = {
   async init(app) {
     this.atlas = buildAtlas();
     this.mats = makeMaterials(app, this.atlas);
+    this.stoneMat = makeStoneMaterial(app);
     this.geo = {
-      bay: [0, 1, 2].map((lod) => DESIGNS.map((d) => bayGeometry(d, lod))),
+      bay: DESIGNS.map((d) => [0, 1, 2].map((lod) => bayGeometry(d, lod))),
       post: [postGeometry(0), postGeometry(1)],
-      corbel: [[corbelGeometry(0, 0), corbelGeometry(1, 0)], [corbelGeometry(0, 1), corbelGeometry(1, 1)]],
+      corbel: [[corbelGeometry(0, 0), corbelGeometry(0, 1)], [corbelGeometry(1, 0), corbelGeometry(1, 1)]],
       baluster: [balusterGeometry(0), balusterGeometry(1)],
     };
     this.att = buildAttachAssets();
     this.amats = makeAttachMaterials(app);
     this.live = new Set();
-    this.syncT = 0;
+    this.uniforms = { uIronPx, uIronA2C, uIronCardK }; // for inspection / debugging
+    this.lastCam = new THREE.Vector3(1e9, 0, 0);
+    this.lastPx = 0;
   },
 
   build(chunk, app) {
@@ -117,21 +219,20 @@ const ironwork = {
     const ctx = {
       lod: chunk.lod,       // detail level of the lot being built (may drop below the chunk's)
       chunkLod: chunk.lod,
-      inst: new Instancer(),
-      stone: new GeoWriter(),
+      inst: new LodInstancer(),
+      stone: new GeoWriter(4096, { kind: true }),
       cards: new GeoWriter(),
       parts: new GeoWriter(),
       ac: new GeoWriter(),
+      stains: new GeoWriter(256),
       flags: [],
-      anchors: [],          // balcony centres (x, y, z, r): carving distance switch
       bounds: [],           // facade centres (x, y, z, r): culling sphere of the merged meshes
     };
     for (const lot of lots) {
-      // deep side-street facades are only seen looking down the side street: skipped in
-      // far chunks and built with far-range detail in near ones
-      const deep = lot.sideStreet && lot.x0 > 24;
-      if (chunk.lod && deep) continue;
-      ctx.lod = chunk.lod || deep ? 1 : 0;
+      // side-street facades are seen down the side street: skipped in far chunks beyond
+      // the corner, built with far-range detail deep in near ones
+      if (chunk.lod && lot.sideStreet && lot.x0 > 24) continue;
+      ctx.lod = chunk.lod || (lot.sideStreet && lot.x0 > 60) ? 1 : 0;
       const plan = facadePlan(lot);
       const st = lotStyle(lot, plan);
       _p.set(lot.frame.width / 2, plan.totalHeight / 2, 0).applyMatrix4(lot.frame.matrix);
@@ -150,31 +251,25 @@ const ironwork = {
     const { y, slabT: T, depth: D, u0, u1 } = bal;
     const isStone = bal.railing === 'stone';
     const tint = st.tint;
-    const dirt = r.range(0.86, 1.0);
+    const dirt = r.range(0.88, 1.0);
 
     // ---- slab
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
-    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt);
+    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt, D);
 
-    // ---- consoles (far side-street facades are only ever seen edge-on: skipped)
-    if (st.corbel >= 0 && !(lod && lot.sideStreet)) {
-      const n = Math.max(2, bal.corbels | 0), len = u1 - u0;
-      const inset = Math.min(0.32, len * 0.1) + CORBEL.W / 2;
+    // ---- consoles, on the piers between the openings below
+    if (st.corbel >= 0) {
       const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
-      const sy = Hc / CORBEL.H, sz = (D - 0.07) / CORBEL.D;
+      const sz = (D - 0.07) / CORBEL.D;
       const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
-      for (let i = 0; i < n; i++) {
-        const u = u0 + inset + ((len - 2 * inset) * i) / (n - 1);
-        _l.makeScale(1, sy, sz).setPosition(u, y - T, 0);
+      for (const { u, h } of placeConsoles(plan, bal, Math.max(2, bal.corbels | 0), Hc)) {
+        // shortened consoles over a high head become the stepped (tiered) kind
+        const variant = h < Hc * 0.8 ? 1 : st.corbel;
+        _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
         _m.multiplyMatrices(F, _l);
-        if (lod) {
-          // far chunks: one plain console shape for every building, one draw per chunk
-          inst.add('corbelFar', this.geo.corbel[1][0], this.mats.stone, _m, c);
-        } else {
-          inst.add(`corbel${st.corbel}`, this.geo.corbel[0][st.corbel], this.mats.stone, _m, c,
-            { tag: 'carve0', alt: { geometry: this.geo.corbel[1][st.corbel], tag: 'carve1' } });
-        }
+        if (lod) inst.add('corbelFar', [this.geo.corbel[0][1]], this.stoneMat, _m, c, { radius: 1 });
+        else inst.add(`corbel${variant}`, this.geo.corbel[variant], this.stoneMat, _m, c, { cls: 'carve', radius: 1 });
       }
     }
 
@@ -184,31 +279,30 @@ const ironwork = {
     else this.ironRailing(ctx, lot, bal, st);
 
     this.balconyContents(ctx, lot, plan, st, bal, index, r);
-
-    _p.set((u0 + u1) / 2, y + 0.5, D / 2).applyMatrix4(F);
-    ctx.anchors.push(_p.x, _p.y, _p.z, (u1 - u0) / 2 + 1);
   },
 
   /** Flower boxes on the railing, pots, a chair, an AC unit, now and then a flag. */
   balconyContents(ctx, lot, plan, st, bal, index, r) {
-    const { lod, inst } = ctx;
+    const { lod } = ctx;
     const F = lot.frame.matrix, A = this.att;
     const { y, depth: D, u0, u1 } = bal;
     const len = u1 - u0, hs = st.railH;
     const g = st.greenery;
     const potCol = POTS[(st.pots + (r.chance(0.2) ? 1 : 0)) % POTS.length];
-    const flower = () => FLOWERS[r.chance(0.75) ? st.flowers : r.int(0, FLOWERS.length - 1)];
+    const flower = () => FLOWERS[r.chance(0.7) ? st.flowers : weighted(r, FLOWER_W)];
     const iron = bal.railing !== 'stone';
     const top = y + (iron ? RAIL_H * hs : BALUSTRADE.H);
-    // flower boxes hung on the front rail (mostly outside), visible from afar
-    if (g > 0 && r.chance(0.2 + 0.55 * g)) {
-      const n = len > 2.2 && r.chance(0.5) ? 2 : 1;
-      const outside = iron && r.chance(0.65);
-      const w = D - (iron ? 0.05 : 0.13) + (outside ? 0.13 : -0.13);
+    // flower boxes hung on the handrail (mostly outside), top 3 cm under the rail top
+    if (g > 0 && r.chance(0.45 + 0.45 * g)) {
+      const n = len > 3.2 ? r.int(2, 3) : len > 2 ? 2 : 1;
+      const outside = !iron || r.chance(0.7);
+      const w = iron ? D - 0.05 + (outside ? 0.13 : -0.13) : D - 0.13 + 0.2;
       for (let k = 0; k < n; k++) {
-        const u = n === 1 ? u0 + len * r.range(0.35, 0.65) : u0 + len * (k ? 0.72 : 0.28);
-        _l.makeScale(0.82, 1, 1).setPosition(u, top - 0.17, w);
-        this.planter(ctx, _m.multiplyMatrices(F, _l), potCol, flower());
+        const u = u0 + len * ((k + 0.5) / n) + r.range(-0.12, 0.12) * len / n;
+        _l.makeScale(0.82, 1, 1).setPosition(THREE.MathUtils.clamp(u, u0 + 0.45, u1 - 0.45), top - 0.19, w);
+        _m.multiplyMatrices(F, _l);
+        this.planter(ctx, _m, potCol, flower());
+        if (!lod && iron) writeTemplate(ctx.parts, A.hooks[outside ? 0 : 1], _m);
       }
     }
     if (lod) return;
@@ -223,7 +317,7 @@ const ironwork = {
         writeTemplate(ctx.parts, A.pot, _m.multiplyMatrices(F, _l), r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)]);
         _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y + 0.2 * s, w);
         // not every pot is in bloom: a green tint turns the umbels into more foliage
-        this.plant(ctx, 0, _m.multiplyMatrices(F, _l), r.chance(0.72) ? flower() : LEAFY);
+        this.plant(ctx, 0, _m.multiplyMatrices(F, _l), r.chance(0.75) ? flower() : LEAFY);
       }
     }
     // a plastic chair
@@ -250,7 +344,7 @@ const ironwork = {
 
   /** Window AC units, window flower boxes, flags and satellite dishes of one facade. */
   facadeAttachments(ctx, lot, plan, st) {
-    const { lod, inst } = ctx;
+    const { lod } = ctx;
     const F = lot.frame.matrix, A = this.att;
     const r = new RNG(hash2(lot.seed, 0x5eed));
     for (const o of plan.openings) {
@@ -267,7 +361,10 @@ const ironwork = {
         this.planter(ctx, _m.multiplyMatrices(F, _l), POTS[st.pots], FLOWERS[st.flowers]);
       }
     }
-    for (const f of plan.flags) this.flag(ctx, F, f.u, f.y, 0, st, r, 1);
+    for (const f of plan.flags) {
+      const u = flagPier(plan, f);
+      if (u !== null) this.flag(ctx, F, u, f.y, 0, st, r, 1);
+    }
     // satellite dish on the top floor, only where the facade can see the satellite
     if (!lod && r.chance(0.14) && plan.bays.length > 1) {
       _a.copy(lot.frame.nDir);
@@ -285,7 +382,7 @@ const ironwork = {
   planter(ctx, m, potCol, flowerCol) {
     const A = this.att;
     if (ctx.lod) {
-      // far: box, green mound and flower patches merged into the parts mesh
+      // far: box, foliage mound and flower clumps merged into the parts mesh
       writeTemplate(ctx.parts, A.bloomLow.box, m, potCol);
       writeTemplate(ctx.parts, A.bloomLow.green, m);
       writeTemplate(ctx.parts, A.bloomLow.flowers, m, flowerCol);
@@ -297,20 +394,22 @@ const ironwork = {
     this.plant(ctx, 1, _c4.multiplyMatrices(m, _l), flowerCol);
   },
 
-  /** Instanced geranium (kind 0 pot, 1 planter): full and light versions share instances. */
+  /** Instanced geranium (kind 0 pot, 1 planter): full and light versions per instance. */
   plant(ctx, kind, m, tint) {
     const P = this.att.plants;
-    ctx.inst.add(`plant${kind}`, P[0][kind], this.amats.plant, m, tint,
-      { castShadow: false, tag: 'carve0', alt: { geometry: P[1][kind], tag: 'carve1' } });
+    ctx.inst.add(`plant${kind}`, [P[0][kind], P[1][kind]], this.amats.plant, m, tint, { cls: 'carve', castShadow: false });
   },
 
   /** Split AC unit (matrix: unit frame on the wall); textured body near, plain box far. */
   acUnit(ctx, m, wallMounted) {
     const A = this.att;
-    if (ctx.lod) { writeTemplate(ctx.parts, A.acBody, m, [0.62, 0.61, 0.58]); return; }
-    writeTemplate(ctx.ac, A.acBody, m);
+    if (ctx.lod) { writeTemplate(ctx.parts, A.acBody, m, [0.56, 0.54, 0.49]); return; }
+    writeTemplate(ctx.ac, A.acBody, m, wallMounted ? [1, 1, 1] : [0.92, 0.92, 0.92]);
     writeTemplate(ctx.parts, A.acPipes, m);
-    if (wallMounted) writeTemplate(ctx.parts, A.acBrackets, m);
+    if (wallMounted) {
+      writeTemplate(ctx.parts, A.acBrackets, m);
+      writeTemplate(ctx.stains, A.acStain, m);
+    }
   },
 
   /** Flag on an angled pole: bracket at facade (u, v, w), pole out of the wall and up. */
@@ -339,8 +438,6 @@ const ironwork = {
     const painted = st.paint >= 0;
     const mat = painted ? this.mats.paint : this.mats.iron;
     const color = painted ? PAINTS[st.paint] : null;
-    // near meshes are per lot and floor, switched on their nearest balcony
-    const key = `${st.design}${painted ? 'p' : ''}:${lot.id}:${bal.floor}`;
     const hs = st.railH;
     const i = 0.05; // railing centre line inset from the slab edge
     const rp = [[u0 + i, 0], [u0 + i, D - i], [u1 - i, D - i], [u1 - i, 0]];
@@ -348,6 +445,7 @@ const ironwork = {
     const cc = painted ? color : this.mats.ironColor();
     cw.color(cc[0], cc[1], cc[2]);
     const vb = atlasV(st.design, 0), vt = atlasV(st.design, RAIL_H);
+    const bayKey = `bay${st.design}${painted ? 'p' : ''}`;
     for (let k = 0; k < rp.length - 1; k++) {
       const A = rp[k], B = rp[k + 1];
       const du = B[0] - A[0], dw = B[1] - A[1], len = Math.sqrt(du * du + dw * dw);
@@ -358,11 +456,7 @@ const ironwork = {
         for (let b = 0; b < nb; b++) {
           const o = b * design.W * sx;
           _l.set(tu * sx, 0, -tw, A[0] + tu * o, 0, hs, 0, y, tw * sx, 0, tu, A[1] + tw * o, 0, 0, 0, 1);
-          _m.multiplyMatrices(F, _l);
-          inst.add(`bay:${key}`, this.geo.bay[0][st.design], mat, _m, color, {
-            tag: 'rail0', castShadow: false, lazy: true,
-            alt: [{ geometry: this.geo.bay[1][st.design], tag: 'rail1' }, { geometry: this.geo.bay[2][st.design], tag: 'rail2' }],
-          });
+          inst.add(bayKey, this.geo.bay[st.design], mat, _m.multiplyMatrices(F, _l), color, { cls: 'rail', castShadow: false, radius: 0.8 });
         }
       }
       // card for this run (also casts the railing shadow at every distance)
@@ -371,18 +465,18 @@ const ironwork = {
       const c = cw.v(B[0], yt, B[1], nx, 0, nz, nb, vt), d = cw.v(A[0], yt, A[1], nx, 0, nz, 0, vt);
       cw.quad(a, b, c, d);
     }
-    if (!lod) {
-      for (const P of rp) {
-        _l.makeScale(1, hs, 1).setPosition(P[0], y, P[1]);
-        inst.add(`post:${key}`, this.geo.post[0], mat, _m.multiplyMatrices(F, _l), color,
-          { tag: 'post0', castShadow: false, lazy: true, alt: { geometry: this.geo.post[1], tag: 'post1' } });
+    // corner and wall-end posts: two crossed sprite quads each on the cards, geometry near
+    const pv0 = atlasV(ATLAS.POST_ROW, 0), pv1 = atlasV(ATLAS.POST_ROW, RAIL_H + 0.1), ph = ATLAS.POST_W / 2;
+    for (const P of rp) {
+      for (const [eu, ew] of [[1, 0], [0, 1]]) {
+        const yt = y + (RAIL_H + 0.1) * hs;
+        const a = cw.v(P[0] - eu * ph, y, P[1] - ew * ph, -ew, 0, eu, 0, pv0), b = cw.v(P[0] + eu * ph, y, P[1] + ew * ph, -ew, 0, eu, 1, pv0);
+        const c = cw.v(P[0] + eu * ph, yt, P[1] + ew * ph, -ew, 0, eu, 1, pv1), d = cw.v(P[0] - eu * ph, yt, P[1] - ew * ph, -ew, 0, eu, 0, pv1);
+        cw.quad(a, b, c, d);
       }
-      // anchors every ~2.5 m along the railing so long balconies switch detail piecewise
-      const na = Math.max(1, Math.round((u1 - u0) / 2.5)), rad = (u1 - u0) / na / 2 + 0.4;
-      for (let k = 0; k < na; k++) {
-        _p.set(u0 + ((k + 0.5) * (u1 - u0)) / na, y + 0.5, D / 2).applyMatrix4(F);
-        inst.anchor(`bay:${key}`, _p.x, _p.y, _p.z, rad);
-        inst.anchor(`post:${key}`, _p.x, _p.y, _p.z, rad);
+      if (!lod) {
+        _l.makeScale(1, hs, 1).setPosition(P[0], y, P[1]);
+        inst.add(`post${painted ? 'p' : ''}`, this.geo.post, mat, _m.multiplyMatrices(F, _l), color, { cls: 'post', castShadow: false, radius: 1.2 });
       }
     }
   },
@@ -433,8 +527,7 @@ const ironwork = {
         if (ped.some((P) => Math.hypot(P[0] - u, P[1] - w) < 0.17)) continue;
         if (j === n && k < path.length - 2) continue; // shared with the next segment
         _l.makeRotationY(r.range(0, Math.PI)).setPosition(u, y + BALUSTRADE.PLINTH, w);
-        inst.add('baluster', this.geo.baluster[0], this.mats.stone, _m.multiplyMatrices(F, _l), col,
-          { tag: 'carve0', alt: { geometry: this.geo.baluster[1], tag: 'carve1' } });
+        inst.add('baluster', this.geo.baluster, this.stoneMat, _m.multiplyMatrices(F, _l), col, { cls: 'carve' });
       }
     }
   },
@@ -442,48 +535,47 @@ const ironwork = {
   finish(ctx) {
     const group = new THREE.Group();
     group.name = 'ironwork';
-    const tags = { rail0: [], rail1: [], rail2: [], post0: [], post1: [], carve0: [], carve1: [] };
-    if (ctx.stone.count) {
-      const mesh = new THREE.Mesh(ctx.stone.toGeometry({ bounds: false }), this.mats.stone);
-      mesh.castShadow = mesh.receiveShadow = true;
-      mesh.name = 'ironwork:stone';
-      group.add(mesh);
-    }
-    if (ctx.cards.count) {
-      const mesh = new THREE.Mesh(ctx.cards.toGeometry({ bounds: false }), this.mats.card);
-      mesh.castShadow = mesh.receiveShadow = true;
-      mesh.name = 'ironwork:cards';
-      group.add(mesh);
-    }
-    for (const [w, mat, name] of [[ctx.parts, this.amats.parts, 'parts'], [ctx.ac, this.amats.ac, 'ac']]) {
-      if (!w.count) continue;
-      const mesh = new THREE.Mesh(w.toGeometry({ bounds: false }), mat);
-      mesh.castShadow = !ctx.chunkLod; mesh.receiveShadow = true;
+    const add = (W, mat, name, shadow, colors = true) => {
+      if (!W.count) return;
+      const mesh = new THREE.Mesh(W.toGeometry({ bounds: false, colors }), mat);
+      mesh.castShadow = shadow; mesh.receiveShadow = true;
       mesh.name = `ironwork:${name}`;
       group.add(mesh);
-    }
+    };
+    add(ctx.stone, this.stoneMat, 'stone', true);
+    add(ctx.cards, this.mats.card, 'cards', true);
+    add(ctx.parts, this.amats.parts, 'parts', !ctx.chunkLod);
+    add(ctx.ac, this.amats.ac, 'ac', !ctx.chunkLod);
+    add(ctx.stains, this.amats.stain, 'stains', false, false);
+    // one conservative sphere for all merged meshes (cheaper than scanning their vertices)
+    const sphere = boundsOf(ctx.bounds);
+    for (const m of group.children) m.geometry.boundingSphere = sphere.clone();
     if (ctx.flags.length) {
       // per-chunk copy of the cloth grid carrying the per-flag design / phase attribute
+      // (copied, not shared: disposing a chunk frees its geometry's GL buffers)
       const src = this.att.flag, geo = new THREE.BufferGeometry();
       for (const k of ['position', 'normal', 'uv']) geo.setAttribute(k, src.attributes[k].clone());
       geo.setIndex(src.index.clone());
       const n = ctx.flags.length, fa = new Float32Array(n * 3);
       const mesh = new THREE.InstancedMesh(geo, this.amats.flag, n);
-      ctx.flags.forEach((f, i) => { mesh.setMatrixAt(i, f.m); fa[i * 3] = f.uv[0]; fa[i * 3 + 1] = f.uv[1]; fa[i * 3 + 2] = f.phase; });
+      const fb = new THREE.Box3();
+      ctx.flags.forEach((f, i) => {
+        mesh.setMatrixAt(i, f.m);
+        fa[i * 3] = f.uv[0]; fa[i * 3 + 1] = f.uv[1]; fa[i * 3 + 2] = f.phase;
+        fb.expandByPoint(_p.setFromMatrixPosition(f.m));
+      });
       geo.setAttribute('aFlag', new THREE.InstancedBufferAttribute(fa, 3));
+      // the cloth hangs and moves up to ~1.5 m from the hoist: pad the culling sphere
+      mesh.boundingSphere = fb.getBoundingSphere(new THREE.Sphere());
+      mesh.boundingSphere.radius += 1.8;
       mesh.customDepthMaterial = this.amats.flagDepth;
       mesh.castShadow = mesh.receiveShadow = true;
-      mesh.frustumCulled = false; // cloth moves outside the static bounds
       mesh.name = 'ironwork:flags';
       group.add(mesh);
     }
-    // one conservative sphere for all merged meshes (cheaper than scanning their vertices)
-    const sphere = boundsOf(ctx.bounds);
-    for (const m of group.children) m.geometry.boundingSphere = sphere.clone();
-    const { meshes, pending } = ctx.inst.build(group);
-    for (const m of meshes) tags[m.userData.tag]?.push(m);
+    const sets = ctx.inst.build(group);
     if (!group.children.length) return null;
-    Object.assign(group.userData, tags, { pending, anchors: new Float32Array(ctx.anchors), lod: ctx.chunkLod });
+    Object.assign(group.userData, { sets, fresh: true, lod: ctx.chunkLod });
     this.live.add(group);
     return group;
   },
@@ -493,42 +585,31 @@ const ironwork = {
     disposeObject(obj);
   },
 
+  /** Distance limits per detail class for the current projection (see header). */
+  limits(px) {
+    const geo = geoLimit() + 0.5;
+    const d1 = (TOL[1] * px) / 0.4, d2 = (TOL[2] * px) / 0.4;
+    const carve = (0.03 * px) / 3.0; // 3 cm carving still covers 3 px
+    return { rail: [d1, d2, geo], post: [d2, geo], carve: [carve, Infinity] };
+  },
+
   update(dt, app) {
     // projected pixels per metre at 1 m distance
     app.renderer.getDrawingBufferSize(_sz);
     const px = 0.5 * _sz.y * app.camera.projectionMatrix.elements[5];
     uIronPx.value = px;
-    const limRail = nearLimit() + 1;            // bars still above the card threshold
-    const limFull = (0.05 * px) / 20.0;         // a 5 cm scroll eye spans 20+ px: full detail
-    const limMid = (0.05 * px) / 13.0;          // ... 13+ px: light detail, coarse beyond
-    const limCarve = (0.03 * px) / 3.0;         // 3 cm carving still covers 3 px
+    const post = app.post;
+    uIronA2C.value = post && !post.disabled && post.sceneRT && post.sceneRT.samples > 0 ? 1 : 0;
     const cam = app.camera.position;
+    const moved = cam.distanceToSquared(this.lastCam) > 0.04 || Math.abs(px - this.lastPx) > 0.01 * px;
+    if (moved) { this.lastCam.copy(cam); this.lastPx = px; }
+    const L = this.limits(px);
     for (const g of this.live) {
       const u = g.userData;
-      // railing geometry is only created once the camera first comes near it
-      for (let i = u.pending.length - 1; i >= 0; i--) {
-        const s = u.pending[i];
-        if (nearest(s.anchors, cam) > limRail + 4) continue;
-        for (const m of Instancer.materialize(s, g)) u[m.userData.tag]?.push(m);
-        u.pending.splice(i, 1);
-      }
-      showInBand(u.rail0, cam, -Infinity, limFull);
-      showInBand(u.rail1, cam, limFull, limMid);
-      showInBand(u.rail2, cam, limMid, limRail);
-      showInBand(u.post0, cam, -Infinity, limFull);
-      showInBand(u.post1, cam, limFull, limRail);
-      if (!u.carve0.length) continue;
-      const a = u.anchors;
-      let near = false;
-      for (let i = 0; i < a.length && !near; i += 4) {
-        const dx = a[i] - cam.x, dy = a[i + 1] - cam.y, dz = a[i + 2] - cam.z;
-        near = Math.sqrt(dx * dx + dy * dy + dz * dz) - a[i + 3] < limCarve;
-      }
-      for (const m of u.carve0) m.visible = near;
-      for (const m of u.carve1) m.visible = !near;
+      if (!moved && !u.fresh) continue;
+      u.fresh = false;
+      for (const s of u.sets) if (s.cls) LodInstancer.partition(s, cam, L[s.cls]);
     }
-    this.syncT -= app.realDt || 0;
-    if (this.syncT <= 0) { this.syncT = 2; this.mats.sync(); }
   },
 };
 

@@ -22,7 +22,7 @@ import { buildStickers, buildStickerAtlas } from './catenary/wear.js';
 
 const HI_DIST = 55;           // chunk near edge closer than this: hi tessellation
 const CAST_DIST = 120;        // mid-tessellation brackets cast shadows only this close
-const PAINT = [0.1, 0.112, 0.112];   // linear albedo of the grey-green satin paint
+const PAINT = [0.125, 0.152, 0.148]; // linear albedo of the grey-green satin paint
 const DEG = Math.PI / 180;
 
 const _y = new THREE.Vector3(0, 1, 0);

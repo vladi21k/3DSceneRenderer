@@ -1,11 +1,18 @@
 import * as THREE from 'three';
-import { GeoWriter, sweepBar, box, simplify, lathe, shared } from './geo.js';
+import { GeoWriter, sweepBar, box, lathe, shared } from './geo.js';
 import { DESIGNS, RAIL_H } from './patterns.js';
 
 // Wrought-iron railing assets built once at init:
-//  - one instanced "bay" geometry per design (handrail, rails, bars, scrolls, collars, rosettes)
+//  - instanced "bay" geometry per design and detail level (handrail, rails, bars,
+//    scrolls, collars, rosettes). Levels are defined by a chord TOLERANCE: every curve
+//    is tessellated so it never deviates more than TOL[level] from the smith's curve,
+//    and the module picks, per bay, the cheapest level whose error stays sub-pixel.
 //  - corner / end posts with finials
-//  - a railing-card atlas (alpha cut-out, coverage-preserving mip chain) for the far range
+//  - a railing-card atlas for the far range: alpha is the true coverage of the iron in
+//    each texel at every mip (plain box filter), rendered with alpha-to-coverage.
+
+/** Max geometric deviation (m) of the tessellated curves, per detail level. */
+export const TOL = [0.0004, 0.0015, 0.004];
 
 /** Smooth-ish closed section extruded along x from x0 to x1 (handrail).
  *  section: [[z, y], ...] counter-clockwise in the (z right, y up) plane. */
@@ -66,14 +73,15 @@ function twistedBar(W, x, y0, y1, s, [t0, t1, turns]) {
   }
 }
 
-/** Small cast rosette facing +z (petalled dome) with a flat back. */
-function rosette(W, x, y, r, z0) {
-  const seg = 16, base = W.count;
-  W.v(x, y, z0 + r * 0.55, 0, 0, 1, 0, 0);
+/** Small cast rosette facing +z: petalled dome (seg >= 8) or a flat faceted disc. */
+function rosette(W, x, y, r, z0, seg) {
+  const base = W.count;
+  const flat = seg < 8;
+  W.v(x, y, z0 + r * (flat ? 0.3 : 0.55), 0, 0, 1, 0, 0);
   for (let i = 0; i <= seg; i++) {
     const a = (i / seg) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
-    const pr = r * (0.72 + 0.28 * Math.abs(Math.cos(a * 4)));
-    W.v(x + c * pr * 0.45, y + s * pr * 0.45, z0 + r * 0.42, c * 0.35, s * 0.35, 0.94, 0, 0);
+    const pr = r * (flat ? 0.85 : 0.72 + 0.28 * Math.abs(Math.cos(a * 4)));
+    W.v(x + c * pr * 0.45, y + s * pr * 0.45, z0 + r * (flat ? 0.25 : 0.42), c * 0.35, s * 0.35, 0.94, 0, 0);
     W.v(x + c * pr, y + s * pr, z0, c * 0.7, s * 0.7, 0.7, 0, 0);
   }
   for (let i = 0; i < seg; i++) {
@@ -83,18 +91,48 @@ function rosette(W, x, y, r, z0) {
   }
 }
 
-/** Evenly resample a closed loop to n points (rings). */
-function resampleLoop(pts, n) {
+/** Douglas-Peucker: the fewest points of a dense polyline that keep every original
+ *  point within `tol` of the simplified one. */
+export function simplifyTol(pts, tol) {
+  const n = pts.length;
+  if (n < 3) return pts.slice();
+  const keep = new Uint8Array(n);
+  keep[0] = keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  const t2 = tol * tol;
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const ax = pts[a][0], ay = pts[a][1], dx = pts[b][0] - ax, dy = pts[b][1] - ay;
+    const l2 = dx * dx + dy * dy || 1e-12;
+    let worst = -1, wi = -1;
+    for (let i = a + 1; i < b; i++) {
+      let t = ((pts[i][0] - ax) * dx + (pts[i][1] - ay) * dy) / l2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const ex = pts[i][0] - ax - t * dx, ey = pts[i][1] - ay - t * dy;
+      const e = ex * ex + ey * ey;
+      if (e > worst) { worst = e; wi = i; }
+    }
+    if (worst > t2) { keep[wi] = 1; stack.push([a, wi], [wi, b]); }
+  }
   const out = [];
-  for (let i = 0; i < n; i++) out.push(pts[Math.floor((i / n) * pts.length)]);
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[i]);
   return out;
 }
 
-/** Instanced bay geometry for one design. lod 0 = full, 1 = light, 2 = coarse (fewer curve
- *  points, plain bars, no rosettes). */
+/** Circle with the fewest segments whose sagitta stays under `tol`. */
+function circlePts(cx, cy, r, tol) {
+  let n = Math.ceil(Math.PI / Math.acos(Math.max(-1, 1 - tol / r)));
+  n = Math.max(10, n + (n & 1));
+  const pts = [];
+  for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  return pts;
+}
+
+/** Instanced bay geometry for one design at detail level `lod` (0..2, see TOL). Collars
+ *  stay at every level (they read as bumps on the bars well into the card range). */
 export function bayGeometry(design, lod = 0) {
   const W = new GeoWriter();
-  const turn = [0.42, 0.62, 0.95][lod], segLen = [0.07, 0.12, 0.18][lod];
+  const tol = TOL[lod];
   for (const st of design.strokes) {
     switch (st.k) {
       case 'rail':
@@ -103,18 +141,19 @@ export function bayGeometry(design, lod = 0) {
         break;
       case 'bar':
         if (st.twist && !lod) twistedBar(W, st.x, st.y0, st.y1, st.s, st.twist);
-        else box(W, st.x, (st.y0 + st.y1) / 2, 0, st.s, st.y1 - st.y0, st.s, 1, 'ud'); // ends hidden in the rails
+        // a twisted square bar's mean silhouette is ~12 % wider than the bar
+        else { const s = st.twist ? st.s * 1.12 : st.s; box(W, st.x, (st.y0 + st.y1) / 2, 0, s, st.y1 - st.y0, s, 1, 'ud'); }
         break;
       case 'curve': {
-        const p = st.closed ? resampleLoop(st.pts, [16, 11, 8][lod]) : simplify(st.pts, turn, segLen);
+        const p = st.ring ? circlePts(st.ring[0], st.ring[1], st.ring[2], tol) : simplifyTol(st.pts, tol);
         sweepBar(W, p, st.w / 2, st.d / 2, { closed: st.closed, caps: false, backFace: false });
         break;
       }
       case 'collar':
-        if (lod < 2) box(W, st.x, st.y, 0, st.w, st.h, st.d);
+        box(W, st.x, st.y, 0, st.w, st.h, st.d);
         break;
       case 'rosette':
-        if (!lod) rosette(W, st.x, st.y, st.r, 0.008);
+        rosette(W, st.x, st.y, st.r, 0.008, [16, 8, 6][lod]);
         break;
     }
   }
@@ -129,16 +168,14 @@ export function postGeometry(lod = 0) {
   const W = new GeoWriter();
   const s = 0.026;
   box(W, 0, RAIL_H / 2 + 0.01, 0, s, RAIL_H + 0.02, s);
-  if (!lod) {
-    box(W, 0, 0.006, 0, 0.06, 0.012, 0.06);                    // foot plate
-    box(W, 0, RAIL_H + 0.026, 0, 0.038, 0.012, 0.038);         // collar
-  }
-  const seg = lod ? 4 : 8;
+  box(W, 0, RAIL_H + 0.026, 0, 0.038, 0.012, 0.038);         // collar
+  if (!lod) box(W, 0, 0.006, 0, 0.06, 0.012, 0.06);          // foot plate
+  const seg = lod ? 6 : 10;
   const prof = [];
   const R = 0.027, cy = RAIL_H + 0.068;
   prof.push([0.008, RAIL_H + 0.03]);
   prof.push([0.011, RAIL_H + 0.042]);
-  const nb = lod ? 2 : 6, a0 = -Math.PI / 2 + 0.42;
+  const nb = lod ? 3 : 6, a0 = -Math.PI / 2 + 0.42;
   for (let i = 0; i <= nb; i++) {
     const a = a0 + (i / nb) * (Math.PI / 2 - a0);
     prof.push([Math.max(0.0001, Math.cos(a) * R), cy + Math.sin(a) * R]);
@@ -148,10 +185,11 @@ export function postGeometry(lod = 0) {
 }
 
 // ---------------------------------------------------------------- card atlas
-export const ATLAS = { TW: 128, ROW: 256, PAD: 24, ROWS: 8 };
+// One row per design (u = one bay, wrapping), plus the post sprite in the last row.
+export const ATLAS = { TW: 128, ROW: 256, PAD: 24, ROWS: 8, POST_ROW: 7, POST_W: 0.1 };
 const ATLAS_H = ATLAS.ROW * ATLAS.ROWS;
 
-/** Texture v for design row `row` at railing height y (0..RAIL_H). */
+/** Texture v for design row `row` at railing height y (0..RAIL_H + PAD). */
 export function atlasV(row, y) {
   const S = (ATLAS.ROW - 2 * ATLAS.PAD) / RAIL_H;
   return (row * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD - y * S) / ATLAS_H;
@@ -163,14 +201,14 @@ export function drawStrokes(ctx, d) {
     switch (st.k) {
       case 'rail': ctx.fillRect(st.x0, st.y0, st.x1 - st.x0, st.y1 - st.y0); break;
       case 'bar': {
-        const w = st.twist ? st.s * 1.2 : st.s;
+        const w = st.twist ? st.s * 1.12 : st.s;
         ctx.fillRect(st.x - w / 2, st.y0, w, st.y1 - st.y0);
         break;
       }
       case 'collar': ctx.fillRect(st.x - st.w / 2, st.y - st.h / 2, st.w, st.h); break;
-      case 'rosette': ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2); ctx.fill(); break;
+      case 'rosette': ctx.beginPath(); ctx.arc(st.x, st.y, st.r * 0.9, 0, Math.PI * 2); ctx.fill(); break;
       case 'curve': {
-        ctx.lineWidth = st.w * 1.15;
+        ctx.lineWidth = st.w;
         ctx.beginPath();
         st.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
         if (st.closed) ctx.closePath();
@@ -189,46 +227,37 @@ function drawDesign(ctx, d, row) {
   }
 }
 
-/** Coverage-preserving mip chain: each level's alpha is rescaled (per design row) so the
- *  fraction of texels passing the 0.5 alpha test matches the full-resolution coverage.
- *  Thin ironwork then keeps its true density at every distance instead of vanishing. */
-function coverageMips(alpha0, w0, h0, levels) {
-  const out = [];
-  const rowsOf = (h) => h / ATLAS.ROWS;
-  // base coverage per design row
-  const cov = new Float32Array(ATLAS.ROWS);
-  for (let r = 0; r < ATLAS.ROWS; r++) {
-    let c = 0, n = 0;
-    for (let y = r * ATLAS.ROW; y < (r + 1) * ATLAS.ROW; y++) for (let x = 0; x < w0; x++) { n++; if (alpha0[y * w0 + x] >= 0.5) c++; }
-    cov[r] = c / n;
-  }
+/** Post sprite (matches postGeometry): bar, collar and ball finial, centred in a
+ *  POST_W wide tile. */
+function drawPost(ctx) {
+  const S = (ATLAS.ROW - 2 * ATLAS.PAD) / RAIL_H, W = ATLAS.POST_W;
+  ctx.setTransform(ATLAS.TW / W, 0, 0, -S, 0, ATLAS.POST_ROW * ATLAS.ROW + ATLAS.ROW - ATLAS.PAD);
+  const c = W / 2;
+  ctx.fillRect(c - 0.013, 0, 0.026, RAIL_H + 0.02);
+  ctx.fillRect(c - 0.019, RAIL_H + 0.02, 0.038, 0.012);
+  ctx.fillRect(c - 0.009, RAIL_H + 0.03, 0.018, 0.015);
+  ctx.beginPath(); ctx.ellipse(c, RAIL_H + 0.068, 0.027, 0.027, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+/** Box-filtered mip chain: each texel's alpha is the exact fraction of iron it covers,
+ *  so the card's coverage (through alpha-to-coverage) matches the geometry at every
+ *  distance. Row boundaries are multiples of every block size, so rows never mix. */
+function boxMips(alpha0, w0, h0, levels) {
+  const out = [{ a: alpha0, w: w0, h: h0 }];
   let cur = alpha0, w = w0, h = h0;
-  out.push({ a: cur, w, h });
   for (let L = 1; L < levels; L++) {
     const nw = w >> 1, nh = h >> 1, nxt = new Float32Array(nw * nh);
     for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
       const i = 2 * y * w + 2 * x;
       nxt[y * nw + x] = (cur[i] + cur[i + 1] + cur[i + w] + cur[i + w + 1]) * 0.25;
     }
+    out.push({ a: nxt, w: nw, h: nh });
     cur = nxt; w = nw; h = nh;
-    // rescale per row
-    const scaled = new Float32Array(nw * nh);
-    const rh = rowsOf(nh);
-    for (let r = 0; r < ATLAS.ROWS; r++) {
-      const y0 = Math.floor(r * rh), y1 = Math.floor((r + 1) * rh);
-      let lo = 0.25, hi = 24;
-      const target = cov[r];
-      const frac = (k) => { let c = 0, n = 0; for (let y = y0; y < y1; y++) for (let x = 0; x < nw; x++) { n++; if (cur[y * nw + x] * k >= 0.5) c++; } return n ? c / n : 0; };
-      for (let it = 0; it < 18; it++) { const k = Math.sqrt(lo * hi); if (frac(k) > target) hi = k; else lo = k; }
-      const k = Math.sqrt(lo * hi);
-      for (let y = y0; y < y1; y++) for (let x = 0; x < nw; x++) scaled[y * nw + x] = Math.min(1, cur[y * nw + x] * k);
-    }
-    out.push({ a: scaled, w: nw, h: nh });
   }
   return out;
 }
 
-/** Builds the railing atlas DataTexture (RGBA: white, alpha = iron) with manual mips. */
+/** Builds the railing atlas DataTexture (RGBA: white, alpha = iron coverage) with mips. */
 export function buildAtlas() {
   const cv = document.createElement('canvas');
   cv.width = ATLAS.TW; cv.height = ATLAS_H;
@@ -236,10 +265,11 @@ export function buildAtlas() {
   ctx.fillStyle = '#fff'; ctx.strokeStyle = '#fff';
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   DESIGNS.forEach((d, i) => drawDesign(ctx, d, i));
+  drawPost(ctx);
   const img = ctx.getImageData(0, 0, ATLAS.TW, ATLAS_H).data;
   const a0 = new Float32Array(ATLAS.TW * ATLAS_H);
   for (let i = 0; i < a0.length; i++) a0[i] = img[i * 4 + 3] / 255;
-  const levels = coverageMips(a0, ATLAS.TW, ATLAS_H, 6);
+  const levels = boxMips(a0, ATLAS.TW, ATLAS_H, 6);
   const mipmaps = levels.map(({ a, w, h }) => {
     const data = new Uint8Array(w * h * 4);
     for (let i = 0; i < w * h; i++) { data[i * 4] = 255; data[i * 4 + 1] = 255; data[i * 4 + 2] = 255; data[i * 4 + 3] = Math.round(a[i] * 255); }

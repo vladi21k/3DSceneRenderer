@@ -85,7 +85,8 @@ export function buildBannerCloth() {
         y = y0 + H * v; z = drape(u, v);
       }
       pos.push(x, y, z);
-      uv.push((0.02 + u * 0.96) * cell, v);
+      // the print reads left to right on the +z face (u runs towards -x)
+      uv.push((0.98 - u * 0.96) * cell, v);
       ab.push(u, bv, 0);
     }
   }

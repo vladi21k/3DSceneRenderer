@@ -230,6 +230,7 @@ export function deriveAppearance(seed, parts) {
   if (a.topType === TOP.JACKET && a.bagPart === P('shopping')) a.bagPart = 0;
   // walking variations: carrying a shopping bag damps the right arm; some walk looking at a phone
   a.carry = a.bagPart > 0 && a.bagPart === P('shopping');
+  if (a.carry && a.idle !== 0) a.idle = 0;          // the bag hand hangs relaxed while standing
   a.phoneWalk = !a.carry && (age === 'adult' || age === 'teen') && r.chance(age === 'teen' ? 0.22 : 0.1);
   if (!a.top2) a.top2 = srgb('#f4f4f0');
   if (a.shoeType === SHOE.SANDAL) a.sole = srgb('#3a2c22');

@@ -25,6 +25,9 @@ const facades = {
     const white = new THREE.Color(1, 1, 1);
     const vc = (name) => M.get(name, { vertexColors: true, color: white });
     const glass = M.register('facades.glassInterior', createInteriorGlass());
+    // far range: the same glass pulled towards the camera in depth, so it never loses
+    // the depth test against the buildings' back plate at 200–680 m
+    const glassFar = M.register('facades.glassInteriorFar', createInteriorGlass({ far: true }));
     const sign = createSignMaterials(M);
     M.register('facades.signBoard', sign.board);
     M.register('facades.signText', sign.text);
@@ -36,6 +39,7 @@ const facades = {
       shutter: { material: vc('wood.shutter') },
       door: { material: vc('wood.door'), castShadow: false },
       glass: { material: glass, color: false, extra: GLASS_ATTRS, castShadow: false },
+      glassFar: { material: glassFar, color: false, extra: GLASS_ATTRS, castShadow: false },
       metal: { material: vc('metal.iron') },
       hardware: { material: vc('metal.steel'), castShadow: false },
       stone: { material: M.get('stone.smooth', { vertexColors: true }), castShadow: false },
@@ -54,17 +58,26 @@ const facades = {
     await this.warmStart(app);
   },
 
-  /** Build the chunks the streamer will ask for first while the loading screen is up. */
+  /**
+   * Build the chunks the streamer will ask for first while the loading screen is up:
+   * around the start position and, for inspection views, around the view position.
+   */
   async warmStart(app) {
-    const s0 = app.startS, n = app.layout.nChunks, L = app.route.length;
-    for (let i = Math.floor((s0 - VIEW_BEHIND) / CHUNK_LEN); i <= Math.floor((s0 + VIEW_AHEAD) / CHUNK_LEN); i++) {
-      const idx = ((i % n) + n) % n;
-      const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s0) - CHUNK_LEN / 2);
-      const lod = dist < LOD0_DIST ? 0 : 1;
-      const job = { it: this.buildGen({ index: idx, lod, s0: idx * CHUNK_LEN, s1: Math.min(L, idx * CHUNK_LEN + CHUNK_LEN) }, app) };
-      try { this._pump(job, Infinity); } catch (e) { console.warn('[facades] warm start failed for chunk', idx, e); continue; }
-      this.jobs.set(`${idx}:${lod}`, job);
-      await new Promise((r) => setTimeout(r, 0));
+    const n = app.layout.nChunks, L = app.route.length;
+    const around = [app.startS];
+    if (app.params.view) around.push(app.params.view[0]);
+    for (const s0 of around) {
+      for (let i = Math.floor((s0 - VIEW_BEHIND) / CHUNK_LEN); i <= Math.floor((s0 + VIEW_AHEAD) / CHUNK_LEN); i++) {
+        const idx = ((i % n) + n) % n;
+        const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s0) - CHUNK_LEN / 2);
+        const lod = dist < LOD0_DIST ? 0 : 1;
+        const key = `${idx}:${lod}`;
+        if (this.jobs.has(key)) continue;
+        const job = { it: this.buildGen({ index: idx, lod, s0: idx * CHUNK_LEN, s1: Math.min(L, idx * CHUNK_LEN + CHUNK_LEN) }, app) };
+        try { this._pump(job, Infinity); } catch (e) { console.warn('[facades] warm start failed for chunk', idx, e); continue; }
+        this.jobs.set(key, job);
+        await new Promise((r) => setTimeout(r, 0));
+      }
     }
   },
 
@@ -74,14 +87,17 @@ const facades = {
    */
   *buildGen(chunk, app) {
     const { layout } = app;
-    const lots = [...layout.inChunk('lots', chunk.index), ...layout.inChunk('sideLots', chunk.index)];
+    // main and side-street lots, plus the buildings' side-street backdrops unless they
+    // carry their own (simpler, far-range) infill
+    const extra = (app.systems.buildings?.extraLots?.(chunk.index) ?? []).filter((l) => !l.selfDressed);
+    const lots = [...layout.inChunk('lots', chunk.index), ...layout.inChunk('sideLots', chunk.index), ...extra];
     if (!lots.length) return null;
     const kit = new Kit(this.mats, chunk.lod);
     const q = chunk.lod === 0 ? 1 : 0.4;
     const assets = this.assets[chunk.lod === 0 ? 0 : 1];
     for (const lot of lots) {
       const plan = facadePlan(lot);
-      const streetW = lot.sideStreet ? lot.cross.width : 2 * lot.d;
+      const streetW = lot.sideStreet ? lot.cross.width : 2 * Math.abs(lot.d);
       const fronts = [{ plan, frame: lot.frame, streetW }];
       // corner returns face the side street
       for (const r of plan.returns || []) fronts.push({ plan: r, frame: r.frame, streetW: 10 });
@@ -119,7 +135,12 @@ const facades = {
   /** Prefetch: build the chunks the streamer will ask for next, a slice per frame. */
   update(dt, app) {
     const W = app.world;
-    if (!W || !W.wanted || app.cameraS == null) return;
+    if (app.cameraS == null || !W) return;
+    if (!W.wanted || !W.chunks) {
+      // the streamer no longer exposes what it will build next: builds run synchronously
+      if (!this._warnedPrefetch) { this._warnedPrefetch = true; console.warn('[facades] streamer API changed, prefetch disabled'); }
+      return;
+    }
     const t0 = performance.now(), until = t0 + this.prefetchMs;
     const cands = [], seen = new Set();
     // what the streamer wants now, and what it will want ~50 m further on

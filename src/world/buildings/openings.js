@@ -80,7 +80,7 @@ export function openingMasonry(ctx, face, o) {
     const proj = surround ? sp : (ground ? 0.02 : 0.012);
     const kind = ground ? orn.shopHead : orn.winHead;
     if (kind === 'flatArch') flatArch(ctx, sT, o, ext, ground ? 0.42 : 0.3, proj, bev);
-    else if (kind === 'hood') { lintel(ctx, sT, o, ext, 0.26, proj, bev, orn.keystone && q.lod === 0); hood(ctx, sT, o, ext, yt + 0.26, q.lod > 0); }
+    else if (kind === 'hood') { lintel(ctx, sT, o, ext, 0.26, proj, bev, orn.keystone); hood(ctx, sT, o, ext, yt + 0.26); }
     else lintel(ctx, sT, o, ext, ground ? 0.38 : 0.26, proj, bev, orn.keystone && kind !== 'plain');
   }
 
@@ -162,26 +162,30 @@ function voussoirRing(ctx, s, o, T, proj, keystone, bev) {
   // arc length estimate
   let L = 0, pu = 0, pv = 0;
   for (let k = 0; k <= 16; k++) { archPoint(o, k / 16, _p, T * 0.5); if (k) L += Math.hypot(_p.u - pu, _p.v - pv); pu = _p.u; pv = _p.v; }
-  if (!q.voussoirs) {
-    // far detail: one band of the ring depth, plus the keystone
-    const n = q.archSeg;
-    s.reserve((n + 1) * 4, n * 12);
-    for (let k = 0; k < n; k++) {
-      archPoint(o, k / n, _p); archPoint(o, (k + 1) / n, _q); archPoint(o, (k + 1) / n, _r, T); archPoint(o, k / n, _s, T);
-      B.prism(s, [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v], 0, proj, 0, false);
-    }
-    if (keystone) {
-      const dt = 0.75 / Math.max(5, Math.round(L / 0.3));
-      archPoint(o, 0.5 - dt, _p); archPoint(o, 0.5 + dt, _q); archPoint(o, 0.5 + dt, _r, T + 0.08); archPoint(o, 0.5 - dt, _s, T + 0.08);
-      B.prism(s, [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v], 0, proj + 0.03, 0, true);
-    }
-    return;
-  }
   let n = Math.max(5, Math.round(L / (T > 0.36 ? 0.42 : 0.3)));
   if (n % 2 === 0) n++;
   const mid = (n - 1) >> 1;
   // keystone takes 1.5 shares
   const shares = n + 0.5;
+  const tk0 = mid / shares, tk1 = (mid + 1.5) / shares;
+  if (!q.voussoirs) {
+    // far detail: the ring as two smooth bands either side of the same keystone as near
+    const hasKey = keystone;
+    const bands = hasKey ? [[0, tk0], [tk1, 1]] : [[0, 1]];
+    for (const [a, b] of bands) {
+      const m = Math.max(2, Math.round(q.archSeg * (b - a)));
+      for (let k = 0; k < m; k++) {
+        const ta = a + ((b - a) * k) / m, tb = a + ((b - a) * (k + 1)) / m;
+        archPoint(o, ta, _p); archPoint(o, tb, _q); archPoint(o, tb, _r, T); archPoint(o, ta, _s, T);
+        B.prism(s, [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v], 0, proj, 0, k === 0 || k === m - 1);
+      }
+    }
+    if (hasKey) {
+      archPoint(o, tk0, _p); archPoint(o, tk1, _q); archPoint(o, tk1, _r, T + 0.08); archPoint(o, tk0, _s, T + 0.08);
+      B.prism(s, [_p.u, _p.v, _q.u, _q.v, _r.u, _r.v, _s.u, _s.v], 0, proj + 0.03, 0, true);
+    }
+    return;
+  }
   const joint = 0.006 / Math.max(0.5, L);
   let t = 0;
   for (let k = 0; k < n; k++) {
@@ -238,13 +242,12 @@ function lintel(ctx, s, o, ext, H, proj, bev, keystone) {
 }
 
 /** Small cornice hood over a head (window or door). */
-function hood(ctx, s, o, ext, v0, simple) {
+function hood(ctx, s, o, ext, v0) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext - 0.07, u1 = o.uc + o.w / 2 + ext + 0.07;
-  B.extrudeU(s, simple ? HOOD_SIMPLE : HOOD, u0, u1, v0, [true, true]);
+  B.extrudeU(s, HOOD, u0, u1, v0, [true, true]);
 }
 const HOOD = [[0, 0], [0.04, 0], [0.05, 0.03], [0.09, 0.07], [0.13, 0.09], [0.13, 0.15], [0.15, 0.17], [0.15, 0.2], [0, 0.22]];
-const HOOD_SIMPLE = [[0, 0], [0.13, 0.08], [0.15, 0.2], [0, 0.22]];
 
 /** Entrance portal hood on two consoles (clear of the voussoir ring of an arched door). */
 function doorHood(ctx, s, o, surround, ring) {

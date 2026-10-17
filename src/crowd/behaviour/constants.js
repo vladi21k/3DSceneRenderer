@@ -3,11 +3,14 @@ import { TREE_D } from '../../world/layout.js';
 
 // Tunables of the pedestrian simulation. Distances in metres, times in seconds.
 
-export const MAX_AGENTS = 440;          // renderer slots allocated once
+export const MAX_AGENTS = 480;          // renderer slots allocated once
 export const RANGE_BEHIND = 42;         // agents further behind the camera are recycled
-export const RANGE_AHEAD = 450;         // populated distance ahead of the camera
+export const RANGE_AHEAD = 560;         // populated distance ahead of the camera
+export const FAR_TAPER = 450;           // density tapers off beyond this (heavier haze, tiny figures)
+export const FAR_SLACK = 40;            // walkers may go this far past the range before they must leave
+export const FAR_HARD = 120;            // ... and are removed regardless beyond this
 export const SIMPLE_BEYOND = 340;       // beyond this agents skip avoidance (cheap kinematics only)
-export const FAR_SPAWN_BAND = 28;       // new arrivals appear in the last metres of the range
+export const FAR_SPAWN_BAND = 44;       // new arrivals appear in the last metres of the range
 
 // population mix
 export const WALKER_DENSITY = 0.32;     // walkers per metre of street per side (before local multipliers)
@@ -22,9 +25,9 @@ export const HURRY = 2.15;              // brisk trot when clearing the track
 export const TURN_RATE = 4.0;           // rad/s, max heading change
 
 // street cross-section (|d|)
-export const SIDEWALK_IN = TREE_D + 0.8;     // inner edge of the shop-side walking band
-export const EDGE_LANE = TRACK_ZONE_HALF + 0.08; // walking line along the corridor edge
-export const WALL_GAP = 0.32;                // never closer than this to a facade (centre)
+export const SIDEWALK_IN = TREE_D + 0.8;           // inner edge of the shop-side walking band
+export const EDGE_LANE = TRACK_ZONE_HALF + 0.55;   // walking line just outside the track corridor (pole strip)
+export const WALL_GAP = 0.32;                      // never closer than this to a facade (centre)
 
 // tram clearance. The camera rides d = TRACK_OFFSET; the cab sweeps |d − TRACK_OFFSET| < 1.5.
 export const RIDE_D = TRACK_OFFSET;
@@ -36,6 +39,10 @@ export const BAND_HI = RIDE_D + BAND;              // safe right of the ride tra
 export const TRAM_LEN = 34;                        // tram body length behind the cab front
 export const NO_GO_AHEAD = 14;                     // never step in front of the tram closer than this, even stopped
 export const BRAKE_DECEL = 1.2;                    // service brake used for stopping distances
+export const PASS_BASE = SWEPT_HALF + AGENT_R + 0.6; // comfortable distance (centre) from the ride track while the tram passes
+export const PASS_PER_V = 0.04;                    // ... plus this per m/s of tram speed
+export const CLEAR_T = [3.5, 6.0];                 // seconds before the tram arrives that people leave its track
+export const CLEAR_T_DREAMY = [2.0, 3.0];          // absorbed people (phone, conversation)
 
 // spatial hash
 export const CELL = 2.0;

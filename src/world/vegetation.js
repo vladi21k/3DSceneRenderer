@@ -9,21 +9,23 @@ import { createProps } from './vegetation/props.js';
 
 // Street trees and planters. Contract: docs/ARCHITECTURE.md
 //
-// init: paints the foliage atlas, grows the tree / shrub templates (three detail levels
-//       each) and puts them into two BatchedMeshes (bark, foliage) shared by the street.
-// build: per chunk, adds one instance per tree (template picked per species zone, scaled
-//       to the planned height / crown, yawed so the pruned side faces the tracks, tinted)
-//       and merges the small static props (tree grates, stakes and ties, planter boxes).
-//       Planters come from layout.furniture entries of type 'planter'.
+// init: starts painting the foliage atlas (workers) while the tree / shrub templates grow
+//       (three detail levels each, bark also mirrored), puts them into two BatchedMeshes
+//       (bark, foliage) shared by the street, and plans every tree of the layout once:
+//       template (species zones, never the same as the previous tree on that side),
+//       mirror, scale (planned height / crown, x and z apart), lean, yaw and tint.
+// build: per chunk, adds one instance per tree and per prop (grates, stakes and ties,
+//       planter boxes; planters come from layout.furniture entries of type 'planter').
 // per frame (pool.js): instance visibility follows the chunk group, detail level follows
-//       the tree's projected size on screen.
-// dispose: removes the chunk's instances and props.
+//       the tree's projected size on screen (cross-faded).
+// dispose: removes the chunk's instances.
 //
 // Debug URL switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf.
 
-const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
-const _c = new THREE.Color();
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
+const _c = new THREE.Color(), _e = new THREE.Euler();
 const _yAxis = new THREE.Vector3(0, 1, 0);
+const _planter = { pos: new THREE.Vector3(), sx: 1, sz: 1 };
 
 const vegetation = {
   name: 'vegetation',
@@ -32,10 +34,11 @@ const vegetation = {
     this.app = app;
     const seed = app.layout.seed;
     const t0 = performance.now();
-    this.atlas = buildLeafAtlas(app.renderer, seed);
-    const t1 = performance.now();
+    const atlasP = buildLeafAtlas(app.renderer, seed); // painted off the main thread
     this.trees = TEMPLATES.map((tpl) => buildTreeTemplate(tpl, seed));
-    this.shrubs = SHRUBS.map((sh) => buildShrubTemplate(sh, seed));
+    this.shrubs = SHRUBS.map((sh) => ({ sh, ...buildShrubTemplate(sh, seed) }));
+    const t1 = performance.now();
+    this.atlas = await atlasP;
     const t2 = performance.now();
     this.mats = createVegMaterials(app, this.atlas);
 
@@ -44,13 +47,14 @@ const vegetation = {
     const put = (list, g) => { const i = list.indexOf(g); return i >= 0 ? i : list.push(g) - 1; };
     for (const t of this.trees) {
       t.leafIdx = t.leaves.map((g) => put(leafGeoms, g));
-      t.barkIdx = t.bark.map((g) => put(barkGeoms, g));
+      t.barkIdx = t.bark.map((set) => set.map((g) => put(barkGeoms, g)));
     }
     for (const sh of this.shrubs) sh.leafIdx = sh.leaves.map((g) => put(leafGeoms, g));
     this.pools = new VegetationPools(app);
     this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400));
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300));
-    this.props = createProps(app);
+    this.props = createProps(app, this.pools);
+    this.plan = this._planTrees();
     // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
     const show = app.params.str('vegshow');
@@ -61,30 +65,72 @@ const vegetation = {
     if (warm) this.dispose(warm);
     this.stats = {
       build: [{ n: 0, total: 0, max: 0 }, { n: 0, total: 0, max: 0 }],
-      atlasMs: +(t1 - t0).toFixed(1), templatesMs: +(t2 - t1).toFixed(1),
+      initMs: { templates: +(t1 - t0).toFixed(1), atlasWait: +(t2 - t1).toFixed(1), total: +(performance.now() - t0).toFixed(1) },
+      atlas: this.atlas.ms,
       templates: this.trees.map((t) => ({ id: t.tpl.id, ...t.stats,
-          tris: [0, 1, 2].map((l) => (t.leaves[l].index.count + t.bark[l].index.count) / 3) })),
+          tris: [0, 1, 2].map((l) => (t.leaves[l].index.count + t.bark[0][l].index.count) / 3) })),
     };
   },
 
-  /** Template for a planned tree: species zones of a few hundred metres, mostly one species. */
-  pickTemplate(t) {
+  /**
+   * Plan every tree once (deterministic, independent of chunk build order): template,
+   * mirror, instance matrix, tints and LOD size. Species come in zones of a few hundred
+   * metres, mostly one species; a tree never repeats the template of the previous tree on
+   * its side, nor the template + mirror of the one before.
+   */
+  _planTrees() {
     const { route, layout } = this.app;
-    const zone = Math.floor(route.wrap(t.s) / 330);
-    const zr = RNG.from(layout.seed, 'vegzone', zone);
-    const dominant = zr.chance(0.62) ? 'pagoda' : 'ash';
-    const other = dominant === 'pagoda' ? 'ash' : 'pagoda';
-    const r = new RNG(t.seed ^ 0x5bd1e995);
-    if (t.mature) {
-      const id = r.weighted(dominant === 'pagoda'
-        ? [['pagodaM', 0.5], ['denseM', 0.35], ['ashM', 0.15]]
-        : [['ashM', 0.5], ['denseM', 0.35], ['pagodaM', 0.15]]);
-      return this.trees.find((x) => x.tpl.id === id);
+    const plan = new Map();
+    const last = { '-1': [], '1': [] };
+    const trees = layout.trees.slice().sort((a, b) => a.side - b.side || a.s - b.s);
+    for (const t of trees) {
+      const zone = Math.floor(route.wrap(t.s) / 330);
+      const zr = RNG.from(layout.seed, 'vegzone', zone);
+      const dominant = zr.chance(0.62) ? 'pagoda' : 'ash';
+      const other = dominant === 'pagoda' ? 'ash' : 'pagoda';
+      const r = new RNG(t.seed ^ 0x5bd1e995);
+      const prev = last[t.side];
+      let T = null, mirror = 0;
+      for (let tries = 0; tries < 8; tries++) {
+        let cand;
+        if (t.mature) {
+          const id = r.weighted(dominant === 'pagoda'
+            ? [['pagodaM', 0.5], ['denseM', 0.35], ['ashM', 0.15]]
+            : [['ashM', 0.5], ['denseM', 0.35], ['pagodaM', 0.15]]);
+          cand = this.trees.find((x) => x.tpl.id === id);
+        } else {
+          const species = r.chance(0.86) ? dominant : other;
+          const cands = this.trees.filter((x) => !x.tpl.mature && x.tpl.species === species);
+          // prefer templates close to the planned size, keep some randomness
+          cand = r.weighted(cands.map((x) => [x, 1 / (0.35 + Math.abs(x.tpl.height - t.height))]));
+        }
+        const mir = r.chance(0.5) ? 1 : 0;
+        T = cand; mirror = mir;
+        const p1 = prev[prev.length - 1], p2 = prev[prev.length - 2];
+        if (p1 && p1.T === cand) continue;
+        if (p2 && p2.T === cand && p2.mirror === mir) continue;
+        break;
+      }
+      const tpl = T.tpl;
+      const heading = route.heading(t.s);
+      // the pruned (clearance) side of the template faces the tracks; some yaw jitter
+      const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.25);
+      const sy = THREE.MathUtils.clamp(t.height / tpl.height, 0.82, 1.22);
+      const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (t.crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.12 : 1.2);
+      const sx = sxz * r.range(0.9, 1.1), sz = sxz * r.range(0.9, 1.1) * (mirror ? -1 : 1);
+      // lean: mostly away from the tracks (local +x), a little along the street
+      _e.set(r.range(-0.035, 0.035), 0, r.range(-0.045, 0.015));
+      route.toWorld(t.s, t.d, 0, _p);
+      _q.setFromAxisAngle(_yAxis, yaw).multiply(_q2.setFromEuler(_e));
+      const matrix = new THREE.Matrix4().compose(_p, _q, _s.set(sx, sy, sz));
+      // per-tree tint: vigour / light differences between individual trees
+      const v = r.range(0.9, 1.07), h = r.range(-0.05, 0.05), bv = r.range(0.88, 1.08);
+      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sxz,
+        leafTint: new THREE.Color(v * (1 + h), v, v * (1 - 2 * h)), barkTint: new THREE.Color(bv, bv, bv), seed: t.seed };
+      plan.set(t, p);
+      prev.push(p);
     }
-    const species = r.chance(0.86) ? dominant : other;
-    const cands = this.trees.filter((x) => !x.tpl.mature && x.tpl.species === species);
-    // prefer templates close to the planned size, keep some randomness
-    return r.weighted(cands.map((x) => [x, 1 / (0.35 + Math.abs(x.tpl.height - t.height))]));
+    return plan;
   },
 
   build(chunk, app) {
@@ -104,48 +150,33 @@ const vegetation = {
     const marker = new THREE.Group();
     marker.name = 'vegetation';
     const rec = this.pools.record(marker);
-    const props = this.props.begin(lod);
+    const props = this.props.begin(rec, lod);
 
     for (const t of trees) {
-      const T = this.pickTemplate(t);
-      const tpl = T.tpl;
-      const r = new RNG(t.seed);
-      const heading = route.heading(t.s);
-      // the pruned (clearance) side of the template faces the tracks; a little yaw jitter only
-      const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.2);
-      const sy = THREE.MathUtils.clamp(t.height / tpl.height, 0.82, 1.22);
-      const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (t.crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.12 : 1.2);
-      route.toWorld(t.s, t.d, 0, _p);
-      _q.setFromAxisAngle(_yAxis, yaw);
-      _s.set(sxz, sy, sxz);
-      _m.compose(_p, _q, _s);
-      // per-tree tint: vigour / light differences between individual trees
-      const v = r.range(0.9, 1.07), h = r.range(-0.05, 0.05);
-      _c.setRGB(v * (1 + h), v, v * (1 - 2 * h));
-      const size = tpl.height * sy;
-      this.pools.add(rec, this.leafPool, T.leafIdx, _m, _c, _p, size);
-      const bv = r.range(0.85, 1.1);
-      _c.setRGB(bv, bv, bv);
-      this.pools.add(rec, this.barkPool, T.barkIdx, _m, _c, _p, size);
-      props.tree(t, T, _m, yaw, sy, sxz, r);
+      const P = this.plan.get(t);
+      if (!P) continue;
+      const T = P.T;
+      this.pools.add(rec, this.leafPool, T.leafIdx, P.matrix, P.leafTint, P.pos, P.size);
+      this.pools.add(rec, this.barkPool, T.barkIdx[P.mirror], P.matrix, P.barkTint, P.pos, P.size);
+      if (!lod) props.tree(t, T, P.matrix, P.sxz, new RNG(P.seed ^ 0x2545f491));
     }
 
     for (const f of planters) {
       const r = RNG.from(layout.seed, 'planter', f.id);
       const kind = r.chance(0.6) ? 0 : 1;
-      const S = this.shrubs[kind === 0 ? r.int(0, 1) : 2];
       const yaw = route.heading(f.s) + (f.yaw || 0);
-      const top = props.planter(f, kind, yaw, r);
-      // shrub mound on the soil, scaled to the planter footprint
-      _q.setFromAxisAngle(_yAxis, yaw);
-      _s.set(top.sx, 1, top.sz);
+      const top = props.planter(f, kind, yaw, _planter);
+      // shrub mound on the soil, scaled to the planter footprint; turned / mirrored and
+      // tinted per planter so neighbours never match
+      const variants = this.shrubs.filter((s) => s.sh.kind === kind);
+      const S = variants[r.int(0, variants.length - 1)];
+      _q.setFromAxisAngle(_yAxis, yaw + (r.chance(0.5) ? Math.PI : 0));
+      _s.set(top.sx, r.range(0.9, 1.1), top.sz * (r.chance(0.5) ? -1 : 1));
       _m.compose(top.pos, _q, _s);
-      _c.setRGB(1, 1, 1);
+      const v = r.range(0.88, 1.08), h = r.range(-0.06, 0.06);
+      _c.setRGB(v * (1 + h), v, v * (1 - 2 * h));
       this.pools.add(rec, this.leafPool, S.leafIdx, _m, _c, top.pos, 1.4);
     }
-
-    const mesh = props.build();
-    if (mesh) marker.add(mesh);
     return marker;
   },
 
@@ -157,7 +188,6 @@ const vegetation = {
 
   dispose(obj) {
     this.pools.release(obj.userData.vegRecord);
-    obj.traverse((o) => { if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose(); });
   },
 };
 
