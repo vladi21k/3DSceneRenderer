@@ -78,7 +78,7 @@ function buildWindow(kit, ctx, o) {
   const m = openingMatrix(ctx.frame, o);
   const v = ctx.joinery;
   const r = RNG.from(o.id);
-  const fc = weather(ctx.frameRGB, r), k = 1;
+  const fc = weather(ctx.frameRGB, r);
   // per-opening offset into the joinery detail bakes (tile 1 m; v kept clear of the putty line)
   const du = r.next(), dv = 0.3 + 0.4 * r.next();
   // summer: some casements stand open, swung into the room
@@ -91,7 +91,7 @@ function buildWindow(kit, ctx, o) {
     if (lim < 0.35) open = null; else open.angle = Math.min(open.angle, lim);
   }
   const jt = joineryTpl(o, v, ctx.q, open);
-  if (jt) kit.get('frame').add(jt, m, fc[0] * k, fc[1] * k, fc[2] * k, null, du, dv);
+  if (jt) kit.get('frame').add(jt, m, fc[0], fc[1], fc[2], null, du, dv);
   const floor = plan.floors[o.floor];
   const bay = plan.bays[o.bay];
   const roomY0 = floor.y + 0.02;
@@ -104,7 +104,7 @@ function buildWindow(kit, ctx, o) {
   if (o.curtain) drape = (dr < 0.33 ? 1 : dr < 0.62 ? 2 : dr < 0.84 ? 3 : 4) + 0.1 + r.next() * 0.8;
   else if (dr < 0.2) drape = 3 + 0.05 + r.next() * 0.35;
   const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind: 0 });
-  if (!jt) ga.aFrame = [fc[0] * k, fc[1] * k, fc[2] * k, 1]; // far range: procedural casing
+  if (!jt) ga.aFrame = [fc[0] * 0.88, fc[1] * 0.88, fc[2] * 0.88, 1]; // far range: procedural casing (× the paint bake's albedo)
   const gt = glassTpl(o, v, ctx.q, open);
   kit.get('glass').add(gt.glass, m, 1, 1, 1, ga);
   if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, winCode(0, true)] }); // no glass: open aperture
@@ -118,13 +118,13 @@ function buildWindow(kit, ctx, o) {
     kit.get('frame').add(rollerTpl(o, down, ctx.q), m, rc[0], rc[1], rc[2]);
   }
   if (o.shutters) {
-    const sc = weather(ctx.shutterRGB, r, 1.3), ks = 1;
+    const sc = weather(ctx.shutterRGB, r, 1.3);
     // open leaves lie on the wall face, clear of a projecting stone surround
     const standoff = plan.style.surrounds ? 0.055 : 0.012;
     const state = o.shutters === 'open' ? fitOpenShutters(ctx, o, standoff) : o.shutters;
     // open leaves are built relative to the wall face (shared by windows of any recess)
     const ms = state === 'open' || state === 'openSpring' ? _ms.copy(m).multiply(_r.makeTranslation(0, 0, o.recess)) : m;
-    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), ms, sc[0] * ks, sc[1] * ks, sc[2] * ks, null, du, dv);
+    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), ms, sc[0], sc[1], sc[2], null, du, dv);
   }
 }
 

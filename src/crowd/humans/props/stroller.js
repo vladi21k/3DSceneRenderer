@@ -346,7 +346,7 @@ function pushchair(ctx, jog = false) {
     grips: [V(-hw + 0.06, H + 0.004, 0), V(hw - 0.06, H + 0.004, 0)], rearRadius: rr, frontRadius: fr,
     length: -(zf - fr), seat: V(0, sy, -0.33),
     // the child's sit bones on the padded seat, its back against the backrest
-    baby: { pos: V(0, sy - 0.012, -0.265), lie: false },
+    baby: { pos: V(0, sy - 0.012, sz0 + 0.17), lie: false },
   };
 }
 
@@ -369,9 +369,10 @@ function pram(ctx) {
   }
   for (const z of [zr, zf]) tubeF(ctx, [V(-xw + 0.03, r, z), V(xw - 0.03, r, z)], 0.007, M.chrome);
   grip(ctx, [V(-0.24, H, 0.01), V(-0.15, H + 0.006, 0.0), V(0.15, H + 0.006, 0.0), V(0.24, H, 0.01)], 0.017);
-  // bassinet body: boat-shaped tub (loft of rounded sections), rim at y 0.86
-  const nL = lod === 2 ? 6 : 14, nR = lod === 2 ? 8 : 18;
-  const rings = [];
+  // bassinet body: an open boat-shaped tub (rounded U sections), rim at y 0.86: the outer shell
+  // in the fabric, lined inside; the baby lies in it on the mattress at its bottom
+  const nL = lod === 2 ? 6 : 14, nU = lod === 2 ? 6 : 14;
+  const rows = [];
   const zA = -0.12, zB = -0.9, top = 0.86, bot = 0.58;
   for (let i = 0; i <= nL; i++) {
     const t = i / nL;
@@ -379,17 +380,21 @@ function pram(ctx) {
     const e = Math.sqrt(Math.max(0.02, 1 - Math.pow(Math.abs(2 * t - 1), 4)));
     const hw = 0.19 * (0.55 + 0.45 * e);
     const depth = (top - bot) * (0.7 + 0.3 * e);
-    const ring = [];
-    for (let j = 0; j < nR; j++) {
-      const a = (j / nR) * Math.PI * 2;
+    const row = [];
+    for (let j = 0; j <= nU; j++) {
+      const a = Math.PI + (j / nU) * Math.PI;            // left rim -> bottom -> right rim
       const c = Math.cos(a), s = Math.sin(a);
-      const x = Math.sign(c) * Math.pow(Math.abs(c), 0.5) * hw;
-      const y = s > 0 ? top - 0.004 * (1 - Math.abs(c)) : top - depth * Math.pow(-s, 0.7);
-      ring.push(V(x, y, z));
+      row.push(V(Math.sign(c) * Math.pow(Math.abs(c), 0.5) * hw, top - depth * Math.pow(Math.max(0, -s), 0.7), z));
     }
-    rings.push(ring);
+    rows.push(row);
   }
-  b.with({ ...M.fabric, aoFn: (x, y) => 0.6 + 0.4 * smooth(0.5, 0.8, y) }, () => b.loft(rings, { capStart: V(0, top - 0.15, zA - 0.01), capEnd: V(0, top - 0.15, zB + 0.01) }));
+  b.with({ ...M.fabric, aoFn: (x, y) => 0.6 + 0.4 * smooth(0.5, 0.8, y) }, () => b.surface(rows, { out: (p) => V(p.x, p.y - 0.75, 0) }));
+  b.with({ ...M.lining, aoFn: (x, y) => 0.35 + 0.35 * smooth(0.6, 0.86, y) }, () => b.surface(rows.map((r) => r.map((p) => V(p.x * 0.985, p.y + 0.004, p.z))), { out: (p) => V(-p.x, 0.75 - p.y, 0) }));
+  // the head and foot ends of the tub
+  for (const [row, dz] of [[rows[0], 1], [rows[nL], -1]]) {
+    const lid = row.map((p) => V(p.x, top, p.z));
+    b.with({ ...M.fabric, aoFn: () => 0.7 }, () => b.surface([row, lid], { out: () => V(0, 0, dz), twoSided: true }));
+  }
   // rim piping
   const rim = [];
   for (let i = 0; i <= nL * 2; i++) {
@@ -412,10 +417,10 @@ function pram(ctx) {
     }
     b.surface(rows, { out: () => V(0, 1, 0), twoSided: false });
   });
-  babyBlanket(ctx, 0.715, -0.34, -0.82, 0.165);
-  // the baby lies on the mattress, the back of its pelvis at y ~0.70, head towards the hood
+  babyBlanket(ctx, 0.745, -0.36, -0.82, 0.165);
+  // the baby lies on the mattress (the back of its pelvis at y ~0.64), head towards the hood
   return { grips: [V(-0.17, H + 0.006, 0), V(0.17, H + 0.006, 0)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.72, -0.3),
-    baby: { pos: V(0, 0.70, -0.46), lie: true } };
+    baby: { pos: V(0, 0.64, -0.50), lie: true } };
 }
 
 function umbrella(ctx) {
@@ -456,7 +461,7 @@ function umbrella(ctx) {
   b.with(M.fabric, () => b.surface(rows, { twoSided: true }));
   canopy(ctx, 0.84, -0.2, 0.2, 0.22, -0.95, 1.1, 2);
   return { grips: [V(-xw, H - 0.005, 0.03), V(xw, H - 0.005, 0.03)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.45, -0.33),
-    baby: { pos: V(0, 0.425, -0.30), lie: false } };
+    baby: { pos: V(0, 0.43, -0.315), lie: false } };
 }
 
 const BUILD = { pushchair: (c) => pushchair(c, false), jogger: (c) => pushchair(c, true), pram, umbrella };

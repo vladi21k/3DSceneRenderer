@@ -1,7 +1,7 @@
 import { KIND, ST, TASK, MOB } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
 import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
-import { updateFoot, footGap, propPointDist2, _foot } from './footprint.js';
+import { updateFoot, footGap, propPointDist2, _foot, footBlend } from './footprint.js';
 import { rideTarget, bikeTurnRate } from './cyclist.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
@@ -91,8 +91,11 @@ export class Steering {
           if (dx * dx + dy * dy > 9) continue;
           const g = footGap(a, b, dx, dy);
           if (g.gap >= SEP_GAP) continue;
-          const share = b.state === ST.SEATED || b.simple ? 1 : 0.5;
-          const push = Math.min(lim - done, (SEP_GAP - g.gap) * share);
+          // (all of it against someone seated, or held against a pole / wall / terrace)
+          const share = b.state === ST.SEATED || b.simple || b.pinned ? 1 : 0.5;
+          // (a touch is eased apart at walking pace; only a real overlap is pushed out briskly)
+          const want = (SEP_GAP - g.gap) * share;
+          const push = Math.min(lim - done, want, g.gap > -0.08 ? 1.5 * this.c.dt : lim);
           if (push <= 0) return;
           a.s += (g.ns * push) / k; a.d += g.nd * push;
           done += push;
@@ -113,6 +116,9 @@ export class Steering {
       dt = dt1;
       if (a.simple) { if (((this.frame + a.slot) & 1) === 1) continue; dt = dt1 * 2; }
       a.timer -= dt; a.thinkT -= dt;
+      if (a.mob && a.footW < 1) { footBlend(a, c.time); updateFoot(a); }
+      // stepping off a bicycle to its left: a short sideways step, nothing else
+      if (a.stepT > 0) { this._stepOff(a, dt); continue; }
       if (a.thinkT <= 0) think(c, a);
       if (!a.active) continue;
       if (a.state === ST.SEATED) { this._settle(a, dt); continue; }
@@ -153,7 +159,9 @@ export class Steering {
       this.maxC = Math.max(0.02, 2 * Math.max(1.6, vmax) * dt);
       const s1 = a.s, d1 = a.d;
       this._separate(a, this.maxC);
+      const s2 = a.s, d2 = a.d;
       this._constrain(a, gathered, a.s - prevS);
+      a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
       // all corrections together stay within a brisk step too
       const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
       if (cl > this.maxC) { const f = this.maxC / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
@@ -217,7 +225,9 @@ export class Steering {
     this.maxC = Math.max(0.02, 2 * Math.max(1.6, v) * dt);
     const s1 = a.s, d1 = a.d;
     this._separate(a, 0.5 * this.maxC);
+    const s2 = a.s, d2 = a.d;
     this._constrain(a, false, 0);
+    a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
     const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
     const lim = 0.5 * this.maxC;
     if (cl > lim) { const f = lim / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
@@ -227,6 +237,22 @@ export class Steering {
     // held back by a constraint: the bicycle really slows down
     const along = (ms * Math.cos(a.alpha) + md * Math.sin(a.alpha)) / dt;
     if (along < a.bikeV - 0.05) a.bikeV = Math.max(0, along);
+  }
+
+  /** Getting off a bicycle on its left side: the rider steps over while the renderer slides the
+   *  bicycle from under them to their right, so the bicycle itself stays where it was. */
+  _stepOff(a, dt) {
+    const c = this.c, T = 0.75, sm = (u) => u * u * (3 - 2 * u);
+    const u0 = 1 - a.stepT / T;
+    a.stepT = Math.max(0, a.stepT - dt);
+    const f = sm(1 - a.stepT / T) - sm(u0);
+    const prevS = a.s, prevD = a.d;
+    const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+    a.s += (a.stepS * f) / k; a.d += a.stepD * f;
+    updateFoot(a);
+    c.tram.constrain(a, prevD);
+    a.vs = ((a.s - prevS) * k) / dt; a.vd = (a.d - prevD) / dt;
+    a.moving = true; a.vmaxCur = 1.6;
   }
 
   /** Seated: ease the last centimetres onto the chair. */

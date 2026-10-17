@@ -52,7 +52,8 @@ const MAX_FILTER_TEXELS = 16; // widest PCF kernel (texels): wider would only ad
 const REFRESH = [1, 1, 2, 4]; // frames between redraws per cascade (far ones staggered)
 const OUTLINE_MARGIN = 1.0;   // slack for the filter footprint and normal offset (m)
 const MAX_REACH = 120;        // longest caster shadow considered by the cascade culling (m)
-export const NEAR_CASCADES = 2; // cascades below this index draw the batcher's cell proxies, the rest its coarse ones
+const DETAIL_MARGIN = 15;     // near cascades draw full-detail static casters this close to their slice (m)
+export const NEAR_CASCADES = 2; // cascades below this index may draw the batcher's detail cells
 
 const _thinMat = new WeakMap();
 const _origShadowHooks = [THREE.Object3D.prototype.onBeforeShadow, THREE.Object3D.prototype.onAfterShadow];
@@ -169,9 +170,19 @@ class CascadeFrustum extends THREE.Frustum {
     const ud = object.userData;
     let sphere;
     if (ud.shadowProxy) {
-      // cell proxies serve the near cascades, the coarse ones the rest
-      if (!ud.shadowProxy.active || (ud.shadowFar === true) !== (this.index >= NEAR_CASCADES)) return false;
+      if (!ud.shadowProxy.active) return false;
       sphere = ud.shadowSphere;
+      // batcher cells: far cascades draw the coarse ones; near cascades the detail cells
+      // close to their slice and the coarse ones farther away
+      const coarse = ud.shadowCoarse === true;
+      if (this.index >= NEAR_CASCADES) {
+        if (!coarse) return false;
+      } else if (c && c.enabled) {
+        const p = sphere.center, r = sphere.radius;
+        const d = (p.x - c.camPos.x) * c.fwd.x + (p.y - c.camPos.y) * c.fwd.y + (p.z - c.camPos.z) * c.fwd.z;
+        const close = d + r > this.zNear - DETAIL_MARGIN && d - r < this.zFar + DETAIL_MARGIN;
+        if (close === coarse) return false;
+      } else if (coarse) return false;
     } else {
       if (c && c.batcher && c.batcher.covers(object)) return false;
       sphere = worldSphere(object, c ? c.frame : 0);

@@ -122,11 +122,17 @@ export class Agent {
     this.prevHead = 0;        // world heading at the last output (lean)
     this.headValid = false;
     this.rx = 0;              // cyclist crossing a rail: 0 no, 1 swinging away first, 2 crossing
-    this.rxSgn = 1; this.rxEnd = 0; this.rxSetup = 0; this.rxT = 0; this.rxSetupT = 0; this.rxHold = 0; this.rxV = 2; this.rxFirst = 0;
+    this.rxSgn = 1; this.rxEnd = 0; this.rxSetup = 0; this.rxT = 0; this.rxSetupT = 0; this.rxHold = 0; this.rxV = 2; this.rxFirst = 0; this.rxWhy = '';
     this.stopT = 0;           // cyclist: seconds stopped
     this.stopNP = 0;          // ... of which with nobody in the way
     this.stallTry = 0;        // ... when getting off was last tried (stopT)
     this.stallSeen = false;   // ... counted as a stall (statistics)
     this.narrowS = null;      // cyclist: where the sidewalk ahead gets too narrow to ride (s)
+    this.mobPrev = 0; this.mobT = -1e9; this.footW = 1; // prop sliding to its new place after getting on / off (footprint.js)
+    this.stepT = 0; this.stepS = 0; this.stepD = 0;
+    this.pinned = false;
+    this.waitX = 0;           // cyclist: waiting for people to clear its way across a rail (until)
+    this.waitXT = 0;          // ... for how long (a lane change is given up after a while)
+    this.dmNext = 0;          // cyclist: earliest time to try getting off again after a failed try      // pushed by a fixed obstacle / wall this frame (takes no share of a separation)      // stepping off a bicycle to its left side (s left, total offset)
   }
 }

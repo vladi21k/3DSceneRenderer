@@ -623,30 +623,31 @@ def build_body(kind='male', build=0.0, belly=0.0, face_var=None):
         return {'head': wh, 'neck': np.clip(1 - wh - ws, 0, 1), 'spine2': ws}
 
     # (men: the neck flares into the trapezius at its base, wider than it is higher up)
-    flare = 0.010 if sex == 'm' else 0.004 if fem else 0.002
+    flare = 0.006 if sex == 'm' else 0.003 if fem else 0.0015
     neck = Loft(nb, nt, (1, 0, 0), [(0, nr[0] + flare + b * 0.012, nr[1] + b * 0.012, 0, 0.006),
-                                    (0.3, nr[0] * 0.97 + flare * 0.3 + b * 0.011, nr[1] * 0.97 + b * 0.012, 0, 0.002),
-                                    (0.6, nr[0] * 0.94 + b * 0.01, nr[1] * 0.96 + b * 0.012, 0, 0.0),
+                                    (0.5, nr[0] * 0.95 + b * 0.01, nr[1] * 0.96 + b * 0.012, 0, 0.0),
                                     (1.0, nr[0] * 0.92 + b * 0.008, nr[1] * 0.95 + b * 0.012, 0, -0.004)],
                 region=REGION['neck'], bones=neck_bones)
     traps = []
     ta, tb = T['trap']
-    # the upper trapezius: a sloping tent from high on the back of the neck down to the acromion
-    # (about 18 degrees for men, 11 for women), so the shoulder line falls away from the neck
-    # instead of running out level to a corner
-    rise = 0.004 * sy if sex == 'm' else 0.0
+    # the upper trapezius: a smooth sloping sheet from the side of the neck down to the acromion
+    # (about 20 degrees for men, 14 for women), thickest near the neck, so the shoulder line falls
+    # away from the neck instead of running out level to a corner
+    slope = 20.0 if sex == 'm' else 14.0
+    th = (0.029 if sex == 'm' else 0.022 if fem else 0.024) * sy
     for s in (-1, 1):
         side = 'R' if s > 0 else 'L'
-        a = np.array([s * nr[0] * 0.6, J['neck'][1] + rise, J['neck'][2] + nr[1] * 0.36])
-        m = np.array([s * (nr[0] * 0.6 + 0.45 * (T['shoulder'][0] - nr[0] * 0.6)), J['neck'][1] + 0.35 * rise - 0.007 * sy,
-                      J['neck'][2] + nr[1] * 0.24])
-        bpt = np.array([s * (T['shoulder'][0] - 0.016 * sx), sh_y + 0.004 * sy, T['shoulder'][2] - 0.002])
-        tw = {'bones': {'spine2': 0.55, 'clav' + side: 0.45}}
-        traps.append(RoundCone(a, m, ta * 1.06 + b * 0.009, (ta + tb) * 0.5 + b * 0.007, region=TR, **tw))
-        traps.append(RoundCone(m, bpt, (ta + tb) * 0.5 + b * 0.007, tb + b * 0.006, region=TR, **tw))
+        a = np.array([s * nr[0] * 0.62, J['neck'][1] + 0.002 * sy, J['neck'][2] + nr[1] * 0.30])
+        bpt = np.array([s * (T['shoulder'][0] - 0.012 * sx), sh_y + 0.006 * sy, T['shoulder'][2] - 0.002])
+        traps.append(RoundCone(a, bpt, ta + b * 0.008, tb + b * 0.006, region=TR,
+                               bones={'spine2': 0.55, 'clav' + side: 0.45}))
+        mid = (a + bpt) * 0.5 + np.array([0, 0.004 * sy, 0.006 * sz])
+        half = 0.5 * np.linalg.norm((bpt - a)[[0, 1]]) + 0.012 * sx
+        traps.append(Ellipsoid(mid, (half, th + b * 0.006, (0.046 if sex == 'm' else 0.040) * sz + b * 0.006),
+                               R=rot_xyz(0, 0, -s * slope), region=TR, bones={'spine2': 0.55, 'clav' + side: 0.45}))
     c7 = Ellipsoid((0, J['neck'][1] - 0.004 * sy, J['neck'][2] + nr[1] * 0.78), (0.010 * sx, 0.012 * sy, 0.010 * sz),
                    region=TR, bones={'spine2': 1})
-    torso = Union([torso, Union(traps, k=0.02 * sy)], k=0.028 * sy)
+    torso = Union([torso, Union(traps, k=0.03 * sy)], k=0.032 * sy)
     body = Union([torso, neck], k=0.028 * sy)
     body = Union([body, c7], k=0.010 * sy)
 

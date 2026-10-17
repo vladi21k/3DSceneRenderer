@@ -50,6 +50,7 @@ export function shopLayout(o, rng, back = 0.4) {
 /** Frame (paint) template for the shopfront. */
 export function shopFrameTpl(o, L, q) {
   const t = new Tpl();
+  t.uvLong = true;
   const n = headSegments(o, q);
   const ring = (d, z) => outlinePts(o, d, n).map((p) => [p[0], p[1], z]);
   if (q < 0.5) t.loft([ring(0, ZF), ring(FW, ZF)], true, 1);
@@ -193,6 +194,7 @@ export function shopGlassTpl(o, L, q = 1) {
 /** Roller-shutter box, guides and (optionally) the lowered shutter curtain. Steel. */
 export function shopShutterTpl(o, L, q) {
   const t = new Tpl();
+  t.uvLong = true;
   const { hwI, yT } = L;
   const top = L.arched ? yT : o.h - FW;
   const boxH = 0.22, z0 = ZF - 0.02, z1 = z0 + Math.min(0.16, o.recess - 0.08);

@@ -89,6 +89,7 @@ export class Population {
     a.bikeV = 0; a.yawW = 0; a.cT = 0; a.slowT = 0; a.stallT = 0; a.mountT = 0; a.mvOn = false; a.mvBand = false;
     a.mvToBand = false; a.mvLane = null; a.nearT = 0; a.headValid = false; a.clearHi = false; a.clearSpare = 0;
     a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; a.narrowS = null;
+    a.mobPrev = 0; a.mobT = -1e9; a.footW = 1; a.stepT = 0; a.dmNext = 0; a.waitX = 0; a.waitXT = 0; a.pinned = false;
     this.stats.spawned++;
     return a;
   }

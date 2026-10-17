@@ -90,9 +90,15 @@ function rawLane(c, a) {
     if (side < 0 && a.laneF < 0.45) return -(0.9 + a.laneF * 4.5);
     return side * (EDGE_LANE + 0.1 + lf * 0.45);
   }
-  // a stroller or a walked bicycle keeps clear of the benches and trunks along the tree line
-  const extra = a.mob ? Math.min(0.45, Math.max(0, w - 1.0)) : 0;
-  return side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra) * lf);
+  // a stroller or a walked bicycle keeps clear of the benches and trunks along the tree line; a
+  // bicycle walked on the person's right keeps its whole length off the shop fronts (or the trees)
+  let extra = a.mob ? Math.min(0.45, Math.max(0, w - 1.0)) : 0, keep = 0;
+  if (a.mob === MOB.WALKBIKE) {
+    const facadeSide = a.dir * side > 0;
+    const need = Math.min(0.85, Math.max(0, w - 1.2));
+    if (facadeSide) keep = need; else extra = Math.max(extra, need);
+  }
+  return side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra - keep) * lf);
 }
 
 // ------------------------------------------------------------------ desired velocity
@@ -407,8 +413,8 @@ function thinkWalk(c, a) {
       if (mob !== MOB.WALKBIKE && r.chance(0.016) && startBrowse(c, a)) return;
       if (!mob && r.chance(0.006) && startEnter(c, a)) return;
       if (!mob && a.nFollow === 0 && r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
-      // drift over to the shop windows for a few steps, without stopping
-      if (r.chance(0.02) && a.driftT < c.time) { a.driftT = c.time + r.range(3, 7); a.driftF = r.range(0.8, 0.97); a.lookGoal = (a.dir * side > 0 ? -1 : 1) * r.range(0.5, 1.0); }
+      // drift over to the shop windows for a few steps, without stopping (not with a bicycle)
+      if (mob !== MOB.WALKBIKE && r.chance(0.02) && a.driftT < c.time) { a.driftT = c.time + r.range(3, 7); a.driftF = r.range(0.8, 0.97); a.lookGoal = (a.dir * side > 0 ? -1 : 1) * r.range(0.5, 1.0); }
     }
     if (!mob && a.nFollow === 0 && r.chance(0.06) && startPlatform(c, a)) return;
   }

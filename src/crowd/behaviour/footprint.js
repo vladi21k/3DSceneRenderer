@@ -14,18 +14,40 @@ export function updateFoot(a) {
   footAt(a, a.alpha, a);
 }
 
-/** Capsule of a's prop for facing alpha → o.fp0s/fp0d/fp1s/fp1d/fpR and o.extLo/extHi/extS. */
+/** Capsule of a's prop for facing alpha → o.fp0s/fp0d/fp1s/fp1d/fpR and o.extLo/extHi/extS.
+ *  Right after getting on or off a bicycle the renderer slides the bicycle from where it was to
+ *  its new place over 0.75 s (a.footW 0..1, a.mobPrev): the capsule follows it. */
 export function footAt(a, alpha, o) {
-  const F = FOOT[a.mob];
+  const D = footDims(a), f0 = D.f0, f1 = D.f1, l = D.l, r = D.r;
   const cs = Math.cos(alpha), sn = Math.sin(alpha);
   // forward (cs, sn) and right (−sn, cs) in (s, d)
-  const ls = -sn * F.l, ld = cs * F.l;
-  const s0 = cs * F.f0 + ls, d0 = sn * F.f0 + ld, s1 = cs * F.f1 + ls, d1 = sn * F.f1 + ld;
-  o.fp0s = s0; o.fp0d = d0; o.fp1s = s1; o.fp1d = d1; o.fpR = F.r;
-  o.extLo = Math.max(0, F.r - Math.min(d0, d1) - AGENT_R);
-  o.extHi = Math.max(0, Math.max(d0, d1) + F.r - AGENT_R);
-  o.extS = Math.max(0, Math.max(Math.abs(s0), Math.abs(s1)) + F.r - AGENT_R);
+  const ls = -sn * l, ld = cs * l;
+  const s0 = cs * f0 + ls, d0 = sn * f0 + ld, s1 = cs * f1 + ls, d1 = sn * f1 + ld;
+  o.fp0s = s0; o.fp0d = d0; o.fp1s = s1; o.fp1d = d1; o.fpR = r;
+  o.extLo = Math.max(0, r - Math.min(d0, d1) - AGENT_R);
+  o.extHi = Math.max(0, Math.max(d0, d1) + r - AGENT_R);
+  o.extS = Math.max(0, Math.max(Math.abs(s0), Math.abs(s1)) + r - AGENT_R);
   return o;
+}
+
+/** The prop's capsule in the person's frame now (FOOT, or between two of them while it slides). */
+const _dims = { f0: 0, f1: 0, l: 0, r: 0 };
+export function footDims(a) {
+  const F = FOOT[a.mob], w = a.footW, P = w < 1 && a.mobPrev ? FOOT[a.mobPrev] : null;
+  if (!P) { _dims.f0 = F.f0; _dims.f1 = F.f1; _dims.l = F.l; _dims.r = F.r; return _dims; }
+  _dims.f0 = P.f0 + (F.f0 - P.f0) * w; _dims.f1 = P.f1 + (F.f1 - P.f1) * w;
+  _dims.l = P.l + (F.l - P.l) * w; _dims.r = Math.max(P.r, F.r);
+  return _dims;
+}
+
+/** Start of the slide of the prop to its new place (getting on or off a bicycle). */
+export function propMoved(a, prevMob, time) { a.mobPrev = prevMob; a.mobT = time; a.footW = 0; updateFoot(a); }
+/** Progress of that slide (0..1, smoothed like the renderer's blend), once per frame. */
+export function footBlend(a, time) {
+  if (a.footW >= 1) return;
+  const u = Math.min(1, Math.max(0, (time - a.mobT) / 0.75));
+  a.footW = u >= 1 ? 1 : u * u * (3 - 2 * u);
+  if (a.footW >= 1) a.mobPrev = 0;
 }
 
 /** Does the footprint (body + prop, as body-centre offsets ext*) reach into the tram band

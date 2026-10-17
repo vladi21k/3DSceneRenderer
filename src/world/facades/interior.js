@@ -4,24 +4,29 @@ import { goodsAtlas, GOODS_PAD } from './goods.js';
 
 // Interior-mapped window glass.
 //
-// A standard PBR glass surface (F0 0.04, near-mirror roughness with a faint smudge film)
-// whose reflections are completed by an analytic "street" model (opposite facades with
-// their windows, the paving and the street trees, falling back to the sky / environment
-// map above the rooflines), and whose transmitted light is a fake room traced per pixel:
-// a box ~4 m deep (homes) or ~7 m (shops) with painted walls, floor, ceiling, furniture
-// boxes, shelving with real depth (boards, goods of varied size and shape, a back panel)
-// and curtains / sheers / blinds just behind the glass.
+// A standard PBR glass surface (F0 0.04 per face, both faces reflecting; near-mirror
+// roughness with a faint smudge film) whose reflection is traced against a stand-in of the
+// street (fStreet: the opposite facade row with its storeys, shop band, awnings, roofline
+// and sun / shade line, the paving with its track corridor and cast shadows, trees, poles
+// and people), falling back to the sky / environment map above the rooflines, and whose
+// transmitted light is a fake room traced per pixel: a box ~4 m deep (homes) or ~7 m
+// (shops) with painted walls, floor, ceiling, furniture boxes, shelving with real depth
+// (boards, products from the goods atlas of goods.js, a back panel) and curtains / sheers /
+// blinds just behind the glass.
 //
 // Lighting inside the room, in scene units (daylight horizontal illuminance is ~3; the
 // camera exposure rises ~1000x at dusk, so lamp levels are ~1/1000 of daylight):
-//   daylight  form factor of the window aperture seen from each point, a uniform
-//             inter-reflected share, sun patches through the aperture, and corner and
-//             contact occlusion;
-//   homes     a pendant or standing lamp of ~2700 K: shaded downward lobe, a bright pool
-//             on the ceiling above the open shade, inverse-square falloff, fabric glowing
-//             through when the curtains are drawn;
-//   shops     a grid of recessed downlights (cos^n lobes, so their pools scallop the
-//             walls and floor) of 3000–3500 K, warmer for cafes, cool only for pharmacies.
+//   daylight  form factor of the window aperture seen from each point (the canyon passes
+//             about half the glass's sky light), a uniform inter-reflected share, sun
+//             patches through the aperture, darkening up the walls, into the corners and
+//             under the furniture;
+//   homes     a pendant or standing lamp, 2700–4000 K by room (fRoomLampC), a few rooms lit
+//             only by a television: shaded downward lobe, a bright pool on the ceiling above
+//             the open shade, inverse-square falloff, fabric glowing through drawn curtains;
+//   shops     recessed downlights, spot tracks or pendants (cos^n lobes, so their pools
+//             scallop the walls and floor) of 3000–3500 K, warmer for cafes, cool only for
+//             pharmacies; by day at ~16% of the daylight on the glass, so the interior sits
+//             at 10–20% of the street's luminance and the reflection dominates.
 //
 // Every periodic pattern is filtered against the pixel footprint at its hit point
 // (pixel angle × path length / obliquity): stripes and grids fade to their mean before
@@ -941,6 +946,8 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
 vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float streetW, vec3 Eamb, vec3 sky ) {
   float tHit;
   vec4 bg = fStreetBg( R, N, T, P, px, baseH, streetW, Eamb, sky, tHit );
+  // small windows (far away): the street furniture is sub-pixel in their reflection
+  if ( gDet <= 0.0 ) return bg;
   float rn = max( dot( R, N ), 0.02 );
   vec3 E = Eamb * 0.8 + uSunColor * step( 0.0, uSunDir.y ) * 0.3;
   float hw = streetW * 0.5;

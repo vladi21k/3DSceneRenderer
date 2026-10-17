@@ -513,8 +513,9 @@ export class Rig {
       const pan = 9 * DEG;
       const dT = new THREE.Vector3(sg * 0.10, Math.sin(pan), -Math.cos(pan)).normalize();
       const knee = hip.clone().addScaledVector(dT, l1 * 0.97);
-      // the shins hang over the seat's edge and swing a little (one kicks, the other dangles)
-      const sw = (8 + 9 * Math.sin(T * (s === 'L' ? 2 : 3) + (s === 'L' ? 0 : 2.2))) * DEG;
+      // the shins lie forward along the leg rest, the feet over the footrest, and swing a little
+      // (one kicks, the other dangles)
+      const sw = (34 + 8 * Math.sin(T * (s === 'L' ? 2 : 3) + (s === 'L' ? 0 : 2.2))) * DEG;
       L.ankle = knee.clone().add(new THREE.Vector3(sg * 0.012 * k, -Math.cos(sw) * l2 * 0.97, -Math.sin(sw) * l2 * 0.97));
       L.pole = new THREE.Vector3(sg * 0.15, 0.3, -1).normalize();
       L.footQ = qEuler(-22 + 8 * Math.sin(T * 2 + sg), -sg * 10, 0);

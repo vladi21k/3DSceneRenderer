@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
+import { COLOR_SCALE } from './mesh.js';
 
 // Weathering for the masonry: buildings-owned variants of the stone materials that
 // darken and grey the albedo where the per-vertex grime mask (colour alpha, baked
@@ -129,9 +130,10 @@ export function grimeAtlas() {
 }
 
 // colour attribute (unorm8 × 4): rgb = sqrt(colour / 2), a = grime / 2 (lit share on glass)
+const CSCALE = COLOR_SCALE.toFixed(1);
 const COLOR_DECODE = /* glsl */ `
-float bgA = vColor.a * 2.0;
-vColor = vec4(vColor.rgb * vColor.rgb * 2.0, 1.0);
+float bgA = vColor.a * ${CSCALE};
+vColor = vec4(vColor.rgb * vColor.rgb * ${CSCALE}, 1.0);
 `;
 
 const VERT_PARS = /* glsl */ `
@@ -313,4 +315,3 @@ export function litGlass(app, name = 'glass.window') {
   app.materials.register(m.name, m);
   return m;
 }
-

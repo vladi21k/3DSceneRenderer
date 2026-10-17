@@ -43,6 +43,9 @@ export class Tpl {
     this.I = takeI(); this.in = 0;     // indices used
     this.k = 1;        // shade multiplier for the piece being added (per-piece value jitter)
     this._piece = 0;
+    // quads take u along their longer side (joinery: the detail bakes' grain, brush strokes
+    // and tile-row lines run along every member, whatever its direction)
+    this.uvLong = false;
   }
   get count() { return this.vn / VS; }
   _growV(k) {
@@ -104,7 +107,15 @@ export class Tpl {
     const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
     const mode = az >= ax && az >= ay ? 0 : ax >= ay ? 1 : 2;
     const b = this.vn / VS;
-    if (mode === 0) {
+    if (this.uvLong) {
+      // planar coordinates (p, q) of the dominant plane; swapped when q is the long side
+      const P = mode === 0 ? [x0, x1, x2, x3] : mode === 1 ? [z0, z1, z2, z3] : [x0, x1, x2, x3];
+      const Q = mode === 2 ? [z0, z1, z2, z3] : [y0, y1, y2, y3];
+      const span = (a) => Math.max(a[0], a[1], a[2], a[3]) - Math.min(a[0], a[1], a[2], a[3]);
+      const [U, V] = span(Q) > span(P) ? [Q, P] : [P, Q];
+      this.v(x0, y0, z0, nx, ny, nz, U[0], V[0], shade); this.v(x1, y1, z1, nx, ny, nz, U[1], V[1], shade);
+      this.v(x2, y2, z2, nx, ny, nz, U[2], V[2], shadeTop); this.v(x3, y3, z3, nx, ny, nz, U[3], V[3], shadeTop);
+    } else if (mode === 0) {
       this.v(x0, y0, z0, nx, ny, nz, x0, y0, shade); this.v(x1, y1, z1, nx, ny, nz, x1, y1, shade);
       this.v(x2, y2, z2, nx, ny, nz, x2, y2, shadeTop); this.v(x3, y3, z3, nx, ny, nz, x3, y3, shadeTop);
     } else if (mode === 1) {

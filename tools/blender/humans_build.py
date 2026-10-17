@@ -150,10 +150,13 @@ def skin_weights(node, P, T, sigma, bones=B.BONES):
         bw = l.bone_weights(P32)
         sides = {bone_side(b) for b in bw}
         f = infl[:, j]
+        # (one-sided pieces stop at the mid plane; the buttocks over a wider band, so the seat of
+        # the trousers does not tear along the cleft when the legs move apart)
+        band = 0.045 if l.region == B.REGION['butt'] else 0.012
         if sides == {-1}:
-            f = f * np.clip(0.5 - x / 0.012, 0, 1)
+            f = f * np.clip(0.5 - x / band, 0, 1)
         elif sides == {1}:
-            f = f * np.clip(0.5 + x / 0.012, 0, 1)
+            f = f * np.clip(0.5 + x / band, 0, 1)
         for b, w in bw.items():
             W[:, bones.index(b)] += f * w
     W /= np.maximum(W.sum(1, keepdims=True), 1e-9)

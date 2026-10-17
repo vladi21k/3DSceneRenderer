@@ -8,6 +8,7 @@ import { Steering } from './behaviour/steering.js';
 import { TramWatch } from './behaviour/tram.js';
 import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES } from './behaviour/agent.js';
 import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D } from './behaviour/constants.js';
+import { footDims } from './behaviour/footprint.js';
 
 // Crowd behaviour: where the pedestrians of the street go and what they do. The
 // figures themselves are drawn by app.humans; this module feeds it one record per
@@ -58,7 +59,7 @@ class CrowdSim {
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
     this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [],
-      propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propWall: 0, propWallLog: [],
+      propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propObstLog: [], propWall: 0, propWallLog: [],
       // strollers / bicycles against people and against each other (world space, within 60 m of the camera)
       pa: { frames: 0, agentOverlap: 0, propOverlap: 0, minAgentGap: 99, minPropGap: 99, pairs: new Set(), log: [] } };
     // renderer slots; alloc may hand back the first index of our block
@@ -342,8 +343,9 @@ class CrowdSim {
   /** The stroller / bicycle in world space (from the heading handed to the renderer): never in
    *  the swept volume, never through a pole or a facade. */
   _checkProp(a, tr, map) {
-    const ck = this.check, route = this.route, F = FOOT[a.mob];
-    if (!F) return;
+    const ck = this.check, route = this.route;
+    if (!FOOT[a.mob]) return;
+    const F = footDims(a);
     // three.js yaw: forward = (−sin h, −cos h), right = (cos h, −sin h)
     const h = a.heading, fx = -Math.sin(h), fz = -Math.cos(h), rx = Math.cos(h), rz = -Math.sin(h);
     const pts = _pp;
@@ -367,7 +369,11 @@ class CrowdSim {
     for (let q = 0; q < n; q++) {
       const i = map.qI[q], cs = map.qDS[q] + ms, cd = map.cD[i];
       const d2 = segPointDist2(pts[0].s, pts[0].d, pts[1].s, pts[1].d, cs, cd);
-      if (d2 < (map.cR[i] + F.r * 0.5) ** 2) { ck.propOverlap++; break; }
+      if (d2 < (map.cR[i] + F.r * 0.5) ** 2) {
+        ck.propOverlap++;
+        if (ck.propObstLog.length < 8) ck.propObstLog.push({ t: +this.time.toFixed(1), mob: MOB_NAMES[a.mob], s: +route.wrap(ms).toFixed(1), d: +md.toFixed(2), obst: [+route.wrap(cs).toFixed(1), +cd.toFixed(2), +map.cR[i].toFixed(2)], dist: +(Math.sqrt(d2) - map.cR[i]).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], step: a.stepT > 0, footW: +a.footW.toFixed(2), lead: !!a.leader });
+        break;
+      }
     }
     // the swept volume
     const ahead0 = pts[0].s - this.tram.trainU, ahead1 = pts[1].s - this.tram.trainU;
@@ -387,7 +393,7 @@ class CrowdSim {
 
   /** World-space prop capsule of a (as drawn from the heading handed to the renderer) → o = [x0, z0, x1, z1, r]. */
   _propSeg(a, o) {
-    const F = FOOT[a.mob], h = a.heading;
+    const F = footDims(a), h = a.heading;
     const fx = -Math.sin(h), fz = -Math.cos(h), rx = Math.cos(h), rz = -Math.sin(h);
     o[0] = a.x + fx * F.f0 + rx * F.l; o[1] = a.z + fz * F.f0 + rz * F.l;
     o[2] = a.x + fx * F.f1 + rx * F.l; o[3] = a.z + fz * F.f1 + rz * F.l; o[4] = F.r;
@@ -491,7 +497,7 @@ class CrowdSim {
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked,
-        prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, wall: ck.propWall, wallLog: ck.propWallLog },
+        prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, obstacleLog: ck.propObstLog, wall: ck.propWall, wallLog: ck.propWallLog },
         // frames (within 60 m) of a stroller / bicycle overlapping a body or another one, distinct pairs
         propPeople: { frames: ck.pa.frames, agentOverlap: ck.pa.agentOverlap, propOverlap: ck.pa.propOverlap, pairs: ck.pa.pairs.size, minAgentGap: +ck.pa.minAgentGap.toFixed(3), minPropGap: +ck.pa.minPropGap.toFixed(3), log: ck.pa.log } } : null,
       population: pop.stats, events: this.events,

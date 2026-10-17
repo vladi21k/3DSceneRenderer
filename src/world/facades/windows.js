@@ -99,6 +99,7 @@ function buildJoinery(o, v, q, open) {
   if (q < 0.5) return null; // far range: the glass shader draws the casing and mullion
   const P = PROFILE[v.type];
   const t = new Tpl();
+  t.uvLong = true;
   const fw = P.fw, { zf, zb, ch } = FR;
   const n = headSegments(o, q);
   const ring = (d, z) => outlinePts(o, d, n).map((p) => [p[0], p[1], z]);
@@ -126,6 +127,7 @@ function buildJoinery(o, v, q, open) {
     if (i === openIdx) {
       // casement swung into the room about its hinge on the jamb side
       const leaf = new Tpl();
+      leaf.uvLong = true;
       sash(leaf, x0, fw, x1, sashTop, P, zOff, v.rows, v.cols, panelTop);
       const hx = open.side < 0 ? x0 : x1;
       t.appendRotY(leaf, hx, P.zgb, open.side < 0 ? open.angle : -open.angle);
@@ -257,6 +259,7 @@ function springLeafPoly(o, d) {
  */
 function buildShutters(o, state, q, standoff) {
   const t = new Tpl();
+  t.uvLong = true;
   const hw = o.w / 2;
   const mirror = (poly, f) => poly.map(f).reverse();
   if (state === 'reveal') {
@@ -316,6 +319,7 @@ function revealPanels(t, o, q) {
  */
 function buildRoller(o, down, q) {
   const t = new Tpl();
+  t.uvLong = true;
   const hw = o.w / 2, top = o.h;
   const z0 = FR.zf + 0.01, z1 = Math.min(o.recess - 0.01, z0 + 0.17);
   const boxH = 0.2;

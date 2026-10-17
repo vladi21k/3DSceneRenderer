@@ -9,12 +9,14 @@ import { isThinCaster, hasShadowHooks } from './sunShadow.js';
 // proxies per shadow side and thin/solid class; the cascade frustums then skip the
 // originals and draw the proxies instead.
 //
-// Two sets of proxies share each merged vertex buffer. The near cascades (fine texels,
-// short depth slices) draw cell proxies: the chunk's triangles sorted into ~13 m cells
-// along the street, so a cascade only draws the cells whose shadows can reach its slice.
-// The far cascades draw one coarse proxy per chunk without the triangles that are
-// smaller than their texels (mouldings, balusters, frames: about half the count and
-// under 1% of the shadow area); thin casters never reach them anyway.
+// Each chunk's merged triangles are sorted into ~13 m cells along the street, so a
+// cascade only draws the cells whose shadows can reach its slice. Every cell exists
+// twice over one shared vertex buffer: in detail, and coarse, without the triangles
+// whose longest edge is under 0.35 m (mouldings, balusters, frames: about half the
+// count and under 1% of the shadow area). The far cascades (texels too coarse for that
+// detail) draw coarse cells; the near ones draw detail cells close to their slice and
+// coarse cells for blockers farther away, whose penumbrae blur such detail anyway.
+// Thin casters have no coarse set: only near cascades draw them, close to their slice.
 //
 // Proxies never draw in the main pass: their geometry's bounding sphere lies far
 // below the street, so the camera frustum culls them, and the cascade frustums test
@@ -224,9 +226,10 @@ export class ShadowBatcher {
   }
 
   /**
-   * Sort a merged part's triangles into cells along the street (near cascades) and pick
-   * the triangles large enough for the far cascades. Both index the same vertices.
-   * Resumable: works in slices and returns false when the frame budget runs out.
+   * Sort a merged part's triangles into cells along the street, twice: all of them
+   * (detail cells) and those large enough for coarse shadow texels or distant blockers
+   * (coarse cells). Both index the same vertices. Resumable: works in slices and
+   * returns false when the frame budget runs out.
    */
   _split(part, rec, t0) {
     const pos = part.pos, idx = part.index, nTri = part.iOff / 3;
@@ -236,21 +239,14 @@ export class ShadowBatcher {
       const tl = Math.hypot(smp.tan.x, smp.tan.z) || 1;
       st = part.split = {
         stage: 0, t: 0, tx: smp.tan.x / tl, tz: smp.tan.z / tl, ox: smp.pos.x, oz: smp.pos.z,
-        u: new Float32Array(nTri), umin: Infinity, umax: -Infinity,
-        far: part.thin ? null : new idx.constructor(idx.length), nFar: 0,
-        farBox: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
+        u: new Float32Array(nTri), big: part.thin ? null : new Uint8Array(nTri), umin: Infinity, umax: -Infinity,
       };
     }
     const over = () => performance.now() - t0 > this.budgetMs;
     const SLICE = 2048;
-    const grow = (bx, p) => {
-      if (pos[p] < bx[0]) bx[0] = pos[p]; if (pos[p] > bx[3]) bx[3] = pos[p];
-      if (pos[p + 1] < bx[1]) bx[1] = pos[p + 1]; if (pos[p + 1] > bx[4]) bx[4] = pos[p + 1];
-      if (pos[p + 2] < bx[2]) bx[2] = pos[p + 2]; if (pos[p + 2] > bx[5]) bx[5] = pos[p + 2];
-    };
-    // 1. position along the street; triangles big enough for the far cascades
+    // 1. position along the street; triangles big enough for the coarse cells
     if (st.stage === 0) {
-      const { u, far, tx, tz, ox, oz } = st, m2 = FAR_MIN_EDGE * FAR_MIN_EDGE;
+      const { u, big, tx, tz, ox, oz } = st, m2 = FAR_MIN_EDGE * FAR_MIN_EDGE;
       while (st.t < nTri) {
         const end = Math.min(nTri, st.t + SLICE);
         for (let t = st.t; t < end; t++) {
@@ -259,14 +255,11 @@ export class ShadowBatcher {
           u[t] = v;
           if (v < st.umin) st.umin = v;
           if (v > st.umax && v < Infinity) st.umax = v;
-          if (!far) continue;
+          if (!big) continue;
           const e1 = (pos[b] - pos[a]) ** 2 + (pos[b + 1] - pos[a + 1]) ** 2 + (pos[b + 2] - pos[a + 2]) ** 2;
           const e2 = (pos[c] - pos[a]) ** 2 + (pos[c + 1] - pos[a + 1]) ** 2 + (pos[c + 2] - pos[a + 2]) ** 2;
           const e3 = (pos[c] - pos[b]) ** 2 + (pos[c + 1] - pos[b + 1]) ** 2 + (pos[c + 2] - pos[b + 2]) ** 2;
-          if (e1 >= m2 || e2 >= m2 || e3 >= m2) {
-            far[st.nFar++] = idx[t * 3]; far[st.nFar++] = idx[t * 3 + 1]; far[st.nFar++] = idx[t * 3 + 2];
-            grow(st.farBox, a); grow(st.farBox, b); grow(st.farBox, c);
-          }
+          big[t] = e1 >= m2 || e2 >= m2 || e3 >= m2 ? 1 : 0;
         }
         st.t = end;
         if (st.t < nTri && over()) return false;
@@ -277,56 +270,72 @@ export class ShadowBatcher {
       st.n = n;
       st.len = Math.max(span / n, 1e-3) || 1;
       st.cell = new Uint8Array(nTri);
-      st.count = new Uint32Array(n);
+      st.count = [new Uint32Array(n), new Uint32Array(n)];   // detail, coarse
       st.stage = 1; st.t = 0;
       if (over()) return false;
     }
     // 2. cell of each triangle
     if (st.stage === 1) {
-      const { u, cell, count, n, len, umin } = st;
+      const { u, big, cell, n, len, umin } = st, [cd, cc] = st.count;
       while (st.t < nTri) {
         const end = Math.min(nTri, st.t + SLICE * 4);
         for (let t = st.t; t < end; t++) {
           const k = Math.min(n - 1, Math.max(0, Math.floor((u[t] - umin) / len))) || 0;
-          cell[t] = k; count[k]++;
+          cell[t] = k; cd[k]++;
+          if (big && big[t]) cc[k]++;
         }
         st.t = end;
         if (st.t < nTri && over()) return false;
       }
-      st.start = new Uint32Array(st.n);
-      for (let k = 1; k < st.n; k++) st.start[k] = st.start[k - 1] + st.count[k - 1];
-      st.w = Uint32Array.from(st.start);
-      st.near = new idx.constructor(nTri * 3);
-      st.box = Array.from({ length: st.n }, () => [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+      const sets = big ? 2 : 1;
+      st.start = []; st.w = []; st.out = []; st.box = [];
+      for (let q = 0; q < sets; q++) {
+        const start = new Uint32Array(n);
+        for (let k = 1; k < n; k++) start[k] = start[k - 1] + st.count[q][k - 1];
+        let total = 0;
+        for (let k = 0; k < n; k++) total += st.count[q][k];
+        st.start.push(start);
+        st.w.push(Uint32Array.from(start));
+        st.out.push(new idx.constructor(total * 3));
+        st.box.push(Array.from({ length: n }, () => [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]));
+      }
       st.stage = 2; st.t = 0;
       if (over()) return false;
     }
     // 3. triangles regrouped by cell, cell bounds
     if (st.stage === 2) {
-      const { cell, w, near, box } = st;
+      const { cell, big, w, out, box } = st;
       while (st.t < nTri) {
         const end = Math.min(nTri, st.t + SLICE);
         for (let t = st.t; t < end; t++) {
-          const k = cell[t], o = w[k]++ * 3, bx = box[k];
-          for (let j = 0; j < 3; j++) {
-            const vi = idx[t * 3 + j];
-            near[o + j] = vi;
-            grow(bx, vi * 3);
+          const k = cell[t];
+          for (let q = 0; q < out.length; q++) {
+            if (q === 1 && !big[t]) break;
+            const o = w[q][k]++ * 3, bx = box[q][k], dst = out[q];
+            for (let j = 0; j < 3; j++) {
+              const vi = idx[t * 3 + j], p = vi * 3;
+              dst[o + j] = vi;
+              if (pos[p] < bx[0]) bx[0] = pos[p]; if (pos[p] > bx[3]) bx[3] = pos[p];
+              if (pos[p + 1] < bx[1]) bx[1] = pos[p + 1]; if (pos[p + 1] > bx[4]) bx[4] = pos[p + 1];
+              if (pos[p + 2] < bx[2]) bx[2] = pos[p + 2]; if (pos[p + 2] > bx[5]) bx[5] = pos[p + 2];
+            }
           }
         }
         st.t = end;
         if (st.t < nTri && over()) return false;
       }
     }
-    const sphereOf = (bx) => new THREE.Sphere(new THREE.Vector3((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2),
-      0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]));
-    part.cells = [];
-    for (let k = 0; k < st.n; k++) {
-      if (st.count[k]) part.cells.push({ start: st.start[k] * 3, count: st.count[k] * 3, sphere: sphereOf(st.box[k]) });
-    }
-    part.near = st.near;
-    part.far = st.far && st.nFar ? st.far.slice(0, st.nFar) : null;
-    if (part.far) part.farSphere = sphereOf(st.farBox);
+    part.sets = st.out.map((index, q) => {
+      const cells = [];
+      for (let k = 0; k < st.n; k++) {
+        const c = st.count[q][k], bx = st.box[q][k];
+        if (!c) continue;
+        const sphere = new THREE.Sphere(new THREE.Vector3((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2),
+          0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]));
+        cells.push({ start: st.start[q][k] * 3, count: c * 3, sphere });
+      }
+      return { index, cells, coarse: q === 1 };
+    });
     part.split = null;
     return true;
   }
@@ -358,9 +367,10 @@ export class ShadowBatcher {
     }
     for (const part of job.parts) {
       const position = new THREE.BufferAttribute(part.pos, 3);
-      const near = new THREE.BufferAttribute(part.near, 1);
-      for (const c of part.cells) this._proxy(rec, part, position, near, c.start, c.count, c.sphere, false);
-      if (part.far) this._proxy(rec, part, position, new THREE.BufferAttribute(part.far, 1), 0, part.far.length, part.farSphere, true);
+      for (const set of part.sets) {
+        const index = new THREE.BufferAttribute(set.index, 1);
+        for (const c of set.cells) this._proxy(rec, part, position, index, c.start, c.count, c.sphere, set.coarse);
+      }
       for (const s of part.snap) { rec.sources.push(s); this.covered.set(s.o, rec); }
     }
     rec.active = true;
@@ -368,8 +378,8 @@ export class ShadowBatcher {
     this._count();
   }
 
-  /** One depth-only proxy: a draw range of a merged part, for the near or the far cascades. */
-  _proxy(rec, part, position, index, start, count, sphere, far) {
+  /** One depth-only proxy: a cell (draw range) of a merged part, detail or coarse. */
+  _proxy(rec, part, position, index, start, count, sphere, coarse) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', position);
     geo.setIndex(index);
@@ -383,7 +393,7 @@ export class ShadowBatcher {
     mesh.userData.shadowProxy = rec;
     mesh.userData.shadowSphere = sphere;
     mesh.userData.thinCaster = part.thin;
-    mesh.userData.shadowFar = far;
+    mesh.userData.shadowCoarse = coarse;
     this.root.add(mesh);
     rec.proxies.push(mesh);
   }

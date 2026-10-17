@@ -550,7 +550,8 @@ const humans = {
       const p = this.slots[s.holdWith];
       if (!p || !p.visible || p.appearance === null || p.comp) continue;
       if (s.pose > 1 || !(p.pose <= 1 || p.pose === 3)) continue;
-      const a = s.a || (s.a = this.appearanceOf(s.appearance)), pa = p.a || (p.a = this.appearanceOf(p.appearance));
+      // (s.a is left for the main loop to set: it writes the look row when it does)
+      const a = s.a || this.appearanceOf(s.appearance), pa = p.a || this.appearanceOf(p.appearance);
       const Bs = this.bases[a.body], Bp = this.bases[pa.body];
       if (!Bs || !Bp) continue;
       let dh = p.heading - s.heading;
@@ -567,12 +568,15 @@ const humans = {
         const ox = p.x + cp * st.offX + spn * st.offZ, oz = p.z - spn * st.offX + cp * st.offZ;
         const rx = (s.x - ox) * cp - (s.z - oz) * spn;          // the child across the stroller's frame
         if (Math.abs(rx) < 0.25 || Math.abs(rx) > 1.0) continue;
-        const sx = Math.sign(rx) * 0.22, sz = -0.12;
         const side = lat > 0 ? 'R' : 'L';
         const sh = this._shoulderW(s, a, Bs, side, _hv);
         const reach = this._reach(a, Bs);
+        // a hand on the side tube that runs from the handle down to the fold hinge, at a height
+        // the child reaches comfortably
+        const gy = Math.min(p.y + 0.9, Math.max(sh.y - 0.5 * reach, p.y + 0.6));
+        const u = Math.min(1, Math.max(0, (1.02 - (gy - p.y)) / 0.4));
+        const sx = Math.sign(rx) * 0.245, sz = -0.27 * u;
         const gx = ox + cp * sx + spn * sz, gz = oz - spn * sx + cp * sz;
-        const gy = Math.min(p.y + 0.86, Math.max(sh.y - 0.85 * reach, p.y + 0.62));
         if (Math.hypot(gx - sh.x, gy - sh.y, gz - sh.z) > reach * 0.97) continue;
         s.hold = { side, x: gx, y: gy, z: gz, adult: false };
         this.holdList.push(i);
@@ -591,7 +595,8 @@ const humans = {
       const tall = shP.y > shS.y;
       const shT = tall ? shP : shS, shL = tall ? shS : shP, rT = tall ? rP : rS, rL = tall ? rS : rP;
       const lowT = shT.y - 0.92 * rT;
-      if (lowT > shL.y + 0.06) continue;            // too small a child for this adult's hand
+      // (a small child reaches up, the hand up to above its shoulder)
+      if (lowT > shL.y + 0.14) continue;            // too small a child for this adult's hand
       const gy = Math.max(lowT, shL.y - 0.8 * rL);
       const gx = (shS.x + shP.x) * 0.5 - sn * 0.06, gz = (shS.z + shP.z) * 0.5 - cs * 0.06;
       if (Math.hypot(gx - shL.x, gy - shL.y, gz - shL.z) > rL * 0.98 || Math.hypot(gx - shT.x, gy - shT.y, gz - shT.z) > rT * 0.98) continue;
@@ -729,6 +734,12 @@ const humans = {
       rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, look * 0.35);
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
+    }
+    // folded arms rest on the clothed chest and belly: a heavier build (or a belly) brings them
+    // forward with it (the clip is posed on the base body)
+    if (s.pose === 1 && a.idle === 2 && !mobP) {
+      const fwd = (3 + Math.max(0, a.build) * 9 + (a.belly || 0) * 11) * Math.PI / 180;
+      for (const [, bones] of ARM_SIDES) rotBonesAxis(M, B.rig.rest, bones, bones[0], BONE.spine2, 1, 0, 0, fwd);
     }
     // the arms hang close to the body; heavier builds (and a woman's hips) hold them a little
     // further out so the hands clear the hips and thighs

@@ -50,7 +50,7 @@ PER_BASE = {
 }
 LONG_STYLES = ('hair_long', 'hair_bob', 'scarf', 'hair_ponytail', 'hair_curlyf')
 # triangles per LOD; 0 = the part is dropped at that LOD (too small to matter on screen)
-LOD_TRIS = {'hair': (1400, 600, 200, 50, 16), 'long': (2600, 1000, 320, 90, 30), 'beard': (900, 320, 110, 24, 0),
+LOD_TRIS = {'hair': (1500, 600, 200, 50, 16), 'long': (3200, 1100, 340, 90, 30), 'beard': (900, 320, 110, 24, 0),
             'hat': (1200, 450, 150, 40, 16), 'bag': (700, 260, 90, 24, 12), 'pack': (1500, 560, 170, 44, 14),
             'glasses': (900, 260, 70, 0, 0)}
 
@@ -125,15 +125,22 @@ def ears_cut():
 
 
 def cap_hair(thick_top, thick_side, region, front=0.058, temple=0.036, burn=-0.014, back=-0.064, fade=0.012,
-             noise=0.0, seed=1, burn_w=1.0, thick_back=None):
+             noise=0.0, seed=1, burn_w=1.0, thick_back=None, ragged=0.0):
     tb = thick_side if thick_back is None else thick_back
+
+    def hl(P):
+        # (ragged: the edge of the hair breaks up into small locks instead of a cut line)
+        h = hairline(P, front, temple, 0.022, burn, back, burn_w)
+        if ragged:
+            h = h + ragged * clump_noise(P * np.array([1.0, 0.25, 1.0]), seed + 9, 170.0, 6)
+        return h
 
     def off(P):
         u = np.clip((P[:, 1] + 0.02) / 0.11, 0, 1)
         # the back of the head carries more hair than the sides above the ears (occipital volume)
         ws = thick_side + (tb - thick_side) * sstep(0.01, 0.07, P[:, 2] - CR_C[2]) * sstep(-0.075, -0.03, P[:, 1])
         t = ws + (thick_top - ws) * u
-        h = hairline(P, front, temple, 0.022, burn, back, burn_w)
+        h = hl(P)
         t = t * (0.08 + 0.92 * sstep(h, h + fade, P[:, 1])) + 0.0010
         if noise:
             t = t + noise * clump_noise(P, seed) * sstep(h, h + fade, P[:, 1])
@@ -141,7 +148,7 @@ def cap_hair(thick_top, thick_side, region, front=0.058, temple=0.036, burn=-0.0
     shell = cranium_offset(off)
 
     def region_fn(P):
-        return hairline(P, front, temple, 0.022, burn, back, burn_w) - P[:, 1]
+        return hl(P) - P[:, 1]
     reg = Fn(region_fn, shell.lo, shell.hi)
     hair = Intersect(shell, reg, k=0.004)
     hair = Subtract(hair, ears_cut(), k=0.006)
@@ -315,7 +322,7 @@ def hair_part(name, body_l=None):
     if name == 'hair_short':
         # the front edge thins out over ~2 cm (no bowl-cut ledge); a little lift on top; volume at
         # the crown with a cowlick whorl; a full occiput tapering to a clipper-faded nape
-        n = cap_hair(0.013, 0.0055, R, front=mf, temple=mt, noise=0.0016, fade=0.02, thick_back=0.009, back=-0.070)
+        n = cap_hair(0.013, 0.0055, R, front=mf, temple=mt, noise=0.0016, fade=0.02, thick_back=0.009, back=-0.070, ragged=0.004)
         n = Union([n, Ellipsoid((0.006, 0.086, -0.040), (0.050, 0.019, 0.032))], k=0.018)
         n = Union([n, crown_volume(0.006)], k=0.02)
     elif name == 'hair_buzz':
@@ -620,7 +627,9 @@ def backpack_part(T, body):
         pts, nrm = [], []
         for i, (p, h) in enumerate(ctrl):
             if 0 < i < len(ctrl) - 1:
-                p, n = on_surface(body, p, off, h)
+                # (over the chest and under the arm the strap lies on the clothes, which stand off
+                # the skin there more than on the shoulders)
+                p, n = on_surface(body, p, off if i <= 2 else max(off * 1.3, 0.02), h)
             else:
                 n = np.asarray(h, dtype=np.float64)
                 n = n / np.linalg.norm(n)

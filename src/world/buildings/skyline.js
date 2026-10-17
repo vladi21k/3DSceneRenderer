@@ -5,9 +5,10 @@ import { hash3 } from './shade.js';
 // Taller post-war blocks standing well behind the street frontage (8–14 storeys), so
 // the skyline down the street is not one even cornice line: where the street bends or
 // a frontage building is low, their upper floors show above the roofs, as in the
-// photographs; some close the vista of a long straight or of a side street. Seen only from far away, they are simple and cheap: stone-clad or
-// rendered boxes with a regular grid of flush dark windows (lit at random at night),
-// a darker shop band, a roof with a lift room, tanks and a mast.
+// photographs; some close the vista of a long straight or of a side street. Seen only
+// from far away, they are simple and cheap: stone-clad or rendered boxes with a regular
+// grid of windows (sills, roller shutters, AC units; lit at random at night), a few
+// solid-parapet balconies, a darker shop band, a roof with a lift room, tanks and a mast.
 
 /**
  * Slab description in its own facade frame (same conventions as a lot frame: u along

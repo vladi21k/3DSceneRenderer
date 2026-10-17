@@ -2,7 +2,7 @@ import { TRACK_ZONE_HALF, TRACK_OFFSET, RAIL_CENTER } from '../../core/config.js
 import { noise1 } from '../../core/rng.js';
 import { ST, TASK, LANE, MOB } from './agent.js';
 import { RIDE_D, BAND, AGENT_R, CELL, GRID_D, CYCLE_V, WALKBIKE_V, TRAM_LEN, CYCLE_CLEAR_T, FOOT } from './constants.js';
-import { footBandGap, footInBand, updateFoot, propPointDist2 } from './footprint.js';
+import { footBandGap, footInBand, updateFoot, propPointDist2, propMoved } from './footprint.js';
 import { startUturn } from './behaviour.js';
 
 // Cyclists in the shared pedestrian street. They ride 10-18 km/h in both directions, mostly
@@ -61,12 +61,19 @@ const inGauge = (d) => (d > RAILS[0] && d < RAILS[1]) || (d > RAILS[2] && d < RA
  *  the tracks and the corridor edges), and clear of the rails. */
 export function rideLine(d, lo = CORR_LO, hi = CORR_HI) {
   d = clamp(d, lo, hi);
-  if (inGauge(d)) {
-    const g = d < 0 ? 0 : 2, a = RAILS[g] - RAIL_CLEAR, b = RAILS[g + 1] + RAIL_CLEAR;
-    const aOk = a >= lo, bOk = b <= hi;
-    d = aOk && bOk ? (d - a < b - d ? a : b) : aOk ? a : bOk ? b : d;
+  if (freeLine(d, lo, hi)) return d;
+  // the nearest free line: just outside a rail's strip, on the side away from its track
+  let best = d, bd = 1e9;
+  for (let i = 0; i < 8; i++) {
+    const x = RAILS[i >> 1] + (i & 1 ? RAIL_CLEAR : -RAIL_CLEAR);
+    if (freeLine(x, lo, hi) && Math.abs(x - d) < bd) { bd = Math.abs(x - d); best = x; }
   }
-  return offRail(d, lo, hi, d);
+  return best;
+}
+function freeLine(x, lo, hi) {
+  if (x < lo - 1e-6 || x > hi + 1e-6 || inGauge(x)) return false;
+  for (const r of RAILS) if (Math.abs(x - r) < RAIL_CLEAR - 1e-6) return false;
+  return true;
 }
 /** Rails strictly between d0 and d1 → number of them; _rx.first / _rx.last (in the direction of d1). */
 const _rx = { first: 0, last: 0 };
@@ -151,7 +158,7 @@ function laneLine(c, a) {
     if (LN.lo > LN.hi) LN.lo = LN.hi - 0.3;
   }
   LN.d = clamp(LN.d, LN.lo, LN.hi);
-  if (Math.abs(LN.d) < TRACK_ZONE_HALF) LN.d = offRail(LN.d, LN.lo, LN.hi, a.d);
+  if (Math.abs(LN.d) < TRACK_ZONE_HALF) LN.d = rideLine(LN.d, LN.lo, LN.hi);
   return LN;
 }
 
@@ -185,7 +192,7 @@ export function rideTarget(c, a, T) {
     // out of the band, towards the other track (tram.js picked the side and the margin), to a
     // line clear of the rails: just out of the band if that is free of them, else past the rail
     let to = a.clearTo;
-    if (Math.abs(to) < TRACK_ZONE_HALF) to = a.clearTo < a.d ? offRail(to, -99, a.clearTo + 0.45, a.d) : offRail(to, a.clearTo - 0.45, 99, a.d);
+    if (Math.abs(to) < TRACK_ZONE_HALF) to = a.clearTo < a.d ? rideLine(to, CORR_LO, a.clearTo + 0.45) : rideLine(to, a.clearTo - 0.45, CORR_HI);
     // (not into the other track's gauge: just between the tracks, or on to the corridor's edge)
     if (to < a.d && to < RAILS[1] && to > RAILS[0]) to = RAILS[1] + RAIL_CLEAR + 0.05 <= RIDE_D - BAND - a.extHi - 0.05 ? RAILS[1] + RAIL_CLEAR + 0.05 : CORR_LO + 0.1;
     dL = to; T.ang = 0.62;
@@ -210,6 +217,13 @@ export function rideTarget(c, a, T) {
   let best = scan(c, a, dL, lo, hi, weave ? (a.lane === LANE.SIDE ? 2.4 : 1.6) : 0.25);
   // every line near the lane blocked by a kiosk / terrace / bench: look wider for a way round
   if (blkStatic && blk[best] < 8 && vblk[best] === 0 && !a.clearing) best = scan(c, a, dL, lo, hi, 4.6);
+  // held up by someone in the corridor with no free line beside the rails (two riders meeting on
+  // the corridor's edge): a line between the rails of a track, crossed into steeply, gets by
+  else if (weave && a.lane === LANE.CORR && blk[best] < 2.5 + a.bikeV && !a.clearing && !inGauge(dL)) {
+    const b0 = blk[best];
+    const b1 = scan(c, a, dL, lo, hi, 2.0, true);
+    if (blk[b1] > b0 + 1.5) best = b1; else best = scan(c, a, dL, lo, hi, weave ? 1.6 : 0.25);
+  }
   T.d = cand[best];
   a.cT = T.d;
   // a lane change running into a bench or a trunk: called off, back to the old line
@@ -247,7 +261,7 @@ function stalled(c, a, dt) {
   a.stopT += dt;
   if (a.stopT < 0.8 || a.state !== ST.WALK) return;
   // nobody in the way: the counter runs; someone passing through the look-ahead only holds it
-  if (!peopleAhead(c, a, 4.5, 1.4)) a.stopNP += dt;
+  if (!peopleAhead(c, a, 4.5, 1.4) && !(a.waitX > c.time)) a.stopNP += dt;
   if (a.stopNP > 5 && !a.stallSeen) { a.stallSeen = true; c.tally('cycleStall5s'); }
   // wedged with nobody in the way for a couple of seconds, or held up for long anyway (a crowd
   // standing round a bench): get off, and walk the bicycle round it
@@ -291,16 +305,17 @@ function railGuard(c, a, T, dGoal) {
       if ((fw - r) * (rw - r) >= 0) continue;
       const sgn = sa > 0 ? 1 : -1;
       a.rxSgn = sgn; a.rxFirst = r; a.rxEnd = r + sgn * (WHEEL * Math.sin(X_ANG) + 0.1); a.rxV = VX;
-      startCross(a, c, T);
+      startCross(a, c, T, 'astride');
       return;
     }
   }
   if (a.rxHold > c.time) { a.rx = 0; return; }
   if (a.rx === 3) {
-    // straightening out after the crossing (tight and slow, so the turn back does not reach the next rail)
+    // straightening out after the crossing (tight and slow, so the turn back does not reach the next
+    // rail); a goal back across a rail is dealt with below like any other
     a.rxT += c.dt;
     if (Math.abs(Math.sin(a.alpha)) < 0.12 || a.rxT > 1.6) a.rx = 0;
-    else { T.v = Math.min(T.v, a.rxV + 0.2); return; }
+    else if (!railsBetween(a.d, dGoal)) { T.v = Math.min(T.v, a.rxV + 0.2); return; }
   }
   if (a.rx === 2) {
     // both wheels over the last rail: straighten out
@@ -333,16 +348,28 @@ function railGuard(c, a, T, dGoal) {
   const vX = crossSpeed(room) + (a.clearing ? 0.3 : 0);
   a.rxV = vX;
   T.v = Math.min(T.v, vX + 0.8 * Math.max(0, dist - turnRoom(vX, 0)));
-  // heading towards the rail now (rad from the street axis, + = towards it)
-  const lat = Math.atan2(Math.sin(a.alpha) * sgn, Math.abs(Math.cos(a.alpha)));
+  // heading towards the rail now (rad from the street axis, + = towards it), less what it will
+  // still turn away while the turn rate reverses
+  let lat = Math.atan2(Math.sin(a.alpha) * sgn, Math.abs(Math.cos(a.alpha)));
+  const wAway = Math.max(0, -a.yawW * sgn * (a.dir > 0 ? 1 : -1));
+  lat -= (wAway * wAway) / (2 * 5.0);
   const slowEnough = v <= vX + 0.3;
-  if (lat >= X_MIN || slowEnough && dist >= turnRoom(v, lat)) { startCross(a, c, T); return; }
+  // (never into people: wait short of the rail until the way across is clear)
+  // (getting out of the tram's way does not wait: people step aside, and whoever is right in
+  // front still stops the bicycle)
+  const wayFree = a.clearing || crossFree(c, a, sgn);
+  if (!wayFree) {
+    T.v = Math.min(T.v, 0.9 * Math.max(0, dist - 0.6)); a.waitX = c.time + 0.3;
+    // a lane change held up like this for a while is given up: on along the present line
+    if (a.mvOn && (a.waitXT += c.dt) > 1.6) { a.waitXT = 0; abortMove(c, a); a.rx = 0; return; }
+  } else a.waitXT = 0;
+  if (wayFree && (lat >= X_MIN || slowEnough && dist >= turnRoom(Math.max(v, vX), lat))) { startCross(a, c, T, lat >= X_MIN ? 'steep' : 'room'); return; }
   // the S-bend: swing away from the rail to where the steep turn fits
   let away = first - sgn * turnRoom(vX, 0);
   away = sgn > 0 ? Math.max(away, lim) : Math.min(away, lim);
   const there = (a.d - away) * sgn <= 0.08;
   // as far away as it goes (or tried for long enough): cross from here once slow enough
-  if ((there || a.rx === 1 && a.rxSetupT > 3) && slowEnough) { startCross(a, c, T); return; }
+  if (wayFree && (there || a.rx === 1 && a.rxSetupT > 3) && slowEnough) { startCross(a, c, T, there ? 'there' : 'timeout'); return; }
   a.rx = 1; a.rxSetup = there ? a.d : away; a.rxT = 0.6; a.rxSetupT += c.dt;
   holdSetup(a, T);
 }
@@ -360,10 +387,29 @@ function crossSpeed(room) {
   while (v > 1.2 && turnRoom(v, 0) > room) v -= 0.1;
   return v;
 }
-function startCross(a, c, T) {
-  a.rx = 2; a.rxT = 0;
+function startCross(a, c, T, why) {
+  a.rx = 2; a.rxT = 0; a.rxWhy = why;
   c.tally('cycleRailCross');
   crossHeading(c, a, T);
+}
+/** Nobody on the way across (a strip X_ANG from the street axis towards sgn, a few metres long)? */
+function crossFree(c, a, sgn) {
+  const st = c.steering, agents = c.population.agents;
+  const th = a.dir > 0 ? sgn * X_ANG : PI - sgn * X_ANG, cs = Math.cos(th), sn = Math.sin(th);
+  const ix0 = Math.max(0, Math.floor((a.s - 4.5 - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((a.s + 4.5 - st.s0) / CELL));
+  const iy0 = Math.max(0, Math.floor((a.d - 4.5 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((a.d + 4.5 + GRID_D) / CELL));
+  for (let x = ix0; x <= ix1; x++) {
+    for (let y = iy0; y <= iy1; y++) {
+      for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
+        const b = agents[j];
+        if (b === a) continue;
+        const ds = b.s - a.s, dd = b.d - a.d;
+        const xa = ds * cs + dd * sn, ya = -ds * sn + dd * cs;
+        if (xa > 0 && xa < 2.8 && Math.abs(ya) < 0.65 + (b.mob ? 0.45 : 0)) return false;
+      }
+    }
+  }
+  return true;
 }
 function holdSetup(a, T) {
   T.alpha = null; T.d = a.rxSetup; T.ang = Math.max(T.ang, 0.42);
@@ -474,7 +520,7 @@ function pathAt(a, x, dL) {
 /** Scores the candidate lines (offsets from the path, clamped to [lo, hi] here) against the
  *  people and fixed obstacles ahead; returns the best index (blk / vblk: nearest conflict on
  *  each line and its speed along our way). */
-function scan(c, a, dL, lo, hi, spread) {
+function scan(c, a, dL, lo, hi, spread, gauge = false) {
   const st = c.steering, agents = c.population.agents, map = c.map;
   const v = Math.max(a.bikeV, 1.2), dir = a.dir;
   const look = 4 + 2.6 * v;
@@ -482,7 +528,9 @@ function scan(c, a, dL, lo, hi, spread) {
   const nL = Math.abs(a.d) < TRACK_ZONE_HALF + 1 ? railsBetween(a.d, dL) : 0;
   for (let i = 0; i < NC; i++) {
     let dc = clamp(dL + ((i - (NC - 1) / 2) / ((NC - 1) / 2)) * spread, lo, hi);
-    if (Math.abs(dc) < TRACK_ZONE_HALF) dc = offRail(dc, lo, hi, a.d);
+    // (lines in the corridor: clear of the rails, and along a track only if the lane is there)
+    // (passing someone it cannot get by otherwise, a line along a track will do)
+    if (Math.abs(dc) < TRACK_ZONE_HALF) dc = inGauge(dL) || gauge ? offRail(dc, lo, hi, a.d) : rideLine(dc, lo, hi);
     cand[i] = dc; off[i] = dc - dL;
     // stay near the lane line, and near the line already chosen (no dithering)
     cost[i] = 0.5 * Math.abs(dc - dL) + 0.7 * Math.abs(dc - a.cT);
@@ -835,20 +883,36 @@ export function propClear(c, a, margin = 0.08) {
 /** Get off and walk the bicycle (a crowd, a narrow stretch). Needs the walking-a-bicycle pose. */
 export function dismount(c, a, stuck = false, anyway = false) {
   if (!c.mobOK(MOB.WALKBIKE) || a.state !== ST.WALK) return false;
+  // (a failed try is not repeated every frame)
+  if (c.time < a.dmNext && !anyway) return false;
   // not in the middle of the poles and trees, nor in the ride track's band (unless wedged there)
   const ad = Math.abs(a.d), gap0 = footBandGap(a);
   if (!stuck && ad > TRACK_ZONE_HALF - 0.3 && ad < c.map.bandInAt(a.s, a.d >= 0 ? 1 : -1) - 0.4) return false;
   if (!stuck && gap0 < 0.8) return false;
   const r = c.rng;
-  const prev = a.alpha;
-  a.mob = MOB.WALKBIKE;
+  const s0 = a.s, d0 = a.d;
+  a.mob = MOB.WALKBIKE; a.footW = 1;
   updateFoot(a);
-  // the bicycle moves to the person's side: not into the tram's band, a pole, a bench or a facade
-  // (wedged beside the band with the tram coming: anywhere not nearer to the band will do)
+  // the bicycle goes to the rider's right: not into the tram's band, a pole, a bench, a facade or
+  // anybody (wedged beside the band with the tram coming: anywhere not nearer to the band will do)
   const near = c.tram.near(a);
-  const why = stuck && near ? (footBandGap(a) < Math.min(gap0, 0.8) ? 'band' : '') : footInBand(a) && near ? 'band' : !anyway && !propClear(c, a) ? 'clear' : '';
-  const bad = why || c.population.propClash(a);
-  if (bad) { a.mob = MOB.CYCLE; a.alpha = prev; updateFoot(a); a.slowT = 1.0; c.tally('dismountNo_' + (why || 'clash')); return false; }
+  const placeBad = () => {
+    if (stuck && near ? footBandGap(a) < Math.min(gap0, 0.8) : footInBand(a) && near) return 'band';
+    if (!anyway && !propClear(c, a)) return 'clear';
+    return c.population.propClash(a) ? 'clash' : '';
+  };
+  let why = placeBad(), step = false;
+  if (why && why !== 'band') {
+    // no room there: the rider steps off to the left instead and the bicycle stays where it is
+    const k = Math.max(0.5, c.route.offsetScale(a.s, a.d)), ls = Math.sin(a.alpha) * FOOT[MOB.WALKBIKE].l, ld = -Math.cos(a.alpha) * FOOT[MOB.WALKBIKE].l;
+    a.s = s0 + ls / k; a.d = d0 + ld;
+    updateFoot(a);
+    if (!placeBad() && bodyClear(c, a)) { why = ''; step = true; }
+    a.s = s0; a.d = d0;
+    if (step) { a.stepT = 0.75; a.stepS = ls; a.stepD = ld; }
+  }
+  if (why) { a.mob = MOB.CYCLE; updateFoot(a); a.slowT = 1.0; a.dmNext = c.time + 0.6; c.tally('dismountNo_' + why); return false; }
+  propMoved(a, MOB.CYCLE, c.time);
   a.state = ST.WALK; a.task = TASK.NONE; a.mvOn = false; a.slowT = 0; a.rx = 0; a.narrowS = null; a.stopT = 0; a.stopNP = 0;
   a.v0 = r.range(WALKBIKE_V[0], WALKBIKE_V[1]);
   a.mountT = c.time + r.range(6, 16);
@@ -861,7 +925,25 @@ export function dismount(c, a, stuck = false, anyway = false) {
     a.laneF = clamp((Math.abs(a.d) - lo - 0.3) / Math.max(0.3, hi - lo - 0.6), 0.04, 0.96);
   }
   a.laneTT = 0; a.strideV = -1; a.yawW = 0; a.uturnT = 0;
-  c.tally('dismount');
+  c.tally(step ? 'dismountLeft' : 'dismount');
+  return true;
+}
+
+/** Is a's body (at its present spot) clear of poles, trunks, benches and other people? */
+function bodyClear(c, a) {
+  const map = c.map;
+  const n = map.gatherCircles(a.s, 1.2);
+  for (let q = 0; q < n; q++) {
+    const i = map.qI[q], ds = map.qDS[q], dd = map.cD[i] - a.d, rr = map.cR[i] + AGENT_R;
+    if (ds * ds + dd * dd < rr * rr) return false;
+  }
+  const side = a.d >= 0 ? 1 : -1;
+  if (map.rectInner(a.s, side, Math.abs(a.d), AGENT_R * 0.5) || Math.abs(a.d) > map.wallAt(a.s, side)) return false;
+  for (const b of c.population.agents) {
+    if (!b.active || b === a || b.mob) continue;
+    const ds = b.s - a.s, dd = b.d - a.d;
+    if (ds * ds + dd * dd < (2 * AGENT_R) ** 2) return false;
+  }
   return true;
 }
 
@@ -880,9 +962,10 @@ export function maybeMount(c, a) {
     const x = (b.s - a.s) * dir;
     if (x > -0.5 && x < 9 && Math.abs(b.d - a.d) < 1.3) { a.mountT = c.time + 2; return false; }
   }
-  a.mob = MOB.CYCLE;
+  a.mob = MOB.CYCLE; a.footW = 1;
   updateFoot(a);
   if (!propClear(c, a) || c.population.propClash(a)) { a.mob = MOB.WALKBIKE; updateFoot(a); a.mountT = c.time + 2; return false; }
+  propMoved(a, MOB.WALKBIKE, c.time);
   const r = c.rng;
   a.v0 = r.range(CYCLE_V[0], CYCLE_V[1]);
   a.clearT = r.range(CYCLE_CLEAR_T[0], CYCLE_CLEAR_T[1]); a.needsBell = false; a.dreamy = false;

@@ -41,13 +41,13 @@ const HDR_CLAMP = 64;
 const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 
 // Camera response (final pass). curve: display value of a scene luminance, a generalised
-// logistic in stops from mid grey fitted to a camera JPEG (0.18 → 0.47, −3 stops → 0.04,
-// +2 → 0.87, white ~3 stops up); chroma: AgX's colour (0) .. the scene's ratios (1).
+// logistic in stops from mid grey fitted to a camera JPEG (0.18 → 0.46, −3 stops → 0.03,
+// +2 → 0.89, white ~3 stops up); chroma: AgX's colour (0) .. the scene's ratios (1).
 // Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
 // bloom: share of the blurred pyramid (veiling glare), day .. night.
 const TONE = {
-  curve: [1.16, 0.625, -1.35, 2.5], chroma: [0.5, 0.75], skyChroma: 0,
-  meter: 0.6, target: 0.34, clamp: [0.5, 2.5], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
+  curve: [1.19, 0.65, -1.2, 2.5], chroma: [0.5, 0.75], skyChroma: 0,
+  meter: 0.6, target: 0.34, clamp: [0.5, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
 };
 
 // Street-level dust haze: extinction per metre (rgb), nearly grey (coarse dust).

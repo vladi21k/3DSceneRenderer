@@ -48,8 +48,7 @@ const BASE_MS = 0.8;               // per-frame generation budget when nothing i
 const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
 const LOOK_FAR = 110;              // far detail is prepared up to this far beyond the view
-
-const UPLOAD_BYTES = 640 << 10;     // vertex data uploaded ahead per frame (at least one buffer)
+const UPLOAD_BYTES = 640 << 10;    // vertex data uploaded ahead per frame (at least one buffer)
 
 let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere
 const jobs = new Map();            // `${chunkIndex}|${lod}` -> job
@@ -335,9 +334,14 @@ function geometries(B) {
   return { geoms, pending, left: pending.reduce((n, a) => n + a[2].array.byteLength, 0) };
 }
 
-/** Attach every attribute a result still holds back (the renderer uploads them when drawn). */
+/**
+ * Attach every attribute a result still holds back (the renderer uploads them when
+ * drawn). geometry.userData.revealBytes: what drawing it still sends (those attributes
+ * and the index), for the streamer's upload budget.
+ */
 function attachAll(res) {
-  for (const [g, name, a] of res.pending) g.setAttribute(name, a);
+  for (const g of res.geoms.values()) g.userData.revealBytes = g.index ? g.index.array.byteLength : 0;
+  for (const [g, name, a] of res.pending) { g.setAttribute(name, a); g.userData.revealBytes += a.array.byteLength; }
   res.pending.length = 0;
 }
 
@@ -573,7 +577,7 @@ function planSkyline(app) {
     const matrix = new THREE.Matrix4().makeBasis(uDir, up, nDir).setPosition(origin);
     const frame = { origin, uDir, nDir: nDir.clone(), up: up.clone(), width: W, ground0: y, ground1: y, floorRef: y, matrix };
     const sl = makeSlab(id, frame, rr, [8, 12]);
-    sl.D = D;
+    sl.D = D;                        // the depth this footprint was placed (and cleared) with
     const idx = layout.chunkIndex(s);
     if (!skyline.has(idx)) skyline.set(idx, []);
     skyline.get(idx).push(sl);

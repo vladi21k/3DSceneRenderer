@@ -339,6 +339,19 @@ void hSkin(out vec3 P, out vec3 N) {
     pos += rp - position;
     vRest = rp;
     vec3 g = hGarment(rp, region, L2, L4, L8);
+    if (g.z == 1.0 && region != 4.0 && region != 5.0) {
+      // a top hanging over the hips and the seat moves with the pelvis, not with each thigh (the
+      // body's buttocks follow the legs: the hem would tear apart at the spine)
+      float wl = 1.0 - smoothstep(uTorso.y - 0.02, uTorso.y + 0.06, rp.y);
+      float add = 0.0;
+      for (int k = 0; k < 4; k++) {
+        if (I[k] == 14.0 || I[k] == 18.0) { add += W[k] * wl; W[k] *= 1.0 - wl; }
+      }
+      int pk = -1;
+      for (int k = 0; k < 4; k++) if (I[k] == 1.0) pk = k;
+      if (pk < 0) for (int k = 0; k < 4; k++) if (pk < 0 && W[k] < 1e-4) { pk = k; I[k] = 1.0; }
+      if (pk >= 0) W[pk] += add; else for (int k = 0; k < 4; k++) if (I[k] == 14.0 || I[k] == 18.0) W[k] += add * 0.5;
+    }
     float ease = 0.0;
     vec3 shift = vec3(0.0);
     vec3 clothN = vec3(0.0);
@@ -361,7 +374,7 @@ void hSkin(out vec3 P, out vec3 N) {
         vec3 upA = normalize(vec3(0.0, 1.0, 0.0) - du * dot(vec3(0.0, 1.0, 0.0), du));
         float top = dot(rv, upA) / max(d, 1e-4);
         float R = jacket ? (0.058 + 0.008 * L8.w) * sc * (1.0 - 0.2 * clamp(t, 0.0, 1.0))
-          : (0.047 + 0.012 * L8.w) * sc * (L8.x < 0.6 ? 1.06 : 0.94);
+          : (0.043 + 0.010 * L8.w) * sc * (uArm.w == 1.0 ? 0.95 : 1.0) * (L8.x < 0.6 ? 1.04 : 0.94);
         float hangW = mix(1.0, jacket ? 0.55 : 0.2, smoothstep(-0.2, 0.7, top));
         ease = max(ease * mix(1.0, 0.5, smoothstep(0.12, 0.0, t)), (R - d) * hangW * smoothstep(0.06, 0.26, t));
       } else if (region == 1.0 || region == 19.0 || region == 20.0) {
@@ -765,8 +778,6 @@ const FRAG_SURFACE = /* glsl */`
   // ---- skin with subtle mottling and warm extremities (knuckles, elbows, knees)
   vec3 skinCol = skin * (0.94 + 0.12 * hNoise(r * 55.0));
   float skinRough = 0.56;
-  // skin relief: pores and fine creases (a low cavity normal), faded before it would alias
-  float skinBump = (hNoise(r * 420.0) - 0.5) * 0.00011 + (hNoise(r * 95.0) - 0.5) * 0.00018;
   if (part < 0.5) {
     float warmX = 0.0;
     if (region == 6.0) warmX = 0.35;
@@ -1010,8 +1021,18 @@ const FRAG_SURFACE = /* glsl */`
       browC *= min(1.0, 0.07 / max(hLum(browC), 1e-3));
       col = mix(col, browC, brow * (uArm.w == 1.0 ? 0.6 : 0.7));
       // lips
-      float lip = region == 17.0 ? 1.0 : 0.0;
-      col = mix(col, skin * vec3(0.86, 0.66, 0.64), lip * 0.6);
+      // lips: painted from the position (the mesh's lip region is too coarse on small heads and
+      // smears a dark band over the upper lip): an upper and a fuller lower lip either side of the
+      // mouth line, fading at the corners
+      float lw = 0.0205 * (1.0 - 0.16 * uFace.z) * (uArm.w == 1.0 ? 1.0 : 0.95);
+      float lipU = smoothstep(0.0066 * (uArm.w == 1.0 ? 1.1 : 0.9), 0.0028, q.y - uFace.y) * step(uFace.y, q.y);
+      float lipL = smoothstep(0.0085 * (uArm.w == 1.0 ? 1.1 : 0.9), 0.0035, uFace.y - q.y) * step(q.y, uFace.y);
+      float lip = max(lipU, lipL) * smoothstep(lw, lw * 0.55, ax) * smoothstep(-0.075, -0.088, q.z);
+      lip *= mix(1.0, 0.7, uFace.z) * (uArm.w == 0.0 ? 0.75 : 1.0);
+      col = mix(col, skin * vec3(0.88, 0.68, 0.66), lip * 0.6);
+      // the baked occlusion of the small face features darkens the whole face into a mask at a
+      // distance: keep most of the face open (more for women and children)
+      aoV = mix(aoV, 1.0, front * (uArm.w == 0.0 ? 0.35 : 0.5));
       float mouth = hAA(0.0011 - abs(q.y - uFace.y)) * hAA(0.019 * (1.0 - 0.16 * uFace.z) - ax) * front;
       col *= 1.0 - 0.4 * mouth;
       // the baked occlusion under the nose and over the upper lip reads as a moustache shadow on
@@ -1289,7 +1310,9 @@ const FRAG_SURFACE = /* glsl */`
   hSkinM = skinAmt;
   if (skinAmt > 0.0) {
     rough = mix(rough, skinRough, skinAmt); hSpec = mix(hSpec, 0.52, skinAmt); hSheenC *= 1.0 - skinAmt;
-    if (part < 0.5) hBump += skinBump * skinAmt;
+    // skin relief: pores and fine creases (a low cavity normal), only where it can resolve
+    if (part < 0.5 && length(fwidth(r)) < 0.004)
+      hBump += ((hNoise(r * 420.0) - 0.5) * 0.00011 + (hNoise(r * 95.0) - 0.5) * 0.00018) * skinAmt;
   }
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
   if (hAlpha < 0.999) {

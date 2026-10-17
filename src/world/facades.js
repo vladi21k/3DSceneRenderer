@@ -24,7 +24,9 @@ import { createSpillMaterial } from './facades/spill.js';
 // infill plane with a depth-offset material, procedural casings, and no small fittings;
 // so do the backdrops and deep side-street lots. Café terraces of the 'awning' style get
 // one continuous retractable awning along the shop front. At dusk lit rooms also light
-// their stone reveals (facades/spill.js; near chunks only, not drawn by day). Chunk
+// their stone reveals and shops the pavement in front (facades/spill.js; not drawn by
+// day). Joinery takes a colour per building from a weighted palette (facades/kit.js),
+// weathered per opening, on the close-range paint bakes offset per opening. Chunk
 // builds are generators: prefetched a slice per frame ahead of the streamer (update,
 // world.upcoming()), or finished synchronously in build() when the prefetch missed.
 
