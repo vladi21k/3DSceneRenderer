@@ -410,11 +410,13 @@ export class Rig {
       P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.170 * k + br, -0.120 * k),
         pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(-0.5, -0.1, 0.85), flex: 30 };
     } else if (variant === 3) {
-      // hands in the front pockets
+      // hands in the front pockets: wrists at the pocket openings, elbows out a little (the
+      // shader tucks the hands themselves inside the trousers)
+      const k = this.H / 1.76, hipY = this.rest[B.thighR].y;
       for (const s of ['L', 'R']) {
-        const A = P.arm[s];
-        A.flex = 8; A.abd = 15; A.elbow = 34; A.twist = -34;
-        A.handQ = qEuler(18, 0, 0);
+        const sg = this.side[s];
+        P.arm[s].ik = { target: new THREE.Vector3(sg * 0.135 * k, hipY - 0.025 * k, -0.045 * k),
+          pole: new THREE.Vector3(sg, -0.1, 0.45), palm: new THREE.Vector3(-sg, 0, 0.2) };
       }
     }
     return P;

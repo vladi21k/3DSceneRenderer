@@ -13,6 +13,9 @@ import { hash2 } from '../../core/rng.js';
 //               shorts | bag | backpack | phone | cross | pocket | long | heavy | male | female | balding
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
+//   ht_tread = 1: grid figures walk in place (a treadmill) at ht_v (default 1.3 m/s), for gait checks
+//   ht_filter may list several filters (comma separated): figure i takes filter i % count
+//   ht_dir  = 1 / -1: every walker heads away from / towards the start of the route
 // e.g. ?only=humans&humanstest=1&ht_mode=grid&view=400,1.6,1.7,0,0&fov=17
 
 export class HumansTest {
@@ -30,7 +33,9 @@ export class HumansTest {
     this.sp = p.num('ht_sp', 0.85);
     this.rot = (p.num('ht_rot', 0) * Math.PI) / 180;
     this.firstFig = p.num('ht_first', 0);       // skip this many figures of the seed's sequence
-    this.filter = p.str('ht_filter', null);
+    this.filters = (p.str('ht_filter', '') || '').split(',').filter(Boolean);
+    this.tread = p.num('ht_tread', 0) > 0;
+    this.dir = p.num('ht_dir', 0);
     this.nextK = this.firstFig;
     this.poseT = p.num('ht_pose', 0);
     this.s0 = (p.view ? p.view[0] : app.startS) + this.d0;
@@ -39,7 +44,7 @@ export class HumansTest {
     this.figs = [];
     const chairs = this.mode === 'cafe' ? this._chairs() : [];
     for (let i = 0; i < this.n; i++) {
-      const app_ = this._pick(i);
+      const app_ = this._pick(this.filters.length ? this.filters[i % this.filters.length] : null);
       const f = { i: this.first + i, app: app_, phase: (i * 0.37) % 1 };
       const mode = this.mode === 'mix' ? ['walk', 'walk', 'cross', 'grid', 'sit'][i % 5] : this.mode;
       f.mode = mode;
@@ -54,7 +59,8 @@ export class HumansTest {
         // spread like the street crowd: sidewalks + track zone, 10..300 m ahead
         f.d = -10 + ((i * 7.31) % 20); f.s = this.s0 + 10 + ((i * 37.7) % 290); f.dir = i % 2 ? 1 : -1; f.mode = 'walk'; f.span = 300;
       } else { f.d = -7 + ((i * 2.9) % 14); f.s = this.s0 + ((i * 5.3) % 30) - 10; f.dir = i % 3 === 0 ? 1 : -1; }
-      f.v = this.v ?? [0.7, 1.0, 1.25, 1.4, 1.6, 1.9][i % 6];
+      f.v = this.v ?? (this.tread ? 1.3 : [0.7, 1.0, 1.25, 1.4, 1.6, 1.9][i % 6]);
+      if (this.dir && f.dir) f.dir = this.dir;
       this.figs.push(f);
     }
   }
@@ -68,6 +74,7 @@ export class HumansTest {
       let s = f.s, d = f.d, heading, speed = 0, pose = 1;
       if (f.mode === 'grid') {
         heading = route.yawAt(s) + Math.PI;
+        if (this.tread) { speed = f.v; pose = 0; }
       } else if (f.mode === 'sit') {
         heading = route.yawAt(s) + Math.PI;
         pose = 2;
@@ -104,8 +111,8 @@ export class HumansTest {
   }
 
   /** Appearance seed of the next figure of the sequence that passes ht_filter. */
-  _pick() {
-    const want = FILTERS[this.filter];
+  _pick(filter) {
+    const want = FILTERS[filter];
     for (let tries = 0; tries < 5000; tries++) {
       const seed = hash2(this.seed * 7919 + this.nextK++, 4242) >>> 0;
       if (!want || want(this.h.appearanceOf(seed), this.h.parts)) return seed;
@@ -158,4 +165,13 @@ const FILTERS = {
   male: (a) => a.base === 'male',
   female: (a) => a.base === 'female',
   balding: (a, P) => a.hairPart === P.hair_balding || a.hairPart === P.hair_receding,
+  man: (a) => a.base === 'male' && a.age === 'adult',
+  woman: (a) => a.base === 'female' && a.age === 'adult',
+  teen: (a) => a.age === 'teen',
+  kid: (a) => a.age === 'child' && a.height < 1.22,
+  boy: (a) => a.age === 'child' && !a.female,
+  girl: (a) => a.age === 'child' && a.female,
+  oldman: (a) => a.age === 'old' && !a.female,
+  oldwoman: (a) => a.age === 'old' && a.female,
+  tee: (a) => a.topType === 0 && a.bottomType !== 3 && a.bottomType !== 5,
 };

@@ -228,7 +228,7 @@ export function createLineMaterials() {
     // worn white line between the tracks (continuous, uniformly scuffed)
     centre: makeLineMaterial('paint', { color: 0xd8d6ce, roughness: 0.62, wear: 0.18, opacity: 0.8, name: 'street.line.centre' }),
     // zebra stripes and stop lines (segments)
-    stripe: makeLineMaterial('paint', { color: 0xdedcd5, roughness: 0.58, wear: 0.3, opacity: 0.87, name: 'street.line.stripe' }),
+    stripe: makeLineMaterial('paint', { color: 0xdedcd5, roughness: 0.58, wear: 0.36, opacity: 0.87, name: 'street.line.stripe' }),
     // sealant-filled expansion joints across the corridor: grey-brown, intermittent
     joint: makeLineMaterial('paint', { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, minPx: 1.2, dash: [0.18, 0.65], name: 'street.line.joint' }),
   };

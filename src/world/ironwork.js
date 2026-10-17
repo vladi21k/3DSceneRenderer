@@ -6,7 +6,8 @@ import { disposeObject } from './streaming.js';
 import { DESIGNS, RAIL_H } from './ironwork/patterns.js';
 import { bayGeometry, postGeometry, buildAtlas, atlasV, ATLAS, TOL } from './ironwork/railings.js';
 import {
-  slabPath, writeSlab, corbelGeometry, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE, makeStoneMaterial,
+  slabPath, writeSlab, corbelGeometry, corbelTemplate, CORBEL, balusterGeometry, plinthProfile, copingProfile, BALUSTRADE,
+  makeStoneMaterial, GRIME,
 } from './ironwork/stone.js';
 import { GeoWriter, sweepPath, box } from './ironwork/geo.js';
 import { LodInstancer } from './ironwork/instancer.js';
@@ -26,9 +27,11 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 //          then nothing once bars are thinner than ~0.8 px, foreshortening included
 //          (the cards carry on)
 //   post   finial post / plain post, same range
-//   carve  carved consoles, turned balusters, full geraniums / plain stand-ins
+//   carve  carved consoles, turned balusters, full geraniums / light levels whose
+//          omissions (~1 cm) stay under 0.6 px, so the switch does not show
 // Railing cards are always present: they fade in under the geometry and take over from
-// it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only.
+// it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only, light
+// consoles merged into the stone mesh and the same instanced plants as near chunks.
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -233,6 +236,7 @@ const ironwork = {
       bay: DESIGNS.map((d) => [0, 1, 2].map((lod) => bayGeometry(d, lod))),
       post: [postGeometry(0), postGeometry(1)],
       corbel: [[corbelGeometry(0, 0), corbelGeometry(0, 1)], [corbelGeometry(1, 0), corbelGeometry(1, 1)]],
+      corbelFar: [corbelTemplate(0), corbelTemplate(1)],
       baluster: [balusterGeometry(0), balusterGeometry(1)],
     };
     this.att = buildAttachAssets();
@@ -305,6 +309,12 @@ const ironwork = {
       }
       this.facadeAttachments(ctx, lot, plan, st);
       yield;
+      // corner returns and chamfered corner faces: window AC units and flower boxes
+      for (const r of plan.returns || []) {
+        _p.set(r.width / 2, plan.totalHeight / 2, 0).applyMatrix4(r.frame.matrix);
+        ctx.bounds.push(_p.x, _p.y, _p.z, Math.max(r.width, plan.totalHeight) / 2);
+        this.facadeAttachments(ctx, r, r, st);
+      }
     }
   },
 
@@ -405,7 +415,8 @@ const ironwork = {
         const variant = h < Hc * 0.8 ? 1 : st.corbel;
         _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
         _m.multiplyMatrices(F, _l);
-        if (lod) inst.add(`corbelFar${variant}`, [this.geo.corbel[variant][1]], this.stoneMat, _m, c, { radius: 1 });
+        // far chunks: merged into the stone mesh; near: instanced, carved or light per instance
+        if (lod) writeTemplate(ctx.stone.kind(GRIME.NONE), this.geo.corbelFar[variant], _m, c);
         else inst.add(`corbel${variant}`, this.geo.corbel[variant], this.stoneMat, _m, c, { cls: 'carve', radius: 1 });
       }
     }
@@ -479,7 +490,8 @@ const ironwork = {
     if (iron && r.chance(0.012)) this.flag(ctx, F, r.chance(0.5) ? u0 + 0.05 : u1 - 0.05, y + 0.85, D - 0.05, st, r, 0.6);
   },
 
-  /** Window AC units, window flower boxes, flags and satellite dishes of one facade. */
+  /** Window AC units, window flower boxes, flags and satellite dishes of one facade
+   *  (`lot` needs only {seed, frame}: a corner return passes itself as both). */
   facadeAttachments(ctx, lot, plan, st) {
     const { lod } = ctx;
     const F = lot.frame.matrix, A = this.att;
@@ -519,16 +531,11 @@ const ironwork = {
     }
   },
 
-  /** Planter box (matrix: origin at the box foot, x scaled to its length) with geraniums. */
+  /** Planter box (matrix: origin at the box foot, x scaled to its length) with geraniums.
+   *  The far chunks use the same instanced plants (their light level), so nothing changes
+   *  when a chunk is rebuilt at full detail. */
   planter(ctx, m, potCol, flowerCol) {
     const A = this.att;
-    if (ctx.lod) {
-      // far: box, foliage mound and flower clumps merged into the parts mesh
-      writeTemplate(ctx.parts, A.bloomLow.box, m, potCol);
-      writeTemplate(ctx.parts, A.bloomLow.green, m);
-      writeTemplate(ctx.parts, A.bloomLow.flowers, m, flowerCol);
-      return;
-    }
     writeTemplate(ctx.parts, A.box, m, potCol);
     // the plant geometry is 0.8 m long, the box template 1 m: rescale to the box length
     _l.makeScale(1 / 0.8, 1, 1).setPosition(0, 0.16, 0);
@@ -541,11 +548,12 @@ const ironwork = {
     ctx.inst.add(`plant${kind}`, [P[0][kind], P[1][kind]], this.amats.plant, m, tint, { cls: 'carve', castShadow: false });
   },
 
-  /** Split AC unit (matrix: unit frame on the wall); textured body near, plain box far. */
+  /** Split AC unit (matrix: unit frame on the wall): textured body, pipes, brackets and
+   *  the wall stain (the body alone in far chunks). */
   acUnit(ctx, m, wallMounted) {
     const A = this.att;
-    if (ctx.lod) { writeTemplate(ctx.parts, A.acBody, m, [0.56, 0.54, 0.49]); return; }
     writeTemplate(ctx.ac, A.acBody, m, wallMounted ? [1, 1, 1] : [0.92, 0.92, 0.92]);
+    if (ctx.lod) return; // pipes and brackets are sub-pixel beyond 200 m
     writeTemplate(ctx.parts, A.acPipes, m);
     if (wallMounted) {
       writeTemplate(ctx.parts, A.acBrackets, m);

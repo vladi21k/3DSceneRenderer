@@ -17,7 +17,7 @@ export function template(W) {
 }
 
 /** Writes a template into W with `matrix` (THREE.Matrix4) and an RGB tint (fast path:
- *  straight into the writer's arrays). */
+ *  straight into the writer's arrays; the writer's current kind() fills its kind stream). */
 export function writeTemplate(W, t, matrix, tint = [1, 1, 1]) {
   W.setMatrix(matrix);
   W.reserve(t.n, t.I.length);
@@ -38,6 +38,7 @@ export function writeTemplate(W, t, matrix, tint = [1, 1, 1]) {
     WT[(base + i) * 2] = T[i * 2]; WT[(base + i) * 2 + 1] = T[i * 2 + 1];
     WC[o3] = C[i3] * tr; WC[o3 + 1] = C[i3 + 1] * tg; WC[o3 + 2] = C[i3 + 2] * tb;
   }
+  if (W.K) W.K.fill(W.k, base, base + t.n);
   W.n += t.n;
   const I = W.I, I0 = t.I;
   for (let i = 0; i < I0.length; i++) I[W.ni + i] = base + I0[i];
@@ -478,26 +479,6 @@ function hookTemplate(dir) {
   return template(W);
 }
 
-/** Far-range planter (beyond 200 m, a dozen pixels wide): the box, a squashed foliage
- *  mound with a lobe hanging over the front, and three flower clumps. Coarse lathes,
- *  ~110 vertices in all, tinted on write. */
-function bloomTemplates() {
-  const B = new GeoWriter(), G = new GeoWriter(), Fl = new GeoWriter();
-  gradBox(B, -0.5, 0.5, 0, 0.16, -0.085, 0.085, 0.66, 0.98, 'bd');
-  const mound = [[1, 0], [0.8, 0.62], [0.0001, 1]];
-  G.color(0.11, 0.19, 0.06);
-  G.setMatrix(new THREE.Matrix4().makeScale(0.54, 0.26, 0.15).setPosition(0, 0.15, 0.015));
-  lathe(G, mound, 6);
-  G.setMatrix(new THREE.Matrix4().makeRotationX(Math.PI).scale(new THREE.Vector3(0.36, 0.2, 0.05)).setPosition(0, 0.16, 0.09));
-  lathe(G, mound, 5);
-  Fl.color(1, 1, 1);
-  for (const [x, y, z, s] of [[-0.28, 0.33, 0.04, 0.16], [0.04, 0.38, 0.02, 0.18], [0.3, 0.3, 0.06, 0.15]]) {
-    Fl.setMatrix(new THREE.Matrix4().makeScale(s, s * 0.55, s * 0.75).setPosition(x, y - s * 0.3, z));
-    lathe(Fl, mound, 5);
-  }
-  return { box: template(B), green: template(G), flowers: template(Fl) };
-}
-
 /** Split AC outdoor unit body: x in [-0.4, 0.4], y in [0, 0.55], z in [0.09, 0.37].
  *  (atlas: front, side louvres, dusty top; faces toward the wall a little darker) */
 function acBodyTemplate() {
@@ -654,7 +635,6 @@ export function buildAttachAssets() {
     pot: potTemplate(),
     box: boxTemplate(),
     hooks: [hookTemplate(1), hookTemplate(-1)],
-    bloomLow: bloomTemplates(),
     acBody: acBodyTemplate(),
     acBrackets: acBracketTemplate(),
     acPipes: acPipeTemplate(),

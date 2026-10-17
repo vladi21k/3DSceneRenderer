@@ -37,6 +37,7 @@ uniform vec4 uHang1;
 uniform vec4 uHang2;
 uniform vec4 uHang3;
 uniform vec4 uHeadJ;      // rest head joint xyz, phone part id
+uniform vec4 uWrist;      // rest right wrist joint xyz
 const vec3 CR_C = vec3(0.0, 0.014, 0.006);      // cranium ellipsoid of the head sculpt (head-local)
 const vec3 CR_R = vec3(0.0745, 0.096, 0.098);
 vec4 hLook(int row, int i) { return texelFetch(uLookTex, ivec2(i, row), 0); }
@@ -415,6 +416,11 @@ void hSkin(out vec3 P, out vec3 N) {
   if (!skirt) {
     float wh = dot(W, vec4(equal(I, vec4(5.0))));
     pos += (pos - uHeadJ.xyz) * (L13.x - 1.0) * wh;
+  }
+  // hands in pockets: the hand folds into the wrist (and is tucked into the trouser leg below)
+  if (D1.z > 0.01 && region == 6.0 && part < 0.5) {
+    vec3 wr = vec3(sign(position.x) * abs(uWrist.x), uWrist.y, uWrist.z);
+    pos = mix(pos, wr + (pos - wr) * 0.25, D1.z);
   }
   mat4 M = hBone(brow, I.x) * W.x;
   if (W.y > 0.0) M += hBone(brow, I.y) * W.y;
@@ -1056,6 +1062,7 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale, shape
     uEye: { value: new THREE.Vector4(...info.eyeR, info.eyeRadius) },
     uHang0: { value: hang[0] }, uHang1: { value: hang[1] }, uHang2: { value: hang[2] }, uHang3: { value: hang[3] },
     uHeadJ: { value: new THREE.Vector4(headJ.x, headJ.y, headJ.z, partIds.phone || -1) },
+    uWrist: { value: new THREE.Vector4(base.rig.rest[13].x, base.rig.rest[13].y, base.rig.rest[13].z, 0) },
     uNight: U.uNight,
   };
   const hatOff = info.hatOffsets || {};

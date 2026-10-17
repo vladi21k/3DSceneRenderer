@@ -148,6 +148,20 @@ export function corbelGeometry(variant, lod) {
   return shared(g);
 }
 
+/** The light console as a template for the merged stone mesh of far chunks (no draw call
+ *  of its own): soot low on the scroll baked into its colour, as the near consoles get it
+ *  from the grime shader (their streaks are sub-pixel at that range). */
+export function corbelTemplate(variant) {
+  const g = corbelGeometry(variant, 1);
+  const n = g.attributes.position.count, C = g.attributes.color.array.slice(), P = g.attributes.position.array;
+  for (let i = 0; i < n; i++) {
+    const y = P[i * 3 + 1], t = Math.min(1, Math.max(0, (y + 0.6) / 0.35)), soot = 1 - 0.1 * (1 - t * t * (3 - 2 * t));
+    C[i * 3] *= soot; C[i * 3 + 1] *= soot; C[i * 3 + 2] *= soot;
+  }
+  const I = g.index ? g.index.array.slice() : Uint32Array.from({ length: n }, (_, i) => i);
+  return { P: P.slice(), N: g.attributes.normal.array.slice(), T: g.attributes.uv.array.slice(), C, I, n };
+}
+
 // ---------------------------------------------------------------- stone balustrade
 export const BALUSTRADE = { H: 1.0, PLINTH: 0.12, COPING: 0.12, SPACING: 0.2 };
 
