@@ -52,6 +52,10 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [ ] Screenshot review against the reference photos (default telephoto, midday, golden hour, dusk, close-ups)
 - [ ] Fix rounds until no frame reads as a 3D demo
 
+## M4b — People rebuild (CC0 MakeHuman)
+- [x] Docker image tramline-mh: MPFB2 add-on plus MakeHuman CC0 system assets (tools/mh_fetch.sh, docker/Dockerfile.mh)
+- [~] Workflow: MPFB2 character generator (28+ cast: men, women, teens, children, elderly, toddlers; summer clothing) → renderer integration on the existing contract → 2 critique/fix rounds
+
 ## M5 — Behaviour verification
 - [ ] Pedestrians never pass through the camera; they clear the tracks and react to the bell
 - [ ] Platform stop, dwell, departure; throttle/brake; mouse look limits and return to centre
