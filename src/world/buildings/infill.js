@@ -126,9 +126,9 @@ function archRing(B, s, o, fw, wb, wf, n) {
     const c = B.v(s, _q.u, _q.v, wf, -_q.ru, -_q.rv, 0, k / n, 0);
     const d = B.v(s, _q.u, _q.v, wb, -_q.ru, -_q.rv, 0, k / n, 1);
     if (k) {
-      // left → right over the crown: (a0, a, b, b0) faces +w; (c0, d0, d, c) faces the arch centre
+      // left → right over the crown: (a0, b0, b, a) faces +w; (d0, d, c, c0) faces the arch centre
       B.quadIdx(s, a0, b0, b, a);
-      B.quadIdx(s, c0, c, d, d0);
+      B.quadIdx(s, d0, d, c, c0);
     }
     a0 = a; b0 = b; c0 = c; d0 = d;
   }

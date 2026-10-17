@@ -41,8 +41,8 @@ export function buildBannerBracket() {
 }
 
 /** Banner cloth in pole-local space (x towards the street centre, so the cloth is at -x),
- *  shared by every banner: the print cell is chosen per instance (aDesign) and the wind
- *  phase per instance (aPhase). Hem sleeves wrap the two rods; a static drape adds gathers
+ *  shared by every banner: the print cell and the wind phase are chosen per instance (see
+ *  patchBanner). Hem sleeves wrap the two rods; a static drape adds gathers
  *  near the rods, tension wrinkles from the pole-side corners and a curl on the free edge. */
 export function buildBannerCloth() {
   const nu = 10, nv = 20;

@@ -1,27 +1,33 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
+import { U } from '../core/uniforms.js';
 import { disposeObject } from './streaming.js';
-import { buildPoleKit, ARM_Y as TRACK_ARM_Y, ARM_Y as WALK_ARM_Y } from './catenary/poleKit.js';
-import { planOverhead, buildOverheadChunk, buildInsulatorGeometry, buildClampGeometry } from './catenary/overhead.js';
-import { patchThin, makeWireMaterial, makeGlassMaterial, patchBanner, updateScreenUniforms } from './catenary/shaders.js';
+import { buildPoleKit, ARM_Y } from './catenary/poleKit.js';
+import { planOverhead, buildOverheadChunk, buildInsulatorGeometry, buildClampGeometry, buildArmGeometry } from './catenary/overhead.js';
+import { patchThin, makeWireMaterial, makeGlassMaterial, patchBanner, updateScreenUniforms, LAMP_RADIANCE } from './catenary/shaders.js';
 import { buildBannerBracket, buildBannerCloth, buildBannerAtlas, BANNER_DESIGNS, BANNER_X0, BANNER_X1, BANNER_Y0, BANNER_Y1 } from './catenary/banners.js';
-import { buildSignalKit, signalPlacements, buildAspectAtlas } from './catenary/signals.js';
+import { buildSignalKit, signalPlacements, buildAspectAtlas, MOUNT_X } from './catenary/signals.js';
 import { buildStickers, buildStickerAtlas } from './catenary/wear.js';
 
 // Lamp standards, overhead contact line, pole banners and traffic signals.
-// Contract: docs/ARCHITECTURE.md. Placements come from layout.poles / layout.crossStreets.
+// Contract: docs/ARCHITECTURE.md. Placements come from layout.poles / layout.crossStreets;
+// poles the plan puts inside a cross-street mouth are rendered at the nearer corner.
 //
 // Per chunk: instanced shafts, brackets and lantern glass (one draw call each), one
-// ribbon mesh for every wire, instanced insulators and clamps near the camera, merged
-// banners and stickers, instanced signal parts at junctions. Full-detail chunks carry a
-// hi and a mid tessellation of the standards and swap them by camera distance; far
-// chunks use the lo kit. Everything heavy is built once in init().
+// ribbon mesh for every wire, instanced insulators, registration arms and clamps near the
+// camera, instanced banners, merged stickers, instanced signal parts at junctions.
+// Full-detail chunks carry a hi and a mid tessellation of the standards and swap them by
+// camera distance; far chunks use the lo kit and cast only the shafts' shadows.
+// Everything heavy is built once in init().
 
-const HI_DIST = 55;          // chunk near edge closer than this: hi tessellation
+const HI_DIST = 55;           // chunk near edge closer than this: hi tessellation
+const CAST_DIST = 120;        // mid-tessellation brackets cast shadows only this close
+const PAINT = [0.1, 0.112, 0.112];   // linear albedo of the grey-green satin paint
+const DEG = Math.PI / 180;
 
-const _x = new THREE.Vector3(), _y = new THREE.Vector3(0, 1, 0), _z = new THREE.Vector3();
+const _y = new THREE.Vector3(0, 1, 0);
 const _t = new THREE.Matrix4(), _r = new THREE.Matrix4().makeRotationY(Math.PI);
-const _p = new THREE.Vector3();
+const _c = new THREE.Color();
 
 const catenary = {
   name: 'catenary',
@@ -30,47 +36,77 @@ const catenary = {
     const { materials: M, layout, route } = app;
     this.app = app;
     this.kit = buildPoleKit();
-    this.plan = planOverhead(app);
-    this.insulatorGeo = buildInsulatorGeometry();
+    this.insSpanGeo = buildInsulatorGeometry({ L: 0.3, sheds: 3, R: [0.026, 0.022] });
+    this.insDropGeo = buildInsulatorGeometry({ L: 0.2, sheds: 3, R: [0.024, 0.021] });
     this.clampGeo = buildClampGeometry();
+    this.armGeo = buildArmGeometry();
     this.bracketGeo = buildBannerBracket();
+    this.clothGeo = buildBannerCloth();
     this.signalKit = buildSignalKit();
     this.live = new Set(); // full-detail chunk parts with a hi / mid pair
+    this.lampRadiance = LAMP_RADIANCE;
+
+    // multisampled frame (post on med / high): thin parts use alpha-to-coverage
+    const post = app.systems.post;
+    const msaa = !!(post && !post.disabled && post.q && post.q.msaa > 0);
 
     // ---- materials: library ones where they exist, own ones registered (and so tracked)
     // Own variant of the pole paint (unique key) so the thin-part patch stays private. The
-    // baked vertex colours carry AO and grime; when the library treats vertex colour as the
-    // paint albedo, the paint colour is folded into the per-instance colour instead.
-    this.poleMat = patchThin(M.get('metal.pole', { vertexColors: true, catenaryThin: true }));
-    this.paint = new THREE.Color(1, 1, 1);
-    if (M.meta?.['metal.pole']?.vertexColor === 'albedo') this.paint.copy(M.get('metal.pole').color);
+    // baked vertex colours carry AO and grime around 1; the paint colour is the material
+    // colour and the per-pole variation the instance colour.
+    this.poleMat = patchThin(M.get('metal.pole', { vertexColors: true, catenaryThin: true, color: PAINT, roughness: 0.5 }), { coverage: msaa });
     this.glassMat = makeGlassMaterial(M);
-    this.wireMat = M.register('catenary.wire', makeWireMaterial());
-    this.insulatorMat = M.register('catenary.insulator', patchThin(new THREE.MeshStandardMaterial({ color: 0x5b5752, roughness: 0.5, metalness: 0.0, vertexColors: true })));
-    this.bannerMat = M.register('catenary.banner', patchBanner(new THREE.MeshStandardMaterial({ map: buildBannerAtlas(layout.seed), roughness: 0.9, metalness: 0, side: THREE.DoubleSide }), [BANNER_X1 - BANNER_X0, BANNER_Y1 - BANNER_Y0]));
+    this.wireMat = M.register('catenary.wire', makeWireMaterial(msaa));
+    this.insulatorMat = M.register('catenary.insulator', patchThin(new THREE.MeshStandardMaterial({ color: 0x5f5c58, roughness: 0.45, metalness: 0.0, vertexColors: true }), { weather: false }));
+    this.fittingMat = patchThin(M.get('metal.galvanized', { vertexColors: true, catenaryFitting: true }), { weather: false });
+    this.bannerMat = M.register('catenary.banner', patchBanner(new THREE.MeshPhysicalMaterial({
+      map: buildBannerAtlas(layout.seed), roughness: 0.82, metalness: 0, sheen: 0.4, sheenRoughness: 0.6, sheenColor: 0xd8d2c8, side: THREE.DoubleSide,
+    }), [BANNER_X1 - BANNER_X0, BANNER_Y1 - BANNER_Y0], BANNER_DESIGNS));
     this.signalMat = M.register('catenary.signalBody', new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.0, side: THREE.DoubleSide }));
     this.stickerMat = M.register('catenary.sticker', new THREE.MeshStandardMaterial({ map: buildStickerAtlas(layout.seed), vertexColors: true, roughness: 0.8, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
-    // LED aspects, about 0.5 scene units (~16,000 cd/m²): clearly lit in sunshine
+    // LED aspects: about 0.55 scene units (~18,000 cd/m²) by day, dimmed at night (update)
     this.aspectMat = M.register('catenary.signalAspect', new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.2, metalness: 0, emissive: 0xffffff, emissiveMap: buildAspectAtlas(), emissiveIntensity: 0.55 }));
 
-    // ---- per-pole fixtures (deterministic) and the lamp head table for env
+    // ---- rendered poles (cross-street mouths cleared) and their fixtures
+    this.poles = relocatePoles(app);
+    this.byChunk = new Map();
+    for (const p of this.poles) {
+      const ci = layout.chunkIndex(p.s);
+      if (!this.byChunk.has(ci)) this.byChunk.set(ci, []);
+      this.byChunk.get(ci).push(p);
+    }
     this.fixtures = new Map();
-    const heads = [];
+    for (const p of this.poles) {
+      const rng = RNG.from(layout.seed, 'poleFix', Math.round(route.wrap(p.s) * 10), p.side);
+      const type = rng.weighted([['double', 0.6], ['track', 0.32], ['walk', 0.08]]);
+      const v = 1 + rng.range(-0.08, 0.08), h = rng.range(-1, 1);
+      this.fixtures.set(p, {
+        type,
+        tint: new THREE.Color(v * (1 - 0.015 * h), v, v * (1 + 0.03 * h)),
+        design: Math.floor(rng.next() * BANNER_DESIGNS),
+        phase: rng.next(),
+        // raked away from the span load, plus a small random lean
+        rake: rng.range(0.3, 0.8) * DEG, leanX: rng.range(-0.15, 0.15) * DEG, leanZ: rng.range(-0.15, 0.15) * DEG,
+        glass: [rng.range(0.95, 1.05), rng.range(-1, 1), rng.range(0.95, 1.05), rng.range(-1, 1)],
+      });
+      const f = this.fixtures.get(p);
+      f.matrix = this.poleMatrix(p, new THREE.Matrix4());
+    }
+    this.plan = planOverhead(app, this.poles, (p) => this.fixtures.get(p).matrix);
     // on curves the outer pole anchors the pull-offs, so it has no track-side bracket
     const pullOffPoles = new Set();
     for (const sp of this.plan.spans) if (sp.curved) pullOffPoles.add(sp.kSign > 0 ? sp.R : sp.L);
-    for (const p of layout.poles) {
-      const rng = RNG.from(layout.seed, 'poleFix', Math.round(route.wrap(p.s) * 10));
-      let type = rng.weighted([['double', 0.6], ['track', 0.32], ['walk', 0.08]]);
-      if (pullOffPoles.has(p)) type = 'walk';
-      const f = {
-        track: type !== 'walk', walk: type !== 'track',
-        tint: 0.9 + rng.next() * 0.16,
-        design: Math.floor(rng.next() * BANNER_DESIGNS),
-      };
-      this.fixtures.set(p, f);
-      const pm = this.poleMatrix(p, new THREE.Matrix4());
-      for (const arm of this.armMatrices(pm, f)) {
+    for (const p of this.poles) {
+      const f = this.fixtures.get(p);
+      const type = pullOffPoles.has(p) ? 'walk' : f.type;
+      f.track = type !== 'walk'; f.walk = type !== 'track';
+      f.arms = this.armMatrices(f.matrix, f);
+    }
+
+    // ---- lamp head table for env (glass centres follow the rake)
+    const heads = [];
+    for (const p of this.poles) {
+      for (const arm of this.fixtures.get(p).arms) {
         const pos = this.kit.info.glassCentre.clone().applyMatrix4(arm);
         heads.push({ position: pos, s: route.wrap(p.s), side: p.side, d: p.d, height: pos.y - route.elevation(p.s) });
       }
@@ -79,20 +115,22 @@ const catenary = {
     this.heads = heads;
   },
 
-  /** Pole frame: +X towards the street centre, +Y up, origin on the paving. */
+  /** Pole frame: +X towards the street centre, +Y up, origin on the paving; raked. */
   poleMatrix(p, out) {
     const { route } = this.app;
+    const f = this.fixtures.get(p);
     const smp = route.sample(p.s);
-    _x.copy(smp.right).multiplyScalar(-Math.sign(p.d || 1));
-    _z.crossVectors(_x, _y);
-    route.toWorld(p.s, p.d, 0, _p);
-    return out.makeBasis(_x, _y, _z).setPosition(_p);
+    const x = smp.right.clone().multiplyScalar(-Math.sign(p.d || 1));
+    const z = new THREE.Vector3().crossVectors(x, _y);
+    out.makeBasis(x, _y, z).setPosition(route.toWorld(p.s, p.d, 0));
+    // rake: the top leans away from the track (rotation about local Z), plus a lean
+    return out.multiply(_t.makeRotationFromEuler(new THREE.Euler(f.leanX, 0, f.rake + f.leanZ)));
   },
 
   armMatrices(pm, f) {
     const out = [];
-    if (f.track) out.push(pm.clone().multiply(_t.makeTranslation(0, TRACK_ARM_Y, 0)));
-    if (f.walk) out.push(pm.clone().multiply(_r).multiply(_t.makeTranslation(0, WALK_ARM_Y, 0)));
+    if (f.track) out.push(pm.clone().multiply(_t.makeTranslation(0, ARM_Y, 0)));
+    if (f.walk) out.push(pm.clone().multiply(_r).multiply(_t.makeTranslation(0, ARM_Y, 0)));
     return out;
   },
 
@@ -125,55 +163,58 @@ const catenary = {
     // ---- lamp standards (+ near/mid detail sets for full-detail chunks)
     const hiSet = new THREE.Group(), midSet = new THREE.Group();
     hiSet.name = 'hi'; midSet.name = 'mid';
-    const poles = layout.inChunk('poles', chunk.index);
+    let midArms = null;
+    const poles = this.byChunk.get(chunk.index) || [];
     if (poles.length) {
-      const shafts = [], arms = [], armTint = [], shaftTint = [], brackets = [], bracketTint = [], cloth = [];
+      const shafts = [], tints = [], arms = [], armTint = [], glassTint = [], banners = [], bannerData = [], bannerTint = [];
       for (const p of poles) {
         const f = this.fixtures.get(p);
-        const pm = this.poleMatrix(p, new THREE.Matrix4());
-        const tint = this.paint.clone().multiplyScalar(f.tint);
-        shafts.push(pm); shaftTint.push(tint);
-        for (const am of this.armMatrices(pm, f)) { arms.push(am); armTint.push(tint); }
+        shafts.push(f.matrix); tints.push(f.tint);
+        f.arms.forEach((am, k) => {
+          arms.push(am); armTint.push(f.tint);
+          const g = f.glass;
+          glassTint.push(new THREE.Color(g[2 * k] * (1 + 0.03 * g[2 * k + 1]), g[2 * k], g[2 * k] * (1 - 0.04 * g[2 * k + 1])));
+        });
         if (p.banner) {
-          brackets.push(pm); bracketTint.push(tint);
-          const g = buildBannerCloth(f.design, (p.id * 0.618) % 1);
-          g.applyMatrix4(pm);
-          cloth.push(g);
+          banners.push(f.matrix); bannerTint.push(f.tint);
+          // per-instance wind phase and print cell (read by the banner shader)
+          bannerData.push(_c.setRGB(f.phase, f.design, 0).clone());
         }
       }
-      // every level casts (env shadows reach ~700 m; silhouettes match across levels, so
-      // nothing pops when a chunk swaps tessellation or LOD)
-      const standards = (target, K) => {
-        target.add(instanced(K.shaft, this.poleMat, shafts, shaftTint, 'poles'));
+      const standards = (target, K, castArms) => {
+        target.add(instanced(K.shaft, this.poleMat, shafts, tints, 'poles', true));
         if (arms.length) {
-          target.add(instanced(K.arm, this.poleMat, arms, armTint, 'brackets'));
-          target.add(instanced(K.glass, this.glassMat, arms, null, 'lanterns', false));
+          const a = instanced(K.arm, this.poleMat, arms, armTint, 'brackets', castArms);
+          target.add(a, instanced(K.glass, this.glassMat, arms, glassTint, 'lanterns', false));
+          return a;
         }
+        return null;
       };
-      if (far) standards(group, this.kit.lo);
+      if (far) standards(group, this.kit.lo, false);
       else {
-        standards(hiSet, this.kit.hi); standards(midSet, this.kit.mid);
-        const st = buildStickers(poles, (p, out) => this.poleMatrix(p, out), layout.seed);
+        standards(hiSet, this.kit.hi, true);
+        midArms = standards(midSet, this.kit.mid, true);
+        const st = buildStickers(poles, (p, out) => out.copy(this.fixtures.get(p).matrix), layout.seed);
         if (st) { const mesh = new THREE.Mesh(st, this.stickerMat); mesh.name = 'stickers'; mesh.receiveShadow = true; group.add(mesh); }
       }
-      if (brackets.length) {
-        group.add(instanced(this.bracketGeo, this.poleMat, brackets, bracketTint, 'bannerBrackets', !far));
-        const mesh = new THREE.Mesh(mergeSimple(cloth), this.bannerMat);
-        mesh.name = 'banners'; mesh.castShadow = !far; mesh.receiveShadow = true;
-        group.add(mesh);
+      if (banners.length) {
+        group.add(instanced(this.bracketGeo, this.poleMat, banners, bannerTint, 'bannerBrackets', !far));
+        group.add(instanced(this.clothGeo, this.bannerMat, banners, bannerData, 'banners', !far));
       }
     }
 
     // ---- overhead line
     const oh = buildOverheadChunk(app, this.plan, chunk);
     if (oh.wires) group.add(wireMesh(oh.wires, this.wireMat, 'wires'));
-    if (oh.insulators.length) hiSet.add(instanced(this.insulatorGeo, this.insulatorMat, oh.insulators, null, 'insulators', false));
-    if (oh.clamps.length) hiSet.add(instanced(this.clampGeo, this.insulatorMat, oh.clamps, null, 'clamps', false));
-    if (oh.insulatorRibbons) midSet.add(wireMesh(oh.insulatorRibbons, this.wireMat, 'insulatorsFar'));
+    if (oh.spanInsulators.length) hiSet.add(instanced(this.insSpanGeo, this.insulatorMat, oh.spanInsulators, null, 'insulators', false));
+    if (oh.dropInsulators.length) hiSet.add(instanced(this.insDropGeo, this.insulatorMat, oh.dropInsulators, null, 'insulators', false));
+    if (oh.arms.length) hiSet.add(instanced(this.armGeo, this.fittingMat, oh.arms, null, 'registrationArms', false));
+    if (oh.clamps.length) hiSet.add(instanced(this.clampGeo, this.fittingMat, oh.clamps, null, 'clamps', false));
+    if (oh.detailRibbons) midSet.add(wireMesh(oh.detailRibbons, this.wireMat, 'overheadFar'));
 
     if (!far && (hiSet.children.length || midSet.children.length)) {
       group.add(hiSet, midSet);
-      const entry = { s0: chunk.s0, s1: chunk.s1, hi: hiSet, mid: midSet };
+      const entry = { s0: chunk.s0, s1: chunk.s1, hi: hiSet, mid: midSet, midArms };
       this.setDetail(entry, app.cameraS ?? app.startS);
       group.userData.catenaryLive = entry;
       this.live.add(entry);
@@ -191,21 +232,24 @@ const catenary = {
     disposeObject(obj);
   },
 
-  /** Show the hi or mid tessellation of a full-detail chunk depending on camera distance. */
+  /** Show the hi or mid tessellation of a full-detail chunk depending on camera distance;
+   *  mid brackets stop casting beyond CAST_DIST (sub-texel in the far cascades). */
   setDetail(e, sCam) {
     const { route } = this.app;
     const a = route.delta(sCam, e.s0), b = route.delta(sCam, e.s1);
     const near = a <= 0 && b >= 0 ? 0 : Math.min(Math.abs(a), Math.abs(b));
     const hi = near < HI_DIST;
     e.hi.visible = hi; e.mid.visible = !hi;
+    if (e.midArms) e.midArms.castShadow = near < CAST_DIST;
   },
 
   buildSignals(group, crossStreets, app, far) {
     const { route, layout } = app;
     const SK = this.signalKit;
-    const sets = { tramBody: [], tramGo: [], tramStop: [], pedBody: [], pedLit: [] };
+    const sets = { tramHead: [], tramPost: [], tramMount: [], tramGo: [], tramStop: [], pedBody: [], pedLit: [] };
+    const polesOf = (ci) => this.byChunk.get(ci) || [];
     for (const c of crossStreets) {
-      for (const sg of signalPlacements(c, layout)) {
+      for (const sg of signalPlacements(c, layout, polesOf)) {
         const smp = route.sample(sg.s);
         const fz = new THREE.Vector3();
         if (sg.face === 'back') fz.copy(smp.tanH).negate();
@@ -213,9 +257,21 @@ const catenary = {
         else if (sg.face === 'left') fz.copy(smp.right).negate();
         else fz.copy(smp.right);
         const fx = new THREE.Vector3().crossVectors(_y, fz);
-        const m = new THREE.Matrix4().makeBasis(fx, _y, fz).setPosition(route.toWorld(sg.s, sg.d, 0));
+        const m = new THREE.Matrix4().makeBasis(fx, _y, fz);
+        if (sg.pole) {
+          // on the pole: the head stands MOUNT_X towards the track from the pole axis
+          // at the mount height (following the pole's rake)
+          const pm = this.fixtures.get(sg.pole).matrix;
+          const axis = new THREE.Vector3(0, 3.2, 0).applyMatrix4(pm);
+          const toTrack = new THREE.Vector3().setFromMatrixColumn(pm, 0).setY(0).normalize();
+          m.setPosition(axis.addScaledVector(toTrack, MOUNT_X).addScaledVector(_y, -3.2));
+          sets.tramMount.push(m);
+        } else {
+          m.setPosition(route.toWorld(sg.s, sg.d, 0));
+          if (sg.kind === 'tram') sets.tramPost.push(m);
+        }
         if (sg.kind === 'tram') {
-          sets.tramBody.push(m);
+          sets.tramHead.push(m);
           // the tram is cleared through: proceed for the ride direction, stop for the other
           (sg.face === 'back' ? sets.tramGo : sets.tramStop).push(m);
         } else {
@@ -225,61 +281,73 @@ const catenary = {
     }
     for (const [k, list] of Object.entries(sets)) {
       if (!list.length) continue;
-      const body = k.endsWith('Body');
-      group.add(instanced(SK[k], body ? this.signalMat : this.aspectMat, list, null, 'signals', body && !far));
+      const lit = k === 'tramGo' || k === 'tramStop' || k === 'pedLit';
+      group.add(instanced(SK[k], lit ? this.aspectMat : this.signalMat, list, null, 'signals', !lit && !far));
     }
   },
 
   update(dt, app) {
-    updateScreenUniforms(app);
+    updateScreenUniforms(app, this.lampRadiance);
+    // LED aspects dim at night so they do not flare
+    this.aspectMat.emissiveIntensity = 0.55 * (1 - 0.93 * U.uNight.value);
     const sCam = app.cameraS ?? app.startS;
     for (const e of this.live) this.setDetail(e, sCam);
   },
 };
 
+/** Rendered pole list: layout.poles, except that a facing pair with a pole inside a
+ *  cross-street mouth moves to the nearer corner (same s for both, so the span still
+ *  pairs), or is dropped when the corner is taken (trees, furniture, other poles). */
+function relocatePoles(app) {
+  const { layout, route } = app;
+  const groups = new Map();
+  for (const p of layout.poles) {
+    const k = Math.round(route.wrap(p.s) * 100);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+  const near = (kind, s) => {
+    const ci = layout.chunkIndex(s);
+    return [...layout.inChunk(kind, ci - 1), ...layout.inChunk(kind, ci), ...layout.inChunk(kind, ci + 1)];
+  };
+  const out = [];
+  for (const pair of groups.values()) {
+    let mouth = null;
+    for (const p of pair) mouth = mouth || layout.isInCrossStreet(p.s, p.side, 0.6);
+    if (!mouth) { out.push(...pair); continue; }
+    const s0 = pair[0].s;
+    const half = mouth.width / 2 + 0.9;
+    const cands = [mouth.s - half, mouth.s + half].sort((a, b) => Math.abs(route.delta(s0, a)) - Math.abs(route.delta(s0, b)));
+    const fits = (s) => pair.every((p) => {
+      if (layout.isInCrossStreet(s, p.side, 0.6)) return false;
+      if (!!layout.isInStation(s, 2) !== !!layout.isInStation(p.s, 2)) return false;
+      if (near('poles', s).some((q) => q.side === p.side && !pair.includes(q) && Math.abs(route.delta(q.s, s)) < 6)) return false;
+      if (near('trees', s).some((t) => t.side === p.side && Math.abs(route.delta(t.s, s)) < 1.6)) return false;
+      return !near('furniture', s).some((o) => Math.abs(route.delta(o.s, s)) < 1.1 && Math.abs(o.d - p.d) < 1.1);
+    });
+    const s = cands.find(fits);
+    if (s == null) continue;
+    for (const p of pair) out.push({ ...p, s: route.wrap(s), src: p });
+  }
+  return out;
+}
+
 function wireMesh(geo, mat, name) {
   const m = new THREE.Mesh(geo, mat);
-  m.name = name; m.castShadow = false; m.receiveShadow = false;
+  m.name = name; m.castShadow = false; m.receiveShadow = true;
   m.renderOrder = 2;
   return m;
 }
 
-function instanced(geo, mat, matrices, tints, name, cast = true) {
+function instanced(geo, mat, matrices, colors, name, cast = true) {
   const mesh = new THREE.InstancedMesh(geo, mat, matrices.length);
   for (let i = 0; i < matrices.length; i++) mesh.setMatrixAt(i, matrices[i]);
-  if (tints) for (let i = 0; i < matrices.length; i++) mesh.setColorAt(i, tints[i]);
+  if (colors) for (let i = 0; i < matrices.length; i++) mesh.setColorAt(i, colors[i]);
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
   mesh.name = name;
   mesh.castShadow = cast; mesh.receiveShadow = true;
   return mesh;
-}
-
-/** Merge geometries sharing an attribute layout (attributes missing anywhere are dropped). */
-function mergeSimple(list) {
-  const names = Object.keys(list[0].attributes).filter((k) => list.every((g) => g.attributes[k]));
-  let nV = 0, nI = 0;
-  for (const g of list) { nV += g.attributes.position.count; nI += g.index ? g.index.count : g.attributes.position.count; }
-  const out = new THREE.BufferGeometry();
-  for (const k of names) {
-    const size = list[0].attributes[k].itemSize;
-    const arr = new Float32Array(nV * size);
-    let o = 0;
-    for (const g of list) { arr.set(g.attributes[k].array, o * size); o += g.attributes.position.count; }
-    out.setAttribute(k, new THREE.BufferAttribute(arr, size));
-  }
-  const idx = nV > 65535 ? new Uint32Array(nI) : new Uint16Array(nI);
-  let o = 0, base = 0;
-  for (const g of list) {
-    const n = g.attributes.position.count;
-    if (g.index) { const a = g.index.array; for (let i = 0; i < a.length; i++) idx[o++] = a[i] + base; }
-    else for (let i = 0; i < n; i++) idx[o++] = i + base;
-    base += n;
-    g.dispose();
-  }
-  out.setIndex(new THREE.BufferAttribute(idx, 1));
-  out.computeBoundingSphere();
-  return out;
 }
 
 export default catenary;

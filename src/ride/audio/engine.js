@@ -2,9 +2,9 @@
 // drives the speakers (AudioContext) and the offline test harness
 // (OfflineAudioContext, with update() stepped on a virtual clock before rendering).
 //
-//   inside buses (rolling, joints, traction, aux, brakes, doors) ─────────────────┐
+//   inside buses (rolling, traction, aux, brakes, doors) ─────────────────────────┐
 //   doors, aux ─ sends ─► cab/saloon reverb (small room) ─────────────────────────┤
-//   bell, squeal ─► near shell (cab body, mild) ──────────────────────────────────┤
+//   bell, squeal, joints ─► near shell (cab body, mild) ──────────────────────────┤
 //   ambience ─► far shell (closed cab: -16 dB, dark; window / doors open it up) ──┼─► mix ─► compressor ─► limiter ─► soft clip ─► volume ─► out
 //   outside sources ─ sends ─► street reverb (narrow / wide canyon) ─► far shell ─┘
 //
@@ -32,8 +32,9 @@ const STREET_SEND = { bell: 0.3, squeal: 0.05, joints: 0.03, brakes: 0.03, ambie
 // sounds inside the car body: dense small-room reflections (doors, chime, beeps;
 // the always-running HVAC is diffuse already and would keep the convolver busy)
 const CAB_SEND = { doors: 0.3 };
-// exterior buses and the shell they are heard through
-const SHELL_OF = { bell: 'near', squeal: 'near', ambience: 'far' };
+// exterior buses and the shell they are heard through (wheel / rail impacts: their
+// airborne crack; the floor thump passes the near shell's low end unchanged)
+const SHELL_OF = { bell: 'near', squeal: 'near', joints: 'near', ambience: 'far' };
 const TICK = 1 / 25;
 
 export class AudioEngine {

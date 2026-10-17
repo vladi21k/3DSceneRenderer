@@ -42,7 +42,7 @@ const street = {
       slab: M.get('concrete'),
       kerb: M.get('paving.band', { vertexColors: true }),
       asphalt: M.get('asphalt', { vertexColors: true }),
-      grout: M.get('concrete', { vertexColors: true }),
+      grout: M.get('asphalt', { vertexColors: true }),
       tactile: M.get('paving.tactile', { vertexColors: true }),
       rail: { head: M.get('rail.head', RAIL_HEAD), lip: M.get('rail.head', RAIL_LIP), side: M.get('rail.side', RAIL_RUST), groove: M.get('rail.groove'), seal: M.get('rubber') },
       lines,
@@ -51,7 +51,7 @@ const street = {
     // coplanar inlay layers for crossovers (higher layers win the depth test)
     const layer = (name, k, extra = {}) => M.get(name, { polygonOffset: true, polygonOffsetFactor: -k, polygonOffsetUnits: -2 * k, ...extra });
     mats.inlay = {
-      grout: layer('concrete', 0.5, { color: [0.45, 0.44, 0.42] }),   // mortar along diverging rails
+      grout: layer('asphalt', 0.5, { color: [1.5, 1.5, 1.53] }),   // mortar along diverging rails
       plate: layer('rail.head', 1, { color: [0.4, 0.39, 0.37], roughness: 3.2 }),   // dull cast steel
       seal: layer('rubber', 2),
       side: layer('rail.side', 3, RAIL_RUST),

@@ -54,3 +54,12 @@ export function noise1(x, seed = 0) {
   const u = f * f * (3 - 2 * f);
   return a + (b - a) * u;
 }
+
+/** Smooth 2D value noise in [-1,1], deterministic per seed. */
+export function noise2(x, y, seed = 0) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const h = (a, b) => (hash2(hash2(a, b), seed) / 4294967296) * 2 - 1;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = h(ix, iy), b = h(ix + 1, iy), c = h(ix, iy + 1), d = h(ix + 1, iy + 1);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}

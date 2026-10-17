@@ -24,6 +24,7 @@ export class Sink {
     this.n = new Float32Array(3 * 2048);
     this.t = new Float32Array(2 * 2048);
     this.c = new Float32Array(3 * 2048);
+    this.g = new Float32Array(2048);  // grime mask (buildings stone) / lit amount (glass)
     this.i = new Uint32Array(6144);
     this.uvx = null; // optional per-sink UV transform overriding the builder's
   }
@@ -31,7 +32,7 @@ export class Sink {
     if ((this.vc + nv) * 3 > this.p.length) {
       const cap = Math.max((this.vc + nv) * 2, 4096);
       const grow = (A, k) => { const b = new A.constructor(cap * k); b.set(A.subarray(0, this.vc * k)); return b; };
-      this.p = grow(this.p, 3); this.n = grow(this.n, 3); this.t = grow(this.t, 2); this.c = grow(this.c, 3);
+      this.p = grow(this.p, 3); this.n = grow(this.n, 3); this.t = grow(this.t, 2); this.c = grow(this.c, 3); this.g = grow(this.g, 1);
     }
     if (this.ic + ni > this.i.length) {
       const b = new Uint32Array(Math.max((this.ic + ni) * 2, 8192));

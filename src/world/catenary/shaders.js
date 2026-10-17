@@ -224,7 +224,8 @@ export function makeGlassMaterial(M) {
 
 /** Fabric with wind billow for pole banners. Banner geometry carries aBanner =
  *  (u across 0..1 from the pole, v up 0..1, phase) and the face normal in `normal`.
- *  Instanced banners take the phase from instance attribute aPhase instead.
+ *  Instanced banners carry per-instance data in the instance colour instead of a tint:
+ *  r = wind phase, g = print cell (design index).
  *  The billow is an analytic field, so normals follow it and the cloth shades like fabric;
  *  the sun shining through the cloth from behind adds a diffuse back-light. */
 export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
@@ -237,10 +238,6 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec3 aBanner;
-        #ifdef USE_INSTANCING
-          attribute float aPhase;
-          attribute float aDesign;
-        #endif
         uniform float uTime;
         uniform vec2 uWind;
         uniform float uWindStrength;
@@ -257,8 +254,8 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
         }`)
       .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
         float bPh = aBanner.z;
-        #ifdef USE_INSTANCING
-          bPh += aPhase;
+        #ifdef USE_INSTANCING_COLOR
+          bPh += instanceColor.r;
         #endif
         vec3 bN = normalize(objectNormal);
         mat3 bM = mat3(modelMatrix);
@@ -276,8 +273,12 @@ export function patchBanner(mat, size = [0.6, 1.6], cells = 4) {
         transformed += bN * bD;
         transformed.y -= 0.1 * abs(bD);`)
       .replace('#include <uv_vertex>', `#include <uv_vertex>
-        #if defined(USE_INSTANCING) && defined(USE_MAP)
-          vMapUv.x += aDesign / ${cells.toFixed(1)};
+        #if defined(USE_INSTANCING_COLOR) && defined(USE_MAP)
+          vMapUv.x += instanceColor.g / ${cells.toFixed(1)};
+        #endif`)
+      .replace('#include <color_vertex>', `#include <color_vertex>
+        #ifdef USE_INSTANCING_COLOR
+          vColor = vec3(1.0); // instance colour holds data, not a tint
         #endif`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <map_fragment>', `

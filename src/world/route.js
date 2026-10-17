@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { noise1, noise2 } from '../core/rng.js';
 
 // The tram line: a closed loop through the city built from straights, clothoid
 // transitions and circular arcs, with gentle grades. Everything in the world is
@@ -13,6 +14,7 @@ import * as THREE from 'three';
 // left; curvature κ > 0 means a left-hand curve. right = (−Tz, 0, Tx).
 
 const DS = 0.5; // table resolution (m)
+const SURF_EDGE = 3.66; // ground shaping starts outside the corridor band + gutter
 
 // Plan of the loop. turn in degrees (+ left), radius in metres, trans = clothoid length.
 // Two straights (chosen automatically) absorb the closure error; `min` bounds them.
@@ -152,6 +154,7 @@ export class Route {
     this.pieces = pieces;
     this.length = length;
     const t = integrate(pieces, length);
+    this.surfaceEnabled = false; // switched on once the paving mesh follows route.surface
     this.n = t.n;
     this.x = t.x; this.z = t.z; this.th = t.th; this.k = t.k;
     // distribute the tiny residual (table end overshoot) so the seam at s = L is exact
@@ -239,7 +242,27 @@ export class Route {
     return out;
   }
 
-  /** World position of route coordinate (s, d, h). */
+  /** Ground shape across the street, metres above the centre-line elevation at (s, d).
+   *  The track corridor (rail level) stays at 0; outside it the sidewalks rise towards the
+   *  facades (drainage cross-fall), the whole street sits on a slowly varying hillside tilt
+   *  (one side higher than the other) and the paving has gentle settlement undulation.
+   *  Fine millimetre detail (gutters, crowns) is added by the street mesh on top. */
+  surface(s, d) {
+    if (!this.surfaceEnabled) return 0;
+    const a = Math.abs(d) - SURF_EDGE;
+    if (a <= 0) return 0;
+    const sw = this.wrap(s);
+    const ramp = Math.min(1, a / 1.2);                       // ease in from the corridor edge
+    const fall = a * 0.017;                                  // ~1.7 % rise towards the facades
+    const tilt = Math.sign(d) * a * 0.018 * noise1(sw / 320, 101);   // hillside: ±1.8 %
+    const settle = 0.022 * noise2(sw / 6.5, d / 5.5, 7) + 0.012 * noise2(sw / 2.3, d / 2.1, 13);
+    return fall + tilt + settle * ramp * ramp;
+  }
+
+  /** World height of the paving at route coordinate (s, d). */
+  groundY(s, d = 0) { return this.elevation(s) + this.surface(s, d); }
+
+  /** World position of route coordinate (s, d, h); h is height above the local ground. */
   toWorld(s, d = 0, h = 0, out = new THREE.Vector3()) {
     const [i, f] = this._idx(s);
     const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
@@ -247,7 +270,7 @@ export class Route {
     const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
     return out.set(
       this.x[i] + (this.x[i + 1] - this.x[i]) * f - tz * d,
-      y + h,
+      y + h + (this.surfaceEnabled ? this.surface(s, d) : 0),
       this.z[i] + (this.z[i + 1] - this.z[i]) * f + tx * d,
     );
   }

@@ -10,7 +10,7 @@ import { colInfo } from './surface.js';
 // chunks shade seamlessly).
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
-const GROUT_TINT = [0.58, 0.56, 0.53];     // dusty mortar on the concrete material
+const GROUT_TINT = [1.75, 1.74, 1.78];     // dusty bitumen mortar (asphalt material, ~0.15 albedo)
 const GROUT_WAVE = 0.016;                  // hand-finished mortar edge wanders by ±16 mm
 
 /** Interior column offsets between a and b, denser next to rails. */
