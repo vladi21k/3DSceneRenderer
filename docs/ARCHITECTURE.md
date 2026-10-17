@@ -109,7 +109,8 @@ export default {
 Blender scripts go in `tools/blender/<area>_*.py` and generated assets in `assets/<area>/`.
 If you need a change in a file you don't own, write the request into your final report rather than editing it.
 
-## Performance budget (1920×1080, 60 fps target on a mid-range desktop GPU)
-- Whole frame under 14 ms GPU. Draw calls under ~1500 including shadow passes. Visible triangles under ~4 M.
+## Performance budget (1920×1080; quality first, 30 fps minimum, 60 fps nice-to-have)
+- The owner accepts 30 fps. Photorealism has priority: spend headroom on image quality (shadow resolution and softness, AO, AA, geometric detail, crowd density) as long as the whole frame stays ≤ ~28 ms GPU / ≤ 20 ms CPU on this machine (RTX 4060 Ti) and riding has no hitches > 60 ms.
+- Draw calls under ~1500 including shadow passes. Keep triangles reasonable (under ~10 M including shadows) and avoid aliasing at all costs.
 - Per chunk per module: build under 3 ms (lod 0), under 1 ms (lod 1). Prefer instancing and merged geometry. LOD 1 (over 200 m) should be much lighter: no small details that would sub-pixel alias at that distance.
 - Thin geometry (wires, railings) must not alias or shimmer. Use pixel-width-aware shading or fade for far wires, and alpha-to-coverage or textures for fine ironwork far away.
