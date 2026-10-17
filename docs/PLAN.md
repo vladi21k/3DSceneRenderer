@@ -48,6 +48,7 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [~] Progressive loading: cold start ~15 s under load (shader compile dominates)
 
 ## M4 — Photoreal review loops
+- [~] Loop running (up to 3 rounds, target ≥ 8.5/10 from every critic): a 4-lens panel (lighting/atmosphere, materials/geometry, shot/motion, people) followed by parallel owner fixes. People fixes are held in round 1 while the figures team finishes.
 - [ ] Screenshot review against the reference photos (default telephoto, midday, golden hour, dusk, close-ups)
 - [ ] Fix rounds until no frame reads as a 3D demo
 
