@@ -18,8 +18,16 @@ import { SunLightShadow } from 'three/addons/lights/SunLightShadow.js';
 // cornice 60 m up-sun throws a ~0.4 m soft edge while a bench leg stays crisp.
 // Coarse cascades filter over at least two texels with more taps (no stair steps),
 // and skip thin casters (railings, lamp scrolls) that a 0.1–0.3 m texel cannot hold.
+// Every tap compares against the receiver plane at its own offset (depth gradient from
+// screen derivatives), so wide kernels on grazing-lit walls do not streak.
 // A pixel samples at most two cascades (its own and, in the fade band, the next one),
 // so the filter is inlined twice per program rather than once per cascade.
+//
+// Caster culling per cascade: the light-space box is a rotation-stable sphere fit, so a
+// caster must also (a) cast within reach of the cascade's slice of view depth, (b)
+// overlap the slice's outline seen from the sun (its convex hull in light space) and
+// (c) for instanced sets that publish it (userData.shadowRange = [min, max, height] view
+// depth band of this frame's instances), have instances near the slice.
 //
 // Atlas: the cascades sit side by side in one row. Near cascades are redrawn every
 // frame; the far ones on a stagger (cascade 2 every other frame, cascade 3 every
@@ -182,9 +190,13 @@ class CascadeFrustum extends THREE.Frustum {
       const lo = Math.min(d, d + dd) - r - 6, hi = Math.max(d, d + dd) + r + 6;
       if (hi < this.zNear || lo > this.zFar) return false;
       // instanced sets drawn in one call (a whole LOD of figures) can publish the view-depth
-      // band of this frame's instances: userData.shadowRange = [min, max] (m along the view)
+      // band of this frame's instances and their height: userData.shadowRange =
+      // [min, max, height?] (m along the view; the sphere's height when omitted)
       const band = ud.shadowRange;
-      if (band && (band[1] + Math.abs(dd) + 2 < this.zNear || band[0] - Math.abs(dd) - 2 > this.zFar)) return false;
+      if (band) {
+        const db = band[2] !== undefined ? Math.min(band[2] * c.cotE, MAX_REACH) * c.awayDotFwd : dd;
+        if (Math.max(band[1], band[1] + db) + 2 < this.zNear || Math.min(band[0], band[0] + db) - 2 > this.zFar) return false;
+      }
       if (!this.intersectsSphere(sphere)) return false;
       return this.reachesOutline(sphere.center, r);
     }

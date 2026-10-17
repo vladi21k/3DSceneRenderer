@@ -36,7 +36,7 @@ const _tc = new THREE.Vector3();
 // field of small flat-based cumulus. cover/scale/top shape the volumetric cumulus.
 const WEATHER = {
   streaks: { cover: 0.3, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5 },
-  cumulus: { cover: 0.52, scale: 0.5, top: 850, cirrus: 0.3, altocu: 0 },
+  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0 },
   haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0 },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];

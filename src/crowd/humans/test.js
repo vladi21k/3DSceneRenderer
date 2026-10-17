@@ -18,6 +18,11 @@ import { hash2 } from '../../core/rng.js';
 //   ht_tread = 1: grid figures walk in place (a treadmill) at ht_v (default 1.3 m/s), for gait checks
 //   ht_filter may list several filters (comma separated): figure i takes filter i % count
 //   ht_dir  = 1 / -1: every walker heads away from / towards the start of the route
+//   ht_mode=family: adults with a child walking hand in hand (holdWith), side by side; pairs stand
+//             in a row across the street (ht_sp apart), walking in place with ht_tread=1, else
+//             along the street; with ht_mob=stroller the adult pushes a stroller and the child
+//             holds on to its side (ht_fam=kid|child picks the child's body; ht_side=1|-1 its side)
+//   ht_baby = 1 / 0: force a child in every stroller / none (default: as the crowd picks)
 // Mobility (poses 3-5 with their props):
 //   ht_mob  = stroller | ride | walkbike | mix: figures push strollers / ride / walk bicycles
 //             (works with grid, walk, cross, crowd; ht_mode=stroller|ride|walkbike|mobmix are walk
@@ -71,11 +76,16 @@ export class HumansTest {
     this.cam = cam[0] ? { t: cam[0], dist: +(cam[1] || 2), az: (+(cam[2] || 0) * Math.PI) / 180, el: (+(cam[3] || 10) * Math.PI) / 180 } : null;
     this.camF = p.num('ht_camf', 0);
     this.s0 = (p.view ? p.view[0] : app.startS) + this.d0;
+    this.family = this.mode === 'family';
+    if (this.family) this.n = Math.max(2, this.n + (this.n & 1));
+    this.famKind = p.str('ht_fam', '');
+    this.famSide = p.num('ht_side', 0);
     this.first = humans.alloc(this.n);
     this.t = 0;
     this.figs = [];
     const chairs = this.mode === 'cafe' ? this._chairs() : [];
     for (let i = 0; i < this.n; i++) {
+      if (this.family) { this.figs.push(this._familyFig(i)); continue; }
       // (ht_mobk=k: only every k-th figure has a prop, the rest walk)
       const mobOn = !this.mobK || i % this.mobK === 0;
       const mob = !mobOn ? '' : this.mob === 'mix' ? ['stroller', 'ride', 'ride', 'walkbike'][(i / (this.mobK || 1)) % 4 | 0] : this.mob;
@@ -110,6 +120,25 @@ export class HumansTest {
     }
   }
 
+  /** Family pairs: even figures adults (pushing a stroller with ht_mob=stroller), odd ones the
+   *  child beside them, holding the adult's hand or the stroller's side. */
+  _familyFig(i) {
+    const k = i >> 1, child = (i & 1) === 1;
+    const strol = this.mob === 'stroller';
+    const side = this.famSide || (k % 2 ? -1 : 1);
+    const pose = !child && strol ? 3 : 0;
+    const filt = child ? (this.famKind || (k % 2 ? 'kid' : 'child')) : (this.filters.length ? this.filters[k % this.filters.length] : (k % 2 ? 'man' : 'woman'));
+    const app_ = this._pick(filt, pose);
+    const u = -((this.n / 2 - 1) * 0.5) * this.sp * 2 + k * this.sp * 2;
+    const lat = child ? side * (strol ? 0.62 : 0.42) : 0;
+    const fwd = child && strol ? -0.42 : 0;
+    const f = { i: this.first + i, app: app_, phase: (k * 0.37 + (child ? 0.21 : 0)) % 1, pose, prop: pose === 3 ? 1 : 0,
+      propSeed: (hash2(this.propSeed * 131 + k, 977) >>> 0) % 100000, mode: this.tread ? 'grid' : 'walk', fam: true,
+      partner: child ? this.first + i - 1 : -1, v: this.v ?? (this.tread ? 1.1 : 1.15), dir: this.dir || -1, lat, fwd };
+    if (this.axisS) { f.d = this.c + lat; f.s = this.s0 + u + fwd; } else { f.d = this.c + u + lat; f.s = this.s0 + fwd; }
+    return f;
+  }
+
   update(dt) {
     const { route } = this.app;
     const h = this.h;
@@ -117,7 +146,14 @@ export class HumansTest {
     const o = {};
     for (const f of this.figs) {
       let s = f.s, d = f.d, heading, speed = 0, pose = 1;
-      if (f.mode === 'grid') {
+      if (f.fam && f.mode === 'walk') {
+        // the pair walks along the street together (the child keeps its place beside the adult)
+        speed = f.v; pose = 0;
+        const span = 40;
+        const u = ((f.v * this.t) % span + span) % span;
+        s = f.dir > 0 ? f.s - 10 + u : f.s + span - 10 - u;
+        heading = route.yawAt(s) + (f.dir > 0 ? 0 : Math.PI);
+      } else if (f.mode === 'grid') {
         heading = route.yawAt(s) + Math.PI;
         if (this.tread) { speed = f.v; pose = 0; }
       } else if (f.mode === 'circle') {
@@ -181,6 +217,7 @@ export class HumansTest {
       o.heading = heading; o.speed = speed; o.phase = f.phase; o.pose = pose;
       o.prop = f.prop; o.propSeed = f.propSeed;
       o.look = this.lookYaw; o.appearance = f.app; o.visible = true;
+      o.holdWith = f.partner >= 0 ? f.partner : -1;
       h.set(f.i, o);
       f.x = o.x; f.y = o.y; f.z = o.z; f.heading = heading;
     }

@@ -72,7 +72,8 @@ if ( kind > 2.5 ) {
   // downlights light the floor and the goods), and the stone is uneven
   k = shop ? 0.00016 : kind > 1.5 ? 0.00008 : 0.0002;
   k *= exp( -vSpill.z / ( shop ? 0.1 : 0.15 ) ) * ( 0.25 + 0.75 * smoothstep( 0.0, 0.012, vSpill.z ) );
-  k *= shop ? 1.0 - 0.75 * smoothstep( 0.25, 0.85, vSpill.w ) : 1.0 - 0.3 * smoothstep( 0.6, 1.0, vSpill.w );
+  k *= shop ? ( 1.0 - 0.75 * smoothstep( 0.25, 0.85, vSpill.w ) ) * ( 0.5 + 0.5 * smoothstep( 0.0, 0.06, vSpill.w ) )
+            : 1.0 - 0.3 * smoothstep( 0.6, 1.0, vSpill.w );
   k *= 0.7 + 0.6 * spN( vSpUv * vec2( 3.1, 9.0 ) ) * ( 0.6 + 0.4 * spN( vSpUv * 23.0 ) );
 }
 gl_FragColor = vec4( lampS * k * on * uEmGain, 1.0 );`);
@@ -82,16 +83,18 @@ gl_FragColor = vec4( lampS * k * on * uEmGain, 1.0 );`);
 }
 
 const cache = new TplCache(1200);
-/** Reveal film of opening o in opening-local coordinates (z = 0 glass plane, z = recess wall face). */
-export function spillTpl(o) {
+/**
+ * Reveal film of opening o in opening-local coordinates (z = 0 glass plane, z = recess
+ * wall face); coarser heads in the far range (q < 0.5), where it is what shows of a lit
+ * window seen along the street.
+ */
+export function spillTpl(o, q = 1) {
   const R = Math.round(o.recess / 0.02) * 0.02;
-  const key = `${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${R.toFixed(2)}`;
+  const key = `${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${R.toFixed(2)}|${q < 0.5 ? 1 : 0}`;
   return cache.get(key, () => {
     const t = new Tpl();
-    const pts = outlinePts(o, 0.003, Math.max(4, headSegments(o, 0.6)));
-    // extra rings near the glass so the exponential falloff is sampled where it is steep
-    const zs = [0.004, Math.min(0.06, R * 0.3), Math.min(0.16, R * 0.6), R - 0.004];
-    t.loft(zs.map((z) => pts.map((p) => [p[0], p[1], z])), true, 1);
+    const pts = outlinePts(o, 0.003, Math.max(q < 0.5 ? 2 : 4, headSegments(o, q < 0.5 ? 0.3 : 0.6)));
+    t.loft([0.004, R - 0.004].map((z) => pts.map((p) => [p[0], p[1], z])), true, 1);
     return { tpl: t.bake(), R, H: crownY(o) };
   });
 }

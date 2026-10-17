@@ -27,6 +27,7 @@ export const CLIPS = [
   { name: 'walkFast', frames: 36, kind: 'walk', v: 2.3 },
   { name: 'walkOld', frames: 40, kind: 'walk', v: 0.95, old: true },
   { name: 'walkSenior', frames: 40, kind: 'walk', v: 1.05, senior: true },
+  { name: 'walkSkirt', frames: 40, kind: 'walk', v: 1.15, skirt: true },
   { name: 'idle', frames: 64, kind: 'idle', variant: 0 },
   { name: 'idlePhone', frames: 64, kind: 'idle', variant: 1 },
   { name: 'idleCross', frames: 64, kind: 'idle', variant: 2 },
@@ -34,6 +35,10 @@ export const CLIPS = [
   { name: 'sit', frames: 32, kind: 'sit', variant: 0 },
   { name: 'sitBack', frames: 32, kind: 'sit', variant: 1 },
   { name: 'sitLean', frames: 32, kind: 'sit', variant: 2 },
+  // toddlers in strollers (sit variant 3: seated in a reclined pushchair seat; 4: a baby lying on
+  // its back in a pram's bassinet)
+  { name: 'sitStroller', frames: 48, kind: 'sit', variant: 3 },
+  { name: 'lieBaby', frames: 48, kind: 'sit', variant: 4 },
 ];
 export const CLIP = Object.fromEntries(CLIPS.map((c, i) => [c.name, i]));
 export const SEAT_HEIGHT = 0.46;
@@ -52,11 +57,14 @@ const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0);
 // lateral sway (m), thorax counter-rotation (x pelvic rotation), arm swing gain, arm abduction
 // and elbow flexion (deg), walk ratio factor (step length at a given speed), loading-response
 // knee flexion (bounce), trunk lean (deg), swing circumduction (m)
+// (arm abduction: the upper arm hangs against the lats, 3-5 degrees out in the walk; children's
+// arms swing freely but the elbows stay soft, never a forearm held out level)
 const GAIT = {
-  male: { stepW: 0.060, yaw: 4.2, roll: 3.0, sway: 0.016, thorax: 1.55, arm: 1.0, abd: 10, elbow: 13, wr: 1.0, bounce: 1.0, lean: 2.5, circ: 0.012 },
-  female: { stepW: 0.042, yaw: 6.5, roll: 4.8, sway: 0.021, thorax: 0.75, arm: 1.05, abd: 6.5, elbow: 18, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.022 },
-  child: { stepW: 0.052, yaw: 5.0, roll: 3.6, sway: 0.016, thorax: 1.1, arm: 1.15, abd: 10, elbow: 16, wr: 1.0, bounce: 1.6, lean: 2.5, circ: 0.014 },
-  kid: { stepW: 0.060, yaw: 5.5, roll: 4.0, sway: 0.020, thorax: 1.0, arm: 1.2, abd: 13, elbow: 20, wr: 0.96, bounce: 2.2, lean: 3.0, circ: 0.016 },
+  male: { stepW: 0.060, yaw: 4.2, roll: 3.0, sway: 0.016, thorax: 1.55, arm: 1.0, abd: 4.5, elbow: 13, wr: 1.0, bounce: 1.0, lean: 2.5, circ: 0.012, twist: -4 },
+  female: { stepW: 0.042, yaw: 6.5, roll: 4.8, sway: 0.021, thorax: 0.75, arm: 1.05, abd: 3.5, elbow: 16, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.022, twist: -6 },
+  child: { stepW: 0.052, yaw: 5.0, roll: 3.6, sway: 0.016, thorax: 1.1, arm: 1.05, abd: 5, elbow: 14, wr: 1.0, bounce: 1.6, lean: 2.5, circ: 0.014, twist: -4 },
+  kid: { stepW: 0.060, yaw: 5.5, roll: 4.0, sway: 0.020, thorax: 1.0, arm: 0.95, abd: 6, elbow: 14, wr: 0.96, bounce: 2.2, lean: 3.0, circ: 0.016, twist: -4 },
+  toddler: { stepW: 0.070, yaw: 5.5, roll: 4.0, sway: 0.022, thorax: 1.0, arm: 0.9, abd: 9, elbow: 18, wr: 0.9, bounce: 2.4, lean: 3.0, circ: 0.018, twist: -4 },
 };
 
 const smooth = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
@@ -258,16 +266,16 @@ export class Rig {
     const k = this.H / 1.76;                 // body scale relative to the reference adult
     const legL = (this.l1 + this.l2) / 0.835;
     const v = clip.v * Math.sqrt(k);         // dynamically similar speed for this body
-    const old = !!clip.old, senior = !!clip.senior;
+    const old = !!clip.old, senior = !!clip.senior, skirt = !!clip.skirt;
     // walk ratio model: step length = sqrt(WR * v * 60), WR scales with stature (women and
-    // seniors take shorter, quicker steps at the same speed)
-    const wr = 0.0065 * legL * G.wr * (old ? 0.82 : senior ? 0.88 : 1);
+    // seniors take shorter, quicker steps at the same speed; so do women in ankle-length skirts)
+    const wr = 0.0065 * legL * G.wr * (old ? 0.82 : senior ? 0.88 : skirt ? 0.86 : 1);
     const step = Math.sqrt(wr * v * 60);
     const S = 2 * step;
     const sn = S / (1.42 * legL);            // stride relative to a normal adult walk
     const age = old ? 1 : senior ? 0.45 : 0;
     return {
-      v, S, sn, old, senior, age, G,
+      v, S, sn, old, senior, skirt, age, G,
       D: old ? 0.65 : THREE.MathUtils.clamp(0.66 - 0.05 * (v - 0.75), 0.58, 0.66) + 0.01 * age,
       armAmp: (old ? 6 : (6 + 13 * sn * sn) * (senior ? 0.6 : 1)) * (clip.v > 1.5 ? 1.15 : 1) * G.arm,
       lean: old ? 7 : senior ? 4.5 + 1.5 * (sn - 0.8) : G.lean + 2.5 * (sn - 0.8),
@@ -282,7 +290,9 @@ export class Rig {
     const ffEnd = 0.07;                // heel rocker ends (foot flat)
     const hoStart = 0.33 + 0.02 * (1 - W.sn); // heel off: roll over the ball
     const tbStart = hoStart + 0.62 * (D - hoStart); // then over the toe tips until toe-off
-    const thHS = 14 + 4 * W.sn, thB = -(26 + 6 * W.sn), thTO = -(50 + 12 * W.sn);
+    // (in a long skirt: a lower heel lift and toe-off, so the trailing leg does not kick back)
+    const sk = W.skirt ? 0.7 : 1;
+    const thHS = (14 + 4 * W.sn) * (W.skirt ? 0.8 : 1), thB = -(26 + 6 * W.sn) * sk, thTO = -(50 + 12 * W.sn) * sk;
     const legs = {};
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
@@ -326,7 +336,7 @@ export class Rig {
         const heelHS = new THREE.Vector3(xLat, 0, relHeel(0));   // next strike: one stride ahead of toe-off
         const aHS = heelHS.add(rot(f.ankle.clone().sub(f.heel), thHS));
         ankle = aTO.clone().lerp(aHS, smoother(u));
-        ankle.y += (0.03 + 0.02 * W.sn) * (1 - 0.35 * W.age) * Math.sin(Math.PI * Math.pow(u, 0.75)) * Math.sqrt(this.H / 1.76);
+        ankle.y += (0.03 + 0.02 * W.sn) * (1 - 0.35 * W.age) * (W.skirt ? 0.8 : 1) * Math.sin(Math.PI * Math.pow(u, 0.75)) * Math.sqrt(this.H / 1.76);
         ankle.x += sg * W.G.circ * Math.sin(Math.PI * u);   // circumduction: the swing foot clears the stance foot
       }
       legs[s] = { ankle, th, toe, phi, stance: phi < D, loaded: phi < hoStart };
@@ -372,10 +382,11 @@ export class Rig {
       const flex = -W.armAmp * a - 3;                               // right arm back at right strike
       const A = P.arm[s];
       A.flex = flex + (W.old ? 3 : 0);
-      A.abd = G.abd - 2 + 2 * Math.abs(a) + 2 * W.age;
-      A.elbow = G.elbow + Math.max(0, flex) * 0.9 + (W.old ? 5 : W.senior ? 6 : 0) + 4 * W.sn;
-      A.twist = this.kind === 'female' ? -18 : -12;
-      A.handQ = qAxis(X, 6 + Math.max(0, flex) * 0.15);
+      A.abd = G.abd - 1.5 + 1.5 * Math.abs(a) + 2 * W.age;
+      // (the elbow bends a little more as the arm comes forward; the palm faces the thigh)
+      A.elbow = G.elbow + Math.max(0, flex) * 0.5 + (W.old ? 5 : W.senior ? 6 : 0) + 3 * W.sn;
+      A.twist = G.twist ?? -4;
+      A.handQ = qAxis(X, 4 + Math.max(0, flex) * 0.12);
       A.clavQ = qAxis(X, -flex * 0.12 * sg * 0);
     }
     return P;
@@ -418,10 +429,10 @@ export class Rig {
       P.leg[s].pole = new THREE.Vector3(sg * 0.15, 0, -1).normalize();
       const A = P.arm[s];
       // (women hold their arms closer in, men's hang wide of the lats; children's a little out)
-      A.abd = this.style.abd + 0.5 + 1.2 * Math.sin(2 * Math.PI * t + sg);
+      A.abd = this.style.abd + 0.5 + 1.0 * Math.sin(2 * Math.PI * t + sg);
       A.flex = 2 + 2 * Math.sin(2 * Math.PI * t * 2 + sg);
-      A.elbow = this.style.elbow - 2 + 3 * Math.sin(2 * Math.PI * t * 3);
-      A.twist = -10;
+      A.elbow = this.style.elbow - 3 + 3 * Math.sin(2 * Math.PI * t * 3);
+      A.twist = -3;
     }
     if (variant === 1) {
       // looking at a phone held in the right hand in front of the chest, palm (and screen)
@@ -456,7 +467,111 @@ export class Rig {
     return P;
   }
 
+  /** Pelvis placement: tilted by pelvisQ, positioned so the body point `local` (rest model space)
+   *  ends up at `target`. */
+  _placePelvis(P, local, target) {
+    const rel = local.clone().sub(this.rest[B.pelvis]).applyQuaternion(P.pelvisQ);
+    P.pelvisOffset.copy(target).sub(rel).sub(this.rest[B.pelvis]);
+  }
+
+  /** Hip joint of side s for the pose's pelvis (model space). */
+  _hipOf(P, s) {
+    const R = this.rest;
+    return R[B['thigh' + s]].clone().sub(R[B.pelvis]).applyQuaternion(P.pelvisQ).add(R[B.pelvis]).add(P.pelvisOffset);
+  }
+
+  /**
+   * A toddler in a pushchair: the sit bones on the seat (model point (0, SEAT_HEIGHT, 0)), the
+   * back against a backrest reclined ~24 degrees, thighs along the seat pan (hips ~90 degrees),
+   * knees bent over its front edge (~90 degrees) and the feet dangling over the footrest; the
+   * hands rest in the lap, now and then on the bumper bar; a toddler's restless head and legs.
+   */
+  strollerSeatPose(t) {
+    const P = this.basePose();
+    const k = this.H / 1.76;
+    const T = 2 * Math.PI * t;
+    const breath = Math.sin(T * 6);
+    const rec = 22 + 2 * Math.sin(T);
+    P.pelvisQ = qEuler(rec * 0.75, 2 * Math.sin(T + 1), 0);
+    const R = this.rest;
+    const hipC = R[B.thighL].clone().add(R[B.thighR]).multiplyScalar(0.5);
+    const isch = hipC.clone().add(new THREE.Vector3(0, -0.088 * k, 0.035 * k));
+    this._placePelvis(P, isch, new THREE.Vector3(0, SEAT_HEIGHT, 0));
+    // a little slumped in the lumbar spine, the chest against the backrest
+    P.spine1Q = qEuler(rec * 0.12 - 3 + 0.6 * breath, -2 * Math.sin(T + 1), 0);
+    P.spine2Q = qEuler(rec * 0.13 - 1, 0, 1.5 * Math.sin(T * 2));
+    // looking about: toddlers turn their heads a lot, and look down at their hands now and then
+    const look = 32 * Math.sin(T * 2 + 0.4) * smooth(Math.abs(Math.sin(T * 2 + 0.4)) * 1.3);
+    const down = 10 * smooth(Math.sin(T * 3 + 2.0));
+    P.neckQ = qEuler(-rec * 0.45 + 2, look * 0.35, 0);
+    P.headQ = qEuler(-rec * 0.4 - 4 - down, look * 0.65, 5 * Math.sin(T * 2 + 1.5));
+    const l1 = this.l1, l2 = this.l2;
+    for (const s of ['L', 'R']) {
+      const sg = this.side[s];
+      const L = P.leg[s];
+      const hip = this._hipOf(P, s);
+      const pan = 9 * DEG;
+      const dT = new THREE.Vector3(sg * 0.10, Math.sin(pan), -Math.cos(pan)).normalize();
+      const knee = hip.clone().addScaledVector(dT, l1 * 0.97);
+      // the shins hang over the seat's edge and swing a little (one kicks, the other dangles)
+      const sw = (8 + 9 * Math.sin(T * (s === 'L' ? 2 : 3) + (s === 'L' ? 0 : 2.2))) * DEG;
+      L.ankle = knee.clone().add(new THREE.Vector3(sg * 0.012 * k, -Math.cos(sw) * l2 * 0.97, -Math.sin(sw) * l2 * 0.97));
+      L.pole = new THREE.Vector3(sg * 0.15, 0.3, -1).normalize();
+      L.footQ = qEuler(-22 + 8 * Math.sin(T * 2 + sg), -sg * 10, 0);
+      const A = P.arm[s];
+      // hands in the lap <-> on the bumper bar in front
+      const bar = smooth(0.5 + 0.8 * Math.sin(T + (s === 'L' ? 0.5 : 0.9)));
+      A.abd = 10 + 4 * bar;
+      A.flex = 22 + 30 * bar + 3 * Math.sin(T * 3 + sg);
+      A.elbow = 78 - 22 * bar;
+      A.twist = -32 + 10 * bar;
+      A.handQ = qAxis(X, 10 - 25 * bar);
+    }
+    return P;
+  }
+
+  /** A baby lying on its back in a pram: head towards +Z (the hood), face up, the back of the
+   *  pelvis on the mattress at SEAT_HEIGHT, legs in the frog position, arms up beside the head,
+   *  the head turned to one side; slow kicks. */
+  babyLiePose(t) {
+    const P = this.basePose();
+    const k = this.H / 1.76;
+    const T = 2 * Math.PI * t;
+    P.pelvisQ = qEuler(86, 0, 3 * Math.sin(T));
+    const R = this.rest;
+    // the sacrum on the mattress: a point ~6.5 cm (at a toddler's size) behind the pelvis joint
+    const back = R[B.pelvis].clone().add(new THREE.Vector3(0, -0.01 * k, 0.13 * k));
+    this._placePelvis(P, back, new THREE.Vector3(0, SEAT_HEIGHT, 0));
+    P.spine1Q = qEuler(-2, 0, -2 * Math.sin(T));
+    P.spine2Q = qEuler(-2 + 0.8 * Math.sin(T * 5), 0, 0);
+    const look = 28 + 14 * Math.sin(T) + 6 * Math.sin(T * 3);
+    P.neckQ = qEuler(4, look * 0.4, 0);
+    P.headQ = qEuler(6, look * 0.6, -8);
+    const l1 = this.l1, l2 = this.l2;
+    for (const s of ['L', 'R']) {
+      const sg = this.side[s];
+      const L = P.leg[s];
+      const hip = this._hipOf(P, s);
+      const kick = 0.5 + 0.5 * Math.sin(T * 2 + (s === 'L' ? 0 : 2.5));
+      const dT = new THREE.Vector3(sg * 0.5, 0.55 + 0.15 * kick, -0.62).normalize();
+      const knee = hip.clone().addScaledVector(dT, l1 * 0.97);
+      const dS = new THREE.Vector3(sg * 0.12, -0.35 - 0.2 * kick, -0.9).normalize();
+      L.ankle = knee.clone().addScaledVector(dS, l2 * 0.97);
+      L.pole = new THREE.Vector3(sg * 0.6, 1, 0.1).normalize();
+      L.footQ = qEuler(70 - 15 * kick, -sg * 25, 0);
+      const A = P.arm[s];
+      A.abd = 70 + 8 * Math.sin(T * 2 + sg);
+      A.flex = 15;
+      A.elbow = 100 + 12 * Math.sin(T * 3 + sg * 1.3);
+      A.twist = 35;
+      A.handQ = qAxis(X, 20);
+    }
+    return P;
+  }
+
   sitPose(t, variant) {
+    if (variant === 3) return this.strollerSeatPose(t);
+    if (variant === 4) return this.babyLiePose(t);
     const P = this.basePose();
     const breath = Math.sin(2 * Math.PI * t * 4);
     // seat: ischia on the seat, thighs forward, feet on the ground

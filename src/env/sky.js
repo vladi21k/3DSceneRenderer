@@ -205,7 +205,7 @@ vec3 clouds(vec3 dir, vec3 L) {
     vec2 p = uCamPosW.xz + dir.xz * t + uCirrusOffset * 0.5;
     float cell = texture2D(uCloudTex, p / 1300.0 + 0.61).r;
     float sheet = texture2D(uCloudTex, p / 70000.0 + 0.23).b;
-    float c = smoothstep(0.5, 0.85, cell) * smoothstep(0.4, 0.75, sheet) * uAltocu;
+    float c = smoothstep(0.5, 0.85, cell) * smoothstep(0.55 - 0.4 * uAltocu, 0.85 - 0.3 * uAltocu, sheet) * min(uAltocu * 1.6, 1.0);
     float a = c * 0.75;
     float ph = mix(atmPhaseHG(cosT, 0.6), atmPhaseHG(cosT, 0.0), 0.5) * 4.0 * ATM_PI;
     // lit from above and the side; the shaded underside sees the sky
@@ -225,7 +225,8 @@ vec3 clouds(vec3 dir, vec3 L) {
     // finer fibres riding on the broad streaks
     c *= 0.62 + 0.55 * texture2D(uCloudTex, q * vec2(4.3, 3.1) + vec2(0.31, 0.17)).a;
     float cr = texture2D(uCloudTex, p / 150000.0 + 0.4).b;
-    c = smoothstep(0.52, 0.9, c) * smoothstep(0.35, 0.7, cr) * uCirrus;
+    // (a heavier cirrus regime also spreads the streaks over more of the sky)
+    c = smoothstep(0.52, 0.9, c) * smoothstep(0.35 - 0.35 * uCirrus, 0.7 - 0.3 * uCirrus, cr) * min(uCirrus * 1.4, 1.0);
     float a = c * 0.55;
     float ph = mix(atmPhaseHG(cosT, 0.75), atmPhaseHG(cosT, 0.0), 0.6) * 4.0 * ATM_PI;
     vec3 col = sunL * ph * 0.16 + ambUp * 0.9;

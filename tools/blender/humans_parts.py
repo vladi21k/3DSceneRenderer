@@ -205,7 +205,7 @@ def falling_hair(bl, length, width, thick, top, seed, wave=0.0, front_z=-0.004, 
         front = fz - P[:, 2]
         # below the jaw the curtain goes back behind the shoulders (more so the further out it is)
         bz = 0.006 + 0.035 * sstep(0.06, 0.12, np.abs(P[:, 0]))
-        behind = (bz - P[:, 2]) * sstep(shy + 0.10, shy + 0.02, P[:, 1])
+        behind = (bz - P[:, 2]) - 0.3 * (1.0 - sstep(shy + 0.10, shy + 0.02, P[:, 1]))
         return np.maximum(np.maximum(np.maximum(d - dn - dw, cut), front * (1.0 - sstep(0.03, 0.09, P[:, 1]))), behind)
     hair = Fn(shape, np.array([-0.2, -length - 0.05, -0.15]), np.array([0.2, 0.17, 0.2]))
     # minus the body inflated a little (hair lies on the skin and the clothes over it)
@@ -241,32 +241,31 @@ def ribbon(path, width, thick, folds=0.0, seed=1, taper=0.25, tip_cut=0.6):
 
     def f(P):
         best = np.full(len(P), 1e9)
-        lat = np.zeros(len(P)); nrm = np.zeros(len(P)); u = np.zeros(len(P))
         for i in range(len(seg)):
             a = pts[i]
             d = seg[i] / segl[i]
             pa = P - a
-            t = np.clip(pa @ d, 0, segl[i])
-            c = a + np.outer(t, d)
-            q = P - c
+            traw = pa @ d
+            t = np.clip(traw, 0, segl[i])
             # normal of the band in the y-z plane (perpendicular to the segment)
             nyz = np.array([0.0, -d[2], d[1]])
             nyz /= max(np.linalg.norm(nyz), 1e-9)
-            ql = q[:, 0]
-            qn = q @ nyz
-            dist = np.abs(qn) + 0.3 * np.maximum(np.abs(ql) - width, 0)
-            m = dist < best
-            best[m] = dist[m]; lat[m] = ql[m]; nrm[m] = qn[m]; u[m] = (cum[i] + t)[m]
-        uu = u / max(Ltot, 1e-6)
-        w = width * (1.0 - taper * uu)
-        # pleats: the cloth ripples across its width, more towards the end
-        fold = folds * np.sin(lat / max(width, 1e-3) * 4.2 + seed) * (0.4 + 0.6 * uu)
-        dn = np.abs(nrm - fold) - thick
-        dl = np.abs(lat) - w
-        # slanted cut end, and the start buried in the knot
-        de = (u - (Ltot - tip_cut * width * (0.5 + 0.5 * lat / max(width, 1e-3)))) 
-        dd = np.maximum(np.maximum(dn, dl), np.maximum(de, -u - 0.01))
-        return dd - 0.0015
+            u = (cum[i] + t) / max(Ltot, 1e-6)
+            ql = pa[:, 0] - d[0] * traw
+            qn = pa @ nyz
+            w = width * (1.0 - taper * u)
+            # pleats: the cloth ripples across its width, more towards the end
+            fold = folds * np.sin(ql / max(width, 1e-3) * 4.2 + seed) * (0.4 + 0.6 * u)
+            e = np.maximum(np.maximum(-traw, traw - segl[i]), 0.0)
+            dn = np.abs(qn - fold) - thick
+            dl = np.abs(ql) - w
+            out = np.sqrt(np.maximum(dn, 0) ** 2 + np.maximum(dl, 0) ** 2 + e ** 2) + np.minimum(np.maximum(dn, dl), 0)
+            # slanted cut at the end of the last piece
+            if i == len(seg) - 1:
+                de = (cum[i] + traw) - (Ltot - tip_cut * width * (0.5 + 0.5 * ql / max(width, 1e-3)))
+                out = np.maximum(out, de)
+            best = np.minimum(best, out)
+        return best - 0.0015
     return Fn(f, lo, hi)
 
 
@@ -287,20 +286,21 @@ def tichel(body_l):
         return 0.0028 * np.sin(th * 9.0 + 1.3 * np.sin(P[:, 1] * 40.0)) * sstep(-0.02, 0.06, P[:, 1])
     cap = Fn(lambda P: base.eval(P) - folds(P), base.lo - 0.01, base.hi + 0.01)
     zb = CR_C[2] + CR_R[2]
-    knot = Ellipsoid((0, -0.040, zb + 0.016), (0.046, 0.036, 0.034))
-    knot2 = Ellipsoid((0.008, -0.020, zb + 0.008), (0.040, 0.030, 0.028), R=rot_xyz(0, 0, 18))
+    # the knot sits low at the nape, gathered (twisted fabric), not a ball on the back of the head
+    knot = Ellipsoid((0, -0.058, zb - 0.010), (0.044, 0.030, 0.028), R=rot_xyz(-20, 0, 0))
+    knot2 = Ellipsoid((0.010, -0.040, zb - 0.006), (0.036, 0.024, 0.024), R=rot_xyz(-10, 0, 22))
     kn0 = Union([knot, knot2], k=0.012)
     kn = Fn(lambda P: kn0.eval(P) - 0.004 * clump_noise(P, 71, 120.0), kn0.lo - 0.01, kn0.hi + 0.01)
     tails = []
     for s, sd in ((-1, 3.0), (1, 5.0)):
         path = []
-        for x, y, z in ((s * 0.016, -0.050, zb + 0.020), (s * 0.024, -0.100, zb), (s * 0.030, -0.150, zb),
-                        (s * 0.036, -0.200, zb), (s * 0.040, -0.250, zb)):
+        for x, y, z in ((s * 0.014, -0.062, zb + 0.004), (s * 0.020, -0.105, zb), (s * 0.026, -0.150, zb),
+                        (s * 0.032, -0.200, zb), (s * 0.036, -0.245, zb)):
             if body_l is not None and y < -0.07:
                 # lying on the back of the neck and the upper back
                 z = surface_z(body_l, x, y, +1, z0=0.0, zmax=0.3) + 0.010
             path.append((x, y, z))
-        tails.append(ribbon(path, 0.036, 0.005, folds=0.004, seed=sd, taper=0.2))
+        tails.append(ribbon(path, 0.034, 0.0045, folds=0.0065, seed=sd, taper=0.25))
     n = Union([cap, kn], k=0.012)
     n = Union([n] + tails, k=0.010)
     if body_l is not None:
@@ -629,7 +629,13 @@ def backpack_part(T, body):
         sb = (lambda P, sd=side: (lambda w: {'spine2': 1.0 - w, 'clav' + sd: w})(
             0.35 * sstep(shY - 0.10 * sy, shY + 0.02 * sy, P[:, 1]) * sstep(0.02, -0.03, P[:, 2])))
         straps.append(strap(pts, nrm, 0.021 * k if not young else 0.019 * k, 0.0042 * k, sb, R))
-    return Union([pack] + straps, k=0.008 * k)
+    out = Union([pack] + straps, k=0.008 * k)
+    # the pack's frame (centre y, z; half width, height, depth; tilt) for the runtime zips and
+    # seams, and which surface is strap webbing
+    out.frame = [float(yc), float(zc), float(hw), float(hh), float(hd), float(np.radians(tilt))]
+    out.pack_body = pack
+    out.straps = Union(straps)
+    return out
 
 
 def bag_part(name, T, body=None):
@@ -767,6 +773,11 @@ def build_parts(kind, body, info, res, mesh_fn=None, decimate_fn=None, attr_fn=N
                 P32 = a['P'].astype(np.float32)
                 lens = node.lens.eval(P32) < node.frame.eval(P32) - 0.0002
                 a['aux'] = np.stack([lens.astype(float), np.zeros(len(Vl))], 1)
+            elif name == 'backpack' and hasattr(node, 'frame'):
+                P32 = a['P'].astype(np.float32)
+                web = node.straps.eval(P32) < node.pack_body.eval(P32) - 0.001
+                a['aux'] = np.stack([np.zeros(len(Vl)), web.astype(float)], 1)
+                info['pack'] = node.frame
             elif name.startswith('beard'):
                 # edge fade (0 at the beard's edge) in head-local coordinates
                 ql = ((a['P'] - hc) / hs).astype(np.float32)

@@ -57,10 +57,13 @@ export function* slabSteps(B, sl, q) {
     (s, a0, a1, v0, v1, o) => B.rectU(s, -o, v0, v1, -D + a0, -D + a1, -1),
   ];
   const box = [
-    (s, a0, a1, v0, v1, o0, o1) => B.box(s, a0, a1, v0, v1, o0, o1, FACES.ALL & ~FACES.BACK),
-    (s, a0, a1, v0, v1, o0, o1) => B.box(s, W + o0, W + o1, v0, v1, -a1, -a0, FACES.ALL & ~FACES.LEFT),
-    (s, a0, a1, v0, v1, o0, o1) => B.box(s, -o1, -o0, v0, v1, -D + a0, -D + a1, FACES.ALL & ~FACES.RIGHT),
+    (s, a0, a1, v0, v1, o0, o1, ends = true) => B.box(s, a0, a1, v0, v1, o0, o1, FACES.FRONT | FACES.TOP | FACES.BOTTOM | (ends ? FACES.LEFT | FACES.RIGHT : 0)),
+    (s, a0, a1, v0, v1, o0, o1, ends = true) => B.box(s, W + o0, W + o1, v0, v1, -a1, -a0, FACES.RIGHT | FACES.TOP | FACES.BOTTOM | (ends ? FACES.FRONT | FACES.BACK : 0)),
+    (s, a0, a1, v0, v1, o0, o1, ends = true) => B.box(s, -o1, -o0, v0, v1, -D + a0, -D + a1, FACES.LEFT | FACES.TOP | FACES.BOTTOM | (ends ? FACES.FRONT | FACES.BACK : 0)),
   ];
+  // sills and lintels: the thin dressing batch (no shadows in the coarse cascades);
+  // AC units: no shadows at all
+  const sTrim = B.sink('smoothD'), sUnit = B.sink('dark');
   const shutter = SHUTTERS[sl.seed % SHUTTERS.length];
   const sill = t.map((c) => c * 1.06);
   [W, D, D].forEach((len, fi) => {
@@ -79,9 +82,9 @@ export function* slabSteps(B, sl, q) {
         B.grime = 0;
         if (cut < y + wh - 0.05) { B.flat = shutter; rect[fi](sDark, x - hw, x + hw, cut, y + wh, 0.016); }
         B.flat = sill;
-        box[fi](sWall, x - hw - 0.06, x + hw + 0.06, y - 0.07, y, 0, 0.07);
-        if (!q.lod) box[fi](sWall, x - hw - 0.04, x + hw + 0.04, y + wh, y + wh + 0.14, 0, 0.025);
-        if (ex < 0.1) { B.flat = [0.84, 0.84, 0.82]; box[fi](sDark, x - 0.42, x + 0.42, y - 0.75, y - 0.15, 0.02, 0.32); }
+        box[fi](sTrim, x - hw - 0.06, x + hw + 0.06, y - 0.07, y, 0, 0.07, false);
+        if (!q.lod) box[fi](sTrim, x - hw - 0.04, x + hw + 0.04, y + wh, y + wh + 0.14, 0, 0.025, false);
+        if (ex < 0.1) { B.flat = [0.84, 0.84, 0.82]; box[fi](sUnit, x - 0.42, x + 0.42, y - 0.75, y - 0.15, 0.02, 0.32); }
         else if (fi === 0 && f > 0 && !sl.balcony && ex > 0.82) {
           B.flat = t.map((c) => c * 0.98);
           box[0](sWall, x - hw - 0.45, x + hw + 0.45, fy - 0.15, fy + 1.0, 0, 1.15);

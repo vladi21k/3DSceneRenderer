@@ -51,7 +51,9 @@ const BAG = C([['#18181a', 12], ['#3b2a20', 6], ['#5a3b24', 5], ['#5d6b52', 3], 
 const SHOPPING = C([['#e87b2a', 3], ['#f4f2ee', 4], ['#3a7bc0', 2], ['#d2302a', 2], ['#3c8a46', 1]]);
 const CAP = C([['#18181a', 5], ['#f2f2ef', 3], ['#2a3a5c', 4], ['#b8352d', 2], ['#8b8f73', 2], ['#cdb991', 2]]);
 const SUNHAT = C([['#e8dcc0', 5], ['#d8c49a', 4], ['#f4f1ea', 3], ['#1b1b1d', 1]]);
-const SCARF = C([['#1d2337', 5], ['#3c3f46', 3], ['#5a3d52', 2], ['#7b6a5a', 2], ['#2e5a6a', 2], ['#e6e0d2', 2], ['#7a2a34', 2]]);
+// (headscarves: no colours near skin tone, which read as a bald head)
+const SCARF = C([['#1d2337', 5], ['#3c3f46', 3], ['#5a3d52', 2], ['#3f5a3a', 2], ['#2e5a6a', 2], ['#e6e0d2', 2], ['#7a2a34', 2],
+  ['#141416', 3], ['#6a3a7a', 1], ['#9a6a2a', 1]]);
 
 const pick = (r, list) => r.weighted(list).clone();
 const jitter = (c, r, amt = 0.06) => {
@@ -262,10 +264,57 @@ export function deriveAppearance(seed, parts) {
   // (relative to the body mesh's own head: younger, shorter children have relatively bigger heads)
   a.headScale = (body === 'kid' ? Math.pow(1.10 / height, 0.5) : body === 'child' ? Math.pow(1.36 / height, 0.45)
     : age === 'teen' ? Math.pow((female ? 1.63 : 1.76) / height, 0.35) : 1) * r.range(0.97, 1.03);
-  a.skirtFolds = r.int(6, 9);
+  a.skirtFolds = r.int(8, 12);
+  // ankle- or calf-length skirts and dresses: shorter steps, a lower heel lift (walkSkirt)
+  a.longSkirt = !!a.skirtPart && (a.bottomType === BOTTOM.SKIRT || a.bottomType === BOTTOM.DRESS) && a.skirtLen >= 0.72;
   if (a.shoeType === SHOE.SANDAL) a.sole = srgb('#3a2c22');
   else if (a.shoeType === SHOE.LEATHER) a.sole = srgb('#2a2220');
   else if (a.shoeType === SHOE.FLAT) a.sole = a.shoes.clone().multiplyScalar(0.7);
+  return a;
+}
+
+// toddlers' clothes: soft pastels, white, bright primaries, small prints
+const TODDLER_TOP = C([['#f4f2ec', 8], ['#bcd6ee', 5], ['#f6c3cf', 5], ['#f3df8f', 4], ['#c4e2b6', 4], ['#e9813c', 2],
+  ['#5b8fd0', 3], ['#d8434a', 2], ['#f0e6d6', 3], ['#9fd2d0', 2], ['#c5b3dd', 2]]);
+const TODDLER_BOTTOM = C([['#3e5f88', 4], ['#f4f2ec', 3], ['#c7b48f', 3], ['#e6a9b8', 2], ['#6f7f99', 3], ['#2a3346', 2],
+  ['#b9d9b0', 2]]);
+const TODDLER_HAT = C([['#f4f2ec', 6], ['#f3dfa0', 2], ['#bcd6ee', 3], ['#f6c3cf', 3], ['#e7e0cf', 2]]);
+const HAIR_BABY = C([['#2a1d14', 22], ['#3d2a1b', 16], ['#5a3e26', 10], ['#7a5a38', 6], ['#a3834f', 5], ['#c9a46a', 3],
+  ['#1c1511', 18]]);
+
+/**
+ * A toddler riding in a stroller (seed: from the stroller's prop seed), drawn with the toddler
+ * body: about 0.78-0.92 m (or a 0.62-0.70 m baby lying in a pram). Tee or romper with shorts /
+ * leggings / a little dress over leggings, small shoes, wispy or short hair, often a sun hat.
+ */
+export function deriveToddler(seed, parts, lying = false) {
+  const r = new RNG((seed >>> 0) ^ 0x2c1b3a6f);
+  const P = (name) => parts[name] || 0;
+  const female = r.chance(0.5);
+  const height = lying ? r.range(0.62, 0.70) : r.range(0.78, 0.92);
+  const a = {
+    seed, age: 'toddler', female, base: 'toddler', body: 'toddler', height, build: r.range(0.1, 0.6),
+    skin: jitter(pick(r, SKIN), r, 0.04), hair: jitter(pick(r, HAIR_BABY), r),
+    hairPart: 0, beardPart: 0, hatPart: 0, bagPart: 0, skirtPart: 0,
+    top: jitter(pick(r, TODDLER_TOP), r), top2: srgb('#f4f4f0'), topType: TOP.TEE, pattern: PATTERN.SOLID,
+    sleeve: r.weighted([[0.22, 5], [0.3, 3], [0.0, 1], [0.9, 1]]), topHem: r.range(-0.1, 0.1), loose: r.range(0.45, 0.8),
+    bottom: jitter(pick(r, TODDLER_BOTTOM), r), bottomType: BOTTOM.SHORTS, hem: r.range(0.45, 0.7), looseB: r.range(0.5, 0.9),
+    skirtLen: 0.4, skirtFlare: 0.8,
+    shoes: jitter(pick(r, C([['#f2f2ef', 4], ['#e9b8c4', 2], ['#5b8fd0', 2], ['#c7b9a2', 2], ['#3b2a20', 1]])), r),
+    sole: srgb('#ece9e2'), shoeType: r.chance(0.3) ? SHOE.SANDAL : SHOE.SNEAKER,
+    bag: srgb('#18181a'), hat: srgb('#f4f2ec'), glasses: 0, kippah: 0, beardAmt: 0,
+    fabricTop: FABRIC.COTTON, fabricBottom: FABRIC.COTTON, wear: r.range(0, 0.3),
+    walkOld: false, idle: 0, sit: lying ? 4 : 3, gait: 0, stoop: 0, carry: false, phoneWalk: false, longSkirt: false,
+  };
+  if (r.chance(0.3)) { a.pattern = r.weighted([[PATTERN.STRIPES, 3], [PATTERN.PRINT, 3], [PATTERN.GRAPHIC, 1]]); a.top2 = jitter(pick(r, TODDLER_TOP), r); }
+  if (r.chance(0.35)) { a.bottomType = BOTTOM.LEGGINGS; a.hem = r.chance(0.5) ? 0 : 0.2; a.looseB = 0; }
+  else if (r.chance(0.2)) { a.bottomType = BOTTOM.TROUSERS; a.hem = r.chance(0.5) ? 0 : 0.25; }
+  a.hairPart = P(r.weighted(female ? [['hair_wisp', 4], ['hair_bob', 3], ['hair_curly', 1]] : [['hair_wisp', 4], ['hair_short', 3], ['hair_curly', 1]]));
+  if (r.chance(lying ? 0.35 : 0.4)) { a.hatPart = P('sunhat'); a.hat = jitter(pick(r, TODDLER_HAT), r); if (a.hairPart === P('hair_bob')) a.hairPart = P('hair_wisp'); }
+  if (a.shoeType === SHOE.SANDAL) a.sole = srgb('#3a2c22');
+  a.faceA = r.next() ** 2 * 0.5; a.faceB = r.next() * 0.8; a.faceOld = 0; a.belly = 0;
+  a.headScale = r.range(0.97, 1.04) * Math.pow(0.86 / height, 0.25);
+  a.skirtFolds = 9;
   return a;
 }
 

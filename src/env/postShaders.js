@@ -124,7 +124,7 @@ uniform float uHazeGap;      // sunlit share of distant air (cross streets, lowe
 uniform float uHazeSun;      // strength of the forward-scattered sun term
 uniform float uShimmer;
 uniform vec2 uResolution;
-uniform float uDofK, uFocus, uCocMax;
+uniform float uDofK, uFocus, uCocMax, uCocTol;
 uniform float uNightAir;
 uniform float uClampHDR;     // highest value passed on (scene units; ~64 after exposure)
 uniform vec3 uLampPos[NUM_LAMPS];
@@ -297,7 +297,7 @@ void main() {
   uvec3 bits = floatBitsToUint(col) & 0x7f800000u;
   if (any(equal(bits, uvec3(0x7f800000u)))) col = vec3(0.0);
   col = clamp(col, vec3(0.0), vec3(uClampHDR));
-  float coc = uDofK * abs(1.0 - uFocus / max(dist, 0.1));
+  float coc = max(uDofK * abs(1.0 - uFocus / max(dist, 0.1)) - uCocTol, 0.0);
   gl_FragColor = vec4(col, min(coc, uCocMax));
 }
 `;

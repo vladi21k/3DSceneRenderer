@@ -321,10 +321,10 @@ function placeTableware(route, t, rng, inst, P, pole, folderCol) {
     return [t.s + (dx / l) * r - (dd / l) * side, t.d + (dd / l) * r + (dx / l) * side, Math.atan2(dd, dx)];
   };
   if (!pole && rng.chance(0.6)) put(P.misc.napkin, t.s + rng.range(-0.04, 0.04), t.d + rng.range(-0.04, 0.04), rng.range(0, 3.14));
-  if (rng.chance(state === 1 ? 0.35 : 0.25)) put(P.misc.ashtray, t.s + rng.range(-0.1, 0.1), t.d + rng.range(-0.1, 0.1), 0);
+  if (rng.chance(state === 1 ? 0.35 : 0.25) && !pole) put(P.misc.ashtray, t.s + rng.range(-0.1, 0.1), t.d + rng.range(-0.1, 0.1), 0);
   if (state === 1) {
     if (rng.chance(0.6) && t.chairs.length) {
-      const [s, d, a] = at(rng.pick(t.chairs), rng.range(0.1, 0.16), rng.range(-0.06, 0.06));
+      const [s, d, a] = at(rng.pick(t.chairs), rng.range(0.18, 0.2), rng.range(-0.05, 0.05));
       put(P.misc.folder, s, d, a + Math.PI / 2 + rng.range(-0.4, 0.4), folderCol);
     }
     return;
@@ -336,7 +336,7 @@ function placeTableware(route, t, rng, inst, P, pole, folderCol) {
     const kind = rng.weighted(SETTINGS);
     const [s, d, a] = at(ch, rng.range(0.15, 0.2), rng.range(-0.07, 0.07));
     if (kind === 'plate') {
-      const [ps, pd] = at(ch, rng.range(0.11, 0.14), rng.range(-0.03, 0.03));
+      const [ps, pd] = at(ch, rng.range(0.17, 0.18), rng.range(-0.03, 0.03)); // clear of the napkins / pole
       put(P.misc.plate, ps, pd, rng.range(0, 6.28));
     } else if (kind === 'cupGlass') {
       const [gs, gd] = at(ch, rng.range(0.14, 0.18), 0.09);

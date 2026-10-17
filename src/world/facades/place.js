@@ -13,13 +13,12 @@ import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow } from './spill.js';
 import { slopeAwningT as slopeAwning, domeAwningT as domeAwning, awningColors } from './awnings.js';
 import { crownY, springY, isArched, halfWidthAt, outlinePts } from './outline.js';
-import { paint } from './kit.js';
+import { swatch, weather } from './kit.js';
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const _m = new THREE.Matrix4(), _t = new THREE.Matrix4(), _r = new THREE.Matrix4(), _ms = new THREE.Matrix4();
 const IDENT = new THREE.Matrix4();
 
-const SHOP_FRAMES = [0x1e1f20, 0x34373a, 0x2a3d30, 0x3b2f25, 0x585c5d, 0xcfcdc5, 0x23303d];
 const DOOR_COLORS = { brown: 0x4a2e1c, varnish: 0x5e3b20, green: 0x283f30, blue: 0x2b5068, black: 0x1d1d1e, red: 0x561c19 };
 const ROLLER = [0xb9b7b0, 0xd4d1c8, 0x8c8e8c, 0xc9bfa8];
 const BRASS = lin(0xb08a45), BLACK_IRON = [0.035, 0.035, 0.037];
@@ -41,10 +40,9 @@ function wallMatrix(frame, u, v, out = _m) {
   return out.copy(frame.matrix).multiply(_t.makeTranslation(u, v, 0));
 }
 
-/** Warm light from the room onto the reveal of opening o (night only, near range, see spill.js). */
+/** Light from the room onto the reveal of opening o (drawn at night only, see spill.js). */
 function addSpill(kit, ctx, o, m, lit, kind, dim = 0) {
-  if (ctx.q < 0.5) return;
-  const sp = spillTpl(o);
+  const sp = spillTpl(o, ctx.q);
   kit.get('spill').add(sp.tpl, m, 1, 1, 1, spillAttrs(lit, kind, dim, sp));
 }
 
@@ -80,7 +78,9 @@ function buildWindow(kit, ctx, o) {
   const m = openingMatrix(ctx.frame, o);
   const v = ctx.joinery;
   const r = RNG.from(o.id);
-  const fc = ctx.frameRGB, k = 0.9 + r.next() * 0.16;
+  const fc = weather(ctx.frameRGB, r), k = 1;
+  // per-opening offset into the joinery detail bakes (tile 1 m; v kept clear of the putty line)
+  const du = r.next(), dv = 0.3 + 0.4 * r.next();
   // summer: some casements stand open, swung into the room
   const ro = r.next();
   let open = ctx.q >= 0.5 && o.shutters !== 'closed' && canOpen(o, v) && ro < (o.kind === 'balconyDoor' ? 0.12 : 0.08)
@@ -91,7 +91,7 @@ function buildWindow(kit, ctx, o) {
     if (lim < 0.35) open = null; else open.angle = Math.min(open.angle, lim);
   }
   const jt = joineryTpl(o, v, ctx.q, open);
-  if (jt) kit.get('frame').add(jt, m, fc[0] * k, fc[1] * k, fc[2] * k);
+  if (jt) kit.get('frame').add(jt, m, fc[0] * k, fc[1] * k, fc[2] * k, null, du, dv);
   const floor = plan.floors[o.floor];
   const bay = plan.bays[o.bay];
   const roomY0 = floor.y + 0.02;
@@ -118,13 +118,13 @@ function buildWindow(kit, ctx, o) {
     kit.get('frame').add(rollerTpl(o, down, ctx.q), m, rc[0], rc[1], rc[2]);
   }
   if (o.shutters) {
-    const sc = ctx.shutterRGB, ks = 0.85 + r.next() * 0.2;
+    const sc = weather(ctx.shutterRGB, r, 1.3), ks = 1;
     // open leaves lie on the wall face, clear of a projecting stone surround
     const standoff = plan.style.surrounds ? 0.055 : 0.012;
     const state = o.shutters === 'open' ? fitOpenShutters(ctx, o, standoff) : o.shutters;
     // open leaves are built relative to the wall face (shared by windows of any recess)
     const ms = state === 'open' || state === 'openSpring' ? _ms.copy(m).multiply(_r.makeTranslation(0, 0, o.recess)) : m;
-    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), ms, sc[0] * ks, sc[1] * ks, sc[2] * ks);
+    kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), ms, sc[0] * ks, sc[1] * ks, sc[2] * ks, null, du, dv);
   }
 }
 
@@ -289,8 +289,10 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   }
   const T = shopTpls(`${plan.seed}|${variant}|${headSign}`, o, L, ctx.q);
   const m = openingMatrix(ctx.frame, o, new THREE.Matrix4());
-  const fc = L.timber ? paint(plan.style.frameColor) : lin(SHOP_FRAMES[r.int(0, SHOP_FRAMES.length - 1)]);
-  kit.get('frame').add(T.frame, m, fc[0], fc[1], fc[2]);
+  // timber shopfronts are painted like the building's joinery, the others steel or
+  // aluminium from the shopfitters' range
+  const fc = weather(L.timber ? ctx.frameRGB : swatch('shop', RNG.from(o.id, 'shopColour')), r, 0.7);
+  kit.get('frame').add(T.frame, m, fc[0], fc[1], fc[2], null, r.next(), 0.3 + 0.4 * r.next());
   // interior
   const f0 = plan.floors[0];
   const roomY0 = o.y;
@@ -562,8 +564,10 @@ export function* buildFront(kit, ctx) {
   const plan = ctx.plan;
   ctx.cafeAwning = ctx.cafe ? planCafeAwning(ctx) : null;
   ctx.joinery = joineryStyle(plan, RNG.from(plan.seed, 'joinery'));
-  ctx.frameRGB = paint(ctx.joinery.type === 'alu' && /green|teal/.test(plan.style.frameColor) ? 'white' : plan.style.frameColor);
-  ctx.shutterRGB = paint(plan.style.shutterColor);
+  // one joinery colour per building (its type's palette), one for its shutters
+  const jr = RNG.from(plan.seed, 'joineryColour');
+  ctx.frameRGB = swatch(ctx.joinery.type, jr);
+  ctx.shutterRGB = swatch('shutter', jr);
   const signs = planSigns(ctx);
   // what each shop sells: the word on its sign, else a draw (the blade signs follow it)
   const shopTypes = new Map();

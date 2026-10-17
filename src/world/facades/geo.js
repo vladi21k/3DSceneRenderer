@@ -260,9 +260,10 @@ export class Batch {
   /**
    * Append a baked template with matrix m (rigid) and colour rgb (multiplied by shade).
    * extraVals: per attribute either a constant array or fn(k, v, out, o) filling vertex k
-   * (v = the template's interleaved vertices, position of k at v[k * VS]).
+   * (v = the template's interleaved vertices, position of k at v[k * VS]). du, dv offset
+   * the UVs (metres), so detail textures differ between copies of one template.
    */
-  add(tpl, m, r = 1, g = 1, b = 1, extraVals = null) {
+  add(tpl, m, r = 1, g = 1, b = 1, extraVals = null, du = 0, dv = 0) {
     const e = m.elements, n = tpl.count, base = this.count;
     const P = this.P, N = this.N, T = this.T, C = this.C;
     P.ensure(n * 3); N.ensure(n * 3); T.ensure(n * 2); if (C) C.ensure(n * 3);
@@ -279,7 +280,7 @@ export class Batch {
       na[pi] = e0 * nx + e4 * ny + e8 * nz;
       na[pi + 1] = e1 * nx + e5 * ny + e9 * nz;
       na[pi + 2] = e2 * nx + e6 * ny + e10 * nz;
-      ta[ti] = sv[o + 6]; ta[ti + 1] = sv[o + 7];
+      ta[ti] = sv[o + 6] + du; ta[ti + 1] = sv[o + 7] + dv;
     }
     if (ca) {
       for (let o = 8, pi = p0; o < end; o += VS, pi += 3) { const s = sv[o]; ca[pi] = r * s; ca[pi + 1] = g * s; ca[pi + 2] = b * s; }

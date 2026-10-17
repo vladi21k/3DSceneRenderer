@@ -7,6 +7,34 @@ export const PAINT = {
 };
 export const paint = (name) => lin(PAINT[name] ?? PAINT.grey);
 
+// Joinery colour swatches (sRGB), weighted as on the street: mostly varnished brown wood
+// and white, then dark green, greys, black and a few blue-greys and teals; anodised
+// aluminium (silver / bronze) for modern sliders; dark steel for Mandate-era sections.
+const SWATCH = {
+  timber: [[0x5a3a22, 0.17], [0x6c4529, 0.1], [0x4a2f1d, 0.07], [0xe2dfd4, 0.17], [0xcbc5b2, 0.08], [0x2d4033, 0.11],
+    [0x6f716c, 0.08], [0x9a9c97, 0.05], [0x262627, 0.06], [0x4a5a66, 0.05], [0x2c5555, 0.04], [0x6b2b24, 0.02]],
+  steel: [[0x2a2b2c, 0.3], [0x2d4033, 0.25], [0x5d605c, 0.2], [0xd8d5ca, 0.15], [0x4a3426, 0.1]],
+  alu: [[0xa4a6a4, 0.45], [0x5b4a3b, 0.2], [0xe4e2dc, 0.25], [0x3a3b3c, 0.1]],
+  shutter: [[0x34503c, 0.2], [0x5e4430, 0.17], [0x7a7c76, 0.13], [0xd2cdbd, 0.12], [0x53636c, 0.1], [0x5d6146, 0.08],
+    [0x8a5a34, 0.08], [0x3e6566, 0.06], [0x9ea29a, 0.06]],
+  shop: [[0x1e1f20, 0.2], [0x34373a, 0.18], [0x4a3021, 0.13], [0xa4a6a4, 0.14], [0x5b4a3b, 0.07], [0x2a3d30, 0.1],
+    [0xdcd9cf, 0.09], [0x23303d, 0.05], [0x5c1f1c, 0.04]],
+};
+
+/** Linear [r, g, b] of a swatch drawn from palette `kind` (timber, steel, alu, shutter, shop). */
+export function swatch(kind, rng) { return lin(rng.weighted(SWATCH[kind])); }
+
+/**
+ * Weathered variant of a paint colour for one opening: sun fading lifts and greys the
+ * colour (strongest on dark paint), plus a little value variation between repaints.
+ */
+export function weather(c, rng, amount = 1) {
+  const fade = rng.next() * 0.22 * amount, k = 0.92 + rng.next() * 0.14;
+  const l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const lift = fade * (1 - Math.min(1, l * 2.5)) * 0.12;
+  return c.map((x) => (x + (l - x) * fade * 0.6 + lift) * k);
+}
+
 /** Standard opening profile values (metres). */
 export const FR = {
   fw: 0.075,      // window casing width (in plane)
@@ -75,7 +103,7 @@ export class Kit {
     if (!al) v = this._batch(key);
     else {
       const tgt = this._batch(al.key), k = al.k;
-      v = !k ? tgt : { add: (t, m, r = 1, g = 1, b = 1, ex = null) => tgt.add(t, m, r * k[0], g * k[1], b * k[2], ex) };
+      v = !k ? tgt : { add: (t, m, r = 1, g = 1, b = 1, ex = null, du = 0, dv = 0) => tgt.add(t, m, r * k[0], g * k[1], b * k[2], ex, du, dv) };
     }
     this.views[key] = v;
     return v;

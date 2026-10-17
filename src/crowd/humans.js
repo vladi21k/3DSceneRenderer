@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { loadHumanAssets } from './humans/assets.js';
 import { Rig, bakeClips, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT } from './humans/anim.js';
-import { deriveAppearance, writeRow, ROW_TEXELS } from './humans/appearance.js';
+import { deriveAppearance, deriveToddler, writeRow, ROW_TEXELS } from './humans/appearance.js';
 import { makeHumanMaterials, hangProfile, BONE_DYN } from './humans/material.js';
 import { makeSkirtPart, makePhonePart, appendPart, partRanges, subGeometry } from './humans/parts.js';
 import { BlobShadows } from './humans/blobs.js';
@@ -12,6 +12,12 @@ import { Mobility } from './humans/mobility.js';
 // Contract (docs/ARCHITECTURE.md):
 //   alloc(count) -> first slot index; set(i, {x,y,z,heading,speed,phase,pose,look,appearance,visible});
 //   setVisible(i, false); strideLength(appearance, speed, pose); cycleLength(appearance); heightOf(appearance)
+//   holdWith (set() field): slot index of the person this one walks hand in hand with (a child
+//   with its parent), or of the stroller pusher whose stroller it holds on to; -1 / absent: none.
+//   Pass it every frame. The renderer picks the hands on the sides facing each other, meets them
+//   between the two (the adult's arm drops, the child's rises) and lets go when they drift apart.
+//   Strollers with a child (prop seed): a toddler figure sits in the seat (a baby lies in a pram),
+//   drawn from a pool of slots allocated here.
 //   Mobility (poses 3 stroller / 4 riding / 5 walking a bicycle, set() fields prop, propSeed, lean,
 //   steer): supportsPose(p); the props are drawn by humans/mobility.js with the kits in humans/props/;
 //   build(chunk) returns the chunk's parked bicycles.
@@ -28,7 +34,8 @@ import { Mobility } from './humans/mobility.js';
 // propstest=1 (humans/props/test.js); humans_dir=<dir> loads a trial asset build;
 // humans_dbg=1|2|3 shows baked occlusion / aux attributes / garment ease instead of shading.
 
-const BASES = ['male', 'female', 'child', 'kid'];
+const BASES = ['male', 'female', 'child', 'kid', 'toddler'];
+const TODDLER_POOL = 64;                  // slots for the children riding in strollers
 // figure height on screen (px) above which each LOD is used, by number of LODs in the asset
 const LOD_PX = { 4: [300, 84, 26], 5: [480, 200, 84, 26] };
 const SKIRT_GRID = { 4: [[48, 22], [20, 10], [10, 5], [8, 3]], 5: [[48, 22], [28, 14], [16, 8], [10, 5], [8, 3]] };
@@ -42,6 +49,12 @@ const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
 const _gait = { a: 0, b: -1, wa: 1, wb: 0, idle: 0, extra: 1, phone: 0 };
+const _hv = new THREE.Vector3(), _hw = new THREE.Vector3();
+const TAU = Math.PI * 2;
+const _hold = [0, 0, 0], _holdI = [0, 0, -1], _holdP = [0, 0, 0];
+
+/** Toddler seed from a stroller's prop seed. */
+function hashSeed(n) { n = Math.imul(n ^ 0x5f3759df, 0x2c1b3c6d); n ^= n >>> 15; return n >>> 0; }
 
 const humans = {
   name: 'humans',
@@ -131,6 +144,16 @@ const humans = {
     }
     this.blobs = new BlobShadows(app, this.capacity);
     this.group.add(this.blobs.mesh);
+    // children riding in strollers: a pool of slots for the toddler figures
+    this.compFirst = -1;
+    if (this.bases.toddler) {
+      this.compFirst = this.alloc(TODDLER_POOL);
+      for (let k = 0; k < TODDLER_POOL; k++) { const c = this.slots[this.compFirst + k]; c.comp = true; c.owner = -1; c.compKey = ''; }
+    }
+    this.babyQ = [];
+    this.babyN = 0;
+    this.tcache = new Map();
+    this.holdList = [];
     if (this.props) {
       try {
         this.mob = new Mobility(app, this, this.props);
@@ -170,6 +193,12 @@ const humans = {
     g.instanceCount = 0;
     const mesh = new THREE.Mesh(g, mat);
     mesh.name = `humans.${B.name}.lod${tag}`;
+    // hair coverage: alpha to coverage on MSAA targets, an ordered dither otherwise
+    mesh.onBeforeRender = (renderer) => {
+      const rt = renderer.getRenderTarget();
+      const msaa = rt ? rt.samples > 0 : !!(renderer.getContext().getContextAttributes() || {}).antialias;
+      if (B.uniforms) B.uniforms.uSeat.value.z = msaa ? 0 : 1;
+    };
     mesh.frustumCulled = true;        // bounds are refit to the instances every frame
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -212,6 +241,8 @@ const humans = {
     if (o.propSeed !== undefined) s.propSeed = o.propSeed | 0;
     s.leanIn = Number.isFinite(o.lean) ? o.lean : null;
     s.steerIn = Number.isFinite(o.steer) ? o.steer : null;
+    // hand in hand with slot holdWith (or holding on to its stroller)
+    s.holdWith = Number.isInteger(o.holdWith) && o.holdWith >= 0 && o.holdWith !== i ? o.holdWith : -1;
     s.visible = o.visible !== false;
   },
 
@@ -307,73 +338,48 @@ const humans = {
     if (mob) mob.begin(cam, app.renderer);
     _m.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     _frustum.setFromProjectionMatrix(_m);
-    const camPos = cam.position;
-    const pxPerM = (app.renderer.domElement.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360));
+    this._camPos = cam.position;
+    this._pxPerM = (app.renderer.domElement.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360));
     for (const B of Object.values(this.bases)) for (const d of B.draws) d.count = 0;
-    const bones = this.boneTex.image.data;
+    this._bones = this.boneTex.image.data;
     const look = this.lookTex;
-    const maxLod = this.nLod - 1;
-    const lodPx = this.lodPx;
     this.blobs.begin();
-    let lookDirty = false, n = 0;
+    this._lookDirty = false;
+    this._n = 0;
+    this.babyN = 0;
+    // who walks hand in hand with whom this frame (both sides' arms)
+    this._holdPrep();
     for (let i = 0; i < this.used; i++) {
       const s = this.slots[i];
-      if (!s.visible || s.appearance === null) continue;
+      if (s.comp || !s.visible || s.appearance === null) continue;
       if (!s.a) {
         s.a = this.appearanceOf(s.appearance);
-        writeRow(look.image.data, i, s.a);
-        s.bagHidden = false;
-        s.posePrev = -1;               // a new person in this slot: no cross-fade from the last one
-        if (!look.userData.fresh) look.addUpdateRange(i * ROW_TEXELS * 4, ROW_TEXELS * 4);
-        lookDirty = true;
+        this._newLook(i, s);
       }
       const a = s.a;
       // seated people put their bags down (bags would hover behind the chair); a shopping bag
-      // does not stay in a hand that holds a stroller or a bicycle
-      const hideBag = (s.pose === 2 || (s.pose >= 3 && a.carry)) && a.bagPart > 0;
+      // does not stay in a hand that holds a stroller, a bicycle or a child's hand
+      const hideBag = (s.pose === 2 || (s.pose >= 3 && a.carry) || (a.carry && s.hold && s.hold.side === 'R')) && a.bagPart > 0;
       if (hideBag !== s.bagHidden) {
         look.image.data[(i * ROW_TEXELS + 11) * 4 + 3] = (hideBag ? 0 : a.bagPart) + a.skirtPart * 256;
         s.bagHidden = hideBag;
         if (!look.userData.fresh) look.addUpdateRange((i * ROW_TEXELS + 11) * 4, 4);
-        lookDirty = true;
+        this._lookDirty = true;
       }
       const B = this.bases[a.body];
       const sc = a.height / B.info.H;
       // mobility props follow their figure (culled and LOD'd by their own instancers)
       if (mob && s.pose >= 3) {
         const st = mob.track(s, a, dt, this.time);
-        if (st && s.prop) mob.draw(s, st);
+        if (st && s.prop) {
+          mob.draw(s, st);
+          // a child riding in the stroller (its figure is placed after this loop)
+          if (st.prop === 1 && (st.look.flags & mob.babyFlag) && this.compFirst >= 0) this._queueBaby(i, s, st);
+        }
       } else if (s.mob) s.mob.valid = false;
-      _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
-      _sph.radius = 0.62 * a.height + 0.3;
-      if (!_frustum.intersectsSphere(_sph)) { s.lod = -1; continue; }
-      const px = (a.height / Math.max(0.5, _sph.center.distanceTo(camPos))) * pxPerM;
-      let lod = 0;
-      while (lod < lodPx.length && px <= lodPx[lod]) lod++;
-      lod = Math.min(lod, maxLod);
-      if (s.lod >= 0 && lod !== s.lod) {      // hysteresis against flicker at the thresholds
-        const edge = lodPx[Math.min(lod, s.lod)];
-        if (Math.abs(px - edge) < edge * 0.08) lod = s.lod;
-      }
-      s.lod = lod;
-      const row = n++;
-      this.rowSlot[row] = i;
-      this._pose(row, i, s, a, B, sc, bones);
-      const at = B.drawAt[lod];
-      const all = at.get(-1);
-      if (all) all.list[all.count++] = row;
-      else {
-        pushDraw(at.get(0), row);
-        if (a.hairPart) pushDraw(at.get(a.hairPart), row);
-        if (a.beardPart) pushDraw(at.get(a.beardPart), row);
-        if (a.hatPart) pushDraw(at.get(a.hatPart), row);
-        if (a.bagPart && !s.bagHidden) pushDraw(at.get(a.bagPart), row);
-        if (a.skirtPart) pushDraw(at.get(a.skirtPart), row);
-        if (a.glasses && this.parts.glasses) pushDraw(at.get(this.parts.glasses), row);
-        if (s.phoneOn) pushDraw(at.get(PHONE_ID), row);
-      }
-      if (lod === maxLod) this.blobs.add(s.x, s.y, s.z, a.height);
+      this._emit(i, s, a, B, sc, true);
     }
+    this._babies();
     for (const B of Object.values(this.bases)) {
       B.draws.forEach(({ mesh, list: L, count: cnt }) => {
         const g = mesh.geometry;
@@ -401,13 +407,211 @@ const humans = {
     this.blobs.end(app);
     if (mob) mob.end();
     // only the rows of this frame's figures are uploaded (see dataTexture)
+    const n = this._n;
     if (n > 0) {
       this.boneTex.userData.rows = n;
       this.boneTex.needsUpdate = true;
     }
-    if (lookDirty) look.needsUpdate = true;
+    if (this._lookDirty) look.needsUpdate = true;
     this.perf.figures = n;
     this.perf.ms = this.perf.ms * 0.95 + (performance.now() - t0) * 0.05;
+  },
+
+  /** A new person in slot i: write its look row, reset its pose history. */
+  _newLook(i, s) {
+    const look = this.lookTex;
+    writeRow(look.image.data, i, s.a);
+    s.bagHidden = false;
+    s.posePrev = -1;               // a new person in this slot: no cross-fade from the last one
+    if (!look.userData.fresh) look.addUpdateRange(i * ROW_TEXELS * 4, ROW_TEXELS * 4);
+    this._lookDirty = true;
+  },
+
+  /** Cull, pick the LOD, pose and queue figure i for drawing. */
+  _emit(i, s, a, B, sc, blob) {
+    _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
+    _sph.radius = 0.62 * a.height + 0.3;
+    if (!_frustum.intersectsSphere(_sph)) { s.lod = -1; return; }
+    const lodPx = this.lodPx, maxLod = this.nLod - 1;
+    const px = (a.height / Math.max(0.5, _sph.center.distanceTo(this._camPos))) * this._pxPerM;
+    let lod = 0;
+    while (lod < lodPx.length && px <= lodPx[lod]) lod++;
+    lod = Math.min(lod, maxLod);
+    if (s.lod >= 0 && lod !== s.lod) {      // hysteresis against flicker at the thresholds
+      const edge = lodPx[Math.min(lod, s.lod)];
+      if (Math.abs(px - edge) < edge * 0.08) lod = s.lod;
+    }
+    s.lod = lod;
+    const row = this._n++;
+    this.rowSlot[row] = i;
+    this._pose(row, i, s, a, B, sc, this._bones);
+    const at = B.drawAt[lod];
+    const all = at.get(-1);
+    if (all) all.list[all.count++] = row;
+    else {
+      pushDraw(at.get(0), row);
+      if (a.hairPart) pushDraw(at.get(a.hairPart), row);
+      if (a.beardPart) pushDraw(at.get(a.beardPart), row);
+      if (a.hatPart) pushDraw(at.get(a.hatPart), row);
+      if (a.bagPart && !s.bagHidden) pushDraw(at.get(a.bagPart), row);
+      if (a.skirtPart) pushDraw(at.get(a.skirtPart), row);
+      if (a.glasses && this.parts.glasses) pushDraw(at.get(this.parts.glasses), row);
+      if (s.phoneOn) pushDraw(at.get(PHONE_ID), row);
+    }
+    if (blob && lod === maxLod) this.blobs.add(s.x, s.y, s.z, a.height);
+  },
+
+  _queueBaby(i, s, st) {
+    let q = this.babyQ[this.babyN];
+    if (!q) q = this.babyQ[this.babyN] = { i: 0, s: null, st: null };
+    q.i = i; q.s = s; q.st = st;
+    this.babyN++;
+  },
+
+  /** Children riding in this frame's strollers: a toddler sits in the seat (a baby lies in a
+   *  pram's bassinet), drawn with the toddler body from the pool of slots. */
+  _babies() {
+    const first = this.compFirst;
+    if (first < 0) return;
+    const B = this.bases.toddler;
+    const kit = this.mob && this.mob.strollers;
+    for (let k = 0; k < TODDLER_POOL; k++) this.slots[first + k].used = false;
+    for (let q = 0; q < this.babyN; q++) {
+      const { i, s, st } = this.babyQ[q];
+      const seat = kit && kit.babySeat ? kit.babySeat(st.v) : null;
+      if (!seat) continue;
+      // keep the child this pusher had last frame
+      let ci = s.babySlot ?? -1;
+      if (ci < 0 || this.slots[ci].owner !== i || this.slots[ci].used) {
+        ci = -1;
+        for (let k = 0; k < TODDLER_POOL; k++) {
+          const c = this.slots[first + k];
+          if (!c.used && c.owner < 0) { ci = first + k; break; }
+        }
+        if (ci < 0) {
+          for (let k = 0; k < TODDLER_POOL; k++) {
+            const c = this.slots[first + k];
+            if (!c.used) { ci = first + k; break; }
+          }
+        }
+        if (ci < 0) continue;            // more strollers in view than seats in the pool
+        s.babySlot = ci;
+      }
+      const c = this.slots[ci];
+      c.used = true;
+      c.owner = i;
+      const key = `${s.propSeed | 0}:${seat.lie ? 1 : 0}`;
+      if (c.compKey !== key) {
+        c.compKey = key;
+        let a = this.tcache.get(key);
+        if (!a) {
+          if (this.tcache.size > 512) this.tcache.clear();
+          a = deriveToddler(hashSeed(s.propSeed | 0), this.parts, seat.lie);
+          a.seedT = ((s.propSeed >>> 0) % 997) / 997;
+          this.tcache.set(key, a);
+        }
+        c.a = a;
+        c.appearance = -1;
+        this._newLook(ci, c);
+        c.lod = -1;
+      }
+      // the seat in the world: prop origin + Ry(heading) Rx(pitch) seat (as mobility.draw places it)
+      const ch = Math.cos(s.heading), sh = Math.sin(s.heading);
+      const ox = s.x + ch * st.offX + sh * st.offZ, oz = s.z - sh * st.offX + ch * st.offZ;
+      const cp = Math.cos(st.pitch), sp = Math.sin(st.pitch);
+      const ly = cp * seat.y - sp * seat.z, lz = sp * seat.y + cp * seat.z;
+      c.x = ox + ch * seat.x + sh * lz;
+      c.z = oz - sh * seat.x + ch * lz;
+      c.y = s.y + ly - SEAT_HEIGHT;
+      c.heading = s.heading;
+      c.speed = 0; c.phase = 0; c.pose = 2; c.look = 0; c.visible = true;
+      c.prop = 0; c.holdWith = -1; c.hold = null;
+      this._emit(ci, c, c.a, B, c.a.height / B.info.H, false);
+    }
+    for (let k = 0; k < TODDLER_POOL; k++) {
+      const c = this.slots[first + k];
+      if (!c.used) { c.owner = -1; c.visible = false; }
+    }
+  },
+
+  /**
+   * Hand-in-hand links for this frame. A child (holdWith = adult's slot) and its adult each get
+   * the hand on the side facing the other; the hands meet between the two at a height both reach
+   * (the adult's arm hangs, the child's rises). Holding on to a stroller (holdWith = the pusher):
+   * the child's hand goes to the stroller's side frame. Links that drift apart let go.
+   */
+  _holdPrep() {
+    for (const i of this.holdList) { const s = this.slots[i]; if (s) s.hold = null; }
+    this.holdList.length = 0;
+    if (!this.mob) return;
+    for (let i = 0; i < this.used; i++) {
+      const s = this.slots[i];
+      if (s.comp || s.holdWith < 0 || !s.visible || s.appearance === null) continue;
+      const p = this.slots[s.holdWith];
+      if (!p || !p.visible || p.appearance === null || p.comp) continue;
+      if (s.pose > 1 || !(p.pose <= 1 || p.pose === 3)) continue;
+      const a = s.a || (s.a = this.appearanceOf(s.appearance)), pa = p.a || (p.a = this.appearanceOf(p.appearance));
+      const Bs = this.bases[a.body], Bp = this.bases[pa.body];
+      if (!Bs || !Bp) continue;
+      let dh = p.heading - s.heading;
+      dh = ((dh + Math.PI) % TAU + TAU) % TAU - Math.PI;
+      if (Math.abs(dh) > 0.7) continue;
+      const cs = Math.cos(s.heading), sn = Math.sin(s.heading);
+      const dx = p.x - s.x, dz = p.z - s.z;
+      const lat = dx * cs - dz * sn, fwd = -dx * sn - dz * cs;
+      if (p.pose === 3) {
+        // the stroller's side frame on the child's side, a little ahead of the handle
+        const st = p.mob;
+        if (!st || !st.valid || st.prop !== 1) continue;
+        const cp = Math.cos(p.heading), spn = Math.sin(p.heading);
+        const ox = p.x + cp * st.offX + spn * st.offZ, oz = p.z - spn * st.offX + cp * st.offZ;
+        const rx = (s.x - ox) * cp - (s.z - oz) * spn;          // the child across the stroller's frame
+        if (Math.abs(rx) < 0.25 || Math.abs(rx) > 1.0) continue;
+        const sx = Math.sign(rx) * 0.22, sz = -0.12;
+        const side = lat > 0 ? 'R' : 'L';
+        const sh = this._shoulderW(s, a, Bs, side, _hv);
+        const reach = this._reach(a, Bs);
+        const gx = ox + cp * sx + spn * sz, gz = oz - spn * sx + cp * sz;
+        const gy = Math.min(p.y + 0.86, Math.max(sh.y - 0.85 * reach, p.y + 0.62));
+        if (Math.hypot(gx - sh.x, gy - sh.y, gz - sh.z) > reach * 0.97) continue;
+        s.hold = { side, x: gx, y: gy, z: gz, adult: false };
+        this.holdList.push(i);
+        continue;
+      }
+      if (Math.abs(lat) < 0.22 || Math.abs(lat) > 0.95 || Math.abs(fwd) > 0.55) continue;
+      const side = lat > 0 ? 'R' : 'L';
+      const latP = -dx * Math.cos(p.heading) + dz * Math.sin(p.heading);
+      const sideP = latP > 0 ? 'R' : 'L';
+      // the phone hand stays on the phone
+      if ((pa.phoneWalk && sideP === 'R') || (a.phoneWalk && side === 'R')) continue;
+      const shS = this._shoulderW(s, a, Bs, side, _hv);
+      const shP = this._shoulderW(p, pa, Bp, sideP, _hw);
+      const rS = this._reach(a, Bs), rP = this._reach(pa, Bp);
+      // height: as low as the taller one's hanging arm reaches; the smaller one raises its arm
+      const tall = shP.y > shS.y;
+      const shT = tall ? shP : shS, shL = tall ? shS : shP, rT = tall ? rP : rS, rL = tall ? rS : rP;
+      const lowT = shT.y - 0.92 * rT;
+      if (lowT > shL.y + 0.06) continue;            // too small a child for this adult's hand
+      const gy = Math.max(lowT, shL.y - 0.8 * rL);
+      const gx = (shS.x + shP.x) * 0.5 - sn * 0.06, gz = (shS.z + shP.z) * 0.5 - cs * 0.06;
+      if (Math.hypot(gx - shL.x, gy - shL.y, gz - shL.z) > rL * 0.98 || Math.hypot(gx - shT.x, gy - shT.y, gz - shT.z) > rT * 0.98) continue;
+      s.hold = { side, x: gx, y: gy, z: gz, adult: !tall };
+      p.hold = { side: sideP, x: gx, y: gy, z: gz, adult: tall };
+      this.holdList.push(i, s.holdWith);
+    }
+  },
+
+  /** World position of slot s's shoulder joint on side `side`. */
+  _shoulderW(s, a, B, side, out) {
+    const j = B.rig.rest[side === 'R' ? BONE.armR : BONE.armL];
+    const sc = a.height / B.info.H;
+    const c = Math.cos(s.heading), sn = Math.sin(s.heading);
+    return out.set(s.x + (c * j.x + sn * j.z) * sc, s.y + j.y * sc, s.z + (-sn * j.x + c * j.z) * sc);
+  },
+
+  /** Shoulder-to-grip reach of a figure (m). */
+  _reach(a, B) {
+    return (B.rig.ua + B.rig.fa + 0.09 * (B.info.H / 1.76)) * (a.height / B.info.H);
   },
 
   /** Blend the figure's pose and write bone row `row` (model -> world) plus its state texels. */
@@ -526,6 +730,27 @@ const humans = {
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
     }
+    // the arms hang close to the body; heavier builds (and a woman's hips) hold them a little
+    // further out so the hands clear the hips and thighs
+    if (!mobP && s.pose <= 1 && a.build > 0.12 && !(a.idle === 2 && s.pose === 1)) {
+      const ang = (a.build - 0.12) * (a.body === 'female' ? 9 : 6) * Math.PI / 180;
+      for (const [side, bones] of ARM_SIDES) {
+        if (s.pose === 1 && (a.idle === 1 || a.idle === 3) && side === 1) continue;
+        rotBonesAxis(M, B.rig.rest, bones, bones[0], BONE.spine2, 0, 0, 1, side * ang);
+      }
+    }
+    // hand in hand: the near arm reaches the meeting point (the other one swings on)
+    if (s.hold && this.mob && s.pose <= 1) {
+      const h = s.hold, P = this.mob.poser(B);
+      const c = Math.cos(s.heading), sn = Math.sin(s.heading);
+      const dx = (h.x - s.x) / sc, dy = (h.y - s.y) / sc, dz = (h.z - s.z) / sc;
+      _hold[0] = c * dx - sn * dz; _hold[1] = dy; _hold[2] = sn * dx + c * dz;
+      const sg = h.side === 'R' ? 1 : -1;
+      // thumb forward; the adult's elbow hangs back and out, the child's points down and back
+      _holdI[0] = 0; _holdI[1] = h.adult ? -0.25 : 0.35; _holdI[2] = -1;
+      _holdP[0] = sg * (h.adult ? 0.55 : 0.35); _holdP[1] = -0.75; _holdP[2] = 0.45;
+      P.armOnto(M, h.side, _hold, _holdI, _holdP, -12 * Math.PI / 180, 0);
+    }
   },
 
   /** Submitted geometry for the main pass (draws, instances, triangles), for profiling. */
@@ -550,6 +775,7 @@ const humans = {
 function pushDraw(d, i) { if (d) d.list[d.count++] = i; }
 
 const PHONE_BONES = [BONE.armR, BONE.foreR, BONE.handR, BONE.neck, BONE.head];
+const ARM_SIDES = [[-1, [BONE.armL, BONE.foreL, BONE.handL]], [1, [BONE.armR, BONE.foreR, BONE.handR]]];
 const STOOP_BONES = [BONE.spine2, BONE.neck, BONE.head, BONE.clavL, BONE.armL, BONE.foreL, BONE.handL,
   BONE.clavR, BONE.armR, BONE.foreR, BONE.handR];
 const HEAD_BONES = [BONE.neck, BONE.head];
@@ -619,7 +845,8 @@ function newSlot() {
   return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,
     lod: -1, blendFrame: -10, blendBase: null, model: null, bagHidden: false,     // model: pose before the figure transform
     posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
-    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: null, steerIn: null, mob: null };
+    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: null, steerIn: null, mob: null,
+    holdWith: -1, hold: null, comp: false, babySlot: -1 };
 }
 
 function newRowAttr(n) {
@@ -672,10 +899,11 @@ function gaitBlend(B, a, speed, sc, idleVar = a.idle) {
   const out = _gait;
   const idle = CLIP.idle + idleVar;         // standing still in pose 0 is the same as pose 1
   out.a = CLIP.walk; out.b = -1; out.wa = 1; out.wb = 0; out.idle = 0; out.extra = 1;
-  if (a.walkOld || a.gait === 1) {
-    // frail and senior walkers: one clip of their own; faster walking only quickens the steps
-    // (stretching the stride without the clip would slide the planted foot)
-    const c = a.walkOld ? CLIP.walkOld : CLIP.walkSenior;
+  if (a.walkOld || a.gait === 1 || a.longSkirt) {
+    // frail and senior walkers, and women in ankle-length skirts (shorter steps, a low heel lift
+    // so the trailing leg does not kick into the hem): one clip of their own; faster walking only
+    // quickens the steps (stretching the stride without the clip would slide the planted foot)
+    const c = a.walkOld ? CLIP.walkOld : a.longSkirt ? CLIP.walkSkirt : CLIP.walkSenior;
     out.a = c;
     const w = smooth01((vb - 0.08) / 0.4);
     if (w < 1) { out.b = idle; out.wa = w; out.wb = 1 - w; out.idle = 1; }
@@ -723,6 +951,32 @@ function pitchBones(M, rest, bones, p, ang) {
       M[o + col] = R00 * x + R01 * y + R02 * z + (col === 3 ? px : 0);
       M[o + 4 + col] = R10 * x + R11 * y + R12 * z + (col === 3 ? py : 0);
       M[o + 8 + col] = R20 * x + R21 * y + R22 * z + (col === 3 ? pz : 0);
+    }
+  }
+}
+
+/** Rotate bones of M about an axis through pivot bone p's posed joint; the axis (ax, ay, az) is
+ *  given in bone `fb`'s posed frame (ang > 0: counter-clockwise about it). */
+function rotBonesAxis(M, rest, bones, p, fb, ax, ay, az, ang) {
+  const k = p * 12, r = rest[p], f = fb * 12;
+  const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
+  const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
+  const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
+  let x = M[f] * ax + M[f + 1] * ay + M[f + 2] * az, y = M[f + 4] * ax + M[f + 5] * ay + M[f + 6] * az, z = M[f + 8] * ax + M[f + 9] * ay + M[f + 10] * az;
+  const l = Math.hypot(x, y, z) || 1;
+  x /= l; y /= l; z /= l;
+  const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+  const R00 = t * x * x + c, R01 = t * x * y - s * z, R02 = t * x * z + s * y;
+  const R10 = t * x * y + s * z, R11 = t * y * y + c, R12 = t * y * z - s * x;
+  const R20 = t * x * z - s * y, R21 = t * y * z + s * x, R22 = t * z * z + c;
+  for (const b of bones) {
+    const o = b * 12;
+    for (let col = 0; col < 4; col++) {
+      let vx = M[o + col], vy = M[o + 4 + col], vz = M[o + 8 + col];
+      if (col === 3) { vx -= px; vy -= py; vz -= pz; }
+      M[o + col] = R00 * vx + R01 * vy + R02 * vz + (col === 3 ? px : 0);
+      M[o + 4 + col] = R10 * vx + R11 * vy + R12 * vz + (col === 3 ? py : 0);
+      M[o + 8 + col] = R20 * vx + R21 * vy + R22 * vz + (col === 3 ? pz : 0);
     }
   }
 }

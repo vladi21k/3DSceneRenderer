@@ -48,7 +48,7 @@ import { U } from '../../core/uniforms.js';
 // Vertex data: see treeGen.js (aVeg, aCrown, aCard; bark: aBark).
 
 const LIGHT_CAP = 8.0;
-const LAMP_CAP = 9.0;
+const LAMP_CAP = 14.0;
 const LAMP_TRANS = 0.3;
 
 const WIND_PARS = /* glsl */`
@@ -297,7 +297,14 @@ function patchLeaf(mat, params) {
         float vegE = dot( directLight.color, vec3( 0.2126, 0.7152, 0.0722 ) );
         float vegCapT = vegSkyE > 0.0 ? min( 1.0, uVegCap.x * vegSkyE / max( vegE, 1e-9 ) ) : 1.0;
         float vegCapD = isSun || vegSkyE <= 0.0 ? 1.0 : min( 1.0, uVegCap.y * vegSkyE / max( vegE, 1e-9 ) );
-        reflectedLight.directDiffuse += leafRL.directDiffuse * ( through * vegCapD * mix( 0.4, 1.0, sameSide ) );
+        vec3 vegDD = leafRL.directDiffuse;
+        if ( ! isSun ) {
+          // a warm lamp on green leaves reads olive / yellow-brown (its spectrum has little
+          // of the green the leaf reflects best), not saturated green
+          float vegDL = dot( vegDD, vec3( 0.2126, 0.7152, 0.0722 ) );
+          vegDD = mix( vegDD, vegDL * vec3( 1.3, 1.0, 0.55 ), 0.4 );
+        }
+        reflectedLight.directDiffuse += vegDD * ( through * vegCapD * mix( 0.3, 1.0, sameSide ) );
         // waxy but small and curled leaves: part of the specular; none on edge-on cards
         reflectedLight.directSpecular += leafRL.directSpecular * ( uLeafSpec * through * smoothstep( 0.0, 0.4, facing ) * vegCapT * vegCapD * sameSide );
         // transmission: only light arriving on the far side of the card (backlit leaves), a
@@ -444,7 +451,7 @@ export function createVegMaterials(app, atlas) {
     sky: { value: new THREE.Vector2(0.55, 0.15) }, // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.5 },       // share of the direct specular kept
     a2c: { value: 0 },
-    density: { value: 0.42 },   // crown extinction (1/m): exp(-0.42 * 2 m) ~ 0.43 through a young crown
+    density: { value: 0.8 },    // crown extinction (1/m): exp(-0.8 * 2 m) ~ 0.2 through a young crown
     shift: { value: 1 },        // shadow lookup moved out of the crown along the sun ray (0 = off, debug)
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
     // per-light caps in units of the sky's irradiance: transmission + specular of any

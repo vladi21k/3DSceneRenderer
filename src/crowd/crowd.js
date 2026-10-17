@@ -406,7 +406,7 @@ class CrowdSim {
     let body = false, prop = false;
     for (let x = ix - 2; x <= ix + 2; x++) {
       if (x < 0 || x >= st.nx) continue;
-      for (let y = iy - 1; y <= iy + 1; y++) {
+      for (let y = iy - 2; y <= iy + 2; y++) {
         if (y < 0 || y >= st.ny) continue;
         for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
           const b = agents[j];

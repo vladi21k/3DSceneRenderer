@@ -7,7 +7,7 @@
 import { glide, clamp, smoothstep } from '../dsp.js';
 import { TRACK_OFFSET } from '../../../core/config.js';
 
-const C = 343;             // m/s
+const C = 343;             // speed of sound, m/s
 const RANGE = 320;         // m beyond which a unit is silent
 const GEAR_HZ = 52;        // gear mesh whine per m/s
 

@@ -150,7 +150,7 @@ export function createStrollerKit(THREE_ = THREE, materials = null, rngSeed = 1)
     variants, byId, mats, material: mats.mat, depthMaterial: mats.depth,
     buildMs: 0,
 
-    /** {variant, colorA (fabric), colorB (frame), look}; opts.baby (default 85 %) shows a child. */
+    /** {variant, colorA (fabric), colorB (frame), look}; opts.baby (default 85 %): a child rides in it. */
     pick(seed, { baby = null, variant = null } = {}) {
       const r = new RNG(hash2(seed | 0, 0x57a1 ^ (rngSeed | 0)));
       let vi = variant !== null ? (typeof variant === 'string' ? byId[variant] : variant) : -1;
@@ -175,6 +175,13 @@ export function createStrollerKit(THREE_ = THREE, materials = null, rngSeed = 1)
 
     /** Pusher contact points (prop-local): handle grips L / R, handle centre, baby seat. */
     attachments(v, out = {}) { return strollerAttachments(variants[v], out); },
+
+    /** Where the child rides (prop-local): {x, y, z, lie}: a toddler's sit bones on the seat, or
+     *  (lie) the back of a baby's pelvis on a pram's mattress, head towards the hood. Null: none. */
+    babySeat(v) {
+      const b = variants[v] && variants[v].attach.baby;
+      return b ? (b._s || (b._s = { x: b.pos.x, y: b.pos.y, z: b.pos.z, lie: !!b.lie })) : null;
+    },
 
     matrix: propMatrix,
     createInstancer(opts = {}) { return new PropInstancer(kit, { name: 'strollers', ...opts }); },

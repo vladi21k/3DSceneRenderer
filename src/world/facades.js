@@ -31,13 +31,16 @@ import { createSpillMaterial } from './facades/spill.js';
 // side-street lots starting this far from the main street get the far-range infill
 const SIDE_FAR = 40;
 
-// albedo of the library bakes relative to the paint of the frame batch (fold-in colours)
-const PAINT_ALB = 0.95;
+// albedo of the library bakes relative to the paint of the frame batch (fold-in colours):
+// frames paint.frameDetail, shutters wood.shutterDetail, sign boards sign.panel
+const FRAME_ALB = 0.88, SHUTTER_ALB = 0.87, SIGN_ALB = 0.95;
+const k3 = (x) => [x, x, x];
 const FOLD = {
-  wood: [0.4 / PAINT_ALB, 0.26 / PAINT_ALB, 0.15 / PAINT_ALB],      // wood.door (tint over the wood bake)
-  paintwood: [0.88 / PAINT_ALB, 0.88 / PAINT_ALB, 0.88 / PAINT_ALB], // wood.shutter
-  stone: [0.61 / PAINT_ALB, 0.555 / PAINT_ALB, 0.44 / PAINT_ALB],   // stone.smooth (tint)
-  board: [PAINT_ALB / 0.88, PAINT_ALB / 0.88, PAINT_ALB / 0.88],    // sign.panel paint → painted timber
+  wood: [0.4 / FRAME_ALB, 0.26 / FRAME_ALB, 0.15 / FRAME_ALB],      // wood.door (tint over the wood bake)
+  paintwood: k3(SHUTTER_ALB / FRAME_ALB),                          // shutters
+  stone: [0.61 / FRAME_ALB, 0.555 / FRAME_ALB, 0.44 / FRAME_ALB],   // stone.smooth (tint)
+  board: k3(SIGN_ALB / SHUTTER_ALB),                               // sign.panel paint → painted timber
+  boardFar: k3(SIGN_ALB / FRAME_ALB),
 };
 
 const facades = {
@@ -61,8 +64,9 @@ const facades = {
     const spill = M.register('facades.spill', createSpillMaterial(M));
     this.mats = {
       // joinery sits inside the reveals, which already shade it: no shadow casting
-      frame: { material: vc('paint.frame'), castShadow: false },
-      shutter: { material: vc('wood.shutter'), thin: true, far: { key: 'frame', k: FOLD.paintwood } },
+      // close-range painted joinery bakes (brush marks, chips), offset per opening
+      frame: { material: vc('paint.frameDetail'), castShadow: false },
+      shutter: { material: vc('wood.shutterDetail'), thin: true, far: { key: 'frame', k: FOLD.paintwood } },
       door: { material: vc('wood.door'), castShadow: false, far: { key: 'frame', k: FOLD.wood } },
       glass: { material: glass, color: false, extra: GLASS_ATTRS, castShadow: false, far: { key: 'glassFar' } },
       glassFar: { material: glassFar, color: false, extra: GLASS_ATTRS, castShadow: false },
@@ -73,7 +77,7 @@ const facades = {
       awning: { material: awning, extra: { aStripe: 4, aFlex: 1 } },
       // sign boards that glow (light boxes); plain painted boards join the shutters' timber
       signBoard: { material: sign.board, extra: { aGlow: 1 }, thin: true },
-      board: { near: { key: 'shutter', k: FOLD.board }, far: { key: 'frame' } },
+      board: { near: { key: 'shutter', k: FOLD.board }, far: { key: 'frame', k: FOLD.boardFar } },
       signText: { material: sign.text, extra: { aGlow: 1 }, castShadow: false, renderOrder: 2 },
       lamp: { material: lamp, color: false, castShadow: false, receiveShadow: false, renderOrder: 3 },
       bulb: { material: bulb, color: false, castShadow: false },

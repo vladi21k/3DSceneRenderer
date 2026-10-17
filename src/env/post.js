@@ -5,7 +5,7 @@ import * as S from './postShaders.js';
 // clouds → scene prepass (clouds over the sky, AO, aerial perspective, heat shimmer,
 // dusk airlight, circle of confusion; NaN / Inf scrubbed and the range clamped) →
 // depth-of-field gather → camera motion blur → bloom pyramid → metered exposure →
-// AgX tone map, grade, lens.
+// lens, in-camera sharpening, white balance, camera tone curve (AgX colour), grain.
 // Contract in docs/ARCHITECTURE.md: render(dt, app), setSize(w, h).
 
 const QUALITY = {
@@ -15,13 +15,17 @@ const QUALITY = {
 };
 
 // Depth of field, for a 1"-type sensor (a typical cab-ride camcorder: deep focus at
-// these focal lengths). Daylight is shot stopped down (f/8, sharp front to back); the
-// lens opens up as the light fades. Focus sits well down the street while riding and
-// pulls in when the tram stands at a stop (people on the platform), and in daylight the
-// blur of anything nearer is capped at a soft couple of pixels.
+// these focal lengths). Daylight is shot stopped down (f/8) and focused near the
+// hyperfocal distance, sharp front to back; the lens opens up and the focus moves down
+// the street as the light fades. Focus pulls in when the tram stands at a stop (people
+// on the platform), and in daylight the blur of anything nearer is capped at a soft
+// couple of pixels.
 const F_DAY = 8, F_DUSK = 2.8;
 const SENSOR_H_MM = 8.8;
-const FOCUS_RIDE = 45, FOCUS_STOP = 22;   // focus distance (m) at speed / standing
+const FOCUS_RIDE = [16, 45], FOCUS_STOP = [13, 22];   // focus distance (m) at speed / standing: day, dusk
+// circle of confusion a 1080p camcorder still renders sharp (px): by day, focused near
+// the hyperfocal distance, everything from ~7 m to the horizon stays crisp
+const COC_TOL = [0.5, 0.15];
 const COC_MAX = [2.5, 8];                  // largest circle of confusion (px): day, dusk
 
 // Camera motion blur: at most this many pixels of streak (1080p), and none below
@@ -134,7 +138,7 @@ const post = {
     this.size = new THREE.Vector2();
     this.firstFrame = true;
     this.lumPing = 0;
-    this.focus = FOCUS_RIDE;
+    this.focus = FOCUS_RIDE[0];
     const env = app.systems.env;
     const air = env?.lights?.airlight;
     const nLamps = air ? air.lampPos.length : q.lamps;
@@ -165,7 +169,7 @@ const post = {
       uHazePlane: { value: env?.haze ? env.haze.plane : new THREE.Vector4(0, 0, 0, -1) },
       uHazeGap: { value: 0 }, uHazeSun: { value: 1.0 },
       uShimmer: { value: 0 }, uResolution: { value: new THREE.Vector2(1, 1) },
-      uDofK: { value: 0 }, uFocus: { value: FOCUS_RIDE }, uCocMax: { value: COC_MAX[0] },
+      uDofK: { value: 0 }, uFocus: { value: FOCUS_RIDE[0] }, uCocMax: { value: COC_MAX[0] }, uCocTol: { value: COC_TOL[0] },
       uNightAir: { value: 0 }, uClampHDR: { value: HDR_CLAMP },
       uLampPos: { value: air ? air.lampPos : Array.from({ length: nLamps }, () => new THREE.Vector3()) },
       uLampI: { value: air ? air.lampI : new Float32Array(nLamps) },
@@ -388,7 +392,9 @@ const post = {
     // focus pulls in as the tram slows for a stop and back out as it leaves (~1.5 s)
     const tr = this.app.train;
     const v = tr && !tr.disabled ? Math.abs(tr.speed || 0) : 10;
-    const want = THREE.MathUtils.lerp(FOCUS_STOP, FOCUS_RIDE, ss(v, 1, 8));
+    const dusk = ss(t, 0.5, 0.95);
+    const lerp = THREE.MathUtils.lerp;
+    const want = lerp(lerp(FOCUS_STOP[0], FOCUS_STOP[1], dusk), lerp(FOCUS_RIDE[0], FOCUS_RIDE[1], dusk), ss(v, 1, 8));
     this.focus += (want - this.focus) * (this.firstFrame ? 1 : 1 - Math.exp(-rdt / 1.5));
     const fovR = THREE.MathUtils.degToRad(camera.fov);
     const fmm = (SENSOR_H_MM / 2) / Math.tan(fovR / 2), fm = fmm / 1000;
@@ -396,6 +402,7 @@ const post = {
     pu.uDofK.value = (fmm / fNum) * fm / Math.max(this.focus - fm, 0.1) * (this.size.y / SENSOR_H_MM);
     pu.uFocus.value = this.focus;
     pu.uCocMax.value = THREE.MathUtils.lerp(COC_MAX[0], COC_MAX[1], ss(t, 0.55, 0.95));
+    pu.uCocTol.value = lerp(COC_TOL[0], COC_TOL[1], dusk);
   },
 
   /** Project the sun into the frame and measure its visible share (1x1 pass). */

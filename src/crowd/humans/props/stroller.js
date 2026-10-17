@@ -1,16 +1,17 @@
 import * as THREE from 'three';
-import { Builder, PIECE, CH, V, roundRect, M4, alongY, lin, smooth } from './geo.js';
+import { Builder, PIECE, CH, V, roundRect, M4, alongY, smooth } from './geo.js';
 import { spokeUv } from './shading.js';
 
 // Strollers at true scale: modern 4-wheel pushchair (swivel front twin casters, canopy,
 // under-seat basket), 3-wheel jogger (air tyres, spoked wheels), classic pram with a deep
-// bassinet and folding hood, and a light umbrella stroller (J handles, sling seat), each with
-// an optional child (seated toddler, or a baby lying in the pram).
+// bassinet and folding hood, and a light umbrella stroller (J handles, sling seat). The child
+// riding in it is a figure of its own (humans.js draws a toddler body seated in the seat, or a
+// baby lying in the pram, at babySeat()); the pram's blanket shows with the BABY flag.
 //
 // Prop-local frame: metres, origin on the ground directly below the middle of the handle,
 // -Z forward (the stroller runs ahead of the pusher), +X right. Animated pieces: rear wheels
 // spin (anim.x), front wheels spin (anim.y) and swivel on their casters (anim.w), the child
-// shows with the BABY flag (hat / hair by the look word, see shading.js).
+// shows with the BABY flag (the pram's blanket; see shading.js).
 
 const M = {
   frameB: { col: [1, 1, 1], rough: 0.4, metal: 0, ch: CH.PAINT_B, w: 0.4 },
@@ -30,10 +31,7 @@ const M = {
   net: { col: [0.025, 0.025, 0.026], rough: 0.8, metal: 0, ch: CH.MESH, w: 0.3 },
   red: { col: [0.42, 0.03, 0.025], rough: 0.4, metal: 0, ch: CH.PLAIN, w: 0 },
   spokeCone: { col: [0.7, 0.7, 0.72], rough: 0.25, metal: 1, ch: CH.SPOKES, w: 0 },
-  skin: { col: [1, 1, 1], rough: 0.55, metal: 0, ch: CH.SKIN, w: 0 },
-  cloth: { col: [1, 1, 1], rough: 0.88, metal: 0, ch: CH.CLOTH, w: 0 },
-  hair: { col: lin('#3b2a1c'), rough: 0.6, metal: 0, ch: CH.PLAIN, w: 0 },
-  shoe: { col: [0.05, 0.05, 0.055], rough: 0.6, metal: 0, ch: CH.PLAIN, w: 0 },
+  cloth: { col: [1, 1, 1], rough: 0.88, metal: 0, ch: CH.CLOTH, w: 0 },        // the pram's blanket (baby palette)
 };
 
 const FABRICS = ['#1a1b1d', '#2c2e31', '#55595e', '#8d9196', '#23304a', '#3d4a3a', '#b7ab93', '#d6cfbf', '#5b2630', '#1f4f55', '#46638a', '#c7a1a3', '#b8913d', '#6b5a4a'];
@@ -248,70 +246,33 @@ function seatTub(ctx, path, w, mat = M.fabricDark) {
   b.with({ ...mat, aoFn: (x, y, z, nx, ny) => 0.75 + 0.25 * Math.max(0, ny) }, () => b.loft(rows, { capStart: c0, capEnd: c1 }));
 }
 
-/** Seated toddler: hips at p (seat surface), facing -Z, back reclined by `recline` (rad). */
-function toddler(ctx, p, recline = 0.25, lying = false) {
+/**
+ * The blanket over a baby lying in a pram (shown with the BABY flag): a soft quilted cover
+ * tucked in round the bassinet from the foot end up to the baby's chest, its top edge folded
+ * back, rising over the bent knees. The baby itself is a figure (humans.js).
+ */
+function babyBlanket(ctx, y0, zHead, zFoot, halfW) {
   const { b, lod } = ctx;
-  const piv = [p.x, p.y, p.z];
-  const seg = lod === 0 ? 14 : lod === 1 ? 9 : 6;
-  const ring = lod === 0 ? 9 : lod === 1 ? 6 : 4;
-  // under a canopy most of the sky is hidden: the child gets little ambient light
-  b.with({ piece: PIECE.BABY, piv, ao: lying ? 0.8 : 0.6 }, () => {
-    if (lying) {
-      // baby lying under a blanket in the bassinet, head towards the hood (+Z)
-      b.with(M.skin, () => b.ellipsoid(V(p.x, p.y + 0.05, p.z + 0.2), 0.058, 0.055, 0.064, seg, ring));
-      b.with({ piece: PIECE.BABY_HAT, piv }, () => b.with(M.cloth, () => b.ellipsoid(V(p.x, p.y + 0.07, p.z + 0.225), 0.062, 0.05, 0.058, seg, ring)));
-      b.with(M.cloth, () => b.ellipsoid(V(p.x, p.y + 0.03, p.z - 0.05), 0.15, 0.06, 0.22, seg, ring));
-      return;
+  const nA = lod === 2 ? 5 : 12, nX = lod === 2 ? 5 : 12;
+  const rows = [];
+  for (let i = 0; i <= nA; i++) {
+    const t = i / nA;                      // 0 at the folded top edge, 1 at the foot end
+    const z = zHead + (zFoot - zHead) * t;
+    const knees = 0.055 * Math.exp(-(((t - 0.42) / 0.2) ** 2));   // over the bent knees
+    const chest = 0.03 * Math.exp(-(((t - 0.08) / 0.12) ** 2));
+    const row = [];
+    for (let j = 0; j <= nX; j++) {
+      const u = j / nX, x = halfW * (1 - 2 * u);
+      const e = Math.max(0, 1 - Math.pow(Math.abs(x) / halfW, 2.4));
+      const fold = 0.006 * Math.sin(x * 60 + t * 9) * e;
+      row.push(V(x, y0 + (0.035 + knees + chest) * Math.pow(e, 0.6) + fold - 0.012 * (1 - e), z));
     }
-    const cr = Math.cos(recline), sr = Math.sin(recline);
-    const up = V(0, cr, sr);        // back direction (leaning back towards +Z)
-    const chest = p.clone().addScaledVector(up, 0.17);
-    const neck = p.clone().addScaledVector(up, 0.27);
-    const head = p.clone().addScaledVector(up, 0.36).add(V(0, 0, -0.012));
-    b.with(M.cloth, () => {
-      // torso and hips (romper)
-      b.ellipsoid(chest, 0.085, 0.12, 0.068, seg, ring);
-      b.ellipsoid(p.clone().addScaledVector(up, 0.04).add(V(0, 0, -0.01)), 0.09, 0.07, 0.075, seg, ring);
-      // thighs along the seat, shins over the edge
-      for (const sx of [-1, 1]) {
-        const hip = p.clone().add(V(sx * 0.045, 0.02, -0.02));
-        const knee = hip.clone().add(V(sx * 0.012, 0.01, -0.17));
-        const ankle = knee.clone().add(V(0, -0.15, -0.03));
-        b.tube([hip, knee], (t) => 0.042 - 0.01 * t, ctx.Q.tube(0.04) >> 1 || 4, { n: 2, caps: ['round', 'round'] });
-        b.tube([knee, ankle], (t) => 0.032 - 0.008 * t, ctx.Q.tube(0.03) >> 1 || 4, { n: 2, caps: ['round', null] });
-        b.with(M.shoe, () => b.ellipsoid(ankle.clone().add(V(0, -0.02, -0.025)), 0.03, 0.026, 0.05, seg >> 1, ring >> 1 || 3));
-        // arms: shoulders down to the lap
-        const sh = chest.clone().addScaledVector(up, 0.07).add(V(sx * 0.085, 0, 0));
-        const el = sh.clone().add(V(sx * 0.02, -0.12, -0.02));
-        const wr = el.clone().add(V(-sx * 0.03, 0.0, -0.11));
-        b.tube([sh, el], 0.026, ctx.Q.tube(0.026) >> 1 || 4, { n: 2, caps: ['round', 'round'] });
-        b.tube([el, wr], 0.022, ctx.Q.tube(0.022) >> 1 || 4, { n: 2, caps: [null, null] });
-        b.with(M.skin, () => b.ellipsoid(wr.clone().add(V(0, 0, -0.025)), 0.022, 0.018, 0.03, seg >> 1, ring >> 1 || 3));
-      }
-    });
-    b.with(M.skin, () => {
-      b.tube([neck.clone().addScaledVector(up, -0.03), neck.clone().addScaledVector(up, 0.03)], 0.032, 6, { n: 1 });
-      b.ellipsoid(head, 0.068, 0.076, 0.074, seg, ring);
-      if (lod < 2) {
-        // ears, full cheeks and a small nose (a toddler's face is round and low on the head)
-        for (const sx of [-1, 1]) {
-          b.ellipsoid(head.clone().add(V(sx * 0.066, -0.005, 0.005)), 0.01, 0.018, 0.012, 6, 4);
-          b.ellipsoid(head.clone().add(V(sx * 0.027, -0.03, -0.036)), 0.029, 0.026, 0.028, 8, 6);
-        }
-        b.ellipsoid(head.clone().add(V(0, -0.014, -0.071)), 0.011, 0.009, 0.01, 6, 4);
-      }
-    });
-    if (lod < 2) {
-      // eyes (dark, glossy) under the brow
-      for (const sx of [-1, 1]) b.with({ col: [0.02, 0.014, 0.01], rough: 0.15, metal: 0, ch: CH.PLAIN, w: 0 }, () => b.ellipsoid(head.clone().add(V(sx * 0.024, 0.004, -0.066)), 0.008, 0.0055, 0.004, 6, 4));
-    }
-    // hair (no hat) or a soft sun hat
-    b.with({ piece: PIECE.BABY_HAIR, piv }, () => b.with(M.hair, () => b.ellipsoid(head.clone().add(V(0, 0.016, 0.01)), 0.07, 0.068, 0.072, seg, ring)));
-    b.with({ piece: PIECE.BABY_HAT, piv }, () => b.with(M.cloth, () => {
-      b.ellipsoid(head.clone().add(V(0, 0.024, 0.006)), 0.074, 0.066, 0.078, seg, ring);
-      b.revolveY(head.clone().add(V(0, 0.012, 0.006)), [[0.115, -0.022], [0.09, -0.004], [0.07, 0.004]], seg);
-      b.revolveY(head.clone().add(V(0, 0.0115, 0.006)), [[0.07, 0.0], [0.09, -0.008], [0.115, -0.026]], seg);
-    }));
+    rows.push(row);
+  }
+  b.with({ piece: PIECE.BABY, piv: [0, y0, (zHead + zFoot) / 2] }, () => {
+    b.with({ ...M.cloth, aoFn: (x, y, z, nx, ny) => 0.7 + 0.3 * Math.max(0, ny) }, () => b.surface(rows, { out: () => V(0, 1, 0), twoSided: true }));
+    // the folded-back top edge
+    b.with(M.cloth, () => b.tube(rows[0].map((p) => p.clone().add(V(0, 0.004, 0.006))), 0.009, 6, { stepRad: 0.3, maxLen: 0.05 }));
   });
 }
 
@@ -381,10 +342,11 @@ function pushchair(ctx, jog = false) {
     panel(p(x1, y0, z0), p(x0, y0, z0), p(x0, y1, z0), p(x1, y1, z0));
     b.with(M.plastic, () => b.tube([p(x0, y1, z0), p(x1, y1, z0), p(x1, y1, z1), p(x0, y1, z1), p(x0, y1, z0)], 0.005, 4, { n: 4 }));
   }
-  toddler(ctx, V(0, sy + 0.01, -0.33), 0.32);
   return {
     grips: [V(-hw + 0.06, H + 0.004, 0), V(hw - 0.06, H + 0.004, 0)], rearRadius: rr, frontRadius: fr,
     length: -(zf - fr), seat: V(0, sy, -0.33),
+    // the child's sit bones on the padded seat, its back against the backrest
+    baby: { pos: V(0, sy - 0.012, -0.265), lie: false },
   };
 }
 
@@ -450,8 +412,10 @@ function pram(ctx) {
     }
     b.surface(rows, { out: () => V(0, 1, 0), twoSided: false });
   });
-  toddler(ctx, V(0, 0.7, -0.42), 0, true);
-  return { grips: [V(-0.17, H + 0.006, 0), V(0.17, H + 0.006, 0)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.72, -0.3) };
+  babyBlanket(ctx, 0.715, -0.34, -0.82, 0.165);
+  // the baby lies on the mattress, the back of its pelvis at y ~0.70, head towards the hood
+  return { grips: [V(-0.17, H + 0.006, 0), V(0.17, H + 0.006, 0)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.72, -0.3),
+    baby: { pos: V(0, 0.70, -0.46), lie: true } };
 }
 
 function umbrella(ctx) {
@@ -491,8 +455,8 @@ function umbrella(ctx) {
   }
   b.with(M.fabric, () => b.surface(rows, { twoSided: true }));
   canopy(ctx, 0.84, -0.2, 0.2, 0.22, -0.95, 1.1, 2);
-  toddler(ctx, V(0, 0.45, -0.33), 0.38);
-  return { grips: [V(-xw, H - 0.005, 0.03), V(xw, H - 0.005, 0.03)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.45, -0.33) };
+  return { grips: [V(-xw, H - 0.005, 0.03), V(xw, H - 0.005, 0.03)], rearRadius: r, frontRadius: r, length: -(zf - r), seat: V(0, 0.45, -0.33),
+    baby: { pos: V(0, 0.425, -0.30), lie: false } };
 }
 
 const BUILD = { pushchair: (c) => pushchair(c, false), jogger: (c) => pushchair(c, true), pram, umbrella };
@@ -517,7 +481,7 @@ export function makeStrollerVariant(spec, { lod0 = false } = {}) {
   const rec = {
     spec, id: spec.id, label: spec.label, lods,
     ensureLod0() { if (!lods[0]) lods[0] = buildLod(spec, 0).g; return lods[0]; },
-    attach: { gripL: info.grips[0], gripR: info.grips[1], seat: info.seat },
+    attach: { gripL: info.grips[0], gripR: info.grips[1], seat: info.seat, baby: info.baby || null },
     dims: {
       handleHeight: H, length: info.length + 0.02, width: 0.62, rearRadius: info.rearRadius, frontRadius: info.frontRadius,
       pushOffset: 0.4,     // pusher's root (between the feet) this far behind the handle (+Z)

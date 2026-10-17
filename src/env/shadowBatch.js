@@ -178,7 +178,7 @@ export class ShadowBatcher {
         if (performance.now() - t0 > this.budgetMs) return;
       }
       if (!part.done) {
-        this._split(part, job.rec);
+        if (!this._split(part, job.rec, t0)) return;
         part.done = true;
         if (performance.now() - t0 > this.budgetMs) { job.p++; return; }
       }
@@ -186,79 +186,6 @@ export class ShadowBatcher {
     }
     this.job = null;
     this._activate(job);
-  }
-
-  /**
-   * Sort a merged part's triangles into cells along the street (near cascades) and pick
-   * the triangles large enough for the far cascades. Both index the same vertices.
-   */
-  _split(part, rec) {
-    const pos = part.pos, idx = part.index, nTri = part.iOff / 3;
-    const smp = this.app.route.sample(rec.s);
-    let tx = smp.tan.x, tz = smp.tan.z;
-    const tl = Math.hypot(tx, tz) || 1;
-    tx /= tl; tz /= tl;
-    const ox = smp.pos.x, oz = smp.pos.z;
-    const u = new Float32Array(nTri);
-    let umin = Infinity, umax = -Infinity;
-    const far = part.thin ? null : new idx.constructor(idx.length);
-    let nFar = 0;
-    const m2 = FAR_MIN_EDGE * FAR_MIN_EDGE;
-    for (let t = 0; t < nTri; t++) {
-      const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
-      const v = ((pos[a] + pos[b] + pos[c]) / 3 - ox) * tx + ((pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3 - oz) * tz;
-      u[t] = v;
-      if (v < umin) umin = v;
-      if (v > umax && v < Infinity) umax = v;
-      if (far) {
-        const e1 = (pos[b] - pos[a]) ** 2 + (pos[b + 1] - pos[a + 1]) ** 2 + (pos[b + 2] - pos[a + 2]) ** 2;
-        const e2 = (pos[c] - pos[a]) ** 2 + (pos[c + 1] - pos[a + 1]) ** 2 + (pos[c + 2] - pos[a + 2]) ** 2;
-        const e3 = (pos[c] - pos[b]) ** 2 + (pos[c + 1] - pos[b + 1]) ** 2 + (pos[c + 2] - pos[b + 2]) ** 2;
-        if (e1 >= m2 || e2 >= m2 || e3 >= m2) { far[nFar++] = idx[t * 3]; far[nFar++] = idx[t * 3 + 1]; far[nFar++] = idx[t * 3 + 2]; }
-      }
-    }
-    // (a source with non-finite vertices leaves the range degenerate: one cell)
-    const span = umax - umin;
-    const n = span > 0 && span < Infinity ? Math.max(1, Math.min(MAX_CELLS, Math.ceil(span / CELL_LEN))) : 1;
-    const len = Math.max((umax - umin) / n, 1e-3);
-    const cell = new Uint8Array(nTri), count = new Uint32Array(n);
-    for (let t = 0; t < nTri; t++) {
-      const k = Math.min(n - 1, Math.max(0, Math.floor((u[t] - umin) / len))) || 0;
-      cell[t] = k; count[k]++;
-    }
-    const start = new Uint32Array(n);
-    for (let k = 1; k < n; k++) start[k] = start[k - 1] + count[k - 1];
-    const near = new idx.constructor(nTri * 3), w = Uint32Array.from(start);
-    const box = Array.from({ length: n }, () => [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
-    for (let t = 0; t < nTri; t++) {
-      const k = cell[t], o = w[k]++ * 3, bx = box[k];
-      for (let j = 0; j < 3; j++) {
-        const vi = idx[t * 3 + j], p = vi * 3;
-        near[o + j] = vi;
-        if (pos[p] < bx[0]) bx[0] = pos[p]; if (pos[p] > bx[3]) bx[3] = pos[p];
-        if (pos[p + 1] < bx[1]) bx[1] = pos[p + 1]; if (pos[p + 1] > bx[4]) bx[4] = pos[p + 1];
-        if (pos[p + 2] < bx[2]) bx[2] = pos[p + 2]; if (pos[p + 2] > bx[5]) bx[5] = pos[p + 2];
-      }
-    }
-    part.cells = [];
-    for (let k = 0; k < n; k++) {
-      if (!count[k]) continue;
-      const bx = box[k], sphere = new THREE.Sphere();
-      sphere.center.set((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2);
-      sphere.radius = 0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]);
-      part.cells.push({ start: start[k] * 3, count: count[k] * 3, sphere });
-    }
-    part.near = near;
-    part.far = far && nFar ? far.slice(0, nFar) : null;
-    if (part.far) {
-      const bx = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-      for (let i = 0; i < nFar; i++) {
-        const p = part.far[i] * 3;
-        for (let j = 0; j < 3; j++) { const v = pos[p + j]; if (v < bx[j]) bx[j] = v; if (v > bx[j + 3]) bx[j + 3] = v; }
-      }
-      part.farSphere = new THREE.Sphere(new THREE.Vector3((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2),
-        0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]));
-    }
   }
 
   _append(part, o) {
@@ -294,6 +221,114 @@ export class ShadowBatcher {
     part.vOff += n;
     // what the proxy assumes about this source (checked every frame while active)
     return { o, material: o.material, geometry: g, version: P.version, m: Float64Array.from(e) };
+  }
+
+  /**
+   * Sort a merged part's triangles into cells along the street (near cascades) and pick
+   * the triangles large enough for the far cascades. Both index the same vertices.
+   * Resumable: works in slices and returns false when the frame budget runs out.
+   */
+  _split(part, rec, t0) {
+    const pos = part.pos, idx = part.index, nTri = part.iOff / 3;
+    let st = part.split;
+    if (!st) {
+      const smp = this.app.route.sample(rec.s);
+      const tl = Math.hypot(smp.tan.x, smp.tan.z) || 1;
+      st = part.split = {
+        stage: 0, t: 0, tx: smp.tan.x / tl, tz: smp.tan.z / tl, ox: smp.pos.x, oz: smp.pos.z,
+        u: new Float32Array(nTri), umin: Infinity, umax: -Infinity,
+        far: part.thin ? null : new idx.constructor(idx.length), nFar: 0,
+        farBox: [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity],
+      };
+    }
+    const over = () => performance.now() - t0 > this.budgetMs;
+    const SLICE = 2048;
+    const grow = (bx, p) => {
+      if (pos[p] < bx[0]) bx[0] = pos[p]; if (pos[p] > bx[3]) bx[3] = pos[p];
+      if (pos[p + 1] < bx[1]) bx[1] = pos[p + 1]; if (pos[p + 1] > bx[4]) bx[4] = pos[p + 1];
+      if (pos[p + 2] < bx[2]) bx[2] = pos[p + 2]; if (pos[p + 2] > bx[5]) bx[5] = pos[p + 2];
+    };
+    // 1. position along the street; triangles big enough for the far cascades
+    if (st.stage === 0) {
+      const { u, far, tx, tz, ox, oz } = st, m2 = FAR_MIN_EDGE * FAR_MIN_EDGE;
+      while (st.t < nTri) {
+        const end = Math.min(nTri, st.t + SLICE);
+        for (let t = st.t; t < end; t++) {
+          const a = idx[t * 3] * 3, b = idx[t * 3 + 1] * 3, c = idx[t * 3 + 2] * 3;
+          const v = ((pos[a] + pos[b] + pos[c]) / 3 - ox) * tx + ((pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3 - oz) * tz;
+          u[t] = v;
+          if (v < st.umin) st.umin = v;
+          if (v > st.umax && v < Infinity) st.umax = v;
+          if (!far) continue;
+          const e1 = (pos[b] - pos[a]) ** 2 + (pos[b + 1] - pos[a + 1]) ** 2 + (pos[b + 2] - pos[a + 2]) ** 2;
+          const e2 = (pos[c] - pos[a]) ** 2 + (pos[c + 1] - pos[a + 1]) ** 2 + (pos[c + 2] - pos[a + 2]) ** 2;
+          const e3 = (pos[c] - pos[b]) ** 2 + (pos[c + 1] - pos[b + 1]) ** 2 + (pos[c + 2] - pos[b + 2]) ** 2;
+          if (e1 >= m2 || e2 >= m2 || e3 >= m2) {
+            far[st.nFar++] = idx[t * 3]; far[st.nFar++] = idx[t * 3 + 1]; far[st.nFar++] = idx[t * 3 + 2];
+            grow(st.farBox, a); grow(st.farBox, b); grow(st.farBox, c);
+          }
+        }
+        st.t = end;
+        if (st.t < nTri && over()) return false;
+      }
+      // (a source with non-finite vertices leaves the range degenerate: one cell)
+      const span = st.umax - st.umin;
+      const n = span > 0 && span < Infinity ? Math.max(1, Math.min(MAX_CELLS, Math.ceil(span / CELL_LEN))) : 1;
+      st.n = n;
+      st.len = Math.max(span / n, 1e-3) || 1;
+      st.cell = new Uint8Array(nTri);
+      st.count = new Uint32Array(n);
+      st.stage = 1; st.t = 0;
+      if (over()) return false;
+    }
+    // 2. cell of each triangle
+    if (st.stage === 1) {
+      const { u, cell, count, n, len, umin } = st;
+      while (st.t < nTri) {
+        const end = Math.min(nTri, st.t + SLICE * 4);
+        for (let t = st.t; t < end; t++) {
+          const k = Math.min(n - 1, Math.max(0, Math.floor((u[t] - umin) / len))) || 0;
+          cell[t] = k; count[k]++;
+        }
+        st.t = end;
+        if (st.t < nTri && over()) return false;
+      }
+      st.start = new Uint32Array(st.n);
+      for (let k = 1; k < st.n; k++) st.start[k] = st.start[k - 1] + st.count[k - 1];
+      st.w = Uint32Array.from(st.start);
+      st.near = new idx.constructor(nTri * 3);
+      st.box = Array.from({ length: st.n }, () => [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+      st.stage = 2; st.t = 0;
+      if (over()) return false;
+    }
+    // 3. triangles regrouped by cell, cell bounds
+    if (st.stage === 2) {
+      const { cell, w, near, box } = st;
+      while (st.t < nTri) {
+        const end = Math.min(nTri, st.t + SLICE);
+        for (let t = st.t; t < end; t++) {
+          const k = cell[t], o = w[k]++ * 3, bx = box[k];
+          for (let j = 0; j < 3; j++) {
+            const vi = idx[t * 3 + j];
+            near[o + j] = vi;
+            grow(bx, vi * 3);
+          }
+        }
+        st.t = end;
+        if (st.t < nTri && over()) return false;
+      }
+    }
+    const sphereOf = (bx) => new THREE.Sphere(new THREE.Vector3((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2),
+      0.5 * Math.hypot(bx[3] - bx[0], bx[4] - bx[1], bx[5] - bx[2]));
+    part.cells = [];
+    for (let k = 0; k < st.n; k++) {
+      if (st.count[k]) part.cells.push({ start: st.start[k] * 3, count: st.count[k] * 3, sphere: sphereOf(st.box[k]) });
+    }
+    part.near = st.near;
+    part.far = st.far && st.nFar ? st.far.slice(0, st.nFar) : null;
+    if (part.far) part.farSphere = sphereOf(st.farBox);
+    part.split = null;
+    return true;
   }
 
   _material(side) {

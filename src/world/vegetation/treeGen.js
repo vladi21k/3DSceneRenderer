@@ -390,19 +390,21 @@ function finishSkeleton(tpl, env, sk, rng) {
 class Buf {
   constructor(spec) {
     this.spec = spec; // { name: itemSize }
+    this.keys = Object.keys(spec);
+    this.sizes = this.keys.map((k) => spec[k]);
     this.a = {};
-    for (const k of Object.keys(spec)) this.a[k] = [];
+    this.lists = this.keys.map((k) => (this.a[k] = []));
     this.idx = [];
     this.count = 0;
   }
   /** Append one vertex: values in spec order (arrays or numbers). */
   vert(...vals) {
-    let j = 0;
-    for (const k of Object.keys(this.spec)) {
-      const v = vals[j++], arr = this.a[k];
+    const lists = this.lists, sizes = this.sizes;
+    for (let j = 0; j < lists.length; j++) {
+      const v = vals[j], arr = lists[j];
       if (typeof v === 'number') arr.push(v);
       else if (v.isVector3) arr.push(v.x, v.y, v.z);
-      else for (let i = 0; i < this.spec[k]; i++) arr.push(v[i]);
+      else for (let i = 0, n = sizes[j]; i < n; i++) arr.push(v[i]);
     }
     return this.count++;
   }

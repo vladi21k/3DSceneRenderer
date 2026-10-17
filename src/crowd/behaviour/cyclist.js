@@ -3,6 +3,7 @@ import { noise1 } from '../../core/rng.js';
 import { ST, TASK, LANE, MOB } from './agent.js';
 import { RIDE_D, BAND, AGENT_R, CELL, GRID_D, CYCLE_V, WALKBIKE_V, TRAM_LEN, CYCLE_CLEAR_T, FOOT } from './constants.js';
 import { footBandGap, footInBand, updateFoot, propPointDist2 } from './footprint.js';
+import { startUturn } from './behaviour.js';
 
 // Cyclists in the shared pedestrian street. They ride 10-18 km/h in both directions, mostly
 // along the edges of the track corridor, between the tracks and along the inner edge of a
@@ -27,9 +28,10 @@ import { footBandGap, footInBand, updateFoot, propPointDist2 } from './footprint
 const PI = Math.PI;
 const RAILS = [-TRACK_OFFSET - RAIL_CENTER, -TRACK_OFFSET + RAIL_CENTER, TRACK_OFFSET - RAIL_CENTER, TRACK_OFFSET + RAIL_CENTER];
 const RAIL_CLEAR = 0.3;                     // riding lines keep the wheels this far from a rail
-const VX = 2.2;                             // speed for crossing a rail (m/s)
-const X_ANG = 0.88;                         // heading across a rail (rad from the street axis, ~50 deg)
+const VX = 2.4;                             // highest speed for crossing a rail (m/s)
+const X_ANG = 0.82;                         // heading across a rail (rad from the street axis, ~47 deg)
 const X_MIN = 0.72;                         // ... never crossed at less than this (~41 deg)
+const WHEEL = 0.5;                          // wheel contact points ahead of / behind the rider's centre
 const CORR_LO = -(TRACK_ZONE_HALF - 0.42);  // riding lines inside the corridor (clear of the platform edges)
 const CORR_HI = TRACK_ZONE_HALF - 0.42;
 const HALF = FOOT[MOB.CYCLE].r;             // half width of a bicycle with its rider (handlebar, elbows)
@@ -52,6 +54,20 @@ function offRail(d, lo = -99, hi = 99, here = d) {
   }
   return d;
 }
+/** Inside a track's gauge (between its two rails)? */
+const inGauge = (d) => (d > RAILS[0] && d < RAILS[1]) || (d > RAILS[2] && d < RAILS[3]);
+/** A riding line through d: inside the corridor [lo, hi], never along a track between its rails
+ *  (there is no room to straighten out after crossing into a gauge; riders keep to the gap between
+ *  the tracks and the corridor edges), and clear of the rails. */
+export function rideLine(d, lo = CORR_LO, hi = CORR_HI) {
+  d = clamp(d, lo, hi);
+  if (inGauge(d)) {
+    const g = d < 0 ? 0 : 2, a = RAILS[g] - RAIL_CLEAR, b = RAILS[g + 1] + RAIL_CLEAR;
+    const aOk = a >= lo, bOk = b <= hi;
+    d = aOk && bOk ? (d - a < b - d ? a : b) : aOk ? a : bOk ? b : d;
+  }
+  return offRail(d, lo, hi, d);
+}
 /** Rails strictly between d0 and d1 → number of them; _rx.first / _rx.last (in the direction of d1). */
 const _rx = { first: 0, last: 0 };
 function railsBetween(d0, d1) {
@@ -69,12 +85,7 @@ function railsBetween(d0, d1) {
 /** Steering limits of a rider at speed v (turn rate rad/s); `tight` while crossing a rail. */
 export function bikeTurnRate(v, tight) {
   const vv = Math.max(v, 0.6);
-  return tight ? Math.min(2.6 / vv, vv / 1.8, 1.4) : Math.min(1.9 / vv, vv / 2.3, 1.3);
-}
-/** Lateral room a rider at speed v needs to turn from riding along the street to X_MIN. */
-function crossNeed(v) {
-  const vv = Math.max(v, 1.2);
-  return 1.15 * (vv / bikeTurnRate(vv, true)) * (1 - Math.cos(X_MIN)) + 0.12;
+  return tight ? Math.min(2.6 / vv, vv / 1.5, 1.4) : Math.min(1.9 / vv, vv / 2.3, 1.3);
 }
 const smooth = (u) => u * u * (3 - 2 * u);
 const wrapAngle = (x) => { x = (x + PI) % (2 * PI); if (x < 0) x += 2 * PI; return x - PI; };
@@ -87,8 +98,7 @@ export function pickRideLane(c, a, r, prefer = 0) {
   for (let k = 0; k < 6; k++) {
     const p = r.next();
     let lane = LANE.CORR, d = 0, side = a.side;
-    if (p < 0.06) d = -TRACK_OFFSET + r.range(-0.15, 0.15);       // between the rails of the other track (rare)
-    else if (p < 0.34) d = CORR_LO + r.range(0, 0.25);           // the left edge of the corridor
+    if (p < 0.33) d = CORR_LO + r.range(0, 0.25);                // the left edge of the corridor
     else if (p < 0.58) d = r.range(-0.5, -0.32);                 // between the tracks (clear of both rails)
     else if (p < 0.72) d = CORR_HI - r.range(0, 0.25);           // the right edge (moves over when the tram comes)
     else { lane = LANE.SIDE; side = prefer || (r.chance(0.5) ? 1 : -1); }
@@ -161,7 +171,9 @@ export function rideTarget(c, a, T) {
     // a lane change towards the ride track is called off when the tram comes
     if (a.mvToBand && rideNear(c, a) && !(a.crossOK > c.time)) abortMove(c, a);
     else {
-      dL = a.mvD0 + (a.mvD1 - a.mvD0) * smooth(u);
+      // (a ramp over rails would run along them: the rail crossing takes the rider straight to
+      // the new line instead, steeply)
+      dL = railsBetween(a.d, a.mvD1) ? a.mvD1 : a.mvD0 + (a.mvD1 - a.mvD0) * smooth(u);
       lo = Math.min(dL, a.d) - 0.35; hi = Math.max(dL, a.d) + 0.35;
       weave = false;
       // steep enough to follow the ramp (its middle is 1.5 times the mean slope)
@@ -174,6 +186,8 @@ export function rideTarget(c, a, T) {
     // line clear of the rails: just out of the band if that is free of them, else past the rail
     let to = a.clearTo;
     if (Math.abs(to) < TRACK_ZONE_HALF) to = a.clearTo < a.d ? offRail(to, -99, a.clearTo + 0.45, a.d) : offRail(to, a.clearTo - 0.45, 99, a.d);
+    // (not into the other track's gauge: just between the tracks, or on to the corridor's edge)
+    if (to < a.d && to < RAILS[1] && to > RAILS[0]) to = RAILS[1] + RAIL_CLEAR + 0.05 <= RIDE_D - BAND - a.extHi - 0.05 ? RAILS[1] + RAIL_CLEAR + 0.05 : CORR_LO + 0.1;
     dL = to; T.ang = 0.62;
     if (to < a.d) { hi = Math.min(hi, to); lo = Math.min(lo, hi - 0.6); } else { lo = Math.max(lo, to); hi = Math.max(hi, lo + 0.6); }
     vT = Math.max(vT, 2.6);
@@ -183,11 +197,15 @@ export function rideTarget(c, a, T) {
   if (a.narrowS !== null) {
     const dist = (a.narrowS - a.s) * a.dir;
     if (dist < -2 || a.lane !== LANE.SIDE || a.mvOn) a.narrowS = null;
-    else vT = Math.min(vT, 0.8 + 0.9 * Math.max(0, dist - 2.5));
+    else {
+      // stop a few metres short of it, and get off there (the bicycle still fits beside the rider)
+      vT = Math.min(vT, 0.9 * Math.max(0, dist - 2.8));
+      if (dist < 6 && a.bikeV < 1.8 && dismount(c, a)) { c.tally('cycleNarrowWalk'); return; }
+    }
   }
   // poles, trunks, bins: steered round (a lane change crosses the line of them)
   if (Math.abs(a.d) > TRACK_ZONE_HALF - 0.1) T.avoid = avoidFixed(c, a);
-  if (a.simple) { T.d = dL; T.v = vT; a.cT = dL; return; }
+  if (a.simple) { T.d = Math.abs(a.d) < TRACK_ZONE_HALF && railsBetween(a.d, dL) && !a.clearing ? a.d : dL; T.v = vT; a.cT = T.d; return; }
   // passing: the candidate line with the least conflict, slowing behind whoever is in the way
   let best = scan(c, a, dL, lo, hi, weave ? (a.lane === LANE.SIDE ? 2.4 : 1.6) : 0.25);
   // every line near the lane blocked by a kiosk / terrace / bench: look wider for a way round
@@ -225,16 +243,20 @@ export function rideTarget(c, a, T) {
 /** Stopped with nobody in the way (wedged behind a kiosk, a terrace across the sidewalk, a pole
  *  on the other side): after a couple of seconds get off and walk the bicycle round it. */
 function stalled(c, a, dt) {
-  if (a.bikeV >= 0.1) { a.stopT = 0; a.stopNP = 0; a.stallSeen = false; return; }
+  if (a.bikeV >= 0.1) { a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; return; }
   a.stopT += dt;
-  if (a.stopT < 0.8) return;
-  if (peopleAhead(c, a, 4.5, 1.4)) { a.stopNP = 0; return; }
-  a.stopNP += dt;
+  if (a.stopT < 0.8 || a.state !== ST.WALK) return;
+  // nobody in the way: the counter runs; someone passing through the look-ahead only holds it
+  if (!peopleAhead(c, a, 4.5, 1.4)) a.stopNP += dt;
   if (a.stopNP > 5 && !a.stallSeen) { a.stallSeen = true; c.tally('cycleStall5s'); }
-  if (a.stopNP < 2.2 || a.state !== ST.WALK) return;
+  // wedged with nobody in the way for a couple of seconds, or held up for long anyway (a crowd
+  // standing round a bench): get off, and walk the bicycle round it
+  if ((a.stopNP < 2.2 && a.stopT < 7) || (a.stopT - a.stallTry) < 1) return;
+  a.stallTry = a.stopT;
   if (dismount(c, a, true)) { c.tally('cycleUnstick'); return; }
-  // no room to put the bicycle beside them here either: try again a moment later
-  a.stopNP -= 0.5;
+  // wedged by fixed things with no room to put the bicycle down beside the rider: get off anyway
+  // (the bicycle is walked clear of what it touches) and turn it round, back the way they came
+  if (a.stopNP >= 2.2 && a.stopT > 4 && dismount(c, a, true, true)) { startUturn(c, a); c.tally('cycleTurnBack'); }
 }
 
 /** Is anybody within `look` metres ahead of the rider (along its heading), `lat` to either side? */
@@ -260,13 +282,38 @@ function peopleAhead(c, a, look, lat) {
  *  steep angle. a.rx: 0 nothing to cross, 1 swinging away from the rail first (no room to turn
  *  steeply), 2 crossing (heading held across until past the last rail). Overrides T. */
 function railGuard(c, a, T, dGoal) {
-  if (a.simple || a.rxHold > c.time) { a.rx = 0; return; }
+  if (a.simple) { a.rx = 0; return; }
   const v = a.bikeV;
+  // astride a rail (one wheel on each side): always on across it, steeply, the way it is heading
+  if (a.rx !== 2 && v > 0.05) {
+    const sa = WHEEL * Math.sin(a.alpha), fw = a.d + sa, rw = a.d - sa;
+    for (const r of RAILS) {
+      if ((fw - r) * (rw - r) >= 0) continue;
+      const sgn = sa > 0 ? 1 : -1;
+      a.rxSgn = sgn; a.rxFirst = r; a.rxEnd = r + sgn * (WHEEL * Math.sin(X_ANG) + 0.1); a.rxV = VX;
+      startCross(a, c, T);
+      return;
+    }
+  }
+  if (a.rxHold > c.time) { a.rx = 0; return; }
+  if (a.rx === 3) {
+    // straightening out after the crossing (tight and slow, so the turn back does not reach the next rail)
+    a.rxT += c.dt;
+    if (Math.abs(Math.sin(a.alpha)) < 0.12 || a.rxT > 1.6) a.rx = 0;
+    else { T.v = Math.min(T.v, a.rxV + 0.2); return; }
+  }
   if (a.rx === 2) {
-    if ((a.d - a.rxEnd) * a.rxSgn >= 0 || a.state === ST.GOTO && Math.abs(a.d - a.gd) < 0.3) { a.rx = 0; rebaseMove(a); return; }
-    // held back at the edge of the tram's band (or by people): called off for a moment
-    if (a.vd * a.rxSgn < 0.15) a.rxT += c.dt; else a.rxT = 0;
-    if (a.rxT > 0.7) { a.rx = 0; a.rxHold = c.time + 2; return; }
+    // both wheels over the last rail: straighten out
+    if ((a.d - a.rxEnd) * a.rxSgn >= 0 || a.state === ST.GOTO && Math.abs(a.d - a.gd) < 0.3) { a.rx = 3; a.rxT = 0; rebaseMove(a); return; }
+    // (it can be called off only while the front wheel is short of the first rail: a rider stopped
+    // with the wheels over the rails goes on across at the same angle)
+    const before = (a.rxFirst - (a.d + WHEEL * Math.abs(Math.sin(a.alpha)) * a.rxSgn)) * a.rxSgn > 0.05;
+    // the goal moved back to this side: called off
+    if (before && (dGoal - a.d) * a.rxSgn < 0) { a.rx = 0; return; }
+    // held up for long (people in the way, or the edge of the tram's band): called off for a moment
+    const atBand = a.rxSgn * (RIDE_D - a.d) > 0 && footBandGap(a) < 0.06 && c.tram.near(a) && !(a.crossOK > c.time);
+    if (v < 0.4 || atBand) a.rxT += c.dt; else a.rxT = 0;
+    if (before && a.rxT > (atBand ? 0.3 : 1.5)) { a.rx = 0; a.rxHold = c.time + 2; return; }
     crossHeading(c, a, T);
     return;
   }
@@ -275,27 +322,43 @@ function railGuard(c, a, T, dGoal) {
   if (a.rx !== 1) a.rxSetupT = 0;
   const sgn = dGoal > a.d ? 1 : -1, first = _rx.first;
   const dist = (first - a.d) * sgn;
-  // heading towards the rail now (rad from the street axis, + = towards it)
-  const lat = Math.atan2(Math.sin(a.alpha) * sgn, Math.abs(Math.cos(a.alpha)));
-  const need = crossNeed(Math.min(v, VX + 0.3));
-  a.rxSgn = sgn; a.rxEnd = _rx.last + sgn * 0.2;
-  // close to the crossing: down to crossing speed
-  T.v = Math.min(T.v, VX + 0.8 * Math.max(0, dist - need) + (a.clearing ? 0.4 : 0));
-  if (lat >= X_MIN || dist >= need && v <= VX + 0.5 || a.rx === 1 && (Math.abs(a.d - a.rxSetup) < 0.1 || a.rxSetupT > 2.5)) { startCross(a, c, T); return; }
-  // room to turn: hold the line on this side while slowing down for it
-  if (dist >= need) { T.alpha = null; T.d = a.d; a.rx = 0; return; }
-  // the S-bend: swing away from the rail to where a steep turn fits, inside the corridor and out
-  // of the ride track's band while the tram is near, short of the next rail behind
-  let away = first - sgn * need;
+  a.rxSgn = sgn; a.rxFirst = first; a.rxEnd = _rx.last + sgn * (WHEEL * Math.sin(X_ANG) + 0.1);
+  // room on this side of the rail for the S-bend: up to the corridor edge, short of the next rail
+  // behind, and out of the ride track's band while the tram is near
   let lim = sgn > 0 ? CORR_LO : CORR_HI;
   for (const r of RAILS) if ((r - a.d) * sgn < 0 && Math.abs(r - a.d) < Math.abs(lim - a.d)) lim = r + sgn * RAIL_CLEAR;
-  // (not towards the ride track's band while the tram is near)
   if (sgn < 0 && a.d < RIDE_D - BAND && rideNear(c, a)) lim = Math.min(lim, RIDE_D - BAND - a.extHi - 0.05);
+  const room = Math.max(dist, (first - lim) * sgn);
+  // a speed at which a steep turn fits into that room, reached before the rail
+  const vX = crossSpeed(room) + (a.clearing ? 0.3 : 0);
+  a.rxV = vX;
+  T.v = Math.min(T.v, vX + 0.8 * Math.max(0, dist - turnRoom(vX, 0)));
+  // heading towards the rail now (rad from the street axis, + = towards it)
+  const lat = Math.atan2(Math.sin(a.alpha) * sgn, Math.abs(Math.cos(a.alpha)));
+  const slowEnough = v <= vX + 0.3;
+  if (lat >= X_MIN || slowEnough && dist >= turnRoom(v, lat)) { startCross(a, c, T); return; }
+  // the S-bend: swing away from the rail to where the steep turn fits
+  let away = first - sgn * turnRoom(vX, 0);
   away = sgn > 0 ? Math.max(away, lim) : Math.min(away, lim);
-  // already as far away as it goes: cross from here
-  if ((a.d - away) * sgn <= 0.06) { startCross(a, c, T); return; }
-  a.rx = 1; a.rxSetup = away; a.rxT = 0.6; a.rxSetupT += c.dt;
+  const there = (a.d - away) * sgn <= 0.08;
+  // as far away as it goes (or tried for long enough): cross from here once slow enough
+  if ((there || a.rx === 1 && a.rxSetupT > 3) && slowEnough) { startCross(a, c, T); return; }
+  a.rx = 1; a.rxSetup = there ? a.d : away; a.rxT = 0.6; a.rxSetupT += c.dt;
   holdSetup(a, T);
+}
+/** Lateral room (from the rider's centre to the rail) a rider at speed v with heading lat (rad
+ *  towards the rail) needs so that both wheels cross at X_MIN or more: the rear wheel crosses
+ *  along the heading, once the centre is WHEEL·sin(heading) past the rail; the front wheel,
+ *  steered into the turn, crosses steeper than the heading (a little room for it still). */
+function turnRoom(v, lat) {
+  const vv = Math.max(v, 1.0), R = vv / bikeTurnRate(vv, true);
+  return Math.max(0.3, R * Math.max(0, Math.cos(Math.min(lat, X_MIN)) - Math.cos(X_MIN)) - WHEEL * Math.sin(X_MIN) + 0.2);
+}
+/** Fastest speed (≤ VX) at which a steep turn fits into `room`. */
+function crossSpeed(room) {
+  let v = VX;
+  while (v > 1.2 && turnRoom(v, 0) > room) v -= 0.1;
+  return v;
 }
 function startCross(a, c, T) {
   a.rx = 2; a.rxT = 0;
@@ -304,14 +367,14 @@ function startCross(a, c, T) {
 }
 function holdSetup(a, T) {
   T.alpha = null; T.d = a.rxSetup; T.ang = Math.max(T.ang, 0.42);
-  T.v = Math.min(T.v, VX + 0.3);
+  T.v = Math.min(T.v, a.rxV + 0.2);
 }
 /** Ride across: a heading of X_ANG from the street axis towards the far side. */
 function crossHeading(c, a, T) {
   const dir = a.dir, sgn = a.rxSgn;
   T.alpha = dir > 0 ? sgn * X_ANG : PI - sgn * X_ANG;
   T.avoid = 0;
-  T.v = Math.min(T.v, VX + (a.clearing ? 0.4 : 0));
+  T.v = Math.min(T.v, a.rxV + 0.2);
   const b = brakeAhead(c, a);
   if (b < 1e8) { T.v = Math.min(T.v, Math.max(0, b - 0.8) * 0.9); if (b < 0.45) T.hard = true; }
 }
@@ -418,14 +481,16 @@ function scan(c, a, dL, lo, hi, spread) {
   blkStatic = false;
   const nL = Math.abs(a.d) < TRACK_ZONE_HALF + 1 ? railsBetween(a.d, dL) : 0;
   for (let i = 0; i < NC; i++) {
-    const dc = clamp(dL + ((i - (NC - 1) / 2) / ((NC - 1) / 2)) * spread, lo, hi);
+    let dc = clamp(dL + ((i - (NC - 1) / 2) / ((NC - 1) / 2)) * spread, lo, hi);
+    if (Math.abs(dc) < TRACK_ZONE_HALF) dc = offRail(dc, lo, hi, a.d);
     cand[i] = dc; off[i] = dc - dL;
     // stay near the lane line, and near the line already chosen (no dithering)
     cost[i] = 0.5 * Math.abs(dc - dL) + 0.7 * Math.abs(dc - a.cT);
     // wheels out of the rail grooves, and no extra rail crossings just to pass someone
     if (Math.abs(dc) < TRACK_ZONE_HALF) {
       for (const r of RAILS) if (Math.abs(dc - r) < RAIL_CLEAR) cost[i] += 1.6 * (1 - Math.abs(dc - r) / RAIL_CLEAR) + 0.4;
-      cost[i] += 0.9 * Math.abs(railsBetween(a.d, dc) - nL);
+      cost[i] += 2.0 * Math.abs(railsBetween(a.d, dc) - nL);
+      if (inGauge(dc) && !inGauge(dL)) cost[i] += 2.0;
     }
     blk[i] = 1e9; vblk[i] = 0;
   }
@@ -637,10 +702,9 @@ function abortMove(c, a) {
 /** A lane through the cyclist's present position. */
 function laneHere(c, a) {
   if (Math.abs(a.d) < TRACK_ZONE_HALF) {
-    a.lane = LANE.CORR; a.laneD = clamp(a.d, CORR_LO, CORR_HI);
     // (never a line in the ride track's band with the tram coming)
-    if (rideNear(c, a, true) && a.laneD > RIDE_D - BAND - 0.6) a.laneD = Math.max(CORR_LO, RIDE_D - BAND - 0.6 - a.extHi);
-    a.laneD = offRail(a.laneD, CORR_LO, CORR_HI, a.d);
+    const hi = rideNear(c, a, true) ? Math.max(CORR_LO, RIDE_D - BAND - 0.6 - a.extHi) : CORR_HI;
+    a.lane = LANE.CORR; a.laneD = rideLine(a.d, CORR_LO, hi);
     a.side = a.laneD >= 0 ? 1 : -1;
   }
   else {
@@ -663,7 +727,7 @@ export function thinkCycle(c, a) {
     }
     return;
   }
-  if (a.simple || a.mvOn) return;
+  if (a.mvOn || a.simple && a.lane !== LANE.SIDE) return;
   // the old lane keeps until a change is planned: remember it to restore on failure
   const keep = { lane: a.lane, laneD: a.laneD, side: a.side, laneF: a.laneF };
   const restore = () => { a.lane = keep.lane; a.laneD = keep.laneD; a.side = keep.side; a.laneF = keep.laneF; };
@@ -672,7 +736,7 @@ export function thinkCycle(c, a) {
     laneLine(c, a);
     if (LN.narrow) {
       a.lane = LANE.CORR; a.laneD = a.side < 0 ? CORR_LO + r.range(0, 0.25) : CORR_HI - r.range(0, 0.25);
-      if (a.side > 0 && rideNear(c, a, true)) a.laneD = -1.6 + r.range(-0.3, 0.3);
+      if (a.side > 0 && rideNear(c, a, true)) a.laneD = CORR_LO + r.range(0, 0.25);
       if (planMove(c, a, a.laneD, keep)) { c.tally('cycleLaneNarrow'); a.narrowS = null; return; }
       restore();
       // nowhere to go: slow down before the narrow stretch, get off and walk the bicycle through
@@ -688,6 +752,7 @@ export function thinkCycle(c, a) {
     }
     a.narrowS = null;
   }
+  if (a.simple) return;
   // a side street just ahead: some turn into it
   const mouthS = a.s + a.dir * 18;
   for (const side of [-1, 1]) {
@@ -768,7 +833,7 @@ export function propClear(c, a, margin = 0.08) {
 }
 
 /** Get off and walk the bicycle (a crowd, a narrow stretch). Needs the walking-a-bicycle pose. */
-export function dismount(c, a, stuck = false) {
+export function dismount(c, a, stuck = false, anyway = false) {
   if (!c.mobOK(MOB.WALKBIKE) || a.state !== ST.WALK) return false;
   // not in the middle of the poles and trees, nor in the ride track's band (unless wedged there)
   const ad = Math.abs(a.d), gap0 = footBandGap(a);
@@ -781,8 +846,9 @@ export function dismount(c, a, stuck = false) {
   // the bicycle moves to the person's side: not into the tram's band, a pole, a bench or a facade
   // (wedged beside the band with the tram coming: anywhere not nearer to the band will do)
   const near = c.tram.near(a);
-  const bad = (stuck && near ? footBandGap(a) < Math.min(gap0, 0.8) : (footInBand(a) && near) || !propClear(c, a)) || c.population.propClash(a);
-  if (bad) { a.mob = MOB.CYCLE; a.alpha = prev; updateFoot(a); a.slowT = 1.0; return false; }
+  const why = stuck && near ? (footBandGap(a) < Math.min(gap0, 0.8) ? 'band' : '') : footInBand(a) && near ? 'band' : !anyway && !propClear(c, a) ? 'clear' : '';
+  const bad = why || c.population.propClash(a);
+  if (bad) { a.mob = MOB.CYCLE; a.alpha = prev; updateFoot(a); a.slowT = 1.0; c.tally('dismountNo_' + (why || 'clash')); return false; }
   a.state = ST.WALK; a.task = TASK.NONE; a.mvOn = false; a.slowT = 0; a.rx = 0; a.narrowS = null; a.stopT = 0; a.stopNP = 0;
   a.v0 = r.range(WALKBIKE_V[0], WALKBIKE_V[1]);
   a.mountT = c.time + r.range(6, 16);
@@ -823,7 +889,7 @@ export function maybeMount(c, a) {
   a.bikeV = Math.max(0.8, a.speedA);
   a.yawW = 0; a.slowT = 0; a.cT = a.d; a.mvOn = false; a.uturnT = 0; a.rx = 0; a.narrowS = null; a.stopT = 0; a.stopNP = 0;
   // ride on along a line through where they are (clear of the rails)
-  if (Math.abs(a.d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = offRail(clamp(a.d, CORR_LO, CORR_HI), CORR_LO, CORR_HI, a.d); }
+  if (Math.abs(a.d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = rideLine(a.d); }
   else { a.lane = LANE.SIDE; a.side = a.d >= 0 ? 1 : -1; a.laneF = r.range(0.05, 0.6); }
   updateFoot(a);
   c.tally('mount');

@@ -72,15 +72,37 @@ if ( vStripe.w > 0.0 ) {
   float seam = 1.0 - smoothstep( 0.0, 0.005 / sp + fws, abs( fract( su + 0.5 ) - 0.5 ) );
   seam *= 1.0 - smoothstep( 0.15, 0.3, fws );
   diffuseColor.rgb *= 1.0 - 0.14 * seam;
-  // sun-faded where the cloth faces the sky, uneven grime
+  // sun-bleached where the cloth faces the sky (lighter, greyer), uneven grime
   vec3 nAw = inverseTransformDirection( vNormal, viewMatrix ) * ( gl_FrontFacing ? 1.0 : -1.0 );
   float lumA = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
-  diffuseColor.rgb = mix( diffuseColor.rgb, vec3( lumA ) * 1.08, 0.12 * smoothstep( 0.1, 0.8, nAw.y ) );
+  float sunAw = smoothstep( 0.1, 0.8, nAw.y ) * ( 0.8 + 0.4 * fract( sin( dot( floor( vAwUv * vec2( 0.7, 1.0 ) ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ) );
+  diffuseColor.rgb = mix( diffuseColor.rgb, mix( vec3( lumA ), diffuseColor.rgb, 0.55 ) * 1.22 + 0.015, 0.3 * sunAw );
+  // rain run-off: faint darker streaks down the hanging parts, a dirtier band at the hem
+  float vertAw = 1.0 - smoothstep( 0.3, 0.7, abs( nAw.y ) );
+  float strk = fract( sin( floor( vAwUv.x * 14.0 ) * 91.7 ) * 4375.85 );
+  float fStrk = 1.0 - smoothstep( 0.1, 0.4, fwidth( vAwUv.x * 14.0 ) );
+  diffuseColor.rgb *= 1.0 - vertAw * ( 0.06 * step( 0.6, strk ) * fStrk + 0.04 );
   vec2 gq = vAwW.xz * 2.3 + vAwW.y * 4.1;
   vec2 gi = floor( gq ), gf = fract( gq ); gf = gf * gf * ( 3.0 - 2.0 * gf );
   float gn = mix( mix( fract( sin( dot( gi, vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), fract( sin( dot( gi + vec2( 1, 0 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), gf.x ),
                   mix( fract( sin( dot( gi + vec2( 0, 1 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), fract( sin( dot( gi + vec2( 1, 1 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), gf.x ), gf.y );
   diffuseColor.rgb *= 0.93 + 0.07 * gn;
+}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+{
+  // canvas relief as a bump: slack ripples running down the cloth, finer creases and the
+  // raised seams; faded out before it would alias (fine folds are in the baked weave)
+  vec2 q = vAwUv;
+  float sp = vStripe.w > 0.0 ? vStripe.w * max( 1.0, floor( 1.0 / vStripe.w ) ) : 0.9;
+  float hb = 0.0028 * sin( q.x * 10.5 + 1.8 * sin( q.y * 4.3 + q.x * 0.9 ) )
+           + 0.0009 * sin( q.x * 31.0 + q.y * 17.0 + 2.0 * sin( q.x * 5.0 ) )
+           + 0.0012 * ( 1.0 - smoothstep( 0.0, 0.012, abs( fract( q.x / sp + 0.5 ) - 0.5 ) * sp ) );
+  float keepB = 1.0 - smoothstep( 0.015, 0.05, length( fwidth( q ) ) );
+  vec3 dpx = dFdx( -vViewPosition ), dpy = dFdy( -vViewPosition );
+  float dhx = dFdx( hb ) * keepB, dhy = dFdy( hb ) * keepB;
+  vec3 r1 = cross( dpy, normal ), r2 = cross( normal, dpx );
+  float det = dot( dpx, r1 );
+  normal = normalize( abs( det ) * normal - sign( det ) * ( dhx * r1 + dhy * r2 ) );
 }`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 {
@@ -95,7 +117,7 @@ if ( vStripe.w > 0.0 ) {
       .replace('vStripe = aStripe;', 'vStripe = aStripe;\nvAwUv = uv;');
     shader.fragmentShader = shader.fragmentShader.replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;');
   };
-  m.customProgramCacheKey = () => prevKey + '|facades.awning.v2';
+  m.customProgramCacheKey = () => prevKey + '|facades.awning.v3';
   return m;
 }
 
@@ -141,10 +163,12 @@ function valance(t, total, valH, q, at) {
   const nS = Math.max(1, Math.round(total / 0.25)), per = total / nS;
   const R = Math.min(0.065, per * 0.42);
   const nvu = nS * (q >= 0.5 ? 6 : 4);
+  // lobes are cut and hang a little unevenly (±7 mm, deterministic per lobe)
+  const lobe = (s) => { const h = Math.sin(Math.floor(s / per) * 78.233 + total * 12.9898) * 43758.5453; return (h - Math.floor(h) - 0.5) * 0.014; };
   const depth = (s) => {
     if (q < 0.5) return valH;
     const f = (s / per) % 1, c = 2 * f - 1;
-    return valH - R + R * Math.sqrt(Math.max(0, 1 - c * c));
+    return valH - R + R * Math.sqrt(Math.max(0, 1 - c * c)) + lobe(Math.min(s, total - 1e-4));
   };
   // rows: top edge, top of the binding, binding, bottom edge
   const rows = q >= 0.5 ? [[0, 1], [-0.022, 0.97], [-0.02, 0.72], [0, 0.72]] : [[0, 1], [0, 0.9]];
@@ -154,7 +178,8 @@ function valance(t, total, valH, q, at) {
     const [dy, shade] = rows[j];
     const y = j === 0 ? 0 : -h - dy;
     const [x, y0, z] = at(s);
-    return [x, y0 + y, z, s, 0, shade * (1 - 0.12 * Math.min(1, -y / valH))];
+    // the hem flutters in the wind (flex), the top edge is held by the bar
+    return [x, y0 + y, z, s, j === 0 ? 0 : 0.7, shade * (1 - 0.12 * Math.min(1, -y / valH))];
   }, 0.95, true);
 }
 
@@ -168,8 +193,10 @@ export function slopeAwning(W, P, D, valH, q) {
   const nv = q >= 0.5 ? 5 : 1;
   surface(t, nu, nv, (a, b) => {
     const x = -W / 2 + W * a;
-    // the cloth sags between the roller and the front bar, and creases near the cassette
-    const sag = Math.sin(Math.PI * b) * 0.035 * (0.6 + 0.4 * Math.sin(Math.PI * a));
+    // the cloth sags between the roller and the front bar (more between the arms, ~1–2 cm
+    // dips between the roller's supports every metre), and creases near the cassette
+    const bays = Math.max(1, Math.round(W / 1.0));
+    const sag = Math.sin(Math.PI * b) * (0.03 * (0.6 + 0.4 * Math.sin(Math.PI * a)) + 0.012 * Math.abs(Math.sin(Math.PI * a * bays)));
     const crease = q >= 0.5 ? 0.006 * Math.max(0, 1 - b / 0.25) * Math.sin(x * 21 + Math.sin(x * 7) * 2) : 0;
     const y = -D * b - sag + crease, z = P * b;
     return [x, y, z, x + W / 2, Math.sin(Math.PI * b) * (0.4 + 0.6 * Math.sin(Math.PI * a)), 1 - 0.1 * Math.max(0, 1 - b / 0.15)];

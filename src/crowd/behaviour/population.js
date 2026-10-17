@@ -9,7 +9,7 @@ import {
   CLEAR_T, CLEAR_T_DREAMY, MOB_SHARE, STROLLER_V, WALKBIKE_V, CYCLE_V, CYCLE_CLEAR_T,
 } from './constants.js';
 import { updateFoot, footBandGap, propPointDist2, footGap } from './footprint.js';
-import { pickRideLane, rideNear, wayClear } from './cyclist.js';
+import { pickRideLane, rideNear, wayClear, rideLine } from './cyclist.js';
 
 // Who is on the street. Keeps the density target over the populated range,
 // recycles people who fall behind the camera or walk out of range, and brings new
@@ -88,7 +88,7 @@ export class Population {
     a.mob = MOB.NONE; a.propSeed = 0; a.lean = 0; a.fpR = 0; a.extLo = 0; a.extHi = 0; a.extS = 0;
     a.bikeV = 0; a.yawW = 0; a.cT = 0; a.slowT = 0; a.stallT = 0; a.mountT = 0; a.mvOn = false; a.mvBand = false;
     a.mvToBand = false; a.mvLane = null; a.nearT = 0; a.headValid = false; a.clearHi = false; a.clearSpare = 0;
-    a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallSeen = false; a.narrowS = null;
+    a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; a.narrowS = null;
     this.stats.spawned++;
     return a;
   }
@@ -287,7 +287,7 @@ export class Population {
     const c = this.c, map = c.map;
     if (a.lane === LANE.CORR) {
       // the tram near: the far side of the ride track
-      if (rideNear(c, a) && a.laneD > RIDE_D - c.tram.passD - 0.6) return RIDE_D - c.tram.passD - 0.7 - this.c.rng.range(0, 0.8);
+      if (rideNear(c, a) && a.laneD > RIDE_D - c.tram.passD - 0.6) return rideLine(RIDE_D - c.tram.passD - 0.7 - this.c.rng.range(0, 0.8), -9, RIDE_D - c.tram.passD - 0.6);
       return a.laneD;
     }
     const lo = map.bandInAt(a.s, a.side), hi = map.bandOutAt(a.s, a.side);
@@ -392,9 +392,10 @@ export class Population {
   /** Does a's footprint overlap a stroller / bicycle footprint, or a's own prop overlap anyone
    *  (group members included: nobody is placed inside a stroller)? */
   propClash(a, margin = 0.05) {
+    const k = this.c.route.offsetScale(a.s, a.d);
     for (const b of this.agents) {
       if (!b.active || b === a || !(a.mob || b.mob)) continue;
-      const ds = b.s - a.s, dd = b.d - a.d;
+      const ds = (b.s - a.s) * k, dd = b.d - a.d;
       if (ds * ds + dd * dd < 9 && footGap(a, b, ds, dd).gap < margin) return true;
     }
     return false;
@@ -734,7 +735,7 @@ export class Population {
       if (vis.rayOffset(a.s + a.fp0s, a.d + a.fp0d, os, od) > 0.12 || vis.rayOffset(a.s + a.fp1s, a.d + a.fp1d, os, od) > 0.12) { this._killGroup(a); return null; }
       if (mob === MOB.CYCLE) {
         // ride on along a line through the spot
-        if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = Math.max(-3.0, Math.min(3.0, d)); }
+        if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = rideLine(d); }
         else { a.lane = LANE.SIDE; a.side = side; a.laneF = 0.3; }
       } else if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = d; }
       a.spawnHidden = true;

@@ -105,20 +105,20 @@ float cloudDensity(vec3 p, float detail) {
   // with 3D billows mixed in so cells stay contiguous
   float field = textureLod(uCloudTex, q / (13000.0 * uCloudScale), 0.0).r;
   vec4 n = textureLod(uNoise3D, vec3(q.x, p.y * 1.4, q.y) / (4500.0 * uCloudScale), 0.0);
-  float shape = field * 0.8 + n.r * 0.2;
+  float shape = field * 0.72 + n.r * 0.28;
   // flat bases, domed tops: the threshold rises with height, so only the cores reach up
   float thr = 1.0 - cov * sqrt(max(1.0 - hf, 0.0)) * smoothstep(0.0, 0.05, hf);
   // dense bodies: the density saturates over the outer part of each cell, so the
   // erosion below carves the boundary into billows and wisps instead of hollowing it
-  float d = clamp((shape - thr) / max(0.28 * (1.0 - thr), 1e-3), 0.0, 1.0);
+  float d = clamp((shape - thr) / max(0.22 * (1.0 - thr), 1e-3), 0.0, 1.0);
   if (d <= 0.0 || detail <= 0.0) return d;
   // cauliflower edges: billowy Worley erosion, strongest at the base, plus a finer
   // octave that frays the rims into wisps
   float e = textureLod(uNoise3D, vec3(q.x, p.y, q.y) / 520.0 + vec3(0.37, 0.11, 0.73), 0.0).g;
-  float ero = (1.0 - e) * mix(0.5, 0.28, hf) * detail;
+  float ero = (1.0 - e) * mix(0.58, 0.34, hf) * detail;
   if (detail > 0.75) {
     float e2 = textureLod(uNoise3D, vec3(q.x, p.y * 1.3, q.y) / 150.0 + vec3(0.71, 0.29, 0.13), 0.0).g;
-    ero += (1.0 - e2) * 0.22 * (1.0 - d);
+    ero += (1.0 - e2) * 0.3 * (1.0 - 0.6 * d);
   }
   return clamp((d - ero) / max(1.0 - ero, 1e-3), 0.0, 1.0);
 }
@@ -142,10 +142,10 @@ vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float d
   vec3 ambBot = (uSunCloud * max(uSunDirA.y + 0.035, 0.0) * 0.1 + irr(0.0) * 0.2) / ATM_PI;
   // in twilight the multiply scattered skylight keeps a cloud about as bright as the sky
   // around it (it never reads as a dark blob against the glow)
-  float tw = 1.0 - smoothstep(-0.01, 0.12, uSunDirA.y);
+  float twl = 1.0 - smoothstep(-0.01, 0.12, uSunDirA.y);
   vec3 skyHere = skyL(dir);
-  ambTop = mix(ambTop, max(ambTop, skyHere * 1.1), tw);
-  ambBot = mix(ambBot, max(ambBot, skyHere * 0.8), tw);
+  ambTop = mix(ambTop, max(ambTop, skyHere * 1.1), twl);
+  ambBot = mix(ambBot, max(ambBot, skyHere * 0.8), twl);
   float cosT = dot(dir, uSunDirA);
   // dual-lobe phase (bright silver lining towards the sun), and two softer lobes for
   // the multiple-scattering octaves

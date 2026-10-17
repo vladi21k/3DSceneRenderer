@@ -372,6 +372,7 @@ export class Mobility {
     this.P = P;
     this.bikes = P.bicycleKit(app);
     this.strollers = P.strollerKit(app);
+    this.babyFlag = (P.FLAG && P.FLAG.BABY) || 2;     // stroller look flag: a child rides in it
     // (far bicycles, a few pixels of spokes and tubes, cast no shadow; strollers always do)
     this.bikeInst = this.bikes.createInstancer({ capacity: 64, name: 'humans.bicycles', shadowLod: 1 });
     this.strollerInst = this.strollers.createInstancer({ capacity: 48, name: 'humans.strollers' });
@@ -382,9 +383,10 @@ export class Mobility {
     this.time = 0;
     this.reachStat = null;
     // test harness: force a bicycle / stroller variant (ht_var / ht_svar)
-    const fv = app.params.num('ht_var', -1), fs = app.params.num('ht_svar', -1);
+    const fv = app.params.num('ht_var', -1), fs = app.params.num('ht_svar', -1), fb = app.params.num('ht_baby', -1);
     this.forceV = fv >= 0 ? fv : null;
     this.forceS = fs >= 0 ? fs : null;
+    this.forceBaby = fb >= 0 ? fb > 0 : null;          // ht_baby=1 / 0: a child in every stroller / none
   }
 
   poser(B) {
@@ -423,7 +425,7 @@ export class Mobility {
     const key = `${prop}:${s.propSeed | 0}:${s.appearance}`;
     if (st.key !== key) {
       st.key = key; st.prop = prop; st.kit = kit;
-      st.look = prop === 1 ? kit.pick(s.propSeed | 0, { variant: this.forceS })
+      st.look = prop === 1 ? kit.pick(s.propSeed | 0, { variant: this.forceS, baby: this.forceBaby })
         : kit.pick(s.propSeed | 0, { riderHeight: a.height, child: a.age === 'child', variant: this.forceV });
       st.v = st.look.variant;
       st.ride = null;           // rider fit (frame size, saddle, lean) and walking stance are solved on first use
@@ -723,8 +725,10 @@ export class Mobility {
     const w = smooth01(st.stopW);
     // pelvis: riding (sit bones on the saddle) -> standing astride (off the nose)
     const sitR = _c; toM(_att.saddle, sitR);
-    const lean = fit.lean * (1 - 0.45 * w);
-    const pk = fit.pk * (1 - 0.7 * w);
+    // (standing astride: the trunk stays inclined towards the bars, at least ~0.25 rad, and the
+    // shoulders come back over the saddle's nose; otherwise the arms fold back behind the trunk)
+    const lean = fit.lean * (1 - w) + Math.max(0.25, fit.lean * 0.7) * w;
+    const pk = fit.pk * (1 - 0.5 * w);
     // pedalling rocks the pelvis a little (more for upright riders)
     const sway = (1 - w) * Math.min(1, s.speed / 1.5);
     // (standing astride, the body stays upright while the bike tips towards the foot that is down)
@@ -762,13 +766,14 @@ export class Mobility {
         // on the hoods (handshake grip): the palm rests on the hood's top inner side, thumb up and in
         set3(_G[i], g.x * kk - sg * 0.004 / sc, g.y * kk + 0.004 / sc, g.z * kk);
         set3(_I[i], -sg * 0.8, 0.6, 0); norm3(_I[i]);
-        set3(_pole, sg * 0.45, -0.75, 0.35); norm3(_pole);
+        set3(_pole, sg * (0.45 + 0.3 * w), -0.75, 0.35 - 0.3 * w); norm3(_pole);
         P._armTo(k, _G[i], _I[i], _pole, -8 * D2R, true);
       } else {
-        // round the grip, thumb towards the stem
+        // round the grip, thumb towards the stem; the elbows bend outwards and down (standing
+        // astride: more to the side, never folded back behind the shoulders)
         toM(g, _G[i]);
         set3(_I[i], -gd.x, -gd.y, -gd.z);
-        set3(_pole, sg * 0.3, -0.75, 0.5); norm3(_pole);
+        set3(_pole, sg * (0.3 + 0.45 * w), -0.75, 0.5 - 0.42 * w); norm3(_pole);
         P._armTo(k, _G[i], _I[i], _pole, -12 * D2R);
       }
     }

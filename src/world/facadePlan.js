@@ -66,8 +66,8 @@ export function facadePlan(lot) {
   // ---- floors: mostly four to six, with low old houses and a few taller (later) blocks
   // between them, so the cornice line steps up and down along the street
   const nFloors = rng.weighted(era === 'modern'
-    ? [[4, 0.1], [5, 0.2], [6, 0.28], [7, 0.24], [8, 0.18]]
-    : [[2, 0.04], [3, 0.11], [4, 0.28], [5, 0.29], [6, 0.17], [7, 0.08], [8, 0.03]]);
+    ? [[4, 0.2], [5, 0.3], [6, 0.25], [7, 0.15], [8, 0.1]]
+    : [[2, 0.07], [3, 0.16], [4, 0.28], [5, 0.25], [6, 0.14], [7, 0.07], [8, 0.03]]);
   const groundH = rng.range(4.4, 5.4);
   const typH = era === 'modern' ? rng.range(3.0, 3.3) : rng.range(3.4, 3.9);
   const floors = [];
@@ -146,14 +146,15 @@ export function facadePlan(lot) {
     if (balStyle === 'none') break;
     if (f.kind === 'top' && rng.chance(0.5)) continue;
     const slab = f.y + 0.02;
-    if (balStyle === 'continuous' && (f.index === 1 || rng.chance(0.4))) {
+    const high = f.index >= 5;   // the upper storeys of tall blocks carry fewer balconies
+    if (balStyle === 'continuous' && (f.index === 1 || rng.chance(high ? 0.25 : 0.4))) {
       balconies.push({ floor: f.index, u0: bays[0].u0 + 0.1, u1: bays[nBays - 1].u1 - 0.1, depth: rng.range(0.8, 1.15), y: slab, railing: rng.chance(0.85) ? 'iron' : 'stone', corbels: Math.max(2, nBays + 1), slabT: 0.16 });
     } else if (balStyle === 'center' && nBays >= 3) {
       const c = Math.floor(nBays / 2);
       balconies.push({ floor: f.index, u0: bays[c].u0 + 0.15, u1: bays[c].u1 - 0.15, depth: rng.range(0.8, 1.1), y: slab, railing: 'iron', corbels: 2, slabT: 0.16 });
     } else {
       for (const b of bays) {
-        if (!rng.chance(0.55)) continue;
+        if (!rng.chance(high ? 0.3 : 0.55)) continue;
         balconies.push({ floor: f.index, u0: b.uc - Math.min(b.w * 0.42, 1.25), u1: b.uc + Math.min(b.w * 0.42, 1.25), depth: rng.range(0.6, 1.0), y: slab, railing: rng.chance(0.9) ? 'iron' : 'stone', corbels: 2, slabT: 0.15 });
       }
     }
@@ -385,7 +386,7 @@ export function openingOutline(o, n = 12) {
 function massing(plan, lot) {
   const rng = RNG.from(lot.seed, 'massing');
   const nF = plan.floors.length;
-  if (!lot.backdrop && nF >= 4 && rng.chance(0.08)) lowerTo(plan, rng.chance(0.45) ? 2 : 3);
+  if (!lot.backdrop && nF >= 4 && rng.chance(0.13)) lowerTo(plan, rng.chance(0.45) ? 2 : 3);
   const roll = rng.next();
   if (plan.roof.type !== 'flat' || plan.depth < 9 || plan.width < 6) return;
   const addition = roll < 0.1 && nF <= 6, pent = !addition && roll < 0.42;   // tall blocks: a penthouse at most

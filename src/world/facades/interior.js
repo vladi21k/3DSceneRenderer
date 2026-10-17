@@ -899,7 +899,7 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
   vec3 winAlb = mix( vec3( 0.12, 0.12, 0.12 ), wk < 0.45 ? vec3( 0.05, 0.055, 0.06 ) : wk < 0.7 ? vec3( 0.45, 0.42, 0.37 )
               : mix( vec3( 0.11, 0.2, 0.14 ), vec3( 0.28, 0.2, 0.13 ), step( 0.5, b1.y ) ), kW );
   float litW = step( fh2( cell + 5.0 ), uNight * 0.5 ) * kW + uNight * 0.25 * ( 1.0 - kW );
-  vec3 winC = winAlb * E * RECIPROCAL_PI * 0.8 + sky * 0.08 * ( 1.0 - step( 0.45, wk ) * kW ) + litW * vec3( 1.0, 0.62, 0.32 ) * 0.0012 * gEm;
+  vec3 winC = winAlb * E * RECIPROCAL_PI * 0.8 + sky * 0.08 * ( 1.0 - step( 0.45, wk ) * kW ) + litW * vec3( 1.0, 0.58, 0.28 ) * 0.0008 * gEm;
   col = mix( col, winC, wx * wy * 0.9 );
   col = mix( col, vec3( 0.03, 0.03, 0.032 ) * E * RECIPROCAL_PI, rail * 0.75 );
   // shop band: dark display glass between stone piers, awnings over some

@@ -65,7 +65,7 @@ export class Steering {
   _propAround(a) {
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
     for (let x = Math.max(0, ix - 2); x <= Math.min(this.nx - 1, ix + 2); x++) {
-      for (let y = Math.max(0, iy - 1); y <= Math.min(this.ny - 1, iy + 1); y++) if (this.propCell[x * this.ny + y]) return true;
+      for (let y = Math.max(0, iy - 2); y <= Math.min(this.ny - 1, iy + 2); y++) if (this.propCell[x * this.ny + y]) return true;
     }
     return false;
   }
@@ -82,7 +82,8 @@ export class Steering {
     const k = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);
     let done = 0;
     for (let x = Math.max(0, ix - 2); x <= Math.min(this.nx - 1, ix + 2); x++) {
-      for (let y = Math.max(0, iy - 1); y <= Math.min(this.ny - 1, iy + 1); y++) {
+      // (two cells either way: a stroller reaches 1.5 m ahead of its pusher)
+      for (let y = Math.max(0, iy - 2); y <= Math.min(this.ny - 1, iy + 2); y++) {
         for (let j = this.head[x * this.ny + y]; j >= 0; j = agents[j].next) {
           const b = agents[j];
           if (b === a || !(a.mob || b.mob) || !b.active) continue;
@@ -199,8 +200,9 @@ export class Steering {
     // turn rate: lateral acceleration ≤ ~1.9 m/s², radius ≥ 2.3 m, and the rate itself changes
     // smoothly; a little tighter (and slower) when turning to cross a rail steeply
     const wMax = bikeTurnRate(vv, a.rx > 0);
-    let w = Math.max(-wMax, Math.min(wMax, (a.rx === 2 ? 4 : 2.4) * err));
-    w = a.yawW + Math.max(-3.0 * dt, Math.min(3.0 * dt, w - a.yawW));
+    let w = Math.max(-wMax, Math.min(wMax, (a.rx >= 2 ? 4 : 2.4) * err));
+    const wAcc = a.rx >= 2 ? 5.0 : 3.0;
+    w = a.yawW + Math.max(-wAcc * dt, Math.min(wAcc * dt, w - a.yawW));
     const na = wrapAngle(a.alpha + w * dt);
     if (tram.turnBlocked(a, na)) w = 0; else a.alpha = na;
     a.yawW = w;
@@ -245,14 +247,17 @@ export class Steering {
     const es = sp > 0.1 ? a.vs / sp : Math.cos(a.alpha), ed = sp > 0.1 ? a.vd / sp : Math.sin(a.alpha);
     const agents = this.c.population.agents;
     const L = a.leader || a;
+    const km = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);   // metres per unit of s here
+    // (strollers and bicycles reach further: their neighbours two cells away across the street too)
+    const yr = a.mob || this._propAround(a) ? 2 : 1;
     for (let x = ix - 2; x <= ix + 2; x++) {
       if (x < 0 || x >= this.nx) continue;
-      for (let y = iy - 1; y <= iy + 1; y++) {
+      for (let y = iy - yr; y <= iy + yr; y++) {
         if (y < 0 || y >= this.ny) continue;
         for (let j = this.head[x * this.ny + y]; j >= 0; j = agents[j].next) {
           const b = agents[j];
           if (b === a) continue;
-          const dx = b.s - a.s, dy = b.d - a.d;
+          const dx = (b.s - a.s) * km, dy = b.d - a.d;
           const d2 = dx * dx + dy * dy;
           if (d2 > 16 || d2 < 1e-6) continue;
           const dist = Math.sqrt(d2);

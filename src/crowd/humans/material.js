@@ -41,6 +41,8 @@ uniform vec4 uWrist;      // rest right wrist joint xyz
 uniform float uClothN;    // 1: body vertices carry the garment drape normal (aux)
 uniform vec4 uFace;       // head-local nostril y, mouth line y, face age (0 adult .. 1 toddler), 1: backpack straps are geometry
 uniform vec4 uFoot;       // rest heel z, toe z, sole thickness at the heel, under the ball (m)
+uniform vec4 uPack;       // backpack frame (rest): centre y, centre z, half width, half height
+uniform vec4 uPack2;      // backpack half depth, tilt (rad, top back), 1: frame known, -
 uniform vec4 uSeat;       // aMorph.w scale (m): trouser seat stand-off; 1: long hair carries its tip taper (aux1); dither (no MSAA); -
 const vec3 CR_C = __CR_C__;      // cranium ellipsoid of this body's head sculpt (head-local)
 const vec3 CR_R = __CR_R__;
@@ -639,6 +641,8 @@ varying vec3 vHairT;
 float hSkinM = 0.0;
 float hHairM = 0.0;
 float hStrand = 0.5;
+float hClump = 0.5;   // hair clump noise (breaks the strand highlight up)
+float hFar = 0.0;     // 0 near .. 1 where hair strands are well below a pixel (highlight anti-aliasing)
 float hSilh = 1.0;
 float hF90 = 1.0;     // grazing reflectance: 1 skin / glass, lower for hair and cloth (fibres mask each other)
 vec3 hHairC = vec3(0.0);
@@ -663,17 +667,22 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   float sh = (hStrand - 0.5) * 0.25;
   vec3 t1 = normalize(T + N * (0.10 + sh)), t2 = normalize(T - N * (0.15 - sh));
   float th1 = dot(t1, H), th2 = dot(t2, H);
-  float s1 = pow(sqrt(max(0.0, 1.0 - th1 * th1)), 120.0);
-  float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), 24.0);
+  // (the lobes widen and dim with distance, where a narrow highlight would alias into moire)
+  float e1 = mix(110.0, 36.0, hFar), e2 = mix(24.0, 12.0, hFar);
+  float s1 = pow(sqrt(max(0.0, 1.0 - th1 * th1)), e1);
+  float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.5);
-  // a narrow, faint sheen: dark hair stays dark (a few times its diffuse at most), never silvery
-  return (0.030 * tint * s1 + hHairC * 0.18 * s2) * vAO;
+  // a narrow, faint sheen broken up by the clumps: dark hair stays dark (a few times its diffuse
+  // at most), never a glossy helmet streak
+  float br = mix(0.25 + 1.1 * hClump, 1.0, hFar);
+  return (0.018 * tint * s1 * br * mix(1.0, 0.6, hFar) + hHairC * 0.14 * s2 * (0.6 + 0.6 * hClump)) * vAO;
 }
 float hSpec = 1.0;
 vec3 hSheenC = vec3(0.0);
 float hSheenR = 0.6;
 float hAO = 1.0;
 float hBump = 0.0;
+float hAlpha = 1.0;   // coverage (hair ends and edges); alpha to coverage with MSAA, dithered without
 float hH3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
 float hNoise(vec3 x) {
   vec3 i = floor(x), f = fract(x);
@@ -950,7 +959,7 @@ const FRAG_SURFACE = /* glsl */`
       if (wb > 0.0 && (region == 1.0 || region == 19.0)) {
         vec3 beltC = (uArm.w == 0.0 && L4.w < 2.5) ? mix(vec3(0.018, 0.012, 0.009), vec3(0.06, 0.035, 0.02), step(0.5, fract(seed * 3.7))) : cloth * 0.8;
         cloth = mix(cloth, beltC, wb);
-        crough = mix(crough, 0.45, wb * step(L4.w, 2.5) * (1.0 - uArm.w));
+        crough = mix(crough, 0.45, wb * step(L4.w, 2.5) * step(uArm.w, 0.5));
       }
     } else if (layer == 3.0) {
       // shoes: upper, sole band, laces line; sandals show skin between straps
@@ -1078,7 +1087,7 @@ const FRAG_SURFACE = /* glsl */`
     // bag straps (backpack: two shoulder straps; shoulder bag: one strap from the right shoulder
     // over the trapezius, across the chest and back to the bag on the left hip)
     float bagPart = mod(L11.w, 256.0);
-    if (bagPart > 0.5 && (region == 1.0 || region == 20.0 || region == 19.0) && uArm.w < 2.0) {
+    if (bagPart > 0.5 && (region == 1.0 || region == 20.0 || region == 19.0) && !(bagPart == __BACKPACK__ && uFace.w > 0.5)) {
       float st = 0.0;
       float scT = uTorso.w / 1.76;
       if (bagPart == __BACKPACK__) {
@@ -1113,9 +1122,12 @@ const FRAG_SURFACE = /* glsl */`
         clump = hNoise(vec3(q.x * 160.0, q.y * 30.0, q.z * 160.0));
         strand = hNoise(vec3(q.x * 700.0, q.y * 90.0, q.z * 700.0));
       }
-      strand = mix(strand, 0.5, smoothstep(0.0015, 0.005, fw));
+      strand = mix(strand, 0.5, smoothstep(0.0012, 0.004, fw));
+      clump = mix(clump, 0.5, smoothstep(0.006, 0.02, fw));
       float n = clump * 0.6 + strand * 0.4;
       hStrand = strand;
+      hClump = clump;
+      hFar = smoothstep(0.0012, 0.006, fw);
       col = L1.rgb * (0.85 + 0.3 * n);
       hHairM = part == __SCARF__ ? 0.0 : 1.0;
       hHairC = L1.rgb;
@@ -1138,15 +1150,52 @@ const FRAG_SURFACE = /* glsl */`
         hHairM *= edge;
       }
       if (pr == 11.0 && part != __SCARF__) {
-        // hair thins out over the last centimetre or so at its hairline: sparse hairs over skin
-        // (the clipper-faded nape of short cuts, the soft front edge), not a helmet rim
+        // hair thins out over the last centimetre or two at its hairline: sparse hairs over skin
+        // (the clipper-faded nape of short cuts, round the ears, the soft front edge), not a
+        // helmet rim; the very edge also thins in coverage (alpha to coverage / dithered)
         float thh = atan(abs(q.x), -q.z);
-        float he = smoothstep(-0.002, 0.016, q.y - hHairline(thh, part) + 0.006 * (strand - 0.5) + 0.004 * (clump - 0.5));
+        float edgeN = 0.008 * (strand - 0.5) + 0.006 * (clump - 0.5);
+        float he = smoothstep(-0.002, 0.018, q.y - hHairline(thh, part) + edgeN);
         if (hLongHair(part) && thh > 1.15) he = 1.0;
         col = mix(mix(L0.rgb * 0.8, col, 0.35), col, he);
         hHairM *= he;
+        if (!hLongHair(part) && uSeat.y > 0.5) hAlpha = min(hAlpha, smoothstep(0.0, 0.45, he + 0.1));
+        // grey and white hair of older people is thinner: the scalp shows between the strands,
+        // the strands themselves vary from silver to darker grey
+        float grey = smoothstep(0.18, 0.4, hLum(L1.rgb)) * (1.0 - step(0.5, float(hLongHair(part))));
+        if (grey > 0.0) {
+          float cov = smoothstep(0.30, 0.62, strand * 0.55 + clump * 0.45 + 0.08) ;
+          cov = mix(cov, 0.75, hFar);
+          col = mix(col, col * (0.62 + 0.55 * strand), grey * (1.0 - hFar));
+          col = mix(mix(L0.rgb * 0.85, col, 0.25), col, mix(1.0, cov, grey));
+          hHairM *= mix(1.0, cov, grey);
+        }
       }
-      if (part == __SCARF__) { col = L1.rgb * (0.9 + 0.15 * hNoise(r * 40.0)); rough = 0.85; hSpec = 0.6; hF90 = 0.5; hSheenC = col * 0.08; hSheenR = 0.8; }
+      if (pr == 11.0 && hLongHair(part) && uSeat.y > 0.5) {
+        // long hair thins out over its last few centimetres: strands of uneven length (alpha to
+        // coverage), not a cut edge
+        float tipA = vAux.y * 1.35 - 0.12 + 0.55 * (strand - 0.5) + 0.35 * (clump - 0.5);
+        hAlpha = min(hAlpha, smoothstep(0.0, 0.55, tipA));
+      }
+      if (part == __SCARF__) {
+        // headscarf: woven cotton / viscose, plain, striped or with a small print (per person),
+        // a fine weave relief and soft folds
+        float kindS = floor(fract(L9.w * 7.31 + 0.13) * 4.0);
+        vec3 base = L1.rgb, alt = mix(L1.rgb, vec3(0.92, 0.9, 0.86), 0.55);
+        if (fract(L9.w * 3.7) > 0.5) alt = L1.rgb * 0.45;
+        float pat = 0.0;
+        if (kindS == 1.0) pat = hBand(q.x * 0.7 + q.y * 0.7 + q.z * 0.2, 0.014, 0.28);                       // diagonal stripes
+        else if (kindS == 2.0) {                                                                             // small floral print
+          vec3 cp = q / 0.016, ci = floor(cp);
+          float dd = length(cp - ci - 0.5 - 0.25 * (vec3(hH3(ci), hH3(ci + 7.0), hH3(ci + 13.0)) - 0.5));
+          pat = hAA((0.22 - dd) * 0.016) * step(0.35, hH3(ci + 3.0));
+          pat = mix(pat, 0.12, smoothstep(0.1, 0.4, length(fwidth(cp))));
+        } else if (kindS == 3.0) pat = hBand(q.y + 0.4 * q.z, 0.022, 0.18) * 0.8;                          // banded edge stripes
+        col = mix(base, alt, pat) * (0.9 + 0.15 * hNoise(r * 40.0));
+        float weave = (sin(r.x * 3200.0) * sin((r.y + r.z) * 3200.0)) * (1.0 - smoothstep(0.0004, 0.0012, fw));
+        hBump += 0.00012 * weave + 0.0009 * (hNoise(r * 60.0) - 0.5);
+        rough = 0.84; hSpec = 0.55; hF90 = 0.5; hSheenC = col * 0.1 + 0.008; hSheenR = 0.75;
+      }
       if (L7.w > 0.5 && pr == 11.0) {
         float k = hAA(0.054 - length(q - vec3(0.0, 0.092, 0.035)));
         col = mix(col, L7.rgb, k); rough = mix(rough, 0.8, k); hHairM *= 1.0 - k;
@@ -1154,13 +1203,46 @@ const FRAG_SURFACE = /* glsl */`
     } else if (pr == 13.0) {
       col = L7.rgb; rough = 0.84; hSpec = 0.55; hF90 = 0.5;
       hSheenC = col * 0.15 + 0.01; hSheenR = 0.7;
-      if (part == __SUNHAT__) { col *= 0.85 + 0.25 * hBand(atan(q.x, q.z) * 0.6 + length(q.xz) * 3.0, 0.02, 0.5); rough = 0.85; hSheenC *= 0.4; }
+      if (part == __SUNHAT__ && uFace.z < 0.9) { col *= 0.85 + 0.25 * hBand(atan(q.x, q.z) * 0.6 + length(q.xz) * 3.0, 0.02, 0.5); rough = 0.85; hSheenC *= 0.4; }
+      else if (part == __SUNHAT__) { col *= 0.94 + 0.08 * hNoise(r * 300.0); rough = 0.9; hSheenC = col * 0.12; }   // a toddler's cotton sun hat
       if (vAux.y > 0.5) { col *= 0.35; } // hat band
     } else if (pr == 14.0) {
       col = L6.rgb * (0.92 + 0.12 * hNoise(r * 60.0)); rough = 0.62; hSpec = 0.8; hF90 = 0.7;
+      if (part == __BACKPACK__) {
+        // nylon / polyester canvas: matte with a soft sheen, a fine weave, darker padded straps
+        rough = 0.78; hSpec = 0.5; hF90 = 0.45;
+        float wv = sin(r.x * 2400.0) * sin(r.y * 2400.0) * (1.0 - smoothstep(0.0004, 0.0012, length(fwidth(r))));
+        hBump += 0.00008 * wv;
+      }
       if (part == __SHOPPING__) { rough = 0.6; hSpec = 0.6; col = min(col, vec3(0.7)); }
       float scB = uTorso.w / 1.76;
-      if (part == __BACKPACK__) {
+      if (part == __BACKPACK__ && uPack2.z > 0.5) {
+        // fitted pack (build frame): a zip running round the top of the main compartment in a
+        // rounded arc, a seam round the front pocket with its own zip, piped edges; the straps
+        // are darker padded webbing
+        vec3 pc = r - vec3(0.0, uPack.x, uPack.y);
+        float ct = cos(uPack2.y), st = sin(uPack2.y);
+        vec3 lp = vec3(pc.x, ct * pc.y + st * pc.z, -st * pc.y + ct * pc.z);
+        float hw = uPack.z, hh = uPack.w, hd = uPack2.x;
+        float backF = smoothstep(-hd * 0.2, hd * 0.4, lp.z);
+        vec2 bq = abs(lp.xy) - vec2(hw - 0.026 * scB, hh - 0.022 * scB) + 0.06 * scB;
+        float rr = length(max(bq, 0.0)) + min(max(bq.x, bq.y), 0.0) - 0.06 * scB;
+        float zipM = hAA(0.0016 - abs(rr)) * step(-hh * 0.15, lp.y) * backF;
+        vec2 pq = (lp.xy - vec2(0.0, -hh * 0.42)) / vec2(hw * 0.68, hh * 0.36);
+        float pkr = (length(pq) - 1.0) * min(hw * 0.68, hh * 0.36);
+        float pocketM = hAA(0.0016 - abs(pkr)) * step(hd * 0.6, lp.z);
+        float pzip = hAA(0.0014 - abs(lp.y + hh * 0.42 - hh * 0.2)) * step(abs(lp.x), hw * 0.5) * step(hd * 0.9, lp.z);
+        float z = max(max(zipM, pocketM * 0.7), pzip);
+        col = mix(col, col * 0.4, z);
+        hBump += 0.0011 * z;
+        // the bottom is scuffed darker, the top seam piped
+        col *= 1.0 - 0.14 * smoothstep(-hh * 0.75, -hh * 1.0, lp.y);
+        if (vAux.y > 0.5) {
+          col = mix(col * 0.5, vec3(0.02), 0.25);
+          rough = 0.84;
+          hBump += 0.0003 * sin((lp.x + lp.y + lp.z) * 900.0) * (1.0 - smoothstep(0.0005, 0.0015, length(fwidth(r))));
+        }
+      } else if (part == __BACKPACK__) {
         // backpack: zip around the main compartment and the front pocket, seams, a worn base
         float back = step(0.11 * scB, r.z);
         float zip = hAA(0.0022 - abs(abs(r.x) - 0.105 * scB)) * step(uShoulder.y - 0.33 * scB, r.y) * back;
@@ -1210,6 +1292,16 @@ const FRAG_SURFACE = /* glsl */`
     if (part < 0.5) hBump += skinBump * skinAmt;
   }
   diffuseColor.rgb = clamp(col, vec3(0.012), vec3(0.82));
+  if (hAlpha < 0.999) {
+    if (uSeat.z > 0.5) {
+      // no MSAA target: ordered dither instead of alpha to coverage
+      float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+      if (hAlpha <= ign) discard;
+    } else {
+      if (hAlpha < 0.02) discard;
+      diffuseColor.a = hAlpha;
+    }
+  }
   roughnessFactor = rough;
   metalnessFactor = 0.0;
   hAO = mix(1.0, aoV * aoV, 0.75);
@@ -1322,6 +1414,8 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale, shape
       info.packStraps ? 1 : 0) },
     uFoot: { value: new THREE.Vector4(info.heelZ, info.toeZ, info.shoe ? info.shoe.heel : 0.024 * (H / 1.76), info.shoe ? info.shoe.ball : 0.024 * (H / 1.76)) },
     uSeat: { value: new THREE.Vector4(info.seatBridge || 0, info.seatBridge ? 1 : 0, 0, 0) },
+    uPack: { value: new THREE.Vector4(...(info.pack ? info.pack.slice(0, 4) : [0, 0, 0, 0])) },
+    uPack2: { value: new THREE.Vector4(info.pack ? info.pack[4] : 0, info.pack ? info.pack[5] : 0, info.pack ? 1 : 0, 0) },
   };
   const hatOff = info.hatOffsets || {};
   const hairline = info.hairline || {};
@@ -1362,6 +1456,8 @@ export function makeHumanMaterials(base, partIds, bones, look, morphScale, shape
     color: 0xffffff, roughness: 0.6, metalness: 0, sheen: 1, sheenRoughness: 0.6, sheenColor: 0x000000,
     specularIntensity: 1, ior: 1.5, side: THREE.DoubleSide,
   });
+  // hair ends and edges thin out in coverage (MSAA targets; humans.js switches to a dither without)
+  mat.alphaToCoverage = true;
   mat.name = 'humans.' + info.kind;
   mat.defines = { ...mat.defines, HUMANS_DBG: debugView | 0 };   // (keeps STANDARD / PHYSICAL)
   mat.onBeforeCompile = (shader) => {

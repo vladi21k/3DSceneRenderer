@@ -94,8 +94,7 @@ const furniture = {
     warm.position.y = -1e4;
     for (const [mat, geo] of platformWarmupParts(app, this.F)) {
       const m = new THREE.Mesh(geo, mat);
-      m.castShadow = m.receiveShadow = true;
-      m.frustumCulled = false;
+      m.receiveShadow = true;
       warm.add(m);
     }
     app.scene.add(warm);
