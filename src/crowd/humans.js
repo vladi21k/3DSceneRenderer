@@ -42,7 +42,9 @@ import { U } from '../core/uniforms.js';
 // stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms.
 
 const TODDLER_POOL = 64;                  // slots for the children riding in strollers
-const LOD_PX = [300, 84, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
+// figure height on screen (px) above which LOD 0 / 1 / 2 are used (a little finer than the cast's own
+// suggestion: the GPU has the headroom, and the coarsest level's hair cap reads as a helmet above ~15 px)
+const LOD_PX = [260, 72, 15];
 const MAT_N = NUM_BONES * 12;
 const FADE = { stand: 0.75, sit: 1.0 };   // pose cross-fade times (s): folding the arms or raising a phone takes a moment
 const _frustum = new THREE.Frustum();
@@ -111,7 +113,9 @@ const humans = {
     this.initMs = { load: Math.round(performance.now() - tLoad) };
     const tBake = performance.now();
     this.bindPose = app.params.num('humans_bind', 0) > 0;
-    this.lodPx = cast.doc.lodPx || LOD_PX;
+    // (humans_lod=a,b,c: other LOD thresholds, for testing)
+    const lp = (app.params.str('humans_lod', '') || '').split(',').map(Number).filter((x) => x > 0);
+    this.lodPx = lp.length === 3 ? lp : LOD_PX;
     this.ensureCapacity(Math.max(512, this.used));
 
     // per character: rig + baked motion, accessories, draw ranges in the merged buffers

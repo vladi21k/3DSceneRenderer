@@ -54,12 +54,12 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 const TONE = {
   curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.7, 0.9],
   meter: [0.3, 0.6], target: [0.15, 0.34], backlit: 0.7,
-  clampLo: [0.75, 0.5], clampHi: [1.3, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.45,
+  clampLo: [0.75, 0.5], clampHi: [1.3, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.8,
   veil: 0.006, veilSun: 0.0012,
   // highlight recovery: knee (stops over mid grey) and the log slope above it (time of
   // day, slope): none at midday, then a phone camera's highlight tone mapping as the sun
   // lowers and the sky outshines the street
-  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.26], [0.9, 0.32], [1.0, 0.6]],
+  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.22], [0.9, 0.3], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
   // just above mid grey), easing off towards golden hour
   midday: 1.14, pivot: 0.4,
@@ -67,8 +67,11 @@ const TONE = {
   sat: [1.16, 1.08],
 };
 
-// temporal AA: weight of the new frame, variance clip width, jitter sequence length
-const TAA = { alpha: 0.1, gamma: 1.0, n: 16 };
+// temporal AA: weight of the new frame, variance clip width, jitter sequence length and
+// amplitude (pixels peak to peak: the 4x MSAA already smooths the edges, so the jitter
+// only needs to break up sub-pixel shading; a full pixel would soften the image like a
+// one-pixel box filter)
+const TAA = { alpha: 0.1, gamma: 1.0, n: 16, jitter: 0.5 };
 const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
 const JITTER = Array.from({ length: TAA.n }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
 
@@ -239,6 +242,7 @@ const post = {
     this.prevFov = 0;
     this.taaValid = false;
     this.jitter = new THREE.Vector2();
+    this.jitterScale = app.params.num ? app.params.num('taaj', TAA.jitter) : TAA.jitter;   // (inspection: URL taaj=)
     // debug=1: count of broken (non-finite / negative) scene pixels, in stats()
     this.debug = app.params.raw.get('debug') === '1';
     this.badPixels = 0;
@@ -258,7 +262,7 @@ const post = {
       uExposure: { value: 1 }, uExposureMax: { value: 1e4 }, uAutoExp: { value: TONE.meter[0] }, uMeterTarget: { value: TONE.target[0] },
       uMeterClamp: { value: new THREE.Vector2(TONE.clampLo[0], TONE.clampHi[0]) }, uBloom: { value: TONE.bloom[0] },
       uVignette: { value: TONE.vignette }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
-      uSharpen: { value: TONE.sharpen },
+      uSharpen: { value: app.params.num ? app.params.num('sharp', TONE.sharpen) : TONE.sharpen },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
       uSat: { value: TONE.sat[0] }, uContrast: { value: 1.08 },
       uCurve: { value: new THREE.Vector4(...TONE.curve) }, uChroma: { value: TONE.chroma[0] },
@@ -589,7 +593,7 @@ const post = {
   _taaBegin(app, camera) {
     if (!this.taaOn || !this.taaRT || !camera.isPerspectiveCamera) return false;
     const rig = app.cameraRig;
-    const jump = camera.position.distanceToSquared(this.prevCamPos) > 16;
+    const jump = _sv.setFromMatrixPosition(camera.matrixWorld).distanceToSquared(this.prevCamPos) > 16;
     const zoom = Math.abs(camera.fov - this.prevFov) > 0.03 * Math.max(camera.fov, 1);
     // (the inspection view= flags every frame as a cut for the motion blur: ignore that)
     const cut = rig && !rig.disabled && rig.cut && !app.params.view;
@@ -598,7 +602,7 @@ const post = {
     const e = camera.projectionMatrix.elements;
     this._pe8 = e[8]; this._pe9 = e[9];
     // content moves by +2j/size in NDC
-    this.jitter.set(2 * j[0] / this.size.x, 2 * j[1] / this.size.y);
+    this.jitter.set(2 * j[0] * this.jitterScale / this.size.x, 2 * j[1] * this.jitterScale / this.size.y);
     e[8] -= this.jitter.x; e[9] -= this.jitter.y;
     return true;
   },
@@ -617,7 +621,8 @@ const post = {
     u.tDepth.value = this.sceneRT.depthTexture;
     u.uCamWorld.value.copy(camera.matrixWorld);
     // last frame's view-projection taking positions relative to this frame's camera
-    u.uPrevVP.value.copy(this.prevVP).multiply(_m4.makeTranslation(camera.position.x, camera.position.y, camera.position.z));
+    _sv.setFromMatrixPosition(camera.matrixWorld);
+    u.uPrevVP.value.copy(this.prevVP).multiply(_m4.makeTranslation(_sv.x, _sv.y, _sv.z));
     u.uJitter.value.copy(this.jitter);
     u.uAlpha.value = this.taaValid ? TAA.alpha : 1;
     u.uExpo.value = Math.min(env && !env.disabled ? env.exposure * 1.3 : 1, env ? env.exposureMax ?? 1e4 : 1e4);
@@ -625,7 +630,7 @@ const post = {
     this.taaPing ^= 1;
     this.taaValid = true;
     this.prevVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    this.prevCamPos.copy(camera.position);
+    this.prevCamPos.setFromMatrixPosition(camera.matrixWorld);
     this.prevFov = camera.fov;
     return dst;
   },

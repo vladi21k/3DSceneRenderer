@@ -18,7 +18,8 @@ import { footDims } from './behaviour/footprint.js';
 //   behaviour/population  spawning where unseen, recycling, groups, cafés, benches, platforms
 //   behaviour/behaviour   decisions and tasks (browse, shops, side streets, crossings…)
 //   behaviour/steering    social-force avoidance, obstacles, walls, gait and gaze
-//   behaviour/tram        tram clearance, bell requests, swept-volume guarantee
+//   behaviour/tram        tram clearance (the cab tram and the oncoming units), bell requests,
+//                         swept-volume guarantee, boarding at the left platform behind a unit
 //   behaviour/visibility  frustum / facade / occluder tests for hidden spawns
 //   behaviour/cyclist     cyclists: riding lines, passing, lane changes, getting on and off
 //   behaviour/footprint   stroller / bicycle footprints for avoidance and the tram clearance
@@ -36,6 +37,10 @@ import { footDims } from './behaviour/footprint.js';
 // stroller / bicycle against people and against each other check (check.propPeople, world
 // space, within 60 m of the camera). stats().cyclists counts riders stopped for more than 5 s
 // with nobody in the way (events.cycleStall5s over the run) and riders near / crossing a rail.
+// stats().units: people kept off the oncoming units' track (clears), blocked steps, body
+// projections (rescues) and, with crowdCheck=1, figures inside a unit's body (leftTrack: 0);
+// stats().mobility.propShare0to100m / 100to400m and stats().corridorDirs (towards / away).
+// With view= the free camera is an obstacle like a pole: nobody walks through it.
 
 const PI = Math.PI;
 const _v = new THREE.Vector3();

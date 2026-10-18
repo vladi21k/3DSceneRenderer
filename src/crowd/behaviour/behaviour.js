@@ -48,7 +48,10 @@ function tramLane(c, a, d) {
   const lo = iv.lo, hi = iv.hi;
   const across = (a.d <= lo && d > lo) || (a.d >= hi && d < hi);
   if (!across && (d >= hi || d <= lo)) return d;
-  const up = keepSide(c, a, a.uSide ? a.uSide > 0 : d >= (lo + hi) / 2);
+  // (inside: over to the other track rather than off the corridor, unless that is much
+  // further; with the cab near as well, the nearer edge)
+  const pref = a.uSide ? a.uSide > 0 : tram.near(a) ? d >= (lo + hi) / 2 : hi - a.d <= a.d - lo + 1.5;
+  const up = keepSide(c, a, pref);
   return up ? hi + a.laneF * 0.35 : lo - a.laneF * 0.5;
 }
 
@@ -884,6 +887,9 @@ export function arrive(c, a) {
       // still in the recess (gave up on a blocked goal): the door keeps bounding them until out
       a.inDoor = Math.abs(a.d) > map.facadeAt(a.s, side) - 0.35;
       if (r.chance(0.25) && startCross(c, a, a.s + a.dir * r.range(2, 6), TASK.NONE, null)) return;
+      // out on the street: any lane of this side, the track corridor too (people arriving from
+      // the far end walk the corridor as much as those coming up from behind the cab)
+      if (!a.inDoor && !a.mob) setLane(c, a, r);
       return;
     case TASK.CROSS: {
       if (a.step === 0 || a.step === 1) {

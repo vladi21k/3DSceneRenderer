@@ -285,6 +285,8 @@ export class Population {
     if (mob === MOB.CYCLE) pickRideLane(c, a, r, opts.d !== undefined ? side : 0);
     if (opts.lane !== undefined && mob !== MOB.CYCLE) { a.lane = opts.lane; if (a.lane === LANE.SIDE) a.laneF = r.range(0.04, 0.96); }
     if (opts.laneD !== undefined && !mob) { a.lane = LANE.CORR; a.laneD = opts.laneD; }
+    // (a corridor walker is placed from its own line: kept clear of a tram's track on its side)
+    if (a.lane === LANE.CORR && opts.d === undefined) a.d = a.laneD;
     a.d = opts.d ?? (mob === MOB.CYCLE ? this._rideLineAt(a) : laneTarget(c, a));
     if (opts.d === undefined) a.d += r.range(-0.2, 0.2);
     a.alpha = dir > 0 ? 0 : PI;

@@ -122,7 +122,7 @@ function vary(r, char, kidTop) {
   if (char.tints.hair && r.chance(0.7)) {
     const h = r.weighted(HAIR[hairFamily(char.tints.hair)]);
     t.hair = h.slice();
-    t.brows = h.map((x) => x * 0.75);
+    t.brows = h.map((x) => x * 0.95);
     t.beard = h.map((x) => x * 0.95);
   }
   const sk = r.range(0.95, 1.05);                                  // skin brightness +-5 %
@@ -133,6 +133,11 @@ function vary(r, char, kidTop) {
 
 function packTints(t) {
   const out = new Float32Array(REGION_COUNT * 3).fill(1);
+  // grey beards read as salt and pepper (dark strands between the grey), never a pale mask
+  if (t.beard) {
+    const l = 0.2126 * t.beard[0] + 0.7152 * t.beard[1] + 0.0722 * t.beard[2];
+    if (l > 0.09) t.beard = t.beard.map((x) => x * (0.09 / l));
+  }
   for (const [name, id] of Object.entries(REGION)) {
     const c = t[name];
     if (c) { out[id * 3] = c[0]; out[id * 3 + 1] = c[1]; out[id * 3 + 2] = c[2]; }

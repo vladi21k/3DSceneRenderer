@@ -498,13 +498,14 @@ export class Rig {
       // arms folded across the chest: the right forearm in front, its hand tucked under the
       // left upper arm; the left forearm behind it with the hand resting on the right biceps
       // (in front of this body's chest: its forward extent comes from the build's hang rings)
+      // (forearms against the lower chest, the elbows low by the sides, upper arms nearly hanging)
       const zf = this.chestFront;
       const br = 0.004 * Math.sin(T * 5);
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.74, shY - 0.235 * k + br, zf - 0.030 * k),
-        pole: new THREE.Vector3(1, -0.3, 0.5), palm: new THREE.Vector3(0.6, -0.2, 1), flex: 85 };
-      // (the left forearm lies behind and a little above it, its hand tucked round the right arm)
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.80, shY - 0.200 * k + br, zf - 0.006 * k),
-        pole: new THREE.Vector3(-1, -0.3, 0.5), palm: new THREE.Vector3(-0.6, -0.2, 1), flex: 80 };
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.46, shY - 0.250 * k + br, zf - 0.040 * k),
+        pole: new THREE.Vector3(0.25, -1, 0.12), palm: new THREE.Vector3(0.1, -0.25, 1), flex: 70 };
+      // (the left forearm lies above it, its hand tucked round the right upper arm)
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.50, shY - 0.212 * k + br, zf - 0.022 * k),
+        pole: new THREE.Vector3(-0.25, -1, 0.12), palm: new THREE.Vector3(-0.1, -0.25, 1), flex: 65 };
     } else if (variant === 3) {
       // hands in the front pockets: wrists at the pocket openings, elbows out a little (the
       // shader tucks the hands themselves inside the trousers)

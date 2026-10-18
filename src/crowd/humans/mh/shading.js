@@ -20,10 +20,10 @@ import { U } from '../../../core/uniforms.js';
 export const NB = 22;
 export const BONE_DYN = NB * 3;          // first state texel of a bone row
 export const BONE_W = BONE_DYN + 2;      // texels per bone row
-export const LOOK_W = 25;                // texels per look row (see writeLook)
+export const LOOK_W = 26;                // texels per look row (see writeLook)
 const REGION_ROUGH = [-1, 0.5, 0.8, 0.8, 0.06, -1, -1, -1, -1, 0.95, -1, 0.85, 0.32, 0.08, 0.55, 0.7];
 // specular strength per region (x the dielectric F0 0.04)
-const REGION_SPEC = [0.72, 0.12, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
+const REGION_SPEC = [0.72, 0.05, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
 
 const COMMON = /* glsl */`
 uniform highp sampler2D uBoneTex;
@@ -145,6 +145,14 @@ vec3 hHairT = vec3(0.0);
 vec3 hEmit = vec3(0.0);
 float hLum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float hH3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float hBump = 0.0;
+float hStrand = 1.0;
+float hVNoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hH3(i), hH3(i + vec3(1, 0, 0)), f.x), mix(hH3(i + vec3(0, 1, 0)), hH3(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(hH3(i + vec3(0, 0, 1)), hH3(i + vec3(1, 0, 1)), f.x), mix(hH3(i + vec3(0, 1, 1)), hH3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
 float hAA(float e) { float w = max(fwidth(e) * 0.8, 1e-5); return smoothstep(-w, w, e); }
 float hBand(float x, float period, float duty) {
   float f = fract(x / period);
@@ -186,7 +194,7 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.45);
   float br = mix(0.35 + 0.9 * j, 0.8, hFar);
-  return (0.06 * tint * s1 * br + hHairC * 0.5 * s2 * (0.5 + 0.6 * j)) * hAO;
+  return (0.035 * tint * s1 * br + hHairC * 0.45 * s2 * (0.5 + 0.6 * j)) * hAO * hStrand;
 }
 `;
 
@@ -216,6 +224,8 @@ const FRAG_SURFACE = /* glsl */`
     // coverage of hair cards, brows, lashes, beards: kept from thinning out in the mips, sharpened
     // to about a pixel, then rounded to the target's sample count (alpha to coverage) or tested
     a = tx.a * (1.0 + max(lod, 0.0) * 0.22);
+    if (hRegion == 3) a *= 1.0 - hLook(row, 3).w;          // lighter lashes (men, children)
+    if (hRegion == 2) a *= 0.8;                            // brows: skin shows between the hairs
     if (hRegion == 11) {
       // beard shell: strands (fine streaks running down the face, in rest space) thin out towards
       // the shell's edges; far away only the soft edge remains
@@ -253,10 +263,32 @@ const FRAG_SURFACE = /* glsl */`
     }
   }
   diffuseColor = vec4(col, a);
-  if (hRegion == 0) hSkinM = 1.0;
+  if (hRegion == 4) {
+    // the upper lid shades the top of the eyeball; the eye's corners are darker too
+    vec3 ec = hLook(row, 25).xyz;
+    vec3 d = vRest - vec3(vRest.x < 0.0 ? -ec.x : ec.x, ec.y, ec.z);
+    float lid = smoothstep(-0.003, 0.009, d.y);
+    diffuseColor.rgb *= mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
+    hAO *= mix(1.0, 0.6, lid);
+  }
+  if (hRegion == 0) {
+    hSkinM = 1.0;
+    // close up: skin is not a flat colour: faint blotches, pores and an uneven sheen (rest space,
+    // faded out well before it could alias)
+    float fwr = length(fwidth(vRest));
+    float near = 1.0 - smoothstep(0.0012, 0.005, fwr);
+    if (near > 0.0) {
+      float n1 = hVNoise(vRest * 160.0), n2 = hVNoise(vRest * 1100.0);
+      diffuseColor.rgb *= 1.0 + near * (n1 - 0.5) * 0.08;
+      hRough = mix(hRough, hRough * (0.82 + 0.36 * n2), near);
+      hBump = near * (n2 * 0.00009 + n1 * 0.00025);
+    }
+  }
   if (hRegion == 1 || hRegion == 11 || hRegion == 2) {
     hHairM = hRegion == 1 ? 1.0 : 0.6;
     hHairC = col;
+    // highlights only on the strands the texture draws (the gaps between them stay dull)
+    hStrand = clamp(hLum(tx.rgb) * 1.8, 0.15, 1.0);
     hFar = smoothstep(0.5, 3.5, lod);
   }
   // cloth sheen: fibres catch light at grazing angles (dark cloth reads as cloth, not plastic)
@@ -290,6 +322,14 @@ const FRAG_NORMAL = /* glsl */`
   if (uHasNormal > 0.5 && vCastTex.y < 254.5 && (hFlags & 16) == 0 && hRegion != 11) {
     vec3 nm = texture(uNormalArr, vec3(vCastUv, vCastTex.y)).xyz * 2.0 - 1.0;
     normal = normalize(T * (nm.x * scl) + Bt * (nm.y * scl) + normal * nm.z);
+  }
+  if (hBump != 0.0) {
+    // skin micro relief from a height in metres (screen-space derivatives)
+    float dhx = dFdx(hBump), dhy = dFdy(hBump);
+    vec3 r1 = cross(q1, normal), r2 = cross(normal, q0);
+    float dt = dot(q0, r1);
+    vec3 nb = abs(dt) * normal - sign(dt) * (dhx * r1 + dhy * r2);
+    if (abs(dt) > 1e-14 && dot(nb, nb) > 1e-30) normal = normalize(nb);
   }
   // strand direction of hair cards: along the texture's v axis
   if (hHairM > 0.0) hHairT = normalize(Bt - normal * dot(Bt, normal) + 1e-6);
@@ -414,7 +454,7 @@ export function floatTexture(w, h) {
 
 /**
  * Writes one person's look row: region tints (texels 0-15), pattern (16, 17) and the character's
- * landmarks for the vertex shader (18-23: thigh capsules L / R, wrists L / R (x hem height); 24: head centre).
+ * landmarks for the vertex shader (18-23: thigh capsules L / R, wrists L / R (x hem height); 24: head centre; 25: right eye centre).
  */
 export function writeLook(data, row, a) {
   const o = row * LOOK_W * 4;
@@ -422,6 +462,9 @@ export function writeLook(data, row, a) {
   for (let i = 0; i < 16; i++) {
     data[o + i * 4] = T[i * 3]; data[o + i * 4 + 1] = T[i * 3 + 1]; data[o + i * 4 + 2] = T[i * 3 + 2]; data[o + i * 4 + 3] = 0;
   }
+  // (lashes texel w: how much thinner the lashes are drawn: men's and children's lashes read as
+  // eyeliner at full density)
+  data[o + 15] = a.female && a.age !== 'child' && a.age !== 'toddler' ? 0 : 0.4;
   const pat = a.patColor || [T[12 * 3], T[12 * 3 + 1], T[12 * 3 + 2]];
   data[o + 64] = pat[0]; data[o + 65] = pat[1]; data[o + 66] = pat[2]; data[o + 67] = a.pattern || 0;
   data[o + 68] = a.patScale || 1; data[o + 69] = a.char.info.H; data[o + 70] = a.topKind === 'dress' ? 1 : 0; data[o + 71] = a.seedT || 0;
@@ -431,4 +474,6 @@ export function writeLook(data, row, a) {
   put(22, 9, a.char.hemY ?? -1); put(23, 13, 0);
   const hc = a.char.info.headC || J[5];
   data[o + 96] = hc[0]; data[o + 97] = hc[1]; data[o + 98] = hc[2]; data[o + 99] = 0;
+  const ey = a.char.info.eyeR || [0.031, hc[1] + 0.02, hc[2] - 0.05];
+  data[o + 100] = Math.abs(ey[0]); data[o + 101] = ey[1]; data[o + 102] = ey[2]; data[o + 103] = 0;
 }

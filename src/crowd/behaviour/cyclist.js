@@ -956,6 +956,12 @@ function startSideOutRide(c, a, m, side) {
     if (!tram.canEnterBand(a, bIn, T) || !tram.canEnterBand(a, bOut, T)) return false;
     a.crossOK = c.time + T + 1;
   }
+  // (across the oncoming units' track: only with a safe gap too)
+  if (tram.units.length && (a.d + RIDE_D) * (gd + RIDE_D) < 0) {
+    const T = Math.hypot(ahead, lat) / Math.max(2, a.bikeV) + 1.5;
+    if (!tram.canEnterUnit(a, a.s, T) || !tram.canEnterUnit(a, gs, T)) return false;
+    a.crossOK = Math.max(a.crossOK, c.time + T + 1);
+  }
   a.state = ST.GOTO; a.task = TASK.SIDE_OUT; a.step = 0; a.mouth = m; a.side = side; a.slotX = slotX;
   a.gs = gs; a.gd = gd; a.gTol = 1.0; a.mvOn = false;
   c.tally('cycleIntoSideStreet');

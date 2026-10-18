@@ -15,7 +15,8 @@ import { hash2 } from '../../core/rng.js';
 //   ht_filter = skirt | dress | longskirt | hat | suit | old | oldwalk | child | kid (5-7) | boy | girl | teen | man |
 //               woman | oldman | oldwoman | male | female | beard | shorts | tee | collar | pattern | heavy | long (hair) |
 //               bag (shoulder bag) | backpack | shopping | phone (walks with a phone) | cross | pocket | hip | back |
-//               talk | look (idle stances) | id=<character id> (one character of the cast, e.g. id=m06)
+//               talk | look (idle stances) | sit0 | sitback | sitlean | sitphone | sitcup | sittalk (how they sit) |
+//               id=<character id> (one character of the cast, e.g. id=m06)
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
 //   ht_idle = 0..7 | cycle: standing figures take that stance (set() field idle), or change it every 4 s
@@ -353,4 +354,6 @@ const FILTERS = {
   collar: (a) => a.topKind === 'shirt',
   pattern: (a) => a.pattern > 0,
   longskirt: (a) => !!a.longSkirt,
+  sit0: (a) => a.sit === 0, sitback: (a) => a.sit === 1, sitlean: (a) => a.sit === 2,
+  sitphone: (a) => a.sit === 5, sitcup: (a) => a.sit === 6, sittalk: (a) => a.sit === 7,
 };

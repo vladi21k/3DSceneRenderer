@@ -626,7 +626,7 @@ void main() {
   float kca = 1.0 - clamp(thin, 0.0, 1.0);
   vec3 col = vec3(mix(c0.r, cr.r, kca), c0.g, mix(c0.b, cb.b, kca));
   // in-camera sharpening: luma unsharp mask in log space (exposure independent), the
-  // boost limited to a third of a stop and faded out across strong edges (no halos)
+  // boost limited to 0.4 stop and faded out across strong edges (no halos)
   if (uSharpen > 0.0) {
     ivec2 p = ivec2(gl_FragCoord.xy), mx = ivec2(uResolution) - 1;
     float n = dot(texelFetch(tHDR, clamp(p + ivec2(1, 0), ivec2(0), mx), 0).rgb, LW)
@@ -635,7 +635,7 @@ void main() {
             + dot(texelFetch(tHDR, clamp(p - ivec2(0, 1), ivec2(0), mx), 0).rgb, LW);
     float d = log2((l0 + 1e-4) / (0.25 * n + 1e-4));
     float k = uSharpen * (1.0 - smoothstep(0.8, 2.5, abs(d)));
-    col *= exp2(clamp(k * d, -0.33, 0.33));
+    col *= exp2(clamp(k * d, -0.4, 0.4));
   }
   col = mix(col, texture2D(tBloom, uv).rgb, uBloom);
 
@@ -718,7 +718,7 @@ vec3 fromYCoCg(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z
 vec3 tm(vec3 c) { return c * uExpo / (1.0 + dot(c, LW) * uExpo); }
 vec3 itm(vec3 t) { return max(t, 0.0) / (uExpo * max(1.0 - dot(t, LW), 1e-3)); }
 // 5-tap Catmull-Rom (bilinear taps at the combined weights)
-vec3 histCR(vec2 uv) {
+vec3 sampleCR(sampler2D tex, vec2 uv) {
   vec2 sp = uv * uResolution;
   vec2 tp = floor(sp - 0.5) + 0.5;
   vec2 f = sp - tp;
@@ -730,18 +730,21 @@ vec3 histCR(vec2 uv) {
   vec2 t12 = (tp + w2 / w12) / uResolution;
   vec2 t0 = (tp - 1.0) / uResolution, t3 = (tp + 2.0) / uResolution;
   float a = w12.x * w0.y, b = w0.x * w12.y, c = w12.x * w12.y, d = w3.x * w12.y, e = w12.x * w3.y;
-  vec3 r = texture2D(tHist, vec2(t12.x, t0.y)).rgb * a + texture2D(tHist, vec2(t0.x, t12.y)).rgb * b
-         + texture2D(tHist, t12).rgb * c + texture2D(tHist, vec2(t3.x, t12.y)).rgb * d
-         + texture2D(tHist, vec2(t12.x, t3.y)).rgb * e;
+  vec3 r = texture2D(tex, vec2(t12.x, t0.y)).rgb * a + texture2D(tex, vec2(t0.x, t12.y)).rgb * b
+         + texture2D(tex, t12).rgb * c + texture2D(tex, vec2(t3.x, t12.y)).rgb * d
+         + texture2D(tex, vec2(t12.x, t3.y)).rgb * e;
   return max(r / (a + b + c + d + e), 0.0);
 }
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy), mx = ivec2(uResolution) - 1;
   vec4 c0 = texelFetch(tCur, p, 0);
-  vec3 cur = toYCoCg(tm(c0.rgb));
   if (uAlpha >= 1.0) { gl_FragColor = c0; return; }
+  // the new frame resampled at this pixel's unjittered position (the jitter shifted the
+  // image by half uJitter in uv), so the accumulation stays as sharp as a single frame
+  vec3 cur = toYCoCg(tm(sampleCR(tCur, vUv + 0.5 * uJitter)));
+  vec3 cpx = toYCoCg(tm(c0.rgb));
   // neighbourhood moments, and the nearest depth (edges move with the foreground)
-  vec3 m1 = cur, m2 = cur * cur, lo = cur, hi = cur;
+  vec3 m1 = cpx, m2 = cpx * cpx, lo = cpx, hi = cpx;
   float dMin = texelFetch(tDepth, p, 0).r;
   ivec2 pMin = p;
   for (int k = 0; k < 8; k++) {
@@ -760,7 +763,7 @@ void main() {
   vec2 vel = pc.w > 1e-6 ? uvq - (pc.xy / pc.w * 0.5 + 0.5) : vec2(1e3);
   vec2 huv = vUv - vel;
   if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) { gl_FragColor = c0; return; }
-  vec3 h = toYCoCg(tm(histCR(huv)));
+  vec3 h = toYCoCg(tm(sampleCR(tHist, huv)));
   // clip the history towards the centre of the variance box (within the min/max box)
   vec3 mean = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mean * mean, 0.0));
   vec3 bl = max(lo, mean - uGamma * sd), bh = min(hi, mean + uGamma * sd);
