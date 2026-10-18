@@ -25,19 +25,23 @@ VERSION = 1
 
 # triangle budgets per part kind for LOD 0..3 (hair: one side; it is drawn double-sided by duplication)
 BUDGET = {
-    'body': (5200, 1500, 420, 130),
-    'suit': (3600, 1000, 300, 90),
+    'body': (5200, 1500, 520, 210),
+    'suit': (3600, 1000, 340, 130),
     'shoes': (700, 200, 60, 20),
-    'hair': (1700, 450, 130, 40),
-    'hat': (500, 160, 50, 16),
+    'hair': (1700, 450, 300, 0),
+    'haircap': (0, 0, 0, 60),
+    'hat': (500, 160, 60, 24),
     'eyes': (None, 40, 0, 0),
     'brows': (None, None, 0, 0),
     'lashes': (None, 0, 0, 0),
-    'beard': (None, 120, 0, 0),
+    'beard': (None, 120, 50, 0),
 }
+# far LODs: skin within GD_RANGE of a garment is pulled in under it by up to SHRINK[l] (m)
+SHRINK = (0.0, 0.0, 0.004, 0.010)
+GD_RANGE = 0.035
 DOUBLE = ('hair', 'lashes', 'beard')
 SIZE_SCALE = {'toddler': 0.7, 'child': 0.85}
-FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL = 1, 2, 4
+FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT = 1, 2, 4, 8
 
 NODE_JS = r"""
 import { MeshoptSimplifier as S } from '%(lib)s';
@@ -128,6 +132,8 @@ def main():
         for p in meta['parts']:
             k = p['key']
             d = {a: z[k + '_' + a] for a in ('co', 'nr', 'uv', 'w', 'idx', 'reg', 'ao')}
+            if k + '_gd' in z:
+                d['gd'] = z[k + '_gd']
             d.update(p)
             bud = BUDGET[p['kind']]
             if p['kind'] == 'suit':
@@ -181,8 +187,10 @@ def main():
             flags = (FLAG_ALPHA if rm.get('alpha') else 0) | (FLAG_DETAIL if rm['type'] == 'detail' else 0)
             n = len(d['co'])
             reg = d['reg'].astype(np.int64)
-            ta = np.stack([np.full(n, rm['layer']), np.full(n, 255 if rm['normal'] < 0 else rm['normal']), reg,
-                           np.full(n, flags)], 1)
+            fl = np.full(n, flags)
+            if d['kind'] == 'suit' and d.get('suit') == 'female_elegantsuit01':
+                fl = np.where(reg == CASTM.REGIONS['bottom'], fl | FLAG_SKIRT, fl)
+            ta = np.stack([np.full(n, rm['layer']), np.full(n, 255 if rm['normal'] < 0 else rm['normal']), reg, fl], 1)
             r = res[f'{cid}_{d["key"]}']
             lodidx = []
             for li in range(4):
@@ -192,9 +200,18 @@ def main():
                     ix = np.array(r[li], np.int64)
                 lodidx.append(ix)
             P.append(d['co']); N.append(d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao']); TEXA.append(ta)
-            for li in range(4):
-                lods[li].append(lodidx[li] + nv)
+            base_nv = nv
             nv += n
+            for li in range(4):
+                if d['kind'] == 'body' and SHRINK[li] > 0 and 'gd' in d and len(lodidx[li]):
+                    # a copy of the skin for this far LOD, pulled in under nearby garment edges
+                    f = np.clip((GD_RANGE - d['gd']) / GD_RANGE, 0, 1)[:, None]
+                    P.append(d['co'] - d['nr'] * SHRINK[li] * f); N.append(d['nr']); UV.append(uv); W.append(d['w'])
+                    AO.append(d['ao']); TEXA.append(ta)
+                    lods[li].append(lodidx[li] + nv)
+                    nv += n
+                else:
+                    lods[li].append(lodidx[li] + base_nv)
             if d['kind'] in DOUBLE:
                 # back faces: duplicated vertices with flipped normals, reversed winding
                 P.append(d['co']); N.append(-d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao'])
@@ -282,7 +299,7 @@ def main():
         license='Human figures: generated with MPFB2 from MakeHuman system assets, CC0 1.0',
         bones=CASTM_BONES(),
         regions=CASTM.REGIONS,
-        flags=dict(alpha=FLAG_ALPHA, backface=FLAG_BACK, detail=FLAG_DETAIL),
+        flags=dict(alpha=FLAG_ALPHA, backface=FLAG_BACK, detail=FLAG_DETAIL, skirt=FLAG_SKIRT),
         textures=layer_table,
         byteLength=len(binary),
         characters=out_chars,
@@ -332,12 +349,27 @@ def landmarks(meta, P, W, TEXA):
             continue
         hang.append([round(float(y), 4), round(float(np.abs(s[:, 0]).max()), 4), round(float(s[:, 2].min()), 4),
                      round(float(s[:, 2].max()), 4)])
+    # thigh capsules (radius at the hip and at the knee, per side): a renderer can keep skirts outside them
+    thigh = {}
+    for side, hb, kb in (('L', 'thighL', 'shinL'), ('R', 'thighR', 'shinR')):
+        a, b = J[hb], J[kb]
+        ab = b - a
+        sk = (reg == CASTM.REGIONS['skin']) & (W[:, 14 if side == 'L' else 18] > 0.6)
+        q = P[sk]
+        if len(q) < 20:
+            thigh[side] = [round(0.085 * k, 4), round(0.055 * k, 4)]
+            continue
+        t = np.clip(((q - a) @ ab) / (ab @ ab), 0, 1)
+        dist = np.linalg.norm(q - (a + t[:, None] * ab), axis=1)
+        r0 = np.percentile(dist[t < 0.25], 96) if (t < 0.25).sum() > 5 else 0.085 * k
+        r1 = np.percentile(dist[t > 0.75], 96) if (t > 0.75).sum() > 5 else 0.055 * k
+        thigh[side] = [round(float(r0), 4), round(float(r1), 4)]
     head = P[(W[:, 5] > 0.5) & (reg == CASTM.REGIONS['skin'])]
     eyes = P[reg == CASTM.REGIONS['eyes']]
     info = dict(H=round(H, 4), kind=meta['kind'], heelZ=round(heelZ, 4), toeZ=round(toeZ, 4), hang=hang,
                 hip=[round(float(x), 4) for x in J['thighR']], knee=[round(float(x), 4) for x in J['shinR']],
                 ankle=[round(float(x), 4) for x in J['footR']], shoulder=[round(float(x), 4) for x in J['armR']],
-                waistY=round(float(waistY), 4), neckY=round(float(J['neck'][1]), 4),
+                waistY=round(float(waistY), 4), neckY=round(float(J['neck'][1]), 4), thigh=thigh,
                 headC=[round(float(x), 4) for x in (head.mean(0) if len(head) else J['head'])],
                 eyeL=[round(float(x), 4) for x in (eyes[eyes[:, 0] < 0].mean(0) if len(eyes) else J['head'])],
                 eyeR=[round(float(x), 4) for x in (eyes[eyes[:, 0] > 0].mean(0) if len(eyes) else J['head'])],
@@ -361,10 +393,13 @@ characters[i]: one dressed character in the rest pose of the runtime skeleton (s
     tex       uint8 x4 = (albedo layer, normal layer or 255 = none, region id, flags)
   index: u16 or u32, count indices (all LODs concatenated; triangle lists, CCW front faces).
 flags: 1 alpha-tested coverage (hair, brows, lashes, beard), 2 duplicated back face of a double-sided card,
-  4 detail texture: albedo_linear = 2 * texel_linear * tint_linear (else albedo = texel * tint).
+  4 detail texture: albedo_linear = 2 * texel_linear * tint_linear (else albedo = texel * tint),
+  8 skirt / dress below the waist (weighted pelvis -> both thighs; a renderer may add its own sway or flare).
 tints[region] = default linear RGB tint per region (regions{} ids); skin = tone gain on the skin layer.
 textures: albedo array = WebP strips (perStrip layers of size x size stacked vertically, top to bottom = layer
-  order, RGBA sRGB; strips without alpha are RGB); normal array the same (RGB tangent space, OpenGL / +Y).
+  order, RGB sRGB); a strip with alpha-tested layers has a second opaque image `alpha` whose red channel is the
+  coverage (kept apart because browsers premultiply decoded alpha); normal array = WebP strips (RGB tangent
+  space, OpenGL / +Y, linear).
   layers[i] = {kind, type ('color' | 'detail' | 'mixed'), rough, normal (normal layer index or -1), alpha}.
 """
 

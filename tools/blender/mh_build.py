@@ -403,6 +403,13 @@ def build_one(cid, save_blend=False):
                 skirt_clearance(d, vpart == 1, body, J, share(body['W'], LEG) > 0.6)
         out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
 
+    # mixed outfits (top and bottom from different suits): the top's hem is tucked into the bottom where
+    # it hangs below the bottom's waistband (a top made for jeans would otherwise cut through a skirt)
+    tops = [op for op in out_parts if op['kind'] == 'suit' and spec['top'] and op['info']['suit'] == spec['top']['suit']]
+    bots = [op for op in out_parts if op['kind'] == 'suit' and spec['bottom'] and op['info']['suit'] == spec['bottom']['suit']]
+    if tops and bots and tops[0] is not bots[0]:
+        tuck_top(tops[0], bots[0], CASTM.REGIONS)
+
     # skirts: weights blend pelvis -> both thighs (no splitting between the legs)
     for op in out_parts:
         if op['kind'] == 'suit' and op['info']['suit'] == 'female_elegantsuit01':
@@ -428,30 +435,22 @@ def build_one(cid, save_blend=False):
                     in_body[i] = True
     deleted = np.zeros(len(body['co']), bool)
     from mathutils.bvhtree import BVHTree
-    gv, gp, goff = [], [], 0
+    gv, gp, sp, goff = [], [], [], 0
     for op in out_parts:
         if op['kind'] in ('suit', 'shoes', 'hat'):
             d = op['d']
             gv.append(d['co'])
+            skirt = op['kind'] == 'suit' and op['info']['suit'] == 'female_elegantsuit01'
             for p in np.where(op['keep'])[0]:
-                gp.append([int(x) + goff for x in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]])
+                f = [int(x) + goff for x in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]]
+                (sp if skirt and op['region'][p] == CASTM.REGIONS['bottom'] else gp).append(f)
             goff += len(d['co'])
-    gbvh = BVHTree.FromPolygons([Vector(v) for v in np.concatenate(gv).astype(np.float64)], gp, epsilon=0.0)
-    # nearest garment vertex (kept or cut away): skin pushing through a tight garment stays hidden
-    gk = []
-    for op in out_parts:
-        if op['kind'] in ('suit', 'shoes', 'hat'):
-            d = op['d']
-            vk = np.zeros(len(d['co']), bool)
-            for p in np.where(op['keep'])[0]:
-                vk[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
-            gk.append(vk)
-    allg = np.concatenate(gv)
-    allk = np.concatenate(gk)
-    kd = KDTree(len(allg))
-    for i, c in enumerate(allg):
-        kd.insert(Vector(c.tolist()), i)
-    kd.balance()
+    GV = [Vector(v) for v in np.concatenate(gv).astype(np.float64)]
+    gbvh = BVHTree.FromPolygons(GV, gp, epsilon=0.0)
+    # legs under a skirt stay: a striding thigh may push through the skirt, and must show as a leg
+    sbvh = BVHTree.FromPolygons(GV, sp, epsilon=0.0) if sp else None
+    knee_z = 0.5 * (J['shinL'][2] + J['shinR'][2])
+    legv = (share(body['W'], LEG) > 0.5) & (body['co'][:, 2] < knee_z + 0.04)
     del_any = np.zeros(len(body['co']), bool)
     for nm, lst in body['groups'].items():
         if nm.startswith('Delete.'):
@@ -470,12 +469,15 @@ def build_one(cid, save_blend=False):
                 h = gbvh.ray_cast(o - n * 0.002, dd, 0.16)
                 if h[0] is not None:
                     break
+        if h[0] is None:
+            # skin pushing through a tight garment: the garment surface lies just inside the skin
+            h = gbvh.ray_cast(o + n * 0.002, -n, 0.025)
+        if h[0] is None and sbvh is not None and not legv[i]:
+            h = sbvh.ray_cast(o - n * 0.002, n, 0.16)
+            if h[0] is None:
+                h = sbvh.ray_cast(o + n * 0.002, -n, 0.025)
         if h[0] is not None:
             deleted[i] = True
-        else:
-            _, j, dist = kd.find(o)
-            if allk[j] and dist < 0.06:
-                deleted[i] = True
     bkeep = np.zeros(len(body['ls']), bool)
     for p in range(len(body['ls'])):
         vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
@@ -489,6 +491,15 @@ def build_one(cid, save_blend=False):
             out_parts.append(dict(kind='beard', d=bd, keep=np.ones(len(bd['ls']), bool),
                                   region=np.full(len(bd['ls']), CASTM.REGIONS['beard'], np.int16),
                                   tex='beard:' + ('stubble' if spec['beard'] == 'stubble' else 'full'), info={}))
+
+    # far-LOD hair: an opaque cap over the scalp, pushed out to the hair's outer surface (alpha cards do not
+    # survive heavy simplification; at a few pixels a hair-coloured silhouette is what reads)
+    hair = [op for op in out_parts if op['kind'] == 'hair' and op['keep'].any()]
+    if hair:
+        cap = hair_cap(body, bkeep, hair[0])
+        if cap is not None:
+            out_parts.append(dict(kind='haircap', d=cap, keep=np.ones(len(cap['ls']), bool),
+                                  region=np.full(len(cap['ls']), CASTM.REGIONS['hair'], np.int16), tex='cap:solid', info={}))
 
     # ---------------------------------------------------------------- weights -> runtime bones
     M = np.zeros((len(bone_names), len(RT_BONES)), np.float32)
@@ -575,6 +586,7 @@ def build_one(cid, save_blend=False):
 
     # ---------------------------------------------------------------- ambient occlusion per vertex (rest pose)
     ambient_occlusion(raw, meta_parts)
+    garment_distance(raw, meta_parts)
 
     joints = {n: to3(J[n] + shift).tolist() for n in RT_BONES}
     joints['root'] = [0.0, 0.0, 0.0]
@@ -656,15 +668,36 @@ def ambient_occlusion(raw, meta_parts):
                 w = raw[p['key'] + '_w']
                 arm = w[:, ARMB[1:]].sum(1) > 0.5
                 idx = idx[~arm[idx].all(1)]
+            if 'skirt' in skip and p['kind'] == 'suit' and p.get('suit') == 'female_elegantsuit01':
+                reg = raw[p['key'] + '_reg']
+                idx = idx[reg[idx[:, 0]] != CASTM.REGIONS['bottom']]
             verts.append(co)
             polys.append(idx + off)
             off += len(co)
         V = np.concatenate(verts).astype(np.float64)
         T = np.concatenate(polys)
         return BVHTree.FromPolygons([Vector(v) for v in V], T.tolist(), all_triangles=True, epsilon=0.0)
-    bvh_all = bvh_of(('lashes', 'brows'))
+    # the arms move away from the body: hands and forearms are occluded only by the arm itself
+    def bvh_arms():
+        verts, polys, off = [], [], 0
+        for p in meta_parts:
+            if p['kind'] in ('lashes', 'brows', 'hair', 'beard'):
+                continue
+            co = raw[p['key'] + '_co']
+            idx = raw[p['key'] + '_idx']
+            w = raw[p['key'] + '_w']
+            arm = w[:, ARMB[1:]].sum(1) > 0.5
+            idx = idx[arm[idx].all(1)]
+            verts.append(co)
+            polys.append(idx + off)
+            off += len(co)
+        T = np.concatenate(polys)
+        V = np.concatenate(verts).astype(np.float64)
+        return BVHTree.FromPolygons([Vector(v) for v in V], T.tolist(), all_triangles=True, epsilon=0.0)
+    bvh_arm = bvh_arms()
     # the arms swing in the walk: they do not darken the torso, hips and thighs
     bvh_noarm = bvh_of(('lashes', 'brows'), True)
+    bvh_noskirt = bvh_of(('lashes', 'brows', 'skirt'), True)
     # hair cards do not darken each other much (light passes between strands): hair sees only the head
     bvh_nohair = bvh_of(('lashes', 'brows', 'hair'))
     # fixed cosine-weighted directions (golden spiral)
@@ -679,8 +712,9 @@ def ambient_occlusion(raw, meta_parts):
         two = p['kind'] in ('hair', 'lashes')
         w = raw[p['key'] + '_w']
         on_arm = w[:, ARMB[1:]].sum(1) > 0.5
+        on_leg = (w[:, [14, 15, 16, 17, 18, 19, 20, 21]].sum(1) > 0.5) if p['kind'] == 'body' else np.zeros(len(co), bool)
         for i in range(len(co)):
-            bvh = bvh_nohair if p['kind'] in ('hair', 'lashes', 'brows') else (bvh_all if on_arm[i] else bvh_noarm)
+            bvh = bvh_nohair if p['kind'] in ('hair', 'lashes', 'brows') else (bvh_arm if on_arm[i] else bvh_noskirt if on_leg[i] else bvh_noarm)
             n = nr[i]
             a = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
             t = np.cross(n, a)
@@ -851,6 +885,123 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
                 ls=np.array(ls, np.int32), lt=np.array(lt, np.int32), W=body['W'][vids], groups={}, name='beard')
 
 
+def garment_distance(raw, meta_parts):
+    """<body>_gd: distance (m) from each body vertex to the nearest garment / shoe / hat vertex. Far LODs pull
+    skin near a garment edge in under it (simplified meshes would otherwise poke through each other)."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.kdtree import KDTree
+    g = [raw[p['key'] + '_co'] for p in meta_parts if p['kind'] in ('suit', 'shoes', 'hat')]
+    for p in meta_parts:
+        if p['kind'] != 'body':
+            continue
+        co = raw[p['key'] + '_co']
+        gd = np.full(len(co), 1.0, np.float32)
+        if g:
+            G = np.concatenate(g)
+            kd = KDTree(len(G))
+            for i, c in enumerate(G):
+                kd.insert(Vector(c.tolist()), i)
+            kd.balance()
+            for i, c in enumerate(co):
+                gd[i] = kd.find(Vector(c.tolist()))[2]
+        raw[p['key'] + '_gd'] = gd
+
+
+def hair_cap(body, bkeep, hair):
+    """Scalp polygons of the body, each vertex moved out along its normal to the outermost hair card."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    sc = np.zeros(len(body['co']), bool)
+    for i, w in body['groups'].get('scalp', []):
+        if w > 0.3:
+            sc[i] = True
+    hd = hair['d']
+    hf = [[int(x) for x in hd['vi'][hd['ls'][p]:hd['ls'][p] + hd['lt'][p]]] for p in np.where(hair['keep'])[0]]
+    if not hf or not sc.any():
+        return None
+    bvh = BVHTree.FromPolygons([Vector(v) for v in hd['co'].astype(np.float64)], hf, epsilon=0.0)
+    sel = []
+    for p in np.where(bkeep)[0]:
+        vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
+        if sc[vs].all():
+            sel.append(p)
+    if not sel:
+        return None
+    vids = np.unique(np.concatenate([body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]] for p in sel]))
+    remap = -np.ones(len(body['co']), np.int64)
+    remap[vids] = np.arange(len(vids))
+    nco = body['co'][vids].astype(np.float64).copy()
+    for k, i in enumerate(vids):
+        n = Vector(body['nr'][i].tolist())
+        o = Vector(body['co'][i].tolist())
+        far = 0.0
+        # outermost hair surface along the normal (march through the card layers)
+        start = o + n * 0.001
+        for _ in range(12):
+            h = bvh.ray_cast(start, n, 0.2)
+            if h[0] is None:
+                break
+            far = (h[0] - o).length
+            start = h[0] + n * 0.0015
+        nco[k] = np.array(o + n * max(0.0, far - 0.003))
+    # smooth the offsets a little (card layers are uneven)
+    off = np.linalg.norm(nco - body['co'][vids], axis=1)
+    vi, ls, lt = [], [], []
+    for p in sel:
+        vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
+        ls.append(len(vi))
+        lt.append(len(vs))
+        vi += [int(remap[v]) for v in vs]
+    nb = [[] for _ in range(len(vids))]
+    for p in range(len(ls)):
+        f = vi[ls[p]:ls[p] + lt[p]]
+        for a in f:
+            nb[a] += f
+    for _ in range(3):
+        off = np.array([np.mean(off[nb[a]]) if nb[a] else off[a] for a in range(len(vids))])
+    nco = body['co'][vids] + body['nr'][vids] * off[:, None]
+    return dict(co=nco.astype(np.float32), nr=body['nr'][vids], vi=np.array(vi, np.int32),
+                uv=np.full((len(vi), 2), 0.5, np.float32), ls=np.array(ls, np.int32), lt=np.array(lt, np.int32),
+                W=body['W'][vids], groups={}, name='haircap')
+
+
+def tuck_top(top, bot, REG):
+    """Push the kept top-garment vertices that lie below the bottom garment's waistband to just inside it."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    bd = bot['d']
+    faces = []
+    for p in np.where(bot['keep'] & (bot['region'] == REG['bottom']))[0]:
+        faces.append([int(x) for x in bd['vi'][bd['ls'][p]:bd['ls'][p] + bd['lt'][p]]])
+    if not faces:
+        return
+    used = np.unique(np.concatenate(faces))
+    waist = bd['co'][used, 2].max()
+    bvh = BVHTree.FromPolygons([Vector(v) for v in bd['co'].astype(np.float64)], faces, epsilon=0.0)
+    td = top['d']
+    tv = np.zeros(len(td['co']), bool)
+    for p in np.where(top['keep'] & (top['region'] != REG['bottom']))[0]:
+        tv[td['vi'][td['ls'][p]:td['ls'][p] + td['lt'][p]]] = True
+    moved = 0
+    for i in np.where(tv & (td['co'][:, 2] < waist + 0.004))[0]:
+        p = Vector(td['co'][i].tolist())
+        q, n, _, dist = bvh.find_nearest(p, 0.12)
+        if q is None:
+            continue
+        # the bottom's outward normal: from the body axis through q (face normals may be flipped)
+        out = Vector((q.x, q.y + 0.0, 0.0))
+        if n.dot(Vector((q.x, q.y, 0))) < 0:
+            n = -n
+        if (p - q).dot(n) > -0.006:
+            depth = 0.008 if p.z < waist - 0.01 else 0.004
+            td['co'][i] = np.array(q - n * depth)
+            moved += 1
+    return moved
+
+
 def fill_small_holes(d, max_perimeter):
     """Close small boundary loops (pocket openings and the like) of a garment with a fan around the loop
     centre (UVs and weights averaged)."""
@@ -975,7 +1126,7 @@ def skirt_clearance(d, vmask, body, J, legmask):
     for i in idx:
         p = co[i]
         u = np.clip((hip - p[2]) / 0.35, 0, 1)
-        clear = 0.012 + 0.018 * u
+        clear = 0.016 + 0.024 * u
         _, _, dist = kd.find(Vector(p.tolist()))
         if dist < clear:
             r = np.hypot(p[0], p[1] - cy)
@@ -1084,16 +1235,17 @@ def reweight_skirt(op, J, ge_index, waist_z):
     pel = ge_index['pelvis']
     tl, tr = ge_index['thigh_l'], ge_index['thigh_r']
     s1 = ge_index['spine_01']
-    side = np.clip(co[:, 0] / 0.12, -1, 1)          # +X = the character's left in Blender
-    wl = 0.5 + 0.22 * side
+    side = np.clip(co[:, 0] / 0.10, -1, 1)          # +X = the character's left in Blender
+    # the sides of a skirt move with the thigh beneath them, the middle front and back with both
+    wl = 0.5 + 0.5 * np.sign(side) * np.abs(side) ** 0.8
     for i in np.where(m)[0]:
         if co[i, 2] > top + 0.02:
             continue
         a = u[i] ** 0.8
         row = np.zeros(W.shape[1], np.float32)
-        row[pel] = 1 - a * 0.85
-        row[tl] = a * 0.85 * wl[i]
-        row[tr] = a * 0.85 * (1 - wl[i])
+        row[pel] = 1 - a * 0.95
+        row[tl] = a * 0.95 * wl[i]
+        row[tr] = a * 0.95 * (1 - wl[i])
         if co[i, 2] > hip:
             row[s1] = 0.15 * (1 - a)
         W[i] = row

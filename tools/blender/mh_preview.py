@@ -53,6 +53,12 @@ def layer_images(doc, outdir):
             px = np.empty(w * h * 4, np.float32)
             img.pixels.foreach_get(px)
             px = px.reshape(h, w, 4)       # Blender rows: bottom to top
+            if st.get('alpha'):
+                aimg = bpy.data.images.load(os.path.join(SRC, st['alpha']))
+                ap = np.empty(w * h * 4, np.float32)
+                aimg.pixels.foreach_get(ap)
+                px[..., 3] = ap.reshape(h, w, 4)[..., 0]
+                bpy.data.images.remove(aimg)
             for k in range(st['layers']):
                 # strip layer k occupies image rows [k*S, (k+1)*S) from the top
                 y0 = h - (k + 1) * S
@@ -263,51 +269,49 @@ def main():
     rows = max(1, a.rows)
     per = math.ceil(len(chars) / rows)
     spacing = 0.78
-    obs = []
-    for i, c in enumerate(chars):
-        r, k = divmod(i, per)
-        ob = build_char(c, binary, a.lod, images, layers, 0)
-        ob.location = ((k - (per - 1) / 2) * spacing, r * 2.6, 0)
-        obs.append(ob)
-    width = per * spacing
+    obs = [build_char(c, binary, a.lod, images, layers, 0) for c in chars]
     cam_d = bpy.data.cameras.new('cam')
     cam = bpy.data.objects.new('cam', cam_d)
     sc.collection.objects.link(cam)
     sc.camera = cam
     cam_d.type = 'ORTHO'
-    cam_d.ortho_scale = max(width + 0.6, 2.1 * rows * 1.3)
-    aspect = (width + 0.6) / (2.15 * rows + (rows - 1) * 0.2)
-    sc.render.resolution_x = a.res
-    sc.render.resolution_y = int(a.res / max(0.8, aspect))
-    cy = (rows - 1) * 2.6 / 2
     views = {
-        'front': ((0, -30 + cy, 0.95 + (rows - 1) * 0.0), (math.radians(90), 0, 0)),
-        'back': ((0, 30 + cy, 0.95), (math.radians(90), 0, math.radians(180))),
-        'side': ((30, cy, 0.95), (math.radians(90), 0, math.radians(90))),
-        'threeq': ((-21, -21 + cy, 1.4), (math.radians(87), 0, math.radians(-45))),
+        'front': ((0, -30, 0.95), (math.radians(90), 0, 0)),
+        'back': ((0, 30, 0.95), (math.radians(90), 0, math.radians(180))),
+        'side': ((30, 0, 0.95), (math.radians(90), 0, math.radians(90))),
+        'threeq': ((-21, -21, 0.95), (math.radians(90), 0, math.radians(-45))),
     }
-    for v in a.views.split(','):
-        if v == 'side':
-            # side view: one row, characters spread along the depth so none hides another
-            for i, ob in enumerate(obs):
-                ob.location = (0, (i - (len(obs) - 1) / 2) * spacing, 0)
-                ob.rotation_euler = (0, 0, 0)
-            cam_d.ortho_scale = len(obs) * spacing + 0.6
-            sc.render.resolution_y = int(a.res / max(0.8, (len(obs) * spacing + 0.6) / 2.15))
-            cam.location = (30, 0, 0.95)
-            cam.rotation_euler = (math.radians(90), 0, math.radians(90))
-        else:
+    tallest = max(c['top'] for c in chars) + 0.08
+    for r in range(rows):
+        row = list(range(r * per, min(len(obs), (r + 1) * per)))
+        for i, ob in enumerate(obs):
+            ob.hide_render = i not in row
+        for v in a.views.split(','):
             loc, rot = views[v]
-            cam.location = loc
+            n = len(row)
+            for k, i in enumerate(row):
+                off = (k - (n - 1) / 2) * spacing
+                if v == 'side':
+                    obs[i].location = (0, off, 0)
+                elif v == 'threeq':
+                    obs[i].location = (off * 0.7071, -off * 0.7071, 0)
+                else:
+                    obs[i].location = (off, 0, 0)
+            width = n * spacing + 0.4
+            cam_d.ortho_scale = max(width, tallest)
+            cam.location = (loc[0], loc[1], tallest / 2 - 0.02)
             cam.rotation_euler = rot
-        if a.zoom:
-            z0, z1 = [float(x) for x in a.zoom.split(',')]
-            cam_d.ortho_scale = max(z1 - z0, width + 0.2)
-            cam.location = (cam.location[0], cam.location[1], (z0 + z1) / 2)
-            sc.render.resolution_y = int(a.res * (z1 - z0) / cam_d.ortho_scale)
-        sc.render.filepath = os.path.join(a.out, f'lineup_{v}_lod{a.lod}.png')
-        bpy.ops.render.render(write_still=True)
-        print('[mh-preview] wrote', sc.render.filepath, flush=True)
+            sc.render.resolution_x = a.res
+            sc.render.resolution_y = int(a.res * tallest / cam_d.ortho_scale)
+            if a.zoom:
+                z0, z1 = [float(x) for x in a.zoom.split(',')]
+                cam_d.ortho_scale = max(z1 - z0, width)
+                cam.location = (loc[0], loc[1], (z0 + z1) / 2)
+                sc.render.resolution_y = int(a.res * (z1 - z0) / cam_d.ortho_scale)
+            suffix = f'_row{r}' if rows > 1 else ''
+            sc.render.filepath = os.path.join(a.out, f'lineup_{v}_lod{a.lod}{suffix}.png')
+            bpy.ops.render.render(write_still=True)
+            print('[mh-preview] wrote', sc.render.filepath, flush=True)
 
 
 if __name__ == '__main__':

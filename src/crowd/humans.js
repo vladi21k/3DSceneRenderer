@@ -70,6 +70,11 @@ const humans = {
 
   async init(app) {
     this.app = app;
+    // mhtest=1: the MakeHuman-based cast (assets/humans_mh) in a lineup, animated by the runtime rig
+    if (app.params.num('mhtest', 0)) {
+      import('./humans/mh/preview.js').then((m) => { this.mhTest = new m.MhPreview(app); })
+        .catch((e) => console.warn('[humans] mhtest unavailable', e));
+    }
     // mobility props (bicycles, strollers; also the parked bicycles of build()): optional
     try {
       this.props = await import('./humans/props/index.js');
@@ -329,6 +334,7 @@ const humans = {
   // ------------------------------------------------------------------ per frame
 
   update(dt, app) {
+    if (this.mhTest) this.mhTest.update(app.realDt ?? dt);
     if (!this.ready) return;
     const t0 = performance.now();
     this.time += dt;

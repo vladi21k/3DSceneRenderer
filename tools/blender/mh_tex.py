@@ -321,7 +321,7 @@ def main():
         remap[key] = dict(layer=li, rect=[0, 0, 1, 1], normal=-1, type='detail', alpha=True)
     # misc atlas layers: cells of 512 (shoes, hat, beard) and 256 (brows, lashes, eyes)
     cells512 = [k for k in keys if k.startswith(('shoes:', 'hat:', 'beard:'))]
-    cells256 = [k for k in keys if k.startswith(('brow:', 'lash:', 'eye:'))]
+    cells256 = [k for k in keys if k.startswith(('brow:', 'lash:', 'eye:', 'cap:'))]
     flatn = np.zeros((S, S, 3), np.float32)
     flatn[..., 0] = 0.5
     flatn[..., 1] = 0.5
@@ -367,6 +367,13 @@ def main():
                 elif kind == 'lash':
                     sub = alpha_detail(f'{ASSETS}/eyelashes/{name}/{name}.png', cell, boost=(0.05, 0.5))
                     t = 'detail'
+                elif kind == 'cap':
+                    # far-LOD hair cap: plain hair-coloured detail with a faint strand grain
+                    rng = np.random.default_rng(3)
+                    gr = ndimage.gaussian_filter(rng.standard_normal((cell, cell)).astype(np.float32), (0.6, 4.0))
+                    g = lin_to_srgb(np.clip(0.5 * (1 + 0.08 * gr / (gr.std() + 1e-6)), 0, 1))
+                    sub = np.stack([g, g, g, np.ones_like(g)], -1)
+                    t = 'detail'
                 elif kind == 'eye':
                     sub = load(f'{ASSETS}/eyes/materials/{name}_eye.png', cell, mode='RGBA')
                     sub[..., 3] = 1
@@ -410,16 +417,19 @@ def main():
         for s0 in range(0, len(arrs), STRIP):
             chunk = arrs[s0:s0 + STRIP]
             strip = np.concatenate(chunk, 0)
-            if kind == 'albedo':
-                im = Image.fromarray(np.round(np.clip(strip, 0, 1) * 255).astype(np.uint8), 'RGBA')
-                has_alpha = (strip[..., 3] < 0.999).any()
-                if not has_alpha:
-                    im = im.convert('RGB')
-            else:
-                im = Image.fromarray(np.round(np.clip(strip, 0, 1) * 255).astype(np.uint8), 'RGB')
+            u8 = np.round(np.clip(strip, 0, 1) * 255).astype(np.uint8)
             name = f'{kind}_{s0 // STRIP}.webp'
-            im.save(os.path.join(OUT, name), 'WEBP', quality=q, method=6, exact=True)
-            files[kind].append(dict(file='tex/' + name, layers=len(chunk)))
+            entry = dict(file='tex/' + name, layers=len(chunk))
+            # colour and coverage go in separate opaque images: browsers premultiply alpha when decoding,
+            # which would wipe the colour bled into transparent hair texels
+            Image.fromarray(np.ascontiguousarray(u8[..., :3]), 'RGB').save(os.path.join(OUT, name), 'WEBP', quality=q, method=6)
+            if kind == 'albedo' and (strip[..., 3] < 0.999).any():
+                aname = f'alpha_{s0 // STRIP}.webp'
+                a3 = np.repeat(u8[..., 3:4], 3, axis=2)
+                Image.fromarray(np.ascontiguousarray(a3), 'RGB').save(os.path.join(OUT, aname), 'WEBP', quality=90, method=6)
+                entry['alpha'] = 'tex/' + aname
+                log('wrote', aname, os.path.getsize(os.path.join(OUT, aname)) // 1024, 'KB')
+            files[kind].append(entry)
             log('wrote', name, len(chunk), 'layers', os.path.getsize(os.path.join(OUT, name)) // 1024, 'KB')
     table = dict(size=S, strip=STRIP, files=files, layers=layers, nAlbedo=len(albedo), nNormal=len(normals),
                  remap=remap, tones=tones)
