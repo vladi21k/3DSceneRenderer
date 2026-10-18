@@ -12,10 +12,13 @@ import { COLOR_SCALE, GLASS_K } from './mesh.js';
 // normal, height = world y), so it needs no extra UV set; two lookups at unrelated
 // periods hide the tiling. Run-off below balcony slabs and window sills is shaded per
 // pixel from the aRun attribute (the occluder above, see shade.runAttr): soffit
-// occlusion and a soot band under the slab, streaks hanging from it, and water, dirt
-// and rust running down narrow strips under the slab and sill ends. Also a glass
+// occlusion and patchy soot under the slab, streaks hanging from it, and water, dirt
+// and rust running down narrow strips under the slab and sill ends. Its masks vary
+// along the wall in facade metres, so they cross materials, dressing and zone borders
+// without a seam, and a slab's soot fades out a little beyond its ends. Also a glass
 // variant for the openings the buildings glaze themselves (party walls, set-back
-// storeys; colour alpha = lit share: warm interior light at night).
+// storeys, skyline blocks): curtains, blinds and rooms behind the panes, reflections
+// that see the sky from the upper floors, warm interior light at night (see litGlass).
 //
 // Every buildings material reads the compact vertex format of buildings/mesh.js: the
 // colour attribute is unorm8 × 4 (rgb = sqrt(colour / 2), a = grime / 2), decoded per
@@ -208,7 +211,7 @@ const FRAG_STONE = /* glsl */ `
       // first 20 cm and hangs 0.4-1.8 m in streaks; both reach a little beyond the slab
       // ends; water and rust down the strips under the ends
       float bgOut = max(0.0, -min(bgUa, bgUb));
-      float bgSpread = exp(-bgOut / 0.4);
+      float bgSpread = exp(-bgOut / 0.4) * (1.0 - smoothstep(0.6, 1.05, bgOut));   // nil at the zone's end (shade.BAL_M)
       bgRunK *= 1.0 - 0.18 * bgSpread * exp(-bgD / 0.35);
       float bgLen = 0.4 + 1.4 * bgVN(vec2(bgPu * 0.9 + 5.3, 0.5));
       float bgCol = smoothstep(0.35, 0.85, bgVN(vec2(bgPu * 3.1, bgD * 0.12)))

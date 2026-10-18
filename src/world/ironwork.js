@@ -642,7 +642,7 @@ const ironwork = {
           const g = this.growOf(st, r);
           if (where !== 'floor' || g === GROW.HERBS || g === GROW.DRY || g === GROW.EMPTY) grow = g;
         }
-        this.planter(ctx, _pb, bl, col, grow, this.tintOf(st, grow, r), trough, r);
+        this.planter(ctx, _pb, bl, col, grow, this.tintOf(st, grow, r), trough, r, where === 'in');
         if (!lod && (where === 'out' || where === 'in')) this.part(ctx, A.hooks[where === 'out' ? 0 : 1], _m.multiplyMatrices(_pb, _l.makeScale(bl, 1, 1)));
         boxes++;
       }
@@ -658,7 +658,8 @@ const ironwork = {
       const potCol = POTS[(st.pots + (r.chance(0.2) ? 1 : 0)) % POTS.length];
       for (let k = 0; k < n; k++) {
         const u = u0 + 0.3 + (len - 0.6) * ((k + r.range(0.3, 0.7)) / n);
-        const w = D - r.range(0.25, 0.32);
+        // (clear of a trough standing along the front)
+        const w = where === 'floor' ? Math.max(0.2, D - r.range(0.45, 0.52)) : D - r.range(0.25, 0.32);
         const s = r.range(0.8, 1.2);
         _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y, w);
         this.part(ctx, A.pot, _m.multiplyMatrices(F, _l), r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)]);
@@ -672,8 +673,8 @@ const ironwork = {
         this.plant(ctx, what, _m.multiplyMatrices(F, _l), tint);
       }
     }
-    // a plastic chair
-    if (r.chance(0.1) && D > 0.75) {
+    // a plastic chair (where no trough takes the room)
+    if (r.chance(0.1) && D > 0.75 && where !== 'floor') {
       _l.makeRotationY(r.range(-0.6, 0.6) + (r.chance(0.5) ? 0 : Math.PI)).setPosition(u0 + len * r.range(0.2, 0.8), y, D * 0.5);
       this.part(ctx, A.chair, _m.multiplyMatrices(F, _l), CHAIRS[r.int(0, CHAIRS.length - 1)]);
     }
@@ -766,10 +767,11 @@ const ironwork = {
 
   /** Planter box or trough (`base`: its foot, unscaled; `len` its length along x) and what
    *  grows in it (GROW, tint). Whole-box plantings (0.8 m long) are fitted to the length,
-   *  mirrored at random; herbs and dried-out plants are pot-sized clumps along it, a gap
-   *  here and there. The far chunks use the same instanced plants (their light levels)
+   *  mirrored at random, and hang over the front edge (over the back with `inward`: a box
+   *  hung inside the railing); herbs and dried-out plants are pot-sized clumps along it, a
+   *  gap here and there. The far chunks use the same instanced plants (their light levels)
    *  and the same draws, so nothing changes when a chunk is rebuilt at full detail. */
-  planter(ctx, base, len, col, grow, tint, trough, r) {
+  planter(ctx, base, len, col, grow, tint, trough, r, inward = false) {
     const A = this.att;
     this.part(ctx, trough ? A.trough : A.box, _pl.multiplyMatrices(base, _l.makeScale(len, 1, 1)), col);
     const soil = trough ? TROUGH_SOIL : BOX_SOIL;
@@ -788,7 +790,7 @@ const ironwork = {
     const kind = grow === GROW.GERANIUM ? PLANT.BOX : grow === GROW.BOUG ? PLANT.BOUG : PLANT.TRAIL;
     const n = Math.max(1, Math.round(len / 0.85)), sx = len / (n * 0.8);
     for (let k = 0; k < n; k++) {
-      _l.makeScale(r.chance(0.5) ? sx : -sx, 1, 1).setPosition(len * ((k + 0.5) / n - 0.5), soil, 0);
+      _l.makeRotationY(inward ? Math.PI : 0).scale(_pv.set(r.chance(0.5) ? sx : -sx, 1, 1)).setPosition(len * ((k + 0.5) / n - 0.5), soil, 0);
       this.plant(ctx, kind, _pl.multiplyMatrices(base, _l), tint);
     }
   },

@@ -534,17 +534,22 @@ function noseFittings(P, lod) {
       }
     }
   }
-  // a single long wiper parked along the bottom of the windscreen
-  const n = 8, w = 0.016;
+  // a single long wiper parked diagonally up the screen's left side (seen from the front;
+  // the viewer's left is +x), from its pivot near the bottom of the U
+  const n = 10, w = 0.014, u0 = 0.17, y0 = Y.ws0 + 0.05, u1 = 0.5, y1 = 1.9;
+  const dx = (u1 - u0) * sideX((y0 + y1) / 2), dy = y1 - y0, dl = Math.hypot(dx, dy);
+  const ox = (-dy / dl) * w, oy = (dx / dl) * w;              // across the blade, in the screen
   let prev = null;
   for (let k = 0; k <= n; k++) {
-    const t = k / n, u = 0.08 - 0.62 * t, y = Y.ws0 + 0.05 + 0.08 * t;
-    capPoint(u, y, _cp); capNormal(u, y, _cn);
+    const t = k / n, u = u0 + (u1 - u0) * t, y = y0 + (y1 - y0) * t;
     const lift = 0.012 + 0.01 * (1 - t);
-    const a = B.vert(_cp.x + _cn.x * lift, _cp.y - w + _cn.y * lift, _cp.z + _cn.z * lift, _cn.x, _cn.y, _cn.z, COL.black);
-    const b = B.vert(_cp.x + _cn.x * lift, _cp.y + w + _cn.y * lift, _cp.z + _cn.z * lift, _cn.x, _cn.y, _cn.z, COL.black);
-    if (prev) B.quad(prev[0], a, b, prev[1]);
-    prev = [a, b];
+    const side = [-1, 1].map((sg) => {
+      const yy = y + sg * oy, uu = u + (sg * ox) / sideX(yy);
+      capPoint(uu, yy, _cp); capNormal(uu, yy, _cn);
+      return B.vert(_cp.x + _cn.x * lift, _cp.y + _cn.y * lift, _cp.z + _cn.z * lift, _cn.x, _cn.y, _cn.z, COL.black);
+    });
+    if (prev) B.quad(prev[0], side[0], side[1], prev[1]);
+    prev = side;
   }
 }
 

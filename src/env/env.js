@@ -37,11 +37,11 @@ const _tc = new THREE.Vector3();
 // mie: aerosol load (x the clean reference atmosphere); haze: street-level dust haze
 // (extinction and in-scatter scale for post's aerial perspective)
 const WEATHER = {
-  streaks: { cover: 0.3, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 12, haze: { ext: 1, inscatter: 1 } },
+  streaks: { cover: 0.24, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 12, haze: { ext: 1, inscatter: 1 } },
   cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 12, haze: { ext: 1, inscatter: 1 } },
   // a pale dust haze: the sky milky and nearly white towards the horizon, far facades
   // losing most of their contrast
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 32, haze: { ext: 1.4, inscatter: 1.2 } },
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 70, haze: { ext: 1.4, inscatter: 1.2 } },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];

@@ -107,8 +107,54 @@ export class FigureBatch {
     this.stats = { view: 0, shadow: 0, tris: 0, shadowTris: 0, passes: 0 };
     const scene = app.scene;
     const self = this;
-    mesh.onBeforeRender = function (renderer, sc, camera) { self._viewPass(renderer, camera); };
-    mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self._shadowPass(scene, shadowCamera); };
+    mesh.onBeforeRender = function (renderer, sc, camera) { self._viewPass(renderer, camera); self._qBegin('view'); };
+    mesh.onBeforeShadow = function (renderer, object, camera, shadowCamera) { self._shadowPass(scene, shadowCamera); self._qBegin('shadow'); };
+    // humans_prof=1: GPU time of the figure draws alone (the frame timer is paused: queries cannot nest)
+    this.prof = null;
+    if (app.params.num('humans_prof', 0)) {
+      const gl = app.renderer.getContext(), ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+      if (ext) {
+        if (app.gpuTimer) app.gpuTimer.ext = null;
+        this.prof = { gl, ext, open: null, pending: [], sum: { view: 0, shadow: 0 }, n: { view: 0, shadow: 0 }, frames: 0, lastFrame: -1, ms: { view: 0, shadow: 0 } };
+        mesh.onAfterRender = () => self._qEnd();
+        mesh.onAfterShadow = () => self._qEnd();
+      }
+    }
+  }
+
+  _qBegin(kind) {
+    const P = this.prof;
+    if (!P || P.open) return;
+    if (this.app.frame !== P.lastFrame) { P.lastFrame = this.app.frame; P.frames++; }
+    const q = P.gl.createQuery();
+    P.gl.beginQuery(P.ext.TIME_ELAPSED_EXT, q);
+    P.open = { q, kind };
+  }
+
+  _qEnd() {
+    const P = this.prof;
+    if (!P || !P.open) return;
+    const gl = P.gl;
+    gl.endQuery(P.ext.TIME_ELAPSED_EXT);
+    P.pending.push(P.open);
+    P.open = null;
+    while (P.pending.length) {
+      const it = P.pending[0];
+      if (!gl.getQueryParameter(it.q, gl.QUERY_RESULT_AVAILABLE)) break;
+      if (!gl.getParameter(P.ext.GPU_DISJOINT_EXT)) { P.sum[it.kind] += gl.getQueryParameter(it.q, gl.QUERY_RESULT) / 1e6; }
+      gl.deleteQuery(it.q);
+      P.pending.shift();
+    }
+  }
+
+  /** humans_prof=1: mean GPU ms per frame of the view and shadow draws since the last call. */
+  profile() {
+    const P = this.prof;
+    if (!P) return null;
+    const f = Math.max(1, P.frames);
+    const r = { view: +(P.sum.view / f).toFixed(3), shadow: +(P.sum.shadow / f).toFixed(3), frames: P.frames };
+    P.sum.view = P.sum.shadow = 0; P.frames = 0;
+    return r;
   }
 
   _grow(n) {

@@ -4,7 +4,7 @@ import { lathe, rbox, xf, merge, makeGeo } from './kit.js';
 import { proto } from './instancer.js';
 
 // Parked vehicles in the cross streets: a hatchback, a saloon (also as a taxi with its
-// roof sign), a delivery van and a motor scooter, parked along the kerbs 15-60 m into the
+// roof sign) and a delivery van, parked along the kerbs 15-60 m into the
 // side streets (beyond the bollards and the crossing at the mouth), never on the tram
 // street itself.
 //
@@ -303,39 +303,6 @@ function carParts(key, detail, taxi = false) {
   return { paint: merge(paint), glass: merge(glass), trim: merge(trim), alloy: merge(alloy), rubber: merge(rubber), lamp: merge(lamp), dark: merge(dark), L, W: body.W(L / 2) };
 }
 
-/** Motor scooter on its side stand (leaning ~6 degrees to its left), front = +Z. */
-function scooterParts(detail) {
-  const seg = detail ? 10 : 20;
-  const paint = [], trim = [], alloy = [], rubber = [], lamp = [], dark = [];
-  const R = 0.2, w = 0.1;
-  for (const zz of [-0.62, 0.66]) {
-    const t = lathe([[R - 0.07, -w / 2], [R - 0.01, -w / 2], [R, -w / 2 + 0.03], [R, w / 2 - 0.03], [R - 0.01, w / 2], [R - 0.07, w / 2]], seg, { crease: 1.2 });
-    rubber.push(xf(t, [0, R, zz], [0, 0, -Math.PI / 2]));
-    alloy.push(xf(lathe([[0, w / 2 - 0.02], [R - 0.07, w / 2 - 0.01], [R - 0.07, -w / 2 + 0.01], [0, -w / 2 + 0.02]], seg), [0, R, zz], [0, 0, -Math.PI / 2]));
-  }
-  // rear body (engine cowl) as a squashed ellipsoid, floorboard, leg shield, front fender
-  const cowl = new THREE.SphereGeometry(0.5, seg, detail ? 6 : 12);
-  xf(cowl, [0, 0.56, -0.42], [0, 0, 0], [0.36, 0.38, 0.95]);
-  paint.push(cowl);
-  trim.push(xf(rbox(0.3, 0.05, 0.62, 0.02), [0, 0.3, 0.1]));
-  paint.push(xf(rbox(0.42, 0.62, 0.06, 0.05, 3), [0, 0.62, 0.42], [-0.22, 0, 0]));
-  paint.push(xf(rbox(0.16, 0.08, 0.36, 0.04), [0, 0.42, 0.66], [0.1, 0, 0]));
-  // steering column, handlebar with its headlamp housing, mirrors
-  paint.push(xf(rbox(0.12, 0.42, 0.1, 0.03), [0, 0.92, 0.48], [-0.25, 0, 0]));
-  paint.push(xf(rbox(0.56, 0.08, 0.12, 0.03), [0, 1.13, 0.44]));
-  lamp.push(xf(lampBox(0.14, 0.09, 0.04, C_HEAD), [0, 1.11, 0.51]));
-  if (!detail) for (const sx of [-1, 1]) alloy.push(xf(rbox(0.012, 0.18, 0.012, 0.004), [sx * 0.24, 1.24, 0.42], [0, 0, sx * 0.2]));
-  // seat, tail lamp, plate
-  trim.push(xf(rbox(0.3, 0.1, 0.7, 0.05, 3), [0, 0.84, -0.36]));
-  lamp.push(xf(lampBox(0.14, 0.05, 0.04, C_TAIL), [0, 0.68, -0.88]));
-  if (!detail) lamp.push(xf(lampBox(0.16, 0.12, 0.01, C_PLATE), [0, 0.5, -0.93]));
-  dark.push(xf(rbox(0.1, 0.1, 0.32, 0.02), [0.12, 0.3, -0.5]));   // exhaust / engine
-  const lean = (g) => (g ? xf(g, [0, 0, 0], [0, 0, 0.1]) : g);
-  const out = { paint: merge(paint), trim: merge(trim), alloy: merge(alloy), rubber: merge(rubber), lamp: merge(lamp), dark: merge(dark), L: 1.85, W: 0.35 };
-  for (const k of ['paint', 'trim', 'alloy', 'rubber', 'lamp', 'dark']) lean(out[k]);
-  return out;
-}
-
 /** Contact shadow decal (a quad slightly above the road), sized to the footprint. */
 function aoDecal(L, W) {
   const g = new THREE.PlaneGeometry(W + 0.32, L + 0.4);
@@ -373,8 +340,7 @@ const LOD_M = [45];
 export function buildVehicleProtos(F) {
   const P = {};
   const kinds = { hatch: () => [carParts('hatch', 0), carParts('hatch', 1)], saloon: () => [carParts('saloon', 0), carParts('saloon', 1)],
-    taxi: () => [carParts('saloon', 0, true), carParts('saloon', 1, true)], van: () => [carParts('van', 0), carParts('van', 1)],
-    scooter: () => [scooterParts(0), scooterParts(1)] };
+    taxi: () => [carParts('saloon', 0, true), carParts('saloon', 1, true)], van: () => [carParts('van', 0), carParts('van', 1)] };
   for (const [k, mk] of Object.entries(kinds)) {
     const lv = mk();
     const ao = aoDecal(lv[0].L, lv[0].W * 2);
@@ -437,23 +403,22 @@ export function planMouth(layout, c, side) {
   const xMax = Math.min(60, c.depth + 8);
   const taken = { '-1': [], '1': [] };
   for (let i = 0, tries = 0; i < n && tries < 30; tries++) {
-    const kind = rng.weighted([['hatch', 0.36], ['saloon', 0.24], ['taxi', 0.07], ['van', 0.2], ['scooter', 0.13]]);
+    const kind = rng.weighted([['hatch', 0.4], ['saloon', 0.28], ['taxi', 0.08], ['van', 0.24]]);
     const kerb = rng.chance(0.5) ? 1 : -1;
-    const len = { hatch: 4.05, saloon: 4.72, taxi: 4.72, van: 5.0, scooter: 1.85 }[kind];
+    const len = { hatch: 4.05, saloon: 4.72, taxi: 4.72, van: 5.0 }[kind];
     const x = rng.range(15 + len / 2, xMax - len / 2);
     if (taken[kerb].some((o) => Math.abs(o.x - x) < (o.len + len) / 2 + rng.range(0.7, 1.6))) continue;
     taken[kerb].push({ x, len });
-    const half = kind === 'scooter' ? 0.4 : kind === 'van' ? 0.99 : 0.9;
-    // cars stand 0.2-0.35 m off the kerb; scooters on the sidewalk edge, nose to the kerb
-    const a = kind === 'scooter' ? kerb * (road + 0.75) : kerb * (road - half - rng.range(0.2, 0.35));
-    const facesOut = rng.chance(0.5);
-    const yaw = kind === 'scooter' ? (kerb > 0 ? -1 : 1) * Math.PI / 2 + rng.range(-0.25, 0.25) : (facesOut ? 0 : Math.PI) + rng.range(-0.02, 0.02);
+    const half = kind === 'van' ? 0.99 : 0.9;
+    // 0.2-0.35 m off the kerb, either way round, never quite square to it
+    const a = kerb * (road - half - rng.range(0.2, 0.35));
+    const yaw = (rng.chance(0.5) ? 0 : Math.PI) + rng.range(-0.02, 0.02);
     let col, fin;
     if (kind === 'taxi') [col, fin] = rng.chance(0.6) ? TAXI : [[0.78, 0.78, 0.76], 'solid'];
     else if (kind === 'van') [col, fin] = rng.chance(0.7) ? [[0.8, 0.8, 0.78], 'solid'] : rng.chance(0.5) ? [[0.42, 0.43, 0.44], 'metal'] : [[0.03, 0.05, 0.12], 'metal'];
     else { const e = rng.weighted(COLOURS.map((c2) => [c2, c2[2]])); col = e[0]; fin = e[1]; }
     const v = rng.range(0.92, 1.05);
-    plan.push({ key: `${kind}_${fin}`, a, x, yaw, col: [col[0] * v, col[1] * v, col[2] * v], scooter: kind === 'scooter' });
+    plan.push({ key: `${kind}_${fin}`, a, x, yaw, col: [col[0] * v, col[1] * v, col[2] * v] });
     i++;
   }
   _plans.set(key, plan);
@@ -468,9 +433,9 @@ export function placeVehicles(chunk, app, inst, P) {
       const f = mouthFrame(route, layout, c, side);
       for (const v of planMouth(layout, c, side)) {
         // road level beyond the ramp: the junction's level, kerb drop and camber
-        // (crossStreets.js in the street module); scooters stand on the sidewalk
+        // (crossStreets.js in the street module)
         const camber = 0.022 * (1 - Math.min(1, (v.a / f.road) ** 2));
-        const y = f.start.y + (v.scooter ? 0 : -0.12 + camber);
+        const y = f.start.y - 0.12 + camber;
         _p.copy(f.start).addScaledVector(f.along, v.a).addScaledVector(f.dirOut, v.x);
         _p.y = y;
         // local +Z (front) along dirOut turned by yaw

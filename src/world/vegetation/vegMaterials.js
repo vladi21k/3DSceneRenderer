@@ -261,7 +261,7 @@ function patchLeaf(mat, params) {
       bool vegUnder = dot( vVegGN, vViewPosition ) < 0.0;
       if ( vegUnder ) {
         float l = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
-        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.1 ) * 1.04;
+        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( l ) * vec3( 0.95, 1.08, 0.85 ), 0.16 ) * 1.08;
       }`, 'leaf color_fragment');
     // crown normals are authored to point out of the crown on both faces: no flip
     fs = rep(fs, '#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin
@@ -476,7 +476,7 @@ export function createVegMaterials(app, atlas) {
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
     trans: { value: 0.32 },     // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.6, 0.3) },   // sky occlusion by the crown: extinction (1/m), floor
+    sky: { value: new THREE.Vector2(0.55, 0.36) }, // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.5 },       // share of the direct specular kept
     a2c: { value: 0 },
     density: { value: 0.75 },   // crown extinction (1/m): exp(-0.75 * 2 m) ~ 0.22 through a young crown

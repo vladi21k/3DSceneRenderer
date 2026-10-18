@@ -365,8 +365,8 @@ export class Layout {
       run--;
       if (lot.len < (hot ? 9 : 10) || this.isInStation(mid, 6)) continue;
       // neighbours in a run vary, but two terraces without umbrellas never follow each
-      // other (about 70% of all terraces stand under umbrellas)
-      const style = last && last.style !== 'umbrella' ? 'umbrella' : rng.weighted([['umbrella', 0.64], ['open', 0.18], ['awning', 0.18]]);
+      // other (about 70% of all terraces stand under umbrellas; all of the opening run)
+      const style = opening || (last && last.style !== 'umbrella') ? 'umbrella' : rng.weighted([['umbrella', 0.64], ['open', 0.18], ['awning', 0.18]]);
       const c = this._addCafe(lot, rng, hot, style);
       if (c) { owed[lot.side] = Math.max(-20, owed[lot.side] - (c.s1 - c.s0)); last = c; }
     }

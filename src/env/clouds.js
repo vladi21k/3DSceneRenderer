@@ -120,8 +120,12 @@ float cloudDensity(vec3 p, float detail) {
   // erosion below carves the boundary into billows and wisps instead of hollowing it
   float d = clamp((shape - thr) / max(0.22 * (1.0 - thr), 1e-3), 0.0, 1.0);
   // fair-weather cumulus come in fields: where the regional coverage is too thin to make
-  // a group, the odd cell that still pokes over the threshold (a lone round puff) fades
-  d *= smoothstep(0.24, 0.36, cov);
+  // a group, or the cell field around this cell (blurred over ~300 m) stays well under
+  // the threshold, the odd cell that still pokes over it (a lone round puff) fades
+  float grp = mix(textureLod(uCloudTex, (q + wq) / (13000.0 * uCloudScale), 4.5).r,
+                  textureLod(uCloudTex, R37 * (q - wq) / (22000.0 * uCloudScale) + 0.37, 4.5).r, 0.4);
+  grp = clamp(0.5 + (grp - 0.5) * 1.35, 0.0, 1.0) * 0.72 + 0.14;
+  d *= smoothstep(0.24, 0.36, cov) * smoothstep(thr - 0.1, thr - 0.03, grp);
   if (d <= 0.0 || detail <= 0.0) return d;
   // cauliflower edges: billowy Worley erosion, strongest at the base, plus a finer
   // octave that frays the rims into wisps

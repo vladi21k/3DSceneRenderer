@@ -337,17 +337,16 @@ export class TramWatch {
   }
 
   /** Is the point (s, d) (a figure on the left platform) hidden from the camera behind a unit's
-   *  body standing between them? Both shoulders are tested. */
+   *  body standing between them? The sight lines to both shoulders, at head height, must pass
+   *  through the body (in plan, below its roof). */
   behindUnit(s, d) {
-    const vis = this.c.vis, cd = vis.camD, cu = vis.camU;
+    const c = this.c, vis = c.vis, cd = vis.camD, cu = vis.camU;
+    let hc = 2.75;
+    try { hc = vis.camPos.y - c.route.groundY(c.route.wrap(cu), cd); } catch (e) { hc = 2.75; }
     for (const T of this.units) {
-      const face = cd > T.d ? T.d + T.half : T.d - T.half;
-      if ((cd - face) * (d - face) >= 0 || Math.abs(d - T.d) < T.half) continue;   // not across the body
-      const k = (face - cd) / (d - cd);
       let ok = true;
       for (const ds of [-0.3, 0.3]) {
-        const sx = cu + (s + ds - cu) * k;
-        if (sx < T.sU + 0.7 || sx > T.sU + T.len - 0.7) { ok = false; break; }
+        if (!rayThroughBox(cu, cd, hc, s + ds, d, 1.55, T.sU + 0.4, T.sU + T.len - 0.4, T.d - T.half + 0.1, T.d + T.half - 0.1, 3.2)) { ok = false; break; }
       }
       if (ok) return true;
     }
@@ -415,6 +414,9 @@ export class TramWatch {
       a.clearing = true;
       const toHi = BAND_HI - a.d, toLo = a.d - BAND_LO;
       let hi = toHi <= toLo;
+      // walking the same way as the tram along the corridor: over to its left strip and on
+      // (rather than off the corridor), when that is not much further
+      if (a.state === ST.WALK && a.dir > 0 && !a.mob && toLo < toHi + 1.2) hi = false;
       // keep going towards the destination when there is time for it
       const tta = ahead > 0 && this.v > 0.2 ? ahead / this.v : 1e9;
       const going = a.state === ST.GOTO;
@@ -582,4 +584,20 @@ export class TramWatch {
   }
 
   onBell(time) { this.bellAt = time; this.stats.bells++; }
+}
+
+/** Does the sight line from (s0, d0, height h0) to (s1, d1, h1) pass through the box
+ *  [sa, sb] × [da, db] below height top (before reaching its end point)? */
+function rayThroughBox(s0, d0, h0, s1, d1, h1, sa, sb, da, db, top) {
+  let t0 = 0, t1 = 0.97;
+  const ds = s1 - s0, dd = d1 - d0;
+  for (const [p, q, lo, hi] of [[s0, ds, sa, sb], [d0, dd, da, db]]) {
+    if (Math.abs(q) < 1e-9) { if (p < lo || p > hi) return false; continue; }
+    let a = (lo - p) / q, b = (hi - p) / q;
+    if (a > b) { const t = a; a = b; b = t; }
+    t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+    if (t0 > t1) return false;
+  }
+  // (the sight line enters the body below its roof)
+  return h0 + (h1 - h0) * t0 < top;
 }

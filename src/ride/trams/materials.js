@@ -11,10 +11,13 @@ import { U } from '../../core/uniforms.js';
 //    than one surface (laminated / double panes) over the interior seen through the tint
 //    (the material colour). Vertex colour black = black frit over the pillars and frames;
 //    the upper panes glow with the saloon lighting at dusk (glass only).
-//  - front: the cab front glass, uv = (u share of the half width, height in m). Drawn per
-//    pixel: the clear windscreen (sky reflection over the lit cab and the dashboard below)
-//    in a rounded U, a thin silver trim round it, the dark tinted mask (cheeks and the
-//    foot where the lamps sit) outside it.
+//  - front / frontTrail: the cab front glass, uv = (u share of the half width, height in m).
+//    Drawn per pixel: the windscreen in a rounded U (coated laminated glass, F0 ≈ 0.25, so
+//    the street canyon and the sky mirror in it over the cab, which is ray traced behind
+//    the glass in the body frame: console and binnacle, the driver in the leading cab,
+//    overhead console, walls, side windows onto the street, the saloon door), a thin
+//    silver trim round it, the dark tinted mask (cheeks and the foot where the lamps sit)
+//    outside it.
 //  - metal: the pantograph frame (dark grey paint).
 
 const C = (r, g, b) => new THREE.Color(r, g, b);
@@ -237,15 +240,20 @@ export function makeFrontMaterial({ driver = true, gain = { value: 1 } } = {}) {
 	roughnessFactor = mix( roughnessFactor, 0.3, tramTrim );`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
 	metalnessFactor = mix( metalnessFactor, 0.7, tramTrim );`)
-      // reflection: the laminated screen mirrors with both faces (the mask only with its
-      // outer face, the black backing behind it); the environment cube's street is bare
-      // stone, so what reflects below the horizon is darkened as on the side glazing
+      // reflection: the windscreen is coated laminated glass whose faces and solar-control
+      // film reflect about a fifth of the light (a little blue), the mask only with its outer
+      // face (the black backing behind it); the Fresnel rise to grazing stays physical
+      .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
+	material.specularColor = mix( material.specularColor * mix( 1.2, 1.0, tramTrim ), vec3( 0.24, 0.275, 0.31 ), tramWs );
+	material.specularColorBlended = mix( material.specularColor, diffuseColor.rgb, metalnessFactor );`)
+      // the environment cube's street is bare stone: what reflects below the horizon is
+      // darkened as on the side glazing
       .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
 	{
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
 		float tramSky = smoothstep( 0.0, 0.35, tramR.y );
 		vec3 tramStreet = mix( radiance, vec3( dot( radiance, vec3( 0.2126, 0.7152, 0.0722 ) ) ), 0.35 ) * 0.5;
-		radiance = mix( tramStreet, radiance, tramSky ) * mix( mix( vec3( 1.2 ), vec3( 5.1, 5.8, 6.5 ), tramWs ), vec3( 1.0 ), tramTrim );
+		radiance = mix( tramStreet, radiance, tramSky );
 	}`)
       // the cab through the glass: lit by the daylight on the screen (or the saloon and the
       // instruments at night), tinted, with a shade band along the top of the screen
@@ -257,12 +265,12 @@ export function makeFrontMaterial({ driver = true, gain = { value: 1 } } = {}) {
 		vec3 tramE = ( irradiance + iblIrradiance + 0.25 * tramEdir ) * ( 0.6 * RECIPROCAL_PI ) + vec3( 0.75, 0.85, 1.0 ) * ( uTramNight * uTramGain * 0.00003 );
 		vec3 tramL = tramCab( vTramP, normalize( - vTramE ), tramRdW, tramFoot, tramE );
 		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
-		float tramF = 0.0426 + 0.9574 * pow( 1.0 - tramNV, 5.0 );
-		vec3 tramT = vec3( 0.48, 0.64, 0.76 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
-		totalEmissiveRadiance += tramWs * tramL * tramT * max( 1.0 - 2.0 * tramF, 0.0 );
+		float tramF = 0.27 + 0.73 * pow( 1.0 - tramNV, 5.0 );
+		vec3 tramT = vec3( 0.52, 0.69, 0.82 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
+		totalEmissiveRadiance += tramWs * tramL * tramT * ( 1.0 - tramF );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.front.v3';
+  m.customProgramCacheKey = () => 'trams.front.v4';
   return m;
 }
 

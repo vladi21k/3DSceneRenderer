@@ -198,7 +198,8 @@ export function desired(c, a, out) {
   if (a.clearing) {
     const sp = c.tram.clearSpeed(a);
     out.vd = Math.sign(a.clearTo - a.d) * sp;
-    out.vs *= 0.5;
+    // (walking the way the tram goes, people step aside and walk on; facing it they hesitate)
+    out.vs *= a.vs * a.dir > 0.5 && a.dir > 0 ? 0.8 : 0.5;
     out.vmax = Math.max(out.vmax, sp * 1.1);
     a.moving = true;
   } else c.tram.filterDesired(a, out);
@@ -640,7 +641,9 @@ export function setLane(c, a, r, forceSide = false) {
     else { a.lane = LANE.CORR; a.laneD = -r.range(1.0, TRACK_ZONE_HALF - 0.55); }
     return;
   }
-  if (forceSide || p < 0.6) { a.lane = LANE.SIDE; a.laneF = r.range(0.04, 0.96); }
+  // (a hot day: on the sunlit side people keep to the shade of the tree crowns)
+  const sun = !forceSide && c.population._shadeK(a.s, a.side) < 0.97;
+  if (forceSide || p < (sun ? 0.5 : 0.6)) { a.lane = LANE.SIDE; a.laneF = sun ? r.range(0.04, 0.45) : r.range(0.04, 0.96); }
   else if (p < 0.8) { a.lane = LANE.EDGE; a.laneF = r.next(); }
   else {
     a.lane = LANE.CORR;

@@ -7,10 +7,11 @@
 // soft patches of the stone, and the local variation of its dirtiness, are added per
 // pixel by the stone materials. Colour factors are linear multipliers on the albedo.
 //
-// Run-off below balcony slabs and window sills (soffit occlusion, soot band, streaks,
+// Run-off below balcony slabs and window sills (soffit occlusion, patchy soot, streaks,
 // drip strips under the slab and sill ends) is shaded per pixel by the stone materials:
 // FaceShade lists those occluders, and every vertex carries the one above it (aRun, see
-// runAttr), so the wall needs no extra geometry for them.
+// runAttr; a slab's zone reaches BAL_M beyond its ends, where its soot fades out), so
+// the wall needs no extra geometry for them.
 
 function ihash(x, y, seed) {
   let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(seed | 0, 0x9e3779b1);
@@ -185,6 +186,7 @@ export class FaceShade {
 }
 
 // run-off: reach below the sill / slab line; zone margin beyond the occluder ends
+// (the stone shader fades a slab's soot out by 1.05 m beyond its ends: keep BAL_M above that)
 const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
 const NO_ZONES = { cuts: [], occ: [null] };
 const _cand = [];

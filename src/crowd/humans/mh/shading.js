@@ -72,6 +72,18 @@ void hSkin(out vec3 P, out vec3 N) {
     vec3 wr = hLook(row, aBoneI.x == 9.0 ? 22 : 23).xyz;
     pos = mix(pos, wr + (pos - wr) * vec3(0.55, 0.35, 0.55), D1.z);
   }
+  // legs under a skirt or dress: the thighs shrink towards their axis above the hem, so a striding
+  // or shifting leg cannot poke through the cloth
+  float hemY = hLook(row, 22).w;
+  if (hemY > 0.0 && aTex.z < 0.5 && pos.y > hemY + 0.012 && (aBoneI.x == 14.0 || aBoneI.x == 18.0 || aBoneI.x == 1.0)) {
+    int sd = pos.x < 0.0 ? 0 : 1;
+    vec3 ha = hLook(row, 18 + sd * 2).xyz, kb = hLook(row, 19 + sd * 2).xyz;
+    if (pos.y < ha.y + 0.03) {
+      vec3 ab = kb - ha;
+      vec3 c = ha + ab * clamp(dot(pos - ha, ab) / dot(ab, ab), 0.0, 1.0);
+      pos = c + (pos - c) * (1.0 - 0.3 * smoothstep(hemY + 0.012, hemY + 0.06, pos.y));
+    }
+  }
   P = (m * vec4(pos, 1.0)).xyz;
   N = normalize(mat3(m) * aNrm.xyz);
   if ((flags & 8) != 0) {
@@ -215,6 +227,11 @@ const FRAG_SURFACE = /* glsl */`
   }
   // cloth sheen: fibres catch light at grazing angles (dark cloth reads as cloth, not plastic)
   if (hRegion >= 5 && hRegion <= 10 && hRegion != 8 || hRegion == 14 || hRegion == 15) hSheen = 1.0;
+#if HUMANS_DBG == 1
+  hEmit = vec3(hAO); diffuseColor.rgb = vec3(0.0);        // debug view: baked occlusion
+#elif HUMANS_DBG == 2
+  hEmit = vec3(col); diffuseColor.rgb = vec3(0.0);        // debug view: albedo
+#endif
   if (hRegion == 13) {
     // a lit phone screen: a pale UI with a few rows of content
     float rows = hBand(vCastUv.y * 14.0, 1.0, 0.55) * step(0.08, vCastUv.x) * step(vCastUv.x, 0.92);
@@ -267,7 +284,7 @@ function patchVertex(shader, depth) {
  * Materials of the figure batch: { mat, depth, uniforms }. textures: { bones, look, albedo, normal };
  * layerRough: per albedo layer roughness.
  */
-export function makeFigureMaterials(textures, layerRough, materials) {
+export function makeFigureMaterials(textures, layerRough, materials, debugView = 0) {
   const rough = new Array(64).fill(0.7);
   for (let i = 0; i < Math.min(64, layerRough.length); i++) rough[i] = layerRough[i];
   const uniforms = {
@@ -290,6 +307,7 @@ export function makeFigureMaterials(textures, layerRough, materials) {
   // hair coverage: alpha to coverage on MSAA targets (uA2C = samples), a dither otherwise
   mat.alphaToCoverage = true;
   mat.name = 'humans.figures';
+  mat.defines = { ...mat.defines, HUMANS_DBG: debugView | 0 };
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     patchVertex(shader, false);
@@ -324,7 +342,7 @@ export function makeFigureMaterials(textures, layerRough, materials) {
       reflectedLight.directDiffuse *= mix( 1.0, hAO, 0.3 );`);
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => 'humans-mh-v1';
+  mat.customProgramCacheKey = () => 'humans-mh-v1-' + (debugView | 0);
 
   const depth = new THREE.MeshDepthMaterial();
   depth.name = 'humans.figures.depth';
@@ -374,5 +392,5 @@ export function writeLook(data, row, a) {
   const J = a.char.skeleton.joints, th = a.char.info.thigh || { L: [0.08, 0.05], R: [0.08, 0.05] };
   const put = (i, j, r) => { data[o + i * 4] = J[j][0]; data[o + i * 4 + 1] = J[j][1]; data[o + i * 4 + 2] = J[j][2]; data[o + i * 4 + 3] = r; };
   put(18, 14, th.L[0]); put(19, 15, th.L[1]); put(20, 18, th.R[0]); put(21, 19, th.R[1]);
-  put(22, 9, 0); put(23, 13, 0);
+  put(22, 9, a.char.hemY ?? -1); put(23, 13, 0);
 }

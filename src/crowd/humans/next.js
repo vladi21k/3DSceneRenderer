@@ -101,6 +101,11 @@ const humans = {
       const frame = (clip, f) => baked.data.slice((baked.offsets[clip] + f) * MAT_N, (baked.offsets[clip] + f + 1) * MAT_N);
       const B = { name: c.id, index: ci, char: c, info: c.info, rig, baked, walkV, phone: frame(CLIP.idlePhone, 0), hang: frame(CLIP.idle, 0) };
       this.bases[c.id] = B;
+      // the hem of a skirt or dress (rest height): skin above it is kept inside the cloth (mh/shading.js)
+      c.hemY = -1;
+      { const T = c.raw.tex, Pp = c.raw.pos; let y = Infinity;
+        for (let v = 0; v < c.raw.n; v++) if (T[v * 4 + 3] & 8) y = Math.min(y, Pp[v * 3 + 1]);
+        if (y < Infinity) c.hemY = y; }
       const parts = buildParts(c);
       B.fit = parts.fit; delete parts.fit;
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
@@ -127,7 +132,7 @@ const humans = {
     this.group.name = 'humans';
     app.scene.add(this.group);
     const { mat, depth, uniforms } = makeFigureMaterials({ bones: this.boneTex, look: this.lookTex, albedo: cast.albedo, normal: cast.normal },
-      cast.layerRough, app.materials);
+      cast.layerRough, app.materials, app.params.num('humans_dbg', 0));
     app.materials.register('humans.figures', mat);
     app.materials.track(mat);
     this.uniforms = uniforms;
@@ -587,8 +592,10 @@ const humans = {
     // frame (staggered); the transform below is still applied every frame so camera motion stays exact
     const M = s.model || (s.model = new Float32Array(MAT_N));
     const frame = this.app.frame;
-    // (riders: every frame until they are tiny, so the feet keep up with the pedals)
-    if (s.pose !== s.posePrev || (s.lod < 2 && s.inView) || (s.pose === 4 && s.lod < 3) || ((frame + i) & 1) === 0 || s.blendFrame < frame - 2 || s.blendBase !== B) {
+    // (riders: every frame until they are tiny, so the feet keep up with the pedals; figures a few
+    // pixels tall and those only casting a shadow into view every third frame)
+    const every = !s.inView || s.lod >= 3 ? 3 : s.lod === 2 && s.pose !== 4 ? 2 : 1;
+    if (every === 1 || s.pose !== s.posePrev || (frame + i) % every === 0 || s.blendFrame < frame - every || s.blendBase !== B) {
       this._blend(s, a, B, sc, M);
       s.blendFrame = frame;
       s.blendBase = B;

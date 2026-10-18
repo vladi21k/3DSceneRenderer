@@ -47,7 +47,7 @@ attribute vec4 aRight;  // xz: lateral unit vector; y: per-line wear factor (pai
 attribute vec4 aLine;   // x: side (-1|1), y: real half width, z: along (m), w: segment length / offset
                         // (position: the ribbon edge at the real half width)
 uniform vec2 uViewport;
-varying vec4 vLine;     // x: lateral (m), y: along (m), z: aLine.w, w: pixels per metre (lateral)
+varying vec4 vLine;     // x: lateral (m), y: along (m), z: aLine.w, w: pixels per metre across the line
 varying vec3 vLineWorld;
 varying vec3 vLineRightW; // world lateral unit vector of the ribbon
 varying float vLineHalf; // real half width (m)
@@ -189,8 +189,9 @@ const RAIL_FRAG = /* glsl */`
   vec3 aShoulder = vec3( 0.3, 0.29, 0.28 );                                // metal 0.75
   vec3 aGauge = vec3( 0.46, 0.45, 0.44 );                                  // flange-polished corner
   vec3 aDust = vec3( 0.16, 0.145, 0.125 ) * ( 0.9 + 0.2 * wear );         // dusty guard lip, metal 0.4
-  // the flangeway: grime and grit (albedo ~0.03) deep in a 36 mm slot, so its walls and
-  // floor see little sky and, mostly, no sun (cavity AO ~0.3) and reflect almost nothing
+  // the flangeway: grime and grit deep in a 36 mm slot whose walls and floor see little
+  // sky and, mostly, no sun, and reflect almost nothing (effective albedo with the
+  // cavity AO folded in, matching the 3D groove of shading.js patchGrit)
   vec3 dGroove = vec3( 0.032, 0.028, 0.0238 );
   vec3 dGrout = ${v3(MORTAR_ALBEDO, 0.95)};                                  // mortar bed
   vec3 dPave = vec3( 0.135, 0.136, 0.14 );                                  // brake-dusted setts beside it

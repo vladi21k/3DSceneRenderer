@@ -470,11 +470,12 @@ export class Rig {
       const f = this.foot[s];
       // feet stay planted; the unloaded knee bends as the pelvis shifts over the other leg
       const an = f.ankle.clone();
-      an.x = sg * (Math.abs(f.ankle.x) + 0.012 * k);
+      // (feet a little inside the hip joints: a relaxed stance, not a mannequin's A)
+      an.x = sg * Math.abs(f.ankle.x) * (variant === 5 ? 0.9 : 0.8);
       an.z = f.ankle.z + (s === 'L' ? -0.035 : 0.02) * k;
       if (variant === 4 && s === 'L') { an.x -= 0.035 * k; an.z -= 0.05 * k; }      // the free leg steps out a little
       P.leg[s].ankle = an;
-      P.leg[s].footQ = qAxis(Y, -sg * (variant === 4 && s === 'L' ? 14 : 5));
+      P.leg[s].footQ = qAxis(Y, -sg * (variant === 4 && s === 'L' ? 16 : 8));
       P.leg[s].pole = new THREE.Vector3(sg * 0.15, 0, -1).normalize();
       const A = P.arm[s];
       // (women hold their arms closer in, men's hang wide of the lats; children's a little out)

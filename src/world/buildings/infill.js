@@ -3,10 +3,11 @@ import { FACES, arcSeg, glassTone } from './mesh.js';
 
 // Self-contained opening infill for the openings the facades module does not dress (the
 // small windows of exposed party walls and the set-back upper storeys, which are not in
-// the shared plan's fronts). Kept simple but complete: glazing at w = −recess, painted
-// frames with mullion and transom, closed shutters on some windows, shopfronts with stall
-// risers or roller shutters, panelled doors with fanlights. Linear albedo colours (vertex
-// colour = paint).
+// the shared plan's fronts, and the skyline blocks). Kept simple but complete: glazing at
+// w = −recess with what shows through it (net or drawn curtains, blinds, dark rooms, open
+// casements), painted frames with mullion and transom, roller or louvred shutters on
+// some windows, shopfronts with stall risers or roller shutters, panelled doors with
+// fanlights. Linear albedo colours (vertex colour = paint; on the glass, see glassTone).
 
 const PAINT = {
   darkgreen: [0.025, 0.06, 0.04], brown: [0.075, 0.042, 0.026], white: [0.58, 0.58, 0.56],
@@ -195,28 +196,35 @@ function glazing(B, s, o, w, arched, n, shop, door, rng) {
   const room = glassTone(rng.pick(ROOM).map((c) => c * rng.range(0.85, 1.2)));
   B.grime = (lit ? 0.75 : 0) + (kind === 'open' ? 0.25 : 0);
   const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2, top = arched ? o.spring : o.y + o.h;
+  // what shows through darkens towards the head, in the shade of the reveal and lintel
+  // (the far shadow cascades are too coarse for a 15 cm reveal)
+  const yTop = o.y + o.h, span = Math.max(0.5, yTop - o.y);
+  let tone = room;
+  B.shade = (u, v, w_, nu, nv, nw, out) => {
+    const k = 0.7 + 0.3 * Math.min(1, (yTop - v) / span);
+    out[0] = tone[0] * k; out[1] = tone[1] * k; out[2] = tone[2] * k;
+  };
   if (kind === 'sheer' || ((kind === 'drawn' || kind === 'blind') && arched)) {
-    // net curtain over the whole window (a little darker low down, where it hangs in folds)
-    const c = (kind === 'drawn' ? rng.pick(DRAPE) : rng.pick(SHEER)).map((x) => x * rng.range(0.85, 1.08));
-    B.flat = glassTone(c);
+    // net curtain over the whole window
+    tone = glassTone((kind === 'drawn' ? rng.pick(DRAPE) : rng.pick(SHEER)).map((x) => x * rng.range(0.85, 1.08)));
     pane(B, s, o, w, n, tu, tv);
   } else if (kind === 'drawn') {
     // curtains drawn back to both sides, the room dark between them
     const c = glassTone(rng.pick(DRAPE).map((x) => x * rng.range(0.85, 1.1)));
     const a = o.w * rng.range(0.18, 0.32), b = o.w * rng.range(0.18, 0.32);
-    B.flat = c; quad(B, s, u0, u0 + a, o.y, top, w, tu, tv);
-    B.flat = room; quad(B, s, u0 + a, u1 - b, o.y, top, w, tu, tv);
-    B.flat = c; quad(B, s, u1 - b, u1, o.y, top, w, tu, tv);
+    tone = c; quad(B, s, u0, u0 + a, o.y, top, w, tu, tv);
+    tone = room; quad(B, s, u0 + a, u1 - b, o.y, top, w, tu, tv);
+    tone = c; quad(B, s, u1 - b, u1, o.y, top, w, tu, tv);
   } else if (kind === 'blind') {
     // a blind let down part of the way from the head
     const yb = top - (top - o.y) * rng.range(0.25, 0.8);
-    B.flat = glassTone(rng.pick(BLIND).map((x) => x * rng.range(0.9, 1.06)));
+    tone = glassTone(rng.pick(BLIND).map((x) => x * rng.range(0.9, 1.06)));
     quad(B, s, u0, u1, yb, top, w, tu, tv);
-    B.flat = room; quad(B, s, u0, u1, o.y, yb, w, tu, tv);
+    tone = room; quad(B, s, u0, u1, o.y, yb, w, tu, tv);
   } else {
-    B.flat = room;
     pane(B, s, o, w, n, tu, tv);
   }
+  B.shade = null;
   B.grime = 0;
   B.flat = [1, 1, 1];
 }

@@ -493,11 +493,7 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
       if (!sk.trunk[i] || p.y > tpl.crownBase) ao *= 0.55 + 0.45 * THREE.MathUtils.smoothstep(rn, 0.1, 0.95);
       const dirt = p.y < 0.4 ? 0.72 + 0.28 * (p.y / 0.4) : 1;
       // limbs inside the crown stand in its shade (as the leaves there, see cardLayout)
-      let occ = 1;
-      if (p.y > env.y0) {
-        env.normal(p.x, p.y, p.z, cn);
-        occ = CROWN_AO_MIN + (1 - CROWN_AO_MIN) * Math.exp(-CROWN_AO_K * crownDepth(env, p, cn));
-      }
+      const occ = nodeOcc(env, sk, i);
       const colr = [tint[0] * tv * dirt * occ, tint[1] * tv * dirt * occ, tint[2] * tv * dirt * occ];
       const veg = [info.phase[c], info.amp[i], 0, ao];
       for (let s = 0; s <= sides; s++) {
@@ -575,7 +571,7 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
     if (c.x < lim) c.x = lim;
     // sunny outer / upper leaves a touch lighter and yellower, plus per-card noise; leaves
     // deep in the crown darker (crown occlusion, see crownDepth)
-    const occ = CROWN_AO_MIN + (1 - CROWN_AO_MIN) * Math.exp(-CROWN_AO_K * crownDepth(env, p, cn));
+    const occ = nodeOcc(env, sk, i);
     const v = rng.range(0.86, 1.1) * (0.94 + 0.08 * Math.max(0, cn.y)) * occ;
     const h = rng.range(-0.06, 0.06) + 0.04 * Math.max(0, cn.y);
     const col = [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
@@ -601,17 +597,35 @@ function crownDepth(env, p, cn) {
   let d = Math.max(0, env.radius(p.y, Math.atan2(p.z, p.x)) - Math.hypot(p.x, p.z));
   d = Math.min(d, Math.max(0, p.x - env.clear(p.y)), Math.max(0, env.y1 - p.y));
   for (const dir of [UP, cn]) {
+    // coarse march out of the envelope, then bisect the last step
+    const at = (t) => env.inside(p.x + dir.x * t, p.y + dir.y * t, p.z + dir.z * t);
     let t = 0;
-    while (t < d && env.inside(p.x + dir.x * t, p.y + dir.y * t, p.z + dir.z * t)) t += 0.08;
-    d = Math.min(d, t);
+    while (t < d && at(t)) t += 0.3;
+    if (t >= d) continue;
+    let a = Math.max(0, t - 0.3), b = t;
+    for (let k = 0; k < 3; k++) { const m = (a + b) / 2; if (at(m)) a = m; else b = m; }
+    d = Math.min(d, (a + b) / 2);
   }
   return d;
+}
+const _cn = new THREE.Vector3();
+/** Crown occlusion factor at skeleton node i (cached per template: cards and bark rings
+ *  of every detail level share their nodes). */
+function nodeOcc(env, sk, i) {
+  const cache = sk.occ || (sk.occ = new Map());
+  let o = cache.get(i);
+  if (o === undefined) {
+    const p = sk.p[i];
+    o = p.y <= env.y0 ? 1 : CROWN_AO_MIN + (1 - CROWN_AO_MIN) * Math.exp(-CROWN_AO_K * crownDepth(env, p, env.normal(p.x, p.y, p.z, _cn)));
+    cache.set(i, o);
+  }
+  return o;
 }
 /** Crown self-occlusion baked into the leaf colour: a leaf deep inside the crown is lit
  *  through and between the outer leaves only (sun, sky and bounce alike), so its albedo
  *  is scaled from 1 on the shell down to CROWN_AO_MIN in the core. */
-export const CROWN_AO_MIN = 0.36;
-const CROWN_AO_K = 1.4;   // 1/m
+export const CROWN_AO_MIN = 0.42;
+const CROWN_AO_K = 1.3;   // 1/m
 
 /** Crown-sphere coordinates of a template-space point. */
 function crownCoord(env, p, out) {
