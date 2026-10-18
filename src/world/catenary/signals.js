@@ -5,7 +5,9 @@ import { TRACK_ZONE_HALF } from '../../core/config.js';
 // Tram signals (a compact black square head with a white border and one lit white bar:
 // vertical = proceed, horizontal = stop) at the approach to every cross street, mounted on
 // the nearest catenary pole at about 3.2 m or, failing that, on a short post of their own;
-// and two-aspect pedestrian lights at both ends of the crossing over the tracks.
+// and two-aspect pedestrian lights at both ends of the crossing over the tracks: green
+// walking figure while no tram is near, flashing green for a few seconds, then the red
+// standing figure while a tram approaches or passes (see catenary.js: pedState).
 // Two materials only: a vertex-coloured body (post, housing, visors, border, dark lenses)
 // and one emissive atlas for every lit aspect; every part is instanced per chunk, so
 // building a junction costs nothing on the CPU.
@@ -67,7 +69,7 @@ function litBar(w, h, x, y, z) {
   return g;
 }
 
-/** Shared signal geometries: {tramHead, tramPost, tramMount, tramGo, tramStop, pedBody, pedLit}.
+/** Shared signal geometries: {tramHead, tramPost, tramMount, tramGo, tramStop, pedBody, pedRed, pedGreen}.
  *  Tram parts are in the head frame (origin on the paving below the head centre). */
 export function buildSignalKit() {
   const kit = {};
@@ -103,7 +105,10 @@ export function buildSignalKit() {
   const pedY = [PED_POLE_H + 0.18, PED_POLE_H - 0.08];
   for (const yy of pedY) { const vv = visor(0.1, 0.13); vv.translate(0, yy, 0.075); pb.push(colored(vv, C_HOUSING)); }
   kit.pedBody = merge(pb);
-  kit.pedLit = merge([litDisc(0.09, CELL.red, 0, pedY[0], 0.076), litDisc(0.09, CELL.green, 0, pedY[1], 0.076)]);
+  // the two aspects are separate instances: their brightness (instance colour) follows
+  // the crossing's state; a dark aspect still shows a faint trace of its figure
+  kit.pedRed = merge([litDisc(0.09, CELL.red, 0, pedY[0], 0.076)]);
+  kit.pedGreen = merge([litDisc(0.09, CELL.green, 0, pedY[1], 0.076)]);
   for (const k of Object.keys(kit)) kit[k].userData.shared = true;
   return kit;
 }
@@ -149,7 +154,7 @@ export function buildAspectAtlas() {
     }
   };
   man(S * CELL.red, false, '#ff3818');
-  man(S * CELL.green, true, '#021a0a'); // unlit aspect: only a faint trace
+  man(S * CELL.green, true, '#28f0a0'); // LED walking figure, blue-green
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
   t.flipY = false;

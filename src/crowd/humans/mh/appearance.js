@@ -242,6 +242,14 @@ function buildOf(char) {
   return THREE.MathUtils.clamp((h[1][1] / char.height - 0.085) / 0.025, -0.6, 1.4);
 }
 
+/** How often a character turns up (ancestry / skin tone mix of the street crowd). */
+function mixWeight(c) {
+  const anc = c.anc || [1, 0, 0];
+  if (anc[1] > 0.5) return 0.45;
+  if (c.tone === 'brown' || c.tone === 'deep') return 0.7;
+  return 1;
+}
+
 /** A person of the street crowd (no toddlers: they ride in strollers). */
 export function castAppearance(seed, cast) {
   const chars = charsOf(cast);
@@ -252,7 +260,10 @@ export function castAppearance(seed, cast) {
   chars.forEach((c, i) => { if (c.ageClass === cls && c.sex === sex) pool.push(i); });
   if (!pool.length) chars.forEach((c, i) => { if (c.ageClass === cls) pool.push(i); });
   if (!pool.length) chars.forEach((c, i) => { if (c.ageClass !== 'toddler') pool.push(i); });
-  return finish(seed, r, cast, pool[Math.floor(r.next() * pool.length)]);
+  // the street's crowd is mostly light and olive Mediterranean / Middle-Eastern skin; darker skin is
+  // there, less often
+  const w = pool.map((i) => [i, mixWeight(chars[i])]);
+  return finish(seed, r, cast, r.weighted(w));
 }
 
 /** A toddler riding in a stroller (seed: from the stroller's prop seed); lying: a baby in a pram

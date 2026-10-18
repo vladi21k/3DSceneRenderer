@@ -7,6 +7,7 @@ import { Route } from './world/route.js';
 import { Layout } from './world/layout.js';
 import { World } from './world/streaming.js';
 import { GpuTimer } from './core/gpuTimer.js';
+import { FrameMonitor } from './core/frameMonitor.js';
 import farfield from './core/farfield.js';
 
 // Module registry. Each module is loaded with a dynamic import so a broken module is
@@ -155,37 +156,62 @@ async function main() {
   const order = ['train', 'cameraRig'];
   updaters.sort((a, b) => (order.includes(b.name) ? 1 : 0) - (order.includes(a.name) ? 1 : 0) || order.indexOf(a.name) - order.indexOf(b.name));
 
+  // frame-time monitor: stats().frames percentiles and the hitch log (app.hitches(),
+  // app.hitchReport(), app.resetFrames()), with stage times per module, world and render
+  const mon = new FrameMonitor(app, [...updaters.map((m) => m.name), 'world', 'render']);
+  const iWorld = updaters.length, iRender = updaters.length + 1;
+  Object.assign(app, { monitor: mon, hitches: () => mon.hitches(), hitchReport: () => mon.report(), resetFrames: () => mon.reset() });
+  {
+    // CPU time of the shadow passes inside render (wraps any module's own hook)
+    const sm = renderer.shadowMap, smRender = sm.render;
+    sm.render = function (...a) {
+      const t = performance.now();
+      try { return smRender.apply(this, a); } finally { mon.shadowMs += performance.now() - t; }
+    };
+  }
+
   function frame(ts) {
     const t0 = performance.now();
+    mon.begin(t0);
     timer.update(ts);
     const realDt = Math.min(timer.getDelta(), 0.1);
     const dt = params.freeze ? 0 : realDt;
     app.dt = dt; app.realDt = realDt; app.time += dt; app.frame++;
     U.uTime.value = app.time;
 
-    for (const m of updaters) {
+    for (let i = 0; i < updaters.length; i++) {
+      const m = updaters[i];
       if (m.disabled) continue;
+      const tu = performance.now();
       try { m.update(dt, app); } catch (e) {
         console.error(`[main] ${m.name}.update failed`, e);
         m.updateErrors = (m.updateErrors || 0) + 1;
         if (m.updateErrors > 5) { m.disabled = true; console.error(`[main] ${m.name} disabled`); }
       }
       if (m.name === 'cameraRig') applyInspectionView(app);
+      mon.st[i] = performance.now() - tu;
     }
     if (!app.cameraRig || app.cameraRig.disabled) { placeCamera(app, app.train?.s ?? app.startS); applyInspectionView(app); }
     camera.updateMatrixWorld();
     U.uCameraPos.value.copy(camera.position);
+    const tw = performance.now();
     app.world.update(app.cameraS ?? app.train?.s ?? app.startS);
+    const tr = performance.now();
+    mon.st[iWorld] = tr - tw;
 
-    app.gpuTimer.begin();
+    mon.renderBegin();
+    app.gpuTimer.begin(app.frame);
     if (app.post && !app.post.disabled && app.post.render) {
       try { app.post.render(realDt, app); } catch (e) { console.error('[main] post.render failed — falling back', e); app.post.disabled = true; }
     } else {
       renderer.render(scene, camera);
     }
     app.gpuTimer.end();
+    mon.renderEnd();
 
     const cpu = performance.now() - t0;
+    mon.st[iRender] = performance.now() - tr;
+    mon.end(cpu);
     if (app.frame <= 40) (app.perf.startFrames ||= []).push([Math.round(t0), Math.round(cpu), renderer.info.programs?.length ?? 0]);
     fpsAcc += realDt; fpsN++; fpsT += cpu;
     if (fpsAcc > 0.5) {
@@ -219,6 +245,7 @@ async function main() {
     geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs?.length,
     chunks: app.world.chunks.size, queue: app.world.stats.queue, buildMsByModule: app.world.stats.buildMsByModule, rideBuild: app.world.rideBuildStats(),
     s: +(app.cameraS ?? 0).toFixed(1), speedKmh: +((app.train?.speed ?? 0) * 3.6).toFixed(1),
+    frames: mon.frames(), hitches: mon.count,
     modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
   });
 }

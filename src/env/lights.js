@@ -44,7 +44,7 @@ export function patchLightLoops() {
   const SC = THREE.ShaderChunk;
   let src = SC.lights_fragment_begin;
   const call = 'RE_Direct( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );';
-  const guard = (begin, head, visible) => {
+  const guard = (begin, head, visible, diffuseOnly = false) => {
     const a = src.indexOf(begin);
     const b = src.indexOf('#pragma unroll_loop_end', a);
     if (a < 0 || b < 0) return false;
@@ -52,14 +52,35 @@ export function patchLightLoops() {
     if (block.split(head).length !== 2 || block.split(call).length !== 2) return false;
     const v = head.split(' = ')[0];
     block = block.replace(head, `${head}\n\t\tif ( ${v}.color.r + ${v}.color.g + ${v}.color.b > 0.0 ) {`);
-    block = block.replace(call, `${visible ? 'if ( directLight.visible ) ' : ''}${call}\n\t\t}`);
+    // a diffuse-only light: whatever the material's RE_Direct adds to the specular terms
+    // is put back (works for every lighting model and the patched leaf / surface ones)
+    const body = diffuseOnly ? `{
+\t\t\tvec3 dlSpec = reflectedLight.directSpecular;
+\t\t\t#ifdef USE_CLEARCOAT
+\t\t\tvec3 dlCc = clearcoatSpecularDirect;
+\t\t\t#endif
+\t\t\t#ifdef USE_SHEEN
+\t\t\tvec3 dlSh = sheenSpecularDirect;
+\t\t\t#endif
+\t\t\t${call}
+\t\t\treflectedLight.directSpecular = dlSpec;
+\t\t\t#ifdef USE_CLEARCOAT
+\t\t\tclearcoatSpecularDirect = dlCc;
+\t\t\t#endif
+\t\t\t#ifdef USE_SHEEN
+\t\t\tsheenSpecularDirect = dlSh;
+\t\t\t#endif
+\t\t\t}` : call;
+    block = block.replace(call, `${visible ? 'if ( directLight.visible ) ' : ''}${body}\n\t\t}`);
     src = src.slice(0, a) + block + src.slice(b);
     return true;
   };
   const spot = guard('#if ( NUM_SPOT_LIGHTS > 0 ) && defined( RE_Direct )', 'spotLight = spotLights[ i ];', true);
   const sun = guard('#if ( NUM_SUN_LIGHTS > 0 ) && defined( RE_Direct )', 'sunLight = sunLights[ i ];', false);
-  // (the canyon cross-bounce is the only directional light; dark when no facade is sunlit)
-  guard('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )', 'directionalLight = directionalLights[ i ];', false);
+  // (the canyon cross-bounce is the only directional light; dark when no facade is sunlit).
+  // Its source is a whole sunlit facade, a 10-20 m area light: no point-like specular
+  // highlight in glass or polished stone, only its diffuse irradiance
+  guard('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )', 'directionalLight = directionalLights[ i ];', false, true);
   SC.lights_fragment_begin = src;
   return spot && sun;
 }

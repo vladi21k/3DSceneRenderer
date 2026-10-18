@@ -6,16 +6,13 @@ import { MORTAR_ALBEDO } from './constants.js';
 //    with fbm dirt mottling, lighter cement patches and trowel streaks along the rail;
 //  - grit in the rail grooves: the flangeway floor is filled with grey-brown grit, sand
 //    and leaf debris (patchy, damp in places) instead of a uniform black slot;
-//  - street-canyon specular occlusion for the rail steel. The sky environment map knows
-//    nothing about the buildings, so a polished rail would reflect open sky in every
-//    direction and glow even in shade or at dusk. The canyon is modelled analytically:
-//    a reflected ray sees sky only if it clears the facade tops, i.e. if
-//    tan(elevation) > H / W · |sin(azimuth from the street axis)|; otherwise it sees
-//    facades and paving, which are much darker than the sky they replace.
+//  - the sheen of the rail steel: wheels polish the running band lengthwise, so its
+//    reflection lobe is a cone around the rail axis (see patchRailSheen).
 
-/** Shared canyon uniform: x = distance to the facades (m), y = facade height (m),
- *  z = radiance of the occluded directions relative to the sky they hide. */
-export const CANYON = { uStCanyon: { value: new THREE.Vector3(10, 17, 0.38) } };
+/** Shared rail-sheen uniform: x = how far the lengthwise polish bends the reflection
+ *  lookup towards the top of its cone (0..1), y = environment reflection strength of
+ *  the steel (the 3D rail.head variants carry the same value as envMapIntensity). */
+export const SHEEN = { uStSheen: { value: new THREE.Vector2(0.6, 1.0) } };
 
 const NOISE = /* glsl */`
 float stHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
@@ -26,63 +23,71 @@ float stNoise( vec2 p ) {
 }
 `;
 
-// view-space canyon visibility of the reflected direction; stLat = lateral street axis
-const CANYON_FN = /* glsl */`
-uniform vec3 uStCanyon;
-float stCanyonVis( vec3 n, vec3 v, vec3 stLat, float rough ) {
-  vec3 up = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-  vec3 r = reflect( -v, n );
-  float t = dot( r, up ) - uStCanyon.y / uStCanyon.x * abs( dot( r, stLat ) );
-  float w = 0.035 + 0.5 * rough * rough;
-  return smoothstep( -w, w, t );
-}
-`;
-
-const CANYON_APPLY = (lat) => /* glsl */`
+// Lengthwise polish. The wheels leave the running band streaked along the rail: its
+// micro-facets tilt about the rail axis t, and a facet rotated by phi about t turns the
+// mirror direction by 2 phi about t, so the reflection lobe is spread round a cone of
+// constant angle to the rail (the view's angle to it) instead of round the mirror
+// direction. From a street view that cone is shallow and always passes through its top,
+// the direction straight down the rail a few degrees above the horizon: the open sky
+// slot at the end of the street, even for a rail seen well off to the side whose mirror
+// direction runs into the facades (which is why every head in the photographs carries a
+// light sheen in shade, while the paving beside it does not). The lookup is bent
+// towards that top in proportion to the polish and to how level the face is (the head
+// and lip tops; not the gauge or field faces). The environment map already holds the
+// street canyon (facades and paving round the sky slot), so nothing is occluded here.
+const SHEEN_APPLY = (along) => /* glsl */`
 #include <lights_fragment_maps>
-#if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular )
+#if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular ) && defined( ENVMAP_TYPE_CUBE_UV )
 {
-  ${lat}
-  float stVis = stCanyonVis( geometryNormal, geometryViewDir, stLatV, material.roughness );
-  // occluded directions see sunlit / shaded limestone and paving instead of sky
-  radiance *= mix( uStCanyon.z * vec3( 1.06, 1.0, 0.9 ), vec3( 1.0 ), stVis );
+  vec3 stUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+  ${along}
+  vec3 stR = reflect( -geometryViewDir, geometryNormal );
+  float stRt = dot( stR, stT );
+  vec3 stUpT = normalize( stUp - stT * dot( stUp, stT ) );
+  vec3 stTop = stT * stRt + stUpT * sqrt( max( 1.0 - stRt * stRt, 0.0 ) );
+  float stK = uStSheen.x * stOk * smoothstep( 0.6, 0.9, dot( geometryNormal, stUp ) );
+  vec3 stRb = normalize( mix( stR, stTop, stK ) );
+  radiance = getIBLRadiance( geometryViewDir, normalize( geometryViewDir + stRb ), material.roughness );
 }
 #endif
 `;
 
 /**
- * Add canyon occlusion to a material.
- * mode 'uv':   the street axis is the direction of increasing uv.x (route s / along the
- *              rail), found from screen-space derivatives (swept rails);
+ * Lengthwise-polish sheen for rail steel.
+ * mode 'uv':   the rail axis is the direction of increasing uv.x (along the rail),
+ *              found from screen-space derivatives (swept rails);
  * mode 'line': the line ribbon shader provides the world lateral vector vLineRightW.
  */
-export function patchCanyon(m, mode = 'uv') {
+export function patchRailSheen(m, mode = 'uv') {
   const prev = m.onBeforeCompile;
   const prevKey = m.customProgramCacheKey;
   m.onBeforeCompile = function (sh, r) {
     if (prev) prev.call(this, sh, r);
-    sh.uniforms.uStCanyon = CANYON.uStCanyon;
-    let lat;
+    sh.uniforms.uStSheen = SHEEN.uStSheen;
+    let along;
     if (mode === 'uv') {
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vStUv;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStUv = uv;');
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vStUv;');
-      lat = /* glsl */`
+      along = /* glsl */`
   vec3 stQ0 = dFdx( -vViewPosition ), stQ1 = dFdy( -vViewPosition );
   float stU0 = dFdx( vStUv.x ), stU1 = dFdy( vStUv.x );
   vec3 stN = normalize( vNormal );
   vec3 stAlong = cross( stQ1, stN ) * stU0 + cross( stN, stQ0 ) * stU1;
-  vec3 stUp = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-  vec3 stLatV = normalize( cross( stAlong, stUp ) + 1e-7 );`;
+  float stL = length( stAlong );
+  float stOk = stL > 1e-30 ? 1.0 : 0.0;
+  vec3 stT = stOk > 0.5 ? stAlong / stL : vec3( 0.0, 0.0, 1.0 );`;
     } else {
-      lat = 'vec3 stLatV = normalize( ( viewMatrix * vec4( vLineRightW, 0.0 ) ).xyz );';
+      along = /* glsl */`
+  vec3 stT = normalize( cross( stUp, ( viewMatrix * vec4( vLineRightW, 0.0 ) ).xyz ) );
+  float stOk = 1.0;`;
     }
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\n${CANYON_FN}`)
-      .replace('#include <lights_fragment_maps>', CANYON_APPLY(lat));
+      .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;')
+      .replace('#include <lights_fragment_maps>', SHEEN_APPLY(along));
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stCanyon-${mode}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen-${mode}`; };
   m.needsUpdate = true;
   return m;
 }

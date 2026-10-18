@@ -10,6 +10,7 @@ Examples
   tools/shoot.py --params "s=820&tod=0.55&fov=28" --out .work/shots/gold.png
   tools/shoot.py --params "s=300" --shots 3 --interval 1.0 --out .work/shots/seq.png
   tools/shoot.py --params "s=300" --eval "JSON.stringify(window.__app.stats())"
+  tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --hitches   (ride timing)
 
 The page URL is http://127.0.0.1:<port>/index.html?<params>&capture=1 ; a private
 static server (serve.py) is started on a free port unless --port is given.
@@ -107,6 +108,32 @@ class WS:
         raise TimeoutError(method)
 
 
+def print_heap_profile(prof, top, secs):
+    """Allocation sites by sampled bytes (self), with their first caller."""
+    sites, total = {}, 0
+
+    def walk(node, parent):
+        nonlocal total
+        cf = node["callFrame"]
+        size = node.get("selfSize", 0)
+        total += size
+        if size:
+            key = (cf.get("functionName") or "(anon)", os.path.basename(cf.get("url", "")).split("?")[0], cf.get("lineNumber", -1) + 1)
+            pcf = parent["callFrame"] if parent else {}
+            caller = f'{pcf.get("functionName") or "(anon)"}@{os.path.basename(pcf.get("url", "")).split("?")[0]}:{pcf.get("lineNumber", -1) + 1}' if parent else ""
+            e = sites.setdefault(key, [0, {}])
+            e[0] += size
+            e[1][caller] = e[1].get(caller, 0) + size
+        for ch in node.get("children", []):
+            walk(ch, node)
+
+    walk(prof["head"], None)
+    print(f"heapprof: {total / 1048576:.1f} MB sampled in {secs:.1f} s ({total / 1048576 / max(secs, 1e-3):.2f} MB/s)")
+    for (fn, url, line), (size, callers) in sorted(sites.items(), key=lambda kv: -kv[1][0])[:top]:
+        c = max(callers.items(), key=lambda kv: kv[1])[0] if callers else ""
+        print(f"  {size / 1048576:7.2f} MB  {fn} {url}:{line}  <- {c}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--params", default="", help="query string for the app (without leading ?)")
@@ -123,6 +150,12 @@ def main():
     ap.add_argument("--eval", default=None, help="JS expression evaluated after the shots; result printed")
     ap.add_argument("--pre", default=None, help="JS evaluated right after ready (before settle)")
     ap.add_argument("--console", action="store_true", help="print all console messages, not only errors/warnings")
+    ap.add_argument("--hitches", action="store_true",
+                    help="reset the frame statistics after ready and print the frame-time summary and hitch log "
+                         "(frame intervals over 50 ms) at the end; screenshots stall frames, so time rides with --shots 0")
+    ap.add_argument("--heapprof", type=int, default=0, metavar="N",
+                    help="sample JS allocations (garbage included) from ready to the end and print the top N "
+                         "allocation sites by bytes")
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--profile", default=None, help="persistent Chrome profile dir (keeps the GPU shader cache between runs)")
     a = ap.parse_args()
@@ -146,6 +179,7 @@ def main():
     args = [chrome, "--headless=new", f"--remote-debugging-port={dbg}", f"--user-data-dir={profile}",
             f"--window-size={a.width},{a.height}", "--hide-scrollbars", "--mute-audio",
             "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+            "--enable-precise-memory-info",
             *os.environ.get("SHOOT_GPU_FLAGS", GPU_FLAGS).split(),
             "--disable-gpu-vsync", "--disable-frame-rate-limit",
             "--autoplay-policy=no-user-gesture-required", "about:blank"]
@@ -213,6 +247,13 @@ def main():
             rc = 1
         if a.pre:
             print("pre:", json.dumps(js(a.pre)))
+        if a.hitches:
+            js("window.__app && window.__app.resetFrames && window.__app.resetFrames()")
+        heap_t0 = time.time()
+        if a.heapprof:
+            ws.call("HeapProfiler.enable", session=sess)
+            ws.call("HeapProfiler.startSampling", {"samplingInterval": 16384, "includeObjectsCollectedByMajorGC": True,
+                                                   "includeObjectsCollectedByMinorGC": True}, session=sess)
         time.sleep(a.settle)
         base, ext = os.path.splitext(a.out)
         for i in range(a.shots):
@@ -228,6 +269,12 @@ def main():
             print("stats:", stats)
         if a.eval:
             print("eval:", json.dumps(js(a.eval)))
+        if a.hitches:
+            rep = js("window.__app && window.__app.hitchReport ? window.__app.hitchReport() : null")
+            print("hitches:", rep if isinstance(rep, str) else json.dumps(rep))
+        if a.heapprof:
+            prof = ws.call("HeapProfiler.stopSampling", session=sess)["profile"]
+            print_heap_profile(prof, a.heapprof, time.time() - heap_t0)
         drain_events()
         for typ, txt in logs:
             if a.console or typ in ("error", "warning", "exception", "assert"):

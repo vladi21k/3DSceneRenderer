@@ -145,6 +145,17 @@ export class Agent {
     this.platSide = 1;        // ... and on which side
     this.boardU = -1;         // boarding this oncoming unit (left platform)
     this.stnS = null;         // cyclist: a stop ahead, gets off before this s
-    this.askT = 0;            // cyclist: when (stopT) it last waited for people to make way          // cyclist: earliest time to try getting off again after a failed try      // pushed by a fixed obstacle / wall this frame (takes no share of a separation)      // stepping off a bicycle to its left side (s left, total offset)
+    this.askT = 0;            // cyclist: when (stopT) it last waited for people to make way
+    // both trams at once (tram.js): the oncoming unit whose pass overlaps the cab's here (id + 1,
+    // 0 none), out to this corridor edge (±1, 0 none), clearing for the pair this frame
+    this.pair = 0; this.pSide = 0; this.pClr = false;
+    this.hurry = 2.15;        // brisk pace when clearing a track (the elderly cannot trot)
+    this.ownV0 = 1.35;        // own walking pace (before any group pace)
+    this.ageK = 'adult';      // age class of the appearance (adult | teen | old | walkOld | child)
+    // walking abreast of a stranger (steering): seconds so far, pace factor and until when
+    this.abT = 0; this.paceK = 1; this.paceKT = 0;
+    this.role = '';           // 'staff': a café waiter
+    this.cafeT = null;        // ... its terrace (feature) and the table being served
+    this.sideK = 0;           // inside a side street (beyond the main facade line): its x (m), 0 outside
   }
 }

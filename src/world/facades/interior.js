@@ -1354,6 +1354,7 @@ if ( fMask < 0.999 ) {
   float px = vRoomP.x + 211.0 * fract( vWin.x * 7.31 );
   vec4 st = fStreet( R, N, T, vFW, px, vRoomS.w + vRoomP.y, streetW, Eamb, skyR );
   radiance = mix( skyR, st.rgb, st.a );
+  vec3 dbgSt = radiance; vec4 dbgHit = st;
   // the reveal around a recessed window (and a shopfront: its glass stands as deep in the
   // reveal) hides most of the street at grazing angles: follow the reflected ray out of
   // the recess and see whether it clears the opening; if not it shows the stone of a jamb
@@ -1417,6 +1418,21 @@ const FRAG_OUT = /* glsl */`
 // transmission through both faces of the pane (with their inter-reflections)
 float fT = mix( 1.0, fRT.y, fGlass );
 vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * fT;
+#if FACDBG == 1
+outgoingLight = fInterior * fT;
+#elif FACDBG == 2
+outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask );
+#elif FACDBG == 3
+outgoingLight = dbgSt;
+#elif FACDBG == 4
+outgoingLight = vec3( fRT.x ) * 0.3;
+#elif FACDBG == 5
+outgoingLight = totalSpecular;
+#elif FACDBG == 6
+outgoingLight = reflectedLight.directSpecular;
+#elif FACDBG == 7
+outgoingLight = vec3( material.roughness );
+#endif
 `;
 
 // per-pane tilt and old-glass waviness, applied to the shading normal
@@ -1478,7 +1494,9 @@ export function createInteriorGlass(M, { far = false } = {}) {
   });
   m.name = far ? 'facades.glassInteriorFar' : 'facades.glassInterior';
   if (far) { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
+  const FACDBG = +(new URLSearchParams(location.search).get('facdbg') || 0);
   m.onBeforeCompile = (shader) => {
+    shader.fragmentShader = '#define FACDBG ' + FACDBG + '\n' + shader.fragmentShader;
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uNight = U.uNight;
     shader.uniforms.uEmGain = gain;

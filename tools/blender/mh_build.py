@@ -77,6 +77,7 @@ def parse(argv):
     p.add_argument('--blend', action='store_true', help='also save .work/mh/raw/<id>.blend')
     p.add_argument('--work', default=WORK, help='working directory (raw/, tex/, lod/)')
     p.add_argument('--out', default=OUT, help='web asset directory')
+    p.add_argument('--debug-holes', action='store_true', help='log the garments\' open loops')
     return p.parse_args(argv)
 
 
@@ -266,6 +267,9 @@ def build_one(cid, save_blend=False):
             n = fill_small_holes(d, 0.11 * kscale, J, kscale)
             if n:
                 log(cid, f'{info["suit"]}: filled {n} holes (pockets, slits)')
+            n = zip_slits(d, kscale)
+            if n:
+                log(cid, f'{info["suit"]}: closed {n} notches')
     # head landmarks: the eyes' centre, the face's front surface (for hair and hats); head scale from the
     # distance between the eyes (children's heads are relatively big)
     eyes_co = [d for d, kind, _ in pdata if kind == 'eyes'][0]['co']
@@ -349,6 +353,7 @@ def build_one(cid, save_blend=False):
         elif kind == 'hair':
             region[:] = CASTM.REGIONS['hair']
             tex = 'hair:' + spec['hair']
+            fade_ch = np.round(254 * d.get('fade', np.ones(len(d['co']), np.float32))).astype(np.uint8)
         elif kind == 'hat':
             region[:] = CASTM.REGIONS['hat']
             tex = 'hat:fedora'
@@ -415,6 +420,8 @@ def build_one(cid, save_blend=False):
             if want_bot and suit == 'female_elegantsuit01':
                 skirt_clearance(d, vpart == 1, body, J, share(body['W'], LEG) > 0.6)
         out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
+        if kind == 'hair':
+            out_parts[-1]['dec'] = fade_ch
 
     # mixed outfits (top and bottom from different suits): the top's hem is tucked into the bottom where
     # it hangs below the bottom's waistband (a top made for jeans would otherwise cut through a skirt)
@@ -469,9 +476,30 @@ def build_one(cid, save_blend=False):
                 for kk in range(len(vs)):
                     e = (min(vs[kk], vs[(kk + 1) % len(vs)]), max(vs[kk], vs[(kk + 1) % len(vs)]))
                     ecount[e] = ecount.get(e, 0) + 1
-            bv = sorted(set(v for e, c in ecount.items() if c == 1 for v in e))
-            if bv:
-                bnd.append(d['co'][bv])
+            # open borders, per loop: only cuffs and hems (short loops) get a skin margin; the long
+            # necklines and front openings do not (skin under a lapel would show through its gaps)
+            bedges = [e for e, c in ecount.items() if c == 1]
+            badj = {}
+            for a_, b_ in bedges:
+                badj.setdefault(a_, []).append(b_)
+                badj.setdefault(b_, []).append(a_)
+            bseen = set()
+            for v0 in badj:
+                if v0 in bseen:
+                    continue
+                comp, stack = [], [v0]
+                bseen.add(v0)
+                while stack:
+                    v = stack.pop()
+                    comp.append(v)
+                    for w in badj[v]:
+                        if w not in bseen:
+                            bseen.add(w)
+                            stack.append(w)
+                cs = set(comp)
+                per = sum(np.linalg.norm(d['co'][a_] - d['co'][b_]) for a_, b_ in bedges if a_ in cs)
+                if per < 0.8 * kscale:
+                    bnd.append(d['co'][comp])
             goff += len(d['co'])
     GV = [Vector(v) for v in np.concatenate(gv).astype(np.float64)]
     gbvh = BVHTree.FromPolygons(GV, gp, epsilon=0.0)
@@ -511,6 +539,7 @@ def build_one(cid, save_blend=False):
         if arm_b[i] < 0.3:
             return fa < 0.6
         return True
+    push = np.zeros(len(body['co']), np.float32)
     # a body vertex under a kept garment is hidden: a ray out along its normal meets the garment
     for i in np.where(del_any)[0]:
         n = Vector(body['nr'][i].tolist())
@@ -526,16 +555,33 @@ def build_one(cid, save_blend=False):
                     break
                 h = (None,)
         if h[0] is None:
-            # skin pushing through a tight garment: the garment surface lies just inside the skin
+            # skin pushing through a tight garment: the garment surface lies just inside the skin (any
+            # garment: this skin would show through it). It is pushed in under the garment as well (a
+            # polygon stays while any of its vertices is uncovered)
             h = gbvh.ray_cast(o + n * 0.002, -n, 0.025)
-            if not fits(i, h):
-                h = (None,)
+            if h[0] is not None:
+                push[i] = max(0.0, h[3] - 0.002) + 0.004
         if h[0] is None and sbvh is not None and not legv[i]:
             h = sbvh.ray_cast(o - n * 0.002, n, 0.16)
             if h[0] is None:
                 h = sbvh.ray_cast(o + n * 0.002, -n, 0.025)
         if h[0] is not None:
             deleted[i] = True
+    # (skin outside every garment's delete group can still poke through a tight one: same test; and
+    # all skin under a garment sinks a few mm, so the simplified LODs' skin stays under the cloth)
+    for i in np.where(push == 0)[0]:
+        n = Vector(body['nr'][i].tolist())
+        o = Vector(body['co'][i].tolist())
+        out = gbvh.ray_cast(o - n * 0.002, n, 0.03)
+        if fits(i, out) and out[0] is not None:
+            push[i] = 0.0035
+            continue
+        h = gbvh.ray_cast(o + n * 0.002, -n, 0.025)
+        if h[0] is not None and gbvh.ray_cast(o - n * 0.002, n, MAXD)[0] is None:
+            push[i] = max(0.0, h[3] - 0.002) + 0.004
+    if push.any():
+        body['co'] = body['co'] - body['nr'] * push[:, None]
+        log(cid, f'skin pushed in under the garments at {int((push > 0).sum())} vertices')
     bkeep = np.zeros(len(body['ls']), bool)
     for p in range(len(body['ls'])):
         vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
@@ -938,7 +984,9 @@ def beard_coverage(body, style, eyes, J, headw):
     lz = L[2] - E[2]
     mous = (1 - sm(0.022 * k, 0.034 * k, ax)) * sm(lz + 0.001, lz + 0.006 * k, z) * (1 - sm(lz + 0.016 * k, lz + 0.024 * k, z))
     # under the chin, down the throat to `reach` below the lips
-    bottom = sm(lz - (0.05 + reach) * k, lz - (0.028 + reach) * k, z)
+    # (deepest under the chin, rising towards the jaw corners: a rounded beard, not an apron)
+    rx = reach * (1.0 - 0.55 * np.clip(ax / (0.06 * k), 0, 1) ** 2)
+    bottom = sm(lz - (0.05 + rx) * k, lz - (0.028 + rx) * k, z)
     # mouth corners: the moustache runs down into the beard
     corner = (1 - sm(0.040 * k, 0.05 * k, ax)) * sm(lz - 0.03 * k, lz - 0.02 * k, z) * (1 - sm(lz + 0.012 * k, lz + 0.02 * k, z)) * (y < 0.0)
     mous = np.maximum(mous, corner)
@@ -1039,7 +1087,8 @@ def scalp_coverage(body, bkeep, hair, headw, E, hk):
             if nb[i]:
                 nxt[i] = 0.5 * cov[i] + 0.5 * cov[nb[i]].mean()
         cov = nxt
-    cov[face & (co[:, 2] < E[2] + 0.03 * hk)] = 0
+    fz = np.clip((co[:, 2] - (E[2] + 0.048 * hk)) / (0.02 * hk), 0, 1)
+    cov = np.where(face | (co[:, 1] < E[1] + 0.05 * hk), cov * fz, cov)
     return cov
 
 
@@ -1163,50 +1212,68 @@ def tuck_top(top, bot, REG):
 def fill_small_holes(d, max_perimeter, J=None, k=1.0):
     """Close the openings of a garment that are not cuffs, hems or the neckline: small loops (button
     holes and the like) and slit pockets (long, thin loops on the chest, hips or thighs), with a fan
-    around the loop centre (UVs and weights averaged)."""
+    around the loop centre (UVs and weights averaged; the fan faces the way the garment does)."""
     import numpy as np
     from collections import defaultdict
+    debug = '--debug-holes' in sys.argv
     E = defaultdict(list)
     for p in range(len(d['ls'])):
         s, n = d['ls'][p], d['lt'][p]
         for kk in range(n):
             a, b = d['vi'][s + kk], d['vi'][s + (kk + 1) % n]
-            E[(min(a, b), max(a, b))].append((p, s + kk, s + (kk + 1) % n, a, b))
-    nxt = {}
-    loopuv = {}
+            E[(min(a, b), max(a, b))].append((s + kk, s + (kk + 1) % n, a, b))
+    adj = defaultdict(list)
+    vuv = {}
     for key, lst in E.items():
         if len(lst) == 1:
-            p, la, lb, a, b = lst[0]
-            nxt[b] = a                   # boundary walked against the face winding
-            loopuv[(b, a)] = (d['uv'][lb], d['uv'][la])
+            la, lb, a, b = lst[0]
+            adj[a].append(b)
+            adj[b].append(a)
+            vuv.setdefault(a, d['uv'][la])
+            vuv.setdefault(b, d['uv'][lb])
     seen = set()
     new_co, new_nr, new_W = [], [], []
     add_vi, add_uv, add_ls, add_lt = [], [], [], []
     nv = len(d['co'])
     filled = 0
-    for start in list(nxt):
+    for start in list(adj):
         if start in seen:
             continue
-        loop = [start]
+        # the boundary component (undirected walk)
+        comp, stack = [], [start]
         seen.add(start)
-        cur = nxt[start]
-        ok = True
-        while cur != start:
-            if cur in seen or cur not in nxt or len(loop) > 120:
-                ok = False
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            for w in adj[v]:
+                if w not in seen:
+                    seen.add(w)
+                    stack.append(w)
+        if len(comp) < 3 or len(comp) > 160 or any(len(adj[v]) != 2 for v in comp):
+            if debug:
+                log(f'  boundary component skipped: n={len(comp)} (not a simple loop)')
+            continue
+        loop = [start]
+        prev, cur = None, start
+        while True:
+            nx = adj[cur][0] if adj[cur][0] != prev else adj[cur][1]
+            if nx == start:
                 break
-            loop.append(cur)
-            seen.add(cur)
-            cur = nxt[cur]
-        if not ok or len(loop) < 3:
+            loop.append(nx)
+            prev, cur = cur, nx
+            if len(loop) > len(comp):
+                break
+        if len(loop) != len(comp):
             continue
         pts = d['co'][loop]
         per = np.linalg.norm(pts - np.roll(pts, -1, 0), axis=1).sum()
         c = pts.mean(0)
         if per > max_perimeter:
             # a slit pocket: thin (area small for its perimeter), on the trunk or thighs, well away from
-            # the neck, the shoulders' armholes and the wrists / ankles
+            # the neck and the wrists / ankles
             if J is None or per > 0.42 * k:
+                if debug:
+                    log(f'  open loop (long): n={len(loop)} per={per:.3f} c={c.round(3).tolist()}')
                 continue
             cr = np.cross(pts - c, np.roll(pts, -1, 0) - c)
             area = 0.5 * np.linalg.norm(cr.sum(0))
@@ -1214,24 +1281,30 @@ def fill_small_holes(d, max_perimeter, J=None, k=1.0):
             sh_z = 0.5 * (J['armL'][2] + J['armR'][2])
             near = min(np.linalg.norm(c - J[j]) for j in ('neck', 'handL', 'handR', 'footL', 'footR', 'foreL', 'foreR'))
             if iso > 0.22 or c[2] > sh_z - 0.06 * k or near < 0.12 * k:
+                if debug:
+                    log(f'  open loop kept: n={len(loop)} per={per:.3f} iso={iso:.3f} z-sh={c[2] - sh_z:+.3f} near={near:.3f}')
                 continue
-        cu_ = None
-        uvs = np.array([loopuv[(loop[i], loop[(i + 1) % len(loop)])][0] for i in range(len(loop))])
+        uvs = np.array([vuv[v] for v in loop])
         cu = uvs.mean(0)
         ci = nv + len(new_co)
         new_co.append(c)
         nrm = d['nr'][loop].mean(0)
-        new_nr.append(nrm / (np.linalg.norm(nrm) + 1e-9))
+        nrm = nrm / (np.linalg.norm(nrm) + 1e-9)
+        new_nr.append(nrm)
         new_W.append(d['W'][loop].mean(0))
-        for i in range(len(loop)):
-            a, b = loop[i], loop[(i + 1) % len(loop)]
-            ua, ub = loopuv[(a, b)]
+        # orientation: the fan's normal along the garment's
+        fan_n = np.cross(pts - c, np.roll(pts, -1, 0) - c).sum(0)
+        order = list(range(len(loop))) if fan_n @ nrm >= 0 else list(range(len(loop)))[::-1]
+        for ii in range(len(order)):
+            i0, i1 = order[ii], order[(ii + 1) % len(order)]
+            a, b = loop[i0], loop[i1]
             add_ls.append(len(d['vi']) + len(add_vi))
             add_lt.append(3)
             add_vi += [a, b, ci]
-            add_uv += [ua, ub, cu]
+            add_uv += [vuv[a], vuv[b], cu]
         filled += 1
-        del cu_
+        if debug:
+            log(f'  filled loop: n={len(loop)} per={per:.3f}')
     if filled:
         d['co'] = np.concatenate([d['co'], np.array(new_co, np.float32)])
         d['nr'] = np.concatenate([d['nr'], np.array(new_nr, np.float32)])
@@ -1241,6 +1314,136 @@ def fill_small_holes(d, max_perimeter, J=None, k=1.0):
         d['ls'] = np.concatenate([d['ls'], np.array(add_ls, np.int32)])
         d['lt'] = np.concatenate([d['lt'], np.array(add_lt, np.int32)])
     return filled
+
+
+def zip_slits(d, k=1.0):
+    """Close V-shaped notches of a garment's open borders (lapel notches, vents, darts): where the
+    border runs into a tip with the cloth on the outside of the V on both arms, the V is stitched
+    shut from the tip outwards while its mouth stays narrower than ~4.5 cm (the notch would show the
+    skin through the garment)."""
+    import numpy as np
+    from collections import defaultdict
+    debug = '--debug-holes' in sys.argv
+    E = defaultdict(list)
+    for p in range(len(d['ls'])):
+        s0, n = d['ls'][p], d['lt'][p]
+        for kk in range(n):
+            a, b = d['vi'][s0 + kk], d['vi'][s0 + (kk + 1) % n]
+            E[(min(a, b), max(a, b))].append((p, s0 + kk, s0 + (kk + 1) % n, a, b))
+    adj = defaultdict(list)
+    vuv = {}
+    eface = {}
+    for key, lst in E.items():
+        if len(lst) == 1:
+            p, la, lb, a, b = lst[0]
+            adj[a].append(b)
+            adj[b].append(a)
+            vuv.setdefault(a, d['uv'][la])
+            vuv.setdefault(b, d['uv'][lb])
+            eface[key] = p
+    co = d['co']
+
+    def fcent(p):
+        return co[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]].mean(0)
+    seen = set()
+    add_vi, add_uv = [], []
+    zipped = 0
+    for start in list(adj):
+        if start in seen or len(adj[start]) != 2:
+            continue
+        loop = [start]
+        seen.add(start)
+        prev, cur = None, start
+        ok = True
+        while True:
+            if len(adj[cur]) != 2:
+                ok = False
+                break
+            nx = adj[cur][0] if adj[cur][0] != prev else adj[cur][1]
+            if nx == start:
+                break
+            if nx in seen:
+                ok = False
+                break
+            loop.append(nx)
+            seen.add(nx)
+            prev, cur = cur, nx
+        n = len(loop)
+        if not ok or n < 12:
+            continue
+        P = co[loop]
+        used = np.zeros(n, bool)
+        for i in range(n):
+            if used[i]:
+                continue
+            a, b = P[(i - 1) % n] - P[i], P[(i + 1) % n] - P[i]
+            la, lb = np.linalg.norm(a), np.linalg.norm(b)
+            if la < 1e-6 or lb < 1e-6:
+                continue
+            ang = np.degrees(np.arccos(np.clip((a @ b) / (la * lb), -1, 1)))
+            if ang > 85:
+                continue
+            u = a / la + b / lb
+            u /= np.linalg.norm(u) + 1e-12
+            # the cloth beside each arm lies outside the V (else this is a pointed corner of the cloth)
+            gap = True
+            for nb, arm in ((loop[(i - 1) % n], a / la), (loop[(i + 1) % n], b / lb)):
+                f = eface.get((min(loop[i], nb), max(loop[i], nb)))
+                if f is None:
+                    gap = False
+                    break
+                w = u - arm * (u @ arm)
+                w /= np.linalg.norm(w) + 1e-12
+                m = 0.5 * (P[i] + co[nb])
+                if debug:
+                    fc = fcent(f)
+                    log(f'    arm len {np.linalg.norm(co[nb] - P[i]):.3f} side {(fc - m) @ w:+.4f} off {np.linalg.norm(fc - m):.4f}')
+                if (fcent(f) - m) @ w > 0:
+                    gap = False
+                    break
+            # (narrow vents and small notches with overlapping cloth are closed anyway)
+            gap = gap or ang < 25 or (la < 0.015 * k and lb < 0.015 * k and ang < 70)
+            if debug:
+                log(f'  tip: angle {ang:.0f} gap {gap} at {P[i].round(3).tolist()}')
+            if not gap:
+                continue
+            depth = 0
+            for j in range(1, 7):
+                if used[(i - j) % n] or used[(i + j) % n]:
+                    break
+                if np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]) > 0.045 * k:
+                    break
+                depth = j
+            if debug:
+                log(f'  notch: angle {ang:.0f} depth {depth} at {P[i].round(3).tolist()}')
+            if depth < 1:
+                continue
+            for j in range(-depth, depth + 1):
+                used[(i + j) % n] = True
+            for j in range(depth):
+                l0, l1 = loop[(i - j) % n], loop[(i - j - 1) % n]
+                r0, r1 = loop[(i + j) % n], loop[(i + j + 1) % n]
+                tris = [(l1, r1, l0)] if j == 0 else [(l1, r1, l0), (l0, r1, r0)]
+                for t in tris:
+                    add_vi += list(t)
+                    add_uv += [vuv[t[0]], vuv[t[1]], vuv[t[2]]]
+            zipped += 1
+    if zipped:
+        # orient the new triangles like the garment around them (by vertex normals)
+        vi = np.array(add_vi, np.int64).reshape(-1, 3)
+        uv = np.array(add_uv, np.float32).reshape(-1, 3, 2)
+        p0, p1, p2 = co[vi[:, 0]], co[vi[:, 1]], co[vi[:, 2]]
+        fn = np.cross(p1 - p0, p2 - p0)
+        vn = d['nr'][vi].sum(1)
+        flip = (fn * vn).sum(1) < 0
+        vi[flip] = vi[flip][:, ::-1]
+        uv[flip] = uv[flip][:, ::-1]
+        nt = len(vi)
+        d['ls'] = np.concatenate([d['ls'], (len(d['vi']) + 3 * np.arange(nt)).astype(np.int32)])
+        d['lt'] = np.concatenate([d['lt'], np.full(nt, 3, np.int32)])
+        d['vi'] = np.concatenate([d['vi'], vi.reshape(-1).astype(np.int32)])
+        d['uv'] = np.concatenate([d['uv'], uv.reshape(-1, 2)])
+    return zipped
 
 
 def drop_polys(d, drop):
@@ -1317,6 +1520,9 @@ def clear_face_window(d, body, E, hk, style, cid):
                 drop[p] = True
                 continue
         side[p] = abs(c[0] - E[0]) >= wx
+    used = np.zeros(n, bool)
+    for p in np.where(~drop)[0]:
+        used[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
     # kept polygons reaching into the window: their vertices there move to the window's edge on the
     # polygon's own side (up to the hairline, or out to the temple)
     tgt = np.zeros(n, np.int8)          # 1 up, 2 sideways
@@ -1332,6 +1538,15 @@ def clear_face_window(d, body, E, hk, style, cid):
         else:
             co[i, 0] = E[0] + np.sign(co[i, 0] - E[0]) * wx
         moved += 1
+    # strand ends at the cut fade out (the shader breaks the fade into strands): the moved vertices and
+    # the kept polygons' vertices on the new border
+    fade = np.ones(n, np.float32)
+    fade[tgt > 0] = 0.0
+    for p in np.where(drop)[0]:
+        for v in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]:
+            if used[v]:
+                fade[v] = 0.0
+    d['fade'] = fade
     drop_polys(d, drop)
     log(cid, f'hair {style}: face window cleared ({int(drop.sum())} polygons trimmed, {moved} vertices moved to the hairline)')
     return int(drop.sum())

@@ -36,10 +36,13 @@ float catCoverage( float a ) {
   return a;
 }`;
 
-// Lit bowl radiance at full night (scene units). Dusk exposure is about three orders of
-// magnitude above midday, so this keeps the bowl a bright warm cream after tone mapping
-// (AgX desaturates towards white) instead of a clipped white disc.
-export const LAMP_RADIANCE = 0.0024;
+// Lit bowl radiance at full night (scene units, about 600 cd/m² of opal glass). From
+// sunset on the lit globe is brighter than the sky behind it: its core clips to a warm
+// white with a bloom skirt (post), the falloff towards the rim keeps it warm.
+export const LAMP_RADIANCE = 0.017;
+// the hood underside reflects the lamp: a share of the bowl radiance (lower than the
+// bowl itself, which would read as a second light source)
+const HOOD_GLOW = 0.3;
 const WARM = 'vec3(1.0, 0.47, 0.11)'; // ~2700 K lamp seen through cream glass, linear
 const LIGHT_MIN_DIST = 1.0;            // m, see patchThin
 
@@ -47,7 +50,11 @@ export function updateScreenUniforms(app, lampRadiance = LAMP_RADIANCE) {
   const cam = app.camera;
   const h = app.renderer.domElement.height || 1080;
   SU.uPxScale.value = (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / (h * (cam.zoom || 1));
-  SU.uLamp.value = lampRadiance * THREE.MathUtils.smoothstep(U.uNight.value, 0.02, 0.85);
+  // the photocells switch the lamps on before sunset (fully on from t 0.72), then the
+  // night ramp holds them
+  const t = app.env && app.env.state ? app.env.state.t : 0;
+  const on = Math.max(THREE.MathUtils.smoothstep(t, 0.64, 0.72), THREE.MathUtils.smoothstep(U.uNight.value, 0.02, 0.85));
+  SU.uLamp.value = lampRadiance * on;
 }
 
 function chain(mat, key, fn) {
@@ -79,7 +86,7 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
   if (mat.userData.catenaryThin) return mat;
   mat.userData.catenaryThin = true;
   mat.alphaToCoverage = coverage;
-  return chain(mat, `catThin2${coverage ? 'C' : ''}${weather ? 'W' : ''}`, (shader) => {
+  return chain(mat, `catThin3${coverage ? 'C' : ''}${weather ? 'W' : ''}`, (shader) => {
     shader.uniforms.uPxScale = SU.uPxScale;
     shader.uniforms.uMinPx = SU.uMinPx;
     shader.uniforms.uLamp = SU.uLamp;
@@ -94,6 +101,9 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         varying vec3 vLocal;
         varying float vInflate;
         varying float vSeed;`)
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+        // degenerate faces carry zero normals: keep the shading and the push finite
+        if (dot(objectNormal, objectNormal) < 1e-12) objectNormal = vec3(0.0, 1.0, 0.0);`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
       {
         vec4 cwp = vec4(transformed, 1.0);
@@ -106,7 +116,8 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         cwp = modelMatrix * cwp;
         float chalf = 0.5 * uMinPx * length(cameraPosition - cwp.xyz) * uPxScale;
         float cneed = chalf - aTube;
-        if (cneed > 0.0) transformed += normalize(objectNormal) * cneed;
+        float cnl = length(objectNormal);
+        if (cneed > 0.0 && cnl > 1e-6) transformed += (objectNormal / cnl) * cneed;
         vInflate = max(1.0, chalf / max(aTube, 1e-4));
         vWear = aWear;
         vLocal = position;
@@ -169,7 +180,9 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
         #include <normal_fragment_begin>`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         // hood underside lit by its own lamp at night
-        totalEmissiveRadiance += vWear.z * uLamp * 0.8 * diffuseColor.rgb * ${WARM};`);
+        totalEmissiveRadiance += vWear.z * uLamp * ${HOOD_GLOW.toFixed(3)} * diffuseColor.rgb * ${WARM};`)
+      .replace('#include <dithering_fragment>', `#include <dithering_fragment>
+        gl_FragColor.rgb = max(gl_FragColor.rgb, vec3(0.0));`);
   });
 }
 
@@ -182,7 +195,7 @@ export function makeWireMaterial(coverage = false) {
   if (coverage) m.alphaToCoverage = true;
   else { m.transparent = true; m.depthWrite = false; }
   m.name = 'catenary.wire';
-  return chain(m, coverage ? 'catWire2C' : 'catWire2', (shader) => {
+  return chain(m, coverage ? 'catWire3C' : 'catWire3', (shader) => {
     shader.uniforms.uPxScale = SU.uPxScale;
     shader.uniforms.uWireMinPx = SU.uWireMinPx;
     shader.uniforms.uA2C = SU.uA2C;
@@ -196,21 +209,33 @@ export function makeWireMaterial(coverage = false) {
         varying float vSide;
         varying float vPxW;`)
       .replace('#include <beginnormal_vertex>', `
+        // every direction below is guarded: a wire seen end-on (a dropper straight
+        // above the eye, a span wire along the line of sight) has no screen-space side
+        // or face direction, and a zero tangent (coincident points) none at all
         vec3 wc = (modelMatrix * vec4(position, 1.0)).xyz;
         vec3 wV = cameraPosition - wc;
         float wDist = max(length(wV), 1e-3);
         wV /= wDist;
-        vec3 wT = normalize(mat3(modelMatrix) * aTan);
+        vec3 wT = mat3(modelMatrix) * aTan;
+        float wtl = length(wT);
+        wT = wtl > 1e-6 ? wT / wtl : vec3(0.0, 1.0, 0.0);
         vec3 wS = cross(wT, wV);
         float wsl = length(wS);
-        wS = wsl > 1e-4 ? wS / wsl : normalize(cross(wT, vec3(0.0, 1.0, 0.0)));
-        float wPx = wDist * uPxScale;
-        float wHalf = max(aWire.y, 0.5 * uWireMinPx * wPx);
+        if (wsl > 1e-4) wS /= wsl;
+        else {
+          wS = cross(wT, abs(wT.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0));
+          wS /= max(length(wS), 1e-6);
+        }
+        float wPx = max(wDist * uPxScale, 1e-7);
+        float wHalf = max(max(aWire.y, 0.5 * uWireMinPx * wPx), 1e-6);
         vCover = clamp(aWire.y / wHalf, 0.0, 1.0);
         vSide = aWire.x;
         vPxW = 2.0 * wHalf / wPx;
-        vec3 wFace = normalize(wV - wT * dot(wV, wT));
-        vec3 objectNormal = normalize(wS * aWire.x * 0.9 + wFace * 0.45);
+        vec3 wFace = wV - wT * dot(wV, wT);
+        float wfl = length(wFace);
+        wFace = wfl > 1e-4 ? wFace / wfl : cross(wS, wT);
+        vec3 objectNormal = wS * aWire.x * 0.9 + wFace * 0.45;
+        objectNormal /= max(length(objectNormal), 1e-6);
         #ifdef USE_TANGENT
           vec3 objectTangent = vec3(tangent.xyz);
         #endif`)
@@ -222,9 +247,11 @@ export function makeWireMaterial(coverage = false) {
           // analytic edge AA once the ribbon is several pixels wide
           float fw = max(fwidth(vSide), 1e-4);
           float edge = clamp((1.0 - abs(vSide)) / (fw * 1.2), 0.0, 1.0);
-          diffuseColor.a *= vCover * mix(1.0, edge, smoothstep(2.0, 4.0, vPxW));
+          diffuseColor.a = clamp(diffuseColor.a * vCover * mix(1.0, edge, smoothstep(2.0, 4.0, vPxW)), 0.0, 1.0);
           ${coverage ? 'diffuseColor.a = catCoverage(diffuseColor.a);' : ''}
-        }`);
+        }`)
+      .replace('#include <dithering_fragment>', `#include <dithering_fragment>
+        gl_FragColor.rgb = max(gl_FragColor.rgb, vec3(0.0));`);
   });
 }
 

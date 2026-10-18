@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W, MORTAR_ALBEDO, SEAL_TONE } from './constants.js';
-import { patchCanyon } from './shading.js';
+import { patchRailSheen } from './shading.js';
 
 // Pixel-width-aware line ribbons with analytic coverage.
 //
@@ -144,7 +144,6 @@ float lnFbm( vec2 p, float fp, int oct ) {
 // whose dark groove and bright head keep their weight at any distance.
 const HEAD_GC = 0.0215;      // the running band ends here, the gauge corner rounds off
 const HEAD_C0 = -0.013, HEAD_C1 = 0.015;   // level crown of the head (reflects the sky)
-const RAIL_SPEC_ENV = 0.6;   // rail.head reflects the environment at 0.6 (library)
 const f = (v) => v.toFixed(4);
 const v3 = (a, k = 1) => `vec3( ${f(a[0] * k)}, ${f(a[1] * k)}, ${f(a[2] * k)} )`;
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
@@ -178,7 +177,7 @@ const RAIL_FRAG = /* glsl */`
   float cPave = core * max( 0.0, 1.0 - cov );
   float inv = 1.0 / max( cov + cPave, 1e-4 );
   // per band: diffuse albedo (incl. cavity AO), specular F0, roughness; the steel kinds
-  // (rail.head) reflect the environment at RAIL_SPEC_ENV
+  // (rail.head) reflect the environment at uStSheen.y
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wShoulder = cShoulder * inv, wGauge = cGauge * inv;
   float wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
   vec3 dSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.86)};                       // bitumen seal
@@ -202,11 +201,12 @@ const RAIL_FRAG = /* glsl */`
   vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.15 * wGroove );
   lnF = fSteel + fOther;
   lnF90 = 1.0 - 0.85 * wGroove;               // the slot's walls hide its grazing sheen
-  // reflection strength relative to the direct specular (steel at RAIL_SPEC_ENV)
+  // reflection strength relative to the direct specular (steel at uStSheen.y, as the
+  // 3D rail.head; see shading.js patchRailSheen)
   float fs = dot( fSteel, vec3( 0.333 ) ), fo = dot( fOther, vec3( 0.333 ) );
-  lnEnvK = ( fs * ${f(RAIL_SPEC_ENV)} + fo ) / max( fs + fo, 1e-5 );
+  lnEnvK = ( fs * uStSheen.y + fo ) / max( fs + fo, 1e-5 );
   lnPhys = 1.0;
-  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.42 + 0.1 * wear ) + wShoulder * 0.55 + wGauge * 0.4 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
+  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.3 + 0.08 * wear ) + wShoulder * 0.55 + wGauge * 0.4 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
   diffuseColor.rgb = lnD;
   diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
@@ -418,7 +418,7 @@ else if ( vLineStyle < ${(LINE_STYLE.joint + 0.5).toFixed(1)} ) ${PAINT_FRAG}
 else ${ASPHALT_FRAG}
 `;
 
-/** The shared line material (all styles; rails reflect the street canyon). */
+/** The shared line material (all styles; the rail steel has the lengthwise-polish sheen). */
 export function createLineMaterial() {
   const m = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.5, metalness: 0, transparent: true, depthWrite: false,
@@ -443,7 +443,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
   m.customProgramCacheKey = () => 'street-line-4';
-  return patchCanyon(m, 'line');
+  return patchRailSheen(m, 'line');
 }
 
 let UP = new Float32Array(0);

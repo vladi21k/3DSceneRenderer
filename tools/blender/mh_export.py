@@ -202,6 +202,7 @@ def main():
         meta, parts = chars[cid]
         spec = meta['spec']
         # ---------------------------------------------------------------- merge parts, LOD index lists
+        body_part = next((q for q in parts if q['kind'] == 'body'), None)
         P, N, UV, W, AO, TEXA = [], [], [], [], [], []
         lods = [[], [], [], []]
         nv = 0
@@ -221,6 +222,9 @@ def main():
             if d['kind'] == 'body' and 'dec' in d:
                 # skin: no normal layer; the channel carries the skin decals instead (128 none, above: beard
                 # growth, below: hair-covered scalp)
+                ta[:, 1] = d['dec']
+            if d['kind'] == 'hair' and 'dec' in d:
+                # hair: no normal layer; the channel carries the strand fade at cut ends (254 none)
                 ta[:, 1] = d['dec']
             r = res[f'{cid}_{d["key"]}']
             lodidx = []
@@ -254,8 +258,10 @@ def main():
                     lods[li].append(ix + nv)
                 nv += n
             if d['kind'] == 'suit':
-                # the inside of the garment near its openings
+                # the inside of the garment near its openings, and faces turned towards the body (pocket
+                # mouths, folds): seen from outside they would be see-through
                 near = hem_distance(d['co'], d['idx']) < HEM_RANGE * max(0.6, meta['H'] / 1.75)
+                near |= inward_vertices(d, body_part)
                 if near.any():
                     P.append(d['co'] - d['nr'] * 0.0006); N.append(-d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao'] * 0.7)
                     tb = ta.copy()
@@ -315,6 +321,7 @@ def main():
         info = landmarks(meta, P, W, TEXA)
         out_chars.append(dict(
             id=cid, note=spec.get('note', ''), sex=spec['sex'], age=spec['age'], ageClass=meta['ageClass'], kind=meta['kind'],
+            anc=[round(float(x), 3) for x in spec['anc']], tone=spec.get('tone', 'base'),
             senior=meta['ageClass'] == 'old', height=round(meta['H'], 4), top=round(float(P[:, 1].max()), 4),
             skeleton=dict(parent=meta['parent'], joints=[[round(v, 5) for v in meta['joints'][b]] for b in meta['bones']]),
             info=info,
@@ -340,7 +347,8 @@ def main():
                                     normal=l['normal'], alpha=bool(l.get('alpha'))) for l in tex['layers']])
     doc = dict(
         version=VERSION,
-        # decal: skin tex.y = skin decals (128 none, > 128 beard growth, < 128 hair-covered scalp);
+        # decal: skin tex.y = skin decals (128 none, > 128 beard growth, < 128 hair-covered scalp); hair
+        # tex.y = strand fade (254 none .. 0 cut strand ends);
         # innerHem: flag 2 on a garment region = inner face near an opening; beardShell: beards with volume only
         features=['decal', 'innerHem', 'beardShell'],
         format=FORMAT_DOC,
@@ -359,6 +367,26 @@ def main():
         json.dump(doc, f, separators=(',', ':'))
     gz = os.path.getsize(os.path.join(OUT, 'cast.bin.gz'))
     log(f'wrote cast.json + cast.bin.gz ({len(binary) // 1024} KB raw, {gz // 1024} KB gz), {len(out_chars)} characters')
+
+
+def inward_vertices(d, body):
+    """Vertices of garment triangles that face the body (normal against the nearest skin normal):
+    the inner walls of pocket mouths and folds."""
+    out = np.zeros(len(d['co']), bool)
+    if body is None:
+        return out
+    from scipy.spatial import cKDTree
+    t = d['idx'].reshape(-1, 3)
+    P = d['co'][t]
+    fn = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    fn /= np.maximum(1e-12, np.linalg.norm(fn, axis=1, keepdims=True))
+    c = P.mean(1)
+    tree = cKDTree(body['co'])
+    dist, j = tree.query(c)
+    bn = body['nr'][j]
+    inward = ((fn * bn).sum(1) < -0.3) & (dist < 0.06)
+    out[t[inward].reshape(-1)] = True
+    return out
 
 
 def hem_distance(co, idx):

@@ -32,6 +32,11 @@ const LEVEL_DIST = [12, 60, 140], FIT_DIST = 55, REF_FOV = 17;
 const PAINT = [0.125, 0.152, 0.148]; // linear albedo of the grey-green satin paint
 const BASE_R = 0.215;         // radius of the cast base of a standard
 const DEG = Math.PI / 180;
+// pedestrian lights: red while a tram is within RED_DIST m of the crossing (or RED_SEC s
+// away at its speed) or over it, flashing green for BLINK_SEC s before that, green otherwise
+const RED_DIST = 60, RED_SEC = 8, BLINK_SEC = 3, CLEAR_M = 4, TRAM_LEN = 32;
+const PED_DARK = 0.03;        // brightness of an unlit aspect (instance colour)
+const _on = new THREE.Color(1, 1, 1), _off = new THREE.Color(PED_DARK, PED_DARK, PED_DARK);
 
 const _y = new THREE.Vector3(0, 1, 0);
 const _t = new THREE.Matrix4(), _r = new THREE.Matrix4().makeRotationY(Math.PI);
@@ -74,6 +79,22 @@ const catenary = {
     this.stickerMat = M.register('catenary.sticker', new THREE.MeshStandardMaterial({ map: buildStickerAtlas(layout.seed), vertexColors: true, roughness: 0.8, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
     // LED aspects: about 0.55 scene units (~18,000 cd/m²) by day, dimmed at night (update)
     this.aspectMat = M.register('catenary.signalAspect', new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.2, metalness: 0, emissive: 0xffffff, emissiveMap: buildAspectAtlas(), emissiveIntensity: 0.55 }));
+    // the instance colour dims an aspect that is off (pedestrian lights); chained after
+    // any hook the lighting set on registration
+    {
+      const m = this.aspectMat, prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey ? m.customProgramCacheKey.bind(m) : null;
+      m.onBeforeCompile = (shader, renderer) => {
+        if (prev) prev.call(m, shader, renderer);
+        shader.fragmentShader = shader.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          #if defined( USE_COLOR_ALPHA ) || defined( USE_COLOR )
+            totalEmissiveRadiance *= vColor.rgb;
+          #endif`);
+      };
+      m.customProgramCacheKey = () => (prevKey ? prevKey() : '') + '|catAspect1';
+      m.needsUpdate = true;
+    }
+    this.pedRecs = new Set();   // chunk records holding pedestrian heads
+    this.pedStates = new Map(); // crossing s -> state of this frame (0 red, 1 flashing, 2 green)
 
     // ---- street-wide parts (see catenary/batch.js)
     this._initBatches(app);
@@ -145,7 +166,7 @@ const catenary = {
       fittings: B.add(new CatBatch('catenary:fittings', this.fittingMat, [this.armGeo, this.clampGeo], 32)),
       insulators: B.add(new CatBatch('catenary:insulators', this.insulatorMat, [this.insSpanGeo, this.insDropGeo], 64)),
       signals: B.add(new CatBatch('catenary:signals', this.signalMat, [SK.tramHead, SK.tramPost, SK.tramMount, SK.pedBody], 32, { cast: true, shadowMaxTexel: 0.07 })),
-      aspects: B.add(new CatBatch('catenary:signalAspects', this.aspectMat, [SK.tramGo, SK.tramStop, SK.pedLit], 32)),
+      aspects: B.add(new CatBatch('catenary:signalAspects', this.aspectMat, [SK.tramGo, SK.tramStop, SK.pedRed, SK.pedGreen], 48)),
       // per-chunk wire ribbons (and their fitting stand-ins) and pole stickers
       wires: B.add(new SlotBatch('catenary:wires', this.wireMat, slotTemplate({ position: 3, aTan: 3, aWire: 2, color: 3 }), 72, 640, 1536)),
       stickers: B.add(new SlotBatch('catenary:stickers', this.stickerMat, slotTemplate({ position: 3, normal: 3, uv: 2, color: 3 }), 40, 256, 512)),
@@ -156,7 +177,7 @@ const catenary = {
     this.parts.wires.mesh.userData.thinCaster = true;
     if (app.params.str('catslots') === '0') this.parts.wires.free.length = this.parts.stickers.free.length = 0;
     // geometry indices within the parts
-    this.SIG = { tramHead: 0, tramPost: 1, tramMount: 2, pedBody: 3, tramGo: 0, tramStop: 1, pedLit: 2 };
+    this.SIG = { tramHead: 0, tramPost: 1, tramMount: 2, pedBody: 3, tramGo: 0, tramStop: 1, pedRed: 2, pedGreen: 3 };
   },
 
   /** Pole frame: +X towards the street centre, +Y up, origin on the paving (sunk by the
@@ -257,6 +278,7 @@ const catenary = {
 
   dispose(obj) {
     if (obj.userData.catenaryLive) this.live.delete(obj.userData.catenaryLive);
+    if (obj.userData.catRecord) this.pedRecs.delete(obj.userData.catRecord);
     this.batches.release(obj.userData.catRecord);
     disposeObject(obj);
   },
@@ -308,14 +330,71 @@ const catenary = {
           B.put(rec, P.aspects, sg.face === 'back' ? I.tramGo : I.tramStop, m);
         } else {
           B.put(rec, P.signals, I.pedBody, m);
-          B.put(rec, P.aspects, I.pedLit, m);
+          B.put(rec, P.aspects, I.pedRed, m);
+          const red = rec.entries[rec.entries.length - 1].id;
+          B.put(rec, P.aspects, I.pedGreen, m);
+          const green = rec.entries[rec.entries.length - 1].id;
+          (rec.peds || (rec.peds = [])).push({ s: c.s, red, green, state: -1, lit: -1 });
+          this.pedRecs.add(rec);
         }
+      }
+    }
+  },
+
+  /** State of the pedestrian lights of the crossing at route s: 0 red (a tram is near
+   *  or over it), 1 flashing green (red in a few seconds), 2 green. Memoised per frame. */
+  pedState(sc) {
+    const app = this.app, route = app.route;
+    if (this._pedFrame !== app.frame) { this._pedFrame = app.frame; this.pedStates.clear(); }
+    const key = Math.round(sc * 10);
+    let st = this.pedStates.get(key);
+    if (st !== undefined) return st;
+    st = 2;
+    // front: leading end, dir: travel direction (+1 / -1 in s), len: body behind the front
+    const check = (front, dir, len, speed) => {
+      const ahead = route.delta(front, sc) * dir;   // crossing ahead of the front (m)
+      if (ahead <= 0) return -ahead < len + CLEAR_M ? 0 : 2;  // over it, or gone
+      const v = Math.max(0, speed || 0), redAt = Math.max(RED_DIST, v * RED_SEC);
+      if (ahead < redAt) return 0;
+      return v > 0.3 && (ahead - redAt) / v < BLINK_SEC ? 1 : 2;
+    };
+    const tr = app.train;
+    if (tr && Number.isFinite(tr.s)) st = Math.min(st, check(tr.s, 1, TRAM_LEN, tr.speed));
+    const units = app.trams && app.trams.units;
+    if (units) for (const u of units) if (u && u.active !== false && Number.isFinite(u.s)) st = Math.min(st, check(u.s, u.dir || -1, u.length || TRAM_LEN, u.speed));
+    this.pedStates.set(key, st);
+    return st;
+  },
+
+  /** Pedestrian light at the crossing nearest route s (within 15 m): 'red', 'flash'
+   *  (green, turning red within a few seconds) or 'green'; null where there is none. */
+  signalAt(s) {
+    const { route, layout } = this.app;
+    let best = null, bd = 15;
+    for (const c of layout.crossStreets) { const d = Math.abs(route.delta(c.s, s)); if (d < bd) { bd = d; best = c; } }
+    if (!best) return null;
+    return ['red', 'flash', 'green'][this.pedState(best.s)];
+  },
+
+  _updatePedLights(app) {
+    if (!this.pedRecs.size) return;
+    const asp = this.parts.aspects.mesh;
+    const flashOn = ((app.time || 0) % 1) < 0.5;
+    for (const rec of this.pedRecs) {
+      for (const h of rec.peds) {
+        const st = this.pedState(h.s);
+        const lit = st === 0 ? 0 : st === 2 || flashOn ? 1 : 2;  // 0 red, 1 green, 2 dark
+        if (lit === h.lit) continue;
+        h.lit = lit;
+        asp.setColorAt(h.red, lit === 0 ? _on : _off);
+        asp.setColorAt(h.green, lit === 1 ? _on : _off);
       }
     }
   },
 
   update(dt, app) {
     updateScreenUniforms(app, this.lampRadiance);
+    this._updatePedLights(app);
     // alpha-to-coverage rounds to whole samples of the scene target
     const post = app.post, rt = post && !post.disabled ? post.sceneRT : null;
     SU.uA2C.value = rt && rt.samples > 0 ? rt.samples : 0;

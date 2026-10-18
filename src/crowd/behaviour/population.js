@@ -5,7 +5,7 @@ import { Agent, KIND, ST, TASK, LANE, MOB } from './agent.js';
 import { laneTarget, setLane, board, doorOf } from './behaviour.js';
 import {
   MAX_AGENTS, RANGE_BEHIND, RANGE_AHEAD, FAR_TAPER, FAR_SLACK, FAR_HARD, FAR_SPAWN_BAND, WALKER_DENSITY, MAX_SEATED,
-  MAX_PASSENGERS, STANDER_TARGET, WALK_MEAN, WALK_SD, WALK_MIN, WALK_MAX, RIDE_D, BAND, AGENT_R, TRAM_LEN,
+  MAX_PASSENGERS, STANDER_TARGET, STAND_NEAR, WALK_BY, WALK_MIN, HURRY, HURRY_BY, RIDE_D, BAND, AGENT_R, TRAM_LEN,
   CLEAR_T, CLEAR_T_DREAMY, MOB_SHARE, STROLLER_V, WALKBIKE_V, CYCLE_V, CYCLE_CLEAR_T, FOOT,
 } from './constants.js';
 import { updateFoot, footBandGap, propPointDist2, footGap } from './footprint.js';
@@ -53,6 +53,8 @@ export class Population {
     this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, vanishSeen: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
     this.popOut = [0, 0, 0, 0];  // removals of figures in plain view, by distance
     this.mobCount = [0, 0, 0, 0]; // people with a stroller / riding / walking a bicycle (by MOB)
+    this._paceK = 1;             // time of day: walking pace factor (a little slower in the evening)
+    this.tod = { t: 0, evening: 0, late: 0 };
   }
 
   // ---------------------------------------------------------------- slots
@@ -74,11 +76,20 @@ export class Population {
     a.clearing = false; a.noRect = false; a.inDoor = false; a.mouth = null; a.after = 0;
     a.feature = null; a.door = null; a.stuckT = 0; a.h = 0; a.timer = 0;
     a.thinkT = r.range(0.2, 1.5); a.simple = false; a.gTol = 0.3;
-    a.v0 = Math.min(WALK_MAX, Math.max(WALK_MIN, r.normal(WALK_MEAN, WALK_SD)));
+    // walking pace by age class (the stooped elderly slowest), a little slower with shopping or
+    // eyes on a phone; the elderly cannot trot off the track, and start leaving it earlier
+    const ageK = !ap ? 'adult' : ap.walkOld ? 'walkOld' : ap.age === 'old' || ap.age === 'teen' || ap.age === 'child' ? ap.age : 'adult';
+    const W = WALK_BY[ageK] || WALK_BY.adult;
+    a.ageK = ageK;
+    a.v0 = Math.min(W[3], Math.max(W[2], r.normal(W[0], W[1]))) * (ap && ap.carry ? 0.95 : 1) * (ap && ap.phoneWalk ? 0.88 : 1) * this._paceK;
+    a.ownV0 = a.v0;
+    a.hurry = HURRY_BY[ageK] || HURRY;
     a.dir = 1; a.side = 1; a.lane = LANE.SIDE; a.laneF = 0.5; a.laneD = 0;
     a.dreamy = r.chance(0.08); a.bellT = 0; a.tramLookS = 0;
     a.clearT = a.dreamy ? r.range(CLEAR_T_DREAMY[0], CLEAR_T_DREAMY[1]) : r.range(CLEAR_T[0], CLEAR_T[1]);
+    if (HURRY_BY[ageK]) a.clearT += 1.5;
     a.needsBell = a.dreamy || r.chance(0.1);
+    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.sideK = 0;
     a.dodge = 0; a.dodgeT = 0; a.passT = -1e9;
     a.fresh = true; a.src = src; a.strideV = -1; a.afs = 0; a.afd = 0; a.laneTT = 0;
     a.pValid = false; a.speedA = 0; a.moving = false; a.uturnT = 0; a.driftT = 0;
@@ -351,7 +362,9 @@ export class Population {
       if (r.chance(0.5)) slots.push({ role: 'child', F: r.range(0.32, 0.55), R: -sideA * r.range(0.6, 0.68), maxH: 1.35 });
       else slots.push({ role: 'child', F: r.range(-0.12, 0.08), R: -sideA * r.range(0.44, 0.52) });
     }
-    a.v0 = Math.max(0.95, a.v0 * (kids ? 0.94 : 1));
+    a.v0 = Math.max(0.9, a.v0 * (kids ? 0.94 : 1));
+    // (a grandparent pushing walks at their own pace)
+    if (a.ageK === 'old' || a.ageK === 'walkOld') a.v0 = Math.min(a.v0, WALK_BY[a.ageK][0] * this.c.rng.range(0.92, 1.02));
     for (const sl of slots) {
       if (this.free.length <= 4) break;
       const f = this.alloc(a.kind, opts.src, sl.role, sl.maxH ? { maxH: sl.maxH } : null);
@@ -368,6 +381,9 @@ export class Population {
       f.state = a.state;
     }
     a.nFollow = a.followers.length;
+    // the group walks at its slowest adult's pace
+    for (const f of a.followers) if (!f.isChild && f.ownV0 < a.v0) a.v0 = Math.max(0.85, f.ownV0);
+    for (const f of a.followers) f.v0 = a.v0 * r.range(1.0, 1.06);
   }
 
   /** Companions for leader a: couples side by side, threes in a loose V / U, fours in pairs,
@@ -377,7 +393,8 @@ export class Population {
     const n = r.weighted([[1, 0.62], [2, 0.28], [3, 0.1]]);
     const kids = r.chance(0.2) ? (n >= 2 && r.chance(0.4) ? 2 : 1) : 0;
     // (each group its own pace: two groups never settle into the same speed side by side)
-    a.v0 = Math.max(WALK_MIN, a.v0 * (kids ? 0.82 : 0.9) * r.range(0.94, 1.06));
+    const gk = (kids ? 0.82 : 0.9) * r.range(0.94, 1.06);
+    a.v0 = Math.max(0.85, a.v0 * gk);
     const R1 = r.range(0.56, 0.72) * (r.chance(0.5) ? 1 : -1);
     const V = (r.chance(0.7) ? 1 : -1) * r.range(0.3, 0.5);
     let slots;
@@ -405,6 +422,9 @@ export class Population {
       f.state = a.state;
     }
     a.nFollow = a.followers.length;
+    // the group walks at its slowest adult's pace
+    for (const f of a.followers) if (!f.isChild && f.ownV0 * gk < a.v0) a.v0 = Math.max(0.85, f.ownV0 * gk);
+    for (const f of a.followers) f.v0 = a.v0 * r.range(1.0, 1.06);
   }
 
   /** Undo an alloc that found no room (not counted as a spawn). */

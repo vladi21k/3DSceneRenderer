@@ -528,7 +528,7 @@ function leafSites(tpl, env, sk, info, rng) {
     const tip = !info.kids[i].length;
     let k = 0;
     if (tip) k = tpl.cardsPerTip * (rn < 0.35 ? 0.5 : 1);
-    else if (info.r[i] < 0.012) k = rn < 0.35 ? 0.25 : tpl.mature ? 0.6 : 0.85;
+    else if (info.r[i] < 0.012) k = rn < 0.35 ? 0.18 : tpl.mature ? 0.42 : 0.6;
     else if (info.r[i] < 0.022 && rn > 0.5) k = 0.15;
     while (k > 0) { if (rng.next() < k) sites.push(i); k -= 1; }
   }
@@ -581,7 +581,7 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
     const col = [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
     // interior occlusion (sky light only), dimmer towards the crown centre and underside
     const ao = (0.78 + 0.22 * THREE.MathUtils.smoothstep(rn, 0.2, 1.0)) * (0.9 + 0.1 * (cn.y * 0.5 + 0.5));
-    const keep = rng.next() < 0.6;
+    const keep = rng.next() < 0.52;
     const card = { i, c, d, nn, size, fold: rng.range(0.12, 0.38), bend: rng.range(0.05, 0.2), cell: rng.pick(fol.cells),
       col, ao, keep, keep2: keep && rng.next() < 0.58, cross: p.y < lowY && rng.next() < 0.3 };
     cards.push(card);
@@ -628,8 +628,8 @@ function nodeOcc(env, sk, i) {
 /** Crown self-occlusion baked into the leaf colour: a leaf deep inside the crown is lit
  *  through and between the outer leaves only (sun, sky and bounce alike), so its albedo
  *  is scaled from 1 on the shell down to CROWN_AO_MIN in the core. */
-export const CROWN_AO_MIN = 0.42;
-const CROWN_AO_K = 1.3;   // 1/m
+export const CROWN_AO_MIN = 0.62;
+const CROWN_AO_K = 1.0;   // 1/m
 
 /** Crown-sphere coordinates of a template-space point. */
 function crownCoord(env, p, out) {

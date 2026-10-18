@@ -114,7 +114,8 @@ const vegetation = {
       // and round the stations
       const sw = route.wrap(t.s);
       const old = sw < 1500 || layout.stations.some((st) => Math.abs(route.delta(st.s, t.s)) < 90);
-      const mature = t.mature ? r.chance(old ? 1 : 0.9) : r.chance(old ? 0.3 : 0.05);
+      const avenue = sw < 1500;
+      const mature = t.mature ? r.chance(avenue ? 0.75 : old ? 0.85 : 0.8) : r.chance(avenue ? 0.015 : old ? 0.04 : 0.03);
       // planned sizes: young trees are kept small (the layout plans them a little bigger),
       // old ones at least 5 m across
       const height = mature ? (t.mature ? t.height * 0.97 : r.range(8.2, 10.5)) : (t.mature ? r.range(5.0, 7.2) : t.height) * 0.9;

@@ -119,7 +119,7 @@ void hSkin(out vec3 P, out vec3 N) {
   vRow = float(row);
   vRest = position;
   vBeard = aTex.z == 11.0 ? aTex.y / 254.0 : 1.0;
-  vDecal = uDecal > 0.5 && aTex.z == 0.0 ? (aTex.y - 128.0) / 127.0 : 0.0;
+  vDecal = uDecal > 0.5 && aTex.z == 0.0 ? (aTex.y - 128.0) / 127.0 : uDecal > 0.5 && aTex.z == 1.0 ? min(1.0, aTex.y / 254.0) : 0.0;
 }
 `;
 
@@ -265,6 +265,11 @@ const FRAG_SURFACE = /* glsl */`
     // to about a pixel, then rounded to the target's sample count (alpha to coverage) or tested
     a = tx.a * (1.0 + max(lod, 0.0) * 0.22);
     if (hRegion == 3) a *= 1.0 - hLook(row, 3).w;          // lighter lashes (men, children)
+    if (hRegion == 1 && uDecal > 0.5 && vDecal < 0.999) {
+      // trimmed strand ends: the fade breaks into strands of uneven length
+      float sn = hH3(vec3(floor(vCastUv.x * 900.0), vCastTex.x, 3.0));
+      a *= clamp((vDecal - 0.1 - 0.55 * sn) * 4.0, 0.0, 1.0);
+    }
     if (hRegion == 2) a *= uDecal > 0.5 ? 0.92 : 0.8;      // brows: thinner strokes, skin shows between the hairs
     if (hRegion == 11) {
       // beard shell: strands (fine streaks running down the face, in rest space) thin out towards
@@ -400,6 +405,11 @@ const FRAG_SURFACE = /* glsl */`
   hEmit = vec3(vBeard, hRegion == 11 ? 0.0 : 0.3, 0.0); diffuseColor.rgb = vec3(0.0);   // debug view: beard edge distance
 #elif HUMANS_DBG == 4
   hEmit = vec3(max(vDecal, 0.0), max(-vDecal, 0.0), 0.0); diffuseColor.rgb = vec3(0.0); // debug view: skin decals
+#elif HUMANS_DBG == 5
+  // debug view: region (hue) and flags (back faces dark)
+  hEmit = 0.5 + 0.5 * cos(6.2832 * (float(hRegion) / 16.0 + vec3(0.0, 0.33, 0.67)));
+  if ((hFlags & 2) != 0) hEmit *= 0.3;
+  diffuseColor.rgb = vec3(0.0);
 #endif
   if (hRegion == 13) {
     // a lit phone screen: a pale UI with a few rows of content
@@ -420,7 +430,7 @@ const FRAG_NORMAL = /* glsl */`
   vec3 Bt = q1perp * st0.y + q0perp * st1.y;
   float det = max(dot(T, T), dot(Bt, Bt));
   float scl = det == 0.0 ? 0.0 : inversesqrt(det);
-  if (uHasNormal > 0.5 && vCastTex.y < 254.5 && (hFlags & 16) == 0 && hRegion != 11 && !(uDecal > 0.5 && hRegion == 0)) {
+  if (uHasNormal > 0.5 && vCastTex.y < 254.5 && (hFlags & 16) == 0 && hRegion != 11 && !(uDecal > 0.5 && (hRegion == 0 || hRegion == 1))) {
     vec3 nm = texture(uNormalArr, vec3(vCastUv, vCastTex.y)).xyz * 2.0 - 1.0;
     normal = normalize(T * (nm.x * scl) + Bt * (nm.y * scl) + normal * nm.z);
   }

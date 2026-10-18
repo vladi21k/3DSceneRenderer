@@ -52,7 +52,7 @@ import { U } from '../../core/uniforms.js';
 const LIGHT_CAP = 8.0;
 const LAMP_CAP = 14.0;
 const LAMP_TRANS = 0.3;
-const SUN_MULTI = 0.2;   // share of the sunlight stopped by a crown that lights its inner leaves
+const SUN_MULTI = 0.3;   // share of the sunlight stopped by a crown that lights its inner leaves
 
 const WIND_PARS = /* glsl */`
 invariant gl_Position;
@@ -157,7 +157,7 @@ function rep(src, from, to, what) {
 
 /** Leaf material: shared by every tree, shrub and flower card. */
 function patchLeaf(mat, params) {
-  chain(mat, 'veg-leaf-v4', (shader) => {
+  chain(mat, 'veg-leaf-v5', (shader) => {
     windUniforms(shader, params);
     shader.uniforms.uLeafTrans = params.trans;
     shader.uniforms.uLeafSpec = params.spec;
@@ -320,7 +320,10 @@ function patchLeaf(mat, params) {
         float into = saturate( dot( -geometryViewDir, directLight.direction ) );
         float fwd = pow( into, 4.0 );
         float rim = smoothstep( 0.85, 1.05, vVegRim ) * fwd;
-        float tThrough = isSun ? mix( 0.12, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
+        // (a high sun reaches the underside through many gaps of the crown: the floor of
+        // the light passing through it rises with the sun's elevation)
+        float tFloor = mix( 0.12, 0.35, smoothstep( 0.42, 0.62, uSunDirV.y ) );
+        float tThrough = isSun ? mix( tFloor, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
         vec3 tc = material.diffuseColor * vec3( 1.12, 1.08, 0.55 );
         reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT * back * ( 1.0 + 0.5 * fwd + 0.4 * rim ) * RECIPROCAL_PI );
         // green light inside the crown: the sunlight the outer leaves stop is partly
@@ -475,11 +478,11 @@ export function createVegMaterials(app, atlas) {
   const M = app.materials;
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
-    trans: { value: 0.4 },      // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.5, 0.4) },   // sky occlusion by the crown: extinction (1/m), floor
+    trans: { value: 0.55 },     // leaf transmission: share of the lit face's radiance passed through
+    sky: { value: new THREE.Vector2(0.4, 0.58) },  // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.7 },       // share of the direct specular kept (waxy sunlit leaves glint)
     a2c: { value: 0 },
-    density: { value: 0.62 },   // crown extinction (1/m): exp(-0.62 * 2 m) ~ 0.29 through a young crown
+    density: { value: 0.46 },   // crown extinction (1/m): exp(-0.46 * 2 m) ~ 0.4 through a young crown
     shift: { value: 0.5 },      // shadow lookup moved this share of the way out of the crown along the sun
                                 // ray: the inner half of a crown receives its outer leaves' shadow
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)

@@ -3,7 +3,7 @@ import { TREE_D } from '../../world/layout.js';
 
 // Tunables of the pedestrian simulation. Distances in metres, times in seconds.
 
-export const MAX_AGENTS = 620;          // renderer slots allocated once
+export const MAX_AGENTS = 760;          // renderer slots allocated once
 export const RANGE_BEHIND = 42;         // agents further behind the camera are recycled
 export const RANGE_AHEAD = 560;         // populated distance ahead of the camera
 export const FAR_TAPER = 450;           // density tapers off beyond this (heavier haze, tiny figures)
@@ -14,14 +14,22 @@ export const FAR_SPAWN_BAND = 44;       // new arrivals appear in the last metre
 
 // population mix
 export const WALKER_DENSITY = 0.39;     // walkers per metre of street per side (before local multipliers)
-export const MAX_SEATED = 116;
-export const MAX_PASSENGERS = 46;
+export const MAX_SEATED = 170;
+export const MAX_PASSENGERS = 70;
 export const STANDER_TARGET = 34;       // people standing and talking in small groups
+export const STAND_NEAR = 30;           // people standing (chats, pauses, windows) wanted within 300 m ahead
 
 // bodies and gait
 export const AGENT_R = 0.28;            // body radius used for avoidance and the tram clearance
 export const WALK_MEAN = 1.36, WALK_SD = 0.14, WALK_MIN = 1.08, WALK_MAX = 1.65;
+// preferred walking speed by age class: [mean, sd, min, max] (m/s). People over 65 walk at about
+// 1.0-1.15 m/s, the frail and stooped at 0.8-0.95; phone walkers are slower, shoppers a little
+export const WALK_BY = {
+  adult: [1.34, 0.13, 1.06, 1.66], teen: [1.40, 0.12, 1.12, 1.70], old: [1.08, 0.10, 0.88, 1.28],
+  walkOld: [0.88, 0.08, 0.72, 1.02], child: [1.30, 0.12, 1.05, 1.55],
+};
 export const HURRY = 2.15;              // brisk trot when clearing the track
+export const HURRY_BY = { old: 1.45, walkOld: 1.15 };   // ... the elderly cannot trot
 export const TURN_RATE = 4.0;           // rad/s, max heading change
 
 // street cross-section (|d|)
@@ -46,7 +54,7 @@ export const CLEAR_T_DREAMY = [2.0, 3.0];          // absorbed people (phone, co
 
 // spatial hash
 export const CELL = 2.0;
-export const GRID_D = 26;                          // grid covers |d| <= GRID_D
+export const GRID_D = 96;                          // grid covers |d| <= GRID_D (side streets included)
 
 // mobility roles (strollers, bicycles). Shares of the walking population: drawn per walker when the
 // street is first filled, then kept by spawning to the deficit (capped at twice the share).
