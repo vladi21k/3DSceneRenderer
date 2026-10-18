@@ -57,7 +57,7 @@ HC = {
 # skin tones applied on top of a MakeHuman skin texture (target mean sRGB of the body skin)
 TONES = {
     'base': None,
-    'fair': '#e2b9a2',
+    'fair': '#e2b496',
     'olive': '#c69a7c',      # Mediterranean
     'tan': '#b58565',        # Middle-Eastern / North African
     'brown': '#8f6248',      # South-Asian / mixed
@@ -198,11 +198,11 @@ CAST = {
     'f09': C('f', 33, anc=CAU, skin='young_caucasian_female2', muscle=0.4, weight=0.55, height=0.52, cup=0.55,
              targets=F(head__head_round=0.2, nose__nose_point_up=0.2),
              top=G('female_casualsuit01', 'top', '#e7e0cf', cut='sleeve', length=0.6), bottom=G('female_elegantsuit01', 'bottom', '#3b3f47', cut='skirt', length=0.9),
-             shoes='shoes04', hair='bob01', hair_color='darkbrown', brows='eyebrow002', eyes='grey',
+             shoes='shoes04', hair='ponytail01', hair_color='darkbrown', brows='eyebrow002', eyes='grey',
              note='modest: cream top, long grey skirt'),
     'f10': C('f', 41, anc=(0.1, 0.0, 0.9), skin='middleage_asian_female', muscle=0.45, weight=0.5, height=0.42, cup=0.45,
              top=G('female_elegantsuit01', 'top', '#f6f3ee', cut='sleeve', length=0.2), bottom=G('female_casualsuit01', 'bottom', '#c2b391'),
-             shoes='shoes05', hair='bob01', hair_color='darkbrown', brows='eyebrow011', eyes='brown',
+             shoes='shoes05', hair='bob02', hair_color='darkbrown', brows='eyebrow011', eyes='brown',
              note='white blouse, beige trousers'),
     'f11': C('f', 20, anc=(0.4, 0.6, 0.0), skin='young_african_female', tone='brown', muscle=0.45, weight=0.45, height=0.55, cup=0.5,
              top=G('female_sportsuit01', 'top', '#e7a3b8'), bottom=G('female_casualsuit01', 'bottom', '#5679a3'),
@@ -227,7 +227,7 @@ CAST = {
     'o04': C('f', 66, anc=MEA, skin='old_caucasian_female', tone='tan', muscle=0.3, weight=0.7, height=0.35, cup=0.6, firm=0.2,
              targets=F(stomach__stomach_pregnant_incr=0.2),
              top=G('male_casualsuit02', 'top', '#5a3d52'), bottom=G('female_elegantsuit01', 'bottom', '#1d2337', cut='skirt', length=0.85),
-             shoes='shoes04', hair='bob01', hair_color='grey', brows='eyebrow008', eyes='brown',
+             shoes='shoes04', hair='bob02', hair_color='grey', brows='eyebrow008', eyes='brown',
              note='elderly woman, plum long-sleeved top, long navy skirt'),
     'o05': C('m', 63, anc=AFR, skin='old_african_male', muscle=0.4, weight=0.55, height=0.5,
              top=G('male_casualsuit04', 'top', '#e0d3b2'), bottom=G('male_casualsuit04', 'bottom', '#3b3f47'),
@@ -235,7 +235,7 @@ CAST = {
              note='older man, beige tee, dark trousers'),
     'o06': C('f', 74, anc=(0.0, 0.0, 1.0), skin='old_asian_female', muscle=0.3, weight=0.45, height=0.3, cup=0.4, firm=0.2,
              top=G('female_casualsuit01', 'top', '#8fb6d9', cut='sleeve', length=0.6), bottom=G('female_sportsuit01', 'bottom', '#3b3f47'),
-             shoes='shoes05', hair='bob01', hair_color='white', brows='eyebrow011', eyes='brown',
+             shoes='shoes05', hair='short02', hair_color='white', brows='eyebrow011', eyes='brown',
              note='elderly woman, light-blue top, grey trousers'),
     # ------------------------------------------------------------------ teens
     't01': C('m', 15, anc=CAU, skin='young_caucasian_male', muscle=0.45, weight=0.4, height=0.55,

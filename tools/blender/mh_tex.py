@@ -226,29 +226,27 @@ def alpha_detail(path, size, boost=(0.08, 0.55)):
 
 
 def beard_tile(size, style, seed=11):
-    """Procedural beard / stubble strands: alpha coverage grows along v (v = density from the
-    shell's coverage, u = position around the face)."""
+    """Beard / stubble: v = coverage of the shell (row 0 = v 1 = full). Coverage is a clean, slightly ragged
+    threshold of v (the beard's outline follows the shell's coverage contour, not noise islands); the strands
+    live in the colour (lighter / darker hairs along the growth direction)."""
     rng = np.random.default_rng(seed + (0 if style == 'stubble' else 5))
-    a = np.zeros((size, size), np.float32)
-    n = 9000 if style == 'stubble' else 16000
-    L = 3 if style == 'stubble' else 9
-    xs = rng.uniform(0, size, n)
-    ys = rng.uniform(0, size, n)
-    ang = rng.normal(np.pi / 2, 0.35, n)
-    for x, y, t in zip(xs, ys, ang):
-        dens = 1 - y / size           # row 0 (v = 1) densest
-        if rng.uniform() > dens * 1.15:
-            continue
-        for k in range(L):
-            xi = int(x + np.cos(t) * k) % size
-            yi = int(y + np.sin(t) * k) % size
-            a[yi, xi] = max(a[yi, xi], 0.9)
-    a = ndimage.gaussian_filter(a, 0.6)
-    a = np.clip(a * (1.6 if style == 'stubble' else 2.2), 0, 1)
-    ramp = np.linspace(1.0, 0.0, size)[:, None] ** 0.8
-    base = (0.35 if style == 'stubble' else 0.55) * ramp
-    a = np.clip(np.maximum(a * (0.4 + 0.6 * ramp), base), 0, 1)
-    detail = 0.85 + 0.3 * rng.uniform(size=(size, size)).astype(np.float32)
+    vv = np.linspace(1.0, 0.0, size)[:, None] * np.ones((1, size), np.float32)
+    rag = ndimage.gaussian_filter(rng.standard_normal((size, size)).astype(np.float32), 2.0)
+    rag /= rag.std() + 1e-6
+    edge = 0.42 if style == 'stubble' else 0.36
+    # hair tips at the outline: fine vertical streaks in the transition band (an alpha test leaves wisps,
+    # alpha to coverage a soft fade)
+    tips = ndimage.gaussian_filter(rng.standard_normal((size, size)).astype(np.float32), (6.0, 0.7))
+    tips /= tips.std() + 1e-6
+    a = np.clip((vv - edge + 0.03 * rag + 0.05 * tips) / 0.22 + 0.5, 0, 1)
+    # strands: short dark / light streaks, mostly vertical (growth downwards)
+    st = rng.standard_normal((size, size)).astype(np.float32)
+    st = ndimage.gaussian_filter(st, (3.0 if style != 'stubble' else 1.2, 0.6))
+    st /= st.std() + 1e-6
+    detail = np.clip(1.0 + (0.22 if style != 'stubble' else 0.12) * st, 0.5, 1.5)
+    if style == 'stubble':
+        # stubble: the skin shows through, a lighter, flatter tone
+        detail = detail * 1.25
     g = lin_to_srgb(np.clip(0.5 * detail, 0, 1))
     return np.stack([g, g, g, a], -1)
 
@@ -362,7 +360,7 @@ def main():
                     sub = beard_tile(cell, name)
                     t = 'detail'
                 elif kind == 'brow':
-                    sub = alpha_detail(f'{ASSETS}/eyebrows/{name}/{name}.png', cell, boost=(0.05, 0.6))
+                    sub = alpha_detail(f'{ASSETS}/eyebrows/{name}/{name}.png', cell, boost=(0.02, 0.32))
                     t = 'detail'
                 elif kind == 'lash':
                     sub = alpha_detail(f'{ASSETS}/eyelashes/{name}/{name}.png', cell, boost=(0.05, 0.5))

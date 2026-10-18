@@ -17,7 +17,9 @@ const PED_POLE_H = 2.75;
 export const MOUNT_X = 0.3;         // pole axis to head centre (pole-mounted heads)
 
 // albedo (linear) of the body parts
-const C_POST = [0.08, 0.088, 0.088], C_HOUSING = [0.022, 0.022, 0.022], C_BORDER = [0.62, 0.62, 0.58], C_LENS = [0.008, 0.008, 0.008];
+// (the white border is painted on the front of the backboard only: from behind a head is
+// a dark grey powder-coated plate with its mounting bracket, never a white sign)
+const C_POST = [0.08, 0.088, 0.088], C_HOUSING = [0.03, 0.031, 0.031], C_BACK = [0.05, 0.051, 0.05], C_BORDER = [0.62, 0.62, 0.58], C_LENS = [0.008, 0.008, 0.008];
 
 // emissive atlas cells (u ranges): white bar, red standing figure, green walking figure
 const CELL = { white: 0, red: 1, green: 2 };
@@ -70,13 +72,19 @@ function litBar(w, h, x, y, z) {
 export function buildSignalKit() {
   const kit = {};
   const y = TRAM_HEAD_Y;
-  // --- tram head: housing, white-bordered backboard, hooded aspect
+  // --- tram head: housing, backboard with a white border painted on its front face,
+  //     hooded aspect; behind the board a vertical mounting strap
   const head = new RoundedBoxGeometry(0.27, 0.27, 0.11, 2, 0.02); head.translate(0, y, 0);
-  const board = new RoundedBoxGeometry(0.33, 0.33, 0.016, 2, 0.006); board.translate(0, y, -0.062);
-  const border = new RoundedBoxGeometry(0.37, 0.37, 0.01, 2, 0.005); border.translate(0, y, -0.073);
+  const board = new RoundedBoxGeometry(0.37, 0.37, 0.016, 2, 0.006); board.translate(0, y, -0.062);
+  const frame = [];
+  for (const [w, h, x, yy] of [[0.35, 0.022, 0, 0.164], [0.35, 0.022, 0, -0.164], [0.022, 0.306, 0.164, 0], [0.022, 0.306, -0.164, 0]]) {
+    const b = new THREE.BoxGeometry(w, h, 0.003); b.translate(x, y + yy, -0.0525);
+    frame.push(colored(b, C_BORDER));
+  }
+  const strap = new RoundedBoxGeometry(0.07, 0.3, 0.025, 2, 0.006); strap.translate(0, y, -0.082);
   const v = visor(0.115, 0.1); v.translate(0, y, 0.055);
   const lens = new THREE.CircleGeometry(0.105, 24); lens.translate(0, y, 0.056);
-  kit.tramHead = merge([colored(head, C_HOUSING), colored(board, C_HOUSING), colored(border, C_BORDER), colored(v, C_HOUSING), colored(lens, C_LENS)]);
+  kit.tramHead = merge([colored(head, C_HOUSING), colored(board, C_BACK), ...frame, colored(strap, C_BACK), colored(v, C_HOUSING), colored(lens, C_LENS)]);
   kit.tramPost = merge([postGeometry(y - 0.14)]);
   // pole mount: a short tube from the back of the head to a clamp band around the pole,
   // which stands MOUNT_X to the head's +X side

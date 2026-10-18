@@ -25,13 +25,13 @@ VERSION = 1
 
 # triangle budgets per part kind for LOD 0..3 (hair: one side; it is drawn double-sided by duplication)
 BUDGET = {
-    'body': (5200, 1500, 520, 210),
-    'suit': (3600, 1000, 340, 130),
+    'body': (5000, 1500, 520, 210),
+    'suit': (3300, 1000, 340, 130),
     'shoes': (700, 200, 60, 20),
     'hair': (1700, 450, 300, 0),
     'haircap': (0, 0, 0, 60),
-    'hat': (500, 160, 60, 24),
-    'eyes': (None, 40, 0, 0),
+    'hat': (500, 200, 110, 50),
+    'eyes': (None, 40, 20, 12),
     'brows': (None, None, 0, 0),
     'lashes': (None, 0, 0, 0),
     'beard': (None, 120, 50, 0),
@@ -61,9 +61,10 @@ for (const j of jobs) {
     if (t === null) { res.push(null); continue; }
     if (t === 0) { res.push([]); continue; }
     if (t >= j.t) { res.push(null); continue; }
-    let [r, err] = S.simplifyWithAttributes(idx, pos, 3, att, 3, [0.35, 0.35, 0.35], null, t * 3, 1.0, ['Prune']);
+    const fl = j.cards ? [] : ['Prune'];
+    let [r, err] = S.simplifyWithAttributes(idx, pos, 3, att, 3, [0.35, 0.35, 0.35], null, t * 3, 1.0, fl);
     if (r.length > t * 3 * 1.25) {
-      [r, err] = S.simplifyWithAttributes(idx, pos, 3, att, 3, [0.2, 0.2, 0.2], null, t * 3, 1.0, ['Prune', 'Permissive']);
+      [r, err] = S.simplifyWithAttributes(idx, pos, 3, att, 3, [0.2, 0.2, 0.2], null, t * 3, 1.0, fl.concat(['Permissive']));
     }
     if (r.length > t * 3 * 1.5) [r, err] = S.simplifySloppy(idx, pos, 3, null, t * 3, 1.0);
     res.push(Array.from(r));
@@ -134,6 +135,16 @@ def main():
             d = {a: z[k + '_' + a] for a in ('co', 'nr', 'uv', 'w', 'idx', 'reg', 'ao')}
             if k + '_gd' in z:
                 d['gd'] = z[k + '_gd']
+            if p['kind'] == 'body':
+                # enclosed skin never seen (inside of the mouth, eye sockets behind the eyes): AO ~ 0 near the eyes
+                eyes = [q for q in meta['parts'] if q['kind'] == 'eyes']
+                if eyes:
+                    E = z[eyes[0]['key'] + '_co'].mean(0)
+                    kk = meta['H'] / 1.75
+                    tc = d['co'][d['idx']].mean(1)
+                    near = (np.linalg.norm(tc - E, axis=1) < 0.10 * kk) & (tc[:, 2] < E[2] + 0.03 * kk)
+                    tri_ao = d['ao'][d['idx']].max(1)
+                    d['idx'] = d['idx'][~(near & (tri_ao < 0.04))]
             d.update(p)
             bud = BUDGET[p['kind']]
             if p['kind'] == 'suit':
@@ -147,7 +158,8 @@ def main():
                 f.write(d['co'].astype(np.float32).tobytes())
                 f.write(d['nr'].astype(np.float32).tobytes())
                 f.write(d['idx'].astype(np.uint32).tobytes())
-            jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets']))
+            jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets'],
+                             cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows')))
         chars[cid] = (meta, parts)
     with open(os.path.join(WORK, 'jobs.json'), 'w') as f:
         json.dump(jobs, f)
@@ -299,7 +311,10 @@ def main():
         license='Human figures: generated with MPFB2 from MakeHuman system assets, CC0 1.0',
         bones=CASTM_BONES(),
         regions=CASTM.REGIONS,
+        # roughness by region where it should override the layer's (hair, brows, lashes, beard: matte fibres)
+        regionRough={'hair': 0.58, 'brows': 0.8, 'lashes': 0.8, 'beard': 0.9, 'socks': 0.95, 'eyes': 0.15},
         flags=dict(alpha=FLAG_ALPHA, backface=FLAG_BACK, detail=FLAG_DETAIL, skirt=FLAG_SKIRT),
+        lodPx=[300, 84, 26],
         textures=layer_table,
         byteLength=len(binary),
         characters=out_chars,
@@ -384,7 +399,10 @@ characters[i]: one dressed character in the rest pose of the runtime skeleton (s
   orientations are identity (skin matrix = [R | p - R * restJoint]); skeleton.joints[b] = rest joint b,
   skeleton.parent = bone parents (bones[] names). info = fields the runtime Rig reads (H, kind, heelZ, toeZ, hang) + landmarks.
   Geometry: one vertex set shared by the 4 LODs; lods[l] = {start, count} into the index list (draw range,
-  in indices), lods[l].vertices = vertex prefix length used by that LOD (coarser LODs use a prefix).
+  in indices); every index of LOD l is < lods[l].vertices (vertices are ordered coarsest-LOD-first, so a far
+  LOD touches a short prefix). LOD 0 ~10-15k tris (full detail), 1 ~3-4k, 2 ~1-1.5k (hair cards kept, skin
+  pulled in under garment edges), 3 ~250-450 (opaque hair cap instead of cards, no lashes / brows).
+  lodPx = suggested figure heights on screen (px) above which LOD 0 / 1 / 2 are used.
   Attributes (byte offsets into the binary, vertexCount entries each):
     position  int16 x3 (6 bytes / vertex): p = min + (q + 32767) / 65534 * range
     normal    int8 x4 normalised: xyz = normal, w = baked ambient occlusion (0..1)
@@ -396,6 +414,7 @@ flags: 1 alpha-tested coverage (hair, brows, lashes, beard), 2 duplicated back f
   4 detail texture: albedo_linear = 2 * texel_linear * tint_linear (else albedo = texel * tint),
   8 skirt / dress below the waist (weighted pelvis -> both thighs; a renderer may add its own sway or flare).
 tints[region] = default linear RGB tint per region (regions{} ids); skin = tone gain on the skin layer.
+regionRough[region] = roughness that overrides the layer's for those regions.
 textures: albedo array = WebP strips (perStrip layers of size x size stacked vertically, top to bottom = layer
   order, RGB sRGB); a strip with alpha-tested layers has a second opaque image `alpha` whose red channel is the
   coverage (kept apart because browsers premultiply decoded alpha); normal array = WebP strips (RGB tangent

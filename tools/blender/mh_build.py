@@ -816,10 +816,10 @@ def pose_relaxed(rig, spec):
         rotate(f'foot_{s}', v0.rotation_difference(v1).inverted())
 
 
-BEARD = {   # thickness (m), lower reach under the chin (x head scale), cheek line below the eyes, density scale
-    'stubble': (0.0012, 0.030, 0.052, 0.55),
-    'short': (0.0035, 0.040, 0.054, 0.8),
-    'full': (0.0080, 0.070, 0.050, 0.95),
+BEARD = {   # thickness (m), lower reach under the chin (x head scale), cheek line below the eyes, density scale, chin volume (m)
+    'stubble': (0.0010, 0.030, 0.052, 0.75, 0.0),
+    'short': (0.0030, 0.038, 0.054, 0.95, 0.007),
+    'full': (0.0060, 0.055, 0.050, 1.0, 0.022),
 }
 
 
@@ -828,7 +828,7 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
     UV u = position around the jaw, v = coverage (the texture's strand density grows with v)."""
     import numpy as np
     co, nr = body['co'], body['nr']
-    thick, reach, cheek, dens = BEARD[style]
+    thick, reach, cheek, dens, bulge = BEARD[style]
     E = eyes.mean(0)
     k = max(0.5, (J['head'][2] + 0.25) / 1.75)
     lips = np.array([i for i, w in body['groups'].get('lips', []) if w > 0.5])
@@ -839,13 +839,17 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
     # in front of the ears (y grows towards the back of the head)
     front = 1 - sm(0.050 * k, 0.075 * k, y)
     # cheek line: low at the sides, rising towards the nose / moustache
-    top_z = -cheek * k
+    # cheek line: from the sideburns (high, in front of the ears) slanting down towards the mouth corners
+    top_z = -(cheek + 0.010 * (1 - sm(0.03 * k, 0.07 * k, ax))) * k + 0.03 * k * sm(0.062 * k, 0.075 * k, ax) * sm(0.02 * k, 0.045 * k, y)
     top = 1 - sm(top_z - 0.012 * k, top_z + 0.006 * k, z)
     # moustache: above the upper lip, below the nose, only near the middle
     lz = L[2] - E[2]
     mous = (1 - sm(0.022 * k, 0.032 * k, ax)) * sm(lz + 0.002, lz + 0.007 * k, z) * (1 - sm(lz + 0.017 * k, lz + 0.024 * k, z))
     # under the chin, down the throat to `reach` below the lips
     bottom = sm(lz - (0.05 + reach) * k, lz - (0.03 + reach) * k, z)
+    # mouth corners: the moustache runs down into the beard
+    corner = (1 - sm(0.042 * k, 0.05 * k, ax)) * sm(lz - 0.03 * k, lz - 0.02 * k, z) * (1 - sm(lz + 0.012 * k, lz + 0.02 * k, z)) * (y < 0.0)
+    mous = np.maximum(mous, corner)
     cov = np.maximum(front * top, mous * (1 if style != 'stubble' else 0.7)) * bottom * (headw > 0.3)
     # bare lips and a little margin
     if len(lips):
@@ -870,6 +874,11 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
     remap = -np.ones(len(co), np.int64)
     remap[vids] = np.arange(len(vids))
     nco = co[vids] + nr[vids] * thick * (0.35 + 0.65 * cov[vids, None])
+    if bulge > 0:
+        # volume at the chin and jaw: the beard stands off the skin and hangs a little
+        under = sm(0.0, 0.05 * k, lz - z[vids]) * np.clip(cov[vids], 0, 1)
+        nco = nco + nr[vids] * (bulge * under)[:, None]
+        nco[:, 2] -= bulge * 0.5 * under
     ang = np.arctan2(x[vids], -y[vids])                    # around the jaw
     u = np.clip(0.5 + ang / np.pi * 0.75, 0.01, 0.99)
     v = 0.04 + 0.92 * np.clip(cov[vids], 0, 1)

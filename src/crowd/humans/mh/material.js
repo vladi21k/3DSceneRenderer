@@ -57,6 +57,7 @@ uniform highp sampler2DArray uAlbedo;
 uniform highp sampler2DArray uNormalArr;
 uniform vec3 uTint[12];
 uniform float uRough[64];
+uniform float uRegionRough[12];
 uniform float uHasNormal;
 varying vec2 vCastUv;
 flat varying vec4 vCastTex;
@@ -71,11 +72,13 @@ export function makeCastMaterial(cast, tints, ch) {
     uHasNormal: { value: cast.normal ? 1 : 0 },
     uTint: { value: Array.from({ length: 12 }, () => new THREE.Vector3(1, 1, 1)) },
     uRough: { value: Array.from({ length: 64 }, (_, i) => cast.layerRough[i] ?? 0.7) },
+    uRegionRough: { value: new Array(12).fill(-1) },
     uHip: { value: [new THREE.Vector3(), new THREE.Vector3()] },
     uKnee: { value: [new THREE.Vector3(), new THREE.Vector3()] },
     uThighR: { value: [new THREE.Vector2(0.08, 0.05), new THREE.Vector2(0.08, 0.05)] },
   };
   setTints(uniforms, tints, cast.doc.regions);
+  for (const [name, r] of Object.entries(cast.doc.regionRough || {})) uniforms.uRegionRough.value[cast.doc.regions[name]] = r;
   if (ch) {
     const J = ch.skeleton.joints;
     uniforms.uHip.value[0].fromArray(J[14]); uniforms.uKnee.value[0].fromArray(J[15]);
@@ -108,7 +111,7 @@ export function makeCastMaterial(cast, tints, ch) {
       vec3 castTint = uTint[int(vCastTex.z + 0.5)];
       diffuseColor.rgb = castTexel.rgb * castTint * ((castFlags & 4) != 0 ? 2.0 : 1.0);
     `);
-    fs = fs.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = uRough[int(vCastTex.x + 0.5)];');
+    fs = fs.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nfloat rr = uRegionRough[int(vCastTex.z + 0.5)];\nroughnessFactor = rr > 0.0 ? rr : uRough[int(vCastTex.x + 0.5)];');
     fs = fs.replace('#include <normal_fragment_maps>', /* glsl */`
       if (uHasNormal > 0.5 && vCastTex.y < 254.5) {
         vec3 nm = texture(uNormalArr, vec3(vCastUv, vCastTex.y)).xyz * 2.0 - 1.0;
