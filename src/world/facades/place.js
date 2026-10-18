@@ -723,27 +723,33 @@ export function lotTypes(app, lot) {
 }
 
 const _w = new THREE.Vector3();
-const sCache = new Map();             // opening id → route position
-/** Route position of opening o of a main-street front (through its frame; cached). */
-function openingS(app, lot, frame, o) {
-  let s = sCache.get(o.id);
+const returnS = new WeakMap();        // corner-return plan → route position of its face
+/**
+ * Route position of opening o on a main-street front: along the lot for its street face
+ * (u runs against s on the right-hand side), the corner's position for a return.
+ */
+function openingS(app, lot, frame, plan, o) {
+  if (!plan.isReturn) {
+    const t = Math.min(1, Math.max(0, o.uc / (plan.width || 1)));
+    return app.route.wrap(lot.side > 0 ? lot.s1 - t * (lot.s1 - lot.s0) : lot.s0 + t * (lot.s1 - lot.s0));
+  }
+  let s = returnS.get(plan);
   if (s === undefined) {
-    _w.set(o.uc, 0, 0).applyMatrix4(frame.matrix);
+    _w.set((plan.width || 0) / 2, 0, 0).applyMatrix4(frame.matrix);
     s = app.route.wrap(app.route.project(_w.x, _w.z, (lot.s0 + lot.s1) / 2, Math.abs(lot.s1 - lot.s0) / 2 + 12).s);
-    if (sCache.size > 8000) sCache.clear();
-    sCache.set(o.id, s);
+    returnS.set(plan, s);
   }
   return s;
 }
 
-/** Block of shop o on a front of lot: {key, phase, b}. */
-function blockOf(app, lot, frame, o) {
+/** Block of shop o on a front (plan, frame) of lot: {key, phase, b}. */
+function blockOf(app, lot, frame, plan, o) {
   if (lot.sideStreet) {
     const b = Math.floor((lot.x0 + lot.x1) / 2 / SIDE_BLOCK);
     return { key: `X${Math.round(lot.cross.s)}|${lot.side}|${lot.edge}|${b}`, phase: b % 3, b, side: true };
   }
   const L = app.route.length, n = 3 * Math.max(1, Math.round(L / 120)), len = L / n;
-  const b = Math.min(n - 1, Math.floor(openingS(app, lot, frame, o) / len));
+  const b = Math.min(n - 1, Math.floor(openingS(app, lot, frame, plan, o) / len));
   return { key: `M${lot.side}|${b}`, phase: b % 3, b, n, len };
 }
 
@@ -754,9 +760,9 @@ function computeBlock(app, lot, blk) {
     frontsOf(app, l).forEach((fr, fi) => {
       for (const o of fr.plan.openings) {
         if (o.kind !== 'shop') continue;
-        const ob = blockOf(app, l, fr.frame, o);
+        const ob = blockOf(app, l, fr.frame, fr.plan, o);
         if (ob.key !== blk.key) continue;
-        const s = blk.side ? (l.x0 + l.x1) / 2 + o.uc * 1e-3 : openingS(app, l, fr.frame, o);
+        const s = blk.side ? (l.x0 + l.x1) / 2 + o.uc * 1e-3 : openingS(app, l, fr.frame, fr.plan, o);
         shops.push({ id: o.id, s, req: dressRequest(o, types[fi].get(o.id)) });
       }
     });
@@ -776,9 +782,9 @@ function computeBlock(app, lot, blk) {
 }
 function hashStrKey(k) { let h = 2166136261; for (let i = 0; i < k.length; i++) { h ^= k.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 
-/** The window designs given to shop o of the front in ctx. */
-function shopAlloc(ctx, o) {
-  const blk = blockOf(ctx.app, ctx.lot, ctx.frame, o);
+/** The window designs given to shop o of the front in ctx ({app, lot, frame, plan}). */
+export function shopAlloc(ctx, o) {
+  const blk = blockOf(ctx.app, ctx.lot, ctx.frame, ctx.plan, o);
   let m = blockCache.get(blk.key);
   if (!m) {
     m = computeBlock(ctx.app, ctx.lot, blk);

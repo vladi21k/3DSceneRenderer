@@ -6,6 +6,7 @@ import { openingInfill } from './infill.js';
 import { plainOrnament } from './upper.js';
 import { MURALS, ADVERTS, ADVERT_ASPECT, advertPanel } from './mural.js';
 import { acUnit } from './roof.js';
+import { FACES } from './mesh.js';
 
 // render washes for the side walls (multipliers on the plaster albedo): off-white, ochre,
 // cool white, buff, rose, cement grey, pale yellow
@@ -51,7 +52,8 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA,
     // windows, or carry a big painted mural, as in the photographs
     const facing = !lot.sideStreet && (lot.side < 0) === (e === 0);
     const tr = RNG.from(lot.seed, 'partyBig', e);
-    const treat = tr.weighted(facing ? [['mural', 0.15], ['advert', 0.15], ['windows', 0.45], ['plain', 0.25]] : [['mural', 0.05], ['advert', 0.06], ['windows', 0.42], ['plain', 0.47]]);
+    // (big blank walls facing back down the street are the city's prime advert sites)
+    const treat = tr.weighted(facing ? [['mural', 0.14], ['advert', 0.24], ['windows', 0.4], ['plain', 0.22]] : [['mural', 0.05], ['advert', 0.07], ['windows', 0.42], ['plain', 0.46]]);
     let col = rcol ? rcol.map((c) => c * 0.97) : null;
     // the dressing of the windows let into the side wall (own stream): shutters, AC units
     const dr = RNG.from(lot.seed, 'partyDress', e);
@@ -156,6 +158,15 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA,
         B.quadIdx(sm, a, b, c, d);
       }
       if (advert) advertPanel(B, sinks, advert, q);
+      if (mode === 'windows' && finish === 'plaster' && dr.chance(0.6)) {
+        // the rendered side of a later block shows its floor slabs as light bands
+        B.shade = (u, v, w, nu, nv, nw, out) => { fs.wall(u, v, out); const c = nv < -0.5 ? 0.66 : nv > 0.5 ? 0.98 : 1.06; out[0] *= c; out[1] *= c; out[2] *= c; };
+        for (const fl of plan.floors) {
+          if (fl.index === 0 || fl.y < v0 + 0.4 || fl.y > v1 - 0.6) continue;
+          B.box(sWall, 0.05, width - 0.05, fl.y - 0.22, fl.y - 0.02, 0, 0.045, FACES.FRONT | FACES.TOP | FACES.BOTTOM | FACES.LEFT | FACES.RIGHT);
+        }
+        B.shade = null;
+      }
       const irng = RNG.from(lot.seed, 'partyInfill', e);
       const ictx = { ...ctx, rollerCol: col ? [0.62, 0.6, 0.55] : undefined };
       for (let i = 0; i < openings.length; i++) {

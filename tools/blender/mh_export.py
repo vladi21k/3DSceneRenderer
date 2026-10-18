@@ -28,7 +28,7 @@ BUDGET = {
     'body': (8500, 1700, 560, 210),
     'suit': (3600, 1100, 360, 130),
     'shoes': (700, 200, 60, 20),
-    'hair': (4000, 1100, 450, 0),
+    'hair': (4000, 1000, 380, 0),
     'haircap': (0, 0, 0, 60),
     'hat': (500, 200, 110, 50),
     'eyes': (None, 40, 20, 12),
@@ -38,10 +38,12 @@ BUDGET = {
 }
 # simplifier options per part kind: lock the open borders (hems, cuffs, the hair's strand tips), keep
 # small pieces (cards)
-LOCK_BORDER = ('suit', 'shoes', 'hat', 'beard')
+LOCK_BORDER = ('suit', 'hat', 'beard')
 # hair and beards: an absolute error ceiling per LOD (m) instead of a forced budget (sheets of hair
 # simplified to a budget collapse into flat planks that cut through the head)
 CARD_ERROR = (0.0015, 0.006, 0.018, 0.05)
+# other parts: relative error bound per LOD
+LOD_ERROR = (0.004, 0.02, 0.05, 0.12)
 # inner faces of garments near their openings (hems, cuffs, necklines), seen from below or through a
 # sleeve: drawn in the garment's colour, darkened (flag 2 on a garment region), for LOD 0-1
 HEM_RANGE = 0.045
@@ -71,8 +73,9 @@ for (const j of jobs) {
   const idx = new Uint32Array(ab, j.n * 32, j.t * 3);
   const res = [];
   // (no Permissive: collapses must not cross UV seams or region borders, which smears other
-  // texels and garment colours over the surface)
-  const fl = (j.cards ? [] : ['Prune']).concat(j.lockBorder ? ['LockBorder'] : []).concat(j.cards ? [] : ['Regularize']);
+  // texels and garment colours over the surface; no Prune: with a loose error bound it deletes whole
+  // garments)
+  const fl = (j.lockBorder ? ['LockBorder'] : []).concat(j.cards ? [] : ['Regularize']);
   let prev = idx;
   for (let li = 0; li < j.targets.length; li++) {
     const t = j.targets[li];
@@ -80,13 +83,17 @@ for (const j of jobs) {
     if (t === 0) { res.push([]); continue; }
     if (t >= j.t) { res.push(null); continue; }
     if (t * 3 >= prev.length) { res.push(Array.from(prev)); continue; }
-    // each LOD simplifies the previous one (nested, so a LOD switch changes as little as possible)
-    const err = j.cardError ? j.cardError[li] : 1.0;
-    let [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, err, j.cardError ? fl.concat(['ErrorAbsolute']) : fl);
+    // each LOD simplifies the previous one (nested, so a LOD switch changes as little as possible),
+    // within an error bound (a budget is a goal, never a reason to wreck the shape)
+    const cap = j.cardError ? j.cardError[li] : j.loose ? 0.25 : %(err)s[li];
+    const flags = j.cardError ? fl.concat(['ErrorAbsolute']) : fl;
+    let [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, cap, flags);
     if (r.length > t * 3 * 1.6 && j.lockBorder) {
       // borders too long to keep at this budget: let them simplify too (still no seam crossing)
-      [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, 1.0, fl.filter((f) => f !== 'LockBorder'));
+      const [r2] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, cap, flags.filter((f) => f !== 'LockBorder'));
+      if (r2.length >= 3) r = r2;
     }
+    if (r.length < 3) r = prev;
     res.push(Array.from(r));
     prev = r;
   }
@@ -182,13 +189,15 @@ def main():
                 f.write(d['idx'].astype(np.uint32).tobytes())
             jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets'],
                              cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows'), lockBorder=p['kind'] in LOCK_BORDER,
-                             cardError=list(CARD_ERROR) if p['kind'] in ('hair', 'beard') else None))
+                             cardError=list(CARD_ERROR) if p['kind'] in ('hair', 'beard') else None,
+                             loose=p['kind'] in ('shoes', 'eyes')))
         chars[cid] = (meta, parts)
     with open(os.path.join(WORK, 'jobs.json'), 'w') as f:
         json.dump(jobs, f)
     js = os.path.join(WORK, 'simplify.mjs')
     with open(js, 'w') as f:
-        f.write(NODE_JS % {'lib': os.path.join(ROOT, 'vendor/three/addons/libs/meshopt_simplifier.module.js'), 'w': json.dumps(ATTR_W)})
+        f.write(NODE_JS % {'lib': os.path.join(ROOT, 'vendor/three/addons/libs/meshopt_simplifier.module.js'), 'w': json.dumps(ATTR_W),
+                           'err': json.dumps(LOD_ERROR)})
     subprocess.check_call(['node', js, WORK])
     res = json.load(open(os.path.join(WORK, 'result.json')))
     log('simplified', len(jobs), 'parts')

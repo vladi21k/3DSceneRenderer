@@ -38,7 +38,7 @@ vec3 limestone(vec2 m, float hc, inout float h) {
   vec4 dv = voro(m, vec2(90.0), 23u, 1.0);
   float speck = smoothstep(0.22, 0.08, dv.x) * step(1.0 - 0.6 * patch_ * patch_, dv.z);
   c = mix(c, c * vec3(0.45, 0.45, 0.47), speck * 0.85);
-  c *= 1.0 - 0.08 * patch_;
+  c *= 1.0 - 0.045 * patch_;
   // iron-oxide flushes (pink / ochre) and grey clay seams
   float fe = smoothstep(0.35, 0.8, fbm(m, 1.6, 4, 0.6, 19u)) * step(0.6, fract(hc * 7.31));
   c = mix(c, c * vec3(1.05, 0.9, 0.78), fe * ${(0.6 * cloud).toFixed(3)});
@@ -246,17 +246,17 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Rock-faced rustication ("tubzeh"): a hammer-pitched boss 4.5-8 cm proud (per block) inside
-// a flat drafted margin of 20-32 mm (fine chisel lines), deep recessed joints (12 mm wide,
-// 2 cm deep, ambient occlusion 0.4). Courses 0.5 m; 4 × 2 m tile at 2 mm/texel.
-// The boss is a few large weathered planes, not a crumple of small facets: the smooth lower
-// envelope of 3-5 planes falling from an off-centre crown to the pitch line (each reaches the
-// rim at its own height, 1.2-3.4 cm, so the break is a rounded cliff of varying height all
-// round), a gentle dome, one or two conchoidal scars (8-20 cm dishes with a sharp rim, a
-// little deeper on the bulb side) and a soft lumpy irregularity at 5-15 cm; the pitching
+// Rock-faced rustication ("tubzeh"): a hammer-pitched boss 5-9 cm proud (per block) inside a
+// narrow flat drafted margin of 15-25 mm (fine chisel lines), deep recessed joints (12 mm
+// wide, 2 cm behind the margin, ambient occlusion 0.4). Courses 0.5 m; 4 × 2 m tile at
+// 2 mm/texel. The boss is a rounded mass, not a crumple of small facets: a loaf whose
+// shoulders roll over 2.5-7 cm from the pitch line (1.6-4.3 cm proud there, varying along
+// the edge), its crown undulating and leaning; 3-5 large planes struck off it (6-20°,
+// crisp slightly worn rims, each a touch paler or darker); one or two conchoidal scars
+// broken out of the shoulder at the edge; rounded hammer lumps at 5-15 cm; the pitching
 // tool's bites along the break line. Dust greys the hollows. Every block is pitched
-// differently (plane count, crown position, tilts, scars; the runtime also mirrors the
-// relief at random per block).
+// differently (plane count and directions, crown, lean, scars; the runtime also mirrors
+// the relief at random per block).
 // The height (m) is stored in the albedo alpha (heightA: the range it encodes), for the
 // runtime's parallax-occlusion relief and self-shadowing; the roughness comes from the
 // height there (joints rougher).
@@ -272,7 +272,7 @@ void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
   float e = c.e + fbm(m, 5.0, 3, 0.5, 51u) * 0.003;
   const float JW = 0.006;
-  float margin = 0.02 + 0.012 * cellRand(c, 2u);
+  float margin = 0.015 + 0.01 * cellRand(c, 2u);
   // pitch line: the boss breaks away 6-10 mm inside the margin, irregularly
   float brk = margin + 0.006 * fbm(m, 12.0, 3, 0.5, 59u) + 0.004 * cellRand(c, 4u);
   vec2 hs = 0.5 * c.size;

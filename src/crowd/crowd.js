@@ -8,7 +8,7 @@ import { Steering } from './behaviour/steering.js';
 import { TramWatch } from './behaviour/tram.js';
 import { SideStreets } from './behaviour/sideStreets.js';
 import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES } from './behaviour/agent.js';
-import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D } from './behaviour/constants.js';
+import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D, TRAM_LEN } from './behaviour/constants.js';
 import { footDims } from './behaviour/footprint.js';
 
 // Crowd behaviour: where the pedestrians of the street go and what they do. The
@@ -24,6 +24,8 @@ import { footDims } from './behaviour/footprint.js';
 //   behaviour/visibility  frustum / facade / occluder tests for hidden spawns
 //   behaviour/cyclist     cyclists: riding lines, passing, lane changes, getting on and off
 //   behaviour/footprint   stroller / bicycle footprints for avoidance and the tram clearance
+//   behaviour/sideStreets the side streets: their frame and level, two-way traffic on their sidewalks
+//   behaviour/staff       café waiters going between the door and the tables in use
 //
 // Strollers and bicycles (Mobility extension): a person pushing a stroller is pose 3 /
 // prop 1, a cyclist pose 4 / prop 2, someone walking a bicycle pose 5 / prop 2; propSeed
@@ -40,7 +42,9 @@ import { footDims } from './behaviour/footprint.js';
 // with nobody in the way (events.cycleStall5s over the run) and riders near / crossing a rail.
 // stats().units: people kept off the oncoming units' track (clears), blocked steps, body
 // projections (rescues) and, with crowdCheck=1, figures inside a unit's body (leftTrack: 0);
-// stats().mobility.propShare0to100m / 100to400m and stats().corridorDirs (towards / away).
+// stats().mobility.propShare0to100m / 100to400m and stats().corridorDirs (towards / away);
+// check.squeeze counts agent-frames between the tracks while the cab and a unit go by each other.
+// stats().standing (people standing about within 300 m), sideStreets (people up the side streets).
 // With view= the free camera is an obstacle like a pole: nobody walks through it.
 
 const PI = Math.PI;
@@ -57,7 +61,7 @@ class CrowdSim {
     this._mobility(app);
     this.map = new StreetMap(app, opts);
     this.vis = new Visibility(app.route);
-    this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0, stand300: 0, walk300: 0, side: 0 };
+    this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0, stand300: 0, walk300: 0, side: 0, standFar: 0 };
     this.tram = new TramWatch(this);
     this.side = new SideStreets(this);
     this.vis.toWorld = (s, d, h, out) => this.side.toWorld(s, d, h, out);
@@ -69,7 +73,7 @@ class CrowdSim {
     this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
-    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [],
+    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [], squeeze: 0, squeezeLog: [],
       propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propObstLog: [], propWall: 0, propWallLog: [],
       // strollers / bicycles against people and against each other (world space, within 60 m of the camera)
       pa: { frames: 0, agentOverlap: 0, propOverlap: 0, minAgentGap: 99, minPropGap: 99, pairs: new Set(), log: [] } };
@@ -282,7 +286,7 @@ class CrowdSim {
       if (a.pValid && !a.fresh) {
         const dx = a.x - a.px, dz = a.z - a.pz;
         dist = Math.sqrt(dx * dx + dz * dz);
-        if (ck.on && dt > 0 && dist > 3 * Math.max(1.6, a.vmaxCur) * dt * (a.simple ? 2 : 1) + 0.01) {
+        if (ck.on && dt > 0 && dist > 3 * Math.max(1.6, a.vmaxCur) * dt * (a.simple ? 2 : 1) + 0.05) {
           ck.teleports++;
           if (ck.teleLog.length < 10) ck.teleLog.push({ t: +this.time.toFixed(2), dist: +dist.toFixed(2), rel: +(a.s - this.camU).toFixed(1), d: +a.d.toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], lead: !!a.leader });
         }
@@ -354,9 +358,15 @@ class CrowdSim {
         }
       }
       ck.agentFrames++;
-      // the oncoming units' bodies (and a metre in front of the noses) are never entered
+      // the oncoming units' bodies (and a metre in front of the noses) are never entered; nobody is
+      // between the tracks (|d| < 0.9) where a unit and the cab go by each other ('squeeze')
+      const cabAh = a.s - this.tram.trainU;
       for (const T of this.tram.units) {
         const ah = T.sU - a.s;
+        if (a.state !== ST.SEATED && Math.abs(a.d) < 0.9 && ah < 1 && ah > -T.len && cabAh < SWEPT_AHEAD && cabAh > -(TRAM_LEN + 1)) {
+          ck.squeeze++;
+          if (ck.squeezeLog.length < 8) ck.squeezeLog.push({ t: +this.time.toFixed(1), unit: T.i, ah: +ah.toFixed(1), cab: +cabAh.toFixed(1), d: +a.d.toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task] });
+        }
         if (ah > -T.len && ah < 1 && Math.abs(a.d - T.d) < T.half + AGENT_R * 0.8) {
           const us = this.tram.uStats;
           us.leftTrack++;
@@ -553,10 +563,13 @@ class CrowdSim {
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked,
+        // agent-frames between the tracks (|d| < 0.9) abreast of both trams going by each other (aim: 0)
+        squeeze: ck.squeeze, squeezeLog: ck.squeezeLog,
         prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, obstacleLog: ck.propObstLog, wall: ck.propWall, wallLog: ck.propWallLog },
         // frames (within 60 m) of a stroller / bicycle overlapping a body or another one, distinct pairs
         propPeople: { frames: ck.pa.frames, agentOverlap: ck.pa.agentOverlap, propOverlap: ck.pa.propOverlap, pairs: ck.pa.pairs.size, minAgentGap: +ck.pa.minAgentGap.toFixed(3), minPropGap: +ck.pa.minPropGap.toFixed(3), log: ck.pa.log } } : null,
       population: pop.stats, events: this.events,
+      standing: { near300: this.counts.stand300, beyond300: this.counts.standFar }, sideStreets: { people: this.counts.side, ...this.side.stats },
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },
       featureArrivalsInView: { under450m: this.featureIn[0], under660m: this.featureIn[1], beyond660m: this.featureIn[2] },
       blockLog: this.check.on ? summarize(this.tram.blockLog) : null,

@@ -54,7 +54,7 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 const TONE = {
   curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.7, 0.9],
   meter: [0.3, 0.6], target: [0.25, 0.36], backlit: 0.85,
-  clampLo: [0.75, 0.5], clampHi: [1.6, 4], bloom: [0.018, 0.04], tail: 0.02, vignette: 0.25, sharpen: 0.8,
+  clampLo: [0.75, 0.5], clampHi: [1.6, 4], bloom: [0.018, 0.04], tail: 0.016, vignette: 0.25, sharpen: 0.8,
   veil: 0.006, veilSun: 0.0012,
   // highlight recovery: knee (stops over mid grey; time of day, knee) and the log slope
   // above it (time of day, slope): none at midday, then a phone camera's highlight tone
@@ -66,6 +66,9 @@ const TONE = {
   // just above mid grey), easing off towards golden hour: the blacks come from the
   // curve, not from underexposure
   midday: 1.10, pivot: 0.3,
+  // soft black point (display units): by day the deepest shade, window recesses and dark
+  // clothes sit near black as in a camera JPEG; little once the light is lamps and sky
+  black: [0.032, 0.012],
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
   // sky pixels keep nearly the scene's colour ratios (a saturated blue overhead)
@@ -103,6 +106,10 @@ const _vp = new THREE.Matrix4();
 const _p0 = new THREE.Vector3();
 const _p1 = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
+const _p2 = new THREE.Vector3();
+const _vx = new THREE.Vector3();
+const _vy = new THREE.Vector3();
+const _vz = new THREE.Vector3();
 
 function target(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
@@ -233,8 +240,15 @@ const post = {
       uSunUV: { value: new THREE.Vector2() }, uSunR: { value: new THREE.Vector2() }, uFade: { value: 0 },
     });
     this.sunVisRT = target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    // oncoming trams' bodies and their motion since the last frame (blur and TAA history)
+    this.movers = {
+      uMoverInv: { value: Array.from({ length: 4 }, () => new THREE.Matrix4()) },
+      uMoverDisp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
+      uMovers: { value: 0 },
+    };
+    this._moverPrev = new Map();
     this.taa = pass(S.TAA_FS, {
-      ...camU, tCur: { value: null }, tHist: { value: null }, tDepth: { value: null },
+      ...camU, ...this.movers, tCur: { value: null }, tHist: { value: null }, tDepth: { value: null },
       uCamWorld: { value: new THREE.Matrix4() }, uPrevVP: { value: new THREE.Matrix4() },
       uResolution: { value: new THREE.Vector2(1, 1) }, uJitter: { value: new THREE.Vector2() },
       uAlpha: { value: 1 }, uGamma: { value: TAA.gamma }, uExpo: { value: 1 },
@@ -256,7 +270,7 @@ const post = {
     if (this.debug) this.badPass = pass(S.BADPIX_FS, { tScene: { value: null }, uSize: { value: new THREE.Vector2() } });
     this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.blur = pass(S.MBLUR_FS, {
-      ...camU, tSrc: { value: null }, tDepth: { value: null },
+      ...camU, ...this.movers, tSrc: { value: null }, tDepth: { value: null },
       uCamWorld: { value: new THREE.Matrix4() }, uCamPos: { value: new THREE.Vector3() },
       uPrevViewProj: { value: new THREE.Matrix4() }, uResolution: { value: new THREE.Vector2(1, 1) },
       uShutter: { value: 1 }, uMaxPx: { value: BLUR_MAX_PX },
@@ -279,7 +293,7 @@ const post = {
       uVeil: { value: TONE.veil }, uVeilSun: { value: new THREE.Vector3() },
       uHiComp: { value: new THREE.Vector2(TONE.hiKnee[0][1], 1) },
       uCurveSlope: { value: new THREE.Vector2(1, TONE.pivot) },
-      tDepth: { value: null },
+      tDepth: { value: null }, uBlack: { value: 0 },
       uSkyChroma: { value: app.params.num ? app.params.num('skychroma', TONE.skyChroma) : TONE.skyChroma },
       uSkySat: { value: TONE.skySat[0] },
     });
@@ -511,6 +525,7 @@ const post = {
     // highlight recovery: none at midday, more as the sun lowers and the sky outshines the street
     fu.uHiComp.value.set(table(TONE.hiKnee, t), this.hiSlopeK > 0 ? this.hiSlopeK : table(TONE.hiSlope, t));
     fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
+    fu.uBlack.value = THREE.MathUtils.lerp(TONE.black[0], TONE.black[1], ss(t, 0.6, 0.85));
     // the low sun's warmth on the highlights only (the shade keeps its blue)
     const hiW = 0.05 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.72, 0.88));
     fu.uHighTint.value.set(1 + hiW, 1, 1 - hiW);
@@ -583,6 +598,46 @@ const post = {
   },
 
   /**
+   * The oncoming trams as moving boxes: two per car (it bends with the track), camera-
+   * relative, each with its displacement since the last frame. Returns the largest
+   * displacement (m).
+   */
+  _movers(app, camera) {
+    const M = this.movers, trams = app.trams, route = app.route;
+    M.uMovers.value = 0;
+    if (!trams || trams.disabled || !Array.isArray(trams.units) || !route) { this._moverPrev.clear(); return 0; }
+    const cp = _p0.setFromMatrixPosition(camera.matrixWorld);
+    const moving = app.dt > 0;
+    let n = 0, dMax = 0;
+    for (const u of trams.units) {
+      const prev = this._moverPrev.get(u.id);
+      this._moverPrev.set(u.id, u.s);
+      if (!u.root || !u.root.visible || !Number.isFinite(u.s) || u.active === false) continue;
+      const len = u.length || 32, hw = (u.halfWidth || 1.3) + 0.08;
+      const ds = prev === undefined || !moving ? 0 : route.delta(prev, u.s);
+      if (Math.abs(ds) > 6) continue;    // a jump (respawn): no history
+      for (let k = 0; k < 2 && n < 4; k++) {
+        const o = (k + 0.5) * len / 2;
+        const c = route.toWorld(u.s + o, u.d, 1.9, _p1);
+        if (c.distanceToSquared(cp) > 200 * 200) continue;
+        const smp = route.sample(u.s + o, this._msmp || (this._msmp = {}));
+        const hl = len / 4 + 0.3;
+        _vx.copy(smp.right).multiplyScalar(hw);
+        _vy.set(0, 1.95, 0);
+        _vz.copy(smp.tan).multiplyScalar(hl);
+        _m4.makeBasis(_vx, _vy, _vz).setPosition(c.x - cp.x, c.y - cp.y, c.z - cp.z);
+        M.uMoverInv.value[n].copy(_m4).invert();
+        const disp = M.uMoverDisp.value[n];
+        if (ds !== 0) disp.subVectors(c, route.toWorld(u.s - ds + o, u.d, 1.9, _p2)); else disp.set(0, 0, 0);
+        dMax = Math.max(dMax, disp.length());
+        n++;
+      }
+    }
+    M.uMovers.value = n;
+    return dMax;
+  },
+
+  /**
    * Camera motion blur for this frame, or false: streaks follow each pixel's reprojected
    * motion since the last frame, scaled to the shutter time. Off for a cut (jump, zoom,
    * inspection view), while frozen, and when the camera barely moved.
@@ -603,7 +658,7 @@ const post = {
       _p0.applyMatrix4(_vp);
       d = Math.max(d, Math.abs(_p0.x - _p1.x) * this.size.x, Math.abs(_p0.y - _p1.y) * this.size.y);
     }
-    if (d * 0.5 * shutter < 0.25) return false;
+    if (d * 0.5 * shutter < 0.25 && !(this._moverMax > 0.01)) return false;
     u.uPrevViewProj.value.copy(rig.prevViewProj);
     u.uCamWorld.value.copy(camera.matrixWorld);
     u.uCamPos.value.copy(camera.position);
@@ -710,6 +765,7 @@ const post = {
     // for the temporal AA (the projection's inverse, which the shadow cascades are fitted
     // from, stays unjittered)
     const taa = this._taaBegin(app, camera);
+    this._moverMax = this._movers(app, camera);
     r.setRenderTarget(this.sceneRT);
     r.clear();
     try { r.render(scene, camera); } finally { if (taa) this._taaRestore(camera); }

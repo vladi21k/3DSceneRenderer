@@ -165,7 +165,8 @@ export class SideStreets {
     if (!L) return 0;
     const lim = L.g.road + KERB_W + 0.22, aa = Math.abs(L.a);
     if (aa >= lim) return 0;
-    return (L.a >= 0 ? 1 : -1) * Math.min(maxC, lim - aa);
+    // (a step up onto the kerb at walking pace, never a shove)
+    return (L.a >= 0 ? 1 : -1) * Math.min(maxC, 1.0 * this.c.dt, lim - aa);
   }
 
   // ---------------------------------------------------------------- population

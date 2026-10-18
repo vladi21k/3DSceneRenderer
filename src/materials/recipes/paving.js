@@ -90,7 +90,7 @@ void surface(vec2 m, inout Surf s) {
   s.albedo = mix(joint, g, st);
   // worn granite tops are fairly smooth (a broad low-angle sheen towards a low sun or the
   // bright end of the street); the sand joints stay matt
-  s.rough = mix(head ? 0.95 : 0.92, mix(0.62, 0.48, wear), st);
+  s.rough = mix(head ? 0.95 : 0.92, mix(0.58, 0.45, wear), st);
 }
 `,
 };

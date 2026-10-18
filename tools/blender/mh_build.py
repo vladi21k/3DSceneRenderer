@@ -1090,11 +1090,11 @@ def scalp_coverage(body, bkeep, hair, headw, E, hk):
             if h[3] < 0.004:
                 push[i] = 0.004 - h[3]
             continue
-        # hair lying inside the scalp (a tight cap fitted under the skin): the scalp goes under it
-        h = bvh.ray_cast(o, -nn, 0.03)
+        # hair lying just inside the scalp (a tight cap fitted under the skin): the scalp goes under it
+        h = bvh.ray_cast(o, -nn, 0.008)
         if h[0] is not None:
             cov[i] = 1.0
-            push[i] = h[3] + 0.004
+            push[i] = h[3] + 0.003
     log(f'  scalp: {len(cand)} candidates, {int((cov > 0).sum())} under hair, {int((push > 0).sum())} pushed in (max {push.max() * 100:.1f} cm)')
     if push.any():
         body['co'] = co - nr * push[:, None]
@@ -1114,6 +1114,9 @@ def scalp_coverage(body, bkeep, hair, headw, E, hk):
     # (the forehead stays skin up to the hairline, with or without a fringe in front of it)
     fz = np.clip((co[:, 2] - (E[2] + 0.062 * hk)) / (0.02 * hk), 0, 1)
     cov = np.where(face | (co[:, 1] < E[1] + 0.05 * hk), cov * fz, cov)
+    # (isolated covered vertices would show as hair-coloured diamonds: they need covered neighbours)
+    nm = np.array([cov[nb[i]].mean() if nb[i] else 0.0 for i in range(n)], np.float32)
+    cov = cov * np.clip((nm - 0.25) / 0.3, 0, 1)
     return cov
 
 

@@ -383,18 +383,30 @@ function tube(B, a, b, r, sides, col, caps = false, r1 = r) {
   }
 }
 
-/** Rounded roof fairing (equipment cover) from z0 to z1 with closed ends. */
+/** Rounded roof fairing (equipment cover) from z0 to z1: its ends ramp down to the roof in
+ *  a quarter round (a loft of the cross-section scaled in height), smooth normals. */
 function fairing(B, z0, z1) {
-  const half = [[0.8, CAR.roof - 0.04], [0.8, 3.4], [0.765, 3.465], [0.69, 3.495], [0, 3.505]];
-  const pts = half.map(([x, y], i) => {
-    const q = half[Math.max(0, i - 1)], r = half[Math.min(half.length - 1, i + 1)];
-    const tx = r[0] - q[0], ty = r[1] - q[1], l = Math.hypot(tx, ty);
-    return { x, y, nx: ty / l, ny: -tx / l, a: y };
-  });
-  pts[pts.length - 1].nx = 0; pts[pts.length - 1].ny = 1;
-  sideWalls(B, pts, [{ z0, z1, kind: 'fairing' }]);
-  endWall(B.body, pts, z0, -1, COL.fairing);
-  endWall(B.body, pts, z1, 1, COL.fairing);
+  const half = [[0.8, CAR.roof - 0.04], [0.8, 3.4], [0.765, 3.465], [0.69, 3.495], [0.35, 3.503], [0, 3.505]];
+  const base = CAR.roof - 0.04;
+  // left side bottom to top, over the crown, down the right side
+  const sec = [...half.map(([x, y]) => [-x, y]), ...half.slice(0, -1).reverse()];
+  const ramp = Math.min(0.42, (z1 - z0) / 4);
+  const us = [0, 0.08, 0.22, 0.42, 0.68, 1];
+  const st = [];
+  for (const u of us) st.push([z0 + ramp * u, Math.sqrt(1 - (1 - u) * (1 - u))]);
+  for (const u of us.slice().reverse()) st.push([z1 - ramp * u, Math.sqrt(1 - (1 - u) * (1 - u))]);
+  const P = st.map(([z, k]) => sec.map(([x, y]) => new THREE.Vector3(x * (0.92 + 0.08 * k), base + (y - base) * Math.max(k, 0.02), z)));
+  const zc = (z0 + z1) / 2, nr = P.length, nc = sec.length;
+  const idx = P.map((row, j) => row.map((p, i) => {
+    const a = P[Math.min(nr - 1, j + 1)][i].clone().sub(P[Math.max(0, j - 1)][i]);
+    const b = row[Math.min(nc - 1, i + 1)].clone().sub(row[Math.max(0, i - 1)]);
+    const n = new THREE.Vector3().crossVectors(a, b).normalize();
+    if (n.dot(new THREE.Vector3(p.x, p.y - base + 0.2, p.z - zc)) < 0) n.negate();
+    return B.body.vert(p.x, p.y, p.z, n.x, n.y, n.z, COL.fairing, p.z, p.y);
+  }));
+  for (let j = 0; j < nr - 1; j++) {
+    for (let i = 0; i < nc - 1; i++) B.body.quad(idx[j][i], idx[j + 1][i], idx[j + 1][i + 1], idx[j][i + 1]);
+  }
 }
 
 // ------------------------------------------------------------------ cab front

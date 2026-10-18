@@ -162,5 +162,7 @@ export class Agent {
     this.inSide = false;      // out in a side street (beyond the main street's building line)
     this.sideX = 0;           // ... how far (m) beyond it
     this.pauseFace = 0; this.pauseT = 0; // a pause about to start on arrival: facing and duration
+    this.sideA = 0; this.sideEnd = 0; this.stuckN = 0; // side street: sidewalk line (a), how far in to go, retries
+    this.laneUrgent = false;  // the lane target moved out of a tram's berth: stepping over briskly
   }
 }

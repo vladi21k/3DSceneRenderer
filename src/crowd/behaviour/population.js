@@ -91,7 +91,7 @@ export class Population {
     a.clearT = a.dreamy ? r.range(CLEAR_T_DREAMY[0], CLEAR_T_DREAMY[1]) : r.range(CLEAR_T[0], CLEAR_T[1]);
     if (HURRY_BY[ageK]) a.clearT += 1.5;
     a.needsBell = a.dreamy || r.chance(0.1);
-    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.path = null; a.pathI = 0; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0;
+    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.path = null; a.pathI = 0; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0; a.sideA = 0; a.sideEnd = 0; a.stuckN = 0;
     a.dodge = 0; a.dodgeT = 0; a.passT = -1e9;
     a.fresh = true; a.src = src; a.strideV = -1; a.afs = 0; a.afd = 0; a.laneTT = 0;
     a.pValid = false; a.speedA = 0; a.moving = false; a.uturnT = 0; a.driftT = 0;
@@ -420,11 +420,11 @@ export class Population {
     else if (n === 2) {
       // threes: mostly two abreast with the third a step behind, or a V with one ahead; now and
       // then all three abreast (a staggered group reads as a group, a rank as a parade)
-      const f = r.weighted([[0, 0.5], [1, 0.3], [2, 0.2]]);
-      if (f === 0) slots = [[r.range(-0.12, 0.12), R1], [-r.range(0.8, 1.05), R1 * 0.5 + r.range(-0.1, 0.1)]];
-      else if (f === 1) { const V = -r.range(0.6, 0.85); slots = [[V, R1], [V + r.range(-0.1, 0.1), -R1 * r.range(0.9, 1.1)]]; }
+      const f = r.weighted([[0, 0.55], [1, 0.33], [2, 0.12]]);
+      if (f === 0) slots = [[r.range(-0.12, 0.12), R1], [-r.range(1.1, 1.45), R1 * 0.5 + r.range(-0.1, 0.1)]];
+      else if (f === 1) { const V = -r.range(1.0, 1.3); slots = [[V, R1], [V + r.range(-0.1, 0.1), -R1 * r.range(0.9, 1.1)]]; }
       else { const V = (r.chance(0.7) ? 1 : -1) * r.range(0.3, 0.5); slots = [[V + r.range(-0.08, 0.08), R1], [V + r.range(-0.08, 0.08), -R1 * r.range(0.9, 1.1)]]; }
-    } else slots = [[r.range(-0.12, 0.12), R1], [-r.range(0.85, 1.0), -R1 * 0.5 + r.range(-0.1, 0.1)], [-r.range(0.85, 1.0), R1 * 0.5 + r.range(-0.1, 0.1)]];
+    } else slots = [[r.range(-0.12, 0.12), R1], [-r.range(1.1, 1.4), -R1 * 0.5 + r.range(-0.1, 0.1)], [-r.range(1.1, 1.4), R1 * 0.5 + r.range(-0.1, 0.1)]];
     // children take the slots right beside the leader (hand-holding distance)
     const kidR = [-Math.sign(R1) * r.range(0.38, 0.46), Math.sign(R1) * r.range(0.38, 0.46)];
     for (let k = 0; k < n && this.free.length > 4; k++) {
@@ -531,7 +531,7 @@ export class Population {
         const side = r.chance(0.5) ? 1 : -1;
         const sU = s0 + r.next() * BIN;
         // some of them are standing talking
-        if (r.chance(0.07) && c.counts.stand < STANDER_TARGET && sU - c.camU < RANGE_AHEAD - 60) {
+        if (r.chance(0.1) && c.counts.stand < STANDER_TARGET * 1.3 && sU - c.camU < RANGE_AHEAD - 60) {
           const n = this.spawnChat(sU, side);
           if (n) { want -= n; c.counts.stand += n; continue; }
         }
@@ -596,7 +596,7 @@ export class Population {
     // one pass: recycling, head counts by kind and walkers per bin
     const lo = c.camU - RANGE_BEHIND;
     const k = c.counts;
-    k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0; k.stand300 = 0; k.walk300 = 0; k.side = 0;
+    k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0; k.stand300 = 0; k.walk300 = 0; k.side = 0; k.standFar = 0;
     this.binCount.fill(0);
     this.mobCount.fill(0);
     let walkers = 0;
@@ -625,6 +625,7 @@ export class Population {
         k.walker++; walkers++;
         if (a.state === ST.STAND) k.stand++;
         if (rel > -5 && rel < 300) { k.walk300++; if (a.state === ST.STAND && !a.inSide) k.stand300++; }
+        else if (rel >= 300 && a.state === ST.STAND && !a.inSide) k.standFar++;
         // (people out in the side streets are counted apart: the main street's density stays as it is)
         if (a.inSide) { k.side++; walkers--; continue; }
         const b = Math.floor((a.s - lo) / BIN);
@@ -641,7 +642,8 @@ export class Population {
     }
     // people standing about (talking, waiting, on the phone): a pair stepping out from behind
     // somebody far down the street now and then when there are too few
-    if (k.stand300 < STAND_NEAR && (this.frame % 20) === 7 && this.free.length > 12) this._spawnChatHidden();
+    // (counting those standing further down the street too: they come within 300 m soon)
+    if (k.stand300 + 0.6 * k.standFar < STAND_NEAR * 1.5 && k.stand300 < STAND_NEAR && (this.frame % 20) === 7 && this.free.length > 12) this._spawnChatHidden();
     c.side.maintain(dt);
   }
 
@@ -689,7 +691,7 @@ export class Population {
     let cs = 0, cd = 0;
     for (const a of placed) { cs += a.s; cd += a.d; }
     cs /= placed.length; cd /= placed.length;
-    const dur = r.range(25, 110), L = placed[0];
+    const dur = r.range(20, 80), L = placed[0];
     for (const a of placed) {
       a.task = TASK.CHAT; a.state = ST.STAND; a.timer = dur; a.chatS = a.s; a.chatD = a.d;
       a.faceA = Math.atan2(cd - a.d, cs - a.s) + r.range(-0.2, 0.2); a.alpha = a.faceA; a.vs = 0;
@@ -1064,13 +1066,13 @@ export class Population {
       if (!dressed || !seats.length) return;
       let n = 0;
       if (dressed === 2) {
-        if (!r.chance(0.9)) return;
+        if (!r.chance(0.95)) return;
         // (the places set: from the furniture when it says, else about two in three chairs, at least one)
-        const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.5, 0.95)));
-        n = places + (r.chance(0.35 + 0.25 * ev) ? 1 : 0);
+        const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.7, 1.0)));
+        n = places + (r.chance(0.4 + 0.25 * ev) ? 1 : 0);
       } else {
         // (a laid table: people who have just sat down, the menu still open)
-        if (!r.chance(0.2 + 0.2 * ev)) return;
+        if (!r.chance(0.3 + 0.2 * ev)) return;
         n = r.chance(0.55) ? 1 : 2;
       }
       n = Math.min(n, seats.length);

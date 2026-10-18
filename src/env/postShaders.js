@@ -17,6 +17,24 @@ vec3 viewPosFrom(vec2 uv, float z) {
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 `;
 
+// Moving vehicles (the oncoming trams) for the motion blur and the TAA history: oriented
+// boxes around each car body (camera-relative world space → unit cube) and how far that
+// body moved since the last frame; a pixel inside a box was that much further back then
+const MOVER_GLSL = /* glsl */ `
+#define NUM_MOVERS 4
+uniform mat4 uMoverInv[NUM_MOVERS];
+uniform vec3 uMoverDisp[NUM_MOVERS];
+uniform int uMovers;
+vec3 moverDisp(vec3 rel) {
+  for (int i = 0; i < NUM_MOVERS; i++) {
+    if (i >= uMovers) break;
+    vec3 l = (uMoverInv[i] * vec4(rel, 1.0)).xyz;
+    if (all(lessThanEqual(abs(l), vec3(1.0)))) return uMoverDisp[i];
+  }
+  return vec3(0.0);
+}
+`;
+
 // ---------------------------------------------------------------- depth → half-res linear Z
 export const DEPTH_DOWN_FS = /* glsl */ `
 ${CAMERA_GLSL}
@@ -425,6 +443,7 @@ void main() {
 // pixel. The sky is left alone (it is effectively at infinity).
 export const MBLUR_FS = /* glsl */ `
 ${CAMERA_GLSL}
+${MOVER_GLSL}
 uniform sampler2D tSrc;
 uniform sampler2D tDepth;
 uniform mat4 uCamWorld;
@@ -441,7 +460,7 @@ void main() {
   vec3 vp = viewPosFrom(vUv, linearZ(d));
   // camera-relative world offset keeps the precision of a nearby point
   vec3 rel = mat3(uCamWorld) * vp;
-  vec4 pc = uPrevViewProj * vec4(uCamPos + rel, 1.0);
+  vec4 pc = uPrevViewProj * vec4(uCamPos + rel - moverDisp(rel), 1.0);
   if (pc.w <= 1e-4) { gl_FragColor = c; return; }
   vec2 prevUv = pc.xy / pc.w * 0.5 + 0.5;
   vec2 v = (vUv - prevUv) * uResolution * uShutter;
@@ -565,6 +584,7 @@ uniform float uVeil;          // veiling glare: share of the frame's mean light 
 uniform vec3 uVeilSun;        // plus light from a sun just outside the frame, scattered by the front glass
 uniform vec2 uHiComp;         // highlight recovery: knee (stops over mid grey), log slope above it
 uniform vec2 uCurveSlope;     // contrast in stops around a pivot (stops over mid grey): slope, pivot
+uniform float uBlack;         // soft black point (display units)
 uniform sampler2D tDepth;     // scene depth (sky = far plane)
 uniform float uSkyChroma;     // chroma for sky pixels (AgX's inset/outset would grey a saturated blue)
 uniform float uSkySat;        // and the saturation the AgX look would have given them (scene-linear)
@@ -605,10 +625,14 @@ vec3 agx(vec3 color) {
 }
 // display value (sRGB-encoded) of a scene luminance: a generalised logistic in stops
 // from mid grey, y = min(1, A / (1 + exp(-s (e - e0)))^q)
+// A camera JPEG also sets a black point: a soft one (uBlack, display units) pulls the
+// deepest shadows down without clipping them flat
 float cameraCurve(float Y) {
   float e = log2(max(Y, 1e-8) / 0.18);
   e = uCurveSlope.y + (e - uCurveSlope.y) * uCurveSlope.x;
-  return min(1.0, uCurve.x / pow(1.0 + exp(-uCurve.y * (e - uCurve.z)), uCurve.w));
+  float d = min(1.0, uCurve.x / pow(1.0 + exp(-uCurve.y * (e - uCurve.z)), uCurve.w));
+  if (uBlack > 0.0) d = (d - uBlack + uBlack * exp(-d / uBlack)) / (1.0 - uBlack + uBlack * exp(-1.0 / uBlack));
+  return d;
 }
 float srgbToLinear(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 vec3 srgbOETF(vec3 c) {
@@ -685,16 +709,26 @@ void main() {
   // camera tone response on luminance, then a soft gamut knee: from 0.8 up, the spread of
   // the channels around the luminance is compressed so the brightest one approaches 0.94
   // (hue and luminance kept), instead of a channel clipping flat (a sunset sky's red);
-  // neutral highlights still reach white
+  // neutral highlights still reach white. A saturated sky (afterglow, the low sun's
+  // aureole) keeps its colour instead and gives up luminance: its brightest channel
+  // eases towards ~0.86, so the orange and pink bands and their gradient survive
   {
     float lt = srgbToLinear(cameraCurve(lum));
     float la = dot(col, LW);
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), skyPx ? uSkyChroma : uChroma);
     float m = max(col.r, max(col.g, col.b));
+    vec3 kn = col;
     if (m > 0.8) {
       float mt = 0.8 + 0.14 * (1.0 - exp(-(m - 0.8) / 0.14));
-      col = lt + (col - lt) * clamp((mt - lt) / max(m - lt, 1e-5), 0.0, 1.0);
+      kn = lt + (col - lt) * clamp((mt - lt) / max(m - lt, 1e-5), 0.0, 1.0);
     }
+    if (skyPx && m > 0.72) {
+      float mn = min(col.r, min(col.g, col.b));
+      float w = smoothstep(0.3, 0.65, (m - mn) / max(m, 1e-5));
+      float ms = 0.72 + 0.14 * (1.0 - exp(-(m - 0.72) / 0.14));
+      kn = mix(kn, col * (ms / m), w);
+    }
+    col = kn;
   }
   col = srgbOETF(clamp(col, 0.0, 1.0));
   // fine film grain, strongest in the mid tones, plus dither
@@ -715,6 +749,7 @@ void main() {
 // the circle of confusion through to the depth of field.
 export const TAA_FS = /* glsl */ `
 ${CAMERA_GLSL}
+${MOVER_GLSL}
 uniform sampler2D tCur;
 uniform sampler2D tHist;
 uniform sampler2D tDepth;
@@ -774,7 +809,10 @@ void main() {
   vec2 uvq = (vec2(pMin) + 0.5) / uResolution - 0.5 * uJitter;
   vec4 pc;
   if (dMin >= 1.0) pc = uPrevVP * vec4(mat3(uCamWorld) * normalize(viewPosFrom(uvq, 1.0)), 0.0);
-  else pc = uPrevVP * vec4(mat3(uCamWorld) * viewPosFrom(uvq, linearZ(dMin)), 1.0);
+  else {
+    vec3 rel = mat3(uCamWorld) * viewPosFrom(uvq, linearZ(dMin));
+    pc = uPrevVP * vec4(rel - moverDisp(rel), 1.0);
+  }
   vec2 vel = pc.w > 1e-6 ? uvq - (pc.xy / pc.w * 0.5 + 0.5) : vec2(1e3);
   vec2 huv = vUv - vel;
   if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) { gl_FragColor = c0; return; }

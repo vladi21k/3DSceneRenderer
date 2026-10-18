@@ -184,28 +184,33 @@ function burst(g, cx, cy, r0, r1, n, color) {
   for (let i = 0; i < 2 * n; i++) { const a = (i / (2 * n)) * Math.PI * 2, r = i % 2 ? r0 : r1; g.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); }
   g.closePath(); g.fill();
 }
-/** Hand lettering in marker: each glyph slightly turned and offset, stroked round. */
+/**
+ * Hand lettering in marker: each glyph (Latin) or word (Hebrew, which the canvas lays out
+ * right to left with its numbers) slightly turned and offset, stroked round.
+ */
 function hand(g, str, cx, cy, maxW, px, color, seed = 1) {
   const r = new RNG(seed);
   g.save();
   g.font = `700 ${px}px "DejaVu Sans", "Noto Sans Hebrew", "Liberation Sans", sans-serif`;
   g.textAlign = 'left'; g.textBaseline = 'middle';
-  const chars = [...str];
-  const rtl = /[֐-׿]/.test(str);
-  const ws = chars.map((c) => g.measureText(c).width * 0.96);
-  const tot = ws.reduce((a, b) => a + b, 0);
+  const rtl = /[\u0590-\u05ff]/.test(str);
+  // units laid out left to right on the card: glyphs, or the words in reverse for Hebrew
+  const units = rtl ? str.split(' ').reverse() : [...str];
+  const gap = rtl ? g.measureText(' ').width : 0;
+  const ws = units.map((c) => g.measureText(c).width * (rtl ? 1 : 0.96));
+  const tot = ws.reduce((a, b) => a + b, 0) + gap * (units.length - 1);
   const sx = Math.min(1, maxW / Math.max(1, tot));
   g.translate(cx, cy); g.scale(sx, 1); g.rotate(r.range(-0.04, 0.04));
   g.fillStyle = color; g.strokeStyle = color; g.lineWidth = px * 0.05; g.lineJoin = 'round';
-  let x = rtl ? tot / 2 : -tot / 2;
-  chars.forEach((c, i) => {
-    if (rtl) x -= ws[i];
+  if (rtl) { g.direction = 'rtl'; g.textAlign = 'right'; }
+  let x = -tot / 2;
+  units.forEach((c, i) => {
     g.save();
-    g.translate(x + r.range(-0.03, 0.03) * px, r.range(-0.05, 0.05) * px);
-    g.rotate(r.range(-0.07, 0.07));
+    g.translate(x + (rtl ? ws[i] : 0) + r.range(-0.03, 0.03) * px, r.range(-0.05, 0.05) * px);
+    g.rotate(r.range(rtl ? -0.04 : -0.07, rtl ? 0.04 : 0.07));
     g.fillText(c, 0, 0); g.strokeText(c, 0, 0);
     g.restore();
-    if (!rtl) x += ws[i];
+    x += ws[i] + gap;
   });
   g.restore();
 }

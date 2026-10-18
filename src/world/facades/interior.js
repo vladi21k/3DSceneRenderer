@@ -442,7 +442,7 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
         }
       }
       gFin = FIN_FRIDGE;
-      fBoxT( h, ao, ro, ird, p, n, mode, vec3( 0.0, 0.0, 2.7 ), vec3( 0.66, 1.95, 3.45 ), vec3( 0.80, 0.80, 0.80 ) );
+      fBoxT( h, ao, ro, ird, p, n, mode, vec3( 0.0, 0.0, 2.7 ), vec3( 0.66, 1.95, 3.45 ), vec3( 0.24, 0.24, 0.25 ) );
     } else if ( st < 3.5 ) {
       // jewellery / optics: display cases along the walls and in the window
       gFin = FIN_WOOD;

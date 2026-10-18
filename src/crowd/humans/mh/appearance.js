@@ -131,7 +131,8 @@ function vary(r, char, kidTop) {
     t.brows = t.hair.map((x, i) => Math.max(0.011, x * 0.7 + BR[i] * 0.3));
   }
   const sk = r.range(0.95, 1.05);                                  // skin brightness +-5 %
-  t.skin = (t.skin || [1, 1, 1]).map((x) => x * sk);
+  const hue = r.range(-0.035, 0.035);                              // and a little warmer / cooler
+  t.skin = (t.skin || [1, 1, 1]).map((x, i) => x * sk * (i === 0 ? 1 + hue : i === 2 ? 1 - hue : 1));
   if (kidTop && r.chance(0.6)) t.top = r.weighted(KIDS).slice();
   return t;
 }
@@ -151,7 +152,14 @@ function packTints(t) {
   // grey beards read as salt and pepper (dark strands between the grey), never a pale mask
   if (t.beard) {
     const l = 0.2126 * t.beard[0] + 0.7152 * t.beard[1] + 0.0722 * t.beard[2];
-    if (l > 0.09) t.beard = t.beard.map((x) => x * (0.09 / l));
+    if (l > 0.16) t.beard = t.beard.map((x) => x * (0.16 / l));
+    // (and a black beard is a very dark brown, so its strands and volume still shade)
+    else if (l < 0.02) t.beard = t.beard.map((x) => x * (0.02 / Math.max(l, 1e-4)));
+  }
+  // black hair: very dark brown, never an ink-black helmet
+  if (t.hair) {
+    const l = 0.2126 * t.hair[0] + 0.7152 * t.hair[1] + 0.0722 * t.hair[2];
+    if (l < 0.011) t.hair = t.hair.map((x) => x * (0.011 / Math.max(l, 1e-4)));
   }
   for (const [name, id] of Object.entries(REGION)) {
     const c = t[name];

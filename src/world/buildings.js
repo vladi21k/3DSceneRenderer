@@ -162,7 +162,7 @@ const buildings = {
     // the adverts' floodlights come on with the street lamps
     if (ADS.length) {
       const gain = app.materials.uniforms && app.materials.uniforms.emissiveGain ? app.materials.uniforms.emissiveGain.value : 1;
-      const e = 0.32 * Math.min(1, Math.max(0, (U.uNight.value - 0.25) / 0.5)) * gain;
+      const e = 0.0055 * Math.min(1, Math.max(0, (U.uNight.value - 0.25) / 0.5)) * gain;
       for (const m of ADS) m.emissiveIntensity = e;
     }
     const s = app.cameraS;

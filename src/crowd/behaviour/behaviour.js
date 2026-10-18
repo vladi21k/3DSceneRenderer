@@ -40,6 +40,7 @@ export function laneTarget(c, a) {
  *  (nobody aims across a closed band). */
 function tramLane(c, a, d) {
   const tram = c.tram;
+  a.laneUrgent = false;
   if (tram.near(a)) d = cabLane(c, a, d);
   if (!tram.units.length) return d;
   const U = a.uI >= 0 ? tram.unitById(a.uI) : tram.uZone(a);
@@ -47,6 +48,8 @@ function tramLane(c, a, d) {
   const iv = tram.keepOut(a, true);
   if (!iv) return d;
   const lo = iv.lo, hi = iv.hi;
+  // (standing too close to where a unit goes by: a brisker step out to the berth)
+  a.laneUrgent = a.d > lo + 0.05 && a.d < hi - 0.05;
   const across = (a.d <= lo && d > lo) || (a.d >= hi && d < hi);
   if (!across && (d >= hi || d <= lo)) return d;
   // (inside: over to the other track rather than off the corridor, unless that is much
@@ -173,7 +176,8 @@ export function desired(c, a, out) {
         // pace drifts a few percent over 5-15 s (and drops back / pulls ahead of a stranger
         // alongside); heading jitters a few degrees
         const pace = a.v0 * (1 + 0.06 * noise1(c.time / a.paceT, a.wSeed + 11)) * (a.paceKT > c.time ? a.paceK : 1);
-        let vs = a.dir * pace, vd = Math.max(-0.75, Math.min(0.75, e * 0.9));
+        const vdMax = a.laneUrgent ? 1.1 : 0.75;
+        let vs = a.dir * pace, vd = Math.max(-vdMax, Math.min(vdMax, e * (a.laneUrgent ? 1.8 : 0.9)));
         const j = 0.045 * noise1(c.time * 0.5, a.wSeed + 23) + 0.025 * noise1(c.time * 1.3, a.wSeed + 29);
         const cj = Math.cos(j), sj = Math.sin(j);
         out.vs = vs * cj - vd * sj; out.vd = vs * sj + vd * cj;
@@ -433,8 +437,8 @@ function follow(c, a, out) {
     if (a.singleT > t || single) {
       F = a.isChild ? -0.55 : -0.85 * (rank + 1); R = 0;
     } else if (twoOne && rank > 0 && !a.isChild) {
-      // two abreast, the others staggered 0.6-1.2 m behind them
-      F = -(0.6 + 0.6 * ((a.wSeed & 15) / 15)) - 0.85 * (rank - 1); R = 0.3 * Math.sign(a.baseR || 1) * ((a.wSeed >> 4 & 1) ? 1 : -0.4);
+      // two abreast, the others staggered 1.0-1.5 m behind them
+      F = -(1.0 + 0.5 * ((a.wSeed & 15) / 15)) - 0.9 * (rank - 1); R = 0.3 * Math.sign(a.baseR || 1) * ((a.wSeed >> 4 & 1) ? 1 : -0.4);
     } else if (!lStop) {
       F += 0.3 * noise1(t / a.wT, a.wSeed + 3);
       R += 0.15 * noise1(t / a.wT + 17.3, a.wSeed + 5);
@@ -482,7 +486,8 @@ function follow(c, a, out) {
   // the leader's sideways motion is copied only while the member is really in its slot
   out.vs = L.vs * pace + es * k; out.vd = (own ? 0 : L.vd) + ed * k;
   const sp = len2(out.vs, out.vd);
-  const lim = Math.max(a.v0 * 1.35, len2(L.vs, L.vd) * 1.2);
+  // (the leader's speed counts only up to a run: a shove it got is not copied)
+  const lim = Math.max(a.v0 * 1.35, Math.min(2.6, len2(L.vs, L.vd)) * 1.2);
   if (sp > lim) { out.vs *= lim / sp; out.vd *= lim / sp; }
   out.vmax = lim;
   // mirror the leader's stops
@@ -637,7 +642,7 @@ function thinkWalk(c, a) {
   if (mob !== MOB.STROLLER && r.chance(0.0018) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
   // people stop to talk, wait for somebody, take a call: more often while too few are standing
   // about near the camera (the street ahead should always have its share of standing people)
-  const need = Math.max(0, (STAND_NEAR - c.counts.stand300) / STAND_NEAR) * (a.s - c.camU > 0 ? 1 : 0);
+  const need = Math.max(0, (STAND_NEAR - c.counts.stand300 - 0.3 * c.counts.standFar) / STAND_NEAR) * (a.s - c.camU > 0 ? 1 : 0);
   if (!mob && a.nFollow > 0 && r.chance(0.0015 + 0.05 * need) && c.counts.stand < STANDER_TARGET * 2 && startChat(c, a)) return;
   if (!mob && a.nFollow === 0 && r.chance(0.001 + 0.02 * need) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF && startPause(c, a)) return;
   // lane drift and the odd change of mind
@@ -866,7 +871,7 @@ function startChat(c, a) {
   let cs = 0, cd = 0;
   for (const m of members) { cs += m.s; cd += m.d; }
   cs /= members.length; cd /= members.length;
-  const t = c.rng.range(15, 75);
+  const t = c.rng.range(12, 60);
   const rad = members.length === 2 ? 0.45 : 0.58;
   for (const m of members) {
     m.task = TASK.CHAT;
@@ -988,6 +993,9 @@ export function arrive(c, a) {
       // out of a side street: along its sidewalk to the mouth first, then onto the main sidewalk
       if (a.step === -1 && a.mouth) {
         const m = a.mouth, line = map.mouthLine(m, side);
+        // (held up on the way down the sidewalk: on along it first, not across the carriageway)
+        if (a.sideX > 3 && (a.stuckN = (a.stuckN || 0) + 1) < 3) { goTo(a, a.gs, a.gd, 0.6); return; }
+        a.stuckN = 0;
         a.step = 0;
         goTo(a, c.unwrap(m.s) + Math.max(-1, Math.min(1, (a.sideA || 0) / Math.max(1, m.width / 2))) * (m.width / 2 - 1.4) * r.range(0.4, 1), side * (line - r.range(0.8, 1.6)), 0.6);
         return;

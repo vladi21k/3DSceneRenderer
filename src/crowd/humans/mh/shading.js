@@ -302,7 +302,7 @@ const FRAG_SURFACE = /* glsl */`
       float sn = hH3(vec3(floor(vCastUv.x * 900.0), vCastTex.x, 3.0));
       a *= clamp((vDecal - 0.1 - 0.55 * sn) * 4.0, 0.0, 1.0);
     }
-    if (hRegion == 2) a *= uDecal > 0.5 ? 0.92 : 0.8;      // brows: thinner strokes, skin shows between the hairs
+    if (hRegion == 2) a *= uDecal > 0.5 ? 0.85 : 0.8;      // brows: thinner strokes, skin shows between the hairs
     if (hRegion == 11) {
       // beard shell: strands (fine streaks running down the face, in rest space) thin out towards
       // the shell's edges; far away only the soft edge remains
@@ -321,14 +321,16 @@ const FRAG_SURFACE = /* glsl */`
         vec3 cq = vRest * vec3(330.0, 110.0, 330.0);
         float cl = hVNoise(cq);
         cl = mix(cl, 0.5, smoothstep(0.5, 2.0, length(fwidth(cq))));
-        vec3 sq = vRest * vec3(1500.0, 190.0, 1500.0);
-        float st = hH3(floor(sq));
-        st = mix(st, 0.5, smoothstep(0.4, 1.5, length(fwidth(sq))));
+        // fine strands: thin streaks down the face, jittered per column so they never line up in a grid
+        vec3 sq = vRest * vec3(1300.0, 1.0, 1300.0);
+        float colId = floor(sq.x + 0.37 * sq.z);
+        float st = hH3(vec3(colId, floor(vRest.y * 140.0 + hH3(vec3(colId, 1.0, 2.0)) * 3.0), 7.0));
+        st = mix(st, 0.5, smoothstep(0.4, 1.5, fwidth(sq.x + 0.37 * sq.z)));
         float dens = edge * tx.a;
-        float nz = 0.55 * cl + 0.45 * st;
-        // (solid inside, broken into strands only over the outer part of the border)
-        a = smoothstep(nz - 0.1, nz + 0.1, dens * 1.35 - 0.12);
-        col *= 0.85 + 0.35 * cl + 0.25 * (st - 0.5);
+        // (solid inside; broken into wisps only over the outer part of the border)
+        float nz = 0.6 * cl + 0.4 * st;
+        a = smoothstep(nz - 0.12, nz + 0.12, dens * 1.5 - 0.15);
+        col *= 0.88 + 0.3 * (cl - 0.5) + 0.22 * (st - 0.5);
       } else if (shell == 0) {
         a *= clamp((edge * (1.25 - 0.3 * light) - sn) * 2.5 + 0.35, 0.0, 1.0);
         col *= mix(0.5 + 0.5 * sn, 0.3 + 1.0 * sn * sn, light);
@@ -341,9 +343,12 @@ const FRAG_SURFACE = /* glsl */`
         col *= 0.85 + 0.5 * s2 + 0.15 * float(shell);
       }
     }
-    a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0);
+    // (a beard's volume fades out softly: dithered coverage instead of a sharpened edge)
+    bool soft = uDecal > 0.5 && hRegion == 11;
+    if (!soft) a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0);
     if (uA2C > 0.5) {
-      a = floor(a * uA2C + 0.5) / uA2C;
+      float dth = soft ? fract(dot(floor(gl_FragCoord.xy), vec2(0.7548777, 0.5698403))) : 0.5;
+      a = floor(a * uA2C + dth) / uA2C;
       if (a <= 0.0) discard;
     } else {
       // no MSAA: an ordered dither instead

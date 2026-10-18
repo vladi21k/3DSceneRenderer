@@ -39,7 +39,7 @@ const V_MAX = MAX_SPEED; // the tram's governed top speed (m/s)
 const UB_EXTRA = AGENT_R + 0.15;  // unit band: body half width + this (its driver brakes for centres within half + 0.38, or heading in)
 const U_CLEAR = 40;               // a unit's track is kept clear at least this far ahead of its nose (it needs the room to get going)
 const U_EARLY = 2.5;              // people leave a unit's track this many seconds earlier than the cab's
-const CLEAR_DEADLINE = 3.3;       // out of the cab's band at least this many seconds before it arrives
+const CLEAR_DEADLINE = 4.0;       // out of the cab's band at least this many seconds before it arrives
 const PAIR_GAP = 3.0;             // the two trams pass a spot within this many seconds of each other: a pair
 const PAIR_EDGE = TRACK_ZONE_HALF + 0.4;   // ... and the corridor is left to beyond |d| = PAIR_EDGE
 const CENTRE_REFUGE = 0.9;        // the strip |d| < this between the tracks is no refuge with a unit near
@@ -89,7 +89,7 @@ export class TramWatch {
       T.i = u.id; T.sU = sU; T.v = v; T.acc = Math.max(0, u.accel || 0); T.len = u.length || 32; T.half = half;
       T.d = Number.isFinite(u.d) ? u.d : -RIDE_D; T.state = u.state; T.UB = half + UB_EXTRA;
       // (passing it, nobody walks closer than 0.9 m to the street's centre line either)
-      T.pass = Math.max(T.UB + 0.3 + 0.03 * v, Math.abs(T.d) + CENTRE_REFUGE);
+      T.pass = Math.max(T.UB + 0.3 + 0.03 * v, Math.abs(T.d) + CENTRE_REFUGE + 0.12);
       // where its driver would start braking for somebody on the track (stopping distance + gap)
       // (not shrinking as it slows down: it will want to get going again)
       const vb = Math.max(v, 5);

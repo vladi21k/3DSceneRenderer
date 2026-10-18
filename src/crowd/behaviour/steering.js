@@ -161,7 +161,7 @@ export class Steering {
       a.s += (a.vs / k) * dt;
       a.d += a.vd * dt;
       // hard corrections never move anyone faster than a brisk step
-      this.maxC = Math.max(0.02, 2 * Math.max(1.6, vmax) * dt);
+      this.maxC = Math.max(0.02, 2 * Math.min(3.2, Math.max(1.6, vmax)) * dt);
       const s1 = a.s, d1 = a.d;
       this._separate(a, this.maxC);
       const s2 = a.s, d2 = a.d;

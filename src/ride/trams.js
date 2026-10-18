@@ -26,6 +26,7 @@ import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMateri
 // −s), accel, dir (−1), d, length, halfWidth, state, phase, bellAt, active}.
 // Emits app.events 'tram-bell' {unit, s, d} when one of them rings.
 
+const REFL_D = [6, 7.5];          // route d of the street-reflection planes (right, left), at most the facade lines
 const LOD_PX = [55, 14];          // projected px per metre (1080 lines) above which LOD 0 / 1 draw
 const SCAN_DT = 0.1;              // s between scans of the people ahead
 const VIEW = [-90, 650];          // drawn while the nose is within this range of the camera (m): the built street
@@ -224,17 +225,24 @@ const trams = {
    *  each visible unit's street planes (facade lines and paving height at its middle). */
   _reflection(app) {
     const post = app.systems.post, cam = app.camera, rig = app.cameraRig, R = this.refl;
-    let on = !!(post && !post.disabled && post.taaOn && post.taaRT && post.taaValid && post.prevVP);
+    // post's history: its `history` {texture, viewProj, valid} when it offers one, else the
+    // anti-aliasing targets it keeps (the last resolved frame and its view-projection)
+    let tex = null, vp = null, on = false;
+    if (post && !post.disabled) {
+      const h = post.history;
+      if (h && h.texture && h.viewProj) { tex = h.texture; vp = h.viewProj; on = h.valid !== false; }
+      else if (post.taaOn && post.taaRT && post.prevVP) { tex = post.taaRT[post.taaPing ^ 1].texture; vp = post.prevVP; on = !!post.taaValid; }
+    }
     if (on) {
       const cut = rig && !rig.disabled && rig.cut && !app.params.view;
       const jump = post.prevCamPos && cam.position.distanceToSquared(post.prevCamPos) > 16;
-      const zoom = Math.abs(cam.fov - (post.prevFov || 0)) > 0.03 * Math.max(cam.fov, 1);
-      on = !cut && !jump && !zoom;
+      const zoom = post.prevFov != null && Math.abs(cam.fov - post.prevFov) > 0.03 * Math.max(cam.fov, 1);
+      on = !cut && !jump && !zoom && !!tex;
     }
     R.on.value = on ? 1 : 0;
     if (on) {
-      R.hist.value = post.taaRT[post.taaPing ^ 1].texture;
-      R.vp.value.copy(post.prevVP);
+      R.hist.value = tex;
+      R.vp.value.copy(vp);
     }
     const route = app.route, layout = app.layout;
     for (let i = 0; i < this.units.length; i++) {
@@ -245,7 +253,8 @@ const trams = {
       const smp = route.sample(sm, this._smp || (this._smp = {}));
       const nx = smp.right.x, nz = smp.right.z, np = nx * smp.pos.x + nz * smp.pos.z;
       const hwR = layout.halfWidth(sm, 1), hwL = layout.halfWidth(sm, -1);
-      uni.uTramStreet.value.set(nx, nz, np + hwR, np - hwL);
+      // mirror planes (materials.js): mid-sidewalk, where the people, trees and poles stand
+      uni.uTramStreet.value.set(nx, nz, np + Math.min(hwR, REFL_D[0]), np - Math.min(hwL, REFL_D[1]));
       uni.uTramGround.value = route.toWorld(sm, -TRACK_OFFSET, 0, _b).y;
     }
   },

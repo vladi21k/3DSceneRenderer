@@ -114,10 +114,11 @@ uniform float uTramSSR;
 uniform vec4 uTramStreet;
 uniform float uTramGround;
 // world point P, reflected direction R: the street seen along R, and its weight (0 = none).
-// The proxy is the two facade planes only: the people, trees and poles in between stand
-// upright in last frame's image, and a vertical proxy keeps them upright in the mirror
-// (a paving proxy would smear them along the street); rays running steeply down land under
-// the street, off screen, and the environment takes over there.
+// The proxy is two vertical planes along the unit, on the sidewalks where the people, trees
+// and poles stand (at most the facade lines): those stand upright in last frame's image and
+// a vertical proxy keeps them upright in the mirror (a paving proxy would smear them along
+// the street). A ray running down meets the plane under the paving; last frame shows the
+// paving in front of that point. Rays steeply down land off screen: the environment there.
 vec3 tramStreetRefl( vec3 P, vec3 R, out float a ) {
   a = 0.0;
   if ( uTramSSR < 0.5 ) return vec3( 0.0 );
@@ -130,7 +131,7 @@ vec3 tramStreetRefl( vec3 P, vec3 R, out float a ) {
   if ( c.w < 0.05 ) return vec3( 0.0 );
   vec2 uv = c.xy / c.w * 0.5 + 0.5;
   vec2 e = min( uv, 1.0 - uv );
-  a = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * smoothstep( uTramGround - 6.0, uTramGround - 1.0, P.y + R.y * t );
+  a = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * smoothstep( uTramGround - 30.0, uTramGround - 10.0, P.y + R.y * t );
   if ( a <= 0.0 ) return vec3( 0.0 );
   return min( texture2D( tTramHist, uv ).rgb, vec3( 64.0 ) );
 }
@@ -484,6 +485,9 @@ export function makeBodyMaterial(uni) {
 		float roof = smoothstep( 3.15, 3.3, bp.y ) * ( 0.5 + 0.5 * tramNoise( bp.z * 1.7 + bp.x * 3.0 ) );
 		tramGrime = clamp( 0.07 * low + 0.06 * under * streak + 0.12 * roof, 0.0, 1.0 );
 		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.12, 0.105, 0.09 ), tramGrime * tramPaint );
+		// road dust greying the black skirt, the bogies and the wheels
+		float dust = ( 1.0 - tramPaint ) * ( 1.0 - smoothstep( 0.15, 0.5, bp.y ) ) * ( 0.7 + 0.3 * tramNoise( bp.z * 4.0 ) );
+		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.06, 0.054, 0.046 ), dust * 0.5 );
 	}
 	// joints between the lower side panels (under the window pillars), a few mm wide
 	float tramSeam = 0.0;
@@ -514,7 +518,7 @@ export function makeBodyMaterial(uni) {
 		clearcoatRadiance = mix( tramTone( clearcoatRadiance, tramRc.y ), tramH, tramA );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.body.v4';
+  m.customProgramCacheKey = () => 'trams.body.v5';
   return m;
 }
 

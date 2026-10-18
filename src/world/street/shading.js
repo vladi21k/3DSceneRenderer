@@ -14,7 +14,7 @@ import { MORTAR_ALBEDO } from './constants.js';
  *  the steel in the far-field line overlay (lines.js). Both are matched to the
  *  photographs: in shade the running band reads 1.1-1.3x the setts beside it, the
  *  flangeway a dark slot. */
-export const SHEEN = { uStSheen: { value: new THREE.Vector2(0.7, 1.35) } };
+export const SHEEN = { uStSheen: { value: new THREE.Vector2(0.7, 1.45) } };
 /** envMapIntensity of the 3D rail.head variants (the resolved head; its texture band is
  *  wider and its normals crowned, so it needs less than the overlay's pre-filtered
  *  bands to read the same). */
