@@ -237,7 +237,9 @@ export class Population {
     // view frames as a packed street (it must read at least as busy as the foreground), easing
     // off only at the far end of the populated range
     const rel = sU - c.camU;
-    m *= rel < 0 ? 0.35 : rel < 30 ? 0.6 + 0.5 * (rel / 30) : rel < 120 ? 1.1 : rel < 160 ? 1.1 - 0.1 * ((rel - 120) / 40)
+    // (the free inspection camera looks any way: no thinning around it)
+    const free = !!c.app.params.view;
+    m *= rel < 0 ? (free ? 1.0 : 0.35) : rel < 30 ? (free ? 1.05 : 0.6 + 0.5 * (rel / 30)) : rel < 120 ? 1.1 : rel < 160 ? 1.1 - 0.1 * ((rel - 120) / 40)
       : rel < FAR_TAPER - 50 ? 1.0 : rel < FAR_TAPER ? 1.0 - 0.25 * ((rel - FAR_TAPER + 50) / 50) : 0.75;
     // a hot day: more people on the shaded sidewalk than on the sunlit one
     m *= this._shadeK(sU, side);
