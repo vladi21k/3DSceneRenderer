@@ -122,8 +122,8 @@ export function lampLevel(t, night) {
 // ---- dark lights keep their uniforms
 // The renderer recomputes every light's view-space position and direction each frame and
 // uploads whatever changed to every lit program it binds (the camera moves, so all of
-// them change), dark pool lights included: a few thousand uniform writes and as many
-// boxed numbers of garbage per frame. A dark light is skipped by the patched light loop
+// them change), dark pool lights included: thousands of uniform uploads per frame, each
+// leaving a little garbage (by day ~5 MB/s from the dark pool alone). A dark light is skipped by the patched light loop
 // (its colour is zero), so its position and direction are never read: holding their last
 // values lets the uniform cache skip them. The renderer's per-light uniform structs are
 // reached through any lit material's live uniforms (they reference the shared light
@@ -167,7 +167,6 @@ function holdDarkLights(uniforms) {
   return n;
 }
 
-const byScore = (a, b) => a.score - b.score;
 const EMPTY = Object.freeze([]);
 const REQUERY = 8;              // metres of travel before the lantern list is fetched again
 
@@ -387,7 +386,13 @@ export class StreetLights {
         st.score = ds >= 0 ? ds * (1 + 12 * Math.max(0, -c)) : -ds * (1 + 12 * Math.max(0, c));
         list.push(st);
       }
-      list.sort(byScore);
+      // (insertion sort: a few dozen standards, nearly in order from the last frame)
+      for (let i = 1; i < list.length; i++) {
+        const x = list[i];
+        let j = i - 1;
+        while (j >= 0 && list[j].score > x.score) { list[j + 1] = list[j]; j--; }
+        list[j + 1] = x;
+      }
       // lanterns in rank order (a lantern inside a tree crown gives its flux to its pair)
       const P = this._headPool;
       for (let j = 0; j < list.length; j++) {

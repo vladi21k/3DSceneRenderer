@@ -5,8 +5,8 @@ import * as S from './postShaders.js';
 // half-res volumetric clouds → scene prepass (clouds over the sky, AO, aerial
 // perspective, heat shimmer, dusk airlight, circle of confusion; broken pixels filled
 // and the range clamped) → temporal anti-aliasing → depth-of-field gather → camera
-// motion blur → bloom pyramid → metered exposure → lens, in-camera sharpening, white
-// balance, camera tone curve (AgX colour), grain.
+// motion blur → bloom pyramid → metered exposure → glow around sources far above white
+// (dusk) → lens, in-camera sharpening, white balance, camera tone curve (AgX colour), grain.
 // Contract in docs/ARCHITECTURE.md: render(dt, app), setSize(w, h).
 
 const QUALITY = {

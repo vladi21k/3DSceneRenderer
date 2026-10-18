@@ -606,6 +606,10 @@ def build_one(cid, save_blend=False):
     for i in np.where(in_body & ~deleted)[0]:
         n = Vector(body['nr'][i].tolist())
         o = Vector(body['co'][i].tolist())
+        # (skin within the margin of a hem stays: a gap between a top's hem and a waistband, or a sleeve
+        # lifted by the arm, must show skin, not the street through the figure)
+        if bnd and kdb.find(Vector(body['co'][i].tolist()))[2] < margin * 1.3:
+            continue
         h = gbvh.ray_cast(o - n * 0.002, n, MAXD)
         if h[0] is not None and h[2] is not None and h[2] < len(gsuit) and gsuit[h[2]]:
             under[i] = True

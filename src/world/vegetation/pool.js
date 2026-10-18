@@ -226,7 +226,8 @@ export class InstancePool {
   /** Point the twins at the pool's current data (buffers are replaced on growth). */
   linkTwin() {
     const m = this.mesh;
-    for (const t of [this.twin, this.far]) {
+    for (let k = 0; k < 2; k++) {
+      const t = k ? this.far : this.twin;
       t.geometry = m.geometry;
       t._matricesTexture = m._matricesTexture;
       t._colorsTexture = m._colorsTexture;

@@ -64,6 +64,7 @@ const catenary = {
     this.signalKit = buildSignalKit();
     this.live = new Set(); // full-detail chunks: hi / mid switch
     this.lampRadiance = LAMP_RADIANCE;
+    this.lampOn = 0;
 
     // multisampled frame (post on med / high): thin parts use alpha-to-coverage
     const post = app.systems.post;
@@ -407,6 +408,9 @@ const catenary = {
 
   update(dt, app) {
     updateScreenUniforms(app, this.lampRadiance);
+    // lamp switch-on level 0..1 (photocell ramp from t 0.64, full by 0.72, then the night),
+    // for env's real lamp lights and post's lantern wash to follow the visible bowls
+    this.lampOn = this.lampRadiance > 0 ? SU.uLamp.value / this.lampRadiance : 0;
     if (this.glow) this.glow.update(app.cameraS ?? app.startS, SU.uLamp.value);
     this._updatePedLights(app);
     // alpha-to-coverage rounds to whole samples of the scene target

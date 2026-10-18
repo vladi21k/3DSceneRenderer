@@ -272,7 +272,9 @@ export function createProps(app, pools) {
     stake: M.register('vegetation.stake', stakeMaterial(rng)),
     soil: M.register('vegetation.soil', soilMaterial(rng)),
     contact: M.register('vegetation.contact', decal),
-    stone: M.get('stone.smooth', { vertexColors: true }),
+    // own variant (same program): a material shared between batched and plain meshes makes
+    // three re-evaluate its program at every switch
+    stone: M.get('stone.smooth', { vertexColors: true, userData: { vegetation: 'stone' } }),
   };
   // shared geometries
   const post = stakeGeometry(1.75, 0.032);

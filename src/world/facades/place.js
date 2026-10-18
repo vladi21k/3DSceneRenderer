@@ -501,8 +501,10 @@ function awningOf(ctx, o) {
 }
 
 /**
- * Facade u range [u0, u1] of the lot's umbrella terrace (the terrace and every canopy
- * over it, as furniture placed them), or null.
+ * Facade u range [u0, u1] of the lot's umbrella terrace, or null: the terrace and its
+ * canopies (layout lets them overhang its ends by 0.35 m; furniture's relaxation may
+ * shift them a little more, and runs after facades' first builds, so the margin covers
+ * it rather than reading their final places, keeping every build of a front identical).
  */
 function umbrellaSpan(ctx) {
   const { lot, frame, app } = ctx;
@@ -511,12 +513,7 @@ function umbrellaSpan(ctx) {
   if (!cafe || cafe.style !== 'umbrella') return null;
   _inv.copy(frame.matrix).invert();
   const uAt = (s) => app.route.toWorld(s, lot.side * lot.d, 0, _p).applyMatrix4(_inv).x;
-  let s0 = cafe.s0 - 0.6, s1 = cafe.s1 + 0.6;
-  for (const u of cafe.umbrellas || []) {
-    const h = (u.size || 4) / 2 + 0.25;
-    s0 = Math.min(s0, u.s - h); s1 = Math.max(s1, u.s + h);
-  }
-  const a = uAt(s0), b = uAt(s1);
+  const a = uAt(cafe.s0 - 0.9), b = uAt(cafe.s1 + 0.9);
   return [Math.min(a, b), Math.max(a, b)];
 }
 

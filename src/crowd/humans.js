@@ -961,8 +961,8 @@ function browLine(c) {
   const k1 = den !== 0 ? (tw * tb - tx * ta) / den : 0, k0 = (ta - k1 * tx) / tw;
   // (the strip is a little taller than the painted brow; brows 6-10 mm tall at the head, 3 mm at the tail)
   const hs = c.info.H / 1.76;
-  const t0 = THREE.MathUtils.clamp((k0 + k1 * x0) * 1.15, 0.0026 * hs, 0.0055 * hs);
-  const t1 = THREE.MathUtils.clamp((k0 + k1 * x1) * 1.0, 0.0014 * hs, 0.003 * hs);
+  const t0 = THREE.MathUtils.clamp((k0 + k1 * x0) * 1.2, 0.0036 * hs, 0.0058 * hs);
+  const t1 = THREE.MathUtils.clamp((k0 + k1 * x1) * 1.0, 0.0021 * hs, 0.0032 * hs);
   c.brow = { x0, x1, a, b, c: cc, t0, t1, z };
   // the brow cards leave every LOD
   for (let l = 0; l < c.lods.length; l++) {

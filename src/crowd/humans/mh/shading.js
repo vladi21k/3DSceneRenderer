@@ -121,7 +121,7 @@ void hSkin(out vec3 P, out vec3 N) {
     shellH = float((flags >> 4) & 15) / 15.0;
     float len = uv.x * 0.04;
     vec3 bn = normalize(aNrm.xyz);
-    pos += bn * (0.0004 + len * shellH * 0.9) + vec3(0.0, -1.0, -0.15) * len * shellH * shellH * 0.4;
+    pos += bn * (0.0004 + len * shellH * 0.6) + vec3(0.0, -1.0, -0.15) * len * shellH * shellH * 0.35;
   }
   P = (m * vec4(pos, 1.0)).xyz;
   vec3 nrm = aNrm.xyz;
@@ -158,7 +158,7 @@ void hSkin(out vec3 P, out vec3 N) {
     // (in rest space the skirt hangs from the hips; per thigh, weighted by the vertex's thigh weights)
     float sc = D1.w;
     vec3 Ps = vec3(0.0), Ns = vec3(0.0);
-    float wsum = 0.0, sdAvg = 0.0;
+    float wsum = 0.0, sdAvg = 0.0, wl = 0.0, wr = 0.0, lenAvg = 0.0;
     for (int s = 0; s < 2; s++) {
       float bt = s == 0 ? 14.0 : 18.0;
       float w = (aBoneI.x == bt ? W.x : 0.0) + (aBoneI.y == bt ? W.y : 0.0) + (aBoneI.z == bt ? W.z : 0.0) + (aBoneI.w == bt ? W.w : 0.0);
@@ -188,12 +188,17 @@ void hSkin(out vec3 P, out vec3 N) {
         }
         P1 = B + rf + Dn * (sd - Lr) * sc;
       }
-      Ps += P1 * w; Ns += N1 * w; wsum += w; sdAvg += sd * w;
+      Ps += P1 * w; Ns += N1 * w; wsum += w; sdAvg += sd * w; lenAvg += Lr * w;
+      if (s == 0) wl = w; else wr = w;
     }
     if (wsum > 0.0) {
       sdAvg /= wsum;
       float ws = D0.z * smoothstep(-0.02, 0.07, sdAvg);
-      P = mix(P, Ps / wsum, ws);
+      lenAvg /= wsum;
+      // (the cloth between the knees sags into the lap instead of lying flat from knee to knee)
+      float between = 4.0 * wl * wr / (wsum * wsum);
+      vec3 Pt = Ps / wsum - vec3(0.0, 1.0, 0.0) * between * 0.045 * sc * smoothstep(0.0, 0.8 * lenAvg, sdAvg);
+      P = mix(P, Pt, ws);
       N = normalize(mix(N, normalize(Ns), ws));
     }
   }
@@ -384,30 +389,38 @@ const FRAG_SURFACE = /* glsl */`
     }
     if (hRegion == 2) a *= uDecal > 0.5 ? 0.85 : 0.8;      // brows: thinner strokes, skin shows between the hairs
     if (bBase) {
-      // beard shells: one strand per cell of the root surface (cylindrical about the head's axis, so the
-      // cells run round the jaw and down the face and on under the chin): ~0.8 mm across, 3 mm down;
-      // each strand has its own length and thins to its tip; the shells' stack makes the volume
+      // beard shells: strands rooted in a fine grid on the skin (cylindrical about the head's axis, so it
+      // runs round the jaw and on under the chin; 0.45 mm cells, every other row offset), each with its
+      // own length and lean; clumps (~4 mm) share a lean and a length, so the beard has a texture of
+      // locks, and the strands thin to their tips. Below a pixel: their expected coverage.
       vec3 hcb = hLook(row, 24).xyz;
       vec2 rp = vRest.xz - hcb.xz;
       float rr = length(rp);
-      vec2 q = vec2(atan(rp.x, -rp.y) * 0.06, vRest.y - rr) * vec2(1250.0, 330.0);
+      vec2 g = vec2(atan(rp.x, -rp.y) * 0.075, vRest.y - rr);
+      // clumps: a lean (the strands sweep down and a little sideways as they grow) and a length factor
+      vec3 cg = vec3(g * 260.0, 0.0);
+      float cl1 = hVNoise(cg), cl2 = hVNoise(cg + 17.3);
+      // (the hairs lie at a low angle to the skin: a strand's root-to-tip sweep is most of its length)
+      vec2 lean = vec2((cl1 - 0.5) * 0.7, -0.75 - 0.4 * cl2) * bShell * (0.0015 + vCastUv.x * 0.04 * 0.6);
+      vec2 q = (g - lean) * 2200.0;
+      q.x += 0.5 * mod(floor(q.y), 2.0);
       vec2 ci = floor(q), f = fract(q) - 0.5;
       float r1 = hH3(vec3(ci, 1.3)), r2 = hH3(vec3(ci, 2.7)), r3 = hH3(vec3(ci, 3.1)), r4 = hH3(vec3(ci, 4.9));
       float dens = vCastUv.y * smoothstep(0.0, 1.0, vBeard);
-      float sl = mix(0.3, 1.0, sqrt(r1));                        // strand length (x the local length)
-      float pres = mix(0.35, 0.97, dens);                        // follicles with a strand
-      vec2 dd = (f - (vec2(r3, r4) - 0.5) * 0.4) * vec2(1.0, 0.42);
-      float rad = 0.5 * (1.0 - 0.75 * bShell / sl);
+      float sl = mix(0.25, 1.0, sqrt(r1)) * mix(0.75, 1.15, cl2);      // strand length (x the local length)
+      // follicles with a strand: none at the border, thinning in over its outer part (broken by the clumps)
+      float pres = smoothstep(0.0, 0.75, dens + (cl1 - 0.5) * 0.3) * mix(0.8, 1.1, cl1);
+      vec2 dd = f - (vec2(r3, r4) - 0.5) * 0.35;
+      float rad = 0.4 * (1.0 - 0.65 * clamp(bShell / max(sl, 1e-3), 0.0, 1.0));
       float fwq = length(fwidth(q));
-      float aw = max(fwq * 0.6, 0.02);
+      float aw = max(fwq * 0.6, 0.03);
       float c1 = step(r2, pres) * step(bShell, sl) * (1.0 - smoothstep(rad - aw, rad + aw, length(dd)));
-      // (strands below a pixel: their expected coverage)
-      float lfrac = clamp((1.0 - bShell) / 0.7, 0.0, 1.0);
-      float cexp = pres * lfrac * min(1.0, 3.14 * rad * rad / 0.42 * 0.9);
-      a = mix(c1, cexp, smoothstep(0.6, 1.6, fwq));
-      // dark roots, lighter tips; strand to strand variation
-      col = tint * mix(0.55, 1.12, bShell) * mix(0.82 + 0.36 * r3, 1.0, smoothstep(0.6, 1.6, fwq));
-      hAO *= mix(0.4, 1.0, bShell);
+      float lfrac = clamp((mix(0.25, 1.15, cl2) - bShell) / 0.75, 0.0, 1.0);
+      float cexp = clamp(pres, 0.0, 1.0) * lfrac * min(1.0, 3.14 * rad * rad * 1.2);
+      a = mix(c1, cexp, smoothstep(0.7, 1.8, fwq));
+      // dark roots, lighter tips; strand to strand and clump to clump shade
+      col = tint * mix(0.5, 1.1, bShell) * mix(0.8 + 0.4 * r3, 1.0, smoothstep(0.7, 1.8, fwq)) * (0.85 + 0.3 * cl1);
+      hAO *= mix(0.45, 1.0, bShell);
     } else if (hRegion == 11) {
       // beard shell: strands (fine streaks running down the face, in rest space) thin out towards
       // the shell's edges; far away only the soft edge remains
@@ -478,7 +491,7 @@ const FRAG_SURFACE = /* glsl */`
       // cap of the eyeball (the eyes look ahead, -z), fibres running out from the pupil, a darker rim;
       // the white of the eye a soft off-white, never paper white
       float rad = length(d.xy);
-      float ir = er * 0.42, pr = er * (0.14 + 0.05 * uNight);
+      float ir = er * 0.44, pr = er * (0.14 + 0.05 * uNight);
       float aw = max(length(fwidth(d.xy)), 1e-5);
       float front = smoothstep(-0.2 * er, -0.45 * er, d.z);
       float iris = front * (1.0 - smoothstep(ir - aw, ir + aw, rad));
@@ -488,7 +501,9 @@ const FRAG_SURFACE = /* glsl */`
       float u = rad / ir;
       vec3 ic = tint * (0.65 + 0.75 * fib) * mix(1.2, 0.55, smoothstep(0.72, 1.0, u)) * mix(0.75, 1.0, smoothstep(0.35, 0.6, u));
       ic = mix(ic, vec3(0.012), front * (1.0 - smoothstep(pr - aw, pr + aw, rad)));
-      vec3 sclera = tx.rgb * vec3(0.8, 0.78, 0.76);
+      // (the texture's own iris may be larger than this one: the sclera is a flat off-white, a touch
+      // warmer and darker towards the corners)
+      vec3 sclera = vec3(0.62, 0.58, 0.55) * mix(1.0, 0.85, smoothstep(0.5, 1.0, length(d.xy) / er));
       diffuseColor.rgb = mix(sclera, ic, iris) * mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
     } else if (uDecal > 0.5) {
       // (the iris a little darker and less saturated; the white of the eye never paper white)
@@ -570,18 +585,20 @@ const FRAG_SURFACE = /* glsl */`
         float th = mix(b1.y, b1.z, clamp(u, 0.0, 1.0));
         float dy = (vRest.y - yc) / max(th, 1e-4);
         // (thicker below the centre line: the brow sits on the orbital rim; the lower edge sharper)
-        float band = (1.0 - smoothstep(dy < 0.0 ? 0.7 : 0.5, dy < 0.0 ? 1.15 : 1.2, abs(dy)))
+        // (a soft, filled shape: densest a little below the centre line, feathered over its outer half)
+        float ey = dy + 0.15;
+        float band = exp(-ey * ey * (ey < 0.0 ? 1.6 : 2.4))
           * smoothstep(-0.14, 0.12, u) * (1.0 - smoothstep(0.82, 1.06, u));
         if (band > 0.002) {
           float hang = mix(1.2, 0.2, smoothstep(0.0, 0.32, u)) - 0.25 * smoothstep(0.7, 1.0, u);
           vec2 hd = vec2(cos(hang), sin(hang));
           vec2 p2 = vec2(ax, vRest.y);
-          vec2 hq = vec2(dot(p2, vec2(-hd.y, hd.x)) * 2400.0, dot(p2, hd) * 220.0);
+          vec2 hq = vec2(dot(p2, vec2(-hd.y, hd.x)) * 1500.0, dot(p2, hd) * 90.0);
           float hcol = floor(hq.x);
           float hn = hH3(vec3(hcol, floor(hq.y + hH3(vec3(hcol, 2.0, 9.0)) * 4.0), 5.0));
           hn = mix(hn, 0.6, smoothstep(0.35, 1.2, length(fwidth(hq))));
           vec4 bt = hLook(row, 2);
-          float dens = band * mix(0.55, 1.0, smoothstep(0.3, 0.7, hn)) * (bt.w > 0.0 ? bt.w : 0.7);
+          float dens = band * mix(0.72, 1.0, smoothstep(0.2, 0.8, hn)) * (bt.w > 0.0 ? bt.w : 0.7);
           // (the middle of the brow fuller than its tail)
           dens *= mix(1.0, 0.75, smoothstep(0.55, 1.0, u));
           diffuseColor.rgb = mix(diffuseColor.rgb, bt.rgb, clamp(dens, 0.0, 0.88));

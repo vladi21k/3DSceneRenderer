@@ -32,9 +32,9 @@ import * as THREE from 'three';
 
 const WHITE = new THREE.Color(1, 1, 1);
 const FADE_MS = 450;
-// numeric instance keys (batch number * KEY_SPAN + instance id): string keys would make
-// garbage on every lookup
-const KEY_SPAN = 16777216;
+// numeric instance keys (batch number * KEY_SPAN + instance id), small integers for up to
+// 1000 batches of a million instances: string keys would make garbage on every lookup
+const KEY_SPAN = 1048576;
 const LOD_STEP = 0.5;   // m of eye movement between two passes over the instance levels
 // shadows: cascade texel (m) above which at least level 1 / the coarsest level is drawn,
 // and the smallest instance (bounding radius in texels) still worth a shadow
@@ -179,7 +179,7 @@ export class BatchSet {
     this.syncFrame = -1;
     this.fades = new Map();            // instance key (see KEY_SPAN) -> active fade
     // depth-only twins of the shadow-casting parts (see header)
-    this.shadow = { key: 4095 * KEY_SPAN, geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null, sph: new Float32Array(256) };
+    this.shadow = { key: 1000 * KEY_SPAN, geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null, sph: new Float32Array(256) };
     this._frustums = {};
     this.hideEmpty = false;
   }

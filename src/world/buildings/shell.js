@@ -15,7 +15,8 @@ import { rusticBlocks } from './rustic.js';
 // wall fields with real openings, reveals and dark closed interiors, arches with
 // voussoirs and keystones, surrounds, sills, string courses, cornice (dentils,
 // modillions), parapet or tiled hip roof, plinth following the slope, steps,
-// rustication, quoins, pilasters, corner returns, party walls where neighbours step,
+// rustication (with proud rock-faced blocks at its arrises, rustic.js), quoins,
+// pilasters, corner returns, party walls where neighbours step,
 // rooftop equipment. Reveals of walled jambs continue the facade's coursing round the
 // arris; a rendered block (plan.style.finish) has its walls above the shop floor in a
 // colour wash with the dressing in stone. Output: one compact vertex/index set per

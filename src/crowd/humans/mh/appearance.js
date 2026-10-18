@@ -262,7 +262,7 @@ function finish(seed, r, cast, index, toddler = false) {
     // the iris is drawn in t.eyes; eyebrows' opacity on the skin (men fuller, children and the elderly
     // lighter, grey brows lighter still)
     irisOn: true,
-    browOpacity: (child || cls === 'toddler' ? 0.5 : old ? 0.6 : teen ? 0.68 : female ? 0.74 : 0.86) *
+    browOpacity: (child || cls === 'toddler' ? 0.55 : old ? 0.66 : teen ? 0.76 : female ? 0.84 : 0.94) *
       (t.hair && 0.2126 * t.hair[0] + 0.7152 * t.hair[1] + 0.0722 * t.hair[2] > 0.12 ? 0.75 : 1),
   };
   return a;

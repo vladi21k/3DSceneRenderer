@@ -698,7 +698,9 @@ export function createMaterials(app) {
     reg('tactile', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(1.2, 1.2), roughness: 0.82, metalness: 0 }));
   }
   // platform: cut limestone coping (per-block tint in vertex colours), mortar, paving
-  out.copingStone = M.get('stone.smooth', { vertexColors: true });
+  // (own variant, same program: the shared one is also drawn batched by other modules, and
+  // a material switching between batched and plain meshes is re-evaluated at every switch)
+  out.copingStone = M.get('stone.smooth', { vertexColors: true, userData: { furniture: 'coping' } });
   out.mortar = M.get('concrete', { color: [0.3, 0.29, 0.28], userData: { furniture: 'mortar' } });
   // platform slabs: toned to the sidewalk granite (a touch lighter, not the warm cream of
   // the bare library slab), per-slab tone, gum, worn door lanes (vertex colours), joints
