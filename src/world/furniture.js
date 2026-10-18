@@ -5,8 +5,10 @@ import { BatchSet } from './furniture/instancer.js';
 import { buildCafeProtos, placeCafes, planAllCafes, chairPose, cafeStyle } from './furniture/cafe.js';
 import { buildStreetProtos, placeStreetFurniture } from './furniture/street.js';
 import { buildPlatformProtos, placePlatforms, platformWarmupParts } from './furniture/platform.js';
+import { buildVehicleProtos, placeVehicles } from './furniture/vehicles.js';
 
-// Street furniture, café terraces and tram-stop platforms. Contract: docs/ARCHITECTURE.md.
+// Street furniture, café terraces, tram-stop platforms and the vehicles parked in the
+// cross streets (vehicles.js). Contract: docs/ARCHITECTURE.md.
 // Prototype geometry and materials are built once in init and registered into global
 // BatchedMeshes (one per material); a chunk build only adds instances at the layout
 // positions (layout.cafes / layout.furniture / layout.stations). Unique per-site geometry
@@ -56,7 +58,7 @@ const furniture = {
     this.F = createMaterials(app);
     lap('materials', t); t = performance.now();
     const M = app.materials;
-    this.P = { cafe: buildCafeProtos(M, this.F), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F) };
+    this.P = { cafe: buildCafeProtos(M, this.F), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F), vehicles: buildVehicleProtos(this.F) };
     this.batches = new BatchSet('furniture');
     this.batches.registerTree(this.P);
     lap('protos', t); t = performance.now();
@@ -110,6 +112,7 @@ const furniture = {
     placeCafes(chunk, app, inst, this.P.cafe, debug);
     placeStreetFurniture(chunk, app, inst, this.P.street);
     placePlatforms(chunk, app, inst, addMesh, this.P.platform, this.F);
+    placeVehicles(chunk, app, inst, this.P.vehicles);
   },
 
   build(chunk, app) {

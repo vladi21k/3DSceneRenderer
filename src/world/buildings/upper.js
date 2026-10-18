@@ -32,10 +32,11 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   const face = {
     width: W, openings: up.openings, courses: [], balconies: up.balconies || [], cornice: { y: top }, groundAt: () => v0,
     floors: [...plan.floors, ...Array.from({ length: up.floors }, (_, k) => ({ index: plan.floors.length + k, y: v0 + k * up.floorH, h: up.floorH }))],
-    style: { ...plan.style, surrounds: false },
+    // later additions mostly have white or light (aluminium) joinery, as do rendered towers
+    style: { ...plan.style, surrounds: false, frameColor: RNG.from(lot.seed, 'upperFrame').pick(plaster ? ['white', 'white', 'lightgrey', 'cream', plan.style.frameColor] : ['white', 'lightgrey', plan.style.frameColor, plan.style.frameColor]) },
   };
   // render weathers (soot under the slab, streaks), as the stone does
-  const unc = plaster ? 0.3 : 0;
+  const unc = plaster ? 0.38 : 0;
   const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.9, uncleaned: unc, sillExt: 0.11, sillH: 0.06 });
   if (!sinks.glass) sinks.glass = B.sink('glass');
   if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery

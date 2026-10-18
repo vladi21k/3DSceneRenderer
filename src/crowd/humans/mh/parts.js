@@ -107,8 +107,8 @@ class PartBuilder {
 }
 
 /** Rounded box (bevelled) geometry of size w x h x d centred at the origin. */
-function roundBox(w, h, d, r, seg = 2) {
-  const g = new THREE.BoxGeometry(w, h, d, 4, 4, 2);
+function roundBox(w, h, d, r, seg = 3) {
+  const g = new THREE.BoxGeometry(w, h, d, seg * 3, seg * 3, seg * 2);
   const p = g.attributes.position;
   const inner = new THREE.Vector3(w / 2 - r, h / 2 - r, d / 2 - r);
   const v = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
@@ -121,7 +121,6 @@ function roundBox(w, h, d, r, seg = 2) {
     v.copy(c).addScaledVector(n, r);
     p.setXYZ(i, v.x, v.y, v.z);
   }
-  void seg;
   g.computeVertexNormals();
   return g;
 }
@@ -131,7 +130,7 @@ function roundBox(w, h, d, r, seg = 2) {
  * arms, hands and hair. surface(p, d) returns the outermost surface point along the ray p + t d
  * (|t| <= 0.35 m, within 2.5 cm of it), pushed out by `off`, or null.
  */
-function torsoSurface(char) {
+export function torsoSurface(char) {
   const raw = char.raw, n = raw.n;
   const L0 = char.lods[0];
   const pts = [];
@@ -144,16 +143,16 @@ function torsoSurface(char) {
     // dominant bone
     let bw = -1, bb = 0;
     for (let k = 0; k < 4; k++) if (raw.bw[v * 4 + k] > bw) { bw = raw.bw[v * 4 + k]; bb = raw.bi[v * 4 + k]; }
-    if (ARM_BONES.has(bb)) continue;
+    if (ARM_BONES.has(bb) || bb === BONE.head) continue;
     pts.push(raw.pos[v * 3], raw.pos[v * 3 + 1], raw.pos[v * 3 + 2]);
   }
   const P = new Float32Array(pts);
-  return (p, d, off = 0.004, rad = 0.025) => {
+  return (p, d, off = 0.004, rad = 0.025, tmin = -0.35, tmax = 0.35) => {
     let best = -Infinity;
     for (let i = 0; i < P.length; i += 3) {
       const x = P[i] - p.x, y = P[i + 1] - p.y, z = P[i + 2] - p.z;
       const t = x * d.x + y * d.y + z * d.z;
-      if (t < -0.35 || t > 0.35 || t < best) continue;
+      if (t < tmin || t > tmax || t < best) continue;
       const qx = x - d.x * t, qy = y - d.y * t, qz = z - d.z * t;
       if (qx * qx + qy * qy + qz * qz < rad * rad) best = t;
     }
@@ -218,8 +217,9 @@ export function buildParts(char) {
   const chest = hang[0], waist = hang[1], hips = hang[2];
   const shR = J[BONE.armR], neck = J[BONE.neck];
   const shoulderTop = (x, z) => {
-    const p = surf(new THREE.Vector3(x, neck.y - 0.02 * k, z), new THREE.Vector3(0, 1, 0), 0.004, 0.02);
-    return p || new THREE.Vector3(x, shR.y + 0.06 * k, z);
+    // (down from above the shoulder, no higher than the base of the neck)
+    const p = surf(new THREE.Vector3(x, shR.y - 0.03 * k, z), new THREE.Vector3(0, 1, 0), 0.004, 0.022, 0, 0.11 * k);
+    return p || new THREE.Vector3(x, shR.y + 0.05 * k, z);
   };
   const chestSkin = (p) => {
     // straps and packs ride the chest; below the waist they follow the hips
@@ -229,18 +229,34 @@ export function buildParts(char) {
   // ---- backpack: a rounded pack on the upper back, two shoulder straps
   {
     const b = new PartBuilder(), bf = new PartBuilder();
-    const pw = 0.29 * k, ph = 0.40 * k, pd = 0.13 * k;
-    const topY = shR.y - 0.035 * k, cy = topY - ph / 2;
-    // the back's surface at the pack's height: the furthest-back point across it
-    let zBack = Math.max(chest[3], waist[3]);
-    for (const y of [topY - 0.04 * k, cy, cy - ph * 0.35]) {
-      for (const x of [-pw * 0.35, 0, pw * 0.35]) {
-        const p = surf(new THREE.Vector3(x, y, 0), new THREE.Vector3(0, 0, 1), 0, 0.03);
-        if (p) zBack = Math.max(zBack, p.z);
+    const pw = 0.29 * k, ph = 0.37 * k, pd = 0.13 * k;
+    const topY = shR.y - 0.02 * k, cy = topY - ph / 2;
+    // the back's profile over the pack's height (furthest-back point across its width), then the
+    // pack's front face as the tilted line resting on it (top back on the shoulder blades)
+    const prof = [];
+    for (let i = 0; i <= 8; i++) {
+      const y = topY - 0.02 * k - (i / 8) * (ph - 0.03 * k);
+      let z = -1;
+      for (const x of [-pw * 0.38, -pw * 0.15, 0, pw * 0.15, pw * 0.38]) {
+        const p = surf(new THREE.Vector3(x, y, 0), new THREE.Vector3(0, 0, 1), 0, 0.025, 0, 0.3);
+        if (p) z = Math.max(z, p.z);
       }
+      if (z > -1) prof.push([y, z]);
     }
-    const tilt = 0.08;
-    const M = new THREE.Matrix4().makeRotationX(-tilt).setPosition(0, cy, zBack + pd / 2 + 0.006 + Math.sin(tilt) * ph * 0.25);
+    if (!prof.length) prof.push([cy, Math.max(chest[3], waist[3])]);
+    let best = null;
+    for (let ti = 0; ti <= 20; ti++) {
+      const tl = -0.05 + ti * 0.02;                     // rad, top tipped back
+      let z0 = -1;                                      // front face z at cy: rests on the furthest point
+      for (const [y, z] of prof) z0 = Math.max(z0, z - Math.sin(tl) * (y - cy));
+      let gap = 0;
+      for (const [y, z] of prof) gap += z0 + Math.sin(tl) * (y - cy) - z;
+      if (!best || gap < best.gap) best = { tl, z0, gap };
+    }
+    const tilt = best.tl;
+    const M = new THREE.Matrix4().makeRotationX(tilt).setPosition(0, cy - pd / 2 * Math.sin(tilt), best.z0 + 0.008 + pd / 2 * Math.cos(tilt));
+    const zBack = best.z0;
+    out.fit = { tilt, z0: best.z0, prof };
     b.geometry(roundBox(pw, ph, pd, 0.04 * k), M, [[BONE.spine2, 1]], REGION.bag);
     // front pocket
     b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.35, 0.025 * k), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.22, pd / 2 + pd * 0.12)),
@@ -291,8 +307,18 @@ export function buildParts(char) {
     const b = new PartBuilder(), bf = new PartBuilder();
     const bw = 0.25 * k, bh = 0.19 * k, bd = 0.075 * k;
     const hipW = Math.max(hips[1], waist[1]);
-    const by = hips[0] + 0.01 * k, bx = -(hipW + bd * 0.5 + 0.01), bz = 0.05 * k;
     const yaw = 0.45;                                   // turned towards the back
+    const by = hips[0] + 0.01 * k;
+    // against the hip: the clothed surface along the bag's outward direction (left and back)
+    const dirB = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
+    let side = null;
+    for (const dy of [-0.06, 0, 0.06]) {
+      const q = surf(new THREE.Vector3(0, by + dy * k, 0.01), dirB, 0, 0.03, 0, 0.4);
+      if (q && (!side || q.dot(dirB) > side.dot(dirB))) side = q.setY(by);
+    }
+    if (!side) side = new THREE.Vector3(-hipW, by, 0.03);
+    const ctr = side.clone().addScaledVector(dirB, bd * 0.5 + 0.006);
+    const bx = ctr.x, bz = ctr.z;
     const M = new THREE.Matrix4().makeRotationY(-yaw).setPosition(bx, by, bz);
     const hipSkin = [[BONE.pelvis, 0.7], [BONE.spine1, 0.3]];
     b.geometry(roundBox(bd, bh, bw, 0.02 * k), M, hipSkin, REGION.bag);

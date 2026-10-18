@@ -73,8 +73,9 @@ export class FigureBatch {
    * geometry: the merged figures (32-bit indices); ranges: index ranges [{start, count}] (in indices)
    * referred to by the sub-draws.
    */
-  constructor(app, geometry, ranges, mat, depth) {
+  constructor(app, geometry, ranges, mat, depth, uniforms) {
     this.app = app;
+    this.uniforms = uniforms;
     this.ranges = ranges;
     const mesh = new THREE.Mesh(geometry, mat);
     mesh.name = 'humans.figures';
@@ -102,7 +103,6 @@ export class FigureBatch {
     this._grow(512);
     this.frame = -1;
     this.viewCam = null;
-    this.order = new Uint32Array(0);
     this.nView = 0;
     this.stats = { view: 0, shadow: 0, tris: 0, shadowTris: 0, passes: 0 };
     const scene = app.scene;
@@ -117,7 +117,7 @@ export class FigureBatch {
     const F = (old, k = 1) => { const a = new Float32Array(cap * k); if (old) a.set(old); return a; };
     const I = (old, k = 1) => { const a = new Int32Array(cap * k); if (old) a.set(old); return a; };
     this.row = I(this.row); this.sph = F(this.sph, 4); this.depth = F(this.depth); this.inView = I(this.inView);
-    this.lod = I(this.lod); this.body = I(this.body, 4); this.extra = I(this.extra, 4); this.extraFar = I(this.extra, 4);
+    this.lod = I(this.lod); this.body = I(this.body, 4); this.extra = I(this.extra, 4); this.extraFar = I(this.extraFar, 4);
     this.shadowExtra = I(this.shadowExtra, 2);
     this.cap = cap;
     this.order = new Uint32Array(cap);
@@ -131,6 +131,7 @@ export class FigureBatch {
 
   begin(frame, camera) {
     this.n = 0;
+    this.stats.shadow = 0; this.stats.shadowTris = 0;
     this.frame = frame;
     this.viewCam = camera;
   }
@@ -183,7 +184,7 @@ export class FigureBatch {
     // alpha to coverage needs a multisampled target: else the shader dithers
     const rt = renderer.getRenderTarget();
     const samples = rt ? rt.samples : ((renderer.getContext().getContextAttributes() || {}).antialias ? 4 : 0);
-    m.material.userData.a2c && (m.material.userData.a2c.value = samples > 1 ? samples : 0);
+    if (this.uniforms) this.uniforms.uA2C.value = samples > 1 ? samples : 0;
     let k = 0, tris = 0;
     const generic = camera !== this.viewCam;
     if (generic) _vf.setFromProjectionMatrix(_pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem, camera.reversedDepth);

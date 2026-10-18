@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
 import { buildPrintAtlas, buildDisplayAtlas, buildLitAtlas, buildGlassDecal, ATLAS_H, LIT_ROWS } from './prints.js';
+import { contactShadowTexture } from './vehicles.js';
 
 // Furniture-specific materials and their procedural textures. Generic surfaces (painted
 // iron, timber, concrete, platform paving...) come from the shared library by name; the
@@ -386,6 +387,60 @@ function patchGrime(m, { albedo = 0.16, rough = 0.15, ao = 0.45, mottle = 0.05 }
   return m;
 }
 
+/**
+ * Weathering of the stone bollards (on top of the library stone): a ragged dirt and splash
+ * band at the foot (10-15 cm, darker and rougher, speckled), rain streaks running down from
+ * the cap, a dusty top and a mottle; every post gets its own pattern from its position.
+ */
+function patchBollard(m) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (s, r) {
+    prev && prev.call(this, s, r);
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBolP;\nvarying vec2 vBolI;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vBolP = position;
+        #ifdef USE_BATCHING
+          vBolI = batchingMatrix[ 3 ].xz;
+        #else
+          vBolI = vec2( 0.0 );
+        #endif`);
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vBolP;
+        varying vec2 vBolI;
+        float bHash( vec3 p ) { p = fract( p * 0.3183099 + 0.1 ); p *= 17.0; return fract( p.x * p.y * p.z * ( p.x + p.y + p.z ) ); }
+        float bNoise( vec3 x ) {
+          vec3 i = floor( x ), f = fract( x ); f = f * f * ( 3.0 - 2.0 * f );
+          return mix( mix( mix( bHash( i ), bHash( i + vec3( 1, 0, 0 ) ), f.x ), mix( bHash( i + vec3( 0, 1, 0 ) ), bHash( i + vec3( 1, 1, 0 ) ), f.x ), f.y ),
+                      mix( mix( bHash( i + vec3( 0, 0, 1 ) ), bHash( i + vec3( 1, 0, 1 ) ), f.x ), mix( bHash( i + vec3( 0, 1, 1 ) ), bHash( i + vec3( 1, 1, 1 ) ), f.x ), f.y ), f.z );
+        }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float bRough = 0.0;
+        {
+          vec3 o = vec3( vBolI.x * 1.7, 0.0, vBolI.y * 1.3 );
+          float n1 = bNoise( vBolP * 9.0 + o ), n2 = bNoise( vBolP * 37.0 + o * 2.0 ), n3 = bNoise( vBolP * 3.0 + o );
+          // splash band: ragged top edge at 10-15 cm, speckled with grit
+          float band = 1.0 - smoothstep( 0.08, 0.13 + 0.05 * n1, vBolP.y );
+          float grit = step( 0.72, n2 ) * smoothstep( 0.3, 0.1, vBolP.y );
+          // rain streaks from the cap down the faces, fading towards the foot
+          float st = bNoise( vec3( ( vBolP.x + vBolP.z ) * 34.0 + o.x, vBolP.y * 2.0, ( vBolP.x - vBolP.z ) * 34.0 + o.z ) );
+          float streak = smoothstep( 0.58, 0.9, st ) * smoothstep( 0.12, 0.45, vBolP.y ) * ( 1.0 - smoothstep( 0.52, 0.56, vBolP.y ) );
+          float dust = smoothstep( 0.54, 0.6, vBolP.y ) * 0.08;
+          diffuseColor.rgb *= ( 1.0 - band * ( 0.4 + 0.2 * n1 ) ) * ( 1.0 - 0.18 * grit ) * ( 1.0 - 0.2 * streak ) * ( 0.9 + 0.2 * n3 ) * ( 1.0 - dust );
+          diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.0, 0.95, 0.86 ), band * 0.5 );
+          bRough = band * 0.12;
+        }`)
+      .replace('#include <normal_fragment_begin>', `roughnessFactor = min( 1.0, roughnessFactor + bRough );
+        #include <normal_fragment_begin>`)
+      .replace('vec3 totalDiffuse =', `reflectedLight.indirectDiffuse *= mix( 0.6, 1.0, smoothstep( 0.0, 0.1, vBolP.y ) );
+        vec3 totalDiffuse =`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-bollard`; };
+  m.needsUpdate = true;
+  return m;
+}
+
 /** Wrapped diffuse for thin pale plastics (light reaches a little past the terminator). */
 function patchWrap(m, w) {
   const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
@@ -537,6 +592,7 @@ export function createMaterials(app) {
   out.galv = patchGrime(variant('metal.galvanized'), { albedo: 0.12, rough: 0.1, mottle: 0.04 });
   out.steel = variant('metal.steel');
   out.stone = patchGrime(variant('stone.smooth'), { albedo: 0.18, rough: 0.05, ao: 0.5, mottle: 0.06 });
+  out.bollardStone = patchBollard(variant('stone.smooth', { userData: { furniture: 'bollard' } }));
   reg('interior', new THREE.MeshStandardMaterial({ color: srgb('#1e1d1b'), roughness: 0.9, metalness: 0 }));
   reg('pages', new THREE.MeshStandardMaterial({ color: srgb('#e4dfd3'), roughness: 0.75, metalness: 0 }));
   out.pole = patchGrime(variant('metal.pole'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
@@ -580,6 +636,19 @@ export function createMaterials(app) {
   patchPosterPick(decalOffset(reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 }))));
   // posters glued on advertising columns: paper with wrinkles and bubbles
   decalOffset(reg('paper', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.68, metalness: 0, normalMap: T('paper', () => paperNormal(R)), normalScale: new THREE.Vector2(0.18, 0.18) })));
+  // parked vehicles: clear-coated paint (solid and metallic, coloured per instance, road
+  // dirt low down), dark tinted glazing over dark interiors, black plastic trim, alloy
+  // wheels (brake dust), lamp lenses (vertex colours) and the contact shadow decal
+  patchGrime(reg('carPaint', new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.07 })), { albedo: 0.3, rough: 0.2, ao: 0.3, mottle: 0.03 });
+  patchGrime(reg('carMetal', new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0.6, clearcoat: 1, clearcoatRoughness: 0.06 })), { albedo: 0.3, rough: 0.2, ao: 0.3, mottle: 0.03 });
+  reg('carGlass', new THREE.MeshStandardMaterial({ color: srgb('#262a2e'), roughness: 0.04, metalness: 0, envMapIntensity: 1.6 }));
+  patchGrime(reg('carTrim', new THREE.MeshStandardMaterial({ color: srgb('#151617'), roughness: 0.62, metalness: 0 })), { albedo: 0.1, rough: 0.1, mottle: 0.04 });
+  patchGrime(reg('carAlloy', new THREE.MeshStandardMaterial({ color: srgb('#8f9295'), roughness: 0.4, metalness: 1, envMapIntensity: 0.7 })), { albedo: 0.3, rough: 0.15, mottle: 0.05 });
+  reg('carLamp', new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.12, metalness: 0 }));
+  {
+    const m = reg('contactShadow', new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: contactShadowTexture(), transparent: true, opacity: 0.5, depthWrite: false }));
+    m.polygonOffset = true; m.polygonOffsetFactor = -2; m.polygonOffsetUnits = -4;
+  }
   // light levels (scene-linear radiance) the module sets every frame from the exposure
   out.levels = { lit: { value: 0.03 }, disp: { value: 0.3 }, lamp: { value: 0 } };
   // backlit advert panels: laminate over a light box (emission from the lit atlas)

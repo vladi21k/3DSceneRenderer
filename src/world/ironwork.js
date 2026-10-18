@@ -777,7 +777,7 @@ const ironwork = {
     if (grow === GROW.HERBS || grow === GROW.DRY) {
       const n = Math.max(1, Math.round(len / 0.27));
       for (let k = 0; k < n; k++) {
-        if (n > 1 && r.chance(grow === GROW.DRY ? 0.15 : 0.1)) continue;
+        if (n > 1 && r.chance(0.1)) continue;
         const s = r.range(0.85, 1.1) * (trough ? 0.9 : 1);
         _l.makeRotationY(r.range(0, 6.28)).scale(_pv.set(s * 0.85, s, s * 0.85))
           .setPosition(len * ((k + 0.5) / n - 0.5) + r.range(-0.03, 0.03), soil, r.range(-0.015, 0.015));

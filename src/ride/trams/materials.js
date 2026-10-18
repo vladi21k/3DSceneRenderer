@@ -139,39 +139,52 @@ vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
   vec3 L;
   if ( tz <= tx && tz <= ty ) {
     // back wall: grey panels and the door to the saloon, whose window shows the saloon
-    // (daylight from its many windows; its lights at night)
+    // (daylight from its many windows; its lights at night); darker into the corners
     vec3 p = ro + rd * tz;
     float door = tramRect( p.xy, vec2( 0.3, 0.6 ), vec2( 1.0, 2.2 ), w );
-    float win = tramRect( p.xy, vec2( 0.39, 1.3 ), vec2( 0.91, 2.06 ), w );
-    vec3 wall = mix( vec3( 0.42, 0.42, 0.4 ), vec3( 0.3, 0.3, 0.3 ), door ) * E * 0.85;
-    vec3 saloon = vec3( 0.3, 0.29, 0.28 ) * E * 0.75 + vec3( 1.0, 0.96, 0.9 ) * ( uTramNight * uTramGain * 0.0006 );
+    float win = tramRect( p.xy, vec2( 0.42, 1.45 ), vec2( 0.88, 2.04 ), w );
+    float ao = ( 0.55 + 0.45 * smoothstep( 0.0, 0.4, 1.22 - abs( p.x ) ) ) * ( 0.6 + 0.4 * smoothstep( 0.0, 0.35, 2.5 - p.y ) );
+    vec3 wall = mix( vec3( 0.42, 0.42, 0.4 ), vec3( 0.3, 0.3, 0.3 ), door ) * E * 0.85 * ao;
+    vec3 saloon = vec3( 0.3, 0.29, 0.28 ) * E * 0.75 + vec3( 1.0, 0.94, 0.85 ) * ( uTramNight * uTramGain * 0.00005 );
     L = mix( wall, saloon, win );
   } else if ( tx < ty ) {
     // side wall: the cab's side window shows the street, the pillar ahead of it is dark
     vec3 p = ro + rd * tx;
     float win = tramRect( p.zy, vec2( 1.28, 0.98 ), vec2( 2.52, 2.42 ), w );
-    vec3 wall = vec3( 0.36, 0.36, 0.35 ) * E * mix( 0.9, 0.5, saturate( p.z / 2.65 ) );
+    float ao = ( 0.6 + 0.4 * smoothstep( 0.0, 0.35, 2.5 - p.y ) ) * ( 0.6 + 0.4 * smoothstep( 0.0, 0.4, 2.65 - p.z ) );
+    vec3 wall = vec3( 0.36, 0.36, 0.35 ) * E * mix( 0.9, 0.5, saturate( p.z / 2.65 ) ) * ao;
     L = mix( wall, tramEnv( rdW ) * vec3( 0.5, 0.57, 0.58 ), win );
   } else if ( rd.y > 0.0 ) {
-    L = vec3( 0.55, 0.55, 0.54 ) * E * 0.4;         // ceiling: lit only from below
+    // ceiling: lit only from below, darker into the corners
+    vec3 p = ro + rd * ty;
+    float ao = ( 0.55 + 0.45 * smoothstep( 0.0, 0.4, 1.22 - abs( p.x ) ) ) * ( 0.6 + 0.4 * smoothstep( 0.0, 0.4, 2.65 - p.z ) );
+    L = vec3( 0.55, 0.55, 0.54 ) * E * 0.4 * ao;
   } else {
     L = vec3( 0.05 ) * E * 0.5;                    // floor
   }
   if ( uTramDriver > 0.5 ) {
-    // seat back and headrest
-    vec2 ps = ( ro + rd * ( ( 1.62 - ro.z ) / rd.z ) ).xy;
-    float seat = max( tramRect( ps, vec2( - 0.19, 1.1 ), vec2( 0.19, 1.7 ), w ), tramRect( ps, vec2( - 0.08, 1.7 ), vec2( 0.08, 1.96 ), w ) );
-    L = mix( L, vec3( 0.03 ) * E * 0.7, seat );
-    // the driver: uniform shirt, neck, head (hair on top)
+    // seat back and headrest (mostly hidden by the driver)
     vec3 n;
-    float c = tramEll( ro, rd, vec3( 0.0, 1.4, 1.42 ), vec3( 0.235, 0.32, 0.13 ), w, n );
-    L = mix( L, vec3( 0.2, 0.26, 0.34 ) * E * tramShade( n ), c );
-    c = tramEll( ro, rd, vec3( 0.0, 1.77, 1.42 ), vec3( 0.055, 0.075, 0.055 ), w, n );
-    vec3 skin = vec3( 0.33, 0.22, 0.165 );
-    L = mix( L, skin * E * tramShade( n ) * 0.8, c );
-    c = tramEll( ro, rd, vec3( 0.0, 1.93, 1.39 ), vec3( 0.083, 0.112, 0.098 ), w, n );
-    vec3 head = mix( skin, vec3( 0.03, 0.025, 0.022 ), smoothstep( 0.2, 0.5, n.y + 0.6 * max( n.z, 0.0 ) ) );
-    L = mix( L, head * E * tramShade( n ), c );
+    float c = tramEll( ro, rd, vec3( 0.0, 1.38, 1.66 ), vec3( 0.22, 0.32, 0.06 ), w, n );
+    L = mix( L, vec3( 0.03 ) * E * tramShade( n ) * 0.7, c );
+    c = tramEll( ro, rd, vec3( 0.0, 1.86, 1.62 ), vec3( 0.11, 0.09, 0.05 ), w, n );
+    L = mix( L, vec3( 0.03 ) * E * tramShade( n ) * 0.7, c );
+    // the driver: uniform shirt (arms, torso, broad shoulders), neck, head with the hair
+    // on top and at the back
+    vec3 shirt = vec3( 0.2, 0.26, 0.34 ), skin = vec3( 0.33, 0.22, 0.165 );
+    c = tramEll( ro, rd, vec3( - 0.215, 1.46, 1.4 ), vec3( 0.055, 0.16, 0.065 ), w, n );
+    L = mix( L, shirt * E * tramShade( n ) * 0.85, c );
+    c = tramEll( ro, rd, vec3( 0.215, 1.46, 1.4 ), vec3( 0.055, 0.16, 0.065 ), w, n );
+    L = mix( L, shirt * E * tramShade( n ) * 0.85, c );
+    c = tramEll( ro, rd, vec3( 0.0, 1.38, 1.44 ), vec3( 0.185, 0.3, 0.12 ), w, n );
+    L = mix( L, shirt * E * tramShade( n ), c );
+    c = tramEll( ro, rd, vec3( 0.0, 1.6, 1.44 ), vec3( 0.235, 0.095, 0.115 ), w, n );
+    L = mix( L, shirt * E * tramShade( n ), c );
+    c = tramEll( ro, rd, vec3( 0.0, 1.74, 1.43 ), vec3( 0.05, 0.07, 0.05 ), w, n );
+    L = mix( L, skin * E * tramShade( n ) * 0.7, c );
+    c = tramEll( ro, rd, vec3( 0.0, 1.9, 1.4 ), vec3( 0.08, 0.108, 0.095 ), w, n );
+    float hair = smoothstep( 0.3, 0.55, n.y + 0.8 * max( n.z, 0.0 ) + 0.35 * abs( n.x ) );
+    L = mix( L, mix( skin, vec3( 0.03, 0.025, 0.022 ), hair ) * E * tramShade( n ), c );
   }
   // overhead console under the destination display: light grey plastic right behind the
   // screen, lit by the whole street through it
@@ -232,7 +245,7 @@ export function makeFrontMaterial({ driver = true, gain = { value: 1 } } = {}) {
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
 		float tramSky = smoothstep( 0.0, 0.35, tramR.y );
 		vec3 tramStreet = mix( radiance, vec3( dot( radiance, vec3( 0.2126, 0.7152, 0.0722 ) ) ), 0.35 ) * 0.5;
-		radiance = mix( tramStreet, radiance, tramSky ) * mix( mix( vec3( 1.2 ), vec3( 5.0, 5.8, 6.6 ), tramWs ), vec3( 1.0 ), tramTrim );
+		radiance = mix( tramStreet, radiance, tramSky ) * mix( mix( vec3( 1.2 ), vec3( 5.1, 5.8, 6.5 ), tramWs ), vec3( 1.0 ), tramTrim );
 	}`)
       // the cab through the glass: lit by the daylight on the screen (or the saloon and the
       // instruments at night), tinted, with a shade band along the top of the screen
@@ -241,11 +254,11 @@ export function makeFrontMaterial({ driver = true, gain = { value: 1 } } = {}) {
 		vec3 tramRdW = inverseTransformDirection( - geometryViewDir, viewMatrix );
 		// direct light on the screen (sun, lamps; shadowed), recovered from its faint road film
 		vec3 tramEdir = reflectedLight.directDiffuse * PI / max( material.diffuseContribution, vec3( 1e-4 ) );
-		vec3 tramE = ( irradiance + iblIrradiance + 0.25 * tramEdir ) * ( 0.6 * RECIPROCAL_PI ) + vec3( 0.75, 0.85, 1.0 ) * ( uTramNight * uTramGain * 0.00012 );
+		vec3 tramE = ( irradiance + iblIrradiance + 0.25 * tramEdir ) * ( 0.6 * RECIPROCAL_PI ) + vec3( 0.75, 0.85, 1.0 ) * ( uTramNight * uTramGain * 0.00003 );
 		vec3 tramL = tramCab( vTramP, normalize( - vTramE ), tramRdW, tramFoot, tramE );
 		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
 		float tramF = 0.0426 + 0.9574 * pow( 1.0 - tramNV, 5.0 );
-		vec3 tramT = vec3( 0.5, 0.66, 0.76 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
+		vec3 tramT = vec3( 0.48, 0.64, 0.76 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
 		totalEmissiveRadiance += tramWs * tramL * tramT * max( 1.0 - 2.0 * tramF, 0.0 );
 	}`);
   };

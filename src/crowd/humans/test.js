@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { hash2 } from '../../core/rng.js';
 
 // Figure test harness (humanstest=1, best with only=humans):
-//   ht_mode = grid | walk | cross | sit | cafe | crowd | mix   (default mix)
+//   ht_mode = grid | walk | cross | sit | cafe | crowd | mix | cast  (default mix)
+//             cast: every character of the cast once, in a row (ht_class = adult | old | teen | child |
+//             toddler, ht_only = ids, ht_own=1: the characters' own colours)
 //             cafe: seated at the café chairs nearest the lineup position (add furniture to only=)
 //   ht_n    = number of figures (default 24)
 //   ht_d    = metres ahead of the start position (default 30)
@@ -81,6 +83,17 @@ export class HumansTest {
     if (this.family) this.n = Math.max(2, this.n + (this.n & 1));
     this.famKind = p.str('ht_fam', '');
     this.famSide = p.num('ht_side', 0);
+    // ht_mode=cast: one figure per character of the cast in a row (grid), ht_class / ht_only narrow it,
+    // ht_own=1 keeps the characters' own colours
+    this.castMode = this.mode === 'cast';
+    if (this.castMode) {
+      const cls = p.str('ht_class', ''), only = (p.str('ht_only', '') || '').split(',').filter(Boolean);
+      const chars = humans.cast ? humans.cast.chars : [];
+      this.castIdx = chars.map((c, i) => i).filter((i) => (!cls || chars[i].ageClass === cls) && (!only.length || only.includes(chars[i].id)));
+      this.n = this.castIdx.length;
+      this.mode = 'grid';
+      this.own = p.num('ht_own', 0) > 0;
+    }
     this.first = humans.alloc(this.n);
     this.t = 0;
     this.figs = [];
@@ -91,7 +104,8 @@ export class HumansTest {
       const mobOn = !this.mobK || i % this.mobK === 0;
       const mob = !mobOn ? '' : this.mob === 'mix' ? ['stroller', 'ride', 'ride', 'walkbike'][(i / (this.mobK || 1)) % 4 | 0] : this.mob;
       const pose = { stroller: 3, ride: 4, walkbike: 5 }[mob] || 0;
-      const app_ = this._pick(this.filters.length ? this.filters[i % this.filters.length] : null, pose);
+      const app_ = this.castMode ? humans.forceCharacter(0x5eed00 + i * 7919 + this.seed * 131, this.castIdx[i], this.own)
+        : this._pick(this.filters.length ? this.filters[i % this.filters.length] : null, pose);
       const f = { i: this.first + i, app: app_, phase: (i * 0.37) % 1, pose, prop: pose === 3 ? 1 : pose ? 2 : 0,
         propSeed: (hash2(this.propSeed * 131 + i, 977) >>> 0) % 100000 };
       // ht_var=all: every model in turn (prop seeds that pick it)
@@ -246,13 +260,14 @@ export class HumansTest {
   /** Appearance seed of the next figure of the sequence that passes ht_filter (and suits the
    *  mobility pose: pushers are adults, riders teens or adults without a skirt or long coat). */
   _pick(filter, pose = 0) {
-    const want = FILTERS[filter];
+    const id = filter && filter.startsWith('id=') ? filter.slice(3) : null;
+    const want = id ? (a) => a.body === id : FILTERS[filter];
     // (children only ride in the harness: ht_filter=child / kid / boy / girl skips the crowd's roles)
-    const role = filter && /^(child|kid|boy|girl)$/.test(filter) ? null : ROLE[pose];
+    const role = filter && /^(child|kid|boy|girl|id=.*)$/.test(filter) ? null : ROLE[pose];
     for (let tries = 0; tries < 5000; tries++) {
       const seed = hash2(this.seed * 7919 + this.nextK++, 4242) >>> 0;
       const a = this.h.appearanceOf(seed);
-      if ((!want || want(a, this.h.parts)) && (!role || role(a))) return seed;
+      if ((!want || want(a)) && (!role || role(a))) return seed;
     }
     return hash2(this.seed * 7919, 4242) >>> 0;
   }
@@ -296,41 +311,42 @@ const ROLE = {
   5: (a) => (a.age === 'adult' || a.age === 'teen') && !a.skirtPart && !a.phoneWalk && !a.carry,
 };
 
-// ht_filter: only figures of one kind
+// ht_filter: only figures of one kind (id=<character id> picks one character of the cast)
+const BAG = { BACKPACK: 1, SHOULDER: 2, SHOPPING: 3 };
 const FILTERS = {
-  skirt: (a) => a.skirtPart > 0 && a.topType !== 5,
-  dress: (a) => a.topType === 7,
+  skirt: (a) => a.skirtPart > 0 && a.topKind !== 'dress',
+  dress: (a) => a.topKind === 'dress',
   hat: (a) => a.hatPart > 0,
-  cap: (a, P) => a.hatPart === P.cap,
-  sunhat: (a, P) => a.hatPart === P.sunhat,
-  suit: (a) => a.topType === 5,
+  suit: (a) => a.suit,
   old: (a) => a.age === 'old',
   oldwalk: (a) => a.walkOld,
   child: (a) => a.age === 'child',
   beard: (a) => a.beardPart > 0,
-  glasses: (a) => a.glasses > 0,
-  shorts: (a) => a.bottomType === 2,
-  bag: (a, P) => a.bagPart === P.shoulderbag,
-  backpack: (a, P) => a.bagPart === P.backpack,
+  shorts: (a) => !!(a.char && a.char.outfit.bottom && a.char.outfit.bottom.cut === 'leg'),
+  bag: (a) => a.bag === BAG.SHOULDER,
+  backpack: (a) => a.bag === BAG.BACKPACK,
+  shopping: (a) => a.bag === BAG.SHOPPING,
   phone: (a) => a.phoneWalk,
   cross: (a) => a.idle === 2,
   pocket: (a) => a.idle === 3,
-  long: (a, P) => a.hairPart === P.hair_long || a.hairPart === P.hair_ponytail,
-  heavy: (a) => a.build > 0.5 || a.belly > 0.5,
+  hip: (a) => a.idle === 4,
+  back: (a) => a.idle === 5,
+  talk: (a) => a.idle === 6,
+  look: (a) => a.idle === 7,
+  long: (a) => /long|ponytail|braid/.test(a.hairPart || ''),
+  heavy: (a) => a.build > 0.5,
   male: (a) => a.base === 'male',
   female: (a) => a.base === 'female',
-  balding: (a, P) => a.hairPart === P.hair_balding || a.hairPart === P.hair_receding,
   man: (a) => a.base === 'male' && a.age === 'adult',
   woman: (a) => a.base === 'female' && a.age === 'adult',
   teen: (a) => a.age === 'teen',
-  kid: (a) => a.body === 'kid',
+  kid: (a) => a.kind === 'kid',
   boy: (a) => a.age === 'child' && !a.female,
   girl: (a) => a.age === 'child' && a.female,
   oldman: (a) => a.age === 'old' && !a.female,
   oldwoman: (a) => a.age === 'old' && a.female,
-  tee: (a) => a.topType === 0 && a.bottomType !== 3 && a.bottomType !== 5,
-  collar: (a) => a.topType === 1 || a.topType === 2,
-  tank: (a) => a.topType === 3,
-  scarf: (a, P) => a.hairPart === P.scarf,
+  tee: (a) => a.topKind === 'tee',
+  collar: (a) => a.topKind === 'shirt',
+  pattern: (a) => a.pattern > 0,
   longskirt: (a) => !!a.longSkirt,
 };

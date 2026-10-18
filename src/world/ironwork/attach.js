@@ -195,21 +195,22 @@ function plantTexture() {
   // ---- (1, 1) dry: twiggy stems from the bottom edge, shrivelled and curled leaves in
   // straw, tan and grey-brown, a few still olive
   inCell(1, 1, () => {
-    const ox = 256 + 128, oy = 250;
+    const ox = 256 + 128, oy = 506;
     const DRY = [[150, 118, 72], [122, 92, 58], [172, 148, 98], [98, 76, 50], [128, 118, 72], [140, 128, 108]];
     const twigs = [];
-    for (let i = 0; i < 6; i++) {
-      const x1 = r.range(-80, 80), y1 = -r.range(130, 225);
+    for (let i = 0; i < 9; i++) {
+      const x1 = r.range(-90, 90), y1 = -r.range(120, 225);
       const pts = []; const bend = r.range(-30, 30);
       for (let k = 0; k <= 8; k++) { const t = k / 8; pts.push([ox + x1 * t + bend * Math.sin(t * 3.1), oy + y1 * t]); }
       twigs.push(pts);
-      stemLine(pts, r.range(2, 3.2), 'rgb(104,86,62)');
+      stemLine(pts, r.range(2.2, 3.4), 'rgb(104,86,62)');
     }
-    for (let i = 0; i < 26; i++) {
-      const tw = twigs[i % twigs.length], [x, y] = tw[r.int(2, 8)];
+    // the shrivelled foliage hangs on in a loose mass, densest halfway up
+    for (let i = 0; i < 80; i++) {
+      const tw = twigs[i % twigs.length], [x, y] = tw[r.int(1, 8)];
       const c = DRY[r.int(0, DRY.length - 1)];
-      const L = r.range(16, 32), curled = r.chance(0.5);
-      leafAt(x, y, r.range(-Math.PI, Math.PI), L, L * (curled ? 0.22 : r.range(0.35, 0.5)), c, 0.2, curled ? 0.55 : 0.75);
+      const L = r.range(18, 36), curled = r.chance(0.45);
+      leafAt(x + r.range(-6, 6), y + r.range(-6, 6), r.range(-Math.PI, Math.PI), L, L * (curled ? 0.25 : r.range(0.38, 0.52)), c.map((v) => v * r.range(0.85, 1.1)), 0.2, curled ? 0.55 : 0.75);
     }
   });
 
@@ -633,7 +634,7 @@ function herb(W, r, { L = 0.26, D = 0.24, sprigs = 18, crown = 6, spikes = 5, he
 /** Neglected planting over L by D: dry stalks (some snapped), shrivelled leaves on twiggy
  *  stems, a leaf or two fallen on the soil and, tinted per instance, withered flower
  *  heads. Sparse: the soil shows through. */
-function dry(W, r, { L = 0.26, D = 0.24, stalks = 8, tufts = 8, fallen = 2, heads = 3, height = 0.28, lite = 0, ks = [1, 1] }) {
+function dry(W, r, { L = 0.26, D = 0.24, stalks = 8, tufts = 10, fallen = 2, heads = 3, height = 0.28, lite = 0, ks = [1, 1] }) {
   const centre = new THREE.Vector3(0, height * 0.2, 0);
   const tips = [];
   for (let i = 0; i < stalks; i++) {
@@ -1040,7 +1041,7 @@ export function buildAttachAssets() {
     [geranium, [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
       { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), s2] }]],
     [herb, [{}, { sprigs: 10, crown: 4, spikes: 3, ks: [1.15, 1.1] }, { sprigs: 5, crown: 2, spikes: 2, ks: [1.3, 1.2] }]],
-    [dry, [{}, { stalks: 5, tufts: 5, fallen: 1, heads: 2, ks: [1.2, 1.1] }, { stalks: 3, tufts: 3, fallen: 0, heads: 1, ks: [1.45, 1.2] }]],
+    [dry, [{}, { stalks: 5, tufts: 6, fallen: 1, heads: 2, ks: [1.2, 1.1] }, { stalks: 3, tufts: 3, fallen: 0, heads: 1, ks: [1.5, 1.2] }]],
     [trailing, [{}, { mound: 13, strands: 9, blooms: 7, ks: [1.45, 1.3, 1.25] }, { mound: 6, strands: 6, blooms: 4, ks: [2, 1.8, 1.6] }]],
     [bougainvillea, [{}, { leaves: 4, bracts: 6, crown: 5, ks: [1.45, 1.4] }, { canes: 6, leaves: 2, bracts: 3, crown: 2, ks: [1.9, 1.9] }]],
   ];

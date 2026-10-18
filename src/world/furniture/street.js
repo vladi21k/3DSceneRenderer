@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
-import { lathe, tube, bar, rbox, xf, merge, makeGeo, quad } from './kit.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { lathe, tube, bar, rbox, xf, merge, makeGeo, quad, boxUV } from './kit.js';
 import { proto, placeMatrix } from './instancer.js';
 import { uvRect, uvSub, columnSheetRects, COLUMN_TIERS } from './prints.js';
 
@@ -148,11 +149,65 @@ function bollardIron(seg = 16) {
   return merge([lathe([[0.12, 0], [0.12, 0.02], [0.1, 0.04], [0.086, 0.09], [0.076, 0.68], [0.086, 0.7], [0.088, 0.74], [0.072, 0.755], [0.064, 0.8], [0.072, 0.845],
     [0.062, 0.89], [0.042, 0.925], [0.047, 0.945], [0.033, 0.975], [0, 0.985]], seg)]);
 }
-function bollardStone(detail) {
+/**
+ * Weathered stone block: a welded box grid rounded to worn arrises (the radius wanders
+ * along the edges), with a faint undulation of its faces and a few spalls knocked off its
+ * edges and corners (flat fracture facets: the vertices beyond a cut plane are pressed
+ * onto it). Centred at the origin, UVs in metres.
+ */
+function worn(w, h, d, r, rng, chips) {
+  const per = 34; // grid vertices per metre
+  const g0 = new THREE.BoxGeometry(w, h, d, Math.max(3, Math.round(w * per)), Math.max(3, Math.round(h * per)), Math.max(3, Math.round(d * per)));
+  g0.deleteAttribute('normal'); g0.deleteAttribute('uv');
+  const g = mergeVertices(g0);
+  const P = g.attributes.position;
+  const hx = w / 2, hy = h / 2, hz = d / 2;
+  const ph = [rng.range(0, 6), rng.range(0, 6), rng.range(0, 6)];
+  const cuts = [];
+  for (let i = 0; i < chips; i++) {
+    // a point on a vertical edge or a top edge, cut by a plane facing out of that edge
+    const sx = rng.chance(0.5) ? 1 : -1, sz = rng.chance(0.5) ? 1 : -1, top = rng.chance(0.4);
+    const c = top
+      ? (rng.chance(0.5) ? new THREE.Vector3(rng.range(-hx, hx), hy, sz * hz) : new THREE.Vector3(sx * hx, hy, rng.range(-hz, hz)))
+      : new THREE.Vector3(sx * hx, rng.range(-hy * 0.8, hy * 0.9), sz * hz);
+    const n = new THREE.Vector3(top ? (Math.abs(c.x) > hx - 1e-6 ? sx : 0) : sx, top ? 1 : 0, top ? (Math.abs(c.z) > hz - 1e-6 ? sz : 0) : sz);
+    n.x += rng.range(-0.35, 0.35); n.y += rng.range(-0.3, 0.3); n.z += rng.range(-0.35, 0.35);
+    n.normalize();
+    cuts.push({ c, n, depth: rng.range(0.008, 0.022), R: rng.range(0.03, 0.06) });
+  }
+  const v = new THREE.Vector3(), q = new THREE.Vector3(), t = new THREE.Vector3();
+  for (let i = 0; i < P.count; i++) {
+    v.fromBufferAttribute(P, i);
+    // worn arris: rounding radius varies along the block
+    const rr = r * (0.65 + 0.35 * Math.sin(v.y * 23 + ph[0]) * Math.sin(v.x * 31 + v.z * 27 + ph[1]) + 0.35);
+    q.set(THREE.MathUtils.clamp(v.x, -hx + rr, hx - rr), THREE.MathUtils.clamp(v.y, -hy + rr, hy - rr), THREE.MathUtils.clamp(v.z, -hz + rr, hz - rr));
+    t.subVectors(v, q);
+    const l = t.length();
+    if (l > 1e-6) v.copy(q).addScaledVector(t, rr / l);
+    // faces are not quite flat
+    const und = 0.0016 * (Math.sin(v.x * 37 + v.y * 19 + ph[2]) + Math.sin(v.z * 41 - v.y * 23 + ph[0]));
+    v.addScaledVector(t.set(Math.sign(v.x) * (Math.abs(v.x) > hx - rr - 1e-4 ? 1 : 0), 0, Math.sign(v.z) * (Math.abs(v.z) > hz - rr - 1e-4 ? 1 : 0)), und);
+    for (const cut of cuts) {
+      t.subVectors(v, cut.c);
+      if (t.length() > cut.R) continue;
+      const k = t.dot(cut.n) + cut.depth * (1 - (t.length() / cut.R) ** 2);
+      if (k > 0) v.addScaledVector(cut.n, -k);
+    }
+    P.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  return boxUV(g);
+}
+
+/** Cut-stone bollard: a square post with worn, chipped arrises under a pyramid cap on a
+ *  shallow lip. variant picks the chips. */
+function bollardStone(detail, variant = 0) {
   if (detail) return merge([B0(0.26, 0.52, 0.26, 0, 0.26, 0), lathe([[0.19, 0.52], [0, 0.61]], 4, { phi0: Math.PI / 4 })]);
-  const post = xf(rbox(0.26, 0.52, 0.26, 0.028, 2), [0, 0.26, 0]);
-  const cap = lathe([[0.19, 0.52], [0.19, 0.545], [0.12, 0.6], [0, 0.62]], 4, { phi0: Math.PI / 4 });
-  return merge([post, cap]);
+  const rng = RNG.from('bollardStone', variant);
+  const post = xf(worn(0.26, 0.52, 0.26, 0.016, rng, rng.int(3, 5)), [0, 0.26, 0]);
+  const lip = xf(worn(0.272, 0.028, 0.272, 0.006, rng, rng.int(1, 2)), [0, 0.534, 0]);
+  const cap = lathe([[0.185, 0.548], [0.12, 0.6], [0.02, 0.618], [0, 0.62]], 4, { phi0: Math.PI / 4 });
+  return merge([post, lip, cap]);
 }
 
 // ------------------------------------------------------------------ kiosk
@@ -415,7 +470,8 @@ export function buildStreetProtos(M, F) {
   const bp = [binPost(0), binPost(1), binPost(2)];
   P.binPost = proto('binPost', [{ geo: bp.map((b) => b.body), mat: F.paint, tint: true }, { geo: bp.map((b) => b.liner), mat: F.rubber }], [25, 110]);
   P.bollardIron = proto('bollardIron', [{ geo: [bollardIron(16), bollardIron(8), bollardIron(5)], mat: F.iron }], [35, 120]);
-  P.bollardStone = proto('bollardStone', [{ geo: [bollardStone(0), bollardStone(1)], mat: F.stone }], [60]);
+  const bsFar = bollardStone(1);
+  P.bollardStone = [0, 1, 2].map((k) => proto(`bollardStone${k}`, [{ geo: [bollardStone(0, k), bsFar], mat: F.bollardStone, tint: true }], [45]));
   const k = [kiosk(0), kiosk(2)];
   P.kiosk = proto('kiosk', [{ geo: k.map((x) => x.paint), mat: F.paint, tint: true }, { geo: [k[0].dark, null], mat: F.interior }, { geo: [k[0].print, null], mat: F.print },
     { geo: [k[0].glass, null], mat: F.shelterGlass, cast: false }, { geo: k.map((x) => x.stone), mat: F.concrete }, { geo: k.map((x) => x.zinc), mat: F.pole },
@@ -434,7 +490,7 @@ const PAINT = {
   bin: ['#24302a', '#2a2c2e', '#3a3f3c'], binPost: ['#5d6266', '#4b5054', '#6b6f6a'],
   kiosk: ['#2e4a3b', '#3a3e41', '#d4cab3', '#5a2b2b'], column: ['#2f4a3c', '#2b2e30', '#3b4a5a'], board: ['#3a3f44', '#2f4a3c'],
 };
-const _m = new THREE.Matrix4(), _c = new THREE.Color();
+const _m = new THREE.Matrix4(), _c = new THREE.Color(), _lean = new THREE.Matrix4(), _e = new THREE.Euler(), _sc = new THREE.Vector3();
 
 /** Add the layout.furniture items of this chunk (except planters and platform fittings).
  *  Far chunks keep every item; its far level is a handful of triangles. */
@@ -456,7 +512,14 @@ export function placeStreetFurniture(chunk, app, inst, P) {
       case 'bollard': {
         const cs = Math.round(f.s / 25) * 2 + (f.d > 0 ? 1 : 0); // one style per street mouth
         const stone = RNG.from(layout.seed, 'bollardStyle', cs).chance(0.35);
-        inst.add(stone ? P.bollardStone : P.bollardIron, placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m, 0.14));
+        if (!stone) { inst.add(P.bollardIron, placeMatrix(route, f.s, f.d, 0, rng.range(0, 6.28), _m, 0.14)); break; }
+        // stone posts were set by hand: a few centimetres taller or lower, out of plumb by
+        // up to a degree, each block its own stone (tint)
+        placeMatrix(route, f.s, f.d, -0.01, rng.int(0, 3) * Math.PI / 2 + rng.range(-0.06, 0.06), _m, 0.18);
+        _m.multiply(_lean.makeRotationFromEuler(_e.set(rng.range(-0.017, 0.017), 0, rng.range(-0.017, 0.017))));
+        _m.scale(_sc.set(1, 1 + rng.range(-0.05, 0.05), 1));
+        const v = rng.range(0.86, 1.06), h = rng.range(-0.04, 0.04);
+        inst.add(P.bollardStone[rng.int(0, 2)], _m, _c.setRGB(v * (1 + h), v, v * (1 - 1.5 * h)));
         break;
       }
       case 'kiosk':

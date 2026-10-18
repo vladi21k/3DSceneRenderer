@@ -166,7 +166,7 @@ export class Steering {
       // all corrections together stay within a brisk step too
       const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
       if (cl > this.maxC) { const f = this.maxC / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
-      tram.constrain(a, prevD);
+      tram.constrain(a, prevD, dt);
       // velocity from the actual motion (constraints included): the gait follows what happened
       const ms = (a.s - prevS) * k, md = a.d - prevD;
       a.vs = ms / dt; a.vd = md / dt;
@@ -232,7 +232,7 @@ export class Steering {
     const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
     const lim = 0.5 * this.maxC;
     if (cl > lim) { const f = lim / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
-    tram.constrain(a, prevD);
+    tram.constrain(a, prevD, dt);
     const ms = (a.s - prevS) * k, md = a.d - prevD;
     a.vs = ms / dt; a.vd = md / dt;
     // held back by a constraint: the bicycle really slows down
@@ -251,7 +251,7 @@ export class Steering {
     const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
     a.s += (a.stepS * f) / k; a.d += a.stepD * f;
     updateFoot(a);
-    c.tram.constrain(a, prevD);
+    c.tram.constrain(a, prevD, dt);
     a.vs = ((a.s - prevS) * k) / dt; a.vd = (a.d - prevD) / dt;
     a.moving = true; a.vmaxCur = 1.6;
   }
@@ -372,6 +372,7 @@ export class Steering {
     let fs = 0, fd = 0;
     // with the tram near, obstacles by the ride track are passed on the side away from it
     const tramNear = c.tram.near(a);
+    const U = a.uI >= 0 ? c.tram.unitById(a.uI) : null;   // an oncoming unit near too
     const n = map.gatherCircles(a.s, 3.5);
     const sp = len2(a.vs, a.vd), des = this.des, dsp = len2(des.vs, des.vd);
     // heading for the look-ahead: the actual motion, or where they want to go when (nearly) stopped
@@ -419,6 +420,10 @@ export class Steering {
         if (tramNear && !a.clearing && Math.abs(map.cD[i] - RIDE_D) < BAND + 1.3 && Math.sign(es * side) === Math.sign(RIDE_D - a.d)) {
           // never between a pole and the passing tram: round its far side, or wait behind it
           // (people getting off the track are never held back)
+          side = -side;
+          if (along < 1.8) brake = (a.v0 / TAU) * Math.min(1.15, (1.8 - along) / 0.9);
+        } else if (U && !a.clearing && Math.abs(map.cD[i] - U.d) < U.UB + 1.3 && Math.sign(es * side) === Math.sign(U.d - a.d)) {
+          // (the same beside an oncoming unit's track: round the pole on the far side from it)
           side = -side;
           if (along < 1.8) brake = (a.v0 / TAU) * Math.min(1.15, (1.8 - along) / 0.9);
         }

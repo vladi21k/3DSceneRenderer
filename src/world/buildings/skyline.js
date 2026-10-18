@@ -32,7 +32,7 @@ const STONE = [[0.86, 0.80, 0.68], [0.84, 0.74, 0.58], [0.88, 0.83, 0.74], [0.80
 const RENDER = {
   ochre: [[1.3, 1.0, 0.52], [1.32, 1.08, 0.62], [1.26, 0.95, 0.5]],
   orange: [[1.36, 0.78, 0.42], [1.3, 0.72, 0.4]],
-  white: [[1.13, 1.15, 1.19], [1.1, 1.11, 1.13], [1.12, 1.11, 1.08]],
+  white: [[1.07, 1.08, 1.11], [1.04, 1.05, 1.06], [1.06, 1.05, 1.01]],
 };
 const ROLLER = [[0.62, 0.6, 0.55], [0.5, 0.5, 0.48], [0.7, 0.7, 0.68], [0.4, 0.33, 0.27]];
 
@@ -64,7 +64,7 @@ export function makeSlab(id, frame, rng, floorsRange = [8, 14], opts = {}) {
     shutterColor: rng.pick(['darkgreen', 'brown', 'teal', 'grey', 'white']),
     canopy: rng.chance(0.6),
     roof: floors <= 8 && rng.chance(0.3) ? 'tile' : 'flat',
-    dirt: rng.range(0.7, 1.3), uncleaned: stone ? (rng.chance(0.2) ? rng.range(0.3, 0.7) : 0) : rng.range(0.15, 0.5),
+    dirt: rng.range(0.7, 1.3), uncleaned: stone ? (rng.chance(0.2) ? rng.range(0.3, 0.7) : 0) : rng.range(0.25, 0.55),
     mural: opts.mural ? { face: opts.muralFace ?? 0, k: rng.int(0, MURALS - 1), u0: rng.range(0.06, 0.16), u1: rng.range(0.84, 0.94), v0: rng.range(0.22, 0.32), v1: rng.range(0.86, 0.95) } : null,
     seed: (rng.next() * 1e9) | 0,
   };
@@ -263,8 +263,9 @@ function* flatRoof(B, sinks, sl, q, fs, H) {
   B.box(sW, 0, W, H, H + ph, -D, -D + t, FACES.FRONT | FACES.BACK | FACES.TOP);
   B.box(sW, 0, t, H, H + ph, -D + t, -t, FACES.LEFT | FACES.RIGHT | FACES.TOP);
   B.box(sW, W - t, W, H, H + ph, -D + t, -t, FACES.LEFT | FACES.RIGHT | FACES.TOP);
-  // coping, a little proud of the wall
-  B.box(sinks.detail, -0.04, W + 0.04, H + ph, H + ph + 0.06, -D - 0.04, 0.04, FACES.FRONT | FACES.BACK | FACES.LEFT | FACES.RIGHT | FACES.BOTTOM);
+  // coping proud of the wall: a light line along the top with a shadowed drip under it
+  B.shade = (u, v, w, nu, nv, nw, out) => { fs.wall(u, v, out); const k = nv < -0.5 ? 0.62 : nv > 0.5 ? 0.96 : 1.08; out[0] *= k; out[1] *= k; out[2] *= k; };
+  B.box(sinks.detail, -0.07, W + 0.07, H + ph - 0.02, H + ph + 0.08, -D - 0.07, 0.07, FACES.ALL);
   B.shade = null;
   B.flat = [0.36, 0.35, 0.34];
   B.rectV(sinks.dark, 0, W, -D, 0, H + 0.02, 1);

@@ -262,6 +262,21 @@ function newJob(app, idx, lod) {
   return job;
 }
 
+/**
+ * A job's detail level as an index into DETAIL (0 or 1). Anything else (undefined, NaN,
+ * negative, fractional) is clamped, and reported once with the job, so a producer handing
+ * out such levels can be found (buildings.stats.badLod).
+ */
+function detailIndex(job, lot) {
+  const raw = job.lod;
+  const lod = Math.max(0, Math.min(1, raw | 0));
+  if (raw !== lod && !(raw > 1 && Number.isInteger(raw)) && !buildings.stats.badLod) {
+    buildings.stats.badLod = { idx: job.idx, lod: String(raw), slab: !!lot.slab, lot: lot.id };
+    console.info('[buildings] job with an unexpected detail level (clamped)', buildings.stats.badLod);
+  }
+  return lod;
+}
+
 function metaOf(M, name) {
   const m = M && M.meta;
   if (!m) return null;
@@ -292,8 +307,9 @@ function runJob(app, job, budgetMs) {
     if (el > 0.02 && el + stepAvg > budgetMs) break;
     if (!job.iter) {
       const lot = job.lots[job.next++];
-      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[Math.min(1, job.lod)]) : lot.lane ? laneSteps(B, lot)
-        : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas);
+      const lod = detailIndex(job, lot);
+      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[Math.min(1, lod)]) : lot.lane ? laneSteps(B, lot)
+        : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, lod)], metas);
     }
     const ts = performance.now();
     if (job.iter.next().done) job.iter = null;
@@ -312,7 +328,8 @@ function runJob(app, job, budgetMs) {
   job.B = null;
   job.done = true;
   finishAvg = finishAvg * 0.9 + (performance.now() - tf) * 0.1;
-  cost[job.lod] = cost[job.lod] * 0.8 + (job.ms / CHUNK_LEN) * 0.2;
+  const cl = job.lod === 0 ? 0 : 1;
+  cost[cl] = cost[cl] * 0.8 + (job.ms / CHUNK_LEN) * 0.2;
 }
 
 /**

@@ -616,8 +616,9 @@ export class Population {
     const sU = c.camU + sRel;
     const side = r.chance(0.5) ? 1 : -1;
     let a = null, src = '';
-    // a stroller or a bicycle, to keep their shares (only where the whole figure can arrive unseen)
-    const mob = this._pickMob(r);
+    // a stroller or a bicycle, to keep their shares (only where the whole figure can arrive unseen;
+    // beside the cab only while it stands: riding, those would only ever be seen leaving)
+    const mob = sRel > 100 || c.tram.v < 1 ? this._pickMob(r) : MOB.NONE;
     if (mob) {
       if (sRel < 45) {
         a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob, src: 'near' });
@@ -821,7 +822,6 @@ export class Population {
     }
     let os, od, w, maxH, dir;
     if (occ) { os = occ.s; od = occ.d; w = 0.46; maxH = occ.height - 0.03; dir = r.chance(0.6) ? occ.dir : -occ.dir; }
-    else if (mob) return null;
     else {
       for (const o of this.occluders) {
         const so = c.unwrap(o.s);
@@ -842,7 +842,9 @@ export class Population {
     if (!a) return null;
     if (mob) {
       // the stroller / bicycle lies along the line of sight: hidden as long as it is no wider
-      if (vis.rayOffset(a.s + a.fp0s, a.d + a.fp0d, os, od) > 0.12 || vis.rayOffset(a.s + a.fp1s, a.d + a.fp1d, os, od) > 0.12) { this._killGroup(a); return null; }
+      // (than the figure in front, or the kiosk / advertising column)
+      const lim = occ ? 0.12 : Math.max(0.12, w / 2 - 0.3 - a.fpR);
+      if (vis.rayOffset(a.s + a.fp0s, a.d + a.fp0d, os, od) > lim || vis.rayOffset(a.s + a.fp1s, a.d + a.fp1d, os, od) > lim) { this._killGroup(a); return null; }
       if (mob === MOB.CYCLE) {
         // ride on along a line through the spot
         if (Math.abs(d) < TRACK_ZONE_HALF) { a.lane = LANE.CORR; a.laneD = rideLine(d); }

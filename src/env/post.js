@@ -59,7 +59,7 @@ const TONE = {
   // highlight recovery: knee (stops over mid grey) and the log slope above it (time of
   // day, slope): none at midday, then a phone camera's highlight tone mapping as the sun
   // lowers and the sky outshines the street
-  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.42], [0.8, 0.34], [0.9, 0.38], [1.0, 0.6]],
+  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.26], [0.9, 0.32], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
   // just above mid grey), easing off towards golden hour
   midday: 1.14, pivot: 0.4,
@@ -462,15 +462,16 @@ const post = {
       // stone stays warm), a little at golden hour, about a third of the blue cast after
       // sunset, none once the lamps set the balance
       const kc = lerp(lerp(0.3, 0.18, ss(t, 0.3, 0.55)), 0.3, ss(t, 0.62, 0.75)) * (1 - ss(t, 0.84, 0.98));
-      // green-magenta: nearly fully corrected (the twilight sky's ozone tint would turn
-      // shaded grey paving mauve)
-      const kt = lerp(1.0, 0.85, ss(t, 0.62, 0.78)) - 0.15 * ss(t, 0.9, 1.0);
+      // green-magenta: mostly corrected through sunset (the twilight sky's ozone tint
+      // would turn shaded grey paving mauve), about a third once the lamps light the street
+      // (sky-lit grey reads blue with G above R, the ~3000 K pools stay amber, not olive)
+      const kt = lerp(1.0, 0.85, ss(t, 0.62, 0.78)) - 0.5 * ss(t, 0.88, 1.0);
       const cool = 0.12 * ss(t, 0.82, 1.0);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
       wb.set(Math.exp(-er) * (1 - cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
-      // a neutral surface under the illuminant: G / mean(R, B) within [0.97, 1.03]
+      // never olive: a neutral surface under the illuminant keeps G / mean(R, B) <= 1.03
       const gr = (ill.y * wb.y) / Math.max(0.5 * (ill.x * wb.x + ill.z * wb.z), 1e-12);
-      if (gr < 0.97) wb.y *= 0.97 / gr; else if (gr > 1.03) wb.y *= 1.03 / gr;
+      if (gr > 1.03) wb.y *= 1.03 / gr;
       // keep the overall exposure (normalise the gains to unit luminance)
       const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
       wb.multiplyScalar(1 / n);

@@ -195,7 +195,7 @@ function finish(seed, r, cast, index, toddler = false) {
     seed, index, body: char.id, char, age: cls === 'toddler' ? 'toddler' : cls, female,
     base: child ? 'child' : cls === 'toddler' ? 'toddler' : female ? 'female' : 'male',
     kind: char.kind, scale, height: char.height * scale,
-    tints: packTints(t), pattern, patScale,
+    tints: packTints(t), pattern, patScale, patColor,
     bag, carry, walkOld, gait: walkOld ? 2 : old ? 1 : 0,
     // forward stoop of the upper back (radians) carried into every pose
     stoop: old ? (walkOld ? r.range(0.10, 0.2) : r.range(0.03, 0.11)) : adult ? r.range(0, 0.03) : 0,
@@ -239,5 +239,20 @@ export function castToddler(seed, cast, lying = false) {
   const a = finish(seed, r, cast, pool[Math.floor(r.next() * pool.length)], true);
   a.sit = lying ? 4 : 3;
   if (lying) { a.scale *= 0.74; a.height = a.char.height * a.scale; }
+  return a;
+}
+
+/** Testing: character `index` itself (own: with its own colours), varied by the seed otherwise. */
+export function castCharacter(seed, cast, index, own = false) {
+  const r = new RNG((seed >>> 0) ^ 0x1b873593);
+  const a = finish(seed, r, cast, index, charsOf(cast)[index].ageClass === 'toddler');
+  if (own) {
+    const char = a.char;
+    const t = {};
+    for (const [k, v] of Object.entries(char.tints)) t[k] = v.slice();
+    t.bag = [0.05, 0.05, 0.06]; t.strap = [0.03, 0.03, 0.03]; t.prop = [0.02, 0.02, 0.02]; t.screen = [1, 1, 1];
+    a.tints = packTints(t);
+    a.pattern = 0; a.scale = 1; a.height = char.height;
+  }
   return a;
 }

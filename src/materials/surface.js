@@ -132,13 +132,14 @@ const MAP_JOINT = /* glsl */ `
 // to grey-black blotch: sizes lognormal (0.6-3 cm across), outlines ragged (radius warped
 // ±40 % by two octaves of noise round the spot) with a soft 2-3 mm edge, about one in eight
 // drawn out into a smear. Density follows a 3-8 m noise mask (clusters where people stand
-// and wait) and, on lanes (street: v = d), drops to a fifth between and over the rails.
+// and wait, a sparse eighth of the peak elsewhere) and, on lanes (street: v = d), drops to
+// a fifth between and over the rails.
 const mapSpots = (f) => /* glsl */ `
     if (sfSpots.x > 0.0) {
       float sfDen = sfSpots.x;
       if (sfSpots2.x > 0.0) {
         vec2 sfCc = vec2(sfUv.x - lx + 0.5 * (b0 + b1), (rgF + 0.5) * rowH);
-        sfDen *= smoothstep(sfSpots2.y, sfSpots2.z, textureLod(sfMacroTex, sfCc * sfSpots2.x + vec2(0.61, 0.23), 0.0).b);
+        sfDen *= 0.12 + 0.88 * smoothstep(sfSpots2.y, sfSpots2.z, textureLod(sfMacroTex, sfCc * sfSpots2.x + vec2(0.61, 0.23), 0.0).b);
       }
 ${f.lanes ? `      if (sfSpots2.w > 0.0) sfDen *= mix(0.2, 1.0, smoothstep(sfSpots2.w - 0.9, sfSpots2.w, abs(${f.laneAttr ? 'vSfLaneD' : 'vMapUv.y'})));
 ` : ''}      if (sfHf(sfH(sfCh + 9u)) < sfDen) {

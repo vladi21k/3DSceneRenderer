@@ -842,7 +842,7 @@ function findTermini(layout) {
 // render colours (multipliers on the plaster albedo, × 0.9 as the upper volumes store them)
 const TOWER_RENDER = [
   [1.17, 0.9, 0.47], [1.19, 0.97, 0.56], [1.22, 0.7, 0.38], [1.17, 0.65, 0.36],   // ochre, yellow, orange
-  [1.02, 1.03, 1.06], [1.0, 1.0, 0.98], [1.04, 1.0, 0.92],                         // white, off-white, cream
+  [0.98, 0.99, 1.01], [0.96, 0.96, 0.94], [1.0, 0.96, 0.89],                        // white, off-white, cream
 ];
 
 /**

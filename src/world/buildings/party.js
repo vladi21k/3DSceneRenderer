@@ -54,7 +54,7 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA)
       if (mode !== 'plain' && !col) {
         // render (or the front's stone, for a windowed wall half the time)
         if (mode === 'mural' || tr.chance(0.6)) finish = 'plaster';
-        col = finish === 'plaster' ? tr.pick([[1.14, 1.1, 1.02], [1.3, 1.02, 0.56], [1.12, 1.13, 1.16], [1.28, 1.1, 0.78]]).map((c) => c * tr.range(0.94, 1.02)) : null;
+        col = finish === 'plaster' ? tr.pick([[1.08, 1.05, 0.97], [1.3, 1.02, 0.56], [1.06, 1.07, 1.1], [1.28, 1.1, 0.78]]).map((c) => c * tr.range(0.94, 1.02)) : null;
       }
       const sWall = finish === 'rough' ? sinks.rough : finish === 'plaster' ? sinks.paint : sinks.ashlar;
       // render is a little lighter and warmer than the stone, patched in places
@@ -100,7 +100,7 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA)
       // windows let into a rendered side wall later on: mostly white or light joinery
       const frameColor = mode === 'windows' && finish === 'plaster' ? RNG.from(lot.seed, 'partyFrame', e).pick(['white', 'white', 'lightgrey', 'cream', plan.style.frameColor]) : plan.style.frameColor;
       const face = { width, openings, courses: [], balconies: [], cornice: { y: v1 }, groundAt: () => gMin, floors: plan.floors, style: { ...plan.style, surrounds: false, frameColor } };
-      const fs = new FaceShade(face, wcol, lot.seed + 7919 * (e + 1), { dirt: orn.dirt * 1.15, uncleaned: finish === 'plaster' ? (mode === 'plain' ? 0.35 : 0.2) : 0.6, sillExt: 0.13, sillH: 0.06 });
+      const fs = new FaceShade(face, wcol, lot.seed + 7919 * (e + 1), { dirt: orn.dirt * 1.15, uncleaned: finish === 'plaster' ? (mode === 'plain' ? 0.4 : 0.32) : 0.6, sillExt: 0.13, sillH: 0.06 });
       if (openings.length) {
         if (!sinks.glass) sinks.glass = B.sink('glass');
         if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery

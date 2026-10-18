@@ -18,7 +18,7 @@ const PAINT = {
 const SHEER = [[0.6, 0.59, 0.56], [0.58, 0.55, 0.48], [0.5, 0.5, 0.49], [0.55, 0.5, 0.42], [0.46, 0.45, 0.43]];
 const DRAPE = [[0.5, 0.43, 0.32], [0.4, 0.2, 0.15], [0.3, 0.33, 0.25], [0.28, 0.32, 0.38], [0.55, 0.5, 0.42], [0.42, 0.36, 0.3], [0.52, 0.52, 0.5]];
 const BLIND = [[0.6, 0.6, 0.58], [0.56, 0.53, 0.46], [0.45, 0.45, 0.45], [0.52, 0.47, 0.38]];
-const ROOM = [[0.028, 0.026, 0.024], [0.04, 0.036, 0.032], [0.055, 0.048, 0.04], [0.032, 0.032, 0.034]];
+const ROOM = [[0.036, 0.034, 0.032], [0.05, 0.045, 0.04], [0.068, 0.06, 0.05], [0.042, 0.043, 0.047]];
 const SHOP_GLASS = glassTone([0.03, 0.032, 0.034]);
 const STALL = [0.05, 0.05, 0.048];
 const ROLLER = [0.3, 0.3, 0.29];
@@ -191,7 +191,7 @@ function glazing(B, s, o, w, arched, n, shop, door, rng) {
     return;
   }
   const h = rng.next();
-  const kind = o.curtain ? (h < 0.5 ? 'sheer' : h < 0.75 ? 'drawn' : 'room') : (h < 0.6 ? 'room' : h < 0.82 ? 'blind' : 'open');
+  const kind = o.curtain ? (h < 0.55 ? 'sheer' : h < 0.8 ? 'drawn' : 'room') : (h < 0.5 ? 'room' : h < 0.82 ? 'blind' : 'open');
   const room = glassTone(rng.pick(ROOM).map((c) => c * rng.range(0.85, 1.2)));
   B.grime = (lit ? 0.75 : 0) + (kind === 'open' ? 0.25 : 0);
   const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2, top = arched ? o.spring : o.y + o.h;

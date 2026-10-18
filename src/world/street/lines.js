@@ -269,24 +269,24 @@ const PAINT_FRAG = /* glsl */`
     float we = sqrt( w * w + 0.008 * 0.008 ), wue = sqrt( wu * wu + 0.008 * 0.008 );
     float cov = lnCov( -pHalf + e0, pHalf + e1, x, we ) * lnCov( 0.0, segLen, u, wue );
     float ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );
-    // worn through where people cross the bars (round the middle of the crossing) and,
-    // on side streets, along the wheel paths; grain-sized flecks cut the paint with a
-    // soft threshold, larger walked-on patches thin it
+    // Wear thins the film (soft patches at metre and decimetre scale) where people cross
+    // the bars (round the middle of the crossing) and, on side streets, along the wheel
+    // paths; close up, the stone and aggregate break through the thinned film as fine
+    // specks (unresolved: their mean). Over setts the paint has cracked along the bed
+    // joints and flaked off a few millimetres to 2 cm either side where the stones rock
+    // (the bar starts on a joint, so they lie every 0.2 m across it); on
+    // asphalt a sparse network of fine fatigue cracks runs through it.
     float foot = bar * exp( -pow( ( u - 0.5 * segLen ) / ( 0.32 * segLen ), 2.0 ) );
-    float wear = pWear * wl + 0.2 * foot;
+    float wear = 0.75 * pWear * wl + 0.18 * foot;
     float big = lnFbm( wp * 0.4 + 17.0 + seed, fpw * 0.4, 3 );
     float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
-    float grain = lnFbm( wp * 30.0 + 9.0, fpw * 30.0, 2 );
-    float field = 0.5 + ( grain - 0.5 ) * 2.4 + ( mid - 0.5 ) * 0.9 + ( big - 0.5 ) * 0.5;
-    float keep = smoothstep( wear - 0.1, wear + 0.1, field );
-    // cracks: over setts the paint has broken along the bed joints (every 0.2 m across the
-    // bar, which starts on one) and flaked off a few millimetres to 2 cm where the setts
-    // rock; on asphalt a sparse network of fine fatigue cracks
+    float wv = 1.1 * wear * ( 1.0 + 2.0 * ( mid - 0.5 ) + 1.2 * ( big - 0.5 ) );
+    float film = clamp( 1.0 - 0.85 * smoothstep( 0.25, 0.8, wv ) - 0.2 * wv, 0.0, 1.0 );
     float crack, crackMean;
     if ( sett > 0.5 ) {
-      float k = floor( u / 0.2 + 0.5 );
+      float k = floor( u / 0.2 + 0.5 ), du = u - 0.2 * k;
       float chip = 0.0012 + 0.011 * pow( lnNoise( vec2( x * 11.0 + k * 3.7, k * 1.3 + seed ) ), 3.0 );
-      crack = lnCov( -chip, chip, u - 0.2 * k, wue );
+      crack = lnCov( -chip, chip, du, wue );
       crackMean = 0.035;
     } else {
       float r = lnNoise( wp * 1.3 + seed ) * 0.6 + lnNoise( wp * 3.7 + seed + 2.0 ) * 0.4;
@@ -294,9 +294,12 @@ const PAINT_FRAG = /* glsl */`
       crackMean = 0.02;
     }
     crack = mix( crack, crackMean, smoothstep( 0.01, 0.04, max( fpw, wue ) ) );
-    keep *= ( 1.0 - crack ) * mix( 0.75, 1.0, smoothstep( 0.3, 0.6, big ) ) * ( 1.0 - 0.25 * wear * ends );
-    // far: the mean coverage
-    keep = mix( keep, ( 1.0 - 0.7 * wear ) * 0.9 * ( 1.0 - crackMean ), smoothstep( 0.012, 0.04, fpw ) );
+    // fine specks in the bar's own coordinates (small numbers: exact noise)
+    vec2 q = vec2( x, u ) * 150.0 + seed;
+    float fine = lnNoise( q ) * 0.6 + lnNoise( mat2( 0.8, 0.6, -0.6, 0.8 ) * q * 2.3 + 7.0 ) * 0.4;
+    float kFine = 1.0 - smoothstep( 0.0015, 0.005, max( w, wu ) );
+    float keep = mix( film, smoothstep( 1.0 - film - 0.14, 1.0 - film + 0.14, fine ), kFine );
+    keep *= ( 1.0 - crack ) * ( 1.0 - 0.2 * wear * ends );
     cov *= keep;
     if ( cov < 0.002 ) discard;
     // grime: dust ground in (patchy, collecting along the edges and towards the ends),
@@ -308,8 +311,9 @@ const PAINT_FRAG = /* glsl */`
     float tyre = ( 1.0 - sett ) * bar * smoothstep( 1.3, 2.3, wl );
     float streak = lnFbm( vec2( x * 9.0 + seed, u * 0.7 ), max( w * 9.0, wu * 0.7 ), 3 );
     float gTyre = tyre * ( 0.2 + 0.55 * smoothstep( 0.35, 0.65, streak ) );
-    float gDust = clamp( 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
-    vec3 col = pCol * ( 0.95 + 0.1 * mid );
+    float gDust = clamp( 0.1 + 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
+    // close up: grit and dust caught in the paint's texture
+    vec3 col = pCol * ( 0.95 + 0.1 * mid ) * mix( 1.0, 0.86 + 0.28 * fine, kFine );
     col = mix( col, vec3( 0.2, 0.19, 0.175 ), gDust );
     col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
     diffuseColor.rgb = col;

@@ -58,18 +58,22 @@ const KDAY = 1.3, EH_FULL = 1.9;
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
-// exposed value of the horizon slot down the street the camera holds (time of day, level):
-// from mid-afternoon, looking towards the sun, the bright sky slot stays ~2.6 stops over
-// mid grey; from sunset on ~4.5 stops (post's highlight recovery brings both down to the
-// shoulder with their colour). Interpolated in log terms; 64 = no hold.
-const HORIZON_LEVEL = [[0.1, 64], [0.2, 1.09], [0.6, 1.09], [0.8, 4.5], [1.0, 4.5]];
-// from sunset on, the metered exposure stays within this factor of the nominal one, so
-// a view away from the afterglow does not open up to a grey midday
-const DUSK_CEIL = 1.5;
+// exposed value of the horizon slot down the street the camera holds (time of day, level),
+// before post's highlight recovery, which brings it down to the shoulder with its colour:
+// from mid-afternoon, looking towards the low sun, the aureole over the end of the street
+// stays below ~6.2 stops over mid grey; from sunset on below ~5 stops. Interpolated in
+// log terms; 64 = no hold.
+const HORIZON_LEVEL = [[0.1, 64], [0.25, 16], [0.6, 16], [0.8, 7.5], [1.0, 4.5]];
+// from sunset on, the metered exposure stays within this factor of the nominal one, so a
+// view away from the afterglow does not open up to a grey midday; in the blue hour the
+// camera opens up as far as the meter asks (time of day, factor; log interpolation)
+const DUSK_CEIL = [[0.62, 1e4], [0.72, 1.8], [0.82, 1.8], [0.92, 4.2], [1.0, 4.2]];
 
 /** HORIZON_LEVEL at time of day t (log interpolation). */
-function horizonLevel(t) {
-  const T = HORIZON_LEVEL;
+function horizonLevel(t) { return logTable(HORIZON_LEVEL, t); }
+
+/** Table lookup ([[t, value], ...]) with smooth log-space interpolation. */
+function logTable(T, t) {
   if (t <= T[0][0]) return T[0][1];
   for (let i = 1; i < T.length; i++) {
     if (t <= T[i][0]) {
@@ -302,8 +306,9 @@ const env = {
     this._irrAge = 0;
     this._todStamp = (this._todStamp || 0) + 1;
 
-    // night: lamps, shop fronts and windows come on around sunset
-    const night = THREE.MathUtils.smoothstep(t, 0.72, 0.86);
+    // night: lamps, shop fronts and windows come on around sunset (the street lamps are
+    // fully on by the time the sun has set)
+    const night = THREE.MathUtils.smoothstep(t, 0.7, 0.82);
     U.uNight.value = night;
 
     Object.assign(this.state, { t, sunElevation: elev, night });
@@ -367,8 +372,7 @@ const env = {
    */
   _applyCaps() {
     // from sunset on, a view-independent ceiling as well
-    const dusk = THREE.MathUtils.smoothstep(this.state.t, 0.62, 0.72);
-    const ceil = dusk > 0 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(DUSK_CEIL * this.exposureBase), dusk)) : 1e4;
+    const ceil = logTable(DUSK_CEIL, this.state.t) * this.exposureBase;
     this.exposureMax = Math.min(this._litCap ?? 1e4, this._horizonCap(), ceil);
     this.exposure = Math.min(this.exposureBase, this.exposureMax);
     if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;

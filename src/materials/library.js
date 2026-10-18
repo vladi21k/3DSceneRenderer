@@ -13,7 +13,7 @@
 //   meta     published in materials.meta[name] for other modules
 
 // Per-building tints, multipliers on the baked limestone (which is itself a warm honey-cream,
-// linear albedo ~(0.61, 0.49, 0.3)). Sunlit Jerusalem stone reads honey to golden in the
+// linear albedo ~(0.6, 0.47, 0.27)). Sunlit Jerusalem stone reads honey to golden in the
 // photographs: honey / golden should go to about half the buildings, pale / grey to about
 // a fifth (the pale ones need a clearly cooler tint than before to read pale cream).
 const LIMESTONE_TINTS = {
@@ -77,7 +77,7 @@ export const LIBRARY = {
       weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and vertical drip streaks (streak), from world normal / position. The splash zone near the paving is left to vertex colours.' },
       tints: LIMESTONE_TINTS,
       tintWeights: LIMESTONE_WEIGHTS,
-      albedo: [0.61, 0.49, 0.3], // mean linear albedo of the baked limestone (before tints): far-field stand-ins should match it
+      albedo: [0.6, 0.47, 0.27], // mean linear albedo of the baked limestone (before tints): far-field stand-ins should match it
     },
   },
   'stone.dirty': {
@@ -102,7 +102,7 @@ export const LIBRARY = {
     bake: 'rustic',
     surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: STONE_PITCH, weather: STONE_WEATHER, mirror: 0.75 },
     vc: 'tint',
-    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication: a boss of 5-10 large planar fracture facets meeting in sharp ridges, 2-5 cm proud inside a 25-40 mm drafted margin, chisel bites along the break line, deep joints; each block\'s boss differs, and its relief is mirrored at random per block at runtime; fine 2-5 mm pitting added within ~6 m)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
+    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication: a boss of large planar fracture facets and conchoidal scars meeting in sharp ridges, 2.5-5.5 cm proud inside a 25-40 mm drafted margin, chisel bites along the break line, deep joints; each block\'s boss differs, and its relief is mirrored at random per block at runtime; fine 2-5 mm pitting added within ~6 m)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
   },
 
   // ---------------------------------------------------------------- paving
@@ -128,7 +128,7 @@ export const LIBRARY = {
     props: { roughness: 1, color: PAVING_TINT },
     bake: 'paving',
     surf: {
-      scale: 1.25, cell: { ...PAVING_CELL, value: 0.12 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
+      scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { ...GUM, prob: 0.22 },
       stain: { amount: 0.22, freq: 0.5, threshold: 0.64 },
       // v = metres from the gutter: grime along the kerb edge (and ~7 m in, at the building

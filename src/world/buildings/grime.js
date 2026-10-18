@@ -266,8 +266,10 @@ varying float vBgH;
 uniform float bgNight;
 uniform float bgGain;
 `;
+// (the vertex colour replaces the library colour; the pane's own dust stays, and the glass
+// tints what shows through it a little green-grey)
 const FRAG_GLASS_COLOR = /* glsl */ `
-diffuseColor.rgb *= ${(GLASS_K / 0.03).toFixed(4)};
+diffuseColor.rgb *= ${GLASS_K.toFixed(4)} * vec3(0.96, 1.0, 0.99) / max(diffuse, vec3(1e-3));
 `;
 const FRAG_GLASS_REFL = /* glsl */ `
 #if defined( RE_IndirectSpecular )
