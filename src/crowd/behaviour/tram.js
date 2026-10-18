@@ -168,7 +168,7 @@ export class TramWatch {
   uFront(T, a) {
     const vc = this.uClosing(T, a);
     // (whatever its speed: a standing unit needs a clear stretch ahead to move off again)
-    let f = Math.max(U_CLEAR, T.brakeAt + 20, vc * (a.clearT + U_EARLY) + 10);
+    let f = Math.max(U_CLEAR, T.brakeAt + 12, vc * (a.clearT + U_EARLY) + 10);
     if (a.ubellT > this.c.time) f = Math.max(f, vc * (a.clearT + U_EARLY + 2) + 16);
     return f;
   }
@@ -218,7 +218,7 @@ export class TramWatch {
     }
     const tta = Math.max(0, this.uDeadline(a, T));
     const spare = Math.min(1, Math.max(0, (tta - 1) / 3));
-    const loT = T.d - T.UB - a.extHi - 0.08 - 0.5 * spare, hiT = T.d + T.UB + a.extLo + 0.08 + 0.3 * spare;
+    const loT = T.d - T.UB - a.extHi - 0.15 - 0.5 * spare, hiT = T.d + T.UB + a.extLo + 0.2 + 0.4 * spare;
     if (a.clearing) {
       // already clearing for the cab: its target must be outside this band too (the left edge)
       if (this.uGap(a, T, a.clearTo) < 0.02) { a.clearTo = loT; a.uOver = true; }
@@ -236,9 +236,12 @@ export class TramWatch {
         // keep going towards the destination when there is time
         else if (a.state === ST.GOTO && a.gd > hiT && (hiT - a.d) / HURRY < tta) hi = true;
         else if (a.state === ST.GOTO && a.gd < loT && (a.d - loT) / HURRY < tta) hi = false;
-        // a group goes to the same side as its leader (families stay together)
+        // a group goes to the side its leader goes to, or is on (families stay together)
         const L = a.leader;
-        if (L && L.active && L.uSide && Math.abs(L.d - a.d) < 3.5) hi = L.uSide > 0;
+        if (L && L.active && Math.abs(L.d - a.d) < 3.5) {
+          const lHi = L.uSide ? L.uSide > 0 : L.clearing ? L.clearTo > T.d : L.d > T.d;
+          if ((lHi ? hiT - a.d : a.d - loT) / HURRY < tta + 1.5) hi = lHi;
+        }
       }
       a.uSide = hi ? 1 : -1;
       this.uStats.clears++;
@@ -414,9 +417,9 @@ export class TramWatch {
       a.clearing = true;
       const toHi = BAND_HI - a.d, toLo = a.d - BAND_LO;
       let hi = toHi <= toLo;
-      // walking the same way as the tram along the corridor: over to its left strip and on
-      // (rather than off the corridor), when that is not much further
-      if (a.state === ST.WALK && a.dir > 0 && !a.mob && toLo < toHi + 1.2) hi = false;
+      // walking along the corridor: over to its left strip and on (rather than off the
+      // corridor), when that is not much further
+      if (a.state === ST.WALK && !a.mob && toLo < toHi + 1.2) hi = false;
       // keep going towards the destination when there is time for it
       const tta = ahead > 0 && this.v > 0.2 ? ahead / this.v : 1e9;
       const going = a.state === ST.GOTO;

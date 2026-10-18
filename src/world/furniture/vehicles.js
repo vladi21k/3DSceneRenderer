@@ -365,7 +365,7 @@ export function buildVehicleProtos(F) {
 
 // paint colours (linear albedo) and finishes
 const COLOURS = [
-  [[0.78, 0.78, 0.76], 'solid', 0.3],      // white
+  [[0.62, 0.62, 0.6], 'solid', 0.3],       // white
   [[0.42, 0.43, 0.44], 'metal', 0.22],     // silver
   [[0.16, 0.165, 0.17], 'metal', 0.12],    // graphite
   [[0.025, 0.025, 0.028], 'solid', 0.1],   // black
@@ -374,7 +374,7 @@ const COLOURS = [
   [[0.5, 0.44, 0.34], 'metal', 0.06],      // champagne
   [[0.1, 0.17, 0.12], 'metal', 0.04],      // dark green
 ];
-const TAXI = [[0.8, 0.5, 0.03], 'solid'];   // yellow
+const TAXI = [[0.7, 0.44, 0.03], 'solid'];  // yellow
 
 const _m = new THREE.Matrix4(), _c = new THREE.Color(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _y = new THREE.Vector3(0, 1, 0);
 const _plans = new Map();
@@ -414,8 +414,8 @@ export function planMouth(layout, c, side) {
     const a = kerb * (road - half - rng.range(0.2, 0.35));
     const yaw = (rng.chance(0.5) ? 0 : Math.PI) + rng.range(-0.02, 0.02);
     let col, fin;
-    if (kind === 'taxi') [col, fin] = rng.chance(0.6) ? TAXI : [[0.78, 0.78, 0.76], 'solid'];
-    else if (kind === 'van') [col, fin] = rng.chance(0.7) ? [[0.8, 0.8, 0.78], 'solid'] : rng.chance(0.5) ? [[0.42, 0.43, 0.44], 'metal'] : [[0.03, 0.05, 0.12], 'metal'];
+    if (kind === 'taxi') [col, fin] = rng.chance(0.6) ? TAXI : [[0.62, 0.62, 0.6], 'solid'];
+    else if (kind === 'van') [col, fin] = rng.chance(0.7) ? [[0.64, 0.64, 0.62], 'solid'] : rng.chance(0.5) ? [[0.42, 0.43, 0.44], 'metal'] : [[0.03, 0.05, 0.12], 'metal'];
     else { const e = rng.weighted(COLOURS.map((c2) => [c2, c2[2]])); col = e[0]; fin = e[1]; }
     const v = rng.range(0.92, 1.05);
     plan.push({ key: `${kind}_${fin}`, a, x, yaw, col: [col[0] * v, col[1] * v, col[2] * v] });

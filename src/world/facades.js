@@ -86,7 +86,7 @@ const facades = {
       metal: { material: vc('metal.iron'), thin: true, far: { key: 'joinery' } },
       hardware: { material: vc('metal.steel'), castShadow: false },
       stone: { material: M.get('stone.smooth', { vertexColors: true }), castShadow: false, far: { key: 'joinery', k: FOLD.stone } },
-      awning: { material: awning, extra: { aStripe: 4, aFlex: 1 } },
+      awning: { material: awning, extra: { aStripe: 4, aFlex: 1 }, farShadow: true },
       // sign boards that glow (light boxes); plain painted boards join the joinery batch
       signBoard: { material: sign.board, extra: { aGlow: 1 }, thin: true },
       board: { near: { key: 'joinery', k: FOLD.board }, far: { key: 'joinery', k: FOLD.board } },

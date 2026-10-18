@@ -248,7 +248,7 @@ function scanAhead(c, a) {
   const sA = Math.min(a.s, a.s + dir * look) - 1.5, sB = Math.max(a.s, a.s + dir * look) + 1.5;
   const ix0 = Math.max(0, Math.floor((sA - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((sB - st.s0) / CELL));
   const iy0 = Math.max(0, Math.floor((lo - 2.6 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((hi + 2.6 + GRID_D) / CELL));
-  let best = 1e9, bv = 0, blk = null, abreast = 0;
+  let best = 1e9, bv = 0, blk = null, abreast = 0, stand = null, sGap = 1e9;
   for (let x = ix0; x <= ix1; x++) {
     for (let y = iy0; y <= iy1; y++) {
       for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
@@ -259,17 +259,21 @@ function scanAhead(c, a) {
         if (Math.abs(xb) < 1.2 && b.d > lo - 1.2 && b.d < hi + 1.2) abreast++;
         if (xb < 0.3 || xb > look || b.mob === MOB.CYCLE) continue;
         const bv0 = b.vs * dir;
-        if (bv0 < 0.2 || bv0 > v * 0.96) continue;      // standing, coming the other way, or not slower
+        if (bv0 < -0.2 || bv0 > v * 0.96) continue;     // coming the other way, or not slower
         let blo = b.d - AGENT_R, bhi = b.d + AGENT_R;
         if (b.mob) { blo -= b.extLo; bhi += b.extHi; }
         if (bhi < lo - 0.2 || blo > hi + 0.2) continue;
         const gap = xb - front - (b.mob ? b.extS : 0);
+        // (somebody standing right in the way: walked round, not followed)
+        if (bv0 < 0.2) { if (gap < 2.4 && gap < sGap) { sGap = gap; stand = b; } continue; }
         if (gap < best) { best = gap; bv = bv0; blk = b; }
       }
     }
   }
   const strip = stripOf(c, a), sLo = strip.lo, sHi = strip.hi;
   a.freeW = Math.max(0.4, sHi - sLo - 0.6 * Math.max(0, abreast - 0));
+  // somebody standing in the way before any slower walker: round them
+  if (stand && sGap < best) { blk = stand; best = sGap; bv = 0; }
   if (!blk) { a.hwV = 99; return; }
   if (a.passT > t) { a.hwV = Math.max(bv + 0.25, bv + (best - 0.9) * 0.8); return; }
   // room to pass beside it (and its group)? on its left first (people keep right)
@@ -286,7 +290,8 @@ function scanAhead(c, a) {
     c.tally('overtake');
     return;
   }
-  // no room: straight behind it, about 1.3 s back
+  // no room: straight behind it, about 1.3 s back (somebody standing: avoidance gets round)
+  if (bv === 0) { a.hwV = 99; return; }
   const G = Math.max(1.5, 1.3 * bv);
   a.hwV = Math.max(0, Math.min(v * 1.2, bv + (best - G) * 0.8));
 }

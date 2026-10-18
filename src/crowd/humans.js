@@ -1,12 +1,13 @@
 import * as THREE from 'three';
-import { loadHumanAssets } from './humans/assets.js';
-import { Rig, bakeClips, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT } from './humans/anim.js';
-import { deriveAppearance, deriveToddler, writeRow, ROW_TEXELS } from './humans/appearance.js';
-import { makeHumanMaterials, hangProfile, BONE_DYN } from './humans/material.js';
-import { makeSkirtPart, makePhonePart, appendPart, partRanges, subGeometry } from './humans/parts.js';
-import { BlobShadows } from './humans/blobs.js';
+import { Rig, bakeClips, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PHONE_IDLE, PHONE_SIT, CUP_SIT } from './humans/anim.js';
+import { loadCast, mergeMeshes } from './humans/mh/cast.js';
+import { castAppearance, castToddler, castCharacter, BAG } from './humans/mh/appearance.js';
+import { buildParts } from './humans/mh/parts.js';
+import { makeFigureMaterials, writeLook, BONE_W, BONE_DYN, LOOK_W } from './humans/mh/shading.js';
+import { FigureBatch } from './humans/mh/batch.js';
 import { HumansTest } from './humans/test.js';
 import { Mobility } from './humans/mobility.js';
+import { U } from '../core/uniforms.js';
 
 // Human figures: rendering + animation (crowd behaviour lives in crowd.js).
 // Contract (docs/ARCHITECTURE.md):
@@ -16,42 +17,61 @@ import { Mobility } from './humans/mobility.js';
 //   with its parent), or of the stroller pusher whose stroller it holds on to; -1 / absent: none.
 //   Pass it every frame. The renderer picks the hands on the sides facing each other, meets them
 //   between the two (the adult's arm drops, the child's rises) and lets go when they drift apart.
-//   Strollers with a child (prop seed): a toddler figure sits in the seat (a baby lies in a pram),
-//   drawn from a pool of slots allocated here.
+//   idle (optional set() field, 0-7): the standing stance for pose 1 (0 relaxed weight shifts, 1 phone, 2 arms
+//   folded, 3 hands in pockets, 4 hand on hip, 5 hands behind the back, 6 talking with gestures, 7 looking
+//   about); absent: the person's own (from the appearance seed).
+//   Strollers with a child (prop seed): a toddler sits in the seat (a baby lies in a pram), drawn
+//   from a pool of slots allocated here.
 //   Mobility (poses 3 stroller / 4 riding / 5 walking a bicycle, set() fields prop, propSeed, lean,
 //   steer): supportsPose(p); the props are drawn by humans/mobility.js with the kits in humans/props/;
 //   build(chunk) returns the chunk's parked bicycles.
 //
-// Figures are SDF-sculpted bodies (tools/blender/humans_build.py) with LODs, drawn with
-// one instanced draw per base body (man / woman / child / young child) and LOD (the nearest LODs one
-// draw per worn part). Each frame the CPU blends baked clips per visible figure (cross-fading
-// pose changes, keeping every bone rigid), adds the head turn, folds in the figure's
-// transform and writes 22 bone matrices plus a little per-frame state into a row of a float
-// texture; visible figures are packed into the first rows so only those are uploaded. The
-// vertex shader skins from it. Clothing, skin and hair are shaded per fragment from a
-// per-figure "look" row (appearance.js).
-// Testing: humanstest=1 (humans/test.js, including ht_mob= for strollers / cyclists / walked bikes);
-// propstest=1 (humans/props/test.js); humans_dir=<dir> loads a trial asset build;
-// humans_dbg=1|2|3 shows baked occlusion / aux attributes / garment ease instead of shading.
+// The people are the cast of assets/humans_mh (MakeHuman characters built by tools/blender/mh_build.py:
+// men, women, teens, children, the elderly and toddlers, dressed, with four LODs each). An appearance
+// seed picks a character and varies it (humans/mh/appearance.js: garment colours and patterns, hair
+// shade, skin, height, a bag, how the person stands, sits and walks). Every character carries its own
+// skeleton; its clips (walks, idles, sitting) are baked once from humans/anim.js. Each frame the CPU
+// blends the clips of every figure in view (or whose shadow is), adds the head turn and hand holds,
+// folds in the figure's transform and writes 22 bone matrices plus a little state into a row of a float
+// texture. All figures are drawn by one multi-draw per pass (humans/mh/batch.js) and skinned and shaded
+// by humans/mh/shading.js.
+// Testing: humanstest=1 (humans/test.js; ht_mode=cast lines up the whole cast); propstest=1
+// (humans/props/test.js); humans_tex=2 loads the texture arrays at half resolution; humans_bind=1 shows
+// the bind pose; humans_dbg=1|2|3 shows baked occlusion / albedo / beard edge distance; humans_prof=1
+// times the figure draws on the GPU (humans.batch.profile(): ms per frame, view and shadow passes).
+// stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms.
 
-const BASES = ['male', 'female', 'child', 'kid', 'toddler'];
 const TODDLER_POOL = 64;                  // slots for the children riding in strollers
-// figure height on screen (px) above which each LOD is used, by number of LODs in the asset
-const LOD_PX = { 4: [300, 84, 26], 5: [480, 200, 84, 26] };
-const SKIRT_GRID = { 4: [[48, 22], [20, 10], [10, 5], [8, 3]], 5: [[48, 22], [28, 14], [16, 8], [10, 5], [8, 3]] };
-const BONE_W = BONE_DYN + 2;              // texels per bone row: 22 bones x 3x4 matrix, then 2 state texels
+const LOD_PX = [300, 84, 26];             // figure height on screen (px) above which LOD 0 / 1 / 2 are used
 const MAT_N = NUM_BONES * 12;
-const SKIRT_ID = 250;                     // part id of the runtime skirt / coat shell
-const PHONE_ID = 251;                     // part id of the runtime phone
-const SPLIT_LODS = 2;                     // the nearest LODs draw body and each worn part separately
 const FADE = { stand: 0.75, sit: 1.0 };   // pose cross-fade times (s): folding the arms or raising a phone takes a moment
 const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
 const _gait = { a: 0, b: -1, wa: 1, wb: 0, idle: 0, extra: 1, phone: 0 };
 const _hv = new THREE.Vector3(), _hw = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
 const TAU = Math.PI * 2;
 const _hold = [0, 0, 0], _holdI = [0, 0, -1], _holdP = [0, 0, 0];
+const _extra = [-1, -1, -1, -1], _extraFar = [-1, -1, -1, -1], _shadowExtra = [-1, -1];
+const FALLBACK = { age: 'adult', base: 'male', female: false, height: 1.72, carry: false, phoneWalk: false, walkOld: false,
+  skirtPart: 0, sit: 0, idle: 0, body: '', scale: 1 };
+
+// the cast starts downloading and decoding as soon as this module is imported, while the modules
+// before it initialise (humans_tex=2 loads the texture arrays at half resolution)
+const CAST_URL = new URL('../../assets/humans_mh/', import.meta.url).href;
+let castLoad = null;
+function startCastLoad(texScale) {
+  if (!castLoad || castLoad.texScale !== texScale) {
+    castLoad = { texScale, promise: loadCast(CAST_URL, { texScale }) };
+    castLoad.promise.catch(() => {});      // (reported by init)
+  }
+  return castLoad.promise;
+}
+const texScaleParam = () => {
+  try { return Math.max(1, Math.min(4, parseInt(new URLSearchParams(location.search).get('humans_tex') || '1', 10) || 1)); } catch (e) { return 1; }
+};
+try { startCastLoad(texScaleParam()); } catch (e) { /* retried by init */ }
 
 /** Toddler seed from a stroller's prop seed. */
 function hashSeed(n) { n = Math.imul(n ^ 0x5f3759df, 0x2c1b3c6d); n ^= n >>> 15; return n >>> 0; }
@@ -65,17 +85,12 @@ const humans = {
   cache: new Map(),
   parts: {},
   time: 0,
-  perf: { ms: 0, figures: 0 },
+  perf: { ms: 0, figures: 0, posed: 0 },
   rowSlot: new Int32Array(0),
 
   async init(app) {
     this.app = app;
-    // mh=1: the MakeHuman-based cast renderer (humans/next.js) instead of this one
-    if (app.params.num('mh', 0)) {
-      const impl = (await import('./humans/next.js')).default;
-      for (const k of Object.keys(impl)) if (k !== 'name') this[k] = impl[k];
-      return this.init(app);
-    }
+    const tInit = performance.now();
     // mobility props (bicycles, strollers; also the parked bicycles of build()): optional
     try {
       this.props = await import('./humans/props/index.js');
@@ -83,76 +98,78 @@ const humans = {
       console.warn('[humans] mobility props unavailable', e);
       this.props = null;
     }
-    let assets;
+    let cast;
+    const tLoad = performance.now();
     try {
-      // humans_dir=<repo-relative dir> loads a trial build instead of assets/humans/ (testing)
-      const dir = app.params.str('humans_dir', 'assets/humans').replace(/^\/+|\/+$/g, '');
-      assets = await loadHumanAssets(new URL(`../../${dir}/`, import.meta.url).href);
+      const texScale = Math.max(1, Math.min(4, app.params.num('humans_tex', 1) | 0));
+      cast = await startCastLoad(texScale);
     } catch (e) {
       console.warn('[humans] figure assets unavailable, figures disabled', e);
       return;
     }
-    this.parts = { ...(assets.meta.parts || {}), skirt: SKIRT_ID, phone: PHONE_ID };
-    this.morphScale = assets.meta.morphScale;
-    this.shapeScale = assets.meta.shapeScale || [0, 0, 0, 0];
+    this.cast = cast;
+    this.initMs = { load: Math.round(performance.now() - tLoad) };
+    const tBake = performance.now();
+    this.bindPose = app.params.num('humans_bind', 0) > 0;
+    this.lodPx = cast.doc.lodPx || LOD_PX;
     this.ensureCapacity(Math.max(512, this.used));
 
-    // rigs + baked motion per base body
+    // per character: rig + baked motion, accessories, draw ranges in the merged buffers
     this.bases = {};
-    for (const name of BASES) {
-      const b = assets.bases[name];
-      if (!b) continue;
-      const rig = new Rig(b.skeleton, b.info);
+    const meshes = [], ranges = [];
+    const refs = [];
+    for (let ci = 0; ci < cast.chars.length; ci++) {
+      const c = cast.chars[ci];
+      const rig = new Rig({ parent: c.skeleton.parent, joints: c.skeleton.joints }, c.info);
       const baked = bakeClips(rig);
-      const walkV = CLIPS.map((c) => (c.kind === 'walk' ? rig.walkParams(c).v : 0));
+      const walkV = CLIPS.map((cl) => (cl.kind === 'walk' ? rig.walkParams(cl).v : 0));
       // single frames used to re-pose the upper body while walking (phone, carried bag)
       const frame = (clip, f) => baked.data.slice((baked.offsets[clip] + f) * MAT_N, (baked.offsets[clip] + f + 1) * MAT_N);
-      const phone = frame(CLIP.idlePhone, 0), hang = frame(CLIP.idle, 0);
-      this.bases[name] = { name, info: b.info, rig, baked, walkV, lods: b.lods, phone, hang };
+      const B = { name: c.id, index: ci, char: c, info: c.info, rig, baked, walkV, phone: frame(CLIP.idlePhone, 0), hang: frame(CLIP.idle, 0) };
+      this.bases[c.id] = B;
+      // the hem of a skirt or dress (rest height): skin above it is kept inside the cloth (mh/shading.js)
+      c.hemY = -1;
+      { const T = c.raw.tex, Pp = c.raw.pos; let y = Infinity;
+        for (let v = 0; v < c.raw.n; v++) if (T[v * 4 + 3] & 8) y = Math.min(y, Pp[v * 3 + 1]);
+        if (y < Infinity) c.hemY = y; }
+      beardFade(c);
+      const parts = buildParts(c);
+      B.fit = parts.fit; delete parts.fit;
+      refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
+      meshes.push(c.raw);
+      for (const k of Object.keys(parts)) meshes.push(parts[k]);
+      // (let the page breathe between characters)
+      if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));
     }
-    if (!Object.keys(this.bases).length) return;
-    this.nLod = Math.min(...Object.values(this.bases).map((B) => B.lods.length));
-    this.lodPx = LOD_PX[this.nLod] || LOD_PX[4];
-    const grid = SKIRT_GRID[this.nLod] || SKIRT_GRID[4];
+    this.initMs.bake = Math.round(performance.now() - tBake);
+    const merged = mergeMeshes(meshes);
+    for (const { B, mesh, parts } of refs) {
+      const r0 = merged.ranges[mesh];
+      B.bodyR = B.char.lods.map((L) => ranges.push({ start: r0.ibase + L.start, count: L.count }) - 1);
+      B.partR = {};
+      parts.forEach((k, j) => {
+        const r = merged.ranges[mesh + 1 + j];
+        B.partR[k] = ranges.push({ start: r.ibase, count: meshes[mesh + 1 + j].index.length }) - 1;
+      });
+    }
+    // the CPU copies of the cast are not needed any more
+    for (const c of cast.chars) c.raw = null;
+    this.stats_ = { vertices: merged.vertices, indices: merged.indices };
 
     this.group = new THREE.Group();
     this.group.name = 'humans';
     app.scene.add(this.group);
-    for (const B of Object.values(this.bases)) {
-      const hang = hangProfile(B.lods[0], B.info);
-      const { mat, depth, uniforms } = makeHumanMaterials(B, this.parts, this.boneTex, this.lookTex, this.morphScale, this.shapeScale, hang,
-        app.params.num('humans_dbg', 0));
-      app.materials.register('humans.' + B.name, mat);
-      app.materials.track(mat);
-      B.mat = mat;
-      B.uniforms = uniforms;
-      // draws: near LODs get one draw per part (sharing buffers through draw ranges) so a
-      // figure only submits its own hair / hat / bag; far LODs draw everything merged and
-      // the vertex shader collapses the parts the figure does not wear
-      B.draws = [];
-      B.drawAt = [];
-      const phonePart = makePhonePart(B.rig, B.info, PHONE_ID);
-      for (let li = 0; li < this.nLod; li++) {
-        const [nt, nr] = grid[Math.min(li, grid.length - 1)];
-        let g = appendPart(B.lods[li], makeSkirtPart(nt, nr, SKIRT_ID));
-        if (li < this.nLod - 1) g = appendPart(g, phonePart);
-        const byPart = new Map();
-        if (li < SPLIT_LODS) {
-          for (const [pid, r] of partRanges(g)) byPart.set(pid, this._addDraw(B, subGeometry(g, r.start, r.count), mat, depth, `${li}.p${pid}`));
-        } else {
-          const d = this._addDraw(B, g, mat, depth, `${li}`);
-          // the farthest figures (a few pixels tall) get a soft ground blob instead (BlobShadows)
-          d.mesh.castShadow = li < this.nLod - 1;
-          byPart.set(-1, d);
-        }
-        B.drawAt.push(byPart);
-      }
-    }
-    this.blobs = new BlobShadows(app, this.capacity);
-    this.group.add(this.blobs.mesh);
+    const { mat, depth, uniforms } = makeFigureMaterials({ bones: this.boneTex, look: this.lookTex, albedo: cast.albedo, normal: cast.normal },
+      cast.layerRough, app.materials, app.params.num('humans_dbg', 0));
+    app.materials.register('humans.figures', mat);
+    app.materials.track(mat);
+    this.uniforms = uniforms;
+    this.batch = new FigureBatch(app, merged.geometry, ranges, mat, depth, uniforms);
+    this.batch.mesh.userData.dynamicCaster = true;
+    this.group.add(this.batch.mesh);
     // children riding in strollers: a pool of slots for the toddler figures
     this.compFirst = -1;
-    if (this.bases.toddler) {
+    if (cast.chars.some((c) => c.ageClass === 'toddler')) {
       this.compFirst = this.alloc(TODDLER_POOL);
       for (let k = 0; k < TODDLER_POOL; k++) { const c = this.slots[this.compFirst + k]; c.comp = true; c.owner = -1; c.compKey = ''; }
     }
@@ -169,51 +186,28 @@ const humans = {
         this.mob = null;
       }
     }
+    this.cache.clear();       // appearances asked for before the cast was loaded
     this._precompile(app);
     this.ready = true;
+    this.initMs.total = Math.round(performance.now() - tInit);
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
     // propstest=1: the props' own close-up harness (humans/props/test.js, pt_* parameters)
     if (this.props && app.params.num('propstest', 0)) this.props.mountPropsTest(app).catch((e) => console.warn('[humans] props test', e));
   },
 
-  /** Build every body's shader programs now, so the first child or woman to walk into view
-   *  does not stall a frame while its program compiles. */
+  /** Build the figures' (and props') shader programs now, so the first figures to walk into view
+   *  do not stall a frame while their program compiles. */
   _precompile(app) {
     const shown = [];
     try {
-      for (const B of Object.values(this.bases)) {
-        const m = B.draws[0] && B.draws[0].mesh;
-        if (m) { m.visible = true; shown.push(m); }
-      }
-      // (and the bicycle / stroller material)
-      if (this.mob) for (const m of this.mob.warmMeshes()) { m.visible = true; shown.push(m); }
+      const m = this.batch.mesh;
+      m.visible = true; shown.push(m);
+      if (this.mob) for (const w of this.mob.warmMeshes()) { w.visible = true; shown.push(w); }
       app.renderer.compile(this.group, app.camera, app.scene);
     } catch (e) {
       console.warn('[humans] shader warm-up skipped', e);
     }
     for (const m of shown) m.visible = false;
-  },
-
-  _addDraw(B, g, mat, depth, tag) {
-    g.setAttribute('iRow', newRowAttr(this.capacity));
-    g.instanceCount = 0;
-    const mesh = new THREE.Mesh(g, mat);
-    mesh.name = `humans.${B.name}.lod${tag}`;
-    // hair coverage: alpha to coverage on MSAA targets, an ordered dither otherwise
-    mesh.onBeforeRender = (renderer) => {
-      const rt = renderer.getRenderTarget();
-      const msaa = rt ? rt.samples > 0 : !!(renderer.getContext().getContextAttributes() || {}).antialias;
-      if (B.uniforms) B.uniforms.uSeat.value.z = msaa ? 0 : 1;
-    };
-    mesh.frustumCulled = true;        // bounds are refit to the instances every frame
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.customDepthMaterial = depth;
-    mesh.visible = false;
-    this.group.add(mesh);
-    const d = { mesh, list: new Int32Array(this.capacity), count: 0 };
-    B.draws.push(d);
-    return d;
   },
 
   // ------------------------------------------------------------------ contract API
@@ -247,6 +241,9 @@ const humans = {
     if (o.propSeed !== undefined) s.propSeed = o.propSeed | 0;
     s.leanIn = Number.isFinite(o.lean) ? o.lean : null;
     s.steerIn = Number.isFinite(o.steer) ? o.steer : null;
+    // standing stance override (optional): 0 relaxed, 1 phone, 2 arms folded, 3 hands in pockets, 4 hand
+    // on hip, 5 hands behind the back, 6 talking, 7 looking about; absent / -1: the person's own
+    s.idleIn = Number.isInteger(o.idle) && o.idle >= 0 && o.idle <= 7 ? o.idle : -1;
     // hand in hand with slot holdWith (or holding on to its stroller)
     s.holdWith = Number.isInteger(o.holdWith) && o.holdWith >= 0 && o.holdWith !== i ? o.holdWith : -1;
     s.visible = o.visible !== false;
@@ -304,31 +301,34 @@ const humans = {
   appearanceOf(seed) {
     let a = this.cache.get(seed);
     if (!a) {
+      if (!this.cast) return FALLBACK;
       if (this.cache.size > 6000) this.cache.clear();
-      a = deriveAppearance(seed, this.parts);
-      // the mesh this person is drawn with (a build without the young-child body uses the child one)
-      if (this.bases && !this.bases[a.body]) a.body = this.bases[a.base] ? a.base : a.base === 'child' && this.bases.child ? 'child' : 'male';
-      a.seedT = (seed % 997) / 997;
+      const f = this.forced.get(seed);
+      a = f ? castCharacter(seed >>> 0, this.cast, f.index, f.own) : castAppearance(seed >>> 0, this.cast);
       this.cache.set(seed, a);
     }
     return a;
   },
 
+  /** Testing: appearance `seed` shows character `index` of the cast (own: its own colours). */
+  forceCharacter(seed, index, own = false) {
+    this.forced.set(seed, { index, own });
+    this.cache.delete(seed);
+    return seed;
+  },
+  forced: new Map(),
+
   ensureCapacity(n) {
     if (n <= this.capacity) return;
     const cap = Math.max(64, 1 << Math.ceil(Math.log2(n)));
-    const look = new Float32Array(cap * ROW_TEXELS * 4);
+    const look = new Float32Array(cap * LOOK_W * 4);
     if (this.lookTex) look.set(this.lookTex.image.data);
     const old = [this.boneTex, this.lookTex];
     this.boneTex = dataTexture(new Float32Array(cap * BONE_W * 4), BONE_W, cap, true);
-    this.lookTex = dataTexture(look, ROW_TEXELS, cap, false);
+    this.lookTex = dataTexture(look, LOOK_W, cap, false);
     this.capacity = cap;
     this.rowSlot = new Int32Array(cap);
-    for (const B of Object.values(this.bases || {})) {
-      if (B.uniforms) { B.uniforms.uBoneTex.value = this.boneTex; B.uniforms.uLookTex.value = this.lookTex; }
-      for (const d of B.draws || []) { d.mesh.geometry.setAttribute('iRow', newRowAttr(cap)); d.list = new Int32Array(cap); }
-    }
-    if (this.blobs) this.blobs.ensureCapacity(cap);
+    if (this.uniforms) { this.uniforms.uBoneTex.value = this.boneTex; this.uniforms.uLookTex.value = this.lookTex; }
     old.forEach((t) => t && t.dispose());
   },
 
@@ -345,14 +345,20 @@ const humans = {
     _m.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     _frustum.setFromProjectionMatrix(_m);
     this._camPos = cam.position;
+    _fwd.set(0, 0, -1).transformDirection(cam.matrixWorld);
     this._pxPerM = (app.renderer.domElement.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360));
-    for (const B of Object.values(this.bases)) for (const d of B.draws) d.count = 0;
+    // the sun's horizontal shadow direction and reach per metre of height (off-screen figures whose
+    // shadow falls into view are posed too)
+    const sd = U.uSunDir ? U.uSunDir.value : null;
+    const el = sd ? Math.max(0.12, sd.y) : 1;
+    const hl = sd ? Math.hypot(sd.x, sd.z) || 1 : 1;
+    this._shadow = sd ? { x: -sd.x / hl, z: -sd.z / hl, k: Math.min(12, Math.sqrt(1 - el * el) / el) } : null;
     this._bones = this.boneTex.image.data;
     const look = this.lookTex;
-    this.blobs.begin();
     this._lookDirty = false;
     this._n = 0;
     this.babyN = 0;
+    this.batch.begin(app.frame, cam);
     // who walks hand in hand with whom this frame (both sides' arms)
     this._holdPrep();
     for (let i = 0; i < this.used; i++) {
@@ -363,16 +369,8 @@ const humans = {
         this._newLook(i, s);
       }
       const a = s.a;
-      // seated people put their bags down (bags would hover behind the chair); a shopping bag
-      // does not stay in a hand that holds a stroller, a bicycle or a child's hand
-      const hideBag = (s.pose === 2 || (s.pose >= 3 && a.carry) || (a.carry && s.hold && s.hold.side === 'R')) && a.bagPart > 0;
-      if (hideBag !== s.bagHidden) {
-        look.image.data[(i * ROW_TEXELS + 11) * 4 + 3] = (hideBag ? 0 : a.bagPart) + a.skirtPart * 256;
-        s.bagHidden = hideBag;
-        if (!look.userData.fresh) look.addUpdateRange((i * ROW_TEXELS + 11) * 4, 4);
-        this._lookDirty = true;
-      }
       const B = this.bases[a.body];
+      if (!B) continue;
       const sc = a.height / B.info.H;
       // mobility props follow their figure (culled and LOD'd by their own instancers)
       if (mob && s.pose >= 3) {
@@ -383,34 +381,10 @@ const humans = {
           if (st.prop === 1 && (st.look.flags & mob.babyFlag) && this.compFirst >= 0) this._queueBaby(i, s, st);
         }
       } else if (s.mob) s.mob.valid = false;
-      this._emit(i, s, a, B, sc, true);
+      this._emit(i, s, a, B, sc);
     }
     this._babies();
-    for (const B of Object.values(this.bases)) {
-      B.draws.forEach(({ mesh, list: L, count: cnt }) => {
-        const g = mesh.geometry;
-        const attr = g.attributes.iRow;
-        // bounds of this draw's instances, so shadow cascades can skip it entirely
-        let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
-        for (let k = 0; k < cnt; k++) {
-          const s = this.slots[this.rowSlot[L[k]]];
-          attr.array[k] = L[k];
-          if (s.x < x0) x0 = s.x; if (s.x > x1) x1 = s.x;
-          if (s.y < y0) y0 = s.y; if (s.y > y1) y1 = s.y;
-          if (s.z < z0) z0 = s.z; if (s.z > z1) z1 = s.z;
-        }
-        g.instanceCount = cnt;
-        mesh.visible = cnt > 0;
-        if (cnt) {
-          attr.clearUpdateRanges();
-          attr.addUpdateRange(0, cnt);
-          attr.needsUpdate = true;
-          g.boundingSphere.center.set((x0 + x1) / 2, (y0 + y1) / 2 + 0.9, (z0 + z1) / 2);
-          g.boundingSphere.radius = 0.5 * Math.hypot(x1 - x0, y1 - y0, z1 - z0) + 1.3;
-        }
-      });
-    }
-    this.blobs.end(app);
+    this.batch.end();
     if (mob) mob.end();
     // only the rows of this frame's figures are uploaded (see dataTexture)
     const n = this._n;
@@ -419,52 +393,69 @@ const humans = {
       this.boneTex.needsUpdate = true;
     }
     if (this._lookDirty) look.needsUpdate = true;
-    this.perf.figures = n;
+    this.perf.figures = this.batch.nView;
+    this.perf.posed = n;
     this.perf.ms = this.perf.ms * 0.95 + (performance.now() - t0) * 0.05;
   },
 
   /** A new person in slot i: write its look row, reset its pose history. */
   _newLook(i, s) {
     const look = this.lookTex;
-    writeRow(look.image.data, i, s.a);
-    s.bagHidden = false;
+    writeLook(look.image.data, i, s.a);
     s.posePrev = -1;               // a new person in this slot: no cross-fade from the last one
-    if (!look.userData.fresh) look.addUpdateRange(i * ROW_TEXELS * 4, ROW_TEXELS * 4);
+    s.idleShown = -1;
+    if (!look.userData.fresh) look.addUpdateRange(i * LOOK_W * 4, LOOK_W * 4);
     this._lookDirty = true;
   },
 
   /** Cull, pick the LOD, pose and queue figure i for drawing. */
-  _emit(i, s, a, B, sc, blob) {
-    _sph.center.set(s.x, s.y + 0.5 * a.height, s.z);
-    _sph.radius = 0.62 * a.height + 0.3;
-    if (!_frustum.intersectsSphere(_sph)) { s.lod = -1; return; }
-    const lodPx = this.lodPx, maxLod = this.nLod - 1;
-    const px = (a.height / Math.max(0.5, _sph.center.distanceTo(this._camPos))) * this._pxPerM;
+  _emit(i, s, a, B, sc) {
+    const h = a.height;
+    _sph.center.set(s.x, s.y + 0.5 * h, s.z);
+    _sph.radius = 0.62 * h + 0.3;
+    let inView = _frustum.intersectsSphere(_sph);
+    if (!inView) {
+      // its shadow may still fall into view (low sun): the sphere stretched along the shadow
+      const S = this._shadow;
+      if (!S) { s.lod = -1; return; }
+      const L = Math.min(25, h * S.k) * 0.5;
+      _sph.center.x += S.x * L; _sph.center.z += S.z * L;
+      _sph.center.y -= 0.4 * h;
+      _sph.radius += L;
+      if (!_frustum.intersectsSphere(_sph)) { s.lod = -1; return; }
+      _sph.center.set(s.x, s.y + 0.5 * h, s.z);
+      _sph.radius = 0.62 * h + 0.3;
+    }
+    const lodPx = this.lodPx;
+    const dist = _sph.center.distanceTo(this._camPos);
+    const px = (h / Math.max(0.5, dist)) * this._pxPerM;
     let lod = 0;
     while (lod < lodPx.length && px <= lodPx[lod]) lod++;
-    lod = Math.min(lod, maxLod);
+    lod = Math.min(lod, 3);
     if (s.lod >= 0 && lod !== s.lod) {      // hysteresis against flicker at the thresholds
       const edge = lodPx[Math.min(lod, s.lod)];
       if (Math.abs(px - edge) < edge * 0.08) lod = s.lod;
     }
     s.lod = lod;
+    s.inView = inView;
     const row = this._n++;
     this.rowSlot[row] = i;
     this._pose(row, i, s, a, B, sc, this._bones);
-    const at = B.drawAt[lod];
-    const all = at.get(-1);
-    if (all) all.list[all.count++] = row;
-    else {
-      pushDraw(at.get(0), row);
-      if (a.hairPart) pushDraw(at.get(a.hairPart), row);
-      if (a.beardPart) pushDraw(at.get(a.beardPart), row);
-      if (a.hatPart) pushDraw(at.get(a.hatPart), row);
-      if (a.bagPart && !s.bagHidden) pushDraw(at.get(a.bagPart), row);
-      if (a.skirtPart) pushDraw(at.get(a.skirtPart), row);
-      if (a.glasses && this.parts.glasses) pushDraw(at.get(this.parts.glasses), row);
-      if (s.phoneOn) pushDraw(at.get(PHONE_ID), row);
+    // accessories: the phone or cup in hand, a bag (put down when seated; a shopping bag does not stay
+    // in a hand that holds a stroller, a bicycle or a child's hand)
+    const P = B.partR;
+    _extra.fill(-1); _extraFar.fill(-1); _shadowExtra.fill(-1);
+    let k = 0, kf = 0;
+    if (s.phoneOn) _extra[k++] = P.phone;
+    else if (s.cupOn) _extra[k++] = P.cup;
+    if (a.bag && s.pose !== 2) {
+      const handBusy = s.pose >= 3 || (s.hold && s.hold.side === 'R');
+      if (a.bag === BAG.BACKPACK) { _extra[k++] = P.backpack; _extraFar[kf++] = P.backpackFar; _shadowExtra[0] = P.backpackFar; }
+      else if (a.bag === BAG.SHOULDER) { _extra[k++] = P.shoulder; _extraFar[kf++] = P.shoulderFar; _shadowExtra[0] = P.shoulderFar; }
+      else if (a.bag === BAG.SHOPPING && !handBusy) { _extra[k++] = P.shopping; _extraFar[kf++] = P.shopping; _shadowExtra[0] = P.shopping; }
     }
-    if (blob && lod === maxLod) this.blobs.add(s.x, s.y, s.z, a.height);
+    const depth = (_sph.center.x - this._camPos.x) * _fwd.x + (_sph.center.y - this._camPos.y) * _fwd.y + (_sph.center.z - this._camPos.z) * _fwd.z;
+    this.batch.add(row, _sph.center.x, _sph.center.y, _sph.center.z, _sph.radius, depth, inView, lod, B.bodyR, _extra, _extraFar, _shadowExtra);
   },
 
   _queueBaby(i, s, st) {
@@ -475,11 +466,10 @@ const humans = {
   },
 
   /** Children riding in this frame's strollers: a toddler sits in the seat (a baby lies in a
-   *  pram's bassinet), drawn with the toddler body from the pool of slots. */
+   *  pram's bassinet), drawn from the pool of slots. */
   _babies() {
     const first = this.compFirst;
     if (first < 0) return;
-    const B = this.bases.toddler;
     const kit = this.mob && this.mob.strollers;
     for (let k = 0; k < TODDLER_POOL; k++) this.slots[first + k].used = false;
     for (let q = 0; q < this.babyN; q++) {
@@ -512,15 +502,16 @@ const humans = {
         let a = this.tcache.get(key);
         if (!a) {
           if (this.tcache.size > 512) this.tcache.clear();
-          a = deriveToddler(hashSeed(s.propSeed | 0), this.parts, seat.lie);
-          a.seedT = ((s.propSeed >>> 0) % 997) / 997;
+          a = castToddler(hashSeed(s.propSeed | 0), this.cast, seat.lie);
           this.tcache.set(key, a);
         }
+        if (!a) { c.used = false; continue; }
         c.a = a;
         c.appearance = -1;
         this._newLook(ci, c);
         c.lod = -1;
       }
+      const B = this.bases[c.a.body];
       // the seat in the world: prop origin + Ry(heading) Rx(pitch) seat (as mobility.draw places it)
       const ch = Math.cos(s.heading), sh = Math.sin(s.heading);
       const ox = s.x + ch * st.offX + sh * st.offZ, oz = s.z - sh * st.offX + ch * st.offZ;
@@ -532,11 +523,10 @@ const humans = {
       c.heading = s.heading;
       c.speed = 0; c.phase = 0; c.pose = 2; c.look = 0; c.visible = true;
       c.prop = 0; c.holdWith = -1; c.hold = null;
-      // far away the child is a few pixels inside the canopy: skip the coarse levels, whose
-      // seated toddler shells stretch into streaks
+      // far away the child is a few pixels inside the canopy
       const px = (c.a.height / Math.max(0.5, Math.hypot(c.x - this._camPos.x, c.y - this._camPos.y, c.z - this._camPos.z))) * this._pxPerM;
-      if (px <= this.lodPx[Math.min(2, this.lodPx.length - 1)]) { c.visible = false; c.lod = -1; continue; }
-      this._emit(ci, c, c.a, B, c.a.height / B.info.H, false);
+      if (px <= this.lodPx[2] * 0.8) { c.visible = false; c.lod = -1; continue; }
+      this._emit(ci, c, c.a, B, c.a.height / B.info.H);
     }
     for (let k = 0; k < TODDLER_POOL; k++) {
       const c = this.slots[first + k];
@@ -596,8 +586,8 @@ const humans = {
       const side = lat > 0 ? 'R' : 'L';
       const latP = -dx * Math.cos(p.heading) + dz * Math.sin(p.heading);
       const sideP = latP > 0 ? 'R' : 'L';
-      // the phone hand stays on the phone
-      if ((pa.phoneWalk && sideP === 'R') || (a.phoneWalk && side === 'R')) continue;
+      // the phone hand stays on the phone, the shopping bag in its hand
+      if (((pa.phoneWalk || pa.carry) && sideP === 'R') || ((a.phoneWalk || a.carry) && side === 'R')) continue;
       const shS = this._shoulderW(s, a, Bs, side, _hv);
       const shP = this._shoulderW(p, pa, Bp, sideP, _hw);
       const rS = this._reach(a, Bs), rP = this._reach(pa, Bp);
@@ -631,12 +621,14 @@ const humans = {
 
   /** Blend the figure's pose and write bone row `row` (model -> world) plus its state texels. */
   _pose(row, i, s, a, B, sc, out) {
-    // small far figures re-blend their clips every other frame (staggered); the
-    // transform below is still applied every frame so camera motion stays exact
+    // small far figures (and those only casting a shadow into view) re-blend their clips every other
+    // frame (staggered); the transform below is still applied every frame so camera motion stays exact
     const M = s.model || (s.model = new Float32Array(MAT_N));
     const frame = this.app.frame;
-    // (riders: every frame until they are tiny, so the feet keep up with the pedals)
-    if (s.pose !== s.posePrev || s.lod < 2 || (s.pose === 4 && s.lod < 3) || ((frame + i) & 1) === 0 || s.blendFrame < frame - 2 || s.blendBase !== B) {
+    // (riders: every frame until they are tiny, so the feet keep up with the pedals; figures a few
+    // pixels tall and those only casting a shadow into view every third frame)
+    const every = !s.inView || s.lod >= 3 ? 3 : s.lod === 2 && s.pose !== 4 ? 2 : 1;
+    if (every === 1 || s.pose !== s.posePrev || (frame + i) % every === 0 || s.blendFrame < frame - every || s.blendBase !== B) {
       this._blend(s, a, B, sc, M);
       s.blendFrame = frame;
       s.blendBase = B;
@@ -657,18 +649,25 @@ const humans = {
       out[o + 7] += y0;
       out[o + 11] += s.z;
     }
-    // state texels: gait phase, speed, seated blend, ground height | look row, phone shown, hands in pockets
+    // state texels: gait phase, speed, seated blend, ground height | look row, phone shown, hands in pockets, scale
     const o = base + BONE_DYN * 4;
-    // (hair, skirts and bags swing with the walking poses only: riders pass no speed)
     out[o] = s.phase; out[o + 1] = s.pose === 0 || s.pose === 3 || s.pose === 5 ? s.speed : 0; out[o + 2] = s.seatW; out[o + 3] = s.y;
-    out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = s.pocketW; out[o + 7] = 0;
+    out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = s.pocketW; out[o + 7] = sc;
   },
 
   _blend(s, a, B, sc, M) {
     const bk = B.baked;
     const t = this.time;
-    // pose changes cross-fade from a snapshot of the last displayed pose
-    if (s.pose !== s.posePrev) {
+    if (this.bindPose) {
+      // testing (humans_bind=1): the bind pose
+      for (let b = 0; b < NUM_BONES; b++) M.set(IDENT34, b * 12);
+      s.seatW = 0; s.phoneOn = s.cupOn = false; s.pocketW = 0;
+      return;
+    }
+    // standing stance: the person's own, or the one the crowd asks for (set() field idle)
+    const idle = s.idleIn >= 0 ? s.idleIn : a.idle;
+    // pose changes (and a new standing stance) cross-fade from a snapshot of the last displayed pose
+    if (s.pose !== s.posePrev || (s.pose === 1 && idle !== s.idleShown && s.idleShown >= 0)) {
       if (s.posePrev >= 0 && s.blendBase === B) {
         s.fromM = s.fromM || new Float32Array(MAT_N);
         s.fromM.set(M);
@@ -677,34 +676,38 @@ const humans = {
         s.fromPhone = s.phoneW;
         s.fromPocket = s.pocketW;
         s.fromSeat = s.seatW;
+        s.fromCup = s.cupW;
       } else {
         s.fadeDur = 0;
       }
       s.posePrev = s.pose;
     }
+    s.idleShown = idle;
     M.fill(0);
-    let phone = 0, pocket = 0;
+    let phone = 0, pocket = 0, cup = 0;
     // mobility poses (props shown): 3 pushing a stroller and 5 walking a bicycle re-pose the arms
     // of the walk; 4 riding is solved whole (humans/mobility.js)
     const mobP = !!(this.mob && s.mob && s.mob.valid && s.prop && s.pose >= 3 && s.pose <= 5);
     if (s.pose === 2) {
-      addClip(M, bk, CLIP.sit + a.sit, t / 11 + a.seedT, 1);
+      addClip(M, bk, CLIP.sit + a.sit, t / (CLIPS[CLIP.sit + a.sit].frames > 64 ? 14 : 11) + a.seedT, 1);
+      phone = PHONE_SIT.includes(a.sit) ? 1 : 0;
+      cup = CUP_SIT.includes(a.sit) ? 1 : 0;
     } else if (s.pose === 1) {
-      addClip(M, bk, CLIP.idle + a.idle, t / 9.5 + a.seedT, 1);
-      phone = a.idle === 1 ? 1 : 0;
-      pocket = a.idle === 3 ? 1 : 0;
+      addClip(M, bk, CLIP.idle + idle, t / idlePeriod(idle) + a.seedT, 1);
+      phone = PHONE_IDLE.includes(idle) ? 1 : 0;
+      pocket = idle === 3 ? 1 : 0;
     } else if (mobP && s.pose === 4) {
       this.mob.pose(s, a, B, M);
     } else {
-      const g = gaitBlend(B, a, s.speed, sc, mobP ? 0 : a.idle);
+      const g = gaitBlend(B, a, s.speed, sc, mobP ? 0 : idle);
       addClip(M, bk, g.a, s.phase, g.wa);
-      if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / 9.5 + a.seedT : s.phase, g.wb);
+      if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / idlePeriod(g.b - CLIP.idle) + a.seedT : s.phase, g.wb);
       // upper-body variations carried by the walking chest (not while the hands hold a prop)
       if (mobP) { /* hands on the stroller / bicycle below */ }
       else if (a.phoneWalk) { overrideBones(M, B.phone, PHONE_BONES, 1); phone = 1; }
       else if (a.carry) overrideBones(M, B.hang, CARRY_BONES, 0.65);
-      else if (a.idle === 1 && g.b >= CLIP.idle) phone = g.wb;
-      if (!mobP && a.idle === 3 && g.b >= CLIP.idle) pocket = g.wb;
+      else if (PHONE_IDLE.includes(idle) && g.b >= CLIP.idle) phone = g.wb;
+      if (!mobP && idle === 3 && g.b >= CLIP.idle) pocket = g.wb;
     }
     if (!(mobP && s.pose === 4)) rigidify(M, B.rig.rest);
     if (mobP && s.pose !== 4) {
@@ -724,11 +727,14 @@ const humans = {
         rigidify(M, B.rig.rest);
         phone = s.fromPhone + (phone - s.fromPhone) * w;
         pocket = s.fromPocket + (pocket - s.fromPocket) * w;
+        cup = s.fromCup + (cup - s.fromCup) * w;
       } else s.fadeDur = 0;
     }
     s.phoneW = phone;
     s.pocketW = pocket;
+    s.cupW = cup;
     s.phoneOn = phone > 0.5;
+    s.cupOn = cup > 0.5;
     const seat = s.pose === 2 ? 1 : 0;
     s.seatW = s.fadeDur > 0 ? s.fromSeat + (seat - s.fromSeat) * w : seat;
     // older people's rounded upper back: the chest and everything it carries tip forward about
@@ -745,21 +751,6 @@ const humans = {
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
       rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
     }
-    // folded arms rest on the clothed chest and belly: a heavier build (or a belly) brings them
-    // forward with it (the clip is posed on the base body)
-    if (s.pose === 1 && a.idle === 2 && !mobP) {
-      const fwd = (3 + Math.max(0, a.build) * 9 + (a.belly || 0) * 11) * Math.PI / 180;
-      for (const [, bones] of ARM_SIDES) rotBonesAxis(M, B.rig.rest, bones, bones[0], BONE.spine2, 1, 0, 0, fwd);
-    }
-    // the arms hang close to the body; heavier builds (and a woman's hips) hold them a little
-    // further out so the hands clear the hips and thighs
-    if (!mobP && s.pose <= 1 && a.build > 0.12 && !(a.idle === 2 && s.pose === 1)) {
-      const ang = (a.build - 0.12) * (a.body === 'female' ? 9 : 6) * Math.PI / 180;
-      for (const [side, bones] of ARM_SIDES) {
-        if (s.pose === 1 && (a.idle === 1 || a.idle === 3) && side === 1) continue;
-        rotBonesAxis(M, B.rig.rest, bones, bones[0], BONE.spine2, 0, 0, 1, side * ang);
-      }
-    }
     // hand in hand: the near arm reaches the meeting point (the other one swings on)
     if (s.hold && this.mob && s.pose <= 1) {
       const h = s.hold, P = this.mob.poser(B);
@@ -774,34 +765,76 @@ const humans = {
     }
   },
 
-  /** Submitted geometry for the main pass (draws, instances, triangles), for profiling. */
+  /** Submitted geometry for the main pass (sub-draws, figures, triangles), for profiling. */
   stats() {
-    let draws = 0, inst = 0, tris = 0;
-    const lods = new Array(this.nLod || 0).fill(0);
-    for (const s of this.slots) if (s.visible && s.lod >= 0 && s.a) lods[s.lod]++;
-    for (const B of Object.values(this.bases || {})) {
-      for (const d of B.draws) {
-        if (!d.count) continue;
-        draws++;
-        inst += d.count;
-        const g = d.mesh.geometry;
-        tris += d.count * Math.min(g.drawRange.count, g.index.count) / 3;
-      }
-    }
-    return { draws, instances: inst, triangles: Math.round(tris), figures: this.perf.figures, lods,
-      blobs: this.blobs ? this.blobs.count : 0, cpuMs: +this.perf.ms.toFixed(3), props: this.mob ? this.mob.stats() : null };
+    const lods = [0, 0, 0, 0];
+    for (const s of this.slots) if (s.visible && s.lod >= 0 && s.a && s.inView) lods[s.lod]++;
+    const b = this.batch ? this.batch.stats : {};
+    return { draws: b.view || 0, figures: this.perf.figures, posed: this.perf.posed, triangles: Math.round(b.tris || 0), lods,
+      shadowDraws: b.shadow || 0, shadowTriangles: Math.round(b.shadowTris || 0), shadowPasses: b.passes || 0,
+      cpuMs: +this.perf.ms.toFixed(3), props: this.mob ? this.mob.stats() : null, buffers: this.stats_, initMs: this.initMs };
   },
 };
 
-function pushDraw(d, i) { if (d) d.list[d.count++] = i; }
+/**
+ * Beards are a single shell over the skin: its edges (cheeks, neck, round the mouth) thin out over
+ * ~3 cm instead of ending in a hard mask line. Per beard vertex the distance (m) to the shell's
+ * boundary (shortest path along the shell's edges) goes into tex.y (0..254 = 0..3.5 cm; the beard has
+ * no normal layer), which the shader turns into strand coverage.
+ */
+function beardFade(c) {
+  const raw = c.raw, T = raw.tex, P = raw.pos, I = raw.index;
+  const L0 = c.lods[0];
+  const edges = new Map(), adj = new Map();
+  const key = (a, b) => (a < b ? a * 1048576 + b : b * 1048576 + a);
+  for (let t = L0.start; t < L0.start + L0.count; t += 3) {
+    const a = I[t], b = I[t + 1], d = I[t + 2];
+    if (T[a * 4 + 2] !== 11) continue;
+    for (const [u, v] of [[a, b], [b, d], [d, a]]) {
+      const k = key(u, v);
+      edges.set(k, (edges.get(k) || 0) + 1);
+      if (!adj.has(u)) adj.set(u, []);
+      if (!adj.has(v)) adj.set(v, []);
+      adj.get(u).push(v); adj.get(v).push(u);
+    }
+  }
+  if (!adj.size) return;
+  const dist = new Map();
+  const queue = [];
+  for (const [k, n] of edges) {
+    if (n !== 1) continue;
+    const u = Math.floor(k / 1048576), v = k % 1048576;
+    dist.set(u, 0); dist.set(v, 0); queue.push(u, v);
+  }
+  // (Bellman-Ford style relaxation: the shell is small)
+  for (let it = 0; it < 40 && queue.length; it++) {
+    const next = [];
+    for (const u of queue) {
+      const du = dist.get(u);
+      for (const v of adj.get(u)) {
+        const l = Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
+        if (!dist.has(v) || du + l < dist.get(v) - 1e-6) { dist.set(v, du + l); next.push(v); }
+      }
+    }
+    queue.length = 0; queue.push(...new Set(next));
+  }
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 11) continue;
+    const d = dist.has(v) ? dist.get(v) : 0.035;
+    T[v * 4 + 1] = Math.round(Math.min(1, d / 0.035) * 254);
+  }
+}
+
+/** Idle clip cycle (s): the talking idle has its own, longer, cycle. */
+function idlePeriod(v) { return CLIPS[CLIP.idle + v] && CLIPS[CLIP.idle + v].frames > 64 ? 12 : 9.5; }
 
 const PHONE_BONES = [BONE.armR, BONE.foreR, BONE.handR, BONE.neck, BONE.head];
-const ARM_SIDES = [[-1, [BONE.armL, BONE.foreL, BONE.handL]], [1, [BONE.armR, BONE.foreR, BONE.handR]]];
 const STOOP_BONES = [BONE.spine2, BONE.neck, BONE.head, BONE.clavL, BONE.armL, BONE.foreL, BONE.handL,
   BONE.clavR, BONE.armR, BONE.foreR, BONE.handR];
 const HEAD_BONES = [BONE.neck, BONE.head];
 const LEAN_BONES = [BONE.spine1, ...STOOP_BONES];
 const CARRY_BONES = [BONE.armR, BONE.foreR, BONE.handR];
+const IDENT34 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
 const _T = new Float32Array(12), _inv = new Float32Array(12), _tmp = new Float32Array(12);
 
 /** C = A * B for 3x4 affine matrices (row-major, implicit last row 0 0 0 1). */
@@ -864,21 +897,16 @@ function rigidify(M, rest) {
 
 function newSlot() {
   return { x: 0, y: -1000, z: 0, heading: 0, speed: 0, phase: 0, pose: 1, look: 0, appearance: null, visible: false, a: null,
-    lod: -1, blendFrame: -10, blendBase: null, model: null, bagHidden: false,     // model: pose before the figure transform
+    lod: -1, inView: false, blendFrame: -10, blendBase: null, model: null,     // model: pose before the figure transform
     posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
+    cupW: 0, fromCup: 0, cupOn: false,
     pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: null, steerIn: null, mob: null,
-    holdWith: -1, hold: null, comp: false, babySlot: -1 };
-}
-
-function newRowAttr(n) {
-  const a = new THREE.InstancedBufferAttribute(new Float32Array(n), 1);
-  a.setUsage(THREE.DynamicDrawUsage);
-  return a;
+    holdWith: -1, hold: null, comp: false, babySlot: -1, idleIn: -1, idleShown: -1 };
 }
 
 /**
  * Float RGBA data texture. With `rows`, an update uploads only the first userData.rows rows
- * (the visible figures are packed there): the image height is lowered for the upload and
+ * (the posed figures are packed there): the image height is lowered for the upload and
  * restored right after it. The first upload always allocates the full height.
  */
 function dataTexture(data, w, h, rows) {
@@ -972,32 +1000,6 @@ function pitchBones(M, rest, bones, p, ang) {
       M[o + col] = R00 * x + R01 * y + R02 * z + (col === 3 ? px : 0);
       M[o + 4 + col] = R10 * x + R11 * y + R12 * z + (col === 3 ? py : 0);
       M[o + 8 + col] = R20 * x + R21 * y + R22 * z + (col === 3 ? pz : 0);
-    }
-  }
-}
-
-/** Rotate bones of M about an axis through pivot bone p's posed joint; the axis (ax, ay, az) is
- *  given in bone `fb`'s posed frame (ang > 0: counter-clockwise about it). */
-function rotBonesAxis(M, rest, bones, p, fb, ax, ay, az, ang) {
-  const k = p * 12, r = rest[p], f = fb * 12;
-  const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
-  const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
-  const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
-  let x = M[f] * ax + M[f + 1] * ay + M[f + 2] * az, y = M[f + 4] * ax + M[f + 5] * ay + M[f + 6] * az, z = M[f + 8] * ax + M[f + 9] * ay + M[f + 10] * az;
-  const l = Math.hypot(x, y, z) || 1;
-  x /= l; y /= l; z /= l;
-  const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
-  const R00 = t * x * x + c, R01 = t * x * y - s * z, R02 = t * x * z + s * y;
-  const R10 = t * x * y + s * z, R11 = t * y * y + c, R12 = t * y * z - s * x;
-  const R20 = t * x * z - s * y, R21 = t * y * z + s * x, R22 = t * z * z + c;
-  for (const b of bones) {
-    const o = b * 12;
-    for (let col = 0; col < 4; col++) {
-      let vx = M[o + col], vy = M[o + 4 + col], vz = M[o + 8 + col];
-      if (col === 3) { vx -= px; vy -= py; vz -= pz; }
-      M[o + col] = R00 * vx + R01 * vy + R02 * vz + (col === 3 ? px : 0);
-      M[o + 4 + col] = R10 * vx + R11 * vy + R12 * vz + (col === 3 ? py : 0);
-      M[o + 8 + col] = R20 * vx + R21 * vy + R22 * vz + (col === 3 ? pz : 0);
     }
   }
 }

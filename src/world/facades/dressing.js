@@ -41,14 +41,16 @@ function panes(L) {
 
 /**
  * Posters, price cards and door stickers on shopfront L of opening o (matrix m: the
- * opening's local frame). Text batch, full colour.
+ * opening's local frame). Text batch, full colour. far: the far range keeps the same
+ * posters and banners (they still read at 200 m, so the shopfront does not change at the
+ * detail switch), in front of the far glass plane; the small cards are left out.
  */
-export function dressWindow(kit, o, L, m, type) {
+export function dressWindow(kit, o, L, m, type, far = false) {
   const r = RNG.from(o.id, 'dress');
   const keen = KEEN[type] || KEEN.general;
   const t = new Tpl();
   const yG = L.yT - 0.05, y0 = L.riser + 0.1;
-  const zG = -0.016;
+  const zG = far ? 0.05 : -0.016;
   const ps = panes(L);
   const used = [];
   const free = (x0, x1, a, b) => !used.some((u) => x0 < u[1] && x1 > u[0] && a < u[3] && b > u[2]);
@@ -92,11 +94,11 @@ export function dressWindow(kit, o, L, m, type) {
       const h = r.range(0.17, 0.26), w = h * cell.aspect;
       if (x + w > x1 - 0.06) break;
       const y = y0 + h / 2 + r.range(0.0, 0.25);
-      if (free(x, x + w, y - h / 2, y + h / 2)) { used.push([x, x + w, y - h / 2, y + h / 2]); cardTpl(t, cell, x + w / 2, y, h, zG); }
+      if (free(x, x + w, y - h / 2, y + h / 2)) { used.push([x, x + w, y - h / 2, y + h / 2]); if (!far) cardTpl(t, cell, x + w / 2, y, h, zG); }
       x += w + r.range(0.08, 0.3);
     }
   }
-  if (r.chance(0.45)) {
+  if (!far && r.chance(0.45)) {
     // the door: "open" / entrance sticker, or the opening hours card
     const cell = dressCell('stickers', r.pick([0, 1, 2, 7, 3, 4]));
     const h = cell.aspect > 1.5 ? 0.11 : 0.2;

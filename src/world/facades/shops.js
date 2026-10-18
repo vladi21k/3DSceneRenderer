@@ -21,6 +21,10 @@ function rail(t, a, b, w, zf, zb, shade = 1) {
  */
 export function shopLayout(o, rng, back = 0.4) {
   const hwI = o.w / 2 - FW;
+  // the shopfront stands back in its opening, lined by a painted box surround, so the
+  // glass sits 0.37–0.6 m behind the wall face and the reveal and its head shade it
+  const inset = Math.min(0.18, Math.max(0.06, 0.45 - o.recess), Math.max(0, back - 0.5));
+  back -= inset;
   const arched = isArched(o);
   const sp = springY(o);
   let yT;
@@ -37,7 +41,7 @@ export function shopLayout(o, rng, back = 0.4) {
   // the head is glazed (sunburst bars under arches); a solid panel only carries a sign
   const head = arched ? 'fan' : yT < o.h - FW - 0.2 ? 'glass' : 'none';
   return {
-    hwI, yT, arched, doorW, dx, setback,
+    hwI, yT, arched, doorW, dx, setback, inset,
     doorH: Math.min(yT - 0.06, rng.range(2.2, 2.4)),
     riser: rng.range(0.3, 0.55),
     head,
@@ -63,11 +67,25 @@ export function shopFrameTpl(o, L, q) {
   const { hwI, yT, doorW, dx, setback, doorH, riser } = L;
   const d0 = dx - doorW / 2, d1 = dx + doorW / 2;
   if (q < 0.5) {
-    // far: casing, transom, risers and door posts as flat faces
+    // far: casing, transom, risers, door posts, the door leaf's stiles and rails and the
+    // display mullions as flat faces, so the opening averages as dark as the near design
+    // (whose joinery covers a fifth of it); a set-back entrance is a dark lobby (shade)
     if (yT < o.h - FW - 0.05) t.box(-hwI, yT - 0.05, -0.04, hwI, yT + 0.05, ZF - 0.005, 1, 1, 1);
     t.box(-hwI, 0, -0.04, hwI, riser, 0.02, 1, 0.8, 0.9);
     t.box(d0 - 0.06, 0, -0.04, d0, yT, ZF - 0.01, 1, 1, 1);
     t.box(d1, 0, -0.04, d1 + 0.06, yT, ZF - 0.01, 1, 1, 1);
+    if (setback > 0) t.box(d0, 0, -0.04, d1, doorH + 0.08, ZF - 0.012, 1, 0.12, 0.08);
+    else {
+      const sw = L.timber ? 0.11 : 0.085, bw = L.timber ? 0.35 : 0.3;
+      t.box(d0, 0, -0.04, d0 + sw, doorH, ZF - 0.01, 1, 0.9, 0.9);
+      t.box(d1 - sw, 0, -0.04, d1, doorH, ZF - 0.01, 1, 0.9, 0.9);
+      t.box(d0 + sw, 0, -0.04, d1 - sw, bw, ZF - 0.01, 1, 0.85, 0.85);
+      t.box(d0, doorH, -0.04, d1, doorH + 0.08, ZF - 0.01, 1, 0.9, 0.9);
+    }
+    for (const [a, b] of [[-hwI, d0 - 0.065], [d1 + 0.065, hwI]]) {
+      const w = b - a, nm = w < 0.3 ? 0 : Math.max(0, Math.round(w / 1.3) - 1);
+      for (let i = 1; i <= nm; i++) { const x = a + (w * i) / (nm + 1); t.box(x - 0.028, riser, -0.04, x + 0.028, yT, ZF - 0.012, 1, 0.95, 0.95); }
+    }
     return t.bake();
   }
   // transom bar
@@ -173,9 +191,9 @@ export function shopGlassTpl(o, L, q = 1) {
   rect(d1 + 0.03, riser, hwI, yG, gz);
   // over the door (top light) — in the front plane
   rect(d0 - 0.03, doorH + 0.08, d1 + 0.03, yG, gz);
-  // door glass
+  // door glass (far: between the leaf's stiles and rails, none in a set-back lobby)
   const zD = far ? gz : -setback - 0.005;
-  if (far) rect(d0, 0.02, d1, doorH + 0.08, zD);
+  if (far) { if (!(L.setback > 0)) rect(d0 + 0.08, 0.3, d1 - 0.08, doorH, zD); }
   else rect(d0 + 0.08, 0.3, d1 - 0.08, doorH - 0.1, zD);
   if (setback > 0) {
     // glazed returns either side of the recessed entrance (facing into the recess)
@@ -223,6 +241,21 @@ export function shopShutterTpl(o, L, q) {
 }
 
 export const SHOP_FW = FW;
+
+/**
+ * Box surround lining the opening from the wall's reveal (its end at z = inset) back to
+ * the set-back shopfront's casing (shopfront-local z, frame paint): jambs, head soffit and
+ * the threshold. Null without an inset.
+ */
+export function shopLiningTpl(o, L, q) {
+  if (!(L.inset > 0.01)) return null;
+  const t = new Tpl();
+  t.uvLong = true;
+  const n = headSegments(o, q);
+  const ring = (z) => outlinePts(o, 0, n).map((p) => [p[0], p[1], z]);
+  t.loft([ring(L.inset + 0.004), ring(ZF - 0.01)], true, 0.7);
+  return t.bake();
+}
 /** Local z of far-range shop glass. */
 export const SHOP_GLASS_Z_FAR = 0.025;
 
@@ -245,7 +278,7 @@ const cache = new TplCache(600);
 /** {frame, glass, shutter, recess} templates for shopfront o with layout L. */
 export function shopTpls(design, o, L, q) {
   const key = `${design}|${o.top}|${o.w.toFixed(3)}|${o.h.toFixed(3)}|${(o.rise ?? 0).toFixed(3)}|${o.recess.toFixed(2)}|${q}`;
-  const T = cache.get(key, () => ({ frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, { ...L, shutterDown: 0 }, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null }));
+  const T = cache.get(key, () => ({ frame: shopFrameTpl(o, L, q), glass: shopGlassTpl(o, L, q), shutter: L.box ? shopShutterTpl(o, { ...L, shutterDown: 0 }, q) : null, recess: q >= 0.5 ? shopRecessTpl(o, L) : null, lining: shopLiningTpl(o, L, q) }));
   if (!L.box || !(L.shutterDown > 0)) return T;
   // a lowered curtain belongs to one opening: its own template (by how far it is down)
   const sh = cache.get(`${key}|down${L.shutterDown.toFixed(2)}`, () => ({ shutter: shopShutterTpl(o, L, q) }));

@@ -26,7 +26,7 @@ import { U } from '../../core/uniforms.js';
 // in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):
-// a fraction (uLeafTrans, ~0.32) of what the lit face would show, a little more looking
+// a fraction (uLeafTrans, ~0.4) of what the lit face would show, a little more looking
 // into the light and on the thin outer shell (rim-lit edges), and through the crown like
 // the direct term. Sky light from the far side passes through the same way.
 //
@@ -475,11 +475,11 @@ export function createVegMaterials(app, atlas) {
   const M = app.materials;
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
-    trans: { value: 0.32 },     // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.55, 0.36) }, // sky occlusion by the crown: extinction (1/m), floor
-    spec: { value: 0.5 },       // share of the direct specular kept
+    trans: { value: 0.4 },      // leaf transmission: share of the lit face's radiance passed through
+    sky: { value: new THREE.Vector2(0.5, 0.4) },   // sky occlusion by the crown: extinction (1/m), floor
+    spec: { value: 0.7 },       // share of the direct specular kept (waxy sunlit leaves glint)
     a2c: { value: 0 },
-    density: { value: 0.75 },   // crown extinction (1/m): exp(-0.75 * 2 m) ~ 0.22 through a young crown
+    density: { value: 0.62 },   // crown extinction (1/m): exp(-0.62 * 2 m) ~ 0.29 through a young crown
     shift: { value: 0.5 },      // shadow lookup moved this share of the way out of the crown along the sun
                                 // ray: the inner half of a crown receives its outer leaves' shadow
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)

@@ -48,7 +48,7 @@ function addSpill(kit, ctx, o, m, lit, kind, dim = 0) {
 }
 
 /** Interior glass attributes for an opening with glass at local depth zRef. */
-export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 0, zRef = -0.012, lit = o.lit }) {
+export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 0, zRef = -0.012, lit = o.lit, recess = o.recess }) {
   const winY0 = o.y - roomY0, winY1 = winY0 + o.h;
   const baseH = roomY0 - ctx.plan.groundAt(o.uc);
   const hw = o.w / 2;
@@ -56,7 +56,7 @@ export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 
     aRoomP: (k, v, a, i) => { const o = k * VS; a[i] = W / 2 + v[o]; a[i + 1] = winY0 + v[o + 1]; a[i + 2] = Math.max(0, zRef - v[o + 2]); a[i + 3] = hw; },
     aRoomS: [W, H, D, baseH],
     aWin: [seed, lit, drape, winCode(kind, false, type)],
-    aFac: [ctx.angle, Math.floor(ctx.streetW) + Math.min(0.95, o.recess), winY0, winY1], // street width + recess packed
+    aFac: [ctx.angle, Math.floor(ctx.streetW) + Math.min(0.95, recess), winY0, winY1], // street width + recess packed
     aFrame: [0, 0, 0, 0],
   };
 }
@@ -290,20 +290,25 @@ function* buildShop(kit, ctx, o, signInfo, type) {
     L.head = 'panel'; L.headSign = true;
   }
   const T = shopTpls(`${plan.seed}|${variant}|${headSign}`, o, L, ctx.q);
-  const m = openingMatrix(ctx.frame, o, new THREE.Matrix4());
+  // the shopfront stands L.inset behind the infill plane, lined back to it (m0: the
+  // opening's own frame, which the reveal film and the awning keep)
+  const m0 = openingMatrix(ctx.frame, o, new THREE.Matrix4());
+  const m = new THREE.Matrix4().copy(m0).multiply(_r.makeTranslation(0, 0, -(L.inset || 0)));
   // timber shopfronts are painted like the building's joinery, the others steel or
   // aluminium from the shopfitters' range
   const fc = weather(L.timber ? ctx.frameRGB : swatch('shop', RNG.from(o.id, 'shopColour')), r, 0.7);
   kit.get('joinery').add(T.frame, m, fc[0], fc[1], fc[2], null, r.next(), 0.3 + 0.4 * r.next());
+  if (T.lining) kit.get('joinery').add(T.lining, m, fc[0], fc[1], fc[2]);
   // interior
   const f0 = plan.floors[0];
   const roomY0 = o.y;
   const W = Math.max(4, o.w + 1.6);
   const H = Math.max(3, f0.y + f0.h - roomY0 - 0.3);
   const D = 6.5 + r.next() * 3;
-  kit.get('glass').add(T.glass, m, 1, 1, 1,
-    glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit }));
-  addSpill(kit, ctx, o, m, o.lit, 1);
+  const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit, recess: o.recess + (L.inset || 0) });
+  shadeGlass(ga, awningShade(ctx, o));
+  kit.get('glass').add(T.glass, m, 1, 1, 1, ga);
+  addSpill(kit, ctx, o, m0, o.lit, 1);
   // its light on the pavement in front (main-street fronts)
   if (ctx.q >= 0.5 && !ctx.lot.sideStreet && !ctx.plan.isReturn && !ctx.lot.backdrop) {
     const gg = groundGlow(ctx, o);
@@ -311,6 +316,8 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   }
   // the shop's dressing: posters and price cards on the glass, stickers on the door, the
   // name in vinyl letters on the head glass, goods hung on the piers (near range)
+  // far range (main street): the same posters, so nothing changes at the detail switch
+  if (ctx.q < 0.5 && ctx.lod > 0 && !ctx.lot.backdrop && !ctx.lot.sideStreet && !(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, true);
   if (ctx.q >= 0.5 && !ctx.lot.backdrop) {
     if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type);
     const rv = RNG.from(o.id, 'vinyl');
@@ -369,35 +376,73 @@ function* buildShop(kit, ctx, o, signInfo, type) {
 }
 
 // ------------------------------------------------------------------ awnings
-function buildAwning(kit, ctx, o, r, design) {
-  const plan = ctx.plan;
-  const col = o.awning.color ? { c1: lin(o.awning.color), c2: lin(o.awning.color), period: 0 } : awningColors(r);
+/**
+ * Shape and colour of the awning over shop opening o (its own, from the plan or added
+ * here; see awningOf), in the opening's local frame: template, placement, the valance
+ * front, and what the shop glass needs to mirror its underside (projection from the wall
+ * face P, valance hem height above the sill, half width). Deterministic per opening.
+ */
+function awningPlan(ctx, o) {
+  const spec = awningOf(ctx, o);
+  if (!spec) return null;
+  const r = RNG.from(o.id, 'awningPlan');
+  const col = spec.color ? { c1: lin(spec.color), c2: lin(spec.color), period: 0 } : awningColors(r);
   const crown = crownY(o);
   const arched = isArched(o) && o.top !== 'segment';
-  const ground = plan.groundAt(o.uc) - o.y; // paving relative to the sill (≤ 0)
-  let tpl, mLocal, valFront = null;
+  const ground = ctx.plan.groundAt(o.uc) - o.y; // paving relative to the sill (≤ 0)
   const valH = r.range(0.2, 0.28);
-  if (o.awning.type === 'dutch') {
+  if (spec.type === 'dutch') {
     if (arched) {
       const R = o.w / 2 + 0.12;
-      tpl = domeAwning(0, R, valH, ctx.q);
-      mLocal = [0, crown + 0.12 - R, o.recess]; // on the spring line for round heads
-    } else {
-      const R = Math.min(0.85, Math.max(0.6, (crown - ground - 2.4) * 0.6));
-      const W = o.w + 0.3;
-      tpl = domeAwning(W, R, valH, ctx.q);
-      mLocal = [0, crown + 0.15 - R, o.recess];
-      if (W - 2 * R > 1.0) valFront = { w: W - 2 * R, y: mLocal[1] - valH / 2, z: o.recess + R + 0.012 };
+      const y0 = crown + 0.12 - R;               // on the spring line for round heads
+      return { col, valH, dome: [0, R], mLocal: [0, y0, o.recess], valFront: null, P: R, hem: y0 - valH, hw: R };
     }
-  } else {
-    const W = o.w + 0.3;
-    const top = crown + 0.14;
-    const P = r.range(1.0, 1.5);
-    const D = Math.max(0.35, Math.min(r.range(0.55, 0.8), top - ground - 2.35 - valH));
-    tpl = slopeAwning(W, P, D, valH, ctx.q);
-    mLocal = [0, top, o.recess];
-    valFront = { w: W, y: top - D - valH / 2, z: o.recess + P + 0.012 };
+    const R = Math.min(0.85, Math.max(0.6, (crown - ground - 2.4) * 0.6));
+    const W = o.w + 0.3, y0 = crown + 0.15 - R;
+    return {
+      col, valH, dome: [W, R], mLocal: [0, y0, o.recess], P: R, hem: y0 - valH, hw: W / 2,
+      valFront: W - 2 * R > 1.0 ? { w: W - 2 * R, y: y0 - valH / 2, z: o.recess + R + 0.012 } : null,
+    };
   }
+  const W = o.w + 0.3;
+  const top = crown + 0.14;
+  const P = r.range(1.0, 1.5);
+  const D = Math.max(0.35, Math.min(r.range(0.55, 0.8), top - ground - 2.35 - valH));
+  return { col, valH, slope: [W, P, D], mLocal: [0, top, o.recess], valFront: { w: W, y: top - D - valH / 2, z: o.recess + P + 0.012 }, P, hem: top - D - valH, hw: W / 2 };
+}
+
+/**
+ * What shades shop opening o's glass from above: its own awning or the café's continuous
+ * one. {P (from the wall face), hem (above the sill), hw (half width about the opening
+ * centre), col (canvas, linear)} or null.
+ */
+function awningShade(ctx, o) {
+  const aw = ctx.cafeAwning;
+  if (aw && aw.covers(o.uc - o.w / 2, o.uc + o.w / 2)) {
+    let best = null;
+    for (const un of aw.units) if (!best || Math.abs(un.uc - o.uc) < Math.abs(best.uc - o.uc)) best = un;
+    if (!best || best.D == null) return null;
+    const c = aw.colors;
+    return { P: best.P, hem: aw.top - best.D - aw.valH - o.y, hw: 9.5, col: c.c1.map((x, i) => (x + c.c2[i]) / 2) };
+  }
+  const ap = awningPlan(ctx, o);
+  if (!ap) return null;
+  const c = ap.col;
+  return { P: ap.P, hem: ap.hem, hw: ap.hw, col: c.c1.map((x, i) => (x + c.c2[i]) / 2) };
+}
+
+/** Write the awning over a shop window into its glass attributes (see interior.js). */
+function shadeGlass(ga, sh) {
+  if (!sh || !(sh.P > 0.1) || !(sh.hem > 0.3)) return;
+  ga.aWin = [ga.aWin[0], ga.aWin[1], Math.round(Math.min(sh.P, 9) * 20) + Math.min(0.999, sh.hem / 10), ga.aWin[3]];
+  ga.aFrame = [sh.col[0], sh.col[1], sh.col[2], Math.min(0.49, sh.hw / 20)];
+}
+
+function buildAwning(kit, ctx, o, r, design) {
+  const ap = awningPlan(ctx, o);
+  if (!ap) return;
+  const { col, valH, mLocal, valFront } = ap;
+  const tpl = ap.dome ? domeAwning(ap.dome[0], ap.dome[1], valH, ctx.q) : slopeAwning(ap.slope[0], ap.slope[1], ap.slope[2], valH, ctx.q);
   const m = new THREE.Matrix4().copy(openingMatrix(ctx.frame, o, new THREE.Matrix4())).multiply(_r.makeTranslation(mLocal[0], mLocal[1], mLocal[2]));
   const canvas = tpl.canvas;
   kit.get('awning').add(canvas, m, col.c1[0], col.c1[1], col.c1[2], {
@@ -416,8 +461,46 @@ function buildAwning(kit, ctx, o, r, design) {
 }
 
 /** Whether shop opening o carries its own awning (none under a café's continuous one). */
-function hasAwning(ctx, o) {
-  return !!o.awning && !(ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2, o.uc + o.w / 2));
+function hasAwning(ctx, o) { return !!awningOf(ctx, o); }
+
+/** Share of the shops without one in the plan that put up an awning (about 60% in all). */
+const EXTRA_AWNING = 0.4;
+
+/**
+ * The awning spec ({type, color}) of shop opening o, or null: the plan's, plus one on
+ * ~40% of the other main-street shops (most shopfronts on the street shade their
+ * windows by day); none under a café's continuous awning, and none over a terrace of
+ * market umbrellas, whose canopies come to within 0.3 m of the wall.
+ */
+function awningOf(ctx, o) {
+  if (o.kind !== 'shop') return null;
+  const memo = ctx.awnings || (ctx.awnings = new Map());
+  if (memo.has(o)) return memo.get(o);
+  let a = null;
+  const a0 = o.uc - o.w / 2, a1 = o.uc + o.w / 2;
+  if (ctx.cafeAwning && ctx.cafeAwning.covers(a0, a1)) a = null;
+  else if (ctx.umbrellas && ctx.umbrellas[0] < a1 + 0.8 && ctx.umbrellas[1] > a0 - 0.8) a = null;
+  else if (o.awning) a = o.awning;
+  else if (!ctx.lot.backdrop && !ctx.lot.sideStreet) {
+    const r = RNG.from(o.id, 'awningExtra');
+    // (round-headed openings mostly take a dome that follows the arch)
+    const arched = isArched(o) && o.top !== 'segment';
+    if (r.chance(EXTRA_AWNING)) a = { type: r.chance(arched ? 0.4 : 0.8) ? 'slope' : 'dutch', color: null };
+  }
+  memo.set(o, a);
+  return a;
+}
+
+/** Facade u range [u0, u1] of the lot's umbrella terrace, or null. */
+function umbrellaSpan(ctx) {
+  const { lot, frame, app } = ctx;
+  if (lot.sideStreet || lot.cafe == null || ctx.plan.isReturn) return null;
+  const cafe = app.layout.cafes[lot.cafe];
+  if (!cafe || cafe.style !== 'umbrella') return null;
+  _inv.copy(frame.matrix).invert();
+  const uAt = (s) => app.route.toWorld(s, lot.side * lot.d, 0, _p).applyMatrix4(_inv).x;
+  const a = uAt(cafe.s0 - 0.6), b = uAt(cafe.s1 + 0.6);
+  return [Math.min(a, b), Math.max(a, b)];
 }
 
 const _inv = new THREE.Matrix4(), _p = new THREE.Vector3();
@@ -487,6 +570,11 @@ function planCafeAwning(ctx) {
   }
   const topMin = gMax + CAFE_HEM + valH + pMax * 0.16;
   const top = Math.max(topMin, Math.min(ceil, Math.max(crown + 0.14, topMin + 0.25)));
+  // each unit's drop: front bar level with the paving under it, hem ~2.7 m above its high side
+  for (const un of units) {
+    const g = Math.max(plan.groundAt(un.uc - un.w / 2), plan.groundAt(un.uc + un.w / 2));
+    un.D = Math.min(un.P * 0.68, Math.max(un.P * 0.1, top - (g + CAFE_HEM + valH)));
+  }
   return { units, covers, valH, top, colors: awningColors(r), design: signDesign(lot.seed ^ 0x5ca1ab1e, 'letters', 'cafe') };
 }
 
@@ -494,10 +582,7 @@ function planCafeAwning(ctx) {
 function buildCafeAwning(kit, ctx, aw) {
   const { plan, frame, q } = ctx;
   const { valH, top, colors: col } = aw;
-  for (const { uc, w, P } of aw.units) {
-    // front bar level with the paving under this unit: hem ~2.7 m above its high side
-    const g = Math.max(plan.groundAt(uc - w / 2), plan.groundAt(uc + w / 2));
-    const D = Math.min(P * 0.68, Math.max(P * 0.1, top - (g + CAFE_HEM + valH)));
+  for (const { uc, w, P, D } of aw.units) {
     const tpl = slopeAwning(w - 0.03, P, D, valH, q);
     const m = wallMatrix(frame, uc, top, new THREE.Matrix4());
     const canvas = tpl.canvas;
@@ -582,6 +667,7 @@ function buildDoor(kit, ctx, o) {
 export function* buildFront(kit, ctx) {
   const plan = ctx.plan;
   ctx.cafeAwning = ctx.cafe ? planCafeAwning(ctx) : null;
+  ctx.umbrellas = umbrellaSpan(ctx);
   ctx.joinery = joineryStyle(plan, RNG.from(plan.seed, 'joinery'));
   // one joinery colour per building (its type's palette), one for its shutters
   const jr = RNG.from(plan.seed, 'joineryColour');

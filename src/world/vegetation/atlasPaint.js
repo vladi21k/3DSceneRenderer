@@ -50,9 +50,9 @@ function ncol(nx, ny, nz, gloss = 0.5) {
 // yellow-green), a dark glossy olive for the dense (ficus-like) ones. The crown's own
 // occlusion (treeGen.js) darkens the inner leaves on top of this.
 const PAL = {
-  pagoda: { leaf: [90, 120, 38], dark: [68, 94, 32], young: [114, 142, 46], rib: [140, 158, 90], twig: [90, 100, 60] },
-  ash: { leaf: [80, 110, 40], dark: [60, 86, 34], young: [102, 130, 48], rib: [128, 146, 88], twig: [100, 96, 76] },
-  dense: { leaf: [56, 80, 34], dark: [42, 62, 28], young: [74, 98, 40], rib: [104, 120, 74], twig: [92, 84, 66] },
+  pagoda: { leaf: [94, 126, 38], dark: [70, 98, 32], young: [118, 148, 46], rib: [144, 162, 92], twig: [90, 100, 60] },
+  ash: { leaf: [84, 116, 40], dark: [62, 90, 34], young: [106, 136, 48], rib: [132, 150, 90], twig: [100, 96, 76] },
+  dense: { leaf: [60, 86, 36], dark: [44, 66, 30], young: [78, 104, 42], rib: [108, 124, 76], twig: [92, 84, 66] },
   shrub: { leaf: [54, 88, 40], dark: [40, 66, 30], young: [80, 114, 48], rib: [108, 130, 80], twig: [84, 76, 58] },
 };
 

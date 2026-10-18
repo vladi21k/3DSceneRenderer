@@ -17,8 +17,10 @@ const SWATCH = {
   alu: [[0xa4a6a4, 0.45], [0x5b4a3b, 0.2], [0xe4e2dc, 0.25], [0x3a3b3c, 0.1]],
   shutter: [[0x34503c, 0.2], [0x5e4430, 0.17], [0x7a7c76, 0.13], [0xd2cdbd, 0.12], [0x53636c, 0.1], [0x5d6146, 0.08],
     [0x8a5a34, 0.08], [0x3e6566, 0.06], [0x9ea29a, 0.06]],
-  shop: [[0x1e1f20, 0.2], [0x34373a, 0.18], [0x4a3021, 0.13], [0xa4a6a4, 0.14], [0x5b4a3b, 0.07], [0x2a3d30, 0.1],
-    [0xdcd9cf, 0.09], [0x23303d, 0.05], [0x5c1f1c, 0.04]],
+  // shopfitters' sections: mostly black, charcoal, bronze-brown and dark green, some
+  // oxblood and navy, the odd anodised silver or white front
+  shop: [[0x1e1f20, 0.26], [0x34373a, 0.18], [0x4a3021, 0.13], [0x2a3d30, 0.12], [0x5c1f1c, 0.07], [0x23303d, 0.07],
+    [0x5b4a3b, 0.06], [0xa4a6a4, 0.08], [0xdcd9cf, 0.03]],
 };
 
 /** Linear [r, g, b] of a swatch drawn from palette `kind` (timber, steel, alu, shutter, shop). */
@@ -122,7 +124,10 @@ export class Kit {
       const hk = `${key}:${this.lod}`, h = hints.get(hk);
       if (!h) hints.set(hk, { verts: batch.count, idx: batch.I.n });
       else { h.verts += (batch.count - h.verts) * 0.25; h.idx += (batch.I.n - h.idx) * 0.25; }
-      const m = batch.mesh(`${name}:${key}`, { castShadow: def.castShadow !== false && this.lod === 0, receiveShadow: def.receiveShadow !== false });
+      // far chunks cast no shadows, except the parts whose shade reads at any distance
+      // (awnings darken the shopfronts under them: without it the lod 0 → 1 swap pops)
+      const cast = def.castShadow !== false && (this.lod === 0 || def.farShadow === true);
+      const m = batch.mesh(`${name}:${key}`, { castShadow: cast, receiveShadow: def.receiveShadow !== false });
       if (!m) continue;
       if (def.renderOrder) m.renderOrder = def.renderOrder;
       // thin parts (glazing bars, grilles, louvres, brackets) only cast in the fine cascades

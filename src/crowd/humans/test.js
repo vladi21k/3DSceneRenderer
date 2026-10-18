@@ -12,12 +12,13 @@ import { hash2 } from '../../core/rng.js';
 //   ht_c    = lateral centre of the lineup (route d, metres), ht_sp = grid spacing (m)
 //   ht_axis = d (grid across the street, default) | s (grid along it)
 //   ht_rot  = extra heading for grid / sit figures (deg; 180 shows their backs, 90 a profile)
-//   ht_filter = skirt | dress | hat | cap | sunhat | suit | old | oldwalk | child | beard | glasses |
-//               shorts | bag | backpack | phone | cross | pocket | long | heavy | male | female | balding |
-//               man | woman | teen | kid (4-6 body) | boy | girl | oldman | oldwoman | tee | collar | tank |
-//               scarf | longskirt
+//   ht_filter = skirt | dress | longskirt | hat | suit | old | oldwalk | child | kid (5-7) | boy | girl | teen | man |
+//               woman | oldman | oldwoman | male | female | beard | shorts | tee | collar | pattern | heavy | long (hair) |
+//               bag (shoulder bag) | backpack | shopping | phone (walks with a phone) | cross | pocket | hip | back |
+//               talk | look (idle stances) | id=<character id> (one character of the cast, e.g. id=m06)
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
+//   ht_idle = 0..7 | cycle: standing figures take that stance (set() field idle), or change it every 4 s
 //   ht_tread = 1: grid figures walk in place (a treadmill) at ht_v (default 1.3 m/s), for gait checks
 //   ht_filter may list several filters (comma separated): figure i takes filter i % count
 //   ht_dir  = 1 / -1: every walker heads away from / towards the start of the route
@@ -62,6 +63,7 @@ export class HumansTest {
     this.dir = p.num('ht_dir', 0);
     this.nextK = this.firstFig;
     this.poseT = p.num('ht_pose', 0);
+    this.idleK = p.str('ht_idle', '');
     // mobility: ht_mode=stroller|ride|walkbike|mobmix are walking figures with that prop
     const MOBM = { stroller: 'stroller', ride: 'ride', walkbike: 'walkbike', mobmix: 'mix' };
     this.mob = p.str('ht_mob', '') || MOBM[this.mode] || '';
@@ -233,6 +235,8 @@ export class HumansTest {
       o.prop = f.prop; o.propSeed = f.propSeed;
       o.look = this.lookYaw; o.appearance = f.app; o.visible = true;
       o.holdWith = f.partner >= 0 ? f.partner : -1;
+      // ht_idle=k: every standing figure takes stance k (set() field idle); ht_idle=cycle: stances in turn
+      o.idle = this.idleK === 'cycle' ? Math.floor(this.t / 4 + i0(f)) % 8 : this.idleK !== '' ? +this.idleK : undefined;
       h.set(f.i, o);
       f.x = o.x; f.y = o.y; f.z = o.z; f.heading = heading;
     }

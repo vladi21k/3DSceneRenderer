@@ -418,7 +418,7 @@ export class Population {
     // nor in an oncoming unit's band anywhere near it (ahead of it or beside it)
     for (const T of c.tram.units) {
       const ah = T.sU - a.s;
-      if (ah > -(T.len + 6) - a.extS && ah < c.tram.uFront(T, a) + 40 + (a.mob === MOB.CYCLE ? 60 : 0) && c.tram.uGap(a, T) < 0.15) return false;
+      if (ah > -(T.len + 6) - a.extS && ah < c.tram.uFront(T, a) + 12 + (a.mob === MOB.CYCLE ? 60 : 0) && c.tram.uGap(a, T) < 0.15) return false;
     }
     // no corridor spawns inside a stop (the platforms are the sidewalk there), and no riders
     // next to each other on one line

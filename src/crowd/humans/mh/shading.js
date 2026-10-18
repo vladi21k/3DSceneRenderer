@@ -20,10 +20,10 @@ import { U } from '../../../core/uniforms.js';
 export const NB = 22;
 export const BONE_DYN = NB * 3;          // first state texel of a bone row
 export const BONE_W = BONE_DYN + 2;      // texels per bone row
-export const LOOK_W = 24;                // texels per look row (see writeLook)
+export const LOOK_W = 25;                // texels per look row (see writeLook)
 const REGION_ROUGH = [-1, 0.5, 0.8, 0.8, 0.06, -1, -1, -1, -1, 0.95, -1, 0.85, 0.32, 0.08, 0.55, 0.7];
 // specular strength per region (x the dielectric F0 0.04)
-const REGION_SPEC = [0.72, 0.35, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
+const REGION_SPEC = [0.72, 0.12, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
 
 const COMMON = /* glsl */`
 uniform highp sampler2D uBoneTex;
@@ -42,6 +42,7 @@ flat varying vec4 vCastTex;
 flat varying float vRow;
 varying float vCastAO;
 varying vec3 vRest;
+varying float vBeard;
 mat4 hBone(int row, float b) {
   int x = int(b + 0.5) * 3;
   vec4 r0 = texelFetch(uBoneTex, ivec2(x, row), 0);
@@ -85,7 +86,14 @@ void hSkin(out vec3 P, out vec3 N) {
     }
   }
   P = (m * vec4(pos, 1.0)).xyz;
-  N = normalize(mat3(m) * aNrm.xyz);
+  vec3 nrm = aNrm.xyz;
+  if (aTex.z == 1.0) {
+    // hair cards: each card is flat, so their normals facet the hair into planks; shade them mostly
+    // with the head's round normal (from the head centre), on the card's own side
+    vec3 rad = normalize(position - hLook(row, 24).xyz);
+    nrm = normalize(mix(nrm, rad * (dot(nrm, rad) < 0.0 ? -1.0 : 1.0), 0.7));
+  }
+  N = normalize(mat3(m) * nrm);
   if ((flags & 8) != 0) {
     // skirts: kept outside both thigh capsules (the striding or seated thigh pushes the cloth)
     float sc = D1.w;
@@ -101,6 +109,7 @@ void hSkin(out vec3 P, out vec3 N) {
   vCastAO = aNrm.w;
   vRow = float(row);
   vRest = position;
+  vBeard = aTex.z == 11.0 ? aTex.y / 254.0 : 1.0;
 }
 `;
 
@@ -120,6 +129,7 @@ flat varying vec4 vCastTex;
 flat varying float vRow;
 varying float vCastAO;
 varying vec3 vRest;
+varying float vBeard;
 int hRegion = 0;
 int hFlags = 0;
 float hSkinM = 0.0;
@@ -206,6 +216,19 @@ const FRAG_SURFACE = /* glsl */`
     // coverage of hair cards, brows, lashes, beards: kept from thinning out in the mips, sharpened
     // to about a pixel, then rounded to the target's sample count (alpha to coverage) or tested
     a = tx.a * (1.0 + max(lod, 0.0) * 0.22);
+    if (hRegion == 11) {
+      // beard shell: strands (fine streaks running down the face, in rest space) thin out towards
+      // the shell's edges; far away only the soft edge remains
+      vec3 sp = vRest * vec3(1400.0, 160.0, 1400.0);
+      float sn = hH3(floor(sp)) * 0.7 + hH3(floor(sp * 0.37 + 11.3)) * 0.3;
+      float fw = length(fwidth(sp));
+      sn = mix(sn, 0.5, smoothstep(0.6, 2.5, fw));
+      float edge = smoothstep(0.0, 1.0, vBeard);
+      // (light beards: grey and white strands over darker ones, the skin showing through)
+      float light = smoothstep(0.08, 0.35, hLum(tint));
+      a *= clamp((edge * (1.25 - 0.3 * light) - sn) * 2.5 + 0.35, 0.0, 1.0);
+      col *= mix(0.6 + 0.6 * sn, 0.3 + 1.1 * sn * sn, light);
+    }
     a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0);
     if (uA2C > 0.5) {
       a = floor(a * uA2C + 0.5) / uA2C;
@@ -231,6 +254,8 @@ const FRAG_SURFACE = /* glsl */`
   hEmit = vec3(hAO); diffuseColor.rgb = vec3(0.0);        // debug view: baked occlusion
 #elif HUMANS_DBG == 2
   hEmit = vec3(col); diffuseColor.rgb = vec3(0.0);        // debug view: albedo
+#elif HUMANS_DBG == 3
+  hEmit = vec3(vBeard, hRegion == 11 ? 0.0 : 0.3, 0.0); diffuseColor.rgb = vec3(0.0);   // debug view: beard edge distance
 #endif
   if (hRegion == 13) {
     // a lit phone screen: a pale UI with a few rows of content
@@ -251,7 +276,7 @@ const FRAG_NORMAL = /* glsl */`
   vec3 Bt = q1perp * st0.y + q0perp * st1.y;
   float det = max(dot(T, T), dot(Bt, Bt));
   float scl = det == 0.0 ? 0.0 : inversesqrt(det);
-  if (uHasNormal > 0.5 && vCastTex.y < 254.5 && (hFlags & 16) == 0) {
+  if (uHasNormal > 0.5 && vCastTex.y < 254.5 && (hFlags & 16) == 0 && hRegion != 11) {
     vec3 nm = texture(uNormalArr, vec3(vCastUv, vCastTex.y)).xyz * 2.0 - 1.0;
     normal = normalize(T * (nm.x * scl) + Bt * (nm.y * scl) + normal * nm.z);
   }
@@ -378,7 +403,7 @@ export function floatTexture(w, h) {
 
 /**
  * Writes one person's look row: region tints (texels 0-15), pattern (16, 17) and the character's
- * landmarks for the vertex shader (18-23: thigh capsules L / R, wrists L / R).
+ * landmarks for the vertex shader (18-23: thigh capsules L / R, wrists L / R (x hem height); 24: head centre).
  */
 export function writeLook(data, row, a) {
   const o = row * LOOK_W * 4;
@@ -393,4 +418,6 @@ export function writeLook(data, row, a) {
   const put = (i, j, r) => { data[o + i * 4] = J[j][0]; data[o + i * 4 + 1] = J[j][1]; data[o + i * 4 + 2] = J[j][2]; data[o + i * 4 + 3] = r; };
   put(18, 14, th.L[0]); put(19, 15, th.L[1]); put(20, 18, th.R[0]); put(21, 19, th.R[1]);
   put(22, 9, a.char.hemY ?? -1); put(23, 13, 0);
+  const hc = a.char.info.headC || J[5];
+  data[o + 96] = hc[0]; data[o + 97] = hc[1]; data[o + 98] = hc[2]; data[o + 99] = 0;
 }

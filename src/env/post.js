@@ -405,13 +405,13 @@ const post = {
     const night = env ? env.state.night : 0;
     const ss = THREE.MathUtils.smoothstep, lerp = THREE.MathUtils.lerp;
     const pu = this.prepass.material.uniforms, fu = this.final.material.uniforms;
-    // how directly the camera faces the sun: `into` 1 within 10° of the view axis, 0 beyond
-    // 25°; `backlit` 1 within ~25°, 0 beyond ~40° (only meaningful for a low sun)
+    // how directly the camera faces the sun: `into` 1 within 12° of the view axis, 0 beyond
+    // 35°; `backlit` 1 within ~25°, 0 beyond ~40° (only meaningful for a low sun)
     let into = 0, backlit = 0;
     if (env && camera && !env.disabled) {
       camera.getWorldDirection(_sv);
       const c = _sv.dot(env.state.sunDir);
-      into = ss(c, 0.9063, 0.9848);
+      into = ss(c, 0.8192, 0.9781);
       backlit = ss(c, 0.766, 0.9063) * ss(t, 0.3, 0.45) * (env.state.sunDir.y > -0.02 ? 1 : 0);
     }
     // haze: a dusty summer afternoon (visibility ~3.5 km: distant facades wash out to a

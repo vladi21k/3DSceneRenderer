@@ -111,7 +111,7 @@ if ( vStripe.w > 0.0 ) {
   // canvas lets some sun through: the shaded underside glows in the canvas colour
   vec3 nW = inverseTransformDirection( normal, viewMatrix );
   float back = max( dot( -nW, uSunDir ), 0.0 ) * step( 0.0, uSunDir.y );
-  totalEmissiveRadiance += diffuseColor.rgb * uSunColor * back * 0.06;
+  totalEmissiveRadiance += diffuseColor.rgb * uSunColor * back * 0.045;
 }`);
     // a UV varying that does not depend on texture maps being present
     shader.vertexShader = shader.vertexShader
@@ -143,33 +143,28 @@ function surface(t, nu, nv, P, shade = 1, flip = false) {
   const pts = [];
   for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) pts.push(P(i / nu, j / nv));
   const at = (i, j) => pts[Math.min(nv, Math.max(0, j)) * (nu + 1) + Math.min(nu, Math.max(0, i))];
-  const EPS = 1e-12;
-  // tangent along u at (i, j), from row j or, if that row is collapsed there, the nearest row that spans
+  const EPS = 1e-12, U = [0, 0, 0], V = [0, 0, 0];
+  // difference of two grid points into out; false if they coincide
+  const diff = (out, a, b) => { out[0] = a[0] - b[0]; out[1] = a[1] - b[1]; out[2] = a[2] - b[2]; return out[0] * out[0] + out[1] * out[1] + out[2] * out[2] > EPS; };
+  // tangent along u at (i, j), from row j or, where that row is collapsed, the nearest row that spans
   const tu = (i, j) => {
     for (let k = 0; k <= nv; k++) {
-      for (const jj of k ? [j + k, j - k] : [j]) {
-        if (jj < 0 || jj > nv) continue;
-        const a = at(i + 1, jj), b = at(i - 1, jj);
-        const x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
-        if (x * x + y * y + z * z > EPS) return [x, y, z];
-      }
+      if (j + k <= nv && diff(U, at(i + 1, j + k), at(i - 1, j + k))) return;
+      if (k && j - k >= 0 && diff(U, at(i + 1, j - k), at(i - 1, j - k))) return;
     }
-    return [1, 0, 0];
+    U[0] = 1; U[1] = 0; U[2] = 0;
   };
   const tv = (i, j) => {
     for (let k = 0; k <= nu; k++) {
-      for (const ii of k ? [i + k, i - k] : [i]) {
-        if (ii < 0 || ii > nu) continue;
-        const c = at(ii, j + 1), d = at(ii, j - 1);
-        const x = c[0] - d[0], y = c[1] - d[1], z = c[2] - d[2];
-        if (x * x + y * y + z * z > EPS) return [x, y, z];
-      }
+      if (i + k <= nu && diff(V, at(i + k, j + 1), at(i + k, j - 1))) return;
+      if (k && i - k >= 0 && diff(V, at(i - k, j + 1), at(i - k, j - 1))) return;
     }
-    return [0, -1, 0];
+    V[0] = 0; V[1] = -1; V[2] = 0;
   };
   for (let j = 0; j <= nv; j++) {
     for (let i = 0; i <= nu; i++) {
-      const [ux, uy, uz] = tu(i, j), [vx, vy, vz] = tv(i, j);
+      tu(i, j); tv(i, j);
+      const ux = U[0], uy = U[1], uz = U[2], vx = V[0], vy = V[1], vz = V[2];
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       let l = Math.hypot(nx, ny, nz);
       if (!(l > 1e-9)) { nx = 0; ny = 1; nz = 0; l = 1; }   // tangents parallel: face up

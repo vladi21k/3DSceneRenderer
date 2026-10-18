@@ -65,9 +65,11 @@ export const LIT_SHARE = 0.5;
 export const ROOM_LIGHT_GLSL = /* glsl */`
 #define LIT_SHARE ${LIT_SHARE.toFixed(3)}
 vec3 fRoomLampC( float lit ) {
+  // 4 rooms in 5 at 2700–3000 K (incandescent, warm LED), a few at ~3500 K, and the odd
+  // cool-white LED room, dimmer (a single ceiling panel, not a lamp in the room)
   float c = fract( lit * 13.71 + 0.37 );
-  vec3 warm = vec3( 1.0, 0.56, 0.27 ), mid = vec3( 1.0, 0.68, 0.42 ), cool = vec3( 1.0, 0.80, 0.62 );
-  return c < 0.55 ? mix( warm, mid, c / 0.55 ) : c < 0.9 ? mix( mid, cool, ( c - 0.55 ) / 0.35 ) : vec3( 0.95, 0.9, 0.84 );
+  vec3 warm = vec3( 1.0, 0.56, 0.27 ), mid = vec3( 1.0, 0.64, 0.36 ), cool = vec3( 1.0, 0.74, 0.52 );
+  return c < 0.82 ? mix( warm, mid, c / 0.82 ) : c < 0.95 ? mix( mid, cool, ( c - 0.82 ) / 0.13 ) : vec3( 0.95, 0.91, 0.85 ) * 0.6;
 }
 // lamp colour at K kelvin under the street's daylight white balance (red = 1)
 vec3 fKelvin( float K ) {
@@ -75,7 +77,7 @@ vec3 fKelvin( float K ) {
   K = clamp( K, 2700.0, 5000.0 );
   return K < 3000.0 ? mix( a, b, ( K - 2700.0 ) / 300.0 ) : K < 3500.0 ? mix( b, c, ( K - 3000.0 ) / 500.0 ) : K < 4000.0 ? mix( c, d, ( K - 3500.0 ) / 500.0 ) : mix( d, e, ( K - 4000.0 ) / 1000.0 );
 }
-float fRoomLevel( float lit ) { return 0.6 + 0.8 * fract( lit * 7.13 + 0.5 ); }
+float fRoomLevel( float lit ) { return 0.6 + 0.6 * fract( lit * 7.13 + 0.5 ); }
 float fRoomTV( float lit ) { return step( fract( lit * 31.17 + 0.11 ), 0.07 ); }
 // television light: cool, its level jumping at every cut and drifting within a shot
 vec3 fTVLight( float lit, float t ) {
@@ -118,10 +120,16 @@ const FRAG_PARS = /* glsl */`
 uniform float uTime;
 ${ROOM_LIGHT_GLSL}
 // shop lighting by day, relative to the daylight irradiance on the glass: interiors read
-// at ~5–15% of the shaded street's luminance (a few hundred lux against tens of
+// at ~3–8% of the shaded street's luminance (a few hundred lux against tens of
 // thousands outside), so the glass is dominated by its reflection wherever that shows
 // anything bright, and the goods lit by the window spots read through it
-#define SHOP_DAY 0.075
+#define SHOP_DAY 0.03
+// daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
+// (-5 EV), so even a spot-lit display stays a dark void against the street by day
+#define DAY_CAP ( 1.0 / 32.0 )
+// brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
+// the daylight on the glass
+#define SHOP_GLOW_DAY 0.075
 // share of the glass's sky irradiance that the street canyon passes into the rooms
 #define CANYON 0.42
 uniform sampler2D uGoods;
@@ -315,7 +323,7 @@ void fMannequin( inout Hit h, vec3 ro, vec3 rd, vec2 c, float seed ) {
   vec2 o = ro.xz - c, d = rd.xz;
   float a = max( dot( d, d ), 1e-6 ), b = dot( o, d ), cc = dot( o, o ) - 0.09;
   if ( b * b - a * cc < 0.0 ) return;
-  vec3 skin = r.x < 0.45 ? vec3( 0.80, 0.79, 0.76 ) : r.x < 0.8 ? vec3( 0.06, 0.06, 0.065 ) : vec3( 0.52, 0.50, 0.47 );
+  vec3 skin = r.x < 0.5 ? vec3( 0.80, 0.79, 0.76 ) : r.x < 0.68 ? vec3( 0.06, 0.06, 0.065 ) : r.x < 0.85 ? vec3( 0.52, 0.50, 0.47 ) : vec3( 0.66, 0.55, 0.42 );
   vec3 top = q.x < 0.25 ? vec3( 0.75, 0.73, 0.68 ) : q.x < 0.45 ? vec3( 0.05, 0.05, 0.055 ) : GOODS[ int( q.y * 7.99 ) ] * 0.8 + 0.03;
   vec3 low = q.z < 0.3 ? vec3( 0.10, 0.14, 0.24 ) : q.z < 0.55 ? vec3( 0.55, 0.47, 0.36 ) : q.z < 0.75 ? vec3( 0.06 ) : GOODS[ int( fract( q.y * 7.0 ) * 7.99 ) ] * 0.7 + 0.04;
   bool skirt = r.y < 0.3;
@@ -669,12 +677,15 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     h.n = vec3( 0, 0, -1 );
     h.alb = wall * 0.94;
     float dx = mix( 0.3, S.x - 1.2, rnd.y );
-    if ( !shop && p.x > dx && p.x < dx + 0.9 && p.y < 2.1 ) h.alb = vec3( 0.10, 0.09, 0.08 ); // doorway
+    if ( !shop ) h.alb = mix( h.alb, vec3( 0.10, 0.09, 0.08 ), fEdge( p.x - dx, fpS ) * fEdge( dx + 0.9 - p.x, fpS ) * fEdge( 2.1 - p.y, fpS ) ); // doorway
     float px = mix( 0.4, S.x - 1.4, rnd.z );
-    if ( !shop && !stair && p.x > px && p.x < px + 0.7 && p.y > 1.35 && p.y < 1.85 ) {
+    if ( !shop && !stair ) {
+      // a picture in a dark frame
       vec3 pc = fh3( seed * 13.0 + 5.0 );
-      float fr = ( p.x - px < 0.04 || px + 0.7 - p.x < 0.04 || p.y - 1.35 < 0.04 || 1.85 - p.y < 0.04 ) ? 1.0 : 0.0;
-      h.alb = mix( pc * 0.5 + 0.1, vec3( 0.12, 0.09, 0.06 ), fr * fKeep( fpS, 0.08 ) + 0.25 * ( 1.0 - fKeep( fpS, 0.08 ) ) );
+      float dE = min( min( p.x - px, px + 0.7 - p.x ), min( p.y - 1.35, 1.85 - p.y ) );
+      float fr = 1.0 - fEdge( dE - 0.04, fpS );
+      vec3 pic = mix( pc * 0.5 + 0.1, vec3( 0.12, 0.09, 0.06 ), fr * fKeep( fpS, 0.08 ) + 0.25 * ( 1.0 - fKeep( fpS, 0.08 ) ) );
+      h.alb = mix( h.alb, pic, fEdge( dE, fpS ) );
     }
     if ( stair ) h.alb *= 0.8 + 0.2 * fPulse( p.y / 0.17, 0.5, fpS / 0.17 ); // stair treads seen through the fanlight
   } else if ( h.t == tB.x ) {
@@ -764,8 +775,9 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
           float keep = fKeep( fp0( h.t, rd ), 0.3 );
           float img = mix( 0.5, vnoise( q * 2.2 ) * 0.7 + vnoise( q * 6.0 ) * 0.3, keep );
           h.alb = mix( c1, c2, smoothstep( 0.3, 0.7, img ) ) * ( 0.75 + 0.25 * mix( 0.5, vnoise( q * 11.0 ), keep ) );
-          float fr = step( 0.66, abs( p.x - S.x * 0.5 ) ) + step( 2.26, p.y ) + step( p.y, st < 0.5 ? 0.64 : 1.24 );
-          h.alb = mix( h.alb, vec3( 0.05 ), min( fr, 1.0 ) ); h.glow = 0.1 * ( 1.0 - min( fr, 1.0 ) );
+          float fpP = fp0( h.t, rd );
+          float fr = 1.0 - fEdge( 0.66 - abs( p.x - S.x * 0.5 ), fpP ) * fEdge( 2.26 - p.y, fpP ) * fEdge( p.y - ( st < 0.5 ? 0.64 : 1.24 ), fpP );
+          h.alb = mix( h.alb, vec3( 0.05 ), fr ); h.glow = 0.1 * ( 1.0 - fr );
         }
         else fShelfUnit( h, ro, rd, h.n, vec3( 1.0, 0.0, 0.0 ), 0.2, S.x - 0.2, spec, sseed + 0.5, st, frameC );
       }
@@ -810,18 +822,39 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
         else if ( h.id < 0.5 ) h.alb *= 0.55 + 0.45 * smoothstep( 0.0, 0.5, hem - p.y );
         h.alb = mix( h.alb, vec3( 0.25 ), rail );
       } else if ( st > 1.5 && st < 2.5 && nn.z < -0.5 && h.id < 0.5 && p.y > 2.25 && p.y < 2.75 && abs( p.x - S.x * 0.5 ) < S.x * 0.3 ) {
-        // menu board above the shelves
-        float keep = fKeep( fp, 0.06 );
-        float txt = step( 0.55, fh2( floor( vec2( p.x / 0.05, p.y / 0.06 ) ) + seed ) ) * step( 0.2, fract( p.y / 0.06 ) );
-        h.alb = mix( vec3( 0.04 ), vec3( 0.8, 0.78, 0.7 ), mix( 0.12, txt * 0.6, keep ) );
+        // menu board above the shelves: a dark board with a narrow frame, lines of chalk
+        // text (names on the left, prices on the right, a heading on top), every stroke and
+        // line end filtered; the lines fade to their mean grey before they could alias
+        float bx = ( p.x - S.x * 0.2 ) / ( S.x * 0.6 ), by = p.y - 2.25;
+        float lineH = 0.055, ly = ( 2.62 - p.y ) / lineH, li = floor( ly );
+        float keep = fKeep( fp, lineH * 0.5 );
+        float bW = S.x * 0.6;
+        float len = 0.3 + 0.35 * fh1( li * 3.1 + seed * 7.0 );
+        float row = fEdge( 0.17 * lineH - abs( fract( ly ) - 0.5 ) * lineH, fp ) * step( 0.5, li ) * step( li, 6.5 );
+        float name = fEdge( ( bx - 0.06 ) * bW, fp ) * fEdge( ( 0.06 + len - bx ) * bW, fp );
+        float price = fEdge( ( bx - 0.84 ) * bW, fp ) * fEdge( ( 0.94 - bx ) * bW, fp );
+        float head = fEdge( 0.012 - abs( p.y - 2.665 ), fp ) * fEdge( ( bx - 0.3 ) * bW, fp ) * fEdge( ( 0.7 - bx ) * bW, fp );
+        // letters: a soft break-up along each line
+        float glyph = mix( 0.75, 0.55 + 0.45 * smoothstep( 0.3, 0.6, vnoise( vec2( p.x * 55.0, li * 7.0 + seed ) ) ), fKeep( fp, 0.02 ) );
+        float txt = max( row * ( name + price ) * glyph, head );
+        float frame = 1.0 - fEdge( 0.025 - min( min( by, 0.5 - by ), min( bx, 1.0 - bx ) * bW ), fp );
+        h.alb = mix( vec3( 0.035, 0.038, 0.036 ), vec3( 0.72, 0.71, 0.66 ), mix( 0.08, txt * 0.55, keep ) );
+        h.alb = mix( h.alb, vec3( 0.24, 0.16, 0.10 ), 1.0 - frame );
       } else if ( st > 2.5 && st < 3.5 && h.id < 0.5 ) {
         // dark panelled walls with small lit display niches
         vec2 nf = fract( vec2( along / 0.7, ( p.y - 1.25 ) / 0.45 ) );
         float keep = fKeep( fp, 0.35 );
-        float niche = step( 1.25, p.y ) * step( p.y, 2.15 ) * step( 0.18, nf.x ) * step( nf.x, 0.82 ) * step( 0.18, nf.y ) * step( nf.y, 0.82 );
-        niche = mix( 0.36 * step( 1.25, p.y ) * step( p.y, 2.15 ), niche, keep );
-        h.alb = mix( h.alb * ( 0.9 + 0.1 * keep * step( 0.04, fract( along / 0.7 ) ) ), vec3( 0.62, 0.58, 0.52 ), niche );
-        h.glow = 0.35 * niche;
+        float band = fEdge( p.y - 1.25, fp ) * fEdge( 2.15 - p.y, fp );
+        float niche = band * fEdge( ( min( nf.x, 1.0 - nf.x ) - 0.18 ) * 0.7, fp ) * fEdge( ( min( nf.y, 1.0 - nf.y ) - 0.18 ) * 0.45, fp );
+        niche = mix( 0.36 * band, niche, keep );
+        // inside: lit by a strip under its top, falling off downwards onto a dark velvet
+        // stand with a few glints of the pieces on it
+        float ny = clamp( ( nf.y - 0.18 ) / 0.64, 0.0, 1.0 ), nx = ( nf.x - 0.5 ) / 0.64;
+        float grad = mix( 0.6, 0.3 + 0.7 * ny * ny, keep );
+        float stand = fEdge( 0.17 - abs( nx ) * 0.7 * 0.64, fp ) * fEdge( 0.3 - ny, fp / 0.29 ) * keep;
+        vec3 nc = mix( vec3( 0.62, 0.58, 0.52 ) * grad, vec3( 0.05, 0.045, 0.05 ), stand * 0.85 );
+        h.alb = mix( h.alb * ( 0.9 + 0.1 * keep * fEdge( fract( along / 0.7 ) * 0.7 - 0.028, fp ) ), nc, niche );
+        h.glow = 0.22 * niche * grad * ( 1.0 - 0.8 * stand ) + 0.6 * niche * stand * step( 0.93, fh2( floor( vec2( along / 0.03, p.y / 0.03 ) ) + seed ) ) * fKeep( fp, 0.03 );
       } else if ( h.id > 0.5 && h.id < 1.5 && ( st > 0.5 && st < 1.5 || st > 3.5 && st < 4.5 ) && p.y > 0.12 ) {
         // goods on the faces of gondola units
         vec4 spec = fShelfSpec( st );
@@ -901,7 +934,9 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   // facades, paving), well below the open-sky irradiance on the glass; walls and ceiling
   // darken upwards and into the corners
   float up = abs( nn.y ) < 0.5 ? mix( 1.0, 0.6, smoothstep( 0.8, S.y, p.y ) ) : nn.y < -0.5 ? 0.7 : 1.0;
-  vec3 E = Eday * CANYON * ( 1.15 * fWinFF( p, nn, S, fac, halfWin ) + 0.9 * A / Aroom + 0.006 ) * ao * up;
+  // (an awning over the shopfront hides most of the sky the window would see)
+  float awK = shop && win.z > 0.5 ? 0.6 : 1.0;
+  vec3 E = Eday * CANYON * awK * ( 1.15 * fWinFF( p, nn, S, fac, halfWin ) + 0.9 * A / Aroom + 0.006 ) * ao * up;
   // sun patch: project the point back to the window plane along the sun direction
   if ( sunR.z < -0.05 ) {
     float tw = -p.z / sunR.z;
@@ -930,13 +965,16 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     lampC = fKelvin( K );
     // shops are lit all day; seen from the daylit street the warm light reads less orange
     lampC = mix( lampC, vec3( 1.0, 0.86, 0.72 ), 0.45 * ( 1.0 - uNight ) ) * gEm;
-    float I = mix( SHOP_DAY * daylum * ( 0.7 + 0.6 * fh1( seed * 8.3 ) ), 0.0035, uNight ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
+    float rI = ( 0.7 + 0.6 * fh1( seed * 8.3 ) ) * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 );
+    float I = mix( SHOP_DAY * daylum * rI, 0.0035 * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 ), uNight );
     float ex = st > 3.5 && st < 4.5 ? 2.0 : st > 2.5 && st < 3.5 ? 14.0 : 8.0;
     // downlight pools, the inter-reflected fill (falling off up the walls: the light goes
     // down onto the floor and the goods) and display spots on the low window zone
     float fill = 0.42 * mix( 1.0, 0.45, smoothstep( 0.9, S.y, p.y ) ) + 1.3 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 0.7, 2.0, p.y ) );
     Elamp = lampC * I * ( fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
-    glowK = I;
+    // the fittings themselves (downlight discs, lit panels, pendants) keep their brightness:
+    // lamps read as bright points by day too
+    glowK = mix( SHOP_GLOW_DAY * daylum * rI, 0.0035 * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 ), uNight );
   } else if ( lit > 0.0 ) {
     Elamp = lampC * lit * Ih * ( fLamp( p, nn, lp, lk ) * ( 0.7 + 0.3 * ao ) + 0.035 * ao );
     if ( tv ) {
@@ -946,7 +984,17 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     }
     glowK = Ih * lit;
   }
-  vec3 col = h.alb * ( E + Elamp ) * RECIPROCAL_PI + h.glow * lampC * glowK;
+  vec3 col = h.alb * ( E + Elamp ) * RECIPROCAL_PI;
+  {
+    // daylight ceiling (DAY_CAP): rooms lit at a few hundred lux sit 6–7 stops under the
+    // sunlit stone (50–100 klux); the knee only bites on the brightest lit surfaces (not on
+    // the lamps). Off at dusk.
+    const vec3 LW = vec3( 0.2126, 0.7152, 0.0722 );
+    float Ls = 0.6 * ( dot( uSunColor, LW ) * step( 0.0, uSunDir.y ) * 0.6 + daylum ) * RECIPROCAL_PI;
+    float xk = dot( col, LW ) / max( Ls * DAY_CAP, 1e-12 );
+    col *= mix( inversesqrt( 1.0 + xk * xk ), 1.0, smoothstep( 0.25, 0.7, uNight ) );
+  }
+  col += h.glow * lampC * glowK;
 
   // visible lamps: the fabric shade (open cylinder) glows when lit, brighter inside
   if ( !shop && !stair && gDet > 0.0 ) {
@@ -981,7 +1029,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
   // ---- drapes just behind the glass (translucent: lit from the street side by day, glowing
   // warm from the room's lamp at night)
   float dtype = floor( win.z ), damt = fract( win.z );
-  if ( dtype > 0.5 && rd.z > 1e-3 ) {
+  if ( dtype > 0.5 && rd.z > 1e-3 && !shop ) {
     float zc = 0.12;
     float tc = ( zc - ro.z ) / rd.z;
     if ( tc > 0.0 && tc < h.t ) {
@@ -1064,7 +1112,7 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
   if ( R.y < 0.0 && baseH / -R.y < tO ) {
     float tg = baseH / -R.y;
     vec2 gp = P.xz + R.xz * tg;
-    float acr = rn * tg, fpG = gPA * ( gTC + tg ) / max( -R.y, 0.05 );
+    float acr = rn * tg, fpG = max( gPA * ( gTC + tg ), 0.003 * tg ) / max( -R.y, 0.05 );
     float gx = px + dot( R, T ) * tg;
     float sy = max( uSunDir.y, 0.03 ), sn = dot( uSunDir, N );
     float roof = 18.0 + 4.0 * ( vnoise( vec2( gx / 13.0, 0.5 ) ) - 0.5 );
@@ -1080,8 +1128,9 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
   }
   tHit = tO;
   // footprint of the pixel on the far facade: up it, and along it (1 / cos at grazing);
-  // float glass is flat: the reflection is nearly as sharp as the view itself
-  float fpY = max( gPA * ( gTC + tO ), 0.006 + 0.0012 * tO );
+  // never sharper than a slight blur growing with the reflected distance (~0.17°: the
+  // pane's waviness and film), so the stand-in never shows hard steps
+  float fpY = max( gPA * ( gTC + tO ), 0.004 + 0.003 * tO );
   float fpX = fpY / rn;
   // buildings 10–16 m wide, the party walls jittered: height, stone, storeys, dressing
   float kB = 1.0 - smoothstep( 4.0, 10.0, fpX );
@@ -1167,7 +1216,16 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
   float pier = fRectP( hx, sp, 0.55, sp - 0.25, fpX );
   float sb = fRect( hy, 0.0, g0 - 0.5, fpY ) * pier;
   vec3 gc = mix( vec3( 0.07, 0.065, 0.06 ), mix( vec3( 0.35, 0.30, 0.25 ), vec3( fh1( shopI * 5.0 ), fh1( shopI * 7.0 ), fh1( shopI * 9.0 ) ) * 0.6, 0.5 ), 0.35 * fRect( hy, 0.4, 2.0, fpY ) * kW );
-  vec3 shopC = gc * E * RECIPROCAL_PI * 0.5 + sky * 0.04 + vec3( 1.0, 0.74, 0.48 ) * 0.0016 * uNight * gEm;
+  // lit at dusk: a shop's own light, brightest under the ceiling (downlights) and on the
+  // goods low in the window, the mullions and the door frame dark across it; one in four
+  // is closed and dark
+  float xs = fract( hx / sp ) * sp;
+  float shopLit = step( 0.25, fract( shopI * 23.7 ) ) * ( 0.45 + 0.55 * fract( shopI * 41.3 ) );
+  float prof = 0.35 + 0.65 * fRect( hy, g0 - 1.3, g0 - 0.6, fpY ) + 0.35 * fRect( hy, 0.35, 1.5, fpY ) * kW;
+  float mull = max( fRectP( hx, 1.3, 0.0, 0.07, fpX ), fRect( xs, 2.2, 2.32, fpX ) ) * kW;
+  float riser = fRect( hy, 0.0, 0.35, fpY );
+  vec3 litC = mix( vec3( 1.0, 0.74, 0.48 ), vec3( 1.0, 0.86, 0.7 ), fract( shopI * 17.1 ) ) * 0.0011 * shopLit * prof * ( 1.0 - 0.85 * max( mull, riser ) );
+  vec3 shopC = gc * E * RECIPROCAL_PI * 0.5 + sky * 0.04 + litC * uNight * gEm;
   col = mix( col, shopC, sb );
   float hasAw = step( 0.5, shopI ) * kW;
   float aw = fRect( hy, g0 - 1.5, g0 - 0.55, fpY ) * pier * hasAw;
@@ -1210,7 +1268,8 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
   // small windows (far away): the street furniture is sub-pixel in their reflection
   if ( gDet <= 0.0 ) return bg;
   float rn = max( dot( R, N ), 0.02 );
-  vec3 E = Eamb * 0.8 + uSunColor * step( 0.0, uSunDir.y ) * 0.3;
+  // (at dusk the street lamps and the shops light the people and trunks from the front)
+  vec3 E = Eamb * 0.8 + uSunColor * step( 0.0, uSunDir.y ) * 0.3 + vec3( 1.0, 0.82, 0.62 ) * 0.003 * uNight * gEm;
   float hw = streetW * 0.5;
   vec3 acc = vec3( 0.0 );
   float tr = 1.0;
@@ -1231,16 +1290,25 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
       vec3 hp = fh3( cid * 1.913 + float( k ) * 17.0 );
       float hgt = 1.5 + 0.4 * hp.y, yr = yc / hgt;
       float du = abs( u - cid - 0.5 - ( hp.z - 0.5 ) * 0.3 ) * 1.1;
-      float wh = yr > 0.87 ? 0.085 : yr > 0.47 ? 0.2 + 0.03 * hp.z : 0.16;
-      float body = fEdge( wh - du, fx ) * step( hp.x, 0.33 ) * ( 1.0 - smoothstep( 1.0 - fy / hgt, 1.0 + fy / hgt, yr ) );
-      if ( yr < 0.45 ) body *= 1.0 - 0.8 * fEdge( 0.035 - du, fx );
+      // a rounded figure: legs widening to the hips, the torso to the shoulders, which round
+      // off into the neck, an oval head (all edges filtered)
+      float sh = 0.19 + 0.03 * hp.z;
+      float ash = ( yr - 0.8 ) / 0.065;
+      float wh = yr < 0.5 ? mix( 0.10, 0.165, smoothstep( 0.02, 0.5, yr ) ) : yr < 0.8 ? mix( 0.165, sh, smoothstep( 0.5, 0.8, yr ) ) : sh * sqrt( max( 1.0 - ash * ash, 0.0 ) );
+      float fyr = fy / hgt;
+      float body = fEdge( wh - du, fx ) * fEdge( 0.86 - yr, fyr );
+      float dh = length( vec2( du / 0.078, ( yr - 0.935 ) * hgt / 0.115 ) );
+      body = max( body, fEdge( ( 1.0 - dh ) * 0.078, fx ) );
+      body = max( body, fEdge( 0.045 - du, fx ) * fEdge( yr - 0.84, fyr ) * fEdge( 0.9 - yr, fyr ) );
+      body *= step( hp.x, 0.33 );
+      if ( yr < 0.45 ) body *= 1.0 - 0.85 * fEdge( 0.022 - du, fx ) * smoothstep( 0.45, 0.38, yr );
       float kp = 1.0 - smoothstep( 0.5, 1.5, fx / 1.1 );
       cover = mix( 0.33 * 0.34 * ( 1.0 - smoothstep( 1.6, 1.8, yc ) ), body, kp );
       vec3 cl = fh3( cid * 7.1 + float( k ) + step( 0.47, yr ) * 3.0 );
       alb = mix( vec3( dot( cl, vec3( 0.33 ) ) ), cl, 0.45 ) * 0.42 + 0.03;
       // a face and hair, the body rounded (darker at its sides)
       if ( yr > 0.87 ) alb = yr > 0.95 ? vec3( 0.05, 0.04, 0.03 ) : mix( vec3( 0.52, 0.36, 0.26 ), vec3( 0.20, 0.13, 0.09 ), hp.x * 3.0 );
-      alb *= 0.6 + 0.4 * ( 1.0 - min( du * du / ( wh * wh ), 1.0 ) );
+      alb *= 0.6 + 0.4 * ( 1.0 - min( du * du / max( wh * wh, 0.004 ), 1.0 ) );
       alb = mix( vec3( 0.12, 0.11, 0.1 ), alb, kp );
     } else if ( k == 2 || k == 5 ) {
       cover = fPulse( xc / 10.0 + 0.1, 0.975, fx / 10.0 ) * step( yc, 2.8 );   // tree trunks
@@ -1286,20 +1354,41 @@ if ( fMask < 0.999 ) {
   float px = vRoomP.x + 211.0 * fract( vWin.x * 7.31 );
   vec4 st = fStreet( R, N, T, vFW, px, vRoomS.w + vRoomP.y, streetW, Eamb, skyR );
   radiance = mix( skyR, st.rgb, st.a );
-  // the reveal around a recessed window hides most of the street at grazing angles:
-  // follow the reflected ray out of the recess and see whether it clears the opening
+  // the reveal around a recessed window (and a shopfront: its glass stands as deep in the
+  // reveal) hides most of the street at grazing angles: follow the reflected ray out of
+  // the recess and see whether it clears the opening; if not it shows the stone of a jamb
+  // (sky light, and the sun on the sunny side), of the head soffit (ground bounce only)
+  // or of the sill. Under an awning the rays that leave the opening rising meet the
+  // canvas: the glass mirrors its shaded underside, not the bright street.
   {
     vec3 Rl = vec3( dot( R, T ), R.y, dot( R, N ) );
-    // shopfront glass sits nearly flush with its frame: only the casing shades it
-    float shopK = abs( mod( vWin.w, 4.0 ) - 1.0 ) < 0.5 ? 0.3 : 1.0;
-    float depth = ( rec + vRoomP.z + 0.015 ) * shopK;
+    bool shopL = abs( mod( vWin.w, 4.0 ) - 1.0 ) < 0.5;
+    float depth = rec + vRoomP.z + 0.015;
     float tOut = depth / max( Rl.z, 0.02 );
     vec2 e = vec2( vRoomP.x - vRoomS.x * 0.5, vRoomP.y - vFac.z ) + Rl.xy * tOut;
     float hh = vFac.w - vFac.z;
     float soft = 0.02 + 0.03 * tOut;
-    float inside = smoothstep( -soft, soft, vRoomP.w - abs( e.x ) ) * smoothstep( -soft, soft, e.y ) * smoothstep( -soft, soft, hh - e.y );
-    vec3 stoneR = vec3( 0.56, 0.50, 0.41 ) * Eamb * RECIPROCAL_PI * ( e.y < 0.0 ? 0.8 : 0.55 );
+    float inX = smoothstep( -soft, soft, vRoomP.w - abs( e.x ) );
+    float inY = smoothstep( -soft, soft, e.y ) * smoothstep( -soft, soft, hh - e.y );
+    float inside = inX * inY;
+    vec3 sunL = uSunColor * step( 0.0, uSunDir.y );
+    vec3 Ej = Eamb * 0.5 + sunL * max( dot( uSunDir, -T * sign( e.x ) ), 0.0 ) * 0.35;
+    vec3 Eh = e.y > 0.0 ? Eamb * 0.3 : Eamb * 0.75 + sunL * max( uSunDir.y, 0.0 ) * 0.4;
+    float wJ = 1.0 - inX, wH = ( 1.0 - inY ) * inX;
+    vec3 stoneR = vec3( 0.56, 0.50, 0.41 ) * RECIPROCAL_PI * ( Ej * wJ + Eh * wH ) / max( wJ + wH, 1e-4 );
     radiance = mix( stoneR, radiance, inside );
+    if ( shopL && vWin.z > 0.5 ) {
+      // awning (aWin.z: projection from the wall face in 5 cm steps + valance hem height in
+      // room space / 10; aFrame: canvas colour, half width / 20)
+      float P = floor( vWin.z ) / 20.0, hem = fract( vWin.z ) * 10.0, hwA = vFrame.a * 20.0;
+      float tP = ( depth + P ) / max( Rl.z, 0.02 );
+      float yP = vRoomP.y + Rl.y * tP, xP = vRoomP.x - vRoomS.x * 0.5 + Rl.x * tP;
+      float sA = 0.02 + 0.015 * tP;
+      float under = smoothstep( hem - sA, hem + sA, yP ) * smoothstep( -sA, sA, hwA - abs( xP ) );
+      // the shaded underside: light bounced off the paving, and some sun through the cloth
+      vec3 canvas = vFrame.rgb * ( Eamb * 0.28 + sunL * max( uSunDir.y, 0.0 ) * 0.14 ) * RECIPROCAL_PI;
+      radiance = mix( radiance, canvas, under * inside );
+    }
   }
   // both faces of the pane reflect: the exact two-face reflectance of float glass (in
   // place of the single-face estimate the indirect specular applies: ~15% at 60°, ~27% at
@@ -1316,6 +1405,7 @@ if ( fMask < 0.999 ) {
   vec3 sunR = vec3( dot( uSunDir, T ), uSunDir.y, -dot( uSunDir, N ) );
   vec3 ro = clamp( vRoomP.xyz, vec3( 0.001 ), vRoomS.xyz - 0.001 );
   fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, vRoomP.w, Eamb, sunR, uSunColor * step( 0.0, uSunDir.y ) );
+
   // glass transmits ~90%
   fInterior *= mix( 1.0, 0.9, fGlass );
   if ( fGlass < 0.5 && fMask < 0.5 ) radiance = vec3( 0.0 );
@@ -1406,7 +1496,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v6';
+  m.customProgramCacheKey = () => 'facades.glassInterior.v7';
   return m;
 }
 

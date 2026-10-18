@@ -46,6 +46,10 @@ export const SIGN_PALETTE = {
   letters: [0xd8b25a, 0xf2efe6, 0xe9dfc4, 0x1a1a1a, 0xb3261e, 0xf2c230],
   boxes: [0xf4f1e8, 0xf2d24a, 0xc8231c, 0x1f5fa8, 0x2a7a3a, 0xf4f1e8, 0xe8701c, 0x1e8a8a],
 };
+// painted fascia boards as on the street: mostly black, dark green, oxblood and navy
+// enamel (gold or cream letters), a few pale, bright or wood-brown ones
+const BOARD_WEIGHTS = [[0x1d1d1f, 0.2], [0x1f3a2c, 0.17], [0x5a1a1c, 0.14], [0x1b2b45, 0.12], [0x24464a, 0.07], [0x6b4a2a, 0.07],
+  [0xd9cfb6, 0.05], [0xe8e4da, 0.04], [0xb8261e, 0.04], [0x1f5f8a, 0.04], [0x2f6e3a, 0.03], [0xe8b820, 0.03]];
 
 let atlas = null;
 
@@ -336,7 +340,7 @@ function inkCell(cell) {
 /** Sign design for seed; kindHint forces board / lightbox / letters, shop a shop type's words. */
 export function signDesign(seed, kindHint, shop = null) {
   const r = new RNG(seed);
-  const type = kindHint || r.weighted([['board', 0.45], ['lightbox', 0.3], ['letters', 0.25]]);
+  const type = kindHint || r.weighted([['board', 0.52], ['lightbox', 0.2], ['letters', 0.28]]);
   let cell = r.int(0, WORDS.length - 1);
   if (shop) {
     const ok = [];
@@ -345,7 +349,7 @@ export function signDesign(seed, kindHint, shop = null) {
   }
   let board, ink, glow;
   if (type === 'board') {
-    board = r.pick(SIGN_PALETTE.boards);
+    board = r.weighted(BOARD_WEIGHTS);
     const light = board === 0xd9cfb6 || board === 0xe8e4da;
     ink = light ? r.pick([0x1d1d1f, 0x1b2b45, 0x5a1a1c]) : r.pick([0xd8b25a, 0xf2efe6, 0xe9dfc4]);
     glow = 0;

@@ -500,21 +500,17 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				// shadow map's stair steps as a rope pattern along sills and string courses)
 				float minR = cascade >= 2 ? 2.2 : 1.5;
 				float maxR = clamp( maxRadius / texel, minR, ${MAX_FILTER_TEXELS.toFixed(1)} );
-				// blocker search over the widest penumbra: 9 taps decide fully lit / fully
-				// shadowed (fewer would call part of a wide penumbra lit or dark at random and
-				// break it into dots); 5 of them probe the blocker distance
-				vec2 so[ 9 ];
+				// blocker search over the widest penumbra (5 taps): in a wide penumbra they
+				// sometimes all agree and call a pixel fully lit or dark; with the rotation
+				// stepping every frame the temporal AA averages those calls into a smooth ramp
+				vec2 so[ 5 ];
 				so[ 0 ] = vec2( 0.0 );
-				float c0 = 1.0 - texture( shadowMap, coord.xyz );
-				float f0 = c0, fp = c0;
-				for ( int k = 1; k < 9; k ++ ) {
-					so[ k ] = vogelDiskSample( k - 1, 8, phi ) * maxR * tx;
-					float o = 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
-					f0 += o;
-					if ( ( k & 1 ) == 0 ) fp += o;
+				float f0 = 1.0 - texture( shadowMap, coord.xyz );
+				for ( int k = 1; k < 5; k ++ ) {
+					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * maxR * tx;
+					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
 				}
-				f0 *= 1.0 / 9.0;
-				fp *= 0.2;
+				f0 *= 0.2;
 				if ( f0 <= 0.0 ) return 1.0;
 				if ( f0 >= 1.0 ) return 0.0;
 				// how far are the blockers? Probe whether the receiver, moved 0.4, 1.2, 3, 7, 15, 30
@@ -522,18 +518,17 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				// share that drops out between two probes lies between their distances
 				float D[ 7 ];
 				D[ 0 ] = 0.4; D[ 1 ] = 1.2; D[ 2 ] = 3.0; D[ 3 ] = 7.0; D[ 4 ] = 15.0; D[ 5 ] = 30.0; D[ 6 ] = 60.0;
-				float prev = fp, dPrev = 0.0, dSum = 0.0;
+				float prev = f0, dPrev = 0.0, dSum = 0.0;
 				for ( int j = 0; j < 7; j ++ ) {
 					if ( prev <= 0.0 ) break;
 					float f = 0.0;
 					float dm = D[ j ] / range;
-					for ( int k = 0; k < 9; k += 2 ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
+					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
 					f = min( f * 0.2, prev );
 					dSum += ( prev - f ) * sqrt( max( dPrev, 0.15 ) * D[ j ] );
 					prev = f; dPrev = D[ j ];
 				}
-				// (the probe taps all lit: an edge grazing the search disc, take the contact width)
-				float dEst = fp > 0.0 ? ( dSum + prev * 85.0 ) / fp : 0.4;
+				float dEst = ( dSum + prev * 85.0 ) / f0;
 				// penumbra half-width from the sun's angular radius: the disc kernel's edge
 				// ramps over its diameter, as the umbra-to-light transition spans 0.0093 x distance
 				float rt = clamp( dEst * 0.0047 * 1.1 / texel, minR, maxR );
