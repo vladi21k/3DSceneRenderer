@@ -273,8 +273,6 @@ def main():
             idx = z[p['key'] + '_idx']
             reg = z[p['key'] + '_reg']
             uvtris.setdefault(key, []).append((uv[idx], reg[idx[:, 0]]))
-        if m['spec'].get('beard'):
-            uvtris.setdefault('beard:' + m['spec']['beard'], [])
     keys = sorted(uvtris)
     log('texture keys:', len(keys))
 
