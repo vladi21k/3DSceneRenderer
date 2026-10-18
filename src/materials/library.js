@@ -105,6 +105,8 @@ export const LIBRARY = {
     fx: 'relief',
     surf: {
       cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: STONE_PITCH, weather: STONE_WEATHER, mirror: 0.75,
+      // deep joints and hollows: the baked occlusion counts in full even while SSAO runs
+      ao: 1.6,
       // parallax-occlusion relief of the bosses (height in the albedo alpha): full within
       // 20 m, gone by 35 m; self-shadowing towards the sun
       relief: { near: 20, far: 35, steps: [12, 24], shadowSteps: 14, shadow: 1 },

@@ -11,7 +11,7 @@ import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, buildDetails } from './street/details.js';
-import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, SHEEN } from './street/shading.js';
+import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV } from './street/shading.js';
 
 // Rail steel: every steel face of the profile (polished running band, flange-polished
 // gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
@@ -49,11 +49,12 @@ const street = {
     // variants of crossover chunks.
     const share = (m) => patchCut(m, 'rail', false);
     const mortar = M.register('street.mortar', share(createMortarMaterial()));
-    // rail steel: lengthwise-polish sheen (see shading.js), reflecting the environment
-    // (which holds the street canyon) as strongly as the far-field line overlay does
+    // rail steel: lengthwise-polish sheen (see shading.js); the environment map holds
+    // the street canyon, so the steel reflects it at RAIL_HEAD_ENV (matched to the
+    // far-field line overlay and the photographs)
     const steel = (name, opts) => {
       const m = patchRailSheen(M.get(name, opts));
-      m.envMapIntensity = SHEEN.uStSheen.value.y;
+      m.envMapIntensity = RAIL_HEAD_ENV;
       return m;
     };
     const groove = (opts) => patchGrit(M.get('rail.groove', opts));

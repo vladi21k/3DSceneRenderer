@@ -23,9 +23,19 @@ const LAMP_CD = 1400;           // luminous intensity of one lantern towards the
 const LAMP_ANGLE = 1.35;        // half-angle of the lantern's light cone (rad)
 const LAMP_PENUMBRA = 0.35;
 const LAMP_DROP = 0.22;         // light source below the glass centre (m): at the bottom of the bowl (0.165 m)
-const HEAD_CD = 15000;          // two LED headlights combined (cd, beam centre)
-const HEAD_ANGLE = 0.42;        // beam half-angle (rad); the soft penumbra covers most of it
-const HEAD_PENUMBRA = 0.85;
+// the tram's dipped (low) beam: two LED headlights, a soft fan on the rails a few to ~25 m
+// ahead with a sharp cut-off just below the lamps' horizontal (shader patch below), so
+// poles, people and facades ahead are not floodlit
+const HEAD_CD = 7000;           // two LED headlights combined (cd, beam centre)
+const HEAD_ANGLE = 0.3;         // beam half-angle (rad); the soft penumbra covers most of it
+const HEAD_PENUMBRA = 0.75;
+const HEAD_AIM = 20;            // beam centre meets the rails this far ahead (m)
+// the headlight is told apart in the shared light loop by this decay (a numerically
+// negligible change from the physical 2)
+export const HEAD_DECAY = 2.0001;
+// cut-off: the beam fades out between these slopes below the lamps' horizontal
+// (sin of the angle; ~2.0° .. 0.5° down)
+export const HEAD_CUT = [-0.035, -0.009];
 const QUERY = [-60, 170];       // metres along the route around the cab searched for standards
 const FADE = 22;                // width of the real-light fade (m of view-weighted distance)
 const FAR_MAX = 460;            // screen-space pools out to this distance
@@ -76,6 +86,16 @@ export function patchLightLoops() {
     return true;
   };
   const spot = guard('#if ( NUM_SPOT_LIGHTS > 0 ) && defined( RE_Direct )', 'spotLight = spotLights[ i ];', true);
+  // the headlight's dipped beam: nothing above a line just below the lamps' horizontal
+  const info = 'getSpotLightInfo( spotLight, geometryPosition, directLight );';
+  if (spot && src.split(info).length === 2) {
+    src = src.replace(info, `${info}
+		if ( spotLight.decay > ${((HEAD_DECAY + 2) / 2).toFixed(6)} && directLight.visible ) {
+			vec3 hlUp = ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz;
+			vec3 hlV = geometryPosition - spotLight.position;
+			directLight.color *= 1.0 - smoothstep( ${HEAD_CUT[0].toFixed(4)}, ${HEAD_CUT[1].toFixed(4)}, dot( hlV, hlUp ) / max( length( hlV ), 1e-3 ) );
+		}`);
+  }
   const sun = guard('#if ( NUM_SUN_LIGHTS > 0 ) && defined( RE_Direct )', 'sunLight = sunLights[ i ];', false);
   // (the canyon cross-bounce is the only directional light; dark when no facade is sunlit).
   // Its source is a whole sunlit facade, a 10-20 m area light: no point-like specular
@@ -101,7 +121,7 @@ export class StreetLights {
       app.scene.add(l, l.target);
       this.pool.push(l);
     }
-    this.head = new THREE.SpotLight(headColor, 0, 160, HEAD_ANGLE, HEAD_PENUMBRA, 2);
+    this.head = new THREE.SpotLight(headColor, 0, 160, HEAD_ANGLE, HEAD_PENUMBRA, HEAD_DECAY);
     this.head.castShadow = false;
     this.head.name = 'headlight';
     app.scene.add(this.head, this.head.target);
@@ -114,6 +134,7 @@ export class StreetLights {
       headDir: new THREE.Vector3(0, 0, -1),
       headI: 0,
       headCos: [Math.cos(HEAD_ANGLE), Math.cos(HEAD_ANGLE * (1 - HEAD_PENUMBRA))],
+      headCut: HEAD_CUT,
     };
     // distant standards, relit in screen space by post: xyz world position, w weight
     this.farLamps = Array.from({ length: FAR_LAMPS }, () => new THREE.Vector4());
@@ -282,9 +303,9 @@ export class StreetLights {
     // intensity of one far lantern (the per-standard weight × lantern count is in w)
     this.farIntensity = on ? unitI * night : 0;
 
-    // ---- headlight: just ahead of the cab, 0.9 m up, aimed ~45 m down the ride track
+    // ---- headlight: just ahead of the cab, 0.9 m up, aimed at the rails HEAD_AIM ahead
     const hp = route.toWorld(s + 0.4, TRACK_OFFSET, 0.9, this.head.position);
-    route.toWorld(s + 45, TRACK_OFFSET, 0, this.head.target.position);
+    route.toWorld(s + HEAD_AIM, TRACK_OFFSET, 0, this.head.target.position);
     this.head.target.updateMatrixWorld();
     this.head.intensity = (HEAD_CD / LUX_PER_UNIT) * night;
     air.headPos.copy(hp);

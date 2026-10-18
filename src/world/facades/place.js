@@ -11,7 +11,8 @@ import { doorLayout, doorTpls } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow } from './spill.js';
-import { dressWindow, hangGoods } from './dressing.js';
+import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
+import { facadePlan } from '../facadePlan.js';
 import { slopeAwningT as slopeAwning, domeAwningT as domeAwning, awningColors } from './awnings.js';
 import { crownY, springY, isArched, halfWidthAt, outlinePts } from './outline.js';
 import { swatch, weather } from './kit.js';
@@ -317,9 +318,9 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   // the shop's dressing: posters and price cards on the glass, stickers on the door, the
   // name in vinyl letters on the head glass, goods hung on the piers (near range)
   // far range (main street): the same posters, so nothing changes at the detail switch
-  if (ctx.q < 0.5 && ctx.lod > 0 && !ctx.lot.backdrop && !ctx.lot.sideStreet && !(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, true);
+  if (ctx.q < 0.5 && ctx.lod > 0 && !ctx.lot.backdrop && !ctx.lot.sideStreet && !(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, true, shopAlloc(ctx, o));
   if (ctx.q >= 0.5 && !ctx.lot.backdrop) {
-    if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type);
+    if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, false, shopAlloc(ctx, o));
     const rv = RNG.from(o.id, 'vinyl');
     if (L.head === 'glass' && !headSign && rv.chance(0.35)) {
       const yH = L.yT + 0.05, top = crownY(o, SHOP_FW);
@@ -664,25 +665,140 @@ function buildDoor(kit, ctx, o) {
 
 // ------------------------------------------------------------------ front
 /** Builds one front; a generator that yields after every opening (time slicing). */
-export function* buildFront(kit, ctx) {
+/**
+ * The fronts of a lot as the facades build them: its street face and the corner returns
+ * (each {plan, frame, streetW, cafe: the café terrace with a continuous awning}).
+ */
+export function frontsOf(app, lot, plan = facadePlan(lot)) {
+  const streetW = lot.sideStreet ? lot.cross.width : 2 * Math.abs(lot.d);
+  const cafe = !lot.sideStreet && lot.cafe != null ? app.layout.cafes[lot.cafe] : null;
+  const fronts = [{ plan, frame: lot.frame, streetW, cafe: cafe && cafe.style === 'awning' ? cafe : null }];
+  // corner returns face the side street
+  for (const r of plan.returns || []) fronts.push({ plan: r, frame: r.frame, streetW: 10, cafe: null });
+  return fronts;
+}
+
+/**
+ * Front decisions shared by the build and the poster allocation: the café awning, the
+ * umbrella terrace, the signs, and what each shop sells (the word on its sign, else a
+ * draw; the shopfronts under a café's awning are the café).
+ */
+function prepareFront(ctx) {
   const plan = ctx.plan;
   ctx.cafeAwning = ctx.cafe ? planCafeAwning(ctx) : null;
   ctx.umbrellas = umbrellaSpan(ctx);
+  const signs = planSigns(ctx);
+  const shopTypes = new Map();
+  for (const o of plan.openings) {
+    if (o.kind !== 'shop') continue;
+    const si = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
+    const cafe = ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2, o.uc + o.w / 2);
+    shopTypes.set(o.id, cafe ? 'cafe' : si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
+  }
+  ctx.shopTypes = shopTypes;
+  return signs;
+}
+
+// ------------------------------------------------------------------ poster allocation
+// Window posters, banners and price cards are given out per 40 m block of a street side
+// (dressing.js allocateBlock), so the same design never shows twice within ~80 m: the
+// main street's sides are cut into a multiple of three blocks round the loop, a side
+// street's sides into 40 m blocks from the corner.
+const typeCache = new Map();          // lot id → [Map(opening id → shop type)] per front
+const blockCache = new Map();         // block key → Map(opening id → designs)
+const SIDE_BLOCK = 40;
+
+/** What each shop of a lot sells, per front (as built). */
+export function lotTypes(app, lot) {
+  let t = typeCache.get(lot.id);
+  if (!t) {
+    t = frontsOf(app, lot).map((fr) => {
+      const c = { plan: fr.plan, frame: fr.frame, lot, app, streetW: fr.streetW, cafe: fr.cafe, q: 1, lod: 0 };
+      prepareFront(c);
+      return c.shopTypes;
+    });
+    typeCache.set(lot.id, t);
+  }
+  return t;
+}
+
+const _w = new THREE.Vector3();
+const sCache = new Map();             // opening id → route position
+/** Route position of opening o of a main-street front (through its frame; cached). */
+function openingS(app, lot, frame, o) {
+  let s = sCache.get(o.id);
+  if (s === undefined) {
+    _w.set(o.uc, 0, 0).applyMatrix4(frame.matrix);
+    s = app.route.wrap(app.route.project(_w.x, _w.z, (lot.s0 + lot.s1) / 2, Math.abs(lot.s1 - lot.s0) / 2 + 12).s);
+    if (sCache.size > 8000) sCache.clear();
+    sCache.set(o.id, s);
+  }
+  return s;
+}
+
+/** Block of shop o on a front of lot: {key, phase, b}. */
+function blockOf(app, lot, frame, o) {
+  if (lot.sideStreet) {
+    const b = Math.floor((lot.x0 + lot.x1) / 2 / SIDE_BLOCK);
+    return { key: `X${Math.round(lot.cross.s)}|${lot.side}|${lot.edge}|${b}`, phase: b % 3, b, side: true };
+  }
+  const L = app.route.length, n = 3 * Math.max(1, Math.round(L / 120)), len = L / n;
+  const b = Math.min(n - 1, Math.floor(openingS(app, lot, frame, o) / len));
+  return { key: `M${lot.side}|${b}`, phase: b % 3, b, n, len };
+}
+
+function computeBlock(app, lot, blk) {
+  const shops = [];
+  const take = (l) => {
+    const types = lotTypes(app, l);
+    frontsOf(app, l).forEach((fr, fi) => {
+      for (const o of fr.plan.openings) {
+        if (o.kind !== 'shop') continue;
+        const ob = blockOf(app, l, fr.frame, o);
+        if (ob.key !== blk.key) continue;
+        const s = blk.side ? (l.x0 + l.x1) / 2 + o.uc * 1e-3 : openingS(app, l, fr.frame, o);
+        shops.push({ id: o.id, s, req: dressRequest(o, types[fi].get(o.id)) });
+      }
+    });
+  };
+  if (blk.side) {
+    for (const l of app.layout.sideLots) if (l.side === lot.side && l.edge === lot.edge && l.cross === lot.cross) take(l);
+  } else {
+    const route = app.route, a = blk.b * blk.len, c = a + blk.len / 2;
+    for (const l of app.layout.lots) {
+      if (l.side !== lot.side) continue;
+      const m = (l.s0 + l.s1) / 2;
+      if (Math.abs(route.delta(c, m)) < blk.len / 2 + Math.abs(l.s1 - l.s0) / 2 + 25) take(l);
+    }
+  }
+  shops.sort((p, q) => p.s - q.s || (p.id < q.id ? -1 : p.id > q.id ? 1 : 0));
+  return allocateBlock(shops, blk.phase, hashStrKey(blk.key));
+}
+function hashStrKey(k) { let h = 2166136261; for (let i = 0; i < k.length; i++) { h ^= k.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+
+/** The window designs given to shop o of the front in ctx. */
+function shopAlloc(ctx, o) {
+  const blk = blockOf(ctx.app, ctx.lot, ctx.frame, o);
+  let m = blockCache.get(blk.key);
+  if (!m) {
+    m = computeBlock(ctx.app, ctx.lot, blk);
+    blockCache.set(blk.key, m);
+    // bounded: a block is cheap to recompute, and the ride passes ~125 per lap
+    if (blockCache.size > 400) blockCache.delete(blockCache.keys().next().value);
+  }
+  if (typeCache.size > 1200) typeCache.clear();
+  return m.get(o.id) || null;
+}
+
+export function* buildFront(kit, ctx) {
+  const plan = ctx.plan;
+  const signs = prepareFront(ctx);
+  const shopTypes = ctx.shopTypes;
   ctx.joinery = joineryStyle(plan, RNG.from(plan.seed, 'joinery'));
   // one joinery colour per building (its type's palette), one for its shutters
   const jr = RNG.from(plan.seed, 'joineryColour');
   ctx.frameRGB = swatch(ctx.joinery.type, jr);
   ctx.shutterRGB = swatch('shutter', jr);
-  const signs = planSigns(ctx);
-  // what each shop sells: the word on its sign, else a draw (the blade signs follow it)
-  const shopTypes = new Map();
-  for (const o of plan.openings) {
-    if (o.kind !== 'shop') continue;
-    const si = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
-    // the shopfronts under a café's awning are the café
-    const cafe = ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2, o.uc + o.w / 2);
-    shopTypes.set(o.id, cafe ? 'cafe' : si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
-  }
   // a few facades (hotels, pensions) carry canvas hoods over the lower upper-floor windows
   const hr = RNG.from(plan.seed, 'hotel');
   const hotel = plan.style.era !== 'modern' && !plan.isReturn && hr.chance(0.08);

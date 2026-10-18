@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
+import { FACES } from './mesh.js';
 
 // Large painted murals on blank gable and party walls (a few of the walls and taller
 // blocks that close the view down the street carry one, as in the photographs). Painted
@@ -458,4 +459,36 @@ function paintAdvert(k) {
   tex.magFilter = THREE.LinearFilter;
   tex.needsUpdate = true;
   return tex;
+}
+
+/**
+ * Printed advert on a steel frame standing off the wall (side-wall frame, a: {u0, u1,
+ * v0, v1, k}): the vinyl face, the frame's edges, and floodlights on arms over the top.
+ */
+export function advertPanel(B, sinks, a, q) {
+  const W = 0.16, s = B.sink(`advert${a.k}`);
+  B.shade = null; B.flat = [1, 1, 1];
+  s.reserve(4, 6);
+  const i0 = B.v(s, a.u0, a.v0, W, 0, 0, 1, 0, 0), i1 = B.v(s, a.u1, a.v0, W, 0, 0, 1, 1, 0);
+  const i2 = B.v(s, a.u1, a.v1, W, 0, 0, 1, 1, 1), i3 = B.v(s, a.u0, a.v1, W, 0, 0, 1, 0, 1);
+  B.quadIdx(s, i0, i1, i2, i3);
+  // the frame: galvanised channel round the edge, its sides back to the wall
+  const m = sinks.paint, e = 0.05;
+  B.flat = [0.36, 0.36, 0.35];
+  B.box(m, a.u0 - e, a.u0, a.v0 - e, a.v1 + e, 0.02, W + 0.012, FACES.FRONT | FACES.LEFT | FACES.TOP | FACES.BOTTOM);
+  B.box(m, a.u1, a.u1 + e, a.v0 - e, a.v1 + e, 0.02, W + 0.012, FACES.FRONT | FACES.RIGHT | FACES.TOP | FACES.BOTTOM);
+  B.box(m, a.u0, a.u1, a.v1, a.v1 + e, 0.02, W + 0.012, FACES.FRONT | FACES.TOP);
+  B.box(m, a.u0, a.u1, a.v0 - e, a.v0, 0.02, W + 0.012, FACES.FRONT | FACES.BOTTOM);
+  if (!q.lod) {
+    // floodlights on arms reaching out over the top edge
+    const n = Math.max(2, Math.round((a.u1 - a.u0) / 3));
+    for (let i = 0; i < n; i++) {
+      const u = a.u0 + ((a.u1 - a.u0) * (i + 0.5)) / n;
+      B.flat = [0.3, 0.3, 0.3];
+      B.box(sinks.metal || m, u - 0.025, u + 0.025, a.v1 + 0.05, a.v1 + 0.1, W, W + 0.85, FACES.ALL & ~FACES.BACK);
+      B.flat = [0.22, 0.22, 0.23];
+      B.box(m, u - 0.14, u + 0.14, a.v1 - 0.08, a.v1 + 0.1, W + 0.75, W + 1.0, FACES.ALL);
+    }
+  }
+  B.flat = [1, 1, 1];
 }

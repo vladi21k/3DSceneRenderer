@@ -32,18 +32,19 @@ const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
 const _tc = new THREE.Vector3();
 
 // Weather regimes (one per world seed; URL sky= picks one): a pale dust haze with faint
-// cirrus, high cirrus streaks over altocumulus patches and a few small cumulus, or a
-// field of small flat-based cumulus. cover/scale/top shape the volumetric cumulus.
+// cirrus, high cirrus streaks over altocumulus patches (no low cumulus: a few evenly
+// strewn small puffs in the telephoto sky slot read as cotton balls), or a field of
+// small flat-based cumulus. cover/scale/top shape the volumetric cumulus.
 // mie: aerosol load (x the clean reference atmosphere); haze: street-level dust haze
 // (extinction and in-scatter scale for post's aerial perspective)
 const WEATHER = {
-  streaks: { cover: 0.24, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, haze: { ext: 1, inscatter: 1 } },
+  streaks: { cover: 0, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, haze: { ext: 1, inscatter: 1 } },
   cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 32, haze: { ext: 1, inscatter: 1 } },
   // a pale dust haze: the sky milky and nearly white towards the horizon, far facades
   // losing most of their contrast
   // (bright, nearly non-absorbing dust, a touch warm; its extinction takes about a fifth
   // of the direct sun, and the forward scatter softens the shadow edges)
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 105, mieH: 1.0, mieAlb: [0.99, 0.975, 0.95], penumbra: 1.3, haze: { ext: 1.4, inscatter: 1.2 } },
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.995, 0.98, 0.95], penumbra: 1.3, haze: { ext: 1.4, inscatter: 1.2 } },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
@@ -141,6 +142,7 @@ const env = {
     this.weather = WEATHER[pick] ? pick : names[(Math.imul(app.params.seed | 0, 2654435761) >>> 0) % names.length];
     const w = WEATHER[this.weather];
     this.hazeBoost = w.haze;
+    this._hlev = app.params.num('hlev', 1);   // (inspection: horizon hold level scale)
     // a hazy, dusty Mediterranean summer afternoon: ~12x the aerosol of the clean
     // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue
     // sky, a milky horizon, deep blue only overhead), more on a hazy day; URL mie=
@@ -409,7 +411,7 @@ const env = {
   _horizonCap() {
     const irr = this.sky.irradiance, cam = this.app && this.app.camera;
     if (!irr || !cam || !irr.horizonSun) return 1e4;
-    const level = horizonLevel(this.state.t);
+    const level = horizonLevel(this.state.t) * (this._hlev ?? 1);
     if (level >= 63.9) return 1e4;
     const d = this.state.sunDir;
     cam.getWorldDirection(_fwd);

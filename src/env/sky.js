@@ -62,15 +62,18 @@ void main() {
   float det = wfbm(uv + 0.37, 16.0);
   // B: regional coverage
   float cov = pfbm(uv + 0.11, vec2(2.0), 3) * 0.5 + 0.5;
-  // A: cirrus wisps (mildly anisotropic, strongly domain-warped so the strands curl and
-  // fray instead of lining up like ripples; the warp is periodic, so the tile still wraps)
-  vec2 wq = vec2(pfbm(uv + 0.53, vec2(3.0), 3), pfbm(uv + 0.71, vec2(3.0), 3));
-  vec2 cu = uv + wq * vec2(0.09, 0.18);
-  float ci = pfbm(cu, vec2(2.0, 5.0), 5) * 0.5 + 0.5;
-  ci *= pfbm(uv + 0.29, vec2(3.0), 3) * 0.5 + 0.6;
+  // A: cirrus fibres. Streaks 1:8, long along y (the upper wind) and narrow across x,
+  // bent gently across only (well under a streak's width, so they never curl into rings
+  // or whorls), with ridged fine fibres along them and a slow envelope where they gather
+  float bend = pfbm(uv + 0.53, vec2(2.0), 2);
+  vec2 cu = uv + vec2(0.025 * bend, 0.0);
+  float band = pfbm(cu, vec2(8.0, 1.0), 4) * 0.5 + 0.5;
+  float fib = 1.0 - abs(pfbm(cu + 0.17, vec2(48.0, 6.0), 2));
+  float env = pfbm(uv + 0.29, vec2(2.0), 2) * 0.5 + 0.5;
+  float ci = band * (0.6 + 0.4 * fib) * (0.75 + 0.4 * env);
   // stretch each channel to use the full range (measured distributions)
   gl_FragColor = vec4(clamp((pw - 0.07) / 0.57, 0.0, 1.0), clamp((det - 0.05) / 0.93, 0.0, 1.0),
-                      clamp((cov - 0.29) / 0.42, 0.0, 1.0), clamp((ci - 0.13) / 0.40, 0.0, 1.0));
+                      clamp((cov - 0.29) / 0.42, 0.0, 1.0), clamp((ci - 0.30) / 0.32, 0.0, 1.0));
 }
 `;
 
@@ -210,11 +213,12 @@ vec3 clouds(vec3 dir, vec3 L) {
   if (uAltocu > 0.0 && lowFade > 0.0) {
     float t = 4200.0 / dir.y;
     vec2 p = uCamPosW.xz + dir.xz * t + uCirrusOffset * 0.5;
-    vec2 wp = (vec2(texture2D(uCloudTex, p / 9000.0 + 0.17).g, texture2D(uCloudTex, p / 9000.0 + 0.59).g) - 0.5) * 1100.0;
+    // (a gentle warp at twice the cloudlets' size: rounded patches, never worm-like flecks)
+    vec2 wp = (vec2(texture2D(uCloudTex, p / 18000.0 + 0.17).g, texture2D(uCloudTex, p / 18000.0 + 0.59).g) - 0.5) * 550.0;
     const mat2 R37 = mat2(0.7986, 0.6018, -0.6018, 0.7986);
     // (a coarser mip: soft-edged cloudlets, no crisp flakes)
-    float c1 = texture2D(uCloudTex, (p + wp) / 2300.0 + 0.61, 1.0).r;
-    float c2 = texture2D(uCloudTex, R37 * (p - wp) / 3900.0 + 0.13, 1.0).r;
+    float c1 = texture2D(uCloudTex, (p + wp) / 4600.0 + 0.61, 1.0).r;
+    float c2 = texture2D(uCloudTex, R37 * (p - wp) / 7800.0 + 0.13, 1.0).r;
     float cell = mix(c1, c2, 0.45);
     float sheet = 0.65 * texture2D(uCloudTex, p / 26000.0 + 0.23).b + 0.35 * texture2D(uCloudTex, R37 * p / 9500.0 + 0.71).b;
     float cov = smoothstep(0.56 - 0.24 * uAltocu, 0.84 - 0.16 * uAltocu, sheet);
@@ -222,8 +226,8 @@ vec3 clouds(vec3 dir, vec3 L) {
     float c = smoothstep(0.58 - 0.12 * cov, 0.9, cell) * cov * min(uAltocu * 1.6, 1.0);
     // self-shadowing towards the sun: thin sunward rims bright, thick bases darker
     vec2 sd = length(uSunDirA.xz) > 1e-3 ? normalize(uSunDirA.xz) : vec2(0.0);
-    float cs = mix(texture2D(uCloudTex, (p + wp + sd * 220.0) / 2300.0 + 0.61, 1.0).r,
-                   texture2D(uCloudTex, R37 * (p - wp + sd * 220.0) / 3900.0 + 0.13, 1.0).r, 0.45);
+    float cs = mix(texture2D(uCloudTex, (p + wp + sd * 440.0) / 4600.0 + 0.61, 1.0).r,
+                   texture2D(uCloudTex, R37 * (p - wp + sd * 440.0) / 7800.0 + 0.13, 1.0).r, 0.45);
     float sunlit = exp(-2.2 * smoothstep(0.5, 0.9, cs));
     float a = c * 0.7;
     float ph = mix(atmPhaseHG(cosT, 0.6), atmPhaseHG(cosT, 0.0), 0.5) * 4.0 * ATM_PI;
@@ -232,23 +236,24 @@ vec3 clouds(vec3 dir, vec3 L) {
     L += a * fade * (col - L);
   }
 
-  // --- cirrus (8 km): a few long, fraying wisps along the upper wind
+  // --- cirrus (8 km): fibrous streaks along the upper wind, ~15 km long and ~1-2 km wide,
+  // crisp bright cores with a faint veil and feathered tails around them
   if (lowFade > 0.0) {
     float t = 8000.0 / dir.y;
     vec2 p = uCamPosW.xz + dir.xz * t + uCirrusOffset;
-    // stretch along the wind
+    // texture x across the wind, y along it
     vec2 w = uWindDir, n = vec2(-w.y, w.x);
     vec2 q = vec2(dot(p, n), dot(p, w)) / 60000.0;
-    float c = texture2D(uCloudTex, q).a;
-    // fine brush-stroke fibres along the wisps (turned ~25° against them), which only
-    // texture the broad shapes, never add cloud of their own
-    const mat2 R25 = mat2(0.9063, 0.4226, -0.4226, 0.9063);
-    c *= 0.62 + 0.55 * texture2D(uCloudTex, R25 * q * vec2(1.6, 9.0) + vec2(0.31, 0.17)).a;
+    float ci = texture2D(uCloudTex, q).a;
     // where there is cirrus at all: ~20 km patches (two octaves), most of the sky clear
+    const mat2 R25 = mat2(0.9063, 0.4226, -0.4226, 0.9063);
     float cr = 0.6 * texture2D(uCloudTex, p / 45000.0 + 0.4).b + 0.4 * texture2D(uCloudTex, R25 * p / 17000.0 + 0.83).b;
-    // (a heavier cirrus regime also spreads the wisps over more of the sky)
-    c = smoothstep(0.48, 0.95, c) * smoothstep(0.5 - 0.2 * uCirrus, 0.8 - 0.15 * uCirrus, cr) * min(uCirrus * 1.4, 1.0);
-    float a = c * 0.55 * lowFade;
+    // (a heavier cirrus regime also spreads the streaks over more of the sky)
+    float patchW = smoothstep(0.5 - 0.2 * uCirrus, 0.8 - 0.15 * uCirrus, cr) * min(uCirrus * 1.4, 1.0);
+    // the streaks' cores rise over a narrow threshold (crisp filaments); the veil and the
+    // tails over a wider, lower one
+    float c = (0.16 * smoothstep(0.5, 0.74, ci) + 0.3 * smoothstep(0.72, 0.8, ci)) * patchW;
+    float a = c * lowFade;
     float ph = mix(atmPhaseHG(cosT, 0.75), atmPhaseHG(cosT, 0.0), 0.6) * 4.0 * ATM_PI;
     vec3 col = sunL * ph * 0.16 + ambUp * 0.9;
     float fade = exp(-t / 60000.0);

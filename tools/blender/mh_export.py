@@ -46,9 +46,11 @@ CARD_ERROR = (0.0015, 0.006, 0.018, 0.05)
 # sleeve: drawn in the garment's colour, darkened (flag 2 on a garment region), for LOD 0-1
 HEM_RANGE = 0.045
 HEM_LODS = (0, 1)
-# far LODs: skin within GD_RANGE of a garment is pulled in under it by up to SHRINK[l] (m)
-SHRINK = (0.0, 0.0, 0.004, 0.010)
-GD_RANGE = 0.035
+# far LODs: skin within GD_RANGE of a garment is pulled in under it by up to SHRINK[l] (m), and the
+# garments swell by GROW[l] (simplified layers would otherwise cut through each other in patches)
+SHRINK = (0.0, 0.0015, 0.007, 0.012)
+GROW = (0.0, 0.001, 0.004, 0.007)
+GD_RANGE = 0.045
 DOUBLE = ('hair', 'lashes', 'beard')
 SIZE_SCALE = {'toddler': 0.7, 'child': 0.85}
 FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT = 1, 2, 4, 8
@@ -248,6 +250,15 @@ def main():
                     # a copy of the skin for this far LOD, pulled in under nearby garment edges
                     f = np.clip((GD_RANGE - d['gd']) / GD_RANGE, 0, 1)[:, None]
                     P.append(d['co'] - d['nr'] * SHRINK[li] * f); N.append(d['nr']); UV.append(uv); W.append(d['w'])
+                    AO.append(d['ao']); TEXA.append(ta)
+                    lods[li].append(lodidx[li] + nv)
+                    nv += n
+                elif d['kind'] == 'suit' and GROW[li] > 0 and len(lodidx[li]):
+                    # a copy of the garment for this far LOD, a little proud of the skin and the layer under it
+                    g = GROW[li] * (1.5 if (d['reg'] != CASTM.REGIONS['bottom']).all() is False else 1.0)
+                    grow = np.where(d['reg'] == CASTM.REGIONS['bottom'], GROW[li], GROW[li] * 1.6)[:, None]
+                    del g
+                    P.append(d['co'] + d['nr'] * grow); N.append(d['nr']); UV.append(uv); W.append(d['w'])
                     AO.append(d['ao']); TEXA.append(ta)
                     lods[li].append(lodidx[li] + nv)
                     nv += n
@@ -495,8 +506,9 @@ characters[i]: one dressed character in the rest pose of the runtime skeleton (s
   skeleton.parent = bone parents (bones[] names). info = fields the runtime Rig reads (H, kind, heelZ, toeZ, hang) + landmarks.
   Geometry: one vertex set shared by the 4 LODs; lods[l] = {start, count} into the index list (draw range,
   in indices); every index of LOD l is < lods[l].vertices (vertices are ordered coarsest-LOD-first, so a far
-  LOD touches a short prefix). LOD 0 ~10-15k tris (full detail), 1 ~3-4k, 2 ~1-1.5k (hair cards kept, skin
-  pulled in under garment edges), 3 ~250-450 (opaque hair cap instead of cards, no lashes / brows).
+  LOD touches a short prefix). LOD 0 ~15-24k tris (full detail), 1 ~4-6k, 2 ~1-2.5k (hair cards kept, skin
+  pulled in under garment edges), 3 ~200-450 (opaque hair cap instead of cards, no lashes / brows). Each
+  LOD is simplified from the one before it, never across UV seams or region borders.
   lodPx = suggested figure heights on screen (px) above which LOD 0 / 1 / 2 are used.
   Attributes (byte offsets into the binary, vertexCount entries each):
     position  int16 x3 (6 bytes / vertex): p = min + (q + 32767) / 65534 * range
@@ -505,6 +517,10 @@ characters[i]: one dressed character in the rest pose of the runtime skeleton (s
     skinIndex uint8 x4 (runtime bones), skinWeight uint8 x4 normalised (sum = 255)
     tex       uint8 x4 = (albedo layer, normal layer or 255 = none, region id, flags)
   index: u16 or u32, count indices (all LODs concatenated; triangle lists, CCW front faces).
+  version 2 (features): skin tex.y = skin decals (128 none, 129..255 beard growth 0..1, 127..0 hair-covered
+  scalp 0..1); hair tex.y = strand fade at trimmed ends (254 none .. 0); garments carry inner faces near
+  their openings and on faces turned towards the body (flag 2 on a garment region: shade as the inside);
+  beards are a volume shell over the dense part only (the rest is the skin decal).
 flags: 1 alpha-tested coverage (hair, brows, lashes, beard), 2 duplicated back face of a double-sided card,
   4 detail texture: albedo_linear = 2 * texel_linear * tint_linear (else albedo = texel * tint),
   8 skirt / dress below the waist (weighted pelvis -> both thighs; a renderer may add its own sway or flare).

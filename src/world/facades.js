@@ -3,11 +3,11 @@ import { CHUNK_LEN, LOD0_DIST, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js
 import { U } from '../core/uniforms.js';
 import { facadePlan } from './facadePlan.js';
 import { Kit } from './facades/kit.js';
-import { createInteriorGlass, GLASS_ATTRS } from './facades/interior.js';
+import { createInteriorGlass, GLASS_ATTRS, shopLevels } from './facades/interior.js';
 import { createSignMaterials } from './facades/signs.js';
 import { createAwningMaterial } from './facades/awnings.js';
 import { lanternTpls, signLampTpls, intercomTpl, createLampGlass, createBulbMaterial } from './facades/extras.js';
-import { buildFront } from './facades/place.js';
+import { buildFront, frontsOf } from './facades/place.js';
 import { createSpillMaterial } from './facades/spill.js';
 import { BAD_NORMALS } from './facades/geo.js';
 
@@ -157,12 +157,8 @@ const facades = {
       // far-range infill whatever the chunk
       const q = chunk.lod === 0 && !lot.backdrop && !(lot.sideStreet && lot.x0 >= SIDE_FAR) ? 1 : 0.4;
       const assets = this.assets[q === 1 ? 0 : 1];
-      const streetW = lot.sideStreet ? lot.cross.width : 2 * Math.abs(lot.d);
-      const cafe = !lot.sideStreet && lot.cafe != null ? layout.cafes[lot.cafe] : null;
-      const fronts = [{ plan, frame: lot.frame, streetW, cafe: cafe && cafe.style === 'awning' ? cafe : null }];
-      // corner returns face the side street
-      for (const r of plan.returns || []) fronts.push({ plan: r, frame: r.frame, streetW: 10, cafe: null });
-      for (const fr of fronts) {
+      // its street face and the corner returns facing the side street
+      for (const fr of frontsOf(app, lot, plan)) {
         const ctx = {
           plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets, app,
           streetW: fr.streetW, cafe: fr.cafe,
@@ -201,6 +197,8 @@ const facades = {
     // the reveal film is black by day (see spill.js): skip its draws altogether
     const spill = this.mats.spill.material, night = U.uNight.value > 0.18;
     if (spill.visible !== night) spill.visible = night;
+    // shop lamps, their spill and the light boxes follow the exposure at dusk
+    shopLevels(app.env ? app.env.exposure : 1);
     this.prefetch(app);
   },
 

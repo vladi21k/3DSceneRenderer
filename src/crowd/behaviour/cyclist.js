@@ -515,7 +515,7 @@ function rebaseMove(a) {
 
 /** Into / out of a side street: ride towards a point. */
 function waypoint(c, a, T, vT) {
-  const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+  const k = a.inSide ? 1 : Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
   const es = (a.gs - a.s) * k, ed = a.gd - a.d, dist = Math.hypot(es, ed);
   if (dist < a.gTol) { arriveRide(c, a); T.d = a.d; T.v = Math.min(vT, 2.5); return; }
   T.alpha = Math.atan2(ed, es);
@@ -572,7 +572,7 @@ function arriveRide(c, a) {
     const m = a.mouth, side = a.side, line = map.mouthLine(m, side);
     a.step++;
     if (a.step >= 3) {
-      if (c.vis.hidden(a.s, a.d) || c.vis.distance(a.s) > 150) { c.population.vanish(a); return; }
+      if (c.side.hidden(a.s, a.d, 1.0) || c.vis.distance(a.s) > 150) { c.population.vanish(a); return; }
       a.gs = c.unwrap(m.s) + a.slotX; a.gd = side * (line + 18); a.gTol = 0.8;
       return;
     }
@@ -856,8 +856,8 @@ export function thinkCycle(c, a) {
   if (a.state === ST.GOTO) {
     // into a side street: gone once out of sight behind the corner
     if (a.task === TASK.SIDE_OUT && a.mouth && a.step >= 1) {
-      const m = a.mouth, line = map.mouthLine(m, a.side), ms = c.unwrap(m.s);
-      if (c.vis.bodyHidden(a.s, a.d, a.side, line, ms - m.width / 2, ms + m.width / 2) && Math.abs(a.d) > line + 2.2) c.population.vanish(a);
+      const m = a.mouth, line = map.mouthLine(m, a.side);
+      if (Math.abs(a.d) > line + 2.2 && c.side.hidden(a.s, a.d, 1.0) && c.side.hidden(a.s, a.d - a.side * 1.0, 1.0)) c.population.vanish(a);
     }
     return;
   }

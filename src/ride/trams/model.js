@@ -283,17 +283,21 @@ function cellMaterial(kind, y0, y1) {
  *  length); the glass shader tells the centre body (uOff 100) from the cab ends by it. */
 function sideWalls(P, prof, cells, uOff = 0) {
   for (const cell of cells) {
-    const u0 = cell.z0 + uOff, u1 = cell.z1 + uOff;
     for (let i = 0; i < prof.length - 1; i++) {
       const a = prof[i], b = prof[i + 1];
       // door and window rows only matter on the side; the roof takes the paint
       const [part, col] = cellMaterial(cell.kind, a.y, b.y);
       const B = P[part];
+      // the lower side panels meet under each window pillar: the body shader draws the
+      // joint at the cell's centre (uv = (centre + uOff, 50 + arc length) marks it)
+      const seam = part === 'body' && cell.kind === 'pillar' && b.y <= Y.belt + 1e-3 && a.y >= Y.skirt - 1e-3;
+      const u0 = seam ? (cell.z0 + cell.z1) / 2 + uOff : cell.z0 + uOff, u1 = seam ? u0 : cell.z1 + uOff;
+      const va = seam ? 50 + a.a : a.a, vb = seam ? 50 + b.a : b.a;
       for (const sx of [1, -1]) {
-        const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, grimed(col, a.y), u0, a.a);
-        const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, grimed(col, a.y), u1, a.a);
-        const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, grimed(col, b.y), u1, b.a);
-        const v3 = B.vert(sx * b.x, b.y, cell.z0, sx * b.nx, b.ny, 0, grimed(col, b.y), u0, b.a);
+        const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, grimed(col, a.y), u0, va);
+        const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, grimed(col, a.y), u1, va);
+        const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, grimed(col, b.y), u1, vb);
+        const v3 = B.vert(sx * b.x, b.y, cell.z0, sx * b.nx, b.ny, 0, grimed(col, b.y), u0, vb);
         B.quad(v0, v1, v2, v3);
       }
     }

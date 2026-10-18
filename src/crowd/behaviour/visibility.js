@@ -18,6 +18,8 @@ export class Visibility {
     this.camU = 0;            // camera route position (unwrapped, crowd frame)
     this.camD = TRACK_OFFSET;
     this.camPos = new THREE.Vector3();
+    // (s, d, h) -> world point: route.toWorld, or the crowd's (which follows the side streets)
+    this.toWorld = (s, d, h, out) => route.toWorld(s, d, h, out);
   }
 
   /** camU: crowd's unwrapped camera s; camS: app.cameraS (wrapped). */
@@ -33,7 +35,7 @@ export class Visibility {
 
   /** Is a standing figure at route (s, d) inside the view frustum (with a margin)? */
   inView(s, d, h = 0) {
-    this.route.toWorld(s, d, h + 0.9, this.sphere.center);
+    this.toWorld(s, d, h + 0.9, this.sphere.center);
     this.sphere.radius = 1.1;
     return this.frustum.intersectsSphere(this.sphere);
   }

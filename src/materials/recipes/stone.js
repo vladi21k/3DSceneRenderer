@@ -265,7 +265,7 @@ export const rustic = {
   layout: { rowH: 0.5, rows: 4, seg: [4, 6], jitter: 0.36, seed: 23, shift: true },
   joint: 0.01,
   heightA: [-0.024, 0.096],
-  pass: { normal: 1.0, ao: 0.85, aoRadius: 0.03, cavity: 0.12 },
+  pass: { normal: 1.25, ao: 1.0, aoRadius: 0.045, cavity: 0.15 },
   glsl: limestone(0.5) + /* glsl */ `
 float sminP(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
 void surface(vec2 m, inout Surf s) {
@@ -279,14 +279,14 @@ void surface(vec2 m, inout Surf s) {
   vec2 q = c.lp - hs;
   // the plane intersections wander a centimetre or two
   vec2 qw = q + vec2(fbm(m, 3.0, 2, 0.5, 61u), fbm(m, 3.0, 2, 0.5, 62u)) * 0.018;
-  float crown = 0.05 + 0.035 * cellRand(c, 3u);
+  float crown = 0.058 + 0.035 * cellRand(c, 3u);
   vec2 cc = (vec2(cellRand(c, 13u), cellRand(c, 14u)) - 0.5) * hs * 0.7;
   // the mass: a loaf whose shoulders roll over 3-9 cm from the pitch line (1-3.4 cm proud
   // there, varying along the edge), its top undulating (lumps of ~30 cm, the whole boss
   // leaning a little to one side)
   float dIn0 = max(e - brk, 0.0);
-  float edgeH = 0.012 + 0.016 * cellRand(c, 8u) + 0.008 * fbm(m, 5.0, 2, 0.5, 63u);
-  float w = 0.03 + 0.045 * cellRand(c, 9u) + 0.015 * fbm(m, 4.0, 2, 0.5, 64u);
+  float edgeH = 0.016 + 0.018 * cellRand(c, 8u) + 0.009 * fbm(m, 5.0, 2, 0.5, 63u);
+  float w = 0.025 + 0.035 * cellRand(c, 9u) + 0.012 * fbm(m, 4.0, 2, 0.5, 64u);
   vec2 lean = (vec2(cellRand(c, 11u), cellRand(c, 12u)) - 0.5) * 0.06;
   float crownH = crown + 0.012 * fbm(m + vec2(c.h * 7.7), 3.0, 3, 0.5, 65u) + dot(q, lean)
                - 0.012 * dot((q - cc) / hs, (q - cc) / hs);
@@ -335,7 +335,7 @@ void surface(vec2 m, inout Surf s) {
     boss -= D * prof * sqrt(prof);
   }
   // rounded hammer lumps (5-15 cm), no small sharp creases: the rough mass of the face between the planes
-  boss += 0.007 * fbm(m + vec2(c.h * 3.1), 6.0, 3, 0.5, 52u) + 0.0025 * fbm(m, 16.0, 2, 0.5, 53u) + 0.0008 * fbm(m, 45.0, 2, 0.5, 54u);
+  boss += 0.01 * fbm(m + vec2(c.h * 3.1), 6.0, 3, 0.5, 52u) + 0.0035 * fbm(m, 16.0, 2, 0.5, 53u) + 0.001 * fbm(m, 45.0, 2, 0.5, 54u);
   // chisel scars: the pitching tool's bites along the break line, short tapered grooves
   // running in from the edge (about one every 8 cm, at random)
   bool alongX = min(c.ed.z, c.ed.w) < min(c.ed.x, c.ed.y);

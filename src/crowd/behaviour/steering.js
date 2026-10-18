@@ -26,6 +26,8 @@ const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform
 const PI = Math.PI;
 
 const len2 = (x, y) => Math.sqrt(x * x + y * y);
+/** Metres per unit of s at a's spot (offset lines on curves; out in a side street s is metric). */
+const kAt = (c, a) => (a.inSide ? 1 : Math.max(0.5, 1 + c.route.curvature(a.s) * a.d));
 const wrapAngle = (x) => { x = (x + PI) % (2 * PI); if (x < 0) x += 2 * PI; return x - PI; };
 
 export class Steering {
@@ -80,7 +82,7 @@ export class Steering {
     if (!a.mob && !this._propAround(a)) return;
     const agents = this.c.population.agents;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
-    const k = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);
+    const k = kAt(this.c, a);
     let done = 0;
     for (let x = Math.max(0, ix - 2); x <= Math.min(this.nx - 1, ix + 2); x++) {
       // (two cells either way: a stroller reaches 1.5 m ahead of its pusher)
@@ -112,6 +114,8 @@ export class Steering {
     const dt1 = dt;
     for (const a of agents) {
       if (!a.active) continue;
+      // out in a side street? (its own frame: s is metric there)
+      c.side.mark(a);
       // far agents (a few pixels tall, far outside the tram's zone) step at half rate
       a.simple = a.s - c.camU > SIMPLE_BEYOND;
       dt = dt1;
@@ -153,7 +157,7 @@ export class Steering {
       if (standing && !a.moving && sp < 0.3) { a.vs = 0; a.vd = 0; }
 
       const prevD = a.d, prevS = a.s;
-      const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+      const k = kAt(c, a);
       a.s += (a.vs / k) * dt;
       a.d += a.vd * dt;
       // hard corrections never move anyone faster than a brisk step
@@ -220,7 +224,7 @@ export class Steering {
     a.vmaxCur = Math.max(1.6, v);
     a.moving = v > 0.05;
     const prevD = a.d, prevS = a.s;
-    const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+    const k = kAt(c, a);
     a.s += (a.vs / k) * dt;
     a.d += a.vd * dt;
     this.maxC = Math.max(0.02, 2 * Math.max(1.6, v) * dt);
@@ -248,7 +252,7 @@ export class Steering {
     a.stepT = Math.max(0, a.stepT - dt);
     const f = sm(1 - a.stepT / T) - sm(u0);
     const prevS = a.s, prevD = a.d;
-    const k = Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
+    const k = kAt(c, a);
     a.s += (a.stepS * f) / k; a.d += a.stepD * f;
     updateFoot(a);
     c.tram.constrain(a, prevD, dt);
@@ -263,7 +267,7 @@ export class Steering {
     if (a.fpR <= 0 || a.simple) return false;
     const agents = this.c.population.agents;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
-    const k = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);
+    const k = kAt(this.c, a);
     const o0s = a.fp0s, o0d = a.fp0d, o1s = a.fp1s, o1d = a.fp1d;
     footAt(a, na, _sw);
     let blocked = false;
@@ -304,7 +308,7 @@ export class Steering {
     const es = sp > 0.1 ? a.vs / sp : Math.cos(a.alpha), ed = sp > 0.1 ? a.vd / sp : Math.sin(a.alpha);
     const agents = this.c.population.agents;
     const L = a.leader || a;
-    const km = Math.max(0.5, 1 + this.c.route.curvature(a.s) * a.d);   // metres per unit of s here
+    const km = kAt(this.c, a);   // metres per unit of s here
     // (strollers and bicycles reach further: their neighbours two cells away across the street too)
     const yr = a.mob || this._propAround(a) ? 2 : 1;
     for (let x = ix - 2; x <= ix + 2; x++) {
@@ -497,7 +501,7 @@ export class Steering {
       const dr = a.door;
       const lim = dr && dr.o ? dr.o.d + dr.depth - 0.1 : map.facadeAt(a.s, side) + 0.25;
       // out of the recess again (people coming out of a door): an ordinary walker
-      if (a.task !== TASK.ENTER && Math.abs(a.d) < map.facadeAt(a.s, side) - 0.35) a.inDoor = false;
+      if (a.task !== TASK.ENTER && !(a.task === TASK.SERVE && a.step === 3) && Math.abs(a.d) < map.facadeAt(a.s, side) - 0.35) a.inDoor = false;
       else {
         // the facade opens only at the door leaf; inside the recess the jambs bound s
         const wall = map.wallAt(a.s, side), ad = Math.abs(a.d);
@@ -518,9 +522,14 @@ export class Steering {
       // inside the side street opening the side walls bound s; elsewhere the facade bounds d
       const line = map.mouthLine(m, side);
       const ms = c.unwrap(m.s), half = m.width / 2 - 0.55;
-      if (Math.abs(a.d) > line - WALL_GAP && Math.abs(a.s - ms) < half + 0.4) {
+      // (well inside the side street its walls bound s whatever happened before)
+      if (Math.abs(a.d) > line - WALL_GAP && (Math.abs(a.s - ms) < half + 0.4 || a.inSide && a.sideX > 1)) {
         if (a.s < ms - half) a.s += Math.min(maxC, ms - half - a.s); else if (a.s > ms + half) a.s -= Math.min(maxC, a.s - ms - half);
-        if (Math.abs(a.d) > line + 22) a.d = side * Math.max(line + 22, Math.abs(a.d) - maxC);
+        const deep = line + (m.depth || 60) + 40;
+        if (Math.abs(a.d) > deep) a.d = side * Math.max(deep, Math.abs(a.d) - maxC);
+        // (up the side street people keep to its sidewalks)
+        const rp = c.side.roadPush(a, maxC);
+        if (rp) a.s += rp;
         return;
       }
     }

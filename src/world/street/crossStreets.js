@@ -289,6 +289,9 @@ export function tactileSlab(ctx, bufs, s0, s1, dA, dB) {
   const da = Math.min(dA, dB), db = Math.max(dA, dB);
   const n = Math.max(1, Math.ceil((s1 - s0) / 0.6));
   const lift = 0.006;
+  // trodden grime: the light concrete is greyed, unevenly along the strip
+  const gr = RNG.from('tactile', Math.round(s0 * 10), Math.round(dA * 10));
+  const tone = () => 0.76 + 0.08 * gr.next();
   const smp = {};
   const ri = {};
   let prev = -1;
@@ -300,10 +303,11 @@ export function tactileSlab(ctx, bufs, s0, s1, dA, dB) {
     const hm = Math.max(ha, hb) + lift;
     const x = smp.pos.x, z = smp.pos.z, y = smp.pos.y, rx = smp.right.x, rz = smp.right.z;
     // outer bottom, top, top, outer bottom
-    const v = b.v(x + rx * (da - 0.01), y + ha - 0.002, z + rz * (da - 0.01), -rx * 0.5, 0.86, -rz * 0.5, s, da - 0.01, 0.85, 0.85, 0.85);
-    b.v(x + rx * da, y + hm, z + rz * da, 0, 1, 0, s, da);
-    b.v(x + rx * db, y + hm, z + rz * db, 0, 1, 0, s, db);
-    b.v(x + rx * (db + 0.01), y + hb - 0.002, z + rz * (db + 0.01), rx * 0.5, 0.86, rz * 0.5, s, db + 0.01, 0.85, 0.85, 0.85);
+    const t = tone(), e = 0.85 * t;
+    const v = b.v(x + rx * (da - 0.01), y + ha - 0.002, z + rz * (da - 0.01), -rx * 0.5, 0.86, -rz * 0.5, s, da - 0.01, e, e, e);
+    b.v(x + rx * da, y + hm, z + rz * da, 0, 1, 0, s, da, t, t, t);
+    b.v(x + rx * db, y + hm, z + rz * db, 0, 1, 0, s, db, t, t, t);
+    b.v(x + rx * (db + 0.01), y + hb - 0.002, z + rz * (db + 0.01), rx * 0.5, 0.86, rz * 0.5, s, db + 0.01, e, e, e);
     if (prev >= 0) {
       for (let k = 0; k < 3; k++) b.quad(prev + k, prev + k + 1, v + k + 1, v + k);
     }
@@ -319,7 +323,7 @@ export function tactileSlab(ctx, bufs, s0, s1, dA, dB) {
     const o = 0.01 * sgn;
     const P = (d, h, off) => [smp.pos.x + smp.right.x * d + smp.tanH.x * off, smp.pos.y + h, smp.pos.z + smp.right.z * d + smp.tanH.z * off];
     const p0 = P(da, hm, 0), p1 = P(db, hm, 0), p2 = P(db, hb - 0.002, o), p3 = P(da, ha - 0.002, o);
-    const q = [p0, p1, p2, p3].map((p, k) => b.v(p[0], p[1], p[2], tx * 0.5, 0.86, tz * 0.5, s, k < 2 ? 0 : 0.01, 0.85, 0.85, 0.85));
+    const q = [p0, p1, p2, p3].map((p, k) => b.v(p[0], p[1], p[2], tx * 0.5, 0.86, tz * 0.5, s, k < 2 ? 0 : 0.01, 0.68, 0.68, 0.68));
     if (sgn > 0) b.quad(q[0], q[1], q[2], q[3]); else b.quad(q[0], q[3], q[2], q[1]);
   }
 }

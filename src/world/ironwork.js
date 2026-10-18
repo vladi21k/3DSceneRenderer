@@ -17,7 +17,8 @@ import {
 import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL } from './ironwork/attach.js';
 import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 
-// Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
+// Balconies and facade attachments: moulded stone slabs on carved consoles (placed by
+// ironwork/consoles.js: scroll, stepped or block, clear of the dressing below), wrought-iron
 // railings (instanced geometry near, coverage cards far) or stone balustrades, planters,
 // AC units, flags and dishes. Everything is placed from facadePlan(lot) in the lot's
 // facade frame (u along the wall, v up, w out of the wall). Contract: docs/ARCHITECTURE.md.

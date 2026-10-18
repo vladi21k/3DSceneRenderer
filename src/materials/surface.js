@@ -550,7 +550,7 @@ ${f.detail ? NORMAL_DETAIL : ''}  if (sfFlags.y > 0.5) sfN = sfN.yx;
 `;
 
 const AO = /* glsl */ `
-  float ambientOcclusion = mix(1.0, sfS.a, sfMisc.y * sfAOScale);
+  float ambientOcclusion = clamp(mix(1.0, sfS.a, sfMisc.y * sfAOScale), 0.0, 1.0);
   reflectedLight.indirectDiffuse *= ambientOcclusion;
   #if defined( USE_CLEARCOAT )
     clearcoatSpecularIndirect *= ambientOcclusion;

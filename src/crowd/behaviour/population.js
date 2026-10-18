@@ -10,6 +10,7 @@ import {
 } from './constants.js';
 import { updateFoot, footBandGap, propPointDist2, footGap } from './footprint.js';
 import { pickRideLane, rideNear, wayClear, rideLine } from './cyclist.js';
+import { staffTick } from './staff.js';
 
 // Who is on the street. Keeps the density target over the populated range,
 // recycles people who fall behind the camera or walk out of range, and brings new
@@ -90,7 +91,7 @@ export class Population {
     a.clearT = a.dreamy ? r.range(CLEAR_T_DREAMY[0], CLEAR_T_DREAMY[1]) : r.range(CLEAR_T[0], CLEAR_T[1]);
     if (HURRY_BY[ageK]) a.clearT += 1.5;
     a.needsBell = a.dreamy || r.chance(0.1);
-    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0;
+    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.path = null; a.pathI = 0; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0;
     a.dodge = 0; a.dodgeT = 0; a.passT = -1e9;
     a.fresh = true; a.src = src; a.strideV = -1; a.afs = 0; a.afd = 0; a.laneTT = 0;
     a.pValid = false; a.speedA = 0; a.moving = false; a.uturnT = 0; a.driftT = 0;
@@ -177,7 +178,7 @@ export class Population {
     this.stats.vanished++;
     // statistics: leaving through a door or into a side street happens behind the building line
     const side = a.d >= 0 ? 1 : -1, c = this.c;
-    if (c.vis.inView(a.s, a.d) && !c.map.mouthAt(a.s, side) && Math.abs(a.d) < c.map.facadeAt(a.s, side) - 0.2 && !this._occluded(a)) this.stats.vanishSeen++;
+    if (a.inSide ? !c.side.hidden(a.s, a.d, 0) : c.vis.inView(a.s, a.d) && !c.map.mouthAt(a.s, side) && Math.abs(a.d) < c.map.facadeAt(a.s, side) - 0.2 && !this._occluded(a)) this.stats.vanishSeen++;
     this.kill(a);
   }
 
@@ -286,7 +287,7 @@ export class Population {
       const t = (this.density(sU, 1) + this.density(sU, -1)) * BIN;
       this.binTarget[b] = t; tot += t;
     }
-    const nonWalk = c.counts.seated + c.counts.passenger;
+    const nonWalk = c.counts.seated + c.counts.passenger + (c.counts.side || 0);
     const cap = MAX_AGENTS - nonWalk - 6;
     this.walkerTarget = Math.min(tot, cap);
     const k = this.walkerTarget / Math.max(1, tot);
@@ -319,7 +320,8 @@ export class Population {
     if (mob) { a.bikeV = mob === MOB.CYCLE && !opts.still ? a.v0 : 0; a.cT = a.d; updateFoot(a); }
     if (!opts.force && !this._placeOk(a)) { this._unspawn(a); this.stats.spawnFail++; return null; }
     this.mobCount[mob]++;
-    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.34);
+    // (late in the evening more people out in company)
+    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.34 + 0.12 * this.tod.late);
     // (no group right beside another one on the same strip: two of them would walk on as one row)
     if (r.chance(groupP) && !this._groupNear(a)) { if (mob === MOB.STROLLER) this._makeStrollerGroup(a, opts); else this._makeGroup(a, opts); }
     return a;
@@ -404,8 +406,11 @@ export class Population {
    *  sometimes a family with children holding on beside an adult. */
   _makeGroup(a, opts) {
     const c = this.c, r = c.rng;
-    const n = r.weighted([[1, 0.62], [2, 0.28], [3, 0.1]]);
-    const kids = r.chance(0.2) ? (n >= 2 && r.chance(0.4) ? 2 : 1) : 0;
+    // (late in the evening: bigger groups of young people, half as many children)
+    const late = this.tod.late;
+    const n = r.weighted([[1, 0.62 - 0.17 * late], [2, 0.28 + 0.07 * late], [3, 0.1 + 0.1 * late]]);
+    const kids = r.chance(0.2 * (1 - 0.5 * late)) ? (n >= 2 && r.chance(0.4) ? 2 : 1) : 0;
+    const young = late > 0.5 && !kids && r.chance(0.6 * late);
     // (each group its own pace: two groups never settle into the same speed side by side)
     const gk = (kids ? 0.82 : 0.9) * r.range(0.94, 1.06);
     a.v0 = Math.max(0.85, a.v0 * gk);
@@ -424,7 +429,7 @@ export class Population {
     const kidR = [-Math.sign(R1) * r.range(0.38, 0.46), Math.sign(R1) * r.range(0.38, 0.46)];
     for (let k = 0; k < n && this.free.length > 4; k++) {
       const child = k >= n - kids;
-      const f = this.alloc(a.kind, opts.src, child ? 'child' : 'any');
+      const f = this.alloc(a.kind, opts.src, child ? 'child' : young ? 'young' : 'any');
       if (!f) break;
       let [F, R] = slots[k];
       if (child) { F = r.range(-0.05, 0.12); R = kidR[(n - 1 - k) % 2]; }
@@ -534,6 +539,8 @@ export class Population {
         if (a) { want -= 1 + a.nFollow; this.stats.bySource.init += 1 + a.nFollow; }
       }
     }
+    // the side streets near the camera with their own people
+    c.side.fill();
     for (const a of this.agents) a.fresh = false;
   }
 
@@ -584,6 +591,8 @@ export class Population {
     if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); this._retrySeats(); }
     this._fillQueue(3);
     this._stationEvents();
+    if ((this.frame % 90) === 11) this._platformArrivals();
+    if ((this.frame % 45) === 23) staffTick(c);
     // one pass: recycling, head counts by kind and walkers per bin
     const lo = c.camU - RANGE_BEHIND;
     const k = c.counts;
@@ -596,6 +605,10 @@ export class Population {
       const rel = a.s - c.camU;
       this.mobCount[a.mob]++;
       if (a.s < lo) { this.stats.recycled++; this.kill(a, 'recycle'); continue; }
+      // (far up a side street and out of sight: gone; very far: gone regardless)
+      if (a.inSide && a.sideX > 64 && !a.leader && ((this.frame + a.slot) % 15 === 0 && c.side.groupHidden(a) || a.sideX > 90)) {
+        this.stats.recycled++; c.side.stats.gone++; this.kill(a); continue;
+      }
       if (rel > RANGE_AHEAD + FAR_SLACK && !a.leader && a.kind !== KIND.SEATED && a.kind !== KIND.PASSENGER) {
         // far beyond the range: leave only unseen (or, rarely, when much too far)
         const hard = rel > RANGE_AHEAD + FAR_HARD;
@@ -629,6 +642,7 @@ export class Population {
     // people standing about (talking, waiting, on the phone): a pair stepping out from behind
     // somebody far down the street now and then when there are too few
     if (k.stand300 < STAND_NEAR && (this.frame % 20) === 7 && this.free.length > 12) this._spawnChatHidden();
+    c.side.maintain(dt);
   }
 
   /** Two or three people standing and talking, far down the street, placed along the line of
@@ -781,8 +795,10 @@ export class Population {
     const c = this.c;
     if (!c.mobOn) return MOB.NONE;
     const W = Math.max(60, this.walkerTarget);
-    for (const [m, share] of MOB_LIST) {
+    for (const [m, share0] of MOB_LIST) {
       if (!c.mobOK(m)) continue;
+      // (fewer strollers out late in the evening)
+      const share = m === MOB.STROLLER ? share0 * (1 - 0.7 * this.tod.late) : share0;
       const want = share * W * c.mobX, def = want - this.mobCount[m];
       if (def <= 0.5) continue;
       if (r.chance(Math.min(0.6, Math.min(1, def / want) * 2 * share * c.mobX))) return m;
@@ -794,7 +810,7 @@ export class Population {
   _drawMob(r) {
     const c = this.c;
     if (!c.mobOn) return MOB.NONE;
-    for (const [m, share] of MOB_LIST) if (c.mobOK(m) && r.chance(Math.min(0.5, share * c.mobX))) return m;
+    for (const [m, share] of MOB_LIST) if (c.mobOK(m) && r.chance(Math.min(0.5, share * c.mobX * (m === MOB.STROLLER ? 1 - 0.7 * this.tod.late : 1)))) return m;
     return MOB.NONE;
   }
 
@@ -836,15 +852,14 @@ export class Population {
         x = gx;
       }
       const sp = ms + x, dp = side * (line + depth);
-      const sa = ms - m.width / 2, sb = ms + m.width / 2;
-      if (!c.vis.bodyHidden(sp, dp, side, line, sa, sb)) return null;
+      if (!c.side.hidden(sp, dp, 0.6)) return null;
       // a stroller / bicycle points out of the side street: its front must be hidden too
-      if (mob && !c.vis.bodyHidden(sp, dp - side * 1.3, side, line, sa, sb)) return null;
+      if (mob && !c.side.hidden(sp, dp - side * 1.3, 0.6)) return null;
       const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side', mob });
       if (!a) return null;
       for (const f of [...a.followers]) {
         f.d = dp + side * r.range(0.4, 1.2); f.s = sp + r.range(-0.5, 0.5);
-        if (!c.vis.bodyHidden(f.s, f.d, side, line, sa, sb)) this._unspawn(f);
+        if (!c.side.hidden(f.s, f.d, 0.6)) this._unspawn(f);
       }
       a.nFollow = a.followers.length;
       a.mouth = m; a.task = TASK.EMERGE; a.state = ST.GOTO;
@@ -1052,9 +1067,10 @@ export class Population {
         if (!r.chance(0.9)) return;
         // (the places set: from the furniture when it says, else about two in three chairs, at least one)
         const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.5, 0.95)));
-        n = places + (r.chance(0.3 + 0.25 * ev) ? 1 : 0);
+        n = places + (r.chance(0.35 + 0.25 * ev) ? 1 : 0);
       } else {
-        if (!r.chance(0.12 + 0.2 * ev)) return;
+        // (a laid table: people who have just sat down, the menu still open)
+        if (!r.chance(0.2 + 0.2 * ev)) return;
         n = r.chance(0.55) ? 1 : 2;
       }
       n = Math.min(n, seats.length);
@@ -1167,7 +1183,7 @@ export class Population {
     const entry = { station: st, served: false, servedL: false, feats: {} };
     this.stations.set(st.id, entry);
     for (const pl of st.platforms) {
-      const feat = { type: 'platform', station: st, platform: pl, side: pl.side, count: 0, cap: pl.side > 0 ? 18 : 13, members: new Set(),
+      const feat = { type: 'platform', station: st, platform: pl, side: pl.side, count: 0, cap: 15, members: new Set(),
         occ: new Set(), seats: [], sitters: [], shelterS: null, ticket: null };
       entry.feats[pl.side] = feat;
       // the shelter (its bench) and the ticket machine of this platform
@@ -1184,16 +1200,40 @@ export class Population {
           }
         } else if (f.type === 'ticketMachine') feat.ticket = { s: c.unwrap(f.s), d: f.d - pl.side * 1.0 };
       }
-      // 1-3 people on the shelter bench (often), the others standing
-      const sit = feat.seats.length && r.chance(0.8) ? r.int(1, 3) : 0;
+      // where the first doors stop (the cab's nose at stopS on the right platform; a unit's at the
+      // mirrored point on the left one): people wait there and by the shelter
+      const nose = pl.side > 0 ? c.unwrap(st.stopS) : c.unwrap(2 * st.s - st.stopS);
+      feat.doorS = [nose - pl.side * 3.5, nose - pl.side * 10.5];
+      // people gather with the time since the last tram (about two a minute, up to 15 standing):
+      // the last one left 1-6 minutes ago; 1-3 of them on the shelter bench (often)
+      const since = r.range(1, 6);
+      const n = Math.min(15, Math.round(2 * since * r.range(0.8, 1.25)) + 2);
+      feat.servedT = c.time - since * 60;
+      const sit = feat.seats.length && r.chance(0.8) ? Math.min(3, r.int(1, 3)) : 0;
       const order = r.chance(0.5) ? [1, 0, 2] : [1, 2, 0];
       for (let k = 0; k < sit; k++) this.queue.push({ type: 'seat', seat: feat.seats[order[k]], role: 'adult', bench: true });
-      const n = pl.side > 0 ? r.int(6, 13) : r.int(4, 10);
       for (let k = 0; k < n; k++) this.queue.push({ type: 'passenger', feat, r, first: k === 0 });
     }
   }
 
-  _placePassenger(feat, r, first = false) {
+  /** More people arrive at the platforms while no tram comes (about two a minute each, up to
+   *  15 standing): placed where nobody is looking (in view, walkers joining do it). */
+  _platformArrivals() {
+    const c = this.c, r = c.rng;
+    for (const e of this.stations.values()) {
+      const rel = c.unwrap(e.station.s) - c.camU;
+      if (rel < -20 || rel > RANGE_AHEAD) continue;
+      for (const feat of Object.values(e.feats)) {
+        const want = Math.min(15, 2 + Math.floor((2 * (c.time - (feat.servedT ?? c.time))) / 60));
+        if (feat.count >= Math.min(want, feat.cap) || c.counts.passenger >= MAX_PASSENGERS) continue;
+        const spot = this.platformSpot(feat, r);
+        if (!spot || !c.vis.hidden(spot.s, spot.d)) continue;
+        this._placePassenger(feat, r, false, spot);
+      }
+    }
+  }
+
+  _placePassenger(feat, r, first = false, at = null) {
     const c = this.c, pl = feat.platform;
     if (c.counts.passenger >= MAX_PASSENGERS) return;
     // someone at the ticket machine (standing side-on to the street, facing it)
@@ -1201,7 +1241,7 @@ export class Population {
     if (first && feat.ticket && r.chance(0.45) && this._spotFree(feat, feat.ticket.s, feat.ticket.d, 0.8)) {
       spot = feat.ticket; faceA = pl.side * PI / 2 + r.range(-0.2, 0.2);
     }
-    spot = spot || this.platformSpot(feat, r);
+    spot = spot || at || this.platformSpot(feat, r);
     if (!spot) return;
     const a = this.alloc(KIND.PASSENGER, 'platform');
     if (!a) return;
@@ -1245,7 +1285,9 @@ export class Population {
         if (w < 0.55) { s = sh + r.range(-2.2, 2.2); ad = r.range(TRACK_ZONE_HALF + 1.35, TRACK_ZONE_HALF + 1.85); }   // under the roof
         else { s = sh + r.range(-7, 7); ad = TRACK_ZONE_HALF + 0.6 + w * w * 0.9; }                                  // in front of it, beside it
       } else if (u < 0.8) {
-        s = entryS + inward * r.range(2.2, 8.5); ad = TRACK_ZONE_HALF + 0.6 + w * w * (PLATFORM_W - 1.0);
+        // where the first two doors will stop
+        s = feat.doorS ? feat.doorS[r.chance(0.55) ? 0 : 1] + r.range(-1.3, 1.3) : entryS + inward * r.range(2.2, 8.5);
+        ad = TRACK_ZONE_HALF + 0.6 + w * w * (PLATFORM_W - 1.0);
       } else {
         s = s0 + r.range(2.2, len - 2.2); ad = TRACK_ZONE_HALF + 0.6 + w * w * (PLATFORM_W - 1.0);
       }
@@ -1280,6 +1322,7 @@ export class Population {
       entry.served = true;
       const feat = entry.feats[1];
       if (!feat) continue;
+      feat.servedT = c.time;
       const pl = feat.platform;
       const s0 = c.unwrap(pl.s0), s1 = s0 + (pl.s1 - pl.s0);
       const doors = [];
@@ -1338,6 +1381,7 @@ export class Population {
     if (!T) { entry.servedL = false; return; }
     if (entry.servedL) return;
     entry.servedL = true;
+    feat.servedT = c.time;
     const pl = feat.platform;
     const s0 = c.unwrap(pl.s0), s1 = s0 + (pl.s1 - pl.s0);
     const doors = [];
@@ -1371,6 +1415,15 @@ export class Population {
   }
 }
 
+/** Light top (a white / pale shirt) and light bottoms of an appearance, from its garment tints. */
+const tintLum = (ap, region) => {
+  const t = ap.tints;
+  if (!t || t.length < (region + 1) * 3) return 0.5;
+  return 0.2126 * t[region * 3] + 0.7152 * t[region * 3 + 1] + 0.0722 * t[region * 3 + 2];
+};
+const lightTop = (ap) => tintLum(ap, 5) > 0.6;
+const lightBottom = (ap) => tintLum(ap, 7) > 0.12;
+
 /** Does an appearance suit a role (see Population._appearance)? */
 function roleFits(role, ap) {
   const age = ap.age || (ap.base === 'child' ? 'child' : 'adult');
@@ -1381,6 +1434,8 @@ function roleFits(role, ap) {
     case 'parent': return age === 'adult' && !ap.carry && !ap.phoneWalk;
     case 'grandparent': return age === 'old' && !ap.walkOld && !ap.carry && !ap.phoneWalk;
     case 'rider': return (age === 'adult' || age === 'teen') && !ap.carry && !ap.phoneWalk && !ap.skirtPart;
+    case 'young': return age === 'adult' || age === 'teen';
+    case 'waiter': return age === 'adult' && !ap.carry && !ap.phoneWalk && !ap.bag && !ap.skirtPart && (ap.topKind === 'shirt' || ap.topKind === 'tee') && lightTop(ap) && !lightBottom(ap);
     default: return ap.base !== 'child';
   }
 }

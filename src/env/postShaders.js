@@ -288,9 +288,11 @@ void main() {
         vec3 lv = uLampPos[i] - wp;
         float r2 = dot(lv, lv);
         vec3 ld = lv * inversesqrt(max(r2, 1e-6));
-        // level with or above the lantern: outside the spot light's cone
-        float side = 1.0 - smoothstep(0.1, 0.4, ld.y);
-        float win = clamp(1.0 - r2 * r2 / (16.0 * 16.0 * 16.0 * 16.0), 0.0, 1.0);
+        // level with or above the lantern: outside the spot light's cone. The cap above
+        // the globe throws little light upwards, so the glow fades out ~2 m above the
+        // lantern (the upper floors stay sky-lit blue-grey) and within ~12 m of it
+        float side = (1.0 - smoothstep(0.1, 0.4, ld.y)) * (1.0 - smoothstep(0.4, 2.4, -lv.y));
+        float win = clamp(1.0 - r2 * r2 / (13.0 * 13.0 * 13.0 * 13.0), 0.0, 1.0);
         // a finite source, and none on the lantern's own cap, arm and the span wires
         // right next to it (their screen-space normals are meaningless anyway)
         Ew += uLampI[i] * side * max(dot(nw, ld), 0.0) * win * win * smoothstep(0.64, 2.25, r2) / (r2 + 0.09);
@@ -344,8 +346,9 @@ void main() {
       float t = (float(k) + j) / 12.0 * Th;
       vec3 v = uCamPos + rd * t - uHeadPos;
       float r2 = max(dot(v, v), 0.25);
-      float cs = dot(v * inversesqrt(r2), uHeadDir);
-      hb += smoothstep(uHeadCos.x, uHeadCos.y, cs) / r2;
+      vec3 vn = v * inversesqrt(r2);
+      // (the dipped beam's cut-off just below the lamps' horizontal)
+      hb += smoothstep(uHeadCos.x, uHeadCos.y, dot(vn, uHeadDir)) * (1.0 - smoothstep(-0.035, -0.009, vn.y)) / r2;
     }
     air += vec3(1.0, 0.84, 0.68) * uHeadI * hb * Th / 12.0 / (4.0 * ATM_PI);
     col += air * uMist * uNightAir;
@@ -537,6 +540,8 @@ void main() {
 export const FINAL_FS = /* glsl */ `
 uniform sampler2D tHDR;
 uniform sampler2D tBloom;
+uniform sampler2D tTail;      // a coarse level of the bloom pyramid (the wide skirt)
+uniform float uTail;
 uniform sampler2D tLum;
 uniform float uExposure;      // base exposure for the time of day
 uniform float uExposureMax;   // ceiling of the metered exposure (low-sun highlight protection)
@@ -641,6 +646,9 @@ void main() {
     col *= exp2(clamp(k * d, -0.4, 0.4));
   }
   col = mix(col, texture2D(tBloom, uv).rgb, uBloom);
+  // at night the frosted globes and lit glass get a wide, soft skirt (light scattered in
+  // the lens and the haze around them), a few times their own size
+  if (uTail > 0.0) col = mix(col, texture2D(tTail, uv).rgb, uTail);
 
   // veiling glare: every lens (and the cab's glass in front of it) scatters a little of
   // the light it receives evenly over the frame, which lifts the deepest shadows off black

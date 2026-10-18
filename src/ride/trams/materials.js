@@ -205,7 +205,7 @@ float tramRail( vec3 ro, vec3 rd, vec2 c, float r, float w, out vec3 n ) {
 vec3 tramLit( vec3 alb, vec3 n, vec3 Ed, float En ) {
   float y = tsHit.y;
   float aoD = 0.4 + 0.6 * smoothstep( 0.45, 1.7, y ), aoN = 0.55 + 0.45 * smoothstep( 0.3, 2.0, y );
-  return alb * ( Ed * aoD * ( 0.5 + 0.5 * abs( n.x ) + 0.15 * n.y ) + En * aoN * vec3( 1.0, 0.96, 0.9 ) * ( 0.35 + 0.65 * max( n.y, 0.0 ) ) );
+  return alb * ( Ed * aoD * ( 0.5 + 0.5 * abs( n.x ) + 0.15 * n.y ) + En * aoN * vec3( 0.97, 0.98, 1.0 ) * ( 0.35 + 0.65 * max( n.y, 0.0 ) ) );
 }
 vec3 tramCloth( float h ) {
   return h < 0.14 ? vec3( 0.018, 0.022, 0.04 ) : h < 0.25 ? vec3( 0.01 ) : h < 0.36 ? vec3( 0.5, 0.5, 0.47 )
@@ -219,20 +219,31 @@ bool tramNear( vec3 ro, vec3 rd, vec3 c, float r ) {
   float t = dot( o, rd );
   return t > 0.0 && dot( o, o ) - t * t < r * r;
 }
-// head (facing f along z) with the hair over the crown and the back, a little ear shadow
+// head (facing f along z): hair over the crown and the back (a smooth hairline, longer on
+// some), skin elsewhere with soft brows / eye sockets and the shade under the jaw
 vec3 tramHead( vec3 n, float f, float h, vec3 Ed, float En ) {
-  float lng = step( 0.55, fract( h * 2.3 ) );           // longer hair down the back and sides
-  float edge = 0.08 * sin( n.x * 11.0 + n.z * 7.0 + h * 40.0 );
-  float hair = smoothstep( 0.0, 0.2, n.y * 1.1 + 0.95 * max( - f * n.z, 0.0 ) + ( 0.25 + 0.4 * lng ) * abs( n.x ) - 0.38 + edge );
+  float lng = step( 0.55, fract( h * 2.3 ) );
+  float back = max( - f * n.z, 0.0 );
+  float hair = smoothstep( 0.0, 0.16, n.y * 1.15 + 0.9 * back + ( 0.2 + 0.45 * lng ) * abs( n.x ) * ( 1.0 - max( f * n.z, 0.0 ) ) - 0.42 + 0.12 * fract( h * 9.1 ) );
   float bald = step( 0.93, fract( h * 7.7 ) );
   hair *= 1.0 - bald * smoothstep( 0.2, 0.5, n.y );
-  vec3 hc = fract( h * 5.3 ) < 0.78 ? vec3( 0.018, 0.013, 0.01 ) : fract( h * 5.3 ) < 0.92 ? vec3( 0.09, 0.055, 0.03 ) : vec3( 0.3, 0.27, 0.24 );
-  float face = smoothstep( 0.35, 0.75, f * n.z );
-  // brows and eye sockets, the shade under the nose and chin
-  float eyes = face * ( 1.0 - smoothstep( 0.04, 0.12, abs( n.y - 0.12 ) ) ) * 0.45;
-  float chin = smoothstep( - 0.35, - 0.7, n.y ) * 0.35;
-  vec3 sk = tramSkin( fract( h * 3.7 ) ) * ( 0.75 + 0.25 * face ) * ( 1.0 - eyes - chin );
+  float hh = fract( h * 5.3 );
+  vec3 hc = hh < 0.72 ? vec3( 0.016, 0.012, 0.009 ) : hh < 0.88 ? vec3( 0.07, 0.042, 0.022 ) : hh < 0.95 ? vec3( 0.2, 0.13, 0.06 ) : vec3( 0.28, 0.26, 0.24 );
+  float face = smoothstep( 0.3, 0.8, f * n.z );
+  float eyes = face * ( 1.0 - smoothstep( 0.03, 0.1, abs( n.y - 0.1 ) ) ) * 0.22;
+  vec3 sk = tramSkin( fract( h * 3.7 ) ) * ( 0.8 + 0.2 * face ) * ( 1.0 - eyes );
   return tramLit( mix( sk, hc, hair ), n, Ed, En );
+}
+// head, jaw and neck at the head centre c (facing f)
+void tramHeadNeck( inout vec3 L, vec3 ro, vec3 rd, vec3 c, float f, float h, float w, vec3 Ed, float En ) {
+  vec3 n; float cv;
+  vec3 sk = tramSkin( fract( h * 3.7 ) );
+  cv = tsEll( ro, rd, c + vec3( 0.0, - 0.12, - f * 0.005 ), vec3( 0.054, 0.08, 0.054 ), w, n );
+  L = mix( L, tramLit( sk * 0.72, n, Ed, En ), cv );
+  cv = tsEll( ro, rd, c + vec3( 0.0, - 0.05, f * 0.02 ), vec3( 0.064, 0.068, 0.072 ), w, n );
+  L = mix( L, tramLit( sk * ( 0.75 + 0.25 * smoothstep( - 0.6, 0.0, n.y ) ), n, Ed, En ), cv );
+  cv = tsEll( ro, rd, c, vec3( 0.077, 0.1, 0.092 ), w, n );
+  L = mix( L, tramHead( n, f, h, Ed, En ), cv );
 }
 // a seated passenger: pos = hip point, facing f
 void tramSeated( inout vec3 L, vec3 ro, vec3 rd, vec3 pos, float f, float h, float w, vec3 Ed, float En ) {
@@ -241,32 +252,29 @@ void tramSeated( inout vec3 L, vec3 ro, vec3 rd, vec3 pos, float f, float h, flo
   vec3 top = tramCloth( fract( h * 7.13 ) ), legs = tramCloth( fract( h * 5.37 + 0.3 ) ) * 0.7;
   vec3 sk = tramSkin( fract( h * 3.7 ) );
   float sh = 0.92 + 0.16 * fract( h * 19.0 );           // build
+  float lean = ( fract( h * 23.0 ) - 0.5 ) * 0.06, side = ( fract( h * 29.0 ) - 0.5 ) * 0.05;
   c = tsEll( ro, rd, pos + vec3( 0.0, - 0.3, f * 0.47 ), vec3( 0.15, 0.25, 0.075 ), w, n );
   L = mix( L, tramLit( legs, n, Ed, En ), c );
   c = tsEll( ro, rd, pos + vec3( 0.0, 0.03, f * 0.24 ), vec3( 0.17 * sh, 0.08, 0.25 ), w, n );
   L = mix( L, tramLit( legs, n, Ed, En ), c );
-  c = tsEll( ro, rd, pos + vec3( 0.0, 0.31, f * 0.04 ), vec3( 0.165 * sh, 0.27, 0.115 ), w, n );
+  c = tsEll( ro, rd, pos + vec3( side * 0.5, 0.3, f * ( 0.04 + lean * 0.5 ) ), vec3( 0.165 * sh, 0.27, 0.115 ), w, n );
   L = mix( L, tramLit( top, n, Ed, En ), c );
-  c = tsEll( ro, rd, pos + vec3( 0.0, 0.53, f * 0.03 ), vec3( 0.205 * sh, 0.075, 0.105 ), w, n );
+  c = tsEll( ro, rd, pos + vec3( side * 0.8, 0.505, f * ( 0.03 + lean ) ), vec3( 0.2 * sh, 0.095, 0.1 ), w, n );
   L = mix( L, tramLit( top, n, Ed, En ), c );
   for ( int i = 0; i < 2; i ++ ) {
-    float ax = ( i == 0 ? - 1.0 : 1.0 ) * 0.2 * sh;
-    c = tsEll( ro, rd, pos + vec3( ax, 0.33, f * 0.1 ), vec3( 0.052, 0.21, 0.06 ), w, n );
+    float ax = ( i == 0 ? - 1.0 : 1.0 ) * 0.195 * sh;
+    c = tsEll( ro, rd, pos + vec3( ax + side * 0.6, 0.33, f * ( 0.09 + lean * 0.6 ) ), vec3( 0.052, 0.2, 0.06 ), w, n );
     L = mix( L, tramLit( top * 0.9, n, Ed, En ), c );
-    c = tsEll( ro, rd, pos + vec3( ax * 0.8, 0.1, f * 0.25 ), vec3( 0.045, 0.045, 0.12 ), w, n );
+    c = tsEll( ro, rd, pos + vec3( ax * 0.75, 0.1, f * 0.25 ), vec3( 0.045, 0.045, 0.12 ), w, n );
     L = mix( L, tramLit( sk, n, Ed, En ), c );
   }
-  c = tsEll( ro, rd, pos + vec3( 0.0, 0.64, f * 0.055 ), vec3( 0.048, 0.06, 0.048 ), w, n );
-  L = mix( L, tramLit( sk * 0.8, n, Ed, En ), c );
-  c = tsEll( ro, rd, pos + vec3( 0.0, 0.775, f * 0.075 ), vec3( 0.076, 0.103, 0.09 ), w, n );
-  L = mix( L, tramHead( n, f, h, Ed, En ), c );
+  tramHeadNeck( L, ro, rd, pos + vec3( side, 0.76, f * ( 0.06 + lean * 1.4 ) ), f, h, w, Ed, En );
 }
 // a standing passenger at p (floor point), facing f, height scale s
 void tramStanding( inout vec3 L, vec3 ro, vec3 rd, vec3 p, float f, float s, float h, float w, vec3 Ed, float En ) {
   if ( !tramNear( ro, rd, p + vec3( 0.0, 0.9 * s, 0.0 ), 0.95 * s + w ) ) return;
   vec3 n; float c;
   vec3 top = tramCloth( fract( h * 7.13 ) ), legs = tramCloth( fract( h * 5.37 + 0.3 ) ) * 0.7;
-  vec3 sk = tramSkin( fract( h * 3.7 ) );
   float sh = 0.92 + 0.16 * fract( h * 19.0 );
   for ( int i = 0; i < 2; i ++ ) {
     float lx = ( i == 0 ? - 1.0 : 1.0 ) * 0.085 * sh;
@@ -275,17 +283,14 @@ void tramStanding( inout vec3 L, vec3 ro, vec3 rd, vec3 p, float f, float s, flo
   }
   c = tsEll( ro, rd, p + vec3( 0.0, 1.12 * s, 0.0 ), vec3( 0.17 * sh, 0.3 * s, 0.12 ), w, n );
   L = mix( L, tramLit( top, n, Ed, En ), c );
-  c = tsEll( ro, rd, p + vec3( 0.0, 1.38 * s, 0.0 ), vec3( 0.205 * sh, 0.075, 0.105 ), w, n );
+  c = tsEll( ro, rd, p + vec3( 0.0, 1.36 * s, 0.0 ), vec3( 0.2 * sh, 0.095, 0.105 ), w, n );
   L = mix( L, tramLit( top, n, Ed, En ), c );
   for ( int i = 0; i < 2; i ++ ) {
-    float ax = ( i == 0 ? - 1.0 : 1.0 ) * 0.21 * sh;
+    float ax = ( i == 0 ? - 1.0 : 1.0 ) * 0.205 * sh;
     c = tsEll( ro, rd, p + vec3( ax, 1.12 * s, 0.0 ), vec3( 0.05, 0.28 * s, 0.058 ), w, n );
     L = mix( L, tramLit( top * 0.9, n, Ed, En ), c );
   }
-  c = tsEll( ro, rd, p + vec3( 0.0, 1.49 * s, f * 0.01 ), vec3( 0.048, 0.06, 0.048 ), w, n );
-  L = mix( L, tramLit( sk * 0.8, n, Ed, En ), c );
-  c = tsEll( ro, rd, p + vec3( 0.0, 1.62 * s, f * 0.02 ), vec3( 0.076, 0.103, 0.09 ), w, n );
-  L = mix( L, tramHead( n, f, h, Ed, En ), c );
+  tramHeadNeck( L, ro, rd, p + vec3( 0.0, 1.6 * s, f * 0.02 ), f, h, w, Ed, En );
 }
 // one side's seat pair (back at zb, facing f) and whoever sits there; sx = +1 near, -1 far
 void tramSeats( inout vec3 L, vec3 ro, vec3 rd, float sx, float k, float zb, float f, float w, vec3 seatC, vec3 Ed, float En ) {
@@ -365,8 +370,12 @@ vec3 tramSaloon( vec3 ro, vec3 rd, vec3 rdW, float w0, float camD, float body, v
     float pil = door ? smoothstep( 0.02 + w, 0.02 - w, dz ) : smoothstep( 0.07 + w, 0.07 - w, abs( fract( ( p.z + 0.4 ) / 1.59 ) - 0.5 ) * 1.59 );
     float pane = tramRect( vec2( 0.0, p.y ), vec2( - 1.0, y0 ), vec2( 1.0, y1 ), w ) * ( 1.0 - pil );
     float band = tramRect( vec2( 0.0, p.y ), vec2( - 1.0, y0 - 0.05 ), vec2( 1.0, y1 + 0.04 ), w );
-    vec3 wall = tramLit( vec3( 0.42, 0.42, 0.4 ), vec3( 1.0, 0.0, 0.0 ), Ed, En );
-    wall = mix( wall, vec3( 0.004 ), band );
+    // lining panels with their joints, a dark kick strip along the floor
+    float fz = fract( p.z / TS_P );
+    float joint = smoothstep( 0.006 + w, 0.006 - w, min( fz, 1.0 - fz ) * TS_P );
+    float kick = smoothstep( 0.52 + w, 0.52 - w, p.y );
+    vec3 wall = tramLit( mix( vec3( 0.4, 0.4, 0.385 ), vec3( 0.07, 0.07, 0.07 ), kick ) * ( 1.0 - 0.6 * joint ), vec3( 1.0, 0.0, 0.0 ), Ed, En );
+    wall = mix( wall, tramLit( vec3( 0.03 ), vec3( 1.0, 0.0, 0.0 ), Ed, En ), band );
     // (the inner face of that glass mirrors the lit saloon a little)
     L = mix( wall, tramOutside( rdW ) + tramLit( vec3( 0.025 ), vec3( 0.0, 1.0, 0.0 ), Ed, En ), pane );
     tsHit = vec3( 0.0, 1.5, 0.0 );
@@ -374,7 +383,7 @@ vec3 tramSaloon( vec3 ro, vec3 rd, vec3 rdW, float w0, float camD, float body, v
     // ceiling, lit from below, with the light strips
     float ax = abs( p.x );
     L = vec3( 0.55, 0.55, 0.53 ) * ( Ed * 0.45 + En * 0.5 ) * ( 0.6 + 0.4 * smoothstep( 1.2, 0.8, ax ) );
-    L = mix( L, vec3( 1.0, 0.97, 0.92 ) * lamp, tramRect( vec2( ax, 0.0 ), vec2( 0.5, - 1.0 ), vec2( 0.64, 1.0 ), w ) );
+    L = mix( L, vec3( 0.97, 0.98, 1.0 ) * lamp, tramRect( vec2( ax, 0.0 ), vec2( 0.5, - 1.0 ), vec2( 0.64, 1.0 ), w ) );
   } else {
     // floor: dark grey vinyl
     L = tramLit( vec3( 0.07, 0.065, 0.06 ), vec3( 0.0, 1.0, 0.0 ), Ed, En );
@@ -388,7 +397,7 @@ vec3 tramSaloon( vec3 ro, vec3 rd, vec3 rdW, float w0, float camD, float body, v
   float dk = kA >= kB ? 1.0 : - 1.0;
   float nk = abs( kA - kB ) + 2.0;
   vec3 seatC = mix( vec3( 0.06, 0.08, 0.15 ), vec3( 0.14, 0.04, 0.045 ), step( 0.6, fract( uTramSeed * 0.37 ) ) );
-  vec3 steel = vec3( 0.28, 0.28, 0.27 );
+  vec3 steel = vec3( 0.2, 0.2, 0.195 );
   vec3 nn; float c;
   // far overhead rail
   c = tramRail( ro, rd, vec2( - 0.42, 1.98 ), 0.016, w0 * ( 1.0 + tfar / camD ), nn );
@@ -405,13 +414,14 @@ vec3 tramSaloon( vec3 ro, vec3 rd, vec3 rdW, float w0, float camD, float body, v
     float zb = f > 0.0 ? z0 + 0.04 : z0 + TS_P - 0.04;
     float dz = zm - tramDoorZ( zm, body );
     bool doorCell = !seat && abs( dz ) < 1.25;
+    // grab poles between back-to-back seats every other pair, on alternate sides of the
+    // aisle; one pole in the middle of each doorway
+    float pk = mod( k, 8.0 );
+    bool poleFar = seat && pk < 0.5, poleNear = seat && abs( pk - 4.0 ) < 0.5;
     // far seats, far pole
     if ( seat ) {
       tramSeats( L, ro, rd, - 1.0, k, zb, f, wc, seatC, Ed, En );
-      if ( f > 0.0 ) { c = tramPole( ro, rd, vec2( - 0.36, z0 ), 0.018, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c ); }
-    }
-    if ( doorCell && abs( dz ) < 0.4 ) {
-      c = tramPole( ro, rd, vec2( - 0.55, zm - dz ), 0.018, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c );
+      if ( poleFar ) { c = tramPole( ro, rd, vec2( - 0.36, z0 ), 0.018, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c ); }
     }
     // standing in the aisle and at the doors
     for ( int i = 0; i < 2; i ++ ) {
@@ -426,11 +436,11 @@ vec3 tramSaloon( vec3 ro, vec3 rd, vec3 rdW, float w0, float camD, float body, v
       }
     }
     if ( doorCell && abs( dz ) < 0.4 ) {
-      c = tramPole( ro, rd, vec2( 0.55, zm - dz ), 0.018, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c );
+      c = tramPole( ro, rd, vec2( 0.0, zm - dz ), 0.019, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c );
     }
     // near pole, near seats
     if ( seat ) {
-      if ( f > 0.0 ) { c = tramPole( ro, rd, vec2( 0.36, z0 ), 0.018, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c ); }
+      if ( poleNear ) { c = tramPole( ro, rd, vec2( 0.36, z0 ), 0.018, wc, nn ); L = mix( L, tramLit( steel, nn, Ed, En ), c ); }
       tramSeats( L, ro, rd, 1.0, k, zb, f, wc, seatC, Ed, En );
     }
   }
@@ -452,12 +462,13 @@ export function makeBodyMaterial(uni) {
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uni, { uTramNight: U.uNight, uTramGain: { value: 1 } });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;')
       .replace('#include <project_vertex>', `#include <project_vertex>
 	vTramP = transformed;
+	vTramUv = uv;
 	vTramZ = normalize( ( modelViewMatrix * vec4( 0.0, 0.0, 1.0, 0.0 ) ).xyz );`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;')
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	// silver paint (bright vertex colours) vs dark trim
@@ -473,6 +484,15 @@ export function makeBodyMaterial(uni) {
 		float roof = smoothstep( 3.15, 3.3, bp.y ) * ( 0.5 + 0.5 * tramNoise( bp.z * 1.7 + bp.x * 3.0 ) );
 		tramGrime = clamp( 0.07 * low + 0.06 * under * streak + 0.12 * roof, 0.0, 1.0 );
 		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.12, 0.105, 0.09 ), tramGrime * tramPaint );
+	}
+	// joints between the lower side panels (under the window pillars), a few mm wide
+	float tramSeam = 0.0;
+	if ( vTramUv.y > 40.0 ) {
+		float zc = vTramUv.x - ( vTramUv.x - vTramP.z > 50.0 ? 100.0 : 0.0 );
+		float aa = max( fwidth( vTramP.z ), 1e-4 );
+		tramSeam = ( 1.0 - smoothstep( 0.0035 - aa, 0.0035 + aa, abs( vTramP.z - zc ) ) ) * min( 1.0, 0.007 / aa );
+		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.015 ), tramSeam );
+		tramPaint *= 1.0 - tramSeam;
 	}`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 	roughnessFactor = mix( 0.5, roughnessFactor + 0.25 * tramGrime, tramPaint );`)
@@ -494,7 +514,7 @@ export function makeBodyMaterial(uni) {
 		clearcoatRadiance = mix( tramTone( clearcoatRadiance, tramRc.y ), tramH, tramA );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.body.v3';
+  m.customProgramCacheKey = () => 'trams.body.v4';
   return m;
 }
 
@@ -516,6 +536,10 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\nvarying vec3 vTramZ;')
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}\n${SALOON_GLSL}`)
+      // coated laminated glazing: a little more reflectance than one plain surface
+      .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
+	material.specularColor *= 1.4;
+	material.specularColorBlended = material.specularColor;`)
       // the street, as last frame saw it, mirrored in the panes (the environment elsewhere);
       // the panes are not perfectly flat, so the mirrored lines bend a little along the car
       .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
@@ -536,7 +560,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }) {
 			vec3 tramRdW = inverseTransformDirection( - geometryViewDir, viewMatrix );
 			vec3 tramEdir = reflectedLight.directDiffuse * PI / max( material.diffuseContribution, vec3( 1e-4 ) );
 			vec3 tramEd = ( irradiance + iblIrradiance + 0.3 * tramEdir ) * ( 0.42 * RECIPROCAL_PI );
-			float tramEn = uTramNight * uTramGain * 0.03 * RECIPROCAL_PI;
+			float tramEn = uTramNight * uTramGain * 0.022 * RECIPROCAL_PI;
 			float tramCamD = max( length( vTramE ), 0.5 );
 			float tramW = max( length( fwidth( vTramP ) ), 0.002 );
 			float tramBody = step( 50.0, vTramUv.x - vTramP.z );
@@ -547,7 +571,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }) {
 		}
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.glass.v8';
+  m.customProgramCacheKey = () => 'trams.glass.v12';
   return m;
 }
 

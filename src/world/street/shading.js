@@ -11,8 +11,14 @@ import { MORTAR_ALBEDO } from './constants.js';
 
 /** Shared rail-sheen uniform: x = how far the lengthwise polish bends the reflection
  *  lookup towards the top of its cone (0..1), y = environment reflection strength of
- *  the steel (the 3D rail.head variants carry the same value as envMapIntensity). */
-export const SHEEN = { uStSheen: { value: new THREE.Vector2(0.6, 1.0) } };
+ *  the steel in the far-field line overlay (lines.js). Both are matched to the
+ *  photographs: in shade the running band reads 1.1-1.3x the setts beside it, the
+ *  flangeway a dark slot. */
+export const SHEEN = { uStSheen: { value: new THREE.Vector2(0.7, 1.35) } };
+/** envMapIntensity of the 3D rail.head variants (the resolved head; its texture band is
+ *  wider and its normals crowned, so it needs less than the overlay's pre-filtered
+ *  bands to read the same). */
+export const RAIL_HEAD_ENV = 0.55;
 
 const NOISE = /* glsl */`
 float stHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
@@ -33,8 +39,9 @@ float stNoise( vec2 p ) {
 // direction runs into the facades (which is why every head in the photographs carries a
 // light sheen in shade, while the paving beside it does not). The lookup is bent
 // towards that top in proportion to the polish and to how level the face is (the head
-// and lip tops; not the gauge or field faces). The environment map already holds the
-// street canyon (facades and paving round the sky slot), so nothing is occluded here.
+// and lip tops; not the gauge or field faces), with the narrower spread of the lobe
+// along the rail. The environment map already holds the street canyon (facades and
+// paving round the sky slot), so nothing is occluded here.
 const SHEEN_APPLY = (along) => /* glsl */`
 #include <lights_fragment_maps>
 #if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular ) && defined( ENVMAP_TYPE_CUBE_UV )
@@ -47,7 +54,9 @@ const SHEEN_APPLY = (along) => /* glsl */`
   vec3 stTop = stT * stRt + stUpT * sqrt( max( 1.0 - stRt * stRt, 0.0 ) );
   float stK = uStSheen.x * stOk * smoothstep( 0.6, 0.9, dot( geometryNormal, stUp ) );
   vec3 stRb = normalize( mix( stR, stTop, stK ) );
-  radiance = getIBLRadiance( geometryViewDir, normalize( geometryViewDir + stRb ), material.roughness );
+  // the polish is smooth along the rail, rough across it: the lobe's spread round the
+  // cone is the bend above; along the rail it is narrower than the mean roughness
+  radiance = getIBLRadiance( geometryViewDir, normalize( geometryViewDir + stRb ), material.roughness * ( 1.0 - 0.5 * stK ) );
 }
 #endif
 `;

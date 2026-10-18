@@ -470,6 +470,7 @@ def build_one(cid, save_blend=False):
             gv.append(d['co'])
             skirt = op['kind'] == 'suit' and op['info']['suit'] == 'female_elegantsuit01'
             arm_v = share(d['W'], ARM)
+            margin_ok = op['kind'] == 'suit'      # (shoes hug the ankle: no skin margin at their opening)
             ecount = {}
             for p in np.where(op['keep'])[0]:
                 vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
@@ -504,7 +505,7 @@ def build_one(cid, save_blend=False):
                             stack.append(w)
                 cs = set(comp)
                 per = sum(np.linalg.norm(d['co'][a_] - d['co'][b_]) for a_, b_ in bedges if a_ in cs)
-                if per < 0.8 * kscale:
+                if per < 0.8 * kscale and margin_ok:
                     bnd.append(d['co'][comp])
             goff += len(d['co'])
     GV = [Vector(v) for v in np.concatenate(gv).astype(np.float64)]
@@ -839,8 +840,11 @@ def ambient_occlusion(raw, meta_parts):
         w = raw[p['key'] + '_w']
         on_arm = w[:, ARMB[1:]].sum(1) > 0.5
         on_leg = (w[:, [14, 15, 16, 17, 18, 19, 20, 21]].sum(1) > 0.5) if p['kind'] == 'body' else np.zeros(len(co), bool)
+        # (the face and neck are not darkened by the hair cards: light passes between the strands, and a
+        # trimmed fringe would leave its old shadow behind)
+        head_v = (w[:, [4, 5]].sum(1) > 0.5) if p['kind'] == 'body' else np.zeros(len(co), bool)
         for i in range(len(co)):
-            bvh = bvh_nohair if p['kind'] in ('hair', 'lashes', 'brows') else (bvh_arm if on_arm[i] else bvh_noskirt if on_leg[i] else bvh_noarm)
+            bvh = bvh_nohair if p['kind'] in ('hair', 'lashes', 'brows', 'body') and (p['kind'] != 'body' or head_v[i]) else (bvh_arm if on_arm[i] else bvh_noskirt if on_leg[i] else bvh_noarm)
             n = nr[i]
             a = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
             t = np.cross(n, a)
@@ -1107,7 +1111,8 @@ def scalp_coverage(body, bkeep, hair, headw, E, hk):
             if nb[i]:
                 nxt[i] = 0.5 * cov[i] + 0.5 * cov[nb[i]].mean()
         cov = nxt
-    fz = np.clip((co[:, 2] - (E[2] + 0.048 * hk)) / (0.02 * hk), 0, 1)
+    # (the forehead stays skin up to the hairline, with or without a fringe in front of it)
+    fz = np.clip((co[:, 2] - (E[2] + 0.062 * hk)) / (0.02 * hk), 0, 1)
     cov = np.where(face | (co[:, 1] < E[1] + 0.05 * hk), cov * fz, cov)
     return cov
 
@@ -1462,14 +1467,16 @@ def zip_slits(d, k=1.0):
             if not gap:
                 continue
             depth = 0
-            for j in range(1, 7):
-                if used[(i - j) % n] or used[(i + j) % n]:
+            for j in range(1, 17):
+                if used[(i - j) % n] or used[(i + j) % n] or (i - j) % n == (i + j) % n:
                     break
-                if np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]) > 0.045 * k:
+                if np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]) > 0.05 * k:
                     break
                 depth = j
             if debug:
                 log(f'  notch: angle {ang:.0f} depth {depth} at {P[i].round(3).tolist()}')
+                for j in range(1, 10):
+                    log(f'    j={j} gap {np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]):.3f} used {used[(i - j) % n]} {used[(i + j) % n]} z {P[(i - j) % n][2]:.3f}')
             if depth < 1:
                 continue
             for j in range(-depth, depth + 1):
@@ -1556,24 +1563,18 @@ def clear_face_window(d, body, E, hk, style, cid):
             inwin[i] = True
     if not inwin.any():
         return 0
+    # every polygon reaching into the window in front of the face goes (moving its vertices instead
+    # would fold the cards flat against the forehead); long cards hanging across the window too
     drop = np.zeros(len(d['ls']), bool)
-    side = np.zeros(len(d['ls']), bool)         # kept polygon beside the window (else above it)
     for p in range(len(d['ls'])):
         vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
-        pv = co[vs]
-        c = pv.mean(0)
-        # (long card polygons can span the whole window with no vertex inside it: test their extent)
-        zmin, zmax = pv[:, 2].min(), pv[:, 2].max()
-        if not inwin[vs].any() and not (zmin < hl and zmax > lo and np.abs(pv[:, 0] - E[0]).min() < wx):
+        if inwin[vs].any():
+            drop[p] = True
             continue
-        if abs(c[0] - E[0]) < wx and lo < c[2] < hl:
-            fy = front(c[0], c[2])
-            if fy is not None and c[1] < fy + 0.018 * hk:
-                drop[p] = True
-                continue
-        elif zmin < hl and zmax > lo and abs(c[0] - E[0]) < wx:
-            # (a long card hanging across the window: every vertex of it in front of the face; caps
-            # that wrap the scalp have vertices behind the face's surface)
+        pv = co[vs]
+        zmin, zmax = pv[:, 2].min(), pv[:, 2].max()
+        c = pv.mean(0)
+        if zmin < hl and zmax > lo and abs(c[0] - E[0]) < wx:
             front_all = True
             for v in pv:
                 fy = front(min(max(v[0], E[0] - wx), E[0] + wx), min(max(v[2], lo), hl))
@@ -1582,26 +1583,37 @@ def clear_face_window(d, body, E, hk, style, cid):
                     break
             if front_all:
                 drop[p] = True
-                continue
-        side[p] = abs(c[0] - E[0]) >= wx
+    # small pieces left over in front of the forehead (stubs of trimmed cards lying on the skin) go too
+    par = np.arange(n)
+
+    def find(a_):
+        while par[a_] != a_:
+            par[a_] = par[par[a_]]
+            a_ = par[a_]
+        return a_
+    for p in np.where(~drop)[0]:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        r0 = find(vs[0])
+        for v in vs[1:]:
+            r1 = find(v)
+            if r1 != r0:
+                par[r1] = r0
+    comp = {}
+    for p in np.where(~drop)[0]:
+        comp.setdefault(find(d['vi'][d['ls'][p]]), []).append(p)
+    for ps in comp.values():
+        if len(ps) > 10:
+            continue
+        c = np.concatenate([co[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] for p in ps]).mean(0)
+        if abs(c[0] - E[0]) < 0.085 * hk and lo < c[2] < E[2] + 0.11 * hk:
+            fy = front(c[0], min(c[2], E[2] + 0.13 * hk), 0.02)
+            if fy is not None and c[1] < fy + 0.03 * hk:
+                drop[ps] = True
     used = np.zeros(n, bool)
     for p in np.where(~drop)[0]:
         used[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
-    # kept polygons reaching into the window: their vertices there move to the window's edge on the
-    # polygon's own side (up to the hairline, or out to the temple)
-    tgt = np.zeros(n, np.int8)          # 1 up, 2 sideways
-    for p in np.where(~drop)[0]:
-        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
-        for v in vs:
-            if inwin[v]:
-                tgt[v] = max(tgt[v], 2 if side[p] else 1)
+    tgt = np.zeros(n, np.int8)
     moved = 0
-    for i in np.where(tgt > 0)[0]:
-        if tgt[i] == 1:
-            co[i, 2] = hl
-        else:
-            co[i, 0] = E[0] + np.sign(co[i, 0] - E[0]) * wx
-        moved += 1
     # strand ends at the cut fade out (the shader breaks the fade into strands): the moved vertices and
     # the kept polygons' vertices on the new border
     fade = np.ones(n, np.float32)
@@ -1612,7 +1624,7 @@ def clear_face_window(d, body, E, hk, style, cid):
                 fade[v] = 0.0
     d['fade'] = fade
     drop_polys(d, drop)
-    log(cid, f'hair {style}: face window cleared ({int(drop.sum())} polygons trimmed, {moved} vertices moved to the hairline)')
+    log(cid, f'hair {style}: face window cleared ({int(drop.sum())} polygons trimmed)')
     return int(drop.sum())
 
 

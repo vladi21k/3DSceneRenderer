@@ -4,9 +4,8 @@ import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
 import { openingInfill } from './infill.js';
 import { plainOrnament } from './upper.js';
-import { MURALS, ADVERTS, ADVERT_ASPECT } from './mural.js';
+import { MURALS, ADVERTS, ADVERT_ASPECT, advertPanel } from './mural.js';
 import { acUnit } from './roof.js';
-import { FACES } from './mesh.js';
 
 // render washes for the side walls (multipliers on the plaster albedo): off-white, ochre,
 // cool white, buff, rose, cement grey, pale yellow
@@ -101,23 +100,27 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA,
           }
         }
       } else if (dressed && !mural && !advert) {
-        // small windows, one or two per storey, clear of the strip's edges
+        // stair and bathroom windows, one or two stacks of them up the storeys (each
+        // storey's window a little off the line now and then), clear of the strip's edges
+        const nCol = width > 6 ? rng.weighted([[1, 0.45], [2, 0.55]]) : rng.weighted([[0, 0.25], [1, 0.75]]);
+        const cols = [];
+        for (let k = 0; k < nCol; k++) {
+          const w = rng.range(0.55, 0.8), uc = rng.range(0.9 + w / 2, width - 0.9 - w / 2);
+          if (uc < 0.9 + w / 2 || cols.some((c) => Math.abs(c.uc - uc) < 2)) continue;
+          cols.push({ uc, w, h: rng.range(0.8, 1.1), dy: rng.range(1.0, 1.25) });
+        }
         for (const fl of plan.floors) {
           if (fl.index === 0) continue;
-          const y = fl.y + rng.range(1.0, 1.25), h = rng.range(0.8, 1.05);
-          if (y < v0 + 0.4 || y + h > v1 - 0.45) continue;
-          const n = rng.weighted([[0, 0.3], [1, 0.5], [2, 0.2]]);
-          const used = [];
-          for (let k = 0; k < n; k++) {
-            const w = rng.range(0.55, 0.75), uc = rng.range(0.9 + w / 2, width - 0.9 - w / 2);
-            if (uc < 0.9 + w / 2 || used.some((x) => Math.abs(x - uc) < 1.6)) continue;
-            used.push(uc);
-            // stair and bathroom windows: frosted or curtained, some behind a roller
-            // shutter or louvred leaves, a few with an AC unit under them
+          cols.forEach((c, k) => {
+            const y = fl.y + c.dy, h = c.h, uc = c.uc + (dr.chance(0.15) ? dr.range(-0.3, 0.3) : 0);
+            const skip = dr.chance(0.18);
+            if (skip || y < v0 + 0.4 || y + h > v1 - 0.45) return;
+            // frosted or curtained, some behind a roller shutter or louvred leaves, a few
+            // with an AC unit under them
             const hs = dr.next();
-            openings.push({ id: `${lot.id}:p${e}f${fl.index}k${k}`, floor: fl.index, uc, w, y, h, top: 'flat', rise: 0, spring: y + h, kind: 'window', recess: 0.12,
+            openings.push({ id: `${lot.id}:p${e}f${fl.index}k${k}`, floor: fl.index, uc, w: c.w, y, h, top: 'flat', rise: 0, spring: y + h, kind: 'window', recess: 0.12,
               shutters: hs < 0.2 ? 'roller' : hs < 0.38 ? 'closed' : null, roller: dr.range(0.3, 0.9), lit: rng.next(), curtain: rng.chance(0.4) || dr.chance(0.5), ac: dr.chance(0.14) && y - 1.05 > v0 });
-          }
+          });
         }
       }
       // windows let into a side wall later on: mostly white or light (aluminium) joinery
@@ -184,34 +187,3 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA,
   B.frameFromLot(f);
 }
 
-/**
- * Printed advert on a steel frame standing off the wall (side-wall frame, a: {u0, u1,
- * v0, v1, k}): the vinyl face, the frame's edges, and floodlights on arms over the top.
- */
-function advertPanel(B, sinks, a, q) {
-  const W = 0.16, s = B.sink(`advert${a.k}`);
-  B.shade = null; B.flat = [1, 1, 1];
-  s.reserve(4, 6);
-  const i0 = B.v(s, a.u0, a.v0, W, 0, 0, 1, 0, 0), i1 = B.v(s, a.u1, a.v0, W, 0, 0, 1, 1, 0);
-  const i2 = B.v(s, a.u1, a.v1, W, 0, 0, 1, 1, 1), i3 = B.v(s, a.u0, a.v1, W, 0, 0, 1, 0, 1);
-  B.quadIdx(s, i0, i1, i2, i3);
-  // the frame: galvanised channel round the edge, its sides back to the wall
-  const m = sinks.paint, e = 0.05;
-  B.flat = [0.36, 0.36, 0.35];
-  B.box(m, a.u0 - e, a.u0, a.v0 - e, a.v1 + e, 0.02, W + 0.012, FACES.FRONT | FACES.LEFT | FACES.TOP | FACES.BOTTOM);
-  B.box(m, a.u1, a.u1 + e, a.v0 - e, a.v1 + e, 0.02, W + 0.012, FACES.FRONT | FACES.RIGHT | FACES.TOP | FACES.BOTTOM);
-  B.box(m, a.u0, a.u1, a.v1, a.v1 + e, 0.02, W + 0.012, FACES.FRONT | FACES.TOP);
-  B.box(m, a.u0, a.u1, a.v0 - e, a.v0, 0.02, W + 0.012, FACES.FRONT | FACES.BOTTOM);
-  if (!q.lod) {
-    // floodlights on arms reaching out over the top edge
-    const n = Math.max(2, Math.round((a.u1 - a.u0) / 3));
-    for (let i = 0; i < n; i++) {
-      const u = a.u0 + ((a.u1 - a.u0) * (i + 0.5)) / n;
-      B.flat = [0.3, 0.3, 0.3];
-      B.box(sinks.metal || m, u - 0.025, u + 0.025, a.v1 + 0.05, a.v1 + 0.1, W, W + 0.85, FACES.ALL & ~FACES.BACK);
-      B.flat = [0.22, 0.22, 0.23];
-      B.box(m, u - 0.14, u + 0.14, a.v1 - 0.08, a.v1 + 0.1, W + 0.75, W + 1.0, FACES.ALL);
-    }
-  }
-  B.flat = [1, 1, 1];
-}

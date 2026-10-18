@@ -146,6 +146,7 @@ const humans = {
         for (let v = 0; v < c.raw.n; v++) if (T[v * 4 + 3] & 8) y = Math.min(y, Pp[v * 3 + 1]);
         if (y < Infinity) c.hemY = y; }
       // (casts with skin decals carry beard volume shells of their own)
+      hatBrim(c);
       beardFade(c, this.v2 ? 0.015 : 0.035);
       if (!this.v2) beardShells(c);
       const parts = buildParts(c);
@@ -888,6 +889,35 @@ function beardShells(c) {
     c.lods[l] = { ...L, start, count: o - start };
   }
   Object.assign(raw, { n, pos, nrm, uv, bi, bw, tex, index: idx });
+}
+
+/**
+ * A hat's band height and brim radius about the head's vertical axis (rest pose), for the shader's
+ * brim shadow on the face: c.hat = {band, rb} or null.
+ */
+function hatBrim(c) {
+  const raw = c.raw, T = raw.tex, P = raw.pos;
+  const hc = c.info.headC || c.skeleton.joints[5];
+  const ys = [];
+  for (let v = 0; v < raw.n; v++) if (T[v * 4 + 2] === 10) ys.push(P[v * 3 + 1]);
+  c.hat = null;
+  if (ys.length < 20) return;
+  ys.sort((a, b) => a - b);
+  const band = ys[Math.floor(ys.length * 0.08)];
+  let rb = 0;
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 10 || P[v * 3 + 1] > band + 0.03) continue;
+    rb = Math.max(rb, Math.hypot(P[v * 3] - hc[0], P[v * 3 + 2] - hc[2]));
+  }
+  // (the brim's height over the face: its front edge, which may sit higher or lower than the band)
+  const fy = [];
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 10) continue;
+    const dx = P[v * 3] - hc[0], dz = P[v * 3 + 2] - hc[2];
+    if (dz < -0.5 * rb && Math.hypot(dx, dz) > 0.8 * rb) fy.push(P[v * 3 + 1]);
+  }
+  fy.sort((a, b) => a - b);
+  c.hat = { band: fy.length ? fy[Math.floor(fy.length * 0.5)] : band, rb };
 }
 
 /** Idle clip cycle (s): the talking idle has its own, longer, cycle. */

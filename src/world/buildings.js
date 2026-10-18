@@ -596,7 +596,7 @@ function planSkyline(app) {
     origin.y = Math.min(origin.y, route.elevation(s));
     const matrix = new THREE.Matrix4().makeBasis(uDir, up, nDir).setPosition(origin);
     const frame = { origin, uDir, nDir, up: up.clone(), width: W, ground0: origin.y, ground1: origin.y, floorRef: origin.y, matrix };
-    const sl = makeSlab(`K${Math.round(s)}_${side}`, frame, RNG.from('buildings', 'slab', Math.round(s)));
+    const sl = makeSlab(`K${Math.round(s)}_${side}`, frame, RNG.from('buildings', 'slab', Math.round(s)), [8, 14], { side });
     const idx = layout.chunkIndex(s);
     if (!skyline.has(idx)) skyline.set(idx, []);
     skyline.get(idx).push(sl);

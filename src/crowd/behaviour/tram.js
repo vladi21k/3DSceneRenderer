@@ -494,6 +494,12 @@ export class TramWatch {
       if (!a.active || a.state === ST.SEATED) continue;
       const ah = T.sU - a.s;
       if (ah < -6 || ah > reach) continue;
+      // (waiting on a platform: a few look up the track at the sound)
+      if (a.state === ST.PLATFORM) {
+        if (!r.chance(0.2)) continue;
+        a.tramLookS = time + r.range(0.2, 1.0); a.tramLookT = a.tramLookS + r.range(1.5, 3.5); a.lookU = T.i;
+        continue;
+      }
       const near = Math.abs(a.d - T.d) < 3.6;
       if (!r.chance(near ? 0.85 : 0.08)) continue;
       const delay = Math.max(0, ah) / 340 + r.range(0.2, 1.1);

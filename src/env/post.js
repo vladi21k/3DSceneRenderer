@@ -54,7 +54,7 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 const TONE = {
   curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.7, 0.9],
   meter: [0.3, 0.6], target: [0.25, 0.36], backlit: 0.85,
-  clampLo: [0.75, 0.5], clampHi: [1.6, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.8,
+  clampLo: [0.75, 0.5], clampHi: [1.6, 4], bloom: [0.018, 0.04], tail: 0.02, vignette: 0.25, sharpen: 0.8,
   veil: 0.006, veilSun: 0.0012,
   // highlight recovery: knee (stops over mid grey; time of day, knee) and the log slope
   // above it (time of day, slope): none at midday, then a phone camera's highlight tone
@@ -240,6 +240,7 @@ const post = {
       uAlpha: { value: 1 }, uGamma: { value: TAA.gamma }, uExpo: { value: 1 },
     });
     this.skySatK = app.params.num ? app.params.num('skysat', 1) : 1;   // (inspection: URL skysat=)
+    this.hiSlopeK = app.params.num ? app.params.num('hslope', 0) : 0;  // (inspection: URL hslope=)
     this.taaOn = q.taa !== false && app.params.raw.get('taa') !== '0';
     this.taaPing = 0;
     this.taaFrame = 0;
@@ -264,7 +265,7 @@ const post = {
     this.up = pass(S.UP_FS, { tLow: { value: null }, tHigh: { value: null }, uTexel: { value: new THREE.Vector2() }, uScatter: { value: 0.68 } });
     this.lum = pass(S.LUM_FS, { tSmall: { value: null }, tPrev: { value: null }, uSize: { value: new THREE.Vector2() }, uRate: { value: 1 } });
     this.final = pass(S.FINAL_FS, {
-      tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
+      tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null }, tTail: { value: null }, uTail: { value: 0 },
       uExposure: { value: 1 }, uExposureMax: { value: 1e4 }, uAutoExp: { value: TONE.meter[0] }, uMeterTarget: { value: TONE.target[0] },
       uMeterClamp: { value: new THREE.Vector2(TONE.clampLo[0], TONE.clampHi[0]) }, uBloom: { value: TONE.bloom[0] },
       uVignette: { value: TONE.vignette }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
@@ -446,6 +447,7 @@ const post = {
     // contact shadows read deeper once the light is all lamps and sky
     pu.uAOStrength.value = Math.min(AO.strength * lerp(1, 1.3, ss(night, 0.5, 1)), 1);
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
+    fu.uTail.value = TONE.tail * ss(night, 0.3, 1.0);
     fu.uExposure.value = env ? env.exposure : 1;
     fu.uExposureMax.value = env ? env.exposureMax ?? 1e4 : 1e4;
     // metering: by day the exposure follows the incident light and the meter only nudges
@@ -482,14 +484,22 @@ const post = {
       const cool = 0.1 * ss(t, 0.82, 1.0);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
       wb.set(Math.exp(-er) * (1 - 0.5 * cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
-      // a neutral surface under the illuminant keeps G / mean(R, B) within [0.98, 1.03]:
-      // never olive, and never mauve until the lamps take over the balance
+      // from sunset on, a daylight-balanced camera keeps the twilight blue (the warmth
+      // comes from the lamps): the blue gain stays within 5% of the green one
+      const keepBlue = ss(t, 0.66, 0.72);
+      if (keepBlue > 0) wb.z = Math.max(wb.z, lerp(wb.z, 0.9025 * wb.x, keepBlue));
+      // the gains stay on the daylight locus: the green one within 1% of the geometric
+      // mean of red and blue (no green-magenta push, so the twilight sky and the limestone
+      // it lights never turn khaki or olive), and a neutral surface under the illuminant
+      // keeps G / mean(R, B) at most 1.0
+      const gm = Math.sqrt(wb.x * wb.z);
+      wb.y = THREE.MathUtils.clamp(wb.y, 0.99 * gm, 1.01 * gm);
       const gr = (ill.y * wb.y) / Math.max(0.5 * (ill.x * wb.x + ill.z * wb.z), 1e-12);
-      const lampW = ss(t, 0.84, 0.95);
-      if (gr > 1.03) wb.y *= 1.03 / gr;
-      else if (gr < 0.98 && lampW < 1) wb.y *= Math.pow(0.98 / gr, 1 - lampW);
+      if (gr > 1.0) wb.y = Math.max(wb.y / gr, 0.99 * gm);
+      else if (gr < 0.97) wb.y = Math.min(wb.y * 0.97 / gr, 1.01 * gm);
       // and once the lamps light the street their pools stay amber, never yellow-green:
       // the green gain stays within 12% of the red one
+      const lampW = ss(t, 0.84, 0.95);
       const gMax = wb.x * (1.12 + 2 * (1 - lampW));
       if (wb.y > gMax) wb.y = gMax;
       // keep the overall exposure (normalise the gains to unit luminance)
@@ -499,7 +509,7 @@ const post = {
       wb.set(1, 1, 1);
     }
     // highlight recovery: none at midday, more as the sun lowers and the sky outshines the street
-    fu.uHiComp.value.set(table(TONE.hiKnee, t), table(TONE.hiSlope, t));
+    fu.uHiComp.value.set(table(TONE.hiKnee, t), this.hiSlopeK > 0 ? this.hiSlopeK : table(TONE.hiSlope, t));
     fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
     // the low sun's warmth on the highlights only (the shade keeps its blue)
     const hiW = 0.05 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.72, 0.88));
@@ -598,7 +608,9 @@ const post = {
     u.uCamWorld.value.copy(camera.matrixWorld);
     u.uCamPos.value.copy(camera.position);
     u.uShutter.value = shutter;
-    u.uMaxPx.value = BLUR_MAX_PX * this.size.y / 1080;
+    // the rig's streak cap (daylight / wide-angle limits), at 1080 lines
+    const cap = Number.isFinite(rig.blurMaxPx) && rig.blurMaxPx > 0 ? rig.blurMaxPx : BLUR_MAX_PX;
+    u.uMaxPx.value = cap * this.size.y / 1080;
     return true;
   },
 
@@ -826,6 +838,8 @@ const post = {
     const fu = this.final.material.uniforms;
     fu.tHDR.value = img.texture;
     fu.tBloom.value = low.texture;
+    const tail = this.ups[Math.min(3, this.ups.length - 2)] || low;
+    fu.tTail.value = tail.texture;
     fu.tLum.value = this.lumRT[this.lumPing].texture;
     fu.tDepth.value = this.sceneRT.depthTexture;
     fu.uTime.value = app.time + app.frame * 0.618;

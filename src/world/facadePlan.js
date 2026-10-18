@@ -409,7 +409,8 @@ function massing(plan, lot) {
   if (width < 4 || depth < 4) return;
   const floorH = rng.range(2.85, 3.15);
   const material = rng.chance(addition ? 0.45 : 0.65) ? 'plaster' : 'stone';
-  const color = rng.pick([[0.93, 0.9, 0.84], [0.9, 0.86, 0.78], [0.86, 0.85, 0.82], [0.95, 0.93, 0.89]]);
+  // (render washes × 0.9: off-whites and cream mostly, a pale ochre or rose now and then)
+  const color = rng.pick([[0.93, 0.9, 0.84], [0.9, 0.86, 0.78], [0.86, 0.85, 0.82], [0.95, 0.93, 0.89], [1.08, 0.92, 0.64], [1.07, 0.84, 0.72]]);
   const v0 = plan.parapet.y;
   const f = lot.frame;
   const origin = f.origin.clone().addScaledVector(f.uDir, in0).addScaledVector(f.nDir, -setback);

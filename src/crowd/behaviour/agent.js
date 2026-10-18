@@ -7,7 +7,7 @@ export const KIND = { WALKER: 0, SEATED: 1, PASSENGER: 2, STANDER: 3 };
 export const ST = { WALK: 0, GOTO: 1, STAND: 2, WAIT: 3, SEATED: 4, PLATFORM: 5 };
 export const TASK = {
   NONE: 0, BROWSE: 1, ENTER: 2, CROSS: 3, SIDE_OUT: 4, EMERGE: 5, TO_PLATFORM: 6,
-  BOARD: 7, ALIGHT: 8, SIT: 9, LEAVE_SEAT: 10, CHAT: 11, PAUSE: 12,
+  BOARD: 7, ALIGHT: 8, SIT: 9, LEAVE_SEAT: 10, CHAT: 11, PAUSE: 12, SERVE: 13,
 };
 export const LANE = { SIDE: 0, EDGE: 1, CORR: 2 };
 /** Mobility role: pushing a stroller, riding a bicycle, walking beside a bicycle. */
@@ -157,7 +157,8 @@ export class Agent {
     // walking abreast of a stranger (steering): seconds so far, pace factor and until when
     this.abT = 0; this.paceK = 1; this.paceKT = 0;
     this.role = '';           // 'staff': a café waiter
-    this.cafeT = null;        // ... its terrace (feature) and the table being served
+    this.cafeT = null;        // ... its terrace (feature)
+    this.path = null; this.pathI = 0; this.serveFace = 0; this.serveTi = -1; // ... its round: waypoints [s, d], facing at the table
     this.inSide = false;      // out in a side street (beyond the main street's building line)
     this.sideX = 0;           // ... how far (m) beyond it
     this.pauseFace = 0; this.pauseT = 0; // a pause about to start on arrival: facing and duration

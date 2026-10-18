@@ -210,6 +210,8 @@ export class FrameMonitor {
       const { _t0, _t1, ...out } = h;
       out.loaf = loaf;
       out.cause = cause(out);
+      // single-module spikes, whatever the overall cause: far over the module's usual time
+      out.spikes = Object.entries(out.stages).filter(([k, v]) => k !== 'render' && v > 4 * (out.usualStages[k] || 0) + 5).map(([k, v]) => `${k}:${v}`);
       return out;
     });
   }
@@ -219,14 +221,19 @@ export class FrameMonitor {
     const f = this.frames();
     const hs = this.hitches();
     const causes = {};
-    for (const h of hs) causes[h.cause] = (causes[h.cause] || 0) + 1;
+    const spikes = {};
+    for (const h of hs) {
+      causes[h.cause] = (causes[h.cause] || 0) + 1;
+      for (const sp of h.spikes) { const k = sp.split(':')[0]; spikes[k] = (spikes[k] || 0) + 1; }
+    }
     const lines = [`frames n=${f.n} p50=${f.p50} p95=${f.p95} p99=${f.p99} max=${f.max} >50ms=${f.over50} >60ms=${f.over60} hitches=${this.count}` +
-      ` causes=${Object.entries(causes).map(([k, v]) => `${k}:${v}`).join(',') || '-'}`];
+      ` causes=${Object.entries(causes).map(([k, v]) => `${k}:${v}`).join(',') || '-'}` +
+      ` spikes=${Object.entries(spikes).map(([k, v]) => `${k}:${v}`).join(',') || '-'}`];
     for (const h of hs) {
       const st = Object.entries(h.stages).slice(0, 5).map(([k, v]) => `${k}=${v}(${h.usualStages[k]})`).join(' ');
       const lo = h.loaf.map((e) => `loaf ${e.ms}ms[${e.scripts.map((s) => `${s.type}:${s.fn || s.inv} ${s.ms}`).join(', ')}]`).join(' ');
       const u = h.usual;
-      lines.push(`t=${h.t}s s=${h.s} ${h.kmh}km/h ${h.ms}ms cause=${h.cause} cpu=${h.cpu}(${u.cpu}) gap=${h.gap} gpu=${h.gpu ?? '?'}(${u.gpu}) | ${st} ` +
+      lines.push(`t=${h.t}s s=${h.s} ${h.kmh}km/h ${h.ms}ms cause=${h.cause}${h.spikes.length ? ' spikes=' + h.spikes.join(',') : ''} cpu=${h.cpu}(${u.cpu}) gap=${h.gap} gpu=${h.gpu ?? '?'}(${u.gpu}) | ${st} ` +
         `shadowCpu=${h.shadowCpu}(${u.shadowCpu}) calls=${h.calls}(${u.calls}) casc=${h.cascades} prog=${h.programs}/${h.syncCompile} ` +
         `compiling=${h.compiling} reveal=${h.reveal}KB build=${h.build} proxy=${h.proxyMerge} heapDrop=${h.heapDropMB}MB${h.newPrograms ? ' new=' + h.newPrograms.join(',') : ''}${lo ? ' ' + lo : ''}`);
     }

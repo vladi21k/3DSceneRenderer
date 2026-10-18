@@ -6,6 +6,7 @@ import { Visibility } from './behaviour/visibility.js';
 import { Population } from './behaviour/population.js';
 import { Steering } from './behaviour/steering.js';
 import { TramWatch } from './behaviour/tram.js';
+import { SideStreets } from './behaviour/sideStreets.js';
 import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES } from './behaviour/agent.js';
 import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D } from './behaviour/constants.js';
 import { footDims } from './behaviour/footprint.js';
@@ -58,6 +59,8 @@ class CrowdSim {
     this.vis = new Visibility(app.route);
     this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0, stand300: 0, walk300: 0, side: 0 };
     this.tram = new TramWatch(this);
+    this.side = new SideStreets(this);
+    this.vis.toWorld = (s, d, h, out) => this.side.toWorld(s, d, h, out);
     this.population = new Population(this);
     this.steering = new Steering(this);
     this.time = 0; this.dt = 0;
@@ -163,6 +166,15 @@ class CrowdSim {
       if (!a.active || a.state === ST.SEATED) continue;
       const ahead = a.s - tram.trainU;
       if (ahead < -8 || ahead > reach + 20) continue;
+      // people waiting on a platform: a few look up the track (and turn to it) at the sound
+      if (a.state === ST.PLATFORM) {
+        if (!r.chance(0.2)) continue;
+        const delay = Math.max(0, ahead) / 340 + r.range(0.2, 1.0);
+        a.tramLookS = this.time + delay; a.tramLookT = a.tramLookS + r.range(1.5, 3.5); a.lookU = -1;
+        if (r.chance(0.5)) a.faceA = this._faceTram(a);
+        reacted++;
+        continue;
+      }
       const near = Math.abs(a.d - RIDE_D) < 3.5 && ahead < reach;
       if (!r.chance(near ? 0.85 : 0.08)) continue;
       const delay = Math.max(0, ahead) / 340 + r.range(0.2, 1.2); // sound travel + reaction
@@ -262,7 +274,8 @@ class CrowdSim {
       else if (a.state === ST.SEATED && a.feature && a.feature.platH) hT = a.feature.platH;   // a stop's shelter bench
       a.h += Math.max(-1.5 * dt, Math.min(1.5 * dt, hT - a.h));
       if (dt === 0 || a.fresh) a.h = hT;
-      route.toWorld(a.s, a.d, a.h, _v);
+      // (out in a side street: its own frame and level)
+      if (this.side.mark(a)) this.side.toWorld(a.s, a.d, a.h, _v); else route.toWorld(a.s, a.d, a.h, _v);
       a.x = _v.x; a.y = _v.y; a.z = _v.z;
       // distance actually covered since the last frame (drives the gait phase)
       let dist = 0;
@@ -293,7 +306,7 @@ class CrowdSim {
           }
         }
       }
-      a.heading = route.heading(a.s) - PI / 2 - a.alpha;
+      a.heading = a.inSide ? this.side.heading(a.s, a.d, a.alpha) : route.heading(a.s) - PI / 2 - a.alpha;
       if (a.mob === MOB.CYCLE) {
         // lean into the turn: from the world turn rate (route bends included), smoothed
         let lean = 0;

@@ -4,6 +4,7 @@ import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, MOB } from './agent.js';
 import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
 import { thinkCycle, maybeMount } from './cyclist.js';
+import { serveArrive } from './staff.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
 // entering shops, side streets, crossing the tracks, joining a platform, café seats,
@@ -549,6 +550,10 @@ export function think(c, a) {
   const r = c.rng;
   if (a.mob === MOB.CYCLE) { thinkCycle(c, a); return; }
   a.thinkT = r.range(0.7, 1.3);
+  // far up a side street and out of sight: gone
+  if (a.task === TASK.SIDE_OUT && a.step >= 2 && a.sideX > 34 && !a.leader && c.side.groupHidden(a)) { c.population.vanish(a); return; }
+  // (walking a lane out in a side street, after a task gave up there: on along the side street)
+  if (a.inSide && a.sideX > 2 && a.state === ST.WALK && !a.leader && !a.mob && c.side.resume(a)) return;
   if (a.simple) { thinkFar(c, a); return; }
   switch (a.state) {
     case ST.WALK:
@@ -609,7 +614,7 @@ function thinkWalk(c, a) {
     const mine = map.mouthAt(look, side), other = map.mouthAt(look, -side);
     if (mine && mine !== a.mouth) {
       a.mouth = mine;
-      if (r.chance(mob ? 0.2 : 0.28) && startSideOut(c, a, mine)) return;
+      if (r.chance(mob ? 0.2 : 0.32) && startSideOut(c, a, mine)) return;
       if (mine.side === 0 && r.chance(0.35) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.SIDE_OUT, mine)) return;
       if (r.chance(0.3) && startCross(c, a, c.unwrap(mine.s) + r.range(-1, 1) * mine.width * 0.3, TASK.NONE, null)) return;
       if (r.chance(0.06)) { startUturn(c, a); return; }  // changed their mind at the corner
@@ -632,9 +637,9 @@ function thinkWalk(c, a) {
   if (mob !== MOB.STROLLER && r.chance(0.0018) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
   // people stop to talk, wait for somebody, take a call: more often while too few are standing
   // about near the camera (the street ahead should always have its share of standing people)
-  const few = c.counts.stand300 < STAND_NEAR && a.s - c.camU > 0;
-  if (!mob && a.nFollow > 0 && r.chance(few ? 0.06 : 0.003) && c.counts.stand < STANDER_TARGET * 2 && startChat(c, a)) return;
-  if (!mob && a.nFollow === 0 && r.chance(few ? 0.02 : 0.0015) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF && startPause(c, a)) return;
+  const need = Math.max(0, (STAND_NEAR - c.counts.stand300) / STAND_NEAR) * (a.s - c.camU > 0 ? 1 : 0);
+  if (!mob && a.nFollow > 0 && r.chance(0.0015 + 0.05 * need) && c.counts.stand < STANDER_TARGET * 2 && startChat(c, a)) return;
+  if (!mob && a.nFollow === 0 && r.chance(0.001 + 0.02 * need) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF && startPause(c, a)) return;
   // lane drift and the odd change of mind
   if (r.chance(0.05)) a.laneF = Math.min(0.97, Math.max(0.03, a.laneF + r.normal(0, 0.18)));
   if (r.chance(0.012)) setLane(c, a, r);
@@ -952,20 +957,41 @@ export function arrive(c, a) {
       return;
     }
     case TASK.SIDE_OUT: {
-      const m = a.mouth, line = map.mouthLine(m, side);
-      const ms = c.unwrap(m.s);
-      if (a.step < 6) {
-        if (a.step > 0 && groupGone(c, a, side, line, ms - m.width / 2, ms + m.width / 2)) { c.population.vanish(a); return; }
-        a.step++;
-        const depth = Math.min(16, 3 + a.step * 2.6);
-        goTo(a, ms + a.slotX, side * (line + depth), 0.5);
+      // into the side street: across its mouth onto one of its sidewalks, then up it 40-60 m,
+      // gone once out of sight there (or further on, at its far end at the latest)
+      const m = a.mouth, ms = c.unwrap(m.s), sd = side > 0 ? 1 : -1;
+      const g = c.side.get(m, sd);
+      if (a.step === 0) {
+        a.step = 1;
+        a.sideA = c.side.laneA(g, r, Math.sign(a.slotX) || 0);
+        goTo(a, ms + a.sideA, sd * (g.hw + 3.6), 0.6);
         return;
       }
-      if (c.vis.hidden(a.s, a.d) || c.vis.distance(a.s) > 120) { c.population.vanish(a); return; }
-      stand(a, faceStreet(side), 2); // rare: in plain view at the end of the side street, wait
+      if (a.step === 1) {
+        a.step = 2;
+        a.sideEnd = r.range(40, 60);
+        goTo(a, ms + a.sideA, sd * (g.hw + a.sideEnd), 0.8);
+        return;
+      }
+      if (c.side.groupHidden(a)) { c.population.vanish(a); return; }
+      if (a.step < 5) {
+        a.step++;
+        a.sideEnd = Math.min(g.len - 6, a.sideEnd + 15);
+        goTo(a, ms + a.sideA, sd * (g.hw + a.sideEnd), 0.8);
+        return;
+      }
+      if (c.vis.distance(a.s) > 140 || a.sideX > 80) { c.population.vanish(a); return; }
+      stand(a, faceStreet(side), 2); // rare: in plain view at the far end of the side street, wait
       return;
     }
     case TASK.EMERGE:
+      // out of a side street: along its sidewalk to the mouth first, then onto the main sidewalk
+      if (a.step === -1 && a.mouth) {
+        const m = a.mouth, line = map.mouthLine(m, side);
+        a.step = 0;
+        goTo(a, c.unwrap(m.s) + Math.max(-1, Math.min(1, (a.sideA || 0) / Math.max(1, m.width / 2))) * (m.width / 2 - 1.4) * r.range(0.4, 1), side * (line - r.range(0.8, 1.6)), 0.6);
+        return;
+      }
       walk(a);
       // still in the recess (gave up on a blocked goal): the door keeps bounding them until out
       a.inDoor = Math.abs(a.d) > map.facadeAt(a.s, side) - 0.35;
@@ -1096,6 +1122,9 @@ export function arrive(c, a) {
       a.timer = r.range(60, 600);
       return;
     }
+    case TASK.SERVE:
+      serveArrive(c, a);
+      return;
     case TASK.LEAVE_SEAT:
       a.noRect = false;
       for (const f of a.followers) f.noRect = false;
@@ -1137,13 +1166,15 @@ export function timerDone(c, a) {
   const r = c.rng;
   switch (a.state) {
     case ST.STAND:
-      if (a.task === TASK.ENTER || a.task === TASK.SIDE_OUT || a.task === TASK.BOARD) { a.state = ST.GOTO; arrive(c, a); return; }
+      if (a.task === TASK.ENTER || a.task === TASK.SIDE_OUT || a.task === TASK.BOARD || a.task === TASK.SERVE) { a.state = ST.GOTO; arrive(c, a); return; }
       if (a.task === TASK.CHAT) {
         if (a.leader) return; // followers resume with their leader
         if (a.kind === KIND.STANDER) a.kind = KIND.WALKER;
         for (const m of c.population.groupOf(a)) { if (m !== a) { m.task = TASK.NONE; m.state = ST.WALK; if (m.kind === KIND.STANDER) m.kind = KIND.WALKER; } }
         if (r.chance(0.35)) flipGroup(a);
       } else if (a.task === TASK.BROWSE && r.chance(0.3)) flipGroup(a);
+      // (a pause out in a side street: on along it)
+      if (a.inSide && a.task === TASK.PAUSE && !a.leader && c.side.resume(a)) return;
       walk(a);
       if (a.lane === LANE.CORR && Math.abs(a.d) > TRACK_ZONE_HALF) setLane(c, a, r, true);
       return;

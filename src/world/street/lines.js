@@ -206,7 +206,7 @@ const RAIL_FRAG = /* glsl */`
   float fs = dot( fSteel, vec3( 0.333 ) ), fo = dot( fOther, vec3( 0.333 ) );
   lnEnvK = ( fs * uStSheen.y + fo ) / max( fs + fo, 1e-5 );
   lnPhys = 1.0;
-  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.3 + 0.08 * wear ) + wShoulder * 0.55 + wGauge * 0.4 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
+  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.42 + 0.1 * wear ) + wShoulder * 0.55 + wGauge * 0.4 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
   diffuseColor.rgb = lnD;
   diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
@@ -301,7 +301,10 @@ const PAINT_FRAG = /* glsl */`
     float nP = lnFbm( vec2( x * 1.5, u * 4.0 ) + seed + 11.0, max( w * 1.5, wu * 4.0 ), 3 );
     float nS = lnFbm( vec2( x * 3.2, u * 26.0 ) + seed + 3.0, max( w * 3.2, wu * 26.0 ), 3 );
     float tP = 0.5 + 0.31 * ( lossP - 0.5 ), tS = 0.5 + 0.31 * ( lossS - 0.5 );
-    float keepP = mix( smoothstep( tP - 0.05, tP + 0.05, nP ), 1.0 - lossP, smoothstep( 0.03, 0.08, max( w, wu * 2.5 ) ) );
+    float kPu = smoothstep( 0.03, 0.08, max( w, wu * 2.5 ) );
+    float keepP = mix( smoothstep( tP - 0.05, tP + 0.05, nP ), 1.0 - lossP, kPu );
+    // the film thins round the worn patches: a grey halo (unresolved: its mean)
+    float thin = bar * mix( 1.0 - smoothstep( tP, tP + 0.14, nP ), 0.3, kPu );
     float keepS = mix( smoothstep( tS - 0.02, tS + 0.02, nS ), 1.0 - lossS, smoothstep( 0.008, 0.025, max( w, wu * 2.0 ) ) );
     float worn = bar * ( 1.0 - keepP * keepS );
     film *= 1.0 - 0.65 * worn;
@@ -337,7 +340,7 @@ const PAINT_FRAG = /* glsl */`
     float gDust = clamp( 0.1 + 0.06 * bar + 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
     // close up: grit and dust caught in the paint's texture
     vec3 col = pCol * ( 0.95 + 0.1 * mid ) * mix( 1.0, 0.86 + 0.28 * fine, kFine );
-    col = mix( col, vec3( 0.2, 0.19, 0.175 ), min( gDust + 0.45 * worn, 0.8 ) );
+    col = mix( col, vec3( 0.2, 0.19, 0.175 ), min( gDust + 0.45 * worn + 0.3 * thin, 0.8 ) );
     col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
     diffuseColor.rgb = col;
     // the trodden film is duller where grit is ground in, a little glossier where soles

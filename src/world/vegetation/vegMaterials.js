@@ -22,7 +22,7 @@ import { U } from '../../core/uniforms.js';
 //     transmittance exp(-density * path), dithered per card into sun flecks.
 // Sky light is occluded the same way: a leaf sees the sky through the crown above it and
 // around it (path to the crown surface straight up and radially out), so the crown core
-// and its underside sit at about half the sky light of the top shell (light also comes
+// and its underside keep about 60 % of the sky light of the top shell (light also comes
 // in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):

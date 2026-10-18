@@ -2,14 +2,15 @@ import { RNG } from '../../core/rng.js';
 import { archPoint, ornament } from '../facadePlan.js';
 
 // Where the carved stone consoles under a balcony slab go. Every slab sits on consoles
-// (two at least): at its ends, on the bay boundaries it spans and in between, no more
-// than MAX_SP apart along long balconies. Each one keeps clear of the masonry dressing
-// of the openings on the floor below, exactly as the buildings module draws it
-// (buildings/openings.js: arch rings, flat arches, lintels, keystones, hoods, door
-// portals), by moving to the nearest pier or, where the dressing reaches close under
-// the slab, by stopping on top of it. One balcony's consoles share one design and
-// height: full scroll consoles where there is room, shortened stepped ones, or rows of
-// short block consoles (modillions) over the shop heads.
+// (two at least) unless the dressing below reaches up to the slab itself. Full consoles
+// stand on the piers: at the slab's ends, either side of each opening below and about
+// MAX_SP apart along wide piers. Where the piers do not carry the slab, consoles keep an
+// even rhythm (ends, bay boundaries, subdivisions) and stop on top of the dressing.
+// The dressing is taken exactly as the buildings module draws it (buildings/openings.js:
+// arch rings, flat arches, lintels, keystones, hoods, door portals), plus the shop
+// signs facades hangs under first-floor balconies. One balcony's consoles share one
+// design and height: full scroll or stepped consoles where there is room, shortened
+// stepped ones, or rows of short block consoles (modillions) over the shop heads.
 // Open shutter leaves need no clearance: facades folds any leaf that would reach into
 // the band under a balcony where consoles may hang (place.js wallObstacles).
 // Facade-local coordinates (see facadePlan): u along the wall, v up.
@@ -127,6 +128,21 @@ function dressingField(heads, lo, N, W2) {
   return top;
 }
 
+/** Shop signs on the wall under a first-floor balcony, as facades hangs them (place.js:
+ *  fascia boards and their lamps stop 0.62 m under the soffit, projecting blade signs
+ *  0.55 m under it), in the form of head dressing. */
+function signsUnder(plan, bal, soffit) {
+  const out = [];
+  for (const s of plan.signs || []) {
+    if (s.kind === 'fascia' && s.u1 > bal.u0 - 0.2 && s.u0 < bal.u1 + 0.2) {
+      out.push({ u0: s.u0 - 0.05, u1: s.u1 + 0.05, flat: soffit - 0.6, jamb: 0, arc: null });
+    } else if (s.kind === 'blade' && s.u > bal.u0 - 0.9 && s.u < bal.u1 + 0.9) {
+      out.push({ u0: s.u - 0.08, u1: s.u + 0.08, flat: soffit - 0.53, jamb: 0, arc: null });
+    }
+  }
+  return out;
+}
+
 /** Ideal console positions along [a, b]: both ends, the bay boundaries in between, and
  *  even subdivisions of what lies between them, at most `sp` apart. */
 function idealPositions(plan, a, b, sp, short) {
@@ -201,6 +217,7 @@ function place(plan, bal, { Hc, W2, rc, kind, foot }) {
   // pair of consoles
   const N = Math.floor((len - 2 * e0) / STEP) + 1, lo = (bal.u0 + bal.u1) / 2 - ((N - 1) * STEP) / 2, hi = lo + (N - 1) * STEP;
   const heads = bal.floor > 0 ? headsOn(plan, bal.floor - 1).filter((hp) => hp.u1 > bal.u0 - 0.5 && hp.u0 < bal.u1 + 0.5) : [];
+  if (bal.floor === 1) heads.push(...signsUnder(plan, bal, soffit));
   const top = dressingField(heads, lo, N, W2);
   const short = len <= 2.8;
   const end = Math.min(Math.max(0.08, len * 0.06), 0.22);
@@ -299,7 +316,8 @@ function flanking(top, lo, N, clearTop, a, b, minGap) {
       if (span > OPEN_SP) return null;
       continue;
     }
-    const n = Math.ceil(span / MAX_SP - 1e-6);
+    // (a pier a little wider than MAX_SP keeps its pair: three in a bunch read badly)
+    const n = span > MAX_SP * 1.25 ? Math.ceil(span / MAX_SP - 1e-6) : 1;
     for (let j = 1; j < n; j++) out.push(lo + (p + ((q - p) * j) / n) * STEP);
   }
   return out;

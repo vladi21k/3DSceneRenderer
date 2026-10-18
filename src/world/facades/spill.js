@@ -3,7 +3,7 @@ import { U } from '../../core/uniforms.js';
 import { Tpl, VS, TplCache } from './geo.js';
 import { outlinePts, headSegments, crownY } from './outline.js';
 import { emissiveGain } from './extras.js';
-import { ROOM_LIGHT_GLSL } from './interior.js';
+import { ROOM_LIGHT_GLSL, SHOP_LEVEL, SHOP_NIGHT_REF } from './interior.js';
 
 // Light spilling out of lit rooms and shops at dusk.
 //  - Reveals: seen along the street at a grazing angle the glass itself is hidden by the
@@ -35,6 +35,7 @@ export function createSpillMaterial(M) {
     shader.uniforms.uNight = U.uNight;
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uEmGain = gain;
+    shader.uniforms.uShopNight = SHOP_LEVEL.uShopNight;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec4 aSpill;\nvarying vec4 vSpill;\nvarying vec2 vSpUv;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSpill = aSpill;\nvSpUv = uv;');
@@ -43,6 +44,7 @@ export function createSpillMaterial(M) {
 uniform float uNight;
 uniform float uTime;
 uniform float uEmGain;
+uniform float uShopNight;
 varying vec4 vSpill;
 varying vec2 vSpUv;
 ${ROOM_LIGHT_GLSL}
@@ -63,14 +65,15 @@ vec3 lampS = shop ? vec3( 1.0, 0.70, 0.43 ) : fRoomLampC( vSpill.x ) * fRoomLeve
 if ( !shop && fRoomTV( vSpill.x ) > 0.5 ) lampS = fTVLight( vSpill.x, uTime ) * 0.6;
 float k;
 if ( kind > 2.5 ) {
-  // pavement pool: paving albedo ~0.3 under the shop's light (the shops' interiors sit far
-  // above the street lamps' level in the exposure, so their pools hold their own)
-  k = 0.0005 * vSpill.z;
+  // pavement pool: paving albedo ~0.3 under the shop's light, at the level of the shop's
+  // own lamps (interior.js uShopNight): a lit display window of ~200 cd/m2 throws a few
+  // hundred lux on the paving at its foot, far above the street lamps' level
+  k = 0.07 * uShopNight * vSpill.z;
 } else {
   // stone albedo ~0.5 lit by the room behind the glass: strongest at the glass, falling off
   // exponentially towards the wall face; the tall jambs of shops fade upwards (their
   // downlights light the floor and the goods), and the stone is uneven
-  k = shop ? 0.00016 : kind > 1.5 ? 0.00008 : 0.0002;
+  k = shop ? 0.00024 * uShopNight / ${SHOP_NIGHT_REF.toFixed(4)} : kind > 1.5 ? 0.00008 : 0.0002;
   k *= exp( -vSpill.z / ( shop ? 0.1 : 0.15 ) ) * ( 0.25 + 0.75 * smoothstep( 0.0, 0.012, vSpill.z ) );
   k *= shop ? ( 1.0 - 0.75 * smoothstep( 0.25, 0.85, vSpill.w ) ) * ( 0.5 + 0.5 * smoothstep( 0.0, 0.06, vSpill.w ) )
             : 1.0 - 0.3 * smoothstep( 0.6, 1.0, vSpill.w );
@@ -78,7 +81,7 @@ if ( kind > 2.5 ) {
 }
 gl_FragColor = vec4( lampS * k * on * uEmGain, 1.0 );`);
   };
-  m.customProgramCacheKey = () => 'facades.spill.v3';
+  m.customProgramCacheKey = () => 'facades.spill.v4';
   return m;
 }
 

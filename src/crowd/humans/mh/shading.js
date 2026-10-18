@@ -91,6 +91,15 @@ void hSkin(out vec3 P, out vec3 N) {
     }
   }
 #if HUMANS_V2
+  // (long skirts: the calves under the cloth thin towards the shin's axis too)
+  if (hemY > 0.0 && aTex.z < 0.5 && pos.y > hemY + 0.01 && (aBoneI.x == 15.0 || aBoneI.x == 19.0)) {
+    int sd = pos.x < 0.0 ? 0 : 1;
+    vec3 kb = hLook(row, 19 + sd * 2).xyz;
+    vec3 c = vec3(kb.x, pos.y, kb.z + 0.01);
+    pos = c + (pos - c) * (1.0 - 0.3 * smoothstep(hemY + 0.01, hemY + 0.05, pos.y));
+  }
+#endif
+#if HUMANS_V2
   if ((flags & 8) != 0 && D0.y > 0.05) {
     // a walking skirt's hem trails a little and swings with the stride (more towards the hem)
     float top = hLook(row, 18).y;
@@ -171,6 +180,18 @@ float hH3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x 
 float hBump = 0.0;
 float hStrand = 1.0;
 float hEyeLid = 1.0;
+float hBrimBelow = -1.0;
+float hBrimOver = 0.0;
+// the brim's shadow for a light direction (view space): the brim overhangs this point by hBrimOver
+// and sits hBrimBelow above it; a sun higher than atan(below / over) is cut off
+float hBrimShadow(vec3 L) {
+  if (hBrimBelow <= 0.0 || hBrimOver <= 0.0) return 0.0;
+  vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  float ly = dot(L, upV);
+  float lh = sqrt(max(1e-4, 1.0 - ly * ly));
+  float reach = hBrimOver * max(ly, 0.0) / lh;          // shadow depth below the band
+  return smoothstep(-0.012, 0.012, reach - hBrimBelow) * 0.85;
+}
 float hVNoise(vec3 x) {
   vec3 i = floor(x), f = fract(x);
   f = f * f * (3.0 - 2.0 * f);
@@ -304,9 +325,10 @@ const FRAG_SURFACE = /* glsl */`
         float st = hH3(floor(sq));
         st = mix(st, 0.5, smoothstep(0.4, 1.5, length(fwidth(sq))));
         float dens = edge * tx.a;
-        float nz = 0.62 * cl + 0.38 * st;
-        a = smoothstep(nz - 0.12, nz + 0.12, dens * 1.02 - 0.1);
-        col *= 0.7 + 0.75 * cl + 0.35 * (st - 0.5);
+        float nz = 0.55 * cl + 0.45 * st;
+        // (solid inside, broken into strands only over the outer part of the border)
+        a = smoothstep(nz - 0.1, nz + 0.1, dens * 1.35 - 0.12);
+        col *= 0.85 + 0.35 * cl + 0.25 * (st - 0.5);
       } else if (shell == 0) {
         a *= clamp((edge * (1.25 - 0.3 * light) - sn) * 2.5 + 0.35, 0.0, 1.0);
         col *= mix(0.5 + 0.5 * sn, 0.3 + 1.0 * sn * sn, light);
@@ -346,6 +368,16 @@ const FRAG_SURFACE = /* glsl */`
       diffuseColor.rgb = mix(vec3(l), diffuseColor.rgb, 0.75) * 0.82;
     }
   }
+#if HUMANS_V2
+  if (hRegion <= 4 || hRegion == 11) {
+    // under a hat's brim: how far below the band, how far the brim reaches past this point
+    vec4 hcB = hLook(row, 24);
+    if (hcB.w > 0.0) {
+      hBrimBelow = hLook(row, 10).w - vRest.y;
+      hBrimOver = hcB.w - length(vRest.xz - hcB.xz);
+    }
+  }
+#endif
   if (hRegion == 0) {
     hSkinM = 1.0;
     float fwr = length(fwidth(vRest));
@@ -435,6 +467,9 @@ const FRAG_SURFACE = /* glsl */`
   hEmit = vec3(vBeard, hRegion == 11 ? 0.0 : 0.3, 0.0); diffuseColor.rgb = vec3(0.0);   // debug view: beard edge distance
 #elif HUMANS_DBG == 4
   hEmit = vec3(max(vDecal, 0.0), max(-vDecal, 0.0), 0.0); diffuseColor.rgb = vec3(0.0); // debug view: skin decals
+#elif HUMANS_DBG == 7
+  // debug view: brim shadow at a 45 degree sun (red), below the brim (green: 0 .. 10 cm)
+  hEmit = 0.05 * vec3(hBrimBelow > 0.0 && hBrimOver > 0.0 ? smoothstep(-0.012, 0.012, hBrimOver - hBrimBelow) : 0.0, clamp(hBrimBelow * 10.0, 0.0, 1.0), 0.0); diffuseColor.rgb = vec3(0.0);
 #elif HUMANS_DBG == 6
   if (hRegion == 0) discard;                              // debug view: no skin
 #elif HUMANS_DBG == 5
@@ -562,13 +597,25 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
 #else
         vec3 irradiance = mix( vec3( dotNL ), vec3( dotNL ) * 0.72 + wrapNL * vec3( 0.36, 0.15, 0.10 ), hSkinM ) * directLight.color;
 #endif
+#if HUMANS_V2
+        irradiance *= 1.0 - hBrimShadow( directLight.direction );
+#endif
         if ( hHairM > 0.0 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;`));
     }
     fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>
       reflectedLight.indirectDiffuse *= hAO;
       // (the eyes' wet surface mirrors the sky even in the lid's shade: the catch light)
       reflectedLight.indirectSpecular *= hRegion == 4 ? mix( 1.0, hAO, 0.25 ) * ( 1.0 - 0.6 * hEyeLid ) : hAO * mix( 1.0, 0.35, hHairM );
-      reflectedLight.directDiffuse *= mix( 1.0, hAO, 0.3 );`);
+      reflectedLight.directDiffuse *= mix( 1.0, hAO, 0.3 );
+      #if HUMANS_V2 && defined( RE_IndirectSpecular )
+      if ( hRegion == 4 ) {
+        // a catch light: the bright sky above and behind the viewer mirrored in the cornea
+        vec3 upV = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+        vec3 Rv = reflect( - geometryViewDir, geometryNormal );
+        float cl = smoothstep( 0.975, 0.993, dot( Rv, normalize( geometryViewDir + upV * 0.5 ) ) ) * ( 1.0 - hEyeLid );
+        reflectedLight.indirectSpecular += cl * iblIrradiance * 0.22;
+      }
+      #endif`);
     shader.fragmentShader = fs;
   };
   mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + '-' + (debugView | 0);
@@ -634,6 +681,9 @@ export function writeLook(data, row, a) {
   put(22, 9, a.char.hemY ?? -1); put(23, 13, 0);
   const hc = a.char.info.headC || J[5];
   data[o + 96] = hc[0]; data[o + 97] = hc[1]; data[o + 98] = hc[2]; data[o + 99] = 0;
+  // a hat's brim (shadow on the face): hat texel w = band height (rest y), head texel w = brim radius
+  const hat = a.char.hat;
+  if (hat) { data[o + 40 + 3] = hat.band; data[o + 99] = hat.rb; }
   const ey = a.char.info.eyeR || [0.031, hc[1] + 0.02, hc[2] - 0.05];
   data[o + 100] = Math.abs(ey[0]); data[o + 101] = ey[1]; data[o + 102] = ey[2]; data[o + 103] = 0;
 }
