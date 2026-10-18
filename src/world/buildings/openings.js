@@ -390,44 +390,51 @@ const _t0 = {}, _t1 = {};
  * faces: 'full'; 'lean' leaves out the flat strips between the chamfers and the wall
  * (a centimetre or two, behind which the wall and the soffit continue); 'front'.
  */
+// ring stone scratch: curve samples (u, v, ru, rv per point) and four quad corners
+let _rI = new Float64Array(64), _rX = new Float64Array(64);
+const _q0 = [0, 0, 0], _q1 = [0, 0, 0], _q2 = [0, 0, 0], _q3 = [0, 0, 0];
 function ringStone(B, s, o, ta, tb, ext, proj, nSub, bev, faces = 'full') {
   const frontOnly = faces === 'front', lean = faces === 'lean' && bev > 0;
-  const I = [], X = [];
+  if ((nSub + 1) * 4 > _rI.length) { _rI = new Float64Array((nSub + 1) * 8); _rX = new Float64Array((nSub + 1) * 8); }
+  const I = _rI, X = _rX;
   for (let i = 0; i <= nSub; i++) {
     const t = ta + ((tb - ta) * i) / nSub;
     archPoint(o, t, _t0, 0); archPoint(o, t, _t1, ext);
-    I.push([_t0.u, _t0.v, _t0.ru, _t0.rv]); X.push([_t1.u, _t1.v, _t1.ru, _t1.rv]);
+    I[i * 4] = _t0.u; I[i * 4 + 1] = _t0.v; I[i * 4 + 2] = _t0.ru; I[i * 4 + 3] = _t0.rv;
+    X[i * 4] = _t1.u; X[i * 4 + 1] = _t1.v; X[i * 4 + 2] = _t1.ru; X[i * 4 + 3] = _t1.rv;
   }
   const wb = bev > 0 ? proj - bev : proj;
   // front-face points, inset by the margin (radially, and along the curve at the joints)
-  const inset = (P, k, sgn) => {
-    const [u, v, ru, rv] = P[k];
+  const inset = (P, k, sgn, out) => {
+    const u = P[k * 4], v = P[k * 4 + 1], ru = P[k * 4 + 2], rv = P[k * 4 + 3];
     let du = ru * bev * sgn, dv = rv * bev * sgn;
     if (k === 0) { du += rv * bev; dv -= ru * bev; }           // tangent (rv, −ru) points along +t
     if (k === nSub) { du -= rv * bev; dv += ru * bev; }
-    return [u + du, v + dv, proj];
+    out[0] = u + du; out[1] = v + dv; out[2] = proj;
+    return out;
   };
-  const at = (P, k, w) => [P[k][0], P[k][1], w];
+  const at = (P, k, w, out) => { out[0] = P[k * 4]; out[1] = P[k * 4 + 1]; out[2] = w; return out; };
   for (let k = 0; k < nSub; k++) {
     // front
-    B.quadOut(s, inset(I, k, 1), inset(I, k + 1, 1), inset(X, k + 1, -1), inset(X, k, -1), 0, 0, 1);
+    B.quadOut(s, inset(I, k, 1, _q0), inset(I, k + 1, 1, _q1), inset(X, k + 1, -1, _q2), inset(X, k, -1, _q3), 0, 0, 1);
     if (frontOnly) continue;
     // intrados (faces into the opening) and extrados (faces away from it)
     if (!lean) {
-      B.quadOut(s, at(I, k, 0), at(I, k + 1, 0), at(I, k + 1, wb), at(I, k, wb), -I[k][2], -I[k][3], 0);
-      B.quadOut(s, at(X, k, 0), at(X, k + 1, 0), at(X, k + 1, wb), at(X, k, wb), X[k][2], X[k][3], 0);
+      B.quadOut(s, at(I, k, 0, _q0), at(I, k + 1, 0, _q1), at(I, k + 1, wb, _q2), at(I, k, wb, _q3), -I[k * 4 + 2], -I[k * 4 + 3], 0);
+      B.quadOut(s, at(X, k, 0, _q0), at(X, k + 1, 0, _q1), at(X, k + 1, wb, _q2), at(X, k, wb, _q3), X[k * 4 + 2], X[k * 4 + 3], 0);
     }
     if (bev > 0) {
-      B.quadOut(s, at(I, k, wb), at(I, k + 1, wb), inset(I, k + 1, 1), inset(I, k, 1), -I[k][2], -I[k][3], 1);
-      B.quadOut(s, at(X, k, wb), at(X, k + 1, wb), inset(X, k + 1, -1), inset(X, k, -1), X[k][2], X[k][3], 1);
+      B.quadOut(s, at(I, k, wb, _q0), at(I, k + 1, wb, _q1), inset(I, k + 1, 1, _q2), inset(I, k, 1, _q3), -I[k * 4 + 2], -I[k * 4 + 3], 1);
+      B.quadOut(s, at(X, k, wb, _q0), at(X, k + 1, wb, _q1), inset(X, k + 1, -1, _q2), inset(X, k, -1, _q3), X[k * 4 + 2], X[k * 4 + 3], 1);
     }
   }
   // joint faces at both ends (normals along ∓ the curve)
   if (frontOnly) return;
-  for (const [k, sg] of [[0, -1], [nSub, 1]]) {
-    const tu = I[k][3] * sg, tv = -I[k][2] * sg;
-    if (!lean) B.quadOut(s, at(I, k, 0), at(X, k, 0), at(X, k, wb), at(I, k, wb), tu, tv, 0);
-    if (bev > 0) B.quadOut(s, at(I, k, wb), at(X, k, wb), inset(X, k, -1), inset(I, k, 1), tu, tv, 1);
+  for (let e = 0; e < 2; e++) {
+    const k = e ? nSub : 0, sg = e ? 1 : -1;
+    const tu = I[k * 4 + 3] * sg, tv = -I[k * 4 + 2] * sg;
+    if (!lean) B.quadOut(s, at(I, k, 0, _q0), at(X, k, 0, _q1), at(X, k, wb, _q2), at(I, k, wb, _q3), tu, tv, 0);
+    if (bev > 0) B.quadOut(s, at(I, k, wb, _q0), at(X, k, wb, _q1), inset(X, k, -1, _q2), inset(I, k, 1, _q3), tu, tv, 1);
   }
 }
 

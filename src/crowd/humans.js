@@ -37,8 +37,8 @@ import { U } from '../core/uniforms.js';
 // by humans/mh/shading.js.
 // Testing: humanstest=1 (humans/test.js; ht_mode=cast lines up the whole cast); propstest=1
 // (humans/props/test.js); humans_tex=2 loads the texture arrays at half resolution; humans_bind=1 shows
-// the bind pose; humans_dbg=1|2|3|4|5|6|7 shows baked occlusion / albedo / beard edge distance / skin decals /
-// regions and inner faces / no skin / hat brim; humans_src=<dir> loads another build of the cast; humans_prof=1
+// the bind pose; humans_dbg=1|2|3|4|5|6|7|8 shows baked occlusion / albedo / beard edge distance / skin decals /
+// regions and inner faces / no skin / hat brim / hair fade and strand direction; humans_src=<dir> loads another build of the cast; humans_prof=1
 // times the figure draws on the GPU (humans.batch.profile(): ms per frame, view and shadow passes).
 // stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms.
 

@@ -261,7 +261,7 @@ export function buildParts(char) {
   // ---- backpack: a rounded pack on the upper back, two shoulder straps
   {
     const b = new PartBuilder(), bf = new PartBuilder();
-    const pw = 0.29 * k, ph = 0.37 * k, pd = 0.13 * k;
+    const pw = 0.29 * k, ph = 0.38 * k, pd = 0.15 * k;
     const topY = shR.y - 0.02 * k, cy = topY - ph / 2;
     // the back's profile over the pack's height (furthest-back point across its width), then the
     // pack's front face as the tilted line resting on it (top back on the shoulder blades)
@@ -289,7 +289,10 @@ export function buildParts(char) {
     const M = new THREE.Matrix4().makeRotationX(tilt).setPosition(0, cy - pd / 2 * Math.sin(tilt), best.z0 + 0.008 + pd / 2 * Math.cos(tilt));
     const zBack = best.z0;
     out.fit = { tilt, z0: best.z0, prof };
-    b.geometry(roundBox(pw, ph, pd, 0.04 * k, 4, 0.16, 0.08), M, [[BONE.spine2, 1]], REGION.bag);
+    // (a soft pack: well rounded, its load bulging the back panel, the top narrower; a flap over the top)
+    b.geometry(roundBox(pw, ph, pd, 0.055 * k, 5, 0.26, 0.12), M, [[BONE.spine2, 1]], REGION.bag);
+    b.geometry(roundBox(pw * 0.86, ph * 0.3, pd * 0.32, 0.03 * k, 3, 0.15, 0.05),
+      M.clone().multiply(new THREE.Matrix4().makeTranslation(0, ph * 0.36, pd * 0.28)), [[BONE.spine2, 1]], REGION.bag);
     // front pocket
     b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.35, 0.025 * k, 3, 0.2), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.22, pd / 2 + pd * 0.12)),
       [[BONE.spine2, 1]], REGION.bag);
@@ -329,7 +332,7 @@ export function buildParts(char) {
         sn.push(nrm);
       }
       tension(sp, sn);
-      b.ribbon(sp, sn, 0.045 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.004);
+      b.ribbon(sp, sn, 0.05 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.008);
     }
     out.backpack = b.build();
     out.backpackFar = bf.build();
@@ -340,7 +343,7 @@ export function buildParts(char) {
     const b = new PartBuilder(), bf = new PartBuilder();
     const bw = 0.25 * k, bh = 0.19 * k, bd = 0.075 * k;
     const hipW = Math.max(hips[1], waist[1]);
-    const yaw = 0.45;                                   // turned towards the back
+    const yaw = 0.5;                                    // turned towards the back, behind the arm's swing
     const by = hips[0] + 0.01 * k;
     // against the hip: the clothed surface along the bag's outward direction (left and back)
     const dirB = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
@@ -350,9 +353,10 @@ export function buildParts(char) {
       if (q && (!side || q.dot(dirB) > side.dot(dirB))) side = q.setY(by);
     }
     if (!side) side = new THREE.Vector3(-hipW, by, 0.03);
-    const ctr = side.clone().addScaledVector(dirB, bd * 0.5 + 0.006);
+    const ctr = side.clone().addScaledVector(dirB, bd * 0.45 + 0.004);
     const bx = ctr.x, bz = ctr.z;
-    const M = new THREE.Matrix4().makeRotationY(-yaw).setPosition(bx, by, bz);
+    // (the bag's thin axis along dirB: its back against the hip, its face turned out)
+    const M = new THREE.Matrix4().makeRotationY(yaw).setPosition(bx, by, bz);
     const hipSkin = [[BONE.pelvis, 0.7], [BONE.spine1, 0.3]];
     b.geometry(roundBox(bd, bh, bw, 0.02 * k, 3, 0.14, 0.06), M, hipSkin, REGION.bag);
     // flap
@@ -393,7 +397,7 @@ export function buildParts(char) {
       }
     }
     tension(sp, sn);
-    b.ribbon(sp, sn, 0.028 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.0045);
+    b.ribbon(sp, sn, 0.032 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.005);
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
   }

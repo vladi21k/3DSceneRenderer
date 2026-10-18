@@ -194,16 +194,17 @@ function block(B, s, fs, ua, ub, vb, vt, e0, e1, h) {
       P.push(cols[o + 2] + (cols[o] - cols[o + 2]) * t, rows[r], cols[o + 3] + (cols[o + 1] - cols[o + 3]) * t, 0, 0, 0);
     }
   }
-  // vertex normals: area-weighted sum of the adjacent quads' normals
+  // vertex normals: area-weighted sum of the adjacent quads' normals, each from the cross
+  // product of its diagonals (robust where the feet of a wrapped arris coincide)
   for (let r = 0; r < NR - 1; r++) {
     for (let k = 0; k < nc - 1; k++) {
-      const a = (r * nc + k) * 6, b = a + 6, d = a + nc * 6;
-      const ax = P[b] - P[a], ay = P[b + 1] - P[a + 1], az = P[b + 2] - P[a + 2];
-      const bx = P[d] - P[a], by = P[d + 1] - P[a + 1], bz = P[d + 2] - P[a + 2];
-      // (u, v, w) right-handed: along × up faces out of the wall
+      const a = (r * nc + k) * 6, b = a + 6, d = a + nc * 6, c = d + 6;
+      const ax = P[c] - P[a], ay = P[c + 1] - P[a + 1], az = P[c + 2] - P[a + 2];
+      const bx = P[d] - P[b], by = P[d + 1] - P[b + 1], bz = P[d + 2] - P[b + 2];
+      // (u, v, w) right-handed: (c − a) × (d − b) faces out of the wall, as along × up
       const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
       P[a + 3] += nx; P[a + 4] += ny; P[a + 5] += nz; P[b + 3] += nx; P[b + 4] += ny; P[b + 5] += nz;
-      P[d + 3] += nx; P[d + 4] += ny; P[d + 5] += nz; P[d + 9] += nx; P[d + 10] += ny; P[d + 11] += nz;
+      P[d + 3] += nx; P[d + 4] += ny; P[d + 5] += nz; P[c + 3] += nx; P[c + 4] += ny; P[c + 5] += nz;
     }
   }
   B.shade = (u, v, w, nu, nv, nw, out) => {
@@ -219,15 +220,19 @@ function block(B, s, fs, ua, ub, vb, vt, e0, e1, h) {
     for (let k = 0; k < nc; k++) {
       const q = (r * nc + k) * 6;
       let nx = P[q + 3], ny = P[q + 4], nz = P[q + 5];
-      const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-      nx /= l; ny /= l; nz /= l;
+      const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (l > 1e-9) { nx /= l; ny /= l; nz /= l; } else { nx = 0; ny = 0; nz = 1; }   // (never a zero normal)
       B.v(s, P[q], P[q + 1], P[q + 2], nx, ny, nz, tu[k], P[q + 1]);
     }
   }
+  // (where the feet of a wrapped arris coincide, the quad is one triangle)
+  const same = (i, j) => P[i * 6] === P[j * 6] && P[i * 6 + 2] === P[j * 6 + 2];
   for (let r = 0; r < NR - 1; r++) {
     for (let k = 0; k < nc - 1; k++) {
-      const a = base + r * nc + k;
-      B.quadIdx(s, a, a + 1, a + 1 + nc, a + nc);
+      const i = r * nc + k, a = base + i;
+      if (same(i, i + 1)) B.tri(s, a, a + 1 + nc, a + nc);
+      else if (same(i + nc, i + nc + 1)) B.tri(s, a, a + 1, a + 1 + nc);
+      else B.quadIdx(s, a, a + 1, a + 1 + nc, a + nc);
     }
   }
 }

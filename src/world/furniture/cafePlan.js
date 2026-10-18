@@ -1,4 +1,5 @@
 import { RNG } from '../../core/rng.js';
+import { UMB_EDGE_H, UMB_RISE } from './umbrella.js';
 
 // Café terrace planning: turns the layout's café (tables, chairs, umbrellas) into
 // collision-free placements. Works in a local metric frame per café: x = metres along the
@@ -7,7 +8,8 @@ import { RNG } from '../../core/rng.js';
 //      moves around their own table, with a casual random turn (up to ~25°) away from the
 //      neighbour; about one in five is pulled out from the table and turned further
 //   2. umbrellas: each canopy keeps clear of its neighbours (no interpenetrating fabric),
-//      of the facade and of the street-tree crowns; the weighted base gets a footprint
+//      of the facade and of the street-tree crowns (as vegetation draws them: a canopy may
+//      stand under a crown whose lowest leaves clear its apex); the weighted base gets a footprint
 //      that clears every chair and table foot, or the pole runs through a table's centre
 //      hole; sizes step down when nothing fits
 //   3. menu board: a free spot along the walkway edge
@@ -62,8 +64,9 @@ function chairRect(ch, f) {
 }
 
 /** Collision-free café plan. Mutates nothing in the layout except chair poses (see placeChairs).
- *  layout (optional): facade line and street trees the canopies keep clear of. */
-export function planCafe(cafe, route, seed, baseType, layout = null) {
+ *  layout (optional): facade line and street trees the canopies keep clear of. crownOf
+ *  (optional): layout tree -> {r (m), base (lowest leaves, m)} of the crown as drawn. */
+export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = null) {
   const sMid = (cafe.s0 + cafe.s1) / 2;
   const dMid = (cafe.dIn + cafe.dOut) / 2;
   const k = route.offsetScale(sMid, dMid);
@@ -182,7 +185,11 @@ export function planCafe(cafe, route, seed, baseType, layout = null) {
   if (layout) {
     const c0 = layout.chunkIndex(cafe.s0 - 6), c1 = layout.chunkIndex(cafe.s1 + 6);
     for (let c = c0; c <= c1; c++) {
-      for (const t of layout.inChunk('trees', c)) if (t.side === cafe.side) crowns.push({ x: X(t.s), y: t.d, r: (t.crown || 3) * 0.5 * CROWN_K });
+      for (const t of layout.inChunk('trees', c)) {
+        if (t.side !== cafe.side) continue;
+        const cw = crownOf ? crownOf(t) : null;
+        crowns.push(cw ? { x: X(t.s), y: t.d, r: cw.r * CROWN_K, base: cw.base } : { x: X(t.s), y: t.d, r: (t.crown || 3) * 0.5 * CROWN_K, base: 0 });
+      }
     }
   }
   const canopyFree = (x, y, half) => {
@@ -190,9 +197,16 @@ export function planCafe(cafe, route, seed, baseType, layout = null) {
       const hw = Math.min(layout.halfWidth(S(x - half), cafe.side), layout.halfWidth(S(x), cafe.side), layout.halfWidth(S(x + half), cafe.side));
       if (Math.abs(y) + half > hw - FACADE_GAP) return false;
     }
+    const a = half - VALANCE, rise = UMB_RISE * a;
     for (const c of crowns) {
       const ex = Math.max(0, Math.abs(c.x - x) - half), ey = Math.max(0, Math.abs(c.y - y) - half);
-      if (ex * ex + ey * ey < c.r * c.r) return false;
+      if (ex * ex + ey * ey >= c.r * c.r) continue;
+      // footprints overlap: the canopy may still pass under the crown. Its highest point
+      // inside the crown's disc is the one nearest the pole (the canopy falls off linearly
+      // from the apex to the hem)
+      const rho = Math.max(0, Math.hypot(c.x - x, c.y - y) - c.r);
+      const top = UMB_EDGE_H + rise * (1 - Math.min(1, rho / a));
+      if (top + 0.12 > c.base) return false;
     }
     return true;
   };

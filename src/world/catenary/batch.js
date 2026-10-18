@@ -311,6 +311,7 @@ export class CatBatches {
     this.app = app;
     this.batches = [];
     this.records = new Set();
+    this.recList = [];         // the same records as an array (iterated every frame: no iterator garbage)
     this._frame = -1;
     this.root = new THREE.Group();
     this.root.name = 'catenary:batches';
@@ -338,6 +339,7 @@ export class CatBatches {
     const rec = { marker, entries: [], visible: false, far, near: false };
     marker.userData.catRecord = rec;
     this.records.add(rec);
+    this.recList.push(rec);
     return rec;
   }
 
@@ -363,6 +365,8 @@ export class CatBatches {
     for (const e of rec.entries) e.batch.remove(e.id);
     rec.entries.length = 0;
     this.records.delete(rec);
+    const L = this.recList, i = L.indexOf(rec);
+    if (i >= 0) { L[i] = L[L.length - 1]; L.pop(); }
   }
 
   _shows(rec, e) { return rec.visible && (e.mode === ALWAYS || (e.mode === NEAR) === rec.near); }
@@ -379,7 +383,8 @@ export class CatBatches {
   updateLevels(eye, dist) {
     const d2s = this._d2s && this._d2s.length === dist.length ? this._d2s : (this._d2s = new Float64Array(dist.length));
     for (let k = 0; k < dist.length; k++) d2s[k] = dist[k] * dist[k];
-    for (const rec of this.records) {
+    for (let ri = 0, RL = this.recList; ri < RL.length; ri++) {
+      const rec = RL[ri];
       if (rec.far) continue;
       for (const e of rec.entries) {
         if (e.lv < 0) continue;
@@ -396,7 +401,8 @@ export class CatBatches {
     const frame = this.app.frame;
     if (frame === this._frame) return;
     this._frame = frame;
-    for (const rec of this.records) {
+    for (let ri = 0, RL = this.recList; ri < RL.length; ri++) {
+      const rec = RL[ri];
       const g = rec.marker.parent;
       const vis = !!(g && g.visible && g.parent);
       if (vis === rec.visible) continue;

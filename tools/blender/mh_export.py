@@ -50,8 +50,8 @@ HEM_RANGE = 0.045
 HEM_LODS = (0, 1)
 # far LODs: skin within GD_RANGE of a garment is pulled in under it by up to SHRINK[l] (m), and the
 # garments swell by GROW[l] (simplified layers would otherwise cut through each other in patches)
-SHRINK = (0.0, 0.0015, 0.007, 0.012)
-GROW = (0.0, 0.001, 0.004, 0.007)
+SHRINK = (0.0, 0.0015, 0.009, 0.014)
+GROW = (0.0, 0.001, 0.007, 0.011)
 GD_RANGE = 0.045
 # (beards: the runtime grows shells from the base, drawn one-sided)
 DOUBLE = ('hair', 'lashes')
@@ -169,6 +169,10 @@ def main():
         sc = SIZE_SCALE.get(meta['ageClass'], 1.0)
         parts = []
         suit_tris = sum(p['tris'] for p in meta['parts'] if p['kind'] == 'suit')
+        # every garment's triangles (for the cover test: a bottom's waistband under a top's hem, a placket's
+        # under-flap)
+        cover_src = [(z[q['key'] + '_co'], z[q['key'] + '_nr'], z[q['key'] + '_idx'], z[q['key'] + '_reg'], q['key'])
+                     for q in meta['parts'] if q['kind'] == 'suit']
         for p in meta['parts']:
             k = p['key']
             d = {a: z[k + '_' + a] for a in ('co', 'nr', 'uv', 'w', 'idx', 'reg', 'ao')}
@@ -196,7 +200,7 @@ def main():
             fn = jid + '.bin'
             idx1 = None
             if p['kind'] == 'suit':
-                cov = covered_layers(d['co'], d['nr'], d['idx'])
+                cov = covered_layers(d['co'], d['nr'], d['idx'], d['reg'], k, cover_src)
                 if cov.any():
                     idx1 = d['idx'][~cov]
                     log(cid, f'{p.get("suit")}: {int(cov.sum())} triangles under another layer left out of LOD 1+')
@@ -450,45 +454,65 @@ def smooth_attrs(co, ao, nr, R):
     return sao, snr.astype(np.float32)
 
 
-def covered_layers(co, nr, idx, reach=0.012):
-    """Triangles of a garment lying under another layer of the same garment (the under-flap of a placket,
-    under-collars, pocket linings): a ray out along the face normal meets a triangle facing the same way
-    within `reach`."""
+def covered_layers(co, nr, idx, reg, key, src, reach=0.012, reach_other=0.03):
+    """Triangles of a garment lying under another layer of cloth (the under-flap of a placket,
+    under-collars, a bottom's waistband under a top's hem): a ray out along the face normal meets a
+    garment triangle facing the same way within `reach` (`reach_other` when the covering cloth is another
+    region: a top hangs loose over the waistband). src = every garment of the character
+    (co, nr, idx, reg, key)."""
     from scipy.spatial import cKDTree
-    t = idx.reshape(-1, 3)
-    P = co[t].astype(np.float64)
-    fn = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
-    vn = nr[t].sum(1)
-    fn = np.where(((fn * vn).sum(1) < 0)[:, None], -fn, fn)
-    fn /= np.maximum(1e-12, np.linalg.norm(fn, axis=1, keepdims=True))
-    c = P.mean(1)
-    tree = cKDTree(c)
+    def tri_data(c, n, ix):
+        t = ix.reshape(-1, 3)
+        P = c[t].astype(np.float64)
+        fn = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+        vn = n[t].sum(1)
+        fn = np.where(((fn * vn).sum(1) < 0)[:, None], -fn, fn)
+        fn /= np.maximum(1e-12, np.linalg.norm(fn, axis=1, keepdims=True))
+        return t, P, fn
+    t, P, fn = tri_data(co, nr, idx)
+    treg = reg[t[:, 0]]
+    # the covering candidates: all garments (own triangles flagged)
+    AP, AF, AR, AOWN = [], [], [], []
+    for (c2, n2, i2, r2, k2) in src:
+        t2, P2, f2 = tri_data(c2, n2, i2)
+        AP.append(P2); AF.append(f2); AR.append(r2[t2[:, 0]]); AOWN.append(np.full(len(t2), k2 == key))
+    AP = np.concatenate(AP); AF = np.concatenate(AF); AR = np.concatenate(AR); AOWN = np.concatenate(AOWN)
+    own_index = np.where(AOWN)[0]
+    ac = AP.mean(1)
+    tree = cKDTree(ac)
+    e1 = AP[:, 1] - AP[:, 0]
+    e2 = AP[:, 2] - AP[:, 0]
     out = np.zeros(len(t), bool)
-    e1 = P[:, 1] - P[:, 0]
-    e2 = P[:, 2] - P[:, 0]
-    for i in range(len(t)):
-        o = c[i] + fn[i] * 0.0006
-        dvec = fn[i]
-        cand = tree.query_ball_point(o + dvec * reach * 0.5, reach * 0.5 + 0.03)
-        if len(cand) < 2:
-            continue
-        cand = np.array([j for j in cand if j != i])
-        cand = cand[(fn[cand] @ dvec) > 0.4]
-        if not len(cand):
-            continue
-        # Moller-Trumbore against the candidates
+    c = P.mean(1)
+    R = max(reach, reach_other)
+    def hits(o, dvec, cand, lim):
         pv = np.cross(dvec, e2[cand])
         det = (e1[cand] * pv).sum(1)
         ok = np.abs(det) > 1e-12
         inv = np.where(ok, 1.0 / np.where(ok, det, 1), 0)
-        tv = o - P[cand, 0]
+        tv = o - AP[cand, 0]
         u = (tv * pv).sum(1) * inv
         qv = np.cross(tv, e1[cand])
         v = (qv @ dvec) * inv
         tt = (e2[cand] * qv).sum(1) * inv
-        hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (tt > 0.0002) & (tt < reach)
-        if hit.any():
-            out[i] = True
+        return (ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (tt > 0.0002) & (tt < lim)).any()
+    for i in range(len(t)):
+        dvec = fn[i]
+        cand = np.array(tree.query_ball_point(c[i] + dvec * R * 0.5, R * 0.5 + 0.04))
+        if len(cand) < 2:
+            continue
+        cand = cand[cand != own_index[i]]
+        cand = cand[(AF[cand] @ dvec) > 0.4]
+        if not len(cand):
+            continue
+        lim = np.where(AOWN[cand] & (AR[cand] == treg[i]), reach, reach_other)
+        # covered all over: from its centre and from near each corner
+        ok = True
+        for o in (c[i], *(0.8 * P[i] + 0.2 * c[i])):
+            if not hits(o + dvec * 0.0006, dvec, cand, lim):
+                ok = False
+                break
+        out[i] = ok
     return out
 
 

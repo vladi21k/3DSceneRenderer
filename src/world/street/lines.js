@@ -199,13 +199,19 @@ const RAIL_FRAG = /* glsl */`
   lnD = dSeal * wSeal + aOx * ( 0.4 * wCorner ) + aShoulder * ( 0.25 * wShoulder ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
   vec3 fOx = mix( f04, aOx, 0.6 ), fDust = mix( f04, aDust, 0.4 ) * 0.97;
   vec3 fSteel = fOx * wCorner + aBand * wBand + mix( f04, aShoulder, 0.75 ) * wShoulder + aGauge * ( 0.95 * wGauge ) + fDust * wLip;
+  // the dust film over the steel and the steel's direct-light lobe, as on the 3D rail
+  // (shading.js SHEEN: uStDust, uStDirK)
+  float wSt = wCorner + wBand + wShoulder + wGauge + wLip;
+  lnD += uStDust.rgb * ( uStDust.w * wSt );
+  fSteel = fSteel * ( 1.0 - uStDust.w ) + f04 * ( uStDust.w * wSt );
   vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.15 * wGroove );
   lnF = fSteel + fOther;
   lnF90 = 1.0 - 0.85 * wGroove;               // the slot's walls hide its grazing sheen
-  // reflection strength relative to the direct specular (steel at uStSheen.y, as the
-  // 3D rail.head; see shading.js patchRailSheen)
+  // reflection strength (steel at uStSheen.y, as the 3D rail.head; see shading.js
+  // patchRailSheen) and direct-light specular (steel at uStDirK) of the mix
   float fs = dot( fSteel, vec3( 0.333 ) ), fo = dot( fOther, vec3( 0.333 ) );
   lnEnvK = ( fs * uStSheen.y + fo ) / max( fs + fo, 1e-5 );
+  lnDirK = ( fs * uStDirK + fo ) / max( fs + fo, 1e-5 );
   lnPhys = 1.0;
   lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.42 + 0.1 * wear ) + wShoulder * 0.55 + wGauge * 0.4 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
   diffuseColor.rgb = lnD;
@@ -437,7 +443,7 @@ const LINE_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
 // rails: physically averaged bands (diffuse contribution, F0, reflection strength)
 vec3 lnD = vec3( 0.0 ), lnF = vec3( 0.04 );
-float lnF90 = 1.0, lnEnvK = 1.0, lnPhys = 0.0;
+float lnF90 = 1.0, lnEnvK = 1.0, lnDirK = 1.0, lnPhys = 0.0;
 float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
 float wu = max( length( vec2( dFdx( vLine.y ), dFdy( vLine.y ) ) ), 1e-5 );
 float fpw = max( length( fwidth( vLineWorld.xz ) ), 1e-4 );     // metres per pixel
@@ -473,9 +479,10 @@ if ( lnPhys > 0.5 ) {
   material.specularColorBlended = lnF;
   material.specularF90 = lnF90;
 }`)
+      .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-4';
+  m.customProgramCacheKey = () => 'street-line-6';
   return patchRailSheen(m, 'line');
 }
 

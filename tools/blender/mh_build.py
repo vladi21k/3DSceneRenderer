@@ -377,7 +377,8 @@ def build_one(cid, save_blend=False):
                 short = b and (b['suit'] in ('female_elegantsuit01', 'female_casualsuit02') or b.get('cut') == 'leg')
                 long_ = b and not short and not (b.get('cut') == 'skirt')
                 # (socks under long trousers and leggings would poke through the hem at the ankle)
-                socks = 'none' if (short and spec['sex'] == 'f') or long_ or CASTM.age_class(spec) == 'toddler' else 'keep'
+                # (the cast's sock tubes end in a torn, notched top edge: bare ankles in summer shoes instead)
+                socks = 'none'
             if socks == 'none':
                 keep &= region != CASTM.REGIONS['socks']
         elif kind == 'suit':
@@ -467,6 +468,7 @@ def build_one(cid, save_blend=False):
     from mathutils.bvhtree import BVHTree
     gv, gp, sp, goff = [], [], [], 0
     gface = []          # per garment face (gp): arm share, side (+1 the character's left)
+    gsuit = []          # per garment face (gp): a suit's (not a shoe's or hat's)
     bnd = []            # open boundary vertices of the kept garments (hems, cuffs, necklines)
     for op in out_parts:
         if op['kind'] in ('suit', 'shoes', 'hat'):
@@ -484,6 +486,7 @@ def build_one(cid, save_blend=False):
                 else:
                     gp.append(f)
                     gface.append((float(arm_v[vs].mean()), 1.0 if d['co'][vs, 0].mean() > 0 else -1.0))
+                    gsuit.append(op['kind'] == 'suit')
                 for kk in range(len(vs)):
                     e = (min(vs[kk], vs[(kk + 1) % len(vs)]), max(vs[kk], vs[(kk + 1) % len(vs)]))
                     ecount[e] = ecount.get(e, 0) + 1
@@ -509,8 +512,12 @@ def build_one(cid, save_blend=False):
                             stack.append(w)
                 cs = set(comp)
                 per = sum(np.linalg.norm(d['co'][a_] - d['co'][b_]) for a_, b_ in bedges if a_ in cs)
-                if per < 0.8 * kscale and margin_ok:
-                    bnd.append(d['co'][comp])
+                lc = d['co'][comp]
+                # (and a top's hem / a bottom's waistband round the waist: level loops below the chest;
+                # without skin under them a gap between the two shows the inside of the garment)
+                waist = per < 1.5 * kscale and np.ptp(lc[:, 2]) < 0.09 * kscale and lc[:, 2].mean() < float(J['spine2'][2])
+                if (per < 0.8 * kscale or waist) and margin_ok:
+                    bnd.append(lc)
             goff += len(d['co'])
     GV = [Vector(v) for v in np.concatenate(gv).astype(np.float64)]
     gbvh = BVHTree.FromPolygons(GV, gp, epsilon=0.0)
@@ -593,12 +600,14 @@ def build_one(cid, save_blend=False):
             push[i] = max(0.0, h[3] - 0.002) + 0.004
     # skin under a garment that stays (within the hem margin, a raised arm or a stride opens it): the far
     # LODs leave it out (mh_export.py), their simplified garments would show it through in patches
+    # (any skin whose normal meets a suit's cloth: also skin outside the garments' delete groups, e.g. the
+    # shoulders under a tee, which only sinks a few mm and would poke through a simplified sleeve)
     under = deleted.copy()
-    for i in np.where(del_any0 & ~deleted)[0]:
+    for i in np.where(in_body & ~deleted)[0]:
         n = Vector(body['nr'][i].tolist())
         o = Vector(body['co'][i].tolist())
         h = gbvh.ray_cast(o - n * 0.002, n, MAXD)
-        if fits(i, h) and h[0] is not None:
+        if h[0] is not None and h[2] is not None and h[2] < len(gsuit) and gsuit[h[2]]:
             under[i] = True
     body['under'] = under
     # feet inside the shoes go (a heel or toe poking through the sole shows as a skin patch under it)

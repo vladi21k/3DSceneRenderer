@@ -16,12 +16,18 @@ import { MORTAR_ALBEDO } from './constants.js';
  *  flangeway a dark slot. */
 export const SHEEN = {
   uStSheen: { value: new THREE.Vector2(0.7, 1.45) },
-  // the film of dust over the head (brake dust, grit and paving dust worked into it by
-  // the wheels): rgb = its albedo (linear), w = the share of the head it covers. Under a
-  // high sun a clean polished head would mirror the sun's lobe at 1.4-1.7x the setts
-  // beside it; in the photographs a sunlit head reads 1.1-1.3x them, a light grey
-  // rather than a chrome line, while in shade the sky-slot sheen still lifts it.
-  uStDust: { value: new THREE.Vector4(0.15, 0.145, 0.14, 0.45) },
+  // The film of dust over the steel (brake dust, grit and paving dust worked into it by
+  // the wheels): rgb = its albedo (linear), w = the share of the steel it covers.
+  uStDust: { value: new THREE.Vector4(0.15, 0.145, 0.14, 0.3) },
+  // Direct-light specular of the steel relative to an isotropic lobe of the same mean
+  // roughness. The lengthwise polish is smooth along the rail and rough across it, so a
+  // light source reaches the eye only from near the cone of reflections round the rail
+  // axis (the sky slot down the street, a low sun ahead); the sun overhead or to the side
+  // of a street view lies far off that cone. With an isotropic lobe a sunlit head
+  // mirrored the sun at 1.4-1.7x the setts beside it, a chrome line; in the photographs a
+  // sunlit head reads 1.1-1.3x them, light grey, while in shade the sky-slot sheen
+  // (indirect, unchanged) still lifts it.
+  uStDirK: { value: 0.6 },
 };
 /** envMapIntensity of the 3D rail.head variants (the resolved head; its texture band is
  *  wider and its normals crowned, so it needs less than the overlay's pre-filtered
@@ -81,23 +87,25 @@ export function patchRailSheen(m, mode = 'uv') {
   m.onBeforeCompile = function (sh, r) {
     if (prev) prev.call(this, sh, r);
     sh.uniforms.uStSheen = SHEEN.uStSheen;
+    sh.uniforms.uStDust = SHEEN.uStDust;
+    sh.uniforms.uStDirK = SHEEN.uStDirK;
     let along;
     if (mode === 'uv') {
-      // the dust film (see SHEEN.uStDust): a dull dielectric over part of the steel
-      sh.uniforms.uStDust = SHEEN.uStDust;
+      // the dust film (see SHEEN.uStDust): a dull dielectric over part of the steel; the
+      // steel's direct-light lobe (SHEEN.uStDirK). (The line overlay folds both into its
+      // own per-band sums, lines.js.)
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform vec4 uStDust;')
         .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
 {
-  float stDc = uStDust.w;
+  float stDc = uStDust.w * material.metalness;
   vec3 stDa = uStDust.rgb;
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
     stDa *= vColor.g;      // cavity AO of the swept profile
   #endif
   material.diffuseContribution = mix( material.diffuseContribution, stDa, stDc );
   material.specularColorBlended = mix( material.specularColorBlended, vec3( 0.04 ), stDc );
-  material.roughness = mix( material.roughness, 0.85, stDc );
-}`);
+}`)
+        .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= mix( 1.0, uStDirK, material.metalness );');
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vStUv;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStUv = uv;');
@@ -116,10 +124,10 @@ export function patchRailSheen(m, mode = 'uv') {
   float stOk = 1.0;`;
     }
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;')
+      .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;\nuniform vec4 uStDust;\nuniform float uStDirK;')
       .replace('#include <lights_fragment_maps>', SHEEN_APPLY(along));
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen2-${mode}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen3-${mode}`; };
   m.needsUpdate = true;
   return m;
 }

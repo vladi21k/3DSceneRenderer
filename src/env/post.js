@@ -75,7 +75,7 @@ const TONE = {
   skyChroma: 0.95, skySat: [1.2, 1.05],
   // glow skirt around sources far above white, from sunset on (lantern globes, lit glass):
   // threshold and knee in exposed units, strength (time of day, strength)
-  glowThresh: 4, glowKnee: 16, glow: [[0.74, 0], [0.8, 0.22], [0.9, 0.16], [1.0, 0.12]],
+  glowThresh: 4, glowKnee: 12, glow: [[0.74, 0], [0.8, 0.2], [0.86, 0.12], [0.95, 0.03], [1.0, 0]], glowScatter: 0.4,
 };
 
 // temporal AA: weight of the new frame, variance clip width, jitter sequence length and
@@ -541,11 +541,16 @@ const post = {
       // twilight sky and the limestone it lights never turn khaki or olive; a little lift
       // keeps twilit grey paving from going mauve), and a neutral surface under the
       // illuminant keeps G / mean(R, B) within [0.97, 1.0]
+      // Exception: around sunset the sky's ozone (Chappuis) absorption leaves the twilight
+      // illuminant some 10-15% short of green against the daylight locus, which would turn
+      // the shaded grey street mauve: from t 0.72 to 0.9 the green gain may rise to 1.12x
+      // (the correction kt asks for), easing back towards the lamp-lit night
       const gm = Math.sqrt(wb.x * wb.z);
-      wb.y = THREE.MathUtils.clamp(wb.y, 0.99 * gm, 1.01 * gm);
+      const gCap = lerp(1.03, 1.12, ss(t, 0.7, 0.78) * (1 - ss(t, 0.9, 1.0)));
+      wb.y = THREE.MathUtils.clamp(wb.y, 0.99 * gm, Math.max(1.01, gCap - 0.02) * gm);
       const gr = (ill.y * wb.y) / Math.max(0.5 * (ill.x * wb.x + ill.z * wb.z), 1e-12);
       if (gr > 1.0) wb.y = Math.max(wb.y / gr, 0.99 * gm);
-      else if (gr < 0.97) wb.y = Math.min(wb.y * 0.97 / gr, 1.03 * gm);
+      else if (gr < 0.97) wb.y = Math.min(wb.y * 0.97 / gr, gCap * gm);
       // and once the lamps light the street their pools stay amber, never yellow-green:
       // the green gain stays within 12% of the red one
       const lampW = ss(t, 0.84, 0.95);
@@ -959,7 +964,7 @@ const post = {
         this._draw(this.down, G[i]);
       }
       // a tighter skirt than the bloom: more of the finer levels
-      uu.uScatter.value = 0.5;
+      uu.uScatter.value = TONE.glowScatter;
       let gl = G[2];
       for (let i = 1; i >= 0; i--) {
         uu.tLow.value = gl.texture;

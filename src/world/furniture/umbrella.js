@@ -11,6 +11,7 @@ import { lathe, tube, bar, rbox, xf, merge, makeGeo } from './kit.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 export const UMB_EDGE_H = 2.38;          // hem height of the canopy
+export const UMB_RISE = 0.37;            // apex rise over the hem, in half sizes (about 20°)
 const VALANCE_H = 0.22;
 const R_VENT = 0.13;                     // top opening of the canopy (under the hood)
 const CAT_C = 2.2;
@@ -18,9 +19,9 @@ const cat = (t) => 1 - (Math.cosh(CAT_C * (2 * t - 1)) - 1) / (Math.cosh(CAT_C) 
 
 /** Canopy shape for a size: rib tips and the surface function surf(k, r, t). */
 export function canopyShape(size) {
-  // pitch about 20° (rise 0.37 of the half size): from the 2.75 m cab eye the large canopies
-  // read as low pyramids, not edge-on slivers
-  const a = size / 2, rise = 0.37 * a, apex = UMB_EDGE_H + rise;
+  // pitch about 20° (UMB_RISE): from the 2.75 m cab eye the large canopies read as low
+  // pyramids, not edge-on slivers
+  const a = size / 2, rise = UMB_RISE * a, apex = UMB_EDGE_H + rise;
   const tips = [];
   for (let k = 0; k < 8; k++) {
     const ang = (k * Math.PI) / 4, c = Math.cos(ang), s = Math.sin(ang), m = Math.max(Math.abs(c), Math.abs(s));

@@ -393,6 +393,7 @@ export class VegetationPools {
     this.app = app;
     this.pools = [];
     this.records = new Set();
+    this.recList = [];         // the same records as an array (iterated every frame: no iterator garbage)
     this.fading = new Set();
     this._frame = -1;
     this.forceLod = null;
@@ -426,6 +427,7 @@ export class VegetationPools {
     const rec = { marker, entries: [], visible: false };
     marker.userData.vegRecord = rec;
     this.records.add(rec);
+    this.recList.push(rec);
     return rec;
   }
 
@@ -448,6 +450,8 @@ export class VegetationPools {
     }
     rec.entries.length = 0;
     this.records.delete(rec);
+    const L = this.recList, i = L.indexOf(rec);
+    if (i >= 0) { L[i] = L[L.length - 1]; L.pop(); }
   }
 
   _endFade(e) {
@@ -466,7 +470,8 @@ export class VegetationPools {
     const cam = app.camera, cp = cam.position;
     const k = (app.canvas.height || 1080) / (2 * Math.tan((cam.fov * Math.PI) / 360) * (cam.zoom || 1));
     const forced = this.forceLod;
-    for (const rec of this.records) {
+    for (let ri = 0, RL = this.recList; ri < RL.length; ri++) {
+      const rec = RL[ri];
       const g = rec.marker.parent;
       const vis = !!(g && g.visible && g.parent);
       if (vis !== rec.visible) {

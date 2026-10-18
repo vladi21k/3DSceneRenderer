@@ -127,7 +127,7 @@ export function pitchedRoof(B, sinks, o, q) {
     const ax = P[1][0] - P[0][0], ay = P[1][1] - P[0][1], az = P[1][2] - P[0][2];
     const bx = P[P.length - 1][0] - P[0][0], by = P[P.length - 1][1] - P[0][1], bz = P[P.length - 1][2] - P[0][2];
     let nu = ay * bz - az * by, nv = az * bx - ax * bz, nw = ax * by - ay * bx;
-    const l = Math.hypot(nu, nv, nw) || 1; nu /= l; nv /= l; nw /= l;
+    const l = Math.sqrt(nu * nu + nv * nv + nw * nw) || 1; nu /= l; nv /= l; nw /= l;
     let order = P;
     if (nv < 0) { order = P.slice().reverse(); nu = -nu; nv = -nv; nw = -nw; }
     s.reserve(order.length, (order.length - 2) * 3);
@@ -197,7 +197,7 @@ export function pitchedRoof(B, sinks, o, q) {
 /** Half-round cap along a segment (in local coords) lying on a roof. */
 function roundCap(B, s, a, b, r) {
   const du = b[0] - a[0], dv = b[1] - a[1], dw = b[2] - a[2];
-  const L = Math.hypot(du, dv, dw);
+  const L = Math.sqrt(du * du + dv * dv + dw * dw);
   if (L < 0.05) return;
   const ax = [du / L, dv / L, dw / L];
   // side vector: horizontal, perpendicular to the axis; up vector completes the frame
@@ -403,7 +403,7 @@ export function satelliteDish(B, s, q, rng, elev = 0.75) {
       for (let j = 0; j < nt; j++) {
         const t = (j / nt) * Math.PI * 2, x = r * Math.cos(t), y = r * Math.sin(t);
         const p = pos(x, y, K * r * r + zo);
-        const l = Math.hypot(2 * K * x, 2 * K * y, 1);
+        const l = Math.sqrt(4 * K * K * (x * x + y * y) + 1);
         const n = dir((-2 * K * x * sg) / l, (-2 * K * y * sg) / l, sg / l);
         B.v(s, p[0], p[1], p[2], n[0], n[1], n[2], x, y);
       }

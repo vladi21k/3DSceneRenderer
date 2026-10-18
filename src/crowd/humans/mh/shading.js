@@ -152,6 +152,51 @@ void hSkin(out vec3 P, out vec3 N) {
 #endif
   }
   N = normalize(mat3(m) * nrm);
+  if ((flags & 8) != 0 && D0.z > 0.01) {
+    // a seated skirt: the cloth below the hips lies along the thighs (the front on top of them, held
+    // to their surface, the back sat on), and below the knees it falls straight down to its hem
+    // (in rest space the skirt hangs from the hips; per thigh, weighted by the vertex's thigh weights)
+    float sc = D1.w;
+    vec3 Ps = vec3(0.0), Ns = vec3(0.0);
+    float wsum = 0.0, sdAvg = 0.0;
+    for (int s = 0; s < 2; s++) {
+      float bt = s == 0 ? 14.0 : 18.0;
+      float w = (aBoneI.x == bt ? W.x : 0.0) + (aBoneI.y == bt ? W.y : 0.0) + (aBoneI.z == bt ? W.z : 0.0) + (aBoneI.w == bt ? W.w : 0.0);
+      if (w < 0.005) continue;
+      vec4 h = hLook(row, 18 + s * 2), k = hLook(row, 19 + s * 2);
+      mat4 tb = hBone(brow, bt);
+      vec3 A = (tb * vec4(h.xyz, 1.0)).xyz, B = (tb * vec4(k.xyz, 1.0)).xyz;
+      float Lr = length(k.xyz - h.xyz);
+      float sd = h.y - pos.y;
+      vec3 U = normalize(B - A);
+      vec3 rw = mat3(tb) * vec3(pos.x - h.x, 0.0, pos.z - h.z);
+      float rad = (mix(h.w, k.w, clamp(sd / Lr, 0.0, 1.0)) + 0.014) * sc;
+      float up = rw.y;
+      if (up > rad) rw.y = rad;
+      vec3 P1, N1 = normalize(mat3(tb) * nrm);
+      if (sd < Lr) P1 = A + U * sd * sc + rw;
+      else {
+        // (the offset folds with the leg's bend from the thigh's direction to the vertical)
+        vec3 Dn = vec3(0.0, -1.0, 0.0);
+        vec3 ax = cross(U, Dn);
+        float sa = length(ax), ca = dot(U, Dn);
+        vec3 rf = rw;
+        if (sa > 1e-4) {
+          ax /= sa;
+          rf = rw * ca + cross(ax, rw) * sa + ax * dot(ax, rw) * (1.0 - ca);
+          N1 = N1 * ca + cross(ax, N1) * sa + ax * dot(ax, N1) * (1.0 - ca);
+        }
+        P1 = B + rf + Dn * (sd - Lr) * sc;
+      }
+      Ps += P1 * w; Ns += N1 * w; wsum += w; sdAvg += sd * w;
+    }
+    if (wsum > 0.0) {
+      sdAvg /= wsum;
+      float ws = D0.z * smoothstep(-0.02, 0.07, sdAvg);
+      P = mix(P, Ps / wsum, ws);
+      N = normalize(mix(N, normalize(Ns), ws));
+    }
+  }
   if ((flags & 8) != 0) {
     // skirts: kept outside both thigh capsules (the striding or seated thigh pushes the cloth)
     float sc = D1.w;
@@ -567,10 +612,12 @@ const FRAG_SURFACE = /* glsl */`
   }
   if ((hFlags & 2) != 0 && (hRegion >= 5 && hRegion <= 10 || hRegion == 14 || hRegion == 15)) {
     // the inside of a garment near its hem or cuff: its own cloth, in the shadow of the garment
-    diffuseColor.rgb *= 0.5;
-    hAO *= 0.6;
+    diffuseColor.rgb *= 0.3;
+    hAO *= 0.5;
   }
   if (hRegion == 1 || hRegion == 11 || hRegion == 2) {
+    // (light passes between the strands: the baked occlusion of hair cards is softened)
+    if (hRegion == 1) hAO = 0.45 + 0.55 * hAO;
     hHairM = hRegion == 1 ? 1.0 : 0.6;
     hHairC = diffuseColor.rgb;
     // highlights only on the strands the texture draws (the gaps between them stay dull)
@@ -594,6 +641,9 @@ const FRAG_SURFACE = /* glsl */`
   hEmit = 0.05 * vec3(hBrimBelow > 0.0 && hBrimOver > 0.0 ? smoothstep(-0.012, 0.012, hBrimOver - hBrimBelow) : 0.0, clamp(hBrimBelow * 10.0, 0.0, 1.0), 0.0); diffuseColor.rgb = vec3(0.0);
 #elif HUMANS_DBG == 6
   if (hRegion == 0) discard;                              // debug view: no skin
+#elif HUMANS_DBG == 8
+  // debug view: hair strand fade (cut ends) in red, strand direction in green / blue (view space)
+  hEmit = hRegion == 1 ? vec3(1.0 - vDecal, 0.5 + 0.5 * vStrand.y, 0.5 + 0.5 * vStrand.x) : vec3(0.0); diffuseColor.rgb = vec3(0.0);
 #elif HUMANS_DBG == 5
   // debug view: region (hue) and flags (back faces dark)
   hEmit = 0.5 + 0.5 * cos(6.2832 * (float(hRegion) / 16.0 + vec3(0.0, 0.33, 0.67)));
@@ -738,6 +788,13 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
         vec3 Rv = reflect( - geometryViewDir, geometryNormal );
         float cl = smoothstep( 0.975, 0.993, dot( Rv, normalize( geometryViewDir + upV * 0.5 ) ) ) * ( 1.0 - hEyeLid );
         reflectedLight.indirectSpecular += cl * iblIrradiance * 0.22;
+      }
+      #endif
+      #if defined( RE_IndirectSpecular )
+      if ( hHairM > 0.0 ) {
+        // the sky's sheen along the strands: hair in the shade keeps a soft highlight band
+        vec3 upS = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * 0.3;
       }
       #endif`);
     shader.fragmentShader = fs;

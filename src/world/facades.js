@@ -30,9 +30,15 @@ import { BAD_NORMALS } from './facades/geo.js';
 // day). Shops are dressed (facades/dressing.js): posters, price cards and stickers on the
 // glass, goods hung on the piers. Joinery takes a colour per building from a weighted
 // palette (facades/kit.js), weathered per opening, on the close-range paint bakes offset
-// per opening. Chunk
+// per opening. The shop a café terrace (any style) is centred on is that café, sign and
+// fit-out. Fittings on a rusticated ground floor stand on the bosses' faces (outline.js
+// rusticOff), signs ~0.1 m off the wall plane. Chunk
 // builds are generators: prefetched a slice per frame ahead of the streamer (update,
 // world.upcoming()), or finished synchronously in build() when the prefetch missed.
+//
+// Debug (URL): facglass=r | t | m | e shows only the glass's reflection, only the room
+// behind it, the glass as a perfect mirror of the street stand-in, or a grey card lit by
+// the glass's ambient light (facades/interior.js).
 
 // side-street lots starting this far from the main street get the far-range infill
 const SIDE_FAR = 40;

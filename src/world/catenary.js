@@ -40,6 +40,7 @@ const DEG = Math.PI / 180;
 // away at its speed) or over it, flashing green for BLINK_SEC s before that, green otherwise
 const RED_DIST = 60, RED_SEC = 8, BLINK_SEC = 3, CLEAR_M = 4, TRAM_LEN = 32;
 const PED_DARK = 0.03;        // brightness of an unlit aspect (instance colour)
+const PED_NAMES = ['red', 'flash', 'green'];
 const _on = new THREE.Color(1, 1, 1), _off = new THREE.Color(PED_DARK, PED_DARK, PED_DARK);
 
 const _y = new THREE.Vector3(0, 1, 0);
@@ -99,7 +100,7 @@ const catenary = {
       m.needsUpdate = true;
     }
     this.pedRecs = new Set();   // chunk records holding pedestrian heads
-    this.pedStates = new Map(); // crossing s -> state of this frame (0 red, 1 flashing, 2 green)
+    this.pedStates = new Map(); // crossing s -> {frame, st}: state of the frame (0 red, 1 flashing, 2 green)
 
     // ---- street-wide parts (see catenary/batch.js)
     this._initBatches(app);
@@ -275,6 +276,7 @@ const catenary = {
     const cs = layout.inChunk('crossStreets', chunk.index);
     if (cs.length) this.buildSignals(rec, cs, app);
 
+    this._lvDirty = true;
     if (!far) {
       const entry = { s0: chunk.s0, s1: chunk.s1, rec, ribbons };
       this.setDetail(entry, app.cameraS ?? app.startS);
@@ -285,8 +287,9 @@ const catenary = {
   },
 
   dispose(obj) {
+    this._lvDirty = true;
     if (obj.userData.catenaryLive) this.live.delete(obj.userData.catenaryLive);
-    if (obj.userData.catRecord) this.pedRecs.delete(obj.userData.catRecord);
+    if (obj.userData.catRecord && this.pedRecs.delete(obj.userData.catRecord)) this._pedList = null;
     this.batches.release(obj.userData.catRecord);
     disposeObject(obj);
   },
@@ -344,6 +347,7 @@ const catenary = {
           const green = rec.entries[rec.entries.length - 1].id;
           (rec.peds || (rec.peds = [])).push({ s: c.s, red, green, state: -1, lit: -1 });
           this.pedRecs.add(rec);
+          this._pedList = null;
         }
       }
     }
@@ -353,11 +357,12 @@ const catenary = {
    *  or over it), 1 flashing green (red in a few seconds), 2 green. Memoised per frame. */
   pedState(sc) {
     const app = this.app, route = app.route;
-    if (this._pedFrame !== app.frame) { this._pedFrame = app.frame; this.pedStates.clear(); }
+    // one memo per crossing, kept (clearing a Map every frame makes garbage)
     const key = Math.round(sc * 10);
-    let st = this.pedStates.get(key);
-    if (st !== undefined) return st;
-    st = 2;
+    let memo = this.pedStates.get(key);
+    if (!memo) { memo = { frame: -1, st: 2 }; this.pedStates.set(key, memo); }
+    if (memo.frame === app.frame) return memo.st;
+    let st = 2;
     const tr = app.train;
     if (tr && Number.isFinite(tr.s)) st = Math.min(st, tramCheck(route, sc, tr.s, 1, TRAM_LEN, tr.speed));
     const units = app.trams && app.trams.units;
@@ -367,7 +372,7 @@ const catenary = {
         if (u && u.active !== false && Number.isFinite(u.s)) st = Math.min(st, tramCheck(route, sc, u.s, u.dir || -1, u.length || TRAM_LEN, u.speed));
       }
     }
-    this.pedStates.set(key, st);
+    memo.frame = app.frame; memo.st = st;
     return st;
   },
 
@@ -378,15 +383,18 @@ const catenary = {
     let best = null, bd = 15;
     for (const c of layout.crossStreets) { const d = Math.abs(route.delta(c.s, s)); if (d < bd) { bd = d; best = c; } }
     if (!best) return null;
-    return ['red', 'flash', 'green'][this.pedState(best.s)];
+    return PED_NAMES[this.pedState(best.s)];
   },
 
   _updatePedLights(app) {
     if (!this.pedRecs.size) return;
     const asp = this.parts.aspects.mesh;
     const flashOn = ((app.time || 0) % 1) < 0.5;
-    for (const rec of this.pedRecs) {
-      for (const h of rec.peds) {
+    const list = this._pedList || (this._pedList = [...this.pedRecs]);
+    for (let r = 0; r < list.length; r++) {
+      const peds = list[r].peds;
+      for (let q = 0; q < peds.length; q++) {
+        const h = peds[q];
         const st = this.pedState(h.s);
         const lit = st === 0 ? 0 : st === 2 || flashOn ? 1 : 2;  // 0 red, 1 green, 2 dark
         if (lit === h.lit) continue;
@@ -406,10 +414,17 @@ const catenary = {
     SU.uA2C.value = rt && rt.samples > 0 ? rt.samples : 0;
     // LED aspects dim at night so they do not flare
     this.aspectMat.emissiveIntensity = 0.55 * (1 - 0.93 * U.uNight.value);
-    const sCam = app.cameraS ?? app.startS, k = this._lens();
-    for (const e of this.live) this.setDetail(e, sCam);
-    for (let i = 0; i < LEVEL_DIST.length; i++) _lvd[i] = LEVEL_DIST[i] * k;
-    this.batches.updateLevels(app.camera.position, _lvd);
+    // detail levels: only when the eye moved, the lens changed or chunks came or went
+    const sCam = app.cameraS ?? app.startS, k = this._lens(), cp = app.camera.position;
+    const L = this._lv || (this._lv = { s: NaN, k: 0, x: 0, z: 0 });
+    const mx = cp.x - L.x, mz = cp.z - L.z;
+    if (this._lvDirty || !(Math.abs(sCam - L.s) < 0.25) || k !== L.k || mx * mx + mz * mz > 0.0625) {
+      this._lvDirty = false;
+      L.s = sCam; L.k = k; L.x = cp.x; L.z = cp.z;
+      for (const e of this.live) this.setDetail(e, sCam);
+      for (let i = 0; i < LEVEL_DIST.length; i++) _lvd[i] = LEVEL_DIST[i] * k;
+      this.batches.updateLevels(cp, _lvd);
+    }
   },
 };
 

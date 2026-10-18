@@ -527,6 +527,23 @@ export class Layout {
     for (const st of this.stations) this.byChunk.stations[idx(st.s)].push(st);
     for (const c of this.crossovers) this.byChunk.crossovers[idx(c.s0)].push(c);
     for (const o of this.obstacles) this._bucketObstacle(o);
+    this._obN = this.obstacles.length;   // obstacles in the buckets (see _syncObstacles)
+  }
+
+  /** Obstacles pushed straight into `obstacles` after the plan (instead of through
+   *  addObstacles) join the chunk buckets on the next lookup. */
+  _syncObstacles() {
+    const ob = this.obstacles;
+    if (ob.length === this._obN) return;
+    if (ob.length < this._obN) {   // removed: bucket them all again
+      for (const list of this.byChunk.obstacles) list.length = 0;
+      this._obN = 0;
+    }
+    for (let i = this._obN; i < ob.length; i++) {
+      const o = ob[i];
+      if (o && (o.kind === 'circle' || o.kind === 'rect')) this._bucketObstacle(o);
+    }
+    this._obN = ob.length;
   }
 
   _bucketObstacle(o) {
@@ -544,16 +561,21 @@ export class Layout {
    * runs after every world module's (registry order).
    */
   addObstacles(list) {
+    this._syncObstacles();
     for (const o of list) {
       if (!o || (o.kind !== 'circle' && o.kind !== 'rect')) continue;
       this.obstacles.push(o);
       this._bucketObstacle(o);
     }
+    this._obN = this.obstacles.length;
     return this.obstacles.length;
   }
 
   /** Items of `kind` whose anchor falls in chunk i. */
-  inChunk(kind, i) { return this.byChunk[kind][((i % this.nChunks) + this.nChunks) % this.nChunks]; }
+  inChunk(kind, i) {
+    if (kind === 'obstacles' && this.obstacles.length !== this._obN) this._syncObstacles();
+    return this.byChunk[kind][((i % this.nChunks) + this.nChunks) % this.nChunks];
+  }
   chunkIndex(s) { return Math.floor(this.route.wrap(s) / CHUNK_LEN) % this.nChunks; }
 
   /** Obstacles near s (within ±range metres). */

@@ -175,6 +175,7 @@ export class BatchSet {
     this.name = name;
     this.batches = new Map();
     this.records = new Set();
+    this.recList = [];                 // the same records as an array (iterated every frame: no iterator garbage)
     this.syncFrame = -1;
     this.fades = new Map();            // instance key (see KEY_SPAN) -> active fade
     // depth-only twins of the shadow-casting parts (see header)
@@ -352,7 +353,8 @@ export class BatchSet {
     const bpe = m.geometry.getIndex().array.BYTES_PER_ELEMENT;
     let n = 0;
     // per chunk record: its bounds first (most chunks lie outside a cascade's slice)
-    for (const rec of this.records) {
+    for (let ri = 0, RL = this.recList; ri < RL.length; ri++) {
+      const rec = RL[ri];
       if (!rec.vis) continue;
       const b = rec.bound || this._recordBound(rec);
       if (b.radius < 0) continue;
@@ -450,6 +452,7 @@ export class BatchSet {
     // ids: [batch, id, shadowId (-1: none)] per part instance
     const rec = { obj, ids: [], lod: [], hidden: new Set(), vis: false, temps: [], dead: false, bound: null };
     this.records.add(rec);
+    this.recList.push(rec);
     this._lodDirty = true;
     obj.userData.batchRecord = rec;
     return {
@@ -507,6 +510,8 @@ export class BatchSet {
     rec.hidden.clear();
     rec.dead = true;
     this.records.delete(rec);
+    const RL = this.recList, ri = RL.indexOf(rec);
+    if (ri >= 0) { RL[ri] = RL[RL.length - 1]; RL.pop(); }
     obj.userData.batchRecord = null;
     this._showBatches();
   }
@@ -516,7 +521,8 @@ export class BatchSet {
    *  the first draw, after the streamer's changes of the frame (exact chunk swaps). */
   sync() {
     let changed = false;
-    for (const rec of this.records) {
+    for (let ri = 0, RL = this.recList; ri < RL.length; ri++) {
+      const rec = RL[ri];
       const p = rec.obj.parent;
       const vis = !!(p && p.visible && p.parent);
       if (vis === rec.vis) continue;
@@ -561,7 +567,8 @@ export class BatchSet {
     const ex = eye.x, ez = eye.z, mx = ex - L.x, mz = ez - L.z;
     const recheck = mx * mx + mz * mz > LOD_STEP * LOD_STEP || this.records.size !== L.n || this._lodDirty;
     if (recheck) { L.x = ex; L.z = ez; L.n = this.records.size; this._lodDirty = false; }
-    if (recheck) for (const rec of this.records) {
+    if (recheck) for (let ri = 0, RL = this.recList; ri < RL.length; ri++) {
+      const rec = RL[ri];
       const items = rec.lod;
       for (let q = 0, nq = items.length; q < nq; q++) {
         const it = items[q], dx = it.x - ex, dz = it.z - ez;

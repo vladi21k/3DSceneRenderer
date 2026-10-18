@@ -46,6 +46,17 @@ import { footDims } from './behaviour/footprint.js';
 // check.squeeze counts agent-frames between the tracks while the cab and a unit go by each other.
 // stats().standing (people standing about within 300 m), sideStreets (people up the side streets).
 // With view= the free camera is an obstacle like a pole: nobody walks through it.
+//
+// For other systems: agents() (the active agents, a list reused every frame),
+// corridorCount(s0, s1, weight, half) (weighted people in the track corridor over a stretch of
+// route, allocation free: the trams' pedestrian load), movers (the riding cyclists near the
+// camera as moving boxes with their displacement since the last frame: post's per-object motion
+// blur), and the cab's obstacle through app.train.setObstacle(m, 'crowd'). At a junction people
+// wait at the kerb on the pedestrian lights (catenary.pedState / signalAt: red, or a flashing
+// green they do not start on); shop doors come from the facades' own shopfront decision.
+// Per-frame code allocates nothing it can avoid: numbers go through fields and typed arrays rather
+// than call arguments and return values (V8 boxes those), and the agents' hidden class is fixed
+// up front (agent.js settleShape) so nothing deoptimises mid-ride.
 
 const PI = Math.PI;
 const _v = new THREE.Vector3();

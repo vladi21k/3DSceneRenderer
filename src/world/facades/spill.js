@@ -68,7 +68,9 @@ if ( kind > 2.5 ) {
   // pavement pool: paving albedo ~0.3 under the shop's light, at the level of the shop's
   // own lamps (interior.js uShopNight): a lit display window of ~200 cd/m2 throws a few
   // hundred lux on the paving at its foot, far above the street lamps' level
-  k = 0.07 * uShopNight * vSpill.z;
+  // (with multisampling a pixel on the pool's edge interpolates its varyings at the
+  // pixel centre, outside the triangle: the rim's 0 extrapolates below zero there)
+  k = 0.07 * uShopNight * max( vSpill.z, 0.0 );
 } else {
   // stone albedo ~0.5 lit by the room behind the glass: strongest at the glass, falling off
   // exponentially towards the wall face; the tall jambs of shops fade upwards (their
@@ -79,9 +81,9 @@ if ( kind > 2.5 ) {
             : 1.0 - 0.3 * smoothstep( 0.6, 1.0, vSpill.w );
   k *= 0.7 + 0.6 * spN( vSpUv * vec2( 3.1, 9.0 ) ) * ( 0.6 + 0.4 * spN( vSpUv * 23.0 ) );
 }
-gl_FragColor = vec4( lampS * k * on * uEmGain, 1.0 );`);
+gl_FragColor = vec4( max( lampS * k * on * uEmGain, vec3( 0.0 ) ), 1.0 );`);
   };
-  m.customProgramCacheKey = () => 'facades.spill.v4';
+  m.customProgramCacheKey = () => 'facades.spill.v5';
   return m;
 }
 

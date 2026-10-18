@@ -34,6 +34,7 @@ const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Qua
 const _c = new THREE.Color(), _e = new THREE.Euler();
 const _yAxis = new THREE.Vector3(0, 1, 0);
 const CLEAR_STEM = 2.85;     // m: lowest crown base of a young street tree
+const LEAF_CLEAR = 2.45;     // m: lowest hanging leaves of a young street tree
 const BARK_LOD_SIZE = 0.65;  // bark picks its detail level as if the tree were this much smaller
 const _planter = { pos: new THREE.Vector3(), sx: 1, sz: 1 };
 
@@ -46,6 +47,14 @@ const vegetation = {
     const t0 = performance.now();
     const atlasP = buildLeafAtlas(app.renderer, seed); // painted off the main thread
     this.trees = TEMPLATES.map((tpl) => buildTreeTemplate(tpl, seed));
+    // drawn crown of each template (detail 0): lowest leaves and horizontal reach
+    for (const t of this.trees) {
+      const g = t.leaves[0];
+      if (!g.boundingBox) g.computeBoundingBox();
+      const b = g.boundingBox;
+      t.leafMinY = b.min.y;
+      t.leafR = Math.max(-b.min.x, b.max.x, -b.min.z, b.max.z);
+    }
     this.shrubs = SHRUBS.map((sh) => ({ sh, ...buildShrubTemplate(sh, seed) }));
     const t1 = performance.now();
     this.mats = createVegMaterials(app, blankAtlas());
@@ -148,9 +157,10 @@ const vegetation = {
       const heading = route.heading(t.s);
       // the pruned (clearance) side of the template faces the tracks; some yaw jitter
       const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.25);
-      // young trees keep a clear stem of at least CLEAR_STEM (pruned for the sidewalk: the
-      // crowns start above the cab eye, so shopfronts and café umbrellas read under them)
-      const sy = THREE.MathUtils.clamp(height / tpl.height, tpl.mature ? 0.82 : Math.max(0.82, CLEAR_STEM / tpl.crownBase), 1.22);
+      // young trees keep a clear stem of at least CLEAR_STEM and no leaves below LEAF_CLEAR
+      // (pruned for the sidewalk: the crowns start about the cab eye, so shopfronts and café
+      // umbrellas read under them)
+      const sy = THREE.MathUtils.clamp(height / tpl.height, tpl.mature ? 0.82 : Math.max(0.82, CLEAR_STEM / tpl.crownBase, LEAF_CLEAR / T.leafMinY), 1.22);
       const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.15 : 1.2);
       const sx = sxz * r.range(0.9, 1.1), sz = sxz * r.range(0.9, 1.1) * (mirror ? -1 : 1);
       // lean: mostly away from the tracks (local +x), a little along the street
@@ -161,7 +171,7 @@ const vegetation = {
       // per-tree tint: vigour / light differences between individual trees (value about
       // ±8 %, hue about ±6°)
       const v = r.range(0.92, 1.08), h = r.range(-0.14, 0.14), bv = r.range(0.88, 1.08);
-      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sxz, mature,
+      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sy, sxz, mature,
         leafTint: new THREE.Color(v * (1 + h), v, v * (1 - 2 * h)), barkTint: new THREE.Color(bv, bv, bv), seed: t.seed };
       plan.set(t, p);
       prev.push(p);
@@ -236,6 +246,14 @@ const vegetation = {
     const P = this.plan && this.plan.get(t);
     if (!P) return null;
     return { leaf: this.leafGeoms[P.T.leafIdx[2]], bark: this.barkGeoms[P.T.barkIdx[P.mirror][2]], matrix: P.matrix, leafTint: P.leafTint, barkTint: P.barkTint, template: P.T.tpl.id };
+  },
+
+  /** The crown of layout tree t as drawn: {r: horizontal reach from the stem (m), base:
+   *  height of its lowest leaves above the paving (m)}, or null. (Café canopies use it.) */
+  crownAt(t) {
+    const P = this.plan && this.plan.get(t);
+    if (!P) return null;
+    return { r: P.T.leafR * P.sxz * 1.1, base: P.T.leafMinY * P.sy };
   },
 
   /** Materials for farTree() geometry (registered and tracked). */

@@ -217,7 +217,8 @@ export function cafeStyle(cafe, app) {
   st.frameWood = rng.chance(0.4);
   st.screen = srgb(rng.pick(SCREEN_COL));
   st.folder = srgb(rng.pick(['#2a2422', '#4a1f1c', '#22302a', '#1f2533', '#5a4632']));
-  st.plan = planCafe(cafe, app.route, seed, st.base, app.layout);
+  const veg = app.systems.vegetation;
+  st.plan = planCafe(cafe, app.route, seed, st.base, app.layout, veg && veg.crownAt ? (t) => veg.crownAt(t) : null);
   for (const c of st.plan.chairs) {
     const ch = cafe.tables[c.ti].chairs[c.ci];
     ch.s = c.s; ch.d = c.d; ch.yaw = c.yaw;

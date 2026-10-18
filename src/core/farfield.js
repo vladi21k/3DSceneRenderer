@@ -13,7 +13,8 @@ import { TRACK_ZONE_HALF, EDGE_BAND_W, CHUNK_LEN, VIEW_FAR } from './config.js';
 // at dusk), tile roofs, penthouses and set-back additions (their balconies; a tower's side
 // windows and its painted mural as a flat muted panel); the paving runs between the facade
 // lines, with the light corridor edge bands and the side-street mouths; trees are
-// irregular crowns on trunks. One merged mesh and one material per chunk; build ≈ 0.3–1 ms.
+// irregular crowns on trunks. Beyond the sun's shadow maps (700 m) it shades itself as a
+// street canyon (FRAG_CANYON). One merged mesh and one material per chunk; build ≈ 1 ms.
 // Party-wall adverts and murals are left out (buildings decides them from what each wall
 // exposes, and beyond VIEW_AHEAD they are a few hazy pixels).
 
@@ -447,6 +448,61 @@ function paving(G, app, chunk) {
   }
 }
 
+// ---- canyon cross-section per vertex (see FRAG_CANYON)
+const CY_MARGIN = 30;                 // m of table beyond the chunk ends (lots reach past them)
+const _cc = new THREE.Vector3();
+
+/** Facade line and block height on both sides at 1 m steps over the chunk (± CY_MARGIN):
+ *  from the lots of this chunk and its neighbours; the layout's facade line and no block
+ *  where there is no lot (a side-street mouth lets the sun through). */
+function canyonTable(app, chunk) {
+  const { route, layout } = app;
+  const sA = chunk.s0 - CY_MARGIN, n = Math.ceil(chunk.s1 - chunk.s0 + 2 * CY_MARGIN) + 1;
+  const T = { sA, n, hw: [new Float32Array(n), new Float32Array(n)], H: [new Float32Array(n), new Float32Array(n)],
+    x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n), tx: new Float64Array(n), tz: new Float64Array(n) };
+  for (let k = 0; k < n; k++) {
+    route.toWorld(sA + k, 0, 0, _cc);
+    const th = route.heading(sA + k);
+    T.x[k] = _cc.x; T.y[k] = _cc.y; T.z[k] = _cc.z; T.tx[k] = Math.cos(th); T.tz[k] = -Math.sin(th);
+  }
+  for (let e = 0; e < 2; e++) for (let k = 0; k < n; k++) T.hw[e][k] = layout.halfWidth(sA + k, e ? 1 : -1);
+  for (let j = -1; j <= 1; j++) {
+    for (const lot of layout.inChunk('lots', chunk.index + j)) {
+      const e = lot.side > 0 ? 1 : 0, top = lot.frame.floorRef + facadePlan(lot).totalHeight;
+      const k0 = Math.max(0, Math.ceil(route.delta(sA, lot.s0))), k1 = Math.min(n - 1, Math.floor(route.delta(sA, lot.s0) + lot.len));
+      for (let k = k0; k <= k1; k++) { T.hw[e][k] = lot.d; T.H[e][k] = top - T.y[k]; }
+    }
+  }
+  return T;
+}
+
+/** aCy = (d, h, right.x, right.z) and aCw = (facade |d| left, right, block height left,
+ *  right) per vertex: each vertex is put on the route by two Newton steps along the
+ *  tangent from the chunk's middle, on the table's centre line (1 m samples). */
+function canyonAttributes(geo, app, chunk) {
+  const pos = geo.getAttribute('position').array, nv = pos.length / 3;
+  const cy = new Float32Array(nv * 4), cw = new Float32Array(nv * 4);
+  const T = canyonTable(app, chunk), n = T.n;
+  const uMid = (chunk.s0 + chunk.s1) / 2 - T.sA;
+  for (let i = 0; i < nv; i++) {
+    const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
+    let u = uMid, cx = 0, cyy = 0, cz = 0, tx = 1, tz = 0;
+    for (let it = 0; it < 3; it++) {
+      const k0 = Math.max(0, Math.min(n - 2, Math.floor(u))), f = Math.max(0, Math.min(1, u - k0)), g = 1 - f;
+      cx = T.x[k0] * g + T.x[k0 + 1] * f; cyy = T.y[k0] * g + T.y[k0 + 1] * f; cz = T.z[k0] * g + T.z[k0 + 1] * f;
+      tx = T.tx[k0] * g + T.tx[k0 + 1] * f; tz = T.tz[k0] * g + T.tz[k0 + 1] * f;
+      const l = Math.sqrt(tx * tx + tz * tz); tx /= l; tz /= l;
+      if (it < 2) u += (px - cx) * tx + (pz - cz) * tz;
+    }
+    const rx = -tz, rz = tx;   // right = (−Tz, 0, Tx)
+    const k = Math.max(0, Math.min(n - 1, Math.round(u)));
+    cy[i * 4] = (px - cx) * rx + (pz - cz) * rz; cy[i * 4 + 1] = py - cyy; cy[i * 4 + 2] = rx; cy[i * 4 + 3] = rz;
+    cw[i * 4] = T.hw[0][k]; cw[i * 4 + 1] = T.hw[1][k]; cw[i * 4 + 2] = T.H[0][k]; cw[i * 4 + 3] = T.H[1][k];
+  }
+  geo.setAttribute('aCy', new THREE.BufferAttribute(cy, 4));
+  geo.setAttribute('aCw', new THREE.BufferAttribute(cw, 4));
+}
+
 // crowns (aGlow < 0): leaf clumps and gaps as a two-octave value noise on the albedo
 const FRAG_NOISE = /* glsl */ `
 float ffHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
@@ -465,6 +521,26 @@ if (vGlow < -0.5) {
 }
 `;
 
+// Canyon shade: the sun's shadow maps end at 700 m, so beyond them the street is shaded as a
+// street canyon in cross-section. vCy = (d: lateral offset from the centre line, h: height
+// over the centre-line paving, right.x, right.z), vCw = (facade line |d| left and right,
+// block height left and right over the paving at the fragment's s; 0 in a side-street
+// mouth). The ray towards the sun reaches the facade line on the sun's side and is shaded
+// when it passes below that block's top. On or behind that facade line: no canyon shade.
+const FRAG_CANYON = /* glsl */ `
+float ffCanyon() {
+  vec3 L = ffSun;
+  if (L.y <= 0.0) return 1.0;
+  float a = dot(L.xz, vCy.zw);
+  bool right = a > 0.0;
+  float dist = right ? vCw.y - vCy.x : vCw.x + vCy.x;
+  float H = right ? vCw.w : vCw.z;
+  if (dist < 0.3 || H <= 0.0) return 1.0;
+  float hit = vCy.y + dist * L.y / max(abs(a), 1e-4);
+  return smoothstep(H - 1.2, H + 1.2, hit);
+}
+`;
+
 const farfield = {
   name: 'farfield',
   lods: [2],
@@ -478,15 +554,22 @@ const farfield = {
     m.onBeforeCompile = (shader) => {
       shader.uniforms.ffNight = U.uNight;
       shader.uniforms.ffGain = gain;
+      shader.uniforms.ffSun = U.uSunDir;
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;\nvarying vec3 vFfPos;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;\nvFfPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        .replace('#include <common>', '#include <common>\nattribute float aGlow;\nattribute vec4 aCy;\nattribute vec4 aCw;\nvarying float vGlow;\nvarying vec3 vFfPos;\nvarying vec4 vCy;\nvarying vec4 vCw;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;\nvCy = aCy;\nvCw = aCw;\nvFfPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      // the sun light alone takes the canyon shade (the shared light loop, as env patched
+      // it, with one line added after the sun's light info)
+      const sunInfo = 'getSunLightInfo( sunLight, directLight );';
+      const loop = THREE.ShaderChunk.lights_fragment_begin;
+      const lights = loop.split(sunInfo).length === 2 ? loop.replace(sunInfo, `${sunInfo}\n\t\tdirectLight.color *= ffCanyon();`) : null;
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float ffNight;\nuniform float ffGain;\nvarying float vGlow;\nvarying vec3 vFfPos;\n' + FRAG_NOISE)
+        .replace('#include <common>', '#include <common>\nuniform float ffNight;\nuniform float ffGain;\nuniform vec3 ffSun;\nvarying float vGlow;\nvarying vec3 vFfPos;\nvarying vec4 vCy;\nvarying vec4 vCw;\n' + FRAG_NOISE + FRAG_CANYON)
         .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_FOLIAGE)
         .replace('#include <lights_physical_fragment>', 'totalEmissiveRadiance += vec3(1.0, 0.66, 0.38) * 0.005 * ffGain * max(vGlow, 0.0) * smoothstep(0.25, 0.75, ffNight);\n#include <lights_physical_fragment>');
+      if (lights) shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_begin>', lights);
     };
-    m.customProgramCacheKey = () => 'farfield2';
+    m.customProgramCacheKey = () => 'farfield3';
     this.material = app.materials.track ? app.materials.track(m) : m;
     this.stats = { builds: 0, ms: 0, maxMs: 0, tris: 0 };
   },
@@ -501,11 +584,12 @@ const farfield = {
     for (const t of layout.inChunk('trees', chunk.index)) tree(G, route, t);
     for (const p of layout.inChunk('poles', chunk.index)) pole(G, route, p);
     const geo = G.geometry();
+    if (geo) canyonAttributes(geo, app, chunk);
     const dt = performance.now() - t0;
     this.stats.builds++; this.stats.ms = dt; this.stats.maxMs = Math.max(this.stats.maxMs, dt);
     if (!geo) return null;
     this.stats.tris = geo.index.count / 3;
-    this.stats.bytes = (G.nv * 10 * 4) + geo.index.array.byteLength;
+    this.stats.bytes = (G.nv * 18 * 4) + geo.index.array.byteLength;
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.name = 'farfield';
     mesh.matrixAutoUpdate = false;

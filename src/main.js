@@ -101,7 +101,7 @@ async function main() {
   Object.assign(app, {
     materials: app.systems.materials, env: app.systems.env, post: app.systems.post,
     train: app.systems.train, cameraRig: app.systems.cameraRig, crowd: app.systems.crowd,
-    humans: app.systems.humans, audio: app.systems.audio, ui: app.systems.ui,
+    humans: app.systems.humans, audio: app.systems.audio, ui: app.systems.ui, trams: app.systems.trams,
   });
   setProgress(0.05);
 

@@ -312,19 +312,32 @@ vec3 canyon(vec3 dir, vec3 skyCol) {
     vec3 E = E_sun * max(cosI, 0.0) * lit
            + irr(3.0)
            + (E_sun * max(-cosI, 0.0) * oppLit * 0.5 * wallAlb + E_sun * max(uSunDirA.y, 0.0) * floorLit * groundAlb) * 0.35;
+    // street level (below ~4.6 m): shopfronts, awnings, street trees, kiosks and people
+    // shade and break up the ground floors, so the lowest band reads much darker and
+    // greyer than bare sunlit stone (glossy surfaces reflecting the street at and below
+    // the horizon must not pick up a bright beige wall), with a dark foot at the paving
+    float shop = 1.0 - smoothstep(4.2, 5.0, z);
+    E -= E_sun * max(cosI, 0.0) * lit * 0.45 * shop;
     vec3 col = wallAlb * E / ATM_PI;
     // window grid: dark glass reflecting the sky
     float u = Dw * dot(hd / lh, uStreetAxis.xz);
     vec2 cell = vec2(fract(u / 3.4), fract((z - 4.6) / 3.6));
     float win = step(0.3, cell.x) * step(cell.x, 0.68) * step(0.12, cell.y) * step(cell.y, 0.68) * step(4.6, z);
     col = mix(col, skyCol * 0.12 + col * 0.15, win * 0.85);
+    float lc = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    vec3 street = mix(vec3(lc), col, 0.55) * 0.55 + skyCol * 0.04;
+    col = mix(col, street, shop) * (1.0 - 0.35 * (1.0 - smoothstep(0.0, 1.2, z)));
     return col;
   }
   if (dir.y < 0.0) {
     float y = uCamD + Dg * sp;                  // lateral offset of the floor point
     float distToSunWall = sunSide * uHalfW - y; // signed, towards the sun-side facade
     float lit = sunUp * smoothstep(-0.6, 0.6, abs(distToSunWall) - shadowLen);
-    vec3 E = E_sun * max(uSunDirA.y, 0.0) * lit + E_sky * 0.62
+    // the sidewalks (within ~5 m of the facades) lie partly under trees, umbrellas and
+    // awnings, and the foot of the walls sees less sky
+    float walk = smoothstep(uHalfW - 5.5, uHalfW - 4.0, abs(y));
+    lit *= 1.0 - 0.3 * walk;
+    vec3 E = E_sun * max(uSunDirA.y, 0.0) * lit + E_sky * 0.62 * (1.0 - 0.2 * walk)
            + E_sunWall * 0.2 * wallAlb;
     vec3 col = groundAlb * E / ATM_PI;
     // distant floor fades into haze

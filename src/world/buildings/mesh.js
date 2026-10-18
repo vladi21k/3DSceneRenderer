@@ -344,7 +344,7 @@ export class Builder {
     const bx = P3[0] - P0[0], by = P3[1] - P0[1], bz = P3[2] - P0[2];
     // (P1-P0) × (P3-P0) in the right-handed (u, v, w) basis
     let nu = ay * bz - az * by, nv = az * bx - ax * bz, nw = ax * by - ay * bx;
-    const l = Math.hypot(nu, nv, nw) || 1; nu /= l; nv /= l; nw /= l;
+    const l = Math.sqrt(nu * nu + nv * nv + nw * nw) || 1; nu /= l; nv /= l; nw /= l;
     this._quad4(s, P0[0], P0[1], P0[2], P1[0], P1[1], P1[2], P2[0], P2[1], P2[2], P3[0], P3[1], P3[2], nu, nv, nw);
   }
 
@@ -443,7 +443,10 @@ export class Builder {
     const base = s.vc;
     const pts = capPoints(profile);
     s.reserve(pts.length, tris.length);
-    for (const [o, up] of pts) this.v(s, P[0] + mi[0] * o, v0 + up, P[1] + mi[1] * o, nu, 0, nw, o * dirSign, up);
+    for (let k = 0; k < pts.length; k++) {
+      const o = pts[k][0], up = pts[k][1];
+      this.v(s, P[0] + mi[0] * o, v0 + up, P[1] + mi[1] * o, nu, 0, nw, o * dirSign, up);
+    }
     for (let k = 0; k < tris.length; k += 3) {
       // profile-plane CCW faces backwards along the path, so the end cap is flipped
       if (dirSign > 0) this.tri(s, base + tris[k], base + tris[k + 2], base + tris[k + 1]);
@@ -559,12 +562,16 @@ export function insetPolygon(pts, d) {
   return out;
 }
 
-/** Points of a profile cap: the profile plus its foot on the wall (out = 0). */
+/** Points of a profile cap: the profile plus its foot on the wall (out = 0); cached. */
+const capPtsCache = new WeakMap();
 function capPoints(profile) {
+  let pts = capPtsCache.get(profile);
+  if (pts) return pts;
   const first = profile[0], last = profile[profile.length - 1];
-  const pts = profile.slice();
+  pts = profile.slice();
   if (last[0] > 1e-4) pts.push([0, last[1]]);
   if (first[0] > 1e-4) pts.push([0, first[1]]);
+  capPtsCache.set(profile, pts);
   return pts;
 }
 

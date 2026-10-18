@@ -30,11 +30,14 @@ import { goodsAtlas, GOODS_PAD } from './goods.js';
 //   shops     recessed downlights, spot tracks or pendants (cos^n lobes, so their pools
 //             scallop the walls and floor) of 2700–5000 K per shop (fKelvin: cafes warm,
 //             pharmacies cool white; a few hundred kelvin warmer at dusk), window spots on
-//             the display zone; by day at ~6% of the daylight on the glass, so the display
-//             zone sits at a quarter to a third of the shaded street's luminance, the back
-//             of the shop at a tenth, the lamps a few times their ceiling, and the
-//             reflection dominates wherever it shows anything bright. From dusk on the
-//             lamps follow the exposure within a physical range (SHOP_LEVEL).
+//             the display zone; by day at retail levels (~1000-1500 lux on the floor,
+//             SHOP_DAY), so the goods by the glass sit at a fifth to a quarter of the
+//             shaded street's luminance, the back of the shop at a tenth, the lamps a few
+//             times their ceiling, and the reflection dominates wherever it shows anything
+//             bright. From dusk on the lamps follow the exposure within a physical range
+//             (SHOP_LEVEL).
+// The daylight entering a room is the glass's own irradiance: the sky and canyon light
+// (irradiance + iblIrradiance) plus env's canyonCrossBounce, the sunlit facade opposite.
 //
 // Every periodic pattern is filtered against the pixel footprint at its hit point
 // (pixel angle × path length / obliquity): stripes and grids fade to their mean before
