@@ -643,8 +643,8 @@ function thinkWalk(c, a) {
   // people stop to talk, wait for somebody, take a call: more often while too few are standing
   // about near the camera (the street ahead should always have its share of standing people)
   const need = Math.max(0, (STAND_NEAR - c.counts.stand300 - 0.3 * c.counts.standFar) / STAND_NEAR) * (a.s - c.camU > 0 ? 1 : 0);
-  if (!mob && a.nFollow > 0 && r.chance(0.0015 + 0.05 * need) && c.counts.stand < STANDER_TARGET * 2 && startChat(c, a)) return;
-  if (!mob && a.nFollow === 0 && r.chance(0.001 + 0.02 * need) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF && startPause(c, a)) return;
+  if (!mob && a.nFollow > 0 && r.chance(0.001 + 0.03 * need) && c.counts.stand < STANDER_TARGET * 2 && startChat(c, a)) return;
+  if (!mob && a.nFollow === 0 && r.chance(0.001 + 0.015 * need) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF && startPause(c, a)) return;
   // lane drift and the odd change of mind
   if (r.chance(0.05)) a.laneF = Math.min(0.97, Math.max(0.03, a.laneF + r.normal(0, 0.18)));
   if (r.chance(0.012)) setLane(c, a, r);
@@ -729,7 +729,7 @@ function startPause(c, a) {
       if ((od >= 0 ? 1 : -1) !== side || Math.abs(od) < TRACK_ZONE_HALF + 0.3 || cr > 0.45) continue;
       const os = at + map.qDS[q], ahead = (os - a.s) * a.dir;
       if (ahead < 2 || ahead > 11) continue;
-      const gs = os + r.range(-0.12, 0.12), gd = od + side * (cr + AGENT_R + 0.08);
+      const gs = os + r.range(-0.12, 0.12), gd = od + side * (cr + AGENT_R + 0.17);
       if (Math.abs(gd) > map.wallAt(gs, side) - 0.6 || map.rectInner(gs, side, Math.abs(gd), 0.35)) continue;
       a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(10, 45);
       a.pauseFace = r.chance(0.5) ? faceStreet(side) + r.range(-0.7, 0.7) : (a.dir > 0 ? 0 : PI) + r.range(-0.8, 0.8);

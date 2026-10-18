@@ -185,12 +185,12 @@ float hBrimOver = 0.0;
 // the brim's shadow for a light direction (view space): the brim overhangs this point by hBrimOver
 // and sits hBrimBelow above it; a sun higher than atan(below / over) is cut off
 float hBrimShadow(vec3 L) {
-  if (hBrimBelow <= 0.0 || hBrimOver <= 0.0) return 0.0;
+  if (hBrimBelow <= -0.05 || hBrimOver <= 0.0) return 0.0;
   vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
   float ly = dot(L, upV);
   float lh = sqrt(max(1e-4, 1.0 - ly * ly));
   float reach = hBrimOver * max(ly, 0.0) / lh;          // shadow depth below the band
-  return smoothstep(-0.012, 0.012, reach - hBrimBelow) * 0.85;
+  return smoothstep(-0.012, 0.012, reach - max(hBrimBelow, 0.0)) * 0.85;
 }
 float hVNoise(vec3 x) {
   vec3 i = floor(x), f = fract(x);
@@ -380,6 +380,8 @@ const FRAG_SURFACE = /* glsl */`
     if (hcB.w > 0.0) {
       hBrimBelow = hLook(row, 10).w - vRest.y;
       hBrimOver = hcB.w - length(vRest.xz - hcB.xz);
+      // the brim hides part of the sky from the face (ambient occlusion under it)
+      if (hBrimOver > 0.0 && hBrimBelow > -0.05) hAO *= 1.0 - 0.5 * hBrimOver / (hBrimOver + max(hBrimBelow, 0.0) + 0.02);
     }
   }
 #endif

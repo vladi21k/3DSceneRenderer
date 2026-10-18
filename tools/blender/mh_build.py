@@ -9,7 +9,11 @@ Stages
            (sleeves and trouser legs cut, skirts lengthened, mixed tops and bottoms, body skin hidden only
            where a kept garment covers it), then the rest pose of the runtime skeleton (arms hanging, elbows
            and fingers relaxed) is applied and the skin weights are converted to the runtime's 22 bones
-           (src/crowd/humans/anim.js). Writes .work/mh/raw/<id>.npz + <id>.json.
+           (src/crowd/humans/anim.js). Clean-up: pockets, slits and vents closed; skin kept under hems and
+           cuffs (a raised arm opens a sleeve) and sunk under the cloth elsewhere; feet inside the shoes
+           dropped; fringes trimmed clear of the eyes (strand ends fade); hats seated low on the brow; skin
+           decals per vertex (beard growth, hair-coloured scalp) instead of stubble shells.
+           Writes <work>/raw/<id>.npz + <id>.json (--work, default .work/mh; --out, default assets/humans_mh).
   tex      mh_tex.py: shared texture arrays (skins, garments, hair, misc atlas), WebP strips.
   export   mh_export.py: LODs (meshoptimizer), per-vertex AO, quantised geometry -> assets/humans_mh/.
   preview  mh_preview.py: Cycles lineup render of the exported cast (front / side / back).
@@ -267,7 +271,7 @@ def build_one(cid, save_blend=False):
             n = fill_small_holes(d, 0.11 * kscale, J, kscale)
             if n:
                 log(cid, f'{info["suit"]}: filled {n} holes (pockets, slits)')
-            n = zip_slits(d, kscale)
+            n = zip_slits(d, kscale, 0.5 * (J['thighL'][2] + J['thighR'][2]))
             if n:
                 log(cid, f'{info["suit"]}: closed {n} notches')
     # head landmarks: the eyes' centre, the face's front surface (for hair and hats); head scale from the
@@ -586,6 +590,24 @@ def build_one(cid, save_blend=False):
         h = gbvh.ray_cast(o + n * 0.002, -n, 0.025)
         if h[0] is not None and gbvh.ray_cast(o - n * 0.002, n, MAXD)[0] is None:
             push[i] = max(0.0, h[3] - 0.002) + 0.004
+    # feet inside the shoes go (a heel or toe poking through the sole shows as a skin patch under it)
+    shoes = [op for op in out_parts if op['kind'] == 'shoes']
+    if shoes:
+        sd = shoes[0]['d']
+        sv = np.zeros(len(sd['co']), bool)
+        for p in np.where(shoes[0]['keep'] & (shoes[0]['region'] == CASTM.REGIONS['shoes']))[0]:
+            sv[sd['vi'][sd['ls'][p]:sd['ls'][p] + sd['lt'][p]]] = True
+        footw = share(body['W'], [b for b in bone_names if b.startswith(('foot', 'ball'))])
+        nfeet = 0
+        for sgn in (1.0, -1.0):
+            side_s = sv & (sd['co'][:, 0] * sgn > 0)
+            if not side_s.any():
+                continue
+            top = float(np.percentile(sd['co'][side_s, 2], 97))
+            m = (footw > 0.5) & (body['co'][:, 0] * sgn > 0) & (body['co'][:, 2] < top - 0.012)
+            deleted |= m
+            nfeet += int(m.sum())
+        log(cid, f'{nfeet} foot vertices inside the shoes hidden')
     if push.any():
         body['co'] = body['co'] - body['nr'] * push[:, None]
         log(cid, f'skin pushed in under the garments at {int((push > 0).sum())} vertices')
@@ -1378,7 +1400,7 @@ def fill_small_holes(d, max_perimeter, J=None, k=1.0):
     return filled
 
 
-def zip_slits(d, k=1.0):
+def zip_slits(d, k=1.0, hip_z=None):
     """Close V-shaped notches of a garment's open borders (lapel notches, vents, darts): where the
     border runs into a tip with the cloth on the outside of the V on both arms, the V is stitched
     shut from the tip outwards while its mouth stays narrower than ~4.5 cm (the notch would show the
@@ -1470,15 +1492,17 @@ def zip_slits(d, k=1.0):
             if not gap:
                 continue
             depth = 0
-            for j in range(1, 17):
+            # (a skirt's back vent opens wider towards the flared hem: it is closed all the way down)
+            vent = hip_z is not None and P[i][2] < hip_z and ang < 30
+            for j in range(1, 24):
                 if used[(i - j) % n] or used[(i + j) % n] or (i - j) % n == (i + j) % n:
                     break
-                if np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]) > 0.05 * k:
+                if np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]) > (0.12 if vent else 0.05) * k:
                     break
                 depth = j
             if debug:
-                log(f'  notch: angle {ang:.0f} depth {depth} at {P[i].round(3).tolist()}')
-                for j in range(1, 10):
+                log(f'  notch: angle {ang:.0f} depth {depth} vent {vent} at {P[i].round(3).tolist()}')
+                for j in range(1, 14):
                     log(f'    j={j} gap {np.linalg.norm(P[(i - j) % n] - P[(i + j) % n]):.3f} used {used[(i - j) % n]} {used[(i + j) % n]} z {P[(i - j) % n][2]:.3f}')
             if depth < 1:
                 continue

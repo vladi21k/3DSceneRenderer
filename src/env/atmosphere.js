@@ -26,7 +26,10 @@ const MIE_EXT = 4.44e-3;   // per km at unit density (x uMieScale)
 // and bright while the sky overhead stays blue
 const MIE_SPEC_EXT = [0.93, 1.0, 1.11];
 export const MIE_DEFAULT = { h: 0.9, alb: [0.975, 0.965, 0.95], g: 0.66 };
-const OZONE = [2.3e-3, 1.881e-3, 0.085e-3]; // the sRGB red primary (~610 nm) sits on the Chappuis peak, above green (550 nm)
+// ozone (Chappuis band) absorption per km at the layer peak. The sRGB red primary spans
+// ~580-700 nm, across the band's peak and its long-wave flank: on average it loses about
+// as much as the green, so the twilight sky goes blue and pink rather than khaki
+const OZONE = [1.75e-3, 1.881e-3, 0.085e-3];
 
 const f = (x) => x.toFixed(7);
 const v3 = (a) => `vec3(${f(a[0])}, ${f(a[1])}, ${f(a[2])})`;

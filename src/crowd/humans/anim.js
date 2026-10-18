@@ -76,7 +76,7 @@ const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0);
 // arms swing freely but the elbows stay soft, never a forearm held out level)
 const GAIT = {
   male: { stepW: 0.060, yaw: 4.2, roll: 3.0, sway: 0.016, thorax: 1.55, arm: 1.0, abd: 4.5, elbow: 13, wr: 1.0, bounce: 1.0, lean: 2.5, circ: 0.012, twist: -4 },
-  female: { stepW: 0.052, yaw: 6.5, roll: 4.5, sway: 0.020, thorax: 0.75, arm: 1.05, abd: 3.5, elbow: 16, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.024, twist: -6 },
+  female: { stepW: 0.058, yaw: 6.5, roll: 4.5, sway: 0.020, thorax: 0.75, arm: 1.05, abd: 3.5, elbow: 16, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.024, twist: -6 },
   child: { stepW: 0.052, yaw: 5.0, roll: 3.6, sway: 0.016, thorax: 1.1, arm: 1.05, abd: 5, elbow: 14, wr: 1.0, bounce: 1.6, lean: 2.5, circ: 0.014, twist: -4 },
   kid: { stepW: 0.060, yaw: 5.5, roll: 4.0, sway: 0.020, thorax: 1.0, arm: 0.95, abd: 6, elbow: 14, wr: 0.96, bounce: 2.2, lean: 3.0, circ: 0.016, twist: -4 },
   toddler: { stepW: 0.070, yaw: 5.5, roll: 4.0, sway: 0.022, thorax: 1.0, arm: 0.9, abd: 9, elbow: 18, wr: 0.9, bounce: 2.4, lean: 3.0, circ: 0.018, twist: -4 },

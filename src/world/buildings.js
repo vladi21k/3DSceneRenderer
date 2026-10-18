@@ -701,7 +701,8 @@ function endsOf(app, lot) {
     // (nbClear: above this nothing of the neighbour stands, its set-back storey and the
     // solar heaters on its roofs included)
     const up = np.upper, upTop = up ? nb.frame.floorRef + up.v0 + up.floors * up.floorH + 0.2 : -Infinity;
-    const nbClear = (np.roof.type === 'tile' ? nbTopWorld + 1.5 : Math.max(nbTopWorld, upTop) + 2.9) - f.floorRef;
+    const ridge = np.roof.type === 'tile' ? nbTopWorld + np.depth * 0.5 * Math.tan(((np.roof.pitch || 30) * Math.PI) / 180) + 0.6 : 0;
+    const nbClear = (np.roof.type === 'tile' ? ridge : Math.max(nbTopWorld, upTop) + 2.9) - f.floorRef;
     // (nbDeck: its roof deck or eaves, below which its building covers this side wall)
     return { corner: false, nb: nb.id, dw: best.dn, nbTop: nbTopWorld - f.floorRef, nbDeck: nb.frame.floorRef + np.parapet.y - f.floorRef, nbDepth, nbClear };
   });

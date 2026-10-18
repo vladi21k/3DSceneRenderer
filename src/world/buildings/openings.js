@@ -48,7 +48,8 @@ export function openingMasonry(ctx, face, o) {
     B.rectU(rend.sink, u0, y0, ys, -R, 0, 1);
     B.rectU(rend.sink, u1, y0, ys, -R, 0, -1);
     B.shade = revealShade(fs, true);
-  } else if (near && !surround && ctx.uvA && ctx.fit && ctx.fit.ashlar) {
+  } else if (!surround && ctx.uvA) {
+    // (far: one piece per material zone, the courses still turn the arris)
     coursedJamb(ctx, u0, 1, y0, ys, R);
     coursedJamb(ctx, u1, -1, y0, ys, R);
   } else if (near && surround) {
@@ -69,12 +70,14 @@ export function openingMasonry(ctx, face, o) {
     // the underside of the head: the lintel (one stone) or the flat arch's voussoirs
     const head = near ? flatHead(o, orn, surround, ctx.ch) : null;
     if (head && head.kind === 'flatArch') {
-      for (const [xa, xb, k] of flatArchParts(o, head.ext)) {
+      // (closed: the joints are mortar-toned strips, nothing shows through them)
+      const parts = flatArchParts(o, head.ext);
+      parts.forEach(([xa, xb, k], i) => {
         const a = Math.max(u0, xa), b = Math.min(u1, xb);
-        if (b - a < 1e-3) continue;
-        block(B, seed, 200 + k);
-        B.rectV(sRev, a, b, -R, 0, yt, -1);
-      }
+        if (b - a > 1e-3) { block(B, seed, 200 + k); B.rectV(sRev, a, b, -R, 0, yt, -1); }
+        const nx = parts[i + 1] ? parts[i + 1][0] : xb;
+        if (nx > xb && xb > u0 && nx < u1) mortar(B, () => B.rectV(sRev, xb, nx, -R, 0, yt, -1));
+      });
       endBlocks(B);
     } else {
       if (head) block(B, seed, 301);
@@ -83,11 +86,12 @@ export function openingMasonry(ctx, face, o) {
     }
   } else if (near && q.voussoirs) {
     // the intrados of each ring stone
-    const n = arcSeg(q, o);
-    for (const [ta, tb, k] of ringParts(o, ringDepth(o, orn, surround), orn.keystone || ground)) {
+    const n = arcSeg(q, o), parts = ringParts(o, ringDepth(o, orn, surround), orn.keystone || ground);
+    parts.forEach(([ta, tb, k], i) => {
       block(B, seed, 100 + k);
       soffit(B, sRev, o, -R, 0, Math.max(1, Math.ceil(n * (tb - ta))), ta, tb);
-    }
+      if (parts[i + 1]) mortar(B, () => soffit(B, sRev, o, -R, 0, 1, tb, parts[i + 1][0]));
+    });
     endBlocks(B);
   } else soffit(B, sRev, o, -R, 0, arcSeg(q, o));
   B.mark('op.reveal');
@@ -306,13 +310,13 @@ const _tr = [0, 0], _jc = [];
  */
 function coursedJamb(ctx, u, dir, y0, y1, R) {
   const { B, sinks, fit, rustic } = ctx;
-  const fA = fit.ashlar, fR = fit.rough;
+  const fA = fit ? fit.ashlar : null, fR = fit ? fit.rough : null;
   const sRough = sinks.rough || sinks.ashlar;
   const inRus = (v) => !!(rustic && v > rustic.v0 && v < rustic.v1);
   const cuts = _jc;
   cuts.length = 0;
   cuts.push(y0, y1);
-  for (let rg = fA.row(y0) + 1, v = fA.bed(rg); v < y1; v = fA.bed(++rg)) if (!inRus(v)) cuts.push(v);
+  if (fA) for (let rg = fA.row(y0) + 1, v = fA.bed(rg); v < y1; v = fA.bed(++rg)) if (!inRus(v)) cuts.push(v);
   if (rustic) {
     if (fR) for (let rg = fR.row(y0) + 1, v = fR.bed(rg); v < y1; v = fR.bed(++rg)) if (inRus(v)) cuts.push(v);
     for (const v of [rustic.v0, rustic.v1]) if (v > y0 && v < y1) cuts.push(v);
@@ -365,6 +369,17 @@ function block(B, seed, k) {
   return h;
 }
 function endBlocks(B) { setBlock(-1); B.setUV(); }
+/**
+ * Emit a mortar joint with `fn`: the current shading, lighter and greyer (pointing in
+ * lime mortar), no block tone.
+ */
+function mortar(B, fn) {
+  setBlock(-1); B.setUV();
+  const sh = B.shade;
+  B.shade = (u, v, w, nu, nv, nw, out) => { sh(u, v, w, nu, nv, nw, out); out[0] *= 1.14; out[1] *= 1.14; out[2] *= 1.16; };
+  fn();
+  B.shade = sh;
+}
 
 const _t0 = {}, _t1 = {};
 /**

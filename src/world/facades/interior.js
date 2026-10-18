@@ -28,10 +28,12 @@ import { goodsAtlas, GOODS_PAD } from './goods.js';
 //             the open shade, inverse-square falloff, fabric glowing through drawn curtains;
 //   shops     recessed downlights, spot tracks or pendants (cos^n lobes, so their pools
 //             scallop the walls and floor) of 2700–5000 K per shop (fKelvin: cafes warm,
-//             pharmacies cool white), window spots on the display zone; by day at ~7% of
-//             the daylight on the glass, so the interior sits at 5–15% of the shaded
-//             street's luminance and the reflection dominates wherever it shows anything
-//             bright.
+//             pharmacies cool white; a few hundred kelvin warmer at dusk), window spots on
+//             the display zone; by day at ~6% of the daylight on the glass, so the display
+//             zone sits at a quarter to a third of the shaded street's luminance, the back
+//             of the shop at a tenth, the lamps a few times their ceiling, and the
+//             reflection dominates wherever it shows anything bright. From dusk on the
+//             lamps follow the exposure within a physical range (SHOP_LEVEL).
 //
 // Every periodic pattern is filtered against the pixel footprint at its hit point
 // (pixel angle × path length / obliquity): stripes and grids fade to their mean before
@@ -75,7 +77,7 @@ export const SHOP_NIGHT_REF = 0.0035;
 export function shopLevels(exposure) {
   const e = Math.max(1e-3, exposure || 1);
   SHOP_LEVEL.uShopNight.value = Math.min(0.035, Math.max(0.0075, 4.0 / e));
-  SHOP_LEVEL.uSignNight.value = Math.min(0.02, Math.max(0.0028, 1.4 / e));
+  SHOP_LEVEL.uSignNight.value = Math.min(0.02, Math.max(0.0015, 0.8 / e));
 }
 
 /**
@@ -144,7 +146,7 @@ ${ROOM_LIGHT_GLSL}
 // at ~3–8% of the shaded street's luminance (a few hundred lux against tens of
 // thousands outside), so the glass is dominated by its reflection wherever that shows
 // anything bright, and the goods lit by the window spots read through it
-#define SHOP_DAY 0.045
+#define SHOP_DAY 0.06
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
 // 1/10 (-3.3 EV): the goods by the glass read at a quarter to a third of the shaded
@@ -158,7 +160,7 @@ ${ROOM_LIGHT_GLSL}
 // share of the glass's sky irradiance that the street canyon passes into the rooms (a
 // shop's display window is tall and wide, its floor and goods catch the street's light)
 #define CANYON 0.42
-#define CANYON_SHOP 0.55
+#define CANYON_SHOP 0.65
 uniform sampler2D uGoods;
 #define GOODS_PAD ${GOODS_PAD.toFixed(5)}
 uniform float uNight;
@@ -437,8 +439,11 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
         fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, 0.43, tz - 0.2 ), vec3( x1, 0.47, tz + 0.2 ), chC );
         fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb, 0.47, tz - 0.19 ), vec3( xb + 0.035, 0.88, tz + 0.19 ), chC );
         if ( mode == 0 ) {
-          fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0 + 0.02, 0.0, tz - 0.19 ), vec3( x1 - 0.02, 0.43, tz - 0.165 ), chC * 0.8 );
-          fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0 + 0.02, 0.0, tz + 0.165 ), vec3( x1 - 0.02, 0.43, tz + 0.19 ), chC * 0.8 );
+          // four legs
+          for ( int l = 0; l < 4; l++ ) {
+            float lx = ( l & 1 ) == 0 ? x0 + 0.02 : x1 - 0.045, lz = l < 2 ? tz - 0.185 : tz + 0.16;
+            fBoxT( h, ao, ro, ird, p, n, mode, vec3( lx, 0.0, lz ), vec3( lx + 0.025, 0.43, lz + 0.025 ), chC * 0.8 );
+          }
         }
       }
       gFin = FIN_FRIDGE;

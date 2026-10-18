@@ -51,10 +51,11 @@ const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street
 // canyon bounce: the share of the interreflection the environment map's single capture
 // point misses (its canyon model already holds the sunlit facades and floor): the
 // sunlit walls seen from the floor (up), the sunlit floor seen from below (down), and the
-// sunlit facade seen from the opposite one (cross; a horizontal light, so a shadow on the
-// sunlit facade itself gets none of its own warm bounce)
-// (the floor-to-floor share is small: open shade on the paving stays sky-blue)
-const BOUNCE = { up: 0.08, down: 0.12, cross: 0.22 };
+// sunlit facade seen from the opposite one (cross; a horizontal, diffuse-only light, so a
+// shadow on the sunlit facade itself gets none of its own warm bounce, and glass shows no
+// highlight from it)
+// (open shade on the paving stays sky-blue: the warm wall bounce it gets is small)
+const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22 };
 // exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
@@ -62,7 +63,7 @@ const BOUNCE = { up: 0.08, down: 0.12, cross: 0.22 };
 // curve (~180-200 sRGB), whites and glints clip, and the low sun's backlit street glows;
 // none of it once the sun has set (the dusk caps hold the exposure from then on)
 const KDAY = 1.3, EH_FULL = 1.9;
-const EXPO_LIFT = [[0.0, 0.76], [0.45, 0.76], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
+const EXPO_LIFT = [[0.0, 0.84], [0.45, 0.8], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
@@ -198,7 +199,8 @@ const env = {
     this.bounce.position.set(0, 1, 0);
     scene.add(this.bounce);
     // and across the street: the sunlit facade relighting the one opposite (a horizontal
-    // light from the sunlit side; dark when no facade is in the sun)
+    // light from the sunlit side; dark when no facade is in the sun). Its source is a
+    // whole facade, so the shared light loop gives it no specular (lights.js)
     this.crossBounce = new THREE.DirectionalLight(0x000000, 1);
     this.crossBounce.name = 'canyonCrossBounce';
     this.crossBounce.castShadow = false;

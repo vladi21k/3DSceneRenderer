@@ -1,10 +1,11 @@
 // Shop dressing: what makes a ground floor look traded in rather than built. On the
 // display glass posters (sales, photographs, menus, events, notices), banners and price
 // cards, spread so no design repeats within ~80 m of a street side; on the door an
-// "open" sticker, the opening hours or card decals; on the piers beside clothing, shoe and general stores merchandise hung
-// from wall hooks (shirts, dresses, trousers, scarves, bags: canvas cards in the awning
-// batch, so they take its cloth shading, translucency and sway in the wind) and price
-// boards. Everything is deterministic per opening and built for the near range only.
+// "open" sticker, the opening hours or card decals; on the piers beside clothing, shoe
+// and general stores merchandise hung from wall hooks (shirts, dresses, trousers,
+// scarves, bags: canvas cards in the awning batch, so they take its cloth shading,
+// translucency and sway in the wind) and price boards. Everything is deterministic per
+// opening and built for the near range only.
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, TplCache, VS, lin } from './geo.js';
@@ -45,7 +46,9 @@ export function dressRequest(o, type) {
   if (r.chance(0.2)) posters.push(['notice']);
   const banner = posters.length > 0 && BANNER_TYPES.has(type) && r.chance(0.3);
   const prices = r.chance(keen[1]) ? r.int(1, 3) : 0;
-  return { posters, banner, prices };
+  // a price board on the pier beside the shopfront, now and then
+  const pier = r.chance(type === 'cafe' ? 0.15 : 0.22);
+  return { posters, banner, prices, pier };
 }
 
 // design pools split into three phases (index mod 3 within each pool); every 40 m block of
@@ -67,8 +70,8 @@ function pools() {
 
 /**
  * Designs for the shops of one block (canonical order): [{id, req}] → Map(id → {posters:
- * [design], banner: design | -1, prices: [design]}). A request that finds its pools
- * used up in the block goes without (never a repeat).
+ * [design], banner: design | -1, prices: [design], pier: design | -1}). A request that
+ * finds its pools used up in the block goes without (never a repeat).
  */
 export function allocateBlock(shops, phase, seed) {
   const P = pools();
@@ -84,7 +87,7 @@ export function allocateBlock(shops, phase, seed) {
   };
   const out = new Map();
   for (const { id, req } of shops) {
-    const a = { posters: [], banner: -1, prices: [] };
+    const a = { posters: [], banner: -1, prices: [], pier: -1 };
     for (const cats of req.posters) {
       for (const c of cats) {
         const set = P.posters[c];
@@ -95,6 +98,7 @@ export function allocateBlock(shops, phase, seed) {
     }
     if (req.banner) a.banner = next('b', P.banners[phase]);
     for (let k = 0; k < req.prices; k++) { const d = next('r', P.prices[phase]); if (d >= 0) a.prices.push(d); }
+    if (req.pier) a.pier = next('r', P.prices[phase]);
     out.set(id, a);
   }
   return out;
@@ -323,7 +327,7 @@ function pier(plan, o, side, gy) {
  * price board: built in the wall frame (u, v, w out of the wall face).
  * Returns the number of items hung.
  */
-export function hangGoods(kit, ctx, o, type) {
+export function hangGoods(kit, ctx, o, type, al = null) {
   const kinds = KINDS[type];
   const r = RNG.from(o.id, 'hang');
   const plan = ctx.plan, frame = ctx.frame;
@@ -369,8 +373,9 @@ export function hangGoods(kit, ctx, o, type) {
       if (n && !both) break;
     }
   }
-  // a price board on the pier (fluorescent card on a dark board), now and then
-  if (r.chance(type === 'cafe' ? 0.15 : 0.22)) {
+  // a price board on the pier (fluorescent card on a dark board), now and then (its card
+  // given out with the window's, so it does not repeat along the street either)
+  if (al && al.pier >= 0) {
     const side = r.chance(0.5) ? 1 : -1;
     const gy = plan.groundAt(o.uc + side * (o.w / 2 + 0.4));
     let span = pier(plan, o, side, gy);
@@ -379,7 +384,7 @@ export function hangGoods(kit, ctx, o, type) {
       span = span[1] - span[0] > 1.5 ? span : null;
     }
     if (span) {
-      const cell = dressCell('prices', r.int(0, N_PRICES - 1));
+      const cell = dressCell('prices', al.pier);
       const h = r.range(0.32, 0.45), w = h * cell.aspect;
       if (w + 0.2 < span[1] - span[0]) {
         const uc = side > 0 ? span[1] - w / 2 - 0.12 : span[0] + w / 2 + 0.12;

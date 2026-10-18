@@ -65,7 +65,7 @@ const TONE = {
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
   // just above mid grey), easing off towards golden hour: the blacks come from the
   // curve, not from underexposure
-  midday: 1.10, pivot: 0.3,
+  midday: 1.12, pivot: 0.3,
   // soft black point (display units): by day the deepest shade, window recesses and dark
   // clothes sit near black as in a camera JPEG; little once the light is lamps and sky
   black: [0.032, 0.012],
@@ -488,9 +488,10 @@ const post = {
       const lr = wSun > 0 ? THREE.MathUtils.lerp(lrAll, Math.log(sun.x / sun.z), wSun) : lrAll;
       const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
       // warm-cool correction: under a third of the sun's cast by day (the warm sun on
-      // stone stays warm), a little at golden hour, about a third of the blue cast after
-      // sunset, none once the lamps set the balance
-      const kc = lerp(lerp(0.3, 0.18, ss(t, 0.3, 0.55)), 0.3, ss(t, 0.62, 0.75)) * (1 - ss(t, 0.84, 0.98));
+      // stone stays warm), a little at golden hour, none from sunset on: a daylight-
+      // balanced camera keeps the twilight blue (the warmth comes from the lamps), and
+      // later the lamp balance turns it bluer still
+      const kc = lerp(0.3, 0.18, ss(t, 0.3, 0.55)) * (1 - ss(t, 0.62, 0.78));
       // green-magenta: mostly corrected through sunset (the twilight sky's ozone tint
       // would turn shaded grey paving mauve), about a third once the lamps light the street
       // (sky-lit grey reads blue with G above R, the ~3000 K pools stay amber, not olive)
@@ -502,15 +503,16 @@ const post = {
       // comes from the lamps): the blue gain stays within 5% of the green one
       const keepBlue = ss(t, 0.66, 0.72);
       if (keepBlue > 0) wb.z = Math.max(wb.z, lerp(wb.z, 0.9025 * wb.x, keepBlue));
-      // the gains stay on the daylight locus: the green one within 1% of the geometric
-      // mean of red and blue (no green-magenta push, so the twilight sky and the limestone
-      // it lights never turn khaki or olive), and a neutral surface under the illuminant
-      // keeps G / mean(R, B) at most 1.0
+      // the gains stay on the daylight locus: the green one never more than 1% under the
+      // geometric mean of red and blue and at most 3% over it (no green push, so the
+      // twilight sky and the limestone it lights never turn khaki or olive; a little lift
+      // keeps twilit grey paving from going mauve), and a neutral surface under the
+      // illuminant keeps G / mean(R, B) within [0.97, 1.0]
       const gm = Math.sqrt(wb.x * wb.z);
       wb.y = THREE.MathUtils.clamp(wb.y, 0.99 * gm, 1.01 * gm);
       const gr = (ill.y * wb.y) / Math.max(0.5 * (ill.x * wb.x + ill.z * wb.z), 1e-12);
       if (gr > 1.0) wb.y = Math.max(wb.y / gr, 0.99 * gm);
-      else if (gr < 0.97) wb.y = Math.min(wb.y * 0.97 / gr, 1.01 * gm);
+      else if (gr < 0.97) wb.y = Math.min(wb.y * 0.97 / gr, 1.03 * gm);
       // and once the lamps light the street their pools stay amber, never yellow-green:
       // the green gain stays within 12% of the red one
       const lampW = ss(t, 0.84, 0.95);

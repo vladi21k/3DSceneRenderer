@@ -5,7 +5,7 @@ import { Agent, KIND, ST, TASK, LANE, MOB } from './agent.js';
 import { laneTarget, setLane, board, doorOf } from './behaviour.js';
 import {
   MAX_AGENTS, RANGE_BEHIND, RANGE_AHEAD, FAR_TAPER, FAR_SLACK, FAR_HARD, FAR_SPAWN_BAND, WALKER_DENSITY, MAX_SEATED,
-  MAX_PASSENGERS, STANDER_TARGET, STAND_NEAR, WALK_BY, WALK_MIN, HURRY, HURRY_BY, RIDE_D, BAND, AGENT_R, TRAM_LEN,
+  MAX_PASSENGERS, STANDER_TARGET, STAND_NEAR, WALK_BY, HURRY, HURRY_BY, RIDE_D, BAND, AGENT_R, TRAM_LEN,
   CLEAR_T, CLEAR_T_DREAMY, MOB_SHARE, STROLLER_V, WALKBIKE_V, CYCLE_V, CYCLE_CLEAR_T, FOOT,
 } from './constants.js';
 import { updateFoot, footBandGap, propPointDist2, footGap } from './footprint.js';
@@ -531,7 +531,7 @@ export class Population {
         const side = r.chance(0.5) ? 1 : -1;
         const sU = s0 + r.next() * BIN;
         // some of them are standing talking
-        if (r.chance(0.1) && c.counts.stand < STANDER_TARGET * 1.3 && sU - c.camU < RANGE_AHEAD - 60) {
+        if (r.chance(0.085) && c.counts.stand < STANDER_TARGET * 1.3 && sU - c.camU < RANGE_AHEAD - 60) {
           const n = this.spawnChat(sU, side);
           if (n) { want -= n; c.counts.stand += n; continue; }
         }
@@ -643,7 +643,7 @@ export class Population {
     // people standing about (talking, waiting, on the phone): a pair stepping out from behind
     // somebody far down the street now and then when there are too few
     // (counting those standing further down the street too: they come within 300 m soon)
-    if (k.stand300 + 0.6 * k.standFar < STAND_NEAR * 1.5 && k.stand300 < STAND_NEAR && (this.frame % 20) === 7 && this.free.length > 12) this._spawnChatHidden();
+    if (k.stand300 + 0.6 * k.standFar < STAND_NEAR * 1.25 && k.stand300 < STAND_NEAR && (this.frame % 20) === 7 && this.free.length > 12) this._spawnChatHidden();
     c.side.maintain(dt);
   }
 

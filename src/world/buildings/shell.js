@@ -15,7 +15,10 @@ import { partyWalls } from './party.js';
 // voussoirs and keystones, surrounds, sills, string courses, cornice (dentils,
 // modillions), parapet or tiled hip roof, plinth following the slope, steps,
 // rustication, quoins, pilasters, corner returns, party walls where neighbours step,
-// rooftop equipment. Output: one compact vertex/index set per material key.
+// rooftop equipment. Reveals of walled jambs continue the facade's coursing round the
+// arris; a rendered block (plan.style.finish) has its walls above the shop floor in a
+// colour wash with the dressing in stone. Output: one compact vertex/index set per
+// material key.
 
 /**
  * Detail levels: 0 near (< 200 m), 1 far (200–680 m). The default view is a 17° telephoto,

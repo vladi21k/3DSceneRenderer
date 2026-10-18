@@ -30,8 +30,9 @@ import { footInBand, footBandGap, footAt } from './footprint.js';
 // in the corridor goes out to one of its edges (|d| > TRACK_ZONE_HALF + 0.4), the side they can
 // reach before the tram on the way arrives (pair rules, _pairPre). While a unit is within 120 m,
 // the strip between the tracks (|d| < 0.9) is no refuge from the cab either.
-// Deadlines: out of the cab's band 3 s before it arrives (dreamy or not), absorbed people get a
-// bell request 5 s before, and the cab brakes for anybody who cannot make it out any more.
+// Deadlines: out of the cab's band CLEAR_DEADLINE seconds before it arrives (dreamy or not),
+// absorbed people get a bell request 5 s before, and the cab's driver brakes (Tram.obstacle) for
+// anybody who cannot make it out any more.
 
 const _ft = { fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 };
 const REQ_HALF = 1.6;   // people this close to the ride track centre may ask for the bell
@@ -190,18 +191,22 @@ export class TramWatch {
    *  within PAIR_GAP seconds of the cab's → _pw {T, tc0, tc1, tu0, tu1} (seconds from now), or null. */
   pairWindow(a) {
     if (!this.units.length) return null;
+    // (a tram standing still is no part of a pair: when it moves off, its own rules apply)
+    if (this.v < 0.5 && this.acc < 0.2) return null;
     const ahead = a.s - this.trainU;
     if (ahead < -(TRAM_LEN + 2) - a.extS) return null;                 // the cab has gone by
-    // (a standing cab pulls away at some point: it counts as a slow one)
-    const vc = Math.max(this.closing(a), this.v < 0.3 ? 1.2 : 0.5);
+    const vc = Math.max(this.closing(a), 0.5);
     const tc0 = ahead > 0 ? ahead / vc : 0, tc1 = (ahead + TRAM_LEN + 2) / vc;
     let best = null, bt = 1e9;
     for (const T of this.units) {
       const ah = T.sU - a.s;
       if (ah < -(T.len + 2) - a.extS || ah > 260) continue;
-      const vu = Math.max(this.uClosing(T, a), T.v < 0.3 ? 1.2 : 0.5);
+      // (a unit standing beside them is a wall the cab passes; one standing ahead is no pair yet)
+      const still = T.v < 0.5 && T.acc < 0.2;
+      if (still && ah > 0) continue;
+      const vu = Math.max(this.uClosing(T, a), 0.5);
       const tu0 = ah > 0 ? ah / vu : 0;
-      const tu1 = T.v < 0.3 && ah <= 0 ? 1e9 : (ah + T.len + 2) / vu;
+      const tu1 = still ? 1e9 : (ah + T.len + 2) / vu;
       if (tc0 > tu1 + PAIR_GAP || tu0 > tc1 + PAIR_GAP) continue;
       const t = Math.min(tc0, tu0);
       if (t < bt) { bt = t; best = T; _pw.tu0 = tu0; _pw.tu1 = tu1; }

@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 import { CONTACT_WIRE_HEIGHT, RAIL_CENTER } from '../../core/config.js';
-import { FONT } from './display.js';
 
 // Procedural model of the line's light-rail vehicles (the oncoming units): a 32 m,
 // 2.65 m wide, bidirectional low-floor tram in silver paint. Three bodies (two cab ends and
 // a centre body on its own bogie) joined by bellows; a raked windscreen running down into a
 // dark glass shield with LED lamps and the fleet number at its foot (headlights leading,
 // red tail lamps trailing) and the lit destination display behind its top band; four
-// double plug doors a side; roof fairings and a single-arm pantograph on the centre body
-// that reaches the contact wire.
+// double plug doors a side (push buttons on the leaves); the fleet number painted under
+// each cab's side windows; lower side panels jointed under the window pillars; roof
+// fairings ramping down at their ends and a single-arm pantograph on the centre body that
+// reaches the contact wire.
 //
 // Each body is built in its own frame: x to the right, y up from the rail top, local −z
 // forward with z = 0 at the body's leading end (the nose tip, or the articulation point).
@@ -20,7 +21,9 @@ import { FONT } from './display.js';
 // inside at night) and ws (lower panes, door glass), both with black frit over the
 // pillars so the glazing reads as one flush band, front (windscreen, trim and dark mask,
 // drawn per pixel), metal (pantograph) and lamps (unlit, from the display / lens atlas:
-// display, head / tail lamps, door indicators).
+// display, head / tail lamps, door indicators and buttons). The glazing's saloon is traced
+// in its shader (trams/materials.js); the centre body's glass uv runs from 100 so the
+// shader knows its door layout.
 
 export const CAR = {
   length: 32,
@@ -516,6 +519,44 @@ function noseEllipse(B, u0, y0, ru, ry, lift, col, uvRect = null, seg = 16, e = 
   for (let k = 0; k < seg; k++) B.tri(c, rim[k], rim[(k + 1) % seg]);
 }
 
+// Painted numerals (the fleet number): strokes in a 0.6 x 1 cell (x right, y up), drawn as
+// quads of a constant pen width so the figures read as signwriting, not a dot matrix.
+const ARC = (cx, cy, rx, ry, a0, a1, n = 10) => Array.from({ length: n + 1 }, (_, i) => {
+  const t = a0 + ((a1 - a0) * i) / n;
+  return [cx + rx * Math.cos(t), cy + ry * Math.sin(t)];
+});
+const PI = Math.PI;
+const NUMERALS = {
+  0: [ARC(0.3, 0.5, 0.26, 0.47, 0, 2 * PI, 20)],
+  1: [[[0.12, 0.8], [0.34, 0.98], [0.34, 0.02]]],
+  2: [[...ARC(0.3, 0.72, 0.25, 0.25, PI * 0.95, -PI * 0.2, 8), [0.04, 0.02], [0.58, 0.02]]],
+  3: [ARC(0.29, 0.74, 0.23, 0.24, PI * 0.9, -PI * 0.5, 9), ARC(0.29, 0.27, 0.26, 0.26, PI * 0.5, -PI * 0.88, 10)],
+  4: [[[0.46, 0.02], [0.46, 0.98], [0.03, 0.3], [0.6, 0.3]]],
+  5: [[[0.55, 0.98], [0.12, 0.98], [0.08, 0.55], ...ARC(0.3, 0.32, 0.26, 0.3, PI * 0.75, -PI * 0.85, 10)]],
+  6: [[...ARC(0.32, 0.6, 0.26, 0.4, PI * 0.35, PI, 6), ...ARC(0.3, 0.3, 0.26, 0.29, PI, 3 * PI, 16)]],
+  7: [[[0.03, 0.98], [0.58, 0.98], [0.2, 0.02]]],
+  8: [ARC(0.3, 0.75, 0.21, 0.23, 0, 2 * PI, 16), ARC(0.3, 0.27, 0.26, 0.27, 0, 2 * PI, 16)],
+  9: [[...ARC(0.3, 0.7, 0.26, 0.29, 0, 2 * PI, 16), ...ARC(0.28, 0.4, 0.26, 0.4, 0, -PI * 0.65, 6)]],
+};
+/** Quads ([[u, v] x 4], text frame: u along the line, v up, centred) of `text` at cap height h. */
+function numeralQuads(text, h) {
+  const pen = 0.12 * h, adv = 0.78 * h, out = [];
+  const x0 = -((text.length - 1) * adv + 0.6 * h) / 2;
+  for (let k = 0; k < text.length; k++) {
+    for (const line of NUMERALS[text[k]] || []) {
+      for (let i = 0; i < line.length - 1; i++) {
+        const [ax, ay] = line[i], [bx, by] = line[i + 1];
+        const pa = [x0 + k * adv + ax * h, (ay - 0.5) * h], pb = [x0 + k * adv + bx * h, (by - 0.5) * h];
+        const dx = pb[0] - pa[0], dy = pb[1] - pa[1], l = Math.hypot(dx, dy) || 1;
+        // a little longer than the segment so the joints close
+        const ex = (dx / l) * pen * 0.35, ey = (dy / l) * pen * 0.35, nx = (-dy / l) * pen / 2, ny = (dx / l) * pen / 2;
+        out.push([[pa[0] - ex + nx, pa[1] - ey + ny], [pb[0] + ex + nx, pb[1] + ey + ny], [pb[0] + ex - nx, pb[1] + ey - ny], [pa[0] - ex - nx, pa[1] - ey - ny]]);
+      }
+    }
+  }
+  return out;
+}
+
 // lamps at the foot of the mask (share of the half width, height, radius m) and the number box
 const LAMPS = { y: 0.745, inner: 0.47, outer: 0.6, r: 0.048 };
 const PLATE = { u: 0.095, y0: 0.66, y1: 0.775 };
@@ -534,23 +575,15 @@ function noseFittings(P, lod) {
   const ym = (PLATE.y0 + PLATE.y1) / 2, hy = (PLATE.y1 - PLATE.y0) / 2;
   noseEllipse(P.body, 0, ym, PLATE.u, hy, 0.005, [0.62, 0.62, 0.6], null, lod === 0 ? 16 : 8, 0.25);
   if (lod > 0) return;
-  const B = P.body, dot = 0.0125, gw = 6 * dot, digits = FLEET_NO;
-  const x0 = (digits.length * gw - dot) / 2;
-  for (let k = 0; k < digits.length; k++) {
-    const g = FONT[digits[k]];
-    for (let r = 0; r < 7; r++) {
-      for (let b = 0; b < 5; b++) {
-        if (!(g[r] & (16 >> b))) continue;
-        // viewer's left is +x: columns run towards −x
-        const xa = x0 - k * gw - b * dot, ya = ym + 3.5 * dot - r * dot;
-        const q = [[xa, ya], [xa - dot, ya], [xa - dot, ya - dot], [xa, ya - dot]].map(([x, y]) => {
-          const u = x / sideX(y);
-          capPoint(u, y, _cp); capNormal(u, y, _cn);
-          return B.vert(_cp.x + _cn.x * 0.0065, _cp.y + _cn.y * 0.0065, _cp.z + _cn.z * 0.0065, _cn.x, _cn.y, _cn.z, COL.black);
-        });
-        B.quad(q[0], q[1], q[2], q[3]);
-      }
-    }
+  const B = P.body;
+  for (const quad of numeralQuads(FLEET_NO, 0.075)) {
+    // viewer's left is +x: the text runs towards −x
+    const q = quad.map(([tu, tv]) => {
+      const x = -tu, y = ym + tv, u = x / sideX(y);
+      capPoint(u, y, _cp); capNormal(u, y, _cn);
+      return B.vert(_cp.x + _cn.x * 0.0065, _cp.y + _cn.y * 0.0065, _cp.z + _cn.z * 0.0065, _cn.x, _cn.y, _cn.z, COL.black);
+    });
+    B.quad(q[0], q[1], q[2], q[3]);
   }
   // a single long wiper parked diagonally up the screen's left side (seen from the front;
   // the viewer's left is +x), from its pivot near the bottom of the U
@@ -628,26 +661,19 @@ function doorLamps(B, zs, atlas, lod) {
   }
 }
 
-/** The fleet number painted on both sides under the cab's side window (LOD 0): black
- *  strokes from the 5 x 7 font, reading towards the viewer's right on either side. */
+/** The fleet number painted on both sides under the cab's side window (LOD 0), reading
+ *  towards the viewer's right on either side. */
 function sideNumber(B, lod) {
   if (lod > 0) return;
-  const dot = 0.02, gw = 6 * dot, yc = 0.64, zc = 1.9, digits = FLEET_NO;
-  const w = digits.length * gw - dot;
+  const yc = 0.64, zc = 1.9;
   for (const sx of [1, -1]) {
-    for (let k = 0; k < digits.length; k++) {
-      const g = FONT[digits[k]];
-      for (let r = 0; r < 7; r++) {
-        for (let b = 0; b < 5; b++) {
-          if (!(g[r] & (16 >> b))) continue;
-          // seen from the side the viewer's right is -z on the +x side, +z on the -x side
-          const a = -w / 2 + k * gw + b * dot;
-          const za = zc - sx * a, zb = zc - sx * (a + dot);
-          const ya = yc + 3.5 * dot - r * dot, yb = ya - dot;
-          const q = [[za, ya], [zb, ya], [zb, yb], [za, yb]].map(([z, y]) => B.vert(sx * (sideX(y) + 0.002), y, z, sx, 0, 0, COL.black));
-          B.quad(q[0], q[1], q[2], q[3]);
-        }
-      }
+    for (const quad of numeralQuads(FLEET_NO, 0.15)) {
+      // seen from the side the viewer's right is -z on the +x side, +z on the -x side
+      const q = quad.map(([tu, tv]) => {
+        const y = yc + tv;
+        return B.vert(sx * (sideX(y) + 0.002), y, zc - sx * tu, sx, 0, 0, COL.black);
+      });
+      B.quad(q[0], q[1], q[2], q[3]);
     }
   }
 }

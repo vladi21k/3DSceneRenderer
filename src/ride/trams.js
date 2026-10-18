@@ -19,7 +19,9 @@ import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMateri
 //  - Rendering (trams/model.js): three articulated bodies placed on the track each frame
 //    (each body on the chord between its articulation points), three levels of detail by
 //    projected size, a coarse depth-only hull for the sun's shadow, lamp levels following
-//    the light (headlights by day, lit saloon windows at dusk).
+//    the light (headlights by day, dimmer at night). Glass and paint mirror the street as
+//    post's anti-aliasing history saw it last frame (each unit's mirror planes are set
+//    here); the saloon behind the side glazing is traced in its shader, lit at dusk.
 //
 // Debug: tram=<s> starts the first unit with its nose at s.
 // API: app.trams.units[] = {id, s (leading nose, route s), speed (m/s, travelling towards
@@ -222,7 +224,8 @@ const trams = {
 
   /** Street reflection inputs (trams/materials.js): last frame's anti-aliased image and its
    *  view-projection from post, while it is valid for this frame (no cut, jump or zoom);
-   *  each visible unit's street planes (facade lines and paving height at its middle). */
+   *  each visible unit's mirror planes (mid-sidewalk, at most the facade lines) and paving
+   *  height at its middle. */
   _reflection(app) {
     const post = app.systems.post, cam = app.camera, rig = app.cameraRig, R = this.refl;
     // post's history: its `history` {texture, viewProj, valid} when it offers one, else the
