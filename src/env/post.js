@@ -667,8 +667,9 @@ const post = {
     const moving = app.dt > 0;
     let n = 0, dMax = 0;
     for (const u of trams.units) {
-      const prev = this._moverPrev.get(u.id);
-      this._moverPrev.set(u.id, u.s);
+      // (the unit's own previous-frame position when it publishes one)
+      let prev = u.prevS;
+      if (!Number.isFinite(prev)) { prev = this._moverPrev.get(u.id); this._moverPrev.set(u.id, u.s); }
       if (!u.root || !u.root.visible || !Number.isFinite(u.s) || u.active === false) continue;
       const len = u.length || 32, hw = (u.halfWidth || 1.3) + 0.08;
       const ds = prev === undefined || !moving ? 0 : route.delta(prev, u.s);

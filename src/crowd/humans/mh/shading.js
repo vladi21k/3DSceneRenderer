@@ -316,11 +316,14 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   vec3 H = normalize(L + V);
   vec2 cq = vHairQ * vec2(1400.0, 50.0);
   float j = hH3(vec3(floor(cq), vCastTex.x));
-  float clump = hH3(vec3(floor(vHairQ * vec2(420.0, 12.0)), vCastTex.x + 3.0));
+  // (locks: value noise ~6 mm across, 10 cm along the strands, so the highlight breaks into streaks even
+  // where single strands are far below a pixel)
+  float clump = hVNoise(vec3(vHairQ * vec2(160.0, 9.0), vCastTex.x * 7.1)) * 0.65 + hVNoise(vec3(vHairQ * vec2(520.0, 22.0), 3.3)) * 0.35;
   // (averaged where the clumps get near a pixel)
   float fq = smoothstep(0.4, 1.2, length(fwidth(cq)));
   j = mix(j, 0.5, fq);
-  clump = mix(clump, 0.5, max(fq, hFar));
+  clump = mix(clump, 0.5, hFar * 0.5);
+  clump = smoothstep(0.25, 0.75, clump);
   float sh = (j - 0.5) * 0.16;
   vec3 t1 = normalize(T + N * (0.09 + sh)), t2 = normalize(T - N * (0.14 - sh));
   float th1 = dot(t1, H), th2 = dot(t2, H);
@@ -329,7 +332,7 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.35);
   float br = mix(0.4 + 0.8 * j, 0.8, hFar);
-  return (0.026 * tint * s1 * br * (0.4 + 1.2 * clump) + hHairC * 0.32 * s2 * (0.55 + 0.5 * j)) * hAO * hStrand;
+  return (0.026 * tint * s1 * br * (0.15 + 1.5 * clump) + hHairC * 0.3 * s2 * (0.35 + 0.9 * clump) * (0.7 + 0.5 * j)) * hAO * hStrand;
 }
 `;
 
@@ -368,7 +371,9 @@ const FRAG_SURFACE = /* glsl */`
     vec2 cp = vHairQ * vec2(900.0, 33.0);
     float cn = hH3(vec3(floor(cp), vCastTex.x + 1.0));
     cn = mix(cn, 0.5, smoothstep(0.3, 1.0, length(fwidth(cp))));
-    col *= 0.9 + 0.2 * cn;
+    // (and locks a shade lighter or darker, ~6 mm across)
+    float lk = hVNoise(vec3(vHairQ * vec2(170.0, 8.0), vCastTex.x * 3.7 + 1.0));
+    col *= (0.9 + 0.2 * cn) * (0.86 + 0.28 * lk);
   }
   // beard shells (cast feature beardBase): which shell, how far out (0 root .. 1 the beard's surface)
   float bShell = 0.0;
@@ -811,7 +816,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       if ( hHairM > 0.0 ) {
         // the sky's sheen along the strands: hair in the shade keeps a soft highlight band
         vec3 upS = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * 0.3;
+        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * 0.12;
       }
       #endif`);
     shader.fragmentShader = fs;

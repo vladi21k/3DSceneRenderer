@@ -426,6 +426,9 @@ def build_one(cid, save_blend=False):
                 lengthen_skirt(d, vpart == 1, J, spec['bottom']['length'], waist_z)
             if want_bot and suit == 'female_elegantsuit01':
                 skirt_clearance(d, vpart == 1, body, J, share(body['W'], LEG) > 0.6)
+                n = level_hem(d, keep & ppart, 0.5 * (J['thighL'][2] + J['thighR'][2]))
+                if n:
+                    log(cid, f'skirt hem levelled ({n} vertices; back vent closed)')
         out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
         if kind == 'hair':
             out_parts[-1]['dec'] = fade_ch
@@ -1864,6 +1867,79 @@ def lengthen_skirt(d, vmask, J, length, waist_z):
     co[idx, 0] = cx + (co[idx, 0] - cx) * flare
     co[idx, 1] = cy + (co[idx, 1] - cy) * flare
     co[idx, 2] = zz
+
+
+def level_hem(d, pmask, hip_z):
+    """A skirt's hem: the open border loop below the hips is levelled (the kick pleat's V at the back
+    pulled down to the hem, so it closes) and relaxed along the loop (no sawtooth), and the flap of cloth
+    behind the vent drops to the hem line too."""
+    import numpy as np
+    from collections import defaultdict
+    co = d['co']
+    cnt = defaultdict(int)
+    for p in np.where(pmask)[0]:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        for k in range(len(vs)):
+            a, b = int(vs[k]), int(vs[(k + 1) % len(vs)])
+            cnt[(min(a, b), max(a, b))] += 1
+    adj = defaultdict(list)
+    for (a, b), c in cnt.items():
+        if c == 1:
+            adj[a].append(b)
+            adj[b].append(a)
+    seen = set()
+    moved = 0
+    hem_base = None
+    for v0 in list(adj):
+        if v0 in seen:
+            continue
+        comp, stack = [], [v0]
+        seen.add(v0)
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            for w in adj[v]:
+                if w not in seen:
+                    seen.add(w)
+                    stack.append(w)
+        z = co[comp, 2]
+        if z.min() > hip_z - 0.1 or len(comp) < 12:
+            continue
+        # the hem line: the loop's lowest band (a wrap's front edge or a vent may run up from it)
+        low = z[z < z.min() + 0.05]
+        base = float(np.median(low))
+        hem_base = base if hem_base is None else min(hem_base, base)
+        # level: nothing near the hem stays more than 6 mm above or below the hem line (the vent's V, a
+        # pointed tab)
+        for v in comp:
+            dz = co[v, 2] - base
+            if 0.006 < abs(dz) < 0.07:
+                co[v, 2] = base + np.sign(dz) * 0.006 * (1 - np.exp(-(abs(dz)) / 0.006))
+                moved += 1
+        # relax along the loop (the loop's own neighbours), only when it is a simple loop
+        if all(len(adj[v]) == 2 for v in comp) and np.ptp(co[comp, 2]) < 0.03:
+            order = [comp[0]]
+            prev = None
+            while True:
+                cur = order[-1]
+                nx = adj[cur][0] if adj[cur][0] != prev else adj[cur][1]
+                if nx == order[0] or len(order) > len(comp):
+                    break
+                order.append(nx)
+                prev = cur
+            if len(order) == len(comp):
+                P = co[order].astype(np.float64)
+                for _ in range(4):
+                    P = 0.5 * P + 0.25 * (np.roll(P, 1, 0) + np.roll(P, -1, 0))
+                co[order] = P
+    # cloth inside the skirt hanging below its hem (a fan or fold of the original's slit): up to the hem
+    if hem_base is not None:
+        vs = np.unique(np.concatenate([d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]] for p in np.where(pmask)[0]]))
+        for v in vs:
+            if co[v, 2] < hem_base - 0.006:
+                co[v, 2] = hem_base - 0.006
+                moved += 1
+    return moved
 
 
 def reweight_skirt(op, J, ge_index, waist_z):
