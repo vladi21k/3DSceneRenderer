@@ -26,6 +26,10 @@ import { cellRect } from './leafAtlas.js';
 //    crown shades as one volume. LOD 1 keeps 60% of the same cards, 1.25x larger; LOD 2
 //    35% of them (a subset of LOD 1), 1.6x larger, as flat quads. All levels share sites,
 //    cells, colour and occlusion, and carry about the same projected leaf area.
+// 5. Crown occlusion: a leaf (or limb) deep inside the crown only gets the light that passes
+//    the leaves around it, so its colour is scaled by mix(CROWN_AO_MIN, 1, exp(-k * depth)),
+//    depth = the shortest way out of the crown envelope (radially, up, along the crown
+//    normal): dark cores under a lit shell, as real crowns.
 //
 // Leaf vertex data (see vegMaterials.js):
 //   aVeg   = (branch phase, branch amplitude, flutter weight, interior occlusion)

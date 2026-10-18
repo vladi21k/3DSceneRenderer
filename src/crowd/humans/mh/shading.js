@@ -226,8 +226,19 @@ const FRAG_SURFACE = /* glsl */`
       float edge = smoothstep(0.0, 1.0, vBeard);
       // (light beards: grey and white strands over darker ones, the skin showing through)
       float light = smoothstep(0.08, 0.35, hLum(tint));
-      a *= clamp((edge * (1.25 - 0.3 * light) - sn) * 2.5 + 0.35, 0.0, 1.0);
-      col *= mix(0.6 + 0.6 * sn, 0.3 + 1.1 * sn * sn, light);
+      // shells: the base one dense and dark (the beard's depth), the outer two ever sparser strands
+      int shell = (hFlags & 64) != 0 ? 1 : (hFlags & 128) != 0 ? 2 : 0;
+      if (shell == 0) {
+        a *= clamp((edge * (1.25 - 0.3 * light) - sn) * 2.5 + 0.35, 0.0, 1.0);
+        col *= mix(0.5 + 0.5 * sn, 0.3 + 1.0 * sn * sn, light);
+      } else {
+        vec3 sp2 = vRest * vec3(1900.0, 210.0, 1900.0) + float(shell) * 7.31;
+        float s2 = hH3(floor(sp2));
+        s2 = mix(s2, 0.5, smoothstep(0.6, 2.5, length(fwidth(sp2))));
+        float dens = (shell == 1 ? 0.62 : 0.34) * edge;
+        a *= clamp((dens - s2) * 6.0 + 0.5, 0.0, 1.0);
+        col *= 0.85 + 0.5 * s2 + 0.15 * float(shell);
+      }
     }
     a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0);
     if (uA2C > 0.5) {

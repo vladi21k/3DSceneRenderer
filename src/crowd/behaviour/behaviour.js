@@ -27,7 +27,7 @@ const tmpBand = { lo: 0, hi: 0 };
 /** Lateral target (signed d) for a lane-following walker. */
 export function laneTarget(c, a) {
   // (overtaking somebody slower: the passing line for a few seconds)
-  let d = a.passT > c.time && a.state === ST.WALK ? a.passD : rawLane(c, a);
+  let d = a.ovT > c.time && a.state === ST.WALK ? a.ovD : rawLane(c, a);
   // nobody walks a ruler-straight line: a slow personal wander across the lane
   d += 0.25 * noise1(a.s / 8, a.wSeed);
   if (a.dodgeT > c.time) d += a.dodge;
@@ -87,7 +87,8 @@ function cabLane(c, a, d) {
     const bi = c.map.bandInAt(a.s, 1), bo = c.map.bandOutAt(a.s, 1);
     if (bo - bi > 1.3) return Math.max(RIDE_D + pdHi, bi + 0.75);
   }
-  return hi ? RIDE_D + pdHi + a.laneF * 0.35 : RIDE_D - pdLo - a.laneF * 1.1;
+  // (spread over the whole strip left of the ride track: no single file of everybody)
+  return hi ? RIDE_D + pdHi + a.laneF * 0.35 : Math.max(-(TRACK_ZONE_HALF - 0.45), RIDE_D - pdLo - a.laneF * 2.1);
 }
 
 function rawLane(c, a) {
@@ -275,7 +276,7 @@ function scanAhead(c, a) {
   // somebody standing in the way before any slower walker: round them
   if (stand && sGap < best) { blk = stand; best = sGap; bv = 0; }
   if (!blk) { a.hwV = 99; return; }
-  if (a.passT > t) { a.hwV = Math.max(bv + 0.25, bv + (best - 0.9) * 0.8); return; }
+  if (a.ovT > t) { a.hwV = Math.max(bv + 0.25, bv + (best - 0.9) * 0.8); return; }
   // room to pass beside it (and its group)? on its left first (people keep right)
   const B = blk.leader || blk;
   let glo = B.d - AGENT_R - (B.mob ? B.extLo : 0), ghi = B.d + AGENT_R + (B.mob ? B.extHi : 0);
@@ -285,7 +286,7 @@ function scanAhead(c, a) {
   for (const cc of dir > 0 ? [pL, pH] : [pH, pL]) {
     if (cc - half < sLo || cc + half > sHi) continue;
     if (!lineFree(c, a, B, cc - half, cc + half, look + 3)) continue;
-    a.passD = cc - cOff; a.passT = t + Math.min(8, Math.max(2.5, (best + 3 + 0.8 * B.followers.length) / Math.max(0.2, v - bv)));
+    a.ovD = cc - cOff; a.ovT = t + Math.min(8, Math.max(2.5, (best + 3 + 0.8 * B.followers.length) / Math.max(0.2, v - bv)));
     a.laneTT = 0; a.hwV = 99;
     c.tally('overtake');
     return;

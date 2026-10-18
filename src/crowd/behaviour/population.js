@@ -92,7 +92,7 @@ export class Population {
     a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; a.narrowS = null;
     a.mobPrev = 0; a.mobT = -1e9; a.footW = 1; a.stepT = 0; a.dmNext = 0; a.waitX = 0; a.waitXT = 0; a.pinned = false;
     a.uI = -1; a.uSide = 0; a.uClr = false; a.uOver = false; a.ubellT = 0; a.lookU = -1;
-    a.hwT = r.range(0, 0.25); a.hwV = 99; a.passT = 0; a.passD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1; a.boardU = -1; a.stnS = null;
+    a.hwT = r.range(0, 0.25); a.hwV = 99; a.ovT = 0; a.ovD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1; a.boardU = -1; a.stnS = null;
     this.stats.spawned++;
     return a;
   }

@@ -133,6 +133,7 @@ const humans = {
         for (let v = 0; v < c.raw.n; v++) if (T[v * 4 + 3] & 8) y = Math.min(y, Pp[v * 3 + 1]);
         if (y < Infinity) c.hemY = y; }
       beardFade(c);
+      beardShells(c);
       const parts = buildParts(c);
       B.fit = parts.fit; delete parts.fit;
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
@@ -823,6 +824,56 @@ function beardFade(c) {
     const d = dist.has(v) ? dist.get(v) : 0.035;
     T[v * 4 + 1] = Math.round(Math.min(1, d / 0.035) * 254);
   }
+}
+
+/**
+ * Two more beard shells (3 and 6 mm out along the normals, flags 64 / 128) on the near LODs, which the
+ * shader thins into strands: the beard gets depth and a soft, fuzzy outline instead of a painted mask.
+ */
+function beardShells(c) {
+  const raw = c.raw, T = raw.tex, I = raw.index;
+  const OFF = [0.003, 0.006], FL = [64, 128];
+  const vmap = new Map();             // base vertex -> index of its first new copy
+  const add = [];                     // base vertices that get copies
+  const per = [];                     // per LOD: base beard triangles
+  for (let l = 0; l < c.lods.length; l++) {
+    const L = c.lods[l], tris = [];
+    if (l <= 1) {
+      for (let t = L.start; t < L.start + L.count; t += 3) {
+        const a = I[t], b = I[t + 1], d = I[t + 2];
+        if (T[a * 4 + 2] !== 11 || (T[a * 4 + 3] & 2)) continue;
+        tris.push(a, b, d);
+        for (const v of [a, b, d]) if (!vmap.has(v)) { vmap.set(v, add.length); add.push(v); }
+      }
+    }
+    per.push(tris);
+  }
+  if (!add.length) return;
+  const n0 = raw.n, nAdd = add.length * OFF.length, n = n0 + nAdd;
+  const grow = (A, k) => { const B = new A.constructor(n * k); B.set(A.subarray(0, n0 * k)); return B; };
+  const pos = grow(raw.pos, 3), nrm = grow(raw.nrm, 4), uv = grow(raw.uv, 2), bi = grow(raw.bi, 4), bw = grow(raw.bw, 4), tex = grow(raw.tex, 4);
+  for (let k = 0; k < OFF.length; k++) {
+    for (let j = 0; j < add.length; j++) {
+      const v = add[j], w = n0 + k * add.length + j;
+      const nx = raw.nrm[v * 4] / 127, ny = raw.nrm[v * 4 + 1] / 127, nz = raw.nrm[v * 4 + 2] / 127;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      for (let i = 0; i < 3; i++) pos[w * 3 + i] = raw.pos[v * 3 + i] + [nx, ny, nz][i] / l * OFF[k];
+      for (let i = 0; i < 4; i++) { nrm[w * 4 + i] = raw.nrm[v * 4 + i]; bi[w * 4 + i] = raw.bi[v * 4 + i]; bw[w * 4 + i] = raw.bw[v * 4 + i]; tex[w * 4 + i] = raw.tex[v * 4 + i]; }
+      tex[w * 4 + 3] |= FL[k];
+      uv[w * 2] = raw.uv[v * 2]; uv[w * 2 + 1] = raw.uv[v * 2 + 1];
+    }
+  }
+  // the index list again, each near LOD followed by its shells
+  const extra = per.reduce((a, t) => a + t.length * OFF.length, 0);
+  const idx = new Uint32Array(I.length + extra);
+  let o = 0;
+  for (let l = 0; l < c.lods.length; l++) {
+    const L = c.lods[l], start = o;
+    idx.set(I.subarray(L.start, L.start + L.count), o); o += L.count;
+    for (let k = 0; k < OFF.length; k++) for (const v of per[l]) idx[o++] = n0 + k * add.length + vmap.get(v);
+    c.lods[l] = { ...L, start, count: o - start };
+  }
+  Object.assign(raw, { n, pos, nrm, uv, bi, bw, tex, index: idx });
 }
 
 /** Idle clip cycle (s): the talking idle has its own, longer, cycle. */

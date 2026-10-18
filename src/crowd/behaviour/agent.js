@@ -139,8 +139,8 @@ export class Agent {
     this.uI = -1; this.uSide = 0; this.uClr = false; this.uOver = false; this.ubellT = 0;
     this.lookU = -1;          // looking at this unit (−1: the cab tram)
     // walking behind slower people (behaviour.js headway): refresh countdown, speed cap, passing
-    // line (signed d) until passT, free width for the group's formation
-    this.hwT = 0; this.hwV = 99; this.passT = 0; this.passD = 0; this.freeW = 9;
+    // line (signed d) until ovT, free width for the group's formation
+    this.hwT = 0; this.hwV = 99; this.ovT = 0; this.ovD = 0; this.freeW = 9;
     this.platSt = null;       // station whose platform this walker uses as a sidewalk (platformOK)
     this.platSide = 1;        // ... and on which side
     this.boardU = -1;         // boarding this oncoming unit (left platform)
