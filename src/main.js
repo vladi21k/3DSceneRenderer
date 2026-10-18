@@ -163,10 +163,11 @@ async function main() {
   Object.assign(app, { monitor: mon, hitches: () => mon.hitches(), hitchReport: () => mon.report(), resetFrames: () => mon.reset() });
   {
     // CPU time of the shadow passes inside render (wraps any module's own hook)
+    // (fixed arity, not rest parameters: no argument array per call)
     const sm = renderer.shadowMap, smRender = sm.render;
-    sm.render = function (...a) {
+    sm.render = function (lights, scene, camera) {
       const t = performance.now();
-      try { return smRender.apply(this, a); } finally { mon.shadowMs += performance.now() - t; }
+      try { return smRender.call(this, lights, scene, camera); } finally { mon.shadowMs += performance.now() - t; }
     };
   }
 
@@ -258,11 +259,13 @@ export function touchPrograms(renderer) {
   }
 }
 
+const _p = new THREE.Vector3(), _t = new THREE.Vector3();
+
 /** Fallback / initial camera: on the ride track at s, looking along the route. */
 function placeCamera(app, s) {
   const { route, camera } = app;
-  const p = route.toWorld(s, TRACK_OFFSET, EYE_HEIGHT);
-  const t = route.toWorld(s + 60, TRACK_OFFSET, EYE_HEIGHT * 0.9);
+  const p = route.toWorld(s, TRACK_OFFSET, EYE_HEIGHT, _p);
+  const t = route.toWorld(s + 60, TRACK_OFFSET, EYE_HEIGHT * 0.9, _t);
   camera.position.copy(p);
   camera.lookAt(t);
   app.cameraS = s;
@@ -272,15 +275,14 @@ function placeCamera(app, s) {
 function applyInspectionView(app) {
   const v = app.params.view;
   if (!v) return;
-  const [s, d = TRACK_OFFSET, h = EYE_HEIGHT, yaw = 0, pitch = 0] = v;
+  const s = v[0], d = v[1] ?? TRACK_OFFSET, h = v[2] ?? EYE_HEIGHT, yaw = v[3] ?? 0, pitch = v[4] ?? 0;
   const { route, camera } = app;
-  const p = route.toWorld(s, d, h);
+  const p = route.toWorld(s, d, h, _p);
   const th = route.heading(s) + (yaw * Math.PI) / 180;
   const pr = (pitch * Math.PI) / 180;
-  const dir = new THREE.Vector3(Math.cos(th) * Math.cos(pr), Math.sin(pr), -Math.sin(th) * Math.cos(pr));
   camera.position.copy(p);
   camera.up.set(0, 1, 0);
-  camera.lookAt(p.clone().add(dir));
+  camera.lookAt(_t.set(p.x + Math.cos(th) * Math.cos(pr), p.y + Math.sin(pr), p.z - Math.sin(th) * Math.cos(pr)));
   app.cameraS = s;
 }
 

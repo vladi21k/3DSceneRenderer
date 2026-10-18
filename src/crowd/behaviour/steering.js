@@ -53,7 +53,8 @@ export class Steering {
     this.head.fill(-1);
     this.propCell.fill(0);
     this.s0 = this.c.camU - RANGE_BEHIND - 8;
-    for (const a of agents) {
+    for (let i = 0, n = agents.length; i < n; i++) {
+      const a = agents[i];
       a.next = -1;
       if (!a.active) continue;
       const k = this._cell(a);
@@ -76,8 +77,9 @@ export class Steering {
   /** Hard separation of footprints: a stroller or a bicycle never overlaps a body or another
    *  stroller / bicycle (capsule against body and capsule against capsule). Each agent of an
    *  overlapping pair takes half of the correction (all of it against someone seated), rate
-   *  limited like every hard correction; `lim` caps it (a moving bicycle is barely shoved). */
-  _separate(a, lim) {
+   *  limited like every hard correction; this.sepLim caps it (a moving bicycle is barely shoved). */
+  _separate(a) {
+    const lim = this.sepLim;
     if (a.simple || a.state === ST.SEATED) return;
     if (!a.mob && !this._propAround(a)) return;
     const agents = this.c.population.agents;
@@ -112,7 +114,8 @@ export class Steering {
     this.buildGrid(agents);
     this.frame++;
     const dt1 = dt;
-    for (const a of agents) {
+    for (let i = 0, n = agents.length; i < n; i++) {
+      const a = agents[i];
       if (!a.active) continue;
       // out in a side street? (its own frame: s is metric there)
       c.side.mark(a);
@@ -163,14 +166,18 @@ export class Steering {
       // hard corrections never move anyone faster than a brisk step
       this.maxC = Math.max(0.02, 2 * Math.min(3.2, Math.max(1.6, vmax)) * dt);
       const s1 = a.s, d1 = a.d;
-      this._separate(a, this.maxC);
+      this.sepLim = this.maxC;
+      this._separate(a);
       const s2 = a.s, d2 = a.d;
-      this._constrain(a, gathered, a.s - prevS);
+      // (numbers handed over in fields: a double argument to a call that is not inlined is boxed)
+      this.cGathered = gathered; this.cMoved = a.s - prevS;
+      this._constrain(a);
       a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
       // all corrections together stay within a brisk step too
       const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
       if (cl > this.maxC) { const f = this.maxC / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
-      tram.constrain(a, prevD, dt);
+      a.prevD = prevD; a.stepDt = dt;
+      tram.constrain(a);
       // velocity from the actual motion (constraints included): the gait follows what happened
       const ms = (a.s - prevS) * k, md = a.d - prevD;
       a.vs = ms / dt; a.vd = md / dt;
@@ -229,14 +236,17 @@ export class Steering {
     a.d += a.vd * dt;
     this.maxC = Math.max(0.02, 2 * Math.max(1.6, v) * dt);
     const s1 = a.s, d1 = a.d;
-    this._separate(a, 0.5 * this.maxC);
+    this.sepLim = 0.5 * this.maxC;
+    this._separate(a);
     const s2 = a.s, d2 = a.d;
-    this._constrain(a, false, 0);
+    this.cGathered = false; this.cMoved = 0;
+    this._constrain(a);
     a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
     const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
     const lim = 0.5 * this.maxC;
     if (cl > lim) { const f = lim / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
-    tram.constrain(a, prevD, dt);
+    a.prevD = prevD; a.stepDt = dt;
+    tram.constrain(a);
     const ms = (a.s - prevS) * k, md = a.d - prevD;
     a.vs = ms / dt; a.vd = md / dt;
     // held back by a constraint: the bicycle really slows down
@@ -255,7 +265,8 @@ export class Steering {
     const k = kAt(c, a);
     a.s += (a.stepS * f) / k; a.d += a.stepD * f;
     updateFoot(a);
-    c.tram.constrain(a, prevD, dt);
+    a.prevD = prevD; a.stepDt = dt;
+    c.tram.constrain(a);
     a.vs = ((a.s - prevS) * k) / dt; a.vd = (a.d - prevD) / dt;
     a.moving = true; a.vmaxCur = 1.6;
   }
@@ -377,7 +388,7 @@ export class Steering {
     // with the tram near, obstacles by the ride track are passed on the side away from it
     const tramNear = c.tram.near(a);
     const U = a.uI >= 0 ? c.tram.unitById(a.uI) : null;   // an oncoming unit near too
-    const n = map.gatherCircles(a.s, 3.5);
+    const n = map.gatherAt(a, 3.5);
     const sp = len2(a.vs, a.vd), des = this.des, dsp = len2(des.vs, des.vd);
     // heading for the look-ahead: the actual motion, or where they want to go when (nearly) stopped
     let es = 0, ed = 0;
@@ -459,14 +470,14 @@ export class Steering {
   }
 
   // ---------------------------------------------------------------- hard constraints
-  /** `gathered`: the obstacle query of this step (around the position before the move, which
-   *  was `moved` metres ago along s) is still in map.q*. Corrections are rate limited. */
-  _constrain(a, gathered = false, moved = 0) {
-    const c = this.c, map = c.map, maxC = this.maxC;
+  /** this.cGathered: the obstacle query of this step (around the position before the move, which
+   *  was this.cMoved metres ago along s) is still in map.q*. Corrections are rate limited. */
+  _constrain(a) {
+    const c = this.c, map = c.map, maxC = this.maxC, gathered = this.cGathered;
     this._s0 = a.s;
     // circle obstacles: resolve overlaps
-    const n = gathered ? map.qN : map.gatherCircles(a.s, 1.2);
-    const shift = gathered ? moved : 0;
+    const n = gathered ? map.qN : map.gatherAt(a, 1.2);
+    const shift = gathered ? this.cMoved : 0;
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
       const dx = map.qDS[q] - shift, dy = map.cD[i] - a.d;
@@ -495,7 +506,7 @@ export class Steering {
     }
     const side = a.d >= 0 ? 1 : -1;
     // café terraces and platforms: out through the nearest edge
-    if (!a.noRect) { this._rects(a, side, maxC); if (a.mob && a.fpR > 0) this._propRects(a, side, maxC); }
+    if (!a.noRect) { this._rects(a, side); if (a.mob && a.fpR > 0) this._propRects(a, side); }
     // facades and cross street mouths
     if (a.inDoor) {
       const dr = a.door;
@@ -549,8 +560,8 @@ export class Steering {
   }
 
   /** The ends of a stroller / bicycle against café terraces and platforms. */
-  _propRects(a, side, maxC) {
-    const map = this.c.map;
+  _propRects(a, side) {
+    const map = this.c.map, maxC = this.maxC;
     const nr = map.rectsNear(a.s, side);
     const pr = a.fpR * 0.6;
     for (let q = 0; q < nr; q++) {
@@ -569,8 +580,8 @@ export class Steering {
   }
 
   /** Push a body out of café / platform footprints through the edge of least penetration. */
-  _rects(a, side, maxC) {
-    const map = this.c.map;
+  _rects(a, side) {
+    const map = this.c.map, maxC = this.maxC;
     const nr = map.rectsNear(a.s, side);
     for (let q = 0; q < nr; q++) {
       const r = map.rq[q];
@@ -595,9 +606,10 @@ export class Steering {
   }
 
   // ---------------------------------------------------------------- facing, gait, gaze
-  /** dist: horizontal distance the figure actually moved since the last output. */
-  animate(a, dt, humans, dist) {
-    const c = this.c;
+  /** a.moveDist: horizontal distance the figure actually moved since the last output (dt: the
+   *  crowd's frame step). */
+  animate(a, humans) {
+    const c = this.c, dt = c.dt, dist = a.moveDist;
     const still = a.state === ST.SEATED || a.state === ST.PLATFORM || a.state === ST.STAND || a.state === ST.WAIT;
     // smoothed actual speed (the steering velocity is the real displacement rate)
     const spRaw = a.state === ST.SEATED ? 0 : len2(a.vs, a.vd);

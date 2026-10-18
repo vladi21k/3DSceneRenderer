@@ -46,34 +46,62 @@ export class RNG {
   }
 }
 
+// Lattice values of the noises in [-1, 1]: hash2(i, seed) (1D) and hash2(hash2(x, y), seed)
+// (2D), written out in place into _L (bit-identical to calling hash2). The noises run per
+// vertex, per agent and per frame: a call that returns a hash (a uint32 above the small-
+// integer range) or a double is not always inlined, and then every return value is a heap
+// allocation; here only the noise's own result can be.
+const _L = new Float64Array(4);
+const _INV = 1 / 4294967296;
+
+/** _L[0] = value at i0, _L[1] = value at i1. */
+function _lattice1(i0, i1, seed) {
+  const sb = Math.imul((seed | 0) + 0x632be5ab, 0xc2b2ae35);
+  let h = Math.imul((i0 | 0) ^ 0x9e3779b9, 0x85ebca6b) ^ sb;
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12; h = Math.imul(h, 0x297a2d39); h ^= h >>> 15;
+  _L[0] = ((h >>> 0) * _INV) * 2 - 1;
+  h = Math.imul((i1 | 0) ^ 0x9e3779b9, 0x85ebca6b) ^ sb;
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12; h = Math.imul(h, 0x297a2d39); h ^= h >>> 15;
+  _L[1] = ((h >>> 0) * _INV) * 2 - 1;
+}
+
+/** _L[k] = value at (k & 1 ? x1 : x0, k & 2 ? y1 : y0). */
+function _lattice2(x0, x1, y0, y1, seed) {
+  const sb = Math.imul((seed | 0) + 0x632be5ab, 0xc2b2ae35);
+  for (let k = 0; k < 4; k++) {
+    const a = k & 1 ? x1 : x0, b = k & 2 ? y1 : y0;
+    let h = Math.imul((a | 0) ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul((b | 0) + 0x632be5ab, 0xc2b2ae35);
+    h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12; h = Math.imul(h, 0x297a2d39); h ^= h >>> 15;
+    // (the outer hash takes the inner one as an int32: (uint32 | 0) is h itself)
+    h = Math.imul(h ^ 0x9e3779b9, 0x85ebca6b) ^ sb;
+    h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12; h = Math.imul(h, 0x297a2d39); h ^= h >>> 15;
+    _L[k] = ((h >>> 0) * _INV) * 2 - 1;
+  }
+}
+
 /** Smooth 1D value noise in [-1,1], deterministic per seed. */
 export function noise1(x, seed = 0) {
   const i = Math.floor(x), f = x - i;
-  const a = (hash2(i, seed) / 4294967296) * 2 - 1;
-  const b = (hash2(i + 1, seed) / 4294967296) * 2 - 1;
+  _lattice1(i, i + 1, seed);
+  const a = _L[0], b = _L[1];
   const u = f * f * (3 - 2 * f);
   return a + (b - a) * u;
 }
-
-// lattice value of the 2D noises in [-1,1] (a module function, not a closure: the noises run
-// per vertex and per agent every frame, and a closure per call is garbage)
-const _h2 = (a, b, seed) => (hash2(hash2(a, b), seed) / 4294967296) * 2 - 1;
 
 /** Smooth 2D value noise in [-1,1], deterministic per seed. */
 export function noise2(x, y, seed = 0) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
   const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-  const a = _h2(ix, iy, seed), b = _h2(ix + 1, iy, seed), c = _h2(ix, iy + 1, seed), d = _h2(ix + 1, iy + 1, seed);
+  _lattice2(ix, ix + 1, iy, iy + 1, seed);
+  const a = _L[0], b = _L[1], c = _L[2], d = _L[3];
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
-
-const _pm = (i, n) => ((i % n) + n) % n;
 
 /** 1D value noise in [-1,1] that repeats every `period` lattice cells (period: integer ≥ 1). */
 export function noise1p(x, period, seed = 0) {
   const i = Math.floor(x), f = x - i;
-  const a = (hash2(_pm(i, period), seed) / 4294967296) * 2 - 1;
-  const b = (hash2(_pm(i + 1, period), seed) / 4294967296) * 2 - 1;
+  _lattice1(((i % period) + period) % period, (((i + 1) % period) + period) % period, seed);
+  const a = _L[0], b = _L[1];
   const u = f * f * (3 - 2 * f);
   return a + (b - a) * u;
 }
@@ -81,9 +109,10 @@ export function noise1p(x, period, seed = 0) {
 /** 2D value noise in [-1,1], periodic in x with `periodX` lattice cells. */
 export function noise2p(x, y, periodX, seed = 0) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
-  const x0 = _pm(ix, periodX), x1 = _pm(ix + 1, periodX);
+  const x0 = ((ix % periodX) + periodX) % periodX, x1 = (((ix + 1) % periodX) + periodX) % periodX;
   const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-  const a = _h2(x0, iy, seed), b = _h2(x1, iy, seed), c = _h2(x0, iy + 1, seed), d = _h2(x1, iy + 1, seed);
+  _lattice2(x0, x1, iy, iy + 1, seed);
+  const a = _L[0], b = _L[1], c = _L[2], d = _L[3];
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 

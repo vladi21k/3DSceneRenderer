@@ -41,6 +41,7 @@ const _on = new THREE.Color(1, 1, 1), _off = new THREE.Color(PED_DARK, PED_DARK,
 const _y = new THREE.Vector3(0, 1, 0);
 const _t = new THREE.Matrix4(), _r = new THREE.Matrix4().makeRotationY(Math.PI);
 const _c = new THREE.Color();
+const _lvd = new Float64Array(LEVEL_DIST.length);
 
 const catenary = {
   name: 'catenary',
@@ -350,18 +351,15 @@ const catenary = {
     let st = this.pedStates.get(key);
     if (st !== undefined) return st;
     st = 2;
-    // front: leading end, dir: travel direction (+1 / -1 in s), len: body behind the front
-    const check = (front, dir, len, speed) => {
-      const ahead = route.delta(front, sc) * dir;   // crossing ahead of the front (m)
-      if (ahead <= 0) return -ahead < len + CLEAR_M ? 0 : 2;  // over it, or gone
-      const v = Math.max(0, speed || 0), redAt = Math.max(RED_DIST, v * RED_SEC);
-      if (ahead < redAt) return 0;
-      return v > 0.3 && (ahead - redAt) / v < BLINK_SEC ? 1 : 2;
-    };
     const tr = app.train;
-    if (tr && Number.isFinite(tr.s)) st = Math.min(st, check(tr.s, 1, TRAM_LEN, tr.speed));
+    if (tr && Number.isFinite(tr.s)) st = Math.min(st, tramCheck(route, sc, tr.s, 1, TRAM_LEN, tr.speed));
     const units = app.trams && app.trams.units;
-    if (units) for (const u of units) if (u && u.active !== false && Number.isFinite(u.s)) st = Math.min(st, check(u.s, u.dir || -1, u.length || TRAM_LEN, u.speed));
+    if (units) {
+      for (let i = 0; i < units.length; i++) {
+        const u = units[i];
+        if (u && u.active !== false && Number.isFinite(u.s)) st = Math.min(st, tramCheck(route, sc, u.s, u.dir || -1, u.length || TRAM_LEN, u.speed));
+      }
+    }
     this.pedStates.set(key, st);
     return st;
   },
@@ -402,9 +400,20 @@ const catenary = {
     this.aspectMat.emissiveIntensity = 0.55 * (1 - 0.93 * U.uNight.value);
     const sCam = app.cameraS ?? app.startS, k = this._lens();
     for (const e of this.live) this.setDetail(e, sCam);
-    this.batches.updateLevels(app.camera.position, LEVEL_DIST.map((d) => d * k));
+    for (let i = 0; i < LEVEL_DIST.length; i++) _lvd[i] = LEVEL_DIST[i] * k;
+    this.batches.updateLevels(app.camera.position, _lvd);
   },
 };
+
+/** Pedestrian light state at crossing sc for one tram: front = its leading end, dir =
+ *  travel direction (+1 / -1 in s), len = body behind the front (0 red, 1 flash, 2 green). */
+function tramCheck(route, sc, front, dir, len, speed) {
+  const ahead = route.delta(front, sc) * dir;   // crossing ahead of the front (m)
+  if (ahead <= 0) return -ahead < len + CLEAR_M ? 0 : 2;  // over it, or gone
+  const v = Math.max(0, speed || 0), redAt = Math.max(RED_DIST, v * RED_SEC);
+  if (ahead < redAt) return 0;
+  return v > 0.3 && (ahead - redAt) / v < BLINK_SEC ? 1 : 2;
+}
 
 /** Sink of an upright base of radius r (m) into the sloping paving at (s, d), so its
  *  downhill edge still touches the ground. */

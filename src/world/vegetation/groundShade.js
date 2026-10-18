@@ -34,6 +34,9 @@ function falloff(r) {
 export function createGroundShade(app) {
   const mat = new THREE.ShadowMaterial({ color: 0x000000, opacity: 1, transparent: true, depthWrite: false, side: THREE.DoubleSide });
   mat.name = 'vegetation.groundShade';
+  // one pass: a transparent DoubleSide material is otherwise drawn back then front, and
+  // three re-evaluates its program on each pass (CPU time and garbage every frame)
+  mat.forceSinglePass = true;
   mat.fog = false;
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = -2;

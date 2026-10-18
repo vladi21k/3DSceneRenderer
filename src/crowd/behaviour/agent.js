@@ -164,5 +164,17 @@ export class Agent {
     this.pauseFace = 0; this.pauseT = 0; // a pause about to start on arrival: facing and duration
     this.sideA = 0; this.sideEnd = 0; this.stuckN = 0; // side street: sidewalk line (a), how far in to go, retries
     this.laneUrgent = false;  // the lane target moved out of a tram's berth: stepping over briskly
+    this.wards = [];          // children seated with this adult (population)
+    this.spawnHidden = false; // spawned where nobody could see it (statistics)
+    // per-frame scratch (fields rather than number arguments: a double passed to a call that is
+    // not inlined is boxed, and that is garbage per agent and per frame)
+    this.prevD = 0; this.stepDt = 0; // lateral position before this step, and the step's dt (tram.constrain)
+    this.moveDist = 0;        // horizontal distance the figure moved since the last output (gait)
+    this.front = 0; this.frontN = -1; // tram.js frontFor of this frame, and the frame it is for
+    this.ws = 0; this.wd = 0; this.wValid = false; // (s, d) of the world position last computed (crowd._output)
+    this.hT = 0;              // platform height under the feet there
+    this.rh = 0; this.rhS = 0; this.rhValid = false; // route heading at rhS (refreshed every 0.2 m)
+    this.wvx = 0; this.wvz = 0; // world velocity of the figure (m/s, actual displacement)
+    this.lnN = 0; this.lnJ = 0; this.fwF = 0; this.fwR = 0; this.fwTT = 0; // slow noise (pace, heading jitter, group slot wander), 4 Hz
   }
 }

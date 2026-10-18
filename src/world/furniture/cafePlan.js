@@ -31,7 +31,7 @@ const CROWN_K = 0.85;                 // share of a tree's crown radius the cano
 const RELAX_ITERS = 40;               // chair relaxation passes
 const MAX_SHIFT = 0.32;               // furthest a chair moves from its planned spot (m)
 const VALANCE = 0.02;                 // valance flare beyond the nominal canopy size
-export const UMB_SIZES = [24, 36];    // canopy size buckets (decimetres)
+export const UMB_SIZES = [24, 40];    // canopy size buckets (decimetres): the layout plans 3.0-4.0 m
 
 const rect = (x, y, yaw, hu, hv, du = 0) => {
   const ux = Math.cos(yaw), uy = Math.sin(yaw);
@@ -209,7 +209,7 @@ export function planCafe(cafe, route, seed, baseType, layout = null) {
       const half = sz / 20 + VALANCE;
       let lo = Math.max(xMin + half, prev ? prev.x + prev.half + half + CANOPY_GAP : -1e9);
       let hi = Math.min(xMax - half, next ? next.x - (next.u.size / 2 + VALANCE) - half - CANOPY_GAP + 0.6 : 1e9);
-      if (hi < lo) continue;
+      if (hi < lo) { (globalThis.__umbWhy ||= {}).range = (globalThis.__umbWhy.range || 0) + 1; continue; }
       const x0 = Math.max(lo, Math.min(hi, src[n].x));
       // free-standing base: scan outwards from the planned spot
       const cands = [];
@@ -217,11 +217,13 @@ export function planCafe(cafe, route, seed, baseType, layout = null) {
         const dx = (k2 % 2 ? 1 : -1) * Math.ceil(k2 / 2) * 0.05;
         const x = x0 + dx;
         if (x < lo - 1e-6 || x > hi + 1e-6) continue;
-        for (const dy of [0, 0.12, -0.12, 0.25, -0.25]) cands.push([x, u.d + dy, Math.abs(dx) + Math.abs(dy) * 1.5]);
+        for (const dy of [0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4, 0.55, -0.55]) cands.push([x, u.d + dy, Math.abs(dx) + Math.abs(dy) * 1.5]);
       }
       cands.sort((a, b) => a[2] - b[2]);
+      let anyFree = false;
       for (const [x, y] of cands) {
         if (!canopyFree(x, y, half)) continue;
+        anyFree = true;
         for (const [kind, yaw] of [['slab', 0], ['slab', Math.PI / 4], ['disc', 0]]) {
           if (baseClear(x, y, kind, yaw) >= GAP) { best = { x, y, sz, half, base: kind, baseYaw: yaw }; break; }
         }
@@ -231,11 +233,12 @@ export function planCafe(cafe, route, seed, baseType, layout = null) {
       // pole through the centre hole of a table inside the allowed range
       let bt = null, bd = 9;
       for (const t of tables) {
-        if (usedTable.has(t) || t.x < lo || t.x > hi || Math.abs(t.y - u.d) > 0.9 || !canopyFree(t.x, t.y, half)) continue;
+        if (usedTable.has(t) || t.x < lo || t.x > hi || Math.abs(t.y - u.d) > 1.3 || !canopyFree(t.x, t.y, half)) continue;
         const dd = Math.abs(t.x - x0) + Math.abs(t.y - u.d);
         if (dd < bd) { bd = dd; bt = t; }
       }
       if (bt) { usedTable.add(bt); best = { x: bt.x, y: bt.y, sz, half, base: 'table', table: bt.ti }; }
+      else { const W = (globalThis.__umbWhy ||= {}); const k = anyFree ? 'base' : 'canopy'; W[k] = (W[k] || 0) + 1; if (!anyFree) { const fc = cands.length ? cands[0] : null; if (fc && layout) { const hw = layout.halfWidth(S(fc[0]), cafe.side); if (Math.abs(fc[1]) + half > hw - FACADE_GAP) W.facade = (W.facade || 0) + 1; else W.crown = (W.crown || 0) + 1; } } }
     }
     if (!best) continue; // nothing fits: this part of the terrace stays open to the sky
     const r2 = RNG.from(seed, 'umb', cafe.id, i);

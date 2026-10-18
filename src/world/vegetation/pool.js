@@ -55,6 +55,20 @@ const _pm = new THREE.Matrix4();
 const _one = { geometry: { boundingSphere: _sph }, matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false, shadowProxy: { active: true }, shadowSphere: _sph } };
 const _all = { boundingSphere: new THREE.Sphere(new THREE.Vector3(), 1e7), matrixWorld: new THREE.Matrix4(), userData: { thinCaster: false } };
 
+/** World bounding sphere of instance i (geometry sphere bs under the instance matrix at
+ *  md[i * 16]) into _sph, without Sphere.applyMatrix4's garbage (Math.max of three). */
+function instanceSphere(bs, md, i) {
+  const o = i * 16, c = bs.center, x = c.x, y = c.y, z = c.z;
+  _sph.center.set(md[o] * x + md[o + 4] * y + md[o + 8] * z + md[o + 12],
+    md[o + 1] * x + md[o + 5] * y + md[o + 9] * z + md[o + 13],
+    md[o + 2] * x + md[o + 6] * y + md[o + 10] * z + md[o + 14]);
+  const sx = md[o] * md[o] + md[o + 1] * md[o + 1] + md[o + 2] * md[o + 2];
+  const sy = md[o + 4] * md[o + 4] + md[o + 5] * md[o + 5] + md[o + 6] * md[o + 6];
+  const sz = md[o + 8] * md[o + 8] + md[o + 9] * md[o + 9] + md[o + 10] * md[o + 10];
+  _sph.radius = bs.radius * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
+  return _sph;
+}
+
 /** World texel (m) of the shadow cascade a frustum belongs to (0: not a cascade). */
 const _texels = new WeakMap();
 function cascadeTexel(scene, f) {
@@ -131,6 +145,32 @@ export class IndirectLists {
     }
     return t;
   }
+}
+
+// Front-to-back order without garbage: TypedArray.sort with a comparator copies the
+// array onto the JS heap on every call, so each entry is packed as (quantised depth,
+// instance index) into one float64 and the keys are sorted natively.
+const IDX_SPAN = 1048576;  // 2^20 instance indices
+function sortByDepth(order, n, z, key) {
+  if (n < 2) return;
+  for (let k = 0; k < n; k++) {
+    const i = order[k];
+    key[k] = Math.floor(Math.min(Math.max(z[i] + 64, 0), 30000) * 256) * IDX_SPAN + i;
+  }
+  key.subarray(0, n).sort();
+  for (let k = 0; k < n; k++) order[k] = key[k] % IDX_SPAN;
+}
+
+/** Fill a target's multi-draw arrays and its pass texture from an instance order. */
+function writeList(order, cnt, target, lists, key, info, gInfo, bpe) {
+  const starts = target._multiDrawStarts, counts = target._multiDrawCounts, ind = lists.begin();
+  for (let k = 0; k < cnt; k++) {
+    const i = order[k], g = gInfo[info[i].geometryIndex];
+    starts[k] = g.start * bpe;
+    counts[k] = g.count;
+    ind[k] = i;
+  }
+  return lists.commit(key, cnt);
 }
 
 export class InstancePool {
@@ -233,27 +273,20 @@ export class InstancePool {
       const it = info[i];
       if (!it.visible || !it.active) continue;
       const gid = it.geometryIndex;
-      _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_m4.fromArray(md, i * 16));
+      instanceSphere(gInfo[gid].boundingSphere, md, i);   // (the pool mesh sits at the origin)
       if (!_vf.intersectsSphere(_sph)) continue;
       const d = _sph.center.sub(_cp).dot(_fw);
       z[i] = d;
       if (split && !(lod[i * 3] === gid && d < PRE_DIST)) far[nf++] = i; else near[nn++] = i;
     }
-    const byDepth = (a, b) => z[a] - z[b];
-    if (this.sort) { near.subarray(0, nn).sort(byDepth); far.subarray(0, nf).sort(byDepth); }
-    const write = (order, cnt, target, lists, key) => {
-      const starts = target._multiDrawStarts, counts = target._multiDrawCounts, ind = lists.begin();
-      for (let k = 0; k < cnt; k++) {
-        const i = order[k], g = gInfo[info[i].geometryIndex];
-        starts[k] = g.start * bpe;
-        counts[k] = g.count;
-        ind[k] = i;
-      }
-      return lists.commit(key, cnt);
-    };
-    V.nearTex = write(near, nn, m, this.lists, camera);
+    if (this.sort) {
+      if (!this._key || this._key.length < z.length) this._key = new Float64Array(z.length);
+      sortByDepth(near, nn, z, this._key);
+      sortByDepth(far, nf, z, this._key);
+    }
+    V.nearTex = writeList(near, nn, m, this.lists, camera, info, gInfo, bpe);
     V.near = nn;
-    if (split) { V.farTex = write(far, nf, this.far, this.farLists, camera); V.far = nf; }
+    if (split) { V.farTex = writeList(far, nf, this.far, this.farLists, camera, info, gInfo, bpe); V.far = nf; }
     V.bpe = bpe;
   }
 
@@ -327,7 +360,7 @@ export class InstancePool {
           const cur = gid === lod[i * 3] ? 0 : gid === lod[i * 3 + 1] ? 1 : 2;
           gid = lod[i * 3 + Math.max(cur, minLv)];
         }
-        _sph.copy(gInfo[gid].boundingSphere).applyMatrix4(_m4.fromArray(md, i * 16).premultiply(m.matrixWorld));
+        instanceSphere(gInfo[gid].boundingSphere, md, i);
         if (!frustum.intersectsObject(_one)) continue;
         const g = gInfo[gid];
         starts[n] = g.start * bpe;
@@ -449,7 +482,8 @@ export class VegetationPools {
         let lod;
         if (forced !== null) lod = forced;
         else {
-          const px = (e.size * k) / Math.max(1, Math.hypot(e.x - cp.x, e.y - cp.y, e.z - cp.z));
+          const dx = e.x - cp.x, dy = e.y - cp.y, dz = e.z - cp.z;   // (Math.hypot of 3 allocates)
+          const px = (e.size * k) / Math.max(1, Math.sqrt(dx * dx + dy * dy + dz * dz));
           const cur = e.lod;
           // thresholds move by HYST against the current level so a tree on a boundary stays put
           const t0 = LOD_PX[0] * (cur === 0 ? 1 - HYST : 1 + HYST);

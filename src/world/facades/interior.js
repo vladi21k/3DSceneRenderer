@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
+import { params } from '../../core/params.js';
 import { goodsAtlas, GOODS_PAD } from './goods.js';
 
 // Interior-mapped window glass.
@@ -146,13 +147,13 @@ ${ROOM_LIGHT_GLSL}
 // at ~3–8% of the shaded street's luminance (a few hundred lux against tens of
 // thousands outside), so the glass is dominated by its reflection wherever that shows
 // anything bright, and the goods lit by the window spots read through it
-#define SHOP_DAY 0.06
+#define SHOP_DAY 0.08
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
 // 1/10 (-3.3 EV): the goods by the glass read at a quarter to a third of the shaded
 // street, the back of the shop at a tenth, as in a photograph of a sunny street
 #define DAY_CAP ( 1.0 / 32.0 )
-#define DAY_CAP_SHOP ( 1.0 / 10.0 )
+#define DAY_CAP_SHOP ( 1.0 / 7.0 )
 // brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
 // the daylight on the glass: a ceiling panel ~3x the wall around it, a downlight a bright
 // point
@@ -160,7 +161,7 @@ ${ROOM_LIGHT_GLSL}
 // share of the glass's sky irradiance that the street canyon passes into the rooms (a
 // shop's display window is tall and wide, its floor and goods catch the street's light)
 #define CANYON 0.42
-#define CANYON_SHOP 0.65
+#define CANYON_SHOP 0.85
 uniform sampler2D uGoods;
 #define GOODS_PAD ${GOODS_PAD.toFixed(5)}
 uniform float uNight;
@@ -1507,6 +1508,9 @@ if ( fMask < 0.999 ) {
   float fNVr = saturate( dot( normal, normalize( vViewPosition ) ) );
   fRT = fGlassRT( fNVr );
   radiance *= fSmudge * fRT.x / max( 0.04 * material.dfg.x + material.dfg.y, 1e-3 );
+  #ifdef FAC_DBG_M
+  radiance *= 1.0 / max( fSmudge * fRT.x, 1e-3 );
+  #endif
 
   // interior: camera ray expressed in room space
   vec3 rd = vec3( dot( Vw, T ), Vw.y, -dot( Vw, N ) );
@@ -1530,6 +1534,12 @@ if ( fMask < 0.999 ) {
 const FRAG_OUT = /* glsl */`
 // transmission through both faces of the pane (with their inter-reflections)
 float fT = mix( 1.0, fRT.y, fGlass );
+#if defined( FAC_DBG_R ) || defined( FAC_DBG_M )
+fInterior = vec3( 0.0 );
+#endif
+#ifdef FAC_DBG_T
+totalSpecular *= fMask;
+#endif
 vec3 outgoingLight = ( totalDiffuse + totalSpecular ) * max( fGlass, fMask ) + totalEmissiveRadiance + fInterior * fT;
 `;
 
@@ -1592,10 +1602,13 @@ export function createInteriorGlass(M, { far = false } = {}) {
   });
   m.name = far ? 'facades.glassInteriorFar' : 'facades.glassInterior';
   if (far) { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
+  // debug switch facglass=r (reflection only) | t (transmitted room only) | m (a perfect mirror)
+  const dbg = { r: 'FAC_DBG_R', t: 'FAC_DBG_T', m: 'FAC_DBG_M' }[params.str('facglass', '')] || '';
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uNight = U.uNight;
     shader.uniforms.uEmGain = gain;
+    if (dbg) shader.fragmentShader = `#define ${dbg}\n` + shader.fragmentShader;
     shader.uniforms.uShopNight = SHOP_LEVEL.uShopNight;
     shader.uniforms.uSunDir = U.uSunDir;
     shader.uniforms.uSunColor = U.uSunColor;
@@ -1611,7 +1624,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v8';
+  m.customProgramCacheKey = () => 'facades.glassInterior.v8' + dbg;
   return m;
 }
 

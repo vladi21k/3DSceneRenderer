@@ -270,47 +270,58 @@ class CrowdSim {
 
   _output(dt) {
     const route = this.route, map = this.map, H = this.humans, o = this.out, ck = this.check;
-    for (const a of this.population.agents) {
+    const agents = this.population.agents;
+    // (indexed loops, and no double arguments where a field will do: per agent and per frame,
+    // a boxed number is garbage)
+    for (let i = 0, n = agents.length; i < n; i++) {
+      const a = agents[i];
       if (!a.active) continue;
-      // platforms raise the feet
-      let hT = 0;
-      if ((a.noRect || a.platformOK) && a.state !== ST.SEATED) hT = map.platformHeight(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d));
-      else if (a.state === ST.SEATED && a.feature && a.feature.platH) hT = a.feature.platH;   // a stop's shelter bench
-      a.h += Math.max(-1.5 * dt, Math.min(1.5 * dt, hT - a.h));
-      if (dt === 0 || a.fresh) a.h = hT;
-      // (out in a side street: its own frame and level)
-      if (this.side.mark(a)) this.side.toWorld(a.s, a.d, a.h, _v); else route.toWorld(a.s, a.d, a.h, _v);
-      a.x = _v.x; a.y = _v.y; a.z = _v.z;
+      // nobody moved since the last frame (seated, standing, waiting, a far walker on its off
+      // frame): the world position, the side street test and the platform height still hold
+      const moved = a.fresh || dt === 0 || !a.wValid || a.s !== a.ws || a.d !== a.wd;
+      if (moved || a.h !== a.hT) {
+        if (moved) {
+          // platforms raise the feet
+          let hT = 0;
+          if ((a.noRect || a.platformOK) && a.state !== ST.SEATED) hT = map.platformHeightA(a);
+          else if (a.state === ST.SEATED && a.feature && a.feature.platH) hT = a.feature.platH;   // a stop's shelter bench
+          a.hT = hT;
+        }
+        const hT = a.hT;
+        // (eased at 1.5 m/s, landing exactly on the target)
+        const dh = hT - a.h, step = 1.5 * dt;
+        if (dt === 0 || a.fresh || (dh <= step && dh >= -step)) a.h = hT; else a.h += dh > 0 ? step : -step;
+        // (out in a side street: its own frame and level)
+        if (this.side.mark(a)) this.side.toWorld(a.s, a.d, a.h, _v);
+        else if (a.h === 0) route.toWorld(a.s, a.d, 0, _v);
+        else route.toWorld(a.s, a.d, a.h, _v);
+        a.x = _v.x; a.y = _v.y; a.z = _v.z;
+        a.ws = a.s; a.wd = a.d; a.wValid = true;
+      }
       // distance actually covered since the last frame (drives the gait phase)
       let dist = 0;
+      a.wvx = 0; a.wvz = 0;
       if (a.pValid && !a.fresh) {
         const dx = a.x - a.px, dz = a.z - a.pz;
         dist = Math.sqrt(dx * dx + dz * dz);
+        // world velocity of the figure (m/s, from the actual displacement; post's per-object blur)
+        if (dt > 0) { a.wvx = dx / dt; a.wvz = dz / dt; }
         if (ck.on && dt > 0 && dist > 3 * Math.max(1.6, a.vmaxCur) * dt * (a.simple ? 2 : 1) + 0.05) {
           ck.teleports++;
           if (ck.teleLog.length < 10) ck.teleLog.push({ t: +this.time.toFixed(2), dist: +dist.toFixed(2), rel: +(a.s - this.camU).toFixed(1), d: +a.d.toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], lead: !!a.leader });
         }
       }
       a.px = a.x; a.pz = a.z; a.pValid = true;
-      this.steering.animate(a, dt, H, dist);
-      if (a.fresh) {
-        // appearances in plain view, by distance (spawns that passed a hidden test are not counted)
-        a.fresh = false;
-        if (this.time > 1 && (a.src === 'seat' || a.src === 'platform') && this.vis.inView(a.s, a.d)) {
-          const r = Math.abs(a.s - this.camU), k = r < 450 ? 0 : r < 660 ? 1 : 2;
-          this.featureIn[k]++;
-        }
-        if (this.time > 1 && !a.spawnHidden && this.vis.inView(a.s, a.d)) {
-          const side = a.d >= 0 ? 1 : -1, m = map.mouthAt(a.s, side);
-          const behind = a.inDoor || Math.abs(a.d) > (m ? map.mouthLine(m, side) : map.facadeAt(a.s, side)) - 0.2;
-          if (!behind) {
-            const dist2 = Math.abs(a.s - this.camU);
-            this.popIn[dist2 < 100 ? 0 : dist2 < 250 ? 1 : dist2 < 450 ? 2 : 3]++;
-            this.popSrc[a.src] = (this.popSrc[a.src] || 0) + 1;
-          }
-        }
+      a.moveDist = dist;
+      this.steering.animate(a, H);
+      if (a.fresh) this._arrived(a);
+      // world yaw: the route's heading at s (refreshed every 0.2 m for walkers: it turns by less
+      // than 0.2 degrees over that; every frame for riders, whose lean comes from its rate)
+      if (a.inSide) a.heading = this.side.heading(a.s, a.d, a.alpha);
+      else {
+        if (!a.rhValid || a.mob === MOB.CYCLE || a.s - a.rhS > 0.2 || a.rhS - a.s > 0.2) { a.rh = route.heading(a.s); a.rhS = a.s; a.rhValid = true; }
+        a.heading = a.rh - PI / 2 - a.alpha;
       }
-      a.heading = a.inSide ? this.side.heading(a.s, a.d, a.alpha) : route.heading(a.s) - PI / 2 - a.alpha;
       if (a.mob === MOB.CYCLE) {
         // lean into the turn: from the world turn rate (route bends included), smoothed
         let lean = 0;
@@ -336,6 +347,26 @@ class CrowdSim {
     }
   }
 
+  /** Statistics of a fresh figure's first frame: appearances in plain view, by distance (spawns
+   *  that passed a hidden test are not counted). */
+  _arrived(a) {
+    const map = this.map;
+    a.fresh = false;
+    if (this.time > 1 && (a.src === 'seat' || a.src === 'platform') && this.vis.inView(a.s, a.d)) {
+      const r = Math.abs(a.s - this.camU), k = r < 450 ? 0 : r < 660 ? 1 : 2;
+      this.featureIn[k]++;
+    }
+    if (this.time > 1 && !a.spawnHidden && this.vis.inView(a.s, a.d)) {
+      const side = a.d >= 0 ? 1 : -1, m = map.mouthAt(a.s, side);
+      const behind = a.inDoor || Math.abs(a.d) > (m ? map.mouthLine(m, side) : map.facadeAt(a.s, side)) - 0.2;
+      if (!behind) {
+        const dist2 = Math.abs(a.s - this.camU);
+        this.popIn[dist2 < 100 ? 0 : dist2 < 250 ? 1 : dist2 < 450 ? 2 : 3]++;
+        this.popSrc[a.src] = (this.popSrc[a.src] || 0) + 1;
+      }
+    }
+  }
+
   /** Independent check of the hard guarantee from the world positions handed to the renderer. */
   _selfCheck(app) {
     const ck = this.check, route = this.route, tr = app.train;
@@ -351,7 +382,7 @@ class CrowdSim {
         if (ck.wallLog.length < 8) ck.wallLog.push({ s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), wall: +map.wallAt(a.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], kind: KIND_NAMES[a.kind], mob: a.mob, src: a.src });
       }
       if (a.state !== ST.SEATED && a.kind !== KIND.PASSENGER) {
-        const n = map.gatherCircles(a.s, 1);
+        const n = map.gatherAt(a, 1);
         for (let q = 0; q < n; q++) {
           const i = map.qI[q], ds = map.qDS[q], dd = map.cD[i] - a.d;
           if (ds * ds + dd * dd < (map.cR[i] + AGENT_R * 0.5) ** 2) { ck.overlap++; break; }

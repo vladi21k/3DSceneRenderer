@@ -32,6 +32,9 @@ import * as THREE from 'three';
 
 const WHITE = new THREE.Color(1, 1, 1);
 const FADE_MS = 450;
+// numeric instance keys (batch number * KEY_SPAN + instance id): string keys would make
+// garbage on every lookup
+const KEY_SPAN = 16777216;
 const LOD_STEP = 0.5;   // m of eye movement between two passes over the instance levels
 // shadows: cascade texel (m) above which at least level 1 / the coarsest level is drawn,
 // and the smallest instance (bounding radius in texels) still worth a shadow
@@ -136,7 +139,8 @@ export function patchFade(m) {
  *  A null level geometry hides that part at that distance (e.g. tableware beyond 30 m). */
 export const proto = (name, parts, lods = null) => {
   const ps = parts.filter((p) => p && p.geo).map((p) => ({ ...p, geos: Array.isArray(p.geo) ? p.geo : [p.geo] }));
-  return { name, parts: ps, lods: lods && ps.some((p) => p.geos.length > 1) ? lods : null };
+  const lv = lods && ps.some((p) => p.geos.length > 1) ? lods : null;
+  return { name, parts: ps, lods: lv, lods2: lv ? lv.map((d) => d * d) : null };
 };
 const levelGeo = (part, lv) => part.geos[Math.min(lv, part.geos.length - 1)];
 const anyGeo = (part) => part.geos.find(Boolean);
@@ -159,15 +163,22 @@ function levelFor(lods, d, cur) {
   return lv;
 }
 
+/** levelFor on squared distances (lods2: squared switch distances; 0.8464 = 0.92²). */
+function levelFor2(lods2, d2, cur) {
+  let lv = 0;
+  while (lv < lods2.length && d2 > lods2[lv] * (cur > lv ? 0.8464 : 1.0)) lv++;
+  return lv;
+}
+
 export class BatchSet {
   constructor(name = 'furniture') {
     this.name = name;
     this.batches = new Map();
     this.records = new Set();
     this.syncFrame = -1;
-    this.fades = new Map();            // id + batch key -> active fade
+    this.fades = new Map();            // instance key (see KEY_SPAN) -> active fade
     // depth-only twins of the shadow-casting parts (see header)
-    this.shadow = { key: '|shadow', geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null, sph: new Float32Array(256) };
+    this.shadow = { key: 4095 * KEY_SPAN, geos: new Map(), bm: null, live: 0, free: [], shown: 0, levels: null, sph: new Float32Array(256) };
     this._frustums = {};
     this.hideEmpty = false;
   }
@@ -186,7 +197,7 @@ export class BatchSet {
     for (const part of p.parts) {
       const key = part.mat.uuid;
       let b = this.batches.get(key);
-      if (!b) { b = { key: `|${this.batches.size}`, mat: part.mat, geos: new Map(), bm: null, live: 0, free: [], shown: 0, dirty: false, sph: new Float32Array(256) }; this.batches.set(key, b); }
+      if (!b) { b = { key: this.batches.size * KEY_SPAN, mat: part.mat, geos: new Map(), bm: null, live: 0, free: [], shown: 0, dirty: false, sph: new Float32Array(256) }; this.batches.set(key, b); }
       for (const g of part.geos) if (g && !b.geos.has(g)) b.geos.set(g, -1);
       part.batch = b;
       part.cast = part.cast !== false;
@@ -540,11 +551,14 @@ export class BatchSet {
     // levels are re-chosen once the eye has moved LOD_STEP (switches have 8 % hysteresis),
     // or when chunks came or went; fades advance every frame
     const L = this._lodEye || (this._lodEye = { x: 1e9, z: 1e9, n: -1 });
-    const recheck = Math.hypot(eye.x - L.x, eye.z - L.z) > LOD_STEP || this.records.size !== L.n || this._lodDirty;
-    if (recheck) { L.x = eye.x; L.z = eye.z; L.n = this.records.size; this._lodDirty = false; }
-    for (const rec of recheck ? this.records : []) {
-      for (const it of rec.lod) {
-        const lv = levelFor(it.p.lods, Math.hypot(it.x - eye.x, it.z - eye.z), it.lv);
+    const ex = eye.x, ez = eye.z, mx = ex - L.x, mz = ez - L.z;
+    const recheck = mx * mx + mz * mz > LOD_STEP * LOD_STEP || this.records.size !== L.n || this._lodDirty;
+    if (recheck) { L.x = ex; L.z = ez; L.n = this.records.size; this._lodDirty = false; }
+    if (recheck) for (const rec of this.records) {
+      const items = rec.lod;
+      for (let q = 0, nq = items.length; q < nq; q++) {
+        const it = items[q], dx = it.x - ex, dz = it.z - ez;
+        const lv = levelFor2(it.p.lods2, dx * dx + dz * dz, it.lv);
         if (lv === it.lv) continue;
         const old = it.lv;
         it.lv = lv;
@@ -587,20 +601,28 @@ export class BatchSet {
         }
       }
     }
-    // advance the fades
-    for (const [key, f] of this.fades) {
-      const t = (now - f.t0) / FADE_MS;
-      if (t < 1) { this._alpha(f.b, f.id, f.out ? -t - 1e-4 : t); continue; }
-      this.fades.delete(key);
-      shownChanged = true;
-      if (f.out) {
-        const tl = f.rec.temps;
-        for (let i = 0; i < tl.length; i += 2) if (tl[i] === f.b && tl[i + 1] === f.id) { tl.splice(i, 2); break; }
-        this._free(f.b, f.id);
-      } else this._alpha(f.b, f.id, 1);
-    }
-    if (shownChanged) this._showBatches();
+    // advance the fades (forEach with a bound callback: no iterator entries per frame)
+    this._fadeNow = now;
+    this._fadeEnded = false;
+    if (this.fades.size) this.fades.forEach(this._stepFade || (this._stepFade = this._advanceFade.bind(this)));
+    if (shownChanged || this._fadeEnded) this._showBatches();
     this._flush();
+  }
+
+  _advanceFade(f, key) {
+    const t = (this._fadeNow - f.t0) / FADE_MS;
+    if (t < 1) { this._alpha(f.b, f.id, f.out ? -t - 1e-4 : t); return; }
+    this.fades.delete(key);
+    this._fadeEnded = true;
+    if (f.out) {
+      const tl = f.rec.temps;
+      for (let i = 0; i < tl.length; i += 2) {
+        if (tl[i] !== f.b || tl[i + 1] !== f.id) continue;
+        tl[i] = tl[tl.length - 2]; tl[i + 1] = tl[tl.length - 1]; tl.length -= 2;  // (order is free)
+        break;
+      }
+      this._free(f.b, f.id);
+    } else this._alpha(f.b, f.id, 1);
   }
 
   stats() {

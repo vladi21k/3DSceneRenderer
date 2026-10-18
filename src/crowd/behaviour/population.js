@@ -33,7 +33,7 @@ const MOB_LIST = [[MOB.CYCLE, MOB_SHARE.cycle], [MOB.STROLLER, MOB_SHARE.strolle
 export class Population {
   constructor(c) {
     this.c = c;
-    this.agents = Array.from({ length: MAX_AGENTS }, (_, i) => { const a = new Agent(i); a.followers = []; a.wards = []; return a; });
+    this.agents = Array.from({ length: MAX_AGENTS }, (_, i) => new Agent(i));
     this.free = [];
     for (let i = MAX_AGENTS - 1; i >= 0; i--) this.free.push(i);
     this.serial = 0;
@@ -105,6 +105,7 @@ export class Population {
     a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; a.narrowS = null;
     a.mobPrev = 0; a.mobT = -1e9; a.footW = 1; a.stepT = 0; a.dmNext = 0; a.waitX = 0; a.waitXT = 0; a.pinned = false;
     a.uI = -1; a.uSide = 0; a.uClr = false; a.uOver = false; a.ubellT = 0; a.lookU = -1;
+    a.wValid = false; a.rhValid = false; a.fwTT = 0; a.lnN = 0; a.lnJ = 0; a.frontN = -1; a.wvx = 0; a.wvz = 0; a.moveDist = 0; a.h = 0; a.hT = 0;
     a.hwT = r.range(0, 0.25); a.hwV = 99; a.ovT = 0; a.ovD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1; a.boardU = -1; a.stnS = null;
     this.stats.spawned++;
     return a;
@@ -478,7 +479,7 @@ export class Population {
     }
     if (!a.noRect && map.rectInner(a.s, side, ad, AGENT_R * 0.5)) return false;
     if (!a.inDoor && ad > map.reachAt(a.s, side, (x) => c.unwrap(x))) return false;
-    map.gatherCircles(a.s, 2);
+    map.gatherAt(a, 2);
     for (let k = 0; k < map.qN; k++) {
       const i = map.qI[k], ds = map.qDS[k], dd = map.cD[i] - a.d;
       if (ds * ds + dd * dd < (map.cR[i] + AGENT_R + 0.1) ** 2) return false;

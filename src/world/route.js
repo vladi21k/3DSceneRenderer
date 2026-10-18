@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { loopNoise1, loopNoise2 } from '../core/rng.js';
+import { noise1p, noise2p } from '../core/rng.js';
 
 // The tram line: a closed loop through the city built from straights, clothoid
 // transitions and circular arcs, with gentle grades. Everything in the world is
@@ -169,6 +169,8 @@ export class Route {
     this.length = length;
     const t = integrate(pieces, length);
     this.surfaceEnabled = true; // toWorld / groundY include surface(s, d); the paving mesh follows it
+    // cell counts of surface()'s loop noises (wavelengths 320, 6.5 and 2.3 m), as loopNoise1/2 compute them
+    this._surfCells = [320, 6.5, 2.3].map((w) => Math.max(1, Math.round(length / w)));
     this.n = t.n;
     this.x = t.x; this.z = t.z; this.th = t.th; this.k = t.k;
     // distribute the tiny residual (table end overshoot) so the seam at s = L is exact
@@ -289,10 +291,13 @@ export class Route {
     const sw = this.wrap(s);
     const ramp = Math.min(1, a / 1.2);                       // ease in from the corridor edge
     const fall = a * 0.016;                                  // ~1.6 % rise towards the facades
-    const L = this.length;   // all noise is periodic in L so the loop has no seam
-    const tilt = Math.sign(d) * a * 0.013 * loopNoise1(sw, L, 320, 101);   // hillside: ±1.3 %
-    const dd = Math.sign(d) * (a + SURF_EDGE);
-    const settle = 0.02 * loopNoise2(sw, dd, L, 6.5, 5.5, 7) + 0.01 * loopNoise2(sw, dd, L, 2.3, 2.1, 13);
+    // all noise is periodic in L so the loop has no seam (loopNoise1 / loopNoise2 with their
+    // cell counts precomputed: the same values, without the per-call setup)
+    const L = this.length, c = this._surfCells;
+    const sd = d < 0 ? -1 : 1;
+    const tilt = sd * a * 0.013 * noise1p((sw / L) * c[0], c[0], 101);   // hillside: ±1.3 %
+    const dd = sd * (a + SURF_EDGE);
+    const settle = 0.02 * noise2p((sw / L) * c[1], dd / 5.5, c[1], 7) + 0.01 * noise2p((sw / L) * c[2], dd / 2.1, c[2], 13);
     return fall + tilt + settle * ramp * ramp;
   }
 
@@ -304,12 +309,11 @@ export class Route {
     const i = this._at(s), f = this._f;
     const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
     const tx = Math.cos(th), tz = -Math.sin(th);
-    const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
-    return out.set(
-      this.x[i] + (this.x[i + 1] - this.x[i]) * f - tz * d,
-      y + h + (this.surfaceEnabled ? this.surface(s, d) : 0),
-      this.z[i] + (this.z[i + 1] - this.z[i]) * f + tx * d,
-    );
+    // (field writes, not out.set(x, y, z): a call that is not inlined boxes its double arguments)
+    out.x = this.x[i] + (this.x[i + 1] - this.x[i]) * f - tz * d;
+    out.z = this.z[i] + (this.z[i + 1] - this.z[i]) * f + tx * d;
+    out.y = this.y[i] + (this.y[i + 1] - this.y[i]) * f + h + (this.surfaceEnabled && (d > SURF_EDGE || d < -SURF_EDGE) ? this.surface(s, d) : 0);
+    return out;
   }
 
   /** Arc-length scale of an offset line: ds_offset = (1 + κ·d) ds. */
@@ -330,7 +334,9 @@ export class Route {
     // refine
     let step = 0.5;
     for (let it = 0; it < 12; it++) {
-      for (const c of [best - step, best + step]) {
+      const b0 = best;
+      for (let k = 0; k < 2; k++) {
+        const c = k ? b0 + step : b0 - step;
         const p = this.toWorld(c, 0, 0, _v);
         const dd = (p.x - x) ** 2 + (p.z - z) ** 2;
         if (dd < bestD) { bestD = dd; best = c; }

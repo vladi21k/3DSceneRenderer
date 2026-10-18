@@ -64,49 +64,53 @@ export function footBandGap(a, d = a.d) {
 }
 
 // ---------------------------------------------------------------- distances
+// (scratch values live in a typed array: doubles written to module-level `let`s are boxed on
+// every write, and these run thousands of times a frame)
 const G = { gap: 0, ns: 0, nd: 0 };
-let _cx = 0, _cy = 0, _qx = 0, _qy = 0;
+const X = new Float64Array(8);   // 0 cx, 1 cy (closest point on p), 2 qx, 3 qy (on q), 4 best gap, 5 bx, 6 by, 7 br
 
-/** Closest points between segments p0p1 and q0q1 (2D) → _c (on p), _q (on q); returns squared distance. */
+/** Closest points between segments p0p1 and q0q1 (2D) → X[0..1] (on p), X[2..3] (on q); returns squared distance. */
 function segSeg(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y) {
   const ux = p1x - p0x, uy = p1y - p0y, vx = q1x - q0x, vy = q1y - q0y, wx = p0x - q0x, wy = p0y - q0y;
   const a = ux * ux + uy * uy, b = ux * vx + uy * vy, c = vx * vx + vy * vy, d = ux * wx + uy * wy, e = vx * wx + vy * wy;
   let s = 0, t = 0;
   if (a < 1e-9 && c < 1e-9) { s = 0; t = 0; }
-  else if (a < 1e-9) { s = 0; t = clamp01(e / c); }
-  else if (c < 1e-9) { t = 0; s = clamp01(-d / a); }
+  else if (a < 1e-9) { s = 0; t = e / c; t = t < 0 ? 0 : t > 1 ? 1 : t; }
+  else if (c < 1e-9) { t = 0; s = -d / a; s = s < 0 ? 0 : s > 1 ? 1 : s; }
   else {
     const den = a * c - b * b;
-    s = den > 1e-9 ? clamp01((b * e - c * d) / den) : 0;
+    s = den > 1e-9 ? (b * e - c * d) / den : 0;
+    s = s < 0 ? 0 : s > 1 ? 1 : s;
     t = (b * s + e) / c;
-    if (t < 0) { t = 0; s = clamp01(-d / a); } else if (t > 1) { t = 1; s = clamp01((b - d) / a); }
+    if (t < 0) { t = 0; s = -d / a; s = s < 0 ? 0 : s > 1 ? 1 : s; }
+    else if (t > 1) { t = 1; s = (b - d) / a; s = s < 0 ? 0 : s > 1 ? 1 : s; }
   }
-  _cx = p0x + ux * s; _cy = p0y + uy * s; _qx = q0x + vx * t; _qy = q0y + vy * t;
-  const dx = _cx - _qx, dy = _cy - _qy;
+  const cx = p0x + ux * s, cy = p0y + uy * s, qx = q0x + vx * t, qy = q0y + vy * t;
+  X[0] = cx; X[1] = cy; X[2] = qx; X[3] = qy;
+  const dx = cx - qx, dy = cy - qy;
   return dx * dx + dy * dy;
 }
-const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 /** Smallest gap between the footprints of a and b (bodies + props), b at (dx, dy) = (b.s − a.s
  *  metric, b.d − a.d) from a. Returns G = {gap (negative: overlap), ns, nd (unit, from b to a)}. */
 export function footGap(a, b, dx, dy) {
-  _best = 1e9; _bx = 0; _by = 0; _br = 0;
+  X[4] = 1e9; X[5] = 0; X[6] = 0; X[7] = 0;
   // a: body point (0, 0) and prop capsule; b: body point (dx, dy) and prop capsule
   const aProp = a.mob && a.fpR > 0, bProp = b.mob && b.fpR > 0;
   pairTest(0, 0, 0, 0, AGENT_R, dx, dy, dx, dy, AGENT_R);
   if (aProp) pairTest(a.fp0s, a.fp0d, a.fp1s, a.fp1d, a.fpR, dx, dy, dx, dy, AGENT_R);
   if (bProp) pairTest(0, 0, 0, 0, AGENT_R, dx + b.fp0s, dy + b.fp0d, dx + b.fp1s, dy + b.fp1d, b.fpR);
   if (aProp && bProp) pairTest(a.fp0s, a.fp0d, a.fp1s, a.fp1d, a.fpR, dx + b.fp0s, dy + b.fp0d, dx + b.fp1s, dy + b.fp1d, b.fpR);
-  G.gap = _best;
-  if (_br > 1e-4) { G.ns = _bx / _br; G.nd = _by / _br; }
-  else { const l = Math.hypot(dx, dy) || 1; G.ns = -dx / l; G.nd = -dy / l; }
+  G.gap = X[4];
+  const br = X[7];
+  if (br > 1e-4) { G.ns = X[5] / br; G.nd = X[6] / br; }
+  else { const l = Math.sqrt(dx * dx + dy * dy) || 1; G.ns = -dx / l; G.nd = -dy / l; }
   return G;
 }
-let _best = 0, _bx = 0, _by = 0, _br = 0;
 function pairTest(p0x, p0y, p1x, p1y, rp, q0x, q0y, q1x, q1y, rq) {
   const d2 = segSeg(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y);
   const dist = Math.sqrt(d2), g = dist - rp - rq;
-  if (g < _best) { _best = g; _bx = _cx - _qx; _by = _cy - _qy; _br = dist; }
+  if (g < X[4]) { X[4] = g; X[5] = X[0] - X[2]; X[6] = X[1] - X[3]; X[7] = dist; }
 }
 
 /** Closest point of a's prop capsule (absolute route s via k, d) to the point (ps, pd): squared
@@ -115,6 +119,6 @@ export const _foot = { s: 0, d: 0 };
 export function propPointDist2(a, rs, rd) {
   // rs, rd: point relative to the body (metric)
   const d2 = segSeg(a.fp0s, a.fp0d, a.fp1s, a.fp1d, rs, rd, rs, rd);
-  _foot.s = _cx; _foot.d = _cy;
+  _foot.s = X[0]; _foot.d = X[1];
   return d2;
 }

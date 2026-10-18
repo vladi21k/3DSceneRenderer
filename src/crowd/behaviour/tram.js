@@ -63,6 +63,7 @@ export class TramWatch {
     this.lastReqU = 0;
     this.stats = { violations: 0, rescues: 0, blocked: 0, tramSide: 0, bellRequests: 0, bells: 0, maxUrgency: 0, sidesteps: 0, pairClears: 0, cabBrake: 0, squeeze: 0 };
     this.obstacle = Infinity;  // the nearest person the cab must brake for this frame (m ahead of its front)
+    this.n = 0;               // frame counter
     this.violationLog = [];
     this.reqLog = [];
     this.rescueLog = [];
@@ -122,6 +123,7 @@ export class TramWatch {
     }
     this.reqUrgency = 0;
     this.obstacle = Infinity;
+    this.n++;                 // frame counter (per-agent caches such as a.front)
   }
 
   /** Speed at which the tram closes in on this person (m/s); a tram pulling away counts with
@@ -130,14 +132,20 @@ export class TramWatch {
 
   /** How far ahead of the cab this person starts getting off the track: their own reaction
    *  time at the closing speed. The bell makes people move earlier. */
-  frontFor(a) {
-    const vc = this.closing(a);
+  frontFor(a) { this.front(a); return a.front; }
+
+  /** frontFor into a.front, worked out once per agent and frame (it is asked for half a dozen
+   *  times in a step; a number returned from a call that is not inlined is boxed). */
+  front(a) {
+    if (a.frontN === this.n) return;
+    a.frontN = this.n;
+    const vc = Math.max(0, Math.min(V_MAX, this.v + 2 * this.acc) - a.vs);
     // (whoever they are, out of the band CLEAR_DEADLINE seconds before the tram is there)
     let f = Math.max(SWEPT_AHEAD + 6, vc * Math.max(a.clearT, CLEAR_DEADLINE + this.exitT(a)) + 4);
     // a tram gathering speed is noticed a little earlier (it will be faster than it looks)
     if (this.acc > 0.2) f = Math.max(f, 12 + vc * 2.4);
     if (a.bellT > this.c.time) f = Math.max(f, vc * (a.clearT + 2.5) + 10);
-    return f;
+    a.front = f;
   }
 
   /** Seconds a person needs to get out of the cab's band from where they are (at their brisk pace). */
@@ -149,8 +157,9 @@ export class TramWatch {
 
   /** Is the tram close enough at this person for the clearance rules to apply? */
   near(a) {
+    this.front(a);
     const ahead = a.s - this.trainU;
-    return ahead > -(TRAM_LEN + 4) && ahead < this.frontFor(a);
+    return ahead > -(TRAM_LEN + 4) && ahead < a.front;
   }
 
   /** May person a start crossing the band at s now? Their time to get through it is measured
@@ -550,7 +559,8 @@ export class TramWatch {
         if (u > this.reqUrgency) { this.reqUrgency = u; this.reqWho = a; this.reqAhead = ahead; this.reqDl = dl; }
       }
     }
-    const front = this.frontFor(a);
+    this.front(a);
+    const front = a.front;
     const inside = a.mob ? footBandGap(a) < 0.02 : adl < BAND + 0.02;
     // somebody who cannot be out of the band before the cab is there any more: its driver brakes
     if (inside && ahead > 0 && this.v > 0.5 && ahead < this.obstacle) {
@@ -677,7 +687,7 @@ export class TramWatch {
     const adl = a.mob ? footBandGap(a) + BAND : Math.abs(dl);
     if (adl < BAND || adl > BAND + 2.5) return;
     const ahead = a.s - this.trainU;
-    if (!a.pair && (ahead < -(TRAM_LEN + 3) || ahead > this.frontFor(a) + 3)) return;
+    if (!a.pair) { this.front(a); if (ahead < -(TRAM_LEN + 3) || ahead > a.front + 3) return; }
     const toward = -Math.sign(dl) * out.vd;      // > 0: moving towards the band
     if (toward <= 0) return;
     // a moving tram is given a comfortable berth; beside a standing one the band edge will do
@@ -686,8 +696,10 @@ export class TramWatch {
     if (toward > lim) out.vd = -Math.sign(dl) * lim;
   }
 
-  /** After integration: never let anyone into the band inside the zone; hard guarantee for the swept volume. */
-  constrain(a, prevD, dt = this.c.dt) {
+  /** After integration: never let anyone into the band inside the zone; hard guarantee for the swept volume.
+   *  (prevD, dt: the lateral position before this step and its dt, by default from the agent's
+   *  fields a.prevD / a.stepDt, so the per-frame call passes no numbers.) */
+  constrain(a, prevD = a.prevD, dt = a.stepDt) {
     this._cabRescue = false;
     this._cabConstrain(a, prevD);
     if (this.units.length) this._uConstrain(a, prevD, dt);
@@ -697,7 +709,8 @@ export class TramWatch {
     const dl = a.d - RIDE_D;
     if (a.mob ? !footInBand(a) : Math.abs(dl) >= BAND) return;
     const ahead = a.s - this.trainU;
-    const inZone = ahead > -(TRAM_LEN + 2) - a.extS && ahead < Math.max(this.frontFor(a) - 4, SWEPT_AHEAD + 2) + a.extS;
+    this.front(a);
+    const inZone = ahead > -(TRAM_LEN + 2) - a.extS && ahead < Math.max(a.front - 4, SWEPT_AHEAD + 2) + a.extS;
     const wasOut = a.mob ? footBandGap(a, prevD) >= -1e-4 : Math.abs(prevD - RIDE_D) >= BAND - 1e-4;
     if (inZone && wasOut && !(a.crossOK > this.c.time)) {
       // was outside: block the step into the band (beside a standing tram this is just its side)
@@ -730,7 +743,8 @@ export class TramWatch {
   turnBlocked(a, alpha) {
     if (!a.mob || a.crossOK > this.c.time) return false;
     const ahead = a.s - this.trainU;
-    if (ahead < -(TRAM_LEN + 3) - 1 || ahead > Math.max(this.frontFor(a), SWEPT_AHEAD + 2) + 2) return false;
+    this.front(a);
+    if (ahead < -(TRAM_LEN + 3) - 1 || ahead > Math.max(a.front, SWEPT_AHEAD + 2) + 2) return false;
     if (footInBand(a)) return false;
     const f = footAt(a, alpha, _ft);
     const dl = a.d - RIDE_D;

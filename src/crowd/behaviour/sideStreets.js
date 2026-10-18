@@ -34,9 +34,12 @@ export class SideStreets {
 
   /** Frame and levels of cross street cs on `side` (cached). */
   get(cs, side) {
-    const key = cs.s * 4 + side;
-    let g = this.geo.get(key);
+    // (keyed by the cross street object: a number key would be boxed on every lookup)
+    let e = this.geo.get(cs);
+    if (!e) { e = [null, null]; this.geo.set(cs, e); }
+    let g = e[side > 0 ? 1 : 0];
     if (g) return g;
+    const key = cs.s * 4 + side;
     const c = this.c, route = c.route, L = c.layout;
     const smp = route.sample(cs.s, {});
     const hw = L.halfWidth(cs.s, side);
@@ -62,7 +65,7 @@ export class SideStreets {
       base.push(y);
     }
     g = { cs, side, hw, start, along, dirOut, n, half, sw, road, base, level: start.y, len: (cs.depth || 60) + 16 + 30, line: c.map.mouthLine(cs, side), key };
-    this.geo.set(key, g);
+    e[side > 0 ? 1 : 0] = g;
     return g;
   }
 
@@ -153,6 +156,8 @@ export class SideStreets {
 
   /** Per frame, for each agent: out in a side street? (sets a.inSide / a.sideX). */
   mark(a) {
+    // (nearly everybody is nowhere near a side street: settled without a number argument)
+    if (!this.c.map.mouthAtA(a)) { a.inSide = false; a.sideX = 0; return null; }
     const L = this.locate(a.s, a.d, _loc3);
     a.inSide = !!L; a.sideX = L ? L.x : 0;
     return L;
@@ -212,14 +217,14 @@ export class SideStreets {
     for (const a of pop.agents) {
       if (!a.active || !a.inSide || a.sideX < 2.5) continue;
       const L = this.locate(a.s, a.d, _loc);
-      if (L) this.n.set(L.g.key, (this.n.get(L.g.key) || 0) + 1);
+      if (L) this.n.set(L.g, (this.n.get(L.g) || 0) + 1);
     }
     if (pop.free.length < 24) return;
     const r = c.rng;
     let spawned = 0;
     this._near((cs, side) => {
       if (spawned >= 2) return;
-      const g = this.get(cs, side), have = this.n.get(g.key) || 0, want = this.target(cs, side);
+      const g = this.get(cs, side), have = this.n.get(g) || 0, want = this.target(cs, side);
       if (have >= want) return;
       const u = r.next();
       let a = null;

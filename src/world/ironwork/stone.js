@@ -72,7 +72,9 @@ export const GRIME = { NONE: 0, EDGE: 1, SOFFIT: 2, CONSOLE: 3 };
 
 /** Writes one balcony slab (sweep + top + soffit) into W (matrix = facade frame): T the
  *  slab's thickness at the wall, E its moulded edge (≥ T). Baked occlusion: dirty top
- *  arris, darker lower edge and drip groove, soffit dark at the wall. */
+ *  arris, darker lower edge and drip groove. The soffit darkens smoothly toward the wall
+ *  (occlusion times a soot film that thickens toward the wall, 0.08 at the front edge to
+ *  0.2 at the wall): no patches, which read as camouflage on a surface this even. */
 export function writeSlab(W, path, y, T, E, variant, lod, dirt = 1, depth = 1) {
   const prof = slabProfile(T, E, variant, lod).map(([o, v, ao]) => [o, y + v, ao * dirt]);
   const [sm0, sm1] = slabSmooth(variant, lod);
@@ -82,7 +84,10 @@ export function writeSlab(W, path, y, T, E, variant, lod, dirt = 1, depth = 1) {
   W.kind(GRIME.NONE);
   capPolygon(W, insetPath(path, topO), y, 1, 0.92 * dirt);
   W.kind(GRIME.SOFFIT);
-  capPolygon(W, insetPath(path, botO), y - T, -1, (u, w) => (0.46 + 0.32 * Math.min(1, Math.max(0, w / depth))) * dirt);
+  capPolygon(W, insetPath(path, botO), y - T, -1, (u, w) => {
+    const f = Math.min(1, Math.max(0, w / depth));
+    return (0.46 + 0.32 * f) * (0.8 + 0.12 * f) * dirt;
+  });
   W.kind(GRIME.NONE);
 }
 
@@ -298,7 +303,7 @@ export function copingProfile(lod) {
 // stone.smooth (with vertex tint/AO) plus balcony weathering, by grime kind (aGk):
 //   EDGE     slab front: water-borne dirt streaks down the face, a dark crust along the
 //            drip edge, now and then a rust tail where a railing post is leaded in
-//   SOFFIT   mottled soot, darker toward the wall (the gradient itself is baked)
+//   SOFFIT   nothing per pixel: its smooth soot gradient toward the wall is baked
 //   CONSOLE  streaks down the scroll faces and soot in the lower coves
 // High-frequency terms fade out as they approach pixel size, so nothing shimmers.
 const GRIME_GLSL = /* glsl */ `
@@ -354,9 +359,8 @@ ${GRIME_GLSL}`)
 			float rust = smoothstep( 0.83, 0.95, gwN( vec2( vGuv.x * 4.3 + 11.0, 0.5 ) ) ) * ( 1.0 - smoothstep( 0.05, 0.2, fx ) );
 			gTint = mix( vec3( 1.0 ), vec3( 0.72, 0.52, 0.38 ), rust * 0.75 );
 		} else if ( vGk < 2.5 ) {
-			// soffit: mottled soot
-			float n = gwN( vGuv * 2.3 ) * 0.6 + gwN( vGuv * 7.1 + 3.3 ) * 0.4;
-			gDark = 0.06 + 0.2 * smoothstep( 0.35, 0.85, n );
+			// soffit: its soot gradient is baked (writeSlab); the library's own soffit
+			// weathering adds the rest evenly
 		} else {
 			// console: streaks down the faces, soot low on the scroll
 			float fx = fwidth( vGl.x );

@@ -8,17 +8,26 @@ import { TRACK_ZONE_HALF, EDGE_BAND_W, CHUNK_LEN, VIEW_FAR } from './config.js';
 // long straight the street, the frontages and the tree lines run on to the vanishing point
 // instead of ending in sky. Everything comes from the master plan, so the far field is the
 // same city the modules build when it comes within VIEW_AHEAD: each lot is a block of its
-// plan's height with its stone tint, its cornice, balconies and openings (dark glass, lit
-// at dusk), tile roofs and penthouses; the paving runs between the facade lines, with the
-// light corridor edge bands and the side-street mouths; trees are irregular crowns on
-// trunks. One merged mesh and one material per chunk; build ≈ 0.2–0.4 ms.
+// plan's height with its stone tint (or its colour wash over a stone shop floor, for a
+// rendered block: plan.style.finish), its cornice, balconies and openings (dark glass, lit
+// at dusk), tile roofs, penthouses and set-back additions (their balconies; a tower's side
+// windows and its painted mural as a flat muted panel); the paving runs between the facade
+// lines, with the light corridor edge bands and the side-street mouths; trees are
+// irregular crowns on trunks. One merged mesh and one material per chunk; build ≈ 0.3–1 ms.
+// Party-wall adverts and murals are left out (buildings decides them from what each wall
+// exposes, and beyond VIEW_AHEAD they are a few hazy pixels).
 
-const STONE = [0.59, 0.535, 0.43];        // mean albedo of the ashlar texture (linear)
-const CREAM = [0.86, 0.80, 0.68];         // facadePlan tint the stone texture corresponds to
+// mean linear albedo of the baked limestone; init() reads it from the materials library
+// (materials.meta['stone.ashlar'].albedo) so the far facades stay the colour of the near ones
+let STONE = [0.6, 0.47, 0.27];
+const CREAM = [0.86, 0.80, 0.68];         // facadePlan tint the stone texture corresponds to (tint 1)
+const PLASTER = [0.66, 0.62, 0.54];       // mean albedo of the plaster texture (render washes multiply it)
+const MURAL = [0.55, 0.5, 0.42];          // a painted mural's average colour, muted
 const GLASS = [0.03, 0.034, 0.038];
 const DOOR = [0.07, 0.045, 0.03];
 const SHUTTER = { darkgreen: [0.03, 0.07, 0.04], brown: [0.12, 0.06, 0.03], grey: [0.2, 0.2, 0.19], teal: [0.03, 0.09, 0.09], white: [0.55, 0.55, 0.52] };
 const ROOF_FLAT = [0.3, 0.29, 0.27];
+const ROLLER = [0.42, 0.41, 0.38];       // a roller shutter let down most of the way
 const ROOF_TILE = [0.36, 0.12, 0.055];
 const PAVE = [0.17, 0.176, 0.19];         // paving (corridor and sidewalks)
 const BAND = [0.25, 0.245, 0.235];        // light stone edge bands of the track corridor
@@ -32,31 +41,56 @@ const SIDE_FULL = 30;                     // side-street lots nearer than this (
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3();
 const _n = new THREE.Vector3(), _a2 = new THREE.Vector3();
 
+// Build buffers, shared by every build (builds run one at a time) and grown as needed, so a
+// far chunk only allocates its final, exactly sized attribute arrays.
+let BP = new Float32Array(3 << 14), BN = new Float32Array(3 << 14), BC = new Float32Array(3 << 14), BG = new Float32Array(1 << 14);
+let BI = new Uint32Array(6 << 14);
+
 /** Indexed triangle soup with position, normal, colour and a night-glow weight. */
 class Geo {
-  constructor() { this.p = []; this.n = []; this.c = []; this.g = []; this.i = []; }
-  vert(v, n, c, g) {
-    this.p.push(v.x, v.y, v.z); this.n.push(n.x, n.y, n.z); this.c.push(c[0], c[1], c[2]); this.g.push(g);
-    return this.p.length / 3 - 1;
+  constructor() { this.nv = 0; this.ni = 0; }
+  _room(v, i) {
+    if ((this.nv + v) * 3 > BP.length) {
+      const grow = (a, k) => { const b = new Float32Array(Math.max(a.length * 2, (this.nv + v) * k * 2)); b.set(a.subarray(0, this.nv * k)); return b; };
+      BP = grow(BP, 3); BN = grow(BN, 3); BC = grow(BC, 3); BG = grow(BG, 1);
+    }
+    if (this.ni + i > BI.length) { const b = new Uint32Array(Math.max(BI.length * 2, (this.ni + i) * 2)); b.set(BI.subarray(0, this.ni)); BI = b; }
   }
+  /** Raw vertex (numbers); returns its index. */
+  v(x, y, z, nx, ny, nz, r, g, b, glow) {
+    if (this.nv * 3 + 3 > BP.length) this._room(1, 0);
+    const k = this.nv * 3;
+    BP[k] = x; BP[k + 1] = y; BP[k + 2] = z;
+    BN[k] = nx; BN[k + 1] = ny; BN[k + 2] = nz;
+    BC[k] = r; BC[k + 1] = g; BC[k + 2] = b;
+    BG[this.nv] = glow;
+    return this.nv++;
+  }
+  vert(v, n, c, g) { return this.v(v.x, v.y, v.z, n.x, n.y, n.z, c[0], c[1], c[2], g); }
+  idx(a) { if (this.ni + 1 > BI.length) this._room(0, 1); BI[this.ni++] = a; }
   /** Quad a-b-c-d counter-clockwise seen from the side the normal points to. */
   quad(a, b, c, d, n, col, glow = 0) {
+    this._room(4, 6);
     const i = this.vert(a, n, col, glow); this.vert(b, n, col, glow); this.vert(c, n, col, glow); this.vert(d, n, col, glow);
-    this.i.push(i, i + 1, i + 2, i, i + 2, i + 3);
+    BI[this.ni++] = i; BI[this.ni++] = i + 1; BI[this.ni++] = i + 2; BI[this.ni++] = i; BI[this.ni++] = i + 2; BI[this.ni++] = i + 3;
   }
   /** Triangle with per-vertex normals (na, nb, nc). */
   tri(a, b, c, na, nb, nc, col, glow = 0) {
+    this._room(3, 3);
     const i = this.vert(a, na, col, glow); this.vert(b, nb, col, glow); this.vert(c, nc, col, glow);
-    this.i.push(i, i + 1, i + 2);
+    BI[this.ni++] = i; BI[this.ni++] = i + 1; BI[this.ni++] = i + 2;
   }
   geometry() {
-    if (!this.i.length) return null;
+    if (!this.ni) return null;
+    const n = this.nv;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
-    g.setAttribute('aGlow', new THREE.Float32BufferAttribute(this.g, 1));
-    g.setIndex(this.p.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(this.i, 1) : new THREE.Uint16BufferAttribute(this.i, 1));
+    g.setAttribute('position', new THREE.BufferAttribute(BP.slice(0, n * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(BN.slice(0, n * 3), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(BC.slice(0, n * 3), 3));
+    g.setAttribute('aGlow', new THREE.BufferAttribute(BG.slice(0, n), 1));
+    const ia = n > 65535 ? new Uint32Array(this.ni) : new Uint16Array(this.ni);
+    ia.set(BI.subarray(0, this.ni));
+    g.setIndex(new THREE.BufferAttribute(ia, 1));
     g.computeBoundingSphere();
     return g;
   }
@@ -69,10 +103,22 @@ function framePoint(f, u, v, w, out) {
 
 const mul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
 
-/** Absolute stone albedo of a plan (its tint relative to the cream the texture carries). */
-function stoneOf(plan) {
-  const t = plan.style.tint;
+/** Absolute stone albedo of a stone tint (relative to the cream the texture carries, as
+ *  buildings' stoneStyle takes it). */
+function stoneOf(t) {
   return [0, 1, 2].map((i) => STONE[i] * Math.pow(t[i] / CREAM[i], 1.25));
+}
+
+/** Wall colours of a plan: {wall, lo, split}: `lo` below v = split (a rendered block's
+ *  stone shop floor), `wall` above it (its colour wash; else the stone, split = −∞). */
+function wallsOf(plan) {
+  const st = plan.style;
+  if (st.finish === 'render' && st.render) {
+    const c = st.render.color;
+    return { wall: [PLASTER[0] * c[0], PLASTER[1] * c[1], PLASTER[2] * c[2]], lo: stoneOf(st.stone || st.tint), split: st.render.from };
+  }
+  const w = stoneOf(st.tint);
+  return { wall: w, lo: w, split: -Infinity };
 }
 
 /**
@@ -80,12 +126,21 @@ function stoneOf(plan) {
  * openings let in as separate quads (no coplanar overlap: the wall is cut around them, so
  * nothing z-fights at a kilometre). Openings are grouped per floor into horizontal bands.
  */
-function facadeFace(G, f, width, vBot0, vBot1, vTop, openings, wall, skipBand = null, shutterCol = SHUTTER.darkgreen) {
+function facadeFace(G, f, width, vBot0, vBot1, vTop, openings, wall, skipBand = null, shutterCol = SHUTTER.darkgreen, lo = null, split = -Infinity) {
   const n = _n.copy(f.nDir);
   const bot = (u) => vBot0 + (vBot1 - vBot0) * (u / width);
+  const quad = (u0, v0, u1, v1, col, glow) => {
+    G.quad(framePoint(f, u0, v0, 0, _a), framePoint(f, u1, v0, 0, _b), framePoint(f, u1, v1, 0, _c), framePoint(f, u0, v1, 0, _d), n, col, glow);
+  };
+  // wall pieces take the lower colour below `split` (a rendered block's stone shop floor)
   const Q = (u0, v0, u1, v1, col, glow = 0) => {
     if (u1 - u0 < 1e-3 || v1 - v0 < 1e-3) return;
-    G.quad(framePoint(f, u0, v0, 0, _a), framePoint(f, u1, v0, 0, _b), framePoint(f, u1, v1, 0, _c), framePoint(f, u0, v1, 0, _d), n, col, glow);
+    if (col === wall && lo && v0 < split) {
+      if (v1 <= split) { quad(u0, v0, u1, v1, lo, glow); return; }
+      quad(u0, v0, u1, split, lo, glow);
+      v0 = split;
+    }
+    quad(u0, v0, u1, v1, col, glow);
   };
   // bands of openings, one per floor (sorted bottom-up)
   const floors = new Map();
@@ -110,7 +165,7 @@ function facadeFace(G, f, width, vBot0, vBot1, vTop, openings, wall, skipBand = 
       const u0 = (width * k) / N, u1 = (width * (k + 1)) / N;
       const b0 = Math.min(bot(u0), v), b1 = Math.min(bot(u1), v);
       if (v - Math.max(b0, b1) > 1e-3 || v - Math.min(b0, b1) > 1e-3) {
-        G.quad(framePoint(f, u0, b0, 0, _a), framePoint(f, u1, b1, 0, _b), framePoint(f, u1, v, 0, _c), framePoint(f, u0, v, 0, _d), n, wall);
+        G.quad(framePoint(f, u0, b0, 0, _a), framePoint(f, u1, b1, 0, _b), framePoint(f, u1, v, 0, _c), framePoint(f, u0, v, 0, _d), n, lo && v <= split ? lo : wall);
       }
     }
   }
@@ -125,7 +180,7 @@ function facadeFace(G, f, width, vBot0, vBot1, vTop, openings, wall, skipBand = 
       Q(u, b.lo, ou0, b.hi, wall);
       Q(ou0, b.lo, ou1, oy0, wall);
       Q(ou0, oy1, ou1, b.hi, wall);
-      Q(ou0, oy0, ou1, oy1, ...openingLook(o, shutterCol, wall));
+      Q(ou0, oy0, ou1, oy1, ...openingLook(o, shutterCol, lo && o.y < split ? lo : wall));
       u = ou1;
     }
     Q(u, b.lo, width, b.hi, wall);
@@ -140,15 +195,22 @@ function facadeFace(G, f, width, vBot0, vBot1, vTop, openings, wall, skipBand = 
 
 /** Colour and night glow of an opening. */
 function openingLook(o, shutterCol, wall) {
+  if (o.kind === 'mural') return [MURAL, 0];
   if (o.kind === 'shop') return [mul(wall, 0.2), 0.15 + 0.15 * (o.lit ?? 0.5)];
+  if (o.shutters === 'roller' && (o.roller ?? 0) > 0.6) return [mul(ROLLER, 1), 0];
   if (o.kind === 'door') return [DOOR, 0];
   if (o.shutters === 'closed') return [shutterCol, 0];
   const lit = (o.lit ?? 0) > 0.86 ? 0.3 + 0.3 * o.lit : 0;   // about one window in seven
   return [GLASS, lit];
 }
 
-/** Box sides (end walls) and top of a block behind a facade, depth `depth` into the lot. */
-function blockShell(G, f, width, depth, vBot0, vBot1, vTop, wall, roofCol) {
+/** Box sides (end walls) and top of a block behind a facade, depth `depth` into the lot
+ *  (ends = false: the roof alone, the sides are drawn as faces of their own). */
+function blockShell(G, f, width, depth, vBot0, vBot1, vTop, wall, roofCol, ends = true) {
+  if (!ends) {
+    G.quad(framePoint(f, 0, vTop, 0, _a), framePoint(f, width, vTop, 0, _b), framePoint(f, width, vTop, -depth, _c), framePoint(f, 0, vTop, -depth, _d), f.up, roofCol);
+    return;
+  }
   // end walls: at u = 0 facing −uDir, at u = width facing +uDir
   const nl = _n.copy(f.uDir).negate();
   G.quad(framePoint(f, 0, vBot0, -depth, _a), framePoint(f, 0, vBot0, 0, _b), framePoint(f, 0, vTop, 0, _c), framePoint(f, 0, vTop, -depth, _d), nl, mul(wall, 0.93));
@@ -185,7 +247,7 @@ function cornice(G, f, width, c, wall) {
 /** Balcony: slab front and the railing seen as a darker band in front of the wall. */
 function balcony(G, f, b, wall) {
   const w = b.depth, y = b.y;
-  const rail = b.railing === 'stone' ? mul(wall, 0.85) : mul(wall, 0.42);
+  const rail = b.railing === 'stone' || b.solid ? mul(wall, 0.85) : mul(wall, 0.42);
   G.quad(framePoint(f, b.u0, y - b.slabT, w, _a), framePoint(f, b.u1, y - b.slabT, w, _b), framePoint(f, b.u1, y, w, _c), framePoint(f, b.u0, y, w, _d), f.nDir, mul(wall, 0.95));
   G.quad(framePoint(f, b.u0, y, w, _a), framePoint(f, b.u1, y, w, _b), framePoint(f, b.u1, y + 1.0, w, _c), framePoint(f, b.u0, y + 1.0, w, _d), f.nDir, rail);
   const down = _n.copy(f.up).negate();
@@ -195,25 +257,49 @@ function balcony(G, f, b, wall) {
 function lotBlock(G, lot, full) {
   const plan = facadePlan(lot);
   const f = lot.frame, W = plan.width, depth = Math.max(8, plan.depth || lot.depth || 14);
-  const wall = stoneOf(plan);
+  const { wall, lo, split } = wallsOf(plan);
   const g0 = plan.groundAt(0) - 0.6, g1 = plan.groundAt(W) - 0.6;
   const top = plan.totalHeight;
   const c = plan.cornice;
+  const shutterCol = SHUTTER[plan.style.shutterColor] || SHUTTER.darkgreen;
   if (full) {
-    facadeFace(G, f, W, g0, g1, top, plan.openings, wall, [c.y, c.y + c.h], SHUTTER[plan.style.shutterColor] || SHUTTER.darkgreen);
-    cornice(G, f, W, c, wall);
-    for (const b of plan.balconies) balcony(G, f, b, wall);
+    facadeFace(G, f, W, g0, g1, top, plan.openings, wall, [c.y, c.y + c.h], shutterCol, lo, split);
+    cornice(G, f, W, c, lo);   // (the cornice stays stone on a rendered block)
+    for (const b of plan.balconies) balcony(G, f, b, lo);
   } else {
-    facadeFace(G, f, W, g0, g1, top, [], wall);
+    facadeFace(G, f, W, g0, g1, top, [], wall, null, shutterCol, lo, split);
   }
   blockShell(G, f, W, depth, g0, g1, top, wall, ROOF_FLAT);
   if (plan.roof && plan.roof.type === 'tile') tileRoof(G, f, W, depth, top, plan.roof.pitch || 26);
   const up = plan.upper;
-  if (up && full) {
-    const uf = up.frame, h = up.v0 + up.floors * up.floorH + 0.5;
-    const ucol = up.material === 'plaster' ? up.color.map((x) => x * 0.68) : wall;
-    facadeFace(G, uf, up.width, up.v0, up.v0, h, up.openings, ucol);
-    blockShell(G, uf, up.width, up.depth, up.v0, up.v0, h, ucol, ROOF_FLAT);
+  if (up && full) upperBlock(G, up, up.material === 'plaster' ? [PLASTER[0] * up.color[0] / 0.9, PLASTER[1] * up.color[1] / 0.9, PLASTER[2] * up.color[2] / 0.9] : lo, shutterCol);
+}
+
+const _sf = { origin: new THREE.Vector3(), uDir: new THREE.Vector3(), nDir: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) };
+
+/** The set-back volume (plan.upper): front with its openings and balconies, roof, and the
+ *  sides: plain, or (an addition or a tower: up.sides) with their windows, and on a
+ *  tower the painted mural (up.mural) as a flat panel of its average colour. */
+function upperBlock(G, up, col, shutterCol) {
+  const uf = up.frame, W = up.width, D = up.depth, h = up.v0 + up.floors * up.floorH + 0.5;
+  facadeFace(G, uf, W, up.v0, up.v0, h, up.openings, col, null, shutterCol);
+  for (const b of up.balconies || []) balcony(G, uf, b, col);
+  if (!up.sides) { blockShell(G, uf, W, D, up.v0, up.v0, h, col, ROOF_FLAT); return; }
+  blockShell(G, uf, W, D, up.v0, up.v0, h, col, ROOF_FLAT, false);
+  const sideCol = mul(col, 0.97);
+  for (let e = 0; e < 2; e++) {
+    // the side's own frame (as buildings' sideFrame): u from the back to the front on the
+    // u = 0 side, from the front to the back on the u = width side; normal outwards
+    if (e === 0) {
+      _sf.origin.copy(uf.origin).addScaledVector(uf.nDir, -D);
+      _sf.uDir.copy(uf.nDir); _sf.nDir.copy(uf.uDir).negate();
+    } else {
+      _sf.origin.copy(uf.origin).addScaledVector(uf.uDir, W);
+      _sf.uDir.copy(uf.nDir).negate(); _sf.nDir.copy(uf.uDir);
+    }
+    const ops = up.sides[e] || [], m = up.mural && up.mural.e === e ? up.mural : null;
+    const list = m ? [...ops, { kind: 'mural', floor: -1, uc: (m.u0 + m.u1) / 2, w: m.u1 - m.u0, y: m.v0, h: m.v1 - m.v0 }] : ops;
+    facadeFace(G, _sf, D, up.v0, up.v0, h, list, sideCol, null, shutterCol);
   }
 }
 
@@ -285,17 +371,17 @@ function tree(G, route, t) {
     const rr = R * (0.58 + 0.12 * (((hl >>> 24) & 255) / 255)), hh = ch * 0.36;
     const ox = bx + Math.cos(ang) * rad, oz = bz + Math.sin(ang) * rad;
     const oy = by + cy + ((l % 2 ? 0.16 : -0.1) + 0.06 * Math.sin(ang * 3)) * ch;
-    const i0 = G.p.length / 3;
+    G._room(tpl.n, tpl.index.length);
+    const i0 = G.nv;
     for (let i = 0; i < tpl.n; i++) {
       const x = tpl.P[i * 3], y = tpl.P[i * 3 + 1], z = tpl.P[i * 3 + 2];
       const nx = tpl.N[i * 3], ny = tpl.N[i * 3 + 1], nz = tpl.N[i * 3 + 2];
-      G.p.push(ox + (a * x + b * z) * rr, oy + y * hh, oz + (c * x + d * z) * rr);
-      G.n.push(a * nx + b * nz, ny, c * nx + d * nz);
       const sh = val * tpl.S[i];
-      G.c.push(LEAF[0] * sh * (1 + hue), LEAF[1] * sh, LEAF[2] * sh * (1 - hue));
-      G.g.push(-1);   // foliage (mottled in the shader)
+      // (glow −1: foliage, mottled in the shader)
+      G.v(ox + (a * x + b * z) * rr, oy + y * hh, oz + (c * x + d * z) * rr, a * nx + b * nz, ny, c * nx + d * nz,
+        LEAF[0] * sh * (1 + hue), LEAF[1] * sh, LEAF[2] * sh * (1 - hue), -1);
     }
-    for (const j of tpl.index) G.i.push(i0 + j);
+    for (let j = 0; j < tpl.index.length; j++) G.idx(i0 + tpl.index[j]);
   }
 }
 
@@ -385,6 +471,8 @@ const farfield = {
 
   init(app) {
     this.app = app;
+    const meta = app.materials && app.materials.meta && app.materials.meta['stone.ashlar'];
+    if (meta && Array.isArray(meta.albedo) && meta.albedo.length === 3) STONE = meta.albedo.slice();
     const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };
     const m = new THREE.MeshStandardMaterial({ name: 'farfield', vertexColors: true, roughness: 0.92, metalness: 0 });
     m.onBeforeCompile = (shader) => {
@@ -417,6 +505,7 @@ const farfield = {
     this.stats.builds++; this.stats.ms = dt; this.stats.maxMs = Math.max(this.stats.maxMs, dt);
     if (!geo) return null;
     this.stats.tris = geo.index.count / 3;
+    this.stats.bytes = (G.nv * 10 * 4) + geo.index.array.byteLength;
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.name = 'farfield';
     mesh.matrixAutoUpdate = false;
@@ -434,7 +523,8 @@ const farfield = {
     if (s == null || !app.layout) return;
     const L = app.layout, n = L.nChunks;
     const iA = Math.floor((s + VIEW_FAR) / CHUNK_LEN) + 1, iB = iA + 3;
-    if (this._cur === undefined || this._cur < iA - 2 || this._cur > iB) { this._cur = iA; this._lot = 0; }
+    // (once the window is planned, wait for it to move on rather than walking it again)
+    if (this._cur === undefined || this._cur < iA - 2 || this._cur > iB + 1) { this._cur = iA; this._lot = 0; }
     const t0 = performance.now();
     while (this._cur <= iB && performance.now() - t0 < 0.35) {
       const idx = ((this._cur % n) + n) % n;

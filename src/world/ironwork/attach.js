@@ -941,21 +941,45 @@ function acStainTemplate() {
   return template(W);
 }
 
-/** Satellite dish on a wall arm, facing +z (re-aimed per placement). */
+// Satellite dish: a pressed-steel offset reflector on a wall mount. Two templates, so
+// the mount stays square to the wall while the dish turns to its satellite: the dish in
+// its own frame (origin at the clamp on the mast, +z its aim, +y up) and the mount in
+// the facade frame (origin at the same clamp, +z out of the wall, the wall DISH_W behind).
+export const DISH_W = 0.42;
+const DISH = { RX: 0.3, RY: 0.33, D: 0.055, Z0: 0.1, T: 0.008 };
+/** Front skin depth of the reflector at (x, y) (dish frame). */
+const dishZ = (x, y) => DISH.Z0 + DISH.D * ((x * x) / (DISH.RX * DISH.RX) + (y * y) / (DISH.RY * DISH.RY));
+
+/** Tube of radius r from p to q ([x, y, z]), `seg` sides, optional end caps. */
+function tube(W, p, q, r, seg = 8, caps = false) {
+  const d = _A.set(q[0] - p[0], q[1] - p[1], q[2] - p[2]), len = d.length();
+  d.multiplyScalar(1 / len);
+  // basis with y along the tube
+  const x = Math.abs(d.y) < 0.9 ? _B.set(0, 1, 0).cross(d).normalize() : _B.set(1, 0, 0).cross(d).normalize();
+  const z = _s.crossVectors(x, d);
+  W.setMatrix(_tm.makeBasis(x, d, z).setPosition(p[0], p[1], p[2]));
+  lathe(W, [[r, 0], [r, len]], seg, { capTop: caps, capBottom: caps });
+  W.setMatrix(null);
+}
+const _tm = new THREE.Matrix4();
+
+/** The dish (dish frame, see above): an oval reflector whose front and back skins, 8 mm
+ *  apart, meet in a rolled rim; the bracket and clamp behind it; the feed arm from the
+ *  lower rim up to the LNB at the focus, its feedhorn turned to the reflector. Painted
+ *  per placement (tint). */
 function dishTemplate() {
   const W = new GeoWriter();
-  const R = 0.32, depth = 0.07, rings = 5, seg = 16;
-  W.color(0.72, 0.71, 0.68);
-  const front = [], back = [];
+  const { RX, RY, D, Z0, T } = DISH, rings = 6, seg = 28;
+  W.color(0.74, 0.735, 0.71);
+  const front = [], back = [], rim = [];
   for (let i = 0; i <= rings; i++) {
-    const r = (i / rings) * R, z = (r * r) / (R * R) * depth;
-    const fr = [], bk = [];
+    const t = i / rings, fr = [], bk = [];
     for (let j = 0; j <= seg; j++) {
-      const a = (j / seg) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
-      const nz = 1, nr = -2 * r / (R * R) * depth;
-      const l = Math.hypot(nz, nr);
-      fr.push(W.v(c * r, s * r, z, (c * nr) / l, (s * nr) / l, nz / l, c * r, s * r));
-      bk.push(W.v(c * r, s * r, z - 0.006, -(c * nr) / l, -(s * nr) / l, -nz / l, c * r, s * r, 0.8));
+      const a = (j / seg) * Math.PI * 2, x = Math.cos(a) * RX * t, y = Math.sin(a) * RY * t, z = dishZ(x, y);
+      const gx = (2 * D * x) / (RX * RX), gy = (2 * D * y) / (RY * RY), l = Math.sqrt(gx * gx + gy * gy + 1);
+      // (the bowl's inside a little darker toward its centre, the back in its own shade)
+      fr.push(W.v(x, y, z, -gx / l, -gy / l, 1 / l, x, y, 0.93 + 0.07 * t));
+      bk.push(W.v(x, y, z - T, gx / l, gy / l, -1 / l, x, y, 0.8));
     }
     front.push(fr); back.push(bk);
   }
@@ -963,22 +987,82 @@ function dishTemplate() {
     W.quad(front[i][j], front[i][j + 1], front[i + 1][j + 1], front[i + 1][j]);
     W.quad(back[i][j], back[i + 1][j], back[i + 1][j + 1], back[i][j + 1]);
   }
-  W.color(0.3, 0.3, 0.3);
-  sweepBar(W, [[0, -R * 0.9], [0, -R * 0.2]], 0.01, 0.01, { z0: 0.32 });       // LNB arm (in the dish's front)
-  box(W, 0, -R * 0.15, 0.32, 0.05, 0.08, 0.06);                                 // LNB
-  W.color(0.5, 0.5, 0.5);
-  box(W, 0, -0.05, -0.12, 0.05, 0.05, 0.2);                                     // mount arm back to the wall
+  // rolled rim: front edge, a lip 4 mm proud of it, back edge (normals turning outward)
+  for (let j = 0; j <= seg; j++) {
+    const a = (j / seg) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
+    const x = c * RX, y = s * RY, z = dishZ(x, y);
+    let ox = c / RX, oy = s / RY;
+    const ol = Math.sqrt(ox * ox + oy * oy); ox /= ol; oy /= ol;
+    rim.push([
+      W.v(x, y, z, ox * 0.6, oy * 0.6, 0.8, x, y, 0.97),
+      W.v(x + ox * 0.004, y + oy * 0.004, z - T * 0.5, ox, oy, 0, x, y, 0.92),
+      W.v(x, y, z - T, ox * 0.6, oy * 0.6, -0.8, x, y, 0.85),
+    ]);
+  }
+  for (let j = 0; j < seg; j++) {
+    const A = rim[j], B = rim[j + 1];
+    W.quad(A[0], A[1], B[1], B[0]);
+    W.quad(A[1], A[2], B[2], B[1]);
+  }
+  // back bracket and the clamp round the mast (galvanised)
+  W.color(0.5, 0.5, 0.49);
+  box(W, 0, 0, Z0 - T - 0.004, 0.17, 0.2, 0.012, 0.85);
+  box(W, 0, 0, 0.02, 0.08, 0.12, 0.14, 0.8);
+  // feed arm from the bracket down behind the reflector, under its lower rim and out to
+  // the LNB holder; the LNB low in front of the reflector (an offset dish's focus), its
+  // horn aimed at the reflector centre
+  W.color(0.7, 0.695, 0.67);
+  const knee = [0, -RY - 0.07, 0.1], lnb = [0, -0.16, 0.44], arm1 = [0, -0.235, 0.49];
+  tube(W, [0, -0.05, 0.03], knee, 0.011, 6);
+  tube(W, knee, arm1, 0.011, 6);
+  box(W, 0, -0.215, 0.495, 0.05, 0.035, 0.06, 0.85);
+  W.color(0.8, 0.8, 0.78);
+  const ax = _A.set(-lnb[0], -lnb[1], Z0 - lnb[2]).normalize().negate(); // away from the reflector
+  const bx = _B.set(1, 0, 0), bz = _s.crossVectors(bx, ax).normalize();
+  W.setMatrix(_tm.makeBasis(bx, ax, bz).setPosition(lnb[0], lnb[1], lnb[2]));
+  lathe(W, [[0.03, 0], [0.03, 0.012], [0.022, 0.03], [0.022, 0.085], [0.027, 0.095], [0.027, 0.13], [0.012, 0.14]], 10, { capBottom: true, capTop: true });
+  W.setMatrix(null);
   return template(W, WHITE_UV);
 }
 
-/** The dish's shadow caster: an eight-sided shallow cone (both faces: the depth pass
- *  draws back faces), the LNB and the wall arm. */
+/** The wall mount (facade frame, origin at the clamp): wall plate, square arm out to the
+ *  mast, a brace under it, and the round mast the dish is clamped to. */
+function dishMountTemplate() {
+  const W = new GeoWriter(), w0 = -DISH_W;
+  W.color(0.5, 0.5, 0.49);
+  box(W, 0, -0.2, w0 + 0.006, 0.15, 0.24, 0.012, 0.8, 'b');
+  box(W, 0, -0.14, w0 / 2 + 0.006, 0.04, 0.04, -w0 - 0.012, 0.8);
+  tube(W, [0, -0.3, w0 + 0.012], [0, -0.155, w0 * 0.3], 0.01, 6);
+  tube(W, [0, -0.24, 0], [0, 0.16, 0], 0.024, 10, true);
+  return template(W, WHITE_UV);
+}
+
+/** The dish's shadow caster (dish frame): the reflector as a coarse shell just behind its
+ *  back skin (chords bulge toward the front skin by under 5 mm, so it never shades its
+ *  own bowl), both faces (the depth pass draws back faces), the bracket and the LNB. */
 function dishCaster() {
-  const S = new PosWriter(), R = 0.32, c = S.v(0, 0, 0), ring = [];
-  for (let j = 0; j < 8; j++) { const a = (j / 8) * Math.PI * 2; ring.push(S.v(Math.cos(a) * R, Math.sin(a) * R, 0.07)); }
-  for (let j = 0; j < 8; j++) { S.tri(c, ring[j], ring[(j + 1) % 8]); S.tri(c, ring[(j + 1) % 8], ring[j]); }
-  boxPos(S, 0, -R * 0.15, 0.32, 0.05, 0.08, 0.06);
-  boxPos(S, 0, -0.05, -0.12, 0.05, 0.05, 0.2);
+  const S = new PosWriter(), { RX, RY, T } = DISH, z = (x, y) => dishZ(x, y) - T - 0.003;
+  const c = S.v(0, 0, z(0, 0)), mid = [], rim = [];
+  for (let j = 0; j < 10; j++) {
+    const a = (j / 10) * Math.PI * 2, x = Math.cos(a) * RX, y = Math.sin(a) * RY;
+    mid.push(S.v(x * 0.55, y * 0.55, z(x * 0.55, y * 0.55)));
+    rim.push(S.v(x, y, z(x, y)));
+  }
+  for (let j = 0; j < 10; j++) {
+    const k = (j + 1) % 10;
+    S.tri(c, mid[j], mid[k]); S.tri(c, mid[k], mid[j]);
+    S.quad(mid[j], rim[j], rim[k], mid[k]); S.quad(mid[k], rim[k], rim[j], mid[j]);
+  }
+  boxPos(S, 0, 0, 0.02, 0.08, 0.12, 0.14);
+  boxPos(S, 0, -0.19, 0.5, 0.06, 0.08, 0.15);
+  return { P: S.P.slice(0, S.n * 3), I: S.I.slice(0, S.ni), n: S.n };
+}
+
+/** The mount's shadow caster (facade frame): mast and arm. */
+function dishMountCaster() {
+  const S = new PosWriter();
+  boxPos(S, 0, -0.04, 0, 0.045, 0.4, 0.045);
+  boxPos(S, 0, -0.14, -DISH_W / 2, 0.04, 0.04, DISH_W);
   return { P: S.P.slice(0, S.n * 3), I: S.I.slice(0, S.ni), n: S.n };
 }
 
@@ -1072,6 +1156,7 @@ export function buildAttachAssets() {
     acPipes: acPipeTemplate(),
     acStain: acStainTemplate(),
     dish: dishTemplate(),
+    dishMount: dishMountTemplate(),
     chair: chairTemplate(),
     towel: towelTemplate(),
     pole: poleTemplate(),
@@ -1090,6 +1175,7 @@ export function buildAttachAssets() {
   lathe(W, [[0.084, 0], [0.118, 0.186], [0.134, 0.224], [0.0001, 0.215]], 6);
   A.thin.set(A.pot, posTemplate(W));
   A.thin.set(A.dish, dishCaster());
+  A.thin.set(A.dishMount, dishMountCaster());
   // the most numerous parts are instanced (module-wide pools, ironwork/instancer.js)
   // rather than written into the merged mesh: planter boxes and troughs, their hook
   // straps, pots and AC units (pipes and brackets dropped at range: the light level is

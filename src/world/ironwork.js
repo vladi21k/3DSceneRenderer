@@ -14,7 +14,7 @@ import { Strip } from './ironwork/strip.js';
 import {
   makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK,
 } from './ironwork/mats.js';
-import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL } from './ironwork/attach.js';
+import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL, DISH_W } from './ironwork/attach.js';
 import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 
 // Balconies and facade attachments: moulded stone slabs on carved consoles (placed by
@@ -95,7 +95,12 @@ const CORBEL_KEYS = ['corbel0', 'corbel1', 'corbel2'], PLANT_KEYS = Object.value
 const PLANT_OPTS = { cls: 'plant' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
 const BAY_OPTS = { cls: 'rail', radius: 0.8, angle: true, thin: true }, POST_OPTS = { cls: 'post', radius: 1.2, thin: true };
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
+// An offset dish receives from about 22° above its face's normal, so the face itself
+// looks out nearly level (18° up).
 const DISH_DIR = new THREE.Vector3(-0.55, 0.64, 0.53).normalize();
+const DISH_AIM = new THREE.Vector3(DISH_DIR.x, 0, DISH_DIR.z).normalize().multiplyScalar(Math.cos(0.314)).setY(Math.sin(0.314));
+// dish paint (tints on the light grey of the template): off-white, light grey, dark grey
+const DISH_PAINT = [[1.04, 1.04, 1.05], [0.86, 0.87, 0.88], [0.42, 0.42, 0.43]], DISH_PAINT_W = [[0, 0.6], [1, 0.28], [2, 0.12]];
 // Stone tints are relative to the cream reference, exactly as the buildings tint theirs.
 // WARM shifts the dressed-stone albedo toward the mean of the ashlar blocks around it
 // (their per-block hue variation leans warm), measured on screen at equal lighting.
@@ -131,7 +136,9 @@ function lotStyle(lot, plan) {
   const pots = r.int(0, POTS.length - 1);
   const flag = r.int(0, 3);
   const k = r.range(0.95, 1.02);
-  const tint = plan.style.tint.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k * WARM[i]);
+  // (on rendered blocks the slabs, consoles and balustrades are dressing: stone, not render)
+  const stone = plan.style.finish === 'render' && plan.style.stone ? plan.style.stone : plan.style.tint;
+  const tint = stone.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k * WARM[i]);
   // gardening (a stream of its own): about half the buildings have bare balconies, in a
   // third some households plant, in the rest (the keen ones) most do. Each building
   // leans toward some plantings; the keen ones let fewer boxes dry out.
@@ -603,15 +610,20 @@ const ironwork = {
       const u = flagPier(plan, f);
       if (u !== null) this.flag(ctx, F, u, f.y, 0, st, r, 1);
     }
-    // satellite dish on the top floor, only where the facade can see the satellite
+    // satellite dish on the top floor, only where the facade can see the satellite: the
+    // mount square to the wall on a pier, the dish clamped to its mast and turned to the
+    // satellite
     if (!lod && r.chance(0.14) && plan.bays.length > 1) {
       _a.copy(lot.frame.nDir);
       if (_a.dot(_b.set(DISH_DIR.x, 0, DISH_DIR.z).normalize()) > 0.25) {
         const fl = plan.floors[plan.floors.length - 1];
         const k = r.int(1, plan.bays.length - 1);
-        _p.set(plan.bays[k].u0, fl.y + r.range(1.1, 1.8), 0.42).applyMatrix4(F);
-        _l.lookAt(_c.set(0, 0, 0), _q.copy(DISH_DIR).negate(), _b.set(0, 1, 0)).setPosition(_p);
-        this.part(ctx, A.dish, _l);
+        const u = plan.bays[k].u0, v = fl.y + r.range(1.1, 1.8);
+        const paint = DISH_PAINT[r.weighted(DISH_PAINT_W)];
+        this.part(ctx, A.dishMount, _m.multiplyMatrices(F, _l.makeTranslation(u, v, DISH_W)));
+        _p.set(u, v, DISH_W).applyMatrix4(F);
+        _l.lookAt(_c.set(0, 0, 0), _q.copy(DISH_AIM).negate(), _b.set(0, 1, 0)).setPosition(_p);
+        this.part(ctx, A.dish, _l, paint);
       }
     }
   },

@@ -15,13 +15,22 @@ import { TRACK_OFFSET, EYE_HEIGHT } from '../core/config.js';
 // courses, arched shop openings, upper windows (flat / round / pointed tops),
 // wrought-iron balconies on stone corbels, cornice + parapet, some tiled roofs.
 
+// Absolute stone tints; every consumer takes them relative to cream, the colour the baked
+// limestone texture stands for (shade.stoneStyle, far field, ironwork). The baked stone is
+// honey, so pale and grey are clearly cooler to read pale cream and grey-white.
 const STONE_TINTS = [
   [0.86, 0.80, 0.68], // cream
   [0.84, 0.74, 0.58], // honey
-  [0.88, 0.83, 0.74], // pale
+  [0.86, 0.825, 0.765], // pale
   [0.82, 0.75, 0.66], // pinkish buff
-  [0.80, 0.77, 0.70], // grey limestone
+  [0.81, 0.78, 0.74], // grey limestone
   [0.87, 0.78, 0.62], // golden
+];
+// Share of the lots per tint (materials.meta['stone.ashlar'].tintWeights): honey and golden
+// on about half the street, cream a fifth, pinkish a tenth, pale and grey a fifth.
+const TINT_PICK = [
+  [STONE_TINTS[1], 0.3], [STONE_TINTS[5], 0.2], [STONE_TINTS[0], 0.2],
+  [STONE_TINTS[3], 0.1], [STONE_TINTS[2], 0.12], [STONE_TINTS[4], 0.08],
 ];
 
 const cache = new Map();
@@ -56,7 +65,7 @@ export function facadePlan(lot) {
   const era = rng.weighted([['ottoman', 0.45], ['mandate', 0.4], ['modern', 0.15]]);
   const style = {
     era,
-    tint: rng.pick(STONE_TINTS).map((c) => c * rng.range(0.96, 1.03)),
+    tint: rng.weighted(TINT_PICK).map((c) => c * rng.range(0.96, 1.03)),   // (one draw, as pick)
     courseH: rng.range(0.30, 0.42),          // ashlar course height
     blockL: rng.range(0.55, 0.95),           // average block length
     tooled: rng.chance(0.7),                 // chisel-dressed faces (Jerusalem "taltish")
@@ -214,7 +223,9 @@ export function facadePlan(lot) {
   followSlope(plan);                       // ground-floor sills step down with the street
   for (const o of plan.openings) setArch(o); // o.rise / o.spring for every opening head
   if (plan.upper) for (const o of [...plan.upper.openings, ...(plan.upper.sides || []).flat()]) setArch(o);
-  plan.relief = reliefOf(plan, ornament(plan, RNG.from(lot.seed, 'shell')));
+  const orn = ornament(plan, RNG.from(lot.seed, 'shell'));
+  balconyRoom(plan, orn);                  // room for the consoles under the balcony slabs
+  plan.relief = reliefOf(plan, orn);
   plan.returns = [];                       // street facades on the side-street returns of corner lots
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
@@ -510,6 +521,113 @@ function lowerTo(plan, n) {
   for (const fl of plan.flags) fl.y = plan.floors[Math.min(2, n - 1)].y + 1.6;
 }
 
+// ------------------------------------------------------------------ room under the balconies
+// A stone balcony slab rests on carved consoles (ironwork/consoles.js) that hang up to
+// about 0.8 m below its soffit, on the piers either side of the head dressing of the
+// opening beneath or on top of it. Two plan rules keep that room:
+//   - a balcony over a single bay is widened (as far as its bay allows) to a console's
+//     width beyond the head dressing of the opening below on either side;
+//   - under first-floor slabs, the shop fronts and doors of the ground floor keep their
+//     head dressing (arch rings, lintels, door portals) ROOM below the soffit: every shop
+//     of the front (corner returns and chamfers too) shares that head line, as in the
+//     street, where the shop arches stop well below the first-floor balconies.
+// Upper storeys are not lowered (their windows would become squat); where a bay is too
+// narrow, the consoles stand on the dressing, shortened.
+const ROOM = 0.8;          // free height under a soffit: a full scroll console and its knob
+const SIDE = 0.5;          // beside the dressing: half a console plus clearance
+const SHOP_MIN = 2.9, DOOR_MIN = 2.35, SPRING_MIN = 2.4;   // clear heights above the paving
+const ORN = new WeakMap(); // plan -> ornament (for the returns, see capGroundHead)
+
+/**
+ * Head dressing of opening o as the building shell draws it (buildings/openings.js: arch
+ * rings and keystones, flat arches, lintels and keystones, hoods, crossettes, door
+ * portals): {u0, u1, top}, its extent along the wall and its highest point.
+ */
+export function headDressing(plan, orn, o) {
+  const ground = o.floor === 0, door = o.kind === 'door', arched = o.top !== 'flat' && o.rise > 0.01;
+  const yt = o.y + o.h, hw = o.w / 2;
+  const isWin = o.kind === 'window' || o.kind === 'balconyDoor';
+  const surround = isWin ? (plan.style.surrounds ? orn.sw : 0) : door && orn.doorSurround ? orn.sw * 1.3 : 0;
+  if (ground && door && orn.doorHood) {
+    // portal: a hood cornice on two consoles (0.24 wide) beside the head
+    const ring = arched ? orn.shopRing : 0;
+    const reach = (ring ? ring + 0.06 : (surround || 0.12) + 0.08) + 0.24 + 0.08;
+    return { u0: o.uc - hw - reach, u1: o.uc + hw + reach, top: ring ? yt + ring + 0.46 : yt + 0.7 };
+  }
+  if (arched) {
+    const T = ground ? orn.shopRing : surround ? surround * 1.3 : orn.ring;
+    return { u0: o.uc - hw - T, u1: o.uc + hw + T, top: yt + T + (ground || orn.keystone ? 0.08 : 0) };
+  }
+  const kind = ground ? orn.shopHead : orn.winHead;
+  const ext = surround || (ground ? 0.2 : 0.12);
+  const H = ground ? (kind === 'flatArch' ? 0.42 : 0.38) : Math.min(0.45, Math.max(0.26, plan.coursing.ch));
+  let reach = ext + (kind === 'flatArch' ? 0.06 : kind === 'hood' ? 0.07 : 0);
+  if (!ground && orn.ears && surround) reach = Math.max(reach, surround + 0.08);
+  const top = kind === 'hood' ? H + 0.22 : kind === 'flatArch' ? H + 0.06 : H + (orn.keystone && kind !== 'plain' ? 0.05 : 0);
+  return { u0: o.uc - hw - reach, u1: o.uc + hw + reach, top: yt + top };
+}
+
+function balconyRoom(plan, orn) {
+  ORN.set(plan, orn);
+  plan.groundHeadLim = null;
+  const bals = plan.balconies;
+  if (!bals.length) return;
+  const W = plan.width;
+  // bay balconies: widen to clear the dressing below
+  for (const b of bals) {
+    if (b.floor < 2) continue;
+    const bay = plan.bays.find((x) => b.u0 >= x.u0 - 0.01 && b.u1 <= x.u1 + 0.01);
+    if (!bay) continue;
+    const soffit = b.y - b.slabT;
+    let d0 = Infinity, d1 = -Infinity;
+    for (const o of plan.openings) {
+      if (o.floor !== b.floor - 1) continue;
+      const d = headDressing(plan, orn, o);
+      if (d.top <= soffit - ROOM || d.u1 < b.u0 - SIDE || d.u0 > b.u1 + SIDE) continue;
+      d0 = Math.min(d0, d.u0); d1 = Math.max(d1, d.u1);
+    }
+    if (d0 > d1) continue;
+    const a = Math.min(b.u0, d0 - SIDE), c = Math.max(b.u1, d1 + SIDE);
+    if (a < Math.max(bay.u0 + 0.15, 0.3) || c > Math.min(bay.u1 - 0.15, W - 0.3)) continue;
+    // (other slabs on the floor keep 0.3 m clear)
+    if (bals.some((x) => x !== b && x.floor === b.floor && x.u1 > a - 0.3 && x.u0 < c + 0.3)) continue;
+    b.u0 = a; b.u1 = c;
+  }
+  // the ground floor's head line under first-floor slabs
+  let soffit = Infinity;
+  for (const b of bals) if (b.floor === 1) soffit = Math.min(soffit, b.y - b.slabT);
+  if (soffit === Infinity) return;
+  plan.groundHeadLim = soffit - ROOM;
+  for (const o of plan.openings) {
+    if (o.floor !== 0) continue;
+    // doors (lower already) only where a slab is over them
+    if (o.kind === 'door') {
+      const d = headDressing(plan, orn, o);
+      if (!bals.some((b) => b.floor === 1 && d.u1 > b.u0 - SIDE && d.u0 < b.u1 + SIDE)) continue;
+    }
+    capGroundHead(plan, o, plan.groundAt);
+  }
+}
+
+/**
+ * Lower a ground-floor opening so its head dressing stays under plan.groundHeadLim, as
+ * far as its clear height above the paving (groundAt: the face's paving) allows.
+ */
+function capGroundHead(plan, o, groundAt) {
+  const lim = plan.groundHeadLim, orn = ORN.get(plan);
+  if (lim == null || !orn || o.floor !== 0) return;
+  const d = headDressing(plan, orn, o);
+  let drop = d.top - lim;
+  if (drop <= 0.005) return;
+  const gHi = Math.max(groundAt(o.uc - o.w / 2), groundAt(o.uc + o.w / 2));
+  const top = o.y + o.h;
+  drop = Math.min(drop, top - gHi - (o.kind === 'door' ? DOOR_MIN : SHOP_MIN));
+  if (o.top !== 'flat' && o.rise > 0.01) drop = Math.min(drop, o.spring - gHi - SPRING_MIN);
+  if (drop <= 0.005) return;
+  o.h -= drop;
+  setArch(o);
+}
+
 // ------------------------------------------------------------------ coursing
 // Ashlar is laid to the openings: every typical storey holds a whole number of courses
 // (height plan.coursing.ch), window sills on one floor share a line and sit on a bed
@@ -627,7 +745,7 @@ function returnPlan(lot, plan, end, cut = 0) {
     const head = isDoor ? Math.min(ground.h - 0.9, 3.2) : ground.h - rng.range(0.8, 1.1);
     const o = { id: `${id}:g${b.index}`, floor: 0, bay: b.index, uc: b.uc, w, y: sill, h: head - sill, top, kind: isDoor ? 'door' : 'shop',
       recess: rng.range(0.25, 0.4), awning: null, lit: rng.range(0.6, 1.0) };
-    setArch(o); openings.push(o);
+    setArch(o); capGroundHead(plan, o, groundAt); openings.push(o);
   }
   const winTpl = plan.openings.filter((o) => o.kind === 'window' || o.kind === 'balconyDoor');
   for (const fl of plan.floors) {
@@ -711,7 +829,7 @@ function cornerCut(plan, lot) {
     const sw = Math.min(L - 0.9, 2.1), sy = Math.max(groundAt(L / 2 - sw / 2), groundAt(L / 2 + sw / 2)) + 0.03;
     const so = { id: `${id}:g0`, floor: 0, bay: 0, uc: L / 2, w: sw, y: sy, h: gf.h - rng.range(0.8, 1.0) - sy,
       top: plan.style.shopTop, kind: 'shop', recess: rng.range(0.25, 0.35), awning: null, lit: rng.range(0.6, 1.0) };
-    setArch(so); openings.push(so);
+    setArch(so); capGroundHead(plan, so, groundAt); openings.push(so);
     for (const fl of plan.floors) {
       if (fl.index === 0) continue;
       const tpl = plan.openings.find((o) => o.floor === fl.index && o.kind === 'window');

@@ -170,15 +170,21 @@ export function desired(c, a, out) {
     switch (a.state) {
       case ST.WALK: {
         // the lane only changes slowly along the street: refresh it a few times a second
+        // (with the slow noise of pace and heading: they change over seconds, and the
+        // velocity relaxes towards them anyway)
         a.laneTT -= c.dt;
-        if (a.laneTT <= 0) { a.laneT = laneTarget(c, a); a.laneTT = 0.25; }
+        if (a.laneTT <= 0) {
+          a.laneT = laneTarget(c, a); a.laneTT = 0.25;
+          a.lnN = noise1(c.time / a.paceT, a.wSeed + 11);
+          a.lnJ = 0.045 * noise1(c.time * 0.5, a.wSeed + 23) + 0.025 * noise1(c.time * 1.3, a.wSeed + 29);
+        }
         const e = a.laneT - a.d;
         // pace drifts a few percent over 5-15 s (and drops back / pulls ahead of a stranger
         // alongside); heading jitters a few degrees
-        const pace = a.v0 * (1 + 0.06 * noise1(c.time / a.paceT, a.wSeed + 11)) * (a.paceKT > c.time ? a.paceK : 1);
+        const pace = a.v0 * (1 + 0.06 * a.lnN) * (a.paceKT > c.time ? a.paceK : 1);
         const vdMax = a.laneUrgent ? 1.1 : 0.75;
         let vs = a.dir * pace, vd = Math.max(-vdMax, Math.min(vdMax, e * (a.laneUrgent ? 1.8 : 0.9)));
-        const j = 0.045 * noise1(c.time * 0.5, a.wSeed + 23) + 0.025 * noise1(c.time * 1.3, a.wSeed + 29);
+        const j = a.lnJ;
         const cj = Math.cos(j), sj = Math.sin(j);
         out.vs = vs * cj - vd * sj; out.vd = vs * sj + vd * cj;
         a.gd = a.laneT;
@@ -357,7 +363,7 @@ function waitForChild(c, a, out) {
   let far = 0, who = null;
   for (const f of a.followers) {
     if (!f.isChild) continue;
-    const dd = Math.hypot(f.s - a.s, f.d - a.d);
+    const fs = f.s - a.s, fd = f.d - a.d, dd = Math.sqrt(fs * fs + fd * fd);
     if (dd > far) { far = dd; who = f; }
   }
   if (far < 2.6) return;
@@ -420,6 +426,13 @@ export function startUturn(c, a) {
  *  two abreast with the others a step behind, or single file (also when a member gets stuck). */
 function follow(c, a, out) {
   const L = a.leader, t = c.time;
+  // the slot's slow wander and the pace drift (periods of seconds): refreshed four times a second
+  a.fwTT -= c.dt;
+  if (a.fwTT <= 0) {
+    a.fwTT = 0.25;
+    a.fwF = 0.3 * noise1(t / a.wT, a.wSeed + 3); a.fwR = 0.15 * noise1(t / a.wT + 17.3, a.wSeed + 5);
+    a.lnN = noise1(t / a.paceT, a.wSeed + 7);
+  }
   // a leader committed to crossing the ride track takes the group across with it
   if (L.crossOK > t && a.crossOK < L.crossOK && Math.abs(a.d - L.d) < 3) a.crossOK = L.crossOK;
   // a leader walking along a platform takes the group up onto it
@@ -440,8 +453,8 @@ function follow(c, a, out) {
       // two abreast, the others staggered 1.0-1.5 m behind them
       F = -(1.0 + 0.5 * ((a.wSeed & 15) / 15)) - 0.9 * (rank - 1); R = 0.3 * Math.sign(a.baseR || 1) * ((a.wSeed >> 4 & 1) ? 1 : -0.4);
     } else if (!lStop) {
-      F += 0.3 * noise1(t / a.wT, a.wSeed + 3);
-      R += 0.15 * noise1(t / a.wT + 17.3, a.wSeed + 5);
+      F += a.fwF;
+      R += a.fwR;
     }
     // leader frame: walking direction on the lane, the body facing otherwise (crossing, browsing)
     const th = L.state === ST.WALK ? ((L.uturnT > 0 ? L.uturnDir : L.dir) > 0 ? 0 : PI) : L.alpha;
@@ -482,7 +495,7 @@ function follow(c, a, out) {
   a.gd = td;
   const es = ts - a.s, ed = td - a.d;
   const k = 0.8;
-  const pace = 1 + 0.04 * noise1(t / a.paceT, a.wSeed + 7);
+  const pace = 1 + 0.04 * a.lnN;
   // the leader's sideways motion is copied only while the member is really in its slot
   out.vs = L.vs * pace + es * k; out.vd = (own ? 0 : L.vd) + ed * k;
   const sp = len2(out.vs, out.vd);

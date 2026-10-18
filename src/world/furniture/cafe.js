@@ -225,7 +225,15 @@ export function cafeStyle(cafe, app) {
   st.umbrellas = st.plan.umbrellas.map((u) => ({ ...u, color: srgb(UMB_COL[u.color] || UMB_COL.cream).multiplyScalar(u.tint) }));
   st.throughTable = new Set(st.plan.umbrellas.filter((u) => u.base === 'table').map((u) => u.table));
   st.menu = st.plan.menu;
-  cafe.tables.forEach((t, ti) => { t.dressed = wareState(wareRng(seed, cafe, ti)); });
+  // table dressing, planned once on the relaxed chairs: the layout table learns its state
+  // (`dressed`) and the chairs whose place is set (`places`, chair indices), so seated
+  // patrons sit exactly at the cups and plates
+  st.ware = cafe.tables.map((t, ti) => {
+    const w = planTableware(t, wareRng(seed, cafe, ti), st.throughTable.has(ti));
+    t.dressed = w.state;
+    t.places = w.places;
+    return w.items;
+  });
   styleCache.set(cafe, st);
   return st;
 }
@@ -273,7 +281,7 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
       placeMatrix(route, t.s, t.d, 0, tyaw, _m, FOOT.table);
       inst.add(P.top[`${t.shape}${st.top}`], _m, _c.copy(st.topTint).multiplyScalar(rng.range(0.95, 1.04)));
       inst.add(P.base[st.base], _m);
-      if (lod === 0) placeTableware(route, t, wareRng(layout.seed, cafe, ti), inst, P, st.throughTable.has(ti), st.folder);
+      if (lod === 0) placeTableware(route, t, st.ware[ti], inst, P, st.folder);
     });
     for (const u of st.umbrellas) {
       const uf = FOOT[u.base] ?? FOOT.table;
@@ -300,54 +308,66 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
 
 /** Table dressing: a table is bare, laid (napkins, a menu folder, an ashtray) or in use,
  *  each place with its own order (espresso, water, a tall glass, a plate) and the odd phone
- *  or folder beside it. The state is the first draw of the table's own generator, so it is
- *  known before any chunk is built: 0 bare, 1 laid, 2 in use (cafeStyle writes it to the
- *  layout table as `dressed`, for seated patrons to prefer the tables in use). */
+ *  or folder beside it. The state is the first draw of the table's own generator. Planned
+ *  once per table (cafeStyle, at init): {state (0 bare, 1 laid, 2 in use), places (chair
+ *  indices with a setting), items [{k (misc proto), s, d, yaw, f (folder colour)}]}. */
 const SETTINGS = [['cup', 0.34], ['glass', 0.2], ['tall', 0.16], ['plate', 0.18], ['cupGlass', 0.12]];
 const wareRng = (seed, cafe, ti) => RNG.from(seed, 'cafeWare', cafe.id, ti);
-const wareState = (rng) => rng.weighted([[0, 0.3], [1, 0.25], [2, 0.45]]);
-function placeTableware(route, t, rng, inst, P, pole, folderCol) {
-  const state = wareState(rng);
-  if (!state) return;
-  // on the (level) table top, whatever the paving does under each item
-  const topY = route.groundY(t.s, t.d) - groundSink(route, t.s, t.d, FOOT.table) + TABLE_H;
-  const onTop = (s, d) => topY - route.groundY(s, d);
+// about half the tables in use, so the terraces near the camera are 50-70 % occupied
+const wareState = (rng) => rng.weighted([[0, 0.25], [1, 0.2], [2, 0.55]]);
+function planTableware(t, rng, pole) {
+  const state = wareState(rng), items = [], places = [];
+  const out = { state, places, items };
+  if (!state) return out;
   const reachR = t.shape === 'square' ? 0.26 : 0.23;
-  const put = (p, s, d, yaw, col = null) => { placeMatrix(route, s, d, onTop(s, d), yaw, _m); inst.add(p, _m, col); };
+  const put = (k, s, d, yaw, f = false) => { items.push({ k, s, d, yaw, f }); };
   // towards place ch: r from the centre, `side` across (m)
   const at = (ch, r, side) => {
     const dx = ch.s - t.s, dd = ch.d - t.d, l = Math.hypot(dx, dd) || 1;
     r = Math.min(r, reachR);
     return [t.s + (dx / l) * r - (dd / l) * side, t.d + (dd / l) * r + (dx / l) * side, Math.atan2(dd, dx)];
   };
-  if (!pole && rng.chance(0.6)) put(P.misc.napkin, t.s + rng.range(-0.04, 0.04), t.d + rng.range(-0.04, 0.04), rng.range(0, 3.14));
-  if (rng.chance(state === 1 ? 0.35 : 0.25) && !pole) put(P.misc.ashtray, t.s + rng.range(-0.1, 0.1), t.d + rng.range(-0.1, 0.1), 0);
+  if (!pole && rng.chance(0.6)) put('napkin', t.s + rng.range(-0.04, 0.04), t.d + rng.range(-0.04, 0.04), rng.range(0, 3.14));
+  if (rng.chance(state === 1 ? 0.35 : 0.25) && !pole) put('ashtray', t.s + rng.range(-0.1, 0.1), t.d + rng.range(-0.1, 0.1), 0);
   if (state === 1) {
     if (rng.chance(0.6) && t.chairs.length) {
       const [s, d, a] = at(rng.pick(t.chairs), rng.range(0.18, 0.2), rng.range(-0.05, 0.05));
-      put(P.misc.folder, s, d, a + Math.PI / 2 + rng.range(-0.4, 0.4), folderCol);
+      put('folder', s, d, a + Math.PI / 2 + rng.range(-0.4, 0.4), true);
     }
-    return;
+    return out;
   }
   let used = 0;
-  for (const ch of t.chairs) {
-    if (!rng.chance(0.62) && (used || ch !== t.chairs[t.chairs.length - 1])) continue;
+  t.chairs.forEach((ch, ci) => {
+    if (!rng.chance(0.62) && (used || ch !== t.chairs[t.chairs.length - 1])) return;
     used++;
+    places.push(ci);
     const kind = rng.weighted(SETTINGS);
     const [s, d, a] = at(ch, rng.range(0.15, 0.2), rng.range(-0.07, 0.07));
     if (kind === 'plate') {
       const [ps, pd] = at(ch, rng.range(0.17, 0.18), rng.range(-0.03, 0.03)); // clear of the napkins / pole
-      put(P.misc.plate, ps, pd, rng.range(0, 6.28));
+      put('plate', ps, pd, rng.range(0, 6.28));
     } else if (kind === 'cupGlass') {
       const [gs, gd] = at(ch, rng.range(0.14, 0.18), 0.09);
-      put(P.misc.cup, s, d, rng.range(0, 6.28));
-      put(P.misc.glass, gs, gd, 0);
-    } else put(P.misc[kind], s, d, rng.range(0, 6.28));
+      put('cup', s, d, rng.range(0, 6.28));
+      put('glass', gs, gd, 0);
+    } else put(kind, s, d, rng.range(0, 6.28));
     if (rng.chance(0.18)) { // a phone beside the place, or the menu still open
       const [qs, qd] = at(ch, rng.range(0.12, 0.17), rng.chance(0.5) ? 0.13 : -0.13);
-      if (rng.chance(0.75)) put(P.misc.phone, qs, qd, a + rng.range(-0.5, 0.5));
-      else put(P.misc.folder, qs, qd, a + Math.PI / 2 + rng.range(-0.3, 0.3), folderCol);
+      if (rng.chance(0.75)) put('phone', qs, qd, a + rng.range(-0.5, 0.5));
+      else put('folder', qs, qd, a + Math.PI / 2 + rng.range(-0.3, 0.3), true);
     }
+  });
+  return out;
+}
+
+/** Instances of a table's planned dressing, on the (level) table top whatever the paving
+ *  does under each item. */
+function placeTableware(route, t, items, inst, P, folderCol) {
+  if (!items.length) return;
+  const topY = route.groundY(t.s, t.d) - groundSink(route, t.s, t.d, FOOT.table) + TABLE_H;
+  for (const it of items) {
+    placeMatrix(route, it.s, it.d, topY - route.groundY(it.s, it.d), it.yaw, _m);
+    inst.add(P.misc[it.k], _m, it.f ? folderCol : null);
   }
 }
 

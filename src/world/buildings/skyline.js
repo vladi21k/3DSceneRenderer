@@ -31,7 +31,7 @@ import { slabBalconies } from './balcony.js';
 // down the street.
 
 const CREAM = [0.86, 0.80, 0.68];
-const STONE = [[0.86, 0.80, 0.68], [0.84, 0.74, 0.58], [0.88, 0.83, 0.74], [0.80, 0.77, 0.70], [0.87, 0.78, 0.62]];
+const STONE = [[0.86, 0.80, 0.68], [0.84, 0.74, 0.58], [0.86, 0.825, 0.765], [0.81, 0.78, 0.74], [0.87, 0.78, 0.62]];   // (facadePlan's tints)
 // render colours as multipliers on the plaster albedo (≈ 0.66, 0.62, 0.54)
 const RENDER = {
   ochre: [[1.3, 1.0, 0.52], [1.32, 1.08, 0.62], [1.26, 0.95, 0.5]],

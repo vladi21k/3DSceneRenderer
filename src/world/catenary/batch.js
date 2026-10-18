@@ -377,7 +377,8 @@ export class CatBatches {
   /** Detail level of every full-detail instance by its distance from `eye` (m): level k
    *  below dist[k], the last one beyond (8 % hysteresis against the current level). */
   updateLevels(eye, dist) {
-    const d2s = dist.map((d) => d * d);
+    const d2s = this._d2s && this._d2s.length === dist.length ? this._d2s : (this._d2s = new Float64Array(dist.length));
+    for (let k = 0; k < dist.length; k++) d2s[k] = dist[k] * dist[k];
     for (const rec of this.records) {
       if (rec.far) continue;
       for (const e of rec.entries) {

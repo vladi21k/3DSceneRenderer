@@ -195,6 +195,9 @@ export function makeWireMaterial(coverage = false) {
   });
   if (coverage) m.alphaToCoverage = true;
   else { m.transparent = true; m.depthWrite = false; }
+  // the ribbons face the camera: one pass (a blended DoubleSide material is otherwise
+  // drawn twice, re-evaluating its program each time)
+  m.forceSinglePass = true;
   m.name = 'catenary.wire';
   return chain(m, coverage ? 'catWire3C' : 'catWire3', (shader) => {
     shader.uniforms.uPxScale = SU.uPxScale;

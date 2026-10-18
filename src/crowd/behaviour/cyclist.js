@@ -126,7 +126,8 @@ export function rideNear(c, a, far = false) {
   const tram = c.tram;
   const ahead = a.s - tram.trainU;
   if (ahead < -(TRAM_LEN + 6)) return false;
-  const reach = tram.frontFor(a) * 1.25 + 25 + (far ? 60 : 0);
+  tram.front(a);
+  const reach = a.front * 1.25 + 25 + (far ? 60 : 0);
   if (ahead < reach) { a.nearT = c.time + 3; return true; }
   return a.nearT > c.time;
 }
@@ -150,7 +151,8 @@ function laneLine(c, a) {
   // a comfortable berth once it is close
   if (rideNear(c, a) && a.d < RIDE_D + BAND) {
     const ahead = a.s - tram.trainU;
-    const close = ahead > -(TRAM_LEN + 4) && ahead < tram.frontFor(a) * 1.3 + 15;
+    tram.front(a);
+    const close = ahead > -(TRAM_LEN + 4) && ahead < a.front * 1.3 + 15;
     const lim = close ? RIDE_D - tram.passD - a.extHi - 0.12 : RIDE_D - BAND - a.extHi - 0.2;
     // pushed off the line between the tracks by a tram passing close: over to the far edge of
     // the corridor, rather than along the other track between its rails
@@ -973,7 +975,7 @@ function startSideOutRide(c, a, m, side) {
 /** Is a's stroller / bicycle (as placed now) clear of poles, trunks, benches, terraces and facades? */
 export function propClear(c, a, margin = 0.08) {
   const map = c.map;
-  const n = map.gatherCircles(a.s, 1.6);
+  const n = map.gatherAt(a, 1.6);
   for (let q = 0; q < n; q++) {
     const i = map.qI[q], rr = map.cR[i] + a.fpR + margin;
     if (propPointDist2(a, map.qDS[q], map.cD[i] - a.d) < rr * rr) return false;
@@ -1038,7 +1040,7 @@ export function dismount(c, a, stuck = false, anyway = false) {
 /** Is a's body (at its present spot) clear of poles, trunks, benches and other people? */
 function bodyClear(c, a) {
   const map = c.map;
-  const n = map.gatherCircles(a.s, 1.2);
+  const n = map.gatherAt(a, 1.2);
   for (let q = 0; q < n; q++) {
     const i = map.qI[q], ds = map.qDS[q], dd = map.cD[i] - a.d, rr = map.cR[i] + AGENT_R;
     if (ds * ds + dd * dd < rr * rr) return false;

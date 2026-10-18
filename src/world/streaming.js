@@ -38,21 +38,47 @@ export class World {
     // (debug: ffnear=<m> starts the far field nearer, to compare it with the real thing)
     this.viewAhead = Math.min(VIEW_AHEAD, app.params?.num ? app.params.num('ffnear', VIEW_AHEAD) : VIEW_AHEAD);
     this.farBuilders = this.buildersFor(2).length;
+    // per-frame bookkeeping without garbage (a major collection is a 20-50 ms hitch): the
+    // wanted list, its index lookup and the build queue reuse their entries, and the
+    // dedupe of upcoming() uses a stamp table instead of a set of string keys
+    const n = app.layout.nChunks;
+    this._byName = new Map(builders.map((b) => [b.name, b]));
+    this._names = [0, 1, 2].map((lod) => this.buildersFor(lod).map((b) => b.name));
+    this._want = [];                       // update(): reusable {idx, dist, lod}
+    this._wantU = [];                      // upcoming() / readyAround(): their own list
+    this._wantAt = new Int32Array(n);      // chunk index -> slot in _want (valid when stamped)
+    this._wantStamp = new Int32Array(n);
+    this._stamp = 0;
+    this._seen = new Int32Array(n * 4);    // upcoming(): (index, lod) already listed (stamp)
+    this._seenStamp = 0;
+    this._queue = [];                      // reusable {c, dist, upgrade}
+    this._recycleFn = (c, idx) => this._recycle(c, idx);
   }
 
-  wanted(sCam) {
+  /** Fill `list` (reusing its entries) with the wanted chunks around sCam; returns the count. */
+  _fillWanted(sCam, list) {
     const n = this.app.layout.nChunks;
-    const out = [];
     const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + this.viewAhead) / CHUNK_LEN);
     // the far field only while some builder serves it, and never wrapping onto the near range
     const i2 = this.farBuilders ? Math.min(Math.floor((sCam + this.viewFar) / CHUNK_LEN), i0 + n - 1) : i1;
-    for (let i = i0; i <= i2; i++) {
+    let k = 0;
+    for (let i = i0; i <= i2; i++, k++) {
       const idx = ((i % n) + n) % n;
       const mid = i * CHUNK_LEN + CHUNK_LEN / 2;
       const dist = Math.max(0, Math.abs(mid - sCam) - CHUNK_LEN / 2);
-      out.push({ idx, dist, lod: i > i1 ? 2 : dist < LOD0_DIST ? 0 : 1 });
+      const lod = i > i1 ? 2 : dist < LOD0_DIST ? 0 : 1;
+      const w = list[k];
+      if (w) { w.idx = idx; w.dist = dist; w.lod = lod; } else list.push({ idx, dist, lod });
     }
-    return out;
+    return k;
+  }
+
+  /** The wanted chunks around sCam, [{idx, dist, lod}] (a new array). */
+  wanted(sCam) {
+    const tmp = [];
+    const n = this._fillWanted(sCam, tmp);
+    tmp.length = n;
+    return tmp;
   }
 
   /** Builders asked for chunks of detail level `lod`. */
@@ -67,7 +93,7 @@ export class World {
     return {
       index: idx, s0, s1, lod, group,
       parts: new Map(),        // module name -> Object3D
-      pending: this.buildersFor(lod).map((b) => b.name),
+      pending: (this._names[lod] || this.buildersFor(lod).map((b) => b.name)).slice(),
       ready: false,
       rng: (tag) => RNG.from(this.app.layout.seed, tag, idx),
     };
@@ -91,7 +117,7 @@ export class World {
 
   _buildPart(c) {
     const name = c.pending.shift();
-    const b = this.builders.find((x) => x.name === name);
+    const b = this._byName.get(name);
     if (!b || b.disabled) return;
     const t0 = performance.now();
     try {
@@ -109,8 +135,8 @@ export class World {
     const dt = performance.now() - t0;
     this.stats.buildMsByModule[name] = Math.max(this.stats.buildMsByModule[name] || 0, dt) * 0.98 + dt * 0.02;
     if (this.staged) {   // ride-time samples only (start-up prime and warm-up builds excluded)
-      const w = this._ride[name] || (this._ride[name] = []);
-      w.push(dt); if (w.length > 200) w.shift();
+      const w = this._ride[name] || (this._ride[name] = { v: new Float32Array(RIDE_KEEP), n: 0 });
+      w.v[w.n++ % RIDE_KEEP] = dt;
     }
   }
 
@@ -146,7 +172,7 @@ export class World {
 
   _reveal() {
     let bytes = 0, shown = 0;
-    this.revealing.sort((a, b) => (a.dist ?? 0) - (b.dist ?? 0));
+    sortByDist(this.revealing, this.revealing.length);
     while (this.revealing.length && (shown === 0 || bytes < this.uploadBudget)) {
       const c = this.revealing[0];
       if (c.dead) { this.revealing.shift(); continue; }
@@ -178,7 +204,7 @@ export class World {
   _dispose(c) {
     c.dead = true;
     for (const [name, obj] of c.parts) {
-      const b = this.builders.find((x) => x.name === name);
+      const b = this._byName.get(name);
       try {
         if (b && b.dispose) b.dispose(obj, c, this.app);
         else disposeObject(obj);
@@ -189,19 +215,33 @@ export class World {
     this.stats.disposed++;
   }
 
+  /** Map.forEach callback of update(): drop a chunk that is no longer wanted. */
+  _recycle(c, idx) {
+    if (this._wantStamp[idx] !== this._stamp) { this._dispose(c); if (c.next) this._dispose(c.next); this.chunks.delete(idx); }
+    else c.dist = this._want[this._wantAt[idx]].dist;
+  }
+
+  /** Next build-queue entry (reused between frames). */
+  _enqueue(n, c, dist, upgrade) {
+    const q = this._queue[n];
+    if (q) { q.c = c; q.dist = dist; q.upgrade = upgrade; } else this._queue.push({ c, dist, upgrade });
+    return n + 1;
+  }
+
   update(sCam) {
-    const want = this.wanted(sCam);
-    const wantSet = new Map(want.map((w) => [w.idx, w]));
+    const want = this._want;
+    const nWant = this._fillWanted(sCam, want);
+    const stamp = ++this._stamp;
+    for (let k = 0; k < nWant; k++) { const idx = want[k].idx; this._wantStamp[idx] = stamp; this._wantAt[idx] = k; }
     // recycle
-    for (const [idx, c] of this.chunks) {
-      if (!wantSet.has(idx)) { this._dispose(c); if (c.next) this._dispose(c.next); this.chunks.delete(idx); }
-      else c.dist = wantSet.get(idx).dist;
-    }
+    this.chunks.forEach(this._recycleFn);
     this.stats.revealBytes = 0;   // (bytes revealed this frame)
     if (this.revealing.length) this._reveal();
     // create / schedule
-    const queue = [];
-    for (const w of want) {
+    const queue = this._queue;
+    let nq = 0;
+    for (let k = 0; k < nWant; k++) {
+      const w = want[k];
       let c = this.chunks.get(w.idx);
       if (!c) {
         c = this.makeChunk(w.idx, w.lod);
@@ -212,13 +252,14 @@ export class World {
         c.next = this.makeChunk(w.idx, w.lod);
         this.root.add(c.next.group);
       }
-      if (!c.ready) queue.push({ c, dist: w.dist });
-      if (c.next) queue.push({ c: c.next, dist: w.dist, upgrade: c });
+      if (!c.ready) nq = this._enqueue(nq, c, w.dist, null);
+      if (c.next) nq = this._enqueue(nq, c.next, w.dist, c);
     }
-    queue.sort((a, b) => a.dist - b.dist);
-    this.stats.queue = queue.length;
+    sortByDist(queue, nq);
+    this.stats.queue = nq;
     const t0 = performance.now();
-    for (const q of queue) {
+    for (let k = 0; k < nq; k++) {
+      const q = queue[k];
       while (q.c.pending.length && performance.now() - t0 < this.budgetMs) this._buildPart(q.c);
       if (!q.c.pending.length && !q.c.ready && !q.c.stage) {
         q.c.dist = q.dist;
@@ -236,43 +277,84 @@ export class World {
       }
       if (performance.now() - t0 >= this.budgetMs) break;
     }
+    // (release the references held by the reused queue entries)
+    for (let k = 0; k < nq; k++) { queue[k].c = null; queue[k].upgrade = null; }
     this.stats.lastBuildMs = performance.now() - t0;
   }
 
-  /** Chunks the streamer will build next, nearest first: [{index, lod, dist}]. Public API for
-   *  modules that prefetch their own work ahead of build(). */
-  upcoming(sCam = this.app.cameraS ?? this.app.startS, lookAhead = 0) {
-    const out = [];
-    const seen = new Set();
+  /** Chunks the streamer will build next, nearest first: [{index, lod, dist, future}]. Public
+   *  API for modules that prefetch their own work ahead of build(). With `out` (an array
+   *  owned by the caller) the result is written into it, reusing its entry objects, and
+   *  returned: no garbage for a caller that asks every frame. */
+  upcoming(sCam = this.app.cameraS ?? this.app.startS, lookAhead = 0, out = null) {
+    const res = out || [];
+    // (a caller's array keeps its entry objects in a side pool, so a shorter list one frame
+    // does not throw them away)
+    const pool = out ? (out._pool || (out._pool = [])) : null;
+    let n = 0;
+    const seen = this._seen, stamp = ++this._seenStamp;
     // what is wanted now, plus what will be wanted (or upgraded to lod 0) within lookAhead metres of travel
-    const steps = lookAhead > 0 ? [0, lookAhead] : [0];
-    for (const ahead of steps) {
-      for (const w of this.wanted(sCam + ahead)) {
+    for (let step = 0; step < (lookAhead > 0 ? 2 : 1); step++) {
+      const ahead = step ? lookAhead : 0;
+      const list = this._wantU, nw = this._fillWanted(sCam + ahead, list);
+      for (let k = 0; k < nw; k++) {
+        const w = list[k];
         if (w.lod > 1) continue;   // the far field is core's own (no module prefetches it)
-        const key = `${w.idx}:${w.lod}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const key = w.idx * 4 + w.lod;
+        if (seen[key] === stamp) continue;
+        seen[key] = stamp;
         const c = this.chunks.get(w.idx);
-        if (!c || !c.ready || (c.next && !c.next.ready) || w.lod < c.lod) out.push({ index: w.idx, lod: w.lod, dist: w.dist + ahead, future: ahead > 0 });
+        if (!c || !c.ready || (c.next && !c.next.ready) || w.lod < c.lod) {
+          const dist = w.dist + ahead, future = ahead > 0;
+          let e = pool ? pool[n] : null;
+          if (e) { e.index = w.idx; e.lod = w.lod; e.dist = dist; e.future = future; } else {
+            e = { index: w.idx, lod: w.lod, dist, future };
+            if (pool) pool[n] = e;
+          }
+          res[n++] = e;
+        }
       }
     }
-    return out.sort((a, b) => a.dist - b.dist);
+    res.length = n;
+    sortByDist(res, n);
+    return res;
   }
 
-  /** Ride-time chunk build statistics per module: {name: {n, p50, p95, max}} (ms). */
+  /** Ride-time chunk build statistics per module: {name: {n, p50, p95, max}} (ms), over the
+   *  last RIDE_KEEP builds of each. */
   rideBuildStats() {
     const out = {};
     for (const [name, w] of Object.entries(this._ride)) {
-      if (!w.length) continue;
-      const a = [...w].sort((x, y) => x - y), q = (f) => +a[Math.min(a.length - 1, Math.floor(f * a.length))].toFixed(2);
-      out[name] = { n: a.length, p50: q(0.5), p95: q(0.95), max: +a[a.length - 1].toFixed(2) };
+      const m = Math.min(w.n, RIDE_KEEP);
+      if (!m) continue;
+      const a = w.v.slice(0, m).sort(), q = (f) => +a[Math.min(m - 1, Math.floor(f * m))].toFixed(2);
+      out[name] = { n: m, p50: q(0.5), p95: q(0.95), max: +a[m - 1].toFixed(2) };
     }
     return out;
   }
 
   /** True when every chunk within `dist` metres of sCam is built. */
   readyAround(sCam, dist) {
-    return this.wanted(sCam).filter((w) => w.dist <= dist && w.lod < 2).every((w) => this.chunks.get(w.idx)?.ready);
+    const list = this._wantU, n = this._fillWanted(sCam, list);
+    for (let k = 0; k < n; k++) {
+      const w = list[k];
+      if (w.dist <= dist && w.lod < 2 && !this.chunks.get(w.idx)?.ready) return false;
+    }
+    return true;
+  }
+}
+
+const RIDE_KEEP = 200;   // ride-time build samples kept per module
+
+/** Stable insertion sort of the first n entries of `a` by their `dist` (missing: 0), without
+ *  garbage: the lists are a few dozen long, and Array.prototype.sort copies its array (and
+ *  a comparator that is not inlined boxes its result) on every call. */
+function sortByDist(a, n) {
+  for (let i = 1; i < n; i++) {
+    const x = a[i], kx = x.dist ?? 0;
+    let j = i - 1;
+    while (j >= 0 && (a[j].dist ?? 0) > kx) { a[j + 1] = a[j]; j--; }
+    a[j + 1] = x;
   }
 }
 

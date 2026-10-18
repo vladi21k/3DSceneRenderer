@@ -48,7 +48,7 @@ export class StreetMap {
     this._circles();
     this._rects();
     this.openingCache = new Map();
-    this.qI = new Int32Array(Q_MAX); this.qDS = new Float32Array(Q_MAX); this.qN = 0;
+    this.qI = new Int32Array(Q_MAX); this.qDS = new Float32Array(Q_MAX); this.qN = 0; this.qS = 0;
   }
 
   idx(s) { const w = this.route.wrap(s); return Math.min(this.N - 1, Math.floor(w)); }
@@ -220,8 +220,12 @@ export class StreetMap {
   }
 
   /** Collects circle obstacles whose centre lies within range + maxR of s into qI / qDS (ds = obstacle s − s); returns the count. */
-  gatherCircles(s, range) {
-    const nb = this.nb, w = this.route.wrap(s), L = this.L;
+  gatherCircles(s, range) { this.qS = s; return this._gather(range); }
+  /** gatherCircles around agent a (its own s: nothing to box per call). */
+  gatherAt(a, range) { this.qS = a.s; return this._gather(range); }
+  _gather(range) {
+    const nb = this.nb, L = this.L;
+    let w = this.qS % L; if (w < 0) w += L; if (w >= L) w -= L;
     const a = Math.floor((w - range - this.maxR) / OB_CELL), b = Math.floor((w + range + this.maxR) / OB_CELL);
     let n = 0;
     for (let j = a; j <= b; j++) {
@@ -283,6 +287,10 @@ export class StreetMap {
     return c[key];
   }
   mouthAt(s, side) { const ci = this.mouth[sideIx(side)][this.idx(s)]; return ci >= 0 ? this.layout.crossStreets[ci] : null; }
+  /** Index of the 1 m sample under agent a (its own s: no number argument to box). */
+  idxA(a) { const L = this.L; let w = a.s % L; if (w < 0) w += L; const k = Math.floor(w); return k < this.N - 1 ? k : this.N - 1; }
+  /** The cross street opening on agent a's side of the street at its s, or null. */
+  mouthAtA(a) { const ci = this.mouth[a.d >= 0 ? 1 : 0][this.idxA(a)]; return ci >= 0 ? this.layout.crossStreets[ci] : null; }
   cafeAtS(s, side) { const ci = this.cafeAt[sideIx(side)][this.idx(s)]; return ci >= 0 ? this.layout.cafes[ci] : null; }
   stationAt(s) { const i = this.station[this.idx(s)]; return i >= 0 ? this.layout.stations[i] : null; }
   bandInAt(s, side) { return this.bandIn[sideIx(side)][this.idx(s)]; }
@@ -318,6 +326,8 @@ export class StreetMap {
     const ds = this.route.delta(pl.s0, s), len = pl.s1 - pl.s0;
     return pl.h * Math.max(0, Math.min(1, ds / PLATFORM_RAMP, (len - ds) / PLATFORM_RAMP));
   }
+  /** platformHeight under agent a (its own s, side and |d|: no number arguments to box). */
+  platformHeightA(a) { return this.platformHeight(a.s, a.d >= 0 ? 1 : -1, a.d >= 0 ? a.d : -a.d); }
   platformAt(s, side, ad, margin = 0) {
     const st = this.stationAt(s);
     if (!st) return null;

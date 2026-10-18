@@ -20,8 +20,10 @@ import { U } from '../core/uniforms.js';
 // interleave freely) in small steps straight into per-material buffers in world space,
 // which become the geometry's arrays as they are (no merging, no copies). update()
 // advances the jobs the streamer will need next, ordered by how soon each is needed,
-// within a per-frame budget that grows with speed and urgency (init prepares the start
-// position up front), so build() normally only wraps finished geometry. A far chunk whose
+// within a per-frame budget in absolute milliseconds that grows with speed (per nominal
+// 60 Hz frame, so slow frames are not made slower) and urgency (init prepares the start
+// position up front), so build() normally only wraps finished geometry. The per-frame
+// path (update, prefetch, preUpload) allocates nothing. A far chunk whose
 // job is still running gets a coarse stand-in that is swapped for the real shell when
 // the job ends, instead of a long synchronous build.
 //
@@ -49,12 +51,13 @@ let MATS = {};                     // buildings-owned material variants by sink 
 let ADS = [];                      // advert materials (floodlit at night)
 const BASE_MS = 0.8;               // per-frame generation budget when nothing is urgent
 const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
+const NOMINAL_DT = 1 / 60;         // the speed-driven budget is per nominal frame, not per realDt
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
 const LOOK_FAR = 110;              // far detail is prepared up to this far beyond the view
 const UPLOAD_BYTES = 640 << 10;    // vertex data uploaded ahead per frame (at least one buffer)
 
 let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere
-const jobs = new Map();            // `${chunkIndex}|${lod}` -> job
+const jobs = new Map();            // jobKey(chunkIndex, lod) -> job
 const swaps = new Map();           // job -> group showing a coarse stand-in until the job ends
 const ends = new Map();            // lotId -> [end0, end1] (lazy)
 let endIndex = null;               // spatial hash of facade end points
@@ -66,6 +69,7 @@ const cost = [0.4, 0.15];          // running generation cost by detail level (m
 let stepAvg = 0.25;                // running cost of one generation step (ms)
 let finishAvg = 0.3;               // running cost of closing a finished job (bounds, buffers)
 let uploaders = null;              // never-drawn meshes that upload vertex buffers ahead (preUpload)
+let metas = null, metasAt = -1e9;  // the stone materials' metadata and row layouts (runJob)
 const NO_GEOMETRY = new THREE.BufferGeometry();
 NO_GEOMETRY.boundingSphere = new THREE.Sphere();
 
@@ -181,12 +185,13 @@ const buildings = {
    */
   prefetch(app, sCam, budgetMs, lookFar = LOOK_FAR) {
     const t0 = performance.now();
-    const spent = () => performance.now() - t0;
     const cands = candidates(app, sCam, false, lookFar);
     if (budgetMs == null) {
       const v = Math.abs(app.train?.speed ?? 10);
-      // generation needed per second of travel, with headroom, spread over this frame
-      budgetMs = Math.max(BASE_MS, v * (cost[0] + cost[1]) * (app.realDt || 1 / 60) * 2);
+      // generation needed per second of travel, with headroom, spread over a nominal
+      // 60 Hz frame: a slow frame (contention, GPU wait) gets no more work than a fast one
+      // unless a chunk is due, so the budget never feeds back into the frame time
+      budgetMs = Math.max(BASE_MS, v * (cost[0] + cost[1]) * NOMINAL_DT * 2);
       const soon = swaps.size ? 0 : cands.length ? cands[0].mtn : Infinity;
       if (soon <= 0) budgetMs = MAX_MS;
       else if (soon < CHUNK_LEN) budgetMs = Math.max(budgetMs, MAX_MS * 0.6);
@@ -194,17 +199,18 @@ const buildings = {
       this.stats.budgetMs = budgetMs;
     }
     for (const [job, g] of swaps) {
-      runJob(app, job, budgetMs - spent());
+      runJob(app, job, budgetMs - (performance.now() - t0));
       // swapped in once its vertex buffers are on the GPU (they go first, see preUpload)
       if (job.done && (!job.result || !job.result.pending.length || !uploaders)) {
         swaps.delete(job); jobs.delete(jobKey(job.idx, job.lod)); swapIn(app, g, job.result);
       }
-      if (spent() > budgetMs) return;
+      if (performance.now() - t0 > budgetMs) return;
     }
-    for (const c of cands) {
-      if (budgetMs - spent() < stepAvg * 0.5) return;
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i];
+      if (budgetMs - (performance.now() - t0) < stepAvg * 0.5) return;
       const job = jobs.get(jobKey(c.idx, c.lod)) || newJob(app, c.idx, c.lod);
-      runJob(app, job, budgetMs - spent());
+      runJob(app, job, budgetMs - (performance.now() - t0));
     }
   },
 };
@@ -212,7 +218,8 @@ export default buildings;
 
 // ------------------------------------------------------------------ chunk jobs
 
-const jobKey = (idx, lod) => `${idx}|${lod}`;
+/** Numeric job key (no string per lookup): a far level of 2 or more shares the far job. */
+const jobKey = (idx, lod) => idx * 2 + (lod ? 1 : 0);
 
 /** Side-street lots deep inside the side street are only ever seen from far away. */
 function lotLod(lot, chunkLod) {
@@ -225,13 +232,16 @@ function lotLod(lot, chunkLod) {
 
 /**
  * Unfinished jobs worth advancing now, sorted by metres of travel until the streamer
- * asks for them (0 = asked for already, or will be any moment).
+ * asks for them (0 = asked for already, or will be any moment). Returns a shared array of
+ * pooled entries {idx, lod, mtn, dist}, valid until the next call.
  */
+const _cands = [], _candPool = [];
 function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
   const W = app.world, n = app.layout.nChunks;
   const iEnd = Math.floor((sCam + VIEW_AHEAD) / CHUNK_LEN);
   const i0 = Math.floor((sCam - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((sCam + VIEW_AHEAD + lookFar) / CHUNK_LEN);
-  const out = [];
+  const out = _cands;
+  out.length = 0;
   for (let i = i0; i <= i1; i++) {
     const idx = ((i % n) + n) % n;
     const mid = i * CHUNK_LEN + CHUNK_LEN / 2;
@@ -257,9 +267,14 @@ function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
     } else continue;
     const job = jobs.get(jobKey(idx, lod));
     if (job && (job.done || swaps.has(job))) continue;
-    out.push({ idx, lod, mtn: Math.max(0, mtn), dist });
+    const e = _candPool[out.length] || (_candPool[out.length] = { idx: 0, lod: 0, mtn: 0, dist: 0 });
+    e.idx = idx; e.lod = lod; e.mtn = Math.max(0, mtn); e.dist = dist;
+    // insertion sort by (mtn, dist): a few dozen entries, no comparator allocation
+    let k = out.length;
+    out.push(e);
+    while (k > 0 && (out[k - 1].mtn > e.mtn || (out[k - 1].mtn === e.mtn && out[k - 1].dist > e.dist))) { out[k] = out[k - 1]; k--; }
+    out[k] = e;
   }
-  out.sort((a, b) => a.mtn - b.mtn || a.dist - b.dist);
   return out;
 }
 
@@ -287,6 +302,23 @@ function detailIndex(job, lot) {
   return lod;
 }
 
+/**
+ * The stone materials' metadata and texture row layouts (for fitting head joints to the
+ * openings), refreshed every few seconds rather than built per call.
+ */
+function stoneMetas(app) {
+  const f = app.frame || 0;
+  // (not cached while a layout is missing: the materials may still be setting up)
+  if (metas && metas.ashlarLay && metas.roughLay && f - metasAt < 240 && f >= metasAt) return metas;
+  const M = app.materials, uni = (n) => (M.uniformsOf ? M.uniformsOf(n) : null);
+  metas = {
+    ashlar: metaOf(M, 'stone.ashlar'), rough: metaOf(M, 'stone.rough'),
+    ashlarLay: rowLayout(uni('stone.ashlar')), roughLay: rowLayout(uni('stone.rough')),
+  };
+  metasAt = f;
+  return metas;
+}
+
 function metaOf(M, name) {
   const m = M && M.meta;
   if (!m) return null;
@@ -305,12 +337,7 @@ function runJob(app, job, budgetMs) {
   const t0 = performance.now();
   if (!job.B) job.B = new Builder();
   const B = job.B;
-  const M = app.materials, uni = (n) => (M.uniformsOf ? M.uniformsOf(n) : null);
-  const metas = {
-    ashlar: metaOf(M, 'stone.ashlar'), rough: metaOf(M, 'stone.rough'),
-    // the textures' block layouts, for fitting head joints to the openings
-    ashlarLay: rowLayout(uni('stone.ashlar')), roughLay: rowLayout(uni('stone.rough')),
-  };
+  const mt = stoneMetas(app);
   const st = buildings.stats;
   while (job.iter || job.next < job.lots.length) {
     const el = performance.now() - t0;
@@ -319,7 +346,7 @@ function runJob(app, job, budgetMs) {
       const lot = job.lots[job.next++];
       const lod = detailIndex(job, lot);
       job.iter = lot.slab ? slabSteps(B, lot, DETAIL[Math.min(1, lod)]) : lot.lane ? laneSteps(B, lot)
-        : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, lod)], metas);
+        : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, lod)], mt);
     }
     const ts = performance.now();
     if (job.iter.next().done) job.iter = null;
@@ -429,10 +456,12 @@ function dropJob(job) {
  * the scene. The geometries are then known to the renderer, so disposing them frees
  * those buffers as usual. Index buffers are only sent by a draw: they go with the reveal.
  */
+const _touched = [];
 function preUpload(app, sCam) {
   if (!uploaders) return;
   const st = buildings.stats;
-  const touched = new Set();
+  const touched = _touched;
+  touched.length = 0;
   let bytes = 0;
   while (true) {
     let best = null, bestNeed = Infinity;
@@ -443,27 +472,27 @@ function preUpload(app, sCam) {
       if (need < bestNeed) { bestNeed = need; best = r; }
     }
     if (!best) break;
-    const [g, name, a] = best.pending[best.pending.length - 1], sz = a.array.byteLength;
+    const p = best.pending[best.pending.length - 1], g = p[0], sz = p[2].array.byteLength;
     if (bytes && bytes + sz > UPLOAD_BYTES) break;
     best.pending.pop();
     best.left -= sz;
-    g.setAttribute(name, a);
-    touched.add(g);
+    g.setAttribute(p[1], p[2]);
+    if (touched.indexOf(g) < 0) touched.push(g);
     bytes += sz;
   }
-  let i = 0;
-  for (const g of touched) {
-    let m = uploaders.children[i++];
+  for (let i = 0; i < touched.length; i++) {
+    let m = uploaders.children[i];
     if (!m) {
       m = new THREE.Mesh(NO_GEOMETRY, []);
       m.frustumCulled = false;
       m.matrixAutoUpdate = false;
       uploaders.add(m);
     }
-    m.geometry = g;
+    m.geometry = touched[i];
   }
+  touched.length = 0;
   st.preBytes = bytes;
-  st.preMB = +(st.preMB + bytes / 1048576).toFixed(2);
+  if (bytes) st.preMB = +(st.preMB + bytes / 1048576).toFixed(2);
 }
 
 /** Let go of the geometries shown to the renderer last frame (their GPU buffers stay). */
