@@ -48,7 +48,9 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [~] Progressive loading: cold start ~15 s under load (shader compile dominates)
 
 ## M4 — Photoreal review loops
-- [~] Loop running (up to 3 rounds, target ≥ 8.5/10 from every critic): a 4-lens panel (lighting/atmosphere, materials/geometry, shot/motion, people) followed by parallel owner fixes. People fixes are held in round 1 while the figures team finishes.
+- [x] Photoreal loop, 3 rounds (40 agents): a 4-lens critic panel (lighting/atmosphere, materials/geometry, shot/motion, people) followed by parallel owner fixes. Panel mean 4.9 → 5.9 → 6.25 (lighting 5→6, surfaces 6→6.5, shot 5→6.5, people/crowd 3.5→6)
+- [x] Highlights: AgX camera tone curve with veiling glare and highlight recovery; sun-only daylight white balance; volumetric cumulus/cirrus regimes; cool granite paving; relief rustication; oncoming trams with street reflections; per-object motion blur; crowd pair-clearing rule and tram obstacle braking
+- [~] M4.5: request sweep (189 cross-module requests/notes), GC/hitch reduction, contract docs, then a serial quiet-machine perf + behaviour QA (M5) and fixes
 - [ ] Screenshot review against the reference photos (default telephoto, midday, golden hour, dusk, close-ups)
 - [ ] Fix rounds until no frame reads as a 3D demo
 
