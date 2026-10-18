@@ -20,12 +20,15 @@ import bpy
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 SRC = os.path.join(ROOT, 'assets', 'humans_mh')
+if '--src' in sys.argv:
+    SRC = os.path.abspath(sys.argv[sys.argv.index('--src') + 1])
 
 
 def args_():
     a = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
     p = argparse.ArgumentParser()
     p.add_argument('--lod', type=int, default=0)
+    p.add_argument('--src', default=SRC)
     p.add_argument('--only', default='')
     p.add_argument('--views', default='front,side,back')
     p.add_argument('--out', default=os.path.join(ROOT, '.work', 'mh', 'preview'))

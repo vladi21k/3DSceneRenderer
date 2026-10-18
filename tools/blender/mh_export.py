@@ -17,31 +17,39 @@ sys.path.insert(0, HERE)
 import mh_cast as CASTM  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
-RAW = os.path.join(ROOT, '.work', 'mh', 'raw')
-WORK = os.path.join(ROOT, '.work', 'mh', 'lod')
-TEXJ = os.path.join(ROOT, '.work', 'mh', 'tex', 'layers.json')
-OUT = os.path.join(ROOT, 'assets', 'humans_mh')
-VERSION = 1
+_WORK, OUT = CASTM.stage_dirs()
+RAW = os.path.join(_WORK, 'raw')
+WORK = os.path.join(_WORK, 'lod')
+TEXJ = os.path.join(_WORK, 'tex', 'layers.json')
+VERSION = 2
 
 # triangle budgets per part kind for LOD 0..3 (hair: one side; it is drawn double-sided by duplication)
 BUDGET = {
-    'body': (5000, 1500, 520, 210),
-    'suit': (3300, 1000, 340, 130),
+    'body': (8500, 1700, 560, 210),
+    'suit': (3600, 1100, 360, 130),
     'shoes': (700, 200, 60, 20),
-    'hair': (1700, 450, 300, 0),
+    'hair': (2400, 900, 420, 0),
     'haircap': (0, 0, 0, 60),
     'hat': (500, 200, 110, 50),
     'eyes': (None, 40, 20, 12),
     'brows': (None, None, 0, 0),
     'lashes': (None, 0, 0, 0),
-    'beard': (None, 120, 50, 0),
+    'beard': (None, 160, 60, 0),
 }
+# simplifier options per part kind: lock the open borders (hems, cuffs, the hair's strand tips), keep
+# small pieces (cards)
+LOCK_BORDER = ('suit', 'shoes', 'hat', 'hair', 'beard')
+# inner faces of garments near their openings (hems, cuffs, necklines), seen from below or through a
+# sleeve: drawn in the garment's colour, darkened (flag 2 on a garment region), for LOD 0-1
+HEM_RANGE = 0.045
+HEM_LODS = (0, 1)
 # far LODs: skin within GD_RANGE of a garment is pulled in under it by up to SHRINK[l] (m)
 SHRINK = (0.0, 0.0, 0.004, 0.010)
 GD_RANGE = 0.035
 DOUBLE = ('hair', 'lashes', 'beard')
 SIZE_SCALE = {'toddler': 0.7, 'child': 0.85}
 FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT = 1, 2, 4, 8
+ATTR_W = [0.35, 0.35, 0.35, 0.3, 0.3]     # simplifier weights: normal xyz, uv
 
 NODE_JS = r"""
 import { MeshoptSimplifier as S } from '%(lib)s';
@@ -54,20 +62,26 @@ for (const j of jobs) {
   const b = fs.readFileSync(dir + '/' + j.file);
   const ab = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
   const pos = new Float32Array(ab, 0, j.n * 3);
-  const att = new Float32Array(ab, j.n * 12, j.n * 3);
-  const idx = new Uint32Array(ab, j.n * 24, j.t * 3);
+  const att = new Float32Array(ab, j.n * 12, j.n * 5);
+  const idx = new Uint32Array(ab, j.n * 32, j.t * 3);
   const res = [];
+  // (no Permissive: collapses must not cross UV seams or region borders, which smears other
+  // texels and garment colours over the surface)
+  const fl = (j.cards ? [] : ['Prune']).concat(j.lockBorder ? ['LockBorder'] : []).concat(j.cards ? [] : ['Regularize']);
+  let prev = idx;
   for (const t of j.targets) {
     if (t === null) { res.push(null); continue; }
     if (t === 0) { res.push([]); continue; }
     if (t >= j.t) { res.push(null); continue; }
-    const fl = j.cards ? [] : ['Prune'];
-    let [r, err] = S.simplifyWithAttributes(idx, pos, 3, att, 3, [0.35, 0.35, 0.35], null, t * 3, 1.0, fl);
-    if (r.length > t * 3 * 1.25) {
-      [r, err] = S.simplifyWithAttributes(idx, pos, 3, att, 3, [0.2, 0.2, 0.2], null, t * 3, 1.0, fl.concat(['Permissive']));
+    if (t * 3 >= prev.length) { res.push(Array.from(prev)); continue; }
+    // each LOD simplifies the previous one (nested, so a LOD switch changes as little as possible)
+    let [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, 1.0, fl);
+    if (r.length > t * 3 * 1.6 && j.lockBorder) {
+      // borders too long to keep at this budget: let them simplify too (still no seam crossing)
+      [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, 1.0, fl.filter((f) => f !== 'LockBorder'));
     }
-    if (r.length > t * 3 * 1.5) [r, err] = S.simplifySloppy(idx, pos, 3, null, t * 3, 1.0);
     res.push(Array.from(r));
+    prev = r;
   }
   out[j.id] = res;
 }
@@ -133,8 +147,9 @@ def main():
         for p in meta['parts']:
             k = p['key']
             d = {a: z[k + '_' + a] for a in ('co', 'nr', 'uv', 'w', 'idx', 'reg', 'ao')}
-            if k + '_gd' in z:
-                d['gd'] = z[k + '_gd']
+            for extra in ('gd', 'dec'):
+                if k + '_' + extra in z:
+                    d[extra] = z[k + '_' + extra]
             if p['kind'] == 'body':
                 # enclosed skin never seen (inside of the mouth, eye sockets behind the eyes): AO ~ 0 near the eyes
                 eyes = [q for q in meta['parts'] if q['kind'] == 'eyes']
@@ -142,7 +157,7 @@ def main():
                     E = z[eyes[0]['key'] + '_co'].mean(0)
                     kk = meta['H'] / 1.75
                     tc = d['co'][d['idx']].mean(1)
-                    near = (np.linalg.norm(tc - E, axis=1) < 0.10 * kk) & (tc[:, 2] < E[2] + 0.03 * kk)
+                    near = (np.linalg.norm(tc - E, axis=1) < 0.06 * kk) & (tc[:, 1] > E[1] - 0.025 * kk)
                     tri_ao = d['ao'][d['idx']].max(1)
                     d['idx'] = d['idx'][~(near & (tri_ao < 0.04))]
             d.update(p)
@@ -156,16 +171,16 @@ def main():
             fn = jid + '.bin'
             with open(os.path.join(WORK, fn), 'wb') as f:
                 f.write(d['co'].astype(np.float32).tobytes())
-                f.write(d['nr'].astype(np.float32).tobytes())
+                f.write(np.concatenate([d['nr'], d['uv']], 1).astype(np.float32).tobytes())
                 f.write(d['idx'].astype(np.uint32).tobytes())
             jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets'],
-                             cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows')))
+                             cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows'), lockBorder=p['kind'] in LOCK_BORDER))
         chars[cid] = (meta, parts)
     with open(os.path.join(WORK, 'jobs.json'), 'w') as f:
         json.dump(jobs, f)
     js = os.path.join(WORK, 'simplify.mjs')
     with open(js, 'w') as f:
-        f.write(NODE_JS % {'lib': os.path.join(ROOT, 'vendor/three/addons/libs/meshopt_simplifier.module.js')})
+        f.write(NODE_JS % {'lib': os.path.join(ROOT, 'vendor/three/addons/libs/meshopt_simplifier.module.js'), 'w': json.dumps(ATTR_W)})
     subprocess.check_call(['node', js, WORK])
     res = json.load(open(os.path.join(WORK, 'result.json')))
     log('simplified', len(jobs), 'parts')
@@ -203,6 +218,10 @@ def main():
             if d['kind'] == 'suit' and d.get('suit') == 'female_elegantsuit01':
                 fl = np.where(reg == CASTM.REGIONS['bottom'], fl | FLAG_SKIRT, fl)
             ta = np.stack([np.full(n, rm['layer']), np.full(n, 255 if rm['normal'] < 0 else rm['normal']), reg, fl], 1)
+            if d['kind'] == 'body' and 'dec' in d:
+                # skin: no normal layer; the channel carries the skin decals instead (128 none, above: beard
+                # growth, below: hair-covered scalp)
+                ta[:, 1] = d['dec']
             r = res[f'{cid}_{d["key"]}']
             lodidx = []
             for li in range(4):
@@ -234,6 +253,20 @@ def main():
                     ix = lodidx[li].reshape(-1, 3)[:, ::-1].reshape(-1)
                     lods[li].append(ix + nv)
                 nv += n
+            if d['kind'] == 'suit':
+                # the inside of the garment near its openings
+                near = hem_distance(d['co'], d['idx']) < HEM_RANGE * max(0.6, meta['H'] / 1.75)
+                if near.any():
+                    P.append(d['co'] - d['nr'] * 0.0006); N.append(-d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao'] * 0.7)
+                    tb = ta.copy()
+                    tb[:, 3] |= FLAG_BACK
+                    TEXA.append(tb)
+                    for li in HEM_LODS:
+                        t3 = lodidx[li].reshape(-1, 3)
+                        sel = near[t3].all(1)
+                        if sel.any():
+                            lods[li].append(t3[sel][:, ::-1].reshape(-1) + nv)
+                    nv += n
         P = np.concatenate(P); N = np.concatenate(N); UV = np.concatenate(UV); W = np.concatenate(W)
         AO = np.concatenate(AO); TEXA = np.concatenate(TEXA)
         lods = [np.concatenate(l) if l else np.zeros(0, np.int64) for l in lods]
@@ -307,6 +340,9 @@ def main():
                                     normal=l['normal'], alpha=bool(l.get('alpha'))) for l in tex['layers']])
     doc = dict(
         version=VERSION,
+        # decal: skin tex.y = skin decals (128 none, > 128 beard growth, < 128 hair-covered scalp);
+        # innerHem: flag 2 on a garment region = inner face near an opening; beardShell: beards with volume only
+        features=['decal', 'innerHem', 'beardShell'],
         format=FORMAT_DOC,
         license='Human figures: generated with MPFB2 from MakeHuman system assets, CC0 1.0',
         bones=CASTM_BONES(),
@@ -323,6 +359,31 @@ def main():
         json.dump(doc, f, separators=(',', ':'))
     gz = os.path.getsize(os.path.join(OUT, 'cast.bin.gz'))
     log(f'wrote cast.json + cast.bin.gz ({len(binary) // 1024} KB raw, {gz // 1024} KB gz), {len(out_chars)} characters')
+
+
+def hem_distance(co, idx):
+    """Per vertex: distance (m) to the nearest vertex on an open border of the part (positions welded, so
+    UV seams and region borders are not borders)."""
+    key = np.round(co * 2e4).astype(np.int64)
+    _, weld = np.unique(key, axis=0, return_inverse=True)
+    weld = weld.reshape(-1)
+    t = weld[idx.reshape(-1, 3)]
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    e = np.sort(e, 1)
+    e = e[e[:, 0] != e[:, 1]]
+    ue, cnt = np.unique(e, axis=0, return_counts=True)
+    bw = np.unique(ue[cnt == 1].reshape(-1))
+    out = np.full(len(co), 1.0)
+    if not len(bw):
+        return out
+    first = np.zeros(weld.max() + 1, np.int64)
+    first[weld] = np.arange(len(co))
+    B = co[first[bw]].astype(np.float64)
+    C = co.astype(np.float64)
+    for a in range(0, len(C), 4096):
+        dd = ((C[a:a + 4096, None, :] - B[None, :, :]) ** 2).sum(-1)
+        out[a:a + 4096] = np.sqrt(dd.min(1))
+    return out
 
 
 def CASTM_BONES():

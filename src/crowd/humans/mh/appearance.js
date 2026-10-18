@@ -125,11 +125,26 @@ function vary(r, char, kidTop) {
     t.brows = h.map((x) => x * 0.95);
     t.beard = h.map((x) => x * 0.95);
   }
+  // brows: most of the hair's colour with a warm brown, never pure black (a black stroke reads as marker)
+  if (t.hair) {
+    const BR = [0.075, 0.05, 0.036];
+    t.brows = t.hair.map((x, i) => Math.max(0.011, x * 0.7 + BR[i] * 0.3));
+  }
   const sk = r.range(0.95, 1.05);                                  // skin brightness +-5 %
   t.skin = (t.skin || [1, 1, 1]).map((x) => x * sk);
   if (kidTop && r.chance(0.6)) t.top = r.weighted(KIDS).slice();
   return t;
 }
+
+/** Does a garment colour (linear) read as denim (blue or washed black)? Other colours get a calmer
+ *  cloth detail (no fading, whiskers or worn patches). */
+function denimLike(c) {
+  const [r, g, b] = c, l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return (b > r * 1.3 && b >= g && l < 0.3) || (l < 0.02 && b >= r * 0.9);
+}
+const DENIM_SUITS = new Set(['male_casualsuit01', 'male_casualsuit02', 'male_casualsuit03', 'male_casualsuit04', 'male_casualsuit05',
+  'male_casualsuit06', 'female_casualsuit01', 'female_casualsuit02']);
+const BEARD_DENS = { stubble: 0.55, short: 0.85, full: 1 };
 
 function packTints(t) {
   const out = new Float32Array(REGION_COUNT * 3).fill(1);
@@ -186,6 +201,12 @@ function finish(seed, r, cast, index, toddler = false) {
   t.strap = bag === BAG.SHOPPING ? t.bag.map((x) => x * 0.8) : t.bag.map((x) => x * 0.55);
   t.prop = r.weighted(PHONES).slice();
   t.screen = [1, 1, 1];
+  // denim bottoms in a non-denim colour (chinos, khaki shorts): calm detail
+  const botSuit = bot ? bot.suit : '';
+  const detailBottom = DENIM_SUITS.has(botSuit) && t.bottom && !denimLike(t.bottom) ? 0.32 : 0;
+  // beard growth: stubble varies from a shadow to a few days' growth
+  const bk = char.outfit.beard;
+  const beardDens = bk ? (bk === 'stubble' ? r.range(0.4, 0.7) : BEARD_DENS[bk] || 0.85) : 0;
   // how this person stands, walks and sits
   const carry = bag === BAG.SHOPPING;
   const walkOld = old && r.chance(0.3);
@@ -209,6 +230,7 @@ function finish(seed, r, cast, index, toddler = false) {
     hatPart: char.outfit.hat ? 1 : 0, beardPart: char.outfit.beard ? 1 : 0, hairPart: char.outfit.hair || '',
     topKind: kind, suit,
     build: buildOf(char), seedT: ((seed >>> 0) % 997) / 997,
+    detailBottom, detailTop: 0, beardDens,
   };
   return a;
 }

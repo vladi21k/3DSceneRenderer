@@ -12,6 +12,23 @@ Colours are sRGB hex. Garments, hair, brows, hats and beards are stored as neutr
 textures and tinted (albedo = 2 * texel * tint, linear); skin, eyes, shoes and the black suit
 keep their own colours (tint white).
 """
+import os as _os
+import sys as _sys
+
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+
+def stage_dirs(argv=None):
+    """(work, out) directories of a pipeline run: --work DIR (raw/, tex/, lod/ inside; default .work/mh)
+    and --out DIR (the web assets; default assets/humans_mh), read from a script's arguments."""
+    argv = _sys.argv if argv is None else argv
+
+    def opt(name, default):
+        if name in argv and argv.index(name) + 1 < len(argv):
+            return _os.path.abspath(argv[argv.index(name) + 1])
+        return default
+    return (opt('--work', _os.path.join(_ROOT, '.work', 'mh')),
+            opt('--out', _os.path.join(_ROOT, 'assets', 'humans_mh')))
 
 # ----------------------------------------------------------------------------- MakeHuman macro age
 

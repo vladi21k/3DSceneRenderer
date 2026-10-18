@@ -30,9 +30,10 @@ import mh_cast as CASTM  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
 ASSETS = '/opt/mh/system_assets'
-RAW = os.path.join(ROOT, '.work', 'mh', 'raw')
-WORK = os.path.join(ROOT, '.work', 'mh', 'tex')
-OUT = os.path.join(ROOT, 'assets', 'humans_mh', 'tex')
+_WORK, _OUT = CASTM.stage_dirs()
+RAW = os.path.join(_WORK, 'raw')
+WORK = os.path.join(_WORK, 'tex')
+OUT = os.path.join(_OUT, 'tex')
 S = 1024          # layer size
 STRIP = 8         # layers per WebP strip
 Q_ALBEDO = 84
@@ -182,8 +183,14 @@ def garment_layer(suit, masks):
         used |= m
         denim = reg == 'bottom' and suit not in ('female_elegantsuit01', 'female_sportsuit01', 'male_elegantsuit01')
         if denim:
+            # stonewash: the broad fading kept (softened), small bright specks (rips, frayed hems,
+            # scuffs) and dark grime clamped to the local level
             med = np.median(L[m])
             dd = np.clip(L / max(1e-4, med), 0.25, 1.9)
+            mf = m.astype(np.float32)
+            low = ndimage.gaussian_filter(dd * mf, 14) / np.maximum(ndimage.gaussian_filter(mf, 14), 1e-3)
+            hi = np.clip(dd - low, -0.16, 0.10)
+            dd = np.clip(1.0 + (low - 1.0) * 0.7 + hi, 0.6, 1.32)
             detail = np.where(m, dd * (0.75 + 0.25 * fold), detail)
         else:
             detail = np.where(m, (0.22 + 0.83 * fold) * noise, detail)
@@ -226,27 +233,16 @@ def alpha_detail(path, size, boost=(0.08, 0.55)):
 
 
 def beard_tile(size, style, seed=11):
-    """Beard / stubble: v = coverage of the shell (row 0 = v 1 = full). Coverage is a clean, slightly ragged
-    threshold of v (the beard's outline follows the shell's coverage contour, not noise islands); the strands
-    live in the colour (lighter / darker hairs along the growth direction)."""
+    """Beard shell: v = how deep inside the beard (row 0 = v 1). Coverage rises smoothly with v (the
+    shader breaks it into strand clumps); the colour carries fine strands along the growth direction."""
     rng = np.random.default_rng(seed + (0 if style == 'stubble' else 5))
     vv = np.linspace(1.0, 0.0, size)[:, None] * np.ones((1, size), np.float32)
-    rag = ndimage.gaussian_filter(rng.standard_normal((size, size)).astype(np.float32), 2.0)
-    rag /= rag.std() + 1e-6
-    edge = 0.42 if style == 'stubble' else 0.36
-    # hair tips at the outline: fine vertical streaks in the transition band (an alpha test leaves wisps,
-    # alpha to coverage a soft fade)
-    tips = ndimage.gaussian_filter(rng.standard_normal((size, size)).astype(np.float32), (6.0, 0.7))
-    tips /= tips.std() + 1e-6
-    a = np.clip((vv - edge + 0.03 * rag + 0.05 * tips) / 0.22 + 0.5, 0, 1)
-    # strands: short dark / light streaks, mostly vertical (growth downwards)
+    a = np.clip((vv - 0.06) / 0.4, 0, 1)
+    a = a * a * (3 - 2 * a)
     st = rng.standard_normal((size, size)).astype(np.float32)
-    st = ndimage.gaussian_filter(st, (3.0 if style != 'stubble' else 1.2, 0.6))
+    st = ndimage.gaussian_filter(st, (3.0, 0.6))
     st /= st.std() + 1e-6
-    detail = np.clip(1.0 + (0.22 if style != 'stubble' else 0.12) * st, 0.5, 1.5)
-    if style == 'stubble':
-        # stubble: the skin shows through, a lighter, flatter tone
-        detail = detail * 1.25
+    detail = np.clip(1.0 + 0.2 * st, 0.55, 1.45)
     g = lin_to_srgb(np.clip(0.5 * detail, 0, 1))
     return np.stack([g, g, g, a], -1)
 
@@ -360,7 +356,8 @@ def main():
                     sub = beard_tile(cell, name)
                     t = 'detail'
                 elif kind == 'brow':
-                    sub = alpha_detail(f'{ASSETS}/eyebrows/{name}/{name}.png', cell, boost=(0.02, 0.32))
+                    # (the painted hairs stay apart: a soft ramp, not a filled stroke)
+                    sub = alpha_detail(f'{ASSETS}/eyebrows/{name}/{name}.png', cell, boost=(0.1, 0.75))
                     t = 'detail'
                 elif kind == 'lash':
                     sub = alpha_detail(f'{ASSETS}/eyelashes/{name}/{name}.png', cell, boost=(0.05, 0.5))

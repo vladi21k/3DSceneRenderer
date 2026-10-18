@@ -61,7 +61,14 @@ const FALLBACK = { age: 'adult', base: 'male', female: false, height: 1.72, carr
 
 // the cast starts downloading and decoding as soon as this module is imported, while the modules
 // before it initialise (humans_tex=2 loads the texture arrays at half resolution)
-const CAST_URL = new URL('../../assets/humans_mh/', import.meta.url).href;
+// (humans_src=<path under the site root>: another build of the cast, for testing)
+const CAST_URL = (() => {
+  try {
+    const src = new URLSearchParams(location.search).get('humans_src');
+    if (src && /^[\w./-]+$/.test(src) && !src.includes('..')) return new URL('../../' + src.replace(/^\/+|\/+$/g, '') + '/', import.meta.url).href;
+  } catch (e) { /* default */ }
+  return new URL('../../assets/humans_mh/', import.meta.url).href;
+})();
 let castLoad = null;
 function startCastLoad(texScale) {
   if (!castLoad || castLoad.texScale !== texScale) {
@@ -110,6 +117,8 @@ const humans = {
       return;
     }
     this.cast = cast;
+    // version 2 casts: skin decals (beard growth, hair-coloured scalp), inner hem faces, beard shells
+    this.v2 = (cast.doc.version | 0) >= 2 && Array.isArray(cast.doc.features) && cast.doc.features.includes('decal');
     this.initMs = { load: Math.round(performance.now() - tLoad) };
     const tBake = performance.now();
     this.bindPose = app.params.num('humans_bind', 0) > 0;
@@ -136,8 +145,9 @@ const humans = {
       { const T = c.raw.tex, Pp = c.raw.pos; let y = Infinity;
         for (let v = 0; v < c.raw.n; v++) if (T[v * 4 + 3] & 8) y = Math.min(y, Pp[v * 3 + 1]);
         if (y < Infinity) c.hemY = y; }
-      beardFade(c);
-      beardShells(c);
+      // (casts with skin decals carry beard volume shells of their own)
+      beardFade(c, this.v2 ? 0.015 : 0.035);
+      if (!this.v2) beardShells(c);
       const parts = buildParts(c);
       B.fit = parts.fit; delete parts.fit;
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
@@ -165,7 +175,7 @@ const humans = {
     this.group.name = 'humans';
     app.scene.add(this.group);
     const { mat, depth, uniforms } = makeFigureMaterials({ bones: this.boneTex, look: this.lookTex, albedo: cast.albedo, normal: cast.normal },
-      cast.layerRough, app.materials, app.params.num('humans_dbg', 0));
+      cast.layerRough, app.materials, app.params.num('humans_dbg', 0), this.v2);
     app.materials.register('humans.figures', mat);
     app.materials.track(mat);
     this.uniforms = uniforms;
@@ -783,11 +793,11 @@ const humans = {
 
 /**
  * Beards are a single shell over the skin: its edges (cheeks, neck, round the mouth) thin out over
- * ~3 cm instead of ending in a hard mask line. Per beard vertex the distance (m) to the shell's
+ * `range` (3.5 cm; 1.5 cm over a version 2 cast's beard growth decal) instead of ending in a hard mask line. Per beard vertex the distance (m) to the shell's
  * boundary (shortest path along the shell's edges) goes into tex.y (0..254 = 0..3.5 cm; the beard has
  * no normal layer), which the shader turns into strand coverage.
  */
-function beardFade(c) {
+function beardFade(c, range = 0.035) {
   const raw = c.raw, T = raw.tex, P = raw.pos, I = raw.index;
   const L0 = c.lods[0];
   const edges = new Map(), adj = new Map();
@@ -825,8 +835,8 @@ function beardFade(c) {
   }
   for (let v = 0; v < raw.n; v++) {
     if (T[v * 4 + 2] !== 11) continue;
-    const d = dist.has(v) ? dist.get(v) : 0.035;
-    T[v * 4 + 1] = Math.round(Math.min(1, d / 0.035) * 254);
+    const d = dist.has(v) ? dist.get(v) : range;
+    T[v * 4 + 1] = Math.round(Math.min(1, d / range) * 254);
   }
 }
 

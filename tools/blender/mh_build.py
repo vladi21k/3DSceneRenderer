@@ -29,7 +29,7 @@ import mh_cast as CASTM  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
 ASSETS = '/opt/mh/system_assets'
-WORK = os.path.join(ROOT, '.work', 'mh')
+WORK, OUT = CASTM.stage_dirs()
 RAW = os.path.join(WORK, 'raw')
 
 # runtime skeleton (src/crowd/humans/anim.js BONE): L = the figure's left = -X in three.js
@@ -75,6 +75,8 @@ def parse(argv):
     p.add_argument('--jobs', type=int, default=8)
     p.add_argument('--one', default='')
     p.add_argument('--blend', action='store_true', help='also save .work/mh/raw/<id>.blend')
+    p.add_argument('--work', default=WORK, help='working directory (raw/, tex/, lod/)')
+    p.add_argument('--out', default=OUT, help='web asset directory')
     return p.parse_args(argv)
 
 
@@ -98,7 +100,7 @@ def run_driver(args):
         while pending or running:
             while pending and len(running) < args.jobs:
                 cid = pending.pop(0)
-                cmd = [blender, '-b', '-P', os.path.abspath(__file__), '--', '--one', cid] + (['--blend'] if args.blend else [])
+                cmd = [blender, '-b', '-P', os.path.abspath(__file__), '--', '--one', cid, '--work', WORK] + (['--blend'] if args.blend else [])
                 lf = open(os.path.join(RAW, cid + '.log'), 'w')
                 running.append((cid, subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT), lf))
             time.sleep(0.5)
@@ -115,11 +117,11 @@ def run_driver(args):
         log(f'chars done in {time.time() - t0:.0f}s')
     py = 'python3'
     if 'tex' in stages:
-        subprocess.check_call([py, os.path.join(HERE, 'mh_tex.py')])
+        subprocess.check_call([py, os.path.join(HERE, 'mh_tex.py'), '--work', WORK, '--out', OUT])
     if 'export' in stages:
-        subprocess.check_call([py, os.path.join(HERE, 'mh_export.py')])
+        subprocess.check_call([py, os.path.join(HERE, 'mh_export.py'), '--work', WORK, '--out', OUT])
     if 'preview' in stages:
-        subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_preview.py'), '--'])
+        subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_preview.py'), '--', '--src', OUT])
     log(f'all done in {time.time() - t0:.0f}s')
 
 
@@ -251,12 +253,6 @@ def build_one(cid, save_blend=False):
     body = extract(bm)
     pdata = [(extract(ob), kind, info) for ob, kind, info in parts]
     kscale = max(0.45, CASTM.stature(spec) / 1.75)
-    for d, kind, info in pdata:
-        if kind == 'suit':
-            n = fill_small_holes(d, 0.11 * kscale)
-            if n:
-                log(cid, f'{info["suit"]}: filled {n} small holes')
-    log(cid, f'extracted in {time.time() - t0:.1f}s')
 
     # joints (Blender space) for the runtime skeleton
     J = {}
@@ -265,6 +261,23 @@ def build_one(cid, save_blend=False):
     J['root'] = np.array([0.0, 0.0, 0.0])
     toe_tip = {s: bone_tail(f'ball_{s}') for s in ('l', 'r')}
     head_top_bone = bone_tail('head')
+    for d, kind, info in pdata:
+        if kind == 'suit':
+            n = fill_small_holes(d, 0.11 * kscale, J, kscale)
+            if n:
+                log(cid, f'{info["suit"]}: filled {n} holes (pockets, slits)')
+    # head landmarks: the eyes' centre, the face's front surface (for hair and hats); head scale from the
+    # distance between the eyes (children's heads are relatively big)
+    eyes_co = [d for d, kind, _ in pdata if kind == 'eyes'][0]['co']
+    E = eyes_co.mean(0)
+    ipd = float(eyes_co[eyes_co[:, 0] > E[0], 0].mean() - eyes_co[eyes_co[:, 0] < E[0], 0].mean())
+    hk = max(0.6, ipd / 0.064)
+    for d, kind, info in pdata:
+        if kind == 'hair':
+            clear_face_window(d, body, E, hk, spec['hair'], cid)
+        elif kind == 'hat':
+            refit_hat(d, body, E, hk, cid)
+    log(cid, f'extracted in {time.time() - t0:.1f}s')
 
     # ---------------------------------------------------------------- per-part processing
     ge_index = {b: i for i, b in enumerate(bone_names)}
@@ -436,14 +449,29 @@ def build_one(cid, save_blend=False):
     deleted = np.zeros(len(body['co']), bool)
     from mathutils.bvhtree import BVHTree
     gv, gp, sp, goff = [], [], [], 0
+    gface = []          # per garment face (gp): arm share, side (+1 the character's left)
+    bnd = []            # open boundary vertices of the kept garments (hems, cuffs, necklines)
     for op in out_parts:
         if op['kind'] in ('suit', 'shoes', 'hat'):
             d = op['d']
             gv.append(d['co'])
             skirt = op['kind'] == 'suit' and op['info']['suit'] == 'female_elegantsuit01'
+            arm_v = share(d['W'], ARM)
+            ecount = {}
             for p in np.where(op['keep'])[0]:
-                f = [int(x) + goff for x in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]]
-                (sp if skirt and op['region'][p] == CASTM.REGIONS['bottom'] else gp).append(f)
+                vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+                f = [int(x) + goff for x in vs]
+                if skirt and op['region'][p] == CASTM.REGIONS['bottom']:
+                    sp.append(f)
+                else:
+                    gp.append(f)
+                    gface.append((float(arm_v[vs].mean()), 1.0 if d['co'][vs, 0].mean() > 0 else -1.0))
+                for kk in range(len(vs)):
+                    e = (min(vs[kk], vs[(kk + 1) % len(vs)]), max(vs[kk], vs[(kk + 1) % len(vs)]))
+                    ecount[e] = ecount.get(e, 0) + 1
+            bv = sorted(set(v for e, c in ecount.items() if c == 1 for v in e))
+            if bv:
+                bnd.append(d['co'][bv])
             goff += len(d['co'])
     GV = [Vector(v) for v in np.concatenate(gv).astype(np.float64)]
     gbvh = BVHTree.FromPolygons(GV, gp, epsilon=0.0)
@@ -457,21 +485,51 @@ def build_one(cid, save_blend=False):
             for i, w in lst:
                 if w > 0.5:
                     del_any[i] = True
+    # skin within a margin of a garment's hem, cuff or neckline stays (a raised arm or a striding leg
+    # opens the hem: there must be skin, not a hole, under it)
+    margin = 0.032 * kscale
+    if bnd:
+        B = np.concatenate(bnd)
+        kdb = KDTree(len(B))
+        for j, c in enumerate(B):
+            kdb.insert(Vector(c.tolist()), j)
+        kdb.balance()
+        for i in np.where(del_any)[0]:
+            if kdb.find(Vector(body['co'][i].tolist()))[2] < margin:
+                del_any[i] = False
+    arm_b = share(body['W'], ARM)
+    MAXD = 0.06 * kscale
+
+    def fits(i, h):
+        """A garment hit belongs to the same limb as the skin (an arm's skin is not hidden by the
+        shirt's body across the gap, nor the torso's by a sleeve)."""
+        if h[0] is None or h[2] is None or h[2] >= len(gface):
+            return h[0] is not None
+        fa, fs = gface[h[2]]
+        if arm_b[i] > 0.5:
+            return fa > 0.3 and fs == (1.0 if body['co'][i, 0] > 0 else -1.0)
+        if arm_b[i] < 0.3:
+            return fa < 0.6
+        return True
     # a body vertex under a kept garment is hidden: a ray out along its normal meets the garment
     for i in np.where(del_any)[0]:
         n = Vector(body['nr'][i].tolist())
         o = Vector(body['co'][i].tolist())
-        h = gbvh.ray_cast(o - n * 0.002, n, 0.16)
-        if h[0] is None:
+        h = gbvh.ray_cast(o - n * 0.002, n, MAXD)
+        if not fits(i, h):
+            h = (None,)
             # tilted rays (armpits, crotch, folds where the normal looks at other skin)
             for tvec in ((0, 0, 1), (0, 0, -1)):
                 dd = (n + Vector(tvec) * 0.6).normalized()
-                h = gbvh.ray_cast(o - n * 0.002, dd, 0.16)
-                if h[0] is not None:
+                h = gbvh.ray_cast(o - n * 0.002, dd, MAXD)
+                if fits(i, h):
                     break
+                h = (None,)
         if h[0] is None:
             # skin pushing through a tight garment: the garment surface lies just inside the skin
             h = gbvh.ray_cast(o + n * 0.002, -n, 0.025)
+            if not fits(i, h):
+                h = (None,)
         if h[0] is None and sbvh is not None and not legv[i]:
             h = sbvh.ray_cast(o - n * 0.002, n, 0.16)
             if h[0] is None:
@@ -484,17 +542,30 @@ def build_one(cid, save_blend=False):
         bkeep[p] = in_body[vs].all() and not deleted[vs].all()
     out_parts.insert(0, dict(kind='body', d=body, keep=bkeep, region=np.zeros(len(body['ls']), np.int16),
                              tex=f'skin:{spec["skin"]}', info={}))
+    # skin decals (per body vertex, for the skin shader): beard growth (stubble and the base of a beard:
+    # the skin darkened towards the hair colour, soft-edged) and the scalp under the hair (hair-coloured,
+    # so the skin between the hair cards never shows as a bald head)
+    headw = share(body['W'], ['head', 'neck_01'])
+    beard_cov = np.zeros(len(body['co']), np.float32)
     if spec.get('beard'):
         eyes = [op for op in out_parts if op['kind'] == 'eyes'][0]['d']['co']
-        bd = beard_shell(body, bkeep, spec['beard'], eyes, J, share(body['W'], ['head', 'neck_01']))
-        if bd is not None:
-            out_parts.append(dict(kind='beard', d=bd, keep=np.ones(len(bd['ls']), bool),
-                                  region=np.full(len(bd['ls']), CASTM.REGIONS['beard'], np.int16),
-                                  tex='beard:' + ('stubble' if spec['beard'] == 'stubble' else 'full'), info={}))
+        beard_cov = beard_coverage(body, spec['beard'], eyes, J, headw)
+        if spec['beard'] != 'stubble':
+            # beards with volume: a shell over the dense part, its strands thinning out towards its edge
+            bd = beard_shell(body, bkeep, spec['beard'], beard_cov, eyes, J)
+            if bd is not None:
+                out_parts.append(dict(kind='beard', d=bd, keep=np.ones(len(bd['ls']), bool),
+                                      region=np.full(len(bd['ls']), CASTM.REGIONS['beard'], np.int16),
+                                      tex='beard:full', info={}))
+    hair = [op for op in out_parts if op['kind'] == 'hair' and op['keep'].any()]
+    scalp_cov = scalp_coverage(body, bkeep, hair[0], headw, E, hk) if hair else np.zeros(len(body['co']), np.float32)
+    dec = np.where(beard_cov >= scalp_cov, 128 + np.round(127 * np.clip(beard_cov, 0, 1)),
+                   128 - np.round(127 * np.clip(scalp_cov, 0, 1))).astype(np.uint8)
+    out_parts[0]['dec'] = dec
+    log(cid, f'skin decals: beard {int((beard_cov > 0.05).sum())} / scalp {int((scalp_cov > 0.05).sum())} vertices')
 
     # far-LOD hair: an opaque cap over the scalp, pushed out to the hair's outer surface (alpha cards do not
     # survive heavy simplification; at a few pixels a hair-coloured silhouette is what reads)
-    hair = [op for op in out_parts if op['kind'] == 'hair' and op['keep'].any()]
     if hair:
         cap = hair_cap(body, bkeep, hair[0])
         if cap is not None:
@@ -581,6 +652,8 @@ def build_one(cid, save_blend=False):
         raw[name + '_w'] = W.astype(np.float32)
         raw[name + '_idx'] = inv.reshape(-1, 3).astype(np.int32)
         raw[name + '_reg'] = vreg
+        if 'dec' in op:
+            raw[name + '_dec'] = op['dec'][vsrc]
         meta_parts.append(dict(key=name, kind=op['kind'], tex=op['tex'], verts=int(len(uk)), tris=int(len(tris)),
                                suit=op['info'].get('suit')))
 
@@ -696,10 +769,11 @@ def ambient_occlusion(raw, meta_parts):
         return BVHTree.FromPolygons([Vector(v) for v in V], T.tolist(), all_triangles=True, epsilon=0.0)
     bvh_arm = bvh_arms()
     # the arms swing in the walk: they do not darken the torso, hips and thighs
-    bvh_noarm = bvh_of(('lashes', 'brows'), True)
-    bvh_noskirt = bvh_of(('lashes', 'brows', 'skirt'), True)
+    # (beards do not darken the skin under them: the beard's own shading does)
+    bvh_noarm = bvh_of(('lashes', 'brows', 'beard'), True)
+    bvh_noskirt = bvh_of(('lashes', 'brows', 'beard', 'skirt'), True)
     # hair cards do not darken each other much (light passes between strands): hair sees only the head
-    bvh_nohair = bvh_of(('lashes', 'brows', 'hair'))
+    bvh_nohair = bvh_of(('lashes', 'brows', 'hair', 'beard'))
     # fixed cosine-weighted directions (golden spiral)
     k = np.arange(AO_RAYS) + 0.5
     r = np.sqrt(k / AO_RAYS)
@@ -791,13 +865,31 @@ def pose_relaxed(rig, spec):
         # palm normal points to the body's midline (x -> 0)
         if palm.x * sx > 0:
             palm = -palm
-        for f, curl in (('index', (14, 22, 14)), ('middle', (18, 26, 16)), ('ring', (22, 28, 18)), ('pinky', (26, 30, 20))):
+        # fingers: closed up beside each other (MakeHuman's rest spreads them), then a relaxed curl that
+        # grows towards the little finger; the thumb lies alongside the index finger
+        dm = (mid.tail - mid.head).normalized()
+        dmp = (dm - palm * dm.dot(palm)).normalized()
+        for f, keep in (('index', 0.3), ('ring', 0.3), ('pinky', 0.4)):
+            pb = rig.pose.bones[f'{f}_01_{s}']
+            dvec = (pb.tail - pb.head).normalized()
+            dp = (dvec - palm * dvec.dot(palm)).normalized()
+            ang = math.atan2(palm.dot(dp.cross(dmp)), dp.dot(dmp))
+            rotate(pb.name, Quaternion(palm, ang * (1 - keep)))
+        for f, curl in (('index', (16, 24, 14)), ('middle', (20, 28, 16)), ('ring', (24, 32, 18)), ('pinky', (28, 34, 20))):
             for j, deg in enumerate(curl, 1):
                 pb = rig.pose.bones[f'{f}_0{j}_{s}']
                 dvec = (pb.tail - pb.head).normalized()
                 k = dvec.cross(palm).normalized()
                 rotate(pb.name, Quaternion(k, math.radians(deg)))
-        for j, deg in ((2, 10), (3, 12)):
+        # thumb: in towards the index finger's side (adducted), lightly flexed
+        t1 = rig.pose.bones[f'thumb_01_{s}']
+        ix = rig.pose.bones[f'index_01_{s}']
+        dt = (t1.tail - t1.head).normalized()
+        di = (ix.tail - ix.head).normalized()
+        ax_ = dt.cross(di)
+        if ax_.length > 1e-6:
+            rotate(t1.name, Quaternion(ax_.normalized(), dt.angle(di) * 0.35))
+        for j, deg in ((2, 14), (3, 16)):
             pb = rig.pose.bones[f'thumb_0{j}_{s}']
             dvec = (pb.tail - pb.head).normalized()
             k = dvec.cross(palm).normalized()
@@ -808,7 +900,8 @@ def pose_relaxed(rig, spec):
         ft = rig.pose.bones[f'foot_{s}']
         hip = th.head.copy()
         ank = ft.head.copy()
-        want_x = hip.x + sx * 0.012 * (rig.pose.bones['head'].tail.z / 1.75)
+        # (women and girls a little wider: thighs that touch would otherwise turn the knees in)
+        want_x = hip.x + sx * (0.012 + (0.010 if spec['sex'] == 'f' else 0.0)) * (rig.pose.bones['head'].tail.z / 1.75)
         v0 = (ank - hip)
         v1 = Vector((want_x - hip.x, v0.y, v0.z))
         rotate(f'thigh_{s}', v0.rotation_difference(v1))
@@ -816,19 +909,19 @@ def pose_relaxed(rig, spec):
         rotate(f'foot_{s}', v0.rotation_difference(v1).inverted())
 
 
-BEARD = {   # thickness (m), lower reach under the chin (x head scale), cheek line below the eyes, density scale, chin volume (m)
-    'stubble': (0.0010, 0.030, 0.052, 0.75, 0.0),
-    'short': (0.0030, 0.038, 0.054, 0.95, 0.007),
-    'full': (0.0060, 0.055, 0.050, 1.0, 0.022),
+BEARD = {   # shell thickness (m), lower reach under the chin (x head scale), cheek line below the eyes, chin volume (m)
+    'stubble': (0.0, 0.026, 0.056, 0.0),
+    'short': (0.0025, 0.034, 0.054, 0.006),
+    'full': (0.0045, 0.050, 0.050, 0.017),
 }
 
 
-def beard_shell(body, bkeep, style, eyes, J, headw):
-    """A beard / stubble shell: the face and neck skin polygons of the beard area, offset along the normals,
-    UV u = position around the jaw, v = coverage (the texture's strand density grows with v)."""
+def beard_coverage(body, style, eyes, J, headw):
+    """Beard growth per body vertex (0..1): the cheeks below a line from the sideburns down towards the
+    mouth corners, the moustache, the chin and down the throat; soft (1-2.5 cm) borders; bare lips."""
     import numpy as np
-    co, nr = body['co'], body['nr']
-    thick, reach, cheek, dens, bulge = BEARD[style]
+    co = body['co']
+    _, reach, cheek, _ = BEARD[style]
     E = eyes.mean(0)
     k = max(0.5, (J['head'][2] + 0.25) / 1.75)
     lips = np.array([i for i, w in body['groups'].get('lips', []) if w > 0.5])
@@ -838,19 +931,18 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
     ax = np.abs(x)
     # in front of the ears (y grows towards the back of the head)
     front = 1 - sm(0.050 * k, 0.075 * k, y)
-    # cheek line: low at the sides, rising towards the nose / moustache
     # cheek line: from the sideburns (high, in front of the ears) slanting down towards the mouth corners
     top_z = -(cheek + 0.010 * (1 - sm(0.03 * k, 0.07 * k, ax))) * k + 0.03 * k * sm(0.062 * k, 0.075 * k, ax) * sm(0.02 * k, 0.045 * k, y)
-    top = 1 - sm(top_z - 0.012 * k, top_z + 0.006 * k, z)
+    top = (1 - sm(top_z - 0.014 * k, top_z + 0.006 * k, z)) * (0.55 + 0.45 * sm(top_z - 0.005 * k, top_z - 0.04 * k, z))
     # moustache: above the upper lip, below the nose, only near the middle
     lz = L[2] - E[2]
-    mous = (1 - sm(0.022 * k, 0.032 * k, ax)) * sm(lz + 0.002, lz + 0.007 * k, z) * (1 - sm(lz + 0.017 * k, lz + 0.024 * k, z))
+    mous = (1 - sm(0.022 * k, 0.034 * k, ax)) * sm(lz + 0.001, lz + 0.006 * k, z) * (1 - sm(lz + 0.016 * k, lz + 0.024 * k, z))
     # under the chin, down the throat to `reach` below the lips
-    bottom = sm(lz - (0.05 + reach) * k, lz - (0.03 + reach) * k, z)
+    bottom = sm(lz - (0.05 + reach) * k, lz - (0.028 + reach) * k, z)
     # mouth corners: the moustache runs down into the beard
-    corner = (1 - sm(0.042 * k, 0.05 * k, ax)) * sm(lz - 0.03 * k, lz - 0.02 * k, z) * (1 - sm(lz + 0.012 * k, lz + 0.02 * k, z)) * (y < 0.0)
+    corner = (1 - sm(0.040 * k, 0.05 * k, ax)) * sm(lz - 0.03 * k, lz - 0.02 * k, z) * (1 - sm(lz + 0.012 * k, lz + 0.02 * k, z)) * (y < 0.0)
     mous = np.maximum(mous, corner)
-    cov = np.maximum(front * top, mous * (1 if style != 'stubble' else 0.7)) * bottom * (headw > 0.3)
+    cov = np.maximum(front * top, mous * (1 if style != 'stubble' else 0.8)) * bottom * np.clip((headw - 0.2) / 0.3, 0, 1)
     # bare lips and a little margin
     if len(lips):
         from mathutils import Vector
@@ -861,27 +953,44 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
         kd.balance()
         for i in np.where(cov > 0)[0]:
             _, _, dist = kd.find(Vector(co[i].tolist()))
-            cov[i] *= sm(0.002, 0.006 * k, dist)
-    cov *= dens
+            cov[i] *= sm(0.0015, 0.0045 * k, dist)
+    return cov.astype(np.float32)
+
+
+def beard_shell(body, bkeep, style, cov, eyes, J):
+    """The volume of a short or full beard: the skin polygons of its dense part, offset along the normals
+    (thicker at the chin and jaw, hanging a little), UV u = position around the jaw, v = coverage (the
+    texture's strands thin out towards low v, so the shell's border is wispy, not a mask line)."""
+    import numpy as np
+    co, nr = body['co'], body['nr']
+    thick, _, _, bulge = BEARD[style]
+    E = eyes.mean(0)
+    k = max(0.5, (J['head'][2] + 0.25) / 1.75)
+    lips = np.array([i for i, w in body['groups'].get('lips', []) if w > 0.5])
+    L = co[lips].mean(0) if len(lips) else E + np.array([0, -0.01, -0.07])
+    sm = lambda a, b, x: np.clip((x - a) / (b - a), 0, 1) ** 2 * (3 - 2 * np.clip((x - a) / (b - a), 0, 1))  # noqa: E731
+    x, y, z = co[:, 0] - E[0], co[:, 1] - E[1], co[:, 2] - E[2]
+    lz = L[2] - E[2]
     sel = []
     for p in np.where(bkeep)[0]:
         vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
-        if cov[vs].max() > 0.03:
+        if cov[vs].min() > 0.18:
             sel.append(p)
     if not sel:
         return None
     vids = np.unique(np.concatenate([body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]] for p in sel]))
     remap = -np.ones(len(co), np.int64)
     remap[vids] = np.arange(len(vids))
-    nco = co[vids] + nr[vids] * thick * (0.35 + 0.65 * cov[vids, None])
+    c = np.clip(cov[vids], 0, 1)
+    nco = co[vids] + nr[vids] * (thick * (0.25 + 0.75 * c))[:, None]
     if bulge > 0:
-        # volume at the chin and jaw: the beard stands off the skin and hangs a little
-        under = sm(0.0, 0.05 * k, lz - z[vids]) * np.clip(cov[vids], 0, 1)
+        # volume at the chin and jaw, tapering towards the cheeks; it hangs a little
+        under = sm(0.0, 0.045 * k, lz - z[vids]) * sm(0.2, 0.7, c) * (1 - 0.5 * sm(0.03 * k, 0.065 * k, np.abs(x[vids])))
         nco = nco + nr[vids] * (bulge * under)[:, None]
-        nco[:, 2] -= bulge * 0.5 * under
+        nco[:, 2] -= bulge * 0.45 * under
     ang = np.arctan2(x[vids], -y[vids])                    # around the jaw
     u = np.clip(0.5 + ang / np.pi * 0.75, 0.01, 0.99)
-    v = 0.04 + 0.92 * np.clip(cov[vids], 0, 1)
+    v = 0.04 + 0.92 * np.clip((c - 0.18) / 0.6, 0, 1)
     vi, uvl, ls, lt = [], [], [], []
     for p in sel:
         vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
@@ -892,6 +1001,46 @@ def beard_shell(body, bkeep, style, eyes, J, headw):
             uvl.append((u[remap[vv]], v[remap[vv]]))
     return dict(co=nco.astype(np.float32), nr=nr[vids], vi=np.array(vi, np.int32), uv=np.array(uvl, np.float32),
                 ls=np.array(ls, np.int32), lt=np.array(lt, np.int32), W=body['W'][vids], groups={}, name='beard')
+
+
+def scalp_coverage(body, bkeep, hair, headw, E, hk):
+    """How much the hair covers each head vertex (1 under the hair .. 0 bare): a ray out along the skin
+    normal meets the hair within 6 cm; the face below the hairline stays bare; eased over the mesh."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    co, nr = body['co'], body['nr']
+    n = len(co)
+    cov = np.zeros(n, np.float32)
+    hd = hair['d']
+    hf = [[int(x) for x in hd['vi'][hd['ls'][p]:hd['ls'][p] + hd['lt'][p]]] for p in np.where(hair['keep'])[0]]
+    if not hf:
+        return cov
+    bvh = BVHTree.FromPolygons([Vector(v) for v in hd['co'].astype(np.float64)], hf, epsilon=0.0)
+    used = np.zeros(n, bool)
+    for p in np.where(bkeep)[0]:
+        used[body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]] = True
+    face = (co[:, 1] < E[1] + 0.035 * hk) & (co[:, 2] < E[2] + 0.045 * hk)
+    cand = np.where(used & (headw > 0.5) & ~face & (co[:, 2] > E[2] - 0.07 * hk))[0]
+    for i in cand:
+        nn = Vector(nr[i].tolist())
+        o = Vector(co[i].tolist()) + nn * 0.001
+        if bvh.ray_cast(o, nn, 0.06)[0] is not None:
+            cov[i] = 1.0
+    # ease the border over the mesh (two rings), so the hairline is soft
+    nb = [[] for _ in range(n)]
+    for p in np.where(bkeep)[0]:
+        vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
+        for a in vs:
+            nb[a].extend(int(b) for b in vs if b != a)
+    for _ in range(2):
+        nxt = cov.copy()
+        for i in np.where(used & (headw > 0.3))[0]:
+            if nb[i]:
+                nxt[i] = 0.5 * cov[i] + 0.5 * cov[nb[i]].mean()
+        cov = nxt
+    cov[face & (co[:, 2] < E[2] + 0.03 * hk)] = 0
+    return cov
 
 
 def garment_distance(raw, meta_parts):
@@ -1011,17 +1160,18 @@ def tuck_top(top, bot, REG):
     return moved
 
 
-def fill_small_holes(d, max_perimeter):
-    """Close small boundary loops (pocket openings and the like) of a garment with a fan around the loop
-    centre (UVs and weights averaged)."""
+def fill_small_holes(d, max_perimeter, J=None, k=1.0):
+    """Close the openings of a garment that are not cuffs, hems or the neckline: small loops (button
+    holes and the like) and slit pockets (long, thin loops on the chest, hips or thighs), with a fan
+    around the loop centre (UVs and weights averaged)."""
     import numpy as np
     from collections import defaultdict
     E = defaultdict(list)
     for p in range(len(d['ls'])):
         s, n = d['ls'][p], d['lt'][p]
-        for k in range(n):
-            a, b = d['vi'][s + k], d['vi'][s + (k + 1) % n]
-            E[(min(a, b), max(a, b))].append((p, s + k, s + (k + 1) % n, a, b))
+        for kk in range(n):
+            a, b = d['vi'][s + kk], d['vi'][s + (kk + 1) % n]
+            E[(min(a, b), max(a, b))].append((p, s + kk, s + (kk + 1) % n, a, b))
     nxt = {}
     loopuv = {}
     for key, lst in E.items():
@@ -1042,7 +1192,7 @@ def fill_small_holes(d, max_perimeter):
         cur = nxt[start]
         ok = True
         while cur != start:
-            if cur in seen or cur not in nxt or len(loop) > 40:
+            if cur in seen or cur not in nxt or len(loop) > 120:
                 ok = False
                 break
             loop.append(cur)
@@ -1052,9 +1202,20 @@ def fill_small_holes(d, max_perimeter):
             continue
         pts = d['co'][loop]
         per = np.linalg.norm(pts - np.roll(pts, -1, 0), axis=1).sum()
-        if per > max_perimeter:
-            continue
         c = pts.mean(0)
+        if per > max_perimeter:
+            # a slit pocket: thin (area small for its perimeter), on the trunk or thighs, well away from
+            # the neck, the shoulders' armholes and the wrists / ankles
+            if J is None or per > 0.42 * k:
+                continue
+            cr = np.cross(pts - c, np.roll(pts, -1, 0) - c)
+            area = 0.5 * np.linalg.norm(cr.sum(0))
+            iso = 4 * np.pi * area / (per * per)
+            sh_z = 0.5 * (J['armL'][2] + J['armR'][2])
+            near = min(np.linalg.norm(c - J[j]) for j in ('neck', 'handL', 'handR', 'footL', 'footR', 'foreL', 'foreR'))
+            if iso > 0.22 or c[2] > sh_z - 0.06 * k or near < 0.12 * k:
+                continue
+        cu_ = None
         uvs = np.array([loopuv[(loop[i], loop[(i + 1) % len(loop)])][0] for i in range(len(loop))])
         cu = uvs.mean(0)
         ci = nv + len(new_co)
@@ -1070,6 +1231,7 @@ def fill_small_holes(d, max_perimeter):
             add_vi += [a, b, ci]
             add_uv += [ua, ub, cu]
         filled += 1
+        del cu_
     if filled:
         d['co'] = np.concatenate([d['co'], np.array(new_co, np.float32)])
         d['nr'] = np.concatenate([d['nr'], np.array(new_nr, np.float32)])
@@ -1079,6 +1241,129 @@ def fill_small_holes(d, max_perimeter):
         d['ls'] = np.concatenate([d['ls'], np.array(add_ls, np.int32)])
         d['lt'] = np.concatenate([d['lt'], np.array(add_lt, np.int32)])
     return filled
+
+
+def drop_polys(d, drop):
+    """Remove polygons (mask) from an extracted part (vertices stay)."""
+    import numpy as np
+    keep = np.where(~drop)[0]
+    if len(keep) == len(d['ls']):
+        return
+    idx = np.concatenate([np.arange(d['ls'][p], d['ls'][p] + d['lt'][p]) for p in keep]) if len(keep) else np.zeros(0, np.int64)
+    d['vi'] = d['vi'][idx]
+    d['uv'] = d['uv'][idx]
+    d['lt'] = d['lt'][keep]
+    d['ls'] = (np.cumsum(d['lt']) - d['lt']).astype(np.int32)
+
+
+def face_front(body, E, hk):
+    """front(x, z) -> the frontmost (min y) head skin depth near (x, z), or None (Blender space)."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.kdtree import KDTree
+    bc = body['co']
+    head = np.where((bc[:, 2] > E[2] - 0.13 * hk) & (bc[:, 2] < E[2] + 0.14 * hk) & (bc[:, 1] < E[1] + 0.07 * hk)
+                    & (np.abs(bc[:, 0] - E[0]) < 0.10 * hk))[0]
+    kd = KDTree(len(head))
+    for j, i in enumerate(head):
+        kd.insert(Vector((float(bc[i, 0]), float(bc[i, 2]), 0.0)), j)
+    kd.balance()
+
+    def front(x, z, r=0.012):
+        hits = kd.find_range(Vector((float(x), float(z), 0.0)), r * hk)
+        if not hits:
+            return None
+        return min(float(bc[head[j], 1]) for _, j, _ in hits)
+    return front
+
+
+def clear_face_window(d, body, E, hk, style, cid):
+    """Trim hair that hangs in front of the eyes and brows (side-swept fringes): polygons inside a window
+    in front of the face (from the cheekbones up to a hairline ~2 cm above the brows, between the
+    temples) go, and the kept polygons' vertices inside it move to its edge, so the fringe ends in a
+    clean line above the brows and the side hair frames the face."""
+    import numpy as np
+    co = d['co']
+    front = face_front(body, E, hk)
+    hl = E[2] + 0.040 * hk           # hairline (the brows are ~2 cm above the eye centres)
+    lo = E[2] - 0.075 * hk
+    wx = 0.064 * hk
+    n = len(co)
+    inwin = np.zeros(n, bool)
+    for i in range(n):
+        x, y, z = co[i]
+        if abs(x - E[0]) >= wx or z >= hl or z <= lo:
+            continue
+        fy = front(x, z)
+        if fy is not None and y < fy + 0.018 * hk:
+            inwin[i] = True
+    if not inwin.any():
+        return 0
+    drop = np.zeros(len(d['ls']), bool)
+    side = np.zeros(len(d['ls']), bool)         # kept polygon beside the window (else above it)
+    for p in range(len(d['ls'])):
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        pv = co[vs]
+        c = pv.mean(0)
+        # (long card polygons can span the whole window with no vertex inside it: test their extent)
+        zmin, zmax = pv[:, 2].min(), pv[:, 2].max()
+        if not inwin[vs].any() and not (zmin < hl and zmax > lo and np.abs(pv[:, 0] - E[0]).min() < wx):
+            continue
+        cz = min(max(c[2], lo + 1e-3), hl - 1e-3)
+        cx = c[0] if abs(c[0] - E[0]) < wx else E[0] + np.sign(c[0] - E[0]) * (wx - 1e-3)
+        if abs(c[0] - E[0]) < wx and lo < c[2] < hl or (zmin < hl and zmax > lo and abs(c[0] - E[0]) < wx):
+            fy = front(cx, cz)
+            if fy is None or pv[:, 1].min() < fy + 0.018 * hk:
+                drop[p] = True
+                continue
+        side[p] = abs(c[0] - E[0]) >= wx
+    # kept polygons reaching into the window: their vertices there move to the window's edge on the
+    # polygon's own side (up to the hairline, or out to the temple)
+    tgt = np.zeros(n, np.int8)          # 1 up, 2 sideways
+    for p in np.where(~drop)[0]:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        for v in vs:
+            if inwin[v]:
+                tgt[v] = max(tgt[v], 2 if side[p] else 1)
+    moved = 0
+    for i in np.where(tgt > 0)[0]:
+        if tgt[i] == 1:
+            co[i, 2] = hl
+        else:
+            co[i, 0] = E[0] + np.sign(co[i, 0] - E[0]) * wx
+        moved += 1
+    drop_polys(d, drop)
+    log(cid, f'hair {style}: face window cleared ({int(drop.sum())} polygons trimmed, {moved} vertices moved to the hairline)')
+    return int(drop.sum())
+
+
+def refit_hat(d, body, E, hk, cid):
+    """Black fedoras sit low and wide: scale the hat about its crown axis, widen the brim and lower it so
+    the sweatband sits ~2.5 cm above the brows."""
+    import numpy as np
+    co = d['co']
+    z = co[:, 2]
+    band = float(np.percentile(z, 8))
+    top = float(z.max())
+    crown = co[(z > band + 0.03 * hk) & (z < top - 0.02 * hk)]
+    cx, cy = float(crown[:, 0].mean()), float(crown[:, 1].mean())
+    r = np.hypot(co[:, 0] - cx, co[:, 1] - cy)
+    rc = float(np.percentile(np.hypot(crown[:, 0] - cx, crown[:, 1] - cy), 90))
+    log(cid, f'hat: band {band - E[2]:+.3f} top {top - E[2]:+.3f} above the eyes, crown r {rc:.3f}, brim r {r.max():.3f}')
+    s = 1.08
+    P = np.array([cx, cy, band])
+    co[:] = P + (co - P) * s
+    z = co[:, 2]
+    r = np.hypot(co[:, 0] - cx, co[:, 1] - cy)
+    rc *= s
+    brim = (z < band + 0.02 * hk) & (r > rc * 0.98)
+    f = np.where(brim, 1.0 + 0.06 * np.clip((r - rc) / max(1e-3, r.max() - rc), 0, 1), 1.0)
+    co[:, 0] = cx + (co[:, 0] - cx) * f
+    co[:, 1] = cy + (co[:, 1] - cy) * f
+    target = E[2] + 0.036 * hk
+    co[:, 2] += target - band
+    r = np.hypot(co[:, 0] - cx, co[:, 1] - cy)
+    log(cid, f'hat refit: band {target - E[2]:+.3f}, brim r {r.max():.3f}, crown top {co[:, 2].max() - E[2]:+.3f}')
 
 
 def uv_islands(d):
