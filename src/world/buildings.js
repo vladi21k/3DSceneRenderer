@@ -237,7 +237,10 @@ function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
       lod = dist < LOD0_DIST ? 0 : 1;
       mtn = i <= iEnd ? 0 : i * CHUNK_LEN - (sCam + VIEW_AHEAD);
     } else if (c.next && !c.next.ready) { lod = c.next.lod; mtn = 0; }
-    else if (!c.ready) { lod = c.lod; mtn = 0; }
+    else if (c.lod > 1) {
+      // a far-field chunk (lod 2: core/farfield.js) becomes ours when it enters the view
+      lod = 1; mtn = i <= iEnd ? 0 : i * CHUNK_LEN - (sCam + VIEW_AHEAD);
+    } else if (!c.ready) { lod = c.lod; mtn = 0; }
     else if (c.lod === 1 && mid > sCam) {
       lod = 0; mtn = dist - LOD0_DIST;
       if (mtn > LOOK_LOD0) continue;
@@ -289,7 +292,7 @@ function runJob(app, job, budgetMs) {
     if (el > 0.02 && el + stepAvg > budgetMs) break;
     if (!job.iter) {
       const lot = job.lots[job.next++];
-      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[job.lod]) : lot.lane ? laneSteps(B, lot)
+      job.iter = lot.slab ? slabSteps(B, lot, DETAIL[Math.min(1, job.lod)]) : lot.lane ? laneSteps(B, lot)
         : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, job.lod)], metas);
     }
     const ts = performance.now();

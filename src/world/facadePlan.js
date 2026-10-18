@@ -213,7 +213,7 @@ export function facadePlan(lot) {
   coursing(plan);                          // sills aligned per floor, heads on whole ashlar courses
   followSlope(plan);                       // ground-floor sills step down with the street
   for (const o of plan.openings) setArch(o); // o.rise / o.spring for every opening head
-  if (plan.upper) for (const o of plan.upper.openings) setArch(o);
+  if (plan.upper) for (const o of [...plan.upper.openings, ...(plan.upper.sides || []).flat()]) setArch(o);
   plan.relief = reliefOf(plan, ornament(plan, RNG.from(lot.seed, 'shell')));
   plan.returns = [];                       // street facades on the side-street returns of corner lots
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
@@ -433,6 +433,62 @@ function massing(plan, lot) {
     }
   }
   plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition };
+  dressUpper(plan.upper, lot, nF);
+}
+
+/**
+ * Dressing of a set-back volume (own stream, so the draws above never shift): shutters
+ * on about 40 % of the windows (roller shutters part or all the way down, or louvred
+ * leaves closed or folded back), split AC units under some, cantilevered balconies on
+ * a few bays of the upper storeys of additions, and windows on the sides of additions
+ * (the long lens sees them end-on down the street). up.balconies: [{u0, u1, y, depth,
+ * slabT, solid, floor}]; up.sides: [openings of the u = 0 side, of the u = width side].
+ */
+function dressUpper(up, lot, nF) {
+  const r = RNG.from(lot.seed, 'upperDress');
+  const roller = r.chance(0.6);
+  up.balconies = [];
+  if (up.addition && up.floors >= 2) {
+    const solid = r.chance(0.5);
+    const cols = new Set(), bays = new Set(up.openings.map((o) => o.bay));
+    for (const b of bays) if (r.chance(0.35)) cols.add(b);
+    for (const o of up.openings) {
+      const k = o.floor - nF;
+      if (k < 1 || !cols.has(o.bay)) continue;
+      const fy = up.v0 + k * up.floorH, top = o.y + o.h;
+      o.kind = 'balconyDoor'; o.y = fy + 0.05; o.h = Math.max(top, fy + 2.15) - o.y;
+      const hw = Math.min(1.3, o.w / 2 + 0.55);
+      up.balconies.push({ floor: o.floor, u0: o.uc - hw, u1: o.uc + hw, y: fy + 0.02, depth: r.range(0.9, 1.2), slabT: 0.15, solid });
+    }
+  }
+  const dress = (o) => {
+    const h = r.next();
+    if (o.kind !== 'window') return;
+    o.shutters = h < 0.42 ? (roller ? 'roller' : h < 0.2 ? 'closed' : 'open') : 'none';
+    o.roller = r.range(0.25, 1);
+    o.ac = r.chance(0.12);
+  };
+  for (const o of up.openings) dress(o);
+  up.sides = null;
+  if (up.addition && up.depth >= 5) {
+    up.sides = [0, 1].map((e) => {
+      const ops = [];
+      if (!r.chance(0.65)) return ops;
+      const nb = Math.max(1, Math.floor((up.depth - 1.2) / r.range(2.8, 3.4))), bw = (up.depth - 1.2) / nb;
+      const ww = Math.min(bw - 0.9, r.range(1.0, 1.4)), wh = r.range(1.3, 1.5);
+      for (let k = 0; k < up.floors; k++) {
+        const y = up.v0 + k * up.floorH + r.range(0.85, 0.95);
+        for (let b = 0; b < nb; b++) {
+          if (r.chance(0.2)) continue;
+          const o = { id: `${lot.id}:us${e}${k}b${b}`, floor: nF + k, bay: b, uc: 0.6 + bw * (b + 0.5), w: ww, y, h: wh, top: 'flat', kind: 'window',
+            recess: r.range(0.12, 0.18), lit: r.next(), curtain: r.chance(0.5) };
+          dress(o);
+          ops.push(o);
+        }
+      }
+      return ops;
+    });
+  }
 }
 
 /** Cut a plan down to its first n floors (cornice, parapet and everything above follow). */
@@ -841,6 +897,6 @@ function tower(plan, lot) {
     ? { e: eFace, k: rng.int(0, 3), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
     : null;
   const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`)));
-  plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind };
+  plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind, balconies: [] };
   for (const o of [...openings, ...sides[0], ...sides[1]]) setArch(o);
 }

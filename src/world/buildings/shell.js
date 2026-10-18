@@ -429,11 +429,11 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
   // the paving to clean stone 0.8 m up, with a dirt line along its foot and grime
   B.shade = (u, v, w, nu, nv, nw, out) => {
     const g = face.groundAt(u), hg = v - g;
-    trimColor(fs, u, Math.max(v, g + 0.6), nv, out, 0.86);
-    const t = Math.min(1, Math.max(0, hg / 0.8)), k = (0.78 + 0.22 * t * t * (3 - 2 * t)) * (hg < 0.06 ? 0.86 : 1);
-    const l = (out[0] + out[1] + out[2]) / 3, gr = 0.4 + 0.25 * (1 - t);
+    trimColor(fs, u, Math.max(v, g + 0.6), nv, out, 0.84);
+    const t = Math.min(1, Math.max(0, hg / 0.8)), k = (0.68 + 0.32 * t * t * (3 - 2 * t)) * (hg < 0.06 ? 0.8 : 1);
+    const l = (out[0] + out[1] + out[2]) / 3, gr = 0.45 + 0.3 * (1 - t);
     out[0] = (out[0] + (l - out[0]) * gr) * k; out[1] = (out[1] + (l - out[1]) * gr) * k; out[2] = (out[2] + (l * 1.02 - out[2]) * gr) * k;
-    out[3] = Math.min(1.2, out[3] + 0.5 * Math.exp(-Math.max(0, hg) / 0.3));
+    out[3] = Math.min(1.4, out[3] + 0.7 * Math.exp(-Math.max(0, hg) / 0.35));
   };
   // a chamfered corner: the plinth runs along the cut face to its door, and from the
   // door's far side round the corner into the return (points in the main frame)
@@ -665,6 +665,15 @@ export function coarseLot(B, lot) {
   for (const o of plan.openings) {
     if (o.y + o.h > cor.y) continue;
     B.rectW(dk, o.uc - o.w / 2, o.uc + o.w / 2, o.y, o.y + o.h - o.rise * 0.4, 0.01, 1);
+  }
+  const up = plan.upper;
+  if (up) {
+    // the set-back volume (a tower closing the view is what the far edge shows first)
+    const ut = up.v0 + up.floors * up.floorH + 0.2, w1 = -up.setback, w0 = w1 - up.depth;
+    B.flat = up.material === 'plaster' ? up.color.map((c) => c / 0.9) : tint;
+    B.box(up.material === 'plaster' ? dk : s, up.u0, up.u1, up.v0 - 0.1, ut, w0, w1, FACES.ALL & ~FACES.BOTTOM);
+    B.flat = [0.05, 0.048, 0.046];
+    for (const o of up.openings) B.rectW(dk, up.u0 + o.uc - o.w / 2, up.u0 + o.uc + o.w / 2, o.y, o.y + o.h, w1 + 0.01, 1);
   }
   B.flat = [1, 1, 1];
 }

@@ -413,7 +413,8 @@ export function satelliteDish(B, s, q, rng, elev = 0.75) {
     for (let i = 0; i < nr - 1; i++) {
       for (let j = 0; j < nt; j++) {
         const a = base + i * nt + j, b = base + i * nt + ((j + 1) % nt), c = b + nt, d = a + nt;
-        if (back) B.quadIdx(s, a, d, c, b); else B.quadIdx(s, a, b, c, d);
+        // (a, b, c, d) runs clockwise seen from +z
+        if (back) B.quadIdx(s, a, b, c, d); else B.quadIdx(s, a, d, c, b);
       }
     }
   }

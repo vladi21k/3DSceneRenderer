@@ -13,9 +13,9 @@ import { SunLightShadow } from 'three/addons/lights/SunLightShadow.js';
 //   shadow.bias       small constant depth bias
 //   cascade.w         floor(depth range of the cascade camera, m) + world texel size (m)
 // Penumbrae harden towards contact: a small blocker search compares the receiver at
-// four depth offsets (0, 1.5, 10 and 50 m towards the sun) to estimate how far the
-// blocker is, and the filter radius follows the sun's angular size (0.53°), so a
-// cornice 60 m up-sun throws a ~0.4 m soft edge while a bench leg stays crisp.
+// depth offsets from 0.4 to 60 m towards the sun to estimate how far the blocker is, and
+// the filter radius follows the sun's angular size (0.53°), so a cornice 60 m up-sun
+// throws a ~0.55 m soft edge, an awning 1 m off the wall a ~1 cm one.
 // Coarse cascades filter over at least two texels with more taps (no stair steps),
 // and skip thin casters (railings, lamp scrolls) that a 0.1–0.3 m texel cannot hold.
 // Every tap compares against the receiver plane at its own offset (depth gradient from
@@ -507,21 +507,25 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				f0 *= 0.2;
 				if ( f0 <= 0.0 ) return 1.0;
 				if ( f0 >= 1.0 ) return 0.0;
-				// how far are the blockers? Probe whether the receiver, moved 1.5, 10 and 50 m
-				// towards the sun, is still blocked (stop once nothing is left)
-				vec3 fd = vec3( 0.0 );
-				vec3 dm = vec3( 1.5, 10.0, 50.0 ) / range;
-				float prev = f0;
-				for ( int j = 0; j < 3; j ++ ) {
+				// how far are the blockers? Probe whether the receiver, moved 0.4, 1.2, 3, 7, 15, 30
+				// and 60 m towards the sun, is still blocked (stop once nothing is left); the
+				// share that drops out between two probes lies between their distances
+				float D[ 7 ];
+				D[ 0 ] = 0.4; D[ 1 ] = 1.2; D[ 2 ] = 3.0; D[ 3 ] = 7.0; D[ 4 ] = 15.0; D[ 5 ] = 30.0; D[ 6 ] = 60.0;
+				float prev = f0, dPrev = 0.0, dSum = 0.0;
+				for ( int j = 0; j < 7; j ++ ) {
 					if ( prev <= 0.0 ) break;
 					float f = 0.0;
-					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm[ j ] ) );
-					prev = f * 0.2;
-					fd[ j ] = prev;
+					float dm = D[ j ] / range;
+					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
+					f = min( f * 0.2, prev );
+					dSum += ( prev - f ) * sqrt( max( dPrev, 0.15 ) * D[ j ] );
+					prev = f; dPrev = D[ j ];
 				}
-				float dEst = ( 0.6 * ( f0 - fd.x ) + 4.5 * ( fd.x - fd.y ) + 24.0 * ( fd.y - fd.z ) + 85.0 * fd.z ) / f0;
-				// penumbra half-width from the sun's angular radius (x1.5 for the filter shape)
-				float rt = clamp( dEst * 0.0047 * 1.5 / texel, minR, maxR );
+				float dEst = ( dSum + prev * 85.0 ) / f0;
+				// penumbra half-width from the sun's angular radius: the disc kernel's edge
+				// ramps over its diameter, as the umbra-to-light transition spans 0.0093 x distance
+				float rt = clamp( dEst * 0.0047 * 1.1 / texel, minR, maxR );
 				vec2 r = rt * tx;
 				// wide kernels and coarse cascades get more taps
 				int n = ( cascade >= 2 || rt > 3.0 ) ? ${wide} : SUN_PCF_TAPS;

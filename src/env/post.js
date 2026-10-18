@@ -190,7 +190,7 @@ const post = {
       uMist: { value: 6e-4 },
       tClouds: { value: null }, uUseClouds: { value: 0 },
       uFarLamp: { value: env?.lights?.farLamps ?? Array.from({ length: 24 }, () => new THREE.Vector4()) },
-      uFarI: { value: 0 }, uFarMin: { value: 60 }, uLampCos: { value: new THREE.Vector2(0.58, 0.88) },
+      uFarI: { value: 0 }, uFarMin: { value: 60 }, uLampCos: { value: new THREE.Vector2(0.58, 0.88) }, uWash: { value: 0 },
       tSunVis: { value: null }, uGlareE: { value: new THREE.Vector3() },
       uGlare: { value: new THREE.Vector4(GLARE.k1, GLARE.theta0 * GLARE.theta0, GLARE.k2, GLARE.theta1) },
     }, { NUM_LAMPS: nLamps, NUM_FAR: env?.lights?.farLamps?.length ?? 24, ...(q.ao ? { USE_AO: 1 } : {}) });
@@ -365,6 +365,8 @@ const post = {
     pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1);
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
+    // frosted globes under a shallow cap send ~a fifth of their light sideways and up
+    pu.uWash.value = 0.2 * night;
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
     fu.uExposure.value = env ? env.exposure : 1;
     fu.uExposureMax.value = env ? env.exposureMax ?? 1e4 : 1e4;

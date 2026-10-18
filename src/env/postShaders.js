@@ -139,6 +139,7 @@ uniform vec4 uFarLamp[NUM_FAR];
 uniform float uFarI;
 uniform float uFarMin;       // the real lights cover everything nearer than this (m)
 uniform vec2 uLampCos;
+uniform float uWash;         // lanterns' sideways glow, as a share of their downward intensity
 uniform sampler2D tSunVis;
 uniform vec3 uGlareE;        // sun illuminance (rgb); 0 disables the glare
 uniform vec4 uGlare;         // veiling glare: k1 / (theta^2 + theta0^2) + k2 exp(-theta / theta1)
@@ -226,9 +227,13 @@ void main() {
   }
 #endif
 
-  // distant lamp pools (beyond the real lights): relight the surface with an albedo
-  // estimated from its ambient-lit colour, depth-reconstructed normal, lantern cone
-  if (uFarI > 0.0 && !sky && dist > uFarMin) {
+  // night relighting in screen space, with an albedo estimated from the surface's
+  // ambient-lit colour and a depth-reconstructed normal: distant lamp pools (beyond the
+  // real lights), and the lanterns' sideways and upward glow on the nearer facades (the
+  // real spot lights only light below the lanterns)
+  bool farPools = uFarI > 0.0 && dist > uFarMin;
+  bool wash = uWash > 0.0 && dist < 140.0;
+  if (!sky && (farPools || wash)) {
     vec2 px = 1.0 / uResolution;
     float zl = linearZ(texture2D(tDepth, vUv - vec2(px.x, 0.0)).r), zr = linearZ(texture2D(tDepth, vUv + vec2(px.x, 0.0)).r);
     float zd = linearZ(texture2D(tDepth, vUv - vec2(0.0, px.y)).r), zu = linearZ(texture2D(tDepth, vUv + vec2(0.0, px.y)).r);
@@ -239,20 +244,38 @@ void main() {
     vec3 nv = normalize(cross(dx, dy));
     vec3 nw = normalize((uCamWorld * vec4(nv, 0.0)).xyz);
     vec3 wp = uCamPos + rd * dist;
-    vec3 Eamb = texture2D(uSkyIrr, vec2(0.5 / 8.0, 0.5)).rgb * 0.7 + 1e-7;
+    // ambient the surface sees: the open sky on the paving, the canyon's sky slot on walls
+    vec3 Eamb = mix(texture2D(uSkyIrr, vec2(3.5 / 8.0, 0.5)).rgb, texture2D(uSkyIrr, vec2(0.5 / 8.0, 0.5)).rgb * 0.7, clamp(nw.y, 0.0, 1.0)) + 1e-7;
     vec3 alb = clamp(col * ATM_PI / Eamb, vec3(0.03), vec3(0.6));
     float E = 0.0;
-    for (int i = 0; i < NUM_FAR; i++) {
-      vec4 L = uFarLamp[i];
-      if (L.w <= 0.0) continue;
-      vec3 lv = L.xyz - wp;
-      float d2 = max(dot(lv, lv), 0.25);
-      vec3 ld = lv * inversesqrt(d2);
-      float cone = smoothstep(uLampCos.x, uLampCos.y, ld.y);   // surface below the lantern
-      float win = clamp(1.0 - d2 * d2 / (32.0 * 32.0 * 32.0 * 32.0), 0.0, 1.0);
-      E += L.w * cone * max(dot(nw, ld), 0.0) * win * win / d2;
+    if (farPools) {
+      for (int i = 0; i < NUM_FAR; i++) {
+        vec4 L = uFarLamp[i];
+        if (L.w <= 0.0) continue;
+        vec3 lv = L.xyz - wp;
+        float d2 = max(dot(lv, lv), 0.25);
+        vec3 ld = lv * inversesqrt(d2);
+        float cone = smoothstep(uLampCos.x, uLampCos.y, ld.y);   // surface below the lantern
+        float win = clamp(1.0 - d2 * d2 / (32.0 * 32.0 * 32.0 * 32.0), 0.0, 1.0);
+        E += L.w * cone * max(dot(nw, ld), 0.0) * win * win / d2;
+      }
+      E *= uFarI;
     }
-    col += alb * E * uFarI * vec3(1.0, 0.64, 0.34) / ATM_PI;
+    if (wash) {
+      float Ew = 0.0;
+      for (int i = 0; i < NUM_LAMPS; i++) {
+        if (uLampI[i] <= 0.0) continue;
+        vec3 lv = uLampPos[i] - wp;
+        float d2 = max(dot(lv, lv), 1.0);
+        vec3 ld = lv * inversesqrt(d2);
+        // level with or above the lantern: outside the spot light's cone
+        float side = 1.0 - smoothstep(0.1, 0.4, ld.y);
+        float win = clamp(1.0 - d2 * d2 / (16.0 * 16.0 * 16.0 * 16.0), 0.0, 1.0);
+        Ew += uLampI[i] * side * max(dot(nw, ld), 0.0) * win * win / d2;
+      }
+      E += Ew * uWash;
+    }
+    col += alb * E * vec3(1.0, 0.64, 0.34) / ATM_PI;
   }
 
   // aerial perspective: extinction plus in-scatter. The ambient source is the mean

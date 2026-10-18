@@ -122,11 +122,19 @@ export function openingMasonry(ctx, face, o) {
   }
 
   B.mark('op.sill');
-  // threshold and steps at ground openings
+  // threshold and steps at ground openings: worn, greyer and dirtier than the dressing
+  // above (trodden and splashed), darkest along the paving
   if (ground) {
     const gA = face.groundAt(u0), gB = face.groundAt(u1);
     const gMin = Math.min(gA, gB);
     const rise = y0 - gMin;
+    B.shade = (u, v, w, nu, nv, nw, out) => {
+      trimColor(fs, u, v, nv, out, 0.9);
+      const hg = Math.max(0, v - face.groundAt(u)), k = 0.8 + 0.12 * Math.min(1, hg / 0.4);
+      const l = (out[0] + out[1] + out[2]) / 3;
+      out[0] = (out[0] + (l - out[0]) * 0.4) * k; out[1] = (out[1] + (l - out[1]) * 0.4) * k; out[2] = (out[2] + (l - out[2]) * 0.4) * k;
+      out[3] = Math.min(1.2, out[3] + 0.35);
+    };
     B.bevelBox(sT, u0 - 0.04, u1 + 0.04, Math.min(y0 - 0.12, gMin - 0.05), y0 + 0.004, -0.03, 0.05, bev, flat ? FACES.FRONT | FACES.TOP : FACES.ALL & ~FACES.BOTTOM);
     if (q.steps && rise > 0.2) {
       const n = Math.ceil(rise / 0.17), r = rise / n, tread = 0.3;

@@ -5,6 +5,8 @@ import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
 import { openingInfill } from './infill.js';
 import { sideFrame } from './party.js';
+import { slabBalconies } from './balcony.js';
+import { acUnit } from './roof.js';
 
 // Set-back upper volume on a flat roof (plan.upper, see facadePlan massing): a
 // penthouse storey behind its terrace, or a later addition of several storeys, in
@@ -28,11 +30,13 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   const sWall = plaster ? sinks.paint : sinks.ashlar, sTrim = plaster ? sinks.paint : sinks.smooth;
   const col = plaster ? up.color.map((c) => c / 0.9) : tint;
   const face = {
-    width: W, openings: up.openings, courses: [], balconies: [], cornice: { y: top }, groundAt: () => v0,
+    width: W, openings: up.openings, courses: [], balconies: up.balconies || [], cornice: { y: top }, groundAt: () => v0,
     floors: [...plan.floors, ...Array.from({ length: up.floors }, (_, k) => ({ index: plan.floors.length + k, y: v0 + k * up.floorH, h: up.floorH }))],
     style: { ...plan.style, surrounds: false },
   };
-  const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.8, sillExt: 0.11, sillH: 0.06 });
+  // render weathers (soot under the slab, streaks), as the stone does
+  const unc = plaster ? 0.3 : 0;
+  const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.9, uncleaned: unc, sillExt: 0.11, sillH: 0.06 });
   if (!sinks.glass) sinks.glass = B.sink('glass');
   if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery
   const ctx = {
@@ -47,10 +51,12 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   for (let i = 0; i < up.openings.length; i++) {
     openingMasonry(ctx, face, up.openings[i]);
     openingInfill(ctx, face, up.openings[i], irng);
+    acUnder(B, ctx.sinks, up.openings[i], q, lot.seed, i);
     if (i % 3 === 2) { yield; B.frameFromLot(up.frame); }
   }
   yield;
   B.frameFromLot(up.frame);
+  if (face.balconies.length) { yield* slabBalconies(B, ctx.sinks, face.balconies, fs, lot.seed + 17, q, up.frame); B.frameFromLot(up.frame); }
   // sides and back (plain walls, shaded like the front's field); a tower's sides have
   // windows, or a painted mural on the side facing back down the street
   B.shade = (u, v, w, nu, nv, nw, out) => { fs.wall(u - w * 0.37, v, out); out[0] *= 0.96; out[1] *= 0.96; out[2] *= 0.96; };
@@ -63,8 +69,8 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
     for (const e of [0, 1]) {
       const fr = sideFrame(up.frame, W, e, -D, 0);
       const ops = up.sides[e], m = up.mural && up.mural.e === e ? up.mural : null;
-      const sface = { ...face, width: D, openings: ops };
-      const sfs = new FaceShade(sface, col.map((c) => c * 0.97), lot.seed + 4241 + 31 * (e + 1), { dirt: dirt * 0.9, sillExt: 0.11, sillH: 0.06 });
+      const sface = { ...face, width: D, openings: ops, balconies: [] };
+      const sfs = new FaceShade(sface, col.map((c) => c * 0.97), lot.seed + 4241 + 31 * (e + 1), { dirt: dirt * 0.95, uncleaned: unc, sillExt: 0.11, sillH: 0.06 });
       const sctx = { ...ctx, fs: sfs };
       B.frameFromLot(fr);
       B.setUV(1, 7.3 * e, 1, 0);
@@ -84,6 +90,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
       for (let i = 0; i < ops.length; i++) {
         openingMasonry(sctx, sface, ops[i]);
         openingInfill(sctx, sface, ops[i], srng);
+        acUnder(B, sctx.sinks, ops[i], q, lot.seed + e + 1, i);
         if (i % 4 === 3) { yield; B.frameFromLot(fr); }
       }
       yield;
@@ -107,4 +114,14 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
 export function upperFootprint(plan) {
   const up = plan.upper;
   return up ? [up.u0 - 0.3, up.u1 + 0.3, -up.setback - up.depth - 0.3, -up.setback + 0.3] : null;
+}
+
+/** Split AC unit hung under a window (o.ac), to one side of it. */
+function acUnder(B, sinks, o, q, seed, i) {
+  if (!o.ac || o.kind !== 'window') return;
+  const r = RNG.from(seed, 'uac', i);
+  B.shade = null;
+  B.enter(o.uc + (r.chance(0.5) ? -0.3 : 0.3), o.y - 0.95, 0.17, 0);
+  acUnit(B, { paint: sinks.paint, metal: sinks.metal || sinks.paint }, q, r);
+  B.popFrame();
 }

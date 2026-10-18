@@ -1,0 +1,715 @@
+"""Crowd character generator: MPFB2 (MakeHuman for Blender) driven headless -> assets/humans_mh/.
+
+  TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_build.py -- \
+      [--stages chars,tex,export,preview] [--only m01,f02] [--jobs 8] [--blend]
+
+Stages
+  chars    one Blender process per character (mh_cast.CAST): MakeHuman body from macros + shape targets,
+           the game_engine rig, CC0 clothes / hair / eyebrows / eyelashes / eyes / hat, garment edits
+           (sleeves and trouser legs cut, skirts lengthened, mixed tops and bottoms, body skin hidden only
+           where a kept garment covers it), then the rest pose of the runtime skeleton (arms hanging, elbows
+           and fingers relaxed) is applied and the skin weights are converted to the runtime's 22 bones
+           (src/crowd/humans/anim.js). Writes .work/mh/raw/<id>.npz + <id>.json.
+  tex      mh_tex.py: shared texture arrays (skins, garments, hair, misc atlas), WebP strips.
+  export   mh_export.py: LODs (meshoptimizer), per-vertex AO, quantised geometry -> assets/humans_mh/.
+  preview  mh_preview.py: Cycles lineup render of the exported cast (front / side / back).
+
+Everything is deterministic (no random numbers; MPFB runs with fixed inputs).
+"""
+import os
+import sys
+import json
+import math
+import time
+import subprocess
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import mh_cast as CASTM  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(HERE))
+ASSETS = '/opt/mh/system_assets'
+WORK = os.path.join(ROOT, '.work', 'mh')
+RAW = os.path.join(WORK, 'raw')
+
+# runtime skeleton (src/crowd/humans/anim.js BONE): L = the figure's left = -X in three.js
+RT_BONES = ['root', 'pelvis', 'spine1', 'spine2', 'neck', 'head',
+            'clavL', 'armL', 'foreL', 'handL', 'clavR', 'armR', 'foreR', 'handR',
+            'thighL', 'shinL', 'footL', 'toeL', 'thighR', 'shinR', 'footR', 'toeR']
+RT_PARENT = [-1, 0, 1, 2, 3, 4, 3, 6, 7, 8, 3, 10, 11, 12, 1, 14, 15, 16, 1, 18, 19, 20]
+RB = {n: i for i, n in enumerate(RT_BONES)}
+
+# MPFB game_engine bone -> runtime bone weights (fingers fold into the hand; spine_02 is shared by
+# the lumbar and thoracic runtime bones). Blender '_l' is the character's left.
+GE_MAP = {'Root': {'root': 1}, 'pelvis': {'pelvis': 1}, 'spine_01': {'spine1': 1}, 'spine_02': {'spine1': 0.5, 'spine2': 0.5},
+          'spine_03': {'spine2': 1}, 'neck_01': {'neck': 1}, 'head': {'head': 1}}
+for s, S in (('l', 'L'), ('r', 'R')):
+    GE_MAP.update({f'clavicle_{s}': {f'clav{S}': 1}, f'upperarm_{s}': {f'arm{S}': 1}, f'lowerarm_{s}': {f'fore{S}': 1},
+                   f'hand_{s}': {f'hand{S}': 1}, f'thigh_{s}': {f'thigh{S}': 1}, f'calf_{s}': {f'shin{S}': 1},
+                   f'foot_{s}': {f'foot{S}': 1}, f'ball_{s}': {f'toe{S}': 1}})
+    for f in ('thumb', 'index', 'middle', 'ring', 'pinky'):
+        for j in (1, 2, 3):
+            GE_MAP[f'{f}_0{j}_{s}'] = {f'hand{S}': 1}
+# runtime joint <- game_engine bone head
+RT_JOINT_SRC = {'pelvis': 'pelvis', 'spine1': 'spine_01', 'spine2': 'spine_03', 'neck': 'neck_01', 'head': 'head'}
+for s, S in (('l', 'L'), ('r', 'R')):
+    RT_JOINT_SRC.update({f'clav{S}': f'clavicle_{s}', f'arm{S}': f'upperarm_{s}', f'fore{S}': f'lowerarm_{s}',
+                         f'hand{S}': f'hand_{s}', f'thigh{S}': f'thigh_{s}', f'shin{S}': f'calf_{s}',
+                         f'foot{S}': f'foot_{s}', f'toe{S}': f'ball_{s}'})
+
+
+def log(*a):
+    print('[mh]', *a, flush=True)
+
+
+def script_args():
+    a = sys.argv
+    return a[a.index('--') + 1:] if '--' in a else []
+
+
+def parse(argv):
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('--stages', default='chars,tex,export,preview')
+    p.add_argument('--only', default='')
+    p.add_argument('--jobs', type=int, default=8)
+    p.add_argument('--one', default='')
+    p.add_argument('--blend', action='store_true', help='also save .work/mh/raw/<id>.blend')
+    return p.parse_args(argv)
+
+
+# ============================================================================= driver
+
+def run_driver(args):
+    ids = [i for i in args.only.split(',') if i] or list(CASTM.CAST.keys())
+    stages = args.stages.split(',')
+    t0 = time.time()
+    if 'chars' in stages:
+        os.makedirs(RAW, exist_ok=True)
+        blender = None
+        try:
+            import bpy
+            blender = bpy.app.binary_path
+        except ImportError:
+            blender = 'blender'
+        pending = list(ids)
+        running = []
+        failed = []
+        while pending or running:
+            while pending and len(running) < args.jobs:
+                cid = pending.pop(0)
+                cmd = [blender, '-b', '-P', os.path.abspath(__file__), '--', '--one', cid] + (['--blend'] if args.blend else [])
+                lf = open(os.path.join(RAW, cid + '.log'), 'w')
+                running.append((cid, subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT), lf))
+            time.sleep(0.5)
+            for r in list(running):
+                if r[1].poll() is not None:
+                    r[2].close()
+                    running.remove(r)
+                    ok = r[1].returncode == 0 and os.path.exists(os.path.join(RAW, r[0] + '.json'))
+                    log(f'char {r[0]} {"ok" if ok else "FAILED (see .work/mh/raw/" + r[0] + ".log)"}')
+                    if not ok:
+                        failed.append(r[0])
+        if failed:
+            raise SystemExit('characters failed: ' + ','.join(failed))
+        log(f'chars done in {time.time() - t0:.0f}s')
+    py = 'python3'
+    if 'tex' in stages:
+        subprocess.check_call([py, os.path.join(HERE, 'mh_tex.py')])
+    if 'export' in stages:
+        subprocess.check_call([py, os.path.join(HERE, 'mh_export.py')])
+    if 'preview' in stages:
+        subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_preview.py'), '--'])
+    log(f'all done in {time.time() - t0:.0f}s')
+
+
+def bpy_binary():
+    try:
+        import bpy
+        return bpy.app.binary_path
+    except ImportError:
+        return 'blender'
+
+
+# ============================================================================= one character (inside Blender)
+
+def build_one(cid, save_blend=False):
+    import bpy
+    import numpy as np
+    from mathutils import Vector, Matrix
+    from mathutils.kdtree import KDTree
+    from bl_ext.user_default.mpfb.services.humanservice import HumanService
+    from bl_ext.user_default.mpfb.services.targetservice import TargetService
+    from bl_ext.user_default.mpfb.services.locationservice import LocationService
+
+    spec = CASTM.CAST[cid]
+    t0 = time.time()
+    for o in list(bpy.data.objects):
+        bpy.data.objects.remove(o)
+
+    # ---------------------------------------------------------------- body
+    macro = TargetService.get_default_macro_info_dict()
+    macro.update(gender=1.0 if spec['sex'] == 'm' else 0.0, age=CASTM.mh_age(spec['age']), muscle=spec['muscle'],
+                 weight=spec['weight'], height=spec['height'], proportions=spec['prop'], cupsize=spec['cup'],
+                 firmness=spec['firm'])
+    cau, afr, asi = spec['anc']
+    tot = cau + afr + asi
+    macro['race'] = {'caucasian': cau / tot, 'african': afr / tot, 'asian': asi / tot}
+    bm = HumanService.create_human(mask_helpers=False, detailed_helpers=True, extra_vertex_groups=True,
+                                   feet_on_ground=True, scale=0.1, macro_detail_dict=macro)
+    tdir = LocationService.get_mpfb_data('targets')
+    for name, w in sorted(spec['targets'].items()):
+        path = os.path.join(tdir, name + '.target.gz')
+        if not os.path.exists(path):
+            raise IOError('missing target ' + name)
+        TargetService.load_target(bm, path, weight=float(w), name=os.path.basename(name))
+    rig = HumanService.add_builtin_rig(bm, 'game_engine', import_weights=True)
+
+    # ---------------------------------------------------------------- assets
+    def add(path, typ):
+        return HumanService.add_mhclo_asset(path, bm, asset_type=typ, subdiv_levels=0, material_type='NONE')
+
+    parts = []          # (object, kind, info)
+    parts.append((add(f'{ASSETS}/eyes/low-poly/low-poly.mhclo', 'Eyes'), 'eyes', {}))
+    if spec['brows']:
+        parts.append((add(f'{ASSETS}/eyebrows/{spec["brows"]}/{spec["brows"]}.mhclo', 'Eyebrows'), 'brows', {}))
+    if spec['lashes']:
+        parts.append((add(f'{ASSETS}/eyelashes/{spec["lashes"]}/{spec["lashes"]}.mhclo', 'Eyelashes'), 'lashes', {}))
+    if spec['hair']:
+        parts.append((add(f'{ASSETS}/hair/{spec["hair"]}/{spec["hair"]}.mhclo', 'Hair'), 'hair', {}))
+    suits = {}
+    for g in (spec['top'], spec['bottom']):
+        if g and g['suit'] not in suits:
+            suits[g['suit']] = add(f'{ASSETS}/clothes/{g["suit"]}/{g["suit"]}.mhclo', 'Clothes')
+    for name, ob in suits.items():
+        parts.append((ob, 'suit', {'suit': name}))
+    parts.append((add(f'{ASSETS}/clothes/{spec["shoes"]}/{spec["shoes"]}.mhclo', 'Clothes'), 'shoes', {}))
+    if spec['hat']:
+        parts.append((add(f'{ASSETS}/clothes/{spec["hat"]}/{spec["hat"]}.mhclo', 'Clothes'), 'hat', {}))
+    for m in list(bm.modifiers):
+        if m.type == 'MASK':
+            bm.modifiers.remove(m)
+    log(cid, f'assembled in {time.time() - t0:.1f}s')
+
+    # ---------------------------------------------------------------- rest pose of the runtime skeleton
+    pose_relaxed(rig, spec)
+    bpy.context.view_layer.update()
+    dg = bpy.context.evaluated_depsgraph_get()
+
+    def bone_head(name):
+        return np.array(rig.matrix_world @ rig.pose.bones[name].head)
+
+    def bone_tail(name):
+        return np.array(rig.matrix_world @ rig.pose.bones[name].tail)
+
+    bone_names = [b.name for b in rig.data.bones]
+
+    def extract(ob):
+        eo = ob.evaluated_get(dg)
+        me = eo.to_mesh()
+        n = len(me.vertices)
+        co = np.zeros(n * 3, np.float32)
+        me.vertices.foreach_get('co', co)
+        co = co.reshape(-1, 3)
+        nr = np.zeros(n * 3, np.float32)
+        me.vertex_normals.foreach_get('vector', nr)
+        nr = nr.reshape(-1, 3)
+        mw = np.array(eo.matrix_world)
+        co = co @ mw[:3, :3].T + mw[:3, 3]
+        nr = nr @ np.linalg.inv(mw[:3, :3])
+        nr /= np.maximum(1e-9, np.linalg.norm(nr, axis=1, keepdims=True))
+        eo.to_mesh_clear()
+        src = ob.data
+        if len(src.vertices) != n:
+            raise RuntimeError(f'{ob.name}: evaluated vertex count differs ({n} vs {len(src.vertices)})')
+        L = len(src.loops)
+        vi = np.zeros(L, np.int32)
+        src.loops.foreach_get('vertex_index', vi)
+        uv = np.zeros(L * 2, np.float32)
+        src.uv_layers.active.data.foreach_get('uv', uv)
+        uv = uv.reshape(-1, 2)
+        P = len(src.polygons)
+        ls = np.zeros(P, np.int32)
+        lt = np.zeros(P, np.int32)
+        src.polygons.foreach_get('loop_start', ls)
+        src.polygons.foreach_get('loop_total', lt)
+        # bone weights (game_engine groups) -> dense (n, len(bone_names))
+        gi = {g.index: g.name for g in ob.vertex_groups}
+        bidx = {b: i for i, b in enumerate(bone_names)}
+        W = np.zeros((n, len(bone_names)), np.float32)
+        groups = {}
+        for v in src.vertices:
+            for g in v.groups:
+                nm = gi.get(g.group)
+                if nm in bidx:
+                    W[v.index, bidx[nm]] = g.weight
+                elif nm is not None and g.weight > 0:
+                    groups.setdefault(nm, []).append((v.index, g.weight))
+        return dict(co=co, nr=nr, vi=vi, uv=uv, ls=ls, lt=lt, W=W, groups=groups, name=ob.name)
+
+    body = extract(bm)
+    pdata = [(extract(ob), kind, info) for ob, kind, info in parts]
+    log(cid, f'extracted in {time.time() - t0:.1f}s')
+
+    # joints (Blender space) for the runtime skeleton
+    J = {}
+    for rt, ge in RT_JOINT_SRC.items():
+        J[rt] = bone_head(ge)
+    J['root'] = np.array([0.0, 0.0, 0.0])
+    toe_tip = {s: bone_tail(f'ball_{s}') for s in ('l', 'r')}
+    head_top_bone = bone_tail('head')
+
+    # ---------------------------------------------------------------- per-part processing
+    ge_index = {b: i for i, b in enumerate(bone_names)}
+
+    def share(W, names):
+        idx = [ge_index[n] for n in names if n in ge_index]
+        tot = W.sum(1) + 1e-9
+        return W[:, idx].sum(1) / tot
+
+    LEG = [b for b in bone_names if b.startswith(('thigh', 'calf', 'foot', 'ball'))]
+    ARM = [b for b in bone_names if b.startswith(('upperarm', 'lowerarm', 'hand', 'thumb', 'index', 'middle', 'ring', 'pinky'))]
+    waist_z = float(J['spine1'][2])
+
+    def components(d):
+        """Connected components over polygons (vertex sharing)."""
+        n = len(d['co'])
+        parent = np.arange(n)
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+        for p in range(len(d['ls'])):
+            vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+            r0 = find(vs[0])
+            for v in vs[1:]:
+                r = find(v)
+                if r != r0:
+                    parent[r] = r0
+        return np.array([find(i) for i in range(n)])
+
+    def chain_t(co, a, b, c):
+        """Parameter of points along the polyline a -> b -> c (0 at a, 0.5 at b, 1 at c)."""
+        def seg(p0, p1):
+            d = p1 - p0
+            L2 = float(d @ d)
+            t = np.clip(((co - p0) @ d) / L2, 0, 1)
+            dist = np.linalg.norm(co - (p0 + t[:, None] * d), axis=1)
+            return t, dist
+        t1, d1 = seg(a, b)
+        t2, d2 = seg(b, c)
+        return np.where(d1 <= d2, 0.5 * t1, 0.5 + 0.5 * t2)
+
+    out_parts = []      # dicts: name, region per poly, keep per poly, data
+    garment_keep_vert = []   # (co of garment verts, kept flag) for the covered-skin test
+    delete_groups = {}
+
+    def poly_vals(d, per_vertex, reduce='mean'):
+        r = np.zeros(len(d['ls']), np.float32)
+        for p in range(len(d['ls'])):
+            vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+            r[p] = per_vertex[vs].mean() if reduce == 'mean' else per_vertex[vs].min()
+        return r
+
+    for d, kind, info in pdata:
+        P = len(d['ls'])
+        keep = np.ones(P, bool)
+        region = np.zeros(P, np.int16)
+        tex = None
+        if kind == 'eyes':
+            region[:] = CASTM.REGIONS['eyes']
+            tex = 'eye:' + spec['eyes']
+        elif kind == 'brows':
+            region[:] = CASTM.REGIONS['brows']
+            tex = 'brow:' + spec['brows']
+        elif kind == 'lashes':
+            region[:] = CASTM.REGIONS['lashes']
+            tex = 'lash:' + spec['lashes']
+        elif kind == 'hair':
+            region[:] = CASTM.REGIONS['hair']
+            tex = 'hair:' + spec['hair']
+        elif kind == 'hat':
+            region[:] = CASTM.REGIONS['hat']
+            tex = 'hat:fedora'
+        elif kind == 'shoes':
+            comp = components(d)
+            zmax = {c: d['co'][comp == c, 2].max() for c in np.unique(comp)}
+            ankle = min(J['footL'][2], J['footR'][2])
+            vreg = np.array([CASTM.REGIONS['socks'] if zmax[c] > ankle + 0.035 else CASTM.REGIONS['shoes'] for c in comp])
+            region[:] = poly_vals(d, vreg.astype(np.float32)).round().astype(np.int16)
+            tex = 'shoes:' + spec['shoes']
+            socks = spec.get('socks')
+            if socks is None:
+                b = spec['bottom']
+                short = b and (b['suit'] in ('female_elegantsuit01', 'female_casualsuit02') or b.get('cut') == 'leg')
+                socks = 'none' if (short and spec['sex'] == 'f') or CASTM.age_class(spec) == 'toddler' else 'keep'
+            if socks == 'none':
+                keep &= region != CASTM.REGIONS['socks']
+        elif kind == 'suit':
+            suit = info['suit']
+            comp = components(d)
+            cl = np.unique(comp)
+            vpart = np.zeros(len(d['co']), np.int8)          # 0 top, 1 bottom
+            vtop2 = np.zeros(len(d['co']), bool)
+            if len(cl) == 1:
+                # one piece (shirt + jeans): split per vertex by leg weights / height
+                leg = share(d['W'], LEG)
+                vpart[:] = ((leg > 0.5) | (d['co'][:, 2] < waist_z - 0.12)).astype(np.int8)
+            else:
+                sizes = []
+                for c in cl:
+                    m = comp == c
+                    bottom = d['co'][m, 2].mean() < waist_z
+                    vpart[m] = 1 if bottom else 0
+                    if not bottom:
+                        sizes.append((m.sum(), c))
+                sizes.sort(reverse=True)
+                for _, c in sizes[1:]:
+                    vtop2[comp == c] = True
+            ppart = poly_vals(d, vpart.astype(np.float32)) > 0.5
+            ptop2 = poly_vals(d, vtop2.astype(np.float32)) > 0.5
+            want_top = spec['top'] and spec['top']['suit'] == suit
+            want_bot = spec['bottom'] and spec['bottom']['suit'] == suit
+            keep &= np.where(ppart, bool(want_bot), bool(want_top))
+            region[:] = np.where(ppart, CASTM.REGIONS['bottom'], np.where(ptop2, CASTM.REGIONS['top2'], CASTM.REGIONS['top']))
+            tex = 'cloth:' + suit
+            co = d['co']
+            # cuts
+            if want_top and spec['top'].get('cut') == 'sleeve':
+                Ls = spec['top']['length']
+                arm = share(d['W'], ARM)
+                t = np.zeros(len(co))
+                for s, S in (('l', 'L'), ('r', 'R')):
+                    side = (co[:, 0] > 0) if s == 'l' else (co[:, 0] <= 0)
+                    tt = chain_t(co, J['arm' + S], J['fore' + S], J['hand' + S])
+                    t = np.where(side, tt, t)
+                tv = np.where(arm > 0.45, t, 0.0)
+                keep &= ~(~ppart & (poly_vals(d, tv.astype(np.float32)) > Ls))
+            if want_bot and spec['bottom'].get('cut') == 'leg':
+                Ll = spec['bottom']['length']
+                leg = share(d['W'], LEG)
+                t = np.zeros(len(co))
+                for s, S in (('l', 'L'), ('r', 'R')):
+                    side = (co[:, 0] > 0) if s == 'l' else (co[:, 0] <= 0)
+                    tt = chain_t(co, J['thigh' + S], J['shin' + S], J['foot' + S])
+                    t = np.where(side, tt, t)
+                tv = np.where(leg > 0.5, t, 0.0)
+                keep &= ~(ppart & (poly_vals(d, tv.astype(np.float32)) > Ll))
+            if want_bot and spec['bottom'].get('cut') == 'skirt':
+                lengthen_skirt(d, vpart == 1, J, spec['bottom']['length'], waist_z)
+        out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
+        if kind in ('suit', 'shoes', 'hat'):
+            vkeep = np.zeros(len(d['co']), bool)
+            for p in np.where(keep)[0]:
+                vkeep[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
+            garment_keep_vert.append((d['co'], vkeep))
+
+    # skirts: weights blend pelvis -> both thighs (no splitting between the legs)
+    for op in out_parts:
+        if op['kind'] == 'suit' and op['info']['suit'] == 'female_elegantsuit01':
+            reweight_skirt(op, J, ge_index, waist_z)
+
+    # hats: hair inside the crown goes
+    hat = [op for op in out_parts if op['kind'] == 'hat']
+    if hat:
+        hco = hat[0]['d']['co']
+        band = np.percentile(hco[:, 2], 8)
+        for op in out_parts:
+            if op['kind'] == 'hair':
+                d = op['d']
+                pz = poly_vals(d, d['co'][:, 2].astype(np.float32), 'min')
+                op['keep'] &= pz < band - 0.004
+
+    # ---------------------------------------------------------------- body: skin shown where no kept garment covers it
+    in_body = np.zeros(len(body['co']), bool)
+    for nm, lst in body['groups'].items():
+        if nm == 'body':
+            for i, w in lst:
+                if w > 0.5:
+                    in_body[i] = True
+    deleted = np.zeros(len(body['co']), bool)
+    allg = np.concatenate([g[0] for g in garment_keep_vert])
+    allk = np.concatenate([g[1] for g in garment_keep_vert])
+    kd = KDTree(len(allg))
+    for i, c in enumerate(allg):
+        kd.insert(Vector(c.tolist()), i)
+    kd.balance()
+    del_any = np.zeros(len(body['co']), bool)
+    for nm, lst in body['groups'].items():
+        if nm.startswith('Delete.'):
+            for i, w in lst:
+                if w > 0.5:
+                    del_any[i] = True
+    for i in np.where(del_any)[0]:
+        _, j, _ = kd.find(Vector(body['co'][i].tolist()))
+        if allk[j]:
+            deleted[i] = True
+    bkeep = np.zeros(len(body['ls']), bool)
+    for p in range(len(body['ls'])):
+        vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
+        bkeep[p] = in_body[vs].all() and not deleted[vs].all()
+    out_parts.insert(0, dict(kind='body', d=body, keep=bkeep, region=np.zeros(len(body['ls']), np.int16),
+                             tex=f'skin:{spec["skin"]}', info={}))
+
+    # ---------------------------------------------------------------- weights -> runtime bones
+    M = np.zeros((len(bone_names), len(RT_BONES)), np.float32)
+    for b, i in ge_index.items():
+        for rt, w in GE_MAP.get(b, {}).items():
+            M[i, RB[rt]] += w
+
+    # ---------------------------------------------------------------- assemble triangles (split by UV), to three.js space
+    ground = None
+    for op in out_parts:
+        d = op['d']
+        if op['kind'] in ('shoes', 'body') and op['keep'].any():
+            idx = np.unique(np.concatenate([d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]] for p in np.where(op['keep'])[0]]))
+            z = d['co'][idx, 2].min()
+            ground = z if ground is None else min(ground, z)
+    shift = np.array([0.0, 0.0, -ground])
+
+    def to3(p):   # Blender (x, y, z) -> three.js (-x, z, y): faces -Z, left = -X, up = +Y
+        p = np.asarray(p, np.float64)
+        return np.stack([-p[..., 0], p[..., 2], p[..., 1]], -1)
+
+    raw = {}
+    meta_parts = []
+    for k, op in enumerate(out_parts):
+        d = op['d']
+        tris, tri_reg, loops = [], [], []
+        for p in np.where(op['keep'])[0]:
+            s, n = d['ls'][p], d['lt'][p]
+            lp = list(range(s, s + n))
+            if n == 4:
+                v = d['co'][d['vi'][lp]]
+                if np.linalg.norm(v[0] - v[2]) <= np.linalg.norm(v[1] - v[3]):
+                    tt = [(lp[0], lp[1], lp[2]), (lp[0], lp[2], lp[3])]
+                else:
+                    tt = [(lp[0], lp[1], lp[3]), (lp[1], lp[2], lp[3])]
+            else:
+                tt = [(lp[0], lp[i], lp[i + 1]) for i in range(1, n - 1)]
+            for t in tt:
+                tris.append(t)
+                tri_reg.append(op['region'][p])
+        if not tris:
+            continue
+        tris = np.array(tris, np.int64)
+        lv = tris.ravel()
+        key = np.stack([d['vi'][lv], np.round(d['uv'][lv, 0] * 8192).astype(np.int64), np.round(d['uv'][lv, 1] * 8192).astype(np.int64)], 1)
+        uk, inv = np.unique(key, axis=0, return_inverse=True)
+        inv = inv.reshape(-1)
+        first = np.zeros(len(uk), np.int64)
+        first[inv[::-1]] = lv[::-1]
+        vsrc = d['vi'][first]
+        co = to3(d['co'][vsrc] + shift).astype(np.float32)
+        nr = to3(d['nr'][vsrc]).astype(np.float32)
+        uv = d['uv'][first].astype(np.float32)
+        W = d['W'][vsrc] @ M
+        sw = W.sum(1)
+        bad = sw < 1e-4
+        if bad.any():
+            # unweighted vertices follow the nearest weighted one of this part (or the head)
+            good = np.where(~bad)[0]
+            if len(good):
+                for i in np.where(bad)[0]:
+                    j = good[np.argmin(np.linalg.norm(co[good] - co[i], axis=1))]
+                    W[i] = W[j]
+            else:
+                W[bad, RB['head']] = 1
+        W /= W.sum(1, keepdims=True)
+        # vertex region: majority of the triangles using it
+        vreg = np.zeros(len(uk), np.int16)
+        tri_reg = np.array(tri_reg, np.int16)
+        vreg[inv.reshape(-1, 3)[:, 0]] = tri_reg
+        vreg[inv.reshape(-1, 3)[:, 1]] = tri_reg
+        vreg[inv.reshape(-1, 3)[:, 2]] = tri_reg
+        name = f'p{k}'
+        raw[name + '_co'] = co
+        raw[name + '_nr'] = nr
+        raw[name + '_uv'] = uv
+        raw[name + '_w'] = W.astype(np.float32)
+        raw[name + '_idx'] = inv.reshape(-1, 3).astype(np.int32)
+        raw[name + '_reg'] = vreg
+        meta_parts.append(dict(key=name, kind=op['kind'], tex=op['tex'], verts=int(len(uk)), tris=int(len(tris)),
+                               suit=op['info'].get('suit')))
+
+    joints = {n: to3(J[n] + shift).tolist() for n in RT_BONES}
+    joints['root'] = [0.0, 0.0, 0.0]
+    # rest-pose landmarks
+    allc = np.concatenate([raw[p['key'] + '_co'] for p in meta_parts if p['kind'] == 'body'])
+    skin_top = float(allc[:, 1].max())
+    allv = np.concatenate([raw[p['key'] + '_co'] for p in meta_parts])
+    meta = dict(id=cid, spec=spec, ageClass=CASTM.age_class(spec), kind=CASTM.gait_kind(spec), joints=joints,
+                parent=RT_PARENT, bones=RT_BONES, parts=meta_parts, H=skin_top, top=float(allv[:, 1].max()),
+                toeTip={'L': to3(toe_tip['l'] + shift).tolist(), 'R': to3(toe_tip['r'] + shift).tolist()},
+                headTopBone=to3(head_top_bone + shift).tolist(), time=round(time.time() - t0, 1))
+    os.makedirs(RAW, exist_ok=True)
+    np.savez_compressed(os.path.join(RAW, cid + '.npz'), **raw)
+    with open(os.path.join(RAW, cid + '.json'), 'w') as f:
+        json.dump(meta, f, indent=1)
+    if save_blend:
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(RAW, cid + '.blend'))
+    log(cid, f'H={skin_top:.3f} verts={sum(p["verts"] for p in meta_parts)} tris={sum(p["tris"] for p in meta_parts)} in {time.time() - t0:.1f}s')
+
+
+def pose_relaxed(rig, spec):
+    """Rest pose of the runtime skeleton: arms hang beside the body (a little abducted, more for heavier
+    builds and for women's hips), elbows slightly bent with the palms towards the thighs, fingers in a
+    relaxed curl, legs straight under the hips."""
+    import bpy
+    from mathutils import Vector, Matrix
+    import numpy as np
+
+    def upd():
+        bpy.context.view_layer.update()
+
+    def rotate(name, q, pivot=None):
+        pb = rig.pose.bones[name]
+        M = pb.matrix.copy()
+        h = pb.head.copy() if pivot is None else pivot
+        pb.matrix = Matrix.Translation(h) @ q.to_matrix().to_4x4() @ Matrix.Translation(-h) @ M
+        upd()
+
+    def aim(name, target):
+        pb = rig.pose.bones[name]
+        d = (pb.tail - pb.head).normalized()
+        rotate(name, d.rotation_difference(Vector(target).normalized()))
+
+    from mathutils import Quaternion
+    child = CASTM.age_class(spec) in ('child', 'toddler')
+    abd = 8.0 + 9.0 * max(0.0, spec['weight'] - 0.45) + (2.5 if spec['sex'] == 'f' else 0.0) + (3.0 if child else 0.0)
+    for s, sx in (('l', 1.0), ('r', -1.0)):
+        a = math.radians(abd)
+        aim(f'upperarm_{s}', (sx * math.sin(a), 0.035, -math.cos(a)))
+        # elbow: forearm bent ~14 degrees forward of the upper arm
+        ua = rig.pose.bones[f'upperarm_{s}']
+        du = (ua.tail - ua.head).normalized()
+        fwd = Vector((0, -1, 0))
+        fl = math.radians(14 if not child else 12)
+        tgt = (du * math.cos(fl) + (fwd - du * du.dot(fwd)).normalized() * math.sin(fl))
+        aim(f'lowerarm_{s}', tgt)
+        # palm towards the thigh: twist the forearm about its axis so the palm normal points medially
+        la = rig.pose.bones[f'lowerarm_{s}']
+        hand = rig.pose.bones[f'hand_{s}']
+        ax = (la.tail - la.head).normalized()
+        i1 = rig.pose.bones[f'index_01_{s}'].head
+        p1 = rig.pose.bones[f'pinky_01_{s}'].head
+        across = (i1 - p1)                                  # index side - little-finger side
+        across = (across - ax * across.dot(ax)).normalized()
+        # the thumb / index side should face forward (-Y), so the palm faces the thigh
+        want = (fwd - ax * fwd.dot(ax)).normalized()
+        ang = math.atan2(ax.dot(across.cross(want)), across.dot(want))
+        rotate(f'lowerarm_{s}', Quaternion(ax, ang * 0.85))
+        # wrist: hand continues the forearm line with a slight flexion
+        # fingers: relaxed curl towards the palm
+        h = rig.pose.bones[f'hand_{s}']
+        mid = rig.pose.bones[f'middle_01_{s}']
+        i1 = rig.pose.bones[f'index_01_{s}'].head
+        p1 = rig.pose.bones[f'pinky_01_{s}'].head
+        hd = (mid.head - h.head).normalized()
+        palm = (i1 - p1).cross(hd).normalized()
+        # palm normal points to the body's midline (x -> 0)
+        if palm.x * sx > 0:
+            palm = -palm
+        for f, curl in (('index', (14, 22, 14)), ('middle', (18, 26, 16)), ('ring', (22, 28, 18)), ('pinky', (26, 30, 20))):
+            for j, deg in enumerate(curl, 1):
+                pb = rig.pose.bones[f'{f}_0{j}_{s}']
+                dvec = (pb.tail - pb.head).normalized()
+                k = dvec.cross(palm).normalized()
+                rotate(pb.name, Quaternion(k, math.radians(deg)))
+        for j, deg in ((2, 10), (3, 12)):
+            pb = rig.pose.bones[f'thumb_0{j}_{s}']
+            dvec = (pb.tail - pb.head).normalized()
+            k = dvec.cross(palm).normalized()
+            rotate(pb.name, Quaternion(k, math.radians(deg)))
+    # legs: ankles under the hips (MakeHuman's rest stands with the feet apart)
+    for s, sx in (('l', 1.0), ('r', -1.0)):
+        th = rig.pose.bones[f'thigh_{s}']
+        ft = rig.pose.bones[f'foot_{s}']
+        hip = th.head.copy()
+        ank = ft.head.copy()
+        want_x = hip.x + sx * 0.012 * (rig.pose.bones['head'].tail.z / 1.75)
+        v0 = (ank - hip)
+        v1 = Vector((want_x - hip.x, v0.y, v0.z))
+        rotate(f'thigh_{s}', v0.rotation_difference(v1))
+        # keep the foot pointing as before (counter-rotate)
+        rotate(f'foot_{s}', v0.rotation_difference(v1).inverted())
+
+
+def lengthen_skirt(d, vmask, J, length, waist_z):
+    """Stretch the skirt part (vmask) of a garment downwards to a hem `length` of the way from the
+    knee to the ankle, flaring towards the hem so it hangs clear of the calves."""
+    import numpy as np
+    co = d['co']
+    idx = np.where(vmask)[0]
+    z = co[idx, 2]
+    hem = z.min()
+    knee = 0.5 * (J['shinL'][2] + J['shinR'][2])
+    ankle = 0.5 * (J['footL'][2] + J['footR'][2])
+    target = knee - length * (knee - ankle)
+    hip = 0.5 * (J['thighL'][2] + J['thighR'][2])
+    top = hip + 0.02
+    if target >= hem - 0.005:
+        # shorter than the original: lift the hem
+        pass
+    s = (top - target) / max(1e-3, top - hem)
+    zz = np.where(z < top, top - (top - z) * s, z)
+    # flare below the hips (radial, about the body's vertical axis through the hip centre)
+    cx = 0.0
+    cy = 0.5 * (J['thighL'][1] + J['thighR'][1])
+    u = np.clip((top - zz) / max(1e-3, top - target), 0, 1)
+    flare = 1.0 + (0.10 + 0.22 * max(0.0, length)) * u ** 1.6
+    co[idx, 0] = cx + (co[idx, 0] - cx) * flare
+    co[idx, 1] = cy + (co[idx, 1] - cy) * flare
+    co[idx, 2] = zz
+
+
+def reweight_skirt(op, J, ge_index, waist_z):
+    """Skirt vertices: from the pelvis at the waistband to an even blend of both thighs at the hem, so
+    the skirt sways with the stride instead of splitting between the legs."""
+    import numpy as np
+    d = op['d']
+    co = d['co']
+    reg = np.zeros(len(co), np.int16)
+    for p in range(len(d['ls'])):
+        reg[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = op['region'][p]
+    m = (reg == CASTM.REGIONS['bottom'])
+    if not m.any():
+        return
+    hip = 0.5 * (J['thighL'][2] + J['thighR'][2])
+    hem = co[m, 2].min()
+    top = hip + 0.05
+    u = np.clip((top - co[:, 2]) / max(1e-3, top - hem), 0, 1)
+    W = d['W']
+    pel = ge_index['pelvis']
+    tl, tr = ge_index['thigh_l'], ge_index['thigh_r']
+    s1 = ge_index['spine_01']
+    side = np.clip(co[:, 0] / 0.12, -1, 1)          # +X = the character's left in Blender
+    wl = 0.5 + 0.22 * side
+    for i in np.where(m)[0]:
+        if co[i, 2] > top + 0.02:
+            continue
+        a = u[i] ** 0.8
+        row = np.zeros(W.shape[1], np.float32)
+        row[pel] = 1 - a * 0.85
+        row[tl] = a * 0.85 * wl[i]
+        row[tr] = a * 0.85 * (1 - wl[i])
+        if co[i, 2] > hip:
+            row[s1] = 0.15 * (1 - a)
+        W[i] = row
+
+
+if __name__ == '__main__':
+    args = parse(script_args())
+    if args.one:
+        try:
+            build_one(args.one, args.blend)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+            os._exit(1)
+        sys.stdout.flush()
+        os._exit(0)
+    run_driver(args)
