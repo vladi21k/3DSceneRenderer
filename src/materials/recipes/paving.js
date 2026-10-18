@@ -97,8 +97,8 @@ void surface(vec2 m, inout Surf s) {
 
 // Light stone edge band of the track corridor: honed slabs 0.6–0.9 m, no lengthwise
 // joints. Pale grey stone, only a little lighter than the setts (as in the photographs:
-// a subtle light stripe, not a painted line), visibly speckled and mottled, the slab
-// joints holding a line of grime.
+// a subtle light stripe, not a painted line), visibly speckled and mottled, slab tones
+// ±8 %, the 4 mm slab joints holding a few centimetres of grime.
 export const band = {
   name: 'band', flat: [0.214, 0.213, 0.207, 0.62], size: 512, tile: [2.4, 2.4], ss: 2,
   layout: { rowH: 2.4, rows: 1, seg: [3, 4], jitter: 0.3, seed: 8, shift: false, rowJoints: false },
@@ -108,7 +108,7 @@ export const band = {
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
   float e = c.e + fbm(m, 15.0, 2, 0.5, 101u) * 0.0006;
-  const float JW = 0.0018;
+  const float JW = 0.002;
   float t = clamp((e - JW) / 0.003, 0.0, 1.0);
   float lip = (cellRand(c, 1u) - 0.5) * 0.002 + (c.lp.x - 0.5 * c.size.x) * (cellRand(c, 2u) - 0.5) * 0.004;
   float hFace = lip + fbm(m, 30.0, 3, 0.5, 102u) * 0.0002 - 0.003 * (1.0 - t);
@@ -116,13 +116,14 @@ void surface(vec2 m, inout Surf s) {
   s.height = mix(-0.005, max(hFace, -0.005), stone);
   // pale grey limestone / light granite: soft clouding and a visible fine speckle
   vec3 base = vec3(0.218, 0.217, 0.211) * (1.0 + 0.08 * fbm(m, 3.0, 4, 0.55, 103u) + 0.04 * fbm(m, 18.0, 2, 0.5, 104u));
-  base *= 1.0 + 0.05 * (cellRand(c, 5u) - 0.5) * 2.0;                       // slab tone
+  base *= 1.0 + 0.08 * (cellRand(c, 5u) - 0.5) * 2.0;                       // slab tone
   vec4 g = voro(m, vec2(220.0), 105u, 1.0);
   base *= 1.0 - 0.3 * step(0.84, g.z) * smoothstep(0.45, 0.2, g.x);
   vec4 g2 = voro(m, vec2(140.0), 107u, 1.0);
   base *= 1.0 + 0.12 * step(0.9, g2.z) * smoothstep(0.4, 0.15, g2.x);       // pale feldspar
-  // grime along the slab joints, fading over a few centimetres
-  base *= mix(0.72, 1.0, smoothstep(0.0, 0.012, e - JW)) * mix(0.93, 1.0, smoothstep(0.0, 0.05, e - JW));
+  // grime along the slab joints, fading over a few centimetres (wide enough that the
+  // joints still mark the slabs off at 10-30 m, where the joint itself is sub-pixel)
+  base *= mix(0.66, 1.0, smoothstep(0.0, 0.016, e - JW)) * mix(0.88, 1.0, smoothstep(0.0, 0.07, e - JW));
   s.albedo = mix(vec3(0.085, 0.082, 0.078), base, stone);
   s.rough = mix(0.95, 0.62 + 0.06 * fbm(m, 4.0, 2, 0.5, 106u), stone);
 }

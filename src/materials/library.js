@@ -123,8 +123,10 @@ export const LIBRARY = {
       swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { ...GUM, prob: 0.12, laneClear: 3.0 },
       stain: { amount: 0.2, freq: 0.5, threshold: 0.66 },
-      // soft grime either side of each rail's mortar strip, a paler polished lane mid-track
-      lanes: { track: 1.6, rail: 0.7455, grime: 0.16, wear: 0.05, grimeBand: [0.08, 0.36], laneBand: [0.18, 0.42] },
+      // soft grime either side of each rail's mortar strip (brake dust, oil, the dirt the
+      // flanges throw out of the grooves), and a slightly darker four-foot (drips; a real
+      // track zone is never paler than the paving beside it), a little smoother
+      lanes: { track: 1.6, rail: 0.7455, grime: 0.18, wear: -0.03, grimeBand: [0.05, 0.35], laneBand: [0.25, 0.55] },
     },
     vc: 'tint',
     meta: {
@@ -153,7 +155,7 @@ export const LIBRARY = {
     bake: 'band',
     surf: { cell: { value: 0.085, hue: 0.3, rough: 0.08, row: 0, a: [1.03, 1.0, 0.97], b: [0.98, 0.99, 1.02] }, macro: { ...PAVING_MACRO, albedo: 0.1 }, detail: { ...STONE_DETAIL, normal: 0.3, albedo: 0.2 }, stain: { amount: 0.16, freq: 0.5, threshold: 0.68 } },
     vc: 'tint',
-    meta: { albedo: [0.214, 0.213, 0.207], slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
+    meta: { albedo: [0.21, 0.209, 0.203], slab: [0.7, 'full band width'], uv: 'u along the band, v across; no lengthwise joints' },
   },
   'paving.platform': {
     props: { roughness: 1 },
@@ -172,14 +174,19 @@ export const LIBRARY = {
 
   // ---------------------------------------------------------------- rail
   'rail.head': {
-    // envMapIntensity < 1: the running band must not mirror the open sky at grazing angles
-    // (the street canyon around it reflects far less light than the sky dome)
-    props: { metalness: 1, roughness: 1, envMapIntensity: 0.45 },
+    // The environment cube already holds the street canyon (env), but it is captured well
+    // above the paving: a rail head lying in the street sees the narrow sky slot down the
+    // street through less solid angle than the cube's centre does, and nothing in the cube
+    // occludes it locally. envMapIntensity 0.55 stands for that (street's RAIL_HEAD_ENV and
+    // its far-field line overlay use the same value).
+    props: { metalness: 1, roughness: 1, envMapIntensity: 0.55 },
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. Only a 21-29 mm running band on the head is bright (satin steel, roughness 0.45-0.6 with fine lengthwise streaks, 2-10 cm patches and duller burn patches, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498; field-side bevel v ~0.02, gauge corner v 0.054-0.071 and the shoulders either side of the band are dark brown oxide (albedo ~0.15, roughness ~0.7, metal 0.4), the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide. Flat inlays: v = rail-local x (1:1), band centred at v = 0. The base values are final: no roughness multiplier is needed. envMapIntensity 0.45.',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 21-29 mm running band on the head is the brightest part (satin steel, albedo ~0.47, roughness 0.45-0.6 with fine lengthwise streaks, 2-10 cm patches and duller burn patches, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498. The rest of the head is worn steel, so the whole head reads light beside the flangeway: the shoulders either side of the band (albedo ~0.29, roughness ~0.6, metal 0.75), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a light oxide film (albedo ~(0.255, 0.232, 0.205), roughness ~0.65, metal 0.6); the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
       band: { centres: [0.0435, 0], halfWidth: 0.0125, vPerM: [0.5, 1], gaugeCorner: 0.076, lip: [0.1, 0.13] },
+      // mean far-field values per zone (street's line overlay should match them)
+      zones: { band: { albedo: [0.47, 0.465, 0.455], rough: 0.52, metal: 1 }, shoulder: { albedo: [0.29, 0.28, 0.265], rough: 0.6, metal: 0.75 }, bevel: { albedo: [0.255, 0.232, 0.205], rough: 0.65, metal: 0.6 }, lip: { albedo: [0.16, 0.145, 0.125], rough: 0.72, metal: 0.4 } },
     },
   },
   'rail.side': {
@@ -405,8 +412,9 @@ export const LIBRARY = {
     meta: { uv: 'as bark', note: 'smooth grey young bark: faint vertical striation, a few long shallow splits, horizontal lenticel dashes (3-8 mm), lichen patches (young street trees, branches)' },
   },
   'leaf': {
-    props: { color: [0.06, 0.12, 0.028], roughness: 0.55, side: 'double' },
-    surf: { trans: [0.32, 0.55, 0.12] },
+    // the values vegetation's own leaf shader settled on (waxy cuticle, bright back-lit green)
+    props: { color: [0.06, 0.12, 0.028], roughness: 0.45, side: 'double' },
+    surf: { trans: [0.45, 0.7, 0.15] },
     vc: 'albedo',
     meta: { note: 'base leaf: diffuse translucency for back-lit foliage. Vertex colour = leaf colour.' },
   },

@@ -1,4 +1,5 @@
 import { AGENT_R, FOOT, BAND, RIDE_D } from './constants.js';
+import { settleShape } from './agent.js';
 
 // Footprints of people with a stroller or a bicycle: the body circle plus the prop as a
 // capsule in route coordinates (s metric along the street, d lateral). Used by the
@@ -31,7 +32,7 @@ export function footAt(a, alpha, o) {
 }
 
 /** The prop's capsule in the person's frame now (FOOT, or between two of them while it slides). */
-const _dims = { f0: 0, f1: 0, l: 0, r: 0 };
+const _dims = settleShape({ f0: 0, f1: 0, l: 0, r: 0 });
 export function footDims(a) {
   const F = FOOT[a.mob], w = a.footW, P = w < 1 && a.mobPrev ? FOOT[a.mobPrev] : null;
   if (!P) { _dims.f0 = F.f0; _dims.f1 = F.f1; _dims.l = F.l; _dims.r = F.r; return _dims; }
@@ -66,7 +67,7 @@ export function footBandGap(a, d = a.d) {
 // ---------------------------------------------------------------- distances
 // (scratch values live in a typed array: doubles written to module-level `let`s are boxed on
 // every write, and these run thousands of times a frame)
-const G = { gap: 0, ns: 0, nd: 0 };
+const G = settleShape({ gap: 0, ns: 0, nd: 0 });
 const X = new Float64Array(8);   // 0 cx, 1 cy (closest point on p), 2 qx, 3 qy (on q), 4 best gap, 5 bx, 6 by, 7 br
 
 /** Closest points between segments p0p1 and q0q1 (2D) → X[0..1] (on p), X[2..3] (on q); returns squared distance. */
@@ -115,7 +116,7 @@ function pairTest(p0x, p0y, p1x, p1y, rp, q0x, q0y, q1x, q1y, rq) {
 
 /** Closest point of a's prop capsule (absolute route s via k, d) to the point (ps, pd): squared
  *  metric distance; the closest point in _foot.s / _foot.d (metric offsets from the body). */
-export const _foot = { s: 0, d: 0 };
+export const _foot = settleShape({ s: 0, d: 0 });
 export function propPointDist2(a, rs, rd) {
   // rs, rd: point relative to the body (metric)
   const d2 = segSeg(a.fp0s, a.fp0d, a.fp1s, a.fp1d, rs, rd, rs, rd);

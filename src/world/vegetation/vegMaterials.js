@@ -370,10 +370,16 @@ function patchLeaf(mat, params) {
 
 /** Bark: wind (so branches carry the leaves), interior occlusion, young-bark lenticels;
  *  old bark furrowed between interlacing ridges (bump-mapped, up to 8 mm deep), a damp, mossy,
- *  soil-splashed foot. */
-function patchBark(mat, params) {
-  chain(mat, 'veg-bark-v4', (shader) => {
+ *  soil-splashed foot. smooth: the library's 'bark.smooth' material, whose maps (smooth grey
+ *  young bark) replace the fissured 'bark' maps on young stems and branches (aBark youth). */
+function patchBark(mat, params, smooth = null) {
+  chain(mat, smooth ? 'veg-bark-v5s' : 'veg-bark-v4', (shader) => {
     windUniforms(shader, params);
+    if (smooth) {
+      // getters: the library swaps in the baked maps after start-up
+      shader.uniforms.tBarkSm = { get value() { return smooth.map; } };
+      shader.uniforms.tBarkSmN = { get value() { return smooth.normalMap; } };
+    }
     let vs = shader.vertexShader;
     vs = rep(vs, '#include <common>', `#include <common>
       ${WIND_PARS}
@@ -405,7 +411,16 @@ function patchBark(mat, params) {
         vec2 i = floor( p ), f = fract( p ); f = f * f * ( 3.0 - 2.0 * f );
         return mix( mix( barkHash( i ), barkHash( i + vec2( 1.0, 0.0 ) ), f.x ), mix( barkHash( i + vec2( 0.0, 1.0 ) ), barkHash( i + vec2( 1.0, 1.0 ) ), f.x ), f.y );
       }
-      float barkRelief = 0.0;   // bump height (m), read by the normal patch`, 'bark frag common');
+      float barkRelief = 0.0;   // bump height (m), read by the normal patch
+      ${smooth ? 'uniform sampler2D tBarkSm;\n      uniform sampler2D tBarkSmN;' : ''}`, 'bark frag common');
+    if (smooth) {
+      // the library's map lookups (same 0.8 x 1.6 m tile for both barks): smooth bark on
+      // young wood (stems under ~25 cm and branches), fissured bark on old trunks and limbs
+      fs = rep(fs, 'vec4 sfA = texture(map, sfUv * sfTile.xy);',
+        'float vegSm = smoothstep( 0.55, 0.85, vBarkYouth );\n  vec4 sfA = mix( texture(map, sfUv * sfTile.xy), texture(tBarkSm, sfUv * sfTile.xy), vegSm );', 'bark smooth albedo');
+      fs = rep(fs, 'vec4 sfS = texture(normalMap, sfUv * sfTile.xy);',
+        'vec4 sfS = mix( texture(normalMap, sfUv * sfTile.xy), texture(tBarkSmN, sfUv * sfTile.xy), vegSm );', 'bark smooth normal');
+    }
     fs = rep(fs, '#include <color_fragment>', /* glsl */`#include <color_fragment>
       {
         // old bark: wavy, interlacing longitudinal furrows (5-6 cm apart, 5-13 mm wide,
@@ -558,7 +573,8 @@ export function createVegMaterials(app, atlas) {
       roughness: 0.6,
       metalness: 0,
       vertexColors: true,
-      envMapIntensity: 0.85,
+      // (no envMapIntensity: three replaces it by scene.environmentIntensity; the leaf
+      // patch scales its indirect specular itself)
     });
     m.defines = { VEG_LEAF: '', ...defines };
     patchLeaf(m, params);
@@ -577,7 +593,9 @@ export function createVegMaterials(app, atlas) {
   M.register('vegetation.leafPre', leafPre);
 
   const bark = M.get('bark', { vertexColors: true });
-  patchBark(bark, params);
+  const names = M.names ? new Set(M.names()) : null;
+  const smooth = names && names.has('bark.smooth') ? M.get('bark.smooth') : null;
+  patchBark(bark, params, smooth && smooth.map && smooth.normalMap ? smooth : null);
 
   const leafDepth = makeDepth(true, params, atlas.map);
   return {

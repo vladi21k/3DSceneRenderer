@@ -1,5 +1,4 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
-import { RNG } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { facadePlan } from '../../world/facadePlan.js';
 import { AGENT_R, SIDEWALK_IN, WALL_GAP } from './constants.js';
@@ -22,9 +21,10 @@ const RECT_REACH = 7;       // rect lookups cover this far beyond a footprint's 
 const PLATFORM_RAMP = 2.5;  // ramp length at each platform end (furniture/platform.js)
 
 export class StreetMap {
-  /** opts.shopLayout: the shopfront layout function of the facades (door position, setback, shutter), if available. */
+  /** opts.shopDecision: the facades' shopfront decision (door position and width, inset, lobby
+   *  setback, roller shutter) for an opening of a plan, if available. */
   constructor(app, opts = {}) {
-    this.shopLayout = opts.shopLayout || null;
+    this.shopDecision = opts.shopDecision || null;
     const { route, layout } = app;
     this.route = route;
     this.layout = layout;
@@ -38,6 +38,7 @@ export class StreetMap {
     this.cafeIn = mk(Float32Array, OPEN);
     this.cafeAt = mk(Int16Array, -1);
     this.mouth = mk(Int16Array, -1);
+    this.cross = new Int16Array(N).fill(-1);   // cross street whose crossing (and pedestrian lights) covers this s, either side
     this.lotAt = mk(Int32Array, -1);
     this.station = new Int16Array(N).fill(-1);
     this._facades();
@@ -48,7 +49,13 @@ export class StreetMap {
     this._circles();
     this._rects();
     this.openingCache = new Map();
+    // (the building lines at every cross street's corners, now: added lazily, these fields
+    // changed the class of the shared cross street objects mid-ride)
+    for (const c of layout.crossStreets) { c._crowdLineR = this._mouthLine(c, 1); c._crowdLineL = this._mouthLine(c, -1); }
     this.qI = new Int32Array(Q_MAX); this.qDS = new Float32Array(Q_MAX); this.qN = 0; this.qS = 0;
+    // results of the per-agent queries (…A(a, …)): a number in a typed array is never boxed,
+    // one returned from a call that is not inlined is
+    this.R = new Float64Array(4);
   }
 
   idx(s) { const w = this.route.wrap(s); return Math.min(this.N - 1, Math.floor(w)); }
@@ -89,6 +96,8 @@ export class StreetMap {
           if (Math.abs(x) < c.width / 2 - 0.5) this.facade[si][k] = OPEN;
         }
       }
+      // (the crossing at the junction: lights at both kerbs whichever sides the street opens to)
+      for (let x = -c.width / 2 - 4; x <= c.width / 2 + 4; x += 1) this.cross[this.idx(c.s + x)] = ci;
     });
   }
 
@@ -276,21 +285,45 @@ export class StreetMap {
     return Math.min(this.wallAt(s, side), m ? this.mouthLine(m, side) - WALL_GAP : 99);
   }
   /** Building line |d| at the corners of a cross street mouth on `side`. */
-  mouthLine(c, side) {
-    const key = side > 0 ? '_crowdLineR' : '_crowdLineL';
-    if (c[key] === undefined) {
-      const w = c.width / 2 + 1.5;
-      let v = Math.min(this.facadeAt(c.s - w, side), this.facadeAt(c.s + w, side));
-      if (v >= OPEN) v = this.layout.halfWidth(c.s, side);
-      c[key] = v;
-    }
-    return c[key];
+  mouthLine(c, side) { return side > 0 ? c._crowdLineR : c._crowdLineL; }
+  _mouthLine(c, side) {
+    const w = c.width / 2 + 1.5;
+    const v = Math.min(this.facadeAt(c.s - w, side), this.facadeAt(c.s + w, side));
+    return v >= OPEN ? this.layout.halfWidth(c.s, side) : v;
   }
   mouthAt(s, side) { const ci = this.mouth[sideIx(side)][this.idx(s)]; return ci >= 0 ? this.layout.crossStreets[ci] : null; }
   /** Index of the 1 m sample under agent a (its own s: no number argument to box). */
   idxA(a) { const L = this.L; let w = a.s % L; if (w < 0) w += L; const k = Math.floor(w); return k < this.N - 1 ? k : this.N - 1; }
   /** The cross street opening on agent a's side of the street at its s, or null. */
   mouthAtA(a) { const ci = this.mouth[a.d >= 0 ? 1 : 0][this.idxA(a)]; return ci >= 0 ? this.layout.crossStreets[ci] : null; }
+  /** ... on `side`. */
+  mouthAtAS(a, side) { const ci = this.mouth[side > 0 ? 1 : 0][this.idxA(a)]; return ci >= 0 ? this.layout.crossStreets[ci] : null; }
+  /** facadeAt(a.s, side) → R[0] (and the wall line, wallAt, → R[1]). */
+  facadeA(a, side) {
+    const f = this.facade[side > 0 ? 1 : 0], k = this.idxA(a), k1 = k + 1 < this.N ? k + 1 : 0;
+    const v = f[k] < f[k1] ? f[k] : f[k1];
+    this.R[0] = v; this.R[1] = v - WALL_GAP;
+  }
+  /** rectsNear(a.s, side). */
+  rectsNearA(a, side) {
+    const si = side > 0 ? 1 : 0, k = this.idxA(a);
+    const ra = this.rectA[si][k], rb = this.rectB[si][k];
+    let n = 0;
+    if (ra >= 0) this.rq[n++] = this.rects[ra];
+    if (rb >= 0) this.rq[n++] = this.rects[rb];
+    this.rqN = n;
+    return n;
+  }
+  /** rectDS(r, a.s) → R[2]. */
+  rectDSA(r, a) {
+    const L = this.L;
+    let w = a.s % L; if (w < 0) w += L;
+    let d = w - r.s0;
+    if (d > L / 2) d -= L; else if (d < -L / 2) d += L;
+    this.R[2] = d;
+  }
+  /** The cross street whose crossing covers s (either side of the street), or null. */
+  crossAt(s) { const ci = this.cross[this.idx(s)]; return ci >= 0 ? this.layout.crossStreets[ci] : null; }
   cafeAtS(s, side) { const ci = this.cafeAt[sideIx(side)][this.idx(s)]; return ci >= 0 ? this.layout.cafes[ci] : null; }
   stationAt(s) { const i = this.station[this.idx(s)]; return i >= 0 ? this.layout.stations[i] : null; }
   bandInAt(s, side) { return this.bandIn[sideIx(side)][this.idx(s)]; }
@@ -356,7 +389,7 @@ export class StreetMap {
         if (o.floor !== 0) continue;
         const sc = lot.side > 0 ? lot.s1 - o.uc * k : lot.s0 + o.uc * k;
         const recess = o.recess || 0.3;
-        ops.push({ s: sc, half: (o.w / 2) * k, kind: o.kind, recess, d: lot.d, side: lot.side, door: this._door(o, sc, us, recess) });
+        ops.push({ s: sc, half: (o.w / 2) * k, kind: o.kind, recess, d: lot.d, side: lot.side, door: this._door(plan, o, sc, us, recess) });
       }
     } catch (e) { /* facade plan unavailable: no openings */ }
     this.openingCache.set(li, ops);
@@ -364,19 +397,21 @@ export class StreetMap {
   }
 
   /** Where the door leaf of an opening is (the shopfront fills the rest of a shop opening). */
-  _door(o, sc, us, recess) {
+  _door(plan, o, sc, us, recess) {
     if (o.kind === 'door') {
       const half = o.w / 2 - 0.1;
       return half > 0.4 ? { s: sc, half: half * Math.abs(us), depth: recess } : null;
     }
     if (o.kind !== 'shop') return null;
-    // the facade plan may carry the door decision; otherwise ask the shopfront layout itself
-    let L = o.shopDoor || null;
-    if (!L && this.shopLayout) {
-      // same arguments as the facades use, so the decisions (door position, setback, shutter) match
-      try { L = this.shopLayout(o, RNG.from(o.id, 'shop'), o.backDepth ?? 0.4); } catch (e) { L = null; }
-    }
-    if (!L || !(L.doorW > 0.6) || L.shutterDown > 0) return null;
-    return { s: sc + (L.dx || 0) * us, half: (L.doorW / 2) * Math.abs(us), depth: recess + (L.setback || 0) };
+    // the facades' own decision for this shopfront (the call they draw it with)
+    let L = null;
+    if (this.shopDecision) { try { L = this.shopDecision(plan, o); } catch (e) { L = null; } }
+    if (!L || !(L.doorW > 0.6)) return null;
+    // a roller shutter part way down: the door is used only while there is head room under it
+    // (its bottom edge as the facades draw it: the box under the opening's head, 0.22 m deep)
+    const sd = L.shutterDown || 0;
+    if (sd > 0 && ((L.arched ? L.yT : o.h - 0.085) - 0.22) * (1 - sd) < 2.05) return null;
+    // the door leaf stands the shopfront's inset behind the wall face, and a lobby's setback further
+    return { s: sc + (L.dx || 0) * us, half: (L.doorW / 2) * Math.abs(us), depth: recess + (L.inset || 0) + (L.setback || 0) };
   }
 }

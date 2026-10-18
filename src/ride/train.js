@@ -27,10 +27,20 @@ import { input } from './input.js';
 //  - The driver coasts: no more power once a stop or a slower limit is within ~1.35x
 //    the braking distance, then a jerk-limited brake application that ends softly.
 //  - Nothing moves before the ride starts (world ready; in the app, the start click).
-//  - Tram.obstacle (m to something standing on the track ahead, set by the owner: the
-//    oncoming units watch for people) brakes to stop short of it, emergency brake if need be.
+//  - Obstacles: setObstacle(m, source) gives the distance (m ahead of the cab front) to
+//    somebody on the track who will not be clear in time (the crowd for the cab tram,
+//    trams.js's people scan for the oncoming units). The nearest report of every source
+//    that reported within OBS_STALE counts; writing Tram.obstacle is the same as source
+//    'direct'. Auto and manual alike (a safety net), the tram brakes to stop
+//    DRIVE.obstacleGap short of it, with the emergency brake when the service brake cannot
+//    make it (after `ebConfirm` s of the same need, so one flickering report does not
+//    throw it). Held by somebody for DRIVE.creepAfter s, the driver rings and creeps up at
+//    walking pace to DRIVE.creepGap; after an emergency stop it waits a few seconds, rings
+//    and moves off.
 //  - The oncoming units (./trams.js) are started from here while the module registry does
 //    not list them (see _oncoming).
+//  - Curve and switch limits come from a per-route table at 1 m (built once), so the
+//    driver's look-ahead does no route queries per frame.
 
 const KMH = 1 / 3.6;
 const G = 9.81;
@@ -68,7 +78,16 @@ export const DRIVE = {
   reqHold: 3.0,            // s a pedestrian request keeps its urgency (the crowd repeats every ~2.5 s)
   bellToGo: 1.2,           // s from the departure bell to moving off
   obstacleGap: 5,          // m short of an obstacle on the track where the tram stops
+  creepAfter: 2,           // s held by somebody on the track before ringing and creeping up
+  creepGap: 2,             // m short of the obstacle where creeping stops
+  creepKmh: 5,             // walking-pace creep
+  ebRest: [3.5, 5],        // s standing after an emergency stop before moving off again
+  ebMinHold: 0.8,          // s an emergency application stays on once thrown
+  besideW: 0.4,            // corridor load weight of people within BESIDE m outside the corridor, on the tram's side
 };
+
+const OBS_STALE = 0.5;     // s: an obstacle source that stopped reporting no longer counts
+export const BESIDE = 2;   // m beyond the corridor edge where people still slow the driver down
 
 /** Master controller positions, brake (left) to power (right). */
 export const NOTCHES = [
@@ -115,6 +134,26 @@ const STOP_CURVE = new BrakeCurve(DRIVE.aStop, 1.6, 0.5);
 const FINAL_STOP = [2.5, 1.0];   // m: blend into the required-rate final stop over these distances
 const STOP_LAG = 0.0;         // m, final-stop aim point beyond the mark (0: the cab front stops on it)
 
+/** Speed limit (m/s, at most 99) at every metre of a route: the curve comfort limit
+ *  sqrt(aLat / κ) and the crossover limit. Built once per layout (the cab tram's, and the
+ *  mirrored one the oncoming units share); a lookup takes the lower of the two neighbours. */
+const LIMIT_TABLES = new WeakMap();
+function limitTable(route, layout) {
+  let T = LIMIT_TABLES.get(layout);
+  if (T) return T;
+  const n = Math.ceil(route.length) + 1, vx = DRIVE.crossoverKmh * KMH;
+  T = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const y = route.wrap(i);
+    const k = Math.abs(route.curvature(y));
+    let v = k > 1e-5 ? Math.sqrt(DRIVE.aLat / k) : 99;
+    if (layout.isInCrossover(y, 3)) v = Math.min(v, vx);
+    T[i] = Math.min(v, 99);
+  }
+  LIMIT_TABLES.set(layout, T);
+  return T;
+}
+
 /** Pure simulation of the vehicle and its driver (no DOM), so it can also be run
  *  offline: new Tram(app, {s, speed, events}).step(dt). */
 export class Tram {
@@ -123,6 +162,7 @@ export class Tram {
     this.layout = app.layout;
     this.events = opts.events || app.events;
     this.t = 0;
+    this._obsSrc = [];          // obstacle reports {key, m, t} (see setObstacle)
     this.s = this.route.wrap(opts.s ?? app.startS ?? 0);
     this.auto = opts.auto ?? true;
     this.notch = N_INDEX;
@@ -145,7 +185,15 @@ export class Tram {
     this._departT = -1e9;
     this.req = { u: 0, lastT: -1e9, persist: 0 };
     this.caution = 0;
-    this.obstacle = Infinity;   // m to something standing on the track ahead (set by the owner)
+    this.ebConfirm = opts.ebConfirm ?? 0;   // s the emergency brake must stay needed before it is thrown
+    this._ebWant = 0;           // s it has been needed
+    this._ebOnT = -1e9;         // last time it was (still) needed and thrown
+    this._restUntil = -1e9;     // standing after an emergency stop until then
+    this._restBell = false;
+    this._heldT = 0;            // s standing short of somebody on the track
+    this.creeping = false;      // ringing and creeping up to them
+    this._o = { v: Infinity, a: 0, eb: false };
+    this._csT = -1e9;           // last cross-street bell check
     this.limit = Infinity;      // current speed restriction at the cab (m/s)
     this.vRef = 0;
     this.coasting = false;
@@ -155,6 +203,7 @@ export class Tram {
     this._rung = new Set();
     this._visits = 0;
     this._lim = new Float32Array(512);
+    this._limT = limitTable(this.route, this.layout);
     this._r = { v: 99, a: 0, w: 99, hold: 99, holdW: 99 };
     this.curvature = this.route.curvature(this.s);
     this.nextStop = { station: null, distance: Infinity };
@@ -190,6 +239,56 @@ export class Tram {
   _emit(type, data) {
     if (this._queue) this._queue.push(type, data);
     else this.events.emit(type, data);
+  }
+
+  // ------------------------------------------------------------------ obstacles
+  /** Report the nearest person on the track ahead (m from the cab front; Infinity: none) for
+   *  one source. Each source reports every frame; one silent for OBS_STALE s drops out. */
+  setObstacle(m, source = 'direct') {
+    const L = this._obsSrc;
+    let r = null;
+    for (let i = 0; i < L.length; i++) if (L[i].key === source) { r = L[i]; break; }
+    if (!r) { r = { key: source, m: Infinity, t: 0 }; L.push(r); }
+    m = +m;
+    r.m = m >= 0 ? m : m < 0 ? 0 : Infinity;        // (NaN: none)
+    r.t = this.t;
+  }
+
+  /** The nearest current obstacle report (m), Infinity when there is none. */
+  get obstacle() {
+    const L = this._obsSrc, t = this.t;
+    let m = Infinity;
+    for (let i = 0; i < L.length; i++) { const r = L[i]; if (t - r.t <= OBS_STALE && r.m < m) m = r.m; }
+    return m;
+  }
+  set obstacle(m) { this.setObstacle(m, 'direct'); }
+
+  /** Somebody on the track ahead: the speed that still stops short of them (o.v, Infinity
+   *  when nobody, with its feed-forward o.a) and whether the emergency brake is on (o.eb).
+   *  Standing held by them for a while, the driver rings and creeps up (auto). */
+  _obstacle(dt, v, shift) {
+    const o = this._o, raw = this.obstacle;
+    o.v = Infinity; o.a = 0;
+    if (raw < DRIVE.obstacleGap + 1.5 && v < 0.3 && !this.seq) this._heldT += dt;
+    else if (!(raw < DRIVE.obstacleGap + 6)) { this._heldT = 0; this.creeping = false; }
+    if (!this.auto) this.creeping = false;
+    else if (!this.creeping && this._heldT >= DRIVE.creepAfter) this.creeping = true;
+    const ob = raw - (this.creeping ? DRIVE.creepGap : DRIVE.obstacleGap);
+    let want = false;
+    if (ob < DRIVE.scanAhead) {
+      o.v = STOP_CURVE.speed(Math.max(0, ob - shift));
+      o.a = -STOP_CURVE.decel(o.v);
+      want = v > 0.5 && (v * v) / (2 * Math.max(0.5, ob + 2)) > VEHICLE.aService;
+    }
+    if (this.creeping) {
+      if (o.v > DRIVE.creepKmh * KMH) { o.v = DRIVE.creepKmh * KMH; o.a = 0; }
+      this.ringBell(true);                            // (every autoBellGap s while held)
+    }
+    // the emergency brake: thrown once needed for ebConfirm s, held at least ebMinHold s
+    this._ebWant = want ? this._ebWant + dt : 0;
+    if (want && this._ebWant >= this.ebConfirm - 1e-6) this._ebOnT = this.t;
+    o.eb = v > 0.02 && this.t - this._ebOnT < DRIVE.ebMinHold;
+    return o;
   }
 
   /** Standing start: bell, then move off DRIVE.bellToGo later (manual: once notched up). */
@@ -234,16 +333,16 @@ export class Tram {
    *  coast curve (hold) below which the driver shuts off power. `shift` moves the
    *  braking curves closer by the distance lost while the brake ramps in. */
   _restriction(shift) {
-    const route = this.route, layout = this.layout, step = 2;
+    const step = 2, T = this._limT, nT = T.length, L = this.route.length;
     const back = Math.ceil(VEHICLE.length / step), ahead = Math.ceil(DRIVE.scanAhead / step);
     const n = Math.min(this._lim.length, back + ahead + 1);
-    const vx = DRIVE.crossoverKmh * KMH;
     for (let i = 0; i < n; i++) {
-      const y = this.s + (i - back) * step;
-      const k = Math.abs(route.curvature(y));
-      let v = k > 1e-5 ? Math.sqrt(DRIVE.aLat / k) : 99;
-      if (layout.isInCrossover(y, 3)) v = Math.min(v, vx);
-      this._lim[i] = v;
+      let y = this.s + (i - back) * step;
+      y -= L * Math.floor(y / L);
+      let k = Math.floor(y);
+      if (k > nT - 2) k = nT - 2;
+      const a = T[k], b = T[k + 1];
+      this._lim[i] = a < b ? a : b;
     }
     let best = 99, bestA = 0, here = 99, bestW = 99, hold = 99, holdW = 99;
     for (let j = 0; j + back < n; j++) {
@@ -405,6 +504,14 @@ export class Tram {
     const shiftS = this._onset(v, DRIVE.aStop);
     const r = this._restriction(shiftR);
     const cruise = this.cruise(this.s);
+    const o = this._obstacle(dt, v, shiftS);
+
+    // after an emergency stop the driver stands a few seconds, rings and moves off
+    if (this.auto && this.t < this._restUntil) {
+      this.coasting = false; this.assisting = false; this.emergency = false; this.vRef = 0;
+      if (this._restBell && this._restUntil - this.t <= DRIVE.bellToGo) { this._restBell = false; this.ringBell(true, true); }
+      return -0.6;                                    // holding brake
+    }
 
     // pedestrians that stay on the track ahead: pre-brake (both modes). The crowd repeats
     // its request every ~2.5 s, so the urgency is held between requests.
@@ -445,19 +552,13 @@ export class Tram {
       if (r.v < vRef) { vRef = r.v; aFF = r.a; }
       if (vStop < vRef) { vRef = vStop; aFF = -STOP_CURVE.decel(vStop); }
       if (ns.station && vStop <= cruise) this.assist = ns.station.id;   // committed to the stop
-      // something on the track ahead: brake to stop short of it (emergency brake if need be)
-      const ob = this.obstacle - DRIVE.obstacleGap;
-      let emergency = false;
-      if (ob < DRIVE.scanAhead) {
-        const vObs = STOP_CURVE.speed(Math.max(0, ob - shiftS));
-        if (vObs < vRef) { vRef = vObs; aFF = -STOP_CURVE.decel(vObs); }
-        emergency = v > 0.5 && (v * v) / (2 * Math.max(0.5, ob + 2)) > VEHICLE.aService;
-      }
+      // somebody on the track ahead: brake to stop short of them (emergency brake if need be)
+      if (o.v < vRef) { vRef = o.v; aFF = o.a; }
       aCmd = this._control(vRef, aFF);
       if (coast) aCmd = Math.min(aCmd, 0);
       if (ns.station && this.assist === ns.station.id) aCmd = this._finalStop(aCmd, ns.distance);
-      if (emergency) aCmd = -VEHICLE.aEmergency;
-      this.emergency = emergency;
+      if (o.eb) aCmd = -VEHICLE.aEmergency;
+      this.emergency = o.eb;
     } else {
       this.coasting = false;
       if (r.v < vRef) { vRef = r.v; aFF = r.a; }
@@ -478,6 +579,9 @@ export class Tram {
       // supervision: curve / switch limits, pedestrians, governor
       const vSup = Math.min(r.v, vCaution, VEHICLE.vMax);
       if (v > vSup - 0.5) aCmd = Math.min(aCmd, this._control(vSup, vSup === r.v ? r.a : 0));
+      // safety net: somebody on the track who will not be clear in time
+      if (v > o.v - 0.3) aCmd = Math.min(aCmd, this._control(o.v, o.a));
+      if (o.eb) { this.emergency = true; aCmd = -VEHICLE.aEmergency; }
     }
     this.vRef = vRef;
     this.assisting = assisted;
@@ -532,6 +636,15 @@ export class Tram {
     this.curvature = this.route.curvature(this.s);
     this._updateStop();
 
+    // brought to rest by the emergency brake: stand a few seconds before moving off (auto)
+    if (this.emergency && this.speed === 0 && !this.seq) {
+      const [a, b] = DRIVE.ebRest;
+      this._restUntil = this.t + a + (b - a) * ((hash2(Math.round(this.s * 10), 61) % 1000) / 1000);
+      this._restBell = true;
+      this._ebOnT = -1e9; this._ebWant = 0;
+      this.emergency = false;
+    }
+
     // arrival: stopped at the platform
     const ns = this.nextStop;
     if (!this.seq && ns.station && this.speed < 0.02 && Math.abs(ns.distance) < 1.5
@@ -542,9 +655,11 @@ export class Tram {
   }
 
   _crossStreetBell() {
-    if (!this.auto || this.speed < 5) return;
-    for (const c of this.layout.crossStreets) {
-      const d = this.route.delta(this.s, c.s);
+    if (!this.auto || this.speed < 5 || this.t - this._csT < 0.25) return;
+    this._csT = this.t;
+    const cs = this.layout.crossStreets;
+    for (let i = 0; i < cs.length; i++) {
+      const c = cs[i], d = this.route.delta(this.s, c.s);
       const key = Math.round(c.s);
       if (d > 20 && d < 45) {
         if (!this._rung.has(key) && hash2(key, 31) % 10 < 6 && this.ringBell(true)) this._rung.add(key);
@@ -561,21 +676,28 @@ export class Tram {
 }
 
 /**
- * Weighted count of the people in the track corridor (|d| ≤ TRACK_ZONE_HALF), read from
- * the crowd: weight(u, d) with u = metres ahead of the camera along the route. Null
- * without a crowd.
+ * Weighted count of the people in and beside the track corridor (|d| ≤ TRACK_ZONE_HALF +
+ * BESIDE), read from the crowd: weight(u, d) with u = metres ahead of the camera along the
+ * route. Null without a crowd.
  */
 export function corridorPeople(app, weight) {
   const cr = app.crowd, sim = cr && !cr.disabled ? cr.sim : null;
   const agents = sim && sim.population && sim.population.agents;
   if (!agents || typeof sim.camU !== 'number') return null;
   let n = 0;
-  for (const a of agents) {
-    if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF)) continue;
+  for (let i = 0; i < agents.length; i++) {
+    const a = agents[i];
+    if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF + BESIDE)) continue;
     n += weight(a.s - sim.camU, a.d);
   }
   return n;
 }
+
+/** The cab tram's load weights (it runs on the right track, d > 0) 5-200 m ahead: its half
+ *  of the corridor 1, the other half 0.6, the strip beside the corridor on its side
+ *  DRIVE.besideW (people there step onto its track; drivers in a pedestrian mall slow for them). */
+const cabWeight = (u, d) => (u > 5 && u < 200
+  ? (d > TRACK_ZONE_HALF ? DRIVE.besideW : d > -0.2 ? 1 : d >= -TRACK_ZONE_HALF ? 0.6 : 0) : 0);
 
 // ---------------------------------------------------------------------- module
 const train = {
@@ -590,6 +712,8 @@ const train = {
   _trams: null,       // oncoming units started from here (see _oncoming)
   corridorCount: 0,   // weighted people in the track corridor ahead (last sample)
   pedLoad: 0,         // the driver's smoothed pedestrian load (0..1)
+  obstacle: Infinity, // nearest current obstacle report (m ahead of the cab front), see setObstacle
+  creeping: false,    // held by somebody on the track: ringing and creeping up
   _loadT: 0,
   _loadInit: false,
   _tramErrors: 0,
@@ -660,7 +784,7 @@ const train = {
       if (this._loadT > 0) return;
     }
     this._loadT = 1;
-    const n = corridorPeople(app, (u, d) => (u > 5 && u < 200 ? (d > -0.2 ? 1 : 0.6) : 0));
+    const n = corridorPeople(app, cabWeight);
     if (n == null) return;
     this.corridorCount = n;
     const x = n / DRIVE.busyPeople;
@@ -675,8 +799,13 @@ const train = {
     this.bellAt = t.bellAt; this.notch = t.notch; this.notchId = NOTCHES[t.notch].id;
     this.emergency = t.emergency; this.limit = t.limit; this.phase = t.phase; this.caution = t.caution;
     this.assisting = t.assisting; this.coasting = t.coasting; this.cruise = t.cruise(t.s); this.t = t.t;
-    this.pedLoad = t.load;
+    this.pedLoad = t.load; this.obstacle = t.obstacle; this.creeping = t.creeping;
   },
+
+  /** Obstacle report for the cab tram (contract): m from the cab front to the nearest person
+   *  on the track ahead who will not be clear in time (Infinity: nobody), per source, every
+   *  frame. The driver takes the nearest current report (see Tram.setObstacle). */
+  setObstacle(m, source = 'crowd') { this.tram.setObstacle(m, source); },
 
   // controls used by the UI
   setAuto(on) { this.tram.setAuto(!!on); this.sync(); },

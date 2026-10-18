@@ -977,15 +977,18 @@ function dishTemplate() {
     for (let j = 0; j <= seg; j++) {
       const a = (j / seg) * Math.PI * 2, x = Math.cos(a) * RX * t, y = Math.sin(a) * RY * t, z = dishZ(x, y);
       const gx = (2 * D * x) / (RX * RX), gy = (2 * D * y) / (RY * RY), l = Math.sqrt(gx * gx + gy * gy + 1);
-      // (the bowl's inside a little darker toward its centre, the back in its own shade)
-      fr.push(W.v(x, y, z, -gx / l, -gy / l, 1 / l, x, y, 0.93 + 0.07 * t));
-      bk.push(W.v(x, y, z - T, gx / l, gy / l, -1 / l, x, y, 0.8));
+      // (the bowl's inside a little darker toward its centre and grimier toward its
+      // lower rim, where rain runs off; the back in its own shade)
+      const grime = 0.9 + 0.1 * Math.min(1, (y / RY + 1) * 0.75);
+      fr.push(W.v(x, y, z, -gx / l, -gy / l, 1 / l, x, y, (0.93 + 0.07 * t) * grime));
+      bk.push(W.v(x, y, z - T, gx / l, gy / l, -1 / l, x, y, 0.8 * grime));
     }
     front.push(fr); back.push(bk);
   }
+  // (rings run counter-clockwise seen from the front: the front skin faces +z, the back -z)
   for (let i = 0; i < rings; i++) for (let j = 0; j < seg; j++) {
-    W.quad(front[i][j], front[i][j + 1], front[i + 1][j + 1], front[i + 1][j]);
-    W.quad(back[i][j], back[i + 1][j], back[i + 1][j + 1], back[i][j + 1]);
+    W.quad(front[i][j], front[i + 1][j], front[i + 1][j + 1], front[i][j + 1]);
+    W.quad(back[i][j], back[i][j + 1], back[i + 1][j + 1], back[i + 1][j]);
   }
   // rolled rim: front edge, a lip 4 mm proud of it, back edge (normals turning outward)
   for (let j = 0; j <= seg; j++) {
@@ -1034,6 +1037,38 @@ function dishMountTemplate() {
   box(W, 0, -0.14, w0 / 2 + 0.006, 0.04, 0.04, -w0 - 0.012, 0.8);
   tube(W, [0, -0.3, w0 + 0.012], [0, -0.155, w0 * 0.3], 0.01, 6);
   tube(W, [0, -0.24, 0], [0, 0.16, 0], 0.024, 10, true);
+  return template(W, WHITE_UV);
+}
+
+/** Far dish (beyond 200 m, a few pixels): the reflector's two skins on a coarse grid, the
+ *  LNB as a box (its 2 cm arm is sub-pixel there), the bracket. Same frame, size and
+ *  colours as the near one. */
+function dishFarTemplate() {
+  const W = new GeoWriter(), { RX, RY, D, Z0, T } = DISH, seg = 10;
+  W.color(0.74, 0.735, 0.71);
+  const c = [W.v(0, 0, Z0, 0, 0, 1, 0, 0, 0.93), W.v(0, 0, Z0 - T, 0, 0, -1, 0, 0, 0.8)], ring = [];
+  for (let j = 0; j <= seg; j++) {
+    const a = (j / seg) * Math.PI * 2, x = Math.cos(a) * RX, y = Math.sin(a) * RY, z = dishZ(x, y);
+    const gx = (2 * D * x) / (RX * RX), gy = (2 * D * y) / (RY * RY), l = Math.sqrt(gx * gx + gy * gy + 1);
+    ring.push([W.v(x, y, z, -gx / l, -gy / l, 1 / l, x, y, 0.97), W.v(x, y, z - T, gx / l, gy / l, -1 / l, x, y, 0.8)]);
+  }
+  for (let j = 0; j < seg; j++) {
+    W.tri(c[0], ring[j][0], ring[j + 1][0]);
+    W.tri(c[1], ring[j + 1][1], ring[j][1]);
+  }
+  W.color(0.5, 0.5, 0.49);
+  box(W, 0, 0, 0.02, 0.08, 0.12, 0.14, 0.8);
+  W.color(0.75, 0.745, 0.72);
+  box(W, 0, -0.19, 0.5, 0.05, 0.06, 0.14, 0.85);
+  return template(W, WHITE_UV);
+}
+
+/** Far wall mount: mast and arm. */
+function dishMountFarTemplate() {
+  const W = new GeoWriter();
+  W.color(0.5, 0.5, 0.49);
+  box(W, 0, -0.04, 0, 0.045, 0.4, 0.045, 0.8);
+  box(W, 0, -0.14, -DISH_W / 2, 0.04, 0.04, DISH_W, 0.8, 'b');
   return template(W, WHITE_UV);
 }
 
@@ -1157,6 +1192,8 @@ export function buildAttachAssets() {
     acStain: acStainTemplate(),
     dish: dishTemplate(),
     dishMount: dishMountTemplate(),
+    dishFar: dishFarTemplate(),
+    dishMountFar: dishMountFarTemplate(),
     chair: chairTemplate(),
     towel: towelTemplate(),
     pole: poleTemplate(),

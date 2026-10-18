@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { noise1p, noise2p } from '../core/rng.js';
+import { lattice1, lattice2, LATTICE } from '../core/rng.js';
 
 // The tram line: a closed loop through the city built from straights, clothoid
 // transitions and circular arcs, with gentle grades. Everything in the world is
@@ -291,13 +291,29 @@ export class Route {
     const sw = this.wrap(s);
     const ramp = Math.min(1, a / 1.2);                       // ease in from the corridor edge
     const fall = a * 0.016;                                  // ~1.6 % rise towards the facades
-    // all noise is periodic in L so the loop has no seam (loopNoise1 / loopNoise2 with their
-    // cell counts precomputed: the same values, without the per-call setup)
-    const L = this.length, c = this._surfCells;
+    // all noise is periodic in L so the loop has no seam: loopNoise1(sw, L, 320, 101) and
+    // loopNoise2(sw, dd, L, 6.5, 5.5, 7) / (…, 2.3, 2.1, 13), written out here with their
+    // cell counts precomputed (the same values: this runs per agent and per vertex, and a
+    // noise call that is not inlined boxes its float arguments and result)
+    const L = this.length, c = this._surfCells, Q = LATTICE;
     const sd = d < 0 ? -1 : 1;
-    const tilt = sd * a * 0.013 * noise1p((sw / L) * c[0], c[0], 101);   // hillside: ±1.3 %
     const dd = sd * (a + SURF_EDGE);
-    const settle = 0.02 * noise2p((sw / L) * c[1], dd / 5.5, c[1], 7) + 0.01 * noise2p((sw / L) * c[2], dd / 2.1, c[2], 13);
+    // hillside: ±1.3 %
+    let n = c[0], x = (sw / L) * n, i = Math.floor(x), f = x - i;
+    lattice1(((i % n) + n) % n, (((i + 1) % n) + n) % n, 101);
+    const tilt = sd * a * 0.013 * (Q[0] + (Q[1] - Q[0]) * (f * f * (3 - 2 * f)));
+    // settlement undulation: two octaves of 2D noise
+    n = c[1]; x = (sw / L) * n; i = Math.floor(x); f = x - i;
+    let y = dd / 5.5, j = Math.floor(y), g = y - j;
+    let ux = f * f * (3 - 2 * f), uy = g * g * (3 - 2 * g);
+    lattice2(((i % n) + n) % n, (((i + 1) % n) + n) % n, j, j + 1, 7);
+    const s1 = Q[0] + (Q[1] - Q[0]) * ux + (Q[2] - Q[0]) * uy + (Q[0] - Q[1] - Q[2] + Q[3]) * ux * uy;
+    n = c[2]; x = (sw / L) * n; i = Math.floor(x); f = x - i;
+    y = dd / 2.1; j = Math.floor(y); g = y - j;
+    ux = f * f * (3 - 2 * f); uy = g * g * (3 - 2 * g);
+    lattice2(((i % n) + n) % n, (((i + 1) % n) + n) % n, j, j + 1, 13);
+    const s2 = Q[0] + (Q[1] - Q[0]) * ux + (Q[2] - Q[0]) * uy + (Q[0] - Q[1] - Q[2] + Q[3]) * ux * uy;
+    const settle = 0.02 * s1 + 0.01 * s2;
     return fall + tilt + settle * ramp * ramp;
   }
 

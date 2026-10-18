@@ -18,7 +18,9 @@ const cat = (t) => 1 - (Math.cosh(CAT_C * (2 * t - 1)) - 1) / (Math.cosh(CAT_C) 
 
 /** Canopy shape for a size: rib tips and the surface function surf(k, r, t). */
 export function canopyShape(size) {
-  const a = size / 2, rise = 0.27 * a, apex = UMB_EDGE_H + rise;
+  // pitch about 20° (rise 0.37 of the half size): from the 2.75 m cab eye the large canopies
+  // read as low pyramids, not edge-on slivers
+  const a = size / 2, rise = 0.37 * a, apex = UMB_EDGE_H + rise;
   const tips = [];
   for (let k = 0; k < 8; k++) {
     const ang = (k * Math.PI) / 4, c = Math.cos(ang), s = Math.sin(ang), m = Math.max(Math.abs(c), Math.abs(s));

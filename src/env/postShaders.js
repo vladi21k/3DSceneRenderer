@@ -369,7 +369,7 @@ void main() {
       hb += smoothstep(uHeadCos.x, uHeadCos.y, dot(vn, uHeadDir)) * (1.0 - smoothstep(-0.035, -0.009, vn.y)) / r2;
     }
     air += vec3(1.0, 0.84, 0.68) * uHeadI * hb * Th / 12.0 / (4.0 * ATM_PI);
-    col += air * uMist * uNightAir;
+    col += air * uMist;
   }
 
   // scrub anything the passes above produced from a bad input, and clamp the range, so a

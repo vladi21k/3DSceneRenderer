@@ -63,6 +63,71 @@ function sideLevel(ctx, c, side, start, flat) {
 }
 const LEVELS = new Map();
 
+/** The mouth profile of side street c on `side` (cached on its mouth, see
+ *  Surface.mouth): the column offsets `cols` (mouth-line coordinate a, with a column
+ *  0.8 m beyond each facade line), the main paving's points on the mouth line at those
+ *  columns (`pts`, world; `base`: their y), where the side street's first row meets the
+ *  main sidewalk without a seam, and the ground the side street ramps to (`level`, world
+ *  y at its two facade lines, see sideLevel). Also completes the mouth frame for other
+ *  modules (half, road, sw, kerbH; see street.js mouth()). */
+export function sideProfile(ctx, c, side) {
+  const { route, surface } = ctx;
+  const m = surface.mouth(c, side);
+  if (m.prof) return m.prof;
+  const { half, road, sw } = dims(c);
+  const cols = [-half - 0.8, ...sideColumns(c), half + 0.8];
+  const base = new Float64Array(cols.length);
+  const pts = [];
+  for (let j = 0; j < cols.length; j++) {
+    const a = Math.max(-half, Math.min(half, cols[j]));
+    const s = c.s + a;
+    const d = surface.mouthD(m, s);
+    // the main paving's own vertex there (heightAt already holds the shared ground, so
+    // it is added to the route elevation, not passed to toWorld as a height above it)
+    const p = route.toWorld(s, d, 0);
+    p.y = route.elevation(s) + surface.heightAt(s, d);
+    pts.push(p);
+    base[j] = p.y;
+  }
+  const level = sideLevel(ctx, c, side, m.start, m.start.y + SIDEWALK_RISE);
+  m.half = half; m.road = road; m.sw = sw; m.kerbH = KERB_H; m.rampX = SIDE_LOT_START;
+  m.level = level;
+  m.prof = { cols, base, pts, level, half, road };
+  return m.prof;
+}
+
+/** World y of side street c's paving (on `side`) at mouth coordinates (a, x): a across
+ *  from its centre line (along the mouth line, + along route travel), x out from the main
+ *  facade line (the side street's own frame). The same surface the street mesh is built
+ *  from: the main paving's heights along the mouth, ramped over SIDE_LOT_START metres to
+ *  the ground of the side street's lots, the carriageway a kerb (KERB_H) down from a few
+ *  metres out, with a slight crown. Allocation-free. */
+export function sideHeight(ctx, c, side, a, x) {
+  const P = sideProfile(ctx, c, side);
+  const cols = P.cols, base = P.base, n = cols.length;
+  let j = 0;
+  while (j < n - 2 && cols[j + 1] < a) j++;
+  const t = Math.max(0, Math.min(1, (a - cols[j]) / (cols[j + 1] - cols[j] || 1)));
+  const b0 = base[j] + (base[j + 1] - base[j]) * t;
+  const xx = x > 0 ? x : 0;
+  const half = P.half, lv = P.level;
+  const tgt = lv[0] + (lv[1] - lv[0]) * Math.max(0, Math.min(1, (a + half) / (2 * half)));
+  return b0 + (tgt - b0) * ramp(xx) + localH(a, xx, P.road);
+}
+
+/** The wear of side street c on `side` (cached on its mouth): its street frame F
+ *  (sideAsphalt.js sideFrame, over the side street's surface) and its wear plan
+ *  (sidePlan). The street's prefetch makes it ahead (see street.js planChunk). */
+export function sideWear(ctx, c, side) {
+  const m = ctx.surface.mouth(c, side);
+  if (m.wear) return m.wear;
+  const P = sideProfile(ctx, c, side);
+  const at = (a, x, lift = 0.002) => [m.start.x + m.along.x * a + m.dirOut.x * x, sideHeight(ctx, c, side, a, x) + lift, m.start.z + m.along.z * a + m.dirOut.z * x];
+  const F = sideFrame(m, at, P.road);
+  m.wear = { F, plan: sidePlan(c, side, m, F, EDGE_X) };
+  return m.wear;
+}
+
 /** Height profile of the side street relative to the blended base level. */
 function localH(a, x, road) {
   const ramp = smooth((x - 2.5) / 5);
@@ -75,7 +140,7 @@ function localH(a, x, road) {
 /** Side street c on `side` (the part built by chunk): resumable (see street.js), yields
  *  'cross' between its parts. */
 export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
-  const { route, surface, mats } = ctx;
+  const { surface, mats } = ctx;
   const m = surface.mouth(c, side);
   const { half, road } = dims(c);
   const lod = chunk.lod;
@@ -83,26 +148,14 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   const xStep = lod === 0 ? 6 : 15;
   for (let x = SIDE_LOT_START + xStep; x < m.len; x += xStep) xs.push(x);
   xs.push(m.len);
-  const level = sideLevel(ctx, c, side, m.start, m.start.y + SIDEWALK_RISE);
+  const prof = sideProfile(ctx, c, side);
+  const level = prof.level;
   const target = (a) => level[0] + (level[1] - level[0]) * Math.max(0, Math.min(1, (a + half) / (2 * half)));
-  const cols = [-half - 0.8, ...sideColumns(c), half + 0.8];
+  const cols = prof.cols, base = prof.base, mouthPts = prof.pts;
   const nc = cols.length, nr = xs.length;
 
   // grid positions and heights
   const P = new Float32Array(nr * nc * 3);
-  const base = new Float32Array(nc);      // mouth heights per column
-  const mouthPts = [];
-  for (let j = 0; j < nc; j++) {
-    const a = Math.max(-half, Math.min(half, cols[j]));
-    const s = c.s + a;
-    const d = surface.mouthD(m, s);
-    // the main paving's own vertex there (heightAt already holds the shared ground, so
-    // it is added to the route elevation, not passed to toWorld as a height above it)
-    const p = route.toWorld(s, d, 0);
-    p.y = route.elevation(s) + surface.heightAt(s, d);
-    mouthPts.push(p);
-    base[j] = p.y;
-  }
   for (let i = 0; i < nr; i++) {
     const x = xs[i];
     const k = ramp(x);
@@ -120,6 +173,7 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     }
   }
 
+  yield 'cross';
   // strips [j0, j1, material]: sidewalk | kerb top | carriageway | kerb top | sidewalk
   const jKbL = cols.indexOf(-road - KERB_W), jKfL = cols.indexOf(-road - 0.001), jRL = cols.indexOf(-road);
   const jRR = cols.indexOf(road), jKfR = cols.indexOf(road + 0.001), jKbR = cols.indexOf(road + KERB_W);
@@ -147,7 +201,7 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
         const bx = P[od] - P[oc], by = P[od + 1] - P[oc + 1], bz = P[od + 2] - P[oc + 2];
         let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
         if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
-        const il2 = 1 / (Math.hypot(nx, ny, nz) || 1);
+        const il2 = 1 / (Math.sqrt(nx * nx + ny * ny + nz * nz) || 1);
         const x = xs[i], a = cols[j];
         let t = (1 + 0.08 * f.sample(x * 0.5 + 300, a * 0.5)) * (1 + 0.05 * f.sample(x * 2.1, a * 2.1 + 90));
         if (mat === mats.asphalt) {
@@ -191,17 +245,8 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
   yield 'cross';
   if (lod > 0 || !lines) return;
   // surface point at mouth coordinates (a, x), lifted
-  const pt = (a, x, lift = 0.002) => {
-    const k = ramp(x);
-    // interpolate base height between columns
-    let j = 0;
-    while (j < nc - 2 && cols[j + 1] < a) j++;
-    const t = (a - cols[j]) / (cols[j + 1] - cols[j] || 1);
-    const b0 = base[j] + (base[j + 1] - base[j]) * Math.max(0, Math.min(1, t));
-    return [m.start.x + m.along.x * a + m.dirOut.x * x, b0 + (target(a) - b0) * k + localH(a, x, road) + lift, m.start.z + m.along.z * a + m.dirOut.z * x];
-  };
-  const F = sideFrame(m, pt, road);
-  const plan = sidePlan(c, side, m, F, EDGE_X);
+  const pt = (a, x, lift = 0.002) => [m.start.x + m.along.x * a + m.dirOut.x * x, sideHeight(ctx, c, side, a, x) + lift, m.start.z + m.along.z * a + m.dirOut.z * x];
+  const { F, plan } = sideWear(ctx, c, side);
   yield 'cross';
   // wear first: the paint lies over it
   yield* buildSideWear(F, plan, lines);
@@ -231,6 +276,7 @@ export function* buildCrossStreet(ctx, c, side, chunk, bufs, lines) {
     for (const x of [x0 - 0.03, x0 + 1.5, x0 + 3.03]) { const p = pt(0, x); arr.push(p[0], p[1], p[2], rx, rz, x - x0); }
     lines.stripe.add(arr, 0.06, 3.0, wear);
   }
+  yield 'cross';
   buildSideIron(F, plan, bufs, ctx.mats);
 }
 

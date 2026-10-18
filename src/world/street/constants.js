@@ -97,8 +97,26 @@ export const RAIL_PROFILE = [
 // Effective albedo of the bitumen seal and of the mortar bed (linear). The mortar is a
 // dirty cement grey at about 0.7x the setts (paving.street ~0.165), so they visually
 // reach the seal; the seal is drawn with the mortar material at SEAL_TONE of its colour
-// (dark bitumen, ~0.055).
+// (dark bitumen, ~0.055). (Scaled with the setts' published albedo: see pavingTones.)
 export const MORTAR_ALBEDO = [0.114, 0.112, 0.108];
 export const SEAL_TONE = 0.49;
+const PAVING_LUM = 0.165;    // mean luminance of the setts the street's own tones were set against
+
+/** The street's own tones that must follow the setts (paving.street's mean linear albedo,
+ *  as the materials library publishes it in meta.albedo): k, the setts' luminance
+ *  relative to PAVING_LUM (mortar, seal and groove grit keep their contrast to the
+ *  setts), the mortar albedo, and `pave`, the brake-dusted setts beside a rail (the
+ *  paving's grime along the rails, Surface.tone: about 0.8x, warmed) that the far-field
+ *  rail overlay blends in at its edges. */
+export function pavingTones(albedo) {
+  const a = Array.isArray(albedo) && albedo.length === 3 && albedo.every((x) => x > 0.02 && x < 0.9) ? albedo : [0.157, 0.168, 0.192];
+  const lum = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+  const k = Math.max(0.6, Math.min(1.6, lum / PAVING_LUM));
+  return {
+    k,
+    mortar: MORTAR_ALBEDO.map((x) => x * k),
+    pave: [a[0] * 0.8 * 1.09, a[1] * 0.8 * 1.02, a[2] * 0.8 * 0.93],
+  };
+}
 
 export { TRACK_OFFSET, RAIL_CENTER, TRACK_ZONE_HALF, EDGE_BAND_W };

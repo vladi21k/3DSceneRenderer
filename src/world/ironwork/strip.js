@@ -187,7 +187,9 @@ export class Strip {
       _f.setFromProjectionMatrix(_m, camera.coordinateSystem, camera.reversedDepth);
     }
     let lo = Infinity, hi = -1;
-    for (const b of this.blocks) {
+    const B = this.blocks;
+    for (let k = 0; k < B.length; k++) {
+      const b = B[k];
       if (!b.active || !(lf ? lf.intersectsObject(b.proxy) : _f.intersectsSphere(b.sphere))) continue;
       if (b.i0 < lo) lo = b.i0;
       if (b.i0 + b.ni > hi) hi = b.i0 + b.ni;

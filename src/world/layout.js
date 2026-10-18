@@ -526,12 +526,30 @@ export class Layout {
     for (const c of this.crossStreets) this.byChunk.crossStreets[idx(c.s)].push(c);
     for (const st of this.stations) this.byChunk.stations[idx(st.s)].push(st);
     for (const c of this.crossovers) this.byChunk.crossovers[idx(c.s0)].push(c);
-    for (const o of this.obstacles) {
-      const a = o.kind === 'rect' ? o.s0 : o.s - o.r, b = o.kind === 'rect' ? o.s1 : o.s + o.r;
-      const i0 = idx(a), i1 = idx(b);
-      this.byChunk.obstacles[i0].push(o);
-      if (i1 !== i0) this.byChunk.obstacles[i1].push(o);
+    for (const o of this.obstacles) this._bucketObstacle(o);
+  }
+
+  _bucketObstacle(o) {
+    const a = o.kind === 'rect' ? o.s0 : o.s - o.r, b = o.kind === 'rect' ? o.s1 : o.s + o.r;
+    const i0 = this.chunkIndex(a), i1 = this.chunkIndex(b);
+    this.byChunk.obstacles[i0].push(o);
+    if (i1 !== i0) this.byChunk.obstacles[i1].push(o);
+  }
+
+  /**
+   * Register obstacles for free-standing things a module places itself (A-frame boards,
+   * goods stands…): circles {kind: 'circle', s, d, r} and rects {kind: 'rect', s0, s1, d0,
+   * d1}, plus any tag fields. They join `obstacles` and the chunk buckets (inChunk,
+   * obstaclesNear). Call it in init(): crowd reads the obstacles in its own init, which
+   * runs after every world module's (registry order).
+   */
+  addObstacles(list) {
+    for (const o of list) {
+      if (!o || (o.kind !== 'circle' && o.kind !== 'rect')) continue;
+      this.obstacles.push(o);
+      this._bucketObstacle(o);
     }
+    return this.obstacles.length;
   }
 
   /** Items of `kind` whose anchor falls in chunk i. */

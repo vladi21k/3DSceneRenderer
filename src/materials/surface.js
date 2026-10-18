@@ -505,9 +505,15 @@ function mapChunk(f) {
 }
 
 // paint coverage mask: chips show the baked undercoat / bare wood, not the paint colour
-// (runs after the vertex colours are applied)
+// (runs after the vertex colours are applied). Under a dark paint the exposed layers are
+// toned most of the way to the paint (older dark coats, dirt in the flake), so wear reads
+// as dull patches there rather than pale dots.
 const PAINT = /* glsl */ `
-  if (sfFlags.z > 0.5) diffuseColor.rgb = mix(sfAlb, diffuseColor.rgb, sfS.b);
+  if (sfFlags.z > 0.5) {
+    vec3 sfPc = diffuseColor.rgb / max(sfAlb, vec3(0.02));
+    float sfDk = 1.0 - smoothstep(0.1, 0.2, dot(sfPc, vec3(0.2126, 0.7152, 0.0722)));
+    diffuseColor.rgb = mix(mix(sfAlb, sfPc * 0.9, 0.7 * sfDk), diffuseColor.rgb, sfS.b);
+  }
 `;
 
 const ROUGH = /* glsl */ `
@@ -533,7 +539,9 @@ const normalChunk = (f) => /* glsl */ `
 ${f.detail ? NORMAL_DETAIL : ''}  if (sfFlags.y > 0.5) sfN = sfN.yx;
   sfN *= normalScale * sfMisc.x;
   sfVar *= sfMisc.x * sfMisc.x * normalScale.x * normalScale.x;
-  normal = normalize(tbn * vec3(sfN, sqrt(max(1.0 - dot(sfN, sfN), 0.0))));
+  // (z kept >= 0.01: with degenerate UVs the tangent columns are zero, and a z of 0 would
+  // normalize a null vector into NaN)
+  normal = normalize(tbn * vec3(sfN, sqrt(max(1.0 - dot(sfN, sfN), 1e-4))));
   // specular anti-aliasing: normal variance hidden in the mips, plus the screen-space
   // variance of the interpolated normal (curvature under a pixel: rail heads, poles,
   // rounded arrises), widen the lobe (alpha² += variance, Kaplanyan-style), so no curved

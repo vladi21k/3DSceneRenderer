@@ -9,7 +9,8 @@ import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms } from './sunShadow.js';
 import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
-import { StreetLights, patchLightLoops } from './lights.js';
+import { StreetLights, patchLightLoops, lampLevel } from './lights.js';
+import { UniformCaches } from './uniformCache.js';
 
 // Environment: physically based sky and sun, cascaded sun shadows, HDR image-based
 // lighting, wind, time of day and the dusk lights. Contract in docs/ARCHITECTURE.md.
@@ -30,6 +31,9 @@ const _es = new THREE.Vector3();
 const _es2 = new THREE.Vector3();
 const lum = (v) => 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
 const _tc = new THREE.Vector3();
+const XYZ = ['x', 'y', 'z'];
+const _up = [0, 0, 0], _dn = [0, 0, 0], _cr = [0, 0, 0];
+const _smpH = {}, _smpE = {};   // route samples (reused per frame)
 
 // Weather regimes (one per world seed; URL sky= picks one): a pale dust haze with faint
 // cirrus, high cirrus streaks over altocumulus patches (no low cumulus: a few evenly
@@ -114,7 +118,8 @@ function skyIrradiance(e) {
 
 const env = {
   name: 'env',
-  state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0 },
+  // lamps: the street lamps' level (their photocells switch on before sunset, see lights.js)
+  state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0, lamps: 0 },
   exposure: 1,
   exposureBase: 1,
   exposureMax: 1e4,    // ceiling for the metered exposure (low-sun highlight protection)
@@ -187,6 +192,8 @@ const env = {
     scene.add(this.sun);
 
     this.lights = new StreetLights(app, q.lamps);
+    // per-frame uniforms without boxed-number garbage (see uniformCache.js)
+    this.uniformCaches = new UniformCaches(renderer);
 
     // street-canyon bounce: sunlit stone and paving relight everything around them (warm
     // fill in the shade, glowing soffits). A hemisphere light along the vertical: its sky
@@ -341,8 +348,11 @@ const env = {
     // fully on by the time the sun has set)
     const night = THREE.MathUtils.smoothstep(t, 0.7, 0.82);
     U.uNight.value = night;
+    // the street lamps (real lights, lantern wash, far pools, airlight) follow the same
+    // photocell ramp as the visible globes: on from t 0.64, fully by 0.72
+    const lamps = lampLevel(t, night);
 
-    Object.assign(this.state, { t, sunElevation: elev, night });
+    Object.assign(this.state, { t, sunElevation: elev, night, lamps });
     this._updateExposure();
     this.solar = solarPosition(t);
     if (this._gpuReady) this.sky.requestEnv(false);
@@ -446,7 +456,7 @@ const env = {
     const litWall = sunUp * THREE.MathUtils.clamp((H - Math.max(zSh, 0)) / H, 0, 1);
     const floorLit = sunUp * THREE.MathUtils.clamp(1 - (H * facing / Math.max(tanSun, 1e-3)) / (2 * hw), 0, 1);
     const sy = Math.max(d.y, 0), cw = facing * h;
-    const c = ['x', 'y', 'z'];
+    const c = XYZ;
     for (let i = 0; i < 3; i++) {
       const k = c[i];
       const sky = skyH[k] / Math.PI;
@@ -462,7 +472,7 @@ const env = {
     // with the stone and paving albedo through the view factors of a ~1:1 street canyon
     const bu = this.bounce, cb = this.crossBounce;
     if (bu) {
-      const up = [0, 0, 0], dn = [0, 0, 0], cr = [0, 0, 0];
+      const up = _up, dn = _dn, cr = _cr;
       for (let i = 0; i < 3; i++) {
         const k = c[i];
         const Ew = Es[k] * cw * litWall, Ef = Es[k] * sy * floorLit;
@@ -489,7 +499,7 @@ const env = {
       const side = across >= 0 ? 1 : -1;
       const k = Math.min(tanSun / facing, 50);
       const s = app.cameraS ?? app.startS;
-      const O = app.route.sample(s).pos;
+      const O = app.route.sample(s, _smpH).pos;
       const dO = O.x * R.x + O.z * R.z;
       hz.plane.set(-k * side * R.x, 1, -k * side * R.z, -O.y + k * hw + k * side * dO - H);
     } else {
@@ -503,7 +513,7 @@ const env = {
   _updateEnvFrame(force) {
     const app = this.app;
     const s = app.cameraS ?? app.startS;
-    const smp = app.route.sample(s);
+    const smp = app.route.sample(s, _smpE);
     const u = this.sky.uniforms;
     u.uStreetAxis.value.set(smp.tan.x, 0, smp.tan.z).normalize();
     u.uStreetRight.value.set(smp.right.x, 0, smp.right.z).normalize();
@@ -571,7 +581,8 @@ const env = {
     this._applyCaps();
 
     // ---- dusk lights
-    this.lights.update(app, U.uNight.value);
+    this.lights.update(app, U.uNight.value, this.state.lamps ?? U.uNight.value);
+    this.uniformCaches.update();
   },
 
   /** Off-scene passes env renders itself (post compiles them up front with its own). */

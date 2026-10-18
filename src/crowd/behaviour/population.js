@@ -1,7 +1,7 @@
 import { hash2, noise1 } from '../../core/rng.js';
 import { TRACK_ZONE_HALF, VIEW_AHEAD } from '../../core/config.js';
 import { PLATFORM_W } from '../../world/layout.js';
-import { Agent, KIND, ST, TASK, LANE, MOB } from './agent.js';
+import { Agent, KIND, ST, TASK, LANE, MOB, settleShape } from './agent.js';
 import { laneTarget, setLane, board, doorOf } from './behaviour.js';
 import {
   MAX_AGENTS, RANGE_BEHIND, RANGE_AHEAD, FAR_TAPER, FAR_SLACK, FAR_HARD, FAR_SPAWN_BAND, WALKER_DENSITY, MAX_SEATED,
@@ -57,6 +57,11 @@ export class Population {
     this.mobCount = [0, 0, 0, 0]; // people with a stroller / riding / walking a bicycle (by MOB)
     this._paceK = 1;             // time of day: walking pace factor (a little slower in the evening)
     this.tod = { t: 0, evening: 0, late: 0 };
+    this._sun = null; this._smp = {}; this._w = null; this._cafeS = null; this._benchS = null;
+    // (classes fixed up front: see settleShape)
+    settleShape(this.tod); settleShape(this.stats); settleShape(this.stats.bySource);
+    this.stats.chatHidden = 0; this.stats.mob = 0;
+    settleShape(this, new Set(['serial', 'frame', 'nBins']));
   }
 
   // ---------------------------------------------------------------- slots
@@ -999,19 +1004,30 @@ export class Population {
   scanFeatures() {
     const c = this.c, L = c.layout;
     const lo = -RANGE_BEHIND + 4, hi = FEATURE_AHEAD;
-    for (const cafe of L.cafes) {
-      const rel = c.unwrap((cafe.s0 + cafe.s1) / 2) - c.camU;
-      const inRange = rel > lo && rel < hi;
-      const f = this.cafes.get(cafe.id);
-      if (inRange && !f) this._populateCafe(cafe);
-      else if (!inRange && f && (rel < lo - 20 || rel > hi + 30)) this.cafes.delete(cafe.id);
+    // (wrapped s of every café middle and bench, once: the scan runs three times a second over
+    // the whole loop, and works out the distances in place)
+    if (!this._cafeS) {
+      this._cafeS = Float64Array.from(L.cafes, (cf) => c.route.wrap((cf.s0 + cf.s1) / 2));
+      this._benchS = Float64Array.from(this.benchList, (b) => c.route.wrap(b.s));
     }
-    for (const b of this.benchList) {
-      const rel = c.unwrap(b.s) - c.camU;
+    const RL = c.route.length, cw = c.camW;
+    for (let i = 0; i < L.cafes.length; i++) {
+      const cafe = L.cafes[i];
+      let rel = this._cafeS[i] - cw;
+      if (rel > RL / 2) rel -= RL; else if (rel < -RL / 2) rel += RL;
       const inRange = rel > lo && rel < hi;
-      const f = this.benches.get(b.id);
-      if (inRange && !f) this._populateBench(b);
-      else if (!inRange && f && (rel < lo - 20 || rel > hi + 30)) this.benches.delete(b.id);
+      if (inRange === this.cafes.has(cafe.id)) continue;
+      if (inRange) this._populateCafe(cafe);
+      else if (rel < lo - 20 || rel > hi + 30) this.cafes.delete(cafe.id);
+    }
+    for (let i = 0; i < this.benchList.length; i++) {
+      const b = this.benchList[i];
+      let rel = this._benchS[i] - cw;
+      if (rel > RL / 2) rel -= RL; else if (rel < -RL / 2) rel += RL;
+      const inRange = rel > lo && rel < hi;
+      if (inRange === this.benches.has(b.id)) continue;
+      if (inRange) this._populateBench(b);
+      else if (rel < lo - 20 || rel > hi + 30) this.benches.delete(b.id);
     }
     for (const st of L.stations) {
       const rel = c.unwrap(st.s) - c.camU;

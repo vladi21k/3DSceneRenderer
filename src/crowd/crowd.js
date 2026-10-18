@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 import { RNG } from '../core/rng.js';
-import { TRACK_OFFSET, RAIL_CENTER } from '../core/config.js';
+import { TRACK_OFFSET, RAIL_CENTER, TRACK_ZONE_HALF } from '../core/config.js';
 import { StreetMap } from './behaviour/streetMap.js';
 import { Visibility } from './behaviour/visibility.js';
 import { Population } from './behaviour/population.js';
 import { Steering } from './behaviour/steering.js';
 import { TramWatch } from './behaviour/tram.js';
 import { SideStreets } from './behaviour/sideStreets.js';
-import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES } from './behaviour/agent.js';
+import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES, settleShape } from './behaviour/agent.js';
 import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D, TRAM_LEN } from './behaviour/constants.js';
 import { footDims } from './behaviour/footprint.js';
 
@@ -49,6 +49,9 @@ import { footDims } from './behaviour/footprint.js';
 
 const PI = Math.PI;
 const _v = new THREE.Vector3();
+const COUNT_INTS = new Set(['seated', 'passenger', 'stand', 'walker', 'stand300', 'walk300', 'side', 'standFar']);
+const MOVERS = 4;              // cyclists handed to post as moving boxes (per-object motion blur)
+const MOVER_RANGE = 70;        // ... within this distance of the camera (m)
 
 class CrowdSim {
   constructor(app, opts = {}) {
@@ -69,7 +72,7 @@ class CrowdSim {
     this.steering = new Steering(this);
     this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
-    this.out = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0 };
+    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0 }, new Set(['pose', 'prop', 'propSeed', 'appearance']));
     this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
@@ -85,6 +88,15 @@ class CrowdSim {
     app.events.on('tram-bell', (e) => { if (this.camU !== null) this.tram.onUnitBell(e, this.time); });
     // crowd_dbg=1: outlines of the stroller / bicycle footprints (testing only)
     if (app.params.num('crowd_dbg', 0) === 1) this._initDebug(app);
+    this.lastBellReact = 0;
+    // read-only views for other systems (refilled once per frame, never reallocated)
+    this.activeList = []; this.activeN = -1;
+    this._camF = settleShape({ x: 0, z: -1 });
+    this.movers = { n: 0, items: Array.from({ length: MOVERS }, () => settleShape({ id: 0, x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0, heading: 0, halfLen: 0.95, halfWidth: 0.36, halfHeight: 0.92, dist2: 0 })) };
+    // (classes fixed up front: see settleShape)
+    settleShape(this.counts, COUNT_INTS); settleShape(this.perf); settleShape(this.check);
+    this.camU = 0.5; this.camU = null;
+    settleShape(this, new Set(['base', 'seed']));
   }
 
   _initDebug(app) {
@@ -233,6 +245,9 @@ class CrowdSim {
     const trainU = this.camU + route.delta(camS, app.train?.s ?? camS);
     this.tram.update(app, trainU);
     this.vis.update(app.camera, this.camU, camS);
+    // (the camera's horizontal forward, for the movers handed to post)
+    const e = app.camera.matrixWorld.elements;
+    this._camF.x = -e[8]; this._camF.z = -e[10];
     // the free inspection camera (view=): an obstacle like a pole, so nobody walks through it
     if (app.params.view) this.map.setCamera(this.vis.camU, this.vis.camD, 0.9);
     if (first) this.population.fillInitial();
@@ -271,6 +286,8 @@ class CrowdSim {
   _output(dt) {
     const route = this.route, map = this.map, H = this.humans, o = this.out, ck = this.check;
     const agents = this.population.agents;
+    const M = this.movers, cam = this.vis.camPos, cf = this._camF;
+    M.n = 0;
     // (indexed loops, and no double arguments where a field will do: per agent and per frame,
     // a boxed number is garbage)
     for (let i = 0, n = agents.length; i < n; i++) {
@@ -333,6 +350,7 @@ class CrowdSim {
           a.lean += (lean - a.lean) * Math.min(1, dt * 6);
         }
         if (dt > 0 || !a.headValid) { a.prevHead = a.heading; a.headValid = true; }
+        if (a.bikeV > 1.2 && dt > 0) this._mover(a, cam, cf, dt);
       } else a.lean = 0;
       if (!H || !H.set) continue;
       o.x = a.x; o.y = a.y; o.z = a.z;
@@ -345,6 +363,56 @@ class CrowdSim {
       o.look = a.look; o.appearance = a.appearance; o.visible = true;
       H.set(this.base + a.slot, o);
     }
+  }
+
+  /** A riding cyclist near the camera and in front of it, for post's per-object motion blur: the
+   *  box of bicycle and rider (world centre, yaw, half extents) and its displacement since the
+   *  last frame. The nearest MOVERS are kept. */
+  _mover(a, cam, cf, dt) {
+    const dx = a.x - cam.x, dz = a.z - cam.z, d2 = dx * dx + dz * dz;
+    if (d2 > MOVER_RANGE * MOVER_RANGE || dx * cf.x + dz * cf.z < -2) return;
+    const M = this.movers, L = M.items;
+    let i = M.n;
+    if (i >= MOVERS) { if (d2 >= L[MOVERS - 1].dist2) return; i = MOVERS - 1; } else M.n++;
+    // (insertion by distance; the slot taken is recycled, the items are never reallocated)
+    const it = L[i];
+    while (i > 0 && L[i - 1].dist2 > d2) { L[i] = L[i - 1]; i--; }
+    L[i] = it;
+    it.id = a.slot; it.dist2 = d2;
+    it.x = a.x; it.y = a.y + 0.92; it.z = a.z; it.heading = a.heading;
+    it.dx = a.wvx * dt; it.dy = 0; it.dz = a.wvz * dt;
+  }
+
+  /** Weighted count of the people in the track corridor (|d| ≤ half, default the corridor's
+   *  half width) between route s0 and s1 (wrapped or not; the stretch from s0 towards +s, at most
+   *  half the loop): the sum of weight(off, d) over them, off = metres past s0 (1 each without a
+   *  weight). No allocation: the trams can sample it often. */
+  corridorCount(s0, s1, weight = null, half = TRACK_ZONE_HALF) {
+    if (this.camU === null) return 0;
+    const route = this.route, L = route.length, agents = this.population.agents;
+    let w0 = s0 % L; if (w0 < 0) w0 += L;
+    let len = (s1 - s0) % L; if (len < 0) len += L;
+    let n = 0;
+    for (let i = 0, N = agents.length; i < N; i++) {
+      const a = agents[i];
+      if (!a.active || a.d > half || a.d < -half) continue;
+      let off = (this.camW + (a.s - this.camU) - w0) % L; if (off < 0) off += L;
+      if (off > len) continue;
+      n += weight ? weight(off, a.d) : 1;
+    }
+    return n;
+  }
+
+  /** The active agents (a list refilled once per frame and reused: read it at once). */
+  activeAgents() {
+    const n = this.tram.n;
+    if (this.activeN !== n) {
+      this.activeN = n;
+      const out = this.activeList, agents = this.population.agents;
+      out.length = 0;
+      for (let i = 0; i < agents.length; i++) if (agents[i].active) out.push(agents[i]);
+    }
+    return this.activeList;
   }
 
   /** Statistics of a fresh figure's first frame: appearances in plain view, by distance (spawns
@@ -651,15 +719,27 @@ function summarize(list) {
 export default {
   name: 'crowd',
   async init(app) {
-    // the shopfront layout (where the door is in a shop opening, roller shutters) comes from the
-    // facades; without it people only use house doors
-    let shopLayout = null;
-    try { shopLayout = (await import('../world/facades/shops.js')).shopLayout || null; } catch (e) { shopLayout = null; }
-    this.sim = new CrowdSim(app, { shopLayout });
+    // the shopfront decisions (where the door is in a shop opening, how far the shopfront and its
+    // lobby stand back, the roller shutter) come from the facades (shopDecision, a pure function
+    // of the plan and the opening, the same call they draw with); without it people only use
+    // house doors
+    let shopDecision = null;
+    try { shopDecision = (await import('../world/facades/shops.js')).shopDecision || null; } catch (e) { shopDecision = null; }
+    this.sim = new CrowdSim(app, { shopDecision });
   },
   update(dt, app) { this.sim.update(dt, app); },
   /** Debug / test counters: counts by kind, state and task, tram clearance stats, cpu time. */
   stats() { return this.sim ? this.sim.stats() : null; },
-  /** Read-only view of the agents (for tests and other systems). */
-  agents() { return this.sim ? this.sim.population.agents.filter((a) => a.active) : []; },
+  /** Read-only view of the active agents (for tests and other systems). The list is refilled once
+   *  per frame and reused (no allocation): read it at once, do not keep it. */
+  agents() { return this.sim ? this.sim.activeAgents() : []; },
+  /** Weighted count of the people in the track corridor between route s0 and s1 (towards +s):
+   *  sum of weight(off, d), off metres past s0, d their lateral offset; `half` widens the strip
+   *  (default the corridor, |d| ≤ TRACK_ZONE_HALF). Allocation free. */
+  corridorCount(s0, s1, weight = null, half = TRACK_ZONE_HALF) { return this.sim ? this.sim.corridorCount(s0, s1, weight, half) : 0; },
+  /** Riding cyclists near the camera as moving boxes, nearest first, for post's per-object
+   *  motion blur: {n, items[0..n): {id, x, y, z (world centre), heading (three.js yaw), halfLen,
+   *  halfWidth, halfHeight (m, along / across / up), dx, dy, dz (world displacement since the
+   *  last frame, m)}}. Refreshed every frame, never reallocated. */
+  get movers() { return this.sim ? this.sim.movers : null; },
 };

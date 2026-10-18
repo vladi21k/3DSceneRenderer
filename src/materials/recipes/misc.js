@@ -1,10 +1,11 @@
 // Fabric, wood, roofing, renders and other secondary surfaces.
 
-// Acrylic canvas, plain weave ~1 mm yarns. Albedo near white: colour comes from the
-// material / vertex colour. Tile 0.2 m.
+// Acrylic canvas, plain weave ~1 mm yarns with uneven (slubbed) yarns and faint yarn-dyed
+// streaks along the warp. Albedo near white: colour comes from the material / vertex
+// colour. Tile 0.2 m.
 export const canvas = {
   name: 'canvas', flat: [0.92, 0.92, 0.92, 0.83], size: 512, tile: [0.2, 0.2], ss: 2,
-  pass: { normal: 0.6, ao: 0.5, aoRadius: 0.0008, cavity: 0.08 },
+  pass: { normal: 0.8, ao: 0.5, aoRadius: 0.0008, cavity: 0.08 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   const float P = 0.001;                                   // yarn pitch (200 per tile)
@@ -20,7 +21,11 @@ void surface(vec2 m, inout Surf s) {
   float hf = pf * (warpUp ? 0.25 : 0.6 + 0.4 * bendF);
   s.height = max(hw, hf) * 0.00025;
   float dirt = fbm(m, 12.0, 3, 0.5, 213u);
-  s.albedo = vec3(0.93) * (1.0 + 0.03 * (warpUp ? slubW : slubF)) * (1.0 - 0.03 * dirt);
+  // yarn-dyed streaks: the warp yarns differ a little in tone along their length (thin
+  // lengthwise lines that still read at a few metres, where the weave itself is sub-pixel),
+  // the weft fainter
+  float stW = fbm2(m, vec2(3.0, 260.0), 3, 0.5, 214u), stF = fbm2(m, vec2(220.0, 3.0), 2, 0.5, 215u);
+  s.albedo = vec3(0.93) * (1.0 + 0.03 * (warpUp ? slubW : slubF)) * (1.0 + 0.06 * stW + 0.02 * stF) * (1.0 - 0.03 * dirt);
   s.rough = 0.82 + 0.05 * dirt;
 }
 `,
@@ -101,8 +106,9 @@ void surface(vec2 m, inout Surf s) {
 };
 
 // Painted louvred shutters up close, tile 1 m at 1 mm/texel. Grain along u telegraphs through the
-// paint, brush marks run along it, the paint cracks along the grain and flakes in
-// elongated chips (pale primer, grey weathered wood in the deeper ones); faint lighter
+// paint, brush marks run along it, the paint cracks along the grain, weathers to chalky
+// dull patches and flakes in a few small elongated chips (pale primer, grey weathered wood
+// in the deeper ones); faint lighter
 // bead lines (paint build-up ridges) along u. Albedo near white where painted (vertex
 // colour = paint); surface.b = paint coverage.
 export const paintwooddetail = {
@@ -118,21 +124,24 @@ void surface(vec2 m, inout Surf s) {
   // cracks along the grain, on the late wood, where the paint is old
   float crack = late * smoothstep(0.55, 0.8, fbm2(m, vec2(6.0, 40.0), 3, 0.5, 415u)) * wearM;
   crack *= smoothstep(0.7, 0.95, fract(rings + 0.05));
-  // flaking in patches stretched along the grain (sparse, clustered by wear)
-  float fl = 0.5 + 0.5 * fbm2(warp(m, 30.0, 0.003, 416u), vec2(10.0, 40.0), 5, 0.6, 417u);
-  float th = 0.84 - 0.22 * wearM;
-  float chip = smoothstep(th, th + 0.012, fl);
-  float lip = smoothstep(th - 0.035, th, fl) * (1.0 - chip);
-  float deep = smoothstep(th + 0.008, th + 0.018, fl);
+  // wear reads mostly as dull chalky patches (matt, a touch paler); a few small flakes
+  // stretched along the grain, sparse even where worn (under dark paints the runtime tones
+  // them down: surface.js PAINT)
+  float chalk = smoothstep(0.2, 0.75, wearM * (0.5 + 0.5 * fbm2(m, vec2(4.0, 12.0), 3, 0.5, 421u)) * 1.6);
+  float fl = 0.5 + 0.5 * fbm2(warp(m, 60.0, 0.002, 416u), vec2(18.0, 70.0), 4, 0.6, 417u);
+  float th = 0.8 - 0.12 * wearM;
+  float chip = smoothstep(th, th + 0.01, fl);
+  float lip = smoothstep(th - 0.025, th, fl) * (1.0 - chip);
+  float deep = smoothstep(th + 0.008, th + 0.016, fl);
   // bead lines: paint ridges along u at irregular spacing
   float bv = m.y * 30.0 + fbm2(m, vec2(1.0, 2.0), 2, 0.5, 418u) * 0.6;
   float bead = (1.0 - smoothstep(0.02, 0.06, abs(fract(bv) - 0.5))) * step(0.55, sfHash(ivec2(sfMod(int(floor(bv)), 30), 0), 419u));
-  vec3 paintC = vec3(0.9) * (1.0 + 0.04 * fbm(m, 10.0, 3, 0.5, 420u) + 0.02 * brush - 0.04 * dust) * (1.0 - 0.35 * crack) * (1.0 + 0.06 * bead) * (1.0 - 0.1 * lip);
+  vec3 paintC = vec3(0.9) * (1.0 + 0.04 * fbm(m, 10.0, 3, 0.5, 420u) + 0.02 * brush - 0.04 * dust + 0.05 * chalk) * (1.0 - 0.3 * crack) * (1.0 + 0.04 * bead) * (1.0 - 0.06 * lip);
   vec3 primer = vec3(0.44, 0.43, 0.4) * (1.0 + 0.04 * dust);
   vec3 wood = mix(vec3(0.42, 0.37, 0.31), vec3(0.3, 0.26, 0.21), late);  // grey weathered wood
   s.albedo = mix(paintC, mix(primer, wood, deep), chip);
   s.cover = 1.0 - chip;
-  s.rough = mix(0.48 + 0.1 * late + 0.05 * brush + 0.06 * dust, mix(0.78, 0.9, deep), max(chip, crack));
+  s.rough = mix(0.48 + 0.1 * late + 0.05 * brush + 0.06 * dust + 0.22 * chalk, mix(0.78, 0.9, deep), max(chip, crack));
   s.height = late * 0.00008 + brush * 0.00002 + bead * 0.00012 + lip * 0.00003 - crack * 0.0002 - chip * 0.00018 - deep * 0.0002;
 }
 `,

@@ -16,7 +16,7 @@ import { crossoverPlan, paveCut, mainCut } from './crossover.js';
 // (crossover.js): the diverging rails, swept with their own mortar, open the paving.
 
 const K_CORR = 0, K_RAIL = 1, K_BAND = 2, K_GUTTER = 3, K_WALK = 4, K_GROUT = 5;
-const ROWS_PER_STEP = 8;                   // buildPaving yields after this many rows
+const ROWS_PER_STEP = 4;                   // buildPaving yields after this many rows
 const GROUT_WAVE = 0.006;                  // hand-finished mortar edge wanders by ±6 mm
 const SLAB_TONE = 0.3;                     // ground slab: dark, seen only through cracks
 const SLAB_FAR = -1.2;                     // slab depth under the blocks (m)
@@ -121,6 +121,7 @@ export function* buildPaving(ctx, chunk, rows, out) {
     infos.push(ri);
     maxL = Math.max(maxL, ri.facL - GUTTER_OUT);
     maxR = Math.max(maxR, ri.facR - GUTTER_OUT);
+    if (i % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield 'paving';
   }
   // per side: the outer edge, a column on the facade line (where the paving meets the
   // building's own ground line exactly), two columns of the facade's dirt band (FB1 and
@@ -205,7 +206,7 @@ export function* buildPaving(ctx, chunk, rows, out) {
     // N = Td x Ts with Td = (rx, hd, rz), Ts = (tx, grade + hs, tz)
     const ax = S.rx, ay = hd, az = S.rz, bx = S.tx, by = S.grade + hs, bz = S.tz;
     let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
-    const il = 1 / Math.hypot(nx, ny, nz);
+    const il = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz);
     nx *= il; ny *= il; nz *= il;
     const fc = c - nL;
     const ci = fc >= 0 && fc < nFixed ? fx.ci[fc] : colInfo(d, ciw);
@@ -286,8 +287,8 @@ export function pavingHeight(grid, s, d, dl) {
 }
 
 // the facade's dirt band columns stand this far in front of the facade line (m), less
-// where the sidewalk is narrow
-const FB1 = 0.5, FB2 = 1.0;
+// where the sidewalk is narrow (the band fades out from 0.1 to 0.5 m, see Surface.tone)
+const FB1 = 0.25, FB2 = 0.6;
 
 /** |d| of sidewalk column j (0 = on the facade line, 1-2 = the facade band columns, then
  *  nEven columns evenly in towards the gutter edge; GUTTER_OUT itself is a fixed column). */

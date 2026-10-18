@@ -537,6 +537,8 @@ const ROOM = 0.8;          // free height under a soffit: a full scroll console 
 const SIDE = 0.5;          // beside the dressing: half a console plus clearance
 const SHOP_MIN = 2.9, DOOR_MIN = 2.35, SPRING_MIN = 2.4;   // clear heights above the paving
 const ORN = new WeakMap(); // plan -> ornament (for the returns, see capGroundHead)
+// (plan.groundHeadLim: the v the ground-floor head dressing stays under, or null;
+//  plan.groundSegment: the front's round shop arches were made segmental)
 
 /**
  * Head dressing of opening o as the building shell draws it (buildings/openings.js: arch
@@ -598,6 +600,10 @@ function balconyRoom(plan, orn) {
   for (const b of bals) if (b.floor === 1) soffit = Math.min(soffit, b.y - b.slabT);
   if (soffit === Infinity) return;
   plan.groundHeadLim = soffit - ROOM;
+  // a wide round (or pointed) shop arch springs too low to come down far enough: the
+  // front's shop arches become segmental (same width, flatter crown, higher springing)
+  plan.groundSegment = plan.openings.some((o) => o.floor === 0 && o.kind === 'shop' && (o.top === 'round' || o.top === 'pointed')
+    && headDressing(plan, orn, o).top - plan.groundHeadLim > lowerBy(o, plan.groundAt, Infinity) + 0.15);
   for (const o of plan.openings) {
     if (o.floor !== 0) continue;
     // doors (lower already) only where a slab is over them
@@ -616,16 +622,19 @@ function balconyRoom(plan, orn) {
 function capGroundHead(plan, o, groundAt) {
   const lim = plan.groundHeadLim, orn = ORN.get(plan);
   if (lim == null || !orn || o.floor !== 0) return;
-  const d = headDressing(plan, orn, o);
-  let drop = d.top - lim;
-  if (drop <= 0.005) return;
-  const gHi = Math.max(groundAt(o.uc - o.w / 2), groundAt(o.uc + o.w / 2));
-  const top = o.y + o.h;
-  drop = Math.min(drop, top - gHi - (o.kind === 'door' ? DOOR_MIN : SHOP_MIN));
-  if (o.top !== 'flat' && o.rise > 0.01) drop = Math.min(drop, o.spring - gHi - SPRING_MIN);
+  if (plan.groundSegment && o.kind === 'shop' && (o.top === 'round' || o.top === 'pointed')) { o.top = 'segment'; setArch(o); }
+  const drop = lowerBy(o, groundAt, headDressing(plan, orn, o).top - lim);
   if (drop <= 0.005) return;
   o.h -= drop;
   setArch(o);
+}
+
+/** How far ground-floor opening o can come down (at most `want`), keeping its clear heights. */
+function lowerBy(o, groundAt, want) {
+  const gHi = Math.max(groundAt(o.uc - o.w / 2), groundAt(o.uc + o.w / 2));
+  let drop = Math.min(want, o.y + o.h - gHi - (o.kind === 'door' ? DOOR_MIN : SHOP_MIN));
+  if (o.top !== 'flat' && o.rise > 0.01) drop = Math.min(drop, o.spring - gHi - SPRING_MIN);
+  return drop;
 }
 
 // ------------------------------------------------------------------ coursing

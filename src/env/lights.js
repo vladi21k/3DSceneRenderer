@@ -109,6 +109,68 @@ const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
 const headColor = new THREE.Color(1.0, 0.84, 0.68);  // ~4300 K, linear
 const ss = THREE.MathUtils.smoothstep;
 
+/**
+ * Street lamp level (0..1): the photocells switch the lanterns on before sunset (fully on
+ * from t 0.72) and the night ramp holds them. The same ramp as the visible globes
+ * (catenary), so the real lights, post's lantern wash, far pools and airlight come on
+ * together with them.
+ */
+export function lampLevel(t, night) {
+  return Math.max(ss(t, 0.64, 0.72), ss(night, 0.02, 0.85));
+}
+
+// ---- dark lights keep their uniforms
+// The renderer recomputes every light's view-space position and direction each frame and
+// uploads whatever changed to every lit program it binds (the camera moves, so all of
+// them change), dark pool lights included: a few thousand uniform writes and as many
+// boxed numbers of garbage per frame. A dark light is skipped by the patched light loop
+// (its colour is zero), so its position and direction are never read: holding their last
+// values lets the uniform cache skip them. The renderer's per-light uniform structs are
+// reached through any lit material's live uniforms (they reference the shared light
+// state arrays); their vectors are swapped once for ones that ignore updates while the
+// light is dark.
+class HeldVector3 extends THREE.Vector3 {
+  constructor(src, owner) {
+    super(src ? src.x : 0, src ? src.y : 0, src ? src.z : 0);
+    this._owner = owner;
+  }
+
+  _held() {
+    const o = this._owner, c = o.color;
+    if (c) return c.r === 0 && c.g === 0 && c.b === 0;
+    const a = o.skyColor, b = o.groundColor;
+    return !!(a && b) && a.r === 0 && a.g === 0 && a.b === 0 && b.r === 0 && b.g === 0 && b.b === 0;
+  }
+
+  setFromMatrixPosition(m) { return this._held() ? this : super.setFromMatrixPosition(m); }
+  applyMatrix4(m) { return this._held() ? this : super.applyMatrix4(m); }
+  sub(v) { return this._held() ? this : super.sub(v); }
+  transformDirection(m) { return this._held() ? this : super.transformDirection(m); }
+}
+const HELD = [['spotLights', 'position', 'direction'], ['directionalLights', 'direction', null],
+  ['sunLights', 'direction', null], ['hemisphereLights', 'direction', null]];
+
+/** Swap the vectors of every light struct in a material's live light uniforms (idempotent). */
+function holdDarkLights(uniforms) {
+  let n = 0;
+  for (let k = 0; k < HELD.length; k++) {
+    const [name, a, b] = HELD[k];
+    const arr = uniforms[name] && uniforms[name].value;
+    if (!Array.isArray(arr)) continue;
+    for (let i = 0; i < arr.length; i++) {
+      const s = arr[i];
+      if (!s || typeof s !== 'object') continue;
+      if (s[a] && s[a].isVector3 && !(s[a] instanceof HeldVector3)) { s[a] = new HeldVector3(s[a], s); n++; }
+      if (b && s[b] && s[b].isVector3 && !(s[b] instanceof HeldVector3)) { s[b] = new HeldVector3(s[b], s); n++; }
+    }
+  }
+  return n;
+}
+
+const byScore = (a, b) => a.score - b.score;
+const EMPTY = Object.freeze([]);
+const REQUERY = 8;              // metres of travel before the lantern list is fetched again
+
 export class StreetLights {
   constructor(app, count = 8) {
     this.app = app;
@@ -140,51 +202,72 @@ export class StreetLights {
     this.farLamps = Array.from({ length: FAR_LAMPS }, () => new THREE.Vector4());
     this.farIntensity = 0;
     this.farMinDist = 60;               // post relights only beyond this distance (m)
+    this.level = 0;                     // lamp level (photocell ramp) of the last update
     this.lampCos = [Math.cos(LAMP_ANGLE), Math.cos(LAMP_ANGLE * (1 - LAMP_PENUMBRA))];
-    this._standards = new Map();        // pole key → merged standard (cached)
-    this._list = [];
-    this._heads = [];                   // ranked lanterns of the near standards
+    this._standards = new Map();        // pole key (number) → merged standard (cached)
+    this._all = [];                     // standards around the camera (refetched every REQUERY m)
+    this._allS = NaN;
+    this._near = [];
+    this._far = [];
+    this._seen = new Set();
+    this._heads = [];                   // ranked lanterns of the near standards (pooled records)
+    this._headPool = [];
     this._smp = { pos: new THREE.Vector3(), tan: new THREE.Vector3(), right: new THREE.Vector3(), tanH: new THREE.Vector3() };
     this._p = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
+    this._darkHold = { uniforms: null, probeAt: 0, frame: 0 };
+    this.parked = false;
   }
 
+  /** Numeric cache key of a standard (pole s in half metres, side). */
+  static _key(s, side) { return Math.round(s * 2) * 4 + (side >= 0 ? 1 : 2); }
+
   /**
-   * Lamp standards within [sMin, sMax]: lanterns from the catenary module (else the pole
-   * plan) merged per pole. A walk-side lantern inside or next to a tree crown gives its
-   * light to the track-side lantern (a light among leaves would blow them out).
+   * Lamp standards within [sMin, sMax] into `out`: lanterns from the catenary module (else
+   * the pole plan) merged per pole. A walk-side lantern inside or next to a tree crown
+   * gives its light to the track-side lantern (a light among leaves would blow them out).
    */
-  _standardsIn(sMin, sMax) {
-    const app = this.app, out = this._list;
+  _standardsIn(sMin, sMax, out) {
+    const app = this.app;
     out.length = 0;
     const cat = app.systems.catenary;
     let heads = null;
     if (cat && !cat.disabled && typeof cat.getLampHeads === 'function') {
       try { heads = cat.getLampHeads(sMin, sMax); } catch (e) { heads = null; }
     }
-    const seen = new Set();
     if (heads && heads.length) {
-      for (const it of heads) {
+      const seen = this._seen;
+      seen.clear();
+      for (let i = 0; i < heads.length; i++) {
+        const it = heads[i];
         const v = it.isVector3 ? it : (it.position || it.pos || it.world);
         if (!v || !Number.isFinite(v.x) || !Number.isFinite(it.s)) continue;
-        const key = `${Math.round(it.s * 2)}:${it.side ?? Math.sign(it.d || 1)}`;
+        const side = it.side ?? Math.sign(it.d || 1);
+        const key = StreetLights._key(it.s, side);
         let st = this._standards.get(key);
-        if (!st) { st = this._newStandard(it.s, it.side ?? Math.sign(it.d || 1)); this._standards.set(key, st); }
-        if (!seen.has(key)) { seen.add(key); st.heads.length = 0; out.push(st); }
-        st.heads.push(v);
+        if (!st) { st = this._newStandard(it.s, side); this._standards.set(key, st); }
+        if (!seen.has(key)) {
+          seen.add(key);
+          // (a resolved standard keeps its lanterns: they never move)
+          if (!st.resolved) st.heads.length = 0;
+          out.push(st);
+        }
+        if (!st.resolved) st.heads.push(v);
       }
-      for (const st of out) this._resolve(st);
+      for (let i = 0; i < out.length; i++) this._resolve(out[i]);
       return out;
     }
     // fallback: one lantern per lamp pole from the plan
     const { layout, route } = app;
     const i0 = layout.chunkIndex(sMin), n = Math.ceil((sMax - sMin) / 40) + 1;
     for (let k = 0; k <= n; k++) {
-      for (const p of layout.inChunk('poles', i0 + k)) {
+      const poles = layout.inChunk('poles', i0 + k);
+      for (let j = 0; j < poles.length; j++) {
+        const p = poles[j];
         if (!p.lamp) continue;
         const ds = route.delta(sMin, p.s);
         if (ds < 0 || ds > sMax - sMin) continue;
-        const key = `${Math.round(p.s * 2)}:${p.side}`;
+        const key = StreetLights._key(p.s, p.side);
         let st = this._standards.get(key);
         if (!st) {
           st = this._newStandard(p.s, p.side);
@@ -201,7 +284,7 @@ export class StreetLights {
 
   _newStandard(s, side) {
     if (this._standards.size > 400) this._standards.clear(); // keep the cache bounded
-    return { s, side, heads: [], pos: new THREE.Vector3(), n: 1, drop: -1, resolved: false, w: 0 };
+    return { s, side, heads: [], pos: new THREE.Vector3(), n: 1, drop: -1, resolved: false, w: 0, ds: 0, score: 0 };
   }
 
   /** Merge a standard's lanterns into one light position (once; lanterns never move). */
@@ -235,51 +318,105 @@ export class StreetLights {
     st.resolved = true;
   }
 
-  update(app, night) {
+  /**
+   * Standards around the camera, fetched for a window wider than both the real lights'
+   * and the far pools' range and refetched only every few metres of travel (the query
+   * builds new lists).
+   */
+  _around(s) {
+    const route = this.app.route;
+    if (!(Math.abs(route.delta(this._allS, s)) < REQUERY)) {
+      this._allS = s;
+      this._standardsIn(s + QUERY[0] - REQUERY, s + FAR_MAX + REQUERY, this._all);
+    }
+    return this._all;
+  }
+
+  /** Hold the uniforms of dark lights (see HeldVector3); cheap after the first install. */
+  _holdDark(app) {
+    const h = this._darkHold, r = app.renderer;
+    if (!r || !r.properties) return;
+    if (h.uniforms && h.frame++ % 30 !== 0) return;
+    if (!h.uniforms || h.frame % 600 === 1) {
+      // find a lit library material the renderer has used (its live uniforms reference the
+      // shared light state); retried until the first frame has been drawn
+      if (performance.now() < h.probeAt) return;
+      h.probeAt = performance.now() + 1000;
+      h.uniforms = null;
+      const mats = app.materials && typeof app.materials.all === 'function' ? app.materials.all() : [];
+      for (let i = 0; i < mats.length && !h.uniforms; i++) {
+        const m = mats[i];
+        if (!m || !(m.isMeshStandardMaterial || m.isMeshPhysicalMaterial || m.isMeshLambertMaterial)) continue;
+        const u = r.properties.get(m).uniforms;
+        if (u && u.spotLights && Array.isArray(u.spotLights.value) && u.spotLights.value.length) h.uniforms = u;
+      }
+      if (!h.uniforms) return;
+    }
+    // (new light structs appear when a light is added: checked every 30 frames)
+    holdDarkLights(h.uniforms);
+  }
+
+  update(app, night, level = night) {
     const s = app.cameraS ?? app.train?.s ?? app.startS;
     const { route } = app;
-    const on = night > 0.001;
+    const on = level > 0.001;
     const air = this.airlight, N = this.count;
     const unitI = LAMP_CD / LUX_PER_UNIT;
+    this.level = level;
+    this._holdDark(app);
 
     // ---- lamp standards ranked by view-weighted distance. Standards behind the view count
     // as much farther (their pools are out of frame), so looking ahead the whole pool
     // covers the stations in front, and looking back lights the ones behind.
     let D = 0;
-    let list = [];
+    const H = this._heads;
+    H.length = 0;
+    let all = EMPTY;
     if (on) {
-      list = this._standardsIn(s + QUERY[0], s + QUERY[1]);
+      all = this._around(s);
+      const list = this._near;
+      list.length = 0;
       const smp = route.sample(s, this._smp);
       app.camera.getWorldDirection(this._fwd);
       const c = THREE.MathUtils.clamp(this._fwd.x * smp.tan.x + this._fwd.z * smp.tan.z, -1, 1);
-      for (const st of list) {
+      for (let i = 0; i < all.length; i++) {
+        const st = all[i];
         const ds = route.delta(s, st.s);
         st.ds = ds;
+        if (ds < QUERY[0] || ds > QUERY[1]) continue;
         st.score = ds >= 0 ? ds * (1 + 12 * Math.max(0, -c)) : -ds * (1 + 12 * Math.max(0, c));
+        list.push(st);
       }
-      list.sort((a, b) => a.score - b.score);
+      list.sort(byScore);
       // lanterns in rank order (a lantern inside a tree crown gives its flux to its pair)
-      const H = this._heads;
-      H.length = 0;
-      for (const st of list) {
+      const P = this._headPool;
+      for (let j = 0; j < list.length; j++) {
+        const st = list[j];
         for (let k = 0; k < st.heads.length; k++) {
           if (k === st.drop) continue;
-          H.push({ st, v: st.heads[k], n: st.drop >= 0 ? st.n : 1 });
+          const rec = P[H.length] || (P[H.length] = { st: null, v: null, n: 1 });
+          rec.st = st; rec.v = st.heads[k]; rec.n = st.drop >= 0 ? st.n : 1;
+          H.push(rec);
         }
       }
       // the score of the N-th lantern: continuous in time, and every standard with a
       // nonzero weight is guaranteed a light for each of its lanterns
       D = H.length >= N ? H[N - 1].st.score : QUERY[1];
     }
-    const H = this._heads;
     for (let i = 0; i < N; i++) {
-      const l = this.pool[i], h = on ? H[i] : null;
+      const l = this.pool[i], h = on && i < H.length ? H[i] : null;
       const w = h ? 1 - ss(h.st.score, D - FADE, D) : 0;
-      if (!h || w <= 0) { l.intensity = 0; air.lampI[i] = 0; continue; }
+      if (!h || w <= 0) {
+        // a dark light is left where it is (nothing about it changes, so the renderer's
+        // uniform cache skips it)
+        if (l.intensity !== 0) l.intensity = 0;
+        air.lampI[i] = 0;
+        continue;
+      }
       l.position.set(h.v.x, h.v.y - LAMP_DROP, h.v.z);
       l.target.position.set(h.v.x, h.v.y - 10, h.v.z);
       l.target.updateMatrixWorld();
-      l.intensity = unitI * h.n * night * w;
+      l.intensity = unitI * h.n * level * w;
       air.lampPos[i].copy(h.v);
       air.lampI[i] = l.intensity;
     }
@@ -288,12 +425,22 @@ export class StreetLights {
     // real lights' fade, out to FAR_MAX
     this.farMinDist = Math.max(0, D - FADE - 15);
     if (on) {
-      const far = this._standardsIn(s + Math.max(0, D - FADE - 2), s + FAR_MAX);
+      const far = this._far;
+      far.length = 0;
+      for (let i = 0; i < all.length; i++) {
+        const st = all[i];
+        if (st.ds >= Math.max(0, D - FADE - 2) && st.ds <= FAR_MAX) far.push(st);
+      }
+      // nearest first (the uniform slots are limited)
+      for (let i = 1; i < far.length; i++) {
+        const x = far[i];
+        let j = i - 1;
+        while (j >= 0 && far[j].ds > x.ds) { far[j + 1] = far[j]; j--; }
+        far[j + 1] = x;
+      }
       let k = 0;
-      for (const st of far) {
-        if (k >= FAR_LAMPS) break;
-        const ds = route.delta(s, st.s);
-        if (ds < 0) continue;
+      for (let i = 0; i < far.length && k < FAR_LAMPS; i++) {
+        const st = far[i], ds = st.ds;
         const w = ss(ds, D - FADE, D) * (1 - ss(ds, FAR_MAX - 60, FAR_MAX));
         if (w <= 0) continue;
         this.farLamps[k++].set(st.pos.x, st.pos.y, st.pos.z, w * st.n);
@@ -301,15 +448,19 @@ export class StreetLights {
       for (; k < FAR_LAMPS; k++) this.farLamps[k].set(0, -1e4, 0, 0);
     }
     // intensity of one far lantern (the per-standard weight × lantern count is in w)
-    this.farIntensity = on ? unitI * night : 0;
+    this.farIntensity = on ? unitI * level : 0;
 
-    // ---- headlight: just ahead of the cab, 0.9 m up, aimed at the rails HEAD_AIM ahead
-    const hp = route.toWorld(s + 0.4, TRACK_OFFSET, 0.9, this.head.position);
-    route.toWorld(s + HEAD_AIM, TRACK_OFFSET, 0, this.head.target.position);
-    this.head.target.updateMatrixWorld();
-    this.head.intensity = (HEAD_CD / LUX_PER_UNIT) * night;
-    air.headPos.copy(hp);
-    air.headDir.subVectors(this.head.target.position, hp).normalize();
-    air.headI = this.head.intensity;
+    // ---- headlight (dipped beam, on with the night): just ahead of the cab, 0.9 m up,
+    // aimed at the rails HEAD_AIM ahead; while it is off it stays where it was
+    const headI = (HEAD_CD / LUX_PER_UNIT) * night;
+    if (headI > 0) {
+      const hp = route.toWorld(s + 0.4, TRACK_OFFSET, 0.9, this.head.position);
+      route.toWorld(s + HEAD_AIM, TRACK_OFFSET, 0, this.head.target.position);
+      this.head.target.updateMatrixWorld();
+      air.headPos.copy(hp);
+      air.headDir.subVectors(this.head.target.position, hp).normalize();
+    }
+    if (this.head.intensity !== headI) this.head.intensity = headI;
+    air.headI = headI;
   }
 }

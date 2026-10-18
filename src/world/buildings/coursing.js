@@ -70,7 +70,7 @@ function nearest(lay, J, T, n, out) {
   }
   return out;
 }
-const _ca = [], _cb = [], _cc = [], _cd = [];
+const _ca = [], _cb = [], _cc = [], _cd = [], _cn = [0, 0];
 
 /**
  * Per-face joint fitter. uvx: the face's base transform [su, ou, sv, ov] (tu = u su + ou,
@@ -171,6 +171,22 @@ export class JointFitter {
     }
     if (cur < rb - 1e-4) { const t = R[R.length - 1]; out.push(cur, rb, t.k, t.off); }
     return out;
+  }
+
+  /**
+   * Wall u of the first head joint of course rg past u in direction dir (±1), at least
+   * minGap away, with the fitted transform at u; u + dir · maxLen when there is none.
+   */
+  nextJoint(rg, u, dir, minGap = 0.2, maxLen = 2) {
+    const tr = this.at(rg, u, _cn);
+    const k = tr[0], off = tr[1], T = u * k + off;
+    const J = rowJoints(this.lay, rg);
+    let best = Infinity;
+    for (const x of nearest(this.lay, J, T + dir * (minGap + 0.3) * k, 8, _cc)) {
+      const d = ((x - T) * dir) / k;
+      if (d >= minGap && d < best) best = d;
+    }
+    return u + dir * Math.min(best, maxLen);
   }
 
   /** Transform at u in course rg (for spandrel pieces): [k, off]. */

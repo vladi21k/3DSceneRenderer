@@ -126,6 +126,12 @@ export class Surface {
   }
 
   // ------------------------------------------------------------------ mouths
+  /** The frame of cross street c's mouth on `side` (cached): start (world, on the main
+   *  facade line at the side street's centre line, on the shared ground), along (unit,
+   *  horizontal: the main street's direction of travel at c.s, the mouth line), dirOut
+   *  (unit, horizontal: up the side street, turned by c.angle from the main street's
+   *  right × side), hw (layout.halfWidth there) and len (how far out the side street is
+   *  built, m). A point at mouth coordinates (a, x) lies at start + along·a + dirOut·x. */
   mouth(c, side) {
     const key = c.s * 4 + side;
     let m = this.mouths.get(key);
@@ -137,7 +143,7 @@ export class Surface {
       const out = smp.right.clone().multiplyScalar(side);
       const ca = Math.cos(c.angle || 0), sa = Math.sin(c.angle || 0);
       // rotate about +Y (same convention as Vector3.applyAxisAngle)
-      const dirOut = { x: out.x * ca + out.z * sa, y: 0, z: -out.x * sa + out.z * ca };
+      const dirOut = out.clone().set(out.x * ca + out.z * sa, 0, -out.x * sa + out.z * ca);
       m = { c, side, hw, start, along, dirOut, len: c.depth + 16 + 30 };
       this.mouths.set(key, m);
     }
@@ -316,12 +322,12 @@ export class Surface {
       // street, else the line FACADE_OVERLAP inside the sidewalk's outer edge)
       const fd = f && f.d === f.d ? (f.d < 0 ? -f.d : f.d) : (d > 0 ? ri.edgeR : -ri.edgeL) - FACADE_OVERLAP;
       const x = Math.max(0, fd - a);
-      // dirt collected along the building line (in front of plinths, steps and shop
-      // fronts, which stand up to ~0.4 m proud of the facade line): a band ~0.6 m wide,
-      // patchy, with a softer tail further out
+      // dirt collected along the building line: a patchy band ~0.3 m wide (the facade's
+      // own plinth darkening and dirt line stand above it, so the two must not double
+      // the dark at the joint), with a softer tail further out
       const pb = Math.max(0, Math.min(1, 0.55 + 1.1 * n2 + 0.6 * n1));
-      const band = 1 - smooth((x - 0.5) / 0.6);
-      v *= 1 - (0.14 + 0.15 * pb) * band - (0.04 + 0.05 * smooth(n1 + 0.2)) * Math.exp(-x / 1.1);
+      const band = 1 - smooth((x - 0.1) / 0.4);
+      v *= 1 - (0.12 + 0.13 * pb) * band - (0.035 + 0.045 * smooth(n1 + 0.2)) * Math.exp(-x / 0.9);
       warm += 0.025 * band;
       // soil and leaf litter around tree pits
       const sp = ri.spots;

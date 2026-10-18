@@ -33,6 +33,7 @@ import { createGroundShade } from './vegetation/groundShade.js';
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3();
 const _c = new THREE.Color(), _e = new THREE.Euler();
 const _yAxis = new THREE.Vector3(0, 1, 0);
+const CLEAR_STEM = 2.85;     // m: lowest crown base of a young street tree
 const BARK_LOD_SIZE = 0.65;  // bark picks its detail level as if the tree were this much smaller
 const _planter = { pos: new THREE.Vector3(), sx: 1, sz: 1 };
 
@@ -146,7 +147,9 @@ const vegetation = {
       const heading = route.heading(t.s);
       // the pruned (clearance) side of the template faces the tracks; some yaw jitter
       const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.25);
-      const sy = THREE.MathUtils.clamp(height / tpl.height, 0.82, 1.22);
+      // young trees keep a clear stem of at least CLEAR_STEM (pruned for the sidewalk: the
+      // crowns start above the cab eye, so shopfronts and café umbrellas read under them)
+      const sy = THREE.MathUtils.clamp(height / tpl.height, tpl.mature ? 0.82 : Math.max(0.82, CLEAR_STEM / tpl.crownBase), 1.22);
       const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.15 : 1.2);
       const sx = sxz * r.range(0.9, 1.1), sz = sxz * r.range(0.9, 1.1) * (mirror ? -1 : 1);
       // lean: mostly away from the tracks (local +x), a little along the street

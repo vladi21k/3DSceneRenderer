@@ -2,7 +2,7 @@ import {
   RIDE_D, BAND, BAND_LO, BAND_HI, TRAM_LEN, NO_GO_AHEAD, BRAKE_DECEL, SWEPT_HALF, SWEPT_AHEAD, AGENT_R,
   PASS_BASE, PASS_PER_V, CLEAR_T,
 } from './constants.js';
-import { KIND, ST, TASK, MOB } from './agent.js';
+import { KIND, ST, TASK, MOB, settleShape } from './agent.js';
 import { MAX_SPEED, TRACK_ZONE_HALF } from '../../core/config.js';
 import { footInBand, footBandGap, footAt } from './footprint.js';
 
@@ -34,7 +34,7 @@ import { footInBand, footBandGap, footAt } from './footprint.js';
 // absorbed people get a bell request 5 s before, and the cab's driver brakes (Tram.obstacle) for
 // anybody who cannot make it out any more.
 
-const _ft = { fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 };
+const _ft = settleShape({ fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 });
 const REQ_HALF = 1.6;   // people this close to the ride track centre may ask for the bell
 const V_MAX = MAX_SPEED; // the tram's governed top speed (m/s)
 const UB_EXTRA = AGENT_R + 0.15;  // unit band: body half width + this (its driver brakes for centres within half + 0.38, or heading in)
@@ -44,8 +44,8 @@ const CLEAR_DEADLINE = 4.0;       // out of the cab's band at least this many se
 const PAIR_GAP = 3.0;             // the two trams pass a spot within this many seconds of each other: a pair
 const PAIR_EDGE = TRACK_ZONE_HALF + 0.4;   // ... and the corridor is left to beyond |d| = PAIR_EDGE
 const CENTRE_REFUGE = 0.9;        // the strip |d| < this between the tracks is no refuge with a unit near
-const _iv = { lo: 0, hi: 0 };
-const _pw = { T: null, tc0: 0, tc1: 0, tu0: 0, tu1: 0 };
+const _iv = settleShape({ lo: 0, hi: 0 });
+const _pw = settleShape({ T: null, tc0: 0, tc1: 0, tu0: 0, tu1: 0 });
 
 export class TramWatch {
   constructor(crowd) {
@@ -72,6 +72,11 @@ export class TramWatch {
     // oncoming units: trackers rebuilt every frame (crowd frame, unwrapped s)
     this.units = [];
     this.uStats = { leftTrack: 0, leftTrackLog: [], blockedS: 0, clears: 0, rescues: 0, rescueLog: [], blocked: 0, boarded: 0, alighted: 0, bells: 0, sidesteps: 0 };
+    this._uPool = [];
+    this._cabRescue = false; this._obsWas = Infinity;
+    // (numbers as doubles from the start: c.tram is read by nearly every crowd function, and its
+    // first fraction (the tram's first acceleration) would change its class mid-ride)
+    settleShape(this, new Set(['n']));
   }
 
   /** The oncoming units near the populated range, as trackers: nose sU (unwrapped), speed v
@@ -87,7 +92,7 @@ export class TramWatch {
       const rel = sU - c.camU;
       if (rel < -120 || rel > 820) continue;
       const v = Math.max(0, u.speed || 0), half = u.halfWidth || 1.325;
-      const T = this._uPool[u.id] || (this._uPool[u.id] = {});
+      const T = this._uPool[u.id] || (this._uPool[u.id] = newTracker());
       T.i = u.id; T.sU = sU; T.v = v; T.acc = Math.max(0, u.accel || 0); T.len = u.length || 32; T.half = half;
       T.d = Number.isFinite(u.d) ? u.d : -RIDE_D; T.state = u.state; T.UB = half + UB_EXTRA;
       // (passing it, nobody walks closer than 0.9 m to the street's centre line either)
@@ -105,7 +110,6 @@ export class TramWatch {
 
   update(app, trainU) {
     const tr = app.train || {};
-    if (!this._uPool) this._uPool = [];
     this._units(app);
     this.trainU = trainU;
     this.v = Math.max(0, tr.speed || 0);
@@ -762,13 +766,12 @@ export class TramWatch {
   /** Emit at most one bell request every couple of seconds (sooner when it gets more urgent), and
    *  hand the cab's driver the nearest person it must brake for (its obstacle; Infinity: none). */
   flushRequests(app, time) {
-    const cab = app.train && app.train.tram;
-    if (cab && 'obstacle' in cab) {
-      // (the crowd frame is the camera's: the driver measures from the cab front)
-      cab.obstacle = this.obstacle;
-      if (this.obstacle < 1e9 && !(this._obsWas < 1e9)) this.stats.cabBrake++;
-      this._obsWas = this.obstacle;
-    }
+    const tr = app.train, cab = tr && tr.tram;
+    // (the crowd frame is the camera's: the driver measures from the cab front)
+    if (tr && typeof tr.setObstacle === 'function') tr.setObstacle(this.obstacle, 'crowd');
+    else if (cab && 'obstacle' in cab) cab.obstacle = this.obstacle;
+    if (this.obstacle < 1e9 && !(this._obsWas < 1e9)) this.stats.cabBrake++;
+    this._obsWas = this.obstacle;
     const u = this.reqUrgency;
     if (u > this.stats.maxUrgency) this.stats.maxUrgency = u;
     if (u < 0.15) return;
@@ -782,6 +785,11 @@ export class TramWatch {
   }
 
   onBell(time) { this.bellAt = time; this.stats.bells++; }
+}
+
+/** An oncoming unit's tracker (fields fixed up front, see settleShape). */
+function newTracker() {
+  return settleShape({ i: 0, sU: 0, v: 0, acc: 0, len: 32, half: 1.325, d: 0, state: '', UB: 0, pass: 0, brakeAt: 0, reach: 0 }, new Set(['i']));
 }
 
 /** Does the sight line from (s0, d0, height h0) to (s1, d1, h1) pass through the box

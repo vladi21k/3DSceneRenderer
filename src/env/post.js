@@ -455,9 +455,12 @@ const post = {
     // the camera and the sunlit far end would otherwise fog the whole view)
     pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1) * lerp(1, 0.35, into * ss(t, 0.4, 0.5));
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
-    pu.uNightAir.value = night;
+    // dusk airlight (lamp and headlight intensities already carry their own ramps)
+    const lamps = env ? env.state.lamps ?? night : 0;
+    pu.uNightAir.value = Math.max(night, lamps);
     // frosted globes under a shallow cap send a little of their light sideways and up
-    pu.uWash.value = 0.08 * night;
+    // (on the lamps' photocell ramp, with the real lights and the globes)
+    pu.uWash.value = 0.08 * lamps;
     // contact shadows read deeper once the light is all lamps and sky
     pu.uAOStrength.value = Math.min(AO.strength * lerp(1, 1.3, ss(night, 0.5, 1)), 1);
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
@@ -535,6 +538,23 @@ const post = {
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
     fu.uSkySat.value = this.skySatK * THREE.MathUtils.lerp(TONE.skySat[0], TONE.skySat[1], ss(t, 0.45, 0.8));
+  },
+
+  /**
+   * The last resolved (anti-aliased) frame, scene-linear HDR before exposure, with its
+   * unjittered view-projection, camera position and field of view; `valid` is false
+   * while there is none (TAA off, a cut). Read it during the update phase, before this
+   * frame renders (the oncoming trams' glass reflects the street from it).
+   */
+  get history() {
+    const h = this._hist || (this._hist = { texture: null, viewProj: null, camPos: null, fov: 0, valid: false });
+    const ok = !!(this.taaOn && this.taaRT && this.taaValid && this.prevVP);
+    h.texture = ok ? this.taaRT[this.taaPing ^ 1].texture : null;
+    h.viewProj = this.prevVP || null;
+    h.camPos = this.prevCamPos || null;
+    h.fov = this.prevFov || 0;
+    h.valid = ok;
+    return h;
   },
 
   /** Thin-lens depth of field: circle of confusion scale (px), focus distance and blur cap. */

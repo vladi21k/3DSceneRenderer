@@ -55,6 +55,13 @@ export class ShadowBatcher {
     this.frame = 0;
     this._mcursor = 0;
     this.stats = { proxies: 0, sources: 0, built: 0, dropped: 0 };
+    this._list = [];              // the records, in insertion order
+    this._addChunk = (c) => {
+      if (!c.ready || !c.group.visible || !c.group.parent || this.records.has(c.group)) return;
+      const rec = { group: c.group, s: 0.5 * (c.s0 + c.s1), active: false, proxies: [], sources: [], retryAt: this.frame + 2 };
+      this.records.set(c.group, rec);
+      this._list.push(rec);
+    };
     this._warmup();
   }
 
@@ -70,22 +77,27 @@ export class ShadowBatcher {
     const world = this.app.world;
     if (!world || !world.chunks) return;
 
-    // forget chunks that were recycled
-    for (const [group, rec] of this.records) {
-      if (!group.parent) { this._drop(rec, false); this.records.delete(group); }
+    // forget chunks that were recycled (the records are also kept in an array: iterating
+    // the map every frame would allocate an entry per record)
+    const list = this._list;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const rec = list[i];
+      if (rec.group.parent) continue;
+      this._drop(rec, false);
+      this.records.delete(rec.group);
+      list[i] = list[list.length - 1];
+      list.pop();
     }
     // new, finished chunks
-    for (const c of world.chunks.values()) {
-      if (!c.ready || !c.group.visible || !c.group.parent) continue;
-      if (!this.records.has(c.group)) this.records.set(c.group, { group: c.group, s: 0.5 * (c.s0 + c.s1), active: false, proxies: [], sources: [], retryAt: this.frame + 2 });
-    }
+    world.chunks.forEach(this._addChunk);
 
     this._validate();
 
     // build (or rebuild) one chunk at a time, within the frame budget
     const t0 = performance.now();
     if (!this.job) {
-      for (const rec of this.records.values()) {
+      for (let i = 0; i < list.length; i++) {
+        const rec = list[i];
         if (rec.active || rec.building || this.frame < rec.retryAt) continue;
         this.job = this._plan(rec);
         break;
@@ -415,7 +427,9 @@ export class ShadowBatcher {
 
   _validate() {
     let checks = MATRIX_CHECKS;
-    for (const rec of this.records.values()) {
+    const list = this._list;
+    for (let r = 0; r < list.length; r++) {
+      const rec = list[r];
       if (!rec.active) continue;
       if (!rec.group.visible) { this._drop(rec, true); continue; }
       const n = rec.sources.length;

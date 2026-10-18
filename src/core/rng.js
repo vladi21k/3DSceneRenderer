@@ -54,6 +54,11 @@ export class RNG {
 const _L = new Float64Array(4);
 const _INV = 1 / 4294967296;
 
+// For hot paths that evaluate the noises themselves (route.surface): lattice1(i0, i1, seed)
+// and lattice2(x0, x1, y0, y1, seed) take integer lattice coordinates (no boxing) and leave
+// their values in LATTICE (read them at once).
+export { _L as LATTICE, _lattice1 as lattice1, _lattice2 as lattice2 };
+
 /** _L[0] = value at i0, _L[1] = value at i1. */
 function _lattice1(i0, i1, seed) {
   const sb = Math.imul((seed | 0) + 0x632be5ab, 0xc2b2ae35);

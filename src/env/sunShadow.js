@@ -43,6 +43,9 @@ const _near = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _far = [0, 1, 2, 3].map(() => new THREE.Vector3());
 const _corners = Array.from({ length: 8 }, () => new THREE.Vector3());
 const _axes = new Float32Array(9);   // light-space axes in world space (rows: x, y, z)
+// convex hull scratch (setOutline): corner x, y, sort order, hull stack
+const _hx = new Float64Array(8), _hy = new Float64Array(8), _ho = new Int32Array(8), _hs = new Int32Array(18);
+const hullCross = (o, a, b) => (_hx[a] - _hx[o]) * (_hy[b] - _hy[o]) - (_hy[a] - _hy[o]) * (_hx[b] - _hx[o]);
 
 // casters too fine for a coarse cascade: wrought iron, ironwork cards, lamp scrolls
 const THIN_MATERIAL = /^(ironwork\.(parts|card)|metal\.(iron|wire))|catenaryThin/;
@@ -128,26 +131,45 @@ class CascadeFrustum extends THREE.Frustum {
     this.axes = null;   // light-space axes (shared): x, y, z rows
   }
 
-  /** Light-space convex hull of the slice corners (Andrew's monotone chain), as edge lines. */
+  /** Light-space convex hull of the slice corners (Andrew's monotone chain), as edge lines.
+   *  Allocation-free: it runs for every redrawn cascade each frame. */
   setOutline(corners, axes) {
     this.axes = axes;
-    const pts = corners.map((v) => [v.x, v.y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-    const lower = [], upper = [];
-    for (const q of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
-    for (let i = pts.length - 1; i >= 0; i--) { const q = pts[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
-    const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+    const n = corners.length, X = _hx, Y = _hy, O = _ho, Hs = _hs;
+    let minZ = Infinity;
+    for (let i = 0; i < n; i++) { X[i] = corners[i].x; Y[i] = corners[i].y; O[i] = i; minZ = Math.min(minZ, corners[i].z); }
+    // sort by x, then y (insertion sort: 8 points)
+    for (let i = 1; i < n; i++) {
+      const v = O[i];
+      let j = i - 1;
+      while (j >= 0 && (X[O[j]] > X[v] || (X[O[j]] === X[v] && Y[O[j]] > Y[v]))) { O[j + 1] = O[j]; j--; }
+      O[j + 1] = v;
+    }
+    // lower hull, then upper hull, into one stack (the last point of each is dropped)
+    let m = 0;
+    for (let i = 0; i < n; i++) {
+      const q = O[i];
+      while (m >= 2 && hullCross(Hs[m - 2], Hs[m - 1], q) <= 0) m--;
+      Hs[m++] = q;
+    }
+    const lo = m;
+    for (let i = n - 2; i >= 0; i--) {
+      const q = O[i];
+      while (m > lo && hullCross(Hs[m - 2], Hs[m - 1], q) <= 0) m--;
+      Hs[m++] = q;
+    }
+    m--;   // the first point closes the loop
     // outward unit normal and offset of each counter-clockwise edge: distance = n·p − c
     let k = 0;
-    for (let i = 0; i < hull.length; i++) {
-      const a = hull[i], b = hull[(i + 1) % hull.length];
-      const ex = b[0] - a[0], ey = b[1] - a[1], l = Math.hypot(ex, ey);
+    for (let i = 0; i < m; i++) {
+      const a = Hs[i], b = Hs[(i + 1) % m];
+      const ex = X[b] - X[a], ey = Y[b] - Y[a], l = Math.sqrt(ex * ex + ey * ey);
       if (l < 1e-6) continue;
       const nx = ey / l, ny = -ex / l;
-      this.hull[k++] = nx; this.hull[k++] = ny; this.hull[k++] = nx * a[0] + ny * a[1];
+      this.hull[k++] = nx; this.hull[k++] = ny; this.hull[k++] = nx * X[a] + ny * Y[a];
     }
     this.hullN = k / 3;
-    this.minZ = Math.min(...corners.map((v) => v.z));
+    this.minZ = minZ;
   }
 
   /**
@@ -290,7 +312,7 @@ export class StreetSunShadow extends SunLightShadow {
     if (Math.abs(_up.dot(_dir)) > 0.99) _up.set(0, 0, 1);
     _m.lookAt(_c.set(0, 0, 0), _dir, _up);
     _viewToLight.copy(_m).transpose().multiply(viewCamera.matrixWorld);
-    { const e = _m.elements; _axes.set([e[0], e[1], e[2], e[4], e[5], e[6], e[8], e[9], e[10]]); }
+    { const e = _m.elements; _axes[0] = e[0]; _axes[1] = e[1]; _axes[2] = e[2]; _axes[3] = e[4]; _axes[4] = e[5]; _axes[5] = e[6]; _axes[6] = e[8]; _axes[7] = e[9]; _axes[8] = e[10]; }
 
     // caster culling context: view position/direction and the sun's horizontal reach
     const ctx = this._ctx;

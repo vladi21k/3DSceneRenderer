@@ -176,5 +176,34 @@ export class Agent {
     this.rh = 0; this.rhS = 0; this.rhValid = false; // route heading at rhS (refreshed every 0.2 m)
     this.wvx = 0; this.wvz = 0; // world velocity of the figure (m/s, actual displacement)
     this.lnN = 0; this.lnJ = 0; this.fwF = 0; this.fwR = 0; this.fwTT = 0; // slow noise (pace, heading jitter, group slot wander), 4 Hz
+    settleAgent(this);
   }
+}
+
+// Integer fields (codes, indices, bit fields): they never hold fractions.
+const INT_FIELDS = new Set(['slot', 'serial', 'kind', 'state', 'task', 'step', 'lane', 'next', 'nFollow', 'mob', 'mobPrev',
+  'propSeed', 'appearance', 'wSeed', 'uI', 'lookU', 'boardU', 'pair', 'serveTi', 'pathI', 'frontN', 'stuckN', 'after']);
+
+/** Fixes an object's hidden class up front (agents, and the scratch objects the per-frame code
+ *  shares). V8 gives a numeric field that starts as a small integer the integer representation,
+ *  and a field written only once is taken as constant; the first fraction written to such a field
+ *  later (a rare event mid-ride: the first cyclist, the tram's first acceleration) or its first
+ *  rewrite changes the class, and every function compiled against the old one is thrown back to
+ *  unoptimised code for a while (where every number it touches is boxed: garbage, and a hitch).
+ *  So each numeric field (but the `ints`) is given the double representation now, and every
+ *  number and boolean field is written twice. */
+export function settleShape(o, ints = null) {
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (typeof v === 'number') { o[k] = ints && ints.has(k) ? v + 1 : 0.5; o[k] = v; }
+    else if (typeof v === 'boolean') { o[k] = !v; o[k] = v; }
+  }
+  return o;
+}
+
+function settleAgent(a) {
+  settleShape(a, INT_FIELDS);
+  // (null or a number)
+  a.narrowS = 0.5; a.narrowS = null;
+  a.stnS = 0.5; a.stnS = null;
 }

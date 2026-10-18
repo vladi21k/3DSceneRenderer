@@ -9,6 +9,7 @@ import { courseProfile, plinthProfile, corniceProfile, dentils, modillions, quoi
 import { parapetProfile, balustrade, merlons, pitchedRoof, solarHeater, heaterRadius, sunYaw, waterTank, acUnit, antenna, headHouse, satelliteDish } from './roof.js';
 import { upperVolume, upperFootprint } from './upper.js';
 import { partyWalls } from './party.js';
+import { rusticBlocks } from './rustic.js';
 
 // Masonry shell of one building lot, generated from its facade plan:
 // wall fields with real openings, reveals and dark closed interiors, arches with
@@ -149,6 +150,16 @@ export function* lotSteps(B, lot, ends, q, metas) {
     return path;
   };
 
+  // exposed street corners of the main front (rusticated ground floors dress them with
+  // proud blocks that wrap the corner, see rustic.js): {dir, len} of the side, or null
+  const rEnds = [0, 1].map((e) => {
+    const x = E[e];
+    if (x.cut) return null;
+    if (x.corner) return { dir: x.dir, len: x.len };
+    if (!x.nb) return { dir: [0, -1], len: D };
+    return x.front > 0.08 ? { dir: [0, -1], len: x.front } : null;
+  });
+
   // ------------------------------------------------------------- faces (front + corner returns)
   const faces = [{ face: plan, frame: f, main: true }];
   for (const r of plan.returns || []) faces.push({ face: r, frame: r.frame, main: false });
@@ -186,7 +197,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
       ctx.uvR = sinks.rough.uvx.slice();
     }
     if (q.fit && (metas.ashlarLay || metas.roughLay)) {
-      const rects = fitRects(plan, face, ops, orn, F.main);
+      const rects = fitRects(plan, face, ops, orn, F.main, rustic && F.main ? rEnds : null, rustic);
       ctx.fit = {
         ashlar: metas.ashlarLay ? new JointFitter(metas.ashlarLay, uvA, face.width, rects) : null,
         rough: rustic && metas.roughLay ? new JointFitter(metas.roughLay, sinks.rough.uvx, face.width, rects) : null,
@@ -206,6 +217,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (i % 3 === 2) { B.mark('openings'); yield; B.frameFromLot(F.frame); }
     }
     B.mark('openings');
+    // proud rock-faced blocks at the arrises of the rusticated ground floor
+    if (rustic && q.rustic) { rusticBlocks(ctx, face, ops, F.main ? rEnds : null); B.mark('rustic'); }
 
     // pilasters between bays (giant order over the upper floors)
     B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.04);
@@ -384,8 +397,13 @@ const quoinH = (plan) => 2 * plan.coursing.ch;
  * openings widened by their surrounds (up to the spring line; above it the stones are
  * cut to the arch), flat heads, aprons, pilaster shafts and quoin blocks.
  */
-function fitRects(plan, face, ops, orn, main) {
+function fitRects(plan, face, ops, orn, main, rEnds = null, rustic = null) {
   const R = [];
+  // exposed corners of the rusticated zone: a head joint on the arris (see rustic.js)
+  if (rEnds && rustic) {
+    if (rEnds[0]) R.push({ a: -1, b: 1e-3, v0: rustic.v0, v1: rustic.v1 });
+    if (rEnds[1]) R.push({ a: face.width - 1e-3, b: face.width + 1, v0: rustic.v0, v1: rustic.v1 });
+  }
   for (const o of ops) {
     const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2, yt = o.y + o.h;
     const sw = surroundOf(o, face, orn);

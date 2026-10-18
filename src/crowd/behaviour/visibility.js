@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TRACK_OFFSET } from '../../core/config.js';
+import { settleShape } from './agent.js';
 
 // What the camera can see, so people only appear or vanish where nobody is looking:
 // outside the view frustum, behind a facade (inside a doorway recess or a side street)
@@ -20,6 +21,7 @@ export class Visibility {
     this.camPos = new THREE.Vector3();
     // (s, d, h) -> world point: route.toWorld, or the crowd's (which follows the side streets)
     this.toWorld = (s, d, h, out) => route.toWorld(s, d, h, out);
+    settleShape(this);
   }
 
   /** camU: crowd's unwrapped camera s; camS: app.cameraS (wrapped). */

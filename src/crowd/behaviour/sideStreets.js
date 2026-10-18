@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SIDE_LOT_START } from '../../world/layout.js';
-import { KIND, ST, TASK, LANE } from './agent.js';
+import { KIND, ST, TASK, LANE, settleShape } from './agent.js';
 
 // The side streets. People walk them the way they do the main street, in route coordinates:
 // inside a cross street's opening, beyond the main building line, s runs across the side
@@ -29,7 +29,8 @@ export class SideStreets {
     this.geo = new Map();
     this.t = 0;
     this.n = new Map();       // people out in each side street (counted every maintenance pass)
-    this.stats = { spawnIn: 0, spawnOut: 0, spawnStand: 0, gone: 0, fail: 0 };
+    this.stats = settleShape({ spawnIn: 0, spawnOut: 0, spawnStand: 0, gone: 0, fail: 0 }, new Set(['spawnIn', 'spawnOut', 'spawnStand', 'gone', 'fail']));
+    settleShape(this);
   }
 
   /** Frame and levels of cross street cs on `side` (cached). */

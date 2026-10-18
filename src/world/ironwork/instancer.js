@@ -155,9 +155,13 @@ export class InstancePool {
     this.cls = opts.cls || null;
     this.group = group;
     this.entries = new Set();
+    this.list = [];            // the entries again, for allocation-free per-frame loops
     this.total = 0;
     this.cap = 0;
     this.meshes = levels.map(() => null);
+    this.counts = new Int32Array(levels.length);
+    this.arrays = levels.map(() => null);
+    this.colors = levels.map(() => null);
     this.dirty = false;
     this.sphere = new THREE.Sphere();
     this._grow();
@@ -165,7 +169,9 @@ export class InstancePool {
 
   /** Adds a chunk's entry (levels are assigned on the next partition). */
   attach(e) {
+    if (this.entries.has(e)) return;
     this.entries.add(e);
+    this.list.push(e);
     this.total += e.n;
     e.lvl.fill(254);
     e.cam = null;
@@ -177,6 +183,7 @@ export class InstancePool {
 
   detach(e) {
     if (!this.entries.delete(e)) return;
+    this.list.splice(this.list.indexOf(e), 1);
     this.total -= e.n;
     this._bounds();
     this.dirty = true;
@@ -184,8 +191,8 @@ export class InstancePool {
 
   _bounds() {
     _b.makeEmpty();
-    for (const e of this.entries) _b.union(e.sphere.getBoundingBox(_bb));
-    if (this.entries.size) _b.getBoundingSphere(this.sphere);
+    for (let i = 0; i < this.list.length; i++) _b.union(this.list[i].sphere.getBoundingBox(_bb));
+    if (this.list.length) _b.getBoundingSphere(this.sphere);
   }
 
   /** (Re)creates the level meshes with room for the current total (and some). */
@@ -217,7 +224,9 @@ export class InstancePool {
    *  repacks the level meshes when an entry came or went, or a cluster appeared or
    *  vanished, or an instance changed level. */
   update(cam, limits, force, frustum) {
-    for (const e of this.entries) {
+    const list = this.list;
+    for (let q = 0; q < list.length; q++) {
+      const e = list[q];
       const vis = !frustum || frustum.intersectsSphere(e.sphere);
       if (vis !== e.vis) { e.vis = vis; this.dirty = true; if (vis) e.cam = null; }
       if (!vis) continue; // its levels are refreshed when it comes into view
@@ -272,9 +281,15 @@ export class InstancePool {
    *  (partial update ranges left stale data on the GPU for meshes culled meanwhile). */
   repack() {
     this.dirty = false;
-    const counts = this.meshes.map(() => 0);
-    const M = this.meshes.map((m) => m && m.instanceMatrix.array), C = this.meshes.map((m) => m && m.instanceColor && m.instanceColor.array);
-    for (const e of this.entries) {
+    const counts = this.counts, M = this.arrays, C = this.colors, meshes = this.meshes, list = this.list;
+    for (let k = 0; k < meshes.length; k++) {
+      const m = meshes[k];
+      counts[k] = 0;
+      M[k] = m && m.instanceMatrix.array;
+      C[k] = m && m.instanceColor && m.instanceColor.array;
+    }
+    for (let r = 0; r < list.length; r++) {
+      const e = list[r];
       if (!e.vis) continue;
       const em = e.m, ec = e.c, c0 = e.c0, cv = e.cv;
       for (let q = 0; q < cv.length; q++) {
@@ -290,14 +305,15 @@ export class InstancePool {
         }
       }
     }
-    this.meshes.forEach((mesh, k) => {
-      if (!mesh) return;
+    for (let k = 0; k < meshes.length; k++) {
+      const mesh = meshes[k];
+      if (!mesh) continue;
       mesh.count = counts[k];
       mesh.visible = counts[k] > 0;
-      if (!counts[k]) return;
+      if (!counts[k]) continue;
       mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, counts[k] * 16); mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) { mesh.instanceColor.clearUpdateRanges(); mesh.instanceColor.addUpdateRange(0, counts[k] * 3); mesh.instanceColor.needsUpdate = true; }
-    });
+    }
   }
 }
 

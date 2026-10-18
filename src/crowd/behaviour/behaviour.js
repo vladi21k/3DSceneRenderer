@@ -1,7 +1,7 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { noise1 } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
-import { KIND, ST, TASK, LANE, MOB } from './agent.js';
+import { KIND, ST, TASK, LANE, MOB, settleShape } from './agent.js';
 import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
 import { thinkCycle, maybeMount } from './cyclist.js';
 import { serveArrive } from './staff.js';
@@ -21,7 +21,7 @@ const crossEdge = (side, a = null) => (side > 0 ? RIDE_EDGE : CORR_EDGE) + (a &&
 const UTURN_T = 1.35;                       // seconds for a turn-around while walking
 const PI = Math.PI;
 const len2 = (x, y) => Math.sqrt(x * x + y * y);
-const tmpBand = { lo: 0, hi: 0 };
+const tmpBand = settleShape({ lo: 0, hi: 0 });
 
 // ------------------------------------------------------------------ lanes
 
@@ -234,7 +234,7 @@ function headway(c, a, out) {
   if (a.hwV < 9 && vs > a.hwV) out.vs *= Math.max(0, a.hwV) / Math.max(1e-3, vs);
 }
 
-const _strip = { lo: 0, hi: 0 };
+const _strip = settleShape({ lo: 0, hi: 0 });
 /** The strip of street a lane walker (and its group) walks in, as signed d [lo, hi]. */
 function stripOf(c, a) {
   const map = c.map;
@@ -361,7 +361,9 @@ function lineFree(c, a, B, dLo, dHi, len) {
 /** Parents wait for a child that has fallen behind (a pole, a crowd, a corner). */
 function waitForChild(c, a, out) {
   let far = 0, who = null;
-  for (const f of a.followers) {
+  const F = a.followers;
+  for (let i = 0; i < F.length; i++) {
+    const f = F[i];
     if (!f.isChild) continue;
     const fs = f.s - a.s, fd = f.d - a.d, dd = Math.sqrt(fs * fs + fd * fd);
     if (dd > far) { far = dd; who = f; }
@@ -462,7 +464,7 @@ function follow(c, a, out) {
     ts = L.s + cf * F - sf * R; td = L.d + sf * F + cf * R;
     // still inside a side street: out through its opening first (not into the corner)
     {
-      const as = a.d >= 0 ? 1 : -1, m = c.map.mouthAt(a.s, as);
+      const as = a.d >= 0 ? 1 : -1, m = c.map.mouthAtA(a);
       if (m && !a.inDoor && Math.abs(a.d) > c.map.mouthLine(m, as) + 0.15) {
         const ms = c.unwrap(m.s), half = Math.max(0.3, m.width / 2 - 1.6);
         if (Math.abs(a.s - ms) < m.width / 2) ts = Math.max(ms - half, Math.min(ms + half, ts));
@@ -1027,6 +1029,16 @@ export function arrive(c, a) {
         const past = side > 0 ? a.d < RIDE_D - BAND : a.d > RIDE_D + BAND;
         // (and the oncoming units' track: crossed only with a safe gap too)
         const pastU = side < 0 && a.d > -RIDE_D + BAND;
+        // at a junction the lights rule: wait at the kerb on red, and do not start on a flashing
+        // green (whoever is already out on the corridor goes on across)
+        if (!(past && pastU) && Math.abs(a.d) > TRACK_ZONE_HALF - 0.3) {
+          const light = crossLight(c, a.s);
+          if (light < 2) {
+            if (a.step === 0) c.tally(light ? 'waitForFlash' : 'waitForRed');
+            waitToCross(c, a, side);
+            return;
+          }
+        }
         if ((!past && (!c.tram.canEnterBand(a, a.s) || !c.tram.canEnterBand(a, a.crossS)))
           || (!pastU && (!c.tram.canEnterUnit(a, a.s) || !c.tram.canEnterUnit(a, a.crossS)))) {
           if (a.step === 0) c.tally('waitForTram');
@@ -1164,6 +1176,21 @@ function groupGone(c, a, side, lineD, sa, sb) {
   if (!c.vis.bodyHidden(a.s, a.d, side, lineD, sa, sb)) return false;
   for (const f of a.followers) if (f.isChild && !c.vis.bodyHidden(f.s, f.d, side, lineD, sa, sb)) return false;
   return true;
+}
+
+/** The pedestrian lights at the crossing of a cross street at s (catenary.pedState): 2 green
+ *  (also where there are none), 1 flashing green (red within a few seconds), 0 red. Red while a
+ *  tram is near the crossing or over it. */
+export function crossLight(c, s) {
+  const m = c.map.crossAt(s);
+  if (!m) return 2;
+  const cat = c.app.systems && c.app.systems.catenary;
+  if (!cat || cat.disabled) return 2;
+  try {
+    if (typeof cat.pedState === 'function') { const v = cat.pedState(m.s); return v === 0 || v === 1 ? v : 2; }
+    if (typeof cat.signalAt === 'function') { const v = cat.signalAt(m.s); return v === 'red' ? 0 : v === 'flash' ? 1 : 2; }
+  } catch (e) { /* no lights */ }
+  return 2;
 }
 
 /** Wait at the edge of the band, half turned towards the oncoming tram. Too close to the ride

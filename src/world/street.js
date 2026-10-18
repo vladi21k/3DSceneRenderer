@@ -5,12 +5,12 @@ import { railLinePoints } from './street/rails.js';
 import { buildMainRails } from './street/track.js';
 import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
-import { MAIN_RAILS } from './street/constants.js';
+import { MAIN_RAILS, pavingTones } from './street/constants.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
 import { buildCrossover, crossoverPlan } from './street/crossover.js';
-import { buildCrossStreet, buildCorridorCrossing, sideColumns, tactileSlab } from './street/crossStreets.js';
+import { buildCrossStreet, buildCorridorCrossing, sideColumns, sideHeight, sideProfile, sideWear, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
-import { planDetails, buildDetails } from './street/details.js';
+import { planDetails, planSteps, buildDetails } from './street/details.js';
 import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV } from './street/shading.js';
 
 // Rail steel: every steel face of the profile (polished running band, flange-polished
@@ -33,7 +33,8 @@ const MAX_JOBS = 6;
 //   crossovers, cross streets, cast-iron details, markings, and a ground slab.
 // A build is a sequence of short steps (a generator), so the chunks the streamer will
 // ask for next are built ahead a slice per frame (prefetch) and build() hands them over.
-// Exposes heightAt(s, d) so other modules can stand things on the real paving.
+// Exposes heightAt(s, d) so other modules can stand things on the real paving, and the
+// side streets' mouth frames and paving heights (mouth(c, side), sideHeightAt(c, side, a, x)).
 
 const street = {
   name: 'street',
@@ -41,14 +42,16 @@ const street = {
   async init(app) {
     const M = app.materials;
     const surface = new Surface(app.route, app.layout);
-    const lines = M.register('street.line', createLineMaterial());
+    // tones that follow the setts' albedo (mortar, seals, groove grit, far-rail overlay)
+    const tones = pavingTones(M.meta && M.meta['paving.street'] && M.meta['paving.street'].albedo);
+    const lines = M.register('street.line', createLineMaterial(tones));
     const details = createDetailMaterials(app.renderer);
     for (const m of Object.values(details)) M.register(m.name, m);
     // Plain rails and mortar carry the crossover cut test too, inactive (no cut
     // attribute: see shading.js patchCut), so they share their programs with the cut
     // variants of crossover chunks.
     const share = (m) => patchCut(m, 'rail', false);
-    const mortar = M.register('street.mortar', share(createMortarMaterial()));
+    const mortar = M.register('street.mortar', share(createMortarMaterial(tones.mortar)));
     // rail steel: lengthwise-polish sheen (see shading.js); the environment map holds
     // the street canyon, so the steel reflects it at RAIL_HEAD_ENV (matched to the
     // far-field line overlay and the photographs)
@@ -57,7 +60,7 @@ const street = {
       m.envMapIntensity = RAIL_HEAD_ENV;
       return m;
     };
-    const groove = (opts) => patchGrit(M.get('rail.groove', opts));
+    const groove = (opts) => patchGrit(M.get('rail.groove', opts), tones.k);
     const mats = {
       corr: M.get('paving.street', { vertexColors: true }),
       band: M.get('paving.band', { vertexColors: true }),
@@ -74,7 +77,7 @@ const street = {
     // crossover variants of the same materials: they discard the fragments that lie in
     // another rail's opening (frog flangeways, switch boxes; see crossover.js)
     const cut = (m, mode = 'rail') => patchCut(m, mode);
-    const mortarCut = M.register('street.mortar.cut', cut(createMortarMaterial()));
+    const mortarCut = M.register('street.mortar.cut', cut(createMortarMaterial(tones.mortar)));
     mortarCut.name = 'street.mortar.cut';
     mats.cut = {
       head: cut(steel('rail.head', { ...RAIL_HEAD, stCut: 1 })),
@@ -88,21 +91,30 @@ const street = {
     mats.cut.gauge = mats.cut.lip = mats.cut.side = mats.cut.head;
     mats.cut.check = mats.cut.head;   // check rails: guard lip polished by wheel backs
     // diverging rails: their swept mortar strips lie over the paving (see rails.js)
-    const mortarDiv = M.register('street.mortar.div', cut(createMortarMaterial()));
+    const mortarDiv = M.register('street.mortar.div', cut(createMortarMaterial(tones.mortar)));
     Object.assign(mortarDiv, { name: 'street.mortar.div', polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
     mats.cutDiv = { ...mats.cut, mortar: mortarDiv };
     this.surface = surface;
+    this.tones = tones;
     this.ctx = { app, route: app.route, layout: app.layout, surface, mats, zonePad: 1.5, delta: surface.dl };
-    this.jobs = new Map();     // chunk index * 2 + lod -> build in progress (see prefetch)
+    this.jobs = [];            // builds in progress (see prefetch), at most MAX_JOBS
     this.linePool = [];        // LineBuf scratch, one per build in progress
-    // detail plans are per chunk index and also flatten the paving under covers
+    // detail plans are per chunk index and also flatten the paving under covers; the
+    // prefetch makes them ahead a step at a time (planJob: the plan in progress)
     const plans = this.plans = new Map();
+    this.planJob = null;
     this.planFor = (ci) => {
       let p = plans.get(ci);
       if (!p) {
-        p = planDetails(this.ctx, ci);
-        if (plans.size > 96) plans.delete(plans.keys().next().value);
-        plans.set(ci, p);
+        const j = this.planJob;
+        if (j && j.ci === ci) {
+          // finish the one in progress (a generator cannot be restarted)
+          let r = j.it.next();
+          while (!r.done) r = j.it.next();
+          this.planJob = null;
+          p = r.value;
+        } else p = planDetails(this.ctx, ci);
+        this._keepPlan(ci, p);
       }
       return p;
     };
@@ -134,13 +146,47 @@ const street = {
   /** Paving height above the route elevation at (s, d) (metres). */
   heightAt(s, d) { return this.surface ? this.surface.heightAt(s, d) : 0; },
 
+  /** The frame of cross street c's mouth (c: a layout.crossStreets entry) on `side`
+   *  (±1; both sides when c.side is 0), shared and cached (read only):
+   *  {c, side, start, along, dirOut, len, hw, half, road, sw, kerbH, rampX, level}.
+   *  A point at mouth coordinates (a, x) lies at start + along·a + dirOut·x: a across the
+   *  side street from its centre line (+ along route travel; the mouth spans
+   *  |a| < half = c.width / 2), x out from the main facade line (up the side street, to
+   *  len). start, along and dirOut are horizontal vectors (start on the ground). The
+   *  carriageway is |a| < road, a kerb (kerbH) below the sidewalks (sw wide) from a few
+   *  metres out; the side street ramps from the main paving at the mouth (x = 0) to the
+   *  ground its lots stand on (level: world y at a = -half and a = +half) over rampX
+   *  metres. Null before init. */
+  mouth(c, side) {
+    if (!this.ctx) return null;
+    sideProfile(this.ctx, c, side);
+    return this.ctx.surface.mouth(c, side);
+  },
+
+  /** World y of the paving of cross street c's side street on `side` at mouth
+   *  coordinates (a, x) (see mouth()): the surface the street mesh is built from
+   *  (sidewalks, kerbs and the crowned carriageway; x <= 0 gives the main paving along
+   *  the mouth line). Allocation-free once the mouth is cached. */
+  sideHeightAt(c, side, a, x) {
+    return this.ctx ? sideHeight(this.ctx, c, side, a, x) : 0;
+  },
+
+  _keepPlan(ci, p) {
+    const plans = this.plans;
+    if (plans.size > 96) plans.delete(plans.keys().next().value);
+    plans.set(ci, p);
+  },
+
   /** The street of a chunk. Chunks the streamer is about to ask for are usually built
    *  already, a slice per frame (see prefetch); otherwise all steps run now. */
   build(chunk) {
-    const key = chunk.index * 2 + chunk.lod;
-    let job = this.jobs.get(key);
-    if (job) this.jobs.delete(key);
-    else job = this.startJob(chunk);
+    const jobs = this.jobs;
+    let job = null;
+    for (let i = 0; i < jobs.length; i++) {
+      const c = jobs[i].chunk;
+      if (c.index === chunk.index && c.lod === chunk.lod) { job = jobs[i]; jobs.splice(i, 1); break; }
+    }
+    if (!job) job = this.startJob(chunk);
     while (!this.stepJob(job));
     return job.group;
   },
@@ -197,11 +243,13 @@ const street = {
     // crossovers overlapping the chunk (each builds only its part inside the chunk)
     for (const c of ctx.surface.near.xo) yield* buildCrossover(ctx, c, chunk, bufs, L.rail);
     for (const c of ctx.layout.inChunk('crossStreets', chunk.index)) {
-      for (const side of c.side === 0 ? [-1, 1] : [c.side]) yield* buildCrossStreet(ctx, c, side, chunk, bufs, L);
+      if (c.side !== 1) { yield* buildCrossStreet(ctx, c, -1, chunk, bufs, L); yield 'cross'; }
+      if (c.side !== -1) { yield* buildCrossStreet(ctx, c, 1, chunk, bufs, L); yield 'cross'; }
       buildCorridorCrossing(ctx, c, chunk, bufs, L);
     }
     if (chunk.lod === 0) {
       buildPlatformTactile(ctx, chunk, bufs);
+      yield 'details';
       yield* buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L.joint, samples.grid);
     }
 
@@ -236,58 +284,111 @@ const street = {
     }
   },
 
-  /** Work ahead, within PREFETCH_MS a frame: plan what chunk builds would otherwise
-   *  compute first (the detail plans of every chunk in view range, which builds read
-   *  for their neighbours too, and the plans of the crossovers in it), then build, step
-   *  by step, the chunks the streamer will ask for next: lod 0 rebuilds about to come
-   *  within LOD0_DIST and new lod 1 chunks about to come within VIEW_AHEAD (the
-   *  streamer's chunk distances). Its build() then only hands the group over. */
+  /** Work ahead, within PREFETCH_MS a frame, in units of well under a millisecond (or
+   *  two at most): first plan what chunk builds would otherwise compute first (the detail
+   *  plans of every chunk in view range, which builds read for their neighbours too, and
+   *  the plans of the crossovers in it; see planSteps), then build, step by step, the
+   *  chunks the streamer will ask for next: lod 0 rebuilds about to come within LOD0_DIST
+   *  and new lod 1 chunks about to come within VIEW_AHEAD (the streamer's chunk
+   *  distances). Its build() then only hands the group over. Allocates nothing per frame
+   *  beyond the work itself. */
   prefetch(app) {
-    const L = this.ctx.layout, n = L.nChunks, plans = this.plans;
     const sCam = app.cameraS ?? app.startS;
     const t0 = performance.now();
-    const c0 = L.chunkIndex(sCam - VIEW_BEHIND);
-    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD) / CHUNK_LEN) + 2;
-    for (let k = 0; k < nAhead && performance.now() - t0 < PREFETCH_MS * 0.5; k++) {
-      const ci = (c0 + k) % n;
-      if (plans.has(ci)) continue;
-      this.planFor(ci);
-      for (const c of L.inChunk('crossovers', ci)) crossoverPlan(c, this.ctx.delta);
+    // plans: a step at a time, within half the budget
+    while (performance.now() - t0 < PREFETCH_MS * 0.5) {
+      let j = this.planJob;
+      if (!j) {
+        const ci = this._unplanned(sCam);
+        if (ci < 0) break;
+        j = this.planJob = { ci, it: planChunk(this.ctx, ci) };
+      }
+      const r = j.it.next();
+      if (r.done) {
+        this.planJob = null;
+        if (!this.plans.has(j.ci)) this._keepPlan(j.ci, r.value);
+      }
     }
 
-    const jobs = this.jobs, len = app.route.length;
-    const ahead = (lo, hi, lod) => {
-      for (let i = Math.floor((sCam + lo) / CHUNK_LEN); i <= Math.floor((sCam + hi) / CHUNK_LEN) + 1; i++) {
-        const dist = i * CHUNK_LEN - sCam;
-        if (dist < lo || dist >= hi) continue;
-        const index = ((i % n) + n) % n, key = index * 2 + lod;
-        if (jobs.has(key)) continue;
-        const s0 = index * CHUNK_LEN;
-        jobs.set(key, this.startJob({ index, s0, s1: Math.min(len, s0 + CHUNK_LEN), lod }));
-      }
-    };
-    ahead(LOD0_DIST, LOD0_DIST + LEAD, 0);
-    ahead(VIEW_AHEAD + 1e-6, VIEW_AHEAD + LEAD, 1);
+    this._ahead(sCam, LOD0_DIST, LOD0_DIST + LEAD, 0);
+    this._ahead(sCam, VIEW_AHEAD + 1e-6, VIEW_AHEAD + LEAD, 1);
     // forget jobs whose chunk the streamer has long since built (or will not want)
-    for (const [key, job] of jobs) {
-      const dist = this.ctx.delta(sCam, job.chunk.s0), edge = job.chunk.lod === 0 ? LOD0_DIST : VIEW_AHEAD;
-      if (dist < edge - 2 * CHUNK_LEN || dist > edge + LEAD + 2 * CHUNK_LEN || jobs.size > MAX_JOBS) {
+    const jobs = this.jobs, dl = this.ctx.delta;
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      const dist = dl(sCam, job.chunk.s0), edge = job.chunk.lod === 0 ? LOD0_DIST : VIEW_AHEAD;
+      if (dist < edge - 2 * CHUNK_LEN || dist > edge + LEAD + 2 * CHUNK_LEN || jobs.length > MAX_JOBS) {
         this.dropJob(job);
-        jobs.delete(key);
+        jobs.splice(i--, 1);
       }
     }
     // nearest first: a step a frame, more while well inside the budget (a step takes
-    // 0.1-0.5 ms)
+    // 0.1-1 ms)
     let next = null;
     do {
       next = null;
-      for (const job of jobs.values()) {
-        if (!job.group && (!next || this.ctx.delta(sCam, job.chunk.s0) < this.ctx.delta(sCam, next.chunk.s0))) next = job;
+      let best = Infinity;
+      for (let i = 0; i < jobs.length; i++) {
+        const job = jobs[i];
+        if (job.group) continue;
+        const dist = dl(sCam, job.chunk.s0);
+        if (dist < best) { best = dist; next = job; }
       }
       if (next) this.stepJob(next);
     } while (next && performance.now() - t0 < PREFETCH_MS * 0.5);
   },
+
+  /** First chunk in view range (from VIEW_BEHIND behind the camera on) without a detail
+   *  plan, or -1. */
+  _unplanned(sCam) {
+    const L = this.ctx.layout, n = L.nChunks;
+    const c0 = L.chunkIndex(sCam - VIEW_BEHIND);
+    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD) / CHUNK_LEN) + 2;
+    for (let k = 0; k < nAhead; k++) {
+      const ci = (c0 + k) % n;
+      if (!this.plans.has(ci)) return ci;
+    }
+    return -1;
+  },
+
+  /** Start builds of the chunks of `lod` whose start lies [lo, hi) metres ahead. */
+  _ahead(sCam, lo, hi, lod) {
+    const n = this.ctx.layout.nChunks, len = this.ctx.route.length, jobs = this.jobs;
+    const i1 = Math.floor((sCam + hi) / CHUNK_LEN) + 1;
+    for (let i = Math.floor((sCam + lo) / CHUNK_LEN); i <= i1; i++) {
+      const dist = i * CHUNK_LEN - sCam;
+      if (dist < lo || dist >= hi) continue;
+      const index = ((i % n) + n) % n;
+      let have = false;
+      for (let k = 0; k < jobs.length; k++) if (jobs[k].chunk.index === index && jobs[k].chunk.lod === lod) { have = true; break; }
+      if (have) continue;
+      const s0 = index * CHUNK_LEN;
+      jobs.push(this.startJob({ index, s0, s1: Math.min(len, s0 + CHUNK_LEN), lod }));
+    }
+  },
 };
+
+/** The detail plan of chunk ci, then the plans of the crossovers starting in it and the
+ *  mouth profiles and wear plans of the side streets two chunks back (their paving
+ *  heights read the detail plans of the chunks round them, planned by now), as short
+ *  steps (see planSteps); returns the detail plan. */
+function* planChunk(ctx, ci) {
+  const p = yield* planSteps(ctx, ci);
+  for (const c of ctx.layout.inChunk('crossovers', ci)) {
+    yield 'plan';
+    crossoverPlan(c, ctx.delta);
+  }
+  for (const c of ctx.layout.inChunk('crossStreets', ci - 2)) {
+    for (let side = -1; side <= 1; side += 2) {
+      if (c.side === -side) continue;
+      yield 'plan';
+      sideProfile(ctx, c, side);
+      yield 'plan';
+      sideWear(ctx, c, side);
+    }
+  }
+  return p;
+}
 
 /** Row positions (route s) for a chunk: regular steps plus exact rows at crossover
  *  crossover zone ends, switch toes and cross-street mouth edges. */

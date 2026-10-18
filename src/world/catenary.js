@@ -9,6 +9,7 @@ import { buildBannerBracket, buildBannerCloth, buildBannerAtlas, BANNER_DESIGNS,
 import { buildSignalKit, signalPlacements, buildAspectAtlas, MOUNT_X } from './catenary/signals.js';
 import { buildStickers, buildStickerAtlas } from './catenary/wear.js';
 import { CatBatch, CatBatches, SlotBatch, NEAR, FAR } from './catenary/batch.js';
+import { createLampGlow } from './catenary/glow.js';
 
 // Lamp standards, overhead contact line, pole banners and traffic signals.
 // Contract: docs/ARCHITECTURE.md. Placements come from layout.poles (pole pairs are kept
@@ -23,7 +24,10 @@ import { CatBatch, CatBatches, SlotBatch, NEAR, FAR } from './catenary/batch.js'
 // Brackets, scrolls and wires are thin casters; shafts stop casting in the coarsest
 // cascade. Everything heavy is built once in init().
 //
-// Debug URL switch: catslots=0 keeps per-chunk wire and sticker meshes.
+// Lit lanterns get a soft aureole (catenary/glow.js), one instanced draw round the camera.
+//
+// Debug URL switches: catslots=0 keeps per-chunk wire and sticker meshes; catglow=0 turns
+// the lantern aureoles off.
 
 // detail by distance (m at the 17° default lens, scaled by the field of view so it
 // follows the size on screen): hi / mid / lo standards below these, far beyond (per
@@ -144,13 +148,16 @@ const catenary = {
     // ---- lamp head table for env (glass centres follow the rake)
     const heads = [];
     for (const p of this.poles) {
-      for (const arm of this.fixtures.get(p).arms) {
+      const f = this.fixtures.get(p);
+      f.arms.forEach((arm, k) => {
         const pos = this.kit.info.glassCentre.clone().applyMatrix4(arm);
-        heads.push({ position: pos, s: route.wrap(p.s), side: p.side, d: p.d, height: pos.y - route.elevation(p.s) });
-      }
+        // (glow: the bowl's own brightness, see the lantern instance colour in build)
+        heads.push({ position: pos, s: route.wrap(p.s), side: p.side, d: p.d, height: pos.y - route.elevation(p.s), glow: f.glass[2 * k] });
+      });
     }
     heads.sort((a, b) => a.s - b.s);
     this.heads = heads;
+    this.glow = app.params.str('catglow') === '0' ? null : createLampGlow(app, heads);
   },
 
   _initBatches(app) {
@@ -392,6 +399,7 @@ const catenary = {
 
   update(dt, app) {
     updateScreenUniforms(app, this.lampRadiance);
+    if (this.glow) this.glow.update(app.cameraS ?? app.startS, SU.uLamp.value);
     this._updatePedLights(app);
     // alpha-to-coverage rounds to whole samples of the scene target
     const post = app.post, rt = post && !post.disabled ? post.sceneRT : null;

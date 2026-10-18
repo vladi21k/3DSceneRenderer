@@ -586,6 +586,27 @@ function patchShelterGlass(m) {
   return m;
 }
 
+/** The material's envMapIntensity, applied to its indirect specular. three replaces
+ *  envMapIntensity by scene.environmentIntensity whenever the environment comes from
+ *  scene.environment (as here), so a per-material level only works through the shader,
+ *  the same way the materials library applies it. */
+function patchEnvSpec(m) {
+  if (m.userData.furnitureEnvSpec) return m;
+  m.userData.furnitureEnvSpec = true;
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (s, r) {
+    if (prev) prev.call(this, s, r);
+    s.uniforms.fEnvSpec = { get value() { return m.envMapIntensity; } };
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float fEnvSpec;')
+      .replace('vec3 totalDiffuse =', `reflectedLight.indirectSpecular *= fEnvSpec;
+        vec3 totalDiffuse =`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-envspec`; };
+  m.needsUpdate = true;
+  return m;
+}
+
 /** Paper wrinkles and glue bubbles for posters glued on advertising columns. */
 function paperNormal(renderer) {
   const N = 256, rng = RNG.from('paper');
@@ -660,9 +681,9 @@ export function createMaterials(app) {
   out.concrete = patchGrime(variant('concrete'), { albedo: 0.2, rough: 0.05, ao: 0.55, mottle: 0.06 });
   // brushed aluminium (chairs, tables, frames); the env reflection is kept moderate
   const brushed = T('brushed', () => brushedNormal(R));
-  patchGrime(reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#c9cacb'), roughness: 0.45, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.25, 0.25), envMapIntensity: 0.75 })), { albedo: 0.12, rough: 0.1, mottle: 0.03 });
+  patchEnvSpec(patchGrime(reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#c9cacb'), roughness: 0.45, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.25, 0.25), envMapIntensity: 0.75 })), { albedo: 0.12, rough: 0.1, mottle: 0.03 }));
   // umbrella frames live under the canopy: little sky reaches them
-  patchGrime(reg('umbFrame', new THREE.MeshStandardMaterial({ color: srgb('#c4c5c6'), roughness: 0.5, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.2, 0.2), envMapIntensity: 0.3 })), { albedo: 0.05, rough: 0.05, ao: 0.2, mottle: 0.02 });
+  patchEnvSpec(patchGrime(reg('umbFrame', new THREE.MeshStandardMaterial({ color: srgb('#c4c5c6'), roughness: 0.5, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.2, 0.2), envMapIntensity: 0.3 })), { albedo: 0.05, rough: 0.05, ao: 0.2, mottle: 0.02 }));
   {
     const t = T('timber', () => timberTextures(R));
     patchGrime(reg('timber', new THREE.MeshStandardMaterial({ map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.82, metalness: 0 })), { albedo: 0.15, rough: 0.08, mottle: 0.05 });
@@ -686,8 +707,10 @@ export function createMaterials(app) {
   // shelter glazing with its decal, and the green-tinted glass edges
   {
     const decal = tex(T('decal', () => buildGlassDecal()), { repeat: [1, 0.25], aniso: 8 }, R);
-    reg('shelterGlass', patchShelterGlass(new THREE.MeshStandardMaterial({ color: srgb('#e6e8e2'), map: decal, roughness: 0.05, metalness: 0, envMapIntensity: 1.7 })));
-    reg('glassEdge', new THREE.MeshStandardMaterial({ color: srgb('#6f9a8a'), roughness: 0.1, metalness: 0, transparent: true, opacity: 0.6, depthWrite: false, envMapIntensity: 1.5 }));
+    // (the reflection level works through patchEnvSpec; a little over 1, since the
+    // environment's street canyon is darker than the sunlit street the glass faces)
+    patchEnvSpec(reg('shelterGlass', patchShelterGlass(new THREE.MeshStandardMaterial({ color: srgb('#e6e8e2'), map: decal, roughness: 0.05, metalness: 0, envMapIntensity: 1.2 }))));
+    patchEnvSpec(reg('glassEdge', new THREE.MeshStandardMaterial({ color: srgb('#6f9a8a'), roughness: 0.1, metalness: 0, transparent: true, opacity: 0.6, depthWrite: false, envMapIntensity: 1.2 })));
   }
   const atlas = T('atlas', () => buildPrintAtlas(R));
   out.atlas = atlas;
@@ -704,9 +727,9 @@ export function createMaterials(app) {
   // wheels (brake dust), lamp lenses (vertex colours) and the contact shadow decal
   patchGrime(reg('carPaint', new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.07 })), { albedo: 0.3, rough: 0.2, ao: 0.3, mottle: 0.03 });
   patchGrime(reg('carMetal', new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0.6, clearcoat: 1, clearcoatRoughness: 0.06 })), { albedo: 0.3, rough: 0.2, ao: 0.3, mottle: 0.03 });
-  reg('carGlass', new THREE.MeshStandardMaterial({ color: srgb('#262a2e'), roughness: 0.04, metalness: 0, envMapIntensity: 1.6 }));
+  patchEnvSpec(reg('carGlass', new THREE.MeshStandardMaterial({ color: srgb('#262a2e'), roughness: 0.04, metalness: 0, envMapIntensity: 1.3 })));
   patchGrime(reg('carTrim', new THREE.MeshStandardMaterial({ color: srgb('#151617'), roughness: 0.62, metalness: 0 })), { albedo: 0.1, rough: 0.1, mottle: 0.04 });
-  patchGrime(reg('carAlloy', new THREE.MeshStandardMaterial({ color: srgb('#8f9295'), roughness: 0.4, metalness: 1, envMapIntensity: 0.7 })), { albedo: 0.3, rough: 0.15, mottle: 0.05 });
+  patchEnvSpec(patchGrime(reg('carAlloy', new THREE.MeshStandardMaterial({ color: srgb('#8f9295'), roughness: 0.4, metalness: 1, envMapIntensity: 0.7 })), { albedo: 0.3, rough: 0.15, mottle: 0.05 }));
   reg('carLamp', new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.12, metalness: 0 }));
   {
     const m = reg('contactShadow', new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: contactShadowTexture(), transparent: true, opacity: 0.5, depthWrite: false }));

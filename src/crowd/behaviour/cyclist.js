@@ -1,9 +1,9 @@
 import { TRACK_ZONE_HALF, TRACK_OFFSET, RAIL_CENTER } from '../../core/config.js';
 import { noise1 } from '../../core/rng.js';
-import { ST, TASK, LANE, MOB, KIND } from './agent.js';
+import { ST, TASK, LANE, MOB, KIND, settleShape } from './agent.js';
 import { RIDE_D, BAND, AGENT_R, CELL, GRID_D, CYCLE_V, WALKBIKE_V, TRAM_LEN, CYCLE_CLEAR_T, FOOT } from './constants.js';
 import { footBandGap, footInBand, updateFoot, propPointDist2, propMoved } from './footprint.js';
-import { startUturn } from './behaviour.js';
+import { startUturn, crossLight } from './behaviour.js';
 
 // Cyclists in the shared pedestrian street. They ride 10-18 km/h in both directions, mostly
 // along the edges of the track corridor, between the tracks and along the inner edge of a
@@ -38,8 +38,8 @@ const HALF = FOOT[MOB.CYCLE].r;             // half width of a bicycle with its 
 const NOSE = FOOT[MOB.CYCLE].f1 + HALF;     // front wheel ahead of the rider's centre
 const NC = 9;                               // candidate lines for passing (spread around the lane line)
 const cand = new Float32Array(NC), cost = new Float32Array(NC), blk = new Float32Array(NC), vblk = new Float32Array(NC);
-const tmpBand = { lo: 0, hi: 0 };
-const LN = { d: 0, lo: 0, hi: 0, narrow: false, uStop: false };
+const tmpBand = settleShape({ lo: 0, hi: 0 });
+const LN = settleShape({ d: 0, lo: 0, hi: 0, narrow: false, uStop: false });
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
 /** d moved out of the RAIL_CLEAR strip around any rail: to the nearer free side inside
@@ -76,7 +76,7 @@ function freeLine(x, lo, hi) {
   return true;
 }
 /** Rails strictly between d0 and d1 → number of them; _rx.first / _rx.last (in the direction of d1). */
-const _rx = { first: 0, last: 0 };
+const _rx = settleShape({ first: 0, last: 0 });
 function railsBetween(d0, d1) {
   const lo = Math.min(d0, d1), hi = Math.max(d0, d1);
   let n = 0, first = 0, last = 0;
@@ -573,12 +573,16 @@ function arriveRide(c, a) {
   if (a.task === TASK.SIDE_OUT) {
     const m = a.mouth, side = a.side, line = map.mouthLine(m, side);
     a.step++;
+    // from about 15 m in, cars stand parked along both kerbs of the side street (furniture's
+    // vehicles, 0.2-0.35 m off the kerb, up to 2 m wide): further in, up its middle
+    const g = c.side.get(m, side), mid = Math.max(0, g.road - 2.6 - HALF);
+    const deepX = Math.max(-mid, Math.min(mid, a.slotX));
     if (a.step >= 3) {
       if (c.side.hidden(a.s, a.d, 1.0) || c.vis.distance(a.s) > 150) { c.population.vanish(a); return; }
-      a.gs = c.unwrap(m.s) + a.slotX; a.gd = side * (line + 18); a.gTol = 0.8;
+      a.gs = c.unwrap(m.s) + deepX; a.gd = side * (line + 18); a.gTol = 0.8;
       return;
     }
-    a.gs = c.unwrap(m.s) + a.slotX; a.gd = side * (line + 4 + a.step * 6); a.gTol = 0.9;
+    a.gs = c.unwrap(m.s) + (a.step >= 2 ? deepX : a.slotX); a.gd = side * (line + 4 + a.step * 6); a.gTol = 0.9;
     return;
   }
   // out of a side street: on along a lane of this side (the turn onto it is the bicycle model's)
@@ -684,13 +688,14 @@ function scan(c, a, dL, lo, hi, spread, gauge = false) {
   }
   // café terraces (and platforms) across the lines: walls, like the fixed obstacles
   const sideR = dL >= 0 ? 1 : -1;
-  for (const at of [a.s + dir * 3, a.s + dir * (look - 3)]) {
-    const nr = map.rectsNear(at, sideR);
+  for (let e = 0; e < 2; e++) {
+    const nr = map.rectsNear(a.s + dir * (e ? look - 3 : 3), sideR);
     for (let q = 0; q < nr; q++) {
       const R = map.rq[q];
       if (R === _rq0 || R === _rq1) continue;
       if (!_rq0) _rq0 = R; else _rq1 = R;
-      const ds0 = map.rectDS(R, a.s);                       // a.s from the rect's start
+      map.rectDSA(R, a);
+      const ds0 = map.R[2];                                 // a.s from the rect's start
       const x0 = dir > 0 ? -ds0 : ds0 - R.len, x1 = dir > 0 ? R.len - ds0 : ds0;
       if (x1 < -1.2 || x0 > look) continue;
       const xe = Math.max(0, x0) - NOSE, w = 3.2 / (1 + 0.3 * Math.max(0, xe));
@@ -953,6 +958,8 @@ function startSideOutRide(c, a, m, side) {
     if (sd > 0 && pd > TRACK_ZONE_HALF - 0.2 && pd < map.bandInAt(ps, 1) + 0.1 && map.facadeAt(ps, 1) < 90) return false;
     if (Math.abs(pd - RIDE_D) < BAND + 0.5) { if (bIn === null) bIn = ps; bOut = ps; }
   }
+  // (across the tracks at a junction: only on a green light)
+  if ((bIn !== null || (a.d + RIDE_D) * (gd + RIDE_D) < 0) && crossLight(c, ms) < 2) return false;
   if (bIn !== null) {
     const T = Math.abs(bOut - a.s) / Math.max(2, a.bikeV) + 1.5;
     if (!tram.canEnterBand(a, bIn, T) || !tram.canEnterBand(a, bOut, T)) return false;

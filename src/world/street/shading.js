@@ -136,10 +136,10 @@ export function patchCut(m, mode, attribute = true) {
 }
 
 /** Mortar bed along the rails (and bitumen seals at SEAL_TONE via vertex colour).
- *  UVs: u along the rail (m), v across (m). */
-export function createMortarMaterial() {
+ *  UVs: u along the rail (m), v across (m). albedo: linear (constants.js pavingTones). */
+export function createMortarMaterial(albedo = MORTAR_ALBEDO) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
-  m.color.setRGB(MORTAR_ALBEDO[0], MORTAR_ALBEDO[1], MORTAR_ALBEDO[2], THREE.LinearSRGBColorSpace);
+  m.color.setRGB(albedo[0], albedo[1], albedo[2], THREE.LinearSRGBColorSpace);
   m.name = 'street.mortar';
   m.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
@@ -230,8 +230,9 @@ float stGNoise( vec2 p ) {
 }
 `;
 
-/** Patch a rail.groove variant with the grit fill (chains any existing hook). */
-export function patchGrit(m) {
+/** Patch a rail.groove variant with the grit fill (chains any existing hook). k scales
+ *  the grit's tone with the setts' (constants.js pavingTones). */
+export function patchGrit(m, k = 1) {
   const prev = m.onBeforeCompile;
   const prevKey = m.customProgramCacheKey;
   m.onBeforeCompile = function (sh, r) {
@@ -241,7 +242,7 @@ export function patchGrit(m) {
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStGritUv = uv;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec2 vStGritUv;\n${GNOISE}`)
-      .replace('#include <color_fragment>', `#include <color_fragment>\nfloat stGrit = 0.0, stGritR = 1.0;\n${GRIT.replace(/stNoise/g, 'stGNoise')}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>\nfloat stGrit = 0.0, stGritR = 1.0;\n${GRIT.replace(/stNoise/g, 'stGNoise').replace('diffuseColor.rgb = mix( diffuseColor.rgb, g, stGrit );', `diffuseColor.rgb = mix( diffuseColor.rgb, g * ${k.toFixed(4)}, stGrit );`)}`)
       .replace('#include <normal_fragment_begin>', 'roughnessFactor = mix( roughnessFactor, stGritR, stGrit );\nmetalnessFactor *= 1.0 - stGrit;\n#include <normal_fragment_begin>')
       .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
 #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
@@ -254,7 +255,7 @@ export function patchGrit(m) {
 }
 #endif`);
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|stGrit2'; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stGrit2-${k.toFixed(4)}`; };
   m.needsUpdate = true;
   return m;
 }

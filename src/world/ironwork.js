@@ -92,6 +92,7 @@ const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 
 const WHITE = [1, 1, 1];
 // instance families (constant keys and options: one lookup per family and chunk)
 const CORBEL_KEYS = ['corbel0', 'corbel1', 'corbel2'], PLANT_KEYS = Object.values(PLANT).map((k) => `plant${k}`);
+const POST_FACES = [[1, 0], [0, 1]]; // the two crossed sprite quads of a post card
 const PLANT_OPTS = { cls: 'plant' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
 const BAY_OPTS = { cls: 'rail', radius: 0.8, angle: true, thin: true }, POST_OPTS = { cls: 'post', radius: 1.2, thin: true };
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
@@ -160,6 +161,24 @@ function lotStyle(lot, plan) {
   };
 }
 
+/** The consoles under balcony `bal` (consoles.js), for the building's style `st`; also
+ *  published on the balcony as bal.consoles = [{u, h, w}]: u the console's centre along
+ *  the facade, h how far its lowest point (the scroll's pendant knob included) hangs
+ *  below the soffit (bal.y - bal.slabT), w its width. */
+function consolesFor(plan, st, bal) {
+  const D = bal.depth;
+  const rc = bal.railing === 'stone' && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
+  const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
+  const W2 = (CORBEL.W * st.corbelW) / 2;
+  const foot = st.corbel === CONSOLE.SCROLL ? CORBEL.FOOT * (Hc / CORBEL.H) : 0;
+  const place = balconyConsoles(plan, bal, { Hc, W2, rc, kind: st.corbel, foot });
+  if (!bal.consoles) {
+    const knob = place.kind === CONSOLE.SCROLL ? CORBEL.FOOT * (place.h / CORBEL.HV[CONSOLE.SCROLL]) : 0;
+    bal.consoles = place.u.map((u) => ({ u, h: place.h + knob, w: W2 * 2 }));
+  }
+  return place;
+}
+
 /** Bracket position for a facade flag: the pier nearest the planned spot that is clear
  *  of the windows on that floor (null if none). */
 function flagPier(plan, f) {
@@ -195,6 +214,7 @@ const ironwork = {
     this.live = new Set();     // marker groups handed to the streamer
     this.pending = new Set();  // ... whose chunk is not shown yet
     this.jobs = new Map();     // chunk index * 2 + lod -> build job (see prefetch)
+    this._pf = this.prefetchScratch();
     this.spare = [];           // spare writer sets
     this.uniforms = { uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden }; // for inspection / debugging
     this.lastPx = 0;
@@ -230,6 +250,7 @@ const ironwork = {
     // instance pools of every family and the flags: created now (empty), so the start-up
     // compile covers their programs instead of the first frame
     this.pools = new Map();
+    this.poolList = [];        // (the same, for per-frame loops)
     for (const f of this.families()) this.poolOf(f);
     this.flagPool = new FlagPool(this.att.flag, this.att.flagShadow, this.amats.flag, this.amats.flagDepth, this.root, app.scene);
     await this.warmStart(app);
@@ -270,6 +291,17 @@ const ironwork = {
     PLANT_KEYS.forEach((key, k) => out.push({ key, levels: A.plants.levels[k], material: this.amats.plant, opts: PLANT_OPTS }));
     for (const p of A.pooled.values()) out.push({ key: p.key, levels: p.levels, material: this.amats.parts, opts: p });
     return out;
+  },
+
+  /** Publishes the console positions under every balcony of `lot` on its facade plan
+   *  (plan.balconies[i].consoles, see consolesFor) and returns the plan's balconies.
+   *  Deterministic and cached per plan: other modules may call it at any time, before or
+   *  after ironwork builds the lot (buildings places run-off streaks under the consoles). */
+  consolesOf(lot) {
+    const plan = facadePlan(lot);
+    let st = null;
+    for (const bal of plan.balconies) if (!bal.consoles) consolesFor(plan, (st ||= lotStyle(lot, plan)), bal);
+    return plan.balconies;
   },
 
   // ---------------------------------------------------------------- chunk jobs
@@ -401,15 +433,18 @@ const ironwork = {
     camera.updateMatrixWorld();
     _pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     _fr.setFromProjectionMatrix(_pm, camera.coordinateSystem, camera.reversedDepth);
-    const L = this.limits(this.lastPx || uIronPx.value), cam = camera.position;
-    for (const p of this.pools.values()) p.update(cam, p.cls ? L[p.cls] : null, force, _fr);
+    const L = this.limits(this.lastPx || uIronPx.value), cam = camera.position, P = this.poolList;
+    for (let i = 0; i < P.length; i++) { const p = P[i]; p.update(cam, p.cls ? L[p.cls] : null, force, _fr); }
     this.flagPool.flush();
   },
 
   /** The pool of an instance family (created with its first entry). */
   poolOf(e) {
     let p = this.pools.get(e.key);
-    if (!p) this.pools.set(e.key, (p = new InstancePool(e.key, e.levels, e.material, e.opts, this.root)));
+    if (!p) {
+      this.pools.set(e.key, (p = new InstancePool(e.key, e.levels, e.material, e.opts, this.root)));
+      this.poolList.push(p);
+    }
     return p;
   },
 
@@ -420,30 +455,57 @@ const ironwork = {
   prefetch(app) {
     const s = app.cameraS;
     if (s == null) return;
-    const n = app.layout.nChunks;
-    const have = new Map(); // chunk index -> finest detail level built
-    for (const g of this.live) {
-      const { index, lod } = g.userData;
-      if (!(have.get(index) <= lod)) have.set(index, lod);
-    }
-    const want = [];
+    // (allocation-free per frame: scratch maps, records and callbacks live in this._pf)
+    const n = app.layout.nChunks, pf = this._pf;
+    if (!pf.have || pf.have.length !== n) pf.have = new Int8Array(n);
+    const have = pf.have.fill(-1);
+    this.live.forEach(pf.noteLive); // chunk index -> finest detail level built (-1: none)
+    pf.n = 0;
     const i0 = Math.floor((s - VIEW_BEHIND) / CHUNK_LEN), i1 = Math.floor((s + VIEW_AHEAD) / CHUNK_LEN);
     for (let i = i0; i <= i1 + 2; i++) {
       const idx = ((i % n) + n) % n;
       const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s) - CHUNK_LEN / 2);
-      const h = have.get(idx), first = dist < LOD0_DIST ? 0 : 1;
-      if (h === undefined) want.push({ key: idx * 2 + first, idx, lod: first, dist });
-      if (dist < LOD0_DIST + 80 && (h ?? first) > 0) want.push({ key: idx * 2, idx, lod: 0, dist });
+      const h = have[idx], first = dist < LOD0_DIST ? 0 : 1;
+      if (h < 0) pf.want(idx * 2 + first, idx, first, dist);
+      if (dist < LOD0_DIST + 80 && (h < 0 ? first : h) > 0) pf.want(idx * 2, idx, 0, dist);
     }
-    const keep = new Set(want.map((w) => w.key));
-    for (const [k, j] of this.jobs) if (!keep.has(k)) { this.dropJob(j); this.jobs.delete(k); }
-    want.sort((a, b) => a.dist - b.dist); // (stable: a chunk's first build before its upgrade)
+    if (this.jobs.size) this.jobs.forEach(pf.dropUnwanted);
     const deadline = performance.now() + PREFETCH_MS;
-    for (const w of want) {
+    for (let k = 0; k < pf.n; k++) {
+      const w = pf.list[k];
       let j = this.jobs.get(w.key);
       if (!j) { j = this.job(w.idx, w.lod); this.jobs.set(w.key, j); }
       if (!this.runJob(j, deadline)) break;
     }
+  },
+
+  /** Scratch state of prefetch(): the wanted builds, nearest first (pf.list[0 .. pf.n),
+   *  records reused from frame to frame), and its callbacks. */
+  prefetchScratch() {
+    const pf = {
+      have: null, list: [], n: 0,
+      noteLive: (g) => {
+        const { index, lod } = g.userData, h = pf.have[index];
+        if (h < 0 || lod < h) pf.have[index] = lod;
+      },
+      // insertion by distance, after equal ones: a chunk's first build stays ahead of its
+      // upgrade
+      want: (key, idx, lod, dist) => {
+        const L = pf.list;
+        let w = L[pf.n];
+        if (!w) L.push((w = { key: 0, idx: 0, lod: 0, dist: 0 }));
+        let k = pf.n++;
+        while (k > 0 && L[k - 1].dist > dist) { L[k] = L[k - 1]; k--; }
+        L[k] = w;
+        w.key = key; w.idx = idx; w.lod = lod; w.dist = dist;
+      },
+      dropUnwanted: (j, key) => {
+        for (let k = 0; k < pf.n; k++) if (pf.list[k].key === key) return;
+        this.dropJob(j);
+        this.jobs.delete(key);
+      },
+    };
+    return pf;
   },
 
   /** One balcony: slab, consoles, railing, then what the residents put on it. */
@@ -467,10 +529,7 @@ const ironwork = {
 
     // ---- consoles: on the piers between the openings below, or shortened to stand on
     // their dressing (see ironwork/consoles.js); their fronts tuck under the drip lip
-    const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
-    const cw = st.corbelW, W2 = (CORBEL.W * cw) / 2;
-    const foot = st.corbel === CONSOLE.SCROLL ? CORBEL.FOOT * (Hc / CORBEL.H) : 0;
-    const place = balconyConsoles(plan, bal, { Hc, W2, rc, kind: st.corbel, foot });
+    const cw = st.corbelW, place = consolesFor(plan, st, bal);
     const variant = place.kind, sz = (D - 0.07) / CORBEL.D, sy = place.h / CORBEL.HV[variant];
     const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
     for (const u of place.u) {
@@ -612,18 +671,18 @@ const ironwork = {
     }
     // satellite dish on the top floor, only where the facade can see the satellite: the
     // mount square to the wall on a pier, the dish clamped to its mast and turned to the
-    // satellite
-    if (!lod && r.chance(0.14) && plan.bays.length > 1) {
+    // satellite (far builds place the same dishes, coarse)
+    if (r.chance(0.14) && plan.bays.length > 1) {
       _a.copy(lot.frame.nDir);
       if (_a.dot(_b.set(DISH_DIR.x, 0, DISH_DIR.z).normalize()) > 0.25) {
         const fl = plan.floors[plan.floors.length - 1];
         const k = r.int(1, plan.bays.length - 1);
         const u = plan.bays[k].u0, v = fl.y + r.range(1.1, 1.8);
         const paint = DISH_PAINT[r.weighted(DISH_PAINT_W)];
-        this.part(ctx, A.dishMount, _m.multiplyMatrices(F, _l.makeTranslation(u, v, DISH_W)));
+        this.part(ctx, lod ? A.dishMountFar : A.dishMount, _m.multiplyMatrices(F, _l.makeTranslation(u, v, DISH_W)));
         _p.set(u, v, DISH_W).applyMatrix4(F);
         _l.lookAt(_c.set(0, 0, 0), _q.copy(DISH_AIM).negate(), _b.set(0, 1, 0)).setPosition(_p);
-        this.part(ctx, A.dish, _l, paint);
+        this.part(ctx, lod ? A.dishFar : A.dish, _l, paint);
       }
     }
   },
@@ -782,7 +841,7 @@ const ironwork = {
     // corner and wall-end posts: two crossed sprite quads each on the cards, geometry near
     const pv0 = atlasV(ATLAS.POST_ROW, 0), pv1 = atlasV(ATLAS.POST_ROW, RAIL_H + 0.1), ph = ATLAS.POST_W / 2;
     for (const P of rp) {
-      for (const [eu, ew] of [[1, 0], [0, 1]]) {
+      for (const [eu, ew] of POST_FACES) {
         const yt = y + (RAIL_H + 0.1) * hs;
         const a = cw.v(P[0] - eu * ph, y, P[1] - ew * ph, -ew, 0, eu, 0, pv0), b = cw.v(P[0] + eu * ph, y, P[1] + ew * ph, -ew, 0, eu, 1, pv0);
         const c = cw.v(P[0] + eu * ph, yt, P[1] + ew * ph, -ew, 0, eu, 1, pv1), d = cw.v(P[0] - eu * ph, yt, P[1] - ew * ph, -ew, 0, eu, 0, pv1);
@@ -842,7 +901,9 @@ const ironwork = {
       for (let j = 0; j <= n; j++) {
         const t = (j * step) / len;
         const u = A[0] + (B[0] - A[0]) * t, w = A[1] + (B[1] - A[1]) * t;
-        if (ped.some((P) => Math.hypot(P[0] - u, P[1] - w) < 0.17)) continue;
+        let clash = false;
+        for (let q = 0; q < ped.length && !clash; q++) { const du = ped[q][0] - u, dw = ped[q][1] - w; clash = du * du + dw * dw < 0.17 * 0.17; }
+        if (clash) continue;
         if (j === n && k < path.length - 2) continue; // shared with the next segment
         _l.makeRotationY(r.range(0, Math.PI)).setPosition(u, y + BALUSTRADE.PLINTH, w);
         inst.add('baluster', this.geo.baluster, this.stoneMat, _m.multiplyMatrices(F, _l), col, BALUSTER_OPTS);
@@ -898,15 +959,20 @@ const ironwork = {
   /** Distance limits per detail class for the current projection (see header). The
    *  railing bays' last limit shrinks with the view angle (mats.js angleK). */
   limits(px) {
+    // (cached: the table changes with the projection only)
+    const c = this._lim;
+    if (c && c.px === px && c.ipx === uIronPx.value && c.gk === uIronGeoK.value) return c.L;
     const geo = geoLimit() + 0.5;
     const d1 = (TOL[1] * px) / 0.4, d2 = (TOL[2] * px) / 0.4;
     const carve = (0.01 * px) / 0.6; // what the light levels leave out (~1 cm) is under 0.6 px
     // far plants once the light level's leaves (14 cm) are under 2 px; planter hook
     // straps (2.6 cm) and AC pipes (3.6 cm) go once they are under a pixel
-    return {
+    const L = {
       rail: Object.assign([d1, d2, geo], { angleK }), post: [d2, geo], carve: [carve, Infinity], plant: [carve, 0.07 * px, Infinity],
       strap: [0.026 * px], ac: [0.036 * px, Infinity],
     };
+    this._lim = { px, ipx: uIronPx.value, gk: uIronGeoK.value, L };
+    return L;
   },
 
   update(dt, app) {
@@ -921,7 +987,7 @@ const ironwork = {
     const zoomed = Math.abs(px - this.lastPx) > 0.01 * px;
     if (zoomed) this.lastPx = px;
     this.prefetch(app);
-    for (const g of this.pending) if (this.shown(g)) this.activate(g);
+    if (this.pending.size) for (const g of this.pending) if (this.shown(g)) this.activate(g);
     this.refresh(zoomed);
   },
 };

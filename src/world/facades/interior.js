@@ -147,21 +147,21 @@ ${ROOM_LIGHT_GLSL}
 // at ~3–8% of the shaded street's luminance (a few hundred lux against tens of
 // thousands outside), so the glass is dominated by its reflection wherever that shows
 // anything bright, and the goods lit by the window spots read through it
-#define SHOP_DAY 0.08
+#define SHOP_DAY 0.0
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
 // 1/10 (-3.3 EV): the goods by the glass read at a quarter to a third of the shaded
 // street, the back of the shop at a tenth, as in a photograph of a sunny street
 #define DAY_CAP ( 1.0 / 32.0 )
-#define DAY_CAP_SHOP ( 1.0 / 7.0 )
+#define DAY_CAP_SHOP ( 1.0 / 6.0 )
 // brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
 // the daylight on the glass: a ceiling panel ~3x the wall around it, a downlight a bright
 // point
-#define SHOP_GLOW_DAY 0.015
+#define SHOP_GLOW_DAY 0.03
 // share of the glass's sky irradiance that the street canyon passes into the rooms (a
 // shop's display window is tall and wide, its floor and goods catch the street's light)
 #define CANYON 0.42
-#define CANYON_SHOP 0.85
+#define CANYON_SHOP 0.75
 uniform sampler2D uGoods;
 #define GOODS_PAD ${GOODS_PAD.toFixed(5)}
 uniform float uNight;
@@ -1322,11 +1322,11 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
     col = mix( col, stone * E * RECIPROCAL_PI * 0.8, slab );
     col = mix( col, vec3( 0.03, 0.03, 0.032 ) * E * RECIPROCAL_PI, rail * 0.6 * mix( 0.6, 1.0, kB ) );
   }
-  // shop band: dark display glass between stone piers (goods catching the light low in
-  // the windows), awnings over some, fascia boards over others
+  // shop band: display glass between stone piers about a metre wide (goods catching the
+  // light low in the windows), awnings over some, fascia boards over others
   float sp = 4.3, shopI = fh1( floor( hx / sp ) * 3.1 + 2.0 + bid );
-  float pier = fRectP( hx, sp, 0.55, sp - 0.25, fpX );
-  float sb = fRect( hy, 0.0, g0 - 0.5, fpY ) * pier;
+  float pier = fRectP( hx, sp, 0.75, sp - 0.3, fpX );
+  float sb = fRect( hy, 0.0, g0 - 0.65, fpY ) * pier;
   vec3 gc = mix( vec3( 0.07, 0.065, 0.06 ), mix( vec3( 0.35, 0.30, 0.25 ), vec3( fh1( shopI * 5.0 ), fh1( shopI * 7.0 ), fh1( shopI * 9.0 ) ) * 0.6, 0.5 ), 0.35 * fRect( hy, 0.4, 2.0, fpY ) * kW );
   // lit at dusk: a shop's own light, brightest under the ceiling (downlights) and on the
   // goods low in the window, the mullions and the door frame dark across it; one in four
@@ -1337,7 +1337,11 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
   float mull = max( fRectP( hx, 1.3, 0.0, 0.07, fpX ), fRect( xs, 2.2, 2.32, fpX ) ) * kW;
   float riser = fRect( hy, 0.0, 0.35, fpY );
   vec3 litC = mix( vec3( 1.0, 0.74, 0.48 ), vec3( 1.0, 0.86, 0.7 ), fract( shopI * 17.1 ) ) * 0.0011 * ( uShopNight / ${SHOP_NIGHT_REF.toFixed(4)} ) * shopLit * prof * ( 1.0 - 0.85 * max( mull, riser ) );
-  vec3 shopC = gc * E * RECIPROCAL_PI * 0.5 + sky * 0.04 + litC * uNight * gEm;
+  // that glass mirrors this side of the street in turn (~10% at the angles it is seen
+  // from): our stone in its sky light, and in the sun when it faces it (the lower floors
+  // half in the far side's shade)
+  vec3 ourL = vec3( 0.60, 0.54, 0.43 ) * ( Eamb * 0.9 + sunC * max( dot( uSunDir, N ), 0.0 ) * 0.5 ) * RECIPROCAL_PI;
+  vec3 shopC = gc * E * RECIPROCAL_PI * 0.5 + sky * 0.04 + ourL * 0.1 + litC * uNight * gEm;
   col = mix( col, shopC, sb );
   float hasAw = step( 0.5, shopI ) * kW;
   float aw = fRect( hy, g0 - 1.5, g0 - 0.55, fpY ) * pier * hasAw;
@@ -1453,6 +1457,13 @@ if ( fMask < 0.999 ) {
   vec3 Nw = inverseTransformDirection( normal, viewMatrix );
   vec3 R = reflect( Vw, Nw );
   vec3 Eamb = irradiance + iblIrradiance;
+  // the light of the sunlit facade across the street (env's canyonCrossBounce, the only
+  // entry of directionalLights[]; diffuse only): it reaches the glass as it does the stone
+  // around it, and through it the room
+  vec3 Ecross = vec3( 0.0 );
+  #if NUM_DIR_LIGHTS > 0
+  for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) Ecross += directionalLights[ i ].color * saturate( dot( normal, directionalLights[ i ].direction ) );
+  #endif
   // sky radiance: environment when available, else a simple gradient from the ambient light
   vec3 skyFallback = Eamb * RECIPROCAL_PI * mix( vec3( 1.15, 1.12, 1.08 ), vec3( 0.75, 0.9, 1.25 ), clamp( R.y, 0.0, 1.0 ) ) * 1.4;
   #if defined( USE_ENVMAP )
@@ -1519,7 +1530,10 @@ if ( fMask < 0.999 ) {
   rd.y = abs( rd.y ) < 1e-4 ? 1e-4 : rd.y;
   vec3 sunR = vec3( dot( uSunDir, T ), uSunDir.y, -dot( uSunDir, N ) );
   vec3 ro = clamp( vRoomP.xyz, vec3( 0.001 ), vRoomS.xyz - 0.001 );
-  fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, vRoomP.w, Eamb, sunR, uSunColor * step( 0.0, uSunDir.y ) );
+  fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, vRoomP.w, Eamb + Ecross, sunR, uSunColor * step( 0.0, uSunDir.y ) );
+  #ifdef FAC_DBG_E
+  fInterior = ( Eamb + Ecross ) * 0.5 * RECIPROCAL_PI;
+  #endif
   // a shop's head glass looks up into the ceiling and its lamps: at night it reads as a
   // lit fanlight, a little dimmer than the display glass, not a burnt-out patch
   if ( abs( mod( vWin.w, 4.0 ) - 1.0 ) < 0.5 ) fInterior *= 1.0 - 0.45 * uNight * smoothstep( 2.35, 2.8, vRoomP.y - vFac.z );
@@ -1603,7 +1617,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
   m.name = far ? 'facades.glassInteriorFar' : 'facades.glassInterior';
   if (far) { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
   // debug switch facglass=r (reflection only) | t (transmitted room only) | m (a perfect mirror)
-  const dbg = { r: 'FAC_DBG_R', t: 'FAC_DBG_T', m: 'FAC_DBG_M' }[params.str('facglass', '')] || '';
+  const dbg = { r: 'FAC_DBG_R', t: 'FAC_DBG_T', m: 'FAC_DBG_M', e: 'FAC_DBG_T\n#define FAC_DBG_E' }[params.str('facglass', '')] || '';
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = U.uTime;
     shader.uniforms.uNight = U.uNight;

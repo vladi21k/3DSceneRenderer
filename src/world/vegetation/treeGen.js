@@ -445,7 +445,12 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
   const minR = [0.0045, 0.015, 0.04][lod];
   const N = new THREE.Vector3(), B = new THREE.Vector3(), T = new THREE.Vector3();
   const q = new THREE.Vector3(), cn = new THREE.Vector3(), p = new THREE.Vector3();
-  const youth = tpl.mature ? 0.25 : 1;
+  // bark youth (aBark): 1 smooth young bark, 0.25 old fissured bark. Branches are smooth;
+  // a young tree's stem (10-18 cm across) is smooth bark just starting to split (half the
+  // fissured relief); on old trees the bark smooths out where the wood is under ~25 cm
+  // across (upper stem, limbs)
+  const youthOf = (r) => (tpl.mature ? 0.25 + 0.6 * (1 - THREE.MathUtils.smoothstep(r, 0.09, 0.135))
+    : 1 - 0.3 * THREE.MathUtils.smoothstep(r, 0.035, 0.055));
   for (let c = 0; c < info.chains.length; c++) {
     const ch = info.chains[c];
     const nodes = ch.nodes;
@@ -515,6 +520,7 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
     N.copy(Math.abs(T.y) < 0.9 ? UP : _v.set(1, 0, 0)).cross(T).normalize();
     for (let k = 0; k < ring.length; k++) {
       const [i, pos, rr, collar] = ring[k];
+      const youth = youthOf(rr);
       p.copy(pos);
       if (k > 0) vacc += p.distanceTo(ring[k - 1][1]);
       const a = ring[Math.max(0, k - 1)][1], bb = ring[Math.min(ring.length - 1, k + 1)][1];

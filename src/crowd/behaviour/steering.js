@@ -1,4 +1,4 @@
-import { KIND, ST, TASK, MOB } from './agent.js';
+import { KIND, ST, TASK, MOB, settleShape } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
 import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
 import { updateFoot, footGap, propPointDist2, _foot, footBlend, footAt } from './footprint.js';
@@ -21,7 +21,7 @@ const FOOT_LAT = FOOT.map((F) => (F ? (F.l + (F.l > 0 ? F.r - AGENT_R : 0)) / 2 
 const FOOT_HALF = FOOT.map((F) => (F ? Math.max(AGENT_R, (Math.abs(F.l) + F.r + AGENT_R) / 2) : AGENT_R));
 const R2 = AGENT_R * 2;
 const SEP_GAP = 0.04;          // footprints with a stroller / bicycle are kept this far apart (hard)
-const _sw = { fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 }; // capsule of a facing being tried
+const _sw = settleShape({ fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, extHi: 0, extS: 0 }); // capsule of a facing being tried
 const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform edges
 const PI = Math.PI;
 
@@ -37,10 +37,17 @@ export class Steering {
     this.ny = Math.ceil((2 * GRID_D) / CELL);
     this.head = new Int32Array(this.nx * this.ny);
     this.propCell = new Uint8Array(this.nx * this.ny);   // a stroller / bicycle in this cell
-    this.des = { vs: 0, vd: 0, vmax: 1.6 };
+    this.des = settleShape({ vs: 0, vd: 0, vmax: 1.6 });
     this.s0 = 0;
     this.frame = 0;
     this.maxC = 0.05;          // largest hard correction of this step (m)
+    this.sepLim = 0.05;        // ... of the footprint separation (_separate)
+    this.cGathered = false; this.cMoved = 0;   // _constrain: obstacle query still valid, and how far it moved since
+    this.fs = 0; this.fd = 0;  // force of the last _social / _obstacles
+    this._s0 = 0;
+    this.ride = settleShape({ d: 0, v: 0, ang: 0.45, hard: false, alpha: 0, avoid: 0 });   // a cyclist's line and speed (cyclist.rideTarget)
+    this.ride.alpha = null;
+    settleShape(this, new Set(['frame', 'nx', 'ny']));
   }
 
   _cell(a) {
@@ -199,7 +206,7 @@ export class Steering {
    *  tram) and the speed; a bicycle model follows it with a speed-dependent, smoothly
    *  changing turn rate, so the path is a sequence of physically plausible arcs. */
   _stepCycle(a, dt) {
-    const c = this.c, tram = c.tram, T = this.ride || (this.ride = { d: 0, v: 0, ang: 0.45, hard: false, alpha: null });
+    const c = this.c, tram = c.tram, T = this.ride;
     tram.preStep(a);
     rideTarget(c, a, T);
     if (!a.active || a.mob !== MOB.CYCLE) return;
@@ -450,11 +457,12 @@ export class Steering {
     // open side (the corridor side of a terrace, whichever side is nearer for a platform)
     if (!a.noRect && !standing && sp > 0.2 && Math.abs(es) > 0.3) {
       const side = a.d >= 0 ? 1 : -1, ad = Math.abs(a.d);
-      const nr = map.rectsNear(a.s, side);
+      const nr = map.rectsNearA(a, side);
       for (let q = 0; q < nr; q++) {
         const r = map.rq[q];
         if (a.platformOK && r.kind === 'platform') continue;
-        const ds = map.rectDS(r, a.s);
+        map.rectDSA(r, a);
+        const ds = map.R[2];
         // distance to the end the walker is heading for
         const along = es > 0 ? -ds : ds - r.len;
         if (along < -RECT_R || along > 4.5) continue;
@@ -528,7 +536,7 @@ export class Steering {
         return;
       }
     }
-    const m = map.mouthAt(a.s, side);
+    const m = map.mouthAtAS(a, side);
     if (m) {
       // inside the side street opening the side walls bound s; elsewhere the facade bounds d
       const line = map.mouthLine(m, side);
@@ -544,7 +552,8 @@ export class Steering {
         return;
       }
     }
-    const wall = map.wallAt(a.s, side);
+    map.facadeA(a, side);
+    const wall = map.R[1];
     if (Math.abs(a.d) > wall) { a.d = side * Math.max(wall, Math.abs(a.d) - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
     // the prop is kept off the facade as well
     if (a.mob && a.fpR > 0) {
@@ -562,7 +571,7 @@ export class Steering {
   /** The ends of a stroller / bicycle against café terraces and platforms. */
   _propRects(a, side) {
     const map = this.c.map, maxC = this.maxC;
-    const nr = map.rectsNear(a.s, side);
+    const nr = map.rectsNearA(a, side);
     const pr = a.fpR * 0.6;
     for (let q = 0; q < nr; q++) {
       const r = map.rq[q];
@@ -582,10 +591,11 @@ export class Steering {
   /** Push a body out of café / platform footprints through the edge of least penetration. */
   _rects(a, side) {
     const map = this.c.map, maxC = this.maxC;
-    const nr = map.rectsNear(a.s, side);
+    const nr = map.rectsNearA(a, side);
     for (let q = 0; q < nr; q++) {
       const r = map.rq[q];
-      const ds = map.rectDS(r, a.s), ad = Math.abs(a.d);
+      map.rectDSA(r, a);
+      const ds = map.R[2], ad = Math.abs(a.d);
       if (ds < -RECT_R || ds > r.len + RECT_R || ad < r.inner - RECT_R || ad > r.outer + RECT_R) continue;
       if (a.platformOK && r.kind === 'platform') {
         // up on the platform: only its back kerb and railing are a wall

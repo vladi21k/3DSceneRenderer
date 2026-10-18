@@ -1,20 +1,22 @@
 // Metals, rail steel, paint, plastic and glass recipes.
 
-// Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). Only a narrow
-// running band, 21-29 mm wide on the head (drifting a few mm along the rail), is bright:
-// satin steel at roughness 0.45-0.6, never a mirror, with lengthwise wheel streaks
-// (roughness ±0.06 in fine lines) and 2-10 cm patches along the rail (±0.06), and a few
-// duller, darker burn patches where wheels slipped. Off the wheel path it is dull: a 2-3 mm
-// grey contact edge, then dark brown oxide on the head's shoulders, the gauge corner and the
-// field-side bevel (albedo ~0.15, roughness ~0.7, metal 0.4), and a dull dusty oxide on the
-// guard lip, so every rail reads as one thin bright line, not a chrome bar. The upper gauge
-// face (flange contact) is lightly polished.
+// Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). A narrow
+// running band, 21-29 mm wide on the head (drifting a few mm along the rail), is the
+// brightest part: satin steel at roughness 0.45-0.6, never a mirror, with lengthwise wheel
+// streaks (roughness ±0.06 in fine lines) and 2-10 cm patches along the rail (±0.06), and a
+// few duller, darker burn patches where wheels slipped. On a busy line the rest of the head
+// is worn steel too, only duller: the crowned shoulders either side of the band (grey,
+// albedo ~0.29, roughness ~0.6, metal 0.75), the field-side bevel and the gauge corner
+// under a thin light oxide film (albedo ~0.25, roughness ~0.65, metal 0.6), so the whole
+// head reads light beside the dark flangeway, as in the photographs. The upper gauge face
+// (flange contact) is lightly polished; the guard lip past the groove is dull dusty oxide.
 // The band sits where the street geometry puts the head top (see meta.uv of rail.head):
 //   swept rail     the head top (x -25 .. 21.5 mm) is pinned onto v 0.031-0.0543, i.e. half a
 //                  metre of v per metre of head, centre (x = 0) at v = 0.0435; field-side
-//                  bevel v 0.02-0.0235, gauge corner 0.054-0.071, gauge face 0.071-0.079,
+//                  bevel v 0.017-0.031, gauge corner 0.054-0.071, gauge face 0.071-0.079,
 //                  guard lip 0.106-0.127
-//   flat inlays    v = rail-local x (1:1), head centre at v = 0 (wraps to 0.25)
+//   flat inlays    v = rail-local x (1:1), head centre at v = 0 (wraps to 0.25); worn steel
+//                  within |x| < 27 mm
 // Widths below are on the head (m); the swept band is half as wide in v.
 // Surface map b = metal mask (oxide is only partly metallic).
 export const railhead = {
@@ -31,7 +33,6 @@ void surface(vec2 m, inout Surf s) {
   float band = 1.0 - smoothstep(hw - 0.0018, hw + 0.0018, dB);
   float e = dB - hw;                                                        // outside the band (m on the head)
   float edge = smoothstep(-0.001, 0.001, e) * (1.0 - smoothstep(0.002, 0.0035, e));
-  float ox = smoothstep(0.002, 0.0035, e);
   float gauge = (1.0 - smoothstep(0.0025, 0.0045, abs(m.y - 0.076))) * step(0.0543, m.y);
   float lipZ = smoothstep(0.098, 0.104, m.y) * (1.0 - smoothstep(0.13, 0.136, m.y));   // guard lip
   // lengthwise wheel streaks (fine lines and 2-10 cm patches along the rail), burn patches
@@ -47,13 +48,28 @@ void surface(vec2 m, inout Surf s) {
   // lightly polished upper gauge face
   vec3 gaugeC = vec3(0.36, 0.35, 0.34) * (1.0 + 0.05 * streakC);
   float gaugeR = 0.5 + 0.05 * streakC + 0.05 * burn;
-  // grey contact edge, dark brown oxide shoulders / corner / bevel, dusty lip
+  // worn steel off the band: crowned shoulders (head top), and under a thin light oxide film
+  // the field-side bevel and the gauge corner; dark brown oxide only off the head (inlay
+  // margins, the groove walls), dusty oxide on the guard lip
+  float top = smoothstep(0.0295, 0.0315, m.y) * (1.0 - smoothstep(0.0533, 0.0553, m.y));
+  float headW = smoothstep(0.015, 0.019, m.y) * (1.0 - smoothstep(0.069, 0.073, m.y));
+  float inlayW = 1.0 - smoothstep(0.024, 0.03, abs(d0));
+  float steelW = max(headW, inlayW);
+  float film = (1.0 - top) * (1.0 - inlayW * (1.0 - smoothstep(0.018, 0.026, abs(d0))));   // bevel / corner film
+  vec3 steelC = vec3(0.29, 0.28, 0.265) * (1.0 + 0.1 * streakC + 0.06 * patchy + 0.03 * streak);
+  steelC = mix(steelC, vec3(0.255, 0.232, 0.205) * (1.0 + 0.1 * streakC), film);
+  steelC = mix(steelC, vec3(0.22, 0.2, 0.18), 0.4 * burn);
+  float steelR = mix(0.58, 0.65, film) + 0.04 * streakC + 0.03 * patchy;
+  float steelM = mix(0.75, 0.6, film);
   vec3 oxC = vec3(0.155, 0.118, 0.085) * (1.0 + 0.15 * streakC + 0.08 * patchy);
   vec3 dustC = vec3(0.16, 0.145, 0.125) * (1.0 + 0.12 * streakC) * (1.0 - 0.1 * burn);
-  vec3 edgeC = vec3(0.24, 0.23, 0.22) * (1.0 + 0.04 * streak);
-  vec3 dull = mix(mix(oxC, edgeC, edge), oxC, ox);
-  float dullR = mix(mix(0.7, 0.56, edge), 0.7, ox) + 0.04 * streakC;
-  float dullM = mix(mix(0.4, 0.6, edge), 0.4, ox);
+  vec3 edgeC = vec3(0.33, 0.32, 0.31) * (1.0 + 0.04 * streak);                            // 2-3 mm contact edge
+  vec3 dull = mix(oxC, steelC, steelW);
+  float dullR = mix(0.7 + 0.04 * streakC, steelR, steelW);
+  float dullM = mix(0.4, steelM, steelW);
+  dull = mix(dull, edgeC, edge * steelW);
+  dullR = mix(dullR, 0.54, edge * steelW);
+  dullM = mix(dullM, 0.8, edge * steelW);
   dull = mix(dull, dustC * (1.0 + 0.1 * streak), lipZ);
   dullR = mix(dullR, 0.72 + 0.05 * streakC, lipZ);
   dullM = mix(dullM, 0.4, lipZ);
@@ -129,9 +145,9 @@ void surface(vec2 m, inout Surf s) {
 
 // Painted joinery up close (window and shop frames), tile 1 m at 1 mm/texel. Gloss enamel over
 // primer over timber: brush marks (fine ridges along the stroke, which runs along u or v
-// in patches), orange peel and dust; chips where the paint has flaked, clustered where
-// the frame is worn, showing the pale primer and, in the deeper ones, grey weathered
-// wood; a lighter putty fillet (v 0-10 mm) and a bead line (v ≈ 18 mm) along u at the
+// in patches), orange peel and dust; chalky dull patches where the frame is worn, with a
+// few small flakes there showing the pale primer and, in the deeper ones, grey weathered
+// wood; a painted-over putty fillet (v 0-10 mm) and a bead line (v ≈ 18 mm) along u at the
 // start of every tile row, so frames whose v is metres from the glass edge get them at
 // the glass (tile 1 m: wider members never reach the next row). Albedo near white where painted (the vertex colour is the paint);
 // surface.b = paint coverage (0 shows the baked primer / wood / putty colour as is).
@@ -145,28 +161,31 @@ void surface(vec2 m, inout Surf s) {
   float brush = fbm2(bm, vec2(5.0, 140.0), 3, 0.55, 402u);
   float peel = fbm(m, 220.0, 2, 0.5, 403u);
   float dust = fbm(m, 30.0, 3, 0.5, 404u);
-  // flaking: ragged patches where a warped fractal noise passes a threshold that drops in
-  // the sparse worn areas; primer inside, bare wood where it flaked deeper
+  // wear: mostly dull, chalky patches (matt, a touch paler) where the frame weathers; only a
+  // few small flakes (2-6 mm, sparse even where worn), primer inside, bare wood where it
+  // flaked deeper. Under dark paints the runtime tones the flakes down (surface.js PAINT).
   float wearM = smoothstep(0.3, 0.85, 0.5 + 0.5 * fbm(m, 3.0, 3, 0.5, 405u));
-  float fl = 0.5 + 0.5 * fbm(warp(m, 30.0, 0.004, 406u), 22.0, 5, 0.6, 407u);
-  float th = 0.84 - 0.22 * wearM;
-  float chip = smoothstep(th, th + 0.012, fl);
-  float lip = smoothstep(th - 0.035, th, fl) * (1.0 - chip);
-  float deep = smoothstep(th + 0.015, th + 0.025, fl);
-  // putty fillet (sloping down to the glass at v = 0, hairline cracks across) and bead line
+  float chalk = smoothstep(0.2, 0.75, wearM * (0.5 + 0.5 * fbm(m, 9.0, 3, 0.5, 410u)) * 1.6);
+  float fl = 0.5 + 0.5 * fbm(warp(m, 60.0, 0.002, 406u), 40.0, 4, 0.6, 407u);
+  float th = 0.785 - 0.1 * wearM;
+  float chip = smoothstep(th, th + 0.01, fl);
+  float lip = smoothstep(th - 0.025, th, fl) * (1.0 - chip);
+  float deep = smoothstep(th + 0.012, th + 0.02, fl);
+  // putty fillet (sloping down to the glass at v = 0, hairline cracks across; painted over
+  // like the frame, the putty shows only through the cracks) and bead line
   float putty = 1.0 - smoothstep(0.0095, 0.0105, m.y);
   float crack = smoothstep(0.03, 0.0, voro(m, vec2(60.0, 6.0), 408u, 1.0).w) * putty;
   float bead = 1.0 - smoothstep(0.0012, 0.0022, abs(m.y - 0.018));
   float grain = fbm2(bm, vec2(3.0, 70.0), 3, 0.5, 409u);
-  vec3 paintC = vec3(0.9) * (1.0 + 0.02 * brush - 0.04 * dust) * (1.0 + 0.08 * bead) * (1.0 - 0.1 * lip);
+  vec3 paintC = vec3(0.9) * (1.0 + 0.02 * brush - 0.04 * dust + 0.05 * chalk) * (1.0 + 0.03 * bead) * (1.0 - 0.06 * lip);
   vec3 primer = vec3(0.52, 0.5, 0.45) * (1.0 + 0.04 * dust);
   vec3 wood = vec3(0.33, 0.29, 0.235) * (1.0 + 0.18 * grain);
   vec3 puttyC = vec3(0.56, 0.54, 0.48) * (1.0 + 0.05 * dust) * (1.0 - 0.45 * crack);
   vec3 bare = mix(primer, wood, deep);
-  s.albedo = mix(mix(paintC, bare, chip), puttyC, putty);
-  s.cover = mix(1.0 - chip, 0.25, putty);
-  s.rough = mix(mix(0.36 + 0.05 * brush + 0.08 * dust, mix(0.75, 0.86, deep), chip), 0.72, putty);
-  s.height = brush * 0.00002 + peel * 0.00001 + lip * 0.00003 - chip * 0.00015 - deep * 0.00015
+  s.albedo = mix(mix(paintC, bare, chip), mix(paintC, puttyC, 0.5 * crack + 0.1), putty);
+  s.cover = mix(1.0 - chip, 0.9 - 0.6 * crack, putty);
+  s.rough = mix(mix(0.36 + 0.05 * brush + 0.08 * dust + 0.24 * chalk, mix(0.75, 0.86, deep), chip), 0.5 + 0.2 * crack, putty);
+  s.height = brush * 0.00002 * (1.0 - 0.5 * chalk) + peel * 0.00001 + lip * 0.00003 - chip * 0.00015 - deep * 0.00015
            + bead * 0.0003 - putty * (0.002 * (0.0105 - m.y) / 0.0105 + crack * 0.0003);
   s.ao = 1.0 - 0.3 * crack;
 }

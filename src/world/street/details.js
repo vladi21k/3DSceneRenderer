@@ -28,7 +28,23 @@ const u01 = (a, b) => hash2(a | 0, b | 0) / 4294967296;
 
 /** Deterministic plan for chunk ci: { items, spots, joints, stains, leaves }. */
 export function planDetails(ctx, ci) {
+  const it = planSteps(ctx, ci);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+
+/** planDetails as a resumable sequence of short steps (it yields 'plan' between them;
+ *  the result is the generator's return value), so the street's prefetch can plan ahead
+ *  a slice per frame. The facade plans of the chunk's lots (shared with buildings and
+ *  facades, cached there) are made one lot per step: the first plan of a lot can take a
+ *  few milliseconds. */
+export function* planSteps(ctx, ci) {
   const { layout, route } = ctx;
+  for (const lot of layout.inChunk('lots', ci)) {
+    facadePlan(lot);
+    yield 'plan';
+  }
   const L = route.length, delta = ctx.delta;
   const s0 = ci * CHUNK_LEN, s1 = Math.min(L, s0 + CHUNK_LEN);
   const rng = RNG.from(layout.seed, 'street-details', ci);
@@ -70,6 +86,7 @@ export function planDetails(ctx, ci) {
   // tree grates around every tree (cast iron, aligned with the street)
   for (const t of layout.inChunk('trees', ci)) items.push({ type: 'treeGrate', s: t.s, d: t.d, yaw: 0, r: 0.88, tree: true });
 
+  yield 'plan';
   // gully grates in both gutters on a global ~18 m rhythm
   for (const side of [-1, 1]) {
     const k0 = Math.floor((s0 - 9) / 18), k1 = Math.ceil((s1 - 9) / 18);
@@ -116,6 +133,7 @@ export function planDetails(ctx, ci) {
     }
   }
 
+  yield 'plan';
   // stains: oil drips along the tracks, dirt and gum on the sidewalks
   const stains = [];
   const nSt = rng.int(3, 7);
@@ -164,6 +182,7 @@ export function planDetails(ctx, ci) {
       stain(lg.range(c.s0, c.s1), d, lg.chance(0.6) ? 2 : 0, lg.range(0.8, 1.6), lg.range(0.7, 1.2), lg.range(0, 6.28));
     }
   }
+  yield 'plan';
   for (const lot of layout.inChunk('lots', ci)) {
     // the frame origin's route position, then step along the facade (u runs along it)
     const F = lot.frame;
@@ -187,6 +206,7 @@ export function planDetails(ctx, ci) {
     stains.push({ s: t.s, d: t.d, kind: 4, size: TREE_RING_SIZE, aspect: 1, yaw: 0, op: tr.range(1.15, 1.35), warm: tr.range(0.3, 0.5) });
   }
 
+  yield 'plan';
   // fallen leaves around trees and in the gutters
   const leaves = [];
   for (const t of layout.inChunk('trees', ci)) {
@@ -239,6 +259,8 @@ export function planDetails(ctx, ci) {
   return { items, spots, stains, leaves, joints };
 }
 
+// corners of a leaf quad
+const QUAD_U = [-1, 1, 1, -1], QUAD_V = [-1, -1, 1, 1];
 // leaf tints (linear): yellowing green, brown, dry tan, green, rusty
 const LEAF_TINTS = [[0.36, 0.34, 0.08], [0.2, 0.11, 0.04], [0.42, 0.3, 0.14], [0.14, 0.2, 0.05], [0.33, 0.16, 0.05]];
 
@@ -356,7 +378,8 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
     const tint = LEAF_TINTS[l.tint];
     const u0 = LR.x / ATLAS + (l.cell % 2) * cw, v0 = LR.y / ATLAS + Math.floor(l.cell / 2) * chh;
     const first = iron.n;
-    for (const [lu, lv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    for (let q = 0; q < 4; q++) {
+      const lu = QUAD_U[q], lv = QUAD_V[q];
       const ds = lu * l.size * ca - lv * l.size * sa, dd = lu * l.size * sa + lv * l.size * ca;
       const d = l.d + dd;
       iron.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + h0 + lu * l.tilt * l.size * 0.4 + 0.006 * (lv + 1), smp.pos.z + smp.tanH.z * ds + smp.right.z * d,

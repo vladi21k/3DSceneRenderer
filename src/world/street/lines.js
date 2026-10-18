@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W, MORTAR_ALBEDO, SEAL_TONE } from './constants.js';
+import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W, SEAL_TONE, pavingTones } from './constants.js';
 import { patchRailSheen } from './shading.js';
 
 // Pixel-width-aware line ribbons with analytic coverage.
@@ -180,7 +180,7 @@ const RAIL_FRAG = /* glsl */`
   // (rail.head) reflect the environment at uStSheen.y
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wShoulder = cShoulder * inv, wGauge = cGauge * inv;
   float wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
-  vec3 dSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.86)};                       // bitumen seal
+  vec3 dSeal = ST_DSEAL;                                                   // bitumen seal
   vec3 aOx = vec3( 0.15, 0.115, 0.085 ) * ( 0.85 + 0.3 * wear );          // oxide bevel, metal 0.4
   vec3 aBand = vec3( 0.5, 0.495, 0.485 ) * ( 0.94 + 0.1 * wear );         // satin running band, metal 1
   // the crowned head's shoulders tilt a few degrees off level: at the grazing angles of
@@ -192,8 +192,8 @@ const RAIL_FRAG = /* glsl */`
   // sky and, mostly, no sun, and reflect almost nothing (effective albedo with the
   // cavity AO folded in, matching the 3D groove of shading.js patchGrit)
   vec3 dGroove = vec3( 0.032, 0.028, 0.0238 );
-  vec3 dGrout = ${v3(MORTAR_ALBEDO, 0.95)};                                  // mortar bed
-  vec3 dPave = vec3( 0.135, 0.136, 0.14 );                                  // brake-dusted setts beside it
+  vec3 dGrout = ST_DGROUT;                                                  // mortar bed
+  vec3 dPave = ST_DPAVE;                                                    // brake-dusted setts beside it
   vec3 f04 = vec3( 0.04 );
   lnD = dSeal * wSeal + aOx * ( 0.6 * wCorner ) + aShoulder * ( 0.25 * wShoulder ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
   vec3 fOx = mix( f04, aOx, 0.4 ), fDust = mix( f04, aDust, 0.4 ) * 0.97;
@@ -445,8 +445,13 @@ else if ( vLineStyle < ${(LINE_STYLE.joint + 0.5).toFixed(1)} ) ${PAINT_FRAG}
 else ${ASPHALT_FRAG}
 `;
 
-/** The shared line material (all styles; the rail steel has the lengthwise-polish sheen). */
-export function createLineMaterial() {
+/** The shared line material (all styles; the rail steel has the lengthwise-polish sheen).
+ *  tones: constants.js pavingTones (mortar and the setts beside the rails). */
+export function createLineMaterial(tones = pavingTones(null)) {
+  const frag = LINE_FRAG
+    .replace('ST_DSEAL', v3(tones.mortar, SEAL_TONE * 0.86))
+    .replace('ST_DGROUT', v3(tones.mortar, 0.95))
+    .replace('ST_DPAVE', v3(tones.pave));
   const m = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.5, metalness: 0, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
@@ -459,7 +464,7 @@ export function createLineMaterial() {
       .replace('#include <begin_vertex>', VERT_MAIN);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\n${FRAG_PARS}`)
-      .replace('#include <color_fragment>', `#include <color_fragment>\n${LINE_FRAG}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${frag}`)
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nroughnessFactor = lnRough;\nmetalnessFactor = lnMetal;')
       .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
 if ( lnPhys > 0.5 ) {

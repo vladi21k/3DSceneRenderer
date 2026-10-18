@@ -194,6 +194,7 @@ export class BatchSet {
   }
 
   register(p) {
+    this._list = null;
     for (const part of p.parts) {
       const key = part.mat.uuid;
       let b = this.batches.get(key);
@@ -536,12 +537,18 @@ export class BatchSet {
   /** Batches with nothing to show are not drawn (no empty multi-draw calls). */
   _showBatches() {
     if (!this.hideEmpty) return;
-    for (const b of this.batches.values()) if (b.bm) b.bm.visible = b.shown > 0;
+    const list = this._list || (this._list = [...this.batches.values()]);
+    for (let i = 0; i < list.length; i++) { const b = list[i]; if (b.bm) b.bm.visible = b.shown > 0; }
     if (this.shadow.bm) this.shadow.bm.visible = this.shadow.shown > 0;
   }
 
   _flush() {
-    for (const b of this.batches.values()) if (b.dirty) { b.dirty = false; if (b.bm._colorsTexture) b.bm._colorsTexture.needsUpdate = true; }
+    // (an array: a Map iterator twice a frame is garbage)
+    const list = this._list || (this._list = [...this.batches.values()]);
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (b.dirty) { b.dirty = false; if (b.bm._colorsTexture) b.bm._colorsTexture.needsUpdate = true; }
+    }
   }
 
   /** Swap instance geometry to the level matching its distance from `eye`, cross-fading

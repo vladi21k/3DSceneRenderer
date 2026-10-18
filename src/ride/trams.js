@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TRACK_OFFSET, TRACK_ZONE_HALF } from '../core/config.js';
 import { U } from '../core/uniforms.js';
 import { Events } from '../core/events.js';
-import { Tram, DRIVE } from './train.js';
+import { Tram, DRIVE, BESIDE } from './train.js';
 import { CAR, buildModels } from './trams/model.js';
 import { makeLampAtlas } from './trams/display.js';
 import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
@@ -24,13 +24,17 @@ import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMateri
 //    here); the saloon behind the side glazing is traced in its shader, lit at dusk.
 //
 // Debug: tram=<s> starts the first unit with its nose at s.
-// API: app.trams.units[] = {id, s (leading nose, route s), speed (m/s, travelling towards
-// −s), accel, dir (−1), d, length, halfWidth, state, phase, bellAt, active}.
+// API: app.trams.units[] = {id, s (leading nose, route s), prevS (s at the previous frame),
+// speed (m/s, travelling towards −s), accel, dir (−1), d, length, halfWidth, state, phase,
+// bellAt, active, obs (m from the nose to the nearest person its driver brakes for)}.
+// Drivers: a unit's people scan is its obstacle source (Tram.setObstacle); the emergency
+// brake needs two scans running; held by somebody it rings and creeps up (train.js).
 // Emits app.events 'tram-bell' {unit, s, d} when one of them rings.
 
 const REFL_D = [6, 7.5];          // route d of the street-reflection planes (right, left), at most the facade lines
 const LOD_PX = [55, 14];          // projected px per metre (1080 lines) above which LOD 0 / 1 draw
 const SCAN_DT = 0.1;              // s between scans of the people ahead
+const EB_CONFIRM = 0.18;          // s the scan must keep asking for the emergency brake (two scans running)
 const VIEW = [-90, 650];          // drawn while the nose is within this range of the camera (m): the built street
 // where each unit's nose starts: m beyond the default start plus a share of the loop
 const UNITS = [
@@ -112,9 +116,9 @@ const trams = {
       if (rel > -CAR.length - 50 && rel < 140) s = route.wrap(s + 420);
       if (i === 0 && force != null) s = route.wrap(force);
       const bus = new Events();
-      const tram = new Tram({ route: mr, layout: ml }, { s: route.wrap(-s), auto: true, events: bus });
+      const tram = new Tram({ route: mr, layout: ml }, { s: route.wrap(-s), auto: true, events: bus, ebConfirm: EB_CONFIRM });
       const unit = {
-        id: i, tram, s, speed: tram.speed, accel: 0, dir: -1, d: -TRACK_OFFSET, length: CAR.length, halfWidth: CAR.halfWidth,
+        id: i, tram, s, prevS: s, speed: tram.speed, accel: 0, dir: -1, d: -TRACK_OFFSET, length: CAR.length, halfWidth: CAR.halfWidth,
         state: tram.state, phase: null, bellAt: -1e9, active: true, obs: Infinity, lod: 2, dist: Infinity, acc: 0,
         root: this._unitMeshes(i),
       };
@@ -207,13 +211,14 @@ const trams = {
     if (h === 0 || this._loadT <= 0) { this._loadT = 1; this._loads(app, h === 0); }
     for (const u of this.units) {
       const t = u.tram;
-      t.obstacle = u.obs;
+      t.setObstacle(u.obs, 'scan');
       // units out of sight are stepped in 0.1 s strides (the driver model's largest step)
       u.acc += h;
       if (u.root.visible || u.acc >= 0.1) {
         while (u.acc > 1e-6) { const d = Math.min(0.1, u.acc); t.step(d); u.acc -= d; }
       }
       if (h > 0 && u.obs < 45 && t.speed > 0.5) t.ringBell(true);
+      u.prevS = u.s;
       u.s = app.route.wrap(-t.s);
       u.speed = t.speed; u.accel = t.accel; u.state = t.state; u.phase = t.phase;
     }
@@ -262,32 +267,39 @@ const trams = {
     }
   },
 
-  /** Weighted people in each unit's track corridor 5-200 m ahead of its nose -> Tram.load. */
+  /** Weighted people in each unit's track corridor 5-200 m ahead of its nose -> Tram.load:
+   *  its half of the corridor 1, the other half 0.6, the strip of BESIDE m outside the
+   *  corridor on its side DRIVE.besideW (as for the cab tram, train.js). */
   _loads(app, immediate) {
     const sim = app.crowd && !app.crowd.disabled ? app.crowd.sim : null;
     const agents = sim && sim.population && sim.population.agents;
     if (!agents || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
-    const route = app.route, n = this.units.map(() => 0);
-    for (const a of agents) {
-      if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF)) continue;
-      const s = route.wrap(sim.camW + (a.s - sim.camU)), w = a.d < 0.2 ? 1 : 0.6;
-      for (let i = 0; i < this.units.length; i++) {
-        const ahead = route.delta(s, this.units[i].s);
+    const route = app.route, U = this.units, n = this._loadN || (this._loadN = new Float64Array(U.length));
+    n.fill(0);
+    for (let k = 0; k < agents.length; k++) {
+      const a = agents[k];
+      if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF + BESIDE)) continue;
+      const w = a.d < -TRACK_ZONE_HALF ? DRIVE.besideW : a.d < 0.2 ? 1 : a.d <= TRACK_ZONE_HALF ? 0.6 : 0;
+      if (w === 0) continue;
+      const s = route.wrap(sim.camW + (a.s - sim.camU));
+      for (let i = 0; i < U.length; i++) {
+        const ahead = route.delta(s, U[i].s);
         if (ahead > 5 && ahead < 200) n[i] += w;
       }
     }
-    for (let i = 0; i < this.units.length; i++) this.units[i].tram.setLoad(n[i] / DRIVE.busyPeople, immediate);
+    for (let i = 0; i < U.length; i++) U[i].tram.setLoad(n[i] / DRIVE.busyPeople, immediate);
   },
 
   /** People on (or stepping onto) a unit's track ahead of its nose: distance to the nearest. */
   _scan(app) {
     for (const u of this.units) u.obs = Infinity;
-    const cr = app.crowd;
-    if (!cr || cr.disabled || typeof cr.agents !== 'function') return;
-    const sim = cr.sim;
-    if (!sim || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
+    const cr = app.crowd, sim = cr && !cr.disabled ? cr.sim : null;
+    const agents = sim && sim.population && sim.population.agents;
+    if (!agents || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
     const route = app.route, reach = CAR.halfWidth + 0.38;   // body half width + a person + a little
-    for (const a of cr.agents()) {
+    for (let k = 0; k < agents.length; k++) {
+      const a = agents[k];
+      if (!a.active) continue;
       const dl = a.d + TRACK_OFFSET, dp = dl + (a.vd || 0) * 1.4;
       if (Math.abs(dl) > reach && Math.abs(dp) > reach && dl * dp > 0) continue;   // stays clear
       const s = route.wrap(sim.camW + (a.s - sim.camU));
@@ -320,8 +332,8 @@ const trams = {
       }
       u.dist = dist;
       const px = f1080 / Math.max(dist, 1);
-      const hyst = (lod, th) => (u.lod <= lod ? px > th * 0.92 : px > th * 1.08);
-      const lod = hyst(0, LOD_PX[0]) ? 0 : hyst(1, LOD_PX[1]) ? 1 : 2;
+      // (hysteresis: a level once reached holds until 8 % past its threshold)
+      const lod = px > LOD_PX[0] * (u.lod <= 0 ? 0.92 : 1.08) ? 0 : px > LOD_PX[1] * (u.lod <= 1 ? 0.92 : 1.08) ? 1 : 2;
       u.lod = lod;
       const B = u.root.userData.bodies;
       this._body(B[0], _P[0], _P[1], lod);
@@ -350,8 +362,8 @@ const trams = {
    *  a little lower at night (the saloon's own lights are part of the glass shader). */
   _lights() {
     const night = Math.min(1, Math.max(0, U.uNight.value));
-    const ln = (a, b) => Math.exp(Math.log(a) + night * (Math.log(b) - Math.log(a)));
-    this.lampLv.value.set(ln(0.12, 0.014), ln(0.12, 0.06));
+    // (log-interpolated: 0.12 -> 0.014 display, 0.12 -> 0.06 lenses)
+    this.lampLv.value.set(0.12 * Math.pow(0.014 / 0.12, night), 0.12 * Math.pow(0.06 / 0.12, night));
   },
 };
 

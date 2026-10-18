@@ -57,6 +57,7 @@ async function main() {
   {
     const gl = renderer.getContext();
     for (const p of [gl.UNPACK_ROW_LENGTH, gl.UNPACK_SKIP_PIXELS, gl.UNPACK_SKIP_ROWS, gl.UNPACK_IMAGE_HEIGHT, gl.UNPACK_SKIP_IMAGES]) renderer.state.pixelStorei(p, 0);
+    if (params.str('glbox', '1') !== '0') unboxedUniforms(gl);
   }
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -249,6 +250,22 @@ async function main() {
     frames: mon.frames(), hitches: mon.count,
     modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
   });
+}
+
+/**
+ * Scalar uniform uploads without garbage. Every frame three uploads a few thousand vector
+ * uniforms (the lights move in view space with the camera, once per program), and a call
+ * into the browser with float arguments boxes each of them: about a tenth of all the
+ * app's garbage. The scalar forms are routed through the vector forms with one reused
+ * typed array, which the GL treats identically (url glbox=0 turns this off for A/B).
+ */
+function unboxedUniforms(gl) {
+  const f1 = gl.uniform1fv.bind(gl), f2 = gl.uniform2fv.bind(gl), f3 = gl.uniform3fv.bind(gl), f4 = gl.uniform4fv.bind(gl);
+  const b1 = new Float32Array(1), b2 = new Float32Array(2), b3 = new Float32Array(3), b4 = new Float32Array(4);
+  gl.uniform1f = function (loc, x) { b1[0] = x; f1(loc, b1); };
+  gl.uniform2f = function (loc, x, y) { b2[0] = x; b2[1] = y; f2(loc, b2); };
+  gl.uniform3f = function (loc, x, y, z) { b3[0] = x; b3[1] = y; b3[2] = z; f3(loc, b3); };
+  gl.uniform4f = function (loc, x, y, z, w) { b4[0] = x; b4[1] = y; b4[2] = z; b4[3] = w; f4(loc, b4); };
 }
 
 /** Resolve uniforms/attributes of every linked program so first use never stalls a frame. */

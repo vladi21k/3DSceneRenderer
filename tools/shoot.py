@@ -11,6 +11,10 @@ Examples
   tools/shoot.py --params "s=300" --shots 3 --interval 1.0 --out .work/shots/seq.png
   tools/shoot.py --params "s=300" --eval "JSON.stringify(window.__app.stats())"
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --hitches   (ride timing)
+  tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --heapprof 40 (allocation sites)
+
+Timing runs (--hitches, --heapprof) print the machine's load at the start and the end:
+other agents may be rendering on the same CPU and GPU, so judge times against it.
 
 The page URL is http://127.0.0.1:<port>/index.html?<params>&capture=1 ; a private
 static server (serve.py) is started on a free port unless --port is given.
@@ -108,6 +112,42 @@ class WS:
         raise TimeoutError(method)
 
 
+def machine_load():
+    """One line on how busy the machine is (other agents may share it): load average per
+    core, headless Chrome processes running, GPU utilisation. Timing runs print it at the
+    start and the end, so a slow run can be put down to contention before blaming a module."""
+    parts = []
+    try:
+        l1, l5, _ = os.getloadavg()
+        parts.append(f"load {l1:.1f}/{l5:.1f} on {os.cpu_count()} cores")
+    except OSError:
+        pass
+    try:
+        n = 0
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read(4096)
+            except OSError:
+                continue
+            if b"--headless" in cmd and b"--type=" not in cmd and (b"chrome" in cmd or b"chromium" in cmd):
+                n += 1
+        parts.append(f"{n} headless browsers")
+    except OSError:
+        pass
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=3).stdout.strip().splitlines()
+            if out:
+                parts.append(f"gpu {out[0].strip()}% busy")
+        except Exception:
+            pass
+    return ", ".join(parts) or "unknown"
+
+
 def print_heap_profile(prof, top, secs):
     """Allocation sites by sampled bytes (self), with their first caller."""
     sites, total = {}, 0
@@ -161,6 +201,9 @@ def main():
     a = ap.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    timing = a.hitches or a.heapprof
+    if timing:
+        print("machine at start:", machine_load())
     server = None
     if not a.port:
         a.port = free_port()
@@ -275,6 +318,8 @@ def main():
         if a.heapprof:
             prof = ws.call("HeapProfiler.stopSampling", session=sess)["profile"]
             print_heap_profile(prof, a.heapprof, time.time() - heap_t0)
+        if timing:
+            print("machine at end:", machine_load())
         drain_events()
         for typ, txt in logs:
             if a.console or typ in ("error", "warning", "exception", "assert"):
