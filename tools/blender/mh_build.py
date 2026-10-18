@@ -163,6 +163,7 @@ def build_one(cid, save_blend=False):
         if not os.path.exists(path):
             raise IOError('missing target ' + name)
         TargetService.load_target(bm, path, weight=float(w), name=os.path.basename(name))
+    fit_stature(bm, CASTM.stature(spec))
     rig = HumanService.add_builtin_rig(bm, 'game_engine', import_weights=True)
 
     # ---------------------------------------------------------------- assets
@@ -303,7 +304,6 @@ def build_one(cid, save_blend=False):
         return np.where(d1 <= d2, 0.5 * t1, 0.5 + 0.5 * t2)
 
     out_parts = []      # dicts: name, region per poly, keep per poly, data
-    garment_keep_vert = []   # (co of garment verts, kept flag) for the covered-skin test
     delete_groups = {}
 
     def poly_vals(d, per_vertex, reduce='mean'):
@@ -336,8 +336,11 @@ def build_one(cid, save_blend=False):
         elif kind == 'shoes':
             comp = components(d)
             zmax = {c: d['co'][comp == c, 2].max() for c in np.unique(comp)}
+            csize = {c: int((comp == c).sum()) for c in np.unique(comp)}
             ankle = min(J['footL'][2], J['footR'][2])
-            vreg = np.array([CASTM.REGIONS['socks'] if zmax[c] > ankle + 0.035 else CASTM.REGIONS['shoes'] for c in comp])
+            # socks: the small tubes rising above the ankle (the shoe shells are much bigger)
+            vreg = np.array([CASTM.REGIONS['socks'] if (zmax[c] > ankle + 0.02 and csize[c] < 260) else CASTM.REGIONS['shoes']
+                             for c in comp])
             region[:] = poly_vals(d, vreg.astype(np.float32)).round().astype(np.int16)
             tex = 'shoes:' + spec['shoes']
             socks = spec.get('socks')
@@ -378,33 +381,12 @@ def build_one(cid, save_blend=False):
             co = d['co']
             # cuts
             if want_top and spec['top'].get('cut') == 'sleeve':
-                Ls = spec['top']['length']
-                arm = share(d['W'], ARM)
-                t = np.zeros(len(co))
-                for s, S in (('l', 'L'), ('r', 'R')):
-                    side = (co[:, 0] > 0) if s == 'l' else (co[:, 0] <= 0)
-                    tt = chain_t(co, J['arm' + S], J['fore' + S], J['hand' + S])
-                    t = np.where(side, tt, t)
-                tv = np.where(arm > 0.45, t, 0.0)
-                keep &= ~(~ppart & (poly_vals(d, tv.astype(np.float32)) > Ls))
+                cut_tube(d, keep, ~ppart, share(d['W'], ARM) > 0.45, J, ('arm', 'fore', 'hand'), spec['top']['length'], poly_vals)
             if want_bot and spec['bottom'].get('cut') == 'leg':
-                Ll = spec['bottom']['length']
-                leg = share(d['W'], LEG)
-                t = np.zeros(len(co))
-                for s, S in (('l', 'L'), ('r', 'R')):
-                    side = (co[:, 0] > 0) if s == 'l' else (co[:, 0] <= 0)
-                    tt = chain_t(co, J['thigh' + S], J['shin' + S], J['foot' + S])
-                    t = np.where(side, tt, t)
-                tv = np.where(leg > 0.5, t, 0.0)
-                keep &= ~(ppart & (poly_vals(d, tv.astype(np.float32)) > Ll))
+                cut_tube(d, keep, ppart, share(d['W'], LEG) > 0.5, J, ('thigh', 'shin', 'foot'), spec['bottom']['length'], poly_vals)
             if want_bot and spec['bottom'].get('cut') == 'skirt':
                 lengthen_skirt(d, vpart == 1, J, spec['bottom']['length'], waist_z)
         out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
-        if kind in ('suit', 'shoes', 'hat'):
-            vkeep = np.zeros(len(d['co']), bool)
-            for p in np.where(keep)[0]:
-                vkeep[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
-            garment_keep_vert.append((d['co'], vkeep))
 
     # skirts: weights blend pelvis -> both thighs (no splitting between the legs)
     for op in out_parts:
@@ -430,21 +412,35 @@ def build_one(cid, save_blend=False):
                 if w > 0.5:
                     in_body[i] = True
     deleted = np.zeros(len(body['co']), bool)
-    allg = np.concatenate([g[0] for g in garment_keep_vert])
-    allk = np.concatenate([g[1] for g in garment_keep_vert])
-    kd = KDTree(len(allg))
-    for i, c in enumerate(allg):
-        kd.insert(Vector(c.tolist()), i)
-    kd.balance()
+    from mathutils.bvhtree import BVHTree
+    gv, gp, goff = [], [], 0
+    for op in out_parts:
+        if op['kind'] in ('suit', 'shoes', 'hat'):
+            d = op['d']
+            gv.append(d['co'])
+            for p in np.where(op['keep'])[0]:
+                gp.append([int(x) + goff for x in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]])
+            goff += len(d['co'])
+    gbvh = BVHTree.FromPolygons([Vector(v) for v in np.concatenate(gv).astype(np.float64)], gp, epsilon=0.0)
     del_any = np.zeros(len(body['co']), bool)
     for nm, lst in body['groups'].items():
         if nm.startswith('Delete.'):
             for i, w in lst:
                 if w > 0.5:
                     del_any[i] = True
+    # a body vertex under a kept garment is hidden: a ray out along its normal meets the garment
     for i in np.where(del_any)[0]:
-        _, j, _ = kd.find(Vector(body['co'][i].tolist()))
-        if allk[j]:
+        n = Vector(body['nr'][i].tolist())
+        o = Vector(body['co'][i].tolist())
+        h = gbvh.ray_cast(o - n * 0.002, n, 0.16)
+        if h[0] is None:
+            # tilted rays (armpits, crotch, folds where the normal looks at other skin)
+            for tvec in ((0, 0, 1), (0, 0, -1)):
+                dd = (n + Vector(tvec) * 0.6).normalized()
+                h = gbvh.ray_cast(o - n * 0.002, dd, 0.16)
+                if h[0] is not None:
+                    break
+        if h[0] is not None:
             deleted[i] = True
     bkeep = np.zeros(len(body['ls']), bool)
     for p in range(len(body['ls'])):
@@ -496,7 +492,9 @@ def build_one(cid, save_blend=False):
             continue
         tris = np.array(tris, np.int64)
         lv = tris.ravel()
-        key = np.stack([d['vi'][lv], np.round(d['uv'][lv, 0] * 8192).astype(np.int64), np.round(d['uv'][lv, 1] * 8192).astype(np.int64)], 1)
+        treg = np.repeat(np.array(tri_reg, np.int64), 3)
+        key = np.stack([d['vi'][lv], np.round(d['uv'][lv, 0] * 8192).astype(np.int64), np.round(d['uv'][lv, 1] * 8192).astype(np.int64),
+                        treg], 1)
         uk, inv = np.unique(key, axis=0, return_inverse=True)
         inv = inv.reshape(-1)
         first = np.zeros(len(uk), np.int64)
@@ -534,6 +532,9 @@ def build_one(cid, save_blend=False):
         meta_parts.append(dict(key=name, kind=op['kind'], tex=op['tex'], verts=int(len(uk)), tris=int(len(tris)),
                                suit=op['info'].get('suit')))
 
+    # ---------------------------------------------------------------- ambient occlusion per vertex (rest pose)
+    ambient_occlusion(raw, meta_parts)
+
     joints = {n: to3(J[n] + shift).tolist() for n in RT_BONES}
     joints['root'] = [0.0, 0.0, 0.0]
     # rest-pose landmarks
@@ -551,6 +552,98 @@ def build_one(cid, save_blend=False):
     if save_blend:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(RAW, cid + '.blend'))
     log(cid, f'H={skin_top:.3f} verts={sum(p["verts"] for p in meta_parts)} tris={sum(p["tris"] for p in meta_parts)} in {time.time() - t0:.1f}s')
+
+
+def fit_stature(bm, target):
+    """Set MakeHuman's height macro so the body's crown height matches `target` (m): MakeHuman children
+    are short for their age, and the macro's metric scale differs between body types."""
+    import bpy
+    import numpy as np
+    from bl_ext.user_default.mpfb.services.targetservice import TargetService
+    from bl_ext.user_default.mpfb.entities.objectproperties import HumanObjectProperties
+    gi = [g.index for g in bm.vertex_groups if g.name == 'body'][0]
+    idx = np.array([v.index for v in bm.data.vertices if any(g.group == gi and g.weight > 0.5 for g in v.groups)])
+
+    def measure(h):
+        HumanObjectProperties.set_value('height', float(h), entity_reference=bm)
+        TargetService.reapply_macro_details(bm)
+        dg = bpy.context.evaluated_depsgraph_get()
+        eo = bm.evaluated_get(dg)
+        me = eo.to_mesh()
+        co = np.zeros(len(me.vertices) * 3, np.float32)
+        me.vertices.foreach_get('co', co)
+        eo.to_mesh_clear()
+        z = co.reshape(-1, 3)[idx, 2]
+        return float(z.max() - z.min())
+    h0 = 0.5
+    H0 = measure(h0)
+    h1 = 0.56 if target > H0 else 0.44
+    H1 = measure(h1)
+    for _ in range(4):
+        if abs(H1 - H0) < 1e-6:
+            break
+        h2 = h1 + (target - H1) * (h1 - h0) / (H1 - H0)
+        h2 = min(1.0, max(0.0, h2))
+        h0, H0 = h1, H1
+        h1, H1 = h2, measure(h2)
+        if abs(H1 - target) < 0.002:
+            break
+    log(f'stature {H1:.3f} (target {target:.3f}, height macro {h1:.3f})')
+    return h1
+
+
+AO_RAYS = 40
+AO_DIST = 0.30
+
+
+def ambient_occlusion(raw, meta_parts):
+    """Hemisphere occlusion by the whole dressed figure (hair, clothes, body), cosine weighted, within
+    AO_DIST. Eyelashes and eyebrows do not occlude. Writes <part>_ao (0 = fully occluded .. 1 = open)."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    def bvh_of(skip):
+        verts, polys, off = [], [], 0
+        for p in meta_parts:
+            if p['kind'] in skip:
+                continue
+            co = raw[p['key'] + '_co']
+            verts.append(co)
+            polys.append(raw[p['key'] + '_idx'] + off)
+            off += len(co)
+        V = np.concatenate(verts).astype(np.float64)
+        T = np.concatenate(polys)
+        return BVHTree.FromPolygons([Vector(v) for v in V], T.tolist(), all_triangles=True, epsilon=0.0)
+    bvh_all = bvh_of(('lashes', 'brows'))
+    # hair cards do not darken each other much (light passes between strands): hair sees only the head
+    bvh_nohair = bvh_of(('lashes', 'brows', 'hair'))
+    # fixed cosine-weighted directions (golden spiral)
+    k = np.arange(AO_RAYS) + 0.5
+    r = np.sqrt(k / AO_RAYS)
+    th = k * math.pi * (3 - math.sqrt(5))
+    dirs = np.stack([r * np.cos(th), r * np.sin(th), np.sqrt(1 - r * r)], 1)
+    for p in meta_parts:
+        co = raw[p['key'] + '_co'].astype(np.float64)
+        nr = raw[p['key'] + '_nr'].astype(np.float64)
+        ao = np.ones(len(co), np.float32)
+        two = p['kind'] in ('hair', 'lashes')
+        bvh = bvh_nohair if p['kind'] in ('hair', 'lashes', 'brows') else bvh_all
+        for i in range(len(co)):
+            n = nr[i]
+            a = np.array([1.0, 0, 0]) if abs(n[0]) < 0.9 else np.array([0, 1.0, 0])
+            t = np.cross(n, a)
+            t /= np.linalg.norm(t) + 1e-12
+            b = np.cross(n, t)
+            hit = 0.0
+            for side in ((1.0, -1.0) if two else (1.0,)):
+                D = dirs[:, 0:1] * t + dirs[:, 1:2] * b + dirs[:, 2:3] * n * side
+                o = co[i] + n * side * 0.0015
+                for dvec in D:
+                    h = bvh.ray_cast(Vector(o), Vector(dvec), AO_DIST)
+                    if h[0] is not None:
+                        hit += 1.0 - (h[3] / AO_DIST) ** 2 * 0.5
+            ao[i] = 1.0 - hit / (len(dirs) * (2 if two else 1))
+        raw[p['key'] + '_ao'] = ao
 
 
 def pose_relaxed(rig, spec):
@@ -635,6 +728,51 @@ def pose_relaxed(rig, spec):
         rotate(f'thigh_{s}', v0.rotation_difference(v1))
         # keep the foot pointing as before (counter-rotate)
         rotate(f'foot_{s}', v0.rotation_difference(v1).inverted())
+
+
+def cut_tube(d, keep, pmask, vmask, J, chain, length, poly_vals):
+    """Cut a sleeve / trouser leg: faces of the part (pmask) on the limb (vmask) beyond `length` along the
+    limb chain (0 at the shoulder / hip, 0.5 at the elbow / knee, 1 at the wrist / ankle) go, and the new
+    hem ring is snapped to exactly that length, square to the limb."""
+    import numpy as np
+    co = d['co']
+    t = np.zeros(len(co))
+    seg = {}
+    for s, S in (('l', 'L'), ('r', 'R')):
+        side = (co[:, 0] > 0) if s == 'l' else (co[:, 0] <= 0)
+        a, b, c = J[chain[0] + S], J[chain[1] + S], J[chain[2] + S]
+        t1 = np.clip(((co - a) @ (b - a)) / ((b - a) @ (b - a)), 0, 1)
+        t2 = np.clip(((co - b) @ (c - b)) / ((c - b) @ (c - b)), 0, 1)
+        d1 = np.linalg.norm(co - (a + t1[:, None] * (b - a)), axis=1)
+        d2 = np.linalg.norm(co - (b + t2[:, None] * (c - b)), axis=1)
+        tt = np.where(d1 <= d2, 0.5 * t1, 0.5 + 0.5 * t2)
+        t = np.where(side, tt, t)
+        seg[s] = (a, b, c)
+    tv = np.where(vmask, t, 0.0)
+    pt = poly_vals(d, tv.astype(np.float32))
+    remove = pmask & (pt > length) & keep
+    keep &= ~remove
+    # hem: vertices shared by kept and removed faces
+    inkept = np.zeros(len(co), bool)
+    inrem = np.zeros(len(co), bool)
+    for p in np.where(pmask)[0]:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        if keep[p]:
+            inkept[vs] = True
+        elif remove[p]:
+            inrem[vs] = True
+    hem = np.where(inkept & inrem & vmask)[0]
+    for i in hem:
+        s = 'l' if co[i, 0] > 0 else 'r'
+        a, b, c = seg[s]
+        if length <= 0.5:
+            p0, p1, tl, ti = a, b, length / 0.5, t[i] / 0.5
+        else:
+            p0, p1, tl, ti = b, c, (length - 0.5) / 0.5, (t[i] - 0.5) / 0.5
+        L = np.linalg.norm(p1 - p0)
+        mv = (tl - ti) * L
+        if abs(mv) < 0.05:
+            co[i] += (p1 - p0) / L * mv
 
 
 def lengthen_skirt(d, vmask, J, length, waist_z):

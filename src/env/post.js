@@ -54,7 +54,7 @@ const TONE = {
   veil: 0.006, veilSun: 0.004,
   // highlight recovery from golden hour on: knee (stops over mid grey) and the log slope
   // above it at golden hour, sunset and dusk
-  hiKnee: 1.2, hiSlope: [0.8, 0.38, 0.6],
+  hiKnee: 1.2, hiSlope: [0.62, 0.38, 0.6],
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
   // just above mid grey), easing off towards golden hour
   midday: 1.14, pivot: 0.4,

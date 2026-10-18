@@ -318,3 +318,36 @@ def gait_kind(c):
 # ----------------------------------------------------------------------------- regions (vertex attribute)
 REGIONS = {'skin': 0, 'hair': 1, 'brows': 2, 'lashes': 3, 'eyes': 4, 'top': 5, 'top2': 6, 'bottom': 7, 'shoes': 8,
            'socks': 9, 'hat': 10, 'beard': 11}
+
+
+# ----------------------------------------------------------------------------- stature (crown height, m)
+# mean heights by age (both sexes until 12, then boys / girls), adults 1.755 m men / 1.625 m women
+_KID_H = [(1.5, 0.82), (2.0, 0.87), (2.5, 0.92), (3.0, 0.96), (4.0, 1.03), (5.0, 1.10), (6.0, 1.16), (7.0, 1.22),
+          (8.0, 1.28), (9.0, 1.33), (10.0, 1.38), (11.0, 1.44), (12.0, 1.50)]
+_TEEN_H = {'m': [(12, 1.50), (13, 1.56), (14, 1.63), (15, 1.69), (16, 1.73), (17, 1.75), (18, 1.755)],
+           'f': [(12, 1.51), (13, 1.57), (14, 1.60), (15, 1.62), (16, 1.625), (17, 1.625), (18, 1.625)]}
+
+
+def _interp(tab, x):
+    if x <= tab[0][0]:
+        return tab[0][1]
+    for (x0, y0), (x1, y1) in zip(tab, tab[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return tab[-1][1]
+
+
+def stature(c):
+    """Target crown height (m, barefoot) of a character: the mean for its age and sex, shifted by its
+    'height' value (0.5 = mean; +-0.2 = +-1 standard deviation)."""
+    a = c['age']
+    z = (c['height'] - 0.5) / 0.2
+    if a < 12:
+        m = _interp(_KID_H, a)
+        return round(m * (1 + 0.04 * z), 4)
+    if a < 18:
+        m = _interp(_TEEN_H[c['sex']], a)
+        return round(m + 0.06 * z, 4)
+    m, sd = (1.755, 0.07) if c['sex'] == 'm' else (1.625, 0.065)
+    shrink = max(0.0, a - 55) * 0.0018
+    return round(m + sd * z - shrink, 4)
