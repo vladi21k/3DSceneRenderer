@@ -44,7 +44,7 @@ const WEATHER = {
   haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 70, haze: { ext: 1.4, inscatter: 1.2 } },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
-const GROUND_ALB = [0.27, 0.26, 0.245];
+const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
 // canyon bounce: the share of the interreflection the environment map's single capture
 // point misses (its canyon model already holds the sunlit facades and floor): the
 // sunlit walls seen from the floor (up), the sunlit floor seen from below (down), and the
@@ -61,9 +61,9 @@ const LIT_STONE = 1.5;
 // exposed value of the horizon slot down the street the camera holds (time of day, level),
 // before post's highlight recovery, which brings it down to the shoulder with its colour:
 // from mid-afternoon, looking towards the low sun, the aureole over the end of the street
-// stays below ~6.2 stops over mid grey; from sunset on below ~5 stops. Interpolated in
+// stays below ~6.5 stops over mid grey; at sunset below ~5.2 stops, at dusk ~4.6. Interpolated in
 // log terms; 64 = no hold.
-const HORIZON_LEVEL = [[0.1, 64], [0.25, 16], [0.6, 16], [0.8, 7.5], [1.0, 4.5]];
+const HORIZON_LEVEL = [[0.1, 64], [0.25, 16], [0.6, 16], [0.8, 6.5], [1.0, 4.5]];
 // from sunset on, the metered exposure stays within this factor of the nominal one, so a
 // view away from the afterglow does not open up to a grey midday; in the blue hour the
 // camera opens up as far as the meter asks (time of day, factor; log interpolation)
@@ -135,7 +135,10 @@ const env = {
     su.uCirrus.value = w.cirrus; su.uAltocu.value = w.altocu;
     scene.background = null;
     scene.fog = null;
-    scene.environmentIntensity = 1.0;
+    // (the capture's canyon model is a single straight street: it misses the open sky the
+    // cross streets, lower roofs and the street's own bends let in, so the shade gets a
+    // little more skylight than it sees)
+    scene.environmentIntensity = 1.25;
 
     this.sun = new SunLight(0xffffff, 3);
     this.sun.name = 'sun';

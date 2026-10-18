@@ -22,7 +22,7 @@ const MIE_SCA = 3.996e-3, MIE_EXT = 4.44e-3, MIE_H = 2.0;  // summer dust reache
 // red .. 0.89 blue), so the load reddens the low sun and whitens the sky near the horizon
 // while the sky away from the sun stays a pale blue
 const MIE_SPEC_EXT = [0.93, 1.0, 1.11], MIE_SPEC_SCA = [0.96, 1.0, 1.07];
-const OZONE = [1.45e-3, 1.881e-3, 0.085e-3]; // red raised: sRGB red sits near the Chappuis peak (~600 nm)
+const OZONE = [2.3e-3, 1.881e-3, 0.085e-3]; // the sRGB red primary (~610 nm) sits on the Chappuis peak, above green (550 nm)
 
 const f = (x) => x.toFixed(7);
 const v3 = (a) => `vec3(${f(a[0])}, ${f(a[1])}, ${f(a[2])})`;

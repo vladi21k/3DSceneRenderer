@@ -53,16 +53,16 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 // `veilSun` of the sun's illuminance when it shines on the lens from just outside the frame.
 const TONE = {
   curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.7, 0.9],
-  meter: [0.3, 0.6], target: [0.15, 0.34], backlit: 0.7,
+  meter: [0.3, 0.6], target: [0.15, 0.34], backlit: 0.6,
   clampLo: [0.75, 0.5], clampHi: [1.3, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.8,
   veil: 0.006, veilSun: 0.0012,
   // highlight recovery: knee (stops over mid grey) and the log slope above it (time of
   // day, slope): none at midday, then a phone camera's highlight tone mapping as the sun
   // lowers and the sky outshines the street
-  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.22], [0.9, 0.3], [1.0, 0.6]],
+  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.27], [0.9, 0.32], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
   // just above mid grey), easing off towards golden hour
-  midday: 1.14, pivot: 0.4,
+  midday: 1.04, pivot: 0.4,
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
 };
@@ -429,7 +429,7 @@ const post = {
     // aerosol albedo; tree canopies and awnings shade much of the street air. Looking
     // straight into a low sun the forward lobe is held back (the shaded street air between
     // the camera and the sunlit far end would otherwise fog the whole view)
-    pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1) * lerp(1, 0.5, into * ss(t, 0.4, 0.5));
+    pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1) * lerp(1, 0.35, into * ss(t, 0.4, 0.5));
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
     // frosted globes under a shallow cap send a little of their light sideways and up
@@ -470,12 +470,19 @@ const post = {
       // would turn shaded grey paving mauve), about a third once the lamps light the street
       // (sky-lit grey reads blue with G above R, the ~3000 K pools stay amber, not olive)
       const kt = lerp(1.0, 0.85, ss(t, 0.62, 0.78)) - 0.5 * ss(t, 0.88, 1.0);
-      const cool = 0.12 * ss(t, 0.82, 1.0);
+      const cool = 0.1 * ss(t, 0.82, 1.0);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
-      wb.set(Math.exp(-er) * (1 - cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
-      // never olive: a neutral surface under the illuminant keeps G / mean(R, B) <= 1.03
+      wb.set(Math.exp(-er) * (1 - 0.5 * cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
+      // a neutral surface under the illuminant keeps G / mean(R, B) within [0.98, 1.03]:
+      // never olive, and never mauve until the lamps take over the balance
       const gr = (ill.y * wb.y) / Math.max(0.5 * (ill.x * wb.x + ill.z * wb.z), 1e-12);
+      const lampW = ss(t, 0.84, 0.95);
       if (gr > 1.03) wb.y *= 1.03 / gr;
+      else if (gr < 0.98 && lampW < 1) wb.y *= Math.pow(0.98 / gr, 1 - lampW);
+      // and once the lamps light the street their pools stay amber, never yellow-green:
+      // the green gain stays within 12% of the red one
+      const gMax = wb.x * (1.12 + 2 * (1 - lampW));
+      if (wb.y > gMax) wb.y = gMax;
       // keep the overall exposure (normalise the gains to unit luminance)
       const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
       wb.multiplyScalar(1 / n);

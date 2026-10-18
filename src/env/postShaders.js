@@ -668,16 +668,17 @@ void main() {
   vec3 sc = max(col, 0.0);
 
   col = agx(col);
-  // camera tone response on luminance, then a soft gamut knee: from 0.85 up, the spread of
-  // the channels around the luminance is compressed so the brightest one approaches 0.98
-  // (hue and luminance kept), instead of a channel clipping flat (a sunset sky's red)
+  // camera tone response on luminance, then a soft gamut knee: from 0.8 up, the spread of
+  // the channels around the luminance is compressed so the brightest one approaches 0.94
+  // (hue and luminance kept), instead of a channel clipping flat (a sunset sky's red);
+  // neutral highlights still reach white
   {
     float lt = srgbToLinear(cameraCurve(lum));
     float la = dot(col, LW);
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), uChroma);
     float m = max(col.r, max(col.g, col.b));
-    if (m > 0.85) {
-      float mt = 0.85 + 0.13 * (1.0 - exp(-(m - 0.85) / 0.13));
+    if (m > 0.8) {
+      float mt = 0.8 + 0.14 * (1.0 - exp(-(m - 0.8) / 0.14));
       col = lt + (col - lt) * clamp((mt - lt) / max(m - lt, 1e-5), 0.0, 1.0);
     }
   }

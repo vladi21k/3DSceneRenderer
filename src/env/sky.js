@@ -280,7 +280,7 @@ vec3 canyon(vec3 dir, vec3 skyCol) {
   float tanSun = uSunDirA.y / max(length(uSunDirA.xz), 1e-3);
   float sunUp = smoothstep(-0.02, 0.03, uSunDirA.y);
   vec3 wallAlb = vec3(0.55, 0.49, 0.40);
-  vec3 groundAlb = vec3(0.27, 0.26, 0.245);
+  vec3 groundAlb = vec3(0.17, 0.175, 0.185);   // grey granite paving (as the street material)
 
   // light reaching the canyon floor (fraction of the street width in sun)
   float sunSide = dot(sunH, uStreetRight.xz) >= 0.0 ? 1.0 : -1.0;
