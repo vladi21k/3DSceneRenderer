@@ -14,9 +14,9 @@
 // would read as cloudy marble.
 const limestone = (cloud = 1) => /* glsl */ `
 vec3 limestone(vec2 m, float hc, inout float h) {
-  // warm honey-cream body (linear R/B ~1.9, sRGB ~1.33): sunlit Jerusalem limestone reads
+  // warm honey-cream body (linear R/B ~2.2, sRGB ~1.43): sunlit Jerusalem limestone reads
   // honey, not grey-cream; the per-building tints shift it golden or pale from here
-  vec3 base = vec3(0.6, 0.505, 0.318);
+  vec3 base = vec3(0.62, 0.495, 0.285);
   float mot = fbm(m + vec2(hc * 13.7, hc * 5.3), 2.2, 5, 0.55, 14u);   // soft clouds ~0.5 m
   float mot2 = fbm(m + vec2(hc * 2.9, 0.0), 10.0, 3, 0.6, 15u);       // 4-10 cm clouding
   vec3 c = base * (1.0 + ${(0.09 * cloud).toFixed(4)} * mot + ${(0.2 * cloud).toFixed(4)} * mot2);
@@ -205,7 +205,7 @@ vec4 rawSurface(vec2 m) {
 // block. 2 mm/texel, so joints and arrises stay crisp from the sidewalk (about a metre). The dressing
 // (taltish, mussamsam, rubbed) is applied at runtime from the detail maps above.
 export const ashlar = {
-  name: 'ashlar', flat: [0.59, 0.5, 0.33, 0.86], size: 2048, tile: [4.2, 4.2], ss: 2,
+  name: 'ashlar', flat: [0.61, 0.49, 0.3, 0.86], size: 2048, tile: [4.2, 4.2], ss: 2,
   layout: { rowH: 0.35, rows: 12, seg: [5, 7], jitter: 0.42, seed: 11, shift: true },
   joint: 0.0055,
   pass: { normal: 1.0, ao: 0.75, aoRadius: 0.012, cavity: 0.06 },
@@ -254,11 +254,30 @@ void surface(vec2 m, inout Surf s) {
 // differently (facet count, sizes, tilts, a boss leaning to one side; the runtime also
 // mirrors the relief at random per block).
 export const rustic = {
-  name: 'rustic', flat: [0.58, 0.49, 0.33, 0.9], size: [2048, 1024], tile: [4.0, 2.0], ss: 2,
+  name: 'rustic', flat: [0.6, 0.48, 0.3, 0.9], size: [2048, 1024], tile: [4.0, 2.0], ss: 2,
   layout: { rowH: 0.5, rows: 4, seg: [4, 6], jitter: 0.36, seed: 23, shift: true },
   joint: 0.01,
   pass: { normal: 1.1, ao: 0.5, aoRadius: 0.012, cavity: 0.05 },
   glsl: limestone(0.5) + /* glsl */ `
+// small conchoidal scars: lower envelope of tilted dishes centred on jittered points (cell
+// size cellM, m), concave and meeting in sharp creases (a faint residue only, see below)
+float scars(vec2 m, float cellM, float slope, float dish, uint sd) {
+  ivec2 per = sfPer(vec2(1.0 / cellM));
+  vec2 cell = uTile / vec2(per);
+  vec2 x = m / cell;
+  vec2 i = floor(x), f = x - i;
+  ivec2 p = ivec2(i);
+  float best = 1.0;
+  for (int y = -uOne; y <= uOne; y++) for (int xx = -uOne; xx <= uOne; xx++) {
+    ivec2 cw = sfMod2(p + ivec2(xx, y), per);
+    vec2 d = (vec2(float(xx), float(y)) + hash22(cw, sd) * 0.9 + 0.05 - f) * cell;
+    float hc = sfHash(cw, sd + 7u);
+    float a = hc * 6.2831853;
+    vec2 g = vec2(cos(a), sin(a)) * slope * (0.3 + 0.7 * fract(hc * 7.13));
+    best = min(best, dot(g, -d) + dish * dot(d, d) / cellM + (fract(hc * 3.71) - 0.5) * cellM * 0.15);
+  }
+  return best;
+}
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
   float e = c.e + fbm(m, 5.0, 3, 0.5, 51u) * 0.003;
@@ -271,7 +290,7 @@ void surface(vec2 m, inout Surf s) {
   vec2 hs = 0.5 * c.size;
   vec2 q = c.lp - hs;
   vec2 qw = q + vec2(fbm(m, 7.0, 2, 0.5, 61u), fbm(m, 7.0, 2, 0.5, 62u)) * 0.005;
-  float crown = 0.02 + 0.03 * cellRand(c, 3u);                  // 2-5 cm proud
+  float crown = 0.025 + 0.03 * cellRand(c, 3u);                 // 2.5-5.5 cm proud
   vec2 lean = (vec2(cellRand(c, 11u), cellRand(c, 12u)) - 0.5) * 0.05;   // boss leaning to one side
   int nf = 5 + int(cellRand(c, 6u) * 4.99);                     // 5-9 side facets
   float a0 = cellRand(c, 7u) * 6.2831853;
@@ -283,9 +302,9 @@ void surface(vec2 m, inout Surf s) {
     vec2 n = vec2(cos(ang), sin(ang));
     float reach = abs(n.x) * hs.x + abs(n.y) * hs.y;            // half extent of the block that way
     float r = reach * (0.2 + 0.45 * hk2);                       // where the facet leaves the crown
-    float slope = 0.14 + 0.13 * fract(hk * 7.31);               // 8-15°
+    float slope = 0.2 + 0.3 * fract(hk * 7.31);                 // 11-27°: the boss falls away to the pitch line
     vec2 dq = qw - n * (r + 0.5 * (reach - r));
-    float h = crown - slope * (dot(n, qw) - r) + 0.06 * dot(dq, dq) / max(reach, 0.1);   // a faint conchoidal dish
+    float h = crown - slope * (dot(n, qw) - r) + 0.07 * dot(dq, dq) / max(reach, 0.1);   // slightly dished (conchoidal)
     if (h < rock) { second = rock; rock = h; fid = hk; } else if (h < second) { second = h; }
   }
   for (int k = 0; k < 2 * uOne; k++) {                          // nearly level crown facets
@@ -295,7 +314,15 @@ void surface(vec2 m, inout Surf s) {
     float h = crown + 0.003 * float(k) - (0.03 + 0.06 * fract(hk * 5.3)) * dot(n, qw - p0);
     if (h < rock) { second = rock; rock = h; fid = hk; } else if (h < second) { second = h; }
   }
-  rock += dot(q, lean) + 0.0025 * fbm(m, 3.0, 2, 0.5, 52u);      // lean, a faint broad swell
+  // the boss leans to one side and bulges round an off-centre lump; a faint residue of
+  // small scars (a third of what reads as crumpled paper) keeps the facets from looking cut
+  vec2 qn = q / hs;
+  vec2 pk = (vec2(cellRand(c, 13u), cellRand(c, 14u)) - 0.5) * 1.1;
+  vec2 pk2 = (vec2(cellRand(c, 16u), cellRand(c, 17u)) - 0.5) * 1.3;
+  rock += dot(q, lean) + exp(-2.2 * dot(qn - pk, qn - pk)) * (0.006 + 0.016 * cellRand(c, 15u))
+        + exp(-5.0 * dot(qn - pk2, qn - pk2)) * 0.012 * cellRand(c, 18u);
+  vec2 mw = m + vec2(c.h * 5.3, c.h * 2.1);
+  rock += 0.3 * (0.5 * scars(mw, 0.07, 0.3, 0.5, 54u) + 0.3 * scars(mw, 0.028, 0.25, 0.6, 55u)) + 0.0015 * fbm(m, 4.0, 2, 0.5, 52u);
   // chisel scars: the pitching tool's bites along the break line, short tapered grooves
   // running in from the edge (about one every 8 cm, at random)
   bool alongX = min(c.ed.z, c.ed.w) < min(c.ed.x, c.ed.y);
@@ -335,7 +362,7 @@ void surface(vec2 m, inout Surf s) {
 
 // Finely dressed trim stone (cornices, sills, string courses, arches): rubbed faces, no joints.
 export const smooth = {
-  name: 'smooth', flat: [0.61, 0.515, 0.335, 0.75], size: 512, tile: [2.0, 2.0], ss: 2,
+  name: 'smooth', flat: [0.63, 0.505, 0.3, 0.75], size: 512, tile: [2.0, 2.0], ss: 2,
   pass: { normal: 1.0, ao: 0.4, aoRadius: 0.006, cavity: 0.05 },
   glsl: limestone(0.45) + /* glsl */ `
 void surface(vec2 m, inout Surf s) {

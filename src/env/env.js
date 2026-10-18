@@ -20,8 +20,8 @@ import { StreetLights, patchLightLoops } from './lights.js';
 
 const QUALITY = {
   low: { cascades: 2, mapSize: 1536, taps: 6, lamps: 4, envSize: 128, cloudSteps: 24 },
-  med: { cascades: 3, mapSize: 2048, taps: 8, lamps: 6, envSize: 192, cloudSteps: 32 },
-  high: { cascades: 4, mapSize: 2048, taps: 8, lamps: 8, envSize: 256, cloudSteps: 44 },
+  med: { cascades: 3, mapSize: 2048, taps: 12, lamps: 8, envSize: 192, cloudSteps: 32 },
+  high: { cascades: 4, mapSize: 2048, taps: 16, lamps: 12, envSize: 256, cloudSteps: 44 },
 };
 
 const _v = new THREE.Vector3();

@@ -212,6 +212,8 @@ class CrowdSim {
     const trainU = this.camU + route.delta(camS, app.train?.s ?? camS);
     this.tram.update(app, trainU);
     this.vis.update(app.camera, this.camU, camS);
+    // the free inspection camera (view=): an obstacle like a pole, so nobody walks through it
+    if (app.params.view) this.map.setCamera(this.vis.camU, this.vis.camD, 0.9);
     if (first) this.population.fillInitial();
 
     this.dt = dt;
@@ -252,6 +254,7 @@ class CrowdSim {
       // platforms raise the feet
       let hT = 0;
       if ((a.noRect || a.platformOK) && a.state !== ST.SEATED) hT = map.platformHeight(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d));
+      else if (a.state === ST.SEATED && a.feature && a.feature.platH) hT = a.feature.platH;   // a stop's shelter bench
       a.h += Math.max(-1.5 * dt, Math.min(1.5 * dt, hT - a.h));
       if (dt === 0 || a.fresh) a.h = hT;
       route.toWorld(a.s, a.d, a.h, _v);
@@ -333,6 +336,15 @@ class CrowdSim {
         }
       }
       ck.agentFrames++;
+      // the oncoming units' bodies (and a metre in front of the noses) are never entered
+      for (const T of this.tram.units) {
+        const ah = T.sU - a.s;
+        if (ah > -T.len && ah < 1 && Math.abs(a.d - T.d) < T.half + AGENT_R * 0.8) {
+          const us = this.tram.uStats;
+          us.leftTrack++;
+          if (us.leftTrackLog.length < 10) us.leftTrackLog.push({ t: +this.time.toFixed(1), unit: T.i, ah: +ah.toFixed(1), d: +a.d.toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], mob: a.mob });
+        }
+      }
       if (a.mob && a.state !== ST.SEATED) { this._checkProp(a, tr, map); this._checkPropPeople(a); }
       if (Math.abs(a.s - this.tram.trainU) > 20) continue;
       const p = route.project(a.x, a.z, route.wrap(a.s), 4);
@@ -463,8 +475,18 @@ class CrowdSim {
     let mobInView = 0, cycV = 0, cycN = 0, strollerKids = 0, strollerPartners = 0;
     let cycStopped = 0, cycStall5 = 0, cycStallMax = 0, cycRail = 0, cycCrossing = 0;
     const lanes = [0, 0, 0], band = [0, 0, 0, 0];
+    // walkers with a stroller / bicycle (or walking with one) by distance band, and the walking
+    // directions in the track corridor 20-90 m ahead (towards the cab / away from it)
+    const prop = [[0, 0], [0, 0]], dirs = [0, 0];
     for (const a of this.population.agents) {
       if (!a.active) continue;
+      const rel = a.s - this.camU;
+      if ((a.kind === KIND.WALKER || a.kind === KIND.STANDER) && rel > 0 && rel < 400) {
+        const k = rel < 100 ? 0 : 1;
+        prop[k][0]++;
+        if (a.mob || (a.leader && a.leader.mob)) prop[k][1]++;
+      }
+      if (a.state === ST.WALK && Math.abs(a.d) < 3.4 && rel > 20 && rel < 90) { if (a.vs < -0.3) dirs[0]++; else if (a.vs > 0.3) dirs[1]++; }
       active++;
       byState[STATE_NAMES[a.state]] = (byState[STATE_NAMES[a.state]] || 0) + 1;
       byTask[TASK_NAMES[a.task]] = (byTask[TASK_NAMES[a.task]] || 0) + 1;
@@ -497,7 +519,14 @@ class CrowdSim {
     const ck = this.check, pop = this.population;
     return {
       active, walkerTarget: Math.round(pop.walkerTarget), byKind, byState, byTask, clearing, simple, followers, corridor, children, childAlone,
-      mobility: { on: this.mobOn, poses: this.poseOK.slice(1), byMob, inView: mobInView, cycleMeanKmh: cycN ? +((cycV / cycN) * 3.6).toFixed(1) : 0, strollerKids, strollerPartners },
+      mobility: { on: this.mobOn, poses: this.poseOK.slice(1), byMob, inView: mobInView, cycleMeanKmh: cycN ? +((cycV / cycN) * 3.6).toFixed(1) : 0, strollerKids, strollerPartners,
+        // share of walkers tied to a prop 0-100 m / 100-400 m ahead (should agree within a factor of 1.5)
+        propShare0to100m: prop[0][0] ? +(prop[0][1] / prop[0][0]).toFixed(3) : 0, propShare100to400m: prop[1][0] ? +(prop[1][1] / prop[1][0]).toFixed(3) : 0 },
+      // corridor walkers 20-90 m ahead walking towards the cab / away from it (aim: ratio 0.8-1.25)
+      corridorDirs: { towards: dirs[0], away: dirs[1], ratio: dirs[1] ? +(dirs[0] / dirs[1]).toFixed(2) : null },
+      // oncoming units: people kept off their track (clears), blocked steps, body projections
+      // (rescues, should stay 0), seconds a unit stood with people on its track ahead, boarding
+      units: { tracked: this.tram.units.length, ...this.tram.uStats, blockedS: +this.tram.uStats.blockedS.toFixed(1), leftTrackLog: this.tram.uStats.leftTrackLog.slice(0, 5) },
       // cyclists now: stopped, stopped for more than 5 s with nobody in the way (should be 0; the
       // event count is events.cycleStall5s), longest such stop (s), within 0.3 m of a rail, crossing one
       cyclists: { stopped: cycStopped, stalledNoPeople5s: cycStall5, stallMaxS: +cycStallMax.toFixed(1), nearRail: cycRail, crossingRail: cycCrossing },

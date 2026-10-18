@@ -2,7 +2,7 @@ import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { noise1 } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, MOB } from './agent.js';
-import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD } from './constants.js';
+import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
 import { thinkCycle, maybeMount } from './cyclist.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
@@ -26,7 +26,8 @@ const tmpBand = { lo: 0, hi: 0 };
 
 /** Lateral target (signed d) for a lane-following walker. */
 export function laneTarget(c, a) {
-  let d = rawLane(c, a);
+  // (overtaking somebody slower: the passing line for a few seconds)
+  let d = a.passT > c.time && a.state === ST.WALK ? a.passD : rawLane(c, a);
   // nobody walks a ruler-straight line: a slow personal wander across the lane
   d += 0.25 * noise1(a.s / 8, a.wSeed);
   if (a.dodgeT > c.time) d += a.dodge;
@@ -171,6 +172,7 @@ export function desired(c, a, out) {
         const cj = Math.cos(j), sj = Math.sin(j);
         out.vs = vs * cj - vd * sj; out.vd = vs * sj + vd * cj;
         a.gd = a.laneT;
+        headway(c, a, out);
         if (a.uturnT > 0) uturn(c, a, out);
         // a child fallen behind: slow down and wait for them, looking back
         if (a.nFollow) waitForChild(c, a, out);
@@ -200,6 +202,118 @@ export function desired(c, a, out) {
     out.vmax = Math.max(out.vmax, sp * 1.1);
     a.moving = true;
   } else c.tram.filterDesired(a, out);
+}
+
+/** Walking behind slower people: a person or a group catching up with a slower one on the same
+ *  strip passes beside it where there is room, else drops in straight behind it and keeps a time
+ *  headway of about 1.3 s (rather than tucking in diagonally a metre behind, which turns two
+ *  groups into one long row). The scan also measures the room the group has (its formation).
+ *  Refreshed four times a second. */
+function headway(c, a, out) {
+  if (a.uturnT > 0 || a.clearing || a.simple || a.mob === MOB.CYCLE || a.inDoor) { a.hwV = 99; a.freeW = 9; return; }
+  a.hwT -= c.dt;
+  if (a.hwT <= 0) { a.hwT = 0.25; scanAhead(c, a); }
+  const vs = out.vs * a.dir;
+  if (a.hwV < 9 && vs > a.hwV) out.vs *= Math.max(0, a.hwV) / Math.max(1e-3, vs);
+}
+
+const _strip = { lo: 0, hi: 0 };
+/** The strip of street a lane walker (and its group) walks in, as signed d [lo, hi]. */
+function stripOf(c, a) {
+  const map = c.map;
+  let lo, hi, side = a.side;
+  if (a.platformOK && a.platSt) { lo = TRACK_ZONE_HALF + 0.3; hi = TRACK_ZONE_HALF + PLATFORM_W - 0.3; side = a.platSide || 1; }
+  else if (a.lane === LANE.SIDE) { lo = map.bandInAt(a.s, side) + 0.15; hi = map.bandOutAt(a.s, side); }
+  else if (a.lane === LANE.EDGE) { lo = TRACK_ZONE_HALF - 0.3; hi = map.bandInAt(a.s, side) + 0.3; }
+  else {
+    // the corridor less the bands kept free for the trams near
+    lo = -TRACK_ZONE_HALF + 0.1; hi = TRACK_ZONE_HALF - 0.1;
+    const iv = c.tram.keepOut(a, true);
+    if (iv) { if (a.d <= iv.lo) hi = Math.min(hi, iv.lo); else if (a.d >= iv.hi) lo = Math.max(lo, iv.hi); else { lo = a.d - 0.3; hi = a.d + 0.3; } }
+    _strip.lo = lo; _strip.hi = Math.max(lo, hi);
+    return _strip;
+  }
+  if (side < 0) { const t = lo; lo = -hi; hi = -t; }
+  _strip.lo = lo; _strip.hi = Math.max(lo, hi);
+  return _strip;
+}
+
+function scanAhead(c, a) {
+  const st = c.steering, agents = c.population.agents, dir = a.dir || 1, t = c.time;
+  // the group's lateral span and how far its members walk ahead of the leader
+  let lo = a.d - AGENT_R - (a.mob ? a.extLo : 0), hi = a.d + AGENT_R + (a.mob ? a.extHi : 0), front = a.mob ? a.extS : 0;
+  for (const f of a.followers) { lo = Math.min(lo, f.d - AGENT_R); hi = Math.max(hi, f.d + AGENT_R); front = Math.max(front, (f.s - a.s) * dir); }
+  const v = a.v0, look = 2.4 + 2.0 * v + front;
+  const sA = Math.min(a.s, a.s + dir * look) - 1.5, sB = Math.max(a.s, a.s + dir * look) + 1.5;
+  const ix0 = Math.max(0, Math.floor((sA - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((sB - st.s0) / CELL));
+  const iy0 = Math.max(0, Math.floor((lo - 2.6 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((hi + 2.6 + GRID_D) / CELL));
+  let best = 1e9, bv = 0, blk = null, abreast = 0;
+  for (let x = ix0; x <= ix1; x++) {
+    for (let y = iy0; y <= iy1; y++) {
+      for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
+        const b = agents[j];
+        if (b === a || b.leader === a || !b.active || b.state === ST.SEATED) continue;
+        const xb = (b.s - a.s) * dir;
+        // people abreast of the group take room from it
+        if (Math.abs(xb) < 1.2 && b.d > lo - 1.2 && b.d < hi + 1.2) abreast++;
+        if (xb < 0.3 || xb > look || b.mob === MOB.CYCLE) continue;
+        const bv0 = b.vs * dir;
+        if (bv0 < 0.2 || bv0 > v * 0.96) continue;      // standing, coming the other way, or not slower
+        let blo = b.d - AGENT_R, bhi = b.d + AGENT_R;
+        if (b.mob) { blo -= b.extLo; bhi += b.extHi; }
+        if (bhi < lo - 0.2 || blo > hi + 0.2) continue;
+        const gap = xb - front - (b.mob ? b.extS : 0);
+        if (gap < best) { best = gap; bv = bv0; blk = b; }
+      }
+    }
+  }
+  const strip = stripOf(c, a), sLo = strip.lo, sHi = strip.hi;
+  a.freeW = Math.max(0.4, sHi - sLo - 0.6 * Math.max(0, abreast - 0));
+  if (!blk) { a.hwV = 99; return; }
+  if (a.passT > t) { a.hwV = Math.max(bv + 0.25, bv + (best - 0.9) * 0.8); return; }
+  // room to pass beside it (and its group)? on its left first (people keep right)
+  const B = blk.leader || blk;
+  let glo = B.d - AGENT_R - (B.mob ? B.extLo : 0), ghi = B.d + AGENT_R + (B.mob ? B.extHi : 0);
+  for (const m of B.followers) { glo = Math.min(glo, m.d - AGENT_R); ghi = Math.max(ghi, m.d + AGENT_R); }
+  const half = (hi - lo) / 2, cOff = (lo + hi) / 2 - a.d;
+  const pL = glo - half - 0.3, pH = ghi + half + 0.3;
+  for (const cc of dir > 0 ? [pL, pH] : [pH, pL]) {
+    if (cc - half < sLo || cc + half > sHi) continue;
+    if (!lineFree(c, a, B, cc - half, cc + half, look + 3)) continue;
+    a.passD = cc - cOff; a.passT = t + Math.min(8, Math.max(2.5, (best + 3 + 0.8 * B.followers.length) / Math.max(0.2, v - bv)));
+    a.laneTT = 0; a.hwV = 99;
+    c.tally('overtake');
+    return;
+  }
+  // no room: straight behind it, about 1.3 s back
+  const G = Math.max(1.5, 1.3 * bv);
+  a.hwV = Math.max(0, Math.min(v * 1.2, bv + (best - G) * 0.8));
+}
+
+/** Is the line [dLo, dHi] free of people (not of a's group or group B) for len metres ahead of a? */
+function lineFree(c, a, B, dLo, dHi, len) {
+  const st = c.steering, agents = c.population.agents, dir = a.dir || 1;
+  const sA = Math.min(a.s - dir, a.s + dir * len), sB = Math.max(a.s - dir, a.s + dir * len);
+  const ix0 = Math.max(0, Math.floor((sA - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((sB - st.s0) / CELL));
+  const iy0 = Math.max(0, Math.floor((dLo - 1 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((dHi + 1 + GRID_D) / CELL));
+  for (let x = ix0; x <= ix1; x++) {
+    for (let y = iy0; y <= iy1; y++) {
+      for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
+        const b = agents[j];
+        if (b === a || b.leader === a || b === B || b.leader === B || !b.active) continue;
+        const xb = (b.s - a.s) * dir;
+        if (xb < -1 || xb > len) continue;
+        if (b.d + AGENT_R > dLo && b.d - AGENT_R < dHi) return false;
+      }
+    }
+  }
+  // (and clear of poles and trunks along it)
+  const n = c.map.gatherCircles(a.s + dir * len * 0.5, len * 0.5);
+  for (let q = 0; q < n; q++) {
+    const i = c.map.qI[q], od = c.map.cD[i], r = c.map.cR[i];
+    if (od + r > dLo && od - r < dHi) return false;
+  }
+  return true;
 }
 
 /** Parents wait for a child that has fallen behind (a pole, a crowd, a corner). */
@@ -702,7 +816,7 @@ function thinkPassenger(c, a) {
 export function board(c, a, doorS) {
   a.task = TASK.BOARD; a.step = 0;
   c.tally('board');
-  goTo(a, doorS + c.rng.range(-0.5, 0.5), TRACK_ZONE_HALF + 0.3, 0.3);
+  goTo(a, doorS + c.rng.range(-0.5, 0.5), (a.side < 0 ? -1 : 1) * (TRACK_ZONE_HALF + 0.3), 0.3);
 }
 
 // ------------------------------------------------------------------ arrival
@@ -766,13 +880,17 @@ export function arrive(c, a) {
       if (a.step === 0 || a.step === 1) {
         // at the corridor edge (or already inside): wait for a safe gap, unless already past the band
         const past = side > 0 ? a.d < RIDE_D - BAND : a.d > RIDE_D + BAND;
-        if (!past && (!c.tram.canEnterBand(a, a.s) || !c.tram.canEnterBand(a, a.crossS))) {
+        // (and the oncoming units' track: crossed only with a safe gap too)
+        const pastU = side < 0 && a.d > -RIDE_D + BAND;
+        if ((!past && (!c.tram.canEnterBand(a, a.s) || !c.tram.canEnterBand(a, a.crossS)))
+          || (!pastU && (!c.tram.canEnterUnit(a, a.s) || !c.tram.canEnterUnit(a, a.crossS)))) {
           if (a.step === 0) c.tally('waitForTram');
           waitToCross(c, a, side);
           return;
         }
         a.step = 2;
-        a.crossOK = past ? 0 : c.time + c.tram.timeThrough(a) + 1.5;   // committed: walks through the band
+        // committed: walks through the bands (both tracks: the whole corridor)
+        a.crossOK = past && pastU ? 0 : c.time + Math.max(c.tram.timeThrough(a), (Math.abs(a.d) + TRACK_ZONE_HALF + 0.6) / Math.max(0.9, a.v0) + 0.8) + 1.5;
         goTo(a, a.crossS, -side * crossEdge(-side, a), 0.5);
         return;
       }
@@ -808,6 +926,27 @@ export function arrive(c, a) {
     case TASK.BOARD: {
       if (c.vis.hidden(a.s, a.d)) { c.population.vanish(a); return; }
       const tram = c.tram;
+      if (a.side < 0) {
+        // an oncoming unit at the left platform: in through its doors where its body hides them
+        const T = a.boardU >= 0 ? tram.unitById(a.boardU) : null;
+        const pl = a.feature && a.feature.platform;
+        if (T && pl && tram.unitDwelling(a.feature.station) === T) {
+          if (tram.behindUnit(a.s, a.d)) { c.population.vanish(a); return; }
+          // in view: along to a door further back (towards its rear, +s)
+          const sMax = c.unwrap(pl.s1) - 1.2;
+          const gs = Math.min(sMax, Math.max(a.s, T.sU + 3.5) + r.range(5, 8));
+          a.step++;
+          if (gs < a.s + 0.6 || a.step > 8) { stand(a, PI / 2, 0.8); return; }
+          goTo(a, gs, -(TRACK_ZONE_HALF + 0.3), 0.35);
+          return;
+        }
+        // it left without them: back to waiting
+        a.boardU = -1;
+        const spot = a.feature && c.population.platformSpot(a.feature);
+        a.task = TASK.TO_PLATFORM; a.step = 1;
+        if (spot) goTo(a, spot.s, spot.d, 0.3); else { a.state = ST.PLATFORM; a.task = TASK.NONE; a.timer = r.range(30, 120); }
+        return;
+      }
       if (!tram.stoppedAt) {
         // the tram left without them: back to waiting
         const spot = a.feature && c.population.platformSpot(a.feature);
@@ -830,7 +969,7 @@ export function arrive(c, a) {
         const pl = a.feature && a.feature.platform;
         a.step = 0;
         const end = !pl ? a.s - 20 : a.after > 0 ? c.unwrap(pl.s1) + 1.0 : c.unwrap(pl.s0) - 1.0;
-        goTo(a, end, TRACK_ZONE_HALF + PLATFORM_W * (a.after > 0 ? 0.62 : 0.5), 0.7);
+        goTo(a, end, (side < 0 ? -1 : 1) * (TRACK_ZONE_HALF + PLATFORM_W * (a.after > 0 ? 0.62 : 0.5)), 0.7);
         return;
       }
       if (a.step === 0) {

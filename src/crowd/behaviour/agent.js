@@ -143,6 +143,8 @@ export class Agent {
     this.hwT = 0; this.hwV = 99; this.passT = 0; this.passD = 0; this.freeW = 9;
     this.platSt = null;       // station whose platform this walker uses as a sidewalk (platformOK)
     this.platSide = 1;        // ... and on which side
+    this.boardU = -1;         // boarding this oncoming unit (left platform)
+    this.stnS = null;         // cyclist: a stop ahead, gets off before this s
     this.askT = 0;            // cyclist: when (stopT) it last waited for people to make way          // cyclist: earliest time to try getting off again after a failed try      // pushed by a fixed obstacle / wall this frame (takes no share of a separation)      // stepping off a bicycle to its left side (s left, total offset)
   }
 }

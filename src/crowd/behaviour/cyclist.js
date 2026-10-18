@@ -39,7 +39,7 @@ const NOSE = FOOT[MOB.CYCLE].f1 + HALF;     // front wheel ahead of the rider's 
 const NC = 9;                               // candidate lines for passing (spread around the lane line)
 const cand = new Float32Array(NC), cost = new Float32Array(NC), blk = new Float32Array(NC), vblk = new Float32Array(NC);
 const tmpBand = { lo: 0, hi: 0 };
-const LN = { d: 0, lo: 0, hi: 0, narrow: false };
+const LN = { d: 0, lo: 0, hi: 0, narrow: false, uStop: false };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
 /** d moved out of the RAIL_CLEAR strip around any rail: to the nearer free side inside
@@ -105,9 +105,10 @@ export function pickRideLane(c, a, r, prefer = 0) {
   for (let k = 0; k < 6; k++) {
     const p = r.next();
     let lane = LANE.CORR, d = 0, side = a.side;
-    if (p < 0.33) d = CORR_LO + r.range(0, 0.25);                // the left edge of the corridor
-    else if (p < 0.58) d = r.range(-0.5, -0.32);                 // between the tracks (clear of both rails)
-    else if (p < 0.72) d = CORR_HI - r.range(0, 0.25);           // the right edge (moves over when the tram comes)
+    // (each rider its own line across the free strip: no single 'bike lane')
+    if (p < 0.33) d = CORR_LO + r.range(0, 0.33);                // the left edge of the corridor
+    else if (p < 0.58) d = r.range(-0.52, 0.2);                  // between the tracks (clear of both rails)
+    else if (p < 0.72) d = CORR_HI - r.range(0, 0.33);           // the right edge (moves over when the tram comes)
     else { lane = LANE.SIDE; side = prefer || (r.chance(0.5) ? 1 : -1); }
     // (on the ride side the corridor is also fine: its far half when the tram is near)
     if (prefer < 0 && lane === LANE.CORR && d > 0 && k < 5) continue;
@@ -157,6 +158,19 @@ function laneLine(c, a) {
     LN.hi = Math.min(LN.hi, lim);
     if (LN.lo > LN.hi) LN.lo = LN.hi - 0.3;
   }
+  // an oncoming unit coming: pull over between the tracks, right of its band (a rider on the
+  // left of it, by the pole line, keeps there)
+  LN.uStop = false;
+  const U = tram.units.length ? tram.uZone(a, 30) : null;
+  if (U && Math.abs(a.d) < TRACK_ZONE_HALF + 0.5) {
+    const lim = U.d + U.UB + a.extLo + 0.12;
+    if (a.d > U.d - U.UB - a.extHi - 0.3 || LN.d > U.d - U.UB) {
+      LN.lo = Math.max(LN.lo, lim);
+      if (LN.d < LN.lo) LN.d = LN.lo;
+      // squeezed between both trams: nowhere to ride (rideTarget gets off)
+      if (LN.lo > LN.hi) { LN.hi = LN.lo; LN.uStop = true; }
+    }
+  }
   LN.d = clamp(LN.d, LN.lo, LN.hi);
   if (Math.abs(LN.d) < TRACK_ZONE_HALF) LN.d = rideLine(LN.d, LN.lo, LN.hi);
   return LN;
@@ -171,6 +185,8 @@ export function rideTarget(c, a, T) {
   let vT = a.v0 * (1 + 0.05 * noise1(c.time / a.paceT, a.wSeed + 11));
   if (a.state === ST.GOTO) { waypoint(c, a, T, vT); return; }
   laneLine(c, a);
+  // between an oncoming unit and the cab tram in the corridor: off the bicycle, out on foot
+  if (LN.uStop && footBandGap(a) < 0.8 && dismount(c, a, true, true)) { c.tally('cycleOffForUnit'); return; }
   let dL = LN.d, lo = LN.lo, hi = LN.hi, weave = true;
   if (a.mvOn && a.mvBand && !a.mvToBand) guardCrossing(c, a);
   if (a.mvOn) {
@@ -210,6 +226,16 @@ export function rideTarget(c, a, T) {
       if (dist < 6 && a.bikeV < 1.8 && dismount(c, a)) { c.tally('cycleNarrowWalk'); return; }
     }
   }
+  // a stop ahead: nobody rides along the track bed between its platforms; get off short of it
+  // and walk the bicycle along the platform (thinkCycle found the spot)
+  if (a.stnS !== null) {
+    const dist = (a.stnS - a.s) * a.dir;
+    if (dist < -3 || Math.abs(a.d) > TRACK_ZONE_HALF + 0.3) a.stnS = null;
+    else {
+      vT = Math.min(vT, 0.9 * Math.max(0, dist - 2.5));
+      if (dist < 7 && a.bikeV < 1.8 && dismount(c, a, dist < 3)) { a.stnS = null; c.tally('cycleStationWalk'); return; }
+    }
+  }
   // poles, trunks, bins: steered round (a lane change crosses the line of them)
   if (Math.abs(a.d) > TRACK_ZONE_HALF - 0.1) T.avoid = avoidFixed(c, a);
   if (a.simple) { T.d = Math.abs(a.d) < TRACK_ZONE_HALF && railsBetween(a.d, dL) && !a.clearing ? a.d : dL; T.v = vT; a.cT = T.d; return; }
@@ -226,6 +252,10 @@ export function rideTarget(c, a, T) {
   }
   T.d = cand[best];
   a.cT = T.d;
+  // another rider level with this one on a parallel line, with people about: single file
+  // (the one level or behind drops back)
+  const nb = riderBeside(c, a);
+  if (nb) { vT = Math.min(vT, Math.max(0.8, nb.bikeV - 0.6)); c.tally('cycleSingleFile'); }
   // a lane change running into a bench or a trunk: called off, back to the old line
   if (a.mvOn && blk[best] < 2.5 && vblk[best] === 0 && blkStatic && !(a.crossOK > c.time)) { abortMove(c, a); c.tally('cycleMoveBlocked'); }
   if (blk[best] < 1e8) {
@@ -298,6 +328,30 @@ function askWay(c, a) {
     }
   }
   if (n) c.tally('cycleAskWay');
+}
+
+/** A rider level with a (or just ahead) on a parallel line within 1.2 m, riding the same way,
+ *  while pedestrians are within 10 m: the one a should drop in behind, else null. */
+function riderBeside(c, a) {
+  const st = c.steering, agents = c.population.agents, dir = a.dir;
+  const ix0 = Math.max(0, Math.floor((a.s - 10 - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((a.s + 10 - st.s0) / CELL));
+  const iy0 = Math.max(0, Math.floor((a.d - 4 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((a.d + 4 + GRID_D) / CELL));
+  let rider = null, people = false;
+  for (let x = ix0; x <= ix1; x++) {
+    for (let y = iy0; y <= iy1; y++) {
+      for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
+        const b = agents[j];
+        if (b === a || !b.active) continue;
+        if (b.mob !== MOB.CYCLE) { if (b.state !== ST.SEATED) people = true; continue; }
+        if (b.dir !== dir || b.state !== ST.WALK) continue;
+        const xb = (b.s - a.s) * dir, dd = Math.abs(b.d - a.d);
+        if (dd > 1.2 || dd < 0.2 || xb < -0.5 || xb > 2.2) continue;
+        if (xb < 0.5 && a.slot < b.slot) continue;     // level: the other one yields
+        rider = b;
+      }
+    }
+  }
+  return people ? rider : null;
 }
 
 /** Is anybody within `look` metres ahead of the rider (along its heading), `lat` to either side? */
@@ -690,6 +744,9 @@ export function planMove(c, a, dTo, old = null) {
   const dd = dTo - a.d;
   const lane = { lane: a.lane, laneD: a.laneD, side: a.side, laneF: a.laneF };
   if (Math.abs(dd) < 0.25) { a.mvOn = false; return true; }
+  // not into (or across) an oncoming unit's band while one is coming
+  const U = tram.units.length ? tram.uZone(a, 60) : null;
+  if (U && (Math.abs(dTo - U.d) < U.UB + 0.4 || (a.d - U.d) * (dTo - U.d) < 0)) return false;
   const toBand = Math.abs(dTo - RIDE_D) < BAND + 0.5;
   // across the ride track: a steeper line (less time in the band)
   const across = !toBand && (a.d - RIDE_D) * (dTo - RIDE_D) < 0;
@@ -715,6 +772,8 @@ export function planMove(c, a, dTo, old = null) {
         // (no stalling between the tram's band and the pole line)
         if (side > 0 && ad > TRACK_ZONE_HALF - 0.2 && ad < map.bandInAt(ps, 1) + 0.1 && map.facadeAt(ps, 1) < 90) { ok = false; break; }
         if (Math.abs(pd - RIDE_D) < BAND + 0.5) { if (bIn === null) bIn = ps; bOut = ps; }
+        // (never along the track bed between the platforms of a stop)
+        if (ad < TRACK_ZONE_HALF + 0.2 && map.stationAt(ps)) { ok = false; break; }
       }
       if (!ok) continue;
       let T = 0;
@@ -828,6 +887,20 @@ export function thinkCycle(c, a) {
     a.narrowS = null;
   }
   if (a.simple) return;
+  // a stop ahead with the rider in the track corridor: over to the sidewalk behind its platform
+  // if there is a way, else get off before it
+  if (Math.abs(a.d) < TRACK_ZONE_HALF + 0.2 && a.stnS === null) {
+    let sE = null;
+    for (let j = 0; j <= 34; j += 2) { if (map.stationAt(a.s + a.dir * j)) { sE = a.s + a.dir * j; break; } }
+    if (sE !== null) {
+      const side = a.d >= 0 ? 1 : -1;
+      a.lane = LANE.SIDE; a.side = side; a.laneF = r.range(0.1, 0.5);
+      const ln = laneLine(c, a);
+      if (ln.d * side > TRACK_ZONE_HALF && planMove(c, a, ln.d, keep)) { c.tally('cycleStationSidewalk'); return; }
+      restore();
+      a.stnS = sE - a.dir * 1.0;
+    }
+  }
   // a side street just ahead: some turn into it
   const mouthS = a.s + a.dir * 18;
   for (const side of [-1, 1]) {
@@ -978,6 +1051,8 @@ function bodyClear(c, a) {
 export function maybeMount(c, a) {
   if (a.mob !== MOB.WALKBIKE || !c.mobOK(MOB.CYCLE) || a.state !== ST.WALK || a.leader || a.nFollow || a.task !== TASK.NONE) return false;
   if (c.time < a.mountT || a.uturnT > 0 || a.clearing) return false;
+  // (not along a stop: on again past its platforms)
+  if (c.map.stationAt(a.s) || c.map.stationAt(a.s + a.dir * 12)) { a.mountT = c.time + 2; return false; }
   const dir = Math.cos(a.alpha) >= 0 ? 1 : -1;
   if (Math.abs(Math.sin(a.alpha)) > 0.35 || dir !== a.dir) return false;
   // not in the tram's band or beside the ride track while it is near

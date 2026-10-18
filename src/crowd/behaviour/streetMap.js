@@ -130,8 +130,21 @@ export class StreetMap {
   // ---------------------------------------------------------------- obstacles
   _circles() {
     const circ = this.layout.obstacles.filter((o) => o.kind === 'circle' && o.r > 0);
+    // platform shelters (a rect in the layout): their glazed back wall with the bench, the end
+    // screen and the advertising case, as rows of circles (people stand in front, under the roof)
+    for (const f of this.layout.furniture) {
+      if (f.type !== 'shelter') continue;
+      const side = f.d >= 0 ? 1 : -1;
+      // shelter local x runs towards −s on the right platform, +s on the left; z towards the tracks
+      const at = (x, z, r) => circ.push({ kind: 'circle', s: f.s - side * x, d: f.d - side * z, r, shelter: true });
+      for (const x of [-1.9, -0.95, 0, 0.95, 1.9]) at(x, -0.42, 0.3);
+      for (const z of [-0.35, 0.1, 0.5]) at(-2.42, z, 0.24);
+      for (const z of [-0.35, 0.15]) at(2.4, z, 0.2);
+    }
     const n = circ.length;
-    this.cS = new Float64Array(n); this.cD = new Float32Array(n); this.cR = new Float32Array(n);
+    // (one more slot: the free inspection camera, when there is one)
+    this.camI = n; this.camOn = false;
+    this.cS = new Float64Array(n + 1); this.cD = new Float32Array(n + 1); this.cR = new Float32Array(n + 1);
     const nb = Math.ceil(this.L / OB_CELL);
     this.nb = nb;
     const lists = Array.from({ length: nb }, () => []);
@@ -220,8 +233,21 @@ export class StreetMap {
         this.qI[n] = i; this.qDS[n] = ds; n++;
       }
     }
+    // the inspection camera: avoided like a pole
+    if (this.camOn && n < Q_MAX) {
+      let ds = this.cS[this.camI] - w;
+      if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
+      if (Math.abs(ds) <= range + this.cR[this.camI]) { this.qI[n] = this.camI; this.qDS[n] = ds; n++; }
+    }
     this.qN = n;
     return n;
+  }
+
+  /** The free inspection camera stands at (s, d) (route coords): nobody walks through it. r = 0 removes it. */
+  setCamera(s, d, r) {
+    const i = this.camI;
+    this.cS[i] = this.route.wrap(s); this.cD[i] = d; this.cR[i] = r;
+    this.camOn = r > 0;
   }
 
   // ---------------------------------------------------------------- queries

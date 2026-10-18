@@ -13,7 +13,7 @@
 //   meta     published in materials.meta[name] for other modules
 
 // Per-building tints, multipliers on the baked limestone (which is itself a warm honey-cream,
-// linear albedo ~(0.6, 0.5, 0.32)). Sunlit Jerusalem stone reads honey to golden in the
+// linear albedo ~(0.61, 0.49, 0.3)). Sunlit Jerusalem stone reads honey to golden in the
 // photographs: honey / golden should go to about half the buildings, pale / grey to about
 // a fifth (the pale ones need a clearly cooler tint than before to read pale cream).
 const LIMESTONE_TINTS = {
@@ -77,7 +77,7 @@ export const LIBRARY = {
       weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and vertical drip streaks (streak), from world normal / position. The splash zone near the paving is left to vertex colours.' },
       tints: LIMESTONE_TINTS,
       tintWeights: LIMESTONE_WEIGHTS,
-      albedo: [0.6, 0.5, 0.32], // mean linear albedo of the baked limestone (before tints): far-field stand-ins should match it
+      albedo: [0.61, 0.49, 0.3], // mean linear albedo of the baked limestone (before tints): far-field stand-ins should match it
     },
   },
   'stone.dirty': {

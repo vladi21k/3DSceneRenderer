@@ -119,6 +119,9 @@ float cloudDensity(vec3 p, float detail) {
   // dense bodies: the density saturates over the outer part of each cell, so the
   // erosion below carves the boundary into billows and wisps instead of hollowing it
   float d = clamp((shape - thr) / max(0.22 * (1.0 - thr), 1e-3), 0.0, 1.0);
+  // fair-weather cumulus come in fields: where the regional coverage is too thin to make
+  // a group, the odd cell that still pokes over the threshold (a lone round puff) fades
+  d *= smoothstep(0.24, 0.36, cov);
   if (d <= 0.0 || detail <= 0.0) return d;
   // cauliflower edges: billowy Worley erosion, strongest at the base, plus a finer
   // octave that frays the rims into wisps
@@ -185,7 +188,10 @@ vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float d
     float hf = clamp((p.y - CB) / uCloudTop, 0.0, 1.0);
     float powder = 1.0 - exp(-sig * 160.0);
     // sun: single scattering plus two multiple-scattering octaves (wider, less attenuated)
-    vec3 S = sunL * (exp(-tau) * ph0 + 0.5 * exp(-tau * 0.25) * ph1 + 0.25 * exp(-tau * 0.07) * ph2) * mix(1.0, powder, 0.5) * MS_BOOST
+    // (flat bases read grey: the light reaching them has crossed the cell, which the four
+    // shadow taps under-count for the small cells)
+    float base = mix(0.6, 1.0, smoothstep(0.0, 0.35, hf));
+    vec3 S = sunL * (exp(-tau) * ph0 + 0.5 * exp(-tau * 0.25) * ph1 + 0.25 * exp(-tau * 0.07) * ph2) * mix(1.0, powder, 0.5) * MS_BOOST * base
            + mix(ambBot, ambTop, smoothstep(0.0, 0.8, hf)) * (0.55 + 0.45 * hf);
     float sT = exp(-sig * dt);
     // energy-conserving integration of the in-scatter over the step (albedo ~1)

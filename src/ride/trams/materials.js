@@ -143,7 +143,7 @@ vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
     vec3 p = ro + rd * tz;
     float door = tramRect( p.xy, vec2( 0.3, 0.6 ), vec2( 1.0, 2.2 ), w );
     float win = tramRect( p.xy, vec2( 0.39, 1.3 ), vec2( 0.91, 2.06 ), w );
-    vec3 wall = mix( vec3( 0.42, 0.42, 0.4 ), vec3( 0.3, 0.3, 0.3 ), door ) * E * 0.6;
+    vec3 wall = mix( vec3( 0.42, 0.42, 0.4 ), vec3( 0.3, 0.3, 0.3 ), door ) * E * 0.85;
     vec3 saloon = vec3( 0.3, 0.29, 0.28 ) * E * 0.75 + vec3( 1.0, 0.96, 0.9 ) * ( uTramNight * uTramGain * 0.0006 );
     L = mix( wall, saloon, win );
   } else if ( tx < ty ) {
@@ -160,7 +160,7 @@ vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
   if ( uTramDriver > 0.5 ) {
     // seat back and headrest
     vec2 ps = ( ro + rd * ( ( 1.62 - ro.z ) / rd.z ) ).xy;
-    float seat = max( tramRect( ps, vec2( - 0.21, 1.1 ), vec2( 0.21, 1.76 ), w ), tramRect( ps, vec2( - 0.11, 1.76 ), vec2( 0.11, 1.98 ), w ) );
+    float seat = max( tramRect( ps, vec2( - 0.19, 1.1 ), vec2( 0.19, 1.7 ), w ), tramRect( ps, vec2( - 0.08, 1.7 ), vec2( 0.08, 1.96 ), w ) );
     L = mix( L, vec3( 0.03 ) * E * 0.7, seat );
     // the driver: uniform shirt, neck, head (hair on top)
     vec3 n;
@@ -173,9 +173,11 @@ vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
     vec3 head = mix( skin, vec3( 0.03, 0.025, 0.022 ), smoothstep( 0.2, 0.5, n.y + 0.6 * max( n.z, 0.0 ) ) );
     L = mix( L, head * E * tramShade( n ), c );
   }
-  // overhead console under the destination display: light grey, facing the screen
+  // overhead console under the destination display: light grey plastic right behind the
+  // screen, lit by the whole street through it
   vec2 po = ( ro + rd * ( ( 0.72 - ro.z ) / rd.z ) ).xy;
-  L = mix( L, vec3( 0.42, 0.42, 0.41 ) * E * 0.95, tramRect( po, vec2( - 0.8, 2.13 ), vec2( 0.8, 2.7 ), w ) * step( ro.z, 0.72 ) );
+  float oc = tramRect( po, vec2( - 0.8, 2.12 ), vec2( 0.8, 2.7 ), w ) * step( ro.z, 0.72 );
+  L = mix( L, vec3( 0.55, 0.55, 0.53 ) * E * mix( 1.0, 1.6, smoothstep( 2.12, 2.5, po.y ) ), oc );
   // console across the cab, the driver's binnacle in the middle
   vec2 pb = ( ro + rd * ( ( 0.6 - ro.z ) / rd.z ) ).xy;
   L = mix( L, vec3( 0.035 ) * E * 0.8, tramRect( pb, vec2( - 0.5, 0.0 ), vec2( 0.5, 1.5 ), w ) * step( ro.z, 0.6 ) );
@@ -230,7 +232,7 @@ export function makeFrontMaterial({ driver = true, gain = { value: 1 } } = {}) {
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
 		float tramSky = smoothstep( 0.0, 0.35, tramR.y );
 		vec3 tramStreet = mix( radiance, vec3( dot( radiance, vec3( 0.2126, 0.7152, 0.0722 ) ) ), 0.35 ) * 0.5;
-		radiance = mix( tramStreet, radiance, tramSky ) * mix( mix( vec3( 1.2 ), vec3( 4.2, 4.7, 5.2 ), tramWs ), vec3( 1.0 ), tramTrim );
+		radiance = mix( tramStreet, radiance, tramSky ) * mix( mix( vec3( 1.2 ), vec3( 5.0, 5.8, 6.6 ), tramWs ), vec3( 1.0 ), tramTrim );
 	}`)
       // the cab through the glass: lit by the daylight on the screen (or the saloon and the
       // instruments at night), tinted, with a shade band along the top of the screen

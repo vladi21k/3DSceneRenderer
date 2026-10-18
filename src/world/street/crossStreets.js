@@ -2,6 +2,7 @@ import { MAIN_RAILS, BAND_IN, GUTTER_OUT, SIDEWALK_RISE, GROUT_W } from './const
 import { RNG } from '../../core/rng.js';
 import { SIDE_LOT_START } from '../layout.js';
 import { sideFrame, sidePlan, buildSideWear, buildSideIron } from './sideAsphalt.js';
+import { SETT_FLAG } from './lines.js';
 
 // Cross streets: the side street from the main facade line out to depth + 16 m (+30 m
 // run-out): sidewalks, granite kerbs dropped to a ramp at the mouth (the side street is
@@ -238,7 +239,10 @@ export function buildCorridorCrossing(ctx, c, chunk, bufs, lines) {
   if (chunk.lod > 0) return;
   const { route, surface } = ctx;
   const L = 4.0;
-  const sA = c.s - L / 2;
+  // start on a bed joint of the setts (paving u = surface.sp(s), courses every 0.2 m), so
+  // the paint's cracks along the joints (lines.js) lie on the real ones
+  const kP = surface.sp(1);
+  const sA = (Math.round(surface.sp(c.s - L / 2) / 0.2) * 0.2) / kP;
   // free lateral intervals between rails (3 cm clear of the mortar strips)
   const free = [];
   const clear = GROUT_W + 0.03;
@@ -263,9 +267,9 @@ export function buildCorridorCrossing(ctx, c, chunk, bufs, lines) {
       for (let i = 0; i < rowsS.length; i++) {
         route.sample(rowsS[i], smp);
         const h = surface.height(rowInfos[i], d) + 0.0015;
-        arr.push(smp.pos.x + smp.right.x * d, smp.pos.y + h, smp.pos.z + smp.right.z * d, smp.right.x, smp.right.z, rowsS[i] - sA);
+        arr.push(smp.pos.x + smp.right.x * d, smp.pos.y + h, smp.pos.z + smp.right.z * d, smp.right.x, smp.right.z, (rowsS[i] - sA) * kP);
       }
-      lines.stripe.add(arr, w / 2, L, wear);
+      lines.stripe.add(arr, w / 2, L * kP, wear + SETT_FLAG);
     }
   }
   // tactile warning strips on both sides, just outside the gutters

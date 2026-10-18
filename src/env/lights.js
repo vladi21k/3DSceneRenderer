@@ -7,12 +7,13 @@ import { LUX_PER_UNIT } from './atmosphere.js';
 // cab aimed down the rails. Lanterns throw their light downwards, so the pool uses
 // spot lights pointing at the ground (discrete pools under each standard).
 //
-// One real light per lamp standard (its lanterns merged at their centroid), so the
-// pool covers about four pole stations. Each standard's weight is a smooth function
+// One real light per lantern, just under its bowl, so the arm, cap and scrolls above
+// and beside it stay dark iron (a light at the merged centre of a two-lantern standard
+// would sit in mid-air among the scrolls). Each standard's weight is a smooth function
 // of its view-weighted distance and of the distance of the last one that still gets
-// a light (an order statistic, so it changes continuously): nothing pops when the
-// ranking changes. Standards beyond that are lit in screen space by post with the
-// complementary weight, so the two systems always overlap exactly.
+// lights (an order statistic over the lanterns, so it changes continuously): nothing
+// pops when the ranking changes. Standards beyond that are lit in screen space by post
+// with the complementary weight, so the two systems always overlap exactly.
 // The light count never changes, so switching day/night never recompiles shaders.
 
 const LAMP_CD = 1400;           // luminous intensity of one lantern towards the ground (cd)
@@ -21,7 +22,7 @@ const LAMP_CD = 1400;           // luminous intensity of one lantern towards the
 // towards the horizontal
 const LAMP_ANGLE = 1.35;        // half-angle of the lantern's light cone (rad)
 const LAMP_PENUMBRA = 0.35;
-const LAMP_DROP = 0.2;          // light source below the glass centre (m): just under the bowl (0.165 m)
+const LAMP_DROP = 0.22;         // light source below the glass centre (m): at the bottom of the bowl (0.165 m)
 const HEAD_CD = 15000;          // two LED headlights combined (cd, beam centre)
 const HEAD_ANGLE = 0.42;        // beam half-angle (rad); the soft penumbra covers most of it
 const HEAD_PENUMBRA = 0.85;
@@ -57,6 +58,8 @@ export function patchLightLoops() {
   };
   const spot = guard('#if ( NUM_SPOT_LIGHTS > 0 ) && defined( RE_Direct )', 'spotLight = spotLights[ i ];', true);
   const sun = guard('#if ( NUM_SUN_LIGHTS > 0 ) && defined( RE_Direct )', 'sunLight = sunLights[ i ];', false);
+  // (the canyon cross-bounce is the only directional light; dark when no facade is sunlit)
+  guard('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )', 'directionalLight = directionalLights[ i ];', false);
   SC.lights_fragment_begin = src;
   return spot && sun;
 }
@@ -84,7 +87,7 @@ export class StreetLights {
 
     // data for the in-scatter (airlight) pass in post
     this.airlight = {
-      lampPos: Array.from({ length: count }, () => new THREE.Vector3()),
+      lampPos: Array.from({ length: count }, () => new THREE.Vector3()),   // glass centres
       lampI: new Float32Array(count),     // intensity in scene units (cd / LUX_PER_UNIT)
       headPos: new THREE.Vector3(),
       headDir: new THREE.Vector3(0, 0, -1),
@@ -98,6 +101,7 @@ export class StreetLights {
     this.lampCos = [Math.cos(LAMP_ANGLE), Math.cos(LAMP_ANGLE * (1 - LAMP_PENUMBRA))];
     this._standards = new Map();        // pole key → merged standard (cached)
     this._list = [];
+    this._heads = [];                   // ranked lanterns of the near standards
     this._smp = { pos: new THREE.Vector3(), tan: new THREE.Vector3(), right: new THREE.Vector3(), tanH: new THREE.Vector3() };
     this._p = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
@@ -143,6 +147,7 @@ export class StreetLights {
         if (!st) {
           st = this._newStandard(p.s, p.side);
           st.pos.copy(route.toWorld(p.s, p.d * 0.84, FALLBACK_HEAD_H - LAMP_DROP, this._p));
+          st.heads.push(new THREE.Vector3(st.pos.x, st.pos.y + LAMP_DROP, st.pos.z));
           st.n = 1; st.resolved = true;
           this._standards.set(key, st);
         }
@@ -154,7 +159,7 @@ export class StreetLights {
 
   _newStandard(s, side) {
     if (this._standards.size > 400) this._standards.clear(); // keep the cache bounded
-    return { s, side, heads: [], pos: new THREE.Vector3(), n: 1, resolved: false, w: 0 };
+    return { s, side, heads: [], pos: new THREE.Vector3(), n: 1, drop: -1, resolved: false, w: 0 };
   }
 
   /** Merge a standard's lanterns into one light position (once; lanterns never move). */
@@ -184,6 +189,7 @@ export class StreetLights {
     st.pos.multiplyScalar(1 / Math.max(m, 1));
     st.pos.y -= LAMP_DROP;
     st.n = st.heads.length;      // a dropped lantern's flux goes to the remaining one
+    st.drop = drop;
     st.resolved = true;
   }
 
@@ -210,19 +216,29 @@ export class StreetLights {
         st.score = ds >= 0 ? ds * (1 + 12 * Math.max(0, -c)) : -ds * (1 + 12 * Math.max(0, c));
       }
       list.sort((a, b) => a.score - b.score);
-      // the N-th smallest score: continuous in time, and every standard with a nonzero
-      // weight is guaranteed a light
-      D = list.length >= N ? list[N - 1].score : QUERY[1];
+      // lanterns in rank order (a lantern inside a tree crown gives its flux to its pair)
+      const H = this._heads;
+      H.length = 0;
+      for (const st of list) {
+        for (let k = 0; k < st.heads.length; k++) {
+          if (k === st.drop) continue;
+          H.push({ st, v: st.heads[k], n: st.drop >= 0 ? st.n : 1 });
+        }
+      }
+      // the score of the N-th lantern: continuous in time, and every standard with a
+      // nonzero weight is guaranteed a light for each of its lanterns
+      D = H.length >= N ? H[N - 1].st.score : QUERY[1];
     }
+    const H = this._heads;
     for (let i = 0; i < N; i++) {
-      const l = this.pool[i], st = list[i];
-      const w = st ? 1 - ss(st.score, D - FADE, D) : 0;
-      if (!st || w <= 0) { l.intensity = 0; air.lampI[i] = 0; continue; }
-      l.position.copy(st.pos);
-      l.target.position.set(st.pos.x, st.pos.y - 10, st.pos.z);
+      const l = this.pool[i], h = on ? H[i] : null;
+      const w = h ? 1 - ss(h.st.score, D - FADE, D) : 0;
+      if (!h || w <= 0) { l.intensity = 0; air.lampI[i] = 0; continue; }
+      l.position.set(h.v.x, h.v.y - LAMP_DROP, h.v.z);
+      l.target.position.set(h.v.x, h.v.y - 10, h.v.z);
       l.target.updateMatrixWorld();
-      l.intensity = unitI * st.n * night * w;
-      air.lampPos[i].copy(l.position);
+      l.intensity = unitI * h.n * night * w;
+      air.lampPos[i].copy(h.v);
       air.lampI[i] = l.intensity;
     }
 

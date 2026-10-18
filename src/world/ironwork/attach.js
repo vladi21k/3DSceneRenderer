@@ -633,7 +633,7 @@ function herb(W, r, { L = 0.26, D = 0.24, sprigs = 18, crown = 6, spikes = 5, he
 /** Neglected planting over L by D: dry stalks (some snapped), shrivelled leaves on twiggy
  *  stems, a leaf or two fallen on the soil and, tinted per instance, withered flower
  *  heads. Sparse: the soil shows through. */
-function dry(W, r, { L = 0.26, D = 0.24, stalks = 7, tufts = 6, fallen = 2, heads = 3, height = 0.24, lite = 0, ks = [1, 1] }) {
+function dry(W, r, { L = 0.26, D = 0.24, stalks = 8, tufts = 8, fallen = 2, heads = 3, height = 0.28, lite = 0, ks = [1, 1] }) {
   const centre = new THREE.Vector3(0, height * 0.2, 0);
   const tips = [];
   for (let i = 0; i < stalks; i++) {
@@ -648,7 +648,7 @@ function dry(W, r, { L = 0.26, D = 0.24, stalks = 7, tufts = 6, fallen = 2, head
   for (let i = 0; i < tufts; i++) {
     const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 0.85;
     W.color(...[1, 1, 1].map(() => r.range(0.75, 1.08)));
-    sprig(W, Math.cos(a) * d * L / 2, Math.sin(a) * d * D / 2, a, height * r.range(0.55, 0.9) * ks[0], d * 0.6 + r.range(0, 0.3), DRY_UV, centre);
+    sprig(W, Math.cos(a) * d * L / 2, Math.sin(a) * d * D / 2, a, height * r.range(0.6, 1.0) * ks[0], d * 0.6 + r.range(0, 0.3), DRY_UV, centre);
   }
   for (let i = 0; i < fallen; i++) {
     W.color(...[1, 1, 1].map(() => r.range(0.7, 0.95)));
@@ -710,33 +710,42 @@ function trailing(W, r, { L = 0.8, D = 0.18, mound = 30, strands = 12, blooms = 
  *  arching up and over the front edge, leaves along them and, tinted per instance, masses
  *  of papery bracts on the outer growth, the longest sprays hanging well below the box.
  *  The light levels have fewer, larger cards (`ks`: leaves, bracts). */
-function bougainvillea(W, r, { L = 0.8, D = 0.18, canes = 7, leaves = 6, bracts = 7, lite = 0, ks = [1, 1] }) {
-  const centre = new THREE.Vector3(0, 0.15, 0.1);
+function bougainvillea(W, r, { L = 0.8, D = 0.18, canes = 9, leaves = 9, bracts = 13, crown = 10, lite = 0, ks = [1, 1] }) {
+  const centre = new THREE.Vector3(0, 0.12, 0.1);
   // cane layout first, so the detail levels (same seed, fewer cards) share it
   const C = [];
   for (let i = 0; i < canes; i++) {
-    const x0 = r.range(-0.4, 0.4) * L, x2 = x0 + r.range(-0.35, 0.35);
-    const h = r.range(0.25, 0.55), drop = r.range(-0.05, 0.55), reach = r.range(0.15, 0.4);
-    C.push([[x0, 0, r.range(-0.3, 0.3) * D], [(x0 + x2) / 2, h * 1.6, D * 0.5 + reach * 0.4], [x2, -drop, D * 0.5 + reach]]);
+    const x0 = r.range(-0.4, 0.4) * L, x2 = x0 + r.range(-0.3, 0.3);
+    const h = r.range(0.2, 0.45), drop = r.range(0.15, 0.7), reach = r.range(0.12, 0.32);
+    C.push([[x0, 0, r.range(-0.3, 0.3) * D], [(x0 + x2) / 2, h * 1.6, D * 0.5 + reach * 0.5], [x2, -drop, D * 0.5 + reach]]);
   }
   for (const [P0, P1, P2] of C) {
     const B = (t) => P0.map((p, k) => (1 - t) * (1 - t) * p + 2 * (1 - t) * t * P1[k] + t * t * P2[k]);
     if (!lite) {
-      W.color(0.95, 0.9, 0.85);
-      for (let k = 0; k < 5; k++) stalk(W, B(k / 5), B((k + 1) / 5), 0.008, TWIG_UV, r.range(0, 6.28));
+      W.color(0.8, 0.85, 0.7);
+      for (let k = 0; k < 5; k++) stalk(W, B(k / 5), B((k + 1) / 5), 0.005, TWIG_UV, r.range(0, 6.28));
     }
     for (let j = 0; j < leaves; j++) {
-      const t = 0.12 + 0.8 * (j + r.next()) / leaves, p = B(t);
+      const t = 0.08 + 0.88 * (j + r.next()) / leaves, p = B(t);
       W.color(r.range(0.55, 0.75), r.range(0.7, 0.88), r.range(0.5, 0.7));
-      card(W, [p[0] + r.range(-0.04, 0.04), p[1] + r.range(-0.03, 0.04), p[2] + r.range(-0.04, 0.04)], [r.range(-1, 1), r.range(-0.2, 1), r.range(-0.3, 1)],
-        r.range(0.15, 0.21) * ks[0], r.range(0, 6.28), HERB_UV[0], HERB_UV[1], centre, 0.5);
+      card(W, [p[0] + r.range(-0.05, 0.05), p[1] + r.range(-0.03, 0.04), p[2] + r.range(-0.05, 0.05)], [r.range(-1, 1), r.range(-0.2, 1), r.range(-0.3, 1)],
+        r.range(0.14, 0.2) * ks[0], r.range(0, 6.28), HERB_UV[0], HERB_UV[1], centre, 0.5);
     }
+    // bracts crowd the outer growth: sprays all along the hanging part
     for (let j = 0; j < bracts; j++) {
-      const t = 0.35 + 0.65 * Math.sqrt((j + r.next()) / bracts), p = B(t);
+      const t = 0.3 + 0.7 * Math.sqrt((j + r.next()) / bracts), p = B(t);
       W.color(...[1, 1, 1].map(() => r.range(0.8, 1)));
-      card(W, [p[0] + r.range(-0.06, 0.06), p[1] + r.range(-0.04, 0.05), p[2] + r.range(-0.03, 0.06)], [r.range(-0.8, 0.8), r.range(-0.1, 0.9), r.range(0.1, 1)],
-        r.range(0.15, 0.22) * ks[1], r.range(0, 6.28), BRACT_UV[0], BRACT_UV[1], centre, 0.5);
+      card(W, [p[0] + r.range(-0.07, 0.07), p[1] + r.range(-0.05, 0.05), p[2] + r.range(-0.03, 0.07)], [r.range(-0.8, 0.8), r.range(-0.1, 0.9), r.range(0.1, 1)],
+        r.range(0.14, 0.2) * ks[1], r.range(0, 6.28), BRACT_UV[0], BRACT_UV[1], centre, 0.5);
     }
+  }
+  // a mound of leaves and bracts over the box, so the canes rise out of a mass
+  for (let i = 0; i < crown; i++) {
+    const x = r.range(-0.48, 0.48) * L, z = r.range(-0.4, 0.7) * D, y = r.range(0.04, 0.26);
+    const b = i % 2 === 1;
+    W.color(...(b ? [1, 1, 1].map(() => r.range(0.8, 1)) : [r.range(0.55, 0.75), r.range(0.7, 0.88), r.range(0.5, 0.7)]));
+    card(W, [x, y, z], [r.range(-0.6, 0.6), 1, r.range(-0.2, 0.8)], r.range(0.16, 0.22) * (b ? ks[1] : ks[0]), r.range(0, 6.28),
+      (b ? BRACT_UV : HERB_UV)[0], (b ? BRACT_UV : HERB_UV)[1], centre, 0.55);
   }
 }
 
@@ -1030,10 +1039,10 @@ export function buildAttachAssets() {
       { L: 0.3, D: 0.28, leaves: 4, flowers: 3, height: 0.26, ks: [Math.sqrt(7 / 4), Math.sqrt(5 / 3), 1, 1] }]],
     [geranium, [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
       { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), s2] }]],
-    [herb, [{ sprigs: 18, crown: 6, spikes: 5 }, { sprigs: 10, crown: 4, spikes: 3, ks: [1.15, 1.1] }, { sprigs: 5, crown: 2, spikes: 2, ks: [1.3, 1.2] }]],
-    [dry, [{ stalks: 7, tufts: 6, fallen: 2, heads: 3 }, { stalks: 5, tufts: 4, fallen: 1, heads: 2, ks: [1.15, 1.1] }, { stalks: 3, tufts: 3, fallen: 0, heads: 1, ks: [1.3, 1.2] }]],
-    [trailing, [{ mound: 30, strands: 12, blooms: 12 }, { mound: 13, strands: 9, blooms: 7, ks: [1.45, 1.3, 1.25] }, { mound: 6, strands: 6, blooms: 4, ks: [2, 1.8, 1.6] }]],
-    [bougainvillea, [{ canes: 7, leaves: 6, bracts: 7 }, { canes: 7, leaves: 3, bracts: 4, ks: [1.35, 1.3] }, { canes: 5, leaves: 2, bracts: 2, ks: [1.7, 1.75] }]],
+    [herb, [{}, { sprigs: 10, crown: 4, spikes: 3, ks: [1.15, 1.1] }, { sprigs: 5, crown: 2, spikes: 2, ks: [1.3, 1.2] }]],
+    [dry, [{}, { stalks: 5, tufts: 5, fallen: 1, heads: 2, ks: [1.2, 1.1] }, { stalks: 3, tufts: 3, fallen: 0, heads: 1, ks: [1.45, 1.2] }]],
+    [trailing, [{}, { mound: 13, strands: 9, blooms: 7, ks: [1.45, 1.3, 1.25] }, { mound: 6, strands: 6, blooms: 4, ks: [2, 1.8, 1.6] }]],
+    [bougainvillea, [{}, { leaves: 4, bracts: 6, crown: 5, ks: [1.45, 1.4] }, { canes: 6, leaves: 2, bracts: 3, crown: 2, ks: [1.9, 1.9] }]],
   ];
   const plants = [[], [], []];
   // (the geraniums' far levels draw from a random stream of their own; the other

@@ -28,13 +28,17 @@ export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint
 // overlaps it), so aLine.y = half width + PATCH_PAD and the points run from -PATCH_PAD to
 // length + PATCH_PAD
 export const PATCH_PAD = 0.06;
+/** Added to a paint stripe's wear value when it is laid over setts (the paint cracks
+ *  along the sett bed joints, which then must lie at whole multiples of 0.2 m of its
+ *  along coordinate). */
+export const SETT_FLAG = 10;
 /** Wear value of a patch ribbon: the radius (m) of a cover lying in its centre (cut out
  *  of the patch) and its tone, -1 (fresh, dark binder) .. 1 (aged, grey). */
 export const patchWear = (hole, tone) => Math.round(hole * 1000) + 0.02 + 0.96 * (tone * 0.5 + 0.5);
 const PAINT = [
   null, null,
-  { color: 0xd8d6ce, roughness: 0.62, wear: 0.18, opacity: 0.8 },                         // centre
-  { color: 0xdedcd5, roughness: 0.58, wear: 0.24, opacity: 0.87 },                         // stripe
+  { color: 0xc9c6bd, roughness: 0.62, wear: 0.18, opacity: 0.86 },                         // centre
+  { color: 0xcfccc3, roughness: 0.58, wear: 0.24, opacity: 0.92 },                         // stripe
   { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, dash: [0.18, 0.65], minPx: 1.2 }, // joint
 ];
 
@@ -139,6 +143,7 @@ float lnFbm( vec2 p, float fp, int oct ) {
 // shades exactly as its share of the footprint: the far rail is a pre-filtered strip
 // whose dark groove and bright head keep their weight at any distance.
 const HEAD_GC = 0.0215;      // the running band ends here, the gauge corner rounds off
+const HEAD_C0 = -0.013, HEAD_C1 = 0.015;   // level crown of the head (reflects the sky)
 const RAIL_SPEC_ENV = 0.6;   // rail.head reflects the environment at 0.6 (library)
 const f = (v) => v.toFixed(4);
 const v3 = (a, k = 1) => `vec3( ${f(a[0] * k)}, ${f(a[1] * k)}, ${f(a[2] * k)} )`;
@@ -150,12 +155,13 @@ const RAIL_FRAG = /* glsl */`
   float wear = lnNoise( vec2( along * 0.35, 3.1 ) ) * 0.6 + lnNoise( vec2( along * 2.7, 7.7 ) ) * 0.4;
   float cSeal = lnCov( ${f(RAIL_X0)}, ${f(-HEAD_HALF)}, x, w ) + lnCov( ${f(LIP_OUT)}, ${f(RAIL_X1)}, x, w );
   float cCorner = lnCov( ${f(-HEAD_HALF)}, ${f(HEAD_DULL)}, x, w );
-  float cBand = lnCov( ${f(HEAD_DULL)}, ${f(HEAD_GC)}, x, w );
+  float cBand = lnCov( ${f(HEAD_C0)}, ${f(HEAD_C1)}, x, w );
+  float cShoulder = lnCov( ${f(HEAD_DULL)}, ${f(HEAD_C0)}, x, w ) + lnCov( ${f(HEAD_C1)}, ${f(HEAD_GC)}, x, w );
   float cGauge = lnCov( ${f(HEAD_GC)}, ${f(HEAD_HALF)}, x, w );
   float cGroove = lnCov( ${f(HEAD_HALF)}, ${f(GROOVE_OUT)}, x, w );
   float cLip = lnCov( ${f(GROOVE_OUT)}, ${f(LIP_OUT)}, x, w );
   float cGrout = lnCov( ${f(RAIL_X0 - GROUT_W)}, ${f(RAIL_X0)}, x, w ) + lnCov( ${f(RAIL_X1)}, ${f(RAIL_X1 + GROUT_W)}, x, w );
-  float cov = cSeal + cCorner + cBand + cGauge + cGroove + cLip + cGrout;
+  float cov = cSeal + cCorner + cBand + cShoulder + cGauge + cGroove + cLip + cGrout;
   float fade = 1.0, core = 0.0;
   if ( vLineStyle > 0.5 ) {
     // near rails: the real rails take over once their narrowest bands (12-13 mm seals
@@ -173,30 +179,33 @@ const RAIL_FRAG = /* glsl */`
   float inv = 1.0 / max( cov + cPave, 1e-4 );
   // per band: diffuse albedo (incl. cavity AO), specular F0, roughness; the steel kinds
   // (rail.head) reflect the environment at RAIL_SPEC_ENV
-  float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGauge = cGauge * inv;
+  float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wShoulder = cShoulder * inv, wGauge = cGauge * inv;
   float wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
   vec3 dSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.86)};                       // bitumen seal
   vec3 aOx = vec3( 0.15, 0.115, 0.085 ) * ( 0.85 + 0.3 * wear );          // oxide bevel, metal 0.4
   vec3 aBand = vec3( 0.5, 0.495, 0.485 ) * ( 0.94 + 0.1 * wear );         // satin running band, metal 1
+  // the crowned head's shoulders tilt a few degrees off level: at the grazing angles of
+  // a street view they mirror the paving rather than the sky, so read duller
+  vec3 aShoulder = vec3( 0.3, 0.29, 0.28 );                                // metal 0.75
   vec3 aGauge = vec3( 0.46, 0.45, 0.44 );                                  // flange-polished corner
   vec3 aDust = vec3( 0.16, 0.145, 0.125 ) * ( 0.9 + 0.2 * wear );         // dusty guard lip, metal 0.4
   // the flangeway: grime and grit (albedo ~0.03) deep in a 36 mm slot, so its walls and
   // floor see little sky and, mostly, no sun (cavity AO ~0.3) and reflect almost nothing
-  vec3 dGroove = vec3( 0.018, 0.0158, 0.0134 );
+  vec3 dGroove = vec3( 0.032, 0.028, 0.0238 );
   vec3 dGrout = ${v3(MORTAR_ALBEDO, 0.95)};                                  // mortar bed
   vec3 dPave = vec3( 0.135, 0.136, 0.14 );                                  // brake-dusted setts beside it
   vec3 f04 = vec3( 0.04 );
-  lnD = dSeal * wSeal + aOx * ( 0.6 * wCorner ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
+  lnD = dSeal * wSeal + aOx * ( 0.6 * wCorner ) + aShoulder * ( 0.25 * wShoulder ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
   vec3 fOx = mix( f04, aOx, 0.4 ), fDust = mix( f04, aDust, 0.4 ) * 0.97;
-  vec3 fSteel = fOx * wCorner + aBand * wBand + aGauge * ( 0.95 * wGauge ) + fDust * wLip;
-  vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.08 * wGroove );
+  vec3 fSteel = fOx * wCorner + aBand * wBand + mix( f04, aShoulder, 0.75 ) * wShoulder + aGauge * ( 0.95 * wGauge ) + fDust * wLip;
+  vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.15 * wGroove );
   lnF = fSteel + fOther;
-  lnF90 = 1.0 - 0.92 * wGroove;               // the slot's walls hide its grazing sheen
+  lnF90 = 1.0 - 0.85 * wGroove;               // the slot's walls hide its grazing sheen
   // reflection strength relative to the direct specular (steel at RAIL_SPEC_ENV)
   float fs = dot( fSteel, vec3( 0.333 ) ), fo = dot( fOther, vec3( 0.333 ) );
   lnEnvK = ( fs * ${f(RAIL_SPEC_ENV)} + fo ) / max( fs + fo, 1e-5 );
   lnPhys = 1.0;
-  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.36 + 0.12 * wear ) + wGauge * 0.36 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
+  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.42 + 0.1 * wear ) + wShoulder * 0.55 + wGauge * 0.4 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
   diffuseColor.rgb = lnD;
   diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
@@ -220,9 +229,9 @@ const PAINT_FRAG = /* glsl */`
   lnRough = pRough;
   float x = vLine.x;
   float u = vLine.y;
-  float cov = lnCov( -vLineHalf, vLineHalf, x, w );
-  float ends = 1.0;
+  vec2 wp = vLineWorld.xz;
   if ( dash ) {
+    float cov = lnCov( -vLineHalf, vLineHalf, x, w );
     // box-filtered square wave: F(t) = floor(t)*duty + min(fract(t), duty)
     const float P = ${f(J.dash[0])}, duty = ${f(J.dash[1])};
     float uj = u + ( lnNoise( vec2( u * 2.3, 4.1 ) ) - 0.5 ) * 0.8 * P;
@@ -230,30 +239,83 @@ const PAINT_FRAG = /* glsl */`
     float F0 = floor( t0 ) * duty + min( fract( t0 ), duty );
     float F1 = floor( t1 ) * duty + min( fract( t1 ), duty );
     cov *= clamp( ( F1 - F0 ) * P / wu, 0.0, 1.0 );
+    // the sealant is cut only by grain-sized flecks; finer octaves fade to their mean
+    float wear = pWear * ( vLineWear > 0.0 ? vLineWear : 1.0 );
+    float big = lnFbm( wp * 0.4 + 17.0, fpw * 0.4, 3 );
+    float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
+    float grain = lnFbm( wp * 30.0 + 9.0, fpw * 30.0, 2 );
+    float field = 0.5 + ( grain - 0.5 ) * 2.4 + ( mid - 0.5 ) * 0.9;
+    float keep = smoothstep( wear - 0.1, wear + 0.1, field ) * mix( 0.72, 1.0, smoothstep( 0.3, 0.6, big ) );
+    keep = mix( keep, ( 1.0 - 0.7 * wear ) * 0.88, smoothstep( 0.012, 0.04, fpw ) );
+    cov *= keep;
+    if ( cov < 0.002 ) discard;
+    float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.4, 0.0, 1.0 );
+    diffuseColor.rgb = pCol * ( 0.93 - 0.17 * dirt ) * ( 0.96 + 0.08 * mid );
+    diffuseColor.a = cov * pOpacity;
   } else {
+    // Road paint (albedo ~0.6, never the cleanest thing in the street). The per-line wear
+    // rises for bars lying in a wheel path; bars laid over setts carry SETT_FLAG on top.
+    float wl = vLineWear > 0.0 ? vLineWear : 1.0;
+    float sett = step( 8.0, wl );
+    wl -= ${f(SETT_FLAG)} * sett;
+    float seed = fract( wl * 7.31 ) * 53.0;
+    float pHalf = vLineHalf;
     float segLen = vLine.z > 0.0 ? vLine.z : 1e9;
-    cov *= lnCov( 0.0, segLen, u, wu );
-    ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );   // dirt towards stripe ends
+    float bar = step( 0.15, pHalf ) * step( segLen, 50.0 );   // crossing bars (not centre dashes)
+    // edges feather off over 3-5 mm and waver a couple of millimetres (where resolved)
+    float res = 1.0 - smoothstep( 0.003, 0.012, w );
+    float e0 = ( lnNoise( vec2( u * 7.0, seed ) ) - 0.5 ) * 0.006 * res;
+    float e1 = ( lnNoise( vec2( u * 6.3, seed + 5.0 ) ) - 0.5 ) * 0.006 * res;
+    float we = sqrt( w * w + 0.008 * 0.008 ), wue = sqrt( wu * wu + 0.008 * 0.008 );
+    float cov = lnCov( -pHalf + e0, pHalf + e1, x, we ) * lnCov( 0.0, segLen, u, wue );
+    float ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );
+    // worn through where people cross the bars (round the middle of the crossing) and,
+    // on side streets, along the wheel paths; grain-sized flecks cut the paint with a
+    // soft threshold, larger walked-on patches thin it
+    float foot = bar * exp( -pow( ( u - 0.5 * segLen ) / ( 0.32 * segLen ), 2.0 ) );
+    float wear = pWear * wl + 0.2 * foot;
+    float big = lnFbm( wp * 0.4 + 17.0 + seed, fpw * 0.4, 3 );
+    float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
+    float grain = lnFbm( wp * 30.0 + 9.0, fpw * 30.0, 2 );
+    float field = 0.5 + ( grain - 0.5 ) * 2.4 + ( mid - 0.5 ) * 0.9 + ( big - 0.5 ) * 0.5;
+    float keep = smoothstep( wear - 0.1, wear + 0.1, field );
+    // cracks: over setts the paint has broken along the bed joints (every 0.2 m across the
+    // bar, which starts on one) and flaked off a few millimetres to 2 cm where the setts
+    // rock; on asphalt a sparse network of fine fatigue cracks
+    float crack, crackMean;
+    if ( sett > 0.5 ) {
+      float k = floor( u / 0.2 + 0.5 );
+      float chip = 0.0012 + 0.011 * pow( lnNoise( vec2( x * 11.0 + k * 3.7, k * 1.3 + seed ) ), 3.0 );
+      crack = lnCov( -chip, chip, u - 0.2 * k, wue );
+      crackMean = 0.035;
+    } else {
+      float r = lnNoise( wp * 1.3 + seed ) * 0.6 + lnNoise( wp * 3.7 + seed + 2.0 ) * 0.4;
+      crack = lnCov( -0.004, 0.004, r - 0.5, 4.5 * fpw + 1e-4 ) * 0.9;
+      crackMean = 0.02;
+    }
+    crack = mix( crack, crackMean, smoothstep( 0.01, 0.04, max( fpw, wue ) ) );
+    keep *= ( 1.0 - crack ) * mix( 0.75, 1.0, smoothstep( 0.3, 0.6, big ) ) * ( 1.0 - 0.25 * wear * ends );
+    // far: the mean coverage
+    keep = mix( keep, ( 1.0 - 0.7 * wear ) * 0.9 * ( 1.0 - crackMean ), smoothstep( 0.012, 0.04, fpw ) );
+    cov *= keep;
+    if ( cov < 0.002 ) discard;
+    // grime: dust ground in (patchy, collecting along the edges and towards the ends),
+    // grey scuffs in the foot path, dark tyre rubber streaked along bars in a wheel path
+    float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.4, 0.0, 1.0 );
+    float edge = 1.0 - smoothstep( 0.0, 0.04, pHalf - abs( x ) );
+    edge = mix( edge, 0.5 * min( 1.0, 0.04 / max( pHalf, 0.04 ) ), smoothstep( 0.008, 0.03, w ) );
+    float scuff = foot * smoothstep( 0.4, 0.7, mid );
+    float tyre = ( 1.0 - sett ) * bar * smoothstep( 1.3, 2.3, wl );
+    float streak = lnFbm( vec2( x * 9.0 + seed, u * 0.7 ), max( w * 9.0, wu * 0.7 ), 3 );
+    float gTyre = tyre * ( 0.2 + 0.55 * smoothstep( 0.35, 0.65, streak ) );
+    float gDust = clamp( 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
+    vec3 col = pCol * ( 0.95 + 0.1 * mid );
+    col = mix( col, vec3( 0.2, 0.19, 0.175 ), gDust );
+    col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
+    diffuseColor.rgb = col;
+    lnRough = mix( pRough, 0.8, 0.5 * gDust ) - 0.1 * gTyre;
+    diffuseColor.a = cov * pOpacity;
   }
-  // Wear: the paint is cut only by grain-sized flecks (aggregate showing through, 20-40
-  // per metre) with a soft threshold; larger walked-on patches only thin it, so worn
-  // lines stay continuous instead of breaking into dashes. Octaves finer than the pixel
-  // footprint fade to their mean, so distant paint shows its average coverage.
-  vec2 wp = vLineWorld.xz;
-  float wear = pWear * ( vLineWear > 0.0 ? vLineWear : 1.0 );
-  float big = lnFbm( wp * 0.4 + 17.0, fpw * 0.4, 3 );             // walked-on patches
-  float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );              // thinner blotches
-  float grain = lnFbm( wp * 30.0 + 9.0, fpw * 30.0, 2 );          // flecks
-  float field = 0.5 + ( grain - 0.5 ) * 2.4 + ( mid - 0.5 ) * 0.9;
-  float keep = smoothstep( wear - 0.1, wear + 0.1, field );
-  keep *= mix( 0.72, 1.0, smoothstep( 0.3, 0.6, big ) ) * ( 1.0 - 0.25 * wear * ends );
-  keep = mix( keep, ( 1.0 - 0.7 * wear ) * 0.88, smoothstep( 0.012, 0.04, fpw ) );   // far: mean
-  cov *= keep;
-  if ( cov < 0.002 ) discard;
-  // dirt ground into the paint where it is walked on most, and towards the ends
-  float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.4, 0.0, 1.0 );
-  diffuseColor.rgb = pCol * ( 0.93 - 0.17 * dirt - 0.12 * ends ) * ( 0.96 + 0.08 * mid );
-  diffuseColor.a = cov * pOpacity;
 }
 `;
 

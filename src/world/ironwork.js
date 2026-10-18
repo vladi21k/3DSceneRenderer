@@ -74,9 +74,9 @@ const HERB_W = [0.25, 0.15, 0.2, 0.4];
 // surfinia: purple, magenta, white, pink, crimson; trailing greens hide their flowers
 const SURFINIA = [[0.32, 0.03, 0.42], [0.62, 0.04, 0.3], [0.78, 0.78, 0.74], [0.8, 0.3, 0.48], [0.5, 0.03, 0.05]];
 const TRAIL_GREEN = [0.05, 0.1, 0.03];
-// bougainvillea bracts: magenta, purple, cerise, orange, cream
-const BOUG = [[0.55, 0.015, 0.22], [0.42, 0.02, 0.32], [0.7, 0.05, 0.3], [0.85, 0.3, 0.08], [0.78, 0.74, 0.68]];
-const BOUG_W = [0.4, 0.22, 0.18, 0.12, 0.08];
+// bougainvillea bracts: magenta, purple, cerise, pink, cream
+const BOUG = [[0.55, 0.015, 0.22], [0.4, 0.02, 0.3], [0.7, 0.04, 0.26], [0.8, 0.2, 0.42], [0.78, 0.74, 0.68]];
+const BOUG_W = [0.42, 0.2, 0.2, 0.12, 0.06];
 // withered flower heads
 const WITHERED = [[0.16, 0.09, 0.045], [0.24, 0.15, 0.08], [0.11, 0.07, 0.045], [0.3, 0.22, 0.12]];
 // planter boxes and troughs: terracotta (three), brown, green, white and anthracite
@@ -777,8 +777,8 @@ const ironwork = {
     if (grow === GROW.HERBS || grow === GROW.DRY) {
       const n = Math.max(1, Math.round(len / 0.27));
       for (let k = 0; k < n; k++) {
-        if (n > 1 && r.chance(grow === GROW.DRY ? 0.3 : 0.12)) continue;
-        const s = r.range(0.8, 1.05) * (trough ? 0.9 : 1);
+        if (n > 1 && r.chance(grow === GROW.DRY ? 0.15 : 0.1)) continue;
+        const s = r.range(0.85, 1.1) * (trough ? 0.9 : 1);
         _l.makeRotationY(r.range(0, 6.28)).scale(_pv.set(s * 0.85, s, s * 0.85))
           .setPosition(len * ((k + 0.5) / n - 0.5) + r.range(-0.03, 0.03), soil, r.range(-0.015, 0.015));
         this.plant(ctx, grow === GROW.HERBS ? PLANT.HERB : PLANT.DRY, _pl.multiplyMatrices(base, _l), k && r.chance(0.3) ? this.tintOf(null, grow, r) : tint);

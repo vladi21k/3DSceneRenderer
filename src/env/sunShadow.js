@@ -373,7 +373,9 @@ export class StreetSunShadow extends SunLightShadow {
       _c.applyMatrix4(_m);
 
       const range = maxZ - minZ + 2 * shadowNear;
-      this._cascadeData[i].set(i === 0 ? -1e10 : cNear, cFar, fadeStart, Math.floor(range) + Math.min(texel, 0.999));
+      // (cascade 0 has no lower bound: its x carries the frame number for the shader's
+      // per-frame kernel rotation, as -(2^20 + frame mod 16))
+      this._cascadeData[i].set(i === 0 ? -(1048576 + (this._frame % 16)) : cNear, cFar, fadeStart, Math.floor(range) + Math.min(texel, 0.999));
       // the slice's view depths (corners of the frustum reach a little further than the split)
       const f = this._frustums[i];
       f.zNear = i === 0 ? -Infinity : cNear * 0.97 - 2;
@@ -473,7 +475,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
     console.warn('[env] getSunShadow not found; using stock sun shadows');
     return false;
   }
-  const wide = Math.max(12, taps);
+  const wide = Math.max(24, taps);
   const fn = /* glsl */ `
 		float sunShadowTap(
 			#if defined( SHADOWMAP_TYPE_PCF )
@@ -481,7 +483,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 			#else
 				sampler2D shadowMap,
 			#endif
-			vec2 atlasSize, float bias, float texel, float range, float maxRadius, int cascade, vec4 coord, vec2 dz ) {
+			vec2 atlasSize, float bias, float texel, float range, float maxRadius, int cascade, vec4 coord, vec2 dz, float frameNo ) {
 			coord.xyz /= coord.w;
 			coord.z += bias;
 			if ( coord.z > 1.0 ) return 1.0;
@@ -490,21 +492,29 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 			// grazes does not shadow itself in streaks
 			#if defined( SHADOWMAP_TYPE_PCF )
 				vec2 tx = 1.0 / atlasSize;
-				float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+				// kernel rotation: interleaved gradient noise, stepped every frame so the
+				// temporal AA in post averages the pattern away instead of freezing a stipple
+				float phi = interleavedGradientNoise( gl_FragCoord.xy + 5.588238 * frameNo ) * PI2;
 				// coarse cascades always filter over two texels or more (no stair steps)
-				// (and the near ones over 1.6: a contact edge filtered over a single texel shows the
+				// (and the near ones over 1.5: a contact edge filtered over a single texel shows the
 				// shadow map's stair steps as a rope pattern along sills and string courses)
-				float minR = cascade >= 2 ? 2.2 : 1.6;
+				float minR = cascade >= 2 ? 2.2 : 1.5;
 				float maxR = clamp( maxRadius / texel, minR, ${MAX_FILTER_TEXELS.toFixed(1)} );
-				// blocker search over the widest penumbra
-				vec2 so[ 5 ];
+				// blocker search over the widest penumbra: 9 taps decide fully lit / fully
+				// shadowed (fewer would call part of a wide penumbra lit or dark at random and
+				// break it into dots); 5 of them probe the blocker distance
+				vec2 so[ 9 ];
 				so[ 0 ] = vec2( 0.0 );
-				float f0 = 1.0 - texture( shadowMap, coord.xyz );
-				for ( int k = 1; k < 5; k ++ ) {
-					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * maxR * tx;
-					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
+				float c0 = 1.0 - texture( shadowMap, coord.xyz );
+				float f0 = c0, fp = c0;
+				for ( int k = 1; k < 9; k ++ ) {
+					so[ k ] = vogelDiskSample( k - 1, 8, phi ) * maxR * tx;
+					float o = 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
+					f0 += o;
+					if ( ( k & 1 ) == 0 ) fp += o;
 				}
-				f0 *= 0.2;
+				f0 *= 1.0 / 9.0;
+				fp *= 0.2;
 				if ( f0 <= 0.0 ) return 1.0;
 				if ( f0 >= 1.0 ) return 0.0;
 				// how far are the blockers? Probe whether the receiver, moved 0.4, 1.2, 3, 7, 15, 30
@@ -512,22 +522,24 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				// share that drops out between two probes lies between their distances
 				float D[ 7 ];
 				D[ 0 ] = 0.4; D[ 1 ] = 1.2; D[ 2 ] = 3.0; D[ 3 ] = 7.0; D[ 4 ] = 15.0; D[ 5 ] = 30.0; D[ 6 ] = 60.0;
-				float prev = f0, dPrev = 0.0, dSum = 0.0;
+				float prev = fp, dPrev = 0.0, dSum = 0.0;
 				for ( int j = 0; j < 7; j ++ ) {
 					if ( prev <= 0.0 ) break;
 					float f = 0.0;
 					float dm = D[ j ] / range;
-					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
+					for ( int k = 0; k < 9; k += 2 ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
 					f = min( f * 0.2, prev );
 					dSum += ( prev - f ) * sqrt( max( dPrev, 0.15 ) * D[ j ] );
 					prev = f; dPrev = D[ j ];
 				}
-				float dEst = ( dSum + prev * 85.0 ) / f0;
+				// (the probe taps all lit: an edge grazing the search disc, take the contact width)
+				float dEst = fp > 0.0 ? ( dSum + prev * 85.0 ) / fp : 0.4;
 				// penumbra half-width from the sun's angular radius: the disc kernel's edge
 				// ramps over its diameter, as the umbra-to-light transition spans 0.0093 x distance
 				float rt = clamp( dEst * 0.0047 * 1.1 / texel, minR, maxR );
 				vec2 r = rt * tx;
-				// wide kernels and coarse cascades get more taps
+				// penumbra taps: 16, and 24 for wide kernels and coarse cascades (only pixels
+				// in a penumbra get here)
 				int n = ( cascade >= 2 || rt > 3.0 ) ? ${wide} : SUN_PCF_TAPS;
 				float s = 0.0;
 				for ( int k = 0; k < ${wide}; k ++ ) {
@@ -558,8 +570,10 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 			// at most 0.25 m of depth per texel (silhouettes and grazing angles give wild slopes)
 			float lim = 0.25 / max( floor( data.w ), 1.0 ) * sunLightShadow.shadowMapSize.y;
 			dz *= min( 1.0, lim / max( length( dz ), 1e-9 ) );
+			// frame number (mod 64) rides in cascade 0's lower depth bound (see updateMatrices)
+			float frameNo = mod( - sunShadowCascade[ index - cascade ].x, 64.0 );
 			float cs = sunShadowTap( shadowMap, sunLightShadow.shadowMapSize, sunLightShadow.shadowBias, texel, floor( data.w ),
-				sunLightShadow.shadowRadius, cascade, M * wp, dz );
+				sunLightShadow.shadowRadius, cascade, M * wp, dz, frameNo );
 			return mix( 1.0, cs, sunLightShadow.shadowIntensity );
 		}
 		float getSunShadow(

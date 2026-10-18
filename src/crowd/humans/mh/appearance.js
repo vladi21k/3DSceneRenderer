@@ -1,14 +1,26 @@
 import * as THREE from 'three';
 import { RNG } from '../../../core/rng.js';
 
-// "Who is this person" for the MakeHuman-based cast (assets/humans_mh): the crowd's integer appearance
-// seed picks one of the cast's characters (by age class and sex, in street proportions) and varies it:
-// garment colours from summer street palettes (regions tinted at runtime), hair shade, skin brightness and
-// a small height scale. Deterministic: the same seed always gives the same person.
+// "Who is this person": the crowd's integer appearance seed picks one character of the cast
+// (assets/humans_mh) by age class and sex, in street proportions, and varies it: garment colours
+// from summer street palettes (the garment regions are tinted at runtime) with an occasional stripe,
+// check or print, hair shade, skin brightness, a small height scale, a bag, and how the person
+// stands, sits and walks. Deterministic: the same seed always gives the same person.
 //
-//   castAppearance(seed, cast) -> { index, char, scale, height, tints: {region: [r, g, b] linear},
-//                                   kind, senior, skirt, longSkirt, seedT }
-//   castToddler(seed, cast)    -> the same for a child riding in a stroller (toddler characters)
+//   castAppearance(seed, cast) -> appearance (fields below)
+//   castToddler(seed, cast, lying) -> a child riding in a stroller (toddler characters)
+//
+// Fields read by the crowd (population.js roleFits / alloc): age ('child' | 'teen' | 'adult' | 'old'),
+// base ('male' | 'female' | 'child'), height, carry, phoneWalk, walkOld, skirtPart, sit.
+// Fields read by the renderer: index (character), body (character id), scale, tints (Float32Array,
+// REGION_COUNT x rgb, linear), pattern, bag, idle, sit, gait, stoop, longSkirt, seedT.
+
+export const REGION_COUNT = 16;
+// regions of the cast (cast.json regions) plus the runtime accessories (mh/parts.js)
+export const REGION = { skin: 0, hair: 1, brows: 2, lashes: 3, eyes: 4, top: 5, top2: 6, bottom: 7, shoes: 8, socks: 9,
+  hat: 10, beard: 11, prop: 12, screen: 13, bag: 14, strap: 15 };
+export const BAG = { NONE: 0, BACKPACK: 1, SHOULDER: 2, SHOPPING: 3 };
+export const PATTERN = { SOLID: 0, STRIPES: 1, CHECK: 2, PRINT: 3, PINSTRIPE: 4 };
 
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };   // sRGB hex -> linear
 const P = (list) => list.map((x) => (Array.isArray(x) ? [lin(x[0]), x[1]] : [lin(x), 1]));
@@ -34,6 +46,12 @@ const SKIRT_LONG = P([['#141416', 10], ['#1f2a44', 9], ['#3b3f47', 5], ['#4a6f96
 const LEGGINGS = P([['#121214', 6], ['#2b2c30', 2], ['#25324a', 1]]);
 const KIDS = P([['#f4f2ec', 8], ['#bcd6ee', 5], ['#f6c3cf', 5], ['#f3df8f', 4], ['#c4e2b6', 4], ['#e9813c', 2],
   ['#5b8fd0', 3], ['#d8434a', 2], ['#9fd2d0', 2], ['#c5b3dd', 2]]);
+const BAGS = P([['#18181a', 12], ['#3b2a20', 6], ['#5a3b24', 5], ['#5d6b52', 3], ['#2c3e5e', 4], ['#8a8f96', 3],
+  ['#b2342e', 2], ['#d9c8a8', 3], ['#e57b2c', 1]]);
+const PACKS = P([['#18181a', 10], ['#2c3e5e', 5], ['#5d6b52', 3], ['#8a8f96', 3], ['#b2342e', 2], ['#3b4a5c', 3],
+  ['#e9802a', 1], ['#d9c8a8', 2]]);
+const SHOPPING = P([['#e87b2a', 3], ['#f4f2ee', 5], ['#3a7bc0', 2], ['#d2302a', 2], ['#3c8a46', 1], ['#c9b48d', 3]]);
+const PHONES = P([['#151517', 10], ['#e9e9e6', 3], ['#3a4a5e', 2], ['#c9b8a8', 2]]);
 // hair shades by family (dark / brown / fair / grey): a person keeps the family of the character's hair
 const HAIR = {
   dark: P(['#141110', '#1c1511', '#2a1d15']),
@@ -49,6 +67,18 @@ const isDress = (char) => {
   return !!(o.top && o.bottom && o.top.suit === 'female_elegantsuit01' && o.bottom.suit === o.top.suit &&
     char.tints.top.every((x, i) => Math.abs(x - char.tints.bottom[i]) < 1e-4));
 };
+const suitOf = (char, part) => (char.outfit[part] ? char.outfit[part].suit : '');
+
+/** Garment kind of the character's top: tee | shirt | blouse | jacket | suit | dress | crop. */
+function topKind(char) {
+  const s = suitOf(char, 'top');
+  if (s === 'male_elegantsuit01') return 'suit';
+  if (isDress(char)) return 'dress';
+  if (s === 'male_casualsuit05') return 'jacket';
+  if (s === 'male_casualsuit01' || s === 'male_casualsuit03') return 'shirt';
+  if (s === 'female_elegantsuit01') return 'blouse';
+  return 'tee';
+}
 
 function garmentPalette(g, region, char) {
   if (!g) return null;
@@ -56,12 +86,10 @@ function garmentPalette(g, region, char) {
   if (s === 'male_elegantsuit01') return null;                     // black suits keep their colours
   const kid = char.ageClass === 'child' || char.ageClass === 'toddler';
   if (region === 'top') {
-    if (isDress(char)) return DRESS;
+    const k = topKind(char);
+    if (k === 'dress') return DRESS;
     if (kid) return KIDS;
-    if (s === 'male_casualsuit05') return JACKET;
-    if (s === 'male_casualsuit01' || s === 'male_casualsuit03') return SHIRT;
-    if (s === 'female_elegantsuit01') return BLOUSE;
-    return TEE;
+    return k === 'jacket' ? JACKET : k === 'shirt' ? SHIRT : k === 'blouse' ? BLOUSE : TEE;
   }
   if (s === 'female_elegantsuit01') return g.cut === 'skirt' && (g.length ?? 0) > 0.5 ? SKIRT_LONG : SKIRT;
   if (s === 'female_sportsuit01') return LEGGINGS;
@@ -71,54 +99,125 @@ function garmentPalette(g, region, char) {
 
 function hairFamily(t) {
   const l = 0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2];
-  const sat = Math.max(...t) - Math.min(...t);
-  if (sat < 0.12 * Math.max(...t) && l > 0.05) return 'grey';
+  const mx = Math.max(...t), mn = Math.min(...t);
+  if (mx - mn < 0.12 * mx && l > 0.05) return 'grey';
   return l < 0.012 ? 'dark' : l < 0.06 ? 'brown' : 'fair';
 }
 
-function vary(r, char, isToddler) {
+function vary(r, char, kidTop) {
   const t = {};
   for (const [k, v] of Object.entries(char.tints)) t[k] = v.slice();
   const o = char.outfit;
   // garments: keep the character's own colour now and then, otherwise a palette colour, slightly jittered
   for (const region of ['top', 'bottom']) {
     const pal = garmentPalette(o[region], region, char);
-    if (!pal || r.chance(0.3)) continue;
+    if (!pal || r.chance(0.25)) continue;
     const j = r.range(0.92, 1.06);
     t[region] = r.weighted(pal).map((x) => x * j);
   }
   if (isDress(char)) t.bottom = t.top.slice();                    // a dress is one colour top to bottom
-  if (o.top && o.top.suit === 'male_casualsuit05') t.top2 = r.weighted(SHIRT).slice();
-  else if (o.top && o.top.suit !== 'male_elegantsuit01') t.top2 = t.top.slice();
+  if (suitOf(char, 'top') === 'male_casualsuit05') t.top2 = r.weighted(SHIRT).slice();
+  else if (suitOf(char, 'top') !== 'male_elegantsuit01') t.top2 = t.top.slice();
   // hair: another shade of the same family; brows and beard follow
-  if (r.chance(0.7)) {
+  if (char.tints.hair && r.chance(0.7)) {
     const h = r.weighted(HAIR[hairFamily(char.tints.hair)]);
     t.hair = h.slice();
     t.brows = h.map((x) => x * 0.75);
     t.beard = h.map((x) => x * 0.95);
   }
   const sk = r.range(0.95, 1.05);                                  // skin brightness +-5 %
-  t.skin = t.skin.map((x) => x * sk);
-  if (isToddler && r.chance(0.6)) t.top = r.weighted(KIDS).slice();
+  t.skin = (t.skin || [1, 1, 1]).map((x) => x * sk);
+  if (kidTop && r.chance(0.6)) t.top = r.weighted(KIDS).slice();
   return t;
 }
 
-function finish(seed, r, cast, index) {
-  const char = cast.chars ? cast.chars[index] : cast.doc.characters[index];
-  const scale = 1 + THREE.MathUtils.clamp(r.normal(0, char.ageClass === 'child' ? 0.03 : 0.022), -0.05, 0.05);
-  const tints = vary(r, char, char.ageClass === 'toddler');
+function packTints(t) {
+  const out = new Float32Array(REGION_COUNT * 3).fill(1);
+  for (const [name, id] of Object.entries(REGION)) {
+    const c = t[name];
+    if (c) { out[id * 3] = c[0]; out[id * 3 + 1] = c[1]; out[id * 3 + 2] = c[2]; }
+  }
+  return out;
+}
+
+function charsOf(cast) { return cast.chars || cast.doc.characters; }
+
+/** The person: character `index` varied by the rest of r's stream. */
+function finish(seed, r, cast, index, toddler = false) {
+  const char = charsOf(cast)[index];
+  const cls = char.ageClass;
+  const female = char.sex === 'f';
+  const scale = 1 + THREE.MathUtils.clamp(r.normal(0, cls === 'child' ? 0.03 : 0.022), -0.05, 0.05);
+  const t = vary(r, char, cls === 'toddler' || cls === 'child');
   const bot = char.outfit.bottom;
-  const skirt = !!bot && bot.suit === 'female_elegantsuit01';
-  return {
-    seed, index, char, scale, height: char.height * scale, tints,
-    kind: char.kind, senior: char.ageClass === 'old', skirt, longSkirt: skirt && bot.cut === 'skirt' && (bot.length ?? 0) > 0.5,
-    seedT: ((seed >>> 0) % 997) / 997,
+  const skirt = !!bot && bot.suit === 'female_elegantsuit01' && (bot.cut === 'skirt' || !bot.cut);
+  const longSkirt = skirt && bot.cut === 'skirt' && (bot.length ?? 0) > 0.5;
+  const kind = topKind(char);
+  const old = cls === 'old', teen = cls === 'teen', adult = cls === 'adult', child = cls === 'child';
+  const suit = kind === 'suit';
+  // top patterns (in the garment's rest space): stripes on tees, checks and pinstripes on shirts,
+  // small prints on blouses and dresses
+  let pattern = PATTERN.SOLID, patScale = 1, patColor = [1, 1, 1];
+  if (!suit) {
+    const p = kind === 'tee' ? (child ? 0.3 : 0.16) : kind === 'shirt' ? 0.3 : kind === 'blouse' || kind === 'dress' ? 0.25 : 0;
+    if (r.chance(p)) {
+      pattern = kind === 'tee' ? PATTERN.STRIPES : kind === 'shirt' ? (r.chance(0.6) ? PATTERN.CHECK : PATTERN.PINSTRIPE) : PATTERN.PRINT;
+      patScale = r.range(0.7, 1.5);
+      const base = t.top;
+      const lum = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
+      patColor = r.chance(0.6) ? (lum > 0.3 ? [0.02, 0.025, 0.04].map((x) => x * r.range(0.6, 3)) : [0.85, 0.84, 0.8])
+        : r.weighted(kind === 'tee' ? TEE : BLOUSE).slice();
+    }
+  }
+  t.pattern = patColor;
+  // bag
+  let bag = BAG.NONE;
+  if (!toddler && !suit) {
+    bag = child ? r.weighted([[BAG.NONE, 70], [BAG.BACKPACK, 30]])
+      : r.weighted([[BAG.NONE, female ? 46 : 64], [BAG.BACKPACK, teen ? 32 : old ? 2 : 12], [BAG.SHOULDER, female ? 32 : 8],
+        [BAG.SHOPPING, old ? 14 : 6]]);
+  }
+  t.bag = r.weighted(bag === BAG.SHOPPING ? SHOPPING : bag === BAG.BACKPACK ? PACKS : BAGS).slice();
+  t.strap = bag === BAG.SHOPPING ? t.bag.map((x) => x * 0.8) : t.bag.map((x) => x * 0.55);
+  t.prop = r.weighted(PHONES).slice();
+  t.screen = [1, 1, 1];
+  // how this person stands, walks and sits
+  const carry = bag === BAG.SHOPPING;
+  const walkOld = old && r.chance(0.3);
+  const idle = toddler ? 0 : child ? r.weighted([[0, 50], [7, 30], [6, 15], [2, 5]])
+    : old ? r.weighted([[0, 26], [2, 14], [5, female ? 6 : 30], [6, 16], [7, 10], [3, female ? 0 : 5], [4, female ? 8 : 0]])
+      : r.weighted([[0, 24], [1, teen ? 26 : 16], [2, 11], [3, skirt ? 0 : 10], [4, female ? 13 : 4], [5, adult && !female ? 4 : 0],
+        [6, 14], [7, 8]]);
+  let sit = toddler ? 3 : child ? r.weighted([[0, 5], [2, 3], [7, 3]])
+    : r.weighted([[0, 22], [1, longSkirt ? 0 : 14], [2, 14], [5, teen ? 30 : 18], [6, 16], [7, 16]]);
+  const phoneWalk = !carry && (adult || teen) && r.chance(teen ? 0.22 : 0.1);
+  const a = {
+    seed, index, body: char.id, char, age: cls === 'toddler' ? 'toddler' : cls, female,
+    base: child ? 'child' : cls === 'toddler' ? 'toddler' : female ? 'female' : 'male',
+    kind: char.kind, scale, height: char.height * scale,
+    tints: packTints(t), pattern, patScale,
+    bag, carry, walkOld, gait: walkOld ? 2 : old ? 1 : 0,
+    // forward stoop of the upper back (radians) carried into every pose
+    stoop: old ? (walkOld ? r.range(0.10, 0.2) : r.range(0.03, 0.11)) : adult ? r.range(0, 0.03) : 0,
+    idle: phoneWalk ? 1 : carry && (idle === 1 || idle === 2 || idle === 4 || idle === 5) ? 0 : idle,
+    sit, phoneWalk, skirtPart: skirt ? 1 : 0, longSkirt,
+    hatPart: char.outfit.hat ? 1 : 0, beardPart: char.outfit.beard ? 1 : 0, hairPart: char.outfit.hair || '',
+    topKind: kind, suit,
+    build: buildOf(char), seedT: ((seed >>> 0) % 997) / 997,
   };
+  return a;
+}
+
+/** Rough build of a character from its waist girth relative to its height (< 0 slim, > 0 heavy). */
+function buildOf(char) {
+  const h = char.info && char.info.hang;
+  if (!h) return 0;
+  return THREE.MathUtils.clamp((h[1][1] / char.height - 0.085) / 0.025, -0.6, 1.4);
 }
 
 /** A person of the street crowd (no toddlers: they ride in strollers). */
 export function castAppearance(seed, cast) {
-  const chars = cast.chars || cast.doc.characters;
+  const chars = charsOf(cast);
   const r = new RNG((seed >>> 0) ^ 0x3c6ef372);
   const cls = r.weighted(CLASS_W);
   const sex = r.chance(0.5) ? 'f' : 'm';
@@ -129,12 +228,16 @@ export function castAppearance(seed, cast) {
   return finish(seed, r, cast, pool[Math.floor(r.next() * pool.length)]);
 }
 
-/** A toddler riding in a stroller (seed: from the stroller's prop seed). */
-export function castToddler(seed, cast) {
-  const chars = cast.chars || cast.doc.characters;
+/** A toddler riding in a stroller (seed: from the stroller's prop seed); lying: a baby in a pram
+ *  (the toddler drawn smaller). */
+export function castToddler(seed, cast, lying = false) {
+  const chars = charsOf(cast);
   const r = new RNG((seed >>> 0) ^ 0x2c1b3a6f);
   const pool = [];
   chars.forEach((c, i) => { if (c.ageClass === 'toddler') pool.push(i); });
   if (!pool.length) return null;
-  return finish(seed, r, cast, pool[Math.floor(r.next() * pool.length)]);
+  const a = finish(seed, r, cast, pool[Math.floor(r.next() * pool.length)], true);
+  a.sit = lying ? 4 : 3;
+  if (lying) { a.scale *= 0.74; a.height = a.char.height * a.scale; }
+  return a;
 }

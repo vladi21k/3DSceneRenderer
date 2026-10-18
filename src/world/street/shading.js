@@ -195,7 +195,7 @@ const GRIT = /* glsl */`
   float leaf = lc * smoothstep( 0.7, 0.82, stNoise( vec2( pw.x * 24.0, pw.y * 70.0 ) + 31.0 ) );
   g = mix( g, vec3( 0.06, 0.041, 0.024 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
-    g *= mix( 0.55, 1.0, smoothstep( 0.2, 0.6, vColor.g ) );
+    g *= mix( 0.65, 1.0, smoothstep( 0.2, 0.6, vColor.g ) );
   #endif
   diffuseColor.rgb = mix( diffuseColor.rgb, g, stGrit );
   stGritR = mix( 0.97, 0.7, damp ) - 0.08 * leaf;
@@ -234,8 +234,7 @@ export function patchGrit(m) {
 {
   // cavity specular occlusion (vertex colour = cavity AO: lip / gauge edge 0.6-0.9, walls
   // 0.3-0.6, floor 0.25)
-  float stSO = smoothstep( 0.22, 0.95, vColor.g );
-  stSO *= stSO;
+  float stSO = smoothstep( 0.15, 1.0, vColor.g );
   material.specularColorBlended *= stSO;
   material.specularF90 *= stSO;
 }

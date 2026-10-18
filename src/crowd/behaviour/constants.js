@@ -13,7 +13,7 @@ export const SIMPLE_BEYOND = 340;       // beyond this agents skip avoidance (ch
 export const FAR_SPAWN_BAND = 44;       // new arrivals appear in the last metres of the range
 
 // population mix
-export const WALKER_DENSITY = 0.32;     // walkers per metre of street per side (before local multipliers)
+export const WALKER_DENSITY = 0.39;     // walkers per metre of street per side (before local multipliers)
 export const MAX_SEATED = 116;
 export const MAX_PASSENGERS = 46;
 export const STANDER_TARGET = 34;       // people standing and talking in small groups

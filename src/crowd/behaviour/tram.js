@@ -294,6 +294,35 @@ export class TramWatch {
     }
   }
 
+  /** The unit standing (doors open) at station st's left platform, or null. A unit stops with
+   *  its nose as far into the left platform as the cab does on the right one. */
+  unitDwelling(st) {
+    const route = this.c.route, nose = 2 * st.s - st.stopS;
+    for (const T of this.units) {
+      if (T.state !== 'dwell' && !(T.v < 0.15 && T.state === 'depart')) continue;
+      if (Math.abs(route.delta(route.wrap(nose), route.wrap(T.sU))) < 10) return T;
+    }
+    return null;
+  }
+
+  /** Is the point (s, d) (a figure on the left platform) hidden from the camera behind a unit's
+   *  body standing between them? Both shoulders are tested. */
+  behindUnit(s, d) {
+    const vis = this.c.vis, cd = vis.camD, cu = vis.camU;
+    for (const T of this.units) {
+      const face = cd > T.d ? T.d + T.half : T.d - T.half;
+      if ((cd - face) * (d - face) >= 0 || Math.abs(d - T.d) < T.half) continue;   // not across the body
+      const k = (face - cd) / (d - cd);
+      let ok = true;
+      for (const ds of [-0.3, 0.3]) {
+        const sx = cu + (s + ds - cu) * k;
+        if (sx < T.sU + 0.7 || sx > T.sU + T.len - 0.7) { ok = false; break; }
+      }
+      if (ok) return true;
+    }
+    return false;
+  }
+
   /** A unit rang: people on or beside its track ahead look round, and the absorbed wake up. */
   onUnitBell(e, time) {
     const T = this.unitById(e && Number.isInteger(e.unit) ? e.unit : -1);

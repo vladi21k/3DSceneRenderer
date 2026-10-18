@@ -92,7 +92,7 @@ export class Population {
     a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; a.narrowS = null;
     a.mobPrev = 0; a.mobT = -1e9; a.footW = 1; a.stepT = 0; a.dmNext = 0; a.waitX = 0; a.waitXT = 0; a.pinned = false;
     a.uI = -1; a.uSide = 0; a.uClr = false; a.uOver = false; a.ubellT = 0; a.lookU = -1;
-    a.hwT = r.range(0, 0.25); a.hwV = 99; a.passT = 0; a.passD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1;
+    a.hwT = r.range(0, 0.25); a.hwV = 99; a.passT = 0; a.passD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1; a.boardU = -1; a.stnS = null;
     this.stats.spawned++;
     return a;
   }
@@ -124,6 +124,7 @@ export class Population {
     if (reason === 'recycle') this._noteGone(a);
     a.active = false;
     if (a.feature) {
+      if (a.feature.type === 'seat' && a.feature.platform) { const L = a.feature.platform.sitters, i = L.indexOf(a); if (i >= 0) L.splice(i, 1); }
       if (a.feature.type === 'seat') this.releaseChair(a.feature);
       else if (a.feature.type === 'platform') this.leavePlatform(a);
       a.feature = null;
@@ -414,6 +415,19 @@ export class Population {
     const ahead = a.s - c.tram.trainU;
     const inBand = a.mob ? footBandGap(a) < 0.1 + (a.mob === MOB.CYCLE ? 0.6 : 0) : Math.abs(a.d - RIDE_D) < BAND + 0.1;
     if (inBand && ahead > -TRAM_LEN - 4 - a.extS && ahead < c.tram.clearAhead + 30 + (a.mob === MOB.CYCLE ? 80 : 0)) return false;
+    // nor in an oncoming unit's band anywhere near it (ahead of it or beside it)
+    for (const T of c.tram.units) {
+      const ah = T.sU - a.s;
+      if (ah > -(T.len + 6) - a.extS && ah < c.tram.uFront(T, a) + 40 + (a.mob === MOB.CYCLE ? 60 : 0) && c.tram.uGap(a, T) < 0.15) return false;
+    }
+    // no corridor spawns inside a stop (the platforms are the sidewalk there), and no riders
+    // next to each other on one line
+    if (ad < TRACK_ZONE_HALF && map.stationAt(a.s)) return false;
+    if (a.mob === MOB.CYCLE) {
+      for (const b of this.agents) {
+        if (b.active && b !== a && b.mob === MOB.CYCLE && Math.abs(b.s - a.s) < 4 && Math.abs(b.d - a.d) < 0.9) return false;
+      }
+    }
     if (!a.noRect && map.rectInner(a.s, side, ad, AGENT_R * 0.5)) return false;
     if (!a.inDoor && ad > map.reachAt(a.s, side, (x) => c.unwrap(x))) return false;
     map.gatherCircles(a.s, 2);
@@ -429,8 +443,9 @@ export class Population {
         if (Math.abs(pd) > map.wallAt(ps, ps2) - a.fpR && !map.mouthAt(ps, ps2)) return false;
       }
     }
-    // not on top of someone else's stroller / bicycle (nor with one's own on top of someone)
-    return !this.propClash(a);
+    // not on top of someone else's stroller / bicycle (nor with one's own on top of someone; a
+    // rider with room to spare)
+    return !this.propClash(a, a.mob === MOB.CYCLE ? 0.3 : 0.05);
   }
 
   /** Does a's footprint overlap a stroller / bicycle footprint, or a's own prop overlap anyone
@@ -888,7 +903,7 @@ export class Population {
         }
         const a = this._seat(q.seat, c.rng, q.role, guardian);
         if (a && q.role === 'adult' && q.table !== undefined) q.seat.feat.adults[q.table] = a;
-      } else if (q.type === 'passenger') this._placePassenger(q.feat, q.r);
+      } else if (q.type === 'passenger') this._placePassenger(q.feat, q.r, q.first);
     }
   }
 
@@ -969,6 +984,8 @@ export class Population {
     a.dir = r.chance(0.5) ? 1 : -1;
     a.spawnHidden = true;    // statistics: feature arrivals are counted apart
     if (guardian) { a.guardian = guardian; guardian.wards.push(a); a.timer = 1e9; }
+    // on a stop's shelter bench: waiting for the tram (boards with the others)
+    if (seat.platform) { a.timer = 1e9; seat.platform.sitters.push(a); }
     c.counts.seated++;
     return a;
   }
@@ -1008,25 +1025,49 @@ export class Population {
   _populateStation(st) {
     const c = this.c;
     const r = c.featureRng('station', st.id, Math.floor(c.time / 300));
-    const entry = { station: st, served: false, feats: {} };
+    const entry = { station: st, served: false, servedL: false, feats: {} };
     this.stations.set(st.id, entry);
     for (const pl of st.platforms) {
-      const feat = { type: 'platform', station: st, platform: pl, side: pl.side, count: 0, cap: pl.side > 0 ? 18 : 13, members: new Set() };
+      const feat = { type: 'platform', station: st, platform: pl, side: pl.side, count: 0, cap: pl.side > 0 ? 18 : 13, members: new Set(),
+        occ: new Set(), seats: [], sitters: [], shelterS: null, ticket: null };
       entry.feats[pl.side] = feat;
+      // the shelter (its bench) and the ticket machine of this platform
+      for (const f of c.layout.furniture) {
+        if (f.station !== st.id || (f.d > 0 ? 1 : -1) !== pl.side) continue;
+        if (f.type === 'shelter') {
+          feat.shelterS = c.unwrap(f.s);
+          // bench seats along the back wall, the sitter facing the tracks (as built by the
+          // furniture: local x towards −s on the right platform, +s on the left)
+          for (const [k, x] of [0.3, 1.0, 1.7].entries()) {
+            const seat = { type: 'seat', cafe: null, feat, key: k, s: c.unwrap(f.s) - pl.side * x, d: f.d + pl.side * 0.38, side: pl.side,
+              faceA: -pl.side * PI / 2, exitD: pl.side * (TRACK_ZONE_HALF + 1.2), bench: true, platH: pl.h ?? 0.3, platform: feat };
+            feat.seats.push(seat);
+          }
+        } else if (f.type === 'ticketMachine') feat.ticket = { s: c.unwrap(f.s), d: f.d - pl.side * 1.0 };
+      }
+      // 1-3 people on the shelter bench (often), the others standing
+      const sit = feat.seats.length && r.chance(0.8) ? r.int(1, 3) : 0;
+      const order = r.chance(0.5) ? [1, 0, 2] : [1, 2, 0];
+      for (let k = 0; k < sit; k++) this.queue.push({ type: 'seat', seat: feat.seats[order[k]], role: 'adult', bench: true });
       const n = pl.side > 0 ? r.int(6, 13) : r.int(4, 10);
-      for (let k = 0; k < n; k++) this.queue.push({ type: 'passenger', feat, r });
+      for (let k = 0; k < n; k++) this.queue.push({ type: 'passenger', feat, r, first: k === 0 });
     }
   }
 
-  _placePassenger(feat, r) {
+  _placePassenger(feat, r, first = false) {
     const c = this.c, pl = feat.platform;
     if (c.counts.passenger >= MAX_PASSENGERS) return;
-    const spot = this.platformSpot(feat, r);
+    // someone at the ticket machine (standing side-on to the street, facing it)
+    let spot = null, faceA = null;
+    if (first && feat.ticket && r.chance(0.45) && this._spotFree(feat, feat.ticket.s, feat.ticket.d, 0.8)) {
+      spot = feat.ticket; faceA = pl.side * PI / 2 + r.range(-0.2, 0.2);
+    }
+    spot = spot || this.platformSpot(feat, r);
     if (!spot) return;
     const a = this.alloc(KIND.PASSENGER, 'platform');
     if (!a) return;
     a.state = ST.PLATFORM; a.s = spot.s; a.d = spot.d; a.side = pl.side; a.noRect = true;
-    a.faceA = this.passengerFacing(pl.side, r); a.alpha = a.faceA;
+    a.faceA = faceA ?? this.passengerFacing(pl.side, r); a.alpha = a.faceA;
     a.timer = r.range(20, 240);
     a.spawnHidden = true;
     this.joinPlatform(a, feat);
@@ -1042,26 +1083,41 @@ export class Population {
     a.feature = null;
   }
 
-  /** A free standing spot on a platform (unwrapped s, signed d), behind the edge line. */
+  /** Nobody of this platform within `gap` of (s, d)? */
+  _spotFree(feat, s, d, gap) {
+    for (const a of feat.members) if ((a.s - s) ** 2 + (a.d - d) ** 2 < gap * gap) return false;
+    for (const a of feat.sitters) if (a.active && (a.s - s) ** 2 + (a.d - d) ** 2 < gap * gap) return false;
+    return true;
+  }
+
+  /** A free standing spot on a platform (unwrapped s, signed d), behind the edge line. People
+   *  bunch the way they do at real stops: half of them by the shelter (under its roof when they
+   *  can: the shade), a third near the end the trams come in at, the rest anywhere; 0.8-1.2 m
+   *  apart. */
   platformSpot(feat, r = this.c.rng) {
-    const c = this.c, pl = feat.platform, st = feat.station;
+    const c = this.c, pl = feat.platform, side = pl.side;
     const s0 = c.unwrap(pl.s0), len = pl.s1 - pl.s0;
-    const shelterS = c.unwrap(st.s) + (pl.side > 0 ? 6 : -6);
-    for (let tries = 0; tries < 12; tries++) {
-      const s = s0 + r.range(2.2, len - 2.2);
-      const u = r.next();
-      let ad = TRACK_ZONE_HALF + 0.6 + u * u * (PLATFORM_W - 1.0);
-      if (Math.abs(s - shelterS) < 3.2) ad = Math.min(ad, TRACK_ZONE_HALF + 1.3);
-      const d = pl.side * ad;
-      let ok = true;
-      for (const a of feat.members) {
-        if ((a.s - s) ** 2 + (a.d - d) ** 2 < 0.65 * 0.65) { ok = false; break; }
+    const sh = feat.shelterS;
+    const inward = side > 0 ? 1 : -1, entryS = side > 0 ? s0 : s0 + len;
+    for (let tries = 0; tries < 14; tries++) {
+      const u = r.next(), w = r.next();
+      let s, ad;
+      if (u < 0.5 && sh !== null) {
+        if (w < 0.55) { s = sh + r.range(-2.2, 2.2); ad = r.range(TRACK_ZONE_HALF + 1.35, TRACK_ZONE_HALF + 1.85); }   // under the roof
+        else { s = sh + r.range(-7, 7); ad = TRACK_ZONE_HALF + 0.6 + w * w * 0.9; }                                  // in front of it, beside it
+      } else if (u < 0.8) {
+        s = entryS + inward * r.range(2.2, 8.5); ad = TRACK_ZONE_HALF + 0.6 + w * w * (PLATFORM_W - 1.0);
+      } else {
+        s = s0 + r.range(2.2, len - 2.2); ad = TRACK_ZONE_HALF + 0.6 + w * w * (PLATFORM_W - 1.0);
       }
-      if (!ok) continue;
+      if (s < s0 + 2.0 || s > s0 + len - 2.0) continue;
+      const d = side * ad;
+      if (!this._spotFree(feat, s, d, r.range(0.8, 1.2))) continue;
+      let ok = true;
       c.map.gatherCircles(s, 1.5);
       for (let k = 0; k < c.map.qN && ok; k++) {
         const i = c.map.qI[k], ds = c.map.qDS[k], dd = c.map.cD[i] - d;
-        if (ds * ds + dd * dd < (c.map.cR[i] + 0.4) ** 2) ok = false;
+        if (ds * ds + dd * dd < (c.map.cR[i] + 0.36) ** 2) ok = false;
       }
       if (ok) return { s, d };
     }
@@ -1073,10 +1129,12 @@ export class Population {
     return side > 0 ? -PI / 2 - r.range(-0.35, 1.25) : PI / 2 - r.range(-0.35, 1.25);
   }
 
-  /** Boarding / alighting when the tram stands at a platform. */
+  /** Boarding / alighting when the tram stands at a platform (the cab tram at the right
+   *  platform, an oncoming unit at the left one). */
   _stationEvents() {
     const c = this.c, tram = c.tram;
     for (const entry of this.stations.values()) {
+      if (tram.units.length) this._unitStop(entry);
       const here = tram.stoppedAt === entry.station;
       if (!here) { if (entry.served && tram.v > 1) entry.served = false; continue; }
       if (entry.served) continue;
@@ -1096,6 +1154,7 @@ export class Population {
         a.timer = 0;
         board(c, a, best);
       }
+      this._boardSitters(feat, doors, -1);
       // people getting off walk away towards the platform end behind the cab
       const n = r.int(2, 7);
       for (let k = 0; k < n; k++) {
@@ -1111,6 +1170,64 @@ export class Population {
         a.alpha = PI; a.spawnHidden = true;
         this.stats.bySource.alight++;
       }
+    }
+  }
+
+  /** The people on the shelter bench get up and board too. */
+  _boardSitters(feat, doors, unit) {
+    const c = this.c;
+    for (const a of [...feat.sitters]) {
+      if (!a.active || a.state !== ST.SEATED || a.feature?.platform !== feat) continue;
+      this.releaseChair(a.feature);
+      const i = feat.sitters.indexOf(a); if (i >= 0) feat.sitters.splice(i, 1);
+      a.feature = null; a.kind = KIND.PASSENGER;
+      c.counts.seated--; c.counts.passenger++;
+      this.joinPlatform(a, feat);
+      let best = doors[0];
+      for (const s of doors) if (Math.abs(s - a.s) < Math.abs(best - a.s)) best = s;
+      a.boardU = unit; a.timer = 0; a.side = feat.side;
+      board(c, a, best);
+    }
+  }
+
+  /** An oncoming unit standing at the left platform: the people waiting there board at its
+   *  doors (going in out of sight behind its body), and a few get off, appearing behind it. */
+  _unitStop(entry) {
+    const c = this.c, tram = c.tram, feat = entry.feats[-1];
+    if (!feat) return;
+    const T = tram.unitDwelling(entry.station);
+    if (!T) { entry.servedL = false; return; }
+    if (entry.servedL) return;
+    entry.servedL = true;
+    const pl = feat.platform;
+    const s0 = c.unwrap(pl.s0), s1 = s0 + (pl.s1 - pl.s0);
+    const doors = [];
+    for (const off of [3.5, 10.5, 17.5, 24.5, 31.5]) { const s = T.sU + off; if (s > s0 + 0.8 && s < s1 - 0.8) doors.push(s); }
+    if (!doors.length) return;
+    const r = c.rng;
+    for (const a of [...feat.members]) {
+      if (!a.active || a.state !== ST.PLATFORM) continue;
+      let best = doors[0];
+      for (const s of doors) if (Math.abs(s - a.s) < Math.abs(best - a.s)) best = s;
+      a.timer = 0; a.boardU = T.i;
+      board(c, a, best);
+      tram.uStats.boarded++;
+    }
+    this._boardSitters(feat, doors, T.i);
+    // people getting off walk away from the platform edge, then to either end
+    const n = r.int(2, 7);
+    for (let k = 0; k < n; k++) {
+      const ds = r.pick(doors);
+      const a = this.alloc(KIND.PASSENGER, 'alight');
+      if (!a) break;
+      a.s = ds + r.range(-0.4, 0.4); a.d = -(TRACK_ZONE_HALF + 0.45); a.side = -1; a.noRect = true;
+      if (!c.vis.hidden(a.s, a.d) && !tram.behindUnit(a.s, a.d)) { this._unspawn(a); continue; }
+      this.joinPlatform(a, feat);
+      a.task = TASK.ALIGHT; a.step = -1; a.state = ST.GOTO; a.after = r.chance(0.5) ? 1 : -1;
+      a.gs = a.s + r.range(-0.8, 0.8); a.gd = -(TRACK_ZONE_HALF + r.range(1.2, 1.9)); a.gTol = 0.4;
+      a.alpha = -PI / 2; a.spawnHidden = true;
+      this.stats.bySource.alight++;
+      tram.uStats.alighted++;
     }
   }
 }
