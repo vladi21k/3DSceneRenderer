@@ -100,10 +100,18 @@ float cloudDensity(vec3 p, float detail) {
   float hf = (p.y - CB) / uCloudTop;
   if (hf <= 0.0 || hf >= 1.0 || uCloudCover <= 0.0) return 0.0;
   vec2 q = p.xz + uCloudOffset;
-  float cov = clamp(uCloudCover + (texture(uCloudTex, q / 110000.0).b - 0.5) * 0.5, 0.0, 0.92);
-  // where the cells are (2D field; a smaller scale gives a field of many small cumulus),
-  // with 3D billows mixed in so cells stay contiguous
-  float field = textureLod(uCloudTex, q / (13000.0 * uCloudScale), 0.0).r;
+  // regional coverage over ~30 km and ~11 km (two octaves): clear gaps and denser fields
+  float cv = 0.6 * textureLod(uCloudTex, q / 31000.0, 0.0).b + 0.4 * textureLod(uCloudTex, q / 11000.0 + 0.43, 0.0).b;
+  float cov = clamp(uCloudCover + (cv - 0.5) * 0.7, 0.0, 0.92);
+  // where the cells are (2D field; a smaller scale gives a field of many small cumulus):
+  // two cell sizes, the second turned against the first, both domain-warped by ~1 km,
+  // so neither the size nor the spacing of the cells repeats; 3D billows mixed in so
+  // cells stay contiguous
+  vec2 wq = (vec2(textureLod(uCloudTex, q / 17000.0 + 0.27, 0.0).b, textureLod(uCloudTex, q / 17000.0 + 0.71, 0.0).b) - 0.5) * 2400.0 * uCloudScale;
+  const mat2 R37 = mat2(0.7986, 0.6018, -0.6018, 0.7986);
+  float field = mix(textureLod(uCloudTex, (q + wq) / (13000.0 * uCloudScale), 0.0).r,
+                    textureLod(uCloudTex, R37 * (q - wq) / (22000.0 * uCloudScale) + 0.37, 0.0).r, 0.4);
+  field = clamp(0.5 + (field - 0.5) * 1.35, 0.0, 1.0);   // (the blend of two fields is flatter)
   vec4 n = textureLod(uNoise3D, vec3(q.x, p.y * 1.4, q.y) / (4500.0 * uCloudScale), 0.0);
   float shape = field * 0.72 + n.r * 0.28;
   // flat bases, domed tops: the threshold rises with height, so only the cores reach up

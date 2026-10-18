@@ -572,6 +572,9 @@ void hSkin(out vec3 P, out vec3 N) {
     vec3 wr = vec3(sign(position.x) * abs(uWrist.x), uWrist.y, uWrist.z);
     pos = mix(pos, wr + (pos - wr) * 0.25, D1.z);
   }
+  // the bone matrices carry the figure's world placement, so weights that do not sum to one
+  // (quantised or decimated far levels) would pull vertices towards the world origin
+  W *= 1.0 / max(1e-4, W.x + W.y + W.z + W.w);
   mat4 M = hBone(brow, I.x) * W.x;
   if (W.y > 0.0) M += hBone(brow, I.y) * W.y;
   if (W.z > 0.0) M += hBone(brow, I.z) * W.z;
