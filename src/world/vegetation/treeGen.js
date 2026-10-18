@@ -61,8 +61,9 @@ function makeEnvelope(tpl, rng) {
   for (let i = 0; i < 6; i++) lobes.push([rng.int(2, 5), rng.range(0, Math.PI * 2), rng.range(0.07, 0.15), rng.range(1, 3), rng.range(0, Math.PI * 2)]);
   // a few random gaps in the crown: attraction points are not placed inside them
   const holes = [];
-  // (young street trees are open: sky and facades show through their crowns)
-  const nHoles = Math.round(tpl.crownR * 3) + 1;
+  // (a few gaps only: even young street trees read as a leaf mass with the odd window of
+  // sky, not as a see-through lattice)
+  const nHoles = Math.round(tpl.crownR * (tpl.mature ? 1.2 : 1.8)) + 1;
   for (let i = 0; i < nHoles; i++) {
     const a = rng.range(0, Math.PI * 2), t = rng.range(0.15, 0.85), rr = rng.range(0.5, 1.0);
     holes.push([Math.cos(a) * R * rr, y0 + (y1 - y0) * t, Math.sin(a) * R * rr, (rng.range(0.32, 0.52) * R) ** 2]);
@@ -449,7 +450,7 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
     // with a green cast, shoots greener, old wood darker grey-brown
     const tv = rng.range(0.92, 1.06);
     const tint = tpl.mature
-      ? (r0 < 0.015 ? [0.82, 0.9, 0.84] : [0.74, 0.76, 0.8])
+      ? (r0 < 0.015 ? [0.74, 0.8, 0.74] : [0.6, 0.6, 0.62])
       : (r0 < 0.012 ? [0.86, 1.04, 0.82] : [0.9, 1.02, 1.08]);
     const base = b.count;
     let vacc = 0;
@@ -491,7 +492,13 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
       const rn = env.rn(p.x, p.y, p.z);
       if (!sk.trunk[i] || p.y > tpl.crownBase) ao *= 0.55 + 0.45 * THREE.MathUtils.smoothstep(rn, 0.1, 0.95);
       const dirt = p.y < 0.4 ? 0.72 + 0.28 * (p.y / 0.4) : 1;
-      const colr = [tint[0] * tv * dirt, tint[1] * tv * dirt, tint[2] * tv * dirt];
+      // limbs inside the crown stand in its shade (as the leaves there, see cardLayout)
+      let occ = 1;
+      if (p.y > env.y0) {
+        env.normal(p.x, p.y, p.z, cn);
+        occ = CROWN_AO_MIN + (1 - CROWN_AO_MIN) * Math.exp(-CROWN_AO_K * crownDepth(env, p, cn));
+      }
+      const colr = [tint[0] * tv * dirt * occ, tint[1] * tv * dirt * occ, tint[2] * tv * dirt * occ];
       const veg = [info.phase[c], info.amp[i], 0, ao];
       for (let s = 0; s <= sides; s++) {
         const th = (s / sides) * Math.PI * 2;
@@ -566,8 +573,10 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
     // keep the leaf tips out of the tram's clearance envelope on the track side (-x)
     const lim = env.clearLeaf(p.y) + size * 0.5;
     if (c.x < lim) c.x = lim;
-    // sunny outer / upper leaves a touch lighter and yellower, plus per-card noise
-    const v = rng.range(0.86, 1.1) * (0.94 + 0.08 * Math.max(0, cn.y));
+    // sunny outer / upper leaves a touch lighter and yellower, plus per-card noise; leaves
+    // deep in the crown darker (crown occlusion, see crownDepth)
+    const occ = CROWN_AO_MIN + (1 - CROWN_AO_MIN) * Math.exp(-CROWN_AO_K * crownDepth(env, p, cn));
+    const v = rng.range(0.86, 1.1) * (0.94 + 0.08 * Math.max(0, cn.y)) * occ;
     const h = rng.range(-0.06, 0.06) + 0.04 * Math.max(0, cn.y);
     const col = [tint[0] * v * (1 + h), tint[1] * v, tint[2] * v * (1 - h * 1.5)];
     // interior occlusion (sky light only), dimmer towards the crown centre and underside
@@ -583,6 +592,26 @@ function cardLayout(tpl, env, sk, info, sites, rng) {
   }
   return cards;
 }
+
+/**
+ * Depth of a point inside the crown (m): the shortest way out of the envelope radially,
+ * through the pruned face on the track side, straight up and along the crown normal.
+ */
+function crownDepth(env, p, cn) {
+  let d = Math.max(0, env.radius(p.y, Math.atan2(p.z, p.x)) - Math.hypot(p.x, p.z));
+  d = Math.min(d, Math.max(0, p.x - env.clear(p.y)), Math.max(0, env.y1 - p.y));
+  for (const dir of [UP, cn]) {
+    let t = 0;
+    while (t < d && env.inside(p.x + dir.x * t, p.y + dir.y * t, p.z + dir.z * t)) t += 0.08;
+    d = Math.min(d, t);
+  }
+  return d;
+}
+/** Crown self-occlusion baked into the leaf colour: a leaf deep inside the crown is lit
+ *  through and between the outer leaves only (sun, sky and bounce alike), so its albedo
+ *  is scaled from 1 on the shell down to CROWN_AO_MIN in the core. */
+export const CROWN_AO_MIN = 0.36;
+const CROWN_AO_K = 1.4;   // 1/m
 
 /** Crown-sphere coordinates of a template-space point. */
 function crownCoord(env, p, out) {

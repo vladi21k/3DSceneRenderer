@@ -3,7 +3,7 @@ import { TREE_D } from '../../world/layout.js';
 
 // Tunables of the pedestrian simulation. Distances in metres, times in seconds.
 
-export const MAX_AGENTS = 480;          // renderer slots allocated once
+export const MAX_AGENTS = 620;          // renderer slots allocated once
 export const RANGE_BEHIND = 42;         // agents further behind the camera are recycled
 export const RANGE_AHEAD = 560;         // populated distance ahead of the camera
 export const FAR_TAPER = 450;           // density tapers off beyond this (heavier haze, tiny figures)
@@ -14,7 +14,7 @@ export const FAR_SPAWN_BAND = 44;       // new arrivals appear in the last metre
 
 // population mix
 export const WALKER_DENSITY = 0.32;     // walkers per metre of street per side (before local multipliers)
-export const MAX_SEATED = 104;
+export const MAX_SEATED = 116;
 export const MAX_PASSENGERS = 46;
 export const STANDER_TARGET = 34;       // people standing and talking in small groups
 
@@ -48,8 +48,11 @@ export const CLEAR_T_DREAMY = [2.0, 3.0];          // absorbed people (phone, co
 export const CELL = 2.0;
 export const GRID_D = 26;                          // grid covers |d| <= GRID_D
 
-// mobility roles (strollers, bicycles). Shares of the walking population, kept by spawning to the deficit.
-export const MOB_SHARE = { stroller: 0.05, cycle: 0.045, walkbike: 0.015 };
+// mobility roles (strollers, bicycles). Shares of the walking population: drawn per walker when the
+// street is first filled, then kept by spawning to the deficit (capped at twice the share).
+// (street photographs of this kind of pedestrian mall show about one stroller per 80 people and
+// hardly any riders in the flow: crowd_mobx=<k> raises them for close-up tests)
+export const MOB_SHARE = { stroller: 0.015, cycle: 0.008, walkbike: 0.004 };
 export const STROLLER_V = [0.98, 1.28];            // pushing a stroller: a little slower than walking
 export const WALKBIKE_V = [1.02, 1.32];
 export const CYCLE_V = [2.8, 5.0];                 // 10-18 km/h

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
-import { COLOR_SCALE } from './mesh.js';
+import { COLOR_SCALE, GLASS_K } from './mesh.js';
 
 // Weathering for the masonry: buildings-owned variants of the stone materials that
 // darken and grey the albedo where the per-vertex grime mask (colour alpha, baked
@@ -188,8 +188,10 @@ const FRAG_STONE = /* glsl */ `
   float bgDk = 0.6 + 0.8 * bgN1;
 
   // run-off below the occluder above: aRun = (a - u, line - v, dirtiness, code), code =
-  // +-(floor(width * 64) + s / 2): + balcony slab (line = soffit), - window sill
-  float bgRunM = 0.0, bgRunD = 0.0, bgWash = 0.0;   // grime mask, direct soot / streaks, wash
+  // +-(floor(width * 64) + s / 2): + balcony slab (line = soffit), - window sill. Its
+  // masks are modulated along the wall in facade metres (bgP), so they run on unbroken
+  // across the materials and the dressing, and from one occluder's zone into the next.
+  float bgRunM = 0.0, bgSoot = 0.0, bgWash = 0.0;   // grime mask, soot, rain wash
   vec3 bgRunK = vec3(1.0);                            // occlusion and rust
   float bgK = abs(vBgRun.w), bgD = vBgRun.y;
   float bgFx = fwidth(vBgRun.x);                     // metres along the wall per pixel
@@ -198,28 +200,31 @@ const FRAG_STONE = /* glsl */ `
     float bgUa = -vBgRun.x, bgUb = bgW - bgUa;      // from the left / right end
     // strips centred just inside each end: water runs off there
     float bgE = max(0.0, 1.0 - min(abs(bgUa - 0.08), abs(bgUb - 0.08)) / 0.2);
+    // patches 1.5-4 m long at 30-100 % strength
+    float bgPu = bgP.x + bgDirtB * 17.3;
+    float bgPatch = 0.3 + 0.7 * smoothstep(0.2, 0.8, 0.65 * bgVN(vec2(bgPu * 0.38, 3.7)) + 0.35 * bgVN(vec2(bgPu * 0.71, 9.1)));
     if (vBgRun.w > 0.0) {
-      // balcony slab: occlusion and a soot band under the soffit, streaks hanging from
-      // it (columns of random length), water and rust down the strips under the ends
-      float bgIn = clamp(min(bgUa, bgUb) / 0.22 + 0.64, 0.0, 1.0);
+      // balcony slab: occlusion right under the soffit, and soot that fades in over the
+      // first 20 cm and hangs 0.4-1.8 m in streaks; both reach a little beyond the slab
+      // ends; water and rust down the strips under the ends
+      float bgOut = max(0.0, -min(bgUa, bgUb));
+      float bgSpread = exp(-bgOut / 0.4);
+      bgRunK *= 1.0 - 0.18 * bgSpread * exp(-bgD / 0.35);
+      float bgLen = 0.4 + 1.4 * bgVN(vec2(bgPu * 0.9 + 5.3, 0.5));
+      float bgCol = smoothstep(0.35, 0.85, bgVN(vec2(bgPu * 3.1, bgD * 0.12)))
+        + 0.6 * smoothstep(0.5, 0.9, bgVN(vec2(bgPu * 9.0, bgD * 0.4))) * (1.0 - smoothstep(0.015, 0.05, bgFx));
+      bgCol = mix(bgCol, 0.4, smoothstep(0.04, 0.15, bgFx));   // far: the mean
       float bgRun = bgE * bgS * exp(-bgD / 3.2) * (1.0 - smoothstep(2.8, 3.8, bgD));
-      bgRunK *= 1.0 - 0.3 * bgIn * exp(-bgD / 0.5);
-      if (bgIn > 0.0 && bgD < 3.0) {
-        float bgSeed = bgW * 7.31 + bgS * 3.7;
-        float bgLen = 0.25 + 1.6 * bgVN(vec2(bgUa * 2.3 + bgSeed, 0.5));
-        float bgSt = smoothstep(0.45, 0.8, bgVN(vec2(bgUa * 4.5 + bgSeed, bgD * 0.15)))
-          + 0.7 * smoothstep(0.55, 0.9, bgVN(vec2(bgUa * 14.0 + bgSeed, bgD * 0.5))) * (1.0 - smoothstep(0.015, 0.05, bgFx));
-        bgSt = mix(bgSt, 0.35, smoothstep(0.04, 0.15, bgFx));   // far: the mean
-        bgRunD = bgIn * min(1.5, bgDirtB * bgDk) * (0.6 * exp(-bgD / 0.2) + 0.8 * bgSt * exp(-bgD / bgLen));
-      }
-      bgRunM = bgDirtB * (0.3 * bgIn * exp(-bgD / 0.5) + 0.95 * bgRun);
+      bgSoot = bgSpread * bgPatch * min(1.4, bgDirtB * bgDk) * smoothstep(0.0, 0.2, bgD)
+        * (0.3 * exp(-bgD / 0.6) + 0.7 * bgCol * exp(-bgD / bgLen));
+      bgRunM = bgDirtB * 0.95 * bgRun;
       float bgRust = 0.6 * bgRun;
       bgRunK *= vec3(1.0 - 0.08 * bgRust, 1.0 - 0.13 * bgRust, 1.0 - 0.2 * bgRust);
     } else {
-      // window sill: dirt under the sill and down the strips under its ends
+      // window sill: dirt under the sill (patchy, fading in below it) and down the strips under its ends
       float bgIn = clamp(min(bgUa, bgUb) / 0.2, 0.0, 1.0);
       float bgRun = bgE * bgS * exp(-bgD / 2.4) * (1.0 - smoothstep(2.4, 3.4, bgD));
-      bgRunM = bgDirtB * (0.22 * bgIn * exp(-bgD / 0.7) + 0.8 * bgRun);
+      bgRunM = bgDirtB * (0.22 * bgIn * bgPatch * smoothstep(0.0, 0.12, bgD) * exp(-bgD / 0.7) + 0.8 * bgRun);
       bgWash = 0.06 * bgRun;
     }
     float bgL0 = dot(diffuseColor.rgb, vec3(0.333));
@@ -236,11 +241,11 @@ const FRAG_STONE = /* glsl */ `
   bgDirt = bgM * (bgGrimeK.w + (1.0 - bgGrimeK.w) * bgDrip) * (0.55 + 0.9 * bgBlot);
   bgDirt += smoothstep(0.5, 1.0, bgM) * (bgA.b * 0.6 + 0.2) * 0.6;
   bgDirt = clamp(bgDirt, 0.0, 1.0);
-  // soot and streaks under a balcony slab: greyer and darker than the grime elsewhere
-  float bgSoot = clamp(bgRunD * (0.7 + 0.6 * bgBlot), 0.0, 1.0);
+  // soot under a balcony slab: greyer and darker (at most a quarter) than the stone
+  bgSoot = clamp(bgSoot * (0.75 + 0.5 * bgBlot), 0.0, 1.0);
   float bgLum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum) * vec3(0.97, 0.98, 1.0), min(1.0, bgDirt * bgGrimeK.y + bgSoot * 0.5));
-  diffuseColor.rgb *= (1.0 - bgDirt * bgGrimeK.x) * (1.0 - 0.5 * bgSoot);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum) * vec3(0.97, 0.98, 1.0), min(1.0, bgDirt * bgGrimeK.y + bgSoot * 0.35));
+  diffuseColor.rgb *= (1.0 - bgDirt * bgGrimeK.x) * (1.0 - 0.25 * bgSoot);
   bgDirt = max(bgDirt, bgSoot);
 }
 `;
@@ -248,17 +253,39 @@ const FRAG_ROUGH = /* glsl */ `
 roughnessFactor = min(1.0, roughnessFactor * (1.0 + bgGrimeK.z * bgDirt));
 `;
 
-// lit windows (party walls, set-back storeys, skyline blocks): warm interior glow at night, by lit share
+// The buildings' own glazing (party walls, set-back storeys, skyline blocks, rooftop
+// collectors). Vertex colour = what shows behind the pane (curtain, blind, dark room) as
+// albedo / GLASS_K; colour alpha = flags: lit at night (0.75) + open casement (0.25).
+// Reflections: the opposite side of the street hides the low sky from the lower floors
+// (they mirror warm stone instead, the upper floors the sky), each window's pane is tilted
+// a little (its vertex normal) so neighbours catch different parts of the sky, and an
+// open window mirrors nothing.
 const FRAG_GLASS_PARS = /* glsl */ `
 varying float vBgGrime;
+varying float vBgH;
 uniform float bgNight;
 uniform float bgGain;
 `;
+const FRAG_GLASS_COLOR = /* glsl */ `
+diffuseColor.rgb *= ${(GLASS_K / 0.03).toFixed(4)};
+`;
+const FRAG_GLASS_REFL = /* glsl */ `
+#if defined( RE_IndirectSpecular )
+{
+  float bgLitR = step(0.5, vBgGrime), bgOpen = step(0.125, vBgGrime - 0.75 * bgLitR);
+  vec3 bgRw = inverseTransformDirection(reflect(-geometryViewDir, geometryNormal), viewMatrix);
+  // elevation of the opposite skyline seen from this height (about 17 m tall, 24 m away)
+  float bgE0 = clamp((17.0 - vBgH) / 24.0, -0.35, 0.6);
+  float bgSky = smoothstep(bgE0 - 0.16, bgE0 + 0.16, bgRw.y);
+  radiance *= mix(vec3(0.52, 0.46, 0.37), vec3(1.0), bgSky) * (1.0 - bgOpen);
+}
+#endif
+`;
 // a dim warm room behind the pane (curtains, a lamp somewhere inside), not a light box
 const FRAG_GLASS = /* glsl */ `
-totalEmissiveRadiance += vec3(1.0, 0.66, 0.38) * 0.005 * bgGain * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.6 + 0.4 * vBgGrime);
+totalEmissiveRadiance += vec3(1.0, 0.66, 0.38) * 0.0045 * bgGain * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.7 + 0.5 * min(1.0, dot(vColor.rgb, vec3(0.4))));
 `;
-const VERT_GLASS_PARS = 'varying float vBgGrime;\n';
+const VERT_GLASS_PARS = 'varying float vBgGrime;\nvarying float vBgH;\n';
 
 /** Chain a patch after the material's existing onBeforeCompile and extend its cache key. */
 function chain(m, key, patch) {
@@ -281,7 +308,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
   const m = base.clone();
   m.name = `buildings:${name}`;
   const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) } };
-  chain(m, 'bgS4', (shader) => {
+  chain(m, 'bgS5', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
@@ -302,15 +329,17 @@ export function litGlass(app, name = 'glass.window') {
   const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };
   const m = app.materials.get(name, { vertexColors: true }).clone();
   m.name = `buildings:${name}`;
-  chain(m, 'bgG2', (shader) => {
+  chain(m, 'bgG3', (shader) => {
     shader.uniforms.bgNight = U.uNight;
     shader.uniforms.bgGain = gain;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_GLASS_PARS)
-      .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\n');
+      .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\nvBgH = uv.y;\n');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + FRAG_GLASS_PARS)
-      .replace('#include <lights_physical_fragment>', FRAG_GLASS + '#include <lights_physical_fragment>');
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_GLASS_COLOR)
+      .replace('#include <lights_physical_fragment>', FRAG_GLASS + '#include <lights_physical_fragment>')
+      .replace('#include <lights_fragment_end>', FRAG_GLASS_REFL + '#include <lights_fragment_end>');
   });
   app.materials.register(m.name, m);
   return m;

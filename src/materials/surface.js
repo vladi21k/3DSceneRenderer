@@ -11,10 +11,13 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //      plain tiling lookups.
 //   L  row layout: analytic rows/segments with a random per-row u shift (no 2D
 //      repetition), per-cell / per-row colour + roughness variation (the cell tint is
-//      box-filtered over the pixel footprint, so it survives at distance), and per-block
-//      mirrored map lookups (u, v or both: four relief variants of every baked block)
+//      box-filtered over the pixel footprint, so it survives at distance; part of it can
+//      follow a 1-3 m noise sampled at the cell centre, so tones drift in runs), and
+//      per-block mirrored map lookups (u, v or both: four relief variants of every block)
 //   J  grazing-angle joint masking (with L), only below ~10° elevation
-//   P  random irregular spots inside some cells, e.g. chewing gum (with L)
+//   P  random irregular spots inside some cells, e.g. chewing gum (with L): lognormal sizes,
+//      ragged soft outlines, occasional smears, clustered by a 3-8 m noise mask and kept
+//      off the track (with K: lane offset |d| below a threshold)
 //   D  detail map: high-frequency grain that fades out through its own mips
 //   R  dressing (with L and D): the detail is chosen, rotated, offset and scaled per block
 //      (chisel dressing)
@@ -43,6 +46,8 @@ uniform vec4 sfMacroAn;  // anisotropy of the two macro lookups
 uniform vec4 sfStain;    // amount, freq (1/m), threshold, unused
 uniform vec4 sfMisc;     // normal strength, ao strength, variance→roughness k, micro-shadow
 uniform float sfAOScale; // global scale of the baked AO (lowered when screen-space AO runs)
+uniform float sfEnvI;    // the material's envMapIntensity (three replaces it by the scene's when the
+                         // environment comes from scene.environment)
 uniform sampler2D sfMacroTex;
 `;
 
@@ -60,13 +65,21 @@ uniform vec3 sfCellOut2; // outlier families 2 and 3
 uniform vec3 sfCellOut3;
 uniform vec4 sfJoint;    // grazing joint masking amount, joint half width (m)
 uniform float sfMirror;  // share of blocks whose map lookup is mirrored (u, v or both)
-uniform vec4 sfSpots;    // probability per cell, radius (m), albedo mult, roughness
-vec3 sfTintOf(uint h, float amp, float outliers) {
+uniform vec4 sfSpots;    // peak probability per cell, median radius (m), albedo mult, roughness
+uniform vec4 sfSpots2;   // clusters: noise freq (1/m, 0 = none), mask low, mask high; lane: clear below |d| (0 = off)
+uniform vec4 sfCell2;    // correlated tone: value amp, hue share, noise freq (1/m, 0 = off), unused
+// per-cell tint; nz = correlated tone noise at the cell centre (0.5 = neutral)
+vec3 sfTintOf(uint h, float amp, float outliers, vec2 nz) {
   float h0 = sfHf(h), h1 = sfHf(sfH(h + 1u)), h2 = sfHf(sfH(h + 2u)), h3 = sfHf(sfH(h + 3u)), h4 = sfHf(sfH(h + 4u));
-  float v = 1.0 + amp * sfCell.x * (h0 * 2.0 - 1.0);
-  vec3 t = v * mix(vec3(1.0), mix(sfCellA, sfCellB, h1), amp * sfCell.y * h2);
+  float v = 1.0 + amp * (sfCell.x * (h0 * 2.0 - 1.0) + sfCell2.x * (nz.x * 2.0 - 1.0));
+  float hm = mix(h1, clamp(0.5 + (nz.y - 0.5) * 3.0, 0.0, 1.0), sfCell2.y);
+  vec3 t = v * mix(vec3(1.0), mix(sfCellA, sfCellB, hm), amp * sfCell.y * h2);
   vec3 o = h4 < 0.3334 ? sfCellOut.rgb : (h4 < 0.6667 ? sfCellOut2 : sfCellOut3);
   return mix(t, t * o, outliers * step(1.0 - sfCellOut.a, h3));
+}
+// correlated tone noise (quarry batches, dirt) sampled at a cell centre (uv metres)
+vec2 sfCellNoise(vec2 c) {
+  return sfCell2.z > 0.0 ? textureLod(sfMacroTex, c * sfCell2.z + vec2(0.37, 0.71), 0.0).rg : vec2(0.5);
 }
 `;
 
@@ -115,19 +128,38 @@ const MAP_JOINT = /* glsl */ `
     }
 `;
 
-// small random spots (chewing gum, drips) inside some cells: flattened blobs with a
-// ragged outline (radius modulated by macro noise sampled round a small circle)
-const MAP_SPOTS = /* glsl */ `
-    if (sfSpots.x > 0.0 && sfHf(sfH(sfCh + 9u)) < sfSpots.x) {
-      float rad = sfSpots.y * (0.6 + 0.8 * sfHf(sfH(sfCh + 12u)));
-      vec2 sp = rad * 1.4 + vec2(sfHf(sfH(sfCh + 10u)), sfHf(sfH(sfCh + 11u))) * max(sfCs - 2.8 * rad, vec2(0.0));
-      float ang = sfHf(sfH(sfCh + 13u)) * 6.2832;
-      vec2 dv = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * (cl - sp) * vec2(1.0, 1.3 + 0.6 * sfHf(sfH(sfCh + 14u)));
-      float dl = length(dv);
-      vec2 ro = vec2(sfHf(sfH(sfCh + 15u)), ang * 0.159);
-      float rr = rad * (0.6 + 0.8 * textureLod(sfMacroTex, dv / max(dl, 1e-6) * 0.07 + ro, 0.0).r);
-      float aa = max(sfFoot.x, sfFoot.y);
-      sfSpot = (1.0 - smoothstep(rr - aa, rr + aa, dl)) * (1.0 - smoothstep(0.4, 1.2, aa / rad));
+// small random spots inside some cells (chewing gum, drips). Aged gum is a flattened grey
+// to grey-black blotch: sizes lognormal (0.6-3 cm across), outlines ragged (radius warped
+// ±40 % by two octaves of noise round the spot) with a soft 2-3 mm edge, about one in eight
+// drawn out into a smear. Density follows a 3-8 m noise mask (clusters where people stand
+// and wait) and, on lanes (street: v = d), drops to a fifth between and over the rails.
+const mapSpots = (f) => /* glsl */ `
+    if (sfSpots.x > 0.0) {
+      float sfDen = sfSpots.x;
+      if (sfSpots2.x > 0.0) {
+        vec2 sfCc = vec2(sfUv.x - lx + 0.5 * (b0 + b1), (rgF + 0.5) * rowH);
+        sfDen *= smoothstep(sfSpots2.y, sfSpots2.z, textureLod(sfMacroTex, sfCc * sfSpots2.x + vec2(0.61, 0.23), 0.0).b);
+      }
+${f.lanes ? `      if (sfSpots2.w > 0.0) sfDen *= mix(0.2, 1.0, smoothstep(sfSpots2.w - 0.9, sfSpots2.w, abs(${f.laneAttr ? 'vSfLaneD' : 'vMapUv.y'})));
+` : ''}      if (sfHf(sfH(sfCh + 9u)) < sfDen) {
+        float g3 = (sfHf(sfH(sfCh + 12u)) + sfHf(sfH(sfCh + 16u)) + sfHf(sfH(sfCh + 17u)) - 1.5) * 2.0;
+        float rad = clamp(sfSpots.y * exp(0.42 * g3), 0.003, 0.015);
+        float hE = sfHf(sfH(sfCh + 14u));
+        float el = hE < 0.12 ? 1.8 + 12.0 * hE : 1.0 + 0.4 * hE;
+        float ext = rad * el;
+        vec2 sp = ext * 1.2 + vec2(sfHf(sfH(sfCh + 10u)), sfHf(sfH(sfCh + 11u))) * max(sfCs - 2.4 * ext, vec2(0.0));
+        float ang = sfHf(sfH(sfCh + 13u)) * 6.2832;
+        vec2 dv = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * (cl - sp);
+        dv.x /= el;
+        float dl = length(dv);
+        vec2 dir = dv / max(dl, 1e-6);
+        vec2 ro = vec2(sfHf(sfH(sfCh + 15u)), ang * 0.159);
+        float wn = (textureLod(sfMacroTex, dir * 0.05 + ro, 0.0).r - 0.5) * 3.0 + (textureLod(sfMacroTex, dir * 0.16 + ro.yx, 0.0).g - 0.5) * 1.6;
+        float rr = rad * (1.0 + 0.4 * clamp(wn, -1.0, 1.0));
+        float aa = max(sfFoot.x, sfFoot.y);
+        sfSpot = (1.0 - smoothstep(rr - 0.0025 - aa, rr + 0.0005 + aa, dl)) * (1.0 - smoothstep(0.5, 1.5, aa / rad));
+        sfSpotA = sfSpots.z + 0.25 * (sfHf(sfH(sfCh + 18u)) - 0.5);
+      }
     }
 `;
 
@@ -140,6 +172,7 @@ const mapLayout = (f) => /* glsl */ `
   vec3 sfTint = vec3(1.0);
   float sfRoughMul = 1.0;
   float sfSpot = 0.0;
+  float sfSpotA = 1.0;
   float sfHide = 0.0;
   vec2 sfOff = vec2(0.0);
   uint sfCh = 0u;            // block hash
@@ -175,11 +208,12 @@ const mapLayout = (f) => /* glsl */ `
       float lo = j == 0 ? b0 : (j < 0 ? sfSegB(r, k - 1, n, L, sfLay2) : b1);
       float hi = j == 0 ? b1 : (j < 0 ? b0 : sfSegB(r, k + 2, n, L, sfLay2));
       float wj = jn == 0 ? 1.0 : max(0.0, min(x1, hi) - max(x0, lo));
-      cellT += sfTintOf(j == 0 ? sfCh : sfH2(rg, gi + j, cs), 1.0, 1.0) * wj;
+      vec2 nz = sfCellNoise(vec2(sfUv.x - lx + 0.5 * (lo + hi), (rgF + 0.5) * rowH));
+      cellT += sfTintOf(j == 0 ? sfCh : sfH2(rg, gi + j, cs), 1.0, 1.0, nz) * wj;
       ws += wj;
     }
     if (jn > 0) cellT = (cellT + vec3(max(0.0, 2.0 * hw - ws))) / (2.0 * hw);
-    sfTint = mix(vec3(1.0), sfTintOf(rh, sfCell.w, 0.0) * cellT, fRow);
+    sfTint = mix(vec3(1.0), sfTintOf(rh, sfCell.w, 0.0, vec2(0.5)) * cellT, fRow);
     sfRoughMul = 1.0 + sfCell.z * (sfHf(sfH(sfCh + 5u)) * 2.0 - 1.0) * fSeg;
     vec2 cl = vec2(lx - b0, sfUv.y - rgF * rowH);
     sfCl = cl;
@@ -192,7 +226,7 @@ const mapLayout = (f) => /* glsl */ `
       sfFl = vec2(mk == 1u ? 1.0 : -1.0, mk == 0u ? 1.0 : -1.0);
       sfFo = vec2(sfFl.x < 0.0 ? b0 + b1 - 2.0 * lx : 0.0, sfFl.y < 0.0 ? rowH - 2.0 * cl.y : 0.0);
     }
-${f.joint ? MAP_JOINT : ''}${f.spots ? MAP_SPOTS : ''}  }
+${f.joint ? MAP_JOINT : ''}${f.spots ? mapSpots(f) : ''}  }
   vec2 sfT = (sfP + sfFo) * sfTile.xy;
   vec2 sfTx = sfGx * sfFl * sfTile.xy, sfTy = sfGy * sfFl * sfTile.xy;
   vec4 sfA = textureGrad(map, sfT, sfTx, sfTy);
@@ -330,7 +364,7 @@ const MAP_WEATHER = /* glsl */ `
 `;
 
 const SPOTS_APPLY = /* glsl */ `
-  sfAlb = mix(sfAlb, sfAlb * sfSpots.z, sfSpot);
+  sfAlb = mix(sfAlb, sfAlb * sfSpotA, sfSpot);
   sfRough = mix(sfRough, sfSpots.w, sfSpot);
 `;
 
@@ -379,9 +413,19 @@ ${f.detail ? NORMAL_DETAIL : ''}  if (sfFlags.y > 0.5) sfN = sfN.yx;
   sfN *= normalScale * sfMisc.x;
   sfVar *= sfMisc.x * sfMisc.x * normalScale.x * normalScale.x;
   normal = normalize(tbn * vec3(sfN, sqrt(max(1.0 - dot(sfN, sfN), 0.0))));
-  // normal variance hidden in the mips becomes roughness (specular anti-aliasing)
+  // specular anti-aliasing: normal variance hidden in the mips, plus the screen-space
+  // variance of the interpolated normal (curvature under a pixel: rail heads, poles,
+  // rounded arrises), widen the lobe (alpha² += variance, Kaplanyan-style), so no curved
+  // surface can leave a sharp mirror line
+  #ifdef FLAT_SHADED
+    float sfGv = 0.0;
+  #else
+    vec3 sfGn = normalize(vNormal);
+    vec3 sfGnx = dFdx(sfGn), sfGny = dFdy(sfGn);
+    float sfGv = min(0.5 * (dot(sfGnx, sfGnx) + dot(sfGny, sfGny)), 0.18);
+  #endif
   float sfA2 = roughnessFactor * roughnessFactor;
-  roughnessFactor = min(sqrt(sqrt(sfA2 * sfA2 + sfMisc.z * sfVar)), 1.0);
+  roughnessFactor = min(sqrt(sqrt(sfA2 * sfA2 + sfMisc.z * sfVar + sfGv)), 1.0);
 `;
 
 const AO = /* glsl */ `
@@ -395,7 +439,7 @@ const AO = /* glsl */ `
   #endif
   #if defined( USE_ENVMAP ) && defined( STANDARD )
     float sfDotNV = saturate( dot( geometryNormal, geometryViewDir ) );
-    reflectedLight.indirectSpecular *= computeSpecularOcclusion( sfDotNV, ambientOcclusion, material.roughness );
+    reflectedLight.indirectSpecular *= computeSpecularOcclusion( sfDotNV, ambientOcclusion, material.roughness ) * sfEnvI;
   #endif
 `;
 
@@ -549,6 +593,8 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfDetail2: { value: v4([dRes, L && toolTex ? d.share ?? 0.6 : 0, d?.margin ?? 0.025, d?.farVar ?? 0.006]) },
     sfMisc: { value: v4([cfg.normal ?? 1, cfg.ao ?? 1, cfg.variance ?? 2, cfg.microShadow ?? 1]) },
     sfSpots: { value: v4([L ? sp.prob ?? 0 : 0, sp.radius ?? 0.01, sp.albedo ?? 1, sp.rough ?? 0.5]) },
+    sfSpots2: { value: v4([shared.macro ? sp.cluster?.freq ?? 0 : 0, sp.cluster?.lo ?? 0.5, sp.cluster?.hi ?? 0.62, sp.laneClear ?? 0]) },
+    sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, 0]) },
     sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, 0]) },
     sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
     sfMirror: { value: L ? cfg.mirror ?? 0 : 0 },
@@ -592,8 +638,11 @@ export function applySurface(mat, sf) {
     return f;
   };
   mat.onBeforeCompile = function (shader) {
-    const f = features(this || mat);
+    const self = this || mat;
+    const f = features(self);
     Object.assign(shader.uniforms, sf.uniforms);
+    // per material (variants and clones keep their own envMapIntensity)
+    shader.uniforms.sfEnvI = { get value() { return self.envMapIntensity; } };
     shader.fragmentShader = patchFragment(shader.fragmentShader, f);
     shader.vertexShader = patchVertex(shader.vertexShader, f);
   };

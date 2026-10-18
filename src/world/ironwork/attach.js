@@ -4,9 +4,10 @@ import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
 import { uIronA2C } from './mats.js';
 
-// Small facade attachments: potted and boxed geraniums, planter boxes with their rail
-// hooks, split AC units with brackets, pipes and the stains they leave on the wall,
-// satellite dishes, balcony chairs and flags on angled poles.
+// Small facade attachments: balcony planting (geraniums, herbs, trailing greens and
+// surfinia, bougainvillea, dried-out pots), planter boxes with their rail hooks, pots,
+// split AC units with brackets, pipes and the stains they leave on the wall, satellite
+// dishes, balcony chairs and flags on angled poles.
 // Shared shapes are built once as templates (written into the merged meshes) or as
 // instanced geometries; their textures are painted on canvases at start-up. The small
 // parts and the AC units share one material: the parts sample a white patch of the AC
@@ -53,11 +54,43 @@ export function writeTemplate(W, t, matrix, tint = [1, 1, 1]) {
 // ---------------------------------------------------------------- canvas textures
 function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
 
-/** Plant atlas (512 x 256): left half a zonal geranium leaf, right half a flower umbel
- *  painted near-white (tinted per plant), bottom-left corner solid stem green. */
+/** Plant atlas (1024 x 512): 4 x 2 cells of 256 px. The left half keeps its own colours:
+ *  zonal geranium leaf, herb sprig (top), ivy sprig, dry twigs (bottom). The right half
+ *  is painted near-white and tinted per instance: geranium umbel, bougainvillea bracts
+ *  (top), small trumpet flowers, flower spikes (bottom). Two solid patches in the bottom
+ *  corners of the left half (outside every card's UVs): stem green and twig brown. */
 function plantTexture() {
-  const cv = canvas(512, 256), g = cv.getContext('2d');
+  const cv = canvas(1024, 512), g = cv.getContext('2d');
   const r = new RNG(4242);
+  const rgb = (c, k = 1, a = 1) => `rgba(${c[0] * k | 0},${c[1] * k | 0},${c[2] * k | 0},${a})`;
+  /** Ovate leaf from its base (origin) to its tip at (L, 0), half width W/2. */
+  const ovate = (L, W, tip = 0.75) => {
+    g.beginPath(); g.moveTo(0, 0);
+    g.bezierCurveTo(L * 0.22, -W * 0.72, L * tip, -W * 0.55, L, 0);
+    g.bezierCurveTo(L * tip, W * 0.55, L * 0.22, W * 0.72, 0, 0);
+  };
+  /** A leaf at (x, y) pointing at `ang`: gradient fill, midrib, crisp margin. */
+  const leafAt = (x, y, ang, L, W, c, mid = 0.35, tip = 0.75) => {
+    g.save(); g.translate(x, y); g.rotate(ang);
+    ovate(L, W, tip);
+    const gr = g.createLinearGradient(0, 0, L, 0);
+    gr.addColorStop(0, rgb(c, 0.82)); gr.addColorStop(0.5, rgb(c, 1.04)); gr.addColorStop(1, rgb(c, 0.92));
+    g.fillStyle = gr; g.fill();
+    g.strokeStyle = rgb(c, 0.45, 0.6); g.lineWidth = 1.2; g.stroke();
+    g.strokeStyle = rgb([255, 255, 220], 1, mid * 0.5); g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(1, 0); g.lineTo(L * 0.85, 0); g.stroke();
+    g.restore();
+  };
+  /** Draws into atlas cell (cx, cy) only. */
+  const inCell = (cx, cy, fn) => { g.save(); g.beginPath(); g.rect(cx * 256, cy * 256, 256, 256); g.clip(); fn(); g.restore(); };
+  const stemLine = (pts, w, c) => {
+    g.strokeStyle = c; g.lineWidth = w; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+    g.stroke();
+  };
+
+  // ---- (0, 0) zonal geranium leaf
   const leaf = (x, y, R, rot, dark) => {
     g.save(); g.translate(x, y); g.rotate(rot);
     g.beginPath();
@@ -95,8 +128,93 @@ function plantTexture() {
     g.fillRect(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 2, 2);
   }
   g.restore();
-  // flower umbel: florets of five petals
-  g.save(); g.translate(384, 128);
+
+  // ---- (1, 0) herb sprig (basil, mint, oregano): a stem from the bottom edge with
+  // opposite pairs of ovate leaves, smaller toward the tip, and two side shoots
+  inCell(1, 0, () => {
+    const ox = 256 + 128, oy = 248;
+    const shoots = [[0, 0, r.range(-14, 14), -222, 3.2, 7], [-2, -78, -70, -176, 2.2, 4], [2, -112, 66, -196, 2, 4]];
+    for (const [x0, y0, x1, y1, w, pairs] of shoots) {
+      const cx = (x0 + x1) / 2 + r.range(-12, 12), cy = (y0 + y1) / 2;
+      const P = (t) => [ox + (1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1, oy + (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1];
+      const pts = []; for (let i = 0; i <= 12; i++) pts.push(P(i / 12));
+      stemLine(pts, w, 'rgb(88,112,52)');
+      for (let p = 0; p < pairs; p++) {
+        const t = 0.18 + 0.82 * (p / pairs) ** 0.9, [x, y] = P(t), [xa, ya] = P(Math.min(1, t + 0.02));
+        const dir = Math.atan2(ya - y, xa - x), L = (46 - 26 * t) * r.range(0.85, 1.1) * (w > 3 ? 1 : 0.8);
+        const c = [r.range(62, 84), r.range(112, 140), r.range(38, 52)];
+        for (const s of [-1, 1]) leafAt(x, y, dir + s * r.range(0.95, 1.3), L, L * r.range(0.5, 0.6), c, 0.5);
+      }
+      const [tx, ty] = P(1);
+      for (const s of [-1, 0, 1]) leafAt(tx, ty, -Math.PI / 2 + s * 0.5, 14, 8, [96, 150, 58], 0.3); // tip bud
+    }
+  });
+
+  // ---- (0, 1) ivy sprig: a wavy stem from the top edge down, alternate three- to
+  // five-lobed leaves on petioles, dark and glossy with pale veins
+  inCell(0, 1, () => {
+    const ox = 128, oy = 256;
+    const pts = [];
+    for (let i = 0; i <= 16; i++) { const t = i / 16; pts.push([ox + Math.sin(t * 5.5) * 12, oy + 8 + t * 236]); }
+    stemLine(pts, 3, 'rgb(84,74,48)');
+    const ivy = (x, y, R, rot) => {
+      g.save(); g.translate(x, y); g.rotate(rot);
+      g.beginPath();
+      for (let i = 0; i <= 72; i++) {
+        const a = (i / 72) * Math.PI * 2;
+        // five lobes, the middle one longest; a sinus at the petiole (a = pi / 2)
+        let rr = R * (0.58 + 0.42 * Math.pow(Math.abs(Math.cos((a + Math.PI / 2) * 2.5)), 1.6));
+        rr *= 1 + 0.25 * Math.max(0, -Math.sin(a)); // the tip lobe (a = -pi / 2) reaches further
+        rr *= 1 - 0.5 * Math.exp(-(((a - Math.PI / 2) / 0.22) ** 2));
+        const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
+        i ? g.lineTo(px, py) : g.moveTo(px, py);
+      }
+      g.closePath();
+      const k = r.range(0.8, 1.1);
+      const grd = g.createRadialGradient(0, R * 0.3, 0, 0, 0, R * 1.2);
+      grd.addColorStop(0, rgb([58, 92, 40], k)); grd.addColorStop(1, rgb([34, 60, 26], k));
+      g.fillStyle = grd; g.fill();
+      g.strokeStyle = 'rgba(12,24,8,0.55)'; g.lineWidth = 1.2; g.stroke();
+      g.strokeStyle = 'rgba(190,210,160,0.35)'; g.lineWidth = 1.3;
+      for (let i = 0; i < 5; i++) {
+        const a = -Math.PI / 2 + (i - 2) * 0.75;
+        g.beginPath(); g.moveTo(0, R * 0.3); g.lineTo(Math.cos(a) * R * 0.85, Math.sin(a) * R * 0.85); g.stroke();
+      }
+      g.restore();
+    };
+    for (let i = 0; i < 7; i++) {
+      const t = 0.08 + i * 0.13, s = i % 2 ? 1 : -1;
+      const [x, y] = pts[Math.round(t * 16)];
+      const R = r.range(28, 38) * (1 - 0.25 * t);
+      const px = x + s * R * 0.95, py = y + R * 0.35;
+      stemLine([[x, y], [px, py - R * 0.35]], 1.6, 'rgb(84,74,48)');
+      ivy(px, py, R, s * r.range(0.6, 1.1) + Math.PI);
+    }
+  });
+
+  // ---- (1, 1) dry: twiggy stems from the bottom edge, shrivelled and curled leaves in
+  // straw, tan and grey-brown, a few still olive
+  inCell(1, 1, () => {
+    const ox = 256 + 128, oy = 250;
+    const DRY = [[150, 118, 72], [122, 92, 58], [172, 148, 98], [98, 76, 50], [128, 118, 72], [140, 128, 108]];
+    const twigs = [];
+    for (let i = 0; i < 6; i++) {
+      const x1 = r.range(-80, 80), y1 = -r.range(130, 225);
+      const pts = []; const bend = r.range(-30, 30);
+      for (let k = 0; k <= 8; k++) { const t = k / 8; pts.push([ox + x1 * t + bend * Math.sin(t * 3.1), oy + y1 * t]); }
+      twigs.push(pts);
+      stemLine(pts, r.range(2, 3.2), 'rgb(104,86,62)');
+    }
+    for (let i = 0; i < 26; i++) {
+      const tw = twigs[i % twigs.length], [x, y] = tw[r.int(2, 8)];
+      const c = DRY[r.int(0, DRY.length - 1)];
+      const L = r.range(16, 32), curled = r.chance(0.5);
+      leafAt(x, y, r.range(-Math.PI, Math.PI), L, L * (curled ? 0.22 : r.range(0.35, 0.5)), c, 0.2, curled ? 0.55 : 0.75);
+    }
+  });
+
+  // ---- (2, 0) geranium umbel: florets of five petals
+  g.save(); g.translate(640, 128);
   const florets = [];
   for (let i = 0; i < 34; i++) {
     const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 92;
@@ -117,13 +235,95 @@ function plantTexture() {
     g.beginPath(); g.arc(x, y, s * 0.16, 0, Math.PI * 2); g.fillStyle = 'rgba(120,120,90,0.9)'; g.fill();
   }
   g.restore();
-  g.fillStyle = 'rgb(70,100,45)'; g.fillRect(0, 236, 20, 20);
+
+  // ---- (3, 0) bougainvillea: a loose spray of papery bract triplets, thin veins, a
+  // small pale flower tube in each, gaps between the clusters
+  inCell(3, 0, () => {
+    const cl = [];
+    for (let i = 0; i < 24; i++) {
+      const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 92;
+      cl.push([896 + Math.cos(a) * d, 128 + Math.sin(a) * d * 0.9, r.range(20, 28), r.range(0, 6.28)]);
+    }
+    cl.sort((p, q) => p[1] - q[1]);
+    for (const [x, y, s, rot] of cl) {
+      for (let p = 0; p < 3; p++) {
+        const a = rot + (p / 3) * Math.PI * 2 + r.range(-0.2, 0.2);
+        g.save(); g.translate(x, y); g.rotate(a);
+        ovate(s * r.range(0.9, 1.1), s * 0.95, 0.6);
+        const c = Math.round(255 * r.range(0.78, 1));
+        const gr = g.createLinearGradient(0, 0, s, 0);
+        gr.addColorStop(0, `rgb(${c * 0.8 | 0},${c * 0.8 | 0},${c * 0.8 | 0})`); gr.addColorStop(0.6, `rgb(${c},${c},${c})`);
+        g.fillStyle = gr; g.fill();
+        g.strokeStyle = 'rgba(0,0,0,0.2)'; g.lineWidth = 1; g.stroke();
+        g.strokeStyle = 'rgba(0,0,0,0.1)';
+        for (const k of [-0.25, 0, 0.25]) { g.beginPath(); g.moveTo(2, 0); g.quadraticCurveTo(s * 0.4, s * k, s * 0.85, s * k * 0.6); g.stroke(); }
+        g.restore();
+      }
+      g.beginPath(); g.ellipse(x, y, 2.5, 5, rot, 0, Math.PI * 2); g.fillStyle = 'rgba(245,240,215,0.95)'; g.fill();
+    }
+  });
+
+  // ---- (2, 1) small trumpet flowers (surfinia, petunia, vinca): five fused lobes, a
+  // darker throat and veins running into it
+  inCell(2, 1, () => {
+    const fl = [];
+    for (let i = 0; i < 15; i++) {
+      const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 90;
+      fl.push([640 + Math.cos(a) * d, 384 + Math.sin(a) * d * 0.9, r.range(20, 29), r.range(0, 6.28)]);
+    }
+    fl.sort((p, q) => p[1] - q[1]);
+    for (const [x, y, R, rot] of fl) {
+      g.save(); g.translate(x, y); g.rotate(rot);
+      g.beginPath();
+      for (let i = 0; i <= 60; i++) {
+        const a = (i / 60) * Math.PI * 2, rr = R * (0.86 + 0.14 * Math.cos(a * 5));
+        const px = Math.cos(a) * rr, py = Math.sin(a) * rr * r.range(0.97, 1);
+        i ? g.lineTo(px, py) : g.moveTo(px, py);
+      }
+      g.closePath();
+      const c = Math.round(255 * r.range(0.82, 1));
+      const gr = g.createRadialGradient(0, 0, 0, 0, 0, R);
+      gr.addColorStop(0, `rgb(${c * 0.35 | 0},${c * 0.35 | 0},${c * 0.35 | 0})`); gr.addColorStop(0.3, `rgb(${c * 0.85 | 0},${c * 0.85 | 0},${c * 0.85 | 0})`);
+      gr.addColorStop(1, `rgb(${c},${c},${c})`);
+      g.fillStyle = gr; g.fill();
+      g.strokeStyle = 'rgba(0,0,0,0.2)'; g.lineWidth = 1; g.stroke();
+      g.strokeStyle = 'rgba(0,0,0,0.12)';
+      for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2 + 0.6; g.beginPath(); g.moveTo(0, 0); g.lineTo(Math.cos(a) * R * 0.8, Math.sin(a) * R * 0.8); g.stroke(); }
+      g.restore();
+    }
+  });
+
+  // ---- (3, 1) flower spikes (lavender, sage, bolting basil): thin stems from the bottom
+  // edge, small florets crowded along their upper part
+  inCell(3, 1, () => {
+    for (let i = 0; i < 9; i++) {
+      const x0 = 896 + r.range(-40, 40), x1 = 896 + r.range(-105, 105), y1 = 384 - r.range(70, 118);
+      const pts = []; for (let k = 0; k <= 6; k++) { const t = k / 6; pts.push([x0 + (x1 - x0) * t, 506 - (506 - y1) * t]); }
+      stemLine(pts, 2, 'rgb(170,176,160)');
+      const n = r.int(9, 14);
+      for (let k = 0; k < n; k++) {
+        const t = 1 - 0.45 * (k / n) ** 1.1, x = x0 + (x1 - x0) * t, y = 506 - (506 - y1) * t;
+        for (const s of [-1, 1]) {
+          const c = Math.round(255 * r.range(0.72, 1));
+          g.beginPath(); g.ellipse(x + s * r.range(2, 5), y + r.range(-2, 2), r.range(3.5, 5.5), r.range(2.5, 4), r.range(0, 3), 0, Math.PI * 2);
+          g.fillStyle = `rgb(${c},${c},${c})`; g.fill();
+          g.strokeStyle = 'rgba(0,0,0,0.15)'; g.lineWidth = 0.8; g.stroke();
+        }
+      }
+    }
+  });
+
+  // solid patches: stem green, twig brown
+  g.fillStyle = 'rgb(70,100,45)'; g.fillRect(0, 500, 12, 12);
+  g.fillStyle = 'rgb(96,80,60)'; g.fillRect(500, 500, 12, 12);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   return tex;
 }
-const STEM_UV = [0.02, 0.04];
+/** UV rectangle of atlas cell (cx, cy), cy = 0 the top row, inset by `px` texels. */
+const cell = (cx, cy, px = 18) => [[(cx * 256 + px) / 1024, ((1 - cy) * 256 + px) / 512], [((cx + 1) * 256 - px) / 1024, ((2 - cy) * 256 - px) / 512]];
+const STEM_UV = [6 / 1024, 6 / 512], TWIG_UV = [506 / 1024, 6 / 512];
 
 // AC atlas (512 x 512): rows 0..352 the front (fan grille, service panel), below it the
 // side louvre panel (x < 256) and the dusty top (x >= 256); an 8 x 8 white patch in the
@@ -367,10 +567,11 @@ function card(W, c, nrm, size, rot, uv0, uv1, centre, roundness = 0.6) {
   W.quad(idx[0], idx[1], idx[2], idx[3]);
 }
 
-const LEAF_UV = [[0.035, 0.07], [0.465, 0.93]], FLOWER_UV = [[0.52, 0.04], [0.98, 0.96]];
+const LEAF_UV = cell(0, 0), HERB_UV = cell(1, 0), IVY_UV = cell(0, 1), DRY_UV = cell(1, 1);
+const FLOWER_UV = cell(2, 0, 10), BRACT_UV = cell(3, 0, 10), BLOOM_UV = cell(2, 1, 10), SPIKE_UV = cell(3, 1, 10);
 
 /** Flower umbel: crossed cards (and a stem at full detail). */
-function umbel(W, r, x, y, z, s, lite) {
+function umbel(W, r, x, y, z, s, lite, uv = FLOWER_UV) {
   const ctr = new THREE.Vector3(x, y - 0.03, z), rot = r.range(0, 3.14);
   if (!lite) {
     const sw = 0.0025, y0 = Math.max(0.0, y - 0.13);
@@ -383,9 +584,160 @@ function umbel(W, r, x, y, z, s, lite) {
   const n = lite ? 2 : 3;
   for (let k = 0; k < n; k++) {
     const ang = rot + (k * Math.PI) / n;
-    card(W, [x, y, z], [Math.cos(ang), 0.45, Math.sin(ang)], s, r.range(0, 6.28), FLOWER_UV[0], FLOWER_UV[1], ctr, 0.55);
+    card(W, [x, y, z], [Math.cos(ang), 0.45, Math.sin(ang)], s, r.range(0, 6.28), uv[0], uv[1], ctr, 0.55);
   }
-  if (!lite) card(W, [x, y + 0.012, z], [0, 1, 0], s * 0.9, r.range(0, 6.28), FLOWER_UV[0], FLOWER_UV[1], ctr, 0.55);
+  if (!lite) card(W, [x, y + 0.012, z], [0, 1, 0], s * 0.9, r.range(0, 6.28), uv[0], uv[1], ctr, 0.55);
+}
+
+/** Thin flat stalk from p0 to p1 (width w), sampling a solid patch of the atlas. */
+function stalk(W, p0, p1, w, uv, face = 0) {
+  const nx = Math.cos(face), nz = Math.sin(face), tx = -nz * w / 2, tz = nx * w / 2;
+  const a = W.v(p0[0] - tx, p0[1], p0[2] - tz, nx, 0.2, nz, uv[0], uv[1]), b = W.v(p0[0] + tx, p0[1], p0[2] + tz, nx, 0.2, nz, uv[0], uv[1]);
+  const c = W.v(p1[0] + tx, p1[1], p1[2] + tz, nx, 0.2, nz, uv[0], uv[1]), d = W.v(p1[0] - tx, p1[1], p1[2] - tz, nx, 0.2, nz, uv[0], uv[1]);
+  W.quad(a, b, c, d);
+}
+
+/** An upright card whose foot stands at (x, 0, z), `s` tall, leaning out of the clump
+ *  centre by `lean` (radians), facing across the radial direction `a`. */
+function sprig(W, x, z, a, s, lean, uv, centre, y0 = 0) {
+  const rx = Math.cos(a), rz = Math.sin(a);
+  const up = Math.cos(lean), out = Math.sin(lean);
+  card(W, [x + rx * out * s * 0.47, y0 + up * s * 0.47, z + rz * out * s * 0.47], [-rz, 0.12, rx], s, -lean, uv[0], uv[1], centre, 0.45);
+}
+
+/** Herb clump (basil, mint, oregano, thyme) over L by D, origin at the soil centre:
+ *  upright sprigs leaning out of the clump, a few lying over the crown and, tinted per
+ *  instance, flower spikes (lavender, sage, bolting basil; a green tint keeps them leafy).
+ *  The light levels have fewer, larger cards (`ks`: size factors of sprigs and spikes). */
+function herb(W, r, { L = 0.26, D = 0.24, sprigs = 18, crown = 6, spikes = 5, height = 0.27, lite = 0, ks = [1, 1] }) {
+  const centre = new THREE.Vector3(0, height * 0.25, 0);
+  for (let i = 0; i < sprigs; i++) {
+    const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 0.9;
+    const x = Math.cos(a) * d * L / 2, z = Math.sin(a) * d * D / 2;
+    W.color(r.range(0.78, 1.05), r.range(0.85, 1.06), r.range(0.72, 1.0));
+    sprig(W, x, z, a, height * r.range(0.72, 1.08) * ks[0], d * 0.55 + r.range(0, 0.2), HERB_UV, centre);
+  }
+  for (let i = 0; i < crown; i++) {
+    const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 0.6;
+    W.color(r.range(0.85, 1.08), r.range(0.9, 1.1), r.range(0.78, 1.0));
+    card(W, [Math.cos(a) * d * L / 2, height * r.range(0.7, 0.9), Math.sin(a) * d * D / 2], [r.range(-0.6, 0.6), 1, r.range(-0.6, 0.6)],
+      height * 0.7 * ks[0], r.range(0, 6.28), HERB_UV[0], HERB_UV[1], centre, 0.5);
+  }
+  for (let i = 0; i < spikes; i++) {
+    const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 0.6;
+    W.color(...[1, 1, 1].map(() => r.range(0.85, 1)));
+    sprig(W, Math.cos(a) * d * L / 2, Math.sin(a) * d * D / 2, a, height * 0.75 * ks[1], d * 0.4 + r.range(-0.1, 0.15), SPIKE_UV, centre, height * 0.45);
+  }
+}
+
+/** Neglected planting over L by D: dry stalks (some snapped), shrivelled leaves on twiggy
+ *  stems, a leaf or two fallen on the soil and, tinted per instance, withered flower
+ *  heads. Sparse: the soil shows through. */
+function dry(W, r, { L = 0.26, D = 0.24, stalks = 7, tufts = 6, fallen = 2, heads = 3, height = 0.24, lite = 0, ks = [1, 1] }) {
+  const centre = new THREE.Vector3(0, height * 0.2, 0);
+  const tips = [];
+  for (let i = 0; i < stalks; i++) {
+    const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 0.7;
+    const x = Math.cos(a) * d * L / 2, z = Math.sin(a) * d * D / 2;
+    const h = height * (r.chance(0.3) ? r.range(0.25, 0.5) : r.range(0.7, 1.15)), lean = r.range(0.05, 0.5);
+    const tip = [x + Math.cos(a) * Math.sin(lean) * h, Math.cos(lean) * h, z + Math.sin(a) * Math.sin(lean) * h];
+    W.color(...[1, 0.97, 0.92].map((c) => c * r.range(0.8, 1.15)));
+    if (!lite) stalk(W, [x, 0, z], tip, 0.004, TWIG_UV, r.range(0, 6.28));
+    tips.push(tip);
+  }
+  for (let i = 0; i < tufts; i++) {
+    const a = r.range(0, Math.PI * 2), d = Math.sqrt(r.next()) * 0.85;
+    W.color(...[1, 1, 1].map(() => r.range(0.75, 1.08)));
+    sprig(W, Math.cos(a) * d * L / 2, Math.sin(a) * d * D / 2, a, height * r.range(0.55, 0.9) * ks[0], d * 0.6 + r.range(0, 0.3), DRY_UV, centre);
+  }
+  for (let i = 0; i < fallen; i++) {
+    W.color(...[1, 1, 1].map(() => r.range(0.7, 0.95)));
+    card(W, [r.range(-0.35, 0.35) * L, 0.012, r.range(-0.3, 0.3) * D], [r.range(-0.2, 0.2), 1, r.range(-0.2, 0.2)], 0.09 * ks[0], r.range(0, 6.28), DRY_UV[0], DRY_UV[1], centre, 0.1);
+  }
+  for (let i = 0; i < heads && tips.length; i++) {
+    const [x, y, z] = tips[i % tips.length];
+    umbel(W, r, x, y, z, r.range(0.05, 0.075) * ks[1], true);
+  }
+}
+
+/** Trailing planting (ivy, ivy-leaved geranium out of bloom, surfinia, pothos) over L by
+ *  D, origin at the soil centre: a low leafy mound and strands hanging over the front
+ *  (+z) edge, 0.25 - 0.85 m long, a few over the ends; tinted per instance, small trumpet
+ *  flowers dotted over it (a green tint keeps them leafy). The light levels have fewer,
+ *  larger cards (`ks`: mound, strand, flower sizes), spaced wider along the strands. */
+function trailing(W, r, { L = 0.8, D = 0.18, mound = 30, strands = 12, blooms = 12, height = 0.13, lite = 0, ks = [1, 1, 1] }) {
+  const ax = L * 0.5 + 0.02, az = D * 0.5 + 0.04;
+  const centre = new THREE.Vector3(0, -0.05, 0);
+  // strand layout first, so the detail levels (same seed, fewer strands) share it
+  const S = [];
+  for (let i = 0; i < strands; i++) {
+    // most hang over the front, a few over the ends
+    const end = i % 6 === 5 ? (r.chance(0.5) ? -1 : 1) : 0;
+    const len = r.range(0.25, 0.85) * (end ? 0.7 : 1);
+    S.push({ end, len, x0: end ? end * (L * 0.5 + 0.02) : r.range(-0.48, 0.48) * L, z0: end ? r.range(-0.3, 0.4) * D : D * 0.5 + 0.02, out: r.range(0.02, 0.08), sway: r.range(-0.1, 0.1) });
+  }
+  for (let i = 0; i < mound; i++) {
+    const a = r.range(0, Math.PI * 2), e = Math.acos(r.range(0.1, 1));
+    const sx = Math.cos(a) * Math.sin(e), sy = Math.cos(e), sz = Math.sin(a) * Math.sin(e);
+    const k = r.range(0.75, 1.05);
+    W.color(...[0.95, 1, 0.92].map((c) => c * r.range(0.72, 1.08)));
+    card(W, [sx * ax * k, 0.02 + sy * height * k, sz * az * k], [sx / ax + r.range(-2, 2), sy / height * 0.3 + r.range(-0.5, 1.5), sz / az + r.range(-2, 2)],
+      r.range(0.11, 0.15) * ks[0], r.range(0, 6.28), IVY_UV[0], IVY_UV[1], centre, 0.45);
+  }
+  const flowerAt = [];
+  for (const { end, len, x0, z0, out, sway } of S) {
+    const n = Math.max(2, Math.round(len / (lite ? 0.1 * ks[1] : 0.07)));
+    for (let j = 0; j < n; j++) {
+      const t = (j + 0.5) / n;
+      const x = x0 + (end ? end * out * Math.sin(t * 1.8) : sway * t) + r.range(-0.015, 0.015), y = 0.03 - len * t;
+      const z = z0 + (end ? sway * t : out * Math.sin(t * 1.8));
+      W.color(...[0.92, 1, 0.9].map((c) => c * r.range(0.7, 1.0)));
+      card(W, [x, y, z], end ? [end, r.range(-0.2, 0.4), r.range(-0.5, 0.5)] : [r.range(-0.5, 0.5), r.range(-0.2, 0.4), 1],
+        r.range(0.1, 0.13) * ks[1], r.range(-0.3, 0.3), IVY_UV[0], IVY_UV[1], centre, 0.3);
+      if (j === n - 1 || r.chance(0.12)) flowerAt.push([x, y, z + 0.015]);
+    }
+  }
+  for (let i = 0; i < blooms; i++) {
+    const p = i < blooms * 0.6 || !flowerAt.length
+      ? [r.range(-0.95, 0.95) * ax * 0.9, 0.03 + height * r.range(0.6, 1.05), r.range(-0.6, 0.9) * az]
+      : flowerAt[r.int(0, flowerAt.length - 1)];
+    W.color(...[1, 1, 1].map(() => r.range(0.85, 1)));
+    card(W, p, [r.range(-0.5, 0.5), r.range(0.3, 1), r.range(0.2, 1)], r.range(0.085, 0.11) * ks[2], r.range(0, 6.28), BLOOM_UV[0], BLOOM_UV[1], centre, 0.4);
+  }
+}
+
+/** Bougainvillea trained out of a box (L along x, origin at the soil centre): woody canes
+ *  arching up and over the front edge, leaves along them and, tinted per instance, masses
+ *  of papery bracts on the outer growth, the longest sprays hanging well below the box.
+ *  The light levels have fewer, larger cards (`ks`: leaves, bracts). */
+function bougainvillea(W, r, { L = 0.8, D = 0.18, canes = 7, leaves = 6, bracts = 7, lite = 0, ks = [1, 1] }) {
+  const centre = new THREE.Vector3(0, 0.15, 0.1);
+  // cane layout first, so the detail levels (same seed, fewer cards) share it
+  const C = [];
+  for (let i = 0; i < canes; i++) {
+    const x0 = r.range(-0.4, 0.4) * L, x2 = x0 + r.range(-0.35, 0.35);
+    const h = r.range(0.25, 0.55), drop = r.range(-0.05, 0.55), reach = r.range(0.15, 0.4);
+    C.push([[x0, 0, r.range(-0.3, 0.3) * D], [(x0 + x2) / 2, h * 1.6, D * 0.5 + reach * 0.4], [x2, -drop, D * 0.5 + reach]]);
+  }
+  for (const [P0, P1, P2] of C) {
+    const B = (t) => P0.map((p, k) => (1 - t) * (1 - t) * p + 2 * (1 - t) * t * P1[k] + t * t * P2[k]);
+    if (!lite) {
+      W.color(0.95, 0.9, 0.85);
+      for (let k = 0; k < 5; k++) stalk(W, B(k / 5), B((k + 1) / 5), 0.008, TWIG_UV, r.range(0, 6.28));
+    }
+    for (let j = 0; j < leaves; j++) {
+      const t = 0.12 + 0.8 * (j + r.next()) / leaves, p = B(t);
+      W.color(r.range(0.55, 0.75), r.range(0.7, 0.88), r.range(0.5, 0.7));
+      card(W, [p[0] + r.range(-0.04, 0.04), p[1] + r.range(-0.03, 0.04), p[2] + r.range(-0.04, 0.04)], [r.range(-1, 1), r.range(-0.2, 1), r.range(-0.3, 1)],
+        r.range(0.15, 0.21) * ks[0], r.range(0, 6.28), HERB_UV[0], HERB_UV[1], centre, 0.5);
+    }
+    for (let j = 0; j < bracts; j++) {
+      const t = 0.35 + 0.65 * Math.sqrt((j + r.next()) / bracts), p = B(t);
+      W.color(...[1, 1, 1].map(() => r.range(0.8, 1)));
+      card(W, [p[0] + r.range(-0.06, 0.06), p[1] + r.range(-0.04, 0.05), p[2] + r.range(-0.03, 0.06)], [r.range(-0.8, 0.8), r.range(-0.1, 0.9), r.range(0.1, 1)],
+        r.range(0.15, 0.22) * ks[1], r.range(0, 6.28), BRACT_UV[0], BRACT_UV[1], centre, 0.5);
+    }
+  }
 }
 
 /** Geranium planting over an area L (x) by D (z), origin at the soil centre: a leafy
@@ -435,6 +787,8 @@ function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 
 
 // ---------------------------------------------------------------- containers & parts
 const SOIL = [0.2, 0.15, 0.11];
+/** Soil heights of the planter box and the trough, from their foot (plants stand on it). */
+export const BOX_SOIL = 0.16, TROUGH_SOIL = 0.14;
 
 /** Box x0..x1, y0..y1, z0..z1 whose side faces shade from `bot` at the foot to `top`. */
 function gradBox(W, x0, x1, y0, y1, z0, z1, bot, top, skip = '') {
@@ -471,6 +825,33 @@ function boxTemplate() {
   gradBox(W, -0.51, 0.51, 0.146, 0.16, -0.095, 0.095, 1.0, 1.04, '');
   W.color(...SOIL);
   box(W, 0, 0.162, 0, 0.98, 0.006, 0.15, 1, 'fblrd');
+  return template(W, WHITE_UV);
+}
+
+/** Moulded plastic trough, unit length along x (scaled on write): sides tapering from
+ *  0.13 deep at the foot to 0.18 under a rolled lip 0.2 deep, 0.16 tall, the soil a
+ *  centimetre under the lip. It stands (on a sill, a coping or the balcony floor). */
+function troughTemplate() {
+  const W = new GeoWriter();
+  const xb = 0.48, zb = 0.065, xt = 0.495, zt = 0.09, h = TROUGH_SOIL + 0.004;
+  const F = (pts, n, s) => {
+    const i = pts.map((p, k) => W.v(p[0], p[1], p[2], n[0], n[1], n[2], p[0] + p[2], p[1], s[k]));
+    W.quad(i[0], i[1], i[2], i[3]);
+  };
+  const nz = new THREE.Vector3(0, zt - zb, h).normalize(), nx = new THREE.Vector3(h, xt - xb, 0).normalize();
+  const S = [0.66, 0.66, 0.95, 0.95];
+  F([[-xb, 0, zb], [xb, 0, zb], [xt, h, zt], [-xt, h, zt]], [0, nz.y, nz.z], S);
+  F([[xb, 0, -zb], [-xb, 0, -zb], [-xt, h, -zt], [xt, h, -zt]], [0, nz.y, -nz.z], S);
+  F([[xb, 0, zb], [xb, 0, -zb], [xt, h, -zt], [xt, h, zt]], [nx.x, nx.y, 0], S);
+  F([[-xb, 0, -zb], [-xb, 0, zb], [-xt, h, zt], [-xt, h, -zt]], [-nx.x, nx.y, 0], S);
+  F([[-xb, 0, -zb], [xb, 0, -zb], [xb, 0, zb], [-xb, 0, zb]], [0, -1, 0], [0.5, 0.5, 0.5, 0.5]);
+  // rolled lip: front, back and end bars
+  const y0 = h - 0.006, y1 = h + 0.016;
+  gradBox(W, -0.505, 0.505, y0, y1, zt - 0.012, zt + 0.01, 0.92, 1.04, 'd');
+  gradBox(W, -0.505, 0.505, y0, y1, -zt - 0.01, -zt + 0.012, 0.92, 1.04, 'd');
+  for (const s of [-1, 1]) gradBox(W, s > 0 ? xt - 0.012 : -xt - 0.01, s > 0 ? xt + 0.01 : -xt + 0.012, y0, y1, -zt + 0.012, zt - 0.012, 0.92, 1.04, 'dfb');
+  W.color(...SOIL);
+  F([[-xt + 0.01, TROUGH_SOIL, zt - 0.01], [xt - 0.01, TROUGH_SOIL, zt - 0.01], [xt - 0.01, TROUGH_SOIL, -zt + 0.01], [-xt + 0.01, TROUGH_SOIL, -zt + 0.01]], [0, 1, 0], [1, 1, 1, 1]);
   return template(W, WHITE_UV);
 }
 
@@ -634,35 +1015,47 @@ function flagGeometry(sx = 24, sy = 16) {
   return shared(g);
 }
 
+/** Plant families, in instance-pool order: geraniums in a pot and along a 0.8 m box,
+ *  herb and dried-out clumps (pot sized, several to a box), trailing greens / surfinia
+ *  and bougainvillea along a 0.8 m box. */
+export const PLANT = { POT: 0, BOX: 1, HERB: 2, DRY: 3, TRAIL: 4, BOUG: 5 };
+
 export function buildAttachAssets() {
-  // [detail level][pot geranium, box geranium (0.8 m, trailing)]; level 1 is the light
-  // stand-in used beyond carving distance, level 2 the far one (leaves of a few pixels):
-  // fewer cards, each kind scaled so the planting covers the same area
-  const plants = [[], [], []];
-  const r = new RNG(9001);
+  // [detail level][family]; level 1 is the light stand-in used beyond carving distance,
+  // level 2 the far one (leaves of a few pixels): fewer cards, larger where that keeps
+  // the planting's outline
+  const s2 = Math.SQRT2;
   const kinds = [
-    [{ L: 0.3, D: 0.28, leaves: 16, flowers: 9, height: 0.26 }, { L: 0.3, D: 0.28, leaves: 7, flowers: 5, height: 0.26 },
-      { L: 0.3, D: 0.28, leaves: 4, flowers: 3, height: 0.26, ks: [Math.sqrt(7 / 4), Math.sqrt(5 / 3), 1, 1] }],
-    [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
-      { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), Math.sqrt(2)] }],
+    [geranium, [{ L: 0.3, D: 0.28, leaves: 16, flowers: 9, height: 0.26 }, { L: 0.3, D: 0.28, leaves: 7, flowers: 5, height: 0.26 },
+      { L: 0.3, D: 0.28, leaves: 4, flowers: 3, height: 0.26, ks: [Math.sqrt(7 / 4), Math.sqrt(5 / 3), 1, 1] }]],
+    [geranium, [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
+      { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), s2] }]],
+    [herb, [{ sprigs: 18, crown: 6, spikes: 5 }, { sprigs: 10, crown: 4, spikes: 3, ks: [1.15, 1.1] }, { sprigs: 5, crown: 2, spikes: 2, ks: [1.3, 1.2] }]],
+    [dry, [{ stalks: 7, tufts: 6, fallen: 2, heads: 3 }, { stalks: 5, tufts: 4, fallen: 1, heads: 2, ks: [1.15, 1.1] }, { stalks: 3, tufts: 3, fallen: 0, heads: 1, ks: [1.3, 1.2] }]],
+    [trailing, [{ mound: 30, strands: 12, blooms: 12 }, { mound: 13, strands: 9, blooms: 7, ks: [1.45, 1.3, 1.25] }, { mound: 6, strands: 6, blooms: 4, ks: [2, 1.8, 1.6] }]],
+    [bougainvillea, [{ canes: 7, leaves: 6, bracts: 7 }, { canes: 7, leaves: 3, bracts: 4, ks: [1.35, 1.3] }, { canes: 5, leaves: 2, bracts: 2, ks: [1.7, 1.75] }]],
   ];
-  // (the far levels draw from a random stream of their own)
-  const rFar = new RNG(9002);
-  for (const levels of kinds) {
+  const plants = [[], [], []];
+  // (the geraniums' far levels draw from a random stream of their own; the other
+  // families build every level from the same seed, so the levels share their layout)
+  const r = new RNG(9001), rFar = new RNG(9002);
+  kinds.forEach(([fn, levels], kind) => {
     levels.forEach((opts, lvl) => {
       const W = new GeoWriter();
-      geranium(W, lvl < 2 ? r : rFar, { ...opts, lite: lvl > 0 });
+      if (kind < 2) fn(W, lvl < 2 ? r : rFar, { ...opts, lite: lvl > 0 });
+      else fn(W, new RNG(9100 + kind), { ...opts, lite: lvl });
       const g = W.toGeometry();
       g.computeBoundingSphere();
       plants[lvl].push(shared(g));
     });
-  }
-  // the detail levels of each kind, as an instance pool takes them
-  plants.levels = [0, 1].map((kind) => plants.map((lvl) => lvl[kind]));
+  });
+  // the detail levels of each family, as an instance pool takes them
+  plants.levels = kinds.map((_, kind) => plants.map((lvl) => lvl[kind]));
   const A = {
     plants,
     pot: potTemplate(),
     box: boxTemplate(),
+    trough: troughTemplate(),
     hooks: [hookTemplate(1), hookTemplate(-1)],
     acBody: acBodyTemplate(),
     acBrackets: acBracketTemplate(),
@@ -677,22 +1070,24 @@ export function buildAttachAssets() {
     flagSize: FLAG,
   };
   // shadow casters (welded positions): the AC body casts in every cascade; the small
-  // parts (pots, boxes, chairs, dishes) and the thin ones (poles, brackets, pipes) only
+  // parts (pots, boxes, troughs, chairs, dishes) and the thin ones (poles, brackets, pipes) only
   // in the fine cascades, whose texels can hold them. The planters' hook straps (2.6 cm)
   // cast nothing.
   A.cast = new Map([[A.acBody, posTemplate(A.acBody)]]);
-  A.thin = new Map([A.box, A.chair, A.towel, A.pole, A.acBrackets, A.acPipes].map((t) => [t, posTemplate(t)]));
+  A.thin = new Map([A.box, A.trough, A.chair, A.towel, A.pole, A.acBrackets, A.acPipes].map((t) => [t, posTemplate(t)]));
   // the pot's caster: a coarse cone through its foot, belly and rim (chords inside)
   const W = new GeoWriter();
   lathe(W, [[0.084, 0], [0.118, 0.186], [0.134, 0.224], [0.0001, 0.215]], 6);
   A.thin.set(A.pot, posTemplate(W));
   A.thin.set(A.dish, dishCaster());
   // the most numerous parts are instanced (module-wide pools, ironwork/instancer.js)
-  // rather than written into the merged mesh: planter boxes, their hook straps, pots and
-  // AC units (pipes and brackets dropped at range: the light level is the bare body)
+  // rather than written into the merged mesh: planter boxes and troughs, their hook
+  // straps, pots and AC units (pipes and brackets dropped at range: the light level is
+  // the bare body)
   const body = templateGeometry([A.acBody]);
   A.pooled = new Map([
     [A.box, { key: 'box', levels: [templateGeometry([A.box])] }],
+    [A.trough, { key: 'trough', levels: [templateGeometry([A.trough])] }],
     [A.hooks[0], { key: 'hook0', levels: [templateGeometry([A.hooks[0]])], cls: 'strap', thin: true }],
     [A.hooks[1], { key: 'hook1', levels: [templateGeometry([A.hooks[1]])], cls: 'strap', thin: true }],
     [A.pot, { key: 'pot', levels: [templateGeometry([A.pot])] }],

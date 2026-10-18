@@ -59,7 +59,8 @@ export function makeSlab(id, frame, rng, floorsRange = [8, 14], opts = {}) {
     solid: rng.chance(0.55),                    // solid parapets (else steel railings)
     shutters: stone || finish === 'white' ? (rng.chance(0.75) ? 'roller' : 'louvre') : (rng.chance(0.7) ? 'louvre' : 'roller'),
     roller: rng.pick(ROLLER),
-    frameColor: rng.pick(stone || finish === 'white' ? ['white', 'grey', 'brown', 'black', 'grey'] : ['darkgreen', 'brown', 'white', 'teal']),
+    // (painted or aluminium joinery: mostly light, so the frames read from afar)
+    frameColor: rng.pick(stone || finish === 'white' ? ['white', 'white', 'lightgrey', 'grey', 'brown', 'cream'] : ['darkgreen', 'brown', 'white', 'teal', 'cream']),
     shutterColor: rng.pick(['darkgreen', 'brown', 'teal', 'grey', 'white']),
     canopy: rng.chance(0.6),
     roof: floors <= 8 && rng.chance(0.3) ? 'tile' : 'flat',

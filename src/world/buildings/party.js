@@ -97,7 +97,9 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA)
           }
         }
       }
-      const face = { width, openings, courses: [], balconies: [], cornice: { y: v1 }, groundAt: () => gMin, floors: plan.floors, style: { ...plan.style, surrounds: false } };
+      // windows let into a rendered side wall later on: mostly white or light joinery
+      const frameColor = mode === 'windows' && finish === 'plaster' ? RNG.from(lot.seed, 'partyFrame', e).pick(['white', 'white', 'lightgrey', 'cream', plan.style.frameColor]) : plan.style.frameColor;
+      const face = { width, openings, courses: [], balconies: [], cornice: { y: v1 }, groundAt: () => gMin, floors: plan.floors, style: { ...plan.style, surrounds: false, frameColor } };
       const fs = new FaceShade(face, wcol, lot.seed + 7919 * (e + 1), { dirt: orn.dirt * 1.15, uncleaned: finish === 'plaster' ? (mode === 'plain' ? 0.35 : 0.2) : 0.6, sillExt: 0.13, sillH: 0.06 });
       if (openings.length) {
         if (!sinks.glass) sinks.glass = B.sink('glass');

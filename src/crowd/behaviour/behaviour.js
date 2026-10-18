@@ -33,11 +33,37 @@ export function laneTarget(c, a) {
   return tramLane(c, a, d);
 }
 
-/** While the tram is near, lane targets keep a comfortable distance from the ride track, on
- *  the side of the band the walker is already on (nobody aims across a closed band). */
+/** While a tram is near (the cab tram, an oncoming unit, or both), lane targets keep a
+ *  comfortable distance from its track, on the side of the band the walker is already on
+ *  (nobody aims across a closed band). */
 function tramLane(c, a, d) {
   const tram = c.tram;
-  if (!tram.near(a)) return d;
+  if (tram.near(a)) d = cabLane(c, a, d);
+  if (!tram.units.length) return d;
+  const U = a.uI >= 0 ? tram.unitById(a.uI) : tram.uZone(a);
+  if (!U) return d;
+  const iv = tram.keepOut(a, true);
+  if (!iv) return d;
+  const lo = iv.lo, hi = iv.hi;
+  const across = (a.d <= lo && d > lo) || (a.d >= hi && d < hi);
+  if (!across && (d >= hi || d <= lo)) return d;
+  const up = keepSide(c, a, a.uSide ? a.uSide > 0 : d >= (lo + hi) / 2);
+  return up ? hi + a.laneF * 0.35 : lo - a.laneF * 0.5;
+}
+
+/** Which side of the bands kept free for the trams person a is on (true: +d); inside them the
+ *  side being cleared to, else `pref`. */
+function keepSide(c, a, pref) {
+  const b = c.tram.keepOut(a, false);
+  if (!b) return pref;
+  if (a.d >= b.hi) return true;
+  if (a.d <= b.lo) return false;
+  if (a.clearing) return a.clearTo > a.d;
+  return pref;
+}
+
+function cabLane(c, a, d) {
+  const tram = c.tram;
   const pd = tram.passD;
   // a stroller / bicycle keeps the berth with its whole footprint
   const pdHi = pd + a.extLo, pdLo = pd + a.extHi;
@@ -67,13 +93,10 @@ function rawLane(c, a) {
   const side = a.side, map = c.map;
   const here = map.stationAt(a.s);
   a.bandW = 9;
-  // stepped up onto a platform to let the tram by: walk on along it to its end
-  if (a.platformOK && here) return TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4;
-  // alongside a platform people in the corridor stay in it (the platform is in the way)
-  if (here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25) {
-    if (a.lane === LANE.CORR) return a.laneD;
-    return -(0.7 + a.laneF * (TRACK_ZONE_HALF - 1.2));
-  }
+  // the raised platforms of a stop are the sidewalk there: nobody walks along the track bed
+  // between them (people cross it only at the platform ends)
+  const pl = platformLane(c, a, here);
+  if (pl !== null) return pl;
   if (a.lane === LANE.CORR) return a.laneD;
   const lf = a.driftT > c.time ? a.driftF : a.laneF;
   const st = here || map.stationAt(a.s + a.dir * 20);
@@ -99,6 +122,31 @@ function rawLane(c, a) {
     if (facadeSide) keep = need; else extra = Math.max(extra, need);
   }
   return side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra - keep) * lf);
+}
+
+/** A walker in the track corridor reaching a stop (or caught beside its platform by the tram)
+ *  steps up onto the platform on its side of the street and walks along it to the far end, then
+ *  back down to its lane. Returns the lane target on the platform (signed d) or null. */
+function platformLane(c, a, here) {
+  const map = c.map;
+  if (!a.platformOK) {
+    // (the cab-side step-ups to let the tram by are made in tram.js)
+    if (a.lane !== LANE.CORR && !(here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25)) return null;
+    const st = here || map.stationAt(a.s + a.dir * 9);
+    if (!st || Math.abs(c.route.delta(st.s, a.s)) > st.len / 2 + 12) return null;
+    // past its middle and walking away from it: nothing to do
+    if (!here && c.route.delta(st.s, a.s) * a.dir > 0) return null;
+    const ps = a.d > RIDE_D - BAND ? 1 : -1;
+    if (!st.platforms.some((p) => p.side === ps)) return null;
+    a.platformOK = true; a.platSt = st; a.platSide = ps;
+    c.tally('platformWalk');
+  }
+  const st = a.platSt;
+  if (!st) return here && a.d > 0 ? TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4 : null;
+  // along the platform (off it again past its far end)
+  const ds = c.route.delta(st.s, a.s);
+  if (Math.abs(ds) > st.len / 2 + 0.5 && ds * a.dir > 0) return null;
+  return (a.platSide || 1) * (TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4);
 }
 
 // ------------------------------------------------------------------ desired velocity
@@ -216,21 +264,31 @@ export function startUturn(c, a) {
   c.tally('uturn');
 }
 
-/** Group members keep a slot beside / behind their leader. The slot wanders slowly, the
- *  group goes single file where the sidewalk is narrow or a member gets stuck. */
+/** Group members keep a slot beside / behind their leader. The slot wanders slowly. The
+ *  formation follows the room the group really has (the sidewalk band, or the strip of the
+ *  corridor the trams leave free, less the people walking beside it): the loose formation,
+ *  two abreast with the others a step behind, or single file (also when a member gets stuck). */
 function follow(c, a, out) {
   const L = a.leader, t = c.time;
   // a leader committed to crossing the ride track takes the group across with it
   if (L.crossOK > t && a.crossOK < L.crossOK && Math.abs(a.d - L.d) < 3) a.crossOK = L.crossOK;
+  // a leader walking along a platform takes the group up onto it
+  if (L.platformOK && L.platSt && !a.platformOK) { a.platformOK = true; a.platSt = L.platSt; a.platSide = L.platSide; }
   const lStop = L.state === ST.STAND || L.state === ST.WAIT || L.state === ST.PLATFORM;
   let ts, td, own = false;
   if (lStop && L.task === TASK.CHAT && a.task === TASK.CHAT) { ts = a.chatS; td = a.chatD; }
   else {
     let F = a.baseF, R = a.baseR;
-    const narrow = L.bandW < (L.nFollow >= 2 ? 2.1 : 1.6) && L.state === ST.WALK;
-    if (a.singleT > t || narrow) {
-      const rank = Math.max(0, L.followers.indexOf(a));
+    const walking = L.state === ST.WALK, n = L.nFollow;
+    const W = walking ? Math.min(L.bandW, L.freeW) : 9;
+    const single = walking && W < (n >= 2 ? 1.8 : 1.4);
+    const twoOne = walking && !single && n >= 2 && W < 2.6;
+    const rank = Math.max(0, L.followers.indexOf(a));
+    if (a.singleT > t || single) {
       F = a.isChild ? -0.55 : -0.85 * (rank + 1); R = 0;
+    } else if (twoOne && rank > 0 && !a.isChild) {
+      // two abreast, the others staggered 0.6-1.2 m behind them
+      F = -(0.6 + 0.6 * ((a.wSeed & 15) / 15)) - 0.85 * (rank - 1); R = 0.3 * Math.sign(a.baseR || 1) * ((a.wSeed >> 4 & 1) ? 1 : -0.4);
     } else if (!lStop) {
       F += 0.3 * noise1(t / a.wT, a.wSeed + 3);
       R += 0.15 * noise1(t / a.wT + 17.3, a.wSeed + 5);
@@ -249,20 +307,25 @@ function follow(c, a, out) {
     }
     // keep the slot out of café / platform footprints and off the walls
     const side = td >= 0 ? 1 : -1;
-    const cl = c.map.clearOfRects(ts, side, Math.abs(td), 0.35);
-    if (cl >= 0 && !a.noRect) td = side * cl;
+    if (!a.noRect && !(a.platformOK && c.map.stationAt(ts))) {
+      const cl = c.map.clearOfRects(ts, side, Math.abs(td), 0.35);
+      if (cl >= 0) td = side * cl;
+    }
     const wall = c.map.wallAt(ts, side) - 0.1;
     if (Math.abs(td) > wall && !c.map.mouthAt(ts, side) && !a.inDoor) td = side * wall;
-    // with the tram near, nobody's slot is next to its track (or across it from this member)
-    const tram = c.tram;
-    if (tram.near(a) && !a.clearing) {
-      const dl = a.d - RIDE_D, tl = td - RIDE_D, pd = tram.passD;
-      const across = (dl <= -BAND && tl > -pd) || (dl >= BAND && tl < pd);
-      if (across || Math.abs(tl) < pd) {
-        // on the side of the band this member is on (never across it to join the leader)
-        const hi = dl > BAND ? true : dl < -BAND ? false : L.d > RIDE_D && !(c.map.stationAt(L.s) && a.kind !== KIND.PASSENGER);
-        td = hi ? RIDE_D + pd + 0.1 : RIDE_D - pd - 0.1;
-        own = true;
+    // with a tram near (the cab's, an oncoming unit, or both), nobody's slot is next to its
+    // track (or across it from this member)
+    if (!a.clearing) {
+      const iv = c.tram.keepOut(a, true);
+      if (iv) {
+        const lo = iv.lo, hi = iv.hi;
+        const across = (a.d <= lo && td > lo) || (a.d >= hi && td < hi);
+        if (across || (td > lo && td < hi)) {
+          // on the side of the band this member is on (never across it to join the leader)
+          const pref = L.d > (lo + hi) / 2 && !(c.map.stationAt(L.s) && a.kind !== KIND.PASSENGER && hi > RIDE_D + 1);
+          td = keepSide(c, a, pref) ? hi + 0.1 : lo - 0.1;
+          own = true;
+        }
       }
     }
   }

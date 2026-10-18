@@ -9,6 +9,7 @@ import { createAwningMaterial } from './facades/awnings.js';
 import { lanternTpls, signLampTpls, intercomTpl, createLampGlass, createBulbMaterial } from './facades/extras.js';
 import { buildFront } from './facades/place.js';
 import { createSpillMaterial } from './facades/spill.js';
+import { BAD_NORMALS } from './facades/geo.js';
 
 // Facade infill: windows, shopfronts, doors, shutters, signage, awnings and small wall
 // fittings for every opening of facadePlan(lot): main-street lots, side-street lots, the
@@ -97,6 +98,9 @@ const facades = {
     this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
     this.handed = new Set();        // builds handed to the streamer, until it stops listing them
     this.stats = { sync: 0, syncMs: 0, lastSync: null, prefetched: 0, prefetchMaxMs: 0, warmBuildMs: 0 };
+    // template vertices whose normal had to be rebuilt at bake time (geo.js fixNormals):
+    // a generator producing zero normals; must stay 0 (checked with debug=1)
+    Object.defineProperty(this.stats, 'badNormals', { get: () => BAD_NORMALS.count, enumerable: true });
     this.prefetchMs = 0.8;          // per-frame budget for prefetching
     this.idle = 0;                  // frames to wait before looking for work again
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
@@ -104,6 +108,7 @@ const facades = {
     await this.warmStart(app);
     // (warm includes the other start-up tasks that run while it yields)
     this.stats.initMs = { setup: Math.round(t1 - t0), warm: Math.round(performance.now() - t1) };
+    if (app.params.debug && BAD_NORMALS.count) console.warn(`[facades] ${BAD_NORMALS.count} template vertices had zero normals (repaired)`);
   },
 
   /**

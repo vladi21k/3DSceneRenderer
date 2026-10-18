@@ -60,10 +60,19 @@ vec3 transformed = vec3( position );
   vLineStyle = aRight.w;
   vec4 c0 = projectionMatrix * viewMatrix * wp;
   vec4 c1 = projectionMatrix * viewMatrix * vec4( wp.xyz + wr * 0.05, 1.0 );
+  // along the line (in the horizontal plane): pixels per metre ACROSS the line are the
+  // lateral offset's screen component perpendicular to the line's screen direction (an
+  // oblique line's lateral vector runs partly along it on screen)
+  vec3 wa = vec3( -wr.z, 0.0, wr.x );
+  vec4 c2 = projectionMatrix * viewMatrix * vec4( wp.xyz + wa * 0.05, 1.0 );
   float pxPerM = 1e4;
-  if ( c0.w > 0.05 && c1.w > 0.05 ) {
-    vec2 sd = ( c1.xy / c1.w - c0.xy / c0.w ) * 0.5 * uViewport;
-    pxPerM = max( length( sd ) / 0.05, 1e-3 );
+  if ( c0.w > 0.05 && c1.w > 0.05 && c2.w > 0.05 ) {
+    vec2 s0 = c0.xy / c0.w;
+    vec2 sd = ( c1.xy / c1.w - s0 ) * 0.5 * uViewport;
+    vec2 sa = ( c2.xy / c2.w - s0 ) * 0.5 * uViewport;
+    float la = length( sa );
+    float perp = la > 1e-3 ? abs( sd.x * sa.y - sd.y * sa.x ) / la : length( sd );
+    pxPerM = max( perp / 0.05, 1e-3 );
   }
   // pad by a pixel so the rasterized edge never cuts the analytic coverage (no stair
   // dots along thin bands), and keep at least minPx half width for sub-pixel lines
@@ -114,9 +123,23 @@ float lnFbm( vec2 p, float fp, int oct ) {
 }
 `;
 
-// Rail cross-section bands in rail-local x (+ towards the gauge side):
-// mortar | field seal | oxidised field bevel | polished head (incl. gauge corner) | groove |
-// lip | gauge seal | mortar
+// Rail cross-section bands in rail-local x (+ towards the gauge side), matching the 3D
+// profile (constants.js RAIL_PROFILE) and the finishes the rail.head texture lays out:
+// mortar | field seal | oxidised field bevel | polished running band | flange-polished
+// gauge corner | groove | dusty guard lip | gauge seal | mortar
+//
+// Footprint-aware: every band is integrated over the pixel footprint (box filter of the
+// lateral footprint w, which is measured perpendicular to the rail on screen, so oblique
+// views are exact). Bands are averaged PHYSICALLY: each band contributes its own diffuse
+// albedo (albedo × (1 - metal) × cavity AO), its own specular F0 (with the cavity's
+// specular occlusion) and its own reflection strength, and the shading model is fed those
+// sums. (Averaging albedo and metalness separately lit the partial-metal pixels at the
+// band edges diffusely: bright fringes round a dark mirror core, which stair-stepped into
+// dash trains wherever the head was a pixel or two wide.) A sub-pixel band therefore
+// shades exactly as its share of the footprint: the far rail is a pre-filtered strip
+// whose dark groove and bright head keep their weight at any distance.
+const HEAD_GC = 0.0215;      // the running band ends here, the gauge corner rounds off
+const RAIL_SPEC_ENV = 0.6;   // rail.head reflects the environment at 0.6 (library)
 const f = (v) => v.toFixed(4);
 const v3 = (a, k = 1) => `vec3( ${f(a[0] * k)}, ${f(a[1] * k)}, ${f(a[2] * k)} )`;
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
@@ -127,16 +150,18 @@ const RAIL_FRAG = /* glsl */`
   float wear = lnNoise( vec2( along * 0.35, 3.1 ) ) * 0.6 + lnNoise( vec2( along * 2.7, 7.7 ) ) * 0.4;
   float cSeal = lnCov( ${f(RAIL_X0)}, ${f(-HEAD_HALF)}, x, w ) + lnCov( ${f(LIP_OUT)}, ${f(RAIL_X1)}, x, w );
   float cCorner = lnCov( ${f(-HEAD_HALF)}, ${f(HEAD_DULL)}, x, w );
-  float cBand = lnCov( ${f(HEAD_DULL)}, ${f(HEAD_HALF)}, x, w );
+  float cBand = lnCov( ${f(HEAD_DULL)}, ${f(HEAD_GC)}, x, w );
+  float cGauge = lnCov( ${f(HEAD_GC)}, ${f(HEAD_HALF)}, x, w );
   float cGroove = lnCov( ${f(HEAD_HALF)}, ${f(GROOVE_OUT)}, x, w );
   float cLip = lnCov( ${f(GROOVE_OUT)}, ${f(LIP_OUT)}, x, w );
   float cGrout = lnCov( ${f(RAIL_X0 - GROUT_W)}, ${f(RAIL_X0)}, x, w ) + lnCov( ${f(RAIL_X1)}, ${f(RAIL_X1 + GROUT_W)}, x, w );
-  float cov = cSeal + cCorner + cBand + cGroove + cLip + cGrout;
+  float cov = cSeal + cCorner + cBand + cGauge + cGroove + cLip + cGrout;
   float fade = 1.0, core = 0.0;
   if ( vLineStyle > 0.5 ) {
     // near rails: the real rails take over once their narrowest bands (12-13 mm seals
-    // and lip) span a few pixels; further out the 3D bands would alias into dash trains
-    fade = 1.0 - smoothstep( 1.5, 3.0, 0.012 * vLine.w );
+    // and lip) span a few pixels across the rail (w is the footprint across it); further
+    // out the 3D bands would alias into dash trains
+    fade = 1.0 - smoothstep( 1.6, 3.2, 0.012 / w );
     // the 3D rail is rasterized under every pixel centre inside the rail span, so cover
     // those pixels fully (the uncovered part of their footprint is paving, filled in
     // below); otherwise the sub-pixel 3D groove and seals leak through as dotted edges
@@ -144,20 +169,35 @@ const RAIL_FRAG = /* glsl */`
   }
   float alpha = mix( cov, 1.0, core ) * fade;
   if ( alpha < 0.002 ) discard;
-  // effective albedos of the 3D rail (materials × cavity AO), so the hand-over is seamless
-  vec3 aSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.88)};               // bitumen seal
-  vec3 aCorner = vec3( 0.2, 0.15, 0.11 ) * ( 0.85 + 0.3 * wear );  // oxidised field bevel
-  vec3 aBand = vec3( 0.60 ) * ( 0.9 + 0.12 * wear );
-  vec3 aGroove = vec3( 0.04, 0.036, 0.03 );                         // grit-filled slot (grit floor, dark walls)
-  vec3 aLip = vec3( 0.3, 0.29, 0.275 ) * ( 0.9 + 0.14 * wear );    // dusty guard lip
-  vec3 aGrout = ${v3(MORTAR_ALBEDO, 0.95)};                          // mortar bed
-  vec3 aPave = vec3( 0.135, 0.136, 0.14 );                          // brake-dusted setts beside it
   float cPave = core * max( 0.0, 1.0 - cov );
   float inv = 1.0 / max( cov + cPave, 1e-4 );
-  float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
-  diffuseColor.rgb = aSeal * wSeal + aCorner * wCorner + aBand * wBand + aGroove * wGroove + aLip * wLip + aPave * wPave + aGrout * wGrout;
-  lnMetal = wCorner * 0.6 + wBand + wLip * 0.85;
-  lnRough = wSeal * 0.85 + wCorner * 0.6 + wBand * ( 0.17 + 0.08 * wear ) + wGroove * 0.75 + wLip * 0.62 + wPave * 0.7 + wGrout * 0.9;
+  // per band: diffuse albedo (incl. cavity AO), specular F0, roughness; the steel kinds
+  // (rail.head) reflect the environment at RAIL_SPEC_ENV
+  float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wGauge = cGauge * inv;
+  float wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
+  vec3 dSeal = ${v3(MORTAR_ALBEDO, SEAL_TONE * 0.86)};                       // bitumen seal
+  vec3 aOx = vec3( 0.15, 0.115, 0.085 ) * ( 0.85 + 0.3 * wear );          // oxide bevel, metal 0.4
+  vec3 aBand = vec3( 0.5, 0.495, 0.485 ) * ( 0.94 + 0.1 * wear );         // satin running band, metal 1
+  vec3 aGauge = vec3( 0.46, 0.45, 0.44 );                                  // flange-polished corner
+  vec3 aDust = vec3( 0.16, 0.145, 0.125 ) * ( 0.9 + 0.2 * wear );         // dusty guard lip, metal 0.4
+  // the flangeway: grime and grit (albedo ~0.03) deep in a 36 mm slot, so its walls and
+  // floor see little sky and, mostly, no sun (cavity AO ~0.3) and reflect almost nothing
+  vec3 dGroove = vec3( 0.018, 0.0158, 0.0134 );
+  vec3 dGrout = ${v3(MORTAR_ALBEDO, 0.95)};                                  // mortar bed
+  vec3 dPave = vec3( 0.135, 0.136, 0.14 );                                  // brake-dusted setts beside it
+  vec3 f04 = vec3( 0.04 );
+  lnD = dSeal * wSeal + aOx * ( 0.6 * wCorner ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
+  vec3 fOx = mix( f04, aOx, 0.4 ), fDust = mix( f04, aDust, 0.4 ) * 0.97;
+  vec3 fSteel = fOx * wCorner + aBand * wBand + aGauge * ( 0.95 * wGauge ) + fDust * wLip;
+  vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.08 * wGroove );
+  lnF = fSteel + fOther;
+  lnF90 = 1.0 - 0.92 * wGroove;               // the slot's walls hide its grazing sheen
+  // reflection strength relative to the direct specular (steel at RAIL_SPEC_ENV)
+  float fs = dot( fSteel, vec3( 0.333 ) ), fo = dot( fOther, vec3( 0.333 ) );
+  lnEnvK = ( fs * ${f(RAIL_SPEC_ENV)} + fo ) / max( fs + fo, 1e-5 );
+  lnPhys = 1.0;
+  lnRough = wSeal * 0.85 + wCorner * 0.64 + wBand * ( 0.36 + 0.12 * wear ) + wGauge * 0.36 + wGroove * 0.85 + wLip * 0.7 + wPave * 0.7 + wGrout * 0.9;
+  diffuseColor.rgb = lnD;
   diffuseColor.a = clamp( alpha, 0.0, 1.0 );
 }
 `;
@@ -300,6 +340,9 @@ const ASPHALT_FRAG = /* glsl */`
 // pixel footprints are taken before the style branch (derivatives in uniform control flow)
 const LINE_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
+// rails: physically averaged bands (diffuse contribution, F0, reflection strength)
+vec3 lnD = vec3( 0.0 ), lnF = vec3( 0.04 );
+float lnF90 = 1.0, lnEnvK = 1.0, lnPhys = 0.0;
 float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
 float wu = max( length( vec2( dFdx( vLine.y ), dFdy( vLine.y ) ) ), 1e-5 );
 float fpw = max( length( fwidth( vLineWorld.xz ) ), 1e-4 );     // metres per pixel
@@ -323,9 +366,16 @@ export function createLineMaterial() {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\n${FRAG_PARS}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${LINE_FRAG}`)
-      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nroughnessFactor = lnRough;\nmetalnessFactor = lnMetal;');
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nroughnessFactor = lnRough;\nmetalnessFactor = lnMetal;')
+      .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
+if ( lnPhys > 0.5 ) {
+  material.diffuseContribution = lnD;
+  material.specularColorBlended = lnF;
+  material.specularF90 = lnF90;
+}`)
+      .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-3';
+  m.customProgramCacheKey = () => 'street-line-4';
   return patchCanyon(m, 'line');
 }
 

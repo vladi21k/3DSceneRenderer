@@ -14,9 +14,10 @@ import { U } from '../../core/uniforms.js';
 // maps cannot resolve that (they turn every card into a blocker and darken whole tiers),
 // so the two parts are separated:
 //   * external shadow: the leaf's shadow-map lookup point is moved along the ray towards
-//     the sun to where it leaves the crown (the move is along the shadow camera's axis, so
-//     the lookup stays in the same cascade texel). Buildings, poles and other trees still
-//     shadow it; its own crown does not;
+//     the sun, half the way to where it leaves the crown (the move is along the shadow
+//     camera's axis, so the lookup stays in the same cascade texel). Buildings, poles and
+//     other trees shadow it, and so do the outer leaves of its own crown for the leaves in
+//     its inner half (dappled shade inside, no darkened tiers on the shell);
 //   * self shadow: the path length through the crown sphere towards the sun, as
 //     transmittance exp(-density * path), dithered per card into sun flecks.
 // Sky light is occluded the same way: a leaf sees the sky through the crown above it and
@@ -25,7 +26,7 @@ import { U } from '../../core/uniforms.js';
 // in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):
-// a fraction (uLeafTrans, ~0.45) of what the lit face would show, a little more looking
+// a fraction (uLeafTrans, ~0.32) of what the lit face would show, a little more looking
 // into the light and on the thin outer shell (rim-lit edges), and through the crown like
 // the direct term. Sky light from the far side passes through the same way.
 //
@@ -51,7 +52,7 @@ import { U } from '../../core/uniforms.js';
 const LIGHT_CAP = 8.0;
 const LAMP_CAP = 14.0;
 const LAMP_TRANS = 0.3;
-const SUN_MULTI = 0.3;   // share of the sunlight stopped by a crown that lights its inner leaves
+const SUN_MULTI = 0.2;   // share of the sunlight stopped by a crown that lights its inner leaves
 
 const WIND_PARS = /* glsl */`
 invariant gl_Position;
@@ -156,7 +157,7 @@ function rep(src, from, to, what) {
 
 /** Leaf material: shared by every tree, shrub and flower card. */
 function patchLeaf(mat, params) {
-  chain(mat, 'veg-leaf-v3', (shader) => {
+  chain(mat, 'veg-leaf-v4', (shader) => {
     windUniforms(shader, params);
     shader.uniforms.uLeafTrans = params.trans;
     shader.uniforms.uLeafSpec = params.spec;
@@ -231,7 +232,10 @@ function patchLeaf(mat, params) {
       float vegSkyE = 0.0;  // luminance of the sky irradiance on a level surface (set before the lights)`, 'leaf frag common');
     fs = rep(fs, '#include <map_fragment>', /* glsl */`
       #ifdef USE_MAP
-        vec4 vegTex = texture2D( map, vMapUv );  // straight sRGB colour, decoded by the sampler
+        // straight sRGB colour, decoded by the sampler. The lookups are biased half a mip
+        // level coarser: the coverage-preserving mips keep the leaf density, while the leaf
+        // pattern stays a little above pixel size, so it does not crawl when the cards move
+        vec4 vegTex = texture2D( map, vMapUv, 0.5 );
         // coverage: sharpened around 0.5 (crisp, anti-aliased edges with alpha-to-coverage).
         // Cards seen nearly edge-on show their clump foreshortened: the leaves thin out
         // instead of smearing into streaks.
@@ -264,7 +268,7 @@ function patchLeaf(mat, params) {
       .replace('float faceDirection = gl_FrontFacing ? 1.0 : - 1.0;', 'float faceDirection = 1.0;'), 'leaf normal begin');
     fs = rep(fs, '#include <normal_fragment_maps>', /* glsl */`
       #ifdef USE_NORMALMAP_TANGENTSPACE
-        vec4 vegNm = texture2D( normalMap, vNormalMapUv );  // normal x, y + gloss
+        vec4 vegNm = texture2D( normalMap, vNormalMapUv, 0.5 );  // normal x, y + gloss (biased as the colour)
         vec3 mapN = vec3( vegNm.xy * 2.0 - 1.0, 0.0 );
         mapN.z = sqrt( saturate( 1.0 - dot( mapN.xy, mapN.xy ) ) );
         mapN.xy *= normalScale;
@@ -349,7 +353,7 @@ function patchLeaf(mat, params) {
         #endif
         // the sky light the crown hides reaches the leaf partly after scattering in other
         // leaves (reflected and transmitted, about twice the leaf albedo): green, not lost
-        reflectedLight.indirectDiffuse *= vVegAO + ( 1.0 - vVegAO ) * min( vec3( 1.0 ), 2.0 * diffuseColor.rgb );
+        reflectedLight.indirectDiffuse *= vVegAO + ( 1.0 - vVegAO ) * min( vec3( 1.0 ), 1.4 * diffuseColor.rgb );
         #ifdef VEG_DEBUG
           // debug view (URL vegdbg=1..4): one lighting term only
           vec3 vegDbg = VEG_DEBUG == 1 ? reflectedLight.directDiffuse : VEG_DEBUG == 2 ? reflectedLight.directSpecular
@@ -471,12 +475,13 @@ export function createVegMaterials(app, atlas) {
   const M = app.materials;
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
-    trans: { value: 0.45 },     // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.4, 0.45) },  // sky occlusion by the crown: extinction (1/m), floor
+    trans: { value: 0.32 },     // leaf transmission: share of the lit face's radiance passed through
+    sky: { value: new THREE.Vector2(0.6, 0.3) },   // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.5 },       // share of the direct specular kept
     a2c: { value: 0 },
-    density: { value: 0.55 },   // crown extinction (1/m): exp(-0.55 * 2 m) ~ 0.33 through a young crown
-    shift: { value: 1 },        // shadow lookup moved out of the crown along the sun ray (0 = off, debug)
+    density: { value: 0.75 },   // crown extinction (1/m): exp(-0.75 * 2 m) ~ 0.22 through a young crown
+    shift: { value: 0.5 },      // shadow lookup moved this share of the way out of the crown along the sun
+                                // ray: the inner half of a crown receives its outer leaves' shadow
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
     holes: { value: 0.3 },      // share of the leaf cards that cast no shadow (sun flecks)
     // per-light caps in units of the sky's irradiance: transmission + specular of any

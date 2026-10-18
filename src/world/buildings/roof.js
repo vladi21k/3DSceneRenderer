@@ -1,6 +1,9 @@
-import { FACES } from './mesh.js';
+import { FACES, glassTone } from './mesh.js';
 
 // Parapets, roofs and rooftop equipment.
+
+// collector glazing: the dark blue-black absorber seen through the glass
+const HEATER_GLASS = glassTone([0.03, 0.034, 0.045]);
 
 /** Solid parapet section profile (closed loop): front face, coping, back face. */
 export function parapetProfile(h, t = 0.3) {
@@ -252,7 +255,7 @@ export function solarHeater(B, sinks, frameYaw, q, rng, stand = 0, n = rng.chanc
     const a = -totalW / 2 + i * (panelW + 0.06), b = a + panelW;
     const wf = run / 2, wb = -run / 2, vf = foot, vb = foot + rise, th = 0.09;
     // glazing (top surface): dark blue-black absorber seen through the glass
-    B.flat = sinks.glass ? [1, 1, 1] : [0.07, 0.08, 0.1];
+    B.flat = sinks.glass ? HEATER_GLASS : [0.07, 0.08, 0.1];
     B._quad4(sG, a, vf + th * c, wf + th * sn, b, vf + th * c, wf + th * sn, b, vb + th * c, wb + th * sn, a, vb + th * c, wb + th * sn, 0, c, sn);
     // aluminium casing sides and underside
     B.flat = [0.85, 0.86, 0.88];

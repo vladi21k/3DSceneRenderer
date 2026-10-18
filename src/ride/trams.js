@@ -75,14 +75,16 @@ const trams = {
     // own materials (trams/materials.js): clear-coated metallic silver paint, flush tinted
     // glazing with black frit, the cab front glass and the pantograph paint
     const interior = new THREE.Color(0.03, 0.033, 0.036);       // the saloon seen through the tint
+    this.gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
     this.mats = {
       body: M.track(makeBodyMaterial()),
       glass: M.track(makeGlassMaterial('trams.glass', interior, true)),
       ws: M.track(makeGlassMaterial('trams.glassLow', interior, false)),
-      front: M.track(makeFrontMaterial()),
+      // cab front glass: the leading cab has its driver at the controls, the trailing one is empty
+      front: M.track(makeFrontMaterial({ driver: true, gain: this.gain })),
+      frontTrail: M.track(makeFrontMaterial({ driver: false, gain: this.gain })),
       metal: M.track(makeMetalMaterial()),
     };
-    this.gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
 
     const atlases = UNITS.map((u) => makeLampAtlas(u.line, u.dest));
     this.models = buildModels(atlases[0]);           // the atlases share their layout
@@ -149,7 +151,7 @@ const trams = {
         const lg = new THREE.Group();
         lg.matrixAutoUpdate = false;
         lg.name = `trams:${kind}:lod${lod}`;
-        const parts = [['body', mats.body], ['glass', mats.glass], ['ws', mats.ws], ['front', mats.front], ['metal', mats.metal],
+        const parts = [['body', mats.body], ['glass', mats.glass], ['ws', mats.ws], ['front', kind === 'trail' ? mats.frontTrail : mats.front], ['metal', mats.metal],
           [kind === 'lead' ? 'lampLead' : kind === 'mid' ? 'lampMid' : 'lampTrail', lamp]];
         for (const [k, mat] of parts) {
           const geo = m[k];

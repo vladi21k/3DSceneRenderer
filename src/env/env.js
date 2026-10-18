@@ -34,24 +34,51 @@ const _tc = new THREE.Vector3();
 // Weather regimes (one per world seed; URL sky= picks one): a pale dust haze with faint
 // cirrus, high cirrus streaks over altocumulus patches and a few small cumulus, or a
 // field of small flat-based cumulus. cover/scale/top shape the volumetric cumulus.
+// mie: aerosol load (x the clean reference atmosphere); haze: street-level dust haze
+// (extinction and in-scatter scale for post's aerial perspective)
 const WEATHER = {
-  streaks: { cover: 0.3, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5 },
-  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0 },
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0 },
+  streaks: { cover: 0.3, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 12, haze: { ext: 1, inscatter: 1 } },
+  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 12, haze: { ext: 1, inscatter: 1 } },
+  // a pale dust haze: the sky milky and nearly white towards the horizon, far facades
+  // losing most of their contrast
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 32, haze: { ext: 1.4, inscatter: 1.2 } },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.27, 0.26, 0.245];
 // canyon bounce: the share of the interreflection the environment map's single capture
-// point misses (its canyon model already holds the sunlit facades and floor), as view
-// factors of the walls seen from the floor (up) and of the floor and walls from below (down)
-const BOUNCE = { up: 0.15, down: 0.2 };
+// point misses (its canyon model already holds the sunlit facades and floor): the
+// sunlit walls seen from the floor (up), the sunlit floor seen from below (down), and the
+// sunlit facade seen from the opposite one (cross; a horizontal light, so a shadow on the
+// sunlit facade itself gets none of its own warm bounce)
+const BOUNCE = { up: 0.08, down: 0.2, cross: 0.22 };
+// exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
+// (sunny-16 with a touch of lift) while Eh is above EH_FULL; below it the camera adapts
+// only partly (dusk stays darker than midday)
+const KDAY = 1.3, EH_FULL = 1.9;
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
-// exposed value of the horizon slot down the street the camera holds once the sun is low
-// (sunset onwards; ~4.5 stops over mid grey, which post's highlight recovery brings down to
-// the shoulder with its colour), by time of day
-const HORIZON_LEVEL = [[0.6, 64], [0.8, 4.5]];
+// exposed value of the horizon slot down the street the camera holds (time of day, level):
+// from mid-afternoon, looking towards the sun, the bright sky slot stays ~2.6 stops over
+// mid grey; from sunset on ~4.5 stops (post's highlight recovery brings both down to the
+// shoulder with their colour). Interpolated in log terms; 64 = no hold.
+const HORIZON_LEVEL = [[0.1, 64], [0.2, 1.09], [0.6, 1.09], [0.8, 4.5], [1.0, 4.5]];
+// from sunset on, the metered exposure stays within this factor of the nominal one, so
+// a view away from the afterglow does not open up to a grey midday
+const DUSK_CEIL = 1.5;
+
+/** HORIZON_LEVEL at time of day t (log interpolation). */
+function horizonLevel(t) {
+  const T = HORIZON_LEVEL;
+  if (t <= T[0][0]) return T[0][1];
+  for (let i = 1; i < T.length; i++) {
+    if (t <= T[i][0]) {
+      const k = THREE.MathUtils.smoothstep(t, T[i - 1][0], T[i][0]);
+      return Math.exp(THREE.MathUtils.lerp(Math.log(T[i - 1][1]), Math.log(T[i][1]), k));
+    }
+  }
+  return T[T.length - 1][1];
+}
 
 /** Sky irradiance on a horizontal surface (scene units), clear sky, sun elevation e (rad). */
 function skyIrradiance(e) {
@@ -85,17 +112,21 @@ const env = {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
-    // a hazy, dusty Mediterranean summer afternoon: ~12x the aerosol of the clean
-    // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue
-    // sky, a milky horizon, deep blue only overhead); URL mie= overrides it
-    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', 12) });
-    this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
-    scene.add(this.sky.mesh);
-    this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
+    // weather regime: one per world seed, URL sky= picks one
     const names = Object.keys(WEATHER);
     const pick = app.params.raw?.get?.('sky');
     this.weather = WEATHER[pick] ? pick : names[(Math.imul(app.params.seed | 0, 2654435761) >>> 0) % names.length];
-    const w = WEATHER[this.weather], su = this.sky.uniforms;
+    const w = WEATHER[this.weather];
+    this.hazeBoost = w.haze;
+    // a hazy, dusty Mediterranean summer afternoon: ~12x the aerosol of the clean
+    // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue
+    // sky, a milky horizon, deep blue only overhead), more on a hazy day; URL mie=
+    // overrides it
+    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', w.mie) });
+    this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
+    scene.add(this.sky.mesh);
+    this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
+    const su = this.sky.uniforms;
     su.uCloudCover.value = w.cover; su.uCloudScale.value = w.scale; su.uCloudTop.value = w.top;
     su.uCirrus.value = w.cirrus; su.uAltocu.value = w.altocu;
     scene.background = null;
@@ -133,6 +164,12 @@ const env = {
     this.bounce.name = 'canyonBounce';
     this.bounce.position.set(0, 1, 0);
     scene.add(this.bounce);
+    // and across the street: the sunlit facade relighting the one opposite (a horizontal
+    // light from the sunlit side; dark when no facade is in the sun)
+    this.crossBounce = new THREE.DirectionalLight(0x000000, 1);
+    this.crossBounce.name = 'canyonCrossBounce';
+    this.crossBounce.castShadow = false;
+    scene.add(this.crossBounce, this.crossBounce.target);
 
     // avenue frame used to orient the sun path
     const ref = app.route.sample(app.layout.defaultStartS);
@@ -296,9 +333,14 @@ const env = {
     }
     this.skyIrradianceH = Esky;
     const Eh = Math.max(this.sunIlluminance * Math.max(this.state.sunDir.y, 0), 0) + Esky;
+    this.Eh = Eh;
+    // full adaptation to the incident light above EH_FULL (a 0.18 albedo exposed to 0.18
+    // KDAY, so sunlit grey granite sits just above mid grey), partial below it, and less
+    // still below ~1000 lux
     const EK = 0.03; // ~1000 lux
-    const lnE = 0.7 * Math.log(3.1 / Math.max(Eh, EK)) + 0.5 * Math.log(EK / Math.min(Math.max(Eh, 1e-7), EK));
-    this.exposureBase = 1.6 * Math.exp(lnE);
+    const lnE = Math.log(KDAY * Math.PI / Math.max(Eh, EH_FULL)) + 0.7 * Math.log(EH_FULL / Math.min(Math.max(Eh, EK), EH_FULL))
+      + 0.5 * Math.log(EK / Math.min(Math.max(Eh, 1e-7), EK));
+    this.exposureBase = Math.exp(lnE);
     // highlight protection for a low sun: whatever the metering does for the shaded
     // canyon, stone facing the sun (albedo ~0.55) stays on the shoulder, so the golden
     // light keeps its colour instead of clipping to cream (half-way in log terms: the
@@ -324,7 +366,10 @@ const env = {
    * held below the shoulder, so the afterglow keeps its colour however dark the canyon.
    */
   _applyCaps() {
-    this.exposureMax = Math.min(this._litCap ?? 1e4, this._horizonCap());
+    // from sunset on, a view-independent ceiling as well
+    const dusk = THREE.MathUtils.smoothstep(this.state.t, 0.62, 0.72);
+    const ceil = dusk > 0 ? Math.exp(THREE.MathUtils.lerp(Math.log(1e4), Math.log(DUSK_CEIL * this.exposureBase), dusk)) : 1e4;
+    this.exposureMax = Math.min(this._litCap ?? 1e4, this._horizonCap(), ceil);
     this.exposure = Math.min(this.exposureBase, this.exposureMax);
     if (this._noPost && this.app) this.app.renderer.toneMappingExposure = this.exposure;
   },
@@ -333,16 +378,14 @@ const env = {
   _horizonCap() {
     const irr = this.sky.irradiance, cam = this.app && this.app.camera;
     if (!irr || !cam || !irr.horizonSun) return 1e4;
-    const [[t0, l0], [t1, l1]] = HORIZON_LEVEL;
-    const k = THREE.MathUtils.smoothstep(this.state.t, t0, t1);
-    if (k <= 0) return 1e4;
+    const level = horizonLevel(this.state.t);
+    if (level >= 63.9) return 1e4;
     const d = this.state.sunDir;
     cam.getWorldDirection(_fwd);
     const h = Math.hypot(_fwd.x, _fwd.z), hs = Math.hypot(d.x, d.z);
     const c = h > 1e-4 && hs > 1e-4 ? (_fwd.x * d.x + _fwd.z * d.z) / (h * hs) : 0;
     const w = Math.pow(0.5 + 0.5 * c, 2);
     const slot = THREE.MathUtils.lerp(lum(irr.horizonAnti), lum(irr.horizonSun), w);
-    const level = Math.exp(THREE.MathUtils.lerp(Math.log(l0), Math.log(l1), k));
     return level / Math.max(slot, 1e-9);
   },
 
@@ -382,17 +425,29 @@ const env = {
     hz.amb.lerp(_es2.set(La * 1.07, La, La * 0.88), 0.2 * sunUp);
     // canyon bounce: mean irradiance of the sun-facing facade and of the floor, reflected
     // with the stone and paving albedo through the view factors of a ~1:1 street canyon
-    const bu = this.bounce;
+    const bu = this.bounce, cb = this.crossBounce;
     if (bu) {
-      const up = [0, 0, 0], dn = [0, 0, 0];
+      const up = [0, 0, 0], dn = [0, 0, 0], cr = [0, 0, 0];
       for (let i = 0; i < 3; i++) {
         const k = c[i];
         const Ew = Es[k] * cw * litWall, Ef = Es[k] * sy * floorLit;
         up[i] = BOUNCE.up * WALL_ALB[i] * Ew;
-        dn[i] = BOUNCE.down * (GROUND_ALB[i] * Ef + 0.5 * WALL_ALB[i] * Ew);
+        dn[i] = BOUNCE.down * GROUND_ALB[i] * Ef;
+        cr[i] = BOUNCE.cross * WALL_ALB[i] * Ew;
       }
       bu.color.setRGB(up[0], up[1], up[2]);
       bu.groundColor.setRGB(dn[0], dn[1], dn[2]);
+      if (cb) {
+        // the sun-facing facade is the one whose normal points towards the sun's side:
+        // its light travels away from it, across the street
+        const side = across >= 0 ? 1 : -1;
+        cb.color.setRGB(cr[0], cr[1], cr[2]);
+        const cp = app.camera.position;
+        cb.position.set(cp.x - side * R.x, cp.y, cp.z - side * R.z);
+        cb.target.position.copy(cp);
+        cb.target.updateMatrixWorld();
+        cb.updateMatrixWorld();
+      }
     }
     // shadow plane in world space: f(p) = dot(p, n) + w
     if (d.y > 0.002) {

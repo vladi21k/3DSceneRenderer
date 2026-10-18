@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import * as S from './postShaders.js';
 
-// Post-processing: HDR scene (HalfFloat, MSAA) → half-res SSAO → half-res volumetric
-// clouds → scene prepass (clouds over the sky, AO, aerial perspective, heat shimmer,
-// dusk airlight, circle of confusion; NaN / Inf scrubbed and the range clamped) →
-// depth-of-field gather → camera motion blur → bloom pyramid → metered exposure →
-// lens, in-camera sharpening, white balance, camera tone curve (AgX colour), grain.
+// Post-processing: HDR scene (HalfFloat, MSAA, sub-pixel jitter) → half-res SSAO →
+// half-res volumetric clouds → scene prepass (clouds over the sky, AO, aerial
+// perspective, heat shimmer, dusk airlight, circle of confusion; broken pixels filled
+// and the range clamped) → temporal anti-aliasing → depth-of-field gather → camera
+// motion blur → bloom pyramid → metered exposure → lens, in-camera sharpening, white
+// balance, camera tone curve (AgX colour), grain.
 // Contract in docs/ARCHITECTURE.md: render(dt, app), setSize(w, h).
 
 const QUALITY = {
@@ -43,22 +44,45 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 // Camera response (final pass). curve: display value of a scene luminance, a generalised
 // logistic in stops from mid grey fitted to a camera JPEG's long toe and soft shoulder
 // (−5 stops → 0.03, −3 → 0.10, −2 → 0.18, 0 → 0.47, +2 → 0.85, +3 → 0.98, white at
-// +3.5); chroma: AgX's colour (0) .. the scene's ratios (1).
-// Auto exposure: the metered log-average is pulled towards `target` with strength `meter`.
+// +3.5); chroma: AgX's colour (0) .. the scene's ratios (1), day .. low sun.
+// Auto exposure: the metered log-average is pulled towards `target` with strength `meter`,
+// within `clamp`; by day the exposure follows the incident light (sunny-16) and the meter
+// only nudges it, from the low sun on the camera meters the scene: [day, evening].
 // bloom: share of the blurred pyramid (glare around bright things), day .. night.
 // veil: share of the frame's mean light the lens spreads evenly (lifts the blacks), plus
 // `veilSun` of the sun's illuminance when it shines on the lens from just outside the frame.
 const TONE = {
-  curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.5, 0.9],
-  meter: 0.6, target: 0.34, clamp: [0.5, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.4,
-  veil: 0.006, veilSun: 0.004,
-  // highlight recovery from golden hour on: knee (stops over mid grey) and the log slope
-  // above it at golden hour, sunset and dusk
-  hiKnee: 1.2, hiSlope: [0.62, 0.38, 0.6],
+  curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.7, 0.9],
+  meter: [0.3, 0.6], target: [0.15, 0.34], backlit: 0.7,
+  clampLo: [0.75, 0.5], clampHi: [1.3, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.45,
+  veil: 0.006, veilSun: 0.0012,
+  // highlight recovery: knee (stops over mid grey) and the log slope above it (time of
+  // day, slope): none at midday, then a phone camera's highlight tone mapping as the sun
+  // lowers and the sky outshines the street
+  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.42], [0.8, 0.34], [0.9, 0.38], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
   // just above mid grey), easing off towards golden hour
   midday: 1.14, pivot: 0.4,
+  // colour saturation in the AgX look: day, dusk
+  sat: [1.16, 1.08],
 };
+
+// temporal AA: weight of the new frame, variance clip width, jitter sequence length
+const TAA = { alpha: 0.1, gamma: 1.0, n: 16 };
+const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
+const JITTER = Array.from({ length: TAA.n }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
+
+/** Piecewise-linear table lookup ([[x, y], ...], x ascending). */
+function table(T, x) {
+  if (x <= T[0][0]) return T[0][1];
+  for (let i = 1; i < T.length; i++) {
+    if (x <= T[i][0]) {
+      const k = THREE.MathUtils.smoothstep(x, T[i - 1][0], T[i][0]);
+      return T[i - 1][1] + (T[i][1] - T[i - 1][1]) * k;
+    }
+  }
+  return T[T.length - 1][1];
+}
 
 // Street-level dust haze: extinction per metre (rgb), nearly grey (coarse dust).
 const HAZE_EXT = [1.05e-3, 1.12e-3, 1.22e-3];
@@ -70,6 +94,7 @@ const _sv = new THREE.Vector3();
 const _vp = new THREE.Matrix4();
 const _p0 = new THREE.Vector3();
 const _p1 = new THREE.Vector3();
+const _m4 = new THREE.Matrix4();
 
 function target(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
@@ -200,6 +225,24 @@ const post = {
       uSunUV: { value: new THREE.Vector2() }, uSunR: { value: new THREE.Vector2() }, uFade: { value: 0 },
     });
     this.sunVisRT = target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    this.taa = pass(S.TAA_FS, {
+      ...camU, tCur: { value: null }, tHist: { value: null }, tDepth: { value: null },
+      uCamWorld: { value: new THREE.Matrix4() }, uPrevVP: { value: new THREE.Matrix4() },
+      uResolution: { value: new THREE.Vector2(1, 1) }, uJitter: { value: new THREE.Vector2() },
+      uAlpha: { value: 1 }, uGamma: { value: TAA.gamma }, uExpo: { value: 1 },
+    });
+    this.taaOn = q.taa !== false && app.params.raw.get('taa') !== '0';
+    this.taaPing = 0;
+    this.taaFrame = 0;
+    this.prevVP = new THREE.Matrix4();
+    this.prevCamPos = new THREE.Vector3();
+    this.prevFov = 0;
+    this.taaValid = false;
+    this.jitter = new THREE.Vector2();
+    // debug=1: count of broken (non-finite / negative) scene pixels, in stats()
+    this.debug = app.params.raw.get('debug') === '1';
+    this.badPixels = 0;
+    if (this.debug) this.badPass = pass(S.BADPIX_FS, { tScene: { value: null }, uSize: { value: new THREE.Vector2() } });
     this.dof = pass(S.DOF_FS, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.blur = pass(S.MBLUR_FS, {
       ...camU, tSrc: { value: null }, tDepth: { value: null },
@@ -212,12 +255,12 @@ const post = {
     this.lum = pass(S.LUM_FS, { tSmall: { value: null }, tPrev: { value: null }, uSize: { value: new THREE.Vector2() }, uRate: { value: 1 } });
     this.final = pass(S.FINAL_FS, {
       tHDR: { value: null }, tBloom: { value: null }, tLum: { value: null },
-      uExposure: { value: 1 }, uExposureMax: { value: 1e4 }, uAutoExp: { value: TONE.meter }, uMeterTarget: { value: TONE.target },
-      uMeterClamp: { value: new THREE.Vector2(...TONE.clamp) }, uBloom: { value: TONE.bloom[0] },
+      uExposure: { value: 1 }, uExposureMax: { value: 1e4 }, uAutoExp: { value: TONE.meter[0] }, uMeterTarget: { value: TONE.target[0] },
+      uMeterClamp: { value: new THREE.Vector2(TONE.clampLo[0], TONE.clampHi[0]) }, uBloom: { value: TONE.bloom[0] },
       uVignette: { value: TONE.vignette }, uCA: { value: 0.0004 }, uGrain: { value: 0.012 }, uTime: { value: 0 },
       uSharpen: { value: TONE.sharpen },
       uWB: { value: new THREE.Vector3(1.0, 0.99, 0.965) },
-      uSat: { value: 1.12 }, uContrast: { value: 1.08 },
+      uSat: { value: TONE.sat[0] }, uContrast: { value: 1.08 },
       uCurve: { value: new THREE.Vector4(...TONE.curve) }, uChroma: { value: TONE.chroma[0] },
       uShadowTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
       uHighTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
@@ -262,7 +305,7 @@ const post = {
    */
   _precompile() {
     const r = this.app.renderer, env = this.app.systems.env;
-    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.dof, this.blur, this.down, this.up, this.lum];
+    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum];
     for (const m of env?.passes?.() || []) into.push(m);
     const prev = r.getRenderTarget();
     const group = (meshes, rt) => {
@@ -313,6 +356,10 @@ const post = {
     depthTexture.magFilter = THREE.NearestFilter;
     this.sceneRT = target(W, H, { depthBuffer: true, samples: q.msaa, depthTexture });
     this.hdrRT = target(W, H);
+    // temporal AA: the resolved frame doubles as the next frame's history
+    this.taaRT = this.taaOn ? [target(W, H), target(W, H)] : null;
+    this.taaValid = false;
+    if (this.debug) this.badRT = target(Math.ceil(W / 8), Math.ceil(H / 8), { type: THREE.FloatType, format: THREE.RedFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     // DOF and motion blur ping-pong between hdrRT and this one
     this.dofRT = q.dof || q.blur ? target(W, H) : null;
     const hw = Math.ceil(W / 2), hh = Math.ceil(H / 2);
@@ -333,13 +380,16 @@ const post = {
     this.prepass.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uAOSize.value.set(hw, hh);
     this.blur.material.uniforms.uResolution.value.set(W, H);
+    this.taa.material.uniforms.uResolution.value.set(W, H);
     this.firstFrame = true;
   },
 
   _disposeTargets() {
-    for (const k of ['sceneRT', 'hdrRT', 'dofRT', 'zRT', 'aoRT', 'aoRT2']) {
+    for (const k of ['sceneRT', 'hdrRT', 'dofRT', 'zRT', 'aoRT', 'aoRT2', 'badRT']) {
       if (this[k]) { if (this[k].depthTexture) this[k].depthTexture.dispose(); this[k].dispose(); this[k] = null; }
     }
+    for (const t of this.taaRT || []) t.dispose();
+    this.taaRT = null;
     for (const t of [...(this.downs || []), ...(this.ups || [])]) t && t.dispose();
   },
 
@@ -349,35 +399,58 @@ const post = {
     r.render(mesh, this.cam);
   },
 
-  /** Per-time-of-day look parameters (haze, shimmer, airlight, bloom, white balance). */
-  _todParams(env) {
+  /** Per-time-of-day look parameters (haze, shimmer, airlight, bloom, exposure, white balance). */
+  _todParams(env, camera) {
     const t = env ? env.state.t : 0.12;
     const night = env ? env.state.night : 0;
-    const ss = THREE.MathUtils.smoothstep;
+    const ss = THREE.MathUtils.smoothstep, lerp = THREE.MathUtils.lerp;
     const pu = this.prepass.material.uniforms, fu = this.final.material.uniforms;
+    // how directly the camera faces the sun: `into` 1 within 10° of the view axis, 0 beyond
+    // 25°; `backlit` 1 within ~25°, 0 beyond ~40° (only meaningful for a low sun)
+    let into = 0, backlit = 0;
+    if (env && camera && !env.disabled) {
+      camera.getWorldDirection(_sv);
+      const c = _sv.dot(env.state.sunDir);
+      into = ss(c, 0.9063, 0.9848);
+      backlit = ss(c, 0.766, 0.9063) * ss(t, 0.3, 0.45) * (env.state.sunDir.y > -0.02 ? 1 : 0);
+    }
     // haze: a dusty summer afternoon (visibility ~3.5 km: distant facades wash out to a
-    // pale warm grey, about half their contrast gone at 500 m), clearing a little at dusk
-    const k = THREE.MathUtils.lerp(1.0, 0.6, ss(t, 0.5, 0.9));
+    // pale warm grey, about half their contrast gone at 500 m), clearing a little at dusk;
+    // a hazy-sky day (env.weather 'haze') is thicker
+    const hz = env && env.hazeBoost ? env.hazeBoost : { ext: 1, inscatter: 1 };
+    const k = THREE.MathUtils.lerp(1.0, 0.6, ss(t, 0.5, 0.9)) * hz.ext;
     pu.uHazeExt.value.set(HAZE_EXT[0] * k, HAZE_EXT[1] * k, HAZE_EXT[2] * k);
-    pu.uHazeInscatter.value = 1.0;
+    pu.uHazeInscatter.value = hz.inscatter;
     pu.uHazeGap.value = env ? env.haze.gap : 0;
-    // aerosol albedo; tree canopies and awnings shade much of the street air
-    pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1);
+    // aerosol albedo; tree canopies and awnings shade much of the street air. Looking
+    // straight into a low sun the forward lobe is held back (the shaded street air between
+    // the camera and the sunlit far end would otherwise fog the whole view)
+    pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1) * lerp(1, 0.5, into * ss(t, 0.4, 0.5));
     pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
     pu.uNightAir.value = night;
-    // frosted globes under a shallow cap send ~a fifth of their light sideways and up
-    pu.uWash.value = 0.2 * night;
+    // frosted globes under a shallow cap send a little of their light sideways and up
+    pu.uWash.value = 0.08 * night;
+    // contact shadows read deeper once the light is all lamps and sky
+    pu.uAOStrength.value = Math.min(AO.strength * lerp(1, 1.3, ss(night, 0.5, 1)), 1);
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
     fu.uExposure.value = env ? env.exposure : 1;
     fu.uExposureMax.value = env ? env.exposureMax ?? 1e4 : 1e4;
+    // metering: by day the exposure follows the incident light and the meter only nudges
+    // it; from the low sun on, the camera meters the scene, and exposes darker when it
+    // looks into the light (the shaded street goes under, the sky keeps its colour)
+    const km = ss(t, 0.35, 0.6);
+    fu.uAutoExp.value = lerp(TONE.meter[0], TONE.meter[1], km);
+    fu.uMeterClamp.value.set(lerp(TONE.clampLo[0], TONE.clampLo[1], km), lerp(TONE.clampHi[0], TONE.clampHi[1], km));
+    fu.uMeterTarget.value = lerp(TONE.target[0], TONE.target[1], ss(t, 0.3, 0.6)) * lerp(1, TONE.backlit, backlit);
     // the HDR clamp is set in exposed units
     pu.uClampHDR.value = HDR_CLAMP / Math.max(env ? env.exposure : 1, 1e-4);
     // white balance, split into a warm-cool and a green-magenta axis. By day the camera
     // balances on the direct sun (a daylight preset), so sunlit grey paving reads neutral
-    // to cool and sky-lit shade keeps its blue; from golden hour on it balances on the
-    // whole illuminant (sun + sky on a horizontal surface), keeping most of the evening
-    // warmth, and a little of the twilight's blue-violet cast. At the blue hour it is set
-    // for the ~3000 K lamps: their pools stay warm, everything the sky lights turns blue.
+    // and sky-lit shade keeps its blue; from golden hour on it balances on the whole
+    // illuminant (sun + sky on a horizontal surface), keeping most of the evening warmth.
+    // At the blue hour it is set for the ~3000 K lamps: their pools stay warm, everything
+    // the sky lights turns blue. Grey stone lit by the open sky stays neutral on the
+    // green-magenta axis at every time of day (never mauve, never olive).
     const wb = fu.uWB.value;
     if (env) {
       const ill = env.illuminant, sun = env.sunIlluminant;
@@ -385,34 +458,34 @@ const post = {
       const wSun = sun && sun.x > 1e-6 && sun.z > 1e-6 ? 1 - ss(t, 0.3, 0.6) : 0;
       const lr = wSun > 0 ? THREE.MathUtils.lerp(lrAll, Math.log(sun.x / sun.z), wSun) : lrAll;
       const lg = Math.log(Math.max(ill.y, 1e-9) / Math.sqrt(Math.max(ill.x * ill.z, 1e-18)));
-      // warm-cool correction: about half the sun's cast by day, a little at golden hour,
-      // about a third of the blue cast after sunset, none once the lamps set the balance
-      const kc = THREE.MathUtils.lerp(THREE.MathUtils.lerp(0.55, 0.18, ss(t, 0.3, 0.55)), 0.3, ss(t, 0.62, 0.75)) * (1 - ss(t, 0.84, 0.98));
-      // green-magenta: the ozone-tinted twilight is only partly corrected (fully, it would
-      // turn the stone olive), and once the lamps dominate hardly at all
-      const kt = THREE.MathUtils.lerp(1.0, 0.6, ss(t, 0.62, 0.78)) - 0.35 * ss(t, 0.84, 1.0);
-      const warm = 0.035 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.75, 0.9));
+      // warm-cool correction: under a third of the sun's cast by day (the warm sun on
+      // stone stays warm), a little at golden hour, about a third of the blue cast after
+      // sunset, none once the lamps set the balance
+      const kc = lerp(lerp(0.3, 0.18, ss(t, 0.3, 0.55)), 0.3, ss(t, 0.62, 0.75)) * (1 - ss(t, 0.84, 0.98));
+      // green-magenta: nearly fully corrected (the twilight sky's ozone tint would turn
+      // shaded grey paving mauve)
+      const kt = lerp(1.0, 0.85, ss(t, 0.62, 0.78)) - 0.15 * ss(t, 0.9, 1.0);
       const cool = 0.12 * ss(t, 0.82, 1.0);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
-      wb.set(Math.exp(-er) * (1 + warm - cool), Math.exp(-eg), Math.exp(er) * (1 - warm + cool));
+      wb.set(Math.exp(-er) * (1 - cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
+      // a neutral surface under the illuminant: G / mean(R, B) within [0.97, 1.03]
+      const gr = (ill.y * wb.y) / Math.max(0.5 * (ill.x * wb.x + ill.z * wb.z), 1e-12);
+      if (gr < 0.97) wb.y *= 0.97 / gr; else if (gr > 1.03) wb.y *= 1.03 / gr;
       // keep the overall exposure (normalise the gains to unit luminance)
       const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
       wb.multiplyScalar(1 / n);
     } else {
       wb.set(1, 1, 1);
     }
-    // highlight recovery: none by day, more as the sky outshines the street
-    const hs = TONE.hiSlope;
-    fu.uHiComp.value.y = t < 0.8
-      ? THREE.MathUtils.lerp(THREE.MathUtils.lerp(1, hs[0], ss(t, 0.3, 0.55)), hs[1], ss(t, 0.6, 0.8))
-      : THREE.MathUtils.lerp(hs[1], hs[2], ss(t, 0.85, 1.0));
+    // highlight recovery: none at midday, more as the sun lowers and the sky outshines the street
+    fu.uHiComp.value.set(TONE.hiKnee, table(TONE.hiSlope, t));
     fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
-    // a faint warm lift of the highlights in the low sun only
-    const hiW = 0.015 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.7, 0.85));
+    // the low sun's warmth on the highlights only (the shade keeps its blue)
+    const hiW = 0.05 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.72, 0.88));
     fu.uHighTint.value.set(1 + hiW, 1, 1 - hiW);
     // more of the scene's own chroma once the light warms (low sun on stone, lamps)
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
-    fu.uSat.value = THREE.MathUtils.lerp(1.12, 1.02, ss(t, 0.6, 0.85));
+    fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
   },
 
   /** Thin-lens depth of field: circle of confusion scale (px), focus distance and blur cap. */
@@ -438,7 +511,7 @@ const post = {
 
   /**
    * Veil from a sun shining on the lens (and the cab's glass) from in or near the frame:
-   * strongest looking towards it, fading over ~30° (exp(−angle / 0.5 rad)); only while
+   * strongest looking towards it, fading over ~15° (exp(−angle / 0.25 rad)); only while
    * the camera itself stands in the sun (canyon shadow plane, skyline).
    */
   _sunVeil(env, camera) {
@@ -449,7 +522,7 @@ const post = {
     const ang = Math.acos(THREE.MathUtils.clamp(_sv.dot(d), -1, 1));
     const p = camera.position;
     const lit = THREE.MathUtils.smoothstep(p.x * pl.x + p.y * pl.y + p.z * pl.z + pl.w, -2, 2);
-    const k = TONE.veilSun * env.sun.intensity * lit * Math.exp(-ang / 0.5);
+    const k = TONE.veilSun * env.sun.intensity * lit * Math.exp(-ang / 0.25);
     const c = env.sun.color;
     v.set(c.r * k, c.g * k, c.b * k);
   },
@@ -507,6 +580,79 @@ const post = {
     return true;
   },
 
+  /**
+   * Temporal AA, step 1: offset the projection by this frame's sub-pixel jitter (Halton
+   * 2,3), and decide whether last frame's history is usable (no cut, jump or zoom).
+   * Returns false when TAA is off.
+   */
+  _taaBegin(app, camera) {
+    if (!this.taaOn || !this.taaRT || !camera.isPerspectiveCamera) return false;
+    const rig = app.cameraRig;
+    const jump = camera.position.distanceToSquared(this.prevCamPos) > 16;
+    const zoom = Math.abs(camera.fov - this.prevFov) > 0.03 * Math.max(camera.fov, 1);
+    // (the inspection view= flags every frame as a cut for the motion blur: ignore that)
+    const cut = rig && !rig.disabled && rig.cut && !app.params.view;
+    if (jump || zoom || cut || this.firstFrame) this.taaValid = false;
+    const j = JITTER[this.taaFrame++ % JITTER.length];
+    const e = camera.projectionMatrix.elements;
+    this._pe8 = e[8]; this._pe9 = e[9];
+    // content moves by +2j/size in NDC
+    this.jitter.set(2 * j[0] / this.size.x, 2 * j[1] / this.size.y);
+    e[8] -= this.jitter.x; e[9] -= this.jitter.y;
+    return true;
+  },
+
+  _taaRestore(camera) {
+    const e = camera.projectionMatrix.elements;
+    e[8] = this._pe8; e[9] = this._pe9;
+  },
+
+  /** Temporal AA, step 2: resolve the prepass output against the history. */
+  _taaResolve(camera, env) {
+    const u = this.taa.material.uniforms;
+    const dst = this.taaRT[this.taaPing], hist = this.taaRT[this.taaPing ^ 1];
+    u.tCur.value = this.hdrRT.texture;
+    u.tHist.value = hist.texture;
+    u.tDepth.value = this.sceneRT.depthTexture;
+    u.uCamWorld.value.copy(camera.matrixWorld);
+    // last frame's view-projection taking positions relative to this frame's camera
+    u.uPrevVP.value.copy(this.prevVP).multiply(_m4.makeTranslation(camera.position.x, camera.position.y, camera.position.z));
+    u.uJitter.value.copy(this.jitter);
+    u.uAlpha.value = this.taaValid ? TAA.alpha : 1;
+    u.uExpo.value = Math.min(env && !env.disabled ? env.exposure * 1.3 : 1, env ? env.exposureMax ?? 1e4 : 1e4);
+    this._draw(this.taa, dst);
+    this.taaPing ^= 1;
+    this.taaValid = true;
+    this.prevVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.prevCamPos.copy(camera.position);
+    this.prevFov = camera.fov;
+    return dst;
+  },
+
+  /** debug=1: count broken scene pixels (read back every 30 frames; a small stall). */
+  _countBad(app) {
+    if (!this.badPass || !this.badRT) return;
+    if ((this._badFrame = (this._badFrame || 0) + 1) % 30 !== 1) return;
+    const u = this.badPass.material.uniforms;
+    u.tScene.value = this.sceneRT.texture;
+    u.uSize.value.set(this.size.x, this.size.y);
+    this._draw(this.badPass, this.badRT);
+    const w = this.badRT.width, h = this.badRT.height;
+    const buf = this._badBuf && this._badBuf.length === w * h ? this._badBuf : (this._badBuf = new Float32Array(w * h));
+    try {
+      app.renderer.readRenderTargetPixels(this.badRT, 0, 0, w, h, buf);
+      let n = 0;
+      for (let i = 0; i < buf.length; i++) n += buf[i];
+      this.badPixels = n;
+    } catch (e) { /* format not readable here */ }
+    // surface it in stats() (debug runs only)
+    if (app.stats && !app.stats.__badPixels) {
+      const f = app.stats, self = this;
+      app.stats = () => ({ ...f(), badPixels: self.badPixels });
+      app.stats.__badPixels = true;
+    }
+  },
+
   render(dt, app) {
     // renderer.info accumulates over the whole frame (scene, shadow passes and post),
     // so stats() reports real draw calls and triangles rather than the last quad
@@ -525,10 +671,13 @@ const post = {
     const prof = this.prof;
     if (prof) { prof.collect(); prof.begin('scene'); }
     const info = r.info;
-    // ---- 1. HDR scene (plus the shadow passes inside it)
+    // ---- 1. HDR scene (plus the shadow passes inside it), jittered by a sub-pixel offset
+    // for the temporal AA (the projection's inverse, which the shadow cascades are fitted
+    // from, stays unjittered)
+    const taa = this._taaBegin(app, camera);
     r.setRenderTarget(this.sceneRT);
     r.clear();
-    r.render(scene, camera);
+    try { r.render(scene, camera); } finally { if (taa) this._taaRestore(camera); }
     const perf = app.perf;
     if (perf) { perf.sceneCalls = info.render.calls; perf.sceneTris = info.render.triangles; }
 
@@ -537,7 +686,7 @@ const post = {
     this.camU.uNear.value = camera.near;
     this.camU.uFar.value = camera.far;
     this.camU.uProjXY.value.set(P[0], P[5]);
-    this._todParams(env);
+    this._todParams(env, camera);
 
     // ---- 2. SSAO (half res)
     if (prof) prof.begin('ao');
@@ -588,12 +737,19 @@ const post = {
     this._dofParams(env, camera, app.realDt ?? dt);
     this._draw(this.prepass, this.hdrRT);
 
-    // ---- 5. depth of field (gather, full res)
+    // ---- 4b. temporal anti-aliasing (history reprojected by depth and camera motion)
     let img = this.hdrRT;
+    if (taa) {
+      if (prof) prof.begin('taa');
+      img = this._taaResolve(camera, env);
+    }
+    if (this.debug) this._countBad(app);
+
+    // ---- 5. depth of field (gather, full res)
     if (this.q.dof) {
       if (prof) prof.begin('dof');
       const fu0 = this.dof.material.uniforms;
-      fu0.tSrc.value = this.hdrRT.texture;
+      fu0.tSrc.value = img.texture;
       fu0.uTexel.value.set(1 / this.size.x, 1 / this.size.y);
       this._draw(this.dof, this.dofRT);
       img = this.dofRT;
@@ -654,7 +810,7 @@ const post = {
     if (prof) {
       prof.end();
       const t = prof.timings;
-      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.final || 0);
+      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.final || 0);
       t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.main || 0) + (t.envmap || 0);
       app.perf.gpuMs = t.total;
     }

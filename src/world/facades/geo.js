@@ -13,6 +13,8 @@ import * as THREE from 'three';
 
 /** Floats per template vertex: x y z, nx ny nz, u v, shade. */
 export const VS = 9;
+/** Vertices whose normal had to be rebuilt at bake time (should stay 0; see fixNormals). */
+export const BAD_NORMALS = { count: 0 };
 
 const poolV = [], poolI = [];
 const POOL_MAX = 24;
@@ -99,11 +101,13 @@ export class Tpl {
   }
   /** quad() with the corners as scalars (no garbage). */
   q4(x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, shade = 1, shadeTop = shade) {
-    const ax_ = x1 - x0, ay_ = y1 - y0, az_ = z1 - z0;
-    const bx = x3 - x0, by = y3 - y0, bz = z3 - z0;
+    // normal from the diagonals (twice the vector area): exact for planar quads, and still
+    // right for a quad with two corners merged (a triangle)
+    const ax_ = x2 - x0, ay_ = y2 - y0, az_ = z2 - z0;
+    const bx = x3 - x1, by = y3 - y1, bz = z3 - z1;
     let nx = ay_ * bz - az_ * by, ny = az_ * bx - ax_ * bz, nz = ax_ * by - ay_ * bx;
-    const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-    nx /= l; ny /= l; nz /= l;
+    const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (l > 1e-12) { nx /= l; ny /= l; nz /= l; } else { nx = 0; ny = 0; nz = 1; }
     const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
     const mode = az >= ax && az >= ay ? 0 : ax >= ay ? 1 : 2;
     const b = this.vn / VS;
@@ -170,7 +174,9 @@ export class Tpl {
         const tx = ap[0] - am[0], ty = ap[1] - am[1], tz = ap[2] - am[2];
         const px = b[0] - a[0], py = b[1] - a[1], pz = b[2] - a[2];
         let nx = ty * pz - tz * py, ny = tz * px - tx * pz, nz = tx * py - ty * px;
-        const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= l; ny /= l; nz /= l;
+        const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        // (a zero-length profile or tangent: bake() repairs the normal from the faces)
+        if (l > 1e-12) { nx /= l; ny /= l; nz /= l; } else { nx = 0; ny = 0; nz = 0; }
         if (j > 0) { const q = A[j - 1]; acc += Math.hypot(a[0] - q[0], a[1] - q[1]); }
         const pl = Math.sqrt(px * px + py * py + pz * pz);
         this.v(a[0], a[1], a[2], nx, ny, nz, acc, 0, shade);
@@ -217,6 +223,7 @@ export class Tpl {
    * vertex), i, count}. The scratch buffers go back to the pool: the template is spent.
    */
   bake() {
+    this.fixNormals();
     const n = this.count, V = this.V, I = this.I;
     const v = allocF(this.vn);
     for (let k = 0; k < this.vn; k++) v[k] = V[k];
@@ -225,6 +232,37 @@ export class Tpl {
     const out = { v, i, count: n };
     this.free();
     return out;
+  }
+  /**
+   * Every vertex must carry a unit normal: a zero (or NaN) one is normalised to NaN by the
+   * vertex shader and blackens every triangle that touches it. Such normals (a collapsed
+   * row, a zero-length profile) are rebuilt from the area-weighted normals of the faces
+   * around the vertex, else set facing out (+z). Counted in BAD_NORMALS for the checks.
+   */
+  fixNormals() {
+    const V = this.V, I = this.I;
+    let bad = null;
+    for (let o = 0; o < this.vn; o += VS) {
+      const x = V[o + 3], y = V[o + 4], z = V[o + 5], l2 = x * x + y * y + z * z;
+      if (!(l2 > 0.25)) (bad || (bad = new Set())).add(o / VS);
+    }
+    if (!bad) return;
+    BAD_NORMALS.count += bad.size;
+    const acc = new Map();
+    for (const k of bad) acc.set(k, [0, 0, 0]);
+    for (let t = 0; t + 2 < this.in; t += 3) {
+      const a = I[t], b = I[t + 1], c = I[t + 2];
+      if (!bad.has(a) && !bad.has(b) && !bad.has(c)) continue;
+      const pa = a * VS, pb = b * VS, pc = c * VS;
+      const ux = V[pb] - V[pa], uy = V[pb + 1] - V[pa + 1], uz = V[pb + 2] - V[pa + 2];
+      const wx = V[pc] - V[pa], wy = V[pc + 1] - V[pa + 1], wz = V[pc + 2] - V[pa + 2];
+      const fx = uy * wz - uz * wy, fy = uz * wx - ux * wz, fz = ux * wy - uy * wx;
+      for (const k of [a, b, c]) { const s = acc.get(k); if (s) { s[0] += fx; s[1] += fy; s[2] += fz; } }
+    }
+    for (const [k, s] of acc) {
+      const l = Math.hypot(s[0], s[1], s[2]), o = k * VS;
+      if (l > 1e-12) { V[o + 3] = s[0] / l; V[o + 4] = s[1] / l; V[o + 5] = s[2] / l; } else { V[o + 3] = 0; V[o + 4] = 0; V[o + 5] = 1; }
+    }
   }
   /** Return the scratch buffers to the pool without baking. */
   free() {

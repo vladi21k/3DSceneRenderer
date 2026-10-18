@@ -102,7 +102,9 @@ if ( vStripe.w > 0.0 ) {
   float dhx = dFdx( hb ) * keepB, dhy = dFdy( hb ) * keepB;
   vec3 r1 = cross( dpy, normal ), r2 = cross( normal, dpx );
   float det = dot( dpx, r1 );
-  normal = normalize( abs( det ) * normal - sign( det ) * ( dhx * r1 + dhy * r2 ) );
+  vec3 nb = abs( det ) * normal - sign( det ) * ( dhx * r1 + dhy * r2 );
+  // (edge-on triangles have parallel derivatives, det = 0: keep the normal, never NaN)
+  if ( dot( nb, nb ) > 1e-30 ) normal = normalize( nb );
 }`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 {
@@ -117,7 +119,7 @@ if ( vStripe.w > 0.0 ) {
       .replace('vStripe = aStripe;', 'vStripe = aStripe;\nvAwUv = uv;');
     shader.fragmentShader = shader.fragmentShader.replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;');
   };
-  m.customProgramCacheKey = () => prevKey + '|facades.awning.v3';
+  m.customProgramCacheKey = () => prevKey + '|facades.awning.v4';
   return m;
 }
 
@@ -129,19 +131,49 @@ class ATpl extends Tpl {
   bake() { const b = super.bake(); b.f = new Float32Array(this.f); return b; }
 }
 
-/** Grid surface from a point function P(i/nu, j/nv) → [x, y, z, u, flex]; normals by finite differences. */
+/**
+ * Grid surface from a point function P(i/nu, j/nv) → [x, y, z, u, flex]; normals by finite
+ * differences. Where a row or column collapses to a point (the pole of a dome, a pinched
+ * edge) the difference across it vanishes: the tangent is then taken from the nearest row
+ * (column) that still spans, so no vertex ever gets a zero normal (which the vertex shader
+ * would normalise into NaN: black triangles).
+ */
 function surface(t, nu, nv, P, shade = 1, flip = false) {
   const base = t.count;
   const pts = [];
   for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) pts.push(P(i / nu, j / nv));
   const at = (i, j) => pts[Math.min(nv, Math.max(0, j)) * (nu + 1) + Math.min(nu, Math.max(0, i))];
+  const EPS = 1e-12;
+  // tangent along u at (i, j), from row j or, if that row is collapsed there, the nearest row that spans
+  const tu = (i, j) => {
+    for (let k = 0; k <= nv; k++) {
+      for (const jj of k ? [j + k, j - k] : [j]) {
+        if (jj < 0 || jj > nv) continue;
+        const a = at(i + 1, jj), b = at(i - 1, jj);
+        const x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+        if (x * x + y * y + z * z > EPS) return [x, y, z];
+      }
+    }
+    return [1, 0, 0];
+  };
+  const tv = (i, j) => {
+    for (let k = 0; k <= nu; k++) {
+      for (const ii of k ? [i + k, i - k] : [i]) {
+        if (ii < 0 || ii > nu) continue;
+        const c = at(ii, j + 1), d = at(ii, j - 1);
+        const x = c[0] - d[0], y = c[1] - d[1], z = c[2] - d[2];
+        if (x * x + y * y + z * z > EPS) return [x, y, z];
+      }
+    }
+    return [0, -1, 0];
+  };
   for (let j = 0; j <= nv; j++) {
     for (let i = 0; i <= nu; i++) {
-      const a = at(i + 1, j), b = at(i - 1, j), c = at(i, j + 1), d = at(i, j - 1);
-      const ux = a[0] - b[0], uy = a[1] - b[1], uz = a[2] - b[2];
-      const vx = c[0] - d[0], vy = c[1] - d[1], vz = c[2] - d[2];
+      const [ux, uy, uz] = tu(i, j), [vx, vy, vz] = tv(i, j);
       let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+      let l = Math.hypot(nx, ny, nz);
+      if (!(l > 1e-9)) { nx = 0; ny = 1; nz = 0; l = 1; }   // tangents parallel: face up
+      nx /= l; ny /= l; nz /= l;
       if (flip) { nx = -nx; ny = -ny; nz = -nz; }
       const p = at(i, j);
       t.v(p[0], p[1], p[2], nx, ny, nz, p[3], p[1], shade * (p[5] ?? 1), p[4]);
@@ -231,8 +263,12 @@ function armBox(m, a, b, s) {
   const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
   const L = Math.hypot(dx, dy, dz) || 1;
   const d = [dx / L, dy / L, dz / L];
-  // side vector (x) and a perpendicular
-  const sx = [1, 0, 0];
+  // side vector (x, or up for bars running along x: the rim of a dutch hood's front) made
+  // square to the bar, and the perpendicular d × side
+  const r = Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const rd = r[0] * d[0] + r[1] * d[1] + r[2] * d[2];
+  const sx = [r[0] - d[0] * rd, r[1] - d[1] * rd, r[2] - d[2] * rd];
+  const sl = Math.hypot(...sx) || 1; sx[0] /= sl; sx[1] /= sl; sx[2] /= sl;
   const px = [d[1] * sx[2] - d[2] * sx[1], d[2] * sx[0] - d[0] * sx[2], d[0] * sx[1] - d[1] * sx[0]];
   const pl = Math.hypot(...px) || 1; px[0] /= pl; px[1] /= pl; px[2] /= pl;
   const h = s / 2;
@@ -249,6 +285,7 @@ function armBox(m, a, b, s) {
  * quarter-sphere ends; a full dome when straight = 0). Top meets the wall at height R
  * above the origin; the bottom edge is at y = 0.
  */
+const TH0 = 0.02;
 export function domeAwning(W, R, valH, q) {
   const t = new ATpl(), m = new Tpl();
   const straight = Math.max(0, W - 2 * R);
@@ -266,7 +303,8 @@ export function domeAwning(W, R, valH, q) {
   const nv = q >= 0.5 ? 6 : 3;
   surface(t, nu, nv, (a, b) => {
     const s = a * total, [xa, dx, dz] = plan(s);
-    const th = (b * Math.PI) / 2;           // 0 at the wall (top), π/2 at the bottom edge
+    // 0.02 rad at the wall (top: the caps' poles keep a few mm of edge), π/2 at the bottom edge
+    const th = TH0 + b * (Math.PI / 2 - TH0);
     // pleats between the ribs
     const rib = (a * ribs) % 1;
     const pleat = q >= 0.5 ? 0.025 * Math.sin(Math.PI * rib) * Math.sin(th) : 0;

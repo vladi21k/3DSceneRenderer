@@ -157,6 +157,11 @@ float vnoise(vec2 p) {
 }
 // integral of clamp(x, 0, 1)
 float rampInt(float x) { return x <= 0.0 ? 0.0 : (x < 1.0 ? 0.5 * x * x : x - 0.5); }
+// finite and not negative (tested by bit pattern: compilers may fold isnan away)
+bool finite3(vec3 c) {
+  uvec3 b = floatBitsToUint(c) & 0x7f800000u;
+  return !any(equal(b, uvec3(0x7f800000u))) && all(greaterThan(c, vec3(-1e-6)));
+}
 // in-scatter phase of the dry street air: a small isotropic share (molecules) and a
 // forward lobe (dust), so a lamp's glow stays close to the line of sight to it
 float airPhase(float c) {
@@ -164,11 +169,13 @@ float airPhase(float c) {
   return 0.25 / (4.0 * ATM_PI) + 0.75 * (1.0 - g2) / (4.0 * ATM_PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
 }
 // point light in-scatter along [0, T] of a ray: substituting t - tc = h tan(phi) turns
-// the integral into (1/h) * integral of phase(-sin phi) dphi (6-point Gauss-Legendre)
+// the integral into (1/h) * integral of phase(-sin phi) dphi (6-point Gauss-Legendre).
+// The lantern is a frosted globe, not a point: rays passing within its radius see the
+// glow of a finite source (h is held at the globe's size), so no hot core forms
 float pointAirlight(vec3 ro, vec3 rd, float T, vec3 lp) {
   vec3 w = lp - ro;
   float tc = dot(w, rd);
-  float h = max(length(w - rd * tc), 0.05);
+  float h = sqrt(dot(w - rd * tc, w - rd * tc) + 0.09);
   float a0 = atan(-tc / h), a1 = atan((T - tc) / h);
   float m = 0.5 * (a0 + a1), r = 0.5 * (a1 - a0);
   const vec3 X = vec3(0.2386191861, 0.6612093865, 0.9324695142);
@@ -202,6 +209,18 @@ void main() {
     }
   }
   vec3 col = texture2D(tScene, uv).rgb;
+  // a non-finite or negative pixel (a broken normal or division somewhere upstream) is
+  // filled from its finite neighbours instead of punching a black hole into the frame
+  if (!finite3(col)) {
+    vec2 px = 1.0 / uResolution;
+    vec3 acc = vec3(0.0); float n = 0.0;
+    for (int k = 0; k < 4; k++) {
+      vec2 o = k == 0 ? vec2(px.x, 0.0) : k == 1 ? vec2(-px.x, 0.0) : k == 2 ? vec2(0.0, px.y) : vec2(0.0, -px.y);
+      vec3 s = texture2D(tScene, vUv + o).rgb;
+      if (finite3(s)) { acc += s; n += 1.0; }
+    }
+    col = n > 0.0 ? acc / n : vec3(0.0);
+  }
   // volumetric cumulus over the sky (rgb = in-scattered light, a = transmittance)
   if (sky && uUseClouds > 0) {
     vec4 cl = texture2D(tClouds, vUv);
@@ -253,11 +272,12 @@ void main() {
         vec4 L = uFarLamp[i];
         if (L.w <= 0.0) continue;
         vec3 lv = L.xyz - wp;
-        float d2 = max(dot(lv, lv), 0.25);
-        vec3 ld = lv * inversesqrt(d2);
+        float r2 = dot(lv, lv);
+        vec3 ld = lv * inversesqrt(max(r2, 1e-6));
         float cone = smoothstep(uLampCos.x, uLampCos.y, ld.y);   // surface below the lantern
-        float win = clamp(1.0 - d2 * d2 / (32.0 * 32.0 * 32.0 * 32.0), 0.0, 1.0);
-        E += L.w * cone * max(dot(nw, ld), 0.0) * win * win / d2;
+        float win = clamp(1.0 - r2 * r2 / (32.0 * 32.0 * 32.0 * 32.0), 0.0, 1.0);
+        // (finite source; the standard's own ironwork right around it is left dark)
+        E += L.w * cone * max(dot(nw, ld), 0.0) * win * win * smoothstep(1.0, 4.0, r2) / (r2 + 0.09);
       }
       E *= uFarI;
     }
@@ -266,12 +286,14 @@ void main() {
       for (int i = 0; i < NUM_LAMPS; i++) {
         if (uLampI[i] <= 0.0) continue;
         vec3 lv = uLampPos[i] - wp;
-        float d2 = max(dot(lv, lv), 1.0);
-        vec3 ld = lv * inversesqrt(d2);
+        float r2 = dot(lv, lv);
+        vec3 ld = lv * inversesqrt(max(r2, 1e-6));
         // level with or above the lantern: outside the spot light's cone
         float side = 1.0 - smoothstep(0.1, 0.4, ld.y);
-        float win = clamp(1.0 - d2 * d2 / (16.0 * 16.0 * 16.0 * 16.0), 0.0, 1.0);
-        Ew += uLampI[i] * side * max(dot(nw, ld), 0.0) * win * win / d2;
+        float win = clamp(1.0 - r2 * r2 / (16.0 * 16.0 * 16.0 * 16.0), 0.0, 1.0);
+        // a finite source, and none on the lantern's own cap, arm and the span wires
+        // right next to it (their screen-space normals are meaningless anyway)
+        Ew += uLampI[i] * side * max(dot(nw, ld), 0.0) * win * win * smoothstep(0.64, 2.25, r2) / (r2 + 0.09);
       }
       E += Ew * uWash;
     }
@@ -329,11 +351,10 @@ void main() {
     col += air * uMist * uNightAir;
   }
 
-  // scrub NaN / Inf (by bit pattern: compilers may fold isnan away) and negatives, and
-  // clamp the range, so a broken pixel or a specular spark cannot spread through the
-  // DOF, motion blur and bloom chains
-  uvec3 bits = floatBitsToUint(col) & 0x7f800000u;
-  if (any(equal(bits, uvec3(0x7f800000u)))) col = vec3(0.0);
+  // scrub anything the passes above produced from a bad input, and clamp the range, so a
+  // broken pixel or a specular spark cannot spread through the TAA, DOF, motion blur and
+  // bloom chains
+  if (!finite3(col)) col = vec3(0.0);
   col = clamp(col, vec3(0.0), vec3(uClampHDR));
   float coc = max(uDofK * abs(1.0 - uFocus / max(dist, 0.1)) - uCocTol, 0.0);
   gl_FragColor = vec4(col, min(coc, uCocMax));
@@ -647,13 +668,18 @@ void main() {
   vec3 sc = max(col, 0.0);
 
   col = agx(col);
-  // camera tone response on luminance; overflow desaturates towards white, hue kept
+  // camera tone response on luminance, then a soft gamut knee: from 0.85 up, the spread of
+  // the channels around the luminance is compressed so the brightest one approaches 0.98
+  // (hue and luminance kept), instead of a channel clipping flat (a sunset sky's red)
   {
     float lt = srgbToLinear(cameraCurve(lum));
     float la = dot(col, LW);
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), uChroma);
     float m = max(col.r, max(col.g, col.b));
-    if (m > 1.0) col = lt + (col - lt) * (1.0 - lt) / max(m - lt, 1e-5);
+    if (m > 0.85) {
+      float mt = 0.85 + 0.13 * (1.0 - exp(-(m - 0.85) / 0.13));
+      col = lt + (col - lt) * clamp((mt - lt) / max(m - lt, 1e-5), 0.0, 1.0);
+    }
   }
   col = srgbOETF(clamp(col, 0.0, 1.0));
   // fine film grain, strongest in the mid tones, plus dither
@@ -662,5 +688,107 @@ void main() {
   col += g * uGrain * (0.35 + lm * (1.0 - lm) * 2.6);
   col += (hash(gl_FragCoord.xy + 0.5) - 0.5) / 255.0;
   gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---------------------------------------------------------------- temporal anti-aliasing
+// The scene is rendered with a sub-pixel jitter (Halton 2,3) and resolved against the
+// history reprojected through depth and last frame's camera. The history is clipped to
+// the current 3x3 neighbourhood (variance box in YCoCg, tone-mapped so a bright spark
+// cannot dominate), sampled with a Catmull-Rom filter (no softening over time), and
+// blended with ~10% of the new frame (more where the image moves fast). Alpha carries
+// the circle of confusion through to the depth of field.
+export const TAA_FS = /* glsl */ `
+${CAMERA_GLSL}
+uniform sampler2D tCur;
+uniform sampler2D tHist;
+uniform sampler2D tDepth;
+uniform mat4 uCamWorld;
+uniform mat4 uPrevVP;        // last frame's view-projection, relative to this frame's camera position
+uniform vec2 uResolution;
+uniform vec2 uJitter;        // this frame's jitter (NDC shift of the image)
+uniform float uAlpha;        // weight of the new frame (1 = no history)
+uniform float uGamma;        // variance clip width (standard deviations)
+uniform float uExpo;         // exposure estimate, for the tone-mapped blend
+varying vec2 vUv;
+
+const vec3 LW = vec3(0.2126, 0.7152, 0.0722);
+vec3 toYCoCg(vec3 c) { return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25))); }
+vec3 fromYCoCg(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
+vec3 tm(vec3 c) { return c * uExpo / (1.0 + dot(c, LW) * uExpo); }
+vec3 itm(vec3 t) { return max(t, 0.0) / (uExpo * max(1.0 - dot(t, LW), 1e-3)); }
+// 5-tap Catmull-Rom (bilinear taps at the combined weights)
+vec3 histCR(vec2 uv) {
+  vec2 sp = uv * uResolution;
+  vec2 tp = floor(sp - 0.5) + 0.5;
+  vec2 f = sp - tp;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 t12 = (tp + w2 / w12) / uResolution;
+  vec2 t0 = (tp - 1.0) / uResolution, t3 = (tp + 2.0) / uResolution;
+  float a = w12.x * w0.y, b = w0.x * w12.y, c = w12.x * w12.y, d = w3.x * w12.y, e = w12.x * w3.y;
+  vec3 r = texture2D(tHist, vec2(t12.x, t0.y)).rgb * a + texture2D(tHist, vec2(t0.x, t12.y)).rgb * b
+         + texture2D(tHist, t12).rgb * c + texture2D(tHist, vec2(t3.x, t12.y)).rgb * d
+         + texture2D(tHist, vec2(t12.x, t3.y)).rgb * e;
+  return max(r / (a + b + c + d + e), 0.0);
+}
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy), mx = ivec2(uResolution) - 1;
+  vec4 c0 = texelFetch(tCur, p, 0);
+  vec3 cur = toYCoCg(tm(c0.rgb));
+  if (uAlpha >= 1.0) { gl_FragColor = c0; return; }
+  // neighbourhood moments, and the nearest depth (edges move with the foreground)
+  vec3 m1 = cur, m2 = cur * cur, lo = cur, hi = cur;
+  float dMin = texelFetch(tDepth, p, 0).r;
+  ivec2 pMin = p;
+  for (int k = 0; k < 8; k++) {
+    ivec2 o = k < 3 ? ivec2(k - 1, -1) : k < 5 ? ivec2(k == 3 ? -1 : 1, 0) : ivec2(k - 6, 1);
+    ivec2 q = clamp(p + o, ivec2(0), mx);
+    vec3 s = toYCoCg(tm(texelFetch(tCur, q, 0).rgb));
+    m1 += s; m2 += s * s; lo = min(lo, s); hi = max(hi, s);
+    float d = texelFetch(tDepth, q, 0).r;
+    if (d < dMin) { dMin = d; pMin = q; }
+  }
+  // reproject (camera motion; the sky by rotation only)
+  vec2 uvq = (vec2(pMin) + 0.5) / uResolution - 0.5 * uJitter;
+  vec4 pc;
+  if (dMin >= 1.0) pc = uPrevVP * vec4(mat3(uCamWorld) * normalize(viewPosFrom(uvq, 1.0)), 0.0);
+  else pc = uPrevVP * vec4(mat3(uCamWorld) * viewPosFrom(uvq, linearZ(dMin)), 1.0);
+  vec2 vel = pc.w > 1e-6 ? uvq - (pc.xy / pc.w * 0.5 + 0.5) : vec2(1e3);
+  vec2 huv = vUv - vel;
+  if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) { gl_FragColor = c0; return; }
+  vec3 h = toYCoCg(tm(histCR(huv)));
+  // clip the history towards the centre of the variance box (within the min/max box)
+  vec3 mean = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mean * mean, 0.0));
+  vec3 bl = max(lo, mean - uGamma * sd), bh = min(hi, mean + uGamma * sd);
+  vec3 cc = 0.5 * (bh + bl), ext = 0.5 * (bh - bl) + 1e-5;
+  vec3 v = h - cc, a = abs(v / ext);
+  float am = max(a.x, max(a.y, a.z));
+  if (am > 1.0) h = cc + v / am;
+  // more of the new frame where the image moves fast (less resampling blur)
+  float velPx = length(vel * uResolution);
+  float w = clamp(uAlpha + velPx * 0.006, uAlpha, 0.3);
+  gl_FragColor = vec4(itm(fromYCoCg(mix(h, cur, w))), c0.a);
+}
+`;
+
+// ---------------------------------------------------------------- debug: broken pixels
+// (debug=1) count of non-finite or negative scene pixels per 8x8 block
+export const BADPIX_FS = /* glsl */ `
+uniform sampler2D tScene;
+uniform vec2 uSize;
+varying vec2 vUv;
+void main() {
+  ivec2 b = ivec2(gl_FragCoord.xy) * 8, mx = ivec2(uSize) - 1;
+  float n = 0.0;
+  for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) {
+    vec3 c = texelFetch(tScene, min(b + ivec2(x, y), mx), 0).rgb;
+    uvec3 e = floatBitsToUint(c) & 0x7f800000u;
+    if (any(equal(e, uvec3(0x7f800000u))) || any(lessThan(c, vec3(-1e-6)))) n += 1.0;
+  }
+  gl_FragColor = vec4(n, 0.0, 0.0, 1.0);
 }
 `;

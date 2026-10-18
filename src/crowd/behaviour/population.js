@@ -27,6 +27,7 @@ const BENCH_RESERVE = 12;   // seated slots kept for people on benches
 const FEATURE_AHEAD = VIEW_AHEAD + 20;
 const BENCH_SEAT_Z = -0.02;  // body origin of a bench sitter along the bench's facing (m, bench local)
 const PI = Math.PI;
+const MOB_LIST = [[MOB.CYCLE, MOB_SHARE.cycle], [MOB.STROLLER, MOB_SHARE.stroller], [MOB.WALKBIKE, MOB_SHARE.walkbike]];
 
 export class Population {
   constructor(c) {
@@ -90,6 +91,8 @@ export class Population {
     a.mvToBand = false; a.mvLane = null; a.nearT = 0; a.headValid = false; a.clearHi = false; a.clearSpare = 0;
     a.rx = 0; a.rxT = 0; a.rxSetupT = 0; a.rxHold = 0; a.stopT = 0; a.stopNP = 0; a.stallTry = 0; a.stallSeen = false; a.narrowS = null;
     a.mobPrev = 0; a.mobT = -1e9; a.footW = 1; a.stepT = 0; a.dmNext = 0; a.waitX = 0; a.waitXT = 0; a.pinned = false;
+    a.uI = -1; a.uSide = 0; a.uClr = false; a.uOver = false; a.ubellT = 0; a.lookU = -1;
+    a.hwT = r.range(0, 0.25); a.hwV = 99; a.passT = 0; a.passD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1;
     this.stats.spawned++;
     return a;
   }
@@ -215,15 +218,42 @@ export class Population {
     if (map.mouthAt(sU, side) || map.mouthAt(sU + 8, side) || map.mouthAt(sU - 8, side)) m += 0.35;
     if (map.stationAt(sU) || map.stationAt(sU + 20) || map.stationAt(sU - 20)) m += 0.15;
     m *= 0.75 + 0.5 * (0.5 + 0.5 * noise1(c.route.wrap(sU) / 70, side > 0 ? 401 : 403));
-    // spend the budget where the cab view sees individuals: thin behind and beside the cab,
-    // tapering off far down the street where figures are a few pixels in the haze
+    // thin behind and beside the cab (out of view); level from 30 m to 400 m, which the telephoto
+    // view frames as a packed street (it must read at least as busy as the foreground), easing
+    // off only at the far end of the populated range
     const rel = sU - c.camU;
-    m *= rel < 0 ? 0.35 : rel < 30 ? 0.6 + 0.75 * (rel / 30) : rel < 200 ? 1.35 : rel < 300 ? 1.0 : rel < FAR_TAPER ? 0.72 : 0.42;
+    m *= rel < 0 ? 0.35 : rel < 30 ? 0.6 + 0.5 * (rel / 30) : rel < 120 ? 1.1 : rel < 160 ? 1.1 - 0.1 * ((rel - 120) / 40)
+      : rel < FAR_TAPER - 50 ? 1.0 : rel < FAR_TAPER ? 1.0 - 0.25 * ((rel - FAR_TAPER + 50) / 50) : 0.75;
+    // a hot day: more people on the shaded sidewalk than on the sunlit one
+    m *= this._shadeK(sU, side);
     return WALKER_DENSITY * m;
+  }
+
+  /** Sun and shade: with the sun up (day), the sidewalk whose buildings stand between it and the
+   *  sun is shaded and draws people (×1.2), the sunlit one loses some (×0.85). */
+  _shadeK(sU, side) {
+    const sh = this._sun;
+    if (!sh || sh.w <= 0) return 1;
+    const smp = this.c.route.sample(this.c.route.wrap(sU), this._smp || (this._smp = {}));
+    const r = smp.right, sr = (sh.x * r.x + sh.z * r.z) / sh.h;     // + : the sun is on the right
+    const w = sh.w * Math.min(1, Math.abs(sr) * 1.5);
+    return Math.sign(sr) === side ? 1 + 0.2 * w : 1 - 0.15 * w;
+  }
+
+  /** Sun direction for the shade preference (refreshed with the targets). */
+  _sunNow() {
+    const env = this.c.app.env || (this.c.app.systems && this.c.app.systems.env);
+    const st = env && env.state, dir = st && st.sunDir;
+    if (!dir || !(st.t < 0.45) || (st.night || 0) > 0.3 || dir.y < 0.2) { this._sun = null; return; }
+    const h = Math.hypot(dir.x, dir.z);
+    if (h < 0.05) { this._sun = null; return; }
+    // fades out from tod 0.35 (low sun: long shadows over the whole street anyway)
+    this._sun = { x: dir.x, z: dir.z, h, w: Math.min(1, Math.max(0, (0.45 - st.t) / 0.1)) };
   }
 
   _targets() {
     const c = this.c;
+    this._sunNow();
     let tot = 0;
     for (let b = 0; b < this.nBins; b++) {
       const sU = c.camU - RANGE_BEHIND + (b + 0.5) * BIN;
@@ -262,8 +292,18 @@ export class Population {
     if (!opts.force && !this._placeOk(a)) { this._unspawn(a); this.stats.spawnFail++; return null; }
     this.mobCount[mob]++;
     const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.34);
-    if (r.chance(groupP)) { if (mob === MOB.STROLLER) this._makeStrollerGroup(a, opts); else this._makeGroup(a, opts); }
+    // (no group right beside another one on the same strip: two of them would walk on as one row)
+    if (r.chance(groupP) && !this._groupNear(a)) { if (mob === MOB.STROLLER) this._makeStrollerGroup(a, opts); else this._makeGroup(a, opts); }
     return a;
+  }
+
+  /** Another group within 6 m along the street on the same strip (|Δd| < 2 m)? */
+  _groupNear(a) {
+    for (const b of this.agents) {
+      if (!b.active || b === a || !b.followers.length || b.kind === KIND.SEATED) continue;
+      if (Math.abs(b.s - a.s) < 6 && Math.abs(b.d - a.d) < 2) return true;
+    }
+    return false;
   }
 
   /** Give a fresh walker a stroller or a bicycle: pace, tram caution, model of the prop. */
@@ -299,7 +339,7 @@ export class Population {
   _makeStrollerGroup(a, opts) {
     const c = this.c, r = c.rng;
     const sideA = r.chance(0.5) ? 1 : -1;                 // which side the partner walks on
-    const partner = r.chance(0.58);
+    const partner = r.chance(0.45);
     const kids = partner ? (r.chance(0.3) ? 1 : 0) : 1;
     const slots = [];
     if (partner) slots.push({ role: r.chance(0.15) ? 'elderly' : 'any', F: r.range(-0.25, 0.05), R: sideA * r.range(0.68, 0.8) });
@@ -333,7 +373,8 @@ export class Population {
     const c = this.c, r = c.rng;
     const n = r.weighted([[1, 0.62], [2, 0.28], [3, 0.1]]);
     const kids = r.chance(0.2) ? (n >= 2 && r.chance(0.4) ? 2 : 1) : 0;
-    a.v0 = Math.max(WALK_MIN, a.v0 * (kids ? 0.82 : 0.9));
+    // (each group its own pace: two groups never settle into the same speed side by side)
+    a.v0 = Math.max(WALK_MIN, a.v0 * (kids ? 0.82 : 0.9) * r.range(0.94, 1.06));
     const R1 = r.range(0.56, 0.72) * (r.chance(0.5) ? 1 : -1);
     const V = (r.chance(0.7) ? 1 : -1) * r.range(0.3, 0.5);
     let slots;
@@ -348,6 +389,8 @@ export class Population {
       if (!f) break;
       let [F, R] = slots[k];
       if (child) { F = r.range(-0.05, 0.12); R = kidR[(n - 1 - k) % 2]; }
+      // (adults half a step ahead or behind: a loose group, never a rank)
+      else F += r.range(-0.35, 0.35);
       f.baseF = F; f.baseR = R;
       const th = a.dir > 0 ? 0 : PI, cf = Math.cos(th), sf = Math.sin(th);
       f.s = a.s + cf * F - sf * R; f.d = a.d + sf * F + cf * R;
@@ -411,7 +454,11 @@ export class Population {
     this._fillQueue(1e9);
     this._count();
     this._targets();
-    for (let b = 0; b < this.nBins; b++) {
+    // bins in a shuffled order, and a plain per-walker draw of the stroller / bicycle roles (no
+    // deficit term: the first bins filled would otherwise take every role)
+    const order = Array.from({ length: this.nBins }, (_, i) => i);
+    for (let i = order.length - 1; i > 0; i--) { const j = r.int(0, i); const t = order[i]; order[i] = order[j]; order[j] = t; }
+    for (const b of order) {
       const s0 = c.camU - RANGE_BEHIND + b * BIN;
       let want = Math.round(this.binTarget[b] * r.range(0.85, 1.1));
       let guard = 0;
@@ -423,7 +470,7 @@ export class Population {
           const n = this.spawnChat(sU, side);
           if (n) { want -= n; c.counts.stand += n; continue; }
         }
-        const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob: this._pickMob(r) });
+        const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob: this._drawMob(r) });
         if (a) { want -= 1 + a.nFollow; this.stats.bySource.init += 1 + a.nFollow; }
       }
     }
@@ -600,17 +647,26 @@ export class Population {
     return true;
   }
 
-  /** Stroller / bicycle role for the next arrival, by how far each share is below its target. */
+  /** Stroller / bicycle role for the next arrival, by how far each share is below its target
+   *  (at most twice the share itself, so the props never bunch where the street refills). */
   _pickMob(r) {
     const c = this.c;
     if (!c.mobOn) return MOB.NONE;
     const W = Math.max(60, this.walkerTarget);
-    for (const [m, share] of [[MOB.CYCLE, MOB_SHARE.cycle], [MOB.STROLLER, MOB_SHARE.stroller], [MOB.WALKBIKE, MOB_SHARE.walkbike]]) {
+    for (const [m, share] of MOB_LIST) {
       if (!c.mobOK(m)) continue;
       const want = share * W * c.mobX, def = want - this.mobCount[m];
       if (def <= 0.5) continue;
-      if (r.chance(Math.min(0.6, (def / want) * 0.5 * Math.max(1, c.mobX)))) return m;
+      if (r.chance(Math.min(0.6, Math.min(1, def / want) * 2 * share * c.mobX))) return m;
     }
+    return MOB.NONE;
+  }
+
+  /** Plain draw of the role of one walker at its share (the first fill of the street). */
+  _drawMob(r) {
+    const c = this.c;
+    if (!c.mobOn) return MOB.NONE;
+    for (const [m, share] of MOB_LIST) if (c.mobOK(m) && r.chance(Math.min(0.5, share * c.mobX))) return m;
     return MOB.NONE;
   }
 

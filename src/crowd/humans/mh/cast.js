@@ -5,26 +5,33 @@ import * as THREE from 'three';
 //   cast.bin.gz    geometry of every character (gzip; one vertex set per character shared by its 4 LODs)
 //   tex/*.webp     texture arrays as vertical strips of layers (albedo RGB + separate coverage strips, normals)
 //
-// loadCast(baseUrl) -> { doc, chars: [{ ...meta, geometry }], albedo: DataArrayTexture, normal: DataArrayTexture,
-//                        layerRough: Float32Array }
-// geometry attributes: position (float, dequantised), aNrm (int8x4 norm: normal + AO), uv (uint16x2 norm),
-//   aBoneI (uint8x4), aBoneW (uint8x4 norm), aTex (uint8x4: albedo layer, normal layer | 255, region, flags);
-//   geometry.userData.lods[l] = {start, count} index draw ranges.
+// loadCast(baseUrl) -> { doc, chars, buf, albedo: DataArrayTexture, normal: DataArrayTexture | null, layerRough }
+//   chars[i] = the character's cast.json entry plus `raw`: typed-array views of its vertex data
+//   { n, pos (Float32Array, dequantised), nrm (Int8 x4: normal + AO), uv (Uint16 x2), bi, bw, tex (Uint8 x4), index }
+// The renderer merges every character (and its runtime accessories) into one vertex / index buffer (merge()).
+
+export const VERTEX_ATTRS = [
+  // name, components, array type, normalised
+  ['position', 3, Float32Array, false],
+  ['aNrm', 4, Int8Array, true],
+  ['uv', 2, Uint16Array, true],
+  ['aBoneI', 4, Uint8Array, false],
+  ['aBoneW', 4, Uint8Array, true],
+  ['aTex', 4, Uint8Array, false],
+];
+const RAW_KEY = { position: 'pos', aNrm: 'nrm', uv: 'uv', aBoneI: 'bi', aBoneW: 'bw', aTex: 'tex' };
 
 async function fetchBin(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(url + ' ' + r.status);
-  if (url.endsWith('.gz') && typeof DecompressionStream !== 'undefined') {
-    // served as a plain file: unzip here (a server sending Content-Encoding: gzip would have done it)
-    const buf = new Uint8Array(await r.arrayBuffer());
-    if (buf[0] !== 0x1f || buf[1] !== 0x8b) return buf.buffer;
-    const ds = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
-    return new Response(ds).arrayBuffer();
-  }
-  return r.arrayBuffer();
+  const buf = new Uint8Array(await r.arrayBuffer());
+  // served as a plain file: unzip here (a server sending Content-Encoding: gzip would have done it)
+  if (buf[0] !== 0x1f || buf[1] !== 0x8b) return buf.buffer;
+  const ds = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(ds).arrayBuffer();
 }
 
-async function decodeStrip(url, S) {
+async function decodeStrip(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(url + ' ' + r.status);
   const bmp = await createImageBitmap(await r.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
@@ -36,33 +43,37 @@ async function decodeStrip(url, S) {
   return d;          // RGBA, rows top to bottom; layer k = rows [k*S, (k+1)*S)
 }
 
-/** Builds a DataArrayTexture from the strips (layer images top row first; uploaded with flipY so v = 0 is the
- *  bottom row of each layer, as the exported UVs expect). */
-async function arrayTexture(base, strips, S, total, srgb) {
-  const data = new Uint8Array(S * S * 4 * total);
-  let layer = 0;
-  const layerBytes = S * S * 4;
+/** DataArrayTexture from the strips (layer images top row first; rows flipped so v = 0 is the bottom row
+ *  of each layer, as the exported UVs expect). `scale` 2 halves the resolution (box filter). */
+async function arrayTexture(base, strips, S, total, srgb, scale = 1) {
+  const D = S / scale;
+  const data = new Uint8Array(D * D * 4 * total);
+  const layerBytes = D * D * 4;
   const jobs = strips.map(async (st, si) => {
     const first = strips.slice(0, si).reduce((a, b) => a + b.layers, 0);
-    const [rgb, alpha] = await Promise.all([decodeStrip(base + st.file, S), st.alpha ? decodeStrip(base + st.alpha, S) : null]);
+    const [rgb, alpha] = await Promise.all([decodeStrip(base + st.file), st.alpha ? decodeStrip(base + st.alpha) : null]);
     for (let k = 0; k < st.layers; k++) {
       const dst = (first + k) * layerBytes;
-      // flip rows: image row 0 (top) -> texture row S-1
-      for (let y = 0; y < S; y++) {
-        const srcRow = (k * S + y) * S * 4;
-        const dstRow = dst + (S - 1 - y) * S * 4;
-        data.set(rgb.subarray(srcRow, srcRow + S * 4), dstRow);
-        if (alpha) {
-          for (let x = 0; x < S; x++) data[dstRow + x * 4 + 3] = alpha[srcRow + x * 4];
-        } else {
-          for (let x = 0; x < S; x++) data[dstRow + x * 4 + 3] = 255;
+      for (let y = 0; y < D; y++) {
+        const dstRow = dst + (D - 1 - y) * D * 4;
+        for (let x = 0; x < D; x++) {
+          let r = 0, g = 0, b = 0, a = 0;
+          for (let sy = 0; sy < scale; sy++) {
+            const src = ((k * S + y * scale + sy) * S + x * scale) * 4;
+            for (let sx = 0; sx < scale; sx++) {
+              const o = src + sx * 4;
+              r += rgb[o]; g += rgb[o + 1]; b += rgb[o + 2];
+              a += alpha ? alpha[o] : 255;
+            }
+          }
+          const n = scale * scale, o = dstRow + x * 4;
+          data[o] = r / n; data[o + 1] = g / n; data[o + 2] = b / n; data[o + 3] = a / n;
         }
       }
     }
   });
   await Promise.all(jobs);
-  layer = total;
-  const t = new THREE.DataArrayTexture(data, S, S, layer);
+  const t = new THREE.DataArrayTexture(data, D, D, total);
   t.format = THREE.RGBAFormat;
   t.type = THREE.UnsignedByteType;
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -77,23 +88,22 @@ async function arrayTexture(base, strips, S, total, srgb) {
   return t;
 }
 
-export async function loadCast(baseUrl) {
+export async function loadCast(baseUrl, { texScale = 1 } = {}) {
   const doc = await fetch(baseUrl + 'cast.json').then((r) => { if (!r.ok) throw new Error('cast.json ' + r.status); return r.json(); });
   const tex = doc.textures;
   const [buf, albedo, normal] = await Promise.all([
     fetchBin(baseUrl + 'cast.bin.gz'),
-    arrayTexture(baseUrl, tex.albedo, tex.size, tex.nAlbedo, true),
-    tex.nNormal ? arrayTexture(baseUrl, tex.normal, tex.size, tex.nNormal, false) : Promise.resolve(null),
+    arrayTexture(baseUrl, tex.albedo, tex.size, tex.nAlbedo, true, texScale),
+    tex.nNormal ? arrayTexture(baseUrl, tex.normal, tex.size, tex.nNormal, false, texScale) : Promise.resolve(null),
   ]);
   if (doc.byteLength && buf.byteLength !== doc.byteLength) throw new Error('cast.bin does not match cast.json');
-  const chars = doc.characters.map((c) => ({ ...c, geometry: buildGeometry(c, buf) }));
+  const chars = doc.characters.map((c) => ({ ...c, raw: rawViews(c, buf) }));
   const layerRough = new Float32Array(tex.layers.map((l) => l.rough));
   return { doc, chars, albedo, normal, layerRough };
 }
 
-function buildGeometry(c, buf) {
+function rawViews(c, buf) {
   const n = c.vertexCount;
-  const g = new THREE.BufferGeometry();
   const q = new Int16Array(buf, c.position.offset, n * 3);
   const pos = new Float32Array(n * 3);
   const mn = c.position.min, rg = c.position.range;
@@ -101,18 +111,43 @@ function buildGeometry(c, buf) {
     const k = i % 3;
     pos[i] = mn[k] + ((q[i] + 32767) / 65534) * rg[k];
   }
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const A = c.attributes;
-  g.setAttribute('aNrm', new THREE.BufferAttribute(new Int8Array(buf, A.normal, n * 4), 4, true));
-  g.setAttribute('uv', new THREE.BufferAttribute(new Uint16Array(buf, A.uv, n * 2), 2, true));
-  g.setAttribute('aBoneI', new THREE.BufferAttribute(new Uint8Array(buf, A.skinIndex, n * 4), 4, false));
-  g.setAttribute('aBoneW', new THREE.BufferAttribute(new Uint8Array(buf, A.skinWeight, n * 4), 4, true));
-  g.setAttribute('aTex', new THREE.BufferAttribute(new Uint8Array(buf, A.tex, n * 4), 4, false));
+  const IT = c.index.type === 'u16' ? Uint16Array : Uint32Array;
+  return {
+    n, pos,
+    nrm: new Int8Array(buf, A.normal, n * 4),
+    uv: new Uint16Array(buf, A.uv, n * 2),
+    bi: new Uint8Array(buf, A.skinIndex, n * 4),
+    bw: new Uint8Array(buf, A.skinWeight, n * 4),
+    tex: new Uint8Array(buf, A.tex, n * 4),
+    index: new IT(buf, c.index.offset, c.index.count),
+  };
+}
+
+/**
+ * Merge meshes (each {n, pos, nrm, uv, bi, bw, tex, index} in the raw layout) into one indexed
+ * geometry with 32-bit indices. Returns {geometry, ranges: [{vbase, ibase}]}: mesh k's index i is at
+ * ranges[k].ibase + i and refers to vertex ranges[k].vbase + index[i].
+ */
+export function mergeMeshes(meshes) {
+  let nv = 0, ni = 0;
+  for (const m of meshes) { nv += m.n; ni += m.index.length; }
+  const arrays = {};
+  for (const [name, k, T] of VERTEX_ATTRS) arrays[name] = new T(nv * k);
+  const index = new Uint32Array(ni);
+  const ranges = [];
+  let v0 = 0, i0 = 0;
+  for (const m of meshes) {
+    for (const [name, k] of VERTEX_ATTRS) arrays[name].set(m[RAW_KEY[name]].subarray(0, m.n * k), v0 * k);
+    const src = m.index;
+    for (let i = 0; i < src.length; i++) index[i0 + i] = src[i] + v0;
+    ranges.push({ vbase: v0, ibase: i0 });
+    v0 += m.n; i0 += src.length;
+  }
+  const g = new THREE.BufferGeometry();
+  for (const [name, k, , norm] of VERTEX_ATTRS) g.setAttribute(name, new THREE.BufferAttribute(arrays[name], k, norm));
   // (three flat-shades lit materials without a 'normal' attribute; the shader reads aNrm)
   g.setAttribute('normal', g.attributes.aNrm);
-  const IT = c.index.type === 'u16' ? Uint16Array : Uint32Array;
-  g.setIndex(new THREE.BufferAttribute(new IT(buf, c.index.offset, c.index.count), 1));
-  g.userData.lods = c.lods;
-  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, c.height / 2, 0), c.height * 0.75);
-  return g;
+  g.setIndex(new THREE.BufferAttribute(index, 1));
+  return { geometry: g, ranges, vertices: nv, indices: ni };
 }

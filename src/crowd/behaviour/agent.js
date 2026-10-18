@@ -134,6 +134,15 @@ export class Agent {
     this.waitX = 0;           // cyclist: waiting for people to clear its way across a rail (until)
     this.waitXT = 0;          // ... for how long (a lane change is given up after a while)
     this.dmNext = 0;
+    // oncoming units (tram.js): the unit whose zone this is (id or −1), the side chosen to leave
+    // its band (±1, 0 none), clearing for it this frame / a cab clearing re-aimed for it, bell
+    this.uI = -1; this.uSide = 0; this.uClr = false; this.uOver = false; this.ubellT = 0;
+    this.lookU = -1;          // looking at this unit (−1: the cab tram)
+    // walking behind slower people (behaviour.js headway): refresh countdown, speed cap, passing
+    // line (signed d) until passT, free width for the group's formation
+    this.hwT = 0; this.hwV = 99; this.passT = 0; this.passD = 0; this.freeW = 9;
+    this.platSt = null;       // station whose platform this walker uses as a sidewalk (platformOK)
+    this.platSide = 1;        // ... and on which side
     this.askT = 0;            // cyclist: when (stopT) it last waited for people to make way          // cyclist: earliest time to try getting off again after a failed try      // pushed by a fixed obstacle / wall this frame (takes no share of a separation)      // stepping off a bicycle to its left side (s left, total offset)
   }
 }

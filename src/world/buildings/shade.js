@@ -97,7 +97,9 @@ export class FaceShade {
       const s = Math.min(1.98, Math.max(0.02, sv));
       // attribute codes (see runAttr): signed width in 1/64 m, strength in 1/63
       const wq = Math.min(32767, Math.max(1, Math.floor((b - a) * 64)));
-      this.occ.push({ bal, a, b, y, s, run: bal ? BAL_RUN : SILL_RUN, wq: bal ? wq : -wq, sq: Math.round(s * 63) });
+      // m: how far beyond its ends an occluder still shades the wall (the soot under a
+      // balcony slab spreads a little sideways and fades out there, see grime.js)
+      this.occ.push({ bal, a, b, y, s, m: bal ? BAL_M : SILL_M, run: bal ? BAL_RUN : SILL_RUN, wq: bal ? wq : -wq, sq: Math.round(s * 63) });
     };
     for (const b of face.balconies || []) add(true, b.u0, b.u1, b.y - (b.slabT || 0.16), 0.7 + 0.6 * hash1(b.u0 * 31 + b.y * 5, seed));
     const ext = opts.sillExt ?? 0.15, sh = opts.sillH ?? 0.12;
@@ -114,17 +116,19 @@ export class FaceShade {
   occluderAt(u, v) {
     for (const it of this.occ) {
       if (it.y < v - 1e-3 || it.y - v > it.run) continue;
-      if (u > it.a - ZONE_M && u < it.b + ZONE_M) return it;
+      if (u > it.a - it.m && u < it.b + it.m) return it;
     }
     return null;
   }
 
   /**
    * Zones of the wall row va..vc by the occluder whose run-off shades them: the nearest
-   * one above that covers u (a line inside the row counts as above: wall rows are cut at
-   * the lines, or a few centimetres from them), else the horizontally nearest (its
-   * run-off is nil there; this keeps one zone change per gap). Returns
-   * {cuts: [u1, ...], occ: [occ0, occ1, ...]}: occ[k] holds between cuts[k-1] and cuts[k].
+   * one above that covers u with its margin (a line inside the row counts as above: wall
+   * rows are cut at the lines, or a few centimetres from them; of two at the same height
+   * the one whose own extent is nearer, so the zone changes half-way across the gap,
+   * where both fade out alike), else the horizontally nearest (its run-off is nil there;
+   * this keeps one zone change per gap). Returns {cuts: [u1, ...], occ: [occ0, occ1,
+   * ...]}: occ[k] holds between cuts[k-1] and cuts[k].
    */
   rowZones(va, vc) {
     const cand = _cand;
@@ -132,16 +136,16 @@ export class FaceShade {
     for (const it of this.occ) if (it.y > va + 1e-3 && it.y - va < it.run) cand.push(it);
     if (!cand.length) return NO_ZONES;
     const xs = [];
-    for (const it of cand) xs.push(it.a - ZONE_M, it.b + ZONE_M);
+    for (const it of cand) xs.push(it.a - it.m, it.b + it.m);
     xs.sort((p, q) => p - q);
     const pts = [xs[0]];
     for (let i = 1; i < xs.length; i++) pts.push((xs[i - 1] + xs[i]) / 2, xs[i]);
     const winner = (u) => {
       let best = null, bd = Infinity;
       for (const it of cand) {
-        const d = u < it.a - ZONE_M ? it.a - ZONE_M - u : u > it.b + ZONE_M ? u - it.b - ZONE_M : 0;
-        // covering occluders (d 0) by height, then the nearest interval
-        const key = d > 0 ? 1e3 + d : it.y;
+        const d = u < it.a - it.m ? it.a - it.m - u : u > it.b + it.m ? u - it.b - it.m : 0;
+        // covering occluders (d 0) by height, then by the distance to their own extent
+        const key = d > 0 ? 1e3 + d : it.y + 0.002 * (u < it.a ? it.a - u : u > it.b ? u - it.b : 0);
         if (key < bd) { bd = key; best = it; }
       }
       return best;
@@ -181,7 +185,7 @@ export class FaceShade {
 }
 
 // run-off: reach below the sill / slab line; zone margin beyond the occluder ends
-const SILL_RUN = 3.4, BAL_RUN = 3.8, ZONE_M = 0.25;
+const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
 const NO_ZONES = { cuts: [], occ: [null] };
 const _cand = [];
 

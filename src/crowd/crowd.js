@@ -69,6 +69,8 @@ class CrowdSim {
     const base = this.humans && this.humans.alloc ? this.humans.alloc(MAX_AGENTS) : 0;
     this.base = Number.isInteger(base) ? base : 0;
     app.events.on('bell', () => this.onBell());
+    // an oncoming unit ringing: people ahead of it look round and the absorbed wake up
+    app.events.on('tram-bell', (e) => { if (this.camU !== null) this.tram.onUnitBell(e, this.time); });
     // crowd_dbg=1: outlines of the stroller / bicycle footprints (testing only)
     if (app.params.num('crowd_dbg', 0) === 1) this._initDebug(app);
   }
@@ -161,6 +163,7 @@ class CrowdSim {
       const delay = Math.max(0, ahead) / 340 + r.range(0.2, 1.2); // sound travel + reaction
       a.tramLookS = this.time + delay;
       a.tramLookT = a.tramLookS + (near ? r.range(1.2, 2.6) : r.range(0.4, 0.9));
+      a.lookU = -1;
       reacted++;
       if (!near) continue;
       a.bellT = this.time + delay + 5;
@@ -180,7 +183,10 @@ class CrowdSim {
   /** Head yaw (relative to the body, + left) that looks at the cab. */
   lookAtTram(a) {
     if (this.time < a.tramLookS && a.state !== ST.WAIT) return a.lookGoal;
-    const p = this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, _v);
+    // (an oncoming unit that rang, or the one coming at someone waiting to cross)
+    let U = a.lookU >= 0 ? this.tram.unitById(a.lookU) : null;
+    if (!U && a.state === ST.WAIT && a.uI >= 0) U = this.tram.unitById(a.uI);
+    const p = U ? this.route.toWorld(U.sU, U.d, 2.2, _v) : this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, _v);
     const yaw = Math.atan2(-(p.x - a.x), -(p.z - a.z));
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;

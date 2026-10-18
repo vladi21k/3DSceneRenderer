@@ -165,8 +165,12 @@ float stMR = 1.0;
 // Grit fill of the flangeway: where the groove surface faces up (its floor and the foot
 // of its walls) the grime of rail.groove gives way to grey-brown grit and sand with leaf
 // fragments, patchy along the rail (packed and damp, loose and pale, swept out by the
-// flanges in places). Effective albedo ~0.03-0.07, mean ~0.05, about 0.3x the setts
-// (the floor's cavity AO is folded in).
+// flanges in places). Albedo ~0.02-0.045, mean ~0.03, and the floor's cavity AO (0.25:
+// it sees a sliver of sky and, mostly, no sun) folds in to an effective ~0.015-0.02, so
+// the flangeway reads as the dark slot of the photographs, ~0.1x the setts.
+// Cavity specular occlusion: the slot's walls hide the sky its floor and walls would
+// reflect at grazing angles (a plain dielectric goes mirror-like there and the groove
+// turned into a pale band of reflected sky), so F0 and F90 scale with the cavity AO.
 // UVs: u along the rail (m), v across the profile (m).
 const GRIT = /* glsl */`
 {
@@ -181,17 +185,17 @@ const GRIT = /* glsl */`
   vec2 q1 = mat2( 0.8, 0.6, -0.6, 0.8 ) * pw * 310.0, q2 = mat2( 0.47, -0.88, 0.88, 0.47 ) * pw * 170.0 + 3.1;
   float grain = mix( 0.5, stNoise( q1 ) * 0.55 + stNoise( q2 ) * 0.45, kFi );
   float stone = kFi * smoothstep( 0.68, 0.8, stNoise( q2 * 0.55 + 9.0 ) );
-  vec3 g = vec3( 0.066, 0.06, 0.05 ) * ( 0.6 + 0.8 * pa ) * ( 0.7 + 0.6 * grain ) * ( 1.0 + 0.35 * stone );
+  vec3 g = vec3( 0.04, 0.0365, 0.0305 ) * ( 0.6 + 0.8 * pa ) * ( 0.7 + 0.6 * grain ) * ( 1.0 + 0.35 * stone );
   // pale dry sand drifts and dark damp stretches
   float sand = smoothstep( 0.62, 0.82, stNoise( vec2( p.x * 0.9, 2.3 ) + 4.0 ) );
   float damp = smoothstep( 0.6, 0.85, stNoise( vec2( p.x * 0.45, 5.1 ) + 13.0 ) );
-  g = mix( g, vec3( 0.09, 0.083, 0.068 ) * ( 0.85 + 0.3 * grain ), 0.6 * sand ) * ( 1.0 - 0.38 * damp );
+  g = mix( g, vec3( 0.056, 0.052, 0.043 ) * ( 0.85 + 0.3 * grain ), 0.6 * sand ) * ( 1.0 - 0.38 * damp );
   // leaf fragments caught in the slot: a few centimetres each, in loose clusters
   float lc = smoothstep( 0.55, 0.8, stNoise( vec2( p.x * 1.7, 0.5 ) + 41.0 ) );
   float leaf = lc * smoothstep( 0.7, 0.82, stNoise( vec2( pw.x * 24.0, pw.y * 70.0 ) + 31.0 ) );
-  g = mix( g, vec3( 0.085, 0.058, 0.034 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
+  g = mix( g, vec3( 0.06, 0.041, 0.024 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
-    g *= mix( 0.78, 1.0, smoothstep( 0.2, 0.5, vColor.g ) );
+    g *= mix( 0.55, 1.0, smoothstep( 0.2, 0.6, vColor.g ) );
   #endif
   diffuseColor.rgb = mix( diffuseColor.rgb, g, stGrit );
   stGritR = mix( 0.97, 0.7, damp ) - 0.08 * leaf;
@@ -224,9 +228,20 @@ export function patchGrit(m) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec2 vStGritUv;\n${GNOISE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\nfloat stGrit = 0.0, stGritR = 1.0;\n${GRIT.replace(/stNoise/g, 'stGNoise')}`)
-      .replace('#include <normal_fragment_begin>', 'roughnessFactor = mix( roughnessFactor, stGritR, stGrit );\nmetalnessFactor *= 1.0 - stGrit;\n#include <normal_fragment_begin>');
+      .replace('#include <normal_fragment_begin>', 'roughnessFactor = mix( roughnessFactor, stGritR, stGrit );\nmetalnessFactor *= 1.0 - stGrit;\n#include <normal_fragment_begin>')
+      .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
+#if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+{
+  // cavity specular occlusion (vertex colour = cavity AO: lip / gauge edge 0.6-0.9, walls
+  // 0.3-0.6, floor 0.25)
+  float stSO = smoothstep( 0.22, 0.95, vColor.g );
+  stSO *= stSO;
+  material.specularColorBlended *= stSO;
+  material.specularF90 *= stSO;
+}
+#endif`);
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|stGrit'; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|stGrit2'; };
   m.needsUpdate = true;
   return m;
 }

@@ -14,7 +14,7 @@ import { Strip } from './ironwork/strip.js';
 import {
   makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK,
 } from './ironwork/mats.js';
-import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwork/attach.js';
+import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL } from './ironwork/attach.js';
 
 // Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
 // railings (instanced geometry near, coverage cards far) or stone balustrades, planters,
@@ -29,7 +29,7 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 //   post   finial post / plain post, same range
 //   carve  carved consoles, turned balusters / light levels whose omissions (~1 cm)
 //          stay under 0.6 px, so the switch does not show
-//   plant  full geraniums / light ones (same rule) / far ones, a few larger cards
+//   plant  full plantings / light ones (same rule) / far ones, a few larger cards
 //          covering as much, once the light level's leaves are under 2 px
 //   strap  planter hook straps, until they are thinner than a pixel
 //   ac     AC unit with pipes and brackets / the bare body, same rule for the pipes
@@ -53,20 +53,43 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate } from './ironwor
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
 const _c4 = new THREE.Matrix4(), _ap = {}, _pm = new THREE.Matrix4(), _fr = new THREE.Frustum();
+const _pb = new THREE.Matrix4(), _pl = new THREE.Matrix4(), _pv = new THREE.Vector3();
 
 /** Time slice (ms per frame) for preparing upcoming chunks in update(). */
 const PREFETCH_MS = 0.5;
 
-// Linear albedo palettes for balcony gardening (geranium reds and pinks dominate).
-const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0.5, 0.02, 0.17], [0.85, 0.2, 0.1], [0.8, 0.78, 0.74]];
-const FLOWER_W = [0.3, 0.24, 0.2, 0.12, 0.08, 0.06];
+// Balcony gardening. Most balconies are bare: a building's residents garden a little,
+// some or a lot (lotStyle greenery: the chance that a household plants), and what one
+// household grows differs from the next: geraniums, herbs, trailing greens, surfinia,
+// bougainvillea, boxes left to dry out or standing empty.
+const GROW = { GERANIUM: 0, HERBS: 1, GREEN: 2, SURFINIA: 3, BOUG: 4, DRY: 5, EMPTY: 6 };
+const GROW_W = [0.36, 0.12, 0.12, 0.08, 0.08, 0.13, 0.11];
+// Linear albedo tints of the flowering parts. Geraniums: scarlet, red, pink, magenta,
+// orange, white, salmon, lilac.
+const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0.5, 0.02, 0.17], [0.85, 0.2, 0.1], [0.8, 0.78, 0.74], [0.85, 0.32, 0.2], [0.45, 0.2, 0.5]];
+const FLOWER_W = [0.26, 0.2, 0.18, 0.11, 0.08, 0.07, 0.06, 0.04];
+// herb spikes: lavender, sage blue, basil white, not in flower (leafy)
+const HERBS = [[0.32, 0.2, 0.55], [0.2, 0.12, 0.42], [0.7, 0.7, 0.66], [0.09, 0.16, 0.05]];
+const HERB_W = [0.25, 0.15, 0.2, 0.4];
+// surfinia: purple, magenta, white, pink, crimson; trailing greens hide their flowers
+const SURFINIA = [[0.32, 0.03, 0.42], [0.62, 0.04, 0.3], [0.78, 0.78, 0.74], [0.8, 0.3, 0.48], [0.5, 0.03, 0.05]];
+const TRAIL_GREEN = [0.05, 0.1, 0.03];
+// bougainvillea bracts: magenta, purple, cerise, orange, cream
+const BOUG = [[0.55, 0.015, 0.22], [0.42, 0.02, 0.32], [0.7, 0.05, 0.3], [0.85, 0.3, 0.08], [0.78, 0.74, 0.68]];
+const BOUG_W = [0.4, 0.22, 0.18, 0.12, 0.08];
+// withered flower heads
+const WITHERED = [[0.16, 0.09, 0.045], [0.24, 0.15, 0.08], [0.11, 0.07, 0.045], [0.3, 0.22, 0.12]];
+// planter boxes and troughs: terracotta (three), brown, green, white and anthracite
+// plastic, fibre-cement grey, galvanised zinc
+const BOXES = [[0.42, 0.16, 0.08], [0.36, 0.14, 0.06], [0.4, 0.22, 0.13], [0.12, 0.065, 0.035], [0.035, 0.075, 0.04], [0.6, 0.59, 0.55], [0.045, 0.045, 0.045], [0.3, 0.29, 0.27], [0.36, 0.37, 0.36]];
+const BOX_W = [0.2, 0.12, 0.1, 0.12, 0.1, 0.12, 0.1, 0.08, 0.06];
 const POTS = [[0.42, 0.16, 0.08], [0.32, 0.11, 0.05], [0.36, 0.14, 0.06], [0.2, 0.1, 0.055], [0.07, 0.11, 0.07], [0.42, 0.41, 0.38]];
 const CHAIRS = [[0.75, 0.75, 0.72], [0.07, 0.2, 0.1], [0.5, 0.5, 0.48]];
 const LEAFY = [0.09, 0.16, 0.05];
 const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 0.12, 0.1], [0.3, 0.45, 0.35], [0.75, 0.65, 0.2]];
 const WHITE = [1, 1, 1];
 // instance families (constant keys and options: one lookup per family and chunk)
-const CORBEL_KEYS = ['corbel0', 'corbel1'], PLANT_KEYS = ['plant0', 'plant1'];
+const CORBEL_KEYS = ['corbel0', 'corbel1'], PLANT_KEYS = Object.values(PLANT).map((k) => `plant${k}`);
 const PLANT_OPTS = { cls: 'plant' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
 const BAY_OPTS = { cls: 'rail', radius: 0.8, angle: true, thin: true }, POST_OPTS = { cls: 'post', radius: 1.2, thin: true };
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
@@ -101,13 +124,21 @@ function lotStyle(lot, plan) {
   const corbel = era === 'modern' ? -1 : r.chance(0.6) ? 0 : 1;
   const slabVariant = era === 'modern' || (era === 'mandate' && r.chance(0.45)) ? 1 : 0;
   const roundStone = r.chance(0.45);
-  const greenery = r.chance(0.1) ? 0 : r.range(0.25, 1);   // how much the residents garden
+  if (!r.chance(0.1)) r.next(); // (a former draw, kept so the choices after it stay put)
   const flowers = weighted(r, FLOWER_W);
   const pots = r.int(0, POTS.length - 1);
   const flag = r.int(0, 3);
   const k = r.range(0.95, 1.02);
   const tint = plan.style.tint.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k * WARM[i]);
-  return { design, paint, railH, corbel, slabVariant, roundStone, tint, greenery, flowers, pots, flag };
+  // gardening (a stream of its own): about half the buildings have bare balconies, in a
+  // third some households plant, in the rest (the keen ones) most do. Each building
+  // leans toward some plantings; the keen ones let fewer boxes dry out.
+  const rg = new RNG(hash2(lot.seed, 0x6a7d));
+  const keen = rg.next();
+  const greenery = keen < 0.48 ? rg.range(0, 0.07) : keen < 0.8 ? rg.range(0.12, 0.42) : rg.range(0.5, 0.88);
+  const grow = GROW_W.map((w, i) => w * rg.range(0.3, 1.7) * (i >= GROW.DRY ? 1.3 - greenery : 1));
+  const box = weighted(rg, BOX_W);
+  return { design, paint, railH, corbel, slabVariant, roundStone, tint, greenery, grow, box, flowers, pots, flag };
 }
 
 // ---------------------------------------------------------------- clearance of openings
@@ -278,6 +309,7 @@ const ironwork = {
     this.spare = [];           // spare writer sets
     this.uniforms = { uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden }; // for inspection / debugging
     this.lastPx = 0;
+    this.census = null;        // set to a Map to record what full-detail builds plant (debugging)
 
     // street-wide meshes: merged strips per material, instance pools per family, flags
     this.root = new THREE.Group();
@@ -569,43 +601,75 @@ const ironwork = {
     this.balconyContents(ctx, lot, plan, st, bal, index, r);
   },
 
-  /** Flower boxes on the railing, pots, a chair, an AC unit, now and then a flag. */
+  /** What the residents keep on a balcony: planter boxes on the rail (or the coping, or
+   *  a trough on the floor), pots, a chair, an AC unit, now and then a towel or a flag. */
   balconyContents(ctx, lot, plan, st, bal, index, r) {
     const { lod } = ctx;
     const F = lot.frame.matrix, A = this.att;
     const { y, depth: D, u0, u1 } = bal;
     const len = u1 - u0, hs = st.railH;
-    const g = st.greenery;
-    const potCol = POTS[(st.pots + (r.chance(0.2) ? 1 : 0)) % POTS.length];
-    const flower = () => FLOWERS[r.chance(0.7) ? st.flowers : weighted(r, FLOWER_W)];
     const iron = bal.railing !== 'stone';
     const top = y + (iron ? RAIL_H * hs : BALUSTRADE.H);
-    // flower boxes hung on the handrail (mostly outside), top 3 cm under the rail top
-    if (g > 0 && r.chance(0.45 + 0.45 * g)) {
-      const n = len > 3.2 ? r.int(2, 3) : len > 2 ? 2 : 1;
-      const outside = !iron || r.chance(0.7);
-      const w = iron ? D - 0.05 + (outside ? 0.13 : -0.13) : D - 0.13 + 0.2;
+    // does this household plant at all? (decided alike in near and far builds)
+    const planted = r.chance(st.greenery);
+    let boxes = 0, grow = -1, where = null;
+    if (planted && r.chance(0.8)) {
+      const n = len > 3.2 ? r.int(1, 3) : len > 2 ? r.int(1, 2) : 1;
+      const col = r.chance(0.6) ? BOXES[st.box] : BOXES[weighted(r, BOX_W)];
+      const bl = r.range(0.6, 1.0);
+      grow = this.growOf(st, r);
+      // hung on the handrail (mostly outside), standing on a balustrade's coping clear of
+      // its rounded corners, or (plantings that do not hang) a trough on the floor
+      const low = grow === GROW.HERBS || grow === GROW.DRY || grow === GROW.EMPTY;
+      where = !iron ? 'coping' : r.weighted([['out', 0.65], ['in', 0.2], ['floor', low ? 0.35 : 0]]);
+      let lo = u0 + 0.45, hi = u1 - 0.45, w, yb;
+      if (where === 'coping') {
+        const rc = st.roundStone ? Math.min(0.3, D * 0.35) : 0, i = 0.13;
+        const e = i + Math.max(0, rc - i * 0.5) + bl / 2 + 0.02;
+        lo = u0 + e; hi = u1 - e;
+        w = D - i; yb = top;
+      } else if (where === 'floor') {
+        w = D - 0.2; yb = y;
+      } else {
+        w = D - 0.05 + (where === 'out' ? 0.13 : -0.13); yb = top - 0.19;
+      }
+      const trough = where === 'coping' || where === 'floor' ? r.chance(0.6) : false;
       for (let k = 0; k < n; k++) {
         const u = u0 + len * ((k + 0.5) / n) + r.range(-0.12, 0.12) * len / n;
-        _l.makeScale(0.82, 1, 1).setPosition(THREE.MathUtils.clamp(u, u0 + 0.45, u1 - 0.45), top - 0.19, w);
-        _m.multiplyMatrices(F, _l);
-        this.planter(ctx, _m, potCol, flower());
-        if (!lod && iron) this.part(ctx, A.hooks[outside ? 0 : 1], _m);
+        _pb.multiplyMatrices(F, _l.makeTranslation(lo < hi ? THREE.MathUtils.clamp(u, lo, hi) : (u0 + u1) / 2, yb, w));
+        // most households fill their boxes alike
+        if (k && r.chance(0.35)) {
+          const g = this.growOf(st, r);
+          if (where !== 'floor' || g === GROW.HERBS || g === GROW.DRY || g === GROW.EMPTY) grow = g;
+        }
+        this.planter(ctx, _pb, bl, col, grow, this.tintOf(st, grow, r), trough, r);
+        if (!lod && (where === 'out' || where === 'in')) this.part(ctx, A.hooks[where === 'out' ? 0 : 1], _m.multiplyMatrices(_pb, _l.makeScale(bl, 1, 1)));
+        boxes++;
       }
     }
+    if (this.census && !ctx.chunkLod) {
+      this.census.set(`${lot.seed}:${index}`, { planted, boxes, grow, where, s: lot.s0, side: lot.side, y, at: _q.set((u0 + u1) / 2, y, D).applyMatrix4(F).toArray() });
+    }
     if (lod || !ctx.clutter) return;
-    // pots along the front, inside the railing
-    if (g > 0 && r.chance(0.15 + 0.5 * g)) {
-      const n = r.int(1, Math.min(4, Math.floor(len / 0.45)));
+    // pots on the floor along the front, inside the railing: in many planted households,
+    // and now and then a forgotten one on a bare balcony
+    if (planted ? r.chance(0.5) : r.chance(0.06)) {
+      const n = planted ? r.int(1, Math.max(1, Math.min(4, Math.floor(len / 0.45)))) : 1;
+      const potCol = POTS[(st.pots + (r.chance(0.2) ? 1 : 0)) % POTS.length];
       for (let k = 0; k < n; k++) {
         const u = u0 + 0.3 + (len - 0.6) * ((k + r.range(0.3, 0.7)) / n);
         const w = D - r.range(0.25, 0.32);
         const s = r.range(0.8, 1.2);
         _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y, w);
         this.part(ctx, A.pot, _m.multiplyMatrices(F, _l), r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)]);
+        // a geranium (not every one in bloom), a herb, a dried-out one or bare soil
+        const what = planted ? r.weighted([[PLANT.POT, 0.5], [PLANT.HERB, 0.28], [PLANT.DRY, 0.12], [-1, 0.1]])
+          : r.weighted([[PLANT.DRY, 0.5], [-1, 0.3], [PLANT.HERB, 0.2]]);
+        if (what < 0) continue;
         _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y + 0.2 * s, w);
-        // not every pot is in bloom: a green tint turns the umbels into more foliage
-        this.plant(ctx, 0, _m.multiplyMatrices(F, _l), r.chance(0.75) ? flower() : LEAFY);
+        const tint = what === PLANT.POT ? (r.chance(0.7) ? this.flower(st, r) : LEAFY)
+          : what === PLANT.HERB ? HERBS[weighted(r, HERB_W)] : WITHERED[r.int(0, WITHERED.length - 1)];
+        this.plant(ctx, what, _m.multiplyMatrices(F, _l), tint);
       }
     }
     // a plastic chair
@@ -649,11 +713,7 @@ const ironwork = {
         _l.makeTranslation(u, top - 0.55, w);
         this.acUnit(ctx, _m.multiplyMatrices(F, _l), true);
       }
-      if (o.flowerBox) {
-        // standing on the sill, half inside the window reveal
-        _l.makeScale(o.w + 0.06, 1, 1).setPosition(o.uc, o.y + 0.012, 0.03);
-        this.planter(ctx, _m.multiplyMatrices(F, _l), POTS[st.pots], FLOWERS[st.flowers]);
-      }
+      if (o.flowerBox) this.sillBox(ctx, lot, st, o, F);
     }
     for (const f of plan.flags) {
       const u = flagPier(plan, f);
@@ -672,18 +732,68 @@ const ironwork = {
     }
   },
 
-  /** Planter box (matrix: origin at the box foot, x scaled to its length) with geraniums.
-   *  The far chunks use the same instanced plants (their light level), so nothing changes
-   *  when a chunk is rebuilt at full detail. */
-  planter(ctx, m, potCol, flowerCol) {
-    const A = this.att;
-    this.part(ctx, A.box, m, potCol);
-    // the plant geometry is 0.8 m long, the box template 1 m: rescale to the box length
-    _l.makeScale(1 / 0.8, 1, 1).setPosition(0, 0.16, 0);
-    this.plant(ctx, 1, _c4.multiplyMatrices(m, _l), flowerCol);
+  /** A planter standing on a window sill, half inside the reveal, where the plan has one
+   *  and the household plants (the building's greenery decides, as on its balconies). */
+  sillBox(ctx, lot, st, o, F) {
+    const r = new RNG(hash2(lot.seed, hash2(Math.round(o.uc * 100), Math.round(o.y * 100))));
+    const planted = r.chance(Math.min(1, st.greenery * 2.2));
+    if (this.census && !ctx.chunkLod) this.census.set(`${lot.seed}:w${o.uc.toFixed(2)}:${o.y.toFixed(2)}`, { sill: true, planted });
+    if (!planted) return;
+    let grow = this.growOf(st, r);
+    if (grow === GROW.BOUG) grow = GROW.GREEN;
+    const col = r.chance(0.6) ? BOXES[st.box] : BOXES[weighted(r, BOX_W)];
+    _pb.multiplyMatrices(F, _l.makeTranslation(o.uc, o.y + 0.012, 0.03));
+    this.planter(ctx, _pb, o.w + 0.06, col, grow, this.tintOf(st, grow, r), r.chance(0.6), r);
   },
 
-  /** Instanced geranium (kind 0 pot, 1 planter): full, light and far versions per instance. */
+  /** What a household grows (GROW), after the building's leaning. */
+  growOf(st, r) { return weighted(r, st.grow); },
+
+  /** Geranium colour: the building's favourite, or any. */
+  flower(st, r) { return FLOWERS[r.chance(0.7) ? st.flowers : weighted(r, FLOWER_W)]; },
+
+  /** Tint of a planting's flowering parts. */
+  tintOf(st, grow, r) {
+    switch (grow) {
+      case GROW.GERANIUM: return this.flower(st, r);
+      case GROW.HERBS: return HERBS[weighted(r, HERB_W)];
+      case GROW.GREEN: return TRAIL_GREEN;
+      case GROW.SURFINIA: return SURFINIA[r.int(0, SURFINIA.length - 1)];
+      case GROW.BOUG: return BOUG[weighted(r, BOUG_W)];
+      default: return WITHERED[r.int(0, WITHERED.length - 1)];
+    }
+  },
+
+  /** Planter box or trough (`base`: its foot, unscaled; `len` its length along x) and what
+   *  grows in it (GROW, tint). Whole-box plantings (0.8 m long) are fitted to the length,
+   *  mirrored at random; herbs and dried-out plants are pot-sized clumps along it, a gap
+   *  here and there. The far chunks use the same instanced plants (their light levels)
+   *  and the same draws, so nothing changes when a chunk is rebuilt at full detail. */
+  planter(ctx, base, len, col, grow, tint, trough, r) {
+    const A = this.att;
+    this.part(ctx, trough ? A.trough : A.box, _pl.multiplyMatrices(base, _l.makeScale(len, 1, 1)), col);
+    const soil = trough ? TROUGH_SOIL : BOX_SOIL;
+    if (grow === GROW.EMPTY) return;
+    if (grow === GROW.HERBS || grow === GROW.DRY) {
+      const n = Math.max(1, Math.round(len / 0.27));
+      for (let k = 0; k < n; k++) {
+        if (n > 1 && r.chance(grow === GROW.DRY ? 0.3 : 0.12)) continue;
+        const s = r.range(0.8, 1.05) * (trough ? 0.9 : 1);
+        _l.makeRotationY(r.range(0, 6.28)).scale(_pv.set(s * 0.85, s, s * 0.85))
+          .setPosition(len * ((k + 0.5) / n - 0.5) + r.range(-0.03, 0.03), soil, r.range(-0.015, 0.015));
+        this.plant(ctx, grow === GROW.HERBS ? PLANT.HERB : PLANT.DRY, _pl.multiplyMatrices(base, _l), k && r.chance(0.3) ? this.tintOf(null, grow, r) : tint);
+      }
+      return;
+    }
+    const kind = grow === GROW.GERANIUM ? PLANT.BOX : grow === GROW.BOUG ? PLANT.BOUG : PLANT.TRAIL;
+    const n = Math.max(1, Math.round(len / 0.85)), sx = len / (n * 0.8);
+    for (let k = 0; k < n; k++) {
+      _l.makeScale(r.chance(0.5) ? sx : -sx, 1, 1).setPosition(len * ((k + 0.5) / n - 0.5), soil, 0);
+      this.plant(ctx, kind, _pl.multiplyMatrices(base, _l), tint);
+    }
+  },
+
+  /** Instanced planting (PLANT family): full, light and far versions per instance. */
   plant(ctx, kind, m, tint) {
     const P = this.att.plants;
     ctx.inst.add(PLANT_KEYS[kind], P.levels[kind], this.amats.plant, m, tint, PLANT_OPTS);

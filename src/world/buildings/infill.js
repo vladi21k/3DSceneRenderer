@@ -1,5 +1,5 @@
 import { archPoint, openingOutline } from '../facadePlan.js';
-import { FACES, arcSeg } from './mesh.js';
+import { FACES, arcSeg, glassTone } from './mesh.js';
 
 // Self-contained opening infill for the openings the facades module does not dress (the
 // small windows of exposed party walls and the set-back upper storeys, which are not in
@@ -11,7 +11,15 @@ import { FACES, arcSeg } from './mesh.js';
 const PAINT = {
   darkgreen: [0.025, 0.06, 0.04], brown: [0.075, 0.042, 0.026], white: [0.58, 0.58, 0.56],
   grey: [0.2, 0.21, 0.21], black: [0.018, 0.018, 0.02], teal: [0.02, 0.09, 0.09],
+  lightgrey: [0.42, 0.42, 0.41], cream: [0.55, 0.51, 0.43],
 };
+// what shows behind the panes (linear albedo, as the light inside the room leaves it):
+// net curtains and blinds (white, cream, grey), drawn curtains (fabric colours), rooms
+const SHEER = [[0.6, 0.59, 0.56], [0.58, 0.55, 0.48], [0.5, 0.5, 0.49], [0.55, 0.5, 0.42], [0.46, 0.45, 0.43]];
+const DRAPE = [[0.5, 0.43, 0.32], [0.4, 0.2, 0.15], [0.3, 0.33, 0.25], [0.28, 0.32, 0.38], [0.55, 0.5, 0.42], [0.42, 0.36, 0.3], [0.52, 0.52, 0.5]];
+const BLIND = [[0.6, 0.6, 0.58], [0.56, 0.53, 0.46], [0.45, 0.45, 0.45], [0.52, 0.47, 0.38]];
+const ROOM = [[0.028, 0.026, 0.024], [0.04, 0.036, 0.032], [0.055, 0.048, 0.04], [0.032, 0.032, 0.034]];
+const SHOP_GLASS = glassTone([0.03, 0.032, 0.034]);
 const STALL = [0.05, 0.05, 0.048];
 const ROLLER = [0.3, 0.3, 0.29];
 const DOOR = [0.09, 0.05, 0.03];
@@ -37,10 +45,7 @@ export function openingInfill(ctx, face, o, rng) {
   B.shade = null;
 
   // glazing (the whole outline; doors and shutters cover parts of it)
-  B.flat = [1, 1, 1];
-  B.grime = shop ? 0.9 : (o.lit != null && o.lit < 0.32 ? 0.75 : 0);
-  pane(B, sinks.glass, o, w0 - 0.012, arched ? arcSeg(q, o) : 1);
-  B.grime = 0;
+  glazing(B, sinks.glass, o, w0 - 0.012, arched, arched ? arcSeg(q, o) : 1, shop, door, rng);
 
   // frame: jambs, sill / head rails, arched head ring
   const fw = shop ? 0.08 : 0.055, wf = w0 + 0.035, wb = w0 - 0.025;
@@ -167,14 +172,72 @@ function openLeaves(B, s, o, face, q) {
   }
 }
 
-/** Flat polygon of the opening outline at depth w (fan; outlines are convex). */
-function pane(B, s, o, w, n) {
+/**
+ * The panes of an opening at depth w, and what shows through them: about a third of the
+ * windows have net curtains, some curtains drawn to the sides, blinds let down part of
+ * the way, dark rooms, a few open casements (no reflection: colour alpha flag 0.25, with
+ * the night-lit flag 0.75). Each window's panes lean a degree or two (their normal), so
+ * neighbouring windows mirror different parts of the sky. (o.curtain: the plan's hint.)
+ */
+function glazing(B, s, o, w, arched, n, shop, door, rng) {
+  const lit = o.lit != null && o.lit < 0.32;
+  const tu = rng.range(-0.035, 0.035), tv = rng.range(-0.03, 0.03);
+  B.shade = null;
+  if (shop || door) {
+    B.flat = SHOP_GLASS;
+    B.grime = shop || lit ? 0.75 : 0;
+    pane(B, s, o, w, n, tu, tv);
+    B.grime = 0; B.flat = [1, 1, 1];
+    return;
+  }
+  const h = rng.next();
+  const kind = o.curtain ? (h < 0.5 ? 'sheer' : h < 0.75 ? 'drawn' : 'room') : (h < 0.6 ? 'room' : h < 0.82 ? 'blind' : 'open');
+  const room = glassTone(rng.pick(ROOM).map((c) => c * rng.range(0.85, 1.2)));
+  B.grime = (lit ? 0.75 : 0) + (kind === 'open' ? 0.25 : 0);
+  const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2, top = arched ? o.spring : o.y + o.h;
+  if (kind === 'sheer' || ((kind === 'drawn' || kind === 'blind') && arched)) {
+    // net curtain over the whole window (a little darker low down, where it hangs in folds)
+    const c = (kind === 'drawn' ? rng.pick(DRAPE) : rng.pick(SHEER)).map((x) => x * rng.range(0.85, 1.08));
+    B.flat = glassTone(c);
+    pane(B, s, o, w, n, tu, tv);
+  } else if (kind === 'drawn') {
+    // curtains drawn back to both sides, the room dark between them
+    const c = glassTone(rng.pick(DRAPE).map((x) => x * rng.range(0.85, 1.1)));
+    const a = o.w * rng.range(0.18, 0.32), b = o.w * rng.range(0.18, 0.32);
+    B.flat = c; quad(B, s, u0, u0 + a, o.y, top, w, tu, tv);
+    B.flat = room; quad(B, s, u0 + a, u1 - b, o.y, top, w, tu, tv);
+    B.flat = c; quad(B, s, u1 - b, u1, o.y, top, w, tu, tv);
+  } else if (kind === 'blind') {
+    // a blind let down part of the way from the head
+    const yb = top - (top - o.y) * rng.range(0.25, 0.8);
+    B.flat = glassTone(rng.pick(BLIND).map((x) => x * rng.range(0.9, 1.06)));
+    quad(B, s, u0, u1, yb, top, w, tu, tv);
+    B.flat = room; quad(B, s, u0, u1, o.y, yb, w, tu, tv);
+  } else {
+    B.flat = room;
+    pane(B, s, o, w, n, tu, tv);
+  }
+  B.grime = 0;
+  B.flat = [1, 1, 1];
+}
+
+/** Flat polygon of the opening outline at depth w (fan; outlines are convex), normal leaning (tu, tv). */
+function pane(B, s, o, w, n, tu = 0, tv = 0) {
   const pts = openingOutline(o, Math.max(1, n));
   const m = pts.length >> 1;
   s.reserve(m, (m - 2) * 3);
   const base = s.vc;
-  for (let k = 0; k < m; k++) B.v(s, pts[k * 2], pts[k * 2 + 1], w, 0, 0, 1, pts[k * 2], pts[k * 2 + 1]);
+  for (let k = 0; k < m; k++) B.v(s, pts[k * 2], pts[k * 2 + 1], w, tu, tv, 1, pts[k * 2], pts[k * 2 + 1]);
   for (let k = 1; k < m - 1; k++) B.tri(s, base, base + k, base + k + 1);
+}
+
+/** Pane rectangle at depth w facing +w, normal leaning (tu, tv). UV = (u, v). */
+function quad(B, s, u0, u1, v0, v1, w, tu, tv) {
+  if (u1 - u0 < 1e-3 || v1 - v0 < 1e-3) return;
+  s.reserve(4, 6);
+  const a = B.v(s, u0, v0, w, tu, tv, 1, u0, v0), b = B.v(s, u1, v0, w, tu, tv, 1, u1, v0);
+  const c = B.v(s, u1, v1, w, tu, tv, 1, u1, v1), d = B.v(s, u0, v1, w, tu, tv, 1, u0, v1);
+  B.quadIdx(s, a, b, c, d);
 }
 
 /** Frame ring following an arched head: front face and the inner (soffit) face. */

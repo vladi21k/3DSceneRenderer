@@ -95,9 +95,10 @@ const vegetation = {
    * mirror, instance matrix, tints and LOD size. Species come in zones of a few hundred
    * metres, each side of the street planted on its own (mostly one species, some of the
    * others mixed in); a tree never repeats the template of the previous tree on its side,
-   * nor the template + mirror of the one before. Most trees are young, small and open
-   * (about 4.5-6 m, crowns under 3 m across), so the facades, balconies and lamps carry the
-   * street; about one in seven is old (7.5-10.5 m): most of the layout's mature trees.
+   * nor the template + mirror of the one before. The main avenue (the first 1.5 km) and
+   * the station surroundings keep their old planting: about 40 % of the trees there are
+   * old (8-11 m tall, crowns 5-7 m across, neighbours meeting over the sidewalk); elsewhere
+   * about one in five, the rest young (about 5-6.5 m) and still filling out.
    */
   _planTrees() {
     const { route, layout } = this.app;
@@ -107,14 +108,17 @@ const vegetation = {
     for (const t of trees) {
       const zone = Math.floor(route.wrap(t.s) / 330);
       const zr = RNG.from(layout.seed, 'vegzone', zone, t.side);
-      const dominant = zr.weighted([['pagoda', 0.5], ['ash', 0.35], ['dense', 0.15]]);
+      const dominant = zr.weighted([['pagoda', 0.4], ['ash', 0.3], ['dense', 0.3]]);
       const r = new RNG(t.seed ^ 0x5bd1e995);
-      // older planting: most of the layout's mature trees (some were replanted young)
-      const mature = t.mature && r.chance(0.85);
-      // planned sizes: young trees are kept small and open (the layout plans them a little
-      // bigger), old ones a little lower and narrower than the layout's
-      const height = mature ? t.height * 0.95 : (t.mature ? r.range(5.0, 7.2) : t.height) * 0.88;
-      const crown = mature ? t.crown * 0.85 : (t.mature ? r.range(2.6, 3.8) : t.crown) * 0.78;
+      // old planting: the layout's mature trees, plus some of its young ones on the avenue
+      // and round the stations
+      const sw = route.wrap(t.s);
+      const old = sw < 1500 || layout.stations.some((st) => Math.abs(route.delta(st.s, t.s)) < 90);
+      const mature = t.mature ? r.chance(old ? 1 : 0.9) : r.chance(old ? 0.3 : 0.05);
+      // planned sizes: young trees are kept small (the layout plans them a little bigger),
+      // old ones at least 5 m across
+      const height = mature ? (t.mature ? t.height * 0.97 : r.range(8.2, 10.5)) : (t.mature ? r.range(5.0, 7.2) : t.height) * 0.9;
+      const crown = mature ? (t.mature ? Math.max(5, t.crown * 1.05) : r.range(5, 7)) : (t.mature ? r.range(2.6, 3.8) : t.crown) * 0.82;
       const prev = last[t.side];
       let T = null, mirror = 0;
       for (let tries = 0; tries < 8; tries++) {
@@ -142,7 +146,7 @@ const vegetation = {
       // the pruned (clearance) side of the template faces the tracks; some yaw jitter
       const yaw = (t.side > 0 ? heading - Math.PI / 2 : heading + Math.PI / 2) + r.range(-1, 1) * (tpl.mature ? 0.15 : 0.25);
       const sy = THREE.MathUtils.clamp(height / tpl.height, 0.82, 1.22);
-      const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.12 : 1.2);
+      const sxz = THREE.MathUtils.clamp(0.5 * sy + 0.5 * (crown / (2 * tpl.crownR)), 0.82, tpl.mature ? 1.15 : 1.2);
       const sx = sxz * r.range(0.9, 1.1), sz = sxz * r.range(0.9, 1.1) * (mirror ? -1 : 1);
       // lean: mostly away from the tracks (local +x), a little along the street
       _e.set(r.range(-0.035, 0.035), 0, r.range(-0.045, 0.015));

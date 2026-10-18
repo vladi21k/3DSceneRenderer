@@ -35,6 +35,13 @@ const HINT = new Map();
 
 /** Colours and grime are stored relative to COLOR_SCALE in unorm8 (0..2 representable). */
 export const COLOR_SCALE = 2;
+/**
+ * Glass batches (buildings' own glazing): the vertex colour is the albedo of what shows
+ * behind the pane (curtain, blind, dark room) divided by GLASS_K (see grime.litGlass).
+ */
+export const GLASS_K = 0.32;
+/** Vertex colour for the glass sink showing `albedo` behind the pane. */
+export const glassTone = (albedo) => albedo.map((c) => Math.min(COLOR_SCALE, c / GLASS_K));
 const C8 = 255 / COLOR_SCALE, CS = 1 / COLOR_SCALE;
 
 function alloc(v, i) {

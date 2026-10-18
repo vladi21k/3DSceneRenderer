@@ -15,6 +15,14 @@ export const PLATFORM_LEN = 52;
 export const POLE_D = TRACK_ZONE_HALF + 0.55;   // lamp / catenary pole line
 export const TREE_D = TRACK_ZONE_HALF + 1.75;   // street tree line
 export const SIDE_LOT_START = 16;                // side-street facades begin this far from the main facade line
+const CAFE_AVENUE_END = 1500;      // the main avenue (from the start) is lined with terraces
+const CAFE_STATION_REACH = 130;    // ...and so are the stretches around each stop (from its centre)
+const CAFE_SHARE_HOT = 0.28;       // share of the frontage that is café there (avenue, stops, corners)
+const CAFE_SHARE = 0.1;            // ...and elsewhere
+const UMB_OVERHANG = 0.35;         // umbrella canopies may overhang a terrace's ends
+const UMB_GAP = 0.3;               // air between neighbouring canopies (furniture keeps ≥ 0.1 + valances)
+// market umbrella colours: mostly cream and white, a few navy
+const UMB_COLORS = [['cream', 0.44], ['white', 0.3], ['navy', 0.16], ['sand', 0.06], ['burgundy', 0.04]];
 
 export class Layout {
   constructor(route, seed = 7) {
@@ -23,6 +31,7 @@ export class Layout {
     this.L = route.length;
     this.nChunks = Math.ceil(this.L / CHUNK_LEN);
     this._planStations();
+    this._planStart();
     this._planCrossovers();
     this._planCrossStreets();
     this._planLots();
@@ -32,7 +41,6 @@ export class Layout {
     this._planFurniture();
     this._planObstacles();
     this._bucket();
-    this._planStart();
   }
 
   // ------------------------------------------------------------------ street width
@@ -312,67 +320,121 @@ export class Layout {
   }
 
   // ------------------------------------------------------------------ cafes
+  /** Lots where terraces gather: the main avenue, the stretches around the stops and the
+   *  cross-street corners. */
+  _cafeHot(lot) {
+    const r = this.route, sm = r.wrap((lot.s0 + lot.s1) / 2);
+    if (sm < CAFE_AVENUE_END || lot.cornerStart || lot.cornerEnd) return true;
+    return this.stations.some((st) => Math.abs(r.delta(st.s, sm)) < CAFE_STATION_REACH);
+  }
+
   _planCafes() {
-    // A terrace belongs to one shop: 5–12 m of sidewalk in front of a shopfront (or the
+    // A terrace belongs to one shop: 5–14 m of sidewalk in front of a shopfront (or the
     // entrance) of the lot, one loose row of tables (sometimes two), at most ten tables,
     // with irregular spacing and the odd gap, as street cafés really spread out.
+    // Terraces come in runs: 2–4 neighbouring lots of a block each put out their own, so
+    // on the avenue, around the stops and at the corners about a quarter to a third of the
+    // frontage is café (market umbrellas, mostly cream and white, the odd navy one), and
+    // elsewhere about a tenth.
     this.cafes = [];
     const rng = RNG.from(this.seed, 'cafes');
     bindLayout(this);   // plans for corner lots follow the side-street lines (buildings binds the same layout)
+    // error diffusion per side: every lot adds its share of café frontage to what the side
+    // owes, a run starts once enough is owed, and each terrace pays its length back, so the
+    // coverage holds steady while the runs stay irregular
+    const owed = { [-1]: 0, [1]: 0 };
+    let run = 0, prev = null, last = null;
     for (const lot of this.lots) {
-      if (lot.len < 10 || this.isInStation((lot.s0 + lot.s1) / 2, 6)) continue;
-      if (!rng.chance(0.22)) continue;
-      const side = lot.side;
-      const len = Math.min(lot.len - 2.4, rng.range(5, 12));
-      // centre on a ground-floor shop (else the door) of the facade behind
-      const ground = facadePlan(lot).openings.filter((o) => o.floor === 0 && (o.kind === 'shop' || o.kind === 'door'));
-      const shops = ground.filter((o) => o.kind === 'shop');
-      const o = shops.length ? rng.pick(shops) : ground.length ? rng.pick(ground) : null;
-      const uFrac = o ? o.uc / lot.frame.width : 0.5;   // u runs from the viewer-left end of the front
-      const sC = side > 0 ? lot.s1 - uFrac * lot.len : lot.s0 + uFrac * lot.len;
-      const lo = lot.s0 + 1.2, hi = lot.s1 - 1.2;
-      const s0 = Math.max(lo, Math.min(hi - len, sC - len / 2)), s1 = s0 + len;
-      const dFacade = lot.d - 0.6;
-      const rows = rng.chance(0.7) ? 1 : 2;
-      const style = rng.weighted([['umbrella', 0.6], ['open', 0.2], ['awning', 0.2]]);
-      const chairStyle = rng.pick(['bistro', 'plastic', 'wicker', 'metal']);
-      const tables = [];
-      const MAX_TABLES = 10;
-      for (let row = 0; row < rows && tables.length < MAX_TABLES; row++) {
-        const dd = dFacade - 1.3 - row * 1.55;
-        if (dd < TREE_D + 1.2) break;
-        const step = rng.range(1.9, 2.4);
-        let prev = -Infinity;
-        for (let s = s0 + 0.9 + (row ? step * 0.5 : 0); s < s1 - 0.6 && tables.length < MAX_TABLES; s += step) {
-          if (rng.chance(0.15)) continue;   // an empty slot
-          const ts = Math.min(s1 - 0.6, Math.max(prev + 1.65, s + rng.range(-0.35, 0.35)));
-          if (ts > s1 - 0.5) break;
-          prev = ts;
-          const td = side * (dd + rng.range(-0.18, 0.18));
-          const nCh = rng.weighted([[2, 0.5], [3, 0.2], [4, 0.3]]);
-          const chairs = [];
-          const rot0 = rng.range(0, Math.PI * 2);
-          for (let c = 0; c < nCh; c++) {
-            const a = (nCh === 2 ? (c * Math.PI) + Math.PI / 2 : (c / nCh) * Math.PI * 2) + (nCh === 2 ? 0 : rot0 * 0.1) + rng.range(-0.25, 0.25);
-            const rr = 0.62;
-            chairs.push({ s: ts + Math.cos(a) * rr, d: td + Math.sin(a) * rr, yaw: a + Math.PI, occupied: false });
-          }
-          tables.push({ s: ts, d: td, shape: rng.chance(0.7) ? 'round' : 'square', chairs });
-        }
+      // a block ends at a side change or a cross street: runs never jump across
+      if (!prev || prev.side !== lot.side || lot.cornerStart || prev.cornerEnd) { run = 0; last = null; }
+      prev = lot;
+      const hot = this._cafeHot(lot), corner = lot.cornerStart || lot.cornerEnd;
+      const mid = (lot.s0 + lot.s1) / 2;
+      let share = hot ? CAFE_SHARE_HOT : CAFE_SHARE;
+      // the avenue's right-hand sidewalk is its café side, and the opening view from the
+      // default start looks along a run of terraces there
+      if (this.route.wrap(mid) < CAFE_AVENUE_END && !corner) share = lot.side > 0 ? CAFE_SHARE_HOT + 0.05 : CAFE_SHARE_HOT - 0.04;
+      const ahead = this.route.delta(this.defaultStartS, mid);
+      const opening = lot.side > 0 && ahead > 40 && ahead < 150;
+      owed[lot.side] += share * lot.len;
+      if (run === 0 && (opening || owed[lot.side] > rng.range(corner ? 2 : 6, 20))) {
+        run = hot ? rng.weighted([[2, 0.4], [3, 0.4], [4, 0.2]]) : rng.weighted([[1, 0.5], [2, 0.35], [3, 0.15]]);
       }
-      if (!tables.length) continue;
-      const umbrellas = [];
-      if (style === 'umbrella') {
-        const us = rng.range(2.8, 3.6);
-        const n = Math.max(1, Math.round((s1 - s0 + 0.2) / (us + 0.2)));
-        const pitch = (s1 - s0) / n;
-        for (let i = 0; i < n; i++) {
-          umbrellas.push({ s: s0 + pitch * (i + 0.5), d: side * (dFacade - 1.3 - (rows - 1) * 0.78), size: us, color: rng.pick(['cream', 'cream', 'white', 'navy', 'burgundy', 'sand']) });
-        }
-      }
-      this.cafes.push({ id: this.cafes.length, lot: lot.id, side, s0, s1, dIn: side * (dFacade - 1.3 - rows * 1.55 - 0.2), dOut: side * dFacade, style, chairStyle, tables, umbrellas });
-      lot.cafe = this.cafes.length - 1;
+      if (run === 0) { last = null; continue; }
+      run--;
+      if (lot.len < (hot ? 9 : 10) || this.isInStation(mid, 6)) continue;
+      // neighbours in a run vary, but two terraces without umbrellas never follow each
+      // other (about 70% of all terraces stand under umbrellas)
+      const style = last && last.style !== 'umbrella' ? 'umbrella' : rng.weighted([['umbrella', 0.6], ['open', 0.2], ['awning', 0.2]]);
+      const c = this._addCafe(lot, rng, hot, style);
+      if (c) { owed[lot.side] = Math.max(-20, owed[lot.side] - (c.s1 - c.s0)); last = c; }
     }
+  }
+
+  _addCafe(lot, rng, hot, style) {
+    const side = lot.side;
+    const len = Math.min(lot.len - 2.4, hot ? rng.range(7, 14) : rng.range(5, 12));
+    // centre on a ground-floor shop (else the door) of the facade behind
+    const ground = facadePlan(lot).openings.filter((o) => o.floor === 0 && (o.kind === 'shop' || o.kind === 'door'));
+    const shops = ground.filter((o) => o.kind === 'shop');
+    const o = shops.length ? rng.pick(shops) : ground.length ? rng.pick(ground) : null;
+    const uFrac = o ? o.uc / lot.frame.width : 0.5;   // u runs from the viewer-left end of the front
+    const sC = side > 0 ? lot.s1 - uFrac * lot.len : lot.s0 + uFrac * lot.len;
+    const lo = lot.s0 + 1.2, hi = lot.s1 - 1.2;
+    const s0 = Math.max(lo, Math.min(hi - len, sC - len / 2)), s1 = s0 + len;
+    const dFacade = lot.d - 0.6;
+    const rows = rng.chance(hot ? 0.58 : 0.7) ? 1 : 2;
+    const chairStyle = rng.pick(['bistro', 'plastic', 'wicker', 'metal']);
+    const tables = [];
+    const MAX_TABLES = 10;
+    for (let row = 0; row < rows && tables.length < MAX_TABLES; row++) {
+      const dd = dFacade - 1.3 - row * 1.55;
+      if (dd < TREE_D + 1.2) break;
+      const step = rng.range(1.9, 2.4);
+      let prev = -Infinity;
+      for (let s = s0 + 0.9 + (row ? step * 0.5 : 0); s < s1 - 0.6 && tables.length < MAX_TABLES; s += step) {
+        if (rng.chance(0.15)) continue;   // an empty slot
+        const ts = Math.min(s1 - 0.6, Math.max(prev + 1.65, s + rng.range(-0.35, 0.35)));
+        if (ts > s1 - 0.5) break;
+        prev = ts;
+        const td = side * (dd + rng.range(-0.18, 0.18));
+        const nCh = rng.weighted([[2, 0.5], [3, 0.2], [4, 0.3]]);
+        const chairs = [];
+        const rot0 = rng.range(0, Math.PI * 2);
+        for (let c = 0; c < nCh; c++) {
+          const a = (nCh === 2 ? (c * Math.PI) + Math.PI / 2 : (c / nCh) * Math.PI * 2) + (nCh === 2 ? 0 : rot0 * 0.1) + rng.range(-0.25, 0.25);
+          const rr = 0.62;
+          chairs.push({ s: ts + Math.cos(a) * rr, d: td + Math.sin(a) * rr, yaw: a + Math.PI, occupied: false });
+        }
+        tables.push({ s: ts, d: td, shape: rng.chance(0.7) ? 'round' : 'square', chairs });
+      }
+    }
+    if (!tables.length) return null;
+    const umbrellas = [];
+    let dIn = dFacade - 1.3 - rows * 1.55 - 0.2;
+    if (style === 'umbrella') {
+      // large square market umbrellas (3–4 m) side by side over the whole terrace (the
+      // canopies may overhang its ends a little); one colour per café, the odd one off
+      const color = rng.weighted(UMB_COLORS);
+      const span = s1 - s0 + 2 * UMB_OVERHANG, gap = UMB_GAP;
+      let n = Math.max(1, Math.round(span / rng.range(3.2, 3.9)));
+      if (n > 1 && (span - (n - 1) * gap) / n < 3.0) n--;
+      const us = Math.min(4.0, Math.max(3.0, (span - (n - 1) * gap) / n));
+      // the canopy keeps clear of the facade line (furniture's planner leaves 0.3 m)
+      let hw = Infinity;
+      for (let s = s0 - 1; s <= s1 + 1; s += 1) hw = Math.min(hw, this.halfWidth(s, side));
+      const dU = Math.min(dFacade - 1.3 - (rows - 1) * 0.78, hw - 0.36 - us / 2);
+      dIn = Math.min(dIn, dU - 0.5);
+      // packed edge to edge, centred on the terrace
+      const sA = (s0 + s1) / 2 - ((n - 1) * (us + gap)) / 2;
+      for (let i = 0; i < n; i++) {
+        umbrellas.push({ s: sA + i * (us + gap), d: side * dU, size: us, color: rng.chance(0.15) ? rng.weighted(UMB_COLORS) : color });
+      }
+    }
+    const cafe = { id: this.cafes.length, lot: lot.id, side, s0, s1, dIn: side * dIn, dOut: side * dFacade, style, chairStyle, tables, umbrellas };
+    this.cafes.push(cafe);
+    lot.cafe = cafe.id;
+    return cafe;
   }
 
   // ------------------------------------------------------------------ furniture
