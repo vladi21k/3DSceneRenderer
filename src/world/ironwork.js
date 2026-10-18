@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG, hash2 } from '../core/rng.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
-import { facadePlan, archPoint } from './facadePlan.js';
+import { facadePlan } from './facadePlan.js';
 import { DESIGNS, RAIL_H } from './ironwork/patterns.js';
 import { bayGeometry, postGeometry, buildAtlas, atlasV, ATLAS, TOL } from './ironwork/railings.js';
 import {
@@ -15,6 +15,7 @@ import {
   makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK,
 } from './ironwork/mats.js';
 import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL } from './ironwork/attach.js';
+import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 
 // Balconies and facade attachments: carved stone slabs on scroll consoles, wrought-iron
 // railings (instanced geometry near, coverage cards far) or stone balustrades, planters,
@@ -52,7 +53,7 @@ import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL,
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
-const _c4 = new THREE.Matrix4(), _ap = {}, _pm = new THREE.Matrix4(), _fr = new THREE.Frustum();
+const _c4 = new THREE.Matrix4(), _pm = new THREE.Matrix4(), _fr = new THREE.Frustum();
 const _pb = new THREE.Matrix4(), _pl = new THREE.Matrix4(), _pv = new THREE.Vector3();
 
 /** Time slice (ms per frame) for preparing upcoming chunks in update(). */
@@ -89,7 +90,7 @@ const LEAFY = [0.09, 0.16, 0.05];
 const TOWELS = [[0.8, 0.8, 0.78], [0.62, 0.55, 0.42], [0.12, 0.2, 0.42], [0.55, 0.12, 0.1], [0.3, 0.45, 0.35], [0.75, 0.65, 0.2]];
 const WHITE = [1, 1, 1];
 // instance families (constant keys and options: one lookup per family and chunk)
-const CORBEL_KEYS = ['corbel0', 'corbel1'], PLANT_KEYS = Object.values(PLANT).map((k) => `plant${k}`);
+const CORBEL_KEYS = ['corbel0', 'corbel1', 'corbel2'], PLANT_KEYS = Object.values(PLANT).map((k) => `plant${k}`);
 const PLANT_OPTS = { cls: 'plant' }, CORBEL_OPTS = { cls: 'carve', radius: 1 }, BALUSTER_OPTS = { cls: 'carve', thin: true };
 const BAY_OPTS = { cls: 'rail', radius: 0.8, angle: true, thin: true }, POST_OPTS = { cls: 'post', radius: 1.2, thin: true };
 // All dishes in town aim at the same satellite: a fixed world direction (south-west, 40° up).
@@ -138,137 +139,17 @@ function lotStyle(lot, plan) {
   const greenery = keen < 0.48 ? rg.range(0, 0.07) : keen < 0.8 ? rg.range(0.12, 0.42) : rg.range(0.5, 0.88);
   const grow = GROW_W.map((w, i) => w * rg.range(0.3, 1.7) * (i >= GROW.DRY ? 1.3 - greenery : 1));
   const box = weighted(rg, BOX_W);
-  return { design, paint, railH, corbel, slabVariant, roundStone, tint, greenery, grow, box, flowers, pots, flag };
-}
-
-// ---------------------------------------------------------------- clearance of openings
-// Dressing around an opening's head (surrounds, voussoir rings, keystones, hoods, door
-// portals), as the buildings module may draw it, and open shutter leaves folded back
-// against the piers either side (facades). Conservative reaches (metres).
-function headProfile(o, ground) {
-  const door = o.kind === 'door';
-  const arched = o.rise > 0.01;
-  const reach = ground ? (door ? 0.8 : arched ? 0.62 : 0.34) : 0.4;
-  const d0 = o.uc - o.w / 2 - reach, d1 = o.uc + o.w / 2 + reach;
-  // open leaves: one leaf width beyond each jamb, up to the crown at their outer edge
-  const leaf = o.shutters === 'open' ? [o.uc - o.w - 0.09, o.uc + o.w + 0.09, o.y + o.h + 0.03] : null;
-  const hp = {
-    u0: leaf ? Math.min(d0, leaf[0]) : d0, u1: leaf ? Math.max(d1, leaf[1]) : d1, d0, d1, leaf,
-    flat: o.y + o.h + (ground ? (door ? (arched ? 1.06 : 0.72) : 0.52) : 0.5),
-    jamb: o.spring + 0.06, arc: null, door,
+  // carved stone (a stream of its own): every slab sits on consoles, modern fronts on
+  // plain stepped or block ones; console width and the height of the slab's moulded
+  // edge vary from building to building
+  const rs = new RNG(hash2(lot.seed, 0x5c0e));
+  const plainCorbel = rs.chance(0.55) ? CONSOLE.TIERED : CONSOLE.BLOCK;
+  const corbelW = rs.range(0.9, 1.3);
+  const edge = rs.range(0.02, 0.06);
+  return {
+    design, paint, railH, corbel: corbel < 0 ? plainCorbel : corbel, corbelW, edge, slabVariant, roundStone, tint,
+    greenery, grow, box, flowers, pots, flag,
   };
-  if (arched) {
-    const T = ground ? 0.6 : 0.36, a = [];
-    for (let i = 0; i <= 20; i++) {
-      archPoint(o, i / 20, _ap, T);
-      a.push(_ap.u, _ap.v + (Math.abs(_ap.u - o.uc) < 0.22 ? 0.1 : 0)); // keystone
-    }
-    // left to right (headTopAt walks it with u increasing)
-    if (a[0] > a[a.length - 2]) for (let i = 0, j = a.length - 2; i < j; i += 2, j -= 2) {
-      [a[i], a[j]] = [a[j], a[i]]; [a[i + 1], a[j + 1]] = [a[j + 1], a[i + 1]];
-    }
-    hp.arc = a;
-  }
-  return hp;
-}
-
-/** Highest point of an opening's dressing at facade position u (−Infinity if clear).
- *  `seg` (optional {i}) is a cursor into the arc for calls with increasing u. */
-function headTopAt(hp, u, seg = null) {
-  if (u < hp.u0 || u > hp.u1) return -Infinity;
-  const L = hp.leaf;
-  const lt = L && u >= L[0] && u <= L[1] ? L[2] : -Infinity;
-  if (u < hp.d0 || u > hp.d1) return lt;
-  if (hp.door || !hp.arc) return Math.max(lt, hp.flat);
-  const a = hp.arc, n = a.length;
-  if (u <= a[0]) return Math.max(lt, hp.jamb, a[1]);
-  if (u >= a[n - 2]) return Math.max(lt, hp.jamb, a[n - 1]);
-  // the segment holding u (the arc runs left to right)
-  let i = seg ? seg.i : 0;
-  while (i < n - 4 && u > a[i + 2]) i += 2;
-  if (seg) seg.i = i;
-  const ua = a[i], ub = a[i + 2];
-  return Math.max(lt, hp.jamb, a[i + 1] + (a[i + 3] - a[i + 1]) * ((u - ua) / ((ub - ua) || 1)));
-}
-
-const planHeads = new WeakMap();
-/** Head profiles of the openings on floor `f` of a plan (cached per plan and floor). */
-function headsOn(plan, f) {
-  let h = planHeads.get(plan);
-  if (!h) planHeads.set(plan, (h = []));
-  if (!h[f]) h[f] = plan.openings.filter((o) => o.floor === f).map((o) => headProfile(o, f === 0));
-  return h[f];
-}
-
-const consoleCache = new WeakMap(); // balcony -> placements (plans are cached)
-/** Console positions for a balcony: n evenly spread consoles, each moved to the nearest
- *  pier where it clears the dressing of the openings below; where no pier is wide
- *  enough it is shortened to stop above the head, or left out. → [{u, h}] */
-function placeConsoles(plan, bal, n, Hc) {
-  let out = consoleCache.get(bal);
-  if (!out) consoleCache.set(bal, (out = findConsoles(plan, bal, n, Hc)));
-  return out;
-}
-function findConsoles(plan, bal, n, Hc) {
-  const soffit = bal.y - bal.slabT, len = bal.u1 - bal.u0;
-  const W2 = CORBEL.W / 2;
-  const lo = bal.u0 + W2 + 0.03, hi = bal.u1 - W2 - 0.03;
-  if (hi <= lo) return [];
-  const heads = bal.floor > 0 ? headsOn(plan, bal.floor - 1).filter((hp) => hp.u1 > bal.u0 - 0.5 && hp.u0 < bal.u1 + 0.5) : [];
-  const step = 0.03, N = Math.floor((hi - lo) / step) + 1;
-  const top = new Float32Array(N).fill(-1e9);
-  if (heads.length) {
-    // dressing height on a grid widened by a console half-width (+2 cm) either side, each
-    // head over its own span only, then the highest point under each console footprint
-    // (sliding maximum, monotone deque)
-    const K = Math.ceil((W2 + 0.02) / step), M = N + 2 * K, u0 = lo - K * step;
-    const raw = new Float32Array(M).fill(-1e9), seg = { i: 0 };
-    for (const hp of heads) {
-      seg.i = 0;
-      const j0 = Math.max(0, Math.ceil((hp.u0 - u0) / step)), j1 = Math.min(M - 1, Math.floor((hp.u1 - u0) / step));
-      for (let j = j0; j <= j1; j++) { const h = headTopAt(hp, u0 + j * step, seg); if (h > raw[j]) raw[j] = h; }
-    }
-    const q = new Int32Array(M);
-    let qh = 0, qt = 0;
-    for (let j = 0; j < M; j++) {
-      while (qt > qh && raw[q[qt - 1]] <= raw[j]) qt--;
-      q[qt++] = j;
-      const i = j - 2 * K;
-      if (i < 0) continue;
-      if (q[qh] < i) qh++;
-      top[i] = raw[q[qh]];
-    }
-  }
-  const clear = soffit - Hc - 0.075; // knob below the console + 3 cm
-  const inset = Math.min(0.32, len * 0.1) + W2;
-  const spacing = n > 1 ? (len - 2 * inset) / (n - 1) : len;
-  const maxShift = Math.min(0.9, Math.max(0.3, spacing * 0.45));
-  const out = [];
-  const taken = (u) => out.some((c) => Math.abs(c.u - u) < 0.42);
-  for (let k = 0; k < n; k++) {
-    const ud = n > 1 ? bal.u0 + inset + spacing * k : (bal.u0 + bal.u1) / 2;
-    const id = Math.round((Math.min(hi, Math.max(lo, ud)) - lo) / step);
-    let best = -1;
-    for (let d = 0; d * step <= maxShift && best < 0; d++) {
-      for (const i of d ? [id - d, id + d] : [id]) {
-        if (i < 0 || i >= N || top[i] >= clear || taken(lo + i * step)) continue;
-        best = i; break;
-      }
-    }
-    if (best >= 0) { out.push({ u: lo + best * step, h: Hc }); continue; }
-    // no clear pier nearby: the tallest console that still stops above the head
-    let bi = -1;
-    for (let d = 0; d * step <= 0.45; d++) {
-      for (const i of [id - d, id + d]) {
-        if (i < 0 || i >= N || taken(lo + i * step)) continue;
-        if (bi < 0 || top[i] < top[bi]) bi = i;
-      }
-    }
-    if (bi < 0) continue;
-    const h = soffit - top[bi] - 0.075;
-    if (h >= 0.2) out.push({ u: lo + bi * step, h: Math.min(Hc, h) });
-  }
-  return out;
 }
 
 /** Bracket position for a facade flag: the pier nearest the planned spot that is clear
@@ -295,8 +176,8 @@ const ironwork = {
     this.geo = {
       bay: DESIGNS.map((d) => [0, 1, 2].map((lod) => bayGeometry(d, lod))),
       post: [postGeometry(0), postGeometry(1)],
-      corbel: [[corbelGeometry(0, 0), corbelGeometry(0, 1)], [corbelGeometry(1, 0), corbelGeometry(1, 1)]],
-      corbelFar: [corbelTemplate(0), corbelTemplate(1)],
+      corbel: [0, 1, 2].map((v) => [corbelGeometry(v, 0), corbelGeometry(v, 1)]),
+      corbelFar: [0, 1, 2].map((v) => corbelTemplate(v)),
       baluster: [balusterGeometry(0), balusterGeometry(1)],
       shadow: shadowTemplates(),
     };
@@ -568,29 +449,30 @@ const ironwork = {
     const tint = st.tint;
     const dirt = r.range(0.88, 1.0);
 
-    // ---- slab (and its shadow caster)
+    // ---- slab (and its shadow caster): T thick at the wall, its moulded edge E tall
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
+    const E = THREE.MathUtils.clamp(T + st.edge, 0.16, 0.22);
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
-    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, st.slabVariant, lod, dirt, D);
+    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, E, st.slabVariant, lod, dirt, D);
     // (rounded corners of two chords: inside the convex corner)
-    writeSlabShadow(ctx.shadow.setMatrix(F), slabPath(u0, u1, D, rc, 0.25, 2), y, T, st.slabVariant, lod);
+    writeSlabShadow(ctx.shadow.setMatrix(F), slabPath(u0, u1, D, rc, 0.25, 2), y, T, E, st.slabVariant, lod);
 
-    // ---- consoles, on the piers between the openings below
-    if (st.corbel >= 0) {
-      const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
-      const sz = (D - 0.07) / CORBEL.D;
-      const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
-      for (const { u, h } of placeConsoles(plan, bal, Math.max(2, bal.corbels | 0), Hc)) {
-        // shortened consoles over a high head become the stepped (tiered) kind
-        const variant = h < Hc * 0.8 ? 1 : st.corbel;
-        _l.makeScale(1, h / CORBEL.H, sz).setPosition(u, y - T, 0);
-        _m.multiplyMatrices(F, _l);
-        // far chunks: merged into the stone mesh; near: instanced, carved or light per
-        // instance. The light console casts the shadow either way.
-        if (lod) writeTemplate(ctx.stone.kind(GRIME.NONE), this.geo.corbelFar[variant], _m, c);
-        else inst.add(CORBEL_KEYS[variant], this.geo.corbel[variant], this.stoneMat, _m, c, CORBEL_OPTS);
-        writePos(ctx.shadow, this.geo.shadow.corbel[variant], _m);
-      }
+    // ---- consoles: on the piers between the openings below, or shortened to stand on
+    // their dressing (see ironwork/consoles.js); their fronts tuck under the drip lip
+    const Hc = THREE.MathUtils.clamp(0.36 + 0.32 * D, 0.5, 0.74);
+    const cw = st.corbelW, W2 = (CORBEL.W * cw) / 2;
+    const foot = st.corbel === CONSOLE.SCROLL ? CORBEL.FOOT * (Hc / CORBEL.H) : 0;
+    const place = balconyConsoles(plan, bal, { Hc, W2, rc, kind: st.corbel, foot });
+    const variant = place.kind, sz = (D - 0.07) / CORBEL.D, sy = place.h / CORBEL.HV[variant];
+    const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
+    for (const u of place.u) {
+      _l.makeScale(cw, sy, sz).setPosition(u, y - T, 0);
+      _m.multiplyMatrices(F, _l);
+      // far chunks: merged into the stone mesh; near: instanced, carved or light per
+      // instance. The light console casts the shadow either way.
+      if (lod) writeTemplate(ctx.stone.kind(GRIME.NONE), this.geo.corbelFar[variant], _m, c);
+      else inst.add(CORBEL_KEYS[variant], this.geo.corbel[variant], this.stoneMat, _m, c, CORBEL_OPTS);
+      writePos(ctx.shadow, this.geo.shadow.corbel[variant], _m);
     }
 
     // ---- railing

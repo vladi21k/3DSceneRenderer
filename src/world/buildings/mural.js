@@ -17,6 +17,28 @@ const TW = 640, TH = 1024;
 
 let mats = null;
 
+// Printed vinyl adverts on steel frames (the big exposed side walls that face back down
+// the street carry some, as in the photographs): graphic designs with generic Hebrew
+// headlines (no brands), sun-faded and grimy. Sink key `advert<k>`, uv 0..1 over the
+// panel (portrait, ADVERT_ASPECT = width / height); lit by floodlights at night.
+export const ADVERTS = 4;
+export const ADVERT_ASPECT = 0.75;
+const AW = 768, AH = 1024;
+let ads = null;
+
+/** Advert materials, one per design (created once, registered with the library). */
+export function advertMaterials(app) {
+  if (ads) return ads;
+  ads = [];
+  for (let k = 0; k < ADVERTS; k++) {
+    const tex = paintAdvert(k);
+    const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.62, metalness: 0, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0, name: `buildings:advert${k}` });
+    if (app.materials.register) app.materials.register(m.name, m);
+    ads.push(m);
+  }
+  return ads;
+}
+
 /** Mural materials, one per composition (created once, registered with the library). */
 export function muralMaterials(app) {
   if (mats) return mats;
@@ -271,6 +293,163 @@ function paint(k) {
   g.strokeStyle = 'rgba(232,226,212,0.9)';
   g.lineWidth = 8;
   g.strokeRect(4, 4, TW - 8, TH - 8);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// ------------------------------------------------------------------ adverts
+
+const HEAD = ['מבצע קיץ', 'עכשיו בחנויות', 'הכי משתלם', 'חדש!', 'בלעדי', 'ליהנות מכל רגע', 'הקיץ שלך', 'פשוט לחיות'];
+const SUB = ['רק החודש', 'בכל הסניפים', 'החל מ-', 'לפרטים נוספים', 'עד גמר המלאי', 'כל יום'];
+const ESTATE = ['דירות למכירה', 'משרדים להשכרה', 'פרויקט חדש', 'דירות 4-5 חדרים'];
+const FIELD = [[22, 62, 142], [196, 32, 44], [236, 118, 24], [18, 122, 72], [96, 40, 128], [24, 24, 30], [0, 140, 170]];
+const HE = '"Liberation Sans", "Noto Sans Hebrew", "DejaVu Sans", Arial, sans-serif';
+
+function text(g, str, x, y, px, col, align = 'right', weight = 700, maxW = AW * 0.86) {
+  g.font = `${weight} ${px}px ${HE}`;
+  g.direction = 'rtl';
+  g.textAlign = align;
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = col;
+  const w = g.measureText(str).width;
+  if (w > maxW) { g.save(); g.translate(x, y); g.scale(maxW / w, 1); g.fillText(str, 0, 0); g.restore(); } else g.fillText(str, x, y);
+}
+
+/** A white roundel with an abstract mark (no real logo). */
+function badge(g, r, x, y, s, col) {
+  g.fillStyle = 'rgba(255,255,255,0.96)';
+  g.beginPath(); g.arc(x, y, s, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = rgb(col); g.lineWidth = s * 0.22; g.lineCap = 'round';
+  const a = r.range(0, Math.PI);
+  g.beginPath(); g.arc(x, y, s * 0.55, a, a + Math.PI * 1.2); g.stroke();
+  g.fillStyle = rgb(col); g.beginPath(); g.arc(x, y, s * 0.18, 0, Math.PI * 2); g.fill();
+}
+
+/** Small print: grey bars. */
+function legal(g, r, y, col) {
+  g.fillStyle = col;
+  for (let i = 0; i < 3; i++) { const w = r.range(0.3, 0.7) * AW; g.fillRect(AW * 0.93 - w, y + i * 14, w, 6); }
+}
+
+/** Design 0: a brand-colour field, a sweeping band, big headline and a percentage. */
+function adField(g, r) {
+  const col = r.pick(FIELD);
+  const gr = g.createLinearGradient(0, 0, AW, AH);
+  gr.addColorStop(0, rgb(shade(col, 1.15))); gr.addColorStop(1, rgb(shade(col, 0.8)));
+  g.fillStyle = gr; g.fillRect(0, 0, AW, AH);
+  // sweeping band
+  g.fillStyle = 'rgba(255,255,255,0.16)';
+  g.beginPath(); g.moveTo(0, AH * 0.62); g.quadraticCurveTo(AW * 0.5, AH * 0.42, AW, AH * 0.5); g.lineTo(AW, AH * 0.66); g.quadraticCurveTo(AW * 0.5, AH * 0.56, 0, AH * 0.78); g.fill();
+  text(g, r.pick(HEAD), AW * 0.93, AH * 0.2, 118, '#ffffff');
+  text(g, r.pick(SUB), AW * 0.93, AH * 0.3, 58, 'rgba(255,255,255,0.9)', 'right', 400);
+  const big = r.pick(['50%', '1+1', '30%', '70%', '2=1']);
+  g.font = `900 260px ${HE}`; g.direction = 'ltr'; g.textAlign = 'center'; g.fillStyle = r.pick(['#ffd400', '#ffffff', '#ffe066']);
+  g.fillText(big, AW * 0.47, AH * 0.62);
+  badge(g, r, AW * 0.16, AH * 0.88, 62, col);
+  legal(g, r, AH * 0.86, 'rgba(255,255,255,0.55)');
+}
+
+/** Design 1: a product (a phone or a bottle) on a light gradient, a price, a brand strip. */
+function adProduct(g, r) {
+  const bgA = r.pick([[214, 232, 244], [246, 232, 210], [232, 240, 226], [244, 222, 226]]);
+  const gr = g.createLinearGradient(0, 0, 0, AH);
+  gr.addColorStop(0, rgb(shade(bgA, 1.04))); gr.addColorStop(1, rgb(shade(bgA, 0.86)));
+  g.fillStyle = gr; g.fillRect(0, 0, AW, AH);
+  const col = r.pick(FIELD);
+  const cx = AW * r.range(0.3, 0.4), cy = AH * 0.52;
+  // soft shadow
+  g.save(); g.filter = 'blur(18px)'; g.fillStyle = 'rgba(0,0,0,0.28)';
+  g.beginPath(); g.ellipse(cx + 20, cy + AH * 0.27, AW * 0.17, 20, 0, 0, Math.PI * 2); g.fill(); g.restore();
+  if (r.chance(0.5)) {
+    // phone: rounded slab, screen gradient
+    const w = AW * 0.34, h = AH * 0.52, x = cx - w / 2, y = cy - h / 2;
+    g.fillStyle = '#16171a'; roundRect(g, x, y, w, h, 34); g.fill();
+    const sg = g.createLinearGradient(x, y, x + w, y + h);
+    sg.addColorStop(0, rgb(shade(col, 1.3))); sg.addColorStop(0.5, rgb(r.pick(FIELD))); sg.addColorStop(1, rgb(shade(col, 0.6)));
+    g.fillStyle = sg; roundRect(g, x + 12, y + 14, w - 24, h - 28, 24); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.18)'; g.beginPath(); g.moveTo(x + 12, y + 14); g.lineTo(x + w * 0.7, y + 14); g.lineTo(x + 12, y + h * 0.5); g.fill();
+  } else {
+    // bottle: body, shoulders, neck, cap and a label
+    const w = AW * 0.2, h = AH * 0.5, x = cx - w / 2, y = cy - h / 2;
+    const bg = g.createLinearGradient(x, 0, x + w, 0);
+    const bc = r.pick([[40, 110, 60], [150, 60, 30], [30, 30, 36], [180, 196, 210]]);
+    bg.addColorStop(0, rgb(shade(bc, 0.7))); bg.addColorStop(0.35, rgb(shade(bc, 1.4))); bg.addColorStop(1, rgb(shade(bc, 0.55)));
+    g.fillStyle = bg;
+    g.beginPath(); g.moveTo(x, y + h); g.lineTo(x, y + h * 0.38); g.quadraticCurveTo(x, y + h * 0.24, x + w * 0.36, y + h * 0.16); g.lineTo(x + w * 0.36, y + h * 0.02);
+    g.lineTo(x + w * 0.64, y + h * 0.02); g.lineTo(x + w * 0.64, y + h * 0.16); g.quadraticCurveTo(x + w, y + h * 0.24, x + w, y + h * 0.38); g.lineTo(x + w, y + h); g.closePath(); g.fill();
+    g.fillStyle = rgb(col); g.fillRect(x + w * 0.33, y - h * 0.02, w * 0.34, h * 0.06);
+    g.fillStyle = '#f4efe2'; g.fillRect(x, y + h * 0.5, w, h * 0.24);
+    g.fillStyle = rgb(col); g.fillRect(x, y + h * 0.56, w, h * 0.08);
+  }
+  text(g, r.pick(HEAD), AW * 0.94, AH * 0.16, 96, rgb(shade(col, 0.7)), 'right', 700, AW * 0.88);
+  text(g, r.pick(SUB), AW * 0.94, AH * 0.36, 52, '#2a2a2e', 'right', 400, AW * 0.4);
+  g.font = `900 120px ${HE}`; g.direction = 'ltr'; g.textAlign = 'right'; g.fillStyle = rgb(col);
+  g.fillText(`₪${r.int(2, 9)}${r.chance(0.5) ? '9' : '0'}.90`, AW * 0.95, AH * 0.56);
+  g.fillStyle = rgb(col); g.fillRect(0, AH * 0.84, AW, AH * 0.16);
+  badge(g, r, AW * 0.84, AH * 0.92, 48, col);
+  legal(g, r, AH * 0.89, 'rgba(255,255,255,0.6)');
+}
+
+/** Design 2: apartments for sale, a drawing of the new block, a phone strip. */
+function adEstate(g, r) {
+  g.fillStyle = r.chance(0.5) ? '#f7f4ec' : '#fff3c4'; g.fillRect(0, 0, AW, AH);
+  const col = r.pick([[198, 30, 36], [22, 62, 142], [18, 110, 70]]);
+  text(g, r.pick(ESTATE), AW * 0.93, AH * 0.14, 104, rgb(col));
+  // the block as rendered by the architect: sky, a tall facade with a window grid, trees
+  const x0 = AW * 0.1, x1 = AW * 0.9, y0 = AH * 0.2, y1 = AH * 0.74;
+  const sg = g.createLinearGradient(0, y0, 0, y1);
+  sg.addColorStop(0, '#7fb1d8'); sg.addColorStop(1, '#dfeaf0');
+  g.fillStyle = sg; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  const bx = AW * r.range(0.25, 0.35), bw = AW * 0.4, by = y0 + (y1 - y0) * 0.12;
+  fillShaded(g, () => { g.beginPath(); g.rect(bx, by, bw, y1 - by); }, [226, 214, 188], bx, 0, bx + bw, 0, 1.08, 0.9);
+  g.fillStyle = 'rgba(40,60,80,0.75)';
+  for (let j = 0; j < 9; j++) for (let i = 0; i < 4; i++) g.fillRect(bx + 12 + i * (bw - 24) / 4, by + 14 + j * (y1 - by - 30) / 9, (bw - 24) / 4 - 14, (y1 - by - 30) / 9 - 14);
+  fillShaded(g, () => { g.beginPath(); g.rect(bx + bw, by + 40, bw * 0.35, y1 - by - 40); }, [196, 184, 160], bx + bw, 0, bx + bw * 1.35, 0, 0.95, 0.8);
+  for (let i = 0; i < 7; i++) {
+    const tx = r.range(x0, x1), ts = r.range(18, 36);
+    fillShaded(g, () => { g.beginPath(); g.ellipse(tx, y1 - ts * 0.8, ts, ts * 0.9, 0, 0, Math.PI * 2); }, r.pick(PAL.green), tx - ts, 0, tx + ts, 0, 1.2, 0.7);
+  }
+  g.fillStyle = rgb(col); g.fillRect(0, AH * 0.8, AW, AH * 0.2);
+  text(g, r.pick(SUB), AW * 0.93, AH * 0.88, 60, '#ffffff', 'right', 700);
+  badge(g, r, AW * 0.15, AH * 0.9, 54, col);
+}
+
+function roundRect(g, x, y, w, h, rr) {
+  g.beginPath();
+  g.moveTo(x + rr, y); g.lineTo(x + w - rr, y); g.quadraticCurveTo(x + w, y, x + w, y + rr); g.lineTo(x + w, y + h - rr);
+  g.quadraticCurveTo(x + w, y + h, x + w - rr, y + h); g.lineTo(x + rr, y + h); g.quadraticCurveTo(x, y + h, x, y + h - rr);
+  g.lineTo(x, y + rr); g.quadraticCurveTo(x, y, x + rr, y); g.closePath();
+}
+
+/** Sun-fade, grime along the foot, a few streaks and the vinyl's seams. */
+function weatherAdvert(g, r) {
+  g.fillStyle = 'rgba(236,230,214,0.12)'; g.fillRect(0, 0, AW, AH);
+  const foot = g.createLinearGradient(0, AH * 0.85, 0, AH);
+  foot.addColorStop(0, 'rgba(50,46,40,0)'); foot.addColorStop(1, 'rgba(50,46,40,0.22)');
+  g.fillStyle = foot; g.fillRect(0, AH * 0.85, AW, AH * 0.15);
+  for (let i = 0; i < 14; i++) {
+    const x = r.range(0, AW), len = r.range(40, 220);
+    const gr = g.createLinearGradient(0, 0, 0, len);
+    gr.addColorStop(0, `rgba(70,64,56,${r.range(0.05, 0.14)})`); gr.addColorStop(1, 'rgba(70,64,56,0)');
+    g.fillStyle = gr; g.fillRect(x, 0, r.range(2, 5), len);
+  }
+  // the printed strips are joined in vertical seams
+  g.fillStyle = 'rgba(0,0,0,0.07)';
+  for (let x = AW / 3; x < AW - 1; x += AW / 3) g.fillRect(x - 1, 0, 2, AH);
+}
+
+function paintAdvert(k) {
+  const c = canvas(AW, AH);
+  const g = c.getContext('2d');
+  const r = RNG.from('buildings', 'advert', k);
+  [adField, adProduct, adEstate, adField][k % 4](g, r);
+  weatherAdvert(g, r);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;

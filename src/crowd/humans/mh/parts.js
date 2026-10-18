@@ -106,23 +106,55 @@ class PartBuilder {
   }
 }
 
-/** Rounded box (bevelled) geometry of size w x h x d centred at the origin. */
-function roundBox(w, h, d, r, seg = 3) {
+/**
+ * Rounded box (bevelled) geometry of size w x h x d centred at the origin. `pillow` > 0 swells the
+ * faces across the thinnest axis (a soft bag stuffed with things, not a crate): the thinnest
+ * dimension grows by up to pillow x its size in the middle of the faces; `taper` narrows the top
+ * (x and the thin axis scale by 1 - taper at the top).
+ */
+function roundBox(w, h, d, r, seg = 3, pillow = 0, taper = 0) {
   const g = new THREE.BoxGeometry(w, h, d, seg * 3, seg * 3, seg * 2);
   const p = g.attributes.position;
   const inner = new THREE.Vector3(w / 2 - r, h / 2 - r, d / 2 - r);
   const v = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  const dims = [w, h, d];
+  const thin = dims.indexOf(Math.min(...dims));
   for (let i = 0; i < p.count; i++) {
     v.fromBufferAttribute(p, i);
     c.set(THREE.MathUtils.clamp(v.x, -inner.x, inner.x), THREE.MathUtils.clamp(v.y, -inner.y, inner.y), THREE.MathUtils.clamp(v.z, -inner.z, inner.z));
     n.subVectors(v, c);
-    if (n.lengthSq() < 1e-12) continue;
-    n.normalize();
-    v.copy(c).addScaledVector(n, r);
+    if (n.lengthSq() > 1e-12) {
+      n.normalize();
+      v.copy(c).addScaledVector(n, r);
+    }
+    if (pillow > 0) {
+      const a = [v.x / (w / 2), v.y / (h / 2), v.z / (d / 2)];
+      const o = [0, 1, 2].filter((k) => k !== thin);
+      const bulge = (1 - Math.min(1, a[o[0]] ** 2)) * (1 - Math.min(1, a[o[1]] ** 2));
+      const comp = ['x', 'y', 'z'][thin];
+      v[comp] *= 1 + pillow * bulge * 2;
+    }
+    if (taper > 0) {
+      const t = 1 - taper * THREE.MathUtils.clamp(0.5 + v.y / h, 0, 1);
+      v.x *= t;
+      if (thin !== 1) v[['x', 'y', 'z'][thin]] *= t;
+    }
     p.setXYZ(i, v.x, v.y, v.z);
   }
   g.computeVertexNormals();
   return g;
+}
+
+/** Straps bridge hollows (between the breasts, the small of the back) instead of following the skin
+ *  into them: each point moves out along its normal to the line between its neighbours. */
+function tension(pts, nrms, iters = 6) {
+  for (let it = 0; it < iters; it++) {
+    for (let i = 1; i < pts.length - 1; i++) {
+      const m = pts[i - 1].clone().add(pts[i + 1]).multiplyScalar(0.5);
+      const out = m.sub(pts[i]).dot(nrms[i]);
+      if (out > 0) pts[i].addScaledVector(nrms[i], out);
+    }
+  }
 }
 
 /**
@@ -197,7 +229,7 @@ export function buildParts(char) {
     const grip = wrist.clone().addScaledVector(a, 0.085 * k).addScaledVector(pn, 0.02 * k);
     const bw = 0.30 * Math.min(1, k), bh = 0.33 * Math.min(1, k), bd = 0.11 * Math.min(1, k);
     const top = grip.clone().add(new THREE.Vector3(0.025 * k, -0.10 * k, 0));
-    const bag = roundBox(bd, bh, bw, 0.012);
+    const bag = roundBox(bd, bh, bw, 0.012, 3, 0.18, 0.12);
     s.geometry(bag, new THREE.Matrix4().makeTranslation(top.x + 0.012, top.y - bh / 2, top.z), rigid(BONE.handR), REGION.bag);
     for (const sz of [-1, 1]) {
       const pts = [], nr = [];
@@ -257,9 +289,9 @@ export function buildParts(char) {
     const M = new THREE.Matrix4().makeRotationX(tilt).setPosition(0, cy - pd / 2 * Math.sin(tilt), best.z0 + 0.008 + pd / 2 * Math.cos(tilt));
     const zBack = best.z0;
     out.fit = { tilt, z0: best.z0, prof };
-    b.geometry(roundBox(pw, ph, pd, 0.04 * k), M, [[BONE.spine2, 1]], REGION.bag);
+    b.geometry(roundBox(pw, ph, pd, 0.04 * k, 4, 0.16, 0.08), M, [[BONE.spine2, 1]], REGION.bag);
     // front pocket
-    b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.35, 0.025 * k), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.22, pd / 2 + pd * 0.12)),
+    b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.35, 0.025 * k, 3, 0.2), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.22, pd / 2 + pd * 0.12)),
       [[BONE.spine2, 1]], REGION.bag);
     bf.geometry(new THREE.BoxGeometry(pw * 0.95, ph * 0.95, pd), M, [[BONE.spine2, 1]], REGION.bag);
     for (const sg of [-1, 1]) {
@@ -296,6 +328,7 @@ export function buildParts(char) {
         if (q && q.distanceTo(sp[i]) < 0.05) sp[i].copy(q);
         sn.push(nrm);
       }
+      tension(sp, sn);
       b.ribbon(sp, sn, 0.045 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.004);
     }
     out.backpack = b.build();
@@ -321,7 +354,7 @@ export function buildParts(char) {
     const bx = ctr.x, bz = ctr.z;
     const M = new THREE.Matrix4().makeRotationY(-yaw).setPosition(bx, by, bz);
     const hipSkin = [[BONE.pelvis, 0.7], [BONE.spine1, 0.3]];
-    b.geometry(roundBox(bd, bh, bw, 0.02 * k), M, hipSkin, REGION.bag);
+    b.geometry(roundBox(bd, bh, bw, 0.02 * k, 3, 0.14, 0.06), M, hipSkin, REGION.bag);
     // flap
     b.geometry(roundBox(bd * 0.25, bh * 0.6, bw * 1.02, 0.01 * k), M.clone().multiply(new THREE.Matrix4().makeTranslation(-bd * 0.55, bh * 0.2, 0)), hipSkin, REGION.bag);
     bf.geometry(new THREE.BoxGeometry(bd, bh, bw), M, hipSkin, REGION.bag);
@@ -351,9 +384,16 @@ export function buildParts(char) {
     const sp = curve.getPoints(40), sn = [];
     for (let i = 0; i < sp.length; i++) {
       const u = (i / (sp.length - 1)) * (ring.length - 1), i0 = Math.floor(u), f = u - i0;
-      sn.push(ring[i0].n.clone().lerp(ring[Math.min(ring.length - 1, i0 + 1)].n, f).normalize());
+      const nrm = ring[i0].n.clone().lerp(ring[Math.min(ring.length - 1, i0 + 1)].n, f).normalize();
+      sn.push(nrm);
+      // (the smoothed curve can cut into the bust or the shoulder blade: back out onto the surface)
+      if (i > 1 && i < sp.length - 2) {
+        const q = surf(sp[i].clone().addScaledVector(nrm, -0.06), nrm, 0.006, 0.02);
+        if (q && q.clone().sub(sp[i]).dot(nrm) > 0) sp[i].copy(q);
+      }
     }
-    b.ribbon(sp, sn, 0.03 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.003);
+    tension(sp, sn);
+    b.ribbon(sp, sn, 0.028 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.0045);
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
   }

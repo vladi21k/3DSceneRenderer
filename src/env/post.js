@@ -53,18 +53,23 @@ const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
 // `veilSun` of the sun's illuminance when it shines on the lens from just outside the frame.
 const TONE = {
   curve: [1.1738, 0.6941, 0.8164, 0.8985], chroma: [0.7, 0.9],
-  meter: [0.3, 0.6], target: [0.15, 0.34], backlit: 0.6,
-  clampLo: [0.75, 0.5], clampHi: [1.3, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.8,
+  meter: [0.3, 0.6], target: [0.25, 0.36], backlit: 0.85,
+  clampLo: [0.75, 0.5], clampHi: [1.6, 4], bloom: [0.018, 0.04], vignette: 0.25, sharpen: 0.8,
   veil: 0.006, veilSun: 0.0012,
-  // highlight recovery: knee (stops over mid grey) and the log slope above it (time of
-  // day, slope): none at midday, then a phone camera's highlight tone mapping as the sun
-  // lowers and the sky outshines the street
-  hiKnee: 1.0, hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.27], [0.9, 0.32], [1.0, 0.6]],
+  // highlight recovery: knee (stops over mid grey; time of day, knee) and the log slope
+  // above it (time of day, slope): none at midday, then a phone camera's highlight tone
+  // mapping as the sun lowers and the sky outshines the street. By day the knee sits high
+  // (sunlit stone and the sky slot reach 230-248), lower as the sky outshines the street
+  hiKnee: [[0.3, 1.6], [0.55, 1.2], [0.8, 1.0]],
+  hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.27], [0.9, 0.32], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast (log slope about a pivot
-  // just above mid grey), easing off towards golden hour
-  midday: 1.04, pivot: 0.4,
+  // just above mid grey), easing off towards golden hour: the blacks come from the
+  // curve, not from underexposure
+  midday: 1.10, pivot: 0.3,
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
+  // sky pixels keep nearly the scene's colour ratios (a saturated blue overhead)
+  skyChroma: 0.95, skySat: [1.2, 1.05],
 };
 
 // temporal AA: weight of the new frame, variance clip width, jitter sequence length and
@@ -234,6 +239,7 @@ const post = {
       uResolution: { value: new THREE.Vector2(1, 1) }, uJitter: { value: new THREE.Vector2() },
       uAlpha: { value: 1 }, uGamma: { value: TAA.gamma }, uExpo: { value: 1 },
     });
+    this.skySatK = app.params.num ? app.params.num('skysat', 1) : 1;   // (inspection: URL skysat=)
     this.taaOn = q.taa !== false && app.params.raw.get('taa') !== '0';
     this.taaPing = 0;
     this.taaFrame = 0;
@@ -270,8 +276,11 @@ const post = {
       uHighTint: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
       uResolution: { value: new THREE.Vector2(1, 1) },
       uVeil: { value: TONE.veil }, uVeilSun: { value: new THREE.Vector3() },
-      uHiComp: { value: new THREE.Vector2(TONE.hiKnee, 1) },
+      uHiComp: { value: new THREE.Vector2(TONE.hiKnee[0][1], 1) },
       uCurveSlope: { value: new THREE.Vector2(1, TONE.pivot) },
+      tDepth: { value: null },
+      uSkyChroma: { value: app.params.num ? app.params.num('skychroma', TONE.skyChroma) : TONE.skyChroma },
+      uSkySat: { value: TONE.skySat[0] },
     });
 
     // the materials' baked AO is scaled down while the screen-space AO runs
@@ -490,7 +499,7 @@ const post = {
       wb.set(1, 1, 1);
     }
     // highlight recovery: none at midday, more as the sun lowers and the sky outshines the street
-    fu.uHiComp.value.set(TONE.hiKnee, table(TONE.hiSlope, t));
+    fu.uHiComp.value.set(table(TONE.hiKnee, t), table(TONE.hiSlope, t));
     fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
     // the low sun's warmth on the highlights only (the shade keeps its blue)
     const hiW = 0.05 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.72, 0.88));
@@ -498,6 +507,7 @@ const post = {
     // more of the scene's own chroma once the light warms (low sun on stone, lamps)
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
+    fu.uSkySat.value = this.skySatK * THREE.MathUtils.lerp(TONE.skySat[0], TONE.skySat[1], ss(t, 0.45, 0.8));
   },
 
   /** Thin-lens depth of field: circle of confusion scale (px), focus distance and blur cap. */
@@ -817,6 +827,7 @@ const post = {
     fu.tHDR.value = img.texture;
     fu.tBloom.value = low.texture;
     fu.tLum.value = this.lumRT[this.lumPing].texture;
+    fu.tDepth.value = this.sceneRT.depthTexture;
     fu.uTime.value = app.time + app.frame * 0.618;
     r.setRenderTarget(null);
     r.render(this.final, this.cam);

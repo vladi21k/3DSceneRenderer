@@ -85,7 +85,9 @@ export const LIBRARY = {
     bake: 'ashlar',
     surf: {
       cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DRESS, mirror: 0.75,
-      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.14, soffit: 0.16 }, stain: { amount: 0.18, freq: 0.6, threshold: 0.66 },
+      // stains on the walls read as run-off: faint, sparse and stretched 1:6 down the face
+      // (the patchy dirt stays on the ledges, the weathering's ledge term)
+      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.14, soffit: 0.16 }, stain: { amount: 0.05, freq: 0.6, threshold: 0.75, stretch: 6 },
     },
     vc: 'tint',
     meta: { note: 'soiled variant of stone.ashlar (same layout / metrics)', tints: LIMESTONE_TINTS },
@@ -100,9 +102,15 @@ export const LIBRARY = {
   'stone.rough': {
     props: { roughness: 1 },
     bake: 'rustic',
-    surf: { cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: STONE_PITCH, weather: STONE_WEATHER, mirror: 0.75 },
+    fx: 'relief',
+    surf: {
+      cell: { ...STONE_CELL, value: 0.09 }, macro: STONE_MACRO, detail: STONE_PITCH, weather: STONE_WEATHER, mirror: 0.75,
+      // parallax-occlusion relief of the bosses (height in the albedo alpha): full within
+      // 20 m, gone by 35 m; self-shadowing towards the sun
+      relief: { near: 20, far: 35, steps: [12, 24], shadowSteps: 14, shadow: 1 },
+    },
     vc: 'tint',
-    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, uv: 'as stone.ashlar (rock-faced rustication: a boss of large planar fracture facets and conchoidal scars meeting in sharp ridges, 2.5-5.5 cm proud inside a 25-40 mm drafted margin, chisel bites along the break line, deep joints; each block\'s boss differs, and its relief is mirrored at random per block at runtime; fine 2-5 mm pitting added within ~6 m)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
+    meta: { courseH: 0.5, blockL: 0.8, blockRange: [0.5, 1.3], courses: 4, joint: 0.012, relief: [0, 0.08], uv: 'as stone.ashlar (rock-faced rustication: a boss of 3-5 large weathered planes with one or two conchoidal scars, 4.5-8 cm proud of the drafted margin, which lies in the polygon plane (20-32 mm wide); deep joints 2 cm behind it. Rendered with parallax-occlusion relief and self-shadowing within ~35 m, so the bosses stand out of the polygon (meta.relief: m in front of the polygon) and break the outline inside a face; the outline of the mesh itself (pier corners, reveals) stays as modelled. Each block\'s boss differs, and its relief is mirrored at random per block at runtime; fine 2-5 mm pitting added within ~6 m)', weather: STONE_WEATHER, tints: LIMESTONE_TINTS },
   },
 
   // ---------------------------------------------------------------- paving

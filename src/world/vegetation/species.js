@@ -51,7 +51,7 @@ export const FOLIAGE = {
  *   droop        how much slender shoots and leaf clumps hang
  *   stake        young tree still tied to stakes
  */
-const young = { mature: false, step: 0.19, infl: 0.95, kill: 0.3, spurs: 0.9, cardsPerTip: 2.4 };
+const young = { mature: false, step: 0.19, infl: 0.95, kill: 0.3, spurs: 0.9, cardsPerTip: 2.2 };
 export const TEMPLATES = [
   { ...young, id: 'pagodaA', species: 'pagoda', height: 5.4, crownBase: 2.7, crownR: 1.35, shape: 'round', trunkR: 0.06, leader: false, scaffolds: 4, attractors: 590, droop: 0.12, stake: true },
   { ...young, id: 'pagodaB', species: 'pagoda', height: 6.0, crownBase: 2.85, crownR: 1.5, shape: 'vase', trunkR: 0.07, leader: false, scaffolds: 3, attractors: 680, droop: 0.15, stake: false },
@@ -67,11 +67,11 @@ export const TEMPLATES = [
   { ...young, id: 'denseB', species: 'dense', height: 6.7, crownBase: 2.9, crownR: 1.8, shape: 'round', trunkR: 0.09, leader: false, scaffolds: 3, attractors: 980, droop: 0.08, stake: false, cardsPerTip: 2.2 },
   // old trees: broad crowns 5-6 m across, 9.5-10.5 m tall (neighbours meet over the sidewalk)
   { id: 'pagodaM', species: 'pagoda', mature: true, height: 10.0, crownBase: 3.8, crownR: 2.9, shape: 'broad', trunkR: 0.16,
-    leader: false, scaffolds: 4, attractors: 2500, step: 0.25, infl: 1.2, kill: 0.36, spurs: 0.85, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.15, stake: false },
+    leader: false, scaffolds: 4, attractors: 2500, step: 0.25, infl: 1.2, kill: 0.36, spurs: 0.85, cardsPerTip: 1.95, cardScale: 1.15, droop: 0.15, stake: false },
   { id: 'denseM', species: 'dense', mature: true, height: 10.4, crownBase: 3.7, crownR: 3.0, shape: 'round', trunkR: 0.18,
-    leader: false, scaffolds: 3, attractors: 2900, step: 0.25, infl: 1.2, kill: 0.34, spurs: 0.9, cardsPerTip: 2.3, cardScale: 1.15, droop: 0.06, stake: false },
+    leader: false, scaffolds: 3, attractors: 2900, step: 0.25, infl: 1.2, kill: 0.34, spurs: 0.9, cardsPerTip: 2.05, cardScale: 1.15, droop: 0.06, stake: false },
   { id: 'ashM', species: 'ash', mature: true, height: 9.6, crownBase: 3.7, crownR: 2.6, shape: 'oval', trunkR: 0.15,
-    leader: true, scaffolds: 0, attractors: 2300, step: 0.25, infl: 1.2, kill: 0.36, spurs: 0.85, cardsPerTip: 2.2, cardScale: 1.15, droop: 0.08, stake: false },
+    leader: true, scaffolds: 0, attractors: 2300, step: 0.25, infl: 1.2, kill: 0.36, spurs: 0.85, cardsPerTip: 1.95, cardScale: 1.15, droop: 0.08, stake: false },
 ];
 
 /** Shrub templates for planters (no trunk, a mound of shoots), footprint in metres. */

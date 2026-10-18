@@ -65,7 +65,11 @@ export function* lotSteps(B, lot, ends, q, metas) {
   const f = lot.frame, W = plan.width, D = plan.depth;
   const rng = RNG.from(lot.seed, 'shell');
   const orn = ornament(plan, rng);           // the same draws as plan.relief; the stream continues
-  const { tint, uncleaned } = stoneStyle(plan, rng);
+  // a rendered block (plan.style.finish, see facadePlan finish()): stone dressing and shop
+  // floor in the plan's stone tint, the wall above in its colour wash
+  const rend = plan.style.finish === 'render' ? plan.style.render : null;
+  const { tint, uncleaned } = stoneStyle(rend ? { style: { tint: plan.style.stone } } : plan, rng);
+  const rcol = rend ? rend.color : null;
   const sillExt = (plan.style.surrounds ? orn.sw : 0.06) + 0.07;   // sill overhang beyond the jambs
   const uvA = ashlarUV(plan, metas.ashlar, rng);
   const rustH = metas.rough && (metas.rough.courseH ?? metas.rough.rowH ?? metas.rough.layout?.rowH);
@@ -111,10 +115,21 @@ export function* lotSteps(B, lot, ends, q, metas) {
   // the main front's extent between chamfers
   const uMin = E[0].cut ? E[0].cut.c : 0, uMax = E[1].cut ? W - E[1].cut.c : W;
   const minRet = (e) => (E[e].cut ? E[e].cut.cr + 0.01 : 0.01);
-  /** Return length of a moulding whose top is at vTopM around end e (0 = none). */
-  const retLen = (e, vTopM, proj) => {
+  // The cornice of a block standing well clear of its neighbour (or of none) often runs
+  // on along the exposed side to the back corner: the side was built to be seen, and the
+  // long lens sees it end-on down the street (vBot: the cornice's foot).
+  const wrapRng = RNG.from(lot.seed, 'cornWrap');
+  const wrapOK = [0, 1].map(() => wrapRng.chance(0.65));
+  const wrapsSide = (e, vBot) => {
+    const x = E[e];
+    if (x.corner || x.cut || !wrapOK[e]) return false;
+    return !x.nb || (x.nbClear != null && vBot > x.nbClear && x.front < 0.5);
+  };
+  /** Return length of a moulding whose top is at vTopM around end e (0 = none); wrap: may run on to the back corner. */
+  const retLen = (e, vTopM, proj, wrap = null) => {
     const x = E[e];
     if (x.corner) return x.len;
+    if (wrap !== null && wrapsSide(e, wrap)) return D;
     if (!x.nb) return proj + 0.12;
     // a return shorter than the projection would fold the mitre over; the excess
     // disappears inside the set-back neighbour
@@ -122,8 +137,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
     if (vTopM > x.nbTop) return Math.min(D, proj + 0.12);
     return 0;
   };
-  const mPath = (vTopM, proj) => {
-    const r0 = retLen(0, vTopM, proj), r1 = retLen(1, vTopM, proj);
+  const mPath = (vTopM, proj, wrap = null) => {
+    const r0 = retLen(0, vTopM, proj, wrap), r1 = retLen(1, vTopM, proj, wrap);
     const path = [];
     if (r0 > minRet(0)) path.push(pt(0, r0));
     path.push(...cornerPts(0), ...cornerPts(1));
@@ -134,7 +149,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
   // ------------------------------------------------------------- faces (front + corner returns)
   const faces = [{ face: plan, frame: f, main: true }];
   for (const r of plan.returns || []) faces.push({ face: r, frame: r.frame, main: false });
-  let mainShade = null;
+  let mainShade = null, mainRend = null;
   for (const F of faces) {
     const face = F.face;
     B.frameFromLot(F.frame);
@@ -150,7 +165,14 @@ export function* lotSteps(B, lot, ends, q, metas) {
       rustic = { v0: fg - 0.4, v1, joints, c: orn.rustC };
     }
     // (the facades module glazes every opening of the plan's fronts: filled)
-    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt, ch: plan.coursing.ch, fit: null, filled: true, uMin: F.main ? uMin : 0, uMax: F.main ? uMax : face.width };
+    // (uvA, uvR: the walling's texture transforms, which the reveals of walled jambs follow)
+    const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt, ch: plan.coursing.ch, fit: null, filled: true, uMin: F.main ? uMin : 0, uMax: F.main ? uMax : face.width, uvA, uvR: null, render: null };
+    if (rend) {
+      // render weathers faster than stone (streaks under the sills, soot under the cornice)
+      const rfs = new FaceShade(face, rcol, lot.seed + 61 + (F.main ? 0 : 977), { dirt: orn.dirt * 1.1, uncleaned: Math.max(uncleaned * 0.6, 0.22), sillExt, sillH: orn.sillH });
+      ctx.render = { v0: rend.from, sink: sinks.paint, fs: rfs };
+      if (F.main) mainRend = rfs;
+    }
     ctx.cover = q.flat ? null : (o) => coverOf(ctx, face, o);
     // texture: ashlar courses aligned with the storeys; rustication rows aligned with the V
     // joints; head joints fitted to the jambs, surrounds, pilasters and quoins per course
@@ -158,6 +180,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
     if (rustic) {
       const sv = rustH ? rustH / orn.rustH : 1;
       sinks.rough.uvx = [sv, uvA[1], sv, -rustic.v1 * sv];
+      ctx.uvR = sinks.rough.uvx.slice();
     }
     if (q.fit && (metas.ashlarLay || metas.roughLay)) {
       const rects = fitRects(plan, face, ops, orn, F.main);
@@ -217,7 +240,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.sweep(sinks.smooth, courseProfile(c.h, c.proj), mPath(c.y + c.h, c.proj), c.y, [true, true]);
   }
   const ck = corniceProfile(cor.h, cor.proj);
-  const cPath = mPath(cor.y + cor.h, cor.proj);
+  const cPath = mPath(cor.y + cor.h, cor.proj, cor.y);
   if (cor.dentils && !q.dentils) {
     // far: the dentil band reads as a darker stripe (lit blocks and shadowed gaps averaged)
     const d = ck.dentil, va = cor.y + d.v0 - 0.002, vb = cor.y + d.v1 + 0.002, wmax = d.w0 + 0.03;
@@ -266,15 +289,15 @@ export function* lotSteps(B, lot, ends, q, metas) {
     const deck = Math.min(x.nbTop, x.nbDeck ?? x.nbTop);
     if (deck < sideTop - 0.05) rects[e].push([Math.max(-D, x.nbBack), Math.min(0, -x.front), Math.max(vb, deck), sideTop]);
   }
-  yield* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA);
+  yield* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA, rcol);
   B.frameFromLot(f);
   B.mark('party');
   yield;
   B.frameFromLot(f);
   B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
-  B.shade = (u, v, w, nu, nv, nw, out) => plainStone(mainShade, tint, -w + u * 0.37, v, out, 0.92, sideTop);
+  B.shade = (u, v, w, nu, nv, nw, out) => plainStone(mainShade, rcol || tint, -w + u * 0.37, v, out, 0.92, sideTop);
   // back wall (between the two back corners; slanted where a return follows a side street)
-  B.vwall(sinks.ashlar, E[1].back[0], E[1].back[1], E[0].back[0], E[0].back[1], gMin - 0.35, sideTop);
+  B.vwall(rend ? sinks.paint : sinks.ashlar, E[1].back[0], E[1].back[1], E[0].back[0], E[0].back[1], gMin - 0.35, sideTop);
   B.setUV();
 
   // ------------------------------------------------------------- parapet / roof
@@ -296,12 +319,15 @@ export function* lotSteps(B, lot, ends, q, metas) {
       path.push(...cornerPts(0), ...cornerPts(1));
       if (r1 > minRet(1)) path.push(pt(1, r1));
       B.setUV(uvA[0], uvA[1], uvA[2], uvA[3]);
-      B.sweep(sinks.ashlar, parapetProfile(ph), path, pv, [true, true]);
+      if (rend) B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainRend, u, v, nv, out, 1.0);
+      B.sweep(rend ? sinks.paint : sinks.ashlar, parapetProfile(ph), path, pv, [true, true]);
+      B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.03);
       B.setUV();
       if (par.type === 'crenel') merlons(B, sinks.smooth, uMin + 0.3, uMax - 0.3, pv + ph, rng.range(0.9, 1.3), rng.range(0.45, 0.6), rng.range(0.35, 0.5));
     }
     // back parapet (plain)
-    B.sweep(sinks.ashlar, parapetProfile(0.85), [E[1].back, E[0].back], pv, [true, true]);
+    if (rend) B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainRend, u, v, nv, out, 0.97);
+    B.sweep(rend ? sinks.paint : sinks.ashlar, parapetProfile(0.85), [E[1].back, E[0].back], pv, [true, true]);
     // roof deck (bituminous membrane), clockwise: negative insets
     B.shade = null;
     roofDeck(B, sinks.paint, insetPolygon(foot.flat(), -0.3), pv + 0.06, q, lot.seed);

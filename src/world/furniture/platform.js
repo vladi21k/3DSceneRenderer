@@ -15,6 +15,10 @@ const COPING = 0.35;     // stone edge width
 const TACTILE = [0.35, 0.75];
 const BAND = 0.12;       // contrasting band behind the tactile strip (dark granite, flat part only)
 const JOINT = 0.004;     // coping block joints
+// tram door centres behind the cab front (m), a 32 m five-section car: the paving in front
+// of them is trodden darker and smoother
+const DOORS = [3.0, 9.2, 15.0, 21.0, 27.2];
+const STOP_BACK = 4;     // the cab front stops this far inside the platform end (layout: stopS)
 
 // ------------------------------------------------------------------ platform body
 /** Strip of an open cross-section profile [[x, h]...] (x from the track edge) along sList.
@@ -33,7 +37,7 @@ function sectionStrip(route, sList, dE, sgn, prof, k, { uvMode = null, u0 = 0, c
       route.toWorld(s, d, h * kk, p);
       pos.push(p.x, p.y, p.z);
       uv.push(s + u0, uvMode === 'd' ? d : acc);
-      if (col) cols.push(...col(x, h));
+      if (col) cols.push(...col(x, h, s));
     });
   }
   for (let i = 0; i < sList.length - 1; i++) for (let j = 0; j < np - 1; j++) {
@@ -117,6 +121,20 @@ function platformBody(pl, app, F, lod) {
   // tyre and shoe grime at the foot of the track face, scuffs along the nose
   const copingGrime = (x, h) => (x < 0.001 ? 0.72 + 0.28 * THREE.MathUtils.smoothstep(h, 0.0, 0.12) : x < 0.04 ? 0.94 : 1);
   const kerbGrime = (x, h) => (h < top - 0.03 ? 0.8 + 0.2 * THREE.MathUtils.smoothstep(h, 0, 0.15) : 1);
+  // walking surface: trodden lanes in front of the tram doors (darker, a little warmer),
+  // strongest by the tactile strip and fading over ~2 m; plus a faint dirt band along the
+  // back kerb. The paving shader turns the darkening into a smoother finish too.
+  const doors = DOORS.map((o) => (sgn > 0 ? s1 - STOP_BACK - o : s0 + STOP_BACK + o));
+  const pavingCol = (x, h, s) => {
+    let w = 0;
+    for (const ds of doors) w = Math.max(w, Math.exp(-(((s - ds) / 0.75) ** 2)));
+    w *= Math.exp(-Math.max(0, x - (TACTILE[1] + BAND)) / 1.6) * k(s);
+    const back = THREE.MathUtils.smoothstep(x, xb - 0.6, xb - 0.26) * 0.05;
+    const f = 1 - 0.13 * w - back;
+    return [f * (1 + 0.012 * w), f, f * (1 - 0.02 * w)];
+  };
+  const fine = sRange(s0 + RAMP, s1 - RAMP, lod ? 8 : 0.375);
+  const allFine = [...rampA, ...fine.slice(1, -1), ...rampB];
   const seed = `${pl.s0.toFixed(1)}|${pl.side}`;
   const stone = [
     ...stoneBlocks(route, pl, dE, sgn, coping, [COPING, 0], k, lod, `coping|${seed}`, copingGrime),
@@ -131,9 +149,9 @@ function platformBody(pl, app, F, lod) {
     [F.bandStone, merge([strip(flat, [[TACTILE[1] + BAND, top], [TACTILE[1], top]], { uvMode: 'd' })])],
     // walking surface; tactile warning strip and band along the flat part, plain paving on the ramps
     [F.platformPaving, merge([
-      strip(all, [[xb - 0.26, top], [TACTILE[1] + BAND, top]], { uvMode: 'd' }),
-      strip(rampA, [[TACTILE[1] + BAND, top], [TACTILE[0], top]], { uvMode: 'd' }),
-      strip(rampB, [[TACTILE[1] + BAND, top], [TACTILE[0], top]], { uvMode: 'd' }),
+      strip(allFine, [[xb - 0.26, top], [xb - 0.6, top], [TACTILE[1] + BAND + 1.0, top], [TACTILE[1] + BAND, top]], { uvMode: 'd', col: pavingCol }),
+      strip(rampA, [[TACTILE[1] + BAND, top], [TACTILE[0], top]], { uvMode: 'd', col: pavingCol }),
+      strip(rampB, [[TACTILE[1] + BAND, top], [TACTILE[0], top]], { uvMode: 'd', col: pavingCol }),
     ])],
     [F.tactile, merge([strip(flat, tactile, { uvMode: 'd' })])],
   ];

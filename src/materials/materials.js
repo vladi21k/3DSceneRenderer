@@ -22,6 +22,7 @@ const shared = {
   night: U.uNight,
   gain: { value: 1 },
   aoScale: { value: 1 },
+  sunDir: U.uSunDir,
 };
 
 const lin = (a) => new THREE.Color().setRGB(a[0], a[1], a[2], THREE.LinearSRGBColorSpace);
@@ -56,8 +57,10 @@ function build(name, def) {
 /** Flat stand-in when a definition fails to build: its colour (or the recipe mean). */
 function fallback(name, def) {
   const p = def.props || {};
-  const flat = (def.bake && RECIPES[def.bake]?.flat) || [0.5, 0.5, 0.5, 0.7];
-  const m = new THREE.MeshStandardMaterial({ name, metalness: p.metalness ?? 0, roughness: Math.min(1, (p.roughness ?? 1) * flat[3]) });
+  const r = def.bake && RECIPES[def.bake];
+  const flat = r?.flat || [0.5, 0.5, 0.5, 0.7];
+  // (a heightA recipe keeps its height in the alpha, not the roughness)
+  const m = new THREE.MeshStandardMaterial({ name, metalness: p.metalness ?? 0, roughness: Math.min(1, (p.roughness ?? 1) * (r?.heightA ? 0.88 : flat[3])) });
   m.color.copy(lin(Array.isArray(p.color) ? p.color : flat));
   return m;
 }

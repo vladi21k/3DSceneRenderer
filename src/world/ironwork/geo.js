@@ -392,11 +392,11 @@ function pathFrame(path, smoothTurn = 0) {
  *  path: [[u, w], ...] traversed so the outside is on the left of travel when seen from
  *  above (n = (-tw, tu)). profile: [[o, v], ...] where o is the outward offset from the
  *  path (≤ 0 inside) and v the height, ordered from the top edge down to the soffit.
- *  shadeFn(o, v) returns an occlusion factor per profile point. Profile joints from
- *  `smoothFrom` on are smooth (one shared vertex), the others hard; path corners turning
+ *  shadeFn(o, v, j) returns an occlusion factor per profile point j. Profile joints from
+ *  `smoothFrom` to `smoothTo` are smooth (one shared vertex), the others hard; path corners turning
  *  by less than `smoothTurn` radians (rounded corners) share their ring and shade
  *  smoothly along the run, sharper corners are hard. */
-export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9, smoothTurn = 0.6 } = {}) {
+export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9, smoothTo = 1e9, smoothTurn = 0.6 } = {}) {
   const m = profile.length;
   const { n, sn, mu, mw, ms, plen, smooth } = pathFrame(path, smoothTurn);
   // profile edge normals in (o, v) and the distance along the profile (uv v)
@@ -409,8 +409,8 @@ export function sweepPath(W, path, profile, { shadeFn = null, smoothFrom = 1e9, 
   // smooth joint, two per hard joint; edge j runs from slot e0[j] to slot e1[j]
   const S = [], e0 = new Int32Array(m - 1), e1 = new Int32Array(m - 1);
   for (let j = 0; j < m; j++) {
-    const o = profile[j][0], v = profile[j][1], sh = shadeFn ? shadeFn(o, v) : 1;
-    if (j > 0 && j < m - 1 && j >= smoothFrom) {
+    const o = profile[j][0], v = profile[j][1], sh = shadeFn ? shadeFn(o, v, j) : 1;
+    if (j > 0 && j < m - 1 && j >= smoothFrom && j <= smoothTo) {
       let no = eo[j - 1] + eo[j], nv = ev[j - 1] + ev[j];
       const l = len2(no, nv) || 1; no /= l; nv /= l;
       e1[j - 1] = e0[j] = S.length / 6;

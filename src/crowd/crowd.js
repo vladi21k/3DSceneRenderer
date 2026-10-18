@@ -56,7 +56,7 @@ class CrowdSim {
     this._mobility(app);
     this.map = new StreetMap(app, opts);
     this.vis = new Visibility(app.route);
-    this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0 };
+    this.counts = { seated: 0, passenger: 0, stand: 0, walker: 0, stand300: 0, walk300: 0, side: 0 };
     this.tram = new TramWatch(this);
     this.population = new Population(this);
     this.steering = new Steering(this);

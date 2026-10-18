@@ -88,7 +88,9 @@ void surface(vec2 m, inout Surf s) {
   vec3 sand = vec3(0.205, 0.192, 0.172);
   vec3 joint = head ? sand * 0.62 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : sand * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
   s.albedo = mix(joint, g, st);
-  s.rough = mix(head ? 0.95 : 0.92, mix(0.74, 0.64, wear), st);
+  // worn granite tops are fairly smooth (a broad low-angle sheen towards a low sun or the
+  // bright end of the street); the sand joints stay matt
+  s.rough = mix(head ? 0.95 : 0.92, mix(0.62, 0.48, wear), st);
 }
 `,
 };

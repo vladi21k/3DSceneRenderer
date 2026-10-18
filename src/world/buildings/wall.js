@@ -64,7 +64,9 @@ function grooveCap(B, s, u, dir, va, vc, groove, c) {
 
 /**
  * ctx: {B, sinks, fs (FaceShade), q (detail), vBottom, vTop, rustic: {v0, v1, joints[], c} | null,
- *       cover?: (o) => {side, head: {ext, H} | null} | null}
+ *       cover?: (o) => {side, head: {ext, H} | null} | null,
+ *       render?: {v0, sink, fs} | null}
+ * ctx.render: the wall above v0 is rendered (its own sink and shading, no ashlar fitting).
  * face: plan-like (width, openings, courses, balconies, cornice, groundAt)
  * ctx.cover tells which dressing closes over the wall around an opening: surround jambs
  * `side` wide up to the spring line, a lintel `ext` beyond the jambs and H tall above a
@@ -94,8 +96,9 @@ export function* wallField(ctx, face, openings) {
   for (const c of face.courses || []) vb.push(c.y - 0.1, c.y - 0.35);
   const gHi = Math.max(face.groundAt(0), face.groundAt(W)), gLo = Math.min(face.groundAt(0), face.groundAt(W));
   for (const d of q.lod ? [0.1, 0.4, 1.0, 2.3] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
-  const rus = ctx.rustic;
+  const rus = ctx.rustic, rend = ctx.render || null;
   if (rus) { vb.push(rus.v0, rus.v1); for (const j of rus.joints) vb.push(j - rus.c, j, j + rus.c); }
+  if (rend) vb.push(rend.v0);
   // bed joints of the ashlar texture (outside the rusticated zone, whose rows already
   // follow its V joints), so every row lies inside one course and can be fitted
   const fitA = ctx.fit ? ctx.fit.ashlar : null, fitR = ctx.fit ? ctx.fit.rough : null;
@@ -114,7 +117,9 @@ export function* wallField(ctx, face, openings) {
 
   const sAsh = ctx.sinks.ashlar, sRough = ctx.sinks.rough || ctx.sinks.ashlar;
   const roughBase = sRough.uvx;
-  B.shade = (u, v, w, nu, nv, nw, out) => fs.wall(u, v, out);
+  const stoneShade = (u, v, w, nu, nv, nw, out) => fs.wall(u, v, out);
+  const rendShade = rend ? (u, v, w, nu, nv, nw, out) => rend.fs.wall(u, v, out) : null;
+  B.shade = stoneShade;
   const sloped = gHi - gLo > 0.02;
   const k = Math.SQRT1_2;
   /** Texture transform of a piece: the sink's own base with u replaced by the fitted (k, off). */
@@ -133,9 +138,11 @@ export function* wallField(ctx, face, openings) {
       rough = true;
       for (const j of rus.joints) { if (vm > j - rus.c && vm < j) groove = 1; else if (vm > j && vm < j + rus.c) groove = -1; }
     }
-    const s = rough ? sRough : sAsh;
-    const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
+    const rr = !rough && rend && vm > rend.v0;
+    const s = rr ? rend.sink : rough ? sRough : sAsh;
+    const fit = rr ? null : rough ? fitR : fitA, base = rough ? roughBase : B.uv;
     const rg = fit ? fit.row(vm) : 0;
+    B.shade = rr ? rendShade : stoneShade;
     const zones = fs.rowZones(va, vc), zc = zones.cuts;
     const maxRun = sloped && va < gHi + 2.5 ? q.gridU : Infinity;
     // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
@@ -187,8 +194,9 @@ export function* wallField(ctx, face, openings) {
       if (groove && !jamb[i]) grooveCap(B, s, ra, -1, va, vc, groove, rus.c);
       if (groove && !jamb[i + 1]) grooveCap(B, s, rb, 1, va, vc, groove, rus.c);
     }
-    s.uvx = rough ? roughBase : null;
+    if (!rr) s.uvx = rough ? roughBase : null;
   }
+  B.shade = stoneShade;
 
   yield;
   // arched spandrels: strips between the head curve and the head line, cut at the bed
@@ -199,8 +207,10 @@ export function* wallField(ctx, face, openings) {
     if (!o.rise || o.top === 'flat') continue;
     const top = Math.min(v1, o.y + o.h);
     const rough = rus && o.spring < rus.v1 && o.spring > rus.v0;
-    const s = rough ? sRough : sAsh;
-    const fit = rough ? fitR : fitA, base = rough ? roughBase : B.uv;
+    const rr = !rough && rend && o.spring > rend.v0;
+    const s = rr ? rend.sink : rough ? sRough : sAsh;
+    const fit = rr ? null : rough ? fitR : fitA, base = rough ? roughBase : B.uv;
+    B.shade = rr ? rendShade : stoneShade;
     const n = arcSeg(q, o);
     B.run = fs.occluderAt(o.uc, top);
     let pu = 0, pv = 0;
@@ -233,7 +243,7 @@ export function* wallField(ctx, face, openings) {
       }
       pu = cu; pv = cv;
     }
-    s.uvx = rough ? roughBase : null;
+    if (!rr) s.uvx = rough ? roughBase : null;
   }
   B.run = null;
   B.shade = null;

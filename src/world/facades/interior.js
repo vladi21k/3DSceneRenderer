@@ -1432,6 +1432,16 @@ outgoingLight = totalSpecular;
 outgoingLight = reflectedLight.directSpecular;
 #elif FACDBG == 7
 outgoingLight = vec3( material.roughness );
+#elif FACDBG == 8
+outgoingLight = vec3( step( 0.3, material.roughness ), step( 0.15, material.roughness ), step( 0.08, material.roughness ) );
+#elif FACDBG == 9
+outgoingLight = vec3( step( 0.05, reflectedLight.directSpecular.g ), step( 0.01, reflectedLight.directSpecular.g ), step( 0.002, reflectedLight.directSpecular.g ) ) * 0.05;
+#elif FACDBG == 11
+outgoingLight = reflectedLight.indirectSpecular;
+#elif FACDBG == 12
+outgoingLight = totalDiffuse;
+#elif FACDBG == 10
+outgoingLight = vec3( 0.01 + 0.04 * step( 0.0, vRoomP.y - vFac.z - 1.0 ) );
 #endif
 `;
 

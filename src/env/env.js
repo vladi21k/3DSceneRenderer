@@ -3,7 +3,7 @@ import { SunLight } from 'three/addons/lights/SunLight.js';
 import { U } from '../core/uniforms.js';
 import { noise1 } from '../core/rng.js';
 import { TRACK_OFFSET } from '../core/config.js';
-import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT } from './atmosphere.js';
+import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT, MIE_DEFAULT } from './atmosphere.js';
 import { Sky } from './sky.js';
 import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms } from './sunShadow.js';
@@ -37,11 +37,13 @@ const _tc = new THREE.Vector3();
 // mie: aerosol load (x the clean reference atmosphere); haze: street-level dust haze
 // (extinction and in-scatter scale for post's aerial perspective)
 const WEATHER = {
-  streaks: { cover: 0.24, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 12, haze: { ext: 1, inscatter: 1 } },
-  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 12, haze: { ext: 1, inscatter: 1 } },
+  streaks: { cover: 0.24, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, haze: { ext: 1, inscatter: 1 } },
+  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 32, haze: { ext: 1, inscatter: 1 } },
   // a pale dust haze: the sky milky and nearly white towards the horizon, far facades
   // losing most of their contrast
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 70, haze: { ext: 1.4, inscatter: 1.2 } },
+  // (bright, nearly non-absorbing dust, a touch warm; its extinction takes about a fifth
+  // of the direct sun, and the forward scatter softens the shadow edges)
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 105, mieH: 1.0, mieAlb: [0.99, 0.975, 0.95], penumbra: 1.3, haze: { ext: 1.4, inscatter: 1.2 } },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
@@ -50,24 +52,41 @@ const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street
 // sunlit walls seen from the floor (up), the sunlit floor seen from below (down), and the
 // sunlit facade seen from the opposite one (cross; a horizontal light, so a shadow on the
 // sunlit facade itself gets none of its own warm bounce)
-const BOUNCE = { up: 0.08, down: 0.2, cross: 0.22 };
+// (the floor-to-floor share is small: open shade on the paving stays sky-blue)
+const BOUNCE = { up: 0.08, down: 0.12, cross: 0.22 };
 // exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
-// (sunny-16 with a touch of lift) while Eh is above EH_FULL; below it the camera adapts
-// only partly (dusk stays darker than midday)
+// while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
+// than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
+// street exposes for the shade and the people, so sunlit pale paving sits well up the
+// curve (~180-200 sRGB), whites and glints clip, and the low sun's backlit street glows;
+// none of it once the sun has set (the dusk caps hold the exposure from then on)
 const KDAY = 1.3, EH_FULL = 1.9;
+const EXPO_LIFT = [[0.0, 0.76], [0.45, 0.76], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
 // exposed value of the horizon slot down the street the camera holds (time of day, level),
 // before post's highlight recovery, which brings it down to the shoulder with its colour:
 // from mid-afternoon, looking towards the low sun, the aureole over the end of the street
-// stays below ~6.5 stops over mid grey; at sunset below ~5.2 stops, at dusk ~4.6. Interpolated in
-// log terms; 64 = no hold.
-const HORIZON_LEVEL = [[0.1, 64], [0.25, 16], [0.6, 16], [0.8, 6.5], [1.0, 4.5]];
+// stays below ~7.3 stops over mid grey (a backlit golden street glows and the sky around
+// the sun may clip, as it does in a photograph); from sunset on below ~4.6 stops, so the
+// afterglow sits under the gamut knee with its gradient and hue. Interpolated in log
+// terms; 64 = no hold.
+const HORIZON_LEVEL = [[0.1, 64], [0.25, 24], [0.45, 30], [0.62, 26], [0.8, 4.5], [1.0, 4.5]];
 // from sunset on, the metered exposure stays within this factor of the nominal one, so a
 // view away from the afterglow does not open up to a grey midday; in the blue hour the
 // camera opens up as far as the meter asks (time of day, factor; log interpolation)
 const DUSK_CEIL = [[0.62, 1e4], [0.72, 1.8], [0.82, 1.8], [0.92, 4.2], [1.0, 4.2]];
+
+/** EXPO_LIFT at time of day t (EV, smooth piecewise-linear). */
+function expoLift(t) {
+  const T = EXPO_LIFT;
+  if (t <= T[0][0]) return T[0][1];
+  for (let i = 1; i < T.length; i++) {
+    if (t <= T[i][0]) return THREE.MathUtils.lerp(T[i - 1][1], T[i][1], THREE.MathUtils.smoothstep(t, T[i - 1][0], T[i][0]));
+  }
+  return T[T.length - 1][1];
+}
 
 /** HORIZON_LEVEL at time of day t (log interpolation). */
 function horizonLevel(t) { return logTable(HORIZON_LEVEL, t); }
@@ -126,7 +145,12 @@ const env = {
     // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue
     // sky, a milky horizon, deep blue only overhead), more on a hazy day; URL mie=
     // overrides it
-    this.atmo = new Atmosphere(renderer, { mieScale: app.params.num('mie', w.mie) });
+    const alb = w.mieAlb || MIE_DEFAULT.alb, ka = app.params.num('miealb', 1);
+    this.atmo = new Atmosphere(renderer, {
+      mieScale: app.params.num('mie', w.mie), mieH: app.params.num('mieh', w.mieH || MIE_DEFAULT.h),
+      mieAlb: alb.map((a) => Math.min(a * ka, 1)), mieG: app.params.num('mieg', w.mieG || MIE_DEFAULT.g),
+      camAlt: app.params.num('alt', 0.35),
+    });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
     scene.add(this.sky.mesh);
     this.clouds = new Clouds(renderer, this.sky.uniforms, { steps: q.cloudSteps });
@@ -156,7 +180,7 @@ const env = {
     sh.bias = patched ? -0.00002 : -0.0002;
     sh.normalBias = patched ? 1.2 : 0.05;
     // widest penumbra half-width (m): a cornice ~80 m up-sun (sun radius 0.27°, x1.5 filter)
-    sh.radius = patched ? 0.5 : 2;
+    sh.radius = (patched ? 0.5 : 2) * (w.penumbra || 1);
     scene.add(this.sun);
 
     this.lights = new StreetLights(app, q.lamps);
@@ -348,7 +372,7 @@ const env = {
     const EK = 0.03; // ~1000 lux
     const lnE = Math.log(KDAY * Math.PI / Math.max(Eh, EH_FULL)) + 0.7 * Math.log(EH_FULL / Math.min(Math.max(Eh, EK), EH_FULL))
       + 0.5 * Math.log(EK / Math.min(Math.max(Eh, 1e-7), EK));
-    this.exposureBase = Math.exp(lnE);
+    this.exposureBase = Math.exp(lnE) * Math.pow(2, expoLift(this.state.t ?? 0));
     // highlight protection for a low sun: whatever the metering does for the shaded
     // canyon, stone facing the sun (albedo ~0.55) stays on the shoulder, so the golden
     // light keeps its colour instead of clipping to cream (half-way in log terms: the

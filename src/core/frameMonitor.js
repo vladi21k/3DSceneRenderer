@@ -47,6 +47,7 @@ export class FrameMonitor {
     this.base = { cpu: new Float32Array(BASE), shadow: new Float32Array(BASE), gpu: new Float32Array(BASE), calls: new Float32Array(BASE) };
     this.baseSt = names.map(() => new Float32Array(BASE));
     this.baseN = 0;
+    this._scratch = new Float32Array(BASE);
     this._measured = false;
     this._pend = [];                            // hitches waiting for their GPU time
     this.loaf = [];
@@ -156,11 +157,13 @@ export class FrameMonitor {
     }
   }
 
-  /** Median of the filled part of a usual-value ring. */
+  /** Median of the filled part of a usual-value ring (typed sort: no garbage). */
   _med(a) {
     const n = Math.min(this.baseN, BASE);
     if (!n) return 0;
-    const v = Array.from(a.subarray(0, n)).sort((x, y) => x - y);
+    const v = this._scratch.subarray(0, n);
+    v.set(a.subarray(0, n));
+    v.sort();
     return v[n >> 1];
   }
 
@@ -234,7 +237,7 @@ export class FrameMonitor {
   frames() {
     const n = Math.min(this.ivN, RING);
     if (!n) return { n: 0, p50: 0, p95: 0, p99: 0, max: 0, over50: 0, over60: 0 };
-    const a = Array.from(this.iv.subarray(0, n)).sort((x, y) => x - y);
+    const a = this.iv.slice(0, n).sort();
     const q = (f) => r1(a[Math.min(n - 1, Math.floor(f * n))]);
     let o50 = 0, o60 = 0;
     for (const v of a) { if (v > 50) o50++; if (v > 60) o60++; }

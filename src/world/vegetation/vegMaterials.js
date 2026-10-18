@@ -26,7 +26,7 @@ import { U } from '../../core/uniforms.js';
 // in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):
-// a fraction (uLeafTrans, ~0.4) of what the lit face would show, a little more looking
+// a fraction (uLeafTrans, ~0.55) of what the lit face would show, a little more looking
 // into the light and on the thin outer shell (rim-lit edges), and through the crown like
 // the direct term. Sky light from the far side passes through the same way.
 //
@@ -368,9 +368,11 @@ function patchLeaf(mat, params) {
   });
 }
 
-/** Bark: wind (so branches carry the leaves), interior occlusion, young-bark lenticels. */
+/** Bark: wind (so branches carry the leaves), interior occlusion, young-bark lenticels;
+ *  old bark furrowed between interlacing ridges (bump-mapped, up to 8 mm deep), a damp, mossy,
+ *  soil-splashed foot. */
 function patchBark(mat, params) {
-  chain(mat, 'veg-bark-v2', (shader) => {
+  chain(mat, 'veg-bark-v4', (shader) => {
     windUniforms(shader, params);
     let vs = shader.vertexShader;
     vs = rep(vs, '#include <common>', `#include <common>
@@ -379,10 +381,12 @@ function patchBark(mat, params) {
       varying float vVegAO;
       varying float vVegFade;
       varying float vBarkYouth;
-      varying vec2 vBarkUv;`, 'bark common');
+      varying vec2 vBarkUv;
+      varying float vBarkY;`, 'bark common');
     vs = rep(vs, '#include <begin_vertex>', `#include <begin_vertex>
       ${BATCH_MATRIX}
       float vegFl;
+      vBarkY = position.y * length( vegBM[ 1 ].xyz );  // height above the paving (m)
       transformed = vegWind( transformed, vegBM, vegFl );
       vVegAO = aVeg.w;
       vBarkYouth = aBark;
@@ -394,9 +398,47 @@ function patchBark(mat, params) {
       varying float vVegAO;
       varying float vBarkYouth;
       varying vec2 vBarkUv;
+      varying float vBarkY;
       ${FADE_FN}
-      float barkHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }`, 'bark frag common');
+      float barkHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
+      float barkN( vec2 p ) {
+        vec2 i = floor( p ), f = fract( p ); f = f * f * ( 3.0 - 2.0 * f );
+        return mix( mix( barkHash( i ), barkHash( i + vec2( 1.0, 0.0 ) ), f.x ), mix( barkHash( i + vec2( 0.0, 1.0 ) ), barkHash( i + vec2( 1.0, 1.0 ) ), f.x ), f.y );
+      }
+      float barkRelief = 0.0;   // bump height (m), read by the normal patch`, 'bark frag common');
     fs = rep(fs, '#include <color_fragment>', /* glsl */`#include <color_fragment>
+      {
+        // old bark: wavy, interlacing longitudinal furrows (5-6 cm apart, 5-13 mm wide,
+        // up to 8 mm deep) between rounded ridges that run together here and there; computed
+        // before the fade discard so the bump derivatives stay valid. Far away only the
+        // furrows' mean darkening remains.
+        vec2 bu = vBarkUv;
+        float pxB = max( max( fwidth( bu.x ), fwidth( bu.y ) ), 1e-5 );
+        float old = 1.0 - smoothstep( 0.35, 0.7, vBarkYouth );
+        float nearB = 1.0 - smoothstep( 0.005, 0.016, pxB );
+        if ( old > 0.0 ) {
+          float x = bu.x / 0.055 + 1.5 * ( barkN( bu * vec2( 5.0, 1.3 ) ) - 0.5 ) + 0.5 * ( barkN( bu * vec2( 13.0, 3.2 ) + 4.2 ) - 0.5 );
+          float d = min( fract( x ), 1.0 - fract( x ) ) * 0.055;        // m to the furrow line
+          float wid = mix( 0.0025, 0.0065, barkN( bu * vec2( 18.0, 3.5 ) + 9.1 ) );
+          float bridge = smoothstep( 0.55, 0.72, barkN( vec2( floor( x + 0.5 ) * 3.1, bu.y * 4.2 ) ) );
+          // V-shaped furrow (soft walls, so the bump stays smooth on screen), dark bottom
+          float groove = ( 1.0 - smoothstep( 0.0, wid * 2.4, d ) ) * ( 1.0 - bridge );
+          float fiss = ( 1.0 - smoothstep( wid * 0.5, wid * 1.5, d ) ) * ( 1.0 - bridge );
+          float crown = smoothstep( 0.0, 0.026, d );
+          float ridge = barkN( bu * vec2( 50.0, 9.0 ) );
+          barkRelief = old * nearB * ( -0.007 * groove + 0.002 * crown + 0.0006 * ridge );
+          float tone = ( 1.0 - 0.5 * fiss ) * ( 0.95 + 0.1 * ridge ) * mix( 0.96, 1.05, crown );
+          diffuseColor.rgb *= mix( 1.0, mix( 0.93, tone, nearB ), old );
+          // lichen-grey patches on the ridges
+          float lich = smoothstep( 0.6, 0.8, barkN( bu * vec2( 6.0, 3.0 ) + 3.1 ) ) * ( 1.0 - fiss ) * old;
+          diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.12, 1.15, 1.08 ), lich * 0.6 );
+        }
+        // the foot: damp and soil-splashed, with green-grey moss on the lower 30 cm
+        float foot = 1.0 - smoothstep( 0.0, 0.45, vBarkY );
+        float moss = foot * smoothstep( 0.45, 0.7, barkN( bu * vec2( 9.0, 6.0 ) + 1.7 ) * 0.7 + 0.3 * barkN( bu * 31.0 ) ) * ( 1.0 - smoothstep( 0.05, 0.32, vBarkY ) );
+        diffuseColor.rgb *= 1.0 - 0.35 * foot * foot;
+        diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.075, 0.085, 0.045 ), moss * 0.7 );
+      }
       if ( vegFadeHidden( false ) ) discard;
       {
         // young bark: pale horizontal lenticels (2-5 mm, ~30 per dm2) and faint vertical
@@ -416,6 +458,19 @@ function patchBark(mat, params) {
         diffuseColor.rgb *= 1.0 + stria;
         diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.36, 0.33, 0.27 ), lent * 0.65 );
       }`, 'bark color_fragment');
+    // (after the normal map: the library bark replaces normal_fragment_maps with its own)
+    fs = rep(fs, '#include <clearcoat_normal_fragment_begin>', `
+      {
+        // bump from the furrow relief (surface gradient, screen-space derivatives)
+        float hx = dFdx( barkRelief ), hy = dFdy( barkRelief );
+        vec3 sx = dFdx( -vViewPosition ), sy = dFdy( -vViewPosition );
+        vec3 r1 = cross( sy, normal ), r2 = cross( normal, sx );
+        float det = dot( sx, r1 );
+        vec3 grad = sign( det ) * ( hx * r1 + hy * r2 );
+        vec3 bn = abs( det ) * normal - grad;
+        if ( abs( det ) > 1e-12 && dot( bn, bn ) > 1e-20 ) normal = normalize( bn );
+      }
+      #include <clearcoat_normal_fragment_begin>`, 'bark normal bump');
     fs = rep(fs, '#include <lights_fragment_end>', `#include <lights_fragment_end>
       reflectedLight.indirectDiffuse *= vVegAO;
       reflectedLight.indirectSpecular *= vVegAO;

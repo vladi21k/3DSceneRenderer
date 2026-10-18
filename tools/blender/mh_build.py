@@ -371,7 +371,9 @@ def build_one(cid, save_blend=False):
             if socks is None:
                 b = spec['bottom']
                 short = b and (b['suit'] in ('female_elegantsuit01', 'female_casualsuit02') or b.get('cut') == 'leg')
-                socks = 'none' if (short and spec['sex'] == 'f') or CASTM.age_class(spec) == 'toddler' else 'keep'
+                long_ = b and not short and not (b.get('cut') == 'skirt')
+                # (socks under long trousers and leggings would poke through the hem at the ankle)
+                socks = 'none' if (short and spec['sex'] == 'f') or long_ or CASTM.age_class(spec) == 'toddler' else 'keep'
             if socks == 'none':
                 keep &= region != CASTM.REGIONS['socks']
         elif kind == 'suit':
@@ -429,6 +431,10 @@ def build_one(cid, save_blend=False):
     bots = [op for op in out_parts if op['kind'] == 'suit' and spec['bottom'] and op['info']['suit'] == spec['bottom']['suit']]
     if tops and bots and tops[0] is not bots[0]:
         tuck_top(tops[0], bots[0], CASTM.REGIONS)
+
+    # layered garments: the bottom's waistband under the top's hem sinks a few mm, so the simplified
+    # LODs of the two never cross (the bottom would show through the top in patches)
+    sink_under_tops(out_parts, CASTM.REGIONS, cid)
 
     # skirts: weights blend pelvis -> both thighs (no splitting between the legs)
     for op in out_parts:
@@ -934,7 +940,7 @@ def pose_relaxed(rig, spec):
         di = (ix.tail - ix.head).normalized()
         ax_ = dt.cross(di)
         if ax_.length > 1e-6:
-            rotate(t1.name, Quaternion(ax_.normalized(), dt.angle(di) * 0.35))
+            rotate(t1.name, Quaternion(ax_.normalized(), dt.angle(di) * 0.5))
         for j, deg in ((2, 14), (3, 16)):
             pb = rig.pose.bones[f'thumb_0{j}_{s}']
             dvec = (pb.tail - pb.head).normalized()
@@ -1070,11 +1076,25 @@ def scalp_coverage(body, bkeep, hair, headw, E, hk):
         used[body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]] = True
     face = (co[:, 1] < E[1] + 0.035 * hk) & (co[:, 2] < E[2] + 0.045 * hk)
     cand = np.where(used & (headw > 0.5) & ~face & (co[:, 2] > E[2] - 0.07 * hk))[0]
+    push = np.zeros(n, np.float32)
     for i in cand:
         nn = Vector(nr[i].tolist())
         o = Vector(co[i].tolist()) + nn * 0.001
-        if bvh.ray_cast(o, nn, 0.06)[0] is not None:
+        h = bvh.ray_cast(o, nn, 0.06)
+        if h[0] is not None:
             cov[i] = 1.0
+            if h[3] < 0.004:
+                push[i] = 0.004 - h[3]
+            continue
+        # hair lying inside the scalp (a tight cap fitted under the skin): the scalp goes under it
+        h = bvh.ray_cast(o, -nn, 0.03)
+        if h[0] is not None:
+            cov[i] = 1.0
+            push[i] = h[3] + 0.004
+    log(f'  scalp: {len(cand)} candidates, {int((cov > 0).sum())} under hair, {int((push > 0).sum())} pushed in (max {push.max() * 100:.1f} cm)')
+    if push.any():
+        body['co'] = co - nr * push[:, None]
+        co = body['co']
     # ease the border over the mesh (two rings), so the hairline is soft
     nb = [[] for _ in range(n)]
     for p in np.where(bkeep)[0]:
@@ -1172,6 +1192,40 @@ def hair_cap(body, bkeep, hair):
     return dict(co=nco.astype(np.float32), nr=body['nr'][vids], vi=np.array(vi, np.int32),
                 uv=np.full((len(vi), 2), 0.5, np.float32), ls=np.array(ls, np.int32), lt=np.array(lt, np.int32),
                 W=body['W'][vids], groups={}, name='haircap')
+
+
+def sink_under_tops(out_parts, REG, cid):
+    """Bottom-garment vertices covered by a top garment (a ray out along the normal meets the top within
+    3 cm) move 4 mm in."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    suits = [op for op in out_parts if op['kind'] == 'suit']
+    tv, tf, off = [], [], 0
+    for op in suits:
+        d = op['d']
+        for p in np.where(op['keep'] & (op['region'] != REG['bottom']))[0]:
+            tf.append([int(x) + off for x in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]])
+        tv.append(d['co'])
+        off += len(d['co'])
+    if not tf:
+        return 0
+    bvh = BVHTree.FromPolygons([Vector(v) for v in np.concatenate(tv).astype(np.float64)], tf, epsilon=0.0)
+    moved = 0
+    for op in suits:
+        d = op['d']
+        vb = np.zeros(len(d['co']), bool)
+        for p in np.where(op['keep'] & (op['region'] == REG['bottom']))[0]:
+            vb[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
+        for i in np.where(vb)[0]:
+            n = Vector(d['nr'][i].tolist())
+            o = Vector(d['co'][i].tolist())
+            if bvh.ray_cast(o + n * 0.0005, n, 0.03)[0] is not None:
+                d['co'][i] = d['co'][i] - d['nr'][i] * 0.004
+                moved += 1
+    if moved:
+        log(cid, f'{moved} bottom-garment vertices sunk under the top')
+    return moved
 
 
 def tuck_top(top, bot, REG):
@@ -1512,11 +1566,21 @@ def clear_face_window(d, body, E, hk, style, cid):
         zmin, zmax = pv[:, 2].min(), pv[:, 2].max()
         if not inwin[vs].any() and not (zmin < hl and zmax > lo and np.abs(pv[:, 0] - E[0]).min() < wx):
             continue
-        cz = min(max(c[2], lo + 1e-3), hl - 1e-3)
-        cx = c[0] if abs(c[0] - E[0]) < wx else E[0] + np.sign(c[0] - E[0]) * (wx - 1e-3)
-        if abs(c[0] - E[0]) < wx and lo < c[2] < hl or (zmin < hl and zmax > lo and abs(c[0] - E[0]) < wx):
-            fy = front(cx, cz)
-            if fy is None or pv[:, 1].min() < fy + 0.018 * hk:
+        if abs(c[0] - E[0]) < wx and lo < c[2] < hl:
+            fy = front(c[0], c[2])
+            if fy is not None and c[1] < fy + 0.018 * hk:
+                drop[p] = True
+                continue
+        elif zmin < hl and zmax > lo and abs(c[0] - E[0]) < wx:
+            # (a long card hanging across the window: every vertex of it in front of the face; caps
+            # that wrap the scalp have vertices behind the face's surface)
+            front_all = True
+            for v in pv:
+                fy = front(min(max(v[0], E[0] - wx), E[0] + wx), min(max(v[2], lo), hl))
+                if fy is None or v[1] > fy + 0.018 * hk:
+                    front_all = False
+                    break
+            if front_all:
                 drop[p] = True
                 continue
         side[p] = abs(c[0] - E[0]) >= wx

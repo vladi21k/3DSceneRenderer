@@ -3,6 +3,8 @@ import { RNG } from '../../core/rng.js';
 import { InstancePool } from './pool.js';
 
 // Static props around the street trees and the planters owned by vegetation:
+//   * a low mound of soil and bark mulch in the tree grate's opening, heaped against the
+//     root flare;
 //   * timber stakes inside the tree grate's opening (the cast-iron grates themselves are
 //     paving details drawn by the street module, opening radius 0.23 m), a cross batten
 //     and a rubber tie on the youngest trees (fresh pine or silvered timber, darker cut tops);
@@ -183,6 +185,40 @@ function contactSkirt(w, d, out, a0) {
   return g;
 }
 
+/** Soil and mulch mound in the grate opening (radius R, crown height H), metre UVs x2. */
+function mulchGeometry(R = 0.215, H = 0.028) {
+  const rng = RNG.from('mulch');
+  const NR = 6, NA = 24, pos = [], nor = [], uv = [], col = [], idx = [];
+  for (let i = 0; i <= NR; i++) {
+    const r = (i / NR) * R;
+    for (let j = 0; j <= NA; j++) {
+      const a = (j / NA) * Math.PI * 2;
+      const t = r / R;
+      const y = H * (1 - t * t) - 0.006 * t + (i && i < NR ? rng.range(-0.003, 0.003) : 0);
+      pos.push(Math.cos(a) * r, y, Math.sin(a) * r);
+      const slope = 2 * H * t / R + 0.006 / R;
+      const l = Math.hypot(slope, 1);
+      nor.push((Math.cos(a) * slope) / l, 1 / l, (Math.sin(a) * slope) / l);
+      uv.push(Math.cos(a) * r * 2 + 0.5, Math.sin(a) * r * 2 + 0.5);
+      const c = 0.8 + 0.2 * t; // darker, damper against the stem
+      col.push(c, c, c);
+    }
+  }
+  for (let i = 0; i < NR; i++) {
+    for (let j = 0; j < NA; j++) {
+      const a = i * (NA + 1) + j, b = a + NA + 1;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  return g;
+}
+
 /** Round stake with a chamfered, darker cut top; UVs scaled for the stake texture. */
 function stakeGeometry(len, r) {
   const body = new THREE.CylinderGeometry(r, r, len, 10, 1, true);
@@ -250,7 +286,8 @@ export function createProps(app, pools) {
     // 3 cm stakes: sub-texel (no shadow) in the coarse cascades
     stake: pool('vegetation:stakes', mats.stake, [post, batten, tie, strap], 224, true, 0.05),
     stone: pool('vegetation:planters', mats.stone, planters.map((p) => p.shell), 48, true),
-    soil: pool('vegetation:soil', mats.soil, planters.map((p) => p.soil), 48, false),
+    // planter soil (0, 1) and the mulch mound of the tree grates (2)
+    soil: pool('vegetation:soil', mats.soil, [...planters.map((p) => p.soil), mulchGeometry()], 160, false),
     contact: pool('vegetation:contact', mats.contact, planters.map((p) => p.skirt), 48, false),
   };
   P.contact.mesh.receiveShadow = false;
@@ -273,6 +310,13 @@ export function createProps(app, pools) {
         /** Stakes and ties on young trees. treeM: the tree instance matrix. */
         tree(t, T, treeM, sxz, r) {
           if (lod) return; // sub-pixel beyond 200 m
+          {
+            // mulch mound round the stem foot (unscaled: the grate opening is fixed)
+            const st0 = T.stem(0);
+            local(treeM, st0.x, 0, st0.z, _base);
+            _m.compose(_base, _q.identity(), _s.set(1, 1, 1));
+            add(P.soil, 2, _m, null, 1.2);
+          }
           if (!T.tpl.stake || r.next() < 0.25) return;
           // two stakes either side of the stem along the street, inside the opening; a batten
           // across their tops on the far side from the tracks, a rubber tie stem -> batten

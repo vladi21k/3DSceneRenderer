@@ -76,7 +76,7 @@ const X = new THREE.Vector3(1, 0, 0), Y = new THREE.Vector3(0, 1, 0);
 // arms swing freely but the elbows stay soft, never a forearm held out level)
 const GAIT = {
   male: { stepW: 0.060, yaw: 4.2, roll: 3.0, sway: 0.016, thorax: 1.55, arm: 1.0, abd: 4.5, elbow: 13, wr: 1.0, bounce: 1.0, lean: 2.5, circ: 0.012, twist: -4 },
-  female: { stepW: 0.042, yaw: 6.5, roll: 4.8, sway: 0.021, thorax: 0.75, arm: 1.05, abd: 3.5, elbow: 16, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.022, twist: -6 },
+  female: { stepW: 0.052, yaw: 6.5, roll: 4.5, sway: 0.020, thorax: 0.75, arm: 1.05, abd: 3.5, elbow: 16, wr: 0.95, bounce: 0.9, lean: 1.8, circ: 0.024, twist: -6 },
   child: { stepW: 0.052, yaw: 5.0, roll: 3.6, sway: 0.016, thorax: 1.1, arm: 1.05, abd: 5, elbow: 14, wr: 1.0, bounce: 1.6, lean: 2.5, circ: 0.014, twist: -4 },
   kid: { stepW: 0.060, yaw: 5.5, roll: 4.0, sway: 0.020, thorax: 1.0, arm: 0.95, abd: 6, elbow: 14, wr: 0.96, bounce: 2.2, lean: 3.0, circ: 0.016, twist: -4 },
   toddler: { stepW: 0.070, yaw: 5.5, roll: 4.0, sway: 0.022, thorax: 1.0, arm: 0.9, abd: 9, elbow: 18, wr: 0.9, bounce: 2.4, lean: 3.0, circ: 0.018, twist: -4 },
@@ -470,8 +470,10 @@ export class Rig {
       const f = this.foot[s];
       // feet stay planted; the unloaded knee bends as the pelvis shifts over the other leg
       const an = f.ankle.clone();
-      // (feet a little inside the hip joints: a relaxed stance, not a mannequin's A)
-      an.x = sg * Math.abs(f.ankle.x) * (variant === 5 ? 0.9 : 0.8);
+      // (feet a little inside the hip joints: a relaxed stance, not a mannequin's A; women's and
+      // girls' feet nearly under the hips, or wide hips turn the knees in)
+      const wide = this.kind === 'female' || this.kind === 'child' ? 0.1 : 0;
+      an.x = sg * Math.abs(f.ankle.x) * ((variant === 5 ? 0.9 : 0.8) + wide);
       an.z = f.ankle.z + (s === 'L' ? -0.035 : 0.02) * k;
       if (variant === 4 && s === 'L') { an.x -= 0.035 * k; an.z -= 0.05 * k; }      // the free leg steps out a little
       P.leg[s].ankle = an;
@@ -501,10 +503,11 @@ export class Rig {
       // (forearms against the lower chest, the elbows low by the sides, upper arms nearly hanging)
       const zf = this.chestFront;
       const br = 0.004 * Math.sin(T * 5);
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.46, shY - 0.250 * k + br, zf - 0.040 * k),
+      // (the forearms lie one above the other, a forearm's thickness apart, a little off the chest)
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.46, shY - 0.262 * k + br, zf - 0.058 * k),
         pole: new THREE.Vector3(0.25, -1, 0.12), palm: new THREE.Vector3(0.1, -0.25, 1), flex: 70 };
       // (the left forearm lies above it, its hand tucked round the right upper arm)
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.50, shY - 0.212 * k + br, zf - 0.022 * k),
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.50, shY - 0.205 * k + br, zf - 0.046 * k),
         pole: new THREE.Vector3(-0.25, -1, 0.12), palm: new THREE.Vector3(-0.1, -0.25, 1), flex: 65 };
     } else if (variant === 3) {
       // hands in the front pockets: wrists at the pocket openings, elbows out a little (the
@@ -537,17 +540,20 @@ export class Rig {
       const nod = 3.5 * g(13, 0) * talk + 2 * g(7, 1.3);
       P.neckQ = qEuler(-2 + nod * 0.4, 14 + 6 * g(2, 0.2), -0.6 * w);
       P.headQ = qEuler(nod * 0.6 + 2, 10 + 4 * g(3, 1), 3 * g(2, 2.2));
+      // (the elbow stays by the side: the forearm rises to 30-45 degrees below level and beats small
+      // and brief; never a forearm held out level)
       const R_ = P.arm.R, L_ = P.arm.L;
-      R_.abd = 12 + this.abdOff + 6 * talk * g(5, 0.6);
-      R_.flex = 6 + 30 * talk + 9 * talk * g(11, 0.2);
-      R_.elbow = 22 + 62 * talk + 14 * talk * g(9, 1.1);
-      R_.twist = -10 - 28 * talk * (0.5 + 0.5 * g(7, 0.3));
-      R_.handQ = qAxis(X, -10 * talk * g(9, 2));
+      const beat = Math.max(0, g(9, 1.1)) ** 2;
+      R_.abd = 8 + this.abdOff + 3 * talk * g(5, 0.6);
+      R_.flex = 3 + 8 * talk + 2 * talk * g(11, 0.2);
+      R_.elbow = 22 + 24 * talk + 8 * talk * beat;
+      R_.twist = -10 - 18 * talk * (0.5 + 0.5 * g(7, 0.3));
+      R_.handQ = qAxis(X, -6 * talk * g(9, 2));
       const j = smooth((g(1, 2.6) - 0.35) / 0.5) * talk;
-      L_.flex = 3 + 26 * j + 6 * j * g(11, 1.7);
-      L_.elbow = this.style.elbow + 58 * j + 10 * j * g(9, 0.3);
-      L_.twist = -8 - 20 * j;
-      L_.abd += 6 * j;
+      L_.flex = 3 + 7 * j + 2 * j * g(11, 1.7);
+      L_.elbow = this.style.elbow + 22 * j + 6 * j * Math.max(0, g(9, 0.3)) ** 2;
+      L_.twist = -8 - 12 * j;
+      L_.abd += 3 * j;
     }
     return P;
   }

@@ -55,12 +55,15 @@ export function noise1(x, seed = 0) {
   return a + (b - a) * u;
 }
 
+// lattice value of the 2D noises in [-1,1] (a module function, not a closure: the noises run
+// per vertex and per agent every frame, and a closure per call is garbage)
+const _h2 = (a, b, seed) => (hash2(hash2(a, b), seed) / 4294967296) * 2 - 1;
+
 /** Smooth 2D value noise in [-1,1], deterministic per seed. */
 export function noise2(x, y, seed = 0) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
-  const h = (a, b) => (hash2(hash2(a, b), seed) / 4294967296) * 2 - 1;
   const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-  const a = h(ix, iy), b = h(ix + 1, iy), c = h(ix, iy + 1), d = h(ix + 1, iy + 1);
+  const a = _h2(ix, iy, seed), b = _h2(ix + 1, iy, seed), c = _h2(ix, iy + 1, seed), d = _h2(ix + 1, iy + 1, seed);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 
@@ -78,9 +81,9 @@ export function noise1p(x, period, seed = 0) {
 /** 2D value noise in [-1,1], periodic in x with `periodX` lattice cells. */
 export function noise2p(x, y, periodX, seed = 0) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
-  const h = (a, b) => (hash2(hash2(_pm(a, periodX), b), seed) / 4294967296) * 2 - 1;
+  const x0 = _pm(ix, periodX), x1 = _pm(ix + 1, periodX);
   const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-  const a = h(ix, iy), b = h(ix + 1, iy), c = h(ix, iy + 1), d = h(ix + 1, iy + 1);
+  const a = _h2(x0, iy, seed), b = _h2(x1, iy, seed), c = _h2(x0, iy + 1, seed), d = _h2(x1, iy + 1, seed);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
 

@@ -7,23 +7,51 @@ import { GeoWriter, sweepPath, sweepPathPos, insetPath, capPolygon, sweepBar, bo
 // that carry it, and the turned-baluster stone balustrade alternative.
 // Facade-local coordinates: u along the wall, v up, w out of the wall (see facadePlan).
 
-/** Slab edge moulding [o, v] relative to the outer edge (o ≤ 0) and the slab top (v = 0),
- *  ordered from the top edge down to the soffit. */
-export function slabProfile(T, variant, lod) {
-  if (lod) return [[-0.012, 0], [0, -0.012], [0, -0.06], [-0.06, -T + 0.01], [-0.07, -T]];
-  if (variant === 1) {
-    // plain thick slab with a drip chamfer (later Mandate buildings)
-    return [[-0.01, 0], [0, -0.01], [0, -T + 0.03], [-0.015, -T + 0.012], [-0.03, -T]];
+/** Slab edge moulding [o, v, occlusion] relative to the outer edge (o ≤ 0) and the slab
+ *  top (v = 0), ordered from the top edge down to the soffit at v = −T. The moulded edge
+ *  is E tall (E ≥ T): its lip hangs E − T below the soffit, with a drip groove cut in
+ *  its underside, and steps back up to the soffit in a chamfer.
+ *    0 classical: eased arris, fascia, ovolo, fillet band, drip lip
+ *    1 plainer (Mandate): fascia with a sunk shadow line, rounded lower arris, drip lip
+ *  The light level (lod) keeps the silhouette: fascia, a chamfer for the mouldings, lip. */
+export function slabProfile(T, E, variant, lod) {
+  const lip = Math.max(0, E - T), k = E / 0.2;
+  const p = [[-0.01, 0], [0, -0.01]];
+  let back;
+  if (lod) {
+    p.push([0, -0.45 * E], [-0.05, -0.8 * E]);
+    back = -0.07;
+  } else if (variant === 1) {
+    const r = 0.03;
+    p.push([0, -0.06 * k], [-0.012, -0.072 * k], [-0.012, -E + r]);
+    for (let i = 1; i <= 3; i++) { const a = -(i / 3) * Math.PI / 2; p.push([-0.012 - r + r * Math.cos(a), -E + r + r * Math.sin(a)]); }
+    p.push([-0.064, -E], [-0.064, -E + 0.016], [-0.078, -E + 0.016], [-0.078, -E]);
+    back = -0.09;
+  } else {
+    p.push([0, -0.075 * k], [-0.007, -0.082 * k]);
+    const rx = 0.038, ry = 0.055 * k, cx = -0.007 - rx, cy = -0.082 * k;
+    for (let i = 1; i <= 4; i++) { const a = -(i / 4) * Math.PI / 2; p.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); }
+    p.push([-0.052, cy - ry], [-0.052, -E + 0.006], [-0.058, -E]);
+    p.push([-0.072, -E], [-0.072, -E + 0.016], [-0.086, -E + 0.016], [-0.086, -E]);
+    back = -0.1;
   }
-  // classical: chamfered top arris, fascia, ovolo, fillet, soffit
-  const p = [[-0.012, 0], [0, -0.012], [0, -0.055], [-0.012, -0.063]];
-  const rx = 0.048, ry = Math.max(0.03, T - 0.078);
-  for (let i = 1; i <= 4; i++) {
-    const a = -(i / 4) * Math.PI / 2;
-    p.push([-0.06 + rx * Math.cos(a), -0.063 + ry * Math.sin(a)]);
-  }
-  p.push([-0.072, -T + 0.015], [-0.072, -T]);
-  return p;
+  // chamfer up to the soffit (a lip of a few millimetres stays flush)
+  if (lip > 0.004) p.push([back, -E], [back - lip * 1.3, -T]);
+  else p.push([back, -T]);
+  // occlusion: dirty top arris, darker toward the underside, the groove and the chamfer
+  // in the lip's shade
+  return p.map(([o, v]) => {
+    const t = Math.min(1, -v / E);
+    let ao = (t < 0.08 ? 0.82 : 1) * (1 - 0.2 * t * t);
+    if (-v > E - 0.02 && o < -0.06 && o > back) ao *= 0.72;   // inside the drip groove
+    else if (o <= back) ao *= 0.8;                             // chamfer and soffit edge
+    return [o, v, ao];
+  });
+}
+
+/** Joints of the slab profile shaded smooth (the curved mouldings): [from, to]. */
+function slabSmooth(variant, lod) {
+  return lod ? [1e9, 0] : [4, 7];
 }
 
 /** Plan outline of a balcony slab: wall-left, front-left, front-right, wall-right, with an
@@ -42,43 +70,47 @@ export function slabPath(u0, u1, depth, rc = 0, into = 0.25, n = 5) {
 /** Grime kinds recorded per vertex (attribute aGk) for the ironwork stone material. */
 export const GRIME = { NONE: 0, EDGE: 1, SOFFIT: 2, CONSOLE: 3 };
 
-/** Writes one balcony slab (sweep + top + soffit) into W (matrix = facade frame).
- *  Baked occlusion: dirty top arris, darker lower edge, soffit dark at the wall. */
-export function writeSlab(W, path, y, T, variant, lod, dirt = 1, depth = 1) {
-  const prof = slabProfile(T, variant, lod).map(([o, v]) => [o, y + v]);
-  const shadeFn = (o, v) => {
-    const t = (y - v) / T; // 0 top .. 1 soffit
-    return (t < 0.08 ? 0.82 : 1) * (1 - 0.2 * t * t) * (t > 0.95 ? 0.8 : 1) * dirt;
-  };
+/** Writes one balcony slab (sweep + top + soffit) into W (matrix = facade frame): T the
+ *  slab's thickness at the wall, E its moulded edge (≥ T). Baked occlusion: dirty top
+ *  arris, darker lower edge and drip groove, soffit dark at the wall. */
+export function writeSlab(W, path, y, T, E, variant, lod, dirt = 1, depth = 1) {
+  const prof = slabProfile(T, E, variant, lod).map(([o, v, ao]) => [o, y + v, ao * dirt]);
+  const [sm0, sm1] = slabSmooth(variant, lod);
   W.kind(GRIME.EDGE);
-  sweepPath(W, path, prof, { shadeFn, smoothFrom: variant === 0 && !lod ? 4 : 1e9 });
+  sweepPath(W, path, prof, { shadeFn: (o, v, j) => prof[j][2], smoothFrom: sm0, smoothTo: sm1 });
   const topO = prof[0][0], botO = prof[prof.length - 1][0];
   W.kind(GRIME.NONE);
   capPolygon(W, insetPath(path, topO), y, 1, 0.92 * dirt);
   W.kind(GRIME.SOFFIT);
-  capPolygon(W, insetPath(path, botO), y - T, -1, (u, w) => (0.55 + 0.3 * Math.min(1, Math.max(0, w / depth))) * dirt);
+  capPolygon(W, insetPath(path, botO), y - T, -1, (u, w) => (0.46 + 0.32 * Math.min(1, Math.max(0, w / depth))) * dirt);
   W.kind(GRIME.NONE);
 }
 
 /** Shadow-caster outline of the slab edge: points of the drawn profile only (the ovolo
- *  reduced to its chord), so the caster never stands proud of the stone it shades; the
- *  outlines differ by a centimetre at most. */
-function slabShadowProfile(T, variant, lod) {
-  const p = slabProfile(T, variant, lod);
-  return lod || variant === 1 ? p : [p[0], p[1], p[2], p[3], p[7], p[9]];
+ *  and the rounded arris reduced to their chords, the drip groove bridged), so the caster
+ *  never stands proud of the stone it shades by more than the groove's 16 mm. */
+function slabShadowProfile(T, E, variant, lod) {
+  const p = slabProfile(T, E, variant, lod).map(([o, v]) => [o, v]);
+  if (lod) return p;
+  const n = p.length, tail = p.slice(n - (E - T > 0.004 ? 2 : 1));
+  if (variant === 1) return [p[0], p[1], p[2], p[3], p[4], p[7], ...tail];
+  return [p[0], p[1], p[2], p[3], p[7], p[8], p[10], ...tail];
 }
 
 /** Position-only slab (shadow caster) into S (matrix = facade frame): the edge sweep with
  *  one ring per path point, top and soffit fans on its first and last profile points. */
-export function writeSlabShadow(S, path, y, T, variant, lod) {
-  const prof = slabShadowProfile(T, variant, lod).map(([o, v]) => [o, y + v]);
+export function writeSlabShadow(S, path, y, T, E, variant, lod) {
+  const prof = slabShadowProfile(T, E, variant, lod).map(([o, v]) => [o, y + v]);
   const rings = sweepPathPos(S, path, prof), m = prof.length, n = path.length;
   for (let i = 1; i < n - 1; i++) S.tri(rings[0], rings[i], rings[i + 1]);
   for (let i = 1; i < n - 1; i++) S.tri(rings[0] + m - 1, rings[i + 1] + m - 1, rings[i] + m - 1);
 }
 
 // ---------------------------------------------------------------- consoles
-export const CORBEL = { D: 0.8, H: 0.62, W: 0.26 };
+// Three kinds (consoles.js CONSOLE): 0 scroll (ancon), 1 tiered, 2 block (a short
+// modillion). D deep, W wide, HV[kind] tall as modelled (instances scale them to the
+// slab's depth and the room under it); the scroll's pendant knob hangs FOOT below.
+export const CORBEL = { D: 0.8, H: 0.62, W: 0.26, HV: [0.62, 0.62, 0.26], FOOT: 0.045 };
 
 /** Console side silhouette in (w, v): v = 0 at the soffit, negative downward. */
 function corbelShape(variant, D, Hc) {
@@ -93,7 +125,18 @@ function corbelShape(variant, D, Hc) {
     s.absarc(wb - 0.045, -Hc, 0.045, 0, -Math.PI / 2, true);
     s.lineTo(0, -Hc - 0.045);
     s.lineTo(0, 0);
-    return { shape: s, roll: [cx, -a, R] };
+    return { shape: s, roll: [cx, -a, R, 1] };
+  }
+  if (variant === 2) {
+    // block: abacus plate, ovolo nose, then a long cove sweeping down to the wall foot
+    const a = 0.04, c = 0.014, r = 0.07, ry = r * 0.85, fx = 0.05;
+    const cx = D - c - r;
+    s.moveTo(0, 0); s.lineTo(D, 0); s.lineTo(D, -a); s.lineTo(D - c, -a);
+    s.absellipse(cx, -a, r, ry, 0, -Math.PI / 2, true);
+    s.absellipse(cx, -Hc, cx - fx, Hc - a - ry, Math.PI / 2, Math.PI, false);
+    s.lineTo(0, -Hc);
+    s.lineTo(0, 0);
+    return { shape: s, roll: [cx, -a, r, ry / r] };
   }
   // tiered: three stacked mouldings stepping back to the wall
   const t1 = 0.075;
@@ -114,32 +157,34 @@ function corbelShape(variant, D, Hc) {
 /** Shared console geometry with baked occlusion in vertex colours. Local frame:
  *  x = along the wall (centred), y = down from the soffit (≤ 0), z = out of the wall. */
 export function corbelGeometry(variant, lod) {
-  const { D, H: Hc, W: Wc } = CORBEL;
+  const { D, W: Wc } = CORBEL, Hc = CORBEL.HV[variant];
   const { shape, roll } = corbelShape(variant, D, Hc);
-  // the light level drops the 12 mm bevel and the carved volutes (sub-pixel where it is
-  // used) but keeps the silhouette: 4 segments per curve hold the big roll within ~5 mm;
-  // the far level (merged into far chunks, 200 m and more away) has 2, within ~2.5 cm
-  const bev = lod ? 0 : 0.012;
+  // the light level drops the 12 mm bevel (8 mm on the small block) and the carved
+  // volutes (sub-pixel where it is used) but keeps the silhouette: 4 segments per curve
+  // hold the big roll within ~5 mm; the far level (merged into far chunks, 200 m and
+  // more away) has 2, within ~2.5 cm
+  const bev = lod ? 0 : variant === 2 ? 0.008 : 0.012;
   const ext = new THREE.ExtrudeGeometry(shape, {
     depth: Wc - 2 * bev, bevelEnabled: !lod, bevelThickness: bev, bevelSize: bev, bevelSegments: 1,
     curveSegments: lod > 1 ? 2 : lod ? 4 : 6,
   });
   let parts = [ext];
   if (roll && !lod) {
-    // volute spirals carved on both flanks of the roll
-    const [cx, cy, R] = roll;
+    // volute spirals carved on both flanks of the roll (the block's nose: smaller, and
+    // flattened with it)
+    const [cx, cy, R, ky] = roll, k = Math.max(0.6, R / 0.165);
     const pts = [];
     const turns = 1.55, n = 16;
     for (let i = 0; i <= n; i++) {
       const t = i / n, a = -t * turns * Math.PI * 2;
       const r = R * 0.86 * Math.pow(0.17, t);
-      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r * ky]);
     }
     const S = new GeoWriter();
-    sweepBar(S, pts, 0.011, 0.007, { z0: -bev - 0.002 });
-    sweepBar(S, pts, 0.011, 0.007, { z0: Wc - bev + 0.002 });
+    sweepBar(S, pts, 0.011 * k, 0.007 * k, { z0: -bev - 0.002 });
+    sweepBar(S, pts, 0.011 * k, 0.007 * k, { z0: Wc - bev + 0.002 });
     // domed eye bosses at the spiral centres (lathe axis turned to -z / +z)
-    const eye = [[0.03, 0], [0.028, 0.008], [0.014, 0.015], [0.0001, 0.017]];
+    const eye = [[0.03, 0], [0.028, 0.008], [0.014, 0.015], [0.0001, 0.017]].map(([x, y]) => [x * k, y * k]);
     for (const [z, rot] of [[-bev, -Math.PI / 2], [Wc - bev, Math.PI / 2]]) {
       S.setMatrix(new THREE.Matrix4().makeRotationX(rot).setPosition(cx, cy, z));
       lathe(S, eye, 8);
@@ -215,8 +260,8 @@ export function balusterGeometry(lod) {
  *  inside the convex roll (lit), outside only the coves underneath, which face away
  *  from the sun and sit in the console's own shade anyway. */
 export function shadowTemplates() {
-  const corbel = [0, 1].map((variant) => {
-    const { shape } = corbelShape(variant, CORBEL.D, CORBEL.H);
+  const corbel = [0, 1, 2].map((variant) => {
+    const { shape } = corbelShape(variant, CORBEL.D, CORBEL.HV[variant]);
     const g = new THREE.ExtrudeGeometry(shape, { depth: CORBEL.W, bevelEnabled: false, curveSegments: 2 });
     g.rotateY(-Math.PI / 2);
     g.translate(CORBEL.W / 2, 0, 0);

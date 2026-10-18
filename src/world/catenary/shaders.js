@@ -36,14 +36,15 @@ float catCoverage( float a ) {
   return a;
 }`;
 
-// Lit bowl radiance at full night (scene units, about 600 cd/m² of opal glass). From
-// sunset on the lit globe is brighter than the sky behind it: its core clips to a warm
-// white with a bloom skirt (post), the falloff towards the rim keeps it warm.
-export const LAMP_RADIANCE = 0.017;
+// Lit bowl radiance at full night (scene units, roughly 3,500 cd/m² of opal glass round
+// an LED lamp). From sunset on the lit globe is brighter than the sky behind it, through
+// the camera's strong highlight compression at dusk: its core clips to a warm white with
+// a bloom skirt (post), the falloff towards the rim keeps it warm.
+export const LAMP_RADIANCE = 0.11;
 // the hood underside reflects the lamp: a share of the bowl radiance (lower than the
 // bowl itself, which would read as a second light source)
-const HOOD_GLOW = 0.3;
-const WARM = 'vec3(1.0, 0.47, 0.11)'; // ~2700 K lamp seen through cream glass, linear
+const HOOD_GLOW = 0.12;
+const WARM = 'vec3(1.0, 0.66, 0.36)'; // ~2800 K lamp behind opal glass, linear (warm white)
 const LIGHT_MIN_DIST = 1.0;            // m, see patchThin
 
 export function updateScreenUniforms(app, lampRadiance = LAMP_RADIANCE) {
@@ -261,7 +262,7 @@ export function makeWireMaterial(coverage = false) {
  *  SU.uLamp. Geometry uv = (angle around the bowl axis, height below the hang point). */
 export function makeGlassMaterial(M) {
   const m = M.get('glass.lamp', { catenaryLantern: true, color: [0.56, 0.55, 0.5], roughness: 0.1, emissive: [0, 0, 0], clearcoat: 0 });
-  return chain(m, 'catGlass3', (shader) => {
+  return chain(m, 'catGlass4', (shader) => {
     shader.uniforms.uLamp = SU.uLamp;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vGlass;\nvarying vec3 vAxis;')
@@ -297,9 +298,10 @@ export function makeGlassMaterial(M) {
         float gBulb = exp(-pow((gY - 0.36) / 0.16, 2.0)) * gF * gF * gF;
         diffuseColor.rgb *= mix(1.0, 0.32, gF * gF * (1.0 - 0.85 * gY)) + 0.55 * gBulb;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-        // lit diffuser: nearly even, a little brighter where it faces the eye and around
-        // the lamp in the upper half of the bowl
-        totalEmissiveRadiance = uLamp * ${WARM} * (0.85 + 0.3 * gF) * (1.0 + 0.8 * exp(-pow((gY - 0.33) / 0.2, 2.0)) * gF * gF);`);
+        // lit diffuser: brighter where it faces the eye and round the lamp in the upper
+        // half of the bowl (a hot core under the strong highlight compression of dusk), a
+        // dimmer warm rim
+        totalEmissiveRadiance = uLamp * ${WARM} * (0.72 + 0.38 * gF) * (1.0 + 1.6 * exp(-pow((gY - 0.36) / 0.22, 2.0)) * gF * gF);`);
   });
 }
 

@@ -39,7 +39,7 @@ const V_MAX = MAX_SPEED; // the tram's governed top speed (m/s)
 const UB_EXTRA = AGENT_R + 0.15;  // unit band: body half width + this (its driver brakes for centres within half + 0.38, or heading in)
 const U_CLEAR = 40;               // a unit's track is kept clear at least this far ahead of its nose (it needs the room to get going)
 const U_EARLY = 2.5;              // people leave a unit's track this many seconds earlier than the cab's
-const CLEAR_DEADLINE = 3.0;       // out of the cab's band at least this many seconds before it arrives
+const CLEAR_DEADLINE = 3.3;       // out of the cab's band at least this many seconds before it arrives
 const PAIR_GAP = 3.0;             // the two trams pass a spot within this many seconds of each other: a pair
 const PAIR_EDGE = TRACK_ZONE_HALF + 0.4;   // ... and the corridor is left to beyond |d| = PAIR_EDGE
 const CENTRE_REFUGE = 0.9;        // the strip |d| < this between the tracks is no refuge with a unit near
@@ -179,7 +179,7 @@ export class TramWatch {
     // clearing for a unit (and for both trams at once) is decided afresh every frame (after the cab's rules)
     if (a.uClr) { a.clearing = false; a.uClr = false; }
     if (a.pClr) { a.clearing = false; a.pClr = false; }
-    a.uOver = false;
+    a.uOver = false; a.uHold = false;
     this._cabPre(a);
     this._unitPre(a);
     this._pairPre(a);
@@ -222,24 +222,24 @@ export class TramWatch {
     const w = this.pairWindow(a);
     if (!w) { a.pSide = 0; return; }
     const T = w.T, t0 = Math.min(w.tc0, w.tu0);
-    // (in time: a person in the corridor reacts like to either tram, the edges keep their berth)
     const vH = Math.max(1, a.hurry);
-    const horizon = Math.max(a.clearT + U_EARLY + 1, (PAIR_EDGE * 2) / vH + 2.5);
-    if (t0 > horizon) return;
-    a.pair = T.i + 1;
-    const L = -(PAIR_EDGE + a.extHi), R = PAIR_EDGE + a.extLo;
-    if (a.d <= L + 0.05 || a.d >= R - 0.05) { a.pSide = 0; return; }   // out at an edge already
-    const time = this.c.time;
-    // out to the left through (or from) the unit's band before its nose is there; out to the
-    // right through the cab's band before the cab is there
+    // out to the left through (or from) the unit's band before its driver would brake for them;
+    // out to the right through the cab's band CLEAR_DEADLINE seconds before the cab is there
     const uOutL = T.d - T.UB - a.extHi - 0.05, cOutR = RIDE_D + BAND + a.extLo + 0.05;
     const needL = a.d > uOutL ? (a.d - uOutL) / vH + 0.6 : 0;
     const needR = a.d < cOutR ? (cOutR - a.d) / vH + 0.6 : 0;
-    const slackL = a.d <= uOutL ? 99 : w.tu0 <= 0 ? -99 : w.tu0 - needL;
-    const slackR = a.d >= cOutR ? 99 : w.tc0 <= 0 ? -99 : w.tc0 - needR;
+    const dL = T.sU - a.s <= 0 ? -99 : this.uDeadline(a, T), dR = w.tc0 <= 0 ? -99 : w.tc0 - CLEAR_DEADLINE;
+    const slackL = a.d <= uOutL ? 99 : dL - needL;
+    const slackR = a.d >= cOutR ? 99 : dR - needR;
+    // (in time: while either way out is still open, with a reaction's margin)
+    if (t0 > a.clearT + U_EARLY + 1 && Math.max(slackL, slackR) > 2.5) return;
+    a.pair = T.i + 1; a.uI = T.i;
+    const L = -(PAIR_EDGE + a.extHi), R = PAIR_EDGE + a.extLo;
+    if (a.d <= L + 0.05 || a.d >= R - 0.05) { a.pSide = 0; return; }   // out at an edge already
+    const time = this.c.time;
     let side = a.pSide;
-    if (!side || (side > 0 ? slackR : slackL) < 0.3) {
-      const okL = slackL > 0.8, okR = slackR > 0.8;
+    if (!side || (side > 0 ? slackR : slackL) < -0.5) {
+      const okL = slackL > 0.3, okR = slackR > 0.3;
       if (okL && okR) {
         // where they were going (a crossing, their sidewalk), else the nearer edge
         const goal = a.state === ST.GOTO ? a.gd : a.clearing && !a.uClr ? a.clearTo : a.side * 9;
@@ -247,7 +247,7 @@ export class TramWatch {
         side = Math.abs(goal) > TRACK_ZONE_HALF ? (goal > 0 ? 1 : -1) : nearR ? 1 : -1;
         // (a group goes out with its leader)
         const Ld = a.leader;
-        if (Ld && Ld.active && Ld.pSide && (Ld.pSide > 0 ? slackR : slackL) > 0.8) side = Ld.pSide;
+        if (Ld && Ld.active && Ld.pSide && (Ld.pSide > 0 ? slackR : slackL) > 0.3) side = Ld.pSide;
       } else if (okL || okR) side = okR ? 1 : -1;
       else side = slackR >= slackL ? 1 : -1;
       if (side !== a.pSide) this.stats.pairClears++;
@@ -326,8 +326,17 @@ export class TramWatch {
     const loT = T.d - T.UB - a.extHi - 0.15 - 0.5 * spare;
     const hiT = Math.max(T.d + T.UB + a.extLo + 0.2 + 0.4 * spare, Math.sign(-T.d) * CENTRE_REFUGE + a.extLo);
     if (a.clearing) {
-      // already clearing for the cab: its target must be outside this band too (the left edge)
-      if (this.uGap(a, T, a.clearTo) < 0.02) { a.clearTo = loT; a.uOver = true; }
+      // already clearing for the cab: its target must be outside this band too. Across it to
+      // the left edge while there is time to be through before its driver would brake; else
+      // (its body beside them, its nose close) wait clear of it on this side until it has gone
+      // by (the cab is far enough: were it not, the pair rules would have taken over)
+      if (this.uGap(a, T, a.clearTo) < 0.02) {
+        const through = (a.d - loT) / Math.max(1, a.hurry) + 0.6;
+        if (T.sU - a.s > 0 && this.uDeadline(a, T) > through + 0.3) a.clearTo = loT;
+        else if (a.d > T.d) { a.clearTo = Math.max(T.d + T.pass, hiT) + a.extLo; a.uHold = true; }
+        else a.clearTo = loT;
+        a.uOver = true;
+      }
       return;
     }
     if (this.uGap(a, T) >= 0.02) { a.uSide = 0; return; }
@@ -426,12 +435,23 @@ export class TramWatch {
       if (ah > 1.5 + 0.5 * T.v + AGENT_R + a.extS) continue;
       const dl = a.d - T.d;
       const hard = a.mob ? this.uGap(a, T) < -(UB_EXTRA - AGENT_R) - 0.03 : Math.abs(dl) < T.half + AGENT_R;
-      if (!hard) continue;
+      if (!hard) {
+        // still in its band beside the body (or right at its nose): a quick step out to the
+        // nearer edge, as fast as a startled person moves (its driver brakes for them)
+        if (!(dt > 0)) continue;
+        const sg = dl >= 0 ? 1 : -1, edge = T.d + sg * (T.UB + (sg > 0 ? a.extLo : a.extHi) + 0.02);
+        const step = Math.min(2.2 * dt, Math.abs(edge - a.d));
+        if (step > 1e-4) { a.d += sg * step; a.vd = sg * 2.2; this.uStats.sidesteps++; }
+        continue;
+      }
       this.uStats.rescues++;
-      if (this.uStats.rescueLog.length < 8) this.uStats.rescueLog.push({ t: +this.c.time.toFixed(1), unit: T.i, ah: +ah.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - T.d).toFixed(2), v: +T.v.toFixed(1), st: a.state, task: a.task, mob: a.mob, kind: a.kind, clr: a.clearing, uClr: a.uClr, cross: +(a.crossOK - this.c.time).toFixed(1), lead: !!a.leader });
-      // out through the nearer side (to the left when the cab is near: never into its band)
-      const hi = dl >= 0 && !this.near(a);
-      a.d = hi ? T.d + T.half + AGENT_R + 0.01 + a.extLo : T.d - T.half - AGENT_R - 0.01 - a.extHi;
+      if (this.uStats.rescueLog.length < 8) this.uStats.rescueLog.push({ t: +this.c.time.toFixed(1), unit: T.i, ah: +ah.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - T.d).toFixed(2), v: +T.v.toFixed(1), st: a.state, task: a.task, mob: a.mob, kind: a.kind, clr: a.clearing, uClr: a.uClr, pClr: a.pClr, cross: +(a.crossOK - this.c.time).toFixed(1), lead: !!a.leader });
+      // out through the nearer side (the smallest jump), in view at a startled person's pace;
+      // the full projection only out of sight
+      const hi = dl >= 0;
+      const tgt = hi ? T.d + T.half + AGENT_R + 0.01 + a.extLo : T.d - T.half - AGENT_R - 0.01 - a.extHi;
+      if (this.c.vis.hidden(a.s, a.d) || !(dt > 0)) a.d = tgt;
+      else a.d += Math.sign(tgt - a.d) * Math.min(Math.abs(tgt - a.d), Math.max(2.2 * dt, 0.12));
       a.vd = 0;
     }
   }
@@ -521,6 +541,11 @@ export class TramWatch {
     }
     const front = this.frontFor(a);
     const inside = a.mob ? footBandGap(a) < 0.02 : adl < BAND + 0.02;
+    // somebody who cannot be out of the band before the cab is there any more: its driver brakes
+    if (inside && ahead > 0 && this.v > 0.5 && ahead < this.obstacle) {
+      const tta = ahead / Math.max(0.3, this.closing(a));
+      if (tta < CLEAR_DEADLINE - 0.5 && this.exitT(a) + 0.6 > tta) this.obstacle = ahead;
+    }
     if (!inside || ahead < -(TRAM_LEN + 7) - a.extS || ahead > front) { a.clearing = false; return; }
     if (a.clearing && a.mob) { this._clearTo(a); return; }
     if (!a.clearing) {
@@ -553,9 +578,11 @@ export class TramWatch {
       // step well clear when there is time, just clear when there is not
       const spare = ahead > 0 && this.v > 0.2 ? Math.min(1, Math.max(0, (ahead / this.v - 2) / 3)) : 1;
       a.clearHi = hi; a.clearSpare = spare;
-      a.clearTo = hi ? BAND_HI + 0.08 + 0.35 * spare : BAND_LO - 0.08 - 0.6 * spare;
+      a.cabTo = hi ? BAND_HI + 0.08 + 0.35 * spare : BAND_LO - 0.08 - 0.6 * spare;
       if (a.mob) this._clearTo(a);
     }
+    // (the cab's target, which a unit's rules may change for a frame)
+    if (!a.mob) a.clearTo = a.cabTo;
     // with a unit coming, between the tracks means beyond the centre strip (it may soon need the
     // rest of the corridor too: the pair rules take over then)
     if (!a.clearHi && a.clearTo > -CENTRE_REFUGE - a.extHi && this.unitNear(a.s, 120)) a.clearTo = -CENTRE_REFUGE - a.extHi - 0.1 * a.clearSpare;
@@ -591,12 +618,15 @@ export class TramWatch {
   clearSpeed(a) {
     const dist = Math.abs(a.clearTo - a.d);
     const H = a.hurry;
+    // (stepping back from a unit going by, to cross behind it: no hurry)
+    if (a.uHold) return Math.min(a.v0, 0.4 + dist * 1.5);
     if (a.pClr) {
       // both trams: out of the corridor at a brisk pace, at a trot when it gets close
       const w = this.pairWindow(a);
-      const left = w ? (a.pSide > 0 ? w.tc0 : w.tu0) - 1.2 : 6;
-      const need = dist / Math.max(0.6, left);
-      return Math.min(H * 1.2, Math.max(Math.min(H, a.v0 * 1.25), need, left < 3 ? H : 0));
+      let left = 6;
+      if (w) left = a.pSide > 0 ? w.tc0 - CLEAR_DEADLINE : w.T.sU - a.s > 0 ? this.uDeadline(a, w.T) : 0;
+      const need = dist / Math.max(0.6, left + 0.6);
+      return Math.min(H * 1.2, Math.max(Math.min(H, a.v0 * 1.25), need, left < 1.5 ? H : 0));
     }
     let left = 6;
     if (!a.uClr) {
@@ -636,7 +666,7 @@ export class TramWatch {
     const adl = a.mob ? footBandGap(a) + BAND : Math.abs(dl);
     if (adl < BAND || adl > BAND + 2.5) return;
     const ahead = a.s - this.trainU;
-    if (ahead < -(TRAM_LEN + 3) || ahead > this.frontFor(a) + 3) return;
+    if (!a.pair && (ahead < -(TRAM_LEN + 3) || ahead > this.frontFor(a) + 3)) return;
     const toward = -Math.sign(dl) * out.vd;      // > 0: moving towards the band
     if (toward <= 0) return;
     // a moving tram is given a comfortable berth; beside a standing one the band edge will do
@@ -674,8 +704,10 @@ export class TramWatch {
       this.stats.rescues++;
       this._cabRescue = true;
       if (this.rescueLog.length < 12) this.rescueLog.push({ slot: a.slot, t: +this.c.time.toFixed(1), ahead: +ahead.toFixed(1), dl: +dl.toFixed(2), pd: +(prevD - RIDE_D).toFixed(2), st: a.state, task: a.task, step: a.step, kind: a.kind, mob: a.mob, clr: a.clearing, lead: !!a.leader });
-      // out through the nearer edge (beside a platform: up onto its edge), never across the track
-      const hi = dl >= 0;
+      // out through the nearer edge (beside a platform: up onto its edge), never across the track,
+      // and never into the body of an oncoming unit beside it
+      let hi = dl >= 0;
+      if (!hi && this.unitNear(a.s, 10)) hi = true;
       if (hi && !a.noRect && this.c.map.platformAt(a.s, 1, BAND_HI + 0.05, 0.35)) { a.platformOK = true; a.platSt = this.c.map.stationAt(a.s); a.platSide = 1; }
       a.d = hi ? BAND_HI + 0.01 + a.extLo : BAND_LO - 0.01 - a.extHi;
       a.vd = 0;
@@ -702,8 +734,16 @@ export class TramWatch {
     }
   }
 
-  /** Emit at most one bell request every couple of seconds (sooner when it gets more urgent). */
+  /** Emit at most one bell request every couple of seconds (sooner when it gets more urgent), and
+   *  hand the cab's driver the nearest person it must brake for (its obstacle; Infinity: none). */
   flushRequests(app, time) {
+    const cab = app.train && app.train.tram;
+    if (cab && 'obstacle' in cab) {
+      // (the crowd frame is the camera's: the driver measures from the cab front)
+      cab.obstacle = this.obstacle;
+      if (this.obstacle < 1e9 && !(this._obsWas < 1e9)) this.stats.cabBrake++;
+      this._obsWas = this.obstacle;
+    }
     const u = this.reqUrgency;
     if (u > this.stats.maxUrgency) this.stats.maxUrgency = u;
     if (u < 0.15) return;

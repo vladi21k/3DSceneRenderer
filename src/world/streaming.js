@@ -197,6 +197,7 @@ export class World {
       if (!wantSet.has(idx)) { this._dispose(c); if (c.next) this._dispose(c.next); this.chunks.delete(idx); }
       else c.dist = wantSet.get(idx).dist;
     }
+    this.stats.revealBytes = 0;   // (bytes revealed this frame)
     if (this.revealing.length) this._reveal();
     // create / schedule
     const queue = [];

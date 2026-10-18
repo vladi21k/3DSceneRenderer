@@ -23,6 +23,7 @@ const MAX_SP = 1.6;    // largest spacing of full consoles along a slab
 const BLOCK_SP = 1.05; // ... of short block consoles
 const H_MIN = 0.1;     // shortest console: below it a spot is not used
 const H_TIERED = 0.34; // shortest stepped console (shorter: block consoles)
+const MERGE = 0.7;     // consoles closer than this become one
 
 const _ap = {};
 const ornCache = new WeakMap();
@@ -194,16 +195,17 @@ export function balconyConsoles(plan, bal, opts) {
 
 function place(plan, bal, { Hc, W2, rc, kind, foot }) {
   const soffit = bal.y - bal.slabT, len = bal.u1 - bal.u0;
-  const lo = bal.u0 + W2 + Math.max(0.05, rc * 0.8), hi = bal.u1 - W2 - Math.max(0.05, rc * 0.8);
-  const none = { kind, h: Hc, u: [] };
-  if (hi <= lo) return none;
-  const N = Math.floor((hi - lo) / STEP) + 1;
+  const e0 = W2 + Math.max(0.05, rc * 0.8), none = { kind, h: Hc, u: [] };
+  if (len <= 2 * e0) return none;
+  // the grid is centred on the slab, so a slab centred over an opening gets a mirrored
+  // pair of consoles
+  const N = Math.floor((len - 2 * e0) / STEP) + 1, lo = (bal.u0 + bal.u1) / 2 - ((N - 1) * STEP) / 2, hi = lo + (N - 1) * STEP;
   const heads = bal.floor > 0 ? headsOn(plan, bal.floor - 1).filter((hp) => hp.u1 > bal.u0 - 0.5 && hp.u0 < bal.u1 + 0.5) : [];
   const top = dressingField(heads, lo, N, W2);
   const short = len <= 2.8;
   const end = Math.min(Math.max(0.08, len * 0.06), 0.22);
   const a = Math.max(lo, bal.u0 + W2 + end + rc * 0.6), b = Math.min(hi, bal.u1 - W2 - end - rc * 0.6);
-  const full = Hc + foot, minGap = W2 * 2 + 0.16;
+  const full = Hc + foot, minGap = Math.max(W2 * 2 + 0.16, MERGE);
 
   // full consoles on the piers: at both ends and either side of every opening's
   // dressing below, the piers between filled in evenly
@@ -232,7 +234,8 @@ function place(plan, bal, { Hc, W2, rc, kind, foot }) {
   };
 
   let cons = pick(MAX_SP);
-  if (!cons.length) return none;
+  // a lone console would carry one end only: the slab rests on the dressing instead
+  if (cons.length < 2) return none;
   let room = Math.min(...cons.map((x) => x.room));
   if (room >= Hc * 0.85 + foot) {
     return { kind, h: Math.min(Hc, room - foot), u: cons.map((x) => x.u) };
@@ -243,7 +246,7 @@ function place(plan, bal, { Hc, W2, rc, kind, foot }) {
   // block consoles: closer together along long runs
   if (!short) {
     const dense = pick(BLOCK_SP);
-    if (dense.length) { cons = dense; room = Math.min(...cons.map((x) => x.room)); }
+    if (dense.length >= 2) { cons = dense; room = Math.min(...cons.map((x) => x.room)); }
   }
   return { kind: CONSOLE.BLOCK, h: Math.min(0.3, Math.max(H_MIN, room)), u: cons.map((x) => x.u) };
 }

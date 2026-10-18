@@ -560,6 +560,9 @@ uniform float uVeil;          // veiling glare: share of the frame's mean light 
 uniform vec3 uVeilSun;        // plus light from a sun just outside the frame, scattered by the front glass
 uniform vec2 uHiComp;         // highlight recovery: knee (stops over mid grey), log slope above it
 uniform vec2 uCurveSlope;     // contrast in stops around a pivot (stops over mid grey): slope, pivot
+uniform sampler2D tDepth;     // scene depth (sky = far plane)
+uniform float uSkyChroma;     // chroma for sky pixels (AgX's inset/outset would grey a saturated blue)
+uniform float uSkySat;        // and the saturation the AgX look would have given them (scene-linear)
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -651,10 +654,12 @@ void main() {
   col *= min(uExposure * corr, uExposureMax);
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);
-  // white balance and split toning in scene-linear
+  // white balance and split toning in scene-linear (the toning is for the street: the
+  // sky keeps its own colour)
+  bool skyPx = texelFetch(tDepth, ivec2(gl_FragCoord.xy), 0).r >= 1.0;
   col *= uWB;
   float lum = dot(col, LW);
-  col *= mix(uShadowTint, uHighTint, smoothstep(0.05, 0.6, lum));
+  if (!skyPx) col *= mix(uShadowTint, uHighTint, smoothstep(0.05, 0.6, lum));
   lum = dot(col, LW);
   // highlight recovery (as a raw developer or a phone's tone mapping does): luminance
   // above the knee is compressed in log terms with a soft knee, so a bright evening sky
@@ -666,6 +671,7 @@ void main() {
     col *= k; lum *= k;
   }
   vec3 sc = max(col, 0.0);
+  if (skyPx) sc = max(lum + (sc - lum) * uSkySat, 0.0);
 
   col = agx(col);
   // camera tone response on luminance, then a soft gamut knee: from 0.8 up, the spread of
@@ -675,7 +681,7 @@ void main() {
   {
     float lt = srgbToLinear(cameraCurve(lum));
     float la = dot(col, LW);
-    col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), uChroma);
+    col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), skyPx ? uSkyChroma : uChroma);
     float m = max(col.r, max(col.g, col.b));
     if (m > 0.8) {
       float mt = 0.8 + 0.14 * (1.0 - exp(-(m - 0.8) / 0.14));

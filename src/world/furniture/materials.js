@@ -388,6 +388,67 @@ function patchGrime(m, { albedo = 0.16, rough = 0.15, ao = 0.45, mottle = 0.05 }
 }
 
 /**
+ * Platform slabs (uv in metres: u along the platform, v = route offset; 0.4 m stack-bond
+ * slabs on the metre grid): every slab its own tone (cv ~0.05) and a faint hue, a few
+ * flattened chewing-gum spots (more where the paving is trodden: the vertex colour carries
+ * the door-lane darkening), joints of varying width and darkness, and a smoother, slightly
+ * polished finish in the trodden lanes. Detail fades out before it would alias.
+ */
+function patchPlatformPaving(m) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (s, r) {
+    prev && prev.call(this, s, r);
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vPlatUv;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPlatUv = uv;');
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec2 vPlatUv;
+        float platH(vec2 p) { p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
+        float platWear = 0.0;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec2 q = vPlatUv / 0.4, si = floor(q), sf = fract(q);
+          float px = max(max(fwidth(vPlatUv.x), fwidth(vPlatUv.y)), 1e-5);
+          float near = 1.0 - smoothstep(0.004, 0.014, px);   // mm detail
+          float slabV = 1.0 - smoothstep(0.06, 0.2, px);      // slab-sized detail
+          #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+            platWear = clamp((1.0 - vColor.g) / 0.13, 0.0, 1.0);
+          #endif
+          float h1 = platH(si), h2 = platH(si + 17.3), h3 = platH(si + 41.9);
+          // slab tone and hue
+          float tone = 1.0 + (h1 - 0.5) * 0.17 + (h3 > 0.93 ? -0.07 : 0.0);
+          diffuseColor.rgb *= mix(vec3(1.0), tone * vec3(1.0 + (h2 - 0.5) * 0.035, 1.0, 1.0 - (h2 - 0.5) * 0.035), slabV);
+          // joints: each edge its own width (2-5 mm of dark grit) and darkness
+          vec2 e0 = sf * 0.4, e1 = (1.0 - sf) * 0.4;
+          float wL = mix(0.0015, 0.0045, platH(si + vec2(0.0, 5.5))), wR = mix(0.0015, 0.0045, platH(si + vec2(1.0, 5.5)));
+          float wB = mix(0.0015, 0.0045, platH(si + vec2(9.5, 0.0))), wT = mix(0.0015, 0.0045, platH(si + vec2(9.5, 1.0)));
+          float jx = max(1.0 - smoothstep(wL - px, wL + px, e0.x), 1.0 - smoothstep(wR - px, wR + px, e1.x));
+          float jy = max(1.0 - smoothstep(wB - px, wB + px, e0.y), 1.0 - smoothstep(wT - px, wT + px, e1.y));
+          float jd = mix(0.45, 0.8, h2);
+          diffuseColor.rgb *= 1.0 - jd * 0.5 * max(jx, jy) * near;
+          // chewing gum: flattened grey-black discs, 8-15 mm, a few per slab (more trodden)
+          float gum = 0.0;
+          for (int k = 0; k < 3; k++) {
+            vec2 hk = si + vec2(float(k) * 3.7, 11.0);
+            float pr = platH(hk);
+            if (pr > 0.16 + 0.5 * platWear) continue;
+            vec2 c = vec2(platH(hk + 1.3), platH(hk + 2.9)) * 0.86 + 0.07;
+            float rr = mix(0.008, 0.015, platH(hk + 4.1));
+            float d = length((sf - c) * 0.4 * vec2(1.0, mix(0.8, 1.2, platH(hk + 5.3))));
+            gum = max(gum, (1.0 - smoothstep(rr - px, rr + px, d)) * mix(0.55, 0.9, platH(hk + 6.7)));
+          }
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.055, 0.053, 0.05), gum * near);
+        }`)
+      .replace('#include <normal_fragment_begin>', `roughnessFactor *= 1.0 - 0.18 * platWear;
+        #include <normal_fragment_begin>`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-platform1`; };
+  m.needsUpdate = true;
+  return m;
+}
+
+/**
  * Weathering of the stone bollards (on top of the library stone): a ragged dirt and splash
  * band at the foot (10-15 cm, darker and rougher, speckled), rain streaks running down from
  * the cap, a dusty top and a mottle; every post gets its own pattern from its position.
@@ -618,7 +679,9 @@ export function createMaterials(app) {
   // platform: cut limestone coping (per-block tint in vertex colours), mortar, paving
   out.copingStone = M.get('stone.smooth', { vertexColors: true });
   out.mortar = M.get('concrete', { color: [0.3, 0.29, 0.28], userData: { furniture: 'mortar' } });
-  out.platformPaving = M.get('paving.platform');
+  // platform slabs: toned to the sidewalk granite (a touch lighter, not the warm cream of
+  // the bare library slab), per-slab tone, gum, worn door lanes (vertex colours), joints
+  out.platformPaving = patchPlatformPaving(M.get('paving.platform', { vertexColors: true, color: [0.6, 0.615, 0.68], userData: { furniture: 'platform' } }));
   out.bandStone = M.get('stone.smooth', { color: [0.42, 0.42, 0.41], userData: { furniture: 'band' } });
   // shelter glazing with its decal, and the green-tinted glass edges
   {

@@ -2,7 +2,7 @@ import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { noise1 } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, MOB } from './agent.js';
-import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
+import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
 import { thinkCycle, maybeMount } from './cyclist.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
@@ -169,8 +169,9 @@ export function desired(c, a, out) {
         a.laneTT -= c.dt;
         if (a.laneTT <= 0) { a.laneT = laneTarget(c, a); a.laneTT = 0.25; }
         const e = a.laneT - a.d;
-        // pace drifts a few percent over 5-15 s; heading jitters a few degrees
-        const pace = a.v0 * (1 + 0.06 * noise1(c.time / a.paceT, a.wSeed + 11));
+        // pace drifts a few percent over 5-15 s (and drops back / pulls ahead of a stranger
+        // alongside); heading jitters a few degrees
+        const pace = a.v0 * (1 + 0.06 * noise1(c.time / a.paceT, a.wSeed + 11)) * (a.paceKT > c.time ? a.paceK : 1);
         let vs = a.dir * pace, vd = Math.max(-0.75, Math.min(0.75, e * 0.9));
         const j = 0.045 * noise1(c.time * 0.5, a.wSeed + 23) + 0.025 * noise1(c.time * 1.3, a.wSeed + 29);
         const cj = Math.cos(j), sj = Math.sin(j);
@@ -252,7 +253,8 @@ function scanAhead(c, a) {
   const sA = Math.min(a.s, a.s + dir * look) - 1.5, sB = Math.max(a.s, a.s + dir * look) + 1.5;
   const ix0 = Math.max(0, Math.floor((sA - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((sB - st.s0) / CELL));
   const iy0 = Math.max(0, Math.floor((lo - 2.6 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((hi + 2.6 + GRID_D) / CELL));
-  let best = 1e9, bv = 0, blk = null, abreast = 0, stand = null, sGap = 1e9;
+  let best = 1e9, bv = 0, blk = null, abreast = 0, stand = null, sGap = 1e9, twin = null, oncoming = 0;
+  const avs = a.vs * dir;
   for (let x = ix0; x <= ix1; x++) {
     for (let y = iy0; y <= iy1; y++) {
       for (let j = st.head[x * st.ny + y]; j >= 0; j = agents[j].next) {
@@ -260,9 +262,15 @@ function scanAhead(c, a) {
         if (b === a || b.leader === a || !b.active || b.state === ST.SEATED) continue;
         const xb = (b.s - a.s) * dir;
         // people abreast of the group take room from it
-        if (Math.abs(xb) < 1.2 && b.d > lo - 1.2 && b.d < hi + 1.2) abreast++;
+        if (Math.abs(xb) < 1.2 && b.d > lo - 1.2 && b.d < hi + 1.2) {
+          abreast++;
+          // a stranger walking right beside it the same way at the same pace
+          if (!twin && b.d > lo - 1.3 && b.d < hi + 1.3 && b.state === ST.WALK && Math.abs(b.vs * dir - avs) < 0.12 && avs > 0.5) twin = b;
+        }
         if (xb < 0.3 || xb > look || b.mob === MOB.CYCLE) continue;
         const bv0 = b.vs * dir;
+        // people coming the other way on the group's line: it closes up to let them by
+        if (bv0 < -0.2 && xb < 4.5 && b.d > lo - 0.9 && b.d < hi + 0.9) oncoming++;
         if (bv0 < -0.2 || bv0 > v * 0.96) continue;     // coming the other way, or not slower
         let blo = b.d - AGENT_R, bhi = b.d + AGENT_R;
         if (b.mob) { blo -= b.extLo; bhi += b.extHi; }
@@ -274,8 +282,21 @@ function scanAhead(c, a) {
       }
     }
   }
+  // strangers do not walk on in step side by side for long: after a second and a half one of
+  // them drifts ahead and the other drops back (the slower by nature falls in behind)
+  if (twin) {
+    a.abT += 0.25;
+    if (a.abT > 1.5 && a.paceKT < t) {
+      const B = twin.leader || twin;
+      const slower = a.v0 < B.v0 - 0.01 || (Math.abs(a.v0 - B.v0) <= 0.01 && a.serial < B.serial);
+      a.paceK = slower ? c.rng.range(0.86, 0.91) : c.rng.range(1.08, 1.12);
+      a.paceKT = t + c.rng.range(5, 9);
+      a.abT = 0;
+      c.tally('unpair');
+    }
+  } else a.abT = Math.max(0, a.abT - 0.25);
   const strip = stripOf(c, a), sLo = strip.lo, sHi = strip.hi;
-  a.freeW = Math.max(0.4, sHi - sLo - 0.6 * Math.max(0, abreast - 0));
+  a.freeW = Math.max(0.4, sHi - sLo - 0.6 * Math.max(0, abreast - 0) - 0.75 * oncoming);
   // somebody standing in the way before any slower walker: round them
   if (stand && sGap < best) { blk = stand; best = sGap; bv = 0; }
   if (!blk) { a.hwV = 99; return; }
@@ -597,8 +618,10 @@ function thinkWalk(c, a) {
       if (r.chance(0.45) && startCross(c, a, c.unwrap(other.s) + r.range(-1, 1) * other.width * 0.3, r.chance(0.5) ? TASK.SIDE_OUT : TASK.NONE, other)) return;
     }
     if (a.lane === LANE.SIDE) {
-      if (mob !== MOB.WALKBIKE && r.chance(0.016) && startBrowse(c, a)) return;
-      if (!mob && r.chance(0.006) && startEnter(c, a)) return;
+      // (in the evening fewer errands in the shops)
+      const ev = c.population.tod.evening;
+      if (mob !== MOB.WALKBIKE && r.chance(0.016 * (1 - 0.4 * ev)) && startBrowse(c, a)) return;
+      if (!mob && r.chance(0.006 * (1 - 0.5 * ev)) && startEnter(c, a)) return;
       if (!mob && a.nFollow === 0 && r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
       // drift over to the shop windows for a few steps, without stopping (not with a bicycle)
       if (mob !== MOB.WALKBIKE && r.chance(0.02) && a.driftT < c.time) { a.driftT = c.time + r.range(3, 7); a.driftF = r.range(0.8, 0.97); a.lookGoal = (a.dir * side > 0 ? -1 : 1) * r.range(0.5, 1.0); }
@@ -607,10 +630,11 @@ function thinkWalk(c, a) {
   }
   // (with a stroller: no crossing in the middle of a block)
   if (mob !== MOB.STROLLER && r.chance(0.0018) && startCross(c, a, a.s + a.dir * r.range(3, 8), TASK.NONE, null)) return;
-  if (!mob && a.nFollow > 0 && r.chance(0.02) && c.counts.stand < STANDER_TARGET && startChat(c, a)) return;
-  if (a.nFollow === 0 && r.chance(0.004) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF) {
-    c.tally('pause'); a.task = TASK.PAUSE; stand(a, a.alpha + r.range(-1.2, 1.2), r.range(6, 24)); return;
-  }
+  // people stop to talk, wait for somebody, take a call: more often while too few are standing
+  // about near the camera (the street ahead should always have its share of standing people)
+  const few = c.counts.stand300 < STAND_NEAR && a.s - c.camU > 0;
+  if (!mob && a.nFollow > 0 && r.chance(few ? 0.06 : 0.003) && c.counts.stand < STANDER_TARGET * 2 && startChat(c, a)) return;
+  if (!mob && a.nFollow === 0 && r.chance(few ? 0.02 : 0.0015) && !nearRide(a) && Math.abs(a.d) > TRACK_ZONE_HALF && startPause(c, a)) return;
   // lane drift and the odd change of mind
   if (r.chance(0.05)) a.laneF = Math.min(0.97, Math.max(0.03, a.laneF + r.normal(0, 0.18)));
   if (r.chance(0.012)) setLane(c, a, r);
@@ -663,7 +687,61 @@ export function setLane(c, a, r, forceSide = false) {
 
 // ------------------------------------------------------------------ tasks
 
-function startBrowse(c, a) {
+/** A walker stops for a while out of the walking line: waiting by a door, leaning by a pole or
+ *  tree, at a shop window for longer than a glance, or on the phone at the edge of the sidewalk. */
+function startPause(c, a) {
+  const r = c.rng, map = c.map, side = a.side;
+  if (a.lane === LANE.CORR || a.platformOK || a.inDoor || a.inSide || map.stationAt(a.s)) return false;
+  const u = r.next(), at = a.s + a.dir * 6;
+  if (u < 0.28) {
+    // by a door, waiting for somebody
+    const ops = map.openingsAt(at, side);
+    if (ops) {
+      for (const o of ops) {
+        const dr = doorOf(c, o);
+        if (!dr) continue;
+        const ahead = (dr.s - a.s) * a.dir;
+        if (ahead < 2 || ahead > 12 || map.cafeAtS(dr.s, side)) continue;
+        const js = dr.s + (r.chance(0.5) ? 1 : -1) * (dr.s1 - dr.s + 0.7);
+        const gd = side * (map.wallMin(js, side, 0.4) - 0.1);
+        if (!clearSpot(c, js, gd, 0.45) || map.rectInner(js, side, Math.abs(gd), 0.3)) continue;
+        a.task = TASK.PAUSE; a.step = 0; a.pauseFace = faceStreet(side) + r.range(-0.6, 0.6); a.pauseT = r.range(15, 60);
+        goTo(a, js, gd, 0.3);
+        c.tally('pauseDoor');
+        return true;
+      }
+    }
+  } else if (u < 0.45) {
+    // beside a pole or a tree trunk, on the sidewalk side of it
+    const n = map.gatherCircles(at, 5);
+    for (let q = 0; q < n; q++) {
+      const i = map.qI[q], od = map.cD[i], cr = map.cR[i];
+      if ((od >= 0 ? 1 : -1) !== side || Math.abs(od) < TRACK_ZONE_HALF + 0.3 || cr > 0.45) continue;
+      const os = at + map.qDS[q], ahead = (os - a.s) * a.dir;
+      if (ahead < 2 || ahead > 11) continue;
+      const gs = os + r.range(-0.12, 0.12), gd = od + side * (cr + AGENT_R + 0.08);
+      if (Math.abs(gd) > map.wallAt(gs, side) - 0.6 || map.rectInner(gs, side, Math.abs(gd), 0.35)) continue;
+      a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(10, 45);
+      a.pauseFace = r.chance(0.5) ? faceStreet(side) + r.range(-0.7, 0.7) : (a.dir > 0 ? 0 : PI) + r.range(-0.8, 0.8);
+      goTo(a, gs, gd, 0.25);
+      c.tally('pausePole');
+      return true;
+    }
+  } else if (u < 0.62 && startBrowse(c, a, r.range(12, 35))) return true;
+  // on the phone (or just waiting) where they are, stepped out of the walking line
+  const bi = map.bandInAt(a.s, side), bo = map.bandOutAt(a.s, side);
+  if (bo - bi < 1.6) return false;
+  const toFac = r.chance(0.55);
+  const gs = a.s + a.dir * r.range(1.2, 2.5), gd = side * (toFac ? bo - 0.1 : bi + 0.35);
+  if (!clearSpot(c, gs, gd, 0.5)) return false;
+  a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(12, 50);
+  a.pauseFace = toFac ? faceStreet(side) + r.range(-0.9, 0.9) : r.range(-PI, PI);
+  goTo(a, gs, gd, 0.35);
+  c.tally('pausePhone');
+  return true;
+}
+
+function startBrowse(c, a, dur = 0) {
   const map = c.map, side = a.side;
   const ops = map.openingsAt(a.s + a.dir * 6, side);
   if (!ops) return false;
@@ -678,7 +756,7 @@ function startBrowse(c, a) {
     const back = a.mob === MOB.STROLLER ? 1.4 : 0.3;
     const gs = sO + c.rng.range(-0.5, 0.5) * o.half, gd = side * ((a.mob ? map.wallMin(sO, side, 1.5) : wall) - back);
     if (!clearSpot(c, gs, gd, 0.45)) continue;
-    a.task = TASK.BROWSE; a.step = 0;
+    a.task = TASK.BROWSE; a.step = 0; a.pauseT = dur;
     goTo(a, gs, gd, 0.3);
     c.tally('browse');
     return true;
@@ -836,9 +914,14 @@ export function board(c, a, doorS) {
 export function arrive(c, a) {
   const r = c.rng, map = c.map, side = a.side;
   switch (a.task) {
+    case TASK.PAUSE:
+      stand(a, a.pauseFace, a.pauseT > 0 ? a.pauseT : r.range(8, 25));
+      a.step = 1; a.pauseT = 0;
+      return;
     case TASK.BROWSE:
       a.step = 1;
-      stand(a, faceFacade(side) + r.range(-0.25, 0.25), r.range(4, 20));
+      stand(a, faceFacade(side) + r.range(-0.25, 0.25), a.pauseT > 0 ? a.pauseT : r.range(4, 20));
+      a.pauseT = 0;
       // companions look at their own bit of the window
       for (const f of a.followers) f.faceA = faceFacade(side) + r.range(-0.4, 0.4);
       return;

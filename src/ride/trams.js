@@ -5,7 +5,7 @@ import { Events } from '../core/events.js';
 import { Tram, DRIVE } from './train.js';
 import { CAR, buildModels } from './trams/model.js';
 import { makeLampAtlas } from './trams/display.js';
-import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial } from './trams/materials.js';
+import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
 
 // Oncoming trams: the other units of the line, on the left track (d = −TRACK_OFFSET),
 // running the loop the other way. The cab tram itself is never rendered.
@@ -72,19 +72,24 @@ const trams = {
     this.app = app;
     app.trams = this;
     const M = app.materials, route = app.route;
-    // own materials (trams/materials.js): clear-coated metallic silver paint, flush tinted
-    // glazing with black frit, the cab front glass and the pantograph paint
-    const interior = new THREE.Color(0.03, 0.033, 0.036);       // the saloon seen through the tint
+    // own materials (trams/materials.js), one set per unit (its seed and the street around
+    // it; the programs are shared): clear-coated metallic silver paint, flush tinted glazing
+    // with black frit over the traced saloon, the cab front glass; the pantograph paint
     this.gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
-    this.mats = {
-      body: M.track(makeBodyMaterial()),
-      glass: M.track(makeGlassMaterial('trams.glass', interior, true)),
-      ws: M.track(makeGlassMaterial('trams.glassLow', interior, false)),
-      // cab front glass: the leading cab has its driver at the controls, the trailing one is empty
-      front: M.track(makeFrontMaterial({ driver: true, gain: this.gain })),
-      frontTrail: M.track(makeFrontMaterial({ driver: false, gain: this.gain })),
-      metal: M.track(makeMetalMaterial()),
-    };
+    this.refl = makeSharedRefl();
+    this.metal = M.track(makeMetalMaterial());
+    this.unitMats = UNITS.map((def, i) => {
+      const uni = makeUnitUniforms(this.refl, 3.7 + i * 11.3);
+      const glass = M.track(makeGlassMaterial(`trams.glass${i}`, uni, this.gain));
+      return {
+        uni, glass, ws: glass, metal: this.metal,
+        body: M.track(makeBodyMaterial(uni)),
+        // cab front glass: the leading cab has its driver at the controls, the trailing one is empty
+        front: M.track(makeFrontMaterial(uni, { driver: true, gain: this.gain })),
+        frontTrail: M.track(makeFrontMaterial(uni, { driver: false, gain: this.gain })),
+      };
+    });
+    this.mats = this.unitMats[0];
 
     const atlases = UNITS.map((u) => makeLampAtlas(u.line, u.dest));
     this.models = buildModels(atlases[0]);           // the atlases share their layout
@@ -141,7 +146,8 @@ const trams = {
   _unitMeshes(i) {
     const root = new THREE.Group();
     root.name = `trams:unit${i}`;
-    const { mats, models } = this;
+    const { models } = this;
+    const mats = this.unitMats[i];
     const lamp = this.lampMats[i];
     root.userData.bodies = ['lead', 'mid', 'trail'].map((kind) => {
       const g = new THREE.Group();
@@ -210,6 +216,38 @@ const trams = {
     }
     this._place(app);
     this._lights();
+    this._reflection(app);
+  },
+
+  /** Street reflection inputs (trams/materials.js): last frame's anti-aliased image and its
+   *  view-projection from post, while it is valid for this frame (no cut, jump or zoom);
+   *  each visible unit's street planes (facade lines and paving height at its middle). */
+  _reflection(app) {
+    const post = app.systems.post, cam = app.camera, rig = app.cameraRig, R = this.refl;
+    let on = !!(post && !post.disabled && post.taaOn && post.taaRT && post.taaValid && post.prevVP);
+    if (on) {
+      const cut = rig && !rig.disabled && rig.cut && !app.params.view;
+      const jump = post.prevCamPos && cam.position.distanceToSquared(post.prevCamPos) > 16;
+      const zoom = Math.abs(cam.fov - (post.prevFov || 0)) > 0.03 * Math.max(cam.fov, 1);
+      on = !cut && !jump && !zoom;
+    }
+    R.on.value = on ? 1 : 0;
+    if (on) {
+      R.hist.value = post.taaRT[post.taaPing ^ 1].texture;
+      R.vp.value.copy(post.prevVP);
+    }
+    const route = app.route, layout = app.layout;
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
+      if (!u.root.visible) continue;
+      const uni = this.unitMats[i].uni;
+      const sm = route.wrap(u.s + CAR.length / 2);
+      const smp = route.sample(sm, this._smp || (this._smp = {}));
+      const nx = smp.right.x, nz = smp.right.z, np = nx * smp.pos.x + nz * smp.pos.z;
+      const hwR = layout.halfWidth(sm, 1), hwL = layout.halfWidth(sm, -1);
+      uni.uTramStreet.value.set(nx, nz, np + hwR, np - hwL);
+      uni.uTramGround.value = route.toWorld(sm, -TRACK_OFFSET, 0, _b).y;
+    }
   },
 
   /** Weighted people in each unit's track corridor 5-200 m ahead of its nose -> Tram.load. */
@@ -297,13 +335,11 @@ const trams = {
   },
 
   /** Lamp levels follow the light: a daylight-readable display dimmed at dusk, headlights
-   *  (a little lower at night), and the saloon lighting showing through the side windows
-   *  once it gets dark. */
+   *  a little lower at night (the saloon's own lights are part of the glass shader). */
   _lights() {
     const night = Math.min(1, Math.max(0, U.uNight.value));
     const ln = (a, b) => Math.exp(Math.log(a) + night * (Math.log(b) - Math.log(a)));
     this.lampLv.value.set(ln(0.12, 0.014), ln(0.12, 0.06));
-    this.mats.glass.emissiveIntensity = night * 0.0005 * this.gain.value;
   },
 };
 

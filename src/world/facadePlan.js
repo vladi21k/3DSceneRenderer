@@ -220,6 +220,7 @@ export function facadePlan(lot) {
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
   cornerCut(plan, lot);                    // some street corners are chamfered (an extra face)
   if (termini.has(lot.id)) tower(plan, lot); // closes the view down the street: a taller block
+  finish(plan, lot);                       // rendered and colour-washed later blocks
   for (const f of [plan, ...plan.returns, ...(plan.upper ? [plan.upper] : [])]) for (const o of f.openings) o.backDepth = backDepthOf(o);
   cache.set(lot.id, plan);
   return plan;
@@ -837,6 +838,43 @@ function findTermini(layout) {
     if (RNG.from(lot.seed, 'terminus').chance(0.6)) out.set(lot.id, true);
   }
   return out;
+}
+
+// ------------------------------------------------------------------ finish
+// The street is limestone, but about half of the later (modern) blocks are rendered and
+// colour-washed above a stone-clad shop floor: the ochre, rose, buff and white blocks
+// that give the far end of the street its colour notes in the photographs. Stone stays
+// for the dressing (sills, surrounds, string courses, cornice, plinth, quoins).
+//   plan.style.finish  'render' (else undefined: ashlar)
+//   plan.style.render  {color: multipliers on the plaster albedo, from: v where the render
+//                      starts (the top of the first string course, or the first floor)}
+//   plan.style.stone   the stone tint of the dressing and the shop floor
+//   plan.style.tint    becomes the render's colour expressed as a stone tint, so whatever
+//                      colours the facade from the tint (far field, balcony slabs, shop
+//                      recesses) follows the render
+const RENDER_WASH = [
+  [[1.3, 1.0, 0.55], 0.2], [[1.34, 0.93, 0.5], 0.08], [[1.32, 1.12, 0.66], 0.12],   // ochre, deep ochre, yellow
+  [[1.3, 0.86, 0.72], 0.14], [[1.33, 0.8, 0.6], 0.08],                               // rose, salmon
+  [[1.22, 1.06, 0.82], 0.12], [[1.1, 1.08, 1.03], 0.16], [[0.98, 0.98, 0.96], 0.1],  // buff, white, grey
+];
+const PLASTER_ALB = [0.66, 0.62, 0.54];    // the plaster texture's mean albedo (linear)
+const ASHLAR_ALB = [0.59, 0.535, 0.43];    // the ashlar texture's (= CREAM tint)
+
+function finish(plan, lot) {
+  const rng = RNG.from(lot.seed, 'finish');
+  const st = plan.style;
+  if (st.era !== 'modern' || plan.floors.length < 3 || !rng.chance(0.5)) return;
+  const color = rng.weighted(RENDER_WASH).map((c) => c * rng.range(0.95, 1.03));
+  const c0 = plan.courses[0];
+  st.finish = 'render';
+  st.render = { color, from: c0 ? c0.y + c0.h : plan.floors[1].y };
+  st.stone = st.tint;
+  st.tint = color.map((c, i) => STONE_TINTS[0][i] * Math.pow((PLASTER_ALB[i] * c) / ASHLAR_ALB[i], 0.8));
+  // rendered blocks have rendered set-back storeys, a shade lighter
+  const up = plan.upper;
+  if (up && !up.tower) { up.material = 'plaster'; up.color = color.map((c) => Math.min(1.2, c * 0.97) * 0.9); }
+  // and their joinery is mostly white or light (aluminium), often with roller shutters
+  st.frameColor = rng.pick(['white', 'white', 'lightgrey', 'cream', st.frameColor]);
 }
 
 // render colours (multipliers on the plaster albedo, × 0.9 as the upper volumes store them)

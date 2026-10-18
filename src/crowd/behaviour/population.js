@@ -43,6 +43,7 @@ export class Population {
       .map((f) => ({ s: f.s, d: f.d, w: f.type === 'kiosk' ? 2.2 : 1.15 }));
     this.stations = new Map();   // station id -> {right, left, served}
     this.queue = [];             // seats / platform spots waiting to be filled (a few per frame)
+    this.seatRetry = [];         // café seats dropped for the budget (far terraces), offered again later
     this.featureT = 0;
     this.nBins = Math.ceil((RANGE_AHEAD + RANGE_BEHIND) / BIN);
     this.binCount = new Float32Array(this.nBins);
@@ -89,7 +90,7 @@ export class Population {
     a.clearT = a.dreamy ? r.range(CLEAR_T_DREAMY[0], CLEAR_T_DREAMY[1]) : r.range(CLEAR_T[0], CLEAR_T[1]);
     if (HURRY_BY[ageK]) a.clearT += 1.5;
     a.needsBell = a.dreamy || r.chance(0.1);
-    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.sideK = 0;
+    a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0;
     a.dodge = 0; a.dodgeT = 0; a.passT = -1e9;
     a.fresh = true; a.src = src; a.strideV = -1; a.afs = 0; a.afd = 0; a.laneTT = 0;
     a.pValid = false; a.speedA = 0; a.moving = false; a.uturnT = 0; a.driftT = 0;
@@ -187,6 +188,7 @@ export class Population {
     this.benches.clear();
     this.stations.clear();
     this.queue.length = 0;
+    this.seatRetry.length = 0;
   }
 
   groupOf(a) {
@@ -263,9 +265,21 @@ export class Population {
     this._sun = { x: dir.x, z: dir.z, h, w: Math.min(1, Math.max(0, (0.45 - st.t) / 0.1)) };
   }
 
+  /** Time of day for the crowd's mix: `evening` from t 0.55 to 0.65 (busier terraces, fewer
+   *  errands in the shops), `late` from t 0.8 to 0.88 (fewer strollers and children, more young
+   *  people in groups, a slower pace). */
+  _todNow() {
+    const env = this.c.app.env || (this.c.app.systems && this.c.app.systems.env);
+    const t = env && env.state && Number.isFinite(env.state.t) ? env.state.t : 0;
+    const sm = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+    this.tod.t = t; this.tod.evening = sm((t - 0.55) / 0.1); this.tod.late = sm((t - 0.8) / 0.08);
+    this._paceK = 1 - 0.05 * this.tod.late;
+  }
+
   _targets() {
     const c = this.c;
     this._sunNow();
+    this._todNow();
     let tot = 0;
     for (let b = 0; b < this.nBins; b++) {
       const sU = c.camU - RANGE_BEHIND + (b + 0.5) * BIN;
@@ -396,11 +410,16 @@ export class Population {
     const gk = (kids ? 0.82 : 0.9) * r.range(0.94, 1.06);
     a.v0 = Math.max(0.85, a.v0 * gk);
     const R1 = r.range(0.56, 0.72) * (r.chance(0.5) ? 1 : -1);
-    const V = (r.chance(0.7) ? 1 : -1) * r.range(0.3, 0.5);
     let slots;
     if (n === 1) slots = [[r.range(-0.15, 0.15), R1]];
-    else if (n === 2) slots = [[V + r.range(-0.08, 0.08), R1], [V + r.range(-0.08, 0.08), -R1 * r.range(0.9, 1.1)]];
-    else slots = [[r.range(-0.12, 0.12), R1], [-r.range(0.85, 1.0), -R1 * 0.5 + r.range(-0.1, 0.1)], [-r.range(0.85, 1.0), R1 * 0.5 + r.range(-0.1, 0.1)]];
+    else if (n === 2) {
+      // threes: mostly two abreast with the third a step behind, or a V with one ahead; now and
+      // then all three abreast (a staggered group reads as a group, a rank as a parade)
+      const f = r.weighted([[0, 0.5], [1, 0.3], [2, 0.2]]);
+      if (f === 0) slots = [[r.range(-0.12, 0.12), R1], [-r.range(0.8, 1.05), R1 * 0.5 + r.range(-0.1, 0.1)]];
+      else if (f === 1) { const V = -r.range(0.6, 0.85); slots = [[V, R1], [V + r.range(-0.1, 0.1), -R1 * r.range(0.9, 1.1)]]; }
+      else { const V = (r.chance(0.7) ? 1 : -1) * r.range(0.3, 0.5); slots = [[V + r.range(-0.08, 0.08), R1], [V + r.range(-0.08, 0.08), -R1 * r.range(0.9, 1.1)]]; }
+    } else slots = [[r.range(-0.12, 0.12), R1], [-r.range(0.85, 1.0), -R1 * 0.5 + r.range(-0.1, 0.1)], [-r.range(0.85, 1.0), R1 * 0.5 + r.range(-0.1, 0.1)]];
     // children take the slots right beside the leader (hand-holding distance)
     const kidR = [-Math.sign(R1) * r.range(0.38, 0.46), Math.sign(R1) * r.range(0.38, 0.46)];
     for (let k = 0; k < n && this.free.length > 4; k++) {
@@ -409,8 +428,8 @@ export class Population {
       if (!f) break;
       let [F, R] = slots[k];
       if (child) { F = r.range(-0.05, 0.12); R = kidR[(n - 1 - k) % 2]; }
-      // (adults half a step ahead or behind: a loose group, never a rank)
-      else F += r.range(-0.35, 0.35);
+      // (adults a little ahead or behind: a loose group, never a rank)
+      else F += r.range(-0.2, 0.2);
       f.baseF = F; f.baseR = R;
       const th = a.dir > 0 ? 0 : PI, cf = Math.cos(th), sf = Math.sin(th);
       f.s = a.s + cf * F - sf * R; f.d = a.d + sf * F + cf * R;
@@ -487,7 +506,11 @@ export class Population {
     const c = this.c, r = c.rng;
     this.mobCount.fill(0);
     this._count();
+    this._todNow();
     this.scanFeatures();
+    // (the seating budget goes to the terraces nearest the camera first)
+    const relQ = (q) => (q.type === 'seat' ? Math.abs(q.seat.s - c.camU) : 0);
+    this.queue.sort((p, q) => relQ(p) - relQ(q));
     this._fillQueue(1e9);
     this._count();
     this._targets();
@@ -558,13 +581,13 @@ export class Population {
     const c = this.c;
     this.frame++;
     this.featureT -= dt;
-    if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); }
+    if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); this._retrySeats(); }
     this._fillQueue(3);
     this._stationEvents();
     // one pass: recycling, head counts by kind and walkers per bin
     const lo = c.camU - RANGE_BEHIND;
     const k = c.counts;
-    k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0;
+    k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0; k.stand300 = 0; k.walk300 = 0; k.side = 0;
     this.binCount.fill(0);
     this.mobCount.fill(0);
     let walkers = 0;
@@ -588,6 +611,9 @@ export class Population {
       else {
         k.walker++; walkers++;
         if (a.state === ST.STAND) k.stand++;
+        if (rel > -5 && rel < 300) { k.walk300++; if (a.state === ST.STAND && !a.inSide) k.stand300++; }
+        // (people out in the side streets are counted apart: the main street's density stays as it is)
+        if (a.inSide) { k.side++; walkers--; continue; }
         const b = Math.floor((a.s - lo) / BIN);
         if (b >= 0 && b < this.nBins) this.binCount[b]++;
       }
@@ -600,6 +626,70 @@ export class Population {
       const n = this._spawnOne();
       if (n) { walkers += n; budget--; }
     }
+    // people standing about (talking, waiting, on the phone): a pair stepping out from behind
+    // somebody far down the street now and then when there are too few
+    if (k.stand300 < STAND_NEAR && (this.frame % 20) === 7 && this.free.length > 12) this._spawnChatHidden();
+  }
+
+  /** Two or three people standing and talking, far down the street, placed along the line of
+   *  sight behind a kiosk / advertising column or a taller figure (so the group appears from
+   *  behind it). Returns how many were placed. */
+  _spawnChatHidden() {
+    const c = this.c, r = c.rng, vis = c.vis, map = c.map;
+    const sU = c.camU + r.range(300, 520), side = r.chance(0.5) ? 1 : -1;
+    let os, od, w, maxH = 0;
+    let occ = null, n = 0;
+    for (const b of this.agents) {
+      if (!b.active || b.kind === KIND.SEATED || b.isChild || b.height < 1.7 || b.inDoor || b.inSide) continue;
+      if (Math.abs(b.s - sU) > 25 || (b.d >= 0 ? 1 : -1) !== side) continue;
+      if (Math.abs(b.d) < map.bandInAt(b.s, side) - 0.3) continue;      // (on the sidewalk proper)
+      if (r.next() * ++n < 1) occ = b;
+    }
+    if (occ) { os = occ.s; od = occ.d; w = 0.42; maxH = occ.height - 0.05; }
+    else {
+      for (const o of this.occluders) {
+        const so = c.unwrap(o.s);
+        if (Math.abs(so - sU) > 40 || (o.d >= 0 ? 1 : -1) !== side) continue;
+        if (r.next() * ++n < 1) { os = so; od = o.d; w = o.w; }
+      }
+      if (os === undefined) return 0;
+    }
+    // the pair (or three) stand along the ray behind it, facing each other across it
+    const k = r.weighted([[2, 0.7], [3, 0.3]]);
+    const b0 = occ ? r.range(2.2, 3.2) : w / 2 + r.range(0.6, 1.2);
+    const placed = [];
+    for (let i = 0; i < k; i++) {
+      const behind = b0 + i * r.range(0.75, 0.95);
+      const s = os + behind, d = vis.rayBehind(os, od, behind);
+      if (Math.abs(d) < map.bandInAt(s, side) + 0.3 || Math.abs(d) > map.wallAt(s, side) - 0.4) break;
+      if (vis.rayOffset(s, d, os, od) > Math.max(0.04, w / 2 - 0.3)) break;
+      const a = this.alloc(KIND.STANDER, 'chat', 'adult', maxH ? { maxH } : null);
+      if (!a) break;
+      if (maxH && a.height > maxH) { this._unspawn(a); break; }
+      a.s = s; a.d = d; a.side = side; a.dir = r.chance(0.5) ? 1 : -1; a.lane = LANE.SIDE; a.laneF = r.next();
+      if (!this._placeOk(a)) { this._unspawn(a); break; }
+      placed.push(a);
+    }
+    if (placed.length < 2) { for (const a of placed) this._unspawn(a); return 0; }
+    // a loose ring around their middle
+    let cs = 0, cd = 0;
+    for (const a of placed) { cs += a.s; cd += a.d; }
+    cs /= placed.length; cd /= placed.length;
+    const dur = r.range(25, 110), L = placed[0];
+    for (const a of placed) {
+      a.task = TASK.CHAT; a.state = ST.STAND; a.timer = dur; a.chatS = a.s; a.chatD = a.d;
+      a.faceA = Math.atan2(cd - a.d, cs - a.s) + r.range(-0.2, 0.2); a.alpha = a.faceA; a.vs = 0;
+      a.spawnHidden = true;
+      if (a !== L) {
+        a.leader = L; L.followers.push(a); a.dir = L.dir;
+        const k2 = L.followers.length;
+        a.baseF = k2 === 1 ? r.range(-0.15, 0.15) : -r.range(0.8, 1.0);
+        a.baseR = (k2 % 2 ? 1 : -1) * r.range(0.55, 0.7);
+      }
+    }
+    L.nFollow = L.followers.length;
+    this.stats.chatHidden = (this.stats.chatHidden || 0) + 1;
+    return placed.length;
   }
 
   /** Head counts (outside the per-frame pass: start-up). */
@@ -918,7 +1008,13 @@ export class Population {
     while (n-- > 0 && this.queue.length) {
       const q = this.queue.shift();
       if (q.type === 'seat') {
-        if (c.counts.seated >= (q.bench ? MAX_SEATED : MAX_SEATED - BENCH_RESERVE)) { this.stats.seatCap++; continue; }
+        // (the terraces near the camera come first: far ones leave a reserve for them)
+        const far = !q.bench && q.seat.s - c.camU > 300;
+        if (c.counts.seated >= (q.bench ? MAX_SEATED : MAX_SEATED - BENCH_RESERVE - (far ? 14 : 0))) {
+          this.stats.seatCap++;
+          if (far && q.seat.cafe && this.seatRetry.length < 200) this.seatRetry.push(q);
+          continue;
+        }
         if (q.seat.feat.occ.has(q.seat.key)) continue;
         let guardian = null;
         if (q.role === 'child') {
@@ -934,41 +1030,59 @@ export class Population {
   _populateCafe(cafe) {
     const c = this.c;
     const r = c.featureRng('cafe', cafe.id);
-    const feat = { type: 'cafe', cafe, occ: new Set(), seats: [], adults: [] };
+    const feat = { type: 'cafe', cafe, occ: new Set(), seats: [], adults: [], staff: null, staffT: 0 };
     this.cafes.set(cafe.id, feat);
-    // the seating budget is shared by every terrace in range: some are busier than others
-    const busy = Math.min(0.9, this._seatShare() * r.range(0.45, 1.6));
+    // patrons sit where the tables are set: a table in use (cups, plates: dressed 2) nearly
+    // always has its people at it, one per place set (now and then a companion with no order
+    // yet), a laid table (dressed 1) only now and then somebody who has just sat down, a bare
+    // one never. In the evening the terraces are busier.
+    const ev = this.tod.evening, kidK = 1 - 0.5 * this.tod.late;
     cafe.tables.forEach((t, ti) => {
-      const used = r.chance(Math.min(0.92, busy * 1.45));
-      let first = true;
-      t.chairs.forEach((ch, ci) => {
+      const dressed = t.dressed ?? 1;
+      const seats = t.chairs.map((ch, ci) => {
         const key = ti * 8 + ci;
         const s = c.unwrap(ch.s), ts = c.unwrap(t.s);
-        const seat = { type: 'seat', cafe, feat, key, s, d: ch.d, side: cafe.side, faceA: Math.atan2(t.d - ch.d, ts - s), exitD: cafe.side * (cafe._crowdInner - 0.5) };
+        const seat = { type: 'seat', cafe, feat, key, s, d: ch.d, side: cafe.side, faceA: Math.atan2(t.d - ch.d, ts - s), exitD: cafe.side * (cafe._crowdInner - 0.5), dressed, table: ti };
         feat.seats.push(seat);
-        if (!used || !r.chance(0.7)) return;
-        // children only at a table where an adult already sits
-        const role = !first && r.chance(0.14) ? 'child' : 'adult';
-        this.queue.push({ type: 'seat', seat, role, table: ti });
-        if (role === 'adult') first = false;
+        return seat;
       });
+      if (!dressed || !seats.length) return;
+      let n = 0;
+      if (dressed === 2) {
+        if (!r.chance(0.9)) return;
+        // (the places set: from the furniture when it says, else about two in three chairs, at least one)
+        const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.5, 0.95)));
+        n = places + (r.chance(0.3 + 0.25 * ev) ? 1 : 0);
+      } else {
+        if (!r.chance(0.12 + 0.2 * ev)) return;
+        n = r.chance(0.55) ? 1 : 2;
+      }
+      n = Math.min(n, seats.length);
+      // which chairs: the set places first, the others in a random order
+      const order = seats.map((x, i) => i);
+      for (let i = order.length - 1; i > 0; i--) { const j = r.int(0, i); const tmp = order[i]; order[i] = order[j]; order[j] = tmp; }
+      if (Array.isArray(t.places)) order.sort((x, y) => (t.places.includes(y) ? 1 : 0) - (t.places.includes(x) ? 1 : 0));
+      for (let k = 0; k < n; k++) {
+        // children only at a table where an adult already sits
+        const role = k > 0 && r.chance(0.14 * kidK) ? 'child' : 'adult';
+        this.queue.push({ type: 'seat', seat: seats[order[k]], role, table: ti });
+      }
     });
   }
 
-  /** Fraction of the café chairs in the populated range that the seating budget can fill
-   *  (re-counted every 25 m of travel). */
-  _seatShare() {
-    const c = this.c;
-    if (this._shareU === undefined || Math.abs(c.camU - this._shareU) > 25) {
-      this._shareU = c.camU;
-      let chairs = 0;
-      for (const cafe of c.layout.cafes) {
-        const rel = c.unwrap((cafe.s0 + cafe.s1) / 2) - c.camU;
-        if (rel > -RANGE_BEHIND && rel < FEATURE_AHEAD) for (const t of cafe.tables) chairs += t.chairs.length;
-      }
-      this._share = Math.min(0.6, Math.max(0.06, (0.85 * (MAX_SEATED - BENCH_RESERVE)) / Math.max(1, chairs)));
+  /** Seats dropped for the seating budget (far terraces) are offered again once there is room,
+   *  while the terrace is still far down the street. */
+  _retrySeats() {
+    const c = this.c, L = this.seatRetry;
+    if (!L.length || c.counts.seated > MAX_SEATED - BENCH_RESERVE - 16) return;
+    for (let i = L.length - 1; i >= 0 && c.counts.seated < MAX_SEATED - BENCH_RESERVE - 16; i--) {
+      const q = L[i];
+      const rel = q.seat.s - c.camU;
+      if (rel < 300 || this.cafes.get(q.seat.cafe.id) !== q.seat.feat) { L.splice(i, 1); continue; }
+      if (rel < 420 && !c.vis.hidden(q.seat.s, q.seat.d)) continue;
+      L.splice(i, 1);
+      this.queue.push(q);
     }
-    return this._share;
   }
 
   /** People resting on the street benches, facing the way the bench faces. */
@@ -1020,7 +1134,8 @@ export class Population {
     if (!feat) return null;
     let best = null, bd = 6;
     for (const seat of feat.seats) {
-      if (feat.occ.has(seat.key)) continue;
+      // (a table in use or laid; nobody sits down at a bare one)
+      if (feat.occ.has(seat.key) || !seat.dressed) continue;
       const dd = Math.abs(seat.s - a.s);
       if (dd < bd) { bd = dd; best = seat; }
     }

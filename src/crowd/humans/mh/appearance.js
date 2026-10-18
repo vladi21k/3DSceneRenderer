@@ -210,10 +210,11 @@ function finish(seed, r, cast, index, toddler = false) {
   // how this person stands, walks and sits
   const carry = bag === BAG.SHOPPING;
   const walkOld = old && r.chance(0.3);
-  const idle = toddler ? 0 : child ? r.weighted([[0, 50], [7, 30], [6, 15], [2, 5]])
-    : old ? r.weighted([[0, 26], [2, 14], [5, female ? 6 : 30], [6, 16], [7, 10], [3, female ? 0 : 5], [4, female ? 8 : 0]])
-      : r.weighted([[0, 24], [1, teen ? 26 : 16], [2, 11], [3, skirt ? 0 : 10], [4, female ? 13 : 4], [5, adult && !female ? 4 : 0],
-        [6, 14], [7, 8]]);
+  // (talking, idle 6, is for people the crowd pairs up with a partner: set() field idle)
+  const idle = toddler ? 0 : child ? r.weighted([[0, 55], [7, 40], [2, 5]])
+    : old ? r.weighted([[0, 32], [2, 16], [5, female ? 6 : 30], [7, 20], [3, female ? 0 : 5], [4, female ? 8 : 0]])
+      : r.weighted([[0, 28], [1, teen ? 26 : 16], [2, 12], [3, skirt ? 0 : 11], [4, female ? 13 : 4], [5, adult && !female ? 4 : 0],
+        [7, 16]]);
   let sit = toddler ? 3 : child ? r.weighted([[0, 5], [2, 3], [7, 3]])
     : r.weighted([[0, 22], [1, longSkirt ? 0 : 14], [2, 14], [5, teen ? 30 : 18], [6, 16], [7, 16]]);
   const phoneWalk = !carry && (adult || teen) && r.chance(teen ? 0.22 : 0.1);

@@ -54,7 +54,7 @@ const COL = {
 };
 
 // lamp brightness relative to the destination display (lamp mesh vertex colours, linear)
-const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17], door: [5, 0.55, 0.12] };
+const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17], door: [5, 0.55, 0.12], button: [0.25, 1.5, 0.45] };
 const FLEET_NO = '07';
 
 // cross-section: band edges and the rows the cab front needs
@@ -279,19 +279,21 @@ function cellMaterial(kind, y0, y1) {
   return body(paint);
 }
 
-/** Both side walls (and the roof) of a body from its cell layout. */
-function sideWalls(P, prof, cells) {
+/** Both side walls (and the roof) of a body from its cell layout. uv = (z + uOff, arc
+ *  length); the glass shader tells the centre body (uOff 100) from the cab ends by it. */
+function sideWalls(P, prof, cells, uOff = 0) {
   for (const cell of cells) {
+    const u0 = cell.z0 + uOff, u1 = cell.z1 + uOff;
     for (let i = 0; i < prof.length - 1; i++) {
       const a = prof[i], b = prof[i + 1];
       // door and window rows only matter on the side; the roof takes the paint
       const [part, col] = cellMaterial(cell.kind, a.y, b.y);
       const B = P[part];
       for (const sx of [1, -1]) {
-        const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, grimed(col, a.y), cell.z0, a.a);
-        const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, grimed(col, a.y), cell.z1, a.a);
-        const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, grimed(col, b.y), cell.z1, b.a);
-        const v3 = B.vert(sx * b.x, b.y, cell.z0, sx * b.nx, b.ny, 0, grimed(col, b.y), cell.z0, b.a);
+        const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, grimed(col, a.y), u0, a.a);
+        const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, grimed(col, a.y), u1, a.a);
+        const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, grimed(col, b.y), u1, b.a);
+        const v3 = B.vert(sx * b.x, b.y, cell.z0, sx * b.nx, b.ny, 0, grimed(col, b.y), u0, b.a);
         B.quad(v0, v1, v2, v3);
       }
     }
@@ -586,21 +588,50 @@ function capLamps(B, cap, prof, lead, atlas) {
 }
 
 /** Door indicator lamps: a small red-orange lens on both sides beside each door (leading
- *  edge, head height), lit from the lens atlas. `zs` are door centres (body frame). */
+ *  edge, head height), and the passengers' push button on a door leaf (a lit green ring,
+ *  LOD 0), lit from the lens atlas. `zs` are door centres (body frame). */
 function doorLamps(B, zs, atlas, lod) {
   if (lod > 1) return;
-  const L = atlas.lens, y = 1.95, r = 0.03, seg = 10, x = sideX(y) + 0.004;
+  const L = atlas.lens, seg = 10;
   const uc = (L[0] + L[2]) / 2, vc = (L[1] + L[3]) / 2, hu = (L[2] - L[0]) / 2, hv = (L[3] - L[1]) / 2;
+  const disc = (sx, y, z, r, col) => {
+    const x = sideX(y) + 0.004;
+    const ctr = B.vert(sx * x, y, z, sx, 0, 0, col, uc, vc);
+    const rim = [];
+    for (let k = 0; k < seg; k++) {
+      const t = (k / seg) * Math.PI * 2, cs = Math.cos(t), sn = Math.sin(t);
+      rim.push(B.vert(sx * x, y + r * sn, z + r * cs, sx, 0, 0, col, uc + hu * cs, vc + hv * sn));
+    }
+    for (let k = 0; k < seg; k++) B.tri(ctr, rim[k], rim[(k + 1) % seg]);
+  };
   for (const c of zs) {
-    const z = c - CAR.doorW / 2 - 0.075;
     for (const sx of [1, -1]) {
-      const ctr = B.vert(sx * x, y, z, sx, 0, 0, LAMP.door, uc, vc);
-      const rim = [];
-      for (let k = 0; k < seg; k++) {
-        const t = (k / seg) * Math.PI * 2, cs = Math.cos(t), sn = Math.sin(t);
-        rim.push(B.vert(sx * x, y + r * sn, z + r * cs, sx, 0, 0, LAMP.door, uc + hu * cs, vc + hv * sn));
+      disc(sx, 1.95, c - CAR.doorW / 2 - 0.075, 0.03, LAMP.door);
+      if (lod === 0) disc(sx, 1.12, c + sx * 0.055, 0.028, LAMP.button);
+    }
+  }
+}
+
+/** The fleet number painted on both sides under the cab's side window (LOD 0): black
+ *  strokes from the 5 x 7 font, reading towards the viewer's right on either side. */
+function sideNumber(B, lod) {
+  if (lod > 0) return;
+  const dot = 0.02, gw = 6 * dot, yc = 0.64, zc = 1.9, digits = FLEET_NO;
+  const w = digits.length * gw - dot;
+  for (const sx of [1, -1]) {
+    for (let k = 0; k < digits.length; k++) {
+      const g = FONT[digits[k]];
+      for (let r = 0; r < 7; r++) {
+        for (let b = 0; b < 5; b++) {
+          if (!(g[r] & (16 >> b))) continue;
+          // seen from the side the viewer's right is -z on the +x side, +z on the -x side
+          const a = -w / 2 + k * gw + b * dot;
+          const za = zc - sx * a, zb = zc - sx * (a + dot);
+          const ya = yc + 3.5 * dot - r * dot, yb = ya - dot;
+          const q = [[za, ya], [zb, ya], [zb, yb], [za, yb]].map(([z, y]) => B.vert(sx * (sideX(y) + 0.002), y, z, sx, 0, 0, COL.black));
+          B.quad(q[0], q[1], q[2], q[3]);
+        }
       }
-      for (let k = 0; k < seg; k++) B.tri(ctr, rim[k], rim[(k + 1) % seg]);
     }
   }
 }
@@ -688,6 +719,7 @@ export function buildModels(atlas) {
       endWall(P.body, prof, z1, 1, COL.bellows, 0.02);
       const cap = capFront(P, prof, lod);
       noseFittings(P, lod);
+      sideNumber(P.body, lod);
       fairing(P, 2.4, z1 - 0.45);
       if (lod === 0) runningGear(P.body, CAR.capBase, z1, CAR.bogies[0]);
       else if (lod === 1) runningGear(P.body, CAR.capBase, z1, null);
@@ -702,7 +734,7 @@ export function buildModels(atlas) {
       const P = new Parts();
       const z0 = gapH, z1 = midLen - gapH;
       const doors = CAR.doors.filter((c) => c > J[1] && c < J[2]).map((c) => c - J[1]);
-      sideWalls(P, prof, sideLayout(z0, z1, doors, lod));
+      sideWalls(P, prof, sideLayout(z0, z1, doors, lod), 100);
       endWall(P.body, prof, z0, -1, COL.bellows, 0.02);
       endWall(P.body, prof, z1, 1, COL.bellows, 0.02);
       bellows(P.body, prof, 0, lod);

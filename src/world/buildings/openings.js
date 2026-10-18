@@ -25,19 +25,71 @@ export function openingMasonry(ctx, face, o) {
   const arched = o.top !== 'flat' && o.rise > 0.01;
   const ground = o.floor === 0;
   const sRev = q.lod ? sinks.detail : sinks.smooth;   // far, the reveals' shadows are sub-texel
+  const surround = surroundOf(o, face, orn);
+  const seed = ((o.uc * 1000) | 0) + ((o.y * 100) | 0) * 7919 + (fs.seed | 0);
 
   // ---------------------------------------------------------------- reveals
-  B.shade = (u, v, w, nu, nv, nw, out) => {
-    trimColor(fs, u, v, 0, out, 1.0);
+  // Near, the reveals are cut stone like the faces they return from: walled jambs carry
+  // the facade's own courses round the arris (coursedJamb); dressed jambs, sills and
+  // heads continue the surround, lintel or ring stones (their tone, stone by stone).
+  // (a rendered wall's own jambs are rendered: ctx.render, see wall.wallField)
+  const rend = ctx.render && !surround && y0 > ctx.render.v0 - 0.05 ? ctx.render : null;
+  const revealShade = (fsx, trim) => (u, v, w, nu, nv, nw, out) => {
+    if (trim) trimColor(fsx, u, v, 0, out, 1.0); else fsx.wall(u, v, out);
     const d = Math.min(1, -w / Math.max(0.05, R));
     const k = (1 - 0.42 * Math.pow(d, 0.8)) * (nv < -0.3 ? 0.8 : nv > 0.5 ? 0.95 : 1);
     out[0] *= k; out[1] *= k; out[2] *= k;
   };
-  B.rectU(sRev, u0, y0, ys, -R, 0, 1);
-  B.rectU(sRev, u1, y0, ys, -R, 0, -1);
+  B.shade = revealShade(fs, true);
+  const near = q.lod === 0;
+  setBlock(-1);
+  if (rend) {
+    B.shade = revealShade(rend.fs, false);
+    B.rectU(rend.sink, u0, y0, ys, -R, 0, 1);
+    B.rectU(rend.sink, u1, y0, ys, -R, 0, -1);
+    B.shade = revealShade(fs, true);
+  } else if (near && !surround && ctx.uvA && ctx.fit && ctx.fit.ashlar) {
+    coursedJamb(ctx, u0, 1, y0, ys, R);
+    coursedJamb(ctx, u1, -1, y0, ys, R);
+  } else if (near && surround) {
+    // the surround's jamb stones (see the dressing below) return into the reveal
+    const nj = ys - y0 > 1.3 ? 2 : 1, hj = (ys - y0) / nj;
+    for (let j = 0; j < nj; j++) {
+      const a = y0 + j * hj, b = y0 + (j + 1) * hj;
+      block(B, seed, j * 2); B.rectU(sRev, u0, a, b, -R, 0, 1);
+      block(B, seed, j * 2 + 1); B.rectU(sRev, u1, a, b, -R, 0, -1);
+    }
+    endBlocks(B);
+  } else {
+    B.rectU(sRev, u0, y0, ys, -R, 0, 1);
+    B.rectU(sRev, u1, y0, ys, -R, 0, -1);
+  }
   B.rectV(sRev, u0, u1, -R, 0, y0, 1);
-  if (!arched) B.rectV(sRev, u0, u1, -R, 0, yt, -1);
-  else soffit(B, sRev, o, -R, 0, arcSeg(q, o));
+  if (!arched) {
+    // the underside of the head: the lintel (one stone) or the flat arch's voussoirs
+    const head = near ? flatHead(o, orn, surround, ctx.ch) : null;
+    if (head && head.kind === 'flatArch') {
+      for (const [xa, xb, k] of flatArchParts(o, head.ext)) {
+        const a = Math.max(u0, xa), b = Math.min(u1, xb);
+        if (b - a < 1e-3) continue;
+        block(B, seed, 200 + k);
+        B.rectV(sRev, a, b, -R, 0, yt, -1);
+      }
+      endBlocks(B);
+    } else {
+      if (head) block(B, seed, 301);
+      B.rectV(sRev, u0, u1, -R, 0, yt, -1);
+      endBlocks(B);
+    }
+  } else if (near && q.voussoirs) {
+    // the intrados of each ring stone
+    const n = arcSeg(q, o);
+    for (const [ta, tb, k] of ringParts(o, ringDepth(o, orn, surround), orn.keystone || ground)) {
+      block(B, seed, 100 + k);
+      soffit(B, sRev, o, -R, 0, Math.max(1, Math.ceil(n * (tb - ta))), ta, tb);
+    }
+    endBlocks(B);
+  } else soffit(B, sRev, o, -R, 0, arcSeg(q, o));
   B.mark('op.reveal');
 
   // ---------------------------------------------------------------- dark interior
@@ -63,13 +115,11 @@ export function openingMasonry(ctx, face, o) {
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.05);
   B.run = fs.occluderAt(o.uc, yt);
   const isWin = o.kind === 'window' || o.kind === 'balconyDoor';
-  const surround = surroundOf(o, face, orn);
   const sp = surround ? orn.sp : 0;
   const bev = q.bevel ? 0.012 : 0;
   const flat = !!q.flat;
 
   // jambs of the surround
-  const seed = ((o.uc * 1000) | 0) + ((o.y * 100) | 0) * 7919 + (fs.seed | 0);
   if (surround) {
     // each jamb is a few dressed stones (tone, tooling and face plane differ a little)
     // (the head covers the top of the jambs, a window's sill their foot)
@@ -94,7 +144,7 @@ export function openingMasonry(ctx, face, o) {
   B.mark('op.surround');
   // head
   if (arched) {
-    const T = ground ? orn.shopRing : (surround ? surround * 1.3 : orn.ring);
+    const T = ringDepth(o, orn, surround);
     const proj = ground ? orn.shopRingP : (surround ? sp : 0.012);
     voussoirRing(ctx, sT, o, T, proj, orn.keystone || ground, bev, seed);
   } else {
@@ -179,12 +229,15 @@ export function flatHead(o, orn, surround, ch) {
   return { kind, ext, H };
 }
 
-/** Curved soffit of an arched head between w0 and w1 (normals point into the opening). */
-function soffit(B, s, o, w0, w1, n) {
+/**
+ * Curved soffit of an arched head between w0 and w1 (normals point into the opening),
+ * over the head parameters ta..tb (0 left spring, 1 right spring) in n segments.
+ */
+function soffit(B, s, o, w0, w1, n, ta = 0, tb = 1) {
   s.reserve((n + 1) * 2, n * 6);
   let a0 = -1, b0 = -1, acc = 0, pu = 0, pv = 0;
   for (let k = 0; k <= n; k++) {
-    archPoint(o, k / n, _p);
+    archPoint(o, ta + ((tb - ta) * k) / n, _p);
     if (k) acc += Math.hypot(_p.u - pu, _p.v - pv);
     pu = _p.u; pv = _p.v;
     const a = B.v(s, _p.u, _p.v, w0, -_p.ru, -_p.rv, 0, acc, w0);
@@ -193,6 +246,92 @@ function soffit(B, s, o, w0, w1, n) {
     if (k) B.quadIdx(s, a0, a, b, b0);
     a0 = a; b0 = b;
   }
+}
+
+/** Depth of the voussoir ring over an arched head (shop arches, surrounds, plain rings). */
+function ringDepth(o, orn, surround) {
+  return o.floor === 0 ? orn.shopRing : (surround ? surround * 1.3 : orn.ring);
+}
+
+/**
+ * The stones of an arched head's ring as head-parameter ranges [ta, tb, k] (joints
+ * excluded), an odd count with the keystone (1.5 shares) at the crown; T: ring depth.
+ */
+function ringParts(o, T, keystone) {
+  // arc length along the middle of the ring
+  let L = 0, pu = 0, pv = 0;
+  for (let k = 0; k <= 16; k++) { archPoint(o, k / 16, _p, T * 0.5); if (k) L += Math.hypot(_p.u - pu, _p.v - pv); pu = _p.u; pv = _p.v; }
+  let n = Math.max(5, Math.round(L / (T > 0.36 ? 0.42 : 0.3)));
+  if (n % 2 === 0) n++;
+  const mid = (n - 1) >> 1, shares = n + 0.5;
+  const joint = 0.006 / Math.max(0.5, L);
+  const out = [];
+  let t = 0;
+  for (let k = 0; k < n; k++) {
+    const dt = (k === mid ? 1.5 : 1) / shares;
+    out.push([t + (k ? joint : 0), t + dt - (k < n - 1 ? joint : 0), k, keystone && k === mid]);
+    t += dt;
+  }
+  out.mid = mid; out.shares = shares;
+  return out;
+}
+
+/**
+ * Voussoirs of a flat (jack) arch over opening o, `ext` beyond its jambs, as their
+ * bottom edges [xa, xb, k, key] (joints excluded); the keystone (1.5 shares) is in the middle.
+ */
+function flatArchParts(o, ext) {
+  const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext;
+  let n = Math.max(5, Math.round((u1 - u0) / 0.28)); if (n % 2 === 0) n++;
+  const mid = (n - 1) >> 1, shares = n + 0.5, W = u1 - u0, j = 0.003;
+  const out = [];
+  let x = u0;
+  for (let k = 0; k < n; k++) {
+    const dx = (k === mid ? 1.5 : 1) * W / shares;
+    out.push([x + (k ? j : 0), x + dx - (k < n - 1 ? j : 0), k, k === mid]);
+    x += dx;
+  }
+  return out;
+}
+
+const _tr = [0, 0], _jc = [];
+/**
+ * A walled jamb at u (dir +1: the left jamb, facing +u; −1: the right one) from y0 to
+ * y1, w from −R to 0, in the wall's own stone: cut at the bed joints of its courses, each
+ * course mapped with the fitted transform of the run beside the opening, mirrored about
+ * the arris (tu = arris − depth), so the bed joints and the block beside the opening turn
+ * the corner; where the block is shorter than the reveal is deep, its head joint shows
+ * in the reveal (the long and short jamb stones of bonded walling). The rusticated
+ * ground floor takes the rock-faced stone and its own rows.
+ */
+function coursedJamb(ctx, u, dir, y0, y1, R) {
+  const { B, sinks, fit, rustic } = ctx;
+  const fA = fit.ashlar, fR = fit.rough;
+  const sRough = sinks.rough || sinks.ashlar;
+  const inRus = (v) => !!(rustic && v > rustic.v0 && v < rustic.v1);
+  const cuts = _jc;
+  cuts.length = 0;
+  cuts.push(y0, y1);
+  for (let rg = fA.row(y0) + 1, v = fA.bed(rg); v < y1; v = fA.bed(++rg)) if (!inRus(v)) cuts.push(v);
+  if (rustic) {
+    if (fR) for (let rg = fR.row(y0) + 1, v = fR.bed(rg); v < y1; v = fR.bed(++rg)) if (inRus(v)) cuts.push(v);
+    for (const v of [rustic.v0, rustic.v1]) if (v > y0 && v < y1) cuts.push(v);
+  }
+  cuts.sort((a, b) => a - b);
+  const uw = u - dir * 0.01;   // in the wall run beside the jamb
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const a = cuts[i], b = cuts[i + 1];
+    if (b - a < 2e-3) continue;
+    const vm = (a + b) / 2, rough = inRus(vm) && !!ctx.uvR;
+    const F = rough ? fR : fA, s = rough ? sRough : sinks.ashlar, base = rough ? ctx.uvR : ctx.uvA;
+    if (F) F.at(F.row(vm), uw, _tr); else { _tr[0] = base[0]; _tr[1] = base[1]; }
+    const x = s.revUV || (s.revUV = [0, 0, 0, 0]);
+    x[0] = -_tr[0]; x[1] = u * _tr[0] + _tr[1]; x[2] = base[2]; x[3] = base[3];
+    s.uvx = x;
+    B.rectU(s, u, a, b, -R, 0, dir);
+  }
+  sinks.ashlar.uvx = null;
+  sRough.uvx = null;
 }
 
 /** Back face of the opening box at depth w (facing the street). */
@@ -280,18 +419,11 @@ function ringStone(B, s, o, ta, tb, ext, proj, nSub, bev, faces = 'full') {
 /** Ring of voussoirs around an arched head; odd count with a keystone at the crown. */
 function voussoirRing(ctx, s, o, T, proj, keystone, bev, seed) {
   const { B, q } = ctx;
-  // arc length estimate
-  let L = 0, pu = 0, pv = 0;
-  for (let k = 0; k <= 16; k++) { archPoint(o, k / 16, _p, T * 0.5); if (k) L += Math.hypot(_p.u - pu, _p.v - pv); pu = _p.u; pv = _p.v; }
-  let n = Math.max(5, Math.round(L / (T > 0.36 ? 0.42 : 0.3)));
-  if (n % 2 === 0) n++;
-  const mid = (n - 1) >> 1;
-  // keystone takes 1.5 shares
-  const shares = n + 0.5;
-  const tk0 = mid / shares, tk1 = (mid + 1.5) / shares;
+  const parts = ringParts(o, T, keystone);
   if (!q.voussoirs) {
     // far detail: the ring as two smooth curved bands either side of the same keystone as
     // near (front faces: the relief is a few millimetres at a pixel there)
+    const tk0 = parts.mid / parts.shares, tk1 = (parts.mid + 1.5) / parts.shares;
     const bands = keystone ? [[0, tk0], [tk1, 1]] : [[0, 1]];
     const n = arcSeg(q, o);
     const faces = q.flat ? 'front' : 'full';
@@ -299,14 +431,8 @@ function voussoirRing(ctx, s, o, T, proj, keystone, bev, seed) {
     if (keystone) ringStone(B, s, o, tk0, tk1, T + 0.08, proj + 0.03, 1, 0, faces);
     return;
   }
-  const joint = 0.006 / Math.max(0.5, L);
   const mb = bev ? Math.max(bev, 0.02) : 0;   // drafted margin of ring stones
-  let t = 0;
-  for (let k = 0; k < n; k++) {
-    const isKey = keystone && k === mid;
-    const dt = (k === mid ? 1.5 : 1) / shares;
-    const ta = t + (k ? joint : 0), tb = t + dt - (k < n - 1 ? joint : 0);
-    t += dt;
+  for (const [ta, tb, k, isKey] of parts) {
     const h = block(B, seed, 100 + k);
     // keystone: projecting a little further and rising above the ring
     if (isKey) ringStone(B, s, o, ta, tb, T + 0.08, proj + 0.03, 2, mb);
@@ -320,15 +446,8 @@ function flatArch(ctx, s, o, ext, H, proj, bev, seed) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext, yt = o.y + o.h;
   const cy = yt - o.w * 1.1; // fan centre
-  let n = Math.max(5, Math.round((u1 - u0) / 0.28)); if (n % 2 === 0) n++;
-  const mid = (n - 1) >> 1, shares = n + 0.5;
-  let x = u0;
-  const W = u1 - u0, j = 0.003;
-  for (let k = 0; k < n; k++) {
-    const dx = (k === mid ? 1.5 : 1) * W / shares;
-    const xa = x + (k ? j : 0), xb0 = x + dx - (k < n - 1 ? j : 0);
-    x += dx;
-    const key = k === mid;
+  const parts = flatArchParts(o, ext), n = parts.length;
+  for (const [xa, xb0, k, key] of parts) {
     const top = key ? H + 0.06 : H;
     const sc = (yt + top - cy) / (yt - cy);
     const pts = [xa, yt, xb0, yt, o.uc + (xb0 - o.uc) * sc, yt + top, o.uc + (xa - o.uc) * sc, yt + top];

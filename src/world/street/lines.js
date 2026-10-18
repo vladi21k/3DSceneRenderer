@@ -38,7 +38,7 @@ export const patchWear = (hole, tone) => Math.round(hole * 1000) + 0.02 + 0.96 *
 const PAINT = [
   null, null,
   { color: 0xc9c6bd, roughness: 0.62, wear: 0.18, opacity: 0.86 },                         // centre
-  { color: 0xcfccc3, roughness: 0.58, wear: 0.24, opacity: 0.92 },                         // stripe
+  { color: 0xb9b7b0, roughness: 0.58, wear: 0.24, opacity: 0.9 },                          // stripe
   { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, dash: [0.18, 0.65], minPx: 1.2 }, // joint
 ];
 
@@ -254,8 +254,9 @@ const PAINT_FRAG = /* glsl */`
     diffuseColor.rgb = pCol * ( 0.93 - 0.17 * dirt ) * ( 0.96 + 0.08 * mid );
     diffuseColor.a = cov * pOpacity;
   } else {
-    // Road paint (albedo ~0.6, never the cleanest thing in the street). The per-line wear
-    // rises for bars lying in a wheel path; bars laid over setts carry SETT_FLAG on top.
+    // Road paint (albedo ~0.45 under its grime, never the cleanest thing in the street).
+    // The per-line wear rises for bars lying in a wheel path; bars laid over setts carry
+    // SETT_FLAG on top.
     float wl = vLineWear > 0.0 ? vLineWear : 1.0;
     float sett = step( 8.0, wl );
     wl -= ${f(SETT_FLAG)} * sett;
@@ -263,10 +264,15 @@ const PAINT_FRAG = /* glsl */`
     float pHalf = vLineHalf;
     float segLen = vLine.z > 0.0 ? vLine.z : 1e9;
     float bar = step( 0.15, pHalf ) * step( segLen, 50.0 );   // crossing bars (not centre dashes)
-    // edges feather off over 3-5 mm and waver a couple of millimetres (where resolved)
+    // edges feather off over 3-5 mm and waver a couple of millimetres; along crossing
+    // bars they are also bitten back 1-2 cm here and there, where the paint has flaked
+    // off the stones' arrises (where resolved)
     float res = 1.0 - smoothstep( 0.003, 0.012, w );
     float e0 = ( lnNoise( vec2( u * 7.0, seed ) ) - 0.5 ) * 0.006 * res;
     float e1 = ( lnNoise( vec2( u * 6.3, seed + 5.0 ) ) - 0.5 ) * 0.006 * res;
+    float rb = bar * ( 1.0 - smoothstep( 0.006, 0.02, w ) );
+    e0 += rb * 0.02 * smoothstep( 0.55, 0.9, lnNoise( vec2( u * 23.0, seed + 2.0 ) ) );
+    e1 -= rb * 0.02 * smoothstep( 0.55, 0.9, lnNoise( vec2( u * 21.0, seed + 9.0 ) ) );
     float we = sqrt( w * w + 0.008 * 0.008 ), wue = sqrt( wu * wu + 0.008 * 0.008 );
     float cov = lnCov( -pHalf + e0, pHalf + e1, x, we ) * lnCov( 0.0, segLen, u, wue );
     float ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );
@@ -283,6 +289,22 @@ const PAINT_FRAG = /* glsl */`
     float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
     float wv = 1.1 * wear * ( 1.0 + 2.0 * ( mid - 0.5 ) + 1.2 * ( big - 0.5 ) );
     float film = clamp( 1.0 - 0.85 * smoothstep( 0.25, 0.8, wv ) - 0.2 * wv, 0.0, 1.0 );
+    // Crossing bars are trodden through: 15-30 % of the paint is gone, more along the long
+    // edges (beside the rails and kerbs) and towards the ends, most in the middle of the
+    // crossing. Soft decimetre patches where the film has worn away, and short scuffs
+    // drawn out in the walking direction (across the bar), in the bar's own coordinates;
+    // unresolved, each fades to the share of paint it leaves. Worn through, a thin grey
+    // ghost of the film stays in the stone's pores.
+    float eX = 1.0 - smoothstep( 0.0, 0.06, pHalf - abs( x ) );
+    float lossP = bar * ( 0.05 + 0.1 * eX + 0.08 * ends + 0.06 * foot );
+    float lossS = bar * ( 0.06 + 0.06 * eX + 0.1 * foot );
+    float nP = lnFbm( vec2( x * 1.5, u * 4.0 ) + seed + 11.0, max( w * 1.5, wu * 4.0 ), 3 );
+    float nS = lnFbm( vec2( x * 3.2, u * 26.0 ) + seed + 3.0, max( w * 3.2, wu * 26.0 ), 3 );
+    float tP = 0.5 + 0.31 * ( lossP - 0.5 ), tS = 0.5 + 0.31 * ( lossS - 0.5 );
+    float keepP = mix( smoothstep( tP - 0.05, tP + 0.05, nP ), 1.0 - lossP, smoothstep( 0.03, 0.08, max( w, wu * 2.5 ) ) );
+    float keepS = mix( smoothstep( tS - 0.02, tS + 0.02, nS ), 1.0 - lossS, smoothstep( 0.008, 0.025, max( w, wu * 2.0 ) ) );
+    float worn = bar * ( 1.0 - keepP * keepS );
+    film *= 1.0 - 0.65 * worn;
     float crack, crackMean;
     if ( sett > 0.5 ) {
       float k = floor( u / 0.2 + 0.5 ), du = u - 0.2 * k;
@@ -312,13 +334,15 @@ const PAINT_FRAG = /* glsl */`
     float tyre = ( 1.0 - sett ) * bar * smoothstep( 1.3, 2.3, wl );
     float streak = lnFbm( vec2( x * 9.0 + seed, u * 0.7 ), max( w * 9.0, wu * 0.7 ), 3 );
     float gTyre = tyre * ( 0.2 + 0.55 * smoothstep( 0.35, 0.65, streak ) );
-    float gDust = clamp( 0.1 + 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
+    float gDust = clamp( 0.1 + 0.06 * bar + 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
     // close up: grit and dust caught in the paint's texture
     vec3 col = pCol * ( 0.95 + 0.1 * mid ) * mix( 1.0, 0.86 + 0.28 * fine, kFine );
-    col = mix( col, vec3( 0.2, 0.19, 0.175 ), gDust );
+    col = mix( col, vec3( 0.2, 0.19, 0.175 ), min( gDust + 0.45 * worn, 0.8 ) );
     col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
     diffuseColor.rgb = col;
-    lnRough = mix( pRough, 0.8, 0.5 * gDust ) - 0.1 * gTyre;
+    // the trodden film is duller where grit is ground in, a little glossier where soles
+    // have polished it
+    lnRough = mix( pRough, 0.8, 0.5 * gDust + 0.3 * worn ) - 0.1 * gTyre + bar * 0.12 * ( nS - 0.5 );
     diffuseColor.a = cov * pOpacity;
   }
 }

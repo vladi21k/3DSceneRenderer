@@ -29,8 +29,13 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //   T  translucency: diffuse transmission for thin fabric and leaves (all light types)
 //   N  night emissive: scaled by U.uNight × emissive gain, optional rim falloff
 //   G  thin glass: reflections are not attenuated by opacity (premultiplied blend)
+//   H  height relief (with L): parallax-occlusion mapping of the height stored in the albedo
+//      alpha (recipe heightA), marched through the row layout (shifted rows, mirrored blocks),
+//      with a self-shadow march towards the sun; faded out with distance. Roughness then
+//      comes from the height (joints rougher).
 // Features come in families (FAMILY below) so that materials drawn with the same three.js
-// variant share programs: 'full' (stone, paving, concrete, plaster, roof tiles) and 'lite'.
+// variant share programs: 'full' (stone, paving, concrete, plaster, roof tiles), 'lite' and
+// 'relief' (rock-faced stone only: the parallax march stays out of the common programs).
 // Two families beat finer ones: a street or facade batch mixes paving and stone, and one
 // extra program costs more to compile than the unused feature code it would save. Inside
 // a program everything is switched by uniforms (coherent per draw, so the branches are
@@ -43,7 +48,7 @@ uniform vec4 sfFlags;    // metal mask, swap uv, paint mask, unused
 uniform vec4 sfTile;     // 1/W, 1/H, W, H (m)
 uniform vec4 sfMacro;    // freq1, freq2 (1/m), albedo amp, roughness amp
 uniform vec4 sfMacroAn;  // anisotropy of the two macro lookups
-uniform vec4 sfStain;    // amount, freq (1/m), threshold, unused
+uniform vec4 sfStain;    // amount, freq (1/m), threshold, vertical stretch (along v: run-off on walls)
 uniform vec4 sfMisc;     // normal strength, ao strength, variance→roughness k, micro-shadow
 uniform float sfAOScale; // global scale of the baked AO (lowered when screen-space AO runs)
 uniform float sfEnvI;    // the material's envMapIntensity (three replaces it by the scene's when the
@@ -80,6 +85,36 @@ vec3 sfTintOf(uint h, float amp, float outliers, vec2 nz) {
 // correlated tone noise (quarry batches, dirt) sampled at a cell centre (uv metres)
 vec2 sfCellNoise(vec2 c) {
   return sfCell2.z > 0.0 ? textureLod(sfMacroTex, c * sfCell2.z + vec2(0.37, 0.71), 0.0).rg : vec2(0.5);
+}
+`;
+
+// parallax relief: texture coordinate (tile units) of a wall point (uv metres) through the
+// row layout, so the march crosses joints into the neighbouring (shifted, mirrored) blocks
+const POM_PARS = /* glsl */ `
+uniform vec4 sfPom;      // height at alpha 0 (m), height range (m), parallax full within / gone by (m)
+uniform vec4 sfPom2;     // steps head-on, steps grazing, shadow steps, shadow strength
+uniform vec3 sfSunDir;   // towards the sun (world)
+vec3 sfSunV = vec3(0.0); // towards the sun (view), set by the relief march
+float sfPomSh = 1.0;     // relief self-shadow towards the sun
+vec2 sfLayT(vec2 uv) {
+  float rowH = sfLay.x;
+  float rgF = floor(uv.y / rowH);
+  int rg = int(rgF);
+  vec2 P = uv;
+  if (sfLay2.z > 0.5) P.x += sfRowShift(rg, sfLay2) * sfTile.z;
+  int r = sfMod(rg, int(sfLay.y));
+  float tx = floor(P.x * sfTile.x);
+  float lx = P.x - tx * sfTile.z;
+  int k, n; float b0, b1;
+  sfRowSeg(r, lx, sfTile.z, sfLay, sfLay2, k, b0, b1, n);
+  uint mh = sfH(sfH2(rg, int(tx) * n + k, uint(sfLay2.y) + 501u) + 41u);
+  vec2 fo = vec2(0.0);
+  if (sfHf(mh) < sfMirror) {
+    uint mk = sfH(mh) % 3u;
+    if (mk != 1u) fo.x = b0 + b1 - 2.0 * lx;
+    if (mk != 0u) fo.y = rowH - 2.0 * (uv.y - rgF * rowH);
+  }
+  return (P + fo) * sfTile.xy;
 }
 `;
 
@@ -128,6 +163,86 @@ const MAP_JOINT = /* glsl */ `
     }
 `;
 
+// Parallax-occlusion relief: march the view ray through the height field (linear search,
+// one secant refinement) and move the lookup to the hit; then march from the hit towards
+// the sun for the relief's own cast shadows. The reference plane (h = 0) is the polygon:
+// proud parts are entered from above it. The tangent frame comes from screen derivatives
+// (gradients of u and v in view space), the step count from the view angle and distance.
+const MAP_POM = /* glsl */ `
+  if (sfPom.y > 0.0 && sfLay.y > 0.5) {
+    float sfVd = length(vViewPosition);
+    float sfPf = 1.0 - smoothstep(sfPom.z, sfPom.w, sfVd);
+    if (sfPf > 0.0) {
+      vec3 sfQ1 = dFdx(-vViewPosition), sfQ2 = dFdy(-vViewPosition);
+      #ifdef FLAT_SHADED
+        vec3 sfNv = normalize(cross(sfQ1, sfQ2));
+      #else
+        vec3 sfNv = normalize(vNormal);
+        #ifdef DOUBLE_SIDED
+          sfNv *= gl_FrontFacing ? 1.0 : -1.0;
+        #endif
+      #endif
+      vec3 sfQ2p = cross(sfQ2, sfNv), sfQ1p = cross(sfNv, sfQ1);
+      float sfDet = dot(sfQ1, sfQ2p);
+      if (abs(sfDet) > 1e-16) {
+        vec3 sfGu = (sfQ2p * sfGx.x + sfQ1p * sfGy.x) / sfDet;
+        vec3 sfGv = (sfQ2p * sfGx.y + sfQ1p * sfGy.y) / sfDet;
+        vec3 sfVv = normalize(vViewPosition);
+        float sfC = dot(sfVv, sfNv);
+        vec2 sfO = vec2(dot(sfVv, sfGu), dot(sfVv, sfGv)) / max(sfC, 0.12);
+        float sfOl = length(sfO);
+        if (sfOl > 7.0) sfO *= 7.0 / sfOl;
+        float hLo = sfPom.x * sfPf, hR = sfPom.y * sfPf, hTop = hLo + hR;
+        vec2 tgx = sfGx * sfTile.xy, tgy = sfGy * sfTile.xy;
+        int nS = int(clamp(mix(sfPom2.y, sfPom2.x, saturate(sfC)) * mix(1.0, 0.6, smoothstep(6.0, sfPom.z, sfVd)), 6.0, 40.0));
+        float dh = hR / float(nS);
+        float rayH = hTop;
+        float prevD = rayH - (hLo + hR * textureGrad(map, sfLayT(sfUv + sfO * rayH), tgx, tgy).a);
+        float hitH = rayH;
+        if (prevD > 0.0) {
+          for (int i = 1; i <= 40 * sfOne; i++) {
+            rayH -= dh;
+            float dD = rayH - (hLo + hR * textureGrad(map, sfLayT(sfUv + sfO * rayH), tgx, tgy).a);
+            if (dD <= 0.0 || i >= nS) {
+              float hA = rayH + dh;
+              float hm = dD < 0.0 ? hA - dh * prevD / (prevD - dD) : rayH;
+              float dm = hm - (hLo + hR * textureGrad(map, sfLayT(sfUv + sfO * hm), tgx, tgy).a);
+              if (dm > 0.0 && dD < 0.0) hitH = hm - (hm - rayH) * dm / (dm - dD);
+              else if (dm < 0.0) hitH = hA - (hA - hm) * prevD / (prevD - dm);
+              else hitH = hm;
+              break;
+            }
+            prevD = dD;
+          }
+        }
+        sfUv += sfO * hitH;
+        // self-shadow: march from the hit towards the sun
+        sfSunV = normalize((viewMatrix * vec4(sfSunDir, 0.0)).xyz);
+        float sfCl = dot(sfSunV, sfNv);
+        if (sfPom2.w > 0.0 && sfCl > 0.0 && sfSunDir.y > 0.0) {
+          vec2 sfOL = vec2(dot(sfSunV, sfGu), dot(sfSunV, sfGv)) / max(sfCl, 0.06);
+          float sfLl = length(sfOL);
+          if (sfLl > 12.0) sfOL *= 12.0 / sfLl;
+          int nL = int(sfPom2.z);
+          float occ = 0.0;
+          // a fixed per-pixel dither of the sample positions turns the march's banding into
+          // fine grain along the shadow edges
+          float sfJ = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+          for (int i = 1; i <= 24 * sfOne; i++) {
+            if (i > nL) break;
+            // denser near the hit, where the short shadows are
+            float fi = (float(i) - sfJ) / float(nL);
+            float rh = hitH + (hTop - hitH) * fi * fi;
+            float Hs = hLo + hR * textureGrad(map, sfLayT(sfUv + sfOL * (rh - hitH)), tgx, tgy).a;
+            occ = max(occ, Hs - rh);
+          }
+          sfPomSh = 1.0 - sfPom2.w * smoothstep(0.0006, 0.004 + 0.002 * (1.0 - sfPf), occ);
+        }
+      }
+    }
+  }
+`;
+
 // small random spots inside some cells (chewing gum, drips). Aged gum is a flattened grey
 // to grey-black blotch: sizes lognormal (0.6-3 cm across), outlines ragged (radius warped
 // ±40 % by two octaves of noise round the spot) with a soft 2-3 mm edge, about one in eight
@@ -169,7 +284,7 @@ const mapLayout = (f) => /* glsl */ `
   vec2 sfUv = sfFlags.y > 0.5 ? vMapUv.yx : vMapUv;
   vec2 sfGx = dFdx(sfUv), sfGy = dFdy(sfUv);
   vec2 sfFoot = max(abs(sfGx), abs(sfGy));
-  vec2 sfP = sfUv;
+${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
   vec3 sfTint = vec3(1.0);
   float sfRoughMul = 1.0;
   float sfSpot = 0.0;
@@ -238,17 +353,18 @@ ${f.joint ? MAP_JOINT : ''}${f.spots ? mapSpots(f) : ''}  }
     sfS = mix(sfS, textureGrad(normalMap, sfT2, sfTx, sfTy), sfHide);
   }
   vec3 sfAlb = sfA.rgb * sfTint;
-  float sfRough = sfA.a * sfRoughMul;
+  float sfRough = ${f.pom ? '(sfPom.y > 0.0 ? mix(0.97, 0.87, smoothstep(-0.012, -0.005, sfPom.x + sfPom.y * sfA.a)) : sfA.a)' : 'sfA.a'} * sfRoughMul;
 `;
 
-// dressing: each block gets its own dressing (taltish strokes from the tool map, pecked or
+// dressing: each block gets its own dressing (taltish striation from the tool map, pecked or
 // rubbed from the detail map), rotated, offset and scaled (±12 %) per block, finer on the
 // drafted margin
 const MAP_DRESS = /* glsl */ `
     if (sfDetail2.y > 0.0 && sfLay.y > 0.5) {
       float hd = sfHf(sfH(sfCh + 21u)), ha = sfHf(sfH(sfCh + 22u));
       dTool = hd < sfDetail2.y;
-      float ang = dTool ? (ha < 0.4 ? 1.5708 : (ha < 0.7 ? 0.85 : 2.29)) + (sfHf(sfH(sfCh + 23u)) - 0.5) * 0.35 : ha * 6.2832;
+      // taltish: one working direction per block, 60-75° from horizontal either way (±7°)
+      float ang = dTool ? (ha < 0.5 ? 1.0 : -1.0) * (1.047 + 0.262 * fract(ha * 7.31)) + (sfHf(sfH(sfCh + 23u)) - 0.5) * 0.24 : ha * 6.2832;
       float ca = cos(ang), sa = sin(ang);
       sfDR = mat2(ca, sa, -sa, ca);
       float dsc = 0.88 + 0.24 * sfHf(sfH(sfCh + 27u));
@@ -306,7 +422,8 @@ const MAP_MACRO = /* glsl */ `
     sfAlb *= 1.0 + sfMacro.z * ((sfM1.r - 0.5) * 1.3 + (sfM2.g - 0.5) * 0.9);
     sfRough *= 1.0 + sfMacro.w * ((sfM1.a - 0.5) * 2.0);
     if (sfStain.x > 0.0) {
-      float sfSt = smoothstep(sfStain.z, sfStain.z + 0.08, texture(sfMacroTex, sfUv * sfStain.y + vec2(0.13, 0.57)).b);
+      vec2 sfStUv = sfUv * vec2(1.0, 1.0 / max(sfStain.w, 1.0));
+      float sfSt = smoothstep(sfStain.z, sfStain.z + 0.08, texture(sfMacroTex, sfStUv * sfStain.y + vec2(0.13, 0.57)).b);
       sfSt *= smoothstep(0.4, 0.62, sfM1.g);
       sfAlb *= 1.0 - sfStain.x * sfSt;
       sfRough = mix(sfRough, sfRough * 0.85, sfSt);
@@ -331,8 +448,10 @@ const mapLanes = (attr) => /* glsl */ `
   }
 `;
 
-// weathering by world orientation: dust and soot on ledges, sheltered soffits dark,
-// rain-washed vertical drip streaks on the walls
+// weathering by world orientation: dust and soot on ledges (patchy), sheltered soffits
+// evenly dark (no blotches: the soffit's own geometry and AO shade it), rain-washed vertical
+// drip streaks on the walls, their strength drifting in tall run-off bands, never in
+// isotropic blobs
 const MAP_WEATHER = /* glsl */ `
   if (sfWeather.x + sfWeather.y + sfWeather.w > 0.0) {
     #ifdef FLAT_SHADED
@@ -352,7 +471,7 @@ const MAP_WEATHER = /* glsl */ `
     float sfLd = sfWeather.x * sfLedge * (0.35 + sfMb) * (0.6 + 0.8 * sfMf);
     vec3 sfDust = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.6, 0.6, 0.62);
     sfAlb = mix(sfAlb, sfDust, min(2.2 * sfLd, 0.85));
-    sfAlb *= 1.0 - sfWeather.w * sfSoffit * (0.6 + 0.8 * sfMb);
+    sfAlb *= 1.0 - sfWeather.w * sfSoffit;
     sfRough = min(sfRough * (1.0 + 0.08 * sfLedge), 1.0);
     vec3 sfTW = normalize(vec3(-sfNW.z, 0.0, sfNW.x) + 1e-5);
     float sfAl = dot(vSfWorld, sfTW);
@@ -360,7 +479,8 @@ const MAP_WEATHER = /* glsl */ `
     float sfS2 = texture(sfMacroTex, vec2(sfAl * 7.0, vSfWorld.y * 0.27) + vec2(0.17, 0.83)).r;
     float sfStreak = smoothstep(sfWeather.z, sfWeather.z + 0.14, 0.65 * sfS1 + 0.35 * sfS2);
     float sfVert = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
-    sfAlb *= 1.0 - sfWeather.y * sfStreak * sfVert * (0.6 + 0.8 * sfMb);
+    float sfMv = texture(sfMacroTex, vec2(sfAl * 0.3, vSfWorld.y * 0.05) + vec2(0.53, 0.19)).b;
+    sfAlb *= 1.0 - sfWeather.y * sfStreak * sfVert * (0.6 + 0.8 * sfMv);
   }
 `;
 
@@ -450,6 +570,7 @@ void RE_Direct_Surf( const in IncidentLight directLight, const in vec3 geometryP
   IncidentLight sfL = directLight;
   float sfNL = dot( geometryNormal, directLight.direction );
   ${f.surf ? 'sfL.color *= saturate( abs( sfNL ) + 2.0 * sfMicroAO * sfMicroAO - 1.0 );' : ''}
+  ${f.pom ? 'if ( dot( directLight.direction, sfSunV ) > 0.995 ) sfL.color *= sfPomSh;' : ''}
   RE_Direct_Physical( sfL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
   ${f.trans ? 'reflectedLight.directDiffuse += saturate( - sfNL ) * directLight.color * BRDF_Lambert( material.diffuseContribution ) * sfTrans;' : ''}
 }
@@ -480,6 +601,7 @@ function fragPars(f) {
   if (f.night) s += 'uniform float sfNight;   // = U.uNight\nuniform float sfEmGain;  // global emissive gain\nuniform vec4 sfEmis;     // rim falloff (0 = flat), rim exponent\n';
   if (f.surf) s += SURF_PARS;
   if (f.layout) s += LAYOUT_PARS;
+  if (f.pom) s += POM_PARS;
   if (f.detail) s += DETAIL_PARS;
   if (f.weather) s += WEATHER_PARS;
   if (f.lanes) s += LANES_PARS + (f.laneAttr ? 'varying float vSfLaneD;\n' : '');
@@ -528,6 +650,7 @@ function patchVertex(src, f) {
 export const FAMILY = {
   lite: '',
   full: 'LJPDRWK',
+  relief: 'LDRWH',
 };
 
 /** Feature family of a library definition: explicit `fx`, else from what it uses. */
@@ -596,7 +719,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfSpots: { value: v4([L ? sp.prob ?? 0 : 0, sp.radius ?? 0.01, sp.albedo ?? 1, sp.rough ?? 0.5]) },
     sfSpots2: { value: v4([shared.macro ? sp.cluster?.freq ?? 0 : 0, sp.cluster?.lo ?? 0.5, sp.cluster?.hi ?? 0.62, sp.laneClear ?? 0]) },
     sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, 0]) },
-    sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, 0]) },
+    sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, st.stretch ?? 1]) },
     sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
     sfMirror: { value: L ? cfg.mirror ?? 0 : 0 },
     sfWeather: { value: v4(shared.macro ? [w.ledge ?? 0, w.streak ?? 0, w.threshold ?? 0.62, w.soffit ?? 0] : [0, 0, 0, 0]) },
@@ -606,6 +729,9 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfToolTex: { value: toolTex || detailTex || null },
     sfMacroTex: { value: shared.macro || null },
     sfOne: { value: 1 },
+    sfPom: { value: v4(r?.heightA && cfg.relief ? [r.heightA[0], r.heightA[1] - r.heightA[0], cfg.relief.near ?? 20, cfg.relief.far ?? 35] : [0, 0, 1, 2]) },
+    sfPom2: { value: v4([cfg.relief?.steps?.[0] ?? 12, cfg.relief?.steps?.[1] ?? 24, cfg.relief?.shadowSteps ?? 10, cfg.relief?.shadow ?? 1]) },
+    sfSunDir: shared.sunDir || { value: new THREE.Vector3(0, 1, 0) },
   };
 }
 
@@ -633,6 +759,7 @@ export function applySurface(mat, sf) {
     const layout = has('L'), detail = has('D'), lanes = has('K');
     const f = {
       surf, layout, detail, lanes, joint: layout && has('J'), spots: layout && has('P'), dress: layout && detail && has('R'), weather: has('W'),
+      pom: layout && has('H'),
       laneAttr: lanes && !!m.laneAttr, trans: !!sf.trans, night: !!sf.night, glass: surf && !!sf.glass,
     };
     f.key = 'sf7' + (surf ? 'S' + fam : '') + (f.laneAttr ? 'A' : '') + (f.trans ? 'T' : '') + (f.night ? 'N' : '') + (f.glass ? 'G' : '');

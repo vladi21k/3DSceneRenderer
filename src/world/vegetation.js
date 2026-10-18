@@ -95,10 +95,10 @@ const vegetation = {
    * mirror, instance matrix, tints and LOD size. Species come in zones of a few hundred
    * metres, each side of the street planted on its own (mostly one species, some of the
    * others mixed in); a tree never repeats the template of the previous tree on its side,
-   * nor the template + mirror of the one before. The main avenue (the first 1.5 km) and
-   * the station surroundings keep their old planting: about 40 % of the trees there are
-   * old (8-11 m tall, crowns 5-7 m across, neighbours meeting over the sidewalk); elsewhere
-   * about one in five, the rest young (about 5-6.5 m) and still filling out.
+   * nor the template + mirror of the one before. The main avenue (the first 1.5 km) is a
+   * replanted line of young, open trees (about 5-6.5 m, clear stems of 2.5-3 m, facades
+   * and shopfronts showing through and above them) with about one old tree in ten (8-11 m
+   * tall, crowns 5-7 m across); elsewhere about one in six is old.
    */
   _planTrees() {
     const { route, layout } = this.app;

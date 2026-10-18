@@ -8,6 +8,8 @@ import { HASH_GLSL, LAYOUT_GLSL, NOISE_GLSL } from './glsl/common.js';
 //                         surface = (normal.xy, |normal.xy|² moment, ao)
 // The moment channel survives hardware mip-mapping, so the runtime shader can turn
 // normal detail lost in the mips into roughness (specular anti-aliasing). Recipes with
+// `heightA: [lo, hi]` store the height (m, encoded over lo..hi) in the albedo alpha instead
+// of the roughness (parallax relief at runtime). Recipes with
 // `mask` store a mask there instead: 'metal' → s.metal, 'paint' → s.cover (paint
 // coverage: 0 where chips show the undercoat or bare wood).
 // `raw` recipes write pass A straight into a half-float texture (macro noise). `aniso`
@@ -68,6 +70,7 @@ uniform vec2 uRes;
 uniform vec2 uTexM;      // metres per texel
 uniform vec4 uNB;        // normal strength, cavity AO strength, AO radius (m), cavity → albedo darkening
 uniform float uMaskOut;  // 1: surface.b carries the mask (metal / paint) instead of the normal moment
+uniform vec2 uHeightA;   // height range (m) stored in the albedo alpha (lo, hi); hi <= lo: roughness
 layout(location = 0) out vec4 oAlb;
 layout(location = 1) out vec4 oSurf;
 int sfMod(int a, int m) { return a - m * int(floor(float(a) / float(m))); }
@@ -96,7 +99,8 @@ void main() {
   }
   vec4 A = texelFetch(tA, p, 0), B = texelFetch(tB, p, 0);
   float ao = clamp(B.g * (1.0 - uNB.y * occ), 0.0, 1.0);
-  oAlb = vec4(clamp(A.rgb * mix(1.0, ao, uNB.w), 0.0, 1.0), clamp(A.a, 0.0, 1.0));
+  float alpha = uHeightA.y > uHeightA.x ? (B.r - uHeightA.x) / (uHeightA.y - uHeightA.x) : A.a;
+  oAlb = vec4(clamp(A.rgb * mix(1.0, ao, uNB.w), 0.0, 1.0), clamp(alpha, 0.0, 1.0));
   oSurf = vec4(n.xy * 0.5 + 0.5, uMaskOut > 0.5 ? clamp(B.b, 0.0, 1.0) : dot(n.xy, n.xy), ao);
 }
 `;
@@ -118,6 +122,7 @@ export class Baker {
       uniforms: {
         tA: { value: null }, tB: { value: null }, uRes: { value: new THREE.Vector2() },
         uTexM: { value: new THREE.Vector2() }, uNB: { value: new THREE.Vector4() }, uMaskOut: { value: 0 },
+        uHeightA: { value: new THREE.Vector2() },
       },
       depthTest: false, depthWrite: false,
     });
@@ -316,6 +321,7 @@ export class Baker {
     const nb = r.pass || {};
     u.uNB.value.set(nb.normal ?? 1, nb.ao ?? 0.6, nb.aoRadius ?? 0.008, nb.cavity ?? 0.05);
     u.uMaskOut.value = r.mask ? 1 : 0;
+    u.uHeightA.value.set(...(r.heightA || [0, 0]));
     this.draw(this.passB, e.target);
   }
 

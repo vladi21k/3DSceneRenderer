@@ -12,8 +12,13 @@
 //   skip=a,b       disable the named modules
 //   view=s,d,h,yaw,pitch   free inspection camera in route coordinates (deg)
 //   q=low|med|high quality preset
-//   debug=1        stats overlay
+//   debug=1        stats overlay; post adds stats().badPixels (broken HDR pixels)
 //   seed=<int>     world seed
+// Read by the modules themselves (params.num / params.str), documented in ARCHITECTURE.md:
+//   sky=streaks|cumulus|haze   cloud regime (env)      tram=<s>    first oncoming tram's nose (trams)
+//   prof=1         post's per-section GPU timers        taa=0       temporal AA off (post)
+//   taaj=<px>      TAA jitter amplitude (post)          sharp=<k>   final luma sharpening (post)
+//   ffnear=<m>     far field starts nearer (streaming)  audio=1, audiocache=0 (audio)
 
 const q = new URLSearchParams(location.search);
 const num = (k, d) => (q.has(k) && q.get(k) !== '' && !isNaN(+q.get(k)) ? +q.get(k) : d);

@@ -43,6 +43,13 @@ import { cellRect } from './leafAtlas.js';
 const _v = new THREE.Vector3(), _w = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
+// Root flare: over the bottom FLARE_H m the stem swells by up to FLARE (young) / FLARE_OLD
+// of its radius, in 3-5 buttress lobes (each tree its own count and turn); the widest
+// lobe stays within FLARE_CAP (template m) so it only just reaches the grate's inner rim.
+// The base ring is sunk FLARE_SINK below the paving (the stem enters the soil).
+const FLARE_H = 0.34, FLARE = 0.42, FLARE_OLD = 0.3, FLARE_CAP = 0.232, FLARE_SINK = 0.04;
+const FLARE_Y = [0.018, 0.05, 0.095, 0.15, 0.22, 0.29];
+
 // ------------------------------------------------------------------ crown envelope
 function profile(shape, t) {
   if (t <= 0 || t >= 1) return 0;
@@ -326,7 +333,6 @@ function finishSkeleton(tpl, env, sk, rng) {
     if (sk.trunk[i]) {
       const y = sk.p[i].y;
       v *= 1 + 0.1 * Math.max(0, 1 - y / Math.max(1, tpl.crownBase)); // taper of the stem
-      if (y < 0.35) v *= 1 + (tpl.mature ? 0.45 : 0.12) * (1 - y / 0.35) ** 2; // root flare
       v = Math.min(v, 0.19); // stays inside the tree grate's 0.23 m opening (at up to 1.12x scale)
     }
     r[i] = Math.max(v, 0.004);
@@ -446,7 +452,8 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
     if (nodes.length < 2) continue;
     const r0 = info.r[nodes[Math.min(1, nodes.length - 1)]];
     if (r0 < minR) continue;
-    const sides = lod === 2 ? (r0 > 0.06 ? 6 : 4)
+    const stem = ch.level === 0 && lod < 2;   // the trunk carries the root flare
+    const sides = stem ? (lod ? 10 : 18) : lod === 2 ? (r0 > 0.06 ? 6 : 4)
       : lod === 1 ? (r0 > 0.06 ? 7 : r0 > 0.03 ? 5 : 4)
       : (r0 > 0.06 ? 10 : r0 > 0.03 ? 7 : r0 > 0.015 ? 5 : r0 > 0.008 ? 4 : 3);
     const circ = Math.max(0.05, 2 * Math.PI * r0);
@@ -477,6 +484,32 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
     if (r0 < [0.012, 0.03, 0.08][lod] && ring.length > 3) {
       for (let k = ring.length - 2; k > 0; k--) if (k % 2 && !ring[k][3]) ring.splice(k, 1);
     }
+    // root flare: extra rings between the foot and the first stem node, and one sunk into
+    // the soil; the swell itself is applied per vertex below (lobes)
+    let flare = null;
+    if (stem) {
+      const [i0, p0, r0b] = ring[0], [, p1, r1b] = ring[1];
+      const extra = [];
+      for (const y of FLARE_Y) {
+        if (y > p1.y - 0.03) break;
+        const t = (y - p0.y) / Math.max(1e-6, p1.y - p0.y);
+        extra.push([i0, new THREE.Vector3().lerpVectors(p0, p1, t), r0b + (r1b - r0b) * t]);
+      }
+      ring.splice(1, 0, ...extra);
+      ring.unshift([i0, p0.clone().setY(p0.y - FLARE_SINK), r0b]);
+      const fr = RNG.from('flare', tpl.id);
+      const amp0 = tpl.mature ? FLARE_OLD : FLARE;
+      // keep the widest lobe within the cap
+      const amp = Math.max(0.06, Math.min(amp0, (FLARE_CAP / r0b - 1) / 1.35));
+      flare = { amp, n: fr.int(3, 5), ph: fr.range(0, Math.PI * 2), ph2: fr.range(0, Math.PI * 2) };
+    }
+    // radius of the flared stem at height y and angle th (1 above the flare)
+    const flareK = (y, th) => {
+      if (!flare || y >= FLARE_H) return 1;
+      const f = flare.amp * Math.pow(1 - Math.max(0, y) / FLARE_H, 2.2);
+      const l = 0.5 + 0.5 * Math.cos(flare.n * (th - flare.ph) + 0.4 * Math.sin(2 * th + flare.ph2));
+      return 1 + f * (0.4 + 0.95 * l * l);
+    };
     // initial frame
     T.subVectors(ring[1][1], ring[0][1]).normalize();
     N.copy(Math.abs(T.y) < 0.9 ? UP : _v.set(1, 0, 0)).cross(T).normalize();
@@ -503,8 +536,17 @@ function barkGeometry(tpl, env, sk, info, lod, rng) {
       for (let s = 0; s <= sides; s++) {
         const th = (s / sides) * Math.PI * 2;
         cn.copy(N).multiplyScalar(Math.cos(th)).addScaledVector(B, Math.sin(th));
-        q.copy(p).addScaledVector(cn, rr);
-        b.vert(q, cn, [(s / sides) * circ, vacc], colr, veg, youth);
+        const fk = flare ? flareK(p.y, th) : 1;
+        q.copy(p).addScaledVector(cn, rr * fk);
+        if (fk !== 1) {
+          // flared surface normal: tilted up by the swell, sideways by the lobes
+          const dy = 0.01, dth = 0.02;
+          const drdy = rr * (flareK(p.y + dy, th) - flareK(p.y - dy, th)) / (2 * dy);
+          const drdt = rr * (flareK(p.y, th + dth) - flareK(p.y, th - dth)) / (2 * dth) / (rr * fk);
+          _w.copy(B).multiplyScalar(Math.cos(th)).addScaledVector(N, -Math.sin(th)); // around the stem
+          _v.copy(cn).addScaledVector(T, -drdy).addScaledVector(_w, -drdt).normalize();
+          b.vert(q, _v, [(s / sides) * circ, vacc], colr, veg, youth);
+        } else b.vert(q, cn, [(s / sides) * circ, vacc], colr, veg, youth);
       }
     }
     for (let k = 0; k < ring.length - 1; k++) {

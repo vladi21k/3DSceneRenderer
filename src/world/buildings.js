@@ -9,7 +9,8 @@ import { grimeStone, litGlass } from './buildings/grime.js';
 import { rowLayout } from './buildings/coursing.js';
 import { makeSlab, slabSteps } from './buildings/skyline.js';
 import { laneSteps } from './buildings/lane.js';
-import { muralMaterials } from './buildings/mural.js';
+import { muralMaterials, advertMaterials } from './buildings/mural.js';
+import { U } from '../core/uniforms.js';
 
 // Building shells (masonry) for every lot, generated from facadePlan(lot): see
 // src/world/buildings/shell.js for what is built. Facade infill (glass, frames,
@@ -45,6 +46,7 @@ const LATE = new Set(['plaster']);
 // weathered materials (aRun: per-pixel run-off); plaster and tiles share their program
 const RUNOFF = new Set(['ashlar', 'smooth', 'smoothD', 'rough', 'plaster', 'dark', 'tile']);
 let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
+let ADS = [];                      // advert materials (floodlit at night)
 const BASE_MS = 0.8;               // per-frame generation budget when nothing is urgent
 const MAX_MS = 4;                  // ... when a chunk is about to be (or already is) requested
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
@@ -92,8 +94,10 @@ const buildings = {
       };
       MATS.smoothD = MATS.smooth;
       MATS.dark = MATS.plaster;
-      // painted murals on a few gables (buildings/mural.js)
+      // painted murals on a few gables, printed adverts on others (buildings/mural.js)
       muralMaterials(app).forEach((m, k) => { MATS[`mural${k}`] = m; });
+      ADS = advertMaterials(app);
+      ADS.forEach((m, k) => { MATS[`advert${k}`] = m; });
     }
     uploaders = new THREE.Group();
     uploaders.name = 'buildings:upload';
@@ -155,6 +159,12 @@ const buildings = {
   },
 
   update(dt, app) {
+    // the adverts' floodlights come on with the street lamps
+    if (ADS.length) {
+      const gain = app.materials.uniforms && app.materials.uniforms.emissiveGain ? app.materials.uniforms.emissiveGain.value : 1;
+      const e = 0.32 * Math.min(1, Math.max(0, (U.uNight.value - 0.25) / 0.5)) * gain;
+      for (const m of ADS) m.emissiveIntensity = e;
+    }
     const s = app.cameraS;
     if (s == null || !app.world) return;
     releaseUploads();
@@ -688,8 +698,12 @@ function endsOf(app, lot) {
     const nbTopWorld = nb.frame.floorRef + (np.roof.type === 'tile' ? np.parapet.y : np.totalHeight);
     // a corner return's building reaches back along the main street by the corner lot's width
     const nbDepth = best.it.ret ? np.width : np.depth;
+    // (nbClear: above this nothing of the neighbour stands, its set-back storey and the
+    // solar heaters on its roofs included)
+    const up = np.upper, upTop = up ? nb.frame.floorRef + up.v0 + up.floors * up.floorH + 0.2 : -Infinity;
+    const nbClear = (np.roof.type === 'tile' ? nbTopWorld + 1.5 : Math.max(nbTopWorld, upTop) + 2.9) - f.floorRef;
     // (nbDeck: its roof deck or eaves, below which its building covers this side wall)
-    return { corner: false, nb: nb.id, dw: best.dn, nbTop: nbTopWorld - f.floorRef, nbDeck: nb.frame.floorRef + np.parapet.y - f.floorRef, nbDepth };
+    return { corner: false, nb: nb.id, dw: best.dn, nbTop: nbTopWorld - f.floorRef, nbDeck: nb.frame.floorRef + np.parapet.y - f.floorRef, nbDepth, nbClear };
   });
   ends.set(lot.id, r);
   return r;

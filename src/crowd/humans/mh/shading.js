@@ -25,8 +25,8 @@ const REGION_ROUGH = [-1, 0.5, 0.8, 0.8, 0.06, -1, -1, -1, -1, 0.95, -1, 0.85, 0
 // specular strength per region (x the dielectric F0 0.04)
 const REGION_SPEC = [0.72, 0.05, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
 // (casts with skin decals: wetter eyes, matte brows and beards)
-const REGION_ROUGH_V2 = [-1, 0.6, 0.85, 0.8, 0.035, -1, -1, -1, -1, 0.95, -1, 0.8, 0.32, 0.08, 0.5, 0.6];
-const REGION_SPEC_V2 = [0.72, 0.05, 0.2, 0.3, 1.5, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.2, 1.0, 1.2, 0.75, 0.6];
+const REGION_ROUGH_V2 = [-1, 0.6, 0.85, 0.8, 0.035, -1, -1, -1, -1, 0.95, 0.8, 0.8, 0.32, 0.08, 0.5, 0.6];
+const REGION_SPEC_V2 = [0.72, 0.05, 0.2, 0.3, 1.5, 0.55, 0.55, 0.55, 0.9, 0.5, 0.3, 0.2, 1.0, 1.2, 0.75, 0.6];
 
 const COMMON = /* glsl */`
 uniform highp sampler2D uBoneTex;
@@ -90,6 +90,17 @@ void hSkin(out vec3 P, out vec3 N) {
       pos = c + (pos - c) * (1.0 - 0.3 * smoothstep(hemY + 0.012, hemY + 0.06, pos.y));
     }
   }
+#if HUMANS_V2
+  if ((flags & 8) != 0 && D0.y > 0.05) {
+    // a walking skirt's hem trails a little and swings with the stride (more towards the hem)
+    float top = hLook(row, 18).y;
+    float u = clamp((top - pos.y) / max(0.05, top - max(hemY, 0.05)), 0.0, 1.0);
+    float v = min(D0.y, 2.0);
+    float ph = 6.2831853 * D0.x;
+    pos.z += u * u * v * (0.018 + 0.006 * cos(2.0 * ph));
+    pos.x += u * u * v * 0.008 * sin(ph + 0.6);
+  }
+#endif
   P = (m * vec4(pos, 1.0)).xyz;
   vec3 nrm = aNrm.xyz;
   if (aTex.z == 1.0) {
@@ -294,8 +305,8 @@ const FRAG_SURFACE = /* glsl */`
         st = mix(st, 0.5, smoothstep(0.4, 1.5, length(fwidth(sq))));
         float dens = edge * tx.a;
         float nz = 0.62 * cl + 0.38 * st;
-        a = smoothstep(nz - 0.1, nz + 0.1, dens * 1.08 - 0.06);
-        col *= 0.62 + 0.62 * cl + 0.3 * (st - 0.5);
+        a = smoothstep(nz - 0.12, nz + 0.12, dens * 1.02 - 0.1);
+        col *= 0.7 + 0.75 * cl + 0.35 * (st - 0.5);
       } else if (shell == 0) {
         a *= clamp((edge * (1.25 - 0.3 * light) - sn) * 2.5 + 0.35, 0.0, 1.0);
         col *= mix(0.5 + 0.5 * sn, 0.3 + 1.0 * sn * sn, light);
@@ -329,6 +340,11 @@ const FRAG_SURFACE = /* glsl */`
     diffuseColor.rgb *= mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
     hAO *= mix(1.0, 0.6, lid);
     hEyeLid = lid;
+    if (uDecal > 0.5) {
+      // (the iris a little darker and less saturated; the white of the eye never paper white)
+      float l = hLum(diffuseColor.rgb);
+      diffuseColor.rgb = mix(vec3(l), diffuseColor.rgb, 0.75) * 0.82;
+    }
   }
   if (hRegion == 0) {
     hSkinM = 1.0;
@@ -354,13 +370,17 @@ const FRAG_SURFACE = /* glsl */`
         vec3 fp = vRest * 1500.0;
         float fol = hH3(floor(fp));
         fol = mix(fol, 0.5, smoothstep(0.4, 1.4, length(fwidth(fp))));
-        float brk = hVNoise(vRest * 180.0);
-        float c = clamp(dcl * 1.3 - 0.35 * brk * (1.0 - dcl), 0.0, 1.0);
-        c = c * c * (3.0 - 2.0 * c);
+        // strand clumps (~3 x 8 mm, down the face): the growth is not an even paint
+        vec3 cq = vRest * vec3(300.0, 120.0, 300.0);
+        float cl = hVNoise(cq);
+        cl = mix(cl, 0.5, smoothstep(0.6, 2.0, length(fwidth(cq))));
+        float brk = hVNoise(vRest * 140.0);
+        // a soft, broken border (the coverage eases in over ~1-2 cm, the noise breaks the line)
+        float c = smoothstep(0.08, 0.9, dcl + (brk - 0.5) * 0.45 * (1.0 - dcl * 0.6));
         // (a few days' stubble greys the jaw by about half; a beard's base is near the hair colour)
-        float amt = c * (0.2 + 0.62 * dens) * (0.6 + 0.8 * fol);
-        vec3 bc = mix(bl.rgb, vec3(0.018, 0.02, 0.024), 0.35);
-        diffuseColor.rgb = mix(diffuseColor.rgb, bc, clamp(amt, 0.0, 0.92));
+        float amt = c * (0.18 + 0.56 * dens) * (0.55 + 0.6 * fol) * (0.8 + 0.45 * cl);
+        vec3 bc = mix(bl.rgb, vec3(0.018, 0.02, 0.024), 0.3);
+        diffuseColor.rgb = mix(diffuseColor.rgb, bc, clamp(amt, 0.0, 0.85));
         hRough = mix(hRough, 0.72, c * dens);
         hSpec *= 1.0 - 0.5 * c * dens;
       } else if (dcl < -0.004) {
@@ -381,6 +401,16 @@ const FRAG_SURFACE = /* glsl */`
       diffuseColor.rgb *= 1.0 + near * (n1 - 0.5) * 0.08;
       hRough = mix(hRough, hRough * (0.82 + 0.36 * n2), near);
       hBump = near * (n2 * 0.00009 + n1 * 0.00025);
+    }
+  }
+  if (uDecal > 0.5 && (hRegion == 14 || hRegion == 15)) {
+    // bags and straps: a leather / canvas grain and soft wear up close
+    float fwb = length(fwidth(vRest));
+    float nb = 1.0 - smoothstep(0.0015, 0.006, fwb);
+    if (nb > 0.0) {
+      float g1 = hVNoise(vRest * 900.0), g2 = hVNoise(vRest * 90.0);
+      hBump = nb * (g1 * 0.00012 + g2 * 0.0003);
+      diffuseColor.rgb *= 1.0 + nb * (g2 - 0.5) * 0.12;
     }
   }
   if ((hFlags & 2) != 0 && (hRegion >= 5 && hRegion <= 10 || hRegion == 14 || hRegion == 15)) {
@@ -405,6 +435,8 @@ const FRAG_SURFACE = /* glsl */`
   hEmit = vec3(vBeard, hRegion == 11 ? 0.0 : 0.3, 0.0); diffuseColor.rgb = vec3(0.0);   // debug view: beard edge distance
 #elif HUMANS_DBG == 4
   hEmit = vec3(max(vDecal, 0.0), max(-vDecal, 0.0), 0.0); diffuseColor.rgb = vec3(0.0); // debug view: skin decals
+#elif HUMANS_DBG == 6
+  if (hRegion == 0) discard;                              // debug view: no skin
 #elif HUMANS_DBG == 5
   // debug view: region (hue) and flags (back faces dark)
   hEmit = 0.5 + 0.5 * cos(6.2832 * (float(hRegion) / 16.0 + vec3(0.0, 0.33, 0.67)));

@@ -48,8 +48,9 @@ export function openingInfill(ctx, face, o, rng) {
   // glazing (the whole outline; doors and shutters cover parts of it)
   glazing(B, sinks.glass, o, w0 - 0.012, arched, arched ? arcSeg(q, o) : 1, shop, door, rng);
 
-  // frame: jambs, sill / head rails, arched head ring
-  const fw = shop ? 0.08 : 0.055, wf = w0 + 0.035, wb = w0 - 0.025;
+  // frame: jambs, sill / head rails, arched head ring (frame and sash together; far, a
+  // little wider, so the light joinery still outlines the window at a pixel or two)
+  const fw = shop ? 0.08 : q.lod ? 0.085 : 0.06, wf = w0 + 0.035, wb = w0 - 0.025;
   const sF = sinks.frame;
   B.flat = shop ? STALL.map((c, i) => c * 0.5 + frameCol[i] * 0.5) : frameCol;
   B.box(sF, u0, u0 + fw, o.y, ys, wb, wf, FACES.FRONT | FACES.RIGHT);
@@ -66,11 +67,12 @@ export function openingInfill(ctx, face, o, rng) {
   else if ((shop || door) && o.h > 2.7) tr = yt - 0.62;
   if (tr !== null) B.box(sF, u0 + fw, u1 - fw, tr - 0.028, tr + 0.028, wb, wf - 0.005, FACES.FRONT | FACES.TOP | FACES.BOTTOM);
   const lowTop = tr !== null ? tr - 0.028 : top;
-  if (q.lod === 0 || shop) {
-    const nm = shop ? Math.max(1, Math.round(o.w / 1.25)) : (o.w > 0.75 ? 2 : 1);
+  {
+    // meeting stiles of the casements (far: the front face, a little wider)
+    const nm = shop ? Math.max(1, Math.round(o.w / 1.25)) : (o.w > 0.75 ? 2 : 1), mw = q.lod && !shop ? 0.04 : 0.025;
     for (let k = 1; k < nm; k++) {
       const u = u0 + (o.w * k) / nm;
-      B.box(sF, u - 0.025, u + 0.025, o.y + fw, shop ? lowTop : top, wb, wf - 0.008, FACES.FRONT | FACES.LEFT | FACES.RIGHT);
+      B.box(sF, u - mw, u + mw, o.y + fw, shop ? lowTop : top, wb, wf - 0.008, q.lod ? FACES.FRONT : FACES.FRONT | FACES.LEFT | FACES.RIGHT);
     }
   }
 
@@ -192,7 +194,7 @@ function glazing(B, s, o, w, arched, n, shop, door, rng) {
     return;
   }
   const h = rng.next();
-  const kind = o.curtain ? (h < 0.55 ? 'sheer' : h < 0.8 ? 'drawn' : 'room') : (h < 0.5 ? 'room' : h < 0.82 ? 'blind' : 'open');
+  const kind = o.curtain ? (h < 0.55 ? 'sheer' : h < 0.8 ? 'drawn' : 'room') : (h < 0.36 ? 'room' : h < 0.8 ? 'blind' : 'open');
   const room = glassTone(rng.pick(ROOM).map((c) => c * rng.range(0.85, 1.2)));
   B.grime = (lit ? 0.75 : 0) + (kind === 'open' ? 0.25 : 0);
   const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2, top = arched ? o.spring : o.y + o.h;

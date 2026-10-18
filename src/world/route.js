@@ -134,6 +134,7 @@ function integrate(pieces, length) {
 
 export class Route {
   constructor() {
+    this._f = 0;   // scratch of _at()
     let plan = meander(PLAN.map((p) => ({ ...p })));
     // Closure: pick the pair of straights whose length change closes the loop with the
     // smallest total adjustment while respecting minimum lengths (heading closes by design).
@@ -239,21 +240,26 @@ export class Route {
   /** Shortest signed distance along the loop from a to b (b - a). */
   delta(a, b) { const L = this.length; let d = this.wrap(b) - this.wrap(a); if (d > L / 2) d -= L; if (d < -L / 2) d += L; return d; }
 
-  _idx(s) {
-    s = this.wrap(s);
-    const f = s / DS;
+  /** Table index at s; the fraction past it goes to this._f (read it at once). Allocation
+   *  free: the route is sampled per vertex, per agent and per frame. */
+  _at(s) {
+    const L = this.length;
+    const f = (((s % L) + L) % L) / DS;
     const i = Math.min(this.n - 2, Math.floor(f));
-    return [i, f - i];
+    this._f = f - i;
+    return i;
   }
 
-  heading(s) { const [i, f] = this._idx(s); return this.th[i] + (this.th[i + 1] - this.th[i]) * f; }
-  curvature(s) { const [i, f] = this._idx(s); return this.k[i] + (this.k[i + 1] - this.k[i]) * f; }
-  elevation(s) { const [i, f] = this._idx(s); return this.y[i] + (this.y[i + 1] - this.y[i]) * f; }
+  _idx(s) { const i = this._at(s); return [i, this._f]; }
+
+  heading(s) { const i = this._at(s), f = this._f; return this.th[i] + (this.th[i + 1] - this.th[i]) * f; }
+  curvature(s) { const i = this._at(s), f = this._f; return this.k[i] + (this.k[i + 1] - this.k[i]) * f; }
+  elevation(s) { const i = this._at(s), f = this._f; return this.y[i] + (this.y[i + 1] - this.y[i]) * f; }
   grade(s) { return (this.elevation(s + 0.5) - this.elevation(s - 0.5)); }
 
   /** Writes the centre-line sample into `out` (allocation free). */
   sample(s, out = {}) {
-    const [i, f] = this._idx(s);
+    const i = this._at(s), f = this._f;
     const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
     const tx = Math.cos(th), tz = -Math.sin(th);
     const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
@@ -295,7 +301,7 @@ export class Route {
 
   /** World position of route coordinate (s, d, h); h is height above the local ground. */
   toWorld(s, d = 0, h = 0, out = new THREE.Vector3()) {
-    const [i, f] = this._idx(s);
+    const i = this._at(s), f = this._f;
     const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
     const tx = Math.cos(th), tz = -Math.sin(th);
     const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;

@@ -28,7 +28,7 @@ BUDGET = {
     'body': (8500, 1700, 560, 210),
     'suit': (3600, 1100, 360, 130),
     'shoes': (700, 200, 60, 20),
-    'hair': (2400, 900, 420, 0),
+    'hair': (4000, 1100, 450, 0),
     'haircap': (0, 0, 0, 60),
     'hat': (500, 200, 110, 50),
     'eyes': (None, 40, 20, 12),
@@ -38,7 +38,10 @@ BUDGET = {
 }
 # simplifier options per part kind: lock the open borders (hems, cuffs, the hair's strand tips), keep
 # small pieces (cards)
-LOCK_BORDER = ('suit', 'shoes', 'hat', 'hair', 'beard')
+LOCK_BORDER = ('suit', 'shoes', 'hat', 'beard')
+# hair and beards: an absolute error ceiling per LOD (m) instead of a forced budget (sheets of hair
+# simplified to a budget collapse into flat planks that cut through the head)
+CARD_ERROR = (0.0015, 0.006, 0.018, 0.05)
 # inner faces of garments near their openings (hems, cuffs, necklines), seen from below or through a
 # sleeve: drawn in the garment's colour, darkened (flag 2 on a garment region), for LOD 0-1
 HEM_RANGE = 0.045
@@ -69,13 +72,15 @@ for (const j of jobs) {
   // texels and garment colours over the surface)
   const fl = (j.cards ? [] : ['Prune']).concat(j.lockBorder ? ['LockBorder'] : []).concat(j.cards ? [] : ['Regularize']);
   let prev = idx;
-  for (const t of j.targets) {
+  for (let li = 0; li < j.targets.length; li++) {
+    const t = j.targets[li];
     if (t === null) { res.push(null); continue; }
     if (t === 0) { res.push([]); continue; }
     if (t >= j.t) { res.push(null); continue; }
     if (t * 3 >= prev.length) { res.push(Array.from(prev)); continue; }
     // each LOD simplifies the previous one (nested, so a LOD switch changes as little as possible)
-    let [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, 1.0, fl);
+    const err = j.cardError ? j.cardError[li] : 1.0;
+    let [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, err, j.cardError ? fl.concat(['ErrorAbsolute']) : fl);
     if (r.length > t * 3 * 1.6 && j.lockBorder) {
       // borders too long to keep at this budget: let them simplify too (still no seam crossing)
       [r] = S.simplifyWithAttributes(prev, pos, 3, att, 5, %(w)s, null, t * 3, 1.0, fl.filter((f) => f !== 'LockBorder'));
@@ -174,7 +179,8 @@ def main():
                 f.write(np.concatenate([d['nr'], d['uv']], 1).astype(np.float32).tobytes())
                 f.write(d['idx'].astype(np.uint32).tobytes())
             jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets'],
-                             cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows'), lockBorder=p['kind'] in LOCK_BORDER))
+                             cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows'), lockBorder=p['kind'] in LOCK_BORDER,
+                             cardError=list(CARD_ERROR) if p['kind'] in ('hair', 'beard') else None))
         chars[cid] = (meta, parts)
     with open(os.path.join(WORK, 'jobs.json'), 'w') as f:
         json.dump(jobs, f)
