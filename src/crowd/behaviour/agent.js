@@ -170,6 +170,8 @@ export class Agent {
     // not inlined is boxed, and that is garbage per agent and per frame)
     this.prevD = 0; this.stepDt = 0; // lateral position before this step, and the step's dt (tram.constrain)
     this.moveDist = 0;        // horizontal distance the figure moved since the last output (gait)
+    this.km = 1;              // metres per unit of s at the agent (steering, once per step)
+    this.kap = 0; this.kapS = -1e9; // route curvature at kapS (refreshed every 0.5 m)
     this.front = 0; this.frontN = -1; // tram.js frontFor of this frame, and the frame it is for
     this.ws = 0; this.wd = 0; this.wValid = false; // (s, d) of the world position last computed (crowd._output)
     this.hT = 0;              // platform height under the feet there

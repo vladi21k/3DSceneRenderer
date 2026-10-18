@@ -148,12 +148,15 @@ export class FrameMonitor {
     this._measured = true;
     // GPU times arrive a few frames late
     if (this._pend.length && app.gpuTimer) {
-      const g = app.gpuTimer;
-      this._pend = this._pend.filter((h) => {
-        const v = g.of(h.frame);
-        if (v !== null) { h.gpu = r1(v); return false; }
-        return app.frame - h.frame < 120;
-      });
+      // (compacted in place: no array or closure per frame while hitches wait)
+      const g = app.gpuTimer, P = this._pend;
+      let k = 0;
+      for (let i = 0; i < P.length; i++) {
+        const h = P[i], v = g.of(h.frame);
+        if (v !== null) h.gpu = r1(v);
+        else if (app.frame - h.frame < 120) P[k++] = h;
+      }
+      P.length = k;
     }
   }
 

@@ -518,7 +518,7 @@ function rebaseMove(a) {
 /** Into / out of a side street: ride towards a point. */
 function waypoint(c, a, T, vT) {
   const k = a.inSide ? 1 : Math.max(0.5, 1 + c.route.curvature(a.s) * a.d);
-  const es = (a.gs - a.s) * k, ed = a.gd - a.d, dist = Math.hypot(es, ed);
+  const es = (a.gs - a.s) * k, ed = a.gd - a.d, dist = Math.sqrt(es * es + ed * ed);
   if (dist < a.gTol) { arriveRide(c, a); T.d = a.d; T.v = Math.min(vT, 2.5); return; }
   T.alpha = Math.atan2(ed, es);
   T.avoid = avoidFixed(c, a);

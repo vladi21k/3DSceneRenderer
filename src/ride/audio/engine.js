@@ -241,7 +241,9 @@ export class AudioEngine {
   _listener(L, now) {
     if (!L || !Number.isFinite(L.px)) return;
     const f = this.frame, l = this.ctx.listener, Q = this.listenerLocal;
-    const p = this.toLocal({ x: L.px, y: L.py, z: L.pz });
+    const w = this._lw || (this._lw = { x: 0, y: 0, z: 0 });
+    w.x = L.px; w.y = L.py; w.z = L.pz;
+    const p = this.toLocal(w);
     Q.x = p.x; Q.y = p.y; Q.z = p.z;
     Q.fx = L.fx * f.c - L.fz * f.s; Q.fy = L.fy; Q.fz = L.fx * f.s + L.fz * f.c;
     const ux = L.ux * f.c - L.uz * f.s, uy = L.uy, uz = L.ux * f.s + L.uz * f.c;
@@ -260,7 +262,7 @@ export class AudioEngine {
   relative(p, out = {}) {
     const q = this.toLocal(p), Q = this.listenerLocal;
     const dx = q.x - Q.x, dy = q.y - Q.y, dz = q.z - Q.z;
-    const dist = Math.hypot(dx, dy, dz) || 1e-3;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-3;   // (3-argument Math.hypot allocates)
     // right = forward x up(0,1,0) = (-fz, 0, fx)
     const rx = -Q.fz, rz = Q.fx, rn = Math.hypot(rx, rz) || 1;
     out.dist = dist;

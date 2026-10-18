@@ -82,12 +82,27 @@ TONES = {
 }
 
 
+# relaxed mouth corners for every face (MakeHuman's neutral mouth reads as a frown at street distance)
+DEFAULT_FACE = {'mouth/mouth-angles-up': 0.32}
+# a child's face: rounder skull and forehead, bigger eyes, smaller nose, shorter lower face
+CHILD_FACE = {'head/head-age-decr': 0.6, 'forehead/forehead-scale-vert-incr': 0.35, 'eyes/l-eye-scale-incr': 0.3,
+              'eyes/r-eye-scale-incr': 0.3, 'nose/nose-scale-vert-decr': 0.35, 'nose/nose-scale-horiz-decr': 0.2,
+              'chin/chin-height-decr': 0.35, 'cheek/l-cheek-volume-incr': 0.3, 'cheek/r-cheek-volume-incr': 0.3,
+              'mouth/mouth-scale-horiz-decr': 0.2}
+
+
 def C(sex, age, *, anc, skin, tone='base', muscle=0.5, weight=0.5, height=0.5, prop=0.5, cup=0.5, firm=0.5,
       targets=None, top=None, bottom=None, shoes='shoes05', socks=None, hair=None, hair_color='brown', brows='eyebrow001',
       lashes='eyelashes01', eyes='brown', hat=None, hat_color='#111113', beard=None, kind=None, note=''):
-    """One character. anc = (caucasian, african, asian) weights."""
+    """One character. anc = (caucasian, african, asian) weights. Every face gets a relaxed mouth (corners a
+    little up: a neutral face, not a scowl) and children a child's face (rounder skull, bigger eyes, small
+    nose and chin), unless the character's own targets say otherwise."""
+    t = dict(DEFAULT_FACE) if age >= 3.5 else {}
+    if 3.5 <= age < 12:
+        t.update({k: v * (1.0 if age < 10.5 else 0.85) for k, v in CHILD_FACE.items()})
+    t.update(targets or {})
     return dict(sex=sex, age=age, anc=anc, skin=skin, tone=tone, muscle=muscle, weight=weight, height=height, prop=prop,
-                cup=cup, firm=firm, targets=targets or {}, top=top, bottom=bottom, shoes=shoes, socks=socks, hair=hair,
+                cup=cup, firm=firm, targets=t, top=top, bottom=bottom, shoes=shoes, socks=socks, hair=hair,
                 hair_color=hair_color, brows=brows, lashes=lashes, eyes=eyes, hat=hat, hat_color=hat_color, beard=beard, kind=kind,
                 note=note)
 
@@ -109,7 +124,7 @@ CAST = {
     'm01': C('m', 24, anc=CAU, skin='young_caucasian_male', tone='fair', muscle=0.55, weight=0.42, height=0.62,
              targets=F(nose__nose_scale_vert_incr=0.3, chin__chin_prominent_incr=0.3, head__head_oval=0.4),
              top=G('male_casualsuit06', 'top', '#f1f0ea'), bottom=G('male_casualsuit06', 'bottom', '#3b5878'),
-             shoes='shoes05', hair='short02', hair_color='chestnut', brows='eyebrow003', eyes='bluegreen',
+             shoes='shoes05', hair='short02', hair_color='chestnut', brows='eyebrow003', eyes='brownlight',
              note='young man, white tee, jeans'),
     'm02': C('m', 31, anc=MED, skin='young_caucasian_male', tone='olive', muscle=0.6, weight=0.55, height=0.5,
              targets=F(nose__nose_hump_incr=0.4, nose__nose_scale_horiz_incr=0.2, head__head_square=0.4, eyebrows__eyebrows_trans_down=0.3),
@@ -119,7 +134,7 @@ CAST = {
     'm03': C('m', 27, anc=AFR, skin='young_african_male', muscle=0.7, weight=0.5, height=0.66,
              targets=F(nose__nose_flaring_incr=0.3, mouth__mouth_lowerlip_volume_incr=0.3, head__head_round=0.3),
              top=G('male_casualsuit04', 'top', '#3e8a4e'), bottom=G('male_casualsuit04', 'bottom', '#2f3f5c'),
-             shoes='shoes05', hair='short04', hair_color='black', brows='eyebrow010', eyes='brown',
+             shoes='shoes02', hair='short04', hair_color='black', brows='eyebrow010', eyes='brown',
              note='green tee, dark jeans'),
     'm04': C('m', 46, anc=MEA, skin='middleage_caucasian_male', tone='tan', muscle=0.45, weight=0.82, height=0.45,
              targets=F(stomach__stomach_pregnant_incr=0.45, neck__neck_double_incr=0.4, nose__nose_volume_incr=0.4, head__head_fat_incr=0.3),
@@ -134,7 +149,7 @@ CAST = {
     'm06': C('m', 38, anc=CAU, skin='middleage_caucasian_male', tone='fair', muscle=0.45, weight=0.5, height=0.55,
              targets=F(nose__nose_hump_incr=0.3, head__head_oval=0.5, chin__chin_width_decr=0.2),
              top=G('male_elegantsuit01', 'top', None), bottom=G('male_elegantsuit01', 'bottom', None),
-             shoes='shoes04', hat='fedora01', hair='short04', hair_color='darkbrown', brows='eyebrow005', eyes='grey',
+             shoes='shoes04', hat='fedora01', hair='short04', hair_color='darkbrown', brows='eyebrow005', eyes='brown',
              beard='full', note='black suit, black hat, beard'),
     'm07': C('m', 25, anc=MED, skin='young_caucasian_male', tone='olive', muscle=0.4, weight=0.38, height=0.58,
              targets=F(head__head_scale_vert_incr=0.2, nose__nose_point_width_decr=0.3),
@@ -149,7 +164,7 @@ CAST = {
     'm09': C('m', 35, anc=CAU, skin='middleage_caucasian_male', muscle=0.5, weight=0.78, height=0.5,
              targets=F(stomach__stomach_pregnant_incr=0.35, head__head_round=0.4, cheek__l_cheek_volume_incr=0.3, cheek__r_cheek_volume_incr=0.3),
              top=G('male_casualsuit06', 'top', '#c8352b'), bottom=G('male_casualsuit06', 'bottom', '#5679a3', cut='leg', length=0.45),
-             shoes='shoes02', hair='short02', hair_color='lightbrown', brows='eyebrow002', eyes='blue',
+             shoes='shoes02', hair='short02', hair_color='lightbrown', brows='eyebrow002', eyes='green',
              note='heavy, red tee, denim shorts'),
     'm10': C('m', 29, anc=MED, skin='young_caucasian_male2', tone='olive', muscle=0.6, weight=0.5, height=0.6,
              targets=F(nose__nose_greek_incr=0.4, chin__chin_prominent_incr=0.4, head__head_rectangular=0.3),
@@ -179,12 +194,12 @@ CAST = {
     'm15': C('m', 28, anc=MEA, skin='young_caucasian_male2', tone='olive', muscle=0.5, weight=0.42, height=0.48,
              targets=F(head__head_oval=0.3, nose__nose_greek_incr=0.3, mouth__mouth_lowerlip_volume_incr=0.2),
              top=G('male_casualsuit04', 'top', '#16171a'), bottom=G('male_casualsuit04', 'bottom', '#3e5f88'),
-             shoes='shoes05', hair='short02', hair_color='black', brows='eyebrow007', eyes='brown',
+             shoes='shoes04', hair='short02', hair_color='black', brows='eyebrow007', eyes='brown',
              note='slim, black tee, jeans'),
     'm16': C('m', 57, anc=CAU, skin='old_caucasian_male', tone='fair', muscle=0.4, weight=0.66, height=0.5,
              targets=F(stomach__stomach_pregnant_incr=0.25, nose__nose_volume_incr=0.2, head__head_round=0.3),
              top=G('male_casualsuit02', 'top', '#c9d8c0', cut='sleeve', length=0.3), bottom=G('male_casualsuit02', 'bottom', '#a8956c'),
-             shoes='shoes01', hair='short04', hair_color='grey', brows='eyebrow006', eyes='blue',
+             shoes='shoes01', hair='short04', hair_color='grey', brows='eyebrow006', eyes='brownlight',
              note='older man, pale green tee, khaki trousers'),
     # ------------------------------------------------------------------ women
     'f12': C('f', 35, anc=MED, skin='middleage_caucasian_female', tone='olive', muscle=0.4, weight=0.52, height=0.5, cup=0.55,
@@ -219,9 +234,9 @@ CAST = {
              note='yellow tee, denim shorts, braid'),
     'f04': C('f', 22, anc=ASI, skin='young_asian_female', muscle=0.4, weight=0.35, height=0.4, cup=0.4,
              targets=F(head__head_round=0.2),
-             top=G('female_sportsuit01', 'top', '#16171a'), bottom=G('female_sportsuit01', 'bottom', '#141416'),
-             shoes='shoes05', hair='bob01', hair_color='black', brows='eyebrow011', eyes='brown',
-             note='slim, black crop tee, leggings, bob'),
+             top=G('female_casualsuit01', 'top', '#16171a'), bottom=G('female_sportsuit01', 'bottom', '#141416'),
+             shoes='shoes02', hair='bob01', hair_color='black', brows='eyebrow011', eyes='brown',
+             note='slim, black tee, leggings, bob'),
     'f05': C('f', 36, anc=MEA, skin='middleage_caucasian_female', tone='tan', muscle=0.4, weight=0.6, height=0.45, cup=0.6, firm=0.4,
              targets=F(nose__nose_hump_incr=0.3, head__head_oval=0.3),
              top=G('female_elegantsuit01', 'top', '#2a3346', cut='sleeve', length=0.85), bottom=G('female_elegantsuit01', 'bottom', '#1d2337', cut='skirt', length=0.75),
@@ -245,16 +260,16 @@ CAST = {
     'f09': C('f', 33, anc=CAU, skin='young_caucasian_female2', muscle=0.4, weight=0.55, height=0.52, cup=0.55,
              targets=F(head__head_round=0.2, nose__nose_point_up=0.2),
              top=G('female_casualsuit01', 'top', '#e7e0cf', cut='sleeve', length=0.6), bottom=G('female_elegantsuit01', 'bottom', '#3b3f47', cut='skirt', length=0.9),
-             shoes='shoes04', hair='ponytail01', hair_color='darkbrown', brows='eyebrow002', eyes='grey',
+             shoes='shoes04', hair='ponytail01', hair_color='darkbrown', brows='eyebrow002', eyes='brown',
              note='modest: cream top, long grey skirt'),
     'f10': C('f', 41, anc=(0.1, 0.0, 0.9), skin='middleage_asian_female', muscle=0.45, weight=0.5, height=0.42, cup=0.45,
              top=G('female_elegantsuit01', 'top', '#f6f3ee', cut='sleeve', length=0.2), bottom=G('female_casualsuit01', 'bottom', '#c2b391'),
-             shoes='shoes05', hair='bob02', hair_color='darkbrown', brows='eyebrow011', eyes='brown',
+             shoes='shoes01', hair='bob02', hair_color='darkbrown', brows='eyebrow011', eyes='brown',
              note='white blouse, beige trousers'),
     'f11': C('f', 20, anc=(0.4, 0.6, 0.0), skin='young_african_female', tone='brown', muscle=0.45, weight=0.45, height=0.55, cup=0.5,
-             top=G('female_sportsuit01', 'top', '#e7a3b8'), bottom=G('female_casualsuit01', 'bottom', '#5679a3'),
+             top=G('female_elegantsuit01', 'top', '#e7a3b8', cut='sleeve', length=0.2), bottom=G('female_casualsuit01', 'bottom', '#5679a3'),
              shoes='shoes05', hair='afro01', hair_color='darkbrown', brows='eyebrow012', eyes='brown',
-             note='pink crop tee, light jeans, curls'),
+             note='pink blouse, light jeans, curls'),
     # ------------------------------------------------------------------ elderly
     'o01': C('m', 72, anc=CAU, skin='old_caucasian_male', muscle=0.35, weight=0.6, height=0.42,
              targets=F(stomach__stomach_pregnant_incr=0.3, nose__nose_volume_incr=0.4, ears__l_ear_scale_incr=0.4, ears__r_ear_scale_incr=0.4),
@@ -269,7 +284,7 @@ CAST = {
     'o03': C('f', 71, anc=CAU, skin='old_caucasian_female', muscle=0.3, weight=0.6, height=0.38, cup=0.6, firm=0.2,
              targets=F(neck__neck_double_incr=0.3),
              top=G('female_elegantsuit01', 'top', '#d9cdb0', cut='sleeve', length=0.6), bottom=G('female_elegantsuit01', 'bottom', '#3b3f47', cut='skirt', length=0.6),
-             shoes='shoes04', hair='bob02', hair_color='silver', brows='eyebrow002', eyes='grey',
+             shoes='shoes04', hair='bob02', hair_color='silver', brows='eyebrow002', eyes='brownlight',
              note='elderly woman, cream blouse, long grey skirt'),
     'o04': C('f', 66, anc=MEA, skin='old_caucasian_female', tone='tan', muscle=0.3, weight=0.7, height=0.35, cup=0.6, firm=0.2,
              targets=F(stomach__stomach_pregnant_incr=0.2),
@@ -282,7 +297,7 @@ CAST = {
              note='older man, beige tee, dark trousers'),
     'o06': C('f', 74, anc=(0.0, 0.0, 1.0), skin='old_asian_female', muscle=0.3, weight=0.45, height=0.3, cup=0.4, firm=0.2,
              top=G('female_casualsuit01', 'top', '#8fb6d9', cut='sleeve', length=0.6), bottom=G('female_sportsuit01', 'bottom', '#3b3f47'),
-             shoes='shoes05', hair='short02', hair_color='white', brows='eyebrow011', eyes='brown',
+             shoes='shoes06', hair='short02', hair_color='white', brows='eyebrow011', eyes='brown',
              note='elderly woman, light-blue top, grey trousers'),
     # ------------------------------------------------------------------ teens
     't01': C('m', 15, anc=CAU, skin='young_caucasian_male', muscle=0.45, weight=0.4, height=0.55,
@@ -299,7 +314,7 @@ CAST = {
              note='teen boy, orange tee, navy shorts'),
     't04': C('f', 14, anc=ASI, skin='young_asian_female', muscle=0.4, weight=0.4, height=0.45, cup=0.25,
              top=G('female_casualsuit01', 'top', '#c94a3a'), bottom=G('female_sportsuit01', 'bottom', '#25324a'),
-             shoes='shoes05', hair='ponytail01', hair_color='black', brows='eyebrow011', eyes='brown',
+             shoes='shoes06', hair='ponytail01', hair_color='black', brows='eyebrow011', eyes='brown',
              note='teen girl, red tee, navy leggings'),
     # ------------------------------------------------------------------ children 4-10
     'c01': C('m', 9, anc=CAU, skin='young_caucasian_female', muscle=0.45, weight=0.45, height=0.5,
@@ -316,7 +331,7 @@ CAST = {
              note='boy 6, red tee, jeans'),
     'c04': C('f', 5, anc=ASI, skin='young_asian_female', muscle=0.45, weight=0.5, height=0.5,
              top=G('female_casualsuit02', 'top', '#f3df8f'), bottom=G('female_casualsuit02', 'bottom', '#5679a3'),
-             shoes='shoes05', hair='bob01', hair_color='black', brows='eyebrow011', eyes='brown', kind='kid',
+             shoes='shoes06', hair='bob01', hair_color='black', brows='eyebrow011', eyes='brown', kind='kid',
              note='girl 5, yellow tee, denim shorts, bob'),
     'c05': C('m', 7, anc=MEA, skin='young_caucasian_female', tone='tan', muscle=0.45, weight=0.45, height=0.5,
              top=G('male_casualsuit03', 'top', '#c4e2b6', cut='sleeve', length=0.3), bottom=G('male_casualsuit03', 'bottom', '#25324a', cut='leg', length=0.45),
@@ -324,7 +339,7 @@ CAST = {
              note='boy 7, green shirt, navy shorts'),
     'c06': C('f', 10, anc=CAU, skin='young_caucasian_female', tone='fair', muscle=0.45, weight=0.42, height=0.55,
              top=G('female_casualsuit01', 'top', '#9fd2d0'), bottom=G('female_sportsuit01', 'bottom', '#c03a6a'),
-             shoes='shoes05', hair='braid01', hair_color='blonde', brows='eyebrow002', eyes='bluegreen', kind='child',
+             shoes='shoes05', hair='braid01', hair_color='lightbrown', brows='eyebrow001', eyes='brownlight', kind='child',
              note='girl 10, aqua tee, pink leggings, braid'),
     # ------------------------------------------------------------------ toddlers (strollers)
     'd01': C('m', 2.0, anc=CAU, skin='young_caucasian_female', muscle=0.5, weight=0.55, height=0.5,

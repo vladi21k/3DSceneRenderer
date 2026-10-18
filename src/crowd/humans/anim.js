@@ -455,8 +455,9 @@ export class Rig {
     else if (variant === 2) w = 0.6 * w;
     const sh = 0.034 * w * k;
     const breath = Math.sin(T * 5);
-    P.pelvisOffset.set(sh, -0.012 * k - 0.009 * k * Math.abs(w), 0);
-    P.pelvisQ = qEuler(1.5, 2.5 * Math.sin(T + 1) + 3 * w, -3.4 * w);
+    // (the pelvis height is set below from the loaded leg; the hip drops on the free side)
+    P.pelvisOffset.set(sh, 0, 0);
+    P.pelvisQ = qEuler(0.8, 2.5 * Math.sin(T + 1) + 3 * w, -1.7 * w);
     P.spine1Q = qEuler(-1, -1.5 * Math.sin(T + 1) - 1.5 * w, 2.4 * w);
     P.spine2Q = qEuler(0.6 * breath - 1, 0, 1.3 * w);
     // gaze: looks about with holds between glances (variants with their own head motion below)
@@ -480,8 +481,9 @@ export class Rig {
       P.leg[s].footQ = qAxis(Y, -sg * (variant === 4 && s === 'L' ? 16 : 8));
       P.leg[s].pole = new THREE.Vector3(sg * 0.15, 0, -1).normalize();
       const A = P.arm[s];
-      // (women hold their arms closer in, men's hang wide of the lats; children's a little out)
-      A.abd = this.style.abd + this.abdOff + 0.5 + 1.0 * Math.sin(T + sg);
+      // (women hold their arms closer in, men's hang wide of the lats; arms hang in at 3-6 degrees,
+      // only as far out as the body's own build needs)
+      A.abd = Math.min(this.style.abd, 4.5) + 0.6 * this.abdOff + 0.5 + 1.0 * Math.sin(T + sg);
       A.flex = 2 + 2 * Math.sin(T * 2 + sg);
       A.elbow = this.style.elbow - 3 + 3 * Math.sin(T * 3);
       A.twist = -3;
@@ -554,6 +556,19 @@ export class Rig {
       L_.elbow = this.style.elbow + 22 * j + 6 * j * Math.max(0, g(9, 0.3)) ** 2;
       L_.twist = -8 - 12 * j;
       L_.abd += 3 * j;
+    }
+    // pelvis height: the leg the weight is on stands straight (~5 degrees at the knee), the free leg's
+    // knee takes the hip drop on its side (~10-14 degrees); never a pelvis lowered onto two bent knees
+    {
+      const D = (this.l1 + this.l2) * 0.999;
+      let y = Infinity;
+      for (const s of ['L', 'R']) {
+        const hip = this._hipOf(P, s), an = P.leg[s].ankle;
+        const hx = hip.x - an.x, hz = hip.z - an.z;
+        const dv = Math.sqrt(Math.max(1e-6, D * D - hx * hx - hz * hz));
+        y = Math.min(y, an.y + dv - hip.y);
+      }
+      P.pelvisOffset.y = Math.min(0, y);
     }
     return P;
   }

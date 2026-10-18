@@ -65,14 +65,18 @@ export function footBandGap(a, d = a.d) {
 }
 
 // ---------------------------------------------------------------- distances
-// (scratch values live in a typed array: doubles written to module-level `let`s are boxed on
-// every write, and these run thousands of times a frame)
+// (inputs and results go through typed arrays: doubles written to module-level `let`s, passed to
+// a call that is not inlined or returned from one are boxed, and these run thousands of times a
+// frame)
 const G = settleShape({ gap: 0, ns: 0, nd: 0 });
-const X = new Float64Array(8);   // 0 cx, 1 cy (closest point on p), 2 qx, 3 qy (on q), 4 best gap, 5 bx, 6 by, 7 br
+const P = new Float64Array(10);  // segment pair: 0-3 p0x p0y p1x p1y, 4 rp, 5-8 q0x q0y q1x q1y, 9 rq
+const X = new Float64Array(9);   // 0-1 closest point on p, 2-3 on q, 4 best gap, 5-6 its vector (q → p), 7 its length, 8 squared distance
 
-/** Closest points between segments p0p1 and q0q1 (2D) → X[0..1] (on p), X[2..3] (on q); returns squared distance. */
-function segSeg(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y) {
-  const ux = p1x - p0x, uy = p1y - p0y, vx = q1x - q0x, vy = q1y - q0y, wx = p0x - q0x, wy = p0y - q0y;
+/** Closest points between the segments P[0..3] and P[5..8] → X[0..1] (on p), X[2..3] (on q),
+ *  X[8] squared distance. */
+function segSeg() {
+  const p0x = P[0], p0y = P[1], q0x = P[5], q0y = P[6];
+  const ux = P[2] - p0x, uy = P[3] - p0y, vx = P[7] - q0x, vy = P[8] - q0y, wx = p0x - q0x, wy = p0y - q0y;
   const a = ux * ux + uy * uy, b = ux * vx + uy * vy, c = vx * vx + vy * vy, d = ux * wx + uy * wy, e = vx * wx + vy * wy;
   let s = 0, t = 0;
   if (a < 1e-9 && c < 1e-9) { s = 0; t = 0; }
@@ -89,7 +93,14 @@ function segSeg(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y) {
   const cx = p0x + ux * s, cy = p0y + uy * s, qx = q0x + vx * t, qy = q0y + vy * t;
   X[0] = cx; X[1] = cy; X[2] = qx; X[3] = qy;
   const dx = cx - qx, dy = cy - qy;
-  return dx * dx + dy * dy;
+  X[8] = dx * dx + dy * dy;
+}
+
+/** The pair in P against the best gap so far (X[4..7]). */
+function pairTest() {
+  segSeg();
+  const dist = Math.sqrt(X[8]), g = dist - P[4] - P[9];
+  if (g < X[4]) { X[4] = g; X[5] = X[0] - X[2]; X[6] = X[1] - X[3]; X[7] = dist; }
 }
 
 /** Smallest gap between the footprints of a and b (bodies + props), b at (dx, dy) = (b.s − a.s
@@ -98,28 +109,36 @@ export function footGap(a, b, dx, dy) {
   X[4] = 1e9; X[5] = 0; X[6] = 0; X[7] = 0;
   // a: body point (0, 0) and prop capsule; b: body point (dx, dy) and prop capsule
   const aProp = a.mob && a.fpR > 0, bProp = b.mob && b.fpR > 0;
-  pairTest(0, 0, 0, 0, AGENT_R, dx, dy, dx, dy, AGENT_R);
-  if (aProp) pairTest(a.fp0s, a.fp0d, a.fp1s, a.fp1d, a.fpR, dx, dy, dx, dy, AGENT_R);
-  if (bProp) pairTest(0, 0, 0, 0, AGENT_R, dx + b.fp0s, dy + b.fp0d, dx + b.fp1s, dy + b.fp1d, b.fpR);
-  if (aProp && bProp) pairTest(a.fp0s, a.fp0d, a.fp1s, a.fp1d, a.fpR, dx + b.fp0s, dy + b.fp0d, dx + b.fp1s, dy + b.fp1d, b.fpR);
+  // body - body
+  P[0] = 0; P[1] = 0; P[2] = 0; P[3] = 0; P[4] = AGENT_R;
+  P[5] = dx; P[6] = dy; P[7] = dx; P[8] = dy; P[9] = AGENT_R;
+  pairTest();
+  if (bProp) {
+    // a's body - b's prop
+    P[5] = dx + b.fp0s; P[6] = dy + b.fp0d; P[7] = dx + b.fp1s; P[8] = dy + b.fp1d; P[9] = b.fpR;
+    pairTest();
+  }
+  if (aProp) {
+    // a's prop - b's prop, then a's prop - b's body
+    P[0] = a.fp0s; P[1] = a.fp0d; P[2] = a.fp1s; P[3] = a.fp1d; P[4] = a.fpR;
+    if (bProp) pairTest();
+    P[5] = dx; P[6] = dy; P[7] = dx; P[8] = dy; P[9] = AGENT_R;
+    pairTest();
+  }
   G.gap = X[4];
   const br = X[7];
   if (br > 1e-4) { G.ns = X[5] / br; G.nd = X[6] / br; }
   else { const l = Math.sqrt(dx * dx + dy * dy) || 1; G.ns = -dx / l; G.nd = -dy / l; }
   return G;
 }
-function pairTest(p0x, p0y, p1x, p1y, rp, q0x, q0y, q1x, q1y, rq) {
-  const d2 = segSeg(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y);
-  const dist = Math.sqrt(d2), g = dist - rp - rq;
-  if (g < X[4]) { X[4] = g; X[5] = X[0] - X[2]; X[6] = X[1] - X[3]; X[7] = dist; }
-}
 
-/** Closest point of a's prop capsule (absolute route s via k, d) to the point (ps, pd): squared
- *  metric distance; the closest point in _foot.s / _foot.d (metric offsets from the body). */
+/** Closest point of a's prop capsule to the point (rs, rd) (metric, relative to the body):
+ *  squared metric distance; the closest point in _foot.s / _foot.d (metric offsets from the body). */
 export const _foot = settleShape({ s: 0, d: 0 });
 export function propPointDist2(a, rs, rd) {
-  // rs, rd: point relative to the body (metric)
-  const d2 = segSeg(a.fp0s, a.fp0d, a.fp1s, a.fp1d, rs, rd, rs, rd);
+  P[0] = a.fp0s; P[1] = a.fp0d; P[2] = a.fp1s; P[3] = a.fp1d;
+  P[5] = rs; P[6] = rd; P[7] = rs; P[8] = rd;
+  segSeg();
   _foot.s = X[0]; _foot.d = X[1];
-  return d2;
+  return X[8];
 }

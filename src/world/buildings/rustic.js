@@ -16,12 +16,14 @@ import { surroundOf } from './openings.js';
 // on (mirrored about the arris, see openings.coursedJamb), so texture and geometry agree.
 
 const CH = 0.04;          // chamfer run from the block's foot to its face
-const STEP_F = 0.2;       // face subdivision along the wall (the uneven rock face)
+const SLICE = 0.3;        // time slice of a generation step (ms)
+const STEP_F = 0.33;      // face subdivision along the wall (the uneven rock face)
 const _tr = [0, 0];
 const _uvx = [1, 0, 1, 0];
 const _col = [];          // polyline columns (reused)
 const _nrm = [];          // positions and accumulated vertex normals (reused)
 const _tu = [];           // texture u per column (reused)
+const NR = 4, _rows = [0, 0, 0, 0];   // rows: foot, chamfer top, chamfer top, foot
 const MARGIN = 0.022;     // a wrapped arris starts the texture just past its joint
 
 function arrisTop(o) { return o.top !== 'flat' && o.rise > 0.01 ? o.spring : o.y + o.h; }
@@ -29,11 +31,13 @@ function arrisTop(o) { return o.top !== 'flat' && o.rise > 0.01 ? o.spring : o.y
 /**
  * ctx: the face context of shell.lotSteps (B, sinks, fs, orn, rustic {v0, v1, joints, c},
  * fit, uvR, uMin, uMax); ops: the face's openings; ends: per face end (u = uMin, u = uMax)
- * null or {dir: [du, dw] along the exposed side from the corner, len: its exposed length}.
+ * null or {dir: [du, dw] along the exposed side from the corner, len: its exposed length};
+ * frame: the face's frame (set again after each yield). A generator.
  */
-export function rusticBlocks(ctx, face, ops, ends) {
+export function* rusticBlocks(ctx, face, ops, ends, frame) {
   const { B, sinks, fs, orn, rustic } = ctx;
   if (!rustic || !rustic.joints.length || !ctx.uvR) return;
+  let ts = performance.now();
   const s = sinks.rough;
   const fit = ctx.fit ? ctx.fit.rough : null;
   const J = rustic.joints.slice().sort((a, b) => a - b), c = rustic.c;
@@ -41,6 +45,13 @@ export function rusticBlocks(ctx, face, ops, ends) {
   const plinthTop = (u) => face.groundAt(u) + orn.plinthH + 0.005;
   const seed = fs.seed | 0;
   for (let i = 0; i <= J.length; i++) {
+    // (a generator: a step ends after about SLICE ms; the frame is set again after it)
+    if (i && performance.now() - ts > SLICE) {
+      s.uvx = null; B.run = null; B.shade = null;
+      yield;
+      B.frameFromLot(frame);
+      ts = performance.now();
+    }
     const ca = i === 0 ? -Infinity : J[i - 1] + c;
     const cb = i === J.length ? rustic.v1 - 0.005 : J[i] - c;
     const vm = (Math.max(ca, cb - 0.6) + cb) / 2;
@@ -115,7 +126,8 @@ function courseRuns(face, ops, orn, vm, uMin, uMax, ends, plinthTop, i) {
 /**
  * One proud block over [ua, ub] × [vb, vt]: a polyline across it (seen from above),
  * wrapping the arris at either end (e0 at ua, e1 at ub: {u, sgn, r, Lr, R}), lofted
- * through five rows (foot, chamfer, middle, chamfer, foot). h: the block's own hash.
+ * through four rows (foot, chamfer top, chamfer top, foot; the face uneven by a few
+ * millimetres). h: the block's own hash.
  */
 function block(B, s, fs, ua, ub, vb, vt, e0, e1, h) {
   const p = 0.026 + 0.012 * h;                     // face proud of the wall
@@ -169,21 +181,21 @@ function block(B, s, fs, ua, ub, vb, vt, e0, e1, h) {
     tu[k] = k < A ? tA + (aA - a) : k > Z ? tB - (a - aB) : tA + ((tB - tA) * (a - aA)) / Math.max(1e-6, aB - aA);
   }
 
-  const rows = [vb, vb + ch, (vb + vt) / 2, vt - ch, vt];
-  const prow = [0, 1, 1, 1, 0];
+  const rows = _rows;
+  rows[0] = vb; rows[1] = vb + ch; rows[2] = vt - ch; rows[3] = vt;
   // positions (u, v, w) per vertex, the face roughened: interior points move ±6 mm
   const P = _nrm;
   P.length = 0;
-  for (let r = 0; r < 5; r++) {
+  for (let r = 0; r < NR; r++) {
     for (let k = 0; k < nc; k++) {
-      const o = k * 7, kk = cols[o + 5] * prow[r];
-      const j = kk > 0 && r === 2 && k > 0 && k < nc - 1 ? (hash3(h * 1e6, k, 17) - 0.5) * 0.012 : 0;
+      const o = k * 7, kk = r === 0 || r === NR - 1 ? 0 : cols[o + 5];
+      const j = kk > 0 && k > 0 && k < nc - 1 ? (hash3(h * 1e6, k, 17 + r) - 0.5) * 0.012 : 0;
       const t = kk * (1 + j / p);
       P.push(cols[o + 2] + (cols[o] - cols[o + 2]) * t, rows[r], cols[o + 3] + (cols[o + 1] - cols[o + 3]) * t, 0, 0, 0);
     }
   }
   // vertex normals: area-weighted sum of the adjacent quads' normals
-  for (let r = 0; r < 4; r++) {
+  for (let r = 0; r < NR - 1; r++) {
     for (let k = 0; k < nc - 1; k++) {
       const a = (r * nc + k) * 6, b = a + 6, d = a + nc * 6;
       const ax = P[b] - P[a], ay = P[b + 1] - P[a + 1], az = P[b + 2] - P[a + 2];
@@ -201,9 +213,9 @@ function block(B, s, fs, ua, ub, vb, vt, e0, e1, h) {
     out[0] *= k; out[1] *= k; out[2] *= k;
   };
   _R = Math.min(e0 ? e0.R : 99, e1 ? e1.R : 99);
-  s.reserve(nc * 5, (nc - 1) * 4 * 6);
+  s.reserve(nc * NR, (nc - 1) * (NR - 1) * 6);
   const base = s.vc;
-  for (let r = 0; r < 5; r++) {
+  for (let r = 0; r < NR; r++) {
     for (let k = 0; k < nc; k++) {
       const q = (r * nc + k) * 6;
       let nx = P[q + 3], ny = P[q + 4], nz = P[q + 5];
@@ -212,7 +224,7 @@ function block(B, s, fs, ua, ub, vb, vt, e0, e1, h) {
       B.v(s, P[q], P[q + 1], P[q + 2], nx, ny, nz, tu[k], P[q + 1]);
     }
   }
-  for (let r = 0; r < 4; r++) {
+  for (let r = 0; r < NR - 1; r++) {
     for (let k = 0; k < nc - 1; k++) {
       const a = base + r * nc + k;
       B.quadIdx(s, a, a + 1, a + 1 + nc, a + nc);

@@ -129,8 +129,9 @@ float lnFbm( vec2 p, float fp, int oct ) {
 
 // Rail cross-section bands in rail-local x (+ towards the gauge side), matching the 3D
 // profile (constants.js RAIL_PROFILE) and the finishes the rail.head texture lays out:
-// mortar | field seal | oxidised field bevel | polished running band | flange-polished
-// gauge corner | groove | dusty guard lip | gauge seal | mortar
+// mortar | field seal | field bevel (steel under a light oxide film) | worn steel
+// shoulder | polished running band | worn steel shoulder | flange-polished gauge corner |
+// groove | dusty guard lip | gauge seal | mortar
 //
 // Footprint-aware: every band is integrated over the pixel footprint (box filter of the
 // lateral footprint w, which is measured perpendicular to the rail on screen, so oblique
@@ -181,7 +182,7 @@ const RAIL_FRAG = /* glsl */`
   float wSeal = cSeal * inv, wCorner = cCorner * inv, wBand = cBand * inv, wShoulder = cShoulder * inv, wGauge = cGauge * inv;
   float wGroove = cGroove * inv, wLip = cLip * inv, wPave = cPave * inv, wGrout = cGrout * inv;
   vec3 dSeal = ST_DSEAL;                                                   // bitumen seal
-  vec3 aOx = vec3( 0.15, 0.115, 0.085 ) * ( 0.85 + 0.3 * wear );          // oxide bevel, metal 0.4
+  vec3 aOx = vec3( 0.255, 0.232, 0.205 ) * ( 0.85 + 0.3 * wear );         // field bevel: steel under a light oxide film, metal 0.6
   vec3 aBand = vec3( 0.5, 0.495, 0.485 ) * ( 0.94 + 0.1 * wear );         // satin running band, metal 1
   // the crowned head's shoulders tilt a few degrees off level: at the grazing angles of
   // a street view they mirror the paving rather than the sky, so read duller
@@ -195,8 +196,8 @@ const RAIL_FRAG = /* glsl */`
   vec3 dGrout = ST_DGROUT;                                                  // mortar bed
   vec3 dPave = ST_DPAVE;                                                    // brake-dusted setts beside it
   vec3 f04 = vec3( 0.04 );
-  lnD = dSeal * wSeal + aOx * ( 0.6 * wCorner ) + aShoulder * ( 0.25 * wShoulder ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
-  vec3 fOx = mix( f04, aOx, 0.4 ), fDust = mix( f04, aDust, 0.4 ) * 0.97;
+  lnD = dSeal * wSeal + aOx * ( 0.4 * wCorner ) + aShoulder * ( 0.25 * wShoulder ) + aDust * ( 0.6 * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
+  vec3 fOx = mix( f04, aOx, 0.6 ), fDust = mix( f04, aDust, 0.4 ) * 0.97;
   vec3 fSteel = fOx * wCorner + aBand * wBand + mix( f04, aShoulder, 0.75 ) * wShoulder + aGauge * ( 0.95 * wGauge ) + fDust * wLip;
   vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.15 * wGroove );
   lnF = fSteel + fOther;

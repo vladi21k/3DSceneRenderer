@@ -14,7 +14,15 @@ import { MORTAR_ALBEDO } from './constants.js';
  *  the steel in the far-field line overlay (lines.js). Both are matched to the
  *  photographs: in shade the running band reads 1.1-1.3x the setts beside it, the
  *  flangeway a dark slot. */
-export const SHEEN = { uStSheen: { value: new THREE.Vector2(0.7, 1.45) } };
+export const SHEEN = {
+  uStSheen: { value: new THREE.Vector2(0.7, 1.45) },
+  // the film of dust over the head (brake dust, grit and paving dust worked into it by
+  // the wheels): rgb = its albedo (linear), w = the share of the head it covers. Under a
+  // high sun a clean polished head would mirror the sun's lobe at 1.4-1.7x the setts
+  // beside it; in the photographs a sunlit head reads 1.1-1.3x them, a light grey
+  // rather than a chrome line, while in shade the sky-slot sheen still lifts it.
+  uStDust: { value: new THREE.Vector4(0.15, 0.145, 0.14, 0.45) },
+};
 /** envMapIntensity of the 3D rail.head variants (the resolved head; its texture band is
  *  wider and its normals crowned, so it needs less than the overlay's pre-filtered
  *  bands to read the same). */
@@ -75,6 +83,21 @@ export function patchRailSheen(m, mode = 'uv') {
     sh.uniforms.uStSheen = SHEEN.uStSheen;
     let along;
     if (mode === 'uv') {
+      // the dust film (see SHEEN.uStDust): a dull dielectric over part of the steel
+      sh.uniforms.uStDust = SHEEN.uStDust;
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform vec4 uStDust;')
+        .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
+{
+  float stDc = uStDust.w;
+  vec3 stDa = uStDust.rgb;
+  #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+    stDa *= vColor.g;      // cavity AO of the swept profile
+  #endif
+  material.diffuseContribution = mix( material.diffuseContribution, stDa, stDc );
+  material.specularColorBlended = mix( material.specularColorBlended, vec3( 0.04 ), stDc );
+  material.roughness = mix( material.roughness, 0.85, stDc );
+}`);
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vStUv;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStUv = uv;');
@@ -96,7 +119,7 @@ export function patchRailSheen(m, mode = 'uv') {
       .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;')
       .replace('#include <lights_fragment_maps>', SHEEN_APPLY(along));
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen-${mode}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen2-${mode}`; };
   m.needsUpdate = true;
   return m;
 }

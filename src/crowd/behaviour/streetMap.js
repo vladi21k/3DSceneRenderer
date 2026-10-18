@@ -56,6 +56,8 @@ export class StreetMap {
     // results of the per-agent queries (…A(a, …)): a number in a typed array is never boxed,
     // one returned from a call that is not inlined is
     this.R = new Float64Array(4);
+    // a target spot for spotQuery: Q[0] s, Q[1] |d| in; Q[2] |d| out of the footprints, Q[3] wall out
+    this.Q = new Float64Array(4);
   }
 
   idx(s) { const w = this.route.wrap(s); return Math.min(this.N - 1, Math.floor(w)); }
@@ -139,6 +141,22 @@ export class StreetMap {
   // ---------------------------------------------------------------- obstacles
   _circles() {
     const circ = this.layout.obstacles.filter((o) => o.kind === 'circle' && o.r > 0);
+    // small free-standing rects other modules register (A-frame boards, goods stands: layout
+    // addObstacles), as rows of circles along their long side; café terraces, platforms and
+    // shelters are handled on their own below
+    for (const o of this.layout.obstacles) {
+      if (o.kind !== 'rect' || 'cafe' in o || 'platform' in o || 'shelter' in o) continue;
+      const ls = Math.abs(o.s1 - o.s0), ld = Math.abs(o.d1 - o.d0);
+      if (!(ls > 0) || !(ld > 0) || ls > 12 || ld > 6) continue;
+      const sm = (o.s0 + o.s1) / 2, dm = (o.d0 + o.d1) / 2, along = ls >= ld, len = along ? ls : ld, r = (along ? ld : ls) / 2;
+      const n = Math.max(1, Math.ceil(len / (1.4 * r)));
+      for (let i = 0; i < n; i++) {
+        const u = n === 1 ? 0 : (i / (n - 1) - 0.5) * (len - 2 * r);
+        // (radius to the rect's corners between the circles)
+        const rr = Math.min(Math.hypot(r, len / (2 * n)), r * 1.42);
+        circ.push({ kind: 'circle', s: along ? sm + u : sm, d: along ? dm : dm + u, r: rr, rect: true });
+      }
+    }
     // platform shelters (a rect in the layout): their glazed back wall with the bench, the end
     // screen and the advertising case, as rows of circles (people stand in front, under the roof)
     for (const f of this.layout.furniture) {
@@ -313,6 +331,28 @@ export class StreetMap {
     if (rb >= 0) this.rq[n++] = this.rects[rb];
     this.rqN = n;
     return n;
+  }
+  /** For the target spot (s, |d|) in Q[0], Q[1] on `side`: Q[2] = clearOfRects(s, side, |d|, rad)
+   *  (the nearest |d| outside a café / platform footprint, -1 when not inside one), Q[3] = wallAt(s,
+   *  side) (99 inside a cross street opening). Numbers in and out through Q: nothing to box. */
+  spotQuery(side, rad) {
+    const Q = this.Q, s = Q[0], ad = Q[1], L = this.L, si = side > 0 ? 1 : 0;
+    let w = s % L; if (w < 0) w += L; if (w >= L) w -= L;
+    let k = Math.floor(w); if (k > this.N - 1) k = this.N - 1;
+    const k1 = k + 1 < this.N ? k + 1 : 0;
+    Q[2] = -1;
+    for (let e = 0; e < 2; e++) {
+      const ri = e ? this.rectB[si][k] : this.rectA[si][k];
+      if (ri < 0) continue;
+      const r = this.rects[ri];
+      let ds = w - r.s0;
+      if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
+      if (ds < -rad || ds > r.len + rad || ad < r.inner - rad || ad > r.outer + rad) continue;
+      Q[2] = r.outer >= OPEN || ad - (r.inner - rad) < r.outer + rad - ad ? r.inner - rad : r.outer + rad;
+      break;
+    }
+    const f = this.facade[si];
+    Q[3] = this.mouth[si][k] >= 0 ? 99 : (f[k] < f[k1] ? f[k] : f[k1]) - WALL_GAP;
   }
   /** rectDS(r, a.s) → R[2]. */
   rectDSA(r, a) {

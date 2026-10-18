@@ -129,7 +129,7 @@ void surface(vec2 m, inout Surf s) {
   // them down: surface.js PAINT)
   float chalk = smoothstep(0.2, 0.75, wearM * (0.5 + 0.5 * fbm2(m, vec2(4.0, 12.0), 3, 0.5, 421u)) * 1.6);
   float fl = 0.5 + 0.5 * fbm2(warp(m, 60.0, 0.002, 416u), vec2(18.0, 70.0), 4, 0.6, 417u);
-  float th = 0.8 - 0.12 * wearM;
+  float th = 0.815 - 0.12 * wearM;
   float chip = smoothstep(th, th + 0.01, fl);
   float lip = smoothstep(th - 0.025, th, fl) * (1.0 - chip);
   float deep = smoothstep(th + 0.008, th + 0.016, fl);

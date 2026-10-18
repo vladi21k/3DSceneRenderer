@@ -232,6 +232,34 @@ def alpha_detail(path, size, boost=(0.08, 0.55)):
     return np.stack([g, g, g, a2], -1)
 
 
+def hair_detail(path, size):
+    """Hair cards: like alpha_detail, but the lighting painted into the texture (highlight bands,
+    shading across the head) is taken out (luminance over its local mean, ~2.5 % of the layer), so the
+    runtime's own strand highlights and occlusion light the hair; only strand-scale detail and a
+    little of the broad variation stay. Coverage keeps its strands."""
+    im = load(path, size, mode='RGBA')
+    a = im[..., 3]
+    lin = srgb_to_lin(im[..., :3])
+    L = lum(lin)
+    op = a > 0.35
+    w = op.astype(np.float32)
+    sig = size * 0.025
+    mean = ndimage.gaussian_filter(L * w, sig) / np.maximum(ndimage.gaussian_filter(w, sig), 1e-3)
+    med = np.median(L[op]) if op.any() else 0.2
+    local = np.clip(L / np.maximum(mean, 1e-4), 0.35, 1.9)
+    broad = np.clip(mean / max(1e-4, med), 0.6, 1.5) ** 0.2
+    detail = np.clip(local * broad, 0.3, 2.0)
+    # (strand contrast a little lower: the painted strands are high contrast to read without lighting)
+    detail = 1.0 + (detail - 1.0) * 0.8
+    v = np.clip(0.5 * detail, 0, 1)
+    v = push_pull(v[..., None], ndimage.binary_dilation(a > 0.3, iterations=1))[..., 0]
+    lo, hi = 0.08, 0.55
+    a2 = np.clip((a - lo) / (hi - lo), 0, 1)
+    a2 = a2 * a2 * (3 - 2 * a2)
+    g = lin_to_srgb(v)
+    return np.stack([g, g, g, a2], -1)
+
+
 def beard_tile(size, style, seed=11):
     """Beard shell: v = how deep inside the beard (row 0 = v 1). Coverage rises smoothly with v (the
     shader breaks it into strand clumps); the colour carries fine strands along the growth direction."""
@@ -310,11 +338,14 @@ def main():
     for key in [k for k in keys if k.startswith('hair:')]:
         name = key.split(':')[1]
         fs = [f for f in glob.glob(f'{ASSETS}/hair/{name}/*diffuse.png')]
-        img = alpha_detail(fs[0], S)
+        img = hair_detail(fs[0], S)
         li, ni = add_layer(img, dict(key=key, kind='hair', type='detail', rough=ROUGH['hair'], alpha=True))
         remap[key] = dict(layer=li, rect=[0, 0, 1, 1], normal=-1, type='detail', alpha=True)
     # misc atlas layers: cells of 512 (shoes, hat, beard) and 256 (brows, lashes, eyes)
-    cells512 = [k for k in keys if k.startswith(('shoes:', 'hat:', 'beard:'))]
+    # (beard shells, 'beard:shell', are procedural at runtime: uv = (beard length, growth density), no texture)
+    for key in [k for k in keys if k == 'beard:shell']:
+        remap[key] = dict(layer=0, rect=[0, 0, 1, 1], normal=-1, type='color', alpha=True, raw=True)
+    cells512 = [k for k in keys if k.startswith(('shoes:', 'hat:', 'beard:')) and k != 'beard:shell']
     cells256 = [k for k in keys if k.startswith(('brow:', 'lash:', 'eye:', 'cap:'))]
     flatn = np.zeros((S, S, 3), np.float32)
     flatn[..., 0] = 0.5

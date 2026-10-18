@@ -63,6 +63,7 @@ const vegetation = {
       t.barkIdx = t.bark.map((set) => set.map((g) => put(barkGeoms, g)));
     }
     for (const sh of this.shrubs) sh.leafIdx = sh.leaves.map((g) => put(leafGeoms, g));
+    this.leafGeoms = leafGeoms; this.barkGeoms = barkGeoms;   // (farTree)
     this.pools = new VegetationPools(app);
     // foliage shadows: the cascade texels hold the leaf clumps of detail level 1 even in the
     // finest cascade (the same dapple, 40 % fewer cards)
@@ -222,6 +223,23 @@ const vegetation = {
     if (ground) marker.add(ground);
     return marker;
   },
+
+  /**
+   * For the far field beyond the streamed range: layout tree t as vegetation draws it at
+   * its coarsest detail (the level its far trees already show inside the streamed range,
+   * so the hand-over matches). {leaf, bark: shared BufferGeometry (never dispose), matrix:
+   * world Matrix4, leafTint, barkTint: Color (instance colours), template: id}, or null.
+   * Draw them with farMaterials() {leaf, bark} on InstancedMeshes (instanceMatrix +
+   * instanceColor); about 400-3,800 triangles a tree.
+   */
+  farTree(t) {
+    const P = this.plan && this.plan.get(t);
+    if (!P) return null;
+    return { leaf: this.leafGeoms[P.T.leafIdx[2]], bark: this.barkGeoms[P.T.barkIdx[P.mirror][2]], matrix: P.matrix, leafTint: P.leafTint, barkTint: P.barkTint, template: P.T.tpl.id };
+  },
+
+  /** Materials for farTree() geometry (registered and tracked). */
+  farMaterials() { return { leaf: this.mats.leafFar, bark: this.mats.bark }; },
 
   update(dt, app) {
     // leaf coverage mode follows the post chain's scene target (its MSAA sample count, 0 = none)

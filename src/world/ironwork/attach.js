@@ -1044,7 +1044,7 @@ function dishMountTemplate() {
  *  LNB as a box (its 2 cm arm is sub-pixel there), the bracket. Same frame, size and
  *  colours as the near one. */
 function dishFarTemplate() {
-  const W = new GeoWriter(), { RX, RY, D, Z0, T } = DISH, seg = 10;
+  const W = new GeoWriter(), { RX, RY, D, Z0, T } = DISH, seg = 14;
   W.color(0.74, 0.735, 0.71);
   const c = [W.v(0, 0, Z0, 0, 0, 1, 0, 0, 0.93), W.v(0, 0, Z0 - T, 0, 0, -1, 0, 0, 0.8)], ring = [];
   for (let j = 0; j <= seg; j++) {

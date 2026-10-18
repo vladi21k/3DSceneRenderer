@@ -369,8 +369,10 @@ export class Tram {
   _updateStop() {
     const L = this.route.length;
     let best = null, bestD = Infinity;
-    for (const st of this.layout.stations) {
-      let d = this.route.wrap(st.stopS - this.s);
+    const S = this.layout.stations;
+    for (let i = 0; i < S.length; i++) {
+      const st = S[i];
+      let d = ((st.stopS - this.s) % L + L) % L;          // (route.wrap, inline: no call per station)
       if (d > L - 60) d -= L;                         // up to 60 m behind: negative
       if (st.id === this.served || st.id === this.skipped) {
         // ignored until the cab has left it behind
@@ -628,7 +630,8 @@ export class Tram {
       if (v <= 0 && aNet <= 0) { aNet = 0; this.speed = 0; continue; }   // brakes hold / no roll-back
       let nv = v + aNet * h;
       if (nv < 0) { aNet = -v / h; nv = 0; }
-      this.s = this.route.wrap(this.s + (v + nv) * 0.5 * h);
+      const L = this.route.length, sn = this.s + (v + nv) * 0.5 * h;
+      this.s = sn >= 0 && sn < L ? sn : ((sn % L) + L) % L;
       this.speed = nv;
     }
     this.accel = aNet;

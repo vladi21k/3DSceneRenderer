@@ -212,13 +212,21 @@ export function* lotSteps(B, lot, ends, q, metas) {
     B.mark('wall');
     yield;
     B.frameFromLot(F.frame);
+    // (a step ends once it has taken SLICE ms: wide arched shopfronts cost several times
+    // a plain window)
+    let ts = performance.now();
     for (let i = 0; i < ops.length; i++) {
       openingMasonry(ctx, face, ops[i]);
-      if (i % 3 === 2) { B.mark('openings'); yield; B.frameFromLot(F.frame); }
+      if (i < ops.length - 1 && performance.now() - ts > SLICE) { B.mark('openings'); yield; B.frameFromLot(F.frame); ts = performance.now(); }
     }
     B.mark('openings');
     // proud rock-faced blocks at the arrises of the rusticated ground floor
-    if (rustic && q.rustic) { rusticBlocks(ctx, face, ops, F.main ? rEnds : null); B.mark('rustic'); }
+    if (rustic && q.rustic) {
+      yield;
+      B.frameFromLot(F.frame);
+      yield* rusticBlocks(ctx, face, ops, F.main ? rEnds : null, F.frame);
+      B.mark('rustic');
+    }
 
     // pilasters between bays (giant order over the upper floors)
     B.shade = (u, v, w, nu, nv, nw, out) => trimColor(fs, u, v, nv, out, 1.04);
@@ -380,6 +388,8 @@ export function* lotSteps(B, lot, ends, q, metas) {
 
 // the openings' dark boxes reach recess + backDepth (≤ 0.45 + 1.2) behind the wall face
 const BACKSTOP = 1.7;
+// time slice of the openings steps (ms)
+const SLICE = 0.3;
 
 /**
  * Quoin column start (the first bed joint above the plinth or the rusticated ground

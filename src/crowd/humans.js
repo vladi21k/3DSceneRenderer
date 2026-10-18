@@ -118,8 +118,13 @@ const humans = {
       return;
     }
     this.cast = cast;
-    // version 2 casts: skin decals (beard growth, hair-coloured scalp), inner hem faces, beard shells
-    this.v2 = (cast.doc.version | 0) >= 2 && Array.isArray(cast.doc.features) && cast.doc.features.includes('decal');
+    // version 2 casts: skin decals (beard growth, hair-coloured scalp), inner hem faces, beard shells;
+    // beardBase (version 3): the beard part is the base the strand shells grow from (beardShellsFromBase)
+    const feats = Array.isArray(cast.doc.features) ? cast.doc.features : [];
+    this.v2 = (cast.doc.version | 0) >= 2 && feats.includes('decal');
+    this.beardBase = feats.includes('beardBase');
+    // eyebrows drawn on the skin from the brow cards' line (humans_brows=0: the cards themselves)
+    this.browsOnSkin = app.params.num('humans_brows', 1) > 0;
     this.initMs = { load: Math.round(performance.now() - tLoad) };
     const tBake = performance.now();
     this.bindPose = app.params.num('humans_bind', 0) > 0;
@@ -148,8 +153,11 @@ const humans = {
         if (y < Infinity) c.hemY = y; }
       // (casts with skin decals carry beard volume shells of their own)
       hatBrim(c);
-      beardFade(c, this.v2 ? 0.015 : 0.035);
-      if (!this.v2) beardShells(c);
+      eyeRadius(c);
+      if (this.browsOnSkin) browLine(c);
+      beardFade(c, this.beardBase ? 0.01 : this.v2 ? 0.015 : 0.035);
+      if (this.beardBase) beardShellsFromBase(c);
+      else if (!this.v2) beardShells(c);
       const parts = buildParts(c);
       B.fit = parts.fit; delete parts.fit;
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
@@ -177,7 +185,8 @@ const humans = {
     this.group.name = 'humans';
     app.scene.add(this.group);
     const { mat, depth, uniforms } = makeFigureMaterials({ bones: this.boneTex, look: this.lookTex, albedo: cast.albedo, normal: cast.normal },
-      cast.layerRough, app.materials, app.params.num('humans_dbg', 0), this.v2);
+      cast.layerRough, app.materials, app.params.num('humans_dbg', 0), this.v2,
+      { beardBase: this.beardBase, brows: this.browsOnSkin && cast.chars.some((c) => c.brow) });
     app.materials.register('humans.figures', mat);
     app.materials.track(mat);
     this.uniforms = uniforms;
@@ -890,6 +899,142 @@ function beardShells(c) {
     c.lods[l] = { ...L, start, count: o - start };
   }
   Object.assign(raw, { n, pos, nrm, uv, bi, bw, tex, index: idx });
+}
+
+/** Eyeball radius (rest pose, m) from the eye vertices around the right eye's centre: c.eyeR. */
+function eyeRadius(c) {
+  const raw = c.raw, T = raw.tex, P = raw.pos, e = c.info.eyeR;
+  c.eyeR = 0;
+  if (!e) return;
+  let s = 0, n = 0;
+  const L0 = c.lods[0];
+  for (let t = L0.start; t < L0.start + L0.count; t++) {
+    const v = raw.index[t];
+    if (T[v * 4 + 2] !== 4 || P[v * 3] < 0) continue;
+    s += Math.hypot(P[v * 3] - e[0], P[v * 3 + 1] - e[1], P[v * 3 + 2] - e[2]); n++;
+  }
+  if (n > 8) c.eyeR = s / n;
+}
+
+/**
+ * Eyebrows drawn on the skin: the line of the brow cards (both sides folded onto |x|): the centre
+ * line y = a + b |x| + c x^2 (least squares over bins along the brow), the half height at its inner
+ * and outer ends (t0, t1, widened a little: the card's painted brow fills most of it), its x range and
+ * depth -> c.brow. The brow cards' triangles leave every LOD (the shader draws the brows).
+ */
+function browLine(c) {
+  const raw = c.raw, T = raw.tex, P = raw.pos, I = raw.index;
+  const L0 = c.lods[0];
+  const pts = [];
+  const seen = new Uint8Array(raw.n);
+  for (let t = L0.start; t < L0.start + L0.count; t++) {
+    const v = I[t];
+    if (T[v * 4 + 2] !== 2 || (T[v * 4 + 3] & 2) || seen[v]) continue;
+    seen[v] = 1;
+    pts.push([Math.abs(P[v * 3]), P[v * 3 + 1], P[v * 3 + 2]]);
+  }
+  c.brow = null;
+  if (pts.length < 12) return;
+  let x0 = Infinity, x1 = -Infinity, z = 0;
+  for (const p of pts) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z += p[2]; }
+  z /= pts.length;
+  const NB = 8, bins = Array.from({ length: NB }, () => ({ lo: Infinity, hi: -Infinity }));
+  for (const p of pts) {
+    const b = Math.min(NB - 1, Math.floor(((p[0] - x0) / Math.max(1e-4, x1 - x0)) * NB));
+    bins[b].lo = Math.min(bins[b].lo, p[1]); bins[b].hi = Math.max(bins[b].hi, p[1]);
+  }
+  // least squares y = a + b x + c x^2 through the bins' centres, and a linear half height
+  const S = new Float64Array(9), R = new Float64Array(3);
+  let tw = 0, ta = 0, tb = 0, tx = 0, txx = 0;
+  for (let i = 0; i < NB; i++) {
+    const B = bins[i];
+    if (B.hi < B.lo) continue;
+    const x = x0 + ((i + 0.5) / NB) * (x1 - x0), y = 0.5 * (B.lo + B.hi), h = 0.5 * (B.hi - B.lo);
+    const f = [1, x, x * x];
+    for (let r = 0; r < 3; r++) { R[r] += f[r] * y; for (let q = 0; q < 3; q++) S[r * 3 + q] += f[r] * f[q]; }
+    tw++; ta += h; tb += h * x; tx += x; txx += x * x;
+  }
+  if (tw < 4) return;
+  const m = new THREE.Matrix3().fromArray(Array.from(S)).invert().toArray();
+  const a = m[0] * R[0] + m[3] * R[1] + m[6] * R[2], b = m[1] * R[0] + m[4] * R[1] + m[7] * R[2], cc = m[2] * R[0] + m[5] * R[1] + m[8] * R[2];
+  const den = tw * txx - tx * tx;
+  const k1 = den !== 0 ? (tw * tb - tx * ta) / den : 0, k0 = (ta - k1 * tx) / tw;
+  // (the strip is a little taller than the painted brow; brows 6-10 mm tall at the head, 3 mm at the tail)
+  const hs = c.info.H / 1.76;
+  const t0 = THREE.MathUtils.clamp((k0 + k1 * x0) * 1.15, 0.0026 * hs, 0.0055 * hs);
+  const t1 = THREE.MathUtils.clamp((k0 + k1 * x1) * 1.0, 0.0014 * hs, 0.003 * hs);
+  c.brow = { x0, x1, a, b, c: cc, t0, t1, z };
+  // the brow cards leave every LOD
+  for (let l = 0; l < c.lods.length; l++) {
+    const L = c.lods[l];
+    let w = L.start;
+    for (let t = L.start; t < L.start + L.count; t += 3) {
+      if (T[I[t] * 4 + 2] === 2) continue;
+      I[w] = I[t]; I[w + 1] = I[t + 1]; I[w + 2] = I[t + 2]; w += 3;
+    }
+    for (let t = w; t < L.start + L.count; t++) I[t] = I[w - 1] ?? 0;
+    c.lods[l] = { ...L, count: w - L.start };
+  }
+}
+
+/**
+ * Beard strand shells (cast feature beardBase): copies of the beard base's vertices, one per shell, the
+ * shell's index in flags bits 4-7 (h = index / 15: the vertex shader grows it out along the normal by
+ * h x the beard's length there, uv.x). LOD 0 gets up to 15 shells (fewer for a short beard), LOD 1
+ * three, LOD 2 one; the base itself (and its back faces) is not drawn.
+ */
+function beardShellsFromBase(c) {
+  const raw = c.raw, T = raw.tex, I = raw.index, UV = raw.uv;
+  let maxLen = 0;
+  for (let v = 0; v < raw.n; v++) if (T[v * 4 + 2] === 11) maxLen = Math.max(maxLen, (UV[v * 2] / 65535) * 0.04);
+  const per = [], used = new Map(), list = [];
+  // shells per LOD (indices 1..15)
+  const nS = Math.max(4, Math.min(15, Math.round(maxLen * 100 * 6)));
+  const sets = [[], [5, 10, 15], [10], []];
+  for (let k = 1; k <= nS; k++) sets[0].push(Math.round((k / nS) * 15));
+  for (let l = 0; l < c.lods.length; l++) {
+    const L = c.lods[l], tris = [];
+    for (let t = L.start; t < L.start + L.count; t += 3) {
+      const a = I[t];
+      if (T[a * 4 + 2] !== 11 || (T[a * 4 + 3] & 2)) continue;
+      tris.push(I[t], I[t + 1], I[t + 2]);
+      for (let k = 0; k < 3; k++) if (!used.has(I[t + k])) { used.set(I[t + k], list.length); list.push(I[t + k]); }
+    }
+    per.push(tris);
+  }
+  if (!list.length) return;
+  const shells = [...new Set(sets.flat())].sort((x, y) => x - y);
+  const sIndex = new Map(shells.map((s, i) => [s, i]));
+  const n0 = raw.n, n = n0 + list.length * shells.length;
+  const grow = (A, k) => { const B = new A.constructor(n * k); B.set(A.subarray(0, n0 * k)); return B; };
+  const pos = grow(raw.pos, 3), nrm = grow(raw.nrm, 4), uv = grow(raw.uv, 2), bi = grow(raw.bi, 4), bw = grow(raw.bw, 4), tex = grow(raw.tex, 4);
+  for (let si = 0; si < shells.length; si++) {
+    for (let j = 0; j < list.length; j++) {
+      const v = list[j], w = n0 + si * list.length + j;
+      for (let i = 0; i < 3; i++) pos[w * 3 + i] = raw.pos[v * 3 + i];
+      for (let i = 0; i < 4; i++) { nrm[w * 4 + i] = raw.nrm[v * 4 + i]; bi[w * 4 + i] = raw.bi[v * 4 + i]; bw[w * 4 + i] = raw.bw[v * 4 + i]; tex[w * 4 + i] = raw.tex[v * 4 + i]; }
+      tex[w * 4 + 3] = (raw.tex[v * 4 + 3] & 15) | (shells[si] << 4);
+      uv[w * 2] = raw.uv[v * 2]; uv[w * 2 + 1] = raw.uv[v * 2 + 1];
+    }
+  }
+  // the index list again: each LOD without its beard base, followed by its shells (outermost last)
+  let extra = 0;
+  for (let l = 0; l < c.lods.length; l++) extra += per[l].length * sets[l].length;
+  const idx = new Uint32Array(I.length + extra);
+  let o = 0;
+  for (let l = 0; l < c.lods.length; l++) {
+    const L = c.lods[l], start = o;
+    for (let t = L.start; t < L.start + L.count; t += 3) {
+      if (T[I[t] * 4 + 2] === 11) continue;
+      idx[o++] = I[t]; idx[o++] = I[t + 1]; idx[o++] = I[t + 2];
+    }
+    for (const s of sets[l]) {
+      const base = n0 + sIndex.get(s) * list.length;
+      for (const v of per[l]) idx[o++] = base + used.get(v);
+    }
+    c.lods[l] = { ...L, start, count: o - start };
+  }
+  Object.assign(raw, { n, pos, nrm, uv, bi, bw, tex, index: idx.subarray(0, o) });
 }
 
 /**

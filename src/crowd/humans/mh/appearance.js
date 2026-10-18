@@ -61,6 +61,16 @@ const HAIR = {
 };
 
 const CLASS_W = [['child', 10], ['teen', 9], ['adult', 66], ['old', 15]];
+// iris colours (sRGB): the street's crowd is mostly brown-eyed (dark brown ~65 %, hazel / green ~20 %,
+// blue / grey ~15 %; almost all brown for African and East Asian faces)
+const IRIS = {
+  brown: P([['#3d2416', 4], ['#4e2f1b', 5], ['#5e3a20', 4], ['#6e4628', 2]]),
+  hazel: P([['#7a6030', 3], ['#6b6a36', 2], ['#5d6a3d', 2], ['#8a6a34', 2]]),
+  light: P([['#6a88a2', 3], ['#7d93a6', 2], ['#8d9aa0', 2], ['#5a7892', 2]]),
+};
+// shoe tints (multiplied with the shoe's own colours): sneakers come in many colours, leather a few shades
+const SNEAKER_TINT = P([['#ffffff', 9], ['#c8c8c4', 3], ['#e9dcc4', 2], ['#3a3a3c', 3], ['#2b3550', 2], ['#7f8a96', 2], ['#b85a4a', 1]]);
+const LEATHER_TINT = P([['#ffffff', 6], ['#d9c2a8', 2], ['#8a7a6a', 2], ['#5a4a40', 1]]);
 
 const isDress = (char) => {
   const o = char.outfit;
@@ -111,7 +121,7 @@ function vary(r, char, kidTop) {
   // garments: keep the character's own colour now and then, otherwise a palette colour, slightly jittered
   for (const region of ['top', 'bottom']) {
     const pal = garmentPalette(o[region], region, char);
-    if (!pal || r.chance(0.25)) continue;
+    if (!pal || r.chance(0.1)) continue;
     const j = r.range(0.92, 1.06);
     t[region] = r.weighted(pal).map((x) => x * j);
   }
@@ -119,7 +129,7 @@ function vary(r, char, kidTop) {
   if (suitOf(char, 'top') === 'male_casualsuit05') t.top2 = r.weighted(SHIRT).slice();
   else if (suitOf(char, 'top') !== 'male_elegantsuit01') t.top2 = t.top.slice();
   // hair: another shade of the same family; brows and beard follow
-  if (char.tints.hair && r.chance(0.7)) {
+  if (char.tints.hair && r.chance(0.85)) {
     const h = r.weighted(HAIR[hairFamily(char.tints.hair)]);
     t.hair = h.slice();
     t.brows = h.map((x) => x * 0.95);
@@ -209,6 +219,14 @@ function finish(seed, r, cast, index, toddler = false) {
   t.strap = bag === BAG.SHOPPING ? t.bag.map((x) => x * 0.8) : t.bag.map((x) => x * 0.55);
   t.prop = r.weighted(PHONES).slice();
   t.screen = [1, 1, 1];
+  // eyes: the iris colour (drawn over the eye texture's own)
+  const anc = char.anc || [1, 0, 0];
+  const dark = anc[1] > 0.5 || anc[2] > 0.5 || char.tone === 'brown' || char.tone === 'deep';
+  const ik = r.weighted(dark ? [['brown', 96], ['hazel', 4]] : [['brown', 62], ['hazel', 22], ['light', 16]]);
+  t.eyes = r.weighted(IRIS[ik]).map((x) => x * r.range(0.9, 1.1));
+  // shoes: another colour of the same model now and then
+  const sneaker = ['shoes02', 'shoes05', 'shoes06'].includes(char.outfit.shoes);
+  t.shoes = r.chance(sneaker ? 0.6 : 0.4) ? r.weighted(sneaker ? SNEAKER_TINT : LEATHER_TINT).slice() : [1, 1, 1];
   // denim bottoms in a non-denim colour (chinos, khaki shorts): calm detail
   const botSuit = bot ? bot.suit : '';
   const detailBottom = DENIM_SUITS.has(botSuit) && t.bottom && !denimLike(t.bottom) ? 0.32 : 0;
@@ -238,8 +256,14 @@ function finish(seed, r, cast, index, toddler = false) {
     sit, phoneWalk, skirtPart: skirt ? 1 : 0, longSkirt,
     hatPart: char.outfit.hat ? 1 : 0, beardPart: char.outfit.beard ? 1 : 0, hairPart: char.outfit.hair || '',
     topKind: kind, suit,
-    build: buildOf(char), seedT: ((seed >>> 0) % 997) / 997,
+    // (idle and sitting cycles start at a phase of their own: neighbours never move in unison)
+    build: buildOf(char), seedT: (Math.imul((seed >>> 0) ^ 0x9e3779b9, 0x85ebca6b) >>> 8) / 16777216,
     detailBottom, detailTop: 0, beardDens,
+    // the iris is drawn in t.eyes; eyebrows' opacity on the skin (men fuller, children and the elderly
+    // lighter, grey brows lighter still)
+    irisOn: true,
+    browOpacity: (child || cls === 'toddler' ? 0.5 : old ? 0.6 : teen ? 0.68 : female ? 0.74 : 0.86) *
+      (t.hair && 0.2126 * t.hair[0] + 0.7152 * t.hair[1] + 0.0722 * t.hair[2] > 0.12 ? 0.75 : 1),
   };
   return a;
 }
@@ -299,6 +323,7 @@ export function castCharacter(seed, cast, index, own = false) {
     for (const [k, v] of Object.entries(char.tints)) t[k] = v.slice();
     t.bag = [0.05, 0.05, 0.06]; t.strap = [0.03, 0.03, 0.03]; t.prop = [0.02, 0.02, 0.02]; t.screen = [1, 1, 1];
     a.tints = packTints(t);
+    a.irisOn = false;
     a.pattern = 0; a.scale = 1; a.height = char.height;
   }
   return a;

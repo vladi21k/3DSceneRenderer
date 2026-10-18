@@ -25,9 +25,15 @@ const _sw = settleShape({ fp0s: 0, fp0d: 0, fp1s: 0, fp1d: 0, fpR: 0, extLo: 0, 
 const RECT_R = AGENT_R * 0.6;  // body radius against café furniture / platform edges
 const PI = Math.PI;
 
-const len2 = (x, y) => Math.sqrt(x * x + y * y);
-/** Metres per unit of s at a's spot (offset lines on curves; out in a side street s is metric). */
-const kAt = (c, a) => (a.inSide ? 1 : Math.max(0.5, 1 + c.route.curvature(a.s) * a.d));
+/** Metres per unit of s at a's spot (offset lines on curves; out in a side street s is metric):
+ *  worked out once per agent step into a.km, with the route's curvature looked up again only
+ *  every half metre along it (it changes over tens of metres). */
+function setKm(c, a) {
+  if (a.inSide) { a.km = 1; return; }
+  if (!(a.kapS - a.s < 0.5 && a.s - a.kapS < 0.5)) { a.kap = c.route.curvature(a.s); a.kapS = a.s; }
+  const k = 1 + a.kap * a.d;
+  a.km = k > 0.5 ? k : 0.5;
+}
 const wrapAngle = (x) => { x = (x + PI) % (2 * PI); if (x < 0) x += 2 * PI; return x - PI; };
 
 export class Steering {
@@ -45,6 +51,7 @@ export class Steering {
     this.cGathered = false; this.cMoved = 0;   // _constrain: obstacle query still valid, and how far it moved since
     this.fs = 0; this.fd = 0;  // force of the last _social / _obstacles
     this._s0 = 0;
+    this.dtA = 0;              // the step of the agent being moved (s)
     this.ride = settleShape({ d: 0, v: 0, ang: 0.45, hard: false, alpha: 0, avoid: 0 });   // a cyclist's line and speed (cyclist.rideTarget)
     this.ride.alpha = null;
     settleShape(this, new Set(['frame', 'nx', 'ny']));
@@ -91,7 +98,7 @@ export class Steering {
     if (!a.mob && !this._propAround(a)) return;
     const agents = this.c.population.agents;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
-    const k = kAt(this.c, a);
+    const k = a.km;
     let done = 0;
     for (let x = Math.max(0, ix - 2); x <= Math.min(this.nx - 1, ix + 2); x++) {
       // (two cells either way: a stroller reaches 1.5 m ahead of its pusher)
@@ -133,13 +140,15 @@ export class Steering {
       a.timer -= dt; a.thinkT -= dt;
       if (a.mob && a.footW < 1) { footBlend(a, c.time); updateFoot(a); }
       // stepping off a bicycle to its left: a short sideways step, nothing else
-      if (a.stepT > 0) { this._stepOff(a, dt); continue; }
+      this.dtA = dt;   // (this agent's step: half-rate far agents take two frames at once)
+      if (a.stepT > 0) { setKm(c, a); this._stepOff(a); continue; }
       if (a.thinkT <= 0) think(c, a);
       if (!a.active) continue;
-      if (a.state === ST.SEATED) { this._settle(a, dt); continue; }
+      if (a.state === ST.SEATED) { this._settle(a); continue; }
+      setKm(c, a);
       if (a.timer <= 0 && (a.state === ST.STAND || a.state === ST.WAIT)) timerDone(c, a);
       if (!a.active) continue;
-      if (a.mob === MOB.CYCLE) { this._stepCycle(a, dt); continue; }
+      if (a.mob === MOB.CYCLE) { this._stepCycle(a); continue; }
       tram.preStep(a);
       desired(c, a, des);
       if (!a.active) continue;
@@ -159,7 +168,7 @@ export class Steering {
       }
       fs += a.afs; fd += a.afd;
       a.vs += fs * dt; a.vd += fd * dt;
-      let sp = len2(a.vs, a.vd);
+      let sp = Math.sqrt(a.vs * a.vs + a.vd * a.vd);
       const vmax = standing && !a.moving ? 0.6 : des.vmax;
       a.vmaxCur = vmax;
       if (sp > vmax) { a.vs *= vmax / sp; a.vd *= vmax / sp; sp = vmax; }
@@ -167,7 +176,7 @@ export class Steering {
       if (standing && !a.moving && sp < 0.3) { a.vs = 0; a.vd = 0; }
 
       const prevD = a.d, prevS = a.s;
-      const k = kAt(c, a);
+      const k = a.km;
       a.s += (a.vs / k) * dt;
       a.d += a.vd * dt;
       // hard corrections never move anyone faster than a brisk step
@@ -181,21 +190,21 @@ export class Steering {
       this._constrain(a);
       a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
       // all corrections together stay within a brisk step too
-      const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
+      const cs = (a.s - s1) * k, cd = a.d - d1, cl = Math.sqrt(cs * cs + cd * cd);
       if (cl > this.maxC) { const f = this.maxC / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
       a.prevD = prevD; a.stepDt = dt;
       tram.constrain(a);
       // velocity from the actual motion (constraints included): the gait follows what happened
       const ms = (a.s - prevS) * k, md = a.d - prevD;
       a.vs = ms / dt; a.vd = md / dt;
-      const moved = len2(ms, md);
+      const moved = Math.sqrt(ms * ms + md * md);
 
       // goals that cannot be reached (blocked by a crowd or a wall): give up after a while
       if (a.state === ST.GOTO) {
         if (moved < 0.12 * dt) { a.stuckT += dt; if (a.stuckT > 4) { a.stuckT = 0; arrive(c, a); } } else a.stuckT = Math.max(0, a.stuckT - dt);
       } else if (a.leader && a.state === ST.WALK) {
         // a group member held back (a pole, a narrow passage): fall in behind the leader for a while
-        const want = len2(des.vs, des.vd);
+        const want = Math.sqrt(des.vs * des.vs + des.vd * des.vd);
         if (want > 0.5 && moved < 0.35 * want * dt) { a.stuckF += dt; if (a.stuckF > 0.7) { a.stuckF = 0; a.singleT = c.time + c.rng.range(4, 7); } }
         else a.stuckF = Math.max(0, a.stuckF - dt);
       }
@@ -205,7 +214,8 @@ export class Steering {
   /** A cyclist: cyclist.js picks the line (lane, passing offset, lane change, clearing the
    *  tram) and the speed; a bicycle model follows it with a speed-dependent, smoothly
    *  changing turn rate, so the path is a sequence of physically plausible arcs. */
-  _stepCycle(a, dt) {
+  _stepCycle(a) {
+    const dt = this.dtA;
     const c = this.c, tram = c.tram, T = this.ride;
     tram.preStep(a);
     rideTarget(c, a, T);
@@ -238,7 +248,7 @@ export class Steering {
     a.vmaxCur = Math.max(1.6, v);
     a.moving = v > 0.05;
     const prevD = a.d, prevS = a.s;
-    const k = kAt(c, a);
+    const k = a.km;
     a.s += (a.vs / k) * dt;
     a.d += a.vd * dt;
     this.maxC = Math.max(0.02, 2 * Math.max(1.6, v) * dt);
@@ -249,7 +259,7 @@ export class Steering {
     this.cGathered = false; this.cMoved = 0;
     this._constrain(a);
     a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
-    const cs = (a.s - s1) * k, cd = a.d - d1, cl = len2(cs, cd);
+    const cs = (a.s - s1) * k, cd = a.d - d1, cl = Math.sqrt(cs * cs + cd * cd);
     const lim = 0.5 * this.maxC;
     if (cl > lim) { const f = lim / cl; a.s = s1 + (a.s - s1) * f; a.d = d1 + cd * f; }
     a.prevD = prevD; a.stepDt = dt;
@@ -263,13 +273,14 @@ export class Steering {
 
   /** Getting off a bicycle on its left side: the rider steps over while the renderer slides the
    *  bicycle from under them to their right, so the bicycle itself stays where it was. */
-  _stepOff(a, dt) {
+  _stepOff(a) {
+    const dt = this.dtA;
     const c = this.c, T = 0.75, sm = (u) => u * u * (3 - 2 * u);
     const u0 = 1 - a.stepT / T;
     a.stepT = Math.max(0, a.stepT - dt);
     const f = sm(1 - a.stepT / T) - sm(u0);
     const prevS = a.s, prevD = a.d;
-    const k = kAt(c, a);
+    const k = a.km;
     a.s += (a.stepS * f) / k; a.d += a.stepD * f;
     updateFoot(a);
     a.prevD = prevD; a.stepDt = dt;
@@ -285,7 +296,7 @@ export class Steering {
     if (a.fpR <= 0 || a.simple) return false;
     const agents = this.c.population.agents;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
-    const k = kAt(this.c, a);
+    const k = a.km;
     const o0s = a.fp0s, o0d = a.fp0d, o1s = a.fp1s, o1d = a.fp1d;
     footAt(a, na, _sw);
     let blocked = false;
@@ -309,10 +320,11 @@ export class Steering {
   }
 
   /** Seated: ease the last centimetres onto the chair. */
-  _settle(a, dt) {
+  _settle(a) {
+    const dt = this.dtA;
     a.vs = 0; a.vd = 0;
     if (a.seatS === undefined || a.seatD === undefined) return;
-    const es = a.seatS - a.s, ed = a.seatD - a.d, e = len2(es, ed);
+    const es = a.seatS - a.s, ed = a.seatD - a.d, e = Math.sqrt(es * es + ed * ed);
     if (e < 1e-3) return;
     const st = Math.min(1, (0.5 * dt) / e);
     a.s += es * st; a.d += ed * st;
@@ -322,11 +334,11 @@ export class Steering {
   _social(a, standing) {
     let fs = 0, fd = 0;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
-    const sp = len2(a.vs, a.vd);
+    const sp = Math.sqrt(a.vs * a.vs + a.vd * a.vd);
     const es = sp > 0.1 ? a.vs / sp : Math.cos(a.alpha), ed = sp > 0.1 ? a.vd / sp : Math.sin(a.alpha);
     const agents = this.c.population.agents;
     const L = a.leader || a;
-    const km = kAt(this.c, a);   // metres per unit of s here
+    const km = a.km;   // metres per unit of s here
     // (strollers and bicycles reach further: their neighbours two cells away across the street too)
     const yr = a.mob || this._propAround(a) ? 2 : 1;
     for (let x = ix - 2; x <= ix + 2; x++) {
@@ -373,7 +385,7 @@ export class Steering {
             fs += g.ns * k - ed * k * 0.3; fd += g.nd * k + es * k * 0.3;
             continue;
           }
-          const cd = len2(cx, cy);
+          const cd = Math.sqrt(cx * cx + cy * cy);
           const reach = 0.85;
           if (cd > reach) continue;
           const k = 1.7 * (1 - tc / 3) * (reach - cd) / reach;
@@ -396,7 +408,7 @@ export class Steering {
     const tramNear = c.tram.near(a);
     const U = a.uI >= 0 ? c.tram.unitById(a.uI) : null;   // an oncoming unit near too
     const n = map.gatherAt(a, 3.5);
-    const sp = len2(a.vs, a.vd), des = this.des, dsp = len2(des.vs, des.vd);
+    const sp = Math.sqrt(a.vs * a.vs + a.vd * a.vd), des = this.des, dsp = Math.sqrt(des.vs * des.vs + des.vd * des.vd);
     // heading for the look-ahead: the actual motion, or where they want to go when (nearly) stopped
     let es = 0, ed = 0;
     if (sp > 0.2) { es = a.vs / sp; ed = a.vd / sp; } else if (dsp > 0.2) { es = des.vs / dsp; ed = des.vd / dsp; }
@@ -406,7 +418,7 @@ export class Steering {
     for (let q = 0; q < n; q++) {
       const i = map.qI[q];
       const dx = map.qDS[q], dy = map.cD[i] - a.d, r = map.cR[i];
-      const dist = len2(dx, dy);
+      const dist = Math.sqrt(dx * dx + dy * dy);
       const gap = dist - r - AGENT_R;
       if (mob && F) {
         // the stroller / bicycle is kept off the pole too
@@ -622,7 +634,7 @@ export class Steering {
     const c = this.c, dt = c.dt, dist = a.moveDist;
     const still = a.state === ST.SEATED || a.state === ST.PLATFORM || a.state === ST.STAND || a.state === ST.WAIT;
     // smoothed actual speed (the steering velocity is the real displacement rate)
-    const spRaw = a.state === ST.SEATED ? 0 : len2(a.vs, a.vd);
+    const spRaw = a.state === ST.SEATED ? 0 : Math.sqrt(a.vs * a.vs + a.vd * a.vd);
     a.speedA += (spRaw - a.speedA) * Math.min(1, dt * 8);
     if (dt === 0 || a.fresh) a.speedA = spRaw;
     const sp = a.speedA;
@@ -645,13 +657,16 @@ export class Steering {
       // (far off the lane, e.g. just out of a side street, they head for it at a real angle)
       if (a.mob && a.state === ST.WALK && !a.clearing && a.uturnT <= 0) {
         const base = a.dir > 0 ? 0 : PI, lim = Math.abs(a.laneT - a.d) > 0.9 && !a.leader ? 1.15 : 0.45;
-        target = base + Math.max(-lim, Math.min(lim, wrapAngle(target - base)));
+        let dv = (target - base + PI) % (2 * PI); if (dv < 0) dv += 2 * PI; dv -= PI;
+        target = base + (dv < -lim ? -lim : dv > lim ? lim : dv);
       }
     } else if (still) target = a.faceA;
-    const diff = wrapAngle(target - a.alpha);
+    // (angles wrapped in place: a helper that is not inlined boxes its number argument and result)
+    let diff = (target - a.alpha + PI) % (2 * PI); if (diff < 0) diff += 2 * PI; diff -= PI;
     // a stroller or a bicycle at one's side turns more slowly than a body alone
     const rate = TURN_RATE * (sp > 0.8 ? 1 : 0.7) * (a.mob ? 0.6 : 1);
-    const na = wrapAngle(a.alpha + Math.max(-rate * dt, Math.min(rate * dt, diff)));
+    const turn = rate * dt, dTurn = diff < -turn ? -turn : diff > turn ? turn : diff;
+    let na = (a.alpha + dTurn + PI) % (2 * PI); if (na < 0) na += 2 * PI; na -= PI;
     if (a.mob) {
       // the prop is never swung into the tram's band, nor into somebody standing or sitting there
       if (!c.tram.turnBlocked(a, na) && !this._swingBlocked(a, na)) a.alpha = na;

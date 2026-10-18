@@ -518,6 +518,43 @@ void main() {
 }
 `;
 
+// ---------------------------------------------------------------- glow (dusk / night)
+// The light of sources far above the white point (frosted lantern globes, lit shop glass,
+// a low sun) spread by the lens and the cab's glass into a soft skirt a few times their
+// size: what exceeds uThresh (exposed units, the frame's actual exposure) is extracted,
+// with its growth eased past uKnee (a sensor's glow does not grow without bound), then
+// blurred by a short pyramid and added after exposure in the final pass.
+export const GLOW_FS = /* glsl */ `
+uniform sampler2D tSrc;
+uniform vec2 uTexel;       // source texel size
+uniform float uThresh;     // exposed luminance where the glow starts
+uniform float uKnee;       // excess past which it grows ever more slowly
+uniform sampler2D tLum;
+uniform float uExposure, uExposureMax, uAutoExp, uMeterTarget;
+uniform vec2 uMeterClamp;
+varying vec2 vUv;
+float gE;
+vec3 tap(vec2 o) {
+  vec3 c = texture2D(tSrc, vUv + o * uTexel).rgb * gE;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float e = max(l - uThresh, 0.0);
+  e = e / (1.0 + e / uKnee);
+  return c * (e / max(l, 1e-6));
+}
+void main() {
+  // the final pass's exposure (time-of-day base nudged by the meter, capped)
+  float metered = exp2(texture2D(tLum, vec2(0.5)).r) * uExposure;
+  float corr = clamp(pow(uMeterTarget / max(metered, 1e-6), uAutoExp), uMeterClamp.x, uMeterClamp.y);
+  gE = min(uExposure * corr, uExposureMax);
+  vec3 a = tap(vec2(-2, 2)), b = tap(vec2(0, 2)), c = tap(vec2(2, 2));
+  vec3 d = tap(vec2(-2, 0)), e = tap(vec2(0, 0)), f = tap(vec2(2, 0));
+  vec3 g = tap(vec2(-2, -2)), h = tap(vec2(0, -2)), i = tap(vec2(2, -2));
+  vec3 j = tap(vec2(-1, 1)), k = tap(vec2(1, 1)), l = tap(vec2(-1, -1)), m = tap(vec2(1, -1));
+  vec3 o = (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + e * 0.125 + (j + k + l + m) * 0.125;
+  gl_FragColor = vec4(o, 1.0);
+}
+`;
+
 // ---------------------------------------------------------------- auto exposure (1x1)
 export const LUM_FS = /* glsl */ `
 uniform sampler2D tSmall;
@@ -588,6 +625,8 @@ uniform float uBlack;         // soft black point (display units)
 uniform sampler2D tDepth;     // scene depth (sky = far plane)
 uniform float uSkyChroma;     // chroma for sky pixels (AgX's inset/outset would grey a saturated blue)
 uniform float uSkySat;        // and the saturation the AgX look would have given them (scene-linear)
+uniform sampler2D tGlow;      // glow around the brightest sources (exposed units, see GLOW_FS)
+uniform float uGlow;
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -684,6 +723,8 @@ void main() {
   float metered = exp2(avgLog) * uExposure;
   float corr = clamp(pow(uMeterTarget / max(metered, 1e-6), uAutoExp), uMeterClamp.x, uMeterClamp.y);
   col *= min(uExposure * corr, uExposureMax);
+  // glow skirt around sources far above white (lantern globes, lit glass at dusk)
+  if (uGlow > 0.0) col += texture2D(tGlow, uv).rgb * uGlow;
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);
   // white balance and split toning in scene-linear (the toning is for the street: the

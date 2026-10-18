@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, TplCache, VS, lin } from './geo.js';
 import { dressCell, cardTpl, sheetTpl, POSTER_INFO, N_PRICES, N_BANNERS } from './signs.js';
+import { inRustic } from './outline.js';
 
 const _t = new THREE.Matrix4();
 
@@ -352,7 +353,8 @@ export function hangGoods(kit, ctx, o, type, al = null) {
           const len = tp.len;
           // a bundle on the hook: the same piece in two or three colours, fanned out
           const nb = kind === 'bag' ? 1 : r.int(1, 3);
-          const z = 0.1;
+          // (rusticated stone: hooks on the bosses' faces)
+          const z = 0.1 + (inRustic(plan, top) ? 0.03 : 0);
           for (let q = nb - 1; q >= 0; q--) {
             const c1 = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
             const stripe = (kind === 'tee' || kind === 'scarf') && r.chance(0.3) ? r.range(0.03, 0.07) : 0;
@@ -389,7 +391,7 @@ export function hangGoods(kit, ctx, o, type, al = null) {
       if (w + 0.2 < span[1] - span[0]) {
         const uc = side > 0 ? span[1] - w / 2 - 0.12 : span[0] + w / 2 + 0.12;
         const yc = gy + r.range(1.55, 1.85);
-        const mb = new THREE.Matrix4().copy(frame.matrix).multiply(_t.makeTranslation(uc, yc, 0.06));
+        const mb = new THREE.Matrix4().copy(frame.matrix).multiply(_t.makeTranslation(uc, yc, inRustic(plan, yc) ? 0.1 : 0.06));
         const tb = new Tpl();
         tb.box(-w / 2 - 0.02, -h / 2 - 0.02, 0, w / 2 + 0.02, h / 2 + 0.02, 0.018, 1 | 4 | 8 | 16 | 32, 0.85, 0.95);
         const bc = lin(r.pick([0x1d1d1f, 0xe8e4da, 0x6b4a2a]));

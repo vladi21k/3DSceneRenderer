@@ -21,6 +21,8 @@ const SIZES = {
 };
 const ROUND = { manhole: 1, valve: 1 };
 const COVER_LIFT = 0.003;      // covers stand this proud of their (planar) bed
+const SETT_COURSE = 0.2;       // paving.street courses run across the street every 0.2 m of u
+const JOINT_HALF = 0.007;      // sealant-filled expansion joint: 14 mm wide
 const TREE_RING_SIZE = 3.0;    // soil ring decal round a 1.24 m tree grate (stain kind 4)
 // chance of a gum / dirt spot by street furniture where people linger
 const LINGER = { bench: 0.9, bin: 0.8, shelter: 0.9, ticketMachine: 0.8, stopSign: 0.6, kiosk: 0.8, infoBoard: 0.5, advertColumn: 0.4 };
@@ -235,12 +237,14 @@ export function* planSteps(ctx, ci) {
     }
   }
 
-  // transverse expansion joints across the corridor every ~12 m
+  // transverse expansion joints across the corridor every ~12 m, each in a bed joint of
+  // the setts (paving u = surface.sp(s), courses every SETT_COURSE), so the sealant fills
+  // a real joint rather than crossing the stones' faces
   const joints = [];
   {
-    const k0 = Math.floor(s0 / 12), k1 = Math.ceil(s1 / 12);
+    const k0 = Math.floor(s0 / 12), k1 = Math.ceil(s1 / 12), kP = ctx.surface.kP;
     for (let k = k0; k <= k1; k++) {
-      const s = 12 * k + (u01(k, 911) - 0.5) * 4;
+      const s = (Math.round(((12 * k + (u01(k, 911) - 0.5) * 4) * kP) / SETT_COURSE) * SETT_COURSE) / kP;
       if (s < s0 + 0.2 || s > s1 - 0.2) continue;
       if (layout.isInCrossover(s, 3) || layout.crossStreets.some((c) => Math.abs(delta(c.s, s)) < 3)) continue;
       joints.push(s);
@@ -409,7 +413,7 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
           const d = a + ((b - a) * k) / n;
           arr.push(smp.pos.x + smp.right.x * d, smp.pos.y + surface.height(ri, d) + 0.0005, smp.pos.z + smp.right.z * d, rx, rz, d - a);
         }
-        jointLines.add(arr, 0.012, b - a);
+        jointLines.add(arr, JOINT_HALF, b - a);
       }
     }
   }

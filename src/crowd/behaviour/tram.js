@@ -211,7 +211,8 @@ export class TramWatch {
     const vc = Math.max(this.closing(a), 0.5);
     const tc0 = ahead > 0 ? ahead / vc : 0, tc1 = (ahead + TRAM_LEN + 2) / vc;
     let best = null, bt = 1e9;
-    for (const T of this.units) {
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui];
       const ah = T.sU - a.s;
       if (ah < -(T.len + 2) - a.extS || ah > 260) continue;
       // (a unit standing beside them is a wall the cab passes; one standing ahead is no pair yet)
@@ -281,7 +282,7 @@ export class TramWatch {
   }
 
   // ---------------------------------------------------------------- oncoming units
-  unitById(i) { for (const T of this.units) if (T.i === i) return T; return null; }
+  unitById(i) { const U = this.units; for (let k = 0; k < U.length; k++) if (U[k].i === i) return U[k]; return null; }
   /** Speed at which unit T closes in on person a (m/s). */
   uClosing(T, a) { return Math.max(0, Math.min(V_MAX, T.v + 2 * T.acc) + a.vs); }
   /** How far ahead of unit T's nose person a starts getting off its track. */
@@ -295,7 +296,8 @@ export class TramWatch {
   /** The unit whose zone person a is in (the soonest to arrive), or null. */
   uZone(a, extra = 0) {
     let best = null, bt = 1e9;
-    for (const T of this.units) {
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui];
       const ah = T.sU - a.s;
       if (ah < -(T.len + 4) - a.extS || ah > this.uFront(T, a) + extra) continue;
       const t = ah / Math.max(0.5, this.uClosing(T, a));
@@ -412,7 +414,8 @@ export class TramWatch {
   /** May person a start crossing the unit bands at s now (the time to get through measured from
    *  where they stand)? A unit standing at a stop counts as about to start. */
   canEnterUnit(a, s, T0 = 0) {
-    for (const T of this.units) {
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui];
       const ah = T.sU - s;
       if (ah < -(T.len + 3)) continue;
       if (ah < NO_GO_AHEAD + 4) return false;
@@ -429,7 +432,8 @@ export class TramWatch {
   /** The units' bands: nobody steps in inside a unit's zone (unless committed to a crossing),
    *  and its body (with a couple of metres in front of the nose) is never entered. */
   _uConstrain(a, prevD, dt) {
-    for (const T of this.units) {
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui];
       const ah = T.sU - a.s;
       if (ah < -(T.len + 3) - a.extS || ah > 260) continue;
       const inZone = ah < Math.max(this.uFront(T, a) - 4, 10) + a.extS;
@@ -478,7 +482,8 @@ export class TramWatch {
    *  its nose as far into the left platform as the cab does on the right one. */
   unitDwelling(st) {
     const route = this.c.route, nose = 2 * st.s - st.stopS;
-    for (const T of this.units) {
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui];
       if (T.state !== 'dwell' && !(T.v < 0.15 && T.state === 'depart')) continue;
       if (Math.abs(route.delta(route.wrap(nose), route.wrap(T.sU))) < 10) return T;
     }
@@ -492,7 +497,8 @@ export class TramWatch {
     const c = this.c, vis = c.vis, cd = vis.camD, cu = vis.camU;
     let hc = 2.75;
     try { hc = vis.camPos.y - c.route.groundY(c.route.wrap(cu), cd); } catch (e) { hc = 2.75; }
-    for (const T of this.units) {
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui];
       let ok = true;
       for (const ds of [-0.3, 0.3]) {
         if (!rayThroughBox(cu, cd, hc, s + ds, d, 1.55, T.sU + 0.4, T.sU + T.len - 0.4, T.d - T.half + 0.1, T.d + T.half - 0.1, 3.2)) { ok = false; break; }
@@ -615,7 +621,10 @@ export class TramWatch {
 
   /** Is an oncoming unit within `reach` metres ahead of s (or beside it)? */
   unitNear(s, reach) {
-    for (const T of this.units) { const ah = T.sU - s; if (ah > -(T.len + 2) && ah < reach) return true; }
+    for (let ui = 0; ui < this.units.length; ui++) {
+      const T = this.units[ui], ah = T.sU - s;
+      if (ah > -(T.len + 2) && ah < reach) return true;
+    }
     return false;
   }
 

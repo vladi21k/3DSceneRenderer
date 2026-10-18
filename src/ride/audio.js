@@ -106,7 +106,14 @@ const audio = {
     const app = this.app;
     this.engine = new AudioEngine(ctx, this.bank, {
       route: app.route, layout: app.layout, features: this.features,
-      crowd: () => { const c = app.crowd; return c && !c.disabled && c.agents ? c.agents() : null; },
+      // the crowd's population array itself (the ambience skips inactive agents), so a survey
+      // does not copy it; crowd.agents() (a filtered copy) when the population is not exposed
+      crowd: () => {
+        const c = app.crowd;
+        if (!c || c.disabled) return null;
+        const pop = c.sim && c.sim.population;
+        return pop && Array.isArray(pop.agents) ? pop.agents : c.agents ? c.agents() : null;
+      },
     });
     this.started = true;
     this._t0 = ctx.currentTime;

@@ -20,13 +20,14 @@ import { U } from '../../../core/uniforms.js';
 export const NB = 22;
 export const BONE_DYN = NB * 3;          // first state texel of a bone row
 export const BONE_W = BONE_DYN + 2;      // texels per bone row
-export const LOOK_W = 26;                // texels per look row (see writeLook)
+export const LOOK_W = 28;                // texels per look row (see writeLook)
 const REGION_ROUGH = [-1, 0.5, 0.8, 0.8, 0.06, -1, -1, -1, -1, 0.95, -1, 0.85, 0.32, 0.08, 0.55, 0.7];
 // specular strength per region (x the dielectric F0 0.04)
 const REGION_SPEC = [0.72, 0.05, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
 // (casts with skin decals: wetter eyes, matte brows and beards)
 const REGION_ROUGH_V2 = [-1, 0.6, 0.85, 0.8, 0.035, -1, -1, -1, -1, 0.95, 0.8, 0.8, 0.32, 0.08, 0.5, 0.6];
-const REGION_SPEC_V2 = [0.72, 0.05, 0.2, 0.3, 1.5, 0.55, 0.55, 0.55, 0.9, 0.5, 0.3, 0.2, 1.0, 1.2, 0.75, 0.6];
+// (eyes: a wet cornea, but the sky's sheen over the whole eye would wash the iris out to a grey stare)
+const REGION_SPEC_V2 = [0.72, 0.05, 0.2, 0.3, 0.7, 0.55, 0.55, 0.55, 0.9, 0.5, 0.3, 0.2, 1.0, 1.2, 0.75, 0.6];
 
 const COMMON = /* glsl */`
 uniform highp sampler2D uBoneTex;
@@ -47,7 +48,10 @@ varying float vCastAO;
 varying vec3 vRest;
 varying float vBeard;
 varying float vDecal;
+varying vec3 vStrand;
+varying vec2 vHairQ;
 uniform float uDecal;        // the cast carries skin decals (tex.y of skin: 128 none, > beard, < scalp)
+uniform float uBeardBase;    // beards are shells grown here from their base (uv = length, density; flags >> 4 = shell)
 mat4 hBone(int row, float b) {
   int x = int(b + 0.5) * 3;
   vec4 r0 = texelFetch(uBoneTex, ivec2(x, row), 0);
@@ -110,8 +114,33 @@ void hSkin(out vec3 P, out vec3 N) {
     pos.x += u * u * v * 0.008 * sin(ph + 0.6);
   }
 #endif
+  // beard shells: grown out along the skin normal by the beard's length there, the strands curving
+  // down as they grow (the base position stays the strands' root for the fragment shader)
+  float shellH = 0.0;
+  if (uBeardBase > 0.5 && aTex.z == 11.0) {
+    shellH = float((flags >> 4) & 15) / 15.0;
+    float len = uv.x * 0.04;
+    vec3 bn = normalize(aNrm.xyz);
+    pos += bn * (0.0004 + len * shellH * 0.9) + vec3(0.0, -1.0, -0.15) * len * shellH * shellH * 0.4;
+  }
   P = (m * vec4(pos, 1.0)).xyz;
   vec3 nrm = aNrm.xyz;
+  // strand direction (rest space): hair runs from the crown out and down over the head, across each
+  // card (never from the cards' UVs, whose layout is mirrored on one side of the head); beard hairs
+  // run down the face, tilting out as they grow
+  vStrand = vec3(0.0);
+  if (aTex.z == 1.0 || aTex.z == 11.0) {
+    vec3 hc = hLook(row, 24).xyz;
+    float hk = hLook(row, 17).y / 1.76;
+    vec3 dir = aTex.z == 1.0 ? position - (hc + vec3(0.0, 0.06 * hk, 0.012 * hk)) : vec3(0.0, -1.0, 0.0) + normalize(nrm) * shellH * 0.5;
+    vec3 nn = normalize(nrm);
+    dir -= nn * dot(dir, nn);
+    if (dot(dir, dir) < 1e-10) dir = vec3(0.0, -1.0, 0.0);
+    vStrand = normalize(mat3(modelViewMatrix) * (mat3(m) * normalize(dir)));
+    // (rest-space coordinates across / along the strands, metres: strand clumps for the shading)
+    vec3 td = normalize(dir);
+    vHairQ = vec2(dot(position, cross(nn, td)), dot(position, td));
+  } else vHairQ = vec2(0.0);
   if (aTex.z == 1.0) {
     // hair cards: each card is flat, so their normals facet the hair into planks; shade them mostly
     // with the head's round normal (from the head centre), on the card's own side
@@ -155,6 +184,8 @@ uniform float uA2C;          // MSAA samples of the target (0: none -> alpha tes
 uniform float uNight;
 uniform float uEmissiveGain;
 uniform float uDecal;
+uniform float uBeardBase;
+uniform float uBrows;        // eyebrows drawn on the skin (look texels 26, 27) instead of the brow cards
 varying vec2 vCastUv;
 flat varying vec4 vCastTex;
 flat varying float vRow;
@@ -162,6 +193,8 @@ varying float vCastAO;
 varying vec3 vRest;
 varying float vBeard;
 varying float vDecal;
+varying vec3 vStrand;
+varying vec2 vHairQ;
 int hRegion = 0;
 int hFlags = 0;
 float hSkinM = 0.0;
@@ -227,30 +260,26 @@ float hPattern(float code, vec3 r, float sc, float seed) {
   return 0.75 * hBand(r.x + 0.5, 0.012 * sc, 0.16);
 }
 // Kajiya-Kay strand highlights: a faint primary lobe shifted towards the root and a tinted
-// secondary lobe towards the tip, both broken up per strand clump; wider and dimmer far away
+// secondary lobe towards the tip, both broken up per strand clump (clumps ~0.7 mm across, 2 cm along
+// the strands, in rest space); wider and dimmer far away
 vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   vec3 H = normalize(L + V);
-  float j = hH3(floor(vec3(vCastUv * 180.0, vCastTex.x)));
-  float sh = (j - 0.5) * 0.2;
-  vec3 t1 = normalize(T + N * (0.10 + sh)), t2 = normalize(T - N * (0.16 - sh));
+  vec2 cq = vHairQ * vec2(1400.0, 50.0);
+  float j = hH3(vec3(floor(cq), vCastTex.x));
+  float clump = hH3(vec3(floor(vHairQ * vec2(420.0, 12.0)), vCastTex.x + 3.0));
+  // (averaged where the clumps get near a pixel)
+  float fq = smoothstep(0.4, 1.2, length(fwidth(cq)));
+  j = mix(j, 0.5, fq);
+  clump = mix(clump, 0.5, max(fq, hFar));
+  float sh = (j - 0.5) * 0.16;
+  vec3 t1 = normalize(T + N * (0.09 + sh)), t2 = normalize(T - N * (0.14 - sh));
   float th1 = dot(t1, H), th2 = dot(t2, H);
-#if HUMANS_V2
-  float e1 = mix(160.0, 40.0, hFar), e2 = mix(22.0, 9.0, hFar);
-#else
-  float e1 = mix(120.0, 30.0, hFar), e2 = mix(26.0, 10.0, hFar);
-#endif
+  float e1 = mix(110.0, 36.0, hFar), e2 = mix(18.0, 8.0, hFar);
   float s1 = pow(sqrt(max(0.0, 1.0 - th1 * th1)), e1);
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
-  vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.45);
-  float br = mix(0.35 + 0.9 * j, 0.8, hFar);
-#if HUMANS_V2
-  // (strand clumps catch the light unevenly: the highlight is broken into streaks, never a band)
-  float clump = hH3(floor(vec3(vCastUv * vec2(420.0, 9.0), vCastTex.x + 3.0)));
-  clump = mix(clump, 0.5, hFar);
-  return (0.05 * tint * s1 * br * (0.3 + 1.4 * clump) + hHairC * 0.55 * s2 * (0.5 + 0.6 * j)) * hAO * hStrand;
-#else
-  return (0.035 * tint * s1 * br + hHairC * 0.45 * s2 * (0.5 + 0.6 * j)) * hAO * hStrand;
-#endif
+  vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.35);
+  float br = mix(0.4 + 0.8 * j, 0.8, hFar);
+  return (0.026 * tint * s1 * br * (0.4 + 1.2 * clump) + hHairC * 0.32 * s2 * (0.55 + 0.5 * j)) * hAO * hStrand;
 }
 `;
 
@@ -269,7 +298,7 @@ const FRAG_SURFACE = /* glsl */`
     vec3 d = 2.0 * tx.rgb;
     if (tl.w > 0.0) d = clamp(1.0 + (d - 1.0) * tl.w, 0.84, 1.16);
     col = d * tint;
-  } else col = tx.rgb * tint;
+  } else col = tx.rgb * (hRegion == 4 ? vec3(1.0) : tint);
   if ((hFlags & 32) != 0) col = vec3(0.82, 0.81, 0.78);
   float rr = uRegionRough[hRegion];
   hRough = rr >= 0.0 ? rr : uLayerRough[int(vCastTex.x + 0.5)];
@@ -284,26 +313,57 @@ const FRAG_SURFACE = /* glsl */`
     if (pa.w > 0.5 && (hRegion == 5 || pb.z > 0.5)) col = mix(col, pa.rgb * (0.6 + 0.4 * tx.g / max(1e-3, hLum(tx.rgb))), hPattern(pa.w, vRest, pb.x * pb.y / 1.76, pb.w));
   }
   if (hRegion == 1) {
-    // hair: strand clumps (cells long along the strands, the texture's v) vary in shade; averaged out
-    // where they get near a pixel
-    vec2 cp = vCastUv * vec2(260.0, 18.0);
-    float cn = hH3(vec3(floor(cp), vCastTex.x));
+    // hair: strand clumps (rest space: ~1 mm across, 3 cm along the strands) vary a little in shade;
+    // averaged out where they get near a pixel
+    vec2 cp = vHairQ * vec2(900.0, 33.0);
+    float cn = hH3(vec3(floor(cp), vCastTex.x + 1.0));
     cn = mix(cn, 0.5, smoothstep(0.3, 1.0, length(fwidth(cp))));
-    col *= 0.82 + 0.36 * cn;
+    col *= 0.9 + 0.2 * cn;
   }
+  // beard shells (cast feature beardBase): which shell, how far out (0 root .. 1 the beard's surface)
+  float bShell = 0.0;
+  bool bBase = uBeardBase > 0.5 && hRegion == 11;
+  if (bBase) bShell = float((hFlags >> 4) & 15) / 15.0;
   float a = 1.0;
   if ((hFlags & 1) != 0) {
     // coverage of hair cards, brows, lashes, beards: kept from thinning out in the mips, sharpened
     // to about a pixel, then rounded to the target's sample count (alpha to coverage) or tested
     a = tx.a * (1.0 + max(lod, 0.0) * 0.22);
-    if (hRegion == 3) a *= 1.0 - hLook(row, 3).w;          // lighter lashes (men, children)
+    // lashes: a soft dark line along the lid, not eyeliner (lighter still for men and children)
+    if (hRegion == 3) a *= 0.5 * (1.0 - 0.6 * hLook(row, 3).w);
     if (hRegion == 1 && uDecal > 0.5 && vDecal < 0.999) {
-      // trimmed strand ends: the fade breaks into strands of uneven length
-      float sn = hH3(vec3(floor(vCastUv.x * 900.0), vCastTex.x, 3.0));
+      // trimmed strand ends: the fade breaks into strands of uneven length (columns across the strands)
+      float sn = hH3(vec3(floor(vHairQ.x * 750.0), vCastTex.x, 3.0));
+      sn = mix(sn, 0.5, smoothstep(0.5, 1.5, fwidth(vHairQ.x * 750.0)));
       a *= clamp((vDecal - 0.1 - 0.55 * sn) * 4.0, 0.0, 1.0);
     }
     if (hRegion == 2) a *= uDecal > 0.5 ? 0.85 : 0.8;      // brows: thinner strokes, skin shows between the hairs
-    if (hRegion == 11) {
+    if (bBase) {
+      // beard shells: one strand per cell of the root surface (cylindrical about the head's axis, so the
+      // cells run round the jaw and down the face and on under the chin): ~0.8 mm across, 3 mm down;
+      // each strand has its own length and thins to its tip; the shells' stack makes the volume
+      vec3 hcb = hLook(row, 24).xyz;
+      vec2 rp = vRest.xz - hcb.xz;
+      float rr = length(rp);
+      vec2 q = vec2(atan(rp.x, -rp.y) * 0.06, vRest.y - rr) * vec2(1250.0, 330.0);
+      vec2 ci = floor(q), f = fract(q) - 0.5;
+      float r1 = hH3(vec3(ci, 1.3)), r2 = hH3(vec3(ci, 2.7)), r3 = hH3(vec3(ci, 3.1)), r4 = hH3(vec3(ci, 4.9));
+      float dens = vCastUv.y * smoothstep(0.0, 1.0, vBeard);
+      float sl = mix(0.3, 1.0, sqrt(r1));                        // strand length (x the local length)
+      float pres = mix(0.35, 0.97, dens);                        // follicles with a strand
+      vec2 dd = (f - (vec2(r3, r4) - 0.5) * 0.4) * vec2(1.0, 0.42);
+      float rad = 0.5 * (1.0 - 0.75 * bShell / sl);
+      float fwq = length(fwidth(q));
+      float aw = max(fwq * 0.6, 0.02);
+      float c1 = step(r2, pres) * step(bShell, sl) * (1.0 - smoothstep(rad - aw, rad + aw, length(dd)));
+      // (strands below a pixel: their expected coverage)
+      float lfrac = clamp((1.0 - bShell) / 0.7, 0.0, 1.0);
+      float cexp = pres * lfrac * min(1.0, 3.14 * rad * rad / 0.42 * 0.9);
+      a = mix(c1, cexp, smoothstep(0.6, 1.6, fwq));
+      // dark roots, lighter tips; strand to strand variation
+      col = tint * mix(0.55, 1.12, bShell) * mix(0.82 + 0.36 * r3, 1.0, smoothstep(0.6, 1.6, fwq));
+      hAO *= mix(0.4, 1.0, bShell);
+    } else if (hRegion == 11) {
       // beard shell: strands (fine streaks running down the face, in rest space) thin out towards
       // the shell's edges; far away only the soft edge remains
       vec3 sp = vRest * vec3(1400.0, 160.0, 1400.0);
@@ -343,8 +403,8 @@ const FRAG_SURFACE = /* glsl */`
         col *= 0.85 + 0.5 * s2 + 0.15 * float(shell);
       }
     }
-    // (a beard's volume fades out softly: dithered coverage instead of a sharpened edge)
-    bool soft = uDecal > 0.5 && hRegion == 11;
+    // (a beard's volume and lashes fade out softly: dithered coverage instead of a sharpened edge)
+    bool soft = uDecal > 0.5 && (hRegion == 11 || hRegion == 3);
     if (!soft) a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0);
     if (uA2C > 0.5) {
       float dth = soft ? fract(dot(floor(gl_FragCoord.xy), vec2(0.7548777, 0.5698403))) : 0.5;
@@ -367,7 +427,25 @@ const FRAG_SURFACE = /* glsl */`
     diffuseColor.rgb *= mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
     hAO *= mix(1.0, 0.6, lid);
     hEyeLid = lid;
-    if (uDecal > 0.5) {
+    float er = hLook(row, 25).w;
+    if (er > 0.0) {
+      // the iris drawn here in the person's own colour (look: eyes tint), over the texture's: the front
+      // cap of the eyeball (the eyes look ahead, -z), fibres running out from the pupil, a darker rim;
+      // the white of the eye a soft off-white, never paper white
+      float rad = length(d.xy);
+      float ir = er * 0.42, pr = er * (0.14 + 0.05 * uNight);
+      float aw = max(length(fwidth(d.xy)), 1e-5);
+      float front = smoothstep(-0.2 * er, -0.45 * er, d.z);
+      float iris = front * (1.0 - smoothstep(ir - aw, ir + aw, rad));
+      float ang = atan(d.y, d.x);
+      float fib = hVNoise(vec3(ang * 9.0, rad / er * 14.0, 3.0)) * 0.6 + hVNoise(vec3(ang * 25.0, rad / er * 5.0, 7.0)) * 0.4;
+      fib = mix(fib, 0.5, smoothstep(0.0005, 0.0015, aw));
+      float u = rad / ir;
+      vec3 ic = tint * (0.65 + 0.75 * fib) * mix(1.2, 0.55, smoothstep(0.72, 1.0, u)) * mix(0.75, 1.0, smoothstep(0.35, 0.6, u));
+      ic = mix(ic, vec3(0.012), front * (1.0 - smoothstep(pr - aw, pr + aw, rad)));
+      vec3 sclera = tx.rgb * vec3(0.8, 0.78, 0.76);
+      diffuseColor.rgb = mix(sclera, ic, iris) * mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
+    } else if (uDecal > 0.5) {
       // (the iris a little darker and less saturated; the white of the eye never paper white)
       float l = hLum(diffuseColor.rgb);
       diffuseColor.rgb = mix(vec3(l), diffuseColor.rgb, 0.75) * 0.82;
@@ -426,10 +504,45 @@ const FRAG_SURFACE = /* glsl */`
         // under the hair: the scalp takes the hair's colour (gaps between the cards read as hair)
         vec4 hl = hLook(row, 1);
         float sc = clamp(-dcl * 1.3, 0.0, 1.0) * hl.w;
-        diffuseColor.rgb = mix(diffuseColor.rgb, hl.rgb * 0.7, sc * 0.92);
+        vec3 sh = hl.rgb * 0.6;
+        sh = mix(vec3(hLum(sh)), sh, 0.7);
+        diffuseColor.rgb = mix(diffuseColor.rgb, sh, sc * 0.92);
         hRough = mix(hRough, 0.7, sc);
         hSpec *= 1.0 - 0.7 * sc;
         hSkinM = 1.0 - sc;
+      }
+    }
+    // eyebrows (uBrows): drawn on the skin along the brow ridge the cast's brow cards trace (look
+    // texels 26, 27: centre line y = a + b |x| + c x^2 from x0 to x1, half height t0 .. t1): a soft band
+    // of fine hairs (the inner hairs rise steeply, the rest run out along the brow), denser in the
+    // middle, feathered at its edges, in a darker shade of the hair (brows texel: colour, opacity)
+    if (uBrows > 0.5) {
+      vec4 b0 = hLook(row, 26), b1 = hLook(row, 27);
+      float ax = abs(vRest.x);
+      if (b0.y > 0.0 && ax > b0.x - 0.008 && ax < b0.y + 0.008 && vRest.z < b1.w + 0.015 && vRest.z > b1.w - 0.03) {
+        float u = (ax - b0.x) / max(b0.y - b0.x, 1e-4);
+        float yc = b0.z + b0.w * ax + b1.x * ax * ax;
+        float th = mix(b1.y, b1.z, clamp(u, 0.0, 1.0));
+        float dy = (vRest.y - yc) / max(th, 1e-4);
+        // (thicker below the centre line: the brow sits on the orbital rim; the lower edge sharper)
+        float band = (1.0 - smoothstep(dy < 0.0 ? 0.7 : 0.5, dy < 0.0 ? 1.15 : 1.2, abs(dy)))
+          * smoothstep(-0.14, 0.12, u) * (1.0 - smoothstep(0.82, 1.06, u));
+        if (band > 0.002) {
+          float hang = mix(1.2, 0.2, smoothstep(0.0, 0.32, u)) - 0.25 * smoothstep(0.7, 1.0, u);
+          vec2 hd = vec2(cos(hang), sin(hang));
+          vec2 p2 = vec2(ax, vRest.y);
+          vec2 hq = vec2(dot(p2, vec2(-hd.y, hd.x)) * 2400.0, dot(p2, hd) * 220.0);
+          float hcol = floor(hq.x);
+          float hn = hH3(vec3(hcol, floor(hq.y + hH3(vec3(hcol, 2.0, 9.0)) * 4.0), 5.0));
+          hn = mix(hn, 0.6, smoothstep(0.35, 1.2, length(fwidth(hq))));
+          vec4 bt = hLook(row, 2);
+          float dens = band * mix(0.55, 1.0, smoothstep(0.3, 0.7, hn)) * (bt.w > 0.0 ? bt.w : 0.7);
+          // (the middle of the brow fuller than its tail)
+          dens *= mix(1.0, 0.75, smoothstep(0.55, 1.0, u));
+          diffuseColor.rgb = mix(diffuseColor.rgb, bt.rgb, clamp(dens, 0.0, 0.88));
+          hRough = mix(hRough, 0.75, dens);
+          hSpec *= 1.0 - 0.6 * dens;
+        }
       }
     }
     // close up: skin is not a flat colour: faint blotches, pores and an uneven sheen (rest space,
@@ -461,11 +574,13 @@ const FRAG_SURFACE = /* glsl */`
     hHairM = hRegion == 1 ? 1.0 : 0.6;
     hHairC = diffuseColor.rgb;
     // highlights only on the strands the texture draws (the gaps between them stay dull)
-    hStrand = clamp(hLum(tx.rgb) * 1.8, 0.15, 1.0);
-    hFar = smoothstep(0.5, 3.5, lod);
+    hStrand = bBase ? 0.8 : clamp(hLum(tx.rgb) * 1.8, 0.15, 1.0);
+    hFar = bBase ? smoothstep(0.3, 2.0, length(fwidth(vRest)) * 1000.0) : smoothstep(0.5, 3.5, lod);
   }
-  // cloth sheen: fibres catch light at grazing angles (dark cloth reads as cloth, not plastic)
+  // cloth sheen: fibres catch light at grazing angles (dark cloth reads as cloth, not plastic); not
+  // on the inside of a garment (a waistband's inside seen over the top must stay in its shade)
   if (hRegion >= 5 && hRegion <= 10 && hRegion != 8 || hRegion == 14 || hRegion == 15) hSheen = 1.0;
+  if ((hFlags & 2) != 0 && hRegion >= 5 && hRegion <= 10) { hSheen = 0.0; hSpec *= 0.15; hAO *= 0.7; }
 #if HUMANS_DBG == 1
   hEmit = vec3(hAO); diffuseColor.rgb = vec3(0.0);        // debug view: baked occlusion
 #elif HUMANS_DBG == 2
@@ -516,11 +631,11 @@ const FRAG_NORMAL = /* glsl */`
     vec3 nb = abs(dt) * normal - sign(dt) * (dhx * r1 + dhy * r2);
     if (abs(dt) > 1e-14 && dot(nb, nb) > 1e-30) normal = normalize(nb);
   }
-  // strand direction of hair cards: along the texture's v axis
-  if (hHairM > 0.0) hHairT = normalize(Bt - normal * dot(Bt, normal) + 1e-6);
-  if (hRegion == 11 && uDecal > 0.5) {
-    vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-    hHairT = normalize(upV - normal * dot(upV, normal) + 1e-6);
+  // strand direction (view space, from the vertex shader: out from the crown over the head, down the
+  // face for beards); brows along the texture's v
+  if (hHairM > 0.0) {
+    vec3 st = dot(vStrand, vStrand) > 0.25 ? vStrand : Bt;
+    hHairT = normalize(st - normal * dot(st, normal) + 1e-6);
   }
   // silhouettes: interpolated normals can face away from the eye, where the specular term
   // blows up; bend them back towards the viewer and fade the grazing sheen there
@@ -549,7 +664,7 @@ function patchVertex(shader, depth) {
  * Materials of the figure batch: { mat, depth, uniforms }. textures: { bones, look, albedo, normal };
  * layerRough: per albedo layer roughness.
  */
-export function makeFigureMaterials(textures, layerRough, materials, debugView = 0, v2 = false) {
+export function makeFigureMaterials(textures, layerRough, materials, debugView = 0, v2 = false, opts = {}) {
   const rough = new Array(64).fill(0.7);
   for (let i = 0; i < Math.min(64, layerRough.length); i++) rough[i] = layerRough[i];
   const uniforms = {
@@ -563,6 +678,8 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
     uRegionSpec: { value: (v2 ? REGION_SPEC_V2 : REGION_SPEC).slice() },
     uA2C: { value: 4 },
     uDecal: { value: v2 ? 1 : 0 },
+    uBeardBase: { value: opts.beardBase ? 1 : 0 },
+    uBrows: { value: opts.brows ? 1 : 0 },
     uNight: U.uNight || { value: 0 },
     uEmissiveGain: (materials && materials.uniforms && materials.uniforms.emissiveGain) || { value: 1 },
   };
@@ -625,7 +742,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       #endif`);
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + '-' + (debugView | 0);
+  mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + 'r3-' + (debugView | 0);
 
   const depth = new THREE.MeshDepthMaterial();
   depth.name = 'humans.figures.depth';
@@ -635,9 +752,12 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
     let fs = shader.fragmentShader;
     fs = fs.replace('#include <common>', `#include <common>
       uniform highp sampler2DArray uAlbedo;
+      uniform float uBeardBase;
       varying vec2 vCastUv;
       flat varying vec4 vCastTex;`);
     fs = fs.replace('#include <alphatest_fragment>', `
+      // (beard shells: every fifth casts the volume's shadow)
+      if (uBeardBase > 0.5 && int(vCastTex.z + 0.5) == 11 && ((int(vCastTex.w + 0.5) >> 4) % 5) != 0) discard;
       if ((int(vCastTex.w + 0.5) & 1) != 0) {
         vec2 tsz = vec2(textureSize(uAlbedo, 0).xy);
         vec2 dx = dFdx(vCastUv * tsz), dy = dFdy(vCastUv * tsz);
@@ -647,7 +767,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
     shader.fragmentShader = fs;
   };
   depth.defines = { HUMANS_V2: v2 ? 1 : 0 };
-  depth.customProgramCacheKey = () => 'humans-mh-depth-v' + (v2 ? 2 : 1);
+  depth.customProgramCacheKey = () => 'humans-mh-depth-v' + (v2 ? 2 : 1) + 'r3';
   return { mat, depth, uniforms };
 }
 
@@ -692,5 +812,17 @@ export function writeLook(data, row, a) {
   const hat = a.char.hat;
   if (hat) { data[o + 40 + 3] = hat.band; data[o + 99] = hat.rb; }
   const ey = a.char.info.eyeR || [0.031, hc[1] + 0.02, hc[2] - 0.05];
-  data[o + 100] = Math.abs(ey[0]); data[o + 101] = ey[1]; data[o + 102] = ey[2]; data[o + 103] = 0;
+  data[o + 100] = Math.abs(ey[0]); data[o + 101] = ey[1]; data[o + 102] = ey[2];
+  // (eyeball radius, for the iris drawn over the texture's; 0: the texture's own iris)
+  data[o + 103] = a.irisOn && a.char.eyeR ? a.char.eyeR : 0;
+  // eyebrows on the skin: the brow cards' centre line and half height (see mh/brows in humans.js),
+  // brows texel w = opacity
+  const B = a.char.brow;
+  if (B) {
+    data[o + 104] = B.x0; data[o + 105] = B.x1; data[o + 106] = B.a; data[o + 107] = B.b;
+    data[o + 108] = B.c; data[o + 109] = B.t0; data[o + 110] = B.t1; data[o + 111] = B.z;
+    data[o + 8 + 3] = a.browOpacity ?? 0.7;
+  } else {
+    for (let k = 104; k < 112; k++) data[o + k] = 0;
+  }
 }

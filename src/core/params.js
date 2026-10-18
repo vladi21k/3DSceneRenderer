@@ -19,6 +19,8 @@
 //   prof=1         post's per-section GPU timers        taa=0       temporal AA off (post)
 //   taaj=<px>      TAA jitter amplitude (post)          sharp=<k>   final luma sharpening (post)
 //   ffnear=<m>     far field starts nearer (streaming)  audio=1, audiocache=0 (audio)
+//   glbox=0        scalar uniform uploads as three makes them (main.js unboxedUniforms off, A/B)
+//   mie, mieh, miealb, mieg, alt, hlev (env) and hslope, skychroma, skysat (post): light and sky inspection
 
 const q = new URLSearchParams(location.search);
 const num = (k, d) => (q.has(k) && q.get(k) !== '' && !isNaN(+q.get(k)) ? +q.get(k) : d);

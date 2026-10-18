@@ -22,6 +22,9 @@ import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 // railings (instanced geometry near, coverage cards far) or stone balustrades, planters,
 // AC units, flags and dishes. Everything is placed from facadePlan(lot) in the lot's
 // facade frame (u along the wall, v up, w out of the wall). Contract: docs/ARCHITECTURE.md.
+// Published for other modules: app.systems.ironwork.consolesOf(lot) writes the console
+// positions under every balcony onto its facade plan (plan.balconies[i].consoles, see
+// consolesFor), so run-off and grime can follow the real consoles.
 //
 // Level of detail is chosen per INSTANCE (each railing bay, post, console, baluster,
 // plant, planter strap, AC unit) in update(), from projected sizes, so it follows the FOV:
@@ -37,7 +40,8 @@ import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 //   ac     AC unit with pipes and brackets / the bare body, same rule for the pipes
 // Railing cards are always present: they fade in under the geometry and take over from
 // it without holes (see ironwork/mats.js). Far chunks (lod 1) have cards only, far
-// consoles merged into the stone mesh and the same instanced plants as near chunks.
+// consoles merged into the stone mesh, the same instanced plants as near chunks and the
+// same satellite dishes, coarse.
 //
 // Draw calls: nothing is drawn per chunk. Merged geometry goes into one strip per
 // material and detail range for the whole street (ironwork/strip.js: one draw per pass,
@@ -48,7 +52,7 @@ import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 // prepared ahead in small steps (see prefetch and warmStart).
 // Shadows: position-only strips of light stand-ins cast them, the drawn geometry casts
 // nothing. Slabs, consoles, balustrade rails and AC bodies cast in every cascade; the
-// small and thin parts (balusters, pots, planters, chairs, poles, brackets, pipes) only
+// small and thin parts (balusters, pots, planters, chairs, poles, brackets, pipes, dishes) only
 // in the fine cascades, whose texels can hold them (userData.thinCaster). The railing
 // cards (thin) and a coarse twin of the flags cast the rest.
 

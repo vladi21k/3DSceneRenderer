@@ -143,15 +143,15 @@ vFW = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 const FRAG_PARS = /* glsl */`
 uniform float uTime;
 ${ROOM_LIGHT_GLSL}
-// shop lighting by day, relative to the daylight irradiance on the glass: interiors read
-// at ~3–8% of the shaded street's luminance (a few hundred lux against tens of
-// thousands outside), so the glass is dominated by its reflection wherever that shows
-// anything bright, and the goods lit by the window spots read through it
-#define SHOP_DAY 0.0
+// shop lighting by day, relative to the daylight irradiance on the glass: a lit shop
+// keeps ~1000-1500 lux on its floor and goods against ~15 klux on the shaded street's
+// walls (floor illuminance ~0.38 x this level, the window spots ~1.3 x), so the goods by
+// the glass read at a fifth to a quarter of the shaded stone, the back of the shop at a
+// tenth, and the glass is dominated by its reflection wherever that shows anything bright
+#define SHOP_DAY 0.22
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
-// 1/10 (-3.3 EV): the goods by the glass read at a quarter to a third of the shaded
-// street, the back of the shop at a tenth, as in a photograph of a sunny street
+// 1/6 (-2.6 EV), as in a photograph of a sunny street
 #define DAY_CAP ( 1.0 / 32.0 )
 #define DAY_CAP_SHOP ( 1.0 / 6.0 )
 // brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
@@ -1594,7 +1594,9 @@ if ( vFrame.a > 0.5 ) {
   if ( hw > 0.38 ) fMask = max( fMask, 1.0 - smoothstep( 0.045 - aa, 0.045 + aa, abs( x ) ) );
   diffuseColor.rgb = mix( diffuseColor.rgb, vFrame.rgb, fMask );
 }
-// low-frequency smudges and drip marks: rougher, slightly dimmer reflections in patches
+// low-frequency smudges and drip marks: slightly dimmer reflections in patches, a touch
+// rougher (the roughness stays within 0.05: the sun's glint in clean float glass is a
+// small hard point, which a rougher film would spread into a soft ball)
 float fSm = smoothstep( 0.45, 0.85, vnoise( vec2( vRoomP.x * 2.2, vRoomP.y * 1.6 ) + vWin.x * 37.0 ) )
   + 0.5 * smoothstep( 0.6, 0.95, vnoise( vec2( vRoomP.x * 9.0, vRoomP.y * 0.8 ) + vWin.x * 11.0 ) ) * smoothstep( 1.2, 0.0, vRoomP.y - vFac.z );
 float fSmudge = 1.0 - 0.12 * fSm;
@@ -1612,11 +1614,15 @@ export function createInteriorGlass(M, { far = false } = {}) {
     color: new THREE.Color(0.018, 0.018, 0.018), // dust film on the glass
     roughness: 0.03,
     metalness: 0,
-    envMapIntensity: 1,
+    // (no envMapIntensity: three replaces it by scene.environmentIntensity whenever the
+    // environment comes from scene.environment; the reflection's strength is set in the
+    // shader by the exact two-face Fresnel fGlassRT instead)
   });
   m.name = far ? 'facades.glassInteriorFar' : 'facades.glassInterior';
   if (far) { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; }
-  // debug switch facglass=r (reflection only) | t (transmitted room only) | m (a perfect mirror)
+  // debug switch (URL) facglass=r: reflection only | t: transmitted room only | m: the
+  // glass as a perfect mirror of what it reflects | e: a grey card lit by the glass's
+  // ambient light in place of the room
   const dbg = { r: 'FAC_DBG_R', t: 'FAC_DBG_T', m: 'FAC_DBG_M', e: 'FAC_DBG_T\n#define FAC_DBG_E' }[params.str('facglass', '')] || '';
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = U.uTime;
@@ -1633,7 +1639,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
       .replace('#include <color_fragment>', FRAG_FRAME)
-      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor + 0.07 * fSm, 0.55, fMask );')
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = mix( roughnessFactor + 0.02 * min( fSm, 1.0 ), 0.55, fMask );')
       .replace('#include <normal_fragment_maps>', FRAG_NORMAL)
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);

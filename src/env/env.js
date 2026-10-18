@@ -10,7 +10,6 @@ import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms } from '
 import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
 import { StreetLights, patchLightLoops, lampLevel } from './lights.js';
-import { UniformCaches } from './uniformCache.js';
 
 // Environment: physically based sky and sun, cascaded sun shadows, HDR image-based
 // lighting, wind, time of day and the dusk lights. Contract in docs/ARCHITECTURE.md.
@@ -192,8 +191,6 @@ const env = {
     scene.add(this.sun);
 
     this.lights = new StreetLights(app, q.lamps);
-    // per-frame uniforms without boxed-number garbage (see uniformCache.js)
-    this.uniformCaches = new UniformCaches(renderer);
 
     // street-canyon bounce: sunlit stone and paving relight everything around them (warm
     // fill in the shade, glowing soffits). A hemisphere light along the vertical: its sky
@@ -582,7 +579,6 @@ const env = {
 
     // ---- dusk lights
     this.lights.update(app, U.uNight.value, this.state.lamps ?? U.uNight.value);
-    this.uniformCaches.update();
   },
 
   /** Off-scene passes env renders itself (post compiles them up front with its own). */

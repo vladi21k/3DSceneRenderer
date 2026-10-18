@@ -60,7 +60,7 @@ export class PassingLayer {
       const p = e.at(u.s + along, -TRACK_OFFSET, 1.0);
       v.at.x = p.x; v.at.y = p.y; v.at.z = p.z;
       const q = e.toLocal(v.at);
-      const dist = Math.hypot(q.x - L.x, q.y - L.y, q.z - L.z);
+      const ex = q.x - L.x, ey = q.y - L.y, ez = q.z - L.z, dist = Math.sqrt(ex * ex + ey * ey + ez * ez);
       const on = dist < RANGE && u.active !== false;
       if (on && !v.active) { v.em = e.anchor(v.pan, v.at, now + 1e9); }
       if (!on && v.active && v.em) { v.em.until = now; }

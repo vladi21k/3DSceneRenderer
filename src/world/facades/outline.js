@@ -123,3 +123,19 @@ export function headCentre(o) {
   const a = head(o);
   return [0, a.type === 'flat' ? a.s : a.type === 'segment' ? Math.max(a.cy, a.s - 0.5) : a.s];
 }
+
+// ------------------------------------------------------------------ wall relief
+/**
+ * Depth of the rock-faced bosses of a rusticated ground floor in front of the wall plane
+ * (stone.rough draws them with parallax relief up to ~9.5 cm proud of its polygon,
+ * materials meta relief[1]): fittings fixed to that stone stand on the boss faces, and
+ * signs stand off ~0.1 m, or they look sunk into the stone.
+ */
+export const RUSTIC_RELIEF = 0.095;
+/** Whether height v of a front (plan, or a corner return's plan) lies in its rusticated zone. */
+export function inRustic(plan, v) {
+  const r = plan && plan.relief && plan.relief.rustic;
+  return !!r && v < r.v1;
+}
+/** Extra stand-off of a wall fitting at height v: the bosses' depth in the rusticated zone. */
+export const rusticOff = (plan, v) => (inRustic(plan, v) ? RUSTIC_RELIEF : 0);

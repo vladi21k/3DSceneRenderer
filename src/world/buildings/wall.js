@@ -16,6 +16,7 @@ import { arcSeg } from './mesh.js';
 // deep V joints in stone.rough.
 
 const EPS = 1e-4;
+const SLICE = 0.3;   // time slice of a generation step (ms)
 
 function uniqSorted(a) {
   a.sort((x, y) => x - y);
@@ -34,21 +35,17 @@ function refine(a, maxStep) {
 }
 
 const _p = {};
-const _cuts = [], _out = [], _pcs = [];
+const _pcs = [];
+const _cut = new Float64Array(512);                // runCuts output (reused)
+const _runs = [], _jamb = [];                      // free runs of a row (reused)
 
-/** Sorted cut positions across a run [ra, rb], at most maxRun apart. */
+/** Cut positions across a run [ra, rb], at most maxRun apart, into _cut; returns the count. */
 function runCuts(ra, rb, maxRun) {
-  _cuts.length = 0;
-  _cuts.push(ra, rb);
-  _out.length = 0;
-  _out.push(_cuts[0]);
-  for (let i = 1; i < _cuts.length; i++) {
-    const a = _out[_out.length - 1], d = _cuts[i] - a;
-    if (d < EPS) continue;
-    if (d > maxRun) { const n = Math.ceil(d / maxRun); for (let k = 1; k < n; k++) _out.push(a + (d * k) / n); }
-    _out.push(_cuts[i]);
-  }
-  return _out;
+  const d = rb - ra;
+  const n = d > maxRun ? Math.min(511, Math.ceil(d / maxRun)) : 1;
+  for (let k = 0; k < n; k++) _cut[k] = ra + (d * k) / n;
+  _cut[n] = rb;
+  return n + 1;
 }
 
 /** Triangle closing a V-joint half at u, facing dir (±u). */
@@ -71,7 +68,7 @@ function grooveCap(B, s, u, dir, va, vc, groove, c) {
  * ctx.cover tells which dressing closes over the wall around an opening: surround jambs
  * `side` wide up to the spring line, a lintel `ext` beyond the jambs and H tall above a
  * flat head. The wall is left out under them (they are closed boxes, set into the wall).
- * A generator: yields every few rows so a large facade can be spread over frames.
+ * A generator: yields every SLICE ms of rows so a large facade can be spread over frames.
  */
 export function* wallField(ctx, face, openings) {
   const { B, q, fs } = ctx;
@@ -129,8 +126,10 @@ export function* wallField(ctx, face, openings) {
     s.uvx = x;
   };
 
+  let ts = performance.now();
   for (let r = 0; r < nr; r++) {
-    if (r % 8 === 7) yield;
+    // (a step ends once it has taken SLICE ms)
+    if (r && performance.now() - ts > SLICE) { yield; ts = performance.now(); }
     const va = V[r], vc = V[r + 1], vm = (va + vc) / 2;
     // rustication: is this row inside the rusticated zone, and is it half of a V joint?
     let rough = false, groove = 0;
@@ -147,7 +146,8 @@ export function* wallField(ctx, face, openings) {
     const maxRun = sloped && va < gHi + 2.5 ? q.gridU : Infinity;
     // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
     let a = uMin, aJamb = false;
-    const runs = [], jamb = [];
+    const runs = _runs, jamb = _jamb;
+    runs.length = 0; jamb.length = 0;
     for (const h of holes) {
       if (vm <= h.y || vm >= h.hTop) continue;
       // the opening (widened by its jambs below the spring line), or the lintel above it
@@ -171,8 +171,7 @@ export function* wallField(ctx, face, openings) {
         for (let za = pa; za < pb - EPS;) {
           const zb = zi < zc.length && zc[zi] < pb - 0.01 ? zc[zi] : pb;
           B.run = zones.occ[zi];
-          const cuts = runCuts(za, zb, maxRun);
-          const n = cuts.length;
+          const n = runCuts(za, zb, maxRun), cuts = _cut;
           s.reserve(n * 2, (n - 1) * 6);
           const b0 = s.vc;
           if (groove) {

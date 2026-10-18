@@ -21,7 +21,7 @@ _WORK, OUT = CASTM.stage_dirs()
 RAW = os.path.join(_WORK, 'raw')
 WORK = os.path.join(_WORK, 'lod')
 TEXJ = os.path.join(_WORK, 'tex', 'layers.json')
-VERSION = 2
+VERSION = 3
 
 # triangle budgets per part kind for LOD 0..3 (hair: one side; it is drawn double-sided by duplication)
 BUDGET = {
@@ -34,7 +34,7 @@ BUDGET = {
     'eyes': (None, 40, 20, 12),
     'brows': (None, None, 0, 0),
     'lashes': (None, 0, 0, 0),
-    'beard': (None, 160, 60, 0),
+    'beard': (None, 200, 70, 0),
 }
 # simplifier options per part kind: lock the open borders (hems, cuffs, the hair's strand tips), keep
 # small pieces (cards)
@@ -53,7 +53,8 @@ HEM_LODS = (0, 1)
 SHRINK = (0.0, 0.0015, 0.007, 0.012)
 GROW = (0.0, 0.001, 0.004, 0.007)
 GD_RANGE = 0.045
-DOUBLE = ('hair', 'lashes', 'beard')
+# (beards: the runtime grows shells from the base, drawn one-sided)
+DOUBLE = ('hair', 'lashes')
 SIZE_SCALE = {'toddler': 0.7, 'child': 0.85}
 FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT = 1, 2, 4, 8
 ATTR_W = [0.35, 0.35, 0.35, 0.3, 0.3]     # simplifier weights: normal xyz, uv
@@ -77,11 +78,21 @@ for (const j of jobs) {
   // garments)
   const fl = (j.lockBorder ? ['LockBorder'] : []).concat(j.cards ? [] : ['Regularize']);
   let prev = idx;
+  // layers hidden under another layer of cloth (the under-flap of a placket, under-collars) leave from
+  // LOD 1; skin under a garment's hem margin from LOD dropFrom (simplified, they would show through)
+  const idx1 = j.n1 ? new Uint32Array(ab, j.n * 32 + j.t * 12, j.n1 * 3) : null;
+  const dropV = j.dropFrom ? new Uint8Array(ab, j.n * 32 + j.t * 12 + (j.n1 || 0) * 12, j.n) : null;
   for (let li = 0; li < j.targets.length; li++) {
     const t = j.targets[li];
-    if (t === null) { res.push(null); continue; }
+    if (li === 1 && idx1) prev = idx1;
+    if (dropV && li === j.dropFrom) {
+      const keep = [];
+      for (let k = 0; k < prev.length; k += 3) if (!(dropV[prev[k]] && dropV[prev[k + 1]] && dropV[prev[k + 2]])) keep.push(prev[k], prev[k + 1], prev[k + 2]);
+      prev = Uint32Array.from(keep);
+    }
+    if (t === null) { res.push(prev === idx ? null : Array.from(prev)); continue; }
     if (t === 0) { res.push([]); continue; }
-    if (t >= j.t) { res.push(null); continue; }
+    if (t >= j.t && prev === idx) { res.push(null); continue; }
     if (t * 3 >= prev.length) { res.push(Array.from(prev)); continue; }
     // each LOD simplifies the previous one (nested, so a LOD switch changes as little as possible),
     // within an error bound (a budget is a goal, never a reason to wreck the shape)
@@ -161,7 +172,7 @@ def main():
         for p in meta['parts']:
             k = p['key']
             d = {a: z[k + '_' + a] for a in ('co', 'nr', 'uv', 'w', 'idx', 'reg', 'ao')}
-            for extra in ('gd', 'dec'):
+            for extra in ('gd', 'dec', 'under'):
                 if k + '_' + extra in z:
                     d[extra] = z[k + '_' + extra]
             if p['kind'] == 'body':
@@ -183,14 +194,26 @@ def main():
             parts.append(d)
             jid = f'{cid}_{k}'
             fn = jid + '.bin'
+            idx1 = None
+            if p['kind'] == 'suit':
+                cov = covered_layers(d['co'], d['nr'], d['idx'])
+                if cov.any():
+                    idx1 = d['idx'][~cov]
+                    log(cid, f'{p.get("suit")}: {int(cov.sum())} triangles under another layer left out of LOD 1+')
+            dropv = d['under'].astype(np.uint8) if p['kind'] == 'body' and 'under' in d else None
             with open(os.path.join(WORK, fn), 'wb') as f:
                 f.write(d['co'].astype(np.float32).tobytes())
                 f.write(np.concatenate([d['nr'], d['uv']], 1).astype(np.float32).tobytes())
                 f.write(d['idx'].astype(np.uint32).tobytes())
+                if idx1 is not None:
+                    f.write(idx1.astype(np.uint32).tobytes())
+                if dropv is not None:
+                    f.write(dropv.tobytes())
             jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets'],
                              cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows'), lockBorder=p['kind'] in LOCK_BORDER,
                              cardError=list(CARD_ERROR) if p['kind'] in ('hair', 'beard') else None,
-                             loose=p['kind'] in ('shoes', 'eyes')))
+                             loose=p['kind'] in ('shoes', 'eyes'), n1=int(len(idx1)) if idx1 is not None else 0,
+                             dropFrom=2 if dropv is not None else 0))
         chars[cid] = (meta, parts)
     with open(os.path.join(WORK, 'jobs.json'), 'w') as f:
         json.dump(jobs, f)
@@ -255,11 +278,15 @@ def main():
             base_nv = nv
             nv += n
             for li in range(4):
+                if li > 0 and d['kind'] in ('body', 'suit') and len(lodidx[li]):
+                    # far LODs keep a subset of the vertices: occlusion and normals averaged over the area each
+                    # one stands for (a vertex deep in a fold must not paint a dark patch over a big triangle)
+                    sao, snr = smooth_attrs(d['co'], d['ao'], d['nr'], SMOOTH_R[li])
                 if d['kind'] == 'body' and SHRINK[li] > 0 and 'gd' in d and len(lodidx[li]):
                     # a copy of the skin for this far LOD, pulled in under nearby garment edges
                     f = np.clip((GD_RANGE - d['gd']) / GD_RANGE, 0, 1)[:, None]
-                    P.append(d['co'] - d['nr'] * SHRINK[li] * f); N.append(d['nr']); UV.append(uv); W.append(d['w'])
-                    AO.append(d['ao']); TEXA.append(ta)
+                    P.append(d['co'] - d['nr'] * SHRINK[li] * f); N.append(snr); UV.append(uv); W.append(d['w'])
+                    AO.append(sao); TEXA.append(ta)
                     lods[li].append(lodidx[li] + nv)
                     nv += n
                 elif d['kind'] == 'suit' and GROW[li] > 0 and len(lodidx[li]):
@@ -267,8 +294,8 @@ def main():
                     g = GROW[li] * (1.5 if (d['reg'] != CASTM.REGIONS['bottom']).all() is False else 1.0)
                     grow = np.where(d['reg'] == CASTM.REGIONS['bottom'], GROW[li], GROW[li] * 1.6)[:, None]
                     del g
-                    P.append(d['co'] + d['nr'] * grow); N.append(d['nr']); UV.append(uv); W.append(d['w'])
-                    AO.append(d['ao']); TEXA.append(ta)
+                    P.append(d['co'] + d['nr'] * grow); N.append(snr); UV.append(uv); W.append(d['w'])
+                    AO.append(sao); TEXA.append(ta)
                     lods[li].append(lodidx[li] + nv)
                     nv += n
                 else:
@@ -375,8 +402,10 @@ def main():
         version=VERSION,
         # decal: skin tex.y = skin decals (128 none, > 128 beard growth, < 128 hair-covered scalp); hair
         # tex.y = strand fade (254 none .. 0 cut strand ends);
-        # innerHem: flag 2 on a garment region = inner face near an opening; beardShell: beards with volume only
-        features=['decal', 'innerHem', 'beardShell'],
+        # innerHem: flag 2 on a garment region = inner face near an opening; beardShell: beards with volume only;
+        # beardBase: the beard part is the base the runtime grows shells from (uv = length, density; one-sided);
+        # softCut: hair tex.y fades strand ends along a smooth line; lodClean: far LODs without hidden layers
+        features=['decal', 'innerHem', 'beardShell', 'beardBase', 'softCut', 'lodClean'],
         format=FORMAT_DOC,
         license='Human figures: generated with MPFB2 from MakeHuman system assets, CC0 1.0',
         bones=CASTM_BONES(),
@@ -393,6 +422,74 @@ def main():
         json.dump(doc, f, separators=(',', ':'))
     gz = os.path.getsize(os.path.join(OUT, 'cast.bin.gz'))
     log(f'wrote cast.json + cast.bin.gz ({len(binary) // 1024} KB raw, {gz // 1024} KB gz), {len(out_chars)} characters')
+
+
+# far-LOD copies of skin and garments: occlusion and normals averaged within this radius (m) per LOD
+SMOOTH_R = (0.0, 0.018, 0.04, 0.07)
+# and never darker than this (a whole far triangle in a fold's shadow reads as a hole)
+AO_FLOOR = (0.0, 0.2, 0.35, 0.45)
+
+
+def smooth_attrs(co, ao, nr, R):
+    """Gaussian-weighted averages (radius R) of occlusion and normals over a part's vertices."""
+    from scipy.spatial import cKDTree
+    n = len(co)
+    k = int(min(n, max(8, 24 * (R / 0.018) ** 2)))
+    tree = cKDTree(co)
+    dist, j = tree.query(co, k=k)
+    w = np.exp(-(dist / max(R * 0.6, 1e-4)) ** 2) * (dist < R)
+    w[:, 0] = 1.0
+    ws = w.sum(1, keepdims=True)
+    sao = (ao[j] * w).sum(1) / ws[:, 0]
+    # (a far triangle's AO is the mean of the area it covers, with the darkest folds lifted)
+    li = SMOOTH_R.index(R) if R in SMOOTH_R else 1
+    sao = np.maximum(sao, AO_FLOOR[li]).astype(np.float32)
+    snr = (nr[j] * w[..., None]).sum(1)
+    snr = 0.35 * nr + 0.65 * snr / np.maximum(1e-9, np.linalg.norm(snr, axis=1, keepdims=True))
+    snr /= np.maximum(1e-9, np.linalg.norm(snr, axis=1, keepdims=True))
+    return sao, snr.astype(np.float32)
+
+
+def covered_layers(co, nr, idx, reach=0.012):
+    """Triangles of a garment lying under another layer of the same garment (the under-flap of a placket,
+    under-collars, pocket linings): a ray out along the face normal meets a triangle facing the same way
+    within `reach`."""
+    from scipy.spatial import cKDTree
+    t = idx.reshape(-1, 3)
+    P = co[t].astype(np.float64)
+    fn = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+    vn = nr[t].sum(1)
+    fn = np.where(((fn * vn).sum(1) < 0)[:, None], -fn, fn)
+    fn /= np.maximum(1e-12, np.linalg.norm(fn, axis=1, keepdims=True))
+    c = P.mean(1)
+    tree = cKDTree(c)
+    out = np.zeros(len(t), bool)
+    e1 = P[:, 1] - P[:, 0]
+    e2 = P[:, 2] - P[:, 0]
+    for i in range(len(t)):
+        o = c[i] + fn[i] * 0.0006
+        dvec = fn[i]
+        cand = tree.query_ball_point(o + dvec * reach * 0.5, reach * 0.5 + 0.03)
+        if len(cand) < 2:
+            continue
+        cand = np.array([j for j in cand if j != i])
+        cand = cand[(fn[cand] @ dvec) > 0.4]
+        if not len(cand):
+            continue
+        # Moller-Trumbore against the candidates
+        pv = np.cross(dvec, e2[cand])
+        det = (e1[cand] * pv).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1), 0)
+        tv = o - P[cand, 0]
+        u = (tv * pv).sum(1) * inv
+        qv = np.cross(tv, e1[cand])
+        v = (qv @ dvec) * inv
+        tt = (e2[cand] * qv).sum(1) * inv
+        hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (tt > 0.0002) & (tt < reach)
+        if hit.any():
+            out[i] = True
+    return out
 
 
 def inward_vertices(d, body):
@@ -530,6 +627,10 @@ characters[i]: one dressed character in the rest pose of the runtime skeleton (s
   scalp 0..1); hair tex.y = strand fade at trimmed ends (254 none .. 0); garments carry inner faces near
   their openings and on faces turned towards the body (flag 2 on a garment region: shade as the inside);
   beards are a volume shell over the dense part only (the rest is the skin decal).
+  version 3 (beardBase): the beard part lies 0.6 mm above the skin over the whole beard; uv u = beard length
+  (0..1 = 0..4 cm), v = growth density; a renderer grows strand shells from it along the normals.
+  Far LODs leave out cloth hidden under another layer (LOD 1+) and skin under garment hems (LOD 2+); their
+  normals and occlusion are averaged over the area the simplified vertices stand for.
 flags: 1 alpha-tested coverage (hair, brows, lashes, beard), 2 duplicated back face of a double-sided card,
   4 detail texture: albedo_linear = 2 * texel_linear * tint_linear (else albedo = texel * tint),
   8 skirt / dress below the waist (weighted pelvis -> both thighs; a renderer may add its own sway or flare).

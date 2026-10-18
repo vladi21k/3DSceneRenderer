@@ -512,7 +512,7 @@ const PAINT = /* glsl */ `
   if (sfFlags.z > 0.5) {
     vec3 sfPc = diffuseColor.rgb / max(sfAlb, vec3(0.02));
     float sfDk = 1.0 - smoothstep(0.1, 0.2, dot(sfPc, vec3(0.2126, 0.7152, 0.0722)));
-    diffuseColor.rgb = mix(mix(sfAlb, sfPc * 0.9, 0.7 * sfDk), diffuseColor.rgb, sfS.b);
+    diffuseColor.rgb = mix(mix(sfAlb, sfPc * 0.9, 0.75 * sfDk), diffuseColor.rgb, sfS.b);
   }
 `;
 

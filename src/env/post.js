@@ -73,6 +73,9 @@ const TONE = {
   sat: [1.16, 1.08],
   // sky pixels keep nearly the scene's colour ratios (a saturated blue overhead)
   skyChroma: 0.95, skySat: [1.2, 1.05],
+  // glow skirt around sources far above white, from sunset on (lantern globes, lit glass):
+  // threshold and knee in exposed units, strength (time of day, strength)
+  glowThresh: 4, glowKnee: 16, glow: [[0.74, 0], [0.8, 0.22], [0.9, 0.16], [1.0, 0.12]],
 };
 
 // temporal AA: weight of the new frame, variance clip width, jitter sequence length and
@@ -296,7 +299,18 @@ const post = {
       tDepth: { value: null }, uBlack: { value: 0 },
       uSkyChroma: { value: app.params.num ? app.params.num('skychroma', TONE.skyChroma) : TONE.skyChroma },
       uSkySat: { value: TONE.skySat[0] },
+      tGlow: { value: null }, uGlow: { value: 0 },
     });
+    // glow extraction (shares the final pass's exposure inputs)
+    {
+      const f = this.final.material.uniforms;
+      this.glowPass = pass(S.GLOW_FS, {
+        tSrc: { value: null }, uTexel: { value: new THREE.Vector2() },
+        uThresh: { value: TONE.glowThresh }, uKnee: { value: TONE.glowKnee }, tLum: { value: null },
+        uExposure: f.uExposure, uExposureMax: f.uExposureMax, uAutoExp: f.uAutoExp,
+        uMeterTarget: f.uMeterTarget, uMeterClamp: f.uMeterClamp,
+      });
+    }
 
     // the materials' baked AO is scaled down while the screen-space AO runs
     const mu = app.materials?.uniforms;
@@ -333,7 +347,7 @@ const post = {
    */
   _precompile() {
     const r = this.app.renderer, env = this.app.systems.env;
-    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum];
+    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum, this.glowPass];
     for (const m of env?.passes?.() || []) into.push(m);
     const prev = r.getRenderTarget();
     const group = (meshes, rt) => {
@@ -367,6 +381,11 @@ const post = {
     const bu = this.blur.material.uniforms;
     bu.tSrc.value = this.hdrRT.texture; bu.tDepth.value = this.sceneRT.depthTexture;
     this._draw(this.blur, this.dofRT);
+    if (this.glowDowns && this.glowDowns[0] && this.downs[0]) {
+      const gu = this.glowPass.material.uniforms;
+      gu.tSrc.value = this.downs[0].texture; gu.tLum.value = this.lumRT[0].texture;
+      this._draw(this.glowPass, this.glowDowns[0]);
+    }
     if (env && env.sky && env.sky.warmCopy) env.sky.warmCopy();
     r.setRenderTarget(prev);
   },
@@ -403,6 +422,16 @@ const post = {
       this.downs.push(target(w, h));
       this.ups.push(i > 0 && i < q.levels - 1 ? target(w, h) : null);
     }
+    // glow pyramid: quarter, eighth and sixteenth resolution (down), eighth and quarter (up)
+    const gq = this.downs[1] || this.downs[0];
+    this.glowDowns = [];
+    this.glowUps = [];
+    w = gq.width; h = gq.height;
+    for (let i = 0; i < 3; i++) {
+      this.glowDowns.push(target(w, h));
+      this.glowUps.push(i < 2 ? target(w, h) : null);
+      w = Math.max(1, Math.ceil(w / 2)); h = Math.max(1, Math.ceil(h / 2));
+    }
     this.app.systems.env?.clouds?.setSize(W, H);
     this.final.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uResolution.value.set(W, H);
@@ -418,7 +447,7 @@ const post = {
     }
     for (const t of this.taaRT || []) t.dispose();
     this.taaRT = null;
-    for (const t of [...(this.downs || []), ...(this.ups || [])]) t && t.dispose();
+    for (const t of [...(this.downs || []), ...(this.ups || []), ...(this.glowDowns || []), ...(this.glowUps || [])]) t && t.dispose();
   },
 
   _draw(mesh, rt) {
@@ -464,6 +493,7 @@ const post = {
     // contact shadows read deeper once the light is all lamps and sky
     pu.uAOStrength.value = Math.min(AO.strength * lerp(1, 1.3, ss(night, 0.5, 1)), 1);
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
+    fu.uGlow.value = table(TONE.glow, t);
     fu.uTail.value = TONE.tail * ss(night, 0.3, 1.0);
     fu.uExposure.value = env ? env.exposure : 1;
     fu.uExposureMax.value = env ? env.exposureMax ?? 1e4 : 1e4;
@@ -911,9 +941,39 @@ const post = {
     this.lumPing ^= 1;
     this._draw(this.lum, this.lumRT[this.lumPing]);
 
+    // ---- 8b. glow around sources far above white (from sunset on)
+    const fu = this.final.material.uniforms;
+    fu.tGlow.value = low.texture;
+    if (fu.uGlow.value > 0 && this.glowDowns && this.glowDowns.length === 3) {
+      if (prof) prof.begin('glow');
+      const gu = this.glowPass.material.uniforms, G = this.glowDowns, Gu = this.glowUps;
+      const src0 = this.downs[0];
+      gu.tSrc.value = src0.texture;
+      gu.uTexel.value.set(1 / src0.width, 1 / src0.height);
+      gu.tLum.value = this.lumRT[this.lumPing].texture;
+      this._draw(this.glowPass, G[0]);
+      du.uKaris.value = 0; du.uClamp.value = 1e4;
+      for (let i = 1; i < 3; i++) {
+        du.tSrc.value = G[i - 1].texture;
+        du.uTexel.value.set(1 / G[i - 1].width, 1 / G[i - 1].height);
+        this._draw(this.down, G[i]);
+      }
+      // a tighter skirt than the bloom: more of the finer levels
+      uu.uScatter.value = 0.5;
+      let gl = G[2];
+      for (let i = 1; i >= 0; i--) {
+        uu.tLow.value = gl.texture;
+        uu.tHigh.value = G[i].texture;
+        uu.uTexel.value.set(1 / gl.width, 1 / gl.height);
+        this._draw(this.up, Gu[i]);
+        gl = Gu[i];
+      }
+      uu.uScatter.value = 0.68;
+      fu.tGlow.value = gl.texture;
+    }
+
     // ---- 9. final
     if (prof) prof.begin('final');
-    const fu = this.final.material.uniforms;
     fu.tHDR.value = img.texture;
     fu.tBloom.value = low.texture;
     const tail = this.ups[Math.min(3, this.ups.length - 2)] || low;
@@ -926,7 +986,7 @@ const post = {
     if (prof) {
       prof.end();
       const t = prof.timings;
-      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.final || 0);
+      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.glow || 0) + (t.final || 0);
       t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.main || 0) + (t.envmap || 0);
       app.perf.gpuMs = t.total;
     }

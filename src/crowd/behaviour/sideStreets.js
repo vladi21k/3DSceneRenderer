@@ -42,36 +42,47 @@ export class SideStreets {
     if (g) return g;
     const key = cs.s * 4 + side;
     const c = this.c, route = c.route, L = c.layout;
+    // the street module's own mouth frame and paving (sidewalks, kerbs, crown, the ramp up to the
+    // side street's ground) when it offers them; else the same frame worked out here
+    const st = c.app.systems && c.app.systems.street;
+    let M = null;
+    if (st && !st.disabled && typeof st.mouth === 'function') { try { M = st.mouth(cs, side); } catch (e) { M = null; } }
+    const street = M && typeof st.sideHeightAt === 'function' ? st : null;
     const smp = route.sample(cs.s, {});
-    const hw = L.halfWidth(cs.s, side);
-    const start = route.toWorld(cs.s, side * hw, 0, new THREE.Vector3());
-    const along = smp.tanH.clone();
-    const out = smp.right.clone().multiplyScalar(side);
-    const ca = Math.cos(cs.angle || 0), sa = Math.sin(cs.angle || 0);
-    // (rotated about +Y like Vector3.applyAxisAngle: the street module's mouth frame)
-    const dirOut = new THREE.Vector3(out.x * ca + out.z * sa, 0, -out.x * sa + out.z * ca);
+    const hw = M ? M.hw : L.halfWidth(cs.s, side);
+    const start = M ? M.start : route.toWorld(cs.s, side * hw, 0, new THREE.Vector3());
+    const along = M ? M.along : smp.tanH.clone();
+    let dirOut = M ? M.dirOut : null;
+    if (!dirOut) {
+      const out = smp.right.clone().multiplyScalar(side);
+      const ca = Math.cos(cs.angle || 0), sa = Math.sin(cs.angle || 0);
+      // (rotated about +Y like Vector3.applyAxisAngle: the street module's mouth frame)
+      dirOut = new THREE.Vector3(out.x * ca + out.z * sa, 0, -out.x * sa + out.z * ca);
+    }
     const n = new THREE.Vector3(-along.z, 0, along.x);
     if (n.dot(dirOut) < 0) n.negate();
-    const half = cs.width / 2;
-    const sw = Math.min(2.6, Math.max(1.6, cs.width * 0.2));
-    const road = half - sw;
+    const half = M && M.half > 0 ? M.half : cs.width / 2;
+    const sw = M && M.sw > 0 ? M.sw : Math.min(2.6, Math.max(1.6, cs.width * 0.2));
+    const road = M && M.road > 0 ? M.road : half - sw;
     // main paving height along the mouth line (every half metre), which the side street ramps
     // from to the junction's level over SIDE_LOT_START metres (street/crossStreets.js)
-    const st = c.app.systems && c.app.systems.street;
     const base = [];
-    for (let a = -half - 0.5; a <= half + 0.51; a += 0.5) {
-      const s = cs.s + a;
-      let y;
-      try { y = st && st.heightAt ? route.elevation(s) + st.heightAt(s, side * hw) : route.toWorld(s, side * hw, 0, _v).y; } catch (e) { y = route.toWorld(s, side * hw, 0, _v).y; }
-      base.push(y);
+    if (!street) {
+      for (let a = -half - 0.5; a <= half + 0.51; a += 0.5) {
+        const s = cs.s + a;
+        let y;
+        try { y = st && st.heightAt ? route.elevation(s) + st.heightAt(s, side * hw) : route.toWorld(s, side * hw, 0, _v).y; } catch (e) { y = route.toWorld(s, side * hw, 0, _v).y; }
+        base.push(y);
+      }
     }
-    g = { cs, side, hw, start, along, dirOut, n, half, sw, road, base, level: start.y, len: (cs.depth || 60) + 16 + 30, line: c.map.mouthLine(cs, side), key };
+    g = { cs, side, hw, start, along, dirOut, n, half, sw, road, base, level: start.y, len: (cs.depth || 60) + 16 + 30, line: c.map.mouthLine(cs, side), key, street };
     e[side > 0 ? 1 : 0] = g;
     return g;
   }
 
   /** Paving height (world y) at (a, x) of side street g. */
   height(g, a, x) {
+    if (g.street) return g.street.sideHeightAt(g.cs, g.side, a, x);
     const i = Math.max(0, Math.min(g.base.length - 1.001, (a + g.half + 0.5) / 0.5));
     const i0 = Math.floor(i), f = i - i0;
     const b = g.base[i0] + (g.base[Math.min(g.base.length - 1, i0 + 1)] - g.base[i0]) * f;

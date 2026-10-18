@@ -107,14 +107,19 @@ const street = {
       let p = plans.get(ci);
       if (!p) {
         const j = this.planJob;
-        if (j && j.ci === ci) {
-          // finish the one in progress (a generator cannot be restarted)
+        if (j && j.ci === ci && !j.running) {
+          // finish the one in progress (a generator cannot be restarted); it keeps its
+          // detail plan as soon as it has it
+          this.planJob = null;
+          j.running = true;
           let r = j.it.next();
           while (!r.done) r = j.it.next();
-          this.planJob = null;
-          p = r.value;
-        } else p = planDetails(this.ctx, ci);
-        this._keepPlan(ci, p);
+          p = plans.get(ci);
+        }
+        if (!p) {
+          p = planDetails(this.ctx, ci);
+          this._keepPlan(ci, p);
+        }
       }
       return p;
     };
@@ -301,13 +306,12 @@ const street = {
       if (!j) {
         const ci = this._unplanned(sCam);
         if (ci < 0) break;
-        j = this.planJob = { ci, it: planChunk(this.ctx, ci) };
+        j = this.planJob = { ci, it: planChunk(this, ci), running: false };
       }
+      j.running = true;
       const r = j.it.next();
-      if (r.done) {
-        this.planJob = null;
-        if (!this.plans.has(j.ci)) this._keepPlan(j.ci, r.value);
-      }
+      j.running = false;
+      if (r.done && this.planJob === j) this.planJob = null;
     }
 
     this._ahead(sCam, LOD0_DIST, LOD0_DIST + LEAD, 0);
@@ -338,12 +342,13 @@ const street = {
     } while (next && performance.now() - t0 < PREFETCH_MS * 0.5);
   },
 
-  /** First chunk in view range (from VIEW_BEHIND behind the camera on) without a detail
-   *  plan, or -1. */
+  /** First chunk in view range (from VIEW_BEHIND behind the camera on, to a few chunks
+   *  beyond the farthest prefetched build, whose rows read their neighbours' plans and
+   *  whose side streets are planned two chunks on) without a detail plan, or -1. */
   _unplanned(sCam) {
     const L = this.ctx.layout, n = L.nChunks;
     const c0 = L.chunkIndex(sCam - VIEW_BEHIND);
-    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD) / CHUNK_LEN) + 2;
+    const nAhead = Math.ceil((VIEW_BEHIND + VIEW_AHEAD + LEAD) / CHUNK_LEN) + 4;
     for (let k = 0; k < nAhead; k++) {
       const ci = (c0 + k) % n;
       if (!this.plans.has(ci)) return ci;
@@ -368,12 +373,15 @@ const street = {
   },
 };
 
-/** The detail plan of chunk ci, then the plans of the crossovers starting in it and the
- *  mouth profiles and wear plans of the side streets two chunks back (their paving
- *  heights read the detail plans of the chunks round them, planned by now), as short
- *  steps (see planSteps); returns the detail plan. */
-function* planChunk(ctx, ci) {
+/** The detail plan of chunk ci (kept in street.plans as soon as it is made), then the
+ *  plans of the crossovers starting in it and the mouth profiles and wear plans of the
+ *  side streets two chunks back (their paving heights read the detail plans of the
+ *  chunks round them, planned by now), as short steps (see planSteps). */
+function* planChunk(street, ci) {
+  const ctx = street.ctx;
   const p = yield* planSteps(ctx, ci);
+  // kept now: the side-street steps below read the paving round them (this chunk too)
+  if (!street.plans.has(ci)) street._keepPlan(ci, p);
   for (const c of ctx.layout.inChunk('crossovers', ci)) {
     yield 'plan';
     crossoverPlan(c, ctx.delta);

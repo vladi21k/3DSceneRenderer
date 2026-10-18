@@ -527,6 +527,7 @@ def build_one(cid, save_blend=False):
     # skin within a margin of a garment's hem, cuff or neckline stays (a raised arm or a striding leg
     # opens the hem: there must be skin, not a hole, under it)
     margin = 0.032 * kscale
+    del_any0 = del_any.copy()
     if bnd:
         B = np.concatenate(bnd)
         kdb = KDTree(len(B))
@@ -590,6 +591,16 @@ def build_one(cid, save_blend=False):
         h = gbvh.ray_cast(o + n * 0.002, -n, 0.025)
         if h[0] is not None and gbvh.ray_cast(o - n * 0.002, n, MAXD)[0] is None:
             push[i] = max(0.0, h[3] - 0.002) + 0.004
+    # skin under a garment that stays (within the hem margin, a raised arm or a stride opens it): the far
+    # LODs leave it out (mh_export.py), their simplified garments would show it through in patches
+    under = deleted.copy()
+    for i in np.where(del_any0 & ~deleted)[0]:
+        n = Vector(body['nr'][i].tolist())
+        o = Vector(body['co'][i].tolist())
+        h = gbvh.ray_cast(o - n * 0.002, n, MAXD)
+        if fits(i, h) and h[0] is not None:
+            under[i] = True
+    body['under'] = under
     # feet inside the shoes go (a heel or toe poking through the sole shows as a skin patch under it)
     shoes = [op for op in out_parts if op['kind'] == 'shoes']
     if shoes:
@@ -631,7 +642,7 @@ def build_one(cid, save_blend=False):
             if bd is not None:
                 out_parts.append(dict(kind='beard', d=bd, keep=np.ones(len(bd['ls']), bool),
                                       region=np.full(len(bd['ls']), CASTM.REGIONS['beard'], np.int16),
-                                      tex='beard:full', info={}))
+                                      tex='beard:shell', info={}))
     hair = [op for op in out_parts if op['kind'] == 'hair' and op['keep'].any()]
     scalp_cov = scalp_coverage(body, bkeep, hair[0], headw, E, hk) if hair else np.zeros(len(body['co']), np.float32)
     dec = np.where(beard_cov >= scalp_cov, 128 + np.round(127 * np.clip(beard_cov, 0, 1)),
@@ -729,6 +740,8 @@ def build_one(cid, save_blend=False):
         raw[name + '_reg'] = vreg
         if 'dec' in op:
             raw[name + '_dec'] = op['dec'][vsrc]
+        if op['kind'] == 'body' and 'under' in d:
+            raw[name + '_under'] = d['under'][vsrc].astype(np.uint8)
         meta_parts.append(dict(key=name, kind=op['kind'], tex=op['tex'], verts=int(len(uk)), tris=int(len(tris)),
                                suit=op['info'].get('suit')))
 
@@ -987,10 +1000,10 @@ def pose_relaxed(rig, spec):
         rotate(f'foot_{s}', v0.rotation_difference(v1).inverted())
 
 
-BEARD = {   # shell thickness (m), lower reach under the chin (x head scale), cheek line below the eyes, chin volume (m)
+BEARD = {   # cheek beard length (m), lower reach under the chin (x head scale), cheek line below the eyes, chin volume (m)
     'stubble': (0.0, 0.026, 0.056, 0.0),
-    'short': (0.0025, 0.034, 0.054, 0.006),
-    'full': (0.0045, 0.050, 0.050, 0.017),
+    'short': (0.0045, 0.024, 0.054, 0.004),
+    'full': (0.011, 0.032, 0.050, 0.014),
 }
 
 
@@ -1038,12 +1051,14 @@ def beard_coverage(body, style, eyes, J, headw):
 
 
 def beard_shell(body, bkeep, style, cov, eyes, J):
-    """The volume of a short or full beard: the skin polygons of its dense part, offset along the normals
-    (thicker at the chin and jaw, hanging a little), UV u = position around the jaw, v = coverage (the
-    texture's strands thin out towards low v, so the shell's border is wispy, not a mask line)."""
+    """The base of a short or full beard's volume: every skin polygon the beard grows on (its soft
+    border included), 0.6 mm above the skin. The runtime grows shells from it (src/crowd/humans.js):
+    uv u = the beard's length there (0..1 = 0..4 cm: longer at the chin and jaw, the volume hanging a
+    little, falling to nothing at the border), v = growth density (the coverage); the shader draws the
+    strands. Weights follow the skin."""
     import numpy as np
     co, nr = body['co'], body['nr']
-    thick, _, _, bulge = BEARD[style]
+    length, _, _, bulge = BEARD[style]
     E = eyes.mean(0)
     k = max(0.5, (J['head'][2] + 0.25) / 1.75)
     lips = np.array([i for i, w in body['groups'].get('lips', []) if w > 0.5])
@@ -1054,7 +1069,7 @@ def beard_shell(body, bkeep, style, cov, eyes, J):
     sel = []
     for p in np.where(bkeep)[0]:
         vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
-        if cov[vs].min() > 0.18:
+        if cov[vs].max() > 0.04:
             sel.append(p)
     if not sel:
         return None
@@ -1062,15 +1077,17 @@ def beard_shell(body, bkeep, style, cov, eyes, J):
     remap = -np.ones(len(co), np.int64)
     remap[vids] = np.arange(len(vids))
     c = np.clip(cov[vids], 0, 1)
-    nco = co[vids] + nr[vids] * (thick * (0.25 + 0.75 * c))[:, None]
-    if bulge > 0:
-        # volume at the chin and jaw, tapering towards the cheeks; it hangs a little
-        under = sm(0.0, 0.045 * k, lz - z[vids]) * sm(0.2, 0.7, c) * (1 - 0.5 * sm(0.03 * k, 0.065 * k, np.abs(x[vids])))
-        nco = nco + nr[vids] * (bulge * under)[:, None]
-        nco[:, 2] -= bulge * 0.45 * under
-    ang = np.arctan2(x[vids], -y[vids])                    # around the jaw
-    u = np.clip(0.5 + ang / np.pi * 0.75, 0.01, 0.99)
-    v = 0.04 + 0.92 * np.clip((c - 0.18) / 0.6, 0, 1)
+    nco = co[vids] + nr[vids] * 0.0006
+    # length: the cheeks' growth, the moustache a little shorter, the volume at the chin and jaw
+    ax = np.abs(x[vids])
+    # (longest round the chin and along the jaw's lower edge, short again down the throat)
+    dz = lz - z[vids]
+    under = sm(0.0, 0.035 * k, dz) * (1 - 0.65 * sm(0.055 * k, 0.08 * k, dz)) * (1 - 0.5 * sm(0.03 * k, 0.065 * k, ax))
+    mous = (1 - sm(0.022 * k, 0.04 * k, ax)) * sm(lz - 0.004 * k, lz + 0.006 * k, z[vids]) * (1 - sm(lz + 0.02 * k, lz + 0.03 * k, z[vids]))
+    T = length * (1 - 0.35 * mous) + bulge * under
+    T = T * sm(0.04, 0.55, c)
+    u = np.clip(T / 0.04, 0, 1)
+    v = c
     vi, uvl, ls, lt = [], [], [], []
     for p in sel:
         vs = body['vi'][body['ls'][p]:body['ls'][p] + body['lt'][p]]
@@ -1079,6 +1096,7 @@ def beard_shell(body, bkeep, style, cov, eyes, J):
         for vv in vs:
             vi.append(remap[vv])
             uvl.append((u[remap[vv]], v[remap[vv]]))
+    log(f'  beard base: {len(sel)} polygons, length up to {T.max() * 100:.1f} cm')
     return dict(co=nco.astype(np.float32), nr=nr[vids], vi=np.array(vi, np.int32), uv=np.array(uvl, np.float32),
                 ls=np.array(ls, np.int32), lt=np.array(lt, np.int32), W=body['W'][vids], groups={}, name='beard')
 
@@ -1569,34 +1587,44 @@ def face_front(body, E, hk):
 
 
 def clear_face_window(d, body, E, hk, style, cid):
-    """Trim hair that hangs in front of the eyes and brows (side-swept fringes): polygons inside a window
-    in front of the face (from the cheekbones up to a hairline ~2 cm above the brows, between the
-    temples) go, and the kept polygons' vertices inside it move to its edge, so the fringe ends in a
-    clean line above the brows and the side hair frames the face."""
+    """Trim hair that hangs in front of the eyes and brows (side-swept fringes) with a soft cut: a
+    window in front of the face (from the cheekbones up to a hairline ~4 cm above the eye centres,
+    between the temples). Each hair vertex gets its signed distance to the window; the hair fades out
+    (strand ends, broken up by the shader) over the last FADE outside it, polygons wholly inside go.
+    The fade is linear across each polygon, so the fringe ends in a smooth line (never a sawtooth of
+    removed quads)."""
     import numpy as np
     co = d['co']
     front = face_front(body, E, hk)
     hl = E[2] + 0.040 * hk           # hairline (the brows are ~2 cm above the eye centres)
     lo = E[2] - 0.075 * hk
     wx = 0.064 * hk
+    FADE = 0.016 * hk
     n = len(co)
-    inwin = np.zeros(n, bool)
+    sd = np.ones(n, np.float64)      # signed distance to the window (m), < 0 inside
     for i in range(n):
         x, y, z = co[i]
-        if abs(x - E[0]) >= wx or z >= hl or z <= lo:
+        cx = min(max(x, E[0] - wx), E[0] + wx)
+        cz = min(max(z, lo), hl)
+        fy = front(cx, cz)
+        if fy is None:
             continue
-        fy = front(x, z)
-        if fy is not None and y < fy + 0.018 * hk:
-            inwin[i] = True
+        # (rounded box: above the hairline / beside the temples / below the cheekbones / behind the
+        # plane 1.8 cm in front of the face are outside)
+        sd[i] = max(z - hl, abs(x - E[0]) - wx, lo - z, y - (fy + 0.018 * hk))
+    inwin = sd <= 0
     if not inwin.any():
         return 0
-    # every polygon reaching into the window in front of the face goes (moving its vertices instead
-    # would fold the cards flat against the forehead); long cards hanging across the window too
+    fade_v = np.clip(sd / FADE, 0.0, 1.0)
+    # polygons wholly inside the window go; long cards hanging across the window in front of the
+    # face too (their corners lie outside it)
     drop = np.zeros(len(d['ls']), bool)
     for p in range(len(d['ls'])):
         vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
-        if inwin[vs].any():
+        if inwin[vs].all():
             drop[p] = True
+            continue
+        if inwin[vs].any():
             continue
         pv = co[vs]
         zmin, zmax = pv[:, 2].min(), pv[:, 2].max()
@@ -1639,19 +1667,17 @@ def clear_face_window(d, body, E, hk, style, cid):
     used = np.zeros(n, bool)
     for p in np.where(~drop)[0]:
         used[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
-    tgt = np.zeros(n, np.int8)
-    moved = 0
-    # strand ends at the cut fade out (the shader breaks the fade into strands): the moved vertices and
-    # the kept polygons' vertices on the new border
-    fade = np.ones(n, np.float32)
-    fade[tgt > 0] = 0.0
+    # strand ends at the cut fade out (the shader breaks the fade into strands of uneven length);
+    # the kept polygons' vertices on the border of a dropped card (a card hanging across the window)
+    # fade too
+    fade = fade_v.astype(np.float32)
     for p in np.where(drop)[0]:
         for v in d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]:
-            if used[v]:
-                fade[v] = 0.0
+            if used[v] and not inwin[v]:
+                fade[v] = min(fade[v], 0.0)
     d['fade'] = fade
     drop_polys(d, drop)
-    log(cid, f'hair {style}: face window cleared ({int(drop.sum())} polygons trimmed)')
+    log(cid, f'hair {style}: face window cut ({int(drop.sum())} polygons dropped, {int(((fade > 0) & (fade < 1) & used).sum())} vertices fading)')
     return int(drop.sum())
 
 

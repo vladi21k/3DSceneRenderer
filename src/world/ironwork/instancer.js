@@ -294,14 +294,21 @@ export class InstancePool {
       const em = e.m, ec = e.c, c0 = e.c0, cv = e.cv;
       for (let q = 0; q < cv.length; q++) {
         if (!cv[q]) continue;
-        for (let i = c0[q]; i < c0[q + 1]; i++) {
-          const k = e.lvl[i], a = M[k];
-          if (!a) continue;
-          const j = counts[k]++;
-          for (let t = 0, o = j * 16, p = i * 16; t < 16; t++) a[o + t] = em[p + t];
-          const c = C[k];
-          if (ec) { c[j * 3] = ec[i * 3]; c[j * 3 + 1] = ec[i * 3 + 1]; c[j * 3 + 2] = ec[i * 3 + 2]; }
-          else { c[j * 3] = c[j * 3 + 1] = c[j * 3 + 2] = 1; }
+        // runs of consecutive instances on one level are copied in one block
+        const end = c0[q + 1], lvl = e.lvl;
+        for (let i = c0[q]; i < end;) {
+          const k = lvl[i];
+          let i1 = i + 1;
+          while (i1 < end && lvl[i1] === k) i1++;
+          const a = M[k];
+          if (a) {
+            const j = counts[k];
+            counts[k] += i1 - i;
+            a.set(em.subarray(i * 16, i1 * 16), j * 16);
+            if (ec) C[k].set(ec.subarray(i * 3, i1 * 3), j * 3);
+            else C[k].fill(1, j * 3, (j + i1 - i) * 3);
+          }
+          i = i1;
         }
       }
     }

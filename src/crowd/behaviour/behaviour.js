@@ -20,7 +20,6 @@ const RIDE_EDGE = TRACK_ZONE_HALF + 1.1;    // ... and on the ride side: clear o
 const crossEdge = (side, a = null) => (side > 0 ? RIDE_EDGE : CORR_EDGE) + (a && a.mob ? 0.9 : 0);
 const UTURN_T = 1.35;                       // seconds for a turn-around while walking
 const PI = Math.PI;
-const len2 = (x, y) => Math.sqrt(x * x + y * y);
 const tmpBand = settleShape({ lo: 0, hi: 0 });
 
 // ------------------------------------------------------------------ lanes
@@ -196,7 +195,7 @@ export function desired(c, a, out) {
       }
       case ST.GOTO: {
         const ds = a.gs - a.s, dd = a.gd - a.d;
-        const dist = len2(ds, dd);
+        const dist = Math.sqrt(ds * ds + dd * dd);
         if (dist < a.gTol) { out.vs = 0; out.vd = 0; arrive(c, a); break; }
         const sp = Math.min(a.v0, dist * 1.3 + 0.25);
         out.vs = (ds / dist) * sp; out.vd = (dd / dist) * sp;
@@ -385,7 +384,7 @@ function standStill(c, a, out) {
 }
 
 function toSpot(a, s, d, out) {
-  const es = s - a.s, ed = d - a.d, e = len2(es, ed);
+  const es = s - a.s, ed = d - a.d, e = Math.sqrt(es * es + ed * ed);
   if (e < 0.18) { out.vs = 0; out.vd = 0; a.moving = false; return; }
   const sp = Math.min(0.9, e * 1.6 + 0.2);
   out.vs = (es / e) * sp; out.vd = (ed / e) * sp;
@@ -470,14 +469,14 @@ function follow(c, a, out) {
         if (Math.abs(a.s - ms) < m.width / 2) ts = Math.max(ms - half, Math.min(ms + half, ts));
       }
     }
-    // keep the slot out of café / platform footprints and off the walls
-    const side = td >= 0 ? 1 : -1;
-    if (!a.noRect && !(a.platformOK && c.map.stationAt(ts))) {
-      const cl = c.map.clearOfRects(ts, side, Math.abs(td), 0.35);
-      if (cl >= 0) td = side * cl;
-    }
-    const wall = c.map.wallAt(ts, side) - 0.1;
-    if (Math.abs(td) > wall && !c.map.mouthAt(ts, side) && !a.inDoor) td = side * wall;
+    // keep the slot out of café / platform footprints and off the walls (outside a cross street
+    // opening)
+    const side = td >= 0 ? 1 : -1, map = c.map, Q = map.Q;
+    Q[0] = ts; Q[1] = td >= 0 ? td : -td;
+    map.spotQuery(side, 0.35);
+    if (!a.noRect && Q[2] >= 0 && !(a.platformOK && map.stationAt(ts))) td = side * Q[2];
+    const wall = Q[3] - 0.1;
+    if (Math.abs(td) > wall && !a.inDoor) td = side * wall;
     // with a tram near (the cab's, an oncoming unit, or both), nobody's slot is next to its
     // track (or across it from this member)
     if (!a.clearing) {
@@ -500,15 +499,15 @@ function follow(c, a, out) {
   const pace = 1 + 0.04 * a.lnN;
   // the leader's sideways motion is copied only while the member is really in its slot
   out.vs = L.vs * pace + es * k; out.vd = (own ? 0 : L.vd) + ed * k;
-  const sp = len2(out.vs, out.vd);
+  const sp = Math.sqrt(out.vs * out.vs + out.vd * out.vd);
   // (the leader's speed counts only up to a run: a shove it got is not copied)
-  const lim = Math.max(a.v0 * 1.35, Math.min(2.6, len2(L.vs, L.vd)) * 1.2);
+  const lim = Math.max(a.v0 * 1.35, Math.min(2.6, Math.sqrt(L.vs * L.vs + L.vd * L.vd)) * 1.2);
   if (sp > lim) { out.vs *= lim / sp; out.vd *= lim / sp; }
   out.vmax = lim;
   // mirror the leader's stops
   a.state = lStop ? (L.state === ST.WAIT ? ST.WAIT : ST.STAND) : ST.WALK;
   if (lStop) {
-    if (len2(es, ed) < 0.3) { out.vs = 0; out.vd = 0; a.moving = false; }
+    if (Math.sqrt(es * es + ed * ed) < 0.3) { out.vs = 0; out.vd = 0; a.moving = false; }
     // own facing: conversations and window shopping set it on arrival; otherwise near the leader's
     if (L.task !== TASK.CHAT && L.task !== TASK.BROWSE) a.faceA = L.faceA + a.faceJ;
     if (a.dodgeT > t && !a.moving) standStill(c, a, out);

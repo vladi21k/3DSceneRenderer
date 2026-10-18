@@ -136,27 +136,21 @@ export class FaceShade {
     cand.length = 0;
     for (const it of this.occ) if (it.y > va + 1e-3 && it.y - va < it.run) cand.push(it);
     if (!cand.length) return NO_ZONES;
-    const xs = [];
+    // (shared arrays: the result is valid until the next call)
+    const xs = _xs, pts = _pts;
+    xs.length = 0; pts.length = 0;
     for (const it of cand) xs.push(it.a - it.m, it.b + it.m);
-    xs.sort((p, q) => p - q);
-    const pts = [xs[0]];
+    xs.sort(numAsc);
+    pts.push(xs[0]);
     for (let i = 1; i < xs.length; i++) pts.push((xs[i - 1] + xs[i]) / 2, xs[i]);
-    const winner = (u) => {
-      let best = null, bd = Infinity;
-      for (const it of cand) {
-        const d = u < it.a - it.m ? it.a - it.m - u : u > it.b + it.m ? u - it.b - it.m : 0;
-        // covering occluders (d 0) by height, then by the distance to their own extent
-        const key = d > 0 ? 1e3 + d : it.y + 0.002 * (u < it.a ? it.a - u : u > it.b ? u - it.b : 0);
-        if (key < bd) { bd = key; best = it; }
-      }
-      return best;
-    };
-    const cuts = [], occ = [winner(pts[0] - 1)];
+    const cuts = _zones.cuts, occ = _zones.occ;
+    cuts.length = 0; occ.length = 0;
+    occ.push(zoneWinner(cand, pts[0] - 1));
     for (let i = 0; i < pts.length; i++) {
-      const w = winner(i + 1 < pts.length ? (pts[i] + pts[i + 1]) / 2 : pts[i] + 1);
+      const w = zoneWinner(cand, i + 1 < pts.length ? (pts[i] + pts[i + 1]) / 2 : pts[i] + 1);
       if (w !== occ[occ.length - 1]) { cuts.push(pts[i]); occ.push(w); }
     }
-    return { cuts, occ };
+    return _zones;
   }
 
   /** Wall field colour at (u, v) into out[0..2], grime mask into out[3], dirtiness into out[4]. */
@@ -189,7 +183,22 @@ export class FaceShade {
 // (the stone shader fades a slab's soot out by 1.05 m beyond its ends: keep BAL_M above that)
 const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
 const NO_ZONES = { cuts: [], occ: [null] };
-const _cand = [];
+const _cand = [], _xs = [], _pts = [], _zones = { cuts: [], occ: [] };
+const numAsc = (p, q) => p - q;
+/**
+ * The occluder whose run-off shades u: covering ones (within their margin) by height,
+ * then by the distance to their own extent; else the horizontally nearest.
+ */
+function zoneWinner(cand, u) {
+  let best = null, bd = Infinity;
+  for (let i = 0; i < cand.length; i++) {
+    const it = cand[i];
+    const d = u < it.a - it.m ? it.a - it.m - u : u > it.b + it.m ? u - it.b - it.m : 0;
+    const key = d > 0 ? 1e3 + d : it.y + 0.002 * (u < it.a ? it.a - u : u > it.b ? u - it.b : 0);
+    if (key < bd) { bd = key; best = it; }
+  }
+  return best;
+}
 
 /**
  * aRun attribute (int16 × 4) of a vertex at facade (u, v) shaded by occluder `it` (null:

@@ -29,6 +29,7 @@ const lin = (a) => new THREE.Color().setRGB(a[0], a[1], a[2], THREE.LinearSRGBCo
 
 function setProps(m, props) {
   for (const [k, v] of Object.entries(props)) {
+    if (k === 'tag') continue;   // variant tag (see get): only makes the variant distinct
     if (k === 'side') m.side = v === 'double' ? THREE.DoubleSide : v === 'back' ? THREE.BackSide : v === 'front' ? THREE.FrontSide : v;
     else if (m[k] && m[k].isColor) Array.isArray(v) ? m[k].copy(lin(v)) : m[k].set(v);
     else if (m[k] && m[k].isVector2 && Array.isArray(v)) m[k].fromArray(v);
@@ -147,7 +148,14 @@ const materials = {
     this.stats.initMs = performance.now() - t0;
   },
 
-  /** Shared material by name. opts (e.g. {vertexColors:true}, {side: THREE.DoubleSide}) returns a cached variant. */
+  /**
+   * Shared material by name. opts (e.g. {vertexColors:true}, {side: THREE.DoubleSide}) returns a
+   * cached variant, shared by every caller passing the same opts. A material instance keeps one
+   * program state, so a variant drawn both on plain meshes and on a BatchedMesh or InstancedMesh
+   * makes three re-evaluate its program at every switch (twice a frame, plus garbage): ask for a
+   * private variant there with a tag, e.g. {vertexColors: true, tag: 'batched'} (the tag only
+   * makes the variant distinct).
+   */
   get(name, opts) {
     if (!lib.has(name)) {
       console.warn('[materials] unknown material', name);

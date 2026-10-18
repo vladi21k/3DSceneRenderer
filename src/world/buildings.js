@@ -5,7 +5,7 @@ import { hashStr, RNG } from '../core/rng.js';
 import { SIDE_LOT_START } from './layout.js';
 import { Builder } from './buildings/mesh.js';
 import { lotSteps, coarseLot, DETAIL } from './buildings/shell.js';
-import { grimeStone, litGlass } from './buildings/grime.js';
+import { grimeStone, litGlass, nightLevels } from './buildings/grime.js';
 import { rowLayout } from './buildings/coursing.js';
 import { makeSlab, slabSteps } from './buildings/skyline.js';
 import { laneSteps } from './buildings/lane.js';
@@ -55,6 +55,7 @@ const NOMINAL_DT = 1 / 60;         // the speed-driven budget is per nominal fra
 const LOOK_LOD0 = 110;             // full detail is prepared up to this far before the switch
 const LOOK_FAR = 110;              // far detail is prepared up to this far beyond the view
 const UPLOAD_BYTES = 640 << 10;    // vertex data uploaded ahead per frame (at least one buffer)
+const ADVERT_EXPOSED = 0.32;       // a floodlit poster's white at night (radiance x exposure)
 
 let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere
 const jobs = new Map();            // jobKey(chunkIndex, lod) -> job
@@ -163,11 +164,15 @@ const buildings = {
   },
 
   update(dt, app) {
+    // night levels that follow the exposure (lit windows, floodlit adverts), so lit glass
+    // and posters keep their colour at full night instead of burning out to white
+    const expo = app.env && app.env.exposure > 0 ? app.env.exposure : 1;
+    nightLevels(expo);
     // the adverts' floodlights come on with the street lamps
     if (ADS.length) {
       const gain = app.materials.uniforms && app.materials.uniforms.emissiveGain ? app.materials.uniforms.emissiveGain.value : 1;
-      const e = 0.0055 * Math.min(1, Math.max(0, (U.uNight.value - 0.25) / 0.5)) * gain;
-      for (const m of ADS) m.emissiveIntensity = e;
+      const e = Math.min(0.0055, ADVERT_EXPOSED / expo) * Math.min(1, Math.max(0, (U.uNight.value - 0.25) / 0.5)) * gain;
+      for (let i = 0; i < ADS.length; i++) ADS[i].emissiveIntensity = e;
     }
     const s = app.cameraS;
     if (s == null || !app.world) return;
@@ -236,6 +241,8 @@ function lotLod(lot, chunkLod) {
  * pooled entries {idx, lod, mtn, dist}, valid until the next call.
  */
 const _cands = [], _candPool = [];
+/** True while the streamer still has to build our part of chunk ch. */
+const partDue = (ch) => !ch.pending || ch.pending.indexOf('buildings') >= 0;
 function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
   const W = app.world, n = app.layout.nChunks;
   const iEnd = Math.floor((sCam + VIEW_AHEAD) / CHUNK_LEN);
@@ -256,11 +263,19 @@ function candidates(app, sCam, boundary = false, lookFar = LOOK_FAR) {
       // created when it enters the view, at the level for its distance then
       lod = dist < LOD0_DIST ? 0 : 1;
       mtn = i <= iEnd ? 0 : i * CHUNK_LEN - (sCam + VIEW_AHEAD);
-    } else if (c.next && !c.next.ready) { lod = c.next.lod; mtn = 0; }
-    else if (c.lod > 1) {
+    } else if (c.next && !c.next.ready) {
+      // an upgrade under way: due now, unless our part of it is built already
+      if (!partDue(c.next)) continue;
+      lod = c.next.lod; mtn = 0;
+    } else if (c.lod > 1) {
       // a far-field chunk (lod 2: core/farfield.js) becomes ours when it enters the view
       lod = 1; mtn = i <= iEnd ? 0 : i * CHUNK_LEN - (sCam + VIEW_AHEAD);
-    } else if (!c.ready) { lod = c.lod; mtn = 0; }
+    } else if (!c.ready) {
+      // (a chunk stays unready while the other modules build and its programs compile:
+      // once our part is built, its job is gone and must not be generated again)
+      if (!partDue(c)) continue;
+      lod = c.lod; mtn = 0;
+    }
     else if (c.lod === 1 && mid > sCam) {
       lod = 0; mtn = dist - LOD0_DIST;
       if (mtn > LOOK_LOD0) continue;

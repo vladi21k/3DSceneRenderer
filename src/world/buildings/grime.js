@@ -268,6 +268,7 @@ varying float vBgGrime;
 varying float vBgH;
 uniform float bgNight;
 uniform float bgGain;
+uniform float bgLevel;
 `;
 // (the vertex colour replaces the library colour; the pane's own dust stays, and the glass
 // tints what shows through it a little green-grey)
@@ -286,10 +287,28 @@ const FRAG_GLASS_REFL = /* glsl */ `
 }
 #endif
 `;
-// a dim warm room behind the pane (curtains, a lamp somewhere inside), not a light box
+// a dim warm room behind the pane (curtains, a lamp somewhere inside), not a light box:
+// 2700-3000 K (the lighter the curtain, the brighter and a little less orange), at a level
+// that follows the exposure at night (GLASS_NIGHT), so a lit window reads as a warm lamp
+// through a curtain and never burns out to a white patch at full night
 const FRAG_GLASS = /* glsl */ `
-totalEmissiveRadiance += vec3(1.0, 0.66, 0.38) * 0.0045 * bgGain * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.7 + 0.5 * min(1.0, dot(vColor.rgb, vec3(0.4))));
+{
+  float bgK = min(1.0, dot(vColor.rgb, vec3(0.4)));
+  totalEmissiveRadiance += mix(vec3(1.0, 0.56, 0.27), vec3(1.0, 0.66, 0.38), bgK) * bgLevel * bgGain * step(0.5, vBgGrime) * smoothstep(0.25, 0.75, bgNight) * (0.6 + 0.6 * bgK);
+}
 `;
+/**
+ * Night level of the buildings' lit windows (scene units), set every frame by
+ * buildings.update from the exposure (see nightLevels).
+ */
+export const GLASS_NIGHT = { value: 0.0045 };
+// exposed level of a lit window's brightest channel (scene radiance x exposure): warm,
+// bright, below the white point
+const GLASS_EXPOSED = 0.3;
+/** Update GLASS_NIGHT from the exposure the post pass applies (env.exposure). */
+export function nightLevels(exposure) {
+  GLASS_NIGHT.value = Math.min(0.0045, GLASS_EXPOSED / Math.max(1, exposure || 1));
+}
 const VERT_GLASS_PARS = 'varying float vBgGrime;\nvarying float vBgH;\n';
 
 /** Chain a patch after the material's existing onBeforeCompile and extend its cache key. */
@@ -334,9 +353,10 @@ export function litGlass(app, name = 'glass.window') {
   const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };
   const m = app.materials.get(name, { vertexColors: true }).clone();
   m.name = `buildings:${name}`;
-  chain(m, 'bgG3', (shader) => {
+  chain(m, 'bgG4', (shader) => {
     shader.uniforms.bgNight = U.uNight;
     shader.uniforms.bgGain = gain;
+    shader.uniforms.bgLevel = GLASS_NIGHT;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_GLASS_PARS)
       .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\nvBgH = uv.y;\n');

@@ -23,6 +23,7 @@ const HEAD = 1.55;     // m, mouth height
 // crowd agent states (crowd/behaviour/agent.js ST): WALK 0, GOTO 1, STAND 2, WAIT 3, SEATED 4, PLATFORM 5
 const isStill = (a) => a.state >= 2;
 const isWalking = (a) => a.state <= 1 && a.speed > 0.4;
+const byDist = (p, q) => p.dist - q.dist;
 
 export class AmbienceLayer {
   constructor(e) {
@@ -88,8 +89,10 @@ export class AmbienceLayer {
     this.people = 0.6;
     this.still = [];
     this.walkers = [];
+    this._walkerPool = [];      // {a, dist} records reused by every survey
     this.virtual = false;
     this.cafe = null;
+    this._cafe = { c: null, w: 0 };
     this.trees = [];
     this.bags = {};
     this.lastPlayed = new Map();
@@ -141,40 +144,49 @@ export class AmbienceLayer {
 
   // ------------------------------------------------------------------ surroundings
 
+  /** Every 0.5 s: the café and trees around, the people standing (talkers) and walking
+   *  close by (footsteps), the crowd density per side. Reuses its arrays and records. */
   _survey(st) {
     const { layout, route } = this.e;
     const s = st.s, ci = layout.chunkIndex(s);
     let cafe = null;
-    const trees = [];
+    const trees = this.trees;
+    trees.length = 0;
     for (let j = -1; j <= 2; j++) {
       for (const c of layout.inChunk('cafes', ci + j)) {
         const dd = Math.max(0, Math.abs(route.delta(s, (c.s0 + c.s1) / 2)) - (c.s1 - c.s0) / 2);
         const w = clamp(1 - dd / 45, 0, 1);
-        if (w > 0 && (!cafe || w > cafe.w)) cafe = { c, w };
+        if (w > 0 && (!cafe || w > cafe.w)) { cafe = this._cafe; cafe.c = c; cafe.w = w; }
       }
       for (const t of layout.inChunk('trees', ci + j)) trees.push(t);
     }
     this.cafe = cafe;
-    this.trees = trees;
 
     const L = st.listener;
     const agents = this._agents();
     this.virtual = !agents;
-    const near = [0, 0];
-    this.still = []; this.walkers = [];
+    let near0 = 0, near1 = 0, nw = 0;
+    const still = this.still, walkers = this.walkers, pool = this._walkerPool;
+    still.length = 0; walkers.length = 0;
     if (agents && L) {
-      for (const a of agents) {
-        const dist = Math.hypot(a.x - L.px, a.z - L.pz);
+      for (let i = 0; i < agents.length; i++) {
+        const a = agents[i];
+        if (a.active === false) continue;           // (the crowd's whole population array)
+        const dx = a.x - L.px, dz = a.z - L.pz, dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 45) continue;
-        const side = a.d >= 0 ? 1 : 0;
-        if (dist < 30) near[side]++;
-        if (isStill(a) && dist > 9) this.still.push(a);
-        else if (isWalking(a) && dist < 12) this.walkers.push({ a, dist });
-        else if (isWalking(a) && dist > 9 && a.leader) this.still.push(a); // walking groups chat too
+        if (dist < 30) { if (a.d >= 0) near1++; else near0++; }
+        if (isStill(a) && dist > 9) still.push(a);
+        else if (isWalking(a) && dist < 12) {
+          const w = pool[nw] || (pool[nw] = { a: null, dist: 0 });
+          w.a = a; w.dist = dist; nw++;
+          walkers.push(w);
+        } else if (isWalking(a) && dist > 9 && a.leader) still.push(a); // walking groups chat too
       }
-      this.walkers.sort((p, q) => p.dist - q.dist);
-      this.dens = near.map((n) => clamp(n / 12, 0.08, 1.6));
-      this.debug.agents = near[0] + near[1];
+      for (let i = nw; i < pool.length; i++) pool[i].a = null;   // (hold no stale agents)
+      walkers.sort(byDist);
+      this.dens[0] = clamp(near0 / 12, 0.08, 1.6);
+      this.dens[1] = clamp(near1 / 12, 0.08, 1.6);
+      this.debug.agents = near0 + near1;
     } else {
       // stand-in: density from what the layout puts here (cafés, stops, cross streets)
       const dens = [0.55, 0.55];
@@ -257,7 +269,8 @@ export class AmbienceLayer {
   /** Level, air absorption and direction of a talker from where they are now. */
   _aim(t, now, tc) {
     const w = t.who;
-    const p = t.pos || (w ? { x: w.x, y: w.y + HEAD, z: w.z } : null);
+    let p = t.pos;
+    if (!p && w) { p = this._aimP || (this._aimP = { x: 0, y: 0, z: 0 }); p.x = w.x; p.y = w.y + HEAD; p.z = w.z; }
     if (!p) return;
     const rel = this.e.relative(p, this._rel);
     const d = Math.max(4, rel.dist);
