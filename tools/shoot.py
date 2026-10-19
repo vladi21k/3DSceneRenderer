@@ -10,13 +10,21 @@ Examples
   tools/shoot.py --params "s=820&tod=0.55&fov=28" --out .work/shots/gold.png
   tools/shoot.py --params "s=300" --shots 3 --interval 1.0 --out .work/shots/seq.png
   tools/shoot.py --params "s=300" --eval "JSON.stringify(window.__app.stats())"
-  tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --hitches   (ride timing)
+  tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --hitches   (ride timing, capped at 60 fps)
+  tools/shoot.py --params "speed=50" --shots 0 --settle 40 --hitches --fps 30  (budget ride at the 30 fps target)
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --heapprof 40 (allocation sites)
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 150 --heaplive 40 (what the heap grows by)
   tools/shoot.py --shots 0 --cpuprof 40   (start-up: main-thread time by file and function, with callers)
 
 Timing runs (--hitches, --heapprof) print the machine's load at the start and the end:
-other captures may be rendering on the same CPU and GPU, so judge times against it.
+other processes may be rendering on the same CPU and GPU, so judge times against it.
+
+Frame rate: Chrome runs here with vsync off, so an uncapped loop queues frames ahead of the
+GPU and then blocks inside GL calls, which inflates CPU times and logs 'gpu-wait' hitches
+that a display-synced browser never has. --fps N caps the app's requestAnimationFrame at N
+from ready on, as vsync would; timing runs default to --fps 60 (--fps 0: uncapped). They
+also sample every frame after ready and print its interval, CPU time (frame callback), GPU
+time (gpuTimer.of(frame)), draw calls and triangles as percentiles ('frame samples').
 
 The tool waits up to --timeout seconds for window.__ready (a cold start takes 15-25 s
 on an idle machine and can take over a minute on a busy one), printing progress every
@@ -117,6 +125,81 @@ class WS:
                 return m.get("result", {})
             self.events.append(m)
         raise TimeoutError(method)
+
+
+# requestAnimationFrame capped at N a second (as vsync would), installed at ready: every
+# caller's callbacks run together in the next slot, while real animation frames are polled
+# until the slot comes (precise to about a millisecond). No allocation per frame.
+FPS_CAP_JS = r"""(() => {
+  if (window.__origRAF) return 'already';
+  const CAP = %g, orig = window.__origRAF = window.requestAnimationFrame.bind(window), origCancel = window.cancelAnimationFrame.bind(window);
+  let next = performance.now(), scheduled = false, id = 0;
+  let qa = [], qi = [], qn = 0, ra = [], ri = [];
+  const go = (ts) => {
+    const now = performance.now();
+    if (now < next - 0.7) { orig(go); return; }
+    next = Math.max(next + 1000 / CAP, now - 1000 / CAP);
+    scheduled = false;
+    // (callbacks asked for while these run go to the next slot)
+    const n = qn, a = qa, ids = qi;
+    qa = ra; qi = ri; ra = a; ri = ids; qn = 0;
+    for (let k = 0; k < n; k++) { const cb = a[k]; a[k] = null; if (cb) cb(ts); }
+  };
+  window.requestAnimationFrame = (cb) => {
+    qa[qn] = cb; qi[qn] = ++id; qn++;
+    if (!scheduled) { scheduled = true; orig(go); }
+    return id;
+  };
+  window.cancelAnimationFrame = (h) => {
+    for (let k = 0; k < qn; k++) if (qi[k] === h) { qa[k] = null; return; }
+    origCancel(h);
+  };
+  return 'capped';
+})()"""
+
+# Per-frame samples after ready (typed arrays, no allocation per frame): frame interval,
+# frame-callback CPU time, GPU time from gpuTimer.of(frame) (results arrive a few frames
+# late), draw calls and triangles; summary() gives their percentiles.
+SAMPLER_JS = r"""(() => {
+  const a = window.__app;
+  if (!a || !a.monitor || window.__shootSamp) return;
+  const N = 1 << 16, LAG = 24;
+  const iv = new Float32Array(N), cpu = new Float32Array(N), gpu = new Float32Array(N), calls = new Float32Array(N), tris = new Float32Array(N), fr = new Int32Array(N);
+  const RAF = window.__origRAF || window.requestAnimationFrame.bind(window);
+  let n = 0, lastF = a.frame, lastT = a.monitor.lastT;
+  const S = window.__shootSamp = {
+    reset() { n = 0; lastF = a.frame; lastT = a.monitor.lastT; },
+    summary() {
+      for (let i = Math.max(0, n - LAG); i < n; i++) { const g = a.gpuTimer.of(fr[i]); gpu[i] = g === null ? -1 : g; }
+      const q = (arr, keep) => {
+        const v = Array.from(arr.subarray(0, n)).filter(keep).sort((x, y) => x - y);
+        if (!v.length) return null;
+        const at = (f) => v[Math.min(v.length - 1, Math.floor(f * v.length))];
+        return { n: v.length, p50: +at(0.5).toFixed(2), p95: +at(0.95).toFixed(2), max: +v[v.length - 1].toFixed(2) };
+      };
+      const all = () => true, known = (x) => x >= 0;
+      let g28 = 0, c20 = 0;
+      for (let i = 0; i < n; i++) { if (gpu[i] > 28) g28++; if (cpu[i] > 20) c20++; }
+      const fps = window.__origRAF ? 'capped' : 'uncapped';
+      return JSON.stringify({ frames: n, loop: fps, intervalMs: q(iv, all), cpuMs: q(cpu, all), gpuMs: q(gpu, known), calls: q(calls, all), trianglesM: q(tris, all), gpuOver28: g28, cpuOver20: c20 });
+    },
+  };
+  const tick = () => {
+    if (a.frame !== lastF && n < N) {
+      lastF = a.frame;
+      const i = n++;
+      const t = a.monitor.lastT;
+      iv[i] = t - lastT; lastT = t;
+      cpu[i] = a.monitor.cpu;
+      calls[i] = a.renderer.info.render.calls; tris[i] = a.renderer.info.render.triangles / 1e6;
+      fr[i] = a.frame;
+      const j = i - LAG;
+      if (j >= 0) { const g = a.gpuTimer.of(fr[j]); gpu[j] = g === null ? -1 : g; }
+    }
+    RAF(tick);
+  };
+  RAF(tick);
+})()"""
 
 
 def machine_load():
@@ -262,12 +345,17 @@ def main():
     ap.add_argument("--cpuprof", type=int, default=0, metavar="N",
                     help="sample the page's main thread from navigation to ready and print the top N source files "
                          "and functions by self time (start-up profile)")
+    ap.add_argument("--fps", type=float, default=None, metavar="N",
+                    help="cap the app's requestAnimationFrame at N frames a second from ready on, as vsync would "
+                         "(default 60 for --hitches/--heapprof/--heaplive runs, else uncapped; 0: uncapped)")
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--profile", default=None, help="persistent Chrome profile dir (keeps the GPU shader cache between runs)")
     a = ap.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     timing = a.hitches or a.heapprof or a.heaplive
+    if a.fps is None:
+        a.fps = 60 if timing else 0
     if timing:
         print("machine at start:", machine_load())
     server = None
@@ -375,10 +463,16 @@ def main():
             print(msg, file=sys.stderr)
             if not a.force:
                 a.shots = 0
+        if ready and a.fps > 0:
+            js(FPS_CAP_JS % a.fps)
+            print(f"frame rate capped at {a.fps:g} fps (--fps)")
+        if ready and timing:
+            js(SAMPLER_JS)
         if a.pre:
             print("pre:", json.dumps(js(a.pre)))
         if a.hitches:
             js("window.__app && window.__app.resetFrames && window.__app.resetFrames()")
+            js("window.__shootSamp && window.__shootSamp.reset()")
         heap_t0 = time.time()
         if a.heapprof or a.heaplive:
             # (one sampling session: with --heaplive, objects collected before the end are left out)
@@ -400,6 +494,10 @@ def main():
             print("stats:", stats)
         if a.eval:
             print("eval:", json.dumps(js(a.eval)))
+        if ready and timing:
+            fs = js("window.__shootSamp ? window.__shootSamp.summary() : null")
+            if fs:
+                print("frame samples:", fs)
         if a.hitches:
             rep = js("window.__app && window.__app.hitchReport ? window.__app.hitchReport() : null")
             print("hitches:", rep if isinstance(rep, str) else json.dumps(rep))

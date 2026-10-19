@@ -25,41 +25,52 @@ const tmpBand = settleShape({ lo: 0, hi: 0 });
 
 // ------------------------------------------------------------------ lanes
 
-/** Lateral target (signed d) for a lane-following walker. */
+/** Lateral target (signed d) for a lane-following walker (it leaves a.laneT as it was). */
 export function laneTarget(c, a) {
+  const keep = a.laneT;
+  laneTargetA(c, a);
+  const d = a.laneT;
+  a.laneT = keep;
+  return d;
+}
+
+/** laneTarget → a.laneT. (The lane helpers below hand the target on in a.laneT rather than as
+ *  an argument and a result: a double passed to or returned from a call that is not inlined is
+ *  boxed, and this runs for every walker a few times a second.) */
+export function laneTargetA(c, a) {
   // (overtaking somebody slower: the passing line for a few seconds)
-  let d = a.ovT > c.time && a.state === ST.WALK ? a.ovD : rawLane(c, a);
+  if (a.ovT > c.time && a.state === ST.WALK) a.laneT = a.ovD; else rawLane(c, a);
   // nobody walks a ruler-straight line: a slow personal wander across the lane
   // (noise1(a.s / 8, a.wSeed) written out: see walkNoise)
   const x = a.s / 8, i = Math.floor(x), f = x - i;
   lattice1(i, i + 1, a.wSeed);
-  d += 0.25 * (LATTICE[0] + (LATTICE[1] - LATTICE[0]) * (f * f * (3 - 2 * f)));
-  if (a.dodgeT > c.time) d += a.dodge;
-  return tramLane(c, a, d);
+  a.laneT += 0.25 * (LATTICE[0] + (LATTICE[1] - LATTICE[0]) * (f * f * (3 - 2 * f)));
+  if (a.dodgeT > c.time) a.laneT += a.dodge;
+  tramLane(c, a);
 }
 
-/** While a tram is near (the cab tram, an oncoming unit, or both), lane targets keep a
+/** While a tram is near (the cab tram, an oncoming unit, or both), lane targets (a.laneT) keep a
  *  comfortable distance from its track, on the side of the band the walker is already on
  *  (nobody aims across a closed band). */
-function tramLane(c, a, d) {
+function tramLane(c, a) {
   const tram = c.tram;
   a.laneUrgent = false;
-  if (tram.near(a)) d = cabLane(c, a, d);
-  if (!tram.units.length) return d;
+  if (tram.near(a)) cabLane(c, a);
+  if (!tram.units.length) return;
   const U = a.uI >= 0 ? tram.unitById(a.uI) : tram.uZone(a);
-  if (!U) return d;
+  if (!U) return;
   const iv = tram.keepOut(a, true);
-  if (!iv) return d;
-  const lo = iv.lo, hi = iv.hi;
+  if (!iv) return;
+  const lo = iv.lo, hi = iv.hi, d = a.laneT;
   // (standing too close to where a unit goes by: a brisker step out to the berth)
   a.laneUrgent = a.d > lo + 0.05 && a.d < hi - 0.05;
   const across = (a.d <= lo && d > lo) || (a.d >= hi && d < hi);
-  if (!across && (d >= hi || d <= lo)) return d;
+  if (!across && (d >= hi || d <= lo)) return;
   // (inside: over to the other track rather than off the corridor, unless that is much
   // further; with the cab near as well, the nearer edge)
   const pref = a.uSide ? a.uSide > 0 : tram.near(a) ? d >= (lo + hi) / 2 : hi - a.d <= a.d - lo + 1.5;
   const up = keepSide(c, a, pref);
-  return up ? hi + a.laneF * 0.35 : lo - a.laneF * 0.5;
+  a.laneT = up ? hi + a.laneF * 0.35 : lo - a.laneF * 0.5;
 }
 
 /** Which side of the bands kept free for the trams person a is on (true: +d); inside them the
@@ -73,46 +84,48 @@ function keepSide(c, a, pref) {
   return pref;
 }
 
-function cabLane(c, a, d) {
-  const tram = c.tram;
+/** The cab tram near: the lane target a.laneT kept off its berth. */
+function cabLane(c, a) {
+  const tram = c.tram, d = a.laneT;
   const pd = tram.passD;
   // a stroller / bicycle keeps the berth with its whole footprint
   const pdHi = pd + a.extLo, pdLo = pd + a.extHi;
   const dl = a.d - RIDE_D, tl = d - RIDE_D;
   // the lane lies across the ride track: walk on along this side until the tram has gone by
   const across = (dl <= -BAND && tl > -pdLo) || (dl >= BAND && tl < pdHi);
-  if (!across && (tl >= pdHi || tl <= -pdLo)) return d;
+  if (!across && (tl >= pdHi || tl <= -pdLo)) return;
   let hi = dl > BAND ? true : dl < -BAND ? false : d >= RIDE_D;
   if (hi && a.kind !== KIND.PASSENGER) {
-    const st = c.map.stationAt(a.s) || c.map.stationAt(a.s + a.dir * 15);
+    const st = c.map.stationAtA(a) || c.map.stationAt(a.s + a.dir * 15);
     // beside a platform: behind it, up on it (caught at its edge), or between the tracks
     if (st) {
-      if (dl <= BAND) return RIDE_D - pdLo - a.laneF * 1.1;
-      if (a.platformOK || a.d < TRACK_ZONE_HALF + 0.8) return Math.max(RIDE_D + pdHi, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8;
-      return c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3;
+      if (dl <= BAND) { a.laneT = RIDE_D - pdLo - a.laneF * 1.1; return; }
+      if (a.platformOK || a.d < TRACK_ZONE_HALF + 0.8) { a.laneT = Math.max(RIDE_D + pdHi, TRACK_ZONE_HALF + 0.6) + a.laneF * 0.8; return; }
+      a.laneT = c.map.bandInAt(a.s + a.dir * 10, 1) + 0.3;
+      return;
     }
   }
   // a stroller / walked bicycle on the ride side waits on the sidewalk proper, not among the poles
   if (hi && a.mob) {
-    const bi = c.map.bandInAt(a.s, 1), bo = c.map.bandOutAt(a.s, 1);
-    if (bo - bi > 1.3) return Math.max(RIDE_D + pdHi, bi + 0.75);
+    const k = c.map.idxA(a), bi = c.map.bandIn[1][k], bo = c.map.bandOut[1][k];
+    if (bo - bi > 1.3) { a.laneT = Math.max(RIDE_D + pdHi, bi + 0.75); return; }
   }
   // (spread over the whole strip left of the ride track: no single file of everybody)
-  return hi ? RIDE_D + pdHi + a.laneF * 0.35 : Math.max(-(TRACK_ZONE_HALF - 0.45), RIDE_D - pdLo - a.laneF * 2.1);
+  a.laneT = hi ? RIDE_D + pdHi + a.laneF * 0.35 : Math.max(-(TRACK_ZONE_HALF - 0.45), RIDE_D - pdLo - a.laneF * 2.1);
 }
 
+/** The walker's own lane line (signed d) → a.laneT. */
 function rawLane(c, a) {
   const side = a.side, map = c.map;
-  const here = map.stationAt(a.s);
+  const here = map.stationAtA(a);
   a.bandW = 9;
   // the raised platforms of a stop are the sidewalk there: nobody walks along the track bed
   // between them (people cross it only at the platform ends)
-  const pl = platformLane(c, a, here);
-  if (pl !== null) return pl;
-  if (a.lane === LANE.CORR) return a.laneD;
+  if (platformLane(c, a, here)) return;
+  if (a.lane === LANE.CORR) { a.laneT = a.laneD; return; }
   const lf = a.driftT > c.time ? a.driftF : a.laneF;
   const st = here || map.stationAt(a.s + a.dir * 20);
-  if (a.lane === LANE.EDGE && !st) return side * (EDGE_LANE + 0.4 * lf);
+  if (a.lane === LANE.EDGE && !st) { a.laneT = side * (EDGE_LANE + 0.4 * lf); return; }
   // narrowest stretch of the sidewalk band around here (cafés, platforms), both ways
   const look = Math.max(7, 5 * a.v0);
   map.bandAhead(a.s - look, side, 2 * look, tmpBand);
@@ -121,9 +134,10 @@ function rawLane(c, a) {
   if (w < 0.7) {
     // café furniture fills the sidewalk: people use the strip by the poles and trees, and on
     // the left also the track corridor
-    if (st) return side * (tmpBand.lo + 0.2);
-    if (side < 0 && a.laneF < 0.45) return -(0.9 + a.laneF * 4.5);
-    return side * (EDGE_LANE + 0.1 + lf * 0.45);
+    if (st) a.laneT = side * (tmpBand.lo + 0.2);
+    else if (side < 0 && a.laneF < 0.45) a.laneT = -(0.9 + a.laneF * 4.5);
+    else a.laneT = side * (EDGE_LANE + 0.1 + lf * 0.45);
+    return;
   }
   // a stroller or a walked bicycle keeps clear of the benches and trunks along the tree line; a
   // bicycle walked on the person's right keeps its whole length off the shop fronts (or the trees)
@@ -133,7 +147,7 @@ function rawLane(c, a) {
     const need = Math.min(0.85, Math.max(0, w - 1.2));
     if (facadeSide) keep = need; else extra = Math.max(extra, need);
   }
-  return side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra - keep) * lf);
+  a.laneT = side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra - keep) * lf);
 }
 
 /** b − a along the loop of length L, the shortest way (route.delta, worked out in place: small
@@ -146,31 +160,37 @@ function loopDelta(L, a, b) {
 
 /** A walker in the track corridor reaching a stop (or caught beside its platform by the tram)
  *  steps up onto the platform on its side of the street and walks along it to the far end, then
- *  back down to its lane. Returns the lane target on the platform (signed d) or null. */
+ *  back down to its lane. Writes the lane target on the platform (signed d) to a.laneT and
+ *  returns true, or returns false. */
 function platformLane(c, a, here) {
   const map = c.map;
   if (!a.platformOK) {
     // (the cab-side step-ups to let the tram by are made in tram.js)
-    if (a.lane !== LANE.CORR && !(here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25)) return null;
+    if (a.lane !== LANE.CORR && !(here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25)) return false;
     const st = here || map.stationAt(a.s + a.dir * 9);
-    if (!st) return null;
+    if (!st) return false;
     const ds0 = loopDelta(c.route.length, st.s, a.s);
-    if (Math.abs(ds0) > st.len / 2 + 12) return null;
+    if (Math.abs(ds0) > st.len / 2 + 12) return false;
     // past its middle and walking away from it: nothing to do
-    if (!here && ds0 * a.dir > 0) return null;
+    if (!here && ds0 * a.dir > 0) return false;
     const ps = a.d > RIDE_D - BAND ? 1 : -1;
     let has = false;
     for (let i = 0; i < st.platforms.length; i++) if (st.platforms[i].side === ps) has = true;
-    if (!has) return null;
+    if (!has) return false;
     a.platformOK = true; a.platSt = st; a.platSide = ps;
     c.tally('platformWalk');
   }
   const st = a.platSt;
-  if (!st) return here && a.d > 0 ? TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4 : null;
+  if (!st) {
+    if (!(here && a.d > 0)) return false;
+    a.laneT = TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4;
+    return true;
+  }
   // along the platform (off it again past its far end)
   const ds = loopDelta(c.route.length, st.s, a.s);
-  if (Math.abs(ds) > st.len / 2 + 0.5 && ds * a.dir > 0) return null;
-  return (a.platSide || 1) * (TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4);
+  if (Math.abs(ds) > st.len / 2 + 0.5 && ds * a.dir > 0) return false;
+  a.laneT = (a.platSide || 1) * (TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4);
+  return true;
 }
 
 // ------------------------------------------------------------------ slow personal noise
@@ -222,7 +242,7 @@ export function desired(c, a, out) {
         // velocity relaxes towards them anyway)
         a.laneTT -= c.dt;
         if (a.laneTT <= 0) {
-          a.laneT = laneTarget(c, a); a.laneTT = 0.25;
+          laneTargetA(c, a); a.laneTT = 0.25;
           walkNoise(c, a);
         }
         const e = a.laneT - a.d;

@@ -343,6 +343,28 @@ export class StreetMap {
     const v = f[k] < f[k1] ? f[k] : f[k1];
     this.R[0] = v; this.R[1] = v - WALL_GAP;
   }
+  /** Building line at s = this.qS on `side` → R[0] (OPEN in a cross street opening), and R[3] = 1
+   *  inside a cross street mouth, else 0 (mouthAt / facadeAt with the s handed over in a field). */
+  facadeQS(side) {
+    const si = side > 0 ? 1 : 0, k = this.idx(this.qS), k1 = k + 1 < this.N ? k + 1 : 0, f = this.facade[si];
+    this.R[0] = f[k] < f[k1] ? f[k] : f[k1];
+    this.R[3] = this.mouth[si][k] >= 0 ? 1 : 0;
+  }
+  /** stationAt(a.s). */
+  stationAtA(a) { const i = this.station[this.idxA(a)]; return i >= 0 ? this.layout.stations[i] : null; }
+  /** platformAt(a.s, side, |a.d|, margin) (agent a's own numbers: nothing boxed). */
+  platformAtA(a, side, margin) {
+    const st = this.stationAtA(a);
+    if (!st) return null;
+    const L = this.L, ad = a.d >= 0 ? a.d : -a.d;
+    let ds = (a.s - st.s) % L;
+    if (ds < -L / 2) ds += L; else if (ds > L / 2) ds -= L;
+    if (ds > st.len / 2 + margin || ds < -st.len / 2 - margin) return null;
+    if (ad < TRACK_ZONE_HALF - margin || ad > TRACK_ZONE_HALF + PLATFORM_W + margin) return null;
+    const P = st.platforms;
+    for (let i = 0; i < P.length; i++) if (P[i].side === side) return P[i];
+    return null;
+  }
   /** rectsNear(a.s, side). */
   rectsNearA(a, side) {
     const si = side > 0 ? 1 : 0, k = this.idxA(a);

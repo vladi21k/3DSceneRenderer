@@ -8,6 +8,7 @@ import { settleShape } from './agent.js';
 // figure or a kiosk on the same line of sight.
 
 const SHOULDER = 0.25;     // half body width tested for openings
+const _c = settleShape({ x: 0, y: 0, z: 0 });
 const BODY_R = 0.28;
 
 export class Visibility {
@@ -31,9 +32,29 @@ export class Visibility {
     this.m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.m);
     this.camPos.copy(camera.position);
-    const p = this.route.project(camera.position.x, camera.position.z, camS, 6, this._proj);
-    this.camU = camU + this.route.delta(camS, p.s);
-    this.camD = p.d;
+    // the camera's route coordinates: a few fixed-point steps along the centre line from camS
+    // through route.io (route.project boxes the numbers of some forty route.toWorld calls)
+    const R = this.route, io = R.io, px = camera.position.x, pz = camera.position.z;
+    let s = camS, d = 0;
+    if (io && R.toWorldIO && R.sampleIO) {
+      for (let k = 0; k < 8; k++) {
+        io[0] = s; io[1] = 0; io[2] = 0;
+        R.toWorldIO(_c);
+        R.sampleIO();
+        const th = io[3], tx = Math.cos(th), tz = -Math.sin(th);
+        const ex = px - _c.x, ez = pz - _c.z, f = ex * tx + ez * tz;
+        d = ez * tx - ex * tz;
+        s += f;
+        if (f < 1e-4 && f > -1e-4) break;
+      }
+    } else {
+      const p = R.project(px, pz, camS, 6, this._proj);
+      s = p.s; d = p.d;
+    }
+    const L = R.length;
+    let ds = (s - camS) % L; if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
+    this.camU = camU + ds;
+    this.camD = d;
   }
 
   /** Is a standing figure at route (s, d) inside the view frustum (with a margin)? */

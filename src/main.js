@@ -10,6 +10,7 @@ import { GpuTimer } from './core/gpuTimer.js';
 import { FrameMonitor } from './core/frameMonitor.js';
 import farfield from './core/farfield.js';
 import { loopSpotLights } from './core/lightLoops.js';
+import { unboxedUniforms, sortRenderLists, typedUniforms } from './core/rendererPatches.js';
 
 // Module registry. Each module is loaded with a dynamic import so a broken module is
 // reported and skipped instead of taking the whole app down. Contracts: docs/ARCHITECTURE.md
@@ -60,6 +61,13 @@ async function main() {
     for (const p of [gl.UNPACK_ROW_LENGTH, gl.UNPACK_SKIP_PIXELS, gl.UNPACK_SKIP_ROWS, gl.UNPACK_IMAGE_HEIGHT, gl.UNPACK_SKIP_IMAGES]) renderer.state.pixelStorei(p, 0);
     if (params.str('glbox', '1') !== '0') unboxedUniforms(gl);
   }
+  // Enable now the extensions three asks for on first use: getExtension is a synchronous
+  // call into the GPU process, and asked in the middle of the start-up compile (the first
+  // BatchedMesh asks for multi-draw) it waited seconds for every program queued before it.
+  for (const name of ['KHR_parallel_shader_compile', 'WEBGL_multi_draw', 'EXT_texture_filter_anisotropic', 'EXT_color_buffer_half_float',
+    'EXT_clip_control', 'EXT_texture_norm16', 'WEBGL_clip_cull_distance', 'OES_texture_float_linear']) renderer.extensions.has(name);
+  // render lists sorted without garbage (core/rendererPatches.js; glsort=0 for A/B)
+  const listSort = params.str('glsort', '1') !== '0' && sortRenderLists(renderer);
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
   const scene = new THREE.Scene();
@@ -75,7 +83,7 @@ async function main() {
     systems: {}, time: 0, dt: 0, frame: 0, ready: false, touchPrograms: (r) => touchPrograms(r),
     startS: params.s ?? layout.defaultStartS,
     gpuTimer: new GpuTimer(renderer),
-    perf: { fps: 0, frameMs: 0, cpuMs: 0, gpuMs: 0 },
+    perf: { fps: 0, frameMs: 0, cpuMs: 0, gpuMs: 0, listSort, typedUniforms: 0 },
   };
   window.__app = app;
 
@@ -84,8 +92,12 @@ async function main() {
   // a busy static server can drop a request: retry each failed import once with a fresh URL
   const load = (path) => import(path).catch(() => new Promise((r) => setTimeout(r, 250)).then(() => import(`${path}?retry=1`)));
   const loaded = await Promise.allSettled(enabled.map(([, path]) => load(path)));
-  // start-up phases (ms): imports (since navigation), each init, modulesTotal, prime, compile,
-  // frames (first frames until the view is ready) and firstReady (since navigation)
+  // start-up phases (ms): imports (since navigation), each init, modulesTotal (all inits),
+  // prime (all chunk builds), compileStart (since navigation, when the first programs were
+  // queued), programsQueued (how many then), compile (until every program was linked; it
+  // overlaps the later inits), compileWait (the part of it after the last init and build),
+  // programs, firstFrame (from then to the first frame callback), frames (to the view being
+  // ready) and firstReady (since navigation)
   app.perf.init = { imports: Math.round(performance.now()) };
   const mods = [];
   loaded.forEach((r, i) => {
@@ -109,68 +121,102 @@ async function main() {
   });
   setProgress(0.05);
 
-  // ---- init (sequential: materials and env first, in registry order)
-  const tStart = performance.now();
-  for (const m of mods) {
-    if (!m.init) continue;
+  // ---- start-up. Chrome compiles the programs one after another in its GPU process, and
+  // that is the longest part of the start-up (some 9 s for 130 programs), so it starts as
+  // early as the programs can be known and runs while the main thread carries on
+  // (KHR_parallel_shader_compile: compileAsync only queues them):
+  //   1. the world modules (src/world/*, after materials, env and post) init in registry order;
+  //   2. their parts of the chunks around the start are built, and the programs of everything
+  //      in the scene so far are queued;
+  //   3. the other modules (trams, humans, crowd, train, cameraRig, ui, audio, the far field)
+  //      init meanwhile: their inits must make no synchronous GL calls (a first draw,
+  //      getUniforms, readPixels, getExtension), each would wait for the whole queue;
+  //   4. their chunk parts (humans' parked bicycles) and the far field are built, their
+  //      programs queued, and the start-up waits for every program.
+  // Programs depend on the output target (colour space, tone mapping): from post's init on,
+  // start-up work renders into the HDR scene target the post chain uses, so the queued
+  // programs (and a module's own renderer.compile warm-up) are the ones the scene pass draws
+  // with, not variants for the screen. (Passes that render elsewhere set their own target.)
+  const WORLD = new Set(MODULES.filter(([, path]) => path.startsWith('./world/')).map(([name]) => name));
+  let split = -1;   // the last module of step 1
+  mods.forEach((m, i) => { if (WORLD.has(m.name) || m.name === 'materials' || m.name === 'env' || m.name === 'post') split = i; });
+  const initModule = async (m) => {
+    if (!m.init) return;
     const t0 = performance.now();
     try {
       await m.init(app);
       // (env has patched the shared light loop: keep its spot lights a real loop, which
       // compiles in about 60 % of the time; lightloop=0 for A/B, see core/lightLoops.js)
       if (m.name === 'env' && params.str('lightloop', '1') !== '0') app.perf.lightLoop = loopSpotLights(THREE.ShaderChunk);
-      // From post on, start-up work renders into the HDR scene target: a module's own shader
-      // warm-up (renderer.compile) then builds the programs the scene pass uses, not variants
-      // for the screen's colour space and tone mapping that nothing draws with. (Passes that
-      // render elsewhere set their own target.)
       if (m.name === 'post' && app.post && app.post.sceneRT) renderer.setRenderTarget(app.post.sceneRT);
       app.perf.init[m.name] = Math.round(performance.now() - t0);
     } catch (e) {
       console.error(`[main] ${m.name}.init failed — module disabled`, e);
       m.disabled = true;
     }
+  };
+  const P = app.perf.init;
+  holdWorkers(true);   // (until every start-up program is linked: see holdWorkers)
+  const tStart = performance.now();
+  for (let i = 0; i <= split; i++) {
+    await initModule(mods[i]);
+    setProgress(0.05 + 0.1 * (i + 1) / (split + 1));
   }
   if (!app.materials || app.materials.disabled) { fatal('materials module unavailable'); return; }
-  setProgress(0.2);
+  let initMs = performance.now() - tStart;
 
-  // ---- world streaming
+  // world streaming: the chunks within 240 m, with the parts of the modules initialised so far
   const builders = mods.filter((m) => m.build && !m.disabled);
   app.world = new World(app, builders);
-  const s0 = app.startS;
+  const s0 = app.startS, primeDist = Math.min(LOD0_DIST, 240);
   placeCamera(app, s0);
-  app.perf.init.modulesTotal = Math.round(performance.now() - tStart);
-  const tPrime = performance.now();
-  await app.world.prime(s0, Math.min(LOD0_DIST, 240), (f) => setProgress(0.2 + 0.15 * f));
-  await app.world.prime(s0, Infinity, null, [2]);   // far field: a few ms in all
-  app.perf.init.prime = Math.round(performance.now() - tPrime);
+  let tq = performance.now();
+  const ready1 = new Set(mods.slice(0, split + 1).filter((m) => !m.disabled).map((m) => m.name));
+  await app.world.prime(s0, primeDist, (f) => setProgress(0.15 + 0.05 * f), null, ready1);
+  let primeMs = performance.now() - tq;
 
-  // warm up shaders: submit every program up front (KHR_parallel_shader_compile keeps the
-  // main thread free meanwhile) instead of stalling the first frames one program at a time.
-  // Chrome compiles them one after another in its GPU process, so this phase lasts about
-  // the sum of the programs' compile times: keep programs few and their loops short (see
-  // core/lightLoops.js), and do no synchronous GL work (readPixels, a first draw, uniform
-  // queries) in init while they compile, or it waits for the whole queue.
+  // queue the programs. (Nothing polls them until step 4: a query of a program's completion
+  // status is a synchronous call that waits whenever the GPU process is busy, so polling
+  // while the inits run would take main-thread time from them.)
   const tCompile = performance.now();
-  // Programs depend on the output target (colour space, tone mapping): compile against the
-  // HDR scene target the post chain renders into, not the screen.
-  // (the loading bar follows the programs as they finish: the longest wait of the start-up)
-  let progressTimer = 0;
-  try {
-    const rt = app.post && !app.post.disabled ? app.post.sceneRT : null;
-    renderer.setRenderTarget(rt || null);
-    const done = renderer.compileAsync(scene, camera);
-    const progs = renderer.info.programs || [];
-    progressTimer = setInterval(() => {
-      let n = 0;
-      for (const p of progs) if (!p.isReady || p.isReady()) n++;
-      setProgress(0.35 + 0.6 * (progs.length ? n / progs.length : 1));
-    }, 250);
-    await Promise.race([done, new Promise((r) => setTimeout(r, 20000))]);
-  } catch (e) { console.warn('compile', e); }
+  P.compileStart = Math.round(tCompile);
+  const progs = renderer.info.programs || [];
+  compileScene(app, false);
+  P.programsQueued = progs.length;
+
+  // step 3: the remaining modules, while the GPU process compiles
+  tq = performance.now();
+  const late = mods.length - split - 1;
+  for (let i = split + 1; i < mods.length; i++) {
+    await initModule(mods[i]);
+    setProgress(0.2 + 0.1 * (i - split) / Math.max(1, late));
+  }
+  initMs += performance.now() - tq;
+  P.modulesTotal = Math.round(initMs);
+
+  // step 4: their chunk parts, the far field (a few ms in all), and their programs; then wait
+  // for every program (the loading bar follows them as they finish)
+  tq = performance.now();
+  await app.world.prime(s0, primeDist, null);
+  await app.world.prime(s0, Infinity, null, [2]);
+  primeMs += performance.now() - tq;
+  P.prime = Math.round(primeMs);
+  const tWait = performance.now();
+  const progressTimer = setInterval(() => {
+    let n = 0;
+    for (const p of progs) if (!p.isReady || p.isReady()) n++;
+    setProgress(0.3 + 0.65 * (progs.length ? n / progs.length : 1));
+  }, 250);
+  await Promise.race([compileScene(app, true), new Promise((r) => setTimeout(r, 20000))]);
   clearInterval(progressTimer);
   renderer.setRenderTarget(null);
   touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
-  app.perf.init.compile = Math.round(performance.now() - tCompile);
+  P.workersHeld = holdWorkers(false);
+  // compile: from queueing the first programs until every program is linked (it overlaps
+  // the step-3 inits); compileWait: the part of it the start-up waited for after step 4
+  P.compile = Math.round(performance.now() - tCompile);
+  P.compileWait = Math.round(performance.now() - tWait);
+  P.programs = progs.length;
   const tFrames = performance.now();
   setProgress(1);
 
@@ -181,7 +227,7 @@ async function main() {
   // simulation holds still while loading, and once ready the loop stops and frames are
   // stepped on demand by app.recStep(n) (tools/record.py screenshots after each step).
   const recFps = params.num('rec', 0);
-  let fpsAcc = 0, fpsN = 0, fpsT = 0;
+  let fpsAcc = 0, fpsN = 0, fpsT = 0, progN = -1;
   const updaters = mods.filter((m) => m.update && !m.disabled);
   const order = ['train', 'cameraRig'];
   updaters.sort((a, b) => (order.includes(b.name) ? 1 : 0) - (order.includes(a.name) ? 1 : 0) || order.indexOf(a.name) - order.indexOf(b.name));
@@ -255,7 +301,11 @@ async function main() {
     const cpu = performance.now() - t0;
     mon.st[iRender] = performance.now() - tr;
     mon.end(cpu);
-    if (app.frame <= 40) (app.perf.startFrames ||= []).push([Math.round(t0), Math.round(cpu), renderer.info.programs?.length ?? 0]);
+    // programs created in a frame or compiled in the background: typed setters once linked
+    const np = renderer.info.programs ? renderer.info.programs.length : 0;
+    if (np !== progN || (app.frame & 31) === 0) { progN = np; touchReadyPrograms(renderer); app.perf.typedUniforms = typedCount; }
+    if (app.frame <= 40) (app.perf.startFrames ||= []).push([Math.round(t0), Math.round(cpu), np]);
+    if (app.frame === 1) app.perf.init.firstFrame = Math.round(t0 - tFrames);
     fpsAcc += realDt; fpsN++; fpsT += cpu;
     if (fpsAcc > 0.5) {
       app.perf.fps = fpsN / fpsAcc; app.perf.frameMs = (fpsAcc / fpsN) * 1000; app.perf.cpuMs = fpsT / fpsN;
@@ -296,26 +346,77 @@ async function main() {
 }
 
 /**
- * Scalar uniform uploads without garbage. Every frame three uploads a few thousand vector
- * uniforms (the lights move in view space with the camera, once per program), and a call
- * into the browser with float arguments boxes each of them: about a tenth of all the
- * app's garbage. The scalar forms are routed through the vector forms with one reused
- * typed array, which the GL treats identically (url glbox=0 turns this off for A/B).
+ * Worker teardown waits for the GPU process: Chrome releases a terminated worker's GPU
+ * context (it has one once it used an OffscreenCanvas or an ImageBitmap) with a synchronous
+ * call, and while the start-up programs compile that call waits behind every program
+ * queued: the main thread stood still for 6-20 s when the figure decoders finished. A
+ * worker terminated during the start-up (inits and compile) is terminated once every
+ * start-up program is linked (the GPU process is idle then). holdWorkers(true) starts holding; holdWorkers(false) stops and
+ * terminates the held ones, returning how many.
  */
-function unboxedUniforms(gl) {
-  const f1 = gl.uniform1fv.bind(gl), f2 = gl.uniform2fv.bind(gl), f3 = gl.uniform3fv.bind(gl), f4 = gl.uniform4fv.bind(gl);
-  const b1 = new Float32Array(1), b2 = new Float32Array(2), b3 = new Float32Array(3), b4 = new Float32Array(4);
-  gl.uniform1f = function (loc, x) { b1[0] = x; f1(loc, b1); };
-  gl.uniform2f = function (loc, x, y) { b2[0] = x; b2[1] = y; f2(loc, b2); };
-  gl.uniform3f = function (loc, x, y, z) { b3[0] = x; b3[1] = y; b3[2] = z; f3(loc, b3); };
-  gl.uniform4f = function (loc, x, y, z, w) { b4[0] = x; b4[1] = y; b4[2] = z; b4[3] = w; f4(loc, b4); };
+const workerHold = { on: false, held: [] };
+if (typeof Worker !== 'undefined' && Worker.prototype.terminate) {
+  const terminate = Worker.prototype.terminate;
+  Worker.prototype.terminate = function () {
+    if (!workerHold.on) return terminate.call(this);
+    if (!workerHold.held.includes(this)) workerHold.held.push(this);
+    workerHold.terminate = terminate;
+  };
+}
+function holdWorkers(on) {
+  workerHold.on = on;
+  if (on) return 0;
+  const held = workerHold.held.splice(0);
+  for (const w of held) { try { workerHold.terminate.call(w); } catch (e) { /* gone */ } }
+  return held.length;
 }
 
-/** Resolve uniforms/attributes of every linked program so first use never stalls a frame. */
+/** Queue the programs of everything in the scene against the HDR scene target (non-blocking:
+ *  KHR_parallel_shader_compile). With `wait`, the promise resolves once they are linked. */
+function compileScene(app, wait) {
+  const r = app.renderer;
+  const rt = app.post && !app.post.disabled ? app.post.sceneRT : null;
+  const prev = r.getRenderTarget();
+  let p = null;
+  try {
+    r.setRenderTarget(rt || null);
+    if (wait) p = r.compileAsync(app.scene, app.camera);
+    else r.compile(app.scene, app.camera);
+  } catch (e) {
+    console.warn('[main] compile', e);
+  }
+  r.setRenderTarget(prev);
+  return (p || Promise.resolve()).catch((e) => console.warn('[main] compile', e));
+}
+
+const TYPED = params.str('gltyped', '1') !== '0';
+let typedCount = 0;
+
+/** Resolve uniforms/attributes of every linked program so first use never stalls a frame
+ *  (getUniforms waits for a program still linking), and give their float uniforms the
+ *  typed setters (core/rendererPatches.js). */
 export function touchPrograms(renderer) {
   for (const p of renderer.info.programs || []) {
     if (p.__touched) continue;
-    try { p.getUniforms(); p.getAttributes(); p.__touched = true; } catch (e) { /* not linked yet */ }
+    try {
+      p.getUniforms(); p.getAttributes(); p.__touched = true;
+      if (TYPED) typedCount += typedUniforms(p);
+    } catch (e) { /* not linked yet */ }
+  }
+}
+
+/** The same for programs that are ready, without waiting for any (per frame: programs the
+ *  renderer created in a frame, or compiled in the background). */
+function touchReadyPrograms(renderer) {
+  const progs = renderer.info.programs;
+  if (!progs) return;
+  for (let i = 0; i < progs.length; i++) {
+    const p = progs[i];
+    if (p.__touched || (p.isReady && !p.isReady())) continue;
+    try {
+      p.getUniforms(); p.getAttributes(); p.__touched = true;
+      if (TYPED) typedCount += typedUniforms(p);
+    } catch (e) { /* not linked yet */ }
   }
 }
 

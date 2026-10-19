@@ -554,7 +554,9 @@ const env = {
   },
 
   update(dt, app) {
-    const realDt = app.realDt ?? dt;
+    // (wall-clock step; never negative: the first frame after a long load can bring one,
+    // which would hold the irradiance read-back and the environment refresh back)
+    const rd = app.realDt ?? dt, realDt = rd > 0 ? rd : 0;
     const time = app.time;
     if (!this._gpuReady) this._initGPU();
     if (!this._shadowsCompiled && this.batcher) this._precompileShadows();

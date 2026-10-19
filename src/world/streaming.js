@@ -100,15 +100,27 @@ export class World {
   }
 
   /** Synchronously build every wanted chunk within `dist` (used at start-up); `lods`
-   *  limits it to those detail levels (the far field is primed apart, it is cheap). */
-  async prime(sCam, dist, onProgress, lods = null) {
+   *  limits it to those detail levels (the far field is primed apart, it is cheap).
+   *  `only` (a Set of module names) builds just those modules' parts and leaves the rest
+   *  pending for a later prime, which builds them and finishes the chunks. */
+  async prime(sCam, dist, onProgress, lods = null, only = null) {
     const want = this.wanted(sCam).filter((w) => w.dist <= dist && (!lods || lods.includes(w.lod))).sort((a, b) => a.dist - b.dist);
     let done = 0;
     for (const w of want) {
       let c = this.chunks.get(w.idx);
       if (!c) { c = this.makeChunk(w.idx, w.lod); this.chunks.set(w.idx, c); this.root.add(c.group); }
-      while (c.pending.length) this._buildPart(c);
-      this._finish(c);
+      if (c.ready) continue;
+      if (only) {
+        const later = [];
+        while (c.pending.length) {
+          if (only.has(c.pending[0])) this._buildPart(c);
+          else later.push(c.pending.shift());
+        }
+        c.pending = later;
+      } else {
+        while (c.pending.length) this._buildPart(c);
+      }
+      if (!c.pending.length) this._finish(c);
       done++;
       onProgress && onProgress(done / want.length);
       await new Promise((r) => setTimeout(r, 0));

@@ -105,7 +105,11 @@ function pairTest() {
 
 /** Smallest gap between the footprints of a and b (bodies + props), b at (dx, dy) = (b.s − a.s
  *  metric, b.d − a.d) from a. Returns G = {gap (negative: overlap), ns, nd (unit, from b to a)}. */
-export function footGap(a, b, dx, dy) {
+export function footGap(a, b, dx, dy) { FQ[0] = dx; FQ[1] = dy; return footGapQ(a, b); }
+/** footGap with b's offset (dx, dy) in FQ[0], FQ[1] (the per-frame callers: nothing boxed). */
+export const FQ = new Float64Array(2);
+export function footGapQ(a, b) {
+  const dx = FQ[0], dy = FQ[1];
   X[4] = 1e9; X[5] = 0; X[6] = 0; X[7] = 0;
   // a: body point (0, 0) and prop capsule; b: body point (dx, dy) and prop capsule
   const aProp = a.mob && a.fpR > 0, bProp = b.mob && b.fpR > 0;
@@ -134,11 +138,13 @@ export function footGap(a, b, dx, dy) {
 
 /** Closest point of a's prop capsule to the point (rs, rd) (metric, relative to the body):
  *  squared metric distance; the closest point in _foot.s / _foot.d (metric offsets from the body). */
-export const _foot = settleShape({ s: 0, d: 0 });
-export function propPointDist2(a, rs, rd) {
+export const _foot = settleShape({ s: 0, d: 0, q: 0 });
+export function propPointDist2(a, rs, rd) { FQ[0] = rs; FQ[1] = rd; propPointQ(a); return _foot.q; }
+/** propPointDist2 with the point in FQ[0], FQ[1]; the squared distance → _foot.q (nothing boxed). */
+export function propPointQ(a) {
+  const rs = FQ[0], rd = FQ[1];
   P[0] = a.fp0s; P[1] = a.fp0d; P[2] = a.fp1s; P[3] = a.fp1d;
   P[5] = rs; P[6] = rd; P[7] = rs; P[8] = rd;
   segSeg();
-  _foot.s = X[0]; _foot.d = X[1];
-  return X[8];
+  _foot.s = X[0]; _foot.d = X[1]; _foot.q = X[8];
 }

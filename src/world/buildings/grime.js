@@ -170,6 +170,7 @@ varying vec3 vBgPos;
 varying vec3 vBgN;
 uniform sampler2D bgGrimeTex;
 uniform vec4 bgGrimeK;   // darkening, greying, roughness gain, base streak share
+uniform vec2 bgArrisK;   // dust on the block arrises: amount, share on the head joints
 float bgDirt = 0.0;
 float bgHash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
 float bgVN(vec2 p) {
@@ -291,6 +292,33 @@ const FRAG_STONE = /* glsl */ `
 #endif
   }
 
+#ifdef BG_ARRIS
+  // dust on the worn arrises of the ashlar: the upper arris of every block is a small
+  // upward-facing bevel that catches the sky, and left clean it reads as a ruled bright
+  // line along each bed joint. Dust settles there (and, less, on the head-joint arrises),
+  // in patches along the arris and heavier on some blocks; gone once the arris is
+  // sub-pixel (its highlight is then gone too)
+  if (bgArrisK.x > 0.0 && sfLay.y > 0.5) {
+    float bgAf = 1.0 - smoothstep(0.002, 0.007, max(fwidth(bgP.x), fwidth(bgP.y)));
+    if (bgAf > 0.0) {
+      float bgAw = max(0.002, sfJoint.y * 0.55);    // pointing half width
+      float bgDt = sfCs.y - sfCl.y, bgDs = min(sfCl.x, sfCs.x - sfCl.x);
+      // (from the lower half of the pointing, over the step up to the stone, across the bevel)
+      float bgAt = smoothstep(0.3 * bgAw, 0.6 * bgAw, bgDt) * (1.0 - smoothstep(bgAw + 0.003, bgAw + 0.011, bgDt));
+      float bgAs = smoothstep(0.3 * bgAw, 0.6 * bgAw, bgDs) * (1.0 - smoothstep(bgAw + 0.002, bgAw + 0.007, bgDs));
+      float bgBh = float(sfCh & 1023u) * (1.0 / 1023.0);
+      float bgPa = smoothstep(0.32, 0.62, bgVN(vec2(bgP.x * 14.0 + bgBh * 31.0, bgP.y * 2.9)));
+      float bgPs = smoothstep(0.32, 0.62, bgVN(vec2(bgP.y * 14.0 + bgBh * 17.0, bgP.x * 2.9 + 5.0)));
+      float bgAk = bgArrisK.x * bgAf * (0.6 + 0.4 * bgBh);
+      float bgAd = bgAk * (0.2 + 0.8 * bgPa) * bgAt + bgAk * bgArrisK.y * (0.2 + 0.8 * bgPs) * bgAs;
+      bgAd = min(bgAd, 1.0);
+      // (the greyed bevel under the bluish sky light reads as a white line: the dust is a
+      // warm brown-grey, darker and less blue than the stone)
+      diffuseColor.rgb *= mix(vec3(1.0), vec3(0.76, 0.66, 0.52), bgAd);
+    }
+  }
+#endif
+
   // weathering detail from the atlas: trails carry most of the dirt; blotches and the
   // soot crust fill sheltered zones
   vec4 bgA = texture(bgGrimeTex, bgP * vec2(${(1 / PERIOD_U).toFixed(4)}, ${(1 / PERIOD_V).toFixed(4)}));
@@ -388,12 +416,12 @@ function chain(m, key, patch) {
  * Weathered stone variant of a library material (vertex colours on). k: darkening,
  * greying, roughness gain, share of the mask that shows without a trail.
  */
-export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
+export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0]) {
   const base = app.materials.get(name, { vertexColors: true });
   const m = base.clone();
   m.name = `buildings:${name}`;
-  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) } };
-  chain(m, 'bgS6', (shader) => {
+  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(...arris) } };
+  chain(m, 'bgS7', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
@@ -402,8 +430,9 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
     // (dirt in the joints needs the library's row layout: the block coordinates and joint
     // width of the surface patch, where the program has them)
     const joints = /vec2 sfCl\b/.test(shader.fragmentShader) && /vec2 sfCs\b/.test(shader.fragmentShader) && /uniform vec4 sfJoint;/.test(shader.fragmentShader);
+    const arrises = joints && /uint sfCh\b/.test(shader.fragmentShader) && /uniform vec4 sfLay;/.test(shader.fragmentShader);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + FRAG_PARS)
+      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_STONE)
       .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>');
   });

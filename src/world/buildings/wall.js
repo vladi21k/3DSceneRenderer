@@ -29,7 +29,7 @@ import { hash3 } from './shade.js';
 const EPS = 1e-4;
 const SLICE = 0.3;   // time slice of a generation step (ms)
 const GROOVE_G = 0.3, GROOVE_A = 0.22;
-const JOINT_BAND = 0.01;
+const JOINT_BAND = 0.022, BAND_VAR = 0.3;
 // soiling of a chamfer (colour factor: base + spread × per-block hash), the upward-facing
 // one dustier; and the grime mask it adds (patchy dirt from the weathering atlas)
 const SOIL_UP = [0.75, 0.08], SOIL_DOWN = [0.79, 0.08], SOIL_GRIME = 0.12;
@@ -77,6 +77,12 @@ function grooveRoot(g, u) {
   const h0 = hash3(m, k, g.seed), h1 = hash3(m + 1, k, g.seed);
   return g.j + GROOVE_A * g.c * (2 * (h0 + (h1 - h0) * f) - 1);
 }
+/** Texture metres of the joint band shown across a chamfer at u (varying along the joint). */
+function grooveBand(g, u) {
+  const x = u / GROOVE_G, m = Math.floor(x), f = x - m, k = g.i * 7919 + 29;
+  const h0 = hash3(m, k, g.seed), h1 = hash3(m + 1, k, g.seed);
+  return JOINT_BAND * (1 + BAND_VAR * (2 * (h0 + (h1 - h0) * f) - 1));
+}
 /** Depth (w ≤ 0) of the V profile at height v, root r. */
 function grooveW(g, r, v) {
   const a0 = g.j - g.c, a1 = g.j + g.c;
@@ -90,7 +96,7 @@ function grooveW(g, r, v) {
  * band (sv: the texture's v scale).
  */
 function grooveStrip(B, s, g, side, xa, xb, va, vc, sv) {
-  const c = g.c, a0 = g.j - c, a1 = g.j + c, band = JOINT_BAND / sv;
+  const c = g.c, a0 = g.j - c, a1 = g.j + c;
   let n = 1;
   _gc[0] = xa;
   for (let m = Math.floor(xa / GROOVE_G) + 1; m * GROOVE_G < xb - 1e-3 && n < 1022; m++) if (m * GROOVE_G > xa + 1e-3) _gc[n++] = m * GROOVE_G;
@@ -98,7 +104,7 @@ function grooveStrip(B, s, g, side, xa, xb, va, vc, sv) {
   s.reserve(n * 2, (n - 1) * 6);
   const b0 = s.vc;
   for (let k = 0; k < n; k++) {
-    const u = _gc[k], r = grooveRoot(g, u);
+    const u = _gc[k], r = grooveRoot(g, u), band = grooveBand(g, u) / sv;
     const lo = side ? Math.max(va, r) : Math.min(va, r), hi = side ? Math.max(vc, r) : Math.min(vc, r);
     // facing up and out (lower chamfer) or down and out (upper chamfer)
     const nv = side ? -c : c, nw = side ? a1 - r : r - a0;

@@ -67,12 +67,15 @@ import { stanceOf } from './behaviour/stance.js';
 // up front (agent.js settleShape) so nothing deoptimises mid-ride.
 
 const PI = Math.PI;
-const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _u = new THREE.Vector3();
+const _v = new THREE.Vector3();
 // A walker's world position is a linear function of (s, d) over a few decimetres (the paving's
 // shape changes over metres): worked out from three route.toWorld calls every LIN metres of
 // movement (the chords the walker is moving along) and interpolated in between: within a
 // millimetre of route.toWorld on a ride (measured: p95 0.2 mm, max 0.9 mm over 640 people).
 const LIN = 0.35;
+// (plain points with their fields fixed as doubles for route.toWorldIO's output: a double written to
+// a field that some other code once gave a non-number is boxed, and THREE.Vector3 is shared app-wide)
+const _p0 = settleShape({ x: 0, y: 0, z: 0 }), _p1 = settleShape({ x: 0, y: 0, z: 0 }), _p2 = settleShape({ x: 0, y: 0, z: 0 });
 const COUNT_INTS = new Set(['seated', 'passenger', 'stand', 'walker', 'stand300', 'walk300', 'side', 'standFar']);
 const MOVERS = 4;              // cyclists handed to post as moving boxes (per-object motion blur)
 const MOVER_RANGE = 70;        // ... within this distance of the camera (m)
@@ -346,7 +349,7 @@ class CrowdSim {
         const dh = hT - a.h, step = 1.5 * dt;
         if (dt === 0 || a.fresh || (dh <= step && dh >= -step)) a.h = hT; else a.h += dh > 0 ? step : -step;
         // (out in a side street: its own frame and level)
-        if (this.side.mark(a)) { this.side.toWorldA(a, _v); a.x = _v.x; a.y = _v.y; a.z = _v.z; a.lwOk = false; }
+        if (this.side.mark(a)) { this.side.toWorldA(a, _p0); a.x = _p0.x; a.y = _p0.y; a.z = _p0.z; a.lwOk = false; }
         else this._ground(a);
         a.ws = a.s; a.wd = a.d; a.wValid = true;
       }
@@ -423,21 +426,22 @@ class CrowdSim {
   _linearise(a) {
     const route = this.route, io = this.io;
     const gs = a.vs < 0 ? -LIN : LIN, gd = a.vd < 0 ? -LIN : LIN;
+    const P = _p0, S = _p1, D = _p2;
     if (io) {
-      io[0] = a.s; io[1] = a.d; io[2] = 0; route.toWorldIO(_v);
-      io[0] = a.s + gs; route.toWorldIO(_w);
-      io[0] = a.s; io[1] = a.d + gd; route.toWorldIO(_u);
+      io[0] = a.s; io[1] = a.d; io[2] = 0; route.toWorldIO(P);
+      io[0] = a.s + gs; route.toWorldIO(S);
+      io[0] = a.s; io[1] = a.d + gd; route.toWorldIO(D);
     } else {
-      route.toWorld(a.s, a.d, 0, _v);
-      route.toWorld(a.s + gs, a.d, 0, _w);
-      route.toWorld(a.s, a.d + gd, 0, _u);
+      route.toWorld(a.s, a.d, 0, P);
+      route.toWorld(a.s + gs, a.d, 0, S);
+      route.toWorld(a.s, a.d + gd, 0, D);
     }
     a.lwS = a.s; a.lwD = a.d;
-    a.lwX = _v.x; a.lwY = _v.y; a.lwZ = _v.z;
-    a.lwXs = (_w.x - _v.x) / gs; a.lwYs = (_w.y - _v.y) / gs; a.lwZs = (_w.z - _v.z) / gs;
-    a.lwXd = (_u.x - _v.x) / gd; a.lwYd = (_u.y - _v.y) / gd; a.lwZd = (_u.z - _v.z) / gd;
+    a.lwX = P.x; a.lwY = P.y; a.lwZ = P.z;
+    a.lwXs = (S.x - P.x) / gs; a.lwYs = (S.y - P.y) / gs; a.lwZs = (S.z - P.z) / gs;
+    a.lwXd = (D.x - P.x) / gd; a.lwYd = (D.y - P.y) / gd; a.lwZd = (D.z - P.z) / gd;
     a.lwOk = true;
-    a.x = _v.x; a.y = _v.y + a.h; a.z = _v.z;
+    a.x = P.x; a.y = P.y + a.h; a.z = P.z;
   }
 
   /** A riding cyclist near the camera and in front of it, for post's per-object motion blur: the

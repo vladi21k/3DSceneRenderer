@@ -93,7 +93,8 @@ const buildings = {
     // says so) and the backdrop lots' glass, lit at night
     if (app.materials.register) {
       MATS = {
-        ashlar: grimeStone(app, 'stone.ashlar'),
+        // (the ashlar's worn arrises collect dust, see grime.js BG_ARRIS)
+        ashlar: grimeStone(app, 'stone.ashlar', undefined, [1.0, 0.8]),
         rough: grimeStone(app, 'stone.rough'),
         smooth: grimeStone(app, 'stone.smooth', [0.45, 0.55, 0.12, 0.35]),
         glass: litGlass(app, 'glass.window'),

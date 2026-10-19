@@ -676,7 +676,8 @@ const ironwork = {
     // a towel or rug airing over the front rail
     if (iron && r.chance(0.04)) {
       _l.makeScale(r.range(0.5, 0.9), 1, 1).setPosition(u0 + len * r.range(0.25, 0.75), top, D - 0.05);
-      this.part(ctx, A.towel, _m.multiplyMatrices(F, _l), TOWELS[r.int(0, TOWELS.length - 1)]);
+      const ti = r.int(0, TOWELS.length - 1), T = A.towels[(ti + st.design) % A.towels.length];
+      this.part(ctx, lod ? T.far : T.near, _m.multiplyMatrices(F, _l), TOWELS[ti]);
     }
     // a flag on the front corner post
     if (iron && r.chance(0.012)) this.flag(ctx, F, r.chance(0.5) ? u0 + 0.05 : u1 - 0.05, y + 0.85, D - 0.05, st, r, 0.6);

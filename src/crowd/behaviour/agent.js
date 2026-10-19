@@ -190,6 +190,7 @@ export class Agent {
     this.km = 1;              // metres per unit of s at the agent (steering, once per step)
     this.kap = 0; this.kapS = -1e9; // route curvature at kapS (refreshed every 0.5 m)
     this.front = 0; this.frontN = -1; // tram.js frontFor of this frame, and the frame it is for
+    this.tryA = 0;            // a facing being tried for a stroller / bicycle (tram.turnBlockedA, steering._swingBlocked)
     this.ws = 0; this.wd = 0; this.wValid = false; // (s, d) of the world position last computed (crowd._output)
     this.hT = 0;              // platform height under the feet there
     this.rh = 0; this.rhS = 0; this.rhValid = false; // route heading at rhS (refreshed every 0.2 m)

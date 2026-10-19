@@ -1116,16 +1116,106 @@ function chairTemplate() {
   return template(W, WHITE_UV);
 }
 
-/** A towel or rug hung over the handrail: front drop 0.45 m, back drop 0.3 m, unit width
- *  along x (scaled on write), folded over the rail at y = 0. White, tinted on write. */
-function towelTemplate() {
-  const W = new GeoWriter();
-  const t = 0.03;
-  const Q = (pts, n, s) => { const i = pts.map((p) => W.v(p[0], p[1], p[2], n[0], n[1], n[2], p[0], p[1], s)); W.quad(i[0], i[1], i[2], i[3]); };
-  Q([[-0.5, -0.45, t], [0.5, -0.45, t], [0.5, 0, t], [-0.5, 0, t]], [0, 0, 1], 1);
-  Q([[0.5, -0.45, t - 0.004], [-0.5, -0.45, t - 0.004], [-0.5, 0, t - 0.004], [0.5, 0, t - 0.004]], [0, 0, -1], 0.7);
-  Q([[-0.5, 0.012, t], [0.5, 0.012, t], [0.5, 0.012, -t], [-0.5, 0.012, -t]], [0, 1, 0], 1.05);
-  Q([[0.5, -0.3, -t], [-0.5, -0.3, -t], [-0.5, 0, -t], [0.5, 0, -t]], [0, 0, -1], 0.75);
+/** Phases of the towel variants' folds and hems. */
+const TOWEL_PH = [[0.7, 1.9, 0.3], [2.3, 0.4, 1.4], [1.2, 2.8, 0.9]];
+
+/** A towel or rug airing over the handrail, folded over the rail at y = 0 (x along the
+ *  rail, unit width, scaled on write; +z out to the street). Soft cloth: the drops hang
+ *  in loose vertical folds that open toward the hems, the hems a little uneven and the
+ *  cloth hung a little askew, the side edges curling outward; two faces 4 mm apart, the
+ *  fold valleys and the inside of the loop over the rail darker. `variant`: 0 a plain
+ *  towel with a woven band near each hem, 1 a striped beach towel, 2 a short, stiffer
+ *  flat-woven rug in bands. `far`: a light grid with the mean of the pattern (coarse
+ *  chunks, and the shadow caster). Every quad has its own vertices, so the bands and
+ *  stripes keep hard edges over smooth normals. White, tinted on write. */
+function towelTemplate(variant = 0, far = false) {
+  const W = new GeoWriter(far ? 256 : 8192);
+  const [p0, p1, p2] = TOWEL_PH[variant];
+  const rug = variant === 2;
+  const t = 0.028, yc = -0.012, top = 0.016; // rail clearance (half), fold centre, cloth top
+  const hf = rug ? 0.36 : 0.46, hb = rug ? 0.27 : 0.31;
+  const amp = rug ? 0.007 : 0.024, skew = (variant === 1 ? -1 : 1) * 0.045;
+  const NX = far ? 5 : 20, step = 0.035, NT = far ? 2 : 5;
+  const sm = (a, b, v) => { const k = Math.min(1, Math.max(0, (v - a) / (b - a))); return k * k * (3 - 2 * k); };
+  const L = (side, x) => (side > 0 ? hf + 0.012 * Math.sin(5.1 * x + p0) + skew * x : hb + 0.01 * Math.sin(4.3 * x + p1) - 0.6 * skew * x);
+  const fold = (x) => 0.5 + 0.5 * (0.62 * Math.sin(2 * Math.PI * 2.2 * x + p0) + 0.38 * Math.sin(2 * Math.PI * 4.6 * x + p2));
+  // rows from the front hem over the rail to the back hem: [side, dh] on the drops (dh:
+  // distance from the hem, null = where the drop meets the fold), [0, angle] on the top
+  const rows = [];
+  const kf = far ? 0 : Math.floor((hf - 0.06) / step), kb = far ? 0 : Math.floor((hb - 0.05) / step);
+  for (let k = 0; k <= kf; k++) rows.push([1, k * step]);
+  rows.push([1, null]);
+  for (let m = 1; m < NT; m++) rows.push([0, (Math.PI * m) / NT]);
+  rows.push([-1, null]);
+  for (let k = kb; k >= 0; k--) rows.push([-1, k * step]);
+  const R = rows.length, C = NX + 1;
+  const G = new Float32Array(R * C * 3), D = new Float32Array(R * C), F = new Float32Array(R * C), H = new Float32Array(R * C);
+  for (let j = 0; j < R; j++) {
+    const [side, q] = rows[j];
+    for (let i = 0; i < C; i++) {
+      const x = -0.5 + i / NX, o = j * C + i;
+      let y, z, d = 0, dh = 0;
+      if (side) {
+        const l = L(side, x);
+        dh = q === null ? l : q; d = l - dh;
+        const e = Math.max(0, Math.abs(x) - 0.36) / 0.14;
+        const bulge = amp * sm(0.03, 0.4, d) * fold(x) + 0.012 * e * e * sm(0.05, 0.3, d);
+        y = yc - d; z = side * (t + bulge);
+      } else {
+        y = yc + (top - yc) * Math.sin(q); z = t * Math.cos(q);
+      }
+      G[o * 3] = x; G[o * 3 + 1] = y; G[o * 3 + 2] = z;
+      D[o] = d; H[o] = dh; F[o] = fold(x);
+    }
+  }
+  // smooth normals from the grid, turned away from the rail
+  const N = new Float32Array(R * C * 3);
+  for (let j = 0; j < R; j++) {
+    const [side, q] = rows[j];
+    const rz = side ? side : Math.cos(q), ry = side ? 0 : Math.sin(q);
+    for (let i = 0; i < C; i++) {
+      const a = (j * C + Math.max(0, i - 1)) * 3, b = (j * C + Math.min(NX, i + 1)) * 3;
+      const c = (Math.max(0, j - 1) * C + i) * 3, d = (Math.min(R - 1, j + 1) * C + i) * 3;
+      const ux = G[b] - G[a], uy = G[b + 1] - G[a + 1], uz = G[b + 2] - G[a + 2];
+      const vx = G[d] - G[c], vy = G[d + 1] - G[c + 1], vz = G[d + 2] - G[c + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1, sg = (ny * ry + nz * rz < 0 ? -1 : 1) / l;
+      const o = (j * C + i) * 3;
+      N[o] = nx * sg; N[o + 1] = ny * sg; N[o + 2] = nz * sg;
+    }
+  }
+  // pattern of a quad (hard edges): woven hem bands, stripes down the drops, rug bands
+  const MEAN = [0.95, 0.8, 0.84];
+  const band = (side, xc, dh) => {
+    if (far) return MEAN[variant];
+    if (variant === 1) return Math.floor((xc + 0.5) / 0.1) % 2 ? 0.6 : 1;
+    if (!side) return 1;
+    if (variant === 0) return dh > step && dh < 2 * step ? 0.8 : 1;
+    return [1, 0.68, 0.85][Math.floor(dh / (2 * step)) % 3];
+  };
+  for (const layer of [1, -1]) {
+    const off = layer > 0 ? 0 : -0.004;
+    for (let j = 0; j < R - 1; j++) {
+      const side = rows[j][0] || rows[j + 1][0];
+      for (let i = 0; i < NX; i++) {
+        const ids = [j * C + i, j * C + i + 1, (j + 1) * C + i + 1, (j + 1) * C + i];
+        const c0 = ids[0] * 3;
+        const b = band(rows[j][0] && rows[j + 1][0] ? side : 0, G[c0] + 0.5 / NX, 0.5 * (H[ids[0]] + H[ids[3]]));
+        const v = ids.map((o) => {
+          const shade = (1 - 0.28 * (1 - F[o]) * sm(0.03, 0.4, D[o])) * (layer > 0 ? 1 : 0.5 + 0.4 * sm(0.02, 0.3, D[o]));
+          const n = o * 3, nx = N[n] * layer, ny = N[n + 1] * layer, nz = N[n + 2] * layer;
+          return W.v(G[n] + N[n] * off, G[n + 1] + N[n + 1] * off, G[n + 2] + N[n + 2] * off, nx, ny, nz, 0, 0, shade * b);
+        });
+        // counter-clockwise seen from the side the layer faces
+        const a0 = ids[0] * 3, a1 = ids[1] * 3, a3 = ids[3] * 3;
+        const ux = G[a1] - G[a0], uy = G[a1 + 1] - G[a0 + 1], uz = G[a1 + 2] - G[a0 + 2];
+        const wx = G[a3] - G[a0], wy = G[a3 + 1] - G[a0 + 1], wz = G[a3 + 2] - G[a0 + 2];
+        const fx = uy * wz - uz * wy, fy = uz * wx - ux * wz, fz = ux * wy - uy * wx;
+        const ccw = (fx * N[a0] + fy * N[a0 + 1] + fz * N[a0 + 2]) * layer > 0;
+        if (ccw) W.quad(v[0], v[1], v[2], v[3]); else W.quad(v[0], v[3], v[2], v[1]);
+      }
+    }
+  }
   return template(W, WHITE_UV);
 }
 
@@ -1199,7 +1289,8 @@ export function buildAttachAssets() {
     dishFar: dishFarTemplate(),
     dishMountFar: dishMountFarTemplate(),
     chair: chairTemplate(),
-    towel: towelTemplate(),
+    // towels and rugs airing on the rail: three kinds, each near and far
+    towels: [0, 1, 2].map((v) => ({ near: towelTemplate(v), far: towelTemplate(v, true) })),
     pole: poleTemplate(),
     flag: flagGeometry(),
     flagShadow: flagGeometry(8, 5), // the cloth's shadow caster: same motion, coarse grid
@@ -1210,7 +1301,9 @@ export function buildAttachAssets() {
   // in the fine cascades, whose texels can hold them. The planters' hook straps (2.6 cm)
   // cast nothing.
   A.cast = new Map([[A.acBody, posTemplate(A.acBody)]]);
-  A.thin = new Map([A.box, A.trough, A.chair, A.towel, A.pole, A.acBrackets, A.acPipes].map((t) => [t, posTemplate(t)]));
+  A.thin = new Map([A.box, A.trough, A.chair, A.pole, A.acBrackets, A.acPipes].map((t) => [t, posTemplate(t)]));
+  // a towel casts its light grid, near and far alike
+  for (const T of A.towels) { const c = posTemplate(T.far); A.thin.set(T.near, c); A.thin.set(T.far, c); }
   // the pot's caster: a coarse cone through its foot, belly and rim (chords inside)
   const W = new GeoWriter();
   lathe(W, [[0.084, 0], [0.118, 0.186], [0.134, 0.224], [0.0001, 0.215]], 6);

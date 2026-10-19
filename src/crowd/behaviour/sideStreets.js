@@ -225,6 +225,17 @@ export class SideStreets {
     return L;
   }
 
+  /** roadPush applied to a.s, with the step limit read from the steering (no number argument or
+   *  result to box). */
+  roadPushA(a) {
+    if (!a.inSide || a.sideX < 3.2 || a.mob === 2) return;
+    const L = this.locateA(a, _loc3);
+    if (!L) return;
+    const lim = L.g.road + KERB_W + 0.22, aa = Math.abs(L.a);
+    if (aa >= lim) return;
+    a.s += (L.a >= 0 ? 1 : -1) * Math.min(this.c.steering.maxC, 1.0 * this.c.dt, lim - aa);
+  }
+
   /** Off the carriageway (kept to the sidewalks a few metres in): the push this step (signed s), or 0. */
   roadPush(a, maxC) {
     if (!a.inSide || a.sideX < 3.2 || a.mob === 2) return 0;   // (cyclists ride the carriageway)

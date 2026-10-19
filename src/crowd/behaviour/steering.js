@@ -1,7 +1,7 @@
 import { KIND, ST, TASK, MOB, settleShape } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
 import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
-import { updateFoot, footGap, propPointDist2, _foot, footBlend, footAt } from './footprint.js';
+import { updateFoot, footGapQ, FQ, propPointQ, _foot, footBlend, footAt } from './footprint.js';
 import { rideTarget, bikeTurnRate } from './cyclist.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
@@ -113,7 +113,8 @@ export class Steering {
           if (b === a || !(a.mob || b.mob) || !b.active) continue;
           const dx = (b.s - a.s) * k, dy = b.d - a.d;
           if (dx * dx + dy * dy > 9) continue;
-          const g = footGap(a, b, dx, dy);
+          FQ[0] = dx; FQ[1] = dy;
+          const g = footGapQ(a, b);
           if (g.gap >= SEP_GAP) continue;
           // (all of it against someone seated, or held against a pole / wall / terrace)
           const share = b.state === ST.SEATED || b.simple || b.pinned ? 1 : 0.5;
@@ -246,7 +247,8 @@ export class Steering {
     const wAcc = a.rx >= 2 ? 5.0 : 3.0;
     w = a.yawW + Math.max(-wAcc * dt, Math.min(wAcc * dt, w - a.yawW));
     const na = wrapAngle(a.alpha + w * dt);
-    if (tram.turnBlocked(a, na)) w = 0; else a.alpha = na;
+    a.tryA = na;
+    if (tram.turnBlockedA(a)) w = 0; else a.alpha = na;
     a.yawW = w;
     updateFoot(a);
     a.vs = v * Math.cos(a.alpha); a.vd = v * Math.sin(a.alpha);
@@ -297,7 +299,8 @@ export class Steering {
   /** Would turning a (with its stroller / bicycle) to facing na bring the prop closer into
    *  somebody than it is now (people only step aside from a prop that moves along, not one that
    *  sweeps round)? */
-  _swingBlocked(a, na) {
+  _swingBlocked(a) {
+    const na = a.tryA;
     if (a.fpR <= 0 || a.simple) return false;
     const agents = this.c.population.agents;
     const ix = Math.floor((a.s - this.s0) / CELL), iy = Math.floor((a.d + GRID_D) / CELL);
@@ -313,9 +316,11 @@ export class Steering {
           const dx = (b.s - a.s) * k, dy = b.d - a.d;
           if (dx * dx + dy * dy > 6.25) continue;
           a.fp0s = o0s; a.fp0d = o0d; a.fp1s = o1s; a.fp1d = o1d;
-          const g0 = footGap(a, b, dx, dy).gap;
+          FQ[0] = dx; FQ[1] = dy;
+          const g0 = footGapQ(a, b).gap;
           a.fp0s = _sw.fp0s; a.fp0d = _sw.fp0d; a.fp1s = _sw.fp1s; a.fp1d = _sw.fp1d;
-          const g1 = footGap(a, b, dx, dy).gap;
+          FQ[0] = dx; FQ[1] = dy;
+          const g1 = footGapQ(a, b).gap;
           if (g1 < SEP_GAP && g1 < g0 - 0.002) { blocked = true; break; }
         }
       }
@@ -375,7 +380,7 @@ export class Steering {
           let nx = -dx / dist, ny = -dy / dist; // from b to a
           let gap = dist - R2;
           // strollers and bicycles: the gap between the whole footprints
-          if ((a.mob || b.mob) && dist < 3.4) { const g = footGap(a, b, dx, dy); gap = g.gap; nx = g.ns; ny = g.nd; }
+          if ((a.mob || b.mob) && dist < 3.4) { FQ[0] = dx; FQ[1] = dy; const g = footGapQ(a, b); gap = g.gap; nx = g.ns; ny = g.nd; }
           const mate = (b.leader || b) === L;
           if (gap < 1.64) {
             // body repulsion, anisotropic (people react to what is in front of them). Standing
@@ -399,7 +404,8 @@ export class Steering {
           if (a.mob || b.mob) {
             // a stroller / bicycle: the gap between the whole footprints at the closest approach
             // (facings held), passed with a margin that grows with the speed of the encounter
-            const g = footGap(a, b, cx, cy), want = 0.3 + 0.08 * Math.sqrt(vv);
+            FQ[0] = cx; FQ[1] = cy;
+            const g = footGapQ(a, b), want = 0.3 + 0.08 * Math.sqrt(vv);
             if (g.gap > want) continue;
             const k = 1.9 * (1 - tc / 3) * Math.min(1, (want - g.gap) / 0.55);
             fs += g.ns * k - ed * k * 0.3; fd += g.nd * k + es * k * 0.3;
@@ -460,7 +466,8 @@ export class Steering {
       const gap = dist - r - AGENT_R;
       if (mob && F) {
         // the stroller / bicycle is kept off the pole too
-        const pd2 = propPointDist2(a, dx, dy), pdist = Math.sqrt(pd2), pg = pdist - r - a.fpR;
+        FQ[0] = dx; FQ[1] = dy; propPointQ(a);
+        const pdist = Math.sqrt(_foot.q), pg = pdist - r - a.fpR;
         if (pg < 0.5 && pdist > 1e-4) {
           const f = Math.min(6, 2.6 * Math.exp(-pg / 0.16));
           fs -= ((dx - _foot.s) / pdist) * f; fd -= ((dy - _foot.d) / pdist) * f;
@@ -553,7 +560,8 @@ export class Steering {
         const i = map.qI[q];
         const dx = map.qDS[q] - shift - (a.s - this._s0), dy = map.cD[i] - a.d;
         const r = map.cR[i];
-        const pd2 = propPointDist2(a, dx, dy);
+        FQ[0] = dx; FQ[1] = dy; propPointQ(a);
+        const pd2 = _foot.q;
         const min = r + a.fpR * 0.85;
         if (pd2 < min * min) {
           const pdist = Math.sqrt(pd2) || 1e-3;
@@ -568,12 +576,15 @@ export class Steering {
     // facades and cross street mouths
     if (a.inDoor) {
       const dr = a.door;
-      const lim = dr && dr.o ? dr.o.d + dr.depth - 0.1 : map.facadeAt(a.s, side) + 0.25;
+      // (facadeAt / wallAt at a.s through map.R: nothing boxed)
+      map.facadeA(a, side);
+      const fac = map.R[0], wall = map.R[1];
+      const lim = dr && dr.o ? dr.o.d + dr.depth - 0.1 : fac + 0.25;
       // out of the recess again (people coming out of a door): an ordinary walker
-      if (a.task !== TASK.ENTER && !(a.task === TASK.SERVE && a.step === 3) && Math.abs(a.d) < map.facadeAt(a.s, side) - 0.35) a.inDoor = false;
+      if (a.task !== TASK.ENTER && !(a.task === TASK.SERVE && a.step === 3) && Math.abs(a.d) < fac - 0.35) a.inDoor = false;
       else {
         // the facade opens only at the door leaf; inside the recess the jambs bound s
-        const wall = map.wallAt(a.s, side), ad = Math.abs(a.d);
+        const ad = Math.abs(a.d);
         const inRange = a.s >= a.doorS0 - 0.02 && a.s <= a.doorS1 + 0.02;
         if (ad > wall && !inRange) {
           // at the corner of the opening: out through the smaller overlap (facade or jamb)
@@ -589,16 +600,19 @@ export class Steering {
     const m = map.mouthAtAS(a, side);
     if (m) {
       // inside the side street opening the side walls bound s; elsewhere the facade bounds d
-      const line = map.mouthLine(m, side);
-      const ms = c.unwrap(m.s), half = m.width / 2 - 0.55;
+      // (map.mouthLine and c.unwrap(m.s) worked out in place: nothing boxed)
+      const line = side > 0 ? m._crowdLineR : m._crowdLineL;
+      const L = c.route.length;
+      let mw = m.s % L; if (mw < 0) mw += L;
+      let mdd = mw - c.camW; if (mdd > L / 2) mdd -= L; if (mdd < -L / 2) mdd += L;
+      const ms = c.camU + mdd, half = m.width / 2 - 0.55;
       // (well inside the side street its walls bound s whatever happened before)
       if (Math.abs(a.d) > line - WALL_GAP && (Math.abs(a.s - ms) < half + 0.4 || a.inSide && a.sideX > 1)) {
         if (a.s < ms - half) a.s += Math.min(maxC, ms - half - a.s); else if (a.s > ms + half) a.s -= Math.min(maxC, a.s - ms - half);
         const deep = line + (m.depth || 60) + 40;
         if (Math.abs(a.d) > deep) a.d = side * Math.max(deep, Math.abs(a.d) - maxC);
         // (up the side street people keep to its sidewalks)
-        const rp = c.side.roadPush(a, maxC);
-        if (rp) a.s += rp;
+        c.side.roadPushA(a);
         return;
       }
     }
@@ -610,9 +624,12 @@ export class Steering {
       // (at the prop's own s: facades step forward at lot boundaries)
       let over = 0;
       for (let e = 0; e < 2; e++) {
-        const ps = a.s + (e ? a.fp1s : a.fp0s), pd = side * (a.d + (e ? a.fp1d : a.fp0d));
-        if (map.mouthAt(ps, side)) continue;
-        over = Math.max(over, pd + a.fpR - (map.facadeAt(ps, side) - 0.06));
+        map.qS = a.s + (e ? a.fp1s : a.fp0s);
+        const pd = side * (a.d + (e ? a.fp1d : a.fp0d));
+        map.facadeQS(side);
+        if (map.R[3] > 0) continue;
+        const o = pd + a.fpR - (map.R[0] - 0.06);
+        if (o > over) over = o;
       }
       if (over > 0) a.d -= side * Math.min(Math.max(maxC, 0.06), over);
     }
@@ -709,7 +726,8 @@ export class Steering {
     let na = (a.alpha + dTurn + PI) % (2 * PI); if (na < 0) na += 2 * PI; na -= PI;
     if (a.mob) {
       // the prop is never swung into the tram's band, nor into somebody standing or sitting there
-      if (!c.tram.turnBlocked(a, na) && !this._swingBlocked(a, na)) a.alpha = na;
+      a.tryA = na;
+      if (!c.tram.turnBlockedA(a) && !this._swingBlocked(a)) a.alpha = na;
       updateFoot(a);
     } else a.alpha = na;
     a.pose = a.state === ST.SEATED ? 2 : (still && !a.moving && sp < 0.6) ? 1 : 0;

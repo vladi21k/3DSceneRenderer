@@ -900,7 +900,9 @@ const post = {
     const info = app.renderer.info;
     info.autoReset = false;
     info.reset();
-    try { this._render(dt, app); } finally { info.autoReset = true; }
+    // (a time step that is not positive, as the first frame after a long load can bring,
+    // must not run the adaptation filters backwards)
+    try { this._render(dt > 0 ? dt : 0, app); } finally { info.autoReset = true; }
   },
 
   _render(dt, app) {
@@ -976,7 +978,7 @@ const post = {
     pu.uFarI.value = L ? L.farIntensity : 0;
     pu.uFarMin.value = L ? L.farMinDist : 60;
     if (L) pu.uLampCos.value.set(L.lampCos[0], L.lampCos[1]);
-    this._dofParams(env, camera, app.realDt ?? dt);
+    this._dofParams(env, camera, app.realDt > 0 ? app.realDt : dt);
     this._draw(this.prepass, this.hdrRT);
 
     // ---- 4b. temporal anti-aliasing (history reprojected by depth and camera motion)
