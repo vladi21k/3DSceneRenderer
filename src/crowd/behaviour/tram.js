@@ -740,7 +740,8 @@ export class TramWatch {
   _cabKerb(a, out) {
     const dl = a.d - RIDE_D;
     // distance of the footprint's near edge, in body-centre terms (|dl| for a plain body)
-    const adl = a.mob ? footBandGap(a) + BAND : Math.abs(dl);
+    // (footBandGap(a) + BAND written out)
+    const adl = a.mob ? (dl >= 0 ? dl - a.extLo : -dl - a.extHi) : Math.abs(dl);
     if (adl < BAND || adl > BAND + 2.5) return;
     const ahead = a.s - this.trainU;
     if (!a.pair) { this.front(a); if (ahead < -(TRAM_LEN + 3) || ahead > a.front + 3) return; }
@@ -764,7 +765,8 @@ export class TramWatch {
   _cabConstrain(a) {
     const prevD = a.prevD;
     const dl = a.d - RIDE_D;
-    if (a.mob ? !footInBand(a) : Math.abs(dl) >= BAND) return;
+    // (footInBand(a) written out)
+    if (a.mob ? !(dl + a.extHi > -BAND && dl - a.extLo < BAND) : Math.abs(dl) >= BAND) return;
     const ahead = a.s - this.trainU;
     this.front(a);
     const inZone = ahead > -(TRAM_LEN + 2) - a.extS && ahead < Math.max(a.front - 4, SWEPT_AHEAD + 2) + a.extS;

@@ -546,6 +546,74 @@ export class Sky {
     if (readback) this.readIrradiance();
   }
 
+  /**
+   * Tabulate the irradiance texels against the time of day, once at start-up: they depend
+   * on the sun's elevation alone (the sky-view LUT is laid out relative to the sun's
+   * azimuth, and the atmosphere is fixed for the session), so the sky-view LUT and the
+   * irradiance pass are rendered for `n` times of day into the rows of one target and read
+   * back in a single synchronous read. irradianceAt(t) interpolates the table, and a time
+   * of day change needs no read-back at all: any GPU-to-CPU read waits for the whole frame
+   * queue in the browser, fence or not (measured 25-500 ms under load). `dirOf(t, out)`
+   * gives the sun direction for t; the sky-view LUT is left at the last row (the caller
+   * re-renders it for the current sun). Returns false when the table could not be read.
+   */
+  buildIrradianceTable(dirOf, n = 129) {
+    const r = this.renderer, prev = r.getRenderTarget();
+    const rt = new THREE.WebGLRenderTarget(IRR_TEXELS, n, {
+      type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
+    });
+    const d = new THREE.Vector3(), clear = r.autoClear;
+    r.autoClear = false;   // (each row is drawn alone: a clear would wipe the rows before it)
+    try {
+      for (let i = 0; i < n; i++) {
+        this.atmo.updateSky(dirOf(i / (n - 1), d));
+        rt.viewport.set(0, i, IRR_TEXELS, 1);
+        r.setRenderTarget(rt);
+        r.render(this._irrQuad, this._quadCam);
+      }
+    } finally {
+      r.autoClear = clear;
+      r.setRenderTarget(prev);
+    }
+    const buf = new Uint16Array(IRR_TEXELS * n * 4);
+    let ok = true;
+    try { r.readRenderTargetPixels(rt, 0, 0, IRR_TEXELS, n, buf); } catch (e) { ok = false; }
+    rt.dispose();
+    if (!ok) return false;
+    // (natural logs, interpolated linearly: near sunset the sky light falls exponentially)
+    const h = THREE.DataUtils.fromHalfFloat, K = IRR_KEYS.length;
+    const T = new Float32Array(n * K * 3);
+    for (let i = 0; i < n; i++) {
+      for (let k = 0; k < K; k++) {
+        for (let c = 0; c < 3; c++) {
+          const v = h(buf[(i * IRR_TEXELS + k) * 4 + c]);
+          if (!(v >= 0) || !Number.isFinite(v)) return false;
+          T[(i * K + k) * 3 + c] = Math.log(Math.max(v, 1e-9));
+        }
+      }
+    }
+    this._irrTable = T;
+    this._irrRows = n;
+    return true;
+  }
+
+  /** Set this.irradiance for time of day t from the table (in place); false without one. */
+  irradianceAt(t) {
+    const T = this._irrTable;
+    if (!T) return false;
+    const n = this._irrRows, K = IRR_KEYS.length;
+    const x = Math.min(Math.max(+t || 0, 0), 1) * (n - 1);
+    const i = Math.min(Math.floor(x), n - 2), f = x - i;
+    const o = this._irrObject();
+    for (let k = 0; k < K; k++) {
+      const a = (i * K + k) * 3, b = a + K * 3, v = o[IRR_KEYS[k]];
+      v.x = Math.exp(T[a] + (T[b] - T[a]) * f);
+      v.y = Math.exp(T[a + 1] + (T[b + 1] - T[a + 1]) * f);
+      v.z = Math.exp(T[a + 2] + (T[b + 2] - T[a + 2]) * f);
+    }
+    return true;
+  }
+
   /** Synchronous read of the irradiance texels (a GPU stall: start-up only). */
   readIrradiance() {
     const r = this.renderer;
@@ -559,18 +627,20 @@ export class Sky {
   }
 
   /**
-   * Start an asynchronous read of the irradiance texels: they are copied into a pixel-pack
-   * buffer behind a fence, and pollIrradiance() (once a frame) collects them once the GPU
-   * has passed it, so the main thread never waits for the frame queue (no timer polls,
-   * no flushes). Returns true while the read is pending; false when it could not be
+   * (Fallback for a session without the irradiance table.) Start an asynchronous read of
+   * the irradiance texels: they are copied into a pixel-pack buffer behind a fence, and
+   * pollIrradiance() (once a frame) collects them once the GPU has passed it (no timer
+   * polls, no flushes; the browser may still wait for its command queue when the buffer
+   * is read). Returns true while the read is pending; false when it could not be
    * started this way and the texels were read synchronously instead (already in
-   * this.irradiance).
+   * this.irradiance; with a lost context nothing is read and the last values stay).
    */
   beginIrradianceRead() {
     if (this._irrSync) return true;
     const r = this.renderer, gl = r.getContext();
+    if (gl.isContextLost()) return false;
     const ok = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext
-      && r.extensions.has('EXT_color_buffer_float') && !gl.isContextLost();
+      && r.extensions.has('EXT_color_buffer_float');
     if (!ok) { this.readIrradiance(); return false; }
     const prev = r.getRenderTarget();
     if (!this._irrPbo) {
@@ -617,12 +687,16 @@ export class Sky {
     return 1;
   }
 
-  _decodeIrradiance(buf, half = true) {
-    // (updated in place: while the time of day changes it is read every other frame)
-    const o = this.irradiance || (this.irradiance = {
+  /** this.irradiance, made once and then updated in place. */
+  _irrObject() {
+    return this.irradiance || (this.irradiance = {
       horizontal: new THREE.Vector3(), horizonMean: new THREE.Vector3(), zenith: new THREE.Vector3(),
       vertical: new THREE.Vector3(), horizonSun: new THREE.Vector3(), horizonAnti: new THREE.Vector3(),
     });
+  }
+
+  _decodeIrradiance(buf, half = true) {
+    const o = this._irrObject();
     const K = IRR_KEYS, h = THREE.DataUtils.fromHalfFloat;
     for (let i = 0; i < K.length; i++) {
       const v = o[K[i]], j = i * 4;

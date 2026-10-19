@@ -13,7 +13,7 @@ their files are part of the app.
 |---|---|---|---|
 | three.js r186 (renderer, maths, loaders) | `vendor/three/build/` | three.js release r186, vendored unmodified so the app runs without a build step | MIT, see `vendor/three/LICENSE` (copyright three.js authors) |
 | three.js add-ons used by the app: `geometries/RoundedBoxGeometry.js`, `lights/SunLight.js`, `lights/SunLightShadow.js`, `utils/BufferGeometryUtils.js` | `vendor/three/addons/` | same release | MIT (three.js authors) |
-| Human figures: 49 dressed characters (meshes, skeleton weights, LODs) and their texture strips | `assets/humans_mh/` (`cast.json`, `cast.bin.gz`, `tex/*.webp`) | Built in this repository by `tools/blender/mh_*.py` with the MPFB2 add-on (MakeHuman for Blender, v2.0.18) from the MakeHuman system assets (`makehuman_system_assets_cc0.zip`); fetched by `tools/mh_fetch.sh`, image `docker/Dockerfile.mh` | CC0 1.0 (public domain dedication of the MakeHuman system assets; the generated cast is released the same way, recorded in `cast.json` `license`) |
+| Human figures: 49 dressed characters (meshes, skeleton weights, LODs, hair strand cards) and their texture strips, about 24.5 MB | `assets/humans_mh/` (`cast.json`, `cast.bin.gz`, `tex/*.webp`, the strand atlas in `albedo_5` / `alpha_5`) | Built in this repository by `tools/blender/mh_*.py` with the MPFB2 add-on (MakeHuman for Blender, v2.0.18) from the MakeHuman system assets (`makehuman_system_assets_cc0.zip`); fetched by `tools/mh_fetch.sh`, image `docker/Dockerfile.mh` | CC0 1.0 (public domain dedication of the MakeHuman system assets; the cast built from them is released the same way, recorded in `cast.json` `license`: 'Human figures: built with MPFB2 from the MakeHuman system assets (CC0 1.0)') |
 
 The rest of `vendor/three/addons/` is the unmodified add-on tree of the same release. The
 app does not load it. Third-party libraries in it keep their own licences, stated in each
@@ -32,7 +32,7 @@ file's header or README (for example `libs/draco` and `libs/basis`: Apache-2.0;
 
 | Tool | Used for | Licence |
 |---|---|---|
-| MPFB2 v2.0.18 (Blender add-on) and the MakeHuman system assets | generating the human cast (`docker/Dockerfile.mh`, `tools/mh_fetch.sh`; the downloads go to the git-ignored `docker/mh/`) | MPFB2 code: GPL-3.0 (used as a tool only; none of its code is redistributed). System assets: CC0 1.0 |
+| MPFB2 v2.0.18 (Blender add-on) and the MakeHuman system assets | building the human cast (`tools/blender/mh_build.py`, stages chars, hair, tex, export, preview) (`docker/Dockerfile.mh`, `tools/mh_fetch.sh`; the downloads go to the git-ignored `docker/mh/`) | MPFB2 code: GPL-3.0 (used as a tool only; none of its code is redistributed). System assets: CC0 1.0 |
 | Blender 4.5 LTS, Node 24, `@gltf-transform/cli`, Python with numpy / scipy / Pillow, ImageMagick, ffmpeg | the tools image (`docker/Dockerfile`, `tools/dk`): asset scripts, checks, movie encoding (`tools/record.py`) | each under its own licence (Blender: GPL-2.0-or-later; gltf-transform: MIT; others: their upstream licences); nothing they contain is shipped |
 | Google Chrome (headless) | screenshots and timing (`tools/shoot.py`, `tools/record.py`) | proprietary browser, not shipped |
 

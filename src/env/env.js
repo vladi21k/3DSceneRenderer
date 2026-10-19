@@ -304,9 +304,19 @@ const env = {
     this.atmo.renderLUTs();
     this.sky.initGPU();
     this.clouds.renderNoise();
+    // the sky irradiance for every time of day, read back once (see Sky.buildIrradianceTable)
+    const t0 = performance.now();
+    const fwd = this._avenueFwd, right = this._avenueRight;
+    this._hasIrrTable = !!(fwd && right) && this.sky.buildIrradianceTable((t, out) => sunDirection(t, fwd, right, out));
+    if (this.app && this.app.perf) this.app.perf.irrTable = { ok: this._hasIrrTable, ms: Math.round(performance.now() - t0) };
     this.atmo.updateSky(this.state.sunDir);
     this.sky.updateIrradiance(false);
-    this._irrDirty = true;     // read back (asynchronously) on the next update
+    if (this._hasIrrTable && this.sky.irradianceAt(this.state.t)) {
+      this._irrDirty = false;
+      this._updateExposure();
+    } else {
+      this._irrDirty = true;     // read back (asynchronously) on the next update
+    }
     this.sky.requestEnv(true);
   },
 
@@ -360,15 +370,16 @@ const env = {
     const Tc = this.atmo.transmittance(dir, 2.0, _tc);
     this.sky.uniforms.uSunCloud.value.set(SUN_TINT.r * Tc.x * E, SUN_TINT.g * Tc.y * E, SUN_TINT.b * Tc.z * E);
 
-    // sky-view LUT and irradiance; the irradiance is read back (asynchronously) by
-    // update(), the calibrated CPU estimate stands in meanwhile
+    // sky-view LUT and irradiance texture (for the shaders); the CPU's copy of the
+    // irradiance comes from the start-up table (without one it is read back by update(),
+    // the calibrated CPU estimate standing in meanwhile)
     if (this._gpuReady) {
       this.atmo.updateSky(dir);
       this.sky.updateIrradiance(false);
     } else {
       this.atmo.uniforms.uSunDirA.value.copy(dir);
     }
-    this._irrDirty = true;
+    this._irrDirty = !(this._hasIrrTable && this.sky.irradianceAt(t));
     this._todStamp = (this._todStamp || 0) + 1;
 
     // night: lamps, shop fronts and windows come on around sunset (the street lamps are
@@ -559,12 +570,11 @@ const env = {
     if (!this._gpuReady) this._initGPU();
     if (!this._shadowsCompiled && this.batcher) this._precompileShadows();
 
-    // sky-irradiance read-back: a pixel-pack buffer behind a fence whose status is polled
-    // here once a frame (a synchronous read, or a wait on the fence, would stall for the
-    // whole frame queue). While the time of day keeps changing (the slider, a sweep) the
-    // reads follow one another, each recalibrating the CPU estimate at the sun elevation
-    // it was taken for, so the exposure tracks the sky within a frame or two instead of
-    // jumping once the change stops
+    // (without the irradiance table) sky-irradiance read-back: a pixel-pack buffer behind
+    // a fence whose status is polled here once a frame. While the time of day keeps
+    // changing (the slider, a sweep) the reads follow one another, each recalibrating the
+    // CPU estimate at the sun elevation it was taken for, so the exposure tracks the sky
+    // within a frame or two instead of jumping once the change stops
     if (this._irrReading) {
       const st = this.sky.pollIrradiance();
       if (st !== 0) {

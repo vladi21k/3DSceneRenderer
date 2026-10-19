@@ -22,6 +22,7 @@ const crossEdge = (side, a = null) => (side > 0 ? RIDE_EDGE : CORR_EDGE) + (a &&
 const UTURN_T = 1.35;                       // seconds for a turn-around while walking
 const PI = Math.PI;
 const tmpBand = settleShape({ lo: 0, hi: 0 });
+const LF = new Float64Array(3);             // lineFree's strip: d from, d to, length ahead (no number argument boxed)
 
 // ------------------------------------------------------------------ lanes
 
@@ -307,8 +308,8 @@ function stripOf(c, a) {
   const map = c.map;
   let lo, hi, side = a.side;
   if (a.platformOK && a.platSt) { lo = TRACK_ZONE_HALF + 0.3; hi = TRACK_ZONE_HALF + PLATFORM_W - 0.3; side = a.platSide || 1; }
-  else if (a.lane === LANE.SIDE) { lo = map.bandInAt(a.s, side) + 0.15; hi = map.bandOutAt(a.s, side); }
-  else if (a.lane === LANE.EDGE) { lo = TRACK_ZONE_HALF - 0.3; hi = map.bandInAt(a.s, side) + 0.3; }
+  else if (a.lane === LANE.SIDE) { const k = map.idxA(a), si = side > 0 ? 1 : 0; lo = map.bandIn[si][k] + 0.15; hi = map.bandOut[si][k]; }
+  else if (a.lane === LANE.EDGE) { lo = TRACK_ZONE_HALF - 0.3; hi = map.bandIn[side > 0 ? 1 : 0][map.idxA(a)] + 0.3; }
   else {
     // the corridor less the bands kept free for the trams near
     lo = -TRACK_ZONE_HALF + 0.1; hi = TRACK_ZONE_HALF - 0.1;
@@ -385,9 +386,12 @@ function scanAhead(c, a) {
   for (const m of B.followers) { glo = Math.min(glo, m.d - AGENT_R); ghi = Math.max(ghi, m.d + AGENT_R); }
   const half = (hi - lo) / 2, cOff = (lo + hi) / 2 - a.d;
   const pL = glo - half - 0.3, pH = ghi + half + 0.3;
-  for (const cc of dir > 0 ? [pL, pH] : [pH, pL]) {
+  // (the two passing lines in turn, without a list; the line handed to lineFree in LF)
+  for (let e = 0; e < 2; e++) {
+    const cc = (e === 0) === (dir > 0) ? pL : pH;
     if (cc - half < sLo || cc + half > sHi) continue;
-    if (!lineFree(c, a, B, cc - half, cc + half, look + 3)) continue;
+    LF[0] = cc - half; LF[1] = cc + half; LF[2] = look + 3;
+    if (!lineFree(c, a, B)) continue;
     a.ovD = cc - cOff; a.ovT = t + Math.min(8, Math.max(2.5, (best + 3 + 0.8 * B.followers.length) / Math.max(0.2, v - bv)));
     a.laneTT = 0; a.hwV = 99;
     c.tally('overtake');
@@ -399,9 +403,11 @@ function scanAhead(c, a) {
   a.hwV = Math.max(0, Math.min(v * 1.2, bv + (best - G) * 0.8));
 }
 
-/** Is the line [dLo, dHi] free of people (not of a's group or group B) for len metres ahead of a? */
-function lineFree(c, a, B, dLo, dHi, len) {
+/** Is the line [dLo, dHi] (LF[0], LF[1]) free of people (not of a's group or group B) for len
+ *  (LF[2]) metres ahead of a? */
+function lineFree(c, a, B) {
   const st = c.steering, agents = c.population.agents, dir = a.dir || 1;
+  const dLo = LF[0], dHi = LF[1], len = LF[2];
   const sA = Math.min(a.s - dir, a.s + dir * len), sB = Math.max(a.s - dir, a.s + dir * len);
   const ix0 = Math.max(0, Math.floor((sA - st.s0) / CELL)), ix1 = Math.min(st.nx - 1, Math.floor((sB - st.s0) / CELL));
   const iy0 = Math.max(0, Math.floor((dLo - 1 + GRID_D) / CELL)), iy1 = Math.min(st.ny - 1, Math.floor((dHi + 1 + GRID_D) / CELL));
@@ -417,7 +423,8 @@ function lineFree(c, a, B, dLo, dHi, len) {
     }
   }
   // (and clear of poles and trunks along it)
-  const n = c.map.gatherCircles(a.s + dir * len * 0.5, len * 0.5);
+  c.map.qS = a.s + dir * len * 0.5; c.map.qR = len * 0.5;
+  const n = c.map.gatherQ();
   for (let q = 0; q < n; q++) {
     const i = c.map.qI[q], od = c.map.cD[i], r = c.map.cR[i];
     if (od + r > dLo && od - r < dHi) return false;

@@ -628,8 +628,11 @@ export class Steering {
       // past the line, rather than being drawn through the corner
       map.qS = this.cPrevS; map.facadeQS(side);
       if (map.R[3] === 0 && ad <= map.R[0] - WALL_GAP + 0.02 && this.cPrevS !== a.s) {
+        const blocked = Math.abs(a.s - this.cPrevS) * a.km;
         a.s = this.cPrevS;
         if (a.vs * (a.s - this._s0) < 0) a.vs = 0;
+        // (round the corner: the step the face stopped goes towards the street instead)
+        a.d -= side * Math.min(blocked, ad - wall);
       } else { a.d = side * Math.max(wall, ad - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
     }
     // the prop is kept off the facade as well

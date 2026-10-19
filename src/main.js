@@ -107,11 +107,12 @@ async function main() {
   const load = (path) => import(path).catch(() => new Promise((r) => setTimeout(r, 250)).then(() => import(`${path}?retry=1`)));
   const loaded = await Promise.allSettled(enabled.map(([, path]) => load(path)));
   // start-up phases (ms): imports (since navigation), each init, modulesTotal (all inits),
-  // prime (all chunk builds), compileStart (since navigation, when the first programs were
-  // queued), programsQueued (how many then), compile (until every program was linked; it
-  // overlaps the later inits), compileWait (the part of it after the last init and build),
-  // programs, firstFrame (from then to the first frame callback), frames (to the view being
-  // ready) and firstReady (since navigation)
+  // prime (all chunk builds), gpuWait (from the world prime until the warm-ups were done),
+  // compileStart (since navigation, when the scene's programs were queued), programsQueued
+  // (how many then), initsQueued (init time that ran alongside the compile), compile (until
+  // every program was linked), compileWait (the part of it after the last init and build),
+  // programs, workersHeld, firstFrame (from then to the first frame callback), frames (to
+  // the view being ready) and firstReady (since navigation). See docs/ARCHITECTURE.md.
   app.perf.init = { imports: Math.round(performance.now()) };
   const mods = [];
   loaded.forEach((r, i) => {
@@ -140,11 +141,12 @@ async function main() {
   // early as the programs can be known and runs while the main thread carries on
   // (KHR_parallel_shader_compile: compileAsync only queues them):
   //   1. the world modules (src/world/*, after materials, env and post) init in registry order;
-  //   2. their parts of the chunks around the start are built, and the programs of everything
-  //      in the scene so far are queued;
+  //   2. their parts of the chunks around the start are built;
   //   3. the other modules (trams, humans, crowd, train, cameraRig, ui, audio, the far field)
-  //      init meanwhile: their inits must make no synchronous GL calls (a first draw,
-  //      getUniforms, readPixels, getExtension), each would wait for the whole queue;
+  //      init, and once the warm-ups are done the programs of everything in the scene so far
+  //      are queued at a module boundary: the inits after it must make no synchronous GL
+  //      calls (a first draw, getUniforms, readPixels, getExtension, a status query), each
+  //      would wait for the whole queue;
   //   4. their chunk parts (humans' parked bicycles) and the far field are built, their
   //      programs queued, and the start-up waits for every program.
   // Programs depend on the output target (colour space, tone mapping): from post's init on,
@@ -154,8 +156,17 @@ async function main() {
   const WORLD = new Set(MODULES.filter(([, path]) => path.startsWith('./world/')).map(([name]) => name));
   let split = -1;   // the last module of step 1
   mods.forEach((m, i) => { if (WORLD.has(m.name) || m.name === 'materials' || m.name === 'env' || m.name === 'post') split = i; });
-  // (boot=serial for A/B: every module inits before the prime and the compile)
-  if (params.str('boot', '') === 'serial') split = mods.length - 1;
+  // (boot=serial for A/B: every module inits before the prime and the compile, one by one)
+  const serial = params.str('boot', '') === 'serial';
+  if (serial) split = mods.length - 1;
+  // Modules whose init depends only on materials, env and post and mostly waits for its own
+  // downloads start right after post's init, alongside the world modules: humans (the
+  // figure cast's fetch and decode). Its slot in step 3 then waits for it. Such an init adds
+  // its scene content in one synchronous step, so a compile between its awaits sees all of
+  // it or none.
+  const EARLY = new Set(serial ? [] : ['humans']);
+  const kickAfter = mods.some((m) => m.name === 'post') ? 'post' : 'env';
+  const early = new Map();
   const initModule = async (m) => {
     if (!m.init) return;
     const t0 = performance.now();
@@ -176,6 +187,12 @@ async function main() {
   const tStart = performance.now();
   for (let i = 0; i <= split; i++) {
     await initModule(mods[i]);
+    if (mods[i].name === kickAfter) {
+      for (const m of mods.slice(split + 1)) {
+        if (!EARLY.has(m.name)) continue;
+        early.set(m, initModule(m));
+      }
+    }
     setProgress(0.05 + 0.1 * (i + 1) / (split + 1));
   }
   if (!app.materials || app.materials.disabled) { fatal('materials module unavailable'); return; }
@@ -193,26 +210,35 @@ async function main() {
 
   // queue the programs. Nothing may poll programs from then until step 4: a query of a
   // program's completion status is a synchronous call that waits until the GPU process has
-  // worked through everything queued before it, so the warm-ups still polling (post's and
-  // env's passes, the texture bake) finish first.
-  tq = performance.now();
-  await Promise.race([Promise.all([...pendingCompiles, app.materials.ready]), new Promise((r) => setTimeout(r, 8000))]);
-  P.gpuWait = Math.round(performance.now() - tq);
-  const tCompile = performance.now();
-  P.compileStart = Math.round(tCompile);
+  // worked through everything queued before it. So the warm-ups still polling (post's and
+  // env's passes, the texture bake, whose programs the GPU process compiles first anyway)
+  // finish first; meanwhile the step-3 inits go on, and the programs are queued at the
+  // first module boundary after the warm-ups are done.
   const progs = renderer.info.programs || [];
-  compileScene(app, false);
-  P.programsQueued = progs.length;
+  let warm = false, tCompile = 0;
+  const tWarm = performance.now();
+  const warmDone = Promise.race([Promise.all([...pendingCompiles, app.materials.ready]), new Promise((r) => setTimeout(r, 8000))])
+    .then(() => { warm = true; P.gpuWait = Math.round(performance.now() - tWarm); });
+  const queuePrograms = () => {
+    if (tCompile) return;
+    tCompile = performance.now();
+    P.compileStart = Math.round(tCompile);
+    compileScene(app, false);
+    P.programsQueued = progs.length;
+  };
 
   // step 3: the remaining modules, while the GPU process compiles
   tq = performance.now();
   const late = mods.length - split - 1;
   for (let i = split + 1; i < mods.length; i++) {
-    await initModule(mods[i]);
+    // (an early init may still be under way: it adds its scene content in one synchronous step)
+    if (warm) queuePrograms();
+    await (early.get(mods[i]) || initModule(mods[i]));
     setProgress(0.2 + 0.1 * (i - split) / Math.max(1, late));
   }
   initMs += performance.now() - tq;
   P.modulesTotal = Math.round(initMs);
+  P.initsQueued = tCompile ? Math.round(performance.now() - tCompile) : 0;   // init time that ran alongside the compile
 
   // step 4: their chunk parts, the far field (a few ms in all), and their programs; then wait
   // for every program (the loading bar follows them as they finish)
@@ -221,6 +247,8 @@ async function main() {
   await app.world.prime(s0, Infinity, null, [2]);
   primeMs += performance.now() - tq;
   P.prime = Math.round(primeMs);
+  await warmDone;
+  queuePrograms();
   const tWait = performance.now();
   const progressTimer = setInterval(() => {
     let n = 0;
@@ -231,6 +259,7 @@ async function main() {
   clearInterval(progressTimer);
   renderer.setRenderTarget(null);
   touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
+  app.perf.typedUniforms = typedCount;
   P.workersHeld = holdWorkers(false);
   // compile: from queueing the first programs until every program is linked (it overlaps
   // the step-3 inits); compileWait: the part of it the start-up waited for after step 4

@@ -632,9 +632,9 @@ void main() {
 // ---------------------------------------------------------------- final: lens, tone map, grade
 // Tone: a camera's JPEG response sets the luminance (mid grey 0.18 → ~0.47, white about
 // 3.3 stops above it; below it a long toe that steepens again in the deep shadows: −1 stop
-// ~77, −2 ~44, −3 ~19, −4 ~6 in sRGB by day, so shade and dark shop glass keep their
-// detail while dark clothes and recesses read near black), AgX sets hue and chroma (its log-domain curve keeps
-// bright saturated colours from skewing), blended towards the scene's own ratios so warm
+// ~77, −2 ~43, −3 ~17, −4 ~5 in sRGB by day, so shade and dark shop glass keep their
+// detail while dark clothes and recesses read near black), AgX sets hue and chroma (its
+// log-domain curve keeps bright saturated colours from skewing), blended towards the scene's own ratios so warm
 // low sun on stone keeps its colour. Large bright areas far above the street's level (a
 // low sun's sheen on the paving) come down locally; small glints, sunlit whites and the
 // bright sky may clip, as in a camera JPEG. Luma-only sharpening stands in for in-camera
