@@ -107,12 +107,13 @@ async function main() {
   const load = (path) => import(path).catch(() => new Promise((r) => setTimeout(r, 250)).then(() => import(`${path}?retry=1`)));
   const loaded = await Promise.allSettled(enabled.map(([, path]) => load(path)));
   // start-up phases (ms): imports (since navigation), each init, modulesTotal (all inits),
-  // prime (all chunk builds), gpuWait (from the world prime until the warm-ups were done),
-  // compileStart (since navigation, when the scene's programs were queued), programsQueued
-  // (how many then), initsQueued (init time that ran alongside the compile), compile (until
-  // every program was linked), compileWait (the part of it after the last init and build),
-  // programs, workersHeld, firstFrame (from then to the first frame callback), frames (to
-  // the view being ready) and firstReady (since navigation). See docs/ARCHITECTURE.md.
+  // prime (all chunk builds; primeLate, primeFar: step 4's), gpuWait (from the world prime
+  // until the warm-ups were done), compileStart (since navigation, when the scene's programs
+  // were queued), programsQueued (how many then), initsQueued (init time that ran alongside
+  // the compile), compile (until every program was linked), compileWait (the part of it
+  // after the last init and build), programs, workersHeld, firstFrame (from then to the
+  // first frame callback), frames (to the view being ready) and firstReady (since
+  // navigation). See docs/ARCHITECTURE.md.
   app.perf.init = { imports: Math.round(performance.now()) };
   const mods = [];
   loaded.forEach((r, i) => {
@@ -140,7 +141,8 @@ async function main() {
   // that is the longest part of the start-up (some 9 s for 130 programs), so it starts as
   // early as the programs can be known and runs while the main thread carries on
   // (KHR_parallel_shader_compile: compileAsync only queues them):
-  //   1. the world modules (src/world/*, after materials, env and post) init in registry order;
+  //   1. the world modules (src/world/*, after materials, env and post) init in registry order,
+  //      with humans' init (the figure cast's download and decode) started alongside;
   //   2. their parts of the chunks around the start are built;
   //   3. the other modules (trams, humans, crowd, train, cameraRig, ui, audio, the far field)
   //      init, and once the warm-ups are done the programs of everything in the scene so far
@@ -244,7 +246,9 @@ async function main() {
   // for every program (the loading bar follows them as they finish)
   tq = performance.now();
   await app.world.prime(s0, primeDist, null);
+  P.primeLate = Math.round(performance.now() - tq);
   await app.world.prime(s0, Infinity, null, [2]);
+  P.primeFar = Math.round(performance.now() - tq) - P.primeLate;
   primeMs += performance.now() - tq;
   P.prime = Math.round(primeMs);
   await warmDone;

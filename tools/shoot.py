@@ -203,7 +203,7 @@ SAMPLER_JS = r"""(() => {
 
 
 def machine_load():
-    """One line on how busy the machine is (other captures may share it): load average per
+    """One line on how busy the machine is (other processes may share it): load average per
     core, headless Chrome processes running, GPU utilisation. Timing runs print it at the
     start and the end, so a slow run can be put down to contention before blaming a module."""
     parts = []

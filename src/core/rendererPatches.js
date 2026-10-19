@@ -119,36 +119,50 @@ function setF1(gl, v) {
   gl.uniform1fv(this.addr, f);
 }
 
+// (each branch compares and stores its own reads: values merged from several kinds of
+// source into one variable would be boxed)
 function setF2(gl, v) {
   const c = this.tc;
-  let x, y;
-  if (v.x !== undefined) { x = v.x; y = v.y; } else if (v.length === 2) { x = v[0]; y = v[1]; } else { fallback(this, gl, v); return; }
-  if (c[0] === x && c[1] === y) return;
-  c[0] = x; c[1] = y;
+  if (v.x !== undefined) {
+    if (c[0] === v.x && c[1] === v.y) return;
+    c[0] = v.x; c[1] = v.y;
+  } else if (v.length === 2) {
+    if (c[0] === v[0] && c[1] === v[1]) return;
+    c[0] = v[0]; c[1] = v[1];
+  } else { fallback(this, gl, v); return; }
   const f = this.tf;
-  f[0] = x; f[1] = y;
+  f[0] = c[0]; f[1] = c[1];
   gl.uniform2fv(this.addr, f);
 }
 
 function setF3(gl, v) {
   const c = this.tc;
-  let x, y, z;
-  if (v.x !== undefined) { x = v.x; y = v.y; z = v.z; } else if (v.r !== undefined) { x = v.r; y = v.g; z = v.b; } else if (v.length === 3) { x = v[0]; y = v[1]; z = v[2]; } else { fallback(this, gl, v); return; }
-  if (c[0] === x && c[1] === y && c[2] === z) return;
-  c[0] = x; c[1] = y; c[2] = z;
+  if (v.x !== undefined) {
+    if (c[0] === v.x && c[1] === v.y && c[2] === v.z) return;
+    c[0] = v.x; c[1] = v.y; c[2] = v.z;
+  } else if (v.r !== undefined) {
+    if (c[0] === v.r && c[1] === v.g && c[2] === v.b) return;
+    c[0] = v.r; c[1] = v.g; c[2] = v.b;
+  } else if (v.length === 3) {
+    if (c[0] === v[0] && c[1] === v[1] && c[2] === v[2]) return;
+    c[0] = v[0]; c[1] = v[1]; c[2] = v[2];
+  } else { fallback(this, gl, v); return; }
   const f = this.tf;
-  f[0] = x; f[1] = y; f[2] = z;
+  f[0] = c[0]; f[1] = c[1]; f[2] = c[2];
   gl.uniform3fv(this.addr, f);
 }
 
 function setF4(gl, v) {
   const c = this.tc;
-  let x, y, z, w;
-  if (v.x !== undefined) { x = v.x; y = v.y; z = v.z; w = v.w; } else if (v.length === 4) { x = v[0]; y = v[1]; z = v[2]; w = v[3]; } else { fallback(this, gl, v); return; }
-  if (c[0] === x && c[1] === y && c[2] === z && c[3] === w) return;
-  c[0] = x; c[1] = y; c[2] = z; c[3] = w;
+  if (v.x !== undefined) {
+    if (c[0] === v.x && c[1] === v.y && c[2] === v.z && c[3] === v.w) return;
+    c[0] = v.x; c[1] = v.y; c[2] = v.z; c[3] = v.w;
+  } else if (v.length === 4) {
+    if (c[0] === v[0] && c[1] === v[1] && c[2] === v[2] && c[3] === v[3]) return;
+    c[0] = v[0]; c[1] = v[1]; c[2] = v[2]; c[3] = v[3];
+  } else { fallback(this, gl, v); return; }
   const f = this.tf;
-  f[0] = x; f[1] = y; f[2] = z; f[3] = w;
+  f[0] = c[0]; f[1] = c[1]; f[2] = c[2]; f[3] = c[3];
   gl.uniform4fv(this.addr, f);
 }
 

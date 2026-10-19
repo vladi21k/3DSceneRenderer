@@ -750,7 +750,7 @@ class CrowdSim {
       lanes: { side: lanes[0], edge: lanes[1], corridor: lanes[2] },
       crossSection30to250m: { leftWalk: band[0], leftTrack: band[1], rideTrack: band[2], rightWalk: band[3] },
       tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
-      violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog,
+      violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog, brakeLog: this.tram.brakeLog,
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked,
         // agent-frames between the tracks (|d| < 0.9) abreast of both trams going by each other (aim: 0)
         squeeze: ck.squeeze, squeezeLog: ck.squeezeLog,

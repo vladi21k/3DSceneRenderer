@@ -74,6 +74,8 @@ export class TramWatch {
     this.uStats = { leftTrack: 0, leftTrackLog: [], blockedS: 0, clears: 0, rescues: 0, rescueLog: [], blocked: 0, boarded: 0, alighted: 0, bells: 0, sidesteps: 0 };
     this._uPool = [];
     this._cabRescue = false; this._obsWas = Infinity;
+    this.obsWho = null;       // the person the cab brakes for (statistics: brakeLog)
+    this.brakeLog = [];
     // results of _uFront / _uDeadline (fields: a number returned from a call that is not inlined
     // is boxed, and these are asked for per agent, unit and frame)
     this.uf = 0; this.uvc = 0; this.ud = 0;
@@ -600,12 +602,14 @@ export class TramWatch {
     this.front(a);
     const front = a.front;
     // (the footprint's gap to the band worked out in place: footBandGap returns a boxed number)
-    const inside = a.mob ? (dl >= 0 ? dl - a.extLo - BAND : -dl - a.extHi - BAND) < 0.02 : adl < BAND + 0.02;
+    const gapB = a.mob ? (dl >= 0 ? dl - a.extLo - BAND : -dl - a.extHi - BAND) : adl - BAND;
+    const inside = gapB < 0.02;
     // somebody who cannot be out of the band before the cab is there any more: its driver brakes
-    if (inside && ahead > 0 && this.v > 0.5 && ahead < this.obstacle) {
+    // (only for whoever is really in it: a body on its edge is already the margin clear of the cab)
+    if (gapB < 0 && ahead > 0 && this.v > 0.5 && ahead < this.obstacle) {
       const tta = ahead / Math.max(0.3, vClose);
       const exit = adl >= BAND ? 0 : (BAND + 0.1 - adl + (a.mob ? 0.7 : 0)) / Math.max(1, a.hurry) + 0.5;   // exitT(a)
-      if (tta < CLEAR_DEADLINE - 0.5 && exit + 0.6 > tta) this.obstacle = ahead;
+      if (tta < CLEAR_DEADLINE - 0.5 && exit + 0.6 > tta) { this.obstacle = ahead; this.obsWho = a; }
     }
     if (!inside || ahead < -(TRAM_LEN + 7) - a.extS || ahead > front) { a.clearing = false; return; }
     if (a.clearing && a.mob) { this._clearTo(a); return; }
@@ -829,7 +833,11 @@ export class TramWatch {
     // (the crowd frame is the camera's: the driver measures from the cab front)
     if (tr && typeof tr.setObstacle === 'function') tr.setObstacle(this.obstacle, 'crowd');
     else if (cab && 'obstacle' in cab) cab.obstacle = this.obstacle;
-    if (this.obstacle < 1e9 && !(this._obsWas < 1e9)) this.stats.cabBrake++;
+    if (this.obstacle < 1e9 && !(this._obsWas < 1e9)) {
+      this.stats.cabBrake++;
+      const w = this.obsWho;
+      if (w && this.brakeLog.length < 10) this.brakeLog.push({ t: +time.toFixed(1), ahead: +this.obstacle.toFixed(1), v: +this.v.toFixed(1), dl: +(w.d - RIDE_D).toFixed(2), vd: +w.vd.toFixed(2), st: w.state, task: w.task, kind: w.kind, mob: w.mob, dreamy: w.dreamy, clr: w.clearing, cross: +(w.crossOK - time).toFixed(1), lead: !!w.leader, clearT: +w.clearT.toFixed(1) });
+    }
     this._obsWas = this.obstacle;
     const u = this.reqUrgency;
     if (u > this.stats.maxUrgency) this.stats.maxUrgency = u;

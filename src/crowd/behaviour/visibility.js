@@ -35,19 +35,22 @@ export class Visibility {
     // the camera's route coordinates: a few fixed-point steps along the centre line from camS
     // through route.io (route.project boxes the numbers of some forty route.toWorld calls)
     const R = this.route, io = R.io, px = camera.position.x, pz = camera.position.z;
-    let s = camS, d = 0;
+    let s = camS, d = 0, f = 1;
     if (io && R.toWorldIO && R.sampleIO) {
       for (let k = 0; k < 8; k++) {
         io[0] = s; io[1] = 0; io[2] = 0;
         R.toWorldIO(_c);
         R.sampleIO();
         const th = io[3], tx = Math.cos(th), tz = -Math.sin(th);
-        const ex = px - _c.x, ez = pz - _c.z, f = ex * tx + ez * tz;
+        const ex = px - _c.x, ez = pz - _c.z;
+        f = ex * tx + ez * tz;
         d = ez * tx - ex * tz;
         s += f;
         if (f < 1e-4 && f > -1e-4) break;
       }
-    } else {
+    }
+    // (not settled: a camera far from camS, e.g. a free inspection camera somewhere else)
+    if (f > 0.01 || f < -0.01) {
       const p = R.project(px, pz, camS, 6, this._proj);
       s = p.s; d = p.d;
     }
