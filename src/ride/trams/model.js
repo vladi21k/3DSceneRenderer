@@ -214,18 +214,22 @@ class Parts {
 // ------------------------------------------------------------------ side walls
 /**
  * Window / door layout of the side wall between z0 and z1 (local), as cells
- * [{z0, z1, kind}] with kind: wall | win (glass) | wframe (black frame strip) |
- * dseam (door seam) | dleaf (door leaf frame) | dglass (door leaf glazing).
+ * [{z0, z1, kind, pane}] with kind: wall | win (glass) | wframe (black frame strip) |
+ * dseam (door seam) | dleaf (door leaf frame) | dglass (door leaf glazing). `pane` numbers
+ * the sheet of glass a glazed cell belongs to (a window with its frit frame, a pillar, a
+ * door leaf), the same at every level of detail.
  */
 function sideLayout(z0, z1, doors, lod, firstWin = null) {
   const cells = [];
   const PILLAR = 0.14, FR = lod === 0 ? Y.frame : 0;
+  const id = (z) => Math.round(z * 20) + 1000;
   const wall = (a, b) => { if (b > a + 1e-4) cells.push({ z0: a, z1: b, kind: 'wall' }); };
   // between panes the glazing band carries on as black frit (flush glazing)
-  const pillar = (a, b) => { if (b > a + 1e-4) cells.push({ z0: a, z1: b, kind: 'pillar' }); };
+  const pillar = (a, b) => { if (b > a + 1e-4) cells.push({ z0: a, z1: b, kind: 'pillar', pane: id(a) }); };
   const window = (a, b) => {
-    if (FR) { cells.push({ z0: a, z1: a + FR, kind: 'wframe' }, { z0: a + FR, z1: b - FR, kind: 'win' }, { z0: b - FR, z1: b, kind: 'wframe' }); }
-    else cells.push({ z0: a, z1: b, kind: 'win' });
+    const pane = id(a);
+    if (FR) { cells.push({ z0: a, z1: a + FR, kind: 'wframe', pane }, { z0: a + FR, z1: b - FR, kind: 'win', pane }, { z0: b - FR, z1: b, kind: 'wframe', pane }); }
+    else cells.push({ z0: a, z1: b, kind: 'win', pane });
   };
   const windows = (a, b) => {
     if (b - a < 0.5) { wall(a, b); return; }
@@ -238,12 +242,12 @@ function sideLayout(z0, z1, doors, lod, firstWin = null) {
     }
   };
   const door = (c) => {
-    const h = CAR.doorW / 2;
-    if (lod > 0) { cells.push({ z0: c - h, z1: c - 0.01, kind: 'dglass' }, { z0: c - 0.01, z1: c + 0.01, kind: lod === 1 ? 'dseam' : 'dglass' }, { z0: c + 0.01, z1: c + h, kind: 'dglass' }); return; }
+    const h = CAR.doorW / 2, pL = id(c - h), pR = id(c);
+    if (lod > 0) { cells.push({ z0: c - h, z1: c - 0.01, kind: 'dglass', pane: pL }, { z0: c - 0.01, z1: c + 0.01, kind: lod === 1 ? 'dseam' : 'dglass', pane: pL }, { z0: c + 0.01, z1: c + h, kind: 'dglass', pane: pR }); return; }
     const S = 0.02, F = 0.09;
     for (const [a, b, k] of [[c - h, c - h + S, 'dseam'], [c - h + S, c - h + S + F, 'dleaf'], [c - h + S + F, c - 0.01 - F, 'dglass'],
       [c - 0.01 - F, c - 0.01, 'dleaf'], [c - 0.01, c + 0.01, 'dseam'], [c + 0.01, c + 0.01 + F, 'dleaf'],
-      [c + 0.01 + F, c + h - S - F, 'dglass'], [c + h - S - F, c + h - S, 'dleaf'], [c + h - S, c + h, 'dseam']]) cells.push({ z0: a, z1: b, kind: k });
+      [c + 0.01 + F, c + h - S - F, 'dglass'], [c + h - S - F, c + h - S, 'dleaf'], [c + h - S, c + h, 'dseam']]) cells.push({ z0: a, z1: b, kind: k, pane: a < c ? pL : pR });
   };
   let z = z0;
   if (firstWin) { wall(z, firstWin[0]); window(firstWin[0], firstWin[1]); z = firstWin[1]; pillar(z, z + PILLAR); z += PILLAR; }
@@ -292,7 +296,8 @@ function cellMaterial(kind, y0, y1) {
 }
 
 /** Both side walls (and the roof) of a body from its cell layout. uv = (z + uOff, arc
- *  length); the glass shader tells the centre body (uOff 100) from the cab ends by it. */
+ *  length); the glass shader tells the centre body (uOff 100) from the cab ends by it. The
+ *  glazing's uv.y is its cell's pane number instead (each pane sits a little differently). */
 function sideWalls(P, prof, cells, uOff = 0) {
   for (const cell of cells) {
     for (let i = 0; i < prof.length - 1; i++) {
@@ -304,7 +309,7 @@ function sideWalls(P, prof, cells, uOff = 0) {
       // joint at the cell's centre (uv = (centre + uOff, 50 + arc length) marks it)
       const seam = !glass && cell.kind === 'pillar' && b.y <= Y.belt + 1e-3 && a.y >= Y.skirt - 1e-3;
       const u0 = seam ? (cell.z0 + cell.z1) / 2 + uOff : cell.z0 + uOff, u1 = seam ? u0 : cell.z1 + uOff;
-      const va = seam ? 50 + a.a : a.a, vb = seam ? 50 + b.a : b.a;
+      const va = glass ? cell.pane || 0 : seam ? 50 + a.a : a.a, vb = glass ? cell.pane || 0 : seam ? 50 + b.a : b.a;
       for (const sx of [1, -1]) {
         // (the glazing of each side is a part of its own, see Parts)
         const B = glass ? (sx > 0 ? P.glassR : P.glassL) : P.body;

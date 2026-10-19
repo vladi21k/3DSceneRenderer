@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { MORTAR_ALBEDO } from './constants.js';
 
 // Street-owned shading pieces:
-//  - the mortar bed along the rails (hand-trowelled cement): a narrow dirty grey strip
-//    with fbm dirt mottling, lighter cement patches and trowel streaks along the rail;
+//  - the mortar bed along the rails (hand-trowelled cement): a narrow grey strip a little
+//    darker than the setts, with fbm dirt mottling, lighter cement patches and trowel
+//    streaks along the rail;
 //  - grit in the rail grooves: the flangeway floor is filled with grey-brown grit, sand
 //    and leaf debris (patchy, damp in places) instead of a uniform black slot;
 //  - the sheen of the rail steel: wheels polish the running band lengthwise, so its
@@ -33,6 +34,13 @@ export const SHEEN = {
  *  wider and its normals crowned, so it needs less than the overlay's pre-filtered
  *  bands to read the same). */
 export const RAIL_HEAD_ENV = 0.55;
+/** Roughness factor on the running band of rail.head (its metal-1 zone; the oxidised
+ *  shoulders, bevel and lip keep theirs): the wheels polish the band smooth along the
+ *  rail, so it mirrors the bright sky slot down the street, a thin light line to the
+ *  vanishing point as in the photographs, rather than a satin smear of sky and facades.
+ *  0.57 (the bake's mean) x 0.55 = about 0.3. The far-field line overlay (lines.js)
+ *  applies the same factor. */
+export const RAIL_BAND_ROUGH = 0.55;
 
 const NOISE = /* glsl */`
 float stHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
@@ -105,7 +113,11 @@ export function patchRailSheen(m, mode = 'uv') {
   material.diffuseContribution = mix( material.diffuseContribution, stDa, stDc );
   material.specularColorBlended = mix( material.specularColorBlended, vec3( 0.04 ), stDc );
 }`)
-        .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= mix( 1.0, uStDirK, material.metalness );');
+        .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= mix( 1.0, uStDirK, material.metalness );')
+        // the polished running band (see RAIL_BAND_ROUGH); before the normal maps, whose
+        // specular anti-aliasing (materials) still widens the lobe where the head curves
+        // under a pixel
+        .replace('#include <normal_fragment_begin>', `roughnessFactor *= mix( 1.0, ${RAIL_BAND_ROUGH.toFixed(3)}, smoothstep( 0.8, 0.97, metalnessFactor ) );\n#include <normal_fragment_begin>`);
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec2 vStUv;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStUv = uv;');
@@ -127,7 +139,7 @@ export function patchRailSheen(m, mode = 'uv') {
       .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;\nuniform vec4 uStDust;\nuniform float uStDirK;')
       .replace('#include <lights_fragment_maps>', SHEEN_APPLY(along));
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen3-${mode}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen4-${mode}`; };
   m.needsUpdate = true;
   return m;
 }
@@ -166,7 +178,7 @@ export function patchCut(m, mode, attribute = true) {
   return m;
 }
 
-/** Mortar bed along the rails (and bitumen seals at SEAL_TONE via vertex colour).
+/** Mortar bed along the rails (and the grey elastomer seals at SEAL_TONE via vertex colour).
  *  UVs: u along the rail (m), v across (m). albedo: linear (constants.js pavingTones). */
 export function createMortarMaterial(albedo = MORTAR_ALBEDO) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
@@ -198,12 +210,12 @@ float stMR = 1.0;
   float fi = ( stNoise( pw * 260.0 ) - 0.5 ) * kFi;
   float tone = stNoise( vec2( p.x * 0.35, p.y * 2.0 ) + 5.0 ) - 0.5;
   diffuseColor.rgb *= ( 1.0 + 0.16 * lighter ) * ( 1.0 + 0.14 * tone ) * ( 1.0 + 0.12 * tr ) * ( 1.0 + 0.2 * fi );
-  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.66, 0.62, 0.57 ), dirt );
+  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.74, 0.725, 0.7 ), dirt );
   stMR = 1.0 - 0.07 * lighter + 0.06 * fi;
 }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= stMR;');
   };
-  m.customProgramCacheKey = () => 'street-mortar-2';
+  m.customProgramCacheKey = () => 'street-mortar-3';
   return m;
 }
 

@@ -78,16 +78,25 @@ const _pb = new THREE.Matrix4(), _pl = new THREE.Matrix4(), _pv = new THREE.Vect
 /** Time slice (ms per frame) for preparing upcoming chunks in update(). */
 const PREFETCH_MS = 0.5;
 
-// Balcony gardening. Most balconies are bare: a building's residents garden a little,
-// some or a lot (lotStyle greenery: the chance that a household plants), and what one
-// household grows differs from the next: geraniums, herbs, trailing greens, surfinia,
-// bougainvillea, boxes left to dry out or standing empty.
+// Balcony gardening. A building's residents garden a little, some or a lot (lotStyle
+// greenery: the chance that a household plants); on the avenue (s < AVENUE_END) most
+// buildings are keen and over half the balconies carry flowers, elsewhere about a
+// third. What one household grows differs from the next: geraniums above all (boxes of
+// them hung on the rail, spilling over its front), herbs, trailing greens, surfinia,
+// bougainvillea, now and then boxes left to dry out or standing empty; on the floor
+// pots and potted shrubs.
+const AVENUE_END = 1500;
 const GROW = { GERANIUM: 0, HERBS: 1, GREEN: 2, SURFINIA: 3, BOUG: 4, DRY: 5, EMPTY: 6 };
-const GROW_W = [0.36, 0.12, 0.12, 0.08, 0.08, 0.13, 0.11];
+const GROW_W = [0.52, 0.08, 0.1, 0.09, 0.08, 0.07, 0.06];
 // Linear albedo tints of the flowering parts. Geraniums: scarlet, red, pink, magenta,
 // orange, white, salmon, lilac.
 const FLOWERS = [[0.62, 0.012, 0.016], [0.75, 0.03, 0.02], [0.82, 0.16, 0.3], [0.5, 0.02, 0.17], [0.85, 0.2, 0.1], [0.8, 0.78, 0.74], [0.85, 0.32, 0.2], [0.45, 0.2, 0.5]];
-const FLOWER_W = [0.26, 0.2, 0.18, 0.11, 0.08, 0.07, 0.06, 0.04];
+const FLOWER_W = [0.3, 0.26, 0.16, 0.07, 0.05, 0.08, 0.05, 0.03];
+// potted shrubs (oleander, hibiscus, myrtle, lemon): flowering tints, or leafy ones
+const SHRUB_BLOOM = [[0.8, 0.25, 0.42], [0.85, 0.82, 0.78], [0.75, 0.05, 0.08], [0.09, 0.16, 0.05], [0.09, 0.16, 0.05]];
+// Flags (the atlas cells of attach.js flagTexture): the national white with two blue
+// stripes and the emblem, the same sun-faded, plain stripes, blue over white.
+const FLAG_W = [0.62, 0.2, 0.12, 0.06];
 // herb spikes: lavender, sage blue, basil white, not in flower (leafy)
 const HERBS = [[0.32, 0.2, 0.55], [0.2, 0.12, 0.42], [0.7, 0.7, 0.66], [0.09, 0.16, 0.05]];
 const HERB_W = [0.25, 0.15, 0.2, 0.4];
@@ -145,7 +154,7 @@ function lotStyle(lot, plan) {
   const design = era === 'modern' ? r.weighted([[5, 0.6], [2, 0.25], [6, 0.15]])
     : era === 'mandate' ? r.weighted([[2, 0.24], [6, 0.22], [3, 0.18], [0, 0.14], [5, 0.08], [1, 0.14]])
       : r.weighted([[0, 0.26], [1, 0.22], [4, 0.22], [3, 0.16], [6, 0.14]]);
-  const paint = r.chance(0.78) ? -1 : weighted(r, PAINT_W);
+  const paint = r.chance(0.6) ? -1 : weighted(r, PAINT_W);
   const railH = r.range(0.96, 1.07);
   const corbel = era === 'modern' ? -1 : r.chance(0.6) ? 0 : 1;
   const slabVariant = era === 'modern' || (era === 'mandate' && r.chance(0.45)) ? 1 : 0;
@@ -153,17 +162,22 @@ function lotStyle(lot, plan) {
   if (!r.chance(0.1)) r.next(); // (a former draw, kept so the choices after it stay put)
   const flowers = weighted(r, FLOWER_W);
   const pots = r.int(0, POTS.length - 1);
-  const flag = r.int(0, 3);
+  r.int(0, 3); // (a former draw, kept so the choices after it stay put)
   const k = r.range(0.95, 1.02);
   // (on rendered blocks the slabs, consoles and balustrades are dressing: stone, not render)
   const stone = plan.style.finish === 'render' && plan.style.stone ? plan.style.stone : plan.style.tint;
   const tint = stone.map((t, i) => Math.pow(t / CREAM[i], 1.1) * k * WARM[i]);
-  // gardening (a stream of its own): about half the buildings have bare balconies, in a
-  // third some households plant, in the rest (the keen ones) most do. Each building
-  // leans toward some plantings; the keen ones let fewer boxes dry out.
+  // gardening (a stream of its own). On the avenue a few buildings have bare balconies,
+  // in a third some households plant and in the rest (the keen ones) most do: over half
+  // the balconies carry flowers. Elsewhere over a third of the buildings are bare and
+  // about a third of the balconies are planted. Each building leans toward some
+  // plantings; the keen ones let fewer boxes dry out.
+  const avenue = lot.s0 < AVENUE_END;
   const rg = new RNG(hash2(lot.seed, 0x6a7d));
   const keen = rg.next();
-  const greenery = keen < 0.48 ? rg.range(0, 0.07) : keen < 0.8 ? rg.range(0.12, 0.42) : rg.range(0.5, 0.88);
+  const greenery = avenue
+    ? (keen < 0.12 ? rg.range(0.04, 0.2) : keen < 0.45 ? rg.range(0.38, 0.66) : rg.range(0.7, 0.95))
+    : (keen < 0.38 ? rg.range(0, 0.08) : keen < 0.74 ? rg.range(0.16, 0.45) : rg.range(0.5, 0.85));
   const grow = GROW_W.map((w, i) => w * rg.range(0.3, 1.7) * (i >= GROW.DRY ? 1.3 - greenery : 1));
   const box = weighted(rg, BOX_W);
   // carved stone (a stream of its own): every slab sits on consoles, modern fronts on
@@ -173,9 +187,16 @@ function lotStyle(lot, plan) {
   const plainCorbel = rs.chance(0.55) ? CONSOLE.TIERED : CONSOLE.BLOCK;
   const corbelW = rs.range(0.9, 1.3);
   const edge = rs.range(0.02, 0.06);
+  // flags (a stream of its own): in some buildings (more on the avenue) several
+  // households hang a flag down the front of their railing, elsewhere hardly any do;
+  // the building's usual flag design
+  const rf = new RNG(hash2(lot.seed, 0x7f1a));
+  const flagK = avenue ? (rf.chance(0.22) ? rf.range(0.25, 0.55) : rf.range(0, 0.02))
+    : (rf.chance(0.1) ? rf.range(0.2, 0.45) : rf.range(0, 0.015));
+  const flag = weighted(rf, FLAG_W);
   return {
     design, paint, railH, corbel: corbel < 0 ? plainCorbel : corbel, corbelW, edge, slabVariant, roundStone, tint,
-    greenery, grow, box, flowers, pots, flag,
+    greenery, grow, box, flowers, pots, flag, flagK, avenue,
   };
 }
 

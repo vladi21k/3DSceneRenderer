@@ -115,6 +115,37 @@ export function sideHeight(ctx, c, side, a, x) {
   return b0 + (tgt - b0) * ramp(xx) + localH(a, xx, P.road);
 }
 
+/** sideHeight with its numbers in a Float64Array: reads io[0] (a) and io[1] (x), writes
+ *  the world y to io[2]. No number crosses a call boundary (a double returned from or
+ *  passed to a call that is not inlined is boxed), so per-agent loops allocate nothing. */
+export function sideHeightIO(ctx, c, side, io) {
+  const P = sideProfile(ctx, c, side);
+  const a = io[0], x = io[1];
+  const cols = P.cols, base = P.base, n = cols.length;
+  let j = 0;
+  while (j < n - 2 && cols[j + 1] < a) j++;
+  const dc = cols[j + 1] - cols[j];
+  let t = (a - cols[j]) / (dc !== 0 ? dc : 1);
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const b0 = base[j] + (base[j + 1] - base[j]) * t;
+  const xx = x > 0 ? x : 0;
+  const half = P.half, lv = P.level;
+  let ta = (a + half) / (2 * half);
+  ta = ta < 0 ? 0 : ta > 1 ? 1 : ta;
+  const tgt = lv[0] + (lv[1] - lv[0]) * ta;
+  const rp = xx / SIDE_LOT_START;
+  let y = b0 + (tgt - b0) * (rp < 1 ? rp : 1);
+  // localH, inline
+  const aa = a < 0 ? -a : a, road = P.road;
+  if (aa <= road) {
+    let r = (xx - 2.5) / 5;
+    r = r <= 0 ? 0 : r >= 1 ? 1 : r * r * (3 - 2 * r);
+    const q = aa / road;
+    y += (-KERB_H + 0.022 * (1 - q * q)) * r;
+  }
+  io[2] = y;
+}
+
 /** The wear of side street c on `side` (cached on its mouth): its street frame F
  *  (sideAsphalt.js sideFrame, over the side street's surface) and its wear plan
  *  (sidePlan). The street's prefetch makes it ahead (see street.js planChunk). */

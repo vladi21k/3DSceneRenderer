@@ -298,12 +298,15 @@ float iwDither( vec2 p ) {
 }
 
 // Paint colours seen on the references besides black (linear albedo): dark blue-grey,
-// bottle green, grey-green, weathered teal, and rarely a stronger blue or off-white.
+// bottle green, grey-green, weathered teal, a stronger blue, off-white and an oxide
+// brown (red-lead primer gone dull).
 export const PAINTS = [
   [0.035, 0.05, 0.065], [0.015, 0.03, 0.022], [0.06, 0.07, 0.06], [0.03, 0.055, 0.06], [0.03, 0.06, 0.13], [0.42, 0.42, 0.39],
+  [0.07, 0.03, 0.018],
 ];
-/** Weights of PAINTS (the saturated blue and off-white are rare). */
-export const PAINT_W = [0.32, 0.28, 0.18, 0.12, 0.04, 0.06];
+/** Weights of PAINTS. With black iron on 60 % of the buildings (lotStyle) this makes
+ *  about 15 % greens, 15 % blue-greys and blues, 8 % oxide brown, 2 % off-white. */
+export const PAINT_W = [0.28, 0.2, 0.1, 0.07, 0.1, 0.04, 0.21];
 
 export function makeMaterials(app, atlas) {
   const M = app.materials;

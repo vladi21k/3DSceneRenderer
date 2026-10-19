@@ -377,8 +377,11 @@ void main() {
   // scrub anything the passes above produced from a bad input, and clamp the range, so a
   // broken pixel or a specular spark cannot spread through the TAA, DOF, motion blur and
   // bloom chains
+  // (one scale for all three channels: a per-channel clamp would turn a warm specular spark
+  // neutral, and the highlight recovery would then show it as a grey or cyan fleck)
   if (!finite3(col)) col = vec3(0.0);
-  col = clamp(col, vec3(0.0), vec3(uClampHDR));
+  col = max(col, vec3(0.0));
+  col *= min(1.0, uClampHDR / max(max(col.r, max(col.g, col.b)), 1e-12));
   float coc = max(uDofK * abs(1.0 - uFocus / max(dist, 0.1)) - uCocTol, 0.0);
   gl_FragColor = vec4(col, min(coc, uCocMax));
 }
@@ -488,7 +491,7 @@ uniform vec2 uTexel;     // source texel size
 uniform float uKaris;
 uniform float uClamp;
 varying vec2 vUv;
-vec3 tap(vec2 o) { return min(texture2D(tSrc, vUv + o * uTexel).rgb, vec3(uClamp)); }
+vec3 tap(vec2 o) { vec3 c = texture2D(tSrc, vUv + o * uTexel).rgb; return c * min(1.0, uClamp / max(max(c.r, max(c.g, c.b)), 1e-12)); }
 float kw(vec3 c) { return 1.0 / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722)) * uKaris); }
 void main() {
   vec3 a = tap(vec2(-2, 2)), b = tap(vec2(0, 2)), c = tap(vec2(2, 2));
@@ -680,6 +683,10 @@ uniform vec4 uLocal;          // local highlight recovery: knee (stops), strengt
 uniform vec4 uKnee;           // gamut knee: start, ceiling (street); start, ceiling (saturated sky)
 uniform float uSatOut;        // saturation of the street's final colour (scene-linear, around its luminance)
 uniform float uSkyTwist;      // sunset: warm sky hues turned towards yellow-orange (a camera profile's hue twist)
+uniform vec3 uSatHi;          // street saturation in the highlights: target, start and end (display-linear luminance)
+uniform vec3 uUpView;         // world up in view space (the sky's elevation per pixel)
+uniform vec2 uProjInv;        // 1 / projectionMatrix[0][0], 1 / projectionMatrix[1][1]
+uniform vec2 uSkySatEl;       // sin(elevation) where the sky's saturation boost starts, and where it is full
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -825,9 +832,13 @@ void main() {
     // (the saturated afterglow band: green raised towards red, so it reads yellow-orange;
     // the paler pink above it stays pink)
     if (uSkyTwist > 0.0) sc.g += uSkyTwist * smoothstep(0.5, 0.85, (sc.r - sc.b) / max(sc.r, 1e-6)) * max(sc.r - sc.g, 0.0);
-    // (a camera renders the blue sky deep and saturated; a warm sky stays nearly as it is)
+    // (a camera renders the blue sky overhead deep and saturated; a warm sky stays nearly as
+    // it is, and so does the low sky: towards the horizon the dusty air turns it pale and
+    // milky, so the boost fades out below ~uSkySatEl.y)
     float blue = smoothstep(0.0, 0.25, (sc.b - sc.r) / max(sc.b, 1e-6));
-    sc = max(lum + (sc - lum) * mix(uSkySat.y, uSkySat.x, blue), 0.0);
+    vec3 dv = normalize(vec3((uv * 2.0 - 1.0) * uProjInv, -1.0));
+    float kEl = smoothstep(uSkySatEl.x, uSkySatEl.y, dot(dv, uUpView));
+    sc = max(lum + (sc - lum) * mix(1.0, mix(uSkySat.y, uSkySat.x, blue), kEl), 0.0);
   }
 
   col = agx(col);
@@ -845,8 +856,9 @@ void main() {
     float la = dot(col, LW);
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), skyPx ? uSkyChroma : uChroma);
     // a little more colour on the street (the sky has its own saturation, uSkySat)
-    // (eased off in the highlights, as a camera's colour rendering does near white)
-    if (!skyPx) col = max(lt + (col - lt) * mix(uSatOut, 0.9, smoothstep(0.45, 0.95, lt)), 0.0);
+    // (eased off in the highlights, as a camera's colour rendering does near white: sunlit
+    // limestone rolls off to cream rather than holding an apricot or orange)
+    if (!skyPx) col = max(lt + (col - lt) * mix(uSatOut, uSatHi.x, smoothstep(uSatHi.y, uSatHi.z, lt)), 0.0);
     float m = max(col.r, max(col.g, col.b));
     vec3 kn = col;
     float k0 = uKnee.x, kr = uKnee.y - uKnee.x;

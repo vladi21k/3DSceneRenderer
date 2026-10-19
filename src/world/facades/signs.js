@@ -4,14 +4,21 @@ import { RNG } from '../../core/rng.js';
 import { Tpl, lin } from './geo.js';
 import { SHOP_LEVEL } from './interior.js';
 
-// Shop signage: a canvas atlas of invented generic shop words (English and Hebrew), house
-// number plaques, blade-sign faces and the shop window dressing (sale posters, price
-// cards, door stickers), plus the geometry for fascia boards, light boxes, individual
-// letters, projecting blade signs and the cards stuck to the glass. Text quads are white
-// glyphs tinted by vertex colour (full-colour cells take white); `aGlow` makes light boxes
-// and neon letters glow at dusk.
+// Shop signage: a canvas atlas of invented shop names (a Hebrew name over its English
+// transliteration, each name in its own lettering), trade words (English and Hebrew),
+// short lines (phone numbers, "since 19xx", taglines), logo marks, house number plaques,
+// blade-sign faces and the shop window dressing (sale posters, price cards, door
+// stickers), plus the geometry for fascia boards, light boxes, individual letters,
+// projecting blades and discs and the cards stuck to the glass. A shop's sign is composed
+// of its name, often a smaller second line (its trade, a phone number or a tagline) and
+// now and then a logo mark; the boards fade, collect grime along their lower edge and hang
+// a little out of true. Text quads are white glyphs tinted by vertex colour (full-colour
+// cells take white); `aGlow` makes light boxes and neon letters glow at dusk.
 
-const W = 2048, H = 6144;
+const W = 2048, H = 8192;
+const NAMES_Y = 6144, NAME_W = 512, NAME_H = 128;          // shop names: 13 rows of 4
+const LINES_Y = 7808, LINE_W = 256, LINE_H = 64;           // short lines and wall tags: 4 rows of 8
+const ICONS_Y = 8064, ICON = 128;                          // logo marks (white), the last cell solid white
 const CELL_W = 512, CELL_H = 128, TEXT_ROWS = 12;          // text cells: rows 0..11
 const PLAQUE = 128, PLAQUE_Y = TEXT_ROWS * CELL_H;        // 2 rows of 16 number plaques
 const BLADE_W = 256, BLADE_H = 256, BLADE_Y = PLAQUE_Y + 2 * PLAQUE; // 2 rows of 8 blade faces
@@ -52,6 +59,53 @@ export const wordType = (cell) => WORDS[cell][1];
 export const wordSub = (cell) => WORDS[cell][2] || SUB[WORDS[cell][0][0]] || SUB[WORDS[cell][0][1]] || null;
 /** Word cells of a shop type. */
 export function wordsOf(type) { const ok = []; WORDS.forEach(([, t], i) => { if (t === type) ok.push(i); }); return ok; }
+/** Single-line word cells of a shop type (a fascia's second line). */
+export function subWordsOf(type) { const ok = []; WORDS.forEach(([l, t], i) => { if (t === type && l.length === 1) ok.push(i); }); return ok; }
+
+// Invented shop names: [Hebrew, English, lettering style]. Family names, given names and
+// plain words, as the street's shops are named (a family's, a founder's, a fruit's), each
+// painted in one of the lettering styles below.
+const NAMES = [
+  ['אלמוג', 'Almog', 0], ['רימון', 'Rimon', 1], ['תמר', 'Tamar', 2], ['הדקל', 'HaDekel', 3], ['שקד', 'Shaked', 4],
+  ['גולדמן', 'Goldman', 1], ['לוי ובניו', 'Levy & Sons', 5], ['כהן', 'Cohen', 0], ['מזרחי', 'Mizrahi', 4], ['פרץ', 'Peretz', 3],
+  ['אזולאי', 'Azoulay', 2], ['פרידמן', 'Friedman', 1], ['שפירא', 'Shapira', 5], ['רוזן', 'Rosen', 0], ['בן דוד', 'Ben David', 4],
+  ['מלכה', 'Malka', 2], ['גבאי', 'Gabay', 3], ['חדד', 'Hadad', 0], ['עמר', 'Amar', 4], ['אוחנה', 'Ohana', 1],
+  ['דהן', 'Dahan', 5], ['ויס', 'Weiss', 3], ['קליין', 'Klein', 0], ['כץ', 'Katz', 4], ['ציון', 'Zion', 1],
+  ['גליל', 'Galil', 2], ['נחמה', 'Nechama', 5], ['שושנה', 'Shoshana', 2], ['אורה', 'Ora', 3], ['מזל', 'Mazal', 0],
+  ['הגפן', 'HaGefen', 1], ['הזית', 'HaZayit', 4], ['אבן חן', 'Even Hen', 5], ['כתר', 'Keter', 1], ['נוף', 'Nof', 3],
+  ['שחר', 'Shachar', 0], ['טל', 'Tal', 2], ['יעלי', 'Yaeli', 4], ['בית אבי', 'Beit Avi', 5], ['האחים ברק', 'Barak Bros.', 0],
+  ['סבינה', 'Sabina', 2], ['מרגלית', 'Margalit', 1], ['אריאל', 'Ariel', 3], ['הרמוניה', 'Harmonia', 2], ['לבנה', 'Levana', 4],
+  ['פנינה', 'Pnina', 5], ['הכרמל', 'HaCarmel', 0], ['עדן', 'Eden', 3], ['אביב', 'Aviv', 1], ['סיגל', 'Sigal', 4],
+  ['נועם', 'Noam', 2], ['מגדל', 'Migdal', 5],
+];
+/** Number of shop names. */
+export const N_NAMES = NAMES.length;
+// lettering styles: [Hebrew font, Latin font, upper-case, letter spacing (px)]
+const NAME_STYLES = [
+  ['900 Hpx "Noto Sans Hebrew", "Liberation Sans", sans-serif', '700 Hpx "Liberation Sans", Arial, sans-serif', true, 2],
+  ['700 Hpx "Noto Serif Hebrew", "Liberation Serif", serif', '400 Hpx "Liberation Serif", Georgia, serif', true, 6],
+  ['700 Hpx "Noto Rashi Hebrew", "Noto Serif Hebrew", serif', 'italic 700 Hpx "Liberation Serif", Georgia, serif', false, 0],
+  ['400 Hpx "Noto Sans Hebrew", "DejaVu Sans", sans-serif', '400 Hpx "DejaVu Sans", Verdana, sans-serif', true, 4],
+  ['700 Hpx "Noto Sans Hebrew", "Liberation Sans Narrow", sans-serif', '700 Hpx "Liberation Sans Narrow", "Arial Narrow", sans-serif', true, 1],
+  ['600 Hpx "Noto Serif Hebrew", "Liberation Serif", serif', '700 Hpx "Liberation Serif", Georgia, serif', false, 1],
+];
+// Short lines (256 x 64 px, white): phone numbers, the year a shop was founded, taglines;
+// then wall tags (full colour, for roller shutters)
+const LINES = [
+  '02-624 5517', '02-625 1180', '02-538 0942', '*6230', '054-776 1209', '052-318 4466', '02-622 7311', '*5594',
+  '02-500 4128', '050-871 3302', '02-623 9065', '*9020', 'EST. 1952', 'SINCE 1968', 'מאז 1949', 'מאז 1923',
+  'EST. 1936', 'מאז 1972', 'כשר', 'כשר למהדרין', 'TAX FREE', 'סיטונאות וקמעונאות', 'יבוא ושיווק', 'HANDMADE',
+];
+/** Line cells: phones 0-11, years 12-17, taglines 18-23, wall tags 24-31. */
+export const LINE_KIND = { phone: [0, 11], year: [12, 17], tagline: [18, 23], tag: [24, 31] };
+// Logo marks (white silhouettes) a trade's shops pick from; 15 is a solid cell
+export const ICON_SOLID = 15;
+const TRADE_ICONS = {
+  cafe: [0, 1, 14], jewellery: [2, 3, 4, 12], clothing: [5, 6, 12, 13], shoes: [7, 13], books: [8, 13], flowers: [9, 14],
+  pharmacy: [10, 10, 14], general: [11, 12, 13, 14], bakery: [1, 14], phones: [11], grocery: [14], toys: [13], sweets: [13],
+};
+/** A logo mark for a shop of type (narrower trade sub), drawn from r. */
+export function tradeIcon(type, sub, r) { const l = (sub && TRADE_ICONS[sub]) || TRADE_ICONS[type] || TRADE_ICONS.general; return l[r.int(0, l.length - 1)]; }
 const FONTS = [
   (px) => `700 ${px}px "Liberation Sans", "Noto Sans Hebrew", Arial, sans-serif`,
   (px) => `700 ${px}px "Liberation Serif", "Noto Serif Hebrew", Georgia, serif`,
@@ -68,10 +122,11 @@ export const SIGN_PALETTE = {
 // painted fascia boards as on the street: half the classic black, dark green, oxblood and
 // navy enamel (gold or cream letters), half the shopfitters' bright plastic and aluminium
 // boards (red, white, blue, yellow, green, orange, the odd purple)
-const BOARD_WEIGHTS = [[0x1d1d1f, 0.12], [0x1f3a2c, 0.1], [0x5a1a1c, 0.09], [0x1b2b45, 0.08], [0x24464a, 0.05], [0x6b4a2a, 0.05],
-  [0xd9cfb6, 0.05], [0xe8e4da, 0.06], [0xb8261e, 0.1], [0x1f5f8a, 0.08], [0x2f6e3a, 0.06], [0xe8b820, 0.06],
-  [0xe8701c, 0.04], [0x5a2a6a, 0.03], [0x2a8ac0, 0.03]];
-const LIGHT_BOARDS = new Set([0xd9cfb6, 0xe8e4da, 0xe8b820]);
+// (about half are saturated: signal red, royal blue, bottle green, mustard, orange, purple)
+const BOARD_WEIGHTS = [[0x1d1d1f, 0.09], [0x1f3a2c, 0.07], [0x5a1a1c, 0.07], [0x1b2b45, 0.06], [0x24464a, 0.04], [0x6b4a2a, 0.04],
+  [0xd9cfb6, 0.05], [0xe8e4da, 0.08], [0xb8261e, 0.12], [0x1f4fa0, 0.08], [0x1e6a36, 0.06], [0xe0a81c, 0.07],
+  [0xe0641a, 0.05], [0x5a2a6a, 0.04], [0x2a8ac0, 0.03], [0xf2e14a, 0.03], [0xc2185b, 0.02]];
+const LIGHT_BOARDS = new Set([0xd9cfb6, 0xe8e4da, 0xe0a81c, 0xf2e14a]);
 
 let atlas = null;
 
@@ -176,13 +231,64 @@ function buildAtlas() {
     yy += Math.ceil(list.length / per) * CH;
   }
   if (yy > WORDS2_Y) console.warn('[facades] sign atlas overflow', yy);
+  // shop names: the Hebrew name on top, its English form below; each line can be used on
+  // its own (sub-cells cropped to the ink)
+  const names = [];
+  const cellOf = (x, y0, y1, inkW, cw) => {
+    const pad = (cw - Math.min(cw, inkW + 16)) / 2;
+    return { u0: (x + pad) / W, u1: (x + cw - pad) / W, v0: 1 - y1 / H, v1: 1 - y0 / H, aspect: Math.min(cw, inkW + 16) / (y1 - y0) };
+  };
+  NAMES.forEach(([he, en, st], i) => {
+    const x = (i % 4) * NAME_W, y = NAMES_Y + Math.floor(i / 4) * NAME_H;
+    const [fh, fl, upper, sp] = NAME_STYLES[st];
+    const enT = upper ? en.toUpperCase() : en;
+    g.font = fh.replace('Hpx', '68px');
+    const wh = g.measureText(he).width, sxH = Math.min(1, (NAME_W - 28) / Math.max(1, wh));
+    g.font = fl.replace('Hpx', '34px');
+    g.letterSpacing = `${sp}px`;
+    const we = g.measureText(enT).width, sxE = Math.min(1, (NAME_W - 28) / Math.max(1, we));
+    g.letterSpacing = '0px';
+    const iH = wh * sxH, iE = we * sxE;
+    paint(() => {
+      g.save();
+      g.beginPath(); g.rect(x, y, NAME_W, NAME_H); g.clip();
+      g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.save(); g.font = fh.replace('Hpx', '68px'); g.direction = 'rtl'; g.translate(x + NAME_W / 2, y + 42); g.scale(sxH, 1); g.fillText(he, 0, 0); g.restore();
+      g.save(); g.font = fl.replace('Hpx', '34px'); g.letterSpacing = `${sp}px`; g.translate(x + NAME_W / 2, y + 104); g.scale(sxE, 1); g.fillText(enT, 0, 0); g.restore();
+      g.restore();
+    });
+    names.push({ full: cellOf(x, y, y + NAME_H, Math.max(iH, iE), NAME_W), he: cellOf(x, y + 2, y + 84, iH, NAME_W), en: cellOf(x, y + 84, y + NAME_H - 2, iE, NAME_W) });
+  });
+  // short lines (white) and wall tags (full colour)
+  const lines = [];
+  for (let i = 0; i < 32; i++) {
+    const x = (i % 8) * LINE_W, y = LINES_Y + Math.floor(i / 8) * LINE_H;
+    if (i < LINES.length) {
+      const str = LINES[i];
+      g.font = SANS(36);
+      const wl = g.measureText(str).width, sx = Math.min(1, (LINE_W - 12) / Math.max(1, wl));
+      paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); g.fillStyle = '#fff'; g.font = SANS(36); g.textAlign = 'center'; g.textBaseline = 'middle'; g.translate(x + LINE_W / 2, y + LINE_H / 2 + 2); g.scale(sx, 1); g.fillText(str, 0, 0); g.restore(); });
+      lines.push(cellOf(x, y + 6, y + LINE_H - 6, wl * sx, LINE_W));
+    } else {
+      paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); wallTag(g, x, y, LINE_W, LINE_H, i); g.restore(); });
+      lines.push({ u0: (x + 2) / W, u1: (x + LINE_W - 2) / W, v0: 1 - (y + LINE_H - 2) / H, v1: 1 - (y + 2) / H, aspect: (LINE_W - 4) / (LINE_H - 4) });
+    }
+  }
+  // logo marks (white silhouettes) and a solid white cell
+  const icons = [];
+  for (let i = 0; i < 16; i++) {
+    const x = i * ICON, y = ICONS_Y;
+    paint(() => { g.save(); g.beginPath(); g.rect(x, y, ICON, ICON); g.clip(); g.fillStyle = '#fff'; g.strokeStyle = '#fff'; ICON_DRAW[i](g, x, y); g.restore(); });
+    icons.push(i === ICON_SOLID ? { u0: (x + 32) / W, u1: (x + 96) / W, v0: 1 - (y + 96) / H, v1: 1 - (y + 32) / H, aspect: 1 }
+      : { u0: (x + 2) / W, u1: (x + ICON - 2) / W, v0: 1 - (y + ICON - 2) / H, v1: 1 - (y + 2) / H, aspect: 1 });
+  }
   // (a plain texture: version 0, not uploaded, until the painting is complete)
   const tex = new THREE.Texture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
-  const out = { tex, cells, plaques, blades, dress, prints, done: false, ms: 0 };
+  const out = { tex, cells, plaques, blades, dress, prints, names, lines, icons, done: false, ms: 0 };
   /** Paint for up to budget ms; true once the atlas is complete (and queued for upload). */
   out.draw = (budget = Infinity) => {
     if (out.done) return true;
@@ -565,12 +671,40 @@ const PAPERS = Array.from({ length: 16 }, (_, i) => (g, x, y, w, h) => {
     linesR(g, x + w * 0.52, y + h * 0.48, w * 0.42, 14, 'rgba(30,30,30,0.55)', h * 0.026);
     g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(x, y + h * 0.5 - 1, w, 2);    // the fold
   } else {
-    // magazine cover: a photograph full bleed, the title across the top, cover lines
-    const c0 = r.pick(['#d8a0a0', '#9ab8d8', '#e8c870', '#8ac0a0', '#c0a0d0', '#f0b080', '#a0a0a0']);
-    grad(g, x, y, w, h, c0, r.pick(['#5a3a3a', '#2a3a5a', '#6a4a20', '#2a4a3a']));
-    figure(g, x + w * 0.5, y + h * 0.2, h * 0.78, r.pick(['#e0b89a', '#c89a7a', '#8a5a3c']), r.pick(['#2a2224', '#6b4a2a', '#c8a050']), r.pick(['#b8261e', '#1d2a44', '#f2efe6', '#2f6e3a']), '#3a3a44', r.chance(0.5));
-    fit(g, ['MODA', 'בית', 'STYLE', 'HOME', 'מטבח', 'CHEF', 'TRAVEL'][i - 9], x + w / 2, y + h * 0.09, w * 0.92, h * 0.11, r.pick(['#f4f2ec', '#c8201a', '#1a1a1a']), 700, SERIF);
-    for (let k = 0; k < 3; k++) fit(g, r.pick(['קיץ', 'NEW', '50 מתכונים', 'SPECIAL', 'מבצע']), x + w * 0.22, y + h * (0.55 + k * 0.1), w * 0.36, h * 0.035, '#f4f2ec');
+    // magazine cover: a studio portrait full bleed (soft-focus skin, hair and clothes, a
+    // backdrop falling off), the masthead across the top behind the head, a column of
+    // cover lines in two weights, a coloured flash and the barcode
+    const back = r.pick([['#d8c8b8', '#9a8878'], ['#a8c0d8', '#5a7088'], ['#e8d090', '#b08840'], ['#b8d0c0', '#6a8a78'], ['#e8b8b0', '#a87068'], ['#3a3a40', '#141418'], ['#f0ece4', '#c8c0b4']]);
+    const gr = g.createRadialGradient(x + w * 0.55, y + h * 0.4, 4, x + w * 0.5, y + h * 0.5, h * 0.7);
+    gr.addColorStop(0, back[0]); gr.addColorStop(1, back[1]); g.fillStyle = gr; g.fillRect(x, y, w, h);
+    const skin = r.pick(['#e8c0a0', '#d8a888', '#c08868', '#8a5a40', '#f0d0b8']), hair = r.pick(['#2a1e18', '#4a3020', '#8a6040', '#c8a060', '#141010', '#6a2a1a']);
+    const cloth = r.pick(['#b8261e', '#1d2a44', '#f2efe6', '#2f6e3a', '#e0a81c', '#141414', '#c2185b', '#6a8ab8']);
+    const hx = x + w * r.range(0.42, 0.6), hy = y + h * r.range(0.3, 0.36), hr = w * r.range(0.2, 0.26);
+    g.save();
+    g.filter = 'blur(1.6px)';
+    // shoulders and garment, neck, hair mass behind the face, the face lit from one side
+    g.fillStyle = cloth; g.beginPath(); g.ellipse(hx, y + h * 0.92, w * 0.62, h * 0.32, 0, Math.PI, Math.PI * 2); g.fill(); g.fillRect(x, y + h * 0.9, w, h * 0.1);
+    g.fillStyle = skin; g.fillRect(hx - hr * 0.36, hy + hr * 0.7, hr * 0.72, h * 0.18);
+    g.fillStyle = hair; g.beginPath(); g.ellipse(hx, hy - hr * 0.08, hr * 1.18, hr * 1.32, 0, 0, Math.PI * 2); g.fill();
+    if (r.chance(0.6)) { g.beginPath(); g.ellipse(hx + hr * 0.7, hy + hr * 1.3, hr * 0.5, hr * 1.4, -0.2, 0, Math.PI * 2); g.fill(); }
+    const fg = g.createLinearGradient(hx - hr, hy, hx + hr, hy);
+    fg.addColorStop(0, skin); fg.addColorStop(1, 'rgba(60,30,20,0.9)');
+    g.fillStyle = skin; g.beginPath(); g.ellipse(hx, hy + hr * 0.12, hr * 0.78, hr, 0, 0, Math.PI * 2); g.fill();
+    g.globalAlpha = 0.35; g.fillStyle = fg; g.beginPath(); g.ellipse(hx, hy + hr * 0.12, hr * 0.78, hr, 0, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1;
+    g.fillStyle = 'rgba(40,24,20,0.75)';
+    for (const s of [-1, 1]) { g.beginPath(); g.ellipse(hx + s * hr * 0.32, hy, hr * 0.12, hr * 0.06, 0, 0, Math.PI * 2); g.fill(); }
+    g.fillStyle = 'rgba(150,50,50,0.7)'; g.beginPath(); g.ellipse(hx, hy + hr * 0.55, hr * 0.22, hr * 0.07, 0, 0, Math.PI * 2); g.fill();
+    g.filter = 'none';
+    g.restore();
+    // masthead (behind the head's top on some covers), cover lines, a flash, the barcode
+    const ink = back[0] === '#3a3a40' ? '#f4f2ec' : r.pick(['#c8201a', '#1a1a1a', '#f4f2ec']);
+    fit(g, ['MODA', 'בית', 'STYLE', 'HOME', 'מטבח', 'CHEF', 'TRAVEL'][i - 9], x + w / 2, y + h * 0.085, w * 0.94, h * 0.13, ink, 900, SERIF);
+    g.fillStyle = ink === '#1a1a1a' ? 'rgba(20,20,20,0.85)' : 'rgba(250,248,240,0.92)';
+    for (let k = 0; k < 7; k++) g.fillRect(x + w * 0.05, y + h * (0.52 + k * 0.045), w * (0.18 + 0.16 * r.next()), Math.max(1.5, h * (k % 3 === 0 ? 0.022 : 0.012)));
+    fit(g, r.pick(['קיץ 2026', 'NEW', '50 מתכונים', 'SPECIAL', 'מהדורה מיוחדת']), x + w * 0.3, y + h * 0.47, w * 0.5, h * 0.04, ink === '#1a1a1a' ? '#c8201a' : '#ffe066');
+    if (r.chance(0.6)) { disc(g, x + w * 0.8, y + h * 0.66, w * 0.12, r.pick(['#ffe066', '#c8201a', '#f4f2ec'])); fit(g, '₪' + r.int(19, 39), x + w * 0.8, y + h * 0.66, w * 0.16, h * 0.035, '#1a1a1a'); }
+    g.fillStyle = '#fff'; g.fillRect(x + w * 0.68, y + h * 0.88, w * 0.26, h * 0.08);
+    g.fillStyle = '#111'; for (let k = 0; k < 14; k++) g.fillRect(x + w * (0.7 + k * 0.016), y + h * 0.895, w * (k % 3 ? 0.006 : 0.01), h * 0.055);
   }
 });
 // Price tags: [draw, aspect]; cardboard or fluorescent card, a price in marker
@@ -599,6 +733,110 @@ function flower(g, x, y) {
   g.fillStyle = '#c8231c';
   for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; g.beginPath(); g.arc(x + 128 + Math.cos(a) * 34, y + 98 + Math.sin(a) * 34, 26, 0, Math.PI * 2); g.fill(); }
   g.fillStyle = '#f2d24a'; g.beginPath(); g.arc(x + 128, y + 98, 22, 0, Math.PI * 2); g.fill();
+}
+
+// ------------------------------------------------------------------ logo marks
+// White silhouettes in a 128 px cell (x, y its corner), tinted by the sign's accent colour:
+// cup, ring bread, cut stone, watch, spectacles, hanger, tee, shoe, open book, flower,
+// cross, phone, crown, star, leaf sprig; the last cell is solid (tinted panels).
+const cut = (g, fn) => { g.save(); g.globalCompositeOperation = 'destination-out'; fn(); g.restore(); };
+const ICON_DRAW = [
+  (g, x, y) => {   // cup and saucer with steam
+    g.beginPath(); g.moveTo(x + 30, y + 52); g.lineTo(x + 92, y + 52); g.quadraticCurveTo(x + 90, y + 98, x + 61, y + 100); g.quadraticCurveTo(x + 32, y + 98, x + 30, y + 52); g.fill();
+    g.lineWidth = 7; g.beginPath(); g.arc(x + 94, y + 68, 11, -1.5, 1.6); g.stroke();
+    g.beginPath(); g.ellipse(x + 61, y + 106, 42, 6, 0, 0, Math.PI * 2); g.fill();
+    g.lineWidth = 5; g.lineCap = 'round';
+    for (const dx of [-12, 2, 16]) { g.beginPath(); g.moveTo(x + 58 + dx, y + 44); g.bezierCurveTo(x + 50 + dx, y + 34, x + 66 + dx, y + 28, x + 58 + dx, y + 16); g.stroke(); }
+  },
+  (g, x, y) => {   // ring bread with sesame
+    g.beginPath(); g.ellipse(x + 64, y + 66, 50, 40, 0, 0, Math.PI * 2); g.fill();
+    cut(g, () => { g.beginPath(); g.ellipse(x + 64, y + 66, 22, 15, 0, 0, Math.PI * 2); g.fill(); for (let k = 0; k < 22; k++) { const a = k * 2.4, r = 30 + (k % 3) * 6; g.beginPath(); g.ellipse(x + 64 + Math.cos(a) * r, y + 66 + Math.sin(a) * r * 0.8, 2.6, 1.4, a, 0, Math.PI * 2); g.fill(); } });
+  },
+  (g, x, y) => {   // brilliant-cut stone
+    g.beginPath(); g.moveTo(x + 18, y + 48); g.lineTo(x + 38, y + 24); g.lineTo(x + 90, y + 24); g.lineTo(x + 110, y + 48); g.lineTo(x + 64, y + 110); g.closePath(); g.fill();
+    cut(g, () => { g.lineWidth = 3; g.beginPath(); g.moveTo(x + 18, y + 48); g.lineTo(x + 110, y + 48); g.moveTo(x + 50, y + 24); g.lineTo(x + 42, y + 48); g.lineTo(x + 64, y + 108); g.lineTo(x + 86, y + 48); g.lineTo(x + 78, y + 24); g.stroke(); });
+  },
+  (g, x, y) => {   // wristwatch
+    g.fillRect(x + 50, y + 8, 28, 112);
+    g.beginPath(); g.arc(x + 64, y + 64, 32, 0, Math.PI * 2); g.fill();
+    cut(g, () => { g.beginPath(); g.arc(x + 64, y + 64, 24, 0, Math.PI * 2); g.fill(); });
+    g.lineWidth = 4; g.beginPath(); g.moveTo(x + 64, y + 64); g.lineTo(x + 64, y + 46); g.moveTo(x + 64, y + 64); g.lineTo(x + 77, y + 70); g.stroke();
+  },
+  (g, x, y) => {   // spectacles
+    g.lineWidth = 9;
+    for (const cx of [38, 90]) { g.beginPath(); g.ellipse(x + cx, y + 70, 22, 18, 0, 0, Math.PI * 2); g.stroke(); }
+    g.beginPath(); g.moveTo(x + 58, y + 64); g.quadraticCurveTo(x + 64, y + 56, x + 70, y + 64); g.stroke();
+    g.beginPath(); g.moveTo(x + 16, y + 64); g.lineTo(x + 6, y + 52); g.moveTo(x + 112, y + 64); g.lineTo(x + 122, y + 52); g.stroke();
+  },
+  (g, x, y) => {   // coat hanger
+    g.lineWidth = 8; g.lineJoin = 'round'; g.lineCap = 'round';
+    g.beginPath(); g.arc(x + 64, y + 30, 11, Math.PI, Math.PI * 2.3); g.stroke();
+    g.beginPath(); g.moveTo(x + 64, y + 44); g.lineTo(x + 12, y + 92); g.lineTo(x + 116, y + 92); g.closePath(); g.stroke();
+  },
+  (g, x, y) => {   // tee
+    g.beginPath(); g.moveTo(x + 46, y + 22); g.quadraticCurveTo(x + 64, y + 34, x + 82, y + 22); g.lineTo(x + 116, y + 42); g.lineTo(x + 102, y + 64); g.lineTo(x + 90, y + 56);
+    g.lineTo(x + 90, y + 112); g.lineTo(x + 38, y + 112); g.lineTo(x + 38, y + 56); g.lineTo(x + 26, y + 64); g.lineTo(x + 12, y + 42); g.closePath(); g.fill();
+  },
+  (g, x, y) => {   // shoe
+    g.beginPath(); g.moveTo(x + 10, y + 92); g.lineTo(x + 12, y + 46); g.lineTo(x + 44, y + 44); g.quadraticCurveTo(x + 52, y + 64, x + 78, y + 68);
+    g.quadraticCurveTo(x + 118, y + 74, x + 118, y + 92); g.closePath(); g.fill(); g.fillRect(x + 8, y + 96, 112, 7);
+  },
+  (g, x, y) => {   // open book
+    g.beginPath(); g.moveTo(x + 64, y + 40); g.quadraticCurveTo(x + 40, y + 28, x + 10, y + 34); g.lineTo(x + 10, y + 100); g.quadraticCurveTo(x + 40, y + 94, x + 64, y + 108);
+    g.quadraticCurveTo(x + 88, y + 94, x + 118, y + 100); g.lineTo(x + 118, y + 34); g.quadraticCurveTo(x + 88, y + 28, x + 64, y + 40); g.closePath(); g.fill();
+    cut(g, () => { g.lineWidth = 3; g.beginPath(); g.moveTo(x + 64, y + 42); g.lineTo(x + 64, y + 104); g.stroke(); });
+  },
+  (g, x, y) => {   // flower
+    for (let k = 0; k < 6; k++) { const a = (k / 6) * Math.PI * 2; g.beginPath(); g.ellipse(x + 64 + Math.cos(a) * 24, y + 50 + Math.sin(a) * 24, 17, 11, a, 0, Math.PI * 2); g.fill(); }
+    cut(g, () => { g.beginPath(); g.arc(x + 64, y + 50, 9, 0, Math.PI * 2); g.fill(); });
+    g.lineWidth = 6; g.beginPath(); g.moveTo(x + 64, y + 76); g.quadraticCurveTo(x + 60, y + 100, x + 66, y + 122); g.stroke();
+    g.beginPath(); g.ellipse(x + 48, y + 102, 13, 6, -0.5, 0, Math.PI * 2); g.fill();
+  },
+  (g, x, y) => { g.fillRect(x + 46, y + 14, 36, 100); g.fillRect(x + 14, y + 46, 100, 36); },   // cross
+  (g, x, y) => {   // phone
+    roundRect(g, x + 36, y + 10, 56, 108, 10); g.fill();
+    cut(g, () => { g.fillRect(x + 42, y + 22, 44, 78); g.beginPath(); g.arc(x + 64, y + 109, 4, 0, Math.PI * 2); g.fill(); });
+  },
+  (g, x, y) => {   // crown
+    g.beginPath(); g.moveTo(x + 14, y + 98); g.lineTo(x + 10, y + 38); g.lineTo(x + 38, y + 66); g.lineTo(x + 64, y + 26); g.lineTo(x + 90, y + 66); g.lineTo(x + 118, y + 38); g.lineTo(x + 114, y + 98); g.closePath(); g.fill();
+    g.fillRect(x + 14, y + 104, 100, 10);
+    for (const [cx, cy] of [[10, 34], [64, 20], [118, 34]]) { g.beginPath(); g.arc(x + cx, y + cy, 6, 0, Math.PI * 2); g.fill(); }
+  },
+  (g, x, y) => {   // six-pointed star
+    for (const a0 of [-Math.PI / 2, Math.PI / 2]) { g.beginPath(); for (let k = 0; k < 3; k++) { const a = a0 + (k * 2 * Math.PI) / 3; g.lineTo(x + 64 + Math.cos(a) * 54, y + 66 + Math.sin(a) * 54); } g.closePath(); g.fill(); }
+    cut(g, () => { g.lineWidth = 3; for (const a0 of [-Math.PI / 2, Math.PI / 2]) { g.beginPath(); for (let k = 0; k < 3; k++) { const a = a0 + (k * 2 * Math.PI) / 3; g.lineTo(x + 64 + Math.cos(a) * 40, y + 66 + Math.sin(a) * 40); } g.closePath(); g.stroke(); } });
+  },
+  (g, x, y) => {   // leaf sprig
+    g.lineWidth = 5; g.beginPath(); g.moveTo(x + 24, y + 118); g.quadraticCurveTo(x + 60, y + 70, x + 104, y + 12); g.stroke();
+    for (let k = 0; k < 5; k++) {
+      const t = 0.15 + k * 0.17, px = x + 24 + 80 * t, py = y + 118 - 106 * t + 10 * t * (1 - t);
+      for (const s of [-1, 1]) { g.beginPath(); g.ellipse(px + s * 14, py + 4, 15, 6, s * 0.7 - 0.6, 0, Math.PI * 2); g.fill(); }
+    }
+  },
+  (g, x, y) => { g.fillRect(x + 24, y + 24, 80, 80); },   // solid (sampled inside)
+];
+
+/** A wall tag sprayed on a roller shutter (full colour, transparent ground), cell i. */
+function wallTag(g, x, y, w, h, i) {
+  const r = new RNG(5300 + i);
+  const cols = ['#e8e4da', '#141414', '#c8231c', '#1f5fa8', '#e0a81c', '#2a7a3a', '#c2185b', '#7a3aa8'];
+  const c1 = r.pick(cols), c2 = r.pick(cols.filter((c) => c !== c1));
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  // a loose script of loops and slashes, outlined in a second colour
+  const pts = [];
+  let px = x + 14, py = y + h * 0.6;
+  const n = r.int(5, 9);
+  for (let k = 0; k < n; k++) {
+    px += (w - 28) / n; py = y + h * r.range(0.25, 0.75);
+    pts.push([px - r.range(0, 10), py, px + r.range(-18, 4), y + h * r.range(0.15, 0.85)]);
+  }
+  for (const [lw, col] of [[r.range(8, 11), c2], [r.range(4, 6), c1]]) {
+    g.strokeStyle = col; g.lineWidth = lw;
+    g.beginPath(); g.moveTo(x + 14, y + h * 0.6);
+    for (const [ax, ay, bx, by] of pts) g.quadraticCurveTo(bx, by, ax, ay);
+    g.stroke();
+  }
+  if (r.chance(0.5)) { g.fillStyle = c1; g.beginPath(); g.arc(px + 8, y + h * 0.3, 4, 0, Math.PI * 2); g.fill(); }
 }
 
 function roundRect(g, x, y, w, h, r) {

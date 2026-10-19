@@ -15,6 +15,9 @@ Examples
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --heapprof 40 (allocation sites)
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 150 --heaplive 40 (what the heap grows by)
   tools/shoot.py --shots 0 --cpuprof 40   (start-up: main-thread time by file and function, with callers)
+  tools/shoot.py --params "speed=50" --shots 0 --settle 30 --heapprof 30 --heapdelay 40 (warm allocation sites)
+  tools/shoot.py --profile .work/prof --params "s=100&speed=60" --shots 0 --settle 30 --firstdraw (late first draws)
+  tools/shoot.py --reap   (kill headless browsers left behind by runs whose tool is gone)
 
 Timing runs (--hitches, --heapprof) print the machine's load at the start and the end:
 other processes may be rendering on the same CPU and GPU, so judge times against it.
@@ -33,11 +36,396 @@ on an idle machine and can take over a minute on a busy one), printing progress 
 
 The page URL is http://127.0.0.1:<port>/index.html?<params>&capture=1 ; a private
 static server (serve.py) is started on a free port unless --port is given.
+
+Browser lifetime: Chrome and the server run in process groups of their own, and the whole
+group is killed when the tool ends: normally, on an exception, on SIGTERM / SIGINT / SIGHUP
+(as `timeout` sends), at interpreter exit, and, through a small watchdog process that
+holds a pipe to the tool, even when the tool itself is killed with SIGKILL. --max-seconds
+bounds the whole run (default: --timeout + --settle + the shots + 15 min; 0: no limit).
+Every run first reaps headless browsers left behind by an earlier run whose tool is gone
+(--reap does only that).
 """
-import argparse, base64, json, os, random, shutil, socket, struct, subprocess, sys, tempfile, time, urllib.request
+import argparse, atexit, base64, json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GPU_FLAGS = "--enable-gpu --ignore-gpu-blocklist --use-angle=gl"
+# Chrome ignores switches it does not know: this one tags a browser with the pid of the tool
+# that started it, so a browser whose tool is gone can be recognised as an orphan.
+OWNER_FLAG = "--shoot-owner="
+
+
+# ---- process lifetime: no browser may outlive the tool that started it
+#
+# Each child (Chrome, serve.py) is started in a new session, so it and everything it forks
+# (Chrome's zygotes, GPU process and renderers) share one process group that can be killed
+# as a whole. The watchdog is a separate tiny process in its own session: the tool tells it
+# the groups over a pipe, and when the pipe closes (the tool exited, crashed or was killed
+# with SIGKILL) or the --max-seconds deadline passes, it kills those groups.
+
+_WATCHDOG = r"""
+import os, select, signal, sys, time
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(s, signal.SIG_IGN)
+parent, deadline, label = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+groups, buf = set(), b""
+
+def alive(g):
+    try:
+        os.killpg(g, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+def kill_groups():
+    for sig, grace in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 2.0)):
+        for g in list(groups):
+            try:
+                os.killpg(g, sig)
+            except (ProcessLookupError, PermissionError):
+                groups.discard(g)
+        end = time.time() + grace
+        while groups and time.time() < end:
+            for g in list(groups):
+                if not alive(g):
+                    groups.discard(g)
+            time.sleep(0.05)
+        if not groups:
+            return
+
+while True:
+    wait = None if deadline <= 0 else max(0.0, deadline - time.time())
+    r, _, _ = select.select([0], [], [], wait)
+    if not r:
+        if groups:
+            sys.stderr.write(f"{label} watchdog: --max-seconds passed and the tool did not stop; killing its browser\n")
+        kill_groups()
+        try:
+            os.kill(parent, signal.SIGTERM)
+            time.sleep(10)
+            os.kill(parent, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        break
+    chunk = os.read(0, 4096)
+    if not chunk:
+        kill_groups()
+        break
+    buf += chunk
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        op, _, g = line.partition(b" ")
+        if op == b"+":
+            groups.add(int(g))
+        elif op == b"-":
+            groups.discard(int(g))
+"""
+
+
+class Overrun(SystemExit):
+    """Raised in the tool when --max-seconds passes."""
+
+
+class ProcessGuard:
+    """Starts child processes in their own process groups and makes sure every group is gone
+    when the tool ends, however it ends. One per tool run: guard = ProcessGuard(label, max_s);
+    guard.spawn([...]); ... guard.close() (also called at exit and on signals)."""
+
+    def __init__(self, label, max_seconds=0.0):
+        self.label, self.children, self.closed = label, [], False
+        self._wd, self._pipe = None, None
+        self.max_seconds = max_seconds or 0.0
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, self._on_signal)
+        if self.max_seconds > 0:
+            signal.signal(signal.SIGALRM, self._on_alarm)
+            signal.alarm(max(1, int(round(self.max_seconds))))
+        atexit.register(self.close)
+        try:
+            r, w = os.pipe()
+            # (the backstop fires 30 s after the tool's own --max-seconds alarm)
+            deadline = time.time() + self.max_seconds + 30 if self.max_seconds > 0 else 0
+            self._wd = subprocess.Popen([sys.executable, "-c", _WATCHDOG, str(os.getpid()), repr(deadline), label],
+                                        stdin=r, stdout=subprocess.DEVNULL, start_new_session=True)
+            os.close(r)
+            self._pipe = w
+        except OSError as e:
+            print(f"WARNING: {label}: no watchdog ({e}); browsers are still killed at exit", file=sys.stderr)
+
+    def _tell(self, msg):
+        if self._pipe is None:
+            return
+        try:
+            os.write(self._pipe, msg.encode())
+        except OSError:
+            pass
+
+    def _on_signal(self, sig, frame):
+        name = signal.Signals(sig).name
+        print(f"{self.label}: {name} received, closing the browser", file=sys.stderr, flush=True)
+        if sig == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + sig)
+
+    def _on_alarm(self, sig, frame):
+        print(f"{self.label}: --max-seconds {self.max_seconds:g} passed, closing the browser", file=sys.stderr, flush=True)
+        raise Overrun(124)
+
+    def spawn(self, args, **kw):
+        """subprocess.Popen in a new session (process group = its pid), registered for cleanup."""
+        p = subprocess.Popen(args, start_new_session=True, **kw)
+        self.children.append(p)
+        self._tell(f"+ {p.pid}\n")
+        return p
+
+    @staticmethod
+    def _group_alive(g):
+        try:
+            os.killpg(g, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    def stop(self, p, grace=5.0):
+        """Ends one child and its whole process group: SIGTERM to the child (Chrome shuts
+        down cleanly and writes its caches), then SIGTERM and SIGKILL to the group."""
+        g = p.pid
+        steps = ((None, grace), (signal.SIGTERM, 2.0), (signal.SIGKILL, 2.0))
+        for sig, wait in steps:
+            try:
+                if sig is None:
+                    p.terminate()
+                else:
+                    os.killpg(g, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+            end = time.time() + wait
+            while time.time() < end:
+                p.poll()   # (reaps the child itself, so its zombie does not keep the group alive)
+                if p.returncode is not None and not self._group_alive(g):
+                    break
+                time.sleep(0.05)
+            else:
+                continue
+            break
+        try:
+            p.wait(1)
+        except Exception:
+            pass
+        if self._group_alive(g):
+            print(f"WARNING: {self.label}: process group {g} survived SIGKILL", file=sys.stderr)
+        else:
+            self._tell(f"- {g}\n")
+        if p in self.children:
+            self.children.remove(p)
+
+    def close(self):
+        """Stops every child (newest first) and the watchdog. Idempotent; signals are held off
+        while it runs so a second Ctrl-C or timeout signal cannot cut the cleanup short."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            signal.alarm(0)
+        except Exception:
+            pass
+        old = {}
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                old[sig] = signal.signal(sig, signal.SIG_IGN)
+            except Exception:
+                pass
+        try:
+            for p in reversed(list(self.children)):
+                self.stop(p)
+        finally:
+            if self._pipe is not None:
+                try:
+                    os.close(self._pipe)
+                except OSError:
+                    pass
+                self._pipe = None
+            if self._wd is not None:
+                try:
+                    self._wd.wait(5)
+                except Exception:
+                    pass
+            for sig, h in old.items():
+                if h in (None, self._on_signal):
+                    h = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
+                try:
+                    signal.signal(sig, h)
+                except Exception:
+                    pass
+
+
+def _cmdline(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().split(b"\0")
+    except OSError:
+        return None
+
+
+def _pgid(pid):
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _runs_script(pid):
+    """True while pid is alive and runs a Python script (a capture tool or a scratch copy)."""
+    c = _cmdline(int(pid))
+    return bool(c) and any(x.endswith(b".py") for x in c)
+
+
+def reap_orphans(verbose=True):
+    """Kills headless browsers that a capture tool left behind: a browser tagged with
+    --shoot-owner=<pid> whose tool is gone, or an untagged one (from an older or scratch
+    copy of the tools) with its profile under .work/ whose parent is no longer a Python
+    script (it was re-parented when its tool died). Browsers of tools still running, and
+    browsers outside this repository, are left alone. Returns the pids of those killed."""
+    me = os.getuid()
+    work = (os.path.join(ROOT, ".work") + os.sep).encode()
+    reaped = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        pid = int(d)
+        c = _cmdline(pid)
+        if not c or not any(x.startswith(b"--headless") for x in c) or any(x.startswith(b"--type=") for x in c):
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != me:
+                continue
+        except OSError:
+            continue
+        owner = next((x[len(OWNER_FLAG):] for x in c if x.startswith(OWNER_FLAG.encode())), None)
+        if owner is not None:
+            if owner.isdigit() and _runs_script(owner):
+                continue
+        else:
+            prof = next((x.split(b"=", 1)[1] for x in c if x.startswith(b"--user-data-dir=")), b"")
+            if not os.path.abspath(prof).startswith(work):
+                continue
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            if _runs_script(ppid):
+                continue
+        g = _pgid(pid)
+        try:
+            if g == pid:
+                os.killpg(g, signal.SIGKILL)   # (its own group: the renderers and GPU process go too)
+            else:
+                os.kill(pid, signal.SIGKILL)
+            reaped.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+    servers = _reap_servers()
+    _clean_profiles()
+    if reaped and verbose:
+        print(f"reaped {len(reaped)} orphaned headless browser(s) left by an earlier run: pids {reaped}", flush=True)
+    if servers and verbose:
+        print(f"reaped {len(servers)} orphaned static server(s): pids {servers}", flush=True)
+    return reaped
+
+
+def _clean_profiles(min_age=900):
+    """Deletes the scratch profiles (.work/shoot-*, .work/record-*) of runs that did not get
+    to delete their own: older than min_age seconds and named by no running process."""
+    work = os.path.join(ROOT, ".work")
+    try:
+        names = [n for n in os.listdir(work) if n.startswith(("shoot-", "record-"))]
+    except OSError:
+        return 0
+    if not names:
+        return 0
+    used = set()
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            for x in _cmdline(int(d)) or ():
+                if x.startswith(b"--user-data-dir="):
+                    used.add(os.path.basename(x[16:].rstrip(b"/")).decode("utf-8", "replace"))
+    now, n = time.time(), 0
+    for name in names:
+        path = os.path.join(work, name)
+        try:
+            if name in used or not os.path.isdir(path) or now - os.stat(path).st_mtime < min_age:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        n += 1
+    return n
+
+
+def _reap_servers():
+    """Static servers (serve.py, or a scratch copy under this repository) a capture tool left
+    behind: tagged --owner=<pid> of a process that is gone, or untagged in the tools' form
+    'serve.py <port> 127.0.0.1' and re-parented to init or the user's service manager."""
+    me, out = os.getuid(), []
+    root = ROOT.encode() + b"/"
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        pid = int(d)
+        c = _cmdline(pid)
+        if not c or len(c) < 2:
+            continue
+        i = next((k for k, x in enumerate(c) if x.endswith(b"serve.py")), -1)
+        if i < 0 or not os.path.abspath(c[i]).startswith(root):
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != me:
+                continue
+            with open(f"/proc/{pid}/stat") as f:
+                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        rest = [x for x in c[i + 1:] if x]
+        owner = next((x[8:] for x in rest if x.startswith(b"--owner=")), None)
+        if owner is not None:
+            if owner.isdigit() and _cmdline(int(owner)) is not None:
+                continue
+        else:
+            if len(rest) != 2 or rest[1] != b"127.0.0.1" or not rest[0].isdigit():
+                continue
+            try:
+                with open(f"/proc/{ppid}/comm") as f:
+                    pcomm = f.read().strip()
+            except OSError:
+                pcomm = ""
+            if ppid != 1 and pcomm != "systemd":
+                continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            out.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return out
+
+
+def chrome_args(dbg, profile, width, height, extra=()):
+    """The headless Chrome command line both tools use (GPU on, vsync and frame cap off).
+    SHOOT_GPU_FLAGS replaces the GPU switches; SHOOT_CHROME_FLAGS adds switches (for example
+    --js-flags=--trace-deopt, with SHOOT_STDERR=<file> to keep Chrome's output)."""
+    chrome = shutil.which("google-chrome") or shutil.which("chromium") or "google-chrome"
+    return [chrome, "--headless=new", f"--remote-debugging-port={dbg}", f"--user-data-dir={profile}",
+            f"--window-size={width},{height}", "--hide-scrollbars", "--mute-audio",
+            "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+            *extra,
+            *os.environ.get("SHOOT_GPU_FLAGS", GPU_FLAGS).split(), *os.environ.get("SHOOT_CHROME_FLAGS", "").split(),
+            "--disable-gpu-vsync", "--disable-frame-rate-limit",
+            f"{OWNER_FLAG}{os.getpid()}", "about:blank"]
+
+
+def chrome_stderr():
+    """Where Chrome's own output goes: SHOOT_STDERR=<file> keeps it, else it is discarded."""
+    path = os.environ.get("SHOOT_STDERR")
+    return open(path, "w") if path else subprocess.DEVNULL
 
 
 def port_open(port):
@@ -202,6 +590,80 @@ SAMPLER_JS = r"""(() => {
 })()"""
 
 
+# --firstdraw: from page start, note the first non-empty draw of every WebGL program (draw
+# calls, instanced draws and multi-draws with a count above 0), so programs first drawn after
+# ready can be listed: each such first draw costs the GPU process 100-250 ms mid-ride.
+FIRSTDRAW_HOOK_JS = r"""(() => {
+  if (window.__firstUse || typeof WebGL2RenderingContext === 'undefined') return;
+  const P = WebGL2RenderingContext.prototype, seen = new Map(), cur = new WeakMap(), made = new Map();
+  window.__firstUse = seen; window.__made = made;
+  const state = () => { const a = window.__app; return { frame: a ? a.frame : -1, s: a && a.cameraS != null ? a.cameraS : null, ready: !!(a && a.ready) }; };
+  const cp = P.createProgram;
+  P.createProgram = function () { const p = cp.call(this); made.set(p, state()); return p; };
+  const use = P.useProgram;
+  P.useProgram = function (p) { cur.set(this, p); return use.call(this, p); };
+  const mark = (gl) => { const p = cur.get(gl); if (p && !seen.has(p)) seen.set(p, state()); };
+  const cnt = { drawElements: (a) => a[1], drawArrays: (a) => a[2], drawElementsInstanced: (a) => a[1] * a[4], drawArraysInstanced: (a) => a[2] * a[3], drawRangeElements: (a) => a[3] };
+  for (const n of Object.keys(cnt)) {
+    const f = P[n]; if (!f) continue;
+    P[n] = function (...a) { if (cnt[n](a) > 0) mark(this); return f.apply(this, a); };
+  }
+  const ge = P.getExtension;
+  P.getExtension = function (name) {
+    const ext = ge.call(this, name);
+    if (ext && /multi_draw/i.test(name) && !ext.__probe) {
+      const gl = this; ext.__probe = true;
+      for (const n of Object.getOwnPropertyNames(Object.getPrototypeOf(ext))) {
+        if (!/^multiDraw/.test(n)) continue;
+        const f = ext[n];
+        ext[n] = function (...a) { if (a[a.length - 1] > 0) mark(gl); return f.apply(ext, a); };
+      }
+    }
+    return ext;
+  };
+})();"""
+
+FIRSTDRAW_REPORT_JS = r"""(() => {
+  const app = window.__app, r = app && app.renderer, seen = window.__firstUse, made = window.__made;
+  if (!r || !seen) return null;
+  const byGl = new Map();
+  for (const p of r.info.programs || []) byGl.set(p.program, { id: p.id, name: p.name, mats: [] });
+  app.scene.traverse((o) => {
+    const ms = Array.isArray(o.material) ? o.material.slice() : o.material ? [o.material] : [];
+    if (o.customDepthMaterial) ms.push(o.customDepthMaterial);
+    for (const m of ms) {
+      const pr = r.properties.get(m).currentProgram;
+      const e = pr && byGl.get(pr.program);
+      if (!e) continue;
+      const nm = (o.name || o.type) + '/' + (m.name || m.type);
+      if (!e.mats.includes(nm) && e.mats.length < 4) e.mats.push(nm);
+    }
+  });
+  const late = [], never = [];
+  for (const [gp, e] of byGl) {
+    const u = seen.get(gp), c = made && made.get(gp);
+    const born = c ? (c.ready ? 'created after ready, frame ' + c.frame : 'start-up') : '?';
+    if (!u) never.push(e.id + ' ' + e.name + ' [' + e.mats.join(', ') + ']');
+    else if (u.ready) late.push({ id: e.id, name: e.name, frame: u.frame, s: u.s == null ? null : +u.s.toFixed(1), born, mats: e.mats });
+  }
+  late.sort((x, y) => x.frame - y.frame);
+  return { frame: app.frame, s: +(app.cameraS || 0).toFixed(1), programs: byGl.size, late, never };
+})()"""
+
+
+def print_firstdraw(rep):
+    if not isinstance(rep, dict):
+        print("firstdraw: no data", json.dumps(rep))
+        return
+    late, never = rep.get("late", []), rep.get("never", [])
+    print(f"firstdraw: {rep['programs']} programs at frame {rep['frame']} (s={rep['s']}): "
+          f"{len(late)} first drawn after ready, {len(never)} never drawn")
+    for e in late:
+        print(f"  late  frame {e['frame']} s={e['s']}  #{e['id']} {e['name']} ({e['born']})  [{', '.join(e['mats'])}]")
+    for e in never[:40]:
+        print(f"  never #{e}")
+
+
 def machine_load():
     """One line on how busy the machine is (other processes may share it): load average per
     core, headless Chrome processes running, GPU utilisation. Timing runs print it at the
@@ -348,10 +810,40 @@ def main():
     ap.add_argument("--fps", type=float, default=None, metavar="N",
                     help="cap the app's requestAnimationFrame at N frames a second from ready on, as vsync would "
                          "(default 60 for --hitches/--heapprof/--heaplive runs, else uncapped; 0: uncapped)")
+    ap.add_argument("--heapdelay", type=float, default=0, metavar="S",
+                    help="with --hitches/--heapprof/--heaplive: start sampling S seconds after ready instead of at "
+                         "ready (frame statistics and the frame samples are reset then too), so a short run is not "
+                         "dominated by warm-up allocation while the code is not yet optimised")
+    ap.add_argument("--firstdraw", action="store_true",
+                    help="audit first draws: hook WebGL from page start and, at the end, list every program whose first "
+                         "non-empty draw came after ready (each is a riding hitch of 50-250 ms in the GPU process) and "
+                         "programs never drawn. Time this with a warm --profile: fresh profiles hide first-draw stalls")
+    ap.add_argument("--max-seconds", type=float, default=None, metavar="S",
+                    help="hard limit for the whole run, after which the browser is killed and the tool exits 124 "
+                         "(default --timeout + --settle + the shots + 900; 0: no limit)")
+    ap.add_argument("--reap", action="store_true",
+                    help="only kill headless browsers left behind by earlier runs whose tool is gone, then exit")
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--profile", default=None, help="persistent Chrome profile dir (keeps the GPU shader cache between runs)")
     a = ap.parse_args()
 
+    if a.reap:
+        n = len(reap_orphans())
+        print(f"reap: {n} orphaned browser(s) killed")
+        return 0
+    reap_orphans()
+    if a.max_seconds is None:
+        a.max_seconds = 0 if a.keep_open else a.timeout + a.settle + a.shots * (a.interval + 5) + 900
+    guard = ProcessGuard("shoot.py", a.max_seconds)
+    try:
+        return run(a, guard)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        guard.close()
+
+
+def run(a, guard):
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     timing = a.hitches or a.heapprof or a.heaplive
     if a.fps is None:
@@ -361,8 +853,8 @@ def main():
     server = None
     if not a.port:
         a.port = free_port()
-        server = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve.py"), str(a.port), "127.0.0.1"],
-                                  cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server = guard.spawn([sys.executable, os.path.join(ROOT, "serve.py"), str(a.port), "127.0.0.1", f"--owner={os.getpid()}"],
+                             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(50):
             if port_open(a.port):
                 break
@@ -372,15 +864,9 @@ def main():
     profile = os.path.abspath(a.profile) if a.profile else tempfile.mkdtemp(prefix="shoot-", dir=os.path.join(ROOT, ".work"))
     if a.profile:
         os.makedirs(profile, exist_ok=True)
-    chrome = shutil.which("google-chrome") or shutil.which("chromium") or "google-chrome"
-    args = [chrome, "--headless=new", f"--remote-debugging-port={dbg}", f"--user-data-dir={profile}",
-            f"--window-size={a.width},{a.height}", "--hide-scrollbars", "--mute-audio",
-            "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-            "--enable-precise-memory-info",
-            *os.environ.get("SHOOT_GPU_FLAGS", GPU_FLAGS).split(),
-            "--disable-gpu-vsync", "--disable-frame-rate-limit",
-            "--autoplay-policy=no-user-gesture-required", "about:blank"]
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    args = chrome_args(dbg, profile, a.width, a.height, ("--enable-precise-memory-info", "--autoplay-policy=no-user-gesture-required"))
+    errf = chrome_stderr()
+    proc = guard.spawn(args, stdout=errf, stderr=errf)
     rc = 0
     try:
         ws_url = None
@@ -407,6 +893,8 @@ def main():
             ws.call("Profiler.enable", session=sess)
             ws.call("Profiler.setSamplingInterval", {"interval": 500}, session=sess)
             ws.call("Profiler.start", session=sess)
+        if a.firstdraw:
+            ws.call("Page.addScriptToEvaluateOnNewDocument", {"source": FIRSTDRAW_HOOK_JS}, session=sess)
         ws.call("Page.navigate", {"url": url}, session=sess)
 
         logs = []
@@ -470,7 +958,10 @@ def main():
             js(SAMPLER_JS)
         if a.pre:
             print("pre:", json.dumps(js(a.pre)))
-        if a.hitches:
+        if a.heapdelay > 0 and timing:
+            print(f"waiting {a.heapdelay:g}s before sampling (--heapdelay)", flush=True)
+            time.sleep(a.heapdelay)
+        if a.hitches or (a.heapdelay > 0 and timing):
             js("window.__app && window.__app.resetFrames && window.__app.resetFrames()")
             js("window.__shootSamp && window.__shootSamp.reset()")
         heap_t0 = time.time()
@@ -494,6 +985,9 @@ def main():
             print("stats:", stats)
         if a.eval:
             print("eval:", json.dumps(js(a.eval)))
+        if a.firstdraw:
+            rep = js(FIRSTDRAW_REPORT_JS)
+            print_firstdraw(rep)
         if ready and timing:
             fs = js("window.__shootSamp ? window.__shootSamp.summary() : null")
             if fs:
@@ -534,15 +1028,13 @@ def main():
         if a.keep_open:
             input("press enter to close")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(5)
-        except Exception:
-            proc.kill()
+        guard.stop(proc)
+        if server:
+            guard.stop(server)
+        if errf is not subprocess.DEVNULL:
+            errf.close()
         if not a.profile:
             shutil.rmtree(profile, ignore_errors=True)
-        if server:
-            server.terminate()
     return rc
 
 

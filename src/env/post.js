@@ -213,6 +213,8 @@ function pass(fragmentShader, uniforms, defines = {}) {
 
 const post = {
   name: 'post',
+  // (inspection: the look tables, read live every frame)
+  tone: TONE,
 
   async init(app) {
     this.app = app;

@@ -123,6 +123,8 @@ function skyIrradiance(e) {
 
 const env = {
   name: 'env',
+  // (inspection: the exposure and bounce tables, read live)
+  tables: { EXPO_LIFT, HORIZON_LEVEL, DUSK_CEIL, BOUNCE },
   // lamps: the street lamps' level (their photocells switch on before sunset, see lights.js)
   state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0, lamps: 0 },
   exposure: 1,

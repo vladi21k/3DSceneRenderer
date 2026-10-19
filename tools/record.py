@@ -10,11 +10,16 @@ Examples
   tools/record.py --name midday --params "s=700&tod=0.1" --seconds 40
   tools/record.py --name dusk --params "s=4000&tod=0.95" --seconds 30 --fps 30
 Outputs .work/movies/<name>/<name>_1080p.mp4 and <name>_phone.mp4 (720p, ~3 MB, for phones).
+
+Chrome and the server are started and killed as in tools/shoot.py: in process groups of
+their own, killed on every way out (SIGTERM / SIGINT from `timeout` included, and by a
+watchdog if the tool is killed outright). --max-seconds bounds the browser part (default:
+--timeout + 2 s per frame + 15 min; 0: no limit); encoding runs after the browser is gone.
 """
 import argparse, base64, json, os, random, shutil, subprocess, sys, tempfile, time, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from shoot import ROOT, GPU_FLAGS, WS, free_port, port_open  # noqa: E402
+from shoot import ROOT, WS, ProcessGuard, chrome_args, chrome_stderr, free_port, port_open, reap_orphans  # noqa: E402
 
 
 def main():
@@ -31,32 +36,47 @@ def main():
     ap.add_argument("--phone-mb", type=float, default=3.0, help="size of the phone copy (uploads over ~3 MB time out)")
     ap.add_argument("--no-encode", action="store_true")
     ap.add_argument("--encode-only", action="store_true", help="re-encode the frames already recorded")
+    ap.add_argument("--max-seconds", type=float, default=None, metavar="S",
+                    help="hard limit for the browser part, after which the browser is killed and the tool exits 124 "
+                         "(default --timeout + 2 s per frame + 900; 0: no limit)")
     a = ap.parse_args()
 
     if a.encode_only:
         encode(a.name, a.fps, a.seconds, a.phone_mb)
         return 0
+    reap_orphans()
+    if a.max_seconds is None:
+        a.max_seconds = a.timeout + 2.0 * (a.warmup + a.seconds * a.fps) + 900
+    guard = ProcessGuard("record.py", a.max_seconds)
+    try:
+        rc = capture(a, guard)
+    except KeyboardInterrupt:
+        rc = 130
+    finally:
+        guard.close()
+    if rc or a.no_encode:
+        return rc
+    encode(a.name, a.fps, a.seconds, a.phone_mb)
+    return rc
+
+
+def capture(a, guard):
     out = os.path.join(ROOT, ".work/movies", a.name)
     frames = os.path.join(out, "frames")
     shutil.rmtree(frames, ignore_errors=True)
     os.makedirs(frames)
 
     port = free_port()
-    server = subprocess.Popen([sys.executable, os.path.join(ROOT, "serve.py"), str(port), "127.0.0.1"],
-                              cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    server = guard.spawn([sys.executable, os.path.join(ROOT, "serve.py"), str(port), "127.0.0.1", f"--owner={os.getpid()}"],
+                         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(50):
         if port_open(port):
             break
         time.sleep(0.1)
     dbg = free_port()
     profile = tempfile.mkdtemp(prefix="record-", dir=os.path.join(ROOT, ".work"))
-    chrome = shutil.which("google-chrome") or shutil.which("chromium") or "google-chrome"
-    proc = subprocess.Popen([chrome, "--headless=new", f"--remote-debugging-port={dbg}", f"--user-data-dir={profile}",
-                             f"--window-size={a.width},{a.height}", "--hide-scrollbars", "--mute-audio",
-                             "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-                             *os.environ.get("SHOOT_GPU_FLAGS", GPU_FLAGS).split(),
-                             "--disable-gpu-vsync", "--disable-frame-rate-limit", "about:blank"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    errf = chrome_stderr()
+    proc = guard.spawn(chrome_args(dbg, profile, a.width, a.height), stdout=errf, stderr=errf)
     rc = 0
     try:
         ws_url = None
@@ -128,17 +148,11 @@ def main():
         for e in errors[:10]:
             print("  [error]", str(e)[:400])
     finally:
-        proc.terminate()
-        try:
-            proc.wait(5)
-        except Exception:
-            proc.kill()
+        guard.stop(proc)
+        guard.stop(server)
+        if errf is not subprocess.DEVNULL:
+            errf.close()
         shutil.rmtree(profile, ignore_errors=True)
-        server.terminate()
-
-    if a.no_encode:
-        return rc
-    encode(a.name, a.fps, a.seconds, a.phone_mb)
     return rc
 
 

@@ -10,12 +10,12 @@ export const HEAD_HALF = RAIL_HEAD_W / 2;                // 0.028 running head h
 export const GROOVE_IN = HEAD_HALF;                      // groove starts at the head's gauge face
 export const GROOVE_OUT = HEAD_HALF + RAIL_GROOVE_W;     // 0.070 (42 mm flangeway)
 export const LIP_OUT = GROOVE_OUT + 0.013;               // 0.083 guard lip
-export const SEAL_W = 0.012;                             // rubber / bitumen sealing strip
+export const SEAL_W = 0.012;                             // elastomer sealing strip
 export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.040 field-side paving edge
 export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.095 gauge-side paving edge
 export const HEAD_DULL = -0.0270;                        // rusty field-side bevel ends here (< 2 mm)
 export const GROOVE_DEPTH = 0.0365;
-export const GROUT_W = 0.02;                             // narrow mortar strip between the bitumen seal and the setts
+export const GROUT_W = 0.02;                             // narrow mortar strip between the seal and the setts
 
 // The four running rails of the two main tracks: centre line d and gauge direction g.
 export const MAIN_RAILS = [];
@@ -60,7 +60,7 @@ export const SLAB_H = -0.30;                             // ground slab below ev
 //   side   narrow field-side bevel: brown oxide (v ≈ 0.02)
 //   groove grime on the flangeway walls, grit and leaf debris on its floor (rail.groove
 //          with the grit fill of shading.js patchGrit)
-//   seal   bitumen sealing strip against the paving
+//   seal   grey elastomer sealing strip against the paving
 // The AO darkens the cavity (groove floor 0.25, walls 0.45, lower gauge face 0.6), so
 // the flangeway reads as a dark slot rather than a lit channel (the grit fill folds the
 // floor's AO into its own tone).
@@ -94,12 +94,15 @@ export const RAIL_PROFILE = [
   [RAIL_X1, 0.0, 'seal', 1],
 ];
 
-// Effective albedo of the bitumen seal and of the mortar bed (linear). The mortar is a
-// dirty cement grey at about 0.7x the setts (paving.street ~0.165), so they visually
-// reach the seal; the seal is drawn with the mortar material at SEAL_TONE of its colour
-// (dark bitumen, ~0.055). (Scaled with the setts' published albedo: see pavingTones.)
-export const MORTAR_ALBEDO = [0.114, 0.112, 0.108];
-export const SEAL_TONE = 0.49;
+// Effective albedo of the seal and of the mortar bed (linear). In the photographs each
+// rail is flanked by a narrow neutral grey strip a little darker than the paving (an
+// elastomer seal against the steel, then the cement bed), never a black bitumen line or
+// a warm band: the mortar is a cement grey at about 0.8x the setts (paving.street
+// ~0.165) before its dirt, the seal is drawn with the mortar material at SEAL_TONE of its
+// colour (~0.11). Together about 32 mm each side of the rail. (Scaled with the setts'
+// published albedo: see pavingTones.)
+export const MORTAR_ALBEDO = [0.136, 0.135, 0.133];
+export const SEAL_TONE = 0.8;
 const PAVING_LUM = 0.165;    // mean luminance of the setts the street's own tones were set against
 
 /** The street's own tones that must follow the setts (paving.street's mean linear albedo,

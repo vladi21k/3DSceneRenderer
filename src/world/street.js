@@ -8,7 +8,7 @@ import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS, pavingTones, TRACK_OFFSET } from './street/constants.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
 import { buildCrossover, crossoverPlan } from './street/crossover.js';
-import { buildCrossStreet, buildCorridorCrossing, sideColumns, sideHeight, sideProfile, sideWear, tactileSlab } from './street/crossStreets.js';
+import { buildCrossStreet, buildCorridorCrossing, sideColumns, sideHeight, sideHeightIO, sideProfile, sideWear, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, planSteps, buildDetails } from './street/details.js';
 import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV } from './street/shading.js';
@@ -37,7 +37,8 @@ const MAX_JOBS = 6;
 // A build is a sequence of short steps (a generator), so the chunks the streamer will
 // ask for next are built ahead a slice per frame (prefetch) and build() hands them over.
 // Exposes heightAt(s, d) so other modules can stand things on the real paving, and the
-// side streets' mouth frames and paving heights (mouth(c, side), sideHeightAt(c, side, a, x)).
+// side streets' mouth frames and paving heights (mouth(c, side), sideHeightAt(c, side, a, x),
+// and sideHeightIO(c, side, io), its allocation-free form for per-agent loops).
 
 const street = {
   name: 'street',
@@ -47,7 +48,10 @@ const street = {
     const surface = new Surface(app.route, app.layout);
     // tones that follow the setts' albedo (mortar, seals, groove grit, far-rail overlay)
     const tones = pavingTones(M.meta && M.meta['paving.street'] && M.meta['paving.street'].albedo);
-    const lines = M.register('street.line', createLineMaterial(tones));
+    // (the far rail overlay takes rail.head's zone finishes from the library, so it matches
+    // the 3D head at the hand-over distance)
+    const zones = M.meta && M.meta['rail.head'] && M.meta['rail.head'].zones;
+    const lines = M.register('street.line', createLineMaterial(tones, zones));
     const details = createDetailMaterials(app.renderer);
     for (const m of Object.values(details)) M.register(m.name, m);
     // Plain rails and mortar carry the crossover cut test too, inactive (no cut
@@ -178,6 +182,15 @@ const street = {
   sideHeightAt(c, side, a, x) {
     return this.ctx ? sideHeight(this.ctx, c, side, a, x) : 0;
   },
+
+  /** sideHeightAt for per-agent loops, its numbers in a Float64Array (no boxing): reads
+   *  io[0] (a) and io[1] (x), writes the paving's world y to io[2] (0 before init).
+   *  `sideIO` is a scratch Float64Array(4) callers may share within a frame. */
+  sideHeightIO(c, side, io) {
+    if (this.ctx) sideHeightIO(this.ctx, c, side, io);
+    else io[2] = 0;
+  },
+  sideIO: new Float64Array(4),
 
   _keepPlan(ci, p) {
     const plans = this.plans;

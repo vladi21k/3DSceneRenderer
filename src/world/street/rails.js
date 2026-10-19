@@ -1,7 +1,7 @@
 import { RAIL_PROFILE, RAIL_X0, RAIL_X1, HEAD_HALF, GROOVE_DEPTH, GROUT_W, SEAL_TONE } from './constants.js';
 
 // Embedded grooved rails as true 3D cross-sections swept along a centre line:
-//  - the plain grooved rail (bitumen seals, bevelled head with a polished running band,
+//  - the plain grooved rail (grey seals, bevelled head with a polished running band,
 //    36 mm deep flangeway, guard lip), on the main tracks and through crossovers;
 //  - switch tongues: a tapered head lying in the stock rail's groove;
 //  - check rails: the guard lip raised and polished opposite a frog;
@@ -50,7 +50,7 @@ function buildRuns(profile, byKind = false) {
     else { cur = { kind: sg.kind, segs: [sg] }; runs.push(cur); }
   }
   for (const r of runs) {
-    // vertex colour = cavity AO (× the bitumen tone on the seals, drawn with the mortar)
+    // vertex colour = cavity AO (× the seal tone on the seals, drawn with the mortar)
     const tone = r.kind === 'seal' ? SEAL_TONE : 1;
     const s0 = r.segs[0];
     r.pts = [{ x: s0.x0, h: s0.h0, n: s0.n0, v: s0.v0, c: s0.ao0 * tone }];
@@ -106,7 +106,7 @@ export const tongueW = (sep) => 2 * HEAD_HALF * Math.min(1, 0.15 + sep / 0.05);
 export const tongueDrop = (sep) => 0.0015 * (1 - smooth(sep / SEP_A));
 
 // Mortar strips swept with a rail (crossovers, where the paving grid has none): flat at
-// the paving level, overlapping the bitumen seal by 3 mm. Their material is drawn with a
+// the paving level, overlapping the seal by 3 mm. Their material is drawn with a
 // small polygon offset, so they cover the paving's (cut, aliased) edge and their own
 // geometric, anti-aliased edges show instead, without z-fighting at any distance.
 const mortarRun = (x0, x1, c0, c1) => ({

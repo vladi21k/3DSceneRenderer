@@ -259,7 +259,11 @@ async function main() {
     for (const p of progs) if (!p.isReady || p.isReady()) n++;
     setProgress(0.3 + 0.65 * (progs.length ? n / progs.length : 1));
   }, 250);
-  await Promise.race([compileScene(app, true), new Promise((r) => setTimeout(r, 20000))]);
+  // (a 20 s cap so a program that never reports would not hold the start-up forever;
+  // perf.init.compileTimeout marks a start-up that went on with programs still linking)
+  let compiled = false;
+  await Promise.race([compileScene(app, true).then(() => { compiled = true; }), new Promise((r) => setTimeout(r, 20000))]);
+  if (!compiled) P.compileTimeout = 1;
   clearInterval(progressTimer);
   renderer.setRenderTarget(null);
   touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
@@ -316,7 +320,9 @@ async function main() {
     const t0 = performance.now();
     mon.begin(t0);
     timer.update(ts);
-    const realDt = recFps > 0 ? 1 / recFps : Math.min(timer.getDelta(), 0.1);
+    // (clamped at the source: the first frame after a long load can carry a rAF timestamp
+    // older than the timer's start, which gave a step of -6 to -10 s to every module)
+    const realDt = recFps > 0 ? 1 / recFps : Math.min(Math.max(timer.getDelta(), 0), 0.1);
     const dt = params.freeze || (recFps > 0 && !app.ready) ? 0 : realDt;
     app.dt = dt; app.realDt = realDt; app.time += dt; app.frame++;
     U.uTime.value = app.time;
