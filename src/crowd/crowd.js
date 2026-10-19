@@ -51,7 +51,10 @@ import { stanceOf } from './behaviour/stance.js';
 // stats().units: people kept off the oncoming units' track (clears), blocked steps, body
 // projections (rescues) and, with crowdCheck=1, figures inside a unit's body (leftTrack: 0);
 // stats().mobility.propShare0to100m / 100to400m and stats().corridorDirs (towards / away);
-// check.squeeze counts agent-frames between the tracks while the cab and a unit go by each other.
+// check.squeeze counts agent-frames between the tracks while the cab and a unit go by each other;
+// check.wallLog says how a walker came to be past a building line (time since leaving a doorway,
+// the line here and a metre either way), stats().brakeLog whom the cab's driver braked for.
+// People keep their bodies CLEAR_MARGIN (0.33 m) outside the cab's swept volume (constants.js BAND).
 // stats().standing (people standing about within 300 m), sideStreets (people up the side streets).
 // With view= the free camera is an obstacle like a pole: nobody walks through it.
 //

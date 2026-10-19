@@ -38,7 +38,7 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [x] Crowd roles for strollers and cyclists (lanes, speeds, tram avoidance)
 
 ## M3 — Integration & performance
-- [x] M3 workflow: 8 area agents (cross-module requests, budgets), then a full-app photoreal critic (5.5/10) plus perf/QA review, then owner fixes (18 agents)
+- [x] M3: 8 area owners (cross-module requests, budgets), then a full-app photoreal review (5.5/10) plus perf/QA review, then owner fixes
 - [x] Core: periodic loop noise (no seam), background compile and byte-budgeted staged chunk reveal, program first-use during loading, oncoming trams registered, ride-time build stats, upcoming(lookAhead), contracts documented
 - [x] Startup: shaders were compiled twice (screen vs HDR target); cold start 32 s → 15 s
 - [x] Route reshaped (user request): gentle bends and S-meanders, so no street is ruler-straight; designed hills (the avenue climbs ~9 m ahead of the start, then crests)
@@ -48,12 +48,12 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [~] Progressive loading: cold start 17.1 s median on a quiet machine (was 19.3 s; compile 9.3 s for 128 programs, module init 4.7 s); target ≤ 10 s
 
 ## M4 — Photoreal review loops
-- [x] Photoreal loop, 3 rounds (40 agents): a 4-lens critic panel (lighting/atmosphere, materials/geometry, shot/motion, people) followed by parallel owner fixes. Panel mean 4.9 → 5.9 → 6.25 (lighting 5→6, surfaces 6→6.5, shot 5→6.5, people/crowd 3.5→6)
+- [x] Photoreal loop, 3 rounds: a 4-lens review (lighting/atmosphere, materials/geometry, shot/motion, people) followed by parallel owner fixes. Panel mean 4.9 → 5.9 → 6.25 (lighting 5→6, surfaces 6→6.5, shot 5→6.5, people/crowd 3.5→6)
 - [x] Highlights: AgX camera tone curve with veiling glare and highlight recovery; sun-only daylight white balance; volumetric cumulus/cirrus regimes; cool granite paving; relief rustication; oncoming trams with street reflections; per-object motion blur; crowd pair-clearing rule and tram obstacle braking
 - [x] M4.5: request sweep (189 cross-module requests/notes), GC/hitch reduction (whole-app garbage 1365 → 920 KB/frame), contract docs
 - [x] M4.6 (Oct 19): status audit, then a build round on what it found: a 175-183 ms hitch at s≈1600 every lap, golden-hour paving clip, double lamp halo at dusk, surfaces too clean and tone too muted against the reference photos (measured), sparse shopfronts, regular facade massing, cold start 19 s, unwired APIs (cyclist motion blur, far-field trees, console drips)
 - [x] M4.6 serial quiet-machine perf + behaviour QA (M5): every behaviour check passes
-- [~] M4.6 fixes from QA: lifted blacks (shade reads milky), washed-out midday paving, cold start, residual garbage, V-joint highlight line
+- [x] M4.6 fixes from QA: blacks back in the photos' range (p2 16-28 by day; the golden-hour stop at 53 is still high), midday paving less washed out, sky read-back stall removed, crowd clearance margin 0.33 m, garbage cut (crowd ~6-16 KB per update, ironwork, three's render lists and uniform setters), V-joint chamfers rebuilt, start-up overlapped; verified Oct 19 23:10: 6 cold-start views with 0 console errors and no floating people (644-774 agents each), ride s 1540-1835 GPU 13.0/14.1 ms, CPU p95 7.7 ms, 0 hitches
 - [x] Cab camera fixed to the cab body (user request): no pan toward a gaze point, so the ride rails stay under the camera; the other track never sits mid-frame
 - [ ] Screenshot review against the reference photos (default telephoto, midday, golden hour, dusk, close-ups)
 - [ ] Fix rounds until no frame reads as a 3D demo
