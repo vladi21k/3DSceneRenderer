@@ -9,11 +9,15 @@ import { Tpl, TplCache, lin } from './geo.js';
 //
 // Extra vertex attributes: aStripe (r, g, b, period: 0 = solid), aFlex (0 fixed .. 1 free).
 
+// canvas colours as on the street: cream and white, the classic bottle green, burgundy and
+// navy, and about half in strong colours (signal red, orange, royal blue, mustard)
 export const AWNING_COLORS = {
-  cream: 0xd9cfb3, green: 0x24452f, burgundy: 0x5c1c22, navy: 0x1f2b48, terracotta: 0xa04a2c, ochre: 0xc49a42, grey: 0x8a8a84,
+  cream: 0xd9cfb3, green: 0x1e5a32, burgundy: 0x5c1c22, navy: 0x1f2b48, terracotta: 0xa04a2c, ochre: 0xc49a42, grey: 0x8a8a84,
+  white: 0xeae7de, red: 0xb81e1a, orange: 0xd8601a, royal: 0x1f4a9a, mustard: 0xd4a020, forest: 0x24452f,
 };
 export const STRIPES = [
   ['cream', 'green'], ['cream', 'burgundy'], ['cream', 'navy'], ['cream', 'terracotta'], ['ochre', 'cream'], ['grey', 'cream'],
+  ['white', 'red'], ['white', 'orange'], ['white', 'royal'], ['white', 'green'], ['mustard', 'white'], ['red', 'white'],
 ];
 
 export function createAwningMaterial(M) {
@@ -76,17 +80,18 @@ if ( vStripe.w > 0.0 ) {
   vec3 nAw = inverseTransformDirection( vNormal, viewMatrix ) * ( gl_FrontFacing ? 1.0 : -1.0 );
   float lumA = dot( diffuseColor.rgb, vec3( 0.3, 0.59, 0.11 ) );
   float sunAw = smoothstep( 0.1, 0.8, nAw.y ) * ( 0.8 + 0.4 * fract( sin( dot( floor( vAwUv * vec2( 0.7, 1.0 ) ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ) );
-  diffuseColor.rgb = mix( diffuseColor.rgb, mix( vec3( lumA ), diffuseColor.rgb, 0.55 ) * 1.22 + 0.015, 0.3 * sunAw );
+  diffuseColor.rgb = mix( diffuseColor.rgb, mix( vec3( lumA ), diffuseColor.rgb, 0.55 ) * 1.25 + 0.02, 0.34 * sunAw );
   // rain run-off: faint darker streaks down the hanging parts, a dirtier band at the hem
   float vertAw = 1.0 - smoothstep( 0.3, 0.7, abs( nAw.y ) );
   float strk = fract( sin( floor( vAwUv.x * 14.0 ) * 91.7 ) * 4375.85 );
   float fStrk = 1.0 - smoothstep( 0.1, 0.4, fwidth( vAwUv.x * 14.0 ) );
-  diffuseColor.rgb *= 1.0 - vertAw * ( 0.06 * step( 0.6, strk ) * fStrk + 0.04 );
+  // (streaks of soot and dust washed down the folds, darker where the cloth hangs)
+  diffuseColor.rgb *= 1.0 - vertAw * ( 0.1 * step( 0.55, strk ) * fStrk * ( 0.6 + 0.4 * sin( vAwUv.y * 9.0 + strk * 6.0 ) ) + 0.06 );
   vec2 gq = vAwW.xz * 2.3 + vAwW.y * 4.1;
   vec2 gi = floor( gq ), gf = fract( gq ); gf = gf * gf * ( 3.0 - 2.0 * gf );
   float gn = mix( mix( fract( sin( dot( gi, vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), fract( sin( dot( gi + vec2( 1, 0 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), gf.x ),
                   mix( fract( sin( dot( gi + vec2( 0, 1 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), fract( sin( dot( gi + vec2( 1, 1 ), vec2( 12.9898, 78.233 ) ) ) * 43758.5 ), gf.x ), gf.y );
-  diffuseColor.rgb *= 0.93 + 0.07 * gn;
+  diffuseColor.rgb *= 0.89 + 0.11 * gn;
 }`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 {
@@ -119,7 +124,7 @@ if ( vStripe.w > 0.0 ) {
       .replace('vStripe = aStripe;', 'vStripe = aStripe;\nvAwUv = uv;');
     shader.fragmentShader = shader.fragmentShader.replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;');
   };
-  m.customProgramCacheKey = () => prevKey + '|facades.awning.v4';
+  m.customProgramCacheKey = () => prevKey + '|facades.awning.v5';
   return m;
 }
 
@@ -204,19 +209,30 @@ function surface(t, nu, nv, P, shade = 1, flip = false) {
  */
 function valance(t, total, valH, q, at) {
   const nS = Math.max(1, Math.round(total / 0.25)), per = total / nS;
-  const R = Math.min(0.065, per * 0.42);
-  const nvu = nS * (q >= 0.5 ? 6 : 4);
+  const R = Math.min(0.06, per * 0.36);
+  const NL = q >= 0.5 ? 12 : 4, nvu = nS * NL;
   // lobes are cut and hang a little unevenly (±7 mm, deterministic per lobe)
-  const lobe = (s) => { const h = Math.sin(Math.floor(s / per) * 78.233 + total * 12.9898) * 43758.5453; return (h - Math.floor(h) - 0.5) * 0.014; };
+  const lobeK = (k) => { const h = Math.sin(k * 78.233 + total * 12.9898) * 43758.5453; return (h - Math.floor(h) - 0.5) * 0.014; };
+  // each lobe a half ellipse; where two meet the cut is rounded (a smooth maximum of the
+  // two lobes, ~1.2 cm fillet) instead of a sharp notch
+  const lobeD = (s, k) => { const x = (s - (k + 0.5) * per) / (per / 2); return valH - R + R * Math.sqrt(Math.max(0, 1 - x * x)) + lobeK(k); };
+  const RHO = 0.012;
   const depth = (s) => {
     if (q < 0.5) return valH;
-    const f = (s / per) % 1, c = 2 * f - 1;
-    return valH - R + R * Math.sqrt(Math.max(0, 1 - c * c)) + lobe(Math.min(s, total - 1e-4));
+    const k = Math.min(nS - 1, Math.floor(s / per)), f = s / per - k;
+    const a = lobeD(s, k), b = lobeD(s, f < 0.5 ? k - 1 : k + 1);
+    return (a + b + Math.sqrt((a - b) * (a - b) + RHO * RHO)) / 2 - RHO * 0.3;
+  };
+  // vertices crowd towards the cuts, where the hem turns fastest
+  const warp = (a) => {
+    if (q < 0.5) return a * total;
+    const x = a * nS, k = Math.min(nS - 1, Math.floor(x)), f = x - k;
+    return (k + (1 - Math.cos(Math.PI * f)) / 2) * per;
   };
   // rows: top edge, top of the binding, binding, bottom edge
   const rows = q >= 0.5 ? [[0, 1], [-0.022, 0.97], [-0.02, 0.72], [0, 0.72]] : [[0, 1], [0, 0.9]];
   surface(t, nvu, rows.length - 1, (a, b) => {
-    const s = a * total, j = Math.round(b * (rows.length - 1));
+    const s = warp(a), j = Math.round(b * (rows.length - 1));
     const h = depth(s);
     const [dy, shade] = rows[j];
     const y = j === 0 ? 0 : -h - dy;
@@ -261,12 +277,44 @@ export function slopeAwning(W, P, D, valH, q) {
   if (q >= 0.5) {
     for (const s of [-1, 1]) {
       const x = s * (W / 2 - 0.25);
-      // arm from the wall (lower) to the front bar
-      armBox(m, [x, -0.45, 0.02], [x, -D - 0.01, P - 0.02], 0.022);
+      // folding arm from the wall (lower) to the front bar: two round tubes and the elbow
+      // joint between them, on a wall bracket
+      const ex = x - s * 0.06, ey = (-0.45 - D) / 2 + 0.06, ez = P * 0.55;
+      tube(m, [x, -0.45, 0.04], [ex, ey, ez], 0.016, 16);
+      tube(m, [ex, ey, ez], [x, -D - 0.01, P - 0.03], 0.014, 16);
+      tube(m, [ex - 0.03, ey, ez], [ex + 0.03, ey, ez], 0.026, 16);
       m.box(x - 0.04, -0.52, 0, x + 0.04, -0.38, 0.05, 1 | 4 | 8 | 16 | 32, 0.85, 1);
     }
   }
   return { canvas: t.bake(), metal: m.bake() };
+}
+
+/** Round tube of radius rr between two 3D points, n facets, both ends capped. */
+function tube(m, a, b, rr, n = 16) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+  const L = Math.hypot(dx, dy, dz) || 1, d = [dx / L, dy / L, dz / L];
+  const r0 = Math.abs(d[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const rd = r0[0] * d[0] + r0[1] * d[1] + r0[2] * d[2];
+  const u = [r0[0] - d[0] * rd, r0[1] - d[1] * rd, r0[2] - d[2] * rd], ul = Math.hypot(...u);
+  u[0] /= ul; u[1] /= ul; u[2] /= ul;
+  const w = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]];
+  const base = m.count;
+  for (let k = 0; k <= n; k++) {
+    const ang = (k / n) * Math.PI * 2, c = Math.cos(ang), sn = Math.sin(ang);
+    const nx = u[0] * c + w[0] * sn, ny = u[1] * c + w[1] * sn, nz = u[2] * c + w[2] * sn;
+    m.v(a[0] + nx * rr, a[1] + ny * rr, a[2] + nz * rr, nx, ny, nz, ang * rr, 0, 0.9);
+    m.v(b[0] + nx * rr, b[1] + ny * rr, b[2] + nz * rr, nx, ny, nz, ang * rr, L, 1);
+  }
+  for (let k = 0; k < n; k++) { const i = base + k * 2; m.ix6(i, i + 2, i + 1, i + 1, i + 2, i + 3); }
+  for (const [p, sg] of [[a, -1], [b, 1]]) {
+    const c0 = m.v(p[0], p[1], p[2], d[0] * sg, d[1] * sg, d[2] * sg, 0, 0, 0.95);
+    for (let k = 0; k < n; k++) {
+      const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2;
+      const q0 = m.v(p[0] + (u[0] * Math.cos(a0) + w[0] * Math.sin(a0)) * rr, p[1] + (u[1] * Math.cos(a0) + w[1] * Math.sin(a0)) * rr, p[2] + (u[2] * Math.cos(a0) + w[2] * Math.sin(a0)) * rr, d[0] * sg, d[1] * sg, d[2] * sg, 0, 0, 0.95);
+      const q1 = m.v(p[0] + (u[0] * Math.cos(a1) + w[0] * Math.sin(a1)) * rr, p[1] + (u[1] * Math.cos(a1) + w[1] * Math.sin(a1)) * rr, p[2] + (u[2] * Math.cos(a1) + w[2] * Math.sin(a1)) * rr, d[0] * sg, d[1] * sg, d[2] * sg, 0, 0, 0.95);
+      if (sg > 0) m.tri(c0, q0, q1); else m.tri(c0, q1, q0);
+    }
+  }
 }
 
 /** Square-section bar between two 3D points. */
@@ -360,10 +408,11 @@ export function domeAwningT(W, R, valH, q) {
 }
 
 export function awningColors(rng) {
-  if (rng.chance(0.42)) {
+  if (rng.chance(0.38)) {
     const [a, b] = rng.pick(STRIPES);
     return { c1: lin(AWNING_COLORS[a]), c2: lin(AWNING_COLORS[b]), period: rng.pick([0.2, 0.25, 0.3, 0.12]) };
   }
-  const c = lin(AWNING_COLORS[rng.weighted([['cream', 0.25], ['green', 0.2], ['burgundy', 0.18], ['navy', 0.14], ['terracotta', 0.15], ['ochre', 0.08]])]);
+  const c = lin(AWNING_COLORS[rng.weighted([['cream', 0.14], ['white', 0.06], ['green', 0.1], ['burgundy', 0.08], ['navy', 0.07], ['terracotta', 0.08],
+    ['ochre', 0.04], ['red', 0.14], ['orange', 0.1], ['royal', 0.08], ['mustard', 0.08], ['forest', 0.03]])]);
   return { c1: c, c2: c, period: 0 };
 }

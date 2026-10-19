@@ -846,8 +846,58 @@ function startPause(c, a) {
   return true;
 }
 
+// The goods stands out on the pavement (crates, produce, racks: layout obstacles with `stand`,
+// registered by the facades), per side in route order: wrapped middle s, half length along s and
+// the |d| of their street-side edge. Built once for the layout.
+let STANDS = null, STANDS_OF = null;
+function standIndex(c) {
+  if (STANDS_OF === c.layout) return STANDS;
+  const route = c.route, ix = [];
+  for (const side of [-1, 1]) {
+    const L = [];
+    for (const o of c.layout.obstacles) {
+      if (o.kind !== 'rect' || !o.stand || ((o.d0 + o.d1) / 2 > 0 ? 1 : -1) !== side) continue;
+      const half = route.delta(o.s0, o.s1) / 2;
+      if (!(half > 0) || half > 3) continue;
+      L.push([route.wrap(o.s0 + half), half, Math.min(Math.abs(o.d0), Math.abs(o.d1))]);
+    }
+    L.sort((p, q) => p[0] - q[0]);
+    ix.push({ s: Float64Array.from(L, (x) => x[0]), half: Float32Array.from(L, (x) => x[1]), dOut: Float32Array.from(L, (x) => x[2]) });
+  }
+  STANDS = ix; STANDS_OF = c.layout;
+  return ix;
+}
+
+/** A shopper stopping at a goods stand 2-11 m ahead on their side: on its street side, facing
+ *  it (and the shop behind it), for dur seconds (0: the usual browse). */
+function browseStand(c, a, dur) {
+  const side = a.side, map = c.map, ix = standIndex(c)[side > 0 ? 1 : 0], n = ix.s.length;
+  if (!n) return false;
+  const L = c.route.length, aw = c.camW + (a.s - c.camU);
+  for (let i = 0; i < n; i++) {
+    // (route.delta(a's wrapped s, the stand's) worked out in place)
+    let ds = (ix.s[i] - aw) % L;
+    if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
+    const ahead = ds * a.dir;
+    if (ahead < 2 || ahead > 11) continue;
+    const sS = a.s + ds;
+    if (map.cafeAtS(sS, side)) continue;
+    // (a stroller stays a step further back, between them and the goods)
+    const gs = sS + c.rng.range(-0.6, 0.6) * ix.half[i];
+    const gd = side * (ix.dOut[i] - AGENT_R - 0.17 - (a.mob === MOB.STROLLER ? 1.1 : 0));
+    if (Math.abs(gd) < map.bandInAt(gs, side) + 0.2 || !clearSpot(c, gs, gd - side * 0.25, 0.3)) continue;
+    a.task = TASK.BROWSE; a.step = 0; a.pauseT = dur;
+    goTo(a, gs, gd, 0.3);
+    c.tally('browseStand');
+    return true;
+  }
+  return false;
+}
+
 function startBrowse(c, a, dur = 0) {
   const map = c.map, side = a.side;
+  // goods out on the pavement draw people first (where a shop has them)
+  if (c.rng.chance(0.6) && browseStand(c, a, dur)) return true;
   const ops = map.openingsAt(a.s + a.dir * 6, side);
   if (!ops) return false;
   for (const o of ops) {

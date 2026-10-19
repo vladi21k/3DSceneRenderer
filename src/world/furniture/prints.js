@@ -790,6 +790,91 @@ export function buildGlassDecal() {
   return c;
 }
 
+// ------------------------------------------------------------------ café umbrella valance prints
+/** Fictional café and drink brands printed on umbrella valances: canopy colour, ink, the
+ *  lettering's font and a small emblem. Index + 1 is the brand number the canopy shader
+ *  reads (0: plain valance). */
+export const BRANDS = [
+  { name: 'CAFFÈ LUNA', canopy: '#26304a', ink: '#efe8d6', font: 'serif', logo: 'moon' },
+  { name: 'קפה מרכז', canopy: '#eeece6', ink: '#b3262b', font: 'sans', logo: 'cup', rtl: true },
+  { name: 'ESPRESSO VIVO', canopy: '#1f2022', ink: '#f1efe8', font: 'sans', logo: 'bean' },
+  { name: 'LIMONANA', canopy: '#2f5a3a', ink: '#f4f1e4', font: 'sans', logo: 'lemon' },
+  { name: 'BIRRA ORO', canopy: '#a8232a', ink: '#f2d27a', font: 'serif', logo: 'star' },
+  { name: 'Crema Rossa', canopy: '#e6dcc4', ink: '#7a1f28', font: 'italic', logo: 'cup' },
+  { name: 'קפה השוק', canopy: '#28324a', ink: '#f3f0e6', font: 'sans', logo: 'bean', rtl: true },
+  { name: 'GELATERIA NOVA', canopy: '#efede6', ink: '#1f6f78', font: 'sans', logo: 'cone' },
+  { name: 'FONTE CHIARA', canopy: '#2a5c8f', ink: '#f6f6f2', font: 'sans', logo: 'drop' },
+  { name: 'BREAD & BEAN', canopy: '#2b2b2a', ink: '#e8dcc2', font: 'serif', logo: 'wheat' },
+  { name: 'מאפה הגפן', canopy: '#cdb894', ink: '#3b2a1e', font: 'serif', logo: 'wheat', rtl: true },
+  { name: 'CAFÉ SOLE', canopy: '#d9a62b', ink: '#2b2a28', font: 'serif', logo: 'sun' },
+];
+export const BRAND_CELL = [512, 64];        // pixels per brand strip
+export const BRAND_PRINT = [1.28, 0.16];    // metres a strip covers on the valance
+
+function brandLogo(ctx, kind, x, y, s, ink) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineWidth = s * 0.09; ctx.lineCap = 'round';
+  ctx.beginPath();
+  switch (kind) {
+    case 'moon': ctx.arc(0, 0, s * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.globalCompositeOperation = 'destination-out'; ctx.beginPath(); ctx.arc(s * 0.17, -s * 0.08, s * 0.36, 0, Math.PI * 2); ctx.fill(); break;
+    case 'cup':
+      ctx.moveTo(-s * 0.32, -s * 0.12); ctx.lineTo(-s * 0.26, s * 0.3); ctx.lineTo(s * 0.18, s * 0.3); ctx.lineTo(s * 0.24, -s * 0.12); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.arc(s * 0.27, s * 0.05, s * 0.12, -Math.PI / 2, Math.PI / 2); ctx.stroke();
+      for (const dx of [-0.1, 0.06]) { ctx.beginPath(); ctx.moveTo(s * dx, -s * 0.2); ctx.bezierCurveTo(s * (dx - 0.08), -s * 0.3, s * (dx + 0.08), -s * 0.36, s * dx, -s * 0.46); ctx.stroke(); }
+      break;
+    case 'bean': ctx.ellipse(0, 0, s * 0.3, s * 0.42, 0.5, 0, Math.PI * 2); ctx.fill(); ctx.globalCompositeOperation = 'destination-out'; ctx.lineWidth = s * 0.07;
+      ctx.beginPath(); ctx.moveTo(-s * 0.12, -s * 0.33); ctx.bezierCurveTo(s * 0.12, -s * 0.1, -s * 0.12, s * 0.1, s * 0.12, s * 0.33); ctx.stroke(); break;
+    case 'lemon': ctx.ellipse(0, 0, s * 0.44, s * 0.3, -0.35, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.ellipse(s * 0.15, -s * 0.36, s * 0.16, s * 0.07, -0.6, 0, Math.PI * 2); ctx.fill(); break;
+    case 'star': for (let i = 0; i < 10; i++) { const r = i % 2 ? s * 0.19 : s * 0.46, a = -Math.PI / 2 + i * Math.PI / 5; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); } ctx.closePath(); ctx.fill(); break;
+    case 'cone': ctx.moveTo(-s * 0.22, -s * 0.05); ctx.lineTo(0, s * 0.48); ctx.lineTo(s * 0.22, -s * 0.05); ctx.closePath(); ctx.fill(); ctx.beginPath(); ctx.arc(0, -s * 0.15, s * 0.24, 0, Math.PI * 2); ctx.fill(); break;
+    case 'drop': ctx.moveTo(0, -s * 0.46); ctx.bezierCurveTo(s * 0.34, -s * 0.05, s * 0.32, s * 0.42, 0, s * 0.42); ctx.bezierCurveTo(-s * 0.32, s * 0.42, -s * 0.34, -s * 0.05, 0, -s * 0.46); ctx.fill(); break;
+    case 'wheat':
+      ctx.moveTo(0, s * 0.48); ctx.lineTo(0, -s * 0.46); ctx.stroke();
+      for (let i = 0; i < 4; i++) for (const sg of [-1, 1]) { ctx.beginPath(); ctx.ellipse(sg * s * 0.1, -s * 0.36 + i * s * 0.18, s * 0.06, s * 0.12, sg * 0.6, 0, Math.PI * 2); ctx.fill(); }
+      break;
+    default: // sun
+      ctx.arc(0, 0, s * 0.2, 0, Math.PI * 2); ctx.fill();
+      for (let i = 0; i < 12; i++) { const a = i * Math.PI / 6; ctx.beginPath(); ctx.moveTo(Math.cos(a) * s * 0.28, Math.sin(a) * s * 0.28); ctx.lineTo(Math.cos(a) * s * 0.44, Math.sin(a) * s * 0.44); ctx.stroke(); }
+  }
+  ctx.restore();
+}
+
+/** Valance print strips: BRANDS[i] in cell i (2 columns of 512 x 64, row-major), ink on a
+ *  transparent ground, lettering about 11 cm tall on the 16 cm band. */
+export function buildBrandAtlas() {
+  const [cw, ch] = BRAND_CELL, cols = 2, rows = 8;
+  const c = mkCanvas(cw * cols, ch * rows);
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  BRANDS.forEach((b, i) => {
+    const x0 = (i % cols) * cw, y0 = Math.floor(i / cols) * ch, cy = y0 + ch * 0.54;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, y0, cw, ch); ctx.clip();
+    const font = b.font === 'serif' ? `bold 40px ${SERIF}` : b.font === 'italic' ? `italic bold 42px ${SERIF}` : `bold 38px ${SANS}`;
+    ctx.font = font;
+    ctx.fillStyle = b.ink;
+    ctx.textBaseline = 'middle';
+    ctx.direction = b.rtl ? 'rtl' : 'ltr';
+    // letter-spaced capitals read as a printed valance; the emblem sits before the name
+    const label = !b.rtl && b.name === b.name.toUpperCase() ? b.name.split('').join(' ') : b.name;
+    const tw = Math.min(ctx.measureText(label).width, cw * 0.74), gap = 14, lw = 40;
+    const left = x0 + (cw - tw - gap - lw) / 2;
+    ctx.textAlign = 'left';
+    if (b.rtl) {
+      // Hebrew: emblem on the right, before the name in reading order
+      brandLogo(ctx, b.logo, left + tw + gap + lw / 2, cy, 46, b.ink);
+      ctx.direction = 'rtl'; ctx.textAlign = 'right';
+      ctx.fillText(label, left + tw, cy + 2, cw * 0.74);
+    } else {
+      brandLogo(ctx, b.logo, left + lw / 2, cy, 46, b.ink);
+      ctx.fillText(label, left + lw + gap, cy + 2, cw * 0.74);
+    }
+    ctx.restore();
+  });
+  return c;
+}
+
 // ------------------------------------------------------------------ LED displays + screens
 const DREG = { stop: [0, 0, 512, 128], shelter: [0, 128, 512, 128], screen: [512, 0, 256, 192] };
 export function displayUV(name) {

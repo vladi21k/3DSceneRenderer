@@ -3,7 +3,7 @@ import { TREE_D } from '../../world/layout.js';
 
 // Tunables of the pedestrian simulation. Distances in metres, times in seconds.
 
-export const MAX_AGENTS = 900;          // renderer slots allocated once
+export const MAX_AGENTS = 980;          // renderer slots allocated once
 export const RANGE_BEHIND = 42;         // agents further behind the camera are recycled
 export const RANGE_AHEAD = 560;         // populated distance ahead of the camera
 export const FAR_TAPER = 450;           // density tapers off beyond this (heavier haze, tiny figures)
@@ -14,7 +14,7 @@ export const FAR_SPAWN_BAND = 44;       // new arrivals appear in the last metre
 
 // population mix
 export const WALKER_DENSITY = 0.39;     // walkers per metre of street per side (before local multipliers)
-export const MAX_SEATED = 300;
+export const MAX_SEATED = 380;          // (busy terraces on the avenue: about two tables in three taken)
 export const MAX_PASSENGERS = 70;
 export const STANDER_TARGET = 34;       // people standing and talking in small groups
 export const STAND_NEAR = 32;           // people standing (chats, pauses, windows) wanted within 300 m ahead

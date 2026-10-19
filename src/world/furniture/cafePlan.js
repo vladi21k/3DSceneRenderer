@@ -1,5 +1,5 @@
 import { RNG } from '../../core/rng.js';
-import { UMB_EDGE_H, UMB_RISE } from './umbrella.js';
+import { UMB_RISE, UMB_HEM, VALANCE_H } from './umbrella.js';
 
 // Café terrace planning: turns the layout's café (tables, chairs, umbrellas) into
 // collision-free placements. Works in a local metric frame per café: x = metres along the
@@ -7,11 +7,15 @@ import { UMB_EDGE_H, UMB_RISE } from './umbrella.js';
 //   1. chairs: neighbouring chairs (other tables, other chairs) are relaxed apart by small
 //      moves around their own table, with a casual random turn (up to ~25°) away from the
 //      neighbour; about one in five is pulled out from the table and turned further
-//   2. umbrellas: each canopy keeps clear of its neighbours (no interpenetrating fabric),
-//      of the facade and of the street-tree crowns (as vegetation draws them: a canopy may
-//      stand under a crown whose lowest leaves clear its apex); the weighted base gets a footprint
-//      that clears every chair and table foot, or the pole runs through a table's centre
-//      hole; sizes step down when nothing fits
+//   2. umbrellas: each café has its own programme (umbrellaProgramme): square 3-4 m
+//      canopies, large 4.2-5 m ones or rectangular 3 x 4-4.5 m ones, at its own hem height
+//      (2.3-2.7 m), re-packed along the terrace with their own gaps; each canopy keeps
+//      clear of its neighbours (no interpenetrating fabric), of the facade and of the
+//      street-tree crowns (as vegetation draws them: a canopy may stand under a crown whose
+//      lowest leaves clear its apex); the weighted base gets a footprint that clears every
+//      chair and table foot, or the pole runs through a table's centre hole; sizes step
+//      down when nothing fits. Some umbrellas stay furled or are missing from the row, and
+//      the poles lean a degree or two towards the kerb (the sidewalk's cross-fall).
 //   3. menu board: a free spot along the walkway edge
 // Footprints are oriented rectangles {x, y, ux, uy, hu, hv} (u = forward axis) or circles.
 
@@ -33,7 +37,7 @@ const CROWN_K = 0.85;                 // share of a tree's crown radius the cano
 const RELAX_ITERS = 40;               // chair relaxation passes
 const MAX_SHIFT = 0.32;               // furthest a chair moves from its planned spot (m)
 const VALANCE = 0.02;                 // valance flare beyond the nominal canopy size
-export const UMB_SIZES = [24, 40];    // canopy size buckets (decimetres): the layout plans 3.0-4.0 m
+export const UMB_SIZES = [24, 50];    // square canopy sizes (decimetres)
 
 const rect = (x, y, yaw, hu, hv, du = 0) => {
   const ux = Math.cos(yaw), uy = Math.sin(yaw);
@@ -66,7 +70,32 @@ function chairRect(ch, f) {
 /** Collision-free café plan. Mutates nothing in the layout except chair poses (see placeChairs).
  *  layout (optional): facade line and street trees the canopies keep clear of. crownOf
  *  (optional): layout tree -> {r (m), base (lowest leaves, m)} of the crown as drawn. */
-export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = null) {
+/**
+ * A café's umbrella programme (deterministic per café): model ('square' 3-4 m, 'large'
+ * 4.2-5 m, 'rect' 3 x 4-4.5 m with the long side along the street), the canopy sizes to
+ * try in order [across, along] (decimetres), hem height, gap between canopies, the poles'
+ * lean (radians), closed (0 all open, 1 one or two furled, 2 all furled: not open yet),
+ * the share of the row missing, big (heavy slab bases only), none (no umbrellas: the
+ * terrace stands open to the sky).
+ */
+export function umbrellaProgramme(cafe, seed, none = false) {
+  const rng = RNG.from(seed, 'umbProg', cafe.id);
+  const model = rng.weighted([['square', 0.48], ['large', 0.27], ['rect', 0.25]]);
+  const planned = cafe.umbrellas && cafe.umbrellas.length ? cafe.umbrellas[0].size : 3.4;
+  const down = (s0, lo) => { const out = []; for (let s = s0; s >= lo; s -= 2) out.push([s, s]); return out; };
+  let sizes;
+  if (model === 'large') sizes = down(2 * Math.round(rng.range(4.2, 5.0) * 5), 30);
+  else if (model === 'rect') sizes = [...(rng.chance(0.6) ? [[30, 45]] : []), [30, 40], [30, 30], [28, 28], [26, 26], [24, 24]];
+  else sizes = down(2 * Math.round(Math.min(4.0, Math.max(3.0, planned + rng.range(-0.3, 0.2))) * 5), UMB_SIZES[0]);
+  const hem = model === 'square' ? rng.range(UMB_HEM[0], 2.62) : rng.range(2.42, UMB_HEM[1]);
+  const gap = rng.weighted([[0.3, 0.4], [0.65, 0.4], [1.4, 0.2]]) + rng.range(-0.1, 0.25);
+  return {
+    model, sizes, hem, gap, lean: rng.range(0.004, 0.055),
+    closed: rng.weighted([[0, 0.7], [1, 0.22], [2, 0.08]]), absent: 0.1, big: model !== 'square', none,
+  };
+}
+
+export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = null, noUmbrellas = false) {
   const sMid = (cafe.s0 + cafe.s1) / 2;
   const dMid = (cafe.dIn + cafe.dOut) / 2;
   const k = route.offsetScale(sMid, dMid);
@@ -180,10 +209,12 @@ export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = n
     }
     return clear;
   };
+  const prog = umbrellaProgramme(cafe, seed, noUmbrellas);
+  const hem = prog.hem;
   // canopy keep-outs: the facade line and the crowns of the street trees on this side
   const crowns = [];
   if (layout) {
-    const c0 = layout.chunkIndex(cafe.s0 - 6), c1 = layout.chunkIndex(cafe.s1 + 6);
+    const c0 = layout.chunkIndex(cafe.s0 - 7), c1 = layout.chunkIndex(cafe.s1 + 7);
     for (let c = c0; c <= c1; c++) {
       for (const t of layout.inChunk('trees', c)) {
         if (t.side !== cafe.side) continue;
@@ -192,40 +223,56 @@ export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = n
       }
     }
   }
-  const canopyFree = (x, y, half) => {
+  /** Is a canopy (half sizes hu along the street, hv across) at (x, y) clear of the facade
+   *  and of the crowns? (The pole's lean moves the kerb-side edge ~0.1 m out.) */
+  const canopyFree = (x, y, hu, hv) => {
     if (layout) {
-      const hw = Math.min(layout.halfWidth(S(x - half), cafe.side), layout.halfWidth(S(x), cafe.side), layout.halfWidth(S(x + half), cafe.side));
-      if (Math.abs(y) + half > hw - FACADE_GAP) return false;
+      const hw = Math.min(layout.halfWidth(S(x - hu), cafe.side), layout.halfWidth(S(x), cafe.side), layout.halfWidth(S(x + hu), cafe.side));
+      if (Math.abs(y) + hv > hw - FACADE_GAP) return false;
     }
-    const a = half - VALANCE, rise = UMB_RISE * a;
+    const a = Math.sqrt(Math.max(0.1, (hu - VALANCE) * (hv - VALANCE))), rise = UMB_RISE * a;
     for (const c of crowns) {
-      const ex = Math.max(0, Math.abs(c.x - x) - half), ey = Math.max(0, Math.abs(c.y - y) - half);
+      const ex = Math.max(0, Math.abs(c.x - x) - hu - 0.05), ey = Math.max(0, Math.abs(c.y - y) - hv - 0.1);
       if (ex * ex + ey * ey >= c.r * c.r) continue;
       // footprints overlap: the canopy may still pass under the crown. Its highest point
       // inside the crown's disc is the one nearest the pole (the canopy falls off linearly
       // from the apex to the hem)
       const rho = Math.max(0, Math.hypot(c.x - x, c.y - y) - c.r);
-      const top = UMB_EDGE_H + rise * (1 - Math.min(1, rho / a));
+      const top = hem + rise * (1 - Math.min(1, rho / a));
       if (top + 0.12 > c.base) return false;
     }
     return true;
   };
-  const src = [...cafe.umbrellas].map((u, i) => ({ u, i, x: X(u.s) })).sort((a, b) => a.x - b.x);
-  const xMin = X(cafe.s0) - 0.4, xMax = X(cafe.s1) + 0.4;  // canopy may overhang the terrace a little
+  // the row, re-packed for the programme's canopy: centred on the terrace (canopies may
+  // overhang its ends a little), each café with its own gaps
+  const xMin = X(cafe.s0) - 0.4, xMax = X(cafe.s1) + 0.4;
   const dLo = Math.min(cafe.dIn, cafe.dOut), dHi = Math.max(cafe.dIn, cafe.dOut), BASE_IN = 0.42;
+  const src = [];
+  if (!prog.none && cafe.umbrellas.length) {
+    const u0 = cafe.umbrellas[0], sizes0 = prog.sizes[0];
+    const along = sizes0[1] / 10, gap = prog.gap;
+    const span = xMax - xMin - 0.1;
+    let n = Math.max(1, Math.round((span + gap) / (along + gap)));
+    if (n > 1 && n * (along + gap) - gap > span + 0.9) n--;
+    const xm = (xMin + xMax) / 2, step = along + gap;
+    // across: the canopy centre moves out from the facade as the canopy grows
+    const dU = Math.sign(u0.d) * Math.max(Math.abs(u0.d) - Math.max(0, (sizes0[0] / 10 - u0.size) / 2), dLo + BASE_IN);
+    for (let i = 0; i < n; i++) src.push({ i, x: xm + (i - (n - 1) / 2) * step, d: cafe.side > 0 ? Math.max(dLo + BASE_IN, Math.min(dHi - BASE_IN, dU)) : Math.min(dHi - BASE_IN, Math.max(dLo + BASE_IN, dU)) });
+  }
   const placed = [];
-  const mixed = rng.chance(0.12);
   for (let n = 0; n < src.length; n++) {
-    const { u, i } = src[n];
+    const u = src[n];
     const prev = placed[placed.length - 1];
     const next = src[n + 1];
     let best = null;
-    for (let sz = Math.min(UMB_SIZES[1], 2 * Math.round(u.size * 5)); sz >= UMB_SIZES[0] && !best; sz -= 2) {
-      const half = sz / 20 + VALANCE;
-      let lo = Math.max(xMin + half, prev ? prev.x + prev.half + half + CANOPY_GAP : -1e9);
-      let hi = Math.min(xMax - half, next ? next.x - (next.u.size / 2 + VALANCE) - half - CANOPY_GAP + 0.6 : 1e9);
+    for (const [szU, szV] of prog.sizes) {
+      if (best) break;
+      const hv = szU / 20 + VALANCE, hu = szV / 20 + VALANCE;  // across, along
+      const nextHu = next ? (prog.sizes[0][1] / 20 + VALANCE) : 0;
+      const lo = Math.max(xMin + hu - 0.1, prev ? prev.x + prev.hu + hu + CANOPY_GAP : -1e9);
+      const hi = Math.min(xMax - hu + 0.1, next ? next.x - nextHu - hu - CANOPY_GAP + 0.6 : 1e9);
       if (hi < lo) continue;
-      const x0 = Math.max(lo, Math.min(hi, src[n].x));
+      const x0 = Math.max(lo, Math.min(hi, u.x));
       // free-standing base: scan outwards from the planned spot (the canopy may sit up to
       // 0.55 m off the planned line across the terrace)
       const cands = [];
@@ -235,38 +282,53 @@ export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = n
         if (x < lo - 1e-6 || x > hi + 1e-6) continue;
         for (const dy of [0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4, 0.55, -0.55]) {
           // the base stays on the terrace (the crowd walks round the terrace rectangle)
-          if (Math.abs(dy) > 0.3 && (u.d + dy - dLo < BASE_IN || dHi - (u.d + dy) < BASE_IN)) continue;
+          if (u.d + dy - dLo < BASE_IN || dHi - (u.d + dy) < BASE_IN) continue;
           cands.push([x, u.d + dy, Math.abs(dx) + Math.abs(dy) * 1.5]);
         }
       }
       cands.sort((a, b) => a[2] - b[2]);
       for (const [x, y] of cands) {
-        if (!canopyFree(x, y, half)) continue;
+        if (!canopyFree(x, y, hu, hv)) continue;
         for (const [kind, yaw] of [['slab', 0], ['slab', Math.PI / 4], ['disc', 0]]) {
-          if (baseClear(x, y, kind, yaw) >= GAP) { best = { x, y, sz, half, base: kind, baseYaw: yaw }; break; }
+          if (prog.big && kind === 'disc') continue;  // big canopies stand on slabs
+          if (baseClear(x, y, kind, yaw) >= GAP) { best = { x, y, szU, szV, hu, hv, base: kind, baseYaw: yaw }; break; }
         }
         if (best) break;
       }
-      if (best) break;
+      if (best || prog.big) continue;
       // pole through the centre hole of a table inside the allowed range, before the
-      // canopy steps down a size
+      // canopy steps down a size (small canopies only)
       let bt = null, bd = 9;
       for (const t of tables) {
-        if (usedTable.has(t) || t.x < lo || t.x > hi || Math.abs(t.y - u.d) > 1.3 || !canopyFree(t.x, t.y, half)) continue;
+        if (usedTable.has(t) || t.x < lo || t.x > hi || Math.abs(t.y - u.d) > 1.3 || !canopyFree(t.x, t.y, hu, hv)) continue;
         const dd = Math.abs(t.x - x0) + Math.abs(t.y - u.d);
         if (dd < bd) { bd = dd; bt = t; }
       }
-      if (bt) { usedTable.add(bt); best = { x: bt.x, y: bt.y, sz, half, base: 'table', table: bt.ti }; }
+      if (bt) { usedTable.add(bt); best = { x: bt.x, y: bt.y, szU, szV, hu, hv, base: 'table', table: bt.ti }; }
     }
     if (!best) continue; // nothing fits: this part of the terrace stays open to the sky
-    const r2 = RNG.from(seed, 'umb', cafe.id, i);
-    best.u = u;
-    best.color = mixed ? u.color : cafe.umbrellas[0].color;
+    const r2 = RNG.from(seed, 'umb', cafe.id, u.i);
     best.tint = r2.range(0.96, 1.02);
-    best.furled = r2.chance(0.07);
     best.yaw = r2.range(-0.012, 0.012);
+    best.alt = r2.chance(0.5);
+    // the pole leans towards the kerb (the base stands on the sidewalk's cross-fall) and a
+    // little along the street; the lowest valance edge stays above 2.05 m
+    if (best.base === 'table') { best.tiltX = 0; best.tiltZ = 0; } else {
+      const lim = Math.asin(Math.min(1, Math.max(0, hem - VALANCE_H - 2.05) / best.hv));
+      // (local +x points to the left of travel, -d: a lean towards the kerb turns about +z by -side)
+      best.tiltZ = -cafe.side * Math.min(lim, r2.range(0.15, 1) * prog.lean);
+      best.tiltX = r2.range(-0.012, 0.012);
+    }
+    best.furled = prog.closed === 2 || (prog.closed === 1 && r2.chance(0.35));
     placed.push(best);
   }
+  // a gap in the row: an umbrella taken in (never the only one)
+  if (placed.length > 1) {
+    const r3 = RNG.from(seed, 'umbGap', cafe.id);
+    for (let i = placed.length - 1; i >= 0 && placed.length > 1; i--) if (r3.chance(prog.absent)) placed.splice(i, 1);
+  }
+  if (prog.closed === 1 && placed.length && !placed.some((p) => p.furled)) placed[RNG.from(seed, 'umbFurl', cafe.id).int(0, placed.length - 1)].furled = true;
+  for (const p of placed) if (p.furled && p.base === 'table') p.furled = false;
 
   // ---------------------------------------------------------------- 3. menu board
   let menu = null;
@@ -294,8 +356,9 @@ export function planCafe(cafe, route, seed, baseType, layout = null, crownOf = n
     k,
     foot,
     chairs: chairs.map((c) => ({ ti: c.t.ti, ci: c.ci, s: S(c.x), d: c.y, yaw: c.yaw, moved: Math.hypot(c.x - c.x0, c.y - c.y0) })),
-    umbrellas: placed.map((p) => ({ s: S(p.x), d: p.y, size: p.sz / 10, sz: p.sz, base: p.base, baseYaw: p.baseYaw || 0, table: p.table ?? -1,
-      color: p.color, tint: p.tint, furled: p.furled, yaw: p.yaw })),
+    umbrellas: placed.map((p) => ({ s: S(p.x), d: p.y, size: Math.max(p.szU, p.szV) / 10, su: p.szU / 10, sv: p.szV / 10, key: `${p.szU}x${p.szV}`,
+      base: p.base, baseYaw: p.baseYaw || 0, table: p.table ?? -1, alt: p.alt, tint: p.tint, furled: p.furled, yaw: p.yaw, tiltX: p.tiltX, tiltZ: p.tiltZ, hem })),
+    prog,
     menu,
     stats: { chairs, chairRects, tables, placed, dropped: src.length - placed.length, X },
   };
@@ -329,10 +392,10 @@ export function auditPlans(plans, route) {
     for (let j = i + 1; j < all.length; j++) {
       const a = all[i], b = all[j];
       const ds = route.delta(a.u.s, b.u.s) * route.offsetScale(a.u.s + route.delta(a.u.s, b.u.s) / 2, (a.u.d + b.u.d) / 2);
-      if (ds > 4) break;
+      if (ds > 6) break;
       if (a.cafe.side !== b.cafe.side || a.u.furled || b.u.furled) continue;
-      const lim = (a.u.size + b.u.size) / 2 + 2 * VALANCE;
-      if (Math.abs(ds) < lim && Math.abs(a.u.d - b.u.d) < lim) canopy++;
+      const limS = (a.u.sv + b.u.sv) / 2 + 2 * VALANCE, limD = (a.u.su + b.u.su) / 2 + 2 * VALANCE;
+      if (Math.abs(ds) < limS && Math.abs(a.u.d - b.u.d) < limD) canopy++;
     }
   }
   return { umbrellas: all.length, canopyOverlaps: canopy, baseClashes: base, chairPairsUnder45: chairPairs, minChairDist: +minChair.toFixed(3), dropped, throughTable, close: close.slice(0, 8) };

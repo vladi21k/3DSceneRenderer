@@ -210,7 +210,7 @@ float stMR = 1.0;
   float fi = ( stNoise( pw * 260.0 ) - 0.5 ) * kFi;
   float tone = stNoise( vec2( p.x * 0.35, p.y * 2.0 ) + 5.0 ) - 0.5;
   diffuseColor.rgb *= ( 1.0 + 0.16 * lighter ) * ( 1.0 + 0.14 * tone ) * ( 1.0 + 0.12 * tr ) * ( 1.0 + 0.2 * fi );
-  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.74, 0.725, 0.7 ), dirt );
+  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.74, 0.73, 0.715 ), dirt );
   stMR = 1.0 - 0.07 * lighter + 0.06 * fi;
 }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= stMR;');

@@ -41,12 +41,12 @@ import { U } from '../../core/uniforms.js';
 const C = (r, g, b) => new THREE.Color(r, g, b);
 
 /** Street-reflection uniforms shared by every unit: last frame's image, its view-projection, on/off;
- *  the blurred levels of that image (post's pyramid of the same frame: 1/2 to 1/16 resolution,
+ *  the blurred levels of that image (post's pyramid of the same frame: 1/2 to 1/32 resolution,
  *  `lv` of them present) and its depth (half resolution, view depth; `zOn` when present). */
 export function makeSharedRefl() {
   return {
     hist: { value: null }, vp: { value: new THREE.Matrix4() }, on: { value: 0 },
-    h1: { value: null }, h2: { value: null }, h3: { value: null }, h4: { value: null }, lv: { value: 0 },
+    h1: { value: null }, h2: { value: null }, h3: { value: null }, h4: { value: null }, h5: { value: null }, lv: { value: 0 },
     z: { value: null }, zOn: { value: 0 },
     // the cab tram's bodies as boxes (world -> box matrices, half width / top / length), see tramCabRefl
     cabM: { value: [new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4()] },
@@ -60,7 +60,7 @@ export function makeSharedRefl() {
 export function makeUnitUniforms(shared, seed) {
   return {
     tTramHist: shared.hist, uTramVP: shared.vp, uTramSSR: shared.on,
-    tTramH1: shared.h1, tTramH2: shared.h2, tTramH3: shared.h3, tTramH4: shared.h4, uTramLv: shared.lv,
+    tTramH1: shared.h1, tTramH2: shared.h2, tTramH3: shared.h3, tTramH4: shared.h4, tTramH5: shared.h5, uTramLv: shared.lv,
     tTramZ: shared.z, uTramZOn: shared.zOn,
     uTramCabM: shared.cabM, uTramCabL: shared.cabL, uTramCabOn: shared.cabOn,
     uTramStreet: { value: new THREE.Vector4(1, 0, 12, -12) },
@@ -134,6 +134,7 @@ uniform sampler2D tTramH1;
 uniform sampler2D tTramH2;
 uniform sampler2D tTramH3;
 uniform sampler2D tTramH4;
+uniform sampler2D tTramH5;
 uniform sampler2D tTramZ;
 uniform mat4 uTramVP;
 uniform float uTramSSR;
@@ -141,14 +142,18 @@ uniform float uTramLv;
 uniform float uTramZOn;
 uniform vec4 uTramStreet;
 uniform float uTramGround;
-// last frame's image at uv, blurred over about 2^l of its pixels (l 0: the image itself, 1-4:
+// the glazing's reflection lobe (rad): flat glass is nearly a mirror; what blurs it a little is
+// the panes' unevenness and the film on them, not the lighting model's roughness floor
+#define TRAM_GLASS_CONE 0.0022
+// last frame's image at uv, blurred over about 2^l of its pixels (l 0: the image itself, 1-5:
 // post's pyramid of the same frame)
 vec3 tramHistLevel( vec2 uv, float l ) {
   if ( l < 0.5 ) return textureLod( tTramHist, uv, 0.0 ).rgb;
   if ( l < 1.5 ) return textureLod( tTramH1, uv, 0.0 ).rgb;
   if ( l < 2.5 ) return textureLod( tTramH2, uv, 0.0 ).rgb;
   if ( l < 3.5 ) return textureLod( tTramH3, uv, 0.0 ).rgb;
-  return textureLod( tTramH4, uv, 0.0 ).rgb;
+  if ( l < 4.5 ) return textureLod( tTramH4, uv, 0.0 ).rgb;
+  return textureLod( tTramH5, uv, 0.0 ).rgb;
 }
 // world point P, reflected direction R, the reflection lobe's half width cone (rad): the
 // street seen along R, blurred over the lobe's footprint, and its weight (0 = none).
@@ -256,9 +261,9 @@ const SALOON_GLSL = /* glsl */ `
 const vec3 TS_T = vec3( 0.5, 0.56, 0.54 );         // the tinted side glazing's transmission (traced saloon)
 // ... and what the see-through glazing lets through (one value: it goes out as alpha): the outer
 // face of a near pane, and a far pane seen from inside (only the street beyond it). The near
-// value is lower than the glass alone: the passengers (humans module) are lit by the open sky,
-// where a saloon gets a fraction of it through its windows (makeInteriorMaterial dims the room).
-#define TS_SEE 0.2
+// value is a little lower than the glass alone (the room behind it is lit as indoors: the saloon
+// mesh by makeInteriorMaterial, the passengers by humans' fill / shade, see trams.js).
+#define TS_SEE 0.32
 #define TS_SEE_FAR 0.8
 vec3 tsHit = vec3( 0.0, 1.5, 0.0 );                // where the last primitive was hit (for the shading)
 float tsEll( vec3 ro, vec3 rd, vec3 c, vec3 r, float w, out vec3 n ) {
@@ -728,7 +733,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, tramNr ), viewMatrix );
 		vec3 tramPw = tramWorldPos();
 		float tramA;
-		vec3 tramH = tramStreetRefl( tramPw, tramR, 1.8 * pow2( material.roughness ), tramA );
+		vec3 tramH = tramStreetRefl( tramPw, tramR, TRAM_GLASS_CONE, tramA );
 		radiance = mix( tramTone( tramEnvR( tramR, 0.12 ), tramR.y ), tramH, tramA );
 		vec3 tramCabC = tramCabRefl( tramPw, tramR, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
 		radiance = mix( radiance, tramCabC, tramA );
@@ -954,7 +959,7 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
 		float tramA;
 		vec3 tramPw = tramWorldPos();
-		vec3 tramH = tramStreetRefl( tramPw, tramR, 1.8 * pow2( material.roughness ), tramA );
+		vec3 tramH = tramStreetRefl( tramPw, tramR, mix( TRAM_GLASS_CONE, 1.8 * pow2( material.roughness ), tramTrim ), tramA );
 		radiance = mix( tramTone( tramEnvR( tramR, max( material.roughness, 0.16 ) ), tramR.y + 0.05 ), tramH, tramA );
 		vec3 tramCabC = tramCabRefl( tramPw, tramR, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
 		radiance = mix( radiance, tramCabC, tramA );

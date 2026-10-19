@@ -59,6 +59,8 @@ export const wordType = (cell) => WORDS[cell][1];
 export const wordSub = (cell) => WORDS[cell][2] || SUB[WORDS[cell][0][0]] || SUB[WORDS[cell][0][1]] || null;
 /** Word cells of a shop type. */
 export function wordsOf(type) { const ok = []; WORDS.forEach(([, t], i) => { if (t === type) ok.push(i); }); return ok; }
+/** Whether word cell i is in Hebrew. */
+export const wordHebrew = (i) => /[֐-׿]/.test(WORDS[i][0][0]);
 /** Single-line word cells of a shop type (a fascia's second line). */
 export function subWordsOf(type) { const ok = []; WORDS.forEach(([l, t], i) => { if (t === type && l.length === 1) ok.push(i); }); return ok; }
 
@@ -907,15 +909,18 @@ export function createSignMaterials(M) {
 }
 
 // ------------------------------------------------------------------ geometry
-/** Text quad (atlas cell) in local xy at depth z, width w, height h, centred at (cx, cy). */
-function cellQuad(t, cell, cx, cy, w, h, z, normalZ = 1) {
+/**
+ * Text quad (atlas cell) in local xy at depth z, width w, height h, centred at (cx, cy);
+ * sb: shade of its lower edge (the grime a sign collects along its bottom).
+ */
+function cellQuad(t, cell, cx, cy, w, h, z, normalZ = 1, sb = 1) {
   const x0 = cx - w / 2, x1 = cx + w / 2, y0 = cy - h / 2, y1 = cy + h / 2;
   const b = t.count;
   const s = normalZ;
   // u is mirrored for back faces so the text reads correctly from both sides
   const uA = s > 0 ? cell.u0 : cell.u1, uB = s > 0 ? cell.u1 : cell.u0;
   const xa = s > 0 ? x0 : x1, xb = s > 0 ? x1 : x0;
-  t.v(xa, y0, z, 0, 0, s, uA, cell.v0); t.v(xb, y0, z, 0, 0, s, uB, cell.v0);
+  t.v(xa, y0, z, 0, 0, s, uA, cell.v0, sb); t.v(xb, y0, z, 0, 0, s, uB, cell.v0, sb);
   t.v(xb, y1, z, 0, 0, s, uB, cell.v1); t.v(xa, y1, z, 0, 0, s, uA, cell.v1);
   t.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
 }
@@ -924,6 +929,60 @@ function cellQuad(t, cell, cx, cy, w, h, z, normalZ = 1) {
 function inkCell(cell) {
   const du = (cell.u1 - cell.u0) * (1 - cell.ink) / 2;
   return { u0: cell.u0 + du, u1: cell.u1 - du, v0: cell.v0, v1: cell.v1, aspect: cell.aspect * cell.ink };
+}
+
+/** The name cell of a design: both lines (nv 0), the Hebrew (1) or the English (2) alone. */
+function nameCell(design, single = false) {
+  const n = atlas.names[((design.name % N_NAMES) + N_NAMES) % N_NAMES];
+  const nv = single && design.nv === 0 ? 1 : design.nv;
+  return nv === 1 ? n.he : nv === 2 ? n.en : n.full;
+}
+/** The second line of a design: a trade word ({w}) or a short line ({l}), or null. */
+function subCell(sub) {
+  if (!sub) return null;
+  if (sub.w != null) return inkCell(atlas.cells[sub.w]);
+  return atlas.lines[sub.l];
+}
+/** Logo mark i, solid cell 15. */
+export function iconCell(i) { return atlas.icons[i]; }
+/** Short-line cell i (phones, years, taglines; 24-31 wall tags). */
+export function lineCell(i) { return atlas.lines[i % atlas.lines.length]; }
+
+/**
+ * Lay out a shop's sign text in a W × H area centred at (0, 0) of a face: its name, below
+ * it a smaller second line, and the logo mark at one end when the area is wide enough.
+ * compact: the name alone on one line (valances, vinyl). Returns quads
+ * [{cell, x, y, w, h, accent}] (accent: drawn in the accent colour).
+ */
+function layoutText(design, Wa, Ha, compact = false) {
+  const out = [];
+  if (design.name == null) {
+    const cell = inkCell(atlas.cells[design.cell]);
+    const tw = Math.min(Wa, Ha * cell.aspect);
+    out.push({ cell, x: 0, y: 0, w: tw, h: tw / cell.aspect });
+    return out;
+  }
+  const nc = nameCell(design, compact && Ha < 0.3);
+  let wA = Wa, xc = 0;
+  if (!compact && design.logo >= 0 && Wa / Ha > 2.4) {
+    const s = Ha * 0.9, side = design.logoRight ? 1 : -1;
+    out.push({ cell: atlas.icons[design.logo], x: side * (Wa / 2 - s / 2), y: 0, w: s, h: s, accent: true });
+    wA = Wa - s * 1.25; xc = -side * s * 0.625;
+  }
+  const sc = compact ? null : subCell(design.sub);
+  if (sc) {
+    let hn = Ha * 0.64, hs = Ha * 0.24;
+    const gap = Ha * 0.08;
+    const wn = Math.min(wA, hn * nc.aspect); hn = wn / nc.aspect;
+    const ws = Math.min(wA * 0.86, hs * sc.aspect); hs = ws / sc.aspect;
+    const top = (hn + gap + hs) / 2;
+    out.push({ cell: nc, x: xc, y: top - hn / 2, w: wn, h: hn });
+    out.push({ cell: sc, x: xc, y: top - hn - gap - hs / 2, w: ws, h: hs, accent: !!design.subAccent });
+  } else {
+    const wn = Math.min(wA, Ha * nc.aspect);
+    out.push({ cell: nc, x: xc, y: 0, w: wn, h: wn / nc.aspect });
+  }
+  return out;
 }
 
 /** Sign design for seed; kindHint forces board / lightbox / letters, shop a shop type's words. */
@@ -938,12 +997,11 @@ export function signDesign(seed, kindHint, shop = null) {
   let board, ink, glow;
   if (type === 'board') {
     board = r.weighted(BOARD_WEIGHTS);
-    const light = LIGHT_BOARDS.has(board);
-    ink = light ? r.pick([0x1d1d1f, 0x1b2b45, 0x5a1a1c, 0xb3261e]) : board === 0xb8261e || board === 0x1f5f8a || board === 0x2a8ac0 || board === 0x5a2a6a ? r.pick([0xf2efe6, 0xf2efe6, 0xf2c230]) : r.pick([0xd8b25a, 0xf2efe6, 0xe9dfc4]);
+    ink = inkOn(board, r);
     glow = 0;
   } else if (type === 'lightbox') {
     board = r.pick(SIGN_PALETTE.boxes);
-    ink = board === 0xc8231c || board === 0x1f5fa8 || board === 0x2a7a3a || board === 0xe8701c || board === 0x1e8a8a ? 0xf4f1e8 : r.pick([0x1d1d1f, 0xb3261e, 0x1b2b45]);
+    ink = luma(board) < 0.5 ? 0xf4f1e8 : r.pick([0x1d1d1f, 0xb3261e, 0x1b2b45]);
     glow = 1;
   } else {
     board = null;
@@ -952,50 +1010,66 @@ export function signDesign(seed, kindHint, shop = null) {
   }
   return { type, cell, board, ink, glow };
 }
+/** sRGB luma (0..1) of a hex colour. */
+export function luma(hex) { return (0.299 * ((hex >> 16) & 255) + 0.587 * ((hex >> 8) & 255) + 0.114 * (hex & 255)) / 255; }
+/** Lettering colour for a board of colour hex: dark on light boards, cream, white or gold on dark ones. */
+export function inkOn(hex, r) {
+  const l = luma(hex);
+  if (l > 0.62) return r.pick([0x1d1d1f, 0x1b2b45, 0x5a1a1c, 0xb3261e]);
+  if (l > 0.42) return r.pick([0xf4f1e8, 0x1d1d1f]);
+  const sat = Math.max((hex >> 16) & 255, (hex >> 8) & 255, hex & 255) - Math.min((hex >> 16) & 255, (hex >> 8) & 255, hex & 255);
+  return sat > 90 ? r.pick([0xf4f1e8, 0xf4f1e8, 0xf2c230]) : r.pick([0xd8b25a, 0xf2efe6, 0xe9dfc4]);
+}
 
 /**
  * Fascia sign of width w and height h centred at the local origin (x across, y up), the
- * wall face at z = 0. Adds to the `board` and `text` batches via callbacks.
+ * wall face at z = 0: the board (its face dirtier towards the bottom edge), and the text
+ * (the shop's name and second line) with the logo mark apart, for the accent colour.
+ * {board, text, accent}.
  */
-export function fasciaTpls(design, w, h, q, z0 = 0.055) {
+export function fasciaTpls(design, w, h, q, z0 = 0.055, compact = false) {
   // stand-off clear of the ground-floor relief (lintels, keystones, rustication: ≤ 5 cm)
-  const tb = new Tpl(), tt = new Tpl();
-  const cell = inkCell(atlas.cells[design.cell]);
+  const tb = new Tpl(), tt = new Tpl(), ta = new Tpl();
   let zText;
+  const g0 = q >= 0.5 ? 0.8 : 0.9;            // grime along the bottom of the face
   if (design.type === 'board') {
     const d = 0.05, b = 0.03;
-    tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.85, 0.95);
+    tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.85 * g0, 0.95);
     if (q >= 0.5) {
       // raised moulded border
       tb.box(-w / 2, h / 2 - b, z0 + d, w / 2, h / 2, z0 + d + 0.012, 1 | 16 | 32, 0.9, 1);
-      tb.box(-w / 2, -h / 2, z0 + d, w / 2, -h / 2 + b, z0 + d + 0.012, 1 | 16 | 32, 0.8, 0.9);
-      tb.box(-w / 2, -h / 2 + b, z0 + d, -w / 2 + b, h / 2 - b, z0 + d + 0.012, 1 | 8, 0.85, 0.95);
-      tb.box(w / 2 - b, -h / 2 + b, z0 + d, w / 2, h / 2 - b, z0 + d + 0.012, 1 | 4, 0.85, 0.95);
+      tb.box(-w / 2, -h / 2, z0 + d, w / 2, -h / 2 + b, z0 + d + 0.012, 1 | 16 | 32, 0.66, 0.78);
+      tb.box(-w / 2, -h / 2 + b, z0 + d, -w / 2 + b, h / 2 - b, z0 + d + 0.012, 1 | 8, 0.8, 0.95);
+      tb.box(w / 2 - b, -h / 2 + b, z0 + d, w / 2, h / 2 - b, z0 + d + 0.012, 1 | 4, 0.8, 0.95);
     }
     zText = z0 + d + 0.002;
   } else if (design.type === 'lightbox') {
     const d = 0.13;
-    tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.95, 1);
+    tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.95 * g0, 1);
     zText = z0 + d + 0.002;
   } else {
     zText = z0 + 0.02;   // individual letters on stand-off pins
   }
-  const th = h * (design.type === 'letters' ? 0.95 : 0.78);
-  const tw = Math.min(w * 0.92, th * cell.aspect);
-  const thFit = Math.min(th, tw / cell.aspect);
-  cellQuad(tt, cell, 0, 0, tw, thFit, zText);
-  return { board: design.board !== null ? tb.bake() : null, text: tt.bake() };
+  const k = design.type === 'letters' ? 0.95 : 0.78;
+  const Wa = w * (design.type === 'letters' ? 0.96 : 0.9), Ha = h * k;
+  for (const p of layoutText(design, Wa, Ha, compact)) {
+    const sb = design.type === 'letters' ? 1 : 1 - (1 - g0) * Math.max(0, (h / 2 - (p.y - p.h / 2)) / h - 0.4);
+    cellQuad(p.accent ? ta : tt, p.cell, p.x, p.y, p.w, p.h, zText, 1, sb);
+  }
+  return { board: design.board !== null ? tb.bake() : null, text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null) };
 }
 
 /** Blade face index advertising shop type `type` (null: no shop below, e.g. a hotel). */
 export function bladeFace(seed, type, round = null) {
   const r = new RNG(seed);
   let ok = [];
-  BLADE_FACES.forEach(([, t, rd], i) => { if (t === type && (round === null || !!rd === round)) ok.push(i); });
+  // (the red sale disc only one time in eight it is drawn)
+  BLADE_FACES.forEach(([, t, rd], i) => { if (t === type && (round === null || !!rd === round) && (i !== SALE_FACE || r.chance(0.125))) ok.push(i); });
   if (!ok.length) BLADE_FACES.forEach(([, t, rd], i) => { if (t === null && (round === null || !!rd === round)) ok.push(i); });
   if (!ok.length) BLADE_FACES.forEach(([, t], i) => { if (t === null) ok.push(i); });
   return ok[r.int(0, ok.length - 1)];
 }
+const SALE_FACE = 22;
 /** Whether blade face i is round (a disc sign). */
 export const bladeRound = (i) => !!BLADE_FACES[i][2];
 /** Goods-stand print cells: kind 'papers' | 'tags', index i (wraps). */
@@ -1015,12 +1089,16 @@ export function bladeTpls(faceIndex, w, h, q) {
   const quad = (sx) => {
     const b = tt.count, x = sx * (th / 2 + 0.002);
     const zA = sx > 0 ? z1 : z0, zB = sx > 0 ? z0 : z1;
-    const uA = sx > 0 ? face.u0 : face.u0, uB = sx > 0 ? face.u1 : face.u1;
-    tt.v(x, 0.02, zA, sx, 0, 0, uA, face.v0); tt.v(x, 0.02, zB, sx, 0, 0, uB, face.v0);
-    tt.v(x, h - 0.02, zB, sx, 0, 0, uB, face.v1); tt.v(x, h - 0.02, zA, sx, 0, 0, uA, face.v1);
+    const sb = q >= 0.5 ? 0.82 : 0.9;
+    tt.v(x, 0.02, zA, sx, 0, 0, face.u0, face.v0, sb); tt.v(x, 0.02, zB, sx, 0, 0, face.u1, face.v0, sb);
+    tt.v(x, h - 0.02, zB, sx, 0, 0, face.u1, face.v1); tt.v(x, h - 0.02, zA, sx, 0, 0, face.u0, face.v1);
     tt.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
   };
   quad(1); quad(-1);
+  bladeBracket(tm, h, z0, z1, q);
+  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
+}
+function bladeBracket(tm, h, z0, z1, q) {
   // bracket: wall plate and two arms (metal batch)
   tm.box(-0.05, h - 0.1, 0, 0.05, h + 0.12, 0.02, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   tm.box(-0.012, h + 0.03, 0.0, 0.012, h + 0.055, z1 + 0.05, 1 | 4 | 8 | 16 | 32, 0.9, 1);
@@ -1028,75 +1106,149 @@ export function bladeTpls(faceIndex, w, h, q) {
     tm.box(-0.01, h - 0.03, 0.0, 0.01, h - 0.005, z0, 1 | 4 | 8 | 16 | 32, 0.9, 1);
     for (const zz of [z0 + 0.08, z1 - 0.08]) tm.box(-0.006, h, zz - 0.006, 0.006, h + 0.035, zz + 0.006, 4 | 8 | 1 | 2, 0.9, 1);
   }
-  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
 }
 
 /** Face quad in the yz plane at x = sx·xo facing ±x (u mirrored so it reads from both sides). */
-function sideQuad(t, cell, sx, xo, y0, y1, zA0, zA1) {
+function sideQuad(t, cell, sx, xo, y0, y1, zA0, zA1, sb = 1) {
   const b = t.count, x = sx * xo;
   const zA = sx > 0 ? zA1 : zA0, zB = sx > 0 ? zA0 : zA1;
-  t.v(x, y0, zA, sx, 0, 0, cell.u0, cell.v0); t.v(x, y0, zB, sx, 0, 0, cell.u1, cell.v0);
+  t.v(x, y0, zA, sx, 0, 0, cell.u0, cell.v0, sb); t.v(x, y0, zB, sx, 0, 0, cell.u1, cell.v0, sb);
   t.v(x, y1, zB, sx, 0, 0, cell.u1, cell.v1); t.v(x, y1, zA, sx, 0, 0, cell.u0, cell.v1);
   t.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
 }
+/**
+ * Quads of a face layout (x across the face as its reader sees it, y up) on both faces of
+ * a projecting sign whose face plane is yz at x = ±xo, centred at (zc, yc): the reader
+ * on +x has the wall on the right, so face x runs against z there and with z on −x.
+ */
+function sideLayout(tt, ta, quads, xo, zc, yc, sbK = 1, hh = 1) {
+  for (const sx of [-1, 1]) {
+    for (const p of quads) {
+      const z = zc - sx * p.x, sb = 1 - (1 - sbK) * Math.min(1, Math.max(0, (hh / 2 - (p.y - p.h / 2)) / hh));
+      sideQuad(p.accent ? ta : tt, p.cell, sx, xo, yc + p.y - p.h / 2, yc + p.y + p.h / 2, z - p.w / 2, z + p.w / 2, sb);
+    }
+  }
+}
 
 /**
- * Projecting light box with the shop's word on both faces ("flag" sign): a box of length
+ * Projecting light box with the shop's name on both faces ("flag" sign): a box of length
  * L out from the wall (from z0), height h and thickness th, on a wall plate with a top
  * arm; origin on the wall face, the box's bottom at y = 0. {board (glowing box), text,
- * metal}.
+ * accent, metal}.
  */
 export function flagTpls(design, L, h, th, q) {
-  const tb = new Tpl(), tt = new Tpl(), tm = new Tpl();
+  const tb = new Tpl(), tt = new Tpl(), ta = new Tpl(), tm = new Tpl();
   const z0 = 0.16, z1 = z0 + L;
-  tb.box(-th / 2, 0, z0, th / 2, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.95, 1);
+  tb.box(-th / 2, 0, z0, th / 2, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.82, 1);
   if (q >= 0.5) {
     // the box's frame: a darker extruded rim round each face
     for (const sx of [-1, 1]) {
       const x0 = sx > 0 ? th / 2 : -th / 2 - 0.006, x1 = x0 + 0.006;
-      tb.box(x0, 0, z0, x1, 0.025, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.55, 0.6);
+      tb.box(x0, 0, z0, x1, 0.025, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.45, 0.5);
       tb.box(x0, h - 0.025, z0, x1, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.6, 0.65);
       tb.box(x0, 0.025, z1 - 0.025, x1, h - 0.025, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.55, 0.6);
     }
   }
-  const cell = inkCell(atlas.cells[design.cell]);
-  const th2 = h * 0.62, tw = Math.min(L * 0.84, th2 * cell.aspect), thFit = Math.min(th2, tw / cell.aspect);
-  const zc = (z0 + z1) / 2, yc = h / 2;
-  for (const sx of [-1, 1]) sideQuad(tt, cell, sx, th / 2 + 0.003, yc - thFit / 2, yc + thFit / 2, zc - tw / 2, zc + tw / 2);
+  const quads = layoutText({ ...design, logo: -1 }, L * 0.84, h * (design.name != null && !design.sub ? 0.74 : 0.8));
+  sideLayout(tt, ta, quads, th / 2 + 0.003, (z0 + z1) / 2, h / 2, q >= 0.5 ? 0.85 : 1, h);
   // wall plate, the arm along the top and a stay
   tm.box(-0.05, -0.04, 0, 0.05, h + 0.08, 0.02, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   tm.box(-0.014, h, 0.0, 0.014, h + 0.03, z1 - 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   if (q >= 0.5) tm.box(-0.012, -0.03, 0.0, 0.012, 0.0, z0 + 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
-  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
+  return { board: tb.bake(), text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null), metal: tm.bake() };
+}
+
+/**
+ * Projecting blade of the shop's own: a painted panel w out from the wall and h tall
+ * (its lower edge dirtier) carrying its logo mark above its name (or the name with its
+ * second line). Origin on the wall face, the panel's bottom at y = 0. {board, text,
+ * accent, metal}.
+ */
+export function bladeNameTpls(design, w, h, q) {
+  const tb = new Tpl(), tt = new Tpl(), ta = new Tpl(), tm = new Tpl();
+  const z0 = 0.18, z1 = z0 + w, th = 0.05;
+  tb.box(-th / 2, 0, z0, th / 2, h, z1, 1 | 2 | 4 | 8 | 16 | 32, q >= 0.5 ? 0.74 : 0.85, 1);
+  if (q >= 0.5) {
+    // a painted border, proud of the faces
+    for (const sx of [-1, 1]) {
+      const x0 = sx > 0 ? th / 2 : -th / 2 - 0.004, x1 = x0 + 0.004, b = 0.022;
+      tb.box(x0, 0, z0, x1, b, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.6, 0.7);
+      tb.box(x0, h - b, z0, x1, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.9, 1);
+      tb.box(x0, b, z0, x1, h - b, z0 + b, 1 | 2 | 4 | 8 | 16 | 32, 0.8, 0.95);
+      tb.box(x0, b, z1 - b, x1, h - b, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.8, 0.95);
+    }
+  }
+  let quads;
+  const Wf = w * 0.82;
+  if (design.logo >= 0) {
+    const s = Math.min(h * 0.42, w * 0.5);
+    const nq = layoutText({ ...design, logo: -1, sub: null }, Wf, h * 0.36);
+    for (const p of nq) p.y += h * 0.27 - h / 2;
+    quads = [{ cell: atlas.icons[design.logo], x: 0, y: h * 0.7 - h / 2, w: s, h: s, accent: true }, ...nq];
+  } else quads = layoutText({ ...design, logo: -1 }, Wf, h * 0.66);
+  sideLayout(tt, ta, quads, th / 2 + 0.006, (z0 + z1) / 2, h / 2, q >= 0.5 ? 0.82 : 1, h);
+  bladeBracket(tm, h, z0, z1, q);
+  return { board: tb.bake(), text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null), metal: tm.bake() };
 }
 
 /**
  * Round projecting sign (blade face i drawn as a disc) of diameter D on a bracket arm:
  * a disc rim of thickness th, both faces from the atlas. Origin on the wall face, the
- * disc's lowest point at y = 0. {board, text, metal}.
+ * disc's lowest point at y = 0. {board, text, metal}. With a design instead of a face
+ * index, the disc is painted in the board colour and carries the shop's logo mark over
+ * its name ({board, text, accent, metal}).
  */
-export function discTpls(faceIndex, D, q) {
-  const face = atlas.blades[faceIndex];
-  const tb = new Tpl(), tt = new Tpl(), tm = new Tpl();
+export function discTpls(faceIndex, D, q, design = null) {
+  const face = design ? null : atlas.blades[faceIndex];
+  const tb = new Tpl(), tt = new Tpl(), ta = new Tpl(), tm = new Tpl();
   const R = D / 2, th = 0.07, zc = 0.2 + R, yc = R;
-  const n = q >= 0.5 ? 28 : 12;
-  // rim (outward normals) and the two faces of the disc just inside the printed quads
+  const n = q >= 0.5 ? 32 : 12;
+  // rim (outward normals) and the two faces of the disc just inside the printed quads; the
+  // faces darker towards the bottom (grime)
+  const g0 = q >= 0.5 ? 0.8 : 0.9, sh = (y) => g0 + (1 - g0) * Math.min(1, y / D);
   for (let k = 0; k < n; k++) {
     const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2;
     const y0 = yc + Math.sin(a0) * R, z0 = zc + Math.cos(a0) * R, y1 = yc + Math.sin(a1) * R, z1 = zc + Math.cos(a1) * R;
-    tb.q4(-th / 2, y0, z0, th / 2, y0, z0, th / 2, y1, z1, -th / 2, y1, z1, 0.85, 0.85);
-    tb.q4(th / 2 - 0.001, yc, zc, th / 2 - 0.001, y1, z1, th / 2 - 0.001, y0, z0, th / 2 - 0.001, y0, z0, 0.9, 0.9);
-    tb.q4(-th / 2 + 0.001, yc, zc, -th / 2 + 0.001, y0, z0, -th / 2 + 0.001, y1, z1, -th / 2 + 0.001, y1, z1, 0.9, 0.9);
+    tb.q4(-th / 2, y0, z0, th / 2, y0, z0, th / 2, y1, z1, -th / 2, y1, z1, 0.85 * sh(y0), 0.85 * sh(y1));
+    // (faces as fans: shade per vertex by height)
+    const fb = tb.count;
+    tb.v(th / 2 - 0.001, yc, zc, 1, 0, 0, zc, yc, 0.9 * sh(yc)); tb.v(th / 2 - 0.001, y1, z1, 1, 0, 0, z1, y1, 0.9 * sh(y1)); tb.v(th / 2 - 0.001, y0, z0, 1, 0, 0, z0, y0, 0.9 * sh(y0));
+    tb.tri(fb, fb + 1, fb + 2);
+    const fc = tb.count;
+    tb.v(-th / 2 + 0.001, yc, zc, -1, 0, 0, zc, yc, 0.9 * sh(yc)); tb.v(-th / 2 + 0.001, y0, z0, -1, 0, 0, z0, y0, 0.9 * sh(y0)); tb.v(-th / 2 + 0.001, y1, z1, -1, 0, 0, z1, y1, 0.9 * sh(y1));
+    tb.tri(fc, fc + 1, fc + 2);
   }
-  const s = 0.996 * D;
-  for (const sx of [-1, 1]) sideQuad(tt, face, sx, th / 2 + 0.002, yc - s / 2, yc + s / 2, zc - s / 2, zc + s / 2);
+  if (face) {
+    const s = 0.996 * D;
+    for (const sx of [-1, 1]) sideQuad(tt, face, sx, th / 2 + 0.002, yc - s / 2, yc + s / 2, zc - s / 2, zc + s / 2, g0 + 0.05);
+  } else {
+    // a ring painted inside the rim, the logo mark above the middle and the name across it
+    const quads = [];
+    if (design.logo >= 0) quads.push({ cell: atlas.icons[design.logo], x: 0, y: D * 0.17, w: D * 0.36, h: D * 0.36, accent: true });
+    const nq = layoutText({ ...design, logo: -1, sub: null }, D * 0.76, D * (design.logo >= 0 ? 0.22 : 0.4));
+    for (const p of nq) p.y += design.logo >= 0 ? -D * 0.17 : 0;
+    quads.push(...nq);
+    sideLayout(tt, ta, quads, th / 2 + 0.003, zc, yc, q >= 0.5 ? 0.85 : 1, D);
+  }
   // bracket: wall plate, an arm over the disc with two short hangers
   tm.box(-0.05, yc + R - 0.12, 0, 0.05, yc + R + 0.14, 0.02, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   tm.box(-0.013, yc + R + 0.06, 0.0, 0.013, yc + R + 0.09, zc + R * 0.7, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   if (q >= 0.5) for (const zz of [zc - R * 0.55, zc + R * 0.55]) tm.box(-0.005, yc + Math.sqrt(Math.max(0, R * R - (zz - zc) * (zz - zc))) - 0.01, zz - 0.005, 0.005, yc + R + 0.06, zz + 0.005, 4 | 8 | 1 | 2, 0.9, 1);
-  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
+  return { board: tb.bake(), text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null), metal: tm.bake() };
 }
 
+/**
+ * Lettering of a shop's design in a W × H area (centred at the origin, facing +z at z),
+ * as vinyl on glass or paint on a panel: {text, accent} templates (accent null when the
+ * layout has no logo mark).
+ */
+export function letteringTpls(design, Wa, Ha, z, compact = false) {
+  const tt = new Tpl(), ta = new Tpl();
+  for (const p of layoutText(design, Wa, Ha, compact)) cellQuad(p.accent ? ta : tt, p.cell, p.x, p.y, p.w, p.h, z);
+  return { text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null) };
+}
+/** A plain quad of cell (icon, line or solid) w × h centred at (x, y), facing +z at z. */
+export function cellTpl(t, cell, x, y, w, h, z, sb = 1) { cellQuad(t, cell, x, y, w, h, z, 1, sb); }
 /** Enamel house number plaque (0.2 × 0.13 m) on the wall face. */
 export function plaqueTpl(seed) {
   const p = atlas.plaques[seed % atlas.plaques.length];

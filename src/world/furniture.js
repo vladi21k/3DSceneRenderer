@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND } from '../core/config.js';
 import { createMaterials, updateLightLevels } from './furniture/materials.js';
 import { BatchSet } from './furniture/instancer.js';
-import { buildCafeProtos, placeCafes, planAllCafes, chairPose, cafeStyle } from './furniture/cafe.js';
+import { buildCafeProtos, placeCafes, planAllCafes, chairPose, cafeStyle, umbrellaKeys } from './furniture/cafe.js';
 import { buildStreetProtos, placeStreetFurniture } from './furniture/street.js';
 import { buildPlatformProtos, placePlatforms, platformWarmupParts } from './furniture/platform.js';
 import { buildVehicleProtos, placeVehicles } from './furniture/vehicles.js';
@@ -36,7 +36,7 @@ function footprintLines(cafe, st, app) {
   for (const u of st.umbrellas) {
     if (u.base === 'slab') rectAt(u.s, u.d, u.baseYaw, 0.28, 0.28);
     else if (u.base === 'disc') loop((t) => W(u.s + Math.cos(t * 6.283) * 0.23 / k, u.d + Math.sin(t * 6.283) * 0.23), 16);
-    rectAt(u.s, u.d, 0, u.size / 2, u.size / 2);
+    rectAt(u.s, u.d, 0, u.sv / 2, u.su / 2);
   }
   for (const t of cafe.tables) loop((q) => W(t.s + Math.cos(q * 6.283) * 0.3 / k, t.d + Math.sin(q * 6.283) * 0.3), 16);
   const g = new THREE.BufferGeometry();
@@ -62,12 +62,15 @@ const furniture = {
     this.F = createMaterials(app);
     lap('materials', t); t = performance.now();
     const M = app.materials;
-    this.P = { cafe: buildCafeProtos(M, this.F), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F), vehicles: buildVehicleProtos(this.F), shop: buildShopProtos(this.F) };
+    // collision-free café plans (adjusted chair poses and the umbrellas as placed are
+    // written back for the crowd), first: the umbrella prototypes follow the canopy sizes
+    // the plans use
+    this.cafeAudit = planAllCafes(app);
+    lap('cafePlans', t); t = performance.now();
+    this.P = { cafe: buildCafeProtos(M, this.F, umbrellaKeys(app)), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F), vehicles: buildVehicleProtos(this.F), shop: buildShopProtos(this.F) };
     this.batches = new BatchSet('furniture');
     this.batches.registerTree(this.P);
     lap('protos', t); t = performance.now();
-    // collision-free café plans (adjusted chair poses are written back for seated patrons)
-    this.cafeAudit = planAllCafes(app);
     // shop boards (after the café plans; their obstacles are registered for the crowd)
     this.shopPlan = planShopStands(app);
     lap('plans', t); t = performance.now();
@@ -150,7 +153,7 @@ const furniture = {
     // the print atlases (painted in a worker during the start-up) are on their textures by
     // the first frame
     if (!this.F.prints.done) this.F.prints.finish();
-    updateLightLevels(this.F, app);
+    updateLightLevels(this.F, app, this.batches.hideEmpty);
     if (!this.batches.hideEmpty) this.batches.warmup(app.camera.position, app.camera.getWorldDirection(_dir));
     this.batches.sync();
     this.batches.updateLod(app.camera.position);

@@ -178,9 +178,10 @@ void surface(vec2 m, inout Surf s) {
   float wGrime = smoothstep(0.7, 0.95, fsel + 0.2 * (fn - 0.5)) + smoothstep(0.003, 0.007, depth);
   vec3 joint = mix(mix(sand, dirt, wDirt), grime, sat(wGrime));
   s.albedo = mix(joint, g, st);
-  // flamed tops matt, worn ones satin (a broad low-angle sheen towards a low sun or the
-  // bright end of the street); breaks and cracks rough, joints matt
-  float rough = mix(0.63, 0.42, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
+  // flamed tops matt, worn ones a soft satin (a broad low-angle sheen towards a low sun or
+  // the bright end of the street, never a mirror: the difference between neighbouring setts
+  // stays small, or single setts glint out of it); breaks and cracks rough, joints matt
+  float rough = mix(0.66, 0.52, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
   rough = mix(rough, 0.8, max(broken, crack));
   s.rough = mix(head ? 0.95 : 0.92, rough, st);
 }

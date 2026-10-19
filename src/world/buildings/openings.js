@@ -1,6 +1,6 @@
 import { archPoint } from '../facadePlan.js';
 import { FACES, arcSeg } from './mesh.js';
-import { trimColor, setBlock, hash3 } from './shade.js';
+import { trimColor, setBlock, hash3, JAMB_H0, JAMB_H1 } from './shade.js';
 
 // Masonry around each opening. The opening itself stays empty for the facade infill
 // (frames, glass, shopfronts, doors at w = −recess). Here:
@@ -62,8 +62,12 @@ export function openingMasonry(ctx, face, o) {
     }
     endBlocks(B);
   } else {
-    B.rectU(sRev, u0, y0, ys, -R, 0, 1);
-    B.rectU(sRev, u1, y0, ys, -R, 0, -1);
+    // (rows where the soiling beside a shop or door jamb fades out, see shade.FaceShade)
+    const vs = jambRows(ctx, u0, y0, ys);
+    for (let i = 0; i + 1 < vs.length; i++) {
+      B.rectU(sRev, u0, vs[i], vs[i + 1], -R, 0, 1);
+      B.rectU(sRev, u1, vs[i], vs[i + 1], -R, 0, -1);
+    }
   }
   B.rectV(sRev, u0, u1, -R, 0, y0, 1);
   if (!arched) {
@@ -316,6 +320,7 @@ function coursedJamb(ctx, u, dir, y0, y1, R) {
   const cuts = _jc;
   cuts.length = 0;
   cuts.push(y0, y1);
+  if (!ctx.q.lod && ctx.fs.jambs) for (const h of JAMB_ROWS) { const v = ctx.fs.groundAt(u) + h; if (v > y0 + 0.02 && v < y1 - 0.02) cuts.push(v); }
   if (fA) for (let rg = fA.row(y0) + 1, v = fA.bed(rg); v < y1; v = fA.bed(++rg)) if (!inRus(v)) cuts.push(v);
   if (rustic) {
     if (fR) for (let rg = fR.row(y0) + 1, v = fR.bed(rg); v < y1; v = fR.bed(++rg)) if (inRus(v)) cuts.push(v);
@@ -336,6 +341,17 @@ function coursedJamb(ctx, u, dir, y0, y1, R) {
   }
   sinks.ashlar.uvx = null;
   sRough.uvx = null;
+}
+
+const JAMB_ROWS = [JAMB_H0, JAMB_H1];
+const _jr = [];
+/** Heights from y0 to y1 cutting a reveal at u where the jamb soiling fades (full detail). */
+function jambRows(ctx, u, y0, y1) {
+  _jr.length = 0;
+  _jr.push(y0);
+  if (!ctx.q.lod && ctx.fs.jambs) for (const h of JAMB_ROWS) { const v = ctx.fs.groundAt(u) + h; if (v > y0 + 0.02 && v < y1 - 0.02) _jr.push(v); }
+  _jr.push(y1);
+  return _jr;
 }
 
 /** Back face of the opening box at depth w (facing the street). */

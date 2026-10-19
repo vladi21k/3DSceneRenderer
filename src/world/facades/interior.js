@@ -166,9 +166,9 @@ ${ROOM_LIGHT_GLSL}
 #define SHOP_DAY 0.22
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
-// 1/6 (-2.6 EV), as in a photograph of a sunny street
+// 1/4.5 (-2.2 EV), as in a photograph of a sunny street (the goods behind the glass read)
 #define DAY_CAP ( 1.0 / 32.0 )
-#define DAY_CAP_SHOP ( 1.0 / 6.0 )
+#define DAY_CAP_SHOP ( 1.0 / 4.5 )
 // brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
 // the daylight on the glass: a ceiling panel ~3x the wall around it, a downlight a bright
 // point
@@ -420,17 +420,23 @@ void fMannequin( inout Hit h, vec3 ro, vec3 rd, vec2 c, float seed ) {
 }
 
 vec4 fItem( float a, float y, float r, float rowH, float cellW, float seed, float st, float keep, float fp );
-// a row of the shop's goods standing on a window display riser (top at y0, between x0 and
-// x1), their fronts 0.52 m behind the glass
-void fWindowGoods( inout Hit h, vec3 ro, vec3 rd, float x0, float x1, float y0, float seed, float st ) {
+// a row of the shop's goods standing on a window display tier (top at y0, between x0 and
+// x1), their fronts zg behind the glass; a white price card leans against every third
+// or fourth item
+void fWindowGoods( inout Hit h, vec3 ro, vec3 rd, float x0, float x1, float y0, float seed, float st, float zg ) {
   if ( rd.z <= 1e-4 ) return;
-  float t = ( 0.52 - ro.z ) / rd.z;
+  float t = ( zg - ro.z ) / rd.z;
   if ( t <= 0.0 || t >= h.t ) return;
   vec3 q = ro + rd * t;
   float rowH = st > 5.5 ? 0.3 : 0.34, cellW = st > 5.5 ? 0.04 : st > 3.5 ? 0.085 : 0.12;
   if ( q.y < y0 || q.y > y0 + rowH || q.x < x0 || q.x > x1 ) return;
   float fp = fFoot( t, rd, vec3( 0.0, 0.0, -1.0 ) );
-  vec4 it = fItem( q.x, q.y - y0, 0.0, rowH, cellW, seed * 13.0, st, fKeep( fp, cellW ), fp );
+  float kc = fKeep( fp, cellW );
+  vec4 it = fItem( q.x, q.y - y0, 0.0, rowH, cellW, seed * 13.0, st, kc, fp );
+  // price cards (resolved close up; a lighter speck further off)
+  float cw = cellW * ( st > 5.5 ? 3.0 : 1.0 ), ci = floor( ( q.x - x0 ) / cw ), cf = fract( ( q.x - x0 ) / cw );
+  float card = step( fh1( ci * 3.17 + seed * 11.0 ), 0.3 ) * fEdge( 0.05 - ( q.y - y0 ), fp ) * fEdge( cf - 0.25, fp / cw ) * fEdge( 0.75 - cf, fp / cw );
+  if ( card * kc > 0.5 ) { h.t = t; h.n = vec3( 0.0, 0.0, -1.0 ); h.alb = vec3( 0.8, 0.79, 0.74 ); h.glow = 0.0; h.id = 2.0; h.m = 0.0; return; }
   if ( it.a > 0.5 ) { h.t = t; h.n = vec3( 0.0, 0.0, -1.0 ); h.alb = it.rgb / it.a; h.glow = 0.0; h.id = 2.0; h.m = 0.0; }
 }
 
@@ -439,20 +445,47 @@ void fWindowGoods( inout Hit h, vec3 ro, vec3 rd, float x0, float x1, float y0, 
 void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p, vec3 n, int mode, vec3 S, float seed, bool shop, bool stair, float st ) {
   vec3 f1 = fh3( seed * 31.0 + 1.0 ), f2 = fh3( seed * 53.0 + 2.0 );
   float cx = S.x * 0.5;
-  if ( shop && ( st > 0.5 && st < 1.5 || st > 3.5 && st < 4.5 || st > 5.5 && st < 6.5 ) && f2.y > 0.15 ) {
-    // a window display: a low riser behind each display pane (none behind the door) with a
-    // row of the shop's goods on it, in the light of the window spots
+  if ( shop && !( st > 1.5 && st < 3.5 ) && f2.y > 0.08 ) {
+    // a window display behind each display pane (none behind the door): a riser with a
+    // row of the shop's goods, and in most shops one or two shelves stepping back above
+    // it, stocked up to ~1.8 m; fashion and shoe windows often closed off by a backdrop
+    // partition a metre behind the glass (a printed photograph), so the window reads as a
+    // display, not as the depth of the shop
     float yR = 0.3 + 0.22 * f1.z;
     vec3 rc = f1.x < 0.4 ? vec3( 0.80, 0.79, 0.76 ) : f1.x < 0.7 ? vec3( 0.42, 0.30, 0.20 ) : vec3( 0.07 );
-    gFin = f1.x >= 0.4 && f1.x < 0.7 ? FIN_WOOD : FIN_PAINT;
+    float fin = f1.x >= 0.4 && f1.x < 0.7 ? FIN_WOOD : FIN_PAINT;
     float a0 = cx - gHW + 0.08, a1 = cx + gHW - 0.08;
     bool door = gDoor > -50.0;
     float dA = door ? cx + gDoor - 0.62 : a1, dB = door ? cx + gDoor + 0.62 : a1;
+    // tiers above the riser: clothing keeps its window to the figures (and a low plinth),
+    // the rest stack shelves
+    int tiers = st < 0.5 ? 0 : ( f1.y < 0.3 ? 1 : 2 );
+    bool backdrop = ( st < 0.5 || st > 4.5 && st < 5.5 ) && f2.z > 0.45 || st > 0.5 && st < 1.5 && f2.z > 0.8;
     for ( int k = 0; k < 2; k++ ) {
       float x0 = k == 0 ? a0 : max( a0, dB ), x1 = k == 0 ? min( a1, dA ) : a1;
       if ( x1 - x0 < 0.45 ) continue;
+      gFin = fin;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, 0.0, 0.3 ), vec3( x1, yR, 0.76 ), rc );
-      if ( mode == 0 ) fWindowGoods( h, ro, rd, x0 + 0.05, x1 - 0.05, yR, seed + float( k ) * 0.37, st );
+      if ( mode == 0 ) fWindowGoods( h, ro, rd, x0 + 0.05, x1 - 0.05, yR, seed + float( k ) * 0.37, st, 0.52 );
+      for ( int t = 1; t <= 2; t++ ) {
+        if ( t > tiers ) break;
+        float yT = yR + float( t ) * 0.44, zF = 0.52 + float( t ) * 0.1;
+        // a shelf board on two slim uprights at the pane's ends
+        gFin = fin;
+        fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, yT - 0.025, zF - 0.17 ), vec3( x1, yT, zF + 0.2 ), rc * 0.95 );
+        gFin = FIN_METAL;
+        if ( mode == 0 ) {
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, yR, zF + 0.17 ), vec3( x0 + 0.02, yT, zF + 0.19 ), vec3( 0.06 ) );
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( x1 - 0.02, yR, zF + 0.17 ), vec3( x1, yT, zF + 0.19 ), vec3( 0.06 ) );
+          fWindowGoods( h, ro, rd, x0 + 0.05, x1 - 0.05, yT, seed + float( k ) * 0.37 + float( t ) * 0.21, st, zF );
+        }
+      }
+      if ( backdrop ) {
+        // (id 4: shaded as a printed photograph)
+        gFin = FIN_PAINT;
+        fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0 - 0.05, 0.0, 1.15 ), vec3( x1 + 0.05, 2.15, 1.19 ), vec3( 0.5 ) );
+        if ( mode == 0 && h.id > 0.5 && h.id < 1.5 && h.b0.z > 1.14 && h.b0.z < 1.16 ) h.id = 4.0;
+      }
     }
   }
   if ( shop ) {
@@ -1052,6 +1085,18 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
         float frame = 1.0 - fEdge( 0.025 - min( min( by, 0.5 - by ), min( bx, 1.0 - bx ) * bW ), fp );
         h.alb = mix( vec3( 0.035, 0.038, 0.036 ), vec3( 0.72, 0.71, 0.66 ), mix( 0.08, txt * 0.55, keep ) );
         h.alb = mix( h.alb, vec3( 0.24, 0.16, 0.10 ), 1.0 - frame );
+      } else if ( st > 1.5 && st < 2.5 && abs( nn.x ) > 0.5 && h.id < 0.5 && p.y > 1.1 && p.y < 2.3 && p.z > 0.9 ) {
+        // cafe side wall: framed prints and photographs in a row, a mirror among them
+        float keep = fKeep( fp, 0.12 );
+        float pz = p.z - 0.9, cell = 1.15, ci = floor( pz / cell ), cz = pz - ci * cell;
+        vec3 ph = fh3( ci * 3.1 + seed * 7.0 );
+        float w = 0.45 + 0.3 * ph.x, hh = 0.4 + 0.3 * ph.y, yc = 1.7 + 0.1 * ( ph.z - 0.5 );
+        float dE = min( min( cz - 0.3, 0.3 + w - cz ), min( p.y - ( yc - hh * 0.5 ), yc + hh * 0.5 - p.y ) );
+        float inside = fEdge( dE, fp ) * step( 0.25, ph.z );
+        float frame = 1.0 - fEdge( dE - 0.035, fp );
+        vec2 q = vec2( cz, p.y ) * 3.0 + ci * 5.0;
+        vec3 pic = ph.z > 0.85 ? vec3( 0.55, 0.58, 0.6 ) * ( 0.7 + 0.3 * vnoise( q * 2.0 ) ) : mix( GOODS[ int( ph.x * 7.99 ) ] * 0.7 + 0.08, vec3( 0.7, 0.62, 0.5 ), smoothstep( 0.3, 0.7, mix( 0.5, vnoise( q ), keep ) ) );
+        h.alb = mix( h.alb, mix( pic, vec3( 0.08, 0.06, 0.05 ), frame * keep + 0.2 * ( 1.0 - keep ) ), inside );
       } else if ( st > 2.5 && st < 3.5 && h.id < 0.5 ) {
         // dark panelled walls with small lit display niches
         vec2 nf = fract( vec2( along / 0.7, ( p.y - 1.25 ) / 0.45 ) );
@@ -1067,6 +1112,14 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
         vec3 nc = mix( vec3( 0.62, 0.58, 0.52 ) * grad, vec3( 0.05, 0.045, 0.05 ), stand * 0.85 );
         h.alb = mix( h.alb * ( 0.9 + 0.1 * keep * fEdge( fract( along / 0.7 ) * 0.7 - 0.028, fp ) ), nc, niche );
         h.glow = 0.22 * niche * grad * ( 1.0 - 0.8 * stand ) + 0.6 * niche * stand * step( 0.93, fh2( floor( vec2( along / 0.03, p.y / 0.03 ) ) + seed ) ) * fKeep( fp, 0.03 );
+      } else if ( st > 1.5 && st < 2.5 && h.id > 0.5 && h.id < 1.5 && nn.z < -0.5 && p.y > 1.05 && p.y < 1.38 && p.x < S.x * 0.56 ) {
+        // the counter's lit display case: glass front, two shelves of pastries and cakes
+        float keep = fKeep( fp, 0.06 );
+        float yy = p.y - 1.05, row = step( 0.16, yy );
+        float it = step( 0.3, fh2( vec2( floor( p.x / 0.09 ), row ) + seed * 5.0 ) ) * step( 0.025, fract( yy / 0.16 ) * 0.16 ) * step( fract( yy / 0.16 ) * 0.16, 0.09 );
+        vec3 pc = mix( vec3( 0.62, 0.40, 0.18 ), vec3( 0.84, 0.74, 0.58 ), fh1( floor( p.x / 0.09 ) * 1.7 + row ) );
+        h.alb = mix( vec3( 0.7, 0.68, 0.64 ), mix( vec3( 0.5 ), pc, it ), keep );
+        h.glow = 0.55;
       } else if ( h.id > 0.5 && h.id < 1.5 && h.m > FIN_FRIDGE - 0.5 && nn.x > 0.5 ) {
         // drinks fridge: a lit cabinet behind its glass door, shelves of bottles and cans
         float keep = fKeep( fp, 0.05 );
@@ -1094,6 +1147,13 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
         // lit glass tops of the display cases, a few glints
         float keep = fKeep( fp, 0.035 );
         h.alb = vec3( 0.5 ); h.glow = 0.35 + mix( 0.018, 1.2 * step( 0.985, fh2( floor( p.xz / 0.035 ) + seed ) ), keep );
+      } else if ( st > 1.5 && st < 2.5 ) {
+        // cafe tables: cups on saucers, a plate, the odd paper napkin
+        float keep = fKeep( fp, 0.08 );
+        vec2 cq = p.xz / 0.24, ci = floor( cq ), cf = fract( cq ) - 0.5;
+        float g = fh2( ci + seed * 2.0 );
+        float cup = step( 0.55, g ) * fEdge( 0.24 * ( 0.3 - length( cf ) ), fp );
+        h.alb = mix( h.alb, mix( h.alb * 1.1, vec3( 0.86, 0.85, 0.82 ), cup ), keep );
       } else {
         // goods on table tops
         float keep = fKeep( fp, 0.18 );
@@ -1141,8 +1201,28 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     }
   }
   // mannequins: matte finish, a faint seam at the neck, darker under the chin and arms
-  if ( h.id > 2.5 && gDet > 0.0 ) {
+  if ( h.id > 2.5 && h.id < 3.5 && gDet > 0.0 ) {
     h.alb *= mix( 1.0, 0.75 + 0.25 * smoothstep( -0.6, 0.4, nn.y ), gDet );
+  }
+  // a window backdrop: a printed photograph (two colour fields, a figure in soft focus) with
+  // a band of type along its foot, lit a little from behind
+  if ( h.id > 3.5 ) {
+    float keep = fKeep( fp, 0.25 );
+    vec2 q = p.xy * 1.3 + seed * 17.0;
+    vec3 c1 = mix( vec3( 0.74, 0.69, 0.63 ), GOODS[ int( fh1( seed * 2.1 ) * 7.99 ) ], 0.5 );
+    vec3 c2 = GOODS[ int( fh1( seed * 3.9 ) * 7.99 ) ] * 0.8 + 0.08;
+    float img = mix( 0.5, vnoise( q * 1.6 ) * 0.65 + vnoise( q * 4.5 ) * 0.35, keep );
+    vec3 photo = mix( c1, c2, smoothstep( 0.35, 0.65, img ) );
+    float fxc = S.x * ( 0.3 + 0.4 * fh1( seed * 5.5 ) ), dx = ( p.x - fxc ) / 0.2;
+    float head = 1.0 - smoothstep( 0.8, 1.2, length( vec2( dx * 0.2 / 0.11, ( p.y - 1.72 ) / 0.14 ) ) );
+    float body = ( 1.0 - smoothstep( 0.7, 1.3, abs( dx ) * ( 1.25 - 0.35 * smoothstep( 0.5, 1.5, p.y ) ) ) ) * step( p.y, 1.55 );
+    vec3 skin = mix( vec3( 0.62, 0.45, 0.35 ), vec3( 0.32, 0.21, 0.15 ), fh1( seed * 8.8 ) );
+    photo = mix( photo, GOODS[ int( fh1( seed * 6.1 ) * 7.99 ) ] * 0.7 + 0.04, body * keep );
+    photo = mix( photo, skin, head * keep );
+    float band = fEdge( p.y - 0.18, fp ) * fEdge( 0.42 - p.y, fp );
+    float type_ = mix( 0.3, fPulse( p.x / 0.05, 0.55, fp / 0.05 ) * fEdge( 0.04 - abs( p.y - 0.3 ), fp ), fKeep( fp, 0.04 ) );
+    h.alb = mix( photo, mix( vec3( 0.82, 0.8, 0.76 ), vec3( 0.08 ), type_ ), band * 0.92 );
+    h.glow = 0.08 * gDet;
   }
 
   // ---- lighting in room space
@@ -1194,7 +1274,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     // goods), the inter-reflected fill (falling off up the walls, and towards the back,
     // where less of the shop's light returns) and display spots on the low window zone
     float fill = 0.24 * mix( 1.0, 0.45, smoothstep( 0.9, S.y, p.y ) ) * mix( 1.0, 0.55, smoothstep( 2.0, S.z, p.z ) )
-               + 1.3 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 0.7, 2.0, p.y ) );
+               + 2.3 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
     Elamp = lampC * I * ( 1.5 * fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
     // the fittings themselves (downlight discs, lit panels, pendants): bright points by day
     // too, a panel a few times its ceiling
@@ -1531,7 +1611,8 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
       body *= step( hp.x, 0.33 );
       if ( yr < 0.45 ) body *= 1.0 - 0.85 * fEdge( 0.022 - du, fx ) * smoothstep( 0.45, 0.38, yr );
       float kp = 1.0 - smoothstep( 0.5, 1.5, fx / 1.1 );
-      cover = mix( 0.33 * 0.34 * ( 1.0 - smoothstep( 1.6, 1.8, yc ) ), body, kp );
+      // (at night the people over there are lit unevenly and barely register in the glass)
+      cover = mix( 0.33 * 0.34 * ( 1.0 - smoothstep( 1.6, 1.8, yc ) ), body, kp ) * ( 1.0 - 0.6 * uNight );
       vec3 cl = fh3( cid * 7.1 + float( k ) + step( 0.47, yr ) * 3.0 );
       alb = mix( vec3( dot( cl, vec3( 0.33 ) ) ), cl, 0.45 ) * 0.42 + 0.03;
       // a face and hair, the body rounded (darker at its sides)
@@ -1758,7 +1839,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v8' + dbg;
+  m.customProgramCacheKey = () => 'facades.glassInterior.v9' + dbg;
   return m;
 }
 

@@ -231,14 +231,18 @@ export class Baker {
   }
 
   /**
-   * Compile every recipe in parallel (KHR_parallel_shader_compile) and bake each one into
-   * its prepared target once its program is ready. While `opts.immediate()` is true
-   * (startup, behind the loading screen) a recipe bakes as soon as it compiles; after
-   * that the remaining ones are queued and baked one per animation frame, largest first,
-   * so bakes never pile up in one frame. `opts.profile` measures each bake's GPU time with
-   * a forced sync (stats only). Note: a program's first draw also pays the driver's deferred
-   * compile (often 10× the steady-state cost of the bake itself, e.g. ashlar ~200 ms vs
-   * 8 ms), which is why startup bakes everything before the first frame.
+   * Compile every recipe in one batch (the driver's threads compile them in parallel, polled
+   * without blocking through KHR_parallel_shader_compile), then bake them. A program's first
+   * use (its uniforms) and a status query wait until the GPU process has worked through
+   * everything queued before them, so nothing is drawn until every bake program is ready:
+   * then their uniforms are resolved in one pass while the queue is empty (one short wait,
+   * not one per recipe behind the bakes already drawn, each of which also pays the driver's
+   * deferred compile on its first draw, e.g. ashlar ~200 ms against 8 ms), and the link
+   * status is only checked when the renderer collects shader diagnostics. While
+   * `opts.immediate()` is true (start-up, behind the loading screen) every recipe bakes in
+   * that one go; after that the bakes are queued and drawn one per animation frame, largest
+   * first, so they never pile up in one frame. `opts.profile` measures each bake's GPU time
+   * with a forced sync (stats only).
    * Resolves with timing stats once every map is final.
    */
   async run(entries, opts = {}) {
@@ -250,17 +254,24 @@ export class Baker {
     const immediate = opts.immediate || (() => true);
     const timings = {}, gpuMs = {}, bakedAt = {};
     const queue = [];
-    let pumping = false, queued = 0;
-    const compile = (mat) => {
-      const sc = new THREE.Scene();
+    let queued = 0;
+    const jobs = [...entries.values()].map((e) => {
+      const [w, h] = sizeOf(e.recipe);
+      return { e, mat: this.passA(e.recipe), cost: w * h * (e.recipe.ss ?? 2) };
+    });
+    const sc = new THREE.Scene();
+    for (const mat of [this.passB, ...jobs.map((j) => j.mat)]) {
       const m = new THREE.Mesh(this.geometry, mat);
       m.frustumCulled = false;
       sc.add(m);
-      return R.compileAsync(sc, this.camera).catch(() => null);
-    };
-    const bake = ({ e, mat, done }) => {
+    }
+    await R.compileAsync(sc, this.camera).catch(() => null);
+    // every program is linked: resolve their uniforms now, while nothing else of ours is queued
+    for (const mat of [this.passB, ...jobs.map((j) => j.mat)]) R.properties.get(mat).currentProgram?.getUniforms();
+    const passBOk = this.runnable(this.passB);
+    const bake = ({ e, mat }) => {
       const r = e.recipe;
-      if (!this.runnable(mat) || (!r.raw && !this.runnable(this.passB))) {
+      if (!this.runnable(mat) || (!r.raw && !passBOk)) {
         console.warn(`[materials] bake recipe ${r.name} did not compile; keeping flat values`);
       } else {
         if (opts.profile) sync(e.target);
@@ -272,27 +283,21 @@ export class Baker {
         e.baked = true;
       }
       mat.dispose();
-      done();
     };
-    const pump = () => {
-      queue.sort((a, b) => b.cost - a.cost);
-      if (queue.length) bake(queue.shift());
-      if (queue.length) requestAnimationFrame(pump);
-      else pumping = false;
-    };
-    const passBReady = compile(this.passB);
-    const jobs = [...entries.values()].map((e) => new Promise((done) => {
-      const mat = this.passA(e.recipe);
-      Promise.all([compile(mat), passBReady]).then(() => {
-        const [w, h] = sizeOf(e.recipe);
-        const job = { e, mat, done, cost: w * h * (e.recipe.ss ?? 2) };
-        if (immediate()) { bake(job); return; }
-        queue.push(job);
-        queued++;
-        if (!pumping) { pumping = true; requestAnimationFrame(pump); }
+    if (immediate()) {
+      for (const j of jobs) bake(j);
+    } else {
+      queue.push(...jobs.sort((a, b) => b.cost - a.cost));
+      queued = queue.length;
+      await new Promise((done) => {
+        const pump = () => {
+          if (queue.length) bake(queue.shift());
+          if (queue.length) requestAnimationFrame(pump);
+          else done();
+        };
+        requestAnimationFrame(pump);
       });
-    }));
-    await Promise.all(jobs);
+    }
     for (const t of this.temps.values()) t.dispose();
     this.temps.clear();
     this.passB.dispose();
@@ -325,10 +330,13 @@ export class Baker {
     this.draw(this.passB, e.target);
   }
 
+  /** False when the material's program failed to link. Only known when the renderer collects
+   *  shader diagnostics (renderer.debug.checkShaderErrors): run() has resolved the program's
+   *  uniforms by then, which fills them; otherwise the bake is drawn and a failed program
+   *  simply leaves the flat values. */
   runnable(mat) {
     const p = this.renderer.properties.get(mat).currentProgram;
-    if (!p) return true;
-    p.getUniforms(); // forces link status / diagnostics
+    if (!p || !this.renderer.debug.checkShaderErrors) return true;
     return !p.diagnostics || p.diagnostics.runnable !== false;
   }
 }

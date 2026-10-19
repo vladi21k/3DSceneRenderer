@@ -96,6 +96,10 @@ const facades = {
       // goods stands on the pavement (crates, produce, buckets, racks): the same powder-coat
       // finish, but casting shadows onto the paving
       standPaint: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }) },
+      // fruit and vegetables: waxy, glossy skins (the moulded-plastic bake, vertex colour = albedo)
+      produce: { material: M.get('plastic.chair', { vertexColors: true, color: white, roughness: 0.42 }) },
+      // wooden crates, carts and trestles: weathered timber (vertex colour tints it)
+      standWood: { material: M.get('wood.bench', { vertexColors: true }), far: { key: 'standPaint' } },
       shutter: { material: vc('wood.shutterDetail'), thin: true, far: { key: 'joinery', k: FOLD.paintwood } },
       door: { material: vc('wood.door'), castShadow: false, far: { key: 'joinery', k: FOLD.wood } },
       glass: { material: glass, color: false, extra: GLASS_ATTRS, castShadow: false, far: { key: 'glassFar' } },

@@ -213,9 +213,12 @@ export function* buildPaving(ctx, chunk, rows, out) {
     surface.tone(S.ri, d, tone, 0, ci);
     if (k === K_GROUT) {
       // mortar takes the tone and grime of the setts beside it, a little darker where it
-      // meets them (dirt collects along the joint)
+      // meets them (dirt collects along the joint), but keeps its own cement grey: the
+      // warm cast of the brake dust on the setts is mostly left out (the photographs show
+      // a neutral grey strip each side of the rail, never a tan band)
       const m = railDist(d) < GROUT_W * 0.5 ? 1.0 : 0.9;
-      tone[0] *= m; tone[1] *= m; tone[2] *= m;
+      const g = (tone[0] + tone[1] + tone[2]) / 3;
+      tone[0] = m * (g + 0.25 * (tone[0] - g)); tone[1] = m * (g + 0.25 * (tone[1] - g)); tone[2] = m * (g + 0.25 * (tone[2] - g));
     }
     let b = bufs[k];
     if (zoned) {

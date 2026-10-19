@@ -12,7 +12,8 @@ const RAIL_LEN = 18;
 /** Axles further back than this belong to the middle / rear bogies (dull, distant impacts). */
 export const NEAR_BOGIE_END = 8;
 
-/** Sorted features [{s, kind: 'joint'|'frog'|'check', sev, v, xo?: turnout part}] over the whole loop. */
+/** Sorted features [{s, kind: 'joint'|'frog'|'check', sev, v, xo?: turnout part, part?: 'toe' | 'heel' |
+ *  'check' | 'frog' | 'frogHeel' | 'closure' (which one)}] over the whole loop. */
 export function trackFeatures(route, layout) {
   const rng = RNG.from(layout.seed ?? 7, 'audio-joints');
   const L = route.length;
@@ -31,12 +32,12 @@ export function trackFeatures(route, layout) {
     // our track has one turnout: facing at s0 (from = +1) or trailing at s1 (from = -1)
     const facing = c.from > 0;
     const at = (x) => route.wrap(facing ? c.s0 + x : c.s1 - x);
-    out.push({ s: at(0.0), kind: 'joint', sev: 0.5, v: rng.int(0, 7), xo: true });     // switch toe
-    out.push({ s: at(6.4), kind: 'joint', sev: 0.75, v: rng.int(0, 7), xo: true });    // switch heel
-    out.push({ s: at(14.0), kind: 'check', sev: 0.7, len: 4.5, xo: true });        // check rail scrape
-    out.push({ s: at(15.6), kind: 'frog', sev: 1.0, v: rng.int(0, 2), xo: true });     // frog nose
-    out.push({ s: at(19.2), kind: 'joint', sev: 0.7, v: rng.int(0, 7), xo: true });    // frog heel
-    out.push({ s: at(23.5), kind: 'joint', sev: 0.55, v: rng.int(0, 7), xo: true });   // closure rail joint
+    out.push({ s: at(0.0), kind: 'joint', sev: 0.5, v: rng.int(0, 7), xo: true, part: 'toe' });     // switch toe
+    out.push({ s: at(6.4), kind: 'joint', sev: 0.75, v: rng.int(0, 7), xo: true, part: 'heel' });   // switch heel
+    out.push({ s: at(14.0), kind: 'check', sev: 0.7, len: 4.5, xo: true, part: 'check' });      // check rail scrape
+    out.push({ s: at(15.6), kind: 'frog', sev: 1.0, v: rng.int(0, 2), xo: true, part: 'frog' });   // frog nose
+    out.push({ s: at(19.2), kind: 'joint', sev: 0.7, v: rng.int(0, 7), xo: true, part: 'frogHeel' }); // frog heel
+    out.push({ s: at(23.5), kind: 'joint', sev: 0.55, v: rng.int(0, 7), xo: true, part: 'closure' }); // closure rail joint
   }
   out.sort((a, b) => a.s - b.s);
   return out;

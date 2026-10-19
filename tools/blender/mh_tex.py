@@ -5,12 +5,16 @@ Builds the shared texture arrays used by every character from the MakeHuman CC0 
   albedo array (1024 x 1024 layers, RGBA, sRGB):
     skin layers   ('color')  MakeHuman skin diffuse; skin tones are per-character tint gains
     garment layers('detail') neutral fabric detail (linear value = 0.5 * detail, mean ~0.5): folds from the
-                             garment's ambient-occlusion map, denim fading from the jeans diffuse; logos and
-                             trims are not carried over. The runtime tints them: albedo = 2 * texel * tint.
+                             garment's ambient-occlusion map, denim fading from the jeans diffuse, the creases of
+                             the cloth relief (mh_folds.py); logos and trims are not carried over. The runtime
+                             tints them: albedo = 2 * texel * tint.
     hair layers   ('detail') luminance detail + coverage alpha (alpha bled into the transparent texels)
     misc layers               shoes (colour), fedora felt (detail), eyebrows / eyelashes (detail + alpha),
                              eyes (colour), beard / stubble (detail + alpha) packed into sub-rectangles
-  normal array (1024 x 1024 layers, RGB tangent-space normals, OpenGL convention) for garments, shoes, hat.
+  normal array (1024 x 1024 layers, RGB tangent-space normals, OpenGL convention) for garments, shoes, hat; the
+                             garments' carry the suit's own map combined with the cloth relief of mh_folds.py (folds
+                             under the arms, at the elbows, round the waist, the crotch, behind the knees, above the
+                             shoes, gored folds on skirts), baked from the characters wearing the suit.
 
 Writes WebP strips (8 layers stacked vertically: 1024 x 8192) to assets/humans_mh/tex/ and the layer table
 .work/mh/tex/layers.json (merged into the cast metadata by mh_export.py).
@@ -27,6 +31,7 @@ from scipy import ndimage
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mh_cast as CASTM  # noqa: E402
+import mh_folds as FOLDS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
 ASSETS = '/opt/mh/system_assets'
@@ -41,6 +46,8 @@ Q_NORMAL = 86
 
 # roughness per layer kind (the runtime may refine per region)
 ROUGH = {'skin': 0.52, 'cloth': 0.86, 'hair': 0.42, 'misc': 0.6}
+# how much the cloth relief's creases darken the garment albedo (linear)
+CREASE_DARK = 0.3
 SUIT_ROUGH = {'male_elegantsuit01': 0.72, 'female_elegantsuit01': 0.8, 'female_sportsuit01': 0.7}
 
 
@@ -158,14 +165,16 @@ def skin_layer(name):
     return rgba, dict(type='color', ref=ref.tolist())
 
 
-def garment_layer(suit, masks):
-    """masks: dict region -> bool mask of the texels the characters use."""
+def garment_layer(suit, masks, crease=None):
+    """masks: dict region -> bool mask of the texels the characters use; crease: 0..1 darkness of the cloth
+    relief's creases (mh_folds.py) or None."""
     d = f'{ASSETS}/clothes/{suit}'
     diff = srgb_to_lin(load(f'{d}/{suit}_diffuse.png', mode='RGB'))
     aop = f'{d}/{suit}_ao.png'
     ao = load(aop, mode='L')[..., 0] if os.path.exists(aop) else np.ones((S, S), np.float32)
+    shade = 1.0 - CREASE_DARK * crease if crease is not None else np.ones((S, S), np.float32)
     if CASTM.SUITS[suit]['tex'] == 'color':
-        rgba = np.concatenate([lin_to_srgb(diff), np.ones((S, S, 1), np.float32)], -1)
+        rgba = np.concatenate([lin_to_srgb(diff * shade[..., None]), np.ones((S, S, 1), np.float32)], -1)
         used = np.zeros((S, S), bool)
         for m in masks.values():
             used |= m
@@ -194,6 +203,7 @@ def garment_layer(suit, masks):
             detail = np.where(m, dd * (0.75 + 0.25 * fold), detail)
         else:
             detail = np.where(m, (0.22 + 0.83 * fold) * noise, detail)
+    detail = detail * shade
     # normalise the used texels to a mean detail of 1 (tint = the garment's mean colour)
     if used.any():
         for reg, m in masks.items():
@@ -204,6 +214,48 @@ def garment_layer(suit, masks):
     g = lin_to_srgb(v)
     rgba = np.stack([g, g, g, np.ones_like(g)], -1)
     return rgba, dict(type='detail')
+
+
+def combine_normals(base, relief, k=1.0):
+    """Tangent-space normals: the suit's own map (0..1 RGB, or None) with the relief's (-1..1) added as slopes."""
+    if base is None:
+        n0 = np.zeros(relief.shape, np.float32)
+        n0[..., 2] = 1
+    else:
+        n0 = base * 2 - 1
+    z0 = np.maximum(n0[..., 2:3], 0.2)
+    z1 = np.maximum(relief[..., 2:3], 0.2)
+    xy = n0[..., :2] / z0 + k * relief[..., :2] / z1
+    n = np.concatenate([xy, np.ones_like(z0)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    return (n * 0.5 + 0.5).astype(np.float32)
+
+
+def relief_entries(metas, RAWDIR):
+    """Per suit: the characters wearing it as mh_folds.bake entries, the most complete adult garment first."""
+    out = {}
+    for cid, m in metas.items():
+        z = np.load(os.path.join(RAWDIR, cid + '.npz'))
+        sp = m['spec']
+        for p in m['parts']:
+            if p['kind'] != 'suit':
+                continue
+            key = p['key']
+            co, reg = z[key + '_co'], z[key + '_reg']
+            top = reg != CASTM.REGIONS['bottom']
+            kk = CASTM.stature(sp) / 1.76
+            cut_t = sp['top'].get('cut') if sp['top'] and sp['top']['suit'] == p['suit'] else None
+            cut_b = sp['bottom'].get('cut') if sp['bottom'] and sp['bottom']['suit'] == p['suit'] else None
+            e = dict(cid=cid, co=co, nr=z[key + '_nr'], uv=z[key + '_uv'], idx=z[key + '_idx'], reg=reg, w=z[key + '_w'],
+                     J=m['joints'], k=kk, kinds=FOLDS.SUIT_KIND.get(p['suit'], ('tee', 'jeans')), female=sp['sex'] == 'f',
+                     seed=zlib.crc32(p['suit'].encode()) % 997,
+                     hemTop=float(co[top, 1].min()) if top.any() else 0.0,
+                     waistBot=float(co[~top, 1].max()) if (~top).any() else 0.0)
+            e['prio'] = ((cut_t is not None) + (cut_b is not None) + (0 if 0.9 < kk < 1.12 else 2) - len(co) / 1e5, cid)
+            out.setdefault(p['suit'], []).append(e)
+    for v in out.values():
+        v.sort(key=lambda e: e['prio'])
+    return out
 
 
 def normal_from(path, size=S):
@@ -375,6 +427,7 @@ def main():
                 uvtris.setdefault(p['tex'], [])
     keys = sorted(uvtris)
     log('texture keys:', len(keys))
+    folds = relief_entries(metas, RAW) if not os.environ.get('MH_NO_FOLDS') else {}
 
     layers = []      # dicts: key, type, rough, ...
     albedo = []      # arrays (S, S, 4) in [0, 1] sRGB
@@ -407,8 +460,18 @@ def main():
         lm = {l: i for i, l in enumerate(labs)}
         mk = raster_mask(allt, labels=np.array([lm[int(r)] for r in allr]), nlab=len(labs))
         masks = {regs[l]: mk[lm[l]] for l in labs}
-        img, info = garment_layer(suit, masks)
+        crease = None
         nimg = normal_from(f'{ASSETS}/clothes/{suit}/{suit}_normal.png')
+        if folds.get(suit):
+            # the cloth relief: creases into the albedo, slopes into the normals (a normal layer even where the
+            # suit has no map of its own)
+            rn, crease, rm = FOLDS.bake(folds[suit], S)
+            rn = push_pull(rn, ndimage.binary_dilation(rm, iterations=2))
+            rn /= np.maximum(np.linalg.norm(rn, axis=-1, keepdims=True), 1e-6)
+            crease = push_pull(crease[..., None].astype(np.float32), rm)[..., 0]
+            nimg = combine_normals(nimg, rn)
+            log('relief', suit, 'from', ','.join(e['cid'] for e in folds[suit][:3]), f'{int(rm.sum())} texels')
+        img, info = garment_layer(suit, masks, crease)
         li, ni = add_layer(img, dict(info, key=key, kind='cloth', rough=SUIT_ROUGH.get(suit, ROUGH['cloth'])), nimg)
         remap[key] = dict(layer=li, rect=[0, 0, 1, 1], normal=ni, type=info['type'])
         log('garment', suit, 'regions', list(masks))

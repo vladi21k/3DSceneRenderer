@@ -3,10 +3,11 @@ import { doorOf } from './behaviour.js';
 
 // Café staff: a waiter for each busy terrace near the camera. They come out of the café's door
 // (only where nobody sees them appear), walk out to the walkway at the terrace's street edge,
-// along it to a table in use, step up to it from the side its chairs leave free and stand there
-// facing it for a few seconds (taking an order, bringing it), then go back the same way and in
-// through the door again; out of sight in the doorway they are gone, to come out again a little
-// later. Paths keep clear of the tables, chairs and free-standing umbrella bases.
+// along it to a table people sit at (more often one not served yet), step up to it from the
+// side its chairs leave free and stand there facing it for a few seconds (taking an order,
+// bringing it), then go back the same way and in through the door again; out of sight in the
+// doorway they are gone, to come out again a little later. Paths keep clear of the tables,
+// chairs and free-standing umbrella bases.
 
 const RANGE = [6, 220];       // terraces with a waiter (m ahead of the camera)
 const MAX_STAFF = 7;
@@ -71,9 +72,14 @@ export function planRound(c, a) {
   const r = c.rng, side = cafe.side, map = c.map, U = (s) => c.unwrap(s);
   const exitD = side * (map.wallMin(dr.s, side, 0.6) - 0.5);
   const aisleD = side * (cafe._crowdInner - 0.45);
-  // tables people sit at (their order on its way), else any table in use
+  // tables people sit at: their order on its way, or (at a table not served yet: people who have
+  // just sat down) the order to take, those twice as often
   const busy = [];
-  for (const seat of feat.seats) if (feat.occ.has(seat.key) && seat.dressed === 2 && !busy.includes(seat.table)) busy.push(seat.table);
+  for (const seat of feat.seats) {
+    if (!feat.occ.has(seat.key) || busy.includes(seat.table)) continue;
+    busy.push(seat.table);
+    if (seat.dressed !== 2) busy.push(seat.table);
+  }
   if (!busy.length) return false;
   for (let tries = 0; tries < 4; tries++) {
     const ti = r.pick(busy);

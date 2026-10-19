@@ -14,7 +14,7 @@ import { Strip } from './ironwork/strip.js';
 import {
   makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK, ironNeglect,
 } from './ironwork/mats.js';
-import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL, DISH_W } from './ironwork/attach.js';
+import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL, DISH_W, FLAG } from './ironwork/attach.js';
 import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 
 // Balconies and facade attachments: moulded stone slabs on carved consoles (placed by
@@ -97,6 +97,8 @@ const SHRUB_BLOOM = [[0.8, 0.25, 0.42], [0.85, 0.82, 0.78], [0.75, 0.05, 0.08], 
 // Flags (the atlas cells of attach.js flagTexture): the national white with two blue
 // stripes and the emblem, the same sun-faded, plain stripes, blue over white.
 const FLAG_W = [0.62, 0.2, 0.12, 0.06];
+const FLAG_UV = [[0, 0.5], [0.5, 0.5], [0, 0], [0.5, 0]];   // atlas offsets of the four cells
+const FLAG_L = FLAG.L, FLAG_H = FLAG.H, FLAG_TOP = 1.85;       // cloth size, hoist top up the pole
 // herb spikes: lavender, sage blue, basil white, not in flower (leafy)
 const HERBS = [[0.32, 0.2, 0.55], [0.2, 0.12, 0.42], [0.7, 0.7, 0.66], [0.09, 0.16, 0.05]];
 const HERB_W = [0.25, 0.15, 0.2, 0.4];
@@ -191,7 +193,7 @@ function lotStyle(lot, plan) {
   // households hang a flag down the front of their railing, elsewhere hardly any do;
   // the building's usual flag design
   const rf = new RNG(hash2(lot.seed, 0x7f1a));
-  const flagK = avenue ? (rf.chance(0.22) ? rf.range(0.25, 0.55) : rf.range(0, 0.02))
+  const flagK = avenue ? (rf.chance(0.18) ? rf.range(0.25, 0.55) : rf.range(0, 0.02))
     : (rf.chance(0.1) ? rf.range(0.2, 0.45) : rf.range(0, 0.015));
   const flag = weighted(rf, FLAG_W);
   return {
@@ -239,6 +241,31 @@ function flagPier(plan, f) {
     if (best === null || Math.abs(u - f.u) < Math.abs(best - f.u)) best = u;
   }
   return best;
+}
+
+/** True where a flag on a pole from facade (u, v, w) at elevation `el` (radians), its
+ *  cloth `s` times the template, keeps clear of the plan's balconies: slab, consoles and
+ *  railing as a box (padded 0.1 m along the wall; `own`, the balcony the pole is tied
+ *  to, unpadded and met only by the cloth). The hanging cloth is boxed generously: from
+ *  the hoist down by its whole fly length, ±0.15 m along the wall. */
+function flagClear(plan, u, v, w, el, s, own) {
+  const sn = Math.sin(el), cs = Math.cos(el);
+  const hb = FLAG_TOP - FLAG_H * s, L = FLAG_L * s;
+  // cloth box (v, w): hoist bottom / top points on the pole, the fly hanging below
+  const cv0 = v + hb * sn - L * 0.98, cv1 = v + FLAG_TOP * sn + 0.05;
+  const cw0 = w + hb * cs - 0.12;
+  for (const b of plan.balconies) {
+    const pad = b === own ? 0 : 0.1;
+    const bu0 = b.u0 - pad, bu1 = b.u1 + pad;
+    const bv0 = b.y - b.slabT - 0.8, bv1 = b.y + 1.15, bw1 = b.depth + 0.08;
+    if (u + 0.15 > bu0 && u - 0.15 < bu1 && cv1 > bv0 && cv0 < bv1 && cw0 < bw1) return false;
+    if (b === own || u < bu0 || u > bu1) continue;
+    for (let i = 1; i <= 10; i++) {
+      const t = (i / 10) * (FLAG_TOP + 0.1), pv = v + t * sn, pw = w + t * cs;
+      if (pv > bv0 && pv < bv1 && pw < bw1) return false;
+    }
+  }
+  return true;
 }
 
 const ironwork = {
@@ -610,7 +637,8 @@ const ironwork = {
   },
 
   /** What the residents keep on a balcony: planter boxes on the rail (or the coping, or
-   *  a trough on the floor), pots, a chair, an AC unit, now and then a towel or a flag. */
+   *  a trough on the floor), pots and potted shrubs, a chair, an AC unit, now and then a
+   *  towel or a flag hung down the front of the railing or on a pole. */
   balconyContents(ctx, lot, plan, st, bal, index, r) {
     const { lod } = ctx;
     const F = lot.frame.matrix, A = this.att;
@@ -618,19 +646,25 @@ const ironwork = {
     const len = u1 - u0, hs = st.railH;
     const iron = bal.railing !== 'stone';
     const top = y + (iron ? RAIL_H * hs : BALUSTRADE.H);
+    // a flag hung down the front of the railing (decided alike in near and far builds)
+    const flagged = iron ? this.railFlag(ctx, F, lot, bal, st, index, top) : null;
     // does this household plant at all? (decided alike in near and far builds)
     const planted = r.chance(st.greenery);
     let boxes = 0, grow = -1, where = null;
-    if (planted && r.chance(0.8)) {
-      const n = len > 3.2 ? r.int(1, 3) : len > 2 ? r.int(1, 2) : 1;
+    if (planted && r.chance(0.85)) {
       const col = r.chance(0.6) ? BOXES[st.box] : BOXES[weighted(r, BOX_W)];
       const bl = r.range(0.6, 1.0);
+      // boxes along the front: one to a row filling most of it
+      const fit = Math.max(1, Math.floor((len - 0.1) / (bl + 0.1)));
+      const n = Math.max(1, Math.min(fit, Math.round((len * r.range(0.3, 0.95)) / bl)));
       grow = this.growOf(st, r);
       // hung on the handrail (mostly outside), standing on a balustrade's coping clear of
-      // its rounded corners, or (plantings that do not hang) a trough on the floor
+      // its rounded corners, or (plantings that do not hang) a trough on the floor; boxes
+      // stay inside the railing where a flag hangs down its front
       const low = grow === GROW.HERBS || grow === GROW.DRY || grow === GROW.EMPTY;
-      where = !iron ? 'coping' : r.weighted([['out', 0.65], ['in', 0.2], ['floor', low ? 0.35 : 0]]);
-      let lo = u0 + 0.45, hi = u1 - 0.45, w, yb;
+      where = !iron ? 'coping' : r.weighted([['out', 0.68], ['in', 0.17], ['floor', low ? 0.35 : 0]]);
+      if (flagged && where === 'out') where = 'in';
+      let lo = u0 + 0.08 + bl / 2, hi = u1 - 0.08 - bl / 2, w, yb;
       if (where === 'coping') {
         const rc = st.roundStone ? Math.min(0.3, D * 0.35) : 0, i = 0.13;
         const e = i + Math.max(0, rc - i * 0.5) + bl / 2 + 0.02;
@@ -655,13 +689,46 @@ const ironwork = {
         boxes++;
       }
     }
-    if (this.census && !ctx.chunkLod) {
-      this.census.set(`${lot.seed}:${index}`, { planted, boxes, grow, where, s: lot.s0, side: lot.side, y, at: _q.set((u0 + u1) / 2, y, D).applyMatrix4(F).toArray() });
-    }
+    const rec = this.census && !ctx.chunkLod ? {
+      planted, boxes, grow, where, flag: !!flagged, pots: 0, shrubs: 0, s: lot.s0, side: lot.side, sideStreet: !!lot.sideStreet, y,
+      at: _q.set((u0 + u1) / 2, y, D).applyMatrix4(F).toArray(),
+    } : null;
+    if (rec) this.census.set(`${lot.seed}:${index}`, rec);
     if (lod || !ctx.clutter) return;
+    // an AC unit standing on the balcony floor beside the door
+    const door = plan.openings.find((o) => o.balcony === index);
+    let acU = null;
+    if (door && (door.ac || r.chance(0.08)) && len > 1.6) {
+      const side = r.chance(0.5) ? -1 : 1;
+      acU = THREE.MathUtils.clamp(door.uc + side * (door.w / 2 + 0.5), u0 + 0.5, u1 - 0.5);
+      _l.makeTranslation(acU, y + 0.06, -0.06);
+      this.acUnit(ctx, _m.multiplyMatrices(F, _l), false);
+    }
+    // potted shrubs in the back corners beside the door (an oleander, a lemon tree, a
+    // myrtle), in keen households above all
+    const shrubs = [];
+    if (D > 0.55 && len > 1.3 && (planted ? r.chance(0.42) : r.chance(0.04))) {
+      const both = len > 2.4 && r.chance(0.35);
+      const first = r.chance(0.5) ? -1 : 1;
+      for (const side of both ? [-1, 1] : [first]) {
+        const s = r.range(1.45, 1.85);
+        const u = side < 0 ? u0 + 0.12 + 0.14 * s : u1 - 0.12 - 0.14 * s;
+        if (acU !== null && Math.abs(u - acU) < 0.75) continue;
+        if (door && Math.abs(u - door.uc) < door.w / 2 + 0.1 && D < 1.0) continue;
+        const w = Math.min(0.14 * s + 0.08, D * 0.45);
+        _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s * r.range(0.95, 1.15), s)).setPosition(u, y, w);
+        this.part(ctx, A.pot, _m.multiplyMatrices(F, _l), POTS[(st.pots + (r.chance(0.3) ? 2 : 0)) % POTS.length]);
+        const k = r.range(0.75, 1.15);
+        _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(k * r.range(0.85, 1.1), k, k * r.range(0.85, 1.1))).setPosition(u, y + 0.2 * s, w);
+        this.plant(ctx, PLANT.SHRUB, _m.multiplyMatrices(F, _l), SHRUB_BLOOM[r.int(0, SHRUB_BLOOM.length - 1)]);
+        shrubs.push(u);
+      }
+      if (rec) rec.shrubs = shrubs.length;
+    }
+    const clearOfShrubs = (u, gap) => shrubs.every((x) => Math.abs(u - x) > gap);
     // pots on the floor along the front, inside the railing: in many planted households,
     // and now and then a forgotten one on a bare balcony
-    if (planted ? r.chance(0.5) : r.chance(0.06)) {
+    if (planted ? r.chance(0.55) : r.chance(0.06)) {
       const n = planted ? r.int(1, Math.max(1, Math.min(4, Math.floor(len / 0.45)))) : 1;
       const potCol = POTS[(st.pots + (r.chance(0.2) ? 1 : 0)) % POTS.length];
       for (let k = 0; k < n; k++) {
@@ -669,40 +736,71 @@ const ironwork = {
         // (clear of a trough standing along the front)
         const w = where === 'floor' ? Math.max(0.2, D - r.range(0.45, 0.52)) : D - r.range(0.25, 0.32);
         const s = r.range(0.8, 1.2);
-        _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y, w);
-        this.part(ctx, A.pot, _m.multiplyMatrices(F, _l), r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)]);
+        const rot = r.range(0, 6.28), col = r.chance(0.7) ? potCol : POTS[r.int(0, POTS.length - 1)];
         // a geranium (not every one in bloom), a herb, a dried-out one or bare soil
-        const what = planted ? r.weighted([[PLANT.POT, 0.5], [PLANT.HERB, 0.28], [PLANT.DRY, 0.12], [-1, 0.1]])
+        const what = planted ? r.weighted([[PLANT.POT, 0.58], [PLANT.HERB, 0.24], [PLANT.DRY, 0.08], [-1, 0.1]])
           : r.weighted([[PLANT.DRY, 0.5], [-1, 0.3], [PLANT.HERB, 0.2]]);
-        if (what < 0) continue;
-        _l.makeRotationY(r.range(0, 6.28)).scale(_a.set(s, s, s)).setPosition(u, y + 0.2 * s, w);
-        const tint = what === PLANT.POT ? (r.chance(0.7) ? this.flower(st, r) : LEAFY)
+        const rot2 = r.range(0, 6.28);
+        const tint = what === PLANT.POT ? (r.chance(0.75) ? this.flower(st, r) : LEAFY)
           : what === PLANT.HERB ? HERBS[weighted(r, HERB_W)] : WITHERED[r.int(0, WITHERED.length - 1)];
+        if (!clearOfShrubs(u, 0.42)) continue;
+        _l.makeRotationY(rot).scale(_a.set(s, s, s)).setPosition(u, y, w);
+        this.part(ctx, A.pot, _m.multiplyMatrices(F, _l), col);
+        if (rec) rec.pots++;
+        if (what < 0) continue;
+        _l.makeRotationY(rot2).scale(_a.set(s, s, s)).setPosition(u, y + 0.2 * s, w);
         this.plant(ctx, what, _m.multiplyMatrices(F, _l), tint);
       }
     }
-    // a plastic chair (where no trough takes the room)
+    // a plastic chair (where no trough or shrub takes the room)
     if (r.chance(0.1) && D > 0.75 && where !== 'floor') {
-      _l.makeRotationY(r.range(-0.6, 0.6) + (r.chance(0.5) ? 0 : Math.PI)).setPosition(u0 + len * r.range(0.2, 0.8), y, D * 0.5);
-      this.part(ctx, A.chair, _m.multiplyMatrices(F, _l), CHAIRS[r.int(0, CHAIRS.length - 1)]);
+      const u = u0 + len * r.range(0.2, 0.8);
+      _l.makeRotationY(r.range(-0.6, 0.6) + (r.chance(0.5) ? 0 : Math.PI)).setPosition(u, y, D * 0.5);
+      if (clearOfShrubs(u, 0.6)) this.part(ctx, A.chair, _m.multiplyMatrices(F, _l), CHAIRS[r.int(0, CHAIRS.length - 1)]);
     }
-    // an AC unit standing on the balcony floor beside the door
-    const door = plan.openings.find((o) => o.balcony === index);
-    if (door && (door.ac || r.chance(0.08)) && len > 1.6) {
-      const side = r.chance(0.5) ? -1 : 1;
-      const u = THREE.MathUtils.clamp(door.uc + side * (door.w / 2 + 0.5), u0 + 0.5, u1 - 0.5);
-      _l.makeTranslation(u, y + 0.06, -0.06);
-      this.acUnit(ctx, _m.multiplyMatrices(F, _l), false);
-    }
-    // a towel or rug airing over the front rail
-    if (iron && r.chance(0.04)) {
+    // a towel or rug airing over the front rail (not over a flag)
+    if (iron && r.chance(0.04) && !flagged) {
       _l.makeScale(r.range(0.5, 0.9), 1, 1).setPosition(u0 + len * r.range(0.25, 0.75), top, D - 0.05);
       const ti = r.int(0, TOWELS.length - 1), T = A.towels[(ti + st.design) % A.towels.length];
       this.part(ctx, lod ? T.far : T.near, _m.multiplyMatrices(F, _l), TOWELS[ti]);
     }
-    // a flag on the front corner post
-    if (iron && r.chance(0.012)) this.flag(ctx, F, r.chance(0.5) ? u0 + 0.05 : u1 - 0.05, y + 0.85, D - 0.05, st, r, 0.6);
+    // a small flag on a pole tied to the outside of a front corner post, leaning out
+    // of the facade (clear of the railing and of the balcony beside it)
+    if (iron && !flagged && r.chance(0.015)) {
+      const side = r.chance(0.5) ? -1 : 1;
+      const u = side < 0 ? u0 - 0.03 : u1 + 0.03;
+      this.flag(ctx, F, plan, u, y + 0.32, D - 0.05, 0.6, this.flagDesign(st, r), r.range(0, 30), r.range(38, 52), bal);
+    }
   },
+
+  /** A flag hung flat down the front of an iron railing, tied over the handrail at its
+   *  top corners: in the households of the building that hang one (st.flagK), on the
+   *  front run clear of the posts. Its own stream, so near and far builds hang it alike.
+   *  Returns [u0, u1] of the cloth, or null. */
+  railFlag(ctx, F, lot, bal, st, index, top) {
+    const { depth: D, u0, u1 } = bal;
+    if (u1 - u0 < 1.1 || st.flagK <= 0) return null;
+    const rf = new RNG(hash2(lot.seed, 0x3c51 + index));
+    if (!rf.chance(st.flagK)) return null;
+    const s = rf.range(0.95, 1.25), wF = FLAG_H * s;
+    const room = u1 - u0 - 0.24 - wF;
+    if (room < 0) return null;
+    // at the middle of the front, or nearer one end
+    const t = rf.chance(0.45) ? 0.5 : rf.chance(0.5) ? rf.range(0, 0.2) : rf.range(0.8, 1);
+    const a = u0 + 0.12 + room * t, b = a + wF;
+    // cloth frame: x down the front (leaning out a little, clear of the slab edge), y
+    // along the rail from its right-hand tie (the hoist runs y 0 .. -H), z out
+    _a.set(0, -1, 0.05).normalize().transformDirection(F).multiplyScalar(s);
+    _b.set(1, 0, 0).transformDirection(F).multiplyScalar(s);
+    _c.crossVectors(_a, _b).normalize().multiplyScalar(s);
+    _p.set(b, top + 0.02, D - 0.012).applyMatrix4(F);
+    _m.makeBasis(_a, _b, _c).setPosition(_p);
+    ctx.flags.push({ m: _m.clone(), uv: FLAG_UV[this.flagDesign(st, rf)], phase: 100 + rf.range(0, 30) });
+    return [a, b];
+  },
+
+  /** A flag's design: mostly the building's own. */
+  flagDesign(st, r) { return r.chance(0.75) ? st.flag : weighted(r, FLAG_W); },
 
   /** Window AC units, window flower boxes, flags and satellite dishes of one facade
    *  (`lot` needs only {seed, frame}: a corner return passes itself as both). */
@@ -727,7 +825,7 @@ const ironwork = {
     }
     for (const f of plan.flags) {
       const u = flagPier(plan, f);
-      if (u !== null) this.flag(ctx, F, u, f.y, 0, st, r, 1);
+      if (u !== null) this.flag(ctx, F, plan, u, f.y, 0, 1, this.flagDesign(st, r), r.range(0, 30), r.range(30, 45));
     }
     // satellite dish on the top floor, only where the facade can see the satellite: the
     // mount square to the wall on a pier, the dish clamped to its mast and turned to the
@@ -843,22 +941,32 @@ const ironwork = {
     }
   },
 
-  /** Flag on an angled pole: bracket at facade (u, v, w), pole out of the wall and up. */
-  flag(ctx, F, u, v, w, st, r, size) {
-    const el = THREE.MathUtils.degToRad(r.range(30, 45));
-    // pole direction p and fly direction q in facade space (u, v, w), then to world
+  /** Flag on an angled pole: bracket at facade (u, v, w), the pole out of the wall and
+   *  up at `elDeg`, the cloth (`size`: scale of the FLAG_L x FLAG_H template) hanging from
+   *  its upper part; `design` an atlas cell, `phase` its motion. The pole is raised, then
+   *  the flag made smaller, where the pole or the hanging cloth would meet a balcony of
+   *  the plan (`own`: the balcony whose corner post the pole is tied to, met only by the
+   *  cloth); else no flag. Returns true once placed. */
+  flag(ctx, F, plan, u, v, w, size, design, phase, elDeg, own = null) {
+    let el = -1, s = size;
+    for (const [e, k] of [[elDeg, 1], [Math.max(elDeg, 52), 1], [60, 0.85], [62, 0.7]]) {
+      const er = THREE.MathUtils.degToRad(e);
+      if (flagClear(plan, u, v, w, er, size * k, own)) { el = er; s = size * k; break; }
+    }
+    if (el < 0) return false;
+    // pole direction p and the cloth's fly direction q (square to the pole, down and out)
+    // in facade space (u, v, w), then to world; the frames are right-handed
     const p = _a.set(0, Math.sin(el), Math.cos(el)).transformDirection(F);
     const q = _b.set(0, -Math.cos(el), Math.sin(el)).transformDirection(F);
+    const n = _c.crossVectors(q, p);
     const base = _p.set(u, v, w).applyMatrix4(F);
     // pole (template is along +y); a 3 cm pole is sub-pixel in far chunks
-    _c.crossVectors(p, q);
-    _l.makeBasis(q, p, _c).setPosition(base);
+    _l.makeBasis(q, p, n).setPosition(base);
     if (!ctx.lod) this.part(ctx, this.att.pole, _l);
     // cloth: local x = fly (q), y = along the pole (p), hoist top at 1.85 m up the pole
-    const s = size;
-    _m.makeBasis(_q.copy(q).multiplyScalar(s), _a.copy(p).multiplyScalar(s), _c.clone().multiplyScalar(s)).setPosition(base.clone().addScaledVector(p, 1.85));
-    const d = r.chance(0.45) ? 0 : (st.flag + (r.chance(0.15) ? 1 : 0)) % 4;
-    ctx.flags.push({ m: _m.clone(), uv: [(d % 2) * 0.5, (1 - Math.floor(d / 2)) * 0.5], phase: r.range(0, 30) });
+    _m.makeBasis(_q.copy(q).multiplyScalar(s), _pv.copy(p).multiplyScalar(s), _c.multiplyScalar(s)).setPosition(base.addScaledVector(p, 1.85));
+    ctx.flags.push({ m: _m.clone(), uv: FLAG_UV[design], phase });
+    return true;
   },
 
   ironRailing(ctx, lot, bal, st) {

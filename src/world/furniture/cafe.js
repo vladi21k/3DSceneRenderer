@@ -2,15 +2,21 @@ import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { lathe, tube, bar, rbox, xf, merge, quad, boxUV } from './kit.js';
 import { proto, placeMatrix, groundSink } from './instancer.js';
-import { uvRect } from './prints.js';
+import { uvRect, BRANDS } from './prints.js';
 import { buildChairGeometry } from './chairs.js';
-import { canopyGeo, umbrellaFrame, umbrellaBase, furledGeo } from './umbrella.js';
-import { planCafe, auditPlans, UMB_SIZES } from './cafePlan.js';
+import { canopyGeo, umbrellaFrame, umbrellaBase, furledGeo, furledPoleGeo, ledGeo, poolGeo, UMB_EDGE_H } from './umbrella.js';
+import { planCafe, auditPlans } from './cafePlan.js';
 
-// Café terraces: chairs (chairs.js), bistro tables, square market umbrellas (umbrella.js),
-// glazed wind screens round 'awning' terraces, tableware and A-frame menu boards.
-// Placements come from the collision-free café plan (cafePlan.js). Geometry is authored
-// once (front = +Z, y up, origin on the ground) and instanced per chunk.
+// Café terraces: chairs (chairs.js), bistro tables, market umbrellas (umbrella.js), glazed
+// wind screens round 'awning' terraces, tableware and A-frame menu boards. Placements come
+// from the collision-free café plan (cafePlan.js). Geometry is authored once (front = +Z,
+// y up, origin on the ground) and instanced per chunk.
+// Umbrellas differ from café to café: model and size, hem height, the poles' lean, colour
+// (one or two per café) or a drink or café brand printed on the valance (prints.js
+// BRANDS), LED strips under the ribs (lit after dusk, with a warm pool on the paving), a
+// furled one or a gap in the row. Where a run of umbrella terraces already faces this one
+// across the street (within 40 m), most terraces stand open to the sky, so the umbrellas
+// come in runs on one side at a time, as on the real street.
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
@@ -130,7 +136,12 @@ const PLASTIC_PAIRS = [[[7, 7], 3], [[3, 3], 2], [[7, 8], 1], [[8, 9], 1], [[9, 
   [[2, 2], 1], [[4, 4], 1], [[5, 1], 1], [[1, 1], 1], [[6, 1], 1], [[10, 10], 1]];
 // painted metal chairs: half of the metal terraces, white, anthracite, sage, red or green
 const METAL_PAINT = ['#e9e7e1', '#3b3e41', '#6f7a72', '#a3302a', '#2f4b3b'];
-const UMB_COL = { cream: '#e6dcc4', white: '#efede6', navy: '#28324a', burgundy: '#6c2531', sand: '#cdb894' };
+const UMB_COL = { cream: '#e6dcc4', white: '#efede6', navy: '#28324a', burgundy: '#6c2531', sand: '#cdb894', ecru: '#d9d0bb',
+  black: '#232426', taupe: '#8f8576', green: '#2f5140', red: '#a3282b', grey: '#b9b8b2' };
+// plain canopies (no print): mostly cream and white, then navy, sand and darker colours;
+// [main colour, weight, alternate colour of a two-colour terrace or null]
+const UMB_PLAIN = [[['cream', 'navy'], 0.22], [['white', 'navy'], 0.16], [['ecru', null], 0.12], [['sand', 'cream'], 0.07], [['navy', 'white'], 0.12],
+  [['black', 'white'], 0.06], [['taupe', null], 0.06], [['grey', null], 0.05], [['burgundy', 'cream'], 0.05], [['green', 'cream'], 0.05], [['red', 'white'], 0.04]];
 const CUSHION = ['#c7bba3', '#6f2b2b', '#2f4a3c', '#d9d2c2', '#33393f', '#b08a5a'];
 const SCREEN_COL = ['#2c3a33', '#5a2b2b', '#d8d0bd', '#23324a', '#3a3a38'];
 const srgb = (h) => new THREE.Color().setStyle(h, THREE.SRGBColorSpace);
@@ -138,7 +149,7 @@ const srgb = (h) => new THREE.Color().setStyle(h, THREE.SRGBColorSpace);
 // switch distances (m) between detail levels; chairs stay crisp to ~35 m at the 17° default lens
 const LOD_CHAIR = [35, 130], LOD_TABLE = [45], LOD_UMB = [55, 170];
 
-export function buildCafeProtos(M, F) {
+export function buildCafeProtos(M, F, umbKeys = ['30x30']) {
   const P = { chair: {}, top: {}, base: {}, umb: {}, misc: {} };
   const C = buildChairGeometry();
   const col = (lv, key) => lv.map((g) => g[key] || null);
@@ -158,21 +169,25 @@ export function buildCafeProtos(M, F) {
   P.base.iron = proto('tableBaseIron', [{ geo: iron, mat: F.iron }], LOD_TABLE);
   P.base.cross = proto('tableBaseCross', [{ geo: cross, mat: F.aluminium }], LOD_TABLE);
   P.base.crossDark = proto('tableBaseCrossDark', [{ geo: cross, mat: F.iron }], LOD_TABLE);
-  // umbrellas: canopy geometry per size bucket (0.2 m steps), three detail levels each
-  for (let sz = UMB_SIZES[0]; sz <= UMB_SIZES[1]; sz += 2) {
-    const cg = [0, 1, 2].map((d) => canopyGeo(sz / 10, d));
-    const fr = [0, 1, 2].map((d) => umbrellaFrame(sz / 10, d));
-    P.umb[sz] = {
+  // umbrellas: canopy geometry per canopy size the café plans use ('<across>x<along>' in
+  // decimetres), three detail levels each
+  for (const key of umbKeys) {
+    const [su, sv] = key.split('x').map((v) => +v / 10);
+    const cg = [0, 1, 2].map((d) => canopyGeo(su, sv, d));
+    const fr = [0, 1, 2].map((d) => umbrellaFrame(su, sv, d));
+    P.umb[key] = {
       canopy: proto('umbrellaCanopy', [{ geo: cg, mat: F.canopy, tint: true }], LOD_UMB),
       alu: proto('umbrellaFrameAlu', [{ geo: fr, mat: F.umbFrame }], LOD_UMB),
       wood: proto('umbrellaFrameWood', [{ geo: fr, mat: F.timber }], LOD_UMB),
+      led: proto('umbrellaLed', [{ geo: [0, 1, 2].map((d) => ledGeo(su, sv, d)), mat: F.umbLed, cast: false }], LOD_UMB),
     };
   }
+  P.umb.pool = proto('umbrellaPool', [{ geo: poolGeo(), mat: F.umbPool, cast: false }]);
   const slab = [umbrellaBase('slab', 0), umbrellaBase('slab', 1)];
   P.umb.slab = proto('umbrellaBase', [{ geo: slab.map((b) => b.conc), mat: F.concrete }, { geo: slab.map((b) => b.steel), mat: F.galv }], LOD_TABLE);
   P.umb.disc = proto('umbrellaDisc', [{ geo: [umbrellaBase('disc', 0).iron, umbrellaBase('disc', 1).iron], mat: F.iron }], LOD_TABLE);
   P.umb.furled = proto('umbrellaFurled', [{ geo: [furledGeo(0), furledGeo(1)], mat: F.canopy, tint: true }], LOD_TABLE);
-  P.umb.furledPole = proto('umbrellaFurledPole', [{ geo: merge([lathe([[0.024, 0], [0.024, 2.9], [0.03, 2.93], [0.028, 2.98], [0, 2.99]], 8)]), mat: F.umbFrame }]);
+  P.umb.furledPole = proto('umbrellaFurledPole', [{ geo: [furledPoleGeo(0), furledPoleGeo(1)], mat: F.umbFrame }], LOD_TABLE);
   // tableware: hidden beyond 30 m (per instance)
   const cs = [cupSet(0), cupSet(1)];
   P.misc.cup = proto('cup', [{ geo: [cs[0].cer, cs[1].cer, null], mat: F.ceramic, cast: false }, { geo: [cs[0].cof, cs[1].cof, null], mat: F.coffee, cast: false }], [14, 30]);
@@ -225,12 +240,29 @@ export function cafeStyle(cafe, app) {
   st.screen = srgb(rng.pick(SCREEN_COL));
   st.folder = srgb(rng.pick(['#2a2422', '#4a1f1c', '#22302a', '#1f2533', '#5a4632']));
   const veg = app.systems.vegetation;
-  st.plan = planCafe(cafe, app.route, seed, st.base, app.layout, veg && veg.crownAt ? (t) => veg.crownAt(t) : null);
+  st.plan = planCafe(cafe, app.route, seed, st.base, app.layout, veg && veg.crownAt ? (t) => veg.crownAt(t) : null, umbrellaSuppressed(app).has(cafe));
   for (const c of st.plan.chairs) {
     const ch = cafe.tables[c.ti].chairs[c.ci];
     ch.s = c.s; ch.d = c.d; ch.yaw = c.yaw;
   }
-  st.umbrellas = st.plan.umbrellas.map((u) => ({ ...u, color: srgb(UMB_COL[u.color] || UMB_COL.cream).multiplyScalar(u.tint) }));
+  // the umbrellas' look: a brand on half the terraces (neighbours never share one), else
+  // a plain colour, now and then two alternating; LED strips on about 60 %
+  const look = RNG.from(seed, 'cafeUmbLook', cafe.id);
+  const brand = look.chance(0.5) ? 1 + ((cafe.id * 5 + 3) % BRANDS.length) : 0;
+  const [c0, c1] = brand ? [null, null] : look.weighted(UMB_PLAIN);
+  const two = !brand && c1 && look.chance(0.22);
+  st.led = look.chance(0.6);
+  st.brand = brand;
+  st.umbrellas = st.plan.umbrellas.map((u) => {
+    const hex = brand ? BRANDS[brand - 1].canopy : UMB_COL[two && u.alt ? c1 : c0];
+    const color = srgb(hex).multiplyScalar(u.tint);
+    // brand and LED flags ride on the instance colour (decoded by the canopy shader)
+    const enc = color.clone();
+    enc.r += 4 * brand; enc.g += 4 * (st.led ? 1 : 0);
+    return { ...u, color, enc, colorName: brand ? `brand${brand}` : (two && u.alt ? c1 : c0) };
+  });
+  // the umbrellas as placed go back into the layout (the crowd's waiters walk round the poles)
+  cafe.umbrellas = st.umbrellas.map((u) => ({ s: u.s, d: u.d, size: u.size, su: u.su, sv: u.sv, color: u.colorName, furled: u.furled, base: u.base, hem: u.hem }));
   st.throughTable = new Set(st.plan.umbrellas.filter((u) => u.base === 'table').map((u) => u.table));
   st.menu = st.plan.menu;
   // table dressing, planned once on the relaxed chairs: the layout table learns its state
@@ -244,6 +276,41 @@ export function cafeStyle(cafe, app) {
   });
   styleCache.set(cafe, st);
   return st;
+}
+
+/**
+ * Umbrella terraces facing a run on the other side of the street (within 40 m of each
+ * other's ends) mostly stand open instead: one side at a time carries the umbrellas, as
+ * on the real street. Kept first: the opening run ahead of the default start, then the
+ * avenue's right-hand (café) side, then by a per-café draw. Computed once per layout.
+ */
+const _suppressed = new WeakMap();
+function umbrellaSuppressed(app) {
+  const L = app.layout, r = app.route;
+  let set = _suppressed.get(L);
+  if (set) return set;
+  set = new Set();
+  const mid = (c) => (c.s0 + c.s1) / 2;
+  const pri = (c) => {
+    const ahead = r.delta(L.defaultStartS, mid(c));
+    return RNG.from(L.seed, 'umbPri', c.id).next() + (c.side > 0 && r.wrap(mid(c)) < 1500 ? 0.6 : 0) + (c.side > 0 && ahead > 0 && ahead < 170 ? 2 : 0);
+  };
+  const list = L.cafes.filter((c) => c.style === 'umbrella' && c.umbrellas && c.umbrellas.length).map((c) => [c, pri(c)]).sort((a, b) => b[1] - a[1]);
+  const kept = [];
+  for (const [c] of list) {
+    const half = (c.s1 - c.s0) / 2;
+    const facing = kept.some((k) => k.side !== c.side && Math.abs(r.delta(mid(k), mid(c))) < 40 + half + (k.s1 - k.s0) / 2);
+    if (facing && RNG.from(L.seed, 'umbSup', c.id).chance(0.75)) set.add(c); else kept.push(c);
+  }
+  _suppressed.set(L, set);
+  return set;
+}
+
+/** Canopy size keys ('<across>x<along>', decimetres) of every open umbrella planned. */
+export function umbrellaKeys(app) {
+  const keys = new Set(['30x30']);
+  for (const c of app.layout.cafes) for (const u of cafeStyle(c, app).umbrellas) if (!u.furled || u.base === 'table') keys.add(u.key);
+  return [...keys].sort();
 }
 
 /** Plan every café once (init) and report placement problems. */
@@ -263,7 +330,8 @@ export function chairPose(app, cafeId, ti, ci) {
   return ch ? { s: ch.s, d: ch.d, yaw: ch.yaw } : null;
 }
 
-const _m = new THREE.Matrix4(), _c = new THREE.Color();
+const _m = new THREE.Matrix4(), _c = new THREE.Color(), _mb = new THREE.Matrix4(), _mu = new THREE.Matrix4(), _mp = new THREE.Matrix4(), _tilt = new THREE.Matrix4();
+const _eu = new THREE.Euler(), _sv = new THREE.Vector3();
 // base radius (m) of each item for the sink into sloping paving (see groundSink)
 const FOOT = { chair: 0.28, table: 0.25, slab: 0.38, disc: 0.23, menu: 0.3 };
 const TABLE_H = 0.75;
@@ -294,15 +362,24 @@ export function placeCafes(chunk, app, inst, P, debug = null) {
     for (const u of st.umbrellas) {
       const uf = FOOT[u.base] ?? FOOT.table;
       placeMatrix(route, u.s, u.d, 0, u.yaw, _m, uf);
-      if (u.base === 'slab') inst.add(P.umb.slab, u.baseYaw ? placeMatrix(route, u.s, u.d, 0, u.yaw + u.baseYaw, new THREE.Matrix4(), uf) : _m);
+      if (u.base === 'slab') inst.add(P.umb.slab, u.baseYaw ? placeMatrix(route, u.s, u.d, 0, u.yaw + u.baseYaw, _mb, uf) : _m);
       else if (u.base === 'disc') inst.add(P.umb.disc, _m);
+      // the pole leans in its base (about the foot), and the canopy, built with its hem at
+      // UMB_EDGE_H, sinks to the café's hem height (the pole runs on below the paving)
+      _mu.copy(_m).multiply(_tilt.makeRotationFromEuler(_eu.set(u.tiltX || 0, 0, u.tiltZ || 0)));
       if (u.furled && u.base !== 'table') {
-        inst.add(P.umb.furledPole, _m);
-        inst.add(P.umb.furled, _m, u.color);
-      } else {
-        const U = P.umb[u.sz] || P.umb[30];
-        inst.add(U.canopy, _m, u.color);
-        inst.add(st.frameWood ? U.wood : U.alu, _m);
+        inst.add(P.umb.furledPole, _mu);
+        inst.add(P.umb.furled, _mu, u.color);
+        continue;
+      }
+      _mu.multiply(_tilt.makeTranslation(0, u.hem - UMB_EDGE_H, 0));
+      const U = P.umb[u.key] || P.umb['30x30'];
+      inst.add(U.canopy, _mu, u.enc);
+      inst.add(st.frameWood ? U.wood : U.alu, _mu);
+      if (st.led) {
+        inst.add(U.led, _mu);
+        // the warm pool the strips throw on the paving (drawn after dusk only)
+        inst.add(P.umb.pool, _mp.copy(_m).scale(_sv.set(u.su * 1.35, 1, u.sv * 1.35)));
       }
     }
     if (st.menu) {

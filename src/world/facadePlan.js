@@ -19,21 +19,26 @@ import { TRACK_OFFSET, EYE_HEIGHT } from '../core/config.js';
 // different stone tones, and colour-washed or taller blocks where the street's view ends.
 
 // Absolute stone tints; every consumer takes them relative to cream, the colour the baked
-// limestone texture stands for (shade.stoneStyle, far field, ironwork). The baked stone is
-// honey, so pale and grey are clearly cooler to read pale cream and grey-white.
+// limestone texture stands for (shade.stoneStyle and the far field as (tint / cream)^1.25,
+// ironwork). The baked stone is honey (blue/red about 0.45 in linear albedo), so the cool
+// tones lift blue a long way: neighbouring fronts in the photographs run from deep honey
+// (blue/red about 0.6 as photographed) to grey-white (0.93), and anything narrower reads
+// as one honey street.
+const CREAM = [0.86, 0.80, 0.68];   // the reference: the texture as baked
 const STONE_TINTS = [
-  [0.86, 0.80, 0.68], // cream
-  [0.84, 0.74, 0.58], // honey
-  [0.86, 0.825, 0.765], // pale
-  [0.82, 0.75, 0.66], // pinkish buff
-  [0.81, 0.78, 0.74], // grey limestone
-  [0.87, 0.78, 0.62], // golden
+  [0.881, 0.851, 0.776], // cream, a little lighter and whiter than the texture
+  [0.846, 0.709, 0.499], // honey
+  [0.915, 0.963, 1.05], // pale: white-cream, lighter
+  [0.874, 0.787, 0.839], // pinkish: rose-white
+  [0.791, 0.851, 0.941], // grey limestone
+  [0.888, 0.781, 0.558], // golden
 ];
 // Share of the lots per tint (materials.meta['stone.ashlar'].tintWeights): honey and golden
-// on about half the street, cream a fifth, pinkish a tenth, pale and grey a fifth.
+// on about two fifths of the street, cream, pinkish and pale together on 45 %, grey on an
+// eighth.
 const TINT_PICK = [
-  [STONE_TINTS[1], 0.3], [STONE_TINTS[5], 0.2], [STONE_TINTS[0], 0.2],
-  [STONE_TINTS[3], 0.1], [STONE_TINTS[2], 0.12], [STONE_TINTS[4], 0.08],
+  [STONE_TINTS[1], 0.25], [STONE_TINTS[5], 0.17], [STONE_TINTS[0], 0.16],
+  [STONE_TINTS[3], 0.14], [STONE_TINTS[2], 0.15], [STONE_TINTS[4], 0.13],
 ];
 // tone groups of STONE_TINTS: 0 warm (honey, golden), 1 middle (cream, pinkish), 2 cool (pale, grey)
 const TONE_GROUP = [1, 0, 2, 1, 2, 0];
@@ -368,7 +373,7 @@ export function ornament(plan, rng) {
     pilW: rng.range(0.42, 0.56), pilP: rng.range(0.06, 0.1),
     modillions: era !== 'modern' && rng.chance(0.45), modSpacing: rng.range(0.55, 0.8),
     headHouse: rng.chance(0.35), headU: rng.range(0.25, 0.75), headW: rng.range(0.35, 0.65),
-    dirt: rng.range(0.6, 1.3),
+    dirt: rng.range(0.5, 1.45),                       // age: how soiled the front is (all weathering scales with it)
   };
 }
 
@@ -1097,10 +1102,13 @@ function findTermini(layout) {
 //   plan.style.tint    becomes the render's colour expressed as a stone tint, so whatever
 //                      colours the facade from the tint as a whole (the far field) follows
 //                      the render; parts that stay stone use plan.style.stone
+// (most later blocks are washed white, off-white, buff or grey; the strong colour notes,
+// ochre, yellow, rose and salmon, stand out on about one rendered block in four, a
+// sixth of the later blocks, and are strong enough not to read as one more honey stone)
 const RENDER_WASH = [
-  [[1.3, 1.0, 0.55], 0.2], [[1.34, 0.93, 0.5], 0.08], [[1.32, 1.12, 0.66], 0.12],   // ochre, deep ochre, yellow
-  [[1.3, 0.86, 0.72], 0.14], [[1.33, 0.8, 0.6], 0.08],                               // rose, salmon
-  [[1.22, 1.06, 0.82], 0.12], [[1.1, 1.08, 1.03], 0.16], [[0.98, 0.98, 0.96], 0.1],  // buff, white, grey
+  [[1.36, 0.98, 0.46], 0.07], [[1.38, 0.86, 0.42], 0.04], [[1.36, 1.18, 0.55], 0.06],   // ochre, deep ochre, yellow
+  [[1.32, 0.84, 0.74], 0.06], [[1.38, 0.8, 0.6], 0.05],                                  // rose, salmon
+  [[1.2, 1.07, 0.86], 0.16], [[1.1, 1.08, 1.03], 0.24], [[1.06, 1.04, 0.95], 0.14], [[0.97, 0.98, 0.97], 0.18],  // buff, white, off-white, grey
 ];
 // old fronts lime-washed later: cream, off-white, buff, a pale ochre
 const PALE_WASH = [[[1.16, 1.06, 0.86], 0.35], [[1.1, 1.08, 1.02], 0.3], [[1.22, 1.06, 0.82], 0.2], [[1.26, 1.04, 0.66], 0.15]];
@@ -1122,7 +1130,7 @@ function finish(plan, lot, landmark = false) {
   st.finish = 'render';
   st.render = { color, from: c0 ? c0.y + c0.h : plan.floors[1] ? plan.floors[1].y : plan.floors[0].h };
   st.stone = st.tint;
-  st.tint = color.map((c, i) => STONE_TINTS[0][i] * Math.pow((PLASTER_ALB[i] * c) / ASHLAR_ALB[i], 0.8));
+  st.tint = color.map((c, i) => CREAM[i] * Math.pow((PLASTER_ALB[i] * c) / ASHLAR_ALB[i], 0.8));
   // rendered blocks have rendered set-back storeys, a shade lighter
   const up = plan.upper;
   if (up && !up.tower) { up.material = 'plaster'; up.color = color.map((c) => Math.min(1.2, c * 0.97) * 0.9); }

@@ -22,8 +22,8 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //   D  detail map: high-frequency grain that fades out through its own mips
 //   R  dressing (with L and D): the detail is chosen, rotated, offset and scaled per block
 //      (chisel dressing)
-//   W  weathering: soiled ledges, chamfers and soffits, vertical drip streaks (world
-//      orientation)
+//   W  weathering: soiled ledges, chamfers and soffits, run-off streaks hanging down the
+//      walls (world orientation and position)
 //   K  lanes: grime bands along the rails / kerbs and worn lanes (street ribbons: v = d,
 //      sidewalks: v = metres from the gutter)
 //   A  (with K) lane offset d from the aLaneD vertex attribute instead of uv.y: set
@@ -75,15 +75,16 @@ uniform float sfMirror;  // share of blocks whose map lookup is mirrored (u, v o
 uniform vec4 sfSpots;    // peak probability per cell, median radius (m), albedo mult, roughness
 uniform vec4 sfSpots2;   // clusters: noise freq (1/m, 0 = none), mask low, mask high; lane: clear below |d| (0 = off)
 uniform vec4 sfSpots3;   // spill blots: probability per cell, median radius (m), albedo mult, roughness mult
-uniform vec4 sfCell2;    // correlated tone: value amp, hue share, noise freq (1/m, 0 = off), unused
+uniform vec4 sfCell2;    // correlated tone: value amp, hue share, noise freq (1/m, 0 = off); far fade of the cells' own tone (share)
+float sfCellFar = 1.0;   // the cells' own tone and outliers (1 near; faded with distance by sfCell2.w)
 // per-cell tint; nz = correlated tone noise at the cell centre (0.5 = neutral)
 vec3 sfTintOf(uint h, float amp, float outliers, vec2 nz) {
   float h0 = sfHf(h), h1 = sfHf(sfH(h + 1u)), h2 = sfHf(sfH(h + 2u)), h3 = sfHf(sfH(h + 3u)), h4 = sfHf(sfH(h + 4u));
-  float v = 1.0 + amp * (sfCell.x * (h0 * 2.0 - 1.0) + sfCell2.x * (nz.x * 2.0 - 1.0));
-  float hm = mix(h1, clamp(0.5 + (nz.y - 0.5) * 3.0, 0.0, 1.0), sfCell2.y);
+  float v = 1.0 + amp * (sfCellFar * sfCell.x * (h0 * 2.0 - 1.0) + sfCell2.x * (nz.x * 2.0 - 1.0));
+  float hm = mix(0.5 + (h1 - 0.5) * sfCellFar, clamp(0.5 + (nz.y - 0.5) * 3.0, 0.0, 1.0), sfCell2.y);
   vec3 t = v * mix(vec3(1.0), mix(sfCellA, sfCellB, hm), amp * sfCell.y * h2);
   vec3 o = h4 < 0.3334 ? sfCellOut.rgb : (h4 < 0.6667 ? sfCellOut2 : sfCellOut3);
-  return mix(t, t * o, outliers * step(1.0 - sfCellOut.a, h3));
+  return mix(t, t * o, outliers * sfCellFar * step(1.0 - sfCellOut.a, h3));
 }
 // correlated tone noise (quarry batches, dirt) sampled at a cell centre (uv metres)
 vec2 sfCellNoise(vec2 c) {
@@ -131,7 +132,7 @@ mat2 sfDR = mat2(1.0);   // detail map rotation (dressing mode)
 
 const WEATHER_PARS = /* glsl */ `
 varying vec3 vSfWorld;
-uniform vec4 sfWeather;  // ledge soiling, streak amount, streak threshold, soffit soot
+uniform vec4 sfWeather;  // ledge soiling, run-off streak darkening, share of streak slots used, soffit soot
 `;
 
 const LANES_PARS = /* glsl */ `
@@ -334,6 +335,7 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
     uint cs = uint(sfLay2.y) + 501u;
     sfCh = sfH2(rg, gi, cs);
     uint rh = sfH2(rg, 7777, uint(sfLay2.y) + 503u);
+    sfCellFar = 1.0 - sfCell2.w * smoothstep(12.0, 22.0, length(vViewPosition));
     float fRow = 1.0 - smoothstep(0.25, 0.8, sfFoot.y / rowH);
     float fSeg = fRow * (1.0 - smoothstep(0.25, 0.8, sfFoot.x * float(n) * sfTile.x));
     // block tint, box-filtered along u over the pixel footprint: at distance blocks
@@ -396,6 +398,9 @@ const MAP_DRESS = /* glsl */ `
       dgx = sfDR * dgx * dsc; dgy = sfDR * dgy * dsc;
       bool rubbed = !dTool && hd > sfDetail2.y + (1.0 - sfDetail2.y) * 0.6;
       dAmp = rubbed ? 0.3 : 1.0;
+      // the chisel work reads within a few metres; further off only a trace of it (its
+      // mean self-shadowing stays below)
+      dAmp *= mix(1.0, dTool ? 0.3 : 0.5, smoothstep(2.0, 5.0, length(vViewPosition)));
       dFar = dTool ? 0.985 : (rubbed ? 1.0 : 0.97);   // mean self-shadowing of the tooling
       float e = min(min(sfCl.x, sfCs.x - sfCl.x), min(sfCl.y, sfCs.y - sfCl.y));
       float mg = sfDetail2.z * (0.7 + 0.6 * sfHf(sfH(sfCh + 26u)));
@@ -474,9 +479,15 @@ const mapLanes = (attr) => /* glsl */ `
 `;
 
 // weathering by world orientation: dust and soot on ledges (patchy), sheltered soffits
-// evenly dark (no blotches: the soffit's own geometry and AO shade it), rain-washed vertical
-// drip streaks on the walls, their strength drifting in tall run-off bands, never in
-// isotropic blobs
+// evenly dark (no blotches: the soffit's own geometry and AO shade it), and run-off on the
+// walls. The run-off is a field of single streaks, never isotropic blobs: columns on a
+// jittered 0.3-0.8 m lattice along the wall, and in each column a slot every 2.4-4 m of
+// height, about half of them holding a streak. A streak hangs from a bed joint where the
+// material has a course layout (water held by the joint runs off there), 2-8 cm wide at
+// its head, widening to about twice that and fading as it runs down over 0.5-2 m, wandering
+// a little and broken in places; warm grey-brown (dirt and soot carried down by the rain).
+// Its strength drifts along the wall in broad stretches. Sub-pixel streaks fade to their
+// (small) mean.
 const MAP_WEATHER = /* glsl */ `
   if (sfWeather.x + sfWeather.y + sfWeather.w > 0.0) {
     #ifdef FLAT_SHADED
@@ -495,20 +506,58 @@ const MAP_WEATHER = /* glsl */ `
     // lines along every bed joint)
     float sfLedge = smoothstep(0.4, 0.85, sfNW.y);
     float sfSoffit = smoothstep(-0.55, -0.9, sfNW.y);
-    // ledge tops collect grey dust and soot (darker and desaturated, patchy)
+    // ledge tops collect warm grey dust and soot (darker and duller, patchy)
     float sfLd = sfWeather.x * sfLedge * (0.35 + sfMb) * (0.6 + 0.8 * sfMf);
-    vec3 sfDust = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.6, 0.6, 0.62);
-    sfAlb = mix(sfAlb, sfDust, min(2.2 * sfLd, 0.85));
+    float sfLum = dot(sfAlb, vec3(0.2126, 0.7152, 0.0722));
+    sfAlb = mix(sfAlb, vec3(sfLum) * vec3(0.64, 0.6, 0.54), min(2.2 * sfLd, 0.85));
     sfAlb *= 1.0 - sfWeather.w * sfSoffit;
     sfRough = min(sfRough * (1.0 + 0.08 * sfLedge), 1.0);
-    vec3 sfTW = normalize(vec3(-sfNW.z, 0.0, sfNW.x) + 1e-5);
-    float sfAl = dot(vSfWorld, sfTW);
-    float sfS1 = texture(sfMacroTex, vec2(sfAl * 2.4, vSfWorld.y * 0.1) + vec2(0.71, 0.29)).g;
-    float sfS2 = texture(sfMacroTex, vec2(sfAl * 7.0, vSfWorld.y * 0.27) + vec2(0.17, 0.83)).r;
-    float sfStreak = smoothstep(sfWeather.z, sfWeather.z + 0.14, 0.65 * sfS1 + 0.35 * sfS2);
     float sfVert = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
-    float sfMv = texture(sfMacroTex, vec2(sfAl * 0.3, vSfWorld.y * 0.05) + vec2(0.53, 0.19)).b;
-    sfAlb *= 1.0 - sfWeather.y * sfStreak * sfVert * (0.6 + 0.8 * sfMv);
+    vec3 sfTW = normalize(vec3(-sfNW.z, 0.0, sfNW.x) + 1e-5);
+    float sfAl = dot(vSfWorld, sfTW), sfY = vSfWorld.y;
+    float sfFx = max(fwidth(sfAl), 1e-5), sfFy = max(fwidth(sfY), 1e-5);
+    // course height along v per metre of height (uv may be scaled per building), so a
+    // streak head can be set on a bed joint
+    float sfKv = clamp(fwidth(sfUv.y) / sfFy, 0.5, 2.0);
+    float sfVo = sfUv.y - sfY * sfKv;
+    float sfNear = 1.0 - smoothstep(0.04, 0.14, sfFx);
+    if (sfWeather.y > 0.0 && sfVert > 0.0) {
+      float sfRun = 0.0;
+      if (sfNear > 0.0) {
+        const float LC = 0.6;
+        float ci = floor(sfAl / LC);
+        for (int j = -1; j <= 1; j++) {
+          float c = ci + float(j);
+          uint h = sfH2(int(c), 1777, 9091u);
+          float h1 = sfHf(h), h2 = sfHf(sfH(h + 1u)), h3 = sfHf(sfH(h + 2u));
+          float xc = (c + 0.2 + 0.6 * h1) * LC;
+          float sv = 2.4 + 1.6 * h2;                    // slot height of this column
+          float k = ceil(sfY / sv - h3);                // the slot whose head is above
+          float top = (k + h3) * sv;
+          uint hk = sfH2(int(c), int(k), 9093u);
+          if (sfHf(hk) > sfWeather.z) continue;         // an empty slot
+          float k2 = sfHf(sfH(hk + 1u)), k3 = sfHf(sfH(hk + 2u)), k4 = sfHf(sfH(hk + 3u)), k5 = sfHf(sfH(hk + 4u));
+          if (sfLay.y > 0.5) top = (floor((top * sfKv + sfVo) / sfLay.x) * sfLay.x - sfVo) / sfKv;
+          float L = 0.6 + 1.9 * k2 * k2;                // 0.6-2.5 m
+          float d = top - sfY;                          // below the head (m)
+          if (d < 0.0 || d > L) continue;
+          float hw = (0.02 + 0.05 * k3) * (1.0 + 0.7 * d / L);   // half width: 4-14 cm wide at the head
+          float wan = texture(sfMacroTex, vec2(c * 0.37 + k * 0.113, d * 0.3)).r - 0.5;
+          float dx = abs(sfAl - xc - 0.03 * (k4 - 0.5) - 0.08 * wan * min(1.0, d / 0.5));
+          float across = 1.0 - smoothstep(0.1 * hw - 0.5 * sfFx, hw + 0.5 * sfFx, dx);
+          float along = smoothstep(0.0, 0.05 + sfFy, d) * pow(1.0 - d / L, 1.5);
+          float brk = smoothstep(0.25, 0.6, texture(sfMacroTex, vec2(c * 0.53 + 0.21, d * 0.9 + k * 0.29)).g);
+          sfRun = max(sfRun, across * along * (0.6 + 0.4 * k5) * (0.55 + 0.45 * brk));
+        }
+      }
+      sfRun = mix(0.012 * sfWeather.z, sfRun, sfNear);
+      // (some stretches of wall clean, others well streaked)
+      float sfMv = texture(sfMacroTex, vec2(sfAl * 0.13, sfY * 0.02) + vec2(0.53, 0.19)).b;
+      sfRun *= sfVert * 1.5 * smoothstep(0.25, 0.75, sfMv);
+      float sfRk = min(0.45, sfWeather.y * sfRun);
+      vec3 sfSoil = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.9, 0.8, 0.66);
+      sfAlb = mix(sfAlb, sfSoil, min(1.0, 1.5 * sfRk)) * (1.0 - sfRk);
+    }
   }
 `;
 
@@ -600,7 +649,20 @@ const AO = /* glsl */ `
   #endif
 `;
 
-// direct light: micro-shadowing from the baked cavity AO, plus thin-surface translucency
+// thin translucent surfaces (canopies, awnings) facing down see the ground under them, and
+// that lies in their own shade: the environment's street floor is far brighter than it
+const AO_THIN = /* glsl */ `
+  {
+    float sfDown = smoothstep(0.15, 0.8, - dot(normal, (viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz));
+    reflectedLight.indirectDiffuse *= 1.0 - 0.45 * sfDown;
+  }
+`;
+
+// direct light: micro-shadowing from the baked cavity AO, plus thin-surface translucency.
+// Translucency comes from lights above or below the cloth, not from the canyon cross-bounce
+// (env's horizontal stand-in for a whole sunlit facade, which would light a shaded
+// canopy's underside through the cloth); the sun's own term is shadowed where the cloth's
+// top is in shade.
 const lightPars = (f) => /* glsl */ `
 void RE_Direct_Surf( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
   IncidentLight sfL = directLight;
@@ -608,7 +670,7 @@ void RE_Direct_Surf( const in IncidentLight directLight, const in vec3 geometryP
   ${f.surf ? 'sfL.color *= saturate( abs( sfNL ) + 2.0 * sfMicroAO * sfMicroAO - 1.0 );' : ''}
   ${f.pom ? 'if ( dot( directLight.direction, sfSunV ) > 0.995 ) sfL.color *= sfPomSh;' : ''}
   RE_Direct_Physical( sfL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
-  ${f.trans ? 'reflectedLight.directDiffuse += saturate( - sfNL ) * directLight.color * BRDF_Lambert( material.diffuseContribution ) * sfTrans;' : ''}
+  ${f.trans ? 'reflectedLight.directDiffuse += saturate( - sfNL ) * directLight.color * BRDF_Lambert( material.diffuseContribution ) * sfTrans * smoothstep( 0.03, 0.1, abs( dot( directLight.direction, ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ) ) );' : ''}
 }
 #undef RE_Direct
 #define RE_Direct RE_Direct_Surf
@@ -653,7 +715,7 @@ function patchFragment(src, f) {
       .replace('#include <roughnessmap_fragment>', ROUGH)
       .replace('#include <metalnessmap_fragment>', METAL)
       .replace('#include <normal_fragment_maps>', normalChunk(f))
-      .replace('#include <aomap_fragment>', AO);
+      .replace('#include <aomap_fragment>', AO + (f.trans ? AO_THIN : ''));
   }
   if (f.surf || f.trans) s = s.replace('#include <lights_physical_pars_fragment>', '#include <lights_physical_pars_fragment>\n' + lightPars(f));
   if (f.night) s = s.replace('#include <emissivemap_fragment>', EMISSIVE);
@@ -755,11 +817,11 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfSpots: { value: v4([L ? sp.prob ?? 0 : 0, sp.radius ?? 0.01, sp.albedo ?? 1, sp.rough ?? 0.5]) },
     sfSpots2: { value: v4([shared.macro ? sp.cluster?.freq ?? 0 : 0, sp.cluster?.lo ?? 0.5, sp.cluster?.hi ?? 0.62, sp.laneClear ?? 0]) },
     sfSpots3: { value: v4([L && shared.macro ? sp.blot?.prob ?? 0 : 0, sp.blot?.radius ?? 0.02, sp.blot?.albedo ?? 0.8, sp.blot?.rough ?? 0.85]) },
-    sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, 0]) },
+    sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, c.far ?? 0]) },
     sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, (st.matt ? -1 : 1) * (st.stretch ?? 1)]) },
     sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
     sfMirror: { value: L ? cfg.mirror ?? 0 : 0 },
-    sfWeather: { value: v4(shared.macro ? [w.ledge ?? 0, w.streak ?? 0, w.threshold ?? 0.62, w.soffit ?? 0] : [0, 0, 0, 0]) },
+    sfWeather: { value: v4(shared.macro ? [w.ledge ?? 0, w.streak ?? 0, w.share ?? 0.5, w.soffit ?? 0] : [0, 0, 0, 0]) },
     sfLanes: { value: v4(shared.macro ? [ln.track ?? 1.6, ln.rail ?? 0.7455, ln.grime ?? 0, ln.wear ?? 0] : [0, 0, 0, 0]) },
     sfLanes2: { value: v4([...(ln.grimeBand || [0.05, 0.24]), ...(ln.laneBand || [0.18, 0.42])]) },
     sfDetailTex: { value: detailTex || null },

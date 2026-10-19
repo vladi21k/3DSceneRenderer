@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { TRACK_OFFSET, EYE_HEIGHT, DEFAULT_VFOV, AXLES } from '../core/config.js';
-import { RNG, noise1, hash2 } from '../core/rng.js';
+import { RNG, noise1 } from '../core/rng.js';
 import { U } from '../core/uniforms.js';
 import { input } from './input.js';
 
@@ -16,15 +16,19 @@ import { input } from './input.js';
 //    mounted cab camera: it never pans towards the line ahead, so the ride rails stay
 //    locked under the middle of the frame and never slide sideways (a panning view
 //    put the other track in the middle of the frame in tight bends);
-//  - body on its suspension: lateral sway and yaw from track alignment, a 1.1-1.6 Hz body
-//    hunting oscillation growing with speed², vertical
-//    bob and pitch from track level, roll from cross level and an outward roll in
+//  - body on its suspension: lateral sway and yaw from track alignment, a broadband body
+//    hunting (0.6-2.5 Hz, excited by the track over the distance run, growing with speed²),
+//    vertical bob and pitch from track level, roll from cross level and an outward roll in
 //    curves (v²κ), pitch from traction / braking with a spring-back at the stop;
 //  - framing: the same body-mounted view at every zoom (RIG.headTurn / teleHeadTurn can
 //    add a head turn towards a gaze point down the line; both are 0);
 //  - impacts at the same rail joints / turnout parts and the same axles (config AXLES)
-//    the audio uses (app.audio.features), so each bump lands with its knock;
-//  - a fine traction / running buzz, boarding movements and door shudders at stops;
+//    the audio uses (app.audio.features), so each bump lands with its knock: a short pitch
+//    jolt (welds barely, dipped joints clearly, the frog hardest) and, at the switch toe, the
+//    check rail and the frog, a sideways jolt (yaw and roll, its sign set by the rail);
+//  - a fine running shake (about 0.7 px RMS at 25 km/h on the 17° lens, angular: the
+//    camera is mounted rigidly), the traction drive's hum under power, boarding movements
+//    and door shudders at stops;
 //  - mouse look (grab and drag the view) with soft limits, easing back to centre when released;
 //  - zoom (Z / X / wheel / UI) between 12° and 60° vertical FOV, smoothed in log space;
 //    portrait screens keep the landscape horizontal view;
@@ -55,12 +59,17 @@ export const RIG = {
   pitchPerAcc: 0.42 * DEG,  // body pitch per m/s² of longitudinal acceleration
   rollArm: 2.0,             // m, eye height above the roll centre
   stopSpring: 3.4 * DEG,    // pitch-rate kick per m/s² of final braking when the tram comes to rest
-  vib: { pitch: 0.035 * DEG, yaw: 0.014 * DEG, roll: 0.017 * DEG },   // RMS buzz at 45 km/h
-  // body hunting: the car body's yaw / lateral oscillation on its secondary suspension
-  // (wheelset hunting coupled through the bogies), 1.1-1.6 Hz with a drifting frequency
-  // and amplitude; the RMS given at `ref` m/s, growing with the square of speed (capped)
-  hunt: { yaw: 0.032 * DEG, lat: 0.003, ref: 7.5, max: 1.4, freq: [1.1, 1.6] },
+  vib: { pitch: 0.05 * DEG, yaw: 0.028 * DEG, roll: 0.025 * DEG },   // RMS buzz at 45 km/h
+  // body hunting: the car body's yaw / lateral motion on its secondary suspension, excited by
+  // the track (grooved rail in the paving: small at street speeds): broadband noise over the
+  // distance run (three octaves of these wavelengths, m: 0.6-2.5 Hz at 25-30 km/h); the RMS
+  // given at `ref` m/s, growing with the square of speed (capped)
+  hunt: { yaw: 0.032 * DEG, lat: 0.003, ref: 12, max: 1.4, wave: [6, 3, 1.6] },
   dipKick: 1.5,             // dipped / insulated joints knock harder than the welds
+  // wheel knocks: pitch-spring kick per unit of axle weight × severity (welds, dipped joints,
+  // the turnout's check rail and frog), and the sideways jolt (rad) at the switch toe, check
+  // rail and frog: a frog gives a 4-8 px pitch jolt and 2-4 px sideways at 25 km/h on 17°
+  knock: { weld: 0.04, dipped: 0.11, special: 0.2, yaw: 0.0036, roll: 0.0015 },
   shutterDay: 1 / 160,      // s, exposure in daylight (camera motion blur in post)...
   shutterNight: 1 / 50,     // ...opening up towards dusk (U.uNight), interpolated in stops
   blurMaxPx: 32,            // streak cap (px at 1080 lines) at the night shutter, scaled with the shutter
@@ -129,9 +138,9 @@ function fallbackFeatures(route, layout) {
   }
   for (const c of layout.crossovers) {
     const facing = c.from > 0, at = (x) => route.wrap(facing ? c.s0 + x : c.s1 - x);
-    out.push({ s: at(0), kind: 'joint', sev: 0.5, xo: true }, { s: at(6.4), kind: 'joint', sev: 0.75, xo: true },
-      { s: at(14), kind: 'check', sev: 0.7, xo: true }, { s: at(15.6), kind: 'frog', sev: 1, xo: true },
-      { s: at(19.2), kind: 'joint', sev: 0.7, xo: true }, { s: at(23.5), kind: 'joint', sev: 0.55, xo: true });
+    out.push({ s: at(0), kind: 'joint', sev: 0.5, xo: true, part: 'toe' }, { s: at(6.4), kind: 'joint', sev: 0.75, xo: true, part: 'heel' },
+      { s: at(14), kind: 'check', sev: 0.7, xo: true, part: 'check' }, { s: at(15.6), kind: 'frog', sev: 1, xo: true, part: 'frog' },
+      { s: at(19.2), kind: 'joint', sev: 0.7, xo: true, part: 'frogHeel' }, { s: at(23.5), kind: 'joint', sev: 0.55, xo: true, part: 'closure' });
   }
   return out.sort((a, b) => a.s - b.s);
 }
@@ -156,7 +165,7 @@ const cameraRig = {
   cut: true,         // the view jumped this frame: no motion blur
   prevViewProj: null, // last frame's projection × view matrix (for the shutter blur in post)
   _hf: { pitch: 0, yaw: 0, roll: 0, lat: 0 },   // current body buzz / hunting (rad, m)
-  _huntPh: 0,         // hunting oscillator phase (rad)
+  _dist: 0,           // distance run (m): drives the hunting
   _tallPitch: 0,      // extra downward tilt on tall (portrait) screens
 
   async init(app) {
@@ -181,6 +190,10 @@ const cameraRig = {
     this.pitchB = new Spring(0.75, 0.38);
     this.roll = new Spring(0.65, 0.3);
     this.tick = new Spring(8, 0.18);
+    // sideways wheel knocks (switch toe, check rail, frog): a short yaw and roll jolt of the
+    // rigid body (rad), decaying within about a quarter of a second
+    this.joltY = new Spring(5.5, 0.28);
+    this.joltR = new Spring(6.5, 0.28);
     this.head = null;          // head turn {x, v, target} (rad), initialised on the first frame
     this.headP = null;
     this._prevS = null;
@@ -280,8 +293,8 @@ const cameraRig = {
     camera.position.set(eye.x + (rx / rl) * right, eye.y + up, eye.z + (rz / rl) * right);
     this._qBody.setFromEuler(this._e.set(
       bodyP + this.pitchB.x + this.tick.x * 0.9 + hv.pitch,
-      bodyH - Math.PI / 2 + this.yawB.x + hv.yaw,
-      this.roll.x + hv.roll, 'YXZ'));
+      bodyH - Math.PI / 2 + this.yawB.x + this.joltY.x + hv.yaw,
+      this.roll.x + this.joltR.x + hv.roll, 'YXZ'));
     this._qHead.setFromEuler(this._e.set(RIG.basePitch + this._tallPitch + this.headP.x + this.pitch, this.head.x + this.yaw, 0, 'YXZ'));
     camera.quaternion.copy(this._qBody).multiply(this._qHead);
   },
@@ -321,14 +334,13 @@ const cameraRig = {
     hv.yaw = RIG.vib.yaw * k * buzz(t, 111);
     hv.roll = RIG.vib.roll * k * buzz(t, 121);
 
-    // body hunting: a drifting 1.1-1.6 Hz yaw / sway (sine of unit RMS, amplitude wandering
-    // ±40 %), lateral motion a quarter period behind the yaw
-    const H = RIG.hunt;
-    const fh = H.freq[0] + (H.freq[1] - H.freq[0]) * (0.5 + 0.5 * noise1(t * 0.13, 141));
-    this._huntPh = (this._huntPh + 2 * Math.PI * fh * dt) % (2 * Math.PI * 64);
-    const ah = Math.min(H.max, (v / H.ref) ** 2) * Math.SQRT2 * (1 + 0.4 * noise1(t * 0.31, 143));
-    hv.yaw += H.yaw * ah * Math.sin(this._huntPh);
-    hv.lat = H.lat * ah * Math.sin(this._huntPh - Math.PI / 2);
+    // body hunting: broadband yaw / sway over the distance run (three octaves of noise, unit
+    // RMS; the amplitude wanders ±30 % over tens of metres), no single tone
+    const H = RIG.hunt, W = H.wave;
+    const d = (this._dist = (this._dist + v * dt) % 1e6);
+    const ah = Math.min(H.max, (v / H.ref) ** 2) * (1 + 0.3 * noise1(d / 37, 143));
+    hv.yaw += H.yaw * ah * (0.62 * noise1(d / W[0], 141) + 0.5 * noise1(d / W[1], 142) + 0.32 * noise1(d / W[2], 144)) / 0.43;
+    hv.lat = H.lat * ah * (0.62 * noise1(d / W[0], 151) + 0.5 * noise1(d / W[1], 152) + 0.32 * noise1(d / W[2], 154)) / 0.43;
 
     const n = Math.ceil(dt / (1 / 240)), h = dt / n;
     for (let i = 0; i < n; i++) {
@@ -338,6 +350,8 @@ const cameraRig = {
       this.pitchB.step(pitchT, h);
       this.roll.step(rollT, h);
       this.tick.step(0, h);
+      this.joltY.step(0, h);
+      this.joltR.step(0, h);
     }
   },
 
@@ -361,14 +375,22 @@ const cameraRig = {
         if (v < 0.3) continue;
         const w = axle.weight * strength;
         // welds are barely there, dipped joints knock, the frog nose hits hardest
-        const sev = ft.sev < 0.25 ? ft.sev * 0.25 : ft.sev * (ft.kind === 'joint' ? RIG.dipKick : 1);
+        const weld = ft.sev < 0.25, special = ft.kind === 'frog' || ft.kind === 'check';
+        const sev = weld ? ft.sev * 0.25 : ft.sev * (ft.kind === 'joint' ? RIG.dipKick : 1);
         const k = ft.kind === 'frog' ? 1.8 : ft.kind === 'check' ? 0.5 : 1;
-        this.tick.v -= 0.04 * w * sev * k;
+        const kn = RIG.knock;
+        this.tick.v -= (special ? kn.special : weld ? kn.weld : kn.dipped) * w * sev * k;
         this.vert.v -= 0.004 * w * sev * k;
-        if (ft.kind === 'frog' || ft.kind === 'check') {
-          const side = hash2(Math.round(ft.s * 10), 7) & 1 ? 1 : -1;
+        // the wheels meet the switch blade's tip, the check rail and the frog nose from the side:
+        // a sideways jolt, its sign by the rail they lie on (the frog on the other rail from the
+        // check rail and the blade tip)
+        if (special || ft.part === 'toe') {
+          const side = ft.kind === 'frog' ? -1 : 1;
+          const j = w * ft.sev * side * (ft.part === 'toe' ? 1.6 : ft.kind === 'check' ? 0.6 : 1);
+          this.joltY.kick(kn.yaw * j);
+          this.joltR.kick(-kn.roll * j);
           this.lat.v += 0.012 * w * ft.sev * side;
-          this.yawB.v += 0.004 * w * ft.sev * side;
+          this.yawB.v += 0.002 * w * ft.sev * side;
         }
       }
     }

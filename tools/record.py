@@ -16,10 +16,10 @@ their own, killed on every way out (SIGTERM / SIGINT from `timeout` included, an
 watchdog if the tool is killed outright). --max-seconds bounds the browser part (default:
 --timeout + 2 s per frame + 15 min; 0: no limit); encoding runs after the browser is gone.
 """
-import argparse, base64, json, os, random, shutil, subprocess, sys, tempfile, time, urllib.request
+import argparse, base64, json, os, random, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from shoot import ROOT, WS, ProcessGuard, chrome_args, chrome_stderr, free_port, port_open, reap_orphans  # noqa: E402
+from shoot import ROOT, WS, ProcessGuard, chrome_args, chrome_stderr, devtools_ws, free_port, port_open, reap_orphans  # noqa: E402
 
 
 def main():
@@ -73,20 +73,13 @@ def capture(a, guard):
         if port_open(port):
             break
         time.sleep(0.1)
-    dbg = free_port()
+    os.makedirs(os.path.join(ROOT, ".work"), exist_ok=True)
     profile = tempfile.mkdtemp(prefix="record-", dir=os.path.join(ROOT, ".work"))
     errf = chrome_stderr()
-    proc = guard.spawn(chrome_args(dbg, profile, a.width, a.height), stdout=errf, stderr=errf)
+    proc = guard.spawn(chrome_args(0, profile, a.width, a.height), stdout=errf, stderr=errf)
     rc = 0
     try:
-        ws_url = None
-        for _ in range(100):
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{dbg}/json/version", timeout=1) as r:
-                    ws_url = json.load(r)["webSocketDebuggerUrl"]
-                break
-            except Exception:
-                time.sleep(0.1)
+        ws_url = devtools_ws(profile, proc)
         if not ws_url:
             print("ERROR: chrome did not start", file=sys.stderr)
             return 2

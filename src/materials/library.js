@@ -33,32 +33,39 @@ const STONE_CELL = {
   value: 0.12, hue: 0.9, rough: 0.06, row: 0.55, a: [1.06, 0.985, 0.86], b: [0.97, 0.985, 1.01],
   out: { p: 0.15, fam: [[1.04, 0.93, 0.88], [1.05, 0.97, 0.82], [0.9, 0.92, 0.95]] },
 };
-const STONE_MACRO = { f1: 1 / 4, f2: 1 / 17, albedo: 0.08, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
+// (faint: the isotropic macro blotches read as cloud mottling on the walls; stone.dirty keeps more)
+const STONE_MACRO = { f1: 1 / 4, f2: 1 / 17, albedo: 0.04, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
 const STONE_DETAIL = { freq: 2.0, normal: 0.7, albedo: 0.3, rough: 0.05 };
-// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed
-const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0, albedo: 1.0, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
+// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed; the relief
+// carries it, the albedo follows only faintly
+const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0, albedo: 0.5, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
 // rock-faced bosses: fine pitting and small spalls at close range (the large fracture facets
 // are in the rustic map), per block, faded on the drafted margin
 const STONE_PITCH = { tex: 'pitch', tool: 'pitch', freq: 2.0, normal: 0.8, albedo: 0.5, rough: 0.05, share: 1.0, margin: 0.035, farVar: 0.008 };
-// soiled ledges, sheltered soffits, faint vertical drip streaks
-const STONE_WEATHER = { ledge: 0.22, streak: 0.08, threshold: 0.6, soffit: 0.1 };
+// soiled ledges, sheltered soffits, run-off streaks (streak: darkening at full strength,
+// share: the share of streak slots in use, see surface.js MAP_WEATHER)
+const STONE_WEATHER = { ledge: 0.22, streak: 0.25, share: 0.5, soffit: 0.1 };
 
 // Granite setts: the tone drifts in runs, as quarry batches and dirt do: per sett, an
 // independent ±7 % plus as much again from a 1-3 m noise sampled at the sett centre
 // (total std ~7 %), the beige ↔ blue-grey drift following the same noise half way; a little
 // banding per course, 1-4 m mottling and broad wear patches (macro), and ~3.5 % odd setts:
-// darker replacements, warmer beige and cooler blue-grey ones.
+// darker replacements, warmer beige and cooler blue-grey ones. Per sett the roughness
+// varies only a little (±3 %: single glinting setts read as a barcode at grazing angles),
+// and beyond about 15 m the setts' own tone and the odd setts fade by 45 % (far: the share
+// faded), so mid-distance paving is a field textured by its joints and the broad wear.
 const PAVING_CELL = {
-  value: 0.07, hue: 0.65, rough: 0.08, row: 0.25, a: [1.06, 1.0, 0.93], b: [0.95, 0.99, 1.06],
-  corr: 0.45, corrHue: 0.5, corrFreq: 1 / 6,
+  value: 0.07, hue: 0.65, rough: 0.03, row: 0.25, a: [1.06, 1.0, 0.93], b: [0.95, 0.99, 1.06],
+  corr: 0.45, corrHue: 0.5, corrFreq: 1 / 6, far: 0.45,
   out: { p: 0.035, fam: [[0.78, 0.78, 0.8], [1.08, 1.0, 0.88], [0.9, 0.95, 1.05]] },
 };
 // chewing gum: grey to grey-black blotches 0.6-3 cm across, clustered (3-8 m noise) where
-// people stand and wait; on the street hardly any between and over the rails
-const GUM = { radius: 0.0065, albedo: 0.67, rough: 0.5, cluster: { freq: 1 / 25, lo: 0.5, hi: 0.6 } };
+// people stand and wait; on the street hardly any between and over the rails. Aged gum is
+// trodden matt and dirty (a glossier fleck would glint out of the grazing sheen)
+const GUM = { radius: 0.0065, albedo: 0.67, rough: 0.8, cluster: { freq: 1 / 25, lo: 0.5, hi: 0.6 } };
 // old spill blots soaked into the setts (oil, coffee, juice): 2-10 cm, soft, a darker tide
-// line, most a little glossy (runtime, per global sett: never repeating with the tile)
-const BLOT = { prob: 0.045, radius: 0.022, albedo: 0.8, rough: 0.82 };
+// line, most a touch glossier (runtime, per global sett: never repeating with the tile)
+const BLOT = { prob: 0.045, radius: 0.022, albedo: 0.8, rough: 0.93 };
 const PAVING_MACRO = { f1: 1 / 2.5, f2: 1 / 20, albedo: 0.16, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
 // crystals at close range (mica darker and glossy, feldspar pale), low contrast: fine
 // grey granite, not terrazzo
@@ -77,7 +84,7 @@ export const LIBRARY = {
       courseH: 0.35, blockL: 0.7, blockRange: [0.36, 1.2], courses: 12, joint: 0.006,
       uv: 'u along the wall, v up (m). Course joints at v = k × courseH. Scale v by meta.courseH / plan.courseH (and u by blockL / plan.blockL) to match a building style; offset v by a random whole number of courses and u by a random amount per lot so neighbours differ.',
       dressing: 'per block at runtime: 60 % taltish comb strokes (vertical or diagonal), 25 % pecked, 15 % rubbed; 20-35 mm finer drafted margin',
-      weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and vertical drip streaks (streak), from world normal / position. The splash zone near the paving is left to vertex colours.' },
+      weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and run-off streaks on vertical faces (streak, share), from world normal / position: single warm grey-brown streaks 2-15 cm wide and 0.5-2 m long hanging from bed joints, on a 0.3-0.8 m lattice along the wall. They know no geometry above them, so the run-off below sills, slabs and consoles stays with the buildings (grime). The splash zone near the paving is left to vertex colours.' },
       tints: LIMESTONE_TINTS,
       tintWeights: LIMESTONE_WEIGHTS,
       albedo: [0.6, 0.47, 0.27], // mean linear albedo of the baked limestone (before tints): far-field stand-ins should match it
@@ -90,7 +97,7 @@ export const LIBRARY = {
       cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DRESS, mirror: 0.75,
       // stains on the walls read as run-off: faint, sparse and stretched 1:6 down the face
       // (the patchy dirt stays on the ledges, the weathering's ledge term)
-      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.14, soffit: 0.16 }, stain: { amount: 0.05, freq: 0.6, threshold: 0.75, stretch: 6 },
+      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.3, share: 0.65, soffit: 0.16 }, stain: { amount: 0.05, freq: 0.6, threshold: 0.75, stretch: 6 },
     },
     vc: 'tint',
     meta: { note: 'soiled variant of stone.ashlar (same layout / metrics)', tints: LIMESTONE_TINTS },

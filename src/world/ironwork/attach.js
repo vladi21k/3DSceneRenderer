@@ -431,16 +431,36 @@ function stainTexture() {
   return tex;
 }
 
-/** Flag designs (2 x 2 atlas): white with two blue stripes, blue over white, white with red
- *  bands, blue with a narrow white band. Generic designs, no emblems. A slightly darker
- *  sleeve at the hoist (u = 0). */
+/** Flag designs (2 x 2 atlas, cells of 256 x 256 px stretched over the 3:2 cloth): the
+ *  national white with two blue stripes and the six-pointed star outline between them,
+ *  the same sun-faded (greyer white, paler blue), plain stripes without the star, and
+ *  blue over white. A slightly darker sleeve at the hoist (u = 0); the fly end frays and
+ *  greys a little; faint creases from folding. */
 function flagTexture() {
   const cv = canvas(512, 512), g = cv.getContext('2d');
+  const r = new RNG(4711);
   const cell = (i, j, fn) => { g.save(); g.translate(i * 256, j * 256); fn(256, 256); g.restore(); };
-  cell(0, 0, (w, h) => { g.fillStyle = '#f0efea'; g.fillRect(0, 0, w, h); g.fillStyle = '#1d3f9a'; g.fillRect(0, h * 0.1, w, h * 0.15); g.fillRect(0, h * 0.75, w, h * 0.15); });
-  cell(1, 0, (w, h) => { g.fillStyle = '#1f4fa8'; g.fillRect(0, 0, w, h / 2); g.fillStyle = '#f0efea'; g.fillRect(0, h / 2, w, h / 2); });
-  cell(0, 1, (w, h) => { g.fillStyle = '#f0efea'; g.fillRect(0, 0, w, h); g.fillStyle = '#c42028'; g.fillRect(0, 0, w, h * 0.3); g.fillRect(0, h * 0.82, w, h * 0.08); });
-  cell(1, 1, (w, h) => { g.fillStyle = '#1b3f8f'; g.fillRect(0, 0, w, h); g.fillStyle = '#f0efea'; g.fillRect(0, h * 0.44, w, h * 0.12); });
+  const striped = (w, h, white, blue, star) => {
+    g.fillStyle = white; g.fillRect(0, 0, w, h);
+    g.fillStyle = blue; g.fillRect(0, h * 0.094, w, h * 0.156); g.fillRect(0, h * 0.75, w, h * 0.156);
+    if (!star) return;
+    // two interlaced triangle outlines, regular on the cloth (x squeezed by 2/3)
+    const cx = w / 2, cy = h / 2, R = h * 0.165, k = 2 / 3;
+    g.strokeStyle = blue; g.lineWidth = h * 0.032; g.lineJoin = 'miter';
+    for (const a0 of [-Math.PI / 2, Math.PI / 2]) {
+      g.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const a = a0 + (i * 2 * Math.PI) / 3;
+        const x = cx + Math.cos(a) * R * k, y = cy + Math.sin(a) * R;
+        i ? g.lineTo(x, y) : g.moveTo(x, y);
+      }
+      g.closePath(); g.stroke();
+    }
+  };
+  cell(0, 0, (w, h) => striped(w, h, '#f1f0eb', '#1d42a8', true));
+  cell(1, 0, (w, h) => striped(w, h, '#e4e2da', '#4467b4', true));
+  cell(0, 1, (w, h) => striped(w, h, '#efeee8', '#21459e', false));
+  cell(1, 1, (w, h) => { g.fillStyle = '#1f4fa8'; g.fillRect(0, 0, w, h / 2); g.fillStyle = '#f0efea'; g.fillRect(0, h / 2, w, h / 2); });
   for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
     cell(i, j, (w, h) => {
       g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(0, 0, w * 0.035, h);
@@ -448,6 +468,12 @@ function flagTexture() {
       const gr = g.createLinearGradient(w * 0.7, 0, w, 0);
       gr.addColorStop(0, 'rgba(120,115,100,0)'); gr.addColorStop(1, 'rgba(120,115,100,0.16)');
       g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      // creases where it was folded away: soft lines across and along
+      g.lineWidth = 2;
+      for (const [x0, y0, x1, y1] of [[w / 2, 0, w / 2, h], [0, h / 2, w, h / 2], [w / 4, 0, w / 4, h], [w * 0.75, 0, w * 0.75, h]]) {
+        g.strokeStyle = `rgba(60,58,50,${r.range(0.04, 0.08).toFixed(3)})`;
+        g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+      }
     });
   }
   const tex = new THREE.CanvasTexture(cv);
@@ -458,7 +484,7 @@ function flagTexture() {
 
 // ---------------------------------------------------------------- materials
 /** Flag cloth size of the instanced template (metres): fly length, hoist height. */
-const FLAG = { L: 1.2, H: 0.8 };
+export const FLAG = { L: 1.2, H: 0.8 };
 
 export function makeAttachMaterials(app) {
   const M = app.materials;
@@ -500,23 +526,50 @@ export function makeAttachMaterials(app) {
   });
 
   const flag = new THREE.MeshStandardMaterial({ name: 'ironwork.flag', map: flagTexture(), side: THREE.DoubleSide, roughness: 0.88 });
-  // Cloth: hoist edge (x = 0) pinned to the pole; the fly end droops under its weight,
-  // soft folds run from hoist to fly, and wind adds travelling waves. Displacement in the
-  // cloth's local frame (x fly, y along the pole, z out of the cloth).
+  // Cloth, displaced in its local frame (x fly, y along the hoist, z out of the cloth).
+  // aFlag.z holds the motion phase, plus 100 for a flag hung down the front of a railing.
+  // On a pole: in calm air the cloth hangs limp, each column from its point of the
+  // hoist curving down toward the vertical (world down from the instance basis), gathered
+  // into soft pleats that deepen toward the fly and swinging a little about the pole; a
+  // stronger wind lifts it toward the pole's square and runs waves down it. Hung on a
+  // railing: tied at the top corners (the top edge sags between the ties), lying flat
+  // on the bars in shallow folds, only its free lower end stirring in the wind (never
+  // into the slab: the ripple only moves it outward).
   const head = `#include <common>
 attribute vec3 aFlag;
 uniform float uTime;
 uniform float uWindStrength;
-vec3 flagDisp( vec2 p, float ph ) {
+vec3 flagDisp( vec2 p, float code ) {
+	float rail = step( 99.5, code );
+	float ph = code - 100.0 * rail;
 	float f = clamp( p.x / ${FLAG.L.toFixed(2)}, 0.0, 1.0 );
+	float hy = clamp( -p.y / ${FLAG.H.toFixed(2)}, 0.0, 1.0 );
 	float w = clamp( uWindStrength, 0.0, 1.0 );
-	float t = uTime * ( 1.6 + 2.4 * w ) + ph;
-	float amp = ( 0.07 + 0.2 * w ) * ( 0.75 + 0.5 * fract( ph * 0.37 ) );
+	float t = uTime * ( 1.3 + 2.2 * w ) + ph;
+	if ( rail > 0.5 ) {
+		float sagTop = 0.03 * sin( 3.14159 * hy ) * ( 1.0 - smoothstep( 0.0, 0.3, f ) );
+		float amp = 0.004 + 0.012 * f;
+		float fold = sin( p.y * 17.0 + ph * 3.0 + 0.6 * sin( p.x * 3.0 + ph ) ) * 0.6 + sin( p.y * 31.0 + ph ) * 0.4;
+		float rip = ( 0.5 + 0.5 * sin( p.x * 6.0 - t * 1.1 + p.y * 2.0 ) ) * smoothstep( 0.75, 1.0, f ) * ( 0.01 + 0.04 * w );
+		return vec3( sagTop, 0.0, amp * ( 1.0 + fold ) + rip );
+	}
+	#ifdef USE_INSTANCING
+		vec3 g = -normalize( vec3( instanceMatrix[ 0 ].y, instanceMatrix[ 1 ].y, instanceMatrix[ 2 ].y ) );
+	#else
+		vec3 g = vec3( 0.0, -1.0, 0.0 );
+	#endif
+	// limp: hanging from the hoist, curving toward the vertical along the fly
+	vec3 dir = normalize( mix( vec3( 1.0, 0.0, 0.0 ), g, 0.55 + 0.35 * f ) );
+	vec3 limp = vec3( 0.0, p.y, 0.0 ) + dir * p.x;
+	float pa = ( 0.02 + 0.06 * f ) * smoothstep( 0.0, 0.3, f ) * ( 0.8 + 0.4 * fract( ph * 0.53 ) );
+	limp.z += pa * ( sin( p.y * 13.0 + ph * 2.0 + p.x * 1.6 ) * 0.65 + sin( p.y * 26.0 - ph + p.x * 2.4 ) * 0.35 );
+	limp.z += p.x * ( 0.04 + 0.1 * w ) * sin( t * 0.55 + ph ) + 0.02 * f * sin( p.x * 4.0 - t * 1.3 );
+	// lifted: square to the pole, waves running down it
+	float amp = ( 0.06 + 0.16 * w ) * ( 0.75 + 0.5 * fract( ph * 0.37 ) );
 	float wave = sin( p.x * 5.2 - t ) * 0.7 + sin( p.x * 8.7 + p.y * 2.6 - t * 1.6 ) * 0.3;
-	float folds = sin( p.y * 8.5 + ph * 2.0 + 0.5 * sin( t * 0.45 ) ) * ( 0.03 + 0.06 * ( 1.0 - w ) );
-	float z = wave * amp * pow( f, 1.3 ) + folds * smoothstep( 0.0, 0.4, f );
-	float sag = 0.3 * ( 1.25 - w ) * f * f;
-	return vec3( -0.25 * sag * f, -sag, z );
+	vec3 lifted = vec3( p.x, p.y - 0.12 * f * f, wave * amp * pow( f, 1.3 ) );
+	float lift = smoothstep( 0.3, 0.9, w ) * ( 0.7 + 0.3 * sin( t * 0.31 + ph ) );
+	return mix( limp, lifted, lift ) - vec3( p, 0.0 );
 }`;
   const flutter = (sh, withNormal) => {
     sh.uniforms.uTime = U.uTime;
@@ -755,11 +808,13 @@ function bougainvillea(W, r, { L = 0.8, D = 0.18, canes = 9, leaves = 9, bracts 
 }
 
 /** Geranium planting over an area L (x) by D (z), origin at the soil centre: a leafy
- *  mound `height` tall, umbels standing out of it, and `trail` ivy-geranium strands
- *  hanging over the front (+z) edge, 0.2 - 0.5 m long. The light levels have fewer,
- *  larger cards (`ks`: size factors of leaves, umbels, trailing leaves and umbels) and
- *  `steps` leaves per strand. */
-function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 0, height = 0.3, lite = false, ks = [1, 1, 1, 1], steps = 3 }) {
+ *  mound `height` tall, umbels standing out of it, `spill` leaves and umbels tumbling
+ *  over the front (+z) rim and down the box front, and `trail` ivy-geranium strands
+ *  hanging below it, 0.25 - 0.6 m long and flowering along their length, so a box seen
+ *  from the street below reads as a mass of flowers spilling over the railing. The light
+ *  levels have fewer, larger cards (`ks`: size factors of leaves, umbels, trailing
+ *  leaves, trailing umbels and spill) and `steps` leaves per strand. */
+function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 0, spill = 0, height = 0.3, lite = false, ks = [1, 1, 1, 1, 1], steps = 3 }) {
   const ax = L * 0.5 + 0.03, az = D * 0.5 + 0.05;
   const centre = new THREE.Vector3(0, -0.04, 0);
   const dome = (x, z) => Math.sqrt(Math.max(0, 1 - (x / ax) ** 2 - (z / az) ** 2));
@@ -780,22 +835,60 @@ function geranium(W, r, { L = 0.26, D = 0.22, leaves = 18, flowers = 7, trail = 
     const y = 0.015 + dome(x, z) * height + r.range(0.02, 0.08);
     umbel(W, r, x, y, z, r.range(0.11, 0.15) * (lite ? 1.2 : 1) * ks[1], lite);
   }
-  // trailing strands over the front edge: chains of leaves, a flower or two on each
+  // spill over the front rim: leaves facing out and down, an umbel among every few
+  for (let i = 0; i < spill; i++) {
+    const x = r.range(-0.5, 0.5) * L, y = r.range(-0.13, 0.07), z = D * 0.5 + r.range(0.02, 0.07) + Math.max(0, -y) * 0.15;
+    if (i % 3 === 2) {
+      umbel(W, r, x, y + 0.03, z + 0.02, r.range(0.1, 0.13) * (lite ? 1.2 : 1) * ks[4], true);
+      continue;
+    }
+    W.color(...[0.92, 1, 0.9].map((c) => c * r.range(0.66, 0.98)));
+    card(W, [x, y, z], [r.range(-0.6, 0.6), r.range(-0.3, 0.7), 1], (lite ? r.range(0.12, 0.15) : r.range(0.075, 0.105)) * ks[4], r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
+  }
+  // trailing strands below the rim: chains of leaves flowering along their length
   for (let i = 0; i < trail; i++) {
-    const x0 = r.range(-0.48, 0.48) * L, len = r.range(0.2, 0.5);
-    const n = lite ? steps : Math.max(4, Math.round(len / 0.055));
-    const out = r.range(0.03, 0.09), sway = r.range(-0.08, 0.08);
+    const x0 = r.range(-0.48, 0.48) * L, len = r.range(0.25, 0.6);
+    const n = lite ? steps : Math.max(4, Math.round(len / 0.05));
+    const out = r.range(0.03, 0.09), sway = r.range(-0.1, 0.1);
     for (let j = 0; j < n; j++) {
       const t = (j + 0.5) / n;
-      const x = x0 + sway * t + r.range(-0.02, 0.02), y = 0.02 - len * t, z = D * 0.5 + 0.02 + out * Math.sin(t * 1.8);
+      const x = x0 + sway * t + r.range(-0.02, 0.02), y = -0.02 - len * t, z = D * 0.5 + 0.03 + out * Math.sin(t * 1.8);
       W.color(r.range(0.66, 0.9), r.range(0.76, 1.0), r.range(0.66, 0.88));
-      card(W, [x, y, z], [r.range(-0.5, 0.5), r.range(-0.2, 0.6), 1], (lite ? r.range(0.1, 0.13) : r.range(0.055, 0.08)) * ks[2], r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
+      card(W, [x, y, z], [r.range(-0.5, 0.5), r.range(-0.2, 0.6), 1], (lite ? r.range(0.11, 0.14) : r.range(0.065, 0.09)) * ks[2], r.range(0, 6.28), LEAF_UV[0], LEAF_UV[1], centre, 0.35);
     }
-    const nf = lite ? 1 : r.int(1, 2);
+    const nf = lite ? (steps > 2 ? 2 : 1) : r.int(2, 3);
     for (let j = 0; j < nf; j++) {
-      const t = r.range(0.35, 1);
-      umbel(W, r, x0 + sway * t, 0.04 - len * t, D * 0.5 + 0.04 + out, r.range(0.08, 0.11) * (lite ? 1.2 : 1) * ks[3], true);
+      const t = (j + r.range(0.4, 1)) / nf;
+      umbel(W, r, x0 + sway * t, -0.01 - len * t, D * 0.5 + 0.05 + out, r.range(0.09, 0.12) * (lite ? 1.2 : 1) * ks[3], true);
     }
+  }
+}
+
+/** Potted shrub (oleander, myrtle, a lemon tree), origin at the soil: a short woody
+ *  stem into a rounded crown of leafy sprigs about 0.25 - 0.8 m up and, tinted per
+ *  instance, a few flowers on its outside (a green tint keeps it leafy). Darker inside
+ *  the crown. The light levels have fewer, larger cards (`ks`: sprigs, flowers). */
+function shrub(W, r, { sprigs = 72, blooms = 10, lite = 0, ks = [1, 1] }) {
+  const cy = 0.52, rx = 0.24, ry = 0.27;
+  const centre = new THREE.Vector3(0, cy, 0);
+  if (!lite) {
+    W.color(0.9, 0.85, 0.8);
+    for (const face of [0, Math.PI / 2]) stalk(W, [0, 0, 0], [0.015, cy - 0.12, 0], 0.018, TWIG_UV, face);
+  }
+  for (let i = 0; i < sprigs; i++) {
+    const a = r.range(0, Math.PI * 2), e = Math.acos(r.range(-0.75, 1));
+    const sx = Math.cos(a) * Math.sin(e), sy = Math.cos(e), sz = Math.sin(a) * Math.sin(e);
+    const k = r.range(0.62, 1.0);
+    const shade = (0.58 + 0.42 * k) * (0.82 + 0.18 * sy);
+    W.color(...[0.92, 1, 0.9].map((c) => c * shade * r.range(0.86, 1.08)));
+    card(W, [sx * rx * k, cy + sy * ry * k, sz * rx * k], [sx + r.range(-0.5, 0.5), sy + r.range(-0.3, 0.6), sz + r.range(-0.5, 0.5)],
+      r.range(0.14, 0.19) * ks[0], r.range(0, 6.28), HERB_UV[0], HERB_UV[1], centre, 0.6);
+  }
+  for (let i = 0; i < blooms; i++) {
+    const a = r.range(0, Math.PI * 2), e = Math.acos(r.range(-0.2, 1));
+    const sx = Math.cos(a) * Math.sin(e), sy = Math.cos(e), sz = Math.sin(a) * Math.sin(e);
+    W.color(...[1, 1, 1].map(() => r.range(0.85, 1)));
+    card(W, [sx * rx * 1.02, cy + sy * ry * 1.02, sz * rx * 1.02], [sx, sy + 0.3, sz], r.range(0.07, 0.09) * ks[1], r.range(0, 6.28), BLOOM_UV[0], BLOOM_UV[1], centre, 0.4);
   }
 }
 
@@ -1240,8 +1333,8 @@ function flagGeometry(sx = 24, sy = 16) {
 
 /** Plant families, in instance-pool order: geraniums in a pot and along a 0.8 m box,
  *  herb and dried-out clumps (pot sized, several to a box), trailing greens / surfinia
- *  and bougainvillea along a 0.8 m box. */
-export const PLANT = { POT: 0, BOX: 1, HERB: 2, DRY: 3, TRAIL: 4, BOUG: 5 };
+ *  and bougainvillea along a 0.8 m box, and a shrub for a large pot. */
+export const PLANT = { POT: 0, BOX: 1, HERB: 2, DRY: 3, TRAIL: 4, BOUG: 5, SHRUB: 6 };
 
 export function buildAttachAssets() {
   // [detail level][family]; level 1 is the light stand-in used beyond carving distance,
@@ -1250,13 +1343,14 @@ export function buildAttachAssets() {
   const s2 = Math.SQRT2;
   const kinds = [
     [geranium, [{ L: 0.3, D: 0.28, leaves: 16, flowers: 9, height: 0.26 }, { L: 0.3, D: 0.28, leaves: 7, flowers: 5, height: 0.26 },
-      { L: 0.3, D: 0.28, leaves: 4, flowers: 3, height: 0.26, ks: [Math.sqrt(7 / 4), Math.sqrt(5 / 3), 1, 1] }]],
-    [geranium, [{ L: 0.8, D: 0.18, leaves: 36, flowers: 24, trail: 7, height: 0.32 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 12, trail: 6, height: 0.32 },
-      { L: 0.8, D: 0.18, leaves: 5, flowers: 5, trail: 3, height: 0.32, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(12 / 5), Math.sqrt(18 / 6), s2] }]],
+      { L: 0.3, D: 0.28, leaves: 4, flowers: 3, height: 0.26, ks: [Math.sqrt(7 / 4), Math.sqrt(5 / 3), 1, 1, 1] }]],
+    [geranium, [{ L: 0.8, D: 0.18, leaves: 38, flowers: 28, trail: 13, spill: 27, height: 0.34 }, { L: 0.8, D: 0.18, leaves: 14, flowers: 14, trail: 9, spill: 12, height: 0.34 },
+      { L: 0.8, D: 0.18, leaves: 5, flowers: 6, trail: 5, spill: 6, height: 0.34, steps: 2, ks: [Math.sqrt(14 / 5), Math.sqrt(14 / 6), Math.sqrt(27 / 10), Math.sqrt(18 / 5), s2] }]],
     [herb, [{}, { sprigs: 10, crown: 4, spikes: 3, ks: [1.15, 1.1] }, { sprigs: 5, crown: 2, spikes: 2, ks: [1.3, 1.2] }]],
     [dry, [{}, { stalks: 5, tufts: 6, fallen: 1, heads: 2, ks: [1.2, 1.1] }, { stalks: 3, tufts: 3, fallen: 0, heads: 1, ks: [1.5, 1.2] }]],
     [trailing, [{}, { mound: 13, strands: 9, blooms: 7, ks: [1.45, 1.3, 1.25] }, { mound: 6, strands: 6, blooms: 4, ks: [2, 1.8, 1.6] }]],
     [bougainvillea, [{}, { leaves: 4, bracts: 6, crown: 5, ks: [1.45, 1.4] }, { canes: 6, leaves: 2, bracts: 3, crown: 2, ks: [1.9, 1.9] }]],
+    [shrub, [{}, { sprigs: 30, blooms: 5, ks: [1.55, 1.41] }, { sprigs: 12, blooms: 3, ks: [2.45, 1.83] }]],
   ];
   const plants = [[], [], []];
   // (the geraniums' far levels draw from a random stream of their own; the other

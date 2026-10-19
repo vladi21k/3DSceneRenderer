@@ -62,7 +62,8 @@ const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street
 // shadow on the sunlit facade itself gets none of its own warm bounce, and glass shows no
 // highlight from it)
 // (open shade on the paving stays sky-blue: the warm wall bounce it gets is small)
-const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22 };
+// lowSun: share of the facade bounce dropped once the sun is under ~12 degrees
+const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22, lowSun: 0.3 };
 // exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
@@ -70,20 +71,22 @@ const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22 };
 // sun's backlit street glows. Under the high sun (to t 0.3) the lift is under half a
 // stop: the sunlit granite near the cab lands at ~165-180 sRGB with its setts and joints
 // apart (post's meter gives back about a third of any change); more as the sun lowers
-// and the street falls into shade, none once it has set (the dusk caps hold the exposure)
+// and the street falls into shade, none once it has set (the dusk caps hold the exposure).
+// At golden hour the lift stays under a stop: the frame keeps a camera's range, the sky
+// over the shaded street blowing out rather than the shade being lifted to mid grey
 const KDAY = 1.3, EH_FULL = 1.9;
-const EXPO_LIFT = [[0.0, 0.4], [0.3, 0.42], [0.45, 0.8], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
+const EXPO_LIFT = [[0.0, 0.4], [0.3, 0.42], [0.45, 0.8], [0.55, 0.7], [0.65, 0.5], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
 // exposed value of the horizon slot down the street the camera holds (time of day, level),
 // before post's highlight recovery, which brings it down to the shoulder with its colour:
 // from mid-afternoon, looking towards the low sun, the aureole over the end of the street
-// stays below ~7.3 stops over mid grey (a backlit golden street glows and the sky around
-// the sun may clip, as it does in a photograph); from sunset on below ~4.6 stops, so the
-// afterglow sits under the gamut knee with its gradient and hue. Interpolated in log
-// terms; 64 = no hold.
-const HORIZON_LEVEL = [[0.1, 64], [0.25, 24], [0.45, 30], [0.62, 26], [0.8, 4.5], [1.0, 4.5]];
+// stays below ~8.4 stops over mid grey (a backlit golden street glows and the sky over
+// it blows out, as it does in a photograph); at sunset below ~5.6 stops, and in the blue
+// hour ~4.6, so the afterglow sits under the gamut knee with its gradient and hue.
+// Interpolated in log terms; 64 = no hold.
+const HORIZON_LEVEL = [[0.1, 64], [0.25, 24], [0.45, 60], [0.62, 52], [0.8, 9], [1.0, 4.5]];
 // from sunset on, the metered exposure stays within this factor of the nominal one, so a
 // view away from the afterglow does not open up to a grey midday; in the blue hour the
 // camera opens up as far as the meter asks (time of day, factor; log interpolation)
@@ -136,6 +139,8 @@ const env = {
   illuminant: new THREE.Vector3(1, 1, 1),
   // the direct sun's illuminance (rgb, normal incidence, zero below the skyline)
   sunIlluminant: new THREE.Vector3(1, 1, 1),
+  // the open sky's alone on a horizontal surface (the light in the shade)
+  skyIlluminant: new THREE.Vector3(0.6, 1, 1.9),
 
   async init(app) {
     this.app = app;
@@ -441,8 +446,10 @@ const env = {
     // sun alone (a daylight preset balances on it)
     const sc = U.uSunColor.value, sy = Math.max(this.state.sunDir.y, 0);
     const sk = irr && !this._irrDirty ? irr.horizontal : null;
-    if (sk) this.illuminant.set(sc.r * sy + sk.x, sc.g * sy + sk.y, sc.b * sy + sk.z);
-    else this.illuminant.set(sc.r * sy + Esky * 0.6, sc.g * sy + Esky, sc.b * sy + Esky * 1.9);
+    if (sk) this.skyIlluminant.copy(sk);
+    else this.skyIlluminant.set(Esky * 0.6, Esky, Esky * 1.9);
+    const kI = this.skyIlluminant;
+    this.illuminant.set(sc.r * sy + kI.x, sc.g * sy + kI.y, sc.b * sy + kI.z);
     this.sunIlluminant.set(sc.r, sc.g, sc.b);
   },
 
@@ -513,9 +520,13 @@ const env = {
     const bu = this.bounce, cb = this.crossBounce;
     if (bu) {
       const up = _up, dn = _dn, cr = _cr;
+      // (a low sun lights the upper facades at a grazing angle across a long street: the
+      // share of their light that reaches the floor and the opposite facade falls, so the
+      // shade keeps its depth against the sunlit stone)
+      const kLow = 1 - BOUNCE.lowSun * (1 - THREE.MathUtils.smoothstep(this.state.sunElevation ?? 1, 0.21, 0.31));
       for (let i = 0; i < 3; i++) {
         const k = c[i];
-        const Ew = Es[k] * cw * litWall, Ef = Es[k] * sy * floorLit;
+        const Ew = Es[k] * cw * litWall * kLow, Ef = Es[k] * sy * floorLit;
         up[i] = BOUNCE.up * WALL_ALB[i] * Ew;
         dn[i] = BOUNCE.down * GROUND_ALB[i] * Ef;
         cr[i] = BOUNCE.cross * WALL_ALB[i] * Ew;

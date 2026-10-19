@@ -103,11 +103,11 @@ class CrowdSim {
     this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
     // (outfit: 'waiter' for café staff, '' for everybody else)
-    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0, idle: -1, outfit: '' }, new Set(['pose', 'prop', 'propSeed', 'appearance', 'idle']));
+    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0, idle: -1, outfit: '', table: true }, new Set(['pose', 'prop', 'propSeed', 'appearance', 'idle']));
     this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
-    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [], squeeze: 0, squeezeLog: [],
+    this.check = { on: app.params.num('crowdCheck', 0) === 1, samples: 0, violations: 0, minClear: 99, log: [], wall: 0, wallLog: [], overlap: 0, agentFrames: 0, teleports: 0, teleLog: [], squeeze: 0, squeezeLog: [], lateBand: 0, lateMin: 99, cabTrackUnit: 0, cabTrackLog: [],
       propSamples: 0, propViolations: 0, propMinClear: 99, propLog: [], propOverlap: 0, propObstLog: [], propWall: 0, propWallLog: [],
       // strollers / bicycles against people and against each other (world space, within 60 m of the camera)
       pa: { frames: 0, agentOverlap: 0, propOverlap: 0, minAgentGap: 99, minPropGap: 99, pairs: new Set(), log: [] } };
@@ -262,7 +262,10 @@ class CrowdSim {
     if (U) {
       p = _v;
       if (io) { io[0] = U.sU; io[1] = U.d; io[2] = 2.2; this.route.toWorldIO(p); } else this.route.toWorld(U.sU, U.d, 2.2, p);
-    } else if (this._tramPN !== this.tram.n) { this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, p); this._tramPN = this.tram.n; }
+    } else if (this._tramPN !== this.tram.n) {
+      if (io) { io[0] = this.tram.trainU; io[1] = RIDE_D; io[2] = 2.2; this.route.toWorldIO(p); } else this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, p);
+      this._tramPN = this.tram.n;
+    }
     const yaw = Math.atan2(-(p.x - a.x), -(p.z - a.z));
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
@@ -408,6 +411,8 @@ class CrowdSim {
       o.steer = shown && a.mob === MOB.CYCLE ? Math.max(-0.5, Math.min(0.5, Math.atan((1.05 * -a.yawW) / Math.max(0.8, a.bikeV)))) : 0;
       o.look = a.look; o.appearance = a.appearance; o.visible = true;
       o.idle = a.idle; o.outfit = a.role === 'staff' ? 'waiter' : '';
+      // (a bench or a stop's shelter seat: no table in front, the hands rest on the thighs)
+      o.table = !(a.state === ST.SEATED && a.feature && a.feature.bench === true);
       H.set(this.base + a.slot, o);
     }
   }
@@ -467,8 +472,9 @@ class CrowdSim {
 
   /** Weighted count of the people in the track corridor (|d| ≤ half, default the corridor's
    *  half width) between route s0 and s1 (wrapped or not; the stretch from s0 towards +s, at most
-   *  half the loop): the sum of weight(off, d) over them, off = metres past s0 (1 each without a
-   *  weight). No allocation: the trams can sample it often. */
+   *  half the loop): the sum of weight(off, d, vd) over them, off = metres past s0, vd their lateral
+   *  velocity (m/s, + to the right; 1 each without a weight). No allocation: the trams can sample it
+   *  often. */
   corridorCount(s0, s1, weight = null, half = TRACK_ZONE_HALF) {
     if (this.camU === null) return 0;
     const route = this.route, L = route.length, agents = this.population.agents;
@@ -480,7 +486,8 @@ class CrowdSim {
       if (!a.active || a.d > half || a.d < -half) continue;
       let off = (this.camW + (a.s - this.camU) - w0) % L; if (off < 0) off += L;
       if (off > len) continue;
-      n += weight ? weight(off, a.d) : 1;
+      // (the lateral velocity too: the trams' scan sees who is about to step onto their track)
+      n += weight ? weight(off, a.d, a.vd) : 1;
     }
     return n;
   }
@@ -552,6 +559,22 @@ class CrowdSim {
       // the oncoming units' bodies (and a metre in front of the noses) are never entered; nobody is
       // between the tracks (|d| < 0.9) where a unit and the cab go by each other ('squeeze')
       const cabAh = a.s - this.tram.trainU;
+      // on the cab's track (a body inside its band) with the moving cab under 3 s away ('lateBand'),
+      // and with it under 5.5 s away while a unit's body goes by beside them ('cabTrackUnit')
+      if (a.state !== ST.SEATED && cabAh > 0 && this.tram.v > 1 && Math.abs(a.d - RIDE_D) < SWEPT_HALF + AGENT_R + 0.3) {
+        const tta = cabAh / Math.max(0.5, this.tram.v - a.vs);
+        if (tta < 3) { ck.lateBand++; ck.lateMin = Math.min(ck.lateMin, tta); }
+        if (tta < 5.5) {
+          for (const T of this.tram.units) {
+            const ah = T.sU - a.s;
+            if (ah < 3 && ah > -T.len) {
+              ck.cabTrackUnit++;
+              if (ck.cabTrackLog.length < 8) ck.cabTrackLog.push({ t: +this.time.toFixed(1), tta: +tta.toFixed(1), ah: +ah.toFixed(1), d: +a.d.toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], clr: a.clearing, hold: a.uHold });
+              break;
+            }
+          }
+        }
+      }
       for (const T of this.tram.units) {
         const ah = T.sU - a.s;
         if (a.state !== ST.SEATED && Math.abs(a.d) < 0.9 && ah < 1 && ah > -T.len && cabAh < SWEPT_AHEAD && cabAh > -(TRAM_LEN + 1)) {
@@ -566,7 +589,7 @@ class CrowdSim {
       }
       if (a.mob && a.state !== ST.SEATED) { this._checkProp(a, tr, map); this._checkPropPeople(a); }
       if (Math.abs(a.s - this.tram.trainU) > 20) continue;
-      const p = route.project(a.x, a.z, route.wrap(a.s), 4);
+      const p = route.project(a.x, a.z, route.wrap(a.s), 4, _pj);
       const ahead = route.delta(tr.s, p.s);
       const lat = Math.abs(p.d - RIDE_D) - SWEPT_HALF - AGENT_R;
       ck.samples++;
@@ -592,7 +615,7 @@ class CrowdSim {
     for (let e = 0; e < 2; e++) {
       const f = e ? F.f1 : F.f0;
       const x = a.x + fx * f + rx * F.l, z = a.z + fz * f + rz * F.l;
-      const p = route.project(x, z, route.wrap(a.s), 4);
+      const p = route.project(x, z, route.wrap(a.s), 4, _pj);
       pts[e].s = this.unwrap(p.s); pts[e].d = p.d;
     }
     // facade
@@ -752,11 +775,15 @@ class CrowdSim {
       cyclists: { stopped: cycStopped, stalledNoPeople5s: cycStall5, stallMaxS: +cycStallMax.toFixed(1), nearRail: cycRail, crossingRail: cycCrossing },
       lanes: { side: lanes[0], edge: lanes[1], corridor: lanes[2] },
       crossSection30to250m: { leftWalk: band[0], leftTrack: band[1], rideTrack: band[2], rightWalk: band[3] },
-      tram: { ...this.tram.stats, v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
+      // (clearTTA: seconds before the cab people got out of its band)
+      tram: { ...this.tram.stats, clearTTA: this.tram.clearStats(), v: +this.tram.v.toFixed(2), clearAhead: +this.tram.clearAhead.toFixed(1), stoppedAt: this.tram.stoppedAt ? this.tram.stoppedAt.id : null },
       violationLog: this.tram.violationLog.slice(0, 5), reqLog: this.tram.reqLog, rescueLog: this.tram.rescueLog, brakeLog: this.tram.brakeLog,
       check: ck.on ? { samples: ck.samples, violations: ck.violations, minClear: +ck.minClear.toFixed(3), log: ck.log.slice(0, 5), agentFrames: ck.agentFrames, wall: ck.wall, wallLog: ck.wallLog, obstacleOverlap: ck.overlap, teleports: ck.teleports, teleLog: ck.teleLog.slice(0, 5), blocked: this.tram.stats.blocked,
         // agent-frames between the tracks (|d| < 0.9) abreast of both trams going by each other (aim: 0)
         squeeze: ck.squeeze, squeezeLog: ck.squeezeLog,
+        // agent-frames on the cab's track (body in its swept volume + 0.3 m) with the moving cab under 3 s
+        // away (lateBand, nearest lateMin s), and under 5.5 s away while a unit goes by beside them (aim: 0)
+        lateBand: ck.lateBand, lateMin: +ck.lateMin.toFixed(2), cabTrackUnit: ck.cabTrackUnit, cabTrackLog: ck.cabTrackLog,
         prop: { samples: ck.propSamples, violations: ck.propViolations, minClear: +ck.propMinClear.toFixed(3), log: ck.propLog.slice(0, 6), obstacleOverlap: ck.propOverlap, obstacleLog: ck.propObstLog, wall: ck.propWall, wallLog: ck.propWallLog },
         // frames (within 60 m) of a stroller / bicycle overlapping a body or another one, distinct pairs
         propPeople: { frames: ck.pa.frames, agentOverlap: ck.pa.agentOverlap, propOverlap: ck.pa.propOverlap, pairs: ck.pa.pairs.size, minAgentGap: +ck.pa.minAgentGap.toFixed(3), minPropGap: +ck.pa.minPropGap.toFixed(3), log: ck.pa.log } } : null,
@@ -778,6 +805,7 @@ class CrowdSim {
 }
 
 const _pp = [{ s: 0, d: 0 }, { s: 0, d: 0 }];
+const _pj = { s: 0, d: 0 };   // route.project's output (self-check)
 const _sa = new Float64Array(5), _sb = new Float64Array(5);
 /** Squared distance between segments p0p1 and q0q1 (2D). */
 function segSegDist2(p0x, p0y, p1x, p1y, q0x, q0y, q1x, q1y) {

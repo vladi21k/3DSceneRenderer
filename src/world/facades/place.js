@@ -8,7 +8,7 @@ import { Tpl, TplCache, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
 import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
-import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls } from './signs.js';
+import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls, bladeNameTpls, letteringTpls, tradeIcon, subWordsOf, wordHebrew, N_NAMES, LINE_KIND, inkOn, lineCell, cellTpl } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow, shopSpill } from './spill.js';
 import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
@@ -22,7 +22,9 @@ const _m = new THREE.Matrix4(), _t = new THREE.Matrix4(), _r = new THREE.Matrix4
 const IDENT = new THREE.Matrix4();
 
 const DOOR_COLORS = { brown: 0x4a2e1c, varnish: 0x5e3b20, green: 0x283f30, blue: 0x2b5068, black: 0x1d1d1e, red: 0x561c19 };
-const ROLLER = [0xb9b7b0, 0xd4d1c8, 0x8c8e8c, 0xc9bfa8];
+const ROLLER = [0xb9b7b0, 0xd4d1c8, 0x8c8e8c, 0xc9bfa8, 0x9aa09a, 0x6e7a72];
+// local z of a lowered roller curtain's front (shops.js: casing front − 2 cm + 3 cm + corrugation)
+const ZF_SHUT = 0.04 - 0.02 + 0.03 + 0.014;
 const BRASS = lin(0xb08a45), BLACK_IRON = [0.035, 0.035, 0.037];
 /** Shops without a sign: what they sell. */
 const SHOP_MIX = [['clothing', 0.22], ['general', 0.24], ['cafe', 0.14], ['jewellery', 0.09], ['pharmacy', 0.05], ['shoes', 0.11], ['books', 0.07], ['flowers', 0.08]];
@@ -47,9 +49,90 @@ function tradeAllowed(app, lot, frame, plan, o, type) {
 /** Share of the shops the plan gives no sign that put up their own (fascia, head panel or valance). */
 const EXTRA_SIGN = 0.8;
 /** Share of the shops of each trade with a projecting sign on a pier beside them. */
-const PROJ = { clothing: 0.55, general: 0.6, cafe: 0.5, jewellery: 0.6, pharmacy: 0.9, shoes: 0.55, books: 0.45, flowers: 0.5 };
+const PROJ = { clothing: 0.62, general: 0.66, cafe: 0.55, jewellery: 0.66, pharmacy: 0.9, shoes: 0.62, books: 0.55, flowers: 0.55 };
 /** The narrower trade of a general store or café whose sign does not say. */
 const SUBDRAW = { general: [['grocery', 0.36], ['kiosk', 0.16], ['toys', 0.14], ['nuts', 0.14], ['sweets', 0.06], [null, 0.14]], cafe: [['bakery', 0.14], ['juice', 0.12], [null, 0.74]] };
+
+// ------------------------------------------------------------------ shop names
+// Every shop trades under a name of its own (signs.js NAMES). On the main street the
+// names are given out along the loop, both sides together in order of s, each shop taking
+// the name used longest ago, so a name comes back only after every other one has been
+// used (~50 shops, a few hundred metres); side streets draw theirs from the shop's id.
+let NAME_TAB = null;
+function nameTable(app) {
+  if (NAME_TAB) return NAME_TAB;
+  const list = [];
+  for (const lot of app.layout.lots) {
+    if (lot.sideStreet || !lot.frame) continue;
+    let plan;
+    try { plan = facadePlan(lot); } catch (e) { continue; }
+    for (const fr of frontsOf(app, lot, plan)) {
+      for (const o of fr.plan.openings) if (o.kind === 'shop') list.push({ id: o.id, s: openingS(app, lot, fr.frame, fr.plan, o) });
+    }
+  }
+  list.sort((a, b) => a.s - b.s || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // ties (names never used yet) in a fixed shuffled order
+  const r = new RNG(0x5a1e5);
+  const order = Array.from({ length: N_NAMES }, (_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) { const j = r.int(0, i); [order[i], order[j]] = [order[j], order[i]]; }
+  const last = new Float64Array(N_NAMES).fill(-1e9), L = app.route.length;
+  const tab = new Map();
+  // (two passes: the second continues past the loop's wrap with the first's history)
+  for (let pass = 0; pass < 2; pass++) {
+    for (const it of list) {
+      let best = order[0], bs = Infinity;
+      for (let k = 0; k < N_NAMES; k++) { const n = order[k]; if (last[n] < bs) { bs = last[n]; best = n; } }
+      last[best] = it.s + pass * L;
+      if (pass) tab.set(it.id, best);
+    }
+  }
+  return (NAME_TAB = tab);
+}
+/** The name (index into signs.js NAMES) shop opening o trades under. */
+function nameOf(app, o) {
+  const n = nameTable(app).get(o.id);
+  return n ?? (hashStr(String(o.id)) % N_NAMES);
+}
+// accents for logo marks and second lines
+const ACCENTS = [0xc8231c, 0xe0a81c, 0xf4f1e8, 0x1f4fa0, 0xd8b25a, 0x2a7a3a];
+/**
+ * A shop's identity, the same on every sign it puts up: its name (both lines, the Hebrew
+ * or the English alone), a second line (its trade in the other language, a phone number,
+ * the year it opened, a tagline) on about three shops in five, a logo mark on a third,
+ * and its colours (the board's and the lettering's; design: its fascia design if it has
+ * one).
+ */
+function makeBrand(app, o, type, sub, design) {
+  const r = RNG.from(o.id, 'brand');
+  const nv = r.weighted([[0, 0.55], [1, 0.28], [2, 0.17]]);
+  let sb = null;
+  const ks = r.next();
+  if (ks < 0.42) {
+    const words = subWordsOf(type);
+    const want = nv === 1 ? false : nv === 2 ? true : r.chance(0.5);
+    const pref = words.filter((w) => wordHebrew(w) === want);
+    const pool = pref.length ? pref : words;
+    if (pool.length) sb = { w: pool[r.int(0, pool.length - 1)] };
+  } else if (ks < 0.64) {
+    const kind = type === 'cafe' && r.chance(0.5) ? r.pick([18, 18, 19]) : null;
+    const [a, b] = r.chance(0.62) ? LINE_KIND.phone : r.chance(0.6) ? LINE_KIND.year : LINE_KIND.tagline;
+    sb = { l: kind ?? r.int(a, b) };
+  }
+  const d = design || signDesign(r.int(0, 1 << 30), 'board', type);
+  const board = d.board ?? r.pick([0x1d1d1f, 0x1f3a2c, 0x5a1a1c, 0x1b2b45, 0xb8261e, 0x1f4fa0]);
+  const ink = d.board != null ? d.ink : inkOn(board, r);
+  const acc = ACCENTS.filter((c) => c !== board && c !== ink);
+  return {
+    name: nameOf(app, o), nv, sub: sb,
+    logo: r.chance(0.34) ? tradeIcon(type, sub, r) : -1, logoRight: r.chance(0.4),
+    accent: r.chance(0.5) ? ink : r.pick(acc), subAccent: r.chance(0.25),
+    board, ink,
+  };
+}
+/** The text fields of a brand, to merge into a sign design. */
+const brandText = (b) => ({ name: b.name, nv: b.nv, sub: b.sub, logo: b.logo, logoRight: b.logoRight, accent: b.accent, subAccent: b.subAccent });
+/** Cache key of a design's lettering. */
+const dkey = (d) => `${d.cell}|${d.name ?? ''}|${d.nv ?? ''}|${d.sub ? (d.sub.w ?? 'l' + d.sub.l) : ''}|${d.logo ?? ''}|${d.logoRight ? 1 : 0}|${d.subAccent ? 1 : 0}`;
 
 /**
  * Depth available behind the infill plane before the back of the dark box with which
@@ -242,22 +325,34 @@ function planSigns(ctx) {
   return { byOpening, wall };
 }
 
-function addSignText(kit, design, m, w, h, q, glow = design.glow, z0 = 0.055) {
-  const tp = fasciaTpls(design, w, h, q, z0);
-  const ink = signColor(design.ink);
+/**
+ * A sign's board and lettering at matrix m: the board's paint faded by the sun (wear:
+ * 0 new .. 1 old), the lettering a little less; the logo mark in the accent colour.
+ * compact: the name alone on one line.
+ */
+function addSignText(kit, design, m, w, h, q, glow = design.glow, z0 = 0.055, compact = false, wear = 0) {
+  const tp = fasciaTpls(design, w, h, q, z0, compact);
+  const wr = RNG.from(dkey(design), Math.round(w * 100), 'wear');
+  const ink = wear > 0 ? weather(signColor(design.ink), wr, wear * 0.8) : signColor(design.ink);
   if (tp.board) {
-    const bc = signColor(design.board);
+    const bc = wear > 0 ? weather(signColor(design.board), wr, wear * 1.6) : signColor(design.board);
     kit.get(glow > 0 ? 'signBoard' : 'board').add(tp.board, m, bc[0], bc[1], bc[2], { aGlow: [glow] });
   }
   kit.get('signText').add(tp.text, m, ink[0], ink[1], ink[2], { aGlow: [glow] });
+  if (tp.accent) {
+    const ac = signColor(design.accent ?? design.ink);
+    kit.get('signText').add(tp.accent, m, ac[0], ac[1], ac[2], { aGlow: [glow] });
+  }
 }
+/** m turned about its local z (the wall's normal) by a few tenths of a degree: hung out of true. */
+function crooked(m, r, amp = 0.012) { return m.multiply(_r.makeRotationZ(r.range(-amp, amp))); }
 
 function buildWallSign(kit, ctx, ws) {
   const { s, design, y, h } = ws;
   const w = s.u1 - s.u0;
-  const m = wallMatrix(ctx.frame, (s.u0 + s.u1) / 2, y + h / 2);
+  const m = crooked(wallMatrix(ctx.frame, (s.u0 + s.u1) / 2, y + h / 2), RNG.from(ctx.plan.seed, s.u0, 'crooked'), 0.01);
   // over rustication the board stands ~0.1 m off the wall plane, clear of the bosses
-  addSignText(kit, design, m, w, h, ctx.q, design.glow, inRustic(ctx.plan, y) ? 0.1 : 0.055);
+  addSignText(kit, design, m, w, h, ctx.q, design.glow, inRustic(ctx.plan, y) ? 0.1 : 0.055, false, RNG.from(ctx.plan.seed, s.u0, 'age').range(0.2, 1));
   // gooseneck lamps over painted boards
   if (design.type === 'board' && ws.lamps && ctx.q >= 0.5) {
     const n = w > 2.4 ? 3 : 2;
@@ -294,13 +389,53 @@ function buildBlade(kit, ctx, s, shopTypes) {
   const aw = ctx.cafeAwning;
   if (aw && aw.covers(s.u - 0.6, s.u + 0.6)) y = Math.max(y, aw.top + 0.3);
   if (y + s.h + 0.15 > top + 1e-3 || y - plan.groundAt(s.u) < 2.5) return;
-  const tp = bladeTpls(bladeFace(s.seed, near ? shopTypes.get(near.id) : null, false), s.w, s.h, ctx.q);
-  const m = wallMatrix(ctx.frame, s.u, y, _m, rusticOff(plan, y));
   const r = new RNG(s.seed);
-  const edge = lin(r.pick([0x1d1d1f, 0x2a2a2c, 0xd8b25a, 0xe8e4da]));
-  const glow = r.chance(0.5) ? 0.7 : 0;
-  kit.get('board').add(tp.board, m, edge[0], edge[1], edge[2]);
-  kit.get('signText').add(tp.text, m, 1, 1, 1, { aGlow: [glow] });
+  const m = wallMatrix(ctx.frame, s.u, y, _m, rusticOff(plan, y));
+  const type = near ? shopTypes.get(near.id) : null;
+  addProjecting(kit, ctx, m, 'blade', near ? ctx.brands.get(near.id) : null, type, [q2(s.w, 0.02), q2(s.h, 0.02)], s.seed, r);
+}
+
+/**
+ * A projecting sign of `kind` at matrix m (on the wall face, the sign's bottom at the
+ * origin): a light box or painted box with the shop's name ('flag'), a disc or a square
+ * blade carrying its logo mark and name in its colours; about one disc or blade in seven
+ * (and those of no shop) shows one of the stock pictogram faces instead. Faded by its
+ * age, hung a little out of true. dims: flag [L, h, th], disc [D], blade [w, h].
+ */
+function addProjecting(kit, ctx, m, kind, brand, type, dims, seed, r) {
+  const q = ctx.q >= 0.5 ? 1 : 0.4;
+  const wear = r.range(0.15, 1);
+  m.multiply(_r.makeRotationX(r.range(-0.02, 0.02)));
+  const stock = !brand || (kind !== 'flag' && r.chance(0.15));
+  const fade = (hex, k) => weather(lin(hex), r, wear * k);
+  let tp, board, ink, glow, kBoard;
+  if (kind === 'flag') {
+    const lightbox = r.chance(0.7);
+    const base = signDesign(seed, lightbox ? 'lightbox' : 'board', type);
+    const own = brand && (!lightbox || r.chance(0.55));
+    const design = brand ? { ...base, ...brandText(brand), board: own ? brand.board : base.board, ink: own ? brand.ink : base.ink } : base;
+    tp = projCache.get(`F|${dkey(design)}|${dims.join('|')}|${q}`, () => flagTpls(design, dims[0], dims[1], dims[2], q));
+    board = fade(design.board, lightbox ? 0.6 : 1.4); ink = fade(design.ink, 0.6); glow = lightbox ? 1 : 0;
+    kBoard = glow ? 'signBoard' : 'board';
+    if (tp.accent) { const ac = fade(design.accent ?? design.ink, 0.6); kit.get('signText').add(tp.accent, m, ac[0], ac[1], ac[2], { aGlow: [glow] }); }
+  } else if (stock) {
+    const face = bladeFace(seed, type, kind === 'disc');
+    tp = kind === 'disc' ? projCache.get(`D|${face}|${dims[0]}|${q}`, () => discTpls(face, dims[0], q))
+      : projCache.get(`B|${face}|${dims.join('|')}|${q}`, () => bladeTpls(face, dims[0], dims[1], q));
+    board = fade(r.pick([0xe8e4da, 0x1d1d1f, 0xd8b25a, 0xb8b8b4]), 1); ink = fade(0xffffff, 0.5);
+    glow = r.chance(kind === 'disc' ? 0.5 : 0.35) ? 0.75 : 0;
+    kBoard = glow && kind === 'disc' ? 'signBoard' : 'board';
+  } else {
+    const design = { type: 'board', cell: 0, board: brand.board, ink: brand.ink, glow: 0, ...brandText(brand) };
+    tp = kind === 'disc' ? projCache.get(`DN|${dkey(design)}|${dims[0]}|${q}`, () => discTpls(-1, dims[0], q, design))
+      : projCache.get(`BN|${dkey(design)}|${dims.join('|')}|${q}`, () => bladeNameTpls(design, dims[0], dims[1], q));
+    board = fade(brand.board, 1.5); ink = fade(brand.ink, 0.7);
+    glow = r.chance(kind === 'disc' ? 0.35 : 0.2) ? 0.75 : 0;
+    kBoard = glow ? 'signBoard' : 'board';
+    if (tp.accent) { const ac = fade(brand.accent, 0.7); kit.get('signText').add(tp.accent, m, ac[0], ac[1], ac[2], { aGlow: [glow] }); }
+  }
+  kit.get(kBoard).add(tp.board, m, board[0], board[1], board[2], { aGlow: [glow] });
+  kit.get('signText').add(tp.text, m, ink[0], ink[1], ink[2], { aGlow: [glow] });
   kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
 }
 
@@ -310,11 +445,12 @@ const q2 = (x, st) => Math.round(x / st) * st;
 
 /**
  * Projecting signs on the piers beside the shops (PROJ of each trade): a light box with
- * the shop's word on both faces, a disc with its pictogram, or a square blade. They face
- * along the street, so they are what a passer-by (and the tram) reads first. Hung on the
- * pier towards a neighbouring shop (never beside an entrance door), clear of the plan's own
- * blades, between ~2.9 m above the paving (over awnings, café umbrellas and awning
- * cassettes beside it) and the first-floor balcony consoles or string course.
+ * the shop's name on both faces, a disc or a square blade with its logo mark and name
+ * (addProjecting). They face along the street, so they are what a passer-by (and the
+ * tram) reads first. Hung on the pier towards a neighbouring shop (never beside an
+ * entrance door), clear of the plan's own blades, their bottoms 2.6-3.5 m above the
+ * paving (higher over awnings, café umbrellas and awning cassettes beside them) and below
+ * the first-floor balcony consoles or string course.
  */
 function buildProjecting(kit, ctx, signs) {
   const plan = ctx.plan, lot = ctx.lot;
@@ -352,8 +488,10 @@ function buildProjecting(kit, ctx, signs) {
       for (const b of plan.balconies || []) {
         if (b.floor === 1 && u > b.u0 - 0.35 && u < b.u1 + 0.35) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.62);
       }
-      // lowest: above the café umbrellas' canopies and any awning beside the pier
-      let yMin = g + 2.95;
+      // lowest: 2.6 m over the pavement, above the café umbrellas' canopies and any
+      // awning beside the pier
+      const um = ctx.umbrellas;
+      let yMin = g + (um && u > um[0] - 0.8 && u < um[1] + 0.8 ? 2.95 : 2.62);
       for (const n of [o, nb]) {
         if (!n || !hasAwning(ctx, n) || Math.abs(u - n.uc) > n.w / 2 + 0.42) continue;
         yMin = Math.max(yMin, n.y + crownY(n) + 0.42);
@@ -363,7 +501,7 @@ function buildProjecting(kit, ctx, signs) {
       // a height in that band clear of any fascia board across the pier (preferring a
       // little above the lowest)
       const clash = (y) => signs.wall.some((ws) => u > ws.s.u0 - 0.12 && u < ws.s.u1 + 0.12 && y < ws.y + ws.h + 0.06 && y + hS > ws.y - 0.06);
-      let y = Math.min(yMin + r.range(0, 0.3), top - hS);
+      let y = Math.min(yMin + r.range(0, 0.85), top - hS);
       if (y < yMin || clash(y)) {
         y = NaN;
         for (const ws of signs.wall) {
@@ -372,35 +510,10 @@ function buildProjecting(kit, ctx, signs) {
         }
         if (Number.isNaN(y) && !clash(top - hS) && top - hS >= yMin) y = top - hS;
       }
-      if (Number.isNaN(y) || y - g < 2.75) continue;
+      if (Number.isNaN(y) || y - g < 2.6) continue;
       used.push(u);
       const m = wallMatrix(ctx.frame, u, y, _m, rusticOff(plan, y));
-      const q = ctx.q >= 0.5 ? 1 : 0.4;
-      if (kind === 'flag') {
-        const lightbox = r.chance(0.7);
-        const design = signDesign(seed, lightbox ? 'lightbox' : 'board', type);
-        const tp = projCache.get(`F|${design.cell}|${dims.join('|')}|${q}`, () => flagTpls(design, dims[0], dims[1], dims[2], q));
-        const bc = signColor(design.board), ink = signColor(design.ink), glow = lightbox ? 1 : 0;
-        kit.get(glow ? 'signBoard' : 'board').add(tp.board, m, bc[0], bc[1], bc[2], { aGlow: [glow] });
-        kit.get('signText').add(tp.text, m, ink[0], ink[1], ink[2], { aGlow: [glow] });
-        kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
-      } else if (kind === 'disc') {
-        const face = bladeFace(seed, type, true);
-        const tp = projCache.get(`D|${face}|${dims[0]}|${q}`, () => discTpls(face, dims[0], q));
-        const rim = lin(r.pick([0xe8e4da, 0x1d1d1f, 0xd8b25a, 0xb8b8b4]));
-        const glow = r.chance(0.5) ? 0.8 : 0;
-        kit.get(glow ? 'signBoard' : 'board').add(tp.board, m, rim[0], rim[1], rim[2], { aGlow: [glow] });
-        kit.get('signText').add(tp.text, m, 1, 1, 1, { aGlow: [glow] });
-        kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
-      } else {
-        const face = bladeFace(seed, type, false);
-        const tp = projCache.get(`B|${face}|${dims.join('|')}|${q}`, () => bladeTpls(face, dims[0], dims[1], q));
-        const edge = lin(r.pick([0x1d1d1f, 0x2a2a2c, 0xd8b25a, 0xe8e4da]));
-        const glow = r.chance(0.35) ? 0.7 : 0;
-        kit.get('board').add(tp.board, m, edge[0], edge[1], edge[2]);
-        kit.get('signText').add(tp.text, m, 1, 1, 1, { aGlow: [glow] });
-        kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
-      }
+      addProjecting(kit, ctx, m, kind, ctx.brands.get(o.id), type, dims, seed, r);
       // (out: how far it reaches over the pavement; kept for the checks)
       if (ctx.projOut) ctx.projOut.push({ u, y, h: hS, out });
       break;
@@ -476,21 +589,21 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   // the shop's dressing: posters and price cards on the glass, stickers on the door, the
   // name in vinyl letters on the head glass, goods hung on the piers (near range)
   // far range (main street): the same posters, so nothing changes at the detail switch
-  if (ctx.q < 0.5 && ctx.lod > 0 && !ctx.lot.backdrop && !ctx.lot.sideStreet && !(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, true, shopAlloc(ctx, o));
+  if (ctx.q < 0.5 && ctx.lod > 0 && !ctx.lot.backdrop && !ctx.lot.sideStreet && !(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, true, shopAlloc(ctx, o), ctx.brands.get(o.id));
   if (ctx.q >= 0.5 && !ctx.lot.backdrop) {
-    if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, false, shopAlloc(ctx, o));
+    if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, false, shopAlloc(ctx, o), ctx.brands.get(o.id));
     const rv = RNG.from(o.id, 'vinyl');
     // (not behind an awning, whose valance carries the name)
     if (L.head === 'glass' && !headSign && !hasAwning(ctx, o) && rv.chance(0.35)) {
       const yH = L.yT + 0.05, top = crownY(o, SHOP_FW);
       const band = Math.min(0.24, (top - yH) * 0.5);
       if (band > 0.1) {
-        const dsg = { ...signDesign(rv.int(0, 1 << 30), 'letters', type), board: null, ink: rv.pick([0xf2efe6, 0xf2efe6, 0xd8b25a, 0xe9dfc4]), glow: 0 };
+        const dsg = { ...signDesign(rv.int(0, 1 << 30), 'letters', type), ...brandText(ctx.brands.get(o.id)), board: null, ink: rv.pick([0xf2efe6, 0xf2efe6, 0xd8b25a, 0xe9dfc4]), glow: 0 };
         const mt = new THREE.Matrix4().copy(m).multiply(_r.makeTranslation(0, (yH + top) / 2, 0));
-        addSignText(kit, dsg, mt, L.hwI * 1.4, band, ctx.q, 0, -0.036);
+        addSignText(kit, dsg, mt, L.hwI * 1.4, band, ctx.q, 0, -0.036, true);
       }
     }
-    if (!ctx.plan.isReturn && !(ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2 - 1.2, o.uc + o.w / 2 + 1.2))) hangGoods(kit, ctx, o, type, shopAlloc(ctx, o));
+    if (!ctx.plan.isReturn && !(ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2 - 1.2, o.uc + o.w / 2 + 1.2))) hangGoods(kit, ctx, o, type, shopAlloc(ctx, o), L, m0);
   }
   // floor of a recessed entrance (the buildings' dark box behind it is unlit)
   // (a rendered block keeps a stone-clad shop floor: its stone tint, not the wash's)
@@ -498,8 +611,23 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   yield;
   // roller-shutter box and guides
   if (L.box) {
-    const rc = lin(r.pick(ROLLER));
+    // (galvanised or painted, faded by the sun)
+    const rc = weather(lin(r.pick(ROLLER)), RNG.from(o.id, 'rollerFade'), 1.4);
     kit.get('joinery').add(T.shutter, m, rc[0], rc[1], rc[2]);
+    // a lowered curtain collects a tag or two on about a third of the shops
+    const rt = RNG.from(o.id, 'tags');
+    if (L.shutterDown > 0 && ctx.q >= 0.5 && rt.chance(0.36)) {
+      const top = (L.arched ? L.yT : o.h - SHOP_FW) - 0.22, yb = top * (1 - L.shutterDown);
+      const tt = new Tpl();
+      for (let k = rt.chance(0.4) ? 2 : 1; k > 0; k--) {
+        const cell = lineCell(rt.int(LINE_KIND.tag[0], LINE_KIND.tag[1]));
+        const w = Math.min(L.hwI * 1.6, rt.range(0.6, 1.3)), h = w / cell.aspect;
+        const y = rt.range(yb + 0.15 + h / 2, Math.min(top - 0.1, 1.9) - h / 2);
+        if (!(y > yb + h / 2)) continue;
+        cellTpl(tt, cell, rt.range(-L.hwI + w / 2, L.hwI - w / 2), y, w, h, ZF_SHUT, rt.range(0.75, 0.95));
+      }
+      if (tt.count) kit.get('signText').add(tt.bake(), m, 0.92, 0.92, 0.92, { aGlow: [0] }); else tt.free();
+    }
   }
   // door push bar / handle (behind a lowered shutter curtain: none)
   const shutterFoot = L.shutterDown > 0 ? ((L.arched ? L.yT : o.h - SHOP_FW) - 0.22) * (1 - L.shutterDown) : 0;
@@ -525,9 +653,9 @@ function* buildShop(kit, ctx, o, signInfo, type) {
     const yc = yH + Math.min(band * 0.5 + 0.06, (top - yH) * 0.42);
     const wAvail = 2 * halfWidthAt(o, yc + band / 2, SHOP_FW) - 0.12;
     const lumB = bc[0] * 0.3 + bc[1] * 0.6 + bc[2] * 0.1;
-    const dsg = { ...design, type: 'letters', board: null, ink: lumB > 0.3 ? 0x1d1d1f : (design.cell % 3 ? 0xe9dfc4 : 0xd8b25a) };
+    const dsg = { ...design, type: 'letters', board: null, ink: design.board != null ? design.ink : lumB > 0.3 ? 0x1d1d1f : (design.cell % 3 ? 0xe9dfc4 : 0xd8b25a) };
     const mt = new THREE.Matrix4().copy(m).multiply(_r.makeTranslation(0, yc, -0.015 - 0.035 + 0.006));
-    if (!signInfo.noText) addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015);
+    if (!signInfo.noText) addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015, band < 0.3);
   }
   // awning
   if (hasAwning(ctx, o)) {
@@ -619,7 +747,7 @@ function buildAwning(kit, ctx, o, r, design) {
     const dsg = { ...design, type: 'letters', board: null, ink: lum > 0.25 ? 0x2a2a2c : 0xf2efe6, glow: 0 };
     const mt = new THREE.Matrix4().copy(openingMatrix(ctx.frame, o, new THREE.Matrix4()))
       .multiply(_r.makeTranslation(0, valFront.y, valFront.z - 0.035));
-    addSignText(kit, dsg, mt, valFront.w * 0.7, valH * 0.72, ctx.q, 0, 0.015);
+    addSignText(kit, dsg, mt, valFront.w * 0.7, valH * 0.72, ctx.q, 0, 0.015, true);
   }
 }
 
@@ -794,7 +922,7 @@ function buildCafeAwning(kit, ctx, aw) {
       const lum = col.c1[0] * 0.3 + col.c1[1] * 0.6 + col.c1[2] * 0.1;
       const dsg = { ...aw.design, ink: lum > 0.25 ? 0x2a2a2c : 0xf2efe6, glow: 0 };
       const mt = wallMatrix(frame, uc, top - D - valH / 2 - 0.006, new THREE.Matrix4(), off).multiply(_r.makeTranslation(0, 0, P + 0.012 - 0.035));
-      addSignText(kit, dsg, mt, Math.min(3, w * 0.6), valH * 0.72, q, 0, 0.015);
+      addSignText(kit, dsg, mt, Math.min(3, w * 0.6), valH * 0.72, q, 0, 0.015, true);
     }
   }
 }
@@ -927,10 +1055,24 @@ function prepareFront(ctx) {
       recent.push(type);
       if (recent.length > 2) recent.shift();
     }
-    f = { cafeAwning: ctx.cafeAwning, umbrellas: ctx.umbrellas, awnings: ctx.awnings, signs, shopTypes, subs, terrace };
+    // each shop's identity (name, second line, logo, colours), lettered on all its signs
+    // (the shops under a café's continuous awning are the café: the name of the first)
+    const brands = new Map();
+    const under = (x) => ctx.cafeAwning && ctx.cafeAwning.covers(x.uc - x.w / 2, x.uc + x.w / 2);
+    const cafeO = shops.find(under);
+    for (const o of shops) {
+      const sg = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
+      const b = under(o) && o !== cafeO ? brands.get(cafeO.id) : makeBrand(ctx.app, o, shopTypes.get(o.id), subs.get(o.id), sg ? sg.design : null);
+      brands.set(o.id, b);
+      if (sg) sg.design = { ...sg.design, ...brandText(b) };
+    }
+    if (cafeO) ctx.cafeAwning.design = { ...ctx.cafeAwning.design, ...brandText(brands.get(cafeO.id)), sub: null, logo: -1 };
+    // the plan's wall signs with no shop below (a building's or a hotel's name board)
+    for (const ws of signs.wall) if (!ws.o && ws.design.name == null) ws.design = { ...ws.design, name: hashStr(`${plan.seed}|${ws.s.u0.toFixed(2)}`) % N_NAMES, nv: 0, sub: null, logo: -1 };
+    f = { cafeAwning: ctx.cafeAwning, umbrellas: ctx.umbrellas, awnings: ctx.awnings, signs, shopTypes, subs, terrace, brands };
     frontCache.set(plan, f);
   }
-  ctx.cafeAwning = f.cafeAwning; ctx.umbrellas = f.umbrellas; ctx.awnings = f.awnings; ctx.shopTypes = f.shopTypes; ctx.subs = f.subs;
+  ctx.cafeAwning = f.cafeAwning; ctx.umbrellas = f.umbrellas; ctx.awnings = f.awnings; ctx.shopTypes = f.shopTypes; ctx.subs = f.subs; ctx.brands = f.brands;
   return f.signs;
 }
 

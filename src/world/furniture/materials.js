@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
-import { buildPrintAtlas, buildDisplayAtlas, buildLitAtlas, buildGlassDecal, ATLAS_H, LIT_ROWS } from './prints.js';
+import { buildPrintAtlas, buildDisplayAtlas, buildLitAtlas, buildGlassDecal, buildBrandAtlas, ATLAS_H, LIT_ROWS, BRAND_PRINT } from './prints.js';
+import { VALANCE_H } from './umbrella.js';
 import { contactShadowTexture } from './vehicles.js';
 
 // Furniture-specific materials and their procedural textures. Generic surfaces (painted
@@ -330,6 +331,130 @@ function patchFabric(m, translucency) {
   };
   m.customProgramCacheKey = () => 'furniture-fabric';
   return m;
+}
+
+/**
+ * Café umbrella canopies (umbrella.js 'aVal', the instance colour carrying brand and LED
+ * flags, see cafe.js):
+ *  - valance print: the café's brand from the brand atlas, on each side's valance, printed
+ *    into the fabric's albedo (seen mirrored and fainter from inside);
+ *  - valance sun: the cloth hanging under the canopy edge never takes its sun through its
+ *    own canopy's shadow map entry (the hem sits right at the canopy's shadow edge, where
+ *    the waves beat against the shadow texels into a comb). Its own canopy's occlusion is
+ *    analytic instead: a side whose outside faces away from the sun is in the canopy's
+ *    shade, a side facing it is lit (and glows through from inside); the shadow map is
+ *    read 0.3 m outside the canopy edge, so buildings, trees and neighbouring canopies
+ *    still shade it;
+ *  - LED glow: after dusk the strips under the ribs light the canopy's underside (and,
+ *    through the cloth, its top a little), brightest along the ribs.
+ */
+function patchCanopy(m, brandMap, ledLevel) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  const P = BRAND_PRINT;
+  m.onBeforeCompile = function (s, r) {
+    if (prev) prev.call(this, s, r);
+    s.uniforms.fBrandMap = { value: brandMap };
+    s.uniforms.fSunW = U.uSunDir;
+    s.uniforms.fLedLevel = ledLevel;
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec4 aVal;
+        varying vec4 vVal;
+        varying vec2 vUmb;
+        varying vec3 vValOut;`)
+      .replace('#include <color_vertex>', `#include <color_vertex>
+        vUmb = vec2( 0.0 );
+        #ifdef USE_BATCHING_COLOR
+        {
+          // brand (red) and LED (green) flags ride on the instance colour as multiples of 4
+          vec4 fBc = getBatchingColor( getIndirectIndex( gl_DrawID ) );
+          vec2 fFl = floor( fBc.rg * 0.25 );
+          vColor.rg *= ( fBc.rg - 4.0 * fFl ) / max( fBc.rg, vec2( 1e-4 ) );
+          vUmb = fFl;
+        }
+        #endif
+        vVal = aVal;`)
+      .replace('#include <shadowmap_vertex>', `#include <shadowmap_vertex>
+        {
+          float fSa = ( aVal.x - 1.0 ) * 1.5707963;
+          vec3 fOut = vec3( cos( fSa ), 0.0, sin( fSa ) );
+          #ifdef USE_BATCHING
+            fOut = mat3( batchingMatrix ) * fOut;
+          #endif
+          vValOut = normalize( mat3( modelMatrix ) * fOut );
+          #if defined( USE_SHADOWMAP ) && NUM_SUN_LIGHT_SHADOWS > 0
+            if ( aVal.x > 0.5 ) vSunShadowWorldPosition.xyz += vValOut * 0.3 + vec3( 0.0, 0.04 + aVal.z * ${VALANCE_H.toFixed(3)}, 0.0 );
+          #endif
+        }`);
+    let f = s.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec4 vVal;
+        varying vec2 vUmb;
+        varying vec3 vValOut;
+        uniform sampler2D fBrandMap;
+        uniform vec3 fSunW;
+        uniform float fLedLevel;
+        float fValSun = 1.0;`)
+      .replace('#include <alphamap_fragment>', `{
+          // valance print: one strip centred on each side (two on sides over 3.6 m)
+          float fIsVal = step( 0.5, vVal.x );
+          float fX = vVal.y - ( vVal.w > 3.6 ? sign( vVal.y ) * vVal.w * 0.25 : 0.0 );
+          vec2 fC = vec2( fX / ${P[0].toFixed(3)} + 0.5, ( vVal.z * ${VALANCE_H.toFixed(3)} - 0.03 ) / ${P[1].toFixed(3)} );
+          float fB = max( vUmb.x - 1.0, 0.0 );
+          vec2 fAuv = vec2( ( mod( fB, 2.0 ) + clamp( fC.x, 0.003, 0.997 ) ) * 0.5, 1.0 - ( floor( fB * 0.5 + 0.01 ) + clamp( fC.y, 0.02, 0.98 ) ) * 0.125 );
+          vec4 fInk = texture2D( fBrandMap, fAuv );
+          float fIn = fIsVal * step( 0.5, vUmb.x ) * step( 0.0, fC.x ) * step( fC.x, 1.0 ) * step( 0.0, fC.y ) * step( fC.y, 1.0 );
+          #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
+            vec3 fBase = diffuseColor.rgb / max( vColor.rgb, vec3( 1e-3 ) );
+          #else
+            vec3 fBase = diffuseColor.rgb;
+          #endif
+          float fWeave = clamp( dot( fBase, vec3( 0.3333 ) ) / 0.62, 0.7, 1.25 );
+          diffuseColor.rgb = mix( diffuseColor.rgb, fInk.rgb * fWeave, fInk.a * fIn * ( gl_FrontFacing ? 1.0 : 0.45 ) );
+          // valance sun: lit only on a side whose outside faces the sun (see above)
+          if ( vVal.x > 0.5 ) fValSun = smoothstep( -0.04, 0.06, dot( vValOut.xz, fSunW.xz ) );
+        }
+        #include <alphamap_fragment>`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        if ( vUmb.y > 0.5 && fLedLevel > 0.0 ) {
+          // LED strips under the ribs: the underside glows warm, brightest along the ribs
+          float fRib = vVal.x > 0.5 ? 0.15 : exp( - vVal.y / 0.1 ) * smoothstep( 0.06, 0.18, vVal.z ) * ( 1.0 - smoothstep( 0.9, 1.0, vVal.z ) );
+          float fUnder = gl_FrontFacing ? ( vVal.x > 0.5 ? 0.2 : 0.1 ) : 1.0;
+          totalEmissiveRadiance += diffuseColor.rgb * vec3( 1.0, 0.7, 0.42 ) * fLedLevel * fUnder * ( 0.18 + 1.6 * fRib );
+        }`);
+    // the valance's own-canopy occlusion gates the sun only (the lamps light it as before)
+    if (f.includes('#define RE_Direct RE_Direct_Surf')) {
+      f = f.replace('#define RE_Direct RE_Direct_Surf', `#define RE_Direct RE_Direct_Surf
+        void RE_Direct_Canopy( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
+          IncidentLight fL = directLight;
+          if ( fValSun < 1.0 && dot( fL.direction, normalize( ( viewMatrix * vec4( fSunW, 0.0 ) ).xyz ) ) > 0.999 ) fL.color *= fValSun;
+          RE_Direct_Surf( fL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
+        }
+        #undef RE_Direct
+        #define RE_Direct RE_Direct_Canopy`);
+    }
+    s.fragmentShader = f;
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-canopy`; };
+  m.needsUpdate = true;
+  return m;
+}
+
+/** Radial falloff for the warm light pool under a lit canopy (linear data). */
+function poolTexture(renderer) {
+  const N = 128, c = canvas(N, N), ctx = c.getContext('2d'), img = ctx.createImageData(N, N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const u = (x + 0.5) / N * 2 - 1, v = (y + 0.5) / N * 2 - 1;
+    // a soft square-ish pool (the canopy is square), brightest under the middle of each half
+    const r = Math.pow(Math.pow(Math.abs(u), 3) + Math.pow(Math.abs(v), 3), 1 / 3);
+    const k = Math.max(0, 1 - sm(0.35, 1.0, r)) * (0.85 + 0.15 * Math.cos(r * 3));
+    const i = (y * N + x) * 4;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = Math.round(255 * k * k); img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = tex(c, { srgb: false, aniso: 4 }, renderer);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
 }
 
 /** Clear glass: reflections are kept at full strength while the body transmits
@@ -704,6 +829,19 @@ export function createMaterials(app) {
     const canopy = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, vertexColors: true });
     reg('canopy', patchFabric(canopy, 0.32));
   }
+  // light levels (scene-linear radiance) the module sets every frame from the exposure
+  out.levels = { lit: { value: 0.03 }, disp: { value: 0.3 }, lamp: { value: 0 }, led: { value: 0 }, board: { value: 0 } };
+  // café umbrellas: valance prints (brand atlas), the valance's own-canopy shading and the
+  // LED glow after dusk (patchCanopy); the LED strips and the warm pool on the paving
+  const brandMap = tex(T('brands', () => buildBrandAtlas()), { aniso: 8 }, R);
+  brandMap.wrapS = brandMap.wrapT = THREE.ClampToEdgeWrapping;
+  patchCanopy(out.canopy, brandMap, out.levels.led);
+  reg('umbLed', patchEmissiveLevel(new THREE.MeshStandardMaterial({ color: srgb('#d9d6cf'), roughness: 0.45, metalness: 0, emissive: new THREE.Color(1.0, 0.7, 0.42), emissiveIntensity: 4 }), out.levels.led, 'led'));
+  {
+    const m = reg('umbPool', new THREE.MeshBasicMaterial({ map: poolTexture(R), color: 0x000000, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+    m.polygonOffset = true; m.polygonOffsetFactor = -2; m.polygonOffsetUnits = -4;
+    m.visible = false;
+  }
   // seat cushions and wind-screen panels: canvas coloured per instance
   out.cushion = albedoVariant('fabric.awning', { userData: { furniture: 'cushion' }, side: THREE.FrontSide }) || reg('cushion', new THREE.MeshStandardMaterial({ roughness: 0.9 }));
   patchGrime(out.cushion, { albedo: 0.08, rough: 0.05, ao: 0.3, mottle: 0.04 });
@@ -797,8 +935,6 @@ export function createMaterials(app) {
     const m = reg('contactShadow', new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: contactShadowTexture(), transparent: true, opacity: 0.5, depthWrite: false }));
     m.polygonOffset = true; m.polygonOffsetFactor = -2; m.polygonOffsetUnits = -4;
   }
-  // light levels (scene-linear radiance) the module sets every frame from the exposure
-  out.levels = { lit: { value: 0.03 }, disp: { value: 0.3 }, lamp: { value: 0 } };
   // backlit advert panels: laminate over a light box (emission from the lit atlas)
   patchPosterPick(decalOffset(reg('printLit', patchEmissiveLevel(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: litMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.25, metalness: 0 }), out.levels.lit, 'lit'))));
   // LED passenger displays and touch screens (auto-dimmed like real ones)
@@ -814,7 +950,7 @@ export function createMaterials(app) {
 
 /** Light levels from the camera exposure: light boxes and screens behave like auto-dimmed
  *  real ones (never clipping at dusk), luminaires switch on with the night. */
-export function updateLightLevels(F, app) {
+export function updateLightLevels(F, app, ready = true) {
   const env = app.env, exp = Math.max(env?.exposure || 1.15, 1e-3), t = env?.state?.t ?? 0;
   const on = THREE.MathUtils.smoothstep(t, 0.68, 0.95);
   // light boxes by day sit near the brightness of the shade round them (the print, a
@@ -822,4 +958,13 @@ export function updateLightLevels(F, app) {
   F.levels.lit.value = Math.min(0.03, 0.75 / exp) * (0.1 + 0.9 * on);
   F.levels.disp.value = Math.min(0.5, 0.3 / exp);
   F.levels.lamp.value = on * 5 / exp;
+  // café umbrella LEDs come on soon after sunset (switched by the staff, not a photocell)
+  const night = U.uNight.value, gain = app.materials?.uniforms?.emissiveGain?.value ?? 1;
+  const led = THREE.MathUtils.smoothstep(night, 0.15, 0.45) * gain / exp;
+  F.levels.led.value = led;
+  const pool = F.umbPool;
+  if (pool) {
+    pool.visible = led > 1e-4 || !ready;  // (drawn behind the loading screen for its first draw)
+    pool.color.setRGB(1.0, 0.7, 0.42).multiplyScalar(0.22 * led);
+  }
 }

@@ -150,7 +150,7 @@ function conform(g, names) {
   for (const k of names) {
     if (g.attributes[k]) continue;
     if (out === g) { out = g.clone(); }
-    const ref = { color: [3, 1], aFlex: [1, 0] }[k] || [g.attributes.position.itemSize, 0];
+    const ref = { color: [3, 1], aFlex: [1, 0], aVal: [4, 0] }[k] || [g.attributes.position.itemSize, 0];
     const arr = new Float32Array(g.attributes.position.count * ref[0]).fill(ref[1]);
     out.setAttribute(k, new THREE.BufferAttribute(arr, ref[0]));
   }

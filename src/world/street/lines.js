@@ -333,13 +333,13 @@ const PAINT_FRAG = /* glsl */`
     // asphalt a sparse network of fine fatigue cracks runs through it.
     float foot = bar * exp( -pow( ( u - 0.5 * segLen ) / ( 0.32 * segLen ), 2.0 ) );
     float eX = 1.0 - smoothstep( 0.0, 0.05, pHalf - abs( x ) );
-    float W = clamp( 0.22 * pWear * wl + 0.08 * foot + bar * ( 0.05 * eX + 0.05 * ends ), 0.0, 0.85 );
+    float W = clamp( 0.26 * pWear * wl + 0.1 * foot + bar * ( 0.05 * eX + 0.05 * ends ), 0.0, 0.85 );
     float fpl = max( w, wu );
     float pv = lnFbm( vec2( x, u ) * 2.6 + seed + 11.0, fpl * 2.6, 3 );
     float big = lnFbm( wp * 0.5 + 17.0 + seed, fpw * 0.5, 2 );
     float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
     // the local share of film lost: decimetre patches (resolved from far off)
-    float Wl = clamp( W * ( 0.12 + 1.7 * smoothstep( 0.45, 0.75, pv ) + 0.4 * ( big - 0.5 ) ), 0.0, 0.9 );
+    float Wl = clamp( W * ( 0.1 + 2.0 * smoothstep( 0.48, 0.78, pv ) + 0.4 * ( big - 0.5 ) ), 0.0, 0.9 );
     // flakes: a field of ~4 cm pieces whose rim is torn at the grain of the surface
     // (asphalt aggregate ~1.5 cm, the setts' crystals ~5 mm), thresholded at the share Wl
     float gs = sett > 0.5 ? 170.0 : 70.0;
@@ -402,8 +402,8 @@ const PAINT_FRAG = /* glsl */`
     col = mix( col, vec3( 0.2, 0.19, 0.175 ), gDust );
     col = mix( col, vec3( 0.16, 0.155, 0.15 ), 0.55 * scuff );
     col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
-    // the cracks: dark hairlines of joint grime through the film
-    col *= 1.0 - 0.6 * crack;
+    // the cracks: dark hairlines of joint grime (setts) or of the asphalt beneath
+    col *= 1.0 - ( sett > 0.5 ? 0.6 : 0.85 ) * crack;
     diffuseColor.rgb = col;
     // the trodden film is duller where grit is ground in, a little glossier where soles
     // have polished it

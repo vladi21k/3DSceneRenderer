@@ -15,7 +15,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, TplCache, VS, lin } from './geo.js';
-import { cloth } from './dressing.js';
+import { cloth, hangerTpl } from './dressing.js';
 import { printCell } from './signs.js';
 import { shopDecision } from './shops.js';
 
@@ -25,21 +25,25 @@ const _p = new THREE.Vector3();
 const cache = new TplCache(640);
 
 // ------------------------------------------------------------------ catalogue
-// produce: [colour, radius, x elongation, z elongation, height squash]
+// produce: [colour, radius, x elongation, z elongation, height squash, second hue (a share
+// of the pile riper or greener), stem (0 none, 1 green calyx, 2 brown stalk), dimple depth]
 const PRODUCE = {
-  oranges: [0xd8701a, 0.04, 1, 1, 0.95], lemons: [0xd8c22a, 0.032, 1.3, 1, 0.9], tomatoes: [0xb8241a, 0.036, 1, 1, 0.82],
-  apples: [0x9a1e1c, 0.038, 1, 1, 0.9], greenApples: [0x8aa83a, 0.038, 1, 1, 0.9], cucumbers: [0x2f4a1e, 0.022, 4.2, 1, 1],
-  aubergines: [0x2a1228, 0.04, 2.2, 1, 0.9], peppers: [0xa81c16, 0.042, 1, 1, 1], yellowPeppers: [0xd8a81a, 0.042, 1, 1, 1],
-  potatoes: [0x9a7448, 0.034, 1.25, 1, 0.8], onions: [0xb8843a, 0.035, 1, 1, 0.9], pomegranates: [0x7a1a1e, 0.046, 1, 1, 0.92],
-  grapes: [0x3e1830, 0.014, 1, 1, 1], carrots: [0xd0601a, 0.017, 4.5, 1, 1], grapefruit: [0xe0943a, 0.052, 1, 1, 0.95],
-  greens: [0x3a6a24, 0.05, 1.4, 1, 0.45], avocados: [0x2e3a1a, 0.038, 1.3, 1, 0.95], bananas: [0xd8b830, 0.03, 3.2, 1.2, 0.6],
+  oranges: [0xd8701a, 0.04, 1, 1, 0.95, 0xe8902a, 0, 0.12], lemons: [0xd8c22a, 0.032, 1.3, 1, 0.9, 0xc0c43a, 0, 0.05], tomatoes: [0xb8241a, 0.036, 1, 1, 0.82, 0xd8461a, 1, 0.18],
+  apples: [0x9a1e1c, 0.038, 1, 1, 0.9, 0xb8502a, 2, 0.22], greenApples: [0x8aa83a, 0.038, 1, 1, 0.9, 0xb8b83a, 2, 0.22], cucumbers: [0x2f4a1e, 0.022, 4.2, 1, 1, 0x3e5a24, 0, 0],
+  aubergines: [0x2a1228, 0.04, 2.2, 1, 0.9, 0x3a1a3a, 1, 0.05], peppers: [0xa81c16, 0.042, 1, 1, 1, 0xc8301a, 1, 0.2], yellowPeppers: [0xd8a81a, 0.042, 1, 1, 1, 0xe0b82a, 1, 0.2],
+  potatoes: [0x9a7448, 0.034, 1.25, 1, 0.8, 0x8a6a40, 0, 0], onions: [0xb8843a, 0.035, 1, 1, 0.9, 0xa86a2a, 2, 0.1], pomegranates: [0x7a1a1e, 0.046, 1, 1, 0.92, 0x9a2a22, 2, 0.08],
+  grapes: [0x3e1830, 0.014, 1, 1, 1, 0, 0, 0], carrots: [0xd0601a, 0.017, 4.5, 1, 1, 0xe07a2a, 1, 0], grapefruit: [0xe0943a, 0.052, 1, 1, 0.95, 0xe8a85a, 0, 0.08],
+  greens: [0x3a6a24, 0.05, 1.4, 1, 0.45, 0, 0, 0], avocados: [0x2e3a1a, 0.038, 1.3, 1, 0.95, 0x3a4a22, 2, 0.05], bananas: [0xd8b830, 0.03, 3.2, 1.2, 0.6, 0xc8c040, 0, 0],
 };
+// (bunches and leaves stay a heap: too small or too many to lie one by one)
+const HEAPED = new Set(['grapes', 'greens']);
 const GROCER = ['oranges', 'lemons', 'tomatoes', 'apples', 'greenApples', 'cucumbers', 'aubergines', 'peppers', 'yellowPeppers', 'potatoes', 'onions', 'pomegranates', 'grapes', 'carrots', 'greens', 'avocados', 'bananas'];
 const CITRUS = ['oranges', 'oranges', 'lemons', 'grapefruit', 'pomegranates', 'oranges'];
 const NUTS = [[0x7a4a22, 0.011, 1.6], [0xb4a274, 0.012, 1.3], [0x2e2c28, 0.007, 1.8], [0xb08a52, 0.011, 1.5], [0x6a3418, 0.012, 1.1], [0xc8b48a, 0.009, 1.4]];
 const SPICES = [0xa82a14, 0xc8901a, 0x7a5a30, 0x5a6a2e, 0x8a2a1a, 0xb87a2a];
 const FLOWERS = [0xb81c2a, 0xe87aa0, 0xf2eee4, 0xe8c22a, 0xe0662a, 0x6a3a8a, 0xf0d8c8, 0xc83a5a, 0xd8a8d0, 0x3a5aa8];
-const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a, 0x2a5a8a];
+const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a, 0x2a5a8a,
+  0xc8231c, 0x1f4fa0, 0xe86a8a, 0x2a9a8a, 0xf2d24a, 0xe0641a];
 const CRATES = [[0x2a5a32, 0.3], [0x1d1d1f, 0.25], [0x1f4a7a, 0.15], [0x8a2a22, 0.08], [0xb8956a, 0.22]];   // plastic greens, blacks, blues, reds; pine
 const BIN_GOODS = {
   toys: [0xc8231c, 0x1f5fa8, 0xe8b820, 0x2a7a3a, 0xe87aa0, 0xf2efe6, 0xe0662a],
@@ -336,6 +340,130 @@ function card(t, cell, x, y, z, h, tilt = 0) {
   t.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
 }
 
+/**
+ * One fruit: an ellipsoid of radii (rx, ry, rz) at (cx, cy, cz) turned by ang about y (and
+ * tipped by tip about x), nLon × nLat facets, its top pulled into a stem dimple of depth
+ * `dimple` (× ry); shaded darker into the dimple and towards its underside, where it rests
+ * on the others. UVs in metres.
+ */
+function fruit(t, cx, cy, cz, rx, ry, rz, ang, tip, nLon, nLat, shade, dimple) {
+  const base = t.count, ca = Math.cos(ang), sa = Math.sin(ang), ct = Math.cos(tip), st = Math.sin(tip);
+  for (let j = 0; j <= nLat; j++) {
+    const th = (j / nLat) * Math.PI, s0 = Math.sin(th), c0 = Math.cos(th);
+    // (the dimple: the cap's first ring pulled down, the pole further)
+    const dip = dimple * (j === 0 ? 1 : j === 1 ? 0.3 : 0);
+    for (let i = 0; i <= nLon; i++) {
+      const ph = (i / nLon) * Math.PI * 2, x = Math.cos(ph) * s0, z = Math.sin(ph) * s0, y = c0;
+      const px = x * rx, py = (y - dip) * ry, pz = z * rz;
+      let nx = x / rx, ny = y / ry, nz = z / rz;
+      if (j === 1 && dimple > 0.1) ny *= 0.6;
+      const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      // tip about x, then turn about y
+      const py2 = py * ct - pz * st, pz2 = py * st + pz * ct, ny2 = ny * ct - nz * st, nz2 = ny * st + nz * ct;
+      const wx = px * ca + pz2 * sa, wz = -px * sa + pz2 * ca, nwx = nx * ca + nz2 * sa, nwz = -nx * sa + nz2 * ca;
+      const sh = shade * (j === 0 ? 0.55 : j === 1 && dimple > 0.1 ? 0.8 : 1) * (0.62 + 0.38 * (0.5 + 0.5 * c0));
+      t.v(cx + wx, cy + py2, cz + wz, nwx, ny2, nwz, ph * rx, th * ry, sh);
+    }
+  }
+  for (let j = 0; j < nLat; j++) {
+    for (let i = 0; i < nLon; i++) {
+      const a = base + j * (nLon + 1) + i, b = a + 1, c = a + nLon + 1, d = c + 1;
+      t.ix6(a, b, c, b, d, c);
+    }
+  }
+}
+
+/**
+ * A crate's worth of fruit heaped above its rim: items of produce `name` packed in layers
+ * on a jittered lattice inside the W × D tray (top of the pile's bed at y = 0, the rim at
+ * about rim), mounded in the middle, each its own size, turn, tip and shade. Returns
+ * {main, alt, stems}: the pile in its two hues (alt: about a fifth of the items) and the
+ * stalks or calyces (or null), as baked templates.
+ */
+function fruitPile(name, W, D, rim, seed, q) {
+  const [, rad, ex, ez, sy, alt, stem, dimple] = PRODUCE[name];
+  const r = new RNG(seed);
+  const tm = new Tpl(), ta = new Tpl(), ts = stem && q >= 0.5 ? new Tpl() : null;
+  const nLon = q >= 0.5 ? (ex > 2 ? 12 : 10) : 6, nLat = q >= 0.5 ? (ex > 2 ? 6 : 7) : 4;
+  // (packed a little closer than their diameter: they nest into each other)
+  const dx = 2 * rad * ex * 0.9, dz = 2 * rad * ez * 0.9;
+  const nx = Math.max(1, Math.floor(W / dx)), nz = Math.max(1, Math.floor(D / dz));
+  const ox = (W - nx * dx) / 2, oz = (D - nz * dz) / 2;
+  // a dark bed under the pile, so nothing shows through its gaps
+  tm.piece(0).box(-W / 2, -rad * 0.4, -D / 2, W / 2, -rad * 0.3, D / 2, 32, 0.25, 0.25);
+  const layers = [[0, 0, 1], [0.5, 0.5, 1.0], [0, 0, 0.55], [0.5, 0.5, 0.22]];
+  let n = 0;
+  for (let L = 0; L < layers.length; L++) {
+    const [fx, fz, keep] = layers[L];
+    for (let j = 0; j < nz; j++) {
+      for (let i = 0; i < nx; i++) {
+        const u = -W / 2 + ox + (i + 0.5 + fx) * dx, w = -D / 2 + oz + (j + 0.5 + fz) * dz;
+        if (Math.abs(u) > W / 2 - rad * ex * 0.7 || Math.abs(w) > D / 2 - rad * ez * 0.7) continue;
+        // the mound: upper layers only towards the middle
+        const cu = u / (W / 2), cw = w / (D / 2);
+        if (L > 0 && cu * cu + cw * cw > keep * 1.25) continue;
+        if (L > 0 && r.chance(0.1)) continue;
+        const k = r.range(0.86, 1.14), rx = rad * ex * k, rz = rad * ez * k, ry = rad * sy * k;
+        const x = u + r.range(-0.18, 0.18) * rad, z = w + r.range(-0.18, 0.18) * rad;
+        const y = L * ry * 1.25 + ry * 0.75 + r.range(-0.12, 0.12) * ry;
+        const ang = ex > 1.5 ? r.range(-0.35, 0.35) : r.range(0, 6.28), tip = r.range(-0.35, 0.35) * (L > 0 ? 1 : 0.4);
+        const isAlt = alt && r.chance(0.2);
+        fruit(isAlt ? ta : tm, x, y, z, rx, ry, rz, ang, tip, nLon, nLat, r.range(0.84, 1.1), dimple);
+        if (ts && r.chance(0.85)) {
+          // a calyx (a short green star) or a stalk at the dimple, turned and tipped with it
+          const top = y + ry * (1 - dimple) * Math.cos(tip), zt = z + ry * (1 - dimple) * Math.sin(tip) * 1;
+          if (stem === 1) {
+            for (let a = 0; a < 5; a++) {
+              const aa = ang + a * 1.2566, c = Math.cos(aa), s2 = Math.sin(aa), L2 = rx * 0.55;
+              ts.q4(x, top + 0.002, zt, x + c * L2 - s2 * 0.006, top - 0.004, zt + s2 * L2 + c * 0.006, x + c * L2 * 1.05, top - 0.006, zt + s2 * L2 * 1.05, x + c * L2 + s2 * 0.006, top - 0.004, zt + s2 * L2 - c * 0.006, 0.9, 0.8);
+            }
+            ts.box(x - 0.003, top, zt - 0.003, x + 0.003, top + 0.012, zt + 0.003, 1 | 2 | 4 | 8 | 32, 0.8, 0.9);
+          } else ts.box(x - 0.002, top - 0.004, zt - 0.002, x + 0.002, top + 0.016, zt + 0.002, 1 | 2 | 4 | 8 | 32, 0.8, 0.9);
+        }
+        n++;
+      }
+    }
+  }
+  void rim;
+  return { main: tm.bake(), alt: ta.count ? ta.bake() : (ta.free(), null), stems: ts ? (ts.count ? ts.bake() : (ts.free(), null)) : null, n };
+}
+
+/**
+ * Wooden fruit crate W × D × H on y = 0: two or three slats a side with gaps between them,
+ * corner posts, a slatted floor; the slats shaded one by one (wood batch).
+ */
+function woodCrate(t, W, D, H) {
+  const T = 0.01, P = 0.022, x0 = -W / 2, x1 = W / 2, z0 = -D / 2, z1 = D / 2;
+  t.uvLong = true;
+  const ns = H > 0.17 ? 3 : 2, sh = (H - 0.01) / ns, gap = Math.min(0.02, sh * 0.25);
+  for (let k = 0; k < ns; k++) {
+    const y0 = 0.008 + k * sh, y1 = y0 + sh - gap;
+    t.piece(0.12);
+    t.box(x0 + P, y0, z1 - T, x1 - P, y1, z1, 1 | 16 | 32, 0.92, 1);                // front
+    t.box(x0 + P, y0, z0, x1 - P, y1, z0 + T, 2 | 16 | 32, 0.85, 0.95);             // back
+    t.box(x0, y0, z0 + P, x0 + T, y1, z1 - P, 4 | 16 | 32, 0.88, 0.98);            // ends
+    t.box(x1 - T, y0, z0 + P, x1, y1, z1 - P, 8 | 16 | 32, 0.88, 0.98);
+    // their inner faces in the crate's shade
+    t.q4(x0 + P, y0, z1 - T, x0 + P, y1, z1 - T, x1 - P, y1, z1 - T, x1 - P, y0, z1 - T, 0.45, 0.6);
+    t.q4(x1 - P, y0, z0 + T, x1 - P, y1, z0 + T, x0 + P, y1, z0 + T, x0 + P, y0, z0 + T, 0.45, 0.6);
+  }
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) { t.piece(0.08); t.box(sx * (W / 2 - P / 2) - P / 2, 0, sz * (D / 2 - P / 2) - P / 2, sx * (W / 2 - P / 2) + P / 2, H, sz * (D / 2 - P / 2) + P / 2, 1 | 2 | 4 | 8 | 32, 0.85, 1); }
+  for (let k = 0; k < 4; k++) { const za = z0 + (k * D) / 4 + 0.006, zb = za + D / 4 - 0.012; t.piece(0.1); t.box(x0 + T, 0, za, x1 - T, 0.008, zb, 32 | 16, 0.6, 0.6); }
+}
+/** Cardboard produce box W × D × H: kraft walls 4 mm, hand holes, its rim's flaps cut off. */
+function cardBox(t, W, D, H) {
+  const T = 0.004, x0 = -W / 2, x1 = W / 2, z0 = -D / 2, z1 = D / 2;
+  t.piece(0.05);
+  t.box(x0, 0, z1 - T, x1, H, z1, 1 | 4 | 8 | 32, 0.9, 1);
+  t.box(x0, 0, z0, x1, H, z0 + T, 2 | 4 | 8 | 32, 0.82, 0.92);
+  t.box(x0, 0, z0 + T, x0 + T, H, z1 - T, 4 | 32, 0.86, 0.96);
+  t.box(x1 - T, 0, z0 + T, x1, H, z1 - T, 8 | 32, 0.86, 0.96);
+  // inner faces (facing into the box)
+  t.q4(x0 + T, 0.005, z1 - T, x0 + T, H, z1 - T, x1 - T, H, z1 - T, x1 - T, 0.005, z1 - T, 0.4, 0.55);
+  t.q4(x1 - T, 0.005, z0 + T, x1 - T, H, z0 + T, x0 + T, H, z0 + T, x0 + T, 0.005, z0 + T, 0.4, 0.55);
+  t.box(-W * 0.12, H - 0.055, z1 + 0.0004, W * 0.12, H - 0.03, z1 + 0.0008, 1, 0.18, 0.18);
+}
+
 // ------------------------------------------------------------------ stand builders
 // Each returns a list of parts: [key, baked template, colour (linear rgb), extra, local
 // matrix or null]. Keys: paint (powder-coat / plastic / produce, casts shadows), metal,
@@ -344,7 +472,11 @@ const PART = (key, tpl, col, extra = null, m = null) => ({ key, tpl, col, extra,
 
 function tiltM(y, z, a, x = 0) { return new THREE.Matrix4().makeTranslation(x, y, z).multiply(_r.makeRotationX(a)); }
 
-/** Stepped crates (greengrocer, juice bar): a front and a back row on a covered step. */
+/**
+ * Stepped crates (greengrocer, juice bar): a front and a back row on a covered step; pine
+ * fruit crates, kraft produce boxes or plastic crates, each heaped above its rim with
+ * 40-60 pieces of fruit or veg lying one by one (bunches of grapes and leaves as heaps).
+ */
 function produceStand(st, r, q) {
   const parts = [];
   const n = st.n, cw = 0.5, cd = 0.34;
@@ -360,23 +492,42 @@ function produceStand(st, r, q) {
     return t.bake();
   });
   parts.push(PART('paint', sb, lin(grass ? 0x2e4a26 : 0x2a2b2c)));
+  // one kind of crate for the stand, sometimes a plastic one among the wooden
+  const ck = r.weighted([['wood', 0.5], ['card', 0.25], ['plastic', 0.25]]);
   for (let row = 0; row < 2; row++) {
     for (let i = 0; i < n; i++) {
       const x = -((n - 1) * 0.52) / 2 + i * 0.52;
       const y = row ? stepB : step, z = row ? -0.22 : 0.19;
       const tilt = row ? 0.1 : 0.13;
-      const cc = lin(r.weighted(CRATES));
       const H = q2(r.range(0.16, 0.22), 0.02);
-      const ct = cache.get(`crate|${cw}|${cd}|${H}`, () => { const t = new Tpl(); crate(t, cw, cd, H); return t.bake(); });
       const m = tiltM(y, z, tilt, x);
-      parts.push(PART('paint', ct, cc, null, m));
+      const kind = ck === 'wood' && r.chance(0.12) ? 'plastic' : ck;
+      if (kind === 'wood') {
+        const ct = cache.get(`wcrate|${cw}|${cd}|${H}`, () => { const t = new Tpl(); woodCrate(t, cw, cd, H); return t.bake(); });
+        parts.push(PART('wood', ct, lin(r.pick([0xc8a878, 0xb89868, 0xd8bc8c, 0xa88a60])), null, m));
+      } else if (kind === 'card') {
+        const ct = cache.get(`cbox|${cw}|${cd}|${H}`, () => { const t = new Tpl(); cardBox(t, cw, cd, H); return t.bake(); });
+        parts.push(PART('paint', ct, lin(r.pick([0xa07850, 0x9a7048, 0xb08860, 0x8a6a48])), null, m));
+      } else {
+        const ct = cache.get(`crate|${cw}|${cd}|${H}`, () => { const t = new Tpl(); crate(t, cw, cd, H); return t.bake(); });
+        parts.push(PART('paint', ct, lin(r.weighted(CRATES)), null, m));
+      }
       const name = list[r.int(0, list.length - 1)];
-      const [col, rad, ex, ez, sy] = PRODUCE[name];
-      const v = r.int(0, 3);
-      const ht = cache.get(`heap|${name}|${cw}|${cd}|${v}|${q}`, () => {
-        const t = new Tpl(); heap(t, -cw / 2 + 0.016, -cd / 2 + 0.016, cw - 0.032, cd - 0.032, 0, rad, ex, ez, sy, 0.035, 977 * v + name.length * 31, q); return t.bake();
-      });
-      parts.push(PART('paint', ht, lin(col), null, m.clone().multiply(_t.makeTranslation(0, H - rad * sy * 0.9, 0))));
+      const [col, rad, ex, ez, sy, alt] = PRODUCE[name];
+      const v = r.int(0, 2);
+      if (HEAPED.has(name)) {
+        const ht = cache.get(`heap|${name}|${cw}|${cd}|${v}|${q}`, () => {
+          const t = new Tpl(); heap(t, -cw / 2 + 0.016, -cd / 2 + 0.016, cw - 0.032, cd - 0.032, 0, rad, ex, ez, sy, 0.035, 977 * v + name.length * 31, q); return t.bake();
+        });
+        parts.push(PART('produce', ht, lin(col), null, m.clone().multiply(_t.makeTranslation(0, H - rad * sy * 0.9, 0))));
+      } else {
+        // the pile's bed a fruit's height below the rim, so the heap stands proud of it
+        const fp = cache.get(`pile|${name}|${cw}|${cd}|${v}|${q}`, () => fruitPile(name, cw - 0.03, cd - 0.03, 0, 4111 * v + name.length * 37 + 5, q));
+        const mp = m.clone().multiply(_t.makeTranslation(0, H - rad * sy * 1.3, 0));
+        parts.push(PART('produce', fp.main, lin(col), null, mp));
+        if (fp.alt) parts.push(PART('produce', fp.alt, lin(alt), null, mp));
+        if (fp.stems) parts.push(PART('produce', fp.stems, lin(PRODUCE[name][6] === 2 ? 0x4a3420 : 0x3a5a22), null, mp));
+      }
       // a cardboard price tag on a stick in some crates
       if (q >= 0.5 && r.chance(0.55)) {
         const cell = printCell('tags', r.int(0, 15));
@@ -463,6 +614,7 @@ function clothesRail(st, r, q) {
   const run = r.int(2, 4);
   const nG = Math.floor((W - 0.12) / 0.07);
   let c1 = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
+  const hc = lin(r.pick([0x141414, 0x141414, 0x5a3a22, 0xd8d8d4]));
   for (let i = 0; i < nG; i++) {
     if (i % run === 0) { c1 = lin(r.pick(CLOTH)); c2 = lin(r.pick(CLOTH)); }
     const tp = cloth(i % 5 === 4 ? r.pick(kinds) : kind);
@@ -473,6 +625,8 @@ function clothesRail(st, r, q) {
     if (top - 0.035 - len < 0.12) m.multiply(_t.makeScale(1, (top - 0.17) / len, 1));
     const stripe = r.chance(0.2) ? r.range(0.03, 0.07) : 0;
     parts.push(PART('cloth', tp, c1, { aStripe: [c2[0], c2[1], c2[2], stripe], aFlex: (k, v, a, j) => { a[j] = Math.min(1, Math.max(0, -v[k * VS + 1] / len)) * 0.5; } }, m));
+    // its hanger (black or clear plastic, or wood), the hook over the rail
+    if (q >= 0.5) parts.push(PART('paint', hangerTpl(tp.kind), hc, null, m));
   }
   return parts;
 }
@@ -514,30 +668,151 @@ function newsRack(st, r, q) {
   return parts;
 }
 
-/** Trestle with bakery trays of loaves, rolls or pastries. */
+/**
+ * Ring bread (an oval torus: ring radius R, tube r) lying flat at (x, y, z), turned by ang
+ * and tipped by tip; its sesame crust as speckled shade, toasted darker on top.
+ */
+function ringBread(t, x, y, z, R, rr, ang, tip, seed, q) {
+  const nu = q >= 0.5 ? 18 : 8, nv = q >= 0.5 ? 8 : 4, base = t.count;
+  const ca = Math.cos(ang), sa = Math.sin(ang), ct = Math.cos(tip), st = Math.sin(tip);
+  for (let i = 0; i <= nu; i++) {
+    const u = (i / nu) * Math.PI * 2, cu = Math.cos(u), su = Math.sin(u);
+    for (let j = 0; j <= nv; j++) {
+      const v = (j / nv) * Math.PI * 2, cv = Math.cos(v), sv = Math.sin(v);
+      // oval ring, tube a little flattened
+      const px = (R + rr * cv) * cu * 1.18, pz = (R + rr * cv) * su, py = rr * sv * 0.8;
+      let nx = cv * cu / 1.18, nz = cv * su, ny = sv / 0.8;
+      const nl = Math.hypot(nx, ny, nz); nx /= nl; ny /= nl; nz /= nl;
+      const y2 = py * ct - pz * st, z2 = py * st + pz * ct, ny2 = ny * ct - nz * st, nz2 = ny * st + nz * ct;
+      const wx = px * ca + z2 * sa, wz = -px * sa + z2 * ca, nwx = nx * ca + nz2 * sa, nwz = -nx * sa + nz2 * ca;
+      const h = Math.sin(i * 12.9898 + j * 78.233 + seed) * 43758.5453, sp = h - Math.floor(h);
+      const sh = (0.78 + 0.3 * Math.max(0, sv)) * (sp > 0.55 ? 1.22 : 0.95) * (cv < -0.3 ? 0.85 : 1);
+      t.v(x + wx, y + y2, z + wz, nwx, ny2, nwz, u * R, v * rr, sh);
+    }
+  }
+  for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    const a = base + i * (nv + 1) + j, b = a + nv + 1;
+    t.ix6(a, b, a + 1, a + 1, b, b + 1);
+  }
+}
+/** Oval wicker basket on y = 0 (half sizes a, b, height h): woven sides (shade in a weave), a rim. */
+function basket(t, a, b, h, q) {
+  const n = q >= 0.5 ? 24 : 10, rows = q >= 0.5 ? 6 : 2, base = t.count;
+  for (let j = 0; j <= rows; j++) {
+    const f = j / rows, k = 0.82 + 0.18 * f, y = h * f;
+    for (let i = 0; i <= n; i++) {
+      const ang = (i / n) * Math.PI * 2, c = Math.cos(ang), s = Math.sin(ang);
+      const weave = q >= 0.5 ? ((i + j) % 2 ? 0.86 : 1.04) : 1;
+      const nl = Math.hypot(c / a, 0.2, s / b);
+      t.v(c * a * k, y, s * b * k, c / a / nl, -0.2 / nl, s / b / nl, ang * a, y, (0.7 + 0.3 * f) * weave);
+    }
+  }
+  for (let j = 0; j < rows; j++) for (let i = 0; i < n; i++) {
+    const p = base + j * (n + 1) + i, c = p + n + 1;
+    t.ix6(p, c, p + 1, p + 1, c, c + 1);
+  }
+  // rim: a rolled edge, and the floor
+  t.box(-a, h - 0.004, -b * 0.06, a, h + 0.012, b * 0.06, 32, 1, 1);
+  t.piece(0).box(-a * 0.82, 0, -b * 0.82, a * 0.82, 0.006, b * 0.82, 32, 0.5, 0.5);
+}
+
+/**
+ * Bakery stand: a wooden cart (two wheels, legs and push handles) or a table under a cloth, with
+ * wicker baskets of sesame ring breads, rolls and flat loaves, and a stack of rings on a
+ * dowel the way the street's bread sellers carry them.
+ */
 function bakeryTable(st, r, q) {
   const parts = [];
   const W = q2(st.W, 0.1), D = 0.55, H = 0.78;
-  const tb = cache.get(`btable|${W.toFixed(2)}`, () => {
+  const cart = r.chance(0.5);
+  const tb = cache.get(`bcart|${W.toFixed(2)}|${cart}|${q}`, () => {
     const t = new Tpl();
-    t.box(-W / 2, H - 0.03, -D / 2, W / 2, H, D / 2, 1 | 2 | 4 | 8 | 16 | 32, 0.9, 1);
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) bar(t, [sx * (W / 2 - 0.05), 0, sz * (D / 2 - 0.05)], [sx * (W / 2 - 0.05), H - 0.03, sz * (D / 2 - 0.05)], 0.03);
+    t.uvLong = true;
+    // the top: planks with a raised edge
+    for (let k = 0; k < 5; k++) { t.piece(0.1); t.box(-W / 2, H - 0.035, -D / 2 + (k * D) / 5 + 0.003, W / 2, H, -D / 2 + ((k + 1) * D) / 5 - 0.003, 1 | 2 | 4 | 8 | 16 | 32, 0.85, 1); }
+    if (cart) {
+      for (const sz of [-1, 1]) t.box(-W / 2, H, sz * D / 2 - (sz > 0 ? 0.02 : 0), W / 2, H + 0.07, sz * D / 2 + (sz < 0 ? 0.02 : 0), 1 | 2 | 4 | 8 | 32, 0.8, 1);
+      for (const sx of [-1, 1]) t.box(sx * W / 2 - (sx > 0 ? 0.02 : 0), H, -D / 2, sx * W / 2 + (sx < 0 ? 0.02 : 0), H + 0.07, D / 2, 1 | 2 | 4 | 8 | 32, 0.8, 1);
+      // two wheels at one end (rims of short boxes, spokes), legs at the other, the shafts
+      const wr = 0.3, nw = q >= 0.5 ? 16 : 8;
+      for (const sz of [-1, 1]) {
+        const zc = sz * (D / 2 + 0.04);
+        for (let k = 0; k < nw; k++) {
+          const a0 = (k / nw) * Math.PI * 2, a1 = ((k + 1) / nw) * Math.PI * 2;
+          const x0 = -W / 2 + 0.25 + Math.cos(a0) * wr, y0 = wr + Math.sin(a0) * wr, x1 = -W / 2 + 0.25 + Math.cos(a1) * wr, y1 = wr + Math.sin(a1) * wr;
+          bar(t, [x0, y0, zc], [x1, y1, zc], 0.035);
+        }
+        for (let k = 0; k < 6; k++) { const a0 = (k / 6) * Math.PI * 2; bar(t, [-W / 2 + 0.25, wr, zc], [-W / 2 + 0.25 + Math.cos(a0) * wr, wr + Math.sin(a0) * wr, zc], 0.018); }
+        bar(t, [W / 2 - 0.06, 0, sz * (D / 2 - 0.05)], [W / 2 - 0.06, H - 0.035, sz * (D / 2 - 0.05)], 0.045);
+        bar(t, [W / 2 - 0.04, H + 0.02, sz * (D / 2 - 0.04)], [W / 2 + 0.06, H + 0.2, sz * (D / 2 - 0.06)], 0.035);
+      }
+      bar(t, [-W / 2 + 0.25, wr, -D / 2 - 0.06], [-W / 2 + 0.25, wr, D / 2 + 0.06], 0.03);
+    } else {
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) bar(t, [sx * (W / 2 - 0.05), 0, sz * (D / 2 - 0.05)], [sx * (W / 2 - 0.05), H - 0.035, sz * (D / 2 - 0.05)], 0.045);
+    }
     return t.bake();
   });
-  parts.push(PART('paint', tb, lin(r.pick([0xc8b89a, 0x6c4529, 0xe2dfd4]))));
-  const n = 3, tw = (W - 0.08) / n;
-  for (let i = 0; i < n; i++) {
-    const x = -W / 2 + 0.04 + tw * (i + 0.5);
-    const tr = cache.get(`tray|${tw.toFixed(2)}`, () => { const t = new Tpl(); crate(t, tw - 0.02, D - 0.06, 0.04); return t.bake(); });
-    const m = tiltM(H, 0, 0.08, x);
-    parts.push(PART('paint', tr, [0.5, 0.5, 0.5], null, m));
-    const kind = r.pick([[0xb06a28, 0.05, 2.2, 1, 0.7], [0xc89048, 0.035, 1, 1, 0.75], [0x8a4a1e, 0.045, 1.6, 1, 0.75], [0xd8a868, 0.06, 1, 1, 0.3], [0xa8602a, 0.03, 1.3, 1, 0.8]]);
-    const v = r.int(0, 3);
-    const ht = cache.get(`bread|${tw.toFixed(2)}|${kind[0]}|${v % 2}|${q}`, () => { const t = new Tpl(); heap(t, -(tw - 0.06) / 2, -(D - 0.1) / 2, tw - 0.06, D - 0.1, 0.03, kind[1], kind[2], kind[3], kind[4], 0.01, 53 * (v % 2) + kind[0] % 97, q); return t.bake(); });
-    parts.push(PART('paint', ht, lin(kind[0]), null, m));
+  parts.push(PART('wood', tb, lin(r.pick([0x8a6a48, 0x9a7a52, 0x6a4a30, 0xa88a60]))));
+  if (!cart) {
+    // a cloth over the table, its sides hanging in folds (plain, striped or checked)
+    const ct = cache.get(`bcloth|${W.toFixed(2)}|${q}`, () => {
+      const t = new Tpl();
+      t.box(-W / 2 - 0.01, H, -D / 2 - 0.01, W / 2 + 0.01, H + 0.003, D / 2 + 0.01, 32, 1, 1);
+      const drop = 0.26, nx = q >= 0.5 ? Math.round(W / 0.04) : 4;
+      for (let i = 0; i < nx; i++) {
+        const xa = -W / 2 - 0.01 + ((W + 0.02) * i) / nx, xb = xa + (W + 0.02) / nx;
+        const fa = 0.012 * Math.sin(xa * 40), fb = 0.012 * Math.sin(xb * 40);
+        t.q4(xa, H - drop, D / 2 + 0.012 + fa, xb, H - drop, D / 2 + 0.012 + fb, xb, H + 0.003, D / 2 + 0.01, xa, H + 0.003, D / 2 + 0.01, 0.82 + 0.1 * Math.cos(xa * 40), 1);
+      }
+      for (const sx of [-1, 1]) t.q4(sx * (W / 2 + 0.012), H - drop, sx > 0 ? D / 2 + 0.01 : -D / 2 - 0.01, sx * (W / 2 + 0.012), H - drop, sx > 0 ? -D / 2 - 0.01 : D / 2 + 0.01, sx * (W / 2 + 0.01), H + 0.003, sx > 0 ? -D / 2 - 0.01 : D / 2 + 0.01, sx * (W / 2 + 0.01), H + 0.003, sx > 0 ? D / 2 + 0.01 : -D / 2 - 0.01, 0.8, 0.95);
+      return t.bake();
+    });
+    const c1 = lin(r.pick([0xf2efe6, 0xe8e0c8, 0xb8261e, 0x1f4fa0, 0xf2efe6])), c2 = lin(r.pick([0xf2efe6, 0xb8261e, 0x2a6a3a, 0x1f4fa0]));
+    parts.push(PART('cloth', ct, c1, { aStripe: [c2[0], c2[1], c2[2], r.chance(0.6) ? r.pick([0.05, 0.08, 0.12]) : 0], aFlex: (k, v, a, j) => { a[j] = v[k * VS + 1] < H - 0.01 ? 0.25 : 0; } }));
+  }
+  // baskets along the top: ring breads (most), rolls, flat loaves
+  const top = H + (cart ? 0.0 : 0.003);
+  const nb = W > 1.15 ? 3 : 2, bw = (W - 0.1) / nb;
+  const wick = lin(r.pick([0xb8925a, 0xa8824a, 0xc8a46a]));
+  for (let i = 0; i < nb; i++) {
+    const x = -W / 2 + 0.05 + bw * (i + 0.5);
+    const ba = Math.min(0.2, bw / 2 - 0.02), bb = 0.2, bh = 0.09;
+    const bt = cache.get(`basket|${ba.toFixed(2)}|${q}`, () => { const t = new Tpl(); basket(t, ba, bb, bh, q); return t.bake(); });
+    const mb = new THREE.Matrix4().makeTranslation(x, top, r.range(-0.03, 0.03)).multiply(_r.makeRotationY(r.range(-0.15, 0.15)));
+    parts.push(PART('wood', bt, wick, null, mb));
+    const what = i === 0 || r.chance(0.6) ? 'rings' : r.chance(0.5) ? 'rolls' : 'flat';
+    const v = r.int(0, 2);
+    const ft = cache.get(`bread|${what}|${ba.toFixed(2)}|${v}|${q}`, () => {
+      const t = new Tpl(), rr = new RNG(77 + v * 13 + what.length);
+      if (what === 'rings') {
+        for (let k = 0; k < 9; k++) {
+          const a = (k / 9) * Math.PI * 2 + rr.range(-0.3, 0.3), rad = k === 0 ? 0 : ba * 0.45;
+          ringBread(t, Math.cos(a) * rad * 0.9, bh * 0.6 + (k === 0 ? 0.05 : 0) + rr.range(0, 0.02), Math.sin(a) * rad * 0.8, 0.07, 0.017, rr.range(0, 6.28), rr.range(-0.4, 0.4), k, q);
+        }
+      } else if (what === 'rolls') {
+        for (let k = 0; k < 12; k++) fruit(t, rr.range(-ba * 0.6, ba * 0.6), bh * 0.55 + rr.range(0, 0.04), rr.range(-bb * 0.6, bb * 0.6), 0.045, 0.03, 0.04, rr.range(0, 6.28), rr.range(-0.3, 0.3), q >= 0.5 ? 10 : 6, q >= 0.5 ? 6 : 4, rr.range(0.85, 1.1), 0);
+      } else {
+        for (let k = 0; k < 5; k++) fruit(t, rr.range(-0.04, 0.04), bh * 0.5 + k * 0.022, rr.range(-0.04, 0.04), 0.1, 0.012, 0.1, rr.range(0, 6.28), rr.range(-0.1, 0.1), q >= 0.5 ? 14 : 6, 4, rr.range(0.9, 1.05), 0);
+      }
+      return t.bake();
+    });
+    parts.push(PART('paint', ft, lin(what === 'flat' ? 0xd8b484 : what === 'rolls' ? 0xc88a40 : 0xc08440), null, mb));
+  }
+  // a stack of rings threaded on a dowel stood at the end of the stand
+  if (q >= 0.5 && r.chance(0.55)) {
+    const pt = cache.get(`dowel|${q}`, () => {
+      const t = new Tpl(), rr = new RNG(991);
+      for (let k = 0; k < 11; k++) ringBread(t, rr.range(-0.006, 0.006), 0.08 + k * 0.034, rr.range(-0.006, 0.006), 0.07, 0.017, rr.range(0, 6.28), rr.range(-0.12, 0.12), k * 3, q);
+      return t.bake();
+    });
+    const sx = r.chance(0.5) ? 1 : -1;
+    const md = new THREE.Matrix4().makeTranslation(sx * (W / 2 - 0.12), top, r.range(-0.12, 0.12));
+    parts.push(PART('paint', pt, lin(0xb87a3a), null, md));
+    const dw = cache.get('dowelStick', () => { const t = new Tpl(); bar(t, [0, 0, 0], [0, 0.5, 0], 0.016); return t.bake(); });
+    parts.push(PART('wood', dw, lin(0x8a6a48), null, md));
   }
   if (q >= 0.5) {
-    const tt = new Tpl(); card(tt, printCell('tags', r.int(0, 15)), r.range(-0.2, 0.2), H + 0.12, 0.2, 0.11, 0.25);
+    const tt = new Tpl(); card(tt, printCell('tags', r.int(0, 15)), r.range(-0.2, 0.2), top + 0.16, 0.22, 0.11, 0.25);
     parts.push(PART('text', tt.bake(), [1, 1, 1]));
   }
   return parts;
@@ -711,7 +986,7 @@ export function buildStand(kit, st, frame, q) {
   }
   const r = new RNG(st.seed);
   const parts = BUILDERS[st.kind](st, r, q);
-  const KEY = { paint: 'standPaint', metal: 'metal', cloth: 'awning', text: 'signText' };
+  const KEY = { paint: 'standPaint', metal: 'metal', cloth: 'awning', text: 'signText', produce: 'produce', wood: 'standWood' };
   for (const p of parts) {
     const m = p.m ? _r.copy(M).multiply(p.m) : M;
     const ex = p.key === 'text' ? { aGlow: [0] } : p.extra;

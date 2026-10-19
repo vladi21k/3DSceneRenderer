@@ -1,6 +1,6 @@
 import { archPoint } from '../facadePlan.js';
 import { arcSeg } from './mesh.js';
-import { hash3 } from './shade.js';
+import { hash3, JAMB_W, JAMB_H0, JAMB_H1 } from './shade.js';
 
 // Wall field of one facade face: the plane w = 0 between the paving and the cornice,
 // with the openings cut out exactly along their outlines.
@@ -59,13 +59,22 @@ const _runs = [], _jamb = [];                      // free runs of a row (reused
 const _gc = new Float64Array(1024);                // grooveStrip columns (reused)
 const _hj = [];                                    // head joints inside a piece (reused)
 
-/** Cut positions across a run [ra, rb], at most maxRun apart, into _cut; returns the count. */
-function runCuts(ra, rb, maxRun) {
+/**
+ * Cut positions across a run [ra, rb], at most maxRun apart, into _cut; returns the count.
+ * extra: further cut positions (sorted), kept where they fall inside the run.
+ */
+function runCuts(ra, rb, maxRun, extra = null) {
   const d = rb - ra;
   const n = d > maxRun ? Math.min(511, Math.ceil(d / maxRun)) : 1;
-  for (let k = 0; k < n; k++) _cut[k] = ra + (d * k) / n;
-  _cut[n] = rb;
-  return n + 1;
+  let m = 0, e = 0;
+  for (let k = 0; k < n; k++) {
+    const u = ra + (d * k) / n;
+    if (extra) for (; e < extra.length && extra[e] < u + 0.02; e++) if (m && extra[e] > _cut[m - 1] + 0.02 && m < 500) _cut[m++] = extra[e];
+    if (!m || u > _cut[m - 1] + 0.02) _cut[m++] = u;
+  }
+  if (extra) for (; e < extra.length && extra[e] < rb - 0.02; e++) if (extra[e] > _cut[m - 1] + 0.02 && m < 510) _cut[m++] = extra[e];
+  _cut[m] = rb;
+  return m + 1;
 }
 
 /**
@@ -169,7 +178,7 @@ export function* wallField(ctx, face, openings) {
   for (const d of [0.15, 0.45, 1.0, 2.0]) vb.push(cy - d);
   for (const c of face.courses || []) vb.push(c.y - 0.1, c.y - 0.35);
   const gHi = Math.max(face.groundAt(0), face.groundAt(W)), gLo = Math.min(face.groundAt(0), face.groundAt(W));
-  for (const d of q.lod ? [0.1, 0.4, 1.0, 2.3] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
+  for (const d of q.lod ? [0.1, 0.4, 1.0, 2.3] : [0.1, 0.3, 0.7, JAMB_H0, JAMB_H1, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
   const rus = ctx.rustic, rend = ctx.render || null;
   if (rus) { vb.push(rus.v0, rus.v1); for (const j of rus.joints) vb.push(j - rus.c, j + rus.c); }
   if (rend) vb.push(rend.v0);
@@ -203,6 +212,13 @@ export function* wallField(ctx, face, openings) {
     out[3] = Math.min(1, out[3] + SOIL_GRIME);
   };
   const gj = rus ? { j: 0, i: 0, c: rus.c, seed: (fs.seed | 0) ^ 0x6a09 } : null;
+  // the jambs' soiled zones (shade.FaceShade.jambs), full detail only
+  let jc = null;
+  if (!q.lod && fs.jambs) {
+    jc = [];
+    for (const x of fs.jambs) jc.push(x - JAMB_W, x + JAMB_W);
+    jc.sort((p, r) => p - r);
+  }
   B.shade = stoneShade;
   const sloped = gHi - gLo > 0.02;
   /** Texture transform of a piece: the sink's own base with u replaced by the fitted (k, off). */
@@ -233,6 +249,8 @@ export function* wallField(ctx, face, openings) {
     B.shade = rr ? rendShade : stoneShade;
     const zones = fs.rowZones(va, vc), zc = zones.cuts;
     const maxRun = sloped && va < gHi + 2.5 ? q.gridU : Infinity;
+    // (near the paving: columns where the soiling beside the shop and door jambs fades out)
+    const jambCuts = jc && va < gHi + JAMB_H1 - EPS ? jc : null;
     // free intervals of this row; jamb[] marks run ends closed by an opening's jamb
     let a = uMin, aJamb = false;
     const runs = _runs, jamb = _jamb;
@@ -301,7 +319,7 @@ export function* wallField(ctx, face, openings) {
         for (let za = pa; za < pb - EPS;) {
           const zb = zi < zc.length && zc[zi] < pb - 0.01 ? zc[zi] : pb;
           B.run = zones.occ[zi];
-          const n = runCuts(za, zb, maxRun), cuts = _cut;
+          const n = runCuts(za, zb, maxRun, jambCuts), cuts = _cut;
           s.reserve(n * 2, (n - 1) * 6);
           const b0 = s.vc;
           for (let c = 0; c < n; c++) { const u = cuts[c]; B.v(s, u, va, 0, 0, 0, 1, u, va); B.v(s, u, vc, 0, 0, 0, 1, u, vc); }

@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, TplCache, VS, lin } from './geo.js';
-import { dressCell, cardTpl, sheetTpl, POSTER_INFO, N_PRICES, N_BANNERS } from './signs.js';
+import { dressCell, cardTpl, sheetTpl, POSTER_INFO, N_PRICES, N_BANNERS, letteringTpls, cellTpl, iconCell, ICON_SOLID, subWordsOf } from './signs.js';
 import { inRustic } from './outline.js';
 
 const _t = new THREE.Matrix4();
@@ -134,7 +134,7 @@ const PAPER = { A4: [0.297, 0.21], A3: [0.42, 0.297], A2: [0.594, 0.42], A1: [0.
  * banners (they still read at 200 m, so the shopfront does not change at the detail
  * switch) as flat sheets in front of the far glass plane; the small cards are left out.
  */
-export function dressWindow(kit, o, L, m, type, far = false, al = null) {
+export function dressWindow(kit, o, L, m, type, far = false, al = null, brand = null) {
   if (!al) return;
   const r = RNG.from(o.id, 'dress');
   const t = new Tpl();
@@ -143,6 +143,7 @@ export function dressWindow(kit, o, L, m, type, far = false, al = null) {
   const ps = panes(L);
   const used = [];
   const free = (x0, x1, a, b) => !used.some((u) => x0 < u[1] && x1 > u[0] && a < u[3] && b > u[2]);
+  if (brand && ps.length) vinyl(kit, o, L, m, type, brand, ps, used, yG, y0, zG, far);
   if (ps.length) {
     for (const d of al.posters) {
       const info = POSTER_INFO[d], cell = dressCell('posters', d);
@@ -209,80 +210,226 @@ export function dressWindow(kit, o, L, m, type, far = false, al = null) {
   kit.get('signText').add(t.bake(), m, 0.86, 0.86, 0.86, GLOW);
 }
 
-// ------------------------------------------------------------------ goods hung outside
-// Cloth cards in the awning batch: hook at the local origin, hanging down -y, facing +z.
-const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a];
-const tplCache = new TplCache(64);
-
-/**
- * Cloth surface over the bilinear patch (a, b, c, d: CCW corners in xy), nx × ny cells:
- * filled out by the body it was cut for (z bulge, most at x = 0) and hanging in soft
- * vertical folds; normals from the analytic surface.
- */
-function patch(t, a, b, c, d, nx, ny, bulge, hw, shade = 1) {
-  // the folds deepen towards the hem (where the cloth hangs free) and break up into two
-  // wavelengths; the hem itself undulates
-  const fold = (x, y) => (0.004 + 0.014 * Math.min(1, -y * 1.6)) * (0.62 * Math.sin(x * 29 + 1.3) + 0.38 * Math.sin(x * 63 + 0.4 + y * 3));
-  const z = (x, y) => Math.max(0, bulge * (1 - (x * x) / (hw * hw))) + fold(x, y);
-  const base = t.count;
-  nx = Math.max(nx, Math.round(nx * 1.8)); ny = Math.max(ny, Math.round(ny * 1.6));
-  for (let j = 0; j <= ny; j++) {
-    const v = j / ny;
-    for (let i = 0; i <= nx; i++) {
-      const u = i / nx;
-      const x = (a[0] * (1 - u) + b[0] * u) * (1 - v) + (d[0] * (1 - u) + c[0] * u) * v;
-      let y = (a[1] * (1 - u) + b[1] * u) * (1 - v) + (d[1] * (1 - u) + c[1] * u) * v;
-      if (j === 0 && a[1] < -0.3) y += 0.012 * Math.sin(x * 29 + 2.9);
-      const e = 0.003, zz = z(x, y);
-      const gx = (z(x + e, y) - z(x - e, y)) / (2 * e), gy = (z(x, y + e) - z(x, y - e)) / (2 * e);
-      const l = Math.sqrt(gx * gx + gy * gy + 1);
-      // the hollows of the folds and the sides falling away read darker
-      const hollow = fold(x, y) / (0.018 + 1e-3);
-      const sh = shade * (0.74 + 0.26 / l) * (0.92 + 0.08 * hollow);
-      t.v(x, y, zz, -gx / l, -gy / l, 1 / l, x, y, sh);
+// ------------------------------------------------------------------ vinyl on the glass
+// Vinyl a shop has cut for its windows, on the outer face of the glass: its name (and
+// often its phone number) in white, gold or its accent colour along the top of a display
+// pane; and on fashion, shoe, general and chemist's windows now and then a band or panel
+// of coloured film carrying its trade or its name, the colour that reads from down the
+// street.
+const VIVID = [0xc8231c, 0xe0641a, 0xe0a81c, 0x1f4fa0, 0x1e7a3a, 0xc2185b, 0x7a3aa8, 0x1e8a8a, 0xd01e1a];
+const PANEL_TYPES = { clothing: 0.32, shoes: 0.28, general: 0.24, pharmacy: 0.22, books: 0.1, jewellery: 0.08, cafe: 0.1, flowers: 0.08 };
+function vinyl(kit, o, L, m, type, brand, ps, used, yG, y0, zG, far) {
+  const r = RNG.from(o.id, 'vinylGlass');
+  const design = { type: 'letters', cell: 0, board: null, ...brand, subAccent: false };
+  // the widest pane takes the lettering
+  let pi = 0;
+  for (let i = 1; i < ps.length; i++) if (ps[i][1] - ps[i][0] > ps[pi][1] - ps[pi][0]) pi = i;
+  const z = zG + (far ? 0 : 0.002);
+  const G = { aGlow: [0.2] };
+  if (r.chance(far ? 0.45 : 0.45)) {
+    const [x0, x1] = ps[pi];
+    const w = Math.min(x1 - x0 - 0.12, r.range(0.7, 1.5)), h = Math.min(0.34, w * r.range(0.2, 0.32));
+    const y = yG - 0.08 - h / 2 - r.range(0, 0.25);
+    if (w > 0.4 && y - h / 2 > y0 + 0.9) {
+      const x = r.chance(0.6) ? (x0 + x1) / 2 : r.chance(0.5) ? x0 + 0.06 + w / 2 : x1 - 0.06 - w / 2;
+      const tp = letteringTpls(design, w, h, z, far);
+      const c = lin(r.weighted([[0xf4f1e8, 0.62], [0xd8b25a, 0.18], [brand.accent ?? 0xf4f1e8, 0.2]]));
+      const mm = new THREE.Matrix4().copy(m).multiply(_t.makeTranslation(x, y, 0));
+      kit.get('signText').add(tp.text, mm, c[0], c[1], c[2], G);
+      if (tp.accent) { const a = lin(brand.accent ?? 0xc8231c); kit.get('signText').add(tp.accent, mm, a[0], a[1], a[2], G); }
+      used.push([x - w / 2, x + w / 2, y - h / 2, y + h / 2]);
     }
   }
-  for (let j = 0; j < ny; j++) {
-    for (let i = 0; i < nx; i++) {
-      const k = base + j * (nx + 1) + i;
-      t.ix6(k, k + 1, k + nx + 2, k, k + nx + 2, k + nx + 1);
+  if (!r.chance(PANEL_TYPES[type] ?? 0.1)) return;
+  // a coloured film panel: a band along the foot of a pane, or a tall panel at one side
+  const [x0, x1] = ps[r.int(0, ps.length - 1)];
+  const col = lin(r.pick(VIVID));
+  const tall = r.chance(0.45) && x1 - x0 > 1.1;
+  const w = tall ? Math.min(x1 - x0 - 0.1, r.range(0.55, 0.9)) : x1 - x0 - 0.04;
+  const h = tall ? Math.min(yG - y0 - 0.2, r.range(1.1, 1.6)) : Math.min(yG - y0 - 0.4, r.range(0.32, 0.62));
+  if (w < 0.4 || h < 0.25) return;
+  const x = tall ? (r.chance(0.5) ? x0 + 0.05 + w / 2 : x1 - 0.05 - w / 2) : (x0 + x1) / 2;
+  const y = tall ? y0 - 0.05 + h / 2 + r.range(0, 0.2) : y0 - 0.1 + h / 2;
+  const pt = new Tpl();
+  cellTpl(pt, iconCell(ICON_SOLID), 0, 0, w, h, z, 0.9);
+  const mm = new THREE.Matrix4().copy(m).multiply(_t.makeTranslation(x, y, 0));
+  kit.get('signText').add(pt.bake(), mm, col[0], col[1], col[2], G);
+  // its lettering in white: the trade (a word in the panel's language), the name, or both
+  const words = subWordsOf(type);
+  const d2 = r.chance(0.5) && words.length ? { type: 'letters', cell: words[r.int(0, words.length - 1)], board: null } : { ...design, sub: tall ? design.sub : null, logo: tall ? brand.logo : -1 };
+  const tp = letteringTpls(d2, w * 0.82, tall ? Math.min(h * 0.4, w * 0.5) : h * 0.62, z + 0.001, !tall);
+  const ty = tall ? h * 0.18 : 0;
+  const mt = new THREE.Matrix4().copy(mm).multiply(_t.makeTranslation(0, ty, 0));
+  kit.get('signText').add(tp.text, mt, 0.95, 0.94, 0.9, G);
+  if (tp.accent) kit.get('signText').add(tp.accent, mt, 0.95, 0.94, 0.9, G);
+  used.push([x - w / 2, x + w / 2, y - h / 2, y + h / 2]);
+}
+
+// ------------------------------------------------------------------ goods hung outside
+// Garments and bags in the awning batch (canvas shading, translucency, sway): hook at the
+// local origin, hanging down -y, facing +z.
+const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a,
+  0xc8231c, 0x1f4fa0, 0xe86a8a, 0x2a9a8a, 0xf2d24a];
+const tplCache = new TplCache(64);
+
+// Silhouettes (CCW, metres; the hook at the origin) and how each piece is made up:
+// [outline, half thickness at its middle (m), rim over which it thins (m), folds, len]
+const GARMENTS = {
+  // a tee on a hanger: neck, sloping shoulders, short sleeves, the body to the hem
+  tee: [[[0, -0.045], [0.07, -0.055], [0.19, -0.09], [0.33, -0.2], [0.27, -0.3], [0.2, -0.255], [0.215, -0.69], [-0.215, -0.69], [-0.2, -0.255], [-0.27, -0.3], [-0.33, -0.2], [-0.19, -0.09], [-0.07, -0.055]], 0.011, 0.04, 1, 0.69],
+  // a summer dress: straps over the hanger, bodice, a skirt flaring to the hem
+  dress: [[[0.05, -0.045], [0.13, -0.06], [0.16, -0.24], [0.13, -0.42], [0.34, -1.0], [-0.34, -1.0], [-0.13, -0.42], [-0.16, -0.24], [-0.13, -0.06], [-0.05, -0.045]], 0.01, 0.04, 1.2, 1.0],
+  // trousers folded at the waist over a clip bar: the legs apart below the fork
+  trousers: [[[0.2, -0.05], [0.215, -0.32], [0.2, -0.97], [0.035, -0.97], [0.0, -0.31], [-0.035, -0.97], [-0.2, -0.97], [-0.215, -0.32], [-0.2, -0.05]], 0.012, 0.03, 0.8, 0.97],
+  // a scarf folded over the bar, its ends hanging (fringed)
+  scarf: [[[0.11, -0.025], [0.125, -1.02], [0.08, -1.08], [0.02, -1.04], [-0.04, -1.09], [-0.125, -1.03], [-0.11, -0.025]], 0.008, 0.02, 1.4, 1.08],
+  // a tote: its body (handles apart), with volume
+  bag: [[[0.18, -0.15], [0.2, -0.5], [-0.2, -0.5], [-0.18, -0.15]], 0.035, 0.07, 0.3, 0.5],
+  // a backpack hung by its grab loop: rounded body
+  pack: [[[0.1, -0.05], [0.15, -0.09], [0.165, -0.42], [0.13, -0.47], [-0.13, -0.47], [-0.165, -0.42], [-0.15, -0.09], [-0.1, -0.05]], 0.075, 0.09, 0.15, 0.47],
+};
+
+/** Distance from (x, y) to polygon P's outline, signed (+ inside), and the nearest outline point. */
+function polyDist(P, x, y, out) {
+  let best = Infinity, inside = false, nx = x, ny = y;
+  for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+    const [ax, ay] = P[j], [bx, by] = P[i];
+    if ((ay > y) !== (by > y) && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside;
+    const ex = bx - ax, ey = by - ay, l2 = ex * ex + ey * ey || 1;
+    const t = Math.max(0, Math.min(1, ((x - ax) * ex + (y - ay) * ey) / l2));
+    const px = ax + ex * t, py = ay + ey * t, d = (x - px) ** 2 + (y - py) ** 2;
+    if (d < best) { best = d; nx = px; ny = py; }
+  }
+  out[0] = nx; out[1] = ny;
+  return inside ? Math.sqrt(best) : -Math.sqrt(best);
+}
+
+/**
+ * A garment as a closed soft shell over silhouette P: front and back surfaces that meet at
+ * the outline (the cloth's edge), thickness T at the middle thinning over the rim R, soft
+ * vertical folds deepening towards the hem, a little fuller where the hanger shapes it.
+ * Grid cells of `cell` metres; outline vertices are snapped onto the outline. Normals from
+ * the faces; the shade darkens the folds' hollows and the sides turning away.
+ */
+function shell(t, P, T, R, folds, len, cell, seed) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [x, y] of P) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const nx = Math.max(3, Math.ceil((x1 - x0) / cell)), ny = Math.max(3, Math.ceil((y1 - y0) / cell));
+  const ph = seed * 1.7;
+  const fold = (x, y) => folds * (0.003 + 0.013 * Math.min(1, -y / len)) * (0.62 * Math.sin(x * 27 + 1.3 + ph) + 0.38 * Math.sin(x * 61 + 0.4 + y * 3 + ph));
+  const np = (nx + 1) * (ny + 1);
+  const X = new Float32Array(np), Y = new Float32Array(np), D = new Float32Array(np);
+  const q = [0, 0];
+  for (let j = 0; j <= ny; j++) {
+    for (let i = 0; i <= nx; i++) {
+      const k = j * (nx + 1) + i;
+      let x = x0 + ((x1 - x0) * i) / nx, y = y0 + ((y1 - y0) * j) / ny;
+      const d = polyDist(P, x, y, q);
+      if (d < 0) { x = q[0]; y = q[1]; }
+      X[k] = x; Y[k] = y; D[k] = Math.max(0, d);
     }
+  }
+  const inCell = (i, j) => { const k = j * (nx + 1) + i; return D[k] > 0 || D[k + 1] > 0 || D[k + nx + 1] > 0 || D[k + nx + 2] > 0; };
+  // vertices: front then back
+  const base = t.count, pos = [];
+  for (let side = 0; side < 2; side++) {
+    for (let k = 0; k < np; k++) {
+      const x = X[k], y = Y[k], e = Math.min(1, D[k] / R), prof = T * (1 - (1 - e) * (1 - e));
+      const f = fold(x, y) * e;
+      const z = side ? -prof * 0.85 + f * 0.6 : prof + f;
+      pos.push(x, y, z);
+    }
+  }
+  const nrm = new Float32Array(pos.length), tris = [];
+  for (let side = 0; side < 2; side++) {
+    const o = side * np;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (!inCell(i, j)) continue;
+        const a = o + j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+        if (side) tris.push(a, b, c, b, d, c); else tris.push(a, c, b, b, c, d);
+      }
+    }
+  }
+  for (let k = 0; k < tris.length; k += 3) {
+    const a = tris[k] * 3, b = tris[k + 1] * 3, c = tris[k + 2] * 3;
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+    const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+    for (const v of [a, b, c]) { nrm[v] += fx; nrm[v + 1] += fy; nrm[v + 2] += fz; }
+  }
+  for (let k = 0; k < 2 * np; k++) {
+    const o = k * 3;
+    let ax = nrm[o], ay = nrm[o + 1], az = nrm[o + 2];
+    const l = Math.hypot(ax, ay, az);
+    if (l > 1e-12) { ax /= l; ay /= l; az /= l; } else { ax = 0; ay = 0; az = k < np ? 1 : -1; }
+    const x = pos[o], y = pos[o + 1], hollow = fold(x, y) / 0.016;
+    const sh = (0.78 + 0.22 * Math.abs(az)) * (0.93 + 0.07 * hollow) * (k < np ? 1 : 0.9);
+    t.v(x, y, pos[o + 2], ax, ay, az, x, y, sh);
+  }
+  for (let k = 0; k < tris.length; k += 6) t.ix6(base + tris[k], base + tris[k + 1], base + tris[k + 2], base + tris[k + 3], base + tris[k + 4], base + tris[k + 5]);
+}
+
+/** A strap or handle loop: a flat band of width bw along the polyline pts (x, y, z), both faces. */
+function strap(t, pts, bw, th = 0.004) {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, ay, az] = pts[i], [bx, by, bz] = pts[i + 1];
+    const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1, sx = (-dy / l) * bw / 2, sy = (dx / l) * bw / 2;
+    t.q4(ax - sx, ay - sy, az + th, ax + sx, ay + sy, az + th, bx + sx, by + sy, bz + th, bx - sx, by - sy, bz + th, 0.9, 0.9);
+    t.q4(ax + sx, ay + sy, az - th, ax - sx, ay - sy, az - th, bx - sx, by - sy, bz - th, bx + sx, by + sy, bz - th, 0.8, 0.8);
   }
 }
 
+/**
+ * Garment template of `kind` (tee, dress, trousers, scarf, bag, pack): a soft shell with
+ * folds (bags with their handles, a backpack with its pocket and straps). Cached; .len is
+ * its hanging length.
+ */
 export function cloth(kind) {
   return tplCache.get(kind, () => {
     const t = new Tpl();
-    let len = 0.7;
-    if (kind === 'tee') {
-      patch(t, [-0.2, -0.68], [0.2, -0.68], [0.2, -0.06], [-0.2, -0.06], 6, 3, 0.05, 0.22);
-      patch(t, [-0.36, -0.22], [-0.2, -0.3], [-0.2, -0.06], [-0.29, -0.07], 1, 1, 0, 1, 0.9);
-      patch(t, [0.2, -0.3], [0.36, -0.22], [0.29, -0.07], [0.2, -0.06], 1, 1, 0, 1, 0.9);
-      len = 0.68;
-    } else if (kind === 'dress') {
-      patch(t, [-0.14, -0.4], [0.14, -0.4], [0.16, -0.05], [-0.16, -0.05], 4, 2, 0.045, 0.17);
-      patch(t, [-0.32, -1.02], [0.32, -1.02], [0.14, -0.4], [-0.14, -0.4], 8, 3, 0.05, 0.33);
-      len = 1.02;
-    } else if (kind === 'trousers') {
-      patch(t, [-0.2, -0.14], [0.2, -0.14], [0.2, -0.04], [-0.2, -0.04], 4, 1, 0.03, 0.21, 0.85);
-      patch(t, [-0.21, -0.98], [-0.03, -0.98], [0.0, -0.14], [-0.2, -0.14], 3, 3, 0.0, 1);
-      patch(t, [0.03, -0.98], [0.21, -0.98], [0.2, -0.14], [0.0, -0.14], 3, 3, 0.0, 1);
-      len = 0.98;
-    } else if (kind === 'scarf') {
-      patch(t, [-0.12, -1.1], [0.12, -1.1], [0.12, -0.04], [-0.12, -0.04], 3, 4, 0.0, 1);
-      len = 1.1;
-    } else {
-      // bag with its handle loop over the hook
-      patch(t, [-0.19, -0.48], [0.19, -0.48], [0.17, -0.16], [-0.17, -0.16], 4, 2, 0.06, 0.2);
-      patch(t, [-0.12, -0.16], [-0.09, -0.16], [-0.01, -0.02], [-0.04, -0.02], 1, 1, 0, 1, 0.7);
-      patch(t, [0.09, -0.16], [0.12, -0.16], [0.04, -0.02], [0.01, -0.02], 1, 1, 0, 1, 0.7);
-      len = 0.48;
+    const [P, T, R, folds, len] = GARMENTS[kind] || GARMENTS.bag;
+    shell(t, P, T, R, folds, len, kind === 'bag' || kind === 'pack' ? 0.03 : 0.035, kind.length);
+    if (kind === 'bag') {
+      for (const s of [-1, 1]) strap(t, [[s * 0.1, -0.15, 0.02 * s], [s * 0.07, -0.07, 0.012 * s], [s * 0.025, -0.015, 0.004 * s], [0, -0.005, 0]], 0.025);
+    } else if (kind === 'pack') {
+      // front pocket, the grab loop over the hook and the shoulder straps behind
+      const pk = new Tpl();
+      shell(pk, [[0.12, -0.24], [0.125, -0.41], [0.1, -0.44], [-0.1, -0.44], [-0.125, -0.41], [-0.12, -0.24]], 0.03, 0.04, 0.1, 0.47, 0.03, 3);
+      t.appendRotY(pk, 0, 0, 0);
+      const V = t.V, n0 = t.count - pk.count;
+      for (let k = n0; k < t.count; k++) V[k * VS + 2] += 0.07;
+      pk.free();
+      strap(t, [[-0.03, -0.055, 0], [0, -0.005, 0], [0.03, -0.055, 0]], 0.02);
+      for (const s of [-1, 1]) strap(t, [[s * 0.08, -0.09, -0.07], [s * 0.11, -0.25, -0.085], [s * 0.12, -0.42, -0.07]], 0.05);
     }
     // darker towards the hem's shadow side
     t.shadeBy((x, y) => 1 - 0.06 * Math.min(1, -y / len));
     const b = t.bake();
-    b.len = len;
+    b.len = len; b.kind = kind;
     return b;
+  });
+}
+/** Hanger of a garment (standPaint batch): hook and shoulder bar, or a clip bar for trousers and scarves. */
+export function hangerTpl(kind) {
+  return tplCache.get(`hanger|${kind}`, () => {
+    const t = new Tpl();
+    // the hook: up from the bar and over (a few straight pieces)
+    t.box(-0.003, -0.05, -0.003, 0.003, 0.0, 0.003, 1 | 2 | 4 | 8, 0.9, 1);
+    t.box(-0.003, 0.0, -0.025, 0.003, 0.006, 0.003, 1 | 2 | 4 | 8 | 16 | 32, 0.9, 1);
+    t.box(-0.003, -0.02, -0.031, 0.003, 0.006, -0.025, 1 | 2 | 4 | 8 | 16, 0.9, 1);
+    if (kind === 'tee' || kind === 'dress') {
+      // the shoulder bar following the shoulders' slope
+      const hw = kind === 'tee' ? 0.2 : 0.15, dy = kind === 'tee' ? 0.045 : 0.02;
+      for (const s of [-1, 1]) {
+        t.q4(0, -0.04, 0.012, s * hw, -0.04 - dy, 0.012, s * hw, -0.055 - dy, 0.012, 0, -0.055, 0.012, 0.9, 1);
+        t.q4(s * hw, -0.04 - dy, -0.012, 0, -0.04, -0.012, 0, -0.055, -0.012, s * hw, -0.055 - dy, -0.012, 0.85, 0.95);
+        t.q4(0, -0.04, -0.012, s * hw, -0.04 - dy, -0.012, s * hw, -0.04 - dy, 0.012, 0, -0.04, 0.012, 1, 1);
+      }
+    } else if (kind === 'trousers' || kind === 'scarf') {
+      t.box(-0.21, -0.06, -0.012, 0.21, -0.042, 0.016, 1 | 2 | 4 | 8 | 16 | 32, 0.85, 1);
+    }
+    return t.bake();
   });
 }
 const HOOK = (() => {
@@ -291,12 +438,31 @@ const HOOK = (() => {
   t.box(-0.006, -0.01, -0.012, 0.006, 0.05, 0.0, 1 | 4 | 8 | 32, 0.9, 1);
   return t.bake();
 })();
+const HANGER_COL = [[0.03, 0.03, 0.032], [0.36, 0.2, 0.1], [0.75, 0.74, 0.72], [0.03, 0.03, 0.032]];
 
 const KINDS = {
-  clothing: [['tee', 0.35], ['dress', 0.25], ['trousers', 0.2], ['scarf', 0.2]],
-  shoes: [['bag', 0.8], ['scarf', 0.2]],
-  general: [['bag', 0.35], ['scarf', 0.35], ['tee', 0.3]],
+  clothing: [['tee', 0.32], ['dress', 0.24], ['trousers', 0.16], ['scarf', 0.16], ['bag', 0.12]],
+  shoes: [['bag', 0.6], ['pack', 0.2], ['scarf', 0.2]],
+  general: [['bag', 0.3], ['pack', 0.25], ['scarf', 0.25], ['tee', 0.2]],
 };
+// fronts that crowd their door with stock (piers covered, a rail of it across the window)
+const DENSE = { clothing: 0.32, general: 0.3, shoes: 0.2 };
+
+/** Hang garment `kind` with its hook at world matrix mw (on a wall hook or a rail). */
+function hangItem(kit, kind, mw, r, sway = 0.9) {
+  const tp = cloth(kind), len = tp.len;
+  const c1 = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
+  const stripe = (kind === 'tee' || kind === 'scarf' || kind === 'dress') && r.chance(0.3) ? r.range(0.03, 0.07) : 0;
+  kit.get('awning').add(tp, mw, c1[0], c1[1], c1[2], {
+    aStripe: [c2[0], c2[1], c2[2], stripe],
+    aFlex: (k, v, a, j) => { a[j] = Math.min(1, Math.max(0, -v[k * VS + 1] / len)) * sway; },
+  });
+  if (kind !== 'bag' && kind !== 'pack') {
+    const hc = r.pick(HANGER_COL);
+    kit.get('standPaint').add(hangerTpl(kind), mw, hc[0], hc[1], hc[2]);
+  }
+  return len;
+}
 
 /**
  * Clear stretch of wall beside opening o on `side` (−1 left, +1 right) at heights
@@ -334,51 +500,68 @@ function pier(plan, o, side, gy) {
  * price board: built in the wall frame (u, v, w out of the wall face).
  * Returns the number of items hung.
  */
-export function hangGoods(kit, ctx, o, type, al = null) {
+export function hangGoods(kit, ctx, o, type, al = null, L = null, mOpen = null) {
   const kinds = KINDS[type];
   const r = RNG.from(o.id, 'hang');
   const plan = ctx.plan, frame = ctx.frame;
   let n = 0;
-  if (kinds && r.chance((KEEN[type] || KEEN.general)[2])) {
+  const dense = !!kinds && r.chance(DENSE[type] ?? 0);
+  if (kinds && (dense || r.chance((KEEN[type] || KEEN.general)[2]))) {
     const sides = r.chance(0.5) ? [1, -1] : [-1, 1];
-    const both = r.chance(0.35);
+    const both = dense || r.chance(0.35);
     for (const side of sides) {
       const gy = plan.groundAt(o.uc + side * (o.w / 2 + 0.4));
       const span = pier(plan, o, side, gy);
       if (!span) continue;
       const [u0, u1] = span;
-      // one or two columns of hooks from the jamb outwards
-      const cols = u1 - u0 > 1.05 && r.chance(0.6) ? 2 : 1;
+      // columns of hooks from the jamb outwards (a dense front fills the pier)
+      const pitch = dense ? 0.4 : 0.52;
+      const cols = dense ? Math.max(1, Math.min(4, Math.floor((u1 - u0 - 0.06) / pitch))) : u1 - u0 > 1.05 && r.chance(0.6) ? 2 : 1;
       for (let c = 0; c < cols; c++) {
-        const uc = side > 0 ? u0 + 0.27 + c * 0.52 : u1 - 0.27 - c * 0.52;
-        let top = gy + r.range(2.35, 2.55);
-        for (let row = 0; row < 2; row++) {
+        const uc = side > 0 ? u0 + 0.22 + c * pitch : u1 - 0.22 - c * pitch;
+        let top = gy + r.range(2.35, 2.6);
+        for (let row = 0; row < (dense ? 3 : 2); row++) {
           const kind = r.weighted(kinds);
-          const tp = cloth(kind);
-          if (top - tp.len < gy + 0.55) break;
-          const len = tp.len;
-          // a bundle on the hook: the same piece in two or three colours, fanned out
-          const nb = kind === 'bag' ? 1 : r.int(1, 3);
+          const len = cloth(kind).len;
+          if (top - len < gy + 0.5) break;
+          // a bundle on the hook: the same piece in two to four colours, fanned out
+          const nb = kind === 'pack' ? 1 : kind === 'bag' ? r.int(1, 2) : r.int(1, dense ? 4 : 3);
           // (rusticated stone: hooks on the bosses' faces)
-          const z = 0.1 + (inRustic(plan, top) ? 0.03 : 0);
+          const z = 0.1 + (inRustic(plan, top) ? 0.03 : 0) + (kind === 'pack' ? 0.06 : kind === 'bag' ? 0.03 : 0);
           for (let q = nb - 1; q >= 0; q--) {
-            const c1 = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
-            const stripe = (kind === 'tee' || kind === 'scarf') && r.chance(0.3) ? r.range(0.03, 0.07) : 0;
-            const mw = new THREE.Matrix4().copy(frame.matrix).multiply(_t.makeTranslation(uc + (q - (nb - 1) / 2) * 0.05 + r.range(-0.02, 0.02), top - q * 0.03, z + q * 0.035));
+            const mw = new THREE.Matrix4().copy(frame.matrix).multiply(_t.makeTranslation(uc + (q - (nb - 1) / 2) * 0.05 + r.range(-0.02, 0.02), top - q * 0.03, z + q * 0.03));
             // a slight swing off the wall at the hem, a little twist
             mw.multiply(_t.makeRotationX(-r.range(0.03, 0.09))).multiply(_t.makeRotationZ(r.range(-0.06, 0.06)));
-            kit.get('awning').add(tp, mw, c1[0], c1[1], c1[2], {
-              aStripe: [c2[0], c2[1], c2[2], stripe],
-              aFlex: (k, v, a, j) => { a[j] = Math.min(1, Math.max(0, -v[k * VS + 1] / len)) * 0.9; },
-            });
+            hangItem(kit, kind, mw, r);
           }
           kit.get('metal').add(HOOK, new THREE.Matrix4().copy(frame.matrix).multiply(_t.makeTranslation(uc, top + 0.01, z)), 0.06, 0.06, 0.062);
           n++;
-          top -= len + 0.12;
+          top -= len + 0.1;
           if (kind === 'dress' || kind === 'trousers' || kind === 'scarf') break;
         }
       }
       if (n && !both) break;
+    }
+  }
+  // a dense front also hangs stock from a rail across the top of its display window, in
+  // the reveal in front of the glass (never across the door)
+  if (dense && L && mOpen && ctx.q >= 0.5) {
+    const yR = L.yT - 0.04, zR = -(L.inset || 0) + 0.14;
+    const d0 = L.dx - L.doorW / 2 - 0.12, d1 = L.dx + L.doorW / 2 + 0.12;
+    for (const [a, b] of [[-L.hwI + 0.05, d0], [d1, L.hwI - 0.05]]) {
+      if (b - a < 0.5) continue;
+      const rail = new Tpl();
+      rail.box(a, yR - 0.012, zR - 0.012, b, yR + 0.012, zR + 0.012, 1 | 2 | 16 | 32, 0.9, 1);
+      kit.get('metal').add(rail.bake(), mOpen, 0.5, 0.5, 0.52);
+      const k2 = KINDS[type].filter(([k]) => k !== 'trousers' && k !== 'dress');
+      for (let x = a + 0.17; x < b - 0.15; x += r.range(0.26, 0.36)) {
+        const kind = r.weighted(k2);
+        if (cloth(kind).len > yR - L.riser - 0.6) continue;
+        const mw = new THREE.Matrix4().copy(mOpen).multiply(_t.makeTranslation(x, yR, zR + (kind === 'pack' ? 0.08 : 0.03)));
+        mw.multiply(_t.makeRotationY(r.range(-0.25, 0.25))).multiply(_t.makeRotationZ(r.range(-0.05, 0.05)));
+        hangItem(kit, kind, mw, r, 0.6);
+        n++;
+      }
     }
   }
   // a price board on the pier (fluorescent card on a dark board), now and then (its card

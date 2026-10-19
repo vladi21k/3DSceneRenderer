@@ -16,7 +16,9 @@ import { input } from './input.js';
 //  - Auto driver: cruise 40-45 km/h where the track corridor ahead is clear, easing down to
 //    23-28 km/h (walking-plus pace) as more people walk in it (Tram.load: the corridor
 //    count 5-200 m ahead, sampled every second and smoothed over ~5 s; the oncoming units
-//    get theirs from trams.js), curve limit sqrt(aLat R), 25 km/h over crossovers
+//    get theirs from trams.js), curve limit sqrt(aLat R) (aLat 0.9 m/s² on the avenue's
+//    bends, easing to 0.55 in tight street corners: a driver takes a 58 m corner at about
+//    20 km/h, not at the lateral comfort limit), 25 km/h over crossovers
 //    (until the rear of the tram has cleared), braking curves to every restriction and a
 //    station stop with the cab front at station.stopS that ends firmly (~0.4 m/s², no
 //    creeping), dwell 12-18 s with door events, bell, departure.
@@ -65,7 +67,9 @@ export const DRIVE = {
   busyKmh: [23, 28],       // cruise through a crowded pedestrian mall (load 1)
   busyPeople: 20,          // corridor people ahead (weighted) for a full load
   loadTau: 5,              // s, smoothing of the load
-  aLat: 0.9,               // m/s² lateral comfort limit in curves
+  aLat: 0.9,               // m/s² lateral comfort limit in curves of RLat[1] m radius and wider...
+  aLatTight: 0.55,         // ...easing to this in street corners of RLat[0] m and tighter (about 20 km/h at R 58)
+  RLat: [60, 150],
   crossoverKmh: 25,
   aStop: 0.85,             // planned station braking
   aRestrict: 0.6,          // planned braking towards curve / switch limits
@@ -134,8 +138,15 @@ const STOP_CURVE = new BrakeCurve(DRIVE.aStop, 1.6, 0.5);
 const FINAL_STOP = [2.5, 1.0];   // m: blend into the required-rate final stop over these distances
 const STOP_LAG = 0.0;         // m, final-stop aim point beyond the mark (0: the cab front stops on it)
 
-/** Speed limit (m/s, at most 99) at every metre of a route: the curve comfort limit
- *  sqrt(aLat / κ) and the crossover limit. Built once per layout (the cab tram's, and the
+/** Lateral acceleration a driver accepts in a curve of radius R (m): DRIVE.aLat on wide bends,
+ *  easing to DRIVE.aLatTight in tight street corners. */
+function curveLat(R) {
+  const [r0, r1] = DRIVE.RLat;
+  return DRIVE.aLatTight + (DRIVE.aLat - DRIVE.aLatTight) * smoothstep(r0, r1, R);
+}
+
+/** Speed limit (m/s, at most 99) at every metre of a route: the curve limit sqrt(a(R) / κ)
+ *  (see curveLat) and the crossover limit. Built once per layout (the cab tram's, and the
  *  mirrored one the oncoming units share); a lookup takes the lower of the two neighbours. */
 const LIMIT_TABLES = new WeakMap();
 function limitTable(route, layout) {
@@ -146,7 +157,7 @@ function limitTable(route, layout) {
   for (let i = 0; i < n; i++) {
     const y = route.wrap(i);
     const k = Math.abs(route.curvature(y));
-    let v = k > 1e-5 ? Math.sqrt(DRIVE.aLat / k) : 99;
+    let v = k > 1e-5 ? Math.sqrt(curveLat(1 / k) / k) : 99;
     if (layout.isInCrossover(y, 3)) v = Math.min(v, vx);
     T[i] = Math.min(v, 99);
   }

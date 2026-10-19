@@ -96,14 +96,10 @@ export class FaceShade {
     // run-off occluders: balcony slabs (line = soffit) and window sills (line = underside),
     // with a random strength s and the attribute code (see runAttr)
     this.occ = [];
-    const add = (bal, a, b, y, sv, ends = 0) => {
-      const s = Math.min(1.98, Math.max(0.02, sv));
-      // attribute codes (see runAttr): signed width in 1/64 m, strength in 1/63; on slab
-      // pieces + CONSOLE_L / CONSOLE_R where the piece ends at a console
-      const wq = Math.min(8191, Math.max(1, Math.floor((b - a) * 64))) + ends;
+    const add = (bal, a, b, y, sv, ends = 0, rust = 0) => {
       // m: how far beyond its ends an occluder still shades the wall (the soot under a
       // balcony slab spreads a little sideways and fades out there, see grime.js)
-      this.occ.push({ bal, a, b, y, s, m: bal ? BAL_M : SILL_M, run: bal ? BAL_RUN : SILL_RUN, wq: bal ? wq : -wq, sq: Math.round(s * 63) });
+      this.occ.push(bal ? slabRun(a, b, y, sv, ends, rust) : runItem(false, a, b, y, sv, 0, 0));
     };
     for (const b of face.balconies || []) {
       // a slab on consoles is cut at every console (ironwork publishes them on the plan,
@@ -115,15 +111,20 @@ export class FaceShade {
       for (let k = 0; k < cs.length; k++) {
         const c = cs[k].u;
         if (c - a < 0.3 || b.u1 - c < 0.3) continue;
-        add(true, a, c, y, sv, endA + CONSOLE_R);
+        add(true, a, c, y, sv, endA + CONSOLE_R, b.rust);
         a = c; endA = CONSOLE_L;
       }
-      add(true, a, b.u1, y, sv, endA);
+      add(true, a, b.u1, y, sv, endA, b.rust);
     }
     const ext = opts.sillExt ?? 0.15, sh = opts.sillH ?? 0.12;
+    // the jambs of the shop fronts and doors: hands, shoulders, bags and bicycles soil the
+    // piers and reveals beside them up to about a metre (see wall())
+    const jambs = [];
     for (const o of face.openings || []) {
       if (o.kind === 'window') add(false, o.uc - o.w / 2 - ext, o.uc + o.w / 2 + ext, o.y - sh, 0.5 + 0.8 * hash1(o.uc * 13 + o.y * 7, seed));
+      else if (o.floor === 0 && (o.kind === 'shop' || o.kind === 'door')) jambs.push(o.uc - o.w / 2, o.uc + o.w / 2);
     }
+    this.jambs = this.damp && jambs.length ? jambs : null;
     this.occ.sort((p, q) => p.y - q.y);
   }
 
@@ -205,7 +206,22 @@ export class FaceShade {
     r += (lum * 0.9 - r) * grey; gg += (lum * 0.9 - gg) * grey; b += (lum * 0.93 - b) * grey;
     // never-cleaned stone is darker overall, more so up under the cornice
     const sootK = this.unc ? 1 - this.unc * (0.12 + 0.12 * Math.min(1, Math.max(0, v / this.corniceY))) : 1;
-    const dk = a * (1 - 0.18 * gz * this.dirt) * sootK;
+    let dk = a * (1 - 0.18 * gz * this.dirt) * sootK;
+    // beside a shop or door jamb, up to about a metre: handled and brushed against, a
+    // greyer, darker zone that fades out 0.35 m along the pier (the wall field and the
+    // reveals have vertices there, see wall.js and openings.js)
+    const J = this.jambs;
+    if (J && hg < 1.35 && hg > -0.5) {
+      let d = 9;
+      for (let i = 0; i < J.length; i++) { const x = u - J[i]; const ax = x < 0 ? -x : x; if (ax < d) d = ax; }
+      if (d < JAMB_W) {
+        const t = 1 - d / JAMB_W, s = hg < JAMB_H0 ? 1 : 1 - (hg - JAMB_H0) / (JAMB_H1 - JAMB_H0);
+        const k = t * t * (3 - 2 * t) * Math.max(0, s) * Math.min(1.4, this.dirt);
+        const l = (r + gg + b) / 3;
+        r += (l - r) * 0.3 * k; gg += (l - gg) * 0.3 * k; b += (l * 0.98 - b) * 0.3 * k;
+        dk *= 1 - 0.16 * k;
+      }
+    }
     out[0] = r * dk; out[1] = gg * dk; out[2] = b * dk;
     out[3] = g;
     out[4] = this.dirt;
@@ -216,6 +232,8 @@ export class FaceShade {
 // run-off: reach below the sill / slab line; zone margin beyond the occluder ends
 // (the stone shader fades a slab's soot out by 1.05 m beyond its ends: keep BAL_M above that)
 const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
+// the soiled zone beside shop and door jambs: reach along the wall, full up to H0, gone by H1
+export const JAMB_W = 0.35, JAMB_H0 = 1.0, JAMB_H1 = 1.3;
 const NO_ZONES = { cuts: [], occ: [null] };
 const sameAt = (it, i) => _zones.cand[i] === it;
 const NO_CONSOLES = [];
@@ -240,12 +258,36 @@ function zoneWinner(cand, u) {
 }
 
 /**
+ * A run-off occluder (FaceShade.occ item): bal true for a balcony slab (a piece of one:
+ * ends + CONSOLE_L / CONSOLE_R where it ends at a console; rust 0..1, how far the iron
+ * railing above it rusts: ironwork's bal.rust) or anything that sheds water like one (a
+ * parapet's coping), false for a window sill. sv: its strength (patchiness of the dirt).
+ */
+export function runItem(bal, a, b, y, sv, ends = 0, rust = 0) {
+  const wq = Math.min(8191, Math.max(1, Math.floor((b - a) * 64))) + ends;
+  let s, sq;
+  if (bal) {
+    // low bits: rust in eighths × 16 + strength 0.4..1.6 in 0.08 steps (grime.js VERT_MAIN)
+    const sQ = Math.round((Math.min(1.6, Math.max(0.4, sv)) - 0.4) / 0.08);
+    s = 0.4 + sQ * 0.08;
+    sq = Math.round(Math.min(1, Math.max(0, rust || 0)) * 7) * 16 + sQ;
+  } else {
+    s = Math.min(1.98, Math.max(0.02, sv));
+    sq = Math.round(s * 63);
+  }
+  return { bal, a, b, y, s, m: bal ? BAL_M : SILL_M, run: bal ? BAL_RUN : SILL_RUN, wq: bal ? wq : -wq, sq };
+}
+/** A balcony slab (or a piece of one) as a run-off occluder (see runItem). */
+export const slabRun = (a, b, y, sv, ends = 0, rust = 0) => runItem(true, a, b, y, sv, ends, rust);
+
+/**
  * aRun attribute (int16 × 4) of a vertex at facade (u, v) shaded by occluder `it` (null:
- * none): ((a − u) · 256, (line − v) · 256, ⌊dirtiness · 128⌉ · 128 + ⌊s · 63⌉, ±⌊width · 64⌋),
+ * none): ((a − u) · 256, (line − v) · 256, ⌊dirtiness · 128⌉ · 128 + low, ±⌊width · 64⌋),
  * + balcony slab (a piece of it: + CONSOLE_L, + CONSOLE_R where it ends at a console),
- * − window sill, 0 none. Both offsets are affine in the position, so they
- * interpolate exactly over any face (4 mm steps, ±128 m); the shader (grime.js) decodes
- * the last two into the building's dirtiness and the occluder code.
+ * − window sill, 0 none; low: a sill's strength ⌊s · 63⌉, a slab's rust and strength (see
+ * runItem). Both offsets are affine in the position, so they interpolate exactly over any
+ * face (4 mm steps, ±128 m); the shader (grime.js) decodes the last two into the
+ * building's dirtiness and the occluder code.
  */
 export function runAttr(it, u, v, dirt, out, k) {
   const dq = Math.round(dirt * 128);

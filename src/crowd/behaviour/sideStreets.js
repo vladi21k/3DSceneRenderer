@@ -130,8 +130,9 @@ export class SideStreets {
 
   /** route.toWorld that follows the side streets. */
   toWorld(s, d, h, out) {
-    const route = this.c.route;
-    route.toWorld(s, d, h, out);
+    const route = this.c.route, io = this.c.io;
+    // (through route.io where there is one: no number handed on to box)
+    if (io) { io[0] = s; io[1] = d; io[2] = h; route.toWorldIO(out); } else route.toWorld(s, d, h, out);
     const L = this.locate(s, d, _loc);
     if (!L) return out;
     const g = L.g, b = smooth(L.x / BLEND);

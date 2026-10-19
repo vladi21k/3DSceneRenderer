@@ -228,14 +228,30 @@ export function shopShutterTpl(o, L, q) {
   if (L.shutterDown > 0) {
     const yb = (top - boxH) * (1 - L.shutterDown);
     const zc = z0 + 0.03;
-    // corrugated curtain: alternating slat facets
+    // corrugated curtain: alternating slat facets, each slat a little different (repaints,
+    // wear), dirtier towards the pavement (splash and kicks), and a slat or two dented in
     const pitch = q >= 0.5 ? 0.08 : 0.32;
-    for (let y = top - boxH; y > yb + 1e-3; y -= pitch) {
+    const rng = new RNG(Math.round(o.w * 1000) + Math.round(top * 100) * 7 + Math.round(L.shutterDown * 20));
+    const dents = q >= 0.5 ? [rng.int(1, 12), rng.int(3, 18)] : [];
+    const x0 = -hwI - 0.02, x1 = hwI + 0.02;
+    let k = 0;
+    for (let y = top - boxH; y > yb + 1e-3; y -= pitch, k++) {
       const y0 = Math.max(yb, y - pitch), ym = (y0 + y) / 2;
-      t.quad([-hwI - 0.02, y0, zc], [hwI + 0.02, y0, zc], [hwI + 0.02, ym, zc + 0.012], [-hwI - 0.02, ym, zc + 0.012], 0.8, 1);
-      t.quad([-hwI - 0.02, ym, zc + 0.012], [hwI + 0.02, ym, zc + 0.012], [hwI + 0.02, y, zc], [-hwI - 0.02, y, zc], 1, 0.85);
+      const g = 0.62 + 0.38 * Math.min(1, Math.max(0, (y0 - yb) / 1.1)), j = rng.range(0.9, 1.06) * g;
+      const nslat = Math.round((top - boxH - yb) / pitch);
+      if (dents.includes(nslat - k) && x1 - x0 > 1.2) {
+        // a dent: the slat pushed in over a stretch, darker in its hollow
+        const a = rng.range(x0 + 0.2, x1 - 0.8), b = a + rng.range(0.3, 0.6), d = -0.012;
+        for (const [xa, xb, dz, sh] of [[x0, a, 0, 1], [a, b, d, 0.78], [b, x1, 0, 1]]) {
+          t.quad([xa, y0, zc + dz], [xb, y0, zc + dz], [xb, ym, zc + 0.012 + dz], [xa, ym, zc + 0.012 + dz], 0.8 * j * sh, j * sh);
+          t.quad([xa, ym, zc + 0.012 + dz], [xb, ym, zc + 0.012 + dz], [xb, y, zc + dz], [xa, y, zc + dz], j * sh, 0.85 * j * sh);
+        }
+        continue;
+      }
+      t.quad([x0, y0, zc], [x1, y0, zc], [x1, ym, zc + 0.012], [x0, ym, zc + 0.012], 0.8 * j, j);
+      t.quad([x0, ym, zc + 0.012], [x1, ym, zc + 0.012], [x1, y, zc], [x0, y, zc], j, 0.85 * j);
     }
-    t.box(-hwI - 0.02, yb - 0.04, zc - 0.01, hwI + 0.02, yb, zc + 0.03, 1 | 16 | 32, 0.7, 0.8);
+    t.box(-hwI - 0.02, yb - 0.04, zc - 0.01, hwI + 0.02, yb, zc + 0.03, 1 | 16 | 32, 0.5, 0.6);
   }
   return t.bake();
 }

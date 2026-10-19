@@ -24,6 +24,7 @@ import { staffTick } from './staff.js';
 
 const BIN = 10;
 const BENCH_RESERVE = 12;   // seated slots kept for people on benches
+const AVENUE_S = 1500;      // the main avenue: its terraces are the busiest (see _cafeBusy)
 // cafés / platforms are filled as their chunk is streamed in (the far edge of the built street)
 const FEATURE_AHEAD = VIEW_AHEAD + 20;
 const BENCH_SEAT_Z = -0.02;  // body origin of a bench sitter along the bench's facing (m, bench local)
@@ -435,6 +436,16 @@ export class Population {
     const sm = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
     this.tod.t = t; this.tod.evening = sm((t - 0.55) / 0.1); this.tod.late = sm((t - 0.8) / 0.08);
     this._paceK = 1 - 0.05 * this.tod.late;
+  }
+
+  /** How busy a café terrace is (about 0.55-1.1): the main avenue (the first AVENUE_S metres of the
+   *  loop) more than the rest; lunch at midday and the evening more than the afternoon lull
+   *  (t about 0.3) and after dark (`late`). */
+  _cafeBusy(cafe) {
+    const t = this.tod.t, lull = Math.exp(-(((t - 0.3) / 0.1) ** 2));
+    const s = this.c.route.wrap((cafe.s0 + cafe.s1) / 2);
+    const place = s < AVENUE_S ? 1 : 0.8;
+    return place * (1 - 0.2 * lull + 0.1 * this.tod.evening - 0.3 * this.tod.late);
   }
 
   _targets() {
@@ -1244,11 +1255,18 @@ export class Population {
     const r = c.featureRng('cafe', cafe.id);
     const feat = { type: 'cafe', cafe, occ: new Set(), seats: [], adults: [], staff: null, staffT: 0 };
     this.cafes.set(cafe.id, feat);
-    // patrons sit where the tables are set: a table in use (cups, plates: dressed 2) nearly
-    // always has its people at it, one per place set (now and then a companion with no order
-    // yet), a laid table (dressed 1) only now and then somebody who has just sat down, a bare
-    // one never. In the evening the terraces are busier.
+    // patrons sit where the tables are set: a table in use (cups, plates: dressed 2) has its
+    // people at it, one per place set, and somebody on their own there mostly has company (a
+    // friend with no order yet); at a laid table (dressed 1) often a couple or three who have just
+    // sat down, the menu still open, at a bare one (dressed 0) now and then. How busy the
+    // terrace is (_cafeBusy: the avenue more than the rest of the loop, lunch and the evening more
+    // than the afternoon lull or after dark) sets how many tables are taken: on the avenue by day
+    // about two in three, mostly by two to four people (the street photographs).
     const ev = this.tod.evening, kidK = 1 - 0.5 * this.tod.late;
+    const busy = this._cafeBusy(cafe);
+    const pUse = Math.min(0.97, Math.max(0.6, 0.97 - 0.75 * (1 - busy)));
+    const pLaid = Math.max(0, 0.25 + 0.35 * busy), pBare = Math.max(0, 0.22 * busy - 0.02);
+    const pMate = Math.min(0.8, 0.35 + 0.35 * busy);
     cafe.tables.forEach((t, ti) => {
       const dressed = t.dressed ?? 1;
       const seats = t.chairs.map((ch, ci) => {
@@ -1258,17 +1276,17 @@ export class Population {
         feat.seats.push(seat);
         return seat;
       });
-      if (!dressed || !seats.length) return;
+      if (!seats.length) return;
       let n = 0;
       if (dressed === 2) {
-        if (!r.chance(0.95)) return;
+        if (!r.chance(pUse)) return;
         // (the places set: from the furniture when it says, else about two in three chairs, at least one)
         const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.7, 1.0)));
-        n = places + (r.chance(0.4 + 0.25 * ev) ? 1 : 0);
+        n = places + (r.chance(places === 1 ? pMate : 0.2 + 0.2 * ev) ? 1 : 0);
       } else {
-        // (a laid table: people who have just sat down, the menu still open)
-        if (!r.chance(0.3 + 0.2 * ev)) return;
-        n = r.chance(0.55) ? 1 : 2;
+        // (a laid or a bare table: people who have just sat down, the waiter not there yet)
+        if (!r.chance(dressed === 1 ? pLaid : pBare)) return;
+        n = r.weighted([[1, 0.2], [2, 0.58], [3, 0.22]]);
       }
       n = Math.min(n, seats.length);
       // which chairs: the set places first, the others in a random order

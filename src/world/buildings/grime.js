@@ -149,14 +149,22 @@ varying float vBgGrime;
 varying vec4 vBgRun;
 varying vec3 vBgPos;
 varying vec3 vBgN;
+varying float vBgRust;
 `;
-// aRun (int16): ((a - u) * 256, (line - v) * 256, dirtiness * 128 * 128 + s * 63, +-width * 64)
+// aRun (int16): ((a - u) * 256, (line - v) * 256, dirtiness * 128 * 128 + low, +-width * 64)
 // to (a - u, line - v, dirtiness, code) with code = +-(floor(width * 64) + s / 2), as
-// the fragment code reads it
+// the fragment code reads it; low: a sill's strength s * 63, a slab's rust (eighths) * 16
+// + (s - 0.4) / 0.08 (shade.runItem)
 const VERT_MAIN = /* glsl */ `
 {
   float bgZ = aRun.z + 0.5, bgZq = floor(bgZ * (1.0 / 128.0));
-  float bgS = (bgZ - bgZq * 128.0 - 0.5) * (1.0 / 63.0);
+  float bgLo = bgZ - bgZq * 128.0 - 0.5, bgS = bgLo * (1.0 / 63.0);
+  vBgRust = 0.0;
+  if (aRun.w > 0.5) {
+    float bgRq = floor(bgLo * (1.0 / 16.0) + 0.01);
+    bgS = 0.4 + (bgLo - bgRq * 16.0) * 0.08;
+    vBgRust = bgRq * (1.0 / 7.0);
+  }
   vBgRun = vec4(aRun.xy * (1.0 / 256.0), bgZq * (1.0 / 128.0), sign(aRun.w) * (abs(aRun.w) + clamp(bgS * 0.5, 0.01, 0.99)));
 }
 vBgPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
@@ -170,6 +178,7 @@ varying float vBgGrime;
 varying vec4 vBgRun;
 varying vec3 vBgPos;
 varying vec3 vBgN;
+varying float vBgRust;
 uniform sampler2D bgGrimeTex;
 uniform vec4 bgGrimeK;   // darkening, greying, roughness gain, base streak share
 uniform vec2 bgArrisK;   // dust on the block arrises: amount, share on the head joints
@@ -253,6 +262,16 @@ const FRAG_STONE = /* glsl */ `
       }
       float bgRust = 0.6 * bgRun;
       bgRunK *= vec3(1.0 - 0.08 * bgRust, 1.0 - 0.13 * bgRust, 1.0 - 0.2 * bgRust);
+      // rust from the iron railing above (ironwork's bal.rust): orange-brown trails 0.3-1.5
+      // m long under the slab ends and the corner posts (less at a piece's console end),
+      // and a little down the console streaks
+      if (vBgRust > 0.01) {
+        float bgEa = max(0.0, 1.0 - abs(bgUa - 0.08) / 0.2) * (1.0 - 0.5 * bgCL), bgEb = max(0.0, 1.0 - abs(bgUb - 0.08) / 0.2) * (1.0 - 0.5 * bgCR);
+        float bgRl = 0.3 + 1.2 * bgVN(vec2(bgPu * 1.7 + 3.1, 6.2));
+        float bgRs = max(bgEa, bgEb) * smoothstep(0.0, 0.06, bgD) * exp(-bgD / bgRl) * (1.0 - smoothstep(bgRl * 1.2, bgRl * 1.8, bgD))
+          * (0.55 + 0.45 * bgVN(vec2(bgPu * 11.0, bgD * 3.0)));
+        bgRunK *= mix(vec3(1.0), vec3(0.6, 0.38, 0.24), 0.5 * vBgRust * min(1.0, bgRs + 0.5 * bgCst));
+      }
     } else {
       // window sill: dirt under the sill (patchy, fading in below it) and down the strips under its ends
       float bgIn = clamp(min(bgUa, bgUb) / 0.2, 0.0, 1.0);
@@ -283,6 +302,15 @@ const FRAG_STONE = /* glsl */ `
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgL1 * 1.1 + 0.025), 0.3 * bgSalt * bgDampK);
     float bgSp = (1.0 - smoothstep(0.04, 0.42, bgHg)) * smoothstep(0.45, 0.8, texture(bgGrimeTex, bgP * vec2(1.13, 1.71) + 0.5).b);
     diffuseColor.rgb *= 1.0 - 0.24 * bgSp;
+    // the splash and pedestrian band: rain splash off the paving, scuffing shoes, bags,
+    // bicycles and dogs soil the bottom half metre or so evenly, darker and greyer, up to
+    // an irregular line (higher and heavier on older, dirtier fronts: bgDirtB is the age)
+    float bgAge = clamp(bgDirtB, 0.4, 1.6);
+    float bgBt = 0.4 + 0.2 * bgAge + 0.16 * (bgVN(vec2(bgP.x * 0.7 + bgDirtB * 5.3, 1.9)) - 0.5) + 0.05 * (bgVN(vec2(bgP.x * 5.5, 3.1)) - 0.5);
+    float bgBand = (1.0 - smoothstep(bgBt - 0.14 - bgFw, bgBt + 0.03 + bgFw, bgHg)) * (0.8 + 0.2 * (1.0 - smoothstep(0.0, 0.2, bgHg)));
+    bgBand *= min(1.0, (0.5 + 0.4 * bgAge) * (0.8 + 0.4 * bgVN(bgP * vec2(2.3, 3.1) + 9.1)));
+    float bgL3 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+    diffuseColor.rgb = mix(diffuseColor.rgb, bgL3 * vec3(0.96, 0.96, 0.95), 0.5 * bgBand) * (1.0 - 0.2 * bgBand);
 #ifdef BG_JOINTS
     if (sfLay.y > 0.5) {
       vec2 bgJd = min(sfCl, sfCs - sfCl);

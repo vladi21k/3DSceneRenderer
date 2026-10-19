@@ -25,11 +25,14 @@ import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMateri
 //    here), and the cab tram where it stands beside them (it is never drawn: its bodies are
 //    boxes in the reflection shaders). The destination display shows behind the top band of
 //    the windscreen.
-//  - Saloon and passengers: near a unit (LOD 0 / 1) by day the side glazing is see-through
-//    over a modelled saloon (seats, poles, lights) with passengers in it, figures of the humans
-//    module placed through its public contract (alloc / set / setVisible / heightOf; each unit
-//    has its own deterministic load). Far away and after dark the glazing is opaque over a
-//    saloon traced in its shader (lit at night); the two cross-fade in the twilight.
+//  - Saloon and passengers: near a unit (LOD 0 / 1) the side glazing is see-through over a
+//    modelled saloon (seats, poles, lights) with passengers in it, figures of the humans module
+//    placed through its public contract (alloc / set / setVisible / heightOf; each unit has its
+//    own deterministic load), lit as indoors (set's fill: the ceiling lights after dark; shade:
+//    the share of the sky's light that reaches them under the roof). Far away the glazing is
+//    opaque over a saloon traced in its shader (lit at night). Without humans' indoor light
+//    (supportsFill) the near glazing too turns to the traced saloon after dark, cross-faded in
+//    the twilight.
 //  - The cab tram's own shadow: three depth-only hulls on its track (never drawn in the main
 //    pass), so the tram the camera rides in shades the street and the people beside it.
 //
@@ -43,6 +46,7 @@ import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMateri
 // Emits app.events 'tram-bell' {unit, s, d} when one of them rings.
 
 const REFL_D = [6, 7.5];          // route d of the street-reflection planes (right, left), at most the facade lines
+const REFL_LV = ['h1', 'h2', 'h3', 'h4', 'h5'];   // the blurred levels' uniforms (makeSharedRefl)
 const LOD_PX = [55, 14];          // projected px per metre (1080 lines) above which LOD 0 / 1 draw
 const SCAN_DT = 0.1;              // s between scans of the people ahead
 const EB_CONFIRM = 0.18;          // s the scan must keep asking for the emergency brake (two scans running)
@@ -58,7 +62,14 @@ const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3
 const UP = new THREE.Vector3(0, 1, 0);
 const FAR_SPHERE = new THREE.Sphere(new THREE.Vector3(0, -1e7, 0), 1e-3);
 // (one record for every passenger's humans.set: no garbage per frame)
-const PAX_SET = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 2, look: 0, appearance: 0, visible: true, idle: -1 };
+const PAX_SET = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 2, look: 0, appearance: 0, visible: true, idle: -1, fill: [0, 0, 0], shade: 1 };
+// passengers' indoor light (humans set fill / shade): the share of the sky and environment light
+// that reaches them through the windows under the roof (as the saloon mesh and the traced saloon
+// get), and the ceiling lights' irradiance / pi at full night (the saloon's own, makeInteriorMaterial)
+// times the share a figure catches (upward faces all of it, vertical ones about a third)
+const PAX_SHADE = 0.42;
+const PAX_LAMP = 0.022 / Math.PI * 0.6;
+const PAX_LAMP_C = [0.97, 0.98, 1.0];
 
 /** A unit's corridor load weights (it runs on the left track, d < 0), see _loads. */
 const unitWeight = (off, d) => (d < -TRACK_ZONE_HALF ? DRIVE.besideW : d < 0.2 ? 1 : d <= TRACK_ZONE_HALF ? 0.6 : 0);
@@ -196,6 +207,51 @@ const trams = {
     });
     app.scene.add(this.cabHull);
     this._cabShadow = app.params.num('cabshadow', 1);
+    // start-up warm-up: until the app is ready every part of the units draws once a frame,
+    // scaled to micrometres 2 m in front of the eye, so each program's first draw and each
+    // geometry's and atlas's upload happen behind the loading screen, not as the first unit
+    // comes into view (see _warmup)
+    this._warm = this._warmGroup();
+    app.scene.add(this._warm);
+  },
+
+  /** One tiny mesh for every geometry and every material the units draw (shared with them). */
+  _warmGroup() {
+    const g = new THREE.Group();
+    g.name = 'trams:warmup';
+    g.matrixAutoUpdate = false;
+    const geos = new Set(), mats = new Set();
+    for (const u of this.units) {
+      for (const b of u.root.userData.bodies) {
+        for (const lg of b.lods) {
+          for (const m of lg.children) {
+            if (geos.has(m.geometry) && mats.has(m.material)) continue;
+            geos.add(m.geometry); mats.add(m.material);
+            const w = new THREE.Mesh(m.geometry, m.material);
+            w.matrixAutoUpdate = false;
+            w.frustumCulled = false;
+            w.castShadow = false;
+            w.receiveShadow = m.receiveShadow;
+            w.name = 'trams:warm';
+            // (counts the frames the warm-up drew: stats for the start-up checks)
+            if (!g.children.length) w.onAfterRender = () => { this.warmDraws = (this.warmDraws || 0) + 1; };
+            g.add(w);
+          }
+        }
+      }
+    }
+    return g;
+  },
+
+  /** Keep the warm-up meshes just in front of the eye until the app is ready, then drop them. */
+  _warmup(app) {
+    const g = this._warm;
+    if (!g) return;
+    if (app.ready) { app.scene.remove(g); this._warm = null; return; }
+    const c = app.camera;
+    _f.set(0, 0, -1).applyQuaternion(c.quaternion);
+    g.matrix.makeScale(1e-5, 1e-5, 1e-5).setPosition(c.position.x + _f.x * 2, c.position.y + _f.y * 2, c.position.z + _f.z * 2);
+    g.matrixWorldNeedsUpdate = true;
   },
 
   /** Unlit lamp material: atlas × vertex colour × level (display or lens, by atlas region). */
@@ -289,6 +345,7 @@ const trams = {
       u.speed = t.speed; u.accel = t.accel; u.state = t.state; u.phase = t.phase;
     }
     this._place(app);
+    this._warmup(app);
     this._lights(app);
     this._reflection(app);
     this._cabBoxes(app);
@@ -344,6 +401,12 @@ const trams = {
     if (!H || H.disabled || typeof H.set !== 'function') return;
     if (!this.pax) { if (!H.ready || typeof H.alloc !== 'function') return; this.pax = this._allocPax(app, H) || []; }
     const see = this.see.value, o = PAX_SET;
+    // indoor light (when humans takes it): the ceiling lights follow the night
+    if (H.supportsFill) {
+      const e = Math.min(1, Math.max(0, U.uNight.value)) * this.gain.value * PAX_LAMP;
+      o.fill[0] = e * PAX_LAMP_C[0]; o.fill[1] = e * PAX_LAMP_C[1]; o.fill[2] = e * PAX_LAMP_C[2];
+      o.shade = PAX_SHADE;
+    }
     for (let i = 0; i < this.units.length; i++) {
       const u = this.units[i], P = u.pax;
       if (!P || !P.length) continue;
@@ -437,6 +500,17 @@ const trams = {
     if (on) {
       R.hist.value = tex;
       R.vp.value.copy(vp);
+      // blurred levels of the same frame (post's bloom pyramid, 1/2 .. 1/32 resolution: it still
+      // holds last frame's while the scene renders) and its view depth (half resolution); the
+      // reflections fall back to the sharp image alone when post has none
+      const D = post.downs, z = post.zRT;
+      let lv = 0;
+      if (Array.isArray(D)) {
+        for (; lv < 5 && D[lv] && D[lv].texture; lv++) R[REFL_LV[lv]].value = D[lv].texture;
+      }
+      R.lv.value = lv;
+      R.z.value = z && z.texture ? z.texture : null;
+      R.zOn.value = R.z.value ? 1 : 0;
     }
     const route = app.route, layout = app.layout;
     for (let i = 0; i < this.units.length; i++) {
@@ -536,11 +610,12 @@ const trams = {
    *  a little lower at night (the saloon's own lights are part of the glass shader). */
   _lights(app) {
     const night = Math.min(1, Math.max(0, U.uNight.value));
-    // the side glazing: see-through by day (with the passengers behind it), the traced saloon
-    // with its lights after dark (needs the humans module)
+    // the side glazing: see-through near (with the passengers behind it, lit as indoors by
+    // humans' fill / shade, day and night); without that indoor light the traced saloon with its
+    // lights after dark (passengers lit by what lights the street are kept until the twilight is
+    // deep, sunset). Needs the humans module.
     const H = app.humans, people = !!(H && !H.disabled && H.ready && this.pax && this.pax.length);
-    // (passengers are lit by what lights the street: kept until the twilight is deep, sunset)
-    const k = Math.min(1, Math.max(0, (night - 0.6) / 0.35));
+    const k = H && H.supportsFill ? 0 : Math.min(1, Math.max(0, (night - 0.6) / 0.35));
     this.see.value = people ? 1 - k * k * (3 - 2 * k) : 0;
     // the modelled saloon only while the glazing lets it through
     const inner = this.see.value > 0.005;

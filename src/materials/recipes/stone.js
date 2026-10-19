@@ -30,7 +30,7 @@ vec3 limestone(vec2 m, float hc, inout float h) {
   vec4 pv = voro(m, vec2(140.0), 17u, 1.0);
   float pden = 0.9 - 0.08 * smoothstep(-0.2, 0.5, fbm(m, 2.5, 2, 0.5, 25u));
   float pore = smoothstep(0.18, 0.05, pv.x) * step(pden, pv.z);
-  c *= 1.0 - 0.35 * pore;
+  c *= 1.0 - 0.28 * pore;
   h -= pore * 0.0008;
   // fossil / calcite fragments: small pale flecks
   vec4 fv = voro(m, vec2(55.0), 18u, 1.0);
@@ -73,69 +73,78 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Taltish: the face is worked over with a toothed (comb) chisel driven the same way across
-// the whole block, so it reads as one continuous field of fine parallel striation inside
-// the drafted margin (never a quilt of separate patches). The strokes lie in rows one
-// chisel wide (8-10 teeth, ~32 mm), end to end along the working direction: each 6-10 cm
-// long, overlapping the next by a quarter to a half with soft ends (the tool bites in and
-// runs out), and overlapping the neighbouring rows by a tooth or two. Every tooth leaves a
-// rounded groove at a 4 mm pitch (3.5-4.5 mm after the runtime's per-block scale), 0.3-0.6
-// mm deep, deepest just past the bite; the mason keeps the teeth roughly in the previous
-// grooves, so the striation runs on from stroke to stroke with only a small jump. The depth
-// drifts over 20-40 cm (some areas worked harder). The direction is along u: the runtime
-// rotates the map per block (one angle per block, 60-75° from horizontal). No pecked dots
-// here (those belong to the pecked blocks), only the stone's sparse natural pores. The
-// relief carries the look; the albedo only follows it faintly (dust in the grooves).
+// Taltish: the face is worked over with a toothed (comb) chisel in passes. Each pass is a
+// group of about eight strokes (a patch of ~13 cm) driven the same way, at its own angle
+// within ±15° of the block's working direction and with its own tooth pitch (3-5.5 mm,
+// a worn or a finer tool); the strokes in it lie side by side and overlap, each 5-9 cm
+// long and one chisel wide (3-4.5 cm), at a few degrees to each other. A stroke bites in
+// deepest and runs out; its depth varies along it and from tooth to tooth (worn teeth cut
+// shallower), and the grooves of one stroke do not line up with the next (every re-set of
+// the tool lands differently). One stroke in ten is missing, leaving the smoother face
+// between, and the stone's pores break the grooves. The depth drifts over 20-40 cm (some
+// areas worked harder). The working direction is along u: the runtime rotates the map per
+// block (one angle per block, 60-75° from horizontal) and fades the striation inside the
+// drafted margin and with distance. The relief carries the look; the albedo only follows
+// it faintly (dust in the grooves).
 // Detail map format: surface = (normal.xy, moment, albedo modulation with 0.5 = neutral).
 export const tooling = {
   name: 'tooling', flat: [1, 1, 1, 0.8], size: 1024, tile: [0.64, 0.64], ss: 2,
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  const int NR = 20, NS = 9;                 // stroke rows across the tile (32 mm), strokes per row (71 mm)
-  const float PITCH = 0.004;
+  const int NR = 20, NS = 10;                // stroke rows across the tile (32 mm), strokes per row (64 mm)
   float rh = uTile.y / float(NR), sl = uTile.x / float(NS);
   // depth drifts over 20-40 cm: some areas worked harder
   float dfield = 0.8 + 0.4 * fbm(m, 3.0, 3, 0.55, 341u);
-  // hand-driven: the work lines wander by a fraction of a millimetre
-  float wy = m.y + 0.0005 * fbm(m, 14.0, 2, 0.5, 342u);
   float best = 0.0, bestT = 0.5, bestG = 0.0;
-  int j0 = int(floor(wy / rh));
+  int j0 = int(floor(m.y / rh)), i0 = int(floor(m.x / sl));
   for (int dj = -uOne; dj <= uOne; dj++) {
     int j = j0 + dj;
     int jw = sfMod(j, NR);
-    float rowOff = sfHash(ivec2(jw, 3), 343u) * sl;
-    float yc = (float(j) + 0.5 + 0.2 * (sfHash(ivec2(jw, 5), 344u) - 0.5)) * rh;
-    float rowPh = sfHash(ivec2(jw, 9), 346u);
-    int i0 = int(floor((m.x - rowOff) / sl));
-    for (int di = -2 * uOne; di <= uOne; di++) {
+    for (int di = -uOne; di <= uOne; di++) {
       int i = i0 + di;
-      uint h = sfH2(sfMod(i, NS), jw, 345u);
+      int iw = sfMod(i, NS);
+      uint h = sfH2(iw, jw, 345u);
       float h1 = sfHf(h), h2 = sfHf(sfH(h + 1u)), h3 = sfHf(sfH(h + 2u));
       float h4 = sfHf(sfH(h + 3u)), h5 = sfHf(sfH(h + 4u)), h6 = sfHf(sfH(h + 5u));
-      float x0 = (float(i) + 0.25 * (h1 - 0.5)) * sl + rowOff;   // where the tool bites in
-      float len = sl * (1.25 + 0.3 * h2);                          // 9-11 cm: overlaps the next stroke
-      float ang = (h3 - 0.5) * 0.04;                               // ±1°
-      float wid = rh * (1.12 + 0.18 * h4);                         // a tooth or two over the next rows
-      vec2 d = vec2(m.x - x0, wy - yc);
-      float f = (d.x + d.y * ang) / len;                           // 0 at the bite, 1 at the run-out
-      float y = d.y - d.x * ang;
-      // soft ends: bites in over the first 10 %, lifts out over the last 35 %
-      float alo = smoothstep(0.0, 0.1, f) * (1.0 - smoothstep(0.65, 1.0, f));
-      float acr = 1.0 - smoothstep(0.5 * wid - 0.005, 0.5 * wid, abs(y));
+      float h7 = sfHf(sfH(h + 6u)), h8 = sfHf(sfH(h + 7u));
+      if (h8 < 0.1) continue;                                      // a stroke left out
+      // its pass: 2 strokes along × 4 rows (staggered per band of rows), one direction,
+      // tooth pitch and depth
+      int band = jw / 4;
+      int pu = sfMod(iw + int(sfHash(ivec2(band, 7), 347u) * 1.99), NS) / 2;
+      uint hp = sfH2(pu, band, 348u);
+      float pAng = (sfHf(hp) - 0.5) * 0.52;                        // ±15°
+      float pitch = 0.003 + 0.0025 * sfHf(sfH(hp + 1u));           // 3-5.5 mm
+      float pDep = 0.7 + 0.5 * sfHf(sfH(hp + 2u));
+      vec2 c0 = vec2((float(i) + 0.5 + 0.35 * (h2 - 0.5)) * sl, (float(j) + 0.5 + 0.3 * (h3 - 0.5)) * rh);
+      float sa = pAng + (h4 - 0.5) * 0.1;                          // ±3° within the pass
+      vec2 dir = vec2(cos(sa), sin(sa));
+      float len = sl * (0.8 + 0.6 * h5);                           // 5-9 cm
+      float wid = rh * (1.0 + 0.4 * h6);                           // 3.2-4.5 cm (8-12 teeth)
+      vec2 d = m - c0;
+      float f = dot(d, dir) / len + 0.5;                           // 0 at the bite, 1 at the run-out
+      float y = dot(d, vec2(-dir.y, dir.x));
+      // soft ends: bites in over the first 8 %, lifts out over the last 40 %
+      float alo = smoothstep(0.0, 0.08, f) * (1.0 - smoothstep(0.6, 1.0, f));
+      float acr = 1.0 - smoothstep(0.5 * wid - 0.004, 0.5 * wid, abs(y));
       float env = alo * acr;
       if (env <= 0.0) continue;
-      // grooves keep roughly to the previous stroke's (a small jump at each re-set)
-      float ph = fract((wy - d.x * ang) / PITCH + rowPh + 0.3 * (h5 - 0.5));
+      // the stroke's own grooves: phase per stroke, depth per tooth and along the stroke
+      float gy = y / pitch + h7 * 7.0;
+      float ph = fract(gy);
+      float toothK = 0.65 + 0.7 * sfHash(ivec2(int(floor(gy)) + 64, iw * NR + jw), 349u);
+      float along = 0.75 + 0.5 * (0.5 + 0.5 * noiseM(vec2(f * len + h1, h7), vec2(25.0), 350u));
       float tooth = pow(0.5 - 0.5 * cos(6.2831853 * ph), 0.7);
-      float dep = (0.0003 + 0.0003 * h6) * dfield * (1.0 - 0.35 * sat(f));
+      float dep = (0.00025 + 0.0003 * h1) * dfield * pDep * toothK * along * (1.0 - 0.4 * sat(f));
       float hs = -dep * env * tooth;
       if (hs < best) { best = hs; bestT = h1; bestG = tooth; }
     }
   }
-  // the stone's natural pores (sparse) and a trace of grain
+  // the stone's natural pores (sparse) break the grooves; a trace of grain
   vec4 v = voro(m, vec2(260.0), 309u, 1.0);
   float pore = smoothstep(0.2, 0.05, v.x) * step(0.93, v.z);
+  best *= 1.0 - smoothstep(0.3, 0.12, v.x) * step(0.93, v.z);
   s.height = best + fbm(m, 120.0, 3, 0.5, 310u) * 0.00006 - pore * 0.0004;
   float dn = sat(-best / 0.0006);
   float a = 1.01 - 0.035 * dn * bestG + 0.012 * (bestT - 0.5) - 0.18 * pore + 0.02 * (v.z - 0.5);
@@ -208,7 +217,7 @@ vec4 rawSurface(vec2 m) {
 };
 
 // Ashlar: courses of 0.35 m, blocks 0.36-1.2 m; 4-8 mm light grey-beige lime pointing,
-// recessed about 2.5 mm behind the arrises; faces slightly proud / sunk / tilted per block.
+// recessed about 1.5 mm behind the arrises; faces slightly proud / sunk / tilted per block.
 // 2 mm/texel, so joints and arrises stay crisp from the sidewalk (about a metre). The arris
 // is crisp along roughly half its length and worn to a small chamfer (1-6 mm) along the
 // rest, so its light catch comes and goes instead of running as a ruled line. About every
@@ -266,11 +275,11 @@ void surface(vec2 m, inout Surf s) {
   float face = fbm(m, 3.5, 3, 0.5, 30u) * 0.0012 + (hA - 0.5) * 0.0024;
   face += dot(c.lp - 0.5 * c.size, vec2(cellRand(c, 7u) - 0.5, cellRand(c, 8u) - 0.5)) * 0.008;
   float t = clamp((e - JW) / bev, 0.0, 1.0);
-  float hFace = face - bev * 0.45 * pow(1.0 - t, 1.5) * (1.0 + 0.4 * fbm(m, 120.0, 2, 0.5, 31u));
+  float hFace = face - bev * 0.38 * pow(1.0 - t, 1.5) * (1.0 + 0.4 * fbm(m, 120.0, 2, 0.5, 31u));
   hFace -= spall * (1.0 + 0.15 * fbm(ms, 150.0, 2, 0.5, 32u));
   float broken = smoothstep(0.0003, 0.0009, spall) * chipIn;
   // pointing: struck a little behind the arrises, slightly ruled (fuller in the middle)
-  float hMortar = -0.0026 + fbm(m, 70.0, 2, 0.5, 13u) * 0.0004 + 0.0006 * smoothstep(0.0, JW, e);
+  float hMortar = -0.0016 + fbm(m, 70.0, 2, 0.5, 13u) * 0.0003 + 0.0004 * smoothstep(0.0, JW, e);
   float stone = smoothstep(JW - 0.0006, JW + 0.0006, e);
   float hs = 0.0;
   vec3 alb = limestone(m, c.h, hs);
@@ -289,7 +298,7 @@ void surface(vec2 m, inout Surf s) {
   alb = mix(alb, vec3(lum(alb)) * vec3(0.9, 0.83, 0.72), 0.18 * crust) * (1.0 - 0.06 * crust);
   alb *= 1.025;                                  // keeps the mean albedo of the limestone (meta)
   // lime pointing: light grey-beige, a little paler and greyer than the stone, dirtier in places
-  vec3 mortar = vec3(0.56, 0.53, 0.47) * (1.0 + 0.08 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.14 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)));
+  vec3 mortar = vec3(0.55, 0.505, 0.425) * (1.0 + 0.08 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.14 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)));
   s.albedo = mix(mortar, alb, stone);
   s.rough = mix(0.95, mix(0.86 + 0.03 * fbm(m, 9.0, 2, 0.5, 20u), 0.93, max(0.6 * (1.0 - t), broken)), stone);
 }

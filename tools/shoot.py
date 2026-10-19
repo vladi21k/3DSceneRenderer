@@ -45,7 +45,7 @@ bounds the whole run (default: --timeout + --settle + the shots + 15 min; 0: no 
 Every run first reaps headless browsers left behind by an earlier run whose tool is gone
 (--reap does only that).
 """
-import argparse, atexit, base64, json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.request
+import argparse, atexit, base64, json, os, random, shutil, signal, socket, struct, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GPU_FLAGS = "--enable-gpu --ignore-gpu-blocklist --use-angle=gl"
@@ -420,6 +420,27 @@ def chrome_args(dbg, profile, width, height, extra=()):
             *os.environ.get("SHOOT_GPU_FLAGS", GPU_FLAGS).split(), *os.environ.get("SHOOT_CHROME_FLAGS", "").split(),
             "--disable-gpu-vsync", "--disable-frame-rate-limit",
             f"{OWNER_FLAG}{os.getpid()}", "about:blank"]
+
+
+def devtools_ws(profile, proc, timeout=30.0):
+    """The browser's DevTools websocket URL. Chrome runs with --remote-debugging-port=0, picks a
+    free port itself and writes it to <profile>/DevToolsActivePort, so runs started at the same
+    moment can never meet on one port (and drive each other's browser). None if Chrome exits
+    or does not answer within timeout."""
+    path = os.path.join(profile, "DevToolsActivePort")
+    end = time.time() + timeout
+    while time.time() < end:
+        if proc.poll() is not None:
+            return None
+        try:
+            with open(path) as f:
+                lines = f.read().split()
+            if len(lines) >= 2 and lines[0].isdigit():
+                return f"ws://127.0.0.1:{lines[0]}{lines[1]}"
+        except OSError:
+            pass
+        time.sleep(0.05)
+    return None
 
 
 def chrome_stderr():
@@ -816,7 +837,7 @@ def main():
                          "dominated by warm-up allocation while the code is not yet optimised")
     ap.add_argument("--firstdraw", action="store_true",
                     help="audit first draws: hook WebGL from page start and, at the end, list every program whose first "
-                         "non-empty draw came after ready (each is a riding hitch of 50-250 ms in the GPU process) and "
+                         "non-empty draw came after ready (each costs the GPU process 100-250 ms mid-ride) and "
                          "programs never drawn. Time this with a warm --profile: fresh profiles hide first-draw stalls")
     ap.add_argument("--max-seconds", type=float, default=None, metavar="S",
                     help="hard limit for the whole run, after which the browser is killed and the tool exits 124 "
@@ -860,23 +881,20 @@ def run(a, guard):
                 break
             time.sleep(0.1)
 
-    dbg = free_port()
+    os.makedirs(os.path.join(ROOT, ".work"), exist_ok=True)
     profile = os.path.abspath(a.profile) if a.profile else tempfile.mkdtemp(prefix="shoot-", dir=os.path.join(ROOT, ".work"))
     if a.profile:
         os.makedirs(profile, exist_ok=True)
-    args = chrome_args(dbg, profile, a.width, a.height, ("--enable-precise-memory-info", "--autoplay-policy=no-user-gesture-required"))
+        try:
+            os.remove(os.path.join(profile, "DevToolsActivePort"))   # (a previous run's)
+        except OSError:
+            pass
+    args = chrome_args(0, profile, a.width, a.height, ("--enable-precise-memory-info", "--autoplay-policy=no-user-gesture-required"))
     errf = chrome_stderr()
     proc = guard.spawn(args, stdout=errf, stderr=errf)
     rc = 0
     try:
-        ws_url = None
-        for _ in range(100):
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{dbg}/json/version", timeout=1) as r:
-                    ws_url = json.load(r)["webSocketDebuggerUrl"]
-                break
-            except Exception:
-                time.sleep(0.1)
+        ws_url = devtools_ws(profile, proc)
         if not ws_url:
             print("ERROR: chrome did not start", file=sys.stderr)
             return 2

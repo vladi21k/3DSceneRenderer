@@ -124,6 +124,15 @@ def run_driver(args):
         if failed:
             raise SystemExit('characters failed: ' + ','.join(failed))
         log(f'chars done in {time.time() - t0:.0f}s')
+        # validation: every top covers its bottom's waistband by at least 3 cm all round (rest pose)
+        gaps = []
+        for cid in ids:
+            with open(os.path.join(RAW, cid + '.json')) as f:
+                g = json.load(f).get('hemGap')
+            if g is not None and g > -0.03:
+                gaps.append(f'{cid} ({-g * 100:.1f} cm)')
+        if gaps:
+            raise SystemExit('top hems do not cover the waistband: ' + ', '.join(gaps))
     py = 'python3'
     if 'hair' in stages:
         subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_hair.py'), '--', '--work', WORK, '--jobs', str(args.jobs)]
@@ -348,6 +357,14 @@ def build_one(cid, save_blend=False):
         return r
 
     for d, kind, info in pdata:
+        if kind == 'suit' and info['suit'] == 'female_elegantsuit01' and spec['bottom'] and spec['bottom']['suit'] == info['suit']:
+            # the skirt (its own piece of the suit) at twice the resolution: room for its gored folds
+            comp = components(d)
+            low = {c for c in np.unique(comp) if d['co'][comp == c, 2].mean() < waist_z}
+            pm = np.array([comp[d['vi'][d['ls'][p]]] in low for p in range(len(d['ls']))])
+            if pm.any():
+                n = subdivide_component(d, pm)
+                log(cid, f'skirt subdivided (+{n} faces)')
         P = len(d['ls'])
         keep = np.ones(P, bool)
         region = np.zeros(P, np.int16)
@@ -440,16 +457,61 @@ def build_one(cid, save_blend=False):
                 if under.any():
                     keep &= ~under
                     log(cid, f'skirt: {int(under.sum())} faces of the vent underlay dropped')
+                # gored folds round the skirt below the hips
+                vsk = np.zeros(len(d['co']), bool)
+                for p in np.where(keep & ppart)[0]:
+                    vsk[d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]] = True
+                mv = gore_skirt(d, vsk, J, kscale, spec['bottom'].get('length') or 0.0, cid)
+                if mv.any():
+                    recompute_normals(d, mv)
+                    log(cid, f'skirt: gored folds ({int(mv.sum())} vertices)')
         out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
         if kind == 'hair':
             out_parts[-1]['dec'] = fade_ch
 
-    # mixed outfits (top and bottom from different suits): the top's hem is tucked into the bottom where
-    # it hangs below the bottom's waistband (a top made for jeans would otherwise cut through a skirt)
+    # tops hang from the body instead of hugging it (tees, shirts, blouses; not jackets), and cover the
+    # bottom's waistband by a few cm all round (no bare midriff in any pose): worn over jeans, shorts and
+    # leggings, tucked into skirts (a blouse also into jeans; a shirt sewn to its jeans stays as it is)
     tops = [op for op in out_parts if op['kind'] == 'suit' and spec['top'] and op['info']['suit'] == spec['top']['suit']]
     bots = [op for op in out_parts if op['kind'] == 'suit' and spec['bottom'] and op['info']['suit'] == spec['bottom']['suit']]
-    if tops and bots and tops[0] is not bots[0]:
-        tuck_top(tops[0], bots[0], CASTM.REGIONS)
+    hem_gap = None
+    axis_y = torso_axis_y(body, J)
+
+    def part_verts(op, want):
+        dd = op['d']
+        m = np.zeros(len(dd['co']), bool)
+        for p in np.where(op['keep'] & want(op['region']))[0]:
+            m[dd['vi'][dd['ls'][p]:dd['ls'][p] + dd['lt'][p]]] = True
+        return m
+    top_suit = spec['top']['suit'] if spec['top'] else None
+    jacket = top_suit in ('male_casualsuit05', 'male_elegantsuit01')
+    if tops and not jacket:
+        op = tops[0]
+        dd = op['d']
+        vt = part_verts(op, lambda r: r == CASTM.REGIONS['top'])
+        vbo = part_verts(op, lambda r: r == CASTM.REGIONS['bottom'])
+        vt &= ~vbo                                  # (a seam shared with the bottom stays put)
+        is_dress = bool(bots and bots[0] is op and top_suit == 'female_elegantsuit01' and spec['top'].get('color') == spec['bottom'].get('color'))
+        kind_t = 'dress' if is_dress else 'blouse' if top_suit == 'female_elegantsuit01' else \
+            'shirt' if top_suit in ('male_casualsuit01', 'male_casualsuit03') else 'tee'
+        mv = drape_top(dd, vt, share(dd['W'], ARM), J, kscale, kind_t, axis_y, cid)
+        if mv.any():
+            recompute_normals(dd, mv)
+            log(cid, f'{kind_t} draped ({int(mv.sum())} vertices)')
+        if bots:
+            ob = bots[0]
+            vb = part_verts(ob, lambda r: r == CASTM.REGIONS['bottom'])
+            sewn = ob is op and bool((vt & vb).any() or len(set(map(tuple, np.round(dd['co'][vt], 5))) & set(map(tuple, np.round(dd['co'][vb], 5)))))
+            if not sewn:
+                skirt_b = spec['bottom']['suit'] == 'female_elegantsuit01'
+                tuck = skirt_b or kind_t in ('blouse', 'dress') or top_suit == 'male_casualsuit01'
+                vtt = vt & (share(dd['W'], ARM) < 0.45)
+                mv, g0, g1 = extend_top_hem(dd, vtt, ob['d'], vb, J, kscale, tuck, axis_y, cid)
+                if mv.any():
+                    recompute_normals(dd, mv)
+                if g1 is not None:
+                    hem_gap = g1
+                    log(cid, f'top hem over the waistband: {-g0 * 100:.1f} -> {-g1 * 100:.1f} cm ({"tucked" if tuck else "over"})')
 
     # layered garments: the bottom's waistband under the top's hem sinks a few mm, so the simplified
     # LODs of the two never cross (the bottom would show through the top in patches)
@@ -786,7 +848,8 @@ def build_one(cid, save_blend=False):
     meta = dict(id=cid, spec=spec, ageClass=CASTM.age_class(spec), kind=CASTM.gait_kind(spec), joints=joints,
                 parent=RT_PARENT, bones=RT_BONES, parts=meta_parts, H=skin_top, top=float(allv[:, 1].max()),
                 toeTip={'L': to3(toe_tip['l'] + shift).tolist(), 'R': to3(toe_tip['r'] + shift).tolist()},
-                headTopBone=to3(head_top_bone + shift).tolist(), time=round(time.time() - t0, 1))
+                headTopBone=to3(head_top_bone + shift).tolist(), time=round(time.time() - t0, 1),
+                hemGap=None if hem_gap is None else round(hem_gap, 4))
     os.makedirs(RAW, exist_ok=True)
     np.savez_compressed(os.path.join(RAW, cid + '.npz'), **raw)
     with open(os.path.join(RAW, cid + '.json'), 'w') as f:
@@ -1362,6 +1425,342 @@ def tuck_top(top, bot, REG):
             depth = 0.008 if p.z < waist - 0.01 else 0.004
             td['co'][i] = np.array(q - n * depth)
             moved += 1
+    return moved
+
+
+def subdivide_component(d, pmask):
+    """Linear subdivision (in place) of the polygons in pmask, which must be whole connected pieces of the
+    mesh (no T-junctions with the rest): quads into four quads, triangles into four triangles. Edge midpoints
+    and face centres take the averaged position, normal, UVs (per loop), bone weights and vertex groups.
+    Returns the number of polygons added."""
+    import numpy as np
+    co, nr, W = d['co'], d['nr'], d['W']
+    nv0 = len(co)
+    new_co, new_nr, new_W, new_src = [], [], [], []
+    mid = {}
+
+    def vert(a, b):
+        key = (min(a, b), max(a, b))
+        if key not in mid:
+            mid[key] = nv0 + len(new_co)
+            new_co.append(0.5 * (co[a] + co[b]))
+            n = nr[a] + nr[b]
+            new_nr.append(n / max(1e-9, float(np.linalg.norm(n))))
+            new_W.append(0.5 * (W[a] + W[b]))
+            new_src.append(key)
+        return mid[key]
+
+    def centre(vs):
+        i = nv0 + len(new_co)
+        new_co.append(co[vs].mean(0))
+        n = nr[vs].sum(0)
+        new_nr.append(n / max(1e-9, float(np.linalg.norm(n))))
+        new_W.append(W[vs].mean(0))
+        new_src.append(tuple(int(v) for v in vs))
+        return i
+    vi, uv, ls, lt = d['vi'], d['uv'], d['ls'], d['lt']
+    out_v, out_uv, out_lt = [], [], []
+    added = 0
+    for p in range(len(ls)):
+        s, n = ls[p], lt[p]
+        vs = [int(x) for x in vi[s:s + n]]
+        us = [uv[s + k] for k in range(n)]
+        if not pmask[p] or n not in (3, 4):
+            out_v.append(vs); out_uv.append(us); out_lt.append(n)
+            continue
+        m = [vert(vs[k], vs[(k + 1) % n]) for k in range(n)]
+        mu = [0.5 * (us[k] + us[(k + 1) % n]) for k in range(n)]
+        if n == 4:
+            c = centre(vs)
+            cu = sum(us) / 4.0
+            quads = [((vs[0], us[0]), (m[0], mu[0]), (c, cu), (m[3], mu[3])),
+                     ((m[0], mu[0]), (vs[1], us[1]), (m[1], mu[1]), (c, cu)),
+                     ((c, cu), (m[1], mu[1]), (vs[2], us[2]), (m[2], mu[2])),
+                     ((m[3], mu[3]), (c, cu), (m[2], mu[2]), (vs[3], us[3]))]
+            for q in quads:
+                out_v.append([a for a, _ in q]); out_uv.append([b for _, b in q]); out_lt.append(4)
+            added += 3
+        else:
+            tris = [((vs[0], us[0]), (m[0], mu[0]), (m[2], mu[2])), ((m[0], mu[0]), (vs[1], us[1]), (m[1], mu[1])),
+                    ((m[2], mu[2]), (m[1], mu[1]), (vs[2], us[2])), ((m[0], mu[0]), (m[1], mu[1]), (m[2], mu[2]))]
+            for q in tris:
+                out_v.append([a for a, _ in q]); out_uv.append([b for _, b in q]); out_lt.append(3)
+            added += 3
+    if new_co:
+        d['co'] = np.concatenate([co, np.array(new_co, co.dtype)])
+        d['nr'] = np.concatenate([nr, np.array(new_nr, nr.dtype)])
+        d['W'] = np.concatenate([W, np.array(new_W, W.dtype)])
+        # vertex groups: a new vertex is in a group when all the vertices it is made from are
+        for nm, lst in d['groups'].items():
+            wmap = dict(lst)
+            for j, src in enumerate(new_src):
+                if all(v in wmap for v in src):
+                    lst.append((nv0 + j, float(np.mean([wmap[v] for v in src]))))
+    lt_new = np.array(out_lt, np.int32)
+    ls_new = np.concatenate([[0], np.cumsum(lt_new)[:-1]]).astype(np.int32)
+    d['vi'] = np.array([v for vs in out_v for v in vs], np.int32)
+    d['uv'] = np.array([u for us in out_uv for u in us], np.float32).reshape(-1, 2)
+    d['ls'], d['lt'] = ls_new, lt_new
+    return added
+
+
+def recompute_normals(d, vmask, polys=None):
+    """Vertex normals of the vertices in vmask from their polygons (area weighted), turned to agree with
+    the old normals (garment shells are not consistently wound)."""
+    import numpy as np
+    co = d['co'].astype(np.float64)
+    acc = np.zeros_like(co)
+    for p in (range(len(d['ls'])) if polys is None else polys):
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        if not vmask[vs].any():
+            continue
+        P = co[vs]
+        fn = np.zeros(3)
+        for k in range(1, len(vs) - 1):
+            fn += np.cross(P[k] - P[0], P[k + 1] - P[0])
+        # (orient the face like its old vertex normals)
+        if fn @ d['nr'][vs].sum(0) < 0:
+            fn = -fn
+        acc[vs] += fn
+    L = np.linalg.norm(acc, axis=1)
+    ok = vmask & (L > 1e-12)
+    d['nr'][ok] = (acc[ok] / L[ok, None]).astype(d['nr'].dtype)
+
+
+def torso_axis_y(body, J):
+    """Body depth centre (Blender y) as a function of height z: the middle of the torso's front and back."""
+    import numpy as np
+    bc = body['co']
+    zs = np.arange(J['pelvis'][2] - 0.25, J['neck'][2] + 0.02, 0.02)
+    ys = []
+    for z0 in zs:
+        m = (np.abs(bc[:, 2] - z0) < 0.015) & (np.abs(bc[:, 0]) < 0.06)
+        ys.append(0.5 * (bc[m, 1].min() + bc[m, 1].max()) if m.sum() > 4 else np.nan)
+    ys = np.array(ys)
+    ok = ~np.isnan(ys)
+    if not ok.any():
+        return lambda z: np.full(np.shape(z), float(J['spine2'][1]))
+    zs, ys = zs[ok], ys[ok]
+    return lambda z: np.interp(z, zs, ys)
+
+
+def drape_top(d, vtop, arm_w, J, k, kind, axis_y, cid):
+    """Cloth that hangs instead of hugging the body: below the armpits a top's torso falls from its fullest
+    point above (chest, bust, shoulder blades, belly) with a slight taper towards the hem, bridges the
+    hollows between the breasts and in the small of the back, and stands off the body a little more towards
+    the hem (ease, less at the sides, where the arms hang); a short sleeve flares a little towards its hem.
+    vtop: the top's vertices; arm_w: their arm share. Returns the moved vertices (bool)."""
+    import numpy as np
+    co = d['co']
+    moved = np.zeros(len(co), bool)
+    zA = 0.5 * (J['armL'][2] + J['armR'][2]) - 0.085 * k            # armpit height
+    torso = vtop & (arm_w < 0.45) & (co[:, 2] < zA + 0.05)
+    if torso.sum() < 20:
+        return moved
+    ease0, ease1, taper, strength = dict(tee=(0.003, 0.012, 0.22, 0.9), shirt=(0.004, 0.014, 0.18, 0.9),
+                                         blouse=(0.003, 0.008, 0.35, 0.75), dress=(0.002, 0.004, 0.5, 0.5))[kind]
+    idx = np.where(torso)[0]
+    P = co[idx].astype(np.float64)
+    yc = axis_y(P[:, 2])
+    dx, dy = P[:, 0], P[:, 1] - yc
+    r = np.hypot(dx, dy)
+    th = np.arctan2(dx, -dy)                                         # 0 front, +pi/2 the figure's left
+    hem = P[:, 2].min()
+    NT, DZ = 48, 0.01
+    z0 = hem - DZ
+    NZ = int(np.ceil((zA + 0.05 - z0) / DZ)) + 1
+    ti = np.round((th + np.pi) / (2 * np.pi) * NT).astype(int) % NT
+    zi = np.clip(((P[:, 2] - z0) / DZ).astype(int), 0, NZ - 1)
+    grid = np.full((NZ, NT), np.nan)
+    for a, b, rr in zip(zi, ti, r):
+        if np.isnan(grid[a, b]) or rr > grid[a, b]:
+            grid[a, b] = rr
+    # fill empty cells round each height ring (periodic), then rows without data from their neighbours
+    for a in range(NZ):
+        row = grid[a]
+        ok = ~np.isnan(row)
+        if ok.sum() >= 3:
+            xs = np.where(ok)[0]
+            grid[a] = np.interp(np.arange(NT), np.concatenate([xs - NT, xs, xs + NT]), np.tile(row[ok], 3))
+    for a in range(NZ):
+        if np.isnan(grid[a]).all():
+            src = [b for b in range(NZ) if not np.isnan(grid[b]).all()]
+            if src:
+                grid[a] = grid[min(src, key=lambda b: abs(b - a))]
+    if np.isnan(grid).any():
+        return moved
+    # tension round the body: no hollows across a ring (between the breasts, the spine's groove)
+    for _ in range(6):
+        grid = np.maximum(grid, 0.5 * (np.roll(grid, 1, 1) + np.roll(grid, -1, 1)) - 0.0005)
+    # the cloth falls from the fullest point above it, tapering a little
+    hang = grid.copy()
+    for a in range(NZ - 2, -1, -1):
+        hang[a] = np.maximum(grid[a], hang[a + 1] - taper * DZ)
+    # target radius at each vertex (bilinear in height, linear round), plus the ease
+    fz = np.clip((P[:, 2] - z0) / DZ, 0, NZ - 1.001)
+    a0 = np.floor(fz).astype(int)
+    tz = fz - a0
+    ft = (th + np.pi) / (2 * np.pi) * NT
+    b0 = np.floor(ft).astype(int) % NT
+    tt = ft - np.floor(ft)
+    b1 = (b0 + 1) % NT
+    R = ((hang[a0, b0] * (1 - tt) + hang[a0, b1] * tt) * (1 - tz) + (hang[a0 + 1, b0] * (1 - tt) + hang[a0 + 1, b1] * tt) * tz)
+    down = np.clip((zA - P[:, 2]) / max(0.05, zA - hem), 0, 1)
+    side = np.abs(np.sin(th))
+    ease = (ease0 + ease1 * down ** 1.3) * (1.0 - 0.55 * side ** 2)
+    ramp = np.clip((zA + 0.03 - P[:, 2]) / 0.08, 0, 1)
+    ramp = ramp * ramp * (3 - 2 * ramp)
+    rn = np.maximum(r, r + (R + ease - r) * ramp * strength)
+    # (the cloth beside the arm stays near the body: the arm hangs there)
+    rn = np.where(side > 0.8, np.minimum(rn, r + 0.006 + 0.01 * down), rn)
+    f = rn / np.maximum(r, 1e-6)
+    co[idx, 0] = dx * f
+    co[idx, 1] = yc + dy * f
+    moved[idx] = np.abs(f - 1) > 1e-5
+    # short sleeves: a little flare towards the hem (out from the arm's axis, less on the side facing the body)
+    for s, S in (('l', 'L'), ('r', 'R')):
+        sl = vtop & (arm_w > 0.55) & ((co[:, 0] > 0) == (s == 'l'))
+        if sl.sum() < 8:
+            continue
+        a, b = np.array(J['arm' + S]), np.array(J['fore' + S])
+        u = (b - a) / np.linalg.norm(b - a)
+        q = co[sl].astype(np.float64)
+        t = (q - a) @ u
+        if t.max() - t.min() < 0.04:
+            continue
+        rad = q - a - t[:, None] * u
+        rl = np.linalg.norm(rad, axis=1)
+        out = np.array([1.0 if s == 'l' else -1.0, 0, 0])
+        outer = 0.5 + 0.5 * (rad / np.maximum(rl[:, None], 1e-6)) @ (out - u * (u @ out))
+        tr = np.clip((t - (t.min() + 0.03)) / max(0.02, t.max() - t.min() - 0.03), 0, 1)
+        push = (0.002 + 0.01 * tr ** 1.5) * (0.35 + 0.65 * outer)
+        co[sl] = q + rad / np.maximum(rl[:, None], 1e-6) * push[:, None]
+        moved[np.where(sl)[0]] = True
+    return moved
+
+
+def hem_overlap(co_t, co_b, zc, axis_y, nb=24):
+    """Per angle round the torso: (lowest top point - highest bottom point) in m (> 0: a gap)."""
+    import numpy as np
+    def ang(P):
+        return np.arctan2(P[:, 0], -(P[:, 1] - axis_y(P[:, 2])))
+    at, ab = ang(co_t), ang(co_b)
+    out = np.full(nb, np.nan)
+    for i in range(nb):
+        a = -np.pi + 2 * np.pi * (i + 0.5) / nb
+        mt = np.abs((at - a + np.pi) % (2 * np.pi) - np.pi) < np.pi / nb * 1.6
+        mb = np.abs((ab - a + np.pi) % (2 * np.pi) - np.pi) < np.pi / nb * 1.6
+        if mt.any() and mb.any():
+            out[i] = co_t[mt, 2].min() - co_b[mb, 2].max()
+    return out
+
+
+def extend_top_hem(dt, vt, db, vb, J, k, tuck, axis_y, cid, overlap=0.045):
+    """No bare midriff: wherever a top's hem ends less than `overlap` below the bottom's waistband (round
+    the torso, in the rest pose), the lower part of the top is stretched down to that depth; the part below
+    the waistband then lies just outside the bottom (worn over it) or just inside it (tucked in).
+    vt: the top's torso vertices in dt; vb: the bottom's vertices in db. Returns (moved, worst gap before,
+    worst gap after) (gaps in m; < 0: covered)."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    ct = dt['co']
+    moved = np.zeros(len(ct), bool)
+    zw = J['spine1'][2]
+    T = np.where(vt & (ct[:, 2] < J['spine2'][2]))[0]
+    Bv = np.where(vb & (db['co'][:, 2] > J['pelvis'][2] - 0.06))[0]
+    if len(T) < 10 or len(Bv) < 10:
+        return moved, None, None
+    nb = 24
+    g0 = hem_overlap(ct[T], db['co'][Bv], zw, axis_y, nb)
+    if np.isnan(g0).all():
+        return moved, None, None
+    need = np.nan_to_num(g0 + overlap * k, nan=0.0).clip(0, 0.15)
+    # (a gap is never narrower than its neighbours': max over neighbours, then smoothed)
+    need = np.maximum(need, np.maximum(np.roll(need, 1), np.roll(need, -1)) * 0.85)
+    need = (np.roll(need, 1) + 2 * need + np.roll(need, -1)) / 4
+    if need.max() > 0.001:
+        P = ct[T].astype(np.float64)
+        a = np.arctan2(P[:, 0], -(P[:, 1] - axis_y(P[:, 2])))
+        f = (a + np.pi) / (2 * np.pi) * nb - 0.5
+        i0 = np.floor(f).astype(int)
+        w = f - i0
+        dz = need[i0 % nb] * (1 - w) + need[(i0 + 1) % nb] * w
+        # per angle: the hem's height there; the stretch runs from the hem up to ~22 cm above it
+        hem = np.array([P[np.abs((a - (-np.pi + 2 * np.pi * (i + 0.5) / nb) + np.pi) % (2 * np.pi) - np.pi) < np.pi / nb * 1.6, 2].min()
+                        if (np.abs((a - (-np.pi + 2 * np.pi * (i + 0.5) / nb) + np.pi) % (2 * np.pi) - np.pi) < np.pi / nb * 1.6).any() else np.nan
+                        for i in range(nb)])
+        hem = np.where(np.isnan(hem), np.nanmin(hem), hem)
+        hv = hem[i0 % nb] * (1 - w) + hem[(i0 + 1) % nb] * w
+        top = np.minimum(hv + 0.22 * k, J['spine2'][2])
+        t = np.clip((top - P[:, 2]) / np.maximum(top - hv, 0.03), 0, 1)
+        P[:, 2] -= dz * t
+        ct[T] = P
+        moved[T] = dz * t > 1e-5
+    # the part over the waistband: just outside the bottom (worn over it) or just inside it (tucked)
+    faces = []
+    for p in range(len(db['ls'])):
+        vs = db['vi'][db['ls'][p]:db['ls'][p] + db['lt'][p]]
+        if vb[vs].all():
+            faces.append([int(x) for x in vs])
+    if faces:
+        bvh = BVHTree.FromPolygons([Vector(v) for v in db['co'].astype(np.float64)], faces, epsilon=0.0)
+        wtop = db['co'][Bv, 2].max()
+        for i in T:
+            if ct[i, 2] > wtop + 0.01:
+                continue
+            p = Vector(ct[i].tolist())
+            q, n, _, dist = bvh.find_nearest(p, 0.1)
+            if q is None:
+                continue
+            ay = float(axis_y(np.array([q.z]))[0])
+            out = Vector((q.x, q.y - ay, 0.0))
+            if out.length < 1e-6:
+                continue
+            out.normalize()
+            if n.dot(out) < 0:
+                n = -n
+            n = (n + out).normalized()
+            dd = (p - q).dot(n)
+            if tuck:
+                if dd > -0.006:
+                    ct[i] = np.array(q - n * (0.008 if p.z < wtop - 0.01 else 0.004))
+                    moved[i] = True
+            elif dd < 0.005:
+                ct[i] = np.array(q + n * 0.006)
+                moved[i] = True
+    g1 = hem_overlap(ct[T], db['co'][Bv], zw, axis_y, nb)
+    return moved, float(np.nanmax(g0)), float(np.nanmax(g1))
+
+
+def gore_skirt(d, vmask, J, k, length, cid):
+    """Gored folds round a skirt below the hips: the cloth swings out into soft folds (about nine round
+    the skirt, each its own depth and spacing), growing from nothing at the hips to the hem; only outwards
+    (the cloth never moves in towards the legs). Returns the moved vertices."""
+    import numpy as np
+    co = d['co']
+    idx = np.where(vmask)[0]
+    if len(idx) < 20:
+        return np.zeros(len(co), bool)
+    hip = 0.5 * (J['thighL'][2] + J['thighR'][2])
+    cy = 0.5 * (J['thighL'][1] + J['thighR'][1])
+    P = co[idx].astype(np.float64)
+    hem = P[:, 2].min()
+    u = np.clip((hip - 0.02 - P[:, 2]) / max(0.1, hip - 0.02 - hem), 0, 1)
+    dx, dy = P[:, 0], P[:, 1] - cy
+    r = np.hypot(dx, dy)
+    th = np.arctan2(dx, -dy)
+    # (an uneven spacing: the phase runs a little faster or slower round the skirt; depths vary per fold)
+    seed = sum(ord(c) for c in cid)
+    ph = 9 * th + 0.8 * np.sin(2 * th + seed) + 0.5 * np.sin(5 * th + 0.7 * seed)
+    depth = 0.75 + 0.25 * np.sin(4.5 * th + 1.3 * seed) + 0.15 * np.cos(7 * th - seed)
+    amp = (0.008 + 0.012 * min(1.0, max(0.0, length))) * k * u ** 1.4 * depth
+    f = 0.5 + 0.5 * np.cos(ph)
+    rn = r + amp * (f ** 1.3)
+    co[idx, 0] = dx * rn / np.maximum(r, 1e-6)
+    co[idx, 1] = cy + dy * rn / np.maximum(r, 1e-6)
+    moved = np.zeros(len(co), bool)
+    moved[idx] = amp > 1e-5
     return moved
 
 
