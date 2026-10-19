@@ -166,6 +166,14 @@ export class Agent {
     this.laneUrgent = false;  // the lane target moved out of a tram's berth: stepping over briskly
     this.wards = [];          // children seated with this adult (population)
     this.spawnHidden = false; // spawned where nobody could see it (statistics)
+    // who this is and how they stand (population.js appearance bank, stance.js)
+    this.charI = -1;          // cast character of the appearance (−1: unknown)
+    this.bankI = -1;          // entry of the population's appearance bank in use (−1: none)
+    this.idle = -1;           // standing stance handed to the renderer (set() field idle; −1: the person's own)
+    this.idleW = -1;          // ... the one chosen for the situation (handed over when the renderer can blend to it)
+    this.idleK = -1;          // ... the situation it was chosen for, and when to choose again
+    this.idleT = 0;
+    this.pauseK = 0;          // kind of pause (stance.js PAUSE_*: by a door, a pole, on the phone, up a side street)
     // per-frame scratch (fields rather than number arguments: a double passed to a call that is
     // not inlined is boxed, and that is garbage per agent and per frame)
     this.prevD = 0; this.stepDt = 0; // lateral position before this step, and the step's dt (tram.constrain)
@@ -184,7 +192,8 @@ export class Agent {
 
 // Integer fields (codes, indices, bit fields): they never hold fractions.
 const INT_FIELDS = new Set(['slot', 'serial', 'kind', 'state', 'task', 'step', 'lane', 'next', 'nFollow', 'mob', 'mobPrev',
-  'propSeed', 'appearance', 'wSeed', 'uI', 'lookU', 'boardU', 'pair', 'serveTi', 'pathI', 'frontN', 'stuckN', 'after']);
+  'propSeed', 'appearance', 'wSeed', 'uI', 'lookU', 'boardU', 'pair', 'serveTi', 'pathI', 'frontN', 'stuckN', 'after',
+  'charI', 'bankI', 'idle', 'idleW', 'idleK', 'pauseK']);
 
 /** Fixes an object's hidden class up front (agents, and the scratch objects the per-frame code
  *  shares). V8 gives a numeric field that starts as a small integer the integer representation,

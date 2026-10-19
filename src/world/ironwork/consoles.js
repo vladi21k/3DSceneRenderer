@@ -1,13 +1,14 @@
 import { RNG } from '../../core/rng.js';
-import { archPoint, ornament } from '../facadePlan.js';
+import { archPoint, ornament, headDressing } from '../facadePlan.js';
 
 // Where the carved stone consoles under a balcony slab go. Every slab sits on consoles
 // (two at least) unless the dressing below reaches up to the slab itself. Full consoles
 // stand on the piers: at the slab's ends, either side of each opening below and about
 // MAX_SP apart along wide piers. Where the piers do not carry the slab, consoles keep an
 // even rhythm (ends, bay boundaries, subdivisions) and stop on top of the dressing.
-// The dressing is taken exactly as the buildings module draws it (buildings/openings.js:
-// arch rings, flat arches, lintels, keystones, hoods, door portals), plus the shop
+// The dressing is the envelope the plan publishes for what the buildings module draws
+// (facadePlan headDressing: arch rings, flat arches, lintels, keystones, hoods, door
+// portals), with the ring of an arched head followed along its curve, plus the shop
 // signs facades hangs under first-floor balconies. One balcony's consoles share one
 // design and height: full scroll or stepped consoles where there is room, shortened
 // stepped ones, or rows of short block consoles (modillions) over the shop heads.
@@ -37,41 +38,30 @@ function ornOf(plan) {
 }
 
 /** Dressing over an opening's head on floor f: the highest point of the masonry at any
- *  u, as {u0, u1, flat, jamb, arc} (arc: [u, v, ...] left to right, or null). */
+ *  u, as {u0, u1, flat, jamb, arc} (arc: [u, v, ...] left to right, or null), MARGIN
+ *  clear of the plan's envelope (facadePlan headDressing, the extent and top the shell
+ *  draws). Flat heads and door portals are their envelope; an arched head follows its
+ *  ring (as thick as the envelope reaches past the jambs) round the arch, the keystone
+ *  (what the envelope's top adds over the ring's crown) standing on the crown. */
 function headProfile(plan, orn, o) {
-  const ground = o.floor === 0, door = o.kind === 'door', arched = o.rise > 0.01;
-  const yt = o.y + o.h;
-  const surround = ground ? (door && orn.doorSurround ? orn.sw * 1.3 : 0) : (plan.style.surrounds ? orn.sw : 0);
-  if (ground && door && orn.doorHood) {
-    // entrance portal: a hood cornice on two tall consoles either side of the head
-    const reach = 0.8;
-    return { u0: o.uc - o.w / 2 - reach, u1: o.uc + o.w / 2 + reach, flat: yt + (arched ? 1.06 : 0.72), jamb: 0, arc: null };
+  const d = headDressing(plan, orn, o);
+  const arched = o.top !== 'flat' && o.rise > 0.01;   // (as headDressing decides)
+  const portal = o.floor === 0 && o.kind === 'door' && orn.doorHood;
+  if (!arched || portal) return { u0: d.u0 - MARGIN, u1: d.u1 + MARGIN, flat: d.top + MARGIN, jamb: 0, arc: null };
+  const T = Math.max(0, d.u1 - (o.uc + o.w / 2));
+  archPoint(o, 0.5, _ap, T);
+  const key = Math.max(0, d.top - _ap.v);
+  const a = [];
+  for (let i = 0; i <= 20; i++) {
+    archPoint(o, i / 20, _ap, T + MARGIN);
+    a.push(_ap.u, _ap.v + (key > 0.005 && Math.abs(_ap.u - o.uc) < 0.24 ? key : 0));
   }
-  if (arched) {
-    // voussoir ring (T deep, radially) with a keystone 8 cm deeper at the crown
-    const T = (ground ? orn.shopRing : surround ? surround * 1.3 : orn.ring) + MARGIN;
-    const key = ground || orn.keystone;
-    const a = [];
-    for (let i = 0; i <= 20; i++) {
-      archPoint(o, i / 20, _ap, T);
-      a.push(_ap.u, _ap.v + (key && Math.abs(_ap.u - o.uc) < 0.24 ? 0.1 : 0));
+  if (a[0] > a[a.length - 2]) {
+    for (let i = 0, j = a.length - 2; i < j; i += 2, j -= 2) {
+      [a[i], a[j]] = [a[j], a[i]]; [a[i + 1], a[j + 1]] = [a[j + 1], a[i + 1]];
     }
-    if (a[0] > a[a.length - 2]) {
-      for (let i = 0, j = a.length - 2; i < j; i += 2, j -= 2) {
-        [a[i], a[j]] = [a[j], a[i]]; [a[i + 1], a[j + 1]] = [a[j + 1], a[i + 1]];
-      }
-    }
-    return { u0: o.uc - o.w / 2 - T, u1: o.uc + o.w / 2 + T, flat: -Infinity, jamb: o.spring + 0.06, arc: a };
   }
-  // flat head: lintel, flat arch (voussoirs fanning 6 cm past its ends) or lintel + hood
-  const kind = ground ? orn.shopHead : orn.winHead;
-  const ext = surround || (ground ? 0.2 : 0.12);
-  const H = ground ? (kind === 'flatArch' ? 0.42 : 0.38) : Math.min(0.45, Math.max(0.26, plan.coursing.ch));
-  let reach = ext + (kind === 'flatArch' ? 0.06 : kind === 'hood' ? 0.07 : 0) + MARGIN;
-  // crossettes: the architrave steps out 8 cm just below the head (windows)
-  if (!ground && orn.ears && surround) reach = Math.max(reach, surround + 0.08 + MARGIN);
-  const top = kind === 'hood' ? H + 0.22 : H + (kind === 'flatArch' ? 0.06 : orn.keystone && kind !== 'plain' ? 0.05 : 0);
-  return { u0: o.uc - o.w / 2 - reach, u1: o.uc + o.w / 2 + reach, flat: yt + top + MARGIN, jamb: 0, arc: null };
+  return { u0: d.u0 - MARGIN, u1: d.u1 + MARGIN, flat: -Infinity, jamb: o.spring + 0.06, arc: a };
 }
 
 /** Highest point of an opening's dressing at facade position u (−Infinity if clear).

@@ -242,8 +242,12 @@ function weather(g, r) {
   fade.addColorStop(1, 'rgba(236,228,212,0.06)');
   g.fillStyle = fade;
   g.fillRect(0, 0, TW, TH);
-  // chalky grain and the render's texture showing through (per pixel)
-  const img = g.getImageData(0, 0, TW, TH), d = img.data;
+  // chalky grain and the render's texture showing through (per pixel): a grain layer
+  // multiplied over the painting, then a faint chalky lift. (Composited on the canvas
+  // rather than read back and written per pixel: a read-back rasterises the whole
+  // painting on the main thread, about a quarter of a second per mural.)
+  const gc = canvas(TW, TH), gg = gc.getContext('2d');
+  const img = gg.createImageData(TW, TH), d = img.data;
   const n0 = new Float32Array(41 * 65);
   for (let i = 0; i < n0.length; i++) n0[i] = r.next();
   for (let y = 0; y < TH; y++) {
@@ -251,12 +255,19 @@ function weather(g, r) {
       const fx = x / 16, fy = y / 16, ix = fx | 0, iy = fy | 0, tx = fx - ix, ty = fy - iy;
       const a = n0[iy * 41 + ix], b = n0[iy * 41 + ix + 1], c = n0[(iy + 1) * 41 + ix], e = n0[(iy + 1) * 41 + ix + 1];
       const low = a + (b - a) * tx + (c - a) * ty + (a - b - c + e) * tx * ty;
-      const k = 0.94 + 0.08 * low + (((x * 73856093) ^ (y * 19349663)) & 255) / 255 * 0.06 - 0.03;
-      const i = (y * TW + x) * 4;
-      d[i] = Math.min(255, d[i] * k + 4); d[i + 1] = Math.min(255, d[i + 1] * k + 4); d[i + 2] = Math.min(255, d[i + 2] * k + 3);
+      const k = (0.91 + 0.08 * low + (((x * 73856093) ^ (y * 19349663)) & 255) / 255 * 0.06) / 1.05;
+      const i = (y * TW + x) * 4, v = Math.min(255, k * 255);
+      d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
     }
   }
-  g.putImageData(img, 0, 0);
+  gg.putImageData(img, 0, 0);
+  g.save();
+  g.globalCompositeOperation = 'multiply';
+  g.drawImage(gc, 0, 0);
+  g.globalCompositeOperation = 'lighter';
+  g.fillStyle = 'rgb(9,9,8)';
+  g.fillRect(0, 0, TW, TH);
+  g.restore();
   // rain streaks from the top edge
   for (let i = 0; i < 50; i++) {
     const x = r.range(0, TW), len = r.range(60, 380);
@@ -286,7 +297,7 @@ function weather(g, r) {
 
 function paint(k) {
   const c = canvas(TW, TH);
-  const g = c.getContext('2d', { willReadFrequently: true });
+  const g = c.getContext('2d');
   const r = RNG.from('buildings', 'mural', k);
   [panorama, crowd, tree, (gg, rr) => panorama(gg, rr, true)][k % 4](g, r);
   weather(g, r);

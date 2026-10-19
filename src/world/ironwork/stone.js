@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { normalizeAttributes } from '../../core/geom.js';
 import { GeoWriter, sweepPath, sweepPathPos, insetPath, capPolygon, sweepBar, box, boxPos, lathe, shared, posTemplate, weldTemplate } from './geo.js';
+import { centroidColor } from './mats.js';
 
 // Carved limestone parts of a balcony: the moulded slab, the scroll consoles (corbels)
 // that carry it, and the turned-baluster stone balustrade alternative.
@@ -326,6 +327,8 @@ export function makeStoneMaterial(app) {
   const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
   m.onBeforeCompile = function (sh, r) {
     if (prev) prev.call(this, sh, r);
+    // (the baked occlusion steps sharply across the mouldings' narrow faces: see mats.js)
+    centroidColor(sh);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
 attribute float aGk;
@@ -370,7 +373,7 @@ ${GRIME_GLSL}`)
 		diffuseColor.rgb *= gTint * ( 1.0 - gDark );
 	}`);
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone'; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone2'; };
   m.needsUpdate = true;
   app.materials.register(m.name, m);
   return m;

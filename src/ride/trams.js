@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TRACK_OFFSET, TRACK_ZONE_HALF } from '../core/config.js';
 import { U } from '../core/uniforms.js';
 import { Events } from '../core/events.js';
-import { Tram, DRIVE, BESIDE } from './train.js';
+import { Tram, DRIVE, BESIDE, crowdCorridor } from './train.js';
 import { CAR, buildModels } from './trams/model.js';
 import { makeLampAtlas } from './trams/display.js';
 import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
@@ -46,6 +46,23 @@ const _P = Array.from({ length: 4 }, () => new THREE.Vector3());
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3(), _b = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 const FAR_SPHERE = new THREE.Sphere(new THREE.Vector3(0, -1e7, 0), 1e-3);
+
+/** A unit's corridor load weights (it runs on the left track, d < 0), see _loads. */
+const unitWeight = (off, d) => (d < -TRACK_ZONE_HALF ? DRIVE.besideW : d < 0.2 ? 1 : d <= TRACK_ZONE_HALF ? 0.6 : 0);
+// people scan (see _scan): the stretch ahead of the nose, the reach from the left track's
+// centre (body half width + a person + a little), the strip searched (a crosser predicted
+// 1.4 s ahead may still be up to ~2 m outside it), and the nearest found (largest offset)
+const SCAN = { ahead: 160, reach: 0, half: 0, best: -1 };
+SCAN.reach = CAR.halfWidth + 0.38;
+SCAN.half = TRACK_OFFSET + SCAN.reach + 2.2;
+/** weight(off, d, vd?) for the scan: records the largest offset (the nearest to the nose) of
+ *  anybody on the track or stepping onto it within 1.4 s (vd: lateral velocity, m/s). */
+const scanWeight = (off, d, vd) => {
+  const dl = d + TRACK_OFFSET, dp = dl + (vd > 0 || vd < 0 ? vd : 0) * 1.4, r = SCAN.reach;
+  if (dl > r || dl < -r) { if ((dp > r || dp < -r) && dl * dp > 0) return 0; }
+  if (off > SCAN.best) SCAN.best = off;
+  return 1;
+};
 
 /** The route seen by a tram running the other way: s' = −s. */
 function mirrorRoute(route) {
@@ -269,44 +286,32 @@ const trams = {
 
   /** Weighted people in each unit's track corridor 5-200 m ahead of its nose -> Tram.load:
    *  its half of the corridor 1, the other half 0.6, the strip of BESIDE m outside the
-   *  corridor on its side DRIVE.besideW (as for the cab tram, train.js). */
+   *  corridor on its side DRIVE.besideW (as for the cab tram, train.js). From the crowd's
+   *  public corridor count. */
   _loads(app, immediate) {
-    const sim = app.crowd && !app.crowd.disabled ? app.crowd.sim : null;
-    const agents = sim && sim.population && sim.population.agents;
-    if (!agents || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
-    const route = app.route, U = this.units, n = this._loadN || (this._loadN = new Float64Array(U.length));
-    n.fill(0);
-    for (let k = 0; k < agents.length; k++) {
-      const a = agents[k];
-      if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF + BESIDE)) continue;
-      const w = a.d < -TRACK_ZONE_HALF ? DRIVE.besideW : a.d < 0.2 ? 1 : a.d <= TRACK_ZONE_HALF ? 0.6 : 0;
-      if (w === 0) continue;
-      const s = route.wrap(sim.camW + (a.s - sim.camU));
-      for (let i = 0; i < U.length; i++) {
-        const ahead = route.delta(s, U[i].s);
-        if (ahead > 5 && ahead < 200) n[i] += w;
-      }
+    const cr = crowdCorridor(app);
+    if (!cr) return;
+    const U = this.units;
+    for (let i = 0; i < U.length; i++) {
+      // a unit travels towards −s: its stretch ahead lies below its nose
+      const s = U[i].s, n = cr.corridorCount(s - 200, s - 5, unitWeight, TRACK_ZONE_HALF + BESIDE);
+      U[i].tram.setLoad(n / DRIVE.busyPeople, immediate);
     }
-    for (let i = 0; i < U.length; i++) U[i].tram.setLoad(n[i] / DRIVE.busyPeople, immediate);
   },
 
-  /** People on (or stepping onto) a unit's track ahead of its nose: distance to the nearest. */
+  /** People on (or stepping onto) a unit's track ahead of its nose: distance to the nearest,
+   *  from the crowd's public corridor count over the 160 m ahead (scanWeight keeps the
+   *  nearest; a lateral velocity, when the crowd passes one, adds who is about to step on). */
   _scan(app) {
-    for (const u of this.units) u.obs = Infinity;
-    const cr = app.crowd, sim = cr && !cr.disabled ? cr.sim : null;
-    const agents = sim && sim.population && sim.population.agents;
-    if (!agents || typeof sim.camU !== 'number' || typeof sim.camW !== 'number') return;
-    const route = app.route, reach = CAR.halfWidth + 0.38;   // body half width + a person + a little
-    for (let k = 0; k < agents.length; k++) {
-      const a = agents[k];
-      if (!a.active) continue;
-      const dl = a.d + TRACK_OFFSET, dp = dl + (a.vd || 0) * 1.4;
-      if (Math.abs(dl) > reach && Math.abs(dp) > reach && dl * dp > 0) continue;   // stays clear
-      const s = route.wrap(sim.camW + (a.s - sim.camU));
-      for (const u of this.units) {
-        const ahead = route.delta(s, u.s);
-        if (ahead > -1 && ahead < 160 && ahead < u.obs) u.obs = Math.max(0, ahead);
-      }
+    const U = this.units;
+    for (let i = 0; i < U.length; i++) U[i].obs = Infinity;
+    const cr = crowdCorridor(app);
+    if (!cr) return;
+    for (let i = 0; i < U.length; i++) {
+      const u = U[i];
+      SCAN.best = -1;
+      cr.corridorCount(u.s - SCAN.ahead, u.s + 1, scanWeight, SCAN.half);
+      if (SCAN.best >= 0) u.obs = Math.max(0, SCAN.ahead - SCAN.best);
     }
   },
 

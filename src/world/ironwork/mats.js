@@ -55,6 +55,18 @@ float iwNoise( vec3 p ) {
 	return mix( mix( mix( a, b, t.x ), mix( c, d, t.x ), t.y ), mix( mix( e, g, t.x ), mix( h, k, t.x ), t.y ), t.z );
 }`;
 
+/** Vertex colours interpolated at the sample centroid (shader patch, call in
+ *  onBeforeCompile). The baked occlusion of small parts changes fast across narrow faces
+ *  (drip grooves, fillets, coves): with MSAA a pixel only partly covered by such a face
+ *  is shaded at its centre, outside the triangle, where the colour is extrapolated and
+ *  can go negative (a broken HDR value) or far above 1 (a sparkle). */
+export function centroidColor(sh) {
+  sh.vertexShader = sh.vertexShader.replace('#include <color_pars_vertex>',
+    '#if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA ) || defined( USE_INSTANCING_COLOR ) || defined( USE_BATCHING_COLOR )\n\tcentroid varying vec4 vColor;\n#endif');
+  sh.fragmentShader = sh.fragmentShader.replace('#include <color_pars_fragment>',
+    '#if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )\n\tcentroid varying vec4 vColor;\n#endif');
+}
+
 /** Chain a patch after any existing onBeforeCompile / program key. */
 function chain(mat, tag, patch) {
   const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey;

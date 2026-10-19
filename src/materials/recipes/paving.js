@@ -38,59 +38,158 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Street / sidewalk setts: 0.40 × 0.20 m (lengths 0.29–0.52) in courses. The continuous
-// bed joints between courses are tight (~2 mm) and filled with pale sand almost to the
-// top under eased arrises, so they read as faint light lines; the head joints between the
-// setts of a course are 3-4 mm, sand filled a couple of millimetres down under a small
-// chamfer, so they read as soft grey dashes (from metres away the joints all but vanish,
-// as in the photographs: no cobble outline that would crawl at ride speed). Lippage, worn
-// tops. Mid-grey granite with a cool cast (the street is a little darker than the facades).
+// Street / sidewalk setts: 0.40 × 0.20 m (lengths 0.29–0.52) in courses, 1.6 mm/texel.
+// Every sett is its own stone: its own mottling (the granite noise is offset per sett, so
+// it never runs on across a joint), a faint tone gradient from the block it was split
+// from, and its own finish: flamed (paler, matt, micro-rough) or worn smooth by traffic
+// (darker, satin, slightly dished, arrises rounded). Some setts carry a dark xenolith, a
+// pale aplite vein, rust specks, an old spill blot or a hairline crack; corners and
+// arrises are chipped here and there. Dirt is worked into the stone for a centimetre or
+// two along the joints, patchily, darkest at the corners.
+// Joints: each joint has its own width (head joints 2-6 mm, bed joints 1-3 mm, varying
+// along it), fill depth (sand to the top, a few millimetres down, or washed out) and fill
+// (pale sand, grey dirt, dark grime), looked up by the joint's own id so both setts beside
+// it agree. Bed joints are tight and mostly sand-filled (faint light lines), head joints
+// wider and dirtier (soft grey dashes); from metres away the joints average out towards
+// the sett tone (no cobble outline that would crawl at ride speed). Mid-grey granite with
+// a cool cast (the street is a little darker than the facades).
 export const paving = {
-  name: 'paving', flat: [0.16, 0.167, 0.186, 0.68], size: 1024, tile: [3.2, 3.2], ss: 2,
+  name: 'paving', flat: [0.16, 0.167, 0.186, 0.6], size: 2048, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
   joint: 0.0018,
-  pass: { normal: 1.0, ao: 0.45, aoRadius: 0.005, cavity: 0.03 },
+  pass: { normal: 1.0, ao: 0.5, aoRadius: 0.005, cavity: 0.08 },
   glsl: GRANITE + /* glsl */ `
+// a line across the sett (crack or vein): distance (m) from it, along a random direction
+// through a random point, wandering
+float settLine(Cell c, vec2 m, uint k, float wander) {
+  float a = (cellRand(c, k) - 0.5) * 1.4 + (cellRand(c, k + 1u) < 0.5 ? 0.0 : 1.5708);
+  vec2 dir = vec2(cos(a), sin(a));
+  vec2 p0 = (vec2(cellRand(c, k + 2u), cellRand(c, k + 3u)) - 0.5) * c.size * 0.6;
+  vec2 q = c.lp - 0.5 * c.size - p0;
+  float along = dot(q, dir);
+  return abs(dot(q, vec2(-dir.y, dir.x)) + wander * fbm(vec2(along * 7.0, c.h * 31.0), 6.0, 3, 0.55, k + 9u));
+}
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
-  float wob = fbm(m, 20.0, 2, 0.5, 91u) * 0.0007;
-  float eH = min(c.ed.x, c.ed.y) + wob;          // to the head joints (dashes)
-  float eB = min(c.ed.z, c.ed.w) + wob * 0.5;    // to the bed joints (continuous)
-  const float JH = 0.0017, JB = 0.0009;          // half widths
-  const float CH = 0.0015;                        // chamfer on the head ends
-  const float CB = 0.0018;                        // eased arris along the beds
-  // lippage: each sett sits a little proud or low and slightly tilted; corners rock
   vec2 q = c.lp - 0.5 * c.size;
+  vec2 ms = m + vec2(c.h * 37.1, cellRand(c, 30u) * 23.7);       // this sett's own noise space
+  // ---- joints: the nearer head joint and bed joint, with their own ids
+  bool leftH = c.ed.x < c.ed.y;
+  uint jh = sfH2(c.r, sfMod(leftH ? c.k : c.k + 1, c.n), 601u);
+  float jhX = leftH ? m.x - c.ed.x : m.x + c.ed.y;
+  bool lowB = c.ed.z < c.ed.w;
+  uint jb = sfH2(lowB ? c.r : sfMod(c.r + 1, int(uLay.y)), 0, 602u);
+  float jbY = lowB ? m.y - c.ed.z : m.y + c.ed.w;
+  float nh = noiseM(vec2(jhX * 3.0, m.y), vec2(40.0), 603u), nb = noiseM(vec2(m.x, jbY * 3.0), vec2(25.0), 604u);
+  float h1 = sfHf(jh), h2 = sfHf(sfH(jh + 1u)), h3 = sfHf(sfH(jh + 2u));
+  float b1 = sfHf(jb), b2 = sfHf(sfH(jb + 1u)), b3 = sfHf(sfH(jb + 2u));
+  float JH = 0.0011 + 0.0017 * h1 + 0.0005 * nh;                 // half widths (m)
+  float JB = 0.0005 + 0.0008 * b1 + 0.0003 * nb;
+  float wob = fbm(m, 20.0, 2, 0.5, 91u) * 0.0006 + fbm(m, 70.0, 2, 0.5, 99u) * 0.00025;
+  float eH = min(c.ed.x, c.ed.y) + wob;
+  float eB = min(c.ed.z, c.ed.w) + wob * 0.5;
+  bool head = eH - JH < eB - JB;
+  // ---- the sett: finish, lippage and tilt, wear
+  float fin = cellRand(c, 10u);                                   // 0 flamed .. 1 worn smooth
+  float worn = smoothstep(0.45, 0.85, fin);
+  float CH = 0.001 + 0.0012 * cellRand(c, 11u) + 0.0012 * worn;  // arris rounding (m)
+  float CB = 0.0012 + 0.0012 * cellRand(c, 12u) + 0.0010 * worn;
   float lip = (cellRand(c, 1u) - 0.5) * 0.002
             + dot(q, vec2(cellRand(c, 2u) - 0.5, cellRand(c, 3u) - 0.5)) * 0.008;
-  // flamed / honed face micro relief, polished by wear on the high spots
-  float relief = fbm(m, 35.0, 3, 0.5, 92u) * 0.00035;
-  float wear = smoothstep(-0.2, 0.6, fbm(m + vec2(c.h * 9.0), 3.0, 3, 0.5, 93u));
+  vec2 qn = q / (0.5 * c.size);
+  float dish = -0.0006 * worn * (1.0 - 0.5 * dot(qn * qn, vec2(0.5)));
+  float relief = fbm(ms, 35.0, 3, 0.5, 92u) * mix(0.00035, 0.00015, worn) + fbm(ms, 140.0, 2, 0.5, 105u) * 0.00018 * (1.0 - worn);
   float tH = clamp((eH - JH) / CH, 0.0, 1.0);
   float tB = clamp((eB - JB) / CB, 0.0, 1.0);
-  // shallow chamfer (~30°) and eased bed arrises: they catch less raking light
-  float hFace = lip + relief * (1.0 - 0.6 * wear) - 0.6 * CH * (1.0 - tH) * (1.0 - tH) - 0.0007 * (1.0 - tB) * (1.0 - tB);
-  // edge chips (mostly at the sett ends)
-  vec4 cv = voro(m, vec2(22.0), 94u, 1.0);
-  float chip = smoothstep(0.45, 0.1, cv.x) * step(0.8, cv.z) * (1.0 - smoothstep(0.0, 0.016, eH));
-  hFace -= chip * 0.003;
+  float hFace = lip + dish + relief - 0.55 * CH * (1.0 - tH) * (1.0 - tH) - 0.6 * CB * (1.0 - tB) * (1.0 - tB);
+  // corner spalls (one corner in five) and small arris chips; flat broken floors, old ones
+  // dirt-filled, a few fresh and pale
+  vec2 cq = vec2(q.x < 0.0 ? c.ed.x : c.ed.y, q.y < 0.0 ? c.ed.z : c.ed.w);
+  uint ck = c.id + (q.x < 0.0 ? 0u : 1u) + (q.y < 0.0 ? 0u : 2u) * 7u;
+  float cr = sfHf(sfH(ck + 77u));
+  float spR = 0.008 + 0.02 * sfHf(sfH(ck + 78u));
+  float spall = step(0.8, cr) * (1.0 - smoothstep(spR - 0.0015, spR + 0.0015, cq.x + cq.y + 0.004 * noiseM(ms, vec2(60.0), 106u)));
+  vec4 cv = voro(ms, vec2(30.0), 94u, 1.0);
+  float chip = smoothstep(0.42, 0.18, cv.x) * step(0.78, cv.z) * (1.0 - smoothstep(0.0, 0.012, min(eH, eB)));
+  float broken = max(spall, chip);
+  float fresh = step(0.75, cellRand(c, 13u));
+  hFace -= broken * (0.0025 + 0.001 * noiseM(ms, vec2(90.0), 107u));
+  // hairline crack across a few setts
+  float crack = 0.0;
+  if (cellRand(c, 14u) < 0.07) {
+    float cd = settLine(c, m, 40u, 0.012);
+    crack = 1.0 - smoothstep(0.0003, 0.0016, cd);
+    hFace -= crack * 0.0006;
+  }
+  // ---- joint profile: fill depth and fill colour per joint (washed out in stretches)
   float sH = smoothstep(JH - 0.0006, JH + 0.0006, eH);
   float sB = smoothstep(JB - 0.0004, JB + 0.0004, eB);
-  bool head = eH - JH < eB - JB;
-  float hJ = head ? -0.0025 + fbm(m, 120.0, 2, 0.5, 95u) * 0.0006 : -0.0012 + fbm(m, 150.0, 2, 0.5, 97u) * 0.0004;
+  float fillH = h2 < 0.45 ? 0.0008 : (h2 < 0.85 ? 0.0025 : 0.007);
+  float fillB = b2 < 0.65 ? 0.0004 : (b2 < 0.92 ? 0.0018 : 0.005);
+  float washH = smoothstep(0.35, 0.6, noiseM(vec2(jhX * 5.0, m.y), vec2(6.0), 608u)) * 0.004;
+  float washB = smoothstep(0.4, 0.65, noiseM(vec2(m.x, jbY * 5.0), vec2(3.0), 609u)) * 0.003;
+  float depth = head ? fillH + washH : fillB + washB;
+  float hJ = -depth + (head ? fbm(m, 120.0, 2, 0.5, 95u) * 0.0006 : fbm(m, 150.0, 2, 0.5, 97u) * 0.0004);
   float st = min(sH, sB);
   s.height = mix(hJ, max(hFace, hJ), st);
-  vec3 g = granite(m, vec3(0.16, 0.168, 0.188));
-  g *= mix(0.95, 1.0, tH) * mix(0.97, 1.0, tB);  // a little grime in the chamfers / arrises
-  g *= 1.0 - 0.1 * chip;
-  // joint sand: grey-beige, darker and dirtier down the head joints, paler where it
-  // fills the bed joints to the top
-  vec3 sand = vec3(0.205, 0.192, 0.172);
-  vec3 joint = head ? sand * 0.62 * (1.0 + 0.25 * fbm(m, 90.0, 2, 0.5, 96u)) : sand * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
+  // ---- colour: granite with this sett's own mottling and clustering, tone gradient,
+  // finish, inclusions
+  vec3 g = granite(ms, vec3(0.16, 0.168, 0.188));
+  g *= 1.0 + 0.09 * fbm(ms, 28.0, 3, 0.55, 108u) + 0.05 * fbm(ms, 95.0, 2, 0.5, 109u);
+  g *= 1.0 + 0.07 * dot(qn, vec2(cellRand(c, 15u) - 0.5, cellRand(c, 16u) - 0.5));
+  g *= mix(1.05, 0.93, worn);
+  float xr = cellRand(c, 17u);
+  if (xr < 0.08) {                                                 // dark xenolith
+    vec2 xc = (vec2(cellRand(c, 18u), cellRand(c, 19u)) - 0.5) * c.size * 0.6;
+    float xs = 0.015 + 0.03 * cellRand(c, 20u);
+    vec2 xd = (q - xc) / vec2(xs * (1.3 + cellRand(c, 21u)), xs);
+    float xb = 1.0 - smoothstep(0.85, 1.15, length(xd) + 0.25 * fbm(ms, 40.0, 2, 0.5, 110u));
+    g = mix(g, g * vec3(0.55, 0.56, 0.6), xb);
+  } else if (xr < 0.17) {                                          // pale aplite vein
+    float vd = settLine(c, m, 50u, 0.02);
+    float vw = 0.0015 + 0.003 * cellRand(c, 22u);
+    g = mix(g, g * vec3(1.3, 1.27, 1.22), (1.0 - smoothstep(vw, vw + 0.0015, vd)) * 0.8);
+  }
+  if (cellRand(c, 23u) < 0.2) {                                    // rust specks (weathered pyrite)
+    vec4 rv = voro(ms, vec2(70.0), 111u, 1.0);
+    float rs = smoothstep(0.3, 0.05, rv.x) * step(0.93, rv.z);
+    float halo = smoothstep(0.6, 0.1, rv.x) * step(0.93, rv.z);
+    g = mix(g, g * vec3(1.18, 0.98, 0.78), 0.45 * halo);
+    g = mix(g, vec3(0.13, 0.075, 0.04), 0.8 * rs);
+  }
+  // old spill blot inside the sett (oil, coffee): darker, a little glossy
+  float blot = 0.0;
+  if (cellRand(c, 24u) < 0.12) {
+    vec2 bc = (vec2(cellRand(c, 25u), cellRand(c, 26u)) - 0.5) * c.size * 0.55;
+    float br = 0.012 + 0.04 * cellRand(c, 27u) * cellRand(c, 28u);
+    blot = 1.0 - smoothstep(0.6, 1.1, length((q - bc) / br) + 0.35 * fbm(ms, 30.0, 3, 0.5, 112u));
+    g *= 1.0 - (0.18 + 0.2 * cellRand(c, 29u)) * blot;
+  }
+  // dirt worked into the stone along the joints: a centimetre or two, patchy, darker at
+  // the corners and along the head joints; the chamfers a little grimier still
+  float ej = min(eH - JH, eB - JB);
+  float dirtA = 0.1 + 0.12 * sfHf(sfH(c.id + 31u));
+  float patchD = 0.55 + 0.9 * (0.5 + 0.5 * fbm(ms, 9.0, 3, 0.5, 113u));
+  float corner = 1.0 - smoothstep(0.0, 0.04, max(cq.x, cq.y));
+  g *= 1.0 - dirtA * patchD * (1.0 - smoothstep(0.0, 0.012 + 0.012 * sfHf(sfH(c.id + 32u)), ej)) - 0.12 * corner;
+  g *= mix(0.92, 1.0, tH) * mix(0.95, 1.0, tB);
+  g = mix(g, fresh > 0.5 ? g * vec3(1.12, 1.11, 1.1) : g * vec3(0.72, 0.7, 0.68), broken);
+  g *= 1.0 - 0.45 * crack;
+  // joint fill: pale sand, grey dirt or dark grime, per joint and along it
+  float fsel = head ? h3 : b3;
+  float fn = 0.5 + 0.5 * (head ? nh : nb);
+  vec3 sand = vec3(0.205, 0.192, 0.172) * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
+  vec3 dirt = vec3(0.13, 0.124, 0.113) * (1.0 + 0.25 * fbm(m, 60.0, 2, 0.5, 96u));
+  vec3 grime = vec3(0.065, 0.061, 0.056);
+  float wDirt = smoothstep(0.25, 0.6, fsel + 0.3 * (fn - 0.5)) * (head ? 1.0 : 0.6);
+  float wGrime = smoothstep(0.7, 0.95, fsel + 0.2 * (fn - 0.5)) + smoothstep(0.003, 0.007, depth);
+  vec3 joint = mix(mix(sand, dirt, wDirt), grime, sat(wGrime));
   s.albedo = mix(joint, g, st);
-  // worn granite tops are fairly smooth (a broad low-angle sheen towards a low sun or the
-  // bright end of the street); the sand joints stay matt
-  s.rough = mix(head ? 0.95 : 0.92, mix(0.58, 0.45, wear), st);
+  // flamed tops matt, worn ones satin (a broad low-angle sheen towards a low sun or the
+  // bright end of the street); breaks and cracks rough, blots a little glossy, joints matt
+  float rough = mix(0.66, 0.44, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
+  rough = mix(rough, 0.8, max(broken, crack)) - 0.12 * blot;
+  s.rough = mix(head ? 0.95 : 0.92, rough, st);
 }
 `,
 };

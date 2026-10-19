@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SIDE_LOT_START } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, settleShape } from './agent.js';
+import { PAUSE } from './stance.js';
 
 // The side streets. People walk them the way they do the main street, in route coordinates:
 // inside a cross street's opening, beyond the main building line, s runs across the side
@@ -291,7 +292,7 @@ export class SideStreets {
     const a = pop.spawnWalker(sp, side, 1, { d: dp, lane: LANE.SIDE, force: true, group: 0, src: 'sideStreet', still: true });
     if (!a) return null;
     a.mouth = g.cs; a.sideA = e * (g.half - 0.45);
-    a.task = TASK.PAUSE; a.step = 1; a.state = ST.STAND; a.timer = r.range(20, 90);
+    a.task = TASK.PAUSE; a.step = 1; a.state = ST.STAND; a.timer = r.range(20, 90); a.pauseK = PAUSE.SIDE;
     a.faceA = -e * PI / 2 + r.range(-0.5, 0.5); a.alpha = a.faceA; a.vs = 0; a.vd = 0;
     a.spawnHidden = true;
     return a;

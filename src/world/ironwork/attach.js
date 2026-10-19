@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GeoWriter, PosWriter, box, boxPos, lathe, sweepBar, shared, posTemplate } from './geo.js';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
-import { uIronA2C } from './mats.js';
+import { uIronA2C, centroidColor } from './mats.js';
 
 // Small facade attachments: balcony planting (geraniums, herbs, trailing greens and
 // surfinia, bougainvillea, dried-out pots), planter boxes with their rail hooks, pots,
@@ -471,6 +471,7 @@ export function makeAttachMaterials(app) {
   // leaf-edge coverage rounded to whole MSAA samples (no driver dither, see mats.js)
   plant.onBeforeCompile = (sh) => {
     sh.uniforms.uIronA2C = uIronA2C;
+    centroidColor(sh);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vFlowerTint;')
       .replace('#include <color_vertex>', 'vFlowerTint = vec3( 1.0 );\n' + THREE.ShaderChunk.color_vertex
@@ -489,6 +490,9 @@ export function makeAttachMaterials(app) {
 
   // parts and AC units: AC atlas (the parts sample its white patch), colour per vertex
   const parts = new THREE.MeshStandardMaterial({ name: 'ironwork.parts', map: acTexture(), vertexColors: true, roughness: 0.6, metalness: 0.0 });
+  // (baked occlusion on small parts: colours at the sample centroid, see mats.js)
+  parts.onBeforeCompile = centroidColor;
+  parts.customProgramCacheKey = () => 'ironwork.parts';
   // stains on the wall under AC units: lit like the wall, blended over it
   const stain = new THREE.MeshStandardMaterial({
     name: 'ironwork.stain', map: stainTexture(), transparent: true, depthWrite: false, roughness: 0.92,

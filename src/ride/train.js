@@ -678,29 +678,20 @@ export class Tram {
   }
 }
 
-/**
- * Weighted count of the people in and beside the track corridor (|d| ≤ TRACK_ZONE_HALF +
- * BESIDE), read from the crowd: weight(u, d) with u = metres ahead of the camera along the
- * route. Null without a crowd.
- */
-export function corridorPeople(app, weight) {
-  const cr = app.crowd, sim = cr && !cr.disabled ? cr.sim : null;
-  const agents = sim && sim.population && sim.population.agents;
-  if (!agents || typeof sim.camU !== 'number') return null;
-  let n = 0;
-  for (let i = 0; i < agents.length; i++) {
-    const a = agents[i];
-    if (!a.active || !(Math.abs(a.d) <= TRACK_ZONE_HALF + BESIDE)) continue;
-    n += weight(a.s - sim.camU, a.d);
-  }
-  return n;
+/** The crowd's public corridor count (app.crowd.corridorCount), or null without a crowd. */
+export function crowdCorridor(app) {
+  const cr = app.crowd;
+  return cr && !cr.disabled && typeof cr.corridorCount === 'function' ? cr : null;
 }
 
-/** The cab tram's load weights (it runs on the right track, d > 0) 5-200 m ahead: its half
- *  of the corridor 1, the other half 0.6, the strip beside the corridor on its side
- *  DRIVE.besideW (people there step onto its track; drivers in a pedestrian mall slow for them). */
-const cabWeight = (u, d) => (u > 5 && u < 200
-  ? (d > TRACK_ZONE_HALF ? DRIVE.besideW : d > -0.2 ? 1 : d >= -TRACK_ZONE_HALF ? 0.6 : 0) : 0);
+/** Stretch of route ahead of the camera (m) whose people set the driver's cruise. */
+const LOAD_AHEAD = [5, 200];
+
+/** The cab tram's load weights (it runs on the right track, d > 0): its half of the
+ *  corridor 1, the other half 0.6, the strip of BESIDE m beside the corridor on its side
+ *  DRIVE.besideW (people there step onto its track; drivers in a pedestrian mall slow for
+ *  them). The crowd calls it as weight(off, d) for everybody within the stretch. */
+const cabWeight = (off, d) => (d > TRACK_ZONE_HALF ? DRIVE.besideW : d > -0.2 ? 1 : d >= -TRACK_ZONE_HALF ? 0.6 : 0);
 
 // ---------------------------------------------------------------------- module
 const train = {
@@ -787,8 +778,10 @@ const train = {
       if (this._loadT > 0) return;
     }
     this._loadT = 1;
-    const n = corridorPeople(app, cabWeight);
-    if (n == null) return;
+    const cr = crowdCorridor(app);
+    if (!cr) return;
+    const camS = app.cameraS ?? this.s;
+    const n = cr.corridorCount(camS + LOAD_AHEAD[0], camS + LOAD_AHEAD[1], cabWeight, TRACK_ZONE_HALF + BESIDE);
     this.corridorCount = n;
     const x = n / DRIVE.busyPeople;
     if (this.holding || !this._loadInit) { this.tram.setLoad(x, true); this._loadInit = !this.holding; }

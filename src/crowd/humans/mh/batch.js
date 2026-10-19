@@ -68,6 +68,19 @@ class IndirectLists {
   }
 }
 
+/** One stable counting-sort pass on byte `shift` of the keys: (srcI, srcK) -> (dstI, dstK). */
+function radixPass(srcI, srcK, dstI, dstK, n, shift, cnt) {
+  cnt.fill(0);
+  for (let j = 0; j < n; j++) cnt[(srcK[j] >> shift) & 255]++;
+  let sum = 0;
+  for (let b = 0; b < 256; b++) { const c = cnt[b]; cnt[b] = sum; sum += c; }
+  for (let j = 0; j < n; j++) {
+    const p = cnt[(srcK[j] >> shift) & 255]++;
+    dstI[p] = srcI[j];
+    dstK[p] = srcK[j];
+  }
+}
+
 export class FigureBatch {
   /**
    * geometry: the merged figures (32-bit indices); ranges: index ranges [{start, count}] (in indices)
@@ -167,6 +180,10 @@ export class FigureBatch {
     this.shadowExtra = I(this.shadowExtra, 2);
     this.cap = cap;
     this.order = new Uint32Array(cap);
+    // (radix sort scratch: indices and 16-bit depth keys, two buffers each)
+    this._oA = new Uint32Array(cap); this._oB = new Uint32Array(cap);
+    this._kA = new Uint16Array(cap); this._kB = new Uint16Array(cap);
+    if (!this._cnt) this._cnt = new Uint32Array(256);
     const m = this.mesh;
     if (m && m._multiDrawStarts.length < cap * 4) {
       m._multiDrawStarts = new Int32Array(cap * 4);
@@ -204,13 +221,22 @@ export class FigureBatch {
     this.shadowExtra[i * 2 + 1] = shadowExtra ? shadowExtra[1] ?? -1 : -1;
   }
 
-  /** After the frame's figures are added: the view order (front to back). */
+  /** After the frame's figures are added: the view order (front to back), by a two-pass radix sort of
+   *  the view depth quantised to 1/32 m (0 .. 2 km; the order only serves early depth rejection), which
+   *  makes no garbage (a typed-array sort with a comparator copies and boxes). */
   end() {
-    const n = this.n, o = this.order, inView = this.inView, d = this.depth;
+    const n = this.n, inView = this.inView, d = this.depth;
+    const oA = this._oA, oB = this._oB, kA = this._kA, kB = this._kB;
     let k = 0;
-    for (let i = 0; i < n; i++) if (inView[i]) o[k++] = i;
-    const sub = o.subarray(0, k);
-    sub.sort((a, b) => d[a] - d[b]);
+    for (let i = 0; i < n; i++) {
+      if (!inView[i]) continue;
+      const q = d[i] * 32;
+      oA[k] = i;
+      kA[k] = q <= 0 ? 0 : q >= 65535 ? 65535 : q | 0;
+      k++;
+    }
+    radixPass(oA, kA, oB, kB, k, 0, this._cnt);
+    radixPass(oB, kB, this.order, kA, k, 8, this._cnt);
     this.nView = k;
     this.mesh.visible = n > 0;
     this.stats.passes = 0;

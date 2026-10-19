@@ -28,9 +28,13 @@ const HAND_SCALE = { male: 1.0, female: 0.9, child: 0.76, kid: 0.62 };
 
 const v3 = () => new Float64Array(3);
 function set3(o, x, y, z) { o[0] = x; o[1] = y; o[2] = z; return o; }
-function norm3(o) { const l = Math.hypot(o[0], o[1], o[2]) || 1; o[0] /= l; o[1] /= l; o[2] /= l; return o; }
+function norm3(o) { const l = hyp3(o[0], o[1], o[2]) || 1; o[0] /= l; o[1] /= l; o[2] /= l; return o; }
 function cross3(a, b, o) { const x = a[1] * b[2] - a[2] * b[1], y = a[2] * b[0] - a[0] * b[2], z = a[0] * b[1] - a[1] * b[0]; o[0] = x; o[1] = y; o[2] = z; return o; }
 function dot3(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+// (Math.hypot boxes its arguments on every call: these are inlined)
+function hyp2(x, y) { return Math.sqrt(x * x + y * y); }
+function hyp3(x, y, z) { return Math.sqrt(x * x + y * y + z * z); }
 /** o = R(m, mo) * v */
 function app3(m, mo, x, y, z, o) {
   o[0] = m[mo] * x + m[mo + 1] * y + m[mo + 2] * z;
@@ -74,7 +78,7 @@ const _iu = v3(), _iv = v3();
 /** Two-bone IK: mid joint bending towards `pole`, end clamped to the reach. Returns the reach ratio. */
 function ik2(root, target, l1, l2, pole, reach, mid, end) {
   let dx = target[0] - root[0], dy = target[1] - root[1], dz = target[2] - root[2];
-  let d = Math.hypot(dx, dy, dz);
+  let d = hyp3(dx, dy, dz);
   const u = set3(_iu, dx / (d || 1), dy / (d || 1), dz / (d || 1));
   const want = d;
   d = Math.min(Math.max(d, Math.abs(l1 - l2) + 1e-3), (l1 + l2) * reach);
@@ -189,7 +193,7 @@ export class Poser {
   /** Shoulder-to-grip distance of the scratch pose's side s over the arm's reach. */
   _reachRatio(s, grip) {
     const b = this.arm[s].b[1] * 3;
-    return Math.hypot(grip[0] - PP[b], grip[1] - PP[b + 1], grip[2] - PP[b + 2]) / this.arm[s].reach;
+    return hyp3(grip[0] - PP[b], grip[1] - PP[b + 1], grip[2] - PP[b + 2]) / this.arm[s].reach;
   }
 
   /** Trunk lean (rad) for a rider sitting at `sit` so both hands reach the grips with the elbows
@@ -238,7 +242,7 @@ export class Poser {
     if (this.missStat) {
       const R = this.missStat;
       R.max = Math.max(R.max, this.miss); R.n++;
-      if (this.miss > 0.005) { R.bad = (R.bad || 0) + 1; const d = Math.hypot(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa); R.far = Math.max(R.far || 0, d); if (d < 0.97) R.nonconv = (R.nonconv || 0) + 1; }
+      if (this.miss > 0.005) { R.bad = (R.bad || 0) + 1; const d = hyp3(G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]) / (this.ua + this.fa); R.far = Math.max(R.far || 0, d); if (d < 0.97) R.nonconv = (R.nonconv || 0) + 1; }
     }
     PP[bF * 3] = E[0]; PP[bF * 3 + 1] = E[1]; PP[bF * 3 + 2] = E[2];
     PP[bH * 3] = Wd[0]; PP[bH * 3 + 1] = Wd[1]; PP[bH * 3 + 2] = Wd[2];
@@ -272,7 +276,7 @@ export class Poser {
   hipDist(s, q) {
     const b = this.leg[s].b[0] * 3, r = this.rest;
     app3(PR, 9, r[b] - r[3], r[b + 1] - r[4], r[b + 2] - r[5], _p);
-    return Math.hypot(q[0] - PP[3] - _p[0], q[1] - PP[4] - _p[1], q[2] - PP[5] - _p[2]);
+    return hyp3(q[0] - PP[3] - _p[0], q[1] - PP[4] - _p[1], q[2] - PP[5] - _p[2]);
   }
 
   /** Ankle target for the sole under the ball of the foot at `ball` with foot rotation Rf. */
@@ -447,7 +451,7 @@ export class Mobility {
       dh = ((dh + Math.PI) % TAU + TAU) % TAU - Math.PI;
       const w = Math.abs(dh) < 1 ? dh / dt : 0;
       st.omega += (w - st.omega) * Math.min(1, dt * 5);
-      const dx = s.x - st.px, dz = s.z - st.pz, dy = s.y - st.py, dist = Math.hypot(dx, dz);
+      const dx = s.x - st.px, dz = s.z - st.pz, dy = s.y - st.py, dist = hyp2(dx, dz);
       if (dist > 0.004 && dist < 1.5) {
         // moving forward up a slope tips the nose up
         const fwd = (-Math.sin(s.heading) * dx - Math.cos(s.heading) * dz) >= 0 ? 1 : -1;
@@ -487,9 +491,9 @@ export class Mobility {
         // standing still: a foot goes down and the bike tips towards it
         const want = 1 - smooth01((v - 0.25) / 0.9);
         st.stopW = fresh ? want : st.stopW + Math.max(-dt * 1.6, Math.min(dt * 1.6, want - st.stopW));
-        const turnLean = s.leanIn !== null ? s.leanIn : Math.max(-0.45, Math.min(0.45, Math.atan((v * st.omega) / 9.81)));
+        const turnLean = s.leanIn === s.leanIn ? s.leanIn : Math.max(-0.45, Math.min(0.45, Math.atan((v * st.omega) / 9.81)));
         st.lean = turnLean * (1 - st.stopW) + st.stopW * -st.footSide * 0.13;
-        st.steer = s.steerIn !== null ? s.steerIn : Math.max(-0.5, Math.min(0.5, Math.atan((wb * st.omega) / Math.max(0.8, v))));
+        st.steer = s.steerIn === s.steerIn ? s.steerIn : Math.max(-0.5, Math.min(0.5, Math.atan((wb * st.omega) / Math.max(0.8, v))));
         st.steer *= 1 - 0.6 * st.stopW;
         // cranks follow the gait phase; at a standstill the pedal of the foot that stays on is
         // brought round to the front (back-pedalling), ready to push off
@@ -563,7 +567,7 @@ export class Mobility {
     const ratio = (side, px, py, pz, wx, wz, palm) => {
       const b = BONE['arm' + side] * 3, A = P.arm[side];
       const reach = (palm ? P.ua + P.fa + 0.062 * (HAND_SCALE[B.rig.kind] ?? 1) : A.reach) * sc;
-      return Math.hypot(px - wx - r[b] * sc, py - r[b + 1] * sc, pz - wz - r[b + 2] * sc) / reach;
+      return hyp3(px - wx - r[b] * sc, py - r[b + 1] * sc, pz - wz - r[b + 2] * sc) / reach;
     };
     let best = null;
     for (const hold of st.hold === 1 ? [1, 0] : [0]) {
@@ -838,11 +842,11 @@ function blendRot(out, o, Bm, bo, u) {
   for (let k = 0; k < 9; k++) out[o + k] += (Bm[bo + k] - out[o + k]) * u;
   // Gram-Schmidt on the columns
   let ax = out[o], ay = out[o + 3], az = out[o + 6];
-  let l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
+  let l = hyp3(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
   let bx = out[o + 1], by = out[o + 4], bz = out[o + 7];
   const d = ax * bx + ay * by + az * bz;
   bx -= ax * d; by -= ay * d; bz -= az * d;
-  l = Math.hypot(bx, by, bz) || 1; bx /= l; by /= l; bz /= l;
+  l = hyp3(bx, by, bz) || 1; bx /= l; by /= l; bz /= l;
   out[o] = ax; out[o + 3] = ay; out[o + 6] = az;
   out[o + 1] = bx; out[o + 4] = by; out[o + 7] = bz;
   out[o + 2] = ay * bz - az * by; out[o + 5] = az * bx - ax * bz; out[o + 8] = ax * by - ay * bx;

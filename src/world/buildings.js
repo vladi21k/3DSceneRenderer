@@ -81,6 +81,9 @@ const buildings = {
 
   async init(app) {
     this.app = app;
+    const T = (this.stats.init = {}), t0 = performance.now();
+    let tl = t0;
+    const lap = (k) => { const t = performance.now(); T[k] = Math.round(t - tl); tl = t; };
     const fl = app.params.str ? app.params.str('blod') : null;
     if (fl === '0' || fl === '1') FORCE_LOD = +fl;
     bindLayout(app.layout);   // corner returns follow the real side-street lines
@@ -99,10 +102,12 @@ const buildings = {
       };
       MATS.smoothD = MATS.smooth;
       MATS.dark = MATS.plaster;
+      lap('materials');
       // painted murals on a few gables, printed adverts on others (buildings/mural.js)
       muralMaterials(app).forEach((m, k) => { MATS[`mural${k}`] = m; });
       ADS = advertMaterials(app);
       ADS.forEach((m, k) => { MATS[`advert${k}`] = m; });
+      lap('murals');
     }
     uploaders = new THREE.Group();
     uploaders.name = 'buildings:upload';
@@ -111,16 +116,30 @@ const buildings = {
     planSkyline(app);
     this.debug = { skyline, backdrops, vistas };   // (inspection from the console / tests)
     indexEnds(app.layout);
-    // everything the first frames need, before the streamer primes
+    lap('plans');
+    // Everything the first frames need: the view (chunks beyond it are prefetched while
+    // riding), and both levels of the chunks near the full-detail switch (the camera
+    // starts a few metres from startS), so the streamer's first builds never generate
+    // inline. These jobs are generated in the background, in slices between the other
+    // modules' start-up work and during the shader compile (the main thread mostly waits
+    // there); the start-up prime builds whatever it needs first inline, and the first
+    // frame completes the rest (see finishStartup), so the first frame sees exactly
+    // what a synchronous start-up would have built.
     const around = [app.startS, app.startS - CHUNK_LEN / 2];   // the cab may start a little behind startS
     if (app.params.view) around.push(app.params.view[0]);
+    const list = [];
+    const add = (c) => { const job = jobs.get(jobKey(c.idx, c.lod)) || newJob(app, c.idx, c.lod); if (list.indexOf(job) < 0) list.push(job); };
     for (const s of around) {
-      // the view (chunks beyond it are prefetched while riding)
-      this.prefetch(app, s, Infinity, 0);
-      // the camera starts a few metres from startS: chunks near the full-detail switch
-      // get both levels, so the streamer's first build never has to generate inline
-      for (const c of candidates(app, s, true)) runJob(app, jobs.get(jobKey(c.idx, c.lod)) || newJob(app, c.idx, c.lod), Infinity);
+      for (const c of candidates(app, s, false, 0)) add(c);
+      for (const c of candidates(app, s, true)) add(c);
     }
+    // nearest first: the prime asks for those first
+    const d = (j) => Math.abs(app.route.delta(app.startS, j.s));
+    list.sort((a, b) => d(a) - d(b));
+    startup = { list, i: 0, timer: 0 };
+    pumpStartup(app);
+    lap('jobs');
+    T.total = Math.round(performance.now() - t0);
   },
 
   build(chunk, app) {
@@ -130,7 +149,8 @@ const buildings = {
     if (!job) job = newJob(app, chunk.index, chunk.lod);
     if (!job.lots.length) { jobs.delete(k); return null; }
     let group;
-    if (!job.done && chunk.lod === 1 && !this.sync) {
+    // (before the first frame: the start-up prime, built inline as a synchronous start-up would)
+    if (!job.done && chunk.lod === 1 && !this.sync && !startup) {
       // far edge not ready: a coarse stand-in now, the real shell once the job is done
       group = coarseGroup(app, job);
       swaps.set(job, group);
@@ -174,6 +194,7 @@ const buildings = {
       const e = Math.min(0.0055, ADVERT_EXPOSED / expo) * Math.min(1, Math.max(0, (U.uNight.value - 0.25) / 0.5)) * gain;
       for (let i = 0; i < ADS.length; i++) ADS[i].emissiveIntensity = e;
     }
+    if (startup) finishStartup(app);
     const s = app.cameraS;
     if (s == null || !app.world) return;
     releaseUploads();
@@ -222,6 +243,38 @@ const buildings = {
 export default buildings;
 
 // ------------------------------------------------------------------ chunk jobs
+
+// ------------------------------------------------------------------ start-up jobs
+
+let startup = null;            // {list: jobs, i, timer} until the first frame
+const PUMP_MS = 6;             // a background slice (the main thread is otherwise waiting)
+
+/** Generate the start-up jobs in background slices, nearest first, until the first frame. */
+function pumpStartup(app) {
+  const st = startup;
+  if (!st) return;
+  st.timer = 0;
+  const t0 = performance.now();
+  while (st.i < st.list.length) {
+    const left = PUMP_MS - (performance.now() - t0);
+    if (left <= 0) break;
+    const job = st.list[st.i];
+    if (!job.done) runJob(app, job, left);
+    if (job.done) st.i++;
+  }
+  if (st.i < st.list.length) st.timer = setTimeout(() => pumpStartup(app), 0);
+}
+
+/** First frame: complete whatever start-up job the background slices have not finished. */
+function finishStartup(app) {
+  const st = startup;
+  startup = null;
+  if (st.timer) clearTimeout(st.timer);
+  const t0 = performance.now();
+  let n = 0;
+  for (let i = st.i; i < st.list.length; i++) if (!st.list[i].done) { runJob(app, st.list[i], Infinity); n++; }
+  buildings.stats.init.firstFrame = [n, Math.round(performance.now() - t0)];
+}
 
 /** Numeric job key (no string per lookup): a far level of 2 or more shares the far job. */
 const jobKey = (idx, lod) => idx * 2 + (lod ? 1 : 0);

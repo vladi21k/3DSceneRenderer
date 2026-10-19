@@ -59,6 +59,9 @@ const _hold = [0, 0, 0], _holdI = [0, 0, -1], _holdP = [0, 0, 0];
 const _extra = [-1, -1, -1, -1], _extraFar = [-1, -1, -1, -1], _shadowExtra = [-1, -1];
 const FALLBACK = { age: 'adult', base: 'male', female: false, height: 1.72, carry: false, phoneWalk: false, walkOld: false,
   skirtPart: 0, sit: 0, idle: 0, body: '', scale: 1 };
+// (Math.hypot boxes its arguments on every call: these are inlined)
+function hyp2(x, y) { return Math.sqrt(x * x + y * y); }
+function hyp3(x, y, z) { return Math.sqrt(x * x + y * y + z * z); }
 
 // the cast starts downloading and decoding as soon as this module is imported, while the modules
 // before it initialise (humans_tex=2 loads the texture arrays at half resolution)
@@ -265,8 +268,9 @@ const humans = {
     // the turn when not given)
     if (o.prop !== undefined) s.prop = o.prop | 0;
     if (o.propSeed !== undefined) s.propSeed = o.propSeed | 0;
-    s.leanIn = Number.isFinite(o.lean) ? o.lean : null;
-    s.steerIn = Number.isFinite(o.steer) ? o.steer : null;
+    // (NaN, not null, when absent: the slot's fields stay unboxed doubles)
+    s.leanIn = Number.isFinite(o.lean) ? o.lean : NaN;
+    s.steerIn = Number.isFinite(o.steer) ? o.steer : NaN;
     // standing stance override (optional): 0 relaxed, 1 phone, 2 arms folded, 3 hands in pockets, 4 hand
     // on hip, 5 hands behind the back, 6 talking, 7 looking about; absent / -1: the person's own
     s.idleIn = Number.isInteger(o.idle) && o.idle >= 0 && o.idle <= 7 ? o.idle : -1;
@@ -376,9 +380,13 @@ const humans = {
     // the sun's horizontal shadow direction and reach per metre of height (off-screen figures whose
     // shadow falls into view are posed too)
     const sd = U.uSunDir ? U.uSunDir.value : null;
-    const el = sd ? Math.max(0.12, sd.y) : 1;
-    const hl = sd ? Math.hypot(sd.x, sd.z) || 1 : 1;
-    this._shadow = sd ? { x: -sd.x / hl, z: -sd.z / hl, k: Math.min(12, Math.sqrt(1 - el * el) / el) } : null;
+    if (sd) {
+      const el = Math.max(0.12, sd.y);
+      const hl = Math.sqrt(sd.x * sd.x + sd.z * sd.z) || 1;
+      const S = this._shadowDir || (this._shadowDir = { x: 0, z: 0, k: 0 });
+      S.x = -sd.x / hl; S.z = -sd.z / hl; S.k = Math.min(12, Math.sqrt(1 - el * el) / el);
+      this._shadow = S;
+    } else this._shadow = null;
     this._bones = this.boneTex.image.data;
     const look = this.lookTex;
     this._lookDirty = false;
@@ -550,7 +558,7 @@ const humans = {
       c.speed = 0; c.phase = 0; c.pose = 2; c.look = 0; c.visible = true;
       c.prop = 0; c.holdWith = -1; c.hold = null;
       // far away the child is a few pixels inside the canopy
-      const px = (c.a.height / Math.max(0.5, Math.hypot(c.x - this._camPos.x, c.y - this._camPos.y, c.z - this._camPos.z))) * this._pxPerM;
+      const px = (c.a.height / Math.max(0.5, hyp3(c.x - this._camPos.x, c.y - this._camPos.y, c.z - this._camPos.z))) * this._pxPerM;
       if (px <= this.lodPx[2] * 0.8) { c.visible = false; c.lod = -1; continue; }
       this._emit(ci, c, c.a, B, c.a.height / B.info.H);
     }
@@ -603,7 +611,7 @@ const humans = {
         const u = Math.min(1, Math.max(0, (1.02 - (gy - p.y)) / 0.4));
         const sx = Math.sign(rx) * 0.245, sz = -0.27 * u;
         const gx = ox + cp * sx + spn * sz, gz = oz - spn * sx + cp * sz;
-        if (Math.hypot(gx - sh.x, gy - sh.y, gz - sh.z) > reach * 0.97) continue;
+        if (hyp3(gx - sh.x, gy - sh.y, gz - sh.z) > reach * 0.97) continue;
         s.hold = { side, x: gx, y: gy, z: gz, adult: false };
         this.holdList.push(i);
         continue;
@@ -625,7 +633,7 @@ const humans = {
       if (lowT > shL.y + 0.14) continue;            // too small a child for this adult's hand
       const gy = Math.max(lowT, shL.y - 0.8 * rL);
       const gx = (shS.x + shP.x) * 0.5 - sn * 0.06, gz = (shS.z + shP.z) * 0.5 - cs * 0.06;
-      if (Math.hypot(gx - shL.x, gy - shL.y, gz - shL.z) > rL * 0.98 || Math.hypot(gx - shT.x, gy - shT.y, gz - shT.z) > rT * 0.98) continue;
+      if (hyp3(gx - shL.x, gy - shL.y, gz - shL.z) > rL * 0.98 || hyp3(gx - shT.x, gy - shT.y, gz - shT.z) > rT * 0.98) continue;
       s.hold = { side, x: gx, y: gy, z: gz, adult: !tall };
       p.hold = { side: sideP, x: gx, y: gy, z: gz, adult: tall };
       this.holdList.push(i, s.holdWith);
@@ -838,7 +846,7 @@ function beardFade(c, range = 0.035) {
     for (const u of queue) {
       const du = dist.get(u);
       for (const v of adj.get(u)) {
-        const l = Math.hypot(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
+        const l = hyp3(P[u * 3] - P[v * 3], P[u * 3 + 1] - P[v * 3 + 1], P[u * 3 + 2] - P[v * 3 + 2]);
         if (!dist.has(v) || du + l < dist.get(v) - 1e-6) { dist.set(v, du + l); next.push(v); }
       }
     }
@@ -881,7 +889,7 @@ function beardShells(c) {
     for (let j = 0; j < add.length; j++) {
       const v = add[j], w = n0 + k * add.length + j;
       const nx = raw.nrm[v * 4] / 127, ny = raw.nrm[v * 4 + 1] / 127, nz = raw.nrm[v * 4 + 2] / 127;
-      const l = Math.hypot(nx, ny, nz) || 1;
+      const l = hyp3(nx, ny, nz) || 1;
       for (let i = 0; i < 3; i++) pos[w * 3 + i] = raw.pos[v * 3 + i] + [nx, ny, nz][i] / l * OFF[k];
       for (let i = 0; i < 4; i++) { nrm[w * 4 + i] = raw.nrm[v * 4 + i]; bi[w * 4 + i] = raw.bi[v * 4 + i]; bw[w * 4 + i] = raw.bw[v * 4 + i]; tex[w * 4 + i] = raw.tex[v * 4 + i]; }
       tex[w * 4 + 3] |= FL[k];
@@ -911,7 +919,7 @@ function eyeRadius(c) {
   for (let t = L0.start; t < L0.start + L0.count; t++) {
     const v = raw.index[t];
     if (T[v * 4 + 2] !== 4 || P[v * 3] < 0) continue;
-    s += Math.hypot(P[v * 3] - e[0], P[v * 3 + 1] - e[1], P[v * 3 + 2] - e[2]); n++;
+    s += hyp3(P[v * 3] - e[0], P[v * 3 + 1] - e[1], P[v * 3 + 2] - e[2]); n++;
   }
   if (n > 8) c.eyeR = s / n;
 }
@@ -1053,14 +1061,14 @@ function hatBrim(c) {
   let rb = 0;
   for (let v = 0; v < raw.n; v++) {
     if (T[v * 4 + 2] !== 10 || P[v * 3 + 1] > band + 0.03) continue;
-    rb = Math.max(rb, Math.hypot(P[v * 3] - hc[0], P[v * 3 + 2] - hc[2]));
+    rb = Math.max(rb, hyp2(P[v * 3] - hc[0], P[v * 3 + 2] - hc[2]));
   }
   // (the brim's height over the face: its front edge, which may sit higher or lower than the band)
   const fy = [];
   for (let v = 0; v < raw.n; v++) {
     if (T[v * 4 + 2] !== 10) continue;
     const dx = P[v * 3] - hc[0], dz = P[v * 3 + 2] - hc[2];
-    if (dz < -0.5 * rb && Math.hypot(dx, dz) > 0.8 * rb) fy.push(P[v * 3 + 1]);
+    if (dz < -0.5 * rb && hyp2(dx, dz) > 0.8 * rb) fy.push(P[v * 3 + 1]);
   }
   fy.sort((a, b) => a - b);
   c.hat = { band: fy.length ? fy[Math.floor(fy.length * 0.5)] : band, rb };
@@ -1118,13 +1126,14 @@ function rigidify(M, rest) {
     const py = M[o + 4] * j.x + M[o + 5] * j.y + M[o + 6] * j.z + M[o + 7];
     const pz = M[o + 8] * j.x + M[o + 9] * j.y + M[o + 10] * j.z + M[o + 11];
     // columns c0, c1 of the 3x3 part: Gram-Schmidt, c2 = c0 x c1
+    // (Math.sqrt, never Math.hypot: the latter boxes its arguments on every call)
     let ax = M[o], ay = M[o + 4], az = M[o + 8];
-    let l = Math.hypot(ax, ay, az) || 1;
+    let l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
     ax /= l; ay /= l; az /= l;
     let bx = M[o + 1], by = M[o + 5], bz = M[o + 9];
     const d = ax * bx + ay * by + az * bz;
     bx -= ax * d; by -= ay * d; bz -= az * d;
-    l = Math.hypot(bx, by, bz) || 1;
+    l = Math.sqrt(bx * bx + by * by + bz * bz) || 1;
     bx /= l; by /= l; bz /= l;
     const cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
     M[o] = ax; M[o + 4] = ay; M[o + 8] = az;
@@ -1141,7 +1150,7 @@ function newSlot() {
     lod: -1, inView: false, blendFrame: -10, blendBase: null, model: null,     // model: pose before the figure transform
     posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
     cupW: 0, fromCup: 0, cupOn: false,
-    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: null, steerIn: null, mob: null,
+    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: NaN, steerIn: NaN, mob: null,
     holdWith: -1, hold: null, comp: false, babySlot: -1, idleIn: -1, idleShown: -1 };
 }
 
@@ -1227,21 +1236,24 @@ function pitchBones(M, rest, bones, p, ang) {
   const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
   const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
   let ax = M[k], ay = M[k + 4], az = M[k + 8];
-  const l = Math.hypot(ax, ay, az) || 1;
+  const l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
   ax /= l; ay /= l; az /= l;
   const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
   const R00 = t * ax * ax + c, R01 = t * ax * ay - s * az, R02 = t * ax * az + s * ay;
   const R10 = t * ax * ay + s * az, R11 = t * ay * ay + c, R12 = t * ay * az - s * ax;
   const R20 = t * ax * az - s * ay, R21 = t * ay * az + s * ax, R22 = t * az * az + c;
-  for (const b of bones) {
-    const o = b * 12;
-    for (let col = 0; col < 4; col++) {
-      let x = M[o + col], y = M[o + 4 + col], z = M[o + 8 + col];
-      if (col === 3) { x -= px; y -= py; z -= pz; }
-      M[o + col] = R00 * x + R01 * y + R02 * z + (col === 3 ? px : 0);
-      M[o + 4 + col] = R10 * x + R11 * y + R12 * z + (col === 3 ? py : 0);
-      M[o + 8 + col] = R20 * x + R21 * y + R22 * z + (col === 3 ? pz : 0);
+  for (let bi = 0; bi < bones.length; bi++) {
+    const o = bones[bi] * 12;
+    for (let col = 0; col < 3; col++) {
+      const x = M[o + col], y = M[o + 4 + col], z = M[o + 8 + col];
+      M[o + col] = R00 * x + R01 * y + R02 * z;
+      M[o + 4 + col] = R10 * x + R11 * y + R12 * z;
+      M[o + 8 + col] = R20 * x + R21 * y + R22 * z;
     }
+    const x = M[o + 3] - px, y = M[o + 7] - py, z = M[o + 11] - pz;
+    M[o + 3] = R00 * x + R01 * y + R02 * z + px;
+    M[o + 7] = R10 * x + R11 * y + R12 * z + py;
+    M[o + 11] = R20 * x + R21 * y + R22 * z + pz;
   }
 }
 

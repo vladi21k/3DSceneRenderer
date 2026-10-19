@@ -5,6 +5,7 @@ import { KIND, ST, TASK, LANE, MOB, settleShape } from './agent.js';
 import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
 import { thinkCycle, maybeMount } from './cyclist.js';
 import { serveArrive } from './staff.js';
+import { PAUSE } from './stance.js';
 
 // Decisions and goals of individual pedestrians: lane walking, window shopping,
 // entering shops, side streets, crossing the tracks, joining a platform, café seats,
@@ -730,6 +731,7 @@ function startPause(c, a) {
         const gd = side * (map.wallMin(js, side, 0.4) - 0.1);
         if (!clearSpot(c, js, gd, 0.45) || map.rectInner(js, side, Math.abs(gd), 0.3)) continue;
         a.task = TASK.PAUSE; a.step = 0; a.pauseFace = faceStreet(side) + r.range(-0.6, 0.6); a.pauseT = r.range(15, 60);
+        a.pauseK = PAUSE.DOOR;
         goTo(a, js, gd, 0.3);
         c.tally('pauseDoor');
         return true;
@@ -745,7 +747,7 @@ function startPause(c, a) {
       if (ahead < 2 || ahead > 11) continue;
       const gs = os + r.range(-0.12, 0.12), gd = od + side * (cr + AGENT_R + 0.17);
       if (Math.abs(gd) > map.wallAt(gs, side) - 0.6 || map.rectInner(gs, side, Math.abs(gd), 0.35)) continue;
-      a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(10, 45);
+      a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(10, 45); a.pauseK = PAUSE.POLE;
       a.pauseFace = r.chance(0.5) ? faceStreet(side) + r.range(-0.7, 0.7) : (a.dir > 0 ? 0 : PI) + r.range(-0.8, 0.8);
       goTo(a, gs, gd, 0.25);
       c.tally('pausePole');
@@ -758,7 +760,7 @@ function startPause(c, a) {
   const toFac = r.chance(0.55);
   const gs = a.s + a.dir * r.range(1.2, 2.5), gd = side * (toFac ? bo - 0.1 : bi + 0.35);
   if (!clearSpot(c, gs, gd, 0.5)) return false;
-  a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(12, 50);
+  a.task = TASK.PAUSE; a.step = 0; a.pauseT = r.range(12, 50); a.pauseK = PAUSE.PHONE;
   a.pauseFace = toFac ? faceStreet(side) + r.range(-0.9, 0.9) : r.range(-PI, PI);
   goTo(a, gs, gd, 0.35);
   c.tally('pausePhone');
