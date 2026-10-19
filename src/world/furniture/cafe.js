@@ -149,6 +149,16 @@ const srgb = (h) => new THREE.Color().setStyle(h, THREE.SRGBColorSpace);
 // switch distances (m) between detail levels; chairs stay crisp to ~35 m at the 17° default lens
 const LOD_CHAIR = [35, 130], LOD_TABLE = [45], LOD_UMB = [55, 170];
 
+/** Copy of a swept / lathed frame with its UVs swapped, so the timber grain (texture u)
+ *  runs along the poles and ribs instead of round them. */
+function grainAlong(g) {
+  if (!g) return g;
+  const c = g.clone(), uv = c.attributes.uv;
+  for (let i = 0; i < uv.count; i++) { const u = uv.getX(i); uv.setXY(i, uv.getY(i), u); }
+  c.userData.shared = true;
+  return c;
+}
+
 export function buildCafeProtos(M, F, umbKeys = ['30x30']) {
   const P = { chair: {}, top: {}, base: {}, umb: {}, misc: {} };
   const C = buildChairGeometry();
@@ -178,7 +188,7 @@ export function buildCafeProtos(M, F, umbKeys = ['30x30']) {
     P.umb[key] = {
       canopy: proto('umbrellaCanopy', [{ geo: cg, mat: F.canopy, tint: true }], LOD_UMB),
       alu: proto('umbrellaFrameAlu', [{ geo: fr, mat: F.umbFrame }], LOD_UMB),
-      wood: proto('umbrellaFrameWood', [{ geo: fr, mat: F.timber }], LOD_UMB),
+      wood: proto('umbrellaFrameWood', [{ geo: fr.map(grainAlong), mat: F.timber }], LOD_UMB),
       led: proto('umbrellaLed', [{ geo: [0, 1, 2].map((d) => ledGeo(su, sv, d)), mat: F.umbLed, cast: false }], LOD_UMB),
     };
   }

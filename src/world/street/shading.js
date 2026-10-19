@@ -26,7 +26,7 @@ export const SHEEN = {
   // and stays there, so off the polished band the head and lip read as the grey of the
   // setts round them, as in the photographs (with the bare oxide's warm colour and its
   // metal sheen, lit by the sun, they read as tan bands either side of the band).
-  uStDustOff: { value: 0.62 },
+  uStDustOff: { value: 0.72 },
   // Direct-light specular of the steel relative to an isotropic lobe of the same mean
   // roughness. The lengthwise polish is smooth along the rail and rough across it, so a
   // light source reaches the eye only from near the cone of reflections round the rail
@@ -59,6 +59,8 @@ export function dustOf(a) {
 /** The dust share at rail.head metalness m: uStDust.w on the polished band (metal 1),
  *  uStDustOff on the oxidised steel round it (metal 0.4-0.6). Mirrors the GLSL below. */
 export const DUST_BAND_M = [0.8, 0.97];
+/** Roughness of the settled dust (the overlay weights its dust share with it too). */
+export const DUST_ROUGH = 0.85;
 
 const NOISE = /* glsl */`
 float stHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
@@ -125,13 +127,16 @@ export function patchRailSheen(m, mode = 'uv') {
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
 {
-  float stDc = mix( uStDustOff, uStDust.w, smoothstep( ${DUST_BAND_M[0].toFixed(2)}, ${DUST_BAND_M[1].toFixed(2)}, material.metalness ) );
+  float stBand = smoothstep( ${DUST_BAND_M[0].toFixed(2)}, ${DUST_BAND_M[1].toFixed(2)}, material.metalness );
+  float stDc = mix( uStDustOff, uStDust.w, stBand );
   vec3 stDa = uStDust.rgb;
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
     stDa *= vColor.g;      // cavity AO of the swept profile
   #endif
   material.diffuseContribution = mix( material.diffuseContribution, stDa, stDc );
   material.specularColorBlended = mix( material.specularColorBlended, vec3( 0.04 ), stDc );
+  // off the band the settled dust is matt (on the band the wheels keep the polish)
+  material.roughness = mix( material.roughness, max( material.roughness, ${DUST_ROUGH.toFixed(2)} ), stDc * ( 1.0 - stBand ) );
 }`)
         .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= mix( 1.0, uStDirK, material.metalness );')
         // the polished running band (see RAIL_BAND_ROUGH); before the normal maps, whose
@@ -159,7 +164,7 @@ export function patchRailSheen(m, mode = 'uv') {
       .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;\nuniform vec4 uStDust;\nuniform float uStDustOff;\nuniform float uStDirK;')
       .replace('#include <lights_fragment_maps>', SHEEN_APPLY(along));
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen5-${mode}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen6-${mode}`; };
   m.needsUpdate = true;
   return m;
 }
@@ -230,12 +235,12 @@ float stMR = 1.0;
   float fi = ( stNoise( pw * 260.0 ) - 0.5 ) * kFi;
   float tone = stNoise( vec2( p.x * 0.35, p.y * 2.0 ) + 5.0 ) - 0.5;
   diffuseColor.rgb *= ( 1.0 + 0.16 * lighter ) * ( 1.0 + 0.14 * tone ) * ( 1.0 + 0.12 * tr ) * ( 1.0 + 0.2 * fi );
-  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.74, 0.73, 0.715 ), dirt );
+  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.8, 0.79, 0.775 ), dirt );
   stMR = 1.0 - 0.07 * lighter + 0.06 * fi;
 }`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor *= stMR;');
   };
-  m.customProgramCacheKey = () => 'street-mortar-3';
+  m.customProgramCacheKey = () => 'street-mortar-4';
   return m;
 }
 

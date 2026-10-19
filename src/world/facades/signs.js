@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
 import { RNG } from '../../core/rng.js';
-import { Tpl, lin } from './geo.js';
+import { Tpl, lin, finiteOutput } from './geo.js';
 import { SHOP_LEVEL } from './interior.js';
 
 // Shop signage: a canvas atlas of invented shop names (a Hebrew name over its English
@@ -881,8 +881,9 @@ function addGlow(m, key, gain) {
       // (at night the light boxes follow the exposure within a physical range: bright, but
       // their colour survives instead of burning out to a lemon or white patch)
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.04 * ( 1.0 - uNight ) + uSignNight * uNight * uEmGain );');
+    finiteOutput(shader);
   };
-  m.customProgramCacheKey = () => prevKey + '|' + key + '.v3';
+  m.customProgramCacheKey = () => prevKey + '|' + key + '.v4';
   return m;
 }
 

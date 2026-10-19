@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RAIL_X0, RAIL_X1, HEAD_HALF, HEAD_DULL, GROOVE_OUT, LIP_OUT, GROUT_W, SEAL_TONE, pavingTones } from './constants.js';
-import { patchRailSheen, RAIL_BAND_ROUGH } from './shading.js';
+import { patchRailSheen, RAIL_BAND_ROUGH, DUST_ROUGH } from './shading.js';
 
 // Pixel-width-aware line ribbons with analytic coverage.
 //
@@ -250,7 +250,7 @@ const RAIL_FRAG = /* glsl */`
   const vec3 LY = vec3( 0.2126, 0.7152, 0.0722 );
   float lB = dot( fBev, LY ) * eO * wBev, lS = dot( fSh, LY ) * eO * wShoulder, lN = dot( fBand, LY ) * ( 1.0 - dB ) * wBand, lL = dot( fLip, LY ) * eO * wLip;
   float lD = 0.04 * wDust, lO = 0.04 * ( wSeal + wGrout + wPave + 0.15 * wGroove );
-  float rNum = lB * ST_ZB_R + lS * ST_ZS_R + lN * rBand + lL * ST_ZL_R + lD * 0.85
+  float rNum = lB * ST_ZB_R + lS * ST_ZS_R + lN * rBand + lL * ST_ZL_R + lD * ${f(DUST_ROUGH)}
              + 0.04 * ( wSeal * 0.85 + wGrout * 0.9 + wPave * 0.7 + 0.15 * wGroove * 0.85 );
   lnRough = rNum / max( lB + lS + lN + lL + lD + lO, 1e-5 );
   diffuseColor.rgb = lnD;
@@ -727,7 +727,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-14';
+  m.customProgramCacheKey = () => 'street-line-15';
   return patchRailSheen(m, 'line');
 }
 

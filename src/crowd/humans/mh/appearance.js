@@ -51,7 +51,14 @@ const BAGS = P([['#18181a', 12], ['#3b2a20', 6], ['#5a3b24', 5], ['#5d6b52', 3],
   ['#b2342e', 2], ['#d9c8a8', 3], ['#e57b2c', 1]]);
 const PACKS = P([['#18181a', 10], ['#2c3e5e', 5], ['#5d6b52', 3], ['#8a8f96', 3], ['#b2342e', 2], ['#3b4a5c', 3],
   ['#e9802a', 1], ['#d9c8a8', 2]]);
+// shopping bags by shape (mh/parts.js shoppingBag): thin plastic carriers (mostly white or pale, a few in a
+// shop's colour), paper carriers (kraft, white, a black boutique bag), cloth totes; and the prints on them
 const SHOPPING = P([['#e87b2a', 3], ['#f4f2ee', 5], ['#3a7bc0', 2], ['#d2302a', 2], ['#3c8a46', 1], ['#c9b48d', 3]]);
+const SHOP_PLASTIC = P([['#efeee9', 10], ['#dcdcd6', 4], ['#a9c6dc', 2], ['#1c1c1e', 2], ['#e07a34', 1], ['#c4423a', 1], ['#e2cf6a', 1],
+  ['#5c9a64', 1]]);
+const SHOP_PAPER = P([['#a8845e', 6], ['#f1efe9', 4], ['#18181a', 2], ['#7c2f2c', 1], ['#c8b8a0', 2]]);
+const SHOP_TOTE = P([['#d8ccb0', 6], ['#1c1c1e', 3], ['#273450', 2], ['#5d6449', 1], ['#e9e6dd', 1]]);
+const PRINT = P([['#18181a', 5], ['#c4372f', 3], ['#2d58a8', 3], ['#2f7a45', 2], ['#e08a2a', 1], ['#f2f0ea', 3]]);
 const PHONES = P([['#151517', 10], ['#e9e9e6', 3], ['#3a4a5e', 2], ['#c9b8a8', 2]]);
 // hair shades by family (dark / brown / fair / grey): a person keeps the family of the character's hair
 const HAIR = {
@@ -148,6 +155,45 @@ function vary(r, char, kidTop) {
   return t;
 }
 
+/**
+ * Garment colours jittered per person (from a stream of their own, so nothing else about the person
+ * changes): the hue turns up to +-16 degrees and the value moves up to about +-22 %, so two people who drew
+ * the same palette entry (a navy tee over khaki shorts) still differ. Near-neutral colours (white, black,
+ * greys) keep their hue; whites stay below 0.86 and a dress stays one colour.
+ */
+const _hsl = { h: 0, s: 0, l: 0 };
+const _jc = new THREE.Color();
+function jitterGarments(t, seed, char) {
+  const rj = new RNG((seed >>> 0) ^ 0x7feb352d);
+  for (const region of ['top', 'bottom']) {
+    const c = t[region];
+    if (!c || suitOf(char, region) === 'male_elegantsuit01') continue;
+    _jc.setRGB(c[0], c[1], c[2]).getHSL(_hsl, THREE.SRGBColorSpace);
+    const dh = rj.range(-16, 16) / 360, dv = rj.range(-0.22, 0.22);
+    const h = _hsl.s > 0.12 ? (_hsl.h + dh + 1) % 1 : _hsl.h;
+    const l = THREE.MathUtils.clamp(_hsl.l * (1 + dv * (1 - _hsl.l)), 0.02, 0.93);
+    _jc.setHSL(h, _hsl.s, l, THREE.SRGBColorSpace);
+    const m = Math.max(_jc.r, _jc.g, _jc.b), sc = m > 0.86 ? 0.86 / m : 1;
+    t[region] = [_jc.r * sc, _jc.g * sc, _jc.b * sc];
+  }
+  if (isDress(char)) t.bottom = t.top.slice();
+}
+
+/** Outfit signature: the garments (top and bottom suits) and their colours in coarse buckets (hue 12ths,
+ *  3 lightness bands, grey or not), as one integer: two people with the same signature look dressed alike. */
+function outfitSignature(char, t) {
+  let sig = 0;
+  const suits = suitOf(char, 'top') + '|' + suitOf(char, 'bottom');
+  for (let i = 0; i < suits.length; i++) sig = (Math.imul(sig, 31) + suits.charCodeAt(i)) | 0;
+  for (const region of ['top', 'bottom']) {
+    const c = t[region] || [0, 0, 0];
+    _jc.setRGB(c[0], c[1], c[2]).getHSL(_hsl, THREE.SRGBColorSpace);
+    const b = _hsl.s < 0.15 ? 12 : Math.floor(_hsl.h * 12) % 12;
+    sig = Math.imul(sig, 53) + b * 3 + (_hsl.l < 0.3 ? 0 : _hsl.l < 0.65 ? 1 : 2);
+  }
+  return sig >>> 0;
+}
+
 /** Does a garment colour (linear) read as denim (blue or washed black)? Other colours get a calmer
  *  cloth detail (no fading, whiskers or worn patches). */
 function denimLike(c) {
@@ -190,6 +236,7 @@ function finish(seed, r, cast, index, toddler = false) {
   const female = char.sex === 'f';
   const scale = 1 + THREE.MathUtils.clamp(r.normal(0, cls === 'child' ? 0.03 : 0.022), -0.05, 0.05);
   const t = vary(r, char, cls === 'toddler' || cls === 'child');
+  jitterGarments(t, seed, char);
   const bot = char.outfit.bottom;
   const skirt = !!bot && bot.suit === 'female_elegantsuit01' && (bot.cut === 'skirt' || !bot.cut);
   const longSkirt = skirt && bot.cut === 'skirt' && (bot.length ?? 0) > 0.5;
@@ -220,6 +267,21 @@ function finish(seed, r, cast, index, toddler = false) {
   }
   t.bag = r.weighted(bag === BAG.SHOPPING ? SHOPPING : bag === BAG.BACKPACK ? PACKS : BAGS).slice();
   t.strap = bag === BAG.SHOPPING ? t.bag.map((x) => x * 0.8) : t.bag.map((x) => x * 0.55);
+  // shopping bags: a shape, its colours and a print (from a stream of their own: the rest of the
+  // person is drawn as before)
+  let bagShape = 0, bagPrint = 0;
+  if (bag === BAG.SHOPPING) {
+    const rb = new RNG((seed >>> 0) ^ 0x2545f491);
+    bagShape = rb.weighted([[0, 50], [1, 30], [2, 20]]);
+    t.bag = rb.weighted(bagShape === 0 ? SHOP_PLASTIC : bagShape === 1 ? SHOP_PAPER : SHOP_TOTE).map((x) => x * rb.range(0.94, 1.04));
+    const bl = 0.2126 * t.bag[0] + 0.7152 * t.bag[1] + 0.0722 * t.bag[2];
+    // (the print contrasts with the bag; it is the strap texel's colour: a paper bag's cords and a tote's
+    // handles take it too, a plastic carrier's handles are its own film)
+    let pc = rb.weighted(PRINT);
+    for (let i = 0; i < 4 && Math.abs(0.2126 * pc[0] + 0.7152 * pc[1] + 0.0722 * pc[2] - bl) < 0.15; i++) pc = rb.weighted(PRINT);
+    t.strap = pc.slice();
+    bagPrint = rb.chance(bagShape === 1 ? 0.75 : bagShape === 0 ? 0.6 : 0.45) ? rb.weighted([[1, 3], [2, 4], [3, 3]]) + rb.range(0.05, 0.95) * 0.9 : 0;
+  }
   t.prop = r.weighted(PHONES).slice();
   t.screen = [1, 1, 1];
   // eyes: the iris colour (drawn over the eye texture's own)
@@ -257,8 +319,8 @@ function finish(seed, r, cast, index, toddler = false) {
     glasses: toddler ? 0 : fv.glasses, frameTone: fv.frame,
     base: child ? 'child' : cls === 'toddler' ? 'toddler' : female ? 'female' : 'male',
     kind: char.kind, scale, height: char.height * scale,
-    tints: packTints(t), pattern, patScale, patColor,
-    bag, carry, walkOld, gait: walkOld ? 2 : old ? 1 : 0,
+    tints: packTints(t), pattern, patScale, patColor, outfitSig: outfitSignature(char, t),
+    bag, bagShape, bagPrint, carry, walkOld, gait: walkOld ? 2 : old ? 1 : 0,
     // forward stoop of the upper back (radians) carried into every pose
     stoop: old ? (walkOld ? r.range(0.10, 0.2) : r.range(0.03, 0.11)) : adult ? r.range(0, 0.03) : 0,
     idle: phoneWalk ? 1 : carry && (idle === 1 || idle === 2 || idle === 4 || idle === 5) ? 0 : idle,

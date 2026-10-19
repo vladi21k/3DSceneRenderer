@@ -7,10 +7,13 @@ import { buildStreetProtos, placeStreetFurniture } from './furniture/street.js';
 import { buildPlatformProtos, placePlatforms, platformWarmupParts } from './furniture/platform.js';
 import { buildVehicleProtos, placeVehicles } from './furniture/vehicles.js';
 import { buildShopProtos, planShopStands, placeShopStands } from './furniture/shopStands.js';
+import { buildClutterProtos, planClutter, placeClutter } from './furniture/clutter.js';
 
 // Street furniture, café terraces, tram-stop platforms, the vehicles parked in the cross
-// streets (vehicles.js) and the shops' sidewalk A-boards (shopStands.js, planned at init and
-// registered as crowd obstacles with layout.addObstacles). Contract: docs/ARCHITECTURE.md.
+// streets (vehicles.js), the shops' sidewalk A-boards (shopStands.js) and the street clutter
+// (clutter.js: utility cabinets, vendor carts, hoarding boxes, grocers' crates, shopkeepers'
+// chairs); A-boards and clutter are planned at init and registered as crowd obstacles with
+// layout.addObstacles. Contract: docs/ARCHITECTURE.md.
 // Prototype geometry and materials are built once in init and registered into global
 // BatchedMeshes (one per material); a chunk build only adds instances at the layout
 // positions (layout.cafes / layout.furniture / layout.stations). Unique per-site geometry
@@ -67,12 +70,14 @@ const furniture = {
     // the plans use
     this.cafeAudit = planAllCafes(app);
     lap('cafePlans', t); t = performance.now();
-    this.P = { cafe: buildCafeProtos(M, this.F, umbrellaKeys(app)), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F), vehicles: buildVehicleProtos(this.F), shop: buildShopProtos(this.F) };
+    this.P = { cafe: buildCafeProtos(M, this.F, umbrellaKeys(app)), street: buildStreetProtos(M, this.F), platform: buildPlatformProtos(M, this.F), vehicles: buildVehicleProtos(this.F), shop: buildShopProtos(this.F), clutter: buildClutterProtos(this.F) };
     this.batches = new BatchSet('furniture');
     this.batches.registerTree(this.P);
     lap('protos', t); t = performance.now();
     // shop boards (after the café plans; their obstacles are registered for the crowd)
     this.shopPlan = planShopStands(app);
+    // street clutter (after the A-boards: it keeps off them and off the goods stands)
+    this.clutterPlan = planClutter(app);
     lap('plans', t); t = performance.now();
     this.debugFoot = app.params.str('fpdebug') === '1';
     // sizing pass over the whole loop: warms the per-site caches (café styles, platform
@@ -127,6 +132,7 @@ const furniture = {
     placePlatforms(chunk, app, inst, addMesh, this.P.platform, this.F);
     placeVehicles(chunk, app, inst, this.P.vehicles);
     placeShopStands(chunk, app, inst, this.P.shop, this.shopPlan);
+    placeClutter(chunk, app, inst, this.P.clutter, this.P.cafe.chair.plastic, this.clutterPlan);
   },
 
   build(chunk, app) {

@@ -4,7 +4,7 @@ import { wallField } from './wall.js';
 import { openingMasonry } from './openings.js';
 import { openingInfill } from './infill.js';
 import { plainOrnament } from './upper.js';
-import { MURALS, ADVERTS, ADVERT_ASPECT, advertPanel } from './mural.js';
+import { MURALS, ADVERTS, ADVERT_ASPECT, advertPanel, muralField } from './mural.js';
 import { acUnit } from './roof.js';
 import { FACES } from './mesh.js';
 
@@ -152,14 +152,7 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA,
       sWall.uvx = keep;
       B.setUV();
       B.frameFromLot(fr);
-      if (mural) {
-        const sm = B.sink(`mural${mural.k}`);
-        B.shade = null; B.flat = [1, 1, 1];
-        sm.reserve(4, 6);
-        const a = B.v(sm, mural.u0, mural.v0, 0, 0, 0, 1, 0, 0), b = B.v(sm, mural.u1, mural.v0, 0, 0, 0, 1, 1, 0);
-        const c = B.v(sm, mural.u1, mural.v1, 0, 0, 0, 1, 1, 1), d = B.v(sm, mural.u0, mural.v1, 0, 0, 0, 1, 0, 1);
-        B.quadIdx(sm, a, b, c, d);
-      }
+      if (mural) { yield* muralField({ ...ctx, q: { ...q, gridU: q.lod ? 3 : 1.8 } }, face, mural, mural.k); B.frameFromLot(fr); }
       if (advert) advertPanel(B, sinks, advert, q);
       if (mode === 'windows' && finish === 'plaster' && dr.chance(0.6)) {
         // the rendered side of a later block shows its floor slabs as light bands

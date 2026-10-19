@@ -468,11 +468,15 @@ function flagTexture() {
       const gr = g.createLinearGradient(w * 0.7, 0, w, 0);
       gr.addColorStop(0, 'rgba(120,115,100,0)'); gr.addColorStop(1, 'rgba(120,115,100,0.16)');
       g.fillStyle = gr; g.fillRect(0, 0, w, h);
-      // creases where it was folded away: soft lines across and along
-      g.lineWidth = 2;
-      for (const [x0, y0, x1, y1] of [[w / 2, 0, w / 2, h], [0, h / 2, w, h / 2], [w / 4, 0, w / 4, h], [w * 0.75, 0, w * 0.75, h]]) {
-        g.strokeStyle = `rgba(60,58,50,${r.range(0.04, 0.08).toFixed(3)})`;
-        g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+      // pressed creases where it was folded away (across the middle and along it): a
+      // faint shade on one side of the fold, a faint sheen on the other
+      for (const [along, at] of [[true, w / 2], [false, h / 2], [true, w * (r.chance(0.5) ? 0.25 : 0.75)]]) {
+        const gr2 = along ? g.createLinearGradient(at - 5, 0, at + 5, 0) : g.createLinearGradient(0, at - 5, 0, at + 5);
+        const a = r.range(0.035, 0.06).toFixed(3);
+        gr2.addColorStop(0, 'rgba(60,58,50,0)'); gr2.addColorStop(0.45, `rgba(60,58,50,${a})`);
+        gr2.addColorStop(0.55, `rgba(255,255,250,${a})`); gr2.addColorStop(1, 'rgba(255,255,250,0)');
+        g.fillStyle = gr2;
+        if (along) g.fillRect(at - 5, 0, 10, h); else g.fillRect(0, at - 5, w, 10);
       }
     });
   }
@@ -528,13 +532,15 @@ export function makeAttachMaterials(app) {
   const flag = new THREE.MeshStandardMaterial({ name: 'ironwork.flag', map: flagTexture(), side: THREE.DoubleSide, roughness: 0.88 });
   // Cloth, displaced in its local frame (x fly, y along the hoist, z out of the cloth).
   // aFlag.z holds the motion phase, plus 100 for a flag hung down the front of a railing.
-  // On a pole: in calm air the cloth hangs limp, each column from its point of the
-  // hoist curving down toward the vertical (world down from the instance basis), gathered
-  // into soft pleats that deepen toward the fly and swinging a little about the pole; a
-  // stronger wind lifts it toward the pole's square and runs waves down it. Hung on a
-  // railing: tied at the top corners (the top edge sags between the ties), lying flat
-  // on the bars in shallow folds, only its free lower end stirring in the wind (never
-  // into the slab: the ripple only moves it outward).
+  // On a pole: in calm air the cloth hangs limp. Each column leaves the pole square to it
+  // and turns plumb within a few centimetres (world down from the instance basis, which
+  // lies in the cloth's plane), the cloth gathers toward the middle of the hoist as it
+  // falls, into deep pleats running down it, deepest at the fly end, and the whole swings
+  // a little about the pole; a stronger wind lifts it toward the pole's square and runs
+  // waves down it. Hung on a railing: tied at the top corners (the top edge sags and
+  // bellies out a little between the ties), lying on the bars in pleats that bulge out
+  // from them (never into them), deeper toward the free lower end, which stirs in the
+  // wind.
   const head = `#include <common>
 attribute vec3 aFlag;
 uniform float uTime;
@@ -546,24 +552,31 @@ vec3 flagDisp( vec2 p, float code ) {
 	float hy = clamp( -p.y / ${FLAG.H.toFixed(2)}, 0.0, 1.0 );
 	float w = clamp( uWindStrength, 0.0, 1.0 );
 	float t = uTime * ( 1.3 + 2.2 * w ) + ph;
+	float arch = sin( 3.14159 * hy );
 	if ( rail > 0.5 ) {
-		float sagTop = 0.03 * sin( 3.14159 * hy ) * ( 1.0 - smoothstep( 0.0, 0.3, f ) );
-		float amp = 0.004 + 0.012 * f;
-		float fold = sin( p.y * 17.0 + ph * 3.0 + 0.6 * sin( p.x * 3.0 + ph ) ) * 0.6 + sin( p.y * 31.0 + ph ) * 0.4;
+		float top = 1.0 - smoothstep( 0.0, 0.35, f );
+		float amp = 0.006 + 0.022 * f;
+		float fold = sin( p.y * 14.0 + ph * 3.0 + 0.8 * sin( p.x * 2.5 + ph ) ) * 0.65 + sin( p.y * 29.0 + ph + p.x * 1.5 ) * 0.35;
 		float rip = ( 0.5 + 0.5 * sin( p.x * 6.0 - t * 1.1 + p.y * 2.0 ) ) * smoothstep( 0.75, 1.0, f ) * ( 0.01 + 0.04 * w );
-		return vec3( sagTop, 0.0, amp * ( 1.0 + fold ) + rip );
+		return vec3( 0.05 * arch * top, 0.0, amp * ( 1.0 + fold ) + 0.02 * arch * top + rip );
 	}
 	#ifdef USE_INSTANCING
 		vec3 g = -normalize( vec3( instanceMatrix[ 0 ].y, instanceMatrix[ 1 ].y, instanceMatrix[ 2 ].y ) );
 	#else
 		vec3 g = vec3( 0.0, -1.0, 0.0 );
 	#endif
-	// limp: hanging from the hoist, curving toward the vertical along the fly
-	vec3 dir = normalize( mix( vec3( 1.0, 0.0, 0.0 ), g, 0.55 + 0.35 * f ) );
-	vec3 limp = vec3( 0.0, p.y, 0.0 ) + dir * p.x;
-	float pa = ( 0.02 + 0.06 * f ) * smoothstep( 0.0, 0.3, f ) * ( 0.8 + 0.4 * fract( ph * 0.53 ) );
-	limp.z += pa * ( sin( p.y * 13.0 + ph * 2.0 + p.x * 1.6 ) * 0.65 + sin( p.y * 26.0 - ph + p.x * 2.4 ) * 0.35 );
-	limp.z += p.x * ( 0.04 + 0.1 * w ) * sin( t * 0.55 + ph ) + 0.02 * f * sin( p.x * 4.0 - t * 1.3 );
+	// limp: square to the pole, then plumb (the bend's direction integrated: x at the
+	// hoist, g beyond a few centimetres)
+	const float bend = 0.07;
+	vec3 limp = g * p.x + ( vec3( 1.0, 0.0, 0.0 ) - g ) * bend * ( 1.0 - exp( -p.x / bend ) );
+	float k = smoothstep( 0.0, 1.0, f ), mid = ${(-FLAG.H / 2).toFixed(2)};
+	limp.y += mid + ( p.y - mid ) * ( 1.0 - 0.36 * k );
+	float pa = ( 0.018 + 0.065 * k ) * ( 0.8 + 0.4 * fract( ph * 0.53 ) );
+	float pl = sin( p.y * 21.0 + ph * 2.0 + p.x * 1.4 ) * 0.72 + sin( p.y * 43.0 - ph + p.x * 2.2 ) * 0.28;
+	limp.z += pa * pl;
+	// the hem of the gathered cloth hangs a little lower in the troughs of the pleats
+	limp += g * ( 0.03 * k * pl );
+	limp.z += p.x * ( 0.03 + 0.08 * w ) * sin( t * 0.55 + ph ) + 0.015 * f * sin( p.x * 4.0 - t * 1.3 );
 	// lifted: square to the pole, waves running down it
 	float amp = ( 0.06 + 0.16 * w ) * ( 0.75 + 0.5 * fract( ph * 0.37 ) );
 	float wave = sin( p.x * 5.2 - t ) * 0.7 + sin( p.x * 8.7 + p.y * 2.6 - t * 1.6 ) * 0.3;

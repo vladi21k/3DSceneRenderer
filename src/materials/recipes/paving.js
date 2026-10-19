@@ -98,8 +98,10 @@ void surface(vec2 m, inout Surf s) {
   float lip = (cellRand(c, 1u) - 0.5) * 0.002
             + dot(q, vec2(cellRand(c, 2u) - 0.5, cellRand(c, 3u) - 0.5)) * 0.008;
   vec2 qn = q / (0.5 * c.size);
-  float dish = -0.0006 * worn * (1.0 - 0.5 * dot(qn * qn, vec2(0.5)));
-  float relief = fbm(ms, 35.0, 3, 0.5, 92u) * mix(0.00035, 0.00015, worn) + fbm(ms, 140.0, 2, 0.5, 105u) * 0.00018 * (1.0 - worn);
+  float dish = -0.0005 * worn * (1.0 - 0.5 * dot(qn * qn, vec2(0.5)));
+  // (worn tops keep some of the grain: a mirror-smooth sett among flamed ones glints alone
+  // at grazing angles, its mip variance far below its neighbours')
+  float relief = fbm(ms, 35.0, 3, 0.5, 92u) * mix(0.00035, 0.00022, worn) + fbm(ms, 140.0, 2, 0.5, 105u) * 0.00018 * (1.0 - 0.6 * worn);
   float tH = clamp((eH - JH) / CH, 0.0, 1.0);
   float tB = clamp((eB - JB) / CB, 0.0, 1.0);
   float hFace = lip + dish + relief - 0.55 * CH * (1.0 - tH) * (1.0 - tH) - 0.6 * CB * (1.0 - tB) * (1.0 - tB);
@@ -182,7 +184,7 @@ void surface(vec2 m, inout Surf s) {
   // sun or the bright end of the street, never a mirror: the difference between neighbouring
   // setts stays small, or single setts glint out of it at grazing angles); breaks and cracks
   // rough, joints matt
-  float rough = mix(0.7, 0.63, worn) + 0.035 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
+  float rough = mix(0.7, 0.655, worn) + 0.03 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
   rough = mix(rough, 0.8, max(broken, crack));
   s.rough = mix(head ? 0.95 : 0.92, rough, st);
 }

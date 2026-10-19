@@ -10,7 +10,7 @@ import { lanternTpls, signLampTpls, intercomTpl, createLampGlass, createBulbMate
 import { buildFront, frontsOf, frontInfo } from './facades/place.js';
 import { planStands, buildStand } from './facades/stands.js';
 import { createSpillMaterial } from './facades/spill.js';
-import { BAD_NORMALS } from './facades/geo.js';
+import { BAD_NORMALS, withFiniteOutput } from './facades/geo.js';
 
 // Facade infill: windows, shopfronts, doors, shutters, signage, awnings and small wall
 // fittings for every opening of facadePlan(lot): main-street lots, side-street lots, the
@@ -95,7 +95,9 @@ const facades = {
       joinery: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }), castShadow: false },
       // goods stands on the pavement (crates, produce, buckets, racks): the same powder-coat
       // finish, but casting shadows onto the paving
-      standPaint: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }) },
+      // (a variant of its own, its radiance kept finite: a few grazing pixels of the stands
+      // came out non-finite where they meet the sun's shadow proxies)
+      standPaint: { material: withFiniteOutput(M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2, tag: 'facades.stand' }), 'facades.finite') },
       // fruit and vegetables: waxy, glossy skins (the moulded-plastic bake, vertex colour = albedo)
       // (the crates cast the stand's shadow; the pieces' own occlusion is in their shade)
       produce: { material: M.get('plastic.chair', { vertexColors: true, color: white, roughness: 0.42 }), castShadow: false },

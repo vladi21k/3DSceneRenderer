@@ -124,7 +124,10 @@ export function facadePlan(lot) {
   const tint0 = rng.weighted(modern ? TINT_MODERN : TINT_PICK), tintBase = tone !== undefined ? STONE_TINTS[tone] : tint0;
   const style = {
     era,
-    tint: tintBase.map((c) => c * rng.range(0.96, 1.03)),
+    // (a little hue drift per channel, and the lot's own value, ±7 %: a stone of one
+    // tone still differs in lightness from block to block; own stream, so the draws
+    // after this never shift)
+    tint: ((k) => tintBase.map((c) => c * rng.range(0.97, 1.02) * k))(RNG.from(lot.seed, 'toneValue').range(0.92, 1.06)),
     tone: STONE_TINTS.indexOf(tintBase),     // (index of the base tint, for the tone table)
     courseH: rng.range(0.30, 0.42),          // ashlar course height
     blockL: rng.range(0.55, 0.95),           // average block length
@@ -1260,6 +1263,28 @@ function tower(plan, lot) {
     ? { e: eFace, k: rng.int(0, MURAL_KINDS - 1), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
     : null;
   const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`)));
+  // the painters worked round the windows of a bay column or two on the mural's side, so
+  // they break the image, as on the painted gables in the photographs (mural.windows:
+  // inside the painted rectangle; buildings draws them, the far field keeps the panel
+  // whole). Their own stream, so the draws above never shift.
+  if (mural) {
+    const rw = RNG.from(lot.seed, 'muralWin');
+    const nb = Math.max(1, Math.floor((depth - 1.2) / rw.range(2.7, 3.2))), bw = (depth - 1.2) / nb;
+    const ww = Math.min(bw - 0.9, rw.range(1.2, 1.5)), wh = rw.range(1.4, 1.55);
+    const cols = [];
+    for (let b = 0; b < nb; b++) if (rw.chance(0.4)) cols.push(b);
+    if (!cols.length && nb > 1) cols.push(rw.int(0, nb - 1));
+    mural.windows = [];
+    for (let k = 0; k < floors; k++) {
+      const y = v0 + k * floorH + rw.range(0.85, 0.92);
+      for (const b of cols) {
+        const uc = 0.6 + bw * (b + 0.5), h = rw.next();
+        if (uc - ww / 2 < mural.u0 + 0.3 || uc + ww / 2 > mural.u1 - 0.3 || y < mural.v0 + 0.3 || y + wh > mural.v1 - 0.3) continue;
+        mural.windows.push({ id: `${lot.id}:tm${k}b${b}`, floor: nF + k, bay: b, uc, w: ww, y, h: wh, top: 'flat', kind: 'window',
+          recess: rw.range(0.14, 0.2), shutters: h < 0.3 ? (shutterKind === 'roller' ? 'roller' : 'closed') : 'none', roller: rw.range(0.25, 1), lit: rw.next(), curtain: rw.chance(0.5) });
+      }
+    }
+  }
   plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind, balconies: [] };
-  for (const o of [...openings, ...sides[0], ...sides[1]]) setArch(o);
+  for (const o of [...openings, ...sides[0], ...sides[1], ...(mural ? mural.windows : [])]) setArch(o);
 }

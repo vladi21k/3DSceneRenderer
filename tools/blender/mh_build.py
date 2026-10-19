@@ -1762,7 +1762,7 @@ def drape_top(d, vtop, arm_w, J, k, kind, axis_y, cid):
     ramp = ramp * ramp * (3 - 2 * ramp)
     rn = np.maximum(r, r + (R + ease - r) * ramp * strength)
     # (the cloth beside the arm stays near the body: the arm hangs there)
-    rn = np.where(side > 0.8, np.minimum(rn, r + 0.006 + 0.01 * down), rn)
+    rn = np.where(side > 0.8, np.minimum(rn, r + 0.004 + 0.007 * down), rn)
     f = rn / np.maximum(r, 1e-6)
     co[idx, 0] = dx * f
     co[idx, 1] = yc + dy * f
@@ -1790,19 +1790,25 @@ def drape_top(d, vtop, arm_w, J, k, kind, axis_y, cid):
 
 
 def hem_overlap(co_t, co_b, zc, axis_y, nb=24):
-    """Per angle round the torso: (lowest top point - highest bottom point) in m (> 0: a gap)."""
+    """Per angle round the torso: (lowest top point - highest bottom point) in m (> 0: a gap). The bottom's
+    height at an angle is the highest of it and its two neighbouring angles: a notch one angle wide in the
+    waistband (a fly's opening under its flap, a closed pocket's mouth) is no gap the hem has to reach down
+    over (a hem stretched into it would hang in a point)."""
     import numpy as np
     def ang(P):
         return np.arctan2(P[:, 0], -(P[:, 1] - axis_y(P[:, 2])))
     at, ab = ang(co_t), ang(co_b)
-    out = np.full(nb, np.nan)
+    hem = np.full(nb, np.nan)
+    wb = np.full(nb, np.nan)
     for i in range(nb):
         a = -np.pi + 2 * np.pi * (i + 0.5) / nb
         mt = np.abs((at - a + np.pi) % (2 * np.pi) - np.pi) < np.pi / nb * 1.6
         mb = np.abs((ab - a + np.pi) % (2 * np.pi) - np.pi) < np.pi / nb * 1.6
         if mt.any() and mb.any():
-            out[i] = co_t[mt, 2].min() - co_b[mb, 2].max()
-    return out
+            hem[i] = co_t[mt, 2].min()
+            wb[i] = co_b[mb, 2].max()
+    wbr = np.fmax(wb, np.fmax(np.roll(wb, 1), np.roll(wb, -1)))
+    return hem - wbr
 
 
 def _waist_max_at(co_t, co_b, axis_y, nb=24):

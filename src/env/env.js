@@ -94,6 +94,14 @@ const HORIZON_LEVEL = [[0.1, 64], [0.25, 24], [0.45, 60], [0.62, 52], [0.8, 9], 
 // view away from the afterglow does not open up to a grey midday; in the blue hour the
 // camera opens up as far as the meter asks (time of day, factor; log interpolation)
 const DUSK_CEIL = [[0.62, 1e4], [0.72, 1.8], [0.82, 1.8], [0.92, 4.2], [1.0, 4.2]];
+// image-based light level (time of day, scene.environmentIntensity). By day a little over
+// the capture (its canyon model is a single straight street: it misses the open sky the
+// cross streets, lower roofs and the street's own bends let in, so the shade gets a
+// little more skylight than it sees). In the blue hour the open twilight sky is brightest
+// low over the horizon towards the sunset, which the real street's bends and its termini
+// hide while the capture's straight canyon lets it in along the axis: the sky light in the
+// canyon falls faster than the open sky's, and the lamps carry the street floor
+const ENV_LEVEL = [[0.86, 1.25], [0.97, 0.8], [1.0, 0.75]];
 
 /** EXPO_LIFT at time of day t (EV, smooth piecewise-linear). */
 function expoLift(t) {
@@ -130,7 +138,7 @@ function skyIrradiance(e) {
 const env = {
   name: 'env',
   // (inspection: the exposure and bounce tables, read live)
-  tables: { EXPO_LIFT, HORIZON_LEVEL, DUSK_CEIL, BOUNCE },
+  tables: { EXPO_LIFT, HORIZON_LEVEL, DUSK_CEIL, BOUNCE, ENV_LEVEL },
   // lamps: the street lamps' level (their photocells switch on before sunset, see lights.js)
   state: { t: 0, sunDir: new THREE.Vector3(0, 1, 0), sunElevation: 1, night: 0, lamps: 0 },
   exposure: 1,
@@ -188,10 +196,8 @@ const env = {
     su.uCirrus.value = w.cirrus; su.uAltocu.value = w.altocu;
     scene.background = null;
     scene.fog = null;
-    // (the capture's canyon model is a single straight street: it misses the open sky the
-    // cross streets, lower roofs and the street's own bends let in, so the shade gets a
-    // little more skylight than it sees)
-    scene.environmentIntensity = 1.25;
+    // (image-based light level: see ENV_LEVEL, set with the time of day)
+    scene.environmentIntensity = ENV_LEVEL[0][1];
 
     this.sun = new SunLight(0xffffff, 3);
     this.sun.name = 'sun';
@@ -403,6 +409,7 @@ const env = {
     const lamps = lampLevel(t, night);
 
     Object.assign(this.state, { t, sunElevation: elev, night, lamps });
+    if (app && app.scene) app.scene.environmentIntensity = logTable(ENV_LEVEL, t);
     this._updateExposure();
     this.solar = solarPosition(t);
     if (this._gpuReady) this.sky.requestEnv(false);

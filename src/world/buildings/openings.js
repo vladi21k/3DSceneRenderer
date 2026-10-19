@@ -457,14 +457,32 @@ function voussoirRing(ctx, s, o, T, proj, keystone, bev, seed) {
   endBlocks(B);
 }
 
+/**
+ * Height above the head line yt to which a head stone rises in a rusticated wall: `top`,
+ * or kept down to the lower arris of a V joint it would reach into (a stone straddling a
+ * joint reads as a displaced block), not below `min`. (Full detail: the joints are cut.)
+ */
+function underJoint(ctx, yt, top, min) {
+  const r = ctx.rustic;
+  if (!r) return top;
+  for (const j of r.joints) {
+    const a = j - r.c - yt, b = j + r.c - yt;
+    if (a < top && b > min) top = Math.max(min, Math.min(top, a));
+  }
+  return top;
+}
+
 /** Flat (jack) arch: voussoirs fanning from a point below the head, keystone in the middle. */
 function flatArch(ctx, s, o, ext, H, proj, bev, seed) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext, yt = o.y + o.h;
   const cy = yt - o.w * 1.1; // fan centre
   const parts = flatArchParts(o, ext), n = parts.length;
+  // (in a rusticated wall the voussoirs end at a joint's arris and the keystone rises
+  // above them only as far as the next one)
+  const vH = underJoint(ctx, yt, H, H - 0.1), kH = underJoint(ctx, yt, vH + 0.06, vH);
   for (const [xa, xb0, k, key] of parts) {
-    const top = key ? H + 0.06 : H;
+    const top = key ? kH : vH;
     const sc = (yt + top - cy) / (yt - cy);
     const pts = [xa, yt, xb0, yt, o.uc + (xb0 - o.uc) * sc, yt + top, o.uc + (xa - o.uc) * sc, yt + top];
     // the outermost voussoirs are cut vertical at the ends of the head
@@ -486,8 +504,8 @@ function lintel(ctx, s, o, ext, H, proj, bev, keystone, seed) {
   block(B, seed, 301);
   if (!flat) B.rectV(s, o.uc - o.w / 2, o.uc + o.w / 2, 0, proj + 0.004, yt, -1);
   if (keystone) {
-    const kw = Math.min(0.32, o.w * 0.22);
-    B.prism(s, [o.uc - kw * 0.4, yt - 0.04, o.uc + kw * 0.4, yt - 0.04, o.uc + kw * 0.55, yt + H + 0.05, o.uc - kw * 0.55, yt + H + 0.05], 0, proj + 0.03, bev, !flat);
+    const kw = Math.min(0.32, o.w * 0.22), kt = yt + underJoint(ctx, yt, H + 0.05, H);
+    B.prism(s, [o.uc - kw * 0.4, yt - 0.04, o.uc + kw * 0.4, yt - 0.04, o.uc + kw * 0.55, kt, o.uc - kw * 0.55, kt], 0, proj + 0.03, bev, !flat);
   }
   endBlocks(B);
 }

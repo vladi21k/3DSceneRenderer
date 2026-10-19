@@ -35,6 +35,10 @@ const BLUR_MAX_PX = 32;
 // mover slots the oncoming trams may take (two per unit); the riding cyclists fill the rest
 const TRAM_MOVERS = 4;
 
+// Heat shimmer: angular offset of a ray grazing the hot paving far away (rad; the noise
+// reaches about 1.5x this).
+const SHIMMER_RAD = 1.5e-4;
+
 // HDR clamp before the blur chains: far above white after any exposure, but it keeps a
 // single specular spark from ringing through the bloom pyramid.
 const HDR_CLAMP = 64;
@@ -66,7 +70,7 @@ const TONE = {
   // out and the sunlit stone reaches the shoulder, rather than everything being fitted onto
   // the curve)
   hiKnee: [[0.3, 1.6], [0.55, 1.2], [0.8, 1.0]],
-  hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.55], [0.8, 0.5], [0.9, 0.5], [1.0, 0.6]],
+  hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.63], [0.8, 0.5], [0.9, 0.5], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast above a pivot just over
   // mid grey (the highlights separate; the shade keeps the toe), easing off towards golden
   // hour: the blacks come from the curve, not from underexposure
@@ -99,12 +103,13 @@ const TONE = {
   knee: [[0.78, 1.0, 0.84, 1.0], [0.8, 0.94, 0.72, 0.86]],
   // saturation of the street's final colour (time of day, saturation): a little more from
   // golden hour on, when the low sun and then the lamps carry the colour
-  satOut: [[0.3, 1.15], [0.5, 1.25], [0.85, 1.25], [0.95, 1.2]],
+  satOut: [[0.3, 1.15], [0.5, 1.38], [0.85, 1.5], [0.95, 1.3]],
   // and in the highlights (time of day, [saturation, from, to] in display-linear luminance):
   // by day it eases off from about +1 stop and is 0.6 by the shoulder, so sunlit limestone
-  // rolls off to cream; at golden hour only above the shoulder; at dusk the lamps' amber
-  // keeps most of it
-  satHi: [[0.3, [0.6, 0.3, 0.75]], [0.5, [0.6, 0.5, 0.92]], [0.85, [0.6, 0.5, 0.92]], [0.95, [0.9, 0.45, 0.95]]],
+  // rolls off to cream; at golden hour from a little higher (the low sun's stone stays
+  // golden, its brightest faces cream rather than apricot); at dusk the lamps' amber keeps
+  // most of it
+  satHi: [[0.3, [0.6, 0.3, 0.75]], [0.5, [0.6, 0.38, 0.82]], [0.85, [0.6, 0.5, 0.92]], [0.95, [0.9, 0.45, 0.95]]],
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
   // sky pixels keep nearly the scene's colour ratios, with more saturation where the sky
@@ -120,6 +125,10 @@ const TONE = {
   // sunset: warm sky hues turned a little towards yellow (the horizon band reads
   // yellow-orange, hue 30-40 degrees, as cameras render it; pink above it)
   skyTwist: 0.4,
+  // blue hour: a camera profile turns saturated blues away from violet (time of day, share
+  // of the red taken out of a blue sky pixel), so the twilight sky, short of green from the
+  // ozone, reads a deep blue (hue ~215-225) rather than lavender
+  skyBlue: [[0.72, 0], [0.86, 0.22], [1.0, 0.22]],
   // glow skirt around sources far above white, from sunset on (lantern globes, lit glass):
   // threshold and knee in exposed units, strength (time of day, strength). Only while the
   // lamps' own aureoles are off: with them each globe would get a second halo
@@ -127,7 +136,11 @@ const TONE = {
   // (time of day, share), and from golden hour on the weight of the open sky (the shade's
   // light) in the neutral the camera balances on (time of day, weight)
   wbK: [[0.3, 0.3], [0.55, 0.25], [0.62, 0.25], [0.78, 0]],
-  wbShade: [[0.4, 0], [0.55, 0.8], [0.68, 0.8], [0.78, 0]],
+  wbShade: [[0.4, 0], [0.55, 1.0], [0.68, 1.0], [0.78, 0]],
+  // and from sunset on a cooler setting (time of day, shift): the blue gain up and the red
+  // one down, towards a ~4000 K balance once the lamps carry the street, so the sky-lit
+  // paving between the pools reads blue-grey and the pools amber
+  wbCool: [[0.82, 0], [1.0, 0.25]],
   // lanterns' sideways and upward glow, as a share of their downward intensity
   wash: 0.04,
   // street dust haze over the day (time of day, scale): extinction and in-scatter
@@ -135,8 +148,14 @@ const TONE = {
   hazeIn: [[0.35, 1.0], [0.5, 0.65], [1.0, 0.65]],
   // green-magenta guard (time of day, value): the neutral's G / mean(R, B) range and the
   // green gain's ceiling over the geometric mean of red and blue; at night the green gain
-  // stays within lampMax of the red one (the lamp pools amber, never yellow-green)
-  wbG: { lo: [[0.6, 0.97], [0.68, 1.0]], hi: [[0.6, 1.0], [0.68, 1.02]], cap: [[0.6, 1.03], [0.72, 1.18], [0.9, 1.18], [1.0, 1.12]], lampMax: 1.12 },
+  // stays within lampMax of the red one (the lamp pools amber, never yellow-green). At
+  // golden hour the neutral sits a little on the green side: the shade's light is the
+  // ozone-tinted evening sky plus the facades' orange bounce, which would otherwise leave
+  // the shaded grey paving pink rather than the warm neutral of the photographs
+  wbG: {
+    lo: [[0.4, 0.97], [0.5, 1.02], [0.7, 1.02], [0.78, 1.0]], hi: [[0.4, 1.0], [0.5, 1.04], [0.7, 1.04], [0.78, 1.02]],
+    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.18], [1.0, 1.12]], lampMax: 1.22,
+  },
   glowThresh: 4, glowKnee: 12, glow: [[0.74, 0], [0.8, 0.2], [0.86, 0.12], [0.95, 0.03], [1.0, 0]], glowScatter: 0.4,
 };
 
@@ -368,7 +387,7 @@ const post = {
       tGlow: { value: null }, uGlow: { value: 0 },
       uToe: { value: new THREE.Vector3(...TONE.toe) }, uDeep: { value: new THREE.Vector3(table(TONE.deep[0], 0), table(TONE.deep[1], 0), TONE.deep[2]) },
       tLocal: { value: null }, uLocal: { value: new THREE.Vector4(TONE.local.knee, 0, TONE.local.px[0], TONE.local.px[1]) },
-      uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: table(TONE.satOut, 0) }, uSkyTwist: { value: 0 },
+      uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: table(TONE.satOut, 0) }, uSkyTwist: { value: 0 }, uSkyBlue: { value: 0 },
       uSatHi: { value: new THREE.Vector3(...TONE.satHi[0][1]) },
       uUpView: { value: new THREE.Vector3(0, 1, 0) }, uProjInv: { value: new THREE.Vector2(1, 1) },
       uSkySatEl: { value: new THREE.Vector2(...TONE.skySatEl) },
@@ -567,7 +586,13 @@ const post = {
     // straight into a low sun the forward lobe is held back (the shaded street air between
     // the camera and the sunlit far end would otherwise fog the whole view)
     pu.uHazeSun.value = 0.25 * (env ? env.haze.sun : 1) * lerp(1, 0.35, into * ss(t, 0.4, 0.5));
-    pu.uShimmer.value = this.q.shimmer ? 1.1 * (1 - ss(t, 0.1, 0.4)) : 0;
+    // heat shimmer over the hot paving: an angular jitter of the rays (~45 arc seconds at
+    // most), so in pixels it scales with the lens, and stays under a pixel: a larger offset
+    // drags thin bright lines (a rail head across a shadow band) into a comb of streaks
+    {
+      const pxAng = camera && camera.isPerspectiveCamera ? THREE.MathUtils.degToRad(camera.fov) / Math.max(this.size.y, 1) : 3e-4;
+      pu.uShimmer.value = this.q.shimmer ? Math.min(SHIMMER_RAD / Math.max(pxAng, 1e-6), 0.8) * (1 - ss(t, 0.1, 0.4)) : 0;
+    }
     // dusk airlight (lamp and headlight intensities already carry their own ramps)
     const lamps = env ? env.state.lamps ?? night : 0;
     pu.uNightAir.value = Math.max(night, lamps);
@@ -621,13 +646,13 @@ const post = {
       // warm-cool correction: under a third of the sun's cast by day (the warm sun on
       // stone stays warm), a little at golden hour, none from sunset on: a daylight-
       // balanced camera keeps the twilight blue (the warmth comes from the lamps), and
-      // later the lamp balance turns it bluer still
+      // later the lamp balance (TONE.wbCool) turns it bluer still
       const kc = table(TONE.wbK, t);
       // green-magenta: mostly corrected through sunset (the twilight sky's ozone tint
       // would turn shaded grey paving mauve), about a third once the lamps light the street
       // (sky-lit grey reads blue with G above R, the ~3000 K pools stay amber, not olive)
       const kt = lerp(1.0, 0.85, ss(t, 0.62, 0.78)) - 0.5 * ss(t, 0.88, 1.0);
-      const cool = 0.1 * ss(t, 0.82, 1.0);
+      const cool = table(TONE.wbCool, t);
       const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
       wb.set(Math.exp(-er) * (1 - 0.5 * cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
       // from sunset on, a daylight-balanced camera keeps the twilight blue (the warmth
@@ -638,7 +663,7 @@ const post = {
       // geometric mean of red and blue and at most 3% over it by day (no green push, so the
       // sky and the limestone it lights never turn khaki or olive), and a neutral surface
       // under the illuminant keeps G / mean(R, B) within [gLo, gHi]: [0.97, 1.0] by day,
-      // [1.0, 1.02] from the low sun on (TONE.wbG)
+      // [1.02, 1.04] at golden hour, [1.0, 1.02] from sunset on (TONE.wbG)
       // Around sunset and in the blue hour the sky's ozone (Chappuis) absorption leaves the
       // twilight illuminant some 10-20% short of green against the daylight locus, which
       // would turn the shaded grey street and the lamp-and-sky mix mauve: the green gain
@@ -650,7 +675,7 @@ const post = {
       if (gr > gHi) wb.y = Math.max(wb.y * gHi / gr, 0.99 * gm);
       else if (gr < gLo) wb.y = Math.min(wb.y * gLo / gr, gCap * gm);
       // and once the lamps light the street their pools stay amber, never yellow-green:
-      // the green gain stays within 12% of the red one
+      // the green gain stays within lampMax of the red one
       const lampW = ss(t, 0.84, 0.95);
       const gMax = wb.x * (G.lampMax + 2 * (1 - lampW));
       if (wb.y > gMax) wb.y = gMax;
@@ -689,6 +714,7 @@ const post = {
     }
     fu.uSkySatEl.value.set(TONE.skySatEl[0], TONE.skySatEl[1]);
     fu.uSkyTwist.value = TONE.skyTwist * ss(t, 0.6, 0.74) * (1 - ss(t, 0.9, 1.0));
+    fu.uSkyBlue.value = table(TONE.skyBlue, t);
     // gamut knee: a camera JPEG by day, hue-keeping from sunset on
     {
       const kd = ss(t, 0.6, 0.75), K0 = TONE.knee[0], K1 = TONE.knee[1];

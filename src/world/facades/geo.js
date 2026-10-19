@@ -397,6 +397,29 @@ export class Batch {
 }
 
 /** sRGB hex → linear [r, g, b] (vertex colours are linear). */
+/**
+ * Keep a fragment's radiance finite and non-negative (appended after the dithering chunk):
+ * a stray NaN or negative from a grazing derivative or a specular singularity would
+ * otherwise spread through the post's temporal history.
+ */
+export function finiteOutput(shader) {
+  shader.fragmentShader = shader.fragmentShader.replace('#include <dithering_fragment>', `#include <dithering_fragment>
+{
+  vec3 cFin = gl_FragColor.rgb;
+  gl_FragColor.rgb = ( any( isnan( cFin ) ) || any( isinf( cFin ) ) ) ? vec3( 0.0 ) : max( cFin, vec3( 0.0 ) );
+}`);
+}
+
+/** Chain finiteOutput onto material m's own shader patch (a private variant: key makes its program distinct). */
+export function withFiniteOutput(m, key) {
+  const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey ? m.customProgramCacheKey() : '';
+  m.onBeforeCompile = (shader, r) => { if (prev) prev.call(m, shader, r); finiteOutput(shader); };
+  m.customProgramCacheKey = () => prevKey + '|' + key;
+  m.needsUpdate = true;
+  return m;
+}
+
 const _c = new THREE.Color();
 export function lin(hex) { _c.setHex(hex); return [_c.r, _c.g, _c.b]; }
 export function scaleRGB(c, k) { return [c[0] * k, c[1] * k, c[2] * k]; }

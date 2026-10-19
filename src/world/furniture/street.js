@@ -476,13 +476,13 @@ export function buildStreetProtos(M, F) {
   P.kiosk = proto('kiosk', [{ geo: k.map((x) => x.paint), mat: F.paint, tint: true }, { geo: [k[0].dark, null], mat: F.interior }, { geo: [k[0].print, null], mat: F.print },
     { geo: [k[0].glass, null], mat: F.shelterGlass, cast: false }, { geo: k.map((x) => x.stone), mat: F.concrete }, { geo: k.map((x) => x.zinc), mat: F.pole },
     { geo: [k[0].fabric, null], mat: F.canopy }, { geo: [k[0].wood, null], mat: F.timber }, { geo: [k[0].pages, null], mat: F.pages },
-    { geo: [k[0].steel, null], mat: F.galv }, { geo: [k[0].lit, null], mat: F.print, cast: false }], [90]);
+    { geo: [k[0].steel, null], mat: F.galv }, { geo: [k[0].lit, null], mat: F.printBoard, cast: false }], [90]);
   const c = [advertColumn(0), advertColumn(1), advertColumn(2)];
   P.column = proto('advertColumn', [{ geo: c.map((x) => x.iron), mat: F.paint, tint: true }, { geo: c.map((x) => x.band), mat: F.paper },
     { geo: c.map((x) => x.sheets), mat: F.paper, cast: false }, { geo: c.map((x) => x.edges), mat: F.pages, cast: false }], [40, 160]);
   P.bikeRack = proto('bikeRack', [{ geo: [bikeRack(0), bikeRack(1), bikeRack(2)], mat: F.galv }], [30, 110]);
   const ib = infoBoard();
-  P.infoBoard = proto('infoBoard', [{ geo: ib.frame, mat: F.paint, tint: true }, { geo: ib.print, mat: F.print }, { geo: ib.post, mat: F.pole }]);
+  P.infoBoard = proto('infoBoard', [{ geo: ib.frame, mat: F.paint, tint: true }, { geo: ib.print, mat: F.printBoard }, { geo: ib.post, mat: F.pole }]);
   return P;
 }
 

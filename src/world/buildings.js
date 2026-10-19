@@ -47,7 +47,8 @@ const THIN = new Set(['smoothD']);                 // centimetre relief: near sh
 // the plaster batch holds the dark boxes behind the openings and the backstops behind the
 // walls: drawn after the other opaque work, they are mostly rejected by the depth test
 const LATE = new Set(['plaster']);
-// weathered materials (aRun: per-pixel run-off); plaster and tiles share their program
+// weathered materials (aRun: per-pixel run-off; also the murals, painted on the wall);
+// plaster and tiles share their program
 const RUNOFF = new Set(['ashlar', 'smooth', 'smoothD', 'rough', 'plaster', 'dark', 'tile']);
 let MATS = {};                     // buildings-owned material variants by sink key (weathered stone, lit glass)
 let ADS = [];                      // advert materials (floodlit at night)
@@ -471,7 +472,7 @@ function geometries(B) {
     geoms.set(key, g);
     pending.push([g, 'position', new THREE.BufferAttribute(p.p, 3)], [g, 'normal', new THREE.BufferAttribute(p.n, 4, true)],
       [g, 'uv', new THREE.BufferAttribute(p.t, 2)], [g, 'color', new THREE.BufferAttribute(p.c, 4, true)]);
-    if (RUNOFF.has(key)) pending.push([g, 'aRun', new THREE.BufferAttribute(p.r, 4)]);
+    if (RUNOFF.has(key) || key.startsWith('mural')) pending.push([g, 'aRun', new THREE.BufferAttribute(p.r, 4)]);
   }
   // smallest last: popped first, so a frame's budget fills up with small ones
   pending.sort((a, b) => b[2].array.byteLength - a[2].array.byteLength);

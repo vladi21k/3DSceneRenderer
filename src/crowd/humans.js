@@ -226,6 +226,8 @@ const humans = {
         const r = merged.ranges[mesh + 1 + j];
         B.partR[k] = ranges.push({ start: r.ibase, count: meshes[mesh + 1 + j].index.length }) - 1;
       });
+      // (the shopping bag's shapes, by appearance bagShape)
+      B.shopV = [B.partR.shopping, B.partR.shopping1 ?? B.partR.shopping, B.partR.shopping2 ?? B.partR.shopping];
     }
     // the CPU copies of the cast are not needed any more
     for (const c of cast.chars) c.raw = null;
@@ -571,7 +573,7 @@ const humans = {
       const handBusy = s.pose >= 3 || (s.hold && s.hold.side === 'R');
       if (a.bag === BAG.BACKPACK) { _extra[k++] = P.backpack; _extraFar[kf++] = P.backpackFar; _shadowExtra[0] = P.backpackFar; }
       else if (a.bag === BAG.SHOULDER) { _extra[k++] = P.shoulder; _extraFar[kf++] = P.shoulderFar; _shadowExtra[0] = P.shoulderFar; }
-      else if (a.bag === BAG.SHOPPING && !handBusy) { _extra[k++] = P.shopping; _extraFar[kf++] = P.shopping; _shadowExtra[0] = P.shopping; }
+      else if (a.bag === BAG.SHOPPING && !handBusy) { const sb = B.shopV[a.bagShape | 0]; _extra[k++] = sb; _extraFar[kf++] = sb; _shadowExtra[0] = sb; }
     }
     const bi = this.batch.add(row, inView, lod, B.bodyR, _extra, _extraFar, _shadowExtra);
     // (the bounding sphere and view depth written straight into the batch's arrays: no boxed float arguments)

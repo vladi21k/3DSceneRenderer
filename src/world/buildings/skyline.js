@@ -7,7 +7,7 @@ import { openingMasonry } from './openings.js';
 import { openingInfill } from './infill.js';
 import { plainOrnament } from './upper.js';
 import { pitchedRoof, solarHeater, heaterRadius, sunYaw, waterTank, antenna, acUnit } from './roof.js';
-import { MURALS, ADVERTS, ADVERT_ASPECT, advertPanel } from './mural.js';
+import { MURALS, ADVERTS, ADVERT_ASPECT, advertPanel, muralField } from './mural.js';
 import { slabBalconies } from './balcony.js';
 
 // Taller post-war blocks standing behind the street frontage (7–14 storeys), so the
@@ -180,7 +180,15 @@ function facePlan(sl, k, width) {
       const y = bal ? f.y + 0.05 : f.y + r.range(0.85, 0.95);
       const h = bal ? Math.min(f.h - 0.75, 2.2) : sl.winH;
       const w = bal ? Math.min(bw - 0.7, sl.winW + 0.25) : sl.winW;
-      if (inMural(b.uc - w / 2, b.uc + w / 2, y, y + h)) continue;
+      // a mural is painted round the windows of some bay columns (plain windows, well
+      // inside it: none on its edge, no balcony or AC unit there); an advert covers them
+      let pierce = false;
+      if (inMural(b.uc - w / 2, b.uc + w / 2, y, y + h)) {
+        const inside = mural && !inRect(advert, b.uc - w / 2, b.uc + w / 2, y, y + h) && !bal && hash3(b.index, k + 41, sl.seed) < 0.5
+          && b.uc - w / 2 > mural.u0 + 0.3 && b.uc + w / 2 < mural.u1 - 0.3 && y > mural.v0 + 0.3 && y + h < mural.v1 - 0.3;
+        if (!inside) continue;
+        pierce = true;
+      }
       if (bal && !bandHere) balconies.push({ floor: f.index, u0: b.uc - Math.min(bw * 0.45, 1.35), u1: b.uc + Math.min(bw * 0.45, 1.35), y: f.y + 0.02, depth: r.range(1.0, 1.4), slabT: 0.15, solid: sl.solid });
       const hs = hash3(f.index * 31 + b.index, k + 7, sl.seed);
       // shutters on about 40 % of the windows: roller shutters part or all the way down,
@@ -193,7 +201,7 @@ function facePlan(sl, k, width) {
       openings.push({
         id: `${id}:f${f.index}b${b.index}`, floor: f.index, bay: b.index, uc: b.uc, w, y, h, top: 'flat', rise: 0, spring: y + h,
         kind: bal ? 'balconyDoor' : 'window', recess: r.range(0.14, 0.22), shutters, roller, lit: r.next(), curtain: r.chance(0.5),
-        ac: !bal && hash3(b.index * 7 + f.index, k + 19, sl.seed) < 0.13,
+        ac: !bal && !pierce && hash3(b.index * 7 + f.index, k + 19, sl.seed) < 0.13,
       });
     }
   }
@@ -230,7 +238,8 @@ export function* slabSteps(B, sl, q0) {
     const ctx = { B, sinks, q, fs, orn: ORN, vBottom: -2, vTop: H, rustic: null, sillExt: 0.11, ch: 0, fit: null, filled: false, rollerCol: sl.roller };
     B.frameFromLot(fr);
     B.setUV(1, uvOff + k * 3.1, 1, 0);
-    // the mural panel is left out of the wall (it is its own surface)
+    // the mural's rectangle is left out of the wall (it is painted on its own, round the
+    // windows that pierce it: see muralField)
     const holes = face.mural
       ? [...face.openings, { uc: (face.mural.u0 + face.mural.u1) / 2, w: face.mural.u1 - face.mural.u0, y: face.mural.v0, h: face.mural.v1 - face.mural.v0, top: 'flat', rise: 0, spring: face.mural.v1 }]
       : face.openings;
@@ -253,7 +262,7 @@ export function* slabSteps(B, sl, q0) {
     yield;
     B.frameFromLot(fr);
     yield* slabBalconies(B, sinks, face.balconies, fs, sl.seed, q, fr);
-    if (face.mural) muralPanel(B, face.mural, face.mural.k ?? sl.mural.k);
+    if (face.mural) { yield* muralField(ctx, face, face.mural, face.mural.k ?? sl.mural.k); B.frameFromLot(fr); }
     if (face.advert) advertPanel(B, sinks, face.advert, q);
     yield* storeyBands(B, sinks, sl, face, fs, fr, H);
     if (!k && sl.canopy && q.lod === 0) {
@@ -368,17 +377,6 @@ function* topStorey(B, sinks, sl, q, fs, H) {
   B.rectV(sinks.dark, u0 - 0.3, u1 + 0.3, w0 - 0.3, w1 + 0.45, vt + 0.18, 1);
   B.flat = [1, 1, 1];
   return [u0, u1, w0, w1];
-}
-
-/** The painted panel (uv 0..1 over it), flush with the wall it replaces. */
-function muralPanel(B, m, k) {
-  const s = B.sink(`mural${k}`);
-  B.shade = null;
-  B.flat = [1, 1, 1];
-  s.reserve(4, 6);
-  const a = B.v(s, m.u0, m.v0, 0, 0, 0, 1, 0, 0), b = B.v(s, m.u1, m.v0, 0, 0, 0, 1, 1, 0);
-  const c = B.v(s, m.u1, m.v1, 0, 0, 0, 1, 1, 1), d = B.v(s, m.u0, m.v1, 0, 0, 0, 1, 0, 1);
-  B.quadIdx(s, a, b, c, d);
 }
 
 /** Flat roof: parapet with a coping, membrane deck, lift room, heaters, tanks, a mast. */

@@ -16,8 +16,8 @@ const _t = new THREE.Matrix4();
 
 // how keen each kind of shop is on posters / price cards / goods hung outside
 const KEEN = {
-  clothing: [0.65, 0.35, 0.7], general: [0.55, 0.45, 0.5], cafe: [0.4, 0.3, 0], jewellery: [0.35, 0.15, 0],
-  pharmacy: [0.5, 0.4, 0], shoes: [0.6, 0.4, 0.5], books: [0.3, 0.15, 0], flowers: [0.2, 0.3, 0],
+  clothing: [0.7, 0.35, 0.78], general: [0.6, 0.45, 0.62], cafe: [0.45, 0.3, 0], jewellery: [0.35, 0.15, 0],
+  pharmacy: [0.55, 0.4, 0], shoes: [0.65, 0.4, 0.6], books: [0.3, 0.15, 0], flowers: [0.2, 0.3, 0],
 };
 // poster categories a kind of shop puts up, by preference (signs.js POSTER_INFO)
 const CATS = {
@@ -25,7 +25,7 @@ const CATS = {
   pharmacy: ['sale', 'notice'], jewellery: ['fashion', 'notice', 'sale'], cafe: ['food', 'notice', 'culture'],
   books: ['culture', 'notice'], flowers: ['culture', 'notice'],
 };
-const BANNER_TYPES = new Set(['clothing', 'shoes', 'general']);
+const BANNER_TYPES = new Set(['clothing', 'shoes', 'general', 'pharmacy']);
 
 const GLOW = { aGlow: [0.25] };
 
@@ -45,10 +45,10 @@ export function dressRequest(o, type) {
     for (let k = 0; k < n; k++) posters.push(k === 0 || r.chance(0.5) ? cats : [...cats.slice(1), cats[0]]);
   }
   if (r.chance(0.2)) posters.push(['notice']);
-  const banner = posters.length > 0 && BANNER_TYPES.has(type) && r.chance(0.3);
+  const banner = BANNER_TYPES.has(type) && r.chance(posters.length > 0 ? 0.42 : 0.2);
   const prices = r.chance(keen[1]) ? r.int(1, 3) : 0;
   // a price board on the pier beside the shopfront, now and then
-  const pier = r.chance(type === 'cafe' ? 0.15 : 0.22);
+  const pier = r.chance(type === 'cafe' ? 0.15 : 0.32);
   return { posters, banner, prices, pier };
 }
 
@@ -176,7 +176,7 @@ export function dressWindow(kit, o, L, m, type, far = false, al = null, brand = 
     // a sale banner along the top of a display pane
     const [x0, x1] = ps[r.int(0, ps.length - 1)];
     const cell = dressCell('banners', al.banner);
-    const h = Math.min(0.24, Math.max(0.12, (x1 - x0 - 0.06) / cell.aspect));
+    const h = Math.min(0.32, Math.max(0.12, (x1 - x0 - 0.06) / cell.aspect));
     const w = Math.min(h * cell.aspect, x1 - x0 - 0.06);
     const y = yG - h / 2 - 0.05;
     if (w > 0.4 && y - h / 2 > y0 + 0.6 && free(x0, x1, y - h / 2, y + h / 2)) {
@@ -217,7 +217,7 @@ export function dressWindow(kit, o, L, m, type, far = false, al = null, brand = 
 // of coloured film carrying its trade or its name, the colour that reads from down the
 // street.
 const VIVID = [0xc8231c, 0xe0641a, 0xe0a81c, 0x1f4fa0, 0x1e7a3a, 0xc2185b, 0x7a3aa8, 0x1e8a8a, 0xd01e1a];
-const PANEL_TYPES = { clothing: 0.32, shoes: 0.28, general: 0.24, pharmacy: 0.22, books: 0.1, jewellery: 0.08, cafe: 0.1, flowers: 0.08 };
+const PANEL_TYPES = { clothing: 0.42, shoes: 0.36, general: 0.34, pharmacy: 0.3, books: 0.14, jewellery: 0.1, cafe: 0.14, flowers: 0.1 };
 function vinyl(kit, o, L, m, type, brand, ps, used, yG, y0, zG, far) {
   const r = RNG.from(o.id, 'vinylGlass');
   const design = { type: 'letters', cell: 0, board: null, ...brand, subAccent: false };
@@ -269,7 +269,7 @@ function vinyl(kit, o, L, m, type, brand, ps, used, yG, y0, zG, far) {
 // Garments and bags in the awning batch (canvas shading, translucency, sway): hook at the
 // local origin, hanging down -y, facing +z.
 const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a,
-  0xc8231c, 0x1f4fa0, 0xe86a8a, 0x2a9a8a, 0xf2d24a];
+  0xc8231c, 0x1f4fa0, 0xe86a8a, 0x2a9a8a, 0xf2d24a, 0xe0641a, 0x7a3aa8, 0x1e8a8a];
 const tplCache = new TplCache(64);
 
 // Silhouettes (CCW, metres; the hook at the origin) and how each piece is made up:
@@ -449,7 +449,7 @@ const KINDS = {
   general: [['bag', 0.3], ['pack', 0.25], ['scarf', 0.25], ['tee', 0.2]],
 };
 // fronts that crowd their door with stock (piers covered, a rail of it across the window)
-const DENSE = { clothing: 0.32, general: 0.3, shoes: 0.2 };
+const DENSE = { clothing: 0.42, general: 0.38, shoes: 0.28 };
 
 /** Hang garment `kind` with its hook at world matrix mw (on a wall hook or a rail). */
 function hangItem(kit, kind, mw, r, sway = 0.9) {
@@ -579,14 +579,15 @@ export function hangGoods(kit, ctx, o, type, al = null, L = null, mOpen = null) 
     }
     if (span) {
       const cell = dressCell('prices', al.pier);
-      const h = r.range(0.32, 0.45), w = h * cell.aspect;
+      // (the size of the boards the street's shops prop up: half a metre and more)
+      const h = r.range(0.4, 0.62), w = h * cell.aspect;
       if (w + 0.2 < span[1] - span[0]) {
         const uc = side > 0 ? span[1] - w / 2 - 0.12 : span[0] + w / 2 + 0.12;
-        const yc = gy + r.range(1.55, 1.85);
+        const yc = gy + r.range(1.55, 1.95);
         const mb = new THREE.Matrix4().copy(frame.matrix).multiply(_t.makeTranslation(uc, yc, inRustic(plan, yc) ? 0.1 : 0.06));
         const tb = new Tpl();
         tb.box(-w / 2 - 0.02, -h / 2 - 0.02, 0, w / 2 + 0.02, h / 2 + 0.02, 0.018, 1 | 4 | 8 | 16 | 32, 0.85, 0.95);
-        const bc = lin(r.pick([0x1d1d1f, 0xe8e4da, 0x6b4a2a]));
+        const bc = lin(r.pick([0x1d1d1f, 0xe8e4da, 0x6b4a2a, 0xb8261e, 0x1f4fa0]));
         kit.get('board').add(tb.bake(), mb, bc[0], bc[1], bc[2]);
         const tt = new Tpl();
         cardTpl(tt, cell, 0, 0, h, 0.0195);

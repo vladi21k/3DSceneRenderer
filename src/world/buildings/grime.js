@@ -471,6 +471,44 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0])
   return m;
 }
 
+// paint on render (the murals): the trowelled render under the paint shows through it
+// (value noise at 0.3 m and 8 cm, the fine one gone once it is sub-pixel), before the
+// weathering of the stone code (soot, splash, run-off under the sills, drip trails)
+const FRAG_PAINT = /* glsl */ `
+{
+  vec3 bgNp = normalize(vBgN);
+  float bgLp = length(bgNp.xz);
+  vec2 bgPp = bgLp > 0.35 ? vec2(dot(vBgPos.xz, vec2(-bgNp.z, bgNp.x) / bgLp), vBgPos.y) : vBgPos.xz;
+  float bgFp = fwidth(bgPp.x);
+  float bgTr = (bgVN(bgPp * 3.3) - 0.5) * 0.1 + (bgVN(bgPp * 12.5 + 4.1) - 0.5) * 0.1 * (1.0 - smoothstep(0.02, 0.08, bgFp));
+  diffuseColor.rgb *= 1.0 + bgTr;
+}
+`;
+
+/**
+ * Weathered paint: a plain map-textured material (vertexColors on, buildings' vertex
+ * format) that takes the stone weathering: the vertex colour is the wall's shading
+ * relative to its tint (FaceShade with a white tint), the grime mask and run-off as on
+ * the wall, and the render's texture through the paint. k: as grimeStone.
+ */
+export function grimePaint(m, k = [0.45, 0.55, 0.12, 0.3]) {
+  m.vertexColors = true;
+  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(0, 0) } };
+  chain(m, 'bgP1', (shader) => {
+    Object.assign(shader.uniforms, uni);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n' + VERT_PARS)
+      .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\n')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + VERT_MAIN);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_PAINT + FRAG_STONE)
+      .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>');
+  });
+  m.userData.grime = uni;
+  return m;
+}
+
 /** Window glass the buildings put in themselves, lit at night by the lit share (colour alpha). */
 export function litGlass(app, name = 'glass.window') {
   const gain = (app.materials.uniforms && app.materials.uniforms.emissiveGain) || { value: 1 };

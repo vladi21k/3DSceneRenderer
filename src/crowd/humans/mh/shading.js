@@ -418,12 +418,13 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   if (hCard) sh += (vDecal - 0.5) * 0.22;
   vec3 t1 = normalize(T + N * (0.09 + sh)), t2 = normalize(T - N * (0.14 - sh));
   float th1 = dot(t1, H), th2 = dot(t2, H);
-  float e1 = hCard ? mix(180.0, 50.0, hFar) : mix(110.0, 36.0, hFar), e2 = mix(18.0, 8.0, hFar);
+  // (cards: a primary band about 10 degrees wide, so dark hair shows its sheen band at street distances)
+  float e1 = hCard ? mix(100.0, 40.0, hFar) : mix(110.0, 36.0, hFar), e2 = mix(18.0, 8.0, hFar);
   float s1 = pow(sqrt(max(0.0, 1.0 - th1 * th1)), e1);
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.35);
   float br = mix(0.4 + 0.8 * j, 0.8, hFar);
-  float k1 = hCard ? 0.016 * (0.35 + 0.9 * cardA) : 0.026;
+  float k1 = hCard ? 0.03 * (0.45 + 0.8 * cardA) : 0.026;
   // (the tinted lobe a little less saturated than the fibre colour: light leaving the strand is not only absorbed)
   vec3 c2 = hCard ? mix(vec3(hLum(hHairC)), hHairC, 0.7) * 0.75 : hHairC;
   return (k1 * tint * s1 * br * (0.15 + 1.5 * clump) + c2 * 0.3 * s2 * (0.35 + 0.9 * clump) * (0.7 + 0.5 * j)) * hAO * hStrand;
@@ -603,9 +604,12 @@ const FRAG_SURFACE = /* glsl */`
     // the upper lid shades the top of the eyeball; the eye's corners are darker too
     vec3 ec = hLook(row, 25).xyz;
     vec3 d = vRest - vec3(vRest.x < 0.0 ? -ec.x : ec.x, ec.y, ec.z);
-    float lid = smoothstep(-0.003, 0.009, d.y);
+    float lid = smoothstep(-0.005, 0.008, d.y);
     diffuseColor.rgb *= mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
-    hAO *= mix(1.0, 0.6, lid);
+    // (the eyeball sits in its socket under the brow: the sky reaches it only from the front, and a high
+    // sun is cut off by the brow and the upper lid's lashes)
+    hAO *= mix(0.78, 0.5, lid);
+    hDirAO = 0.75;
     hEyeLid = lid;
     float er = hLook(row, 25).w;
     if (er > 0.0) {
@@ -626,9 +630,12 @@ const FRAG_SURFACE = /* glsl */`
       ic = mix(ic, vec3(0.012), front * (1.0 - smoothstep(pr - aw, pr + aw, rad)));
       // (the texture's own iris may be larger than this one: the sclera is a flat off-white, a touch
       // warmer and darker towards the corners)
-      vec3 sclera = vec3(0.66, 0.62, 0.58) * mix(1.0, 0.86, smoothstep(0.5, 1.0, length(d.xy) / er));
+      // (never brighter than ~0.6; darker and warmer in darker faces, where the white of the eye carries
+      // some pigment: eyes texel w = the skin's darkness, 0 fair .. 1 deep)
+      float skd = hLook(row, 4).w;
+      vec3 sclera = mix(vec3(0.6, 0.57, 0.53), vec3(0.47, 0.42, 0.37), skd) * mix(1.0, 0.84, smoothstep(0.5, 1.0, length(d.xy) / er));
       // (warmer and a little pink towards the corners)
-      sclera = mix(sclera, vec3(0.6, 0.47, 0.44), smoothstep(0.5, 1.0, abs(d.x) / er) * 0.55);
+      sclera = mix(sclera, vec3(0.55, 0.43, 0.4) * (1.0 - 0.25 * skd), smoothstep(0.5, 1.0, abs(d.x) / er) * 0.55);
       diffuseColor.rgb = mix(sclera, ic, iris) * mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
     } else if (uDecal > 0.5) {
       // (the iris a little darker and less saturated; the white of the eye never paper white)
@@ -661,8 +668,9 @@ const FRAG_SURFACE = /* glsl */`
       float tz = max((1.0 - smoothstep(0.012, 0.03, ax)) * smoothstep(-0.075, -0.05, fd.y),     // nose, chin line
                      smoothstep(0.02, 0.04, fd.y) * (1.0 - smoothstep(0.045, 0.07, ax)));         // forehead
       float dark = 1.0 - smoothstep(0.03, 0.14, hLum(col));
-      hRough = mix(0.56, mix(0.64, 0.46, tz), face) - 0.07 * dark;
-      hSpec *= 1.0 + 0.25 * dark;
+      // (forehead and nose about 0.4, the cheeks about 0.58: the sheen sits on the T-zone)
+      hRough = mix(0.56, mix(0.6, 0.4, tz), face) - 0.07 * dark;
+      hSpec *= (1.0 + 0.25 * dark) * (1.0 + 0.2 * tz * face);
       float dcl = vDecal;
       if (dcl > 0.004) {
         // beard growth: stubble darkens and desaturates the skin towards the hair colour (follicle
@@ -816,7 +824,42 @@ const FRAG_SURFACE = /* glsl */`
       hBump += near * (n2 * 0.00012 + n1 * 0.00025);
     }
   }
-  if (uDecal > 0.5 && (hRegion == 14 || hRegion == 15)) {
+  bool hShop = hRegion == 14 && (hFlags & 192) != 0 || hRegion == 15 && (hFlags & 128) != 0;
+  if (hRegion == 14 && (hFlags & 16) != 0 && vCastUv.x > 0.0005) {
+    // shopping bags (mh/parts.js shoppingBag): the print on their big faces (bag texel w: 1 a band, 2 a
+    // block with a line of lettering, 3 a round logo; the fraction places it) in the strap texel's colour
+    float pr = tl.w;
+    if (pr > 0.5) {
+      float kind = floor(pr), f = fract(pr);
+      vec2 q = vCastUv;
+      vec2 aw = max(fwidth(q), vec2(1e-4)) * 0.8;
+      float m = 0.0;
+      if (kind < 1.5) {
+        float c = 0.42 + 0.3 * f, hw = 0.05 + 0.05 * fract(f * 7.0);
+        m = smoothstep(c - hw - aw.y, c - hw + aw.y, q.y) - smoothstep(c + hw - aw.y, c + hw + aw.y, q.y);
+      } else if (kind < 2.5) {
+        vec2 d = abs(q - vec2(0.5, 0.5 + 0.18 * f)) - vec2(0.22 + 0.1 * fract(f * 5.0), 0.1);
+        m = 1.0 - smoothstep(-aw.x, aw.x, max(d.x, d.y));
+        // (a line of lettering in the bag's colour inside it: short strokes, averaged out far away)
+        vec2 lq = (q - vec2(0.5, 0.5 + 0.18 * f)) * vec2(46.0, 1.0);
+        float ln = (1.0 - smoothstep(0.035 - aw.y, 0.035 + aw.y, abs(lq.y))) * step(abs(q.x - 0.5), 0.16 + 0.1 * fract(f * 5.0));
+        float st = mix(step(0.45, fract(lq.x + 0.3 * hH3(vec3(floor(lq.x), f, 2.0)))), 0.55, smoothstep(0.3, 0.8, fwidth(lq.x)));
+        m *= 1.0 - ln * st;
+      } else {
+        float e = length((q - vec2(0.5, 0.5 + 0.15 * f)) * vec2(1.0, 1.1)) - (0.13 + 0.05 * fract(f * 3.0));
+        m = 1.0 - smoothstep(-aw.x, aw.x, e);
+        m *= 1.0 - (1.0 - smoothstep(-aw.x, aw.x, abs(e + 0.035) - 0.012)) * step(0.5, fract(f * 11.0));
+      }
+      diffuseColor.rgb = mix(diffuseColor.rgb, hLook(row, 15).rgb, m * 0.92);
+    }
+  }
+  if (hShop) {
+    // (thin plastic film: smooth and glossy, its creases catching the light; paper and paper cords: matte)
+    bool film = (hFlags & 64) != 0;
+    hRough = film ? 0.3 : 0.8;
+    hSpec = film ? 1.0 : 0.4;
+  }
+  if (uDecal > 0.5 && (hRegion == 14 || hRegion == 15) && !hShop) {
     // bags and straps: a leather / canvas grain and soft wear up close
     float fwb = length(fwidth(vRest));
     float nb = 1.0 - smoothstep(0.0015, 0.006, fwb);
@@ -842,7 +885,7 @@ const FRAG_SURFACE = /* glsl */`
   }
   // cloth sheen: fibres catch light at grazing angles (dark cloth reads as cloth, not plastic); not
   // on the inside of a garment (a waistband's inside seen over the top must stay in its shade)
-  if (hRegion >= 5 && hRegion <= 10 && hRegion != 8 || hRegion == 14 || hRegion == 15) hSheen = 1.0;
+  if (hRegion >= 5 && hRegion <= 10 && hRegion != 8 || (hRegion == 14 || hRegion == 15) && !hShop) hSheen = 1.0;
   if ((hFlags & 2) != 0 && hRegion >= 5 && hRegion <= 10) { hSheen = 0.0; hSpec *= 0.15; hAO *= 0.7; }
 #if HUMANS_DBG == 1
   hEmit = vec3(hAO); diffuseColor.rgb = vec3(0.0);        // debug view: baked occlusion
@@ -1018,7 +1061,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       if ( hHairM > 0.0 ) {
         // the sky's sheen along the strands: hair in the shade keeps a soft highlight band
         vec3 upS = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * ( hCard || hTail ? 0.035 : 0.08 );
+        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * ( hCard || hTail ? 0.06 : 0.08 );
       }
       #endif`);
     shader.fragmentShader = fs;
@@ -1082,8 +1125,13 @@ export function writeLook(data, row, a) {
   // (stubble .. full); garment texels w: detail contrast (0 = as textured)
   data[o + 4 + 3] = a.hairPart ? 1 : 0;
   data[o + 44 + 3] = a.beardDens || 0;
-  // prop texel w: the tone of a glasses frame (0 black .. 1 tortoiseshell)
+  // prop texel w: the tone of a glasses frame (0 black .. 1 tortoiseshell); bag texel w: a shopping bag's
+  // print (0 none, 1 band, 2 block, 3 round logo; the fraction places it)
   data[o + 48 + 3] = a.frameTone || 0;
+  data[o + 56 + 3] = a.bagPrint || 0;
+  // eyes texel w: how dark the skin is (0 fair .. 1 deep; the white of the eye follows it)
+  const anc = a.char.anc || [1, 0, 0], tone = a.char.tone;
+  data[o + 16 + 3] = Math.min(1, anc[1] * 0.9 + (tone === 'brown' ? 0.6 : tone === 'tan' ? 0.3 : tone === 'olive' ? 0.15 : 0));
   data[o + 20 + 3] = a.detailTop || 0;
   data[o + 28 + 3] = a.detailBottom || 0;
   const pat = a.patColor || [T[12 * 3], T[12 * 3 + 1], T[12 * 3 + 2]];

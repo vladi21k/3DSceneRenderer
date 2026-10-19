@@ -73,21 +73,21 @@ function twistedBar(W, x, y0, y1, s, [t0, t1, turns]) {
   }
 }
 
-/** Small cast rosette facing +z: petalled dome (seg >= 8) or a flat faceted disc. */
-function rosette(W, x, y, r, z0, seg) {
+/** Small cast rosette facing +z (`side` -1: the matching one facing -z, on the back of
+ *  the bay): petalled dome (seg >= 8) or a flat faceted disc. */
+function rosette(W, x, y, r, z0, seg, side = 1) {
   const base = W.count;
-  const flat = seg < 8;
-  W.v(x, y, z0 + r * (flat ? 0.3 : 0.55), 0, 0, 1, 0, 0);
+  const flat = seg < 8, k = side;
+  W.v(x, y, k * (z0 + r * (flat ? 0.3 : 0.55)), 0, 0, k, 0, 0);
   for (let i = 0; i <= seg; i++) {
     const a = (i / seg) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
     const pr = r * (flat ? 0.85 : 0.72 + 0.28 * Math.abs(Math.cos(a * 4)));
-    W.v(x + c * pr * 0.45, y + s * pr * 0.45, z0 + r * (flat ? 0.25 : 0.42), c * 0.35, s * 0.35, 0.94, 0, 0);
-    W.v(x + c * pr, y + s * pr, z0, c * 0.7, s * 0.7, 0.7, 0, 0);
+    W.v(x + c * pr * 0.45, y + s * pr * 0.45, k * (z0 + r * (flat ? 0.25 : 0.42)), c * 0.35, s * 0.35, 0.94 * k, 0, 0);
+    W.v(x + c * pr, y + s * pr, k * z0, c * 0.7, s * 0.7, 0.7 * k, 0, 0);
   }
   for (let i = 0; i < seg; i++) {
     const m0 = base + 1 + i * 2, o0 = m0 + 1, m1 = m0 + 2, o1 = m0 + 3;
-    W.tri(base, m0, m1);
-    W.quad(m0, o0, o1, m1);
+    if (k > 0) { W.tri(base, m0, m1); W.quad(m0, o0, o1, m1); } else { W.tri(base, m1, m0); W.quad(m0, m1, o1, o0); }
   }
 }
 
@@ -145,15 +145,19 @@ export function bayGeometry(design, lod = 0) {
         else { const s = st.twist ? st.s * 1.12 : st.s; box(W, st.x, (st.y0 + st.y1) / 2, 0, s, st.y1 - st.y0, s, 1, 'ud'); }
         break;
       case 'curve': {
+        // all four faces: the inner face of a return panel (and of the far end's, seen
+        // through the front) faces the street, and without it the scrolls seen from the
+        // side read as loose ribbons
         const p = st.ring ? circlePts(st.ring[0], st.ring[1], st.ring[2], tol) : simplifyTol(st.pts, tol);
-        sweepBar(W, p, st.w / 2, st.d / 2, { closed: st.closed, caps: false, backFace: false });
+        sweepBar(W, p, st.w / 2, st.d / 2, { closed: st.closed, caps: false });
         break;
       }
       case 'collar':
         box(W, st.x, st.y, 0, st.w, st.h, st.d);
         break;
       case 'rosette':
-        rosette(W, st.x, st.y, st.r, 0.008, [16, 8, 6][lod]);
+        // cast in pairs, one on each face of the bar it is riveted through
+        for (const side of [1, -1]) rosette(W, st.x, st.y, st.r, 0.008, [16, 8, 6][lod], side);
         break;
     }
   }

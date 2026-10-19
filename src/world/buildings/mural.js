@@ -1,17 +1,27 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { FACES } from './mesh.js';
+import { FaceShade } from './shade.js';
+import { wallField } from './wall.js';
+import { grimePaint } from './grime.js';
 
 // Large painted murals on blank gable and party walls (a few of the walls and taller
 // blocks that close the view down the street carry one, as in the photographs). Painted
 // once at start-up on a canvas: a city panorama under a cloudy or an evening sky, a
-// crowd of figures before old houses, a tree with birds; each built from many shaded shapes and brush strokes in the muted, sun-faded
-// palette of outdoor acrylic on render. Then weathered: bleached towards the top,
+// crowd of figures before old houses, a tree with birds; each built from many shaded
+// shapes and brush strokes in the muted, sun-faded palette of outdoor acrylic on render,
+// the skies flat pastel paint with painted clouds (a blurred, saturated sky reads as a
+// glass curtain wall mirroring the real one). Then weathered: bleached towards the top,
 // chalky grain, a few peeled and patched spots near the edges, rain streaks, a grimy
 // foot.
 //
-// The mural geometry (buildings sink key `mural<k>`) carries uv in 0..1 over the painted
-// rectangle; the material is a plain matte standard material with the painting as map.
+// The mural is paint on the wall (muralField): the wall field's pieces inside the
+// painted rectangle, in the mural's own sink (key `mural<k>`, uv 0..1 over the
+// rectangle), cut around the windows that pierce it, so the windows break the image as
+// they do on the painted gables in the photographs. Its material (grime.grimePaint)
+// shades and weathers it like the wall it is painted on: the soot under the cornice,
+// the splash zone, run-off streaks under every sill, drip trails, and the render's
+// texture through the paint.
 
 export const MURALS = 6;   // (= facadePlan MURAL_KINDS)
 const TW = 640, TH = 1024;
@@ -46,11 +56,37 @@ export function muralMaterials(app) {
   mats = [];
   for (let k = 0; k < MURALS; k++) {
     const tex = paint(k);
-    const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.93, metalness: 0, name: `buildings:mural${k}` });
+    const m = grimePaint(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.93, metalness: 0, name: `buildings:mural${k}` }));
     if (app.materials.register) app.materials.register(m.name, m);
     mats.push(m);
   }
   return mats;
+}
+
+/**
+ * The painted rectangle m {u0, u1, v0, v1} (mural k) of a face as paint on its wall: the
+ * wall field inside m, cut around the openings that pierce it, in the sink `mural<k>`
+ * with uv 0..1 over m. ctx: the face's wall context ({B, q, fs, sinks, sillExt, cover?},
+ * as for wallField), face: its plan. The wall itself leaves m out (a hole). The shading
+ * is the face's own, relative to its tint (a FaceShade with a white tint), so the paint
+ * carries the same soot, splash and run-off as the wall around it. A generator.
+ */
+export function* muralField(ctx, face, m, k) {
+  const { B } = ctx, s = B.sink(`mural${k}`), fs0 = ctx.fs;
+  const fs = new FaceShade(face, [1, 1, 1], fs0.seed + 0x3c1, { dirt: fs0.dirt, uncleaned: fs0.unc * 0.6, damp: fs0.damp, sillExt: ctx.sillExt ?? 0.12, sillH: 0.06 });
+  // (only the openings over the rectangle: a hole starting beyond its right edge would
+  // open a run past uMax)
+  const ops = (face.openings || []).filter((o) => {
+    const cov = ctx.cover ? ctx.cover(o) : null, e = cov ? cov.side : 0;
+    return o.uc - o.w / 2 - e < m.u1 - 1e-3 && o.uc + o.w / 2 + e > m.u0 + 1e-3 && o.y < m.v1 && o.y + o.h > m.v0;
+  });
+  const uv = B.uv.slice(), su = 1 / (m.u1 - m.u0), sv = 1 / (m.v1 - m.v0);
+  B.setUV(su, -m.u0 * su, sv, -m.v0 * sv);
+  s.uvx = null;
+  yield* wallField({ ...ctx, fs, sinks: { ...ctx.sinks, ashlar: s, rough: null }, rustic: null, render: null, fit: null, uMin: m.u0, uMax: m.u1, vBottom: m.v0, vTop: m.v1 }, face, ops);
+  B.setUV(uv[0], uv[1], uv[2], uv[3]);
+  B.shade = null;
+  B.flat = [1, 1, 1];
 }
 
 function canvas(w, h) {
@@ -104,24 +140,28 @@ function strokes(g, r, x0, y0, x1, y1, col, n, w0 = 4, w1 = 14, a = [0.08, 0.22]
 }
 
 function sky(g, r, y1, warm = false) {
-  const top = warm ? [214, 150, 112] : r.pick(PAL.sky), low = warm ? [246, 210, 150] : mix(top, [240, 226, 196], 0.55);
+  // flat pastel paint, paler towards the horizon (sun-faded acrylic, never the deep blue
+  // of the real sky), and painted clouds: flat light shapes over a slightly darker
+  // underside, hard-edged as a brush leaves them (soft, blurred clouds read as the sky
+  // mirrored in glass)
+  const top = warm ? [218, 164, 128] : mix(r.pick(PAL.sky), [226, 228, 218], 0.38);
+  const low = warm ? [244, 212, 160] : mix(top, [242, 232, 208], 0.6);
   const gr = g.createLinearGradient(0, 0, 0, y1);
-  gr.addColorStop(0, rgb(shade(top, 0.92)));
+  gr.addColorStop(0, rgb(top));
   gr.addColorStop(1, rgb(low));
   g.fillStyle = gr;
   g.fillRect(0, 0, TW, y1);
-  // soft clouds
-  g.save();
-  g.filter = 'blur(10px)';
-  for (let i = 0; i < 14; i++) {
-    g.fillStyle = `rgba(245,240,230,${r.range(0.25, 0.6)})`;
-    const cx = r.range(-50, TW + 50), cy = r.range(0.05, 0.7) * y1;
-    for (let k = 0; k < 5; k++) {
-      g.beginPath(); g.ellipse(cx + r.range(-60, 60), cy + r.range(-12, 12), r.range(30, 80), r.range(12, 26), 0, 0, Math.PI * 2); g.fill();
+  strokes(g, r, 0, 0, TW, y1, top, 220, 8, 22, [0.05, 0.14]);
+  const body = warm ? [250, 226, 196] : [246, 242, 230], under = mix(top, body, 0.55);
+  for (let i = 0; i < 9; i++) {
+    const cx = r.range(-40, TW + 40), cy = r.range(0.08, 0.72) * y1, n = r.int(3, 6), w = r.range(36, 90);
+    const blobs = [];
+    for (let k = 0; k < n; k++) blobs.push([cx + (k - n / 2) * w * r.range(0.5, 0.8), cy - r.range(0, w * 0.35), w * r.range(0.4, 0.75), w * r.range(0.22, 0.38)]);
+    for (const [col, dy, a] of [[under, 7, 0.9], [body, 0, 0.94]]) {
+      g.fillStyle = rgb(col, a);
+      for (const [x, y, rx, ry] of blobs) { g.beginPath(); g.ellipse(x, y + dy, rx, ry, 0, Math.PI, 0); g.lineTo(x + rx, cy + dy); g.lineTo(x - rx, cy + dy); g.closePath(); g.fill(); }
     }
   }
-  g.restore();
-  strokes(g, r, 0, 0, TW, y1, top, 160, 6, 18, [0.04, 0.12]);
 }
 
 /** Composition 0: a panorama of old houses, domes and towers on hills under a cloudy sky. */
@@ -237,8 +277,8 @@ function tree(g, r) {
 function weather(g, r) {
   // sun-bleaching, strongest at the top
   const fade = g.createLinearGradient(0, 0, 0, TH);
-  fade.addColorStop(0, 'rgba(236,228,212,0.3)');
-  fade.addColorStop(0.5, 'rgba(236,228,212,0.14)');
+  fade.addColorStop(0, 'rgba(236,228,212,0.36)');
+  fade.addColorStop(0.5, 'rgba(236,228,212,0.15)');
   fade.addColorStop(1, 'rgba(236,228,212,0.06)');
   g.fillStyle = fade;
   g.fillRect(0, 0, TW, TH);

@@ -20,7 +20,8 @@ import { createGroundShade } from './vegetation/groundShade.js';
 //       in the background while the other modules start, long before the first frame.
 //       The drawn size of every tree goes back into layout.trees (_writeBack).
 // build: per chunk, adds one instance per tree and per prop (stakes and ties, planter
-//       boxes; planters come from layout.furniture entries of type 'planter'). The tree
+//       boxes, raised tree beds; planters come from layout.furniture entries of type
+//       'planter', the beds from _planBeds). The tree
 //       grates are paving details drawn by the street module. The chunk's trees also get
 //       a soft sky-occlusion disc on the paving under their crowns (groundShade.js).
 // per frame (pool.js): instance visibility follows the chunk group, detail level follows
@@ -88,6 +89,7 @@ const vegetation = {
     this.props = createProps(app, this.pools);
     this.groundShade = createGroundShade(app);
     this.plan = this._planTrees();
+    this.beds = this._planBeds();
     this._writeBack();
     // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
@@ -187,6 +189,45 @@ const vegetation = {
   },
 
   /**
+   * Raised beds round some street trees (about one in eight on the main avenue, one in
+   * twenty elsewhere): a limestone kerb people sit on, with timber seat slats on the side
+   * towards the shopfronts and sometimes the tracks. Never at a stop, a cross-street mouth
+   * or a café terrace, never where the kerb would meet a bench, bin, pole or anything else
+   * in the plan, never two within 12 m on one side. Registered as crowd obstacles (rect,
+   * tag treeBed). Map layout tree -> {half, seats, tint, timber}.
+   */
+  _planBeds() {
+    const { route, layout } = this.app;
+    const beds = new Map(), half = this.props.bedSize / 2, obs = [], m = 0.35;
+    const last = { '-1': -1e9, '1': -1e9 };
+    const trees = layout.trees.slice().sort((a, b) => a.side - b.side || a.s - b.s);
+    for (const t of trees) {
+      const r = RNG.from(layout.seed, 'treeBed', t.id);
+      if (!r.chance(route.wrap(t.s) < 1500 ? 0.13 : 0.05)) continue;
+      if (route.wrap(t.s) - last[t.side] < 12) continue;
+      if (layout.isInStation(t.s, 8) || layout.isInCrossStreet(t.s, t.side, 3) || layout.isInCrossStreet(t.s, 0, 3)) continue;
+      let ok = true;
+      for (const o of layout.obstaclesNear(t.s, 4)) {
+        if (o.kind === 'circle') {
+          const ds = Math.abs(route.delta(o.s, t.s)), dd = Math.abs(o.d - t.d);
+          if (ds < 0.01 && dd < 0.01) continue;   // the tree itself
+          const ex = Math.max(0, ds - half), ey = Math.max(0, dd - half);
+          if (ex * ex + ey * ey < (o.r + m) ** 2) { ok = false; break; }
+        } else if (route.delta(o.s0, t.s) > -(half + m) && route.delta(t.s, o.s1) > -(half + m) && t.d > o.d0 - half - m && t.d < o.d1 + half + m) { ok = false; break; }
+      }
+      if (!ok) continue;
+      const out = t.side > 0 ? 'z+' : 'z-';
+      const v = r.range(0.92, 1.04), tv = r.range(0.92, 1.05);
+      const timber = r.chance(0.5) ? new THREE.Color(0.82 * tv, 0.8 * tv, 0.78 * tv) : new THREE.Color(0.86 * tv, 0.63 * tv, 0.43 * tv);
+      beds.set(t, { half, seats: r.chance(0.35) ? [out, out === 'z+' ? 'z-' : 'z+'] : [out], tint: new THREE.Color(v, v, v * 0.985), timber });
+      obs.push({ kind: 'rect', s0: t.s - half, s1: t.s + half, d0: t.d - half, d1: t.d + half, treeBed: t.id });
+      last[t.side] = route.wrap(t.s);
+    }
+    if (layout.addObstacles) layout.addObstacles(obs); else layout.obstacles.push(...obs);
+    return beds;
+  },
+
+  /**
    * The drawn trees go back into the shared plan, so every module sees them as drawn
    * (café canopies, lamp pools, signals, the crowd, parked bicycles, the far field): per
    * layout tree, `height` (m, top of the crown above the paving), `crown` (m, the spread
@@ -195,8 +236,9 @@ const vegetation = {
    * clearances: crowns are pruned on the track side, so they are not centred on the
    * stem), `crownBase` (m, its lowest leaves above the paving), `species`,
    * `template`, `drawn: true` and the layout's own values in `planned` {height, crown,
-   * mature}. Modules that read layout.trees in their own init before vegetation's still
-   * see the planned values.
+   * mature}, and `bed` {half (m), h (m), seats} for a tree standing in a raised bed.
+   * Modules that read layout.trees in their own init before vegetation's still see the
+   * planned values.
    */
   _writeBack() {
     for (const [t, P] of this.plan) {
@@ -209,6 +251,8 @@ const vegetation = {
       t.species = P.T.tpl.species;
       t.template = P.T.tpl.id;
       t.drawn = true;
+      const bed = this.beds && this.beds.get(t);
+      if (bed) t.bed = { half: bed.half, h: 0.44, seats: bed.seats };
     }
   },
 
@@ -243,7 +287,9 @@ const vegetation = {
       // bark detail steps down sooner than the crown's: its twigs are sub-pixel long before
       // the leaf clumps are (and mostly hidden by them)
       this.pools.add(rec, this.barkPool, T.barkIdx[P.mirror], P.matrix, P.barkTint, P.pos, P.size * BARK_LOD_SIZE);
-      if (!lod) props.tree(t, T, P.matrix, P.sxz, new RNG(P.seed ^ 0x2545f491));
+      const bed = this.beds.get(t);
+      if (!lod) props.tree(t, T, P.matrix, P.sxz, new RNG(P.seed ^ 0x2545f491), !!bed);
+      if (bed) props.bed(t, bed);
     }
 
     for (const f of planters) {

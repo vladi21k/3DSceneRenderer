@@ -221,7 +221,9 @@ void main() {
     vec3 wp = uCamPos + rd * dist;
     float m = smoothstep(70.0, 260.0, dist) * (1.0 - smoothstep(1.0, 7.0, wp.y - (uCamPos.y - 2.75)));
     if (m > 0.0) {
-      vec2 q = uv * vec2(70.0, 210.0) * (uResolution.y / 1080.0);
+      // (cells a few pixels across and several rows tall: neighbouring rows move together,
+      // so edges waver instead of combing)
+      vec2 q = uv * vec2(70.0, 130.0) * (uResolution.y / 1080.0);
       float t = uTime;
       vec2 o = vec2(vnoise(q + vec2(0.0, t * 2.3)) + 0.5 * vnoise(q * 2.1 + vec2(t * 0.7, t * 3.9)),
                     vnoise(q.yx * 0.7 + vec2(t * 1.9, 0.0)));
@@ -683,6 +685,7 @@ uniform vec4 uLocal;          // local highlight recovery: knee (stops), strengt
 uniform vec4 uKnee;           // gamut knee: start, ceiling (street); start, ceiling (saturated sky)
 uniform float uSatOut;        // saturation of the street's final colour (scene-linear, around its luminance)
 uniform float uSkyTwist;      // sunset: warm sky hues turned towards yellow-orange (a camera profile's hue twist)
+uniform float uSkyBlue;       // blue hour: share of the red taken out of a blue sky pixel (blues turned away from violet)
 uniform vec3 uSatHi;          // street saturation in the highlights: target, start and end (display-linear luminance)
 uniform vec3 uUpView;         // world up in view space (the sky's elevation per pixel)
 uniform vec2 uProjInv;        // 1 / projectionMatrix[0][0], 1 / projectionMatrix[1][1]
@@ -832,6 +835,8 @@ void main() {
     // (the saturated afterglow band: green raised towards red, so it reads yellow-orange;
     // the paler pink above it stays pink)
     if (uSkyTwist > 0.0) sc.g += uSkyTwist * smoothstep(0.5, 0.85, (sc.r - sc.b) / max(sc.r, 1e-6)) * max(sc.r - sc.g, 0.0);
+    // (and the twilight's lavender blue turned towards a deep blue, as a camera profile does)
+    if (uSkyBlue > 0.0) sc.r *= 1.0 - uSkyBlue * smoothstep(0.2, 0.45, (sc.b - sc.r) / max(sc.b, 1e-6));
     // (a camera renders the blue sky overhead deep and saturated; a warm sky stays nearly as
     // it is, and so does the low sky: towards the horizon the dusty air turns it pale and
     // milky, so the boost fades out below ~uSkySatEl.y)

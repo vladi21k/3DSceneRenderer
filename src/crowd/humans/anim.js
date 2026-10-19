@@ -510,11 +510,13 @@ export class Rig {
       const zf = this.chestFront;
       const br = 0.004 * Math.sin(T * 5);
       // (the forearms lie one above the other, a forearm's thickness apart, a little off the chest)
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.46, shY - 0.262 * k + br, zf - 0.058 * k),
-        pole: new THREE.Vector3(0.25, -1, 0.12), palm: new THREE.Vector3(0.1, -0.25, 1), flex: 70 };
+      // (the hands reach round to the opposite upper arms: the wrists well past the middle, the forearms
+      // resting on each other rather than hovering in front of the chest)
+      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.56, shY - 0.262 * k + br, zf - 0.046 * k),
+        pole: new THREE.Vector3(0.25, -1, 0.12), palm: new THREE.Vector3(0.1, -0.25, 1), flex: 62 };
       // (the left forearm lies above it, its hand tucked round the right upper arm)
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.50, shY - 0.205 * k + br, zf - 0.046 * k),
-        pole: new THREE.Vector3(-0.25, -1, 0.12), palm: new THREE.Vector3(-0.1, -0.25, 1), flex: 65 };
+      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.6, shY - 0.205 * k + br, zf - 0.037 * k),
+        pole: new THREE.Vector3(-0.25, -1, 0.12), palm: new THREE.Vector3(-0.1, -0.25, 1), flex: 58 };
     } else if (variant === 3) {
       // hands in the front pockets: wrists at the pocket openings, elbows out a little (the
       // shader tucks the hands themselves inside the trousers)
@@ -527,7 +529,8 @@ export class Rig {
     } else if (variant === 4) {
       // weight on the right leg, the left hand on the hip (wrist bent back, fingers forward, the
       // elbow out to the side); the right arm hangs
-      P.arm.L.ik = { target: new THREE.Vector3(-(this.waist.hw + 0.045 * k), this.waist.y - 0.035 * k, 0.012 * k),
+      // (the wrist just off the waist's side: the palm lies on the hip bone, not over it)
+      P.arm.L.ik = { target: new THREE.Vector3(-(this.waist.hw + 0.03 * k), this.waist.y - 0.04 * k, 0.012 * k),
         pole: new THREE.Vector3(-1, -0.1, 0.45), palm: new THREE.Vector3(1, -0.15, -0.1), flex: -28 };
       P.spine2Q = qEuler(0.6 * breath - 1, -3, 2.5);
     } else if (variant === 5) {

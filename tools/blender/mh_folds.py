@@ -314,6 +314,9 @@ def _ridge(phase, sharp=1.6):
     return (0.5 + 0.5 * np.cos(2 * np.pi * phase)) ** sharp
 
 
+DRAPE_GAIN = 1.4
+
+
 def drape(P, ctx):
     """Outward offset (m, >= 0) of rest-pose garment points P (n, 3; three.js space) for the garments' own
     geometry: the broad folds a worn garment stands off the body in, which the normal maps alone cannot
@@ -349,7 +352,9 @@ def drape(P, ctx):
     if mT.any():
         e = np.where(mT, wt, 0.0)
         down = np.clip((yA - 0.04 * k - y) / np.maximum(0.05, yA - 0.04 * k - yb), 0, 1)
-        sides = 1.0 - 0.55 * np.abs(np.sin(th)) ** 3            # (less where the arms hang)
+        # (less where the arms hang, and next to nothing right beside them: an arm held against the side,
+        # arms folded, would show through cloth standing off there)
+        sides = (1.0 - 0.55 * np.abs(np.sin(th)) ** 3) * (1.0 - 0.85 * ss(0.8, 0.97, np.abs(np.sin(th))))
         nf = 9.0 if top_kind != 'jacket' else 6.0
         ph = th * nf / (2 * np.pi) + warp + 0.35 * np.sin(th * 2 + seed)
         if ctx.get('tuck'):
@@ -372,7 +377,8 @@ def drape(P, ctx):
             dh = -s * dth * np.maximum(rt, 0.08 * k)
             rq = np.hypot(dy, dh)
             fan = np.arctan2(dh, np.maximum(dy, 1e-4))
-            env = e * ss(-0.02 * k, 0.05 * k, dy) * ss(0.03 * k, 0.08 * k, rq) * ss(0.32 * k, 0.12 * k, rq) * ss(1.3, 0.7, np.abs(fan))
+            env = e * ss(-0.02 * k, 0.05 * k, dy) * ss(0.03 * k, 0.08 * k, rq) * ss(0.32 * k, 0.12 * k, rq) * ss(1.3, 0.7, np.abs(fan)) \
+                * (1.0 - 0.8 * ss(0.85, 0.98, np.abs(np.sin(th))))
             h += 0.0035 * heavy * env * ampn * _ridge(fan * 4.0 / np.pi + warp * 0.6)
         if ctx['female'] and top_kind != 'jacket':
             # under the bust the cloth falls from its apex: a few soft folds down and out
@@ -435,7 +441,8 @@ def drape(P, ctx):
                 hem = ss(tmax - 0.18 * k, tmax, t)
                 hh += el * hem * (0.004 + 0.007 * hem) * (0.75 + 0.25 * np.sin(phi * 2 + seed))
             h[m] += hh * ampn[m]
-    return h
+    # (deep enough to read at the distances people are seen from the cab: 5-25 m with a long lens)
+    return h * DRAPE_GAIN
 
 
 # ----------------------------------------------------------------------------- baking into UV space

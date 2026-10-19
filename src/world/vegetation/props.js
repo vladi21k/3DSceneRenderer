@@ -10,7 +10,9 @@ import { InstancePool } from './pool.js';
 //     and a rubber tie on the youngest trees (fresh pine or silvered timber, darker cut tops);
 //   * limestone planters (bevelled trough or square box) with soil and a soft contact
 //     shadow on the paving, holding a shrub mound (the foliage itself is instanced in the
-//     leaf pool by vegetation.js).
+//     leaf pool by vegetation.js);
+//   * raised tree beds round some street trees: a square limestone kerb with a broad
+//     coping people sit on, timber seat slats along one or two sides, soil and mulch.
 // Every prop is an instance in a BatchedMesh per material, created at init: a chunk build
 // only adds instances (no geometry is copied), and they follow the chunk's visibility
 // through the vegetation pools. Textures are painted on canvases at init. Stakes and the
@@ -164,6 +166,45 @@ function planterGeometry(w, d, H) {
   return { shell, soil, skirt, soilY, inner: [w - 2 * T, d - 2 * T], foot: Math.hypot(w, d) / 2 };
 }
 
+/** Raised tree bed (outer w x w, height H): limestone kerb with a 0.3 m coping that
+ *  overhangs both faces a little, its soil (mulch) surface, and the contact skirt. */
+function treeBedGeometry(w, H) {
+  const C = 0.3;   // coping width
+  const prof = [
+    [-0.015, 0.0], [-0.015, 0.04], [0.0, 0.05],          // plinth set back, step out
+    [0.004, H - 0.07], [0.028, H - 0.064],                // batter, coping overhang
+    [0.03, H - 0.018], [0.018, H],                         // rounded arris
+    [-C + 0.04, H], [-C + 0.025, H - 0.01],                // flat top, inner arris
+    [-C + 0.02, H - 0.06], [-C + 0.05, H - 0.07], [-C + 0.05, H - 0.16], // coping lip, inner wall
+  ];
+  const shell = sweepRoundedRect(w, w, prof, 0.04, (y, o) => {
+    if (o < -C * 0.5) return 0.6;                             // inner faces, shaded
+    return y < 0.12 ? 0.6 + 0.4 * (y / 0.12) : 1.0 - 0.07 * Math.max(0, (y - H + 0.05) / 0.05); // splash dirt, worn top
+  });
+  const soilY = H - 0.1, inner = w - 2 * (C - 0.05);
+  const soil = withColor(new THREE.PlaneGeometry(inner + 0.01, inner + 0.01, 4, 4));
+  soil.rotateX(-Math.PI / 2);
+  // heaped a little towards the stem
+  const p = soil.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const r = Math.hypot(p.getX(i), p.getZ(i)) / (inner / 2);
+    p.setY(i, soilY + 0.035 * Math.max(0, 1 - r * r));
+  }
+  soil.computeVertexNormals();
+  const uv = soil.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * inner * 2, uv.getY(i) * inner * 2);
+  const skirt = contactSkirt(w - 0.04, w - 0.04, 0.18, 0.55);
+  return { shell, soil, skirt, soilY, inner, C, H, w, foot: w * 0.71 };
+}
+
+/** Unit seat slat (1 m along x, 35 x 75 mm) with the timber grain (texture v) along it. */
+function slatGeometry() {
+  const g = new THREE.BoxGeometry(1, 0.035, 0.075);
+  const p = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) uv.setXY(i, (p.getY(i) + p.getZ(i)) * 4, 0.18 + (p.getX(i) + 0.5) * 0.76);
+  return withColor(g);
+}
+
 /** Flat ring around a w x d footprint on the paving: alpha a0 inside, 0 at `out` metres. */
 function contactSkirt(w, d, out, a0) {
   const pos = [], col = [], idx = [];
@@ -283,14 +324,16 @@ export function createProps(app, pools) {
   tie.rotateX(Math.PI / 2);
   const strap = withColor(new THREE.BoxGeometry(1, 0.03, 0.004));
   const planters = [planterGeometry(1.5, 0.66, 0.48), planterGeometry(0.86, 0.86, 0.52)];
+  const bedG = treeBedGeometry(1.8, 0.44), slat = slatGeometry();
   const pool = (name, mat, geoms, cap, cast, shadowMaxTexel) => pools.addPool(new InstancePool(name, mat, null, geoms, cap, { castShadow: cast, receiveShadow: true, sort: false, shadowMaxTexel }));
   const P = {
-    // 3 cm stakes: sub-texel (no shadow) in the coarse cascades
-    stake: pool('vegetation:stakes', mats.stake, [post, batten, tie, strap], 224, true, 0.05),
-    stone: pool('vegetation:planters', mats.stone, planters.map((p) => p.shell), 48, true),
-    // planter soil (0, 1) and the mulch mound of the tree grates (2)
-    soil: pool('vegetation:soil', mats.soil, [...planters.map((p) => p.soil), mulchGeometry()], 160, false),
-    contact: pool('vegetation:contact', mats.contact, planters.map((p) => p.skirt), 48, false),
+    // 3 cm stakes: sub-texel (no shadow) in the coarse cascades; seat slats of the tree beds (4)
+    stake: pool('vegetation:stakes', mats.stake, [post, batten, tie, strap, slat], 300, true, 0.05),
+    // planter shells (0, 1), tree-bed kerb (2)
+    stone: pool('vegetation:planters', mats.stone, [...planters.map((p) => p.shell), bedG.shell], 80, true),
+    // planter soil (0, 1), the mulch mound of the tree grates (2), tree-bed soil (3)
+    soil: pool('vegetation:soil', mats.soil, [...planters.map((p) => p.soil), mulchGeometry(), bedG.soil], 200, false),
+    contact: pool('vegetation:contact', mats.contact, [...planters.map((p) => p.skirt), bedG.skirt], 80, false),
   };
   P.contact.mesh.receiveShadow = false;
   P.contact.mesh.renderOrder = 1;
@@ -299,20 +342,21 @@ export function createProps(app, pools) {
   const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _v = new THREE.Vector3(), _e = new THREE.Euler();
   const _base = new THREE.Vector3(), _mid = new THREE.Vector3(), _stemP = new THREE.Vector3(), _tgt = new THREE.Vector3();
   const _ends = [new THREE.Vector3(), new THREE.Vector3()];
-  const _c = new THREE.Color();
+  const _c = new THREE.Color(), _q2 = new THREE.Quaternion();
+  const _qy90 = new THREE.Quaternion().setFromAxisAngle(UP, Math.PI / 2);
   const X1 = new THREE.Vector3(1, 0, 0);
   const local = (treeM, x, y, z, out) => out.set(x, y, z).applyMatrix4(treeM);
 
   return {
-    mats, pools: P,
+    mats, pools: P, bedSize: bedG.w,
     begin(rec, lod) {
       const { route } = app;
       const add = (p, g, m, c, size = 1) => pools.add(rec, p, g, m, c, _p.setFromMatrixPosition(m), size);
       return {
         /** Stakes and ties on young trees. treeM: the tree instance matrix. */
-        tree(t, T, treeM, sxz, r) {
+        tree(t, T, treeM, sxz, r, bed = false) {
           if (lod) return; // sub-pixel beyond 200 m
-          {
+          if (!bed) {
             // mulch mound round the stem foot (unscaled: the grate opening is fixed)
             const st0 = T.stem(0);
             local(treeM, st0.x, 0, st0.z, _base);
@@ -375,6 +419,35 @@ export function createProps(app, pools) {
           out.sx = (G.inner[0] / shrubW) * 0.98;
           out.sz = (G.inner[1] / shrubD) * 0.98;
           return out;
+        },
+        /** Raised bed round layout tree t (bed: {seats: ['z+' | 'z-'], tint, timber}; local
+         *  +z is the right of travel). */
+        bed(t, bed) {
+          const yaw = route.heading(t.s);
+          const gs = route.groundY(t.s + 0.25, t.d) - route.groundY(t.s - 0.25, t.d);
+          const gd = route.groundY(t.s, t.d + 0.25) - route.groundY(t.s, t.d - 0.25);
+          route.toWorld(t.s, t.d, -bedG.foot * 2 * Math.hypot(gs, gd), _base);
+          _q.setFromAxisAngle(UP, yaw);
+          _m.compose(_base, _q, _s.set(1, 1, 1));
+          add(P.stone, 2, _m, bed.tint, 2.2);
+          add(P.soil, 3, _m, null, 2);
+          add(P.contact, 2, _m, null, 2.2);
+          if (lod) return;
+          // seat slats on the coping: three per seat side (local +z = right of travel)
+          const half = bedG.w / 2, len = bedG.w - 0.26;
+          for (const sd of bed.seats) {
+            const ax = sd === 'x+' || sd === 'x-';
+            const sg = sd.endsWith('+') ? 1 : -1;
+            for (let k = 0; k < 3; k++) {
+              const o = half - 0.05 - k * 0.085;    // across the coping, outer slat first
+              const lx = ax ? sg * o : 0, lz = ax ? 0 : sg * o;
+              _p.set(lx, bedG.H + 0.0185, lz).applyQuaternion(_q).add(_base);
+              _q2.copy(_q);
+              if (ax) _q2.multiply(_qy90);
+              _m.compose(_p, _q2, _s.set(len, 1, 1));
+              add(P.stake, 4, _m, bed.timber, 1.6);
+            }
+          }
         },
       };
     },

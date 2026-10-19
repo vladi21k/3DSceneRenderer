@@ -920,6 +920,9 @@ export function createMaterials(app) {
   // of the panel in the depth buffer at any distance
   const decalOffset = (m) => { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; return m; };
   patchPosterPick(decalOffset(reg('print', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.55, metalness: 0 }))));
+  // city map boards and the kiosk's drinks cooler: the print over a light box, switched on
+  // after dusk (levels.board)
+  decalOffset(reg('printBoard', patchEmissiveLevel(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: printMap, emissive: 0xffffff, emissiveIntensity: 1, roughness: 0.4, metalness: 0 }), out.levels.board, 'board')));
   // posters glued on advertising columns: paper with wrinkles and bubbles
   decalOffset(reg('paper', new THREE.MeshStandardMaterial({ map: printMap, roughness: 0.68, metalness: 0, normalMap: T('paper', () => paperNormal(R)), normalScale: new THREE.Vector2(0.18, 0.18) })));
   // parked vehicles: clear-coated paint (solid and metallic, coloured per instance, road
@@ -958,6 +961,8 @@ export function updateLightLevels(F, app, ready = true) {
   F.levels.lit.value = Math.min(0.03, 0.75 / exp) * (0.1 + 0.9 * on);
   F.levels.disp.value = Math.min(0.5, 0.3 / exp);
   F.levels.lamp.value = on * 5 / exp;
+  // map boards' light boxes: a little dimmer than the adverts', off by day
+  F.levels.board.value = on * Math.min(0.025, 0.6 / exp);
   // café umbrella LEDs come on soon after sunset (switched by the staff, not a photocell)
   const night = U.uNight.value, gain = app.materials?.uniforms?.emissiveGain?.value ?? 1;
   const led = THREE.MathUtils.smoothstep(night, 0.15, 0.45) * gain / exp;

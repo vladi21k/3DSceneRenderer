@@ -47,7 +47,8 @@ HEAD, NECK = 5, 4
 #   flow   'crown' (away from the whorl), 'part' (sideways from a parting, then down), 'tie' (to a tail's tie)
 #   crown  whorl offset from the head centre (x, y, z: up, back), part = parting x offset
 #   grav   pull down per step (0 stiff short hair .. 1 long hair), len = strand length range
-#   thick  hair volume thickness under the envelope's outer surface, width = card width scale
+#   thick  hair volume thickness under the envelope's outer surface (hthick: of the hanging length, if
+#          different), width = card width scale
 #   fwd    forward sweep of the front hair (fringe), side = sideways sweep of the front hair
 STYLE = {
     'short01': dict(flow='crown', crown=(0.01, 0.075, 0.05), grav=0.10, len=(0.045, 0.075), thick=0.022, width=0.7, fwd=0.15, side=0.5, twist=0.4, brow=0.058),
@@ -56,7 +57,7 @@ STYLE = {
     'short04': dict(flow='crown', crown=(0.0, 0.08, 0.045), grav=0.06, len=(0.03, 0.055), thick=0.016, width=0.65, fwd=0.1, side=0.3, twist=0.3, brow=0.065),
     'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004)),
     'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004)),
-    'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, width=1.35, fwd=0.0, side=1.0),
+    'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, hthick=0.042, width=1.35, fwd=0.0, side=1.0),
     'ponytail01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.24), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'braid01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.26), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'afro01': None,
@@ -67,7 +68,7 @@ LAYERS = [
     dict(name='base', depth=0.9, r=0.0125, w=0.026, cols=(0, 1), lod1=0.4),
     dict(name='mid', depth=0.5, r=0.0155, w=0.02, cols=(2, 3, 4, 5), lod1=0.35),
     dict(name='outer', depth=0.12, r=0.017, w=0.016, cols=(2, 3, 4, 5), lod1=0.3),
-    dict(name='fly', depth=-0.12, r=0.03, w=0.01, cols=(6,), lod1=0.0),
+    dict(name='fly', depth=-0.12, r=0.024, w=0.01, cols=(6,), lod1=0.0),
 ]
 STRAND_COLS = 8          # columns of the strand atlas layer
 CLEAR = 0.0018           # strands stay this far off the skin / cloth (m)
@@ -415,7 +416,8 @@ def groom(cid):
                 if np.linalg.norm(tang) > 0.004 * hk or de > 0.04 * hk:
                     why = 'edge'
                     break
-                dz = depth * S['thick'] * 0.6 * hk if depth >= 0 else depth * 0.03 * hk
+                # (hanging hair keeps a volume of its own: long hair falls in a layer 2-3 cm deep, not a sheet)
+                dz = depth * S.get('hthick', S['thick']) * 0.6 * hk if depth >= 0 else depth * 0.03 * hk
                 tgt = qe - ne * dz
                 q = q + (tgt - q) * 0.35
                 g3 = ground(q)

@@ -3,17 +3,20 @@ import { BONE } from '../anim.js';
 import { REGION } from './appearance.js';
 
 // Runtime accessories fitted to each character of the cast, in the cast's vertex layout (mh/cast.js
-// mergeMeshes): a phone and a cup (rigid in the right hand), a shopping bag (hanging from the right
-// hand), a soft backpack on the upper back (padded shoulder straps over the shoulders and down the
-// chest, webbing back under the arms), a cross-body shoulder bag (a soft bag wrapped against the left
-// hip, its strap from the bag's front end across the chest, over the right shoulder and down the back
-// to its rear end) and, for characters that can wear it, a waiter's waist apron. Straps lie on the
-// character's own clothed surface: their paths are rays from the torso's axis onto the rest-pose
-// torso found in the character's vertices (height-sorted, so a query scans only its band).
-// Untextured: flag SOLID, shaded from the wearer's region tints (the apron: the socks region's).
+// mergeMeshes): a phone and a cup (rigid in the right hand), shopping bags in three shapes (plastic,
+// paper, a cloth tote; hanging from the right hand, the handles in the fingers), a soft backpack on the
+// upper back (padded shoulder straps over the shoulders and down the chest to a buckle at the lower ribs,
+// thin webbing back under the arms), a cross-body shoulder bag (a soft bag wrapped against the left hip,
+// its strap from the bag's front end across the chest, over the right shoulder and down the back to its
+// rear end) and, for characters that can wear it, a waiter's waist apron. Straps lie on the character's
+// own clothed surface: their paths start as rays from the torso's axis onto the rest-pose torso found in
+// the character's vertices (height-sorted, so a query scans only its band), then settle on it under
+// tension (settle: across hollows, never more than ~8 mm off the cloth), skinned like the cloth under them.
+// Untextured: flag SOLID, shaded from the wearer's region tints (the apron: the socks region's; a shopping
+// bag's print: the strap's).
 //
-//   buildParts(char, {apron}) -> { phone, cup, shopping, backpack, backpackFar, shoulder, shoulderFar,
-//     sunglasses?, sunglassesFar?, glasses?, apron?, apronFar? } (raw meshes)
+//   buildParts(char, {apron}) -> { phone, cup, shopping, shopping1, shopping2, backpack, backpackFar, shoulder,
+//     shoulderFar, sunglasses?, sunglassesFar?, glasses?, apron?, apronFar? } (raw meshes)
 
 export const FLAG = { ALPHA: 1, BACK: 2, DETAIL: 4, SKIRT: 8, SOLID: 16, WHITE: 32 };
 const ARM_BONES = new Set([BONE.armL, BONE.foreL, BONE.handL, BONE.armR, BONE.foreR, BONE.handR]);
@@ -51,7 +54,7 @@ class PartBuilder {
    * A strap along a polyline lying on a surface (points pts[i], surface normals nrms[i]): a band of
    * width w(i) with a rounded top t(i) thick (padding) and rounded edges, closed underneath by the body.
    */
-  strap(pts, nrms, w, t, skin, region) {
+  strap(pts, nrms, w, t, skin, region, flags = FLAG.SOLID) {
     const n = pts.length;
     // cross-section (across, up) and its normals: a soft rounded band
     const PRO = [[-0.5, 0], [-0.5, 0.5], [-0.36, 0.92], [-0.12, 1], [0.12, 1], [0.36, 0.92], [0.5, 0.5], [0.5, 0]];
@@ -68,7 +71,7 @@ class PartBuilder {
       for (let k = 0; k < PRO.length; k++) {
         q.copy(pts[i]).addScaledVector(side, PRO[k][0] * wi).addScaledVector(up, PRO[k][1] * ti);
         nn.copy(side).multiplyScalar(PN[k][0]).addScaledVector(up, PN[k][1]).normalize();
-        row.push(this.vertex(q, nn, k / (PRO.length - 1), i / (n - 1), sk, region, FLAG.SOLID, k === 0 || k === PRO.length - 1 ? 0.7 : 1));
+        row.push(this.vertex(q, nn, k / (PRO.length - 1), i / (n - 1), sk, region, flags, k === 0 || k === PRO.length - 1 ? 0.7 : 1));
       }
       rows.push(row);
     }
@@ -188,18 +191,6 @@ function roundBox(w, h, d, r, seg = 3, pillow = 0, taper = 0) {
   }
   g.computeVertexNormals();
   return g;
-}
-
-/** Straps bridge hollows (between the breasts, the small of the back) instead of following the skin
- *  into them: each point moves out along its normal to the line between its neighbours. */
-function tension(pts, nrms, iters = 6) {
-  for (let it = 0; it < iters; it++) {
-    for (let i = 1; i < pts.length - 1; i++) {
-      const m = pts[i - 1].clone().add(pts[i + 1]).multiplyScalar(0.5);
-      const out = m.sub(pts[i]).dot(nrms[i]);
-      if (out > 0) pts[i].addScaledVector(nrms[i], out);
-    }
-  }
 }
 
 /**
@@ -352,14 +343,6 @@ function torsoAxis(surf) {
     }
     return z;
   };
-}
-
-/** Moving-average smoothing of a polyline (ends fixed). */
-function smoothPath(pts, iters = 1) {
-  for (let it = 0; it < iters; it++) {
-    const c = pts.map((p) => p.clone());
-    for (let i = 1; i < pts.length - 1; i++) pts[i].copy(c[i - 1]).add(c[i + 1]).multiplyScalar(0.25).addScaledVector(c[i], 0.5);
-  }
 }
 
 const rigid = (b) => [[b, 1]];
@@ -522,7 +505,9 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
       // (sampled between the rows too, so a narrow bulge between them is not missed)
       rMax = Math.max(rMax, rayR(y, th), j > 0 ? rayR(y - (yHem - yTop) / NY * 0.5, th) : 0);
       const ease = THREE.MathUtils.smoothstep(u, 0, 0.3);
-      const r = Math.max(rMax, 0.08 * k) + 0.004 + 0.012 * u * u + (near ? (0.002 + 0.013 * ease * u) * fh : 0.004 * u * u);
+      // (clear of the shirt by ~8 mm at the waistband: the shirt moves with the spine, the apron with the
+      // pelvis, and the ties cover the edge)
+      const r = Math.max(rMax, 0.08 * k) + 0.008 + 0.012 * u * u + (near ? (0.002 + 0.013 * ease * u) * fh : 0.004 * u * u);
       col.push(new THREE.Vector3(Math.sin(th) * r, y, az - Math.cos(th) * r));
     }
     cols.push(col);
@@ -543,7 +528,12 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
   const skin = (p, th) => {
     const u = THREE.MathUtils.smoothstep((hipY + 0.05 * k - p.y) / Math.max(0.05, hipY + 0.05 * k - yHem), 0, 1);
     const sd = THREE.MathUtils.clamp(Math.sin(th) / 0.7, -1, 1);
-    return [[BONE.pelvis, 1 - u], [BONE.thighL, u * (0.5 - 0.3 * sd)], [BONE.thighR, u * (0.5 + 0.3 * sd)]];
+    const sk = [[BONE.pelvis, 1 - u], [BONE.thighL, u * (0.5 - 0.3 * sd)], [BONE.thighR, u * (0.5 + 0.3 * sd)]];
+    // (the waistband moves with the cloth under it: the cloth's own weights there, without the thighs)
+    const top = 1 - THREE.MathUtils.smoothstep((yTop - p.y) / Math.max(0.05, yTop - yHem), 0.0, 0.2);
+    if (top <= 0) return sk;
+    const ws = (surf.skin(p) || []).filter(([bn]) => bn !== BONE.thighL && bn !== BONE.thighR);
+    return ws.length ? mixSkin(sk, ws, top) : sk;
   };
   const FL = FLAG.SOLID | FLAG.SKIRT;
   const layer = (inner) => {
@@ -584,7 +574,11 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
       tn.push(d.clone());
     }
     const tieSkin = [[BONE.pelvis, 0.6], [BONE.spine1, 0.4]];
-    b.strap(tie, tn, () => 0.022 * k, () => 0.003, tieSkin, REGION.socks);
+    const tieAt = (p) => {
+      const ws = (surf.skin(p) || []).filter(([bn]) => bn !== BONE.thighL && bn !== BONE.thighR);
+      return ws.length ? mixSkin(tieSkin, ws, 0.7) : tieSkin;
+    };
+    b.strap(tie, tn, () => 0.022 * k, () => 0.003, tieAt, REGION.socks);
     const rb = rayR(yTop + 0.012 * k, Math.PI) || 0.12 * k;
     const knot = new THREE.Vector3(0, yTop + 0.012 * k, az + rb + 0.012);
     b.geometry(new THREE.SphereGeometry(0.016 * k, 8, 6).scale(1.3, 0.9, 0.7), new THREE.Matrix4().makeTranslation(knot.x, knot.y, knot.z), tieSkin, REGION.socks, FLAG.SOLID, 0.85);
@@ -640,6 +634,8 @@ function shoppingBag(shape, grip, k) {
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i); n.fromBufferAttribute(nrm, i);
     const yy = v.y / bh + 0.5;
+    // (displacements are functions of the position only: the faces' duplicated edge vertices move together)
+    const dir = new THREE.Vector3(v.x / (bd / 2), v.y / (bh / 2), v.z / (bw / 2)).normalize();
     if (shape === 1) {
       // gussets: the narrow sides fold in along their middle (a V, deepest at the top)
       const side = THREE.MathUtils.smoothstep(Math.abs(v.z) / (bw / 2), 0.9, 1.0);
@@ -653,7 +649,7 @@ function shoppingBag(shape, grip, k) {
     }
     // crumple: thin film wrinkles in creases a centimetre or two long, cloth in softer dents
     const c = vnoise3(v.x * fq + 3.1 * shape, v.y * fq * 0.6, v.z * fq) * 0.7 + vnoise3(v.x * fq * 2.7, v.y * fq * 2.1 + 7.7, v.z * fq * 2.7) * 0.3;
-    v.addScaledVector(n, amp * (c - 0.5) * 2);
+    v.addScaledVector(dir, amp * (c - 0.5) * 2);
     pos.setXYZ(i, v.x, v.y, v.z);
     const big = Math.abs(n.x) > 0.6;
     uv[i * 2] = big ? THREE.MathUtils.clamp(v.z / bw + 0.5, 0.001, 0.999) : 0;
@@ -678,7 +674,7 @@ function shoppingBag(shape, grip, k) {
     const crv = new THREE.CatmullRomCurve3(ctrl, false, 'centripetal');
     const pts = crv.getSpacedPoints(14), nr = pts.map(() => new THREE.Vector3(sx, 0, 0));
     if (shape === 1) s.strap(pts, nr, () => 0.006 * kk, () => 0.005 * kk, hand, REGION.strap);
-    else s.strap(pts, nr, () => (shape === 0 ? 0.03 : 0.025) * kk, () => (shape === 0 ? 0.0012 : 0.0025), hand, shape === 0 ? REGION.bag : REGION.strap);
+    else s.strap(pts, nr, () => (shape === 0 ? 0.03 : 0.025) * kk, () => (shape === 0 ? 0.0012 : 0.0025), hand, shape === 0 ? REGION.bag : REGION.strap, flags);
   }
   return s.build();
 }
@@ -734,13 +730,6 @@ export function buildParts(char, opts = {}) {
     // straps and packs ride the chest; below the waist they follow the hips
     const wc = THREE.MathUtils.clamp((p.y - waist[0]) / Math.max(0.05, chest[0] - waist[0]), 0, 1);
     return wc > 0.5 ? [[BONE.spine2, 1]] : [[BONE.spine2, wc + 0.5], [BONE.spine1, 0.5 - wc]];
-  };
-  // (smoothing a path over a convex body pulls it inside: each inner point back out onto the surface)
-  const lift = (pts, nrms, off) => {
-    for (let i = 1; i < pts.length - 1; i++) {
-      const q = surf(pts[i].clone().addScaledVector(nrms[i], -0.05), nrms[i], off, 0.02, 0, 0.1);
-      if (q && q.clone().sub(pts[i]).dot(nrms[i]) > 0) pts[i].copy(q);
-    }
   };
   // torso axis (rest pose): the middle of the torso's depth at a height, from the surface points
   const axisZ = torsoAxis(surf);

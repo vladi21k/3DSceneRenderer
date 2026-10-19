@@ -159,16 +159,16 @@ const FRAG_PARS = /* glsl */`
 uniform float uTime;
 ${ROOM_LIGHT_GLSL}
 // shop lighting by day, relative to the daylight irradiance on the glass: a lit shop
-// keeps ~1000-1500 lux on its floor and goods against ~15 klux on the shaded street's
-// walls (floor illuminance ~0.38 x this level, the window spots ~1.3 x), so the goods by
-// the glass read at a fifth to a quarter of the shaded stone, the back of the shop at a
+// keeps ~1500-2000 lux on its floor and goods against ~15 klux on the shaded street's
+// walls (floor illuminance ~0.38 x this level, the window spots ~1.6 x), so the goods by
+// the glass read at a quarter to a third of the shaded stone, the back of the shop at a
 // tenth, and the glass is dominated by its reflection wherever that shows anything bright
-#define SHOP_DAY 0.22
+#define SHOP_DAY 0.3
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
-// 1/4.5 (-2.2 EV), as in a photograph of a sunny street (the goods behind the glass read)
+// 1/3.5 (-1.8 EV), as in a photograph of a sunny street (the goods behind the glass read)
 #define DAY_CAP ( 1.0 / 32.0 )
-#define DAY_CAP_SHOP ( 1.0 / 4.5 )
+#define DAY_CAP_SHOP ( 1.0 / 3.5 )
 // brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
 // the daylight on the glass: a ceiling panel ~3x the wall around it, a downlight a bright
 // point
@@ -560,6 +560,38 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
       }
       gFin = FIN_FRIDGE;
       fBoxT( h, ao, ro, ird, p, n, mode, vec3( 0.0, 0.0, 2.7 ), vec3( 0.66, 1.95, 3.45 ), vec3( 0.24, 0.24, 0.25 ) );
+      // most cafes seat a row along the glass: a bar board behind each display pane (none
+      // behind the door), its stools and the cups on it (the table-top shading), so the
+      // window reads as occupied from the street
+      if ( f1.y > 0.25 ) {
+        float a0 = cx - gHW + 0.06, a1 = cx + gHW - 0.06;
+        bool door = gDoor > -50.0;
+        float dA = door ? cx + gDoor - 0.6 : a1, dB = door ? cx + gDoor + 0.6 : a1;
+        bool oak = f2.x < 0.55;
+        vec3 bc = oak ? vec3( 0.36, 0.24, 0.14 ) : vec3( 0.80, 0.78, 0.74 );
+        vec3 sc = f1.z < 0.4 ? vec3( 0.06 ) : f1.z < 0.7 ? vec3( 0.40, 0.26, 0.15 ) : GOODS[ int( f2.z * 7.99 ) ] * 0.85 + 0.04;
+        for ( int k = 0; k < 2; k++ ) {
+          float x0 = k == 0 ? a0 : max( a0, dB ), x1 = k == 0 ? min( a1, dA ) : a1;
+          if ( x1 - x0 < 0.6 ) continue;
+          gFin = oak ? FIN_WOOD : FIN_STONE;
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, 1.0, 0.1 ), vec3( x1, 1.04, 0.46 ), bc );
+          if ( mode == 0 ) {
+            gFin = FIN_METAL;
+            // the board's two brackets, then a stool to every ~0.55 m
+            fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0 + 0.1, 0.0, 0.12 ), vec3( x0 + 0.13, 1.0, 0.15 ), vec3( 0.07 ) );
+            fBoxT( h, ao, ro, ird, p, n, mode, vec3( x1 - 0.13, 0.0, 0.12 ), vec3( x1 - 0.1, 1.0, 0.15 ), vec3( 0.07 ) );
+            float ns = clamp( floor( ( x1 - x0 ) / 0.55 ), 1.0, 4.0 );
+            for ( int s = 0; s < 4; s++ ) {
+              if ( float( s ) >= ns ) break;
+              float sx = x0 + ( float( s ) + 0.5 ) * ( x1 - x0 ) / ns + ( fh1( seed * 9.1 + float( s + 4 * k ) ) - 0.5 ) * 0.1;
+              float sz = 0.74 + 0.08 * fh1( seed * 3.7 + float( s ) );
+              fCylT( h, ro, rd, vec2( sx, sz ), 0.165, 0.7, 0.75, sc );
+              fCylT( h, ro, rd, vec2( sx, sz ), 0.022, 0.0, 0.7, vec3( 0.07 ) );
+              fCylT( h, ro, rd, vec2( sx, sz ), 0.15, 0.24, 0.26, vec3( 0.07 ) );
+            }
+          }
+        }
+      }
     } else if ( st < 3.5 ) {
       // jewellery / optics: display cases along the walls and in the window
       gFin = FIN_WOOD;
@@ -1280,7 +1312,7 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     // goods), the inter-reflected fill (falling off up the walls, and towards the back,
     // where less of the shop's light returns) and display spots on the low window zone
     float fill = 0.24 * mix( 1.0, 0.45, smoothstep( 0.9, S.y, p.y ) ) * mix( 1.0, 0.55, smoothstep( 2.0, S.z, p.z ) )
-               + 2.3 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
+               + 2.8 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
     Elamp = lampC * I * ( 1.5 * fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
     // the fittings themselves (downlight discs, lit panels, pendants): bright points by day
     // too, a panel a few times its ceiling
@@ -1845,7 +1877,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v9' + dbg;
+  m.customProgramCacheKey = () => 'facades.glassInterior.v10' + dbg;
   return m;
 }
 

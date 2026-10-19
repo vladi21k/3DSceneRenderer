@@ -97,18 +97,21 @@ export const RAIL_PROFILE = [
 // Effective albedo of the seal and of the mortar bed (linear). In the photographs each
 // rail is flanked by a narrow grey strip close to the paving's tone, a shade darker (an
 // elastomer seal against the steel, then the cement bed), never a black bitumen line or a
-// warm band, and barely set apart from the setts: the mortar is about 0.92x the setts
+// warm band, and barely set apart from the setts: the mortar has the setts' luminance
 // (paving.street ~0.165) in their own cool grey, half neutralised (under the warm sun a
-// plainly neutral albedo read tan beside the cool granite), before its dirt; the seal is
-// drawn with the mortar material at SEAL_TONE of its colour (~0.13). Together about 26 mm
-// each side of the rail. (Follows the setts' published albedo: see pavingTones.)
-const MORTAR_K = 0.92, MORTAR_GREY = 0.4;
+// plainly neutral albedo read tan beside the cool granite), before its dirt (the mortar
+// material's mottling, about 0.93x on average, and the setts' grime); the seal is
+// drawn with the mortar material at SEAL_TONE of its colour (a grey sealant under the
+// paving's dust, ~0.16 before its cavity AO, which together with the strip's dip against
+// the head reads a shade darker than the setts). Together about 26 mm each side of the
+// rail. (Follows the setts' published albedo: see pavingTones.)
+const MORTAR_K = 1.0, MORTAR_GREY = 0.4;
 const mortarOf = (a) => {
   const l = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
   return a.map((x) => MORTAR_K * (x + MORTAR_GREY * (l - x)));
 };
 export const MORTAR_ALBEDO = mortarOf([0.157, 0.168, 0.192]);
-export const SEAL_TONE = 0.9;
+export const SEAL_TONE = 1.0;
 const PAVING_LUM = 0.165;    // mean luminance of the setts the street's own tones were set against
 
 /** The street's own tones that must follow the setts (paving.street's mean linear albedo,

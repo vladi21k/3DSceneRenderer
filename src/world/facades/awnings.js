@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
-import { Tpl, TplCache, lin } from './geo.js';
+import { Tpl, TplCache, lin, finiteOutput } from './geo.js';
 
 // Canvas awnings: sloped (retractable, on folding arms) or dutch / dome (ribbed hoods,
 // domes over arched openings). Scalloped valance, solid or striped canvas (stripes are
@@ -123,8 +123,9 @@ if ( vStripe.w > 0.0 ) {
       .replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;')
       .replace('vStripe = aStripe;', 'vStripe = aStripe;\nvAwUv = uv;');
     shader.fragmentShader = shader.fragmentShader.replace('varying vec4 vStripe;', 'varying vec4 vStripe;\nvarying vec2 vAwUv;');
+    finiteOutput(shader);
   };
-  m.customProgramCacheKey = () => prevKey + '|facades.awning.v5';
+  m.customProgramCacheKey = () => prevKey + '|facades.awning.v6';
   return m;
 }
 
@@ -412,7 +413,8 @@ export function awningColors(rng) {
     const [a, b] = rng.pick(STRIPES);
     return { c1: lin(AWNING_COLORS[a]), c2: lin(AWNING_COLORS[b]), period: rng.pick([0.2, 0.25, 0.3, 0.12]) };
   }
-  const c = lin(AWNING_COLORS[rng.weighted([['cream', 0.14], ['white', 0.06], ['green', 0.1], ['burgundy', 0.08], ['navy', 0.07], ['terracotta', 0.08],
-    ['ochre', 0.04], ['red', 0.14], ['orange', 0.1], ['royal', 0.08], ['mustard', 0.08], ['forest', 0.03]])]);
+  // (about two in five a strong colour: signal red, orange, royal blue, mustard, green)
+  const c = lin(AWNING_COLORS[rng.weighted([['cream', 0.11], ['white', 0.05], ['green', 0.11], ['burgundy', 0.07], ['navy', 0.06], ['terracotta', 0.08],
+    ['ochre', 0.03], ['red', 0.17], ['orange', 0.12], ['royal', 0.09], ['mustard', 0.09], ['forest', 0.02]])]);
   return { c1: c, c2: c, period: 0 };
 }

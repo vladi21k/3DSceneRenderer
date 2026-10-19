@@ -513,13 +513,13 @@ function mapBoard(ctx, [x, y, w, h], seed) {
   const rng = RNG.from('map', seed);
   ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
   ctx.fillStyle = '#f1ece0'; ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = '#23415f'; ctx.fillRect(x, y, w, 58);
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(x + 32, y + 29, 18, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#23415f'; ctx.font = `bold 28px ${SERIF}`; ctx.textAlign = 'center'; ctx.fillText('i', x + 32, y + 39);
-  const title = rng.chance(0.5);
-  text(ctx, title ? 'מפת העיר' : 'מידע לתייר', x + w - 16, y + 38, 26, { align: 'right', rtl: true, color: '#ffffff', maxW: 220 });
-  text(ctx, title ? 'City Map' : 'Visitor Information', x + 64, y + 38, 20, { color: '#dfe7ef', maxW: 200, weight: '600' });
+  // (the board's own title bar, mapHead, sits above this sheet): the district's name on a
+  // pale band
+  ctx.fillStyle = '#e2dccd'; ctx.fillRect(x, y, w, 58);
+  ctx.fillStyle = '#23415f'; ctx.fillRect(x, y + 56, w, 2);
+  const district = seed % 2 ? ['מרכז העיר', 'City Centre'] : ['העיר העתיקה', 'Old City'];
+  text(ctx, district[0], x + w - 16, y + 36, 24, { align: 'right', rtl: true, color: '#23415f', maxW: 230 });
+  text(ctx, district[1], x + 16, y + 36, 20, { color: '#3d556e', maxW: 200, weight: '600' });
   const mx = x + 16, my = y + 74, mw = w - 32, mh = h - 190;
   ctx.fillStyle = '#d9d2c1'; ctx.fillRect(mx, my, mw, mh);
   const cols = [], rows = [];

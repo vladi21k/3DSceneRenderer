@@ -7,6 +7,7 @@ import { openingInfill } from './infill.js';
 import { sideFrame } from './party.js';
 import { slabBalconies } from './balcony.js';
 import { acUnit } from './roof.js';
+import { muralField } from './mural.js';
 
 // Set-back upper volume on a flat roof (plan.upper, see facadePlan massing): a
 // penthouse storey behind its terrace, or a later addition of several storeys, in
@@ -69,7 +70,9 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   if (up.sides) {
     for (const e of [0, 1]) {
       const fr = sideFrame(up.frame, W, e, -D, 0);
-      const ops = up.sides[e], m = up.mural && up.mural.e === e ? up.mural : null;
+      // (the mural's side: the windows the painting is worked round, see facadePlan tower)
+      const m = up.mural && up.mural.e === e ? up.mural : null;
+      const ops = m && m.windows ? [...up.sides[e], ...m.windows] : up.sides[e];
       const sface = { ...face, width: D, openings: ops, balconies: [] };
       const sfs = new FaceShade(sface, col.map((c) => c * 0.97), lot.seed + 4241 + 31 * (e + 1), { dirt: dirt * 0.95, uncleaned: unc, sillExt: 0.11, sillH: 0.06, damp: false });
       const sctx = { ...ctx, fs: sfs };
@@ -79,14 +82,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
       yield* wallField(sctx, sface, holes);
       B.setUV();
       B.frameFromLot(fr);
-      if (m) {
-        const sm = B.sink(`mural${m.k}`);
-        B.shade = null; B.flat = [1, 1, 1];
-        sm.reserve(4, 6);
-        const a = B.v(sm, m.u0, m.v0, 0, 0, 0, 1, 0, 0), b = B.v(sm, m.u1, m.v0, 0, 0, 0, 1, 1, 0);
-        const c = B.v(sm, m.u1, m.v1, 0, 0, 0, 1, 1, 1), d = B.v(sm, m.u0, m.v1, 0, 0, 0, 1, 0, 1);
-        B.quadIdx(sm, a, b, c, d);
-      }
+      if (m) { yield* muralField(sctx, sface, m, m.k); B.frameFromLot(fr); }
       const srng = RNG.from(lot.seed, 'upperSide', e);
       for (let i = 0; i < ops.length; i++) {
         openingMasonry(sctx, sface, ops[i]);
