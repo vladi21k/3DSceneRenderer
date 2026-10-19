@@ -152,6 +152,10 @@ async function main() {
   // ---- loop
   const timer = new THREE.Timer();
   timer.connect(document);
+  // rec=<fps>: offline recording. Every frame advances the clock by exactly 1/fps; the
+  // simulation holds still while loading, and once ready the loop stops and frames are
+  // stepped on demand by app.recStep(n) (tools/record.py screenshots after each step).
+  const recFps = params.num('rec', 0);
   let fpsAcc = 0, fpsN = 0, fpsT = 0;
   const updaters = mods.filter((m) => m.update && !m.disabled);
   const order = ['train', 'cameraRig'];
@@ -176,8 +180,8 @@ async function main() {
     const t0 = performance.now();
     mon.begin(t0);
     timer.update(ts);
-    const realDt = Math.min(timer.getDelta(), 0.1);
-    const dt = params.freeze ? 0 : realDt;
+    const realDt = recFps > 0 ? 1 / recFps : Math.min(timer.getDelta(), 0.1);
+    const dt = params.freeze || (recFps > 0 && !app.ready) ? 0 : realDt;
     app.dt = dt; app.realDt = realDt; app.time += dt; app.frame++;
     U.uTime.value = app.time;
 
@@ -230,9 +234,10 @@ async function main() {
       events.emit('ready', {});
       setTimeout(() => { window.__ready = true; }, 300);
     }
-    requestAnimationFrame(frame);
+    if (!(recFps > 0 && app.ready)) requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+  app.recStep = (n = 1) => { for (let i = 0; i < n; i++) frame(performance.now()); return app.frame; };
 
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;

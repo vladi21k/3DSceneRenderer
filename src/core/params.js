@@ -7,6 +7,7 @@
 //   speed=<km/h>   initial speed
 //   auto=0|1       automatic driving (default 1)
 //   freeze=1       freeze the simulation clock (static frame, still renders)
+//   rec=<fps>      offline recording: fixed 1/fps steps, stepped by app.recStep(n) (tools/record.py)
 //   capture=1      hide UI / overlays, no click-to-start gate
 //   only=a,b       only enable the named modules (plus core); e.g. only=street,buildings
 //   skip=a,b       disable the named modules
