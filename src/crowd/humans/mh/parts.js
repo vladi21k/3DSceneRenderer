@@ -800,7 +800,7 @@ export function buildParts(char, opts = {}) {
     };
     const SW = 0.034 * Math.min(1, k * 1.1);
     b.strap(pts, nr, () => SW, () => 0.0035, strapSkin, REGION.strap);
-    { const [fp, fn] = coarsePath(pts, nr, 3); bf.ribbon(fp, fn, SW, strapSkin, REGION.strap, 0.005); }
+    { const [fp, fn] = coarsePath(pts, nr, 2); bf.ribbon(fp, fn, SW, strapSkin, REGION.strap, 0.005); }
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
   }

@@ -36,9 +36,10 @@ import { U } from '../core/uniforms.js';
 //   build(chunk) returns the chunk's parked bicycles.
 //
 // The people are the cast of assets/humans_mh (MakeHuman characters built by tools/blender/mh_build.py:
-// men, women, teens, children, the elderly and toddlers, dressed, with four LODs each). An appearance
-// seed picks a character and varies it (humans/mh/appearance.js: garment colours and patterns, hair
-// shade, skin, height, a bag, how the person stands, sits and walks). Every character carries its own
+// men, women, teens, children, the elderly and toddlers, dressed, with four LODs each; hair as layered
+// strand cards on LOD 0-1). An appearance seed picks a character and varies it (humans/mh/appearance.js:
+// garment colours and patterns, hair shade, skin, height, the face's shape and marks, glasses or
+// sunglasses, a bag, how the person stands, sits and walks). Every character carries its own
 // skeleton; its clips (walks, idles, sitting) are baked once from humans/anim.js. Each frame the CPU
 // blends the clips of every figure in view (or whose shadow is), adds the head turn and hand holds,
 // folds in the figure's transform and writes 22 bone matrices plus a little state into a row of a float
@@ -48,7 +49,8 @@ import { U } from '../core/uniforms.js';
 // every figure as café staff); propstest=1
 // (humans/props/test.js); humans_tex=2 loads the texture arrays at half resolution; humans_bind=1 shows
 // the bind pose; humans_dbg=1|2|3|4|5|6|7|8 shows baked occlusion / albedo / beard edge distance / skin decals /
-// regions and inner faces / no skin / hat brim / hair fade and strand direction; humans_src=<dir> loads another build of the cast; humans_prof=1
+// regions and inner faces / no skin / hat brim / hair fade and strand direction; humans_face=<k> scales the per-person
+// face shapes (0: every instance of a character alike); humans_src=<dir> loads another build of the cast; humans_prof=1
 // times the figure draws on the GPU (humans.batch.profile(): ms per frame, view and shadow passes).
 // stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms,
 // initMs (load: waiting for the cast; bake: rigs, clips and parts; rig, prep, parts, merge, compile and

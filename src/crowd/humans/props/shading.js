@@ -169,7 +169,9 @@ vec3 pBump(vec3 pos, vec3 n, float h, float fd) {
   vec3 r1 = cross(sy, n), r2 = cross(n, sx);
   float det = dot(sx, r1) * fd;
   vec3 grad = sign(det) * (dFdx(h) * r1 + dFdy(h) * r2);
-  return normalize(abs(det) * n - grad);
+  // (degenerate derivatives on thin far geometry: keep the normal, never normalise a zero vector)
+  vec3 nb = abs(det) * n - grad;
+  return dot(nb, nb) > 1e-30 ? normalize(nb) : n;
 }
 // fades a pattern of frequency f (cycles per uv unit) as it approaches the pixel size
 float pFade(vec2 uv, float f) { vec2 w = fwidth(uv) * f; return 1.0 - smoothstep(0.25, 0.6, max(w.x, w.y)); }
@@ -278,10 +280,12 @@ const FRAG_LIGHT = /* glsl */`
   #endif
 `;
 
+// (clamped: under MSAA the occlusion varying is extrapolated outside small far triangles and can go negative)
 const FRAG_AO = /* glsl */`
-  reflectedLight.indirectDiffuse *= vPInfo.x;
-  reflectedLight.indirectSpecular *= mix(1.0, vPInfo.x, 0.8);
-  reflectedLight.directDiffuse *= mix(1.0, vPInfo.x, 0.25);
+  float pAO = clamp(vPInfo.x, 0.0, 1.0);
+  reflectedLight.indirectDiffuse *= pAO;
+  reflectedLight.indirectSpecular *= mix(1.0, pAO, 0.8);
+  reflectedLight.directDiffuse *= mix(1.0, pAO, 0.25);
 `;
 
 function patchVertex(vs, depthOnly) {
