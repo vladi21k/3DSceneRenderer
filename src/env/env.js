@@ -66,11 +66,13 @@ const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22 };
 // exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
-// street exposes for the shade and the people, so sunlit pale paving sits well up the
-// curve (~180-200 sRGB), whites and glints clip, and the low sun's backlit street glows;
-// none of it once the sun has set (the dusk caps hold the exposure from then on)
+// street exposes for the shade and the people, so whites and glints clip and the low
+// sun's backlit street glows. Under the high sun (to t 0.3) the lift is half a stop: the
+// sunlit granite near the cab lands at ~165-180 sRGB with its setts and joints apart
+// (post's meter gives back about a third of any change); more as the sun lowers and
+// the street falls into shade, none once it has set (the dusk caps hold the exposure)
 const KDAY = 1.3, EH_FULL = 1.9;
-const EXPO_LIFT = [[0.0, 0.84], [0.45, 0.8], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
+const EXPO_LIFT = [[0.0, 0.48], [0.3, 0.5], [0.45, 0.8], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
@@ -557,18 +559,24 @@ const env = {
     if (!this._gpuReady) this._initGPU();
     if (!this._shadowsCompiled && this.batcher) this._precompileShadows();
 
-    // deferred sky-irradiance read-back once the time of day has settled (asynchronous:
-    // a synchronous read would wait for the whole frame queue)
-    if (this._irrDirty && !this._irrReading && (this._irrAge += realDt) > 0.25) {
-      const stamp = this._todStamp;
-      this._irrReading = true;
-      this.sky.readIrradianceAsync().then(() => {
+    // deferred sky-irradiance read-back once the time of day has settled: a pixel-pack
+    // buffer behind a fence whose status is polled here once a frame (a synchronous read,
+    // or a wait on the fence, would stall for the whole frame queue)
+    if (this._irrReading) {
+      const st = this.sky.pollIrradiance();
+      if (st !== 0) {
         this._irrReading = false;
-        // a newer time of day was set meanwhile: its own read-back follows
-        if (stamp !== this._todStamp) return;
-        this._irrDirty = false;
-        this._updateExposure();
-      });
+        // (a newer time of day was set meanwhile: its own read-back follows)
+        if (st > 0 && this._irrStamp === this._todStamp) {
+          this._irrDirty = false;
+          this._updateExposure();
+        }
+      }
+    } else if (this._irrDirty && (this._irrAge += realDt) > 0.25) {
+      this._irrStamp = this._todStamp;
+      this._irrReading = this.sky.beginIrradianceRead();
+      // (read synchronously instead: the values are in place)
+      if (!this._irrReading) { this._irrDirty = false; this._updateExposure(); }
     }
 
     // ---- wind: slowly veering direction, gusty strength (deterministic in time)

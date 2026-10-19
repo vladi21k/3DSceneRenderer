@@ -333,13 +333,14 @@ export function makeStoneMaterial(app) {
     if (prev) prev.call(this, sh, r);
     // (the baked occlusion steps sharply across the mouldings' narrow faces: see mats.js)
     centroidColor(sh);
+    // (the railing's neglect too, and clamped: far slab edges are slivers, see mats.js)
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
 attribute float aGk;
 varying float vGk;
 varying vec2 vGuv;
 varying vec3 vGl;
-varying float vGn;
+centroid varying float vGn;
 ${NEGLECT_GLSL}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
 	vGk = aGk;
@@ -357,7 +358,7 @@ ${NEGLECT_GLSL}`)
 varying float vGk;
 varying vec2 vGuv;
 varying vec3 vGl;
-varying float vGn;
+centroid varying float vGn;
 ${GRIME_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	if ( vGk > 0.5 ) {
@@ -377,7 +378,8 @@ ${GRIME_GLSL}`)
 				// their mean tint. Over them a rust-brown wash along the top under neglected iron.
 				float cx = vGuv.x / 0.16, cell = floor( cx );
 				float h1 = gwH( vec2( cell, 3.7 ) ), h2 = gwH( vec2( cell, 9.1 ) ), h3 = gwH( vec2( cell, 5.3 ) );
-				float p = vGn * 0.42 + 0.03;
+				float gn = clamp( vGn, 0.0, 1.0 );
+				float p = gn * 0.42 + 0.03;
 				float len = mix( 0.08, 0.4, h3 * h3 ), f = clamp( d / len, 0.0, 1.0 );
 				float w = ( 0.01 + 0.01 * h2 ) * ( 1.0 + 1.2 * f ) / 0.16;
 				float dx = ( fract( cx ) - 0.2 - 0.6 * h2 ) / w;
@@ -385,7 +387,7 @@ ${GRIME_GLSL}`)
 					* ( 0.55 + 0.45 * gwN( vec2( vGuv.x * 37.0, d * 14.0 ) ) );
 				float mean = p * 0.1 * ( 1.0 - smoothstep( 0.0, 0.35, d ) );
 				float rs = mix( tail, mean, smoothstep( 0.01, 0.03, fx ) );
-				rs = max( rs, vGn * 0.35 * ( 1.0 - smoothstep( 0.0, 0.09, d ) ) * ( 0.4 + 0.6 * gwN( vec2( vGuv.x * 6.0, 2.9 ) ) ) );
+				rs = max( rs, gn * 0.35 * ( 1.0 - smoothstep( 0.0, 0.09, d ) ) * ( 0.4 + 0.6 * gwN( vec2( vGuv.x * 6.0, 2.9 ) ) ) );
 				gTint = mix( vec3( 1.0 ), vec3( 0.56, 0.34, 0.2 ), rs * 0.85 );
 			}
 		} else if ( vGk < 2.5 ) {

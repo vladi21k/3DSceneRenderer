@@ -556,22 +556,66 @@ export class Sky {
   }
 
   /**
-   * Asynchronous read (pixel-pack buffer + fence, no stall); resolves true once
-   * this.irradiance holds the values of the texture as it was when called.
+   * Start an asynchronous read of the irradiance texels: they are copied into a pixel-pack
+   * buffer behind a fence, and pollIrradiance() (once a frame) collects them once the GPU
+   * has passed it, so the main thread never waits for the frame queue (no timer polls,
+   * no flushes). Returns true while the read is pending; false when it could not be
+   * started this way and the texels were read synchronously instead (already in
+   * this.irradiance).
    */
-  readIrradianceAsync() {
-    const r = this.renderer;
-    if (this._irrPending) return this._irrPending;
-    const buf = new Uint16Array(IRR_TEXELS * 4);
-    this._irrPending = r.readRenderTargetPixelsAsync(this.irrRT, 0, 0, IRR_TEXELS, 1, buf)
-      .then(() => { this._decodeIrradiance(buf); return true; })
-      .catch(() => { this.readIrradiance(); return true; })
-      .finally(() => { this._irrPending = null; });
-    return this._irrPending;
+  beginIrradianceRead() {
+    if (this._irrSync) return true;
+    const r = this.renderer, gl = r.getContext();
+    const ok = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext
+      && r.extensions.has('EXT_color_buffer_float') && !gl.isContextLost();
+    if (!ok) { this.readIrradiance(); return false; }
+    const prev = r.getRenderTarget();
+    if (!this._irrPbo) {
+      this._irrPbo = gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._irrPbo);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, IRR_TEXELS * 16, gl.STREAM_READ);
+    } else {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._irrPbo);
+    }
+    // (RGBA / FLOAT is the read format every float colour buffer accepts)
+    r.setRenderTarget(this.irrRT);
+    gl.readPixels(0, 0, IRR_TEXELS, 1, gl.RGBA, gl.FLOAT, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    r.setRenderTarget(prev);
+    this._irrSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    this._irrPolls = 0;
+    if (!this._irrSync) { this.readIrradiance(); return false; }
+    return true;
   }
 
-  _decodeIrradiance(buf) {
-    const h = THREE.DataUtils.fromHalfFloat;
+  /**
+   * Collect a pending read (see beginIrradianceRead), once a frame: the fence's status is
+   * only queried, never waited on. Returns 1 once this.irradiance holds the texels as they
+   * were when the read began, 0 while it is pending (or none is), −1 if it was abandoned
+   * (a lost context, or a fence that never signals): start a new one.
+   */
+  pollIrradiance() {
+    const sync = this._irrSync;
+    if (!sync) return 0;
+    const gl = this.renderer.getContext();
+    if (gl.isContextLost() || ++this._irrPolls > 900) {
+      if (!gl.isContextLost()) gl.deleteSync(sync);
+      this._irrSync = null;
+      return -1;
+    }
+    if (gl.getSyncParameter(sync, gl.SYNC_STATUS) !== gl.SIGNALED) return 0;
+    gl.deleteSync(sync);
+    this._irrSync = null;
+    const buf = this._irrBufF || (this._irrBufF = new Float32Array(IRR_TEXELS * 4));
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._irrPbo);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, buf);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    this._decodeIrradiance(buf, false);
+    return 1;
+  }
+
+  _decodeIrradiance(buf, half = true) {
+    const h = half ? THREE.DataUtils.fromHalfFloat : (x) => x;
     const px = (i) => new THREE.Vector3(h(buf[i * 4]), h(buf[i * 4 + 1]), h(buf[i * 4 + 2]));
     this.irradiance = {
       horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3), horizonSun: px(4), horizonAnti: px(5),

@@ -189,6 +189,31 @@ export class JointFitter {
     return u + dir * Math.min(best, maxLen);
   }
 
+  /**
+   * Wall u of the head joints of course rg strictly inside (ua, ub) under the piece
+   * transform tu = u k + off (k > 0), appended to out in order.
+   */
+  headJoints(rg, ua, ub, k, off, out) {
+    const W = this.lay.W, J = rowJoints(this.lay, rg);
+    const Ta = ua * k + off, Tb = ub * k + off;
+    for (let t = Math.floor(Ta / W); t * W < Tb; t++) {
+      for (let i = 0; i < J.length; i++) {
+        const T = t * W + J[i];
+        if (T > Ta + 1e-4 && T < Tb - 1e-4) out.push((T - off) / k);
+      }
+    }
+    return out;
+  }
+
+  /** Integer id of the texture block of course rg at wall u (transform tu = u k + off). */
+  blockId(rg, u, k, off) {
+    const W = this.lay.W, J = rowJoints(this.lay, rg), T = u * k + off;
+    const t = Math.floor(T / W), x = T - t * W;
+    let i = 0;
+    while (i < J.length && J[i] <= x) i++;
+    return t * J.length + i;
+  }
+
   /** Transform at u in course rg (for spandrel pieces): [k, off]. */
   at(rg, u, out) {
     const R = this.runs(rg);

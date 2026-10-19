@@ -108,6 +108,26 @@ export class SideStreets {
     return out;
   }
 
+  /** locate for agent a, from its own s and d: the mouth from its 1 m sample and the loop
+   *  distance worked out in place (a double handed to or returned from a call that is not inlined
+   *  is boxed, and this runs per agent and frame near the mouths). */
+  locateA(a, out) {
+    const c = this.c, side = a.d >= 0 ? 1 : -1;
+    const cs = c.map.mouthAtA(a);
+    if (!cs) return null;
+    const g = this.get(cs, side);
+    const x = side * a.d - g.hw;
+    if (x <= 0) return null;
+    // a.s − c.unwrap(cs.s)
+    const L = c.route.length;
+    let w = cs.s % L; if (w < 0) w += L;
+    let dd = w - c.camW; if (dd > L / 2) dd -= L; if (dd < -L / 2) dd += L;
+    const da = a.s - c.camU - dd;
+    if (da > g.half + 1 || da < -(g.half + 1)) return null;
+    out.g = g; out.a = da; out.x = x;
+    return out;
+  }
+
   /** route.toWorld that follows the side streets. */
   toWorld(s, d, h, out) {
     const route = this.c.route;
@@ -119,6 +139,35 @@ export class SideStreets {
     const py = this.height(g, L.a, L.x) + h;
     out.x += (px - out.x) * b; out.y += (py - out.y) * b; out.z += (pz - out.z) * b;
     return out;
+  }
+
+  /** toWorld(a.s, a.d, a.h, out) for agent a (its numbers read from its fields: nothing boxed). */
+  toWorldA(a, out) {
+    const c = this.c, route = c.route, io = c.io;
+    if (io) { io[0] = a.s; io[1] = a.d; io[2] = a.h; route.toWorldIO(out); } else route.toWorld(a.s, a.d, a.h, out);
+    const L = this.locateA(a, _loc);
+    if (!L) return out;
+    const g = L.g, b = smooth(L.x / BLEND);
+    const px = g.start.x + g.along.x * L.a + g.dirOut.x * L.x, pz = g.start.z + g.along.z * L.a + g.dirOut.z * L.x;
+    const py = this.height(g, L.a, L.x) + a.h;
+    out.x += (px - out.x) * b; out.y += (py - out.y) * b; out.z += (pz - out.z) * b;
+    return out;
+  }
+
+  /** heading(a.s, a.d, a.alpha) for agent a → a.heading (no number argument or result to box). */
+  headingA(a) {
+    const c = this.c;
+    let rh;
+    if (c.io) { c.io[0] = a.s; c.route.sampleIO(); rh = c.io[3]; } else rh = c.route.heading(a.s);
+    const base = rh - PI / 2 - a.alpha;
+    const L = this.locateA(a, _loc);
+    if (!L) { a.heading = base; return; }
+    const g = L.g, ca = Math.cos(a.alpha), sa = Math.sin(a.alpha) * g.side;
+    const fx = g.along.x * ca + g.dirOut.x * sa, fz = g.along.z * ca + g.dirOut.z * sa;
+    const hs = Math.atan2(-fx, -fz);
+    let dh = hs - base;
+    dh = ((dh + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
+    a.heading = base + dh * smooth(L.x / BLEND);
   }
 
   /** World yaw (three.js, 0 faces −Z) of facing alpha at (s, d): turned into the side street's frame there. */
@@ -171,7 +220,7 @@ export class SideStreets {
   mark(a) {
     // (nearly everybody is nowhere near a side street: settled without a number argument)
     if (!this.c.map.mouthAtA(a)) { a.inSide = false; a.sideX = 0; return null; }
-    const L = this.locate(a.s, a.d, _loc3);
+    const L = this.locateA(a, _loc3);
     a.inSide = !!L; a.sideX = L ? L.x : 0;
     return L;
   }
@@ -179,7 +228,7 @@ export class SideStreets {
   /** Off the carriageway (kept to the sidewalks a few metres in): the push this step (signed s), or 0. */
   roadPush(a, maxC) {
     if (!a.inSide || a.sideX < 3.2 || a.mob === 2) return 0;   // (cyclists ride the carriageway)
-    const L = this.locate(a.s, a.d, _loc3);
+    const L = this.locateA(a, _loc3);
     if (!L) return 0;
     const lim = L.g.road + KERB_W + 0.22, aa = Math.abs(L.a);
     if (aa >= lim) return 0;
@@ -229,7 +278,7 @@ export class SideStreets {
     this.n.clear();
     for (const a of pop.agents) {
       if (!a.active || !a.inSide || a.sideX < 2.5) continue;
-      const L = this.locate(a.s, a.d, _loc);
+      const L = this.locateA(a, _loc);
       if (L) this.n.set(L.g, (this.n.get(L.g) || 0) + 1);
     }
     if (pop.free.length < 24) return;
@@ -322,4 +371,4 @@ export class SideStreets {
   get count() { let n = 0; for (const v of this.n.values()) n += v; return n; }
 }
 
-const _loc = { g: null, a: 0, x: 0 }, _loc2 = { g: null, a: 0, x: 0 }, _loc3 = { g: null, a: 0, x: 0 };
+const _loc = settleShape({ g: null, a: 0, x: 0 }), _loc2 = settleShape({ g: null, a: 0, x: 0 }), _loc3 = settleShape({ g: null, a: 0, x: 0 });

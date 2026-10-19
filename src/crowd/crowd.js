@@ -346,7 +346,7 @@ class CrowdSim {
         const dh = hT - a.h, step = 1.5 * dt;
         if (dt === 0 || a.fresh || (dh <= step && dh >= -step)) a.h = hT; else a.h += dh > 0 ? step : -step;
         // (out in a side street: its own frame and level)
-        if (this.side.mark(a)) { this.side.toWorld(a.s, a.d, a.h, _v); a.x = _v.x; a.y = _v.y; a.z = _v.z; a.lwOk = false; }
+        if (this.side.mark(a)) { this.side.toWorldA(a, _v); a.x = _v.x; a.y = _v.y; a.z = _v.z; a.lwOk = false; }
         else this._ground(a);
         a.ws = a.s; a.wd = a.d; a.wValid = true;
       }
@@ -369,7 +369,7 @@ class CrowdSim {
       if (a.fresh) this._arrived(a);
       // world yaw: the route's heading at s (refreshed every 0.2 m for walkers: it turns by less
       // than 0.2 degrees over that; every frame for riders, whose lean comes from its rate)
-      if (a.inSide) a.heading = this.side.heading(a.s, a.d, a.alpha);
+      if (a.inSide) this.side.headingA(a);
       else {
         if (!a.rhValid || a.mob === MOB.CYCLE || a.s - a.rhS > 0.2 || a.rhS - a.s > 0.2) {
           if (this.io) { this.io[0] = a.s; route.sampleIO(); a.rh = this.io[3]; } else a.rh = route.heading(a.s);

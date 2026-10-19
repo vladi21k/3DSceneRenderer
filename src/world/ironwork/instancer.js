@@ -278,7 +278,11 @@ export class InstancePool {
   }
 
   /** Packs every entry's instances into the mesh of their level. Whole-buffer uploads
-   *  (partial update ranges left stale data on the GPU for meshes culled meanwhile). */
+   *  (partial update ranges left stale data on the GPU for meshes culled meanwhile).
+   *  Runs every few frames while the camera moves (some cluster leaves or enters the
+   *  view), so it copies with plain index loops: typed-array views (subarray) for
+   *  TypedArray.set were ~80 small allocations a frame, and the runs are short (a
+   *  frame packs ~150 instances in ~40 runs). */
   repack() {
     this.dirty = false;
     const counts = this.counts, M = this.arrays, C = this.colors, meshes = this.meshes, list = this.list;
@@ -302,11 +306,12 @@ export class InstancePool {
           while (i1 < end && lvl[i1] === k) i1++;
           const a = M[k];
           if (a) {
-            const j = counts[k];
-            counts[k] += i1 - i;
-            a.set(em.subarray(i * 16, i1 * 16), j * 16);
-            if (ec) C[k].set(ec.subarray(i * 3, i1 * 3), j * 3);
-            else C[k].fill(1, j * 3, (j + i1 - i) * 3);
+            const j = counts[k], n = i1 - i;
+            counts[k] += n;
+            for (let s = i * 16, d = j * 16, se = i1 * 16; s < se;) a[d++] = em[s++];
+            const ca = C[k];
+            if (ec) for (let s = i * 3, d = j * 3, se = i1 * 3; s < se;) ca[d++] = ec[s++];
+            else ca.fill(1, j * 3, (j + n) * 3);
           }
           i = i1;
         }

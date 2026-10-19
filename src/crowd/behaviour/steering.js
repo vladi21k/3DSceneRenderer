@@ -56,7 +56,8 @@ export class Steering {
     this.fs = 0; this.fd = 0;  // force of the last _social / _obstacles
     this._s0 = 0;
     this.dtA = 0;              // the step of the agent being moved (s)
-    this.ride = settleShape({ d: 0, v: 0, ang: 0.45, hard: false, alpha: 0, avoid: 0 });   // a cyclist's line and speed (cyclist.rideTarget)
+    // a cyclist's line and speed (cyclist.rideTarget); g: the line or waypoint its rail guard heads for
+    this.ride = settleShape({ d: 0, v: 0, ang: 0.45, hard: false, alpha: 0, avoid: 0, g: 0 });
     this.ride.alpha = null;
     settleShape(this, new Set(['frame', 'nx', 'ny']));
   }

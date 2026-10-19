@@ -631,8 +631,9 @@ void main() {
 
 // ---------------------------------------------------------------- final: lens, tone map, grade
 // Tone: a camera's JPEG response sets the luminance (mid grey 0.18 → ~0.47, white about
-// 3.3 stops above it, a long toe: −2 stops ~52, −3 ~31, −4 ~17 in sRGB, so shade and dark
-// shop glass keep their detail), AgX sets hue and chroma (its log-domain curve keeps
+// 3.3 stops above it; below it a long toe that steepens again in the deep shadows: −1 stop
+// ~77, −2 ~44, −3 ~19, −4 ~6 in sRGB by day, so shade and dark shop glass keep their
+// detail while dark clothes and recesses read near black), AgX sets hue and chroma (its log-domain curve keeps
 // bright saturated colours from skewing), blended towards the scene's own ratios so warm
 // low sun on stone keeps its colour. Large bright areas far above the street's level (a
 // low sun's sheen on the paving) come down locally; small glints, sunlit whites and the
@@ -673,6 +674,7 @@ uniform vec2 uSkySat;         // and their saturation (scene-linear): blue sky, 
 uniform sampler2D tGlow;      // glow around the brightest sources (exposed units, see GLOW_FS)
 uniform float uGlow;
 uniform vec3 uToe;            // toe: log-slope reduction, the stops where it eases in, ease width
+uniform vec3 uDeep;           // deep shadows: log-slope increase, the stops where it eases in, ease width
 uniform sampler2D tLocal;     // local level of the surfaces (see LOCAL_FS, normalised in rg)
 uniform vec4 uLocal;          // local highlight recovery: knee (stops), strength, pixel ramp start, ramp width
 uniform vec4 uKnee;           // gamut knee: start, ceiling (street); start, ceiling (saturated sky)
@@ -725,6 +727,10 @@ float cameraCurve(float Y) {
   // the toe's log slope eases off below uToe.y stops (a camera's long linear toe, not the
   // logistic's steep one)
   e += uToe.x * uToe.z * softplus((uToe.y - e) / uToe.z);
+  // and below about uDeep.y stops it steepens again, more than the logistic alone: the
+  // deepest shade (dark clothes, canopy undersides, recesses) falls towards black as in a
+  // camera JPEG instead of hanging in a milky grey
+  e -= uDeep.x * uDeep.z * softplus((uDeep.y - e) / uDeep.z);
   float d = min(1.0, uCurve.x / pow(1.0 + exp(-uCurve.y * (e - uCurve.z)), uCurve.w));
   if (uBlack > 0.0) d = (d - uBlack + uBlack * exp(-d / uBlack)) / (1.0 - uBlack + uBlack * exp(-1.0 / uBlack));
   return d;

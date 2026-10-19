@@ -72,9 +72,14 @@ const TONE = {
   // clothes sit near black as in a camera JPEG; less once the light is lamps and sky
   black: [0.043, 0.018],
   // toe: below about mid grey the curve's log slope eases off by `toe[0]` (over `toe[2]`
-  // stops around `toe[1]`), a camera's long toe: −2 stops ~50 sRGB, −3 ~29, −4 ~15, −6 ~3
-  // (building shade and dark shop glass keep their detail; mid grey and up unchanged)
+  // stops around `toe[1]`), a camera's long toe (building shade and dark shop glass keep
+  // their detail; mid grey and up unchanged); below about `deep[1]` stops the slope rises
+  // again by `deep[0]` (by day .. dusk; over `deep[2]` stops), so the deepest shade falls
+  // towards black as in a camera JPEG: by day −1 stop ~77 sRGB, −2 ~44, −2.5 ~30, −3 ~19,
+  // −4 ~6, −5 ~1 (the photographs' darkest 2 % sit at 3-40, median 13); the lamp-lit night
+  // keeps more of its shadow detail
   toe: [0.22, 0.06, 0.5],
+  deep: [[0.8, 0.3], -1.8, 0.5],
   // local highlight recovery (final pass): where the surfaces around a pixel average more
   // than `knee` stops over mid grey (a low sun's sheen on the paving, looking into it), its
   // bright pixels (ramped in from `px[0]` stops over `px[1]`) come down by `strength` x the
@@ -327,7 +332,7 @@ const post = {
       uSkyChroma: { value: app.params.num ? app.params.num('skychroma', TONE.skyChroma) : TONE.skyChroma },
       uSkySat: { value: new THREE.Vector2(TONE.skySat[0], TONE.skySatWarm[0]) },
       tGlow: { value: null }, uGlow: { value: 0 },
-      uToe: { value: new THREE.Vector3(...TONE.toe) },
+      uToe: { value: new THREE.Vector3(...TONE.toe) }, uDeep: { value: new THREE.Vector3(TONE.deep[0][0], TONE.deep[1], TONE.deep[2]) },
       tLocal: { value: null }, uLocal: { value: new THREE.Vector4(TONE.local.knee, 0, TONE.local.px[0], TONE.local.px[1]) },
       uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: TONE.satOut[0] }, uSkyTwist: { value: 0 },
     });
@@ -608,6 +613,7 @@ const post = {
     fu.uHiComp.value.set(table(TONE.hiKnee, t), this.hiSlopeK > 0 ? this.hiSlopeK : table(TONE.hiSlope, t));
     fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
     fu.uBlack.value = THREE.MathUtils.lerp(TONE.black[0], TONE.black[1], ss(t, 0.6, 0.85));
+    fu.uDeep.value.x = THREE.MathUtils.lerp(TONE.deep[0][0], TONE.deep[0][1], ss(t, 0.7, 0.95));
     // the low sun's warmth on the highlights only (the shade keeps its blue)
     const hiW = 0.05 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.72, 0.88));
     fu.uHighTint.value.set(1 + hiW, 1, 1 - hiW);

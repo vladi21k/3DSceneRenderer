@@ -52,7 +52,8 @@ export class StreetMap {
     // (the building lines at every cross street's corners, now: added lazily, these fields
     // changed the class of the shared cross street objects mid-ride)
     for (const c of layout.crossStreets) { c._crowdLineR = this._mouthLine(c, 1); c._crowdLineL = this._mouthLine(c, -1); }
-    this.qI = new Int32Array(Q_MAX); this.qDS = new Float32Array(Q_MAX); this.qN = 0; this.qS = 0;
+    // (qS / qR: the s and range of a query handed over in fields, doubles from the start)
+    this.qI = new Int32Array(Q_MAX); this.qDS = new Float32Array(Q_MAX); this.qN = 0; this.qS = 0.5; this.qS = 0; this.qR = 0.5; this.qR = 0;
     // results of the per-agent queries (…A(a, …)): a number in a typed array is never boxed,
     // one returned from a call that is not inlined is
     this.R = new Float64Array(4);
@@ -60,7 +61,14 @@ export class StreetMap {
     this.Q = new Float64Array(4);
   }
 
-  idx(s) { const w = this.route.wrap(s); return Math.min(this.N - 1, Math.floor(w)); }
+  /** Index of the 1 m sample under route s (the loop wrap worked out in place: route.wrap would
+   *  return a boxed number whenever it is not inlined). */
+  idx(s) {
+    const L = this.L;
+    let w = s % L; if (w < 0) w += L;
+    const k = Math.floor(w);
+    return k < this.N - 1 ? k : this.N - 1;
+  }
 
   // ---------------------------------------------------------------- building line
   _facades() {
@@ -229,6 +237,17 @@ export class StreetMap {
     return n;
   }
 
+  /** rectsNear(this.qS, side) (the s handed over in a field: nothing boxed). */
+  rectsNearQ(side) {
+    const si = side > 0 ? 1 : 0, k = this.idx(this.qS);
+    const a = this.rectA[si][k], b = this.rectB[si][k];
+    let n = 0;
+    if (a >= 0) this.rq[n++] = this.rects[a];
+    if (b >= 0) this.rq[n++] = this.rects[b];
+    this.rqN = n;
+    return n;
+  }
+
   /** s offset of `s` from the start of rect r (unwrapped across the loop seam). */
   rectDS(r, s) { return this.route.delta(r.s0, s); }
 
@@ -247,11 +266,13 @@ export class StreetMap {
   }
 
   /** Collects circle obstacles whose centre lies within range + maxR of s into qI / qDS (ds = obstacle s − s); returns the count. */
-  gatherCircles(s, range) { this.qS = s; return this._gather(range); }
+  gatherCircles(s, range) { this.qS = s; this.qR = range; return this._gather(); }
   /** gatherCircles around agent a (its own s: nothing to box per call). */
-  gatherAt(a, range) { this.qS = a.s; return this._gather(range); }
-  _gather(range) {
-    const nb = this.nb, L = this.L;
+  gatherAt(a, range) { this.qS = a.s; this.qR = range; return this._gather(); }
+  /** gatherCircles(this.qS, this.qR): the per-frame callers hand their numbers over in the fields. */
+  gatherQ() { return this._gather(); }
+  _gather() {
+    const nb = this.nb, L = this.L, range = this.qR;
     let w = this.qS % L; if (w < 0) w += L; if (w >= L) w -= L;
     const a = Math.floor((w - range - this.maxR) / OB_CELL), b = Math.floor((w + range + this.maxR) / OB_CELL);
     let n = 0;
@@ -370,12 +391,17 @@ export class StreetMap {
   bandOutAt(s, side) { return this.bandOut[sideIx(side)][this.idx(s)]; }
   /** Narrowest shop-side band over [s, s + len] (len may be negative). */
   bandAhead(s, side, len, out) {
-    const si = sideIx(side), step = len >= 0 ? 1 : -1, n = Math.abs(Math.round(len));
+    const si = sideIx(side), step = len >= 0 ? 1 : -1, n = Math.abs(Math.round(len)), L = this.L, N1 = this.N - 1;
+    const bi = this.bandIn[si], bo = this.bandOut[si];
     let lo = 0, hi = OPEN;
+    // (the sample index stepped along in place: no call per metre)
+    let w = s % L; if (w < 0) w += L;
     for (let j = 0; j <= n; j++) {
-      const k = this.idx(s + j * step);
-      lo = Math.max(lo, this.bandIn[si][k]);
-      hi = Math.min(hi, this.bandOut[si][k]);
+      let x = w + j * step;
+      if (x >= L) x -= L; else if (x < 0) x += L;
+      let k = Math.floor(x); if (k > N1) k = N1;
+      if (bi[k] > lo) lo = bi[k];
+      if (bo[k] < hi) hi = bo[k];
     }
     out.lo = lo; out.hi = hi;
     return out;

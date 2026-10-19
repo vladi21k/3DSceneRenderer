@@ -154,7 +154,7 @@ function nearPatch(mat, rust, angle) {
   return chain(mat, '|ironNear', (sh) => {
     sh.uniforms.uIwRust = uIwRust;
     sh.uniforms.uIwAngle = uIwAngle;
-    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;\nvarying float vIwNeg;\nuniform float uIwAngle;' + NEGLECT_GLSL);
+    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;\ncentroid varying float vIwNeg;\nuniform float uIwAngle;' + NEGLECT_GLSL);
     sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
 	#ifdef USE_INSTANCING
 		vIwW = ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz;
@@ -171,7 +171,7 @@ function nearPatch(mat, rust, angle) {
 varying vec3 vIwW;
 varying float vIwY;
 varying float vIwK;
-varying float vIwNeg;
+centroid varying float vIwNeg;
 uniform float uIwRust;
 float iwRust = 0.0;
 float iwRn = 0.0;
@@ -188,7 +188,7 @@ ${NOISE}`)
 		// rust: broken paint where water sits (bottom rail, feet, collars), in patches and
 		// in runs down the bars (stretched upright), as far as the railing is neglected
 		vec3 q = mod( vIwW, 512.0 );
-		float neg = vIwNeg;
+		float neg = clamp( vIwNeg, 0.0, 1.0 );
 		iwRn = iwNoise( q * 13.0 ) * 0.6 + iwNoise( q * 41.0 ) * 0.4;
 		float foot = 1.0 - smoothstep( 0.0, 0.2, vIwY );
 		float run = iwNoise( vec3( q.x * 31.0, q.y * 3.3, q.z * 31.0 ) );
@@ -199,7 +199,7 @@ ${NOISE}`)
 		diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * 1.45 + vec3( 0.011, 0.0105, 0.0098 ), neg );
 		diffuseColor.rgb = mix( diffuseColor.rgb, rc, iwRust );
 	}`)
-      .replace('#include <lights_physical_fragment>', `roughnessFactor = mix( min( roughnessFactor * mix( 0.85, 1.3, vIwNeg ), 1.0 ), 0.93, iwRust );
+      .replace('#include <lights_physical_fragment>', `roughnessFactor = mix( min( roughnessFactor * mix( 0.85, 1.3, clamp( vIwNeg, 0.0, 1.0 ) ), 1.0 ), 0.93, iwRust );
 	#include <lights_physical_fragment>`);
   });
 }
@@ -209,12 +209,16 @@ ${NOISE}`)
  *  the atlas (railings.js) adds cover in proportion to the sideways shift of the view
  *  per unit depth, and the added cover fills the open part of the bay as the design's
  *  fitted constants say (patterns.js `widen`). Toward grazing angles the railing closes
- *  into a dark band, as real ones do. Dull, a little darker at grazing (no Fresnel). */
+ *  into a dark band, as real ones do. Dull, a little darker at grazing (no Fresnel).
+ *  The neglect varying (here and on the near geometry) is interpolated at the sample
+ *  centroid and clamped: a far card seen edge-on is a sliver narrower than a pixel, and
+ *  the value extrapolated to the pixel centre drove the chalk and rust mixes past their
+ *  ends into a negative albedo (a broken HDR pixel wherever MSAA kept that sample). */
 export const uIwWiden = { value: WIDEN.map((w) => new THREE.Vector4(...w)) };
 
 function cardPatch(mat) {
   return chain(mat, '|ironCard', (sh) => {
-    VERT_DIST(sh, '\nvarying float vIwNeg;' + NEGLECT_GLSL);
+    VERT_DIST(sh, '\ncentroid varying float vIwNeg;' + NEGLECT_GLSL);
     sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
 	#ifdef USE_INSTANCING
 		vIwNeg = iwNeglect( ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz );
@@ -225,7 +229,7 @@ function cardPatch(mat) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>${FRAG_HEAD}
 uniform vec4 uIwWiden[ ${ATLAS.ROWS} ];
-varying float vIwNeg;
+centroid varying float vIwNeg;
 vec3 iwN;`)
       // the atlas holds coverage planes, not colour (colour is per vertex)
       .replace('#include <map_fragment>', 'vec4 iwCov = texture2D( map, vMapUv );')
@@ -249,8 +253,9 @@ vec3 iwN;`)
 		diffuseColor.rgb *= mix( 1.0, 0.7, 1.0 - nv );
 		// neglected iron: the near geometry's chalked paint and rust (mats.js nearPatch)
 		// as their mean over bars too fine to resolve
-		diffuseColor.rgb = mix( diffuseColor.rgb * 1.45 + vec3( 0.011, 0.0105, 0.0098 ), diffuseColor.rgb, 1.0 - vIwNeg );
-		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.13, 0.056, 0.026 ), 0.02 + 0.3 * vIwNeg * vIwNeg );
+		float ng = clamp( vIwNeg, 0.0, 1.0 );
+		diffuseColor.rgb = mix( diffuseColor.rgb * 1.45 + vec3( 0.011, 0.0105, 0.0098 ), diffuseColor.rgb, 1.0 - ng );
+		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.13, 0.056, 0.026 ), 0.02 + 0.3 * ng * ng );
 		// shading normal of the lattice: the bar faces we see turn toward us as the view
 		// grazes the card (round and square bars alike), not the card's own plane
 		iwN = normalize( V + 0.5 * ( dot( N, V ) < 0.0 ? -N : N ) );

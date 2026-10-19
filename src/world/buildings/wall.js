@@ -1,5 +1,6 @@
 import { archPoint } from '../facadePlan.js';
 import { arcSeg } from './mesh.js';
+import { hash3 } from './shade.js';
 
 // Wall field of one facade face: the plane w = 0 between the paving and the cornice,
 // with the openings cut out exactly along their outlines.
@@ -14,9 +15,25 @@ import { arcSeg } from './mesh.js';
 // and the head line. Rows do not share vertices (T-junctions are hidden by a dark
 // backstop behind the wall). The ground floor may be rusticated: banded courses with
 // deep V joints in stone.rough.
+//
+// V joints (grooveStrip): the band j ± c of a joint is one row holding both chamfers, the
+// lower block's (facing up) and the upper block's (facing down), which meet at the root
+// c behind the wall face. The root wanders up and down along the joint (piecewise linear,
+// knots every GROOVE_G m, up to GROOVE_A of the depth), so the chamfers vary in width
+// while their arrises stay on the course lines. Each block's chamfer carries its own
+// soiling (dust settles on the upward-facing one; blocks split at the texture's head
+// joints), and the texture across a chamfer is the joint band of the rock-faced stone
+// (JOINT_BAND texture metres either side of the bed joint): its mortar, occlusion and the
+// margin's broken edge, not a clean stretch of the drafted margin.
 
 const EPS = 1e-4;
 const SLICE = 0.3;   // time slice of a generation step (ms)
+const GROOVE_G = 0.3, GROOVE_A = 0.22;
+const JOINT_BAND = 0.01;
+// soiling of a chamfer (colour factor: base + spread × per-block hash), the upward-facing
+// one dustier; and the grime mask it adds (patchy dirt from the weathering atlas)
+const SOIL_UP = [0.75, 0.08], SOIL_DOWN = [0.79, 0.08], SOIL_GRIME = 0.12;
+const BLOCK_L = 0.8;   // block rhythm along a joint without a fitted texture layout
 
 function uniqSorted(a) {
   a.sort((x, y) => x - y);
@@ -38,6 +55,8 @@ const _p = {};
 const _pcs = [];
 const _cut = new Float64Array(512);                // runCuts output (reused)
 const _runs = [], _jamb = [];                      // free runs of a row (reused)
+const _gc = new Float64Array(1024);                // grooveStrip columns (reused)
+const _hj = [];                                    // head joints inside a piece (reused)
 
 /** Cut positions across a run [ra, rb], at most maxRun apart, into _cut; returns the count. */
 function runCuts(ra, rb, maxRun) {
@@ -48,15 +67,66 @@ function runCuts(ra, rb, maxRun) {
   return n + 1;
 }
 
-/** Triangle closing a V-joint half at u, facing dir (±u). */
-function grooveCap(B, s, u, dir, va, vc, groove, c) {
-  s.reserve(3, 3);
-  // lower half (groove > 0): face at va, joint root at vc; upper half: root at va, face at vc
-  const a = groove > 0 ? B.v(s, u, va, 0, dir, 0, 0, 0, va) : B.v(s, u, va, -c, dir, 0, 0, c, va);
-  const b = groove > 0 ? B.v(s, u, vc, -c, dir, 0, 0, c, vc) : B.v(s, u, vc, 0, dir, 0, 0, 0, vc);
-  const m = groove > 0 ? B.v(s, u, vc, 0, dir, 0, 0, 0, vc) : B.v(s, u, va, 0, dir, 0, 0, 0, va);
-  // (a, b, m) faces +u in both halves
-  if (dir > 0) B.tri(s, a, b, m); else B.tri(s, a, m, b);
+/**
+ * A V joint: {j (joint line), i (its index), c (depth), seed}. Root height at u: the joint
+ * line plus a piecewise-linear wander (knots every GROOVE_G m, the same in every row
+ * and pass, so the two chamfers always meet).
+ */
+function grooveRoot(g, u) {
+  const x = u / GROOVE_G, m = Math.floor(x), f = x - m, k = g.i * 7919 + 13;
+  const h0 = hash3(m, k, g.seed), h1 = hash3(m + 1, k, g.seed);
+  return g.j + GROOVE_A * g.c * (2 * (h0 + (h1 - h0) * f) - 1);
+}
+/** Depth (w ≤ 0) of the V profile at height v, root r. */
+function grooveW(g, r, v) {
+  const a0 = g.j - g.c, a1 = g.j + g.c;
+  return v <= r ? -g.c * Math.max(0, v - a0) / (r - a0) : -g.c * Math.max(0, a1 - v) / (a1 - r);
+}
+
+/**
+ * One chamfer of a V joint over [xa, xb] in the row va..vc: side 0 the lower block's
+ * (from its arris at j − c up to the root), 1 the upper block's (root to j + c), clamped
+ * to the row. A column every GROOVE_G (on the root's knots); texture v across the joint
+ * band (sv: the texture's v scale).
+ */
+function grooveStrip(B, s, g, side, xa, xb, va, vc, sv) {
+  const c = g.c, a0 = g.j - c, a1 = g.j + c, band = JOINT_BAND / sv;
+  let n = 1;
+  _gc[0] = xa;
+  for (let m = Math.floor(xa / GROOVE_G) + 1; m * GROOVE_G < xb - 1e-3 && n < 1022; m++) if (m * GROOVE_G > xa + 1e-3) _gc[n++] = m * GROOVE_G;
+  _gc[n++] = xb;
+  s.reserve(n * 2, (n - 1) * 6);
+  const b0 = s.vc;
+  for (let k = 0; k < n; k++) {
+    const u = _gc[k], r = grooveRoot(g, u);
+    const lo = side ? Math.max(va, r) : Math.min(va, r), hi = side ? Math.max(vc, r) : Math.min(vc, r);
+    // facing up and out (lower chamfer) or down and out (upper chamfer)
+    const nv = side ? -c : c, nw = side ? a1 - r : r - a0;
+    const tLo = side ? g.j + (band * (lo - r)) / (a1 - r) : g.j - (band * (r - lo)) / (r - a0);
+    const tHi = side ? g.j + (band * (hi - r)) / (a1 - r) : g.j - (band * (r - hi)) / (r - a0);
+    B.v(s, u, lo, grooveW(g, r, lo), 0, nv, nw, u, tLo);
+    B.v(s, u, hi, grooveW(g, r, hi), 0, nv, nw, u, tHi);
+  }
+  for (let k = 0; k < n - 1; k++) { const b = b0 + k * 2; B.quadIdx(s, b, b + 2, b + 3, b + 1); }
+}
+
+/** Closes the notch of a V joint where it stops at u (an arch spandrel or a corner), facing dir (±u). */
+function grooveCap(B, s, g, u, dir, va, vc) {
+  const r = grooveRoot(g, u);
+  s.reserve(5, 9);
+  // the section between the wall plane and the profile: convex, counter-clockwise in
+  // (v, w), which faces +u
+  const b0 = s.vc;
+  B.v(s, u, va, 0, dir, 0, 0, 0, va);
+  const wa = grooveW(g, r, va);
+  B.v(s, u, va, wa, dir, 0, 0, -dir * wa, va);
+  let n = 2;
+  if (r > va + 1e-4 && r < vc - 1e-4) { B.v(s, u, r, -g.c, dir, 0, 0, dir * g.c, r); n++; }
+  const wc = grooveW(g, r, vc);
+  B.v(s, u, vc, wc, dir, 0, 0, -dir * wc, vc);
+  B.v(s, u, vc, 0, dir, 0, 0, 0, vc);
+  n += 2;
+  for (let k = 1; k < n - 1; k++) { if (dir > 0) B.tri(s, b0, b0 + k, b0 + k + 1); else B.tri(s, b0, b0 + k + 1, b0 + k); }
 }
 
 /**
@@ -94,7 +164,7 @@ export function* wallField(ctx, face, openings) {
   const gHi = Math.max(face.groundAt(0), face.groundAt(W)), gLo = Math.min(face.groundAt(0), face.groundAt(W));
   for (const d of q.lod ? [0.1, 0.4, 1.0, 2.3] : [0.1, 0.3, 0.7, 1.3, 2.3]) { vb.push(gHi + d); if (gHi - gLo > 0.15) vb.push(gLo + d); }
   const rus = ctx.rustic, rend = ctx.render || null;
-  if (rus) { vb.push(rus.v0, rus.v1); for (const j of rus.joints) vb.push(j - rus.c, j, j + rus.c); }
+  if (rus) { vb.push(rus.v0, rus.v1); for (const j of rus.joints) vb.push(j - rus.c, j + rus.c); }
   if (rend) vb.push(rend.v0);
   // bed joints of the ashlar texture (outside the rusticated zone, whose rows already
   // follow its V joints), so every row lies inside one course and can be fitted
@@ -116,9 +186,18 @@ export function* wallField(ctx, face, openings) {
   const roughBase = sRough.uvx;
   const stoneShade = (u, v, w, nu, nv, nw, out) => fs.wall(u, v, out);
   const rendShade = rend ? (u, v, w, nu, nv, nw, out) => rend.fs.wall(u, v, out) : null;
+  // a V-joint chamfer: the wall's shading, soiled by the block's factor gk (a little greyer
+  // and darker, and a little grime for the weathering's patchy dirt)
+  let gk = 1;
+  const grooveShade = (u, v, w, nu, nv, nw, out) => {
+    fs.wall(u, v, out);
+    const l = (out[0] + out[1] + out[2]) / 3;
+    out[0] = (out[0] + (l - out[0]) * 0.12) * gk; out[1] = (out[1] + (l - out[1]) * 0.12) * gk; out[2] = (out[2] + (l * 0.97 - out[2]) * 0.12) * gk;
+    out[3] = Math.min(1, out[3] + SOIL_GRIME);
+  };
+  const gj = rus ? { j: 0, i: 0, c: rus.c, seed: (fs.seed | 0) ^ 0x6a09 } : null;
   B.shade = stoneShade;
   const sloped = gHi - gLo > 0.02;
-  const k = Math.SQRT1_2;
   /** Texture transform of a piece: the sink's own base with u replaced by the fitted (k, off). */
   const setPiece = (s, base, kk, off) => {
     const x = s.fitUV || (s.fitUV = [1, 0, 1, 0]);
@@ -131,11 +210,14 @@ export function* wallField(ctx, face, openings) {
     // (a step ends once it has taken SLICE ms)
     if (r && performance.now() - ts > SLICE) { yield; ts = performance.now(); }
     const va = V[r], vc = V[r + 1], vm = (va + vc) / 2;
-    // rustication: is this row inside the rusticated zone, and is it half of a V joint?
-    let rough = false, groove = 0;
+    // rustication: is this row inside the rusticated zone, and inside a V joint's band?
+    let rough = false, groove = false;
     if (rus && vm > rus.v0 && vm < rus.v1) {
       rough = true;
-      for (const j of rus.joints) { if (vm > j - rus.c && vm < j) groove = 1; else if (vm > j && vm < j + rus.c) groove = -1; }
+      for (let ji = 0; ji < rus.joints.length; ji++) {
+        const j = rus.joints[ji];
+        if (vm > j - rus.c && vm < j + rus.c) { groove = true; gj.j = j; gj.i = ji; }
+      }
     }
     const rr = !rough && rend && vm > rend.v0;
     const s = rr ? rend.sink : rough ? sRough : sAsh;
@@ -160,6 +242,47 @@ export function* wallField(ctx, face, openings) {
     if (uMax - a > EPS) { runs.push(a, uMax); jamb.push(aJamb, false); }
     for (let i = 0; i < runs.length; i += 2) {
       const ra = runs[i], rb = runs[i + 1];
+      if (groove) {
+        // V joint: the two chamfers, each in its own course's fitted texture
+        B.shade = grooveShade;
+        for (let side = 0; side < 2; side++) {
+          const rgS = fit ? fit.row(side ? gj.j + 0.01 : gj.j - 0.01) : 0;
+          const P = fit ? fit.pieces(rgS, ra, rb, _pcs) : null;
+          const np = P ? P.length : 4, soil = side ? SOIL_DOWN : SOIL_UP;
+          for (let pi = 0; pi < np; pi += 4) {
+            const pa = P ? P[pi] : ra, pb = P ? P[pi + 1] : rb, kk = P ? P[pi + 2] : 1, off = P ? P[pi + 3] : 0;
+            if (P) setPiece(s, base, kk, off);
+            // blocks: split at the texture's head joints (or an even rhythm)
+            const H = _hj;
+            H.length = 0;
+            if (P) fit.headJoints(rgS, pa, pb, kk, off, H);
+            else for (let m = Math.floor(pa / BLOCK_L) + 1; m * BLOCK_L < pb; m++) H.push(m * BLOCK_L);
+            let zi = 0, hi = 0;
+            while (zi < zc.length && zc[zi] <= pa + 0.01) zi++;
+            for (let za = pa; za < pb - EPS;) {
+              const zb = zi < zc.length && zc[zi] < pb - 0.01 ? zc[zi] : pb;
+              B.run = zones.occ[zi];
+              for (let xa = za; xa < zb - EPS;) {
+                while (hi < H.length && H[hi] <= xa + EPS) hi++;
+                const xb = hi < H.length && H[hi] < zb - EPS ? H[hi] : zb;
+                const xm = (xa + xb) / 2;
+                const id = P ? fit.blockId(rgS, xm, kk, off) : Math.floor(xm / BLOCK_L);
+                gk = soil[0] + soil[1] * hash3(id, rgS * 2 + side + gj.i * 64, gj.seed);
+                grooveStrip(B, s, gj, side, xa, xb, va, vc, base[2]);
+                xa = xb;
+              }
+              za = zb; zi++;
+            }
+          }
+        }
+        B.run = null;
+        if (!rr) s.uvx = roughBase;
+        // close the notch where a V joint stops at an arch spandrel or a corner (a jamb closes it otherwise)
+        B.shade = stoneShade;
+        if (!jamb[i]) grooveCap(B, s, gj, ra, -1, va, vc);
+        if (!jamb[i + 1]) grooveCap(B, s, gj, rb, 1, va, vc);
+        continue;
+      }
       const P = fit ? fit.pieces(rg, ra, rb, _pcs) : null;
       const np = P ? P.length : 4;
       for (let pi = 0; pi < np; pi += 4) {
@@ -174,24 +297,12 @@ export function* wallField(ctx, face, openings) {
           const n = runCuts(za, zb, maxRun), cuts = _cut;
           s.reserve(n * 2, (n - 1) * 6);
           const b0 = s.vc;
-          if (groove) {
-            // V joint: strip from the wall face back to the joint (chamfer at 45°)
-            for (let c = 0; c < n; c++) {
-              const u = cuts[c];
-              if (groove > 0) { B.v(s, u, va, 0, 0, k, k, u, va); B.v(s, u, vc, -rus.c, 0, k, k, u, vc); }
-              else { B.v(s, u, va, -rus.c, 0, -k, k, u, va); B.v(s, u, vc, 0, 0, -k, k, u, vc); }
-            }
-          } else {
-            for (let c = 0; c < n; c++) { const u = cuts[c]; B.v(s, u, va, 0, 0, 0, 1, u, va); B.v(s, u, vc, 0, 0, 0, 1, u, vc); }
-          }
+          for (let c = 0; c < n; c++) { const u = cuts[c]; B.v(s, u, va, 0, 0, 0, 1, u, va); B.v(s, u, vc, 0, 0, 0, 1, u, vc); }
           for (let c = 0; c < n - 1; c++) { const b = b0 + c * 2; B.quadIdx(s, b, b + 2, b + 3, b + 1); }
           za = zb; zi++;
         }
       }
       B.run = null;
-      // close the notch where a V joint stops at an arch spandrel or a corner (a jamb closes it otherwise)
-      if (groove && !jamb[i]) grooveCap(B, s, ra, -1, va, vc, groove, rus.c);
-      if (groove && !jamb[i + 1]) grooveCap(B, s, rb, 1, va, vc, groove, rus.c);
     }
     if (!rr) s.uvx = rough ? roughBase : null;
   }
