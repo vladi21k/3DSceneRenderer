@@ -44,19 +44,22 @@ Status legend: [x] done · [~] in progress · [ ] todo
 - [x] Route reshaped (user request): gentle bends and S-meanders, so no street is ruler-straight; designed hills (the avenue climbs ~9 m ahead of the start, then crests)
 - [x] Uneven ground (user request): shared `route.surface(s, d)` with sidewalk cross-fall, a slow hillside tilt across the street and settlement undulation, applied by toWorld and the paving mesh so every object sits on it
 - [x] All modules running together, clean console (0 errors across views)
-- [ ] 60 fps at 1920×1080 target; draw calls / triangles / chunk build time within budget
-- [~] Progressive loading: cold start ~15 s under load (shader compile dominates)
+- [~] 30 fps at 1920×1080 (quality first): GPU 9-11 ms of a 28 ms budget, ≤ 912 calls, ≤ 7 M triangles; one deterministic hitch at s≈1600 open
+- [~] Progressive loading: cold start 19.3 s on a quiet machine (compile 12.1 s for 127 programs, module init 5.0 s); target ≤ 10 s
 
 ## M4 — Photoreal review loops
 - [x] Photoreal loop, 3 rounds (40 agents): a 4-lens critic panel (lighting/atmosphere, materials/geometry, shot/motion, people) followed by parallel owner fixes. Panel mean 4.9 → 5.9 → 6.25 (lighting 5→6, surfaces 6→6.5, shot 5→6.5, people/crowd 3.5→6)
 - [x] Highlights: AgX camera tone curve with veiling glare and highlight recovery; sun-only daylight white balance; volumetric cumulus/cirrus regimes; cool granite paving; relief rustication; oncoming trams with street reflections; per-object motion blur; crowd pair-clearing rule and tram obstacle braking
-- [~] M4.5: request sweep (189 cross-module requests/notes), GC/hitch reduction, contract docs, then a serial quiet-machine perf + behaviour QA (M5) and fixes
+- [x] M4.5: request sweep (189 cross-module requests/notes), GC/hitch reduction (whole-app garbage 1365 → 920 KB/frame), contract docs
+- [~] M4.6 (Oct 19): status audit, then a build round on what it found: a 175-183 ms hitch at s≈1600 every lap, golden-hour paving clip, double lamp halo at dusk, surfaces too clean and tone too muted against the reference photos (measured), sparse shopfronts, regular facade massing, cold start 19 s, unwired APIs (cyclist motion blur, far-field trees, console drips)
+- [ ] M4.6 serial quiet-machine perf + behaviour QA (M5), then fixes
 - [ ] Screenshot review against the reference photos (default telephoto, midday, golden hour, dusk, close-ups)
 - [ ] Fix rounds until no frame reads as a 3D demo
 
 ## M4b — People rebuild (CC0 MakeHuman)
 - [x] Docker image tramline-mh: MPFB2 add-on plus MakeHuman CC0 system assets (tools/mh_fetch.sh, docker/Dockerfile.mh)
-- [~] Workflow: MPFB2 character generator (28+ cast: men, women, teens, children, elderly, toddlers; summer clothing) → renderer integration on the existing contract → 2 critique/fix rounds
+- [x] MPFB2 character generator (49-character cast: men, women, teens, children, elderly, toddlers; summer clothing) → renderer integration on the existing contract → 2 review/fix rounds (people 5/10 at telephoto-photographic, game-like close up)
+- [~] Ship the round-2 cast (built but never promoted; HEAD still loads version 2), then round 3: strand hair and beards, eyes and brows, face variety and no neighbouring clones, clean coarse LODs, bags and straps, seated skirts, no crop tops, per-frame garbage
 
 ## M5 — Behaviour verification
 - [ ] Pedestrians never pass through the camera; they clear the tracks and react to the bell
