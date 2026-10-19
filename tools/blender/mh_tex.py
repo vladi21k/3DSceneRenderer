@@ -261,8 +261,9 @@ def hair_detail(path, size):
 
 
 # strand atlas columns (mh_hair.py LAYERS picks them): 0-1 dense inner locks (an opaque core: no scalp shows
-# through), 2-5 strand clumps (locks that part towards their tips), 6 sparse flyaway wisps, 7 short bristle
-STRAND_KINDS = ['dense', 'dense', 'clump', 'clump', 'clump', 'clump', 'sparse', 'bristle']
+# through), 2-5 strand clumps (locks that part towards their tips), 6 sparse flyaway wisps, 7 a blunt cut
+# (strands side by side ending within the last tenth: bobs and fringes)
+STRAND_KINDS = ['dense', 'dense', 'clump', 'clump', 'clump', 'clump', 'sparse', 'blunt']
 
 
 def strand_layer(size, seed=29):
@@ -283,14 +284,14 @@ def strand_layer(size, seed=29):
         A = np.zeros((H, cw), np.float32)       # coverage so far (front to back)
         Cc = np.zeros((H, cw), np.float32)      # premultiplied shade
         P = dict(dense=(170, 0.30, 5, 0.85, 0.55), clump=(95, 0.22, 3, 0.65, 0.65), sparse=(16, 0.25, 2, 0.5, 0.45),
-                 bristle=(120, 0.3, 6, 0.3, 0.6))[kind]
+                 blunt=(130, 0.3, 6, 0.9, 0.12))[kind]
         n, sig, nclump, t_lo, conv = P
         centres = rng.uniform(-0.3, 0.3, nclump)
         for k in range(n):
             ci = rng.integers(nclump)
             x0 = float(np.clip(rng.normal(0, sig), -0.46, 0.46))
             t0 = rng.uniform(0.0, 0.12 if kind != 'sparse' else 0.2)
-            t1 = rng.uniform(t_lo, 1.0) if kind != 'bristle' else rng.uniform(0.25, 0.6)
+            t1 = rng.uniform(t_lo, 1.0)
             amp = rng.uniform(0.004, 0.025) * (2.0 if kind == 'sparse' else 1.0)
             fr = rng.uniform(1.5, 4.5)
             ph = rng.uniform(0, 1)
@@ -306,7 +307,7 @@ def strand_layer(size, seed=29):
             inside = (t >= t0) & (t <= t1)
             u = np.clip((t - t0) / max(t1 - t0, 1e-3), 0, 1)
             # (tapers to a point over the last quarter of its length; fades in at its root)
-            taper = np.clip((1 - u) / 0.25, 0, 1) ** 0.7 * np.clip(u / 0.08, 0, 1)
+            taper = np.clip((1 - u) / (0.25 if kind != 'blunt' else 0.06), 0, 1) ** 0.7 * np.clip(u / 0.08, 0, 1)
             hw = 0.5 * wpx * (0.35 + 0.65 * taper)
             cov = np.clip(hw[:, None] + 0.5 - np.abs(xs[None, :] - xc_px[:, None]), 0, 1) * (op * taper * inside)[:, None]
             # front to back: what is already there hides the strand behind it

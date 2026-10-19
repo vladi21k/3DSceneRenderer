@@ -3,7 +3,7 @@ import { Rig, bakeClips, bakeClip, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PH
 import { loadCast, mergeMeshes } from './humans/mh/cast.js';
 import { castAppearance, castToddler, castCharacter, castWaiter, waiterFits, BAG } from './humans/mh/appearance.js';
 import { buildParts } from './humans/mh/parts.js';
-import { makeFigureMaterials, writeLook, BONE_W, BONE_DYN, LOOK_W } from './humans/mh/shading.js';
+import { makeFigureMaterials, writeLook, BONE_W, BONE_DYN, LOOK_W, FACE } from './humans/mh/shading.js';
 import { FigureBatch } from './humans/mh/batch.js';
 import { HumansTest } from './humans/test.js';
 import { Mobility } from './humans/mobility.js';
@@ -160,6 +160,7 @@ const humans = {
     this.initMs = { props: this._tProps || 0, load: Math.round(performance.now() - tLoad) };
     const tBake = performance.now();
     this.bindPose = app.params.num('humans_bind', 0) > 0;
+    FACE.scale = app.params.num('humans_face', 1);
     // (humans_lod=a,b,c: other LOD thresholds, for testing)
     const lp = (app.params.str('humans_lod', '') || '').split(',').map(Number).filter((x) => x > 0);
     this.lodPx = lp.length === 3 ? lp : LOD_PX;
@@ -190,6 +191,7 @@ const humans = {
       // (casts with skin decals carry beard volume shells of their own)
       hatBrim(c);
       eyeRadius(c);
+      faceMarks(c);
       if (this.browsOnSkin) browLine(c);
       beardFade(c, this.beardBase ? 0.01 : this.v2 ? 0.015 : 0.035);
       if (this.beardBase) beardShellsFromBase(c);
@@ -990,6 +992,35 @@ function beardShells(c) {
   Object.assign(raw, { n, pos, nrm, uv, bi, bw, tex, index: idx });
 }
 
+/**
+ * Face landmarks (rest pose) for the per-person face shape (mh/shading.js hFaceWarp): the nose tip (the
+ * frontmost skin on the midline between the eyes and the mouth), the mouth line and the chin (the lowest
+ * front skin on the midline), and the head scale from the eyes' spacing -> c.face, or null.
+ */
+function faceMarks(c) {
+  const raw = c.raw, T = raw.tex, P = raw.pos, e = c.info.eyeR;
+  c.face = null;
+  if (!e) return;
+  const hk = Math.max(0.6, Math.abs(e[0]) * 2 / 0.064);
+  let nz = Infinity, ny = 0, cy = Infinity, cz = 0;
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 0) continue;
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (Math.abs(x) > 0.008 * hk) continue;
+    if (y < e[1] - 0.015 * hk && y > e[1] - 0.065 * hk && z < nz) { nz = z; ny = y; }
+  }
+  if (!(nz < Infinity)) return;
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 0) continue;
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (Math.abs(x) > 0.01 * hk || z > nz + 0.045 * hk || y > ny - 0.04 * hk || y < ny - 0.11 * hk) continue;
+    if (y < cy) { cy = y; cz = z; }
+  }
+  if (!(cy < Infinity)) cy = ny - 0.075 * hk;
+  // (the mouth line about two fifths of the way from the nose tip to the chin)
+  c.face = { nose: [0, ny, nz], mouthY: ny + (cy - ny) * 0.42, chinY: cy, hk };
+}
+
 /** Eyeball radius (rest pose, m) from the eye vertices around the right eye's centre: c.eyeR. */
 function eyeRadius(c) {
   const raw = c.raw, T = raw.tex, P = raw.pos, e = c.info.eyeR;
@@ -1050,8 +1081,9 @@ function browLine(c) {
   const k1 = den !== 0 ? (tw * tb - tx * ta) / den : 0, k0 = (ta - k1 * tx) / tw;
   // (the strip is a little taller than the painted brow; brows 6-10 mm tall at the head, 3 mm at the tail)
   const hs = c.info.H / 1.76;
-  const t0 = THREE.MathUtils.clamp((k0 + k1 * x0) * 1.2, 0.0036 * hs, 0.0058 * hs);
-  const t1 = THREE.MathUtils.clamp((k0 + k1 * x1) * 1.0, 0.0021 * hs, 0.0032 * hs);
+  // (fuller than the cards' painted line: a real brow is a band of hairs about a centimetre tall at its head)
+  const t0 = THREE.MathUtils.clamp((k0 + k1 * x0) * 1.5, 0.0046 * hs, 0.0072 * hs);
+  const t1 = THREE.MathUtils.clamp((k0 + k1 * x1) * 1.25, 0.0026 * hs, 0.004 * hs);
   c.brow = { x0, x1, a, b, c: cc, t0, t1, z };
   // the brow cards leave every LOD
   for (let l = 0; l < c.lods.length; l++) {

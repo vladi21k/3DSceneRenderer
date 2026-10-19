@@ -20,7 +20,7 @@ import { U } from '../../../core/uniforms.js';
 export const NB = 22;
 export const BONE_DYN = NB * 3;          // first state texel of a bone row
 export const BONE_W = BONE_DYN + 2;      // texels per bone row
-export const LOOK_W = 28;                // texels per look row (see writeLook)
+export const LOOK_W = 34;                // texels per look row (see writeLook)
 const REGION_ROUGH = [-1, 0.5, 0.8, 0.8, 0.06, -1, -1, -1, -1, 0.95, -1, 0.85, 0.32, 0.08, 0.55, 0.7];
 // specular strength per region (x the dielectric F0 0.04)
 const REGION_SPEC = [0.72, 0.05, 0.3, 0.3, 1.1, 0.55, 0.55, 0.55, 0.9, 0.5, 0.5, 0.3, 1.0, 1.2, 0.75, 0.6];
@@ -68,6 +68,59 @@ vec3 hPush(vec3 P, vec3 a, vec3 b, float ra, float rb) {
   float l = length(d), r = mix(ra, rb, t);
   return l < r && l > 1e-5 ? c + d * (r / l) : P;
 }
+// The person's own face: smooth displacements of the rest pose round the character's landmarks (look
+// texels 28-32: nose tip, head scale, mouth and chin heights; the person's coefficients -1..1). Every part
+// near the face moves with the skin (eyes, lashes, brows, beard, hair), so nothing parts from it.
+vec3 hFaceWarp(vec3 p, vec3 n, int row) {
+  vec4 F0 = hLook(row, 28);
+  if (F0.w <= 0.0) return p;
+  float hk = F0.w;
+  vec4 F1 = hLook(row, 29), K0 = hLook(row, 30), K1 = hLook(row, 31), K2 = hLook(row, 32);
+  vec4 Eo = hLook(row, 25);
+  float ey = Eo.y, ny = F0.y, nz = F0.z, my = F1.x, cy = F1.y;
+  vec3 q = p - vec3(0.0, ny, nz);
+  // (the face only: in front of the ears, from above the brows to below the chin)
+  if (q.z > 0.14 * hk || p.y > ey + 0.08 * hk || p.y < cy - 0.06 * hk || abs(p.x) > 0.11 * hk) return p;
+  float ax = abs(p.x), sx = p.x < 0.0 ? -1.0 : 1.0;
+  float front = 1.0 - smoothstep(0.06 * hk, 0.13 * hk, q.z);
+  float above = smoothstep(cy - 0.05 * hk, cy - 0.005 * hk, p.y);          // fades out under the chin
+  vec3 d = vec3(0.0);
+  // nose: wider or narrower round its middle; longer (the tip lower and further out) or shorter
+  vec3 r = (p - vec3(0.0, mix(ey, ny, 0.65), nz + 0.012 * hk)) / (0.021 * hk);
+  float gn = exp(-dot(r, r));
+  r = q / (0.015 * hk);
+  float gt = exp(-dot(r, r));
+  d.x += K0.x * 0.2 * p.x * gn;
+  d.y -= K0.y * 0.0032 * hk * (gn * 0.5 + gt);
+  d.z -= K0.y * 0.0025 * hk * gt;
+  // lower face: the jaw wider or narrower (most towards its angles), the chin longer or shorter, the whole
+  // face below the nose longer or shorter
+  float lower = (1.0 - smoothstep(my, ey - 0.02 * hk, p.y)) * above;
+  float jawF = 1.0 - smoothstep(0.09 * hk, 0.14 * hk, q.z);
+  d.x += K0.z * 0.075 * p.x * lower * jawF * (0.4 + 0.6 * smoothstep(0.015 * hk, 0.07 * hk, ax));
+  float chin = (1.0 - smoothstep(cy, my, p.y)) * (1.0 - smoothstep(0.03 * hk, 0.08 * hk, q.z)) * above;
+  d.y -= K0.w * 0.006 * hk * chin;
+  d.z -= K0.w * 0.0025 * hk * chin;
+  d.y += K1.y * 0.05 * min(0.0, p.y - ny) * front * above;
+  // cheeks fuller or hollower (out along the skin's normal)
+  r = vec3(ax - 0.042 * hk, p.y - (ey - 0.03 * hk), p.z - (nz + 0.04 * hk)) / (0.024 * hk);
+  d += n * (K1.x * 0.0032 * hk * exp(-dot(r, r)));
+  // brows higher or lower (and the brow ridge with them)
+  r = vec3(ax - 0.03 * hk, p.y - (ey + 0.022 * hk), p.z - (nz + 0.03 * hk)) / (0.02 * hk);
+  float gb = exp(-dot(r, r));
+  d.y += K1.z * 0.0025 * hk * gb;
+  d.z -= K1.z * 0.0012 * hk * gb;
+  // lips fuller or thinner
+  r = (p - vec3(0.0, my, nz + 0.017 * hk)) / (0.016 * hk);
+  float gl = exp(-dot(r, r));
+  d.z -= K1.w * 0.0018 * hk * gl;
+  d.y += K1.w * 0.13 * (p.y - my) * gl;
+  // the face wider or narrower across the cheekbones; the eyes set wider or closer
+  d.x += K2.x * 0.045 * p.x * front * (1.0 - smoothstep(ey + 0.02 * hk, ey + 0.07 * hk, p.y)) * above;
+  r = vec3(ax - Eo.x, p.y - ey, p.z - Eo.z) / (0.022 * hk);
+  d.x += sx * K2.y * 0.0022 * hk * exp(-dot(r, r));
+  return p + d;
+}
 void hSkin(out vec3 P, out vec3 N) {
   int brow = int(getIndirectIndex(gl_DrawID) + 0.5);
   vec4 D0 = texelFetch(uBoneTex, ivec2(${BONE_DYN}, brow), 0);   // gait phase, speed, seated blend, ground y
@@ -75,7 +128,7 @@ void hSkin(out vec3 P, out vec3 N) {
   int row = int(D1.x + 0.5);
   vec4 W = aBoneW / max(aBoneW.x + aBoneW.y + aBoneW.z + aBoneW.w, 1e-4);
   mat4 m = hBone(brow, aBoneI.x) * W.x + hBone(brow, aBoneI.y) * W.y + hBone(brow, aBoneI.z) * W.z + hBone(brow, aBoneI.w) * W.w;
-  vec3 pos = position;
+  vec3 pos = hFaceWarp(position, aNrm.xyz, row);
   int flags = int(aTex.w + 0.5);
   // hands in the pockets: the hands fold into the trousers about the wrist
   if (D1.z > 0.01 && W.x > 0.5 && (aBoneI.x == 9.0 || aBoneI.x == 13.0) && aTex.z < 0.5) {
@@ -159,7 +212,8 @@ void hSkin(out vec3 P, out vec3 N) {
   N = normalize(mat3(m) * nrm);
   if ((flags & 8) != 0 && D0.z > 0.01) {
     // a seated skirt: the cloth below the hips lies along the thighs (the front on top of them, held
-    // to their surface, the back sat on), and below the knees it falls straight down to its hem
+    // to their surface, the back sat on), rolls over the knees on a rounded bend, and below them falls to
+    // its hem a little back towards the shins, narrowing at the sides and breaking into soft folds
     // (in rest space the skirt hangs from the hips; per thigh, weighted by the vertex's thigh weights)
     float sc = D1.w;
     vec3 Ps = vec3(0.0), Ns = vec3(0.0);
@@ -178,21 +232,40 @@ void hSkin(out vec3 P, out vec3 N) {
       float rad = (mix(h.w, k.w, clamp(sd / Lr, 0.0, 1.0)) + 0.014) * sc;
       float up = rw.y;
       if (up > rad) rw.y = rad;
-      vec3 P1, N1 = normalize(mat3(tb) * nrm);
-      if (sd < Lr) P1 = A + U * sd * sc + rw;
-      else {
-        // (the offset folds with the leg's bend from the thigh's direction to the vertical)
-        vec3 Dn = vec3(0.0, -1.0, 0.0);
-        vec3 ax = cross(U, Dn);
-        float sa = length(ax), ca = dot(U, Dn);
-        vec3 rf = rw;
-        if (sa > 1e-4) {
-          ax /= sa;
-          rf = rw * ca + cross(ax, rw) * sa + ax * dot(ax, rw) * (1.0 - ca);
-          N1 = N1 * ca + cross(ax, N1) * sa + ax * dot(ax, N1) * (1.0 - ca);
-        }
-        P1 = B + rf + Dn * (sd - Lr) * sc;
-      }
+      vec3 N1 = normalize(mat3(tb) * nrm);
+      // the bend over the knee: the centre line runs along the thigh, round an arc of radius Rk, then
+      // down (Dn: a little back, under the knee); the cloth's offset turns with it
+      vec3 Dn = normalize(vec3(0.0, -1.0, 0.0) - U * 0.16);
+      vec3 ax = cross(U, Dn);
+      float sa = length(ax);
+      ax = sa > 1e-4 ? ax / sa : vec3(1.0, 0.0, 0.0);
+      vec3 V = cross(ax, U);
+      float beta = atan(sa, dot(U, Dn));
+      float Rk = 0.06 * sc, s0 = max(0.0, Lr * sc - Rk), arc = Rk * beta;
+      float sdp = sd * sc;
+      float phi = 0.0, drop = 0.0;
+      vec3 C;
+      if (sdp < s0) C = A + U * sdp;
+      else if (sdp < s0 + arc) { phi = (sdp - s0) / Rk; C = A + U * s0 + (U * sin(phi) + V * (1.0 - cos(phi))) * Rk; }
+      else { phi = beta; drop = sdp - s0 - arc; C = A + U * s0 + (U * sin(beta) + V * (1.0 - cos(beta))) * Rk + Dn * drop; }
+      float cp = cos(phi), sp = sin(phi);
+      vec3 rf = rw * cp + cross(ax, rw) * sp + ax * dot(ax, rw) * (1.0 - cp);
+      N1 = N1 * cp + cross(ax, N1) * sp + ax * dot(ax, N1) * (1.0 - cp);
+      // (cloth reaching out past the thigh's outer side is not held up by it: the excess hangs down from
+      // the thigh's edge; ax points to the figure's left, the left thigh's outer side)
+      vec3 outer = s == 0 ? ax : -ax;
+      float ex = max(0.0, dot(rf, outer) - rad * 1.08);
+      rf += (vec3(0.0, -0.85, 0.0) - outer) * ex;
+      // (below the knee the sides draw in towards the shins; folds round the hem, growing as it falls)
+      float fall = smoothstep(0.0, 0.22 * sc, drop);
+      rf -= ax * dot(ax, rf) * 0.2 * fall;
+      float th = atan(pos.x, h.z - pos.z);
+      float fa = (0.0035 + 0.006 * fall) * sc * smoothstep(-0.03 * sc, 0.04 * sc, sdp - s0);
+      float fw = sin(th * 7.0 + h.x * 31.0) + 0.45 * sin(th * 13.0 + 1.7);
+      vec3 rn = rf / max(length(rf), 1e-4);
+      vec3 P1 = C + rf + rn * fa * fw;
+      vec3 tg = normalize(cross(Dn, rn) + 1e-5);
+      N1 = normalize(N1 - tg * (cos(th * 7.0 + h.x * 31.0) * 7.0 + 0.45 * 13.0 * cos(th * 13.0 + 1.7)) * fa / max(length(rf), 0.03));
       Ps += P1 * w; Ns += N1 * w; wsum += w; sdAvg += sd * w; lenAvg += Lr * w;
       if (s == 0) wl = w; else wr = w;
     }
@@ -525,19 +598,22 @@ const FRAG_SURFACE = /* glsl */`
       // cap of the eyeball (the eyes look ahead, -z), fibres running out from the pupil, a darker rim;
       // the white of the eye a soft off-white, never paper white
       float rad = length(d.xy);
-      float ir = er * 0.44, pr = er * (0.14 + 0.05 * uNight);
+      // (an iris about two fifths of the eyeball's radius: white shows on both sides of it, as in life)
+      float ir = er * 0.4, pr = er * (0.13 + 0.05 * uNight);
       float aw = max(length(fwidth(d.xy)), 1e-5);
-      float front = smoothstep(-0.2 * er, -0.45 * er, d.z);
+      float front = 1.0 - smoothstep(-0.45 * er, -0.2 * er, d.z);
       float iris = front * (1.0 - smoothstep(ir - aw, ir + aw, rad));
       float ang = atan(d.y, d.x);
       float fib = hVNoise(vec3(ang * 9.0, rad / er * 14.0, 3.0)) * 0.6 + hVNoise(vec3(ang * 25.0, rad / er * 5.0, 7.0)) * 0.4;
       fib = mix(fib, 0.5, smoothstep(0.0005, 0.0015, aw));
       float u = rad / ir;
-      vec3 ic = tint * (0.65 + 0.75 * fib) * mix(1.2, 0.55, smoothstep(0.72, 1.0, u)) * mix(0.75, 1.0, smoothstep(0.35, 0.6, u));
+      vec3 ic = tint * (0.58 + 0.68 * fib) * mix(1.15, 0.4, smoothstep(0.76, 1.0, u)) * mix(0.75, 1.0, smoothstep(0.35, 0.6, u));
       ic = mix(ic, vec3(0.012), front * (1.0 - smoothstep(pr - aw, pr + aw, rad)));
       // (the texture's own iris may be larger than this one: the sclera is a flat off-white, a touch
       // warmer and darker towards the corners)
-      vec3 sclera = vec3(0.62, 0.58, 0.55) * mix(1.0, 0.85, smoothstep(0.5, 1.0, length(d.xy) / er));
+      vec3 sclera = vec3(0.66, 0.62, 0.58) * mix(1.0, 0.86, smoothstep(0.5, 1.0, length(d.xy) / er));
+      // (warmer and a little pink towards the corners)
+      sclera = mix(sclera, vec3(0.6, 0.47, 0.44), smoothstep(0.5, 1.0, abs(d.x) / er) * 0.55);
       diffuseColor.rgb = mix(sclera, ic, iris) * mix(1.0, 0.45, lid) * mix(1.0, 0.7, smoothstep(0.006, 0.012, abs(d.x)));
     } else if (uDecal > 0.5) {
       // (the iris a little darker and less saturated; the white of the eye never paper white)
@@ -620,19 +696,26 @@ const FRAG_SURFACE = /* glsl */`
         float dy = (vRest.y - yc) / max(th, 1e-4);
         // (thicker below the centre line: the brow sits on the orbital rim; the lower edge sharper)
         // (a soft, filled shape: densest a little below the centre line, feathered over its outer half)
-        float ey = dy + 0.15;
-        float band = exp(-ey * ey * (ey < 0.0 ? 1.6 : 2.4))
+        // hairs: fine strokes along the brow's growth (the inner hairs rise steeply, the rest run out
+        // along the brow), each with its own length and offset, so the band's edges break up into hairs
+        float hang = mix(1.2, 0.2, smoothstep(0.0, 0.32, u)) - 0.25 * smoothstep(0.7, 1.0, u);
+        vec2 hd = vec2(cos(hang), sin(hang));
+        vec2 p2 = vec2(ax, vRest.y);
+        vec2 hq = vec2(dot(p2, vec2(-hd.y, hd.x)) * 1500.0, dot(p2, hd) * 90.0);
+        float hcol = floor(hq.x);
+        float hh = hH3(vec3(hcol, 7.0, 3.0));
+        float fq = smoothstep(0.35, 1.2, length(fwidth(hq)));
+        // (clumps ~4 mm along the brow: a little denser and sparser)
+        float clm = hVNoise(vec3(u * 9.0, dy * 1.5, b0.x * 300.0));
+        float ey = dy + 0.15 + (hh - 0.5) * 0.55 * (1.0 - fq);
+        float band = exp(-ey * ey * (ey < 0.0 ? 1.5 : 2.1)) * (0.8 + 0.4 * clm)
           * smoothstep(-0.14, 0.12, u) * (1.0 - smoothstep(0.82, 1.06, u));
         if (band > 0.002) {
-          float hang = mix(1.2, 0.2, smoothstep(0.0, 0.32, u)) - 0.25 * smoothstep(0.7, 1.0, u);
-          vec2 hd = vec2(cos(hang), sin(hang));
-          vec2 p2 = vec2(ax, vRest.y);
-          vec2 hq = vec2(dot(p2, vec2(-hd.y, hd.x)) * 1500.0, dot(p2, hd) * 90.0);
-          float hcol = floor(hq.x);
-          float hn = hH3(vec3(hcol, floor(hq.y + hH3(vec3(hcol, 2.0, 9.0)) * 4.0), 5.0));
-          hn = mix(hn, 0.6, smoothstep(0.35, 1.2, length(fwidth(hq))));
+          float hn = hH3(vec3(hcol, floor(hq.y + hh * 4.0), 5.0));
+          float line = 1.0 - smoothstep(0.18, 0.42, abs(fract(hq.x) - 0.5));
+          float stroke = mix(step(0.3, hn) * line * 1.6, 0.62, fq);
           vec4 bt = hLook(row, 2);
-          float dens = band * mix(0.72, 1.0, smoothstep(0.2, 0.8, hn)) * (bt.w > 0.0 ? bt.w : 0.7);
+          float dens = band * mix(0.45, 1.0, clamp(stroke, 0.0, 1.0)) * (bt.w > 0.0 ? bt.w : 0.7) * 1.1;
           // (the middle of the brow fuller than its tail)
           dens *= mix(1.0, 0.75, smoothstep(0.55, 1.0, u));
           diffuseColor.rgb = mix(diffuseColor.rgb, bt.rgb, clamp(dens, 0.0, 0.88));
@@ -641,14 +724,78 @@ const FRAG_SURFACE = /* glsl */`
         }
       }
     }
+    // the person's skin (look texels 28-33): redness over the cheeks, nose and ears, freckles, a few moles,
+    // and with age lines on the forehead, at the eyes' corners, the folds from the nose to the mouth and
+    // shade under the eyes (rest space round the face's landmarks; fine marks fade out before they alias)
+    vec4 F0 = hLook(row, 28);
+    if (uDecal > 0.5 && F0.w > 0.0) {
+      vec4 F1 = hLook(row, 29), K2 = hLook(row, 32), K3 = hLook(row, 33);
+      float hk = F0.w;
+      vec3 ec2 = hLook(row, 25).xyz;
+      float ax = abs(vRest.x);
+      vec3 rc = vec3(ax - 0.042 * hk, vRest.y - (ec2.y - 0.032 * hk), vRest.z - (F0.z + 0.04 * hk)) / (0.022 * hk);
+      vec3 rn = (vRest - vec3(0.0, F0.y + 0.003 * hk, F0.z + 0.006 * hk)) / (0.013 * hk);
+      vec3 re = vec3(ax - 0.075 * hk, vRest.y - ec2.y, vRest.z - (F0.z + 0.105 * hk)) / (0.022 * hk);
+      float red = (exp(-dot(rc, rc)) * 0.85 + exp(-dot(rn, rn)) * 0.75 + exp(-dot(re, re)) * 0.6) * K2.z;
+      diffuseColor.rgb *= mix(vec3(1.0), vec3(1.06, 0.94, 0.93), clamp(red, 0.0, 1.0) * 0.45);
+      float near2 = 1.0 - smoothstep(0.0008, 0.003, fwr);
+      if (K2.w > 0.0 && near2 > 0.0) {
+        // freckles: small spots over the nose and cheeks (~3 mm apart)
+        vec3 fc = vRest / (0.003 * hk);
+        vec3 fi = floor(fc);
+        vec3 fo = fc - fi - (0.3 + 0.4 * vec3(hH3(fi), hH3(fi + 3.1), hH3(fi + 7.7)));
+        float fr = step(hH3(fi + 11.3), 0.55) * (1.0 - smoothstep(0.12, 0.3, length(fo)));
+        float zone = exp(-dot(rc, rc) * 0.6) + exp(-dot(rn, rn) * 0.4);
+        diffuseColor.rgb *= 1.0 - near2 * fr * clamp(zone, 0.0, 1.0) * K2.w * vec3(0.22, 0.3, 0.36);
+      }
+      if (near2 > 0.0) {
+        // moles: one or two small dark spots somewhere on the face and neck
+        vec3 mc = vRest / (0.035 * hk) + K3.x;
+        vec3 mi = floor(mc);
+        vec3 mo = mc - mi - (0.25 + 0.5 * vec3(hH3(mi), hH3(mi + 5.3), hH3(mi + 9.1)));
+        float mr = step(0.93, hH3(mi + 2.2)) * (1.0 - smoothstep(0.025, 0.045, length(mo)));
+        diffuseColor.rgb *= 1.0 - near2 * mr * vec3(0.45, 0.55, 0.6);
+      }
+      float age = F1.w * K3.y;
+      float nearA = 1.0 - smoothstep(0.0012, 0.005, fwr);
+      if (age > 0.03 && nearA > 0.0) {
+        float lines = 0.0, folds = 0.0;
+        // forehead: horizontal lines, gently waved
+        float fy = (vRest.y - ec2.y) / hk;
+        float fh = smoothstep(0.032, 0.045, fy) * (1.0 - smoothstep(0.07, 0.085, fy)) * (1.0 - smoothstep(0.035, 0.055, ax / hk))
+          * (1.0 - smoothstep(0.03, 0.06, (vRest.z - F0.z) / hk));
+        float wv = sin((fy + 0.0012 * sin(ax / hk * 90.0)) * 6.2832 / 0.0075);
+        lines += fh * pow(0.5 + 0.5 * wv, 6.0);
+        // the eyes' outer corners: crow's feet (lines fanning out)
+        vec2 cc = vec2(ax - (ec2.x + 0.019 * hk), vRest.y - ec2.y) / hk;
+        float cr = length(cc);
+        float cz = smoothstep(0.003, 0.007, cr) * (1.0 - smoothstep(0.014, 0.022, cr)) * step(0.0, cc.x + 0.002);
+        lines += cz * pow(0.5 + 0.5 * cos(atan(cc.y, cc.x) * 15.0), 5.0) * 0.8;
+        // from the sides of the nose round the mouth: the nasolabial folds
+        vec2 a0 = vec2(0.017, F0.y / hk + 0.002), a1 = vec2(0.029, F1.x / hk - 0.009);
+        vec2 pq = vec2(ax, vRest.y) / hk - a0, ab = a1 - a0;
+        float tq = clamp(dot(pq, ab) / dot(ab, ab), 0.0, 1.0);
+        float dl = length(pq - ab * tq);
+        float zf = 1.0 - smoothstep(0.04, 0.07, (vRest.z - F0.z) / hk);
+        folds += exp(-dl * dl / (0.0024 * 0.0024)) * zf * smoothstep(0.0, 0.15, tq);
+        // under the eyes: a soft shade
+        vec2 ue = vec2(ax - ec2.x, vRest.y - (ec2.y - 0.014 * hk)) / (vec2(0.016, 0.006) * hk);
+        float under = exp(-dot(ue, ue)) * step(vRest.z, ec2.z + 0.01 * hk);
+        float A = clamp(age, 0.0, 1.0);
+        diffuseColor.rgb *= 1.0 - nearA * (lines * 0.16 * A + folds * 0.18 * A + under * 0.12 * (0.3 + A)) * vec3(0.95, 1.0, 1.0);
+        hBump -= nearA * (lines * 0.00022 + folds * 0.0005) * A;
+      }
+    }
     // close up: skin is not a flat colour: faint blotches, pores and an uneven sheen (rest space,
     // faded out well before it could alias)
     float near = 1.0 - smoothstep(0.0012, 0.005, fwr);
     if (near > 0.0) {
       float n1 = hVNoise(vRest * 160.0), n2 = hVNoise(vRest * 1100.0);
-      diffuseColor.rgb *= 1.0 + near * (n1 - 0.5) * 0.08;
-      hRough = mix(hRough, hRough * (0.82 + 0.36 * n2), near);
-      hBump = near * (n2 * 0.00009 + n1 * 0.00025);
+      // (blotches a few mm across, a little redder or browner; pores; an uneven sheen)
+      float n3 = hVNoise(vRest * 420.0 + 5.1);
+      diffuseColor.rgb *= 1.0 + near * ((n1 - 0.5) * 0.1 + (n3 - 0.5) * vec3(0.05, -0.01, -0.03));
+      hRough = mix(hRough, hRough * (0.78 + 0.44 * n2), near);
+      hBump += near * (n2 * 0.00012 + n1 * 0.00025);
     }
   }
   if (uDecal > 0.5 && (hRegion == 14 || hRegion == 15)) {
@@ -807,7 +954,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       material.specularColor *= hSpec;
       material.specularColorBlended *= hSpec;
       // (fibres: no glassy Fresnel sheen at grazing angles; their highlight is the strand lobes)
-      material.specularF90 = hCard ? 0.04 : hRegion == 1 ? 0.2 : mix(1.0, 0.6, hHairM);
+      material.specularF90 = hCard ? 0.04 : hRegion == 1 ? 0.2 : hRegion == 10 ? 0.35 : mix(1.0, 0.6, hHairM);
       #ifdef USE_SHEEN
         material.sheenColor = hSheen * hSilh * mix(diffuseColor.rgb, vec3(1.0), 0.35) * 0.18;
         material.sheenRoughness = 0.65;
@@ -886,6 +1033,9 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
   return { mat, depth, uniforms };
 }
 
+// (humans_face=<k>: the face shapes scaled by k, 0 = every instance of a character the same; for testing)
+export const FACE = { scale: 1 };
+
 /** Float RGBA data texture (nearest, no mips). */
 export function floatTexture(w, h) {
   const t = new THREE.DataTexture(new Float32Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.FloatType);
@@ -939,5 +1089,16 @@ export function writeLook(data, row, a) {
     data[o + 8 + 3] = a.browOpacity ?? 0.7;
   } else {
     for (let k = 104; k < 112; k++) data[o + k] = 0;
+  }
+  // face shape (hFaceWarp) and skin variety (texels 28-33): the character's landmarks, then the person's own
+  // nose, jaw, chin, cheeks, lower face, brows, lips, face width, eye spacing (-1..1), redness, freckles,
+  // age lines, a seed for moles
+  const F = a.char.face, K = a.faceK;
+  for (let k = 112; k < 136; k++) data[o + k] = 0;
+  if (F && K) {
+    data[o + 112] = F.nose[0]; data[o + 113] = F.nose[1]; data[o + 114] = F.nose[2]; data[o + 115] = F.hk;
+    data[o + 116] = F.mouthY; data[o + 117] = F.chinY; data[o + 118] = 0; data[o + 119] = a.ageF || 0;
+    for (let k = 0; k < 12; k++) data[o + 120 + k] = (K[k] || 0) * (k < 10 ? FACE.scale : 1);
+    data[o + 132] = a.moleSeed || 0; data[o + 133] = a.lineK || 0;
   }
 }

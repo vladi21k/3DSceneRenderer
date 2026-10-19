@@ -54,8 +54,8 @@ STYLE = {
     'short02': dict(flow='crown', crown=(-0.01, 0.07, 0.055), grav=0.12, len=(0.05, 0.085), thick=0.024, width=0.72, fwd=0.15, side=-0.6, twist=0.4, brow=0.055),
     'short03': dict(flow='crown', crown=(0.0, 0.075, 0.05), grav=0.14, len=(0.06, 0.10), thick=0.028, width=0.8, fwd=0.3, side=0.6, twist=0.5, brow=0.05),
     'short04': dict(flow='crown', crown=(0.0, 0.08, 0.045), grav=0.06, len=(0.03, 0.055), thick=0.016, width=0.65, fwd=0.1, side=0.3, twist=0.3, brow=0.065),
-    'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6),
-    'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6),
+    'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, jit=(-0.002, 0.004)),
+    'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, jit=(-0.002, 0.004)),
     'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, width=1.35, fwd=0.0, side=1.0),
     'ponytail01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.24), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'braid01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.26), thick=0.012, width=0.9, fwd=0.0, side=0.0),
@@ -340,7 +340,7 @@ def groom(cid):
 
     # ---------------------------------------------------------------- growth
     def grow(root, n0, depth, Lmax, rs):
-        brow = (S.get('brow', 0.03) + rs.uniform(-0.004, 0.012)) * hk
+        brow = (S.get('brow', 0.03) + rs.uniform(*S.get('jit', (-0.004, 0.012)))) * hk
         p = root + n0 * CLEAR
         d = flow(p, n0)
         pts = [p.copy()]
@@ -570,6 +570,9 @@ def groom(cid):
         Nv /= np.maximum(1e-9, np.linalg.norm(Nv, axis=1, keepdims=True))
         Nn = np.concatenate([Nv, Nv])
         cols = Ly['cols']
+        # (blunt cuts: strands ending together, a straight hem and fringe)
+        if S.get('blunt') and Ly['name'] in ('mid', 'outer'):
+            cols = (7, 7, 7, 2)
         cidx = cols[int(rnd * len(cols) * 0.9999)]
         cw = 1.0 / STRAND_COLS
         inset = 1.5 / 1024

@@ -244,8 +244,12 @@ function finish(seed, r, cast, index, toddler = false) {
   let sit = toddler ? 3 : child ? r.weighted([[0, 5], [2, 3], [7, 3]])
     : r.weighted([[0, 22], [1, longSkirt ? 0 : 14], [2, 14], [5, teen ? 30 : 18], [6, 16], [7, 16]]);
   const phoneWalk = !carry && (adult || teen) && r.chance(teen ? 0.22 : 0.1);
+  const fv = faceVariety(seed, char);
   const a = {
     seed, index, body: char.id, char, age: cls === 'toddler' ? 'toddler' : cls, female,
+    // the person's own face (mh/shading.js hFaceWarp: nose, jaw, chin, cheeks, lower face, brows, lips, face
+    // width, eye spacing; then redness and freckles) and age lines
+    faceK: fv.k, ageF: fv.age, moleSeed: fv.mole, lineK: fv.line,
     base: child ? 'child' : cls === 'toddler' ? 'toddler' : female ? 'female' : 'male',
     kind: char.kind, scale, height: char.height * scale,
     tints: packTints(t), pattern, patScale, patColor,
@@ -266,6 +270,27 @@ function finish(seed, r, cast, index, toddler = false) {
       (t.hair && 0.2126 * t.hair[0] + 0.7152 * t.hair[1] + 0.0722 * t.hair[2] > 0.12 ? 0.75 : 1),
   };
   return a;
+}
+
+/**
+ * Per-person face variety, from its own stream of the seed (so the rest of the appearance is unchanged):
+ * shape coefficients -1..1 (children's faces vary less), redness and freckles 0..1, the age lines'
+ * strength from the character's age with a personal spread, a seed for moles.
+ */
+function faceVariety(seed, char) {
+  const r = new RNG((seed >>> 0) ^ 0x68e31da4);
+  const kid = char.ageClass === 'child' || char.ageClass === 'toddler';
+  const amp = kid ? 0.55 : 1.0;
+  const k = new Float32Array(12);
+  for (let i = 0; i < 10; i++) k[i] = THREE.MathUtils.clamp(r.normal(0, 0.62), -1, 1) * amp;
+  const anc = char.anc || [1, 0, 0];
+  const light = anc[0] > 0.7 && (char.tone === 'fair' || char.tone === 'base' || !char.tone);
+  k[10] = THREE.MathUtils.clamp(r.normal(light ? 0.5 : 0.3, 0.22), 0, 1);
+  k[11] = light && r.chance(kid ? 0.35 : 0.18) ? r.range(0.3, 1) : 0;
+  const y = char.age || 30;
+  // (the elderly characters' own skin textures are lined already: less on top of them)
+  const age = kid ? 0 : THREE.MathUtils.clamp(((y - 26) / 36) * (y >= 60 ? 0.55 : 1) + r.normal(0, 0.08), 0, 1);
+  return { k, age, mole: r.next() * 997, line: r.range(0.7, 1.3) };
 }
 
 /** Rough build of a character from its waist girth relative to its height (< 0 slim, > 0 heavy). */

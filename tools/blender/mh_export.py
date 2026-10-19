@@ -343,7 +343,12 @@ def main():
                     nv += n
                 else:
                     lods[li].append(lodidx[li] + base_nv)
-            if d['kind'] in DOUBLE:
+            if d['kind'] in CARDS:
+                # strand cards: the back faces reuse the card's vertices (the same volume normal), reversed
+                for li in range(4):
+                    ix = lodidx[li].reshape(-1, 3)[:, ::-1].reshape(-1)
+                    lods[li].append(ix + base_nv)
+            elif d['kind'] in DOUBLE:
                 # back faces: duplicated vertices with flipped normals, reversed winding
                 P.append(d['co']); N.append(d['nr'] if d['kind'] in CARDS else -d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao'])
                 tb = ta.copy()
