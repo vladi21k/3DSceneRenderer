@@ -171,6 +171,8 @@ function packTints(t) {
   if (t.hair) {
     const l = 0.2126 * t.hair[0] + 0.7152 * t.hair[1] + 0.0722 * t.hair[2];
     if (l < 0.011) t.hair = t.hair.map((x) => x * (0.011 / Math.max(l, 1e-4)));
+    // (and white hair a soft grey: fibres pass light, the strands never read as white feathers)
+    else if (l > 0.3) t.hair = t.hair.map((x) => x * (0.3 / l));
   }
   for (const [name, id] of Object.entries(REGION)) {
     const c = t[name];

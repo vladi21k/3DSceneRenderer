@@ -16,6 +16,7 @@ import { hash2 } from '../../core/rng.js';
 //               woman | oldman | oldwoman | male | female | beard | shorts | tee | collar | pattern | heavy | long (hair) |
 //               bag (shoulder bag) | backpack | shopping | phone (walks with a phone) | cross | pocket | hip | back |
 //               talk | look (idle stances) | sit0 | sitback | sitlean | sitphone | sitcup | sittalk (how they sit) |
+//               sunglasses | glasses (spectacles) |
 //               id=<character id> (one character of the cast, e.g. id=m06)
 //   ht_first = index of the first figure in the seed's sequence (to isolate one person)
 //   ht_pose = pose switching test: figures alternate walk / stand / sit every ht_pose seconds
@@ -29,6 +30,8 @@ import { hash2 } from '../../core/rng.js';
 //             holds on to its side (ht_fam=kid|child picks the child's body; ht_side=1|-1 its side)
 //   ht_baby = 1 / 0: force a child in every stroller / none (default: as the crowd picks)
 //   ht_outfit = waiter: every figure is dressed as café staff (set() field outfit)
+//   ht_table = 0: seated figures sit as on a bench, hands on the thighs (set() field table false)
+//   ht_fill = r,g,b / ht_shade = k: indoor light on every figure (set() fields fill, shade)
 // Mobility (poses 3-5 with their props):
 //   ht_mob  = stroller | ride | walkbike | mix: figures push strollers / ride / walk bicycles
 //             (works with grid, walk, cross, crowd; ht_mode=stroller|ride|walkbike|mobmix are walk
@@ -67,6 +70,10 @@ export class HumansTest {
     this.poseT = p.num('ht_pose', 0);
     this.idleK = p.str('ht_idle', '');
     this.outfit = p.str('ht_outfit', '');
+    this.table = p.num('ht_table', 1) > 0;
+    const fl = (p.str('ht_fill', '') || '').split(',').map(Number);
+    this.fill = fl.length === 3 && fl.every(Number.isFinite) ? fl : null;
+    this.shade = p.num('ht_shade', 1);
     // mobility: ht_mode=stroller|ride|walkbike|mobmix are walking figures with that prop
     const MOBM = { stroller: 'stroller', ride: 'ride', walkbike: 'walkbike', mobmix: 'mix' };
     this.mob = p.str('ht_mob', '') || MOBM[this.mode] || '';
@@ -242,6 +249,9 @@ export class HumansTest {
       o.idle = this.idleK === 'cycle' ? Math.floor(this.t / 4 + i0(f)) % 8 : this.idleK !== '' ? +this.idleK : undefined;
       // ht_outfit=waiter: every figure dressed as café staff (set() field outfit)
       o.outfit = this.outfit || undefined;
+      o.table = this.table;
+      o.fill = this.fill || undefined;
+      o.shade = this.shade;
       h.set(f.i, o);
       f.x = o.x; f.y = o.y; f.z = o.z; f.heading = heading;
     }
@@ -360,4 +370,5 @@ const FILTERS = {
   longskirt: (a) => !!a.longSkirt,
   sit0: (a) => a.sit === 0, sitback: (a) => a.sit === 1, sitlean: (a) => a.sit === 2,
   sitphone: (a) => a.sit === 5, sitcup: (a) => a.sit === 6, sittalk: (a) => a.sit === 7,
+  sunglasses: (a) => a.glasses === 1, glasses: (a) => a.glasses === 2,
 };

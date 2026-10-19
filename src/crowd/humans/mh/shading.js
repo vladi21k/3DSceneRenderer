@@ -19,7 +19,7 @@ import { U } from '../../../core/uniforms.js';
 
 export const NB = 22;
 export const BONE_DYN = NB * 3;          // first state texel of a bone row
-export const BONE_W = BONE_DYN + 2;      // texels per bone row
+export const BONE_W = BONE_DYN + 3;      // texels per bone row
 export const LOOK_W = 34;                // texels per look row (see writeLook)
 const REGION_ROUGH = [-1, 0.5, 0.8, 0.8, 0.06, -1, -1, -1, -1, 0.95, -1, 0.85, 0.32, 0.08, 0.55, 0.7];
 // specular strength per region (x the dielectric F0 0.04)
@@ -50,6 +50,7 @@ varying float vBeard;
 varying float vDecal;
 varying vec3 vStrand;
 varying vec2 vHairQ;
+flat varying vec4 vFill;     // the slot's indoor light: fill irradiance / pi (rgb), how much sky it loses (w)
 uniform float uDecal;        // the cast carries skin decals (tex.y of skin: 128 none, > beard, < scalp)
 uniform float uBeardBase;    // beards are shells grown here from their base (uv = length, density; flags >> 4 = shell)
 mat4 hBone(int row, float b) {
@@ -126,6 +127,7 @@ void hSkin(out vec3 P, out vec3 N) {
   vec4 D0 = texelFetch(uBoneTex, ivec2(${BONE_DYN}, brow), 0);   // gait phase, speed, seated blend, ground y
   vec4 D1 = texelFetch(uBoneTex, ivec2(${BONE_DYN + 1}, brow), 0); // look row, phone shown, hands in pockets, scale
   int row = int(D1.x + 0.5);
+  vFill = texelFetch(uBoneTex, ivec2(${BONE_DYN + 2}, brow), 0);
   vec4 W = aBoneW / max(aBoneW.x + aBoneW.y + aBoneW.z + aBoneW.w, 1e-4);
   mat4 m = hBone(brow, aBoneI.x) * W.x + hBone(brow, aBoneI.y) * W.y + hBone(brow, aBoneI.z) * W.z + hBone(brow, aBoneI.w) * W.w;
   vec3 pos = hFaceWarp(position, aNrm.xyz, row);
@@ -241,7 +243,7 @@ void hSkin(out vec3 P, out vec3 N) {
       ax = sa > 1e-4 ? ax / sa : vec3(1.0, 0.0, 0.0);
       vec3 V = cross(ax, U);
       float beta = atan(sa, dot(U, Dn));
-      float Rk = 0.06 * sc, s0 = max(0.0, Lr * sc - Rk), arc = Rk * beta;
+      float Rk = 0.042 * sc, s0 = max(0.0, Lr * sc - Rk * 0.6), arc = Rk * beta;
       float sdp = sd * sc;
       float phi = 0.0, drop = 0.0;
       vec3 C;
@@ -259,13 +261,16 @@ void hSkin(out vec3 P, out vec3 N) {
       // (below the knee the sides draw in towards the shins; folds round the hem, growing as it falls)
       float fall = smoothstep(0.0, 0.22 * sc, drop);
       rf -= ax * dot(ax, rf) * 0.2 * fall;
+      // (the curtain's corners round off backwards, round the outer shin, instead of a square edge)
+      float lat = dot(rf, outer);
+      rf += cross(ax, Dn) * (smoothstep(0.3, 1.0, lat / max(rad * 1.6, 1e-3)) * 0.035 * sc * fall);
       float th = atan(pos.x, h.z - pos.z);
-      float fa = (0.0035 + 0.006 * fall) * sc * smoothstep(-0.03 * sc, 0.04 * sc, sdp - s0);
-      float fw = sin(th * 7.0 + h.x * 31.0) + 0.45 * sin(th * 13.0 + 1.7);
+      float fa = (0.004 + 0.011 * fall) * sc * smoothstep(-0.03 * sc, 0.04 * sc, sdp - s0);
+      float fw = sin(th * 6.0 + h.x * 31.0) + 0.45 * sin(th * 11.0 + 1.7);
       vec3 rn = rf / max(length(rf), 1e-4);
       vec3 P1 = C + rf + rn * fa * fw;
       vec3 tg = normalize(cross(Dn, rn) + 1e-5);
-      N1 = normalize(N1 - tg * (cos(th * 7.0 + h.x * 31.0) * 7.0 + 0.45 * 13.0 * cos(th * 13.0 + 1.7)) * fa / max(length(rf), 0.03));
+      N1 = normalize(N1 - tg * (cos(th * 6.0 + h.x * 31.0) * 6.0 + 0.45 * 11.0 * cos(th * 11.0 + 1.7)) * fa / max(length(rf), 0.03));
       Ps += P1 * w; Ns += N1 * w; wsum += w; sdAvg += sd * w; lenAvg += Lr * w;
       if (s == 0) wl = w; else wr = w;
     }
@@ -315,7 +320,6 @@ uniform float uDecal;
 uniform float uBeardBase;
 uniform float uBrows;        // eyebrows drawn on the skin (look texels 26, 27) instead of the brow cards
 uniform float uTime;
-uniform float uHairDbg;
 varying vec2 vCastUv;
 flat varying vec4 vCastTex;
 flat varying float vRow;
@@ -325,6 +329,7 @@ varying float vBeard;
 varying float vDecal;
 varying vec3 vStrand;
 varying vec2 vHairQ;
+flat varying vec4 vFill;
 int hRegion = 0;
 int hFlags = 0;
 float hSkinM = 0.0;
@@ -690,6 +695,9 @@ const FRAG_SURFACE = /* glsl */`
         hRough = mix(hRough, 0.7, sc);
         hSpec *= 1.0 - 0.7 * sc;
         hSkinM = 1.0 - sc;
+        // (the scalp's occlusion was baked under the proxy's solid shells; between strand cards light
+        // reaches it, a parting or a crown never reads as a black hole)
+        hAO = mix(hAO, max(hAO, 0.55), sc);
       }
     }
     // eyebrows (uBrows): drawn on the skin along the brow ridge the cast's brow cards trace (look
@@ -939,7 +947,6 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
     uBeardBase: { value: opts.beardBase ? 1 : 0 },
     uBrows: { value: opts.brows ? 1 : 0 },
     uTime: U.uTime || { value: 0 },
-    uHairDbg: { value: opts.hairDbg || 0 },
     uNight: U.uNight || { value: 0 },
     uEmissiveGain: (materials && materials.uniforms && materials.uniforms.emissiveGain) || { value: 1 },
   };
@@ -985,17 +992,19 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
 #if HUMANS_V2
         irradiance *= 1.0 - hBrimShadow( directLight.direction );
 #endif
-        if ( hHairM > 0.0 && mod(uHairDbg, 2.0) < 0.5 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;`));
+        if ( hHairM > 0.0 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;`));
     }
     fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>
       reflectedLight.indirectDiffuse *= hAO;
       // (the eyes' wet surface mirrors the sky even in the lid's shade: the catch light)
       reflectedLight.indirectSpecular *= hRegion == 4 ? mix( 1.0, hAO, 0.25 ) * ( 1.0 - 0.6 * hEyeLid ) : hAO * mix( 1.0, 0.35, hHairM );
       reflectedLight.directDiffuse *= mix( 1.0, hAO, hDirAO );
+      // indoors (a tram saloon): the slot's own fill light, and less of the sky
+      reflectedLight.indirectDiffuse = reflectedLight.indirectDiffuse * ( 1.0 - vFill.w ) + vFill.rgb * diffuseColor.rgb * hAO;
+      reflectedLight.indirectSpecular *= 1.0 - vFill.w;
       // (strand cards: the env map's broad sheen on hair reads as plastic; the strands' own sky highlight
       // below stands in for it)
-      if ( hCard || hTail ) reflectedLight.indirectSpecular *= mod(floor(uHairDbg / 4.0), 2.0) > 0.5 ? 0.0 : 0.2;
-      if ( hCard && mod(floor(uHairDbg / 8.0), 2.0) > 0.5 ) { reflectedLight.directDiffuse *= 0.0; reflectedLight.indirectDiffuse *= 0.0; }
+      if ( hCard || hTail ) reflectedLight.indirectSpecular *= 0.2;
       #if HUMANS_V2 && defined( RE_IndirectSpecular )
       if ( hRegion == 4 ) {
         // a catch light: the bright sky above and behind the viewer mirrored in the cornea
@@ -1006,7 +1015,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       }
       #endif
       #if defined( RE_IndirectSpecular )
-      if ( hHairM > 0.0 && mod(floor(uHairDbg / 2.0), 2.0) < 0.5 ) {
+      if ( hHairM > 0.0 ) {
         // the sky's sheen along the strands: hair in the shade keeps a soft highlight band
         vec3 upS = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
         reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * ( hCard || hTail ? 0.035 : 0.08 );
@@ -1014,7 +1023,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       #endif`);
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + 'r4-' + (debugView | 0);
+  mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + 'r5-' + (debugView | 0);
 
   const depth = new THREE.MeshDepthMaterial();
   depth.name = 'humans.figures.depth';

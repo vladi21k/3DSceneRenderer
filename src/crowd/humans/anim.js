@@ -50,7 +50,11 @@ export const CLIPS = [
   { name: 'sitPhone', frames: 48, kind: 'sit', variant: 5 },
   { name: 'sitCup', frames: 64, kind: 'sit', variant: 6 },
   { name: 'sitTalk', frames: 96, kind: 'sit', variant: 7 },
+  // without a table (a bench): the hands rest on the thighs, the legs side by side
+  { name: 'sitLap', frames: 48, kind: 'sit', variant: 8 },
 ];
+// the seated stance of a person on a seat without a table, for each café stance (humans set() field table)
+export const SIT_NO_TABLE = [8, 1, 8, 3, 4, 5, 8, 8, 8];
 // idle / sit variants that hold the phone or a cup in the right hand
 export const PHONE_IDLE = [1];
 export const PHONE_SIT = [5];
@@ -729,7 +733,7 @@ export class Rig {
       }
       L.ankle = an;
       const A = P.arm[s];
-      if (variant === 1) {          // hands in the lap
+      if (variant === 1 || variant === 8) {          // hands in the lap
         A.flex = 18; A.abd = 6; A.elbow = 62; A.twist = -30;
       } else if (variant === 2 || variant === 7) {   // forearms on the table edge
         A.flex = 48; A.abd = 14; A.elbow = 66; A.twist = -35;
@@ -742,7 +746,16 @@ export class Rig {
     // IK targets follow the chest in rest model space: a height above the street is that plus
     // how far the sitting body sank
     const yOf = (y) => y - P.pelvisOffset.y;
-    if (variant === 5) {
+    if (variant === 8) {
+      // the hands rest on the thighs, palms down, the fingers over the front of the thigh; the elbows
+      // out a little and back; a slow breath
+      for (const s of ['L', 'R']) {
+        const sg = this.side[s];
+        const ph = 0.004 * k * Math.sin(T + (s === 'L' ? 0 : 1.3));
+        P.arm[s].ik = { target: new THREE.Vector3(sg * (0.105 * k), yOf(seatY + 0.165 * k) + ph, thighZ * (s === 'L' ? 0.6 : 0.66)),
+          pole: new THREE.Vector3(sg * 0.7, -0.1, 0.7).normalize(), palm: new THREE.Vector3(sg * -0.15, -1, -0.1).normalize() };
+      }
+    } else if (variant === 5) {
       // a phone in both hands above the table edge, the screen up towards the face
       P.arm.R.ik = { target: new THREE.Vector3(shX * 0.22, shY - 0.30 * k, -0.30 * k),
         pole: new THREE.Vector3(0.8, -0.6, 0.2), palm: new THREE.Vector3(-0.3, 0.75, 0.6) };

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Rig, bakeClips, bakeClip, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PHONE_IDLE, PHONE_SIT, CUP_SIT } from './humans/anim.js';
+import { Rig, bakeClips, bakeClip, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PHONE_IDLE, PHONE_SIT, CUP_SIT, SIT_NO_TABLE } from './humans/anim.js';
 import { loadCast, mergeMeshes } from './humans/mh/cast.js';
 import { castAppearance, castToddler, castCharacter, castWaiter, waiterFits, BAG } from './humans/mh/appearance.js';
 import { buildParts } from './humans/mh/parts.js';
@@ -21,6 +21,11 @@ import { U } from '../core/uniforms.js';
 //   dark shoes and a long waist apron, no bag or phone (the seed's own character when it can wear it,
 //   else one of the same sex near its height); heightOf / strideLength / cycleLength then describe the
 //   waiter. Absent: the seed's own clothes.
+//   fill, shade (optional set() fields; supportsFill = true): indoor light for passengers inside a tram: fill
+//   [r, g, b] = extra irradiance / pi (linear, scene units) on the figure's diffuse light, shade 0..1 = the share
+//   of the sky / environment light it keeps. Absent: none, 1.
+//   table (optional set() field): false for a seat without a table in front (a bench): the person sits
+//   with the hands resting on the thighs (pose 2); absent / true: the café stances (hands on the table).
 //   idle (optional set() field, 0-7): the standing stance for pose 1 (0 relaxed weight shifts, 1 phone, 2 arms
 //   folded, 3 hands in pockets, 4 hand on hip, 5 hands behind the back, 6 talking with gestures, 7 looking
 //   about); absent: the person's own (from the appearance seed).
@@ -229,7 +234,7 @@ const humans = {
     app.scene.add(this.group);
     const { mat, depth, uniforms } = makeFigureMaterials({ bones: this.boneTex, look: this.lookTex, albedo: cast.albedo, normal: cast.normal },
       cast.layerRough, app.materials, app.params.num('humans_dbg', 0), this.v2,
-      { beardBase: this.beardBase, brows: this.browsOnSkin && cast.chars.some((c) => c.brow), hairDbg: app.params.num('humans_hdbg', 0) });
+      { beardBase: this.beardBase, brows: this.browsOnSkin && cast.chars.some((c) => c.brow) });
     app.materials.register('humans.figures', mat);
     app.materials.track(mat);
     this.uniforms = uniforms;
@@ -323,8 +328,19 @@ const humans = {
     s.idleIn = Number.isInteger(o.idle) && o.idle >= 0 && o.idle <= 7 ? o.idle : -1;
     // hand in hand with slot holdWith (or holding on to its stroller)
     s.holdWith = Number.isInteger(o.holdWith) && o.holdWith >= 0 && o.holdWith !== i ? o.holdWith : -1;
+    // seated without a table in front (a bench, a shelter seat): table false rests the hands on the thighs
+    s.tableIn = o.table === false ? 0 : 1;
+    // indoors (a tram's passengers): fill = extra irradiance / pi (linear rgb) on the diffuse light, shade = the
+    // share of the sky / environment light kept (0..1); absent: none, 1
+    const f = o.fill;
+    if (f && f.length >= 3 && Number.isFinite(f[0] + f[1] + f[2])) { s.fillR = Math.max(0, f[0]); s.fillG = Math.max(0, f[1]); s.fillB = Math.max(0, f[2]); }
+    else { s.fillR = 0; s.fillG = 0; s.fillB = 0; }
+    s.shade = Number.isFinite(o.shade) ? Math.min(1, Math.max(0, o.shade)) : 1;
     s.visible = o.visible !== false;
   },
+
+  /** set() takes the indoor light fields fill and shade (see set). */
+  supportsFill: true,
 
   /** Poses this renderer can show: 0-2 always, 3-5 (stroller, riding, walking a bicycle) with the props. */
   supportsPose(p) { return p >= 0 && p <= 2 ? true : p >= 3 && p <= 5 ? !!(this.ready && this.mob) : false; },
@@ -546,8 +562,8 @@ const humans = {
     else if (s.cupOn) _extra[k++] = P.cup;
     // a waiter's apron
     if (a.apron && P.apron !== undefined) { _extra[k++] = P.apron; _extraFar[kf++] = P.apronFar; _shadowExtra[1] = P.apronFar; }
-    // glasses (sunglasses by day only; both too small to draw on the far LODs)
-    if (a.glasses === 1 && P.sunglasses !== undefined && U.uNight.value < 0.35) _extra[k++] = P.sunglasses;
+    // glasses (sunglasses by day only, a coarse pair on the far LODs; a thin frame is sub-pixel there)
+    if (a.glasses === 1 && P.sunglasses !== undefined && U.uNight.value < 0.35) { _extra[k++] = P.sunglasses; if (P.sunglassesFar !== undefined) _extraFar[kf++] = P.sunglassesFar; }
     else if (a.glasses === 2 && P.glasses !== undefined) _extra[k++] = P.glasses;
     if (a.bag && s.pose !== 2) {
       const handBusy = s.pose >= 3 || (s.hold && s.hold.side === 'R');
@@ -755,10 +771,12 @@ const humans = {
       out[o + 7] += y0;
       out[o + 11] += s.z;
     }
-    // state texels: gait phase, speed, seated blend, ground height | look row, phone shown, hands in pockets, scale
+    // state texels: gait phase, speed, seated blend, ground height | look row, phone shown, hands in pockets, scale |
+    // indoor fill light (irradiance / pi), the share of the sky light it loses
     const o = base + BONE_DYN * 4;
     out[o] = s.phase; out[o + 1] = s.pose === 0 || s.pose === 3 || s.pose === 5 ? s.speed : 0; out[o + 2] = s.seatW; out[o + 3] = s.y;
     out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = s.pocketW; out[o + 7] = sc;
+    out[o + 8] = s.fillR; out[o + 9] = s.fillG; out[o + 10] = s.fillB; out[o + 11] = 1 - s.shade;
   },
 
   _blend(s, a, B, M) {
@@ -796,9 +814,10 @@ const humans = {
     // of the walk; 4 riding is solved whole (humans/mobility.js)
     const mobP = !!(this.mob && s.mob && s.mob.valid && s.prop && s.pose >= 3 && s.pose <= 5);
     if (s.pose === 2) {
-      addClip(M, bk, CLIP.sit + a.sit, t / (CLIPS[CLIP.sit + a.sit].frames > 64 ? 14 : 11) + a.seedT, 1);
-      phone = PHONE_SIT.includes(a.sit) ? 1 : 0;
-      cup = CUP_SIT.includes(a.sit) ? 1 : 0;
+      const sv = s.tableIn ? a.sit : SIT_NO_TABLE[a.sit];
+      addClip(M, bk, CLIP.sit + sv, t / (CLIPS[CLIP.sit + sv].frames > 64 ? 14 : 11) + a.seedT, 1);
+      phone = PHONE_SIT.includes(sv) ? 1 : 0;
+      cup = CUP_SIT.includes(sv) ? 1 : 0;
     } else if (s.pose === 1) {
       addClip(M, bk, CLIP.idle + idle, t / idlePeriod(idle) + a.seedT, 1);
       phone = PHONE_IDLE.includes(idle) ? 1 : 0;
@@ -1291,7 +1310,8 @@ function newSlot() {
     posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
     cupW: 0, fromCup: 0, cupOn: false,
     pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: NaN, steerIn: NaN, mob: null, sc: 0.5,
-    holdWith: -1, hold: null, comp: false, babySlot: -1, idleIn: -1, idleShown: -1, outfit: 0 };
+    holdWith: -1, hold: null, comp: false, babySlot: -1, idleIn: -1, idleShown: -1, outfit: 0, tableIn: 1,
+    fillR: 0, fillG: 0, fillB: 0, shade: 1 };
 }
 
 /**

@@ -13,7 +13,7 @@ import { REGION } from './appearance.js';
 // Untextured: flag SOLID, shaded from the wearer's region tints (the apron: the socks region's).
 //
 //   buildParts(char, {apron}) -> { phone, cup, shopping, backpack, backpackFar, shoulder, shoulderFar,
-//     sunglasses?, glasses?, apron?, apronFar? } (raw meshes)
+//     sunglasses?, sunglassesFar?, glasses?, apron?, apronFar? } (raw meshes)
 
 export const FLAG = { ALPHA: 1, BACK: 2, DETAIL: 4, SKIRT: 8, SOLID: 16, WHITE: 32 };
 const ARM_BONES = new Set([BONE.armL, BONE.foreL, BONE.handL, BONE.armR, BONE.foreR, BONE.handR]);
@@ -294,9 +294,10 @@ function coarsePath(pts, nrms, k) {
  * Glasses on the head bone, fitted to the character's eyes, nose bridge and temples (rest pose):
  * sun = true: sunglasses (large dark lenses in a heavier frame, wrapped round the face), else a thin
  * frame with clear lenses (the frame only). Flags SOLID + LENS (128) on the prop region: the shader
- * shades them dark (uv.x 1 the lens: smooth glass; 0 the frame, its tone from the look row).
+ * shades them dark (uv.x 1 the lens: smooth glass; 0 the frame, its tone from the look row). far: a
+ * coarse version for the far LODs (a few dozen triangles).
  */
-function glasses(char, J, sun) {
+function glasses(char, J, sun, far = false) {
   const e = char.info.eyeR;
   if (!e) return null;
   const ex = Math.abs(e[0]), ey = e[1], ez = e[2];
@@ -311,13 +312,14 @@ function glasses(char, J, sun) {
     const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
     if (Math.abs(y - ey) > 0.012 * hk) continue;
     if (Math.abs(x) < 0.006 * hk && y > ey - 0.004 * hk) bz = Math.min(bz, z);
-    if (z > ez + 0.012 * hk && z < hc[2] + 0.01 * hk) tw = Math.max(tw, Math.abs(x));
+    // (the temples in front of the ears: the arms run along them, under the hair)
+    if (z > ez + 0.012 * hk && z < ez + 0.045 * hk) tw = Math.max(tw, Math.abs(x));
   }
   if (!(bz < Infinity)) bz = ez - er - 0.006 * hk;
   if (!(tw > 0)) tw = ex + 0.04 * hk;
   const z0 = Math.min(ez - er - 0.012 * hk, bz - 0.003 * hk);
-  const w = (sun ? 0.053 : 0.049) * hk, h = (sun ? 0.042 : 0.033) * hk;
-  const cx = ex + 0.0025 * hk, cy = ey - (sun ? 0.004 : 0.002) * hk;
+  const w = (sun ? 0.051 : 0.048) * hk, h = (sun ? 0.038 : 0.032) * hk;
+  const cx = ex + 0.0025 * hk, cy = ey - (sun ? 0.0065 : 0.003) * hk;
   const wrapK = (sun ? 4.5 : 2.2) / hk;
   const zAt = (x) => z0 + wrapK * Math.max(0, Math.abs(x) - 0.012 * hk) ** 2;
   const dzAt = (x) => Math.sign(x) * 2 * wrapK * Math.max(0, Math.abs(x) - 0.012 * hk);
@@ -325,8 +327,9 @@ function glasses(char, J, sun) {
   const b = new PartBuilder();
   const sk = rigid(BONE.head);
   const LENS = FLAG.SOLID | 128;
-  const NO = 36;
+  const NO = far ? 12 : 36;
   const tubeAlong = (pts, closed, r, sides = 6) => {
+    if (far) sides = 3;
     const n = pts.length, rows = [];
     const t = new THREE.Vector3(), a = new THREE.Vector3(), c = new THREE.Vector3(), q = new THREE.Vector3(), nn = new THREE.Vector3();
     for (let i = 0; i < n; i++) {
@@ -355,7 +358,8 @@ function glasses(char, J, sun) {
     const rim = [];
     for (let i = 0; i < NO; i++) {
       const th = (i / NO) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
-      const px = Math.sign(c) * Math.abs(c) ** (2 / 3.4), py = Math.sign(s) * Math.abs(s) ** (2 / 3.4);
+      const pe = sun ? 2.9 : 3.3;
+      const px = Math.sign(c) * Math.abs(c) ** (2 / pe), py = Math.sign(s) * Math.abs(s) ** (2 / pe);
       const drop = sun && py < 0 && px > 0 ? 1 + 0.12 * px : 1;
       const x = sx * (cx + px * w * 0.5);
       const y = cy + py * h * 0.5 * drop - (py > 0 ? 0 : 0.0015 * hk * (1 - Math.abs(px)));
@@ -376,7 +380,7 @@ function glasses(char, J, sun) {
     for (let i = 0; i <= 6; i++) {
       const u = i / 6;
       const x = xo + (xa - xo) * Math.min(1, u * 3.5);
-      arm.push(new THREE.Vector3(x, yo + 0.003 * hk * u, zAt(xo) + (hc[2] + 0.012 * hk - zAt(xo)) * u));
+      arm.push(new THREE.Vector3(x, yo + 0.005 * hk * u, zAt(xo) + (hc[2] + 0.012 * hk - zAt(xo)) * u));
     }
     tubeAlong(arm, false, rf * 0.85, 5);
   }
@@ -803,8 +807,9 @@ export function buildParts(char, opts = {}) {
   // ---- glasses: sunglasses or a thin frame (drawn for the people wearing them, appearance glasses)
   if (char.ageClass !== 'toddler') {
     try {
-      const sg = glasses(char, J, true), cg = glasses(char, J, false);
+      const sg = glasses(char, J, true), cg = glasses(char, J, false), sf = glasses(char, J, true, true);
       if (sg) out.sunglasses = sg;
+      if (sf) out.sunglassesFar = sf;
       if (cg) out.glasses = cg;
     } catch (e) { /* no glasses for this character */ }
   }
