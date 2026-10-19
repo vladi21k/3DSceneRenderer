@@ -133,6 +133,12 @@ async function arrayTexture(base, strips, S, total, srgb, scale = 1) {
     }
   });
   await Promise.all(jobs);
+  return layersTexture(data, D, total, srgb);
+}
+
+/** (the texture is made here, away from the decode jobs' closures: their shared scope would keep the
+ *  layer data alive after upload) */
+function layersTexture(data, D, total, srgb) {
   const t = new THREE.DataArrayTexture(data, D, D, total);
   t.format = THREE.RGBAFormat;
   t.type = THREE.UnsignedByteType;
@@ -144,9 +150,10 @@ async function arrayTexture(base, strips, S, total, srgb, scale = 1) {
   t.anisotropy = 4;
   t.needsUpdate = true;
   // the CPU copy is not needed once uploaded
-  t.onUpdate = () => { t.image.data = null; };
+  t.onUpdate = releaseImage;
   return t;
 }
+function releaseImage(t) { t.image.data = null; }
 
 export async function loadCast(baseUrl, { texScale = 1 } = {}) {
   const t0 = performance.now();

@@ -1,4 +1,4 @@
-"""Texture stage of the crowd character generator (run by mh_build.py, plain python3 + numpy/PIL).
+"""Texture stage of the crowd character builder (run by mh_build.py, plain python3 + numpy/PIL).
 
 Builds the shared texture arrays used by every character from the MakeHuman CC0 system assets:
 
@@ -283,7 +283,9 @@ def strand_layer(size, seed=29):
     for c, kind in enumerate(STRAND_KINDS):
         A = np.zeros((H, cw), np.float32)       # coverage so far (front to back)
         Cc = np.zeros((H, cw), np.float32)      # premultiplied shade
-        P = dict(dense=(170, 0.30, 5, 0.85, 0.55), clump=(95, 0.22, 3, 0.65, 0.65), sparse=(16, 0.25, 2, 0.5, 0.45),
+        # (dense: the inner layer; its strands end at mixed lengths, so a card ending mid-length feathers out
+        # instead of stopping in a block)
+        P = dict(dense=(170, 0.30, 5, 0.5, 0.35), clump=(95, 0.22, 3, 0.65, 0.65), sparse=(16, 0.25, 2, 0.5, 0.45),
                  blunt=(130, 0.3, 6, 0.9, 0.12))[kind]
         n, sig, nclump, t_lo, conv = P
         centres = rng.uniform(-0.3, 0.3, nclump)
@@ -317,7 +319,7 @@ def strand_layer(size, seed=29):
         if kind == 'dense':
             # the inner layer's core: an even mat of fibres under the strands (scalp never shows through)
             prof = np.exp(-((xs - cw / 2) / (cw * 0.3)) ** 2)[None, :]
-            tt = np.clip((t - 0.04) / 0.1, 0, 1) * np.clip((0.92 - t) / 0.25, 0, 1)
+            tt = np.clip((t - 0.04) / 0.1, 0, 1) * np.clip((0.8 - t) / 0.3, 0, 1)
             core = 0.8 * prof * tt[:, None]
             vis = core * (1 - A)
             Cc += vis * 0.85

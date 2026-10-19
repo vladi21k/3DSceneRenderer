@@ -1,7 +1,7 @@
-"""Crowd character generator: MPFB2 (MakeHuman for Blender) driven headless -> assets/humans_mh/.
+"""Crowd character builder: MPFB2 (MakeHuman for Blender) driven headless -> assets/humans_mh/.
 
   TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_build.py -- \
-      [--stages chars,tex,export,preview] [--only m01,f02] [--jobs 8] [--blend]
+      [--stages chars,hair,tex,export,preview] [--only m01,f02] [--jobs 8] [--blend]
 
 Stages
   chars    one Blender process per character (mh_cast.CAST): MakeHuman body from macros + shape targets,
@@ -16,7 +16,9 @@ Stages
            dropped; fringes trimmed clear of the eyes (strand ends fade); hats seated low on the brow; skin
            decals per vertex (beard growth, hair-coloured scalp) instead of stubble shells.
            Writes <work>/raw/<id>.npz + <id>.json (--work, default .work/mh; --out, default assets/humans_mh).
-  tex      mh_tex.py: shared texture arrays (skins, garments, hair, misc atlas), WebP strips.
+  hair     mh_hair.py: strand-card hair groomed over each character's scalp inside its hairstyle's proxy
+           (layered cards for LOD 0-1; the proxy stays for LOD 2 and the opaque cap for LOD 3).
+  tex      mh_tex.py: shared texture arrays (skins, garments, hair, the strand atlas, misc atlas), WebP strips.
   export   mh_export.py: LODs (meshoptimizer), per-vertex AO, quantised geometry -> assets/humans_mh/.
   preview  mh_preview.py: Cycles lineup render of the exported cast (front / side / back).
 
@@ -76,7 +78,7 @@ def script_args():
 def parse(argv):
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument('--stages', default='chars,tex,export,preview')
+    p.add_argument('--stages', default='chars,hair,tex,export,preview')
     p.add_argument('--only', default='')
     p.add_argument('--jobs', type=int, default=8)
     p.add_argument('--one', default='')
@@ -123,6 +125,9 @@ def run_driver(args):
             raise SystemExit('characters failed: ' + ','.join(failed))
         log(f'chars done in {time.time() - t0:.0f}s')
     py = 'python3'
+    if 'hair' in stages:
+        subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_hair.py'), '--', '--work', WORK, '--jobs', str(args.jobs)]
+                              + (['--only', args.only] if args.only else []))
     if 'tex' in stages:
         subprocess.check_call([py, os.path.join(HERE, 'mh_tex.py'), '--work', WORK, '--out', OUT])
     if 'export' in stages:

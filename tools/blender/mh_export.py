@@ -1,4 +1,4 @@
-"""Export stage of the crowd character generator (run by mh_build.py, plain python3 + numpy + node).
+"""Export stage of the crowd character builder (run by mh_build.py, plain python3 + numpy + node).
 
 Reads the raw characters (.work/mh/raw) and the texture layer table (.work/mh/tex/layers.json), builds
 LODs with meshoptimizer (vendor/three/addons/libs/meshopt_simplifier.module.js, run in node), quantises and
@@ -65,7 +65,7 @@ DOUBLE = ('hair', 'lashes', 'cards0', 'cards1', 'hairtail')
 # (strand cards: the back face keeps the hair volume's normal, the volume is lit the same from either side)
 CARDS = ('cards0', 'cards1')
 SIZE_SCALE = {'toddler': 0.7, 'child': 0.85}
-FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT, FLAG_CARD = 1, 2, 4, 8, 64
+FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT, FLAG_CARD, FLAG_TAIL = 1, 2, 4, 8, 64, 128
 ATTR_W = [0.35, 0.35, 0.35, 0.3, 0.3]     # simplifier weights: normal xyz, uv
 
 NODE_JS = r"""
@@ -306,6 +306,9 @@ def main():
             elif d['kind'] in ('hair', 'hairtail') and 'dec' in d:
                 # hair: no normal layer; the channel carries the strand fade at cut ends (254 none)
                 ta[:, 1] = d['dec']
+            if d['kind'] == 'hairtail':
+                # a ponytail's or braid's tail next to strand cards: flag 128 (shaded as matte as the cards)
+                ta[:, 3] |= FLAG_TAIL
             r = res[f'{cid}_{d["key"]}']
             lodidx = []
             for li in range(4):
@@ -457,7 +460,7 @@ def main():
         # value per card; uv v = root 1 .. tip 0 inside one column of the strand atlas layer)
         features=['decal', 'innerHem', 'beardShell', 'beardBase', 'softCut', 'lodClean'] + (['strandCards'] if any_cards else []),
         format=FORMAT_DOC,
-        license='Human figures: generated with MPFB2 from MakeHuman system assets, CC0 1.0',
+        license='Human figures: built with MPFB2 from the MakeHuman system assets (CC0 1.0)',
         bones=CASTM_BONES(),
         regions=CASTM.REGIONS,
         # roughness by region where it should override the layer's (hair, brows, lashes, beard: matte fibres)
@@ -715,6 +718,8 @@ characters[i]: one dressed character in the rest pose of the runtime skeleton (s
 flags: 1 alpha-tested coverage (hair, brows, lashes, beard), 2 duplicated back face of a double-sided card,
   4 detail texture: albedo_linear = 2 * texel_linear * tint_linear (else albedo = texel * tint),
   8 skirt / dress below the waist (weighted pelvis -> both thighs; a renderer may add its own sway or flare).
+  64 strand card (hair region, cast feature strandCards), 128 the proxy's ponytail or braid tail drawn with the
+  cards (hair region; beards use bits 16-128 for their shell index instead).
 tints[region] = default linear RGB tint per region (regions{} ids); skin = tone gain on the skin layer.
 regionRough[region] = roughness that overrides the layer's for those regions.
 textures: albedo array = WebP strips (perStrip layers of size x size stacked vertically, top to bottom = layer

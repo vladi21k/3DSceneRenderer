@@ -37,6 +37,8 @@ function cascadeOf(scene, cam) {
   return c;
 }
 
+function releaseArray() { this.array = null; }
+
 /** Indirect textures (sub-draw -> bone row), one per pass key. */
 class IndirectLists {
   constructor() { this.size = 0; this.scratch = null; this.tex = new Map(); this.ensure(256); }
@@ -108,6 +110,11 @@ export class FigureBatch {
     // frame; any other frustum keeps the batch (figures are culled per pass)
     mesh.intersectsFrustum = (f) => f.intersectsObject(_all);
     geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7);
+    // the CPU copies of the merged vertices and indices are not needed once uploaded (nothing rewrites
+    // them; the figures are not raycast: their rest-pose vertices are not where they are drawn)
+    for (const a of Object.values(geometry.attributes)) a.onUpload(releaseArray);
+    if (geometry.index) geometry.index.onUpload(releaseArray);
+    mesh.raycast = () => {};
     this.mesh = mesh;
     this.lists = new IndirectLists();
     // posed figures of this frame (struct of arrays)

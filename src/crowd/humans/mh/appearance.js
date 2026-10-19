@@ -13,7 +13,8 @@ import { RNG } from '../../../core/rng.js';
 // Fields read by the crowd (population.js roleFits / alloc): age ('child' | 'teen' | 'adult' | 'old'),
 // base ('male' | 'female' | 'child'), height, carry, phoneWalk, walkOld, skirtPart, sit.
 // Fields read by the renderer: index (character), body (character id), scale, tints (Float32Array,
-// REGION_COUNT x rgb, linear), pattern, bag, idle, sit, gait, stoop, longSkirt, seedT.
+// REGION_COUNT x rgb, linear), pattern, bag, idle, sit, gait, stoop, longSkirt, seedT, faceK / ageF / moleSeed /
+// lineK (the person's face), glasses / frameTone.
 
 export const REGION_COUNT = 16;
 // regions of the cast (cast.json regions) plus the runtime accessories (mh/parts.js)
@@ -250,6 +251,8 @@ function finish(seed, r, cast, index, toddler = false) {
     // the person's own face (mh/shading.js hFaceWarp: nose, jaw, chin, cheeks, lower face, brows, lips, face
     // width, eye spacing; then redness and freckles) and age lines
     faceK: fv.k, ageF: fv.age, moleSeed: fv.mole, lineK: fv.line,
+    // glasses: 0 none, 1 sunglasses (by day), 2 a thin frame; frame tone 0 black .. 1 tortoiseshell
+    glasses: toddler ? 0 : fv.glasses, frameTone: fv.frame,
     base: child ? 'child' : cls === 'toddler' ? 'toddler' : female ? 'female' : 'male',
     kind: char.kind, scale, height: char.height * scale,
     tints: packTints(t), pattern, patScale, patColor,
@@ -290,7 +293,14 @@ function faceVariety(seed, char) {
   const y = char.age || 30;
   // (the elderly characters' own skin textures are lined already: less on top of them)
   const age = kid ? 0 : THREE.MathUtils.clamp(((y - 26) / 36) * (y >= 60 ? 0.55 : 1) + r.normal(0, 0.08), 0, 1);
-  return { k, age, mole: r.next() * 997, line: r.range(0.7, 1.3) };
+  const mole = r.next() * 997, line = r.range(0.7, 1.3);
+  // glasses (a summer street: many sunglasses; spectacles more often with age)
+  const cls = char.ageClass;
+  const pSun = cls === 'child' ? 0.05 : cls === 'old' ? 0.14 : cls === 'teen' ? 0.16 : 0.22;
+  const pClear = cls === 'child' ? 0.04 : cls === 'old' ? 0.34 : cls === 'teen' ? 0.08 : 0.11;
+  const g = r.next();
+  const glasses = g < pSun ? 1 : g < pSun + pClear ? 2 : 0;
+  return { k, age, mole, line, glasses, frame: r.chance(0.3) ? r.range(0.5, 1) : r.range(0, 0.15) };
 }
 
 /** Rough build of a character from its waist girth relative to its height (< 0 slim, > 0 heavy). */
@@ -349,6 +359,8 @@ export function waiterFits(char) {
   if (char.ageClass !== 'adult' || !char.outfit || !char.outfit.top || !char.outfit.bottom || char.outfit.hat) return false;
   const k = topKind(char);
   if (k !== 'shirt' && k !== 'tee' && k !== 'blouse') return false;
+  // (never a crop-length sports top: an apron under a bare midriff)
+  if (char.outfit.top.suit === 'female_sportsuit01') return false;
   const b = char.outfit.bottom;
   return b.cut !== 'leg' && b.cut !== 'skirt' && b.suit !== 'female_elegantsuit01' && b.suit !== 'female_casualsuit02';
 }
@@ -394,6 +406,7 @@ export function castWaiter(seed, cast) {
   a.detailBottom = 0.25; a.detailTop = 0.4;
   a.apron = true;
   a.waiter = true;
+  if (a.glasses === 1) a.glasses = 0;        // (staff serve without sunglasses)
   return a;
 }
 

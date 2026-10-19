@@ -1,5 +1,5 @@
-# Human-figure generation image: the tools image plus MPFB2 (MakeHuman for Blender, GPLv3 code)
-# and the MakeHuman CC0 system assets (body, skins, eyes, hair, clothes). Only generated output
+# Human-figure build image: the tools image plus MPFB2 (MakeHuman for Blender, GPLv3 code)
+# and the MakeHuman CC0 system assets (body, skins, eyes, hair, clothes). Only the built output
 # (CC0) is shipped in assets/; nothing from this image is redistributed.
 # The two archives are fetched by tools/mh_fetch.sh into docker/mh/ (git-ignored).
 FROM tramline-tools:latest

@@ -54,8 +54,8 @@ STYLE = {
     'short02': dict(flow='crown', crown=(-0.01, 0.07, 0.055), grav=0.12, len=(0.05, 0.085), thick=0.024, width=0.72, fwd=0.15, side=-0.6, twist=0.4, brow=0.055),
     'short03': dict(flow='crown', crown=(0.0, 0.075, 0.05), grav=0.14, len=(0.06, 0.10), thick=0.028, width=0.8, fwd=0.3, side=0.6, twist=0.5, brow=0.05),
     'short04': dict(flow='crown', crown=(0.0, 0.08, 0.045), grav=0.06, len=(0.03, 0.055), thick=0.016, width=0.65, fwd=0.1, side=0.3, twist=0.3, brow=0.065),
-    'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, jit=(-0.002, 0.004)),
-    'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, jit=(-0.002, 0.004)),
+    'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004)),
+    'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004)),
     'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, width=1.35, fwd=0.0, side=1.0),
     'ponytail01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.24), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'braid01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.26), thick=0.012, width=0.9, fwd=0.0, side=0.0),
@@ -283,8 +283,10 @@ def groom(cid):
     def flow(p, n):
         """Desired strand direction at p over a surface with normal n (unit, tangent to it)."""
         if S['flow'] == 'tie' and tie is not None:
-            # (back over the top of the head to the tie: the front hair aims at the crown first)
+            # (back over the top of the head to the tie: the hair over the forehead aims at the crown first,
+            # the hair at the sides runs straight back to the tie, flat along the head)
             w = float(np.clip((p[2] - (crown[2] - 0.05 * hk)) / (0.06 * hk), 0, 1))
+            w = max(w, float(np.clip((abs(p[0] - hc[0]) - 0.035 * hk) / (0.03 * hk), 0, 1)))
             a_ = crown + np.array([0.0, 0.01, 0.0]) * hk - p
             b_ = tie - p
             v = a_ / max(1e-6, np.linalg.norm(a_)) * (1 - w) + b_ / max(1e-6, np.linalg.norm(b_)) * w
@@ -298,7 +300,10 @@ def groom(cid):
             v = v + (p - crown) / max(1e-6, np.linalg.norm(p - crown)) * (0.6 + 0.6 * (1 - wp))
         else:
             v = p - crown
-            v = v / max(1e-6, np.linalg.norm(v))
+            rr = max(1e-6, np.linalg.norm(v))
+            v = v / rr
+            # (round the whorl the hair turns about the crown, so it covers it instead of parting from it)
+            v = v + np.cross(n, v) * 1.3 * math.exp(-(rr / (0.035 * hk)) ** 2)
         # front hair: swept forward and to the side (a fringe or a quiff lies over the forehead)
         fr = np.clip((front_z + 0.07 * hk - p[2]) / (0.05 * hk), 0.0, 1.0)
         if fr > 0 and S['flow'] != 'tie':
@@ -374,7 +379,11 @@ def groom(cid):
                         want = 0.15 * want + 0.85 * w2 / l2
             # (a strand that keeps circling in one spot ends there)
             if len(pts) > 21 and np.linalg.norm(pts[-1] - pts[-21]) < 0.35 * 20 * h:
+                # (the loop itself is dropped: crumpled cards read as a tangle)
                 why = 'stall'
+                k_ = max(2, len(pts) - 20)
+                pts, nrm, hts, dep = pts[:k_], nrm[:k_], hts[:k_], dep[:k_]
+                L = float(np.linalg.norm(np.diff(np.array(pts), axis=0), axis=1).sum())
                 break
             # stiffness: a strand bends gradually; gravity grows along it (the root stands, the length hangs)
             gw = S['grav'] * min(1.0, L / (0.04 * hk) + 0.15)
@@ -500,7 +509,7 @@ def groom(cid):
         for i in chosen:
             p = pts[i]
             # (the dense inner layer stays off the hairline over the forehead: thin hair there)
-            if Ly['name'] == 'base' and p[2] < E[2] + 0.035 * hk and p[1] < E[1] + 0.1 * hk:
+            if Ly['name'] == 'base' and p[2] < E[2] + 0.035 * hk and p[1] < E[1] + 0.1 * hk and not S.get('fringe'):
                 continue
             g = ground(p)
             if g is None:
@@ -560,7 +569,7 @@ def groom(cid):
         w = Ly['w'] * hk * S['width'] * rs.uniform(0.8, 1.2) * (1.6 if lod == 1 else 1.0)
         # (fine locks along the front hairline and the fringe)
         if sp[0][2] < E[2] + 0.04 * hk:
-            w *= 0.65
+            w *= 1.1 if S.get('fringe') else 0.65
         prof = (0.75 + 0.25 * np.sin(np.pi * np.clip(ts * 1.7, 0, 1))) * (1.0 - 0.45 * np.clip((ts - 0.55) / 0.45, 0, 1))
         half = 0.5 * w * prof
         V = np.concatenate([P - Bc * half[:, None], P + Bc * half[:, None]])
@@ -582,8 +591,9 @@ def groom(cid):
         v = 0.995 - 0.99 * ts
         UV = np.concatenate([np.stack([np.full_like(v, u0), v], 1), np.stack([np.full_like(v, u1), v], 1)])
         # occlusion: deeper in the volume and near the roots darker
-        ao_d = 0.3 + 0.7 * np.exp(-D / 0.01)
-        ao_r = 0.55 + 0.45 * np.clip(ts / 0.25, 0, 1)
+        # (light passes between the strands: a centimetre in, the hair is a little over half as bright)
+        ao_d = 0.4 + 0.6 * np.exp(-D / 0.012)
+        ao_r = 0.7 + 0.3 * np.clip(ts / 0.25, 0, 1)
         Wt, AOp = [], []
         for pnt in P:
             wv, ao = weights_at(pnt)

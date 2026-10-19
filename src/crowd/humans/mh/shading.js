@@ -344,6 +344,7 @@ float hBump = 0.0;
 float hStrand = 1.0;
 float hEyeLid = 1.0;
 bool hCard = false;          // a strand card (hair region, flag 64)
+bool hTail = false;          // a ponytail's or braid's tail drawn with the cards (hair region, flag 128): as matte
 float hDirAO = 0.3;          // share of the baked occlusion on the direct light
 float hBrimBelow = -1.0;
 float hBrimOver = 0.0;
@@ -441,9 +442,17 @@ const FRAG_SURFACE = /* glsl */`
     col = d * tint;
   } else col = tx.rgb * (hRegion == 4 ? vec3(1.0) : tint);
   if ((hFlags & 32) != 0) col = vec3(0.82, 0.81, 0.78);
+  bool hLens = false;
+  if (hRegion == 12 && (hFlags & 128) != 0) {
+    // glasses (mh/parts.js glasses): the lenses dark smooth glass, the frame black or tortoiseshell acetate
+    hLens = vCastUv.x > 0.5;
+    vec3 fc = mix(vec3(0.016, 0.014, 0.013), vec3(0.075, 0.04, 0.02), tl.w);
+    col = hLens ? vec3(0.012, 0.012, 0.011) : fc;
+  }
   float rr = uRegionRough[hRegion];
   hRough = rr >= 0.0 ? rr : uLayerRough[int(vCastTex.x + 0.5)];
   hSpec = uRegionSpec[hRegion];
+  if (hRegion == 12 && (hFlags & 128) != 0) { hRough = hLens ? 0.05 : 0.3; hSpec = hLens ? 1.2 : 0.9; }
   // (clamped: under MSAA a varying is evaluated at the pixel centre even where that lies outside the
   // triangle, and the extrapolated occlusion of a small far triangle can go negative)
   hAO = clamp(vCastAO, 0.0, 1.0);
@@ -456,12 +465,13 @@ const FRAG_SURFACE = /* glsl */`
     if (pa.w > 0.5 && (hRegion == 5 || pb.z > 0.5)) col = mix(col, pa.rgb * (0.6 + 0.4 * tx.g / max(1e-3, hLum(tx.rgb))), hPattern(pa.w, vRest, pb.x * pb.y / 1.76, pb.w));
   }
   hCard = hRegion == 1 && (hFlags & 64) != 0;
+  hTail = hRegion == 1 && (hFlags & 128) != 0;
   if (hCard) {
     // strand cards: darker at the roots (the volume's shade), the tips a touch lighter; every card its
     // own shade and warmth (tex.y: a random value per card)
     float tt = clamp((0.995 - vCastUv.y) / 0.99, 0.0, 1.0);
     float rnd = vDecal;
-    col *= mix(0.62, 1.0, smoothstep(0.0, 0.3, tt)) * (1.0 + 0.1 * smoothstep(0.55, 1.0, tt));
+    col *= mix(0.76, 1.0, smoothstep(0.0, 0.3, tt)) * (1.0 + 0.1 * smoothstep(0.55, 1.0, tt));
     col *= (0.86 + 0.28 * rnd) * mix(vec3(1.0), vec3(1.05, 1.0, 0.93), fract(rnd * 7.31) * 0.7);
     hDirAO = 0.6;
   } else if (hRegion == 1) {
@@ -954,7 +964,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       material.specularColor *= hSpec;
       material.specularColorBlended *= hSpec;
       // (fibres: no glassy Fresnel sheen at grazing angles; their highlight is the strand lobes)
-      material.specularF90 = hCard ? 0.04 : hRegion == 1 ? 0.2 : hRegion == 10 ? 0.35 : mix(1.0, 0.6, hHairM);
+      material.specularF90 = hCard || hTail ? 0.04 : hRegion == 1 ? 0.12 : hRegion == 10 ? 0.35 : mix(1.0, 0.6, hHairM);
       #ifdef USE_SHEEN
         material.sheenColor = hSheen * hSilh * mix(diffuseColor.rgb, vec3(1.0), 0.35) * 0.18;
         material.sheenRoughness = 0.65;
@@ -984,7 +994,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       reflectedLight.directDiffuse *= mix( 1.0, hAO, hDirAO );
       // (strand cards: the env map's broad sheen on hair reads as plastic; the strands' own sky highlight
       // below stands in for it)
-      if ( hCard ) reflectedLight.indirectSpecular *= mod(floor(uHairDbg / 4.0), 2.0) > 0.5 ? 0.0 : 0.2;
+      if ( hCard || hTail ) reflectedLight.indirectSpecular *= mod(floor(uHairDbg / 4.0), 2.0) > 0.5 ? 0.0 : 0.2;
       if ( hCard && mod(floor(uHairDbg / 8.0), 2.0) > 0.5 ) { reflectedLight.directDiffuse *= 0.0; reflectedLight.indirectDiffuse *= 0.0; }
       #if HUMANS_V2 && defined( RE_IndirectSpecular )
       if ( hRegion == 4 ) {
@@ -999,7 +1009,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       if ( hHairM > 0.0 && mod(floor(uHairDbg / 2.0), 2.0) < 0.5 ) {
         // the sky's sheen along the strands: hair in the shade keeps a soft highlight band
         vec3 upS = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * ( hCard ? 0.035 : 0.12 );
+        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * ( hCard || hTail ? 0.035 : 0.08 );
       }
       #endif`);
     shader.fragmentShader = fs;
@@ -1035,6 +1045,7 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
 
 // (humans_face=<k>: the face shapes scaled by k, 0 = every instance of a character the same; for testing)
 export const FACE = { scale: 1 };
+const FACE_AMP = 1.45;
 
 /** Float RGBA data texture (nearest, no mips). */
 export function floatTexture(w, h) {
@@ -1062,6 +1073,8 @@ export function writeLook(data, row, a) {
   // (stubble .. full); garment texels w: detail contrast (0 = as textured)
   data[o + 4 + 3] = a.hairPart ? 1 : 0;
   data[o + 44 + 3] = a.beardDens || 0;
+  // prop texel w: the tone of a glasses frame (0 black .. 1 tortoiseshell)
+  data[o + 48 + 3] = a.frameTone || 0;
   data[o + 20 + 3] = a.detailTop || 0;
   data[o + 28 + 3] = a.detailBottom || 0;
   const pat = a.patColor || [T[12 * 3], T[12 * 3 + 1], T[12 * 3 + 2]];
@@ -1098,7 +1111,9 @@ export function writeLook(data, row, a) {
   if (F && K) {
     data[o + 112] = F.nose[0]; data[o + 113] = F.nose[1]; data[o + 114] = F.nose[2]; data[o + 115] = F.hk;
     data[o + 116] = F.mouthY; data[o + 117] = F.chinY; data[o + 118] = 0; data[o + 119] = a.ageF || 0;
-    for (let k = 0; k < 12; k++) data[o + 120 + k] = (K[k] || 0) * (k < 10 ? FACE.scale : 1);
+    // (shape coefficients x FACE_AMP: the faces of one character's instances differ enough to read as
+    // different people at a few metres, within a plausible range)
+    for (let k = 0; k < 12; k++) data[o + 120 + k] = (K[k] || 0) * (k < 10 ? FACE.scale * FACE_AMP : 1);
     data[o + 132] = a.moleSeed || 0; data[o + 133] = a.lineK || 0;
   }
 }

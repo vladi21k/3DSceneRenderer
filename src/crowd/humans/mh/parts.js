@@ -13,7 +13,7 @@ import { REGION } from './appearance.js';
 // Untextured: flag SOLID, shaded from the wearer's region tints (the apron: the socks region's).
 //
 //   buildParts(char, {apron}) -> { phone, cup, shopping, backpack, backpackFar, shoulder, shoulderFar,
-//     apron?, apronFar? } (raw meshes)
+//     sunglasses?, glasses?, apron?, apronFar? } (raw meshes)
 
 export const FLAG = { ALPHA: 1, BACK: 2, DETAIL: 4, SKIRT: 8, SOLID: 16, WHITE: 32 };
 const ARM_BONES = new Set([BONE.armL, BONE.foreL, BONE.handL, BONE.armR, BONE.foreR, BONE.handR]);
@@ -281,6 +281,114 @@ function smoothPath(pts, iters = 1) {
 }
 
 const rigid = (b) => [[b, 1]];
+
+/** Every k-th point of a path (and its normals), its ends kept. */
+function coarsePath(pts, nrms, k) {
+  const p = [], n = [];
+  for (let i = 0; i < pts.length; i += k) { p.push(pts[i]); n.push(nrms[i]); }
+  if ((pts.length - 1) % k) { p.push(pts[pts.length - 1]); n.push(nrms[nrms.length - 1]); }
+  return [p, n];
+}
+
+/**
+ * Glasses on the head bone, fitted to the character's eyes, nose bridge and temples (rest pose):
+ * sun = true: sunglasses (large dark lenses in a heavier frame, wrapped round the face), else a thin
+ * frame with clear lenses (the frame only). Flags SOLID + LENS (128) on the prop region: the shader
+ * shades them dark (uv.x 1 the lens: smooth glass; 0 the frame, its tone from the look row).
+ */
+function glasses(char, J, sun) {
+  const e = char.info.eyeR;
+  if (!e) return null;
+  const ex = Math.abs(e[0]), ey = e[1], ez = e[2];
+  const hk = Math.max(0.6, (ex * 2) / 0.064);
+  const er = char.eyeR > 0 ? char.eyeR : 0.0125 * hk;
+  const hc = char.info.headC || J[BONE.head].toArray();
+  // the nose bridge (frontmost skin on the midline at the eyes' height) and the temples' half width
+  const raw = char.raw, T = raw.tex, P = raw.pos;
+  let bz = Infinity, tw = 0;
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 0) continue;
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (Math.abs(y - ey) > 0.012 * hk) continue;
+    if (Math.abs(x) < 0.006 * hk && y > ey - 0.004 * hk) bz = Math.min(bz, z);
+    if (z > ez + 0.012 * hk && z < hc[2] + 0.01 * hk) tw = Math.max(tw, Math.abs(x));
+  }
+  if (!(bz < Infinity)) bz = ez - er - 0.006 * hk;
+  if (!(tw > 0)) tw = ex + 0.04 * hk;
+  const z0 = Math.min(ez - er - 0.012 * hk, bz - 0.003 * hk);
+  const w = (sun ? 0.053 : 0.049) * hk, h = (sun ? 0.042 : 0.033) * hk;
+  const cx = ex + 0.0025 * hk, cy = ey - (sun ? 0.004 : 0.002) * hk;
+  const wrapK = (sun ? 4.5 : 2.2) / hk;
+  const zAt = (x) => z0 + wrapK * Math.max(0, Math.abs(x) - 0.012 * hk) ** 2;
+  const dzAt = (x) => Math.sign(x) * 2 * wrapK * Math.max(0, Math.abs(x) - 0.012 * hk);
+  const rf = (sun ? 0.0021 : 0.0011) * hk;
+  const b = new PartBuilder();
+  const sk = rigid(BONE.head);
+  const LENS = FLAG.SOLID | 128;
+  const NO = 36;
+  const tubeAlong = (pts, closed, r, sides = 6) => {
+    const n = pts.length, rows = [];
+    const t = new THREE.Vector3(), a = new THREE.Vector3(), c = new THREE.Vector3(), q = new THREE.Vector3(), nn = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      const i0 = closed ? (i - 1 + n) % n : Math.max(0, i - 1), i1 = closed ? (i + 1) % n : Math.min(n - 1, i + 1);
+      t.copy(pts[i1]).sub(pts[i0]).normalize();
+      a.set(0, 0, -1).cross(t);
+      if (a.lengthSq() < 1e-6) a.set(0, 1, 0).cross(t);
+      a.normalize();
+      c.crossVectors(t, a).normalize();
+      const row = [];
+      for (let k = 0; k < sides; k++) {
+        const ang = (k / sides) * Math.PI * 2;
+        nn.copy(a).multiplyScalar(Math.cos(ang)).addScaledVector(c, Math.sin(ang));
+        q.copy(pts[i]).addScaledVector(nn, r);
+        row.push(b.vertex(q, nn, 0, 0, sk, REGION.prop, LENS));
+      }
+      rows.push(row);
+    }
+    for (let i = 0; i < (closed ? n : n - 1); i++) {
+      const r0 = rows[i], r1 = rows[(i + 1) % n];
+      for (let k = 0; k < sides; k++) b.quad(r0[k], r1[k], r1[(k + 1) % sides], r0[(k + 1) % sides]);
+    }
+  };
+  for (const sx of [-1, 1]) {
+    // the rim: a rounded rectangle (a superellipse), sunglasses a little deeper at the outer corner
+    const rim = [];
+    for (let i = 0; i < NO; i++) {
+      const th = (i / NO) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+      const px = Math.sign(c) * Math.abs(c) ** (2 / 3.4), py = Math.sign(s) * Math.abs(s) ** (2 / 3.4);
+      const drop = sun && py < 0 && px > 0 ? 1 + 0.12 * px : 1;
+      const x = sx * (cx + px * w * 0.5);
+      const y = cy + py * h * 0.5 * drop - (py > 0 ? 0 : 0.0015 * hk * (1 - Math.abs(px)));
+      rim.push(new THREE.Vector3(x, y, zAt(x)));
+    }
+    tubeAlong(rim, true, rf);
+    if (sun) {
+      // the lens: a fan over the rim, its normal off the wrapped face
+      const cxs = sx * cx;
+      const ctr = b.vertex(new THREE.Vector3(cxs, cy, zAt(cxs) - 0.0005 * hk), new THREE.Vector3(dzAt(cxs), 0, -1).normalize(), 1, 0, sk, REGION.prop, LENS);
+      const ring = rim.map((p) => b.vertex(p, new THREE.Vector3(dzAt(p.x), 0, -1).normalize(), 1, 0, sk, REGION.prop, LENS));
+      for (let i = 0; i < NO; i++) b.I.push(ctr, ring[i], ring[(i + 1) % NO]);
+    }
+    // the arm: from the rim's outer top corner back past the temple to above the ear
+    const xo = sx * (cx + w * 0.5), yo = cy + h * 0.28;
+    const xa = sx * Math.max(tw + 0.003 * hk, Math.abs(xo) + 0.002 * hk);
+    const arm = [];
+    for (let i = 0; i <= 6; i++) {
+      const u = i / 6;
+      const x = xo + (xa - xo) * Math.min(1, u * 3.5);
+      arm.push(new THREE.Vector3(x, yo + 0.003 * hk * u, zAt(xo) + (hc[2] + 0.012 * hk - zAt(xo)) * u));
+    }
+    tubeAlong(arm, false, rf * 0.85, 5);
+  }
+  // the bridge between the rims over the nose
+  const br = [];
+  for (let i = 0; i <= 6; i++) {
+    const u = i / 6, x = -(cx - w * 0.5) + 2 * (cx - w * 0.5) * u;
+    br.push(new THREE.Vector3(x, cy + h * 0.22 + 0.003 * hk * Math.sin(Math.PI * u), Math.min(zAt(x), bz - 0.002 * hk) - 0.0005 * hk));
+  }
+  tubeAlong(br, false, rf * 0.9, 5);
+  return b.build();
+}
 
 /**
  * A waiter's long waist apron (café staff): cloth from just below the waist to below the knees,
@@ -570,6 +678,9 @@ export function buildParts(char, opts = {}) {
       const W = 0.052 * Math.min(1, k * 1.1);
       const n = pts.length;
       b.strap(pts, nr, (i) => W * (i > n - 9 ? 0.62 : 1), (i) => tk[i], chestSkin, REGION.strap);
+      // (the far stand-in keeps the straps as flat bands: they do not vanish at the LOD switch)
+      const [fp, fn] = coarsePath(pts, nr, 3);
+      bf.ribbon(fp, fn, W * 0.9, chestSkin, REGION.strap, 0.006);
     }
     out.backpack = b.build();
     out.backpackFar = bf.build();
@@ -685,8 +796,17 @@ export function buildParts(char, opts = {}) {
     };
     const SW = 0.034 * Math.min(1, k * 1.1);
     b.strap(pts, nr, () => SW, () => 0.0035, strapSkin, REGION.strap);
+    { const [fp, fn] = coarsePath(pts, nr, 3); bf.ribbon(fp, fn, SW, strapSkin, REGION.strap, 0.005); }
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
+  }
+  // ---- glasses: sunglasses or a thin frame (drawn for the people wearing them, appearance glasses)
+  if (char.ageClass !== 'toddler') {
+    try {
+      const sg = glasses(char, J, true), cg = glasses(char, J, false);
+      if (sg) out.sunglasses = sg;
+      if (cg) out.glasses = cg;
+    } catch (e) { /* no glasses for this character */ }
   }
   if (opts.apron) {
     out.apron = apron(char, J, k, surf, hips[0], waist[0], 28, 18, true);

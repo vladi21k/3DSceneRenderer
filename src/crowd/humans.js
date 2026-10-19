@@ -546,6 +546,9 @@ const humans = {
     else if (s.cupOn) _extra[k++] = P.cup;
     // a waiter's apron
     if (a.apron && P.apron !== undefined) { _extra[k++] = P.apron; _extraFar[kf++] = P.apronFar; _shadowExtra[1] = P.apronFar; }
+    // glasses (sunglasses by day only; both too small to draw on the far LODs)
+    if (a.glasses === 1 && P.sunglasses !== undefined && U.uNight.value < 0.35) _extra[k++] = P.sunglasses;
+    else if (a.glasses === 2 && P.glasses !== undefined) _extra[k++] = P.glasses;
     if (a.bag && s.pose !== 2) {
       const handBusy = s.pose >= 3 || (s.hold && s.hold.side === 'R');
       if (a.bag === BAG.BACKPACK) { _extra[k++] = P.backpack; _extraFar[kf++] = P.backpackFar; _shadowExtra[0] = P.backpackFar; }
