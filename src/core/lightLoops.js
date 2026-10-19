@@ -4,14 +4,16 @@
 // and the GLSL compiler inlines the lighting model's RE_Direct into every copy: with env's
 // pool of 12 lamp lights plus the headlight, each lit program carries 13 copies of the
 // whole BRDF. Programs are compiled one after another in the browser's GPU process, so
-// that is start-up time paid ~100 times over (a typical lit program compiled in 245 ms
-// with the unrolled loop and in 141 ms with a plain loop, the same shader otherwise; see
-// docs/ARCHITECTURE.md, Cold start).
+// that is start-up time paid ~100 times over: a typical lit program of this app compiled
+// in 245 ms with the unrolled loop and in 141 ms with a plain loop, the same shader
+// otherwise (best of 8 compiles each on a busy machine; the compile phase of the cold
+// start shrank by a quarter to a half in A/B runs, URL lightloop=0 turns this off).
 //
 // loopSpotLights() keeps the spot block a real loop (RE_Direct inlined once) whenever the
 // program has no spot light shadows and no spot light maps, which is always the case here;
 // with either, the original unrolled block is compiled as before. The light maths and the
-// order in which lights add up are unchanged, so the image is identical.
+// order in which lights add up are unchanged: a dusk frame with all lamps lit differs only
+// at the level of the temporal AA noise (mean 1.3 of 255, on edges).
 //
 // It rewrites THREE.ShaderChunk.lights_fragment_begin in place and must run after env has
 // patched the loop (env.patchLightLoops: dark-light skip, headlight cut-off) and before

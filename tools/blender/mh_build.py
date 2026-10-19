@@ -9,7 +9,9 @@ Stages
            (sleeves and trouser legs cut, skirts lengthened, mixed tops and bottoms, body skin hidden only
            where a kept garment covers it), then the rest pose of the runtime skeleton (arms hanging, elbows
            and fingers relaxed) is applied and the skin weights are converted to the runtime's 22 bones
-           (src/crowd/humans/anim.js). Clean-up: pockets, slits and vents closed; skin kept under hems and
+           (src/crowd/humans/anim.js). Clean-up: pockets, slits and vents closed (a skirt's kick-pleat
+           underlay, wholly covered by the skirt itself, dropped); occlusion pits on garments lifted to
+           their neighbourhood (no dark seam lines from stitched vents and notches); skin kept under hems and
            cuffs (a raised arm opens a sleeve) and sunk under the cloth elsewhere; feet inside the shoes
            dropped; fringes trimmed clear of the eyes (strand ends fade); hats seated low on the brow; skin
            decals per vertex (beard growth, hair-coloured scalp) instead of stubble shells.

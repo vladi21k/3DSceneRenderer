@@ -140,7 +140,7 @@ async function main() {
   placeCamera(app, s0);
   app.perf.init.modulesTotal = Math.round(performance.now() - tStart);
   const tPrime = performance.now();
-  await app.world.prime(s0, Math.min(LOD0_DIST, 240), (f) => setProgress(0.2 + 0.7 * f));
+  await app.world.prime(s0, Math.min(LOD0_DIST, 240), (f) => setProgress(0.2 + 0.15 * f));
   await app.world.prime(s0, Infinity, null, [2]);   // far field: a few ms in all
   app.perf.init.prime = Math.round(performance.now() - tPrime);
 
@@ -153,11 +153,21 @@ async function main() {
   const tCompile = performance.now();
   // Programs depend on the output target (colour space, tone mapping): compile against the
   // HDR scene target the post chain renders into, not the screen.
+  // (the loading bar follows the programs as they finish: the longest wait of the start-up)
+  let progressTimer = 0;
   try {
     const rt = app.post && !app.post.disabled ? app.post.sceneRT : null;
     renderer.setRenderTarget(rt || null);
-    await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 20000))]);
+    const done = renderer.compileAsync(scene, camera);
+    const progs = renderer.info.programs || [];
+    progressTimer = setInterval(() => {
+      let n = 0;
+      for (const p of progs) if (!p.isReady || p.isReady()) n++;
+      setProgress(0.35 + 0.6 * (progs.length ? n / progs.length : 1));
+    }, 250);
+    await Promise.race([done, new Promise((r) => setTimeout(r, 20000))]);
   } catch (e) { console.warn('compile', e); }
+  clearInterval(progressTimer);
   renderer.setRenderTarget(null);
   touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
   app.perf.init.compile = Math.round(performance.now() - tCompile);
@@ -199,7 +209,7 @@ async function main() {
       const t = performance.now();
       rbd.call(this, camera, scene, geometry, material, object, group);
       const d = performance.now() - t;
-      if (d > mon.shadowDraw) { mon.shadowDraw = d; mon.shadowDrawObj = object; }
+      if (d > mon.shadowDraw) { mon.shadowDraw = d; mon.shadowDrawObj = object.name || object.type; }
     };
   }
 

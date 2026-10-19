@@ -30,7 +30,11 @@ const PI = Math.PI;
  *  every half metre along it (it changes over tens of metres). */
 function setKm(c, a) {
   if (a.inSide) { a.km = 1; return; }
-  if (!(a.kapS - a.s < 0.5 && a.s - a.kapS < 0.5)) { a.kap = c.route.curvature(a.s); a.kapS = a.s; }
+  if (!(a.kapS - a.s < 0.5 && a.s - a.kapS < 0.5)) {
+    // (through route.io when the route has it: no number boxed)
+    if (c.io) { c.io[0] = a.s; c.route.sampleIO(); a.kap = c.io[4]; } else a.kap = c.route.curvature(a.s);
+    a.kapS = a.s;
+  }
   const k = 1 + a.kap * a.d;
   a.km = k > 0.5 ? k : 0.5;
 }

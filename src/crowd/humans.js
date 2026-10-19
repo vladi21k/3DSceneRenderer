@@ -39,12 +39,20 @@ import { U } from '../core/uniforms.js';
 // folds in the figure's transform and writes 22 bone matrices plus a little state into a row of a float
 // texture. All figures are drawn by one multi-draw per pass (humans/mh/batch.js) and skinned and shaded
 // by humans/mh/shading.js.
-// Testing: humanstest=1 (humans/test.js; ht_mode=cast lines up the whole cast); propstest=1
+// Testing: humanstest=1 (humans/test.js; ht_mode=cast lines up the whole cast, ht_outfit=waiter dresses
+// every figure as café staff); propstest=1
 // (humans/props/test.js); humans_tex=2 loads the texture arrays at half resolution; humans_bind=1 shows
 // the bind pose; humans_dbg=1|2|3|4|5|6|7|8 shows baked occlusion / albedo / beard edge distance / skin decals /
 // regions and inner faces / no skin / hat brim / hair fade and strand direction; humans_src=<dir> loads another build of the cast; humans_prof=1
 // times the figure draws on the GPU (humans.batch.profile(): ms per frame, view and shadow passes).
-// stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms.
+// stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms,
+// initMs (load: waiting for the cast; bake: rigs, clips and parts; rig, prep, parts, merge, compile and
+// the cast's own download / decode timings, cast.bin / albedo / normal / raw).
+// Per-frame code makes (almost) no garbage: scratch arrays, no Math.hypot, float arguments of large
+// functions passed through typed arrays or slot fields, the batch's view order by a radix sort.
+// Clips are baked at init for what each character plays (toddlers: their stroller seats; the walks of
+// the elderly and of long skirts only for them), any other on first use (humans/anim.js bakeClip).
+// The cast's texture strips are decoded off the main thread (humans/mh/decode.worker.js).
 
 const TODDLER_POOL = 64;                  // slots for the children riding in strollers
 // figure height on screen (px) above which LOD 0 / 1 / 2 are used (a little finer than the cast's own
@@ -56,6 +64,7 @@ const _frustum = new THREE.Frustum();
 const _m = new THREE.Matrix4();
 const _sph = new THREE.Sphere();
 const _gait = { a: 0, b: -1, wa: 1, wb: 0, idle: 0, extra: 1, phone: 0 };
+const _gaitIn = new Float64Array(2);    // gaitBlend's speed and scale
 const _hv = new THREE.Vector3(), _hw = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
 const TAU = Math.PI * 2;
@@ -89,6 +98,9 @@ const texScaleParam = () => {
   try { return Math.max(1, Math.min(4, parseInt(new URLSearchParams(location.search).get('humans_tex') || '1', 10) || 1)); } catch (e) { return 1; }
 };
 try { startCastLoad(texScaleParam()); } catch (e) { /* retried by init */ }
+// the mobility props' modules (bicycles, strollers) are fetched alongside, not when init gets to them
+const propsLoad = import('./humans/props/index.js');
+propsLoad.catch(() => {});             // (reported by init)
 
 /** Toddler seed from a stroller's prop seed. */
 function hashSeed(n) { n = Math.imul(n ^ 0x5f3759df, 0x2c1b3c6d); n ^= n >>> 15; return n >>> 0; }
@@ -110,7 +122,8 @@ const humans = {
     const tInit = performance.now();
     // mobility props (bicycles, strollers; also the parked bicycles of build()): optional
     try {
-      this.props = await import('./humans/props/index.js');
+      this.props = await propsLoad;
+      this._tProps = Math.round(performance.now() - tInit);
     } catch (e) {
       console.warn('[humans] mobility props unavailable', e);
       this.props = null;
@@ -132,7 +145,7 @@ const humans = {
     this.beardBase = feats.includes('beardBase');
     // eyebrows drawn on the skin from the brow cards' line (humans_brows=0: the cards themselves)
     this.browsOnSkin = app.params.num('humans_brows', 1) > 0;
-    this.initMs = { load: Math.round(performance.now() - tLoad) };
+    this.initMs = { props: this._tProps || 0, load: Math.round(performance.now() - tLoad) };
     const tBake = performance.now();
     this.bindPose = app.params.num('humans_bind', 0) > 0;
     // (humans_lod=a,b,c: other LOD thresholds, for testing)
@@ -213,7 +226,7 @@ const humans = {
     this.compFirst = -1;
     if (cast.chars.some((c) => c.ageClass === 'toddler')) {
       this.compFirst = this.alloc(TODDLER_POOL);
-      for (let k = 0; k < TODDLER_POOL; k++) { const c = this.slots[this.compFirst + k]; c.comp = true; c.owner = -1; c.compKey = ''; }
+      for (let k = 0; k < TODDLER_POOL; k++) { const c = this.slots[this.compFirst + k]; c.comp = true; c.owner = -1; c.compKey = NaN; }
     }
     this.babyQ = [];
     this.babyN = 0;
@@ -221,7 +234,9 @@ const humans = {
     this.holdList = [];
     if (this.props) {
       try {
+        tq = performance.now();
         this.mob = new Mobility(app, this, this.props);
+        this.initMs.mob = Math.round(performance.now() - tq);
         this.group.add(this.mob.object);
       } catch (e) {
         console.warn('[humans] mobility props disabled', e);
@@ -339,7 +354,8 @@ const humans = {
     const B = this.bases && this.bases[a.body];
     if (!B) return 1.48 * (0.55 + 0.32 * speed);
     const sc = a.height / B.info.H;
-    const g = gaitBlend(B, a, speed, sc);
+    _gaitIn[0] = speed; _gaitIn[1] = sc;
+    const g = gaitBlend(B, a, a.idle);
     const st = B.baked.strides;
     let S = st[g.a] * g.wa + (g.b >= 0 && g.b < CLIP.idle ? st[g.b] * g.wb : 0);
     if (g.idle > 0) S = st[g.a] * (0.55 + 0.45 * g.wa);
@@ -567,7 +583,7 @@ const humans = {
       const c = this.slots[ci];
       c.used = true;
       c.owner = i;
-      const key = `${s.propSeed | 0}:${seat.lie ? 1 : 0}`;
+      const key = (s.propSeed | 0) * 2 + (seat.lie ? 1 : 0);      // (a number: no string per frame)
       if (c.compKey !== key) {
         c.compKey = key;
         let a = this.tcache.get(key);
@@ -773,7 +789,8 @@ const humans = {
     } else if (mobP && s.pose === 4) {
       this.mob.pose(s, a, B, M);
     } else {
-      const g = gaitBlend(B, a, s.speed, sc, mobP ? 0 : idle);
+      _gaitIn[0] = s.speed; _gaitIn[1] = sc;
+      const g = gaitBlend(B, a, mobP ? 0 : idle);
       addClip(M, bk, g.a, s.phase, g.wa);
       if (g.b >= 0 && g.wb > 0.001) addClip(M, bk, g.b, g.b >= CLIP.idle ? t / idlePeriod(g.b - CLIP.idle) + a.seedT : s.phase, g.wb);
       // upper-body variations carried by the walking chest (not while the hands hold a prop)
@@ -1269,8 +1286,9 @@ function addClip(M, bk, clip, time, w) {
 }
 
 /** Which clips play at a speed: walk clips bracket the body-normalised speed, slow walking blends into standing. */
-function gaitBlend(B, a, speed, sc, idleVar = a.idle) {
-  const vb = speed / Math.sqrt(Math.max(0.3, sc));
+function gaitBlend(B, a, idleVar) {
+  // (speed and scale in _gaitIn: float arguments to a call that is not inlined are boxed)
+  const vb = _gaitIn[0] / Math.sqrt(Math.max(0.3, _gaitIn[1]));
   const V = B.walkV;
   const out = _gait;
   const idle = CLIP.idle + idleVar;         // standing still in pose 0 is the same as pose 1

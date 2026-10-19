@@ -171,7 +171,7 @@ export class AmbienceLayer {
     if (agents && L) {
       for (let i = 0; i < agents.length; i++) {
         const a = agents[i];
-        if (a.active === false) continue;           // (the crowd's whole population array)
+        if (a.active === false) continue;           // (a stand-in list may hold inactive ones)
         const dx = a.x - L.px, dz = a.z - L.pz, dist = Math.sqrt(dx * dx + dz * dz);
         if (dist > 45) continue;
         if (dist < 30) { if (a.d >= 0) near1++; else near0++; }

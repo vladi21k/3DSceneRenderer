@@ -13,6 +13,7 @@ Examples
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --hitches   (ride timing)
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --heapprof 40 (allocation sites)
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 150 --heaplive 40 (what the heap grows by)
+  tools/shoot.py --shots 0 --cpuprof 40   (start-up: main-thread time by file and function, with callers)
 
 Timing runs (--hitches, --heapprof) print the machine's load at the start and the end:
 other captures may be rendering on the same CPU and GPU, so judge times against it.
@@ -252,7 +253,12 @@ def main():
                          "allocation sites by bytes")
     ap.add_argument("--heaplive", type=int, default=0, metavar="N",
                     help="sample the JS allocations made from ready to the end that are still alive at the end "
-                         "(what the heap grows by: caches, retained garbage, leaks) and print the top N sites")
+                         "(what the heap grows by: caches, retained garbage, leaks) and print the top N sites. Typed-array "
+                         "data is not sampled (only its small wrapper object), although performance.memory counts it: "
+                         "compare heap snapshots for that")
+    ap.add_argument("--snapshot", default=None, metavar="PATH",
+                    help="after the shots, collect garbage and save a heap snapshot to PATH (open it in DevTools, "
+                         "or diff two of them to see what a ride retains, typed-array data included)")
     ap.add_argument("--cpuprof", type=int, default=0, metavar="N",
                     help="sample the page's main thread from navigation to ready and print the top N source files "
                          "and functions by self time (start-up profile)")
@@ -397,6 +403,21 @@ def main():
         if a.hitches:
             rep = js("window.__app && window.__app.hitchReport ? window.__app.hitchReport() : null")
             print("hitches:", rep if isinstance(rep, str) else json.dumps(rep))
+        if a.snapshot:
+            ws.call("HeapProfiler.enable", session=sess)
+            ws.call("HeapProfiler.collectGarbage", session=sess)
+            os.makedirs(os.path.dirname(os.path.abspath(a.snapshot)), exist_ok=True)
+            with open(a.snapshot, "w") as f:
+                mid = ws.send("HeapProfiler.takeHeapSnapshot", {"reportProgress": False}, session=sess)
+                while True:
+                    m = ws.recv()
+                    if m.get("method") == "HeapProfiler.addHeapSnapshotChunk":
+                        f.write(m["params"]["chunk"])
+                    elif m.get("id") == mid:
+                        break
+                    else:
+                        ws.events.append(m)
+            print("snapshot", a.snapshot, f"{os.path.getsize(a.snapshot) / 1048576:.0f} MB")
         if a.heapprof or a.heaplive:
             if a.heaplive:
                 ws.call("HeapProfiler.collectGarbage", session=sess)

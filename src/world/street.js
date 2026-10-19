@@ -490,7 +490,7 @@ function buildDripBands(ctx, chunk, samples, out) {
       const sp = surface.sp(s);
       const st = t > 0 ? w.stopR : w.stopL, bg = t > 0 ? w.bogR : w.bogL;
       const nz = surface.fG.sample(sp * ks[0] + 61.3, t * 9.1 + 2.7);
-      let k = 0.3 * (0.55 + 0.9 * Math.max(0, nz + 0.35)) + 0.5 * st + 0.35 * bg;
+      let k = 0.4 * (0.5 + 0.9 * Math.max(0, nz + 0.35)) + 0.5 * st + 0.35 * bg;
       for (const c of layout.crossovers) {
         const a = dl(c.s0 - ctx.zonePad - 1, s), b = dl(s, c.s1 + ctx.zonePad + 1);
         if (a > -3 && b > -3) k *= 1 - Math.min(1, Math.min(a + 3, b + 3) / 3);

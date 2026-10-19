@@ -220,19 +220,25 @@ const tplCache = new TplCache(64);
  * vertical folds; normals from the analytic surface.
  */
 function patch(t, a, b, c, d, nx, ny, bulge, hw, shade = 1) {
-  const z = (x, y) => Math.max(0, bulge * (1 - (x * x) / (hw * hw))) + 0.006 * Math.sin(x * 37 + 1.3) * Math.min(1, -y * 2.5);
+  // the folds deepen towards the hem (where the cloth hangs free) and break up into two
+  // wavelengths; the hem itself undulates
+  const fold = (x, y) => (0.004 + 0.014 * Math.min(1, -y * 1.6)) * (0.62 * Math.sin(x * 29 + 1.3) + 0.38 * Math.sin(x * 63 + 0.4 + y * 3));
+  const z = (x, y) => Math.max(0, bulge * (1 - (x * x) / (hw * hw))) + fold(x, y);
   const base = t.count;
+  nx = Math.max(nx, Math.round(nx * 1.8)); ny = Math.max(ny, Math.round(ny * 1.6));
   for (let j = 0; j <= ny; j++) {
     const v = j / ny;
     for (let i = 0; i <= nx; i++) {
       const u = i / nx;
       const x = (a[0] * (1 - u) + b[0] * u) * (1 - v) + (d[0] * (1 - u) + c[0] * u) * v;
-      const y = (a[1] * (1 - u) + b[1] * u) * (1 - v) + (d[1] * (1 - u) + c[1] * u) * v;
-      const e = 0.004, zz = z(x, y);
+      let y = (a[1] * (1 - u) + b[1] * u) * (1 - v) + (d[1] * (1 - u) + c[1] * u) * v;
+      if (j === 0 && a[1] < -0.3) y += 0.012 * Math.sin(x * 29 + 2.9);
+      const e = 0.003, zz = z(x, y);
       const gx = (z(x + e, y) - z(x - e, y)) / (2 * e), gy = (z(x, y + e) - z(x, y - e)) / (2 * e);
-      const l = Math.hypot(gx, gy, 1);
-      // folds and the sides falling away read darker
-      const sh = shade * (0.8 + 0.2 / l) * (0.93 + 0.07 * Math.cos(x * 37 + 1.3));
+      const l = Math.sqrt(gx * gx + gy * gy + 1);
+      // the hollows of the folds and the sides falling away read darker
+      const hollow = fold(x, y) / (0.018 + 1e-3);
+      const sh = shade * (0.74 + 0.26 / l) * (0.92 + 0.08 * hollow);
       t.v(x, y, zz, -gx / l, -gy / l, 1 / l, x, y, sh);
     }
   }

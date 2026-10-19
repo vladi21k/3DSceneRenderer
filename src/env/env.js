@@ -193,6 +193,25 @@ const env = {
     // (the cascades sit side by side in one atlas row; inspection: URL shadowmap=<tile texels>)
     const ms = Math.min(app.params.num('shadowmap', q.mapSize), Math.floor(renderer.capabilities.maxTextureSize / q.cascades));
     sh.mapSize.set(ms, ms);
+    // the atlas, made here rather than by the renderer: its colour attachment is never read
+    // (the passes keep only depth), so it is a single 8-bit channel instead of RGBA (at 4096
+    // texels a tile: 64 MB instead of 256 MB next to the 256 MB of depth)
+    if (patched && !sh.map) {
+      const W = ms * q.cascades, H = ms;
+      const map = new THREE.WebGLRenderTarget(W, H, {
+        format: THREE.RedFormat, type: THREE.UnsignedByteType, generateMipmaps: false,
+        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      });
+      const dt = new THREE.DepthTexture(W, H, THREE.UnsignedIntType);
+      dt.format = THREE.DepthFormat;
+      dt.compareFunction = renderer.state.buffers.depth.getReversed() ? THREE.GreaterEqualCompare : THREE.LessEqualCompare;
+      dt.minFilter = THREE.LinearFilter;
+      dt.magFilter = THREE.LinearFilter;
+      dt.name = 'sun.shadowMap';
+      map.texture.name = 'sun.shadowMapColor';
+      map.depthTexture = dt;
+      sh.map = map;
+    }
     sh.camera.near = 1;
     sh.camera.far = 700;
     sh.bias = patched ? -0.00002 : -0.0002;
@@ -332,7 +351,7 @@ const env = {
     const up = Es > 1e-4;
     const sh = this.sun.shadow;
     // (the atlas must exist even when the sun is down: lit shaders sample it)
-    if ((up && !sh.autoUpdate) || !sh.map) sh.needsUpdate = true;
+    if ((up && !sh.autoUpdate) || !sh.map || !this._atlasInit) { sh.needsUpdate = true; this._atlasInit = true; }
     sh.autoUpdate = up;
     U.uSunDir.value.copy(dir);
     U.uSunColor.value.setRGB(sunCol.r * Es, sunCol.g * Es, sunCol.b * Es);

@@ -37,7 +37,7 @@ const MOB_LIST = [[MOB.CYCLE, MOB_SHARE.cycle], [MOB.STROLLER, MOB_SHARE.strolle
 // walking as they do, keeping the age class and sex first drawn so the mix of the street stays as
 // it is. Where a class has too few characters for that (three old men,
 // say), a twin as far away as possible.
-const BANK_N = 4096;          // seeds in the bank (a power of two: the scan steps through it with an odd stride)
+const BANK_N = 2048;          // seeds in the bank (a power of two: the scan steps through it with an odd stride)
 const BANK_SCAN = 400;        // entries looked at per new person
 const NEAR_R = 20;            // nobody with the same character within this distance (m)
 const SAME_CLASS = 8;         // a twin this much nearer is still preferred to another age class or sex
@@ -83,7 +83,9 @@ export class Population {
     this.hint = settleShape({ on: false, s: 0, d: 0, v: 0 });
     this.charD = new Float32Array(256);
     this._lastBank = -1; this._fit = -1; this._cls = -1;
+    const tBank = performance.now();
     this.bank = this._buildBank();
+    this.bankMs = performance.now() - tBank;
     // placements with a spot: no twin within NEAR_R / another age class or sex taken / a twin kept
     this.cloneN = new Int32Array(3);
     // (classes fixed up front: see settleShape)

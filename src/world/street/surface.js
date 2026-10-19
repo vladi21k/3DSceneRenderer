@@ -364,7 +364,7 @@ export class Surface {
       const kb = this.kS;
       const nb = this.fG.sample(s * kb[0] * 8.0 + 3.3, d * 1.1 + 9.1) * 0.65 + this.fG.sample(s * kb[0] * 17.0 + 17.9, d * 2.1 + 2.2) * 0.35;
       const blot = smooth((nb + 0.1) / 0.38);
-      v *= 1 - 0.2 * blot;
+      v *= 1 - 0.26 * blot;
       warm += 0.025 * blot;
     }
     if (ci.grime > 0) {
@@ -417,7 +417,6 @@ export class Surface {
       }
     }
     const hue = 0.014 * n1;
-    if (d > 0) v *= 0.5;
     out[o] = v * (1 + hue + warm);
     out[o + 1] = v * (1 + warm * 0.25);
     out[o + 2] = v * (1 - hue - warm * 0.8);

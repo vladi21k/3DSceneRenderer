@@ -118,9 +118,7 @@ const facades = {
     // init runs after every world module's) walks round them
     const tS = performance.now();
     try {
-      let tInfo = 0, tPlan = 0;
-      this.stands = planStands(app, (lot) => { const t = performance.now(); const r = frontInfo(app, lot)[0]; tInfo += performance.now() - t; return r; }, (lot) => { const t = performance.now(); const r = facadePlan(lot); tPlan += performance.now() - t; return r; });
-      this._tStand = { tInfo: Math.round(tInfo), tPlan: Math.round(tPlan) };
+      this.stands = planStands(app, (lot) => frontInfo(app, lot)[0], (lot) => facadePlan(lot));
       app.layout.addObstacles(this.stands.obstacles);
     } catch (e) { console.warn('[facades] goods stands not planned', e); this.stands = null; }
     this.stats.stands = { n: this.stands ? this.stands.obstacles.length : 0, planMs: Math.round(performance.now() - tS) };
@@ -140,6 +138,16 @@ const facades = {
     let yielded = performance.now();
     const around = [app.startS];
     if (app.params.view) around.push(app.params.view[0]);
+    // the chunks the start-up prime builds (within 240 m) now; the rest of the view range
+    // in the background, in the main thread's idle time while the shaders compile
+    const later = [];
+    const warm = (idx, lod, key) => {
+      const job = { it: this.buildGen({ index: idx, lod, s0: idx * CHUNK_LEN, s1: Math.min(L, idx * CHUNK_LEN + CHUNK_LEN) }, app) };
+      const tb = performance.now();
+      try { this._pump(job, Infinity); } catch (e) { console.warn('[facades] warm start failed for chunk', idx, e); return; }
+      this.stats.warmBuildMs += performance.now() - tb;
+      this.jobs.set(key, job);
+    };
     for (const s0 of around) {
       for (let i = Math.floor((s0 - VIEW_BEHIND) / CHUNK_LEN); i <= Math.floor((s0 + VIEW_AHEAD) / CHUNK_LEN); i++) {
         const idx = ((i % n) + n) % n;
@@ -147,15 +155,23 @@ const facades = {
         const lod = dist < LOD0_DIST ? 0 : 1;
         const key = `${idx}:${lod}`;
         if (this.jobs.has(key)) continue;
-        const job = { it: this.buildGen({ index: idx, lod, s0: idx * CHUNK_LEN, s1: Math.min(L, idx * CHUNK_LEN + CHUNK_LEN) }, app) };
-        const tb = performance.now();
-        try { this._pump(job, Infinity); } catch (e) { console.warn('[facades] warm start failed for chunk', idx, e); continue; }
-        this.stats.warmBuildMs += performance.now() - tb;
-        this.jobs.set(key, job);
+        if (dist > 250) { later.push([idx, lod, key]); continue; }
+        warm(idx, lod, key);
         // let the loading screen breathe now and then
         if (performance.now() - yielded > 40) { await new Promise((r) => setTimeout(r, 0)); yielded = performance.now(); }
       }
     }
+    const next = () => {
+      // (skipped once the streamer has asked for the chunk or a prefetch has it)
+      while (later.length) {
+        const [idx, lod, key] = later.shift();
+        if (this.jobs.has(key) || this.handed.has(key)) continue;
+        warm(idx, lod, key);
+        break;
+      }
+      if (later.length) setTimeout(next, 0);
+    };
+    setTimeout(next, 0);
   },
 
   /**

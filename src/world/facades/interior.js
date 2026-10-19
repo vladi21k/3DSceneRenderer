@@ -52,6 +52,7 @@ import { goodsAtlas, GOODS_PAD } from './goods.js';
 // Per-vertex attributes (all in the facade frame of the lot, metres):
 //   aRoomP  (x, y, z, halfWinW)   ray origin in room space (x from the left wall, y up from
 //                                 the room floor, z depth behind the glass), window half width
+//                                 (a shop adds 10 · round((door x + 4) · 100): see gDoor)
 //   aRoomS  (W, H, D, baseH)      room size, and height of the room floor above the paving
 //   aWin    (seed, lit, drape, code)  code = kind + 4·noGlass + 8·shopType (winCode);
 //                                 kind 0 home, 1 shop, 2 stairwell/door
@@ -197,6 +198,10 @@ float gPA = 0.001;
 float gTC = 10.0;
 float gDet = 1.0;
 float gEm = 1.0;
+// the window's half width, and for a shop the x of its door (room x from the window's
+// centre; -99 when not known): aRoomP.w packs them as halfW + 10 · round((door + 4) · 100)
+float gHW = 1.0;
+float gDoor = -99.0;
 
 float fh1( float p ) { p = fract( p * 0.1031 ); p *= p + 33.33; p *= p + p; return fract( p ); }
 float fh2( vec2 p ) { vec3 p3 = fract( vec3( p.xyx ) * 0.1031 ); p3 += dot( p3, p3.yzx + 33.33 ); return fract( ( p3.x + p3.y ) * p3.z ); }
@@ -414,11 +419,42 @@ void fMannequin( inout Hit h, vec3 ro, vec3 rd, vec2 c, float seed ) {
   fEllT( h, ro, rd, C + vec3( 0.0, 0.0, 0.0 ), vec3( 0.17, 0.02, 0.17 ), vec3( 0.06 ), 3.0 );                     // base plate
 }
 
+vec4 fItem( float a, float y, float r, float rowH, float cellW, float seed, float st, float keep, float fp );
+// a row of the shop's goods standing on a window display riser (top at y0, between x0 and
+// x1), their fronts 0.52 m behind the glass
+void fWindowGoods( inout Hit h, vec3 ro, vec3 rd, float x0, float x1, float y0, float seed, float st ) {
+  if ( rd.z <= 1e-4 ) return;
+  float t = ( 0.52 - ro.z ) / rd.z;
+  if ( t <= 0.0 || t >= h.t ) return;
+  vec3 q = ro + rd * t;
+  float rowH = st > 5.5 ? 0.3 : 0.34, cellW = st > 5.5 ? 0.04 : st > 3.5 ? 0.085 : 0.12;
+  if ( q.y < y0 || q.y > y0 + rowH || q.x < x0 || q.x > x1 ) return;
+  float fp = fFoot( t, rd, vec3( 0.0, 0.0, -1.0 ) );
+  vec4 it = fItem( q.x, q.y - y0, 0.0, rowH, cellW, seed * 13.0, st, fKeep( fp, cellW ), fp );
+  if ( it.a > 0.5 ) { h.t = t; h.n = vec3( 0.0, 0.0, -1.0 ); h.alb = it.rgb / it.a; h.glow = 0.0; h.id = 2.0; h.m = 0.0; }
+}
+
 // Fixed fittings of a room. Shop types: 0 clothing 1 general 2 cafe 3 jewellery 4 pharmacy
 // 5 shoes 6 books 7 flowers.
 void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p, vec3 n, int mode, vec3 S, float seed, bool shop, bool stair, float st ) {
   vec3 f1 = fh3( seed * 31.0 + 1.0 ), f2 = fh3( seed * 53.0 + 2.0 );
   float cx = S.x * 0.5;
+  if ( shop && ( st > 0.5 && st < 1.5 || st > 3.5 && st < 4.5 || st > 5.5 && st < 6.5 ) && f2.y > 0.15 ) {
+    // a window display: a low riser behind each display pane (none behind the door) with a
+    // row of the shop's goods on it, in the light of the window spots
+    float yR = 0.3 + 0.22 * f1.z;
+    vec3 rc = f1.x < 0.4 ? vec3( 0.80, 0.79, 0.76 ) : f1.x < 0.7 ? vec3( 0.42, 0.30, 0.20 ) : vec3( 0.07 );
+    gFin = f1.x >= 0.4 && f1.x < 0.7 ? FIN_WOOD : FIN_PAINT;
+    float a0 = cx - gHW + 0.08, a1 = cx + gHW - 0.08;
+    bool door = gDoor > -50.0;
+    float dA = door ? cx + gDoor - 0.62 : a1, dB = door ? cx + gDoor + 0.62 : a1;
+    for ( int k = 0; k < 2; k++ ) {
+      float x0 = k == 0 ? a0 : max( a0, dB ), x1 = k == 0 ? min( a1, dA ) : a1;
+      if ( x1 - x0 < 0.45 ) continue;
+      fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, 0.0, 0.3 ), vec3( x1, yR, 0.76 ), rc );
+      if ( mode == 0 ) fWindowGoods( h, ro, rd, x0 + 0.05, x1 - 0.05, yR, seed + float( k ) * 0.37, st );
+    }
+  }
   if ( shop ) {
     if ( st < 0.5 ) {
       // clothing: island table, two garment rails mid-floor, mannequins in the window
@@ -1567,7 +1603,7 @@ if ( fMask < 0.999 ) {
     vec2 e = vec2( vRoomP.x - vRoomS.x * 0.5, vRoomP.y - vFac.z ) + Rl.xy * tOut;
     float hh = vFac.w - vFac.z;
     float soft = 0.02 + 0.03 * tOut;
-    float inX = smoothstep( -soft, soft, vRoomP.w - abs( e.x ) );
+    float inX = smoothstep( -soft, soft, gHW - abs( e.x ) );
     float inY = smoothstep( -soft, soft, e.y ) * smoothstep( -soft, soft, hh - e.y );
     float inside = inX * inY;
     vec3 sunL = uSunColor * step( 0.0, uSunDir.y );
@@ -1606,7 +1642,7 @@ if ( fMask < 0.999 ) {
   rd.y = abs( rd.y ) < 1e-4 ? 1e-4 : rd.y;
   vec3 sunR = vec3( dot( uSunDir, T ), uSunDir.y, -dot( uSunDir, N ) );
   vec3 ro = clamp( vRoomP.xyz, vec3( 0.001 ), vRoomS.xyz - 0.001 );
-  fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, vRoomP.w, Eamb + Ecross, sunR, uSunColor * step( 0.0, uSunDir.y ) );
+  fInterior = fRoom( ro, rd, vRoomS.xyz, vWin, vFac, gHW, Eamb + Ecross, sunR, uSunColor * step( 0.0, uSunDir.y ) );
   #ifdef FAC_DBG_E
   fInterior = ( Eamb + Ecross ) * 0.5 * RECIPROCAL_PI;
   #endif
@@ -1660,10 +1696,12 @@ gTC = length( vViewPosition );
 gPA = max( length( fwidth( normalize( vViewPosition ) ) ) * 0.75, 1e-5 );
 gDet = 1.0 - smoothstep( 0.06, 0.11, gPA * gTC );
 gEm = mix( 1.0, uEmGain, uNight );
+if ( vRoomP.w >= 10.0 ) { float dk = floor( vRoomP.w / 10.0 ); gHW = vRoomP.w - 10.0 * dk; gDoor = dk / 100.0 - 4.0; }
+else gHW = vRoomP.w;
 float fMask = 0.0;
 if ( vFrame.a > 0.5 ) {
   float x = vRoomP.x - vRoomS.x * 0.5, y = vRoomP.y - vFac.z;
-  float hw = vRoomP.w, hh = vFac.w - vFac.z;
+  float hw = gHW, hh = vFac.w - vFac.z;
   float d = min( min( hw - abs( x ), y ), hh - y );
   float aa = fwidth( x ) * 0.75;
   fMask = 1.0 - smoothstep( 0.075 - aa, 0.075 + aa, d );

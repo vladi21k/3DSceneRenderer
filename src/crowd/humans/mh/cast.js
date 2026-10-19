@@ -3,9 +3,11 @@ import * as THREE from 'three';
 // Loader for the character cast built by tools/blender/mh_build.py (assets/humans_mh/):
 //   cast.json      metadata (format description in cast.json.format)
 //   cast.bin.gz    geometry of every character (gzip; one vertex set per character shared by its 4 LODs)
-//   tex/*.webp     texture arrays as vertical strips of layers (albedo RGB + separate coverage strips, normals)
+//   tex/*.webp     texture arrays as vertical strips of layers (albedo RGB + separate coverage strips, normals),
+//                  decoded and flipped in module workers (decode.worker.js; on the main thread where those fail)
 //
-// loadCast(baseUrl) -> { doc, chars, buf, albedo: DataArrayTexture, normal: DataArrayTexture | null, layerRough }
+// loadCast(baseUrl) -> { doc, chars, buf, albedo: DataArrayTexture, normal: DataArrayTexture | null, layerRough,
+//   timing: ms from the start to cast.bin / albedo / normal done, raw views, total }
 //   chars[i] = the character's cast.json entry plus `raw`: typed-array views of its vertex data
 //   { n, pos (Float32Array, dequantised), nrm (Int8 x4: normal + AO), uv (Uint16 x2), bi, bw, tex (Uint8 x4), index }
 // The renderer merges every character (and its runtime accessories) into one vertex / index buffer (merge()).

@@ -21,6 +21,7 @@ export class Visibility {
     this.camPos = new THREE.Vector3();
     // (s, d, h) -> world point: route.toWorld, or the crowd's (which follows the side streets)
     this.toWorld = (s, d, h, out) => route.toWorld(s, d, h, out);
+    this._proj = settleShape({ s: 0, d: 0 });
     settleShape(this);
   }
 
@@ -30,7 +31,7 @@ export class Visibility {
     this.m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.m);
     this.camPos.copy(camera.position);
-    const p = this.route.project(camera.position.x, camera.position.z, camS, 6);
+    const p = this.route.project(camera.position.x, camera.position.z, camS, 6, this._proj);
     this.camU = camU + this.route.delta(camS, p.s);
     this.camD = p.d;
   }

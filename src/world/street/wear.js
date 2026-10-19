@@ -263,6 +263,20 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
     }
   }
 
+  // stains in the corridor stay on the setts of their strip: a decal draped over a rail
+  // would bridge its flangeway (shrunk to fit, or dropped where too little room is left)
+  for (let i = stains.length - 1; i >= 0; i--) {
+    const sn = stains[i];
+    if (Math.abs(sn.d) >= BAND_IN) continue;
+    const z = STRIPS.find((q) => sn.d >= q[0] && sn.d <= q[1]);
+    const room = z ? Math.min(sn.d - z[0], z[1] - sn.d) - 0.02 : 0;
+    // (a drip trail, kind 3, is a narrow streak down the middle of its decal)
+    const w = sn.kind === 3 ? 0.16 : 1;
+    const across = (sn.size / 2) * (w * Math.abs(Math.sin(sn.yaw)) + (sn.aspect ?? 1) * Math.abs(Math.cos(sn.yaw)));
+    if (room < 0.12) stains.splice(i, 1);
+    else if (across > room) sn.size *= room / across;
+  }
+
   // --- weeds: the odd tuft in a joint at the foot of a facade, along the gutter's outer
   // edge or against a tree grate
   const weeds = [];

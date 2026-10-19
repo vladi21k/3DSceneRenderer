@@ -22,7 +22,7 @@ import { shopDecision } from './shops.js';
 const OUT0 = 0.25;                    // gap between the wall face and the stand
 const _m = new THREE.Matrix4(), _s = new THREE.Matrix4(), _t = new THREE.Matrix4(), _r = new THREE.Matrix4();
 const _p = new THREE.Vector3();
-const cache = new TplCache(240);
+const cache = new TplCache(640);
 
 // ------------------------------------------------------------------ catalogue
 // produce: [colour, radius, x elongation, z elongation, height squash]
@@ -213,11 +213,12 @@ function heap(t, x0, z0, W, D, y0, r, ex, ez, sy, mound, seed, q, round = false,
         const cx = (x - x0) / W - 0.5, cz = (z - z0) / D - 0.5;
         if (round && cx * cx + cz * cz > 0.2) continue;
         const m = mound * Math.max(0, 1 - 2.6 * (cx * cx + cz * cz));
-        items.push({ x, z, y: y0 + r * sy * (layer ? 1.05 : 0.15) + m + rng.range(-0.15, 0.15) * r, rx: r * ex * rng.range(0.9, 1.1), rz: r * ez * rng.range(0.9, 1.1), ry: r * sy, k: rng.range(0.78, 1.16), a: rng.range(0, 3.14) });
+        const a = rng.range(0, 3.14), rx = r * ex * rng.range(0.9, 1.1), rz = r * ez * rng.range(0.9, 1.1);
+        items.push({ x, z, y: y0 + r * sy * (layer ? 1.05 : 0.15) + m + rng.range(-0.15, 0.15) * r, rx, rz, ry: r * sy, k: rng.range(0.78, 1.16), c: Math.cos(a), s: Math.sin(a), b: Math.max(rx, rz) });
       }
     }
   }
-  const res = Math.max(0.0085, r * (q >= 0.5 ? 0.42 : 1.2));
+  const res = Math.max(0.012, r * (q >= 0.5 ? 0.6 : 1.2));
   const gx = Math.max(2, Math.ceil(W / res)), gz = Math.max(2, Math.ceil(D / res));
   const H = new Float32Array((gx + 1) * (gz + 1)), S = new Float32Array((gx + 1) * (gz + 1));
   const floor = y0 - r * 0.2;
@@ -225,10 +226,12 @@ function heap(t, x0, z0, W, D, y0, r, ex, ez, sy, mound, seed, q, round = false,
     for (let i = 0; i <= gx; i++) {
       const x = x0 + (i / gx) * W, z = z0 + (j / gz) * D;
       let h = floor, s = 0.3;
-      for (const it of items) {
-        // item axes turned by its angle in plan
-        const dx0 = x - it.x, dz0 = z - it.z, c = Math.cos(it.a), sn = Math.sin(it.a);
-        const dx = (dx0 * c + dz0 * sn) / it.rx, dz = (-dx0 * sn + dz0 * c) / it.rz;
+      for (let n = 0; n < items.length; n++) {
+        const it = items[n];
+        // item axes turned by its angle in plan (a cheap reject first)
+        const dx0 = x - it.x, dz0 = z - it.z;
+        if (dx0 > it.b || dx0 < -it.b || dz0 > it.b || dz0 < -it.b) continue;
+        const dx = (dx0 * it.c + dz0 * it.s) / it.rx, dz = (-dx0 * it.s + dz0 * it.c) / it.rz;
         const q2 = dx * dx + dz * dz;
         if (q2 >= 1) continue;
         const hh = it.y + it.ry * Math.sqrt(1 - q2);
@@ -370,10 +373,10 @@ function produceStand(st, r, q) {
       const name = list[r.int(0, list.length - 1)];
       const [col, rad, ex, ez, sy] = PRODUCE[name];
       const v = r.int(0, 3);
-      const ht = cache.get(`heap|${name}|${cw}|${cd}|${H}|${v}|${q}`, () => {
-        const t = new Tpl(); heap(t, -cw / 2 + 0.016, -cd / 2 + 0.016, cw - 0.032, cd - 0.032, H - rad * sy * 0.9, rad, ex, ez, sy, 0.035, 977 * v + name.length * 31, q); return t.bake();
+      const ht = cache.get(`heap|${name}|${cw}|${cd}|${v}|${q}`, () => {
+        const t = new Tpl(); heap(t, -cw / 2 + 0.016, -cd / 2 + 0.016, cw - 0.032, cd - 0.032, 0, rad, ex, ez, sy, 0.035, 977 * v + name.length * 31, q); return t.bake();
       });
-      parts.push(PART('paint', ht, lin(col), null, m));
+      parts.push(PART('paint', ht, lin(col), null, m.clone().multiply(_t.makeTranslation(0, H - rad * sy * 0.9, 0))));
       // a cardboard price tag on a stick in some crates
       if (q >= 0.5 && r.chance(0.55)) {
         const cell = printCell('tags', r.int(0, 15));
@@ -419,18 +422,21 @@ function flowerStand(st, r, q) {
       // heads crowning it (roses, gerberas, tulips or carnations; one kind per bucket)
       const v = r.int(0, 3), hd = q2(r.range(0.12, 0.26), 0.02);
       const leaf = lin(r.pick([0x2e4a1e, 0x3a5a24, 0x26401a]));
-      const sm = cache.get(`stems|${rb}|${hb}|${hd}|${q}`, () => { const t = new Tpl(); cyl(t, 0, 0, rb * 0.7, rb * 0.95, hb - 0.02, hb + hd * 0.55, q >= 0.5 ? 10 : 6, 0.55, 0.8); return t.bake(); });
-      parts.push(PART('paint', sm, leaf, null, m));
-      const lt = cache.get(`leaves|${rb}|${hb}|${hd}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.3, -rb * 1.3, rb * 2.6, rb * 2.6, hb + hd * 0.3, 0.04, 1.6, 0.7, 0.7, 0.03, 431 * v + 7, q, true); return t.bake(); });
-      parts.push(PART('paint', lt, leaf, null, m));
-      const [hr, hx, hs] = r.pick([[0.026, 1, 1], [0.04, 1, 0.45], [0.02, 1, 1.5], [0.024, 1, 0.9]]);
-      const fl = cache.get(`heads|${rb}|${hb}|${hd}|${hr}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.12, -rb * 1.12, rb * 2.24, rb * 2.24, hb + hd * 0.45, hr, hx, 1, hs, hd * 0.55, 211 * v + 3, q, true, 0.3); return t.bake(); });
+      // (built for a 0.13 m bucket and a 0.2 m bunch at y = 0, scaled to this one)
+      const RB = 0.13, HD = 0.2, ks = rb / RB, kh = hd / HD;
+      const sm = cache.get(`stems|${q}`, () => { const t = new Tpl(); cyl(t, 0, 0, RB * 0.7, RB * 0.95, -0.02, HD * 0.55, q >= 0.5 ? 10 : 6, 0.55, 0.8); return t.bake(); });
+      const mb = m.clone().multiply(_t.makeTranslation(0, hb, 0)).multiply(_s.makeScale(ks, kh, ks));
+      parts.push(PART('paint', sm, leaf, null, mb));
+      const lt = cache.get(`leaves|${v}|${q}`, () => { const t = new Tpl(); heap(t, -RB * 1.3, -RB * 1.3, RB * 2.6, RB * 2.6, HD * 0.3, 0.04, 1.6, 0.7, 0.7, 0.03, 431 * v + 7, q, true); return t.bake(); });
+      parts.push(PART('paint', lt, leaf, null, mb));
+      const hk = r.int(0, 3), [hr, hx, hs] = [[0.026, 1, 1], [0.04, 1, 0.45], [0.02, 1, 1.5], [0.024, 1, 0.9]][hk];
+      const fl = cache.get(`heads|${hk}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -RB * 1.12, -RB * 1.12, RB * 2.24, RB * 2.24, HD * 0.45, hr, hx, 1, hs, HD * 0.55, 211 * v + 3, q, true, 0.3); return t.bake(); });
       const c1 = r.pick(FLOWERS);
-      parts.push(PART('paint', fl, lin(c1), null, m));
+      parts.push(PART('paint', fl, lin(c1), null, mb));
       // half the buckets hold a mixed bunch: a second kind of head among the first
       if (r.chance(0.5)) {
-        const f2 = cache.get(`heads2|${rb}|${hb}|${hd}|${hr}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.05, -rb * 1.05, rb * 2.1, rb * 2.1, hb + hd * 0.42, hr * 0.9, hx, 1, hs, hd * 0.55, 389 * v + 11, q, true, 0.3); return t.bake(); });
-        parts.push(PART('paint', f2, lin(r.pick(FLOWERS.filter((c) => c !== c1))), null, m));
+        const f2 = cache.get(`heads2|${hk}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -RB * 1.05, -RB * 1.05, RB * 2.1, RB * 2.1, HD * 0.42, hr * 0.9, hx, 1, hs, HD * 0.55, 389 * v + 11, q, true, 0.3); return t.bake(); });
+        parts.push(PART('paint', f2, lin(r.pick(FLOWERS.filter((c) => c !== c1))), null, mb));
       }
     }
   }
@@ -511,7 +517,7 @@ function newsRack(st, r, q) {
 /** Trestle with bakery trays of loaves, rolls or pastries. */
 function bakeryTable(st, r, q) {
   const parts = [];
-  const W = st.W, D = 0.55, H = 0.78;
+  const W = q2(st.W, 0.1), D = 0.55, H = 0.78;
   const tb = cache.get(`btable|${W.toFixed(2)}`, () => {
     const t = new Tpl();
     t.box(-W / 2, H - 0.03, -D / 2, W / 2, H, D / 2, 1 | 2 | 4 | 8 | 16 | 32, 0.9, 1);
@@ -527,7 +533,7 @@ function bakeryTable(st, r, q) {
     parts.push(PART('paint', tr, [0.5, 0.5, 0.5], null, m));
     const kind = r.pick([[0xb06a28, 0.05, 2.2, 1, 0.7], [0xc89048, 0.035, 1, 1, 0.75], [0x8a4a1e, 0.045, 1.6, 1, 0.75], [0xd8a868, 0.06, 1, 1, 0.3], [0xa8602a, 0.03, 1.3, 1, 0.8]]);
     const v = r.int(0, 3);
-    const ht = cache.get(`bread|${tw.toFixed(2)}|${kind[0]}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -(tw - 0.06) / 2, -(D - 0.1) / 2, tw - 0.06, D - 0.1, 0.03, kind[1], kind[2], kind[3], kind[4], 0.01, 53 * v + kind[0] % 97, q); return t.bake(); });
+    const ht = cache.get(`bread|${tw.toFixed(2)}|${kind[0]}|${v % 2}|${q}`, () => { const t = new Tpl(); heap(t, -(tw - 0.06) / 2, -(D - 0.1) / 2, tw - 0.06, D - 0.1, 0.03, kind[1], kind[2], kind[3], kind[4], 0.01, 53 * (v % 2) + kind[0] % 97, q); return t.bake(); });
     parts.push(PART('paint', ht, lin(kind[0]), null, m));
   }
   if (q >= 0.5) {
@@ -558,14 +564,16 @@ function sackRow(st, r, q) {
       const m = new THREE.Matrix4().makeTranslation(x, 0, z);
       parts.push(PART('paint', sk, lin(r.pick([0x7a6040, 0x6e5636, 0x8a7250, 0xc8c0a8])), null, m));
       const v = r.int(0, 3);
+      // (contents built for a 0.16 m sack at y = 0 and scaled to this one)
+      const ks = rb / 0.16, mc = m.clone().multiply(_t.makeTranslation(0, hb, 0)).multiply(_s.makeScale(ks, 1, ks));
       if (r.chance(0.4)) {
         // ground spice: one smooth cone
-        const ct = cache.get(`spice|${rb}|${hb}|${v}`, () => { const t = new Tpl(); heap(t, -rb * 0.95, -rb * 0.95, rb * 1.9, rb * 1.9, hb - 0.06, rb * 0.9, 1, 1, 0.55, 0.0, 17 * v + 1, 0, true); return t.bake(); });
-        parts.push(PART('paint', ct, lin(r.pick(SPICES)), null, m));
+        const ct = cache.get(`spice|${v}`, () => { const t = new Tpl(); heap(t, -0.152, -0.152, 0.304, 0.304, -0.06, 0.144, 1, 1, 0.55, 0.0, 17 * v + 1, 0, true); return t.bake(); });
+        parts.push(PART('paint', ct, lin(r.pick(SPICES)), null, mc));
       } else {
-        const [col, rad, ex] = r.pick(NUTS);
-        const nt = cache.get(`nuts|${rad}|${ex}|${rb}|${hb}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 0.92, -rb * 0.92, rb * 1.84, rb * 1.84, hb - 0.035, rad, ex, 1, 0.8, rb * 0.25, 71 * v + 5, q, true); return t.bake(); });
-        parts.push(PART('paint', nt, lin(col), null, m));
+        const nk = r.int(0, NUTS.length - 1), [col, rad, ex] = NUTS[nk];
+        const nt = cache.get(`nuts|${nk}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -0.147, -0.147, 0.294, 0.294, -0.035, rad, ex, 1, 0.8, 0.04, 71 * v + 5, q, true); return t.bake(); });
+        parts.push(PART('paint', nt, lin(col), null, mc));
       }
       if (q >= 0.5 && r.chance(0.5)) {
         const tt = new Tpl(); card(tt, printCell('tags', r.int(0, 15)), x, hb + 0.1, z + rb * 0.4, 0.09, 0.15);
@@ -579,7 +587,7 @@ function sackRow(st, r, q) {
 /** Wire bins of sale goods (toys, sweets, shoes, phone cases...) with a big price card. */
 function saleBins(st, r, q) {
   const parts = [];
-  const W = st.W, D = 0.55, H = 0.62, bh = 0.2;
+  const W = q2(st.W, 0.1), D = 0.55, H = 0.62, bh = 0.2;
   const ft = cache.get(`bin|${W.toFixed(2)}`, () => {
     const t = new Tpl();
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) bar(t, [sx * W / 2, 0, sz * D / 2], [sx * W / 2, H + bh, sz * D / 2], 0.018);

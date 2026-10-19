@@ -118,6 +118,8 @@ class CrowdSim {
     this.activeList = []; this.activeN = -1;
     this._camF = settleShape({ x: 0, z: -1 });
     this._tramP = new THREE.Vector3(); this._tramPN = -1;
+    // route's allocation-free entry points (route.io + toWorldIO / sampleIO), when it has them
+    this.io = app.route.io && app.route.toWorldIO && app.route.sampleIO ? app.route.io : null;
     this.movers = { n: 0, items: Array.from({ length: MOVERS }, () => settleShape({ id: 0, x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0, heading: 0, halfLen: 0.95, halfWidth: 0.36, halfHeight: 0.92, dist2: 0 })) };
     // (classes fixed up front: see settleShape)
     settleShape(this.counts, COUNT_INTS); settleShape(this.perf); settleShape(this.check);
@@ -250,8 +252,11 @@ class CrowdSim {
     if (!U && a.state === ST.WAIT && a.uI >= 0) U = this.tram.unitById(a.uI);
     // (the cab's front once per frame for everybody looking at it)
     let p = this._tramP;
-    if (U) p = this.route.toWorld(U.sU, U.d, 2.2, _v);
-    else if (this._tramPN !== this.tram.n) { this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, p); this._tramPN = this.tram.n; }
+    const io = this.io;
+    if (U) {
+      p = _v;
+      if (io) { io[0] = U.sU; io[1] = U.d; io[2] = 2.2; this.route.toWorldIO(p); } else this.route.toWorld(U.sU, U.d, 2.2, p);
+    } else if (this._tramPN !== this.tram.n) { this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, p); this._tramPN = this.tram.n; }
     const yaw = Math.atan2(-(p.x - a.x), -(p.z - a.z));
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
@@ -366,7 +371,10 @@ class CrowdSim {
       // than 0.2 degrees over that; every frame for riders, whose lean comes from its rate)
       if (a.inSide) a.heading = this.side.heading(a.s, a.d, a.alpha);
       else {
-        if (!a.rhValid || a.mob === MOB.CYCLE || a.s - a.rhS > 0.2 || a.rhS - a.s > 0.2) { a.rh = route.heading(a.s); a.rhS = a.s; a.rhValid = true; }
+        if (!a.rhValid || a.mob === MOB.CYCLE || a.s - a.rhS > 0.2 || a.rhS - a.s > 0.2) {
+          if (this.io) { this.io[0] = a.s; route.sampleIO(); a.rh = this.io[3]; } else a.rh = route.heading(a.s);
+          a.rhS = a.s; a.rhValid = true;
+        }
         a.heading = a.rh - PI / 2 - a.alpha;
       }
       if (a.mob === MOB.CYCLE) {
@@ -410,13 +418,20 @@ class CrowdSim {
     }
   }
 
-  /** route.toWorld at a's spot and LIN metres on along s and d, the way a is moving. */
+  /** route.toWorld at a's spot and LIN metres on along s and d, the way a is moving (through
+   *  route.io: no number argument boxed). */
   _linearise(a) {
-    const route = this.route;
+    const route = this.route, io = this.io;
     const gs = a.vs < 0 ? -LIN : LIN, gd = a.vd < 0 ? -LIN : LIN;
-    route.toWorld(a.s, a.d, 0, _v);
-    route.toWorld(a.s + gs, a.d, 0, _w);
-    route.toWorld(a.s, a.d + gd, 0, _u);
+    if (io) {
+      io[0] = a.s; io[1] = a.d; io[2] = 0; route.toWorldIO(_v);
+      io[0] = a.s + gs; route.toWorldIO(_w);
+      io[0] = a.s; io[1] = a.d + gd; route.toWorldIO(_u);
+    } else {
+      route.toWorld(a.s, a.d, 0, _v);
+      route.toWorld(a.s + gs, a.d, 0, _w);
+      route.toWorld(a.s, a.d + gd, 0, _u);
+    }
     a.lwS = a.s; a.lwD = a.d;
     a.lwX = _v.x; a.lwY = _v.y; a.lwZ = _v.z;
     a.lwXs = (_w.x - _v.x) / gs; a.lwYs = (_w.y - _v.y) / gs; a.lwZs = (_w.z - _v.z) / gs;
@@ -732,7 +747,7 @@ class CrowdSim {
       population: pop.stats, events: this.events,
       // appearance bank (population.js): entries, characters, and the people placed with a spot
       // by outcome: no twin within 20 m / another age class or sex taken / a twin kept (farthest)
-      appearance: pop.bank ? { bank: pop.bank.n, chars: pop.bank.chars, inUse: pop.bank.use.reduce((n, u) => n + (u > 0 ? 1 : 0), 0),
+      appearance: pop.bank ? { bank: pop.bank.n, chars: pop.bank.chars, buildMs: +pop.bankMs.toFixed(1), inUse: pop.bank.use.reduce((n, u) => n + (u > 0 ? 1 : 0), 0),
         placed: { clean: pop.cloneN[0], otherClass: pop.cloneN[1], twin: pop.cloneN[2] } } : null,
       standing: { near300: this.counts.stand300, beyond300: this.counts.standFar }, sideStreets: { people: this.counts.side, ...this.side.stats },
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },

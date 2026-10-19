@@ -4,11 +4,16 @@ import { REGION } from './appearance.js';
 
 // Runtime accessories fitted to each character of the cast, in the cast's vertex layout (mh/cast.js
 // mergeMeshes): a phone and a cup (rigid in the right hand), a shopping bag (hanging from the right
-// hand), a backpack and a cross-body shoulder bag (on the back / the left hip, their straps laid on
-// the character's own clothed surface: strap points are pushed out of the rest-pose torso found
-// in the character's vertices). Untextured: flag SOLID, shaded from the wearer's region tints.
+// hand), a soft backpack on the upper back (padded shoulder straps over the shoulders and down the
+// chest, webbing back under the arms), a cross-body shoulder bag (a soft bag wrapped against the left
+// hip, its strap from the bag's front end across the chest, over the right shoulder and down the back
+// to its rear end) and, for characters that can wear it, a waiter's waist apron. Straps lie on the
+// character's own clothed surface: their paths are rays from the torso's axis onto the rest-pose
+// torso found in the character's vertices (height-sorted, so a query scans only its band).
+// Untextured: flag SOLID, shaded from the wearer's region tints (the apron: the socks region's).
 //
-//   buildParts(char) -> { phone, cup, shopping, backpack, backpackFar, shoulder, shoulderFar } (raw meshes)
+//   buildParts(char, {apron}) -> { phone, cup, shopping, backpack, backpackFar, shoulder, shoulderFar,
+//     apron?, apronFar? } (raw meshes)
 
 export const FLAG = { ALPHA: 1, BACK: 2, DETAIL: 4, SKIRT: 8, SOLID: 16, WHITE: 32 };
 const ARM_BONES = new Set([BONE.armL, BONE.foreL, BONE.handL, BONE.armR, BONE.foreR, BONE.handR]);
@@ -509,9 +514,9 @@ export function buildParts(char, opts = {}) {
     // (a soft pack: deep corner radii, the load bulging its faces, the top rounded and narrower;
     // the panel against the back and the seams in shade)
     const panelAO = (v) => 0.55 + 0.45 * THREE.MathUtils.smoothstep(v.z, -pd * 0.5, -pd * 0.1);
-    b.geometry(roundBox(pw, ph, pd, 0.05 * k, 6, 0.13, 0.12), M, packSkin, REGION.bag, FLAG.SOLID, panelAO);
+    b.geometry(roundBox(pw, ph, pd, 0.05 * k, 5, 0.13, 0.12), M, packSkin, REGION.bag, FLAG.SOLID, panelAO);
     // front pocket: a flatter, soft pouch low on the face
-    b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.22, 0.03 * k, 4, 0.18, 0.06), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.19, pd * 0.5 * 1.1)),
+    b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.22, 0.03 * k, 3, 0.18, 0.06), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.19, pd * 0.5 * 1.1)),
       packSkin, REGION.bag, FLAG.SOLID, (v) => 0.7 + 0.3 * THREE.MathUtils.smoothstep(v.z, -pd * 0.11, pd * 0.04));
     // a carry loop at the top
     {

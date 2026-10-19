@@ -28,6 +28,22 @@ const BRASS = lin(0xb08a45), BLACK_IRON = [0.035, 0.035, 0.037];
 const SHOP_MIX = [['clothing', 0.22], ['general', 0.24], ['cafe', 0.14], ['jewellery', 0.09], ['pharmacy', 0.05], ['shoes', 0.11], ['books', 0.07], ['flowers', 0.08]];
 /** Trades that cluster (a run of fashion shops, cafés side by side); any other trade does not repeat within two shops. */
 const CLUSTER = new Set(['clothing', 'cafe']);
+/**
+ * Trades a street side has only so many of: on the main street a shop may follow one of
+ * them only inside that trade's slot of its block (14 m in every `block` metres of a side,
+ * placed by a hash), so three pharmacies never line one stretch.
+ */
+const RARE = { pharmacy: 75, jewellery: 45, books: 60, flowers: 55, shoes: 40 };
+function tradeAllowed(app, lot, frame, plan, o, type) {
+  const B = RARE[type];
+  if (!B || lot.sideStreet || lot.backdrop) return true;
+  const s = openingS(app, lot, frame, plan, o);
+  const b = Math.floor(s / B);
+  const h = RNG.from('trade', type, b, lot.side).next();
+  const s0 = b * B + h * (B - 14);
+  return s >= s0 && s < s0 + 14;
+}
+
 /** Share of the shops the plan gives no sign that put up their own (fascia, head panel or valance). */
 const EXTRA_SIGN = 0.8;
 /** Share of the shops of each trade with a projecting sign on a pier beside them. */
@@ -57,10 +73,11 @@ function addSpill(kit, ctx, o, m, lit, kind, dim = 0) {
 }
 
 /** Interior glass attributes for an opening with glass at local depth zRef. */
-export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 0, zRef = -0.012, lit = o.lit, recess = o.recess }) {
+export function glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind, type = 0, zRef = -0.012, lit = o.lit, recess = o.recess, door = null }) {
   const winY0 = o.y - roomY0, winY1 = winY0 + o.h;
   const baseH = roomY0 - ctx.plan.groundAt(o.uc);
-  const hw = o.w / 2;
+  // (a shop also packs the x of its door, so its window displays keep out of the doorway)
+  const hw = door == null ? o.w / 2 : o.w / 2 + 10 * Math.round((Math.max(-3.9, Math.min(3.9, door)) + 4) * 100);
   return {
     aRoomP: (k, v, a, i) => { const o = k * VS; a[i] = W / 2 + v[o]; a[i + 1] = winY0 + v[o + 1]; a[i + 2] = Math.max(0, zRef - v[o + 2]); a[i + 3] = hw; },
     aRoomS: [W, H, D, baseH],
@@ -439,7 +456,7 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   const H = Math.max(3, f0.y + f0.h - roomY0 - 0.3);
   const D = 6.5 + r.next() * 3;
   const gseed = r.next();
-  const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed: gseed, drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit, recess: o.recess + (L.inset || 0) });
+  const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed: gseed, drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit, recess: o.recess + (L.inset || 0), door: L.dx });
   shadeGlass(ga, awningShade(ctx, o));
   kit.get('glass').add(T.glass, m, 1, 1, 1, ga);
   // (the reveal glow and the pavement pool in the colour of its lamps)
@@ -889,7 +906,9 @@ function prepareFront(ctx) {
       if (!cafe) {
         const r = RNG.from(o.id, 'type');
         type = si ? wordType(si.design.cell) : r.weighted(SHOP_MIX);
-        for (let k = 0; k < 6 && !CLUSTER.has(type) && recent.includes(type); k++) type = r.weighted(SHOP_MIX);
+        const ok = (t) => (CLUSTER.has(t) || !recent.includes(t)) && tradeAllowed(ctx.app, ctx.lot, ctx.frame, plan, o, t);
+        for (let k = 0; k < 8 && !ok(type); k++) type = r.weighted(SHOP_MIX);
+        if (!ok(type)) type = recent.includes('clothing') ? 'general' : 'clothing';
         if (si && type !== wordType(si.design.cell)) si.design = { ...si.design, cell: signDesign(r.int(0, 1 << 30), si.design.type, type).cell };
         if (!si && !ctx.lot.backdrop && RNG.from(o.id, 'ownSign').chance(EXTRA_SIGN)) addShopSign(ctx, signs, o, type);
       }

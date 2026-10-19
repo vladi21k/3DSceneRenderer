@@ -39,7 +39,7 @@ export class FrameMonitor {
     this.readyT = 0;
     // scalars of the frame being run (read back when the next interval turns out long)
     this.cpu = 0; this.shadowMs = 0; this.cascades = -1;
-    this.shadowDraw = 0; this.shadowDrawObj = null;   // longest single draw in the shadow passes (main.js)
+    this.shadowDraw = 0; this.shadowDrawObj = null;   // longest single draw in the shadow passes (ms, object name; main.js)
     this.progUpd = 0; this.progRender = 0; this.progNames = null;
     this.reveal = 0; this.build = 0; this.queue = 0;
     this.heap = 0; this.heapStart = 0; this.calls = 0; this.tris = 0; this.proxy = 0;
@@ -190,7 +190,7 @@ export class FrameMonitor {
       s: r1(app.cameraS ?? 0), kmh: r1((app.train?.speed ?? 0) * 3.6), state: app.train?.state ?? null,
       ms: r1(dtMs), cpu: r1(this.cpu), gap: r1(dtMs - this.cpu),
       stages, usualStages, shadowCpu: r1(this.shadowMs), cascades: this.cascades,
-      shadowDraw: r1(this.shadowDraw), shadowDrawObj: this.shadowDrawObj ? (this.shadowDrawObj.name || this.shadowDrawObj.type || '?') : null,
+      shadowDraw: r1(this.shadowDraw), shadowDrawObj: this.shadowDrawObj,
       programs: this.progUpd + this.progRender, syncCompile: this.progRender,
       newPrograms: this.progNames ? this.progNames.slice(0, 8) : undefined,
       compiling, reveal: Math.round(this.reveal / 1024), build: r1(this.build), queue: this.queue, proxyMerge: this.proxy,

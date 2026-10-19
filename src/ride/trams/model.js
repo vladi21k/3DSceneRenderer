@@ -591,7 +591,7 @@ function noseFittings(P, lod) {
   if (lod < 2) {
     const cu = -0.215, cw = 0.042 / sideX(ym);
     noseEllipse(P.body, cu, ym + 0.004, cw, 0.055, 0.005, [0.6, 0.6, 0.58], null, lod === 0 ? 16 : 8, 0.55);
-    noseEllipse(P.body, cu, ym + 0.006, cw * 0.66, 0.036, 0.0062, [0.03, 0.06, 0.2], null, lod === 0 ? 12 : 6, 0.7);
+    noseEllipse(P.body, cu, ym + 0.008, cw * 0.45, 0.026, 0.0062, [0.1, 0.17, 0.4], null, lod === 0 ? 12 : 6, 0.8);
     const hw = 0.3 / sideX(0.42);
     noseEllipse(P.body, 0, 0.42, hw, 0.105, 0.0025, [0.05, 0.05, 0.052], null, lod === 0 ? 20 : 10, 0.3);
     noseEllipse(P.body, 0, 0.42, hw - 0.009 / sideX(0.42), 0.096, 0.0035, grimed(COL.silver, 0.42).slice(), null, lod === 0 ? 20 : 10, 0.3);

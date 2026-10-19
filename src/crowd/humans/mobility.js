@@ -61,34 +61,50 @@ function setRaxis(m, o, kx, ky, kz, a) {
   m[o + 3] = t * kx * ky + s * kz; m[o + 4] = t * ky * ky + c; m[o + 5] = t * ky * kz - s * kx;
   m[o + 6] = t * kx * kz - s * ky; m[o + 7] = t * ky * kz + s * kx; m[o + 8] = t * kz * kz + c;
 }
-const _ta = v3(), _tn = v3(), _tc = v3(), _ua = v3(), _un = v3(), _uc = v3();
-/** Rotation taking frame (d0, n0) onto (d1, n1): d = primary direction, n = secondary axis. */
+/** Rotation taking frame (d0, n0) onto (d1, n1): d = primary direction, n = secondary axis.
+ *  (Scalar arithmetic only: no helper calls, so no float is boxed on the way.) */
 function frameMatch(out, o, d0, n0, d1, n1) {
-  const a = norm3(set3(_ta, d0[0], d0[1], d0[2]));
-  let k = dot3(n0, a);
-  const na = norm3(set3(_tn, n0[0] - a[0] * k, n0[1] - a[1] * k, n0[2] - a[2] * k));
-  const ca = cross3(a, na, _tc);
-  const b = norm3(set3(_ua, d1[0], d1[1], d1[2]));
-  k = dot3(n1, b);
-  const nb = norm3(set3(_un, n1[0] - b[0] * k, n1[1] - b[1] * k, n1[2] - b[2] * k));
-  const cb = cross3(b, nb, _uc);
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out[o + r * 3 + c] = b[r] * a[c] + nb[r] * na[c] + cb[r] * ca[c];
+  let ax = d0[0], ay = d0[1], az = d0[2];
+  let l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+  ax /= l; ay /= l; az /= l;
+  let k = n0[0] * ax + n0[1] * ay + n0[2] * az;
+  let nax = n0[0] - ax * k, nay = n0[1] - ay * k, naz = n0[2] - az * k;
+  l = Math.sqrt(nax * nax + nay * nay + naz * naz) || 1;
+  nax /= l; nay /= l; naz /= l;
+  const cax = ay * naz - az * nay, cay = az * nax - ax * naz, caz = ax * nay - ay * nax;
+  let bx = d1[0], by = d1[1], bz = d1[2];
+  l = Math.sqrt(bx * bx + by * by + bz * bz) || 1;
+  bx /= l; by /= l; bz /= l;
+  k = n1[0] * bx + n1[1] * by + n1[2] * bz;
+  let nbx = n1[0] - bx * k, nby = n1[1] - by * k, nbz = n1[2] - bz * k;
+  l = Math.sqrt(nbx * nbx + nby * nby + nbz * nbz) || 1;
+  nbx /= l; nby /= l; nbz /= l;
+  const cbx = by * nbz - bz * nby, cby = bz * nbx - bx * nbz, cbz = bx * nby - by * nbx;
+  out[o] = bx * ax + nbx * nax + cbx * cax; out[o + 1] = bx * ay + nbx * nay + cbx * cay; out[o + 2] = bx * az + nbx * naz + cbx * caz;
+  out[o + 3] = by * ax + nby * nax + cby * cax; out[o + 4] = by * ay + nby * nay + cby * cay; out[o + 5] = by * az + nby * naz + cby * caz;
+  out[o + 6] = bz * ax + nbz * nax + cbz * cax; out[o + 7] = bz * ay + nbz * nay + cbz * cay; out[o + 8] = bz * az + nbz * naz + cbz * caz;
 }
-const _iu = v3(), _iv = v3();
-/** Two-bone IK: mid joint bending towards `pole`, end clamped to the reach. Returns the reach ratio. */
-function ik2(root, target, l1, l2, pole, reach, mid, end) {
-  let dx = target[0] - root[0], dy = target[1] - root[1], dz = target[2] - root[2];
-  let d = hyp3(dx, dy, dz);
-  const u = set3(_iu, dx / (d || 1), dy / (d || 1), dz / (d || 1));
-  const want = d;
-  d = Math.min(Math.max(d, Math.abs(l1 - l2) + 1e-3), (l1 + l2) * reach);
-  const k = dot3(pole, u);
-  const v = norm3(set3(_iv, pole[0] - u[0] * k, pole[1] - u[1] * k, pole[2] - u[2] * k));
+/**
+ * Two-bone IK: mid joint bending towards `pole`, end clamped to the reach. L = [l1, l2, reach] (an
+ * array, so no float is passed boxed); the reach ratio is written to L[3].
+ */
+function ik2(root, target, L, pole, mid, end) {
+  const l1 = L[0], l2 = L[1];
+  const dx = target[0] - root[0], dy = target[1] - root[1], dz = target[2] - root[2];
+  const want = Math.sqrt(dx * dx + dy * dy + dz * dz), q = want || 1;
+  const ux = dx / q, uy = dy / q, uz = dz / q;
+  const d = Math.min(Math.max(want, Math.abs(l1 - l2) + 1e-3), (l1 + l2) * L[2]);
+  const k = pole[0] * ux + pole[1] * uy + pole[2] * uz;
+  let vx = pole[0] - ux * k, vy = pole[1] - uy * k, vz = pole[2] - uz * k;
+  const lv = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+  vx /= lv; vy /= lv; vz /= lv;
   const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
   const h = Math.sqrt(Math.max(0, l1 * l1 - a * a));
-  for (let i = 0; i < 3; i++) { mid[i] = root[i] + u[i] * a + v[i] * h; end[i] = root[i] + u[i] * d; }
-  return want / (l1 + l2);
+  mid[0] = root[0] + ux * a + vx * h; mid[1] = root[1] + uy * a + vy * h; mid[2] = root[2] + uz * a + vz * h;
+  end[0] = root[0] + ux * d; end[1] = root[1] + uy * d; end[2] = root[2] + uz * d;
+  L[3] = want / (l1 + l2);
 }
+const _L = new Float64Array(4);
 const smooth01 = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
 
 // ------------------------------------------------------------------ per-body poser
@@ -219,20 +235,39 @@ export class Poser {
     const off = palm ? A.palm : A.grip;
     // wrist target: grip minus the hand's offset (iterated: the hand's orientation follows the IK)
     const W = _b, E = _c, Wd = _d;
-    set3(_e, G[0] - sh[0], G[1] - sh[1], G[2] - sh[2]); norm3(_e);
-    W[0] = G[0] - _e[0] * 0.09 * this.k; W[1] = G[1] - _e[1] * 0.09 * this.k + 0.02 * this.k; W[2] = G[2] - _e[2] * 0.09 * this.k;
+    // (scalar arithmetic in the loop: helper calls with float arguments would box them)
+    {
+      let ex = G[0] - sh[0], ey = G[1] - sh[1], ez = G[2] - sh[2];
+      const le = Math.sqrt(ex * ex + ey * ey + ez * ez) || 1, kk = 0.09 * this.k / le;
+      W[0] = G[0] - ex * kk; W[1] = G[1] - ey * kk + 0.02 * this.k; W[2] = G[2] - ez * kk;
+    }
+    _L[0] = this.ua; _L[1] = this.fa; _L[2] = 0.985;
+    // wrist flexion about the hand's own axis (constant through the iterations)
+    {
+      const kx = A.wd[0], ky = A.wd[1], kz = A.wd[2];
+      const c = Math.cos(flex), sn = Math.sin(flex), t = 1 - c;
+      _m9[0] = t * kx * kx + c; _m9[1] = t * kx * ky - sn * kz; _m9[2] = t * kx * kz + sn * ky;
+      _m9[3] = t * kx * ky + sn * kz; _m9[4] = t * ky * ky + c; _m9[5] = t * ky * kz - sn * kx;
+      _m9[6] = t * kx * kz - sn * ky; _m9[7] = t * ky * kz + sn * kx; _m9[8] = t * kz * kz + c;
+    }
     for (let it = 0; it < 10; it++) {
-      ik2(sh, W, this.ua, this.fa, pole, 0.985, E, Wd);
-      set3(_f, E[0] - sh[0], E[1] - sh[1], E[2] - sh[2]);         // upper arm
-      set3(_g, Wd[0] - E[0], Wd[1] - E[1], Wd[2] - E[2]);         // forearm
-      cross3(_f, _g, _h); norm3(_h);
+      ik2(sh, W, _L, pole, E, Wd);
+      _f[0] = E[0] - sh[0]; _f[1] = E[1] - sh[1]; _f[2] = E[2] - sh[2];          // upper arm
+      _g[0] = Wd[0] - E[0]; _g[1] = Wd[1] - E[1]; _g[2] = Wd[2] - E[2];          // forearm
+      {
+        const hx = _f[1] * _g[2] - _f[2] * _g[1], hy = _f[2] * _g[0] - _f[0] * _g[2], hz = _f[0] * _g[1] - _f[1] * _g[0];
+        const lh = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
+        _h[0] = hx / lh; _h[1] = hy / lh; _h[2] = hz / lh;
+      }
       frameMatch(PR, bA * 9, A.du, A.axis, _f, _h);
       frameMatch(PR, bF * 9, A.df, A.th, _g, I);
-      setRaxis(_m9, 0, A.wd[0], A.wd[1], A.wd[2], flex);
       mul3(PR, bF * 9, _m9, 0, PR, bH * 9);
       // where the hold point ends up: move the wrist target by the miss
-      app3(PR, bH * 9, off[0], off[1], off[2], _q);
-      const mx = G[0] - (Wd[0] + _q[0]), my = G[1] - (Wd[1] + _q[1]), mz = G[2] - (Wd[2] + _q[2]);
+      const ho = bH * 9, ox = off[0], oy = off[1], oz = off[2];
+      const qx = PR[ho] * ox + PR[ho + 1] * oy + PR[ho + 2] * oz;
+      const qy = PR[ho + 3] * ox + PR[ho + 4] * oy + PR[ho + 5] * oz;
+      const qz = PR[ho + 6] * ox + PR[ho + 7] * oy + PR[ho + 8] * oz;
+      const mx = G[0] - (Wd[0] + qx), my = G[1] - (Wd[1] + qy), mz = G[2] - (Wd[2] + qz);
       // (damped after a few steps: a palm laid flat can make the plain update overshoot)
       const g = it < 4 ? 1 : 0.6;
       W[0] = Wd[0] + mx * g; W[1] = Wd[1] + my * g; W[2] = Wd[2] + mz * g;
@@ -255,7 +290,9 @@ export class Poser {
     // hip joint from the pelvis
     app3(PR, 9, r[bT * 3] - r[3], r[bT * 3 + 1] - r[4], r[bT * 3 + 2] - r[5], _p);
     const hip = _a; hip[0] = PP[3] + _p[0]; hip[1] = PP[4] + _p[1]; hip[2] = PP[5] + _p[2];
-    const ratio = ik2(hip, ankle, this.l1, this.l2, pole, 0.999, _c, _d);
+    _L[0] = this.l1; _L[1] = this.l2; _L[2] = 0.999;
+    ik2(hip, ankle, _L, pole, _c, _d);
+    const ratio = _L[3];
     set3(_f, _c[0] - hip[0], _c[1] - hip[1], _c[2] - hip[2]);
     set3(_g, _d[0] - _c[0], _d[1] - _c[1], _d[2] - _c[2]);
     cross3(_f, pole, _h); norm3(_h);
@@ -363,7 +400,7 @@ const POLE_KNEE = [norm3([-0.1, 0.15, -1]), norm3([0.1, 0.15, -1])];   // L, R
 
 /** Per-slot state of a figure with a mobility prop. */
 function newMob() {
-  return { key: '', prop: 0, kit: null, v: 0, look: null, ride: null, walk: null, roll: 0, crankOff: 0, crank: 0, steer: 0,
+  return { key: '', kSeed: 0, kApp: null, prop: 0, kit: null, v: 0, look: null, ride: null, walk: null, roll: 0, crankOff: 0, crank: 0, steer: 0,
     lean: 0, pitch: 0, omega: 0, swivel: 0, stopW: 0, px: 0, py: 0, pz: 0, ph: 0, valid: false,
     offX: 0, offZ: 0, offL: 0, toX: 0, toZ: 0, toL: 0, fromX: 0, fromZ: 0, fromL: 0, fadeT0: -1, fadeDur: 0, pose: -1,
     sitR: v3(), sitS: v3(), footSide: -1, hold: 0, pushOff: 0.4 };
@@ -426,9 +463,9 @@ export class Mobility {
     if (!prop) { if (s.mob) s.mob.valid = false; return null; }
     const st = s.mob || (s.mob = newMob());
     const kit = prop === 1 ? this.strollers : this.bikes;
-    const key = `${prop}:${s.propSeed | 0}:${s.appearance}`;
-    if (st.key !== key) {
-      st.key = key; st.prop = prop; st.kit = kit;
+    // (the prop, its seed and the person: compared field by field, no key string per frame)
+    if (st.prop !== prop || st.kSeed !== (s.propSeed | 0) || st.kApp !== s.appearance || st.key !== 'set') {
+      st.key = 'set'; st.prop = prop; st.kit = kit; st.kSeed = s.propSeed | 0; st.kApp = s.appearance;
       st.look = prop === 1 ? kit.pick(s.propSeed | 0, { variant: this.forceS, baby: this.forceBaby })
         : kit.pick(s.propSeed | 0, { riderHeight: a.height, child: a.age === 'child', variant: this.forceV });
       st.v = st.look.variant;

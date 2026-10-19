@@ -276,7 +276,7 @@ const QUAD_U = [-1, 1, 1, -1], QUAD_V = [-1, -1, 1, 1];
 // leaf tints (linear): yellowing green, brown, dry tan, green, rusty
 const LEAF_TINTS = [[0.36, 0.34, 0.08], [0.2, 0.11, 0.04], [0.42, 0.3, 0.14], [0.14, 0.2, 0.05], [0.33, 0.16, 0.05]];
 // weed tints (linear): fresh green, grey-green, yellowing, dry straw
-const WEED_TINTS = [[0.11, 0.19, 0.045], [0.13, 0.17, 0.07], [0.2, 0.21, 0.06], [0.3, 0.26, 0.12]];
+const WEED_TINTS = [[0.085, 0.15, 0.035], [0.1, 0.14, 0.055], [0.11, 0.17, 0.04], [0.15, 0.16, 0.05], [0.22, 0.2, 0.09]];
 
 /** Build the details of a chunk into the BufSet (iron, stains, leaves, weeds) and joints
  *  and repairs into the line buffer (lines: its style writers, see street.js). grid: the
