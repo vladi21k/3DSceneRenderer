@@ -22,6 +22,8 @@ import { MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_W, GUTTER_OUT, GROUT_W, TRACK_OFF
 //              tree grate.
 
 const SETT_COURSE = 0.2;      // paving.street courses run across the street every 0.2 m of u
+const WALK_COURSE = 0.25;     // paving.sidewalk courses run along the street every 0.25 m of
+                              // v (metres from the gutter's outer edge)
 /** Cover size as a share of its halo decal (the halo cells of the stain atlas keep the
  *  middle RING_IN of the cell for the cover, see textures.js). */
 export const RING_IN = 0.6;
@@ -38,6 +40,12 @@ export const STRIPS = (() => {
 
 // repair kinds (lines.js: the repair style's fill)
 export const REPAIR_ASPHALT = 0, REPAIR_CONCRETE = 1;
+// how a repair's edges follow the setts it replaced (lines.js repairWear): free, or stepped
+// a course at a time: sidewalk courses (WALK_COURSE) lying across the ribbon's length
+// (STEP_WALK_U: its sides step) or along it (STEP_WALK_X: its ends step), street courses
+// (SETT_COURSE) across its length (STEP_STREET_U). The stepped extent starts and ends on
+// course joints.
+export const STEP_NONE = 0, STEP_WALK_U = 1, STEP_WALK_X = 2, STEP_STREET_U = 3;
 
 /**
  * Wear plan of chunk ci (see the header): { relays, repairs, weeds }; halo, gutter and oil
@@ -50,6 +58,14 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
   const rng = RNG.from(layout.seed, 'street-wear', ci);
   const inside = (s, r) => s - r > s0 + 0.3 && s + r < s1 - 0.3;
   const joint = (s) => (Math.round((s * kP) / SETT_COURSE) * SETT_COURSE) / kP;
+  // |d| of the sidewalk course joint nearest |d| = a
+  const walkJoint = (a) => GUTTER_OUT + Math.round((a - GUTTER_OUT) / WALK_COURSE) * WALK_COURSE;
+  const poleNear = (s, d, r) => {
+    for (let k = -1; k <= 1; k++) {
+      for (const p of layout.inChunk('poles', ci + k)) if (Math.abs(delta(p.s, s)) < r + 0.3 && Math.abs(p.d - d) < r + 0.3) return true;
+    }
+    return false;
+  };
   const nearCross = (s, r) => layout.crossStreets.some((c) => Math.abs(delta(c.s, s)) < c.width / 2 + r);
 
   // --- relaid setts
@@ -65,8 +81,8 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
       if (layout.isInCrossover(mid, half + 3) || nearCross(mid, half + 3)) continue;
       if (relays.some((r) => r.zone === zone && r.s0 < b + 0.6 && r.s1 > a - 0.6)) continue;
       // another batch of granite: darker or paler, a little warmer or cooler
-      const k = rng.chance(0.55) ? rng.range(0.8, 0.92) : rng.range(1.07, 1.17);
-      const h = rng.range(-0.035, 0.05);
+      const k = rng.chance(0.55) ? rng.range(0.68, 0.84) : rng.range(1.15, 1.32);
+      const h = rng.range(-0.05, 0.07);
       const [d0, d1] = STRIPS[zone];
       relays.push({ s0: a, s1: b, zone, d0, d1, tone: [k * (1 + h), k * (1 + 0.15 * h), k * (1 - h)] });
       break;
@@ -82,16 +98,23 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
     const walk = Math.abs(it.d) > GUTTER_OUT + 0.2;
     if (walk && (it.type === 'manhole' || it.type === 'plate' || it.type === 'plate2' || it.type === 'valve')
       && rng.chance(it.type === 'valve' ? 0.15 : 0.22)) {
-      // reinstatement square round the cover, hand-laid in asphalt or concrete
+      // reinstatement square round the cover, hand-laid in asphalt or concrete where the
+      // setts were taken up: its sides on course joints (the cover is nudged by up to an
+      // eighth of a course to sit centred between them), its ends stepped sett by sett
       const side = it.type === 'valve' ? rng.range(0.6, 0.9) : it.type === 'manhole' ? rng.range(1.25, 1.7) : rng.range(1.0, 1.5);
-      const hs = side / 2 + rng.range(-0.05, 0.12), hd = side / 2 + rng.range(-0.05, 0.12);
+      const hs = side / 2 + rng.range(-0.05, 0.12);
       const kind = rng.chance(0.65) ? REPAIR_ASPHALT : REPAIR_CONCRETE;
-      if (inside(it.s, hs + 0.1) && !overlaps(it.s, it.d, hs, hd)) {
+      const sd = it.d < 0 ? -1 : 1, H = WALK_COURSE / 2;
+      const ac = GUTTER_OUT + Math.round((Math.abs(it.d) - GUTTER_OUT) / H) * H;
+      const onJoint = Math.abs(walkJoint(ac) - ac) < 1e-6;
+      const hd = (onJoint ? 0 : H) + Math.max(1, Math.round((side / 2 - (onJoint ? 0 : H)) / WALK_COURSE)) * WALK_COURSE;
+      if (inside(it.s, hs + 0.25) && !overlaps(it.s, sd * ac, hs, hd) && ac - hd > GUTTER_OUT + 0.1) {
+        it.d = sd * ac;
         const round = it.type === 'manhole' || it.type === 'valve';
         const [w, l] = SIZE[it.type];
         const rot = Math.abs(Math.sin(it.yaw)) > 0.7;
         repairs.push({
-          dir: 's', s: it.s, d: it.d, hs, hd, kind, tone: rng.next(),
+          dir: 's', s: it.s, d: it.d, hs, hd, kind, tone: rng.next(), step: STEP_WALK_X,
           hole: round ? { r: w / 2 + 0.002 } : { hs: (rot ? l : w) / 2 + 0.002, hd: (rot ? w : l) / 2 + 0.002 },
         });
         continue;
@@ -123,59 +146,73 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
     }
   }
 
-  // trenches of service connections across a sidewalk, from the facade towards the
-  // street (some to a valve or plate on the way), and cable trenches along it
+  // trenches of service connections across a sidewalk, from the facade (or a cover on
+  // the way) out towards the street: from course joint to course joint, the sides
+  // stepped where the setts were taken up; and, rarely, a cable trench along it
   for (const side of [-1, 1]) {
     if (!rng.chance(0.13)) continue;
     for (let t = 0; t < 4; t++) {
       const s = rng.range(s0 + 1.2, s1 - 1.2);
-      const hs = rng.range(0.22, 0.4);
-      if (!inside(s, hs + 0.2) || layout.isInStation(s, 3) || layout.isInCrossStreet(s, side, 2) || layout.isInCrossStreet(s, 0, 2)) continue;
+      const hs = rng.range(0.24, 0.42);
+      if (!inside(s, hs + 0.35) || layout.isInStation(s, 3) || layout.isInCrossStreet(s, side, 2) || layout.isInCrossStreet(s, 0, 2)) continue;
       const f = surface.facadeAt(s, side, {});
       if (!(f.d === f.d)) continue;
       const a = Math.abs(f.d) - 0.04;
-      const b = rng.chance(0.6) ? GUTTER_OUT + 0.06 : rng.range(Math.max(GUTTER_OUT + 1.5, a - 4.5), a - 1.2);
+      const b = rng.chance(0.6) ? GUTTER_OUT : walkJoint(rng.range(Math.max(GUTTER_OUT + 1.5, a - 4.5), a - 1.2));
       if (a - b < 1) continue;
       const dm = side * (a + b) / 2, hd = (a - b) / 2;
-      // clear of grates and covers (a cover at the inner end is fine: it is where the
-      // pipe went)
-      let ok = true;
-      for (let x = b; x <= a; x += 0.3) if (hit(s, side * x, hs)) { ok = false; break; }
+      // clear of grates, covers, poles and anything standing on the sidewalk
+      let ok = !poleNear(s, dm, Math.max(hs, hd));
+      for (let x = b + 0.2; ok && x <= a - 0.2; x += 0.3) if (hit(s, side * x, hs + 0.2) || blocked(s, side * x, hs + 0.15)) ok = false;
       if (!ok || overlaps(s, dm, hs, hd)) continue;
-      repairs.push({ dir: 'd', s, d: dm, hs, hd, kind: rng.chance(0.7) ? REPAIR_ASPHALT : REPAIR_CONCRETE, tone: rng.next(), hole: null });
+      repairs.push({ dir: 'd', s, d: dm, hs, hd, kind: rng.chance(0.7) ? REPAIR_ASPHALT : REPAIR_CONCRETE, tone: rng.next(), hole: null, step: STEP_WALK_U, side });
       break;
     }
   }
   if (rng.chance(0.08)) {
     const side = rng.chance(0.5) ? 1 : -1;
-    const len = rng.range(4, 12), hd = rng.range(0.2, 0.32);
+    const len = rng.range(4, 12), hd = rng.chance(0.6) ? WALK_COURSE : WALK_COURSE / 2;
     const s = rng.range(s0 + len / 2 + 0.5, s1 - len / 2 - 0.5);
     const hw = layout.halfWidth(s, side);
-    const d = side * (hw - rng.range(0.9, 1.8));
-    let ok = inside(s, len / 2 + 0.1) && !layout.isInStation(s, len / 2 + 3) && !layout.isInCrossStreet(s, side, len / 2 + 2) && !layout.isInCrossStreet(s, 0, len / 2 + 2);
-    for (let x = -len / 2; ok && x <= len / 2; x += 0.4) if (hit(s + x, d, hd)) ok = false;
-    if (ok && !overlaps(s, d, len / 2, hd)) repairs.push({ dir: 's', s, d, hs: len / 2, hd, kind: REPAIR_ASPHALT, tone: rng.next(), hole: null });
+    const d = side * (walkJoint(hw - rng.range(0.9, 1.8)) + hd);
+    let ok = inside(s, len / 2 + 0.3) && !layout.isInStation(s, len / 2 + 3) && !layout.isInCrossStreet(s, side, len / 2 + 2) && !layout.isInCrossStreet(s, 0, len / 2 + 2);
+    for (let x = -len / 2; ok && x <= len / 2; x += 0.4) if (hit(s + x, d, hd) || poleNear(s + x, d, hd)) ok = false;
+    if (ok && !overlaps(s, d, len / 2, hd)) repairs.push({ dir: 's', s, d, hs: len / 2, hd, kind: REPAIR_ASPHALT, tone: rng.next(), hole: null, step: STEP_WALK_X });
   }
-  // small fills where a broken sett or two were replaced with mortar or asphalt
+  // small fills where a broken sett or two were replaced with mortar or asphalt: a course
+  // or two of the sidewalk, or a few courses of the street's setts
   for (let i = rng.chance(0.55) ? 1 : 0; i > 0; i--) {
-    const s = rng.range(s0 + 1, s1 - 1);
+    let s = rng.range(s0 + 1, s1 - 1);
     const side = rng.chance(0.5) ? 1 : -1;
     const walk = rng.chance(0.65);
-    const d = walk ? side * rng.range(GUTTER_OUT + 0.6, layout.halfWidth(s, side) - 0.6) : side * rng.range(0.3, BAND_IN - 0.4);
-    const hs = rng.range(0.12, 0.35), hd = rng.range(0.12, 0.3);
-    if (!inside(s, hs + 0.1) || blocked(s, d, Math.max(hs, hd)) || overlaps(s, d, hs, hd) || nearCross(s, 3)) continue;
-    // in the corridor keep clear of the rails' mortar strips
-    if (!walk && MAIN_RAILS.some((r) => d + hd + 0.08 > r.lo - GROUT_W && d - hd - 0.08 < r.hi + GROUT_W)) continue;
-    repairs.push({ dir: 's', s, d, hs, hd, kind: rng.chance(0.6) ? REPAIR_CONCRETE : REPAIR_ASPHALT, tone: rng.next(), hole: null, small: true });
+    let d, hs, hd, step;
+    if (walk) {
+      hd = rng.chance(0.65) ? WALK_COURSE / 2 : WALK_COURSE;
+      d = side * (walkJoint(rng.range(GUTTER_OUT + 0.6, layout.halfWidth(s, side) - 0.6)) + hd);
+      hs = rng.range(0.2, 0.45);
+      step = STEP_WALK_X;
+    } else {
+      const a = joint(s - rng.range(0.15, 0.4)), b = joint(s + rng.range(0.15, 0.4));
+      s = (a + b) / 2; hs = (b - a) / 2;
+      hd = rng.range(0.15, 0.32);
+      d = side * rng.range(0.3, BAND_IN - 0.4);
+      step = STEP_STREET_U;
+    }
+    if (hs < 0.08 || !inside(s, hs + 0.3) || blocked(s, d, Math.max(hs, hd)) || overlaps(s, d, hs, hd) || nearCross(s, 3)) continue;
+    // in the corridor keep clear of the rails' mortar strips (the steps reach a little
+    // beyond the nominal sides)
+    if (!walk && MAIN_RAILS.some((r) => d + hd + 0.22 > r.lo - GROUT_W && d - hd - 0.22 < r.hi + GROUT_W)) continue;
+    repairs.push({ dir: 's', s, d, hs, hd, kind: rng.chance(0.6) ? REPAIR_CONCRETE : REPAIR_ASPHALT, tone: rng.next(), hole: null, step, small: true });
   }
   // concrete along a rail where the setts beside it broke under the wheels' blows
   if (rng.chance(0.2)) {
     const r = MAIN_RAILS[rng.int(0, 3)];
     const out = rng.chance(0.5) ? 1 : -1;
-    const w = rng.range(0.12, 0.24), len = rng.range(0.6, 3.2);
-    const s = rng.range(s0 + len / 2 + 0.5, s1 - len / 2 - 0.5);
+    const w = rng.range(0.12, 0.24);
+    const a0 = joint(rng.range(s0 + 0.8, s1 - 3.6)), s = (a0 + joint(a0 + rng.range(0.6, 3.0))) / 2;
+    const len = 2 * (s - a0);
     const d = out > 0 ? r.hi + GROUT_W + 0.012 + w / 2 : r.lo - GROUT_W - 0.012 - w / 2;
-    if (Math.abs(d) + w / 2 < BAND_IN - 0.05 && !layout.isInCrossover(s, len / 2 + 3) && !nearCross(s, len / 2 + 3)
+    if (len > 0.4 && inside(s, len / 2 + 0.3) && Math.abs(d) + w / 2 < BAND_IN - 0.05 && !layout.isInCrossover(s, len / 2 + 3) && !nearCross(s, len / 2 + 3)
       && !hit(s, d, Math.max(len / 2, w)) && !overlaps(s, d, len / 2, w / 2)) {
       repairs.push({ dir: 's', s, d, hs: len / 2, hd: w / 2, kind: REPAIR_CONCRETE, tone: rng.next(), hole: null, rail: true });
     }

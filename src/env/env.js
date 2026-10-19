@@ -21,7 +21,9 @@ import { StreetLights, patchLightLoops, lampLevel } from './lights.js';
 const QUALITY = {
   low: { cascades: 2, mapSize: 1536, taps: 6, lamps: 4, envSize: 128, cloudSteps: 24 },
   med: { cascades: 3, mapSize: 2048, taps: 12, lamps: 8, envSize: 192, cloudSteps: 32 },
-  high: { cascades: 4, mapSize: 2048, taps: 16, lamps: 12, envSize: 256, cloudSteps: 44 },
+  // (high: 4096-texel tiles, ~1 cm texels in the nearest cascade and ~2 cm in the next, so
+  // railing bars and lamp arms throw real shadows; about +0.6-1 ms of shadow pass)
+  high: { cascades: 4, mapSize: 4096, taps: 16, lamps: 12, envSize: 256, cloudSteps: 44 },
 };
 
 const _v = new THREE.Vector3();
@@ -47,7 +49,9 @@ const WEATHER = {
   // losing most of their contrast
   // (bright, nearly non-absorbing dust, a touch warm; its extinction takes about a fifth
   // of the direct sun, and the forward scatter softens the shadow edges)
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.995, 0.98, 0.95], penumbra: 1.3, haze: { ext: 1.4, inscatter: 1.2 } },
+  // (mineral dust absorbs a little in the blue, so the haze sky is cream rather than pale
+  // blue, and post keeps half of its daytime sky saturation boost)
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.4, inscatter: 1.2 }, skySat: 0.5 },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
@@ -150,6 +154,7 @@ const env = {
     this.weather = WEATHER[pick] ? pick : names[(Math.imul(app.params.seed | 0, 2654435761) >>> 0) % names.length];
     const w = WEATHER[this.weather];
     this.hazeBoost = w.haze;
+    this.skySatScale = w.skySat ?? 1;   // (post: share of the sky saturation boost)
     this._hlev = app.params.num('hlev', 1);   // (inspection: horizon hold level scale)
     // a hazy, dusty Mediterranean summer afternoon: ~12x the aerosol of the clean
     // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue
@@ -159,6 +164,7 @@ const env = {
     this.atmo = new Atmosphere(renderer, {
       mieScale: app.params.num('mie', w.mie), mieH: app.params.num('mieh', w.mieH || MIE_DEFAULT.h),
       mieAlb: alb.map((a) => Math.min(a * ka, 1)), mieG: app.params.num('mieg', w.mieG || MIE_DEFAULT.g),
+      mieAng: app.params.num('mieang', w.mieAng ?? MIE_DEFAULT.ang),
       camAlt: app.params.num('alt', 0.35),
     });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
@@ -184,7 +190,9 @@ const env = {
       this.sun.shadow.batcher = this.batcher;
     }
     const sh = this.sun.shadow;
-    sh.mapSize.set(q.mapSize, q.mapSize);
+    // (the cascades sit side by side in one atlas row; inspection: URL shadowmap=<tile texels>)
+    const ms = Math.min(app.params.num('shadowmap', q.mapSize), Math.floor(renderer.capabilities.maxTextureSize / q.cascades));
+    sh.mapSize.set(ms, ms);
     sh.camera.near = 1;
     sh.camera.far = 700;
     sh.bias = patched ? -0.00002 : -0.0002;

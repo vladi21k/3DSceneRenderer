@@ -244,7 +244,7 @@ function patch(t, a, b, c, d, nx, ny, bulge, hw, shade = 1) {
   }
 }
 
-function cloth(kind) {
+export function cloth(kind) {
   return tplCache.get(kind, () => {
     const t = new Tpl();
     let len = 0.7;

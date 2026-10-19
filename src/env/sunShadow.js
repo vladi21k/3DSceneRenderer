@@ -51,7 +51,8 @@ const hullCross = (o, a, b) => (_hx[a] - _hx[o]) * (_hy[b] - _hy[o]) - (_hy[a] -
 const THIN_MATERIAL = /^(ironwork\.(parts|card)|metal\.(iron|wire))|catenaryThin/;
 const THIN_TEXEL = 0.05;      // cascades with texels coarser than this (m) skip them
 const SUBTEXEL = 1.5;         // casters smaller than this many texels (radius) are skipped
-const MAX_FILTER_TEXELS = 16; // widest PCF kernel (texels): wider would only add noise
+const MAX_FILTER_TEXELS = 24; // widest PCF kernel (texels): wider would only add noise (24 x ~1 cm
+                              // in the nearest 4096 cascade: a cornice 50 m up-sun keeps its soft edge)
 const REFRESH = [1, 1, 2, 4]; // frames between redraws per cascade (far ones staggered)
 const OUTLINE_MARGIN = 1.0;   // slack for the filter footprint and normal offset (m)
 const MAX_REACH = 120;        // longest caster shadow considered by the cascade culling (m)
@@ -456,6 +457,8 @@ export function installDepthKinds(renderer) {
   let inShadow = false;
   const render = sm.render;
   sm.render = function (lights, scene, camera) {
+    // (every render call passes through here; only the ones with shadow lights draw)
+    if (!lights || lights.length === 0) return render.call(this, lights, scene, camera);
     inShadow = true;
     stats.frameSwitches = 0; stats.frameReevals = 0;
     try { return render.call(this, lights, scene, camera); } finally {
@@ -562,7 +565,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
     console.warn('[env] getSunShadow not found; using stock sun shadows');
     return false;
   }
-  const wide = Math.max(24, taps);
+  const wide = Math.max(32, taps);
   const fn = /* glsl */ `
 		float sunShadowTap(
 			#if defined( SHADOWMAP_TYPE_PCF )
@@ -620,7 +623,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				// ramps over its diameter, as the umbra-to-light transition spans 0.0093 x distance
 				float rt = clamp( dEst * 0.0047 * 1.1 / texel, minR, maxR );
 				vec2 r = rt * tx;
-				// penumbra taps: 16, and 24 for wide kernels and coarse cascades (only pixels
+				// penumbra taps: 16, and 32 for wide kernels and coarse cascades (only pixels
 				// in a penumbra get here)
 				int n = ( cascade >= 2 || rt > 3.0 ) ? ${wide} : SUN_PCF_TAPS;
 				float s = 0.0;

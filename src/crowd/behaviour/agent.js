@@ -90,6 +90,7 @@ export class Agent {
     this.singleT = 0;         // walking single file behind the leader until this time
     this.stuckF = 0;          // follower held back by constraints (s)
     this.chatS = 0; this.chatD = 0; // standing spot in a conversation circle
+    this.ccS = 0; this.ccD = 0; this.ccR = 0; this.ccN = -1; // the circle (centre, radius) a conversation stands in, and the frame it is for (leaders)
     this.isChild = false; this.height = 1.7;
     this.wT = 6; this.paceT = 9; this.faceJ = 0; // slot wander period, pace drift period, facing jitter
     this.bandW = 9;           // width of the sidewalk band around (lane walkers)
@@ -174,6 +175,13 @@ export class Agent {
     this.idleK = -1;          // ... the situation it was chosen for, and when to choose again
     this.idleT = 0;
     this.pauseK = 0;          // kind of pause (stance.js PAUSE_*: by a door, a pole, on the phone, up a side street)
+    // gait stride (steering.animate): the renderer's stride at the two ends of the 0.2 m/s speed
+    // band the walker is in (interpolated between them), the band and the pose they are for
+    this.strideB = -1; this.strideP = -1; this.strideS0 = 1.5; this.strideS1 = 1.5;
+    // world position as a linear function of (s, d) about (lwS, lwD) (crowd._ground), refreshed
+    // every LIN metres
+    this.lwOk = false; this.lwS = 0; this.lwD = 0; this.lwX = 0; this.lwY = 0; this.lwZ = 0;
+    this.lwXs = 0; this.lwYs = 0; this.lwZs = 0; this.lwXd = 0; this.lwYd = 0; this.lwZd = 0;
     // per-frame scratch (fields rather than number arguments: a double passed to a call that is
     // not inlined is boxed, and that is garbage per agent and per frame)
     this.prevD = 0; this.stepDt = 0; // lateral position before this step, and the step's dt (tram.constrain)
@@ -193,7 +201,7 @@ export class Agent {
 // Integer fields (codes, indices, bit fields): they never hold fractions.
 const INT_FIELDS = new Set(['slot', 'serial', 'kind', 'state', 'task', 'step', 'lane', 'next', 'nFollow', 'mob', 'mobPrev',
   'propSeed', 'appearance', 'wSeed', 'uI', 'lookU', 'boardU', 'pair', 'serveTi', 'pathI', 'frontN', 'stuckN', 'after',
-  'charI', 'bankI', 'idle', 'idleW', 'idleK', 'pauseK']);
+  'charI', 'bankI', 'idle', 'idleW', 'idleK', 'pauseK', 'strideB', 'strideP', 'ccN']);
 
 /** Fixes an object's hidden class up front (agents, and the scratch objects the per-frame code
  *  shares). V8 gives a numeric field that starts as a small integer the integer representation,

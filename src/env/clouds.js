@@ -313,7 +313,7 @@ export class Clouds {
     this.uniforms = {
       uSkyLUT: skyUniforms.uSkyLUT, uSkyIrr: skyUniforms.uSkyIrr, uCloudTex: skyUniforms.uCloudTex,
       uSunDirA: skyUniforms.uSunDirA, uSunCloud: skyUniforms.uSunCloud, uCamPosW: skyUniforms.uCamPosW,
-      uCloudOffset: skyUniforms.uCloudOffset, uCloudCover: skyUniforms.uCloudCover, uMieScale: skyUniforms.uMieScale,
+      uCloudOffset: skyUniforms.uCloudOffset, uCloudCover: skyUniforms.uCloudCover, uMieScale: skyUniforms.uMieScale, uMieExt: skyUniforms.uMieExt,
       uCloudScale: skyUniforms.uCloudScale, uCloudTop: skyUniforms.uCloudTop,
       uNoise3D: skyUniforms.uNoise3D || { value: null },
       tDepth: { value: null }, uFullRes: { value: new THREE.Vector2(1, 1) },

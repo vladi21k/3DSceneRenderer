@@ -137,8 +137,8 @@ void surface(vec2 m, inout Surf s) {
   // finish, inclusions
   vec3 g = granite(ms, vec3(0.162, 0.17, 0.19));
   g *= 1.0 + 0.12 * fbm(ms, 28.0, 3, 0.55, 108u) + 0.07 * fbm(ms, 95.0, 2, 0.5, 109u) + 0.06 * noiseM(ms, vec2(230.0), 117u);
-  g *= 1.0 + 0.07 * dot(qn, vec2(cellRand(c, 15u) - 0.5, cellRand(c, 16u) - 0.5));
-  g *= mix(1.04, 0.94, worn);
+  g *= 1.0 + 0.05 * dot(qn, vec2(cellRand(c, 15u) - 0.5, cellRand(c, 16u) - 0.5));
+  g *= mix(1.025, 0.965, worn);
   float xr = cellRand(c, 17u);
   if (xr < 0.035) {                                                // dark xenolith (fine-grained, speckled)
     vec2 xc = (vec2(cellRand(c, 18u), cellRand(c, 19u)) - 0.5) * c.size * 0.6;
@@ -161,7 +161,7 @@ void surface(vec2 m, inout Surf s) {
   // dirt worked into the stone along the joints: a centimetre or two, patchy, darker at
   // the corners and along the head joints; the chamfers a little grimier still
   float ej = min(eH - JH, eB - JB);
-  float dirtA = 0.1 + 0.12 * sfHf(sfH(c.id + 31u));
+  float dirtA = 0.07 + 0.1 * sfHf(sfH(c.id + 31u));
   float patchD = 0.55 + 0.9 * (0.5 + 0.5 * fbm(ms, 9.0, 3, 0.5, 113u));
   float corner = 1.0 - smoothstep(0.0, 0.04, max(cq.x, cq.y));
   g *= 1.0 - dirtA * patchD * (1.0 - smoothstep(0.0, 0.012 + 0.012 * sfHf(sfH(c.id + 32u)), ej)) - 0.12 * corner;

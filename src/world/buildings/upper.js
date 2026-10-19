@@ -37,7 +37,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
   };
   // render weathers (soot under the slab, streaks), as the stone does
   const unc = plaster ? 0.38 : 0;
-  const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.9, uncleaned: unc, sillExt: 0.11, sillH: 0.06 });
+  const fs = new FaceShade(face, col, lot.seed + 4241, { dirt: dirt * 0.9, uncleaned: unc, sillExt: 0.11, sillH: 0.06, damp: false });
   if (!sinks.glass) sinks.glass = B.sink('glass');
   if (!sinks.frame) sinks.frame = B.sink('plaster');   // painted joinery
   const ctx = {
@@ -71,7 +71,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
       const fr = sideFrame(up.frame, W, e, -D, 0);
       const ops = up.sides[e], m = up.mural && up.mural.e === e ? up.mural : null;
       const sface = { ...face, width: D, openings: ops, balconies: [] };
-      const sfs = new FaceShade(sface, col.map((c) => c * 0.97), lot.seed + 4241 + 31 * (e + 1), { dirt: dirt * 0.95, uncleaned: unc, sillExt: 0.11, sillH: 0.06 });
+      const sfs = new FaceShade(sface, col.map((c) => c * 0.97), lot.seed + 4241 + 31 * (e + 1), { dirt: dirt * 0.95, uncleaned: unc, sillExt: 0.11, sillH: 0.06, damp: false });
       const sctx = { ...ctx, fs: sfs };
       B.frameFromLot(fr);
       B.setUV(1, 7.3 * e, 1, 0);

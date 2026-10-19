@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Rig, bakeClips, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PHONE_IDLE, PHONE_SIT, CUP_SIT } from './humans/anim.js';
 import { loadCast, mergeMeshes } from './humans/mh/cast.js';
-import { castAppearance, castToddler, castCharacter, BAG } from './humans/mh/appearance.js';
+import { castAppearance, castToddler, castCharacter, castWaiter, waiterFits, BAG } from './humans/mh/appearance.js';
 import { buildParts } from './humans/mh/parts.js';
 import { makeFigureMaterials, writeLook, BONE_W, BONE_DYN, LOOK_W } from './humans/mh/shading.js';
 import { FigureBatch } from './humans/mh/batch.js';
@@ -17,6 +17,10 @@ import { U } from '../core/uniforms.js';
 //   with its parent), or of the stroller pusher whose stroller it holds on to; -1 / absent: none.
 //   Pass it every frame. The renderer picks the hands on the sides facing each other, meets them
 //   between the two (the adult's arm drops, the child's rises) and lets go when they drift apart.
+//   outfit (optional set() field): 'waiter' dresses café staff: a white or light plain shirt, dark trousers,
+//   dark shoes and a long waist apron, no bag or phone (the seed's own character when it can wear it,
+//   else one of the same sex near its height); heightOf / strideLength / cycleLength then describe the
+//   waiter. Absent: the seed's own clothes.
 //   idle (optional set() field, 0-7): the standing stance for pose 1 (0 relaxed weight shifts, 1 phone, 2 arms
 //   folded, 3 hands in pockets, 4 hand on hip, 5 hands behind the back, 6 talking with gestures, 7 looking
 //   about); absent: the person's own (from the appearance seed).
@@ -161,7 +165,7 @@ const humans = {
       beardFade(c, this.beardBase ? 0.01 : this.v2 ? 0.015 : 0.035);
       if (this.beardBase) beardShellsFromBase(c);
       else if (!this.v2) beardShells(c);
-      const parts = buildParts(c);
+      const parts = buildParts(c, { apron: waiterFits(c) });
       B.fit = parts.fit; delete parts.fit;
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
       meshes.push(c.raw);
@@ -264,6 +268,9 @@ const humans = {
       s.appearance = o.appearance;
       s.a = null;
     }
+    // outfit (optional): 'waiter' dresses café staff (light shirt, dark trousers, a waist apron)
+    const outfit = o.outfit === 'waiter' ? 1 : 0;
+    if (outfit !== s.outfit) { s.outfit = outfit; s.a = null; }
     // mobility: prop kind / seed, the bicycle's lean and handlebar angle (rad, + left; derived from
     // the turn when not given)
     if (o.prop !== undefined) s.prop = o.prop | 0;
@@ -299,12 +306,12 @@ const humans = {
 
   setVisible(i, v) { const s = this.slots[i]; if (s) s.visible = !!v; },
 
-  heightOf(appearance) { return this.appearanceOf(appearance).height; },
+  heightOf(appearance) { return this._personOf(appearance).height; },
 
   /** Metres travelled per crank revolution when riding: the gearing of the bikes this person
    *  rides (kids' 20-inch bikes for children, city / commuter gearing for everyone else). */
   cycleLength(appearance) {
-    const a = this.appearanceOf(appearance);
+    const a = this._personOf(appearance);
     return a.age === 'child' || a.height < 1.45 ? 3.05 : 4.4;
   },
 
@@ -317,7 +324,7 @@ const humans = {
   },
 
   _stride(appearance, speed) {
-    const a = this.appearanceOf(appearance);
+    const a = this._personOf(appearance);
     const B = this.bases && this.bases[a.body];
     if (!B) return 1.48 * (0.55 + 0.32 * speed);
     const sc = a.height / B.info.H;
@@ -328,16 +335,28 @@ const humans = {
     return Math.max(0.3, S * sc * g.extra);
   },
 
-  appearanceOf(seed) {
-    let a = this.cache.get(seed);
+  /** The person for appearance seed `seed` (outfit 1: dressed as a waiter, see castWaiter). */
+  appearanceOf(seed, outfit = 0) {
+    const cache = outfit ? this.wcache : this.cache;
+    let a = cache.get(seed);
     if (!a) {
       if (!this.cast) return FALLBACK;
-      if (this.cache.size > 6000) this.cache.clear();
+      if (cache.size > 6000) cache.clear();
       const f = this.forced.get(seed);
-      a = f ? castCharacter(seed >>> 0, this.cast, f.index, f.own) : castAppearance(seed >>> 0, this.cast);
-      this.cache.set(seed, a);
+      a = f ? castCharacter(seed >>> 0, this.cast, f.index, f.own) : outfit ? castWaiter(seed >>> 0, this.cast) : castAppearance(seed >>> 0, this.cast);
+      cache.set(seed, a);
     }
     return a;
+  },
+  wcache: new Map(),
+
+  /** The person the contract's per-seed queries (heightOf, strideLength, cycleLength) describe: the
+   *  waiter for seeds last shown with outfit 'waiter' (the character may differ from the seed's own). */
+  _personOf(seed) { return this.appearanceOf(seed, this.waiterSeeds.has(seed) ? 1 : 0); },
+  waiterSeeds: new Set(),
+  _markWaiter(seed) {
+    if (this.waiterSeeds.size > 4000) this.waiterSeeds.clear();
+    this.waiterSeeds.add(seed);
   },
 
   /** Testing: appearance `seed` shows character `index` of the cast (own: its own colours). */
@@ -399,13 +418,15 @@ const humans = {
       const s = this.slots[i];
       if (s.comp || !s.visible || s.appearance === null) continue;
       if (!s.a) {
-        s.a = this.appearanceOf(s.appearance);
+        s.a = this.appearanceOf(s.appearance, s.outfit);
+        if (s.outfit) this._markWaiter(s.appearance);
         this._newLook(i, s);
       }
       const a = s.a;
       const B = this.bases[a.body];
       if (!B) continue;
-      const sc = a.height / B.info.H;
+      // (the figure's scale travels in the slot: a float argument to a large function is boxed)
+      s.sc = a.height / B.info.H;
       // mobility props follow their figure (culled and LOD'd by their own instancers)
       if (mob && s.pose >= 3) {
         const st = mob.track(s, a, dt, this.time);
@@ -415,7 +436,7 @@ const humans = {
           if (st.prop === 1 && (st.look.flags & mob.babyFlag) && this.compFirst >= 0) this._queueBaby(i, s, st);
         }
       } else if (s.mob) s.mob.valid = false;
-      this._emit(i, s, a, B, sc);
+      this._emit(i, s, a, B);
     }
     this._babies();
     this.batch.end();
@@ -443,7 +464,7 @@ const humans = {
   },
 
   /** Cull, pick the LOD, pose and queue figure i for drawing. */
-  _emit(i, s, a, B, sc) {
+  _emit(i, s, a, B) {
     const h = a.height;
     _sph.center.set(s.x, s.y + 0.5 * h, s.z);
     _sph.radius = 0.62 * h + 0.3;
@@ -474,7 +495,7 @@ const humans = {
     s.inView = inView;
     const row = this._n++;
     this.rowSlot[row] = i;
-    this._pose(row, i, s, a, B, sc, this._bones);
+    this._pose(row, i, s, a, B, this._bones);
     // accessories: the phone or cup in hand, a bag (put down when seated; a shopping bag does not stay
     // in a hand that holds a stroller, a bicycle or a child's hand)
     const P = B.partR;
@@ -482,14 +503,19 @@ const humans = {
     let k = 0, kf = 0;
     if (s.phoneOn) _extra[k++] = P.phone;
     else if (s.cupOn) _extra[k++] = P.cup;
+    // a waiter's apron
+    if (a.apron && P.apron !== undefined) { _extra[k++] = P.apron; _extraFar[kf++] = P.apronFar; _shadowExtra[1] = P.apronFar; }
     if (a.bag && s.pose !== 2) {
       const handBusy = s.pose >= 3 || (s.hold && s.hold.side === 'R');
       if (a.bag === BAG.BACKPACK) { _extra[k++] = P.backpack; _extraFar[kf++] = P.backpackFar; _shadowExtra[0] = P.backpackFar; }
       else if (a.bag === BAG.SHOULDER) { _extra[k++] = P.shoulder; _extraFar[kf++] = P.shoulderFar; _shadowExtra[0] = P.shoulderFar; }
       else if (a.bag === BAG.SHOPPING && !handBusy) { _extra[k++] = P.shopping; _extraFar[kf++] = P.shopping; _shadowExtra[0] = P.shopping; }
     }
-    const depth = (_sph.center.x - this._camPos.x) * _fwd.x + (_sph.center.y - this._camPos.y) * _fwd.y + (_sph.center.z - this._camPos.z) * _fwd.z;
-    this.batch.add(row, _sph.center.x, _sph.center.y, _sph.center.z, _sph.radius, depth, inView, lod, B.bodyR, _extra, _extraFar, _shadowExtra);
+    const bi = this.batch.add(row, inView, lod, B.bodyR, _extra, _extraFar, _shadowExtra);
+    // (the bounding sphere and view depth written straight into the batch's arrays: no boxed float arguments)
+    const S = this.batch.sph, c = _sph.center;
+    S[bi * 4] = c.x; S[bi * 4 + 1] = c.y; S[bi * 4 + 2] = c.z; S[bi * 4 + 3] = _sph.radius;
+    this.batch.depth[bi] = (c.x - this._camPos.x) * _fwd.x + (c.y - this._camPos.y) * _fwd.y + (c.z - this._camPos.z) * _fwd.z;
   },
 
   _queueBaby(i, s, st) {
@@ -560,7 +586,8 @@ const humans = {
       // far away the child is a few pixels inside the canopy
       const px = (c.a.height / Math.max(0.5, hyp3(c.x - this._camPos.x, c.y - this._camPos.y, c.z - this._camPos.z))) * this._pxPerM;
       if (px <= this.lodPx[2] * 0.8) { c.visible = false; c.lod = -1; continue; }
-      this._emit(ci, c, c.a, B, c.a.height / B.info.H);
+      c.sc = c.a.height / B.info.H;
+      this._emit(ci, c, c.a, B);
     }
     for (let k = 0; k < TODDLER_POOL; k++) {
       const c = this.slots[first + k];
@@ -654,7 +681,8 @@ const humans = {
   },
 
   /** Blend the figure's pose and write bone row `row` (model -> world) plus its state texels. */
-  _pose(row, i, s, a, B, sc, out) {
+  _pose(row, i, s, a, B, out) {
+    const sc = s.sc;
     // small far figures (and those only casting a shadow into view) re-blend their clips every other
     // frame (staggered); the transform below is still applied every frame so camera motion stays exact
     const M = s.model || (s.model = new Float32Array(MAT_N));
@@ -663,7 +691,7 @@ const humans = {
     // pixels tall and those only casting a shadow into view every third frame)
     const every = !s.inView || s.lod >= 3 ? 3 : s.lod === 2 && s.pose !== 4 ? 2 : 1;
     if (every === 1 || s.pose !== s.posePrev || (frame + i) % every === 0 || s.blendFrame < frame - every || s.blendBase !== B) {
-      this._blend(s, a, B, sc, M);
+      this._blend(s, a, B, M);
       s.blendFrame = frame;
       s.blendBase = B;
     }
@@ -689,7 +717,8 @@ const humans = {
     out[o + 4] = i; out[o + 5] = s.phoneOn ? 1 : 0; out[o + 6] = s.pocketW; out[o + 7] = sc;
   },
 
-  _blend(s, a, B, sc, M) {
+  _blend(s, a, B, M) {
+    const sc = s.sc;
     const bk = B.baked;
     const t = this.time;
     if (this.bindPose) {
@@ -752,15 +781,16 @@ const humans = {
       else { const g = _gait; wOut = g.b >= CLIP.idle ? 1 - g.wb * (1 - BAG_ARM_OUT[g.b - CLIP.idle]) : 1; }
       if (wOut > 0.01) {
         const c = BONE.spine2 * 12;
-        rotBones(M, B.rig.rest, LARM_BONES, BONE.armL, M[c + 2], M[c + 6], M[c + 10], -BAG_ARM_ANGLE * wOut);
+        _rot[0] = M[c + 2]; _rot[1] = M[c + 6]; _rot[2] = M[c + 10]; _rot[3] = -BAG_ARM_ANGLE * wOut;
+        rotBones(M, B.rig.rest, LARM_BONES, BONE.armL, _rot);
       }
     }
     if (mobP && s.pose !== 4) {
       // pushing leans the trunk in a little from the hips; stoop as usual; then hands on the prop
       const lean = (s.pose === 3 ? 5.5 : 2) * Math.PI / 180;
-      pitchBones(M, B.rig.rest, LEAN_BONES, BONE.spine1, -lean);
-      if (a.stoop > 0.005) pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
-      pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, (lean + a.stoop) * 0.65);
+      _ang[0] = -lean; pitchBones(M, B.rig.rest, LEAN_BONES, BONE.spine1, _ang);
+      if (a.stoop > 0.005) { _ang[0] = -a.stoop; pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, _ang); }
+      _ang[0] = (lean + a.stoop) * 0.65; pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, _ang);
       this.mob.pose(s, a, B, M);
     }
     let w = 1;
@@ -785,16 +815,16 @@ const humans = {
     // older people's rounded upper back: the chest and everything it carries tip forward about
     // the mid spine, the neck and head take most of it back so the gaze stays level
     if (a.stoop > 0.005 && !mobP) {
-      pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, -a.stoop);
-      pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, a.stoop * 0.65);
+      _ang[0] = -a.stoop; pitchBones(M, B.rig.rest, STOOP_BONES, BONE.spine2, _ang);
+      _ang[0] = a.stoop * 0.65; pitchBones(M, B.rig.rest, HEAD_BONES, BONE.neck, _ang);
     }
     // head turn: the neck takes a third, the head the rest, both about their own joints
     // (a rider's head turn is part of the riding pose)
     const look = mobP && s.pose === 4 ? 0 : Math.max(-1.25, Math.min(1.25, s.look || 0));
     if (look > 1e-3 || look < -1e-3) {
-      rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, look * 0.35);
-      rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, look * 0.35);
-      rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, look * 0.65);
+      _ang[0] = look * 0.35; rotateBoneY(M, B.rig.rest, BONE.neck, BONE.neck, _ang);
+      _ang[0] = look * 0.35; rotateBoneY(M, B.rig.rest, BONE.head, BONE.neck, _ang);
+      _ang[0] = look * 0.65; rotateBoneY(M, B.rig.rest, BONE.head, BONE.head, _ang);
     }
     // hand in hand: the near arm reaches the meeting point (the other one swings on)
     if (s.hold && this.mob && s.pose <= 1) {
@@ -1098,6 +1128,7 @@ const LARM_BONES = [BONE.armL, BONE.foreL, BONE.handL];
 // (left arm held out by a shoulder bag: angle, and per standing stance whether it applies)
 const BAG_ARM_ANGLE = 4.5 * Math.PI / 180;
 const BAG_ARM_OUT = [1, 1, 0, 0, 0, 0, 1, 1];
+const _rot = new Float64Array(4), _ang = new Float64Array(1);     // (axis and angle for rotBones: passed in an array, not as boxed floats)
 const IDENT34 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
 const _T = new Float32Array(12), _inv = new Float32Array(12), _tmp = new Float32Array(12);
 
@@ -1165,8 +1196,8 @@ function newSlot() {
     lod: -1, inView: false, blendFrame: -10, blendBase: null, model: null,     // model: pose before the figure transform
     posePrev: -1, fromM: null, fadeT0: 0, fadeDur: 0, seatW: 0, fromSeat: 0, phoneW: 0, fromPhone: 0, phoneOn: false,
     cupW: 0, fromCup: 0, cupOn: false,
-    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: NaN, steerIn: NaN, mob: null,
-    holdWith: -1, hold: null, comp: false, babySlot: -1, idleIn: -1, idleShown: -1 };
+    pocketW: 0, fromPocket: 0, prop: 0, propSeed: 0, leanIn: NaN, steerIn: NaN, mob: null, sc: 0.5,
+    holdWith: -1, hold: null, comp: false, babySlot: -1, idleIn: -1, idleShown: -1, outfit: 0 };
 }
 
 /**
@@ -1244,8 +1275,9 @@ function gaitBlend(B, a, speed, sc, idleVar = a.idle) {
 
 function smooth01(t) { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); }
 
-/** Pitch bones (3x4 matrices of M) about the lateral axis of pivot bone p through its posed joint (ang < 0: forward). */
-function pitchBones(M, rest, bones, p, ang) {
+/** Pitch bones (3x4 matrices of M) about the lateral axis of pivot bone p through its posed joint (A[0]: angle, < 0: forward). */
+function pitchBones(M, rest, bones, p, A) {
+  const ang = A[0];
   const k = p * 12, r = rest[p];
   const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
   const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
@@ -1273,7 +1305,9 @@ function pitchBones(M, rest, bones, p, ang) {
 }
 
 /** Rotate bones (3x4 matrices of M) about the unit-ish axis (ax, ay, az) through pivot bone p's posed joint. */
-function rotBones(M, rest, bones, p, ax, ay, az, ang) {
+function rotBones(M, rest, bones, p, R) {
+  let ax = R[0], ay = R[1], az = R[2];
+  const ang = R[3];
   const k = p * 12, r = rest[p];
   const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
   const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
@@ -1299,8 +1333,9 @@ function rotBones(M, rest, bones, p, ax, ay, az, ang) {
   }
 }
 
-/** Rotate bone b's 3x4 matrix about the vertical through pivot bone p's posed joint. */
-function rotateBoneY(M, rest, b, p, ang) {
+/** Rotate bone b's 3x4 matrix about the vertical through pivot bone p's posed joint by A[0]. */
+function rotateBoneY(M, rest, b, p, A) {
+  const ang = A[0];
   const k = p * 12, r = rest[p];
   const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
   const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];

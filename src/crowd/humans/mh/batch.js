@@ -200,16 +200,15 @@ export class FigureBatch {
   }
 
   /**
-   * A posed figure: bone row, world bounding sphere, view depth, in the view frustum, view LOD, body
-   * range ids per LOD [4], accessory range ids drawn at LOD <= 1 (up to 4, -1 none), their far stand-
-   * ins for LOD >= 2 (or -1), and accessory ranges that cast shadows (up to 2).
+   * A posed figure: bone row, in the view frustum, view LOD, body range ids per LOD [4], accessory range
+   * ids drawn at LOD <= 1 (up to 4, -1 none), their far stand-ins for LOD >= 2 (or -1), and accessory
+   * ranges that cast shadows (up to 2). Returns its index: the caller writes its world bounding sphere
+   * into sph[i * 4 .. i * 4 + 3] and its view depth into depth[i] (floats are not passed as arguments).
    */
-  add(row, x, y, z, r, depth, inView, lod, body, extra, extraFar, shadowExtra) {
+  add(row, inView, lod, body, extra, extraFar, shadowExtra) {
     if (this.n >= this.cap) this._grow(this.n + 1);
     const i = this.n++;
     this.row[i] = row;
-    this.sph[i * 4] = x; this.sph[i * 4 + 1] = y; this.sph[i * 4 + 2] = z; this.sph[i * 4 + 3] = r;
-    this.depth[i] = depth;
     this.inView[i] = inView ? 1 : 0;
     this.lod[i] = lod;
     for (let k = 0; k < 4; k++) {
@@ -219,6 +218,7 @@ export class FigureBatch {
     }
     this.shadowExtra[i * 2] = shadowExtra ? shadowExtra[0] ?? -1 : -1;
     this.shadowExtra[i * 2 + 1] = shadowExtra ? shadowExtra[1] ?? -1 : -1;
+    return i;
   }
 
   /** After the frame's figures are added: the view order (front to back), by a two-pass radix sort of

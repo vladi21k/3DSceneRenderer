@@ -24,8 +24,10 @@ const MIE_EXT = 4.44e-3;   // per km at unit density (x uMieScale)
 // Most of it sits in the boundary layer (scale height ~0.9 km), and coarse dust scatters
 // a little less forward than urban aerosol (g ~0.66): the band near the horizon goes milky
 // and bright while the sky overhead stays blue
-const MIE_SPEC_EXT = [0.93, 1.0, 1.11];
-export const MIE_DEFAULT = { h: 0.9, alb: [0.975, 0.965, 0.95], g: 0.66 };
+// (Angstrom exponent `ang`: extinction ∝ (λ / 550 nm)^−ang at the primaries' ~615, 550 and
+// 465 nm; 0.6 gives about [0.93, 1.0, 1.11])
+const mieSpectrum = (ang) => [Math.pow(615 / 550, -ang), 1.0, Math.pow(465 / 550, -ang)];
+export const MIE_DEFAULT = { h: 0.9, alb: [0.975, 0.965, 0.95], g: 0.66, ang: 0.6 };
 // ozone (Chappuis band) absorption per km at the layer peak. The sRGB red primary spans
 // ~580-700 nm, across the band's peak and its long-wave flank: on average it loses about
 // as much as the green, so the twilight sky goes blue and pink rather than khaki
@@ -43,7 +45,7 @@ export const ATMO_GLSL = /* glsl */ `
 #define ATM_PI 3.14159265
 const vec3 ATM_RAYLEIGH = ${v3(RAYLEIGH)};
 const vec3 ATM_OZONE = ${v3(OZONE)};
-const vec3 ATM_MIE_EXT = ${v3(MIE_SPEC_EXT.map((k) => k * MIE_EXT))};
+uniform vec3 uMieExt;        // aerosol extinction per km at unit density (rgb)
 uniform float uMieScale;     // aerosol load (x the clean reference atmosphere)
 uniform float uMieH;         // aerosol scale height (km)
 uniform vec3 uMieAlb;        // aerosol single-scattering albedo (rgb)
@@ -60,8 +62,8 @@ void atmMedium(float h, out vec3 scaR, out vec3 scaM, out vec3 ext) {
   float dM = exp(-h / uMieH);
   float dO = max(0.0, 1.0 - abs(h - 25.0) / 15.0);
   scaR = ATM_RAYLEIGH * dR;
-  scaM = ATM_MIE_EXT * uMieAlb * (uMieScale * dM);
-  ext = scaR + ATM_MIE_EXT * (uMieScale * dM) + ATM_OZONE * dO;
+  scaM = uMieExt * uMieAlb * (uMieScale * dM);
+  ext = scaR + uMieExt * (uMieScale * dM) + ATM_OZONE * dO;
 }
 float atmPhaseR(float c) { return 3.0 / (16.0 * ATM_PI) * (1.0 + c * c); }
 float atmPhaseHG(float c, float g) {
@@ -242,10 +244,11 @@ function lutTarget(w, h) {
 }
 
 export class Atmosphere {
-  constructor(renderer, { mieScale = 2.2, mieH = MIE_DEFAULT.h, mieAlb = MIE_DEFAULT.alb, mieG = MIE_DEFAULT.g, camAlt = CAMERA_ALT_KM } = {}) {
+  constructor(renderer, { mieScale = 2.2, mieH = MIE_DEFAULT.h, mieAlb = MIE_DEFAULT.alb, mieG = MIE_DEFAULT.g, mieAng = MIE_DEFAULT.ang, camAlt = CAMERA_ALT_KM } = {}) {
     this.renderer = renderer;
     this.mieScale = mieScale;
     this.mieH = mieH;
+    this.mieSpec = mieSpectrum(mieAng);
     this.camAlt = camAlt;
     this.trans = lutTarget(256, 64);
     this.ms = lutTarget(32, 32);
@@ -255,6 +258,7 @@ export class Atmosphere {
     // uniforms other shaders can share (same objects, so updates propagate)
     this.uniforms = {
       uMieScale: { value: mieScale },
+      uMieExt: { value: new THREE.Vector3(...this.mieSpec.map((k) => k * MIE_EXT)) },
       uMieH: { value: mieH },
       uMieAlb: { value: new THREE.Vector3(...mieAlb) },
       uMieG: { value: mieG },
@@ -300,7 +304,7 @@ export class Atmosphere {
   _ext(h) {
     const dR = Math.exp(-h / RAYLEIGH_H), dM = Math.exp(-h / this.mieH), dO = Math.max(0, 1 - Math.abs(h - 25) / 15);
     const m = MIE_EXT * this.mieScale * dM;
-    return [0, 1, 2].map((i) => RAYLEIGH[i] * dR + m * MIE_SPEC_EXT[i] + OZONE[i] * dO);
+    return [0, 1, 2].map((i) => RAYLEIGH[i] * dR + m * this.mieSpec[i] + OZONE[i] * dO);
   }
 
   /** Transmittance from the camera altitude towards a direction (y up), with a soft planet shadow. */

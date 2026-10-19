@@ -404,10 +404,15 @@ export class StreetMap {
   platformAt(s, side, ad, margin = 0) {
     const st = this.stationAt(s);
     if (!st) return null;
-    const ds = this.route.delta(st.s, s);
-    if (Math.abs(ds) > st.len / 2 + margin) return null;
+    // (the loop distance worked out in place, and no closure: this runs per agent and per frame)
+    const L = this.route.length;
+    let ds = (s - st.s) % L;
+    if (ds < -L / 2) ds += L; else if (ds > L / 2) ds -= L;
+    if (ds > st.len / 2 + margin || ds < -st.len / 2 - margin) return null;
     if (ad < TRACK_ZONE_HALF - margin || ad > TRACK_ZONE_HALF + PLATFORM_W + margin) return null;
-    return st.platforms.find((p) => p.side === side) || null;
+    const P = st.platforms;
+    for (let i = 0; i < P.length; i++) if (P[i].side === side) return P[i];
+    return null;
   }
 
   /** Ground-floor openings (shop windows / doors) of the lot at s on side, in route coordinates:

@@ -7,7 +7,8 @@ import { createInteriorGlass, GLASS_ATTRS, shopLevels } from './facades/interior
 import { createSignMaterials } from './facades/signs.js';
 import { createAwningMaterial } from './facades/awnings.js';
 import { lanternTpls, signLampTpls, intercomTpl, createLampGlass, createBulbMaterial } from './facades/extras.js';
-import { buildFront, frontsOf } from './facades/place.js';
+import { buildFront, frontsOf, frontInfo } from './facades/place.js';
+import { planStands, buildStand } from './facades/stands.js';
 import { createSpillMaterial } from './facades/spill.js';
 import { BAD_NORMALS } from './facades/geo.js';
 
@@ -84,6 +85,9 @@ const facades = {
       // powder-coated / anodised metal and enamelled boards, which do not flake (plain
       // paint bake: orange peel, a satin sheen); the far range folds everything into it
       joinery: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }), castShadow: false },
+      // goods stands on the pavement (crates, produce, buckets, racks): the same powder-coat
+      // finish, but casting shadows onto the paving
+      standPaint: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }) },
       shutter: { material: vc('wood.shutterDetail'), thin: true, far: { key: 'joinery', k: FOLD.paintwood } },
       door: { material: vc('wood.door'), castShadow: false, far: { key: 'joinery', k: FOLD.wood } },
       glass: { material: glass, color: false, extra: GLASS_ATTRS, castShadow: false, far: { key: 'glassFar' } },
@@ -110,6 +114,14 @@ const facades = {
     this.prefetchMs = 0.8;          // per-frame budget for prefetching
     this.idle = 0;                  // frames to wait before looking for work again
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
+    // goods stands on the pavement: planned for the whole loop now, so the crowd (whose
+    // init runs after every world module's) walks round them
+    const tS = performance.now();
+    try {
+      this.stands = planStands(app, (lot) => frontInfo(app, lot)[0], (lot) => facadePlan(lot));
+      app.layout.addObstacles(this.stands.obstacles);
+    } catch (e) { console.warn('[facades] goods stands not planned', e); this.stands = null; }
+    this.stats.stands = { n: this.stands ? this.stands.obstacles.length : 0, planMs: Math.round(performance.now() - tS) };
     const t1 = performance.now();
     await this.warmStart(app);
     // (warm includes the other start-up tasks that run while it yields)
@@ -172,6 +184,8 @@ const facades = {
         };
         yield* buildFront(kit, ctx);
       }
+      const stands = this.stands && !lot.sideStreet && this.stands.byLot.get(lot.id);
+      if (stands) for (const st of stands) buildStand(kit, st, lot.frame, q);
     }
     const group = new THREE.Group();
     group.name = 'facades';

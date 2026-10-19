@@ -21,6 +21,7 @@ const RING = 4096;          // frame intervals kept for the percentiles
 const MAX_HITCHES = 120;
 const LOAF_KEEP = 96;
 const BASE = 128;           // smooth frames kept for the usual values
+const SHADOW_DRAW_WAIT = 10; // ms: one shadow draw this long waited on the GPU (cause 'gpu-wait')
 
 const r1 = (x) => Math.round(x * 10) / 10;
 
@@ -38,6 +39,7 @@ export class FrameMonitor {
     this.readyT = 0;
     // scalars of the frame being run (read back when the next interval turns out long)
     this.cpu = 0; this.shadowMs = 0; this.cascades = -1;
+    this.shadowDraw = 0; this.shadowDrawObj = null;   // longest single draw in the shadow passes (main.js)
     this.progUpd = 0; this.progRender = 0; this.progNames = null;
     this.reveal = 0; this.build = 0; this.queue = 0;
     this.heap = 0; this.heapStart = 0; this.calls = 0; this.tris = 0; this.proxy = 0;
@@ -93,6 +95,7 @@ export class FrameMonitor {
     this.lastFrame = app.frame + 1;   // the frame this callback runs (main increments app.frame after begin)
     this.st.fill(0);
     this.shadowMs = 0; this.progRender = 0; this.progNames = null;
+    this.shadowDraw = 0; this.shadowDrawObj = null;
     // (programs created between frames, in timers or promise callbacks, count with the updates)
   }
 
@@ -187,6 +190,7 @@ export class FrameMonitor {
       s: r1(app.cameraS ?? 0), kmh: r1((app.train?.speed ?? 0) * 3.6), state: app.train?.state ?? null,
       ms: r1(dtMs), cpu: r1(this.cpu), gap: r1(dtMs - this.cpu),
       stages, usualStages, shadowCpu: r1(this.shadowMs), cascades: this.cascades,
+      shadowDraw: r1(this.shadowDraw), shadowDrawObj: this.shadowDrawObj ? (this.shadowDrawObj.name || this.shadowDrawObj.type || '?') : null,
       programs: this.progUpd + this.progRender, syncCompile: this.progRender,
       newPrograms: this.progNames ? this.progNames.slice(0, 8) : undefined,
       compiling, reveal: Math.round(this.reveal / 1024), build: r1(this.build), queue: this.queue, proxyMerge: this.proxy,
@@ -237,7 +241,7 @@ export class FrameMonitor {
       const lo = h.loaf.map((e) => `loaf ${e.ms}ms[${e.scripts.map((s) => `${s.type}:${s.fn || s.inv} ${s.ms}`).join(', ')}]`).join(' ');
       const u = h.usual;
       lines.push(`t=${h.t}s s=${h.s} ${h.kmh}km/h ${h.ms}ms cause=${h.cause}${h.spikes.length ? ' spikes=' + h.spikes.join(',') : ''} cpu=${h.cpu}(${u.cpu}) gap=${h.gap} gpu=${h.gpu ?? '?'}(${u.gpu}) | ${st} ` +
-        `shadowCpu=${h.shadowCpu}(${u.shadowCpu}) calls=${h.calls}(${u.calls}) casc=${h.cascades} prog=${h.programs}/${h.syncCompile} ` +
+        `shadowCpu=${h.shadowCpu}(${u.shadowCpu})${h.shadowDraw >= 2 ? ` shadowDraw=${h.shadowDraw}(${h.shadowDrawObj})` : ''} calls=${h.calls}(${u.calls}) casc=${h.cascades} prog=${h.programs}/${h.syncCompile} ` +
         `compiling=${h.compiling} reveal=${h.reveal}KB build=${h.build} proxy=${h.proxyMerge} heapDrop=${h.heapDropMB}MB${h.newPrograms ? ' new=' + h.newPrograms.join(',') : ''}${lo ? ' ' + lo : ''}`);
     }
     return lines.join('\n');
@@ -265,7 +269,9 @@ export class FrameMonitor {
  *   with other processes, or moved to a slow core), not a code path.
  * - 'gc' / 'gc-in-<stage>': the heap dropped by more than 2 MB.
  * - 'gpu-wait': render alone took several times its usual CPU for the usual draw calls,
- *   so the main thread waited inside GL calls for a GPU that was behind.
+ *   so the main thread waited inside GL calls for a GPU that was behind; also when the
+ *   shadow passes explain the excess but most of it is one draw call of over 10 ms
+ *   (`shadowDraw`, `shadowDrawObj`: the longest single draw in the shadow passes).
  * - 'cpu:<stage>': one stage explains most of the excess.
  * - 'task:<fn>': a timer or promise callback between frames; 'gpu': GPU-bound frame;
  *   'idle-wait': the main thread was idle (GPU or compositor back-pressure).
@@ -289,7 +295,13 @@ function cause(h) {
     if (inflated >= 2 && inflated >= 0.5 * measured && (top === 'render' || topEx < 0.6 * Math.max(h.cpu - u.cpu, 1e-3))) return 'contention';
     if (top === 'render') {
       const sameWork = !u.calls || h.calls < 1.3 * u.calls;
-      if (h.shadowCpu - u.shadowCpu > 0.5 * topEx) return 'cpu:shadows';
+      const shadowEx = h.shadowCpu - u.shadowCpu;
+      if (shadowEx > 0.5 * topEx) {
+        // one draw call of over ~10 ms that carries most of the excess: that GL call
+        // waited for the GPU (another process's work, or a long GPU frame before it)
+        if (h.shadowDraw > SHADOW_DRAW_WAIT && h.shadowDraw > 0.5 * shadowEx) return 'gpu-wait';
+        return 'cpu:shadows';
+      }
       if (sameWork && h.stages.render > 2.5 * (us.render || 0) + 10) return 'gpu-wait';
     }
     return `cpu:${top}`;

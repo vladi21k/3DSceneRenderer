@@ -626,6 +626,64 @@ function paperNormal(renderer) {
   return tex(heightToNormal(hf, N, N, 1.4), { srgb: false, repeat: [12, 6] }, renderer);
 }
 
+// ------------------------------------------------------------------ print atlases
+/** Texture for an atlas whose image arrives later (canvas texture settings, clamped). */
+function atlasTexture({ repeat = null, aniso = 8 }, renderer) {
+  const t = new THREE.Texture();
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  if (repeat) t.repeat.set(repeat[0], repeat[1]);
+  t.anisotropy = Math.min(aniso, renderer?.capabilities.getMaxAnisotropy() || 1);
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  return t;
+}
+
+/** Paint the print atlas and the lit atlas (prints.js) in a module worker and give them to
+ *  the two textures when they arrive. Returns {done, finish()}: finish() paints them here
+ *  at once if the worker has not delivered yet (or failed), so the textures never get
+ *  their images (and uploads) after the first frame. */
+function paintPrintAtlases(printMap, litMap, tm) {
+  const t0 = performance.now();
+  const job = { done: false, finish: null };
+  let w = null;
+  const set = (t, image, flipY) => { t.image = image; t.flipY = flipY; t.needsUpdate = true; };
+  const local = () => {
+    if (job.done) return;
+    job.done = true;
+    if (w) { w.terminate(); w = null; }
+    const t1 = performance.now();
+    const a = buildPrintAtlas();
+    set(printMap, a.canvas, true);
+    set(litMap, buildLitAtlas(a.canvas), true);
+    tm.atlas = +(performance.now() - t1).toFixed(1);
+  };
+  job.finish = local;
+  try {
+    if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') { local(); return job; }
+    w = new Worker(new URL('./printWorker.js', import.meta.url), { type: 'module' });
+  } catch (e) { local(); return job; }
+  w.onmessage = (e) => {
+    if (job.done) return;
+    const d = e.data;
+    if (!d || d.error || !d.atlas || !d.lit) {
+      console.warn('[furniture] print atlas worker failed, painting here:', d && d.error);
+      local();
+      return;
+    }
+    job.done = true;
+    w.terminate(); w = null;
+    // the bitmaps come flipped (a bitmap ignores the GL's flipY)
+    set(printMap, d.atlas, false);
+    set(litMap, d.lit, false);
+    tm.atlasWorker = d.ms;
+    tm.atlasWall = +(performance.now() - t0).toFixed(1);
+  };
+  w.onerror = (e) => { e.preventDefault?.(); local(); };
+  w.postMessage({});
+  return job;
+}
+
 // ------------------------------------------------------------------ library
 export function createMaterials(app) {
   const M = app.materials, R = app.renderer;
@@ -714,10 +772,12 @@ export function createMaterials(app) {
     patchEnvSpec(reg('shelterGlass', patchShelterGlass(new THREE.MeshStandardMaterial({ color: srgb('#e6e8e2'), map: decal, roughness: 0.05, metalness: 0, envMapIntensity: 1.2 }))));
     patchEnvSpec(reg('glassEdge', new THREE.MeshStandardMaterial({ color: srgb('#6f9a8a'), roughness: 0.1, metalness: 0, transparent: true, opacity: 0.6, depthWrite: false, envMapIntensity: 1.2 })));
   }
-  const atlas = T('atlas', () => buildPrintAtlas(R));
-  out.atlas = atlas;
-  const printMap = tex(atlas.canvas, { repeat: [1, 1], aniso: 16 }, R);
-  printMap.wrapS = printMap.wrapT = THREE.ClampToEdgeWrapping;
+  // the print atlas and its lit copy are painted in a worker while the start-up goes on;
+  // the module's first update finishes them here if they have not arrived (out.prints)
+  const printMap = atlasTexture({ aniso: 16 }, R);
+  const litMap = atlasTexture({ repeat: [1, ATLAS_H / LIT_ROWS], aniso: 8 }, R);
+  litMap.offset.set(0, -(1 - LIT_ROWS / ATLAS_H) * (ATLAS_H / LIT_ROWS));
+  out.prints = paintPrintAtlases(printMap, litMap, tm);
   // prints sit a few millimetres proud of their panels; polygon offset keeps them clear
   // of the panel in the depth buffer at any distance
   const decalOffset = (m) => { m.polygonOffset = true; m.polygonOffsetFactor = -1; m.polygonOffsetUnits = -4; return m; };
@@ -740,9 +800,6 @@ export function createMaterials(app) {
   // light levels (scene-linear radiance) the module sets every frame from the exposure
   out.levels = { lit: { value: 0.03 }, disp: { value: 0.3 }, lamp: { value: 0 } };
   // backlit advert panels: laminate over a light box (emission from the lit atlas)
-  const litMap = tex(T('lit', () => buildLitAtlas(atlas.canvas)), { repeat: [1, ATLAS_H / LIT_ROWS], aniso: 8 }, R);
-  litMap.offset.set(0, -(1 - LIT_ROWS / ATLAS_H) * (ATLAS_H / LIT_ROWS));
-  litMap.wrapS = litMap.wrapT = THREE.ClampToEdgeWrapping;
   patchPosterPick(decalOffset(reg('printLit', patchEmissiveLevel(new THREE.MeshStandardMaterial({ map: printMap, emissiveMap: litMap, emissive: 0xffffff, emissiveIntensity: 1.0, roughness: 0.25, metalness: 0 }), out.levels.lit, 'lit'))));
   // LED passenger displays and touch screens (auto-dimmed like real ones)
   const disp = T('display', () => buildDisplayAtlas());

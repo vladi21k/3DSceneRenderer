@@ -18,7 +18,9 @@ import { archSegments } from '../facadePlan.js';
 //
 // Vertex format (36 bytes; the GPU upload of a chunk is what costs, see buildings.js):
 //   p  position   float32 × 3, world space
-//   n  normal     snorm8 × 4 (w unused, keeps the attribute 4-byte aligned)
+//   n  normal     snorm8 × 4; w: height above the paving in front (HG_MAX = none or out
+//                 of reach, out[5] of the shade callback), affine over a face, so it
+//                 interpolates exactly; the stone materials read it as aNrmW.w (grime.js)
 //   t  uv         float32 × 2, metres
 //   c  colour     unorm8 × 4: rgb = sqrt(colour / COLOR_SCALE) (dark paints keep their
 //                 precision), a = grime (or lit share) / COLOR_SCALE; decoded per vertex by
@@ -33,6 +35,9 @@ export const FACES = { FRONT: F_FRONT, BACK: F_BACK, LEFT: F_LEFT, RIGHT: F_RIGH
 // arrays are handed over to the GPU geometry as they are, see Sink.detach).
 const HINT = new Map();
 
+/** Height above the paving (normal.w, snorm8): metres up to HG_MAX, in steps of HG_MAX / 127. */
+export const HG_MAX = 3;
+const HG_Q = 127 / HG_MAX;
 /** Colours and grime are stored relative to COLOR_SCALE in unorm8 (0..2 representable). */
 export const COLOR_SCALE = 2;
 /**
@@ -123,9 +128,9 @@ export class Builder {
     this.frames = [];
     this.setFrame(0, 0, 0, 1, 0, 0, 1);
     this.uv = [1, 0, 1, 0];          // tu = u*su + ou, tv = v*sv + ov
-    this.shade = null;               // (u, v, w, nu, nv, nw, out[5]) -> void
+    this.shade = null;               // (u, v, w, nu, nv, nw, out[6]) -> void (out[5]: height above the paving)
     this.run = null;                 // run-off occluder above what is emitted (FaceShade.occ item)
-    this.col = [1, 1, 1, 0, 1];
+    this.col = [1, 1, 1, 0, 1, HG_MAX];
     this.flat = [1, 1, 1];           // colour used when shade is null
     this.grime = 0;                  // per-vertex grime mask (shade callbacks may write out[3])
   }
@@ -195,10 +200,11 @@ export class Builder {
     const uv = s.uvx || this.uv;
     t[k * 2] = tu * uv[0] + uv[1];
     t[k * 2 + 1] = tv * uv[2] + uv[3];
-    let col = this.flat, gr = this.grime;
-    if (this.shade) { col = this.col; col[3] = gr; col[4] = 1; this.shade(u, v, w, nu, nv, nw, col); gr = col[3]; }
+    let col = this.flat, gr = this.grime, hg = HG_MAX;
+    if (this.shade) { col = this.col; col[3] = gr; col[4] = 1; col[5] = HG_MAX; this.shade(u, v, w, nu, nv, nw, col); gr = col[3]; hg = col[5]; }
     c[i4] = 255 * Math.sqrt(col[0] * CS); c[i4 + 1] = 255 * Math.sqrt(col[1] * CS); c[i4 + 2] = 255 * Math.sqrt(col[2] * CS);
     c[i4 + 3] = gr * C8;
+    n[i4 + 3] = Math.round((hg < -0.4 ? -0.4 : hg > HG_MAX ? HG_MAX : hg) * HG_Q);
     runAttr(this.run, u, v, this.shade ? col[4] : 1, s.r, i4);
     return k;
   }

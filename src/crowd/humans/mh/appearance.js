@@ -313,6 +313,65 @@ export function castToddler(seed, cast, lying = false) {
   return a;
 }
 
+// café staff (set() field outfit: 'waiter'): a white or light shirt, dark trousers, a long waist apron
+const WAITER_SHIRT = P([['#f4f4f1', 12], ['#ecebe6', 5], ['#e3e8ee', 2], ['#efeadf', 2]]);
+const WAITER_TROUSERS = P([['#141416', 9], ['#1c1e23', 4], ['#232a3a', 2]]);
+const APRON = P([['#121214', 12], ['#2b1f18', 3], ['#1e2a22', 2], ['#3a1a20', 2], ['#e9e6df', 1]]);
+const WAITER_SHOES = P([['#3a3a3c', 3], ['#2a2a2c', 2]]);
+
+/** Can this character be dressed as a waiter (an adult in a shirt, blouse or tee over long trousers)? */
+export function waiterFits(char) {
+  if (char.ageClass !== 'adult' || !char.outfit || !char.outfit.top || !char.outfit.bottom || char.outfit.hat) return false;
+  const k = topKind(char);
+  if (k !== 'shirt' && k !== 'tee' && k !== 'blouse') return false;
+  const b = char.outfit.bottom;
+  return b.cut !== 'leg' && b.cut !== 'skirt' && b.suit !== 'female_elegantsuit01' && b.suit !== 'female_casualsuit02';
+}
+
+/**
+ * A café waiter for appearance seed `seed`: the seed's own person when the character can wear the
+ * outfit, else a character of the same sex that can (nearest in height, drawn at the seed's height
+ * within +-10 %), in a white or light plain shirt, dark trousers, dark shoes and a long waist apron
+ * (flag apron: the renderer draws the character's apron part; its colour is the socks region's tint),
+ * no bag or phone, standing relaxed or with the hands behind the back.
+ */
+export function castWaiter(seed, cast) {
+  const chars = charsOf(cast);
+  const base = castAppearance(seed, cast);
+  let index = base.index;
+  if (!waiterFits(chars[index])) {
+    const sex = chars[index].sex;
+    let pool = [];
+    chars.forEach((c, i) => { if (waiterFits(c) && c.sex === sex) pool.push(i); });
+    if (!pool.length) chars.forEach((c, i) => { if (waiterFits(c)) pool.push(i); });
+    if (!pool.length) return base;
+    pool = pool.sort((x, y) => Math.abs(chars[x].height - base.height) - Math.abs(chars[y].height - base.height) || x - y).slice(0, 3);
+    index = pool[(Math.imul((seed >>> 0) ^ 0x7f4a7c15, 0x2c1b3c6d) >>> 16) % pool.length];
+  }
+  const r = new RNG((seed >>> 0) ^ 0x51ed270b);
+  const a = finish(seed, r, cast, index);
+  const char = a.char;
+  a.scale = THREE.MathUtils.clamp(base.height / char.height, 0.9, 1.1);
+  a.height = char.height * a.scale;
+  const T = a.tints;
+  const put = (reg, c) => { T[reg * 3] = c[0]; T[reg * 3 + 1] = c[1]; T[reg * 3 + 2] = c[2]; };
+  const shirt = r.weighted(WAITER_SHIRT), trousers = r.weighted(WAITER_TROUSERS);
+  put(REGION.top, shirt); put(REGION.top2, shirt);
+  put(REGION.bottom, trousers);
+  put(REGION.socks, r.weighted(APRON));
+  // (dark shoes: sneakers tinted down to charcoal, leather mostly black)
+  const sneaker = ['shoes02', 'shoes05', 'shoes06'].includes(char.outfit.shoes);
+  if (sneaker || r.chance(0.6)) put(REGION.shoes, r.weighted(WAITER_SHOES));
+  a.pattern = PATTERN.SOLID; a.patScale = 1; a.patColor = [1, 1, 1];
+  a.bag = BAG.NONE; a.carry = false; a.phoneWalk = false; a.walkOld = false;
+  a.idle = r.weighted([[0, 40], [5, 35], [2, 10], [7, 15]]);
+  // (plain pressed cloth: no denim fading on the trousers)
+  a.detailBottom = 0.25; a.detailTop = 0.4;
+  a.apron = true;
+  a.waiter = true;
+  return a;
+}
+
 /** Testing: character `index` itself (own: with its own colours), varied by the seed otherwise. */
 export function castCharacter(seed, cast, index, own = false) {
   const r = new RNG((seed >>> 0) ^ 0x1b873593);

@@ -356,7 +356,9 @@ const FRAG_SURFACE = /* glsl */`
   float rr = uRegionRough[hRegion];
   hRough = rr >= 0.0 ? rr : uLayerRough[int(vCastTex.x + 0.5)];
   hSpec = uRegionSpec[hRegion];
-  hAO = vCastAO;
+  // (clamped: under MSAA a varying is evaluated at the pixel centre even where that lies outside the
+  // triangle, and the extrapolated occlusion of a small far triangle can go negative)
+  hAO = clamp(vCastAO, 0.0, 1.0);
   // texel footprint (mip level) of the layer: strands and fine detail below a pixel
   vec2 tsz = vec2(textureSize(uAlbedo, 0).xy);
   vec2 dx = dFdx(vCastUv * tsz), dy = dFdy(vCastUv * tsz);

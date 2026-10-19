@@ -263,7 +263,122 @@ function smoothPath(pts, iters = 1) {
 
 const rigid = (b) => [[b, 1]];
 
-export function buildParts(char) {
+/**
+ * A waiter's long waist apron (café staff): cloth from just below the waist to below the knees,
+ * wrapped round the front and sides of the hips (open at the back), falling straight from the widest
+ * part of the hips and thighs with a slight flare and soft vertical folds; its inside drawn as the
+ * garment's inner face; ties round the back to a knot with two hanging ends (near version). Skinned
+ * like a skirt (the pelvis at the waistband, blending to the thighs, each side more to its own leg,
+ * towards the hem) and flagged SKIRT, so the shader keeps it outside the striding thighs. Colour: the
+ * socks region's tint (no character of the cast wears visible socks).
+ */
+function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
+  const b = new PartBuilder();
+  const yTop = waistY - 0.03 * k, yHem = J[BONE.shinL].y - 0.1 * k;
+  const az = 0.5 * (J[BONE.thighL].z + J[BONE.thighR].z);
+  const TH = 1.62;
+  const o = new THREE.Vector3(), d = new THREE.Vector3();
+  const rayR = (y, th) => {
+    o.set(0, y, az); d.set(Math.sin(th), 0, -Math.cos(th));
+    const q = surf(o, d, 0, 0.025, 0, 0.45);
+    return q ? Math.hypot(q.x, q.z - az) : 0;
+  };
+  // per column: the radius falls straight from the widest point above (cloth hangs), a soft flare
+  // and folds towards the hem
+  const P = [], N = [];
+  const cols = [];
+  for (let i = 0; i <= NT; i++) {
+    const th = -TH + (2 * TH * i) / NT;
+    let rMax = 0;
+    const col = [];
+    for (let j = 0; j <= NY; j++) {
+      const y = yTop + (yHem - yTop) * (j / NY);
+      // (sampled between the rows too, so a narrow bulge between them is not missed)
+      rMax = Math.max(rMax, rayR(y, th), j > 0 ? rayR(y - (yHem - yTop) / NY * 0.5, th) : 0);
+      const u = j / NY;
+      // (the waistband stands clear of a shirt's hem; folds deepen towards the hem)
+      const r = Math.max(rMax, 0.08 * k) + 0.007 + 0.009 * (1 - THREE.MathUtils.smoothstep(u, 0, 0.25)) + 0.014 * u * u +
+        (near ? 0.0055 * u * Math.sin(th * 11 + 0.7) : 0);
+      col.push(new THREE.Vector3(Math.sin(th) * r, y, az - Math.cos(th) * r));
+    }
+    cols.push(col);
+  }
+  for (let i = 0; i <= NT; i++) {
+    for (let j = 0; j <= NY; j++) {
+      const a = cols[Math.min(NT, i + 1)][j].clone().sub(cols[Math.max(0, i - 1)][j]);
+      const c = cols[i][Math.min(NY, j + 1)].clone().sub(cols[i][Math.max(0, j - 1)]);
+      N.push(new THREE.Vector3().crossVectors(c, a).normalize());
+      P.push(cols[i][j]);
+    }
+  }
+  // (outward: away from the axis)
+  for (let i = 0; i < P.length; i++) {
+    const out = new THREE.Vector3(P[i].x, 0, P[i].z - az);
+    if (N[i].dot(out) < 0) N[i].negate();
+  }
+  const skin = (p, th) => {
+    const u = THREE.MathUtils.smoothstep((hipY + 0.05 * k - p.y) / Math.max(0.05, hipY + 0.05 * k - yHem), 0, 1);
+    const sd = THREE.MathUtils.clamp(Math.sin(th) / 0.7, -1, 1);
+    return [[BONE.pelvis, 1 - u], [BONE.thighL, u * (0.5 - 0.3 * sd)], [BONE.thighR, u * (0.5 + 0.3 * sd)]];
+  };
+  const FL = FLAG.SOLID | FLAG.SKIRT;
+  const layer = (inner) => {
+    const v0 = b.n;
+    for (let i = 0; i <= NT; i++) {
+      const th = -TH + (2 * TH * i) / NT;
+      for (let j = 0; j <= NY; j++) {
+        const q = i * (NY + 1) + j;
+        const p = inner ? P[q].clone().addScaledVector(N[q], -0.0015) : P[q];
+        const n = inner ? N[q].clone().negate() : N[q];
+        // (folds and the hem's underside a little darker)
+        const fold = 0.5 + 0.5 * Math.sin(th * 11 + 0.7 + 1.2);
+        const ao = inner ? 0.6 : (near ? 0.8 + 0.2 * (1 - (1 - fold) * (j / NY)) : 0.95) * (j === 0 ? 0.8 : 1);
+        b.vertex(p, n, i / NT, 1 - j / NY, skin(p, th), REGION.socks, inner ? FL | FLAG.BACK : FL, ao);
+      }
+    }
+    for (let i = 0; i < NT; i++) {
+      for (let j = 0; j < NY; j++) {
+        const a = v0 + i * (NY + 1) + j, c = a + NY + 1;
+        b.quad(a, a + 1, c + 1, c);
+      }
+    }
+  };
+  layer(false);
+  layer(true);
+  if (near) {
+    // the waistband and its ties: all round the waist (over the apron's top in front), to a knot over
+    // the small of the back
+    const tie = [], tn = [];
+    const r0 = cols[NT >> 1][0].distanceTo(new THREE.Vector3(0, yTop, az));
+    for (let i = 0; i <= 40; i++) {
+      const th = -Math.PI + (2 * Math.PI * i) / 40;
+      const front = Math.abs(th) < TH;
+      const r = front ? Math.hypot(cols[Math.round(((th + TH) / (2 * TH)) * NT)][0].x, cols[Math.round(((th + TH) / (2 * TH)) * NT)][0].z - az) + 0.001
+        : (rayR(yTop + 0.012 * k, th) || r0) + 0.004;
+      d.set(Math.sin(th), 0, -Math.cos(th));
+      tie.push(new THREE.Vector3(d.x * r, yTop + 0.012 * k, az + d.z * r));
+      tn.push(d.clone());
+    }
+    const tieSkin = [[BONE.pelvis, 0.6], [BONE.spine1, 0.4]];
+    b.strap(tie, tn, () => 0.022 * k, () => 0.003, tieSkin, REGION.socks);
+    const rb = rayR(yTop + 0.012 * k, Math.PI) || 0.12 * k;
+    const knot = new THREE.Vector3(0, yTop + 0.012 * k, az + rb + 0.012);
+    b.geometry(new THREE.SphereGeometry(0.016 * k, 8, 6).scale(1.3, 0.9, 0.7), new THREE.Matrix4().makeTranslation(knot.x, knot.y, knot.z), tieSkin, REGION.socks, FLAG.SOLID, 0.85);
+    for (const sg of [-1, 1]) {
+      const end = [], en = [];
+      for (let i = 0; i <= 5; i++) {
+        const u = i / 5;
+        end.push(new THREE.Vector3(sg * (0.008 + 0.03 * u) * k, knot.y - u * 0.2 * k, knot.z + 0.004 + 0.01 * u));
+        en.push(new THREE.Vector3(0, 0, 1));
+      }
+      b.strap(end, en, () => 0.02 * k, () => 0.003, (p) => (p.y > knot.y - 0.05 * k ? tieSkin : [[BONE.pelvis, 1]]), REGION.socks);
+    }
+  }
+  return b.build();
+}
+
+/** opts.apron: also a waiter's waist apron (apron, apronFar). */
+export function buildParts(char, opts = {}) {
   const J = char.skeleton.joints.map((j) => new THREE.Vector3(...j));
   const H = char.info.H, k = H / 1.76;
   const out = {};
@@ -541,6 +656,10 @@ export function buildParts(char) {
     b.strap(pts, nr, () => SW, () => 0.0035, strapSkin, REGION.strap);
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
+  }
+  if (opts.apron) {
+    out.apron = apron(char, J, k, surf, hips[0], waist[0], 28, 18, true);
+    out.apronFar = apron(char, J, k, surf, hips[0], waist[0], 10, 5, false);
   }
   return out;
 }

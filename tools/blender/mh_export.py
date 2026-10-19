@@ -247,6 +247,20 @@ def main():
         spec = meta['spec']
         # ---------------------------------------------------------------- merge parts, LOD index lists
         body_part = next((q for q in parts if q['kind'] == 'body'), None)
+        # far LODs: the inside of the mouth and the eye sockets keep a lit skin tone (the simplified lips
+        # and eyeballs part a little and would show a black mouth or hollow eyes)
+        lift = None
+        eyes_p = next((q for q in parts if q['kind'] == 'eyes'), None)
+        if body_part is not None and eyes_p is not None:
+            ec = eyes_p['co']
+            E = ec.mean(0)
+            kk = meta['H'] / 1.75
+            EL, ER = ec[ec[:, 0] < E[0]].mean(0), ec[ec[:, 0] >= E[0]].mean(0)
+            M = E + np.array([0.0, -0.066 * kk, 0.01 * kk])
+            bc = body_part['co']
+            inner = (np.linalg.norm(bc - M, axis=1) < 0.035 * kk) | (np.linalg.norm(bc - EL, axis=1) < 0.026 * kk) | \
+                (np.linalg.norm(bc - ER, axis=1) < 0.026 * kk)
+            lift = inner & (body_part['ao'] < 0.35)
         P, N, UV, W, AO, TEXA = [], [], [], [], [], []
         lods = [[], [], [], []]
         nv = 0
@@ -286,6 +300,9 @@ def main():
                     # far LODs keep a subset of the vertices: occlusion and normals averaged over the area each
                     # one stands for (a vertex deep in a fold must not paint a dark patch over a big triangle)
                     sao, snr = smooth_attrs(d['co'], d['ao'], d['nr'], SMOOTH_R[li])
+                    if d is body_part and lift is not None and lift.any():
+                        sao = sao.copy()
+                        sao[lift] = np.maximum(sao[lift], 0.72)
                 if d['kind'] == 'body' and SHRINK[li] > 0 and 'gd' in d and len(lodidx[li]):
                     # a copy of the skin for this far LOD, pulled in under nearby garment edges
                     f = np.clip((GD_RANGE - d['gd']) / GD_RANGE, 0, 1)[:, None]

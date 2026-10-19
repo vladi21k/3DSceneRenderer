@@ -394,7 +394,9 @@ function tube(B, a, b, r, sides, col, caps = false, r1 = r) {
 }
 
 /** Rounded roof fairing (equipment cover) from z0 to z1: its ends ramp down to the roof in
- *  a quarter round (a loft of the cross-section scaled in height), smooth normals. */
+ *  a quarter round (a loft of the cross-section scaled in height), smooth normals. uv = (m from
+ *  its front end, 300 + its length): the body shader draws the panel joints across it, the
+ *  louvred intakes in its end faces and the louvre panels low on its sides from it. */
 function fairing(B, z0, z1) {
   const half = [[0.8, CAR.roof - 0.04], [0.8, 3.4], [0.765, 3.465], [0.69, 3.495], [0.35, 3.503], [0, 3.505]];
   const base = CAR.roof - 0.04;
@@ -412,7 +414,7 @@ function fairing(B, z0, z1) {
     const b = row[Math.min(nc - 1, i + 1)].clone().sub(row[Math.max(0, i - 1)]);
     const n = new THREE.Vector3().crossVectors(a, b).normalize();
     if (n.dot(new THREE.Vector3(p.x, p.y - base + 0.2, p.z - zc)) < 0) n.negate();
-    return B.body.vert(p.x, p.y, p.z, n.x, n.y, n.z, COL.fairing, p.z, p.y);
+    return B.body.vert(p.x, p.y, p.z, n.x, n.y, n.z, COL.fairing, p.z - z0, 300 + (z1 - z0));
   }));
   for (let j = 0; j < nr - 1; j++) {
     for (let i = 0; i < nc - 1; i++) B.body.quad(idx[j][i], idx[j + 1][i], idx[j + 1][i + 1], idx[j][i + 1]);
@@ -580,6 +582,16 @@ function noseFittings(P, lod) {
   // number box: a white plate with the fleet number in black (LOD 0)
   const ym = (PLATE.y0 + PLATE.y1) / 2, hy = (PLATE.y1 - PLATE.y0) / 2;
   noseEllipse(P.body, 0, ym, PLATE.u, hy, 0.005, [0.62, 0.62, 0.6], null, lod === 0 ? 16 : 8, 0.25);
+  // the city's crest on an enamel shield beside it (the viewer's right), and the coupler hatch in
+  // the nose apron: a cover panel in a dark seam
+  if (lod < 2) {
+    const cu = -0.215, cw = 0.042 / sideX(ym);
+    noseEllipse(P.body, cu, ym + 0.004, cw, 0.055, 0.005, [0.6, 0.6, 0.58], null, lod === 0 ? 16 : 8, 0.55);
+    noseEllipse(P.body, cu, ym + 0.006, cw * 0.66, 0.036, 0.0062, [0.03, 0.06, 0.2], null, lod === 0 ? 12 : 6, 0.7);
+    const hw = 0.3 / sideX(0.42);
+    noseEllipse(P.body, 0, 0.42, hw, 0.105, 0.0025, [0.05, 0.05, 0.052], null, lod === 0 ? 20 : 10, 0.3);
+    noseEllipse(P.body, 0, 0.42, hw - 0.009 / sideX(0.42), 0.096, 0.0035, grimed(COL.silver, 0.42).slice(), null, lod === 0 ? 20 : 10, 0.3);
+  }
   if (lod > 0) return;
   const B = P.body;
   for (const quad of numeralQuads(FLEET_NO, 0.075)) {
@@ -882,7 +894,9 @@ export function buildModels(atlas) {
       const cap = capFront(P, prof, lod);
       noseFittings(P, lod);
       sideNumber(P.body, lod);
-      fairing(P, 2.4, z1 - 0.45);
+      // the air conditioning unit over the front of the saloon, the traction converter behind it
+      fairing(P, 2.4, 5.2);
+      fairing(P, 5.5, z1 - 0.45);
       if (lod < 2) saloon(P.inner, true, 0, z1, lod);
       if (lod === 0) runningGear(P.body, CAR.capBase, z1, CAR.bogies[0]);
       else if (lod === 1) runningGear(P.body, CAR.capBase, z1, null);

@@ -22,7 +22,8 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //   D  detail map: high-frequency grain that fades out through its own mips
 //   R  dressing (with L and D): the detail is chosen, rotated, offset and scaled per block
 //      (chisel dressing)
-//   W  weathering: soiled ledges and soffits, vertical drip streaks (world orientation)
+//   W  weathering: soiled ledges, chamfers and soffits, vertical drip streaks (world
+//      orientation)
 //   K  lanes: grime bands along the rails / kerbs and worn lanes (street ribbons: v = d,
 //      sidewalks: v = metres from the gutter)
 //   A  (with K) lane offset d from the aLaneD vertex attribute instead of uv.y: set
@@ -49,7 +50,7 @@ uniform vec4 sfFlags;    // metal mask, swap uv, paint mask, unused
 uniform vec4 sfTile;     // 1/W, 1/H, W, H (m)
 uniform vec4 sfMacro;    // freq1, freq2 (1/m), albedo amp, roughness amp
 uniform vec4 sfMacroAn;  // anisotropy of the two macro lookups
-uniform vec4 sfStain;    // amount, freq (1/m), threshold, vertical stretch (along v: run-off on walls)
+uniform vec4 sfStain;    // amount, freq (1/m), threshold, vertical stretch (along v: run-off on walls; < 0: matt stains)
 uniform vec4 sfMisc;     // normal strength, ao strength, variance→roughness k, micro-shadow
 uniform float sfAOScale; // global scale of the baked AO (lowered when screen-space AO runs)
 uniform float sfEnvI;    // the material's envMapIntensity (three replaces it by the scene's when the
@@ -445,11 +446,12 @@ const MAP_MACRO = /* glsl */ `
     sfAlb *= 1.0 + sfMacro.z * ((sfM1.r - 0.5) * 1.3 + (sfM2.g - 0.5) * 0.9);
     sfRough *= 1.0 + sfMacro.w * ((sfM1.a - 0.5) * 2.0);
     if (sfStain.x > 0.0) {
-      vec2 sfStUv = sfUv * vec2(1.0, 1.0 / max(sfStain.w, 1.0));
+      vec2 sfStUv = sfUv * vec2(1.0, 1.0 / max(abs(sfStain.w), 1.0));
       float sfSt = smoothstep(sfStain.z, sfStain.z + 0.08, texture(sfMacroTex, sfStUv * sfStain.y + vec2(0.13, 0.57)).b);
       sfSt *= smoothstep(0.4, 0.62, sfM1.g);
       sfAlb *= 1.0 - sfStain.x * sfSt;
-      sfRough = mix(sfRough, sfRough * 0.85, sfSt);
+      // stains on stone are a little glossier (oily, sealed pores); on cloth (w < 0) not
+      sfRough = mix(sfRough, sfRough * (sfStain.w < 0.0 ? 1.0 : 0.85), sfSt);
     }
   }
 `;
@@ -488,7 +490,10 @@ const MAP_WEATHER = /* glsl */ `
     vec3 sfNW = inverseTransformDirection(sfVN, viewMatrix);
     float sfMb = texture(sfMacroTex, vSfWorld.xz * 0.23 + vSfWorld.y * 0.05).b;
     float sfMf = texture(sfMacroTex, vSfWorld.xz * 1.7 + vec2(0.41, 0.13)).g;
-    float sfLedge = smoothstep(0.55, 0.9, sfNW.y);
+    // dust settles on anything tilted up by more than ~25°: ledges, sills and the 45°
+    // chamfers of V-jointed rustication (which otherwise caught a high sun as clean white
+    // lines along every bed joint)
+    float sfLedge = smoothstep(0.4, 0.85, sfNW.y);
     float sfSoffit = smoothstep(-0.55, -0.9, sfNW.y);
     // ledge tops collect grey dust and soot (darker and desaturated, patchy)
     float sfLd = sfWeather.x * sfLedge * (0.35 + sfMb) * (0.6 + 0.8 * sfMf);
@@ -751,7 +756,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfSpots2: { value: v4([shared.macro ? sp.cluster?.freq ?? 0 : 0, sp.cluster?.lo ?? 0.5, sp.cluster?.hi ?? 0.62, sp.laneClear ?? 0]) },
     sfSpots3: { value: v4([L && shared.macro ? sp.blot?.prob ?? 0 : 0, sp.blot?.radius ?? 0.02, sp.blot?.albedo ?? 0.8, sp.blot?.rough ?? 0.85]) },
     sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, 0]) },
-    sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, st.stretch ?? 1]) },
+    sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, (st.matt ? -1 : 1) * (st.stretch ?? 1)]) },
     sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
     sfMirror: { value: L ? cfg.mirror ?? 0 : 0 },
     sfWeather: { value: v4(shared.macro ? [w.ledge ?? 0, w.streak ?? 0, w.threshold ?? 0.62, w.soffit ?? 0] : [0, 0, 0, 0]) },

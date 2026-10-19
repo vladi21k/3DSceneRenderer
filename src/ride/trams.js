@@ -165,6 +165,25 @@ const trams = {
       for (const b of u.root.userData.bodies) for (const lg of b.lods) lg.visible = true;
     }
     this.pax = null;                                  // passengers: allocated on the first update (humans ready)
+    // the cab tram's own shadow: its three bodies as depth-only hulls on its track (never drawn
+    // in the main pass, as the units' hulls), so it shades the street, the people beside it and a
+    // passing unit like the tram the camera rides in
+    this.cabHull = new THREE.Group();
+    this.cabHull.name = 'trams:cabShadow';
+    this.cabHull.userData.hulls = ['cab', 'mid', 'cab'].map((kind) => {
+      const hg = (kind === 'mid' ? this.models.hull.mid : this.models.hull.cab).clone();
+      hg.boundingSphere = FAR_SPHERE.clone();
+      const h = new THREE.Mesh(hg, this.unitMats[0].body);
+      h.matrixAutoUpdate = false;
+      h.castShadow = true;
+      h.receiveShadow = false;
+      h.name = `trams:cab:${kind}:shadow`;
+      h.userData.shadowProxy = { active: false };
+      h.userData.shadowSphere = new THREE.Sphere();
+      this.cabHull.add(h);
+      return h;
+    });
+    app.scene.add(this.cabHull);
   },
 
   /** Unlit lamp material: atlas × vertex colour × level (display or lens, by atlas region). */
@@ -269,6 +288,8 @@ const trams = {
     const R = this.refl, tr = app.train;
     const on = !!(tr && !tr.disabled && Number.isFinite(tr.s) && !app.params.view);
     R.cabOn.value = on ? 1 : 0;
+    const H = this.cabHull ? this.cabHull.userData.hulls : null;
+    if (H) for (let i = 0; i < 3; i++) H[i].userData.shadowProxy.active = on;
     if (!on) return;
     const J = CAR.joints, route = app.route;
     for (let i = 0; i < 3; i++) {
@@ -280,7 +301,19 @@ const trams = {
       _r.crossVectors(UP, _b).normalize();                 // local +x (the unit's frame: right of travel)
       _u.crossVectors(_b, _r);
       const m = R.cabM.value[i];
-      m.makeBasis(_r, _u, _b).setPosition(F).invert();
+      m.makeBasis(_r, _u, _b).setPosition(F);
+      if (H) {
+        // the shadow hulls: the rear body is a cab turned round (its nose at the rear end)
+        const h = H[i];
+        if (i < 2) h.matrix.copy(m);
+        else { _f.copy(_b).negate(); _r.negate(); h.matrix.makeBasis(_r, _u, _f).setPosition(B); _r.negate(); }
+        h.matrixWorldNeedsUpdate = true;
+        const sp = h.userData.shadowSphere;
+        sp.center.addVectors(F, B).multiplyScalar(0.5);
+        sp.center.y += 1.7;
+        sp.radius = len / 2 + 2;
+      }
+      m.invert();
       R.cabL.value[i].set(CAR.halfWidth, 3.3, len - CAR.gap / 2);
     }
   },
@@ -490,8 +523,9 @@ const trams = {
     // the side glazing: see-through by day (with the passengers behind it), the traced saloon
     // with its lights after dark (needs the humans module)
     const H = app.humans, people = !!(H && !H.disabled && H.ready && this.pax && this.pax.length);
-    const k = Math.min(1, Math.max(0, (night - 0.25) / 0.5));
-    this.see.value = people ? 1 - k * k * (3 - 2 * k) : 0;
+    // (passengers are lit by what lights the street: kept until the twilight is deep, sunset)
+    const k = Math.min(1, Math.max(0, (night - 0.6) / 0.35));
+    this.see.value = people ? 1 : 0; // DBG
     // (log-interpolated: 0.12 -> 0.014 display, 0.12 -> 0.06 lenses)
     this.lampLv.value.set(0.12 * Math.pow(0.014 / 0.12, night), 0.12 * Math.pow(0.06 / 0.12, night));
   },

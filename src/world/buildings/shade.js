@@ -67,6 +67,7 @@ export class FaceShade {
     this.width = face.width;
     this.dirt = opts.dirt ?? 1;
     this.unc = opts.uncleaned || 0;
+    this.damp = opts.damp !== false;   // false: no paving in front (roof-top volumes)
     const top = face.cornice ? face.cornice.y : 20;
     this.corniceY = top;
     // 1D AO and grime tables along v (5 cm steps)
@@ -79,8 +80,9 @@ export class FaceShade {
       const dc = top - v;
       if (dc >= 0) {
         a *= 1 - 0.30 * Math.exp(-dc / 0.45) - 0.06 * Math.exp(-dc / 2.0);
-        // soot crust right under the cornice soffit, rain wash running down from it
-        g += 0.7 * Math.exp(-dc / 0.7) + 0.3 * Math.exp(-dc / 3.5);
+        // soot crust right under the cornice soffit, rain wash running down from it (the
+        // stone materials draw it as streaks, which reach a few storeys down)
+        g += 0.7 * Math.exp(-dc / 0.7) + 0.32 * Math.exp(-dc / 5);
       }
       for (const c of face.courses || []) {
         const d = c.y - v;
@@ -94,15 +96,30 @@ export class FaceShade {
     // run-off occluders: balcony slabs (line = soffit) and window sills (line = underside),
     // with a random strength s and the attribute code (see runAttr)
     this.occ = [];
-    const add = (bal, a, b, y, sv) => {
+    const add = (bal, a, b, y, sv, ends = 0) => {
       const s = Math.min(1.98, Math.max(0.02, sv));
-      // attribute codes (see runAttr): signed width in 1/64 m, strength in 1/63
-      const wq = Math.min(32767, Math.max(1, Math.floor((b - a) * 64)));
+      // attribute codes (see runAttr): signed width in 1/64 m, strength in 1/63; on slab
+      // pieces + CONSOLE_L / CONSOLE_R where the piece ends at a console
+      const wq = Math.min(8191, Math.max(1, Math.floor((b - a) * 64))) + ends;
       // m: how far beyond its ends an occluder still shades the wall (the soot under a
       // balcony slab spreads a little sideways and fades out there, see grime.js)
       this.occ.push({ bal, a, b, y, s, m: bal ? BAL_M : SILL_M, run: bal ? BAL_RUN : SILL_RUN, wq: bal ? wq : -wq, sq: Math.round(s * 63) });
     };
-    for (const b of face.balconies || []) add(true, b.u0, b.u1, b.y - (b.slabT || 0.16), 0.7 + 0.6 * hash1(b.u0 * 31 + b.y * 5, seed));
+    for (const b of face.balconies || []) {
+      // a slab on consoles is cut at every console (ironwork publishes them on the plan,
+      // bal.consoles): the shader runs water and dirt down strips at the ends of every
+      // piece, so streaks hang from both edges of each console as well as the slab ends
+      const y = b.y - (b.slabT || 0.16), sv = 0.7 + 0.6 * hash1(b.u0 * 31 + b.y * 5, seed);
+      let a = b.u0, endA = 0;
+      const cs = b.consoles && b.consoles.length > 1 ? b.consoles.slice().sort(byU) : b.consoles || NO_CONSOLES;
+      for (let k = 0; k < cs.length; k++) {
+        const c = cs[k].u;
+        if (c - a < 0.3 || b.u1 - c < 0.3) continue;
+        add(true, a, c, y, sv, endA + CONSOLE_R);
+        a = c; endA = CONSOLE_L;
+      }
+      add(true, a, b.u1, y, sv, endA);
+    }
     const ext = opts.sillExt ?? 0.15, sh = opts.sillH ?? 0.12;
     for (const o of face.openings || []) {
       if (o.kind === 'window') add(false, o.uc - o.w / 2 - ext, o.uc + o.w / 2 + ext, o.y - sh, 0.5 + 0.8 * hash1(o.uc * 13 + o.y * 7, seed));
@@ -115,11 +132,17 @@ export class FaceShade {
 
   /** The nearest run-off occluder above (u, v) whose run reaches it, or null. */
   occluderAt(u, v) {
+    // (the lowest line first; of pieces on one line, the one u lies in, else the nearest)
+    let best = null, bd = Infinity;
     for (const it of this.occ) {
       if (it.y < v - 1e-3 || it.y - v > it.run) continue;
-      if (u > it.a - it.m && u < it.b + it.m) return it;
+      if (best && it.y > best.y + 1e-6) break;
+      if (u > it.a - it.m && u < it.b + it.m) {
+        const d = u < it.a ? it.a - u : u > it.b ? u - it.b : 0;
+        if (d < bd) { bd = d; best = it; }
+      }
     }
-    return null;
+    return best;
   }
 
   /**
@@ -139,7 +162,8 @@ export class FaceShade {
     // (shared arrays: the result is valid until the next call)
     const xs = _xs, pts = _pts;
     xs.length = 0; pts.length = 0;
-    for (const it of cand) xs.push(it.a - it.m, it.b + it.m);
+    // (the ends themselves too: pieces of a slab cut at a console meet there)
+    for (const it of cand) xs.push(it.a - it.m, it.a, it.b, it.b + it.m);
     xs.sort(numAsc);
     pts.push(xs[0]);
     for (let i = 1; i < xs.length; i++) pts.push((xs[i - 1] + xs[i]) / 2, xs[i]);
@@ -176,6 +200,7 @@ export class FaceShade {
     out[0] = r * dk; out[1] = gg * dk; out[2] = b * dk;
     out[3] = g;
     out[4] = this.dirt;
+    out[5] = this.damp ? hg : 3;
   }
 }
 
@@ -183,6 +208,10 @@ export class FaceShade {
 // (the stone shader fades a slab's soot out by 1.05 m beyond its ends: keep BAL_M above that)
 const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
 const NO_ZONES = { cuts: [], occ: [null] };
+const NO_CONSOLES = [];
+// width-code flags of a slab piece that ends at a console (left end, right end)
+export const CONSOLE_L = 16384, CONSOLE_R = 8192;
+const byU = (p, q) => p.u - q.u;
 const _cand = [], _xs = [], _pts = [], _zones = { cuts: [], occ: [] };
 const numAsc = (p, q) => p - q;
 /**
@@ -203,7 +232,8 @@ function zoneWinner(cand, u) {
 /**
  * aRun attribute (int16 × 4) of a vertex at facade (u, v) shaded by occluder `it` (null:
  * none): ((a − u) · 256, (line − v) · 256, ⌊dirtiness · 128⌉ · 128 + ⌊s · 63⌉, ±⌊width · 64⌋),
- * + balcony slab, − window sill, 0 none. Both offsets are affine in the position, so they
+ * + balcony slab (a piece of it: + CONSOLE_L, + CONSOLE_R where it ends at a console),
+ * − window sill, 0 none. Both offsets are affine in the position, so they
  * interpolate exactly over any face (4 mm steps, ±128 m); the shader (grime.js) decodes
  * the last two into the building's dirtiness and the occluder code.
  */

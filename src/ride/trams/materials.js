@@ -202,7 +202,13 @@ const SALOON_GLSL = /* glsl */ `
 #define TS_YF 0.36
 #define TS_YC 2.3
 #define TS_P 0.8
-const vec3 TS_T = vec3( 0.5, 0.56, 0.54 );         // the tinted side glazing's transmission
+const vec3 TS_T = vec3( 0.5, 0.56, 0.54 );         // the tinted side glazing's transmission (traced saloon)
+// ... and what the see-through glazing lets through (one value: it goes out as alpha): the outer
+// face of a near pane, and a far pane seen from inside (only the street beyond it). The near
+// value is lower than the glass alone: the passengers (humans module) are lit by the open sky,
+// where a saloon gets a fraction of it through its windows (makeInteriorMaterial dims the room).
+#define TS_SEE 0.2
+#define TS_SEE_FAR 0.8
 vec3 tsHit = vec3( 0.0, 1.5, 0.0 );                // where the last primitive was hit (for the shading)
 float tsEll( vec3 ro, vec3 rd, vec3 c, vec3 r, float w, out vec3 n ) {
   float cv = tramEll( ro, rd, c, r, w, n );
@@ -514,13 +520,14 @@ export function makeBodyMaterial(uni) {
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uni, { uTramNight: U.uNight, uTramGain: { value: 1 } });
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;\nvarying vec3 vTramN;')
       .replace('#include <project_vertex>', `#include <project_vertex>
 	vTramP = transformed;
 	vTramUv = uv;
+	vTramN = objectNormal;
 	vTramZ = normalize( ( modelViewMatrix * vec4( 0.0, 0.0, 1.0, 0.0 ) ).xyz );`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;\nvarying vec3 vTramN;')
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	// silver paint (bright vertex colours) vs dark trim
@@ -542,12 +549,34 @@ export function makeBodyMaterial(uni) {
 	}
 	// joints between the lower side panels (under the window pillars), a few mm wide
 	float tramSeam = 0.0;
-	if ( vTramUv.y > 40.0 ) {
+	if ( vTramUv.y > 40.0 && vTramUv.y < 250.0 ) {
 		float zc = vTramUv.x - ( vTramUv.x - vTramP.z > 50.0 ? 100.0 : 0.0 );
 		float aa = max( fwidth( vTramP.z ), 1e-4 );
 		tramSeam = ( 1.0 - smoothstep( 0.0035 - aa, 0.0035 + aa, abs( vTramP.z - zc ) ) ) * min( 1.0, 0.007 / aa );
 		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.015 ), tramSeam );
 		tramPaint *= 1.0 - tramSeam;
+	}
+	// roof equipment covers (trams/model.js fairing: uv = (m from the cover's front end, 300 +
+	// its length)): panel joints across them every 0.55 m, louvred intakes in their front and
+	// rear faces, louvre panels low on their sides near both ends (slats fade to their average
+	// where they get finer than a few pixels)
+	if ( vTramUv.y > 250.0 ) {
+		float fu = vTramUv.x, fL = vTramUv.y - 300.0;
+		vec3 fn = normalize( vTramN );
+		float aaU = max( fwidth( fu ), 1e-4 );
+		float fj = abs( fract( fu / 0.55 + 0.5 ) - 0.5 ) * 0.55;
+		float joint = ( 1.0 - smoothstep( 0.003 - aaU, 0.003 + aaU, fj ) ) * min( 1.0, 0.006 / aaU ) * step( 0.5, fu ) * step( fu, fL - 0.5 );
+		float fax = abs( vTramP.x ), fy = vTramP.y;
+		float face = ( step( fu, 0.42 ) * step( 0.3, - fn.z ) + step( fL - 0.42, fu ) * step( 0.3, fn.z ) ) * step( fax, 0.6 ) * step( 3.24, fy );
+		float side = step( 0.6, abs( fn.x ) ) * step( 3.22, fy ) * step( fy, 3.38 ) * step( 3.6, fL )
+			* ( step( 0.7, fu ) * step( fu, 1.75 ) + step( fL - 1.75, fu ) * step( fu, fL - 0.7 ) );
+		float louvre = max( face, side );
+		float aaY = max( fwidth( fy ), 1e-4 );
+		float slat = smoothstep( 0.3, 0.7, abs( fract( fy / 0.022 ) - 0.5 ) * 2.0 );
+		slat = mix( slat, 0.5, smoothstep( 0.004, 0.011, aaY ) );
+		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.02 ), joint * 0.8 );
+		diffuseColor.rgb = mix( diffuseColor.rgb, mix( vec3( 0.012 ), vec3( 0.09, 0.092, 0.095 ), slat ), louvre );
+		tramPaint *= ( 1.0 - louvre ) * ( 1.0 - 0.8 * joint );
 	}`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 	roughnessFactor = mix( 0.5, roughnessFactor + 0.25 * tramGrime, tramPaint );`)
@@ -572,7 +601,7 @@ export function makeBodyMaterial(uni) {
 		clearcoatRadiance = mix( clearcoatRadiance, tramCabC, tramA );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.body.v6';
+  m.customProgramCacheKey = () => 'trams.body.v7';
   return m;
 }
 
@@ -640,7 +669,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
 		float tramBody = step( 50.0, vTramUv.x - vTramP.z );
 		${see ? `// see-through: everywhere but the cab's side window (the traced cab stays there)
 		float tramSee = uTramSee * tramPane * ( 1.0 - ( 1.0 - tramBody ) * step( vTramP.z, 2.65 ) );
-		tramAlpha = 1.0 - tramSee * ( 1.0 - tramF ) * dot( TS_T, vec3( 1.0 / 3.0 ) );
+		tramAlpha = 1.0 - tramSee * ( 1.0 - tramF ) * ( gl_FrontFacing ? TS_SEE : TS_SEE_FAR );
 		if ( ! gl_FrontFacing ) tramPane = 0.0;` : 'float tramSee = 0.0;'}
 		float tramW = max( length( fwidth( vTramP ) ), 0.002 );      // (derivatives in uniform control flow)
 		if ( tramPane * ( 1.0 - tramSee ) > 0.0 ) {
@@ -679,7 +708,7 @@ export function makeInteriorMaterial(uni, gain = { value: 1 }, seat = new THREE.
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
 	{
 		// daylight reaching the saloon through its windows, and its ceiling lights
-		reflectedLight.indirectDiffuse *= 0.55;
+		reflectedLight.indirectDiffuse *= 0.45;
 		reflectedLight.indirectSpecular *= 0.4;
 		float tramEn = uTramNight * uTramGain * 0.022 * RECIPROCAL_PI;
 		totalEmissiveRadiance += diffuseColor.rgb * tramEn * ( 0.35 + 0.65 * max( dot( normal, ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ), 0.0 ) );
@@ -789,7 +818,7 @@ vec3 tramDisplay( vec2 uv, out float cov ) {
   cov = clamp( min( e.x, e.y ) + 0.5, 0.0, 1.0 );
   // (sampled everywhere: the mip level needs the derivatives of uniform control flow)
   vec3 c = texture2D( tTramDisp, mix( uTramDispR.xy, uTramDispR.zw, clamp( q, 0.0, 1.0 ) ) ).rgb;
-  return c * uTramLampLv.x * 1.3;
+  return c * uTramLampLv.x * 2.0;
 }
 `;
 

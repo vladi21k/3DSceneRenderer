@@ -1,5 +1,5 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
-import { noise1 } from '../../core/rng.js';
+import { lattice1, LATTICE } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, MOB, settleShape } from './agent.js';
 import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
@@ -30,7 +30,10 @@ export function laneTarget(c, a) {
   // (overtaking somebody slower: the passing line for a few seconds)
   let d = a.ovT > c.time && a.state === ST.WALK ? a.ovD : rawLane(c, a);
   // nobody walks a ruler-straight line: a slow personal wander across the lane
-  d += 0.25 * noise1(a.s / 8, a.wSeed);
+  // (noise1(a.s / 8, a.wSeed) written out: see walkNoise)
+  const x = a.s / 8, i = Math.floor(x), f = x - i;
+  lattice1(i, i + 1, a.wSeed);
+  d += 0.25 * (LATTICE[0] + (LATTICE[1] - LATTICE[0]) * (f * f * (3 - 2 * f)));
   if (a.dodgeT > c.time) d += a.dodge;
   return tramLane(c, a, d);
 }
@@ -133,6 +136,14 @@ function rawLane(c, a) {
   return side * (tmpBand.lo + 0.3 + extra + Math.max(0, w - 0.6 - extra - keep) * lf);
 }
 
+/** b − a along the loop of length L, the shortest way (route.delta, worked out in place: small
+ *  enough to be inlined, so the per-frame callers box no numbers). */
+function loopDelta(L, a, b) {
+  let d = (b - a) % L;
+  if (d < -L / 2) d += L; else if (d > L / 2) d -= L;
+  return d;
+}
+
 /** A walker in the track corridor reaching a stop (or caught beside its platform by the tram)
  *  steps up onto the platform on its side of the street and walks along it to the far end, then
  *  back down to its lane. Returns the lane target on the platform (signed d) or null. */
@@ -142,20 +153,57 @@ function platformLane(c, a, here) {
     // (the cab-side step-ups to let the tram by are made in tram.js)
     if (a.lane !== LANE.CORR && !(here && Math.abs(a.d) < TRACK_ZONE_HALF + 0.25)) return null;
     const st = here || map.stationAt(a.s + a.dir * 9);
-    if (!st || Math.abs(c.route.delta(st.s, a.s)) > st.len / 2 + 12) return null;
+    if (!st) return null;
+    const ds0 = loopDelta(c.route.length, st.s, a.s);
+    if (Math.abs(ds0) > st.len / 2 + 12) return null;
     // past its middle and walking away from it: nothing to do
-    if (!here && c.route.delta(st.s, a.s) * a.dir > 0) return null;
+    if (!here && ds0 * a.dir > 0) return null;
     const ps = a.d > RIDE_D - BAND ? 1 : -1;
-    if (!st.platforms.some((p) => p.side === ps)) return null;
+    let has = false;
+    for (let i = 0; i < st.platforms.length; i++) if (st.platforms[i].side === ps) has = true;
+    if (!has) return null;
     a.platformOK = true; a.platSt = st; a.platSide = ps;
     c.tally('platformWalk');
   }
   const st = a.platSt;
   if (!st) return here && a.d > 0 ? TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4 : null;
   // along the platform (off it again past its far end)
-  const ds = c.route.delta(st.s, a.s);
+  const ds = loopDelta(c.route.length, st.s, a.s);
   if (Math.abs(ds) > st.len / 2 + 0.5 && ds * a.dir > 0) return null;
   return (a.platSide || 1) * (TRACK_ZONE_HALF + 0.6 + a.laneF * 1.4);
+}
+
+// ------------------------------------------------------------------ slow personal noise
+// noise1(x, seed) of core/rng.js written out with its lattice values (the same numbers): these
+// run a few times a second for every walker, and a noise call that is not inlined boxes its
+// argument and its result.
+
+/** A walker's pace drift (a.lnN) and heading jitter (a.lnJ) at the crowd's time. */
+function walkNoise(c, a) {
+  const t = c.time, L = LATTICE;
+  let x = t / a.paceT, i = Math.floor(x), f = x - i;
+  lattice1(i, i + 1, a.wSeed + 11);
+  a.lnN = L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f));
+  x = t * 0.5; i = Math.floor(x); f = x - i;
+  lattice1(i, i + 1, a.wSeed + 23);
+  const j = 0.045 * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
+  x = t * 1.3; i = Math.floor(x); f = x - i;
+  lattice1(i, i + 1, a.wSeed + 29);
+  a.lnJ = j + 0.025 * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
+}
+
+/** A group member's slow wander about its slot (a.fwF along, a.fwR across) and pace (a.lnN). */
+function followNoise(c, a) {
+  const t = c.time, L = LATTICE;
+  let x = t / a.wT, i = Math.floor(x), f = x - i;
+  lattice1(i, i + 1, a.wSeed + 3);
+  a.fwF = 0.3 * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
+  x = t / a.wT + 17.3; i = Math.floor(x); f = x - i;
+  lattice1(i, i + 1, a.wSeed + 5);
+  a.fwR = 0.15 * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
+  x = t / a.paceT; i = Math.floor(x); f = x - i;
+  lattice1(i, i + 1, a.wSeed + 7);
+  a.lnN = L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f));
 }
 
 // ------------------------------------------------------------------ desired velocity
@@ -175,8 +223,7 @@ export function desired(c, a, out) {
         a.laneTT -= c.dt;
         if (a.laneTT <= 0) {
           a.laneT = laneTarget(c, a); a.laneTT = 0.25;
-          a.lnN = noise1(c.time / a.paceT, a.wSeed + 11);
-          a.lnJ = 0.045 * noise1(c.time * 0.5, a.wSeed + 23) + 0.025 * noise1(c.time * 1.3, a.wSeed + 29);
+          walkNoise(c, a);
         }
         const e = a.laneT - a.d;
         // pace drifts a few percent over 5-15 s (and drops back / pulls ahead of a stranger
@@ -432,8 +479,7 @@ function follow(c, a, out) {
   a.fwTT -= c.dt;
   if (a.fwTT <= 0) {
     a.fwTT = 0.25;
-    a.fwF = 0.3 * noise1(t / a.wT, a.wSeed + 3); a.fwR = 0.15 * noise1(t / a.wT + 17.3, a.wSeed + 5);
-    a.lnN = noise1(t / a.paceT, a.wSeed + 7);
+    followNoise(c, a);
   }
   // a leader committed to crossing the ride track takes the group across with it
   if (L.crossOK > t && a.crossOK < L.crossOK && Math.abs(a.d - L.d) < 3) a.crossOK = L.crossOK;
@@ -610,8 +656,10 @@ function thinkFar(c, a) {
 function thinkFollower(c, a) {
   const r = c.rng, L = a.leader;
   if (r.chance(0.22)) {
-    const others = [L, ...L.followers].filter((m) => m !== a);
-    const o = r.pick(others);
+    // one of the others (the leader or another follower)
+    const F = L.followers, n = F.length;
+    let k = Math.floor(r.next() * n);
+    const o = k >= n || F[k] === a ? L : F[k];
     const oR = o === L ? 0 : o.baseR;
     a.lookGoal = (Math.sign(a.baseR - oR) || 1) * r.range(0.3, 0.8);
   } else if (r.chance(0.3)) a.lookGoal = 0;

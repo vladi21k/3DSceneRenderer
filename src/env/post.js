@@ -88,8 +88,14 @@ const TONE = {
   satOut: [1.15, 1.2],
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
-  // sky pixels keep nearly the scene's colour ratios (a saturated blue overhead)
-  skyChroma: 0.95, skySat: [1.2, 1.05],
+  // sky pixels keep nearly the scene's colour ratios, and more saturation by day (the
+  // dusty atmosphere's sky is pale; a camera renders the clear sky overhead a deep blue,
+  // (95-130, 145-180, 220-250) sRGB at 45 degrees); env.skySatScale scales the boost (a
+  // milky dust-haze day keeps its pale cream sky)
+  skyChroma: 0.95, skySat: [1.8, 1.05],
+  // sunset: warm sky hues turned a little towards yellow (the horizon band reads
+  // yellow-orange, hue 30-40 degrees, as cameras render it; pink above it)
+  skyTwist: 0.25,
   // glow skirt around sources far above white, from sunset on (lantern globes, lit glass):
   // threshold and knee in exposed units, strength (time of day, strength). Only while the
   // lamps' own aureoles are off: with them each globe would get a second halo
@@ -321,7 +327,7 @@ const post = {
       tGlow: { value: null }, uGlow: { value: 0 },
       uToe: { value: new THREE.Vector3(...TONE.toe) },
       tLocal: { value: null }, uLocal: { value: new THREE.Vector4(TONE.local.knee, 0, TONE.local.px[0], TONE.local.px[1]) },
-      uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: TONE.satOut[0] },
+      uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: TONE.satOut[0] }, uSkyTwist: { value: 0 },
     });
     // local level of the surfaces for the highlight recovery (1/8 res, then blurred)
     this.localPass = pass(S.LOCAL_FS, { tSrc: { value: null }, tDepth: { value: null }, uSrcSize: { value: new THREE.Vector2() } });
@@ -607,6 +613,7 @@ const post = {
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
     fu.uSatOut.value = THREE.MathUtils.lerp(TONE.satOut[0], TONE.satOut[1], ss(t, 0.6, 0.85));
+    fu.uSkyTwist.value = TONE.skyTwist * ss(t, 0.6, 0.74) * (1 - ss(t, 0.9, 1.0));
     // gamut knee: a camera JPEG by day, hue-keeping from sunset on
     {
       const kd = ss(t, 0.6, 0.75), K0 = TONE.knee[0], K1 = TONE.knee[1];
@@ -614,7 +621,8 @@ const post = {
     }
     // local highlight recovery while the sun is up (the dusk sources have the glow)
     fu.uLocal.value.y = this.localOn && this.localRT ? TONE.local.strength * (1 - ss(t, 0.8, 0.9)) : 0;
-    fu.uSkySat.value = this.skySatK * THREE.MathUtils.lerp(TONE.skySat[0], TONE.skySat[1], ss(t, 0.45, 0.8));
+    const kSky = env && Number.isFinite(env.skySatScale) ? env.skySatScale : 1;
+    fu.uSkySat.value = this.skySatK * (1 + (THREE.MathUtils.lerp(TONE.skySat[0], TONE.skySat[1], ss(t, 0.45, 0.8)) - 1) * kSky);
   },
 
   /**

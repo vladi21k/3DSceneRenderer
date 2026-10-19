@@ -28,6 +28,10 @@ export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint
 // overlaps it), so aLine.y = half width + PATCH_PAD and the points run from -PATCH_PAD to
 // length + PATCH_PAD
 export const PATCH_PAD = 0.06;
+/** Repairs whose sides step with the courses (wear.js STEP_WALK_U, STEP_STREET_U) have
+ *  ribbons this much wider on both sides; those whose ends step reach this much further
+ *  at both ends (the steps reach out up to 0.2 m). */
+export const STEP_PAD = 0.2;
 /** Added to a paint stripe's wear value when it is laid over setts (the paint cracks
  *  along the sett bed joints, which then must lie at whole multiples of 0.2 m of its
  *  along coordinate). */
@@ -36,14 +40,15 @@ export const SETT_FLAG = 10;
  *  of the patch) and its tone, -1 (fresh, dark binder) .. 1 (aged, grey). */
 export const patchWear = (hole, tone) => Math.round(hole * 1000) + 0.02 + 0.96 * (tone * 0.5 + 0.5);
 /** Wear value of a repair ribbon (fills over the setts, wear.js): kind (0 asphalt, 1
- *  concrete), tone 0..1 (asphalt: fresh dark .. aged grey; concrete: dirty .. pale), and
- *  the cover lying in its centre, cut out of the fill: null, {r} (round) or {hs, hd} (half
- *  sizes along and across the ribbon), rounded up to whole millimetres / 5 mm. */
-export function repairWear(kind, tone, hole) {
+ *  concrete), tone 0..1 (asphalt: fresh dark .. aged grey; concrete: dirty .. pale), the
+ *  cover lying in its centre, cut out of the fill: null, {r} (round) or {hs, hd} (half
+ *  sizes along and across the ribbon), rounded up to whole millimetres / 5 mm, and how its
+ *  edges step with the courses of the setts it replaced (wear.js STEP_*). */
+export function repairWear(kind, tone, hole, step = 0) {
   let h = 0;
   if (hole && hole.r) h = Math.min(999, Math.ceil(hole.r * 1000));
   else if (hole) h = 1000 + Math.min(199, Math.ceil(hole.hs * 200)) * 200 + Math.min(199, Math.ceil(hole.hd * 200));
-  return kind * 50000 + h + 0.02 + 0.96 * Math.max(0, Math.min(1, tone));
+  return step * 100000 + kind * 50000 + h + 0.02 + 0.96 * Math.max(0, Math.min(1, tone));
 }
 const PAINT = [
   null, null,
@@ -282,49 +287,43 @@ const PAINT_FRAG = /* glsl */`
     float segLen = vLine.z > 0.0 ? vLine.z : 1e9;
     float bar = step( 0.15, pHalf ) * step( segLen, 50.0 );   // crossing bars (not centre dashes)
     // edges feather off over 3-5 mm and waver a couple of millimetres; along crossing
-    // bars they are also bitten back 1-2 cm here and there, where the paint has flaked
-    // off the stones' arrises (where resolved)
+    // bars they are chipped here and there (small rounded bites a centimetre or two deep,
+    // where resolved)
     float res = 1.0 - smoothstep( 0.003, 0.012, w );
     float e0 = ( lnNoise( vec2( u * 7.0, seed ) ) - 0.5 ) * 0.006 * res;
     float e1 = ( lnNoise( vec2( u * 6.3, seed + 5.0 ) ) - 0.5 ) * 0.006 * res;
     float rb = bar * ( 1.0 - smoothstep( 0.006, 0.02, w ) );
-    e0 += rb * 0.02 * smoothstep( 0.55, 0.9, lnNoise( vec2( u * 23.0, seed + 2.0 ) ) );
-    e1 -= rb * 0.02 * smoothstep( 0.55, 0.9, lnNoise( vec2( u * 21.0, seed + 9.0 ) ) );
+    e0 += rb * 0.016 * smoothstep( 0.74, 0.95, lnNoise( vec2( u * 37.0, seed + 2.0 ) ) );
+    e1 -= rb * 0.016 * smoothstep( 0.74, 0.95, lnNoise( vec2( u * 33.0, seed + 9.0 ) ) );
     float we = sqrt( w * w + 0.008 * 0.008 ), wue = sqrt( wu * wu + 0.008 * 0.008 );
     float cov = lnCov( -pHalf + e0, pHalf + e1, x, we ) * lnCov( 0.0, segLen, u, wue );
     float ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );
-    // Wear thins the film (soft patches at metre and decimetre scale) where people cross
-    // the bars (round the middle of the crossing) and, on side streets, along the wheel
-    // paths; close up, the stone and aggregate break through the thinned film as fine
-    // specks (unresolved: their mean). Over setts the paint has cracked along the bed
-    // joints and flaked off a few millimetres to 2 cm either side where the stones rock
-    // (the bar starts on a joint, so they lie every 0.2 m across it); on
+    // Wear: traffic grinds the paint off grain by grain. The tops of the surface (the
+    // aggregate of asphalt, the crystals and arrises of setts) break through first, so a
+    // worn bar reads as paint speckled with the dark surface beneath, densest where the
+    // wear is: round the middle of a crossing (feet), along a bar lying in a wheel path
+    // (side streets: the per-line wear), towards its ends and long edges, varying in
+    // decimetre patches where wheels and soles bear most. Never soft clouds: unresolved,
+    // the speckle is just the share of paint left. Over setts the paint has also cracked
+    // along the bed joints and flaked a few millimetres to 2 cm either side where the
+    // stones rock (the bar starts on a joint, so they lie every 0.2 m across it); on
     // asphalt a sparse network of fine fatigue cracks runs through it.
     float foot = bar * exp( -pow( ( u - 0.5 * segLen ) / ( 0.32 * segLen ), 2.0 ) );
-    float wear = 0.75 * pWear * wl + 0.18 * foot;
-    float big = lnFbm( wp * 0.4 + 17.0 + seed, fpw * 0.4, 3 );
-    float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
-    float wv = 1.1 * wear * ( 1.0 + 2.0 * ( mid - 0.5 ) + 1.2 * ( big - 0.5 ) );
-    float film = clamp( 1.0 - 0.85 * smoothstep( 0.25, 0.8, wv ) - 0.2 * wv, 0.0, 1.0 );
-    // Crossing bars are trodden through: 15-30 % of the paint is gone, more along the long
-    // edges (beside the rails and kerbs) and towards the ends, most in the middle of the
-    // crossing. Soft decimetre patches where the film has worn away, and short scuffs
-    // drawn out in the walking direction (across the bar), in the bar's own coordinates;
-    // unresolved, each fades to the share of paint it leaves. Worn through, a thin grey
-    // ghost of the film stays in the stone's pores.
     float eX = 1.0 - smoothstep( 0.0, 0.06, pHalf - abs( x ) );
-    float lossP = bar * ( 0.05 + 0.1 * eX + 0.08 * ends + 0.06 * foot );
-    float lossS = bar * ( 0.06 + 0.06 * eX + 0.1 * foot );
-    float nP = lnFbm( vec2( x * 1.5, u * 4.0 ) + seed + 11.0, max( w * 1.5, wu * 4.0 ), 3 );
-    float nS = lnFbm( vec2( x * 3.2, u * 26.0 ) + seed + 3.0, max( w * 3.2, wu * 26.0 ), 3 );
-    float tP = 0.5 + 0.31 * ( lossP - 0.5 ), tS = 0.5 + 0.31 * ( lossS - 0.5 );
-    float kPu = smoothstep( 0.03, 0.08, max( w, wu * 2.5 ) );
-    float keepP = mix( smoothstep( tP - 0.05, tP + 0.05, nP ), 1.0 - lossP, kPu );
-    // the film thins round the worn patches: a grey halo (unresolved: its mean)
-    float thin = bar * mix( 1.0 - smoothstep( tP, tP + 0.14, nP ), 0.3, kPu );
-    float keepS = mix( smoothstep( tS - 0.02, tS + 0.02, nS ), 1.0 - lossS, smoothstep( 0.008, 0.025, max( w, wu * 2.0 ) ) );
-    float worn = bar * ( 1.0 - keepP * keepS );
-    film *= 1.0 - 0.65 * worn;
+    float W = clamp( 0.6 * pWear * wl + 0.16 * foot + bar * ( 0.08 * eX + 0.1 * ends ), 0.0, 0.9 );
+    float pv = lnFbm( vec2( x, u ) * 2.6 + seed + 11.0, max( w, wu ) * 2.6, 3 );
+    float big = lnFbm( wp * 0.5 + 17.0 + seed, fpw * 0.5, 2 );
+    float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
+    float Wl = clamp( W * ( 0.4 + 1.2 * pv + 0.5 * ( big - 0.5 ) ), 0.02, 0.97 );
+    // the grain (sizes: asphalt aggregate ~1.5 cm, setts' crystals and arrises ~5 mm), in
+    // the bar's own small coordinates (exact noise); its threshold removes the share Wl
+    float gs = sett > 0.5 ? 170.0 : 70.0;
+    vec2 q = vec2( x, u ) * gs + seed;
+    float gr = lnNoise( q ) * 0.55 + lnNoise( mat2( 0.8, 0.6, -0.6, 0.8 ) * q * 2.2 + 7.0 ) * 0.45;
+    float tg = 0.5 + 0.09 * log( Wl / ( 1.0 - Wl ) );
+    float kG = 1.0 - smoothstep( 0.6, 1.8, max( w, wu ) * gs );
+    float keepW = mix( 1.0 - Wl, smoothstep( tg - 0.035, tg + 0.035, gr ), kG );
+    float worn = 1.0 - keepW;
     float crack, crackMean;
     if ( sett > 0.5 ) {
       float k = floor( u / 0.2 + 0.5 ), du = u - 0.2 * k;
@@ -337,32 +336,31 @@ const PAINT_FRAG = /* glsl */`
       crackMean = 0.02;
     }
     crack = mix( crack, crackMean, smoothstep( 0.01, 0.04, max( fpw, wue ) ) );
-    // fine specks in the bar's own coordinates (small numbers: exact noise)
-    vec2 q = vec2( x, u ) * 150.0 + seed;
-    float fine = lnNoise( q ) * 0.6 + lnNoise( mat2( 0.8, 0.6, -0.6, 0.8 ) * q * 2.3 + 7.0 ) * 0.4;
+    // fine texture of the film (small numbers: exact noise)
+    vec2 qf = vec2( x, u ) * 150.0 + seed;
+    float fine = lnNoise( qf ) * 0.6 + lnNoise( mat2( 0.8, 0.6, -0.6, 0.8 ) * qf * 2.3 + 7.0 ) * 0.4;
     float kFine = 1.0 - smoothstep( 0.0015, 0.005, max( w, wu ) );
-    float keep = mix( film, smoothstep( 1.0 - film - 0.14, 1.0 - film + 0.14, fine ), kFine );
-    keep *= ( 1.0 - crack ) * ( 1.0 - 0.2 * wear * ends );
-    cov *= keep;
+    cov *= keepW * ( 1.0 - crack );
     if ( cov < 0.002 ) discard;
-    // grime: dust ground in (patchy, collecting along the edges and towards the ends),
-    // grey scuffs in the foot path, dark tyre rubber streaked along bars in a wheel path
-    float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.4, 0.0, 1.0 );
+    // grime: dust ground in (collecting along the edges and towards the ends, more on a
+    // worn film), grey scuffs in the foot path, dark tyre rubber streaked along bars in a
+    // wheel path
+    float dirt = clamp( 0.5 - ( big - 0.5 ) * 2.0, 0.0, 1.0 );
     float edge = 1.0 - smoothstep( 0.0, 0.04, pHalf - abs( x ) );
     edge = mix( edge, 0.5 * min( 1.0, 0.04 / max( pHalf, 0.04 ) ), smoothstep( 0.008, 0.03, w ) );
-    float scuff = foot * smoothstep( 0.4, 0.7, mid );
+    float scuff = foot * smoothstep( 0.45, 0.7, mid );
     float tyre = ( 1.0 - sett ) * bar * smoothstep( 1.3, 2.3, wl );
     float streak = lnFbm( vec2( x * 9.0 + seed, u * 0.7 ), max( w * 9.0, wu * 0.7 ), 3 );
-    float gTyre = tyre * ( 0.2 + 0.55 * smoothstep( 0.35, 0.65, streak ) );
-    float gDust = clamp( 0.1 + 0.06 * bar + 0.22 * dirt + 0.3 * edge + 0.25 * ends + 0.35 * scuff, 0.0, 0.7 );
+    float gTyre = tyre * ( 0.15 + 0.4 * smoothstep( 0.35, 0.65, streak ) );
+    float gDust = clamp( 0.1 + 0.06 * bar + 0.14 * dirt + 0.3 * edge + 0.22 * ends + 0.25 * scuff + 0.4 * W, 0.0, 0.7 );
     // close up: grit and dust caught in the paint's texture
     vec3 col = pCol * ( 0.95 + 0.1 * mid ) * mix( 1.0, 0.86 + 0.28 * fine, kFine );
-    col = mix( col, vec3( 0.2, 0.19, 0.175 ), min( gDust + 0.45 * worn + 0.3 * thin, 0.8 ) );
+    col = mix( col, vec3( 0.2, 0.19, 0.175 ), min( gDust, 0.75 ) );
     col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
     diffuseColor.rgb = col;
     // the trodden film is duller where grit is ground in, a little glossier where soles
     // have polished it
-    lnRough = mix( pRough, 0.8, 0.5 * gDust + 0.3 * worn ) - 0.1 * gTyre + bar * 0.12 * ( nS - 0.5 );
+    lnRough = mix( pRough, 0.8, 0.5 * gDust + 0.2 * W ) - 0.1 * gTyre + bar * 0.1 * ( pv - 0.5 );
     diffuseColor.a = cov * pOpacity;
   }
 }
@@ -456,9 +454,11 @@ const ASPHALT_FRAG = /* glsl */`
 const REPAIR_FRAG = /* glsl */`
 {
   float x = vLine.x, u = vLine.y, len = vLine.z;
-  float hx = vLineHalf - ${f(PATCH_PAD)};
   float code = floor( vLineWear );
   float tone = clamp( ( fract( vLineWear ) - 0.02 ) / 0.96, 0.0, 1.0 );
+  float mode = floor( code / 100000.0 + 1e-4 );
+  code -= 100000.0 * mode;
+  float hx = vLineHalf - ${f(PATCH_PAD)} - ( abs( mode - 2.0 ) > 0.5 && mode > 0.5 ? ${f(STEP_PAD)} : 0.0 );
   float kind = step( 49999.5, code );
   code -= 50000.0 * kind;
   float seed = floor( tone * 97.0 );
@@ -467,6 +467,22 @@ const REPAIR_FRAG = /* glsl */`
   float side = x > 0.0 ? 1.0 : 0.0, end = u > 0.5 * len ? 1.0 : 0.0;
   float ex = ( lnNoise( vec2( u * 3.1, 3.7 + 6.0 * side + seed ) ) - 0.5 ) * 2.0 * amp + ( lnNoise( vec2( u * 19.0, 1.3 + 4.0 * side + seed ) ) - 0.5 ) * 0.5 * amp;
   float eu = ( lnNoise( vec2( x * 3.1, 13.7 + 6.0 * end + seed ) ) - 0.5 ) * 2.0 * amp + ( lnNoise( vec2( x * 19.0, 21.1 + 4.0 * end + seed ) ) - 0.5 ) * 0.5 * amp;
+  if ( mode > 0.5 ) {
+    // the setts were taken up whole: the edges crossing the courses step out course by
+    // course (to wherever the joint between two setts happened to lie), and the step
+    // between two courses runs along their bed joint (blended over the pixel footprint)
+    float cs = mode > 2.5 ? 0.2 : 0.25;
+    bool alongU = mode < 1.5 || mode > 2.5;
+    float t = alongU ? u : x + hx;
+    float ft = alongU ? wu : w;
+    float k = floor( t / cs ), f = t - k * cs;
+    float sd = alongU ? side : end;
+    float A = min( 0.2, 0.45 * ( alongU ? hx : 0.5 * len ) );
+    float o0 = lnHash( vec2( k, seed + 13.0 * sd ) ), om = lnHash( vec2( k - 1.0, seed + 13.0 * sd ) ), op = lnHash( vec2( k + 1.0, seed + 13.0 * sd ) );
+    float o = mix( om, o0, clamp( ( f + 0.5 * ft ) / ft, 0.0, 1.0 ) );
+    o = mix( o, op, clamp( ( f - cs + 0.5 * ft ) / ft, 0.0, 1.0 ) );
+    if ( alongU ) ex += A * o; else eu += A * o;
+  }
   float sx = hx + ex - abs( x ), su = 0.5 * len + eu - abs( u - 0.5 * len );
   float cov = clamp( sx / w + 0.5, 0.0, 1.0 ) * clamp( su / wu + 0.5, 0.0, 1.0 );
   if ( code > 0.5 ) {
@@ -497,7 +513,7 @@ const REPAIR_FRAG = /* glsl */`
     lnRough = 0.8 + 0.12 * mot;
   } else {
     // concrete mortar: pale warm grey, mottled and stained, fine pores; dirt along its edges
-    col = mix( vec3( 0.17, 0.165, 0.155 ), vec3( 0.3, 0.29, 0.268 ), tone ) * ( 0.84 + 0.3 * mot ) * ( 0.92 + 0.16 * spot );
+    col = mix( vec3( 0.14, 0.136, 0.128 ), vec3( 0.24, 0.232, 0.215 ), tone ) * ( 0.84 + 0.3 * mot ) * ( 0.92 + 0.16 * spot );
     col *= 0.88 + 0.24 * grain;
     col *= 1.0 - 0.35 * edge;
     lnRough = 0.92;

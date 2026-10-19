@@ -45,6 +45,11 @@ const MEET_T = 12;            // ... nor one the new person will walk past withi
 const ROLES = ['adult', 'child', 'any', 'elderly', 'parent', 'grandparent', 'rider', 'young', 'waiter'];
 const ROLE_I = Object.fromEntries(ROLES.map((r, i) => [r, i]));
 const AGE_I = { child: 0, teen: 1, adult: 2, old: 3, toddler: 4 };
+const SHOPPING_BAG = 3;       // appearance bag: carrier bags in hand (humans/mh/appearance.js BAG.SHOPPING)
+// A shopping street: on top of the appearance's own share (about one in thirteen), a walker
+// arriving on the street carries what they bought one time in sixteen, and two in five of those
+// stepping out of a shop do (the photographs show about one passer-by in six with carrier bags).
+const SHOP_WISH = 0.06;
 
 export class Population {
   constructor(c) {
@@ -88,7 +93,9 @@ export class Population {
   }
 
   // ---------------------------------------------------------------- slots
-  /** role: 'adult' (default), 'child' or 'any'. opt.maxH caps the height, opt.noCross avoids the crossed-legs sitting variant. */
+  /** role: 'adult' (default), 'child' or 'any'. opt.maxH caps the height, opt.noCross avoids the
+   *  crossed-legs sitting variant, opt.shop asks for somebody carrying shopping bags (as far as the
+   *  appearance bank has one to hand). */
   alloc(kind, src = 'walker', role = 'adult', opt = null) {
     if (!this.free.length) { this.hint.on = false; return null; }
     const a = this.agents[this.free.pop()];
@@ -126,7 +133,7 @@ export class Population {
     a.needsBell = a.dreamy || r.chance(0.1);
     a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.path = null; a.pathI = 0; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0; a.sideA = 0; a.sideEnd = 0; a.stuckN = 0;
     a.dodge = 0; a.dodgeT = 0; a.passT = -1e9;
-    a.fresh = true; a.src = src; a.strideV = -1; a.afs = 0; a.afd = 0; a.laneTT = 0;
+    a.fresh = true; a.src = src; a.strideV = -1; a.strideB = -1; a.lwOk = false; a.afs = 0; a.afd = 0; a.laneTT = 0;
     a.pValid = false; a.speedA = 0; a.moving = false; a.uturnT = 0; a.driftT = 0;
     a.baseF = 0; a.baseR = 0; a.singleT = 0; a.stuckF = 0; a.bandW = 9;
     a.wSeed = hash2(this.serial, 977) & 0xffff;
@@ -148,7 +155,7 @@ export class Population {
    *  'child', 'any', 'elderly', 'parent' (an adult with free hands, to push a stroller),
    *  'grandparent', 'rider' (a teen or adult with free hands and no skirt or long coat, for a
    *  bicycle), 'young', 'waiter'. opt.maxH caps the height, opt.noCross avoids the crossed-legs
-   *  sitting variant. From the bank (see BANK_N) with the spot in this.hint (consumed); this._lastBank
+   *  sitting variant, opt.shop wishes for carrier bags in hand. From the bank (see BANK_N) with the spot in this.hint (consumed); this._lastBank
    *  is the bank entry taken (−1: none). */
   _appearance(role, opt) {
     const hint = this.hint, B = this.bank;
@@ -167,7 +174,7 @@ export class Population {
       if (((B.role[k] >> ri) & 1) === 0) continue;
       // (the role fits, the extra wishes or a free seed maybe not: kept should nothing else do)
       if (fit < 0) fit = k;
-      if (opt && ((opt.maxH && B.h[k] > opt.maxH) || (opt.noCross && B.cross[k]))) continue;
+      if (opt && ((opt.maxH && B.h[k] > opt.maxH) || (opt.noCross && B.cross[k]) || (opt.shop && B.bag[k] !== SHOPPING_BAG))) continue;
       if (B.use[k]) continue;
       if (!near) { best = k; break; }
       if (cls < 0) cls = B.cls[k];
@@ -229,18 +236,19 @@ export class Population {
     if (!H || !H.appearanceOf || !H.cast) return null;
     const N = BANK_N;
     const B = { n: N, seed: new Uint32Array(N), ch: new Uint8Array(N), cls: new Uint8Array(N), role: new Uint16Array(N),
-      h: new Float32Array(N), cross: new Uint8Array(N), use: new Uint16Array(N), roleN: new Int32Array(ROLES.length), chars: 0 };
+      h: new Float32Array(N), cross: new Uint8Array(N), bag: new Uint8Array(N), use: new Uint16Array(N), roleN: new Int32Array(ROLES.length), chars: 0 };
     const base = (this.c.seed * 7919 + 13) ^ 0x5bd1e995;
     let maxCh = 0;
     for (let k = 0; k < N; k++) {
-      const seed = hash2(k + 1, base) >>> 0;
+      // (30-bit seeds: small integers to the engine, never boxed when handed around per frame)
+      const seed = hash2(k + 1, base) & 0x3fffffff;
       const ap = H.appearanceOf(seed);
       if (!ap || !Number.isInteger(ap.index) || ap.index > 255) return null;
       B.seed[k] = seed; B.ch[k] = ap.index; maxCh = Math.max(maxCh, ap.index);
       B.cls[k] = (AGE_I[ap.age] ?? 2) * 2 + (ap.female ? 1 : 0);
       let m = 0;
       for (let r = 0; r < ROLES.length; r++) if (roleFits(ROLES[r], ap)) { m |= 1 << r; B.roleN[r]++; }
-      B.role[k] = m; B.h[k] = ap.height; B.cross[k] = ap.sit === 1 ? 1 : 0;
+      B.role[k] = m; B.h[k] = ap.height; B.cross[k] = ap.sit === 1 ? 1 : 0; B.bag[k] = ap.bag | 0;
     }
     B.chars = maxCh + 1;
     return B;
@@ -249,7 +257,7 @@ export class Population {
   /** Appearance seed without the bank: re-hashed until the body fits the role. */
   _appearanceHash(role, opt) {
     const H = this.c.humans;
-    let seed = hash2(this.serial, this.c.seed * 7919 + 13) >>> 0;
+    let seed = hash2(this.serial, this.c.seed * 7919 + 13) & 0x3fffffff;
     if (!H || !H.appearanceOf) return seed;
     let roleOk = -1;   // first seed of the right role, should nothing fit the extra wishes
     for (let k = 0; k < 64; k++) {
@@ -258,7 +266,7 @@ export class Population {
         if (!opt || ((!opt.maxH || ap.height <= opt.maxH) && (!opt.noCross || ap.sit !== 1))) return seed;
         if (roleOk < 0) roleOk = seed;
       }
-      seed = hash2(seed, k + 101) >>> 0;
+      seed = hash2(seed, k + 101) & 0x3fffffff;
     }
     return roleOk >= 0 ? roleOk : seed;
   }
@@ -437,7 +445,7 @@ export class Population {
     const mob = opts.mob || MOB.NONE;
     const role = mob === MOB.STROLLER ? (r.chance(0.12) ? 'grandparent' : 'parent') : mob ? 'rider' : 'adult';
     this.placeAt(sU, opts.d ?? side * (c.map.bandInAt(sU, side) + 1), opts.still ? 0 : dir * (mob === MOB.CYCLE ? 3.8 : 1.3));
-    const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src, role, opts.maxH ? { maxH: opts.maxH } : null);
+    const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src, role, opts.maxH || opts.shop ? { maxH: opts.maxH || 0, shop: !!opts.shop && !mob } : null);
     if (!a) return null;
     // hidden behind a figure: only someone shorter than it
     if (opts.maxH && a.height > opts.maxH) { this._unspawn(a); this.stats.spawnFail++; return null; }
@@ -677,7 +685,7 @@ export class Population {
           const n = this.spawnChat(sU, side);
           if (n) { want -= n; c.counts.stand += n; continue; }
         }
-        const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob: this._drawMob(r) });
+        const a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { mob: this._drawMob(r), shop: r.chance(SHOP_WISH) });
         if (a) { want -= 1 + a.nFollow; this.stats.bySource.init += 1 + a.nFollow; }
       }
     }
@@ -727,16 +735,11 @@ export class Population {
   }
 
   // ---------------------------------------------------------------- per-frame maintenance
-  maintain(dt) {
+  /** The per-frame pass over the agents: recycling, head counts by kind (c.counts) and walkers
+   *  per bin. Returns the walkers on the main street. (A method of its own: the loop is compiled
+   *  on its own, and the rest of maintain never runs in code compiled in the middle of it.) */
+  _census() {
     const c = this.c;
-    this.frame++;
-    this.featureT -= dt;
-    if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); this._retrySeats(); }
-    this._fillQueue(3);
-    this._stationEvents();
-    if ((this.frame % 90) === 11) this._platformArrivals();
-    if ((this.frame % 45) === 23) staffTick(c);
-    // one pass: recycling, head counts by kind and walkers per bin
     const lo = c.camU - RANGE_BEHIND;
     const k = c.counts;
     k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0; k.stand300 = 0; k.walk300 = 0; k.side = 0; k.standFar = 0;
@@ -777,6 +780,21 @@ export class Population {
         if (b >= 0 && b < this.nBins) this.binCount[b]++;
       }
     }
+    return walkers;
+  }
+
+  maintain(dt) {
+    const c = this.c;
+    this.frame++;
+    this.featureT -= dt;
+    if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); this._retrySeats(); }
+    this._fillQueue(3);
+    this._stationEvents();
+    if ((this.frame % 90) === 11) this._platformArrivals();
+    if ((this.frame % 45) === 23) staffTick(c);
+    // one pass: recycling, head counts by kind and walkers per bin
+    let walkers = this._census();
+    const k = c.counts;
     // spawn towards the target (targets follow the camera slowly: refresh twice a second)
     this.targetT -= dt;
     if (this.targetT <= 0) { this.targetT = 0.5; this._targets(); }
@@ -914,7 +932,7 @@ export class Population {
       if (!a) { a = this._spawnFromSideStreet(sU, side); src = 'side'; }
       if (!a) { a = this._spawnBehind(sU, side); src = 'behind'; }
     } else if (sRel < 45) {
-      a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1);
+      a = this.spawnWalker(sU, side, r.chance(0.5) ? 1 : -1, { shop: r.chance(SHOP_WISH) });
       if (a && !this._groupHidden(a)) { this._killGroup(a); a = null; }
       else if (a) a.spawnHidden = true;
       src = 'near';
@@ -1005,7 +1023,7 @@ export class Population {
       if (!c.side.hidden(sp, dp, 0.6)) return null;
       // a stroller / bicycle points out of the side street: its front must be hidden too
       if (mob && !c.side.hidden(sp, dp - side * 1.3, 0.6)) return null;
-      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side', mob });
+      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side', mob, shop: r.chance(SHOP_WISH) });
       if (!a) return null;
       for (const f of [...a.followers]) {
         f.d = dp + side * r.range(0.4, 1.2); f.s = sp + r.range(-0.5, 0.5);
@@ -1074,7 +1092,8 @@ export class Population {
       const dIn = side * (o.d + dr.depth - 0.1);
       const s = dr.s + r.range(-0.6, 0.6) * (dr.s1 - dr.s);
       if (!c.vis.bodyHidden(s, dIn, side, o.d, dr.oS - o.half, dr.oS + o.half)) continue;
-      const a = this.spawnWalker(s, side, r.chance(0.5) ? 1 : -1, { d: dIn, lane: LANE.SIDE, force: true, group: 0, src: 'door' });
+      // (out of a shop: often with what they bought)
+      const a = this.spawnWalker(s, side, r.chance(0.5) ? 1 : -1, { d: dIn, lane: LANE.SIDE, force: true, group: 0, src: 'door', shop: o.kind === 'shop' && r.chance(0.4) });
       if (!a) return null;
       if (this.propClash(a)) { this._unspawn(a); return null; }
       a.inDoor = true; a.door = dr; a.doorS0 = dr.s0; a.doorS1 = dr.s1;
@@ -1116,7 +1135,7 @@ export class Population {
     // (a stroller / walked bicycle in the corridor only on its far half)
     if (mob && mob !== MOB.CYCLE && Math.abs(d) < TRACK_ZONE_HALF && d > -0.9) return null;
     if (vis.rayOffset(s, d, os, od) > Math.max(0.03, w / 2 - 0.26)) return null;
-    const a = this.spawnWalker(s, side, dir, { d, force: false, group: 0, src: 'behind', maxH: maxH || undefined, laneD: Math.abs(d) < TRACK_ZONE_HALF ? d : undefined, mob });
+    const a = this.spawnWalker(s, side, dir, { d, force: false, group: 0, src: 'behind', maxH: maxH || undefined, laneD: Math.abs(d) < TRACK_ZONE_HALF ? d : undefined, mob, shop: r.chance(SHOP_WISH) });
     if (!a) return null;
     if (mob) {
       // the stroller / bicycle lies along the line of sight: hidden as long as it is no wider

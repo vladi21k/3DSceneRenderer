@@ -12,9 +12,12 @@ import { TRACK_ZONE_HALF, EDGE_BAND_W, CHUNK_LEN, VIEW_FAR } from './config.js';
 // rendered block: plan.style.finish), its cornice, balconies and openings (dark glass, lit
 // at dusk), tile roofs, penthouses and set-back additions (their balconies; a tower's side
 // windows and its painted mural as a flat muted panel); the paving runs between the facade
-// lines, with the light corridor edge bands and the side-street mouths; trees are
-// irregular crowns on trunks. Beyond the sun's shadow maps (700 m) it shades itself as a
-// street canyon (FRAG_CANYON). One merged mesh and one material per chunk; build ≈ 1 ms.
+// lines, with the light corridor edge bands and the side-street mouths; the trees are
+// vegetation's own models at their coarsest detail (vegetation.farTree), so they hand over
+// to the streamed trees without a change of species, size or tint (FarTrees below; plain
+// crowns on trunks when vegetation is off). Beyond the sun's shadow maps (700 m) it shades
+// itself as a street canyon (FRAG_CANYON). One merged mesh and one material per chunk, plus
+// the far trees' two shared batches; build ≈ 1 ms.
 // Party-wall adverts and murals are left out (buildings decides them from what each wall
 // exposes, and beyond VIEW_AHEAD they are a few hazy pixels).
 
@@ -448,6 +451,149 @@ function paving(G, app, chunk) {
   }
 }
 
+// ---- far trees: vegetation's coarsest tree models in two shared batches
+//
+// vegetation.farTree(t) gives layout tree t as vegetation draws it at its coarsest detail
+// (shared geometry, world matrix, leaf and bark tints), drawn here with vegetation's far
+// materials (farMaterials()). Every far chunk adds its trees as instances of two
+// BatchedMeshes (foliage, bark) shared by all far chunks, the same kind of mesh vegetation
+// draws these materials with, so they need no programs of their own. The batches draw
+// every live instance (no per-instance culling or sorting: no per-frame work), and a
+// chunk's instances are shown while its far part is (the streamer hides the part when the
+// full chunk replaces it). Beyond the sun's shadow maps the crowns take the canyon shade
+// of FRAG_CANYON at their centre, folded into the instance colour (recomputed when the sun
+// moves): a shaded crown keeps FAR_TREE_SHADE of its sunlit colour.
+
+const FAR_TREE_CAP = 512;        // instances per batch to start with (grows as needed)
+const FAR_TREE_SHADE = 0.42;     // colour of a crown in the canyon shade (share of the sunlit one)
+const _tc = new THREE.Color();
+
+class FarTrees {
+  constructor(app, veg) {
+    this.veg = veg;
+    const mats = veg.farMaterials();
+    if (!mats || !mats.leaf || !mats.bark) throw new Error('vegetation.farMaterials() incomplete');
+    // the coarsest geometries of every planned tree, collected once
+    const leaf = new Map(), bark = new Map();
+    let n = 0;
+    for (const t of app.layout.trees) {
+      const f = veg.farTree(t);
+      if (!f || !f.leaf || !f.bark) continue;
+      n++;
+      leaf.set(f.leaf, -1); bark.set(f.bark, -1);
+    }
+    if (!n) throw new Error('vegetation.farTree() gave no trees');
+    this.leaf = this._batch(leaf, mats.leaf, 'farfield:treeLeaf');
+    this.bark = this._batch(bark, mats.bark, 'farfield:treeBark');
+    this.leafIds = leaf; this.barkIds = bark;
+    this.group = new THREE.Group();
+    this.group.name = 'farfield:trees';
+    this.group.add(this.leaf, this.bark);
+    app.scene.add(this.group);
+    this.parts = [];                           // live far parts with trees (dispose removes them)
+    this.sun = new THREE.Vector3(0, -1, 0);    // sun direction the colours were shaded for
+    // instance visibility and colours are brought up to date right before the first of the
+    // two batches draws (after the streamer has shown and hidden this frame's parts)
+    let frame = -1;
+    const sync = () => { if (frame !== app.frame) { frame = app.frame; this.update(); } };
+    for (const m of [this.leaf, this.bark]) {
+      const draw = m.onBeforeRender;
+      m.onBeforeRender = function (renderer, scene, camera, geometry, material, group) {
+        sync();
+        draw.call(this, renderer, scene, camera, geometry, material, group);
+      };
+    }
+  }
+
+  _batch(geoms, material, name) {
+    let vc = 0, ic = 0;
+    for (const g of geoms.keys()) { vc += g.attributes.position.count; ic += g.index ? g.index.count : g.attributes.position.count; }
+    const m = new THREE.BatchedMesh(FAR_TREE_CAP, vc, ic, material);
+    m.name = name;
+    m.frustumCulled = false;
+    m.perObjectFrustumCulled = false;
+    m.sortObjects = false;
+    m.castShadow = false;
+    m.receiveShadow = true;
+    m.matrixAutoUpdate = false;
+    // colour texture from the start: the start-up compile then builds the program it keeps
+    if (m._initColorsTexture && !m._colorsTexture) m._initColorsTexture();
+    for (const g of geoms.keys()) geoms.set(g, m.addGeometry(g));
+    return m;
+  }
+
+  _add(m, gid) {
+    if (m.instanceCount >= m.maxInstanceCount) m.setInstanceCount(m.maxInstanceCount * 2);
+    return m.addInstance(gid);
+  }
+
+  /** Instances for the trees of a far chunk; returns their records (or null) and draws the
+   *  trees vegetation has no model for as crowns into G. */
+  add(G, app, chunk, T) {
+    const { route, layout } = app;
+    let recs = null;
+    for (const t of layout.inChunk('trees', chunk.index)) {
+      const f = this.veg.farTree(t);
+      const lg = f && this.leafIds.get(f.leaf), bg = f && this.barkIds.get(f.bark);
+      if (lg === undefined || bg === undefined || lg < 0 || bg < 0) { tree(G, route, t); continue; }
+      const li = this._add(this.leaf, lg), bi = this._add(this.bark, bg);
+      this.leaf.setMatrixAt(li, f.matrix); this.bark.setMatrixAt(bi, f.matrix);
+      this.leaf.setVisibleAt(li, false); this.bark.setVisibleAt(bi, false);
+      // canyon cross-section at the tree (see FRAG_CANYON): lateral offset, crown centre
+      // height over the centre-line paving, the street's right vector and both frontages
+      const base = route.toWorld(t.s, t.d, 0, _a);
+      const k = Math.max(0, Math.min(T.n - 1, Math.round(route.delta(T.sA, t.s))));
+      const tx = T.tx[k], tz = T.tz[k];
+      (recs ||= []).push({ li, bi, leafTint: f.leafTint, barkTint: f.barkTint,
+        d: t.d, h: base.y - T.y[k] + (t.height || 6) * 0.62, rx: -tz, rz: tx,
+        hwL: T.hw[0][k], hwR: T.hw[1][k], HL: T.H[0][k], HR: T.H[1][k] });
+    }
+    if (recs) this._shade(recs, U.uSunDir.value);
+    return recs;
+  }
+
+  /** Instance colours for sun direction L (world). */
+  _shade(recs, L) {
+    for (const r of recs) {
+      let f = 1;
+      if (L.y > 0) {
+        const a = L.x * r.rx + L.z * r.rz;
+        const right = a > 0;
+        const dist = right ? r.hwR - r.d : r.hwL + r.d;
+        const H = right ? r.HR : r.HL;
+        if (dist >= 0.3 && H > 0) {
+          const hit = r.h + dist * L.y / Math.max(Math.abs(a), 1e-4);
+          // (a crown is a few metres across: a wider band than the shader's ±1.2 m)
+          const x = Math.min(1, Math.max(0, (hit - H + 2.5) / 5));
+          f = FAR_TREE_SHADE + (1 - FAR_TREE_SHADE) * x * x * (3 - 2 * x);
+        }
+      }
+      this.leaf.setColorAt(r.li, _tc.copy(r.leafTint).multiplyScalar(f));
+      this.bark.setColorAt(r.bi, _tc.copy(r.barkTint).multiplyScalar(f));
+    }
+  }
+
+  remove(recs) {
+    for (const r of recs) { this.leaf.deleteInstance(r.li); this.bark.deleteInstance(r.bi); }
+  }
+
+  /** Once per frame: instance visibility follows each far part, colours follow the sun. */
+  update() {
+    const P = this.parts, L = U.uSunDir.value;
+    const resun = Math.abs(L.x - this.sun.x) + Math.abs(L.y - this.sun.y) + Math.abs(L.z - this.sun.z) > 2e-4;
+    if (resun) this.sun.copy(L);
+    for (let i = 0; i < P.length; i++) {
+      const o = P[i], u = o.userData;
+      const vis = o.visible && !!o.parent && o.parent.visible;
+      if (vis !== u.ffVis) {
+        u.ffVis = vis;
+        for (const r of u.ffTrees) { this.leaf.setVisibleAt(r.li, vis); this.bark.setVisibleAt(r.bi, vis); }
+      }
+      if (resun) this._shade(u.ffTrees, L);
+    }
+  }
+}
+
 // ---- canyon cross-section per vertex (see FRAG_CANYON)
 const CY_MARGIN = 30;                 // m of table beyond the chunk ends (lots reach past them)
 const _cc = new THREE.Vector3();
@@ -479,10 +625,10 @@ function canyonTable(app, chunk) {
 /** aCy = (d, h, right.x, right.z) and aCw = (facade |d| left, right, block height left,
  *  right) per vertex: each vertex is put on the route by two Newton steps along the
  *  tangent from the chunk's middle, on the table's centre line (1 m samples). */
-function canyonAttributes(geo, app, chunk) {
+function canyonAttributes(geo, T, chunk) {
   const pos = geo.getAttribute('position').array, nv = pos.length / 3;
   const cy = new Float32Array(nv * 4), cw = new Float32Array(nv * 4);
-  const T = canyonTable(app, chunk), n = T.n;
+  const n = T.n;
   const uMid = (chunk.s0 + chunk.s1) / 2 - T.sA;
   for (let i = 0; i < nv; i++) {
     const px = pos[i * 3], py = pos[i * 3 + 1], pz = pos[i * 3 + 2];
@@ -571,7 +717,13 @@ const farfield = {
     };
     m.customProgramCacheKey = () => 'farfield3';
     this.material = app.materials.track ? app.materials.track(m) : m;
-    this.stats = { builds: 0, ms: 0, maxMs: 0, tris: 0 };
+    this.stats = { builds: 0, ms: 0, maxMs: 0, tris: 0, trees: 0 };
+    // far trees from vegetation's own models (fftrees=0: the plain crowns, for A/B)
+    this.trees = null;
+    const veg = app.systems.vegetation;
+    if (veg && !veg.disabled && typeof veg.farTree === 'function' && typeof veg.farMaterials === 'function' && app.params.str('fftrees', '1') !== '0') {
+      try { this.trees = new FarTrees(app, veg); } catch (e) { console.warn('[farfield] far trees from vegetation unavailable, drawing crowns', e); }
+    }
   },
 
   build(chunk, app) {
@@ -581,24 +733,45 @@ const farfield = {
     paving(G, app, chunk);
     for (const lot of layout.inChunk('lots', chunk.index)) lotBlock(G, lot, true);
     for (const lot of layout.inChunk('sideLots', chunk.index)) lotBlock(G, lot, lot.x0 < SIDE_FULL);
-    for (const t of layout.inChunk('trees', chunk.index)) tree(G, route, t);
+    const T = canyonTable(app, chunk);
+    const recs = this.trees ? this.trees.add(G, app, chunk, T) : null;
+    if (!this.trees) for (const t of layout.inChunk('trees', chunk.index)) tree(G, route, t);
     for (const p of layout.inChunk('poles', chunk.index)) pole(G, route, p);
     const geo = G.geometry();
-    if (geo) canyonAttributes(geo, app, chunk);
+    if (geo) canyonAttributes(geo, T, chunk);
     const dt = performance.now() - t0;
     this.stats.builds++; this.stats.ms = dt; this.stats.maxMs = Math.max(this.stats.maxMs, dt);
-    if (!geo) return null;
-    this.stats.tris = geo.index.count / 3;
-    this.stats.bytes = (G.nv * 18 * 4) + geo.index.array.byteLength;
-    const mesh = new THREE.Mesh(geo, this.material);
-    mesh.name = 'farfield';
-    mesh.matrixAutoUpdate = false;
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    return mesh;
+    let part = null;
+    if (geo) {
+      this.stats.tris = geo.index.count / 3;
+      this.stats.bytes = (G.nv * 18 * 4) + geo.index.array.byteLength;
+      part = new THREE.Mesh(geo, this.material);
+      part.castShadow = false;
+      part.receiveShadow = true;
+    } else if (recs) part = new THREE.Group();
+    if (!part) return null;
+    part.name = 'farfield';
+    part.matrixAutoUpdate = false;
+    if (recs) {
+      part.userData.ffTrees = recs;
+      part.userData.ffVis = false;
+      this.trees.parts.push(part);
+      this.stats.trees += recs.length;
+    }
+    return part;
   },
 
-  dispose(obj) { if (obj.geometry) obj.geometry.dispose(); },
+  dispose(obj) {
+    if (obj.geometry) obj.geometry.dispose();
+    const recs = obj.userData.ffTrees;
+    if (recs && this.trees) {
+      this.trees.remove(recs);
+      this.stats.trees -= recs.length;
+      const P = this.trees.parts, i = P.indexOf(obj);
+      if (i >= 0) { P[i] = P[P.length - 1]; P.pop(); }
+      obj.userData.ffTrees = null;
+    }
+  },
 
   /** Plans the facades of the next far chunks ahead of need, a lot or two per frame, so a
    *  ride-time build only assembles geometry (the plans are shared with the modules). */

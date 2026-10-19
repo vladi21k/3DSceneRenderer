@@ -684,11 +684,12 @@ function balconyRoom(plan, orn) {
       d0 = Math.min(d0, d.u0); d1 = Math.max(d1, d.u1);
     }
     if (d0 > d1) continue;
-    const a = Math.min(b.u0, d0 - SIDE), c = Math.max(b.u1, d1 + SIDE);
-    if (a < Math.max(bay.u0 + 0.15, 0.3) || c > Math.min(bay.u1 - 0.15, W - 0.3)) continue;
+    // (as far as the bay allows: a narrow bay still gives the consoles what room it has)
+    const a = Math.max(Math.min(b.u0, d0 - SIDE), bay.u0 + 0.15, 0.3), c = Math.min(Math.max(b.u1, d1 + SIDE), bay.u1 - 0.15, W - 0.3);
+    if (a >= b.u0 - 0.01 && c <= b.u1 + 0.01) continue;
     // (other slabs on the floor keep 0.3 m clear)
     if (bals.some((x) => x !== b && x.floor === b.floor && x.u1 > a - 0.3 && x.u0 < c + 0.3)) continue;
-    b.u0 = a; b.u1 = c;
+    b.u0 = Math.min(a, b.u0); b.u1 = Math.max(c, b.u1);
   }
   // the ground floor's head line under first-floor slabs
   let soffit = Infinity;

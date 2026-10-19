@@ -395,6 +395,12 @@ function metaOf(M, name) {
   return m[name] || null;
 }
 
+/** Ironwork's published API (console positions), when the module runs. */
+function iw(app) {
+  const m = app.systems && app.systems.ironwork;
+  return m && !m.disabled && typeof m.consolesOf === 'function' ? m : null;
+}
+
 /**
  * Generate steps of `job` until it is complete or budgetMs is spent. A step (part of a
  * facade, a few openings, one rooftop item...) is not started when the running average
@@ -413,6 +419,9 @@ function runJob(app, job, budgetMs) {
     if (!job.iter) {
       const lot = job.lots[job.next++];
       const lod = detailIndex(job, lot);
+      // (the consoles under the balconies, which the run-off streaks hang from: ironwork
+      // publishes them on the plan, see shade.FaceShade)
+      if (!lot.slab && !lot.lane && iw(app)) iw(app).consolesOf(lot);
       job.iter = lot.slab ? slabSteps(B, lot, DETAIL[Math.min(1, lod)]) : lot.lane ? laneSteps(B, lot)
         : lotSteps(B, lot, endsOf(app, lot), DETAIL[lotLod(lot, lod)], mt);
     }
@@ -464,13 +473,22 @@ function geometries(B) {
 }
 
 /**
+ * Set a vertex attribute; the packed normal also goes in as aNrmW (the same buffer, sent
+ * once): its w is the height above the paving, which the stone materials read (grime.js).
+ */
+function attach(g, name, a) {
+  g.setAttribute(name, a);
+  if (name === 'normal') g.setAttribute('aNrmW', a);
+}
+
+/**
  * Attach every attribute a result still holds back (the renderer uploads them when
  * drawn). geometry.userData.revealBytes: what drawing it still sends (those attributes
  * and the index), for the streamer's upload budget.
  */
 function attachAll(res) {
   for (const g of res.geoms.values()) g.userData.revealBytes = g.index ? g.index.array.byteLength : 0;
-  for (const [g, name, a] of res.pending) { g.setAttribute(name, a); g.userData.revealBytes += a.array.byteLength; }
+  for (const [g, name, a] of res.pending) { attach(g, name, a); g.userData.revealBytes += a.array.byteLength; }
   res.pending.length = 0;
 }
 
@@ -544,7 +562,7 @@ function preUpload(app, sCam) {
     if (bytes && bytes + sz > UPLOAD_BYTES) break;
     best.pending.pop();
     best.left -= sz;
-    g.setAttribute(p[1], p[2]);
+    attach(g, p[1], p[2]);
     if (touched.indexOf(g) < 0) touched.push(g);
     bytes += sz;
   }

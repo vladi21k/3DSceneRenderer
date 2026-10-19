@@ -84,6 +84,9 @@ async function main() {
   // a busy static server can drop a request: retry each failed import once with a fresh URL
   const load = (path) => import(path).catch(() => new Promise((r) => setTimeout(r, 250)).then(() => import(`${path}?retry=1`)));
   const loaded = await Promise.allSettled(enabled.map(([, path]) => load(path)));
+  // start-up phases (ms): imports (since navigation), each init, modulesTotal, prime, compile,
+  // frames (first frames until the view is ready) and firstReady (since navigation)
+  app.perf.init = { imports: Math.round(performance.now()) };
   const mods = [];
   loaded.forEach((r, i) => {
     const [name] = enabled[i];
@@ -107,7 +110,6 @@ async function main() {
   setProgress(0.05);
 
   // ---- init (sequential: materials and env first, in registry order)
-  app.perf.init = {};
   const tStart = performance.now();
   for (const m of mods) {
     if (!m.init) continue;
@@ -151,6 +153,7 @@ async function main() {
   } catch (e) { console.warn('compile', e); }
   touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
   app.perf.init.compile = Math.round(performance.now() - tCompile);
+  const tFrames = performance.now();
   setProgress(1);
 
   // ---- loop
@@ -171,12 +174,24 @@ async function main() {
   const iWorld = updaters.length, iRender = updaters.length + 1;
   Object.assign(app, { monitor: mon, hitches: () => mon.hitches(), hitchReport: () => mon.report(), resetFrames: () => mon.reset() });
   {
-    // CPU time of the shadow passes inside render (wraps any module's own hook)
+    // CPU time of the shadow passes inside render (wraps any module's own hook), and their
+    // longest single draw: one GL call that blocks for 10 ms or more is the main thread
+    // waiting for a GPU that is behind, not shadow work on the CPU
     // (fixed arity, not rest parameters: no argument array per call)
     const sm = renderer.shadowMap, smRender = sm.render;
+    let inShadow = false;
     sm.render = function (lights, scene, camera) {
       const t = performance.now();
-      try { return smRender.call(this, lights, scene, camera); } finally { mon.shadowMs += performance.now() - t; }
+      inShadow = true;
+      try { return smRender.call(this, lights, scene, camera); } finally { inShadow = false; mon.shadowMs += performance.now() - t; }
+    };
+    const rbd = renderer.renderBufferDirect;
+    renderer.renderBufferDirect = function (camera, scene, geometry, material, object, group) {
+      if (!inShadow) return rbd.call(this, camera, scene, geometry, material, object, group);
+      const t = performance.now();
+      rbd.call(this, camera, scene, geometry, material, object, group);
+      const d = performance.now() - t;
+      if (d > mon.shadowDraw) { mon.shadowDraw = d; mon.shadowDrawObj = object; }
     };
   }
 
@@ -234,6 +249,7 @@ async function main() {
       app.ready = true;
       app.world.staged = true;   // from now on chunks are compiled in the background and revealed gradually
       app.perf.init.firstReady = Math.round(performance.now());
+      app.perf.init.frames = Math.round(performance.now() - tFrames);
       if (loadingEl) loadingEl.classList.add('done');
       events.emit('ready', {});
       setTimeout(() => { window.__ready = true; }, 300);

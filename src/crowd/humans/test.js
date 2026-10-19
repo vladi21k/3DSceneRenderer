@@ -28,6 +28,7 @@ import { hash2 } from '../../core/rng.js';
 //             along the street; with ht_mob=stroller the adult pushes a stroller and the child
 //             holds on to its side (ht_fam=kid|child picks the child's body; ht_side=1|-1 its side)
 //   ht_baby = 1 / 0: force a child in every stroller / none (default: as the crowd picks)
+//   ht_outfit = waiter: every figure is dressed as café staff (set() field outfit)
 // Mobility (poses 3-5 with their props):
 //   ht_mob  = stroller | ride | walkbike | mix: figures push strollers / ride / walk bicycles
 //             (works with grid, walk, cross, crowd; ht_mode=stroller|ride|walkbike|mobmix are walk
@@ -65,6 +66,7 @@ export class HumansTest {
     this.nextK = this.firstFig;
     this.poseT = p.num('ht_pose', 0);
     this.idleK = p.str('ht_idle', '');
+    this.outfit = p.str('ht_outfit', '');
     // mobility: ht_mode=stroller|ride|walkbike|mobmix are walking figures with that prop
     const MOBM = { stroller: 'stroller', ride: 'ride', walkbike: 'walkbike', mobmix: 'mix' };
     this.mob = p.str('ht_mob', '') || MOBM[this.mode] || '';
@@ -238,6 +240,8 @@ export class HumansTest {
       o.holdWith = f.partner >= 0 ? f.partner : -1;
       // ht_idle=k: every standing figure takes stance k (set() field idle); ht_idle=cycle: stances in turn
       o.idle = this.idleK === 'cycle' ? Math.floor(this.t / 4 + i0(f)) % 8 : this.idleK !== '' ? +this.idleK : undefined;
+      // ht_outfit=waiter: every figure dressed as café staff (set() field outfit)
+      o.outfit = this.outfit || undefined;
       h.set(f.i, o);
       f.x = o.x; f.y = o.y; f.z = o.z; f.heading = heading;
     }

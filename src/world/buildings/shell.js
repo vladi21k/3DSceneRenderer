@@ -488,6 +488,7 @@ function plinth(B, sinks, F, face, ops, orn, E, fg, fs, pt, ctx) {
   B.shade = (u, v, w, nu, nv, nw, out) => {
     const g = face.groundAt(u), hg = v - g;
     trimColor(fs, u, Math.max(v, g + 0.6), nv, out, 0.84);
+    out[5] = hg;
     const t = Math.min(1, Math.max(0, hg / 0.8)), k = (0.68 + 0.32 * t * t * (3 - 2 * t)) * (hg < 0.06 ? 0.8 : 1);
     const l = (out[0] + out[1] + out[2]) / 3, gr = 0.45 + 0.3 * (1 - t);
     out[0] = (out[0] + (l - out[0]) * gr) * k; out[1] = (out[1] + (l - out[1]) * gr) * k; out[2] = (out[2] + (l * 1.02 - out[2]) * gr) * k;

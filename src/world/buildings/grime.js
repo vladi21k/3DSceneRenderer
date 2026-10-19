@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
-import { COLOR_SCALE, GLASS_K } from './mesh.js';
+import { COLOR_SCALE, GLASS_K, HG_MAX } from './mesh.js';
 
 // Weathering for the masonry: buildings-owned variants of the stone materials that
 // darken and grey the albedo where the per-vertex grime mask (colour alpha, baked
@@ -141,6 +141,8 @@ vColor = vec4(vColor.rgb * vColor.rgb * ${CSCALE}, 1.0);
 
 const VERT_PARS = /* glsl */ `
 attribute vec4 aRun;
+attribute vec4 aNrmW;
+varying float vBgHg;
 varying float vBgGrime;
 varying vec4 vBgRun;
 varying vec3 vBgPos;
@@ -157,9 +159,11 @@ const VERT_MAIN = /* glsl */ `
 }
 vBgPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vBgN = normalize(mat3(modelMatrix) * objectNormal);
+vBgHg = aNrmW.w * ${HG_MAX.toFixed(1)};
 `;
 
 const FRAG_PARS = /* glsl */ `
+varying float vBgHg;
 varying float vBgGrime;
 varying vec4 vBgRun;
 varying vec3 vBgPos;
@@ -195,11 +199,16 @@ const FRAG_STONE = /* glsl */ `
   // masks are modulated along the wall in facade metres (bgP), so they run on unbroken
   // across the materials and the dressing, and from one occluder's zone into the next.
   float bgRunM = 0.0, bgSoot = 0.0, bgWash = 0.0;   // grime mask, soot, rain wash
+  float bgCst = 0.0;                                  // console streak
   vec3 bgRunK = vec3(1.0);                            // occlusion and rust
   float bgK = abs(vBgRun.w), bgD = vBgRun.y;
   float bgFx = fwidth(vBgRun.x);                     // metres along the wall per pixel
+  // (whether bgP.x runs with the face's u or against it, for positions along the wall)
+  float bgSg = dFdx(bgP.x) * dFdx(vBgRun.x) + dFdy(bgP.x) * dFdy(vBgRun.x) > 0.0 ? -1.0 : 1.0;
   if (bgK >= 1.0 && bgD > 0.0) {
-    float bgW = floor(bgK) * (1.0 / 64.0), bgS = fract(bgK) * 2.0;
+    // (width code: width in 1/64 m, plus flags on slab pieces ending at a console)
+    float bgKq = floor(bgK), bgCf = floor(bgKq * (1.0 / 8192.0));
+    float bgW = (bgKq - bgCf * 8192.0) * (1.0 / 64.0), bgS = fract(bgK) * 2.0;
     float bgUa = -vBgRun.x, bgUb = bgW - bgUa;      // from the left / right end
     // strips centred just inside each end: water runs off there
     float bgE = max(0.0, 1.0 - min(abs(bgUa - 0.08), abs(bgUb - 0.08)) / 0.2);
@@ -221,6 +230,24 @@ const FRAG_STONE = /* glsl */ `
       bgSoot = bgSpread * bgPatch * min(1.4, bgDirtB * bgDk) * smoothstep(0.0, 0.2, bgD)
         * (0.3 * exp(-bgD / 0.6) + 0.7 * bgCol * exp(-bgD / bgLen));
       bgRunM = bgDirtB * 0.95 * bgRun;
+      // streaks hanging from the consoles: water runs down the console and off its foot,
+      // a dark trail below it that meanders a little, widens as it runs down and fades
+      // over 1-3 m, some consoles far dirtier than others, a third of them clean (the
+      // consoles split the slab into pieces, see shade.js)
+      float bgCL = step(1.5, bgCf), bgCR = step(0.5, bgCf - 2.0 * bgCL);
+      bool bgOnL = bgCL > 0.5 && (bgCR < 0.5 || bgUa < bgUb);
+      float bgOff = bgOnL ? bgUa : (bgCR > 0.5 ? -bgUb : 9.0);   // across from the console (m)
+      if (abs(bgOff) < 0.35) {
+        float bgCu = bgP.x - bgSg * bgOff;                         // the console along the wall (the same from both pieces)
+        float bgCk = smoothstep(0.3, 0.8, bgVN(vec2(bgCu * 2.3 + bgDirtB * 7.0, 4.1)));
+        float bgCLen = 1.0 + 2.2 * bgVN(vec2(bgCu * 3.1, 8.7));
+        float bgCx = bgOff - 0.05 * (bgVN(vec2(bgCu * 5.0, bgD * 1.3)) - 0.5) * min(1.0, bgD);
+        float bgCw = 0.045 + 0.05 * min(1.0, bgD / 1.5) + 0.03 * (bgVN(vec2(bgCu * 4.0 + 1.7, bgD * 2.5)) - 0.5);
+        bgCst = (1.0 - smoothstep(bgCw * 0.35, bgCw * 1.3, abs(bgCx))) * bgCk * smoothstep(0.3, 0.6, bgD)
+          * exp(-bgD / bgCLen) * (1.0 - smoothstep(bgCLen * 1.1, bgCLen * 1.6, bgD)) * (0.55 + 0.45 * bgVN(vec2(bgCu * 7.0, bgD * 4.0)))
+          * (1.0 - smoothstep(0.06, 0.2, bgFx));                   // (sub-pixel trails: the run-off mean carries them)
+        bgRunM += bgDirtB * 0.5 * bgCst;
+      }
       float bgRust = 0.6 * bgRun;
       bgRunK *= vec3(1.0 - 0.08 * bgRust, 1.0 - 0.13 * bgRust, 1.0 - 0.2 * bgRust);
     } else {
@@ -232,6 +259,36 @@ const FRAG_STONE = /* glsl */ `
     }
     float bgL0 = dot(diffuseColor.rgb, vec3(0.333));
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgL0 * 0.9), min(0.7, bgWash * 1.4)) * bgRunK * (1.0 - bgWash);
+  }
+
+  // the foot of the wall (vBgHg: height above the paving in front, per vertex): rising
+  // damp up to an irregular tide line 0.3-1.4 m up (higher on dirtier buildings), darker
+  // and a little greener and greyer below it, with a patchy pale salt bloom just above
+  // it; splash dirt in the first 40 cm; and dirt packed into the joints near the ground
+  float bgHg = vBgHg;
+  if (bgHg < 2.0) {
+    float bgDampK = clamp(bgDirtB * 0.9 - 0.25, 0.1, 1.0);
+    float bgTide = 0.3 + 1.05 * bgDampK * (0.4 + 0.6 * bgVN(vec2(bgP.x * 0.45 + bgDirtB * 13.0, 2.7)))
+      + 0.12 * (bgVN(vec2(bgP.x * 2.9, 5.3)) - 0.5);
+    float bgFw = fwidth(bgHg);
+    float bgWet = 1.0 - smoothstep(bgTide - 0.06 - bgFw, bgTide + 0.02 + bgFw, bgHg);
+    float bgWetN = 0.7 + 0.6 * bgVN(bgP * vec2(1.6, 2.2) + 3.3);
+    float bgL1 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+    diffuseColor.rgb = mix(diffuseColor.rgb, bgL1 * vec3(0.92, 0.97, 0.9), 0.35 * bgWet) * (1.0 - 0.26 * bgWet * bgWetN * bgDampK);
+    float bgSalt = smoothstep(bgTide - 0.03 - bgFw, bgTide + 0.02, bgHg) * (1.0 - smoothstep(bgTide + 0.03, bgTide + 0.15 + bgFw, bgHg))
+      * smoothstep(0.3, 0.7, bgVN(vec2(bgP.x * 3.3, bgHg * 7.0)));
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgL1 * 1.1 + 0.025), 0.3 * bgSalt * bgDampK);
+    float bgSp = (1.0 - smoothstep(0.04, 0.42, bgHg)) * smoothstep(0.45, 0.8, texture(bgGrimeTex, bgP * vec2(1.13, 1.71) + 0.5).b);
+    diffuseColor.rgb *= 1.0 - 0.24 * bgSp;
+#ifdef BG_JOINTS
+    if (sfLay.y > 0.5) {
+      vec2 bgJd = min(sfCl, sfCs - sfCl);
+      float bgJw = max(0.004, sfJoint.y);
+      float bgJ = 1.0 - smoothstep(bgJw, bgJw * 2.6, min(bgJd.x, bgJd.y));
+      float bgJf = 1.0 - smoothstep(0.004, 0.012, max(fwidth(sfCl.x), fwidth(sfCl.y)));   // (gone once a joint is sub-pixel)
+      diffuseColor.rgb *= 1.0 - 0.42 * bgJ * bgJf * exp(-max(0.0, bgHg) / 0.8);
+    }
+#endif
   }
 
   // weathering detail from the atlas: trails carry most of the dirt; blotches and the
@@ -249,7 +306,11 @@ const FRAG_STONE = /* glsl */ `
   float bgLum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum) * vec3(0.97, 0.98, 1.0), min(1.0, bgDirt * bgGrimeK.y + bgSoot * 0.35));
   diffuseColor.rgb *= (1.0 - bgDirt * bgGrimeK.x) * (1.0 - 0.25 * bgSoot);
-  bgDirt = max(bgDirt, bgSoot);
+  // console streaks: brown-grey dirt, broken up by the drip trails
+  float bgCt = bgCst * (0.5 + 0.5 * bgDrip);
+  float bgLc = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+  diffuseColor.rgb = mix(diffuseColor.rgb, bgLc * vec3(0.96, 0.92, 0.85), 0.4 * bgCt) * (1.0 - 0.4 * bgCt);
+  bgDirt = max(max(bgDirt, bgSoot), bgCt);
 }
 `;
 const FRAG_ROUGH = /* glsl */ `
@@ -332,14 +393,17 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3]) {
   const m = base.clone();
   m.name = `buildings:${name}`;
   const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) } };
-  chain(m, 'bgS5', (shader) => {
+  chain(m, 'bgS6', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\n')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\n' + VERT_MAIN);
+    // (dirt in the joints needs the library's row layout: the block coordinates and joint
+    // width of the surface patch, where the program has them)
+    const joints = /vec2 sfCl\b/.test(shader.fragmentShader) && /vec2 sfCs\b/.test(shader.fragmentShader) && /uniform vec4 sfJoint;/.test(shader.fragmentShader);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
+      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_STONE)
       .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>');
   });

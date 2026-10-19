@@ -633,10 +633,14 @@ export class TramWatch {
    *  doing so while on it or about to be, and steps down again past its far end. */
   _platformKeep(a) {
     const c = this.c, st = a.platSt;
-    if (!st) { if (!c.map.platformAt(a.s, a.d >= 0 ? 1 : -1, Math.abs(a.d), 0.6)) a.platformOK = false; return; }
-    const ds = c.route.delta(st.s, a.s);
-    if (c.map.platformAt(a.s, a.platSide || 1, Math.abs(a.d), 0.8)) return;
-    if (Math.abs(ds) > st.len / 2 + (ds * (a.dir || 1) < 0 ? 12 : 2)) { a.platformOK = false; a.platSt = null; }
+    const ad = a.d >= 0 ? a.d : -a.d;
+    if (!st) { if (!c.map.platformAt(a.s, a.d >= 0 ? 1 : -1, ad, 0.6)) a.platformOK = false; return; }
+    if (c.map.platformAt(a.s, a.platSide || 1, ad, 0.8)) return;
+    // (route.delta(st.s, a.s) worked out in place: no numbers boxed per agent and frame)
+    const L = c.route.length;
+    let ds = (a.s - st.s) % L;
+    if (ds < -L / 2) ds += L; else if (ds > L / 2) ds -= L;
+    if ((ds >= 0 ? ds : -ds) > st.len / 2 + (ds * (a.dir || 1) < 0 ? 12 : 2)) { a.platformOK = false; a.platSt = null; }
   }
 
   /** Clearing target of a person with a stroller / bicycle: the prop has to be out too

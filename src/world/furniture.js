@@ -147,6 +147,9 @@ const furniture = {
   cafeUmbrellas(cafeId) { const c = this.app.layout.cafes[cafeId]; return c ? cafeStyle(c, this.app).umbrellas : null; },
 
   update(dt, app) {
+    // the print atlases (painted in a worker during the start-up) are on their textures by
+    // the first frame
+    if (!this.F.prints.done) this.F.prints.finish();
     updateLightLevels(this.F, app);
     if (!this.batches.hideEmpty) this.batches.warmup(app.camera.position, app.camera.getWorldDirection(_dir));
     this.batches.sync();

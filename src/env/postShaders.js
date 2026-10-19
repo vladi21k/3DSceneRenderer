@@ -677,6 +677,7 @@ uniform sampler2D tLocal;     // local level of the surfaces (see LOCAL_FS, norm
 uniform vec4 uLocal;          // local highlight recovery: knee (stops), strength, pixel ramp start, ramp width
 uniform vec4 uKnee;           // gamut knee: start, ceiling (street); start, ceiling (saturated sky)
 uniform float uSatOut;        // saturation of the street's final colour (scene-linear, around its luminance)
+uniform float uSkyTwist;      // sunset: warm sky hues turned towards yellow-orange (a camera profile's hue twist)
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -814,7 +815,12 @@ void main() {
     col *= k; lum *= k;
   }
   vec3 sc = max(col, 0.0);
-  if (skyPx) sc = max(lum + (sc - lum) * uSkySat, 0.0);
+  if (skyPx) {
+    // (warm afterglow: green raised towards red, so the band over the horizon reads
+    // yellow-orange and the pink above it stays pink)
+    if (uSkyTwist > 0.0) sc.g += uSkyTwist * smoothstep(0.15, 0.5, (sc.r - sc.b) / max(sc.r, 1e-6)) * max(sc.r - sc.g, 0.0);
+    sc = max(lum + (sc - lum) * uSkySat, 0.0);
+  }
 
   col = agx(col);
   // camera tone response on luminance, then a soft gamut knee: from uKnee.x up, the spread
@@ -831,7 +837,8 @@ void main() {
     float la = dot(col, LW);
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), skyPx ? uSkyChroma : uChroma);
     // a little more colour on the street (the sky has its own saturation, uSkySat)
-    if (!skyPx) col = max(lt + (col - lt) * uSatOut, 0.0);
+    // (eased off in the highlights, as a camera's colour rendering does near white)
+    if (!skyPx) col = max(lt + (col - lt) * mix(uSatOut, 0.9, smoothstep(0.45, 0.95, lt)), 0.0);
     float m = max(col.r, max(col.g, col.b));
     vec3 kn = col;
     float k0 = uKnee.x, kr = uKnee.y - uKnee.x;

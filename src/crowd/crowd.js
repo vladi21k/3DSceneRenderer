@@ -60,7 +60,12 @@ import { stanceOf } from './behaviour/stance.js';
 // up front (agent.js settleShape) so nothing deoptimises mid-ride.
 
 const PI = Math.PI;
-const _v = new THREE.Vector3();
+const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _u = new THREE.Vector3();
+// A walker's world position is a linear function of (s, d) over a few decimetres (the paving's
+// shape changes over metres): worked out from three route.toWorld calls every LIN metres of
+// movement (the chords the walker is moving along) and interpolated in between, within about
+// 2 mm of route.toWorld (5 mm walking backwards over a hump of the paving).
+const LIN = 0.35;
 const COUNT_INTS = new Set(['seated', 'passenger', 'stand', 'walker', 'stand300', 'walk300', 'side', 'standFar']);
 const MOVERS = 4;              // cyclists handed to post as moving boxes (per-object motion blur)
 const MOVER_RANGE = 70;        // ... within this distance of the camera (m)
@@ -105,6 +110,7 @@ class CrowdSim {
     // read-only views for other systems (refilled once per frame, never reallocated)
     this.activeList = []; this.activeN = -1;
     this._camF = settleShape({ x: 0, z: -1 });
+    this._tramP = new THREE.Vector3(); this._tramPN = -1;
     this.movers = { n: 0, items: Array.from({ length: MOVERS }, () => settleShape({ id: 0, x: 0, y: 0, z: 0, dx: 0, dy: 0, dz: 0, heading: 0, halfLen: 0.95, halfWidth: 0.36, halfHeight: 0.92, dist2: 0 })) };
     // (classes fixed up front: see settleShape)
     settleShape(this.counts, COUNT_INTS); settleShape(this.perf); settleShape(this.check);
@@ -234,7 +240,10 @@ class CrowdSim {
     // (an oncoming unit that rang, or the one coming at someone waiting to cross)
     let U = a.lookU >= 0 ? this.tram.unitById(a.lookU) : null;
     if (!U && a.state === ST.WAIT && a.uI >= 0) U = this.tram.unitById(a.uI);
-    const p = U ? this.route.toWorld(U.sU, U.d, 2.2, _v) : this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, _v);
+    // (the cab's front once per frame for everybody looking at it)
+    let p = this._tramP;
+    if (U) p = this.route.toWorld(U.sU, U.d, 2.2, _v);
+    else if (this._tramPN !== this.tram.n) { this.route.toWorld(this.tram.trainU, RIDE_D, 2.2, p); this._tramPN = this.tram.n; }
     const yaw = Math.atan2(-(p.x - a.x), -(p.z - a.z));
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
@@ -324,10 +333,8 @@ class CrowdSim {
         const dh = hT - a.h, step = 1.5 * dt;
         if (dt === 0 || a.fresh || (dh <= step && dh >= -step)) a.h = hT; else a.h += dh > 0 ? step : -step;
         // (out in a side street: its own frame and level)
-        if (this.side.mark(a)) this.side.toWorld(a.s, a.d, a.h, _v);
-        else if (a.h === 0) route.toWorld(a.s, a.d, 0, _v);
-        else route.toWorld(a.s, a.d, a.h, _v);
-        a.x = _v.x; a.y = _v.y; a.z = _v.z;
+        if (this.side.mark(a)) { this.side.toWorld(a.s, a.d, a.h, _v); a.x = _v.x; a.y = _v.y; a.z = _v.z; a.lwOk = false; }
+        else this._ground(a);
         a.ws = a.s; a.wd = a.d; a.wValid = true;
       }
       // distance actually covered since the last frame (drives the gait phase)
@@ -381,6 +388,33 @@ class CrowdSim {
       o.idle = a.idle; o.outfit = a.role === 'staff' ? 'waiter' : '';
       H.set(this.base + a.slot, o);
     }
+  }
+
+  /** World position of a on the main street (a.x, a.y, a.z; a.h above the paving), from its
+   *  linearisation about (lwS, lwD): refreshed when a has moved LIN metres from it. */
+  _ground(a) {
+    const ds = a.s - a.lwS, dd = a.d - a.lwD;
+    if (!a.lwOk || ds > LIN || ds < -LIN || dd > LIN || dd < -LIN) { this._linearise(a); }
+    else {
+      a.x = a.lwX + a.lwXs * ds + a.lwXd * dd;
+      a.y = a.lwY + a.lwYs * ds + a.lwYd * dd + a.h;
+      a.z = a.lwZ + a.lwZs * ds + a.lwZd * dd;
+    }
+  }
+
+  /** route.toWorld at a's spot and LIN metres on along s and d, the way a is moving. */
+  _linearise(a) {
+    const route = this.route;
+    const gs = a.vs < 0 ? -LIN : LIN, gd = a.vd < 0 ? -LIN : LIN;
+    route.toWorld(a.s, a.d, 0, _v);
+    route.toWorld(a.s + gs, a.d, 0, _w);
+    route.toWorld(a.s, a.d + gd, 0, _u);
+    a.lwS = a.s; a.lwD = a.d;
+    a.lwX = _v.x; a.lwY = _v.y; a.lwZ = _v.z;
+    a.lwXs = (_w.x - _v.x) / gs; a.lwYs = (_w.y - _v.y) / gs; a.lwZs = (_w.z - _v.z) / gs;
+    a.lwXd = (_u.x - _v.x) / gd; a.lwYd = (_u.y - _v.y) / gd; a.lwZd = (_u.z - _v.z) / gd;
+    a.lwOk = true;
+    a.x = _v.x; a.y = _v.y + a.h; a.z = _v.z;
   }
 
   /** A riding cyclist near the camera and in front of it, for post's per-object motion blur: the

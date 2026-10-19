@@ -150,6 +150,14 @@ class HeldVector3 extends THREE.Vector3 {
 const HELD = [['spotLights', 'position', 'direction'], ['directionalLights', 'direction', null],
   ['sunLights', 'direction', null], ['hemisphereLights', 'direction', null]];
 
+// Number fields of the light structs (spot: distance, decay, cone cosines). The renderer
+// reads every member of every light struct each time a lit program is bound, and reading a
+// number field V8 stores unboxed makes a new heap number each time (about 40 KB a frame
+// at dusk, over some fifty program binds). Once a field has held a non-number its storage
+// stays tagged: a read then hands over the stored number, and only the renderer's own write
+// per light and frame makes one.
+const TAGGED = ['distance', 'decay', 'coneCos', 'penumbraCos'];
+
 /** Swap the vectors of every light struct in a material's live light uniforms (idempotent). */
 function holdDarkLights(uniforms) {
   let n = 0;
@@ -162,6 +170,63 @@ function holdDarkLights(uniforms) {
       if (!s || typeof s !== 'object') continue;
       if (s[a] && s[a].isVector3 && !(s[a] instanceof HeldVector3)) { s[a] = new HeldVector3(s[a], s); n++; }
       if (b && s[b] && s[b].isVector3 && !(s[b] instanceof HeldVector3)) { s[b] = new HeldVector3(s[b], s); n++; }
+      if (!s.__tagged) {
+        for (let j = 0; j < TAGGED.length; j++) {
+          const f = TAGGED[j], v = s[f];
+          if (typeof v === 'number') { s[f] = null; s[f] = v; }
+        }
+        s.__tagged = true;
+      }
+    }
+  }
+  return n;
+}
+
+// ---- light vectors uploaded without boxing
+// Each lit program uploads the light structs' vectors (view-space positions and
+// directions, colours) whenever it is bound and they changed: at dusk, the lit pool lights
+// move with the camera every frame. The renderer's vec3 setter passes three numbers to
+// gl.uniform3f, and each is a new heap number (about 100 KB a frame at dusk). These
+// setters compare against a typed cache and upload from a typed copy instead.
+const LIGHT_ARRAYS = ['spotLights', 'sunLights', 'hemisphereLights', 'directionalLights', 'pointLights'];
+const COLOR_IDS = new Set(['color', 'skyColor', 'groundColor']);
+const GL_FLOAT_VEC3 = 0x8B51;
+function setVec3Typed(gl, v) {
+  const c = this.c64, x = v.x, y = v.y, z = v.z;
+  if (c[0] === x && c[1] === y && c[2] === z) return;
+  c[0] = x; c[1] = y; c[2] = z;
+  const f = this.f32;
+  f[0] = x; f[1] = y; f[2] = z;
+  gl.uniform3fv(this.addr, f);
+}
+function setColorTyped(gl, v) {
+  const c = this.c64, x = v.r, y = v.g, z = v.b;
+  if (c[0] === x && c[1] === y && c[2] === z) return;
+  c[0] = x; c[1] = y; c[2] = z;
+  const f = this.f32;
+  f[0] = x; f[1] = y; f[2] = z;
+  gl.uniform3fv(this.addr, f);
+}
+
+/** Give a program's light-struct vec3 uniforms the typed setters (idempotent); returns how many changed. */
+function typedLightSetters(program) {
+  const U = program && typeof program.getUniforms === 'function' ? program.getUniforms() : null;
+  if (!U || !U.map) return 0;
+  let n = 0;
+  for (let k = 0; k < LIGHT_ARRAYS.length; k++) {
+    const arr = U.map[LIGHT_ARRAYS[k]];
+    if (!arr || !Array.isArray(arr.seq)) continue;
+    for (let i = 0; i < arr.seq.length; i++) {
+      const st = arr.seq[i];
+      if (!st || !Array.isArray(st.seq)) continue;
+      for (let j = 0; j < st.seq.length; j++) {
+        const u = st.seq[j];
+        if (!u || u.seq || u.type !== GL_FLOAT_VEC3 || u.setValue === setVec3Typed || u.setValue === setColorTyped) continue;
+        u.c64 = new Float64Array(3).fill(NaN);
+        u.f32 = new Float32Array(3);
+        u.setValue = COLOR_IDS.has(u.id) ? setColorTyped : setVec3Typed;
+        n++;
+      }
     }
   }
   return n;
@@ -214,7 +279,9 @@ export class StreetLights {
     this._smp = { pos: new THREE.Vector3(), tan: new THREE.Vector3(), right: new THREE.Vector3(), tanH: new THREE.Vector3() };
     this._p = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
-    this._darkHold = { uniforms: null, probeAt: 0, frame: 0 };
+    this._darkHold = { uniforms: null, probeAt: 0, frame: 0, programs: 0 };
+    this._typedProgs = new WeakSet();
+    this.typedSetters = 0;               // light vec3 uniforms given the typed setter
     this.parked = false;
   }
 
@@ -353,6 +420,20 @@ export class StreetLights {
     }
     // (new light structs appear when a light is added: checked every 30 frames)
     holdDarkLights(h.uniforms);
+    // and new programs as chunks stream in: their light vectors get the typed setters
+    const progs = r.info && r.info.programs;
+    if (Array.isArray(progs) && progs.length !== h.programs) {
+      h.programs = progs.length;
+      const seen = this._typedProgs;
+      for (let i = 0; i < progs.length; i++) {
+        const p = progs[i];
+        if (seen.has(p)) continue;
+        // (a program still compiling in the background would be waited for: later)
+        if (typeof p.isReady === 'function' && !p.isReady()) { h.programs = -1; continue; }
+        seen.add(p);
+        try { this.typedSetters += typedLightSetters(p); } catch (e) { /* layout changed: keep the renderer's setters */ }
+      }
+    }
   }
 
   update(app, night, level = night) {

@@ -121,8 +121,15 @@ function windScreen(detail) {
 }
 
 // ------------------------------------------------------------------ prototypes
-const PLASTIC = ['#86b5d3', '#cdbb9f', '#e6e3dc', '#d2492f', '#43474b', '#8a9a5b', '#9fc3d8'];
-const PLASTIC_PAIRS = [[0, 1], [0, 0], [6, 6], [2, 2], [3, 3], [4, 4], [5, 1], [1, 1], [6, 1]];
+// moulded chair colours: the street's terraces run from signal red and orange-red through
+// orange and mustard to light blue, taupe, white, anthracite, olive and green
+const PLASTIC = ['#86b5d3', '#cdbb9f', '#e6e3dc', '#d2492f', '#43474b', '#8a9a5b', '#9fc3d8', '#bf2c26', '#e0732c', '#dca833', '#4d8753'];
+// [chair colours of a terrace (one or two, mixed at random), weight]: a third of the
+// moulded-chair terraces are red
+const PLASTIC_PAIRS = [[[7, 7], 3], [[3, 3], 2], [[7, 8], 1], [[8, 9], 1], [[9, 9], 1], [[0, 1], 2], [[0, 0], 1], [[6, 6], 1],
+  [[2, 2], 1], [[4, 4], 1], [[5, 1], 1], [[1, 1], 1], [[6, 1], 1], [[10, 10], 1]];
+// painted metal chairs: half of the metal terraces, white, anthracite, sage, red or green
+const METAL_PAINT = ['#e9e7e1', '#3b3e41', '#6f7a72', '#a3302a', '#2f4b3b'];
 const UMB_COL = { cream: '#e6dcc4', white: '#efede6', navy: '#28324a', burgundy: '#6c2531', sand: '#cdb894' };
 const CUSHION = ['#c7bba3', '#6f2b2b', '#2f4a3c', '#d9d2c2', '#33393f', '#b08a5a'];
 const SCREEN_COL = ['#2c3a33', '#5a2b2b', '#d8d0bd', '#23324a', '#3a3a38'];
@@ -202,12 +209,12 @@ export function cafeStyle(cafe, app) {
   switch (cafe.chairStyle) {
     case 'bistro': st.weave = rng.int(0, 3); st.top = rng.pick(['stone', 'stone', 'wood']); st.base = 'iron'; st.topTint = srgb(rng.pick(['#ece9e2', '#d9d5cc', '#2b2b2a'])); break;
     case 'plastic': {
-      const pr = rng.pick(PLASTIC_PAIRS);
+      const pr = rng.weighted(PLASTIC_PAIRS);
       st.plastic = pr.map((i) => srgb(PLASTIC[i]));
       st.top = rng.pick(['stone', 'alu']); st.base = rng.pick(['cross', 'crossDark']); st.topTint = srgb(rng.pick(['#e4e1da', '#3a3b3c']));
       break;
     }
-    case 'metal': st.paint = rng.chance(0.35) ? srgb(rng.pick(['#e9e7e1', '#3b3e41', '#6f7a72'])) : null; st.top = rng.pick(['alu', 'stone']); st.base = 'cross'; st.topTint = srgb('#d6d3cc'); break;
+    case 'metal': st.paint = rng.chance(0.5) ? srgb(rng.pick(METAL_PAINT)) : null; st.top = rng.pick(['alu', 'stone']); st.base = 'cross'; st.topTint = srgb('#d6d3cc'); break;
     default:
       st.wicker = srgb(rng.pick(['#ffffff', '#ece6dc', '#d3cdc4', '#bdb5aa']));
       st.cushion = srgb(rng.pick(CUSHION));

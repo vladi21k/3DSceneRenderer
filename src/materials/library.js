@@ -186,10 +186,10 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 21-29 mm running band on the head is the only bright part (satin steel, albedo ~0.47, roughness 0.48-0.66 with fine lengthwise streaks, 2-10 cm patches, 10-50 cm dull stretches, duller burn patches and fine fatigue pits, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498. Off the band the head is oxidised: the shoulders either side of the band under a thin brown-grey oxide (albedo ~(0.235, 0.205, 0.175), roughness ~0.66, metal 0.55), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.2, 0.155, 0.11), roughness ~0.72, metal 0.4); the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 21-29 mm running band on the head is the only bright part (satin steel, albedo ~0.45, roughness 0.5-0.7 with fine lengthwise streaks, 2-10 cm patches, 10-50 cm dull stretches, duller burn patches and fine fatigue pits, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498. Off the band the head is oxidised: the shoulders either side of the band under a thin brown-grey oxide (albedo ~(0.235, 0.205, 0.175), roughness ~0.66, metal 0.55), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.2, 0.155, 0.11), roughness ~0.72, metal 0.4); the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
       band: { centres: [0.0435, 0], halfWidth: 0.0125, vPerM: [0.5, 1], gaugeCorner: 0.076, lip: [0.1, 0.13] },
       // mean far-field values per zone (street's line overlay should match them)
-      zones: { band: { albedo: [0.455, 0.45, 0.44], rough: 0.56, metal: 1 }, shoulder: { albedo: [0.225, 0.19, 0.157], rough: 0.68, metal: 0.5 }, bevel: { albedo: [0.19, 0.142, 0.098], rough: 0.74, metal: 0.36 }, lip: { albedo: [0.16, 0.145, 0.125], rough: 0.72, metal: 0.4 } },
+      zones: { band: { albedo: [0.451, 0.446, 0.436], rough: 0.57, metal: 1 }, shoulder: { albedo: [0.254, 0.226, 0.2], rough: 0.64, metal: 0.59 }, bevel: { albedo: [0.204, 0.161, 0.118], rough: 0.72, metal: 0.41 }, lip: { albedo: [0.16, 0.145, 0.125], rough: 0.72, metal: 0.4 } },
     },
   },
   'rail.side': {
@@ -282,7 +282,7 @@ export const LIBRARY = {
     props: { color: [0.6, 0.53, 0.4], roughness: 1, sheen: 0.6, sheenRoughness: 0.65, sheenColor: [0.5, 0.48, 0.44], side: 'double' },
     bake: 'canvas',
     // water marks and dirt at decimetre scale, a little run-off stretch down the cloth
-    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.05 }, stain: { amount: 0.1, freq: 0.9, threshold: 0.6, stretch: 1.6 }, trans: [0.3, 0.27, 0.22] },
+    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.05 }, stain: { amount: 0.1, freq: 0.9, threshold: 0.6, stretch: 1.6, matt: true }, trans: [0.3, 0.27, 0.22] },
     vc: 'albedo',
     meta: { uv: 'metres', note: 'acrylic canvas with heathered weave, soiling, sheen and back-lit translucency' },
   },
@@ -290,7 +290,7 @@ export const LIBRARY = {
     kind: 'physical',
     props: { color: [0.7, 0.66, 0.57], roughness: 1, sheen: 0.6, sheenRoughness: 0.65, sheenColor: [0.5, 0.48, 0.44], side: 'double' },
     bake: 'canvas',
-    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.07, rough: 0.05 }, stain: { amount: 0.08, freq: 0.9, threshold: 0.62 }, trans: [0.38, 0.35, 0.3] },
+    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.07, rough: 0.05 }, stain: { amount: 0.08, freq: 0.9, threshold: 0.62, matt: true }, trans: [0.38, 0.35, 0.3] },
     vc: 'albedo',
   },
   'fabric.flag': {

@@ -370,20 +370,23 @@ ${GRIME_GLSL}`)
 			gDark = gwStreaks( vGuv.x, d, fx ) * mix( 0.12, 0.3, smoothstep( 0.0, 0.18, d ) );
 			gDark += 0.22 * smoothstep( 0.1, 0.22, d ) * ( 0.6 + 0.4 * gwN( vec2( vGuv.x * 3.0, 1.7 ) ) );
 			if ( vGk < 1.5 ) {
-				// rust tails from the bar feet: each 11 cm cell of the front may hold one, the
-				// more the railing is neglected (a few even under kept-up iron), 1-3 cm wide
-				// and 5-28 cm long; where a pixel is wider than a tail they fade into their
-				// mean tint. Over them a rust-brown wash along the top under neglected iron.
-				float cx = vGuv.x / 0.11, cell = floor( cx );
+				// rust tails from the bar feet: each 16 cm of the front may hold one, the
+				// more the railing is neglected (now and then even under kept-up iron): soft,
+				// 2-4 cm wide where they leave the bar, spreading and fading over 8-40 cm,
+				// uneven along their length; where a pixel is wider than a tail they fade into
+				// their mean tint. Over them a rust-brown wash along the top under neglected iron.
+				float cx = vGuv.x / 0.16, cell = floor( cx );
 				float h1 = gwH( vec2( cell, 3.7 ) ), h2 = gwH( vec2( cell, 9.1 ) ), h3 = gwH( vec2( cell, 5.3 ) );
-				float p = vGn * 0.75 + 0.03;
-				float w = ( 0.006 + 0.008 * h3 ) / 0.11, len = mix( 0.05, 0.28, h3 * h3 );
-				float tail = step( h1, p ) * ( 1.0 - smoothstep( w * 0.35, w, abs( fract( cx ) - 0.25 - 0.5 * h2 ) ) )
-					* ( 1.0 - smoothstep( len * 0.25, len, d ) );
-				float mean = p * 0.12 * ( 1.0 - smoothstep( 0.02, 0.25, d ) );
-				float rs = mix( tail, mean, smoothstep( 0.004, 0.012, fx ) );
-				rs = max( rs, vGn * 0.3 * ( 1.0 - smoothstep( 0.0, 0.07, d ) ) );
-				gTint = mix( vec3( 1.0 ), vec3( 0.66, 0.42, 0.27 ), rs * 0.85 );
+				float p = vGn * 0.42 + 0.03;
+				float len = mix( 0.08, 0.4, h3 * h3 ), f = clamp( d / len, 0.0, 1.0 );
+				float w = ( 0.01 + 0.01 * h2 ) * ( 1.0 + 1.2 * f ) / 0.16;
+				float dx = ( fract( cx ) - 0.2 - 0.6 * h2 ) / w;
+				float tail = step( h1, p ) * exp( -dx * dx ) * ( 1.0 - f * f ) * ( 0.6 + 0.4 * fract( h1 * 7.31 ) )
+					* ( 0.55 + 0.45 * gwN( vec2( vGuv.x * 37.0, d * 14.0 ) ) );
+				float mean = p * 0.1 * ( 1.0 - smoothstep( 0.0, 0.35, d ) );
+				float rs = mix( tail, mean, smoothstep( 0.01, 0.03, fx ) );
+				rs = max( rs, vGn * 0.35 * ( 1.0 - smoothstep( 0.0, 0.09, d ) ) * ( 0.4 + 0.6 * gwN( vec2( vGuv.x * 6.0, 2.9 ) ) ) );
+				gTint = mix( vec3( 1.0 ), vec3( 0.56, 0.34, 0.2 ), rs * 0.85 );
 			}
 		} else if ( vGk < 2.5 ) {
 			// soffit: its soot gradient is baked (writeSlab); the library's own soffit

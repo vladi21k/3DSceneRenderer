@@ -8,7 +8,7 @@ import { Tpl, TplCache, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
 import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
-import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, flagTpls, discTpls } from './signs.js';
+import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow } from './spill.js';
 import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
@@ -32,6 +32,8 @@ const CLUSTER = new Set(['clothing', 'cafe']);
 const EXTRA_SIGN = 0.8;
 /** Share of the shops of each trade with a projecting sign on a pier beside them. */
 const PROJ = { clothing: 0.45, general: 0.5, cafe: 0.4, jewellery: 0.5, pharmacy: 0.85, shoes: 0.45, books: 0.35, flowers: 0.45 };
+/** The narrower trade of a general store or café whose sign does not say. */
+const SUBDRAW = { general: [['grocery', 0.36], ['kiosk', 0.16], ['toys', 0.14], ['nuts', 0.14], ['sweets', 0.06], [null, 0.14]], cafe: [['bakery', 0.14], ['juice', 0.12], [null, 0.74]] };
 
 /**
  * Depth available behind the infill plane before the back of the dark box with which
@@ -867,7 +869,7 @@ function prepareFront(ctx) {
     // what each shop sells: the café's, the word on its sign, else a draw; a trade that
     // does not cluster never repeats within two shops of a front (a sign whose word would
     // repeat is repainted with another trade), and most unsigned shops put up a sign
-    const shopTypes = new Map();
+    const shopTypes = new Map(), subs = new Map();
     const recent = [];
     const shops = plan.openings.filter((o) => o.kind === 'shop').sort((a, b) => a.uc - b.uc);
     for (const o of shops) {
@@ -881,14 +883,18 @@ function prepareFront(ctx) {
         if (si && type !== wordType(si.design.cell)) si.design = { ...si.design, cell: signDesign(r.int(0, 1 << 30), si.design.type, type).cell };
         if (!si && !ctx.lot.backdrop && RNG.from(o.id, 'ownSign').chance(EXTRA_SIGN)) addShopSign(ctx, signs, o, type);
       }
+      // the narrower trade (what a general store or a café puts out): its sign's, else a draw
+      const sg = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
+      const sub = sg ? wordSub(sg.design.cell) : null;
+      subs.set(o.id, sub ?? (SUBDRAW[type] && !(cafe && ctx.cafeAwning) ? RNG.from(o.id, 'trade').weighted(SUBDRAW[type]) : null));
       shopTypes.set(o.id, type);
       recent.push(type);
       if (recent.length > 2) recent.shift();
     }
-    f = { cafeAwning: ctx.cafeAwning, umbrellas: ctx.umbrellas, awnings: ctx.awnings, signs, shopTypes };
+    f = { cafeAwning: ctx.cafeAwning, umbrellas: ctx.umbrellas, awnings: ctx.awnings, signs, shopTypes, subs, terrace };
     frontCache.set(plan, f);
   }
-  ctx.cafeAwning = f.cafeAwning; ctx.umbrellas = f.umbrellas; ctx.awnings = f.awnings; ctx.shopTypes = f.shopTypes;
+  ctx.cafeAwning = f.cafeAwning; ctx.umbrellas = f.umbrellas; ctx.awnings = f.awnings; ctx.shopTypes = f.shopTypes; ctx.subs = f.subs;
   return f.signs;
 }
 
@@ -922,7 +928,7 @@ export function frontInfo(app, lot) {
       const a = awningOf(c, o);
       if (a) awnings.push({ id: o.id, u0: o.uc - o.w / 2 - 0.15, u1: o.uc + o.w / 2 + 0.15, type: a.type });
     }
-    return { types: c.shopTypes, terrace: terraceCafeOpening(c), umbrellas: c.umbrellas, awnings, cafeAwning: !!c.cafeAwning };
+    return { types: c.shopTypes, subs: c.subs, terrace: terraceCafeOpening(c), umbrellas: c.umbrellas, awnings, cafeAwning: !!c.cafeAwning };
   });
 }
 

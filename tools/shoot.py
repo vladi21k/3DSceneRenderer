@@ -12,9 +12,15 @@ Examples
   tools/shoot.py --params "s=300" --eval "JSON.stringify(window.__app.stats())"
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --hitches   (ride timing)
   tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 24 --heapprof 40 (allocation sites)
+  tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 150 --heaplive 40 (what the heap grows by)
 
 Timing runs (--hitches, --heapprof) print the machine's load at the start and the end:
-other agents may be rendering on the same CPU and GPU, so judge times against it.
+other captures may be rendering on the same CPU and GPU, so judge times against it.
+
+The tool waits up to --timeout seconds for window.__ready (a cold start takes 15-25 s
+on an idle machine and can take over a minute on a busy one), printing progress every
+30 s. If the app is not ready by then it says so and takes no screenshots (exit code 1);
+--force shoots the partly loaded page anyway.
 
 The page URL is http://127.0.0.1:<port>/index.html?<params>&capture=1 ; a private
 static server (serve.py) is started on a free port unless --port is given.
@@ -113,7 +119,7 @@ class WS:
 
 
 def machine_load():
-    """One line on how busy the machine is (other agents may share it): load average per
+    """One line on how busy the machine is (other captures may share it): load average per
     core, headless Chrome processes running, GPU utilisation. Timing runs print it at the
     start and the end, so a slow run can be put down to contention before blaming a module."""
     parts = []
@@ -174,6 +180,53 @@ def print_heap_profile(prof, top, secs):
         print(f"  {size / 1048576:7.2f} MB  {fn} {url}:{line}  <- {c}")
 
 
+def print_cpu_profile(prof, top, label):
+    """Main-thread CPU time by function (self time) and by source file, from a sampled
+    profile (Profiler domain). Idle and GC show as (idle) / (garbage collector); time the
+    page spent waiting inside GL calls is charged to the JS function that made the call."""
+    nodes = {n["id"]: n for n in prof["nodes"]}
+    dt = prof.get("timeDeltas", [])
+    self_us = {}
+    for sid, d in zip(prof.get("samples", []), dt[1:] + [0]):
+        self_us[sid] = self_us.get(sid, 0) + d
+    parent = {}
+    for n in prof["nodes"]:
+        for c in n.get("children", []):
+            parent[c] = n["id"]
+
+    def name(nid):
+        cf = nodes[nid]["callFrame"]
+        return f'{cf.get("functionName") or "(anon)"}@{os.path.basename(cf.get("url", "")).split("?")[0]}:{cf.get("lineNumber", -1) + 1}'
+
+    by_fn, by_file, callers, total = {}, {}, {}, 0
+    for nid, us in self_us.items():
+        cf = nodes[nid]["callFrame"]
+        fn = cf.get("functionName") or "(anon)"
+        f = os.path.basename(cf.get("url", "")).split("?")[0]
+        key = (fn, f, cf.get("lineNumber", -1) + 1)
+        by_fn[key] = by_fn.get(key, 0) + us
+        k2 = f or fn
+        by_file[k2] = by_file.get(k2, 0) + us
+        total += us
+        # the nearest callers outside three.js (who asked for the work)
+        chain, q = [], parent.get(nid)
+        while q is not None and len(chain) < 2:
+            if "three." not in (nodes[q]["callFrame"].get("url") or "") and nodes[q]["callFrame"].get("url"):
+                chain.append(name(q))
+            q = parent.get(q)
+        c = callers.setdefault(key, {})
+        ck = " <- ".join(chain)
+        c[ck] = c.get(ck, 0) + us
+    print(f"cpuprof ({label}): {total / 1e3:.0f} ms sampled")
+    for k, us in sorted(by_file.items(), key=lambda kv: -kv[1])[:top]:
+        print(f"  file {us / 1e3:8.0f} ms  {k}")
+    for key, us in sorted(by_fn.items(), key=lambda kv: -kv[1])[:top]:
+        fn, f, line = key
+        cs = sorted(callers.get(key, {}).items(), key=lambda kv: -kv[1])[:2]
+        via = "; ".join(f"{c or '-'} {v / 1e3:.0f}" for c, v in cs)
+        print(f"  fn   {us / 1e3:8.0f} ms  {fn} {f}:{line}   [{via}]")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--params", default="", help="query string for the app (without leading ?)")
@@ -183,7 +236,8 @@ def main():
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--port", type=int, default=int(os.environ.get("TRAM_PORT", "0")),
                     help="use an already running server on this port (default: start a private one)")
-    ap.add_argument("--timeout", type=float, default=90, help="seconds to wait for window.__ready")
+    ap.add_argument("--timeout", type=float, default=240, help="seconds to wait for window.__ready")
+    ap.add_argument("--force", action="store_true", help="take the screenshots even if the app never became ready")
     ap.add_argument("--settle", type=float, default=1.5, help="extra seconds after ready before first shot")
     ap.add_argument("--shots", type=int, default=1)
     ap.add_argument("--interval", type=float, default=1.0)
@@ -196,12 +250,18 @@ def main():
     ap.add_argument("--heapprof", type=int, default=0, metavar="N",
                     help="sample JS allocations (garbage included) from ready to the end and print the top N "
                          "allocation sites by bytes")
+    ap.add_argument("--heaplive", type=int, default=0, metavar="N",
+                    help="sample the JS allocations made from ready to the end that are still alive at the end "
+                         "(what the heap grows by: caches, retained garbage, leaks) and print the top N sites")
+    ap.add_argument("--cpuprof", type=int, default=0, metavar="N",
+                    help="sample the page's main thread from navigation to ready and print the top N source files "
+                         "and functions by self time (start-up profile)")
     ap.add_argument("--keep-open", action="store_true")
     ap.add_argument("--profile", default=None, help="persistent Chrome profile dir (keeps the GPU shader cache between runs)")
     a = ap.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-    timing = a.hitches or a.heapprof
+    timing = a.hitches or a.heapprof or a.heaplive
     if timing:
         print("machine at start:", machine_load())
     server = None
@@ -249,6 +309,10 @@ def main():
                 {"width": a.width, "height": a.height, "deviceScaleFactor": 1, "mobile": False}, session=sess)
         sep = "&" if a.params else ""
         url = f"http://127.0.0.1:{a.port}/{a.page}?{a.params}{sep}capture=1&cb={random.randint(0, 1 << 30)}"
+        if a.cpuprof:
+            ws.call("Profiler.enable", session=sess)
+            ws.call("Profiler.setSamplingInterval", {"interval": 500}, session=sess)
+            ws.call("Profiler.start", session=sess)
         ws.call("Page.navigate", {"url": url}, session=sess)
 
         logs = []
@@ -274,7 +338,8 @@ def main():
             return r.get("result", {}).get("value")
 
         t0 = time.time()
-        ready = False
+        ready = fatal = False
+        next_note = 30
         while time.time() - t0 < a.timeout:
             v = js("window.__ready === true")
             if v is True:
@@ -283,20 +348,37 @@ def main():
             err = js("window.__fatal || null")
             if err:
                 print("FATAL:", err)
+                fatal = True
                 break
+            if time.time() - t0 > next_note:
+                next_note = time.time() - t0 + 30
+                st = js("(() => { const a = window.__app; if (!a) return 'modules loading'; const p = a.perf && a.perf.init || {};"
+                        " return 'init ' + JSON.stringify(p) + (a.world ? ' chunks ' + a.world.chunks.size : ''); })()")
+                print(f"  still loading after {time.time() - t0:.0f}s: {st}", flush=True)
             time.sleep(0.25)
         print(f"ready={ready} after {time.time() - t0:.1f}s")
+        if a.cpuprof:
+            print_cpu_profile(ws.call("Profiler.stop", session=sess)["profile"], a.cpuprof, "navigation to ready")
         if not ready:
             rc = 1
+            why = "a fatal error" if fatal else f"no window.__ready within --timeout {a.timeout:.0f}s"
+            msg = (f"WARNING: the app is NOT ready ({why}): "
+                   + ("taking the screenshots anyway (--force); they show a partly loaded scene" if a.force
+                      else "no screenshots taken (pass --force to shoot anyway, or a longer --timeout)"))
+            print(msg)
+            print(msg, file=sys.stderr)
+            if not a.force:
+                a.shots = 0
         if a.pre:
             print("pre:", json.dumps(js(a.pre)))
         if a.hitches:
             js("window.__app && window.__app.resetFrames && window.__app.resetFrames()")
         heap_t0 = time.time()
-        if a.heapprof:
+        if a.heapprof or a.heaplive:
+            # (one sampling session: with --heaplive, objects collected before the end are left out)
             ws.call("HeapProfiler.enable", session=sess)
-            ws.call("HeapProfiler.startSampling", {"samplingInterval": 16384, "includeObjectsCollectedByMajorGC": True,
-                                                   "includeObjectsCollectedByMinorGC": True}, session=sess)
+            ws.call("HeapProfiler.startSampling", {"samplingInterval": 16384, "includeObjectsCollectedByMajorGC": not a.heaplive,
+                                                   "includeObjectsCollectedByMinorGC": not a.heaplive}, session=sess)
         time.sleep(a.settle)
         base, ext = os.path.splitext(a.out)
         for i in range(a.shots):
@@ -315,9 +397,13 @@ def main():
         if a.hitches:
             rep = js("window.__app && window.__app.hitchReport ? window.__app.hitchReport() : null")
             print("hitches:", rep if isinstance(rep, str) else json.dumps(rep))
-        if a.heapprof:
+        if a.heapprof or a.heaplive:
+            if a.heaplive:
+                ws.call("HeapProfiler.collectGarbage", session=sess)
             prof = ws.call("HeapProfiler.stopSampling", session=sess)["profile"]
-            print_heap_profile(prof, a.heapprof, time.time() - heap_t0)
+            if a.heaplive:
+                print("heaplive: allocations since ready still alive at the end (after a full collection):")
+            print_heap_profile(prof, a.heaplive or a.heapprof, time.time() - heap_t0)
         if timing:
             print("machine at end:", machine_load())
         drain_events()

@@ -351,6 +351,21 @@ export class Steering {
           const dx = (b.s - a.s) * km, dy = b.d - a.d;
           const d2 = dx * dx + dy * dy;
           if (d2 > 16 || d2 < 1e-6) continue;
+          // people talking in a ring are walked round, not through (anticipated like a person,
+          // the whole ring at once: from its first member, the leader)
+          if (!standing && sp >= 0.3 && b.task === TASK.CHAT && b.state === ST.STAND && !b.leader && b.nFollow > 0 && L !== b) {
+            this._chatCircle(b);
+            const gx = (b.ccS - a.s) * km, gy = b.ccD - a.d;
+            const tc = (gx * a.vs + gy * a.vd) / (sp * sp);
+            if (tc > 0 && tc < 3) {
+              const cx = gx - a.vs * tc, cy = gy - a.vd * tc, cd = Math.sqrt(cx * cx + cy * cy);
+              const reach = b.ccR + AGENT_R + 0.35;
+              if (cd < reach) {
+                const k = 2.2 * (1 - tc / 3) * (reach - cd) / reach;
+                if (cd < 0.08) { fs += -ed * k; fd += es * k; } else { fs += (-cx / cd) * k; fd += (-cy / cd) * k; }
+              }
+            }
+          }
           const dist = Math.sqrt(d2);
           let nx = -dx / dist, ny = -dy / dist; // from b to a
           let gap = dist - R2;
@@ -398,6 +413,24 @@ export class Steering {
       }
     }
     this.fs = fs; this.fd = fd;
+  }
+
+  /** The ring a conversation stands in (leader b): centre (b.ccS, b.ccD) and radius b.ccR to the
+   *  outermost member, worked out once per frame. */
+  _chatCircle(b) {
+    if (b.ccN === this.frame) return;
+    b.ccN = this.frame;
+    const F = b.followers;
+    let cs = b.s, cd = b.d;
+    for (let i = 0; i < F.length; i++) { cs += F[i].s; cd += F[i].d; }
+    cs /= F.length + 1; cd /= F.length + 1;
+    const km = b.km;
+    let r = (b.s - cs) * km * (b.s - cs) * km + (b.d - cd) * (b.d - cd);
+    for (let i = 0; i < F.length; i++) {
+      const ds = (F[i].s - cs) * km, dd = F[i].d - cd, q = ds * ds + dd * dd;
+      if (q > r) r = q;
+    }
+    b.ccS = cs; b.ccD = cd; b.ccR = Math.sqrt(r);
   }
 
   // ---------------------------------------------------------------- obstacles
@@ -675,11 +708,20 @@ export class Steering {
     a.pose = a.state === ST.SEATED ? 2 : (still && !a.moving && sp < 0.6) ? 1 : 0;
     // gait phase: advance by the distance actually covered / stride length, so feet do not slide
     if ((a.pose === 0 || a.mob) && dist > 1e-5) {
-      // the renderer's stride for this body and speed (re-queried only when the speed changes)
-      if (Math.abs(sp - a.strideV) > 0.04) {
-        a.strideV = sp;
-        a.stride = Math.max(0.3, humans && humans.strideLength ? humans.strideLength(a.appearance, Math.max(0.05, sp), c.poseOf(a)) : fallbackStride(sp));
+      // the renderer's stride for this body and speed: asked for at the ends of the 0.2 m/s band
+      // the speed is in, and interpolated between them (re-asked only when the band or the pose
+      // changes: a call that is not inlined boxes the speed and the stride)
+      const pose = c.poseOf(a), b = Math.floor(sp * 5);
+      if (b !== a.strideB || pose !== a.strideP) {
+        a.strideB = b; a.strideP = pose;
+        const v0 = b * 0.2;
+        if (humans && humans.strideLength) {
+          a.strideS0 = humans.strideLength(a.appearance, v0 > 0.05 ? v0 : 0.05, pose);
+          a.strideS1 = humans.strideLength(a.appearance, v0 + 0.2, pose);
+        } else { a.strideS0 = fallbackStride(v0 > 0.05 ? v0 : 0.05); a.strideS1 = fallbackStride(v0 + 0.2); }
       }
+      const st = a.strideS0 + (a.strideS1 - a.strideS0) * (sp * 5 - b);
+      a.stride = st > 0.3 ? st : 0.3;
       a.phase = (a.phase + dist / a.stride) % 1;
     }
     // gaze: the tram when it rings or when waiting to cross, otherwise idle glances

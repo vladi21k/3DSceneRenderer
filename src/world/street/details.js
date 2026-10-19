@@ -5,8 +5,8 @@ import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } fro
 import { colInfo, Z_CORR } from './surface.js';
 import { pavingHeight } from './paving.js';
 import { facadePlan } from '../facadePlan.js';
-import { planWear } from './wear.js';
-import { PATCH_PAD, repairWear } from './lines.js';
+import { planWear, STEP_WALK_U, STEP_WALK_X, STEP_STREET_U } from './wear.js';
+import { PATCH_PAD, STEP_PAD, repairWear } from './lines.js';
 
 // Street details per chunk, planned deterministically from the chunk index so the
 // surface can flatten the paving under covers before it is built:
@@ -435,18 +435,26 @@ export function* buildDetails(ctx, chunk, plan, bufs, lines, grid) {
 
   yield 'details';
 
-  // --- repairs (wear.js): ribbons over the paving grid, lying on its cross slope
+  // --- repairs (wear.js): ribbons over the paving grid, lying on its cross slope. Their
+  // along coordinate starts at the nominal start of the fill (a course joint where its
+  // ends step: the ribbon reaches STEP_PAD further at both ends) and runs outwards from
+  // the gutter for trenches across a sidewalk; where the sides step, the ribbon is
+  // STEP_PAD wider on both sides (lines.js)
   if (lines && lines.repair) {
     const e = 0.15;
     for (const p of plan.repairs) {
       const along = p.dir === 's';
       const half = along ? p.hd : p.hs, h0 = along ? p.hs : p.hd;
-      const n = Math.max(2, Math.ceil((2 * (h0 + PATCH_PAD)) / 0.35));
+      const endPad = p.step === STEP_WALK_X ? STEP_PAD : 0;
+      const sidePad = p.step === STEP_WALK_U || p.step === STEP_STREET_U ? STEP_PAD : 0;
+      const sg = along || !(p.d < 0) ? 1 : -1;      // trenches on the left run towards -d
+      const r0 = h0 + PATCH_PAD + endPad;
+      const n = Math.max(2, Math.ceil((2 * r0) / 0.35));
       const pts = new Array((n + 1) * 7);
       let acc = 0, px = 0, pz = 0;
       for (let i = 0; i <= n; i++) {
-        const t = -h0 - PATCH_PAD + ((2 * (h0 + PATCH_PAD)) * i) / n;
-        const s = along ? p.s + t : p.s, d = along ? p.d : p.d + t;
+        const t = -r0 + (2 * r0 * i) / n;
+        const s = along ? p.s + t : p.s, d = along ? p.d : p.d + sg * t;
         route.sample(s, smp);
         const x = smp.pos.x + smp.right.x * d, z = smp.pos.z + smp.right.z * d;
         if (i > 0) acc += Math.sqrt((x - px) * (x - px) + (z - pz) * (z - pz));
@@ -457,13 +465,13 @@ export function* buildDetails(ctx, chunk, plan, bufs, lines, grid) {
           pts[o + 3] = smp.right.x; pts[o + 4] = smp.right.z;
           pts[o + 6] = (pave(s, d + e) - pave(s, d - e)) / (2 * e);
         } else {
-          // runs towards +d: its right vector is -tangent
-          pts[o + 3] = -smp.tanH.x; pts[o + 4] = -smp.tanH.z;
-          pts[o + 6] = -(pave(s + e, d) - pave(s - e, d)) / (2 * e);
+          // runs towards sg·d: its right vector is -sg·tangent
+          pts[o + 3] = -sg * smp.tanH.x; pts[o + 4] = -sg * smp.tanH.z;
+          pts[o + 6] = -sg * (pave(s + e, d) - pave(s - e, d)) / (2 * e);
         }
-        pts[o + 5] = acc - PATCH_PAD;
+        pts[o + 5] = acc - PATCH_PAD - endPad;
       }
-      lines.repair.add(pts, half + PATCH_PAD, acc - 2 * PATCH_PAD, repairWear(p.kind, p.tone, p.hole), 7);
+      lines.repair.add(pts, half + PATCH_PAD + sidePad, acc - 2 * (PATCH_PAD + endPad), repairWear(p.kind, p.tone, p.hole, p.step || 0), 7);
     }
   }
 
