@@ -22,6 +22,7 @@ const MAX_HITCHES = 120;
 const LOAF_KEEP = 96;
 const BASE = 128;           // smooth frames kept for the usual values
 const SHADOW_DRAW_WAIT = 10; // ms: one shadow draw this long waited on the GPU (cause 'gpu-wait')
+const GC_MAX_MS = 250;       // ms: the most excess a garbage collection is taken to explain
 
 const r1 = (x) => Math.round(x * 10) / 10;
 
@@ -267,7 +268,8 @@ export class FrameMonitor {
  * - 'contention': most stages, the GL-free updates too, ran far over their usual times at
  *   once and no single one explains the excess: the main thread was starved (cores busy
  *   with other processes, or moved to a slow core), not a code path.
- * - 'gc' / 'gc-in-<stage>': the heap dropped by more than 2 MB.
+ * - 'gc' / 'gc-in-<stage>': the heap dropped by more than 2 MB (and, inside the frame, the
+ *   excess is under GC_MAX_MS: a longer one is judged by the rules below).
  * - 'gpu-wait': render alone took several times its usual CPU for the usual draw calls,
  *   so the main thread waited inside GL calls for a GPU that was behind; also when the
  *   shadow passes explain the excess but most of it is one draw call of over 10 ms
@@ -291,7 +293,9 @@ function cause(h) {
       if (ex > topEx) { topEx = ex; top = k; }
       if (k !== 'render' && k !== 'world' && (us[k] || 0) >= 0.3) { measured++; if (v > 1.8 * us[k] + 0.5) inflated++; }
     }
-    if (h.heapDropMB > 2) return `gc-in-${top}`;
+    // (a collection pauses tens of ms, a major one rarely over 150: a longer excess has
+    // another cause, and the collection only happened to fall in that frame)
+    if (h.heapDropMB > 2 && h.cpu - u.cpu < GC_MAX_MS) return `gc-in-${top}`;
     if (inflated >= 2 && inflated >= 0.5 * measured && (top === 'render' || topEx < 0.6 * Math.max(h.cpu - u.cpu, 1e-3))) return 'contention';
     if (top === 'render') {
       const sameWork = !u.calls || h.calls < 1.3 * u.calls;

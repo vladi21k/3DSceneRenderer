@@ -107,13 +107,15 @@ const PAVING_LUM = 0.165;    // mean luminance of the setts the street's own ton
  *  relative to PAVING_LUM (mortar, seal and groove grit keep their contrast to the
  *  setts), the mortar albedo, and `pave`, the brake-dusted setts beside a rail (the
  *  paving's grime along the rails, Surface.tone: about 0.8x, warmed) that the far-field
- *  rail overlay blends in at its edges. */
+ *  rail overlay blends in at its edges, and `albedo`, the setts' own (the relaid setts'
+ *  overlay is shaded from it). */
 export function pavingTones(albedo) {
   const a = Array.isArray(albedo) && albedo.length === 3 && albedo.every((x) => x > 0.02 && x < 0.9) ? albedo : [0.157, 0.168, 0.192];
   const lum = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
   const k = Math.max(0.6, Math.min(1.6, lum / PAVING_LUM));
   return {
     k,
+    albedo: a.slice(),
     mortar: MORTAR_ALBEDO.map((x) => x * k),
     pave: [a[0] * 0.8 * 1.09, a[1] * 0.8 * 1.02, a[2] * 0.8 * 0.93],
   };

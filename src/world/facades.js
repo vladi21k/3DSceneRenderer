@@ -28,8 +28,16 @@ import { BAD_NORMALS } from './facades/geo.js';
 // so do the backdrops and deep side-street lots. Café terraces of the 'awning' style get
 // one continuous retractable awning along the shop front. At dusk lit rooms also light
 // their stone reveals and shops the pavement in front (facades/spill.js; not drawn by
-// day). Shops are dressed (facades/dressing.js): posters, price cards and stickers on the
-// glass, goods hung on the piers. Joinery takes a colour per building from a weighted
+// day), in the colour of each shop's own lamps. Shops are dressed (facades/dressing.js):
+// posters, price cards and stickers on the glass, goods hung on the piers; most put up a
+// sign of their own where the plan gives them none (fascia, head panel or valance), half
+// hang a projecting sign on a pier (a light box with their word, a disc or a blade), and
+// the trades that do put their goods out on the pavement (facades/stands.js: crates of
+// produce, buckets of flowers, rails of clothes, racks of papers, bakery trays, sacks of
+// nuts and spices, sale bins, shoe racks, book carts), planned at init and registered as
+// crowd obstacles. A trade other than fashion or food does not repeat within two shops of
+// a front, and the rarer ones (pharmacies, jewellers...) keep to one slot per block of a
+// street side. Joinery takes a colour per building from a weighted
 // palette (facades/kit.js), weathered per opening, on the close-range paint bakes offset
 // per opening. The shop a café terrace (any style) is centred on is that café, sign and
 // fit-out. Fittings on a rusticated ground floor stand on the bosses' faces (outline.js
@@ -105,9 +113,12 @@ const facades = {
       bulb: { material: bulb, color: false, castShadow: false },
       spill: { material: spill, color: false, extra: { aSpill: 4 }, castShadow: false, receiveShadow: false, renderOrder: 1 },
     };
-    this.jobs = new Map();          // prefetched chunk builds, key "index:lod"
+    this.jobs = new Map();          // prefetched chunk builds, key index · 4 + lod
     this.handed = new Set();        // builds handed to the streamer, until it stops listing them
+    this.signAtlas = sign.atlas;
     this.stats = { sync: 0, syncMs: 0, lastSync: null, prefetched: 0, prefetchMaxMs: 0, warmBuildMs: 0 };
+    // sign atlas: layout now, painting in idle slices (done before the first frame)
+    Object.defineProperty(this.stats, 'atlasMs', { get: () => ({ layout: Math.round(sign.atlas.layoutMs || 0), paint: Math.round(sign.atlas.ms), done: sign.atlas.done }), enumerable: true });
     // template vertices whose normal had to be rebuilt at bake time (geo.js fixNormals):
     // a generator producing zero normals; must stay 0 (checked with debug=1)
     Object.defineProperty(this.stats, 'badNormals', { get: () => BAD_NORMALS.count, enumerable: true });
@@ -153,7 +164,7 @@ const facades = {
         const idx = ((i % n) + n) % n;
         const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s0) - CHUNK_LEN / 2);
         const lod = dist < LOD0_DIST ? 0 : 1;
-        const key = `${idx}:${lod}`;
+        const key = idx * 4 + lod;
         if (this.jobs.has(key)) continue;
         if (dist > 250) { later.push([idx, lod, key]); continue; }
         warm(idx, lod, key);
@@ -212,7 +223,7 @@ const facades = {
   },
 
   build(chunk, app) {
-    const key = `${chunk.index}:${chunk.lod}`;
+    const key = chunk.index * 4 + chunk.lod;
     let job = this.jobs.get(key);
     if (job) this.jobs.delete(key);
     else job = { it: this.buildGen(chunk, app) };
@@ -220,7 +231,7 @@ const facades = {
     const t0 = performance.now(), ready = job.done;
     if (!job.done) this._pump(job, Infinity);
     // misses of the prefetch (built here, synchronously) for the perf overlay / tests
-    if (!ready) { const st = this.stats; st.sync++; st.syncMs = Math.max(st.syncMs, performance.now() - t0); st.lastSync = key; }
+    if (!ready) { const st = this.stats; st.sync++; st.syncMs = Math.max(st.syncMs, performance.now() - t0); st.lastSync = `${chunk.index}:${chunk.lod}`; }
     else this.stats.prefetched++;
     return job.result;
   },
@@ -232,6 +243,8 @@ const facades = {
   },
 
   update(dt, app) {
+    // the sign atlas is painted in the start-up's idle time; finish it should a frame come first
+    if (!this.signAtlas.done) this.signAtlas.draw(Infinity);
     // the reveal film is black by day (see spill.js): skip its draws altogether
     const spill = this.mats.spill.material, night = U.uNight.value > 0.18;
     if (spill.visible !== night) spill.visible = night;
@@ -240,49 +253,58 @@ const facades = {
     this.prefetch(app);
   },
 
-  /** Prefetch: build the chunks the streamer will ask for next, a slice per frame. */
+  /**
+   * Prefetch: build the chunks the streamer will ask for next, a slice per frame. Chunks
+   * are keyed index · 4 + lod; the lists are reused, so a frame with nothing to build
+   * allocates nothing.
+   */
   prefetch(app) {
     const W = app.world;
     if (app.cameraS == null || !W || !W.upcoming) return;
     if (this.idle > 0) { this.idle--; return; }
     const t0 = performance.now(), until = t0 + this.prefetchMs;
-    const cands = [], seen = new Set();
-    // what the streamer will build now, and what it will want ~50 m further on
-    for (const w of [...W.upcoming(app.cameraS), ...W.upcoming(app.cameraS + 50)]) {
-      const key = `${w.index}:${w.lod}`;
+    // what the streamer will build now, and what it will want within ~50 m of travel
+    const ups = W.upcoming(app.cameraS, 50, this._ups || (this._ups = []));
+    const seen = this._seen || (this._seen = new Set());
+    const cands = this._cands || (this._cands = []);
+    seen.clear(); cands.length = 0;
+    for (let i = 0; i < ups.length; i++) {
+      const w = ups[i], key = w.index * 4 + w.lod;
       if (seen.has(key)) continue;
       seen.add(key);
       // already handed over (the chunk is listed until every module has built it)
-      if (!this.handed.has(key)) cands.push({ key, idx: w.index, lod: w.lod, dist: w.dist });
+      if (!this.handed.has(key)) cands.push(w);
     }
-    for (const k of this.handed) if (!seen.has(k)) this.handed.delete(k);
-    cands.sort((a, b) => a.dist - b.dist);
-    const keep = new Set(cands.map((c) => c.key));
-    // drop prefetched results that are no longer wanted
-    for (const [k, j] of this.jobs) {
-      if (keep.has(k)) continue;
-      if (j.result) j.result.traverse((o) => o.geometry && o.geometry.dispose());
-      this.jobs.delete(k);
+    if (this.handed.size) this.handed.forEach(this._prune || (this._prune = (k) => { if (!this._seen.has(k)) this.handed.delete(k); }));
+    // drop prefetched results that are no longer wanted (the streamer lists them nearest first)
+    if (this.jobs.size > cands.length || this.jobs.size > 8) {
+      for (const [k, j] of this.jobs) {
+        if (seen.has(k) && !this.handed.has(k)) continue;
+        if (j.result) j.result.traverse((o) => o.geometry && o.geometry.dispose());
+        this.jobs.delete(k);
+      }
     }
-    for (const c of cands.slice(0, 4)) {
+    let pending = false;
+    for (let i = 0; i < cands.length && i < 4; i++) {
+      const c = cands[i], key = c.index * 4 + c.lod;
+      let job = this.jobs.get(key);
+      if (job && job.done) continue;
+      pending = true;
       if (performance.now() >= until) break;
-      let job = this.jobs.get(c.key);
       if (!job) {
         const L = app.route.length;
-        const s0 = c.idx * CHUNK_LEN;
-        job = { it: this.buildGen({ index: c.idx, lod: c.lod, s0, s1: Math.min(L, s0 + CHUNK_LEN) }, app) };
-        this.jobs.set(c.key, job);
+        const s0 = c.index * CHUNK_LEN;
+        job = { it: this.buildGen({ index: c.index, lod: c.lod, s0, s1: Math.min(L, s0 + CHUNK_LEN) }, app) };
+        this.jobs.set(key, job);
       }
-      if (!job.done) {
-        try { this._pump(job, until); } catch (e) {
-          // a failed prefetch is dropped; build() will retry and report through the streamer
-          console.warn('[facades] prefetch failed for chunk', c.key, e);
-          this.jobs.delete(c.key);
-        }
+      try { this._pump(job, until); } catch (e) {
+        // a failed prefetch is dropped; build() will retry and report through the streamer
+        console.warn('[facades] prefetch failed for chunk', `${c.index}:${c.lod}`, e);
+        this.jobs.delete(key);
       }
     }
     // nothing left to build ahead: look again a few frames later
-    this.idle = cands.some((c) => !this.jobs.get(c.key)?.done) ? 0 : 5;
+    this.idle = pending ? 0 : 5;
     this.stats.prefetchMaxMs = Math.max(this.stats.prefetchMaxMs * 0.995, performance.now() - t0);
   },
 };

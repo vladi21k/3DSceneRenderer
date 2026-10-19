@@ -231,9 +231,12 @@ export function createDetailMaterials(renderer) {
 #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
   diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 1.5, 1.08, 0.7 ), vColor.g );
   diffuseColor.a *= vColor.r;
-#endif`);
+#endif`)
+      // opacities above 1 (heavier stains) saturate: alpha past 1 would subtract the
+      // paving behind
+      .replace('#include <alphamap_fragment>', '#include <alphamap_fragment>\ndiffuseColor.a = min( diffuseColor.a, 1.0 );');
   };
-  stain.customProgramCacheKey = () => 'street-stain-2';
+  stain.customProgramCacheKey = () => 'street-stain-3';
 
   return { iron, stain };
 }

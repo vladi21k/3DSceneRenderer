@@ -47,7 +47,7 @@ function tradeAllowed(app, lot, frame, plan, o, type) {
 /** Share of the shops the plan gives no sign that put up their own (fascia, head panel or valance). */
 const EXTRA_SIGN = 0.8;
 /** Share of the shops of each trade with a projecting sign on a pier beside them. */
-const PROJ = { clothing: 0.45, general: 0.5, cafe: 0.4, jewellery: 0.5, pharmacy: 0.85, shoes: 0.45, books: 0.35, flowers: 0.45 };
+const PROJ = { clothing: 0.55, general: 0.6, cafe: 0.5, jewellery: 0.6, pharmacy: 0.9, shoes: 0.55, books: 0.45, flowers: 0.5 };
 /** The narrower trade of a general store or café whose sign does not say. */
 const SUBDRAW = { general: [['grocery', 0.36], ['kiosk', 0.16], ['toys', 0.14], ['nuts', 0.14], ['sweets', 0.06], [null, 0.14]], cafe: [['bakery', 0.14], ['juice', 0.12], [null, 0.74]] };
 
@@ -353,20 +353,26 @@ function buildProjecting(kit, ctx, signs) {
         if (b.floor === 1 && u > b.u0 - 0.35 && u < b.u1 + 0.35) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.62);
       }
       // lowest: above the café umbrellas' canopies and any awning beside the pier
-      let y = g + 2.95 + r.range(0, 0.3);
+      let yMin = g + 2.95;
       for (const n of [o, nb]) {
         if (!n || !hasAwning(ctx, n) || Math.abs(u - n.uc) > n.w / 2 + 0.42) continue;
-        y = Math.max(y, n.y + crownY(n) + 0.42);
+        yMin = Math.max(yMin, n.y + crownY(n) + 0.42);
       }
       const aw = ctx.cafeAwning;
-      if (aw && aw.covers(u - 0.5, u + 0.5)) y = Math.max(y, aw.top + 0.3);
-      // clear of a fascia board across the pier
-      for (const ws of signs.wall) {
-        if (u < ws.s.u0 - 0.12 || u > ws.s.u1 + 0.12) continue;
-        if (y < ws.y + ws.h + 0.06 && y + hS > ws.y - 0.06) y = ws.y + ws.h + 0.08;
+      if (aw && aw.covers(u - 0.5, u + 0.5)) yMin = Math.max(yMin, aw.top + 0.3);
+      // a height in that band clear of any fascia board across the pier (preferring a
+      // little above the lowest)
+      const clash = (y) => signs.wall.some((ws) => u > ws.s.u0 - 0.12 && u < ws.s.u1 + 0.12 && y < ws.y + ws.h + 0.06 && y + hS > ws.y - 0.06);
+      let y = Math.min(yMin + r.range(0, 0.3), top - hS);
+      if (y < yMin || clash(y)) {
+        y = NaN;
+        for (const ws of signs.wall) {
+          const c = ws.y + ws.h + 0.08;
+          if (c >= yMin && c + hS <= top && !clash(c)) { y = c; break; }
+        }
+        if (Number.isNaN(y) && !clash(top - hS) && top - hS >= yMin) y = top - hS;
       }
-      if (y + hS > top) y = top - hS;
-      if (y - g < 2.75) continue;
+      if (Number.isNaN(y) || y - g < 2.75) continue;
       used.push(u);
       const m = wallMatrix(ctx.frame, u, y, _m, rusticOff(plan, y));
       const q = ctx.q >= 0.5 ? 1 : 0.4;
@@ -474,7 +480,8 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   if (ctx.q >= 0.5 && !ctx.lot.backdrop) {
     if (!(L.shutterDown > 0.7)) dressWindow(kit, o, L, m, type, false, shopAlloc(ctx, o));
     const rv = RNG.from(o.id, 'vinyl');
-    if (L.head === 'glass' && !headSign && rv.chance(0.35)) {
+    // (not behind an awning, whose valance carries the name)
+    if (L.head === 'glass' && !headSign && !hasAwning(ctx, o) && rv.chance(0.35)) {
       const yH = L.yT + 0.05, top = crownY(o, SHOP_FW);
       const band = Math.min(0.24, (top - yH) * 0.5);
       if (band > 0.1) {

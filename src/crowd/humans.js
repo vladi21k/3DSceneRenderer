@@ -102,6 +102,18 @@ try { startCastLoad(texScaleParam()); } catch (e) { /* retried by init */ }
 const propsLoad = import('./humans/props/index.js');
 propsLoad.catch(() => {});             // (reported by init)
 
+/** Yield to the event loop for a moment (a message-channel task: setTimeout(0) is clamped to >= 4 ms
+ *  and can be held much longer on a busy page). */
+function yieldTask() {
+  return new Promise((resolve) => {
+    try {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+      ch.port2.postMessage(0);
+    } catch (e) { setTimeout(resolve, 0); }
+  });
+}
+
 /** Toddler seed from a stroller's prop seed. */
 function hashSeed(n) { n = Math.imul(n ^ 0x5f3759df, 0x2c1b3c6d); n ^= n >>> 15; return n >>> 0; }
 
@@ -189,8 +201,8 @@ const humans = {
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
       meshes.push(c.raw);
       for (const k of Object.keys(parts)) meshes.push(parts[k]);
-      // (let the page breathe between characters)
-      if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));
+      // (let the page breathe now and then: a message-channel yield, not a clamped timer)
+      if (ci % 12 === 11) await yieldTask();
     }
     this.initMs.bake = Math.round(performance.now() - tBake);
     Object.assign(this.initMs, { rig: Math.round(tRig), prep: Math.round(tPrep), parts: Math.round(tParts), cast: cast.timing || null });

@@ -113,12 +113,17 @@ export class Tpl {
     const b = this.vn / VS;
     if (this.uvLong) {
       // planar coordinates (p, q) of the dominant plane; swapped when q is the long side
-      const P = mode === 0 ? [x0, x1, x2, x3] : mode === 1 ? [z0, z1, z2, z3] : [x0, x1, x2, x3];
-      const Q = mode === 2 ? [z0, z1, z2, z3] : [y0, y1, y2, y3];
-      const span = (a) => Math.max(a[0], a[1], a[2], a[3]) - Math.min(a[0], a[1], a[2], a[3]);
-      const [U, V] = span(Q) > span(P) ? [Q, P] : [P, Q];
-      this.v(x0, y0, z0, nx, ny, nz, U[0], V[0], shade); this.v(x1, y1, z1, nx, ny, nz, U[1], V[1], shade);
-      this.v(x2, y2, z2, nx, ny, nz, U[2], V[2], shadeTop); this.v(x3, y3, z3, nx, ny, nz, U[3], V[3], shadeTop);
+      // (scalars throughout: no arrays per quad)
+      const p0 = mode === 1 ? z0 : x0, p1 = mode === 1 ? z1 : x1, p2 = mode === 1 ? z2 : x2, p3 = mode === 1 ? z3 : x3;
+      const q0 = mode === 2 ? z0 : y0, q1 = mode === 2 ? z1 : y1, q2 = mode === 2 ? z2 : y2, q3 = mode === 2 ? z3 : y3;
+      const sp = Math.max(p0, p1, p2, p3) - Math.min(p0, p1, p2, p3), sq = Math.max(q0, q1, q2, q3) - Math.min(q0, q1, q2, q3);
+      if (sq > sp) {
+        this.v(x0, y0, z0, nx, ny, nz, q0, p0, shade); this.v(x1, y1, z1, nx, ny, nz, q1, p1, shade);
+        this.v(x2, y2, z2, nx, ny, nz, q2, p2, shadeTop); this.v(x3, y3, z3, nx, ny, nz, q3, p3, shadeTop);
+      } else {
+        this.v(x0, y0, z0, nx, ny, nz, p0, q0, shade); this.v(x1, y1, z1, nx, ny, nz, p1, q1, shade);
+        this.v(x2, y2, z2, nx, ny, nz, p2, q2, shadeTop); this.v(x3, y3, z3, nx, ny, nz, p3, q3, shadeTop);
+      }
     } else if (mode === 0) {
       this.v(x0, y0, z0, nx, ny, nz, x0, y0, shade); this.v(x1, y1, z1, nx, ny, nz, x1, y1, shade);
       this.v(x2, y2, z2, nx, ny, nz, x2, y2, shadeTop); this.v(x3, y3, z3, nx, ny, nz, x3, y3, shadeTop);

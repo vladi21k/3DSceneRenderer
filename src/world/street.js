@@ -3,7 +3,7 @@ import { Surface } from './street/surface.js';
 import { buildPaving, buildSlab, inCrossoverZone, pavingHeight } from './street/paving.js';
 import { railLinePoints } from './street/rails.js';
 import { buildMainRails } from './street/track.js';
-import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE } from './street/lines.js';
+import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE, RELAY_PAD, relayWear } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS, pavingTones, TRACK_OFFSET } from './street/constants.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
@@ -12,7 +12,6 @@ import { buildCrossStreet, buildCorridorCrossing, sideColumns, sideHeight, sideP
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, planSteps, buildDetails } from './street/details.js';
 import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV } from './street/shading.js';
-import { RELAY_EDGE } from './street/surface.js';
 
 // Rail steel: every steel face of the profile (polished running band, flange-polished
 // gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
@@ -31,7 +30,10 @@ const MAX_JOBS = 6;
 // Street surface and embedded tram track. Builds per chunk:
 //   paving (corridor, edge bands, gutters, sidewalks) with camber / unevenness / grime,
 //   3D grooved rails (lod 0), far-field anti-aliased rail lines (all lods),
-//   crossovers, cross streets, cast-iron details, markings, and a ground slab.
+//   crossovers, cross streets, cast-iron details, markings, and a ground slab;
+//   and the wear placed on it (street/wear.js): relaid setts (line decals between bed
+//   joints), asphalt and concrete repairs, the drip band along each track (all lods,
+//   heavy where the trams stand at the stops), halos, oil and grime stains, and weeds.
 // A build is a sequence of short steps (a generator), so the chunks the streamer will
 // ask for next are built ahead a slice per frame (prefetch) and build() hands them over.
 // Exposes heightAt(s, d) so other modules can stand things on the real paving, and the
@@ -232,7 +234,7 @@ const street = {
    *  phase just done, for the debug timings); returns the chunk's group. */
   *steps(chunk, { bufs, lines: LB }) {
     const ctx = this.ctx;
-    const rows = makeRows(ctx, chunk, this.planFor(chunk.index));
+    const rows = makeRows(ctx, chunk);
     yield 'rows';
     const samples = yield* buildPaving(ctx, chunk, rows, bufs);
     buildSlab(ctx, chunk, bufs);
@@ -245,9 +247,11 @@ const street = {
       rail: LB.style(chunk.lod === 0 ? LINE_STYLE.railNear : LINE_STYLE.railFar),
       stripe: LB.style(LINE_STYLE.stripe), joint: LB.style(LINE_STYLE.joint),
       seal: LB.style(LINE_STYLE.seal), patch: LB.style(LINE_STYLE.patch), polish: LB.style(LINE_STYLE.polish),
-      repair: LB.style(LINE_STYLE.repair), drip: LB.style(LINE_STYLE.drip),
+      repair: LB.style(LINE_STYLE.repair), drip: LB.style(LINE_STYLE.drip), relay: LB.style(LINE_STYLE.relay),
     };
-    // drip bands along the middle of both tracks (under the paint and joints)
+    // relaid setts and the drip bands along the middle of both tracks (under the paint
+    // and joints)
+    buildRelays(ctx, chunk, samples, this.planFor(chunk.index), L.relay);
     buildDripBands(ctx, chunk, samples, L.drip);
     // crossovers overlapping the chunk (each builds only its part inside the chunk)
     for (const c of ctx.surface.near.xo) yield* buildCrossover(ctx, c, chunk, bufs, L.rail);
@@ -403,9 +407,8 @@ function* planChunk(street, ci) {
 }
 
 /** Row positions (route s) for a chunk: regular steps plus exact rows at crossover
- *  zone ends, switch toes, cross-street mouth edges and the ends of relaid setts (a pair
- *  of rows RELAY_EDGE apart on each end: the tone changes between them, see wear.js). */
-function makeRows(ctx, chunk, plan) {
+ *  zone ends, switch toes and cross-street mouth edges. */
+function makeRows(ctx, chunk) {
   const { route, layout } = ctx;
   const s0 = chunk.s0, s1 = chunk.s1, len = s1 - s0;
   let kmax = 0;
@@ -421,11 +424,6 @@ function makeRows(ctx, chunk, plan) {
   };
   // crossover zone ends and switch toes
   for (const c of layout.crossovers) { addAt(c.s0 - ctx.zonePad); addAt(c.s0); addAt(c.s1); addAt(c.s1 + ctx.zonePad); }
-  const relayRows = [];
-  for (const r of plan.relays || []) {
-    relayRows.push(r.s0, r.s0 + RELAY_EDGE, r.s1 - RELAY_EDGE, r.s1);
-    for (const e of relayRows.slice(-4)) addAt(e);
-  }
   const mouths = [];
   for (const c of layout.crossStreets) {
     if (Math.abs(ctx.delta(c.s, (s0 + s1) / 2)) > len / 2 + c.width) continue;
@@ -438,9 +436,7 @@ function makeRows(ctx, chunk, plan) {
   const all = base.filter((s) => s === s0 || s === s1 || (!inMouth(s) && !extra.some((e) => Math.abs(e - s) < 0.3)));
   for (const e of extra) all.push(e);
   all.sort((a, b) => a - b);
-  // (relay edge pairs stay; other rows closer than 2 cm merge)
-  const keep = (s) => relayRows.some((e) => Math.abs(e - s) < 1e-6);
-  return densify(ctx, chunk, all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02 || (keep(s) && s - all[i - 1] > RELAY_EDGE * 0.5)));
+  return densify(ctx, chunk, all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02));
 }
 
 /** Dense rows (<= 0.75 m) where crossover rails curve, at lod 0: the cut attributes
@@ -490,7 +486,7 @@ function buildDripBands(ctx, chunk, samples, out) {
       const sp = surface.sp(s);
       const st = t > 0 ? w.stopR : w.stopL, bg = t > 0 ? w.bogR : w.bogL;
       const nz = surface.fG.sample(sp * ks[0] + 61.3, t * 9.1 + 2.7);
-      let k = 0.4 * (0.5 + 0.9 * Math.max(0, nz + 0.35)) + 0.5 * st + 0.35 * bg;
+      let k = 0.5 * (0.5 + 0.9 * Math.max(0, nz + 0.35)) + 0.5 * st + 0.35 * bg;
       for (const c of layout.crossovers) {
         const a = dl(c.s0 - ctx.zonePad - 1, s), b = dl(s, c.s1 + ctx.zonePad + 1);
         if (a > -3 && b > -3) k *= 1 - Math.min(1, Math.min(a + 3, b + 3) / 3);
@@ -504,6 +500,34 @@ function buildDripBands(ctx, chunk, samples, out) {
       pts[o + 3] = smp.right.x; pts[o + 4] = smp.right.z; pts[o + 5] = sp; pts[o + 6] = 0; pts[o + 7] = k;
     }
     if (any) out.add(pts, DRIP_HALF, 0, 1, 8);
+  }
+}
+
+/** Relaid setts (wear.js relays) as line decals over their corridor strip (both lods):
+ *  rail to rail (or rail to edge band) across, bed joint to bed joint along, the darker
+ *  or paler batch shaded by the line material (LINE_STYLE.relay). Points every metre on
+ *  the built paving; the along coordinate is the arc length at the strip's middle. */
+function buildRelays(ctx, chunk, samples, plan, out) {
+  const { route } = ctx;
+  const grid = samples.grid, dl = ctx.delta, smp = {};
+  for (const r of plan.relays || []) {
+    const d = (r.d0 + r.d1) / 2, half = (r.d1 - r.d0) / 2 + RELAY_PAD;
+    const n = Math.max(2, Math.ceil((r.s1 - r.s0) / 1.0));
+    const pts = new Array((n + 1) * 7);
+    let acc = 0, px = 0, pz = 0;
+    const e = 0.2;
+    for (let i = 0; i <= n; i++) {
+      const s = r.s0 + ((r.s1 - r.s0) * i) / n;
+      route.sample(s, smp);
+      const x = smp.pos.x + smp.right.x * d, z = smp.pos.z + smp.right.z * d;
+      if (i > 0) acc += Math.sqrt((x - px) * (x - px) + (z - pz) * (z - pz));
+      px = x; pz = z;
+      const o = i * 7;
+      pts[o] = x; pts[o + 1] = smp.pos.y + pavingHeight(grid, s, d, dl) + 0.0012; pts[o + 2] = z;
+      pts[o + 3] = smp.right.x; pts[o + 4] = smp.right.z; pts[o + 5] = acc;
+      pts[o + 6] = (pavingHeight(grid, s, d + e, dl) - pavingHeight(grid, s, d - e, dl)) / (2 * e);
+    }
+    out.add(pts, half, acc, relayWear(r.k, r.h), 7);
   }
 }
 

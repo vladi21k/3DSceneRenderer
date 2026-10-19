@@ -75,76 +75,90 @@ const LIGHT_BOARDS = new Set([0xd9cfb6, 0xe8e4da, 0xe8b820]);
 
 let atlas = null;
 
+/**
+ * The atlas layout (every cell's UVs, a word's inked width) is computed at once; the
+ * painting is deferred (atlas.draw(budget ms), time-sliced in idle time while the shaders
+ * compile) and the texture is uploaded once it is complete (its version stays 0 until then,
+ * so nothing half painted ever reaches the GPU).
+ */
 function buildAtlas() {
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
-  g.clearRect(0, 0, W, H);
+  const jobs = [];
+  const paint = (fn) => jobs.push(fn);
   const cells = [];
   // text cells: white glyphs on transparent
   WORDS.forEach(([lines], i) => {
     const cx = (i % 4) * CELL_W, cy = i < 48 ? Math.floor(i / 4) * CELL_H : WORDS2_Y + Math.floor((i - 48) / 4) * CELL_H;
     const font = FONTS[i % FONTS.length];
-    g.save();
-    g.beginPath(); g.rect(cx, cy, CELL_W, CELL_H); g.clip();
-    g.fillStyle = '#fff';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    let inkW = 0;
+    let inkW = 0, sx = 1;
     if (lines.length === 1) {
-      const px = 92;
-      g.font = font(px);
+      g.font = font(92);
       const m = g.measureText(lines[0]);
-      const sx = Math.min(1, (CELL_W - 24) / m.width);
-      g.translate(cx + CELL_W / 2, cy + CELL_H / 2 + 4);
-      g.scale(sx, 1);
-      g.fillText(lines[0], 0, 0);
+      sx = Math.min(1, (CELL_W - 24) / m.width);
       inkW = m.width * sx;
     } else {
-      const px = 56;
-      g.font = font(px);
+      g.font = font(56);
       const m0 = g.measureText(lines[0]), m1 = g.measureText(lines[1]);
-      const sx = Math.min(1, (CELL_W - 24) / Math.max(m0.width, m1.width));
-      g.translate(cx + CELL_W / 2, cy + CELL_H / 2);
-      g.scale(sx, 1);
-      g.fillText(lines[0], 0, -30);
-      g.font = font(44);
-      g.fillText(lines[1], 0, 34);
+      sx = Math.min(1, (CELL_W - 24) / Math.max(m0.width, m1.width));
       inkW = Math.max(m0.width, m1.width) * sx;
     }
-    g.restore();
+    paint(() => {
+      g.save();
+      g.beginPath(); g.rect(cx, cy, CELL_W, CELL_H); g.clip();
+      g.fillStyle = '#fff';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      if (lines.length === 1) {
+        g.font = font(92);
+        g.translate(cx + CELL_W / 2, cy + CELL_H / 2 + 4);
+        g.scale(sx, 1);
+        g.fillText(lines[0], 0, 0);
+      } else {
+        g.font = font(56);
+        g.translate(cx + CELL_W / 2, cy + CELL_H / 2);
+        g.scale(sx, 1);
+        g.fillText(lines[0], 0, -30);
+        g.font = font(44);
+        g.fillText(lines[1], 0, 34);
+      }
+      g.restore();
+    });
     cells.push({ u0: cx / W, v0: 1 - (cy + CELL_H) / H, u1: (cx + CELL_W) / W, v1: 1 - cy / H, aspect: CELL_W / CELL_H, ink: Math.min(1, (inkW + 30) / CELL_W), lines: lines.length });
   });
   // house number plaques: blue enamel with a white border and number
   const plaques = [];
   for (let i = 0; i < 32; i++) {
     const x = (i % 16) * PLAQUE, y = PLAQUE_Y + Math.floor(i / 16) * PLAQUE;
-    g.save();
-    g.fillStyle = '#e9e6dc'; roundRect(g, x + 8, y + 22, PLAQUE - 16, PLAQUE - 44, 14); g.fill();
-    g.fillStyle = i % 5 === 3 ? '#2d5a3a' : '#1d3f7a'; roundRect(g, x + 14, y + 28, PLAQUE - 28, PLAQUE - 56, 10); g.fill();
-    g.fillStyle = '#f2efe6'; g.font = '700 50px "Liberation Sans", Arial, sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(String(1 + ((i * 7) % 63)), x + PLAQUE / 2, y + PLAQUE / 2 + 2);
-    g.restore();
+    paint(() => {
+      g.save();
+      g.fillStyle = '#e9e6dc'; roundRect(g, x + 8, y + 22, PLAQUE - 16, PLAQUE - 44, 14); g.fill();
+      g.fillStyle = i % 5 === 3 ? '#2d5a3a' : '#1d3f7a'; roundRect(g, x + 14, y + 28, PLAQUE - 28, PLAQUE - 56, 10); g.fill();
+      g.fillStyle = '#f2efe6'; g.font = '700 50px "Liberation Sans", Arial, sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(String(1 + ((i * 7) % 63)), x + PLAQUE / 2, y + PLAQUE / 2 + 2);
+      g.restore();
+    });
     plaques.push({ u0: x / W, v0: 1 - (y + PLAQUE - 22) / H, u1: (x + PLAQUE) / W, v1: 1 - (y + 22) / H });
   }
   // blade sign faces (full colour, generic pictograms)
   const blades = [];
   BLADE_FACES.forEach(([fn, , round], i) => {
     const x = (i % 8) * BLADE_W, y = (i < 16 ? BLADE_Y : BLADE2_Y - 2 * BLADE_H) + Math.floor(i / 8) * BLADE_H;
-    g.save(); g.beginPath(); g.rect(x, y, BLADE_W, BLADE_H); g.clip(); fn(g, x, y); g.restore();
+    paint(() => { g.save(); g.beginPath(); g.rect(x, y, BLADE_W, BLADE_H); g.clip(); fn(g, x, y); g.restore(); });
     blades.push({ u0: (x + 4) / W, v0: 1 - (y + BLADE_H - 4) / H, u1: (x + BLADE_W - 4) / W, v1: 1 - (y + 4) / H, round: !!round });
   });
   // goods-stand prints: folded newspapers and magazines, cardboard price tags
   const prints = { papers: [], tags: [] };
   PAPERS.forEach((fn, i) => {
     const x = i * 128, y = PRINT_Y;
-    g.save(); g.beginPath(); g.rect(x, y, 128, 256); g.clip(); fn(g, x + 4, y + 4, 120, 248, i); g.restore();
+    paint(() => { g.save(); g.beginPath(); g.rect(x, y, 128, 256); g.clip(); fn(g, x + 4, y + 4, 120, 248, i); g.restore(); });
     prints.papers.push({ u0: (x + 4.5) / W, v0: 1 - (y + 251.5) / H, u1: (x + 123.5) / W, v1: 1 - (y + 4.5) / H, aspect: 119 / 247 });
   });
   TAGS.forEach(([fn, a], i) => {
     const cx = (i % 16) * 128, cy = PRINT_Y + 256 + Math.floor(i / 16) * 128;
     const w = Math.min(120, 120 * a), h = w / a, x = cx + (128 - w) / 2, y = cy + (128 - h) / 2;
-    g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h, i); g.restore();
+    paint(() => { g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h, i); g.restore(); });
     prints.tags.push({ u0: (x + 1) / W, v0: 1 - (y + h - 1) / H, u1: (x + w - 1) / W, v1: 1 - (y + 1) / H, aspect: w / h });
   });
   // window dressing: each draws a card of aspect a (w / h) centred in its cell
@@ -156,18 +170,29 @@ function buildAtlas() {
       const cx = (i % per) * CW, cy = yy + Math.floor(i / per) * CH;
       const w = Math.min(CW - 2 * mg, (CH - 2 * mg) * a), h = w / a;
       const x = cx + (CW - w) / 2, y = cy + (CH - h) / 2;
-      g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h); g.restore();
+      paint(() => { g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h); g.restore(); });
       dress[key].push({ u0: (x + 1) / W, v0: 1 - (y + h - 1) / H, u1: (x + w - 1) / W, v1: 1 - (y + 1) / H, aspect: w / h });
     });
     yy += Math.ceil(list.length / per) * CH;
   }
   if (yy > WORDS2_Y) console.warn('[facades] sign atlas overflow', yy);
-  const tex = new THREE.CanvasTexture(cv);
+  // (a plain texture: version 0, not uploaded, until the painting is complete)
+  const tex = new THREE.Texture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
-  return { tex, cells, plaques, blades, dress, prints };
+  const out = { tex, cells, plaques, blades, dress, prints, done: false, ms: 0 };
+  /** Paint for up to budget ms; true once the atlas is complete (and queued for upload). */
+  out.draw = (budget = Infinity) => {
+    if (out.done) return true;
+    const t0 = performance.now();
+    while (jobs.length && performance.now() - t0 < budget) jobs.shift()();
+    out.ms += performance.now() - t0;
+    if (!jobs.length) { out.done = true; tex.needsUpdate = true; }
+    return out.done;
+  };
+  return out;
 }
 
 // ------------------------------------------------------------------ window dressing
@@ -621,7 +646,15 @@ function addGlow(m, key, gain) {
 }
 
 export function createSignMaterials(M) {
-  if (!atlas) atlas = buildAtlas();
+  if (!atlas) {
+    const t0 = performance.now();
+    atlas = buildAtlas();
+    atlas.layoutMs = performance.now() - t0;
+    // paint it in slices while the start-up continues (facades.update finishes it should
+    // the first frame come first)
+    const step = () => { if (!atlas.draw(6)) setTimeout(step, 0); };
+    setTimeout(step, 0);
+  }
   // a private variant of the library panel (keeps its baked surface), plus the glow hook
   const board = M.get('sign.panel', { vertexColors: true, color: new THREE.Color(1, 1, 1), userData: { owner: 'facades.signBoard' } });
   const gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };

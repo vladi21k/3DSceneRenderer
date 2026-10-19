@@ -23,7 +23,7 @@ export const LINE_SHARED = {
 // sealant-filled expansion joints, dashed and irregular), and the wear of the asphalt
 // side streets: bitumen crack seals and hairline cracks, saw-cut repair patches with
 // sealed joints, and tyre polish / oil drip bands.
-export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint: 4, seal: 5, patch: 6, polish: 7, repair: 8, drip: 9 };
+export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint: 4, seal: 5, patch: 6, polish: 7, repair: 8, drip: 9, relay: 10 };
 // patches: their ribbon reaches PATCH_PAD beyond the cut on every side (the sealed joint
 // overlaps it), so aLine.y = half width + PATCH_PAD and the points run from -PATCH_PAD to
 // length + PATCH_PAD
@@ -32,6 +32,11 @@ export const PATCH_PAD = 0.06;
  *  ribbons this much wider on both sides; those whose ends step reach this much further
  *  at both ends (the steps reach out up to 0.2 m). */
 export const STEP_PAD = 0.2;
+/** Relay ribbons (relaid setts, wear.js) reach this far beyond their strip on both sides. */
+export const RELAY_PAD = 0;
+/** Wear value of a relay ribbon: the batch's tone k (0.6..1.4, relative to the setts
+ *  round it) and hue h (-0.1..0.1: + warmer, - cooler). */
+export const relayWear = (k, h) => Math.round((Math.max(-0.1, Math.min(0.1, h)) + 0.1) * 500) + 0.5 * Math.max(0.5, Math.min(1.45, k));
 /** Added to a paint stripe's wear value when it is laid over setts (the paint cracks
  *  along the sett bed joints, which then must lie at whole multiples of 0.2 m of its
  *  along coordinate). */
@@ -97,7 +102,8 @@ vec3 transformed = vec3( position );
   // dots along thin bands), and keep at least minPx half width for sub-pixel lines
   // (joints and crack seals: thinner)
   float minPx = aRight.w > ${(LINE_STYLE.joint - 0.5).toFixed(1)} && aRight.w < ${(LINE_STYLE.seal + 0.5).toFixed(1)} ? ${PAINT[LINE_STYLE.joint].minPx.toFixed(2)} : 1.5;
-  float hw = aLine.y + 1.0 / pxPerM;
+  // (the pad is capped: seen edge-on, at the horizon, the pixel footprint diverges)
+  float hw = aLine.y + min( 1.0 / pxPerM, 2.0 );
   hw = max( hw, min( minPx / pxPerM, 1.6 ) );
   // the vertex lies on the real edge (on the surface's cross slope); widen beyond it in
   // the horizontal plane only (aRight.y carries the wear factor)
@@ -553,6 +559,38 @@ const DRIP_FRAG = /* glsl */`
 }
 `;
 
+// Relaid setts (wear.js): another batch of setts over a corridor strip, its sides on the
+// rails' mortar strips and its ends on bed joints, x across and u along [0, length].
+// Darker batches blend towards a deep tint of the setts (so the setts beneath keep their
+// relative variation: the result is close to the paving times k), paler ones towards a
+// pale granite, which also evens out the variation a little, as a fresh batch does; the
+// specular is the paving's own beneath (a dark blend carries none of its own).
+const RELAY_FRAG = /* glsl */`
+{
+  float x = vLine.x, u = vLine.y, len = vLine.z;
+  float hx = vLineHalf - ${f(0)};
+  float h = floor( vLineWear ) * 0.002 - 0.1, k = fract( vLineWear ) * 2.0;
+  float cov = lnCov( -hx, hx, x, w ) * lnCov( 0.0, len, u, wu );
+  if ( cov < 0.002 ) discard;
+  vec3 tint = vec3( 1.0 + h, 1.0 + 0.15 * h, 1.0 - h );
+  vec3 pave = ST_ALB;
+  float a;
+  if ( k < 1.0 ) {
+    lnD = pave * 0.25 * tint;
+    a = ( 1.0 - k ) / 0.75;
+    lnF = vec3( 0.0 ); lnF90 = 0.0;
+  } else {
+    lnD = pave * 1.75 * tint;
+    a = ( k - 1.0 ) / 0.75;
+    lnF = vec3( 0.04 ); lnF90 = 1.0;
+  }
+  lnPhys = 1.0; lnEnvK = 1.0; lnDirK = 1.0;
+  lnRough = 0.85;
+  diffuseColor.rgb = lnD;
+  diffuseColor.a = cov * clamp( a, 0.0, 0.9 );
+}
+`;
+
 // pixel footprints are taken before the style branch (derivatives in uniform control flow)
 const LINE_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
@@ -566,7 +604,8 @@ if ( vLineStyle < ${(LINE_STYLE.centre - 0.5).toFixed(1)} ) ${RAIL_FRAG}
 else if ( vLineStyle < ${(LINE_STYLE.joint + 0.5).toFixed(1)} ) ${PAINT_FRAG}
 else if ( vLineStyle < ${(LINE_STYLE.polish + 0.5).toFixed(1)} ) ${ASPHALT_FRAG}
 else if ( vLineStyle < ${(LINE_STYLE.repair + 0.5).toFixed(1)} ) ${REPAIR_FRAG}
-else ${DRIP_FRAG}
+else if ( vLineStyle < ${(LINE_STYLE.drip + 0.5).toFixed(1)} ) ${DRIP_FRAG}
+else ${RELAY_FRAG}
 `;
 
 /** The shared line material (all styles; the rail steel has the lengthwise-polish sheen).
@@ -575,7 +614,8 @@ export function createLineMaterial(tones = pavingTones(null)) {
   const frag = LINE_FRAG
     .replace('ST_DSEAL', v3(tones.mortar, SEAL_TONE * 0.86))
     .replace('ST_DGROUT', v3(tones.mortar, 0.95))
-    .replace('ST_DPAVE', v3(tones.pave));
+    .replace('ST_DPAVE', v3(tones.pave))
+    .replace('ST_ALB', v3(tones.albedo));
   const m = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.5, metalness: 0, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
@@ -599,7 +639,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-8';
+  m.customProgramCacheKey = () => 'street-line-10';
   return patchRailSheen(m, 'line');
 }
 

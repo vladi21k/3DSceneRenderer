@@ -53,8 +53,9 @@ export class Surface {
     this.kS = [per(0.19, 128), per(0.53, 25.6)];   // drip line: metre-long patches along s
     this.hShade = 0;       // shading height of the last height() call
     this.planCache = new Map();
-    this.planner = null;     // (chunkIndex) => detail plan ({spots, relays, ...}), set by the street module
+    this.planner = null;     // (chunkIndex) => detail plan ({spots, ...}), set by the street module
     this.stops = null;       // tram stop zones (see stopZones)
+    this.walks = null;       // where passengers cross the corridor at the stops (walkZones)
     this._ri = {};
     // mouth geometry per (cross street, side), facade lines per lot
     this.mouths = new Map();
@@ -112,17 +113,34 @@ export class Surface {
         if (ds < p.r + 0.7 && ds > -p.r - 0.7) list.push(p, ds);
       }
     }
-    // relaid stretches of a corridor strip whose inside contains this row (their edge
-    // rows, RELAY_EDGE apart, are built: see details.js)
-    const rl = out.relays || (out.relays = []);
-    rl.length = 0;
-    const own = this.plan(ci).relays;
-    if (own) for (let i = 0; i < own.length; i++) {
-      const r = own[i];
-      if (dl(r.s0, s) > RELAY_EDGE * 0.5 && dl(r.s1, s) < -RELAY_EDGE * 0.5) rl.push(r);
-    }
     this.stopAt(s, out);
+    // where people walk across the corridor: the crossings at the cross streets and the
+    // ends of the platforms (trodden in, darker), weight 0..1
+    let foot = 0;
+    for (let i = 0; i < lists.cs.length; i++) {
+      const x = dl(lists.cs[i].s, s);
+      if (x > -4 && x < 4) foot = Math.max(foot, 1 - smooth((Math.abs(x) - 1.6) / 2));
+    }
+    const W = this.walkZones();
+    for (let i = 0; i < W.length; i++) {
+      const x = dl(W[i], s);
+      if (x > -4 && x < 4) foot = Math.max(foot, 0.8 * (1 - smooth((Math.abs(x) - 0.8) / 2.2)));
+    }
+    out.foot = foot;
     return out;
+  }
+
+  /** Route s of the places where passengers cross the corridor to and from the stops:
+   *  just beyond both ends of every platform. */
+  walkZones() {
+    if (this.walks) return this.walks;
+    const w = [];
+    for (const st of this.layout.stations) {
+      const pl = st.platforms[0];
+      if (pl) w.push(pl.s0 - 1.5, pl.s1 + 1.5);
+    }
+    this.walks = w;
+    return w;
   }
 
   /** The detail plan of chunk ci (cached; see street.js planFor). */
@@ -388,6 +406,7 @@ export class Surface {
       const drip = ci.drip * (patch * (1 + 0.6 * st) + 0.9 * bg) * (0.75 + 0.25 * n2);
       v *= (1 - Math.min(0.4, drip)) * (1 - ri.xo * ci.xoTone);
       v *= 1 - ci.four * (0.05 * st + 0.04 * bg);
+      v *= 1 - 0.07 * (ri.foot || 0) * (0.6 + 0.4 * n2);
       warm += ci.four * (0.02 * st + 0.03 * bg) + 0.15 * drip;
     } else if (ci.zone === Z_GUTTER) {
       // damp, dirty streaks along the channel
@@ -428,11 +447,8 @@ export class Surface {
 export const railGrime = (e) => 1 - smooth((e - 0.05) / 0.3);
 
 export const Z_CORR = 0, Z_BAND = 1, Z_GUTTER = 2, Z_WALK = 3;
-/** Relaid setts change tone over this distance at the ends of the stretch (m): the edge
- *  rows of a relay, the bed joint between the old and the new setts. */
-export const RELAY_EDGE = 0.008;
 const TRAM_LEN = 32;
-const NO_PLAN = { spots: [], relays: [] };
+const NO_PLAN = { spots: [] };
 
 /** The s-independent part of the cross-section at d: base height (camber, crown between
  *  the rails, dished gutter, sidewalk cross-fall), noise amplitude and mask, and the

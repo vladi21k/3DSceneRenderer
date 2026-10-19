@@ -8,7 +8,7 @@ import { MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_W, GUTTER_OUT, GROUT_W, TRACK_OFF
 //              taken up for rail or utility work and relaid with setts of another batch,
 //              a slightly different stone and tone; the ends lie on bed joints, the sides
 //              on the rails' mortar strips, so the change of tone follows real joints
-//              (applied as paving vertex colour, see paving.js and Surface.rowInfo);
+//              (line decals, street.js buildRelays and lines.js LINE_STYLE.relay);
 //   repairs    asphalt and concrete fills over the setts: reinstatement squares round
 //              some covers, trenches of service connections across the sidewalk from
 //              the facades, cable trenches along it, small fills where broken setts
@@ -84,7 +84,7 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
       const k = rng.chance(0.55) ? rng.range(0.68, 0.84) : rng.range(1.15, 1.32);
       const h = rng.range(-0.05, 0.07);
       const [d0, d1] = STRIPS[zone];
-      relays.push({ s0: a, s1: b, zone, d0, d1, tone: [k * (1 + h), k * (1 + 0.15 * h), k * (1 - h)] });
+      relays.push({ s0: a, s1: b, zone, d0, d1, k, h });
       break;
     }
   }

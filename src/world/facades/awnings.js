@@ -131,6 +131,9 @@ class ATpl extends Tpl {
   bake() { const b = super.bake(); b.f = new Float32Array(this.f); return b; }
 }
 
+/** Fill the scratch grid point (surface copies it out at once). */
+function pt(x, y, z, u, f, sh) { _pt[0] = x; _pt[1] = y; _pt[2] = z; _pt[3] = u; _pt[4] = f; _pt[5] = sh; return _pt; }
+
 /**
  * Grid surface from a point function P(i/nu, j/nv) → [x, y, z, u, flex]; normals by finite
  * differences. Where a row or column collapses to a point (the pole of a dome, a pinched
@@ -138,10 +141,23 @@ class ATpl extends Tpl {
  * (column) that still spans, so no vertex ever gets a zero normal (which the vertex shader
  * would normalise into NaN: black triangles).
  */
+// (grid points of the surface being built: one reused buffer of [x, y, z, u, flex, shade]
+// rows, subarray views into it, so a template allocates little but its baked arrays)
+let gridBuf = new Float64Array(6 * 1024);
+const _pt = [0, 0, 0, 0, 0, 1];
 function surface(t, nu, nv, P, shade = 1, flip = false) {
   const base = t.count;
-  const pts = [];
-  for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) pts.push(P(i / nu, j / nv));
+  const n = (nu + 1) * (nv + 1);
+  if (gridBuf.length < n * 6) gridBuf = new Float64Array(n * 6 * 2);
+  const G = gridBuf, pts = new Array(n);
+  for (let j = 0, k = 0; j <= nv; j++) {
+    for (let i = 0; i <= nu; i++, k++) {
+      _pt[5] = 1;
+      const p = P(i / nu, j / nv, _pt), o = k * 6;
+      G[o] = p[0]; G[o + 1] = p[1]; G[o + 2] = p[2]; G[o + 3] = p[3]; G[o + 4] = p[4]; G[o + 5] = p[5] ?? 1;
+      pts[k] = G.subarray(o, o + 6);
+    }
+  }
   const at = (i, j) => pts[Math.min(nv, Math.max(0, j)) * (nu + 1) + Math.min(nu, Math.max(0, i))];
   const EPS = 1e-12, U = [0, 0, 0], V = [0, 0, 0];
   // difference of two grid points into out; false if they coincide
@@ -204,9 +220,9 @@ function valance(t, total, valH, q, at) {
     const h = depth(s);
     const [dy, shade] = rows[j];
     const y = j === 0 ? 0 : -h - dy;
-    const [x, y0, z] = at(s);
+    const e = at(s);
     // the hem flutters in the wind (flex), the top edge is held by the bar
-    return [x, y0 + y, z, s, j === 0 ? 0 : 0.7, shade * (1 - 0.12 * Math.min(1, -y / valH))];
+    return pt(e[0], e[1] + y, e[2], s, j === 0 ? 0 : 0.7, shade * (1 - 0.12 * Math.min(1, -y / valH)));
   }, 0.95, true);
 }
 
@@ -226,7 +242,7 @@ export function slopeAwning(W, P, D, valH, q) {
     const sag = Math.sin(Math.PI * b) * (0.03 * (0.6 + 0.4 * Math.sin(Math.PI * a)) + 0.012 * Math.abs(Math.sin(Math.PI * a * bays)));
     const crease = q >= 0.5 ? 0.006 * Math.max(0, 1 - b / 0.25) * Math.sin(x * 21 + Math.sin(x * 7) * 2) : 0;
     const y = -D * b - sag + crease, z = P * b;
-    return [x, y, z, x + W / 2, Math.sin(Math.PI * b) * (0.4 + 0.6 * Math.sin(Math.PI * a)), 1 - 0.1 * Math.max(0, 1 - b / 0.15)];
+    return pt(x, y, z, x + W / 2, Math.sin(Math.PI * b) * (0.4 + 0.6 * Math.sin(Math.PI * a)), 1 - 0.1 * Math.max(0, 1 - b / 0.15));
   });
   // hem tube wrapped round the front bar
   if (q >= 0.5) {
@@ -234,7 +250,7 @@ export function slopeAwning(W, P, D, valH, q) {
     for (let k = 0; k <= 4; k++) { const a = (k / 4) * Math.PI * 1.5 - Math.PI * 0.25; ring.push([Math.cos(a) * 0.022, Math.sin(a) * 0.022]); }
     surface(t, Math.max(2, Math.round(W / 0.3)), ring.length - 1, (a, b) => {
       const x = -W / 2 + W * a, [dz, dy] = ring[Math.round(b * (ring.length - 1))];
-      return [x, -D + 0.004 + dy, P - 0.012 + dz, x + W / 2, 0, 0.9];
+      return pt(x, -D + 0.004 + dy, P - 0.012 + dz, x + W / 2, 0, 0.9);
     });
   }
   // valance hanging from the front bar
@@ -312,7 +328,7 @@ export function domeAwning(W, R, valH, q) {
     // cornice), the sagging middle of each gore a little darker, dirt along the hem
     const top = 0.62 + 0.38 * Math.min(1, b / 0.35);
     const hem = 1 - 0.1 * Math.max(0, (b - 0.75) / 0.25);
-    return [xa + dx * r * Math.sin(th), R * Math.cos(th) - pleat * Math.cos(th) * 0.3, dz * r * Math.sin(th), s, 0.25 * Math.sin(th) * sg, (1 - 0.2 * sg) * top * hem * gore(gi)];
+    return pt(xa + dx * r * Math.sin(th), R * Math.cos(th) - pleat * Math.cos(th) * 0.3, dz * r * Math.sin(th), s, 0.25 * Math.sin(th) * sg, (1 - 0.2 * sg) * top * hem * gore(gi));
   });
   // valance along the bottom edge
   valance(t, total, valH, q, (s) => { const [xa, dx, dz] = plan(s); return [xa + dx * (R + 0.004), 0, dz * (R + 0.004)]; });
