@@ -150,14 +150,6 @@ class HeldVector3 extends THREE.Vector3 {
 const HELD = [['spotLights', 'position', 'direction'], ['directionalLights', 'direction', null],
   ['sunLights', 'direction', null], ['hemisphereLights', 'direction', null]];
 
-// Number fields of the light structs (spot: distance, decay, cone cosines). The renderer
-// reads every member of every light struct each time a lit program is bound, and reading a
-// number field V8 stores unboxed makes a new heap number each time (about 40 KB a frame
-// at dusk, over some fifty program binds). Once a field has held a non-number its storage
-// stays tagged: a read then hands over the stored number, and only the renderer's own write
-// per light and frame makes one.
-const TAGGED = ['distance', 'decay', 'coneCos', 'penumbraCos'];
-
 /** Swap the vectors of every light struct in a material's live light uniforms (idempotent). */
 function holdDarkLights(uniforms) {
   let n = 0;
@@ -170,27 +162,38 @@ function holdDarkLights(uniforms) {
       if (!s || typeof s !== 'object') continue;
       if (s[a] && s[a].isVector3 && !(s[a] instanceof HeldVector3)) { s[a] = new HeldVector3(s[a], s); n++; }
       if (b && s[b] && s[b].isVector3 && !(s[b] instanceof HeldVector3)) { s[b] = new HeldVector3(s[b], s); n++; }
-      if (!s.__tagged) {
-        for (let j = 0; j < TAGGED.length; j++) {
-          const f = TAGGED[j], v = s[f];
-          if (typeof v === 'number') { s[f] = null; s[f] = v; }
-        }
-        s.__tagged = true;
-      }
     }
   }
   return n;
 }
 
-// ---- light vectors uploaded without boxing
-// Each lit program uploads the light structs' vectors (view-space positions and
-// directions, colours) whenever it is bound and they changed: at dusk, the lit pool lights
-// move with the camera every frame. The renderer's vec3 setter passes three numbers to
-// gl.uniform3f, and each is a new heap number (about 100 KB a frame at dusk). These
-// setters compare against a typed cache and upload from a typed copy instead.
+// ---- light structs uploaded without boxing
+// Each lit program uploads the light structs whenever it is bound (some fifty times a
+// frame). The renderer reads every member by name through a generic lookup, and a number
+// field read that way becomes a new heap number (spot lights: distance, decay and the cone
+// cosines, ~35 KB a frame); its vec3 setter passes three numbers to gl.uniform3f, each a
+// new heap number too (the lit pool lights move with the camera every frame at dusk, ~100
+// KB a frame). These setters compare against typed caches, read the spot lights' numbers
+// by their own names, and upload from typed copies instead.
 const LIGHT_ARRAYS = ['spotLights', 'sunLights', 'hemisphereLights', 'directionalLights', 'pointLights'];
 const COLOR_IDS = new Set(['color', 'skyColor', 'groundColor']);
-const GL_FLOAT_VEC3 = 0x8B51;
+const GL_FLOAT = 0x1406, GL_FLOAT_VEC3 = 0x8B51;
+const SPOT_NUMBERS = ['coneCos', 'penumbraCos', 'distance', 'decay'];
+/** Setter of one spot light struct: vec3 members through their typed setters, numbers read
+ *  by their own names (unboxed field loads) into a typed cache. */
+function setSpotStruct(gl, value) {
+  const seq = this.seq;
+  for (let i = 0, n = seq.length; i < n; i++) {
+    const u = seq[i], k = u.spotK;
+    if (k < 0) { u.setValue(gl, value[u.id]); continue; }
+    const c = u.c1;
+    c[1] = k === 0 ? value.coneCos : k === 1 ? value.penumbraCos : k === 2 ? value.distance : value.decay;
+    if (c[0] === c[1]) continue;
+    c[0] = c[1];
+    u.f1[0] = c[1];
+    gl.uniform1fv(u.addr, u.f1);
+  }
+}
 function setVec3Typed(gl, v) {
   const c = this.c64, x = v.x, y = v.y, z = v.z;
   if (c[0] === x && c[1] === y && c[2] === z) return;
@@ -219,14 +222,25 @@ function typedLightSetters(program) {
     for (let i = 0; i < arr.seq.length; i++) {
       const st = arr.seq[i];
       if (!st || !Array.isArray(st.seq)) continue;
+      let plain = true;
       for (let j = 0; j < st.seq.length; j++) {
         const u = st.seq[j];
-        if (!u || u.seq || u.type !== GL_FLOAT_VEC3 || u.setValue === setVec3Typed || u.setValue === setColorTyped) continue;
+        if (!u || u.seq) { plain = false; continue; }
+        u.spotK = k === 0 && u.type === GL_FLOAT ? SPOT_NUMBERS.indexOf(u.id) : -1;
+        if (u.spotK >= 0) {
+          u.c1 = new Float64Array(2).fill(NaN); u.f1 = new Float32Array(1);
+          n++;
+          continue;
+        }
+        if (u.type === GL_FLOAT && k === 0) plain = false;
+        if (u.type !== GL_FLOAT_VEC3 || u.setValue === setVec3Typed || u.setValue === setColorTyped) continue;
         u.c64 = new Float64Array(3).fill(NaN);
         u.f32 = new Float32Array(3);
         u.setValue = COLOR_IDS.has(u.id) ? setColorTyped : setVec3Typed;
         n++;
       }
+      // (spot lights: the whole struct, so its numbers are read by name)
+      if (k === 0 && plain) st.setValue = setSpotStruct;
     }
   }
   return n;

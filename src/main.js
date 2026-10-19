@@ -119,6 +119,11 @@ async function main() {
       // (env has patched the shared light loop: keep its spot lights a real loop, which
       // compiles in about 60 % of the time; lightloop=0 for A/B, see core/lightLoops.js)
       if (m.name === 'env' && params.str('lightloop', '1') !== '0') app.perf.lightLoop = loopSpotLights(THREE.ShaderChunk);
+      // From post on, start-up work renders into the HDR scene target: a module's own shader
+      // warm-up (renderer.compile) then builds the programs the scene pass uses, not variants
+      // for the screen's colour space and tone mapping that nothing draws with. (Passes that
+      // render elsewhere set their own target.)
+      if (m.name === 'post' && app.post && app.post.sceneRT) renderer.setRenderTarget(app.post.sceneRT);
       app.perf.init[m.name] = Math.round(performance.now() - t0);
     } catch (e) {
       console.error(`[main] ${m.name}.init failed — module disabled`, e);
@@ -139,9 +144,12 @@ async function main() {
   await app.world.prime(s0, Infinity, null, [2]);   // far field: a few ms in all
   app.perf.init.prime = Math.round(performance.now() - tPrime);
 
-  // warm up shaders
-  // compile every program up front, in parallel on the driver's threads where supported
-  // (KHR_parallel_shader_compile), instead of stalling the first frames one program at a time
+  // warm up shaders: submit every program up front (KHR_parallel_shader_compile keeps the
+  // main thread free meanwhile) instead of stalling the first frames one program at a time.
+  // Chrome compiles them one after another in its GPU process, so this phase lasts about
+  // the sum of the programs' compile times: keep programs few and their loops short (see
+  // core/lightLoops.js), and do no synchronous GL work (readPixels, a first draw, uniform
+  // queries) in init while they compile, or it waits for the whole queue.
   const tCompile = performance.now();
   // Programs depend on the output target (colour space, tone mapping): compile against the
   // HDR scene target the post chain renders into, not the screen.
@@ -149,8 +157,8 @@ async function main() {
     const rt = app.post && !app.post.disabled ? app.post.sceneRT : null;
     renderer.setRenderTarget(rt || null);
     await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 20000))]);
-    renderer.setRenderTarget(null);
   } catch (e) { console.warn('compile', e); }
+  renderer.setRenderTarget(null);
   touchPrograms(renderer);   // pay each program's first-use cost now, behind the loading bar
   app.perf.init.compile = Math.round(performance.now() - tCompile);
   const tFrames = performance.now();

@@ -93,12 +93,12 @@ const furniture = {
       return best * 1.3 + 32;
     });
     lap('sizing', t);
-    // every batch stays drawn until the programs have been compiled up front (the compile
-    // pass skips hidden objects), and until the app is ready each batch draws one invisible
-    // warm-up instance (BatchSet.warmup), so no program has its first draw mid-ride; from
-    // then on empty batches are skipped. The per-site platform meshes (library materials
-    // only stations use) get stand-ins far below the street, drawn (and clipped) every
-    // frame until ready, so a station streamed in mid-ride neither compiles nor first-draws.
+    // until the app is ready every batch stays shown and draws one invisible warm-up
+    // instance a frame (BatchSet.warmup), so its program is compiled up front and has its
+    // first draw behind the loading screen, not mid-ride; from then on empty batches are
+    // skipped. The per-site platform meshes (library materials only stations use) get
+    // stand-ins far below the street, drawn (and clipped) every frame until ready, so a
+    // station streamed in mid-ride neither compiles nor first-draws anything.
     const warm = new THREE.Group();
     warm.name = 'furniture:warmup';
     warm.position.y = -1e4;

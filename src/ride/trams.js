@@ -22,9 +22,19 @@ import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMateri
 //    projected size, a coarse depth-only hull for the sun's shadow, lamp levels following
 //    the light (headlights by day, dimmer at night). Glass and paint mirror the street as
 //    post's anti-aliasing history saw it last frame (each unit's mirror planes are set
-//    here); the saloon behind the side glazing is traced in its shader, lit at dusk.
+//    here), and the cab tram where it stands beside them (it is never drawn: its bodies are
+//    boxes in the reflection shaders). The destination display shows behind the top band of
+//    the windscreen.
+//  - Saloon and passengers: near a unit (LOD 0 / 1) by day the side glazing is see-through
+//    over a modelled saloon (seats, poles, lights) with passengers in it, figures of the humans
+//    module placed through its public contract (alloc / set / setVisible / heightOf; each unit
+//    has its own deterministic load). Far away and after dark the glazing is opaque over a
+//    saloon traced in its shader (lit at night); the two cross-fade in the twilight.
+//  - The cab tram's own shadow: three depth-only hulls on its track (never drawn in the main
+//    pass), so the tram the camera rides in shades the street and the people beside it.
 //
-// Debug: tram=<s> starts the first unit with its nose at s.
+// Debug: tram=<s> starts the first unit with its nose at s; cabshadow=0 drops the cab tram's
+// shadow (A/B), cabshadow=2 keeps it in the inspection view (view=) to look at it from outside.
 // API: app.trams.units[] = {id, s (leading nose, route s), prevS (s at the previous frame),
 // speed (m/s, travelling towards −s), accel, dir (−1), d, length, halfWidth, state, phase,
 // bellAt, active, obs (m from the nose to the nearest person its driver brakes for)}.
@@ -110,6 +120,7 @@ const trams = {
     // see-through side glazing by day (passengers of the humans module behind it), the traced
     // saloon after dark; 0..1, see _lights
     this.see = { value: 0 };
+    this._inner = []; this._innerOn = null;             // the saloon meshes (shown while see > 0)
     const atlases = UNITS.map((u) => makeLampAtlas(u.line, u.dest));
     this.unitMats = UNITS.map((def, i) => {
       const uni = makeUnitUniforms(this.refl, 3.7 + i * 11.3);
@@ -184,6 +195,7 @@ const trams = {
       return h;
     });
     app.scene.add(this.cabHull);
+    this._cabShadow = app.params.num('cabshadow', 1);
   },
 
   /** Unlit lamp material: atlas × vertex colour × level (display or lens, by atlas region). */
@@ -227,6 +239,7 @@ const trams = {
           mesh.castShadow = false;
           mesh.receiveShadow = !k.startsWith('lamp');
           mesh.name = `trams:${kind}:${k}`;
+          if (k === 'inner') this._inner.push(mesh);
           lg.add(mesh);
         }
         lg.visible = lod === 2;
@@ -286,11 +299,14 @@ const trams = {
    *  units' glass and paint (trams/materials.js tramCabRefl). Off in the inspection view. */
   _cabBoxes(app) {
     const R = this.refl, tr = app.train;
-    const on = !!(tr && !tr.disabled && Number.isFinite(tr.s) && !app.params.view);
+    const live = !!(tr && !tr.disabled && Number.isFinite(tr.s));
+    const on = live && !app.params.view;
     R.cabOn.value = on ? 1 : 0;
     const H = this.cabHull ? this.cabHull.userData.hulls : null;
-    if (H) for (let i = 0; i < 3; i++) H[i].userData.shadowProxy.active = on;
-    if (!on) return;
+    // (cabshadow=2: also in the inspection view, to look at it from outside)
+    const shade = this._cabShadow === 2 ? live : on && this._cabShadow !== 0;
+    if (H) for (let i = 0; i < 3; i++) H[i].userData.shadowProxy.active = shade;
+    if (!on && !shade) return;
     const J = CAR.joints, route = app.route;
     for (let i = 0; i < 3; i++) {
       const F = route.toWorld(tr.s - J[i], TRACK_OFFSET, 0, _P[0]);
@@ -525,7 +541,10 @@ const trams = {
     const H = app.humans, people = !!(H && !H.disabled && H.ready && this.pax && this.pax.length);
     // (passengers are lit by what lights the street: kept until the twilight is deep, sunset)
     const k = Math.min(1, Math.max(0, (night - 0.6) / 0.35));
-    this.see.value = people ? 1 : 0; // DBG
+    this.see.value = people ? 1 - k * k * (3 - 2 * k) : 0;
+    // the modelled saloon only while the glazing lets it through
+    const inner = this.see.value > 0.005;
+    if (inner !== this._innerOn) { this._innerOn = inner; for (let i = 0; i < this._inner.length; i++) this._inner[i].visible = inner; }
     // (log-interpolated: 0.12 -> 0.014 display, 0.12 -> 0.06 lenses)
     this.lampLv.value.set(0.12 * Math.pow(0.014 / 0.12, night), 0.12 * Math.pow(0.06 / 0.12, night));
   },

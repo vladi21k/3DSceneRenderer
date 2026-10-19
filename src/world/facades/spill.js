@@ -61,7 +61,10 @@ bool shop = kind > 0.5 && kind < 1.5 || kind > 2.5;
 float litT = uNight * LIT_SHARE;
 float litS = shop ? 1.0 : 1.0 - smoothstep( litT - 0.03, litT + 0.03, vSpill.x );
 float on = smoothstep( 0.2, 0.7, uNight ) * litS * ( 1.0 - dim );
-vec3 lampS = shop ? vec3( 1.0, 0.70, 0.43 ) : fRoomLampC( vSpill.x ) * fRoomLevel( vSpill.x );
+// a shop's light: the colour of its own lamps (x = 1 + type + draw, see shopSpill), else a
+// warm white
+vec3 lampS = shop ? ( vSpill.x >= 1.0 ? fKelvin( fShopK( floor( vSpill.x ) - 1.0, min( fract( vSpill.x ) / 0.998, 1.0 ), uNight ) ) : vec3( 1.0, 0.70, 0.43 ) )
+                  : fRoomLampC( vSpill.x ) * fRoomLevel( vSpill.x );
 if ( !shop && fRoomTV( vSpill.x ) > 0.5 ) lampS = fTVLight( vSpill.x, uTime ) * 0.6;
 float k;
 if ( kind > 2.5 ) {
@@ -83,7 +86,7 @@ if ( kind > 2.5 ) {
 }
 gl_FragColor = vec4( max( lampS * k * on * uEmGain, vec3( 0.0 ) ), 1.0 );`);
   };
-  m.customProgramCacheKey = () => 'facades.spill.v5';
+  m.customProgramCacheKey = () => 'facades.spill.v6';
   return m;
 }
 
@@ -104,6 +107,13 @@ export function spillTpl(o, q = 1) {
   });
 }
 
+/**
+ * aSpill.x of a shop's films and pool: 1 + its type index + the draw of its lamp colour
+ * from the glass seed (interior.js fShopK: fract(seed · 5.1 + 0.37)), so the light on its
+ * reveals and on the paving has the colour of the room's lamps.
+ */
+export function shopSpill(type, seed) { const kr = (seed * 5.1 + 0.37) % 1; return 1 + type + kr * 0.998; }
+
 /** aSpill values for a reveal template: lit threshold, kind, dim (0..0.95). */
 export function spillAttrs(lit, kind, dim, sp) {
   const H = Math.max(0.5, sp.H), kd = kind + Math.min(0.95, Math.max(0, dim));
@@ -121,7 +131,7 @@ const _p = new THREE.Vector3(), _q = new THREE.Vector3();
  * aperture (above the stall riser) seen from each vertex. Returns a template in world
  * coordinates (add with an identity matrix) and its aSpill attributes, or null.
  */
-export function groundGlow(ctx, o) {
+export function groundGlow(ctx, o, lit = o.lit ?? 1) {
   const { frame, plan, app, lot } = ctx;
   const route = app.route;
   const hw = o.w / 2, y0 = 0.45, y1 = Math.min(crownY(o), 3.4);
@@ -159,7 +169,6 @@ export function groundGlow(ctx, o) {
       t.ix6(a, c, b, b, c, d);
     }
   }
-  const lit = o.lit ?? 1;
   return { tpl: t.bake(), attrs: { aSpill: (k, v, arr, i) => { arr[i] = lit; arr[i + 1] = 3; arr[i + 2] = val[k]; arr[i + 3] = 0; } } };
 }
 

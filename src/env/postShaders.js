@@ -669,7 +669,7 @@ uniform vec2 uCurveSlope;     // contrast in stops around a pivot (stops over mi
 uniform float uBlack;         // soft black point (display units)
 uniform sampler2D tDepth;     // scene depth (sky = far plane)
 uniform float uSkyChroma;     // chroma for sky pixels (AgX's inset/outset would grey a saturated blue)
-uniform float uSkySat;        // and the saturation the AgX look would have given them (scene-linear)
+uniform vec2 uSkySat;         // and their saturation (scene-linear): blue sky, warm sky (low sun, afterglow)
 uniform sampler2D tGlow;      // glow around the brightest sources (exposed units, see GLOW_FS)
 uniform float uGlow;
 uniform vec3 uToe;            // toe: log-slope reduction, the stops where it eases in, ease width
@@ -816,10 +816,12 @@ void main() {
   }
   vec3 sc = max(col, 0.0);
   if (skyPx) {
-    // (warm afterglow: green raised towards red, so the band over the horizon reads
-    // yellow-orange and the pink above it stays pink)
-    if (uSkyTwist > 0.0) sc.g += uSkyTwist * smoothstep(0.15, 0.5, (sc.r - sc.b) / max(sc.r, 1e-6)) * max(sc.r - sc.g, 0.0);
-    sc = max(lum + (sc - lum) * uSkySat, 0.0);
+    // (the saturated afterglow band: green raised towards red, so it reads yellow-orange;
+    // the paler pink above it stays pink)
+    if (uSkyTwist > 0.0) sc.g += uSkyTwist * smoothstep(0.5, 0.85, (sc.r - sc.b) / max(sc.r, 1e-6)) * max(sc.r - sc.g, 0.0);
+    // (a camera renders the blue sky deep and saturated; a warm sky stays nearly as it is)
+    float blue = smoothstep(0.0, 0.25, (sc.b - sc.r) / max(sc.b, 1e-6));
+    sc = max(lum + (sc - lum) * mix(uSkySat.y, uSkySat.x, blue), 0.0);
   }
 
   col = agx(col);

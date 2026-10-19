@@ -11,9 +11,12 @@ import { TRACK_OFFSET, EYE_HEIGHT } from '../core/config.js';
 //   w  out of the wall towards the street (+), into the building (−)
 // lot.frame.matrix maps (u, v, w) → world.
 //
-// Late-Ottoman / Mandate-era limestone commercial street: mostly 4–6 storeys (2–8), ashlar
-// courses, arched shop openings, upper windows (flat / round / pointed tops),
-// wrought-iron balconies on stone corbels, cornice + parapet, some tiled roofs.
+// Late-Ottoman / Mandate-era limestone commercial street: mostly 4–6 storeys (2–9), ashlar
+// courses, arched shop openings, upper windows (flat / round / pointed tops; grouped
+// lights in a wider centre bay), wrought-iron balconies on stone corbels, cornice +
+// parapet, some tiled roofs; between them a quarter of later blocks (wide flat windows,
+// slab balconies, a thin coping, mostly rendered and colour-washed), neighbours in
+// different stone tones, and colour-washed or taller blocks where the street's view ends.
 
 // Absolute stone tints; every consumer takes them relative to cream, the colour the baked
 // limestone texture stands for (shade.stoneStyle, far field, ironwork). The baked stone is
@@ -1129,6 +1132,9 @@ function finish(plan, lot, landmark = false) {
   if (st.era === 'modern') st.frameColor = fc;
 }
 
+// painted mural compositions (buildings/mural.js MURALS)
+const MURAL_KINDS = 6;
+
 // render colours (multipliers on the plaster albedo, × 0.9 as the upper volumes store them)
 const TOWER_RENDER = [
   [1.17, 0.9, 0.47], [1.19, 0.97, 0.56], [1.22, 0.7, 0.38], [1.17, 0.65, 0.36],   // ochre, yellow, orange
@@ -1184,7 +1190,7 @@ function tower(plan, lot) {
   // street (side < 0), u = width on the right
   const eFace = lot.side < 0 ? 0 : 1;
   const mural = material === 'plaster' && rng.chance(0.55)
-    ? { e: eFace, k: rng.int(0, 3), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
+    ? { e: eFace, k: rng.int(0, MURAL_KINDS - 1), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
     : null;
   const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`)));
   plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind, balconies: [] };

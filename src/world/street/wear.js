@@ -236,6 +236,24 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
       stains.push({ s, d: dc + zr.normal(0, 0.07), kind: 3, size: zr.range(1.0, 1.5), aspect: zr.range(0.6, 1.1), yaw: Math.PI / 2 + zr.normal(0, 0.04), op: zr.range(0.7, 1.0), warm: 0.1 });
     }
   }
+  // grime blotches a metre or two across: spills and water stains dried into the stone,
+  // trodden-in dirt, darker damp patches in the four-foot
+  const gr = RNG.from(layout.seed, 'street-grime', ci);
+  for (let k = gr.int(3, 7); k > 0; k--) {
+    const s = gr.range(s0 + 1.0, s1 - 1.0);
+    const where = gr.weighted([[0, 0.45], [1, 0.2], [2, 0.35]]);
+    let d;
+    if (where === 0) d = (gr.chance(0.5) ? 1 : -1) * (TRACK_OFFSET + gr.normal(0, 0.25));
+    else if (where === 1) d = gr.range(-BAND_IN + 0.3, BAND_IN - 0.3);
+    else {
+      const side = gr.chance(0.5) ? 1 : -1;
+      d = side * gr.range(GUTTER_OUT + 0.4, layout.halfWidth(s, side) - 0.5);
+    }
+    const size = where === 0 ? gr.range(0.6, 1.1) : gr.range(0.9, 2.4);
+    if (!inside(s, where === 0 ? size * 1.1 : size * 0.5) || layout.isInCrossover(s, 2) || nearCross(s, 1.5) || (where === 2 && blocked(s, d, 0.2))) continue;
+    stains.push({ s, d, kind: gr.chance(0.6) ? 0 : 5, size, aspect: where === 0 ? gr.range(1.3, 2.2) : gr.range(0.6, 1.1), yaw: where === 0 ? Math.PI / 2 + gr.normal(0, 0.2) : gr.range(0, 6.28), op: gr.range(0.85, 1.45), warm: gr.range(0.05, 0.3) });
+  }
+
   // drips along the middle of both tracks elsewhere
   for (const t of [-1, 1]) {
     for (let k = rng.int(0, 3); k > 0; k--) {

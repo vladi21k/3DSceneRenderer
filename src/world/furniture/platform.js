@@ -87,11 +87,25 @@ function stoneBlocks(route, pl, dE, sgn, prof, close, k, lod, seed, grime) {
     if (s1 - (a + L) < 0.5 / kS) L = s1 - a;                 // no sliver at the end
     const b = Math.min(s1, a + L);
     const inRamp = a < s0 + RAMP || b > s1 - RAMP;
-    const list = sRange(a, b - (b < s1 ? JOINT / kS : 0), inRamp && !lod ? 0.25 : 2);
-    const v = rng.range(0.96, 1.04), h = rng.range(-0.02, 0.02);
-    // cooler, paler stone than the facades (desaturated towards #cfc4ae), dirt at the foot
-    const base = [0.97 * v * (1 + h), 0.97 * v, 1.0 * v * (1 - h)];
-    const col = (x, hh) => { const f = grime(x, hh); return [base[0] * f, base[1] * f, base[2] * f]; };
+    const bEnd = b - (b < s1 ? JOINT / kS : 0);
+    const list = sRange(a, bEnd, inRamp && !lod ? 0.25 : 2);
+    // near detail: extra rows 4 cm inside each block end, where dirt collects in the joint
+    // and the arrises are worn
+    const EDGE = 0.04 / kS;
+    if (!lod && bEnd - a > 3 * EDGE) {
+      list.push(a + EDGE, bEnd - EDGE);
+      list.sort((x, y) => x - y);
+    }
+    const v = rng.range(0.9, 1.07), h = rng.range(-0.03, 0.03);
+    // pale grey-beige kerb limestone, much cooler and greyer than the honey facade stone
+    // (the library limestone times about (0.86, 0.97, 1.3): linear ~(0.52, 0.46, 0.35)),
+    // a tone of its own per block, dirt at the foot and in the joints
+    const base = [0.86 * v * (1 + h), 0.97 * v, 1.3 * v * (1 - h)];
+    const col = (x, hh, ss) => {
+      const e = Math.min(ss - a, bEnd - ss);
+      const f = grime(x, hh) * (e < EDGE * 0.5 ? 0.8 : 1);
+      return [base[0] * f, base[1] * f, base[2] * f];
+    };
     out.push(sectionStrip(route, list, dE, sgn, prof, k, { u0: rng.range(0, 20), col }));
     if (!lod) {
       if (a > s0 + 1e-6) out.push(sectionCap(route, list[0], dE, sgn, prof, k(list[0]), close, -1, base));

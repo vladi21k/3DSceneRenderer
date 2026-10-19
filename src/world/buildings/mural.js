@@ -13,7 +13,7 @@ import { FACES } from './mesh.js';
 // The mural geometry (buildings sink key `mural<k>`) carries uv in 0..1 over the painted
 // rectangle; the material is a plain matte standard material with the painting as map.
 
-export const MURALS = 4;
+export const MURALS = 6;   // (= facadePlan MURAL_KINDS)
 const TW = 640, TH = 1024;
 
 let mats = null;
@@ -299,7 +299,8 @@ function paint(k) {
   const c = canvas(TW, TH);
   const g = c.getContext('2d');
   const r = RNG.from('buildings', 'mural', k);
-  [panorama, crowd, tree, (gg, rr) => panorama(gg, rr, true)][k % 4](g, r);
+  // (two more of the crowd and the tree, painted from other draws)
+  [panorama, crowd, tree, (gg, rr) => panorama(gg, rr, true), crowd, tree][k % MURALS](g, r);
   weather(g, r);
   // the primed border
   g.strokeStyle = 'rgba(232,226,212,0.9)';

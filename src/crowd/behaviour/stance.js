@@ -89,7 +89,7 @@ function choose(c, a, L, group, key) {
   a.idleT = 1e9;
   // (seated, riding or pushing something: the renderer has poses of its own)
   if (a.mob || a.state === ST.SEATED) { a.idleW = OWN; return; }
-  const ap = c.humans && c.humans.appearanceOf ? c.humans.appearanceOf(a.appearance) : null;
+  const ap = c.humans && c.humans.appearanceOf ? c.humans.appearanceOf(a.appearance, a.role === 'staff' ? 1 : 0) : null;
   const st = a.state;
   if (a.role === 'staff') {
     // walking: relaxed when slowing down (never a phone); at the table: talking (taking the

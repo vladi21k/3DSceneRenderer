@@ -218,10 +218,21 @@ export function torsoSurface(char) {
     if (ARM_BONES.has(bb) || bb === BONE.head) continue;
     pts.push(raw.pos[v * 3], raw.pos[v * 3 + 1], raw.pos[v * 3 + 2]);
   }
-  const P = new Float32Array(pts);
+  // (sorted by height: a query scans only the points within the height band its ray segment can reach)
+  const m = pts.length / 3, order = new Uint32Array(m);
+  for (let i = 0; i < m; i++) order[i] = i;
+  order.sort((a, b) => pts[a * 3 + 1] - pts[b * 3 + 1]);
+  const P = new Float32Array(m * 3);
+  for (let i = 0; i < m; i++) { P[i * 3] = pts[order[i] * 3]; P[i * 3 + 1] = pts[order[i] * 3 + 1]; P[i * 3 + 2] = pts[order[i] * 3 + 2]; }
+  const lower = (y) => {      // first point with height >= y
+    let lo = 0, hi = m;
+    while (lo < hi) { const md = (lo + hi) >> 1; if (P[md * 3 + 1] < y) lo = md + 1; else hi = md; }
+    return lo;
+  };
   const f = (p, d, off = 0.004, rad = 0.025, tmin = -0.35, tmax = 0.35) => {
     let best = -Infinity;
-    for (let i = 0; i < P.length; i += 3) {
+    const y0 = p.y + Math.min(tmin * d.y, tmax * d.y) - rad, y1 = p.y + Math.max(tmin * d.y, tmax * d.y) + rad;
+    for (let i = lower(y0) * 3, e = lower(y1) * 3; i < e; i += 3) {
       const x = P[i] - p.x, y = P[i + 1] - p.y, z = P[i + 2] - p.z;
       const t = x * d.x + y * d.y + z * d.z;
       if (t < tmin || t > tmax || t < best) continue;
@@ -231,19 +242,22 @@ export function torsoSurface(char) {
     return best === -Infinity ? null : p.clone().addScaledVector(d, best + off);
   };
   f.pts = P;
+  f.slice = (y0, y1) => [lower(y0), lower(y1)];
   return f;
 }
 
 /** The torso's axis: z at height y = the middle of the torso points' depth within 2.5 cm of y. */
-function torsoAxis(P) {
+function torsoAxis(surf) {
+  const P = surf.pts;
   const cache = new Map();
   return (y) => {
     const key = Math.round(y * 200);
     let z = cache.get(key);
     if (z === undefined) {
       let lo = Infinity, hi = -Infinity;
-      for (let i = 0; i < P.length; i += 3) {
-        if (Math.abs(P[i + 1] - y) > 0.025 || Math.abs(P[i]) > 0.06) continue;
+      const [a, b] = surf.slice(y - 0.025, y + 0.025);
+      for (let i = a * 3; i < b * 3; i += 3) {
+        if (Math.abs(P[i]) > 0.06) continue;
         lo = Math.min(lo, P[i + 2]); hi = Math.max(hi, P[i + 2]);
       }
       z = lo <= hi ? 0.5 * (lo + hi) : 0;
@@ -442,8 +456,15 @@ export function buildParts(char, opts = {}) {
     const wc = THREE.MathUtils.clamp((p.y - waist[0]) / Math.max(0.05, chest[0] - waist[0]), 0, 1);
     return wc > 0.5 ? [[BONE.spine2, 1]] : [[BONE.spine2, wc + 0.5], [BONE.spine1, 0.5 - wc]];
   };
+  // (smoothing a path over a convex body pulls it inside: each inner point back out onto the surface)
+  const lift = (pts, nrms, off) => {
+    for (let i = 1; i < pts.length - 1; i++) {
+      const q = surf(pts[i].clone().addScaledVector(nrms[i], -0.05), nrms[i], off, 0.02, 0, 0.1);
+      if (q && q.clone().sub(pts[i]).dot(nrms[i]) > 0) pts[i].copy(q);
+    }
+  };
   // torso axis (rest pose): the middle of the torso's depth at a height, from the surface points
-  const axisZ = torsoAxis(surf.pts);
+  const axisZ = torsoAxis(surf);
   // the surface along a horizontal ray from the torso's axis at height y, at angle th round it
   // (0 = straight ahead, -z; +pi/2 = the figure's right, +x), pushed out by off
   const _d = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
@@ -522,24 +543,28 @@ export function buildParts(char, opts = {}) {
         const q = surf(new THREE.Vector3(x, shR.y - 0.03 * k, z), _up, 0.005, 0.016, 0, 0.11 * k);
         if (q) add({ p: q, n: new THREE.Vector3(0, 1, 0) }, 0.012);
       }
-      // down the front of the chest
+      // down the front of the chest to the armpit
+      const yA = Math.min(chest[0], shR.y - 0.12 * k);
       for (let i = 0; i <= 5; i++) {
         const u = i / 5;
-        add(around(shR.y - 0.05 * k - u * (shR.y - 0.05 * k - (chest[0] - 0.05 * k)), sg * (0.58 + 0.12 * u), 0.005), 0.012);
+        add(around(shR.y - 0.05 * k - u * (shR.y - 0.05 * k - yA), sg * (0.58 + 0.12 * u), 0.005), 0.012);
       }
-      // round the side under the arm to the pack's lower corner (webbing)
-      for (let i = 1; i <= 6; i++) {
-        const u = i / 7;
-        add(around(chest[0] - 0.05 * k - u * (chest[0] - 0.05 * k - (cy - ph * 0.36)), sg * (0.72 + u * (Math.PI - 0.72 - 0.75)), 0.005), 0.01 - 0.006 * u);
+      // the webbing: back under the arm at the armpit's height first, then down to the pack's lower corner
+      const yE = cy - ph * 0.36;
+      for (let i = 1; i <= 7; i++) {
+        const u = i / 8;
+        const th = 0.72 + (Math.PI - 0.72 - 0.75) * THREE.MathUtils.smoothstep(u, 0, 0.55);
+        add(around(yA - (yA - yE) * THREE.MathUtils.smoothstep(u, 0.25, 1), sg * th, 0.005), 0.01 - 0.006 * u);
       }
       const end = new THREE.Vector3(sg * pw * 0.42, -ph * 0.36, -pd * 0.32).applyMatrix4(M);
       pts.push(end); nr.push(new THREE.Vector3(sg, 0, 0)); tk.push(0.004);
       if (pts.length < 6) continue;
       smoothPath(pts, 2);
+      lift(pts, nr, 0.005);
       tension(pts, nr);
       const W = 0.052 * Math.min(1, k * 1.1);
       const n = pts.length;
-      b.strap(pts, nr, (i) => W * (i > n - 8 ? 0.62 : 1), (i) => tk[i], chestSkin, REGION.strap);
+      b.strap(pts, nr, (i) => W * (i > n - 9 ? 0.62 : 1), (i) => tk[i], chestSkin, REGION.strap);
     }
     out.backpack = b.build();
     out.backpackFar = bf.build();
@@ -641,6 +666,7 @@ export function buildParts(char, opts = {}) {
     }
     pts.push(pB); nr.push(dirP(phc + half, new THREE.Vector3()));
     smoothPath(pts, 2);
+    lift(pts, nr, 0.005);
     tension(pts, nr);
     // skinning: the chest above the waist (the right shoulder's top with its clavicle), the hips at the bag
     const strapSkin = (p) => {

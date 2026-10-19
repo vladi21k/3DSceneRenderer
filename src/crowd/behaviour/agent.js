@@ -48,6 +48,7 @@ export class Agent {
     this.slotF = 0; this.slotR = 0;
     this.appearance = 0; this.phase = 0; this.pose = 0;
     this.look = 0; this.lookGoal = 0; this.lookT = 0; this.tramLookT = 0;
+    this.lookTram = 0;        // head yaw that looks at the tram (crowd.lookAtTram, this frame)
     this.clearing = false; this.clearTo = 0;
     this.noRect = false;      // may enter café / platform footprints (patrons, passengers)
     this.inDoor = false;      // inside a shop doorway recess (no facade clamp)
@@ -69,7 +70,7 @@ export class Agent {
     this.dreamy = false;      // absorbed (phone, conversation): notices the tram late
     this.fresh = false;       // spawned this frame (for the visible-spawn statistics)
     this.src = '';            // where it came from (statistics)
-    this.stride = 1.5; this.strideV = -1; // cached gait cycle length and the speed it was computed for
+    this.stride = 1.5;        // gait cycle length at the current speed (steering.animate)
     this.afs = 0; this.afd = 0; // avoidance force (recomputed every other frame)
     this.laneT = 0; this.laneTT = 0; // cached lane target and its refresh countdown
     // tram awareness

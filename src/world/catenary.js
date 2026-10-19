@@ -26,6 +26,10 @@ import { createLampGlow } from './catenary/glow.js';
 //
 // Lit lanterns get a soft aureole (catenary/glow.js), one instanced draw round the camera.
 //
+// Until the app is ready every part (and the aureole) draws one invisible instance a frame
+// (CatBatches.warmup), so no program has its first draw mid-ride: signals, banners and the
+// aureoles are otherwise first drawn where the ride first meets them.
+//
 // Debug URL switches: catslots=0 keeps per-chunk wire and sticker meshes; catglow=0 turns
 // the lantern aureoles off.
 
@@ -414,7 +418,7 @@ const catenary = {
     updateScreenUniforms(app, this.lampRadiance);
     // lamp switch-on level 0..1 (env.state.lamps: photocell ramp from t 0.64, full by 0.72,
     // then the night)
-    this.lampOn =this.lampRadiance > 0 ? SU.uLamp.value / this.lampRadiance : 0;
+    this.lampOn = this.lampRadiance > 0 ? SU.uLamp.value / this.lampRadiance : 0;
     if (this.glow) this.glow.update(app.cameraS ?? app.startS, SU.uLamp.value);
     this._updatePedLights(app);
     // alpha-to-coverage rounds to whole samples of the scene target

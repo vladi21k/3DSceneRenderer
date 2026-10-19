@@ -18,12 +18,15 @@ import { createGroundShade } from './vegetation/groundShade.js';
 //       It does not wait for the atlas: the leaf materials start on blank stand-ins (no
 //       leaves drawn, same shader programs) and take the atlas when the painting ends,
 //       in the background while the other modules start, long before the first frame.
+//       The drawn size of every tree goes back into layout.trees (_writeBack).
 // build: per chunk, adds one instance per tree and per prop (stakes and ties, planter
 //       boxes; planters come from layout.furniture entries of type 'planter'). The tree
 //       grates are paving details drawn by the street module. The chunk's trees also get
 //       a soft sky-occlusion disc on the paving under their crowns (groundShade.js).
 // per frame (pool.js): instance visibility follows the chunk group, detail level follows
-//       the tree's projected size on screen (cross-faded).
+//       the tree's projected size on screen (cross-faded). Until the app is ready every
+//       pool draws invisible warm-up instances (VegetationPools.warmup), so no program has
+//       its first draw mid-ride.
 // dispose: removes the chunk's instances.
 //
 // Debug URL switches: veglod=0|1|2 forces a detail level, vegshow=bark|leaf,
@@ -55,6 +58,7 @@ const vegetation = {
       t.leafMinY = b.min.y;
       t.leafMaxY = b.max.y;
       t.leafR = Math.max(-b.min.x, b.max.x, -b.min.z, b.max.z);
+      t.leafW = [b.max.x - b.min.x, b.max.z - b.min.z];
     }
     this.shrubs = SHRUBS.map((sh) => ({ sh, ...buildShrubTemplate(sh, seed) }));
     const t1 = performance.now();
@@ -174,6 +178,7 @@ const vegetation = {
       // ±8 %, hue about ±6°)
       const v = r.range(0.92, 1.08), h = r.range(-0.14, 0.14), bv = r.range(0.88, 1.08);
       const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sy, sxz, mature, reach: T.leafR * Math.max(Math.abs(sx), Math.abs(sz)),
+        spread: 0.5 * (T.leafW[0] * Math.abs(sx) + T.leafW[1] * Math.abs(sz)),
         leafTint: new THREE.Color(v * (1 + h), v, v * (1 - 2 * h)), barkTint: new THREE.Color(bv, bv, bv), seed: t.seed };
       plan.set(t, p);
       prev.push(p);
@@ -184,9 +189,11 @@ const vegetation = {
   /**
    * The drawn trees go back into the shared plan, so every module sees them as drawn
    * (café canopies, lamp pools, signals, the crowd, parked bicycles, the far field): per
-   * layout tree, `height` (m, top of the crown above the paving), `crown` (m across, the
-   * widest reach of the leaves), `mature` (an old tree as drawn), plus `crownR` (m, reach
-   * from the stem), `crownBase` (m, its lowest leaves above the paving), `species`,
+   * layout tree, `height` (m, top of the crown above the paving), `crown` (m, the spread
+   * of its leaves: mean width across the two crown axes), `mature` (an old tree as
+   * drawn), plus `crownR` (m, the farthest reach of its leaves from the stem, for
+   * clearances: crowns are pruned on the track side, so they are not centred on the
+   * stem), `crownBase` (m, its lowest leaves above the paving), `species`,
    * `template`, `drawn: true` and the layout's own values in `planned` {height, crown,
    * mature}. Modules that read layout.trees in their own init before vegetation's still
    * see the planned values.
@@ -196,7 +203,7 @@ const vegetation = {
       if (!t.planned) t.planned = { height: t.height, crown: t.crown, mature: t.mature };
       t.height = +(P.T.leafMaxY * P.sy).toFixed(2);
       t.crownR = +P.reach.toFixed(2);
-      t.crown = +(2 * P.reach).toFixed(2);
+      t.crown = +P.spread.toFixed(2);
       t.crownBase = +(P.T.leafMinY * P.sy).toFixed(2);
       t.mature = P.mature;
       t.species = P.T.tpl.species;

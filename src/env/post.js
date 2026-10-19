@@ -12,7 +12,7 @@ import * as S from './postShaders.js';
 const QUALITY = {
   low: { msaa: 0, ao: 0, dof: false, levels: 5, shimmer: false, lamps: 4, blur: false },
   med: { msaa: 4, ao: 8, dof: true, levels: 6, shimmer: true, lamps: 6, blur: true },
-  high: { msaa: 4, ao: 12, dof: true, levels: 6, shimmer: true, lamps: 8, blur: true },
+  high: { msaa: 4, ao: 16, dof: true, levels: 6, shimmer: true, lamps: 8, blur: true },
 };
 
 // Depth of field, for a 1"-type sensor (a typical cab-ride camcorder: deep focus at
@@ -41,12 +41,12 @@ const HDR_CLAMP = 64;
 
 // Screen-space AO: world radius and strength; the baked AO in the materials is scaled
 // down while it runs so contact darkening isn't counted twice.
-const AO = { radius: 0.75, intensity: 0.75, strength: 0.75, bakedScale: 0.6 };
+const AO = { radius: 0.75, intensity: 0.75, strength: 0.85, bakedScale: 0.6 };
 
 // Camera response (final pass). curve: display value of a scene luminance, a generalised
-// logistic in stops from mid grey fitted to a camera JPEG's long toe and soft shoulder
-// (−5 stops → 0.03, −3 → 0.10, −2 → 0.18, 0 → 0.47, +2 → 0.85, +3 → 0.98, white at
-// +3.5); chroma: AgX's colour (0) .. the scene's ratios (1), day .. low sun.
+// logistic in stops from mid grey fitted to a camera JPEG's soft shoulder (0 → 0.47,
+// +2 → 0.85, +3 → 0.98, white at about +3.2), its toe eased by `toe` and `black` below;
+// chroma: AgX's colour (0) .. the scene's ratios (1), day .. low sun.
 // Auto exposure: the metered log-average is pulled towards `target` with strength `meter`,
 // within `clamp`; by day the exposure follows the incident light (sunny-16) and the meter
 // only nudges it, from the low sun on the camera meters the scene: [day, evening].
@@ -64,17 +64,17 @@ const TONE = {
   // (sunlit stone and the sky slot reach 230-248), lower as the sky outshines the street
   hiKnee: [[0.3, 1.6], [0.55, 1.2], [0.8, 1.0]],
   hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.34], [0.8, 0.27], [0.9, 0.32], [1.0, 0.6]],
-  // the hard light of midday is shot with a little more contrast (log slope about a pivot
-  // just above mid grey), easing off towards golden hour: the blacks come from the
-  // curve, not from underexposure
+  // the hard light of midday is shot with a little more contrast above a pivot just over
+  // mid grey (the highlights separate; the shade keeps the toe), easing off towards golden
+  // hour: the blacks come from the curve, not from underexposure
   midday: 1.12, pivot: 0.3,
   // soft black point (display units): by day the deepest shade, window recesses and dark
   // clothes sit near black as in a camera JPEG; less once the light is lamps and sky
-  black: [0.047, 0.02],
+  black: [0.043, 0.018],
   // toe: below about mid grey the curve's log slope eases off by `toe[0]` (over `toe[2]`
-  // stops around `toe[1]`), a camera's long toe: −2 stops ~52 sRGB, −3 ~31, −4 ~17, −6 ~4
+  // stops around `toe[1]`), a camera's long toe: −2 stops ~50 sRGB, −3 ~29, −4 ~15, −6 ~3
   // (building shade and dark shop glass keep their detail; mid grey and up unchanged)
-  toe: [0.26, 0.126, 0.5],
+  toe: [0.22, 0.06, 0.5],
   // local highlight recovery (final pass): where the surfaces around a pixel average more
   // than `knee` stops over mid grey (a low sun's sheen on the paving, looking into it), its
   // bright pixels (ramped in from `px[0]` stops over `px[1]`) come down by `strength` x the
@@ -88,14 +88,16 @@ const TONE = {
   satOut: [1.15, 1.2],
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
-  // sky pixels keep nearly the scene's colour ratios, and more saturation by day (the
-  // dusty atmosphere's sky is pale; a camera renders the clear sky overhead a deep blue,
-  // (95-130, 145-180, 220-250) sRGB at 45 degrees); env.skySatScale scales the boost (a
-  // milky dust-haze day keeps its pale cream sky)
-  skyChroma: 0.95, skySat: [1.8, 1.05],
+  // sky pixels keep nearly the scene's colour ratios, with more saturation where the sky
+  // is blue (the dusty atmosphere's sky is pale; a camera renders the clear sky overhead a
+  // deep blue, (95-130, 145-180, 220-250) sRGB at 45 degrees): day .. blue hour. A warm sky
+  // (towards a low sun, the afterglow) gets little (`skySatWarm`): a golden sky stays pale
+  // cream, as in a photograph. env.skySatScale scales both boosts (a milky dust-haze day
+  // keeps its pale cream sky)
+  skyChroma: 0.95, skySat: [1.8, 1.3], skySatWarm: [1.1, 1.05],
   // sunset: warm sky hues turned a little towards yellow (the horizon band reads
   // yellow-orange, hue 30-40 degrees, as cameras render it; pink above it)
-  skyTwist: 0.25,
+  skyTwist: 0.4,
   // glow skirt around sources far above white, from sunset on (lantern globes, lit glass):
   // threshold and knee in exposed units, strength (time of day, strength). Only while the
   // lamps' own aureoles are off: with them each globe would get a second halo
@@ -323,7 +325,7 @@ const post = {
       uCurveSlope: { value: new THREE.Vector2(1, TONE.pivot) },
       tDepth: { value: null }, uBlack: { value: 0 },
       uSkyChroma: { value: app.params.num ? app.params.num('skychroma', TONE.skyChroma) : TONE.skyChroma },
-      uSkySat: { value: TONE.skySat[0] },
+      uSkySat: { value: new THREE.Vector2(TONE.skySat[0], TONE.skySatWarm[0]) },
       tGlow: { value: null }, uGlow: { value: 0 },
       uToe: { value: new THREE.Vector3(...TONE.toe) },
       tLocal: { value: null }, uLocal: { value: new THREE.Vector4(TONE.local.knee, 0, TONE.local.px[0], TONE.local.px[1]) },
@@ -619,10 +621,13 @@ const post = {
       const kd = ss(t, 0.6, 0.75), K0 = TONE.knee[0], K1 = TONE.knee[1];
       fu.uKnee.value.set(lerp(K0[0], K1[0], kd), lerp(K0[1], K1[1], kd), lerp(K0[2], K1[2], kd), lerp(K0[3], K1[3], kd));
     }
-    // local highlight recovery while the sun is up (the dusk sources have the glow)
+    // local highlight recovery while the sun is up (after sunset the bright things are the
+    // lamps, small sources whose halos stand for the lens)
     fu.uLocal.value.y = this.localOn && this.localRT ? TONE.local.strength * (1 - ss(t, 0.8, 0.9)) : 0;
     const kSky = env && Number.isFinite(env.skySatScale) ? env.skySatScale : 1;
-    fu.uSkySat.value = this.skySatK * (1 + (THREE.MathUtils.lerp(TONE.skySat[0], TONE.skySat[1], ss(t, 0.45, 0.8)) - 1) * kSky);
+    const kd = ss(t, 0.45, 0.9);
+    fu.uSkySat.value.set(this.skySatK * (1 + (lerp(TONE.skySat[0], TONE.skySat[1], kd) - 1) * kSky),
+      this.skySatK * (1 + (lerp(TONE.skySatWarm[0], TONE.skySatWarm[1], kd) - 1) * kSky));
   },
 
   /**

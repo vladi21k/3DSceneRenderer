@@ -294,17 +294,25 @@ export function domeAwning(W, R, valH, q) {
     return [straight / 2, Math.cos(a), Math.sin(a)];
   };
   const ribs = Math.max(4, Math.round(total / 0.42));
-  const nu = q >= 0.5 ? ribs * 3 : ribs;
-  const nv = q >= 0.5 ? 6 : 3;
+  const nu = q >= 0.5 ? ribs * 4 : ribs;
+  const nv = q >= 0.5 ? 8 : 3;
+  // each gore of canvas between two ribs has faded and gathered dirt a little differently
+  const gore = (k) => { const h = Math.sin(k * 91.7 + total * 17.3) * 43758.5453; return 0.93 + 0.12 * (h - Math.floor(h)); };
   surface(t, nu, nv, (a, b) => {
     const s = a * total, [xa, dx, dz] = plan(s);
     // 0.02 rad at the wall (top: the caps' poles keep a few mm of edge), π/2 at the bottom edge
     const th = TH0 + b * (Math.PI / 2 - TH0);
-    // pleats between the ribs
-    const rib = (a * ribs) % 1;
-    const pleat = q >= 0.5 ? 0.025 * Math.sin(Math.PI * rib) * Math.sin(th) : 0;
+    // the canvas sags in between the ribs (most at the panel's middle and towards the
+    // hem, where it is held only at the ribs), and creases run down beside each rib
+    const rib = (a * ribs) % 1, gi = Math.min(ribs - 1, Math.floor(a * ribs));
+    const sg = Math.sin(Math.PI * rib);
+    const pleat = q >= 0.5 ? (0.042 * sg + 0.006 * Math.sin(Math.PI * 4 * rib)) * Math.sin(th) * (0.7 + 0.3 * b) : 0;
     const r = R - pleat;
-    return [xa + dx * r * Math.sin(th), R * Math.cos(th) - pleat * Math.cos(th) * 0.3, dz * r * Math.sin(th), s, 0.25 * Math.sin(th) * Math.sin(Math.PI * rib), 1 - 0.15 * Math.sin(Math.PI * rib)];
+    // shading baked per vertex: dark where the canvas meets the wall (no sky under the
+    // cornice), the sagging middle of each gore a little darker, dirt along the hem
+    const top = 0.62 + 0.38 * Math.min(1, b / 0.35);
+    const hem = 1 - 0.1 * Math.max(0, (b - 0.75) / 0.25);
+    return [xa + dx * r * Math.sin(th), R * Math.cos(th) - pleat * Math.cos(th) * 0.3, dz * r * Math.sin(th), s, 0.25 * Math.sin(th) * sg, (1 - 0.2 * sg) * top * hem * gore(gi)];
   });
   // valance along the bottom edge
   valance(t, total, valH, q, (s) => { const [xa, dx, dz] = plan(s); return [xa + dx * (R + 0.004), 0, dz * (R + 0.004)]; });

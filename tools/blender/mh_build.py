@@ -1997,14 +1997,8 @@ def vent_underlay(d, pmask, hip_z, reach=0.025):
     fn *= np.sign((fn * vn).sum(1))[:, None]            # (oriented like the vertex normals: outwards)
     fn /= np.linalg.norm(fn, axis=1)[:, None] + 1e-12
     e1, e2 = B - A, C - A
-    for p in faces:
-        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
-        c = co[vs].mean(0).astype(np.float64)
-        if c[2] > hip_z - 0.08:
-            continue
-        n = d['nr'][vs].sum(0).astype(np.float64)
-        n /= np.linalg.norm(n) + 1e-12
-        o = c + n * 0.0008
+
+    def covered(o, n, p):
         pv = np.cross(n, e2)
         det = (e1 * pv).sum(1)
         ok = (np.abs(det) > 1e-12) & (own != p) & ((fn @ n) > 0.5)
@@ -2014,7 +2008,18 @@ def vent_underlay(d, pmask, hip_z, reach=0.025):
         q = np.cross(sv, e1)
         v = (q * n).sum(1) * inv
         t = (e2 * q).sum(1) * inv
-        if (ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0) & (t < reach)).any():
+        return bool((ok & (u >= -0.02) & (v >= -0.02) & (u + v <= 1.04) & (t > 0) & (t < reach)).any())
+    for p in faces:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        c = co[vs].mean(0).astype(np.float64)
+        if c[2] > hip_z - 0.08:
+            continue
+        n = d['nr'][vs].sum(0).astype(np.float64)
+        n /= np.linalg.norm(n) + 1e-12
+        # (wholly covered only: the centre and every corner, pulled a little towards the centre, lie
+        # under the outer cloth; a face only partly under it stays, or its uncovered part would open a hole)
+        pts = [c] + [0.85 * co[v].astype(np.float64) + 0.15 * c for v in vs]
+        if all(covered(q + n * 0.0008, n, p) for q in pts):
             out[p] = True
     return out
 

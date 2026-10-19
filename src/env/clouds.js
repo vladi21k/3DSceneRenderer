@@ -112,13 +112,17 @@ float cloudDensity(vec3 p, float detail) {
   float field = mix(textureLod(uCloudTex, (q + wq) / (13000.0 * uCloudScale), 0.0).r,
                     textureLod(uCloudTex, R37 * (q - wq) / (22000.0 * uCloudScale) + 0.37, 0.0).r, 0.4);
   field = clamp(0.5 + (field - 0.5) * 1.35, 0.0, 1.0);   // (the blend of two fields is flatter)
+  // size spread: the cells' strength drifts over ~3 km, so big towers stand beside small
+  // humilis and fragments instead of a field of equal puffs
+  float big = textureLod(uCloudTex, R37 * q / (9000.0 * uCloudScale) + 0.61, 0.0).b;
+  field *= mix(0.86, 1.14, big);
   vec4 n = textureLod(uNoise3D, vec3(q.x, p.y * 1.4, q.y) / (4500.0 * uCloudScale), 0.0);
   float shape = field * 0.72 + n.r * 0.28;
   // flat bases, domed tops: the threshold rises with height, so only the cores reach up
   float thr = 1.0 - cov * sqrt(max(1.0 - hf, 0.0)) * smoothstep(0.0, 0.05, hf);
   // dense bodies: the density saturates over the outer part of each cell, so the
   // erosion below carves the boundary into billows and wisps instead of hollowing it
-  float d = clamp((shape - thr) / max(0.22 * (1.0 - thr), 1e-3), 0.0, 1.0);
+  float d = clamp((shape - thr) / max(0.3 * (1.0 - thr), 1e-3), 0.0, 1.0);
   // fair-weather cumulus come in fields: where the regional coverage is too thin to make
   // a group, or the cell field around this cell (blurred over ~300 m) stays well under
   // the threshold, the odd cell that still pokes over it (a lone round puff) fades
@@ -192,11 +196,12 @@ vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float d
     float hf = clamp((p.y - CB) / uCloudTop, 0.0, 1.0);
     float powder = 1.0 - exp(-sig * 160.0);
     // sun: single scattering plus two multiple-scattering octaves (wider, less attenuated)
-    // (flat bases read grey: the light reaching them has crossed the cell, which the four
-    // shadow taps under-count for the small cells)
-    float base = mix(0.6, 1.0, smoothstep(0.0, 0.35, hf));
-    vec3 S = sunL * (exp(-tau) * ph0 + 0.5 * exp(-tau * 0.25) * ph1 + 0.25 * exp(-tau * 0.07) * ph2) * mix(1.0, powder, 0.5) * MS_BOOST * base
-           + mix(ambBot, ambTop, smoothstep(0.0, 0.8, hf)) * (0.55 + 0.45 * hf);
+    // (flat bases read grey, a little blue: the light reaching them has crossed the whole
+    // cell, which the four shadow taps under-count, and below them only the ground's dim
+    // light comes up)
+    float base = mix(0.42, 1.0, smoothstep(0.0, 0.45, hf));
+    vec3 S = sunL * (exp(-tau) * ph0 + 0.5 * exp(-tau * 0.3) * ph1 + 0.25 * exp(-tau * 0.12) * ph2) * mix(1.0, powder, 0.5) * MS_BOOST * base
+           + mix(ambBot, ambTop, smoothstep(0.0, 0.8, hf)) * (0.45 + 0.55 * hf);
     float sT = exp(-sig * dt);
     // energy-conserving integration of the in-scatter over the step (albedo ~1)
     L += T * S * (1.0 - sT);

@@ -768,8 +768,12 @@ export class Rig {
   }
 }
 
-/** Bakes every clip for a rig. Returns {data: Float32Array, offsets: [frame0 per clip], frames, strides}. */
-export function bakeClips(rig) {
+/**
+ * Bakes a rig's clips. Returns {data: Float32Array, offsets: [frame0 per clip], frames, strides, ready,
+ * rig}: every clip has its place in `data`; want(clipIndex) (default: all) picks the clips baked now, the
+ * rest are baked on first use by bakeClip (ready[clip] = 1 once baked).
+ */
+export function bakeClips(rig, want = null) {
   const total = CLIPS.reduce((a, c) => a + c.frames, 0);
   const data = new Float32Array(total * NB * 12);
   const offsets = [];
@@ -777,42 +781,50 @@ export function bakeClips(rig) {
   let f0 = 0;
   for (const clip of CLIPS) {
     offsets.push(f0);
-    let W = null;
-    if (clip.kind === 'walk') W = rig.walkParams(clip);
-    strides.push(W ? W.S : 0);
-    // walks: compute raw pelvis heights for all frames, then smooth them cyclically
-    const poses = [];
-    for (let i = 0; i < clip.frames; i++) {
-      const t = i / clip.frames;
-      if (clip.kind === 'walk') poses.push(rig.walkPose(t, W));
-      else if (clip.kind === 'idle') poses.push(rig.idlePose(t, clip.variant));
-      else poses.push(rig.sitPose(t, clip.variant));
-    }
-    if (clip.kind === 'walk') {
-      const n = poses.length, ys = poses.map((p) => p._yHip);
-      const sm = ys.map((_, i) => {
-        let a = 0, w = 0;
-        for (let k = -3; k <= 3; k++) { const g = Math.exp(-(k * k) / 4); a += ys[(i + k + n) % n] * g; w += g; }
-        return Math.min(a / w, ys[i] + 0.004);
-      });
-      poses.forEach((p, i) => { p._yHip = sm[i]; rig.finishWalk(p); });
-    }
-    for (let i = 0; i < clip.frames; i++) {
-      let pose = rig.solve(poses[i]);
-      if (clip.kind === 'walk') {
-        // swing foot ground clearance (toe tip / heel never below the street)
-        for (const s of ['L', 'R']) {
-          if (poses[i]._legs[s].stance) continue;
-          const fp = rig.footPoints(pose, s);
-          const low = Math.min(fp.tip.y, fp.heel.y, fp.ball.y);
-          if (low < 0.012) { poses[i].leg[s].ankle.y += 0.012 - low; pose = rig.solve(poses[i]); }
-        }
-      }
-      rig.skin(pose, data, (f0 + i) * NB * 12);
-    }
+    strides.push(clip.kind === 'walk' ? rig.walkParams(clip).S : 0);
     f0 += clip.frames;
   }
-  return { data, offsets, frames: CLIPS.map((c) => c.frames), strides, total };
+  const baked = { data, offsets, frames: CLIPS.map((c) => c.frames), strides, total, ready: new Uint8Array(CLIPS.length), rig };
+  for (let ci = 0; ci < CLIPS.length; ci++) if (!want || want(ci)) bakeClip(baked, ci);
+  return baked;
+}
+
+/** Bakes clip `ci` of a bakeClips() result into its place (a no-op once baked). */
+export function bakeClip(baked, ci) {
+  if (baked.ready[ci]) return;
+  const rig = baked.rig, clip = CLIPS[ci], data = baked.data, f0 = baked.offsets[ci];
+  const W = clip.kind === 'walk' ? rig.walkParams(clip) : null;
+  // walks: compute raw pelvis heights for all frames, then smooth them cyclically
+  const poses = [];
+  for (let i = 0; i < clip.frames; i++) {
+    const t = i / clip.frames;
+    if (clip.kind === 'walk') poses.push(rig.walkPose(t, W));
+    else if (clip.kind === 'idle') poses.push(rig.idlePose(t, clip.variant));
+    else poses.push(rig.sitPose(t, clip.variant));
+  }
+  if (clip.kind === 'walk') {
+    const n = poses.length, ys = poses.map((p) => p._yHip);
+    const sm = ys.map((_, i) => {
+      let a = 0, w = 0;
+      for (let k = -3; k <= 3; k++) { const g = Math.exp(-(k * k) / 4); a += ys[(i + k + n) % n] * g; w += g; }
+      return Math.min(a / w, ys[i] + 0.004);
+    });
+    poses.forEach((p, i) => { p._yHip = sm[i]; rig.finishWalk(p); });
+  }
+  for (let i = 0; i < clip.frames; i++) {
+    let pose = rig.solve(poses[i]);
+    if (clip.kind === 'walk') {
+      // swing foot ground clearance (toe tip / heel never below the street)
+      for (const s of ['L', 'R']) {
+        if (poses[i]._legs[s].stance) continue;
+        const fp = rig.footPoints(pose, s);
+        const low = Math.min(fp.tip.y, fp.heel.y, fp.ball.y);
+        if (low < 0.012) { poses[i].leg[s].ankle.y += 0.012 - low; pose = rig.solve(poses[i]); }
+      }
+    }
+    rig.skin(pose, data, (f0 + i) * NB * 12);
+  }
+  baked.ready[ci] = 1;
 }
 
 export const NUM_BONES = NB;

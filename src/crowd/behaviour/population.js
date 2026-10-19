@@ -82,14 +82,14 @@ export class Population {
     // appearance bank and the spot a new person is being placed at (set by the spawners before alloc)
     this.hint = settleShape({ on: false, s: 0, d: 0, v: 0 });
     this.charD = new Float32Array(256);
-    this._lastBank = -1;
+    this._lastBank = -1; this._fit = -1; this._cls = -1;
     this.bank = this._buildBank();
     // placements with a spot: no twin within NEAR_R / another age class or sex taken / a twin kept
     this.cloneN = new Int32Array(3);
     // (classes fixed up front: see settleShape)
     settleShape(this.tod); settleShape(this.stats); settleShape(this.stats.bySource);
     this.stats.chatHidden = 0; this.stats.mob = 0;
-    settleShape(this, new Set(['serial', 'frame', 'nBins', '_lastBank']));
+    settleShape(this, new Set(['serial', 'frame', 'nBins', '_lastBank', '_fit', '_cls']));
   }
 
   // ---------------------------------------------------------------- slots
@@ -109,7 +109,8 @@ export class Population {
     a.bankI = this._lastBank;
     if (a.bankI >= 0) this.bank.use[a.bankI]++;
     const H = c.humans;
-    const ap = H && H.appearanceOf ? H.appearanceOf(a.appearance) : null;
+    // (café staff are drawn in the waiter's outfit, by a character that can wear it: humans.js)
+    const ap = H && H.appearanceOf ? H.appearanceOf(a.appearance, role === 'waiter' ? 1 : 0) : null;
     a.charI = ap && Number.isInteger(ap.index) ? ap.index : -1;
     a.idle = -1; a.idleW = -1; a.idleK = -1; a.idleT = 0; a.pauseK = 0;
     a.isChild = ap ? ap.base === 'child' : false;
@@ -133,7 +134,7 @@ export class Population {
     a.needsBell = a.dreamy || r.chance(0.1);
     a.pair = 0; a.pSide = 0; a.pClr = false; a.abT = 0; a.paceK = 1; a.paceKT = 0; a.role = ''; a.cafeT = null; a.path = null; a.pathI = 0; a.inSide = false; a.sideX = 0; a.pauseT = 0; a.pauseFace = 0; a.sideA = 0; a.sideEnd = 0; a.stuckN = 0;
     a.dodge = 0; a.dodgeT = 0; a.passT = -1e9;
-    a.fresh = true; a.src = src; a.strideV = -1; a.strideB = -1; a.lwOk = false; a.afs = 0; a.afd = 0; a.laneTT = 0;
+    a.fresh = true; a.src = src; a.strideB = -1; a.lwOk = false; a.afs = 0; a.afd = 0; a.laneTT = 0;
     a.pValid = false; a.speedA = 0; a.moving = false; a.uturnT = 0; a.driftT = 0;
     a.baseF = 0; a.baseR = 0; a.singleT = 0; a.stuckF = 0; a.bandW = 9;
     a.wSeed = hash2(this.serial, 977) & 0xffff;
@@ -165,16 +166,35 @@ export class Population {
     const ri = ROLE_I[role] ?? 0;
     if (!B || B.roleN[ri] < 8) return this._appearanceHash(role, opt);
     if (near) this._nearChars(hint.s, hint.d, hint.v);
-    const N = B.n, D = this.charD;
+    // (a wish for shopping bags is dropped rather than a twin or a seed in use taken for it)
+    let best = this._scan(ri, opt, near, !!(opt && opt.shop));
+    if (best < 0 && opt && opt.shop) best = this._scan(ri, opt, near, false);
+    if (best < 0) best = this._fit;
+    if (best < 0) return this._appearanceHash(role, opt);
+    if (near) {
+      const sc = this.charD[B.ch[best]];
+      this.cloneN[sc < NEAR_R ? 2 : B.cls[best] === this._cls ? 0 : 1]++;
+    }
+    this._lastBank = best;
+    return B.seed[best];
+  }
+
+  /** Bank entry for role index ri (−1: none free): the first free one that fits opt with no twin
+   *  near (near: this.charD filled), else the best kept clear. this._fit is the first entry of the
+   *  role at all, this._cls the age class and sex first drawn. */
+  _scan(ri, opt, near, shop) {
+    const B = this.bank, N = B.n, D = this.charD;
     const h0 = hash2(this.serial, this.c.seed * 7919 + 13);
     let k = h0 & (N - 1);
     const step = (((h0 >>> 12) & (N / 2 - 1)) << 1) | 1;
-    let best = -1, bestSc = -1, fit = -1, cls = -1;
+    let best = -1, bestSc = -1, cls = -1;
+    this._fit = -1;
     for (let t = 0; t < BANK_SCAN; t++, k = (k + step) & (N - 1)) {
       if (((B.role[k] >> ri) & 1) === 0) continue;
       // (the role fits, the extra wishes or a free seed maybe not: kept should nothing else do)
-      if (fit < 0) fit = k;
-      if (opt && ((opt.maxH && B.h[k] > opt.maxH) || (opt.noCross && B.cross[k]) || (opt.shop && B.bag[k] !== SHOPPING_BAG))) continue;
+      if (this._fit < 0) this._fit = k;
+      if (opt && ((opt.maxH && B.h[k] > opt.maxH) || (opt.noCross && B.cross[k]))) continue;
+      if (shop && B.bag[k] !== SHOPPING_BAG) continue;
       if (B.use[k]) continue;
       if (!near) { best = k; break; }
       if (cls < 0) cls = B.cls[k];
@@ -183,14 +203,8 @@ export class Population {
       const score = sc + (same ? SAME_CLASS : 0);
       if (score > bestSc) { bestSc = score; best = k; }
     }
-    if (best < 0) best = fit;
-    if (best < 0) return this._appearanceHash(role, opt);
-    if (near) {
-      const sc = D[B.ch[best]];
-      this.cloneN[sc < NEAR_R ? 2 : B.cls[best] === cls ? 0 : 1]++;
-    }
-    this._lastBank = best;
-    return B.seed[best];
+    this._cls = cls;
+    return best;
   }
 
   /** Spot of the next person to be placed (unwrapped s, d) and their walking speed along s

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Rig, bakeClips, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PHONE_IDLE, PHONE_SIT, CUP_SIT } from './humans/anim.js';
+import { Rig, bakeClips, bakeClip, CLIPS, CLIP, NUM_BONES, BONE, SEAT_HEIGHT, PHONE_IDLE, PHONE_SIT, CUP_SIT } from './humans/anim.js';
 import { loadCast, mergeMeshes } from './humans/mh/cast.js';
 import { castAppearance, castToddler, castCharacter, castWaiter, waiterFits, BAG } from './humans/mh/appearance.js';
 import { buildParts } from './humans/mh/parts.js';
@@ -144,15 +144,19 @@ const humans = {
     this.bases = {};
     const meshes = [], ranges = [];
     const refs = [];
+    let tRig = 0, tPrep = 0, tParts = 0;
     for (let ci = 0; ci < cast.chars.length; ci++) {
       const c = cast.chars[ci];
+      let tq = performance.now();
       const rig = new Rig({ parent: c.skeleton.parent, joints: c.skeleton.joints }, c.info);
-      const baked = bakeClips(rig);
+      // (the clips this character can play are baked now, any other on first use)
+      const baked = bakeClips(rig, clipsFor(c));
       const walkV = CLIPS.map((cl) => (cl.kind === 'walk' ? rig.walkParams(cl).v : 0));
       // single frames used to re-pose the upper body while walking (phone, carried bag)
-      const frame = (clip, f) => baked.data.slice((baked.offsets[clip] + f) * MAT_N, (baked.offsets[clip] + f + 1) * MAT_N);
+      const frame = (clip, f) => (bakeClip(baked, clip), baked.data).slice((baked.offsets[clip] + f) * MAT_N, (baked.offsets[clip] + f + 1) * MAT_N);
       const B = { name: c.id, index: ci, char: c, info: c.info, rig, baked, walkV, phone: frame(CLIP.idlePhone, 0), hang: frame(CLIP.idle, 0) };
       this.bases[c.id] = B;
+      tRig += performance.now() - tq; tq = performance.now();
       // the hem of a skirt or dress (rest height): skin above it is kept inside the cloth (mh/shading.js)
       c.hemY = -1;
       { const T = c.raw.tex, Pp = c.raw.pos; let y = Infinity;
@@ -165,7 +169,9 @@ const humans = {
       beardFade(c, this.beardBase ? 0.01 : this.v2 ? 0.015 : 0.035);
       if (this.beardBase) beardShellsFromBase(c);
       else if (!this.v2) beardShells(c);
+      tPrep += performance.now() - tq; tq = performance.now();
       const parts = buildParts(c, { apron: waiterFits(c) });
+      tParts += performance.now() - tq;
       B.fit = parts.fit; delete parts.fit;
       refs.push({ B, mesh: meshes.length, parts: Object.keys(parts) });
       meshes.push(c.raw);
@@ -174,7 +180,10 @@ const humans = {
       if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));
     }
     this.initMs.bake = Math.round(performance.now() - tBake);
+    Object.assign(this.initMs, { rig: Math.round(tRig), prep: Math.round(tPrep), parts: Math.round(tParts), cast: cast.timing || null });
+    let tq = performance.now();
     const merged = mergeMeshes(meshes);
+    this.initMs.merge = Math.round(performance.now() - tq);
     for (const { B, mesh, parts } of refs) {
       const r0 = merged.ranges[mesh];
       B.bodyR = B.char.lods.map((L) => ranges.push({ start: r0.ibase + L.start, count: L.count }) - 1);
@@ -220,7 +229,9 @@ const humans = {
       }
     }
     this.cache.clear();       // appearances asked for before the cast was loaded
+    tq = performance.now();
     this._precompile(app);
+    this.initMs.compile = Math.round(performance.now() - tq);
     this.ready = true;
     this.initMs.total = Math.round(performance.now() - tInit);
     if (app.params.num('humanstest', 0)) this.test = new HumansTest(app, this);
@@ -1115,6 +1126,25 @@ function hatBrim(c) {
   c.hat = { band: fy.length ? fy[Math.floor(fy.length * 0.5)] : band, rb };
 }
 
+/**
+ * The clips a character plays (baked at init; any other is baked on first use): toddlers ride in
+ * strollers (their two seated clips); everyone else walks, stands and sits, the elderly with their own
+ * walks and long skirts with theirs.
+ */
+function clipsFor(c) {
+  const cls = c.ageClass;
+  const bot = c.outfit && c.outfit.bottom;
+  const longSkirt = !!bot && bot.suit === 'female_elegantsuit01' && bot.cut === 'skirt' && (bot.length ?? 0) > 0.5;
+  return (ci) => {
+    const n = CLIPS[ci].name;
+    if (cls === 'toddler') return n === 'sitStroller' || n === 'lieBaby' || n === 'idle';
+    if (n === 'sitStroller' || n === 'lieBaby') return false;
+    if (n === 'walkOld' || n === 'walkSenior') return cls === 'old';
+    if (n === 'walkSkirt') return longSkirt;
+    return true;
+  };
+}
+
 /** Idle clip cycle (s): the talking idle has its own, longer, cycle. */
 function idlePeriod(v) { return CLIPS[CLIP.idle + v] && CLIPS[CLIP.idle + v].frames > 64 ? 12 : 9.5; }
 
@@ -1227,6 +1257,7 @@ function dataTexture(data, w, h, rows) {
 
 /** Accumulate w * clip(time) (frames linearly interpolated) into M. */
 function addClip(M, bk, clip, time, w) {
+  if (!bk.ready[clip]) bakeClip(bk, clip);
   const n = bk.frames[clip];
   const f = (((time % 1) + 1) % 1) * n;
   const fi = Math.floor(f);

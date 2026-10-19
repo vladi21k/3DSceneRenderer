@@ -357,6 +357,16 @@ export class Surface {
     const n2 = 0.62 * this.fD.sample(s, d) + 0.38 * this.fD.sample(s * k[0] + d * 0.13 + 37.7, d * 0.71 - s * k[1] + 11.3);
     let v = (1 + 0.11 * n1) * (1 + 0.09 * n2) * ci.v;
     let warm = ci.warm;
+    if (ci.zone === Z_CORR || ci.zone === Z_WALK) {
+      // broad dirty patches a few metres to tens of metres across (where dust settles,
+      // water dries and the street is swept less), seen from the cab as the paving's
+      // uneven tone down the street
+      const kb = this.kS;
+      const nb = this.fG.sample(s * kb[0] * 8.0 + 3.3, d * 1.1 + 9.1) * 0.65 + this.fG.sample(s * kb[0] * 17.0 + 17.9, d * 2.1 + 2.2) * 0.35;
+      const blot = smooth((nb + 0.1) / 0.38);
+      v *= 1 - 0.2 * blot;
+      warm += 0.025 * blot;
+    }
     if (ci.grime > 0) {
       // placement grime (brake dust along the rails, dirt across the four-foot), broken up
       // into heavier and lighter stretches so the bands never read as painted stripes
@@ -407,6 +417,7 @@ export class Surface {
       }
     }
     const hue = 0.014 * n1;
+    if (d > 0) v *= 0.5;
     out[o] = v * (1 + hue + warm);
     out[o + 1] = v * (1 + warm * 0.25);
     out[o + 2] = v * (1 - hue - warm * 0.8);

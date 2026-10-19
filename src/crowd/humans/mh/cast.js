@@ -43,6 +43,62 @@ async function decodeStrip(url) {
   return d;          // RGBA, rows top to bottom; layer k = rows [k*S, (k+1)*S)
 }
 
+// strips are decoded (and flipped) in a few module workers, off the main thread; where workers are not
+// available, here
+let _pool = null;
+function decodePool() {
+  if (_pool !== null) return _pool;
+  try {
+    const url = new URL('./decode.worker.js', import.meta.url);
+    const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 4) >> 1));
+    const workers = [];
+    for (let i = 0; i < n; i++) workers.push(new Worker(url, { type: 'module' }));
+    const waiting = new Map();
+    let next = 0, seq = 0, live = 0;
+    for (const w of workers) {
+      w.onmessage = (e) => {
+        const job = waiting.get(e.data.id);
+        if (!job) return;
+        waiting.delete(e.data.id);
+        if (--live === 0) { for (const x of workers) x.terminate(); _pool = null; }
+        if (e.data.error) job.reject(new Error(e.data.error)); else job.resolve(e.data.data);
+      };
+      w.onerror = (e) => {
+        for (const j of waiting.values()) j.reject(new Error('decode worker failed'));
+        waiting.clear();
+        for (const x of workers) x.terminate();
+        _pool = undefined;              // (no workers here: decode on the main thread from now on)
+        e.preventDefault && e.preventDefault();
+      };
+    }
+    _pool = {
+      run(msg) {
+        return new Promise((resolve, reject) => {
+          const id = ++seq;
+          waiting.set(id, { resolve, reject });
+          live++;
+          workers[next++ % workers.length].postMessage({ ...msg, id });
+        });
+      },
+    };
+  } catch (e) {
+    _pool = undefined;
+  }
+  return _pool;
+}
+
+/** One strip's layers as RGBA bytes (rows flipped, box-filtered by `scale`): in a worker, else here. */
+async function stripLayers(base, st, S, scale) {
+  const pool = decodePool();
+  if (pool) {
+    try {
+      return await pool.run({ url: new URL(base + st.file, location.href).href, alpha: st.alpha ? new URL(base + st.alpha, location.href).href : null,
+        S, layers: st.layers, scale });
+    } catch (e) { /* decoded here instead */ }
+  }
+  return null;
+}
+
 /** DataArrayTexture from the strips (layer images top row first; rows flipped so v = 0 is the bottom row
  *  of each layer, as the exported UVs expect). `scale` 2 halves the resolution (box filter). */
 async function arrayTexture(base, strips, S, total, srgb, scale = 1) {
@@ -51,6 +107,8 @@ async function arrayTexture(base, strips, S, total, srgb, scale = 1) {
   const layerBytes = D * D * 4;
   const jobs = strips.map(async (st, si) => {
     const first = strips.slice(0, si).reduce((a, b) => a + b.layers, 0);
+    const done = await stripLayers(base, st, S, scale);
+    if (done) { data.set(done, first * layerBytes); return; }
     const [rgb, alpha] = await Promise.all([decodeStrip(base + st.file), st.alpha ? decodeStrip(base + st.alpha) : null]);
     for (let k = 0; k < st.layers; k++) {
       const dst = (first + k) * layerBytes;
@@ -89,17 +147,23 @@ async function arrayTexture(base, strips, S, total, srgb, scale = 1) {
 }
 
 export async function loadCast(baseUrl, { texScale = 1 } = {}) {
+  const t0 = performance.now();
+  const timing = {};
   const doc = await fetch(baseUrl + 'cast.json').then((r) => { if (!r.ok) throw new Error('cast.json ' + r.status); return r.json(); });
   const tex = doc.textures;
+  const done = (k) => (v) => { timing[k] = Math.round(performance.now() - t0); return v; };
   const [buf, albedo, normal] = await Promise.all([
-    fetchBin(baseUrl + 'cast.bin.gz'),
-    arrayTexture(baseUrl, tex.albedo, tex.size, tex.nAlbedo, true, texScale),
-    tex.nNormal ? arrayTexture(baseUrl, tex.normal, tex.size, tex.nNormal, false, texScale) : Promise.resolve(null),
+    fetchBin(baseUrl + 'cast.bin.gz').then(done('bin')),
+    arrayTexture(baseUrl, tex.albedo, tex.size, tex.nAlbedo, true, texScale).then(done('albedo')),
+    tex.nNormal ? arrayTexture(baseUrl, tex.normal, tex.size, tex.nNormal, false, texScale).then(done('normal')) : Promise.resolve(null),
   ]);
   if (doc.byteLength && buf.byteLength !== doc.byteLength) throw new Error('cast.bin does not match cast.json');
+  const t1 = performance.now();
   const chars = doc.characters.map((c) => ({ ...c, raw: rawViews(c, buf) }));
+  timing.raw = Math.round(performance.now() - t1);
+  timing.total = Math.round(performance.now() - t0);
   const layerRough = new Float32Array(tex.layers.map((l) => l.rough));
-  return { doc, chars, albedo, normal, layerRough };
+  return { doc, chars, albedo, normal, layerRough, timing };
 }
 
 function rawViews(c, buf) {

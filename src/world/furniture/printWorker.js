@@ -1,7 +1,7 @@
 import { buildPrintAtlas, buildLitAtlas } from './prints.js';
 
 // Worker entry: paints the print atlas and the lit atlas off the main thread (see
-// materials.js printAtlases) and returns them as bitmaps flipped for upload (a bitmap
+// materials.js paintPrintAtlases) and returns them as bitmaps flipped for upload (a bitmap
 // ignores the GL's flipY).
 self.onmessage = async () => {
   try {

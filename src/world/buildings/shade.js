@@ -159,11 +159,20 @@ export class FaceShade {
     cand.length = 0;
     for (const it of this.occ) if (it.y > va + 1e-3 && it.y - va < it.run) cand.push(it);
     if (!cand.length) return NO_ZONES;
+    // (the zones only depend on the candidates: consecutive rows mostly share them)
+    if (_zones.fs === this && cand.length === _zones.cand.length && cand.every(sameAt)) return _zones;
+    _zones.fs = this;
+    _zones.cand.length = 0;
+    for (const it of cand) _zones.cand.push(it);
     // (shared arrays: the result is valid until the next call)
     const xs = _xs, pts = _pts;
     xs.length = 0; pts.length = 0;
-    // (the ends themselves too: pieces of a slab cut at a console meet there)
-    for (const it of cand) xs.push(it.a - it.m, it.a, it.b, it.b + it.m);
+    for (const it of cand) {
+      xs.push(it.a - it.m, it.b + it.m);
+      // (the ends themselves too where pieces of a slab cut at a console meet)
+      if (it.wq >= CONSOLE_L) xs.push(it.a);
+      if (it.wq > 0 && (it.wq & CONSOLE_R)) xs.push(it.b);
+    }
     xs.sort(numAsc);
     pts.push(xs[0]);
     for (let i = 1; i < xs.length; i++) pts.push((xs[i - 1] + xs[i]) / 2, xs[i]);
@@ -208,11 +217,12 @@ export class FaceShade {
 // (the stone shader fades a slab's soot out by 1.05 m beyond its ends: keep BAL_M above that)
 const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
 const NO_ZONES = { cuts: [], occ: [null] };
+const sameAt = (it, i) => _zones.cand[i] === it;
 const NO_CONSOLES = [];
 // width-code flags of a slab piece that ends at a console (left end, right end)
 export const CONSOLE_L = 16384, CONSOLE_R = 8192;
 const byU = (p, q) => p.u - q.u;
-const _cand = [], _xs = [], _pts = [], _zones = { cuts: [], occ: [] };
+const _cand = [], _xs = [], _pts = [], _zones = { cuts: [], occ: [], cand: [], fs: null };
 const numAsc = (p, q) => p - q;
 /**
  * The occluder whose run-off shades u: covering ones (within their margin) by height,

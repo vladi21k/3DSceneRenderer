@@ -12,10 +12,14 @@ import { U } from '../../core/uniforms.js';
 //    reflection; the clear coat mirrors the street (see street reflection below).
 //  - glass: flush side glazing, a smooth dielectric with a little more reflectance than one
 //    surface (laminated / double panes). Vertex colour black = black frit over the pillars
-//    and frames. Behind the panes the saloon is traced per pixel in the body frame (seat
+//    and frames. Near units by day it is see-through (transparent, both faces) over the
+//    modelled saloon and its passengers (interior: the saloon's own material). Far away and
+//    after dark the saloon is traced per pixel behind opaque panes in the body frame (seat
 //    pairs, grab poles and rails, seated and standing passengers, the ceiling's light
 //    strips, the far side's windows onto the street), lit by the daylight coming in or by
 //    its own lights after dark, and seen through the tinted glass.
+//  - interior: the modelled saloon (trams/model.js saloon), its light dimmed to what comes in
+//    through the windows, its own lights at dusk.
 //  - front / frontTrail: the cab front glass, uv = (u share of the half width, height in m).
 //    Drawn per pixel: the windscreen in a rounded U (coated laminated glass, F0 ≈ 0.25, so
 //    the street canyon and the sky mirror in it over the cab, which is ray traced behind
@@ -24,12 +28,15 @@ import { U } from '../../core/uniforms.js';
 //    silver trim round it, the dark tinted mask (cheeks and the foot where the lamps sit)
 //    outside it.
 //  - metal: the pantograph frame (dark grey paint).
+//  The destination display is drawn by the front glass, just behind its top band (lamp atlas,
+//  display level from trams.js), so the windscreen's reflection lies over it.
 //
 // Street reflection: glass, windscreen and clear coat mirror the street as the camera saw it
 // in the previous frame (the anti-aliasing history): the reflected ray is met with the
 // street's paving and its two facade planes along the unit, and that point is looked up in
 // last frame's image. Where it falls off screen (or there is no history) the environment
-// cube takes over, with its bare street below the horizon toned down.
+// cube takes over, with its bare street below the horizon toned down. The cab tram, which is
+// never drawn, is put back into these reflections as three boxes (tramCabRefl).
 
 const C = (r, g, b) => new THREE.Color(r, g, b);
 
@@ -266,9 +273,11 @@ vec3 tramLit( vec3 alb, vec3 n, vec3 Ed, float En ) {
   return alb * ( Ed * aoD * ( 0.5 + 0.5 * abs( n.x ) + 0.15 * n.y ) + En * aoN * vec3( 0.97, 0.98, 1.0 ) * ( 0.35 + 0.65 * max( n.y, 0.0 ) ) );
 }
 vec3 tramCloth( float h ) {
-  return h < 0.14 ? vec3( 0.018, 0.022, 0.04 ) : h < 0.25 ? vec3( 0.01 ) : h < 0.36 ? vec3( 0.5, 0.5, 0.47 )
+  vec3 c = h < 0.14 ? vec3( 0.018, 0.022, 0.04 ) : h < 0.25 ? vec3( 0.01 ) : h < 0.36 ? vec3( 0.5, 0.5, 0.47 )
     : h < 0.46 ? vec3( 0.045, 0.07, 0.13 ) : h < 0.55 ? vec3( 0.16, 0.13, 0.09 ) : h < 0.62 ? vec3( 0.17, 0.025, 0.025 )
     : h < 0.7 ? vec3( 0.04, 0.055, 0.03 ) : h < 0.8 ? vec3( 0.2, 0.27, 0.38 ) : h < 0.9 ? vec3( 0.08 ) : vec3( 0.32, 0.2, 0.1 );
+  // worn, washed colours rather than paint
+  return mix( c, vec3( dot( c, vec3( 0.3, 0.59, 0.11 ) ) ), 0.3 ) * 0.88;
 }
 vec3 tramSkin( float h ) { return mix( vec3( 0.34, 0.22, 0.16 ), vec3( 0.06, 0.035, 0.022 ), h * h ); }
 // does the ray pass within r (+ the footprint) of c? (bound before the details)
@@ -288,8 +297,13 @@ vec3 tramHead( vec3 n, float f, float h, vec3 Ed, float En ) {
   float hh = fract( h * 5.3 );
   vec3 hc = hh < 0.72 ? vec3( 0.016, 0.012, 0.009 ) : hh < 0.88 ? vec3( 0.07, 0.042, 0.022 ) : hh < 0.95 ? vec3( 0.2, 0.13, 0.06 ) : vec3( 0.28, 0.26, 0.24 );
   float face = smoothstep( 0.3, 0.8, f * n.z );
-  float eyes = face * ( 1.0 - smoothstep( 0.03, 0.1, abs( n.y - 0.1 ) ) ) * 0.22;
-  vec3 sk = tramSkin( fract( h * 3.7 ) ) * ( 0.8 + 0.2 * face ) * ( 1.0 - eyes );
+  float eyes = face * ( 1.0 - smoothstep( 0.03, 0.1, abs( n.y - 0.1 ) ) ) * ( 0.4 + 0.6 * smoothstep( 0.03, 0.09, abs( n.x ) ) ) * 0.22;
+  // the face's relief in shading: brow and nose catch the light, the eye sockets, the cheeks'
+  // sides, under the nose and the mouth are a little darker
+  float nose = face * ( 1.0 - smoothstep( 0.04, 0.16, abs( n.x ) ) ) * smoothstep( - 0.3, 0.0, n.y ) * ( 1.0 - smoothstep( 0.0, 0.2, n.y ) );
+  float mouth = face * ( 1.0 - smoothstep( 0.02, 0.07, abs( n.y + 0.38 ) ) ) * ( 1.0 - smoothstep( 0.18, 0.32, abs( n.x ) ) );
+  float cheek = face * smoothstep( 0.35, 0.7, abs( n.x ) );
+  vec3 sk = tramSkin( fract( h * 3.7 ) ) * ( 0.8 + 0.2 * face ) * ( 1.0 - eyes ) * ( 1.0 + 0.12 * nose - 0.3 * mouth - 0.12 * cheek );
   return tramLit( mix( sk, hc, hair ), n, Ed, En );
 }
 // head, jaw and neck at the head centre c (facing f)
@@ -685,13 +699,13 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
     // (see-through: the transmission goes out as alpha, see the blend factors above)
     if (see) sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', '#include <opaque_fragment>\n\tgl_FragColor.a = tramAlpha;');
   };
-  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v1' : 'trams.glass.v13');
+  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v2' : 'trams.glass.v14');
   return m;
 }
 
 /** The saloon seen through the side glazing by day (trams/model.js saloon): albedo from the
- *  vertex colour, the seat fabric in the unit's colour (uv.x 2), the ceiling's light strips lit
- *  (uv.x 1, on day and night), and the light the room gets: the daylight through its windows
+ *  vertex colour, the seat fabric in the unit's colour (uv.x 20), the ceiling's light strips lit
+ *  (uv.x 10, on day and night), and the light the room gets: the daylight through its windows
  *  (the indirect light, scaled down to what reaches inside) and its own lights after dark. */
 export function makeInteriorMaterial(uni, gain = { value: 1 }, seat = new THREE.Color(0.06, 0.08, 0.15)) {
   const m = new THREE.MeshStandardMaterial({ name: 'trams.interior', color: C(1, 1, 1), vertexColors: true, metalness: 0, roughness: 0.72 });
@@ -704,7 +718,7 @@ export function makeInteriorMaterial(uni, gain = { value: 1 }, seat = new THREE.
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vTramMark;\nuniform float uTramNight;\nuniform float uTramGain;\nuniform vec3 uTramSeatC;')
       .replace('#include <color_fragment>', `#include <color_fragment>
-	if ( vTramMark > 1.5 ) diffuseColor.rgb = uTramSeatC;`)
+	if ( vTramMark > 15.0 ) diffuseColor.rgb = uTramSeatC;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
 	{
 		// daylight reaching the saloon through its windows, and its ceiling lights
@@ -712,13 +726,13 @@ export function makeInteriorMaterial(uni, gain = { value: 1 }, seat = new THREE.
 		reflectedLight.indirectSpecular *= 0.4;
 		float tramEn = uTramNight * uTramGain * 0.022 * RECIPROCAL_PI;
 		totalEmissiveRadiance += diffuseColor.rgb * tramEn * ( 0.35 + 0.65 * max( dot( normal, ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ), 0.0 ) );
-		float tramLamp = step( 0.5, vTramMark ) * step( vTramMark, 1.5 );
+		float tramLamp = step( 5.0, vTramMark ) * step( vTramMark, 15.0 );
 		totalEmissiveRadiance = mix( totalEmissiveRadiance, vec3( 0.97, 0.98, 1.0 ) * 0.085 * mix( 1.0, uTramGain, uTramNight ), tramLamp );
 		reflectedLight.directDiffuse *= 1.0 - tramLamp;
 		reflectedLight.indirectDiffuse *= 1.0 - tramLamp;
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.interior.v1';
+  m.customProgramCacheKey = () => 'trams.interior.v2';
   m.userData.seatC = seatC;
   return m;
 }

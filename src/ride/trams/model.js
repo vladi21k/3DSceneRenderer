@@ -8,8 +8,12 @@ import { CONTACT_WIRE_HEIGHT, RAIL_CENTER } from '../../core/config.js';
 // red tail lamps trailing) and the lit destination display behind its top band; four
 // double plug doors a side (push buttons on the leaves); the fleet number painted under
 // each cab's side windows; lower side panels jointed under the window pillars; roof
-// fairings ramping down at their ends and a single-arm pantograph on the centre body that
-// reaches the contact wire.
+// equipment covers (the cab's air conditioning unit and traction converter, the centre
+// body's resistors either side of the pantograph) ramping down at their ends, with panel
+// joints and louvred intakes, and a single-arm pantograph on the centre body that reaches the
+// contact wire; the city's crest beside the fleet number on the nose and the coupler hatch in
+// its apron. Inside: the saloon (seats, poles, rails, ceiling lights) seen through the side
+// glazing by day, with the spots where passengers sit and stand.
 //
 // Each body is built in its own frame: x to the right, y up from the rail top, local −z
 // forward with z = 0 at the body's leading end (the nose tip, or the articulation point).
@@ -17,13 +21,13 @@ import { CONTACT_WIRE_HEIGHT, RAIL_CENTER } from '../../core/config.js';
 // differs. Three levels of detail share the generators: LOD 0 (door seams, window frames,
 // wheels, corrugated bellows, wiper), LOD 1 (plain glazing) and LOD 2 (coarse, for the
 // far end of the street). One part per material (trams/materials.js): body (silver
-// paint and dark trim, vertex colour = paint colour), glass (upper side glazing, lit from
-// inside at night) and ws (lower panes, door glass), both with black frit over the
-// pillars so the glazing reads as one flush band, front (windscreen, trim and dark mask,
-// drawn per pixel), metal (pantograph) and lamps (unlit, from the display / lens atlas:
-// display, head / tail lamps, door indicators and buttons). The glazing's saloon is traced
-// in its shader (trams/materials.js); the centre body's glass uv runs from 100 so the
-// shader knows its door layout.
+// paint and dark trim, vertex colour = paint colour), glassR / glassL (each side's glazing,
+// windows and door glass, with black frit over the pillars so the glazing reads as one flush
+// band), front (windscreen, trim, dark mask and the destination display behind it, drawn per
+// pixel), metal (pantograph), inner (the saloon, LOD 0 / 1) and lamps (unlit, from the lens
+// atlas: head / tail lamps, door indicators and buttons). Far away and after dark the
+// glazing's saloon is traced in its shader (trams/materials.js); the centre body's glass uv
+// runs from 100 so the shader knows its door layout.
 
 export const CAR = {
   length: 32,
@@ -748,7 +752,8 @@ function pantograph(P, z, lod) {
 // poles and the overhead rails (LOD 0). The layout is the traced saloon's (trams/materials.js),
 // which the glazing draws instead after dark and far away. Normals face into the room, so from
 // outside only its far side, floor and ceiling are drawn. Vertex colour = albedo; uv.x marks the
-// seat fabric (2: the unit's colour) and the light strips (1: lit), see makeInteriorMaterial.
+// seat fabric (20: the unit's colour) and the light strips (10: lit), see makeInteriorMaterial
+// (everything else keeps uv.x within 0..1).
 export const SALOON = { xw: 1.2, yf: 0.36, yc: 2.47, sill: 0.98, pitch: 0.8, part: 2.65, seatY: 0.84 };
 const INC = {
   floor: [0.05, 0.047, 0.043], wall: [0.4, 0.4, 0.385], kick: [0.06, 0.06, 0.058], ceil: [0.55, 0.55, 0.53],
@@ -814,7 +819,7 @@ function saloon(B, cab, z0, z1, lod) {
   quadN(B, [-X, yf, za], [X, yf, za], [X, yf, zb], [-X, yf, zb], [0, 1, 0], INC.floor);
   quadN(B, [-0.95, yc, za], [0.95, yc, za], [0.95, yc, zb], [-0.95, yc, zb], [0, -1, 0], INC.ceil);
   for (const sx of [1, -1]) {
-    quadN(B, [sx * 0.5, yc - 0.006, za + 0.2], [sx * 0.64, yc - 0.006, za + 0.2], [sx * 0.64, yc - 0.006, zb - 0.2], [sx * 0.5, yc - 0.006, zb - 0.2], [0, -1, 0], [1, 1, 1], 1);
+    quadN(B, [sx * 0.5, yc - 0.006, za + 0.2], [sx * 0.64, yc - 0.006, za + 0.2], [sx * 0.64, yc - 0.006, zb - 0.2], [sx * 0.5, yc - 0.006, zb - 0.2], [0, -1, 0], [1, 1, 1], 10);
     // coves from the window heads up to the ceiling
     const n = [-sx * 0.27, -0.96, 0];
     quadN(B, [sx * X, 2.4, za], [sx * 0.95, yc, za], [sx * 0.95, yc, zb], [sx * X, 2.4, zb], n, INC.ceil);
@@ -844,7 +849,7 @@ function saloon(B, cab, z0, z1, lod) {
   end(za, 1);
   end(zb, -1);
   // seat pairs: cushion on a pedestal, back with a rounded grab top; fabric towards the sitter
-  const fabric = [[1, 1, 1], 2];
+  const fabric = [[1, 1, 1], 20];
   for (let k = Math.ceil(za / S.pitch); (k + 1) * S.pitch <= zb + 1e-6; k++) {
     const zc = k * S.pitch, zm = zc + S.pitch / 2;
     if (!seatCell(zm, cab)) continue;

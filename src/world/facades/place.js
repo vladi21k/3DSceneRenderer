@@ -10,7 +10,7 @@ import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
 import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
-import { spillTpl, spillAttrs, groundGlow } from './spill.js';
+import { spillTpl, spillAttrs, groundGlow, shopSpill } from './spill.js';
 import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
 import { facadePlan } from '../facadePlan.js';
 import { slopeAwningT as slopeAwning, domeAwningT as domeAwning, awningColors } from './awnings.js';
@@ -438,13 +438,16 @@ function* buildShop(kit, ctx, o, signInfo, type) {
   const W = Math.max(4, o.w + 1.6);
   const H = Math.max(3, f0.y + f0.h - roomY0 - 0.3);
   const D = 6.5 + r.next() * 3;
-  const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed: r.next(), drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit, recess: o.recess + (L.inset || 0) });
+  const gseed = r.next();
+  const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed: gseed, drape: 0, kind: 1, type: shopTypeIndex(type), zRef: -0.02, lit: o.lit, recess: o.recess + (L.inset || 0) });
   shadeGlass(ga, awningShade(ctx, o));
   kit.get('glass').add(T.glass, m, 1, 1, 1, ga);
-  addSpill(kit, ctx, o, m0, o.lit, 1);
+  // (the reveal glow and the pavement pool in the colour of its lamps)
+  const lampX = shopSpill(shopTypeIndex(type), gseed);
+  addSpill(kit, ctx, o, m0, lampX, 1);
   // its light on the pavement in front (main-street fronts)
   if (ctx.q >= 0.5 && !ctx.lot.sideStreet && !ctx.plan.isReturn && !ctx.lot.backdrop) {
-    const gg = groundGlow(ctx, o);
+    const gg = groundGlow(ctx, o, lampX);
     if (gg) kit.get('spill').add(gg.tpl, IDENT, 1, 1, 1, gg.attrs);
   }
   // the shop's dressing: posters and price cards on the glass, stickers on the door, the
@@ -533,7 +536,7 @@ function awningPlan(ctx, o) {
       const y0 = crown + 0.12 - R;               // on the spring line for round heads
       return { col, valH, dome: [0, R], mLocal: [0, y0, o.recess + off], valFront: null, P: R + off, hem: y0 - valH, hw: R };
     }
-    const R = Math.min(0.85, Math.max(0.6, (crown - ground - 2.4) * 0.6));
+    const R = Math.min(0.85, Math.max(0.45, Math.min((crown - ground - 2.4) * 0.6 + 0.3, crown + 0.15 - valH - ground - 2.3)));
     const W = o.w + 0.3, y0 = crown + 0.15 - R;
     return {
       col, valH, dome: [W, R], mLocal: [0, y0, o.recess + off], P: R + off, hem: y0 - valH, hw: W / 2,
@@ -622,6 +625,13 @@ function awningOf(ctx, o) {
     // (round-headed openings mostly take a dome that follows the arch)
     const arched = isArched(o) && o.top !== 'segment';
     if (r.chance(EXTRA_AWNING)) a = { type: r.chance(arched ? 0.4 : 0.8) ? 'slope' : 'dutch', color: null };
+  }
+  // a dutch hood over a flat or segmental head (the shop heads come down under the
+  // first-floor balconies) needs ~0.45 m of hood above a 2.3 m clear hem: on a lower head
+  // the shop puts up a sloped awning instead
+  if (a && a.type === 'dutch' && !(isArched(o) && o.top !== 'segment')) {
+    const clear = o.y + crownY(o) - ctx.plan.groundAt(o.uc);
+    if (clear < 2.3 + 0.28 + 0.45 - 0.15) a = { ...a, type: 'slope' };
   }
   memo.set(o, a);
   return a;

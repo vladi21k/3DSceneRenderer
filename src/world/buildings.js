@@ -22,7 +22,9 @@ import { U } from '../core/uniforms.js';
 // advances the jobs the streamer will need next, ordered by how soon each is needed,
 // within a per-frame budget in absolute milliseconds that grows with speed (per nominal
 // 60 Hz frame, so slow frames are not made slower) and urgency (init prepares the start
-// position up front), so build() normally only wraps finished geometry. The per-frame
+// position: the full-detail range up front, the rest of the view in background slices
+// while the other modules start and the shaders compile), so build() normally only
+// wraps finished geometry. The per-frame
 // path (update, prefetch, preUpload) allocates nothing. A far chunk whose
 // job is still running gets a coarse stand-in that is swapped for the real shell when
 // the job ends, instead of a long synchronous build.
@@ -120,11 +122,11 @@ const buildings = {
     // Everything the first frames need: the view (chunks beyond it are prefetched while
     // riding), and both levels of the chunks near the full-detail switch (the camera
     // starts a few metres from startS), so the streamer's first builds never generate
-    // inline. These jobs are generated in the background, in slices between the other
-    // modules' start-up work and during the shader compile (the main thread mostly waits
-    // there); the start-up prime builds whatever it needs first inline, and the first
-    // frame completes the rest (see finishStartup), so the first frame sees exactly
-    // what a synchronous start-up would have built.
+    // inline. The full-detail range, which the start-up prime builds, is generated here;
+    // the far jobs in the background, in slices between the other modules' start-up work
+    // and during the shader compile (the main thread mostly waits there), and the first
+    // frame completes whatever is left (see finishStartup), so the first frame sees
+    // exactly what a synchronous start-up would have built.
     const around = [app.startS, app.startS - CHUNK_LEN / 2];   // the cab may start a little behind startS
     if (app.params.view) around.push(app.params.view[0]);
     const list = [];
@@ -133,9 +135,11 @@ const buildings = {
       for (const c of candidates(app, s, false, 0)) add(c);
       for (const c of candidates(app, s, true)) add(c);
     }
-    // nearest first: the prime asks for those first
+    // nearest first; what the start-up prime builds (the full-detail range) is generated
+    // right here, the rest in the background
     const d = (j) => Math.abs(app.route.delta(app.startS, j.s));
     list.sort((a, b) => d(a) - d(b));
+    for (const job of list) if (job.lod === 0 || d(job) < PRIME_DIST) runJob(app, job, Infinity);
     startup = { list, i: 0, timer: 0 };
     pumpStartup(app);
     lap('jobs');
@@ -242,12 +246,11 @@ const buildings = {
 };
 export default buildings;
 
-// ------------------------------------------------------------------ chunk jobs
-
 // ------------------------------------------------------------------ start-up jobs
 
 let startup = null;            // {list: jobs, i, timer} until the first frame
 const PUMP_MS = 6;             // a background slice (the main thread is otherwise waiting)
+const PRIME_DIST = LOD0_DIST + CHUNK_LEN;   // (chunk centres) the start-up prime's range, and a chunk to spare
 
 /** Generate the start-up jobs in background slices, nearest first, until the first frame. */
 function pumpStartup(app) {
@@ -275,6 +278,8 @@ function finishStartup(app) {
   for (let i = st.i; i < st.list.length; i++) if (!st.list[i].done) { runJob(app, st.list[i], Infinity); n++; }
   buildings.stats.init.firstFrame = [n, Math.round(performance.now() - t0)];
 }
+
+// ------------------------------------------------------------------ chunk jobs
 
 /** Numeric job key (no string per lookup): a far level of 2 or more shares the far job. */
 const jobKey = (idx, lod) => idx * 2 + (lod ? 1 : 0);

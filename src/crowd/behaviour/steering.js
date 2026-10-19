@@ -353,7 +353,7 @@ export class Steering {
           if (d2 > 16 || d2 < 1e-6) continue;
           // people talking in a ring are walked round, not through (anticipated like a person,
           // the whole ring at once: from its first member, the leader)
-          if (!standing && sp >= 0.3 && b.task === TASK.CHAT && b.state === ST.STAND && !b.leader && b.nFollow > 0 && L !== b) {
+          if (!standing && !a.mob && sp >= 0.3 && b.task === TASK.CHAT && b.state === ST.STAND && !b.leader && b.nFollow > 0 && L !== b) {
             this._chatCircle(b);
             const gx = (b.ccS - a.s) * km, gy = b.ccD - a.d;
             const tc = (gx * a.vs + gy * a.vd) / (sp * sp);
@@ -679,7 +679,9 @@ export class Steering {
         const cl = humans && humans.cycleLength ? humans.cycleLength(a.appearance) : CYCLE_FALLBACK;
         a.phase = (a.phase + dist / Math.max(1, cl || CYCLE_FALLBACK)) % 1;
       }
-      a.look += Math.max(-2.5 * dt, Math.min(2.5 * dt, (a.tramLookT > c.time ? c.lookAtTram(a) : a.lookGoal) - a.look));
+      let lt = a.lookGoal;
+      if (a.tramLookT > c.time) { c.lookAtTram(a); lt = a.lookTram; }
+      a.look += Math.max(-2.5 * dt, Math.min(2.5 * dt, lt - a.look));
       return;
     }
     let target = a.alpha;
@@ -726,7 +728,7 @@ export class Steering {
     }
     // gaze: the tram when it rings or when waiting to cross, otherwise idle glances
     let lookT = a.lookGoal;
-    if (a.tramLookT > c.time || (a.state === ST.WAIT && a.task === TASK.CROSS)) lookT = c.lookAtTram(a);
+    if (a.tramLookT > c.time || (a.state === ST.WAIT && a.task === TASK.CROSS)) { c.lookAtTram(a); lookT = a.lookTram; }
     const ld = lookT - a.look;
     a.look += Math.max(-2.5 * dt, Math.min(2.5 * dt, ld));
   }

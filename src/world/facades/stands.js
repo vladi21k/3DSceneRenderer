@@ -198,7 +198,7 @@ function blocked(app, sMid, s0, s1, d0, d1, own) {
  * A height field (cell ~0.4 r) whose shade carries each item's ripeness and the dark
  * gaps between items. One template, one colour.
  */
-function heap(t, x0, z0, W, D, y0, r, ex, ez, sy, mound, seed, q, round = false) {
+function heap(t, x0, z0, W, D, y0, r, ex, ez, sy, mound, seed, q, round = false, gap = 0.5) {
   const rng = new RNG(seed);
   const items = [];
   const sx = r * ex * 1.85, sz = r * ez * 1.75;
@@ -213,7 +213,7 @@ function heap(t, x0, z0, W, D, y0, r, ex, ez, sy, mound, seed, q, round = false)
         const cx = (x - x0) / W - 0.5, cz = (z - z0) / D - 0.5;
         if (round && cx * cx + cz * cz > 0.2) continue;
         const m = mound * Math.max(0, 1 - 2.6 * (cx * cx + cz * cz));
-        items.push({ x, z, y: y0 + r * sy * (layer ? 1.05 : 0.15) + m + rng.range(-0.15, 0.15) * r, rx: r * ex * rng.range(0.9, 1.1), rz: r * ez * rng.range(0.9, 1.1), ry: r * sy, k: rng.range(0.82, 1.14), a: rng.range(0, 3.14) });
+        items.push({ x, z, y: y0 + r * sy * (layer ? 1.05 : 0.15) + m + rng.range(-0.15, 0.15) * r, rx: r * ex * rng.range(0.9, 1.1), rz: r * ez * rng.range(0.9, 1.1), ry: r * sy, k: rng.range(0.78, 1.16), a: rng.range(0, 3.14) });
       }
     }
   }
@@ -232,7 +232,7 @@ function heap(t, x0, z0, W, D, y0, r, ex, ez, sy, mound, seed, q, round = false)
         const q2 = dx * dx + dz * dz;
         if (q2 >= 1) continue;
         const hh = it.y + it.ry * Math.sqrt(1 - q2);
-        if (hh > h) { h = hh; s = it.k * (0.5 + 0.5 * Math.sqrt(Math.max(0, 1 - q2))); }
+        if (hh > h) { h = hh; s = it.k * (gap + (1 - gap) * Math.sqrt(Math.max(0, 1 - q2))); }
       }
       // the rim of the tray holds everything in; a round heap tapers to its base at the edge
       const e = Math.min(i, gx - i, j, gz - j);
@@ -284,12 +284,27 @@ function crate(t, W, D, H, cx = 0, cz = 0, y = 0) {
   t.box(cx - W * 0.16, y + H - 0.06, z1 + 0.0005, cx + W * 0.16, y + H - 0.03, z1 + 0.001, 1, 0.15, 0.15);
 }
 
-/** Vertical cylinder (n sides) of radius r0 at y0 to r1 at y1, with or without a bottom. */
-function cyl(t, cx, cz, r0, r1, y0, y1, n, shade = 1, shadeTop = shade) {
-  for (let k = 0; k < n; k++) {
-    const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2;
-    t.q4(cx + Math.cos(a0) * r0, y0, cz + Math.sin(a0) * r0, cx + Math.cos(a1) * r0, y0, cz + Math.sin(a1) * r0,
-      cx + Math.cos(a1) * r1, y1, cz + Math.sin(a1) * r1, cx + Math.cos(a0) * r1, y1, cz + Math.sin(a0) * r1, shade, shadeTop);
+/**
+ * Smooth vertical frustum (n sides) of radius r0 at y0 to r1 at y1 (radial normals, so a
+ * bucket or a sack reads round), bulging out by `bulge` at mid height over `rows` rows.
+ */
+function cyl(t, cx, cz, r0, r1, y0, y1, n, shade = 1, shadeTop = shade, bulge = 0, rows = 1) {
+  const base = t.count;
+  const slope = (r0 - r1) / Math.max(1e-3, y1 - y0);
+  for (let j = 0; j <= rows; j++) {
+    const f = j / rows, y = y0 + (y1 - y0) * f, rr = r0 + (r1 - r0) * f + bulge * Math.sin(Math.PI * f);
+    const ny0 = slope - bulge * Math.PI * Math.cos(Math.PI * f) / Math.max(1e-3, y1 - y0);
+    const nl = Math.sqrt(1 + ny0 * ny0);
+    for (let k = 0; k <= n; k++) {
+      const a = (k / n) * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a);
+      t.v(cx + c * rr, y, cz + sn * rr, c / nl, ny0 / nl, sn / nl, a * rr, y, shade + (shadeTop - shade) * f);
+    }
+  }
+  for (let j = 0; j < rows; j++) {
+    for (let k = 0; k < n; k++) {
+      const a = base + j * (n + 1) + k, b = a + 1, c = a + n + 1, d = c + 1;
+      t.ix6(a, c, b, b, c, d);
+    }
   }
 }
 /** Thin square bar between two points (metal frames). */
@@ -408,9 +423,15 @@ function flowerStand(st, r, q) {
       parts.push(PART('paint', sm, leaf, null, m));
       const lt = cache.get(`leaves|${rb}|${hb}|${hd}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.3, -rb * 1.3, rb * 2.6, rb * 2.6, hb + hd * 0.3, 0.04, 1.6, 0.7, 0.7, 0.03, 431 * v + 7, q, true); return t.bake(); });
       parts.push(PART('paint', lt, leaf, null, m));
-      const [hr, hx, hs] = r.pick([[0.03, 1, 1], [0.045, 1, 0.4], [0.022, 1, 1.5], [0.028, 1, 0.9]]);
-      const fl = cache.get(`heads|${rb}|${hb}|${hd}|${hr}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.12, -rb * 1.12, rb * 2.24, rb * 2.24, hb + hd * 0.45, hr, hx, 1, hs, hd * 0.55, 211 * v + 3, q, true); return t.bake(); });
-      parts.push(PART('paint', fl, lin(r.pick(FLOWERS)), null, m));
+      const [hr, hx, hs] = r.pick([[0.026, 1, 1], [0.04, 1, 0.45], [0.02, 1, 1.5], [0.024, 1, 0.9]]);
+      const fl = cache.get(`heads|${rb}|${hb}|${hd}|${hr}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.12, -rb * 1.12, rb * 2.24, rb * 2.24, hb + hd * 0.45, hr, hx, 1, hs, hd * 0.55, 211 * v + 3, q, true, 0.3); return t.bake(); });
+      const c1 = r.pick(FLOWERS);
+      parts.push(PART('paint', fl, lin(c1), null, m));
+      // half the buckets hold a mixed bunch: a second kind of head among the first
+      if (r.chance(0.5)) {
+        const f2 = cache.get(`heads2|${rb}|${hb}|${hd}|${hr}|${v}|${q}`, () => { const t = new Tpl(); heap(t, -rb * 1.05, -rb * 1.05, rb * 2.1, rb * 2.1, hb + hd * 0.42, hr * 0.9, hx, 1, hs, hd * 0.55, 389 * v + 11, q, true, 0.3); return t.bake(); });
+        parts.push(PART('paint', f2, lin(r.pick(FLOWERS.filter((c) => c !== c1))), null, m));
+      }
     }
   }
   return parts;
@@ -528,14 +549,14 @@ function sackRow(st, r, q) {
       const z = row ? -0.2 : 0.18, rb = q2(r.range(0.15, 0.18), 0.01), hb = q2(r.range(0.34, 0.46), 0.02) + (row ? 0.14 : 0);
       const sk = cache.get(`sack|${rb}|${hb}|${q}`, () => {
         const t = new Tpl(); const ns = q >= 0.5 ? 14 : 8;
-        cyl(t, 0, 0, rb * 0.92, rb, 0, hb - 0.06, ns, 0.7, 0.95);
+        cyl(t, 0, 0, rb * 0.9, rb * 0.97, 0, hb - 0.06, ns, 0.6, 0.92, rb * 0.08, 4);
         // the rolled-down rim, a fat roll of cloth
         cyl(t, 0, 0, rb, rb * 1.12, hb - 0.06, hb - 0.03, ns, 0.95, 1.05);
         cyl(t, 0, 0, rb * 1.12, rb * 0.98, hb - 0.03, hb, ns, 1.05, 0.85);
         return t.bake();
       });
       const m = new THREE.Matrix4().makeTranslation(x, 0, z);
-      parts.push(PART('paint', sk, lin(r.pick([0x9a7a4a, 0x8a6a3e, 0xb09060, 0xd8d0b8])), null, m));
+      parts.push(PART('paint', sk, lin(r.pick([0x7a6040, 0x6e5636, 0x8a7250, 0xc8c0a8])), null, m));
       const v = r.int(0, 3);
       if (r.chance(0.4)) {
         // ground spice: one smooth cone
@@ -629,27 +650,27 @@ function bookCart(st, r, q) {
   const ct = cache.get(`cart|${W.toFixed(2)}`, () => {
     const t = new Tpl();
     t.box(-W / 2, H - 0.2, -D / 2, W / 2, H - 0.18, D / 2, 32 | 16, 0.6, 0.6);
-    t.box(-W / 2, H - 0.2, D / 2 - 0.02, W / 2, H + 0.06, D / 2, 1 | 2 | 4 | 8 | 32, 0.9, 1);
-    t.box(-W / 2, H - 0.2, -D / 2, W / 2, H + 0.06, -D / 2 + 0.02, 1 | 2 | 4 | 8 | 32, 0.85, 1);
-    t.box(-W / 2, H - 0.2, -D / 2, -W / 2 + 0.02, H + 0.06, D / 2, 4 | 8 | 32, 0.85, 1);
-    t.box(W / 2 - 0.02, H - 0.2, -D / 2, W / 2, H + 0.06, D / 2, 4 | 8 | 32, 0.85, 1);
+    t.box(-W / 2, H - 0.2, D / 2 - 0.02, W / 2, H - 0.05, D / 2, 1 | 2 | 4 | 8 | 32, 0.9, 1);
+    t.box(-W / 2, H - 0.2, -D / 2, W / 2, H + 0.02, -D / 2 + 0.02, 1 | 2 | 4 | 8 | 32, 0.85, 1);
+    t.box(-W / 2, H - 0.2, -D / 2, -W / 2 + 0.02, H - 0.05, D / 2, 4 | 8 | 32, 0.85, 1);
+    t.box(W / 2 - 0.02, H - 0.2, -D / 2, W / 2, H - 0.05, D / 2, 4 | 8 | 32, 0.85, 1);
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) t.box(sx * (W / 2 - 0.04) - 0.02, 0.08, sz * (D / 2 - 0.04) - 0.02, sx * (W / 2 - 0.04) + 0.02, H - 0.2, sz * (D / 2 - 0.04) + 0.02, 1 | 2 | 4 | 8, 0.7, 0.9);
     return t.bake();
   });
   parts.push(PART('paint', ct, lin(r.pick([0x5a3a22, 0x6c4529, 0x2d4033]))));
-  const bt = new Tpl();
-  const cols = [];
+  // books spines up in two rows (the back row a little higher), in four bindings
+  const groups = [new Tpl(), new Tpl(), new Tpl(), new Tpl()];
   for (let row = 0; row < 2; row++) {
     let x = -W / 2 + 0.03;
-    const z0 = row ? -0.2 : 0.02, z1 = row ? -0.02 : 0.2;
+    const z0 = row ? -0.21 : 0.01, z1 = row ? -0.03 : 0.19, y0 = H - 0.18 + (row ? 0.05 : 0);
     while (x < W / 2 - 0.05) {
-      const th = r.range(0.018, 0.045), hh = r.range(0.16, 0.24);
-      bt.piece(0.22).box(x, H - 0.18, z0 + r.range(0, 0.02), x + th, H - 0.18 + hh, z1 - r.range(0, 0.03), 1 | 2 | 4 | 8 | 32, 0.85, 1);
+      const th = r.range(0.018, 0.045), hh = r.range(0.17, 0.27);
+      groups[r.int(0, 3)].piece(0.25).box(x, y0, z0 + r.range(0, 0.02), x + th, y0 + hh, z1 - r.range(0, 0.03), 1 | 2 | 4 | 8 | 32, 0.85, 1);
       x += th + 0.002;
     }
   }
-  // books in the shade bands of the piece() jitter; one dusty colour each row is enough
-  parts.push(PART('paint', bt.bake(), lin(r.pick([0x6a3a2a, 0x2a3a4a, 0x5a4a2a, 0x3a4a3a]))));
+  const BOOKS = [0x6a2a22, 0x2a3a5a, 0x5a4a2a, 0x2e4a32, 0xc8b89a, 0x1d1d1f, 0x8a6a3a, 0x7a2a4a];
+  for (const gt of groups) if (gt.count) parts.push(PART('paint', gt.bake(), lin(r.pick(BOOKS)))); else gt.free();
   return parts;
 }
 

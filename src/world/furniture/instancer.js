@@ -269,9 +269,13 @@ export class BatchSet {
     const S = this.shadow;
     if (!S.geos.size) return;
     let nv = 0, ni = 0;
+    // (a zero normal of one byte per component: the depth pass ignores it, but with it the
+    // start-up compile, which also builds a view program for this batch, finds the borrowed
+    // material's own program instead of building a flat-shaded variant that is never used)
     const depthGeo = (g) => {
       const d = new THREE.BufferGeometry();
       d.setAttribute('position', g.attributes.position);
+      d.setAttribute('normal', new THREE.BufferAttribute(new Int8Array(g.attributes.position.count * 3), 3, true));
       d.setIndex(g.index);
       return d;
     };
@@ -290,8 +294,6 @@ export class BatchSet {
     }
     bm.name = `${this.name}:shadow`;
     bm.castShadow = true;
-    // (never drawn in the view, so receiving changes nothing; as the batch whose material it
-    // borrows, so the start-up compile builds that batch's program for it, not another one)
     bm.receiveShadow = true;
     bm.perObjectFrustumCulled = true;
     // drawn in the light's shadow cascades only (never in the view), and only in the

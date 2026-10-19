@@ -27,6 +27,13 @@ import { stanceOf } from './behaviour/stance.js';
 //   behaviour/footprint   stroller / bicycle footprints for avoidance and the tram clearance
 //   behaviour/sideStreets the side streets: their frame and level, two-way traffic on their sidewalks
 //   behaviour/staff       café waiters going between the door and the tables in use
+//   behaviour/stance      how people stand (set() field idle): talking in turns in company, looking
+//                         about or on the phone at a stop, window shoppers, waiters taking an order
+//
+// Who is who: new people take their appearance seed from population.js's bank, never one already
+// on the street and never a cast character somebody within 20 m has (or will walk past within
+// 12 s), the people of their own group included; stats().appearance counts the placements.
+// Café staff are handed to the renderer with set() field outfit: 'waiter' (everybody else '').
 //
 // Strollers and bicycles (Mobility extension): a person pushing a stroller is pose 3 /
 // prop 1, a cyclist pose 4 / prop 2, someone walking a bicycle pose 5 / prop 2; propSeed
@@ -63,8 +70,8 @@ const PI = Math.PI;
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _u = new THREE.Vector3();
 // A walker's world position is a linear function of (s, d) over a few decimetres (the paving's
 // shape changes over metres): worked out from three route.toWorld calls every LIN metres of
-// movement (the chords the walker is moving along) and interpolated in between, within about
-// 2 mm of route.toWorld (5 mm walking backwards over a hump of the paving).
+// movement (the chords the walker is moving along) and interpolated in between: within a
+// millimetre of route.toWorld on a ride (measured: p95 0.2 mm, max 0.9 mm over 640 people).
 const LIN = 0.35;
 const COUNT_INTS = new Set(['seated', 'passenger', 'stand', 'walker', 'stand300', 'walk300', 'side', 'standFar']);
 const MOVERS = 4;              // cyclists handed to post as moving boxes (per-object motion blur)
@@ -234,9 +241,10 @@ class CrowdSim {
   /** Route-relative facing (alpha) towards the cab. */
   _faceTram(a) { return Math.atan2(RIDE_D - a.d, this.tram.trainU - a.s); }
 
-  /** Head yaw (relative to the body, + left) that looks at the cab. */
+  /** Head yaw (relative to the body, + left) that looks at the cab → a.lookTram (a field, not a
+   *  return value: a double returned from a call that is not inlined is a heap allocation). */
   lookAtTram(a) {
-    if (this.time < a.tramLookS && a.state !== ST.WAIT) return a.lookGoal;
+    if (this.time < a.tramLookS && a.state !== ST.WAIT) { a.lookTram = a.lookGoal; return; }
     // (an oncoming unit that rang, or the one coming at someone waiting to cross)
     let U = a.lookU >= 0 ? this.tram.unitById(a.lookU) : null;
     if (!U && a.state === ST.WAIT && a.uI >= 0) U = this.tram.unitById(a.uI);
@@ -247,9 +255,9 @@ class CrowdSim {
     const yaw = Math.atan2(-(p.x - a.x), -(p.z - a.z));
     let rel = yaw - a.heading;
     rel = ((rel + PI) % (2 * PI) + 2 * PI) % (2 * PI) - PI;
-    if (Math.abs(rel) > 2.3) return Math.sign(rel) * 0.9; // tram right behind: a glance over the shoulder
-    if (Math.abs(rel) < PI / 2) return Math.max(-0.7, Math.min(0.7, rel)); // in front: a turn of the head
-    return Math.max(-1.2, Math.min(1.2, rel));
+    if (rel > 2.3 || rel < -2.3) a.lookTram = rel > 0 ? 0.9 : -0.9;   // tram right behind: a glance over the shoulder
+    else if (rel < PI / 2 && rel > -PI / 2) a.lookTram = rel > 0.7 ? 0.7 : rel < -0.7 ? -0.7 : rel;   // in front: a turn of the head
+    else a.lookTram = rel > 1.2 ? 1.2 : rel < -1.2 ? -1.2 : rel;
   }
 
   update(dt, app) {

@@ -53,7 +53,7 @@ function drawStains() {
     g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(0.6, `rgba(255,255,255,${a * 0.6})`); g.addColorStop(1, 'rgba(255,255,255,0)');
     C.fillStyle = g; C.beginPath(); C.arc(x, y, r, 0, Math.PI * 2); C.fill();
   };
-  for (let i = 0; i < 40; i++) blob(cx(0) + rng.normal(0, 26), cy(0) + rng.normal(0, 26), rng.range(14, 46), 0.12);
+  for (let i = 0; i < 40; i++) blob(cx(0) + rng.normal(0, 26), cy(0) + rng.normal(0, 26), rng.range(14, 46), 0.15);
   for (let i = 0; i < 26; i++) blob(cx(1) + rng.normal(0, 20), cy(1) + rng.normal(0, 14), rng.range(8, 30), 0.2);
   for (let i = 0; i < 6; i++) blob(cx(1) + rng.normal(0, 8), cy(1) + rng.normal(0, 8), rng.range(6, 12), 0.35);
   for (let i = 0; i < 70; i++) {
@@ -222,7 +222,7 @@ export function createDetailMaterials(renderer) {
 
   // stains: dark grime decals; vertex colour r = opacity, g = warmth (soil, brake dust)
   const stain = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0.075, 0.068, 0.06), alphaMap: drawStains(), transparent: true, depthWrite: false, opacity: 0.7,
+    color: new THREE.Color(0.062, 0.057, 0.051), alphaMap: drawStains(), transparent: true, depthWrite: false, opacity: 0.88,
     roughness: 0.6, metalness: 0, vertexColors: true, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6,
   });
   stain.name = 'street.stain';

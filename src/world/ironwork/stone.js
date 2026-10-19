@@ -226,7 +226,7 @@ export function corbelTemplate(variant) {
   const g = corbelGeometry(variant, 2);
   const n = g.attributes.position.count, C = g.attributes.color.array.slice(), P = g.attributes.position.array;
   for (let i = 0; i < n; i++) {
-    const y = P[i * 3 + 1], t = Math.min(1, Math.max(0, (y + 0.6) / 0.35)), soot = 1 - 0.1 * (1 - t * t * (3 - 2 * t));
+    const y = P[i * 3 + 1], t = Math.min(1, Math.max(0, (y + 0.6) / 0.35)), soot = 1 - 0.13 * (1 - t * t * (3 - 2 * t));
     C[i * 3] *= soot; C[i * 3 + 1] *= soot; C[i * 3 + 2] *= soot;
   }
   const I = g.index ? g.index.array.slice() : Uint32Array.from({ length: n }, (_, i) => i);
@@ -392,10 +392,11 @@ ${GRIME_GLSL}`)
 			// soffit: its soot gradient is baked (writeSlab); the library's own soffit
 			// weathering adds the rest evenly
 		} else {
-			// console: streaks down the faces, soot low on the scroll
+			// console: streaks down the faces, soot low on the scroll where the rain never
+			// reaches, in patches (corbelTemplate bakes its mean into the far consoles)
 			float fx = fwidth( vGl.x );
-			gDark = gwStreaks( vGl.x + vGl.z * 0.7, -vGl.y, fx ) * 0.22;
-			gDark += 0.1 * ( 1.0 - smoothstep( -0.6, -0.25, vGl.y ) );
+			gDark = gwStreaks( vGl.x + vGl.z * 0.7, -vGl.y, fx ) * 0.26;
+			gDark += 0.16 * ( 1.0 - smoothstep( -0.6, -0.25, vGl.y ) ) * ( 0.6 + 0.4 * gwN( vec2( vGl.x * 4.0, vGl.z * 4.0 + 3.1 ) ) );
 		}
 		diffuseColor.rgb *= gTint * ( 1.0 - gDark );
 	}`);

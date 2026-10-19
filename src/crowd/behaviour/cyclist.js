@@ -1039,7 +1039,7 @@ export function dismount(c, a, stuck = false, anyway = false) {
     const lo = c.map.bandInAt(a.s, a.side), hi = c.map.bandOutAt(a.s, a.side);
     a.laneF = clamp((Math.abs(a.d) - lo - 0.3) / Math.max(0.3, hi - lo - 0.6), 0.04, 0.96);
   }
-  a.laneTT = 0; a.strideV = -1; a.strideB = -1; a.yawW = 0; a.uturnT = 0;
+  a.laneTT = 0; a.strideB = -1; a.yawW = 0; a.uturnT = 0;
   c.tally(step ? 'dismountLeft' : 'dismount');
   return true;
 }

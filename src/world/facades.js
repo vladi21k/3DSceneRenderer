@@ -118,7 +118,9 @@ const facades = {
     // init runs after every world module's) walks round them
     const tS = performance.now();
     try {
-      this.stands = planStands(app, (lot) => frontInfo(app, lot)[0], (lot) => facadePlan(lot));
+      let tInfo = 0, tPlan = 0;
+      this.stands = planStands(app, (lot) => { const t = performance.now(); const r = frontInfo(app, lot)[0]; tInfo += performance.now() - t; return r; }, (lot) => { const t = performance.now(); const r = facadePlan(lot); tPlan += performance.now() - t; return r; });
+      this._tStand = { tInfo: Math.round(tInfo), tPlan: Math.round(tPlan) };
       app.layout.addObstacles(this.stands.obstacles);
     } catch (e) { console.warn('[facades] goods stands not planned', e); this.stands = null; }
     this.stats.stands = { n: this.stands ? this.stands.obstacles.length : 0, planMs: Math.round(performance.now() - tS) };

@@ -64,7 +64,11 @@ import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 // nothing. Slabs, consoles, balustrade rails and AC bodies cast in every cascade; the
 // small and thin parts (balusters, pots, planters, chairs, poles, brackets, pipes, dishes) only
 // in the fine cascades, whose texels can hold them (userData.thinCaster). The railing
-// cards (thin) and a coarse twin of the flags cast the rest.
+// cards (thin) and a coarse twin of the flags cast the rest; the cards cast their true
+// share of iron where the bars are finer than a shadow texel (mats.js cardDepthMaterial).
+// Weathering: each railing's neglect (mats.js iwNeglect: kept up, chalking, rusting)
+// drives its rust and paint wear near and far and the rust running from its feet down
+// the slab edge (stone.js); consoles and slab edges carry dirt streaks and soot.
 
 const _l = new THREE.Matrix4(), _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _sz = new THREE.Vector2();
 const _q = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
@@ -551,7 +555,7 @@ const ironwork = {
     const { y, slabT: T, depth: D, u0, u1 } = bal;
     const isStone = bal.railing === 'stone';
     const tint = st.tint;
-    const dirt = r.range(0.88, 1.0);
+    const dirt = r.range(0.84, 1.0);
 
     // ---- slab (and its shadow caster): T thick at the wall, its moulded edge E tall
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;

@@ -403,8 +403,9 @@ export class Route {
    *  (its local +X then points to the right, d+). Use heading(s) itself to align local +X with travel. */
   yawAt(s) { return this.heading(s) - Math.PI / 2; }
 
-  /** Nearest route coordinate to a world xz point, searching around sHint (±range). */
-  project(x, z, sHint, range = 30) {
+  /** Nearest route coordinate to a world xz point, searching around sHint (±range):
+   *  {s, d}, written into `out` when given (no allocation). */
+  project(x, z, sHint, range = 30, out = null) {
     let best = sHint, bestD = Infinity;
     for (let ds = -range; ds <= range; ds += 1) {
       const p = this.toWorld(sHint + ds, 0, 0, _v);
@@ -425,7 +426,8 @@ export class Route {
     }
     const smp = this.sample(best, _smp);
     const d = (x - smp.pos.x) * smp.right.x + (z - smp.pos.z) * smp.right.z;
-    return { s: this.wrap(best), d };
+    if (out) { out.s = smp.s; out.d = d; return out; }
+    return { s: smp.s, d };
   }
 
   /** Segment info at s. */
