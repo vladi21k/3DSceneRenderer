@@ -12,7 +12,7 @@ import { GeoWriter, PosWriter, writePos, sweepPath, box } from './ironwork/geo.j
 import { InstanceCollector, InstancePool, FlagPool } from './ironwork/instancer.js';
 import { Strip } from './ironwork/strip.js';
 import {
-  makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK,
+  makeMaterials, PAINTS, PAINT_W, uIronPx, uIronA2C, uIronCardK, uIronGeoK, uIwWiden, geoLimit, angleK, ironNeglect,
 } from './ironwork/mats.js';
 import { buildAttachAssets, makeAttachMaterials, writeTemplate, PLANT, BOX_SOIL, TROUGH_SOIL, DISH_W } from './ironwork/attach.js';
 import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
@@ -24,7 +24,17 @@ import { balconyConsoles, CONSOLE } from './ironwork/consoles.js';
 // facade frame (u along the wall, v up, w out of the wall). Contract: docs/ARCHITECTURE.md.
 // Published for other modules: app.systems.ironwork.consolesOf(lot) writes the console
 // positions under every balcony onto its facade plan (plan.balconies[i].consoles, see
-// consolesFor), so run-off and grime can follow the real consoles.
+// consolesFor), so run-off, grime and shutter clearances can follow the real consoles,
+// and how far its iron railing is left to rust (plan.balconies[i].rust, 0 kept up .. 1
+// rusting, 0 under a stone balustrade: the neglect the railing and slab shaders draw,
+// mats.js ironNeglect), so rust stains on the wall below can follow the railing.
+// When it is valid: always. It is pure (facade plan and lot seed only), deterministic
+// and cached per plan, and needs no init, so another module may call it from its own
+// init or build. Reading plan.balconies[i].consoles directly is valid once ironwork's
+// init has run (it fills every lot and side lot of the layout, before the first chunk
+// is built); a module that reads them during its own init, or plans that are not
+// layout lots, call consolesOf(lot) first. Every balcony then has an array ([] where
+// the slab rests on the dressing below).
 //
 // Level of detail is chosen per INSTANCE (each railing bay, post, console, baluster,
 // plant, planter strap, AC unit) in update(), from projected sizes, so it follows the FOV:
@@ -183,6 +193,15 @@ function consolesFor(plan, st, bal) {
   return place;
 }
 
+/** Neglect of a balcony's iron railing as its shaders draw it (mats.js ironNeglect, at
+ *  the middle of its front, half way up), 0 for a stone balustrade. */
+function railRust(lot, bal) {
+  if (bal.railing === 'stone') return 0;
+  _rp.set((bal.u0 + bal.u1) / 2, bal.y + 0.5, bal.depth - 0.05).applyMatrix4(lot.frame.matrix);
+  return ironNeglect(_rp.x, _rp.y, _rp.z);
+}
+const _rp = new THREE.Vector3(); // (railRust's own: other modules call consolesOf)
+
 /** Bracket position for a facade flag: the pier nearest the planned spot that is clear
  *  of the windows on that floor (null if none). */
 function flagPier(plan, f) {
@@ -201,6 +220,10 @@ const ironwork = {
   name: 'ironwork',
 
   async init(app) {
+    // consoles of every balcony in town, published on the plans before any module builds
+    // a chunk (see consolesOf)
+    const L = app.layout;
+    for (const list of [L.lots, L.sideLots]) for (const lot of list) this.consolesOf(lot);
     this.atlas = buildAtlas();
     this.mats = makeMaterials(app, this.atlas);
     this.stoneMat = makeStoneMaterial(app);
@@ -247,6 +270,8 @@ const ironwork = {
       near: set('', { stone: [128, 256], parts: [64, 96], shadow: [128, 512] }),
       far: set('Far', { stone: [192, 448], parts: [16, 32], shadow: [64, 256] }),
     };
+    // railing cards cast their true share of iron (mats.js cardDepthMaterial)
+    for (const k in this.strips) this.strips[k].cards.mesh.customDepthMaterial = this.mats.cardDepth;
     Object.assign(this.strips.near, {
       stains: strip(this.amats.stain, ['normal', 'uv'], 'stains', { vCap: K, iCap: 2 * K }),
       thin: strip(this.stoneMat, [], 'thinShadow', { shadowOnly: true, thin: true, instanceColor: true, vCap: 112 * K, iCap: 512 * K }),
@@ -298,13 +323,18 @@ const ironwork = {
   },
 
   /** Publishes the console positions under every balcony of `lot` on its facade plan
-   *  (plan.balconies[i].consoles, see consolesFor) and returns the plan's balconies.
-   *  Deterministic and cached per plan: other modules may call it at any time, before or
-   *  after ironwork builds the lot (buildings places run-off streaks under the consoles). */
+   *  (plan.balconies[i].consoles = [{u, h, w}], see consolesFor) and returns the plan's
+   *  balconies. Pure, deterministic and cached per plan: valid at any time from module
+   *  load on (it uses no state of this module), before or after ironwork builds the lot
+   *  (buildings places run-off streaks under the consoles, facades keeps open shutter
+   *  leaves clear of them). */
   consolesOf(lot) {
     const plan = facadePlan(lot);
     let st = null;
-    for (const bal of plan.balconies) if (!bal.consoles) consolesFor(plan, (st ||= lotStyle(lot, plan)), bal);
+    for (const bal of plan.balconies) {
+      if (!bal.consoles) consolesFor(plan, (st ||= lotStyle(lot, plan)), bal);
+      if (bal.rust === undefined) bal.rust = railRust(lot, bal);
+    }
     return plan.balconies;
   },
 
@@ -527,7 +557,7 @@ const ironwork = {
     const rc = isStone && st.roundStone ? Math.min(0.3, D * 0.35) : 0;
     const E = THREE.MathUtils.clamp(T + st.edge, 0.16, 0.22);
     ctx.stone.setMatrix(F).color(tint[0], tint[1], tint[2]);
-    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, E, st.slabVariant, lod, dirt, D);
+    writeSlab(ctx.stone, slabPath(u0, u1, D, rc), y, T, E, st.slabVariant, lod, dirt, D, !isStone);
     // (rounded corners of two chords: inside the convex corner)
     writeSlabShadow(ctx.shadow.setMatrix(F), slabPath(u0, u1, D, rc, 0.25, 2), y, T, E, st.slabVariant, lod);
 

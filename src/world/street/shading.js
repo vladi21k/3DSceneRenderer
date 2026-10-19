@@ -208,11 +208,13 @@ float stMR = 1.0;
 }
 
 // Grit fill of the flangeway: where the groove surface faces up (its floor and the foot
-// of its walls) the grime of rail.groove gives way to grey-brown grit and sand with leaf
-// fragments, patchy along the rail (packed and damp, loose and pale, swept out by the
-// flanges in places). Albedo ~0.02-0.045, mean ~0.03, and the floor's cavity AO (0.25:
-// it sees a sliver of sky and, mostly, no sun) folds in to an effective ~0.015-0.02, so
-// the flangeway reads as the dark slot of the photographs, ~0.1x the setts.
+// of its walls) the grime of rail.groove gives way to grit, sand and rust dust ground off
+// the wheels and rails, with leaf fragments, patchy along the rail (packed and damp, loose
+// and pale, swept out by the flanges in places). Albedo ~0.05-0.11 (rust brown, paler sand
+// drifts), mean ~0.075; the floor of a 42 mm slot 36 mm deep still sees about half the sky
+// it would in the open, so only part of the cavity AO folds in (the lighting adds its own
+// occlusion): the flangeway reads as the dark brown slot of the photographs, about 0.3-0.4x
+// the setts in the light, never a black line.
 // Cavity specular occlusion: the slot's walls hide the sky its floor and walls would
 // reflect at grazing angles (a plain dielectric goes mirror-like there and the groove
 // turned into a pale band of reflected sky), so F0 and F90 scale with the cavity AO.
@@ -230,17 +232,17 @@ const GRIT = /* glsl */`
   vec2 q1 = mat2( 0.8, 0.6, -0.6, 0.8 ) * pw * 310.0, q2 = mat2( 0.47, -0.88, 0.88, 0.47 ) * pw * 170.0 + 3.1;
   float grain = mix( 0.5, stNoise( q1 ) * 0.55 + stNoise( q2 ) * 0.45, kFi );
   float stone = kFi * smoothstep( 0.68, 0.8, stNoise( q2 * 0.55 + 9.0 ) );
-  vec3 g = vec3( 0.04, 0.0365, 0.0305 ) * ( 0.6 + 0.8 * pa ) * ( 0.7 + 0.6 * grain ) * ( 1.0 + 0.35 * stone );
+  vec3 g = vec3( 0.082, 0.066, 0.048 ) * ( 0.6 + 0.8 * pa ) * ( 0.75 + 0.5 * grain ) * ( 1.0 + 0.35 * stone );
   // pale dry sand drifts and dark damp stretches
-  float sand = smoothstep( 0.62, 0.82, stNoise( vec2( p.x * 0.9, 2.3 ) + 4.0 ) );
+  float sand = smoothstep( 0.6, 0.8, stNoise( vec2( p.x * 0.9, 2.3 ) + 4.0 ) );
   float damp = smoothstep( 0.6, 0.85, stNoise( vec2( p.x * 0.45, 5.1 ) + 13.0 ) );
-  g = mix( g, vec3( 0.056, 0.052, 0.043 ) * ( 0.85 + 0.3 * grain ), 0.6 * sand ) * ( 1.0 - 0.38 * damp );
+  g = mix( g, vec3( 0.13, 0.115, 0.088 ) * ( 0.85 + 0.3 * grain ), 0.65 * sand ) * ( 1.0 - 0.4 * damp );
   // leaf fragments caught in the slot: a few centimetres each, in loose clusters
   float lc = smoothstep( 0.55, 0.8, stNoise( vec2( p.x * 1.7, 0.5 ) + 41.0 ) );
   float leaf = lc * smoothstep( 0.7, 0.82, stNoise( vec2( pw.x * 24.0, pw.y * 70.0 ) + 31.0 ) );
-  g = mix( g, vec3( 0.06, 0.041, 0.024 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
+  g = mix( g, vec3( 0.1, 0.066, 0.036 ) * ( 0.8 + 0.4 * grain ), 0.8 * leaf );
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
-    g *= mix( 0.65, 1.0, smoothstep( 0.2, 0.6, vColor.g ) );
+    g *= mix( 0.78, 1.0, smoothstep( 0.2, 0.6, vColor.g ) );
   #endif
   diffuseColor.rgb = mix( diffuseColor.rgb, g, stGrit );
   stGritR = mix( 0.97, 0.7, damp ) - 0.08 * leaf;
@@ -286,7 +288,7 @@ export function patchGrit(m, k = 1) {
 }
 #endif`);
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stGrit2-${k.toFixed(4)}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stGrit3-${k.toFixed(4)}`; };
   m.needsUpdate = true;
   return m;
 }

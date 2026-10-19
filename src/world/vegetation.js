@@ -53,6 +53,7 @@ const vegetation = {
       if (!g.boundingBox) g.computeBoundingBox();
       const b = g.boundingBox;
       t.leafMinY = b.min.y;
+      t.leafMaxY = b.max.y;
       t.leafR = Math.max(-b.min.x, b.max.x, -b.min.z, b.max.z);
     }
     this.shrubs = SHRUBS.map((sh) => ({ sh, ...buildShrubTemplate(sh, seed) }));
@@ -83,6 +84,7 @@ const vegetation = {
     this.props = createProps(app, this.pools);
     this.groundShade = createGroundShade(app);
     this.plan = this._planTrees();
+    this._writeBack();
     // debug switches (see header)
     this.pools.forceLod = app.params.num('veglod', null);
     const show = app.params.str('vegshow');
@@ -171,12 +173,36 @@ const vegetation = {
       // per-tree tint: vigour / light differences between individual trees (value about
       // ±8 %, hue about ±6°)
       const v = r.range(0.92, 1.08), h = r.range(-0.14, 0.14), bv = r.range(0.88, 1.08);
-      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sy, sxz, mature,
+      const p = { T, mirror, matrix, pos: _p.clone(), size: tpl.height * sy, sy, sxz, mature, reach: T.leafR * Math.max(Math.abs(sx), Math.abs(sz)),
         leafTint: new THREE.Color(v * (1 + h), v, v * (1 - 2 * h)), barkTint: new THREE.Color(bv, bv, bv), seed: t.seed };
       plan.set(t, p);
       prev.push(p);
     }
     return plan;
+  },
+
+  /**
+   * The drawn trees go back into the shared plan, so every module sees them as drawn
+   * (café canopies, lamp pools, signals, the crowd, parked bicycles, the far field): per
+   * layout tree, `height` (m, top of the crown above the paving), `crown` (m across, the
+   * widest reach of the leaves), `mature` (an old tree as drawn), plus `crownR` (m, reach
+   * from the stem), `crownBase` (m, its lowest leaves above the paving), `species`,
+   * `template`, `drawn: true` and the layout's own values in `planned` {height, crown,
+   * mature}. Modules that read layout.trees in their own init before vegetation's still
+   * see the planned values.
+   */
+  _writeBack() {
+    for (const [t, P] of this.plan) {
+      if (!t.planned) t.planned = { height: t.height, crown: t.crown, mature: t.mature };
+      t.height = +(P.T.leafMaxY * P.sy).toFixed(2);
+      t.crownR = +P.reach.toFixed(2);
+      t.crown = +(2 * P.reach).toFixed(2);
+      t.crownBase = +(P.T.leafMinY * P.sy).toFixed(2);
+      t.mature = P.mature;
+      t.species = P.T.tpl.species;
+      t.template = P.T.tpl.id;
+      t.drawn = true;
+    }
   },
 
   build(chunk, app) {
@@ -260,6 +286,9 @@ const vegetation = {
   farMaterials() { return { leaf: this.mats.leafFar, bark: this.mats.bark }; },
 
   update(dt, app) {
+    // until ready every pool draws once a frame (see VegetationPools.warmup)
+    if (!app.ready) this.pools.warmup(app.camera.position, app.camera.getWorldDirection(_p));
+    else if (this.pools.warm) this.pools.endWarmup();
     // leaf coverage mode follows the post chain's scene target (its MSAA sample count, 0 = none)
     const post = app.post, rt = post && !post.disabled ? post.sceneRT : null;
     this.mats.params.a2c.value = rt && rt.samples > 0 ? rt.samples : 0;

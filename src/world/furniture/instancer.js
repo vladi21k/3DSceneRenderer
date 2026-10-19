@@ -290,7 +290,9 @@ export class BatchSet {
     }
     bm.name = `${this.name}:shadow`;
     bm.castShadow = true;
-    bm.receiveShadow = false;
+    // (never drawn in the view, so receiving changes nothing; as the batch whose material it
+    // borrows, so the start-up compile builds that batch's program for it, not another one)
+    bm.receiveShadow = true;
     bm.perObjectFrustumCulled = true;
     // drawn in the light's shadow cascades only (never in the view), and only in the
     // cascades the light redraws this frame
@@ -538,6 +540,44 @@ export class BatchSet {
     }
     if (changed) this._showBatches();
     this._flush();
+  }
+
+  /**
+   * Start-up warm-up, every frame until the app is ready: one invisible instance per batch
+   * (scaled to a few micrometres, a little in front of the eye) so every batch is really
+   * drawn behind the loading screen. The start-up compile links each program, but the GPU
+   * process still pays a large one-off cost (100-200 ms here, mostly when the browser's
+   * shader cache supplied the program) at a program's first draw; a batch that is first
+   * seen mid-ride (tableware within 30 m of a laid table, a stop's fittings) would stall
+   * a frame a few frames later. `eye` and `dir` (unit) are world vectors.
+   */
+  warmup(eye, dir) {
+    if (!this.warm) {
+      this.warm = [];
+      for (const b of this.batches.values()) {
+        if (!b.bm || !b.geos.size) continue;
+        const gid = b.geos.values().next().value;
+        const id = this._alloc(b, gid);
+        this._alpha(b, id, 1);
+        b.bm.setColorAt(id, WHITE);
+        this.warm.push(b, id);
+      }
+    }
+    const x = eye.x + dir.x * 2, y = eye.y + dir.y * 2, z = eye.z + dir.z * 2;
+    _mat.makeScale(1e-5, 1e-5, 1e-5).setPosition(x, y, z);
+    for (let i = 0, W = this.warm; i < W.length; i += 2) {
+      const b = W[i], id = W[i + 1];
+      b.bm.setMatrixAt(id, _mat);
+      this._setSphere(b, id, b.bm._instanceInfo[id].geometryIndex, _mat);
+      this._show(b, id, true);
+    }
+  }
+
+  /** End of the warm-up (the app is ready): free the warm-up instances. */
+  endWarmup() {
+    if (!this.warm) return;
+    for (let i = 0, W = this.warm; i < W.length; i += 2) this._free(W[i], W[i + 1]);
+    this.warm = null;
   }
 
   /** Batches with nothing to show are not drawn (no empty multi-draw calls). */

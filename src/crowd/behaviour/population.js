@@ -29,6 +29,22 @@ const FEATURE_AHEAD = VIEW_AHEAD + 20;
 const BENCH_SEAT_Z = -0.02;  // body origin of a bench sitter along the bench's facing (m, bench local)
 const PI = Math.PI;
 const MOB_LIST = [[MOB.CYCLE, MOB_SHARE.cycle], [MOB.STROLLER, MOB_SHARE.stroller], [MOB.WALKBIKE, MOB_SHARE.walkbike]];
+// Who is who: the cast has a few dozen characters for several hundred people on the street, so
+// each character turns up many times. New people take their appearance from a bank of seeds worked
+// out once (character, age class, the roles each one suits, height): never a seed somebody in the
+// populated range already has, and a character nobody within NEAR_R metres of the spot has (the
+// people of the group being placed included) or will come that near in the next MEET_T seconds
+// walking as they do, keeping the age class and sex first drawn so the mix of the street stays as
+// it is. Where a class has too few characters for that (three old men,
+// say), a twin as far away as possible.
+const BANK_N = 4096;          // seeds in the bank (a power of two: the scan steps through it with an odd stride)
+const BANK_SCAN = 400;        // entries looked at per new person
+const NEAR_R = 20;            // nobody with the same character within this distance (m)
+const SAME_CLASS = 8;         // a twin this much nearer is still preferred to another age class or sex
+const MEET_T = 12;            // ... nor one the new person will walk past within this many seconds (m/s along s)
+const ROLES = ['adult', 'child', 'any', 'elderly', 'parent', 'grandparent', 'rider', 'young', 'waiter'];
+const ROLE_I = Object.fromEntries(ROLES.map((r, i) => [r, i]));
+const AGE_I = { child: 0, teen: 1, adult: 2, old: 3, toddler: 4 };
 
 export class Population {
   constructor(c) {
@@ -58,25 +74,37 @@ export class Population {
     this._paceK = 1;             // time of day: walking pace factor (a little slower in the evening)
     this.tod = { t: 0, evening: 0, late: 0 };
     this._sun = null; this._smp = {}; this._w = null; this._cafeS = null; this._benchS = null;
+    // appearance bank and the spot a new person is being placed at (set by the spawners before alloc)
+    this.hint = settleShape({ on: false, s: 0, d: 0, v: 0 });
+    this.charD = new Float32Array(256);
+    this._lastBank = -1;
+    this.bank = this._buildBank();
+    // placements with a spot: no twin within NEAR_R / another age class or sex taken / a twin kept
+    this.cloneN = new Int32Array(3);
     // (classes fixed up front: see settleShape)
     settleShape(this.tod); settleShape(this.stats); settleShape(this.stats.bySource);
     this.stats.chatHidden = 0; this.stats.mob = 0;
-    settleShape(this, new Set(['serial', 'frame', 'nBins']));
+    settleShape(this, new Set(['serial', 'frame', 'nBins', '_lastBank']));
   }
 
   // ---------------------------------------------------------------- slots
   /** role: 'adult' (default), 'child' or 'any'. opt.maxH caps the height, opt.noCross avoids the crossed-legs sitting variant. */
   alloc(kind, src = 'walker', role = 'adult', opt = null) {
-    if (!this.free.length) return null;
+    if (!this.free.length) { this.hint.on = false; return null; }
     const a = this.agents[this.free.pop()];
     const c = this.c, r = c.rng;
     a.active = true; a.serial = ++this.serial; a.kind = kind;
     a.state = ST.WALK; a.task = TASK.NONE; a.step = 0;
     a.vs = 0; a.vd = 0; a.leader = null; a.followers.length = 0; a.nFollow = 0; a.slotF = 0; a.slotR = 0;
     a.wards.length = 0; a.guardian = null;
+    a.charI = -1;
     a.appearance = this._appearance(role, opt);
+    a.bankI = this._lastBank;
+    if (a.bankI >= 0) this.bank.use[a.bankI]++;
     const H = c.humans;
     const ap = H && H.appearanceOf ? H.appearanceOf(a.appearance) : null;
+    a.charI = ap && Number.isInteger(ap.index) ? ap.index : -1;
+    a.idle = -1; a.idleW = -1; a.idleK = -1; a.idleT = 0; a.pauseK = 0;
     a.isChild = ap ? ap.base === 'child' : false;
     a.height = ap ? ap.height : 1.72;
     a.phase = r.next(); a.pose = 0; a.look = 0; a.lookGoal = 0; a.tramLookT = 0;
@@ -116,12 +144,110 @@ export class Population {
     return a;
   }
 
-  /** Appearance seed for the role: re-hashed until the body fits. Roles: 'adult' (default:
-   *  teens, adults and the elderly), 'child', 'any', 'elderly', 'parent' (an adult with free
-   *  hands, to push a stroller), 'grandparent', 'rider' (a teen or adult with free hands and no
-   *  skirt or long coat, for a bicycle). opt.maxH caps the height, opt.noCross avoids the
-   *  crossed-legs sitting variant. */
+  /** Appearance seed for the role. Roles: 'adult' (default: teens, adults and the elderly),
+   *  'child', 'any', 'elderly', 'parent' (an adult with free hands, to push a stroller),
+   *  'grandparent', 'rider' (a teen or adult with free hands and no skirt or long coat, for a
+   *  bicycle), 'young', 'waiter'. opt.maxH caps the height, opt.noCross avoids the crossed-legs
+   *  sitting variant. From the bank (see BANK_N) with the spot in this.hint (consumed); this._lastBank
+   *  is the bank entry taken (−1: none). */
   _appearance(role, opt) {
+    const hint = this.hint, B = this.bank;
+    const near = hint.on;
+    hint.on = false;
+    this._lastBank = -1;
+    const ri = ROLE_I[role] ?? 0;
+    if (!B || B.roleN[ri] < 8) return this._appearanceHash(role, opt);
+    if (near) this._nearChars(hint.s, hint.d, hint.v);
+    const N = B.n, D = this.charD;
+    const h0 = hash2(this.serial, this.c.seed * 7919 + 13);
+    let k = h0 & (N - 1);
+    const step = (((h0 >>> 12) & (N / 2 - 1)) << 1) | 1;
+    let best = -1, bestSc = -1, fit = -1, cls = -1;
+    for (let t = 0; t < BANK_SCAN; t++, k = (k + step) & (N - 1)) {
+      if (((B.role[k] >> ri) & 1) === 0) continue;
+      // (the role fits, the extra wishes or a free seed maybe not: kept should nothing else do)
+      if (fit < 0) fit = k;
+      if (opt && ((opt.maxH && B.h[k] > opt.maxH) || (opt.noCross && B.cross[k]))) continue;
+      if (B.use[k]) continue;
+      if (!near) { best = k; break; }
+      if (cls < 0) cls = B.cls[k];
+      const same = B.cls[k] === cls, sc = D[B.ch[k]];
+      if (same && sc >= NEAR_R) { best = k; break; }
+      const score = sc + (same ? SAME_CLASS : 0);
+      if (score > bestSc) { bestSc = score; best = k; }
+    }
+    if (best < 0) best = fit;
+    if (best < 0) return this._appearanceHash(role, opt);
+    if (near) {
+      const sc = D[B.ch[best]];
+      this.cloneN[sc < NEAR_R ? 2 : B.cls[best] === cls ? 0 : 1]++;
+    }
+    this._lastBank = best;
+    return B.seed[best];
+  }
+
+  /** Spot of the next person to be placed (unwrapped s, d) and their walking speed along s
+   *  (m/s, signed): their appearance keeps clear of the characters around it. */
+  placeAt(s, d, v = 0) { const h = this.hint; h.on = true; h.s = s; h.d = d; h.v = v; }
+
+  /** this.charD[character] = how near (m, up to NEAR_R) a person of that character is to (s, d),
+   *  or comes within MEET_T seconds, walking at their speed along s while the new one walks at v. */
+  _nearChars(s, d, v) {
+    const D = this.charD, agents = this.agents;
+    D.fill(NEAR_R);
+    for (let i = 0, n = agents.length; i < n; i++) {
+      const b = agents[i];
+      if (!b.active || b.charI < 0 || b.charI >= D.length) continue;
+      const ds0 = b.s - s, w = (b.state === ST.SEATED ? 0 : b.vs) - v;
+      if (ds0 > NEAR_R + (w < 0 ? -w * MEET_T : 0) || ds0 < -NEAR_R - (w > 0 ? w * MEET_T : 0)) continue;
+      // closest approach along s over the next MEET_T seconds
+      let ds = ds0;
+      if (w > 1e-3 || w < -1e-3) { let t = -ds0 / w; t = t < 0 ? 0 : t > MEET_T ? MEET_T : t; ds = ds0 + w * t; }
+      const dd = b.d - d, r = Math.sqrt(ds * ds + dd * dd);
+      if (r < D[b.charI]) D[b.charI] = r;
+    }
+  }
+
+  /** Is somebody of character ch (other than `except`) within r metres of (s, d)? */
+  charNear(ch, s, d, r, except = null) {
+    if (ch < 0) return false;
+    const agents = this.agents;
+    for (let i = 0, n = agents.length; i < n; i++) {
+      const b = agents[i];
+      if (!b.active || b === except || b.charI !== ch) continue;
+      const ds = b.s - s, dd = b.d - d;
+      if (ds * ds + dd * dd < r * r) return true;
+    }
+    return false;
+  }
+
+  /** The bank of appearance seeds (null without the cast): per entry the seed, its character,
+   *  age class and sex, the roles it suits (bit per ROLES entry), height, crossed-legs sitting, and
+   *  how many people on the street have it now. */
+  _buildBank() {
+    const H = this.c.humans;
+    if (!H || !H.appearanceOf || !H.cast) return null;
+    const N = BANK_N;
+    const B = { n: N, seed: new Uint32Array(N), ch: new Uint8Array(N), cls: new Uint8Array(N), role: new Uint16Array(N),
+      h: new Float32Array(N), cross: new Uint8Array(N), use: new Uint16Array(N), roleN: new Int32Array(ROLES.length), chars: 0 };
+    const base = (this.c.seed * 7919 + 13) ^ 0x5bd1e995;
+    let maxCh = 0;
+    for (let k = 0; k < N; k++) {
+      const seed = hash2(k + 1, base) >>> 0;
+      const ap = H.appearanceOf(seed);
+      if (!ap || !Number.isInteger(ap.index) || ap.index > 255) return null;
+      B.seed[k] = seed; B.ch[k] = ap.index; maxCh = Math.max(maxCh, ap.index);
+      B.cls[k] = (AGE_I[ap.age] ?? 2) * 2 + (ap.female ? 1 : 0);
+      let m = 0;
+      for (let r = 0; r < ROLES.length; r++) if (roleFits(ROLES[r], ap)) { m |= 1 << r; B.roleN[r]++; }
+      B.role[k] = m; B.h[k] = ap.height; B.cross[k] = ap.sit === 1 ? 1 : 0;
+    }
+    B.chars = maxCh + 1;
+    return B;
+  }
+
+  /** Appearance seed without the bank: re-hashed until the body fits the role. */
+  _appearanceHash(role, opt) {
     const H = this.c.humans;
     let seed = hash2(this.serial, this.c.seed * 7919 + 13) >>> 0;
     if (!H || !H.appearanceOf) return seed;
@@ -142,6 +268,7 @@ export class Population {
     if (!a.active) return;
     if (reason === 'recycle') this._noteGone(a);
     a.active = false;
+    if (a.bankI >= 0) { if (this.bank) this.bank.use[a.bankI]--; a.bankI = -1; }
     if (a.feature) {
       if (a.feature.type === 'seat' && a.feature.platform) { const L = a.feature.platform.sitters, i = L.indexOf(a); if (i >= 0) L.splice(i, 1); }
       if (a.feature.type === 'seat') this.releaseChair(a.feature);
@@ -218,7 +345,8 @@ export class Population {
   /** Is a's figure hidden right behind a taller figure or a kiosk / advert column (same line of sight)? */
   _occluded(a) {
     const c = this.c, vis = c.vis;
-    for (const b of this.agents) {
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const b = AG[ii];
       if (!b.active || b === a || b.kind === KIND.SEATED || b.height < a.height - 0.02) continue;
       if (Math.abs(b.s - a.s) > 14 || b.s > a.s - 0.8) continue;
       if (vis.rayOffset(a.s, a.d, b.s, b.d) < 0.1) return true;
@@ -308,6 +436,7 @@ export class Population {
     const c = this.c, r = c.rng;
     const mob = opts.mob || MOB.NONE;
     const role = mob === MOB.STROLLER ? (r.chance(0.12) ? 'grandparent' : 'parent') : mob ? 'rider' : 'adult';
+    this.placeAt(sU, opts.d ?? side * (c.map.bandInAt(sU, side) + 1), opts.still ? 0 : dir * (mob === MOB.CYCLE ? 3.8 : 1.3));
     const a = this.alloc(opts.kind ?? KIND.WALKER, opts.src, role, opts.maxH ? { maxH: opts.maxH } : null);
     if (!a) return null;
     // hidden behind a figure: only someone shorter than it
@@ -337,7 +466,8 @@ export class Population {
 
   /** Another group within 6 m along the street on the same strip (|Δd| < 2 m)? */
   _groupNear(a) {
-    for (const b of this.agents) {
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const b = AG[ii];
       if (!b.active || b === a || !b.followers.length || b.kind === KIND.SEATED) continue;
       if (Math.abs(b.s - a.s) < 6 && Math.abs(b.d - a.d) < 2) return true;
     }
@@ -391,6 +521,7 @@ export class Population {
     if (a.ageK === 'old' || a.ageK === 'walkOld') a.v0 = Math.min(a.v0, WALK_BY[a.ageK][0] * this.c.rng.range(0.92, 1.02));
     for (const sl of slots) {
       if (this.free.length <= 4) break;
+      this.placeAt(a.s, a.d, a.vs);
       const f = this.alloc(a.kind, opts.src, sl.role, sl.maxH ? { maxH: sl.maxH } : null);
       if (!f) break;
       if (sl.role === 'any' && f.isChild) { this._unspawn(f); continue; }
@@ -437,6 +568,7 @@ export class Population {
     const kidR = [-Math.sign(R1) * r.range(0.38, 0.46), Math.sign(R1) * r.range(0.38, 0.46)];
     for (let k = 0; k < n && this.free.length > 4; k++) {
       const child = k >= n - kids;
+      this.placeAt(a.s, a.d, a.vs);
       const f = this.alloc(a.kind, opts.src, child ? 'child' : young ? 'young' : 'any');
       if (!f) break;
       let [F, R] = slots[k];
@@ -478,7 +610,8 @@ export class Population {
     // next to each other on one line
     if (ad < TRACK_ZONE_HALF && map.stationAt(a.s)) return false;
     if (a.mob === MOB.CYCLE) {
-      for (const b of this.agents) {
+      for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+        const b = AG[ii];
         if (b.active && b !== a && b.mob === MOB.CYCLE && Math.abs(b.s - a.s) < 4 && Math.abs(b.d - a.d) < 0.9) return false;
       }
     }
@@ -506,7 +639,8 @@ export class Population {
    *  (group members included: nobody is placed inside a stroller)? */
   propClash(a, margin = 0.05) {
     const k = this.c.route.offsetScale(a.s, a.d);
-    for (const b of this.agents) {
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const b = AG[ii];
       if (!b.active || b === a || !(a.mob || b.mob)) continue;
       const ds = (b.s - a.s) * k, dd = b.d - a.d;
       if (ds * ds + dd * dd < 9 && footGap(a, b, ds, dd).gap < margin) return true;
@@ -564,6 +698,7 @@ export class Population {
     let leader = null, placed = 0;
     const dur = r.range(20, 150);
     for (let k = 0; k < n; k++) {
+      this.placeAt(sU, cd);
       const a = this.alloc(KIND.STANDER, 'chat');
       if (!a) break;
       const ang = a0 + (k / n) * PI * 2 + r.range(-0.25, 0.25);
@@ -665,7 +800,8 @@ export class Population {
     const sU = c.camU + r.range(300, 520), side = r.chance(0.5) ? 1 : -1;
     let os, od, w, maxH = 0;
     let occ = null, n = 0;
-    for (const b of this.agents) {
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const b = AG[ii];
       if (!b.active || b.kind === KIND.SEATED || b.isChild || b.height < 1.7 || b.inDoor || b.inSide) continue;
       if (Math.abs(b.s - sU) > 25 || (b.d >= 0 ? 1 : -1) !== side) continue;
       if (Math.abs(b.d) < map.bandInAt(b.s, side) - 0.3) continue;      // (on the sidewalk proper)
@@ -689,6 +825,7 @@ export class Population {
       const s = os + behind, d = vis.rayBehind(os, od, behind);
       if (Math.abs(d) < map.bandInAt(s, side) + 0.3 || Math.abs(d) > map.wallAt(s, side) - 0.4) break;
       if (vis.rayOffset(s, d, os, od) > Math.max(0.04, w / 2 - 0.3)) break;
+      this.placeAt(s, d);
       const a = this.alloc(KIND.STANDER, 'chat', 'adult', maxH ? { maxH } : null);
       if (!a) break;
       if (maxH && a.height > maxH) { this._unspawn(a); break; }
@@ -722,7 +859,8 @@ export class Population {
   _count() {
     const k = this.c.counts;
     k.seated = 0; k.passenger = 0; k.stand = 0; k.walker = 0;
-    for (const a of this.agents) {
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const a = AG[ii];
       if (!a.active) continue;
       if (a.kind === KIND.SEATED) k.seated++;
       else if (a.kind === KIND.PASSENGER) k.passenger++;
@@ -954,7 +1092,8 @@ export class Population {
     const c = this.c, r = c.rng, vis = c.vis, map = c.map;
     // a random occluder near sU on this side (reservoir pick over people, then street furniture)
     let occ = null, n = 0;
-    for (const b of this.agents) {
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const b = AG[ii];
       if (!b.active || b.kind === KIND.SEATED || b.isChild || b.height < 1.58 || b.inDoor) continue;
       if (Math.abs(b.s - sU) > 18 || (b.d >= 0 ? 1 : -1) !== side || b.s - c.camU < 300) continue;
       if (r.next() * ++n < 1) occ = b;
@@ -1150,6 +1289,7 @@ export class Population {
 
   _seat(seat, r, role = 'adult', guardian = null) {
     const c = this.c;
+    this.placeAt(seat.s, seat.d);
     const a = this.alloc(KIND.SEATED, 'seat', role, seat.end ? { noCross: true } : null);
     if (!a) return null;
     a.state = ST.SEATED; a.s = seat.s; a.d = seat.d; a.side = seat.side; a.noRect = true;
@@ -1266,6 +1406,7 @@ export class Population {
     }
     spot = spot || at || this.platformSpot(feat, r);
     if (!spot) return;
+    this.placeAt(spot.s, spot.d);
     const a = this.alloc(KIND.PASSENGER, 'platform');
     if (!a) return;
     a.state = ST.PLATFORM; a.s = spot.s; a.d = spot.d; a.side = pl.side; a.noRect = true;
@@ -1364,6 +1505,7 @@ export class Population {
       const n = r.int(2, 7);
       for (let k = 0; k < n; k++) {
         const ds = r.pick(doors);
+        this.placeAt(ds, TRACK_ZONE_HALF + 0.45);
         const a = this.alloc(KIND.PASSENGER, 'alight');
         if (!a) break;
         a.s = ds + r.range(-0.4, 0.4); a.d = TRACK_ZONE_HALF + 0.45; a.side = 1; a.noRect = true;
@@ -1424,6 +1566,7 @@ export class Population {
     const n = r.int(2, 7);
     for (let k = 0; k < n; k++) {
       const ds = r.pick(doors);
+      this.placeAt(ds, -(TRACK_ZONE_HALF + 0.45));
       const a = this.alloc(KIND.PASSENGER, 'alight');
       if (!a) break;
       a.s = ds + r.range(-0.4, 0.4); a.d = -(TRACK_ZONE_HALF + 0.45); a.side = -1; a.noRect = true;

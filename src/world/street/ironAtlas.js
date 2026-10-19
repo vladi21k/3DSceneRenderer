@@ -4,8 +4,9 @@ import { RNG } from '../../core/rng.js';
 // worker): height and mask maps drawn with Canvas 2D, then turned into albedo (sRGB),
 // tangent-space normals (Sobel) and an ORM map (roughness in G, metalness in B):
 // worn raised metal, dusty / rusty recesses, black voids, soil and mulch.
-// One corner holds four fallen-leaf cut-outs (alpha; near-white albedo tinted by vertex
-// colour), so the leaves on the paving draw with the iron in one call.
+// One corner holds four fallen-leaf cut-outs and another two weed tufts (alpha; near-white
+// albedo tinted by vertex colour), so the leaves and weeds on the paving draw with the
+// iron in one call.
 
 export const ATLAS = 1024;
 
@@ -18,6 +19,7 @@ export const IRON_REGIONS = {
   plate: { x: 512, y: 512, w: 256, h: 256, mw: 0.6, mh: 0.6 },
   valve: { x: 768, y: 512, w: 128, h: 128, mw: 0.32, mh: 0.32 },
   leaves: { x: 896, y: 512, w: 128, h: 128 },     // 2 x 2 leaf cells
+  weeds: { x: 768, y: 640, w: 256, h: 128 },      // 2 tufts, 128 px each: base at the cell's bottom
   plate2: { x: 512, y: 768, w: 512, h: 256, mw: 1.0, mh: 0.5 },
 };
 
@@ -290,17 +292,48 @@ function drawLeaves() {
   return C.getImageData(0, 0, R.w, R.h).data;
 }
 
-/** Writes the leaf cut-outs into the maps: albedo with alpha, flat normal, dull leaf
- *  roughness, no metal. Without leaf data (initial maps) the region is just cleared. */
-export function writeLeaves(maps, px = null) {
-  const R = IRON_REGIONS.leaves;
-  for (let y = 0; y < R.h; y++) {
-    for (let x = 0; x < R.w; x++) {
-      const o = ((R.y + y) * ATLAS + R.x + x) * 4, q = (y * R.w + x) * 4;
-      const a = px ? px[q + 3] : 0, v = px ? px[q] : 235;
-      maps.alb[o] = maps.alb[o + 1] = maps.alb[o + 2] = v; maps.alb[o + 3] = a;
-      maps.nor[o] = 128; maps.nor[o + 1] = 128; maps.nor[o + 2] = 255; maps.nor[o + 3] = 255;
-      maps.orm[o] = 255; maps.orm[o + 1] = 190; maps.orm[o + 2] = 0; maps.orm[o + 3] = 255;
+/** Two weed tufts (RGBA): tapering grass blades fanning up from the base at the bottom
+ *  middle of each 128 px cell, a few broader leaves in the second. */
+function drawWeeds() {
+  const R = IRON_REGIONS.weeds, c = canvas(R.w, R.h), C = ctx2d(c);
+  C.clearRect(0, 0, R.w, R.h);
+  const rng = RNG.from('street-weeds');
+  for (let i = 0; i < 2; i++) {
+    const bx = i * 128 + 64, by = 124;
+    const n = i ? 9 : 16;
+    for (let j = 0; j < n; j++) {
+      const lean = rng.range(-0.9, 0.9), len = rng.range(48, 118) * (1 - 0.35 * Math.abs(lean));
+      const w = i && j < 4 ? rng.range(6, 10) : rng.range(2.2, 4);
+      const x0 = bx + rng.normal(0, 5), tipX = x0 + Math.sin(lean) * len, tipY = by - Math.cos(lean) * len;
+      const cx = x0 + Math.sin(lean) * len * 0.35 + rng.range(-6, 6), cy = by - len * 0.6;
+      const v = Math.round(rng.range(190, 245));
+      C.fillStyle = `rgb(${v},${v},${v})`;
+      C.beginPath();
+      C.moveTo(x0 - w, by);
+      C.quadraticCurveTo(cx - w * 0.8, cy, tipX, tipY);
+      C.quadraticCurveTo(cx + w * 0.8, cy, x0 + w, by);
+      C.closePath();
+      C.fill();
+      // a darker midrib
+      C.strokeStyle = `rgb(${v - 45},${v - 45},${v - 45})`; C.lineWidth = 0.8;
+      C.beginPath(); C.moveTo(x0, by); C.quadraticCurveTo(cx, cy, tipX, tipY); C.stroke();
+    }
+  }
+  return C.getImageData(0, 0, R.w, R.h).data;
+}
+
+/** Writes the cut-outs (leaves, weeds) into the maps: albedo with alpha, flat normal, dull
+ *  leaf roughness, no metal. Without their data (initial maps) the regions are cleared. */
+export function writeLeaves(maps, px = null, weeds = null) {
+  for (const [R, d] of [[IRON_REGIONS.leaves, px], [IRON_REGIONS.weeds, weeds]]) {
+    for (let y = 0; y < R.h; y++) {
+      for (let x = 0; x < R.w; x++) {
+        const o = ((R.y + y) * ATLAS + R.x + x) * 4, q = (y * R.w + x) * 4;
+        const a = d ? d[q + 3] : 0, v = d ? d[q] : 235;
+        maps.alb[o] = maps.alb[o + 1] = maps.alb[o + 2] = v; maps.alb[o + 3] = a;
+        maps.nor[o] = 128; maps.nor[o + 1] = 128; maps.nor[o + 2] = 255; maps.nor[o + 3] = 255;
+        maps.orm[o] = 255; maps.orm[o + 1] = 190; maps.orm[o + 2] = 0; maps.orm[o + 3] = 255;
+      }
     }
   }
 }
@@ -310,6 +343,6 @@ export function generateIronAtlas() {
   const hc = canvas(ATLAS, ATLAS), mc = canvas(ATLAS, ATLAS);
   drawIron(hc, mc);
   const maps = ironMaps(hc, mc);
-  writeLeaves(maps, drawLeaves());
+  writeLeaves(maps, drawLeaves(), drawWeeds());
   return maps;
 }

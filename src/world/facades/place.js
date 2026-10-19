@@ -4,11 +4,11 @@
 // the infill plane (w = −recess); wall-mounted items use the wall face (w = 0).
 import * as THREE from 'three';
 import { RNG, hashStr } from '../../core/rng.js';
-import { Tpl, VS, lin } from './geo.js';
+import { Tpl, TplCache, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
 import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
-import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType } from './signs.js';
+import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, flagTpls, discTpls } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow } from './spill.js';
 import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
@@ -25,7 +25,13 @@ const DOOR_COLORS = { brown: 0x4a2e1c, varnish: 0x5e3b20, green: 0x283f30, blue:
 const ROLLER = [0xb9b7b0, 0xd4d1c8, 0x8c8e8c, 0xc9bfa8];
 const BRASS = lin(0xb08a45), BLACK_IRON = [0.035, 0.035, 0.037];
 /** Shops without a sign: what they sell. */
-const SHOP_MIX = [['clothing', 0.2], ['general', 0.18], ['cafe', 0.14], ['jewellery', 0.1], ['pharmacy', 0.05], ['shoes', 0.11], ['books', 0.11], ['flowers', 0.11]];
+const SHOP_MIX = [['clothing', 0.22], ['general', 0.24], ['cafe', 0.14], ['jewellery', 0.09], ['pharmacy', 0.05], ['shoes', 0.11], ['books', 0.07], ['flowers', 0.08]];
+/** Trades that cluster (a run of fashion shops, cafés side by side); any other trade does not repeat within two shops. */
+const CLUSTER = new Set(['clothing', 'cafe']);
+/** Share of the shops the plan gives no sign that put up their own (fascia, head panel or valance). */
+const EXTRA_SIGN = 0.8;
+/** Share of the shops of each trade with a projecting sign on a pier beside them. */
+const PROJ = { clothing: 0.45, general: 0.5, cafe: 0.4, jewellery: 0.5, pharmacy: 0.85, shoes: 0.45, books: 0.35, flowers: 0.45 };
 
 /**
  * Depth available behind the infill plane before the back of the dark box with which
@@ -269,7 +275,7 @@ function buildBlade(kit, ctx, s, shopTypes) {
   const aw = ctx.cafeAwning;
   if (aw && aw.covers(s.u - 0.6, s.u + 0.6)) y = Math.max(y, aw.top + 0.3);
   if (y + s.h + 0.15 > top + 1e-3 || y - plan.groundAt(s.u) < 2.5) return;
-  const tp = bladeTpls(bladeFace(s.seed, near ? shopTypes.get(near.id) : null), s.w, s.h, ctx.q);
+  const tp = bladeTpls(bladeFace(s.seed, near ? shopTypes.get(near.id) : null, false), s.w, s.h, ctx.q);
   const m = wallMatrix(ctx.frame, s.u, y, _m, rusticOff(plan, y));
   const r = new RNG(s.seed);
   const edge = lin(r.pick([0x1d1d1f, 0x2a2a2c, 0xd8b25a, 0xe8e4da]));
@@ -277,6 +283,125 @@ function buildBlade(kit, ctx, s, shopTypes) {
   kit.get('board').add(tp.board, m, edge[0], edge[1], edge[2]);
   kit.get('signText').add(tp.text, m, 1, 1, 1, { aGlow: [glow] });
   kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
+}
+
+// ------------------------------------------------------------------ projecting signs
+const projCache = new TplCache(160);
+const q2 = (x, st) => Math.round(x / st) * st;
+
+/**
+ * Projecting signs on the piers beside the shops (PROJ of each trade): a light box with
+ * the shop's word on both faces, a disc with its pictogram, or a square blade. They face
+ * along the street, so they are what a passer-by (and the tram) reads first. Hung on the
+ * pier towards a neighbouring shop (never beside an entrance door), clear of the plan's own
+ * blades, between ~2.9 m above the paving (over awnings, café umbrellas and awning
+ * cassettes beside it) and the first-floor balcony consoles or string course.
+ */
+function buildProjecting(kit, ctx, signs) {
+  const plan = ctx.plan, lot = ctx.lot;
+  if (lot.backdrop || plan.isReturn || (lot.sideStreet && ctx.q < 0.5)) return;
+  const ground = plan.openings.filter((x) => x.floor === 0).sort((a, b) => a.uc - b.uc);
+  const used = (plan.signs || []).filter((x) => x.kind === 'blade').map((x) => x.u);
+  const f1 = plan.floors[1];
+  for (let i = 0; i < ground.length; i++) {
+    const o = ground[i];
+    if (o.kind !== 'shop') continue;
+    const type = ctx.shopTypes.get(o.id);
+    const r = RNG.from(o.id, 'projSign');
+    if (!r.chance(PROJ[type] ?? 0.4)) continue;
+    const kind = r.weighted([['flag', 0.45], ['disc', 0.25], ['blade', 0.3]]);
+    const seed = r.int(0, 1 << 30);
+    // size: light box (out from the wall L, height h, thickness th), disc diameter, blade
+    const dims = kind === 'flag' ? [q2(r.range(0.72, 1.05), 0.05), q2(r.range(0.3, 0.44), 0.02), q2(r.range(0.12, 0.16), 0.02)]
+      : kind === 'disc' ? [q2(r.range(0.52, 0.7), 0.04)] : [q2(r.range(0.5, 0.64), 0.02), q2(r.range(0.6, 0.82), 0.02)];
+    const hS = kind === 'flag' ? dims[1] : kind === 'disc' ? dims[0] : dims[1];
+    const out = kind === 'flag' ? 0.16 + dims[0] : kind === 'disc' ? 0.2 + dims[0] : 0.18 + dims[0];
+    const sides = r.chance(0.5) ? [1, -1] : [-1, 1];
+    for (const side of sides) {
+      const nb = ground[i + side];
+      if (nb && nb.kind !== 'shop') continue;
+      const jamb = o.uc + side * o.w / 2;
+      const end = nb ? nb.uc - side * nb.w / 2 : (side > 0 ? plan.width - 0.45 : 0.45);
+      const gap = (end - jamb) * side;
+      if (gap < 0.32) continue;
+      const u = jamb + side * Math.min(gap / 2, 0.55);
+      if (used.some((x) => Math.abs(x - u) < 0.9)) continue;
+      const g = plan.groundAt(u);
+      // highest the sign may reach: under the first-floor string course, and under the
+      // consoles of a first-floor balcony it would stand beneath
+      let top = f1 ? f1.y - 0.15 : plan.totalHeight - 0.6;
+      for (const b of plan.balconies || []) {
+        if (b.floor === 1 && u > b.u0 - 0.35 && u < b.u1 + 0.35) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.62);
+      }
+      // lowest: above the café umbrellas' canopies and any awning beside the pier
+      let y = g + 2.95 + r.range(0, 0.3);
+      for (const n of [o, nb]) {
+        if (!n || !hasAwning(ctx, n) || Math.abs(u - n.uc) > n.w / 2 + 0.42) continue;
+        y = Math.max(y, n.y + crownY(n) + 0.42);
+      }
+      const aw = ctx.cafeAwning;
+      if (aw && aw.covers(u - 0.5, u + 0.5)) y = Math.max(y, aw.top + 0.3);
+      // clear of a fascia board across the pier
+      for (const ws of signs.wall) {
+        if (u < ws.s.u0 - 0.12 || u > ws.s.u1 + 0.12) continue;
+        if (y < ws.y + ws.h + 0.06 && y + hS > ws.y - 0.06) y = ws.y + ws.h + 0.08;
+      }
+      if (y + hS > top) y = top - hS;
+      if (y - g < 2.75) continue;
+      used.push(u);
+      const m = wallMatrix(ctx.frame, u, y, _m, rusticOff(plan, y));
+      const q = ctx.q >= 0.5 ? 1 : 0.4;
+      if (kind === 'flag') {
+        const lightbox = r.chance(0.7);
+        const design = signDesign(seed, lightbox ? 'lightbox' : 'board', type);
+        const tp = projCache.get(`F|${design.cell}|${dims.join('|')}|${q}`, () => flagTpls(design, dims[0], dims[1], dims[2], q));
+        const bc = signColor(design.board), ink = signColor(design.ink), glow = lightbox ? 1 : 0;
+        kit.get(glow ? 'signBoard' : 'board').add(tp.board, m, bc[0], bc[1], bc[2], { aGlow: [glow] });
+        kit.get('signText').add(tp.text, m, ink[0], ink[1], ink[2], { aGlow: [glow] });
+        kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
+      } else if (kind === 'disc') {
+        const face = bladeFace(seed, type, true);
+        const tp = projCache.get(`D|${face}|${dims[0]}|${q}`, () => discTpls(face, dims[0], q));
+        const rim = lin(r.pick([0xe8e4da, 0x1d1d1f, 0xd8b25a, 0xb8b8b4]));
+        const glow = r.chance(0.5) ? 0.8 : 0;
+        kit.get(glow ? 'signBoard' : 'board').add(tp.board, m, rim[0], rim[1], rim[2], { aGlow: [glow] });
+        kit.get('signText').add(tp.text, m, 1, 1, 1, { aGlow: [glow] });
+        kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
+      } else {
+        const face = bladeFace(seed, type, false);
+        const tp = projCache.get(`B|${face}|${dims.join('|')}|${q}`, () => bladeTpls(face, dims[0], dims[1], q));
+        const edge = lin(r.pick([0x1d1d1f, 0x2a2a2c, 0xd8b25a, 0xe8e4da]));
+        const glow = r.chance(0.35) ? 0.7 : 0;
+        kit.get('board').add(tp.board, m, edge[0], edge[1], edge[2]);
+        kit.get('signText').add(tp.text, m, 1, 1, 1, { aGlow: [glow] });
+        kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
+      }
+      // (out: how far it reaches over the pavement; kept for the checks)
+      if (ctx.projOut) ctx.projOut.push({ u, y, h: hS, out });
+      break;
+    }
+  }
+}
+
+/**
+ * A sign of its own for shop o, which the plan left without one: on the valance of its
+ * awning, else a fascia board over the opening where the wall has room below the
+ * first-floor balconies, else a panel in the shopfront's head.
+ */
+function addShopSign(ctx, signs, o, type) {
+  const plan = ctx.plan;
+  const r = RNG.from(o.id, 'shopSign');
+  const design = signDesign(r.int(0, 1 << 30), null, type);
+  if (hasAwning(ctx, o)) { signs.byOpening.set(o.id, { mode: 'valance', design }); return; }
+  const ceiling = (plan.floors[1] ? plan.floors[1].y : plan.totalHeight) - 0.12;
+  const y = o.y + crownY(o) + (isArched(o) ? 0.6 : 0.1);
+  const u0 = Math.max(0.25, o.uc - o.w / 2 - 0.12), u1 = Math.min(plan.width - 0.25, o.uc + o.w / 2 + 0.12);
+  let top = ceiling;
+  for (const b of plan.balconies || []) if (b.floor === 1 && b.u1 > u0 - 0.2 && b.u0 < u1 + 0.2) top = Math.min(top, b.y - (b.slabT || 0.16) - 0.62);
+  const h = Math.min(r.range(0.45, 0.62), top - y);
+  const clash = signs.wall.some((w) => w.s.u0 < u1 + 0.1 && w.s.u1 > u0 - 0.1);
+  if (h >= 0.32 && !clash) signs.wall.push({ s: { kind: 'fascia', u0, u1, y, h }, design, y, h, o, lamps: top - (y + h) > 0.3 });
+  else signs.byOpening.set(o.id, { mode: 'head', design });
 }
 
 // ------------------------------------------------------------------ shops
@@ -739,12 +864,26 @@ function prepareFront(ctx) {
       if (ws) ws.design = recast(ws.design);
       if (!si && !ws) signs.byOpening.set(terrace.id, hasAwning(ctx, terrace) ? { mode: 'valance', design: signDesign(seed, 'letters', 'cafe') } : { mode: 'head', design: signDesign(seed, 'board', 'cafe') });
     }
+    // what each shop sells: the café's, the word on its sign, else a draw; a trade that
+    // does not cluster never repeats within two shops of a front (a sign whose word would
+    // repeat is repainted with another trade), and most unsigned shops put up a sign
     const shopTypes = new Map();
-    for (const o of plan.openings) {
-      if (o.kind !== 'shop') continue;
+    const recent = [];
+    const shops = plan.openings.filter((o) => o.kind === 'shop').sort((a, b) => a.uc - b.uc);
+    for (const o of shops) {
       const si = signs.byOpening.get(o.id) || signs.wall.find((w) => w.o === o);
       const cafe = o === terrace || (ctx.cafeAwning && ctx.cafeAwning.covers(o.uc - o.w / 2, o.uc + o.w / 2));
-      shopTypes.set(o.id, cafe ? 'cafe' : si ? wordType(si.design.cell) : RNG.from(o.id, 'type').weighted(SHOP_MIX));
+      let type = 'cafe';
+      if (!cafe) {
+        const r = RNG.from(o.id, 'type');
+        type = si ? wordType(si.design.cell) : r.weighted(SHOP_MIX);
+        for (let k = 0; k < 6 && !CLUSTER.has(type) && recent.includes(type); k++) type = r.weighted(SHOP_MIX);
+        if (si && type !== wordType(si.design.cell)) si.design = { ...si.design, cell: signDesign(r.int(0, 1 << 30), si.design.type, type).cell };
+        if (!si && !ctx.lot.backdrop && RNG.from(o.id, 'ownSign').chance(EXTRA_SIGN)) addShopSign(ctx, signs, o, type);
+      }
+      shopTypes.set(o.id, type);
+      recent.push(type);
+      if (recent.length > 2) recent.shift();
     }
     f = { cafeAwning: ctx.cafeAwning, umbrellas: ctx.umbrellas, awnings: ctx.awnings, signs, shopTypes };
     frontCache.set(plan, f);
@@ -883,5 +1022,6 @@ export function* buildFront(kit, ctx) {
   }
   for (const ws of signs.wall) buildWallSign(kit, ctx, ws);
   for (const s of plan.signs || []) if (s.kind === 'blade') buildBlade(kit, ctx, s, shopTypes);
+  buildProjecting(kit, ctx, signs);
   if (ctx.cafeAwning) buildCafeAwning(kit, ctx, ctx.cafeAwning);
 }

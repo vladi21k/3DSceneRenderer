@@ -17,7 +17,8 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //   J  grazing-angle joint masking (with L), only below ~10° elevation
 //   P  random irregular spots inside some cells, e.g. chewing gum (with L): lognormal sizes,
 //      ragged soft outlines, occasional smears, clustered by a 3-8 m noise mask and kept
-//      off the track (with K: lane offset |d| below a threshold)
+//      off the track (with K: lane offset |d| below a threshold); and larger soft spill
+//      blots with a dried tide line in other cells (per global cell: never repeating)
 //   D  detail map: high-frequency grain that fades out through its own mips
 //   R  dressing (with L and D): the detail is chosen, rotated, offset and scaled per block
 //      (chisel dressing)
@@ -72,6 +73,7 @@ uniform vec4 sfJoint;    // grazing joint masking amount, joint half width (m)
 uniform float sfMirror;  // share of blocks whose map lookup is mirrored (u, v or both)
 uniform vec4 sfSpots;    // peak probability per cell, median radius (m), albedo mult, roughness
 uniform vec4 sfSpots2;   // clusters: noise freq (1/m, 0 = none), mask low, mask high; lane: clear below |d| (0 = off)
+uniform vec4 sfSpots3;   // spill blots: probability per cell, median radius (m), albedo mult, roughness mult
 uniform vec4 sfCell2;    // correlated tone: value amp, hue share, noise freq (1/m, 0 = off), unused
 // per-cell tint; nz = correlated tone noise at the cell centre (0.5 = neutral)
 vec3 sfTintOf(uint h, float amp, float outliers, vec2 nz) {
@@ -249,19 +251,27 @@ const MAP_POM = /* glsl */ `
 // drawn out into a smear. Density follows a 3-8 m noise mask (clusters where people stand
 // and wait, a sparse eighth of the peak elsewhere) and, on lanes (street: v = d), drops to
 // a fifth between and over the rails.
+// Old spill blots (sfSpots3: oil, coffee, juice soaked into the stone) take some of the
+// other cells: larger (lognormal, 2-10 cm across, never past the cell), with a wide soft
+// fringe and a darker tide line where the spill dried, mottled inside, a little glossier
+// (oil) or a little rougher. They are drawn per global cell, so unlike anything baked into
+// the tiled maps they never repeat.
 const mapSpots = (f) => /* glsl */ `
-    if (sfSpots.x > 0.0) {
+    if (sfSpots.x + sfSpots3.x > 0.0) {
       float sfDen = sfSpots.x;
       if (sfSpots2.x > 0.0) {
         vec2 sfCc = vec2(sfUv.x - lx + 0.5 * (b0 + b1), (rgF + 0.5) * rowH);
         sfDen *= 0.12 + 0.88 * smoothstep(sfSpots2.y, sfSpots2.z, textureLod(sfMacroTex, sfCc * sfSpots2.x + vec2(0.61, 0.23), 0.0).b);
       }
 ${f.lanes ? `      if (sfSpots2.w > 0.0) sfDen *= mix(0.2, 1.0, smoothstep(sfSpots2.w - 0.9, sfSpots2.w, abs(${f.laneAttr ? 'vSfLaneD' : 'vMapUv.y'})));
-` : ''}      if (sfHf(sfH(sfCh + 9u)) < sfDen) {
+` : ''}      bool sfGum = sfHf(sfH(sfCh + 9u)) < sfDen;
+      bool sfBlot = !sfGum && sfHf(sfH(sfCh + 19u)) < sfSpots3.x;
+      if (sfGum || sfBlot) {
         float g3 = (sfHf(sfH(sfCh + 12u)) + sfHf(sfH(sfCh + 16u)) + sfHf(sfH(sfCh + 17u)) - 1.5) * 2.0;
-        float rad = clamp(sfSpots.y * exp(0.42 * g3), 0.003, 0.015);
         float hE = sfHf(sfH(sfCh + 14u));
         float el = hE < 0.12 ? 1.8 + 12.0 * hE : 1.0 + 0.4 * hE;
+        float rad = sfGum ? clamp(sfSpots.y * exp(0.42 * g3), 0.003, 0.015)
+                          : min(clamp(sfSpots3.y * exp(0.5 * g3), 0.008, 0.05), 0.4 * min(sfCs.x / el, sfCs.y));
         float ext = rad * el;
         vec2 sp = ext * 1.2 + vec2(sfHf(sfH(sfCh + 10u)), sfHf(sfH(sfCh + 11u))) * max(sfCs - 2.4 * ext, vec2(0.0));
         float ang = sfHf(sfH(sfCh + 13u)) * 6.2832;
@@ -273,8 +283,19 @@ ${f.lanes ? `      if (sfSpots2.w > 0.0) sfDen *= mix(0.2, 1.0, smoothstep(sfSpo
         float wn = (textureLod(sfMacroTex, dir * 0.05 + ro, 0.0).r - 0.5) * 3.0 + (textureLod(sfMacroTex, dir * 0.16 + ro.yx, 0.0).g - 0.5) * 1.6;
         float rr = rad * (1.0 + 0.4 * clamp(wn, -1.0, 1.0));
         float aa = max(sfFoot.x, sfFoot.y);
-        sfSpot = (1.0 - smoothstep(rr - 0.0025 - aa, rr + 0.0005 + aa, dl)) * (1.0 - smoothstep(0.5, 1.5, aa / rad));
-        sfSpotA = sfSpots.z + 0.25 * (sfHf(sfH(sfCh + 18u)) - 0.5);
+        float hA = sfHf(sfH(sfCh + 18u));
+        if (sfGum) {
+          sfSpot = (1.0 - smoothstep(rr - 0.0025 - aa, rr + 0.0005 + aa, dl)) * (1.0 - smoothstep(0.5, 1.5, aa / rad));
+          sfSpotA = sfSpots.z + 0.25 * (hA - 0.5);
+          sfSpotR = sfSpots.w;
+        } else {
+          float x = dl / rr;
+          float mot = textureLod(sfMacroTex, cl * 3.1 + ro, 0.0).b;
+          sfSpot = (1.0 - smoothstep(0.55, 1.0 + aa / rr, x)) * (0.55 + 0.45 * smoothstep(0.35, 0.9, x)) * (0.7 + 0.6 * mot)
+                 * (1.0 - smoothstep(0.6, 1.6, aa / rad));
+          sfSpotA = sfSpots3.z + 0.12 * (hA - 0.5);
+          sfSpotRm = hA < 0.6 ? sfSpots3.w : 1.08;
+        }
       }
     }
 `;
@@ -289,6 +310,8 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
   float sfRoughMul = 1.0;
   float sfSpot = 0.0;
   float sfSpotA = 1.0;
+  float sfSpotR = 0.5;       // roughness of a spot, or
+  float sfSpotRm = 0.0;      // (> 0) its multiplier on the stone's
   float sfHide = 0.0;
   vec2 sfOff = vec2(0.0);
   uint sfCh = 0u;            // block hash
@@ -486,7 +509,7 @@ const MAP_WEATHER = /* glsl */ `
 
 const SPOTS_APPLY = /* glsl */ `
   sfAlb = mix(sfAlb, sfAlb * sfSpotA, sfSpot);
-  sfRough = mix(sfRough, sfSpots.w, sfSpot);
+  sfRough = mix(sfRough, sfSpotRm > 0.0 ? sfRough * sfSpotRm : sfSpotR, sfSpot);
 `;
 
 const MAP_END = /* glsl */ `
@@ -726,6 +749,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfMisc: { value: v4([cfg.normal ?? 1, cfg.ao ?? 1, cfg.variance ?? 2, cfg.microShadow ?? 1]) },
     sfSpots: { value: v4([L ? sp.prob ?? 0 : 0, sp.radius ?? 0.01, sp.albedo ?? 1, sp.rough ?? 0.5]) },
     sfSpots2: { value: v4([shared.macro ? sp.cluster?.freq ?? 0 : 0, sp.cluster?.lo ?? 0.5, sp.cluster?.hi ?? 0.62, sp.laneClear ?? 0]) },
+    sfSpots3: { value: v4([L && shared.macro ? sp.blot?.prob ?? 0 : 0, sp.blot?.radius ?? 0.02, sp.blot?.albedo ?? 0.8, sp.blot?.rough ?? 0.85]) },
     sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, 0]) },
     sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, st.stretch ?? 1]) },
     sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },

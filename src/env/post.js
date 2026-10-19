@@ -32,6 +32,8 @@ const COC_MAX = [2.5, 8];                  // largest circle of confusion (px): 
 // Camera motion blur: at most this many pixels of streak (1080p), and none below
 // half a pixel (the pass is skipped when the camera is still).
 const BLUR_MAX_PX = 32;
+// mover slots the oncoming trams may take (two per unit); the riding cyclists fill the rest
+const TRAM_MOVERS = 4;
 
 // HDR clamp before the blur chains: far above white after any exposure, but it keeps a
 // single specular spark from ringing through the bloom pyramid.
@@ -67,14 +69,30 @@ const TONE = {
   // curve, not from underexposure
   midday: 1.12, pivot: 0.3,
   // soft black point (display units): by day the deepest shade, window recesses and dark
-  // clothes sit near black as in a camera JPEG; little once the light is lamps and sky
-  black: [0.032, 0.012],
+  // clothes sit near black as in a camera JPEG; less once the light is lamps and sky
+  black: [0.047, 0.02],
+  // toe: below about mid grey the curve's log slope eases off by `toe[0]` (over `toe[2]`
+  // stops around `toe[1]`), a camera's long toe: −2 stops ~52 sRGB, −3 ~31, −4 ~17, −6 ~4
+  // (building shade and dark shop glass keep their detail; mid grey and up unchanged)
+  toe: [0.26, 0.126, 0.5],
+  // local highlight recovery (final pass): where the surfaces around a pixel average more
+  // than `knee` stops over mid grey (a low sun's sheen on the paving, looking into it), its
+  // bright pixels (ramped in from `px[0]` stops over `px[1]`) come down by `strength` x the
+  // excess. Sunlit stone and paving at the usual angles stay below the knee
+  local: { knee: 2.5, strength: 1.0, px: [2.0, 1.5] },
+  // gamut knee: start and ceiling of the brightest channel, street and saturated sky; by
+  // day (camera JPEG: whites, cream stone and the blue near the horizon may clip), and
+  // from sunset on (amber lamps, afterglow bands keep their hue)
+  knee: [[0.84, 1.0, 0.84, 1.0], [0.8, 0.94, 0.72, 0.86]],
+  // saturation of the street's final colour: day, dusk
+  satOut: [1.15, 1.2],
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
   // sky pixels keep nearly the scene's colour ratios (a saturated blue overhead)
   skyChroma: 0.95, skySat: [1.2, 1.05],
   // glow skirt around sources far above white, from sunset on (lantern globes, lit glass):
-  // threshold and knee in exposed units, strength (time of day, strength)
+  // threshold and knee in exposed units, strength (time of day, strength). Only while the
+  // lamps' own aureoles are off: with them each globe would get a second halo
   glowThresh: 4, glowKnee: 12, glow: [[0.74, 0], [0.8, 0.2], [0.86, 0.12], [0.95, 0.03], [1.0, 0]], glowScatter: 0.4,
 };
 
@@ -243,10 +261,11 @@ const post = {
       uSunUV: { value: new THREE.Vector2() }, uSunR: { value: new THREE.Vector2() }, uFade: { value: 0 },
     });
     this.sunVisRT = target(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-    // oncoming trams' bodies and their motion since the last frame (blur and TAA history)
+    // oncoming trams' bodies and riding cyclists, and their motion since the last frame
+    // (blur and TAA history)
     this.movers = {
-      uMoverInv: { value: Array.from({ length: 4 }, () => new THREE.Matrix4()) },
-      uMoverDisp: { value: Array.from({ length: 4 }, () => new THREE.Vector3()) },
+      uMoverInv: { value: Array.from({ length: S.NUM_MOVERS }, () => new THREE.Matrix4()) },
+      uMoverDisp: { value: Array.from({ length: S.NUM_MOVERS }, () => new THREE.Vector3()) },
       uMovers: { value: 0 },
     };
     this._moverPrev = new Map();
@@ -300,7 +319,14 @@ const post = {
       uSkyChroma: { value: app.params.num ? app.params.num('skychroma', TONE.skyChroma) : TONE.skyChroma },
       uSkySat: { value: TONE.skySat[0] },
       tGlow: { value: null }, uGlow: { value: 0 },
+      uToe: { value: new THREE.Vector3(...TONE.toe) },
+      tLocal: { value: null }, uLocal: { value: new THREE.Vector4(TONE.local.knee, 0, TONE.local.px[0], TONE.local.px[1]) },
+      uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: TONE.satOut[0] },
     });
+    // local level of the surfaces for the highlight recovery (1/8 res, then blurred)
+    this.localPass = pass(S.LOCAL_FS, { tSrc: { value: null }, tDepth: { value: null }, uSrcSize: { value: new THREE.Vector2() } });
+    this.localBlur = pass(S.LOCAL_BLUR_FS, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
+    this.localOn = app.params.raw.get('lhr') !== '0';   // (A/B: URL lhr=0)
     // glow extraction (shares the final pass's exposure inputs)
     {
       const f = this.final.material.uniforms;
@@ -347,7 +373,7 @@ const post = {
    */
   _precompile() {
     const r = this.app.renderer, env = this.app.systems.env;
-    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum, this.glowPass];
+    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum, this.glowPass, this.localPass, this.localBlur];
     for (const m of env?.passes?.() || []) into.push(m);
     const prev = r.getRenderTarget();
     const group = (meshes, rt) => {
@@ -432,6 +458,9 @@ const post = {
       this.glowUps.push(i < 2 ? target(w, h) : null);
       w = Math.max(1, Math.ceil(w / 2)); h = Math.max(1, Math.ceil(h / 2));
     }
+    // local highlight level: 1/8 res, a ping-pong pair for the separable blur
+    const lw = Math.ceil(W / 8), lh = Math.ceil(H / 8);
+    this.localRT = [target(lw, lh, { format: THREE.RGFormat }), target(lw, lh, { format: THREE.RGFormat })];
     this.app.systems.env?.clouds?.setSize(W, H);
     this.final.material.uniforms.uResolution.value.set(W, H);
     this.prepass.material.uniforms.uResolution.value.set(W, H);
@@ -447,6 +476,8 @@ const post = {
     }
     for (const t of this.taaRT || []) t.dispose();
     this.taaRT = null;
+    for (const t of this.localRT || []) t.dispose();
+    this.localRT = null;
     for (const t of [...(this.downs || []), ...(this.ups || []), ...(this.glowDowns || []), ...(this.glowUps || [])]) t && t.dispose();
   },
 
@@ -493,7 +524,10 @@ const post = {
     // contact shadows read deeper once the light is all lamps and sky
     pu.uAOStrength.value = Math.min(AO.strength * lerp(1, 1.3, ss(night, 0.5, 1)), 1);
     fu.uBloom.value = THREE.MathUtils.lerp(TONE.bloom[0], TONE.bloom[1], night);
-    fu.uGlow.value = table(TONE.glow, t);
+    // one halo per lantern: the lamps' own aureoles (catenary) draw the skirt round each lit
+    // globe, so the glow pass only stands in for them while they are off (catglow=0)
+    const cat = this.app.systems.catenary;
+    fu.uGlow.value = cat && !cat.disabled && cat.glow ? 0 : table(TONE.glow, t);
     fu.uTail.value = TONE.tail * ss(night, 0.3, 1.0);
     fu.uExposure.value = env ? env.exposure : 1;
     fu.uExposureMax.value = env ? env.exposureMax ?? 1e4 : 1e4;
@@ -572,6 +606,14 @@ const post = {
     // more of the scene's own chroma once the light warms (low sun on stone, lamps)
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
+    fu.uSatOut.value = THREE.MathUtils.lerp(TONE.satOut[0], TONE.satOut[1], ss(t, 0.6, 0.85));
+    // gamut knee: a camera JPEG by day, hue-keeping from sunset on
+    {
+      const kd = ss(t, 0.6, 0.75), K0 = TONE.knee[0], K1 = TONE.knee[1];
+      fu.uKnee.value.set(lerp(K0[0], K1[0], kd), lerp(K0[1], K1[1], kd), lerp(K0[2], K1[2], kd), lerp(K0[3], K1[3], kd));
+    }
+    // local highlight recovery while the sun is up (the dusk sources have the glow)
+    fu.uLocal.value.y = this.localOn && this.localRT ? TONE.local.strength * (1 - ss(t, 0.8, 0.9)) : 0;
     fu.uSkySat.value = this.skySatK * THREE.MathUtils.lerp(TONE.skySat[0], TONE.skySat[1], ss(t, 0.45, 0.8));
   },
 
@@ -655,17 +697,51 @@ const post = {
   },
 
   /**
-   * The oncoming trams as moving boxes: two per car (it bends with the track), camera-
-   * relative, each with its displacement since the last frame. Returns the largest
-   * displacement (m).
+   * Moving boxes, camera-relative, each with its displacement since the last frame: the
+   * oncoming trams, two per car (it bends with the track; at most TRAM_MOVERS slots), then
+   * the riding cyclists the crowd publishes (app.crowd.movers: box centre, yaw, half
+   * extents, displacement). Returns the largest displacement (m).
    */
   _movers(app, camera) {
     const M = this.movers, trams = app.trams, route = app.route;
     M.uMovers.value = 0;
-    if (!trams || trams.disabled || !Array.isArray(trams.units) || !route) { this._moverPrev.clear(); return 0; }
     const cp = _p0.setFromMatrixPosition(camera.matrixWorld);
     const moving = app.dt > 0;
     let n = 0, dMax = 0;
+    if (!trams || trams.disabled || !Array.isArray(trams.units) || !route) this._moverPrev.clear();
+    else n = this._tramMovers(app, trams, route, cp, moving);
+    for (let i = 0; i < n; i++) dMax = Math.max(dMax, M.uMoverDisp.value[i].length());
+    // riding cyclists (bicycle and rider, a little margin for the wheels and elbows)
+    const crowd = app.crowd, mv = crowd && !crowd.disabled ? crowd.movers : null;
+    if (mv && mv.items && moving) {
+      const items = mv.items, cap = S.NUM_MOVERS;
+      for (let j = 0, m = Math.min(mv.n | 0, items.length); j < m && n < cap; j++) {
+        const it = items[j];
+        const sh = Math.sin(it.heading), ch = Math.cos(it.heading);
+        const hw = (it.halfWidth || 0.36) + 0.06, hl = (it.halfLen || 0.95) + 0.06, hh = (it.halfHeight || 0.92) + 0.06;
+        // (yaw 0 faces −Z: forward (−sin, 0, −cos), right (cos, 0, −sin))
+        _vx.x = ch * hw; _vx.y = 0; _vx.z = -sh * hw;
+        _vy.x = 0; _vy.y = hh; _vy.z = 0;
+        _vz.x = -sh * hl; _vz.y = 0; _vz.z = -ch * hl;
+        _m4.makeBasis(_vx, _vy, _vz).setPosition(it.x - cp.x, it.y - cp.y, it.z - cp.z);
+        M.uMoverInv.value[n].copy(_m4).invert();
+        const disp = M.uMoverDisp.value[n];
+        disp.x = it.dx; disp.y = it.dy; disp.z = it.dz;
+        const dl = disp.length();
+        // (a respawn or a jump: no history)
+        if (dl > 3) continue;
+        if (dl > dMax) dMax = dl;
+        n++;
+      }
+    }
+    M.uMovers.value = n;
+    return dMax;
+  },
+
+  /** The oncoming trams' boxes (see _movers); returns the number of slots filled. */
+  _tramMovers(app, trams, route, cp, moving) {
+    const M = this.movers;
+    let n = 0;
     for (const u of trams.units) {
       // (the unit's own previous-frame position when it publishes one)
       let prev = u.prevS;
@@ -674,7 +750,7 @@ const post = {
       const len = u.length || 32, hw = (u.halfWidth || 1.3) + 0.08;
       const ds = prev === undefined || !moving ? 0 : route.delta(prev, u.s);
       if (Math.abs(ds) > 6) continue;    // a jump (respawn): no history
-      for (let k = 0; k < 2 && n < 4; k++) {
+      for (let k = 0; k < 2 && n < TRAM_MOVERS; k++) {
         const o = (k + 0.5) * len / 2;
         const c = route.toWorld(u.s + o, u.d, 1.9, _p1);
         if (c.distanceToSquared(cp) > 200 * 200) continue;
@@ -687,12 +763,10 @@ const post = {
         M.uMoverInv.value[n].copy(_m4).invert();
         const disp = M.uMoverDisp.value[n];
         if (ds !== 0) disp.subVectors(c, route.toWorld(u.s - ds + o, u.d, 1.9, _p2)); else disp.set(0, 0, 0);
-        dMax = Math.max(dMax, disp.length());
         n++;
       }
     }
-    M.uMovers.value = n;
-    return dMax;
+    return n;
   },
 
   /**
@@ -947,8 +1021,24 @@ const post = {
     this.lumPing ^= 1;
     this._draw(this.lum, this.lumRT[this.lumPing]);
 
-    // ---- 8b. glow around sources far above white (from sunset on)
+    // ---- 8b. local level of the surfaces (highlight recovery in the final pass)
     const fu = this.final.material.uniforms;
+    if (fu.uLocal.value.y > 0) {
+      if (prof) prof.begin('local');
+      const lu0 = this.localPass.material.uniforms, L = this.localRT;
+      lu0.tSrc.value = img.texture;
+      lu0.tDepth.value = this.sceneRT.depthTexture;
+      lu0.uSrcSize.value.set(img.width, img.height);
+      this._draw(this.localPass, L[0]);
+      const bu = this.localBlur.material.uniforms;
+      bu.tSrc.value = L[0].texture; bu.uDir.value.set(1 / L[0].width, 0);
+      this._draw(this.localBlur, L[1]);
+      bu.tSrc.value = L[1].texture; bu.uDir.value.set(0, 1 / L[0].height);
+      this._draw(this.localBlur, L[0]);
+      fu.tLocal.value = L[0].texture;
+    }
+
+    // ---- 8c. glow around sources far above white (from sunset on)
     fu.tGlow.value = low.texture;
     if (fu.uGlow.value > 0 && this.glowDowns && this.glowDowns.length === 3) {
       if (prof) prof.begin('glow');
@@ -992,7 +1082,7 @@ const post = {
     if (prof) {
       prof.end();
       const t = prof.timings;
-      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.glow || 0) + (t.final || 0);
+      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.local || 0) + (t.glow || 0) + (t.final || 0);
       t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.main || 0) + (t.envmap || 0);
       app.perf.gpuMs = t.total;
     }

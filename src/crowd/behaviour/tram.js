@@ -514,7 +514,8 @@ export class TramWatch {
     if (!T) return;
     this.uStats.bells++;
     const r = this.c.rng, reach = 60 + 3 * T.v;
-    for (const a of this.c.population.agents) {
+    for (let ii = 0, AG = this.c.population.agents, nn = AG.length; ii < nn; ii++) {
+      const a = AG[ii];
       if (!a.active || a.state === ST.SEATED) continue;
       const ah = T.sU - a.s;
       if (ah < -6 || ah > reach) continue;

@@ -127,6 +127,7 @@ function spawnWaiter(c, feat) {
   const dr = r.pick(doors);
   const dIn = side * (dr.o.d + dr.depth - 0.15);
   if (!c.vis.bodyHidden(dr.s, dIn, side, dr.o.d, dr.oS - dr.o.half, dr.oS + dr.o.half)) return null;
+  pop.placeAt(dr.s, dIn);
   const a = pop.alloc(KIND.WALKER, 'staff', 'waiter');
   if (!a) return null;
   a.s = dr.s; a.d = dIn; a.side = side; a.dir = 1; a.lane = LANE.SIDE; a.laneF = 0.9;

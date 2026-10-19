@@ -11,11 +11,14 @@ import { SHOP_LEVEL } from './interior.js';
 // glyphs tinted by vertex colour (full-colour cells take white); `aGlow` makes light boxes
 // and neon letters glow at dusk.
 
-const W = 2048, H = 4096;
+const W = 2048, H = 6144;
 const CELL_W = 512, CELL_H = 128, TEXT_ROWS = 12;          // text cells: rows 0..11
 const PLAQUE = 128, PLAQUE_Y = TEXT_ROWS * CELL_H;        // 2 rows of 16 number plaques
 const BLADE_W = 256, BLADE_H = 256, BLADE_Y = PLAQUE_Y + 2 * PLAQUE; // 2 rows of 8 blade faces
 const DRESS_Y = BLADE_Y + 2 * BLADE_H;                     // posters 5 rows of 8 (256 px), price cards and stickers a row of 16 (128 px) each, banners 2 rows of 4 (512 x 128)
+const WORDS2_Y = 4096;                                     // text cells 48..79: 8 more rows of 4
+const BLADE2_Y = WORDS2_Y + 8 * CELL_H;                    // blade faces 16..31: 2 more rows of 8
+const PRINT_Y = BLADE2_Y + 2 * BLADE_H;                    // goods-stand prints: a row of 16 papers (128 x 256), 2 rows of 16 price tags (128 x 128)
 
 // Shop words and the interior each one implies (see interior.js SHOP_TYPES).
 const WORDS = [
@@ -31,9 +34,24 @@ const WORDS = [
   [['ממתקים'], 'general'], [['גלידה'], 'cafe'], [['מסעדה'], 'cafe'], [['בגדים'], 'clothing'],
   [['קפה', 'CAFE'], 'cafe'], [['ספרים', 'BOOKS'], 'books'], [['תכשיטים', 'JEWELRY'], 'jewellery'], [['מאפייה', 'BAKERY'], 'cafe'],
   [['פרחים', 'FLOWERS'], 'flowers'], [['נעליים', 'SHOES'], 'shoes'], [['אופטיקה', 'OPTICS'], 'jewellery'], [['מתנות', 'GIFTS'], 'general'],
+  // (a third entry narrows the trade: what the shop puts out on the pavement, stands.js)
+  [['COFFEE'], 'cafe'], [['שווארמה'], 'cafe'], [['BURGER'], 'cafe'], [['חומוס'], 'cafe'],
+  [['פיצה'], 'cafe'], [['קונדיטוריה'], 'cafe', 'bakery'], [['SUSHI'], 'cafe'], [['WINE BAR'], 'cafe'],
+  [['MINI MARKET'], 'general', 'grocery'], [['מכולת'], 'general', 'grocery'], [['פירות וירקות'], 'general', 'grocery'], [['פיצוחים'], 'general', 'nuts'],
+  [['תבלינים'], 'general', 'nuts'], [['PHONES'], 'general', 'phones'], [['סלולר'], 'general', 'phones'], [['קיוסק'], 'general', 'kiosk'],
+  [['צעצועים'], 'general', 'toys'], [['JEANS'], 'clothing'], [['KIDS'], 'clothing'], [['אופנת נשים'], 'clothing'],
+  [['SPORT'], 'clothing'], [['נעלי ספורט'], 'shoes'], [['SHOE STORE'], 'shoes'], [['GOLD'], 'jewellery'],
+  [['שעונים'], 'jewellery'], [['WATCHES'], 'jewellery'], [['פארם'], 'pharmacy'], [['COSMETICS'], 'pharmacy'],
+  [['JUDAICA'], 'books'], [['יודאיקה'], 'books'], [['כלי כתיבה'], 'books', 'kiosk'], [['FLORIST'], 'flowers'],
 ];
+// the trade of the original words that put something particular out
+const SUB = { BAKERY: 'bakery', 'מאפייה': 'bakery', BAGELS: 'bakery', MARKET: 'grocery', SWEETS: 'sweets', 'ממתקים': 'sweets', SOUVENIRS: 'toys', TOYS: 'toys', GIFTS: 'toys', 'מתנות': 'toys', 'ICE CREAM': 'icecream', 'גלידה': 'icecream', 'JUICE BAR': 'juice', 'מיצים': 'juice' };
 /** Shop type implied by a sign's word cell. */
 export const wordType = (cell) => WORDS[cell][1];
+/** The narrower trade of a sign's word cell (grocery, bakery, nuts, phones, kiosk, toys, sweets, icecream, juice) or null. */
+export const wordSub = (cell) => WORDS[cell][2] || SUB[WORDS[cell][0][0]] || SUB[WORDS[cell][0][1]] || null;
+/** Word cells of a shop type. */
+export function wordsOf(type) { const ok = []; WORDS.forEach(([, t], i) => { if (t === type) ok.push(i); }); return ok; }
 const FONTS = [
   (px) => `700 ${px}px "Liberation Sans", "Noto Sans Hebrew", Arial, sans-serif`,
   (px) => `700 ${px}px "Liberation Serif", "Noto Serif Hebrew", Georgia, serif`,
@@ -47,10 +65,13 @@ export const SIGN_PALETTE = {
   letters: [0xd8b25a, 0xf2efe6, 0xe9dfc4, 0x1a1a1a, 0xb3261e, 0xf2c230],
   boxes: [0xf4f1e8, 0xf2d24a, 0xc8231c, 0x1f5fa8, 0x2a7a3a, 0xf4f1e8, 0xe8701c, 0x1e8a8a],
 };
-// painted fascia boards as on the street: mostly black, dark green, oxblood and navy
-// enamel (gold or cream letters), a few pale, bright or wood-brown ones
-const BOARD_WEIGHTS = [[0x1d1d1f, 0.2], [0x1f3a2c, 0.17], [0x5a1a1c, 0.14], [0x1b2b45, 0.12], [0x24464a, 0.07], [0x6b4a2a, 0.07],
-  [0xd9cfb6, 0.05], [0xe8e4da, 0.04], [0xb8261e, 0.04], [0x1f5f8a, 0.04], [0x2f6e3a, 0.03], [0xe8b820, 0.03]];
+// painted fascia boards as on the street: half the classic black, dark green, oxblood and
+// navy enamel (gold or cream letters), half the shopfitters' bright plastic and aluminium
+// boards (red, white, blue, yellow, green, orange, the odd purple)
+const BOARD_WEIGHTS = [[0x1d1d1f, 0.12], [0x1f3a2c, 0.1], [0x5a1a1c, 0.09], [0x1b2b45, 0.08], [0x24464a, 0.05], [0x6b4a2a, 0.05],
+  [0xd9cfb6, 0.05], [0xe8e4da, 0.06], [0xb8261e, 0.1], [0x1f5f8a, 0.08], [0x2f6e3a, 0.06], [0xe8b820, 0.06],
+  [0xe8701c, 0.04], [0x5a2a6a, 0.03], [0x2a8ac0, 0.03]];
+const LIGHT_BOARDS = new Set([0xd9cfb6, 0xe8e4da, 0xe8b820]);
 
 let atlas = null;
 
@@ -62,7 +83,7 @@ function buildAtlas() {
   const cells = [];
   // text cells: white glyphs on transparent
   WORDS.forEach(([lines], i) => {
-    const cx = (i % 4) * CELL_W, cy = Math.floor(i / 4) * CELL_H;
+    const cx = (i % 4) * CELL_W, cy = i < 48 ? Math.floor(i / 4) * CELL_H : WORDS2_Y + Math.floor((i - 48) / 4) * CELL_H;
     const font = FONTS[i % FONTS.length];
     g.save();
     g.beginPath(); g.rect(cx, cy, CELL_W, CELL_H); g.clip();
@@ -108,10 +129,23 @@ function buildAtlas() {
   }
   // blade sign faces (full colour, generic pictograms)
   const blades = [];
-  BLADE_FACES.forEach(([fn], i) => {
-    const x = (i % 8) * BLADE_W, y = BLADE_Y + Math.floor(i / 8) * BLADE_H;
+  BLADE_FACES.forEach(([fn, , round], i) => {
+    const x = (i % 8) * BLADE_W, y = (i < 16 ? BLADE_Y : BLADE2_Y - 2 * BLADE_H) + Math.floor(i / 8) * BLADE_H;
     g.save(); g.beginPath(); g.rect(x, y, BLADE_W, BLADE_H); g.clip(); fn(g, x, y); g.restore();
-    blades.push({ u0: (x + 4) / W, v0: 1 - (y + BLADE_H - 4) / H, u1: (x + BLADE_W - 4) / W, v1: 1 - (y + 4) / H });
+    blades.push({ u0: (x + 4) / W, v0: 1 - (y + BLADE_H - 4) / H, u1: (x + BLADE_W - 4) / W, v1: 1 - (y + 4) / H, round: !!round });
+  });
+  // goods-stand prints: folded newspapers and magazines, cardboard price tags
+  const prints = { papers: [], tags: [] };
+  PAPERS.forEach((fn, i) => {
+    const x = i * 128, y = PRINT_Y;
+    g.save(); g.beginPath(); g.rect(x, y, 128, 256); g.clip(); fn(g, x + 4, y + 4, 120, 248, i); g.restore();
+    prints.papers.push({ u0: (x + 4.5) / W, v0: 1 - (y + 251.5) / H, u1: (x + 123.5) / W, v1: 1 - (y + 4.5) / H, aspect: 119 / 247 });
+  });
+  TAGS.forEach(([fn, a], i) => {
+    const cx = (i % 16) * 128, cy = PRINT_Y + 256 + Math.floor(i / 16) * 128;
+    const w = Math.min(120, 120 * a), h = w / a, x = cx + (128 - w) / 2, y = cy + (128 - h) / 2;
+    g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h, i); g.restore();
+    prints.tags.push({ u0: (x + 1) / W, v0: 1 - (y + h - 1) / H, u1: (x + w - 1) / W, v1: 1 - (y + 1) / H, aspect: w / h });
   });
   // window dressing: each draws a card of aspect a (w / h) centred in its cell
   const dress = { posters: [], prices: [], stickers: [], banners: [] };
@@ -127,13 +161,13 @@ function buildAtlas() {
     });
     yy += Math.ceil(list.length / per) * CH;
   }
-  if (yy > H) console.warn('[facades] sign atlas overflow', yy);
+  if (yy > WORDS2_Y) console.warn('[facades] sign atlas overflow', yy);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
-  return { tex, cells, plaques, blades, dress };
+  return { tex, cells, plaques, blades, dress, prints };
 }
 
 // ------------------------------------------------------------------ window dressing
@@ -409,7 +443,120 @@ const BLADE_FACES = [
   [(g, x, y) => { fill(g, '#f4f1e8', x, y); txt(g, 'אופנה', x, y, '#5a1a1c', 84); }, 'clothing'],
   [(g, x, y) => { fill(g, '#24464a', x, y); txt(g, 'OPTICS', x, y, '#f2efe6', 56); }, 'jewellery'],
   [(g, x, y) => { fill(g, '#c49a42', x, y); txt(g, 'מתנות', x, y, '#1d1d1f', 84); }, 'general'],
+  // round faces (discs: the corners stay transparent) and more square ones
+  [(g, x, y) => { discFace(g, x, y, '#f4f1e8', '#1f8a3a'); g.fillStyle = '#1f8a3a'; g.fillRect(x + 104, y + 58, 48, 140); g.fillRect(x + 58, y + 104, 140, 48); }, 'pharmacy', true],
+  [(g, x, y) => { discFace(g, x, y, '#4a2a18', '#e9dfc4'); cup(g, x + 4, y - 8, '#f2e6cc'); }, 'cafe', true],
+  [(g, x, y) => { discFace(g, x, y, '#f7b8c8', '#ffffff'); cone(g, x, y); }, 'cafe', true],
+  [(g, x, y) => { discFace(g, x, y, '#141416', '#d8b25a'); diamond(g, x, y, '#e8e4da'); }, 'jewellery', true],
+  [(g, x, y) => { discFace(g, x, y, '#1f5fa8', '#f4f1e8'); phone(g, x, y, '#f4f1e8'); }, 'general', true],
+  [(g, x, y) => { discFace(g, x, y, '#2a7a3a', '#f4f1e8'); tulip(g, x, y); }, 'flowers', true],
+  [(g, x, y) => { discFace(g, x, y, '#c8231c', '#f4f1e8'); txt(g, 'SALE', x, y, '#f4f1e8', 70); }, 'clothing', true],
+  [(g, x, y) => { discFace(g, x, y, '#e8b820', '#1d1d1f'); txt(g, '₪ $ €', x, y, '#1d1d1f', 54); }, 'jewellery', true],
+  [(g, x, y) => { fill(g, '#1f5f8a', x, y); tee(g, x, y, '#f4f1e8'); }, 'clothing'],
+  [(g, x, y) => { fill(g, '#c8231c', x, y); heel(g, x, y, '#f4f1e8'); }, 'shoes'],
+  [(g, x, y) => { fill(g, '#2f6e3a', x, y); basket(g, x, y, '#f4f1e8'); }, 'general'],
+  [(g, x, y) => { fill(g, '#5a1a1c', x, y); book(g, x, y, '#e9dfc4'); }, 'books'],
+  [(g, x, y) => { fill(g, '#f2d24a', x, y); txt(g, 'פלאפל', x, y, '#b3261e', 92); }, 'cafe'],
+  [(g, x, y) => { fill(g, '#e8701c', x, y); txt(g, 'פארם', x, y, '#f4f1e8', 100); }, 'pharmacy'],
+  [(g, x, y) => { fill(g, '#1b2b45', x, y); watch(g, x, y, '#d8b25a'); }, 'jewellery'],
+  [(g, x, y) => { discFace(g, x, y, '#1d3f7a', '#f4f1e8'); txt(g, 'HOTEL', x, y, '#f4f1e8', 58); }, null, true],
 ];
+
+/** Round sign face: a disc with a rim; the corners of the cell stay transparent. */
+function discFace(g, x, y, c, rim) {
+  g.fillStyle = rim; g.beginPath(); g.arc(x + 128, y + 128, 122, 0, Math.PI * 2); g.fill();
+  g.fillStyle = c; g.beginPath(); g.arc(x + 128, y + 128, 110, 0, Math.PI * 2); g.fill();
+  const gr = g.createRadialGradient(x + 100, y + 96, 10, x + 128, y + 128, 112);
+  gr.addColorStop(0, 'rgba(255,255,255,0.10)'); gr.addColorStop(1, 'rgba(0,0,0,0.12)');
+  g.fillStyle = gr; g.beginPath(); g.arc(x + 128, y + 128, 110, 0, Math.PI * 2); g.fill();
+}
+function cone(g, x, y) {
+  g.fillStyle = '#c8823a'; g.beginPath(); g.moveTo(x + 96, y + 128); g.lineTo(x + 160, y + 128); g.lineTo(x + 128, y + 212); g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(90,50,20,0.6)'; g.lineWidth = 3;
+  for (let k = 0; k < 4; k++) { g.beginPath(); g.moveTo(x + 100 + k * 14, y + 132); g.lineTo(x + 128 + k * 6, y + 200); g.stroke(); }
+  for (const [dx, dy, c] of [[-16, -6, '#f4e8d0'], [16, -6, '#8a4a2a'], [0, -34, '#e86a8a']]) { g.fillStyle = c; g.beginPath(); g.arc(x + 128 + dx, y + 118 + dy, 30, 0, Math.PI * 2); g.fill(); }
+}
+function diamond(g, x, y, c) {
+  g.fillStyle = c; g.beginPath(); g.moveTo(x + 78, y + 104); g.lineTo(x + 100, y + 76); g.lineTo(x + 156, y + 76); g.lineTo(x + 178, y + 104); g.lineTo(x + 128, y + 182); g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(x + 78, y + 104); g.lineTo(x + 178, y + 104); g.moveTo(x + 112, y + 76); g.lineTo(x + 104, y + 104); g.lineTo(x + 128, y + 182); g.lineTo(x + 152, y + 104); g.lineTo(x + 144, y + 76); g.stroke();
+}
+function phone(g, x, y, c) {
+  g.fillStyle = c; roundRect(g, x + 98, y + 60, 60, 120, 10); g.fill();
+  g.fillStyle = '#1f5fa8'; g.fillRect(x + 106, y + 74, 44, 82);
+  g.fillStyle = c; g.beginPath(); g.arc(x + 128, y + 168, 5, 0, Math.PI * 2); g.fill();
+}
+function tulip(g, x, y) {
+  g.strokeStyle = '#d8e8b0'; g.lineWidth = 8; g.beginPath(); g.moveTo(x + 128, y + 128); g.lineTo(x + 128, y + 200); g.stroke();
+  g.fillStyle = '#d8e8b0'; g.beginPath(); g.ellipse(x + 104, y + 176, 22, 9, -0.6, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#f2d24a'; g.beginPath(); g.moveTo(x + 98, y + 80); g.lineTo(x + 112, y + 100); g.lineTo(x + 128, y + 74); g.lineTo(x + 144, y + 100); g.lineTo(x + 158, y + 80); g.lineTo(x + 156, y + 120); g.quadraticCurveTo(x + 128, y + 148, x + 100, y + 120); g.closePath(); g.fill();
+}
+function tee(g, x, y, c) {
+  g.fillStyle = c; g.beginPath();
+  g.moveTo(x + 100, y + 62); g.quadraticCurveTo(x + 128, y + 80, x + 156, y + 62); g.lineTo(x + 206, y + 92); g.lineTo(x + 186, y + 124); g.lineTo(x + 168, y + 112);
+  g.lineTo(x + 168, y + 196); g.lineTo(x + 88, y + 196); g.lineTo(x + 88, y + 112); g.lineTo(x + 70, y + 124); g.lineTo(x + 50, y + 92); g.closePath(); g.fill();
+}
+function heel(g, x, y, c) {
+  g.fillStyle = c; g.beginPath();
+  g.moveTo(x + 60, y + 104); g.quadraticCurveTo(x + 70, y + 92, x + 84, y + 100); g.quadraticCurveTo(x + 120, y + 150, x + 176, y + 152);
+  g.quadraticCurveTo(x + 204, y + 156, x + 206, y + 176); g.lineTo(x + 120, y + 176); g.quadraticCurveTo(x + 96, y + 150, x + 78, y + 132); g.lineTo(x + 74, y + 190); g.lineTo(x + 66, y + 190); g.closePath(); g.fill();
+}
+function basket(g, x, y, c) {
+  g.strokeStyle = c; g.fillStyle = c; g.lineWidth = 10; g.lineJoin = 'round';
+  g.beginPath(); g.moveTo(x + 64, y + 104); g.lineTo(x + 192, y + 104); g.lineTo(x + 176, y + 180); g.lineTo(x + 80, y + 180); g.closePath(); g.stroke();
+  g.beginPath(); g.moveTo(x + 96, y + 104); g.lineTo(x + 120, y + 62); g.moveTo(x + 160, y + 104); g.lineTo(x + 136, y + 62); g.stroke();
+  for (let k = 1; k < 4; k++) { g.beginPath(); g.moveTo(x + 64 + k * 32, y + 110); g.lineTo(x + 70 + k * 29, y + 176); g.stroke(); }
+}
+function book(g, x, y, c) {
+  g.fillStyle = c; g.beginPath(); g.moveTo(x + 128, y + 92); g.quadraticCurveTo(x + 92, y + 72, x + 52, y + 80); g.lineTo(x + 52, y + 180); g.quadraticCurveTo(x + 92, y + 172, x + 128, y + 190);
+  g.quadraticCurveTo(x + 164, y + 172, x + 204, y + 180); g.lineTo(x + 204, y + 80); g.quadraticCurveTo(x + 164, y + 72, x + 128, y + 92); g.closePath(); g.fill();
+  g.strokeStyle = '#5a1a1c'; g.lineWidth = 4; g.beginPath(); g.moveTo(x + 128, y + 94); g.lineTo(x + 128, y + 186); g.stroke();
+}
+function watch(g, x, y, c) {
+  g.fillStyle = c; g.fillRect(x + 108, y + 46, 40, 164);
+  g.beginPath(); g.arc(x + 128, y + 128, 48, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#f4f1e8'; g.beginPath(); g.arc(x + 128, y + 128, 38, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#1d1d1f'; g.lineWidth = 5; g.beginPath(); g.moveTo(x + 128, y + 128); g.lineTo(x + 128, y + 100); g.moveTo(x + 128, y + 128); g.lineTo(x + 148, y + 136); g.stroke();
+}
+
+// ------------------------------------------------------------------ goods-stand prints
+// Folded newspapers and magazines for the racks (portrait 120 x 248 px: the top half of a
+// folded paper with its masthead and a photograph, or a magazine cover), and cardboard
+// price tags for produce and sale bins (hand-lettered with a marker).
+const PAPER_INK = ['#1a1a1a', '#b3261e', '#1b3a8a', '#1a1a1a'];
+const PAPERS = Array.from({ length: 16 }, (_, i) => (g, x, y, w, h) => {
+  const r = new RNG(9100 + i);
+  if (i < 9) {
+    // newspaper: masthead, headline, a photograph, columns of small print
+    paper(g, x, y, w, h, '#ece8dc');
+    const ink = PAPER_INK[i % 4];
+    fit(g, ['חדשות', 'הבוקר', 'השבוע', 'יומון', 'CITY NEWS', 'DAILY', 'כלכלה', 'ספורט', 'ערב'][i], x + w / 2, y + h * 0.07, w * 0.86, h * 0.07, ink, 700, i % 2 ? SERIF : SANS);
+    g.fillStyle = ink; g.fillRect(x + w * 0.06, y + h * 0.125, w * 0.88, 2);
+    hand(g, r.pick(['הבחירות', 'מחר', 'BREAKING', 'הכותרת', 'גשם', 'MARKETS']), x + w / 2, y + h * 0.18, w * 0.82, h * 0.045, '#1a1a1a', i + 3);
+    const ph = r.pick(['#7a8a9a', '#9a7a5a', '#5a6a4a', '#8a5a4a']);
+    grad(g, x + w * 0.06, y + h * 0.23, w * 0.88, h * 0.22, ph, '#3a3a3a');
+    disc(g, x + w * r.range(0.3, 0.7), y + h * 0.32, w * 0.1, 'rgba(230,200,170,0.8)');
+    linesR(g, x + w * 0.06, y + h * 0.48, w * 0.42, 14, 'rgba(30,30,30,0.55)', h * 0.026);
+    linesR(g, x + w * 0.52, y + h * 0.48, w * 0.42, 14, 'rgba(30,30,30,0.55)', h * 0.026);
+    g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(x, y + h * 0.5 - 1, w, 2);    // the fold
+  } else {
+    // magazine cover: a photograph full bleed, the title across the top, cover lines
+    const c0 = r.pick(['#d8a0a0', '#9ab8d8', '#e8c870', '#8ac0a0', '#c0a0d0', '#f0b080', '#a0a0a0']);
+    grad(g, x, y, w, h, c0, r.pick(['#5a3a3a', '#2a3a5a', '#6a4a20', '#2a4a3a']));
+    figure(g, x + w * 0.5, y + h * 0.2, h * 0.78, r.pick(['#e0b89a', '#c89a7a', '#8a5a3c']), r.pick(['#2a2224', '#6b4a2a', '#c8a050']), r.pick(['#b8261e', '#1d2a44', '#f2efe6', '#2f6e3a']), '#3a3a44', r.chance(0.5));
+    fit(g, ['MODA', 'בית', 'STYLE', 'HOME', 'מטבח', 'CHEF', 'TRAVEL'][i - 9], x + w / 2, y + h * 0.09, w * 0.92, h * 0.11, r.pick(['#f4f2ec', '#c8201a', '#1a1a1a']), 700, SERIF);
+    for (let k = 0; k < 3; k++) fit(g, r.pick(['קיץ', 'NEW', '50 מתכונים', 'SPECIAL', 'מבצע']), x + w * 0.22, y + h * (0.55 + k * 0.1), w * 0.36, h * 0.035, '#f4f2ec');
+  }
+});
+// Price tags: [draw, aspect]; cardboard or fluorescent card, a price in marker
+const TAG_DEFS = [['#d8c09a', '5.90'], ['#f6d21c', '9.90'], ['#ece8dc', '12'], ['#d8c09a', '7.90'], ['#ff8a1c', '3 ב-10'], ['#ece8dc', '19.90'], ['#b8e02a', '4.90'], ['#d8c09a', '14'],
+  ['#ff6fa8', '2 ב-20'], ['#ece8dc', '6.90'], ['#f6d21c', '29'], ['#d8c09a', '8.90'], ['#ece8dc', '49'], ['#7fe3f0', '25'], ['#d8c09a', '3.90'], ['#f6d21c', '1+1']];
+const TAGS = TAG_DEFS.map(([bg, num], i) => [(g, x, y, w, h) => {
+  paper(g, x, y, w, h, bg);
+  if (bg === '#d8c09a') { g.fillStyle = 'rgba(120,90,50,0.18)'; for (let k = 0; k < 5; k++) g.fillRect(x, y + h * (0.1 + k * 0.2), w, 1.5); }   // corrugation
+  hand(g, num, x + w / 2, y + h * 0.48, w * 0.86, h * 0.48, i % 3 === 1 ? '#1b3a8a' : '#c8201a', 200 + i);
+  hand(g, i % 2 ? 'לק"ג' : '₪', x + w * 0.5, y + h * 0.84, w * 0.5, h * 0.16, '#1a1a1a', 300 + i);
+}, 1.35]);
 
 function hanger(g, x, y, c) {
   g.strokeStyle = c; g.lineWidth = 11; g.lineJoin = 'round'; g.lineCap = 'round';
@@ -511,22 +658,21 @@ function inkCell(cell) {
 /** Sign design for seed; kindHint forces board / lightbox / letters, shop a shop type's words. */
 export function signDesign(seed, kindHint, shop = null) {
   const r = new RNG(seed);
-  const type = kindHint || r.weighted([['board', 0.52], ['lightbox', 0.2], ['letters', 0.28]]);
+  const type = kindHint || r.weighted([['board', 0.42], ['lightbox', 0.33], ['letters', 0.25]]);
   let cell = r.int(0, WORDS.length - 1);
   if (shop) {
-    const ok = [];
-    WORDS.forEach(([, t], i) => { if (t === shop) ok.push(i); });
+    const ok = wordsOf(shop);
     if (ok.length) cell = ok[cell % ok.length];
   }
   let board, ink, glow;
   if (type === 'board') {
     board = r.weighted(BOARD_WEIGHTS);
-    const light = board === 0xd9cfb6 || board === 0xe8e4da;
-    ink = light ? r.pick([0x1d1d1f, 0x1b2b45, 0x5a1a1c]) : r.pick([0xd8b25a, 0xf2efe6, 0xe9dfc4]);
+    const light = LIGHT_BOARDS.has(board);
+    ink = light ? r.pick([0x1d1d1f, 0x1b2b45, 0x5a1a1c, 0xb3261e]) : board === 0xb8261e || board === 0x1f5f8a || board === 0x2a8ac0 || board === 0x5a2a6a ? r.pick([0xf2efe6, 0xf2efe6, 0xf2c230]) : r.pick([0xd8b25a, 0xf2efe6, 0xe9dfc4]);
     glow = 0;
   } else if (type === 'lightbox') {
     board = r.pick(SIGN_PALETTE.boxes);
-    ink = board === 0xc8231c || board === 0x1f5fa8 || board === 0x2a7a3a ? 0xf4f1e8 : r.pick([0x1d1d1f, 0xb3261e, 0x1b2b45]);
+    ink = board === 0xc8231c || board === 0x1f5fa8 || board === 0x2a7a3a || board === 0xe8701c || board === 0x1e8a8a ? 0xf4f1e8 : r.pick([0x1d1d1f, 0xb3261e, 0x1b2b45]);
     glow = 1;
   } else {
     board = null;
@@ -571,12 +717,20 @@ export function fasciaTpls(design, w, h, q, z0 = 0.055) {
 }
 
 /** Blade face index advertising shop type `type` (null: no shop below, e.g. a hotel). */
-export function bladeFace(seed, type) {
+export function bladeFace(seed, type, round = null) {
   const r = new RNG(seed);
-  const ok = [];
-  BLADE_FACES.forEach(([, t], i) => { if (t === type) ok.push(i); });
+  let ok = [];
+  BLADE_FACES.forEach(([, t, rd], i) => { if (t === type && (round === null || !!rd === round)) ok.push(i); });
+  if (!ok.length) BLADE_FACES.forEach(([, t, rd], i) => { if (t === null && (round === null || !!rd === round)) ok.push(i); });
   if (!ok.length) BLADE_FACES.forEach(([, t], i) => { if (t === null) ok.push(i); });
   return ok[r.int(0, ok.length - 1)];
+}
+/** Whether blade face i is round (a disc sign). */
+export const bladeRound = (i) => !!BLADE_FACES[i][2];
+/** Goods-stand print cells: kind 'papers' | 'tags', index i (wraps). */
+export function printCell(kind, i) {
+  const list = atlas.prints[kind];
+  return list[((i % list.length) + list.length) % list.length];
 }
 
 /** Double-sided projecting blade sign with an iron bracket; origin on the wall face. */
@@ -603,6 +757,72 @@ export function bladeTpls(faceIndex, w, h, q) {
     tm.box(-0.01, h - 0.03, 0.0, 0.01, h - 0.005, z0, 1 | 4 | 8 | 16 | 32, 0.9, 1);
     for (const zz of [z0 + 0.08, z1 - 0.08]) tm.box(-0.006, h, zz - 0.006, 0.006, h + 0.035, zz + 0.006, 4 | 8 | 1 | 2, 0.9, 1);
   }
+  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
+}
+
+/** Face quad in the yz plane at x = sx·xo facing ±x (u mirrored so it reads from both sides). */
+function sideQuad(t, cell, sx, xo, y0, y1, zA0, zA1) {
+  const b = t.count, x = sx * xo;
+  const zA = sx > 0 ? zA1 : zA0, zB = sx > 0 ? zA0 : zA1;
+  t.v(x, y0, zA, sx, 0, 0, cell.u0, cell.v0); t.v(x, y0, zB, sx, 0, 0, cell.u1, cell.v0);
+  t.v(x, y1, zB, sx, 0, 0, cell.u1, cell.v1); t.v(x, y1, zA, sx, 0, 0, cell.u0, cell.v1);
+  t.ix6(b, b + 1, b + 2, b, b + 2, b + 3);
+}
+
+/**
+ * Projecting light box with the shop's word on both faces ("flag" sign): a box of length
+ * L out from the wall (from z0), height h and thickness th, on a wall plate with a top
+ * arm; origin on the wall face, the box's bottom at y = 0. {board (glowing box), text,
+ * metal}.
+ */
+export function flagTpls(design, L, h, th, q) {
+  const tb = new Tpl(), tt = new Tpl(), tm = new Tpl();
+  const z0 = 0.16, z1 = z0 + L;
+  tb.box(-th / 2, 0, z0, th / 2, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.95, 1);
+  if (q >= 0.5) {
+    // the box's frame: a darker extruded rim round each face
+    for (const sx of [-1, 1]) {
+      const x0 = sx > 0 ? th / 2 : -th / 2 - 0.006, x1 = x0 + 0.006;
+      tb.box(x0, 0, z0, x1, 0.025, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.55, 0.6);
+      tb.box(x0, h - 0.025, z0, x1, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.6, 0.65);
+      tb.box(x0, 0.025, z1 - 0.025, x1, h - 0.025, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.55, 0.6);
+    }
+  }
+  const cell = inkCell(atlas.cells[design.cell]);
+  const th2 = h * 0.62, tw = Math.min(L * 0.84, th2 * cell.aspect), thFit = Math.min(th2, tw / cell.aspect);
+  const zc = (z0 + z1) / 2, yc = h / 2;
+  for (const sx of [-1, 1]) sideQuad(tt, cell, sx, th / 2 + 0.003, yc - thFit / 2, yc + thFit / 2, zc - tw / 2, zc + tw / 2);
+  // wall plate, the arm along the top and a stay
+  tm.box(-0.05, -0.04, 0, 0.05, h + 0.08, 0.02, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+  tm.box(-0.014, h, 0.0, 0.014, h + 0.03, z1 - 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+  if (q >= 0.5) tm.box(-0.012, -0.03, 0.0, 0.012, 0.0, z0 + 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
+}
+
+/**
+ * Round projecting sign (blade face i drawn as a disc) of diameter D on a bracket arm:
+ * a disc rim of thickness th, both faces from the atlas. Origin on the wall face, the
+ * disc's lowest point at y = 0. {board, text, metal}.
+ */
+export function discTpls(faceIndex, D, q) {
+  const face = atlas.blades[faceIndex];
+  const tb = new Tpl(), tt = new Tpl(), tm = new Tpl();
+  const R = D / 2, th = 0.07, zc = 0.2 + R, yc = R;
+  const n = q >= 0.5 ? 28 : 12;
+  // rim (outward normals) and the two faces of the disc just inside the printed quads
+  for (let k = 0; k < n; k++) {
+    const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2;
+    const y0 = yc + Math.sin(a0) * R, z0 = zc + Math.cos(a0) * R, y1 = yc + Math.sin(a1) * R, z1 = zc + Math.cos(a1) * R;
+    tb.q4(-th / 2, y0, z0, th / 2, y0, z0, th / 2, y1, z1, -th / 2, y1, z1, 0.85, 0.85);
+    tb.q4(th / 2 - 0.001, yc, zc, th / 2 - 0.001, y1, z1, th / 2 - 0.001, y0, z0, th / 2 - 0.001, y0, z0, 0.9, 0.9);
+    tb.q4(-th / 2 + 0.001, yc, zc, -th / 2 + 0.001, y0, z0, -th / 2 + 0.001, y1, z1, -th / 2 + 0.001, y1, z1, 0.9, 0.9);
+  }
+  const s = 0.996 * D;
+  for (const sx of [-1, 1]) sideQuad(tt, face, sx, th / 2 + 0.002, yc - s / 2, yc + s / 2, zc - s / 2, zc + s / 2);
+  // bracket: wall plate, an arm over the disc with two short hangers
+  tm.box(-0.05, yc + R - 0.12, 0, 0.05, yc + R + 0.14, 0.02, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+  tm.box(-0.013, yc + R + 0.06, 0.0, 0.013, yc + R + 0.09, zc + R * 0.7, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+  if (q >= 0.5) for (const zz of [zc - R * 0.55, zc + R * 0.55]) tm.box(-0.005, yc + Math.sqrt(Math.max(0, R * R - (zz - zc) * (zz - zc))) - 0.01, zz - 0.005, 0.005, yc + R + 0.06, zz + 0.005, 4 | 8 | 1 | 2, 0.9, 1);
   return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
 }
 

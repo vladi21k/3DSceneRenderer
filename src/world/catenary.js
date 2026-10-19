@@ -47,6 +47,7 @@ const _y = new THREE.Vector3(0, 1, 0);
 const _t = new THREE.Matrix4(), _r = new THREE.Matrix4().makeRotationY(Math.PI);
 const _c = new THREE.Color();
 const _lvd = new Float64Array(LEVEL_DIST.length);
+const _dir = new THREE.Vector3();
 
 const catenary = {
   name: 'catenary',
@@ -407,10 +408,13 @@ const catenary = {
   },
 
   update(dt, app) {
+    // until ready every part draws once a frame (see CatBatches.warmup)
+    if (!app.ready) this.batches.warmup(app.camera.position, app.camera.getWorldDirection(_dir));
+    else if (this.batches.warm) this.batches.endWarmup();
     updateScreenUniforms(app, this.lampRadiance);
-    // lamp switch-on level 0..1 (photocell ramp from t 0.64, full by 0.72, then the night),
-    // for env's real lamp lights and post's lantern wash to follow the visible bowls
-    this.lampOn = this.lampRadiance > 0 ? SU.uLamp.value / this.lampRadiance : 0;
+    // lamp switch-on level 0..1 (env.state.lamps: photocell ramp from t 0.64, full by 0.72,
+    // then the night)
+    this.lampOn =this.lampRadiance > 0 ? SU.uLamp.value / this.lampRadiance : 0;
     if (this.glow) this.glow.update(app.cameraS ?? app.startS, SU.uLamp.value);
     this._updatePedLights(app);
     // alpha-to-coverage rounds to whole samples of the scene target

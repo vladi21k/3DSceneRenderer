@@ -217,6 +217,15 @@ export function* buildPaving(ctx, chunk, rows, out) {
       const m = railDist(d) < GROUT_W * 0.5 ? 1.0 : 0.9;
       tone[0] *= m; tone[1] *= m; tone[2] *= m;
     }
+    if (k === K_CORR || k === K_GROUT) {
+      // relaid setts (wear.js): their tone over their strip, from joint to joint
+      const rl = S.ri.relays;
+      for (let i = 0; i < rl.length; i++) {
+        const q = rl[i];
+        if (d < q.d0 - 1e-4 || d > q.d1 + 1e-4) continue;
+        tone[0] *= q.tone[0]; tone[1] *= q.tone[1]; tone[2] *= q.tone[2];
+      }
+    }
     let b = bufs[k];
     if (zoned) {
       if (k === K_CORR) {

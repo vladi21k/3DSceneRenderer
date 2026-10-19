@@ -135,6 +135,10 @@ function integrate(pieces, length) {
 export class Route {
   constructor() {
     this._f = 0;   // scratch of _at()
+    // number passing without heap numbers (see toWorldOf / toWorldIO): the public slots and
+    // the internal ones of toWorld and surface
+    this.io = new Float64Array(8);
+    this._sio = new Float64Array(8);
     let plan = meander(PLAN.map((p) => ({ ...p })));
     // Closure: pick the pair of straights whose length change closes the loop with the
     // smallest total adjustment while respecting minimum lengths (heading closes by design).
@@ -259,18 +263,28 @@ export class Route {
   elevation(s) { const i = this._at(s), f = this._f; return this.y[i] + (this.y[i + 1] - this.y[i]) * f; }
   grade(s) { return (this.elevation(s + 0.5) - this.elevation(s - 0.5)); }
 
-  /** Writes the centre-line sample into `out` (allocation free). */
+  /** Writes the centre-line sample into `out` (allocation free once `out` holds its vectors:
+   *  field writes and inline maths, no calls that would box a computed number). */
   sample(s, out = {}) {
-    const i = this._at(s), f = this._f;
+    const L = this.length, w = ((s % L) + L) % L, fi = w / DS;
+    const i = Math.min(this.n - 2, Math.floor(fi)), f = fi - i;
     const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
     const tx = Math.cos(th), tz = -Math.sin(th);
     const y = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
-    const g = this.grade(s);
-    out.s = this.wrap(s);
-    out.pos = (out.pos || new THREE.Vector3()).set(this.x[i] + (this.x[i + 1] - this.x[i]) * f, y, this.z[i] + (this.z[i + 1] - this.z[i]) * f);
-    out.tanH = (out.tanH || new THREE.Vector3()).set(tx, 0, tz);
-    out.tan = (out.tan || new THREE.Vector3()).set(tx, g, tz).normalize();
-    out.right = (out.right || new THREE.Vector3()).set(-tz, 0, tx);
+    // grade(s) = elevation(s + 0.5) − elevation(s − 0.5), written out
+    const fa = (((s + 0.5) % L + L) % L) / DS, ia = Math.min(this.n - 2, Math.floor(fa)), ua = fa - ia;
+    const fb = (((s - 0.5) % L + L) % L) / DS, ib = Math.min(this.n - 2, Math.floor(fb)), ub = fb - ib;
+    const g = (this.y[ia] + (this.y[ia + 1] - this.y[ia]) * ua) - (this.y[ib] + (this.y[ib + 1] - this.y[ib]) * ub);
+    out.s = w;
+    const p = out.pos || (out.pos = new THREE.Vector3());
+    p.x = this.x[i] + (this.x[i + 1] - this.x[i]) * f; p.y = y; p.z = this.z[i] + (this.z[i + 1] - this.z[i]) * f;
+    const h = out.tanH || (out.tanH = new THREE.Vector3());
+    h.x = tx; h.y = 0; h.z = tz;
+    const t = out.tan || (out.tan = new THREE.Vector3());
+    const inv = 1 / (Math.sqrt(tx * tx + g * g + tz * tz) || 1);   // (as Vector3.normalize)
+    t.x = tx * inv; t.y = g * inv; t.z = tz * inv;
+    const r = out.right || (out.right = new THREE.Vector3());
+    r.x = -tz; r.y = 0; r.z = tx;
     out.heading = th;
     out.curvature = this.k[i] + (this.k[i + 1] - this.k[i]) * f;
     out.grade = g;
@@ -283,38 +297,49 @@ export class Route {
    *  (one side higher than the other) and the paving has gentle settlement undulation.
    *  Fine millimetre detail (gutters, crowns) is added by the street mesh on top. */
   surface(s, d) {
-    if (!this.surfaceEnabled) return 0;
+    const a = this._sio;
+    a[0] = s; a[1] = d;
+    this._surf(a);
+    return a[7];
+  }
+
+  /** surface(a[0], a[1]) into a[7] (a: a Float64Array, so no number is boxed on the way). */
+  _surf(a) {
+    a[7] = 0;
+    if (!this.surfaceEnabled) return;
+    const s = a[0], d = a[1];
     // shaping runs from the corridor edge to about the facade line, then stays level
     // (side streets continue at the height of their mouth)
-    const a = Math.min(Math.abs(d), SURF_FAR) - SURF_EDGE;
-    if (a <= 0) return 0;
-    const sw = this.wrap(s);
-    const ramp = Math.min(1, a / 1.2);                       // ease in from the corridor edge
-    const fall = a * 0.016;                                  // ~1.6 % rise towards the facades
+    const ad = Math.min(Math.abs(d), SURF_FAR) - SURF_EDGE;
+    if (ad <= 0) return;
+    const L = this.length, sw = ((s % L) + L) % L;
+    const ramp = Math.min(1, ad / 1.2);                      // ease in from the corridor edge
+    const fall = ad * 0.016;                                 // ~1.6 % rise towards the facades
     // all noise is periodic in L so the loop has no seam: loopNoise1(sw, L, 320, 101) and
     // loopNoise2(sw, dd, L, 6.5, 5.5, 7) / (…, 2.3, 2.1, 13), written out here with their
     // cell counts precomputed (the same values: this runs per agent and per vertex, and a
-    // noise call that is not inlined boxes its float arguments and result)
-    const L = this.length, c = this._surfCells, Q = LATTICE;
+    // noise call that is not inlined boxes its float arguments and result; the lattice
+    // coordinates are passed as int32, which stay unboxed)
+    const c = this._surfCells, Q = LATTICE;
     const sd = d < 0 ? -1 : 1;
-    const dd = sd * (a + SURF_EDGE);
+    const dd = sd * (ad + SURF_EDGE);
     // hillside: ±1.3 %
     let n = c[0], x = (sw / L) * n, i = Math.floor(x), f = x - i;
-    lattice1(((i % n) + n) % n, (((i + 1) % n) + n) % n, 101);
-    const tilt = sd * a * 0.013 * (Q[0] + (Q[1] - Q[0]) * (f * f * (3 - 2 * f)));
+    lattice1((((i % n) + n) % n) | 0, ((((i + 1) % n) + n) % n) | 0, 101);
+    const tilt = sd * ad * 0.013 * (Q[0] + (Q[1] - Q[0]) * (f * f * (3 - 2 * f)));
     // settlement undulation: two octaves of 2D noise
     n = c[1]; x = (sw / L) * n; i = Math.floor(x); f = x - i;
     let y = dd / 5.5, j = Math.floor(y), g = y - j;
     let ux = f * f * (3 - 2 * f), uy = g * g * (3 - 2 * g);
-    lattice2(((i % n) + n) % n, (((i + 1) % n) + n) % n, j, j + 1, 7);
+    lattice2((((i % n) + n) % n) | 0, ((((i + 1) % n) + n) % n) | 0, j | 0, (j + 1) | 0, 7);
     const s1 = Q[0] + (Q[1] - Q[0]) * ux + (Q[2] - Q[0]) * uy + (Q[0] - Q[1] - Q[2] + Q[3]) * ux * uy;
     n = c[2]; x = (sw / L) * n; i = Math.floor(x); f = x - i;
     y = dd / 2.1; j = Math.floor(y); g = y - j;
     ux = f * f * (3 - 2 * f); uy = g * g * (3 - 2 * g);
-    lattice2(((i % n) + n) % n, (((i + 1) % n) + n) % n, j, j + 1, 13);
+    lattice2((((i % n) + n) % n) | 0, ((((i + 1) % n) + n) % n) | 0, j | 0, (j + 1) | 0, 13);
     const s2 = Q[0] + (Q[1] - Q[0]) * ux + (Q[2] - Q[0]) * uy + (Q[0] - Q[1] - Q[2] + Q[3]) * ux * uy;
     const settle = 0.02 * s1 + 0.01 * s2;
-    return fall + tilt + settle * ramp * ramp;
+    a[7] = fall + tilt + settle * ramp * ramp;
   }
 
   /** World height of the paving at route coordinate (s, d). */
@@ -322,13 +347,52 @@ export class Route {
 
   /** World position of route coordinate (s, d, h); h is height above the local ground. */
   toWorld(s, d = 0, h = 0, out = new THREE.Vector3()) {
-    const i = this._at(s), f = this._f;
+    const a = this._sio;
+    a[0] = s; a[1] = d; a[2] = h;
+    return this._world(a, out);
+  }
+
+  /**
+   * Allocation-free entry points for per-agent and per-vertex loops. A call that is not
+   * inlined boxes each float argument and a float result (a heap number each), so these
+   * take their numbers from an object's fields or from `route.io` (a Float64Array) and
+   * write their results into `out` or `route.io`:
+   *   route.toWorldOf(o, out)   toWorld(o.s, o.d, o.h ?? 0, out), read from o's fields
+   *   io[0] = s; io[1] = d; io[2] = h; route.toWorldIO(out)   the same through route.io
+   *   io[0] = s; route.sampleIO()   io[3] heading, io[4] curvature, io[5] elevation, io[6] grade
+   * (io[7] is scratch.)
+   */
+  toWorldOf(o, out) {
+    const a = this._sio;
+    a[0] = o.s; a[1] = o.d; a[2] = o.h === undefined ? 0 : o.h;
+    return this._world(a, out);
+  }
+
+  toWorldIO(out) { return this._world(this.io, out); }
+
+  sampleIO() {
+    const a = this.io, s = a[0], L = this.length;
+    const fi = (((s % L) + L) % L) / DS, i = Math.min(this.n - 2, Math.floor(fi)), f = fi - i;
+    a[3] = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
+    a[4] = this.k[i] + (this.k[i + 1] - this.k[i]) * f;
+    a[5] = this.y[i] + (this.y[i + 1] - this.y[i]) * f;
+    const fa = (((s + 0.5) % L + L) % L) / DS, ia = Math.min(this.n - 2, Math.floor(fa)), ua = fa - ia;
+    const fb = (((s - 0.5) % L + L) % L) / DS, ib = Math.min(this.n - 2, Math.floor(fb)), ub = fb - ib;
+    a[6] = (this.y[ia] + (this.y[ia + 1] - this.y[ia]) * ua) - (this.y[ib] + (this.y[ib + 1] - this.y[ib]) * ub);
+  }
+
+  /** World position of (a[0], a[1], a[2]) = (s, d, h) into out (a: a Float64Array). */
+  _world(a, out) {
+    const s = a[0], d = a[1], L = this.length;
+    const fi = (((s % L) + L) % L) / DS, i = Math.min(this.n - 2, Math.floor(fi)), f = fi - i;
     const th = this.th[i] + (this.th[i + 1] - this.th[i]) * f;
     const tx = Math.cos(th), tz = -Math.sin(th);
     // (field writes, not out.set(x, y, z): a call that is not inlined boxes its double arguments)
     out.x = this.x[i] + (this.x[i + 1] - this.x[i]) * f - tz * d;
     out.z = this.z[i] + (this.z[i + 1] - this.z[i]) * f + tx * d;
-    out.y = this.y[i] + (this.y[i + 1] - this.y[i]) * f + h + (this.surfaceEnabled && (d > SURF_EDGE || d < -SURF_EDGE) ? this.surface(s, d) : 0);
+    let y = this.y[i] + (this.y[i + 1] - this.y[i]) * f + a[2];
+    if (this.surfaceEnabled && (d > SURF_EDGE || d < -SURF_EDGE)) { this._surf(a); y += a[7]; }
+    out.y = y;
     return out;
   }
 

@@ -3,9 +3,10 @@ import { TRACK_OFFSET, TRACK_ZONE_HALF } from '../core/config.js';
 import { U } from '../core/uniforms.js';
 import { Events } from '../core/events.js';
 import { Tram, DRIVE, BESIDE, crowdCorridor } from './train.js';
-import { CAR, buildModels } from './trams/model.js';
+import { RNG } from '../core/rng.js';
+import { CAR, SALOON, buildModels } from './trams/model.js';
 import { makeLampAtlas } from './trams/display.js';
-import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
+import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeInteriorMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
 
 // Oncoming trams: the other units of the line, on the left track (d = −TRACK_OFFSET),
 // running the loop the other way. The cab tram itself is never rendered.
@@ -46,6 +47,8 @@ const _P = Array.from({ length: 4 }, () => new THREE.Vector3());
 const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3(), _b = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 const FAR_SPHERE = new THREE.Sphere(new THREE.Vector3(0, -1e7, 0), 1e-3);
+// (one record for every passenger's humans.set: no garbage per frame)
+const PAX_SET = { x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 2, look: 0, appearance: 0, visible: true, idle: -1 };
 
 /** A unit's corridor load weights (it runs on the left track, d < 0), see _loads. */
 const unitWeight = (off, d) => (d < -TRACK_ZONE_HALF ? DRIVE.besideW : d < 0.2 ? 1 : d <= TRACK_ZONE_HALF ? 0.6 : 0);
@@ -102,23 +105,30 @@ const trams = {
     this.gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
     this.refl = makeSharedRefl();
     this.metal = M.track(makeMetalMaterial());
+    // lamps: the display and the lamp lenses have their own levels (one program for all units)
+    this.lampLv = { value: new THREE.Vector2(1, 1) };
+    // see-through side glazing by day (passengers of the humans module behind it), the traced
+    // saloon after dark; 0..1, see _lights
+    this.see = { value: 0 };
+    const atlases = UNITS.map((u) => makeLampAtlas(u.line, u.dest));
     this.unitMats = UNITS.map((def, i) => {
       const uni = makeUnitUniforms(this.refl, 3.7 + i * 11.3);
-      const glass = M.track(makeGlassMaterial(`trams.glass${i}`, uni, this.gain));
+      // the seat fabric (as the traced saloon picks it from the unit's seed)
+      const seat = ((3.7 + i * 11.3) * 0.37) % 1 >= 0.6 ? new THREE.Color(0.14, 0.04, 0.045) : new THREE.Color(0.06, 0.08, 0.15);
       return {
-        uni, glass, ws: glass, metal: this.metal,
+        uni, metal: this.metal,
+        glass: M.track(makeGlassMaterial(`trams.glass${i}`, uni, this.gain)),
+        glassSee: M.track(makeGlassMaterial(`trams.glassSee${i}`, uni, this.gain, this.see)),
+        inner: M.track(makeInteriorMaterial(uni, this.gain, seat)),
         body: M.track(makeBodyMaterial(uni)),
-        // cab front glass: the leading cab has its driver at the controls, the trailing one is empty
-        front: M.track(makeFrontMaterial(uni, { driver: true, gain: this.gain })),
-        frontTrail: M.track(makeFrontMaterial(uni, { driver: false, gain: this.gain })),
+        // cab front glass: the leading cab has its driver at the controls, the trailing one is
+        // empty; the destination display shows behind its top band
+        front: M.track(makeFrontMaterial(uni, { driver: true, gain: this.gain, atlas: atlases[i], lampLv: this.lampLv })),
+        frontTrail: M.track(makeFrontMaterial(uni, { driver: false, gain: this.gain, atlas: atlases[i], lampLv: this.lampLv })),
       };
     });
     this.mats = this.unitMats[0];
-
-    const atlases = UNITS.map((u) => makeLampAtlas(u.line, u.dest));
     this.models = buildModels(atlases[0]);           // the atlases share their layout
-    // lamps: the display and the lamp lenses have their own levels (one program for all units)
-    this.lampLv = { value: new THREE.Vector2(1, 1) };
     this.lampMats = atlases.map((a, i) => M.track(this._lampMaterial(a, i)));
 
     // ---- units and their drivers
@@ -148,8 +158,13 @@ const trams = {
     });
     this._scanT = 0;
     this._place(app);
-    // stay visible until the first frame: the start-up shader compile only sees visible objects
-    for (const u of this.units) u.root.visible = true;
+    // stay visible until the first frame, every level of detail: the start-up shader compile
+    // only sees visible objects
+    for (const u of this.units) {
+      u.root.visible = true;
+      for (const b of u.root.userData.bodies) for (const lg of b.lods) lg.visible = true;
+    }
+    this.pax = null;                                  // passengers: allocated on the first update (humans ready)
   },
 
   /** Unlit lamp material: atlas × vertex colour × level (display or lens, by atlas region). */
@@ -181,8 +196,10 @@ const trams = {
         const lg = new THREE.Group();
         lg.matrixAutoUpdate = false;
         lg.name = `trams:${kind}:lod${lod}`;
-        const parts = [['body', mats.body], ['glass', mats.glass], ['ws', mats.ws], ['front', kind === 'trail' ? mats.frontTrail : mats.front], ['metal', mats.metal],
-          [kind === 'lead' ? 'lampLead' : kind === 'mid' ? 'lampMid' : 'lampTrail', lamp]];
+        // (the near levels: see-through glazing over the saloon; the far one: traced, opaque)
+        const glass = lod < 2 ? mats.glassSee : mats.glass;
+        const parts = [['body', mats.body], ['glassR', glass], ['glassL', glass], ['front', kind === 'trail' ? mats.frontTrail : mats.front], ['metal', mats.metal],
+          ['inner', mats.inner], [kind === 'lead' ? 'lampLead' : kind === 'mid' ? 'lampMid' : 'lampTrail', lamp]];
         for (const [k, mat] of parts) {
           const geo = m[k];
           if (!geo) continue;
@@ -240,8 +257,111 @@ const trams = {
       u.speed = t.speed; u.accel = t.accel; u.state = t.state; u.phase = t.phase;
     }
     this._place(app);
-    this._lights();
+    this._lights(app);
     this._reflection(app);
+    this._cabBoxes(app);
+    this._passengers(app);
+  },
+
+  /** The cab tram (never drawn) as three boxes along its track, for the reflections in the
+   *  units' glass and paint (trams/materials.js tramCabRefl). Off in the inspection view. */
+  _cabBoxes(app) {
+    const R = this.refl, tr = app.train;
+    const on = !!(tr && !tr.disabled && Number.isFinite(tr.s) && !app.params.view);
+    R.cabOn.value = on ? 1 : 0;
+    if (!on) return;
+    const J = CAR.joints, route = app.route;
+    for (let i = 0; i < 3; i++) {
+      const F = route.toWorld(tr.s - J[i], TRACK_OFFSET, 0, _P[0]);
+      const B = route.toWorld(tr.s - J[i + 1], TRACK_OFFSET, 0, _P[1]);
+      _b.subVectors(B, F);
+      const len = _b.length();
+      _b.multiplyScalar(1 / Math.max(len, 1e-3));          // local +z: towards the rear
+      _r.crossVectors(UP, _b).normalize();                 // local +x (the unit's frame: right of travel)
+      _u.crossVectors(_b, _r);
+      const m = R.cabM.value[i];
+      m.makeBasis(_r, _u, _b).setPosition(F).invert();
+      R.cabL.value[i].set(CAR.halfWidth, 3.3, len - CAR.gap / 2);
+    }
+  },
+
+  /** Passengers: figures of the humans module (its public contract: alloc, set, setVisible,
+   *  heightOf) seated and standing in the saloons (trams/model.js SALOON spots), drawn while a
+   *  unit is near enough for its see-through glazing (LOD 0 / 1) and the glazing is see-through
+   *  (by day; after dark the traced saloon takes over). Each unit carries its own, deterministic
+   *  load: about four seats in ten taken and a few people standing at the doors. */
+  _passengers(app) {
+    const H = app.humans;
+    if (!H || H.disabled || typeof H.set !== 'function') return;
+    if (!this.pax) { if (!H.ready || typeof H.alloc !== 'function') return; this.pax = this._allocPax(app, H) || []; }
+    const see = this.see.value, o = PAX_SET;
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i], P = u.pax;
+      if (!P || !P.length) continue;
+      const show = see > 0.02 && u.root.visible && u.lod <= 1;
+      if (!show) {
+        if (u.paxOn) { for (let k = 0; k < P.length; k++) H.setVisible(P[k].slot, false); u.paxOn = false; }
+        continue;
+      }
+      u.paxOn = true;
+      const B = u.root.userData.bodies;
+      for (let k = 0; k < P.length; k++) {
+        const p = P[k], e = B[p.b].group.matrix.elements, x = p.x, y = SALOON.yf, z = p.z;
+        o.x = e[0] * x + e[4] * y + e[8] * z + e[12];
+        o.y = e[1] * x + e[5] * y + e[9] * z + e[13];
+        o.z = e[2] * x + e[6] * y + e[10] * z + e[14];
+        // facing along the body (local ±z), turned a little
+        const c = Math.cos(p.dh), sn = Math.sin(p.dh);
+        const fx = p.f * e[8], fz = p.f * e[10];
+        o.heading = Math.atan2(-(fx * c + fz * sn), -(fz * c - fx * sn));
+        o.pose = p.pose; o.look = p.look; o.appearance = p.app; o.phase = p.phase; o.idle = p.idle;
+        H.set(p.slot, o);
+      }
+    }
+  },
+
+  /** Reserve the passengers' figure slots and pick who sits and stands where (per unit). */
+  _allocPax(app, H) {
+    const spots = this.models.spots, seed = app.layout.seed ?? 7;
+    let total = 0;
+    const lists = this.units.map((u, i) => {
+      const rng = RNG.from('tram-pax', seed, i), list = [];
+      const pick = (lo, hi) => {
+        for (let t = 0; t < 12; t++) {
+          const a = rng.int(0, 999999), h = typeof H.heightOf === 'function' ? H.heightOf(a) : 1.7;
+          if (h >= lo && h <= hi) return a;
+        }
+        return -1;
+      };
+      for (let b = 0; b < 3; b++) {
+        const S = b === 1 ? spots.mid : spots.cab;
+        for (const p of S.seats) {
+          if (!rng.chance(0.42)) continue;
+          const a = pick(rng.chance(0.9) ? 1.45 : 1.15, 1.98);
+          if (a >= 0) list.push({ b, x: p.x, z: p.z, f: p.f, dh: rng.range(-0.12, 0.12), pose: 2, app: a, look: rng.range(-0.35, 0.35), phase: rng.next(), idle: -1 });
+        }
+        for (const p of S.stand) {
+          if (!rng.chance(p.door ? 0.2 : 0.08)) continue;
+          const a = pick(1.5, 1.92);
+          if (a < 0) continue;
+          // at the doors facing them or the aisle; in the aisle along the car (either way)
+          const f = rng.chance(0.5) ? p.f : -p.f;
+          list.push({ b, x: p.x + rng.range(-0.06, 0.06), z: p.z + rng.range(-0.08, 0.08), f, dh: p.door ? rng.range(-1.2, 1.2) : rng.range(-0.3, 0.3), pose: 1,
+            app: a, look: rng.range(-0.5, 0.5), phase: rng.next(), idle: rng.chance(0.3) ? 1 : -1 });
+        }
+      }
+      total += list.length;
+      return list;
+    });
+    if (!total) return null;
+    const first = H.alloc(total);
+    let n = first;
+    for (let i = 0; i < lists.length; i++) {
+      for (const p of lists[i]) { p.slot = n++; H.setVisible(p.slot, false); }
+      this.units[i].pax = lists[i];
+      this.units[i].paxOn = false;
+    }
+    return lists;
   },
 
   /** Street reflection inputs (trams/materials.js): last frame's anti-aliased image and its
@@ -365,8 +485,13 @@ const trams = {
 
   /** Lamp levels follow the light: a daylight-readable display dimmed at dusk, headlights
    *  a little lower at night (the saloon's own lights are part of the glass shader). */
-  _lights() {
+  _lights(app) {
     const night = Math.min(1, Math.max(0, U.uNight.value));
+    // the side glazing: see-through by day (with the passengers behind it), the traced saloon
+    // with its lights after dark (needs the humans module)
+    const H = app.humans, people = !!(H && !H.disabled && H.ready && this.pax && this.pax.length);
+    const k = Math.min(1, Math.max(0, (night - 0.25) / 0.5));
+    this.see.value = people ? 1 - k * k * (3 - 2 * k) : 0;
     // (log-interpolated: 0.12 -> 0.014 display, 0.12 -> 0.06 lenses)
     this.lampLv.value.set(0.12 * Math.pow(0.014 / 0.12, night), 0.12 * Math.pow(0.06 / 0.12, night));
   },

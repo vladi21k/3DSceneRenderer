@@ -154,7 +154,8 @@ export function planShopStands(app) {
       const ci = layout.chunkIndex(s);
       if (!byChunk.has(ci)) byChunk.set(ci, []);
       byChunk.get(ci).push(st);
-      layout.obstacles.push({ kind: 'circle', s, d, r: R_OBST, shopBoard: true });
+      const ob = { kind: 'circle', s, d, r: R_OBST, shopBoard: true };
+      if (layout.addObstacles) layout.addObstacles([ob]); else layout.obstacles.push(ob);
     }
   }
   return byChunk;

@@ -35,7 +35,13 @@ const C = (r, g, b) => new THREE.Color(r, g, b);
 
 /** Street-reflection uniforms shared by every unit: last frame's image, its view-projection, on/off. */
 export function makeSharedRefl() {
-  return { hist: { value: null }, vp: { value: new THREE.Matrix4() }, on: { value: 0 } };
+  return {
+    hist: { value: null }, vp: { value: new THREE.Matrix4() }, on: { value: 0 },
+    // the cab tram's bodies as boxes (world -> box matrices, half width / top / length), see tramCabRefl
+    cabM: { value: [new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4()] },
+    cabL: { value: [new THREE.Vector3(1.33, 3.3, 11.0), new THREE.Vector3(1.33, 3.3, 9.4), new THREE.Vector3(1.33, 3.3, 11.0)] },
+    cabOn: { value: 0 },
+  };
 }
 
 /** One unit's uniforms: the shared reflection source plus its street planes (route right
@@ -43,6 +49,7 @@ export function makeSharedRefl() {
 export function makeUnitUniforms(shared, seed) {
   return {
     tTramHist: shared.hist, uTramVP: shared.vp, uTramSSR: shared.on,
+    uTramCabM: shared.cabM, uTramCabL: shared.cabL, uTramCabOn: shared.cabOn,
     uTramStreet: { value: new THREE.Vector4(1, 0, 12, -12) },
     uTramGround: { value: 0 },
     uTramSeed: { value: seed },
@@ -136,6 +143,50 @@ vec3 tramStreetRefl( vec3 P, vec3 R, out float a ) {
   return min( texture2D( tTramHist, uv ).rgb, vec3( 64.0 ) );
 }
 vec3 tramWorldPos() { return cameraPosition + ( vec4( - vViewPosition, 0.0 ) * viewMatrix ).xyz; }
+// The cab tram itself is never drawn, so neither last frame's image nor the environment holds
+// it: where a reflected ray meets it (three boxes, one per body: x across, y up from the rail,
+// z back from the body's leading end; uTramCabM maps world to box) it is shaded here: silver
+// panels mirroring the sky, the dark glazing band, the windscreen and mask at the front, the
+// bellows between the bodies. E: the irradiance / pi at the reflecting surface (lights the
+// side of the cab tram facing it about as much).
+uniform mat4 uTramCabM[ 3 ];
+uniform vec3 uTramCabL[ 3 ];
+uniform float uTramCabOn;
+vec3 tramCabRefl( vec3 P, vec3 R, vec3 E, out float a ) {
+  a = 0.0;
+  if ( uTramCabOn < 0.5 ) return vec3( 0.0 );
+  float tb = 1e9;
+  vec3 hp = vec3( 0.0 ), hn = vec3( 0.0 );
+  int hb = - 1;
+  for ( int i = 0; i < 3; i ++ ) {
+    vec3 ro = ( uTramCabM[ i ] * vec4( P, 1.0 ) ).xyz;
+    vec3 rd = mat3( uTramCabM[ i ] ) * R;
+    vec3 L = uTramCabL[ i ];
+    vec3 iv = 1.0 / ( sign( rd ) * max( abs( rd ), vec3( 1e-5 ) ) );
+    vec3 ta = ( vec3( - L.x, 0.18, 0.0 ) - ro ) * iv, tc = ( vec3( L.x, L.y, L.z ) - ro ) * iv;
+    vec3 tn = min( ta, tc ), tf = max( ta, tc );
+    float t0 = max( max( tn.x, tn.y ), tn.z ), t1 = min( min( tf.x, tf.y ), tf.z );
+    if ( t0 > 0.02 && t0 < t1 && t0 < tb ) {
+      tb = t0; hb = i; hp = ro + rd * t0;
+      hn = tn.x >= t0 ? vec3( - sign( rd.x ), 0.0, 0.0 ) : tn.y >= t0 ? vec3( 0.0, - sign( rd.y ), 0.0 ) : vec3( 0.0, 0.0, - sign( rd.z ) );
+    }
+  }
+  if ( hb < 0 ) return vec3( 0.0 );
+  mat3 Mi = hb == 0 ? mat3( uTramCabM[ 0 ] ) : hb == 1 ? mat3( uTramCabM[ 1 ] ) : mat3( uTramCabM[ 2 ] );
+  vec3 nW = transpose( Mi ) * hn;
+  vec3 env = tramEnv( reflect( R, nW ) );
+  float y = hp.y, ax = abs( hp.x );
+  // 0 silver, 1 glass, 2 dark trim / mask / bellows
+  float kind = 0.0;
+  if ( hn.z < - 0.5 && hb == 0 ) {
+    // the front: windscreen over the dark mask, silver round them
+    kind = ( ax < 0.95 && y > 1.12 && y < 3.0 ) ? 1.0 : ( ax < 1.1 && y > 0.6 && y < 1.15 ) ? 2.0 : 0.0;
+  } else if ( abs( hn.z ) > 0.5 ) kind = 2.0;           // articulation ends: bellows
+  else if ( hn.y < 0.5 ) kind = y < 0.3 ? 2.0 : ( y > 0.95 && y < 2.45 ) ? 1.0 : 0.0;
+  vec3 c = kind < 0.5 ? 0.15 * E + 0.42 * env : kind < 1.5 ? 0.012 * E + 0.1 * env : 0.017 * E + 0.05 * env;
+  a = 1.0;
+  return c;
+}
 `;
 
 /** The saloon behind the side glazing, traced per pixel in the body frame (x right, y up
@@ -514,22 +565,40 @@ export function makeBodyMaterial(uni) {
 	{
 		vec3 tramRc = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryClearcoatNormal ), viewMatrix );
 		float tramA;
-		vec3 tramH = tramStreetRefl( tramWorldPos(), tramRc, tramA );
+		vec3 tramPw = tramWorldPos();
+		vec3 tramH = tramStreetRefl( tramPw, tramRc, tramA );
 		clearcoatRadiance = mix( tramTone( clearcoatRadiance, tramRc.y ), tramH, tramA );
+		vec3 tramCabC = tramCabRefl( tramPw, tramRc, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
+		clearcoatRadiance = mix( clearcoatRadiance, tramCabC, tramA );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.body.v5';
+  m.customProgramCacheKey = () => 'trams.body.v6';
   return m;
 }
 
-/** Side glazing: flush tinted panes over the traced saloon (see the header); vertex colour
- *  black = black frit. uv.x > 50 marks a centre body (its glass uv runs from 100). */
-export function makeGlassMaterial(name, uni, gain = { value: 1 }) {
+/** Side glazing: flush tinted panes (see the header); vertex colour black = black frit. uv.x > 50
+ *  marks a centre body (its glass uv runs from 100).
+ *  - Without `see`: opaque, the saloon traced behind the panes (far units).
+ *  - With `see` (a uniform, 0..1): transparent, drawn on both faces. By day (see 1) the panes let
+ *    the real saloon behind them through (trams/model.js saloon, the passengers): the tinted
+ *    transmission multiplies what lies behind (blend one, one minus source alpha), the
+ *    reflection adds to it; the inner face of the far side's panes shows the street beyond. After
+ *    dark (see 0) the panes are opaque again over the traced saloon with its own lights; in
+ *    between the two cross-fade. The cab's side window always shows the traced cab. */
+export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
   const m = new THREE.MeshPhysicalMaterial({
     name, color: C(0.004, 0.004, 0.004), vertexColors: true, metalness: 0, roughness: 0.04, ior: 1.65,
   });
+  if (see) {
+    Object.assign(m, {
+      transparent: true, depthWrite: true, side: THREE.DoubleSide, forceSinglePass: true,
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+    });
+  }
   m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uni, { uTramNight: U.uNight, uTramGain: gain });
+    Object.assign(sh.uniforms, uni, { uTramNight: U.uNight, uTramGain: gain }, see ? { uTramSee: see } : {});
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\nvarying vec3 vTramZ;')
       .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTramUv = uv;')
@@ -538,44 +607,90 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }) {
 	vTramE = ( cameraPosition - modelMatrix[ 3 ].xyz ) * mat3( modelMatrix ) - transformed;
 	vTramZ = normalize( ( modelViewMatrix * vec4( 0.0, 0.0, 1.0, 0.0 ) ).xyz );`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\nvarying vec3 vTramZ;')
+      .replace('#include <common>', `#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\nvarying vec3 vTramZ;${see ? '\nuniform float uTramSee;' : ''}`)
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}\n${SALOON_GLSL}`)
       // coated laminated glazing: a little more reflectance than one plain surface
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
 	material.specularColor *= 1.4;
 	material.specularColorBlended = material.specularColor;`)
-      // the street, as last frame saw it, mirrored in the panes (the environment elsewhere);
-      // the panes are not perfectly flat, so the mirrored lines bend a little along the car
+      // the street, as last frame saw it, mirrored in the panes (the environment elsewhere; the
+      // cab tram where it stands beside them); the panes are not perfectly flat, so the mirrored
+      // lines bend a little along the car. The inner face of a pane mirrors the dimmer saloon.
       .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
 	{
 		float tramRip = ( tramNoise( vTramP.z * 0.9 + 11.0 ) - 0.5 ) * 0.008 + ( tramNoise( vTramP.z * 3.7 + vTramP.y * 1.3 ) - 0.5 ) * 0.003;
 		vec3 tramNr = normalize( geometryNormal + vTramZ * tramRip * ( 1.0 - abs( dot( geometryNormal, vTramZ ) ) ) );
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, tramNr ), viewMatrix );
+		vec3 tramPw = tramWorldPos();
 		float tramA;
-		vec3 tramH = tramStreetRefl( tramWorldPos(), tramR, tramA );
+		vec3 tramH = tramStreetRefl( tramPw, tramR, tramA );
 		radiance = mix( tramTone( radiance, tramR.y ), tramH, tramA );
+		vec3 tramCabC = tramCabRefl( tramPw, tramR, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
+		radiance = mix( radiance, tramCabC, tramA );
+		if ( ! gl_FrontFacing ) radiance *= 0.3;
 	}`)
       // the saloon through the pane: daylight from the windows (and the sun on this side),
       // the ceiling lights after dark; tinted, less what the outer face reflects
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+	float tramAlpha = 1.0;
 	{
 		float tramPane = smoothstep( 0.3, 0.7, vColor.g );
-		if ( tramPane > 0.0 ) {
+		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
+		float tramF = 0.06 + 0.94 * pow( 1.0 - tramNV, 5.0 );
+		float tramBody = step( 50.0, vTramUv.x - vTramP.z );
+		${see ? `// see-through: everywhere but the cab's side window (the traced cab stays there)
+		float tramSee = uTramSee * tramPane * ( 1.0 - ( 1.0 - tramBody ) * step( vTramP.z, 2.65 ) );
+		tramAlpha = 1.0 - tramSee * ( 1.0 - tramF ) * dot( TS_T, vec3( 1.0 / 3.0 ) );
+		if ( ! gl_FrontFacing ) tramPane = 0.0;` : 'float tramSee = 0.0;'}
+		float tramW = max( length( fwidth( vTramP ) ), 0.002 );      // (derivatives in uniform control flow)
+		if ( tramPane * ( 1.0 - tramSee ) > 0.0 ) {
 			vec3 tramRdW = inverseTransformDirection( - geometryViewDir, viewMatrix );
 			vec3 tramEdir = reflectedLight.directDiffuse * PI / max( material.diffuseContribution, vec3( 1e-4 ) );
 			vec3 tramEd = ( irradiance + iblIrradiance + 0.3 * tramEdir ) * ( 0.42 * RECIPROCAL_PI );
 			float tramEn = uTramNight * uTramGain * 0.022 * RECIPROCAL_PI;
 			float tramCamD = max( length( vTramE ), 0.5 );
-			float tramW = max( length( fwidth( vTramP ) ), 0.002 );
-			float tramBody = step( 50.0, vTramUv.x - vTramP.z );
 			vec3 tramL = tramSaloon( vTramP, normalize( - vTramE ), tramRdW, tramW, tramCamD, tramBody, tramEd, tramEn );
-			float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
-			float tramF = 0.06 + 0.94 * pow( 1.0 - tramNV, 5.0 );
-			totalEmissiveRadiance += tramPane * tramL * TS_T * ( 1.0 - tramF );
+			totalEmissiveRadiance += tramPane * ( 1.0 - tramSee ) * tramL * TS_T * ( 1.0 - tramF );
 		}
 	}`);
+    // (see-through: the transmission goes out as alpha, see the blend factors above)
+    if (see) sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', '#include <opaque_fragment>\n\tgl_FragColor.a = tramAlpha;');
   };
-  m.customProgramCacheKey = () => 'trams.glass.v12';
+  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v1' : 'trams.glass.v13');
+  return m;
+}
+
+/** The saloon seen through the side glazing by day (trams/model.js saloon): albedo from the
+ *  vertex colour, the seat fabric in the unit's colour (uv.x 2), the ceiling's light strips lit
+ *  (uv.x 1, on day and night), and the light the room gets: the daylight through its windows
+ *  (the indirect light, scaled down to what reaches inside) and its own lights after dark. */
+export function makeInteriorMaterial(uni, gain = { value: 1 }, seat = new THREE.Color(0.06, 0.08, 0.15)) {
+  const m = new THREE.MeshStandardMaterial({ name: 'trams.interior', color: C(1, 1, 1), vertexColors: true, metalness: 0, roughness: 0.72 });
+  const seatC = { value: seat };
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, { uTramNight: U.uNight, uTramGain: gain, uTramSeatC: seatC });
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vTramMark;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTramMark = uv.x;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vTramMark;\nuniform float uTramNight;\nuniform float uTramGain;\nuniform vec3 uTramSeatC;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+	if ( vTramMark > 1.5 ) diffuseColor.rgb = uTramSeatC;`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+	{
+		// daylight reaching the saloon through its windows, and its ceiling lights
+		reflectedLight.indirectDiffuse *= 0.55;
+		reflectedLight.indirectSpecular *= 0.4;
+		float tramEn = uTramNight * uTramGain * 0.022 * RECIPROCAL_PI;
+		totalEmissiveRadiance += diffuseColor.rgb * tramEn * ( 0.35 + 0.65 * max( dot( normal, ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz ), 0.0 ) );
+		float tramLamp = step( 0.5, vTramMark ) * step( vTramMark, 1.5 );
+		totalEmissiveRadiance = mix( totalEmissiveRadiance, vec3( 0.97, 0.98, 1.0 ) * 0.085 * mix( 1.0, uTramGain, uTramNight ), tramLamp );
+		reflectedLight.directDiffuse *= 1.0 - tramLamp;
+		reflectedLight.indirectDiffuse *= 1.0 - tramLamp;
+	}`);
+  };
+  m.customProgramCacheKey = () => 'trams.interior.v1';
+  m.userData.seatC = seatC;
   return m;
 }
 
@@ -659,16 +774,42 @@ vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
 }
 `;
 
+/** The destination display behind the top band of the windscreen, in the front glass's uv
+ *  (u share of the half width, height; trams/model.js: the band from Y.dispBand to the top of
+ *  the screen, |u| up to DISP_U): the LED matrix from the lamp atlas at the display level, its
+ *  black board round the lit dots. Returns the light leaving it and its coverage. */
+const DISP_GLSL = /* glsl */ `
+uniform sampler2D tTramDisp;
+uniform vec4 uTramDispR;
+uniform vec2 uTramLampLv;
+vec3 tramDisplay( vec2 uv, out float cov ) {
+  vec2 q = vec2( ( 0.56 - uv.x ) / 1.12, ( uv.y - 2.62 ) / ( 2.9995 - 2.62 ) );
+  vec2 w = max( fwidth( q ), vec2( 1e-4 ) );
+  vec2 e = min( q, 1.0 - q ) / w;
+  cov = clamp( min( e.x, e.y ) + 0.5, 0.0, 1.0 );
+  // (sampled everywhere: the mip level needs the derivatives of uniform control flow)
+  vec3 c = texture2D( tTramDisp, mix( uTramDispR.xy, uTramDispR.zw, clamp( q, 0.0, 1.0 ) ) ).rgb;
+  return c * uTramLampLv.x * 1.3;
+}
+`;
+
 /** Cab front glass: windscreen, trim and mask from uv (see WS_GLSL); the cab is traced
  *  behind the windscreen (CAB_GLSL). `driver`: the leading cab has its driver at the
  *  controls; `gain`: the library's night emissive gain. */
-export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 } } = {}) {
+export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atlas = null, lampLv = null } = {}) {
   const m = new THREE.MeshPhysicalMaterial({
     name: driver ? 'trams.front' : 'trams.frontTrail', color: C(1, 1, 1), metalness: 0, roughness: 0.03, ior: 1.52,
   });
   const drv = { value: driver ? 1 : 0 };
+  // the destination display behind the top band of the windscreen: the lamp atlas, its display
+  // rectangle and the display level (trams.js), see DISP_GLSL
+  const disp = {
+    tTramDisp: { value: atlas ? atlas.texture : null },
+    uTramDispR: { value: new THREE.Vector4(...(atlas ? atlas.display : [0, 0, 0, 0])) },
+    uTramLampLv: lampLv || { value: new THREE.Vector2(0, 0) },
+  };
   m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uni, { uTramDriver: drv, uTramNight: U.uNight, uTramGain: gain });
+    Object.assign(sh.uniforms, uni, disp, { uTramDriver: drv, uTramNight: U.uNight, uTramGain: gain });
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;')
       .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTramUv = uv;')
@@ -679,7 +820,7 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 } } = 
 	vTramE = ( cameraPosition - modelMatrix[ 3 ].xyz ) * mat3( modelMatrix ) - transformed;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\n${WS_GLSL}`)
-      .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}\n${CAB_GLSL}`)
+      .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}\n${CAB_GLSL}\n${DISP_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	float tramD = tramWsDist( vTramUv );
 	float tramAA = max( fwidth( tramD ), 1e-4 );
@@ -706,8 +847,11 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 } } = 
 	{
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
 		float tramA;
-		vec3 tramH = tramStreetRefl( tramWorldPos(), tramR, tramA );
+		vec3 tramPw = tramWorldPos();
+		vec3 tramH = tramStreetRefl( tramPw, tramR, tramA );
 		radiance = mix( tramTone( radiance, tramR.y + 0.05 ), tramH, tramA );
+		vec3 tramCabC = tramCabRefl( tramPw, tramR, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
+		radiance = mix( radiance, tramCabC, tramA );
 	}`)
       // the cab through the glass: lit by the daylight on the screen (or the saloon and the
       // instruments at night), tinted, with a shade band along the top of the screen
@@ -721,10 +865,14 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 } } = 
 		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
 		float tramF = 0.27 + 0.73 * pow( 1.0 - tramNV, 5.0 );
 		vec3 tramT = vec3( 0.52, 0.69, 0.82 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
+		// the destination display just behind the glass (its LEDs and its black board)
+		float tramDc;
+		vec3 tramDl = tramDisplay( vTramUv, tramDc );
+		tramL = mix( tramL, tramDl / tramT, tramDc );
 		totalEmissiveRadiance += tramWs * tramL * tramT * ( 1.0 - tramF );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.front.v5';
+  m.customProgramCacheKey = () => 'trams.front.v7';
   return m;
 }
 

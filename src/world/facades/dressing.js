@@ -16,8 +16,8 @@ const _t = new THREE.Matrix4();
 
 // how keen each kind of shop is on posters / price cards / goods hung outside
 const KEEN = {
-  clothing: [0.6, 0.3, 0.45], general: [0.45, 0.4, 0.4], cafe: [0.35, 0.3, 0], jewellery: [0.3, 0.12, 0],
-  pharmacy: [0.4, 0.35, 0], shoes: [0.55, 0.35, 0.25], books: [0.25, 0.15, 0], flowers: [0.2, 0.3, 0],
+  clothing: [0.65, 0.35, 0.7], general: [0.55, 0.45, 0.5], cafe: [0.4, 0.3, 0], jewellery: [0.35, 0.15, 0],
+  pharmacy: [0.5, 0.4, 0], shoes: [0.6, 0.4, 0.5], books: [0.3, 0.15, 0], flowers: [0.2, 0.3, 0],
 };
 // poster categories a kind of shop puts up, by preference (signs.js POSTER_INFO)
 const CATS = {

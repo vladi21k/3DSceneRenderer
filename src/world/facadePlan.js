@@ -32,10 +32,23 @@ const TINT_PICK = [
   [STONE_TINTS[1], 0.3], [STONE_TINTS[5], 0.2], [STONE_TINTS[0], 0.2],
   [STONE_TINTS[3], 0.1], [STONE_TINTS[2], 0.12], [STONE_TINTS[4], 0.08],
 ];
+// tone groups of STONE_TINTS: 0 warm (honey, golden), 1 middle (cream, pinkish), 2 cool (pale, grey)
+const TONE_GROUP = [1, 0, 2, 1, 2, 0];
+// later blocks are clad in whiter, sawn stone: pale, grey and cream mostly
+const TINT_MODERN = [
+  [STONE_TINTS[2], 0.38], [STONE_TINTS[4], 0.24], [STONE_TINTS[0], 0.22], [STONE_TINTS[1], 0.1], [STONE_TINTS[3], 0.06],
+];
+// Building ages along the street: Ottoman-era houses, Mandate-era commercial blocks and
+// a quarter of later (1950s-1970s) blocks that break the rhythm of the old fronts:
+// taller, on lower storeys, with wide flat windows, plain slab balconies, a thin coping
+// for a cornice, and more than half of them rendered and colour-washed (finish()).
+const ERA_PICK = [['ottoman', 0.4], ['mandate', 0.36], ['modern', 0.24]];
 
 const cache = new Map();
 let layoutRef = null;
-let termini = new Map();   // lot id -> true: the lot closes the view down the street (see findTermini)
+let termini = new Map();   // lot id -> 'tower' | 'landmark': the lot closes the view down the street (see findTermini)
+let tones = new Map();     // lot id -> STONE_TINTS index (see toneTable)
+let seen = new Map();      // lot id -> how many cab positions see it close the view (see findTermini)
 
 /**
  * Give the plan generator access to the layout (cross streets and side lots), so corner
@@ -49,6 +62,38 @@ export function bindLayout(layout) {
   layoutRef = layout;
   cache.clear();
   termini = findTermini(layout);
+  tones = toneTable(layout);
+}
+
+/**
+ * Stone tone of every main-street lot (STONE_TINTS index), walking each side in order:
+ * a lot keeps its own pick (the same draws as facadePlan's) unless that repeats the tone
+ * group of its neighbour (warm, middle, cool), in which case it mostly takes the next pick
+ * of a stream of its own that differs (pale or grey next to honey, honey next to cream...).
+ */
+function toneTable(layout) {
+  const out = new Map();
+  if (!layout || !layout.lots) return out;
+  for (const side of [-1, 1]) {
+    const lots = layout.lots.filter((l) => (l.side > 0 ? 1 : -1) === side).sort((a, b) => a.s0 - b.s0);
+    let prev = -1, prevS1 = -1e9;
+    for (const lot of lots) {
+      const r = new RNG(lot.seed);
+      const modern = r.weighted(ERA_PICK) === 'modern';
+      const pick = modern ? TINT_MODERN : TINT_PICK;
+      let t = STONE_TINTS.indexOf(r.weighted(pick));
+      // (neighbours: the previous lot of the block, not across a cross street)
+      const rr = RNG.from(lot.seed, 'tone');
+      // (now and then two of a kind stand together, as they do in the street)
+      if (prev >= 0 && TONE_GROUP[t] === TONE_GROUP[prev] && lot.s0 - prevS1 < 6 && rr.chance(0.8)) {
+        for (let k = 0; k < 8 && TONE_GROUP[t] === TONE_GROUP[prev]; k++) t = STONE_TINTS.indexOf(rr.weighted(pick));
+        if (TONE_GROUP[t] === TONE_GROUP[prev]) t = TONE_GROUP[prev] === 2 ? 1 : 2;
+      }
+      out.set(lot.id, t);
+      prev = t; prevS1 = lot.s1;
+    }
+  }
+  return out;
 }
 
 /** Ids of the lots that close the view down the street (inspection, tests). */
@@ -62,31 +107,39 @@ export function facadePlan(lot) {
   const g1 = lot.frame.ground1 - lot.frame.floorRef;
 
   // ---- style
-  const era = rng.weighted([['ottoman', 0.45], ['mandate', 0.4], ['modern', 0.15]]);
+  // (the era is the stream's first draw: eraOf(seed) repeats it for the tone table)
+  const era = rng.weighted(ERA_PICK);
+  const modern = era === 'modern';
+  // neighbours on the street differ in stone (see toneTable): pale next to honey, grey
+  // next to golden, as in the street, rather than one tone along a whole block
+  const tone = tones.get(lot.id);
+  const tint0 = rng.weighted(modern ? TINT_MODERN : TINT_PICK), tintBase = tone !== undefined ? STONE_TINTS[tone] : tint0;
   const style = {
     era,
-    tint: rng.weighted(TINT_PICK).map((c) => c * rng.range(0.96, 1.03)),   // (one draw, as pick)
+    tint: tintBase.map((c) => c * rng.range(0.96, 1.03)),
+    tone: STONE_TINTS.indexOf(tintBase),     // (index of the base tint, for the tone table)
     courseH: rng.range(0.30, 0.42),          // ashlar course height
     blockL: rng.range(0.55, 0.95),           // average block length
-    tooled: rng.chance(0.7),                 // chisel-dressed faces (Jerusalem "taltish")
-    rusticGround: rng.chance(0.45),          // rusticated ground floor
-    quoins: rng.chance(0.4),
-    pilasters: era !== 'modern' && rng.chance(0.3),
-    surrounds: rng.chance(0.65),             // smooth stone window surrounds
+    tooled: rng.chance(modern ? 0.35 : 0.7), // chisel-dressed faces (Jerusalem "taltish"); later cladding is sawn
+    rusticGround: rng.chance(modern ? 0.12 : 0.5),   // rusticated ground floor
+    quoins: rng.chance(modern ? 0.08 : 0.45),
+    pilasters: !modern && rng.chance(0.3),
+    surrounds: rng.chance(modern ? 0.3 : 0.7),       // smooth stone window surrounds
     windowTop: era === 'ottoman' ? rng.weighted([['round', 0.45], ['pointed', 0.2], ['segment', 0.2], ['flat', 0.15]])
       : era === 'mandate' ? rng.weighted([['flat', 0.6], ['round', 0.25], ['segment', 0.15]]) : 'flat',
-    shopTop: rng.weighted([['round', 0.45], ['flat', 0.4], ['segment', 0.15]]),
+    shopTop: modern ? 'flat' : rng.weighted([['round', 0.45], ['flat', 0.4], ['segment', 0.15]]),
     frameColor: rng.pick(['darkgreen', 'brown', 'white', 'grey', 'black', 'teal', 'brown']),
     shutterColor: rng.pick(['darkgreen', 'brown', 'grey', 'teal', 'white']),
   };
 
   // ---- floors: mostly four to six, with low old houses and a few taller (later) blocks
-  // between them, so the cornice line steps up and down along the street
-  const nFloors = rng.weighted(era === 'modern'
-    ? [[4, 0.2], [5, 0.3], [6, 0.25], [7, 0.15], [8, 0.1]]
+  // between them, so the cornice line steps up and down along the street. The later
+  // blocks run taller, on lower storeys.
+  const nFloors = rng.weighted(modern
+    ? [[4, 0.12], [5, 0.22], [6, 0.24], [7, 0.2], [8, 0.14], [9, 0.08]]
     : [[2, 0.07], [3, 0.16], [4, 0.28], [5, 0.25], [6, 0.14], [7, 0.07], [8, 0.03]]);
-  const groundH = rng.range(4.4, 5.4);
-  const typH = era === 'modern' ? rng.range(3.0, 3.3) : rng.range(3.4, 3.9);
+  const groundH = modern ? rng.range(4.0, 4.9) : rng.range(4.4, 5.4);
+  const typH = modern ? rng.range(3.0, 3.3) : rng.range(3.4, 3.9);
   const floors = [];
   let y = 0;
   for (let i = 0; i < nFloors; i++) {
@@ -94,37 +147,54 @@ export function facadePlan(lot) {
     floors.push({ index: i, y, h, kind: i === 0 ? 'ground' : (i === nFloors - 1 ? 'top' : 'typical') });
     y += h;
   }
-  const corniceH = rng.range(0.45, 0.8);
-  const cornice = { y, h: corniceH, proj: rng.range(0.25, 0.6), dentils: era !== 'modern' && rng.chance(0.5) };
+  // a later block has a thin coping for a cornice, a plain parapet and a flat roof
+  const corniceH = modern ? rng.range(0.25, 0.4) : rng.range(0.45, 0.8);
+  const cornice = { y, h: corniceH, proj: modern ? rng.range(0.12, 0.28) : rng.range(0.25, 0.6), dentils: !modern && rng.chance(0.5) };
   y += corniceH;
-  const parapet = { y, h: rng.range(0.6, 1.1), type: rng.weighted([['solid', 0.6], ['balustrade', 0.25], ['crenel', 0.15]]) };
+  const parapet = { y, h: rng.range(0.6, 1.1), type: modern ? 'solid' : rng.weighted([['solid', 0.6], ['balustrade', 0.25], ['crenel', 0.15]]) };
   y += parapet.h;
-  const roof = rng.chance(era === 'ottoman' ? 0.3 : 0.12)
+  const roof = rng.chance(era === 'ottoman' ? 0.3 : modern ? 0 : 0.12)
     ? { type: 'tile', pitch: rng.range(22, 32), color: rng.pick(['terracotta', 'terracotta', 'darkred']) }
     : { type: 'flat' };
   const totalHeight = y;
 
   // ---- bays
+  // The rhythm of the bays: even, or (older fronts) a wider centre bay on the axis of
+  // the entrance with a grouped window above, or wider end bays framing the front.
   const pierL = rng.range(0.6, 1.1), pierR = rng.range(0.6, 1.1);
   const inner = Math.max(1, width - pierL - pierR);
-  const bayTarget = era === 'modern' ? rng.range(3.0, 3.6) : rng.range(3.0, 4.0);
-  const nBays = Math.max(1, Math.round(inner / bayTarget));
-  const bayW = inner / nBays;
+  const bayTarget = modern ? rng.range(3.0, 3.6) : rng.range(3.0, 4.0);
+  let nBays = Math.max(1, Math.round(inner / bayTarget));
+  let rhythm = modern ? 'even' : rng.weighted([['even', 0.55], ['centre', 0.3], ['ends', 0.15]]);
+  const wts = [];
+  if (rhythm === 'centre' && nBays >= 4 && nBays % 2 === 0) nBays--;
+  for (let i = 0; i < nBays; i++) wts.push(1);
+  const wide = rng.range(1.4, 1.75);
+  if (rhythm === 'centre' && nBays >= 3) wts[(nBays - 1) / 2] = wide;
+  else if (rhythm === 'ends' && nBays >= 4) { wts[0] = wide * 0.85; wts[nBays - 1] = wide * 0.85; }
+  else rhythm = 'even';
+  const wsum = wts.reduce((a, b) => a + b, 0);
+  // (narrow bays still hold a window between two piers)
+  if (wts.some((k) => (inner * k) / wsum < 2.5)) { rhythm = 'even'; wts.fill(1); }
   const bays = [];
-  for (let i = 0; i < nBays; i++) {
-    const u0 = pierL + i * bayW;
-    bays.push({ index: i, u0, u1: u0 + bayW, uc: u0 + bayW / 2, w: bayW });
+  for (let i = 0, u0 = pierL, sum = wts.reduce((a, b) => a + b, 0); i < nBays; i++) {
+    const bw = (inner * wts[i]) / sum;
+    bays.push({ index: i, u0, u1: u0 + bw, uc: u0 + bw / 2, w: bw });
+    u0 += bw;
   }
+  style.rhythm = rhythm;
+  const mid = rhythm === 'centre' ? (nBays - 1) / 2 : -1;   // the wide centre bay
 
   // ---- openings
   const openings = [];
   const shopTop = style.shopTop;
-  const doorBay = nBays > 2 ? rng.int(0, nBays - 1) : -1;
+  // (a symmetric front has its entrance on its axis)
+  const doorBay = mid >= 0 && rng.chance(0.65) ? mid : nBays > 2 ? rng.int(0, nBays - 1) : -1;
   for (const b of bays) {
-    // ground floor: shopfront or entrance door
+    // ground floor: shopfront or entrance door (later blocks: wide glazed shopfronts)
     const isDoor = b.index === doorBay;
-    const w = isDoor ? Math.min(1.6, b.w - 0.9) : Math.max(1.2, b.w - rng.range(0.55, 0.9));
-    const h = isDoor ? Math.min(groundH - 0.9, 3.2) : groundH - rng.range(0.7, 1.0);
+    const w = isDoor ? Math.min(b.index === mid ? 2.2 : 1.6, b.w - 0.9) : Math.max(1.2, b.w - (modern ? rng.range(0.4, 0.6) : rng.range(0.55, 0.9)));
+    const h = isDoor ? Math.min(groundH - 0.9, b.index === mid ? 3.4 : 3.2) : groundH - rng.range(0.7, 1.0);
     openings.push({
       id: `${lot.id}:g${b.index}`, floor: 0, bay: b.index, uc: b.uc, w, y: 0, h,
       top: isDoor ? (shopTop === 'round' ? 'round' : 'flat') : shopTop,
@@ -133,24 +203,45 @@ export function facadePlan(lot) {
       lit: rng.range(0.6, 1.0),
     });
   }
-  // upper floors
+  // upper floors. Later blocks: wide flat windows of horizontal proportions (aluminium
+  // sliders), the same on every floor. Older fronts: tall windows; in the wide centre bay
+  // a grouped window (an arcaded triple light on Ottoman fronts, else a wide window), in
+  // wide end bays a wide window.
   const paired = era === 'ottoman' && rng.chance(0.2);
+  const triple = mid >= 0 && era === 'ottoman' && rng.chance(0.7);
+  const modW = modern ? rng.range(1.55, 2.3) : 0, modH = modern ? rng.range(1.35, 1.6) : 0;
   for (const f of floors) {
     if (f.index === 0) continue;
     const top = f.kind === 'top' && rng.chance(0.3) ? 'flat' : style.windowTop;
-    const winW = Math.min(bayTarget * 0.42, rng.range(1.05, 1.4));
-    const winH = Math.min(f.h - 1.15, rng.range(1.9, 2.4) + (top === 'round' || top === 'pointed' ? winW * 0.3 : 0));
+    const winW = modern ? 0 : Math.min(bayTarget * 0.42, rng.range(1.05, 1.4));
+    const winH = modern ? Math.min(f.h - 1.15, modH) : Math.min(f.h - 1.15, rng.range(1.9, 2.4) + (top === 'round' || top === 'pointed' ? winW * 0.3 : 0));
+    const sill = f.y + rng.range(0.8, 0.95);
     for (const b of bays) {
+      const big = b.w > bayTarget * 1.2 && !modern;
+      const w = modern ? Math.min(b.w - 0.75, modW) : big ? Math.min(b.w - 0.9, winW * (paired ? 1.8 : 1.55)) : paired ? winW * 1.5 : winW;
+      // (a wide window under a round or pointed head would be all arch: segmental)
       const win = {
         id: `${lot.id}:f${f.index}b${b.index}`, floor: f.index, bay: b.index, uc: b.uc,
-        w: paired ? winW * 1.5 : winW, y: f.y + rng.range(0.8, 0.95), h: winH, top, paired,
+        w, y: sill, h: winH, top: big && (top === 'round' || top === 'pointed') && !(b.index === mid && triple) ? 'segment' : top, paired: paired || big,
         kind: 'window', recess: rng.range(0.18, 0.3),
         shutters: rng.chance(0.25) ? (rng.chance(0.5) ? 'open' : 'closed') : null,
         lit: rng.next(), // threshold vs uNight to decide which windows are lit at dusk
         curtain: rng.chance(0.5),
-        ac: rng.chance(0.08),   // split AC unit hanging under the window
+        ac: rng.chance(modern ? 0.14 : 0.08),   // split AC unit hanging under the window
         flowerBox: rng.chance(0.07),
       };
+      if (modern && win.shutters) win.shutters = null;   // (the facades put roller shutters on sliders)
+      if (b.index === mid && triple && top !== 'flat') {
+        // three narrow arched lights on slender piers, the middle one a little taller
+        const lw = Math.min(0.8, (b.w - 1.1 - 2 * 0.24) / 3), gap = 0.24;
+        if (lw >= 0.55) {
+          for (const k of [-1, 0, 1]) {
+            openings.push({ ...win, id: `${win.id}${k < 0 ? 'l' : k > 0 ? 'r' : ''}`, uc: b.uc + k * (lw + gap), w: lw, paired: false, group: 3,
+              h: win.h + (k ? 0 : lw * 0.18), shutters: null, ac: false, flowerBox: false });
+          }
+          continue;
+        }
+      }
       openings.push(win);
     }
   }
@@ -158,13 +249,15 @@ export function facadePlan(lot) {
   // ---- balconies
   const balconies = [];
   const balFloors = floors.filter((f) => f.index >= 1 && f.index < nFloors);
-  const balStyle = rng.weighted([['bays', 0.5], ['continuous', 0.25], ['center', 0.15], ['none', 0.1]]);
+  const balStyle = modern ? rng.weighted([['continuous', 0.38], ['bays', 0.32], ['none', 0.3]])
+    : rng.weighted([['bays', 0.5], ['continuous', 0.25], ['center', mid >= 0 ? 0.3 : 0.15], ['none', 0.1]]);
   for (const f of balFloors) {
     if (balStyle === 'none') break;
     if (f.kind === 'top' && rng.chance(0.5)) continue;
     const slab = f.y + 0.02;
     const high = f.index >= 5;   // the upper storeys of tall blocks carry fewer balconies
-    if (balStyle === 'continuous' && (f.index === 1 || rng.chance(high ? 0.25 : 0.4))) {
+    // (later blocks: a slab balcony along the whole front on most floors)
+    if (balStyle === 'continuous' && (f.index === 1 || rng.chance(modern ? 0.7 : high ? 0.25 : 0.4))) {
       balconies.push({ floor: f.index, u0: bays[0].u0 + 0.1, u1: bays[nBays - 1].u1 - 0.1, depth: rng.range(0.8, 1.15), y: slab, railing: rng.chance(0.85) ? 'iron' : 'stone', corbels: Math.max(2, nBays + 1), slabT: 0.16 });
     } else if (balStyle === 'center' && nBays >= 3) {
       const c = Math.floor(nBays / 2);
@@ -216,6 +309,7 @@ export function facadePlan(lot) {
     floors, bays, pierL, pierR, openings, balconies, courses, cornice, parapet, roof, rooftop,
     signs, flags, style, totalHeight,
     cornerU0: !!lot.cornerU0, cornerU1: !!lot.cornerU1, sideStreet: !!lot.sideStreet,
+    vista: seen.get(lot.id) || 0,   // cab positions (every 20 m) that see the lot close the view down the street
   };
   // Extensions (own RNG streams so the values above never shift):
   massing(plan, lot);                      // low buildings, set-back penthouses and additions
@@ -230,8 +324,9 @@ export function facadePlan(lot) {
   if (plan.cornerU0) plan.returns.push(returnPlan(lot, plan, 0));
   if (plan.cornerU1) plan.returns.push(returnPlan(lot, plan, 1));
   cornerCut(plan, lot);                    // some street corners are chamfered (an extra face)
-  if (termini.has(lot.id)) tower(plan, lot); // closes the view down the street: a taller block
-  finish(plan, lot);                       // rendered and colour-washed later blocks
+  const tk = termini.get(lot.id);           // closes the view down the street:
+  if (tk === 'tower') tower(plan, lot);    // a taller block, or
+  finish(plan, lot, !!tk && !(plan.upper && plan.upper.tower)); // a colour-washed front (and the later blocks)
   for (const f of [plan, ...plan.returns, ...(plan.upper ? [plan.upper] : [])]) for (const o of f.openings) o.backDepth = backDepthOf(o);
   cache.set(lot.id, plan);
   return plan;
@@ -907,11 +1002,14 @@ function sideLotStart(lot, end, corner) {
 // white 1960s one, one with a big mural on its gable). findTermini() casts the cab's
 // lines of sight every 20 m along the route (a fan around the gaze, which the telephoto
 // framing turns towards the track some 80 m ahead), takes the deepest one, and marks the
-// lot where it leaves the street (outer frontage, 140–700 m out; corner lots and
-// side-street mouths excepted; at most one per 90 m of frontage; 60 % of them).
+// lot where it leaves the street (outer frontage, 140–700 m out; side-street mouths
+// excepted; at most one per 90 m of frontage, the lots seen most often first): 60 % of
+// them get a taller block behind the front (tower(); not on corner lots, whose return
+// often is what closes the view at a bend), the others a colour-washed front (finish()).
 
 function findTermini(layout) {
   const out = new Map(), route = layout && layout.route;
+  seen = new Map();
   if (!route || !layout.lots) return out;
   const L = route.length, step = 3, n = Math.ceil(L / step);
   const F = [new Float32Array(n * 2), new Float32Array(n * 2)];
@@ -943,7 +1041,9 @@ function findTermini(layout) {
   };
   const bySide = new Map([[-1, []], [1, []]]);
   for (const l of layout.lots) bySide.get(l.side > 0 ? 1 : -1).push(l);
-  const chosen = [];
+  // every camera position votes for the lot its deepest line of sight ends on; the lots
+  // seen most often are taken first (the spacing rule then drops their neighbours)
+  const votes = new Map();
   for (let sc = 0; sc < L; sc += 20) {
     const eye = route.toWorld(sc, TRACK_OFFSET, EYE_HEIGHT), ahead = route.toWorld(sc + 80, TRACK_OFFSET, 0);
     const tan = route.sample(sc).tanH;
@@ -960,49 +1060,72 @@ function findTermini(layout) {
     if (!hit || hit.t < 140 || hit.t > 700) continue;
     if (layout.isInCrossStreet && layout.isInCrossStreet(hit.s, hit.side, 6)) continue;
     const lot = bySide.get(hit.side).find((l) => route.delta(l.s0 - 1, hit.s) >= 0 && route.delta(hit.s, l.s1 + 1) >= 0);
-    if (!lot || lot.cornerU0 || lot.cornerU1 || lot.len < 9) continue;
-    if (chosen.some((c) => c.side === hit.side && Math.abs(route.delta(c.s, hit.s)) < 90)) continue;
-    chosen.push({ side: hit.side, s: hit.s });
-    if (RNG.from(lot.seed, 'terminus').chance(0.6)) out.set(lot.id, true);
+    if (!lot || lot.len < 9) continue;
+    const v = votes.get(lot) || { lot, n: 0, s: hit.s, side: hit.side, first: sc };
+    v.n++;
+    votes.set(lot, v);
+    // the lots around it (a taller neighbour shows its side wall there): plan.vista
+    for (const l of bySide.get(hit.side)) if (route.delta(l.s0 - 25, hit.s) >= 0 && route.delta(hit.s, l.s1 + 25) >= 0) seen.set(l.id, (seen.get(l.id) || 0) + 1);
+  }
+  const chosen = [];
+  for (const v of [...votes.values()].sort((a, b) => b.n - a.n || a.first - b.first)) {
+    if (chosen.some((c) => c.side === v.side && Math.abs(route.delta(c.s, v.s)) < 90)) continue;
+    chosen.push(v);
+    // a taller set-back block on most, a colour-washed front on the others
+    out.set(v.lot.id, RNG.from(v.lot.seed, 'terminus').chance(0.6) ? 'tower' : 'landmark');
   }
   return out;
 }
 
 // ------------------------------------------------------------------ finish
-// The street is limestone, but about half of the later (modern) blocks are rendered and
+// The street is limestone, but most of the later (modern) blocks are rendered and
 // colour-washed above a stone-clad shop floor: the ochre, rose, buff and white blocks
-// that give the far end of the street its colour notes in the photographs. Stone stays
-// for the dressing (sills, surrounds, string courses, cornice, plinth, quoins).
+// that give the street its colour notes in the photographs. A few older fronts were
+// lime-washed later (pale washes), and the fronts closing the view down the street that
+// carry no taller block (landmark) are washed in the warm colours of the blocks seen
+// there in the photographs. Stone stays for the dressing (sills, surrounds, string
+// courses, cornice, plinth, quoins).
 //   plan.style.finish  'render' (else undefined: ashlar)
 //   plan.style.render  {color: multipliers on the plaster albedo, from: v where the render
 //                      starts (the top of the first string course, or the first floor)}
-//   plan.style.stone   the stone tint of the dressing and the shop floor
+//   plan.style.stone   the stone tint of the dressing, the shop floor, the balcony slabs
+//                      and their consoles, and the stone linings of the shop recesses
 //   plan.style.tint    becomes the render's colour expressed as a stone tint, so whatever
-//                      colours the facade from the tint (far field, balcony slabs, shop
-//                      recesses) follows the render
+//                      colours the facade from the tint as a whole (the far field) follows
+//                      the render; parts that stay stone use plan.style.stone
 const RENDER_WASH = [
   [[1.3, 1.0, 0.55], 0.2], [[1.34, 0.93, 0.5], 0.08], [[1.32, 1.12, 0.66], 0.12],   // ochre, deep ochre, yellow
   [[1.3, 0.86, 0.72], 0.14], [[1.33, 0.8, 0.6], 0.08],                               // rose, salmon
   [[1.22, 1.06, 0.82], 0.12], [[1.1, 1.08, 1.03], 0.16], [[0.98, 0.98, 0.96], 0.1],  // buff, white, grey
 ];
+// old fronts lime-washed later: cream, off-white, buff, a pale ochre
+const PALE_WASH = [[[1.16, 1.06, 0.86], 0.35], [[1.1, 1.08, 1.02], 0.3], [[1.22, 1.06, 0.82], 0.2], [[1.26, 1.04, 0.66], 0.15]];
+// fronts closing the view: ochre, yellow, orange, rose, a white one now and then
+const WARM_WASH = [[[1.3, 1.0, 0.55], 0.28], [[1.32, 1.12, 0.66], 0.18], [[1.34, 0.82, 0.48], 0.2], [[1.3, 0.86, 0.72], 0.16], [[1.1, 1.08, 1.03], 0.18]];
 const PLASTER_ALB = [0.66, 0.62, 0.54];    // the plaster texture's mean albedo (linear)
 const ASHLAR_ALB = [0.59, 0.535, 0.43];    // the ashlar texture's (= CREAM tint)
 
-function finish(plan, lot) {
+function finish(plan, lot, landmark = false) {
   const rng = RNG.from(lot.seed, 'finish');
-  const st = plan.style;
-  if (st.era !== 'modern' || plan.floors.length < 3 || !rng.chance(0.5)) return;
-  const color = rng.weighted(RENDER_WASH).map((c) => c * rng.range(0.95, 1.03));
+  const st = plan.style, nF = plan.floors.length;
+  const roll = rng.next();
+  const pick = landmark && nF >= 2 ? WARM_WASH
+    : st.era === 'modern' ? (nF >= 3 && roll < 0.6 ? RENDER_WASH : null)
+      : st.era === 'mandate' && nF >= 3 && !plan.sideStreet && RNG.from(lot.seed, 'limewash').chance(0.07) ? PALE_WASH : null;
+  if (!pick) return;
+  const color = rng.weighted(pick).map((c) => c * rng.range(0.95, 1.03));
   const c0 = plan.courses[0];
   st.finish = 'render';
-  st.render = { color, from: c0 ? c0.y + c0.h : plan.floors[1].y };
+  st.render = { color, from: c0 ? c0.y + c0.h : plan.floors[1] ? plan.floors[1].y : plan.floors[0].h };
   st.stone = st.tint;
   st.tint = color.map((c, i) => STONE_TINTS[0][i] * Math.pow((PLASTER_ALB[i] * c) / ASHLAR_ALB[i], 0.8));
   // rendered blocks have rendered set-back storeys, a shade lighter
   const up = plan.upper;
   if (up && !up.tower) { up.material = 'plaster'; up.color = color.map((c) => Math.min(1.2, c * 0.97) * 0.9); }
   // and their joinery is mostly white or light (aluminium), often with roller shutters
-  st.frameColor = rng.pick(['white', 'white', 'lightgrey', 'cream', st.frameColor]);
+  // (an old front keeps its painted timber)
+  const fc = rng.pick(['white', 'white', 'lightgrey', 'cream', st.frameColor]);
+  if (st.era === 'modern') st.frameColor = fc;
 }
 
 // render colours (multipliers on the plaster albedo, × 0.9 as the upper volumes store them)
@@ -1059,7 +1182,7 @@ function tower(plan, lot) {
   // the side facing back down the street (the oncoming tram): u = 0 on the left of the
   // street (side < 0), u = width on the right
   const eFace = lot.side < 0 ? 0 : 1;
-  const mural = material === 'plaster' && rng.chance(0.4)
+  const mural = material === 'plaster' && rng.chance(0.55)
     ? { e: eFace, k: rng.int(0, 3), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
     : null;
   const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`)));

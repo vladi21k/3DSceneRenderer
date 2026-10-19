@@ -1,17 +1,18 @@
 import * as THREE from 'three';
 import { Surface } from './street/surface.js';
-import { buildPaving, buildSlab, inCrossoverZone } from './street/paving.js';
+import { buildPaving, buildSlab, inCrossoverZone, pavingHeight } from './street/paving.js';
 import { railLinePoints } from './street/rails.js';
 import { buildMainRails } from './street/track.js';
 import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
-import { MAIN_RAILS, pavingTones } from './street/constants.js';
+import { MAIN_RAILS, pavingTones, TRACK_OFFSET } from './street/constants.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
 import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, sideHeight, sideProfile, sideWear, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, planSteps, buildDetails } from './street/details.js';
 import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV } from './street/shading.js';
+import { RELAY_EDGE } from './street/surface.js';
 
 // Rail steel: every steel face of the profile (polished running band, flange-polished
 // gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
@@ -123,7 +124,7 @@ const street = {
       }
       return p;
     };
-    surface.planner = (ci) => this.planFor(ci).spots;
+    surface.planner = (ci) => this.planFor(ci);
 
     // Warm-up: build representative chunks (plain, crossover, cross street, station;
     // both lods) so streamed chunks never pay first-call JIT costs. The lod 0 ones stay
@@ -231,7 +232,7 @@ const street = {
    *  phase just done, for the debug timings); returns the chunk's group. */
   *steps(chunk, { bufs, lines: LB }) {
     const ctx = this.ctx;
-    const rows = makeRows(ctx, chunk);
+    const rows = makeRows(ctx, chunk, this.planFor(chunk.index));
     yield 'rows';
     const samples = yield* buildPaving(ctx, chunk, rows, bufs);
     buildSlab(ctx, chunk, bufs);
@@ -244,7 +245,10 @@ const street = {
       rail: LB.style(chunk.lod === 0 ? LINE_STYLE.railNear : LINE_STYLE.railFar),
       stripe: LB.style(LINE_STYLE.stripe), joint: LB.style(LINE_STYLE.joint),
       seal: LB.style(LINE_STYLE.seal), patch: LB.style(LINE_STYLE.patch), polish: LB.style(LINE_STYLE.polish),
+      repair: LB.style(LINE_STYLE.repair), drip: LB.style(LINE_STYLE.drip),
     };
+    // drip bands along the middle of both tracks (under the paint and joints)
+    buildDripBands(ctx, chunk, samples, L.drip);
     // crossovers overlapping the chunk (each builds only its part inside the chunk)
     for (const c of ctx.surface.near.xo) yield* buildCrossover(ctx, c, chunk, bufs, L.rail);
     for (const c of ctx.layout.inChunk('crossStreets', chunk.index)) {
@@ -255,7 +259,7 @@ const street = {
     if (chunk.lod === 0) {
       buildPlatformTactile(ctx, chunk, bufs);
       yield 'details';
-      yield* buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L.joint, samples.grid);
+      yield* buildDetails(ctx, chunk, this.planFor(chunk.index), bufs, L, samples.grid);
     }
 
     for (const rl of MAIN_RAILS) {
@@ -399,8 +403,9 @@ function* planChunk(street, ci) {
 }
 
 /** Row positions (route s) for a chunk: regular steps plus exact rows at crossover
- *  crossover zone ends, switch toes and cross-street mouth edges. */
-function makeRows(ctx, chunk) {
+ *  zone ends, switch toes, cross-street mouth edges and the ends of relaid setts (a pair
+ *  of rows RELAY_EDGE apart on each end: the tone changes between them, see wear.js). */
+function makeRows(ctx, chunk, plan) {
   const { route, layout } = ctx;
   const s0 = chunk.s0, s1 = chunk.s1, len = s1 - s0;
   let kmax = 0;
@@ -416,6 +421,11 @@ function makeRows(ctx, chunk) {
   };
   // crossover zone ends and switch toes
   for (const c of layout.crossovers) { addAt(c.s0 - ctx.zonePad); addAt(c.s0); addAt(c.s1); addAt(c.s1 + ctx.zonePad); }
+  const relayRows = [];
+  for (const r of plan.relays || []) {
+    relayRows.push(r.s0, r.s0 + RELAY_EDGE, r.s1 - RELAY_EDGE, r.s1);
+    for (const e of relayRows.slice(-4)) addAt(e);
+  }
   const mouths = [];
   for (const c of layout.crossStreets) {
     if (Math.abs(ctx.delta(c.s, (s0 + s1) / 2)) > len / 2 + c.width) continue;
@@ -428,7 +438,9 @@ function makeRows(ctx, chunk) {
   const all = base.filter((s) => s === s0 || s === s1 || (!inMouth(s) && !extra.some((e) => Math.abs(e - s) < 0.3)));
   for (const e of extra) all.push(e);
   all.sort((a, b) => a - b);
-  return densify(ctx, chunk, all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02));
+  // (relay edge pairs stay; other rows closer than 2 cm merge)
+  const keep = (s) => relayRows.some((e) => Math.abs(e - s) < 1e-6);
+  return densify(ctx, chunk, all.filter((s, i) => i === 0 || s - all[i - 1] > 0.02 || (keep(s) && s - all[i - 1] > RELAY_EDGE * 0.5)));
 }
 
 /** Dense rows (<= 0.75 m) where crossover rails curve, at lod 0: the cut attributes
@@ -453,6 +465,46 @@ function densify(ctx, chunk, out) {
     dense.push(b);
   }
   return dense;
+}
+
+/** The drip band along the middle of each track (lines.js LINE_STYLE.drip), at both
+ *  lods: light and patchy along the line, heavy where the trams stand at the stops and
+ *  under their bogies (Surface.stopAt), faded out through crossovers (their diverging
+ *  rails cross the four-foot). Points every 2 m (4 m at lod 1) on the built paving. */
+const DRIP_HALF = 0.36;
+function buildDripBands(ctx, chunk, samples, out) {
+  const { route, surface, layout } = ctx;
+  const grid = samples.grid, dl = ctx.delta;
+  const step = chunk.lod === 0 ? 2 : 4;
+  const n = Math.max(1, Math.ceil((chunk.s1 - chunk.s0) / step));
+  const smp = {}, w = {};
+  const ks = surface.kS;
+  for (const t of [-1, 1]) {
+    const d = t * TRACK_OFFSET;
+    const pts = new Array((n + 1) * 8);
+    let any = false;
+    for (let i = 0; i <= n; i++) {
+      const s = chunk.s0 + ((chunk.s1 - chunk.s0) * i) / n;
+      route.sample(s, smp);
+      surface.stopAt(s, w);
+      const sp = surface.sp(s);
+      const st = t > 0 ? w.stopR : w.stopL, bg = t > 0 ? w.bogR : w.bogL;
+      const nz = surface.fG.sample(sp * ks[0] + 61.3, t * 9.1 + 2.7);
+      let k = 0.3 * (0.55 + 0.9 * Math.max(0, nz + 0.35)) + 0.5 * st + 0.35 * bg;
+      for (const c of layout.crossovers) {
+        const a = dl(c.s0 - ctx.zonePad - 1, s), b = dl(s, c.s1 + ctx.zonePad + 1);
+        if (a > -3 && b > -3) k *= 1 - Math.min(1, Math.min(a + 3, b + 3) / 3);
+      }
+      k = Math.max(0, Math.min(1.25, k));
+      if (k > 0.01) any = true;
+      const o = i * 8;
+      pts[o] = smp.pos.x + smp.right.x * d;
+      pts[o + 1] = smp.pos.y + pavingHeight(grid, s, d, dl) + 0.0015;
+      pts[o + 2] = smp.pos.z + smp.right.z * d;
+      pts[o + 3] = smp.right.x; pts[o + 4] = smp.right.z; pts[o + 5] = sp; pts[o + 6] = 0; pts[o + 7] = k;
+    }
+    if (any) out.add(pts, DRIP_HALF, 0, 1, 8);
+  }
 }
 
 /** Tactile warning strips on the sidewalk at both ends of every platform. */

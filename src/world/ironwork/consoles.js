@@ -26,6 +26,7 @@ const BLOCK_SP = 1.05; // ... of short block consoles
 const H_MIN = 0.1;     // shortest console: below it a spot is not used
 const H_TIERED = 0.34; // shortest stepped console (shorter: block consoles)
 const MERGE = 0.7;     // consoles closer than this become one
+const PORTAL_SP = 4.5; // longest span of a slab resting on a portal hood instead
 
 const _ap = {};
 const ornCache = new WeakMap();
@@ -51,10 +52,15 @@ function headProfile(plan, orn, o) {
   const T = Math.max(0, d.u1 - (o.uc + o.w / 2));
   archPoint(o, 0.5, _ap, T);
   const key = Math.max(0, d.top - _ap.v);
+  // the keystone's span of the head parameter, where the plan gives it (d.keyT), else
+  // about half a metre round the crown
+  const kt = d.keyT;
   const a = [];
   for (let i = 0; i <= 20; i++) {
-    archPoint(o, i / 20, _ap, T + MARGIN);
-    a.push(_ap.u, _ap.v + (key > 0.005 && Math.abs(_ap.u - o.uc) < 0.24 ? key : 0));
+    const t = i / 20;
+    archPoint(o, t, _ap, T + MARGIN);
+    const onKey = kt ? t >= kt[0] - 0.025 && t <= kt[1] + 0.025 : Math.abs(_ap.u - o.uc) < 0.24;
+    a.push(_ap.u, _ap.v + (key > 0.005 && onKey ? key : 0));
   }
   if (a[0] > a[a.length - 2]) {
     for (let i = 0, j = a.length - 2; i < j; i += 2, j -= 2) {
@@ -228,13 +234,20 @@ function place(plan, bal, { Hc, W2, rc, kind, foot }) {
     const at = settle(ideal, top, lo, N, soffit, full).sort((p, q) => p.u - q.u);
     const c = spaced(at, minGap).filter((x) => x.room >= H_MIN);
     // a console far shorter than the others is left out where its neighbours still
-    // carry the slab (a door portal or an arch crown under one end of a long run)
+    // carry the slab (a door portal or an arch crown under one end of a long run).
+    // Where the dressing comes up within a stepped console's height of the soffit (a
+    // portal hood), the slab rests on it: that spot keeps no console, at the slab's
+    // ends too, as long as the slab spans at most PORTAL_SP there (else one spot
+    // would turn the whole run into modillions)
     if (c.length > 2) {
       const rooms = c.map((x) => Math.min(x.room, full)).sort((p, q) => p - q);
       const med = rooms[rooms.length >> 1];
-      for (let i = c.length - 2; i > 0; i--) {
-        if (Math.min(c[i].room, full) >= med * 0.6) continue;
-        if (c[i + 1].u - c[i - 1].u <= sp * 1.45) c.splice(i, 1);
+      for (let i = c.length - 1; i >= 0 && c.length > 2; i--) {
+        const r = Math.min(c[i].room, full);
+        if (r >= med * 0.6) continue;
+        const end = i === 0 || i === c.length - 1;
+        const span = i === 0 ? c[1].u - bal.u0 : i === c.length - 1 ? bal.u1 - c[i - 1].u : c[i + 1].u - c[i - 1].u;
+        if (r < H_TIERED && med >= H_TIERED ? span <= PORTAL_SP : !end && span <= sp * 1.45) c.splice(i, 1);
       }
     }
     return c;

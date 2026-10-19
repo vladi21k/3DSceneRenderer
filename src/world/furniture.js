@@ -10,7 +10,7 @@ import { buildShopProtos, planShopStands, placeShopStands } from './furniture/sh
 
 // Street furniture, café terraces, tram-stop platforms, the vehicles parked in the cross
 // streets (vehicles.js) and the shops' sidewalk A-boards (shopStands.js, planned at init and
-// added to layout.obstacles for the crowd). Contract: docs/ARCHITECTURE.md.
+// registered as crowd obstacles with layout.addObstacles). Contract: docs/ARCHITECTURE.md.
 // Prototype geometry and materials are built once in init and registered into global
 // BatchedMeshes (one per material); a chunk build only adds instances at the layout
 // positions (layout.cafes / layout.furniture / layout.stations). Unique per-site geometry
@@ -44,6 +44,8 @@ function footprintLines(cafe, st, app) {
   return new THREE.LineSegments(g, app.materials.track(new THREE.LineBasicMaterial({ color: 0xff2060, depthTest: false })));
 }
 
+const _dir = new THREE.Vector3();
+
 function disposeOwn(obj) {
   obj.traverse((o) => { if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose(); });
 }
@@ -66,7 +68,7 @@ const furniture = {
     lap('protos', t); t = performance.now();
     // collision-free café plans (adjusted chair poses are written back for seated patrons)
     this.cafeAudit = planAllCafes(app);
-    // shop boards (after the café plans; their obstacles go into layout.obstacles)
+    // shop boards (after the café plans; their obstacles are registered for the crowd)
     this.shopPlan = planShopStands(app);
     lap('plans', t); t = performance.now();
     this.debugFoot = app.params.str('fpdebug') === '1';
@@ -92,19 +94,23 @@ const furniture = {
     });
     lap('sizing', t);
     // every batch stays drawn until the programs have been compiled up front (the compile
-    // pass skips hidden objects); from then on empty batches are skipped. The per-site
-    // platform meshes (library materials only stations use) get stand-ins far below the
-    // street for that compile, so a station streamed in mid-ride compiles nothing.
+    // pass skips hidden objects), and until the app is ready each batch draws one invisible
+    // warm-up instance (BatchSet.warmup), so no program has its first draw mid-ride; from
+    // then on empty batches are skipped. The per-site platform meshes (library materials
+    // only stations use) get stand-ins far below the street, drawn (and clipped) every
+    // frame until ready, so a station streamed in mid-ride neither compiles nor first-draws.
     const warm = new THREE.Group();
     warm.name = 'furniture:warmup';
     warm.position.y = -1e4;
     for (const [mat, geo] of platformWarmupParts(app, this.F)) {
       const m = new THREE.Mesh(geo, mat);
       m.receiveShadow = true;
+      m.frustumCulled = false;
       warm.add(m);
     }
     app.scene.add(warm);
     app.events.on('ready', () => {
+      this.batches.endWarmup();
       this.batches.hideEmpty = true;
       this.batches._showBatches();
       app.scene.remove(warm);
@@ -142,6 +148,7 @@ const furniture = {
 
   update(dt, app) {
     updateLightLevels(this.F, app);
+    if (!this.batches.hideEmpty) this.batches.warmup(app.camera.position, app.camera.getWorldDirection(_dir));
     this.batches.sync();
     this.batches.updateLod(app.camera.position);
   },

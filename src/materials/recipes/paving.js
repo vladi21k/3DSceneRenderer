@@ -43,7 +43,8 @@ void surface(vec2 m, inout Surf s) {
 // it never runs on across a joint), a faint tone gradient from the block it was split
 // from, and its own finish: flamed (paler, matt, micro-rough) or worn smooth by traffic
 // (darker, satin, slightly dished, arrises rounded). Some setts carry a dark xenolith, a
-// pale aplite vein, rust specks, an old spill blot or a hairline crack; corners and
+// pale aplite vein, rust specks or a hairline crack (spill blots, which would repeat
+// with the tile, are drawn at runtime per global sett); corners and
 // arrises are chipped here and there. Dirt is worked into the stone for a centimetre or
 // two along the joints, patchily, darkest at the corners.
 // Joints: each joint has its own width (head joints 2-6 mm, bed joints 1-3 mm, varying
@@ -61,13 +62,13 @@ export const paving = {
   glsl: GRANITE + /* glsl */ `
 // a line across the sett (crack or vein): distance (m) from it, along a random direction
 // through a random point, wandering
-float settLine(Cell c, vec2 m, uint k, float wander) {
+float settLine(Cell c, vec2 m, uint k, float wander, float wf) {
   float a = (cellRand(c, k) - 0.5) * 1.4 + (cellRand(c, k + 1u) < 0.5 ? 0.0 : 1.5708);
   vec2 dir = vec2(cos(a), sin(a));
   vec2 p0 = (vec2(cellRand(c, k + 2u), cellRand(c, k + 3u)) - 0.5) * c.size * 0.6;
   vec2 q = c.lp - 0.5 * c.size - p0;
   float along = dot(q, dir);
-  return abs(dot(q, vec2(-dir.y, dir.x)) + wander * fbm(vec2(along * 7.0, c.h * 31.0), 6.0, 3, 0.55, k + 9u));
+  return abs(dot(q, vec2(-dir.y, dir.x)) + wander * fbm(vec2(along, c.h * 3.1), wf, 3, 0.5, k + 9u));
 }
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
@@ -110,14 +111,14 @@ void surface(vec2 m, inout Surf s) {
   float spR = 0.008 + 0.02 * sfHf(sfH(ck + 78u));
   float spall = step(0.8, cr) * (1.0 - smoothstep(spR - 0.0015, spR + 0.0015, cq.x + cq.y + 0.004 * noiseM(ms, vec2(60.0), 106u)));
   vec4 cv = voro(ms, vec2(30.0), 94u, 1.0);
-  float chip = smoothstep(0.42, 0.18, cv.x) * step(0.78, cv.z) * (1.0 - smoothstep(0.0, 0.012, min(eH, eB)));
+  float chip = smoothstep(0.42, 0.18, cv.x) * step(0.85, cv.z) * (1.0 - smoothstep(0.0, 0.012, min(eH, eB)));
   float broken = max(spall, chip);
   float fresh = step(0.75, cellRand(c, 13u));
   hFace -= broken * (0.0025 + 0.001 * noiseM(ms, vec2(90.0), 107u));
   // hairline crack across a few setts
   float crack = 0.0;
   if (cellRand(c, 14u) < 0.07) {
-    float cd = settLine(c, m, 40u, 0.012);
+    float cd = settLine(c, m, 40u, 0.01, 12.0);
     crack = 1.0 - smoothstep(0.0003, 0.0016, cd);
     hFace -= crack * 0.0006;
   }
@@ -134,21 +135,21 @@ void surface(vec2 m, inout Surf s) {
   s.height = mix(hJ, max(hFace, hJ), st);
   // ---- colour: granite with this sett's own mottling and clustering, tone gradient,
   // finish, inclusions
-  vec3 g = granite(ms, vec3(0.16, 0.168, 0.188));
-  g *= 1.0 + 0.09 * fbm(ms, 28.0, 3, 0.55, 108u) + 0.05 * fbm(ms, 95.0, 2, 0.5, 109u);
+  vec3 g = granite(ms, vec3(0.162, 0.17, 0.19));
+  g *= 1.0 + 0.12 * fbm(ms, 28.0, 3, 0.55, 108u) + 0.07 * fbm(ms, 95.0, 2, 0.5, 109u) + 0.06 * noiseM(ms, vec2(230.0), 117u);
   g *= 1.0 + 0.07 * dot(qn, vec2(cellRand(c, 15u) - 0.5, cellRand(c, 16u) - 0.5));
-  g *= mix(1.05, 0.93, worn);
+  g *= mix(1.04, 0.94, worn);
   float xr = cellRand(c, 17u);
-  if (xr < 0.08) {                                                 // dark xenolith
+  if (xr < 0.035) {                                                // dark xenolith (fine-grained, speckled)
     vec2 xc = (vec2(cellRand(c, 18u), cellRand(c, 19u)) - 0.5) * c.size * 0.6;
     float xs = 0.015 + 0.03 * cellRand(c, 20u);
     vec2 xd = (q - xc) / vec2(xs * (1.3 + cellRand(c, 21u)), xs);
     float xb = 1.0 - smoothstep(0.85, 1.15, length(xd) + 0.25 * fbm(ms, 40.0, 2, 0.5, 110u));
-    g = mix(g, g * vec3(0.55, 0.56, 0.6), xb);
-  } else if (xr < 0.17) {                                          // pale aplite vein
-    float vd = settLine(c, m, 50u, 0.02);
-    float vw = 0.0015 + 0.003 * cellRand(c, 22u);
-    g = mix(g, g * vec3(1.3, 1.27, 1.22), (1.0 - smoothstep(vw, vw + 0.0015, vd)) * 0.8);
+    g = mix(g, g * vec3(0.74, 0.75, 0.78) * (1.0 + 0.12 * noiseM(ms, vec2(300.0), 118u)), xb);
+  } else if (xr < 0.115) {                                         // pale aplite vein
+    float vd = settLine(c, m, 50u, 0.025, 3.0);
+    float vw = 0.002 + 0.005 * cellRand(c, 22u);
+    g = mix(g, g * vec3(1.16, 1.15, 1.12), (1.0 - smoothstep(vw, vw + 0.004, vd)) * 0.6);
   }
   if (cellRand(c, 23u) < 0.2) {                                    // rust specks (weathered pyrite)
     vec4 rv = voro(ms, vec2(70.0), 111u, 1.0);
@@ -156,14 +157,6 @@ void surface(vec2 m, inout Surf s) {
     float halo = smoothstep(0.6, 0.1, rv.x) * step(0.93, rv.z);
     g = mix(g, g * vec3(1.18, 0.98, 0.78), 0.45 * halo);
     g = mix(g, vec3(0.13, 0.075, 0.04), 0.8 * rs);
-  }
-  // old spill blot inside the sett (oil, coffee): darker, a little glossy
-  float blot = 0.0;
-  if (cellRand(c, 24u) < 0.12) {
-    vec2 bc = (vec2(cellRand(c, 25u), cellRand(c, 26u)) - 0.5) * c.size * 0.55;
-    float br = 0.012 + 0.04 * cellRand(c, 27u) * cellRand(c, 28u);
-    blot = 1.0 - smoothstep(0.6, 1.1, length((q - bc) / br) + 0.35 * fbm(ms, 30.0, 3, 0.5, 112u));
-    g *= 1.0 - (0.18 + 0.2 * cellRand(c, 29u)) * blot;
   }
   // dirt worked into the stone along the joints: a centimetre or two, patchy, darker at
   // the corners and along the head joints; the chamfers a little grimier still
@@ -186,9 +179,9 @@ void surface(vec2 m, inout Surf s) {
   vec3 joint = mix(mix(sand, dirt, wDirt), grime, sat(wGrime));
   s.albedo = mix(joint, g, st);
   // flamed tops matt, worn ones satin (a broad low-angle sheen towards a low sun or the
-  // bright end of the street); breaks and cracks rough, blots a little glossy, joints matt
-  float rough = mix(0.66, 0.44, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
-  rough = mix(rough, 0.8, max(broken, crack)) - 0.12 * blot;
+  // bright end of the street); breaks and cracks rough, joints matt
+  float rough = mix(0.63, 0.42, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
+  rough = mix(rough, 0.8, max(broken, crack));
   s.rough = mix(head ? 0.95 : 0.92, rough, st);
 }
 `,

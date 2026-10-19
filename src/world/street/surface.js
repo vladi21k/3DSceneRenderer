@@ -1,4 +1,4 @@
-import { CHUNK_LEN } from '../../core/config.js';
+import { CHUNK_LEN, AXLES } from '../../core/config.js';
 import {
   railDist, BAND_IN, CORRIDOR, GUTTER_OUT, GUTTER_W, SIDEWALK_RISE, FACADE_OVERLAP, TRACK_OFFSET, RAIL_CENTER, GROUT_W,
 } from './constants.js';
@@ -50,9 +50,11 @@ export class Surface {
     this.kD = [per(0.71, 25.6), per(0.13, 25.6)];
     this.kW = per(1.7, 128);
     this.kB = [per(0.37, 25.6), per(0.29, 25.6)];
+    this.kS = [per(0.19, 128), per(0.53, 25.6)];   // drip line: metre-long patches along s
     this.hShade = 0;       // shading height of the last height() call
-    this.spotCache = new Map();
-    this.planner = null;     // (chunkIndex) => [{s, d, r}], set by the street module
+    this.planCache = new Map();
+    this.planner = null;     // (chunkIndex) => detail plan ({spots, relays, ...}), set by the street module
+    this.stops = null;       // tram stop zones (see stopZones)
     this._ri = {};
     // mouth geometry per (cross street, side), facade lines per lot
     this.mouths = new Map();
@@ -110,19 +112,73 @@ export class Surface {
         if (ds < p.r + 0.7 && ds > -p.r - 0.7) list.push(p, ds);
       }
     }
+    // relaid stretches of a corridor strip whose inside contains this row (their edge
+    // rows, RELAY_EDGE apart, are built: see details.js)
+    const rl = out.relays || (out.relays = []);
+    rl.length = 0;
+    const own = this.plan(ci).relays;
+    if (own) for (let i = 0; i < own.length; i++) {
+      const r = own[i];
+      if (dl(r.s0, s) > RELAY_EDGE * 0.5 && dl(r.s1, s) < -RELAY_EDGE * 0.5) rl.push(r);
+    }
+    this.stopAt(s, out);
     return out;
   }
 
-  spots(ci) {
+  /** The detail plan of chunk ci (cached; see street.js planFor). */
+  plan(ci) {
     const n = this.layout.nChunks;
     ci = ((ci % n) + n) % n;
-    let v = this.spotCache.get(ci);
+    let v = this.planCache.get(ci);
     if (!v) {
-      v = this.planner ? this.planner(ci) : [];
-      if (this.spotCache.size > 96) this.spotCache.delete(this.spotCache.keys().next().value);
-      this.spotCache.set(ci, v);
+      v = this.planner ? this.planner(ci) : NO_PLAN;
+      if (this.planCache.size > 96) this.planCache.delete(this.planCache.keys().next().value);
+      this.planCache.set(ci, v);
     }
     return v;
+  }
+
+  spots(ci) { return this.plan(ci).spots; }
+
+  // ------------------------------------------------------------------ tram stops
+  /** Where the trams stand at the stops, per track (+1 the ride track, -1 the other):
+   *  {track, s0, s1, bogies: [s]}. The cab tram stops with its front at stopS, its 32 m
+   *  body behind; the oncoming units stop with their nose at the mirrored position
+   *  (2 s - stopS, as trams.js plans them), their body trailing towards +s. */
+  stopZones() {
+    if (this.stops) return this.stops;
+    const out = [];
+    const bogies = [];
+    for (let i = 0; i + 1 < AXLES.length; i += 2) bogies.push((AXLES[i].offset + AXLES[i + 1].offset) / 2);
+    for (const st of this.layout.stations) {
+      const a = st.stopS, b = 2 * st.s - st.stopS;
+      out.push({ track: 1, s0: a - TRAM_LEN, s1: a, bogies: bogies.map((o) => a - o) });
+      out.push({ track: -1, s0: b, s1: b + TRAM_LEN, bogies: bogies.map((o) => b + o) });
+    }
+    this.stops = out;
+    return out;
+  }
+
+  /** Weights of the stop zones at s per track: out.stopL / stopR (0..1: under a standing
+   *  tram's body, eased over a couple of metres at its ends) and out.bogL / bogR (peaks
+   *  under its bogies, where gear oil and grease drip). */
+  stopAt(s, out) {
+    out.stopL = out.stopR = out.bogL = out.bogR = 0;
+    const Z = this.stopZones(), dl = this.dl;
+    for (let i = 0; i < Z.length; i++) {
+      const z = Z[i];
+      const a = dl(z.s0, s), b = dl(s, z.s1);
+      if (a < -6 || b < -6) continue;
+      const w = smooth((a + 2) / 5) * smooth((b + 2) / 5);
+      let g = 0;
+      for (let k = 0; k < z.bogies.length; k++) {
+        const x = dl(z.bogies[k], s) / 1.7;
+        const e = Math.exp(-x * x);
+        if (e > g) g = e;
+      }
+      if (z.track > 0) { out.stopR = Math.max(out.stopR, w); out.bogR = Math.max(out.bogR, g); }
+      else { out.stopL = Math.max(out.stopL, w); out.bogL = Math.max(out.bogL, g); }
+    }
   }
 
   // ------------------------------------------------------------------ mouths
@@ -311,7 +367,18 @@ export class Surface {
       warm += ci.grimeWarm * b;
     }
     if (ci.zone === Z_CORR) {
-      v *= (1 - ci.drip * (0.6 + 0.4 * n2)) * (1 - ri.xo * ci.xoTone);
+      // the drip line along the middle of each track: oil, grease and brake dust dropped by
+      // passing trams, in patches a few metres long; much heavier where the trams stand at
+      // the stops, heaviest under their bogies
+      const ks = this.kS;
+      const n3 = 0.65 * this.fG.sample(s * ks[0] + 31.7, d * 0.23 + 5.3) + 0.35 * this.fD.sample(s * ks[1] + 3.9, d * 0.41 + 19.1);
+      const st = d > 0 ? ri.stopR : ri.stopL, bg = d > 0 ? ri.bogR : ri.bogL;
+      // (the drip band decal, street.js buildDripBands, carries the sharper part of it)
+      const patch = 0.45 + 0.9 * smooth((n3 + 0.15) / 0.6);
+      const drip = ci.drip * (patch * (1 + 0.6 * st) + 0.9 * bg) * (0.75 + 0.25 * n2);
+      v *= (1 - Math.min(0.4, drip)) * (1 - ri.xo * ci.xoTone);
+      v *= 1 - ci.four * (0.05 * st + 0.04 * bg);
+      warm += ci.four * (0.02 * st + 0.03 * bg) + 0.15 * drip;
     } else if (ci.zone === Z_GUTTER) {
       // damp, dirty streaks along the channel
       v *= (1 + 0.05 * n2) * (1 - 0.15 * smooth((n2 - 0.3) / 0.3));
@@ -351,13 +418,18 @@ export class Surface {
 export const railGrime = (e) => 1 - smooth((e - 0.05) / 0.3);
 
 export const Z_CORR = 0, Z_BAND = 1, Z_GUTTER = 2, Z_WALK = 3;
+/** Relaid setts change tone over this distance at the ends of the stretch (m): the edge
+ *  rows of a relay, the bed joint between the old and the new setts. */
+export const RELAY_EDGE = 0.008;
+const TRAM_LEN = 32;
+const NO_PLAN = { spots: [], relays: [] };
 
 /** The s-independent part of the cross-section at d: base height (camber, crown between
  *  the rails, dished gutter, sidewalk cross-fall), noise amplitude and mask, and the
  *  static dirt factors (grime along the rails, oil drips, dark gutter). */
 export function colInfo(d, out = {}) {
   const a = d < 0 ? -d : d;
-  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1; out.trough = 0; out.grime = 0; out.grimeWarm = 0;
+  out.drip = 0; out.xoTone = 0; out.warm = 0; out.mask = 1; out.trough = 0; out.grime = 0; out.grimeWarm = 0; out.four = 0;
   if (a < BAND_IN) {
     const e = railDist(d);
     const g1 = Math.exp(-e / 0.045);
@@ -375,7 +447,8 @@ export function colInfo(d, out = {}) {
     out.grime = 0.2 * railGrime(e) + 0.08 * four;
     out.grimeWarm = 0.09 * railGrime(e) + 0.04 * four;
     out.warm = 0.03 * g1;
-    out.drip = 0.07 * Math.exp(-(dc * dc) / 0.05);
+    out.drip = 0.07 * Math.exp(-(dc * dc) / 0.06);
+    out.four = four;
     out.xoTone = 0.1 * Math.exp(-e / 0.1);
   } else if (a < CORRIDOR) {
     const t = (a - BAND_IN) / (CORRIDOR - BAND_IN);

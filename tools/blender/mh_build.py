@@ -429,6 +429,10 @@ def build_one(cid, save_blend=False):
                 n = level_hem(d, keep & ppart, 0.5 * (J['thighL'][2] + J['thighR'][2]))
                 if n:
                     log(cid, f'skirt hem levelled ({n} vertices; back vent closed)')
+                under = vent_underlay(d, keep & ppart, 0.5 * (J['thighL'][2] + J['thighR'][2]))
+                if under.any():
+                    keep &= ~under
+                    log(cid, f'skirt: {int(under.sum())} faces of the vent underlay dropped')
         out_parts.append(dict(kind=kind, d=d, keep=keep, region=region, tex=tex, info=info))
         if kind == 'hair':
             out_parts[-1]['dec'] = fade_ch
@@ -763,6 +767,7 @@ def build_one(cid, save_blend=False):
 
     # ---------------------------------------------------------------- ambient occlusion per vertex (rest pose)
     ambient_occlusion(raw, meta_parts)
+    ao_pits(raw, meta_parts)
     garment_distance(raw, meta_parts)
 
     joints = {n: to3(J[n] + shift).tolist() for n in RT_BONES}
@@ -911,6 +916,32 @@ def ambient_occlusion(raw, meta_parts):
                         hit += 1.0 - (h[3] / AO_DIST) ** 2 * 0.5
             ao[i] = 1.0 - hit / (len(dirs) * (2 if two else 1))
         raw[p['key'] + '_ao'] = ao
+
+
+def ao_pits(raw, meta_parts, depth=0.12, iters=3):
+    """Garments: a vertex darker than its neighbours' mean by more than `depth` is lifted to that
+    level (a stitched vent, a zipped notch or a pocket seam leaves single vertices whose rays start
+    inside a crease; their occlusion would draw a dark line down the cloth). Real creases keep their
+    shade: their neighbourhood is dark too."""
+    import numpy as np
+    for p in meta_parts:
+        if p['kind'] != 'suit':
+            continue
+        ao = raw[p['key'] + '_ao'].astype(np.float64)
+        idx = raw[p['key'] + '_idx']
+        n = len(ao)
+        a = np.concatenate([idx[:, 0], idx[:, 1], idx[:, 2], idx[:, 1], idx[:, 2], idx[:, 0]])
+        b = np.concatenate([idx[:, 1], idx[:, 2], idx[:, 0], idx[:, 0], idx[:, 1], idx[:, 2]])
+        deg = np.bincount(a, minlength=n).astype(np.float64)
+        lifted = 0
+        for _ in range(iters):
+            nb = np.bincount(a, weights=ao[b], minlength=n) / np.maximum(deg, 1)
+            m = (deg > 0) & (ao < nb - depth)
+            lifted += int(m.sum())
+            ao[m] = nb[m] - depth
+        raw[p['key'] + '_ao'] = ao.astype(np.float32)
+        if lifted:
+            log(f'  {p.get("suit")}: {lifted} occlusion pits lifted')
 
 
 def pose_relaxed(rig, spec):
@@ -1940,6 +1971,52 @@ def level_hem(d, pmask, hip_z):
                 co[v, 2] = hem_base - 0.006
                 moved += 1
     return moved
+
+
+def vent_underlay(d, pmask, hip_z, reach=0.025):
+    """A skirt's kick pleat: the underlay behind the back vent is cloth covered from outside by the skirt
+    itself (within `reach` along its normal, by a face facing the same way). It is dropped, so the
+    pleat's overlap no longer bakes dark occlusion lines down the back and its edges do not show."""
+    import numpy as np
+    co = d['co']
+    faces = np.where(pmask)[0]
+    tri, own = [], []
+    for p in faces:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        for k in range(1, len(vs) - 1):
+            tri.append((vs[0], vs[k], vs[k + 1]))
+            own.append(p)
+    out = np.zeros(len(d['ls']), bool)
+    if not tri:
+        return out
+    tri = np.array(tri, np.int64)
+    own = np.array(own)
+    A, B, C = co[tri[:, 0]].astype(np.float64), co[tri[:, 1]].astype(np.float64), co[tri[:, 2]].astype(np.float64)
+    fn = np.cross(B - A, C - A)
+    vn = d['nr'][tri].sum(1)
+    fn *= np.sign((fn * vn).sum(1))[:, None]            # (oriented like the vertex normals: outwards)
+    fn /= np.linalg.norm(fn, axis=1)[:, None] + 1e-12
+    e1, e2 = B - A, C - A
+    for p in faces:
+        vs = d['vi'][d['ls'][p]:d['ls'][p] + d['lt'][p]]
+        c = co[vs].mean(0).astype(np.float64)
+        if c[2] > hip_z - 0.08:
+            continue
+        n = d['nr'][vs].sum(0).astype(np.float64)
+        n /= np.linalg.norm(n) + 1e-12
+        o = c + n * 0.0008
+        pv = np.cross(n, e2)
+        det = (e1 * pv).sum(1)
+        ok = (np.abs(det) > 1e-12) & (own != p) & ((fn @ n) > 0.5)
+        inv = 1.0 / np.where(ok, det, 1.0)
+        sv = o - A
+        u = (sv * pv).sum(1) * inv
+        q = np.cross(sv, e1)
+        v = (q * n).sum(1) * inv
+        t = (e2 * q).sum(1) * inv
+        if (ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0) & (t < reach)).any():
+            out[p] = True
+    return out
 
 
 def reweight_skirt(op, J, ge_index, waist_z):

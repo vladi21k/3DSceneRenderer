@@ -1,31 +1,48 @@
 // Fabric, wood, roofing, renders and other secondary surfaces.
 
-// Acrylic canvas, plain weave ~1 mm yarns with uneven (slubbed) yarns and faint yarn-dyed
-// streaks along the warp. Albedo near white: colour comes from the material / vertex
-// colour. Tile 0.2 m.
+// Acrylic canvas: solution-dyed yarns ~1 mm in a plain weave (crimp relief, slubbed yarns
+// of uneven thickness), heathered: neighbouring yarns and stretches of a yarn differ a
+// little in tone, so the cloth has a fine tweedy grain that still reads at a few metres
+// where the weave itself is sub-pixel. Soiled in use: soft grey dirt clouding at 3-10 cm,
+// soot and pollen specks and a rare small darker spot (anything larger would repeat
+// visibly with the tile: the runtime stain layer of the fabric materials adds water marks
+// and dirt at decimetre scale). Albedo near white: colour comes from the material / vertex
+// colour. Tile 0.4 m (0.4 mm/texel). Sun-fading, seams and run-off down hanging parts
+// depend on the geometry and are left to the owner's shading.
 export const canvas = {
-  name: 'canvas', flat: [0.92, 0.92, 0.92, 0.83], size: 512, tile: [0.2, 0.2], ss: 2,
-  pass: { normal: 0.8, ao: 0.5, aoRadius: 0.0008, cavity: 0.08 },
+  name: 'canvas', flat: [0.9, 0.9, 0.9, 0.84], size: 1024, tile: [0.4, 0.4], ss: 2,
+  pass: { normal: 0.9, ao: 0.5, aoRadius: 0.0008, cavity: 0.08 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  const float P = 0.001;                                   // yarn pitch (200 per tile)
+  const float P = 0.001;                                   // yarn pitch (400 per tile)
   vec2 g = m / P;
   vec2 cid = floor(g), f = fract(g);
   bool warpUp = mod(cid.x + cid.y, 2.0) < 1.0;
   float slubW = fbm2(m, vec2(4.0, 60.0), 2, 0.5, 211u);   // uneven yarn thickness
   float slubF = fbm2(m, vec2(60.0, 4.0), 2, 0.5, 212u);
-  float pw = sqrt(sat(1.0 - pow(2.0 * f.x - 1.0, 2.0) * (1.0 - 0.2 * slubW)));
-  float pf = sqrt(sat(1.0 - pow(2.0 * f.y - 1.0, 2.0) * (1.0 - 0.2 * slubF)));
+  float pw = sqrt(sat(1.0 - pow(2.0 * f.x - 1.0, 2.0) * (1.0 - 0.25 * slubW)));
+  float pf = sqrt(sat(1.0 - pow(2.0 * f.y - 1.0, 2.0) * (1.0 - 0.25 * slubF)));
   float bendW = sin(f.y * 3.14159), bendF = sin(f.x * 3.14159);
   float hw = pw * (warpUp ? 0.6 + 0.4 * bendW : 0.25);
   float hf = pf * (warpUp ? 0.25 : 0.6 + 0.4 * bendF);
-  s.height = max(hw, hf) * 0.00025;
-  float dirt = fbm(m, 12.0, 3, 0.5, 213u);
-  // yarn-dyed streaks: the warp yarns differ a little in tone along their length (thin
-  // lengthwise lines that still read at a few metres, where the weave itself is sub-pixel),
-  // the weft fainter
+  // heathered yarns: each warp yarn (column) and weft yarn (row) has its own tone, which
+  // drifts along it over a few centimetres
+  int yc = int(cid.x), yr = int(cid.y);
+  float tw = sfHash(ivec2(sfMod(yc, 400), 1), 216u) - 0.5 + 0.6 * noiseM(m, vec2(2.5, 30.0), 217u);
+  float tf = sfHash(ivec2(sfMod(yr, 400), 2), 218u) - 0.5 + 0.6 * noiseM(m, vec2(30.0, 2.5), 219u);
+  float heather = warpUp ? tw : tf;
+  // yarn-dyed streaks along the warp (thin lengthwise lines), the weft fainter
   float stW = fbm2(m, vec2(3.0, 260.0), 3, 0.5, 214u), stF = fbm2(m, vec2(220.0, 3.0), 2, 0.5, 215u);
-  s.albedo = vec3(0.93) * (1.0 + 0.03 * (warpUp ? slubW : slubF)) * (1.0 + 0.06 * stW + 0.02 * stF) * (1.0 - 0.03 * dirt);
+  // soiling: grey clouding, water marks, specks
+  float dirt = 0.5 + 0.5 * fbm(m, 12.0, 4, 0.55, 213u);
+  vec4 sv = voro(m, vec2(150.0), 222u, 1.0);
+  float speck = smoothstep(0.25, 0.08, sv.x) * step(0.94, sv.z);
+  vec4 dv = voro(m, vec2(25.0), 223u, 1.0);
+  float spot = smoothstep(0.3, 0.12, dv.x + 0.08 * fbm(m, 80.0, 2, 0.5, 224u)) * step(0.985, dv.z);
+  s.height = max(hw, hf) * 0.0003;
+  s.albedo = vec3(0.93) * (1.0 + 0.035 * (warpUp ? slubW : slubF)) * (1.0 + 0.07 * heather)
+           * (1.0 + 0.05 * stW + 0.02 * stF) * (1.0 - 0.07 * dirt * dirt)
+           * (1.0 - 0.3 * speck) * (1.0 - 0.12 * spot);
   s.rough = 0.82 + 0.05 * dirt;
 }
 `,
@@ -128,8 +145,8 @@ void surface(vec2 m, inout Surf s) {
   // stretched along the grain, sparse even where worn (under dark paints the runtime tones
   // them down: surface.js PAINT)
   float chalk = smoothstep(0.2, 0.75, wearM * (0.5 + 0.5 * fbm2(m, vec2(4.0, 12.0), 3, 0.5, 421u)) * 1.6);
-  float fl = 0.5 + 0.5 * fbm2(warp(m, 60.0, 0.002, 416u), vec2(18.0, 70.0), 4, 0.6, 417u);
-  float th = 0.815 - 0.12 * wearM;
+  float fl = 0.5 + 0.5 * fbm2(warp(m, 90.0, 0.0015, 416u), vec2(27.0, 105.0), 4, 0.6, 417u);
+  float th = 0.88 - 0.1 * wearM;
   float chip = smoothstep(th, th + 0.01, fl);
   float lip = smoothstep(th - 0.025, th, fl) * (1.0 - chip);
   float deep = smoothstep(th + 0.008, th + 0.016, fl);

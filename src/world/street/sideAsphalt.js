@@ -1,5 +1,5 @@
 import { RNG, noise1 } from '../../core/rng.js';
-import { IRON_REGIONS, STAIN_COLS } from './textures.js';
+import { IRON_REGIONS, stainUV } from './textures.js';
 import { PATCH_PAD, patchWear } from './lines.js';
 
 // The worn asphalt of a side street, planned once per street (and side) and built at lod 0:
@@ -20,6 +20,7 @@ const ATLAS = 1024;
 const LIFT = 0.0015;            // overlays above the asphalt (they also have a polygon offset)
 const COVER_LIFT = 0.003;
 const PLANS = new Map();
+const UV = [0, 0];
 
 /** Orthonormal frame of a side street over its surface function at(a, x, lift) (grid
  *  coordinates: a along the main street, x out along dirOut): u out along the street, v
@@ -279,11 +280,11 @@ export function buildSideIron(F, plan, bufs, mats) {
   for (const sn of plan.stains) {
     const hx = sn.size / 2, hy = (sn.size * sn.aspect) / 2;
     const ca = Math.cos(sn.rot), sa = Math.sin(sn.rot);
-    const col = sn.kind % STAIN_COLS, row = Math.floor(sn.kind / STAIN_COLS);
     const first = st.n;
     for (const [lu, lv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
       const p = F.P(sn.u + lu * hx * ca - lv * hy * sa, sn.v + lu * hx * sa + lv * hy * ca, LIFT);
-      st.v(p[0], p[1], p[2], 0, 1, 0, (col + lu * 0.5 + 0.5) / STAIN_COLS, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5, 1, 0, 0);
+      stainUV(sn.kind, lu, lv, UV);
+      st.v(p[0], p[1], p[2], 0, 1, 0, UV[0], UV[1], 1, 0, 0);
     }
     st.quad(first, first + 3, first + 2, first + 1);
   }

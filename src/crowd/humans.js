@@ -744,6 +744,17 @@ const humans = {
       if (!mobP && idle === 3 && g.b >= CLIP.idle) pocket = g.wb;
     }
     if (!(mobP && s.pose === 4)) rigidify(M, B.rig.rest);
+    // a shoulder bag at the left hip holds the left arm a little out from the side, so the arm hangs
+    // and swings past the bag (not in the stances that fold, pocket or hide the left hand)
+    if (a.bag === BAG.SHOULDER && !mobP && s.pose <= 1 && !(s.hold && s.hold.side === 'L')) {
+      let wOut = 0;
+      if (s.pose === 1) wOut = BAG_ARM_OUT[idle];
+      else { const g = _gait; wOut = g.b >= CLIP.idle ? 1 - g.wb * (1 - BAG_ARM_OUT[g.b - CLIP.idle]) : 1; }
+      if (wOut > 0.01) {
+        const c = BONE.spine2 * 12;
+        rotBones(M, B.rig.rest, LARM_BONES, BONE.armL, M[c + 2], M[c + 6], M[c + 10], -BAG_ARM_ANGLE * wOut);
+      }
+    }
     if (mobP && s.pose !== 4) {
       // pushing leans the trunk in a little from the hips; stoop as usual; then hands on the prop
       const lean = (s.pose === 3 ? 5.5 : 2) * Math.PI / 180;
@@ -1083,6 +1094,10 @@ const STOOP_BONES = [BONE.spine2, BONE.neck, BONE.head, BONE.clavL, BONE.armL, B
 const HEAD_BONES = [BONE.neck, BONE.head];
 const LEAN_BONES = [BONE.spine1, ...STOOP_BONES];
 const CARRY_BONES = [BONE.armR, BONE.foreR, BONE.handR];
+const LARM_BONES = [BONE.armL, BONE.foreL, BONE.handL];
+// (left arm held out by a shoulder bag: angle, and per standing stance whether it applies)
+const BAG_ARM_ANGLE = 4.5 * Math.PI / 180;
+const BAG_ARM_OUT = [1, 1, 0, 0, 0, 0, 1, 1];
 const IDENT34 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
 const _T = new Float32Array(12), _inv = new Float32Array(12), _tmp = new Float32Array(12);
 
@@ -1236,6 +1251,33 @@ function pitchBones(M, rest, bones, p, ang) {
   const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
   const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
   let ax = M[k], ay = M[k + 4], az = M[k + 8];
+  const l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
+  ax /= l; ay /= l; az /= l;
+  const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+  const R00 = t * ax * ax + c, R01 = t * ax * ay - s * az, R02 = t * ax * az + s * ay;
+  const R10 = t * ax * ay + s * az, R11 = t * ay * ay + c, R12 = t * ay * az - s * ax;
+  const R20 = t * ax * az - s * ay, R21 = t * ay * az + s * ax, R22 = t * az * az + c;
+  for (let bi = 0; bi < bones.length; bi++) {
+    const o = bones[bi] * 12;
+    for (let col = 0; col < 3; col++) {
+      const x = M[o + col], y = M[o + 4 + col], z = M[o + 8 + col];
+      M[o + col] = R00 * x + R01 * y + R02 * z;
+      M[o + 4 + col] = R10 * x + R11 * y + R12 * z;
+      M[o + 8 + col] = R20 * x + R21 * y + R22 * z;
+    }
+    const x = M[o + 3] - px, y = M[o + 7] - py, z = M[o + 11] - pz;
+    M[o + 3] = R00 * x + R01 * y + R02 * z + px;
+    M[o + 7] = R10 * x + R11 * y + R12 * z + py;
+    M[o + 11] = R20 * x + R21 * y + R22 * z + pz;
+  }
+}
+
+/** Rotate bones (3x4 matrices of M) about the unit-ish axis (ax, ay, az) through pivot bone p's posed joint. */
+function rotBones(M, rest, bones, p, ax, ay, az, ang) {
+  const k = p * 12, r = rest[p];
+  const px = M[k] * r.x + M[k + 1] * r.y + M[k + 2] * r.z + M[k + 3];
+  const py = M[k + 4] * r.x + M[k + 5] * r.y + M[k + 6] * r.z + M[k + 7];
+  const pz = M[k + 8] * r.x + M[k + 9] * r.y + M[k + 10] * r.z + M[k + 11];
   const l = Math.sqrt(ax * ax + ay * ay + az * az) || 1;
   ax /= l; ay /= l; az /= l;
   const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;

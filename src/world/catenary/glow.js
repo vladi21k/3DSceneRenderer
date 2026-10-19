@@ -88,6 +88,21 @@ export function createLampGlow(app, heads) {
     mesh,
     /** Once per frame: the lamps within RANGE of the camera (no garbage). */
     update(sCam, lampOn) {
+      if (!app.ready) {
+        // start-up: one dark instance far below the street, so the program has its first
+        // draw behind the loading screen (a first draw when the lamps come on would stall
+        // a frame mid-ride)
+        if (shown !== -2) {
+          mesh.instanceMatrix.array.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1e4, 0, 1]);
+          mesh.instanceMatrix.clearUpdateRanges();
+          mesh.instanceMatrix.needsUpdate = true;
+          mesh.count = 1;
+          shown = -2;
+          lastS = NaN;
+        }
+        uGlowA.value = 0;
+        return;
+      }
       if (!(lampOn > 0) || !heads.length) {
         if (shown !== 0) { mesh.count = 0; shown = 0; lastS = NaN; }
         return;

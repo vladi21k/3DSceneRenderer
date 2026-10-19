@@ -51,10 +51,13 @@ export function updateScreenUniforms(app, lampRadiance = LAMP_RADIANCE) {
   const cam = app.camera;
   const h = app.renderer.domElement.height || 1080;
   SU.uPxScale.value = (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2)) / (h * (cam.zoom || 1));
-  // the photocells switch the lamps on before sunset (fully on from t 0.72), then the
-  // night ramp holds them
-  const t = app.env && app.env.state ? app.env.state.t : 0;
-  const on = Math.max(THREE.MathUtils.smoothstep(t, 0.64, 0.72), THREE.MathUtils.smoothstep(U.uNight.value, 0.02, 0.85));
+  // the street lamps' level is env's (env.state.lamps: the photocells switch them on before
+  // sunset, fully on from t 0.72, then the night ramp holds them), so the globes, the real
+  // lights, the lantern wash and the far pools come on together; the same ramp locally if
+  // env is not running
+  const st = app.env && app.env.state;
+  const on = st && typeof st.lamps === 'number' ? st.lamps
+    : Math.max(THREE.MathUtils.smoothstep(st ? st.t : 0, 0.64, 0.72), THREE.MathUtils.smoothstep(U.uNight.value, 0.02, 0.85));
   SU.uLamp.value = lampRadiance * on;
 }
 

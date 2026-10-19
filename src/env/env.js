@@ -6,7 +6,7 @@ import { TRACK_OFFSET } from '../core/config.js';
 import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT, MIE_DEFAULT } from './atmosphere.js';
 import { Sky } from './sky.js';
 import { Clouds } from './clouds.js';
-import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms } from './sunShadow.js';
+import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms, installDepthKinds } from './sunShadow.js';
 import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
 import { StreetLights, patchLightLoops, lampLevel } from './lights.js';
@@ -140,6 +140,9 @@ const env = {
     if (!patchLightLoops()) console.warn('[env] light loop layout changed; dark lights are not skipped');
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
+    // one depth material per mesh kind in the shadow passes (no program re-evaluations);
+    // env.depthKinds.reevals / .switches: with and without it, in the last shadow pass
+    this.depthKinds = installDepthKinds(renderer);
 
     // weather regime: one per world seed, URL sky= picks one
     const names = Object.keys(WEATHER);

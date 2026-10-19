@@ -53,7 +53,10 @@ export function* partyWalls(B, sinks, lot, plan, orn, tint, q, rects, gMin, uvA,
     const facing = !lot.sideStreet && (lot.side < 0) === (e === 0);
     const tr = RNG.from(lot.seed, 'partyBig', e);
     // (big blank walls facing back down the street are the city's prime advert sites)
-    const treat = tr.weighted(facing ? [['mural', 0.14], ['advert', 0.24], ['windows', 0.4], ['plain', 0.22]] : [['mural', 0.05], ['advert', 0.07], ['windows', 0.42], ['plain', 0.46]]);
+    // (where the cab sees the wall close the view down the street, plan.vista, it is
+    // rarely left plain stone: a mural, an advert or a colour-washed wall with windows)
+    const treat = tr.weighted(facing && plan.vista >= 2 ? [['mural', 0.3], ['advert', 0.28], ['windows', 0.34], ['plain', 0.08]]
+      : facing ? [['mural', 0.2], ['advert', 0.24], ['windows', 0.36], ['plain', 0.2]] : [['mural', 0.05], ['advert', 0.07], ['windows', 0.42], ['plain', 0.46]]);
     let col = rcol ? rcol.map((c) => c * 0.97) : null;
     // the dressing of the windows let into the side wall (own stream): shutters, AC units
     const dr = RNG.from(lot.seed, 'partyDress', e);

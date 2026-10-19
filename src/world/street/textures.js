@@ -25,19 +25,28 @@ function dataTex(data, w, h, srgb, aniso) {
 }
 
 // ------------------------------------------------------------------ stains
-/** Stain atlas layout: STAIN_COLS x 2 cells of 256 px; kind k sits in column k % 3, row
- *  floor(k / 3) (row 0 at the top of the canvas = texture v 0.5..1). */
-export const STAIN_COLS = 3;
+/** Stain atlas layout: STAIN_COLS x STAIN_ROWS cells of 256 px; kind k sits in column
+ *  k % 3, row floor(k / 3) (row 0 at the top of the canvas = the top of texture v). */
+export const STAIN_COLS = 3, STAIN_ROWS = 3;
+/** Atlas uv of stain kind `kind` at local (lu, lv) in [-1, 1]. */
+export function stainUV(kind, lu, lv, out) {
+  const col = kind % STAIN_COLS, row = Math.floor(kind / STAIN_COLS);
+  out[0] = (col + lu * 0.5 + 0.5) / STAIN_COLS;
+  out[1] = 1 - (row + 1) / STAIN_ROWS + (lv * 0.5 + 0.5) / STAIN_ROWS;
+  return out;
+}
 
 function drawStains() {
   // grey levels on black (alphaMap reads the green channel); blobs accumulate additively
-  const cell = 256, W = cell * STAIN_COLS, H = cell * 2, c = canvas(W, H), C = ctx2d(c);
+  const cell = 256, W = cell * STAIN_COLS, H = cell * STAIN_ROWS, c = canvas(W, H), C = ctx2d(c);
   C.fillStyle = '#000'; C.fillRect(0, 0, W, H);
   C.globalCompositeOperation = 'lighter';
   const rng = RNG.from('street-stains');
   // 0: broad water / dirt stain, 1: oil drip patch, 2: gum spots, 3: streaky drip trail,
   // 4: soil and litter ring round a tree grate (the grate covers the middle 41%),
-  // 5: mottled trodden-in dirt (café floors, benches)
+  // 5: mottled trodden-in dirt (café floors, benches),
+  // 6 / 7: grime and rust halo round a round / square cover (the cover takes the middle
+  // 60 %: wear.js RING_IN), 8: a cluster of oil and grease drops
   const cx = (k) => (k % STAIN_COLS + 0.5) * cell, cy = (k) => (Math.floor(k / STAIN_COLS) + 0.5) * cell;
   const blob = (x, y, r, a) => {
     const g = C.createRadialGradient(x, y, 0, x, y, r);
@@ -113,6 +122,61 @@ function drawStains() {
       const x = cx(5) + rng.normal(0, 45), y = cy(5) + rng.normal(0, 45), r = rng.range(1.5, 4);
       C.fillStyle = `rgba(255,255,255,${rng.range(0.5, 0.85)})`; C.beginPath(); C.ellipse(x, y, r, r * rng.range(0.7, 1), rng.range(0, 3), 0, Math.PI * 2); C.fill();
     }
+  }
+  // 6, 7: halos round covers. Dirt packed into the joint round the frame (a thin dark
+  // ring hugging it), rust and grime bled out of it into the stone (ragged, patchy, a
+  // few centimetres), and a run-off lobe where water leaves the cover
+  for (const k of [6, 7]) {
+    const im = C.getImageData(0, 0, W, H), p = im.data;
+    const x0 = cx(k) - cell / 2, y0 = cy(k) - cell / 2;
+    const rIn = cell * 0.3;
+    const lobe = rng.range(0, Math.PI * 2);
+    for (let y = 0; y < cell; y++) {
+      for (let x = 0; x < cell; x++) {
+        const qx = x + 0.5 - cell / 2, qy = y + 0.5 - cell / 2;
+        // distance from the cover's edge (round, or a square with slightly eased corners)
+        const q = (k === 6 ? Math.hypot(qx, qy) : Math.pow(qx ** 8 + qy ** 8, 1 / 8)) - rIn;
+        if (q < -1) continue;
+        const n = na((x0 + x) / 9, (y0 + y) / 9) * 0.55 + nb((x0 + x) / 3, (y0 + y) / 3) * 0.3 + nc((x0 + x) / 26, (y0 + y) / 26) * 0.15;
+        const ang = Math.atan2(qy, qx);
+        const run = Math.max(0, Math.cos(ang - lobe)) ** 3;
+        const reach = 9 + 26 * nc((x0 + x) / 18 + 3, (y0 + y) / 18) + 30 * run;
+        const joint = sm(-1, 0.5, q) * (1 - sm(2.5, 6, q)) * (0.7 + 0.3 * n);
+        const bleed = sm(0, 2, q) * Math.pow(1 - sm(1, reach, q), 1.4) * Math.max(0, Math.min(1, 0.25 + (n - 0.3) * 1.8));
+        const v = Math.max(joint * 0.95, bleed * 0.8);
+        const o = ((y0 + y) * W + x0 + x) * 4;
+        if (v > 0) p[o] = p[o + 1] = p[o + 2] = Math.min(255, v * 255);
+      }
+    }
+    C.putImageData(im, 0, 0);
+  }
+  // 8: oil and grease: drops soaked into the stone (dark cores feathering out), overlapping
+  // into a couple of soft smears, splashes round them; broken up by noise
+  {
+    C.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) blob(cx(8) + rng.normal(0, 20), cy(8) + rng.normal(0, 16), rng.range(18, 36), 0.2);
+    for (let i = 0; i < 46; i++) {
+      const a = rng.range(0, Math.PI * 2), r = Math.abs(rng.normal(0, 36));
+      const x = cx(8) + Math.cos(a) * r, y = cy(8) + Math.sin(a) * r * 0.8;
+      const rr = Math.max(1.5, Math.min(10, Math.abs(rng.normal(3.5, 2.4)) * (1.25 - r / 120)));
+      const g = C.createRadialGradient(x, y, 0, x, y, rr * 1.8);
+      const k = rng.range(0.35, 0.7);
+      g.addColorStop(0, `rgba(255,255,255,${k})`); g.addColorStop(0.45, `rgba(255,255,255,${k * 0.8})`); g.addColorStop(1, 'rgba(255,255,255,0)');
+      C.fillStyle = g; C.beginPath(); C.arc(x, y, rr * 1.8, 0, Math.PI * 2); C.fill();
+    }
+    C.globalCompositeOperation = 'source-over';
+    const im = C.getImageData(0, 0, W, H), p = im.data;
+    const x0 = cx(8) - cell / 2, y0 = cy(8) - cell / 2;
+    for (let y = 0; y < cell; y++) {
+      for (let x = 0; x < cell; x++) {
+        const o = ((y0 + y) * W + x0 + x) * 4;
+        if (p[o + 1] === 0) continue;
+        const n = na((x0 + x) / 7, (y0 + y) / 7) * 0.6 + nb((x0 + x) / 2.5, (y0 + y) / 2.5) * 0.4;
+        const v = Math.min(1, p[o + 1] / 255) * Math.max(0, Math.min(1, 0.35 + (n - 0.3) * 1.6));
+        p[o] = p[o + 1] = p[o + 2] = v * 255;
+      }
+    }
+    C.putImageData(im, 0, 0);
   }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.NoColorSpace;

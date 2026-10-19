@@ -1,10 +1,12 @@
 import { RNG, hash2 } from '../../core/rng.js';
 import { CHUNK_LEN } from '../../core/config.js';
-import { IRON_REGIONS, STAIN_COLS } from './textures.js';
+import { IRON_REGIONS, stainUV } from './textures.js';
 import { MAIN_RAILS, CORRIDOR, GUTTER_W, GUTTER_OUT, TRACK_OFFSET, BAND_IN } from './constants.js';
 import { colInfo, Z_CORR } from './surface.js';
 import { pavingHeight } from './paving.js';
 import { facadePlan } from '../facadePlan.js';
+import { planWear } from './wear.js';
+import { PATCH_PAD, repairWear } from './lines.js';
 
 // Street details per chunk, planned deterministically from the chunk index so the
 // surface can flatten the paving under covers before it is built:
@@ -12,7 +14,8 @@ import { facadePlan } from '../facadePlan.js';
 //   gutters, slotted drain covers between the rails, tree grates around every tree,
 //   stains / gum spots / drip trails, soil rings and leaf litter round the tree grates,
 //   trodden-in dirt under café tables and at benches, fallen leaves, and transverse
-//   expansion joints.
+//   expansion joints; and the wear placed on the paving (wear.js: relaid setts, asphalt
+//   and concrete repairs, halos round the covers, oil under the trams at the stops, weeds).
 
 const ATLAS = 1024;
 const SIZES = {
@@ -21,6 +24,7 @@ const SIZES = {
 };
 const ROUND = { manhole: 1, valve: 1 };
 const COVER_LIFT = 0.003;      // covers stand this proud of their (planar) bed
+const REPAIR_LIFT = 0.0025;    // repair ribbons above the paving (they also have a polygon offset)
 const SETT_COURSE = 0.2;       // paving.street courses run across the street every 0.2 m of u
 const JOINT_HALF = 0.007;      // sealant-filled expansion joint: 14 mm wide
 const TREE_RING_SIZE = 3.0;    // soil ring decal round a 1.24 m tree grate (stain kind 4)
@@ -28,7 +32,8 @@ const TREE_RING_SIZE = 3.0;    // soil ring decal round a 1.24 m tree grate (sta
 const LINGER = { bench: 0.9, bin: 0.8, shelter: 0.9, ticketMachine: 0.8, stopSign: 0.6, kiosk: 0.8, infoBoard: 0.5, advertColumn: 0.4 };
 const u01 = (a, b) => hash2(a | 0, b | 0) / 4294967296;
 
-/** Deterministic plan for chunk ci: { items, spots, joints, stains, leaves }. */
+/** Deterministic plan for chunk ci: { items, spots, joints, stains, leaves, relays,
+ *  repairs, weeds }. */
 export function planDetails(ctx, ci) {
   const it = planSteps(ctx, ci);
   let r = it.next();
@@ -251,6 +256,9 @@ export function* planSteps(ctx, ci) {
     }
   }
 
+  yield 'plan';
+  const wear = planWear(ctx, ci, s0, s1, items, stains, blocked);
+
   // flat spots for the surface: covers (with dishing towards them), tree pits, and the
   // footprints of street furniture and café floors (objects stand at h = 0)
   // (covers and grates lie on a planar bed, see Surface.bedAt)
@@ -260,18 +268,22 @@ export function* planSteps(ctx, ci) {
     if (o.kind === 'circle') spots.push({ s: o.s, d: o.d, r: o.r + 0.1 });
     else spots.push({ rect: true, s: (o.s0 + o.s1) / 2, hs: (o.s1 - o.s0) / 2 + 0.1, r: (o.s1 - o.s0) / 2 + 0.1, d0: o.d0 - 0.1, d1: o.d1 + 0.1 });
   }
-  return { items, spots, stains, leaves, joints };
+  return { items, spots, stains, leaves, joints, relays: wear.relays, repairs: wear.repairs, weeds: wear.weeds };
 }
 
 // corners of a leaf quad
 const QUAD_U = [-1, 1, 1, -1], QUAD_V = [-1, -1, 1, 1];
 // leaf tints (linear): yellowing green, brown, dry tan, green, rusty
 const LEAF_TINTS = [[0.36, 0.34, 0.08], [0.2, 0.11, 0.04], [0.42, 0.3, 0.14], [0.14, 0.2, 0.05], [0.33, 0.16, 0.05]];
+// weed tints (linear): fresh green, grey-green, yellowing, dry straw
+const WEED_TINTS = [[0.11, 0.19, 0.045], [0.13, 0.17, 0.07], [0.2, 0.21, 0.06], [0.3, 0.26, 0.12]];
 
-/** Build the details of a chunk into the BufSet (iron, stains, leaves) and joints into a
- *  LineBuf. grid: the chunk's paving grid (buildPaving), which covers, stains and leaves
- *  follow exactly. Resumable (see street.js): yields 'details' after each kind. */
-export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
+/** Build the details of a chunk into the BufSet (iron, stains, leaves, weeds) and joints
+ *  and repairs into the line buffer (lines: its style writers, see street.js). grid: the
+ *  chunk's paving grid (buildPaving), which covers, stains, leaves and repairs follow
+ *  exactly. Resumable (see street.js): yields 'details' after each kind. */
+export function* buildDetails(ctx, chunk, plan, bufs, lines, grid) {
+  const jointLines = lines && lines.joint;
   const { route, surface, mats } = ctx;
   const pave = (s, d) => pavingHeight(grid, s, d, ctx.delta);
   const smp = {};
@@ -347,11 +359,11 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
   // --- stains (alpha decals): a small grid draped over the paving (the ground undulates
   // by a few centimetres over a couple of metres on the sidewalks)
   const st = bufs.get(mats.details.stain, true);
+  const uv = [0, 0];
   for (const sn of plan.stains) {
     route.sample(sn.s, smp);
     const hx = sn.size / 2, hy = (sn.size * sn.aspect) / 2;
     const ca = Math.cos(sn.yaw), sa = Math.sin(sn.yaw);
-    const col = sn.kind % STAIN_COLS, row = Math.floor(sn.kind / STAIN_COLS);
     const op = sn.op ?? 1, warm = sn.warm ?? 0;
     const nu = Math.min(3, Math.ceil(hx / 0.4)), nv = Math.min(3, Math.ceil(hy / 0.4));
     const first = st.n;
@@ -361,8 +373,9 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
         const ds = lu * hx * ca - lv * hy * sa, dd = lu * hx * sa + lv * hy * ca;
         const d = sn.d + dd;
         const h = pave(sn.s + ds, d) + 0.0015;
+        stainUV(sn.kind, lu, lv, uv);
         st.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * d, smp.pos.y + smp.grade * ds + h, smp.pos.z + smp.tanH.z * ds + smp.right.z * d,
-          0, 1, 0, (col + lu * 0.5 + 0.5) / STAIN_COLS, 1 - (row + 1) * 0.5 + (lv * 0.5 + 0.5) * 0.5, op, warm, 0);
+          0, 1, 0, uv[0], uv[1], op, warm, 0);
       }
     }
     for (let j = 0; j < nv; j++) {
@@ -392,7 +405,67 @@ export function* buildDetails(ctx, chunk, plan, bufs, jointLines, grid) {
     iron.quad(first, first + 3, first + 2, first + 1);
   }
 
+  // --- weeds (wear.js): crossed upright cut-outs of the iron atlas, tinted, lit as the
+  // ground (up normals; both windings, the iron material is single sided)
+  const WR = IRON_REGIONS.weeds;
+  for (const wd of plan.weeds) {
+    const r = RNG.from('weed', wd.seed);
+    for (let k = 0; k < wd.n; k++) {
+      const s = wd.s + r.normal(0, 0.03), d = wd.d + r.normal(0, 0.025);
+      route.sample(s, smp);
+      const h = wd.size * r.range(0.7, 1.15), y0 = smp.pos.y + pave(s, d) - 0.004;
+      const tint = WEED_TINTS[r.int(0, WEED_TINTS.length - 1)];
+      const cell = r.int(0, 1);
+      const u0 = (WR.x + cell * 128 + 4) / ATLAS, u1 = (WR.x + cell * 128 + 124) / ATLAS;
+      const vTop = (WR.y + 4) / ATLAS, vBase = (WR.y + 124) / ATLAS;
+      const yaw = r.range(0, Math.PI);
+      for (let q = 0; q < 2; q++) {
+        const a = yaw + q * Math.PI / 2, ca = Math.cos(a) * h * 0.5, sa = Math.sin(a) * h * 0.5;
+        const P = (sg, up) => {
+          const ds = sg * ca, dd = sg * sa;
+          return iron.v(smp.pos.x + smp.tanH.x * ds + smp.right.x * (d + dd), y0 + smp.grade * ds + up * h, smp.pos.z + smp.tanH.z * ds + smp.right.z * (d + dd),
+            0, 1, 0, sg < 0 ? u0 : u1, up ? vTop : vBase, tint[0], tint[1], tint[2]);
+        };
+        const b0 = P(-1, 0), b1 = P(1, 0), t1 = P(1, 1), t0 = P(-1, 1);
+        iron.quad(b0, b1, t1, t0);
+        iron.quad(b0, t0, t1, b1);
+      }
+    }
+  }
+
   yield 'details';
+
+  // --- repairs (wear.js): ribbons over the paving grid, lying on its cross slope
+  if (lines && lines.repair) {
+    const e = 0.15;
+    for (const p of plan.repairs) {
+      const along = p.dir === 's';
+      const half = along ? p.hd : p.hs, h0 = along ? p.hs : p.hd;
+      const n = Math.max(2, Math.ceil((2 * (h0 + PATCH_PAD)) / 0.35));
+      const pts = new Array((n + 1) * 7);
+      let acc = 0, px = 0, pz = 0;
+      for (let i = 0; i <= n; i++) {
+        const t = -h0 - PATCH_PAD + ((2 * (h0 + PATCH_PAD)) * i) / n;
+        const s = along ? p.s + t : p.s, d = along ? p.d : p.d + t;
+        route.sample(s, smp);
+        const x = smp.pos.x + smp.right.x * d, z = smp.pos.z + smp.right.z * d;
+        if (i > 0) acc += Math.sqrt((x - px) * (x - px) + (z - pz) * (z - pz));
+        px = x; pz = z;
+        const o = i * 7;
+        pts[o] = x; pts[o + 1] = smp.pos.y + pave(s, d) + REPAIR_LIFT; pts[o + 2] = z;
+        if (along) {
+          pts[o + 3] = smp.right.x; pts[o + 4] = smp.right.z;
+          pts[o + 6] = (pave(s, d + e) - pave(s, d - e)) / (2 * e);
+        } else {
+          // runs towards +d: its right vector is -tangent
+          pts[o + 3] = -smp.tanH.x; pts[o + 4] = -smp.tanH.z;
+          pts[o + 6] = -(pave(s + e, d) - pave(s - e, d)) / (2 * e);
+        }
+        pts[o + 5] = acc - PATCH_PAD;
+      }
+      lines.repair.add(pts, half + PATCH_PAD, acc - 2 * PATCH_PAD, repairWear(p.kind, p.tone, p.hole), 7);
+    }
+  }
 
   // --- transverse joints (intermittent sealant lines across the corridor between the rails)
   if (jointLines) {

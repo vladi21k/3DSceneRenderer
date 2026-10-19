@@ -194,10 +194,15 @@ class Part {
  *  (upper: lit saloon at night; ws: the lower panes and door glass), the cab front glass
  *  (windscreen and dark mask, drawn analytically from uv = (u share, height)) and metal. */
 class Parts {
-  constructor() { this.body = new Part(); this.glass = new Part(); this.ws = new Part(); this.front = new Part(); this.metal = new Part(); }
+  constructor() {
+    this.body = new Part(); this.glassR = new Part(); this.glassL = new Part(); this.front = new Part(); this.metal = new Part();
+    this.inner = new Part();
+  }
+  /** (each side's glazing is a geometry of its own: three sorts transparent draws by the
+   *  centre of their bounding spheres, so the far side's is drawn before the near side's) */
   geometries() {
     const o = {};
-    for (const k of ['body', 'glass', 'ws', 'front', 'metal']) o[k] = this[k].geometry();
+    for (const k of ['body', 'glassR', 'glassL', 'front', 'metal', 'inner']) o[k] = this[k].geometry();
     return o;
   }
 }
@@ -290,13 +295,15 @@ function sideWalls(P, prof, cells, uOff = 0) {
       const a = prof[i], b = prof[i + 1];
       // door and window rows only matter on the side; the roof takes the paint
       const [part, col] = cellMaterial(cell.kind, a.y, b.y);
-      const B = P[part];
+      const glass = part !== 'body';
       // the lower side panels meet under each window pillar: the body shader draws the
       // joint at the cell's centre (uv = (centre + uOff, 50 + arc length) marks it)
-      const seam = part === 'body' && cell.kind === 'pillar' && b.y <= Y.belt + 1e-3 && a.y >= Y.skirt - 1e-3;
+      const seam = !glass && cell.kind === 'pillar' && b.y <= Y.belt + 1e-3 && a.y >= Y.skirt - 1e-3;
       const u0 = seam ? (cell.z0 + cell.z1) / 2 + uOff : cell.z0 + uOff, u1 = seam ? u0 : cell.z1 + uOff;
       const va = seam ? 50 + a.a : a.a, vb = seam ? 50 + b.a : b.a;
       for (const sx of [1, -1]) {
+        // (the glazing of each side is a part of its own, see Parts)
+        const B = glass ? (sx > 0 ? P.glassR : P.glassL) : P.body;
         const v0 = B.vert(sx * a.x, a.y, cell.z0, sx * a.nx, a.ny, 0, grimed(col, a.y), u0, va);
         const v1 = B.vert(sx * a.x, a.y, cell.z1, sx * a.nx, a.ny, 0, grimed(col, a.y), u1, va);
         const v2 = B.vert(sx * b.x, b.y, cell.z1, sx * b.nx, b.ny, 0, grimed(col, b.y), u1, vb);
@@ -436,7 +443,7 @@ const LOD_CAP = [
   { disp: [0, 1], mid: [1], out: [0.45, 0.8, 1] },
 ];
 
-/** The front cap (nose, mask, windscreen) of a cab body; the display cells are left to capLamps. */
+/** The front cap (nose, mask, windscreen with the display behind its top band) of a cab body. */
 function capFront(P, prof, lod) {
   const C = LOD_CAP[lod];
   // half columns: [segment, share]; the display edge and the mask edge are grid lines
@@ -485,8 +492,7 @@ function capFront(P, prof, lod) {
       let part = 'body', col = COL.silver;
       if (ym < Y.noseSkirt) col = COL.skirt;              // the nose is silver nearly to the rails
       else if (ym > MASK.bottom && ym < wsTop && h <= hM) {
-        if (ym > Y.dispBand && h <= hD) continue;                     // display: lamp mesh
-        part = 'front'; col = COL.white;
+        part = 'front'; col = COL.white;                              // (the display shows behind its top band)
       }
       const B = P[part], front = part === 'front';
       const corner = [i * nc + j, i * nc + j + 1, (i + 1) * nc + j + 1, (i + 1) * nc + j];
@@ -604,27 +610,9 @@ function noseFittings(P, lod) {
   }
 }
 
-/** Lit parts of a cab end: destination display (both ends), headlights (leading) or tail lamps (trailing). */
+/** Lit parts of a cab end: headlights (leading) or tail lamps (trailing). (The destination
+ *  display is drawn by the front glass, behind its top band: trams/materials.js.) */
 function capLamps(B, cap, prof, lead, atlas) {
-  const { pos, nrm, uu, nr, nc, c0, hD } = cap;
-  const D = atlas.display;
-  for (let i = 0; i < nr - 1; i++) {
-    const ym = (prof[i].y + prof[i + 1].y) / 2;
-    if (!(ym > Y.dispBand && ym < cap.wsTop)) continue;
-    for (let j = 0; j < nc - 1; j++) {
-      if (Math.max(Math.abs(j - c0), Math.abs(j + 1 - c0)) > hD) continue;
-      const corner = [i * nc + j, i * nc + j + 1, (i + 1) * nc + j + 1, (i + 1) * nc + j];
-      const v = corner.map((q) => {
-        // text reads left to right seen from the front (the viewer's left is +x)
-        const y = pos[q * 3 + 1], d = dispW(y);
-        const su = clamp((d - uu[q]) / (2 * d), 0, 1);
-        const sv = clamp((y - Y.dispBand) / (cap.wsTop - Y.dispBand), 0, 1);
-        return B.vert(pos[q * 3], pos[q * 3 + 1], pos[q * 3 + 2], nrm[q * 3], nrm[q * 3 + 1], nrm[q * 3 + 2], COL.white,
-          D[0] + (D[2] - D[0]) * su, D[1] + (D[3] - D[1]) * sv);
-      });
-      B.quad(v[0], v[1], v[2], v[3]);
-    }
-  }
   const L = atlas.lens, ru = LAMPS.r / sideX(LAMPS.y);
   for (const s of [1, -1]) {
     if (lead) {
@@ -740,11 +728,143 @@ function pantograph(P, z, lod) {
   }
 }
 
+// ------------------------------------------------------------------ saloon
+// The saloon seen through the side glazing by day (LOD 0 / 1; trams.js seats and stands the
+// passengers in it, figures of the humans module): vinyl floor, the lining under the windows
+// (door leaves at the doors), the ceiling with its two light strips and coves, the end walls
+// (the cab partition with its door, the gangways), transverse seat pairs in facing bays, grab
+// poles and the overhead rails (LOD 0). The layout is the traced saloon's (trams/materials.js),
+// which the glazing draws instead after dark and far away. Normals face into the room, so from
+// outside only its far side, floor and ceiling are drawn. Vertex colour = albedo; uv.x marks the
+// seat fabric (2: the unit's colour) and the light strips (1: lit), see makeInteriorMaterial.
+export const SALOON = { xw: 1.2, yf: 0.36, yc: 2.47, sill: 0.98, pitch: 0.8, part: 2.65, seatY: 0.84 };
+const INC = {
+  floor: [0.05, 0.047, 0.043], wall: [0.4, 0.4, 0.385], kick: [0.06, 0.06, 0.058], ceil: [0.55, 0.55, 0.53],
+  shell: [0.21, 0.21, 0.2], steel: [0.42, 0.42, 0.41], leg: [0.025, 0.025, 0.025], door: [0.3, 0.3, 0.29],
+  gang: [0.02, 0.02, 0.02], part: [0.36, 0.36, 0.35], win: [0.012, 0.012, 0.014],
+};
+
+/** Seat bays and doors of the saloon (shared with the traced saloon's tramSeatCell / tramDoorZ). */
+const seatCell = (zm, cab) => (cab ? zm > 3.15 && zm < 10.5 && Math.abs(zm - 6.4) > 1.05
+  : zm > 0.6 && zm < 9.1 && Math.abs(zm - 2.25) > 1.05 && Math.abs(zm - 7.45) > 1.05);
+const saloonDoors = (cab) => (cab ? [6.4] : [2.25, 7.45]);
+
+/** Quad with one normal (CCW as seen from the side the normal points to is not required:
+ *  Part.tri winds by the normal). */
+function quadN(B, a, b, c, d, n, col, uvx = 0) {
+  const v = [a, b, c, d].map((p) => B.vert(p[0], p[1], p[2], n[0], n[1], n[2], col, uvx, p[1]));
+  B.quad(v[0], v[1], v[2], v[3]);
+}
+
+/** Box with a colour (and uv mark) per face: face(n) -> [col, uvx]. */
+function boxF(B, x0, x1, y0, y1, z0, z1, face) {
+  const F = [
+    [[1, 0, 0], [[x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]]],
+    [[-1, 0, 0], [[x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1]]],
+    [[0, 1, 0], [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]]],
+    [[0, -1, 0], [[x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0]]],
+    [[0, 0, 1], [[x0, y0, z1], [x0, y1, z1], [x1, y1, z1], [x1, y0, z1]]],
+    [[0, 0, -1], [[x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z0]]],
+  ];
+  for (const [n, q] of F) {
+    const [col, ux] = face(n);
+    if (!col) continue;
+    quadN(B, q[0], q[1], q[2], q[3], n, col, ux);
+  }
+}
+
+/** Spots of the passengers in a body's frame: seats {x, z, f (facing ±z)} and standing spots
+ *  {x, z, f} (at the doors and in the aisle between the bays). */
+function saloonSpots(cab, z0, z1) {
+  const S = SALOON, seats = [], stand = [];
+  for (let k = Math.ceil(z0 / S.pitch); (k + 1) * S.pitch <= z1 + 1e-6; k++) {
+    const zc = k * S.pitch, zm = zc + S.pitch / 2;
+    if (cab && zm < S.part) continue;
+    if (seatCell(zm, cab)) {
+      const f = k % 2 === 0 ? 1 : -1, zb = f > 0 ? zc + 0.04 : zc + S.pitch - 0.04;
+      for (const sx of [1, -1]) for (const x of [0.55, 0.95]) seats.push({ x: sx * x, z: zb + f * 0.17, f, bay: k >> 1, side: sx });
+      stand.push({ x: 0, z: zm, f: k % 2 === 0 ? 1 : -1, aisle: true });
+    }
+  }
+  for (const dz of saloonDoors(cab)) {
+    for (const sx of [1, -1]) for (const o of [-0.55, 0.55]) stand.push({ x: sx * 0.62, z: dz + o, f: o > 0 ? -1 : 1, door: true });
+    stand.push({ x: 0.05, z: dz - 0.3, f: 1, door: true }, { x: -0.05, z: dz + 0.3, f: -1, door: true });
+  }
+  return { seats, stand };
+}
+
+/** The saloon of a body between z0 and z1 (body frame; cab: behind the partition). */
+function saloon(B, cab, z0, z1, lod) {
+  const S = SALOON, X = S.xw, yf = S.yf, yc = S.yc;
+  const za = cab ? S.part : z0 + 0.02, zb = z1 - 0.02;
+  const doors = saloonDoors(cab);
+  // floor (a little lighter in the aisle where it is worn), ceiling, light strips
+  quadN(B, [-X, yf, za], [X, yf, za], [X, yf, zb], [-X, yf, zb], [0, 1, 0], INC.floor);
+  quadN(B, [-0.95, yc, za], [0.95, yc, za], [0.95, yc, zb], [-0.95, yc, zb], [0, -1, 0], INC.ceil);
+  for (const sx of [1, -1]) {
+    quadN(B, [sx * 0.5, yc - 0.006, za + 0.2], [sx * 0.64, yc - 0.006, za + 0.2], [sx * 0.64, yc - 0.006, zb - 0.2], [sx * 0.5, yc - 0.006, zb - 0.2], [0, -1, 0], [1, 1, 1], 1);
+    // coves from the window heads up to the ceiling
+    const n = [-sx * 0.27, -0.96, 0];
+    quadN(B, [sx * X, 2.4, za], [sx * 0.95, yc, za], [sx * 0.95, yc, zb], [sx * X, 2.4, zb], n, INC.ceil);
+    // lining under the windows (kick strip, panel), door leaves up to their glazing
+    let z = za;
+    const runs = [];
+    for (const dz of doors) { const a = dz - 0.66, b = dz + 0.66; if (a > z) runs.push([z, a, false]); runs.push([a, b, true]); z = b; }
+    if (zb > z) runs.push([z, zb, false]);
+    for (const [a, b, door] of runs) {
+      const top = door ? 0.8 : S.sill, nIn = [-sx, 0, 0];
+      quadN(B, [sx * X, yf, a], [sx * X, yf, b], [sx * X, 0.5, b], [sx * X, 0.5, a], nIn, door ? INC.door : INC.kick);
+      quadN(B, [sx * X, 0.5, a], [sx * X, 0.5, b], [sx * X, top, b], [sx * X, top, a], nIn, door ? INC.door : INC.wall);
+    }
+  }
+  // end walls: the cab partition (its door, the door's window onto the cab), the gangways
+  const end = (z, dir) => {
+    const n = [0, 0, dir];
+    quadN(B, [-X, yf, z], [X, yf, z], [X, yc, z], [-X, yc, z], n, cab && z === za ? INC.part : INC.wall);
+    const zz = z + dir * 0.005;
+    if (cab && z === za) {
+      quadN(B, [0.25, yf, zz], [0.85, yf, zz], [0.85, 2.15, zz], [0.25, 2.15, zz], n, INC.door);
+      quadN(B, [0.33, 1.4, zz + dir * 0.003], [0.77, 1.4, zz + dir * 0.003], [0.77, 2.05, zz + dir * 0.003], [0.33, 2.05, zz + dir * 0.003], n, INC.win);
+    } else {
+      quadN(B, [-0.62, yf, zz], [0.62, yf, zz], [0.62, 2.12, zz], [-0.62, 2.12, zz], n, INC.gang);
+    }
+  };
+  end(za, 1);
+  end(zb, -1);
+  // seat pairs: cushion on a pedestal, back with a rounded grab top; fabric towards the sitter
+  const fabric = [[1, 1, 1], 2];
+  for (let k = Math.ceil(za / S.pitch); (k + 1) * S.pitch <= zb + 1e-6; k++) {
+    const zc = k * S.pitch, zm = zc + S.pitch / 2;
+    if (!seatCell(zm, cab)) continue;
+    const f = k % 2 === 0 ? 1 : -1, zbk = f > 0 ? zc + 0.04 : zc + S.pitch - 0.04;
+    for (const sx of [1, -1]) {
+      const x0 = sx > 0 ? 0.34 : -1.16, x1 = sx > 0 ? 1.16 : -0.34;
+      const c0 = Math.min(zbk, zbk + f * 0.48), c1 = Math.max(zbk, zbk + f * 0.48);
+      boxF(B, x0, x1, 0.74, S.seatY, c0, c1, (n) => (n[1] > 0.5 ? fabric : n[1] < -0.5 ? [null] : [INC.shell, 0]));
+      boxF(B, x0, x1, 0.74, 1.33, zbk - 0.035, zbk + 0.035, (n) => (n[2] * f > 0.5 ? fabric : [INC.shell, 0]));
+      boxF(B, x0 + 0.01, x1 - 0.01, 1.33, 1.39, zbk - 0.03, zbk + 0.03, () => [INC.shell, 0]);
+      const xm = (x0 + x1) / 2;
+      boxF(B, xm - 0.09, xm + 0.09, yf, 0.74, (c0 + c1) / 2 - 0.12, (c0 + c1) / 2 + 0.12, (n) => (n[1] !== 0 ? [null] : [INC.leg, 0]));
+    }
+    if (lod === 0) {
+      // grab poles between back-to-back seats (every other bay, alternate sides)
+      const pk = ((k % 8) + 8) % 8;
+      if (pk === 0) tube(B, [-0.36, yf, zc], [-0.36, yc, zc], 0.018, 6, INC.steel);
+      if (pk === 4) tube(B, [0.36, yf, zc], [0.36, yc, zc], 0.018, 6, INC.steel);
+    }
+  }
+  if (lod === 0) {
+    for (const dz of doors) tube(B, [0, yf, dz], [0, yc, dz], 0.019, 6, INC.steel);
+    for (const sx of [1, -1]) tube(B, [sx * 0.42, 2.22, za + 0.1], [sx * 0.42, 2.22, zb - 0.1], 0.016, 6, INC.steel);
+  }
+}
+
 // ------------------------------------------------------------------ bodies
 /**
  * Geometry of every body type at every LOD:
- *   {cab: [{body, glass, ws, lampLead, lampTrail}, ...lods], mid: [{body, glass, metal}, ...],
- *    hull: {cab, mid}} plus the length / joint table.
+ *   {cab: [{body, glassR, glassL, front, metal, inner, lampLead, lampTrail}, ...lods],
+ *    mid: [{body, glassR, glassL, metal, inner, lampMid}, ...], hull: {cab, mid},
+ *    spots: {cab, mid} (the passengers' seats and standing spots, body frame)}.
  */
 export function buildModels(atlas) {
   const J = CAR.joints, gapH = CAR.gap / 2;
@@ -763,6 +883,7 @@ export function buildModels(atlas) {
       noseFittings(P, lod);
       sideNumber(P.body, lod);
       fairing(P, 2.4, z1 - 0.45);
+      if (lod < 2) saloon(P.inner, true, 0, z1, lod);
       if (lod === 0) runningGear(P.body, CAR.capBase, z1, CAR.bogies[0]);
       else if (lod === 1) runningGear(P.body, CAR.capBase, z1, null);
       const lampLead = new Part(), lampTrail = new Part();
@@ -785,6 +906,7 @@ export function buildModels(atlas) {
       fairing(P, z0 + 0.25, pz - 1.35);
       fairing(P, pz + 1.35, z1 - 0.25);
       pantograph(P, pz, lod);
+      if (lod < 2) saloon(P.inner, false, z0, z1, lod);
       if (lod === 0) runningGear(P.body, z0, z1, pz);
       else if (lod === 1) runningGear(P.body, z0, z1, null);
       const lampMid = new Part();
@@ -793,6 +915,7 @@ export function buildModels(atlas) {
     }
   }
   out.hull = { cab: hull(cabLen - gapH, true), mid: hull(midLen - gapH, false) };
+  out.spots = { cab: saloonSpots(true, 0, cabLen - gapH - 0.02), mid: saloonSpots(false, gapH + 0.02, midLen - gapH - 0.02) };
   return out;
 }
 
@@ -806,7 +929,7 @@ function hull(z1, cab) {
     return { x, y, nx: ty / l, ny: -tx / l, a: y };
   });
   const z0 = cab ? 0.45 : CAR.gap / 2;
-  const fake = { body: P, glass: P, ws: P, metal: P };
+  const fake = { body: P, glassR: P, glassL: P, metal: P };
   sideWalls(fake, prof, [{ z0, z1, kind: 'wall' }]);
   endWall(P, prof, z0, -1, COL.silver);
   endWall(P, prof, z1, 1, COL.silver);

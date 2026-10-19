@@ -9,6 +9,7 @@ import { U } from '../../src/core/uniforms.js';
 //   &mat=<name>  &recipe=<bake name>  &sun=<elevDeg>,<azDeg>  &fov=<deg>
 //   &cam=x,y,z,tx,ty,tz  &night=<0..1>  &exposure=<f>  &filter=<substring>
 //   &color=r,g,b (linear; single mode: overrides the material colour, e.g. a paint)
+//   &zoom=<k> (maps mode: show 1/k of the tile, magnified) &panel=<0..3> (maps mode: one map, full height)
 // Works with tools/shoot.py: --page tools/textures/preview.html --params "mode=wall"
 
 const q = new URLSearchParams(location.search);
@@ -212,14 +213,20 @@ async function main() {
     camera.lookAt(tx, ty, tz);
   } else if (mode === 'maps') {
     const t = M.textures.get(q.get('recipe') || 'ashlar');
+    const rep = (2 / num('zoom', 1)).toFixed(4);
+    const one = q.has('panel') ? num('panel', 0) : -1;
+    let slot = 0;
     const show = (tex, x, fn) => {
+      const k = slot++;
+      if (one >= 0 && k !== one) return;
       const m = new THREE.ShaderMaterial({
         uniforms: { t: { value: tex } },
         vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-        fragmentShader: `uniform sampler2D t; varying vec2 vUv; void main(){ vec4 s = texture2D(t, vUv * 2.0); ${fn} }`,
+        fragmentShader: `uniform sampler2D t; varying vec2 vUv; void main(){ vec4 s = texture2D(t, vUv * ${rep}); ${fn} }`,
       });
       const p = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), m);
-      p.position.set(x, 0, 0);
+      p.position.set(one >= 0 ? 0 : x, 0, 0);
+      if (one >= 0) p.scale.setScalar(2.1);
       scene.add(p);
     };
     if (t?.albedo) {

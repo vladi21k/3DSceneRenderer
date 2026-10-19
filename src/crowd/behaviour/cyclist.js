@@ -1054,7 +1054,8 @@ function bodyClear(c, a) {
   }
   const side = a.d >= 0 ? 1 : -1;
   if (map.rectInner(a.s, side, Math.abs(a.d), AGENT_R * 0.5) || Math.abs(a.d) > map.wallAt(a.s, side)) return false;
-  for (const b of c.population.agents) {
+  for (let ii = 0, AG = c.population.agents, nn = AG.length; ii < nn; ii++) {
+    const b = AG[ii];
     if (!b.active || b === a || b.mob) continue;
     const ds = b.s - a.s, dd = b.d - a.d;
     if (ds * ds + dd * dd < (2 * AGENT_R) ** 2) return false;
@@ -1074,7 +1075,8 @@ export function maybeMount(c, a) {
   if (footBandGap(a) < 0.6 && c.tram.near(a)) return false;
   // nobody right in front
   const agents = c.population.agents;
-  for (const b of agents) {
+  for (let ii = 0, AG = agents, nn = AG.length; ii < nn; ii++) {
+    const b = AG[ii];
     if (!b.active || b === a) continue;
     const x = (b.s - a.s) * dir;
     if (x > -0.5 && x < 9 && Math.abs(b.d - a.d) < 1.3) { a.mountT = c.time + 2; return false; }

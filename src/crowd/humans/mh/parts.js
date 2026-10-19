@@ -19,17 +19,57 @@ class PartBuilder {
 
   /** Add a THREE geometry through matrix M, skinned by skin(p) -> [[bone, w], ...] (or a fixed list). */
   geometry(geo, M, skin, region, flags = FLAG.SOLID, ao = 1) {
-    const g = geo.index ? geo : geo;
-    const pos = g.attributes.position, nrm = g.attributes.normal, uv = g.attributes.uv;
     const nm = new THREE.Matrix3().getNormalMatrix(M);
+    this.warp(geo, (v, n) => { v.applyMatrix4(M); n.applyMatrix3(nm).normalize(); }, skin, region, flags, ao);
+  }
+
+  /** Add a THREE geometry through map(v, n) (both changed in place, from the geometry's own space);
+   *  ao: a number or a function of the vertex in the geometry's own space. */
+  warp(geo, map, skin, region, flags = FLAG.SOLID, ao = 1) {
+    const g = geo;
+    const pos = g.attributes.position, nrm = g.attributes.normal, uv = g.attributes.uv;
     const v0 = this.n;
+    const loc = new THREE.Vector3();
     for (let i = 0; i < pos.count; i++) {
-      _v.fromBufferAttribute(pos, i).applyMatrix4(M);
-      _n.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
-      this.vertex(_v, _n, uv ? uv.getX(i) : 0, uv ? uv.getY(i) : 0, typeof skin === 'function' ? skin(_v) : skin, region, flags, ao);
+      loc.fromBufferAttribute(pos, i);
+      _v.copy(loc);
+      _n.fromBufferAttribute(nrm, i);
+      map(_v, _n);
+      const a = typeof ao === 'function' ? ao(loc) : ao;
+      this.vertex(_v, _n, uv ? uv.getX(i) : 0, uv ? uv.getY(i) : 0, typeof skin === 'function' ? skin(_v) : skin, region, flags, a);
     }
     if (g.index) for (let i = 0; i < g.index.count; i++) this.I.push(v0 + g.index.getX(i));
     else for (let i = 0; i < pos.count; i++) this.I.push(v0 + i);
+  }
+
+  /**
+   * A strap along a polyline lying on a surface (points pts[i], surface normals nrms[i]): a band of
+   * width w(i) with a rounded top t(i) thick (padding) and rounded edges, closed underneath by the body.
+   */
+  strap(pts, nrms, w, t, skin, region) {
+    const n = pts.length;
+    // cross-section (across, up) and its normals: a soft rounded band
+    const PRO = [[-0.5, 0], [-0.5, 0.5], [-0.36, 0.92], [-0.12, 1], [0.12, 1], [0.36, 0.92], [0.5, 0.5], [0.5, 0]];
+    const PN = [[-1, 0.1], [-0.9, 0.45], [-0.45, 0.9], [-0.1, 1], [0.1, 1], [0.45, 0.9], [0.9, 0.45], [1, 0.1]];
+    const rows = [];
+    const side = new THREE.Vector3(), up = new THREE.Vector3(), tg = new THREE.Vector3(), q = new THREE.Vector3(), nn = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      tg.copy(pts[Math.min(n - 1, i + 1)]).sub(pts[Math.max(0, i - 1)]).normalize();
+      side.crossVectors(tg, nrms[i]).normalize();
+      up.crossVectors(side, tg).normalize();
+      const sk = typeof skin === 'function' ? skin(pts[i]) : skin;
+      const wi = w(i), ti = t(i);
+      const row = [];
+      for (let k = 0; k < PRO.length; k++) {
+        q.copy(pts[i]).addScaledVector(side, PRO[k][0] * wi).addScaledVector(up, PRO[k][1] * ti);
+        nn.copy(side).multiplyScalar(PN[k][0]).addScaledVector(up, PN[k][1]).normalize();
+        row.push(this.vertex(q, nn, k / (PRO.length - 1), i / (n - 1), sk, region, FLAG.SOLID, k === 0 || k === PRO.length - 1 ? 0.7 : 1));
+      }
+      rows.push(row);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      for (let k = 0; k < PRO.length - 1; k++) this.quad(rows[i][k], rows[i + 1][k], rows[i + 1][k + 1], rows[i][k + 1]);
+    }
   }
 
   vertex(p, n, u, v, skin, region, flags, ao = 1) {
@@ -179,7 +219,7 @@ export function torsoSurface(char) {
     pts.push(raw.pos[v * 3], raw.pos[v * 3 + 1], raw.pos[v * 3 + 2]);
   }
   const P = new Float32Array(pts);
-  return (p, d, off = 0.004, rad = 0.025, tmin = -0.35, tmax = 0.35) => {
+  const f = (p, d, off = 0.004, rad = 0.025, tmin = -0.35, tmax = 0.35) => {
     let best = -Infinity;
     for (let i = 0; i < P.length; i += 3) {
       const x = P[i] - p.x, y = P[i + 1] - p.y, z = P[i + 2] - p.z;
@@ -190,6 +230,35 @@ export function torsoSurface(char) {
     }
     return best === -Infinity ? null : p.clone().addScaledVector(d, best + off);
   };
+  f.pts = P;
+  return f;
+}
+
+/** The torso's axis: z at height y = the middle of the torso points' depth within 2.5 cm of y. */
+function torsoAxis(P) {
+  const cache = new Map();
+  return (y) => {
+    const key = Math.round(y * 200);
+    let z = cache.get(key);
+    if (z === undefined) {
+      let lo = Infinity, hi = -Infinity;
+      for (let i = 0; i < P.length; i += 3) {
+        if (Math.abs(P[i + 1] - y) > 0.025 || Math.abs(P[i]) > 0.06) continue;
+        lo = Math.min(lo, P[i + 2]); hi = Math.max(hi, P[i + 2]);
+      }
+      z = lo <= hi ? 0.5 * (lo + hi) : 0;
+      cache.set(key, z);
+    }
+    return z;
+  };
+}
+
+/** Moving-average smoothing of a polyline (ends fixed). */
+function smoothPath(pts, iters = 1) {
+  for (let it = 0; it < iters; it++) {
+    const c = pts.map((p) => p.clone());
+    for (let i = 1; i < pts.length - 1; i++) pts[i].copy(c[i - 1]).add(c[i + 1]).multiplyScalar(0.25).addScaledVector(c[i], 0.5);
+  }
 }
 
 const rigid = (b) => [[b, 1]];
@@ -258,10 +327,21 @@ export function buildParts(char) {
     const wc = THREE.MathUtils.clamp((p.y - waist[0]) / Math.max(0.05, chest[0] - waist[0]), 0, 1);
     return wc > 0.5 ? [[BONE.spine2, 1]] : [[BONE.spine2, wc + 0.5], [BONE.spine1, 0.5 - wc]];
   };
-  // ---- backpack: a rounded pack on the upper back, two shoulder straps
+  // torso axis (rest pose): the middle of the torso's depth at a height, from the surface points
+  const axisZ = torsoAxis(surf.pts);
+  // the surface along a horizontal ray from the torso's axis at height y, at angle th round it
+  // (0 = straight ahead, -z; +pi/2 = the figure's right, +x), pushed out by off
+  const _d = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
+  const around = (y, th, off = 0.004) => {
+    _d.set(Math.sin(th), 0, -Math.cos(th));
+    const o = new THREE.Vector3(0, y, axisZ(y));
+    const p = surf(o, _d, off, 0.022, 0, 0.45);
+    return p ? { p, n: _d.clone() } : null;
+  };
+  // ---- backpack: a soft, rounded pack on the upper back, two padded shoulder straps
   {
     const b = new PartBuilder(), bf = new PartBuilder();
-    const pw = 0.29 * k, ph = 0.38 * k, pd = 0.15 * k;
+    const pw = 0.29 * k, ph = 0.38 * k, pd = 0.125 * k;
     const topY = shR.y - 0.02 * k, cy = topY - ph / 2;
     // the back's profile over the pack's height (furthest-back point across its width), then the
     // pack's front face as the tilted line resting on it (top back on the shoulder blades)
@@ -286,118 +366,179 @@ export function buildParts(char) {
       if (!best || gap < best.gap) best = { tl, z0, gap };
     }
     const tilt = best.tl;
-    const M = new THREE.Matrix4().makeRotationX(tilt).setPosition(0, cy - pd / 2 * Math.sin(tilt), best.z0 + 0.008 + pd / 2 * Math.cos(tilt));
+    const M = new THREE.Matrix4().makeRotationX(tilt).setPosition(0, cy - pd / 2 * Math.sin(tilt), best.z0 + 0.006 + pd / 2 * Math.cos(tilt));
     const zBack = best.z0;
     out.fit = { tilt, z0: best.z0, prof };
-    // (a soft pack: well rounded, its load bulging the back panel, the top narrower; a flap over the top)
-    b.geometry(roundBox(pw, ph, pd, 0.055 * k, 5, 0.26, 0.12), M, [[BONE.spine2, 1]], REGION.bag);
-    b.geometry(roundBox(pw * 0.86, ph * 0.3, pd * 0.32, 0.03 * k, 3, 0.15, 0.05),
-      M.clone().multiply(new THREE.Matrix4().makeTranslation(0, ph * 0.36, pd * 0.28)), [[BONE.spine2, 1]], REGION.bag);
-    // front pocket
-    b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.35, 0.025 * k, 3, 0.2), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.22, pd / 2 + pd * 0.12)),
-      [[BONE.spine2, 1]], REGION.bag);
-    bf.geometry(new THREE.BoxGeometry(pw * 0.95, ph * 0.95, pd), M, [[BONE.spine2, 1]], REGION.bag);
-    for (const sg of [-1, 1]) {
+    const packSkin = [[BONE.spine2, 1]];
+    // (a soft pack: deep corner radii, the load bulging its faces, the top rounded and narrower;
+    // the panel against the back and the seams in shade)
+    const panelAO = (v) => 0.55 + 0.45 * THREE.MathUtils.smoothstep(v.z, -pd * 0.5, -pd * 0.1);
+    b.geometry(roundBox(pw, ph, pd, 0.05 * k, 6, 0.13, 0.12), M, packSkin, REGION.bag, FLAG.SOLID, panelAO);
+    // front pocket: a flatter, soft pouch low on the face
+    b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.22, 0.03 * k, 4, 0.18, 0.06), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.19, pd * 0.5 * 1.1)),
+      packSkin, REGION.bag, FLAG.SOLID, (v) => 0.7 + 0.3 * THREE.MathUtils.smoothstep(v.z, -pd * 0.11, pd * 0.04));
+    // a carry loop at the top
+    {
       const pts = [], nr = [];
-      const x0 = sg * 0.07 * k;
-      // over the shoulder: from the pack's top, over the trapezius, down the chest, under the arm
-      const ctrl = [
-        [x0, topY - 0.01 * k, 'back'], [sg * 0.085 * k, neck.y - 0.075 * k, 'back'], ['top', sg * 0.095 * k, -0.005 * k],
-        ['top', sg * 0.105 * k, -0.04 * k], [sg * 0.11 * k, shR.y - 0.07 * k, 'front'], [sg * 0.12 * k, chest[0] - 0.04 * k, 'front'],
-        [sg * (chest[1] + 0.0) * 0.98, chest[0] - 0.11 * k, 'side'], [sg * pw * 0.42, cy - ph * 0.42, 'back'],
-      ];
-      for (const c of ctrl) {
-        let p;
-        if (c[0] === 'top') {
-          p = shoulderTop(c[1], c[2]);
-          nr.push(new THREE.Vector3(0, 1, 0));
-        } else {
-          const dir = c[2] === 'back' ? new THREE.Vector3(0, 0, 1) : c[2] === 'front' ? new THREE.Vector3(0, 0, -1) : new THREE.Vector3(sg, 0, 0);
-          const base = new THREE.Vector3(c[0], c[1], c[2] === 'side' ? 0 : 0);
-          if (c[2] === 'side') base.x = 0;
-          p = surf(base, dir, 0.005) || base.clone().addScaledVector(dir, 0.12 * k);
-          if (c[2] === 'back' && c === ctrl[ctrl.length - 1]) p.z = Math.max(p.z, zBack + 0.01);
-          nr.push(dir);
-        }
-        pts.push(p);
+      for (let i = 0; i <= 8; i++) {
+        const a = Math.PI * (i / 8);
+        pts.push(new THREE.Vector3(Math.cos(a) * 0.035 * k, ph * 0.5 - 0.004 + Math.sin(a) * 0.028 * k, -pd * 0.18).applyMatrix4(M));
+        nr.push(new THREE.Vector3(0, 0, 1).transformDirection(M));
       }
-      // smooth the polyline (Catmull-Rom) and re-project onto the surface along the averaged normals
-      const curve = new THREE.CatmullRomCurve3(pts);
-      const sp = curve.getPoints(18), sn = [];
-      for (let i = 0; i < sp.length; i++) {
-        const u = (i / (sp.length - 1)) * (nr.length - 1), i0 = Math.floor(u), f = u - i0;
-        const nrm = nr[i0].clone().lerp(nr[Math.min(nr.length - 1, i0 + 1)], f).normalize();
-        const q = surf(sp[i].clone().addScaledVector(nrm, -0.05), nrm, 0.005, 0.02);
-        if (q && q.distanceTo(sp[i]) < 0.05) sp[i].copy(q);
-        sn.push(nrm);
+      b.strap(pts, nr, () => 0.018 * k, () => 0.004, packSkin, REGION.strap);
+    }
+    bf.geometry(roundBox(pw, ph, pd, 0.05 * k, 1, 0.13, 0.12), M, packSkin, REGION.bag);
+    // shoulder straps: from the pack's top up over the trapezius, over the shoulder, down the front
+    // of the chest (padded), then a webbing strap round the side under the arm to the pack's lower
+    // corner. Each point lies on the torso's surface (rays out from the torso's axis; over the
+    // shoulder, rays up through it: its top).
+    for (const sg of [-1, 1]) {
+      const pts = [], nr = [], tk = [];
+      const add = (q, t) => { if (q) { pts.push(q.p); nr.push(q.n); tk.push(t); } };
+      // up the back from the pack's top edge
+      for (let i = 0; i <= 4; i++) {
+        const u = i / 4;
+        add(around(topY - 0.01 * k + u * (shR.y - 0.04 * k - topY), Math.PI - sg * (0.3 + 0.22 * u), 0.005), 0.008);
       }
-      tension(sp, sn);
-      b.ribbon(sp, sn, 0.05 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.008);
+      // over the shoulder (back to front)
+      for (let i = 0; i <= 4; i++) {
+        const u = i / 4;
+        const x = sg * (0.095 + 0.012 * u) * k, z = (0.045 - 0.09 * u) * k;
+        const q = surf(new THREE.Vector3(x, shR.y - 0.03 * k, z), _up, 0.005, 0.016, 0, 0.11 * k);
+        if (q) add({ p: q, n: new THREE.Vector3(0, 1, 0) }, 0.012);
+      }
+      // down the front of the chest
+      for (let i = 0; i <= 5; i++) {
+        const u = i / 5;
+        add(around(shR.y - 0.05 * k - u * (shR.y - 0.05 * k - (chest[0] - 0.05 * k)), sg * (0.58 + 0.12 * u), 0.005), 0.012);
+      }
+      // round the side under the arm to the pack's lower corner (webbing)
+      for (let i = 1; i <= 6; i++) {
+        const u = i / 7;
+        add(around(chest[0] - 0.05 * k - u * (chest[0] - 0.05 * k - (cy - ph * 0.36)), sg * (0.72 + u * (Math.PI - 0.72 - 0.75)), 0.005), 0.01 - 0.006 * u);
+      }
+      const end = new THREE.Vector3(sg * pw * 0.42, -ph * 0.36, -pd * 0.32).applyMatrix4(M);
+      pts.push(end); nr.push(new THREE.Vector3(sg, 0, 0)); tk.push(0.004);
+      if (pts.length < 6) continue;
+      smoothPath(pts, 2);
+      tension(pts, nr);
+      const W = 0.052 * Math.min(1, k * 1.1);
+      const n = pts.length;
+      b.strap(pts, nr, (i) => W * (i > n - 8 ? 0.62 : 1), (i) => tk[i], chestSkin, REGION.strap);
     }
     out.backpack = b.build();
     out.backpackFar = bf.build();
   }
-  // ---- cross-body shoulder bag: the strap from the right shoulder across the chest and the back
-  // to a bag at the left hip, a little behind the line of the arm swing
+  // ---- cross-body shoulder bag: a soft bag lying against the left hip just behind the side line
+  // (its inner face follows the hip's curve; the left arm, held a little out by it, swings past its
+  // front), its strap from the bag's front end up across the chest, over the right shoulder and down
+  // across the back to the bag's rear end
   {
     const b = new PartBuilder(), bf = new PartBuilder();
-    const bw = 0.25 * k, bh = 0.19 * k, bd = 0.075 * k;
-    const hipW = Math.max(hips[1], waist[1]);
-    const yaw = 0.5;                                    // turned towards the back, behind the arm's swing
-    const by = hips[0] + 0.01 * k;
-    // against the hip: the clothed surface along the bag's outward direction (left and back)
-    const dirB = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
-    let side = null;
-    for (const dy of [-0.06, 0, 0.06]) {
-      const q = surf(new THREE.Vector3(0, by + dy * k, 0.01), dirB, 0, 0.03, 0, 0.4);
-      if (q && (!side || q.dot(dirB) > side.dot(dirB))) side = q.setY(by);
-    }
-    if (!side) side = new THREE.Vector3(-hipW, by, 0.03);
-    const ctr = side.clone().addScaledVector(dirB, bd * 0.45 + 0.004);
-    const bx = ctr.x, bz = ctr.z;
-    // (the bag's thin axis along dirB: its back against the hip, its face turned out)
-    const M = new THREE.Matrix4().makeRotationY(yaw).setPosition(bx, by, bz);
-    const hipSkin = [[BONE.pelvis, 0.7], [BONE.spine1, 0.3]];
-    b.geometry(roundBox(bd, bh, bw, 0.02 * k, 3, 0.14, 0.06), M, hipSkin, REGION.bag);
-    // flap
-    b.geometry(roundBox(bd * 0.25, bh * 0.6, bw * 1.02, 0.01 * k), M.clone().multiply(new THREE.Matrix4().makeTranslation(-bd * 0.55, bh * 0.2, 0)), hipSkin, REGION.bag);
-    bf.geometry(new THREE.BoxGeometry(bd, bh, bw), M, hipSkin, REGION.bag);
-    const top = new THREE.Vector3(bx, by + bh / 2, bz);
-    const ring = [];
-    // round the torso: angle 0 = the right shoulder top, pi = the left hip
-    const N = 26;
-    for (let i = 0; i <= N; i++) {
-      const th = (i / N) * Math.PI * 2;
-      const u = 0.5 - 0.5 * Math.cos(th);            // 0 at the shoulder, 1 at the hip
-      const y = (neck.y - 0.03 * k) * (1 - u) + (top.y + 0.02 * k) * u;
-      const front = Math.sin(th) > 0;                  // first half runs down the front
-      if (u < 0.12) {
-        const x = 0.10 * k * (1 - u * 2);
-        ring.push({ p: shoulderTop(x + 0.005, (front ? -1 : 1) * 0.02 * k * u / 0.12), n: new THREE.Vector3(0, 1, 0) });
-        continue;
+    const bw = 0.23 * k, bh = 0.175 * k, bd = 0.065 * k;
+    const by = hips[0] - 0.01 * k;
+    const az = axisZ(by);
+    // angle round the hip: phi 0 = the figure's left side (-x), + towards the back
+    const dirP = (phi, o) => o.set(-Math.cos(phi), 0, Math.sin(phi));
+    const NPH = 33, PH0 = -1.4, PH1 = 1.4;
+    const rad = new Float64Array(NPH);
+    const _o = new THREE.Vector3(), _dd = new THREE.Vector3();
+    for (let i = 0; i < NPH; i++) {
+      const phi = PH0 + ((PH1 - PH0) * i) / (NPH - 1);
+      let r = 0;
+      // (the bag hangs flat down its height: it rests on the outermost surface over it)
+      for (const dy of [-0.42, -0.2, 0, 0.2, 0.42]) {
+        _o.set(0, by + dy * bh, az);
+        const q = surf(_o, dirP(phi, _dd), 0, 0.022, 0, 0.45);
+        if (q) r = Math.max(r, Math.hypot(q.x, q.z - az));
       }
-      const x = 0.10 * k - (0.10 * k + hipW) * u;
-      const dir = new THREE.Vector3(0, 0, front ? -1 : 1);
-      const p = surf(new THREE.Vector3(x, y, 0), dir, 0.005, 0.022);
-      if (p) ring.push({ p, n: dir });
+      rad[i] = r || 0.17 * k;
     }
-    // the ends meet the bag's top
-    ring.push({ p: top.clone().add(new THREE.Vector3(0, 0.01, 0)), n: new THREE.Vector3(-1, 0, 0) });
-    ring.unshift({ p: top.clone().add(new THREE.Vector3(0, 0.01, -0.02)), n: new THREE.Vector3(-1, 0, 0) });
-    const curve = new THREE.CatmullRomCurve3(ring.map((r) => r.p), false);
-    const sp = curve.getPoints(40), sn = [];
-    for (let i = 0; i < sp.length; i++) {
-      const u = (i / (sp.length - 1)) * (ring.length - 1), i0 = Math.floor(u), f = u - i0;
-      const nrm = ring[i0].n.clone().lerp(ring[Math.min(ring.length - 1, i0 + 1)].n, f).normalize();
-      sn.push(nrm);
-      // (the smoothed curve can cut into the bust or the shoulder blade: back out onto the surface)
-      if (i > 1 && i < sp.length - 2) {
-        const q = surf(sp[i].clone().addScaledVector(nrm, -0.06), nrm, 0.006, 0.02);
-        if (q && q.clone().sub(sp[i]).dot(nrm) > 0) sp[i].copy(q);
+    // smoothed (soft leather bridges small hollows)
+    for (let it = 0; it < 3; it++) {
+      const c = Float64Array.from(rad);
+      for (let i = 1; i < NPH - 1; i++) rad[i] = Math.max(c[i], 0.25 * c[i - 1] + 0.5 * c[i] + 0.25 * c[i + 1]);
+    }
+    const radAt = (phi) => {
+      const f = THREE.MathUtils.clamp(((phi - PH0) / (PH1 - PH0)) * (NPH - 1), 0, NPH - 1.001);
+      const i = Math.floor(f);
+      return rad[i] + (rad[i + 1] - rad[i]) * (f - i);
+    };
+    const phc = 0.08;
+    const rMid = radAt(phc) + 0.005 + bd * 0.5;
+    const half = bw / 2 / rMid;
+    const _dp = new THREE.Vector3(), _tg = new THREE.Vector3();
+    // bag-local (x thin: -bd/2 against the hip .. +bd/2 outside; y up; z along the bag) -> wrapped
+    // round the hip
+    const wrap = (v, nrm) => {
+      const phi = phc + v.z / rMid;
+      const r = Math.max(radAt(phi) + 0.003, radAt(phi) + 0.005 + v.x + bd / 2);
+      dirP(phi, _dp);
+      _tg.set(Math.sin(phi), 0, Math.cos(phi));
+      const nx = nrm.x, ny = nrm.y, nz = nrm.z;
+      v.set(_dp.x * r, by + v.y, az + _dp.z * r);
+      nrm.set(_dp.x * nx + _tg.x * nz, ny, _dp.z * nx + _tg.z * nz).normalize();
+    };
+    const bagSkin = [[BONE.pelvis, 0.7], [BONE.spine1, 0.3]];
+    const innerAO = (v) => 0.5 + 0.5 * THREE.MathUtils.smoothstep(v.x, -bd * 0.5, bd * 0.15);
+    b.warp(roundBox(bd, bh, bw, 0.022 * k, 4, 0.12, 0.05), wrap, bagSkin, REGION.bag, FLAG.SOLID, innerAO);
+    // the flap over the top two thirds of its face
+    // (laid on the bag's swollen face: the same bulge as roundBox's pillow)
+    b.warp(roundBox(0.005 * k, bh * 0.64, bw * 1.015, 0.002 * k, 3, 0, 0), (v, n) => {
+      const yy = v.y + bh * 0.19, a = yy / (bh / 2), c = v.z / (bw / 2);
+      const bul = (1 - Math.min(1, a * a)) * (1 - Math.min(1, c * c));
+      v.x += (bd / 2) * (1 + 0.24 * bul) + 0.0025;
+      v.y = yy;
+      wrap(v, n);
+    }, bagSkin, REGION.bag, FLAG.SOLID, 0.92);
+    bf.warp(roundBox(bd, bh, bw, 0.02 * k, 1, 0.1, 0.05), wrap, bagSkin, REGION.bag);
+    // strap ends: on the bag's top, 1.5 cm in from its ends, at the middle of its depth
+    const endAt = (s) => {
+      const v = new THREE.Vector3(0, bh / 2 - 0.004, s * (bw / 2 - 0.015 * k)), n = new THREE.Vector3(-1, 0, 0);
+      wrap(v, n);
+      return v;
+    };
+    const pF = endAt(-1), pB = endAt(1);
+    // (angles round the torso: th = -pi/2 - phi)
+    const thF = -Math.PI / 2 - (phc - half * 0.85), thB = -Math.PI / 2 - (phc + half * 0.85);
+    const yS = shR.y - 0.06 * k;                          // where the strap leaves the shoulder's top
+    const pts = [pF], nr = [dirP(phc - half, new THREE.Vector3())], tk = [];
+    // up across the front: from the bag's front end, crossing the chest, to the front of the right shoulder
+    const thS = 0.62;
+    for (let i = 1; i <= 14; i++) {
+      const u = i / 14;
+      const q = around(pF.y + (yS - pF.y) * u, thF + (thS - thF) * u, 0.005);
+      if (q) { pts.push(q.p); nr.push(q.n); }
+    }
+    // over the right shoulder, near the neck
+    for (let i = 0; i <= 4; i++) {
+      const u = i / 4;
+      const q = surf(new THREE.Vector3((0.096 + 0.008 * Math.sin(Math.PI * u)) * k, shR.y - 0.03 * k, (-0.045 + 0.09 * u) * k), _up, 0.005, 0.016, 0, 0.11 * k);
+      if (q) { pts.push(q); nr.push(new THREE.Vector3(0, 1, 0)); }
+    }
+    // down across the back to the bag's rear end (th from the back of the right shoulder, round past
+    // the spine, to the left side)
+    const thS2 = Math.PI - 0.62, thB2 = thB + 2 * Math.PI;
+    for (let i = 0; i <= 13; i++) {
+      const u = i / 14;
+      const q = around(yS + (pB.y - yS) * u, thS2 + (thB2 - thS2) * u, 0.005);
+      if (q) { pts.push(q.p); nr.push(q.n); }
+    }
+    pts.push(pB); nr.push(dirP(phc + half, new THREE.Vector3()));
+    smoothPath(pts, 2);
+    tension(pts, nr);
+    // skinning: the chest above the waist (the right shoulder's top with its clavicle), the hips at the bag
+    const strapSkin = (p) => {
+      if (p.y < waist[0]) {
+        const u = THREE.MathUtils.clamp((waist[0] - p.y) / Math.max(0.05, waist[0] - (by + bh / 2)), 0, 1);
+        return [[BONE.spine1, 1 - 0.7 * u], [BONE.pelvis, 0.7 * u]];
       }
-    }
-    tension(sp, sn);
-    b.ribbon(sp, sn, 0.032 * Math.min(1, k * 1.1), chestSkin, REGION.strap, 0.005);
+      const sk = chestSkin(p);
+      if (p.x > 0.04 * k && p.y > shR.y - 0.07 * k) return [[BONE.spine2, 0.72], [BONE.clavR, 0.28]];
+      return sk;
+    };
+    const SW = 0.034 * Math.min(1, k * 1.1);
+    b.strap(pts, nr, () => SW, () => 0.0035, strapSkin, REGION.strap);
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
   }

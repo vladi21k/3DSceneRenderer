@@ -23,7 +23,7 @@ export const LINE_SHARED = {
 // sealant-filled expansion joints, dashed and irregular), and the wear of the asphalt
 // side streets: bitumen crack seals and hairline cracks, saw-cut repair patches with
 // sealed joints, and tyre polish / oil drip bands.
-export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint: 4, seal: 5, patch: 6, polish: 7 };
+export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint: 4, seal: 5, patch: 6, polish: 7, repair: 8, drip: 9 };
 // patches: their ribbon reaches PATCH_PAD beyond the cut on every side (the sealed joint
 // overlaps it), so aLine.y = half width + PATCH_PAD and the points run from -PATCH_PAD to
 // length + PATCH_PAD
@@ -35,6 +35,16 @@ export const SETT_FLAG = 10;
 /** Wear value of a patch ribbon: the radius (m) of a cover lying in its centre (cut out
  *  of the patch) and its tone, -1 (fresh, dark binder) .. 1 (aged, grey). */
 export const patchWear = (hole, tone) => Math.round(hole * 1000) + 0.02 + 0.96 * (tone * 0.5 + 0.5);
+/** Wear value of a repair ribbon (fills over the setts, wear.js): kind (0 asphalt, 1
+ *  concrete), tone 0..1 (asphalt: fresh dark .. aged grey; concrete: dirty .. pale), and
+ *  the cover lying in its centre, cut out of the fill: null, {r} (round) or {hs, hd} (half
+ *  sizes along and across the ribbon), rounded up to whole millimetres / 5 mm. */
+export function repairWear(kind, tone, hole) {
+  let h = 0;
+  if (hole && hole.r) h = Math.min(999, Math.ceil(hole.r * 1000));
+  else if (hole) h = 1000 + Math.min(199, Math.ceil(hole.hs * 200)) * 200 + Math.min(199, Math.ceil(hole.hd * 200));
+  return kind * 50000 + h + 0.02 + 0.96 * Math.max(0, Math.min(1, tone));
+}
 const PAINT = [
   null, null,
   { color: 0xc9c6bd, roughness: 0.62, wear: 0.18, opacity: 0.86 },                         // centre
@@ -189,10 +199,10 @@ const RAIL_FRAG = /* glsl */`
   vec3 aShoulder = vec3( 0.3, 0.29, 0.28 );                                // metal 0.75
   vec3 aGauge = vec3( 0.46, 0.45, 0.44 );                                  // flange-polished corner
   vec3 aDust = vec3( 0.16, 0.145, 0.125 ) * ( 0.9 + 0.2 * wear );         // dusty guard lip, metal 0.4
-  // the flangeway: grime and grit deep in a 36 mm slot whose walls and floor see little
-  // sky and, mostly, no sun, and reflect almost nothing (effective albedo with the
+  // the flangeway: grit and rust dust in a 36 mm slot whose walls and floor see part of
+  // the sky and, mostly, no sun, and reflect almost nothing (effective albedo with the
   // cavity AO folded in, matching the 3D groove of shading.js patchGrit)
-  vec3 dGroove = vec3( 0.032, 0.028, 0.0238 );
+  vec3 dGroove = vec3( 0.05, 0.042, 0.032 );
   vec3 dGrout = ST_DGROUT;                                                  // mortar bed
   vec3 dPave = ST_DPAVE;                                                    // brake-dusted setts beside it
   vec3 f04 = vec3( 0.04 );
@@ -438,6 +448,95 @@ const ASPHALT_FRAG = /* glsl */`
 }
 `;
 
+// Repairs over the setts (wear.js): a hand-laid fill [-half, half] x [0, length], x across
+// and u along the ribbon, in asphalt (fresh and dark, or aged and grey, with its stone
+// chips showing close up) or concrete mortar (pale warm grey, mottled, pores), its edges
+// cut by hand and wandering by up to a couple of centimetres, dark where the joint has
+// collected dirt; a cover in its middle is cut out (wear: repairWear).
+const REPAIR_FRAG = /* glsl */`
+{
+  float x = vLine.x, u = vLine.y, len = vLine.z;
+  float hx = vLineHalf - ${f(PATCH_PAD)};
+  float code = floor( vLineWear );
+  float tone = clamp( ( fract( vLineWear ) - 0.02 ) / 0.96, 0.0, 1.0 );
+  float kind = step( 49999.5, code );
+  code -= 50000.0 * kind;
+  float seed = floor( tone * 97.0 );
+  vec2 wp = vLineWorld.xz;
+  float amp = min( 0.022, 0.07 * min( hx, 0.5 * len ) ) * ( 1.0 - 0.35 * kind );
+  float side = x > 0.0 ? 1.0 : 0.0, end = u > 0.5 * len ? 1.0 : 0.0;
+  float ex = ( lnNoise( vec2( u * 3.1, 3.7 + 6.0 * side + seed ) ) - 0.5 ) * 2.0 * amp + ( lnNoise( vec2( u * 19.0, 1.3 + 4.0 * side + seed ) ) - 0.5 ) * 0.5 * amp;
+  float eu = ( lnNoise( vec2( x * 3.1, 13.7 + 6.0 * end + seed ) ) - 0.5 ) * 2.0 * amp + ( lnNoise( vec2( x * 19.0, 21.1 + 4.0 * end + seed ) ) - 0.5 ) * 0.5 * amp;
+  float sx = hx + ex - abs( x ), su = 0.5 * len + eu - abs( u - 0.5 * len );
+  float cov = clamp( sx / w + 0.5, 0.0, 1.0 ) * clamp( su / wu + 0.5, 0.0, 1.0 );
+  if ( code > 0.5 ) {
+    vec2 q = vec2( x, u - 0.5 * len );
+    if ( code < 999.5 ) cov *= clamp( ( length( q ) - code * 0.001 ) / max( max( w, wu ), 1e-4 ) + 0.5, 0.0, 1.0 );
+    else {
+      float c = code - 1000.0, hs = floor( c / 200.0 + 1e-3 ), hd = c - hs * 200.0;
+      cov *= 1.0 - clamp( ( hd * 0.005 - abs( q.x ) ) / w + 0.5, 0.0, 1.0 ) * clamp( ( hs * 0.005 - abs( q.y ) ) / wu + 0.5, 0.0, 1.0 );
+    }
+  }
+  if ( cov < 0.002 ) discard;
+  float mot = lnFbm( wp * 0.9 + 13.0 + seed, fpw * 0.9, 3 );
+  float spot = lnFbm( wp * 4.3 + 3.0 + seed, fpw * 4.3, 2 );
+  float kFine = 1.0 - smoothstep( 0.003, 0.01, fpw );
+  vec2 qf = vec2( x, u ) * 90.0 + seed;   // the fill's own small coordinates: exact noise
+  float grain = mix( 0.5, lnNoise( qf ) * 0.6 + lnNoise( mat2( 0.8, 0.6, -0.6, 0.8 ) * qf * 2.3 + 7.0 ) * 0.4, kFine );
+  float chips = mix( 0.12, smoothstep( 0.66, 0.8, lnNoise( qf * 0.55 + 31.0 ) ), kFine );
+  float din = min( sx, su );
+  float edge = 1.0 - smoothstep( 0.0, mix( 0.03, 0.012, kind ), din );
+  edge = mix( edge, 0.3 * min( 1.0, 0.03 / max( min( hx, 0.5 * len ), 0.03 ) ), smoothstep( 0.01, 0.04, max( w, wu ) ) );
+  vec3 col;
+  if ( kind < 0.5 ) {
+    // asphalt: the binder greys and the chips show as it ages; worn smooth, dusty
+    col = mix( vec3( 0.055, 0.053, 0.051 ), vec3( 0.118, 0.113, 0.106 ), tone ) * ( 0.84 + 0.32 * mot ) * ( 0.94 + 0.12 * spot );
+    col *= 0.8 + 0.4 * grain;
+    col = mix( col, vec3( 0.22, 0.212, 0.198 ), ( 0.2 + 0.35 * tone ) * chips );
+    col = mix( col, vec3( 0.03, 0.029, 0.028 ), 0.55 * edge );
+    lnRough = 0.8 + 0.12 * mot;
+  } else {
+    // concrete mortar: pale warm grey, mottled and stained, fine pores; dirt along its edges
+    col = mix( vec3( 0.17, 0.165, 0.155 ), vec3( 0.3, 0.29, 0.268 ), tone ) * ( 0.84 + 0.3 * mot ) * ( 0.92 + 0.16 * spot );
+    col *= 0.88 + 0.24 * grain;
+    col *= 1.0 - 0.35 * edge;
+    lnRough = 0.92;
+  }
+  diffuseColor.rgb = col;
+  diffuseColor.a = cov * 0.97;
+}
+`;
+
+// Drip band along the middle of a track on the main street: oil, grease and brake dust
+// dropped by the passing trams, a soft dark band (its nominal half width two thirds of
+// the ribbon's) wandering a little, mottled in patches along the track and, close up,
+// broken into drops and splashes. Strength per point (wear: heavier where the trams stand
+// at the stops). The profile is widened by the pixel footprint with its energy kept, so
+// the band thins into a faint line in the distance instead of breaking up.
+const DRIP_FRAG = /* glsl */`
+{
+  float x = vLine.x, u = vLine.y;
+  vec2 wp = vLineWorld.xz;
+  float hw = vLineHalf * 0.6667;
+  float c = ( lnNoise( vec2( u * 0.23, 4.3 ) ) - 0.5 ) * 0.45 * hw;
+  float hwl = hw * ( 0.8 + 0.4 * lnNoise( vec2( u * 0.6, 9.7 ) ) );
+  float he = sqrt( hwl * hwl + w * w );
+  float q = ( x - c ) / he;
+  float prof = max( 0.0, 1.0 - q * q );
+  prof *= prof * ( hwl / he );
+  float big = lnFbm( wp * 0.33 + 23.0, fpw * 0.33, 3 );
+  float mid = lnFbm( wp * 2.1 + 7.0, fpw * 2.1, 3 );
+  float fine = lnFbm( wp * 13.0 + 3.0, fpw * 13.0, 2 );
+  float patchy = clamp( 0.45 + 1.5 * ( big - 0.45 ) + 0.8 * ( mid - 0.5 ), 0.0, 1.0 );
+  float drops = mix( smoothstep( 0.5, 0.68, fine ), 0.35, smoothstep( 0.015, 0.05, fpw ) );
+  float a = prof * ( 0.65 * patchy + 0.35 * drops ) * vLineWear * 1.25;
+  if ( a < 0.002 ) discard;
+  diffuseColor.rgb = vec3( 0.042, 0.037, 0.031 ) * ( 0.85 + 0.3 * mid );
+  lnRough = 0.62 - 0.12 * drops;
+  diffuseColor.a = min( a, 0.88 );
+}
+`;
+
 // pixel footprints are taken before the style branch (derivatives in uniform control flow)
 const LINE_FRAG = /* glsl */`
 float lnRough = 0.5, lnMetal = 0.0;
@@ -449,7 +548,9 @@ float wu = max( length( vec2( dFdx( vLine.y ), dFdy( vLine.y ) ) ), 1e-5 );
 float fpw = max( length( fwidth( vLineWorld.xz ) ), 1e-4 );     // metres per pixel
 if ( vLineStyle < ${(LINE_STYLE.centre - 0.5).toFixed(1)} ) ${RAIL_FRAG}
 else if ( vLineStyle < ${(LINE_STYLE.joint + 0.5).toFixed(1)} ) ${PAINT_FRAG}
-else ${ASPHALT_FRAG}
+else if ( vLineStyle < ${(LINE_STYLE.polish + 0.5).toFixed(1)} ) ${ASPHALT_FRAG}
+else if ( vLineStyle < ${(LINE_STYLE.repair + 0.5).toFixed(1)} ) ${REPAIR_FRAG}
+else ${DRIP_FRAG}
 `;
 
 /** The shared line material (all styles; the rail steel has the lengthwise-polish sheen).
@@ -482,7 +583,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-6';
+  m.customProgramCacheKey = () => 'street-line-8';
   return patchRailSheen(m, 'line');
 }
 
@@ -516,7 +617,8 @@ export class LineBuf {
   }
   /** pts: flat array [x,y,z, rx,rz, along, ...] (6 per point, or 7 with stride 7: plus
    *  the surface's slope (dh/dm) along the right vector, so wide ribbons lie on a cross
-   *  slope); wear scales the paint style's wear for this line. */
+   *  slope; or 8 with stride 8: plus a per-point factor on the wear); wear scales the paint
+   *  style's wear for this line. */
   add(pts, halfW, extra, style, wear = 1, stride = 6) {
     const np = pts.length / stride;
     if (this.n + np * 2 > this.cap) this._grow(Math.max(this.cap * 2, this.n + np * 2 + 64));
@@ -524,10 +626,11 @@ export class LineBuf {
     for (let i = 0; i < np; i++) {
       const o = i * stride, v = this.n;
       const rx = pts[o + 3], rz = pts[o + 4], dy = stride > 6 ? pts[o + 6] * halfW : 0;
+      const wr = stride > 7 ? wear * pts[o + 7] : wear;
       for (let k = 0; k < 2; k++) {
         const j = v + k, sd = k ? 1 : -1;
         this.pos[j * 3] = pts[o] + rx * sd * halfW; this.pos[j * 3 + 1] = pts[o + 1] + dy * sd; this.pos[j * 3 + 2] = pts[o + 2] + rz * sd * halfW;
-        this.right[j * 4] = rx; this.right[j * 4 + 1] = wear; this.right[j * 4 + 2] = rz; this.right[j * 4 + 3] = style;
+        this.right[j * 4] = rx; this.right[j * 4 + 1] = wr; this.right[j * 4 + 2] = rz; this.right[j * 4 + 3] = style;
         this.line[j * 4] = sd; this.line[j * 4 + 1] = halfW; this.line[j * 4 + 2] = pts[o + 5]; this.line[j * 4 + 3] = extra;
       }
       this.n += 2;

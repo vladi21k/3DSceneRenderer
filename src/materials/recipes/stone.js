@@ -205,43 +205,76 @@ vec4 rawSurface(vec2 m) {
 };
 
 // Ashlar: courses of 0.35 m, blocks 0.36-1.2 m; 6 mm pointing recessed 4-5 mm behind
-// rounded, worn and soiled arrises with chips, faces slightly proud / sunk / tilted per
-// block. 2 mm/texel, so joints and arrises stay crisp from the sidewalk (about a metre). The dressing
-// (taltish, mussamsam, rubbed) is applied at runtime from the detail maps above.
+// worn, crumbly, soiled arrises with angular spalls, faces slightly proud / sunk / tilted
+// per block. 2 mm/texel, so joints and arrises stay crisp from the sidewalk (about a
+// metre). The arris is a small worn chamfer (3-8 mm, its steepest part ~40°, never a
+// rounded bead that would catch the sun as a glossy rim), broken along its length by
+// spalls: flat fracture planes cut back 2-6 mm over 1-5 cm, their floors rough and dusty.
+// Dust and soot settle in the pointing and work a few centimetres into the stone along
+// the joints (patchy), and old weathered blocks carry a grey crust in patches. The
+// dressing (taltish, mussamsam, rubbed) is applied at runtime from the detail maps above.
 export const ashlar = {
   name: 'ashlar', flat: [0.6, 0.47, 0.27, 0.86], size: 2048, tile: [4.2, 4.2], ss: 2,
   layout: { rowH: 0.35, rows: 12, seg: [5, 7], jitter: 0.42, seed: 11, shift: true },
   joint: 0.0055,
-  pass: { normal: 1.0, ao: 0.75, aoRadius: 0.012, cavity: 0.06 },
+  pass: { normal: 1.0, ao: 0.75, aoRadius: 0.012, cavity: 0.12 },
   glsl: limestone() + /* glsl */ `
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
   float hA = cellRand(c, 1u);
-  // irregular arrises
-  float wob = fbm(m, 6.0, 3, 0.55, 11u) * 0.0016 + fbm(m, 30.0, 2, 0.5, 12u) * 0.0004;
+  vec2 ms = m + vec2(c.h * 17.3, cellRand(c, 30u) * 11.9);
+  // crumbly arris line: small irregularities, no long smooth swell
+  float wob = fbm(m, 8.0, 2, 0.5, 11u) * 0.0008 + fbm(m, 45.0, 3, 0.55, 12u) * 0.0007;
   float e = c.e + wob;
   const float JW = 0.003;                        // half joint (6 mm)
-  float bev = 0.006 + 0.01 * cellRand(c, 3u);    // rounded arris 6-16 mm
-  // chips along the arrises
-  vec4 cv = voro(m, vec2(16.0), 21u, 1.0);
-  float chip = smoothstep(0.5, 0.1, cv.x) * step(0.72, cv.z) * (1.0 - smoothstep(0.0, 0.025, e));
+  // worn chamfer 2-8 mm, coming and going along the arris (crisp stretches between)
+  // which arris: along a bed joint (horizontal) or a head joint
+  bool bed = min(c.ed.z, c.ed.w) < min(c.ed.x, c.ed.y);
+  float ta = bed ? m.x : m.y;                    // position along the arris
+  float bev = (0.002 + 0.006 * cellRand(c, 3u)) * (0.25 + 0.75 * smoothstep(-0.35, 0.35, noiseM(vec2(ta, c.h * 9.0), vec2(14.0), 39u)));
+  // spalls: per 3 cm of arris, one in four broken off by a flat plane 2-6 mm deep and
+  // 1-3 cm into the face, deepest at the arris; shell-shaped in plan (widest mid-way, the
+  // inner edge ragged), up to 4 cm long, so neighbouring stretches are looked at too
+  float seg0 = floor(ta / 0.03);
+  float spall = 0.0;
+  for (int j = -uOne; j <= uOne; j++) {
+    float seg = seg0 + float(j);
+    uint sh = sfH2(int(seg), bed ? 1 : 2, c.id + 211u);
+    if (sfHf(sh) < 0.62 + 0.3 * cellRand(c, 38u)) continue;
+    float sl = 0.012 + 0.022 * sfHf(sfH(sh + 1u));
+    float sc = (seg + 0.5) * 0.03 + (sfHf(sfH(sh + 2u)) - 0.5) * 0.02;
+    float sa = (ta - sc) / sl;
+    if (abs(sa) >= 1.0) continue;
+    float sw = (0.008 + 0.018 * sfHf(sfH(sh + 3u))) * sqrt(1.0 - sa * sa) * (1.0 + 0.35 * fbm(ms, 90.0, 2, 0.5, 37u));
+    float sd = 0.002 + 0.004 * sfHf(sfH(sh + 4u));
+    spall = max(spall, sd * sat(1.0 - (e - JW) / max(sw, 1e-4)));
+  }
   // face: not perfectly flat, block proud / sunk and slightly tilted
   float face = fbm(m, 3.5, 3, 0.5, 30u) * 0.0012 + (hA - 0.5) * 0.0024;
   face += dot(c.lp - 0.5 * c.size, vec2(cellRand(c, 7u) - 0.5, cellRand(c, 8u) - 0.5)) * 0.008;
   float t = clamp((e - JW) / bev, 0.0, 1.0);
-  float rnd = sqrt(1.0 - (1.0 - t) * (1.0 - t));
-  float hFace = face - bev * 0.6 * (1.0 - rnd) - chip * 0.005;
+  float hFace = face - bev * 0.45 * pow(1.0 - t, 1.5) * (1.0 + 0.4 * fbm(m, 120.0, 2, 0.5, 31u));
+  hFace -= spall * (1.0 + 0.25 * fbm(ms, 150.0, 2, 0.5, 32u));
+  float broken = smoothstep(0.0003, 0.0012, spall);
   float hMortar = -0.0045 + fbm(m, 70.0, 2, 0.5, 13u) * 0.0006 + 0.0008 * smoothstep(0.0, JW, e);
   float stone = smoothstep(JW - 0.0008, JW + 0.0008, e);
   float hs = 0.0;
   vec3 alb = limestone(m, c.h, hs);
   s.height = mix(hMortar, max(hFace + hs, hMortar), stone);
-  // soiled arrises (lightly: the shading does the rest), fresh chips paler
-  alb *= mix(0.93, 1.0, smoothstep(0.0, 0.02, e - JW));
-  alb *= 1.0 + 0.07 * chip;
-  vec3 mortar = vec3(0.58, 0.545, 0.47) * (1.0 + 0.07 * fbm(m, 45.0, 2, 0.5, 19u));
+  // soiling: dust and soot worked a few centimetres in from the joints (patchy, more on
+  // some blocks), the worn arris dusty, spall floors dirty grey
+  float ej = e - JW;
+  float soil = (0.05 + 0.08 * cellRand(c, 33u)) * (0.4 + 1.2 * (0.5 + 0.5 * fbm(ms, 7.0, 3, 0.55, 34u)));
+  alb *= 1.0 - soil * (1.0 - smoothstep(0.0, 0.035, ej));
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.8, 0.79, 0.78), 0.45 * (1.0 - t) * (1.0 - t));
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.86, 0.85, 0.84), 0.4 * broken);
+  // grey weathering crust in patches on old blocks
+  float crust = smoothstep(0.15, 0.55, fbm(ms, 2.5, 4, 0.6, 35u)) * smoothstep(0.55, 0.9, cellRand(c, 36u));
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.74, 0.74, 0.75), 0.45 * crust);
+  alb *= 1.02;                                   // keeps the mean albedo of the limestone (meta)
+  vec3 mortar = vec3(0.5, 0.47, 0.41) * (1.0 + 0.1 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.15 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)));
   s.albedo = mix(mortar, alb, stone);
-  s.rough = mix(0.95, 0.86 + 0.03 * fbm(m, 9.0, 2, 0.5, 20u), stone);
+  s.rough = mix(0.95, mix(0.86 + 0.03 * fbm(m, 9.0, 2, 0.5, 20u), 0.93, max(1.0 - t, broken)), stone);
 }
 `,
 };
@@ -266,7 +299,7 @@ export const rustic = {
   joint: 0.01,
   heightA: [-0.024, 0.096],
   pass: { normal: 1.25, ao: 1.0, aoRadius: 0.045, cavity: 0.15 },
-  glsl: limestone(0.5) + /* glsl */ `
+  glsl: limestone(0.75) + /* glsl */ `
 float sminP(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
 void surface(vec2 m, inout Surf s) {
   Cell c = rowsCell(m);
@@ -366,9 +399,18 @@ void surface(vec2 m, inout Surf s) {
   // facets each a touch paler or darker, crowns washed paler, fresh bites pale; dust and
   // soot settle in the scars and hollows
   float hollow = sat((planes - boss) / 0.01) * rise;
-  alb *= 1.0 + (0.05 * (fid - 0.5) + 0.04 * scar) * rise;
-  alb = mix(alb, vec3(lum(alb)) * vec3(0.92, 0.92, 0.93), 0.1 * hollow) * (1.0 - 0.03 * hollow);
-  alb *= mix(0.95, 1.03, sat(hRock / 0.06));
+  alb *= 1.0 + (0.07 * (fid - 0.5) + 0.04 * scar) * rise;
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.8, 0.8, 0.81), 0.3 * hollow) * (1.0 - 0.1 * hollow);
+  // crowns washed paler by the rain, the low shoulders and the margin dustier
+  alb *= mix(0.86, 1.05, sat(hRock / 0.06));
+  // grey soot crust in patches over part of the boss, heavier on some blocks; fine dark
+  // specks of lichen and soot in the pitting
+  vec2 ms = m + vec2(c.h * 13.1, cellRand(c, 15u) * 7.7);
+  float crust = smoothstep(0.05, 0.5, fbm(ms, 3.2, 4, 0.6, 66u) + 0.35 * (cellRand(c, 16u) - 0.5)) * (0.4 + 0.6 * cellRand(c, 17u));
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.62, 0.62, 0.63), 0.45 * crust * rise);
+  vec4 sv = voro(ms, vec2(70.0), 67u, 1.0);
+  alb *= 1.0 - 0.35 * smoothstep(0.3, 0.1, sv.x) * step(0.9 - 0.15 * crust, sv.z) * rise;
+  alb *= 1.07;                                   // keeps the mean albedo of the limestone (meta)
   vec3 mortar = vec3(0.6, 0.56, 0.48) * (1.0 + 0.08 * fbm(m, 40.0, 2, 0.5, 58u));
   s.height = mix(-0.022, hFace + hm, stone);
   s.albedo = mix(mortar, alb, stone);
@@ -378,7 +420,8 @@ void surface(vec2 m, inout Surf s) {
 `,
 };
 
-// Finely dressed trim stone (cornices, sills, string courses, arches): rubbed faces, no joints.
+// Finely dressed trim stone (cornices, sills, string courses, arches): rubbed faces, no joints,
+// weathered in patches.
 export const smooth = {
   name: 'smooth', flat: [0.63, 0.495, 0.28, 0.75], size: 512, tile: [2.0, 2.0], ss: 2,
   pass: { normal: 1.0, ao: 0.4, aoRadius: 0.006, cavity: 0.05 },
@@ -388,7 +431,13 @@ void surface(vec2 m, inout Surf s) {
   // faint fine claw-tool striation along u
   h += sin(m.y / uTile.y * 333.0 * 6.2831853 + fbm(m, 6.0, 2, 0.5, 73u) * 3.0) * 0.00008;
   vec3 c = limestone(m, 0.37, h);
-  s.albedo = c * vec3(1.03, 1.03, 1.04);
+  // weathered trim: a grey crust in patches (sheltered undersides and returns keep it
+  // longest), fine soot specks, faint rust-brown flushes
+  float crust = smoothstep(0.1, 0.6, fbm(m, 1.6, 4, 0.6, 75u));
+  c = mix(c, vec3(lum(c)) * vec3(0.76, 0.76, 0.77), 0.3 * crust);
+  vec4 sv = voro(m, vec2(80.0), 76u, 1.0);
+  c *= 1.0 - 0.3 * smoothstep(0.3, 0.1, sv.x) * step(0.93 - 0.1 * crust, sv.z);
+  s.albedo = c * vec3(1.06, 1.06, 1.065);
   s.height = h;
   s.rough = 0.74 + 0.04 * fbm(m, 8.0, 2, 0.5, 74u);
 }

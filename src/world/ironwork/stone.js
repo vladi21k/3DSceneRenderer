@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { normalizeAttributes } from '../../core/geom.js';
 import { GeoWriter, sweepPath, sweepPathPos, insetPath, capPolygon, sweepBar, box, boxPos, lathe, shared, posTemplate, weldTemplate } from './geo.js';
-import { centroidColor } from './mats.js';
+import { centroidColor, NEGLECT_GLSL } from './mats.js';
 
 // Carved limestone parts of a balcony: the moulded slab, the scroll consoles (corbels)
 // that carry it, and the turned-baluster stone balustrade alternative.
@@ -68,18 +68,19 @@ export function slabPath(u0, u1, depth, rc = 0, into = 0.25, n = 5) {
   return p;
 }
 
-/** Grime kinds recorded per vertex (attribute aGk) for the ironwork stone material. */
-export const GRIME = { NONE: 0, EDGE: 1, SOFFIT: 2, CONSOLE: 3 };
+/** Grime kinds recorded per vertex (attribute aGk) for the ironwork stone material
+ *  (EDGE: slab edge under an iron railing, PLAIN_EDGE: under a stone balustrade). */
+export const GRIME = { NONE: 0, EDGE: 1, SOFFIT: 2, CONSOLE: 3, PLAIN_EDGE: 4 };
 
 /** Writes one balcony slab (sweep + top + soffit) into W (matrix = facade frame): T the
  *  slab's thickness at the wall, E its moulded edge (≥ T). Baked occlusion: dirty top
  *  arris, darker lower edge and drip groove. The soffit darkens smoothly toward the wall
  *  (occlusion times a soot film that thickens toward the wall, 0.08 at the front edge to
  *  0.2 at the wall): no patches, which read as camouflage on a surface this even. */
-export function writeSlab(W, path, y, T, E, variant, lod, dirt = 1, depth = 1) {
+export function writeSlab(W, path, y, T, E, variant, lod, dirt = 1, depth = 1, iron = true) {
   const prof = slabProfile(T, E, variant, lod).map(([o, v, ao]) => [o, y + v, ao * dirt]);
   const [sm0, sm1] = slabSmooth(variant, lod);
-  W.kind(GRIME.EDGE);
+  W.kind(iron ? GRIME.EDGE : GRIME.PLAIN_EDGE);
   sweepPath(W, path, prof, { shadeFn: (o, v, j) => prof[j][2], smoothFrom: sm0, smoothTo: sm1 });
   const topO = prof[0][0], botO = prof[prof.length - 1][0];
   W.kind(GRIME.NONE);
@@ -303,7 +304,10 @@ export function copingProfile(lod) {
 // ---------------------------------------------------------------- weathered stone material
 // stone.smooth (with vertex tint/AO) plus balcony weathering, by grime kind (aGk):
 //   EDGE     slab front: water-borne dirt streaks down the face, a dark crust along the
-//            drip edge, now and then a rust tail where a railing post is leaded in
+//            drip edge; under iron railings rust tails from the bar feet leaded into
+//            the slab and a rust-brown wash along its top, as far as the railing is
+//            neglected (mats.js iwNeglect, sampled where the railing stands)
+//   PLAIN_EDGE  the same without rust (under stone balustrades)
 //   SOFFIT   nothing per pixel: its smooth soot gradient toward the wall is baked
 //   CONSOLE  streaks down the scroll faces and soot in the lower coves
 // High-frequency terms fade out as they approach pixel size, so nothing shimmers.
@@ -334,33 +338,53 @@ export function makeStoneMaterial(app) {
 attribute float aGk;
 varying float vGk;
 varying vec2 vGuv;
-varying vec3 vGl;`)
+varying vec3 vGl;
+varying float vGn;
+${NEGLECT_GLSL}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
 	vGk = aGk;
 	vGuv = uv;
 	vGl = position;
+	vGn = 0.0;
 	#ifdef USE_INSTANCING
 		// per console: offset the pattern by the instance position
 		vGl.x += dot( instanceMatrix[ 3 ].xyz, vec3( 0.37, 0.11, 0.53 ) );
-	#endif`);
+	#endif
+	// (slab edges are merged in world space: the railing above stands about 0.5 m higher)
+	if ( aGk > 0.5 && aGk < 1.5 ) vGn = iwNeglect( ( modelMatrix * vec4( position + vec3( 0.0, 0.5, 0.0 ), 1.0 ) ).xyz );`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
 varying float vGk;
 varying vec2 vGuv;
 varying vec3 vGl;
+varying float vGn;
 ${GRIME_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	if ( vGk > 0.5 ) {
 		vec3 gTint = vec3( 1.0 );
 		float gDark = 0.0;
-		if ( vGk < 1.5 ) {
+		if ( vGk < 1.5 || vGk > 3.5 ) {
 			// slab edge: u along the front, v = depth below the slab top
 			float fx = fwidth( vGuv.x );
 			float d = vGuv.y;
 			gDark = gwStreaks( vGuv.x, d, fx ) * mix( 0.12, 0.3, smoothstep( 0.0, 0.18, d ) );
 			gDark += 0.22 * smoothstep( 0.1, 0.22, d ) * ( 0.6 + 0.4 * gwN( vec2( vGuv.x * 3.0, 1.7 ) ) );
-			float rust = smoothstep( 0.83, 0.95, gwN( vec2( vGuv.x * 4.3 + 11.0, 0.5 ) ) ) * ( 1.0 - smoothstep( 0.05, 0.2, fx ) );
-			gTint = mix( vec3( 1.0 ), vec3( 0.72, 0.52, 0.38 ), rust * 0.75 );
+			if ( vGk < 1.5 ) {
+				// rust tails from the bar feet: each 11 cm cell of the front may hold one, the
+				// more the railing is neglected (a few even under kept-up iron), 1-3 cm wide
+				// and 5-28 cm long; where a pixel is wider than a tail they fade into their
+				// mean tint. Over them a rust-brown wash along the top under neglected iron.
+				float cx = vGuv.x / 0.11, cell = floor( cx );
+				float h1 = gwH( vec2( cell, 3.7 ) ), h2 = gwH( vec2( cell, 9.1 ) ), h3 = gwH( vec2( cell, 5.3 ) );
+				float p = vGn * 0.75 + 0.03;
+				float w = ( 0.006 + 0.008 * h3 ) / 0.11, len = mix( 0.05, 0.28, h3 * h3 );
+				float tail = step( h1, p ) * ( 1.0 - smoothstep( w * 0.35, w, abs( fract( cx ) - 0.25 - 0.5 * h2 ) ) )
+					* ( 1.0 - smoothstep( len * 0.25, len, d ) );
+				float mean = p * 0.12 * ( 1.0 - smoothstep( 0.02, 0.25, d ) );
+				float rs = mix( tail, mean, smoothstep( 0.004, 0.012, fx ) );
+				rs = max( rs, vGn * 0.3 * ( 1.0 - smoothstep( 0.0, 0.07, d ) ) );
+				gTint = mix( vec3( 1.0 ), vec3( 0.66, 0.42, 0.27 ), rs * 0.85 );
+			}
 		} else if ( vGk < 2.5 ) {
 			// soffit: its soot gradient is baked (writeSlab); the library's own soffit
 			// weathering adds the rest evenly
@@ -373,7 +397,7 @@ ${GRIME_GLSL}`)
 		diffuseColor.rgb *= gTint * ( 1.0 - gDark );
 	}`);
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone2'; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone3'; };
   m.needsUpdate = true;
   app.materials.register(m.name, m);
   return m;

@@ -10,6 +10,7 @@ import { SideStreets } from './behaviour/sideStreets.js';
 import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES, settleShape } from './behaviour/agent.js';
 import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D, TRAM_LEN } from './behaviour/constants.js';
 import { footDims } from './behaviour/footprint.js';
+import { stanceOf } from './behaviour/stance.js';
 
 // Crowd behaviour: where the pedestrians of the street go and what they do. The
 // figures themselves are drawn by app.humans; this module feeds it one record per
@@ -83,7 +84,8 @@ class CrowdSim {
     this.steering = new Steering(this);
     this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
-    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0 }, new Set(['pose', 'prop', 'propSeed', 'appearance']));
+    // (outfit: 'waiter' for café staff, '' for everybody else)
+    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0, idle: -1, outfit: '' }, new Set(['pose', 'prop', 'propSeed', 'appearance', 'idle']));
     this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
@@ -131,7 +133,8 @@ class CrowdSim {
     const put = (s, d, c) => { route.toWorld(s, d, 0.08, _v); D.pos[k * 3] = _v.x; D.pos[k * 3 + 1] = _v.y; D.pos[k * 3 + 2] = _v.z; D.col[k * 3] = c[0]; D.col[k * 3 + 1] = c[1]; D.col[k * 3 + 2] = c[2]; k++; };
     const COL = [null, [1, 0.2, 0.8], [0.1, 0.9, 1], [1, 0.8, 0.1]];
     let n = 0;
-    for (const a of this.population.agents) {
+    for (let ii = 0, AG = this.population.agents, nn = AG.length; ii < nn; ii++) {
+      const a = AG[ii];
       if (!a.active || !a.mob || a.fpR <= 0 || n >= D.MAXN) continue;
       n++;
       const kk = Math.max(0.5, 1 + route.curvature(a.s) * a.d), c = COL[a.mob];
@@ -189,7 +192,8 @@ class CrowdSim {
     const r = this.rng, tram = this.tram;
     const reach = Math.max(40, 1.5 * tram.stopDist);
     let reacted = 0;
-    for (const a of this.population.agents) {
+    for (let ii = 0, AG = this.population.agents, nn = AG.length; ii < nn; ii++) {
+      const a = AG[ii];
       if (!a.active || a.state === ST.SEATED) continue;
       const ahead = a.s - tram.trainU;
       if (ahead < -8 || ahead > reach + 20) continue;
@@ -364,6 +368,8 @@ class CrowdSim {
         if (a.bikeV > 1.2 && dt > 0) this._mover(a, cam, cf, dt);
       } else a.lean = 0;
       if (!H || !H.set) continue;
+      // how they stand (talking in company, looking about at a stop…; stance.js)
+      stanceOf(this, a);
       o.x = a.x; o.y = a.y; o.z = a.z;
       o.heading = a.heading; o.speed = a.mob === MOB.CYCLE ? a.bikeV : a.speed; o.phase = a.phase;
       const shown = a.mob && this.poseOK[a.mob];
@@ -372,6 +378,7 @@ class CrowdSim {
       // handlebar angle (rad, + to the left) of a bicycle following its turn: tan δ = wheelbase · ω / v
       o.steer = shown && a.mob === MOB.CYCLE ? Math.max(-0.5, Math.min(0.5, Math.atan((1.05 * -a.yawW) / Math.max(0.8, a.bikeV)))) : 0;
       o.look = a.look; o.appearance = a.appearance; o.visible = true;
+      o.idle = a.idle; o.outfit = a.role === 'staff' ? 'waiter' : '';
       H.set(this.base + a.slot, o);
     }
   }
@@ -451,7 +458,8 @@ class CrowdSim {
     const ck = this.check, route = this.route, tr = app.train;
     if (!tr) return;
     const map = this.map;
-    for (const a of this.population.agents) {
+    for (let ii = 0, AG = this.population.agents, nn = AG.length; ii < nn; ii++) {
+      const a = AG[ii];
       if (!a.active) continue;
       // walls and obstacles (route coordinates)
       const side = a.d >= 0 ? 1 : -1, ad = Math.abs(a.d);
@@ -616,7 +624,8 @@ class CrowdSim {
     // walkers with a stroller / bicycle (or walking with one) by distance band, and the walking
     // directions in the track corridor 20-90 m ahead (towards the cab / away from it)
     const prop = [[0, 0], [0, 0]], dirs = [0, 0];
-    for (const a of this.population.agents) {
+    for (let ii = 0, AG = this.population.agents, nn = AG.length; ii < nn; ii++) {
+      const a = AG[ii];
       if (!a.active) continue;
       const rel = a.s - this.camU;
       if ((a.kind === KIND.WALKER || a.kind === KIND.STANDER) && rel > 0 && rel < 400) {
@@ -679,6 +688,10 @@ class CrowdSim {
         // frames (within 60 m) of a stroller / bicycle overlapping a body or another one, distinct pairs
         propPeople: { frames: ck.pa.frames, agentOverlap: ck.pa.agentOverlap, propOverlap: ck.pa.propOverlap, pairs: ck.pa.pairs.size, minAgentGap: +ck.pa.minAgentGap.toFixed(3), minPropGap: +ck.pa.minPropGap.toFixed(3), log: ck.pa.log } } : null,
       population: pop.stats, events: this.events,
+      // appearance bank (population.js): entries, characters, and the people placed with a spot
+      // by outcome: no twin within 20 m / another age class or sex taken / a twin kept (farthest)
+      appearance: pop.bank ? { bank: pop.bank.n, chars: pop.bank.chars, inUse: pop.bank.use.reduce((n, u) => n + (u > 0 ? 1 : 0), 0),
+        placed: { clean: pop.cloneN[0], otherClass: pop.cloneN[1], twin: pop.cloneN[2] } } : null,
       standing: { near300: this.counts.stand300, beyond300: this.counts.standFar }, sideStreets: { people: this.counts.side, ...this.side.stats },
       visibleSpawns: { under100m: this.popIn[0], under250m: this.popIn[1], under450m: this.popIn[2], beyond450m: this.popIn[3], bySource: this.popSrc },
       featureArrivalsInView: { under450m: this.featureIn[0], under660m: this.featureIn[1], beyond660m: this.featureIn[2] },

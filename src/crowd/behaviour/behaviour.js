@@ -872,6 +872,8 @@ function startSit(c, a) {
   if (a.isChild) return false;
   const cafe = c.map.cafeAtS(a.s + a.dir * 4, a.side);
   if (!cafe) return false;
+  // (not at a terrace where somebody of the same character already sits or stands)
+  if (c.population.charNear(a.charI, a.s + a.dir * 4, a.d, 9, a)) { c.tally('sitTwinSkipped'); return false; }
   const seat = c.population.freeChair(cafe, a);
   if (!seat) return false;
   a.task = TASK.SIT; a.step = 0; a.feature = seat;

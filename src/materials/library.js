@@ -56,6 +56,9 @@ const PAVING_CELL = {
 // chewing gum: grey to grey-black blotches 0.6-3 cm across, clustered (3-8 m noise) where
 // people stand and wait; on the street hardly any between and over the rails
 const GUM = { radius: 0.0065, albedo: 0.67, rough: 0.5, cluster: { freq: 1 / 25, lo: 0.5, hi: 0.6 } };
+// old spill blots soaked into the setts (oil, coffee, juice): 2-10 cm, soft, a darker tide
+// line, most a little glossy (runtime, per global sett: never repeating with the tile)
+const BLOT = { prob: 0.045, radius: 0.022, albedo: 0.8, rough: 0.82 };
 const PAVING_MACRO = { f1: 1 / 2.5, f2: 1 / 20, albedo: 0.16, rough: 0.12, an1: [1, 1], an2: [0.12, 1.5] };
 // crystals at close range (mica darker and glossy, feldspar pale), low contrast: fine
 // grey granite, not terrazzo
@@ -121,7 +124,7 @@ export const LIBRARY = {
     bake: 'paving',
     surf: {
       swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL, mirror: 0.75,
-      spots: { ...GUM, prob: 0.12, laneClear: 3.0 },
+      spots: { ...GUM, prob: 0.12, laneClear: 3.0, blot: BLOT },
       stain: { amount: 0.2, freq: 0.5, threshold: 0.66 },
       // soft grime either side of each rail's mortar strip (brake dust, oil, the dirt the
       // flanges throw out of the grooves), and a slightly darker four-foot (drips; a real
@@ -141,7 +144,7 @@ export const LIBRARY = {
     bake: 'paving',
     surf: {
       scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
-      spots: { ...GUM, prob: 0.22 },
+      spots: { ...GUM, prob: 0.22, blot: { ...BLOT, prob: 0.06 } },
       stain: { amount: 0.22, freq: 0.5, threshold: 0.64 },
       // v = metres from the gutter: grime along the kerb edge (and ~7 m in, at the building
       // line), a darker trodden pedestrian lane round 3.6 m
@@ -183,10 +186,10 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 21-29 mm running band on the head is the brightest part (satin steel, albedo ~0.47, roughness 0.45-0.6 with fine lengthwise streaks, 2-10 cm patches and duller burn patches, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498. The rest of the head is worn steel, so the whole head reads light beside the flangeway: the shoulders either side of the band (albedo ~0.29, roughness ~0.6, metal 0.75), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a light oxide film (albedo ~(0.255, 0.232, 0.205), roughness ~0.65, metal 0.6); the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 21-29 mm running band on the head is the only bright part (satin steel, albedo ~0.47, roughness 0.48-0.66 with fine lengthwise streaks, 2-10 cm patches, 10-50 cm dull stretches, duller burn patches and fine fatigue pits, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498. Off the band the head is oxidised: the shoulders either side of the band under a thin brown-grey oxide (albedo ~(0.235, 0.205, 0.175), roughness ~0.66, metal 0.55), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.2, 0.155, 0.11), roughness ~0.72, metal 0.4); the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
       band: { centres: [0.0435, 0], halfWidth: 0.0125, vPerM: [0.5, 1], gaugeCorner: 0.076, lip: [0.1, 0.13] },
       // mean far-field values per zone (street's line overlay should match them)
-      zones: { band: { albedo: [0.47, 0.465, 0.455], rough: 0.52, metal: 1 }, shoulder: { albedo: [0.29, 0.28, 0.265], rough: 0.6, metal: 0.75 }, bevel: { albedo: [0.255, 0.232, 0.205], rough: 0.65, metal: 0.6 }, lip: { albedo: [0.16, 0.145, 0.125], rough: 0.72, metal: 0.4 } },
+      zones: { band: { albedo: [0.455, 0.45, 0.44], rough: 0.56, metal: 1 }, shoulder: { albedo: [0.225, 0.19, 0.157], rough: 0.68, metal: 0.5 }, bevel: { albedo: [0.19, 0.142, 0.098], rough: 0.74, metal: 0.36 }, lip: { albedo: [0.16, 0.145, 0.125], rough: 0.72, metal: 0.4 } },
     },
   },
   'rail.side': {
@@ -278,15 +281,16 @@ export const LIBRARY = {
     kind: 'physical',
     props: { color: [0.6, 0.53, 0.4], roughness: 1, sheen: 0.6, sheenRoughness: 0.65, sheenColor: [0.5, 0.48, 0.44], side: 'double' },
     bake: 'canvas',
-    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.06, rough: 0.05 }, trans: [0.3, 0.27, 0.22] },
+    // water marks and dirt at decimetre scale, a little run-off stretch down the cloth
+    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.08, rough: 0.05 }, stain: { amount: 0.1, freq: 0.9, threshold: 0.6, stretch: 1.6 }, trans: [0.3, 0.27, 0.22] },
     vc: 'albedo',
-    meta: { uv: 'metres', note: 'acrylic canvas with weave, sheen and back-lit translucency' },
+    meta: { uv: 'metres', note: 'acrylic canvas with heathered weave, soiling, sheen and back-lit translucency' },
   },
   'fabric.umbrella': {
     kind: 'physical',
     props: { color: [0.7, 0.66, 0.57], roughness: 1, sheen: 0.6, sheenRoughness: 0.65, sheenColor: [0.5, 0.48, 0.44], side: 'double' },
     bake: 'canvas',
-    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.05, rough: 0.05 }, trans: [0.38, 0.35, 0.3] },
+    surf: { macro: { f1: 1 / 1.5, f2: 1 / 4, albedo: 0.07, rough: 0.05 }, stain: { amount: 0.08, freq: 0.9, threshold: 0.62 }, trans: [0.38, 0.35, 0.3] },
     vc: 'albedo',
   },
   'fabric.flag': {

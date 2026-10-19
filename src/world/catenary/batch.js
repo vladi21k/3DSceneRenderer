@@ -396,6 +396,35 @@ export class CatBatches {
     }
   }
 
+  /**
+   * Start-up warm-up, every frame until the app is ready: one invisible instance per part
+   * (scaled to a few micrometres, a little in front of the eye), so every part's program
+   * has its first draw behind the loading screen. The start-up compile links each program,
+   * but the GPU process pays a large one-off cost at a program's first draw (100-200 ms,
+   * mostly when the browser's shader cache supplied the program): signals and banners
+   * first seen mid-ride stalled a frame. `eye`, `dir` (unit): world vectors.
+   */
+  warmup(eye, dir) {
+    _m4.makeScale(1e-5, 1e-5, 1e-5).setPosition(eye.x + dir.x * 2, eye.y + dir.y * 2, eye.z + dir.z * 2);
+    if (!this.warm) {
+      this.warm = [];
+      for (const b of this.batches) if (b instanceof CatBatch) this.warm.push(b, b.add(0, 0, _m4, WHITE));
+    }
+    for (let i = 0, W = this.warm; i < W.length; i += 2) {
+      const b = W[i], id = W[i + 1];
+      b.mesh.setMatrixAt(id, _m4);
+      b.setVisible(id, true);
+      b.bounds.dirty = true;
+    }
+  }
+
+  /** End of the warm-up (the app is ready): remove the warm-up instances. */
+  endWarmup() {
+    if (!this.warm) return;
+    for (let i = 0, W = this.warm; i < W.length; i += 2) W[i].remove(W[i + 1]);
+    this.warm = null;
+  }
+
   /** Once per frame: instance visibility from the chunk groups. */
   sync() {
     const frame = this.app.frame;

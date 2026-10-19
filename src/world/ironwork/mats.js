@@ -55,6 +55,50 @@ float iwNoise( vec3 p ) {
 	return mix( mix( mix( a, b, t.x ), mix( c, d, t.x ), t.y ), mix( mix( e, g, t.x ), mix( h, k, t.x ), t.y ), t.z );
 }`;
 
+// Neglect of the iron, 0 (kept up) .. 1 (left to rust): a smooth value noise in world
+// space on a lattice of about a balcony along the street and a storey up, so one
+// household's railing reads alike and the next may not. The lattice values come from an
+// integer hash that the shaders (iwNeglect) and ironNeglect() below compute exactly
+// alike, so the CPU can publish what the shaders draw (bal.rust, see consolesOf). About
+// two railings in three are kept up (under 0.2), one in nine is rusting (over 0.8).
+export const NEGLECT = { CELL: [4.0, 3.4, 4.0], LO: 0.45, HI: 0.85 };
+export const NEGLECT_GLSL = /* glsl */ `
+float iwH3( ivec3 i ) {
+	uvec3 u = uvec3( i );
+	uint h = ( u.x * 0x8da6b343u ) ^ ( u.y * 0xd8163841u ) ^ ( u.z * 0xcb1ab31fu );
+	h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u;
+	return float( h ) * ( 1.0 / 4294967296.0 );
+}
+float iwNeglect( vec3 p ) {
+	vec3 x = p / vec3( ${NEGLECT.CELL.map((c) => c.toFixed(2)).join(', ')} ), fl = floor( x ), t = x - fl;
+	ivec3 i = ivec3( fl );
+	t = t * t * ( 3.0 - 2.0 * t );
+	float n = mix(
+		mix( mix( iwH3( i ), iwH3( i + ivec3( 1, 0, 0 ) ), t.x ), mix( iwH3( i + ivec3( 0, 1, 0 ) ), iwH3( i + ivec3( 1, 1, 0 ) ), t.x ), t.y ),
+		mix( mix( iwH3( i + ivec3( 0, 0, 1 ) ), iwH3( i + ivec3( 1, 0, 1 ) ), t.x ), mix( iwH3( i + ivec3( 0, 1, 1 ) ), iwH3( i + ivec3( 1, 1, 1 ) ), t.x ), t.y ),
+		t.z );
+	return smoothstep( ${NEGLECT.LO.toFixed(2)}, ${NEGLECT.HI.toFixed(2)}, n );
+}`;
+const h3 = (ix, iy, iz) => {
+  let h = (Math.imul(ix, 0x8da6b343) ^ Math.imul(iy, 0xd8163841) ^ Math.imul(iz, 0xcb1ab31f)) >>> 0;
+  h = (h ^ (h >>> 16)) >>> 0; h = Math.imul(h, 0x7feb352d) >>> 0;
+  h = (h ^ (h >>> 15)) >>> 0; h = Math.imul(h, 0x846ca68b) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+const smooth = (t) => t * t * (3 - 2 * t);
+/** Neglect of the iron at world position (x, y, z), as the shaders draw it (0 .. 1). */
+export function ironNeglect(x, y, z) {
+  const C = NEGLECT.CELL, px = x / C[0], py = y / C[1], pz = z / C[2];
+  const fx = Math.floor(px), fy = Math.floor(py), fz = Math.floor(pz);
+  const tx = smooth(px - fx), ty = smooth(py - fy), tz = smooth(pz - fz);
+  const L = (a, b, t) => a + (b - a) * t;
+  const n = L(
+    L(L(h3(fx, fy, fz), h3(fx + 1, fy, fz), tx), L(h3(fx, fy + 1, fz), h3(fx + 1, fy + 1, fz), tx), ty),
+    L(L(h3(fx, fy, fz + 1), h3(fx + 1, fy, fz + 1), tx), L(h3(fx, fy + 1, fz + 1), h3(fx + 1, fy + 1, fz + 1), tx), ty), tz);
+  const t = Math.min(1, Math.max(0, (n - NEGLECT.LO) / (NEGLECT.HI - NEGLECT.LO)));
+  return smooth(t);
+}
+
 /** Vertex colours interpolated at the sample centroid (shader patch, call in
  *  onBeforeCompile). The baked occlusion of small parts changes fast across narrow faces
  *  (drip grooves, fillets, coves): with MSAA a pixel only partly covered by such a face
@@ -100,14 +144,17 @@ float iwCoverage( float a ) {
 
 /** Near railing geometry: fades out by projected bar width (with the view-angle factor
  *  for bays, whose instance z axis is the railing normal: angle 1; posts 0); rust at
- *  the feet and in patches (amount: 0 none .. 1 neglected paint). Both are uniforms, so
+ *  the feet, in patches and in runs down the bars, by the iron's neglect (iwNeglect:
+ *  hardly any on a kept-up railing, broken paint over half of a neglected one, whose
+ *  remaining paint has chalked to a dusty charcoal; a fresh coat is glossier). `rust`
+ *  scales it (black iron less than the thinner coloured paints). Both are uniforms, so
  *  black and painted bays and posts all share one program. */
 function nearPatch(mat, rust, angle) {
   const uIwRust = { value: rust }, uIwAngle = { value: angle ? 1 : 0 };
   return chain(mat, '|ironNear', (sh) => {
     sh.uniforms.uIwRust = uIwRust;
     sh.uniforms.uIwAngle = uIwAngle;
-    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;\nuniform float uIwAngle;');
+    VERT_DIST(sh, '\nvarying vec3 vIwW;\nvarying float vIwY;\nvarying float vIwK;\nvarying float vIwNeg;\nuniform float uIwAngle;' + NEGLECT_GLSL);
     sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
 	#ifdef USE_INSTANCING
 		vIwW = ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz;
@@ -117,12 +164,14 @@ function nearPatch(mat, rust, angle) {
 		vec3 iwN = normalize( mat3( modelMatrix ) * vec3( 0.0, 0.0, 1.0 ) );
 	#endif
 	vIwK = mix( 1.0, ${ANGLE_GLSL('abs( dot( iwN, normalize( cameraPosition - vIwW ) ) )')}, uIwAngle );
-	vIwY = transformed.y;`);
+	vIwY = transformed.y;
+	vIwNeg = iwNeglect( vIwW );`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>${FRAG_HEAD}
 varying vec3 vIwW;
 varying float vIwY;
 varying float vIwK;
+varying float vIwNeg;
 uniform float uIwRust;
 float iwRust = 0.0;
 float iwRn = 0.0;
@@ -136,16 +185,21 @@ ${NOISE}`)
 	#include <alphatest_fragment>`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	{
-		// rust: broken paint where water sits (bottom rail, feet, collars) and in patches
+		// rust: broken paint where water sits (bottom rail, feet, collars), in patches and
+		// in runs down the bars (stretched upright), as far as the railing is neglected
 		vec3 q = mod( vIwW, 512.0 );
+		float neg = vIwNeg;
 		iwRn = iwNoise( q * 13.0 ) * 0.6 + iwNoise( q * 41.0 ) * 0.4;
 		float foot = 1.0 - smoothstep( 0.0, 0.2, vIwY );
-		float m = iwRn + 0.2 * foot - 0.66;
-		iwRust = uIwRust * smoothstep( 0.0, 0.12, m );
+		float run = iwNoise( vec3( q.x * 31.0, q.y * 3.3, q.z * 31.0 ) );
+		float m = iwRn + 0.2 * foot + 0.14 * run * neg - mix( 0.8, 0.55, neg );
+		iwRust = uIwRust * mix( 0.75, 1.0, neg ) * smoothstep( 0.0, 0.12, m );
 		vec3 rc = mix( vec3( 0.075, 0.032, 0.016 ), vec3( 0.2, 0.085, 0.035 ), iwNoise( q * 97.0 ) );
+		// chalked paint on neglected iron: lighter, greyer, duller
+		diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * 1.45 + vec3( 0.011, 0.0105, 0.0098 ), neg );
 		diffuseColor.rgb = mix( diffuseColor.rgb, rc, iwRust );
 	}`)
-      .replace('#include <lights_physical_fragment>', `roughnessFactor = mix( roughnessFactor, 0.93, iwRust );
+      .replace('#include <lights_physical_fragment>', `roughnessFactor = mix( min( roughnessFactor * mix( 0.85, 1.3, vIwNeg ), 1.0 ), 0.93, iwRust );
 	#include <lights_physical_fragment>`);
   });
 }
@@ -160,11 +214,18 @@ export const uIwWiden = { value: WIDEN.map((w) => new THREE.Vector4(...w)) };
 
 function cardPatch(mat) {
   return chain(mat, '|ironCard', (sh) => {
-    VERT_DIST(sh);
+    VERT_DIST(sh, '\nvarying float vIwNeg;' + NEGLECT_GLSL);
+    sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+	#ifdef USE_INSTANCING
+		vIwNeg = iwNeglect( ( modelMatrix * instanceMatrix * vec4( transformed, 1.0 ) ).xyz );
+	#else
+		vIwNeg = iwNeglect( ( modelMatrix * vec4( transformed, 1.0 ) ).xyz );
+	#endif`);
     sh.uniforms.uIwWiden = uIwWiden;
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>${FRAG_HEAD}
 uniform vec4 uIwWiden[ ${ATLAS.ROWS} ];
+varying float vIwNeg;
 vec3 iwN;`)
       // the atlas holds coverage planes, not colour (colour is per vertex)
       .replace('#include <map_fragment>', 'vec4 iwCov = texture2D( map, vMapUv );')
@@ -186,6 +247,10 @@ vec3 iwN;`)
 		if ( a <= 0.0 ) discard;
 		diffuseColor.a = a;
 		diffuseColor.rgb *= mix( 1.0, 0.7, 1.0 - nv );
+		// neglected iron: the near geometry's chalked paint and rust (mats.js nearPatch)
+		// as their mean over bars too fine to resolve
+		diffuseColor.rgb = mix( diffuseColor.rgb * 1.45 + vec3( 0.011, 0.0105, 0.0098 ), diffuseColor.rgb, 1.0 - vIwNeg );
+		diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.13, 0.056, 0.026 ), 0.02 + 0.3 * vIwNeg * vIwNeg );
 		// shading normal of the lattice: the bar faces we see turn toward us as the view
 		// grazes the card (round and square bars alike), not the card's own plane
 		iwN = normalize( V + 0.5 * ( dot( N, V ) < 0.0 ? -N : N ) );
@@ -197,6 +262,34 @@ vec3 iwN;`)
 	// angles: reflectance stays at the paint's normal-incidence value
 	material.specularF90 = 0.04;`);
   });
+}
+
+/** Shadow-pass material of the railing cards. The atlas mips hold the true coverage of
+ *  the iron in each texel, so where a shadow texel is wider than the bars (coarse
+ *  cascades, far railings) a fixed 0.5 cut would drop the bars altogether (coverage
+ *  0.15-0.4) and keep only the handrail. Instead each shadow texel is solid where the
+ *  coverage beats a 4x4 ordered-dither threshold: the sun filter, two texels wide or
+ *  more, then darkens by the true share of iron, and once texels are finer than the bars
+ *  the mips are sharp and the bars cast crisp. The cascades are snapped to their texel
+ *  grid, so the pattern holds still while the camera moves. */
+function cardDepthMaterial(atlas) {
+  const m = new THREE.MeshDepthMaterial({
+    name: 'ironwork.cardDepth', depthPacking: THREE.RGBADepthPacking, map: atlas, alphaTest: 0.5, side: THREE.DoubleSide,
+  });
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+float iwDither( vec2 p ) {
+	ivec2 q = ivec2( mod( p, 4.0 ) );
+	int i = q.x + q.y * 4;
+	// 4x4 Bayer matrix, row by row
+	const float B[ 16 ] = float[ 16 ]( 0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0 );
+	return ( B[ i ] + 0.5 ) / 16.0;
+}`)
+      .replace('#include <alphatest_fragment>', 'if ( diffuseColor.a < iwDither( gl_FragCoord.xy ) ) discard;');
+  };
+  m.customProgramCacheKey = () => 'ironwork.cardDepth';
+  return m;
 }
 
 // Paint colours seen on the references besides black (linear albedo): dark blue-grey,
@@ -234,7 +327,7 @@ export function makeMaterials(app, atlas) {
   for (const m of [iron, paint, ironPost, paintPost, card]) M.register(m.name, m);
 
   return {
-    iron, paint, ironPost, paintPost, card,
+    iron, paint, ironPost, paintPost, card, cardDepth: cardDepthMaterial(atlas),
     ironColor: () => [lib.color.r, lib.color.g, lib.color.b],
   };
 }

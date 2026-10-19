@@ -17,11 +17,13 @@ vec3 viewPosFrom(vec2 uv, float z) {
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 `;
 
-// Moving vehicles (the oncoming trams) for the motion blur and the TAA history: oriented
-// boxes around each car body (camera-relative world space → unit cube) and how far that
-// body moved since the last frame; a pixel inside a box was that much further back then
+// Moving vehicles (the oncoming trams, the riding cyclists) for the motion blur and the TAA
+// history: oriented boxes around each car body or bicycle and rider (camera-relative world
+// space → unit cube) and how far it moved since the last frame; a pixel inside a box was
+// that much further back then
+export const NUM_MOVERS = 8;
 const MOVER_GLSL = /* glsl */ `
-#define NUM_MOVERS 4
+#define NUM_MOVERS ${NUM_MOVERS}
 uniform mat4 uMoverInv[NUM_MOVERS];
 uniform vec3 uMoverDisp[NUM_MOVERS];
 uniform int uMovers;
@@ -555,6 +557,46 @@ void main() {
 }
 `;
 
+// ---------------------------------------------------------------- local highlight level (1/8 res)
+// How bright the surroundings of each pixel are, for the final pass's local highlight
+// recovery (a camera's highlight tone mapping: a large sunlit sheen comes down, a small
+// glint still clips). Each texel holds the mean log2 luminance of the surfaces in its
+// 8x8 block (sky excluded, so the skyline casts no dark rim) and the share of surface
+// pixels: r = sum(m log2 L) / 16, g = sum(m) / 16; the blur then normalises the two.
+export const LOCAL_FS = /* glsl */ `
+uniform sampler2D tSrc;
+uniform sampler2D tDepth;
+uniform vec2 uSrcSize;
+varying vec2 vUv;
+void main() {
+  ivec2 b = ivec2(gl_FragCoord.xy) * 8, mx = ivec2(uSrcSize) - 2;
+  float s = 0.0, m = 0.0;
+  for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {
+    ivec2 p = min(b + ivec2(x * 2, y * 2), mx);
+    if (texelFetch(tDepth, p, 0).r >= 1.0) continue;
+    // (bilinear at the 2x2 block's corner: its average)
+    vec3 c = texture2D(tSrc, (vec2(p) + 1.0) / uSrcSize).rgb;
+    s += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-6));
+    m += 1.0;
+  }
+  gl_FragColor = vec4(s / 16.0, m / 16.0, 0.0, 1.0);
+}
+`;
+
+// separable Gaussian (sigma 3 texels, 13 taps as 7 bilinear ones) of the local level
+export const LOCAL_BLUR_FS = /* glsl */ `
+uniform sampler2D tSrc;
+uniform vec2 uDir;         // texel step
+varying vec2 vUv;
+void main() {
+  vec2 a = texture2D(tSrc, vUv).rg * 0.1370;
+  a += (texture2D(tSrc, vUv + uDir * 1.4586).rg + texture2D(tSrc, vUv - uDir * 1.4586).rg) * 0.2394;
+  a += (texture2D(tSrc, vUv + uDir * 3.4036).rg + texture2D(tSrc, vUv - uDir * 3.4036).rg) * 0.1395;
+  a += (texture2D(tSrc, vUv + uDir * 5.3520).rg + texture2D(tSrc, vUv - uDir * 5.3520).rg) * 0.0526;
+  gl_FragColor = vec4(a, 0.0, 1.0);
+}
+`;
+
 // ---------------------------------------------------------------- auto exposure (1x1)
 export const LUM_FS = /* glsl */ `
 uniform sampler2D tSmall;
@@ -589,10 +631,13 @@ void main() {
 
 // ---------------------------------------------------------------- final: lens, tone map, grade
 // Tone: a camera's JPEG response sets the luminance (mid grey 0.18 → ~0.47, white about
-// 3.5 stops above it, a long toe: −3 stops still reads as dark grey), AgX sets hue and chroma (its log-domain
-// curve keeps bright saturated colours from skewing), blended towards the scene's own
-// ratios so warm low sun on stone keeps its colour. Luma-only sharpening stands in for
-// in-camera sharpening.
+// 3.3 stops above it, a long toe: −2 stops ~52, −3 ~31, −4 ~17 in sRGB, so shade and dark
+// shop glass keep their detail), AgX sets hue and chroma (its log-domain curve keeps
+// bright saturated colours from skewing), blended towards the scene's own ratios so warm
+// low sun on stone keeps its colour. Large bright areas far above the street's level (a
+// low sun's sheen on the paving) come down locally; small glints, sunlit whites and the
+// bright sky may clip, as in a camera JPEG. Luma-only sharpening stands in for in-camera
+// sharpening.
 export const FINAL_FS = /* glsl */ `
 uniform sampler2D tHDR;
 uniform sampler2D tBloom;
@@ -627,6 +672,11 @@ uniform float uSkyChroma;     // chroma for sky pixels (AgX's inset/outset would
 uniform float uSkySat;        // and the saturation the AgX look would have given them (scene-linear)
 uniform sampler2D tGlow;      // glow around the brightest sources (exposed units, see GLOW_FS)
 uniform float uGlow;
+uniform vec3 uToe;            // toe: log-slope reduction, the stops where it eases in, ease width
+uniform sampler2D tLocal;     // local level of the surfaces (see LOCAL_FS, normalised in rg)
+uniform vec4 uLocal;          // local highlight recovery: knee (stops), strength, pixel ramp start, ramp width
+uniform vec4 uKnee;           // gamut knee: start, ceiling (street); start, ceiling (saturated sky)
+uniform float uSatOut;        // saturation of the street's final colour (scene-linear, around its luminance)
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -666,9 +716,14 @@ vec3 agx(vec3 color) {
 // from mid grey, y = min(1, A / (1 + exp(-s (e - e0)))^q)
 // A camera JPEG also sets a black point: a soft one (uBlack, display units) pulls the
 // deepest shadows down without clipping them flat
+float softplus(float x) { return x > 20.0 ? x : log(1.0 + exp(x)); }
 float cameraCurve(float Y) {
   float e = log2(max(Y, 1e-8) / 0.18);
-  e = uCurveSlope.y + (e - uCurveSlope.y) * uCurveSlope.x;
+  // extra contrast (midday) above the pivot only: the shade keeps its detail
+  e += (uCurveSlope.x - 1.0) * 0.5 * softplus((e - uCurveSlope.y) / 0.5);
+  // the toe's log slope eases off below uToe.y stops (a camera's long linear toe, not the
+  // logistic's steep one)
+  e += uToe.x * uToe.z * softplus((uToe.y - e) / uToe.z);
   float d = min(1.0, uCurve.x / pow(1.0 + exp(-uCurve.y * (e - uCurve.z)), uCurve.w));
   if (uBlack > 0.0) d = (d - uBlack + uBlack * exp(-d / uBlack)) / (1.0 - uBlack + uBlack * exp(-1.0 / uBlack));
   return d;
@@ -722,14 +777,29 @@ void main() {
   float avgLog = lumv.r;
   float metered = exp2(avgLog) * uExposure;
   float corr = clamp(pow(uMeterTarget / max(metered, 1e-6), uAutoExp), uMeterClamp.x, uMeterClamp.y);
-  col *= min(uExposure * corr, uExposureMax);
+  float expo = min(uExposure * corr, uExposureMax);
+  col *= expo;
+  bool skyPx = texelFetch(tDepth, ivec2(gl_FragCoord.xy), 0).r >= 1.0;
+  // local highlight recovery: where the surfaces around a pixel sit far above the street's
+  // level (a low sun's sheen on the paving), bright pixels come down by part of the excess,
+  // as a camera's highlight tone mapping does; dark things in that area (people, joints)
+  // keep their level, a small glint barely moves the local level and still clips, and the
+  // sky is left to clip
+  if (uLocal.y > 0.0 && !skyPx) {
+    vec2 lb = texture2D(tLocal, uv).rg;
+    if (lb.g > 0.02) {
+      float ex = lb.r / lb.g + log2(expo / 0.18) - uLocal.x;
+      float lp = log2(max(dot(col, LW), 1e-8) / 0.18);
+      float k = uLocal.y * 0.5 * softplus(ex * 1.3863) / 0.6931 * smoothstep(uLocal.z, uLocal.z + uLocal.w, lp);
+      col *= exp2(-k * min(lb.g * 8.0, 1.0));
+    }
+  }
   // glow skirt around sources far above white (lantern globes, lit glass at dusk)
   if (uGlow > 0.0) col += texture2D(tGlow, uv).rgb * uGlow;
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);
   // white balance and split toning in scene-linear (the toning is for the street: the
   // sky keeps its own colour)
-  bool skyPx = texelFetch(tDepth, ivec2(gl_FragCoord.xy), 0).r >= 1.0;
   col *= uWB;
   float lum = dot(col, LW);
   if (!skyPx) col *= mix(uShadowTint, uHighTint, smoothstep(0.05, 0.6, lum));
@@ -747,26 +817,33 @@ void main() {
   if (skyPx) sc = max(lum + (sc - lum) * uSkySat, 0.0);
 
   col = agx(col);
-  // camera tone response on luminance, then a soft gamut knee: from 0.8 up, the spread of
-  // the channels around the luminance is compressed so the brightest one approaches 0.94
-  // (hue and luminance kept), instead of a channel clipping flat (a sunset sky's red);
-  // neutral highlights still reach white. A saturated sky (afterglow, the low sun's
-  // aureole) keeps its colour instead and gives up luminance: its brightest channel
-  // eases towards ~0.86, so the orange and pink bands and their gradient survive
+  // camera tone response on luminance, then a soft gamut knee: from uKnee.x up, the spread
+  // of the channels around the luminance is compressed so the brightest one approaches
+  // uKnee.y (hue and luminance kept) instead of a channel clipping flat; neutral highlights
+  // still reach white. By day the ceiling is white itself (a camera JPEG: sunlit cream
+  // stone, whites and glints may clip in their brightest channel); from sunset on it is
+  // held lower, so the lamps' amber and the afterglow keep their hue. A saturated sky
+  // keeps its colour instead and gives up luminance: its brightest channel eases towards
+  // uKnee.w (by day the blue near the horizon may clip, as in a photograph; at sunset
+  // ~0.86, so the orange and pink bands and their gradient survive)
   {
     float lt = srgbToLinear(cameraCurve(lum));
     float la = dot(col, LW);
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), skyPx ? uSkyChroma : uChroma);
+    // a little more colour on the street (the sky has its own saturation, uSkySat)
+    if (!skyPx) col = max(lt + (col - lt) * uSatOut, 0.0);
     float m = max(col.r, max(col.g, col.b));
     vec3 kn = col;
-    if (m > 0.8) {
-      float mt = 0.8 + 0.14 * (1.0 - exp(-(m - 0.8) / 0.14));
+    float k0 = uKnee.x, kr = uKnee.y - uKnee.x;
+    if (m > k0) {
+      float mt = k0 + kr * (1.0 - exp(-(m - k0) / kr));
       kn = lt + (col - lt) * clamp((mt - lt) / max(m - lt, 1e-5), 0.0, 1.0);
     }
-    if (skyPx && m > 0.72) {
+    if (skyPx && m > uKnee.z) {
       float mn = min(col.r, min(col.g, col.b));
       float w = smoothstep(0.3, 0.65, (m - mn) / max(m, 1e-5));
-      float ms = 0.72 + 0.14 * (1.0 - exp(-(m - 0.72) / 0.14));
+      float s0 = uKnee.z, sr = uKnee.w - uKnee.z;
+      float ms = s0 + sr * (1.0 - exp(-(m - s0) / sr));
       kn = mix(kn, col * (ms / m), w);
     }
     col = kn;

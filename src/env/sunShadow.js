@@ -425,6 +425,71 @@ export class StreetSunShadow extends SunLightShadow {
 
 const SIDE_FLIP = { [THREE.FrontSide]: THREE.BackSide, [THREE.BackSide]: THREE.FrontSide, [THREE.DoubleSide]: THREE.DoubleSide };
 
+/** Mesh kind bits that select a different depth program (batched, instanced, skinned, morphs). */
+function depthKind(object, geometry) {
+  let k = 0;
+  if (object.isBatchedMesh) k = object._colorsTexture ? 2 : 1;
+  else if (object.isInstancedMesh) k = 4 + (object.instanceColor ? 8 : 0) + (object.morphTexture ? 16 : 0);
+  if (object.isSkinnedMesh) k += 32;
+  const mp = geometry && geometry.morphAttributes.position;
+  if (mp && mp.length) k += 64 * mp.length;
+  return k;
+}
+
+/**
+ * One depth material per mesh kind in the shadow passes. Casters without a custom depth
+ * material all draw with the renderer's shared depth material (or its per-material
+ * variant when alpha-tested), and the renderer re-evaluates that material's program each
+ * time the kind of mesh drawing it changes (plain, batched, instanced, skinned...): a
+ * parameter object and a cache-key string, several times per frame. Here every such draw
+ * in a shadow pass takes a kind-specific copy of the material the renderer prepared (its
+ * per-object state copied over), so each copy only ever sees one kind and keeps its
+ * program. Casters with their own depth material are left alone. `stats.switches` counts
+ * the kind changes the shared materials would have seen in the last shadow pass, and
+ * `stats.reevals` the ones the renderer still sees (program re-evaluations).
+ */
+export function installDepthKinds(renderer) {
+  const sm = renderer.shadowMap;
+  if (sm.__depthKinds) return sm.__depthKinds;
+  const stats = { switches: 0, reevals: 0, copies: 0, frameSwitches: 0, frameReevals: 0 };
+  const byMat = new WeakMap();    // depth material -> { kind last seen (shared / actual), copies by kind }
+  let inShadow = false;
+  const render = sm.render;
+  sm.render = function (lights, scene, camera) {
+    inShadow = true;
+    stats.frameSwitches = 0; stats.frameReevals = 0;
+    try { return render.call(this, lights, scene, camera); } finally {
+      inShadow = false; stats.switches = stats.frameSwitches; stats.reevals = stats.frameReevals;
+    }
+  };
+  const rbd = renderer.renderBufferDirect;
+  renderer.renderBufferDirect = function (camera, scene, geometry, material, object, group) {
+    if (inShadow && scene === null && material && material.isMeshDepthMaterial && object.customDepthMaterial === undefined) {
+      const k = depthKind(object, geometry);
+      let e = byMat.get(material);
+      if (!e) { e = { would: k, act: k, kinds: new Map() }; byMat.set(material, e); }
+      if (e.would !== k) { stats.frameSwitches++; e.would = k; }
+      // (the plain kind keeps the material itself)
+      if (k !== 0) {
+        let c = e.kinds.get(k);
+        if (!c) { c = material.clone(); e.kinds.set(k, c); stats.copies++; }
+        c.visible = material.visible; c.side = material.side; c.wireframe = material.wireframe;
+        c.map = material.map; c.alphaMap = material.alphaMap; c.alphaTest = material.alphaTest;
+        c.displacementMap = material.displacementMap; c.displacementScale = material.displacementScale; c.displacementBias = material.displacementBias;
+        c.clipShadows = material.clipShadows; c.clippingPlanes = material.clippingPlanes; c.clipIntersection = material.clipIntersection;
+        material = c;
+      }
+      // (what the renderer now sees: a change here is a program re-evaluation)
+      let a = byMat.get(material);
+      if (!a) { a = { would: k, act: k, kinds: null }; byMat.set(material, a); }
+      if (a.act !== k) { stats.frameReevals++; a.act = k; }
+    }
+    return rbd.call(this, camera, scene, geometry, material, object, group);
+  };
+  sm.__depthKinds = stats;
+  return stats;
+}
+
 /**
  * Compile the programs the sun's depth passes will use, now and on the driver's threads,
  * instead of one by one in the first shadow pass (or later, the first time a caster

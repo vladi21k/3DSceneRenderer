@@ -1,0 +1,244 @@
+import { RNG } from '../../core/rng.js';
+import { MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_W, GUTTER_OUT, GROUT_W, TRACK_OFFSET } from './constants.js';
+
+// Wear of the street as it is placed on the paving (planned per chunk with the details,
+// deterministically from the chunk index; the paving recipes carry the stone's own
+// texture-level wear):
+//   relays     stretches of a corridor strip (rail to rail, or rail to the edge band)
+//              taken up for rail or utility work and relaid with setts of another batch,
+//              a slightly different stone and tone; the ends lie on bed joints, the sides
+//              on the rails' mortar strips, so the change of tone follows real joints
+//              (applied as paving vertex colour, see paving.js and Surface.rowInfo);
+//   repairs    asphalt and concrete fills over the setts: reinstatement squares round
+//              some covers, trenches of service connections across the sidewalk from
+//              the facades, cable trenches along it, small fills where broken setts
+//              were replaced, and concrete strips along the rails (line ribbons of style
+//              LINE_STYLE.repair, lines.js);
+//   stains     rust and grime halos round the cast-iron covers (the joint round a frame
+//              collects dirt, rust bleeds out of it), damp streaks along the gutter at
+//              the gullies, oil and grease under the bogies where trams stand at the
+//              stops, and drip trails along the middle of each track;
+//   weeds      the odd tuft in a joint at the foot of a facade, along the gutter or at a
+//              tree grate.
+
+const SETT_COURSE = 0.2;      // paving.street courses run across the street every 0.2 m of u
+/** Cover size as a share of its halo decal (the halo cells of the stain atlas keep the
+ *  middle RING_IN of the cell for the cover, see textures.js). */
+export const RING_IN = 0.6;
+
+/** The lateral ranges of the corridor strips: edge band | setts | rail | setts (four-foot)
+ *  | rail | ... | setts | edge band. */
+export const STRIPS = (() => {
+  const z = [];
+  let x = -BAND_IN;
+  for (const r of MAIN_RAILS) { z.push([x, r.lo]); x = r.hi; }
+  z.push([x, BAND_IN]);
+  return z;
+})();
+
+// repair kinds (lines.js: the repair style's fill)
+export const REPAIR_ASPHALT = 0, REPAIR_CONCRETE = 1;
+
+/**
+ * Wear plan of chunk ci (see the header): { relays, repairs, weeds }; halo, gutter and oil
+ * stains are appended to `stains` (the details' stain decals). items: the chunk's covers
+ * and grates; blocked(s, d, r): the details' free-space test.
+ */
+export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
+  const { layout, route, surface } = ctx;
+  const delta = ctx.delta, kP = surface.kP;
+  const rng = RNG.from(layout.seed, 'street-wear', ci);
+  const inside = (s, r) => s - r > s0 + 0.3 && s + r < s1 - 0.3;
+  const joint = (s) => (Math.round((s * kP) / SETT_COURSE) * SETT_COURSE) / kP;
+  const nearCross = (s, r) => layout.crossStreets.some((c) => Math.abs(delta(c.s, s)) < c.width / 2 + r);
+
+  // --- relaid setts
+  const relays = [];
+  const nRel = rng.weighted([[0, 0.5], [1, 0.38], [2, 0.12]]);
+  for (let i = 0; i < nRel; i++) {
+    for (let t = 0; t < 5; t++) {
+      const zone = rng.weighted([[0, 0.1], [1, 0.3], [2, 0.2], [3, 0.3], [4, 0.1]]);
+      const len = rng.chance(0.25) ? rng.range(4.5, 9) : rng.range(0.8, 4);
+      const a = joint(rng.range(s0 + 0.4, s1 - 0.4 - len)), b = joint(a + len);
+      if (b - a < 0.6 || a < s0 + 0.3 || b > s1 - 0.3) continue;
+      const mid = (a + b) / 2, half = (b - a) / 2;
+      if (layout.isInCrossover(mid, half + 3) || nearCross(mid, half + 3)) continue;
+      if (relays.some((r) => r.zone === zone && r.s0 < b + 0.6 && r.s1 > a - 0.6)) continue;
+      // another batch of granite: darker or paler, a little warmer or cooler
+      const k = rng.chance(0.55) ? rng.range(0.8, 0.92) : rng.range(1.07, 1.17);
+      const h = rng.range(-0.035, 0.05);
+      const [d0, d1] = STRIPS[zone];
+      relays.push({ s0: a, s1: b, zone, d0, d1, tone: [k * (1 + h), k * (1 + 0.15 * h), k * (1 - h)] });
+      break;
+    }
+  }
+
+  // --- repairs, and halos round the covers that keep their setts
+  const repairs = [];
+  const hit = (s, d, r, skip) => items.some((it) => it !== skip && (delta(it.s, s) ** 2 + (d - it.d) ** 2) < (r + it.r + 0.15) ** 2);
+  const overlaps = (s, d, hs, hd) => repairs.some((p) => Math.abs(delta(p.s, s)) < p.hs + hs + 0.3 && Math.abs(p.d - d) < p.hd + hd + 0.3);
+  for (const it of items) {
+    if (it.tree) continue;
+    const walk = Math.abs(it.d) > GUTTER_OUT + 0.2;
+    if (walk && (it.type === 'manhole' || it.type === 'plate' || it.type === 'plate2' || it.type === 'valve')
+      && rng.chance(it.type === 'valve' ? 0.15 : 0.22)) {
+      // reinstatement square round the cover, hand-laid in asphalt or concrete
+      const side = it.type === 'valve' ? rng.range(0.6, 0.9) : it.type === 'manhole' ? rng.range(1.25, 1.7) : rng.range(1.0, 1.5);
+      const hs = side / 2 + rng.range(-0.05, 0.12), hd = side / 2 + rng.range(-0.05, 0.12);
+      const kind = rng.chance(0.65) ? REPAIR_ASPHALT : REPAIR_CONCRETE;
+      if (inside(it.s, hs + 0.1) && !overlaps(it.s, it.d, hs, hd)) {
+        const round = it.type === 'manhole' || it.type === 'valve';
+        const [w, l] = SIZE[it.type];
+        const rot = Math.abs(Math.sin(it.yaw)) > 0.7;
+        repairs.push({
+          dir: 's', s: it.s, d: it.d, hs, hd, kind, tone: rng.next(),
+          hole: round ? { r: w / 2 + 0.002 } : { hs: (rot ? l : w) / 2 + 0.002, hd: (rot ? w : l) / 2 + 0.002 },
+        });
+        continue;
+      }
+    }
+    // halo: grime in the joint round the frame and rust bled out of it into the stone
+    const R = SIZE[it.type];
+    if (!R) continue;
+    const round = it.type === 'manhole' || it.type === 'valve';
+    if (it.type === 'gully') {
+      stains.push({ s: it.s, d: it.d, kind: 7, size: R[0] / RING_IN, aspect: R[1] / R[0], yaw: 0, op: rng.range(0.8, 1.1), warm: rng.range(0.1, 0.3) });
+      // damp silt washed along the channel to the grate
+      const up = rng.chance(0.5) ? 1 : -1;
+      const L = rng.range(1.6, 3.2);
+      const sc = it.s + up * (R[0] / 2 + L * 0.42);
+      if (inside(sc, L / 2)) stains.push({ s: sc, d: it.d + rng.range(-0.02, 0.02), kind: 3, size: rng.range(1.3, 1.7), aspect: L / 1.5, yaw: Math.PI / 2, op: rng.range(0.75, 1.05), warm: rng.range(0.05, 0.2) });
+      if (rng.chance(0.5)) stains.push({ s: it.s, d: it.d, kind: 0, size: rng.range(0.7, 1.0), aspect: 0.6, yaw: rng.range(-0.2, 0.2), op: 0.8, warm: 0.15 });
+    } else if (it.type === 'drain') {
+      stains.push({ s: it.s, d: it.d, kind: 7, size: R[0] / RING_IN, aspect: R[1] / R[0], yaw: it.yaw, op: rng.range(0.9, 1.15), warm: rng.range(0.2, 0.45) });
+      for (let k = rng.int(1, 3); k > 0; k--) {
+        const s = it.s + rng.range(-1.2, 1.2);
+        if (inside(s, 0.6)) stains.push({ s, d: it.d + rng.normal(0, 0.12), kind: 8, size: rng.range(0.45, 0.8), aspect: rng.range(0.7, 1.1), yaw: rng.range(0, 6.28), op: rng.range(0.7, 1.0), warm: 0.15 });
+      }
+    } else {
+      stains.push({
+        s: it.s, d: it.d, kind: round ? 6 : 7, size: R[0] / RING_IN, aspect: R[1] / R[0], yaw: it.yaw,
+        op: rng.range(0.75, 1.15), warm: rng.range(0.35, 0.85),
+      });
+    }
+  }
+
+  // trenches of service connections across a sidewalk, from the facade towards the
+  // street (some to a valve or plate on the way), and cable trenches along it
+  for (const side of [-1, 1]) {
+    if (!rng.chance(0.13)) continue;
+    for (let t = 0; t < 4; t++) {
+      const s = rng.range(s0 + 1.2, s1 - 1.2);
+      const hs = rng.range(0.22, 0.4);
+      if (!inside(s, hs + 0.2) || layout.isInStation(s, 3) || layout.isInCrossStreet(s, side, 2) || layout.isInCrossStreet(s, 0, 2)) continue;
+      const f = surface.facadeAt(s, side, {});
+      if (!(f.d === f.d)) continue;
+      const a = Math.abs(f.d) - 0.04;
+      const b = rng.chance(0.6) ? GUTTER_OUT + 0.06 : rng.range(Math.max(GUTTER_OUT + 1.5, a - 4.5), a - 1.2);
+      if (a - b < 1) continue;
+      const dm = side * (a + b) / 2, hd = (a - b) / 2;
+      // clear of grates and covers (a cover at the inner end is fine: it is where the
+      // pipe went)
+      let ok = true;
+      for (let x = b; x <= a; x += 0.3) if (hit(s, side * x, hs)) { ok = false; break; }
+      if (!ok || overlaps(s, dm, hs, hd)) continue;
+      repairs.push({ dir: 'd', s, d: dm, hs, hd, kind: rng.chance(0.7) ? REPAIR_ASPHALT : REPAIR_CONCRETE, tone: rng.next(), hole: null });
+      break;
+    }
+  }
+  if (rng.chance(0.08)) {
+    const side = rng.chance(0.5) ? 1 : -1;
+    const len = rng.range(4, 12), hd = rng.range(0.2, 0.32);
+    const s = rng.range(s0 + len / 2 + 0.5, s1 - len / 2 - 0.5);
+    const hw = layout.halfWidth(s, side);
+    const d = side * (hw - rng.range(0.9, 1.8));
+    let ok = inside(s, len / 2 + 0.1) && !layout.isInStation(s, len / 2 + 3) && !layout.isInCrossStreet(s, side, len / 2 + 2) && !layout.isInCrossStreet(s, 0, len / 2 + 2);
+    for (let x = -len / 2; ok && x <= len / 2; x += 0.4) if (hit(s + x, d, hd)) ok = false;
+    if (ok && !overlaps(s, d, len / 2, hd)) repairs.push({ dir: 's', s, d, hs: len / 2, hd, kind: REPAIR_ASPHALT, tone: rng.next(), hole: null });
+  }
+  // small fills where a broken sett or two were replaced with mortar or asphalt
+  for (let i = rng.chance(0.55) ? 1 : 0; i > 0; i--) {
+    const s = rng.range(s0 + 1, s1 - 1);
+    const side = rng.chance(0.5) ? 1 : -1;
+    const walk = rng.chance(0.65);
+    const d = walk ? side * rng.range(GUTTER_OUT + 0.6, layout.halfWidth(s, side) - 0.6) : side * rng.range(0.3, BAND_IN - 0.4);
+    const hs = rng.range(0.12, 0.35), hd = rng.range(0.12, 0.3);
+    if (!inside(s, hs + 0.1) || blocked(s, d, Math.max(hs, hd)) || overlaps(s, d, hs, hd) || nearCross(s, 3)) continue;
+    // in the corridor keep clear of the rails' mortar strips
+    if (!walk && MAIN_RAILS.some((r) => d + hd + 0.08 > r.lo - GROUT_W && d - hd - 0.08 < r.hi + GROUT_W)) continue;
+    repairs.push({ dir: 's', s, d, hs, hd, kind: rng.chance(0.6) ? REPAIR_CONCRETE : REPAIR_ASPHALT, tone: rng.next(), hole: null, small: true });
+  }
+  // concrete along a rail where the setts beside it broke under the wheels' blows
+  if (rng.chance(0.2)) {
+    const r = MAIN_RAILS[rng.int(0, 3)];
+    const out = rng.chance(0.5) ? 1 : -1;
+    const w = rng.range(0.12, 0.24), len = rng.range(0.6, 3.2);
+    const s = rng.range(s0 + len / 2 + 0.5, s1 - len / 2 - 0.5);
+    const d = out > 0 ? r.hi + GROUT_W + 0.012 + w / 2 : r.lo - GROUT_W - 0.012 - w / 2;
+    if (Math.abs(d) + w / 2 < BAND_IN - 0.05 && !layout.isInCrossover(s, len / 2 + 3) && !nearCross(s, len / 2 + 3)
+      && !hit(s, d, Math.max(len / 2, w)) && !overlaps(s, d, len / 2, w / 2)) {
+      repairs.push({ dir: 's', s, d, hs: len / 2, hd: w / 2, kind: REPAIR_CONCRETE, tone: rng.next(), hole: null, rail: true });
+    }
+  }
+
+  // --- oil and grease where the trams stand at the stops: patches under the bogies and
+  // drip trails along the middle of the track under the body
+  for (const z of surface.stopZones()) {
+    if (delta(s0, z.s1) < -1 || delta(s1, z.s0) > 1) continue;
+    const dc = z.track * TRACK_OFFSET;
+    const zr = RNG.from(layout.seed, 'street-stop', ci, z.track);
+    for (const b of z.bogies) {
+      for (let k = zr.int(2, 4); k > 0; k--) {
+        const s = b + zr.normal(0, 0.7);
+        if (!inside(s, 0.5)) continue;
+        stains.push({ s, d: dc + zr.normal(0, 0.1), kind: zr.chance(0.6) ? 8 : 1, size: zr.range(0.55, 1.15), aspect: zr.range(0.6, 1.0), yaw: zr.range(0, 6.28), op: zr.range(0.85, 1.25), warm: zr.range(0.05, 0.25) });
+      }
+    }
+    for (let s = z.s0 + zr.range(0, 2); delta(s, z.s1) > 0; s += zr.range(1.6, 3.4)) {
+      if (!inside(s, 0.9) || !zr.chance(0.6)) continue;
+      stains.push({ s, d: dc + zr.normal(0, 0.07), kind: 3, size: zr.range(1.0, 1.5), aspect: zr.range(0.6, 1.1), yaw: Math.PI / 2 + zr.normal(0, 0.04), op: zr.range(0.7, 1.0), warm: 0.1 });
+    }
+  }
+  // drips along the middle of both tracks elsewhere
+  for (const t of [-1, 1]) {
+    for (let k = rng.int(0, 3); k > 0; k--) {
+      const s = rng.range(s0 + 0.8, s1 - 0.8);
+      if (layout.isInCrossover(s, 2)) continue;
+      stains.push({ s, d: t * TRACK_OFFSET + rng.normal(0, 0.1), kind: 8, size: rng.range(0.35, 0.75), aspect: rng.range(0.6, 1.1), yaw: rng.range(0, 6.28), op: rng.range(0.6, 0.95), warm: 0.12 });
+    }
+  }
+
+  // --- weeds: the odd tuft in a joint at the foot of a facade, along the gutter's outer
+  // edge or against a tree grate
+  const weeds = [];
+  for (let k = rng.int(0, 3); k > 0; k--) {
+    const s = rng.range(s0 + 0.5, s1 - 0.5);
+    const side = rng.chance(0.5) ? 1 : -1;
+    const where = rng.weighted([[0, 0.55], [1, 0.3], [2, 0.15]]);
+    let d;
+    if (where === 0) {
+      const f = surface.facadeAt(s, side, {});
+      if (!(f.d === f.d)) continue;
+      d = f.d - side * rng.range(0.02, 0.06);
+    } else if (where === 1) d = side * (GUTTER_OUT + rng.range(0.0, 0.03));
+    else {
+      const trees = items.filter((it) => it.tree);
+      if (!trees.length) continue;
+      const tr = trees[rng.int(0, trees.length - 1)];
+      const e = rng.int(0, 3), a = rng.range(-0.55, 0.55);
+      const ds = e < 2 ? (e ? 0.66 : -0.66) : a, dd = e < 2 ? a : (e === 2 ? 0.66 : -0.66);
+      if (!inside(tr.s + ds, 0.1)) continue;
+      weeds.push({ s: tr.s + ds, d: tr.d + dd, n: rng.int(1, 3), size: rng.range(0.06, 0.12), seed: rng.int(0, 1 << 20) });
+      continue;
+    }
+    if (where === 1 && (layout.isInStation(s, 1) || nearCross(s, 1))) continue;
+    if (where === 0 && blocked(s, d, 0.15)) continue;
+    weeds.push({ s, d, n: rng.int(1, 4), size: rng.range(0.05, 0.13), seed: rng.int(0, 1 << 20) });
+  }
+  return { relays, repairs, weeds };
+}
+
+// cover sizes [across u, across v] (m), as details.js lays them out
+const SIZE = { manhole: [0.8, 0.8], gully: [0.62, 0.31], drain: [1.0, 0.5], plate: [0.6, 0.6], plate2: [1.0, 0.5], valve: [0.32, 0.32] };
+
+export { CORRIDOR, GUTTER_W };

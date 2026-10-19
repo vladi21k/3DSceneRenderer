@@ -9,6 +9,7 @@ import { World } from './world/streaming.js';
 import { GpuTimer } from './core/gpuTimer.js';
 import { FrameMonitor } from './core/frameMonitor.js';
 import farfield from './core/farfield.js';
+import { loopSpotLights } from './core/lightLoops.js';
 
 // Module registry. Each module is loaded with a dynamic import so a broken module is
 // reported and skipped instead of taking the whole app down. Contracts: docs/ARCHITECTURE.md
@@ -113,6 +114,9 @@ async function main() {
     const t0 = performance.now();
     try {
       await m.init(app);
+      // (env has patched the shared light loop: keep its spot lights a real loop, which
+      // compiles in about 60 % of the time; lightloop=0 for A/B, see core/lightLoops.js)
+      if (m.name === 'env' && params.str('lightloop', '1') !== '0') app.perf.lightLoop = loopSpotLights(THREE.ShaderChunk);
       app.perf.init[m.name] = Math.round(performance.now() - t0);
     } catch (e) {
       console.error(`[main] ${m.name}.init failed — module disabled`, e);
