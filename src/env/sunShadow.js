@@ -21,7 +21,10 @@ import { SunLightShadow } from 'three/addons/lights/SunLightShadow.js';
 // Every tap compares against the receiver plane at its own offset (depth gradient from
 // screen derivatives), so wide kernels on grazing-lit walls do not streak.
 // A pixel samples at most two cascades (its own and, in the fade band, the next one),
-// so the filter is inlined twice per program rather than once per cascade.
+// through a single call site, so the filter is inlined once per program; the tap loops
+// have runtime bounds (sunShadowZero, never set) so they are not unrolled either.
+// A pixel skips the filter (fully lit or dark) only when the widest-penumbra probe and a
+// ring at the narrowest kernel's reach agree.
 //
 // Caster culling per cascade: the light-space box is a rotation-stable sphere fit, so a
 // caster must also (a) cast within reach of the cascade's slice of view depth, (b)
@@ -178,15 +181,52 @@ class CascadeFrustum extends THREE.Frustum {
    * the outline (conservative: within r of every edge line) and it must not lie wholly
    * beyond the slice.
    */
-  reachesOutline(p, r) {
+  reachesOutline(p, r) { return this._reachesOutline(p.x, p.y, p.z, r); }
+
+  _reachesOutline(px, py, pz, r) {
     const a = this.axes, n = this.hullN;
     if (!a || n < 3) return true;
-    const z = p.x * a[6] + p.y * a[7] + p.z * a[8];
+    const z = px * a[6] + py * a[7] + pz * a[8];
     if (z + r < this.minZ - OUTLINE_MARGIN) return false;
-    const x = p.x * a[0] + p.y * a[1] + p.z * a[2], y = p.x * a[3] + p.y * a[4] + p.z * a[5];
+    const x = px * a[0] + py * a[1] + pz * a[2], y = px * a[3] + py * a[4] + pz * a[5];
     const H = this.hull, rr = r + OUTLINE_MARGIN;
     for (let i = 0; i < n * 3; i += 3) if (H[i] * x + H[i + 1] * y - H[i + 2] > rr) return false;
     return true;
+  }
+
+  /** Is a caster's shadow along view depth [d0, d1] (top `h` m above the street) in the slice? */
+  _reachesSlice(d0, d1, h, r) {
+    const c = this.ctx;
+    const dd = Math.min(h * c.cotE, MAX_REACH) * c.awayDotFwd;
+    const lo = Math.min(d0, d0 + dd) - r - 6, hi = Math.max(d1, d1 + dd) + r + 6;
+    return !(hi < this.zNear || lo > this.zFar);
+  }
+
+  /**
+   * Allocation-free caster test for modules that cull their own instances in a shadow pass
+   * (one call per instance and cascade): a sphere given as numbers (world centre, radius),
+   * with the same slice, shadow-reach, frustum, outline and sub-texel tests as
+   * intersectsObject for an ordinary caster. `height` (optional): how far the caster's top
+   * stands above the street (m), when the sphere's top overstates it. Thin casters are the
+   * caller's to skip (`skipThin`).
+   */
+  reachesSphere(cx, cy, cz, r, height) {
+    if (this.skip) return false;
+    if (this.acceptAll) return true;
+    if (r < this.minRadius) return false;
+    const c = this.ctx;
+    const on = c && c.enabled;
+    if (on) {
+      const d = (cx - c.camPos.x) * c.fwd.x + (cy - c.camPos.y) * c.fwd.y + (cz - c.camPos.z) * c.fwd.z;
+      const h = Math.max(0, Math.min(height !== undefined ? height : cy + r - c.groundY, 60));
+      if (!this._reachesSlice(d, d, h, r)) return false;
+    }
+    const P = this.planes;
+    for (let i = 0; i < 6; i++) {
+      const pl = P[i], nn = pl.normal;
+      if (nn.x * cx + nn.y * cy + nn.z * cz + pl.constant < -r) return false;
+    }
+    return on ? this._reachesOutline(cx, cy, cz, r) : true;
   }
 
   intersectsObject(object) {
@@ -223,15 +263,13 @@ class CascadeFrustum extends THREE.Frustum {
       const h = Math.max(0, Math.min(p.y + r - c.groundY, 60));
       // view-depth component of the top's shadow reach, capped: a low sun's shadows run for
       // hundreds of metres, but by then the street floor is in the canyon's shadow anyway
-      const dd = Math.min(h * c.cotE, MAX_REACH) * c.awayDotFwd;
-      const lo = Math.min(d, d + dd) - r - 6, hi = Math.max(d, d + dd) + r + 6;
-      if (hi < this.zNear || lo > this.zFar) return false;
+      if (!this._reachesSlice(d, d, h, r)) return false;
       // instanced sets drawn in one call (a whole LOD of figures) can publish the view-depth
       // band of this frame's instances and their height: userData.shadowRange =
       // [min, max, height?] (m along the view; the sphere's height when omitted)
       const band = ud.shadowRange;
       if (band) {
-        const db = band[2] !== undefined ? Math.min(band[2] * c.cotE, MAX_REACH) * c.awayDotFwd : dd;
+        const db = Math.min((band[2] !== undefined ? band[2] : h) * c.cotE, MAX_REACH) * c.awayDotFwd;
         if (Math.max(band[1], band[1] + db) + 2 < this.zNear || Math.min(band[0], band[0] + db) - 2 > this.zFar) return false;
       }
       if (!this.intersectsSphere(sphere)) return false;
@@ -501,11 +539,12 @@ export function installDepthKinds(renderer) {
  * the caster's map, alpha test and shadow side; one representative of each such
  * combination (and mesh kind) is compiled with that material swapped in for a moment.
  * The renderer shares programs by key, so equivalent materials stand in for its own.
+ * `seen` (the signatures already submitted) lets a later call take only the casters added
+ * since, such as figures or proxies a module adds after the start-up compile.
  */
-export function precompileShadowPrograms(renderer, scene, camera, target) {
+export function precompileShadowPrograms(renderer, scene, camera, target, seen = new Set()) {
   const shared = new THREE.MeshDepthMaterial();
   const variants = new Map();
-  const seen = new Set();
   const jobs = [];
   scene.traverse((o) => {
     if (!o.castShadow || !o.isMesh) return;
@@ -567,6 +606,10 @@ export function patchSunShadowChunk(cascades, taps = 8) {
   }
   const wide = Math.max(32, taps);
   const fn = /* glsl */ `
+		// (never set, so 0: the tap loops get bounds the compiler cannot see, so it keeps them
+		// as loops instead of unrolling and inlining every tap, which halves the compile time
+		// of every lit program)
+		uniform int sunShadowZero;
 		float sunShadowTap(
 			#if defined( SHADOWMAP_TYPE_PCF )
 				sampler2DShadow shadowMap,
@@ -596,39 +639,51 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				vec2 so[ 5 ];
 				so[ 0 ] = vec2( 0.0 );
 				float f0 = 1.0 - texture( shadowMap, coord.xyz );
-				for ( int k = 1; k < 5; k ++ ) {
+				for ( int k = 1; k < 5 + sunShadowZero; k ++ ) {
 					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * maxR * tx;
 					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
 				}
 				f0 *= 0.2;
-				if ( f0 <= 0.0 ) return 1.0;
-				if ( f0 >= 1.0 ) return 0.0;
-				// how far are the blockers? Probe whether the receiver, moved 0.4, 1.2, 3, 7, 15, 30
-				// and 60 m towards the sun, is still blocked (stop once nothing is left); the
-				// share that drops out between two probes lies between their distances
-				float D[ 7 ];
-				D[ 0 ] = 0.4; D[ 1 ] = 1.2; D[ 2 ] = 3.0; D[ 3 ] = 7.0; D[ 4 ] = 15.0; D[ 5 ] = 30.0; D[ 6 ] = 60.0;
-				float prev = f0, dPrev = 0.0, dSum = 0.0;
-				for ( int j = 0; j < 7; j ++ ) {
-					if ( prev <= 0.0 ) break;
-					float f = 0.0;
-					float dm = D[ j ] / range;
-					for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
-					f = min( f * 0.2, prev );
-					dSum += ( prev - f ) * sqrt( max( dPrev, 0.15 ) * D[ j ] );
-					prev = f; dPrev = D[ j ];
+				// and a ring at the narrowest filter's reach: a pixel is only called fully lit or
+				// dark when the smallest kernel it could get agrees, so the edge between the pixels
+				// that skip the filter and those that run it never follows the shadow map's texel
+				// grid (a sawtooth along contact edges, as on an awning's valance)
+				float fi = 0.0;
+				for ( int k = 0; k < 4 + sunShadowZero; k ++ ) {
+					vec2 o = vogelDiskSample( k, 4, phi + 0.785 ) * ( minR * 1.15 ) * tx;
+					fi += 1.0 - texture( shadowMap, vec3( coord.xy + o, coord.z + dot( dz, o ) ) );
 				}
-				float dEst = ( dSum + prev * 85.0 ) / f0;
-				// penumbra half-width from the sun's angular radius: the disc kernel's edge
-				// ramps over its diameter, as the umbra-to-light transition spans 0.0093 x distance
-				float rt = clamp( dEst * 0.0047 * 1.1 / texel, minR, maxR );
+				fi *= 0.25;
+				if ( f0 <= 0.0 && fi <= 0.0 ) return 1.0;
+				if ( f0 >= 1.0 && fi >= 1.0 ) return 0.0;
+				float rt = minR;
+				if ( f0 > 0.0 ) {
+					// how far are the blockers? Probe whether the receiver, moved 0.4, 1.2, 3, 7, 15, 30
+					// and 60 m towards the sun, is still blocked (stop once nothing is left); the
+					// share that drops out between two probes lies between their distances
+					float D[ 7 ];
+					D[ 0 ] = 0.4; D[ 1 ] = 1.2; D[ 2 ] = 3.0; D[ 3 ] = 7.0; D[ 4 ] = 15.0; D[ 5 ] = 30.0; D[ 6 ] = 60.0;
+					float prev = f0, dPrev = 0.0, dSum = 0.0;
+					for ( int j = 0; j < 7 + sunShadowZero; j ++ ) {
+						if ( prev <= 0.0 ) break;
+						float f = 0.0;
+						float dm = D[ j ] / range;
+						for ( int k = 0; k < 5 + sunShadowZero; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
+						f = min( f * 0.2, prev );
+						dSum += ( prev - f ) * sqrt( max( dPrev, 0.15 ) * D[ j ] );
+						prev = f; dPrev = D[ j ];
+					}
+					float dEst = ( dSum + prev * 85.0 ) / f0;
+					// penumbra half-width from the sun's angular radius: the disc kernel's edge
+					// ramps over its diameter, as the umbra-to-light transition spans 0.0093 x distance
+					rt = clamp( dEst * 0.0047 * 1.1 / texel, minR, maxR );
+				}
 				vec2 r = rt * tx;
 				// penumbra taps: 16, and 32 for wide kernels and coarse cascades (only pixels
 				// in a penumbra get here)
 				int n = ( cascade >= 2 || rt > 3.0 ) ? ${wide} : SUN_PCF_TAPS;
 				float s = 0.0;
-				for ( int k = 0; k < ${wide}; k ++ ) {
-					if ( k >= n ) break;
+				for ( int k = 0; k < n; k ++ ) {
 					vec2 o = vogelDiskSample( k, n, phi + 1.3 ) * r;
 					s += texture( shadowMap, vec3( coord.xy + o, coord.z + dot( dz, o ) ) );
 				}
@@ -681,14 +736,14 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				if ( ci < 0 && viewDepth >= c.x && viewDepth < c.y ) ci = i;
 			}
 			if ( ci < 0 ) return 1.0;
-			vec4 cascade = sunShadowCascade[ base + ci ];
-			float shadow = sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci, ci, dpx, dpy );
-			float f = smoothstep( cascade.z, cascade.y, viewDepth );
-			if ( f > 0.0 ) {
-				float next = ci + 1 < SUN_LIGHT_CASCADES ? sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci + 1, ci + 1, dpx, dpy ) : 1.0;
-				shadow = mix( shadow, next, f );
-			}
-			return shadow;
+			float f = smoothstep( sunShadowCascade[ base + ci ].z, sunShadowCascade[ base + ci ].y, viewDepth );
+			// one call site for the filter (a 1-2 step loop: its own cascade and, in the fade
+			// band, the next one), so the compiler inlines it once
+			int nc = ( f > 0.0 && ci + 1 < SUN_LIGHT_CASCADES ) ? 2 : 1;
+			float sh[ 2 ];
+			sh[ 0 ] = 1.0; sh[ 1 ] = 1.0;
+			for ( int q = 0; q < nc; q ++ ) sh[ q ] = sunShadowCascadeTap( shadowMap, sunLightShadow, base + ci + q, ci + q, dpx, dpy );
+			return f > 0.0 ? mix( sh[ 0 ], sh[ 1 ], f ) : sh[ 0 ];
 		}
 	`;
   src = src.slice(0, start) + fn + '\n\t' + src.slice(end);

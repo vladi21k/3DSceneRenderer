@@ -114,8 +114,10 @@ float cloudDensity(vec3 p, float detail) {
   field = clamp(0.5 + (field - 0.5) * 1.35, 0.0, 1.0);   // (the blend of two fields is flatter)
   // size spread: the cells' strength drifts over ~3 km, so big towers stand beside small
   // humilis and fragments instead of a field of equal puffs
+  // (a skewed spread, as cumulus sizes are roughly log-normal: many small cells, a few
+  // large ones that merge with their neighbours into a bank)
   float big = textureLod(uCloudTex, R37 * q / (9000.0 * uCloudScale) + 0.61, 0.0).b;
-  field *= mix(0.86, 1.14, big);
+  field *= exp(0.42 * (big - 0.45));
   vec4 n = textureLod(uNoise3D, vec3(q.x, p.y * 1.4, q.y) / (4500.0 * uCloudScale), 0.0);
   float shape = field * 0.72 + n.r * 0.28;
   // flat bases, domed tops: the threshold rises with height, so only the cores reach up
@@ -131,13 +133,14 @@ float cloudDensity(vec3 p, float detail) {
   grp = clamp(0.5 + (grp - 0.5) * 1.35, 0.0, 1.0) * 0.72 + 0.14;
   d *= smoothstep(0.24, 0.36, cov) * smoothstep(thr - 0.1, thr - 0.03, grp);
   if (d <= 0.0 || detail <= 0.0) return d;
-  // cauliflower edges: billowy Worley erosion, strongest at the base, plus a finer
-  // octave that frays the rims into wisps
+  // cauliflower sides and tops: billowy Worley erosion, plus a finer octave that frays the
+  // rims into wisps. The base is the condensation level: it stays flat (little erosion in
+  // its lowest ~15 %), so the cells read as flat-bottomed towers, not round puffs
   float e = textureLod(uNoise3D, vec3(q.x, p.y, q.y) / 520.0 + vec3(0.37, 0.11, 0.73), 0.0).g;
-  float ero = (1.0 - e) * mix(0.58, 0.34, hf) * detail;
+  float ero = (1.0 - e) * mix(0.1, 0.5, smoothstep(0.0, 0.18, hf)) * mix(1.0, 0.75, smoothstep(0.5, 1.0, hf)) * detail;
   if (detail > 0.75) {
     float e2 = textureLod(uNoise3D, vec3(q.x, p.y * 1.3, q.y) / 150.0 + vec3(0.71, 0.29, 0.13), 0.0).g;
-    ero += (1.0 - e2) * 0.3 * (1.0 - 0.6 * d);
+    ero += (1.0 - e2) * 0.3 * (1.0 - 0.6 * d) * smoothstep(0.0, 0.12, hf);
   }
   return clamp((d - ero) / max(1.0 - ero, 1e-3), 0.0, 1.0);
 }
@@ -199,7 +202,7 @@ vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float d
     // (flat bases read grey, a little blue: the light reaching them has crossed the whole
     // cell, which the four shadow taps under-count, and below them only the ground's dim
     // light comes up)
-    float base = mix(0.42, 1.0, smoothstep(0.0, 0.45, hf));
+    float base = mix(0.3, 1.0, smoothstep(0.0, 0.45, hf));
     vec3 S = sunL * (exp(-tau) * ph0 + 0.5 * exp(-tau * 0.3) * ph1 + 0.25 * exp(-tau * 0.12) * ph2) * mix(1.0, powder, 0.5) * MS_BOOST * base
            + mix(ambBot, ambTop, smoothstep(0.0, 0.8, hf)) * (0.45 + 0.55 * hf);
     float sT = exp(-sig * dt);

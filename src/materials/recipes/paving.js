@@ -181,7 +181,7 @@ void surface(vec2 m, inout Surf s) {
   // flamed tops matt, worn ones a soft satin (a broad low-angle sheen towards a low sun or
   // the bright end of the street, never a mirror: the difference between neighbouring setts
   // stays small, or single setts glint out of it); breaks and cracks rough, joints matt
-  float rough = mix(0.66, 0.52, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
+  float rough = mix(0.66, 0.54, worn) + 0.05 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
   rough = mix(rough, 0.8, max(broken, crack));
   s.rough = mix(head ? 0.95 : 0.92, rough, st);
 }

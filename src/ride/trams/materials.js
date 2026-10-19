@@ -188,12 +188,14 @@ vec3 tramStreetRefl( vec3 P, vec3 R, float cone, out float a ) {
   vec2 e = min( uv, 1.0 - uv );
   a = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * smoothstep( uTramGround - 30.0, uTramGround - 10.0, X.y );
   a *= 1.0 - smoothstep( 6.0, 24.0, stretch );
-  if ( uTramZOn > 0.5 && X.y > uTramGround + 0.3 ) {
+  float l = clamp( log2( max( max( lobe, 0.6 * stretch ), 1.0 ) ), 0.0, uTramLv );
+  // (only where the reflection is sharp enough to show the misplaced occluder: a blurred one
+  // averages it in with its surroundings anyway)
+  if ( uTramZOn > 0.5 && X.y > uTramGround + 0.3 && l < 3.0 ) {
     float zh = textureLod( tTramZ, uv, 0.0 ).r;
-    a *= 1.0 - 0.65 * smoothstep( 0.8, 0.55, zh / w );
+    a *= 1.0 - 0.65 * smoothstep( 0.8, 0.55, zh / w ) * ( 1.0 - smoothstep( 1.5, 3.0, l ) );
   }
   if ( a <= 0.0 ) return vec3( 0.0 );
-  float l = clamp( log2( max( max( lobe, 0.6 * stretch ), 1.0 ) ), 0.0, uTramLv );
   float l0 = floor( l );
   vec3 h = mix( tramHistLevel( uv, l0 ), tramHistLevel( uv, min( l0 + 1.0, uTramLv ) ), l - l0 );
   return min( h, vec3( 64.0 ) );

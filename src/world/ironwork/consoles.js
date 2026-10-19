@@ -197,7 +197,8 @@ const cache = new WeakMap(); // balcony -> placement (plans are cached)
  * The consoles under balcony `bal` of `plan`. opts: {Hc (full height), W2 (half-width),
  * rc (rounded slab corners), kind (the building's full console: SCROLL or TIERED),
  * foot (what the full kind hangs below its height: the scroll's pendant knob)}.
- * → {kind, h, u: [...]} (h: console height below the soffit).
+ * → {kind, h, u: [...], w2?} (h: console height below the soffit; w2: the half-width of
+ * slimmer consoles where the building's own found no room, see slimEnds).
  */
 export function balconyConsoles(plan, bal, opts) {
   let out = cache.get(bal);
@@ -254,8 +255,9 @@ function place(plan, bal, { Hc, W2, rc, kind, foot }) {
   };
 
   let cons = pick(MAX_SP);
-  // a lone console would carry one end only: the slab rests on the dressing instead
-  if (cons.length < 2) return none;
+  // a lone console would carry one end only: the slab rests on the dressing instead,
+  // unless slimmer consoles find room nearer its ends (stone-era fronts)
+  if (cons.length < 2) return (plan.style.era !== 'modern' && slimEnds(bal, heads, soffit, rc, W2, Hc, kind, foot)) || none;
   let room = Math.min(...cons.map((x) => x.room));
   if (room >= Hc * 0.85 + foot) {
     return { kind, h: Math.min(Hc, room - foot), u: cons.map((x) => x.u) };
@@ -269,6 +271,49 @@ function place(plan, bal, { Hc, W2, rc, kind, foot }) {
     if (dense.length >= 2) { cons = dense; room = Math.min(...cons.map((x) => x.room)); }
   }
   return { kind: CONSOLE.BLOCK, h: Math.min(0.3, Math.max(H_MIN, room)), u: cons.map((x) => x.u) };
+}
+
+/** Fallback for a slab whose dressing below leaves no room for the building's consoles
+ *  where they normally stand (a wide head under the middle of the slab, its ends within
+ *  half a metre of the slab's, or a rounded slab whose consoles keep inside the curve):
+ *  slimmer consoles (`w2` half-width, down to 13 cm wide) as near each end as the slab's
+ *  plan allows (inside its rounded corners), on the first spot inward with room, plus
+ *  any clear spots between them about BLOCK_SP apart. Full or stepped where there is
+ *  room for them, else short blocks; null if an end finds no spot. */
+function slimEnds(bal, heads, soffit, rc, W2, Hc, kind, foot) {
+  const w2a = Math.max(0.065, Math.min(0.1, W2 * 0.75));
+  return slimAt(bal, heads, soffit, rc, w2a, Hc, kind, foot) || (w2a > 0.07 ? slimAt(bal, heads, soffit, rc, 0.065, Hc, kind, foot) : null);
+}
+
+function slimAt(bal, heads, soffit, rc, w2, Hc, kind, foot) {
+  const len = bal.u1 - bal.u0;
+  // a console of the slab's depth (its front 7 cm in from the edge) stays 1.5 cm inside
+  // a rounded corner from this far in
+  const inset = rc > 0.05 ? rc - Math.sqrt(Math.max(0, 0.11 * rc - 0.003)) : 0.02;
+  const e = w2 + Math.max(0.02, inset);
+  if (len < 2 * e + 0.6) return null;
+  const N = Math.floor((len - 2 * e) / STEP) + 1, lo = bal.u0 + e;
+  const top = dressingField(heads, lo, N, w2);
+  const room = (i) => soffit - top[i];
+  const reach = Math.round(0.4 / STEP);
+  const find = (i0, dir) => {
+    for (let d = 0; d <= reach; d++) { const i = i0 + d * dir; if (i >= 0 && i < N && room(i) >= H_MIN - 0.005) return i; }
+    return -1;
+  };
+  const s = find(0, 1), t = find(N - 1, -1);
+  if (s < 0 || t < 0 || (t - s) * STEP < 0.6) return null;
+  const idx = [s];
+  const n = Math.round(((t - s) * STEP) / BLOCK_SP);
+  for (let k = 1; k < n; k++) {
+    const i = Math.round(s + ((t - s) * k) / n);
+    if (room(i) >= H_MIN - 0.005) idx.push(i);
+  }
+  idx.push(t);
+  const r = Math.min(...idx.map(room));
+  const u = idx.map((i) => lo + i * STEP);
+  if (r >= Hc * 0.85 + foot) return { kind, h: Math.min(Hc, r - foot), u, w2 };
+  if (r >= H_TIERED) return { kind: CONSOLE.TIERED, h: Math.min(Hc, r), u, w2 };
+  return { kind: CONSOLE.BLOCK, h: Math.min(0.3, r), u, w2 };
 }
 
 /** Pier positions for full consoles along [a, b] (grid lo + i·STEP; a spot is clear

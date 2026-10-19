@@ -203,9 +203,10 @@ vec3 clouds(vec3 dir, vec3 L) {
   vec3 ambUp = irr(0.0) / ATM_PI;
   float cosT = dot(dir, uSunDirA);
 
-  // the high layers sink into the horizon haze below ~12° (seen edge-on they would
-  // compress into regular stripes)
-  float lowFade = smoothstep(0.08, 0.3, dir.y);
+  // the high layers sink into the horizon haze towards the horizon (seen edge-on they would
+  // compress into regular stripes); a few thin streaks still show in the sky slot down the
+  // street, 5-10 degrees up
+  float lowFade = smoothstep(0.035, 0.22, dir.y);
 
   // --- altocumulus (4 km): a few patches of rounded cloudlets. Two cell sizes, one turned
   // against the other and both domain-warped, so neither size nor spacing repeats;
@@ -252,7 +253,7 @@ vec3 clouds(vec3 dir, vec3 L) {
     float patchW = smoothstep(0.5 - 0.2 * uCirrus, 0.8 - 0.15 * uCirrus, cr) * min(uCirrus * 1.4, 1.0);
     // the streaks' cores rise over a narrow threshold (crisp filaments); the veil and the
     // tails over a wider, lower one
-    float c = (0.16 * smoothstep(0.5, 0.74, ci) + 0.3 * smoothstep(0.72, 0.8, ci)) * patchW;
+    float c = (0.19 * smoothstep(0.5, 0.74, ci) + 0.36 * smoothstep(0.72, 0.8, ci)) * patchW;
     float a = c * lowFade;
     float ph = mix(atmPhaseHG(cosT, 0.75), atmPhaseHG(cosT, 0.0), 0.6) * 4.0 * ATM_PI;
     vec3 col = sunL * ph * 0.16 + ambUp * 0.9;

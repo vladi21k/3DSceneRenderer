@@ -284,7 +284,7 @@ const GARMENTS = {
   // a scarf folded over the bar, its ends hanging (fringed)
   scarf: [[[0.11, -0.025], [0.125, -1.02], [0.08, -1.08], [0.02, -1.04], [-0.04, -1.09], [-0.125, -1.03], [-0.11, -0.025]], 0.008, 0.02, 1.4, 1.08],
   // a tote: its body (handles apart), with volume
-  bag: [[[0.18, -0.15], [0.2, -0.5], [-0.2, -0.5], [-0.18, -0.15]], 0.035, 0.07, 0.3, 0.5],
+  bag: [[[0.18, -0.15], [0.2, -0.5], [-0.2, -0.5], [-0.18, -0.15]], 0.02, 0.035, 0.3, 0.5],
   // a backpack hung by its grab loop: rounded body
   pack: [[[0.1, -0.05], [0.15, -0.09], [0.165, -0.42], [0.13, -0.47], [-0.13, -0.47], [-0.165, -0.42], [-0.15, -0.09], [-0.1, -0.05]], 0.075, 0.09, 0.15, 0.47],
 };
@@ -311,7 +311,7 @@ function polyDist(P, x, y, out) {
  * Grid cells of `cell` metres; outline vertices are snapped onto the outline. Normals from
  * the faces; the shade darkens the folds' hollows and the sides turning away.
  */
-function shell(t, P, T, R, folds, len, cell, seed) {
+function shell(t, P, T, R, folds, len, cell, seed, sides = 2) {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const [x, y] of P) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
   const nx = Math.max(3, Math.ceil((x1 - x0) / cell)), ny = Math.max(3, Math.ceil((y1 - y0) / cell));
@@ -330,9 +330,9 @@ function shell(t, P, T, R, folds, len, cell, seed) {
     }
   }
   const inCell = (i, j) => { const k = j * (nx + 1) + i; return D[k] > 0 || D[k + 1] > 0 || D[k + nx + 1] > 0 || D[k + nx + 2] > 0; };
-  // vertices: front then back
+  // vertices: front then back (one side only: the front, its edge thinning to the outline)
   const base = t.count, pos = [];
-  for (let side = 0; side < 2; side++) {
+  for (let side = 0; side < sides; side++) {
     for (let k = 0; k < np; k++) {
       const x = X[k], y = Y[k], e = Math.min(1, D[k] / R), prof = T * (1 - (1 - e) * (1 - e));
       const f = fold(x, y) * e;
@@ -341,7 +341,7 @@ function shell(t, P, T, R, folds, len, cell, seed) {
     }
   }
   const nrm = new Float32Array(pos.length), tris = [];
-  for (let side = 0; side < 2; side++) {
+  for (let side = 0; side < sides; side++) {
     const o = side * np;
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
@@ -358,7 +358,7 @@ function shell(t, P, T, R, folds, len, cell, seed) {
     const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
     for (const v of [a, b, c]) { nrm[v] += fx; nrm[v + 1] += fy; nrm[v + 2] += fz; }
   }
-  for (let k = 0; k < 2 * np; k++) {
+  for (let k = 0; k < sides * np; k++) {
     const o = k * 3;
     let ax = nrm[o], ay = nrm[o + 1], az = nrm[o + 2];
     const l = Math.hypot(ax, ay, az);
@@ -383,13 +383,16 @@ function strap(t, pts, bw, th = 0.004) {
 /**
  * Garment template of `kind` (tee, dress, trousers, scarf, bag, pack): a soft shell with
  * folds (bags with their handles, a backpack with its pocket and straps). Cached; .len is
- * its hanging length.
+ * its hanging length. `use`: 'wall' (hung against a wall or the glass: the front only, the
+ * back never seen), 'rail' (on a stand's rail, seen from both sides but small: a closed
+ * shell on a coarser grid), else a closed shell.
  */
-export function cloth(kind) {
-  return tplCache.get(kind, () => {
+export function cloth(kind, use = 'wall') {
+  return tplCache.get(`${kind}|${use}`, () => {
     const t = new Tpl();
     const [P, T, R, folds, len] = GARMENTS[kind] || GARMENTS.bag;
-    shell(t, P, T, R, folds, len, kind === 'bag' || kind === 'pack' ? 0.03 : 0.035, kind.length);
+    const vol = kind === 'bag' || kind === 'pack';
+    shell(t, P, T, R, folds, len, vol ? 0.035 : use === 'rail' ? 0.06 : 0.05, kind.length, use === 'wall' && !vol ? 1 : 2);
     if (kind === 'bag') {
       for (const s of [-1, 1]) strap(t, [[s * 0.1, -0.15, 0.02 * s], [s * 0.07, -0.07, 0.012 * s], [s * 0.025, -0.015, 0.004 * s], [0, -0.005, 0]], 0.025);
     } else if (kind === 'pack') {
@@ -516,7 +519,7 @@ export function hangGoods(kit, ctx, o, type, al = null, L = null, mOpen = null) 
       const [u0, u1] = span;
       // columns of hooks from the jamb outwards (a dense front fills the pier)
       const pitch = dense ? 0.4 : 0.52;
-      const cols = dense ? Math.max(1, Math.min(4, Math.floor((u1 - u0 - 0.06) / pitch))) : u1 - u0 > 1.05 && r.chance(0.6) ? 2 : 1;
+      const cols = dense ? Math.max(1, Math.min(3, Math.floor((u1 - u0 - 0.06) / pitch))) : u1 - u0 > 1.05 && r.chance(0.6) ? 2 : 1;
       for (let c = 0; c < cols; c++) {
         const uc = side > 0 ? u0 + 0.22 + c * pitch : u1 - 0.22 - c * pitch;
         let top = gy + r.range(2.35, 2.6);
@@ -525,7 +528,7 @@ export function hangGoods(kit, ctx, o, type, al = null, L = null, mOpen = null) 
           const len = cloth(kind).len;
           if (top - len < gy + 0.5) break;
           // a bundle on the hook: the same piece in two to four colours, fanned out
-          const nb = kind === 'pack' ? 1 : kind === 'bag' ? r.int(1, 2) : r.int(1, dense ? 4 : 3);
+          const nb = kind === 'pack' ? 1 : kind === 'bag' ? r.int(1, 2) : r.int(1, dense ? 2 : 3);
           // (rusticated stone: hooks on the bosses' faces)
           const z = 0.1 + (inRustic(plan, top) ? 0.03 : 0) + (kind === 'pack' ? 0.06 : kind === 'bag' ? 0.03 : 0);
           for (let q = nb - 1; q >= 0; q--) {

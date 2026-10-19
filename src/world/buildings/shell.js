@@ -5,7 +5,7 @@ import { insetPolygon, FACES } from './mesh.js';
 import { wallField } from './wall.js';
 import { openingMasonry, surroundOf, flatHead, coverOf } from './openings.js';
 import { JointFitter } from './coursing.js';
-import { courseProfile, plinthProfile, corniceProfile, dentils, modillions, quoins, pilaster } from './mouldings.js';
+import { courseProfile, plinthProfile, corniceProfile, dentils, modillions, quoins, pilaster, CREASE } from './mouldings.js';
 import { parapetProfile, balustrade, merlons, pitchedRoof, solarHeater, heaterRadius, sunYaw, waterTank, acUnit, antenna, headHouse, satelliteDish } from './roof.js';
 import { upperVolume, upperFootprint } from './upper.js';
 import { partyWalls } from './party.js';
@@ -274,7 +274,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
       if (v > va && v < vb && w < wmax && nw > 0.8) { out[0] *= 0.68; out[1] *= 0.67; out[2] *= 0.66; }
     };
   }
-  B.sweep(sinks.smooth, ck.profile, cPath, cor.y, [true, true]);
+  B.sweep(sinks.smooth, ck.profile, cPath, cor.y, [true, true], 0, CREASE);
   B.shade = (u, v, w, nu, nv, nw, out) => trimColor(mainShade, u, v, nv, out, 1.05);
   B.mark('mouldings');
   yield;

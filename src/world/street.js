@@ -38,7 +38,7 @@ const MAX_JOBS = 6;
 // ask for next are built ahead a slice per frame (prefetch) and build() hands them over.
 // Exposes heightAt(s, d) so other modules can stand things on the real paving, and the
 // side streets' mouth frames and paving heights (mouth(c, side), sideHeightAt(c, side, a, x),
-// and sideHeightIO(c, side, io), its allocation-free form for per-agent loops).
+// and sideHeightIO(c, side, io), its allocation-free form for per-pedestrian loops).
 
 const street = {
   name: 'street',
@@ -183,7 +183,7 @@ const street = {
     return this.ctx ? sideHeight(this.ctx, c, side, a, x) : 0;
   },
 
-  /** sideHeightAt for per-agent loops, its numbers in a Float64Array (no boxing): reads
+  /** sideHeightAt for per-pedestrian loops, its numbers in a Float64Array (no boxing): reads
    *  io[0] (a) and io[1] (x), writes the paving's world y to io[2] (0 before init).
    *  `sideIO` is a scratch Float64Array(4) callers may share within a frame. */
   sideHeightIO(c, side, io) {

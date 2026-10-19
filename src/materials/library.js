@@ -44,7 +44,7 @@ const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0,
 const STONE_PITCH = { tex: 'pitch', tool: 'pitch', freq: 2.0, normal: 0.8, albedo: 0.5, rough: 0.05, share: 1.0, margin: 0.035, farVar: 0.008 };
 // soiled ledges, sheltered soffits, run-off streaks (streak: darkening at full strength,
 // share: the share of streak slots in use, see surface.js MAP_WEATHER)
-const STONE_WEATHER = { ledge: 0.22, streak: 0.25, share: 0.5, soffit: 0.1 };
+const STONE_WEATHER = { ledge: 0.22, streak: 0.4, share: 0.55, soffit: 0.1 };
 
 // Granite setts: the tone drifts in runs, as quarry batches and dirt do: per sett, an
 // independent ±7 % plus as much again from a 1-3 m noise sampled at the sett centre
@@ -84,7 +84,7 @@ export const LIBRARY = {
       courseH: 0.35, blockL: 0.7, blockRange: [0.36, 1.2], courses: 12, joint: 0.006,
       uv: 'u along the wall, v up (m). Course joints at v = k × courseH. Scale v by meta.courseH / plan.courseH (and u by blockL / plan.blockL) to match a building style; offset v by a random whole number of courses and u by a random amount per lot so neighbours differ.',
       dressing: 'per block at runtime: 60 % taltish comb strokes (vertical or diagonal), 25 % pecked, 15 % rubbed; 20-35 mm finer drafted margin',
-      weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and run-off streaks on vertical faces (streak, share), from world normal / position: single warm grey-brown streaks 2-15 cm wide and 0.5-2 m long hanging from bed joints, on a 0.3-0.8 m lattice along the wall. They know no geometry above them, so the run-off below sills, slabs and consoles stays with the buildings (grime). The splash zone near the paving is left to vertex colours.' },
+      weather: { ...STONE_WEATHER, note: 'albedo darkening on up-facing ledges (ledge), down-facing soffits (soffit) and run-off streaks on vertical faces (streak, share), from world normal / position: single warm grey-brown streaks 4-25 cm wide and 0.8-2.6 m long hanging from bed joints, on a 0.3-0.8 m lattice along the wall, and faint tall rain-wash bands. They know no geometry above them, so the run-off below sills, slabs and consoles stays with the buildings (grime). The splash zone near the paving is left to vertex colours.' },
       tints: LIMESTONE_TINTS,
       tintWeights: LIMESTONE_WEIGHTS,
       albedo: [0.6, 0.47, 0.27], // mean linear albedo of the baked limestone (before tints): far-field stand-ins should match it
@@ -97,7 +97,7 @@ export const LIBRARY = {
       cell: STONE_CELL, macro: { ...STONE_MACRO, albedo: 0.12, rough: 0.08 }, detail: STONE_DRESS, mirror: 0.75,
       // stains on the walls read as run-off: faint, sparse and stretched 1:6 down the face
       // (the patchy dirt stays on the ledges, the weathering's ledge term)
-      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.3, share: 0.65, soffit: 0.16 }, stain: { amount: 0.05, freq: 0.6, threshold: 0.75, stretch: 6 },
+      weather: { ...STONE_WEATHER, ledge: 0.3, streak: 0.45, share: 0.7, soffit: 0.16 }, stain: { amount: 0.05, freq: 0.6, threshold: 0.75, stretch: 6 },
     },
     vc: 'tint',
     meta: { note: 'soiled variant of stone.ashlar (same layout / metrics)', tints: LIMESTONE_TINTS },

@@ -488,6 +488,33 @@ export function archSegments(o, q = 1) {
   return o.top === 'pointed' ? 2 * Math.max(1, Math.round(n / 2)) : n;
 }
 
+/**
+ * The stones of an arched head's ring as head-parameter ranges [ta, tb, k, key] (joints
+ * excluded), an odd count with the keystone (1.5 shares) at the crown (key: it is the
+ * keystone and the ring has one); T: ring depth. out.mid, out.shares: the crown stone's
+ * index and the shares of the whole ring. (The shell draws the ring from these, see
+ * buildings/openings.js, and headDressing publishes the keystone's span from them.)
+ */
+export function ringParts(o, T, keystone) {
+  // arc length along the middle of the ring
+  let L = 0, pu = 0, pv = 0;
+  for (let k = 0; k <= 16; k++) { archPoint(o, k / 16, _rp, T * 0.5); if (k) L += Math.hypot(_rp.u - pu, _rp.v - pv); pu = _rp.u; pv = _rp.v; }
+  let n = Math.max(5, Math.round(L / (T > 0.36 ? 0.42 : 0.3)));
+  if (n % 2 === 0) n++;
+  const mid = (n - 1) >> 1, shares = n + 0.5;
+  const joint = 0.006 / Math.max(0.5, L);
+  const out = [];
+  let t = 0;
+  for (let k = 0; k < n; k++) {
+    const dt = (k === mid ? 1.5 : 1) / shares;
+    out.push([t + (k ? joint : 0), t + dt - (k < n - 1 ? joint : 0), k, keystone && k === mid]);
+    t += dt;
+  }
+  out.mid = mid; out.shares = shares;
+  return out;
+}
+const _rp = {};
+
 /** Outline of an opening as a flat [u, v, ...] array, CCW seen from the street, `n` head segments. */
 export function openingOutline(o, n = 12) {
   const u0 = o.uc - o.w / 2, u1 = o.uc + o.w / 2;
@@ -638,6 +665,7 @@ function lowerTo(plan, n) {
 // narrow, the consoles stand on the dressing, shortened.
 const ROOM = 0.8;          // free height under a soffit: a full scroll console and its knob
 const SIDE = 0.5;          // beside the dressing: half a console plus clearance
+const HOOD_ROOM = 0.35;    // a window hood keeps this much clear of the soffit above, or goes
 const SHOP_MIN = 2.9, DOOR_MIN = 2.35, SPRING_MIN = 2.4;   // clear heights above the paving
 const ORN = new WeakMap(); // plan -> ornament (for the returns, see capGroundHead)
 // (plan.groundHeadLim: the v the ground-floor head dressing stays under, or null;
@@ -661,9 +689,11 @@ export function headDressing(plan, orn, o) {
   }
   if (arched) {
     const T = ground ? orn.shopRing : surround ? surround * 1.3 : orn.ring;
-    return { u0: o.uc - hw - T, u1: o.uc + hw + T, top: yt + T + (ground || orn.keystone ? 0.08 : 0) };
+    const key = ground || orn.keystone;
+    // keyT: the keystone's span of the head parameter (the crown stone of ringParts)
+    return { u0: o.uc - hw - T, u1: o.uc + hw + T, top: yt + T + (key ? 0.08 : 0), keyT: key ? keySpan(o, T) : null };
   }
-  const kind = ground ? orn.shopHead : orn.winHead;
+  const kind = headKind(o, orn);
   const ext = surround || (ground ? 0.2 : 0.12);
   const H = ground ? (kind === 'flatArch' ? 0.42 : 0.38) : Math.min(0.45, Math.max(0.26, plan.coursing.ch));
   let reach = ext + (kind === 'flatArch' ? 0.06 : kind === 'hood' ? 0.07 : 0);
@@ -672,12 +702,41 @@ export function headDressing(plan, orn, o) {
   return { u0: o.uc - hw - reach, u1: o.uc + hw + reach, top: yt + top };
 }
 
+/** Head kind over a flat-topped opening: the front's (orn.shopHead / winHead) unless the plan set o.headKind. */
+export function headKind(o, orn) {
+  return o.headKind || (o.floor === 0 ? orn.shopHead : orn.winHead);
+}
+
+// keystone spans by opening (the ring's division depends on the ring depth T)
+const KEY_SPAN = new WeakMap();
+function keySpan(o, T) {
+  let c = KEY_SPAN.get(o);
+  if (!c || c.T !== T || c.w !== o.w || c.rise !== o.rise || c.top !== o.top) {
+    const p = ringParts(o, T, true), k = p[p.mid];
+    c = { T, w: o.w, rise: o.rise, top: o.top, span: [k[0], k[1]] };
+    KEY_SPAN.set(o, c);
+  }
+  return c.span;
+}
+
 function balconyRoom(plan, orn) {
   ORN.set(plan, orn);
   plan.groundHeadLim = null;
   const bals = plan.balconies;
   if (!bals.length) return;
   const W = plan.width;
+  // no hood right under a balcony: where an upper window's hood would come within
+  // HOOD_ROOM of the soffit of the slab above it (the slab sheds the water a hood would),
+  // the window keeps a plain lintel (with its keystone, if the front has them)
+  for (const b of bals) {
+    if (b.floor < 2) continue;
+    const soffit = b.y - b.slabT;
+    for (const o of plan.openings) {
+      if (o.floor !== b.floor - 1 || (o.top !== 'flat' && o.rise > 0.01) || headKind(o, orn) !== 'hood') continue;
+      const d = headDressing(plan, orn, o);
+      if (d.top > soffit - HOOD_ROOM && d.u1 > b.u0 - SIDE && d.u0 < b.u1 + SIDE) o.headKind = 'lintel';
+    }
+  }
   // bay balconies: widen to clear the dressing below
   for (const b of bals) {
     if (b.floor < 2) continue;

@@ -58,7 +58,7 @@ export function repairWear(kind, tone, hole, step = 0) {
 const PAINT = [
   null, null,
   { color: 0xc9c6bd, roughness: 0.55, wear: 0.18, opacity: 1 },                           // centre
-  { color: 0xcfccc4, roughness: 0.5, wear: 0.24, opacity: 1 },                             // stripe
+  { color: 0xd9d6cd, roughness: 0.5, wear: 0.24, opacity: 1 },                             // stripe
   { color: 0x3a342c, roughness: 0.6, wear: 0.12, opacity: 0.65, dash: [0.18, 0.65], minPx: 1.2 }, // joint
 ];
 
@@ -146,6 +146,11 @@ float lnFbm( vec2 p, float fp, int oct ) {
   }
   return s / n;
 }
+// change per pixel (steepest screen direction) of a field whose gradient in the ribbon's
+// (lateral, along) metres is g; dx, du: screen derivatives (d/dX, d/dY) of those coordinates
+float lnFw( vec2 g, vec2 dx, vec2 du ) { return length( g.x * dx + g.y * du ); }
+// threshold of a noise field (mean 0.5, roughly logistic) below which the share W lies
+float lnTg( float W ) { return 0.5 + 0.07 * log( max( W, 1e-3 ) / max( 1.0 - W, 1e-3 ) ); }
 `;
 
 // Rail cross-section bands in rail-local x (+ towards the gauge side), matching the 3D
@@ -295,7 +300,7 @@ const PAINT_FRAG = /* glsl */`
     diffuseColor.rgb = pCol * ( 0.93 - 0.17 * dirt ) * ( 0.96 + 0.08 * mid );
     diffuseColor.a = cov * pOpacity;
   } else {
-    // Road paint: an opaque off-white film (albedo ~0.6 where clean, ~0.5 under its
+    // Road paint: an opaque off-white film (albedo ~0.65 where clean, ~0.55 under its
     // grime). The per-line wear rises for bars lying in a wheel path; bars laid over setts
     // carry SETT_FLAG on top.
     float wl = vLineWear > 0.0 ? vLineWear : 1.0;
@@ -312,7 +317,8 @@ const PAINT_FRAG = /* glsl */`
     float res = 1.0 - smoothstep( 0.003, 0.012, max( w, wu ) );
     float e0 = ( lnNoise( vec2( u * 7.0, seed ) ) - 0.5 ) * 0.005 * res;
     float e1 = ( lnNoise( vec2( u * 6.3, seed + 5.0 ) ) - 0.5 ) * 0.005 * res;
-    float rb = bar * ( 1.0 - smoothstep( 0.006, 0.02, w ) );
+    // (the bites fade once they are under a pixel along the edge, so it stays crisp)
+    float rb = bar * ( 1.0 - smoothstep( 0.006, 0.02, w ) ) * ( 1.0 - smoothstep( 0.012, 0.03, wu ) );
     e0 += rb * 0.016 * smoothstep( 0.74, 0.95, lnNoise( vec2( u * 37.0, seed + 2.0 ) ) );
     e1 -= rb * 0.016 * smoothstep( 0.74, 0.95, lnNoise( vec2( u * 33.0, seed + 9.0 ) ) );
     float eu0 = ( lnNoise( vec2( x * 7.0, seed + 3.0 ) ) - 0.5 ) * 0.008 * res;
@@ -321,33 +327,43 @@ const PAINT_FRAG = /* glsl */`
     float cov = lnCov( -pHalf + e0, pHalf + e1, x, we ) * lnCov( eu0, segLen + eu1, u, wue );
     float ends = 1.0 - smoothstep( 0.0, 0.4, min( u, segLen - u ) );
     // Wear removes the film in discrete flakes, never as a thinner veil: feet and wheels
-    // break it where it bears on the tops of the surface, and it then lifts in pieces of a
-    // few millimetres to several centimetres with sharp edges, clustered in decimetre
-    // patches where soles and tyres bear most (round the middle of a crossing, along a bar
-    // in a wheel path, towards the ends and the long edges). Unresolved, the flakes are
-    // just the share of the film missing, which stays small: a crossing reads as solid
-    // paint from any distance. Over setts the film has also cracked along the joints
-    // (dark hairlines; the bar starts on a bed joint, so they lie every 0.2 m across it,
-    // with the head joints of each course between them) and flaked off for a few
-    // millimetres to a couple of centimetres either side where the stones rock; on
-    // asphalt a sparse network of fine fatigue cracks runs through it.
-    float foot = bar * exp( -pow( ( u - 0.5 * segLen ) / ( 0.32 * segLen ), 2.0 ) );
+    // break it where it bears on the tops of the surface, and it then lifts in pieces with
+    // sharp rims, clustered in decimetre patches where soles and tyres bear most (round the
+    // middle of a crossing, along a bar in a wheel path, towards the ends and the long
+    // edges). Two sizes: pieces of about 12 cm whose rims are torn at the 4 cm scale (they
+    // stay resolved from the cab well down the street), and pieces of about 4 cm torn at
+    // the grain of the surface (asphalt aggregate ~1.5 cm, the setts' crystals ~5 mm), each
+    // a noise field thresholded at its share of the loss with a rim one pixel wide. Flakes
+    // under a pixel never thin the film: the share of bared surface they stand for tints
+    // the paint towards it instead (below), so the setts' pattern never shows through and a
+    // crossing reads as solid paint from any distance. Over setts the film has also cracked
+    // along the joints (dark hairlines; the bar starts on a bed joint, so they lie every
+    // 0.2 m across it, with the head joints of each course between them) and flaked off
+    // for a few millimetres to a couple of centimetres either side where the stones rock;
+    // on asphalt a sparse network of fine fatigue cracks runs through it.
+    float fq = ( u - 0.5 * segLen ) / ( 0.32 * segLen );     // (pow() of a negative base is undefined)
+    float foot = bar * exp( -fq * fq );
     float eX = 1.0 - smoothstep( 0.0, 0.05, pHalf - abs( x ) );
     float W = clamp( 0.26 * pWear * wl + 0.1 * foot + bar * ( 0.05 * eX + 0.05 * ends ), 0.0, 0.85 );
     float fpl = max( w, wu );
     float pv = lnFbm( vec2( x, u ) * 2.6 + seed + 11.0, fpl * 2.6, 3 );
     float big = lnFbm( wp * 0.5 + 17.0 + seed, fpw * 0.5, 2 );
     float mid = lnFbm( wp * 3.1 + 5.0, fpw * 3.1, 3 );
-    // the local share of film lost: decimetre patches (resolved from far off)
-    float Wl = clamp( W * ( 0.1 + 2.0 * smoothstep( 0.48, 0.78, pv ) + 0.4 * ( big - 0.5 ) ), 0.0, 0.9 );
-    // flakes: a field of ~4 cm pieces whose rim is torn at the grain of the surface
-    // (asphalt aggregate ~1.5 cm, the setts' crystals ~5 mm), thresholded at the share Wl
+    // the local share of film lost: decimetre patches
+    float Wl = clamp( W * ( 0.12 + 1.3 * smoothstep( 0.5, 0.8, pv ) + 0.25 * ( big - 0.5 ) ), 0.0, 0.7 );
     float gs = sett > 0.5 ? 170.0 : 70.0;
     vec2 q = vec2( x, u ) * gs + seed;
     float kG = 1.0 - smoothstep( 0.6, 1.8, fpl * gs );
     float gr = mix( 0.5, lnNoise( q ) * 0.55 + lnNoise( mat2( 0.8, 0.6, -0.6, 0.8 ) * q * 2.2 + 7.0 ) * 0.45, kG );
-    float fl = lnFbm( vec2( x, u ) * 22.0 + seed * 1.7 + 3.0, fpl * 22.0, 3 );
-    float field = fl + 0.16 * ( gr - 0.5 );
+    // the two flake fields and their gradients (finite steps of FH metres)
+    const float FH = 0.004;
+    vec2 pF = vec2( x, u ) * 22.0 + seed * 1.7 + 3.0, pC = vec2( x, u ) * 8.0 + seed * 1.3 + 7.0;
+    float fpF = fpl * 22.0, fpC = fpl * 8.0;
+    float fF = lnFbm( pF, fpF, 3 );
+    float fFx = lnFbm( pF + vec2( 22.0 * FH, 0.0 ), fpF, 3 ), fFu = lnFbm( pF + vec2( 0.0, 22.0 * FH ), fpF, 3 );
+    float fC = lnFbm( pC, fpC, 2 ) + 0.3 * ( fF - 0.5 );
+    float fCx = lnFbm( pC + vec2( 8.0 * FH, 0.0 ), fpC, 2 ) + 0.3 * ( fFx - 0.5 );
+    float fCu = lnFbm( pC + vec2( 0.0, 8.0 * FH ), fpC, 2 ) + 0.3 * ( fFu - 0.5 );
     // over setts the film goes first along the joints, where the stones' arrises carry it
     // and the stones rock (bed joints every 0.2 m along u)
     float jn = 0.0;
@@ -355,13 +371,20 @@ const PAINT_FRAG = /* glsl */`
       float dj = abs( u - 0.2 * floor( u / 0.2 + 0.5 ) );
       jn = ( 1.0 - smoothstep( 0.0, 0.025, dj ) ) * ( 1.0 - smoothstep( 0.012, 0.04, wue ) );
     }
-    field -= 0.1 * jn;
-    float tg = 0.5 + 0.075 * log( max( Wl, 1e-3 ) / ( 1.0 - Wl ) );
-    // footprint in field units (the fbm's gradient is about 1.1 per unit of its input)
-    float fe = max( 0.006, 0.6 * 22.0 * fpl + 0.004 );
-    float keepW = Wl < 0.002 ? 1.0 : smoothstep( tg - fe, tg + fe, field );
-    // once even the flakes are under a pixel: the share of film left
-    keepW = mix( keepW, 1.0 - Wl, smoothstep( 0.35, 0.8, fpl * 22.0 ) );
+    float fieldC = fC + 0.06 * ( gr - 0.5 ) - 0.06 * jn;
+    float fieldF = fF + 0.16 * ( gr - 0.5 ) - 0.1 * jn;
+    // rims a pixel wide: the fields' change per pixel through the ribbon's coordinate
+    // derivatives (sharp across the bar even where the view compresses it along)
+    float feC = 0.5 * lnFw( vec2( fCx - fC, fCu - fC ) / FH, lnDx, lnDu ) + 0.002;
+    float feF = 0.5 * lnFw( vec2( fFx - fF, fFu - fF ) / FH, lnDx, lnDu ) + 0.002;
+    float WC = 0.5 * Wl, WF = 0.5 * Wl;
+    float tC = lnTg( WC ), tF = lnTg( WF );
+    float keepC = WC < 0.002 ? 1.0 : smoothstep( tC - feC, tC + feC, fieldC );
+    float keepF = WF < 0.002 ? 1.0 : smoothstep( tF - feF, tF + feF, fieldF );
+    // a size of flake is drawn while it spans a few pixels; under that, its share tints
+    float rC = 1.0 - smoothstep( 0.35, 0.8, fpC ), rF = 1.0 - smoothstep( 0.35, 0.8, fpF );
+    float keepW = mix( 1.0, keepC, rC ) * mix( 1.0, keepF, rF );
+    float bared = 1.0 - ( 1.0 - ( 1.0 - rC ) * WC ) * ( 1.0 - ( 1.0 - rF ) * WF );
     float crack = 0.0, chipped = 0.0;
     if ( sett > 0.5 ) {
       // bed joints every 0.2 m along u, head joints every 0.29-0.52 m across each course
@@ -402,12 +425,15 @@ const PAINT_FRAG = /* glsl */`
     col = mix( col, vec3( 0.2, 0.19, 0.175 ), gDust );
     col = mix( col, vec3( 0.16, 0.155, 0.15 ), 0.55 * scuff );
     col = mix( col, vec3( 0.06, 0.058, 0.055 ), gTyre );
+    // flakes under a pixel: the bared setts (grimed, in the flakes' hollows) or asphalt
+    col = mix( col, sett > 0.5 ? ST_ALB * 0.8 : vec3( 0.075, 0.072, 0.068 ), bared );
     // the cracks: dark hairlines of joint grime (setts) or of the asphalt beneath
     col *= 1.0 - ( sett > 0.5 ? 0.6 : 0.85 ) * crack;
     diffuseColor.rgb = col;
     // the trodden film is duller where grit is ground in, a little glossier where soles
     // have polished it
     lnRough = mix( pRough, 0.78, 0.6 * gDust + 0.2 * W ) - 0.08 * scuff - 0.1 * gTyre + bar * 0.08 * ( pv - 0.5 );
+    lnRough = mix( lnRough, 0.85, bared );
     diffuseColor.a = cov * pOpacity;
   }
 }
@@ -638,8 +664,9 @@ float lnRough = 0.5, lnMetal = 0.0;
 // rails: physically averaged bands (diffuse contribution, F0, reflection strength)
 vec3 lnD = vec3( 0.0 ), lnF = vec3( 0.04 );
 float lnF90 = 1.0, lnEnvK = 1.0, lnDirK = 1.0, lnPhys = 0.0;
-float w = max( length( vec2( dFdx( vLine.x ), dFdy( vLine.x ) ) ), 1e-5 );
-float wu = max( length( vec2( dFdx( vLine.y ), dFdy( vLine.y ) ) ), 1e-5 );
+vec2 lnDx = vec2( dFdx( vLine.x ), dFdy( vLine.x ) ), lnDu = vec2( dFdx( vLine.y ), dFdy( vLine.y ) );
+float w = max( length( lnDx ), 1e-5 );
+float wu = max( length( lnDu ), 1e-5 );
 float fpw = max( length( fwidth( vLineWorld.xz ) ), 1e-4 );     // metres per pixel
 if ( vLineStyle < ${(LINE_STYLE.centre - 0.5).toFixed(1)} ) ${RAIL_FRAG}
 else if ( vLineStyle < ${(LINE_STYLE.joint + 0.5).toFixed(1)} ) ${PAINT_FRAG}
@@ -670,7 +697,7 @@ export function createLineMaterial(tones = pavingTones(null), zones = null) {
     .replace('ST_DSEAL', v3(tones.mortar, SEAL_TONE * 0.86))
     .replace('ST_DGROUT', v3(tones.mortar, 0.95))
     .replace('ST_DPAVE', v3(tones.pave))
-    .replace('ST_ALB', v3(tones.albedo));
+    .replaceAll('ST_ALB', v3(tones.albedo));
   const zk = { B: Z.bevel, S: Z.shoulder, N: Z.band, L: Z.lip };
   for (const [c, z] of Object.entries(zk)) {
     // the running band's roughness as on the 3D head (shading.js RAIL_BAND_ROUGH)
@@ -700,7 +727,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-12';
+  m.customProgramCacheKey = () => 'street-line-13';
   return patchRailSheen(m, 'line');
 }
 

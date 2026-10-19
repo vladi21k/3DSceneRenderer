@@ -40,7 +40,7 @@ vec3 limestone(vec2 m, float hc, inout float h) {
   float patch_ = smoothstep(0.0, 0.55, fbm(m, 1.8, 4, 0.6, 22u));
   vec4 dv = voro(m, vec2(90.0), 23u, 1.0);
   float speck = smoothstep(0.22, 0.08, dv.x) * step(0.97 - 0.65 * patch_ * patch_, dv.z);
-  c = mix(c, c * vec3(0.45, 0.45, 0.47), speck * 0.85);
+  c = mix(c, c * vec3(0.55, 0.53, 0.5), speck * 0.6);
   c *= 1.0 - 0.045 * patch_;
   // iron-oxide flushes (pink / ochre) and grey clay seams
   float fe = smoothstep(0.35, 0.8, fbm(m, 1.6, 4, 0.6, 19u)) * step(0.6, fract(hc * 7.31));
@@ -278,8 +278,10 @@ void surface(vec2 m, inout Surf s) {
   float hFace = face - bev * 0.38 * pow(1.0 - t, 1.5) * (1.0 + 0.4 * fbm(m, 120.0, 2, 0.5, 31u));
   hFace -= spall * (1.0 + 0.15 * fbm(ms, 150.0, 2, 0.5, 32u));
   float broken = smoothstep(0.0003, 0.0009, spall) * chipIn;
-  // pointing: struck a little behind the arrises, slightly ruled (fuller in the middle)
-  float hMortar = -0.0016 + fbm(m, 70.0, 2, 0.5, 13u) * 0.0003 + 0.0004 * smoothstep(0.0, JW, e);
+  // pointing: struck a little behind the arrises, slightly ruled (fuller in the middle),
+  // nearly flush in stretches and washed out deeper in others
+  float mWash = 0.5 + 0.5 * noiseM(m, vec2(4.0), 41u);
+  float hMortar = -0.0007 - 0.0018 * mWash + fbm(m, 70.0, 2, 0.5, 13u) * 0.0003 + 0.0004 * smoothstep(0.0, JW, e);
   float stone = smoothstep(JW - 0.0006, JW + 0.0006, e);
   float hs = 0.0;
   vec3 alb = limestone(m, c.h, hs);
@@ -296,9 +298,10 @@ void surface(vec2 m, inout Surf s) {
   // narrow, never round clouds)
   float crust = smoothstep(0.15, 0.6, fbm2(ms, vec2(6.0, 1.1), 3, 0.55, 35u) + 0.3 * (cellRand(c, 36u) - 0.5)) * smoothstep(0.35, 0.9, cellRand(c, 36u));
   alb = mix(alb, vec3(lum(alb)) * vec3(0.9, 0.83, 0.72), 0.18 * crust) * (1.0 - 0.06 * crust);
-  alb *= 1.025;                                  // keeps the mean albedo of the limestone (meta)
+  alb *= 1.005;                                  // keeps the mean albedo of the limestone (meta)
   // lime pointing: light grey-beige, a little paler and greyer than the stone, dirtier in places
-  vec3 mortar = vec3(0.55, 0.505, 0.425) * (1.0 + 0.08 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.14 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)));
+  vec3 mortar = vec3(0.55, 0.505, 0.425) * (1.0 + 0.08 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.14 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)))
+              * (1.0 - 0.16 * smoothstep(0.45, 0.85, mWash));     // dirt held in the washed-out stretches
   s.albedo = mix(mortar, alb, stone);
   s.rough = mix(0.95, mix(0.86 + 0.03 * fbm(m, 9.0, 2, 0.5, 20u), 0.93, max(0.6 * (1.0 - t), broken)), stone);
 }
@@ -426,17 +429,17 @@ void surface(vec2 m, inout Surf s) {
   // soot settle in the scars and hollows
   float hollow = sat((planes - boss) / 0.01) * rise;
   alb *= 1.0 + (0.07 * (fid - 0.5) + 0.04 * scar) * rise;
-  alb = mix(alb, vec3(lum(alb)) * vec3(0.88, 0.82, 0.72), 0.3 * hollow) * (1.0 - 0.1 * hollow);
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.9, 0.84, 0.74), 0.15 * hollow) * (1.0 - 0.05 * hollow);
   // crowns washed paler by the rain, the low shoulders and the margin dustier
   alb *= mix(0.86, 1.05, sat(hRock / 0.06));
   // warm grey soot crust in patches over part of the boss (stretched down the face, as the
   // rain leaves it), heavier on some blocks; fine dark specks of lichen and soot in the pitting
   vec2 ms = m + vec2(c.h * 13.1, cellRand(c, 15u) * 7.7);
   float crust = smoothstep(0.05, 0.5, fbm2(ms, vec2(5.0, 1.6), 4, 0.6, 66u) + 0.35 * (cellRand(c, 16u) - 0.5)) * (0.4 + 0.6 * cellRand(c, 17u));
-  alb = mix(alb, vec3(lum(alb)) * vec3(0.8, 0.74, 0.65), 0.3 * crust * rise) * (1.0 - 0.06 * crust * rise);
+  alb = mix(alb, vec3(lum(alb)) * vec3(0.84, 0.77, 0.67), 0.2 * crust * rise) * (1.0 - 0.05 * crust * rise);
   vec4 sv = voro(ms, vec2(70.0), 67u, 1.0);
   alb *= 1.0 - 0.35 * smoothstep(0.3, 0.1, sv.x) * step(0.9 - 0.15 * crust, sv.z) * rise;
-  alb *= 1.06;                                   // keeps the mean albedo of the limestone (meta)
+  alb *= 1.04;                                   // keeps the mean albedo of the limestone (meta)
   vec3 mortar = vec3(0.6, 0.56, 0.48) * (1.0 + 0.08 * fbm(m, 40.0, 2, 0.5, 58u));
   s.height = mix(-0.022, hFace + hm, stone);
   s.albedo = mix(mortar, alb, stone);

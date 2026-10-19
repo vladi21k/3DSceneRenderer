@@ -31,9 +31,9 @@ function seatPanel(shape, thick, y, bevel = 0.004, curveSegs = 4) {
 
 // ------------------------------------------------------------------ lofted moulded slab
 /**
- * Thin moulded shell lofted along a side profile prof = [[z, y], ...]. hw(z, y) gives the
- * half width at a profile point, shape(xn, t) -> [dz, dy] bends the cross-section
- * (xn = -1..1 across, t = 0..1 along). Closed solid: top and bottom skins `thick` apart
+ * Thin moulded shell lofted along a side profile prof = [[z, y], ...]. hw(z, y, i) gives the
+ * half width at profile point i, shape(xn, t, i) -> [dz, dy, kx = 1] bends the
+ * cross-section (xn = -1..1 across, t = 0..1 along; kx scales the half width). Closed solid: top and bottom skins `thick` apart
  * and a rolled rim with a stiffening lip under the edge. UVs in metres.
  */
 function loftSlab(prof, hw, shape, { nu = 12, thick = 0.006, rim = 0.0045, lip = 0.012 } = {}) {
@@ -43,11 +43,11 @@ function loftSlab(prof, hw, shape, { nu = 12, thick = 0.006, rim = 0.0045, lip =
   const L = len[nv - 1];
   const P = [];
   for (let i = 0; i < nv; i++) {
-    const [z, y] = prof[i], w = hw(z, y), t = len[i] / L, row = [];
+    const [z, y] = prof[i], w = hw(z, y, i), t = len[i] / L, row = [];
     for (let j = 0; j <= nu; j++) {
       const xn = (2 * j) / nu - 1;
-      const [dz, dy] = shape(xn, t);
-      row.push(V(xn * w, y + dy, z + dz));
+      const [dz, dy, kx = 1] = shape(xn, t, i);
+      row.push(V(xn * w * kx, y + dy, z + dz));
     }
     P.push(row);
   }
@@ -55,6 +55,9 @@ function loftSlab(prof, hw, shape, { nu = 12, thick = 0.006, rim = 0.0045, lip =
   const N = P.map((row, i) => row.map((p, j) => {
     const du = new THREE.Vector3().subVectors(at(i, j + 1), at(i, j - 1));
     const dv = new THREE.Vector3().subVectors(at(i + 1, j), at(i - 1, j));
+    // rows drawn together (a shape collapsing them at the edge): take the direction to the
+    // first distinct row
+    for (let k = i + 2; dv.lengthSq() < 1e-12 && k < nv; k++) dv.subVectors(at(k, j), at(i, j));
     return du.cross(dv).normalize();
   }));
   const pos = [], uv = [], idx = [];
@@ -89,14 +92,20 @@ function loftSlab(prof, hw, shape, { nu = 12, thick = 0.006, rim = 0.0045, lip =
     }
   }
   // rim: top edge -> rolled bead -> lip under the edge -> back up to the bottom skin
-  const rows = [[1, 0], [0.55, 0.8], [0, 1], [-0.7, 0.75], [-1 - lip / h, 0.45], [-1 - lip / h, -0.6], [-1, -1.33]];
+  // (rows 4-5: the lip; it dies out into the slab's corners, where the edge turns through
+  // 90 degrees and a full-depth lip would stand out as a fin)
+  const rows = [[1, 0], [0.55, 0.8], [0, 1], [-0.7, 0.75], [-1, 0.45, 1], [-1, -0.6, 1], [-1, -1.33]];
   const rb = pos.length / 3, nl = loop.length;
+  const corners = [0, nu, nu + nv - 1, 2 * nu + nv - 1];
   let acc = 0;
   for (let m = 0; m <= nl; m++) {
     const [i, j] = loop[m % nl];
     if (m) { const [pi, pj] = loop[m - 1]; acc += P[i][j].distanceTo(P[pi][pj]); }
     const o = outDir(i, j), n = N[i][j];
-    rows.forEach(([kn, ko], r) => push(P[i][j].clone().addScaledVector(n, kn * h).addScaledVector(o, ko * rim), acc, r * 0.004));
+    let cd = 9;
+    for (const c of corners) cd = Math.min(cd, Math.abs((m % nl) - c), nl - Math.abs((m % nl) - c));
+    const lk = (lip / h) * Math.min(1, cd / 2.5);
+    rows.forEach(([kn, ko, isLip], r) => push(P[i][j].clone().addScaledVector(n, (kn - (isLip ? lk : 0)) * h).addScaledVector(o, ko * rim), acc, r * 0.004));
   }
   const nr = rows.length;
   for (let m = 0; m < nl; m++) for (let r = 0; r < nr - 1; r++) {
@@ -200,6 +209,20 @@ const SEAT_PROF = [[0.236, 0.416], [0.244, 0.436], [0.24, 0.454], [0.225, 0.466]
 const BACK_PROF = [[-0.198, 0.54], [-0.204, 0.566], [-0.212, 0.605], [-0.222, 0.65], [-0.235, 0.7], [-0.249, 0.75], [-0.262, 0.795],
   [-0.271, 0.828], [-0.28, 0.846], [-0.294, 0.853]];
 
+/** Profile with the points between rows i0 and i1 subdivided (Catmull-Rom midpoints), so
+ *  the moulding's rounded nose and corners are not faceted close up. */
+function refineProfile(prof, i0, i1) {
+  const out = [];
+  const at = (i) => prof[Math.max(0, Math.min(prof.length - 1, i))];
+  for (let i = 0; i < prof.length; i++) {
+    out.push(prof[i]);
+    if (i < i0 || i >= i1 || i === prof.length - 1) continue;
+    const a = at(i - 1), b = at(i), c = at(i + 1), d = at(i + 2);
+    out.push([0, 1].map((k) => (-a[k] + 9 * b[k] + 9 * c[k] - d[k]) / 16));
+  }
+  return out;
+}
+
 /** One-piece moulded polypropylene chair: dished seat with a waterfall front, reclined
  *  lumbar-curved back with a rolled top edge, open slot between them, flat tapered legs. */
 function plasticChair(detail) {
@@ -208,26 +231,48 @@ function plasticChair(detail) {
   const sub = (a) => (mid ? a.filter((_, i) => i % 2 === 0 || i === a.length - 1) : a);
   const parts = [], glides = [];
   const seatHW = roundedHW(0.234, 0.214, 0.244, -0.187, 0.075, 0.05);
-  parts.push(loftSlab(sub(SEAT_PROF), (z) => seatHW(z), (xn, t) => {
+  // the waterfall rows (below and up to the seat's nose) keep the nose's plan width: a
+  // row hanging under the front edge must not stand out wider than the edge it hangs from
+  // The waterfall (the rows hanging under the front edge) fades out towards the corners:
+  // its rows draw up onto the front edge's row (iTop), so the rounded front corners are the
+  // plain rolled rim of the slab, as on a moulded shell, not a cut-off box corner.
+  const seatProf = mid ? sub(SEAT_PROF) : refineProfile(SEAT_PROF, 0, SEAT_PROF.length - 1);
+  let iNose = 0, iTop = 0;
+  seatProf.forEach((p, i) => { if (p[0] > seatProf[iNose][0]) iNose = i; if (Math.abs(p[0] - 0.225) < Math.abs(seatProf[iTop][0] - 0.225)) iTop = i; });
+  const sHW = (i) => seatHW(i <= iNose ? seatProf[iNose][0] : seatProf[i][0]);
+  parts.push(loftSlab(seatProf, (z, y, i) => sHW(i), (xn, t, i) => {
     const dish = 0.024 * Math.pow(Math.sin(Math.PI * THREE.MathUtils.clamp((t - 0.12) / 0.8, 0, 1)), 0.8);
-    return [0, -dish * (1 - xn * xn) + 0.01 * sstep(Math.abs(xn), 0.75, 1) * (t > 0.2 ? 1 : 0)];
-  }, { nu: mid ? 6 : 14, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
-  // back: wider at the top with round corners, wrapped round the sitter in plan
+    // the side edges roll up 1 cm, eased in behind the front corners and before the back
+    let dy = -dish * (1 - xn * xn) + 0.01 * sstep(Math.abs(xn), 0.7, 1) * sstep(t, 0.1, 0.32) * (1 - 0.6 * sstep(t, 0.85, 1));
+    if (i >= iTop) return [0, dy];
+    const f = 0.8 * sstep(Math.abs(xn), 0.45, 1), [z, y] = seatProf[i], [zt, yt] = seatProf[iTop];
+    return [(zt - z) * f, dy + (yt - y) * f, 1 + f * (sHW(iTop) / sHW(i) - 1)];
+  }, { nu: mid ? 6 : 18, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
+  // back: wider at the top with round corners, wrapped round the sitter in plan, its lower
+  // corners rounded (r 2.2 cm)
+  const RB = 0.022;
   const backHW = (z, y) => {
-    const w = THREE.MathUtils.lerp(0.19, 0.222, (y - 0.54) / 0.31), r = 0.075, dy = Math.max(0, y - (0.853 - r));
-    return dy > 0 ? w - r + Math.sqrt(Math.max(0, r * r - dy * dy)) : w - 0.02 + 0.02 * Math.sqrt(Math.min(1, (y - 0.54) / 0.03));
+    const w = THREE.MathUtils.lerp(0.197, 0.222, (y - 0.54) / 0.31), r = 0.075, dy = Math.max(0, y - (0.853 - r));
+    if (dy > 0) return w - r + Math.sqrt(Math.max(0, r * r - dy * dy));
+    const e = Math.max(0, RB - (y - 0.54));
+    return w - RB + Math.sqrt(Math.max(0, RB * RB - e * e));
   };
-  parts.push(loftSlab(sub(BACK_PROF), backHW, (xn, t) => {
+  const backProf = mid ? sub(BACK_PROF) : [BACK_PROF[0], ...[0.0035, 0.008, 0.015].map((dy) => {
+    const [a, b] = BACK_PROF, k = dy / (b[1] - a[1]);
+    return [a[0] + (b[0] - a[0]) * k, a[1] + dy];
+  }), ...BACK_PROF.slice(1)];
+  parts.push(loftSlab(backProf, backHW, (xn, t) => {
     const x = xn * 0.21;
     return [0.55 * x * x * (0.6 + 0.4 * Math.sin(Math.PI * t)), 0];
   }, { nu: mid ? 6 : 14, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
   // flat tapered blade legs, flared where they are moulded into the shell
   const legP = rectProfile(0.02, 0.045, mid ? 0.004 : 0.006, mid ? 1 : 2);
   for (const sx of [-1, 1]) {
-    parts.push(sweep([V(sx * 0.222, 0, 0.252), V(sx * 0.21, 0.24, 0.205), V(sx * 0.196, 0.452, 0.16)], legP,
+    parts.push(sweep([V(sx * 0.222, 0, 0.252), V(sx * 0.21, 0.24, 0.205), V(sx * 0.196, 0.463, 0.16)], legP,
       { bend: mid ? 0 : 0.15, up: [1, 0, 0], scales: (t) => (0.68 + 0.32 * t) * (1 + 0.28 * sstep(t, 0.82, 1)) }));
+    // (the rear legs run up behind the back's lower corners and taper into it)
     parts.push(sweep([V(sx * 0.226, 0, -0.312), V(sx * 0.208, 0.25, -0.24), V(sx * 0.198, 0.455, -0.19), V(sx * 0.188, 0.62, -0.208)], legP,
-      { bend: mid ? 0 : 0.12, up: [1, 0, 0], scales: (t) => (0.68 + 0.32 * Math.min(1, t * 1.6)) * (1 + 0.22 * Math.exp(-(((t - 0.7) / 0.1) ** 2))) }));
+      { bend: mid ? 0 : 0.12, up: [1, 0, 0], scales: (t) => (0.68 + 0.32 * Math.min(1, t * 1.6)) * (1 + 0.22 * Math.exp(-(((t - 0.7) / 0.1) ** 2))) * (1 - 0.6 * sstep(t, 0.84, 1)) }));
     if (!mid) for (const z of [0.252, -0.312]) glides.push(xf(lathe([[0.0, 0], [0.013, 0], [0.014, 0.004], [0.011, 0.008], [0, 0.008]], 8), [sx * (z > 0 ? 0.222 : 0.226), 0, z]));
   }
   return { shell: merge(parts), glides: glides.length ? merge(glides) : null };

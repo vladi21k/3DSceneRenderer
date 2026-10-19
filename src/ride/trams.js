@@ -394,8 +394,10 @@ const trams = {
   /** Passengers: figures of the humans module (its public contract: alloc, set, setVisible,
    *  heightOf) seated and standing in the saloons (trams/model.js SALOON spots), drawn while a
    *  unit is near enough for its see-through glazing (LOD 0 / 1) and the glazing is see-through
-   *  (by day; after dark the traced saloon takes over). Each unit carries its own, deterministic
-   *  load: about four seats in ten taken and a few people standing at the doors. */
+   *  (day and night with humans' indoor light, see _lights). Lit as indoors: the share of the sky
+   *  light that reaches them under the roof (shade) and the ceiling lights after dark (fill).
+   *  Each unit carries its own, deterministic load: about four seats in ten taken and a few
+   *  people standing at the doors. */
   _passengers(app) {
     const H = app.humans;
     if (!H || H.disabled || typeof H.set !== 'function') return;

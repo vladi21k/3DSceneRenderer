@@ -117,7 +117,7 @@ export function sideHeight(ctx, c, side, a, x) {
 
 /** sideHeight with its numbers in a Float64Array: reads io[0] (a) and io[1] (x), writes
  *  the world y to io[2]. No number crosses a call boundary (a double returned from or
- *  passed to a call that is not inlined is boxed), so per-agent loops allocate nothing. */
+ *  passed to a call that is not inlined is boxed), so per-pedestrian loops allocate nothing. */
 export function sideHeightIO(ctx, c, side, io) {
   const P = sideProfile(ctx, c, side);
   const a = io[0], x = io[1];

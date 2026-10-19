@@ -215,7 +215,7 @@ function consolesFor(plan, st, bal) {
   const place = balconyConsoles(plan, bal, { Hc, W2, rc, kind: st.corbel, foot });
   if (!bal.consoles) {
     const knob = place.kind === CONSOLE.SCROLL ? CORBEL.FOOT * (place.h / CORBEL.HV[CONSOLE.SCROLL]) : 0;
-    bal.consoles = place.u.map((u) => ({ u, h: place.h + knob, w: W2 * 2 }));
+    bal.consoles = place.u.map((u) => ({ u, h: place.h + knob, w: (place.w2 ?? W2) * 2 }));
   }
   return place;
 }
@@ -615,7 +615,7 @@ const ironwork = {
 
     // ---- consoles: on the piers between the openings below, or shortened to stand on
     // their dressing (see ironwork/consoles.js); their fronts tuck under the drip lip
-    const cw = st.corbelW, place = consolesFor(plan, st, bal);
+    const place = consolesFor(plan, st, bal), cw = place.w2 ? (place.w2 * 2) / CORBEL.W : st.corbelW;
     const variant = place.kind, sz = (D - 0.07) / CORBEL.D, sy = place.h / CORBEL.HV[variant];
     const c = [tint[0] * dirt, tint[1] * dirt, tint[2] * dirt];
     for (const u of place.u) {

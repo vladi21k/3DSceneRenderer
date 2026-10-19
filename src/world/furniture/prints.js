@@ -4,8 +4,8 @@ import { RNG } from '../../core/rng.js';
 // advertising posters, layered paper posters for the advertising columns, magazine
 // covers, city map boards, chalk menu boards, the tram-stop pictogram sign, timetables,
 // ticket machine panels, kiosk signs, LED passenger displays and touch screens, plus the
-// shelter glazing decal (safety dots, dust, water spots). Text is generated pseudo-text in
-// mixed sizes and scripts; nothing names a real place, brand or person.
+// shelter glazing decal (safety dots, dust, water spots). Text is real generic Hebrew and
+// English (see Text below); nothing names a real place, brand or person.
 
 export const ATLAS_W = 4096, ATLAS_H = 2048;
 // [x, y, w, h] in atlas pixels (canvas y down)
@@ -35,21 +35,46 @@ export function uvSub(name, fx0, fy0, fx1, fy1) {
   return [(x + fx0 * w) / ATLAS_W, 1 - (y + fy1 * h) / ATLAS_H, (x + fx1 * w) / ATLAS_W, 1 - (y + fy0 * h) / ATLAS_H];
 }
 
-// ------------------------------------------------------------------ pseudo text
-const SYL = ['ka', 'lo', 'ver', 'mi', 'sta', 'ne', 'ri', 'tal', 'zo', 'an', 'el', 'mar', 'qu', 'ten', 'si', 'bo', 'ra', 'lin', 'do', 'ves', 'sha', 'or', 'ni', 'pel', 'gu', 'ma', 'tor', 'il'];
-const HEB = 'אבגדהוזחטיכלמנסעפצקרשת';
-function pseudoWord(rng, cap = false) {
-  let w = '';
-  const n = rng.int(1, 3);
-  for (let i = 0; i < n; i++) w += rng.pick(SYL);
-  return cap ? w[0].toUpperCase() + w.slice(1) : w;
-}
-function hebWord(rng) {
-  let w = '';
-  for (let i = rng.int(2, 6); i > 0; i--) w += HEB[rng.int(0, HEB.length - 1)];
-  return w;
-}
-const phrase = (rng, n, heb = false) => Array.from({ length: n }, (_, i) => (heb ? hebWord(rng) : pseudoWord(rng, i === 0))).join(' ');
+// ------------------------------------------------------------------ text
+// Everything legible is real generic vocabulary in Hebrew or English (headlines, event
+// names, place names on the maps, board titles, menu items); fictional brand names stand
+// in for real ones. Fine print is drawn from word pools of the same languages, so even a
+// close look finds words, not letter soup. Nothing names a real place, brand or person.
+const pick = (rng, a) => a[rng.int(0, a.length - 1)];
+const W_EN = {
+  event: ['Summer Festival', 'Jazz Nights', 'Concert in the Park', 'New Exhibition', 'Book Week', 'Open Air Cinema', 'Food Market', 'Festival of Light',
+    'Live Music', 'Dance Season', 'City Marathon', 'Craft Fair', 'Wine Festival', 'Museum Night', 'Theatre Season', 'Photo Exhibition', 'Street Food Week', 'Chamber Music'],
+  ad: ['Taste the Summer', 'Fresh Every Day', 'Made for the City', 'Simply Better', 'The New Classic', 'Feel the Difference', 'Now Open', 'Coming Soon',
+    'Your Next Trip', 'Light & Fresh', 'Pure Comfort', 'Summer Sale', 'New Collection', 'Grand Opening'],
+  brand: ['NOVELLA', 'Aurelia', 'Solara', 'MAREA', 'Velaro', 'Orla', 'Terrano', 'Brisa', 'LUMIO', 'Castella', 'Delmara', 'Ostara', 'Kaliope', 'Sabbia'],
+  place: ['Central Station', 'City Hall', 'Market', 'Museum', 'Old City', 'City Park', 'University', 'Hospital', 'Stadium', 'Library', 'Main Square', 'Theatre',
+    'Botanic Garden', 'Bus Terminal', 'Concert Hall'],
+  magazine: ['WEEKEND', 'CITY', 'TRAVEL', 'HOME', 'FOOD', 'STYLE', 'SPORT', 'DESIGN', 'GARDEN', 'MUSIC', 'CINEMA', 'HEALTH'],
+  fine: ['the', 'city', 'information', 'tickets', 'available', 'daily', 'from', 'service', 'every', 'minutes', 'line', 'station', 'open', 'visit', 'more',
+    'at', 'free', 'entry', 'for', 'all', 'ages', 'programme', 'details', 'booking', 'online', 'and', 'in', 'with', 'season', 'events', 'centre', 'museum',
+    'park', 'weekend', 'evening', 'until', 'to', 'on', 'opening', 'hours', 'children', 'family', 'music', 'food', 'street', 'routes', 'stop', 'please',
+    'thank', 'you', 'new', 'store', 'collection', 'limited', 'offer', 'terms', 'apply', 'members', 'reduced', 'price', 'doors', 'open', 'gallery'],
+};
+const W_HE = {
+  event: ['פסטיבל האור', "פסטיבל ג'אז", 'קונצרט בפארק', 'תערוכה חדשה', 'לילה לבן', 'שבוע הספר', 'יריד אומנים', 'הופעה חיה', 'ערב מחול', 'קולנוע בחוץ',
+    'מרתון העיר', 'שוק האוכל', 'פסטיבל היין', 'הצגה חדשה', 'תזמורת העיר', 'ערב שירה'],
+  ad: ['טעם של קיץ', 'טרי כל יום', 'חדש!', 'עכשיו במבצע', 'פשוט טעים', 'נפתח בקרוב', 'הקולקציה החדשה', 'הטיול הבא שלך', 'קל ורענן', 'נוחות מושלמת', 'מבצע קיץ'],
+  brand: ['אורה', 'שחר', 'גפן', 'נוף', 'תמר', 'זית', 'ענבר', 'אלון'],
+  place: ['תחנה מרכזית', 'העירייה', 'השוק', 'המוזיאון', 'העיר העתיקה', 'גן העיר', 'האוניברסיטה', 'בית החולים', 'האצטדיון', 'הספרייה', 'הכיכר', 'התיאטרון'],
+  street: ['רחוב הגפן', 'רחוב הזית', 'שדרות הדקל', 'רחוב התאנה', 'רחוב השקד', 'רחוב הרימון', 'רחוב האלון', 'רחוב הברוש', 'רחוב התמר', 'שדרות הארזים'],
+  magazine: ['סוף שבוע', 'בית', 'טיולים', 'אוכל', 'ספורט', 'מוזיקה', 'עיצוב', 'בריאות'],
+  fine: ['את', 'של', 'על', 'עם', 'לכל', 'העיר', 'הקו', 'תחנה', 'שעות', 'הפעילות', 'ימים', 'בשבוע', 'כרטיס', 'נסיעה', 'מידע', 'נוסף', 'באתר', 'בטלפון',
+    'שירות', 'לקוחות', 'החל', 'מיום', 'עד', 'בין', 'השעות', 'נא', 'לשמור', 'על', 'הניקיון', 'תודה', 'לתושבים', 'ולמבקרים', 'בכל', 'יום', 'ראשון', 'חמישי',
+    'שישי', 'ערב', 'חג', 'הכניסה', 'חופשית', 'בהרשמה', 'מראש', 'מספר', 'המקומות', 'מוגבל', 'פרטים', 'נוספים', 'בקופות', 'ובאתר', 'העירייה', 'מחיר',
+    'מלא', 'מוזל', 'לילדים', 'ולגמלאים', 'משתנות', 'לפי', 'העונה'],
+};
+const words = (heb) => (heb ? W_HE : W_EN);
+/** Headline of an event poster ('event') or an advert ('ad'). */
+const headline = (rng, heb, kind = 'event') => pick(rng, words(heb)[kind]);
+/** Fictional brand name. */
+const brandName = (rng, heb = false) => pick(rng, words(heb).brand);
+/** Generic city place name (map stops, destinations). */
+const placeName = (rng, heb = false) => pick(rng, words(heb).place);
 
 const SANS = 'Helvetica, Arial, sans-serif', SERIF = 'Georgia, "Times New Roman", serif';
 function text(ctx, str, x, y, size, { weight = 'bold', align = 'left', font = SANS, maxW = 1e4, color = null, rtl = false } = {}) {
@@ -61,7 +86,7 @@ function text(ctx, str, x, y, size, { weight = 'bold', align = 'left', font = SA
   ctx.fillText(str, x, y);
   ctx.direction = 'ltr';
 }
-/** Paragraph of small pseudo-text lines. */
+/** Paragraph of small-print lines (words from the language's pool). */
 function smallPrint(ctx, x, y, w, lines, size, color, rng, { heb = false, lh = 1.35 } = {}) {
   ctx.fillStyle = color;
   ctx.font = `${size > 9 ? '500' : 'normal'} ${size}px ${SANS}`;
@@ -69,7 +94,7 @@ function smallPrint(ctx, x, y, w, lines, size, color, rng, { heb = false, lh = 1
   for (let i = 0; i < lines; i++) {
     let line = '';
     const target = (i === lines - 1 ? rng.range(0.3, 0.8) : rng.range(0.85, 1)) * w;
-    while (ctx.measureText(line).width < target) line += (heb ? hebWord(rng) : pseudoWord(rng)) + ' ';
+    while (ctx.measureText(line).width < target) line += pick(rng, words(heb).fine) + ' ';
     ctx.fillText(line.trim(), heb ? x + w : x, y + i * size * lh, w);
   }
 }
@@ -278,19 +303,19 @@ function photoPoster(ctx, x, y, w, h, seed) {
   }
   p.imageSmoothingEnabled = true; p.imageSmoothingQuality = 'high';
   p.drawImage(ic, 0, 0, w, h);
-  // typography: a headline of 1-3 pseudo-words, sub lines, fine print, logo, date strip
+  // typography: a headline, sub lines, fine print, the brand's logo and name
   const heb = rng.chance(0.45);
   const fg = 'rgba(250,248,240,0.95)';
   const top = rng.chance(0.5);
   const hy = top ? h * 0.1 : h * 0.66;
-  text(p, phrase(rng, rng.int(1, 2), heb), heb ? w * 0.92 : w * 0.08, hy, h * rng.range(0.05, 0.075), { maxW: w * 0.84, align: heb ? 'right' : 'left', rtl: heb, color: fg, font: rng.chance(0.4) ? SERIF : SANS });
+  text(p, headline(rng, heb, 'ad'), heb ? w * 0.92 : w * 0.08, hy, h * rng.range(0.05, 0.075), { maxW: w * 0.84, align: heb ? 'right' : 'left', rtl: heb, color: fg, font: rng.chance(0.4) ? SERIF : SANS });
   smallPrint(p, w * 0.08, hy + h * 0.05, w * 0.7, rng.int(1, 3), Math.max(8, h * 0.022), fg, rng, { heb });
   // brand band
   const band = rng.chance(0.6);
   if (band) { p.fillStyle = hsl(hue + 180, 40, 18, 0.85); p.fillRect(0, h * 0.9, w, h * 0.1); }
   p.fillStyle = band ? 'rgba(240,238,230,0.9)' : fg;
   p.beginPath(); p.arc(w * 0.12, h * 0.95, h * 0.022, 0, Math.PI * 2); p.fill();
-  text(p, pseudoWord(rng, true), w * 0.17, h * 0.962, h * 0.03, { color: band ? 'rgba(240,238,230,0.95)' : fg, maxW: w * 0.4 });
+  text(p, brandName(rng), w * 0.17, h * 0.962, h * 0.03, { color: band ? 'rgba(240,238,230,0.95)' : fg, maxW: w * 0.4 });
   smallPrint(p, w * 0.56, h * 0.94, w * 0.36, 2, Math.max(6, h * 0.012), band ? 'rgba(230,230,225,0.8)' : fg, rng);
   grainVignette(p, 0, 0, w, h, rng, 4);
   ctx.drawImage(c, x, y);
@@ -311,7 +336,7 @@ function eventPoster(ctx, x, y, w, h, seed) {
   const fg = rng.chance(0.5) ? '#f6f2e8' : '#141414';
   const heb = rng.chance(0.5);
   text(p, `${rng.int(1, 28)}.${rng.int(1, 12)}`, w * 0.08, pb[1] - h * 0.02 > h * 0.08 ? pb[1] - h * 0.02 : h * 0.75, h * 0.07, { color: fg });
-  text(p, phrase(rng, 2, heb), heb ? w * 0.92 : w * 0.08, pb[1] + pb[3] + h * 0.08, h * 0.055, { maxW: w * 0.84, color: fg, align: heb ? 'right' : 'left', rtl: heb });
+  text(p, headline(rng, heb, 'event'), heb ? w * 0.92 : w * 0.08, pb[1] + pb[3] + h * 0.08, h * 0.055, { maxW: w * 0.84, color: fg, align: heb ? 'right' : 'left', rtl: heb });
   smallPrint(p, w * 0.08, pb[1] + pb[3] + h * 0.13, w * 0.84, rng.int(4, 7), Math.max(7, h * 0.024), fg, rng, { heb });
   grainVignette(p, 0, 0, w, h, rng, 5, 0.1);
   ctx.drawImage(c, x, y);
@@ -458,8 +483,9 @@ function magazineCovers(ctx, [x, y, w, h], seed) {
     else if (kind === 2) landscape(p, W, H, rng);
     else if (kind === 3) { silk(p, W, H, rng, hue); product(p, W * 0.5, H * 0.85, H * 0.6, rng, hue + 160); }
     else product(p, W * 0.5, H * 0.85, H * 0.6, rng, hue + 160);
-    text(p, pseudoWord(rng, true).toUpperCase(), W * 0.5, H * 0.15, H * 0.13, { align: 'center', maxW: W * 0.92, color: rng.chance(0.5) ? '#c0141e' : '#f8f6f0', font: rng.chance(0.5) ? SERIF : SANS });
-    smallPrint(p, W * 0.06, H * 0.55, W * 0.4, 4, Math.max(5, H * 0.035), '#fbfbf6', rng);
+    const mh = rng.chance(0.4);
+    text(p, pick(rng, words(mh).magazine), W * 0.5, H * 0.15, H * 0.13, { align: 'center', maxW: W * 0.92, color: rng.chance(0.5) ? '#c0141e' : '#f8f6f0', font: rng.chance(0.5) ? SERIF : SANS, rtl: mh });
+    smallPrint(p, W * 0.06, H * 0.55, W * 0.4, 4, Math.max(5, H * 0.035), '#fbfbf6', rng, { heb: mh });
     grainVignette(p, 0, 0, W, H, rng, 4, 0.08);
     ctx.drawImage(c, x + i * cw, y + j * ch);
   }
@@ -491,8 +517,9 @@ function mapBoard(ctx, [x, y, w, h], seed) {
   ctx.fillStyle = '#ffffff';
   ctx.beginPath(); ctx.arc(x + 32, y + 29, 18, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#23415f'; ctx.font = `bold 28px ${SERIF}`; ctx.textAlign = 'center'; ctx.fillText('i', x + 32, y + 39);
-  text(ctx, hebWord(rng) + ' ' + hebWord(rng), x + w - 16, y + 38, 26, { align: 'right', rtl: true, color: '#ffffff', maxW: 220 });
-  text(ctx, phrase(rng, 2), x + 64, y + 38, 20, { color: '#dfe7ef', maxW: 200, weight: '600' });
+  const title = rng.chance(0.5);
+  text(ctx, title ? 'מפת העיר' : 'מידע לתייר', x + w - 16, y + 38, 26, { align: 'right', rtl: true, color: '#ffffff', maxW: 220 });
+  text(ctx, title ? 'City Map' : 'Visitor Information', x + 64, y + 38, 20, { color: '#dfe7ef', maxW: 200, weight: '600' });
   const mx = x + 16, my = y + 74, mw = w - 32, mh = h - 190;
   ctx.fillStyle = '#d9d2c1'; ctx.fillRect(mx, my, mw, mh);
   const cols = [], rows = [];
@@ -504,18 +531,24 @@ function mapBoard(ctx, [x, y, w, h], seed) {
     if (bw < 4 || bh < 4) continue;
     ctx.fillStyle = rng.chance(0.1) ? '#b7cf9a' : rng.chance(0.08) ? '#e6c9a8' : '#ebe4d4';
     ctx.fillRect(bx, by, Math.min(bw, mx + mw - bx), Math.min(bh, my + mh - by));
-    if (rng.chance(0.3)) { ctx.fillStyle = '#8a8478'; ctx.font = `7px ${SANS}`; ctx.textAlign = 'left'; ctx.fillText(pseudoWord(rng), bx + 2, by + 9, bw - 4); }
+    if (rng.chance(0.3)) { ctx.fillStyle = '#8a8478'; ctx.font = `7px ${SANS}`; ctx.textAlign = 'right'; ctx.direction = 'rtl'; ctx.fillText(pick(rng, W_HE.street), bx + bw - 2, by + 9, bw - 4); ctx.direction = 'ltr'; }
   }
   ctx.strokeStyle = '#9cc3dc'; ctx.lineWidth = 14;
   ctx.beginPath(); ctx.moveTo(mx, my + mh * 0.85); ctx.bezierCurveTo(mx + mw * 0.3, my + mh * 0.7, mx + mw * 0.6, my + mh, mx + mw, my + mh * 0.8); ctx.stroke();
   ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 6;
   ctx.beginPath(); ctx.moveTo(mx + mw * 0.08, my + mh * 0.1);
   ctx.lineTo(mx + mw * 0.45, my + mh * 0.38); ctx.lineTo(mx + mw * 0.55, my + mh * 0.62); ctx.lineTo(mx + mw * 0.95, my + mh * 0.7); ctx.stroke();
-  for (const t of [[0.08, 0.1], [0.27, 0.24], [0.45, 0.38], [0.5, 0.5], [0.55, 0.62], [0.75, 0.66], [0.95, 0.7]]) {
+  // stops along the line: generic place names, Hebrew over English, never the same twice
+  // (W_HE.place[i] and W_EN.place[i] name the same place)
+  const stops = W_HE.place.map((n, i) => i).sort((a, b) => RNG.from('mapStop', seed, a).next() - RNG.from('mapStop', seed, b).next());
+  [[0.08, 0.1], [0.27, 0.24], [0.45, 0.38], [0.5, 0.5], [0.55, 0.62], [0.75, 0.66], [0.95, 0.7]].forEach((t, k) => {
     ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(mx + mw * t[0], my + mh * t[1], 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    text(ctx, pseudoWord(rng, true), mx + mw * t[0] + 10, my + mh * t[1] - 8, 10, { color: '#333', weight: '600' });
-  }
+    const si = stops[k], left = t[0] > 0.8;
+    const he = W_HE.place[si], en = W_EN.place[si];
+    text(ctx, he, mx + mw * t[0] + (left ? -10 : 10), my + mh * t[1] - 17, 10, { color: '#222', weight: '600', align: left ? 'right' : 'left', rtl: true });
+    text(ctx, en, mx + mw * t[0] + (left ? -10 : 10), my + mh * t[1] - 6, 9, { color: '#555', weight: '600', align: left ? 'right' : 'left' });
+  });
   ctx.fillStyle = '#e74c3c'; ctx.beginPath(); ctx.arc(mx + mw * 0.5, my + mh * 0.5, 11, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = '#ffffff'; ctx.fillRect(x + 16, y + h - 104, w - 32, 88);
@@ -601,7 +634,7 @@ function timetable(ctx, [x, y, w, h], seed) {
   ctx.fillStyle = '#1f5ea8'; ctx.fillRect(x, y, w, 46);
   ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.roundRect(x + 10, y + 8, 30, 30, 4); ctx.fill();
   ctx.fillStyle = '#1f5ea8'; ctx.font = `bold 24px ${SANS}`; ctx.textAlign = 'center'; ctx.fillText('1', x + 25, y + 32);
-  text(ctx, hebWord(rng) + ' ' + hebWord(rng), x + w - 10, y + 30, 18, { align: 'right', rtl: true, color: '#ffffff', maxW: w - 70 });
+  text(ctx, 'לוח זמנים', x + w - 10, y + 30, 18, { align: 'right', rtl: true, color: '#ffffff', maxW: w - 70 });
   ctx.fillStyle = '#e4e2dc';
   for (let r = 0; r < 18; r += 2) ctx.fillRect(x + 6, y + 56 + r * 17, w - 12, 17);
   ctx.fillStyle = '#333333'; ctx.font = `11px ${SANS}`; ctx.textAlign = 'left';
@@ -621,7 +654,7 @@ function ticketFront(ctx, [x, y, w, h], seed) {
   ctx.fillStyle = '#1f5ea8'; ctx.fillRect(x, y, w, 50);
   ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.roundRect(x + 14, y + 12, 50, 24, [6, 10, 3, 3]); ctx.fill();
   ctx.fillStyle = '#1f5ea8'; for (let i = 0; i < 3; i++) ctx.fillRect(x + 19 + i * 14, y + 17, 9, 8);
-  text(ctx, hebWord(rng) + ' ' + hebWord(rng), x + w - 12, y + 32, 18, { align: 'right', rtl: true, color: '#ffffff', maxW: w - 90 });
+  text(ctx, 'כרטיסי נסיעה', x + w - 12, y + 32, 18, { align: 'right', rtl: true, color: '#ffffff', maxW: w - 90 });
   ctx.fillStyle = '#16191b'; ctx.fillRect(x + 22, y + 66, w - 44, 120);  // screen bezel (screen is a separate lit part)
   for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) {
     ctx.fillStyle = '#9aa2a8'; ctx.beginPath(); ctx.roundRect(x + 30 + c * 28, y + 206 + r * 24, 22, 18, 3); ctx.fill();
@@ -640,8 +673,8 @@ function kioskBand(ctx, [x, y, w, h], seed) {
   const rng = RNG.from('kband', seed);
   ctx.save();
   ctx.fillStyle = '#21463a'; ctx.fillRect(x, y, w, h);
-  text(ctx, hebWord(rng) + ' ' + hebWord(rng), x + w - 70, y + h * 0.62, 38, { align: 'right', rtl: true, color: '#efe6cf', font: SERIF, maxW: w * 0.5 });
-  text(ctx, pseudoWord(rng, true) + ' · ' + pseudoWord(rng), x + 70, y + h * 0.6, 22, { color: '#d9cfb4', maxW: w * 0.36, weight: '600' });
+  text(ctx, rng.chance(0.5) ? 'קיוסק הכיכר' : 'קפה ועיתונים', x + w - 70, y + h * 0.62, 38, { align: 'right', rtl: true, color: '#efe6cf', font: SERIF, maxW: w * 0.5 });
+  text(ctx, rng.chance(0.5) ? 'Coffee · Newspapers' : 'Coffee · Snacks', x + 70, y + h * 0.6, 22, { color: '#d9cfb4', maxW: w * 0.36, weight: '600' });
   for (const cx of [x + 34, x + w - 34]) {
     ctx.strokeStyle = '#efe6cf'; ctx.lineWidth = 4;
     ctx.beginPath(); ctx.moveTo(cx - 14, y + 30); ctx.lineTo(cx - 11, y + 62); ctx.lineTo(cx + 11, y + 62); ctx.lineTo(cx + 14, y + 30); ctx.closePath(); ctx.stroke();
@@ -665,7 +698,7 @@ function kioskMenu(ctx, [x, y, w, h], seed) {
     p.fillStyle = 'rgba(255,250,240,0.8)'; p.beginPath(); p.ellipse(c.width * 0.5, 19, c.width * 0.15, 4, 0, 0, Math.PI * 2); p.fill();
     grainVignette(p, 0, 0, c.width, 70, rng, 5, 0.2);
     ctx.drawImage(c, px + 4, y + 8);
-    text(ctx, hebWord(rng), px + cw - 8, y + 94, 13, { align: 'right', rtl: true, color: '#2a2a2a', maxW: cw - 50 });
+    text(ctx, ['אספרסו', 'הפוך', 'קפה קר', 'לימונענע'][i], px + cw - 8, y + 94, 13, { align: 'right', rtl: true, color: '#2a2a2a', maxW: cw - 50 });
     text(ctx, `${rng.int(8, 26)}`, px + 6, y + 94, 14, { color: '#8a2a1e' });
     smallPrint(ctx, px + 6, y + 108, cw - 14, 2, 8, '#555', rng, { heb: true });
   }
@@ -677,15 +710,16 @@ function mapHead(ctx, [x, y, w, h], seed) {
   ctx.fillStyle = '#23415f'; ctx.fillRect(x, y, w, h);
   ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(x + 32, y + h / 2, 20, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#23415f'; ctx.font = `bold 32px ${SERIF}`; ctx.textAlign = 'center'; ctx.fillText('i', x + 32, y + h / 2 + 11);
-  text(ctx, hebWord(rng) + ' ' + hebWord(rng), x + w - 16, y + h * 0.66, 28, { align: 'right', rtl: true, color: '#ffffff', maxW: w * 0.5 });
-  text(ctx, phrase(rng, 2), x + 64, y + h * 0.64, 18, { color: '#cfd9e4', maxW: w * 0.38, weight: '600' });
+  const title = rng.chance(0.5);
+  text(ctx, title ? 'מפת העיר' : 'מידע לתייר', x + w - 16, y + h * 0.66, 28, { align: 'right', rtl: true, color: '#ffffff', maxW: w * 0.5 });
+  text(ctx, title ? 'City Map' : 'Visitor Information', x + 64, y + h * 0.64, 18, { color: '#cfd9e4', maxW: w * 0.38, weight: '600' });
 }
 
 function shelterInfo(ctx, [x, y, w, h], seed) {
   const rng = RNG.from('sinfo', seed);
   ctx.fillStyle = '#f7f6f2'; ctx.fillRect(x, y, w, h);
   ctx.fillStyle = '#1f5ea8'; ctx.fillRect(x, y, w, 40);
-  text(ctx, hebWord(rng) + ' ' + hebWord(rng), x + w - 10, y + 27, 18, { align: 'right', rtl: true, color: '#ffffff', maxW: w - 20 });
+  text(ctx, 'מידע לנוסע', x + w - 10, y + 27, 18, { align: 'right', rtl: true, color: '#ffffff', maxW: w - 20 });
   ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 5;
   ctx.beginPath(); ctx.moveTo(x + 20, y + 70); for (let i = 1; i < 7; i++) ctx.lineTo(x + 20 + i * 36, y + 70 + (i % 2) * 18); ctx.stroke();
   for (let i = 0; i < 7; i++) { ctx.fillStyle = '#fff'; ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x + 20 + i * 36, y + 70 + (i % 2) * 18, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
@@ -918,12 +952,14 @@ export function buildDisplayAtlas() {
   g.addColorStop(0, '#0f2440'); g.addColorStop(1, '#081628');
   ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
   ctx.fillStyle = '#1d3b63'; ctx.fillRect(x, y, w, 24);
-  smallPrint(ctx, x + 8, y + 16, w * 0.5, 1, 11, 'rgba(225,232,240,0.9)', rng, { heb: true });
+  text(ctx, 'בחר כרטיס', x + w - 8, y + 17, 12, { align: 'right', rtl: true, color: 'rgba(225,232,240,0.9)', maxW: w * 0.5 });
   smallPrint(ctx, x + 10, y + 42, w - 20, 2, 9, 'rgba(200,210,222,0.75)', rng, { heb: true });
+  const opts = ['נסיעה בודדת', 'כרטיס יומי', 'כרטיס שבועי', 'טעינת כרטיס', 'English', 'עזרה'];
   for (let r = 0; r < 3; r++) for (let k = 0; k < 2; k++) {
     const bx = x + 12 + k * (w / 2 - 6), by = y + 70 + r * 38;
     ctx.fillStyle = ['#2a6fb5', '#2f4f73', '#2f4f73'][r]; ctx.beginPath(); ctx.roundRect(bx, by, w / 2 - 24, 30, 5); ctx.fill();
-    smallPrint(ctx, bx + 8, by + 19, w / 2 - 44, 1, 10, 'rgba(235,240,245,0.92)', rng, { heb: true });
+    const o = opts[r * 2 + (1 - k)];
+    text(ctx, o, bx + w / 2 - 32, by + 20, 10, { align: 'right', rtl: o !== 'English', color: 'rgba(235,240,245,0.92)', maxW: w / 2 - 44, weight: '600' });
   }
   return { canvas: c, uv: displayUV };
 }

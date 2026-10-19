@@ -1282,11 +1282,11 @@ export class Population {
         if (!r.chance(pUse)) return;
         // (the places set: from the furniture when it says, else about two in three chairs, at least one)
         const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.7, 1.0)));
-        n = places + (r.chance(places === 1 ? pMate : 0.2 + 0.2 * ev) ? 1 : 0);
+        n = places + (r.chance(places === 1 ? pMate : 0.35 + 0.15 * ev) ? 1 : 0);
       } else {
         // (a laid or a bare table: people who have just sat down, the waiter not there yet)
         if (!r.chance(dressed === 1 ? pLaid : pBare)) return;
-        n = r.weighted([[1, 0.2], [2, 0.58], [3, 0.22]]);
+        n = r.weighted([[1, 0.15], [2, 0.5], [3, 0.25], [4, 0.1]]);
       }
       n = Math.min(n, seats.length);
       // which chairs: the set places first, the others in a random order

@@ -5,6 +5,8 @@ import { setBlock, hash3 } from './shade.js';
 // the wall face) and the small repeated stone details that go with them.
 
 const profileCache = new Map();
+/** Carved curves (cymas, scrolls) shade smooth across joints turning by less than this (degrees, see mesh.sweep). */
+export const CREASE = 40;
 const keyOf = (...a) => a.map((x) => (typeof x === 'number' ? x.toFixed(3) : x)).join('|');
 
 /** String course: soffit with a small drip, flat face, weathered (sloped) top. */
@@ -51,7 +53,7 @@ export function corniceProfile(H, P) {
     add(0.05, 0.3); add(0.05, 0.33);                          // fillet
     // cyma reversa bed moulding
     const b0 = 0.05, b1 = 0.24 * P + 0.05;
-    for (let i = 1; i <= 4; i++) { const t = i / 4; const s = t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.6; add(b0 + (b1 - b0) * s, 0.33 + 0.13 * t); }
+    for (let i = 1; i <= 8; i++) { const t = i / 8; const s = t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.6; add(b0 + (b1 - b0) * s, 0.33 + 0.13 * t); }
     add(b1, 0.5);                                              // dentil band face
     add(b1 + 0.01, 0.6);
     add(0.86 * P, 0.6);                                        // corona soffit
@@ -61,7 +63,7 @@ export function corniceProfile(H, P) {
     add(0.92 * P, 0.8);
     // cyma recta
     const c0 = 0.92 * P, c1 = P;
-    for (let i = 1; i <= 4; i++) { const t = i / 4; const s = t + Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.7; add(c0 + (c1 - c0) * s, 0.8 + 0.15 * t); }
+    for (let i = 1; i <= 8; i++) { const t = i / 8; const s = t + Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.7; add(c0 + (c1 - c0) * s, 0.8 + 0.15 * t); }
     add(P, 0.985); add(P - 0.01, 1);
     add(0, 1.0);
   }
@@ -94,7 +96,7 @@ export function modillions(B, s, u0, u1, y, H, P, spacing, full = true) {
   for (let i = 0; i <= n; i++) {
     const c = u0 + i * st;
     if (c - w / 2 < u0 - 0.01 || c + w / 2 > u1 + 0.01) continue;
-    B.sweep(s, prof, [[c - w / 2, 0], [c + w / 2, 0]], y, [true, true]);
+    B.sweep(s, prof, [[c - w / 2, 0], [c + w / 2, 0]], y, [true, true], 0, full ? CREASE : 0);
   }
 }
 function modillionSimple(H, P) {

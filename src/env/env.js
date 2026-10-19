@@ -3,7 +3,7 @@ import { SunLight } from 'three/addons/lights/SunLight.js';
 import { U } from '../core/uniforms.js';
 import { noise1 } from '../core/rng.js';
 import { TRACK_OFFSET } from '../core/config.js';
-import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT, MIE_DEFAULT } from './atmosphere.js';
+import { Atmosphere, SUN_E0, SUN_TINT, LUX_PER_UNIT, MIE_DEFAULT, MIE_LOW_DEFAULT } from './atmosphere.js';
 import { Sky } from './sky.js';
 import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms, installDepthKinds } from './sunShadow.js';
@@ -40,11 +40,14 @@ const _smpH = {}, _smpE = {};   // route samples (reused per frame)
 // cirrus, high cirrus streaks over altocumulus patches (no low cumulus: a few evenly
 // strewn small puffs in the telephoto sky slot read as cotton balls), or a field of
 // small flat-based cumulus. cover/scale/top shape the volumetric cumulus.
-// mie: aerosol load (x the clean reference atmosphere); haze: street-level dust haze
-// (extinction and in-scatter scale for post's aerial perspective)
+// mie: aerosol load (x the clean reference atmosphere); mieLow: the shallow city haze
+// layer (density x the main layer's, scale height km): the sky below ~10 degrees turns
+// pale and milky (HSV saturation ~0.1-0.15) and brightens towards the vanishing point,
+// while the sky overhead stays blue; haze: street-level dust haze (extinction and
+// in-scatter scale for post's aerial perspective)
 const WEATHER = {
-  streaks: { cover: 0, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, haze: { ext: 1, inscatter: 1 } },
-  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 32, haze: { ext: 1, inscatter: 1 } },
+  streaks: { cover: 0, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, mieLow: [2, 0.5], haze: { ext: 1, inscatter: 1 } },
+  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 32, mieLow: [2, 0.5], haze: { ext: 1, inscatter: 1 } },
   // a pale dust haze: the sky milky and nearly white towards the horizon, far facades
   // losing most of their contrast
   // (bright, nearly non-absorbing dust, a touch warm; its extinction takes about a fifth
@@ -174,6 +177,7 @@ const env = {
       mieScale: app.params.num('mie', w.mie), mieH: app.params.num('mieh', w.mieH || MIE_DEFAULT.h),
       mieAlb: alb.map((a) => Math.min(a * ka, 1)), mieG: app.params.num('mieg', w.mieG || MIE_DEFAULT.g),
       mieAng: app.params.num('mieang', w.mieAng ?? MIE_DEFAULT.ang),
+      mieLow: [app.params.num('mielow', (w.mieLow || MIE_LOW_DEFAULT)[0]), app.params.num('mielowh', (w.mieLow || MIE_LOW_DEFAULT)[1])],
       camAlt: app.params.num('alt', 0.35),
     });
     this.sky = new Sky(app, this.atmo, { envSize: q.envSize });
@@ -334,7 +338,8 @@ const env = {
     const app = this.app, t0 = performance.now();
     try {
       const target = app.renderer.getRenderTarget() || app.post?.hdrRT || null;
-      const n = precompileShadowPrograms(app.renderer, app.scene, app.camera, target);
+      this._shadowSeen = this._shadowSeen || new Set();
+      const n = precompileShadowPrograms(app.renderer, app.scene, app.camera, target, this._shadowSeen);
       if (app.perf) app.perf.shadowPrecompile = { casters: n, ms: Math.round(performance.now() - t0) };
     } catch (e) {
       console.warn('[env] shadow precompile', e);
@@ -582,6 +587,19 @@ const env = {
     const time = app.time;
     if (!this._gpuReady) this._initGPU();
     if (!this._shadowsCompiled && this.batcher) this._precompileShadows();
+    // and once more when the world is ready, for the casters added since (figures, shadow
+    // proxies), so none of their depth programs first compiles in a shadow pass mid-ride
+    // (at dusk there is no shadow pass until the sun comes back)
+    else if (this._shadowsCompiled && !this._shadowsLate && app.ready && this.batcher) {
+      this._shadowsLate = true;
+      try {
+        const t0 = performance.now(), target = app.renderer.getRenderTarget() || app.post?.hdrRT || null;
+        const n = precompileShadowPrograms(app.renderer, app.scene, app.camera, target, this._shadowSeen || (this._shadowSeen = new Set()));
+        if (app.perf && app.perf.shadowPrecompile) Object.assign(app.perf.shadowPrecompile, { late: n, lateMs: Math.round(performance.now() - t0) });
+      } catch (e) {
+        console.warn('[env] shadow precompile', e);
+      }
+    }
 
     // (without the irradiance table) sky-irradiance read-back: a pixel-pack buffer behind
     // a fence whose status is polled here once a frame. While the time of day keeps

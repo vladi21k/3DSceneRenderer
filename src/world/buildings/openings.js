@@ -1,5 +1,6 @@
-import { archPoint } from '../facadePlan.js';
+import { archPoint, ringParts, headKind } from '../facadePlan.js';
 import { FACES, arcSeg } from './mesh.js';
+import { CREASE } from './mouldings.js';
 import { trimColor, setBlock, hash3, JAMB_H0, JAMB_H1 } from './shade.js';
 
 // Masonry around each opening. The opening itself stays empty for the facade infill
@@ -231,7 +232,7 @@ export function surroundOf(o, face, orn) {
  */
 export function flatHead(o, orn, surround, ch) {
   const ground = o.floor === 0;
-  const kind = ground ? orn.shopHead : orn.winHead;
+  const kind = headKind(o, orn);
   const ext = surround || (ground ? 0.2 : 0.12);
   const H = ground ? (kind === 'flatArch' ? 0.42 : 0.38) : ch ? Math.min(0.45, Math.max(0.26, ch)) : (kind === 'flatArch' ? 0.3 : 0.26);
   return { kind, ext, H };
@@ -259,29 +260,6 @@ function soffit(B, s, o, w0, w1, n, ta = 0, tb = 1) {
 /** Depth of the voussoir ring over an arched head (shop arches, surrounds, plain rings). */
 function ringDepth(o, orn, surround) {
   return o.floor === 0 ? orn.shopRing : (surround ? surround * 1.3 : orn.ring);
-}
-
-/**
- * The stones of an arched head's ring as head-parameter ranges [ta, tb, k] (joints
- * excluded), an odd count with the keystone (1.5 shares) at the crown; T: ring depth.
- */
-function ringParts(o, T, keystone) {
-  // arc length along the middle of the ring
-  let L = 0, pu = 0, pv = 0;
-  for (let k = 0; k <= 16; k++) { archPoint(o, k / 16, _p, T * 0.5); if (k) L += Math.hypot(_p.u - pu, _p.v - pv); pu = _p.u; pv = _p.v; }
-  let n = Math.max(5, Math.round(L / (T > 0.36 ? 0.42 : 0.3)));
-  if (n % 2 === 0) n++;
-  const mid = (n - 1) >> 1, shares = n + 0.5;
-  const joint = 0.006 / Math.max(0.5, L);
-  const out = [];
-  let t = 0;
-  for (let k = 0; k < n; k++) {
-    const dt = (k === mid ? 1.5 : 1) / shares;
-    out.push([t + (k ? joint : 0), t + dt - (k < n - 1 ? joint : 0), k, keystone && k === mid]);
-    t += dt;
-  }
-  out.mid = mid; out.shares = shares;
-  return out;
 }
 
 /**
@@ -519,7 +497,7 @@ function hood(ctx, s, o, ext, v0) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext - 0.07, u1 = o.uc + o.w / 2 + ext + 0.07;
   if (ctx.q.flat) B.extrudeU(s, HOOD_FAR, u0, u1, v0, [false, false]);
-  else B.extrudeU(s, HOOD, u0, u1, v0, [true, true]);
+  else B.extrudeU(s, HOOD, u0, u1, v0, [true, true], CREASE);
 }
 const HOOD = [[0, 0], [0.04, 0], [0.05, 0.03], [0.09, 0.07], [0.13, 0.09], [0.13, 0.15], [0.15, 0.17], [0.15, 0.2], [0, 0.22]];
 const HOOD_FAR = [[0, 0], [0.13, 0.09], [0.15, 0.2], [0, 0.22]];
@@ -532,21 +510,26 @@ function doorHood(ctx, s, o, surround, ring) {
   const ua = o.uc - o.w / 2 - off - cw, ub = o.uc + o.w / 2 + off;
   for (const cu of [ua, ub]) {
     // carved scroll console: the full S profile on the outside, a sunk side panel inside
-    B.sweep(s, CONSOLE, [[cu, 0], [cu + 0.035, 0]], yt - CONSOLE_H, [true, true]);
-    B.sweep(s, CONSOLE_IN, [[cu + 0.035, 0], [cu + cw - 0.035, 0]], yt - CONSOLE_H, [false, false]);
-    B.sweep(s, CONSOLE, [[cu + cw - 0.035, 0], [cu + cw, 0]], yt - CONSOLE_H, [true, true]);
+    // (finely divided and smooth-shaded: a carved scroll, not facets)
+    B.sweep(s, CONSOLE, [[cu, 0], [cu + 0.035, 0]], yt - CONSOLE_H, [true, true], 0, CREASE);
+    B.sweep(s, CONSOLE_IN, [[cu + 0.035, 0], [cu + cw - 0.035, 0]], yt - CONSOLE_H, [false, false], 0, CREASE);
+    B.sweep(s, CONSOLE, [[cu + cw - 0.035, 0], [cu + cw, 0]], yt - CONSOLE_H, [true, true], 0, CREASE);
   }
-  B.extrudeU(s, DOOR_HOOD, ua - 0.08, ub + cw + 0.08, yt, [true, true]);
+  B.extrudeU(s, DOOR_HOOD, ua - 0.08, ub + cw + 0.08, yt, [true, true], CREASE);
 }
 // S-scroll console profile [out, up], bottom to top: small lower volute, cyma body
-// swelling out, a large upper volute under the hood (0.36 m projection, 0.7 m tall)
+// swelling out, a large upper volute under the hood (0.36 m projection, 0.7 m tall),
+// 10-16 segments per curve
 const CONSOLE_H = 0.7;
 const CONSOLE = (() => {
-  const pts = [[0, 0], [0.05, 0.0], [0.085, 0.025], [0.09, 0.06], [0.07, 0.09], [0.075, 0.13]];
+  const pts = [[0, 0]];
+  // lower volute: a roll from the foot round to its neck
+  for (let i = 0; i <= 10; i++) { const a = -Math.PI / 2 + (i / 10) * (Math.PI * 5 / 6); pts.push([0.05 + 0.045 * Math.cos(a), 0.045 + 0.045 * Math.sin(a)]); }
+  pts.push([0.075, 0.13]);
   // cyma body: from the lower volute out to the upper one
-  for (let i = 1; i <= 6; i++) { const t = i / 6; pts.push([0.075 + 0.2 * (t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.8), 0.13 + 0.38 * t]); }
+  for (let i = 1; i <= 16; i++) { const t = i / 16; pts.push([0.075 + 0.2 * (t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.8), 0.13 + 0.38 * t]); }
   // upper volute rolling out under the hood
-  for (let i = 1; i <= 5; i++) { const a = -Math.PI / 2 + (i / 5) * Math.PI * 0.9; pts.push([0.29 + 0.07 * Math.cos(a), 0.58 + 0.07 * Math.sin(a) + 0.03]); }
+  for (let i = 1; i <= 14; i++) { const a = -Math.PI / 2 + (i / 14) * Math.PI * 0.9; pts.push([0.29 + 0.07 * Math.cos(a), 0.58 + 0.07 * Math.sin(a) + 0.03]); }
   pts.push([0.36, CONSOLE_H - 0.02], [0.35, CONSOLE_H], [0, CONSOLE_H]);
   return pts;
 })();

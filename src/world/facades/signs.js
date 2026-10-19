@@ -16,8 +16,8 @@ import { SHOP_LEVEL } from './interior.js';
 // cells take white); `aGlow` makes light boxes and neon letters glow at dusk.
 
 const W = 2048, H = 8192;
-const NAMES_Y = 6144, NAME_W = 512, NAME_H = 128;          // shop names: 13 rows of 4
-const LINES_Y = 7808, LINE_W = 256, LINE_H = 64;           // short lines and wall tags: 4 rows of 8
+const NAMES_Y = 6144, NAME_W = 512, NAME_H = 112;          // shop names: 15 rows of 4
+const LINES_Y = 7824, LINE_W = 256, LINE_H = 60;           // short lines and wall tags: 4 rows of 8
 const ICONS_Y = 8064, ICON = 128;                          // logo marks (white), the last cell solid white
 const CELL_W = 512, CELL_H = 128, TEXT_ROWS = 12;          // text cells: rows 0..11
 const PLAQUE = 128, PLAQUE_Y = TEXT_ROWS * CELL_H;        // 2 rows of 16 number plaques
@@ -78,7 +78,8 @@ const NAMES = [
   ['שחר', 'Shachar', 0], ['טל', 'Tal', 2], ['יעלי', 'Yaeli', 4], ['בית אבי', 'Beit Avi', 5], ['האחים ברק', 'Barak Bros.', 0],
   ['סבינה', 'Sabina', 2], ['מרגלית', 'Margalit', 1], ['אריאל', 'Ariel', 3], ['הרמוניה', 'Harmonia', 2], ['לבנה', 'Levana', 4],
   ['פנינה', 'Pnina', 5], ['הכרמל', 'HaCarmel', 0], ['עדן', 'Eden', 3], ['אביב', 'Aviv', 1], ['סיגל', 'Sigal', 4],
-  ['נועם', 'Noam', 2], ['מגדל', 'Migdal', 5],
+  ['נועם', 'Noam', 2], ['מגדל', 'Migdal', 5], ['זהבי', 'Zehavi', 3], ['השקמה', 'HaShikma', 1],
+  ['אלון', 'Alon', 0], ['רקפת', 'Rakefet', 2], ['ניסים', 'Nissim', 4], ['ירושלמי', 'Yerushalmi', 5], ['רז', 'Raz', 3], ['עופר', 'Ofer', 1],
 ];
 /** Number of shop names. */
 export const N_NAMES = NAMES.length;
@@ -244,9 +245,9 @@ function buildAtlas() {
     const x = (i % 4) * NAME_W, y = NAMES_Y + Math.floor(i / 4) * NAME_H;
     const [fh, fl, upper, sp] = NAME_STYLES[st];
     const enT = upper ? en.toUpperCase() : en;
-    g.font = fh.replace('Hpx', '68px');
+    g.font = fh.replace('Hpx', '62px');
     const wh = g.measureText(he).width, sxH = Math.min(1, (NAME_W - 28) / Math.max(1, wh));
-    g.font = fl.replace('Hpx', '34px');
+    g.font = fl.replace('Hpx', '31px');
     g.letterSpacing = `${sp}px`;
     const we = g.measureText(enT).width, sxE = Math.min(1, (NAME_W - 28) / Math.max(1, we));
     g.letterSpacing = '0px';
@@ -255,11 +256,11 @@ function buildAtlas() {
       g.save();
       g.beginPath(); g.rect(x, y, NAME_W, NAME_H); g.clip();
       g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.save(); g.font = fh.replace('Hpx', '68px'); g.direction = 'rtl'; g.translate(x + NAME_W / 2, y + 42); g.scale(sxH, 1); g.fillText(he, 0, 0); g.restore();
-      g.save(); g.font = fl.replace('Hpx', '34px'); g.letterSpacing = `${sp}px`; g.translate(x + NAME_W / 2, y + 104); g.scale(sxE, 1); g.fillText(enT, 0, 0); g.restore();
+      g.save(); g.font = fh.replace('Hpx', '62px'); g.direction = 'rtl'; g.translate(x + NAME_W / 2, y + 38); g.scale(sxH, 1); g.fillText(he, 0, 0); g.restore();
+      g.save(); g.font = fl.replace('Hpx', '31px'); g.letterSpacing = `${sp}px`; g.translate(x + NAME_W / 2, y + 92); g.scale(sxE, 1); g.fillText(enT, 0, 0); g.restore();
       g.restore();
     });
-    names.push({ full: cellOf(x, y, y + NAME_H, Math.max(iH, iE), NAME_W), he: cellOf(x, y + 2, y + 84, iH, NAME_W), en: cellOf(x, y + 84, y + NAME_H - 2, iE, NAME_W) });
+    names.push({ full: cellOf(x, y, y + NAME_H, Math.max(iH, iE), NAME_W), he: cellOf(x, y + 2, y + 75, iH, NAME_W), en: cellOf(x, y + 75, y + NAME_H - 2, iE, NAME_W) });
   });
   // short lines (white) and wall tags (full colour)
   const lines = [];
@@ -267,9 +268,9 @@ function buildAtlas() {
     const x = (i % 8) * LINE_W, y = LINES_Y + Math.floor(i / 8) * LINE_H;
     if (i < LINES.length) {
       const str = LINES[i];
-      g.font = SANS(36);
+      g.font = SANS(34);
       const wl = g.measureText(str).width, sx = Math.min(1, (LINE_W - 12) / Math.max(1, wl));
-      paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); g.fillStyle = '#fff'; g.font = SANS(36); g.textAlign = 'center'; g.textBaseline = 'middle'; g.translate(x + LINE_W / 2, y + LINE_H / 2 + 2); g.scale(sx, 1); g.fillText(str, 0, 0); g.restore(); });
+      paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); g.fillStyle = '#fff'; g.font = SANS(34); g.textAlign = 'center'; g.textBaseline = 'middle'; g.translate(x + LINE_W / 2, y + LINE_H / 2 + 2); g.scale(sx, 1); g.fillText(str, 0, 0); g.restore(); });
       lines.push(cellOf(x, y + 6, y + LINE_H - 6, wl * sx, LINE_W));
     } else {
       paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); wallTag(g, x, y, LINE_W, LINE_H, i); g.restore(); });
@@ -1070,6 +1071,9 @@ export function bladeFace(seed, type, round = null) {
   return ok[r.int(0, ok.length - 1)];
 }
 const SALE_FACE = 22;
+/** Trade a stock blade face advertises (null: none), and whether it is the sale disc. */
+export const bladeTrade = (i) => BLADE_FACES[i][1];
+export const isSaleFace = (i) => i === SALE_FACE;
 /** Whether blade face i is round (a disc sign). */
 export const bladeRound = (i) => !!BLADE_FACES[i][2];
 /** Goods-stand print cells: kind 'papers' | 'tags', index i (wraps). */

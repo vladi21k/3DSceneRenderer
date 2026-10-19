@@ -402,8 +402,27 @@ export function lin(hex) { _c.setHex(hex); return [_c.r, _c.g, _c.b]; }
 export function scaleRGB(c, k) { return [c[0] * k, c[1] * k, c[2] * k]; }
 
 /**
+ * Copy the baked templates in v (a template, or an object or array of them, two levels
+ * deep) out of the shared slabs into arrays of their own: a cached template must not keep
+ * a whole slab (and every transient template baked into it) alive.
+ */
+function compact(v, depth = 0) {
+  if (!v || typeof v !== 'object' || depth > 2) return v;
+  if (v.v instanceof Float32Array && v.i && typeof v.count === 'number') {
+    if (v.v.byteLength !== v.v.buffer.byteLength) v.v = v.v.slice();
+    if (v.i.byteLength !== v.i.buffer.byteLength) v.i = v.i.slice();
+    return v;
+  }
+  if (ArrayBuffer.isView(v)) return v;
+  if (Array.isArray(v)) { for (let k = 0; k < v.length; k++) compact(v[k], depth + 1); return v; }
+  for (const k in v) compact(v[k], depth + 1);
+  return v;
+}
+
+/**
  * Bounded template cache: when full, the oldest quarter is dropped (Map keeps insertion
  * order) rather than everything, so the templates of the building being dressed survive.
+ * Cached templates are copied out of the bake slabs (compact).
  */
 export class TplCache {
   constructor(max) { this.max = max; this.map = new Map(); }
@@ -414,7 +433,7 @@ export class TplCache {
         let drop = this.max >> 2;
         for (const k of this.map.keys()) { this.map.delete(k); if (--drop <= 0) break; }
       }
-      v = make();
+      v = compact(make());
       this.map.set(key, v);
     }
     return v;

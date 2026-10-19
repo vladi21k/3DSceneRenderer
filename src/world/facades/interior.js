@@ -542,8 +542,14 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
         float sd = ( k & 1 ) == 0 ? -1.0 : 1.0;
         float x0 = sd < 0.0 ? tx - 0.46 : tx + 0.76, x1 = x0 + 0.4;
         float xb = sd < 0.0 ? x0 : x1 - 0.035;
-        fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, 0.43, tz - 0.2 ), vec3( x1, 0.47, tz + 0.2 ), chC );
-        fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb, 0.47, tz - 0.19 ), vec3( xb + 0.035, 0.88, tz + 0.19 ), chC );
+        fBoxT( h, ao, ro, ird, p, n, mode, vec3( x0, 0.43, tz - 0.2 ), vec3( x1, 0.455, tz + 0.2 ), chC );
+        if ( mode == 0 ) {
+          // the back: two posts, a curved top rail and a slat between them
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb, 0.455, tz - 0.19 ), vec3( xb + 0.028, 0.88, tz - 0.162 ), chC );
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb, 0.455, tz + 0.162 ), vec3( xb + 0.028, 0.88, tz + 0.19 ), chC );
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb - 0.004, 0.78, tz - 0.17 ), vec3( xb + 0.032, 0.87, tz + 0.17 ), chC );
+          fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb + 0.004, 0.6, tz - 0.17 ), vec3( xb + 0.024, 0.64, tz + 0.17 ), chC );
+        } else fBoxT( h, ao, ro, ird, p, n, mode, vec3( xb, 0.455, tz - 0.19 ), vec3( xb + 0.028, 0.88, tz + 0.19 ), chC );
         if ( mode == 0 ) {
           // four legs
           for ( int l = 0; l < 4; l++ ) {

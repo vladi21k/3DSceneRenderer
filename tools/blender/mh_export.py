@@ -26,7 +26,7 @@ VERSION = 3
 # triangle budgets per part kind for LOD 0..3 (hair: one side; it is drawn double-sided by duplication)
 BUDGET = {
     'body': (8500, 1700, 560, 210),
-    'suit': (3600, 1100, 360, 130),
+    'suit': (16000, 1100, 360, 130),
     'shoes': (700, 200, 60, 20),
     'hair': (4000, 1000, 380, 0),
     'haircap': (0, 0, 0, 60),

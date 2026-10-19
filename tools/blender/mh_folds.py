@@ -306,6 +306,138 @@ def relief(P, ctx):
     return R.h, np.clip(R.c, 0, 1)
 
 
+# ----------------------------------------------------------------------------- geometric drape
+
+def _ridge(phase, sharp=1.6):
+    """Cloth standing off the body in folds: 0 in the broad valleys (where the cloth lies on the body) to 1 on
+    the rounded ridges, one ridge per period."""
+    return (0.5 + 0.5 * np.cos(2 * np.pi * phase)) ** sharp
+
+
+def drape(P, ctx):
+    """Outward offset (m, >= 0) of rest-pose garment points P (n, 3; three.js space) for the garments' own
+    geometry: the broad folds a worn garment stands off the body in, which the normal maps alone cannot
+    show (silhouettes, ridges catching the light, shade in the valleys). Periods of 5 cm and more only
+    (the meshes carry about a centimetre between vertices); the finer creases stay in relief(). ctx as for
+    relief(), plus tuck (the top is tucked into its bottom) and long (the bottom reaches the ankle)."""
+    J, k = ctx['J'], ctx['k']
+    n = len(P)
+    h = np.zeros(n)
+    wa, wl, reg = ctx['wa'], ctx['wl'], ctx['reg']
+    top_kind, bot_kind = ctx['kinds']
+    seed = ctx['seed']
+    x, y, z = P[:, 0], P[:, 1], P[:, 2]
+    side = np.where(x < 0, -1.0, 1.0)
+    is_top = (reg == REG_TOP) | (reg == REG_TOP2)
+    is_bot = reg == REG_BOTTOM
+    heavy = 0.6 if top_kind == 'jacket' else 1.0
+    Q = P / k
+    warp = fbm(Q * 5.0, seed + 31, 2) * 0.6
+    ampn = 0.6 + 0.8 * vnoise(Q * 9.0 + 1.7, seed + 32)
+
+    # ---- tops: the torso's cloth falls in broad folds from the chest and shoulder blades, deepening
+    # towards the hem (untucked) or bunching above the waistband (tucked); fans of drape from the armpits;
+    # the hem itself stands off and waves a little
+    zc = 0.5 * (J['spine2'][2] + J['pelvis'][2])
+    th = np.arctan2(x, -(z - zc))
+    rt = np.hypot(x, z - zc)
+    wt = np.clip(1 - wa - wl, 0, 1)
+    yA = 0.5 * (J['armL'][1] + J['armR'][1]) - 0.085 * k
+    yb = ctx['hemTop']
+    yw = ctx['waistBot']
+    mT = is_top & (wt > 0.05)
+    if mT.any():
+        e = np.where(mT, wt, 0.0)
+        down = np.clip((yA - 0.04 * k - y) / np.maximum(0.05, yA - 0.04 * k - yb), 0, 1)
+        sides = 1.0 - 0.55 * np.abs(np.sin(th)) ** 3            # (less where the arms hang)
+        nf = 9.0 if top_kind != 'jacket' else 6.0
+        ph = th * nf / (2 * np.pi) + warp + 0.35 * np.sin(th * 2 + seed)
+        if ctx.get('tuck'):
+            # tucked: the cloth blouses over the waistband in short soft folds
+            env = e * ss(yA - 0.06 * k, yA - 0.2 * k, y) * sides
+            h += 0.0035 * heavy * env * ampn * _ridge(ph)
+            env = e * ss(yw + 0.12 * k, yw + 0.03 * k, y) * ss(yw - 0.02 * k, yw + 0.01 * k, y)
+            h += 0.004 * heavy * env * ampn * _ridge((y + 0.012 * k * np.sin(th * 4 + seed)) / (0.05 * k) + warp)
+        else:
+            env = e * down ** 1.4 * sides
+            h += 0.0075 * heavy * env * ampn * _ridge(ph)
+            # the hem stands off the body and waves (never a ruled circle)
+            env = e * ss(yb + 0.07 * k, yb, y) * sides
+            h += env * (0.0025 + 0.002 * np.sin(th * 3 + seed * 1.3) + 0.0015 * np.sin(th * 7 - seed))
+        # drape fans from the armpits, down the side and round onto the front and back
+        for s, S in ((-1, 'L'), (1, 'R')):
+            dy = yA - y
+            ang0 = s * np.pi / 2
+            dth = (th - ang0 + np.pi) % (2 * np.pi) - np.pi
+            dh = -s * dth * np.maximum(rt, 0.08 * k)
+            rq = np.hypot(dy, dh)
+            fan = np.arctan2(dh, np.maximum(dy, 1e-4))
+            env = e * ss(-0.02 * k, 0.05 * k, dy) * ss(0.03 * k, 0.08 * k, rq) * ss(0.32 * k, 0.12 * k, rq) * ss(1.3, 0.7, np.abs(fan))
+            h += 0.0035 * heavy * env * ampn * _ridge(fan * 4.0 / np.pi + warp * 0.6)
+        if ctx['female'] and top_kind != 'jacket':
+            # under the bust the cloth falls from its apex: a few soft folds down and out
+            for s in (-1, 1):
+                bx, by = s * 0.085 * k, yA - 0.07 * k
+                dyb = by - y
+                dxb = (x - bx) * s
+                front = ss(0.8, 0.3, np.abs(th))
+                ang = np.arctan2(dxb, np.maximum(dyb, 1e-4))
+                rb = np.hypot(dxb, dyb)
+                env = e * front * ss(0.0, 0.06 * k, dyb) * ss(0.24 * k, 0.1 * k, rb) * (side * s > -0.3)
+                h += 0.003 * env * ampn * _ridge(ang * 3.0 / np.pi + warp * 0.5)
+
+    # ---- sleeves: rings bunching under the arm near the armpit, the crook of a long sleeve's elbow and
+    # its stack above the cuff; a short sleeve's opening stands off the arm
+    mA = (wa > 0.15) & is_top
+    if mA.any():
+        e = np.where(mA, wa, 0.0)
+        for s, S in ((-1, 'L'), (1, 'R')):
+            m = (side == s) & mA
+            if not m.any():
+                continue
+            a, b, c = (np.array(J[nm + S]) for nm in ('arm', 'fore', 'hand'))
+            t, phi, r, tb, L = limb_frame(P[m], a, b, c, np.array([-s, 0.0, 0.0]), np.array([0.0, 0.0, -1.0]))
+            inner = (1 + np.cos(phi)) * 0.5
+            turn = phi / (2 * np.pi)
+            em = e[m]
+            hh = 0.003 * heavy * em * ss(0.18 * k, 0.03 * k, t) * (0.3 + 0.7 * inner) * _ridge(t / (0.05 * k) + turn + warp[m])
+            de = t - tb
+            crook = (1 + np.cos(phi - 0.9)) * 0.5
+            hh += 0.0035 * heavy * em * ss(0.1 * k, 0.0, np.abs(de)) * (0.3 + 0.7 * crook) * _ridge(de / (0.05 * k) + turn + warp[m])
+            tmax = t.max()
+            if tmax > tb + 0.08 * k:
+                hh += 0.003 * em * ss(tmax - 0.14 * k, tmax - 0.03 * k, t) * _ridge(t / (0.05 * k) - turn + warp[m])
+            else:
+                hh += em * ss(tmax - 0.06 * k, tmax, t) * (0.002 + 0.002 * (1 - inner))
+            h[m] += hh * ampn[m]
+
+    # ---- trousers, jeans, shorts (leggings stay smooth): bunching behind the knee and over the shoe,
+    # soft vertical drape down the legs, a shorts' leg standing off the thigh towards its hem
+    if is_bot.any() and bot_kind not in ('skirt', 'leggings'):
+        for s, S in ((-1, 'L'), (1, 'R')):
+            m = (side == s) & is_bot & (wl > 0.3)
+            if not m.any():
+                continue
+            a, b, c = (np.array(J[nm + S]) for nm in ('thigh', 'shin', 'foot'))
+            t, phi, r, tk, L = limb_frame(P[m], a, b, c, np.array([-s, 0.0, 0.0]), np.array([0.0, 0.0, -1.0]))
+            turn = phi / (2 * np.pi)
+            fr = np.sin(phi)
+            el = np.clip(wl[m] * 1.4, 0, 1)
+            # (never at the waistband: it lies under the top's hem)
+            el *= ss(yw - 0.06 * k, yw - 0.14 * k, y[m])
+            back = ss(0.3, -0.7, fr)
+            hh = 0.003 * el * ss(0.11 * k, 0.0, np.abs(t - tk + 0.01 * k)) * (0.35 + 0.65 * back) * _ridge((t - tk) / (0.05 * k) + turn + warp[m])
+            tmax = t.max()
+            if ctx.get('long'):
+                hh += 0.0045 * el * ss(tmax - 0.2 * k, tmax - 0.04 * k, t) * _ridge(t / (0.05 * k) + 1.5 * turn + warp[m] * 1.3)
+            hh += 0.0022 * el * ss(0.02 * k, 0.12 * k, t) * _ridge(5 * turn + t / (0.4 * k) + warp[m])
+            if bot_kind == 'shorts' or tmax < tk + 0.05 * k:
+                hem = ss(tmax - 0.18 * k, tmax, t)
+                hh += el * hem * (0.004 + 0.007 * hem) * (0.75 + 0.25 * np.sin(phi * 2 + seed))
+            h[m] += hh * ampn[m]
+    return h
+
+
 # ----------------------------------------------------------------------------- baking into UV space
 
 def raster_attr(uv, idx, S, co=None):

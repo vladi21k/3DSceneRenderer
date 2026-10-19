@@ -97,7 +97,8 @@ const facades = {
       // finish, but casting shadows onto the paving
       standPaint: { material: M.get('paint.frame', { vertexColors: true, color: white, roughness: 1.2 }) },
       // fruit and vegetables: waxy, glossy skins (the moulded-plastic bake, vertex colour = albedo)
-      produce: { material: M.get('plastic.chair', { vertexColors: true, color: white, roughness: 0.42 }) },
+      // (the crates cast the stand's shadow; the pieces' own occlusion is in their shade)
+      produce: { material: M.get('plastic.chair', { vertexColors: true, color: white, roughness: 0.42 }), castShadow: false },
       // wooden crates, carts and trestles: weathered timber (vertex colour tints it)
       standWood: { material: M.get('wood.bench', { vertexColors: true }), far: { key: 'standPaint' } },
       shutter: { material: vc('wood.shutterDetail'), thin: true, far: { key: 'joinery', k: FOLD.paintwood } },
@@ -249,8 +250,9 @@ const facades = {
   update(dt, app) {
     // the sign atlas is painted in the start-up's idle time; finish it should a frame come first
     if (!this.signAtlas.done) this.signAtlas.draw(Infinity);
-    // the reveal film is black by day (see spill.js): skip its draws altogether
-    const spill = this.mats.spill.material, night = U.uNight.value > 0.18;
+    // the reveal film is black by day (see spill.js): skip its draws altogether, except
+    // while loading, so its program is compiled before the ride starts (not at dusk)
+    const spill = this.mats.spill.material, night = U.uNight.value > 0.18 || !app.ready;
     if (spill.visible !== night) spill.visible = night;
     // shop lamps, their spill and the light boxes follow the exposure at dusk
     shopLevels(app.env ? app.env.exposure : 1);

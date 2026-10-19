@@ -34,6 +34,7 @@ export const FACES = { FRONT: F_FRONT, BACK: F_BACK, LEFT: F_LEFT, RIGHT: F_RIGH
 // Recent batch sizes per sink key, so fresh buffers rarely need to grow (each batch's
 // arrays are handed over to the GPU geometry as they are, see Sink.detach).
 const HINT = new Map();
+let _pj = new Float64Array(256);   // smoothed profile joint normals of a sweep (reused; NaN: sharp)
 
 /** Height above the paving (normal.w, snorm8): metres up to HG_MAX, in steps of HG_MAX / 127. */
 export const HG_MAX = 3;
@@ -388,10 +389,12 @@ export class Builder {
    * at height v0. profile: [[out, up], ...] ordered bottom to top (out = distance in
    * front of the path, i.e. along the path's outward normal). path: [[u, w], ...]; the
    * outward side is to the right of the direction of travel seen from above, which for
-   * a path running +u along the facade is +w. Mitred corners, flat shading per edge.
+   * a path running +u along the facade is +w. Mitred corners, flat shading per edge,
+   * or with `crease` (degrees) smooth shading across the profile's joints that turn by
+   * less than that (a carved curve), sharp at the rest (fillets, steps, drips).
    * caps: [startCap, endCap] booleans close the ends with the profile polygon.
    */
-  sweep(s, profile, path, v0, caps = [false, false], uStart = 0) {
+  sweep(s, profile, path, v0, caps = [false, false], uStart = 0, crease = 0) {
     const np = path.length, m = profile.length;
     // outward normals per path segment
     const segN = [];
@@ -419,6 +422,20 @@ export class Builder {
       pe.push([dup / l, -dout / l]); // rotate so the normal points outwards for bottom->top order
       acc += l; pv.push(acc);
     }
+    // smooth joints: the profile vertex's normal is the mean of its two edges' normals
+    // (pj[2j], pj[2j + 1]: at profile vertex j, NaN where the joint stays sharp)
+    if (_pj.length < m * 2) _pj = new Float64Array(m * 4);
+    const pj = _pj;
+    pj.fill(NaN, 0, m * 2);
+    if (crease > 0) {
+      const cc = Math.cos((crease * Math.PI) / 180);
+      for (let j = 1; j < m - 1; j++) {
+        const a = pe[j - 1], b = pe[j];
+        if (a[0] * b[0] + a[1] * b[1] < cc) continue;
+        const x = a[0] + b[0], y = a[1] + b[1], l = Math.hypot(x, y) || 1;
+        pj[j * 2] = x / l; pj[j * 2 + 1] = y / l;
+      }
+    }
     s.reserve((np - 1) * (m - 1) * 4 + m * 2 + 8, (np - 1) * (m - 1) * 6 + m * 6);
     let tuAcc = uStart;
     for (let k = 0; k < np - 1; k++) {
@@ -426,11 +443,16 @@ export class Builder {
       const segLen = Math.hypot(B[0] - A[0], B[1] - A[1]);
       for (let j = 0; j < m - 1; j++) {
         const p0 = profile[j], p1 = profile[j + 1];
-        const nu = n[0] * pe[j][0], nw = n[1] * pe[j][0], nv = pe[j][1];
+        // normals at the bottom and the top of the edge (its own, or the smoothed joint's)
+        const s0 = pj[j * 2] === pj[j * 2], s1 = pj[j * 2 + 2] === pj[j * 2 + 2];
+        const ex = s0 ? pj[j * 2] : pe[j][0], ey = s0 ? pj[j * 2 + 1] : pe[j][1];
+        const fx = s1 ? pj[j * 2 + 2] : pe[j][0], fy = s1 ? pj[j * 2 + 3] : pe[j][1];
+        const nu = n[0] * ex, nw = n[1] * ex, nv = ey;
+        const mu = n[0] * fx, mw = n[1] * fx, mv = fy;
         const a = this.v(s, A[0] + ma[0] * p0[0], v0 + p0[1], A[1] + ma[1] * p0[0], nu, nv, nw, tuAcc, pv[j]);
         const b = this.v(s, B[0] + mb[0] * p0[0], v0 + p0[1], B[1] + mb[1] * p0[0], nu, nv, nw, tuAcc + segLen, pv[j]);
-        const c = this.v(s, B[0] + mb[0] * p1[0], v0 + p1[1], B[1] + mb[1] * p1[0], nu, nv, nw, tuAcc + segLen, pv[j + 1]);
-        const d = this.v(s, A[0] + ma[0] * p1[0], v0 + p1[1], A[1] + ma[1] * p1[0], nu, nv, nw, tuAcc, pv[j + 1]);
+        const c = this.v(s, B[0] + mb[0] * p1[0], v0 + p1[1], B[1] + mb[1] * p1[0], mu, mv, mw, tuAcc + segLen, pv[j + 1]);
+        const d = this.v(s, A[0] + ma[0] * p1[0], v0 + p1[1], A[1] + ma[1] * p1[0], mu, mv, mw, tuAcc, pv[j + 1]);
         this.quadIdx(s, a, b, c, d);
       }
       tuAcc += segLen;
@@ -460,9 +482,9 @@ export class Builder {
     }
   }
 
-  /** Straight extrusion of a profile along u from u0 to u1 at w = 0 (wall face). */
-  extrudeU(s, profile, u0, u1, v0, caps = [true, true]) {
-    this.sweep(s, profile, [[u0, 0], [u1, 0]], v0, caps, u0);
+  /** Straight extrusion of a profile along u from u0 to u1 at w = 0 (wall face); crease: see sweep. */
+  extrudeU(s, profile, u0, u1, v0, caps = [true, true], crease = 0) {
+    this.sweep(s, profile, [[u0, 0], [u1, 0]], v0, caps, u0, crease);
   }
 
   // ------------------------------------------------------------------ solids of revolution

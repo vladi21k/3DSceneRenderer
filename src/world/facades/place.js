@@ -8,7 +8,7 @@ import { Tpl, TplCache, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
 import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
-import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls, bladeNameTpls, letteringTpls, tradeIcon, subWordsOf, wordHebrew, N_NAMES, LINE_KIND, inkOn, lineCell, cellTpl } from './signs.js';
+import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls, bladeNameTpls, letteringTpls, tradeIcon, subWordsOf, wordHebrew, N_NAMES, LINE_KIND, inkOn, lineCell, cellTpl, bladeTrade, isSaleFace } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow, shopSpill } from './spill.js';
 import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
@@ -88,6 +88,8 @@ function nameTable(app) {
   }
   return (NAME_TAB = tab);
 }
+/** Main-street shop names as given out (Map opening id → name index), for tools and checks. */
+export function shopNames(app) { return nameTable(app); }
 /** The name (index into signs.js NAMES) shop opening o trades under. */
 function nameOf(app, o) {
   const n = nameTable(app).get(o.id);
@@ -104,16 +106,16 @@ const ACCENTS = [0xc8231c, 0xe0a81c, 0xf4f1e8, 0x1f4fa0, 0xd8b25a, 0x2a7a3a];
  */
 function makeBrand(app, o, type, sub, design) {
   const r = RNG.from(o.id, 'brand');
-  const nv = r.weighted([[0, 0.55], [1, 0.28], [2, 0.17]]);
+  const nv = r.weighted([[0, 0.4], [1, 0.38], [2, 0.22]]);
   let sb = null;
   const ks = r.next();
-  if (ks < 0.42) {
+  if (ks < 0.3) {
     const words = subWordsOf(type);
     const want = nv === 1 ? false : nv === 2 ? true : r.chance(0.5);
     const pref = words.filter((w) => wordHebrew(w) === want);
     const pool = pref.length ? pref : words;
     if (pool.length) sb = { w: pool[r.int(0, pool.length - 1)] };
-  } else if (ks < 0.64) {
+  } else if (ks < 0.5) {
     const kind = type === 'cafe' && r.chance(0.5) ? r.pick([18, 18, 19]) : null;
     const [a, b] = r.chance(0.62) ? LINE_KIND.phone : r.chance(0.6) ? LINE_KIND.year : LINE_KIND.tagline;
     sb = { l: kind ?? r.int(a, b) };
@@ -205,7 +207,8 @@ function buildWindow(kit, ctx, o) {
   const floor = plan.floors[o.floor];
   const bay = plan.bays[o.bay];
   const roomY0 = floor.y + 0.02;
-  const W = clamp(bay ? bay.w : 3.6, Math.max(2.4, o.w + 0.5), 4.8);
+  // (several lights of a triple window share one bay: the room box keeps to the light)
+  const W = o.group === 3 ? Math.max(2.4, o.w + 0.5) : clamp(bay ? bay.w : 3.6, Math.max(2.4, o.w + 0.5), 4.8);
   const H = Math.max(2.4, floor.h - 0.3);
   const D = 3.4 + r.next() * 1.8;
   const seed = r.next();
@@ -406,7 +409,13 @@ function addProjecting(kit, ctx, m, kind, brand, type, dims, seed, r) {
   const q = ctx.q >= 0.5 ? 1 : 0.4;
   const wear = r.range(0.15, 1);
   m.multiply(_r.makeRotationX(r.range(-0.02, 0.02)));
-  const stock = !brand || (kind !== 'flag' && r.chance(0.15));
+  // (a stock face only where one shows the shop's own trade, and never the sale disc)
+  let face = -1;
+  if (brand && kind !== 'flag' && r.chance(0.15)) {
+    face = bladeFace(seed, type, kind === 'disc');
+    if (bladeTrade(face) !== type || isSaleFace(face)) face = -1;
+  }
+  const stock = !brand || face >= 0;
   const fade = (hex, k) => weather(lin(hex), r, wear * k);
   let tp, board, ink, glow, kBoard;
   if (kind === 'flag') {
@@ -419,7 +428,7 @@ function addProjecting(kit, ctx, m, kind, brand, type, dims, seed, r) {
     kBoard = glow ? 'signBoard' : 'board';
     if (tp.accent) { const ac = fade(design.accent ?? design.ink, 0.6); kit.get('signText').add(tp.accent, m, ac[0], ac[1], ac[2], { aGlow: [glow] }); }
   } else if (stock) {
-    const face = bladeFace(seed, type, kind === 'disc');
+    if (face < 0) face = bladeFace(seed, type, kind === 'disc');
     tp = kind === 'disc' ? projCache.get(`D|${face}|${dims[0]}|${q}`, () => discTpls(face, dims[0], q))
       : projCache.get(`B|${face}|${dims.join('|')}|${q}`, () => bladeTpls(face, dims[0], dims[1], q));
     board = fade(r.pick([0xe8e4da, 0x1d1d1f, 0xd8b25a, 0xb8b8b4]), 1); ink = fade(0xffffff, 0.5);
@@ -440,7 +449,7 @@ function addProjecting(kit, ctx, m, kind, brand, type, dims, seed, r) {
 }
 
 // ------------------------------------------------------------------ projecting signs
-const projCache = new TplCache(160);
+const projCache = new TplCache(400);
 const q2 = (x, st) => Math.round(x / st) * st;
 
 /**
@@ -1118,8 +1127,9 @@ const returnS = new WeakMap();        // corner-return plan → route position o
  */
 function openingS(app, lot, frame, plan, o) {
   if (!plan.isReturn) {
-    const t = Math.min(1, Math.max(0, o.uc / (plan.width || 1)));
-    return app.route.wrap(lot.side > 0 ? lot.s1 - t * (lot.s1 - lot.s0) : lot.s0 + t * (lot.s1 - lot.s0));
+    // (the span taken the short way round, for the lot across the loop's seam)
+    const t = Math.min(1, Math.max(0, o.uc / (plan.width || 1))), span = app.route.delta(lot.s0, lot.s1);
+    return app.route.wrap(lot.side > 0 ? lot.s1 - t * span : lot.s0 + t * span);
   }
   let s = returnS.get(plan);
   if (s === undefined) {

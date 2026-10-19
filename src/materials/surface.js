@@ -483,11 +483,11 @@ const mapLanes = (attr) => /* glsl */ `
 // walls. The run-off is a field of single streaks, never isotropic blobs: columns on a
 // jittered 0.3-0.8 m lattice along the wall, and in each column a slot every 2.4-4 m of
 // height, about half of them holding a streak. A streak hangs from a bed joint where the
-// material has a course layout (water held by the joint runs off there), 2-8 cm wide at
-// its head, widening to about twice that and fading as it runs down over 0.5-2 m, wandering
+// material has a course layout (water held by the joint runs off there), 4-14 cm wide at
+// its head, widening by about 70 % and fading as it runs down over 0.8-2.6 m, wandering
 // a little and broken in places; warm grey-brown (dirt and soot carried down by the rain).
-// Its strength drifts along the wall in broad stretches. Sub-pixel streaks fade to their
-// (small) mean.
+// Its strength drifts along the wall in broad stretches, and the wall's tone varies in tall
+// faint rain-wash bands. Sub-pixel streaks fade to their (small) mean.
 const MAP_WEATHER = /* glsl */ `
   if (sfWeather.x + sfWeather.y + sfWeather.w > 0.0) {
     #ifdef FLAT_SHADED
@@ -538,7 +538,7 @@ const MAP_WEATHER = /* glsl */ `
           if (sfHf(hk) > sfWeather.z) continue;         // an empty slot
           float k2 = sfHf(sfH(hk + 1u)), k3 = sfHf(sfH(hk + 2u)), k4 = sfHf(sfH(hk + 3u)), k5 = sfHf(sfH(hk + 4u));
           if (sfLay.y > 0.5) top = (floor((top * sfKv + sfVo) / sfLay.x) * sfLay.x - sfVo) / sfKv;
-          float L = 0.6 + 1.9 * k2 * k2;                // 0.6-2.5 m
+          float L = 0.8 + 1.8 * k2 * k2;                // 0.8-2.6 m
           float d = top - sfY;                          // below the head (m)
           if (d < 0.0 || d > L) continue;
           float hw = (0.02 + 0.05 * k3) * (1.0 + 0.7 * d / L);   // half width: 4-14 cm wide at the head
@@ -550,10 +550,14 @@ const MAP_WEATHER = /* glsl */ `
           sfRun = max(sfRun, across * along * (0.6 + 0.4 * k5) * (0.55 + 0.45 * brk));
         }
       }
-      sfRun = mix(0.012 * sfWeather.z, sfRun, sfNear);
+      sfRun = mix(0.014 * sfWeather.z, sfRun, sfNear);
       // (some stretches of wall clean, others well streaked)
       float sfMv = texture(sfMacroTex, vec2(sfAl * 0.13, sfY * 0.02) + vec2(0.53, 0.19)).b;
       sfRun *= sfVert * 1.5 * smoothstep(0.25, 0.75, sfMv);
+      // and the rain washes a wall in tall bands: some 0.5-1 m wide strips a little paler,
+      // others a little dirtier, running down several metres
+      float sfWash = texture(sfMacroTex, vec2(sfAl * 0.25, sfY * 0.04) + vec2(0.27, 0.61)).g - 0.5;
+      sfAlb *= 1.0 + 0.5 * sfWeather.y * sfWash * sfVert;
       float sfRk = min(0.45, sfWeather.y * sfRun);
       vec3 sfSoil = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.9, 0.8, 0.66);
       sfAlb = mix(sfAlb, sfSoil, min(1.0, 1.5 * sfRk)) * (1.0 - sfRk);
@@ -654,7 +658,7 @@ const AO = /* glsl */ `
 const AO_THIN = /* glsl */ `
   {
     float sfDown = smoothstep(0.15, 0.8, - dot(normal, (viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz));
-    reflectedLight.indirectDiffuse *= 1.0 - 0.45 * sfDown;
+    reflectedLight.indirectDiffuse *= 1.0 - 0.5 * sfDown;
   }
 `;
 

@@ -88,7 +88,8 @@ function sashLayout(o, v) {
   if (isArched(o)) yT = Math.max(fw + 0.6, springY(o) - (o.top === 'segment' ? 0.04 : 0));
   else if (v.transom && o.h > 1.9) yT = o.h - fw - (o.kind === 'balconyDoor' ? 0.5 : 0.42);
   const sashTop = yT !== null ? yT - tw / 2 : o.h - fw;
-  const nL = v.type === 'alu' ? 2 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
+  // (the narrow lights of a triple window open as single leaves)
+  const nL = o.group === 3 ? 1 : v.type === 'alu' ? 2 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
   return { P, fw, hwI, tw, yT, sashTop, nL, lw: (2 * hwI) / nL };
 }
 
@@ -153,7 +154,7 @@ function buildJoinery(o, v, q, open) {
       t.loft([arc(rh + 0.03, P.zs - 0.004), arc(rh, P.zs - 0.004), arc(rh, -0.02)], false, 0.95);
     } else {
       // vertical bars continuing the leaf joints
-      const nV = o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
+      const nV = o.group === 3 ? 1 : o.w > 1.75 ? 4 : o.w > 0.75 ? 2 : 1;
       for (let i = 1; i < nV; i++) {
         const x = -hwI + (2 * hwI * i) / nV;
         const yt = topAt(o, x, fw - 0.01);

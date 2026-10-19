@@ -28,6 +28,12 @@ const MIE_EXT = 4.44e-3;   // per km at unit density (x uMieScale)
 // 465 nm; 0.6 gives about [0.93, 1.0, 1.11])
 const mieSpectrum = (ang) => [Math.pow(615 / 550, -ang), 1.0, Math.pow(465 / 550, -ang)];
 export const MIE_DEFAULT = { h: 0.9, alb: [0.975, 0.965, 0.95], g: 0.66, ang: 0.6 };
+// and a shallow urban haze layer in the lowest few hundred metres (dust, traffic, the
+// city's own heat): density at sea level relative to the main layer's, and its scale
+// height (km). A ray low over the horizon runs for kilometres through it, one overhead
+// for a few hundred metres, so it turns the band near the horizon pale and milky (multiple
+// scattering whitens it further) while the sky overhead stays a deep blue
+export const MIE_LOW_DEFAULT = [0, 0.4];
 // ozone (Chappuis band) absorption per km at the layer peak. The sRGB red primary spans
 // ~580-700 nm, across the band's peak and its long-wave flank: on average it loses about
 // as much as the green, so the twilight sky goes blue and pink rather than khaki
@@ -49,6 +55,7 @@ uniform vec3 uMieExt;        // aerosol extinction per km at unit density (rgb)
 uniform float uMieScale;     // aerosol load (x the clean reference atmosphere)
 uniform float uMieH;         // aerosol scale height (km)
 uniform vec3 uMieAlb;        // aerosol single-scattering albedo (rgb)
+uniform vec2 uMieLow;        // shallow haze layer: density at sea level (x the main layer's), scale height (km)
 
 float atmRaySphere(vec3 ro, vec3 rd, float R) {
   float b = dot(ro, rd), c = dot(ro, ro) - R * R, d = b * b - c;
@@ -59,7 +66,7 @@ float atmRaySphere(vec3 ro, vec3 rd, float R) {
 }
 void atmMedium(float h, out vec3 scaR, out vec3 scaM, out vec3 ext) {
   float dR = exp(-h / ${f(RAYLEIGH_H)});
-  float dM = exp(-h / uMieH);
+  float dM = exp(-h / uMieH) + uMieLow.x * exp(-h / uMieLow.y);
   float dO = max(0.0, 1.0 - abs(h - 25.0) / 15.0);
   scaR = ATM_RAYLEIGH * dR;
   scaM = uMieExt * uMieAlb * (uMieScale * dM);
@@ -244,10 +251,11 @@ function lutTarget(w, h) {
 }
 
 export class Atmosphere {
-  constructor(renderer, { mieScale = 2.2, mieH = MIE_DEFAULT.h, mieAlb = MIE_DEFAULT.alb, mieG = MIE_DEFAULT.g, mieAng = MIE_DEFAULT.ang, camAlt = CAMERA_ALT_KM } = {}) {
+  constructor(renderer, { mieScale = 2.2, mieH = MIE_DEFAULT.h, mieAlb = MIE_DEFAULT.alb, mieG = MIE_DEFAULT.g, mieAng = MIE_DEFAULT.ang, mieLow = MIE_LOW_DEFAULT, camAlt = CAMERA_ALT_KM } = {}) {
     this.renderer = renderer;
     this.mieScale = mieScale;
     this.mieH = mieH;
+    this.mieLow = [Math.max(+mieLow[0] || 0, 0), Math.max(+mieLow[1] || MIE_LOW_DEFAULT[1], 0.05)];
     this.mieSpec = mieSpectrum(mieAng);
     this.camAlt = camAlt;
     this.trans = lutTarget(256, 64);
@@ -260,6 +268,7 @@ export class Atmosphere {
       uMieScale: { value: mieScale },
       uMieExt: { value: new THREE.Vector3(...this.mieSpec.map((k) => k * MIE_EXT)) },
       uMieH: { value: mieH },
+      uMieLow: { value: new THREE.Vector2(...this.mieLow) },
       uMieAlb: { value: new THREE.Vector3(...mieAlb) },
       uMieG: { value: mieG },
       uTransLUT: { value: this.trans.texture },
@@ -302,7 +311,8 @@ export class Atmosphere {
   // ---- CPU mirror of the medium, for the sun light colour
 
   _ext(h) {
-    const dR = Math.exp(-h / RAYLEIGH_H), dM = Math.exp(-h / this.mieH), dO = Math.max(0, 1 - Math.abs(h - 25) / 15);
+    const dR = Math.exp(-h / RAYLEIGH_H), dO = Math.max(0, 1 - Math.abs(h - 25) / 15);
+    const dM = Math.exp(-h / this.mieH) + this.mieLow[0] * Math.exp(-h / this.mieLow[1]);
     const m = MIE_EXT * this.mieScale * dM;
     return [0, 1, 2].map((i) => RAYLEIGH[i] * dR + m * this.mieSpec[i] + OZONE[i] * dO);
   }
