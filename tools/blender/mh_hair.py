@@ -291,9 +291,11 @@ def groom(cid):
         elif S['flow'] == 'part':
             lat = p[0] - part_x
             sgn = 1.0 if lat >= 0 else -1.0
-            # (sideways from the parting on top; the back hangs down from the crown)
-            v = np.array([sgn * (0.35 + 0.65 * min(1.0, abs(lat) / (0.03 * hk))), 0.0, 0.0])
-            v = v + (p - crown) / max(1e-6, np.linalg.norm(p - crown)) * 0.6
+            # (sideways from the parting, which runs from the front hairline back to the crown; behind the
+            # crown the hair falls from it, with no parting down the back of the head)
+            wp = float(np.clip((crown[2] + 0.015 * hk - p[2]) / (0.05 * hk), 0, 1))
+            v = np.array([sgn * (0.35 + 0.65 * min(1.0, abs(lat) / (0.03 * hk))), 0.0, 0.0]) * wp
+            v = v + (p - crown) / max(1e-6, np.linalg.norm(p - crown)) * (0.6 + 0.6 * (1 - wp))
         else:
             v = p - crown
             v = v / max(1e-6, np.linalg.norm(v))

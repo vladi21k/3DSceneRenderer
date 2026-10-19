@@ -12,14 +12,16 @@ import { input } from './input.js';
 //  - body frame: the axis through the two bogie pivots of the cab module, so in a curve
 //    the cab points across the bend (the track sweeps towards the inside of the frame
 //    and the outer facades fill it); the eye sits 1.7 m behind the cab front on that
-//    axis. The driver's head turns a little towards where the track goes;
+//    axis, over the centre of the ride track. The view is fixed to the cab like a
+//    mounted cab camera: it never pans towards the line ahead, so the ride rails stay
+//    locked under the middle of the frame and never slide sideways (a panning view
+//    put the other track in the middle of the frame in tight bends);
 //  - body on its suspension: lateral sway and yaw from track alignment, a 1.1-1.6 Hz body
 //    hunting oscillation growing with speed², vertical
 //    bob and pitch from track level, roll from cross level and an outward roll in
 //    curves (v²κ), pitch from traction / braking with a spring-back at the stop;
-//  - framing: at the telephoto default (DEFAULT_VFOV) the gaze settles far down the line,
-//    so the rails run to a clear vanishing point on straights and bends alike; at wide
-//    angles it is the plain body-mounted view with a slight turn into curves;
+//  - framing: the same body-mounted view at every zoom (RIG.headTurn / teleHeadTurn can
+//    add a head turn towards a gaze point down the line; both are 0);
 //  - impacts at the same rail joints / turnout parts and the same axles (config AXLES)
 //    the audio uses (app.audio.features), so each bump lands with its knock;
 //  - a fine traction / running buzz, boarding movements and door shudders at stops;
@@ -42,10 +44,10 @@ export const RIG = {
   eyeBack: 1.7,             // m, driver's eye behind the cab front
   pivot1: 3.125,            // m behind the cab front: cab bogie centre (body pivot)
   pivot2: 14.525,           // second bogie centre (sets the body axis)
-  lookAhead: 10,            // m, where the driver looks along the track (wide angle)
-  headTurn: 0.22,           // share of the angle to that point the head turns (rest: body axis)
-  teleLookAhead: 80,        // m, gaze point at the telephoto default: far down the line...
-  teleHeadTurn: 0.7,        // ...and how far the view turns towards it
+  lookAhead: 10,            // m, gaze point along the track (wide angle)
+  headTurn: 0,              // share of the angle to that point the view turns (0: fixed to the cab)
+  teleLookAhead: 80,        // m, gaze point at the telephoto default...
+  teleHeadTurn: 0,          // ...and its turn share (0: fixed to the cab, so the rails stay centred)
   teleFov: [20, 40],        // vertical FOV range blending telephoto (≤) into wide-angle (≥) framing
   basePitch: -0.7 * DEG,    // slight downward gaze (vanishing point a little above centre)
   gazeFreq: 0.55,           // Hz, head-turn spring (critically damped)
