@@ -119,7 +119,11 @@ function sweepRoundedRect(w, d, prof, cr, colorFn) {
       const base = pos.length / 3;
       for (const [P, pu] of [[A, u], [B, u + du]]) {
         for (const [o, y, pv] of [[o0, y0, v], [o1, y1, v + len]]) {
-          pos.push(P[0] + P[2] * (cr + o), y, P[1] + P[3] * (cr + o));
+          // faces set in further than the corner radius meet in a sharp corner (a negative
+          // radius would turn the corner inside out into folded slivers)
+          const rr = cr + o;
+          if (rr >= 0) pos.push(P[0] + P[2] * rr, y, P[1] + P[3] * rr);
+          else pos.push(P[0] + Math.sign(P[0]) * rr, y, P[1] + Math.sign(P[1]) * rr);
           nor.push(P[2] * nh, nv, P[3] * nh);
           uv.push(pu, pv);
           const c = colorFn(y, o);

@@ -70,7 +70,7 @@ const TONE = {
   // out and the sunlit stone reaches the shoulder, rather than everything being fitted onto
   // the curve)
   hiKnee: [[0.3, 1.6], [0.55, 1.2], [0.8, 1.0]],
-  hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.63], [0.8, 0.5], [0.9, 0.5], [1.0, 0.6]],
+  hiSlope: [[0.15, 1], [0.3, 0.5], [0.55, 0.66], [0.8, 0.5], [0.9, 0.5], [1.0, 0.6]],
   // the hard light of midday is shot with a little more contrast above a pivot just over
   // mid grey (the highlights separate; the shade keeps the toe), easing off towards golden
   // hour: the blacks come from the curve, not from underexposure
@@ -101,24 +101,26 @@ const TONE = {
   // day (camera JPEG: whites, cream stone and the blue near the horizon may clip), and
   // from sunset on (amber lamps, afterglow bands keep their hue)
   knee: [[0.78, 1.0, 0.84, 1.0], [0.8, 0.94, 0.72, 0.86]],
-  // saturation of the street's final colour (time of day, saturation): a little more from
-  // golden hour on, when the low sun and then the lamps carry the colour
-  satOut: [[0.3, 1.15], [0.5, 1.38], [0.85, 1.5], [0.95, 1.3]],
+  // saturation of the street's final colour (time of day, saturation): more from golden
+  // hour on, when the low sun, the afterglow and then the lamps carry the colour (a camera
+  // keeps the evening's warm-cool split vivid instead of letting the canyon go grey)
+  satOut: [[0.3, 1.15], [0.5, 1.38], [0.85, 1.58], [0.95, 1.3]],
   // and in the highlights (time of day, [saturation, from, to] in display-linear luminance):
   // by day it eases off from about +1 stop and is 0.6 by the shoulder, so sunlit limestone
-  // rolls off to cream; at golden hour from a little higher (the low sun's stone stays
-  // golden, its brightest faces cream rather than apricot); at dusk the lamps' amber keeps
-  // most of it
-  satHi: [[0.3, [0.6, 0.3, 0.75]], [0.5, [0.6, 0.38, 0.82]], [0.85, [0.6, 0.5, 0.92]], [0.95, [0.9, 0.45, 0.95]]],
+  // rolls off to cream; at golden hour the same, a little stronger (the low sun's stone
+  // stays golden in the mid tones, its brightest faces and the backlit paving's glow go
+  // cream rather than apricot); at dusk the lamps' amber keeps most of it
+  satHi: [[0.3, [0.6, 0.3, 0.75]], [0.5, [0.52, 0.3, 0.74]], [0.85, [0.6, 0.5, 0.92]], [0.95, [0.9, 0.45, 0.95]]],
   // colour saturation in the AgX look: day, dusk
   sat: [1.16, 1.08],
   // sky pixels keep nearly the scene's colour ratios, with more saturation where the sky
   // is blue (the dusty atmosphere's sky is pale; a camera renders the clear sky overhead a
   // deep blue, (95-130, 145-180, 220-250) sRGB at 45 degrees): day .. blue hour. A warm sky
-  // (towards a low sun, the afterglow) gets little (`skySatWarm`): a golden sky stays pale
-  // cream, as in a photograph. env.skySatScale scales both boosts (a milky dust-haze day
-  // keeps its pale cream sky)
-  skyChroma: 0.95, skySat: [1.8, 1.3], skySatWarm: [1.1, 1.05],
+  // (towards a low sun, the afterglow) gets little (`skySatWarm`) by day: a golden sky
+  // stays pale cream, as in a photograph; after sunset the afterglow band down the street
+  // keeps its orange. env.skySatScale scales both boosts (a milky dust-haze day keeps its
+  // pale cream sky)
+  skyChroma: 0.95, skySat: [1.8, 1.3], skySatWarm: [1.1, 1.25],
   // the boost depends on the view ray's elevation: none below ~8 degrees (the pale, milky
   // band down the street), full above ~35 (sin of the elevations)
   skySatEl: [0.139, 0.574],
@@ -140,7 +142,7 @@ const TONE = {
   // and from sunset on a cooler setting (time of day, shift): the blue gain up and the red
   // one down, towards a ~4000 K balance once the lamps carry the street, so the sky-lit
   // paving between the pools reads blue-grey and the pools amber
-  wbCool: [[0.82, 0], [1.0, 0.25]],
+  wbCool: [[0.82, 0], [1.0, 0.3]],
   // lanterns' sideways and upward glow, as a share of their downward intensity
   wash: 0.04,
   // street dust haze over the day (time of day, scale): extinction and in-scatter
@@ -153,8 +155,8 @@ const TONE = {
   // ozone-tinted evening sky plus the facades' orange bounce, which would otherwise leave
   // the shaded grey paving pink rather than the warm neutral of the photographs
   wbG: {
-    lo: [[0.4, 0.97], [0.5, 1.02], [0.7, 1.02], [0.78, 1.0]], hi: [[0.4, 1.0], [0.5, 1.04], [0.7, 1.04], [0.78, 1.02]],
-    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.18], [1.0, 1.12]], lampMax: 1.22,
+    lo: [[0.4, 0.97], [0.5, 1.02], [0.6, 1.02], [0.7, 1.0]], hi: [[0.4, 1.0], [0.5, 1.04], [0.6, 1.04], [0.7, 1.02]],
+    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.18], [1.0, 1.12]], lampMax: 1.28,
   },
   glowThresh: 4, glowKnee: 12, glow: [[0.74, 0], [0.8, 0.2], [0.86, 0.12], [0.95, 0.03], [1.0, 0]], glowScatter: 0.4,
 };

@@ -157,7 +157,7 @@ function rep(src, from, to, what) {
 
 /** Leaf material: shared by every tree, shrub and flower card. */
 function patchLeaf(mat, params) {
-  chain(mat, 'veg-leaf-v5', (shader) => {
+  chain(mat, 'veg-leaf-v6', (shader) => {
     windUniforms(shader, params);
     shader.uniforms.uLeafTrans = params.trans;
     shader.uniforms.uLeafSpec = params.spec;
@@ -229,7 +229,10 @@ function patchLeaf(mat, params) {
       uniform vec2 uVegCap;
       ${FADE_FN}
       float vegGloss = 0.5;
-      float vegSkyE = 0.0;  // luminance of the sky irradiance on a level surface (set before the lights)`, 'leaf frag common');
+      float vegSkyE = 0.0;  // luminance of the sky irradiance on a level surface (set before the lights)
+      // normalize that survives a null vector (a card normal or a normal-map frame that
+      // collapses on a degenerate sliver would otherwise write NaN into the frame)
+      vec3 vegSafeN( vec3 v ) { float l = dot( v, v ); return l > 1e-24 ? v * inversesqrt( l ) : vec3( 0.0, 0.0, 1.0 ); }`, 'leaf frag common');
     fs = rep(fs, '#include <map_fragment>', /* glsl */`
       #ifdef USE_MAP
         // straight sRGB colour, decoded by the sampler. The lookups are biased half a mip
@@ -239,7 +242,7 @@ function patchLeaf(mat, params) {
         // coverage: sharpened around 0.5 (crisp, anti-aliased edges with alpha-to-coverage).
         // Cards seen nearly edge-on show their clump foreshortened: the leaves thin out
         // instead of smearing into streaks.
-        float vegFace = abs( dot( normalize( vVegGN ), normalize( vViewPosition ) ) );
+        float vegFace = abs( dot( vegSafeN( vVegGN ), normalize( vViewPosition ) ) );
         float vegA = vegTex.a * mix( 0.45, 1.0, smoothstep( 0.03, 0.2, vegFace ) );
         float vegCov = uVegA2C > 0.5 ? clamp( ( vegA - 0.5 ) / max( fwidth( vegA ), 1e-4 ) + 0.5, 0.0, 1.0 ) : step( 0.5, vegA );
         if ( uVegA2C > 0.5 ) vegCov = floor( vegCov * uVegA2C + 0.5 ) / uVegA2C;  // whole samples
@@ -270,11 +273,11 @@ function patchLeaf(mat, params) {
       #ifdef USE_NORMALMAP_TANGENTSPACE
         vec4 vegNm = texture2D( normalMap, vNormalMapUv, 0.5 );  // normal x, y + gloss (biased as the colour)
         vec3 mapN = vec3( vegNm.xy * 2.0 - 1.0, 0.0 );
-        mapN.z = sqrt( saturate( 1.0 - dot( mapN.xy, mapN.xy ) ) );
+        mapN.z = sqrt( max( 1.0 - dot( mapN.xy, mapN.xy ), 1e-4 ) );
         mapN.xy *= normalScale;
-        normal = normalize( tbn * mapN );
+        normal = vegSafeN( tbn * mapN );
         // flutter turns the card about its axis: the shading normal follows
-        normal = normalize( normal + tbn[ 0 ] * vVegFlut * 1.5 );
+        normal = vegSafeN( normal + tbn[ 0 ] * vVegFlut * 1.5 );
         vegGloss = vegNm.b;
       #endif
       // thick, older leaves are glossier
@@ -288,7 +291,7 @@ function patchLeaf(mat, params) {
         vec3 sunV = normalize( ( viewMatrix * vec4( uSunDirV, 0.0 ) ).xyz );
         bool isSun = dot( directLight.direction, sunV ) > 0.999;
         float through = isSun ? vVegSun : 1.0;
-        vec3 gn = normalize( vVegGN );
+        vec3 gn = vegSafeN( vVegGN );
         float facing = abs( dot( gn, geometryViewDir ) );
         if ( dot( gn, geometryViewDir ) < 0.0 ) gn = -gn;  // card normal on the viewer's side
         // a leaf reflects a light only on the face the light falls on: seen from the other
@@ -342,7 +345,7 @@ function patchLeaf(mat, params) {
     fs = rep(fs, '#include <lights_fragment_end>', /* glsl */`#include <lights_fragment_end>
       {
         // grazing cards pick up no sky sheen
-        float vegFacing = smoothstep( 0.0, 0.4, abs( dot( normalize( vVegGN ), geometryViewDir ) ) );
+        float vegFacing = smoothstep( 0.0, 0.4, abs( dot( vegSafeN( vVegGN ), geometryViewDir ) ) );
         // (the waxy sheen of a leaf is broken up by its curl, hairs and veins: a little over
         // half of a smooth dielectric's, so the sky does not grey the foliage; a mirror
         // direction needs a clear view of the sky, so the crown hides it more than it hides
@@ -350,7 +353,7 @@ function patchLeaf(mat, params) {
         reflectedLight.indirectSpecular *= vVegAO * vVegAO * vegFacing * 0.6;
         // sky light from the far side of the card, transmitted through the leaf
         #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
-          vec3 vegGn = normalize( vVegGN );
+          vec3 vegGn = vegSafeN( vVegGN );
           if ( dot( vegGn, geometryViewDir ) < 0.0 ) vegGn = -vegGn;
           reflectedLight.indirectDiffuse += getIBLIrradiance( -vegGn ) * diffuseColor.rgb * vec3( 1.0, 1.04, 0.6 ) * ( 0.8 * uLeafTrans * RECIPROCAL_PI );
         #endif

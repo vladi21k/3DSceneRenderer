@@ -552,11 +552,15 @@ export class Sky {
    * on the sun's elevation alone (the sky-view LUT is laid out relative to the sun's
    * azimuth, and the atmosphere is fixed for the session), so the sky-view LUT and the
    * irradiance pass are rendered for `n` times of day into the rows of one target and read
-   * back in a single synchronous read. irradianceAt(t) interpolates the table, and a time
-   * of day change needs no read-back at all: any GPU-to-CPU read waits for the whole frame
-   * queue in the browser, fence or not (measured 25-500 ms under load). `dirOf(t, out)`
-   * gives the sun direction for t; the sky-view LUT is left at the last row (the caller
-   * re-renders it for the current sun). Returns false when the table could not be read.
+   * back once. irradianceAt(t) interpolates the table, and a time of day change needs no
+   * read-back at all: any GPU-to-CPU read waits for the whole frame queue in the browser,
+   * fence or not (measured 25-500 ms under load). Where it can, the read goes into a
+   * pixel-pack buffer behind a fence and returns 'pending': pollIrradianceTable(), once a
+   * frame, collects it when the GPU has passed the fence, so start-up never waits on the
+   * GPU queue here (the first frames run before the app is ready). Otherwise the rows are
+   * read synchronously. `dirOf(t, out)` gives the sun direction for t; the sky-view LUT is
+   * left at the last row (the caller re-renders it for the current sun). Returns true
+   * (table in place), 'pending', or false when the table could not be read.
    */
   buildIrradianceTable(dirOf, n = 129) {
     const r = this.renderer, prev = r.getRenderTarget();
@@ -576,18 +580,66 @@ export class Sky {
       r.autoClear = clear;
       r.setRenderTarget(prev);
     }
+    // asynchronous read (WebGL 2 with float colour buffers: RGBA / FLOAT reads them all)
+    const gl = r.getContext();
+    if (typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext
+      && r.extensions.has('EXT_color_buffer_float') && !gl.isContextLost()) {
+      const pbo = gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, IRR_TEXELS * n * 16, gl.STREAM_READ);
+      r.setRenderTarget(rt);
+      gl.readPixels(0, 0, IRR_TEXELS, n, gl.RGBA, gl.FLOAT, 0);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      r.setRenderTarget(prev);
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (sync) {
+        this._irrTableJob = { rt, pbo, sync, n, polls: 0 };
+        return 'pending';
+      }
+      gl.deleteBuffer(pbo);
+    }
     const buf = new Uint16Array(IRR_TEXELS * n * 4);
     let ok = true;
     try { r.readRenderTargetPixels(rt, 0, 0, IRR_TEXELS, n, buf); } catch (e) { ok = false; }
     rt.dispose();
-    if (!ok) return false;
+    return ok && this._tabulate(buf, n, true);
+  }
+
+  /**
+   * Collect the pending table read (see buildIrradianceTable), once a frame: the fence is
+   * only queried, never waited on. Returns 1 once the table is in place, 0 while the read
+   * is pending (or none is), -1 if it failed (a lost context, a fence that never signals,
+   * values that do not decode).
+   */
+  pollIrradianceTable() {
+    const j = this._irrTableJob;
+    if (!j) return 0;
+    const gl = this.renderer.getContext();
+    const done = (ok) => {
+      if (!gl.isContextLost()) { gl.deleteSync(j.sync); gl.deleteBuffer(j.pbo); }
+      j.rt.dispose();
+      this._irrTableJob = null;
+      return ok ? 1 : -1;
+    };
+    if (gl.isContextLost() || ++j.polls > 900) return done(false);
+    if (gl.getSyncParameter(j.sync, gl.SYNC_STATUS) !== gl.SIGNALED) return 0;
+    const buf = new Float32Array(IRR_TEXELS * j.n * 4);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, j.pbo);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, buf);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    return done(this._tabulate(buf, j.n, false));
+  }
+
+  /** The table from the read rows (half floats or floats); false if a value is broken. */
+  _tabulate(buf, n, half) {
     // (natural logs, interpolated linearly: near sunset the sky light falls exponentially)
     const h = THREE.DataUtils.fromHalfFloat, K = IRR_KEYS.length;
     const T = new Float32Array(n * K * 3);
     for (let i = 0; i < n; i++) {
       for (let k = 0; k < K; k++) {
         for (let c = 0; c < 3; c++) {
-          const v = h(buf[(i * IRR_TEXELS + k) * 4 + c]);
+          const raw = buf[(i * IRR_TEXELS + k) * 4 + c];
+          const v = half ? h(raw) : raw;
           if (!(v >= 0) || !Number.isFinite(v)) return false;
           T[(i * K + k) * 3 + c] = Math.log(Math.max(v, 1e-9));
         }

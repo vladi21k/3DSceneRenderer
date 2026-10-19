@@ -324,8 +324,12 @@ const env = {
     // the sky irradiance for every time of day, read back once (see Sky.buildIrradianceTable)
     const t0 = performance.now();
     const fwd = this._avenueFwd, right = this._avenueRight;
-    this._hasIrrTable = !!(fwd && right) && this.sky.buildIrradianceTable((t, out) => sunDirection(t, fwd, right, out));
-    if (this.app && this.app.perf) this.app.perf.irrTable = { ok: this._hasIrrTable, ms: Math.round(performance.now() - t0) };
+    const table = !!(fwd && right) && this.sky.buildIrradianceTable((t, out) => sunDirection(t, fwd, right, out));
+    this._hasIrrTable = table === true;
+    // (read back asynchronously where it can: update() collects it, and until then the
+    // single-read path below stands in)
+    this._irrTablePending = table === 'pending';
+    if (this.app && this.app.perf) this.app.perf.irrTable = { ok: this._hasIrrTable, pending: this._irrTablePending, ms: Math.round(performance.now() - t0) };
     this.atmo.updateSky(this.state.sunDir);
     this.sky.updateIrradiance(false);
     if (this._hasIrrTable && this.sky.irradianceAt(this.state.t)) {
@@ -605,6 +609,17 @@ const env = {
         if (app.perf && app.perf.shadowPrecompile) Object.assign(app.perf.shadowPrecompile, { late: n, lateMs: Math.round(performance.now() - t0) });
       } catch (e) {
         console.warn('[env] shadow precompile', e);
+      }
+    }
+
+    // the irradiance table's asynchronous read (see Sky.buildIrradianceTable)
+    if (this._irrTablePending) {
+      const st = this.sky.pollIrradianceTable();
+      if (st !== 0) {
+        this._irrTablePending = false;
+        this._hasIrrTable = st > 0;
+        if (app.perf && app.perf.irrTable) Object.assign(app.perf.irrTable, { ok: st > 0, pending: false, frame: app.frame });
+        if (this._hasIrrTable && this.sky.irradianceAt(this.state.t)) { this._irrDirty = false; this._updateExposure(); }
       }
     }
 

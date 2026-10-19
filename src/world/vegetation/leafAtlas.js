@@ -39,7 +39,15 @@ function dataTexture(levels, srgb, aniso) {
   t.flipY = false;
   t.unpackAlignment = 4;
   t.needsUpdate = true;
+  // the pixels live on the GPU once uploaded: drop the CPU copies of the whole chain
+  // (about 21 MB per texture). Nothing re-uploads these textures.
+  t.onUpdate = releaseLevels;
   return t;
+}
+function releaseLevels(t) {
+  for (const l of t.mipmaps) l.data = null;
+  t.image.data = null;
+  t.onUpdate = null;
 }
 
 /**

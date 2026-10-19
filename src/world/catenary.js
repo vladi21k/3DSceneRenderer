@@ -91,6 +91,9 @@ const catenary = {
     this.stickerMat = M.register('catenary.sticker', new THREE.MeshStandardMaterial({ map: buildStickerAtlas(layout.seed), vertexColors: true, roughness: 0.8, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
     // LED aspects: about 0.55 scene units (~18,000 cd/m²) by day, dimmed at night (update)
     this.aspectMat = M.register('catenary.signalAspect', new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.2, metalness: 0, emissive: 0xffffff, emissiveMap: buildAspectAtlas(), emissiveIntensity: 0.55 }));
+    // the canvas atlases go to the GPU now (with their mips), not inside whichever pass
+    // first draws them mid-ride (a shadow cascade, for the banners)
+    if (app.renderer.initTexture) for (const t of [this.bannerMat.map, this.stickerMat.map, this.aspectMat.emissiveMap]) app.renderer.initTexture(t);
     // the instance colour dims an aspect that is off (pedestrian lights); chained after
     // any hook the lighting set on registration
     {

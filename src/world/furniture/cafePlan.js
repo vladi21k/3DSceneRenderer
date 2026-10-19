@@ -91,7 +91,7 @@ export function umbrellaProgramme(cafe, seed, none = false) {
   const gap = rng.weighted([[0.3, 0.4], [0.65, 0.4], [1.4, 0.2]]) + rng.range(-0.1, 0.25);
   return {
     model, sizes, hem, gap, lean: rng.range(0.004, 0.055),
-    closed: rng.weighted([[0, 0.7], [1, 0.22], [2, 0.08]]), absent: 0.1, big: model !== 'square', none,
+    closed: rng.weighted([[0, 0.76], [1, 0.18], [2, 0.06]]), absent: 0.08, big: model !== 'square', none,
   };
 }
 

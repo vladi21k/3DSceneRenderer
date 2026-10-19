@@ -430,6 +430,11 @@ export function nightLevels(exposure) {
 }
 const VERT_GLASS_PARS = 'varying float vBgGrime;\nvarying float vBgH;\n';
 
+// Never a negative radiance out of the buildings' materials: at golden hour a few far
+// (600 m) plaster and glass pixels came out a little below zero (about -0.0015, all three
+// channels), which the post pass counts as broken and replaces; clamped where they are made.
+const FRAG_NONNEG = 'gl_FragColor.rgb = max(gl_FragColor.rgb, vec3(0.0));\n#include <dithering_fragment>';
+
 /** Chain a patch after the material's existing onBeforeCompile and extend its cache key. */
 function chain(m, key, patch) {
   const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
@@ -464,7 +469,8 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0])
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_STONE)
-      .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>');
+      .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>')
+      .replace('#include <dithering_fragment>', FRAG_NONNEG);
   });
   m.userData.grime = uni;
   app.materials.register(m.name, m);
@@ -503,7 +509,8 @@ export function grimePaint(m, k = [0.45, 0.55, 0.12, 0.3]) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_PAINT + FRAG_STONE)
-      .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>');
+      .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>')
+      .replace('#include <dithering_fragment>', FRAG_NONNEG);
   });
   m.userData.grime = uni;
   return m;
@@ -525,7 +532,8 @@ export function litGlass(app, name = 'glass.window') {
       .replace('#include <common>', '#include <common>\n' + FRAG_GLASS_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_GLASS_COLOR)
       .replace('#include <lights_physical_fragment>', FRAG_GLASS + '#include <lights_physical_fragment>')
-      .replace('#include <lights_fragment_end>', FRAG_GLASS_REFL + '#include <lights_fragment_end>');
+      .replace('#include <lights_fragment_end>', FRAG_GLASS_REFL + '#include <lights_fragment_end>')
+      .replace('#include <dithering_fragment>', FRAG_NONNEG);
   });
   app.materials.register(m.name, m);
   return m;

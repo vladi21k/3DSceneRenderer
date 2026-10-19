@@ -12,8 +12,10 @@ import { isThinCaster, hasShadowHooks } from './sunShadow.js';
 // Each chunk's merged triangles are sorted into ~13 m cells along the street, so a
 // cascade only draws the cells whose shadows can reach its slice. Every cell exists
 // twice over one shared vertex buffer: in detail, and coarse, without the triangles
-// whose longest edge is under 0.35 m (mouldings, balusters, frames: about half the
-// count and under 1% of the shadow area). The far cascades (texels too coarse for that
+// whose longest edge is under 0.15 m (fine mouldings, balusters, frames). The threshold
+// stays well under the size of a cornice's or a front's own pieces: at 0.35 m the coarse
+// set opened rows of gaps in such casters, and their far shadow bands across the street
+// showed a comb of sunlit streaks. The far cascades (texels too coarse for that
 // detail) draw coarse cells; the near ones draw detail cells close to their slice and
 // coarse cells for blockers farther away, whose penumbrae blur such detail anyway.
 // Thin casters have no coarse set: only near cascades draw them, close to their slice.
@@ -35,7 +37,7 @@ const MIN_SOURCES = 2;          // a group with fewer sources keeps its original
 const MATRIX_CHECKS = 96;       // source transforms compared per frame (rolling)
 const CELL_LEN = 13.5;          // near-cascade cell length along the street (m)
 const MAX_CELLS = 6;
-const FAR_MIN_EDGE = 0.35;      // far cascades skip triangles whose longest edge is shorter (m)
+const FAR_MIN_EDGE = 0.15;      // far cascades skip triangles whose longest edge is shorter (m)
 
 export class ShadowBatcher {
   constructor(app, shadow, { budgetMs = 1.0 } = {}) {
@@ -225,11 +227,19 @@ export class ShadowBatcher {
     }
     const idx = part.index;
     let w = part.iOff;
+    const w0 = w;
     if (g.index) {
       const ia = g.index.array;
       for (let i = 0, m = g.index.count; i < m; i++) idx[w++] = ia[i] + base;
     } else {
       for (let i = 0; i < n; i++) idx[w++] = base + i;
+    }
+    // a mirrored source (negative determinant): the renderer flips its front face, the
+    // merged world-space copy must have its winding reversed instead, or the proxy's
+    // depth pass culls the faces the original casts with
+    const det = e[0] * (e[5] * e[10] - e[6] * e[9]) - e[4] * (e[1] * e[10] - e[2] * e[9]) + e[8] * (e[1] * e[6] - e[2] * e[5]);
+    if (det < 0) {
+      for (let i = w0; i + 2 < w; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
     }
     part.iOff = w;
     part.vOff += n;

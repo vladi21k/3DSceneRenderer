@@ -400,7 +400,9 @@ function patchCanopy(m, brandMap, ledLevel) {
           float fIsVal = step( 0.5, vVal.x );
           float fX = vVal.y - ( vVal.w > 3.6 ? sign( vVal.y ) * vVal.w * 0.25 : 0.0 );
           vec2 fC = vec2( fX / ${P[0].toFixed(3)} + 0.5, ( vVal.z * ${VALANCE_H.toFixed(3)} - 0.03 ) / ${P[1].toFixed(3)} );
-          float fB = max( vUmb.x - 1.0, 0.0 );
+          // (the flags are interpolated: a brand of 9 can arrive as 8.9999995, and mod() would
+          // then pick the wrong atlas column for that pixel, so they are rounded first)
+          float fB = max( floor( vUmb.x + 0.5 ) - 1.0, 0.0 );
           vec2 fAuv = vec2( ( mod( fB, 2.0 ) + clamp( fC.x, 0.003, 0.997 ) ) * 0.5, 1.0 - ( floor( fB * 0.5 + 0.01 ) + clamp( fC.y, 0.02, 0.98 ) ) * 0.125 );
           vec4 fInk = texture2D( fBrandMap, fAuv );
           float fIn = fIsVal * step( 0.5, vUmb.x ) * step( 0.0, fC.x ) * step( fC.x, 1.0 ) * step( 0.0, fC.y ) * step( fC.y, 1.0 );

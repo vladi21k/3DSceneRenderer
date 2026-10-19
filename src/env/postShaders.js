@@ -837,13 +837,14 @@ void main() {
     if (uSkyTwist > 0.0) sc.g += uSkyTwist * smoothstep(0.5, 0.85, (sc.r - sc.b) / max(sc.r, 1e-6)) * max(sc.r - sc.g, 0.0);
     // (and the twilight's lavender blue turned towards a deep blue, as a camera profile does)
     if (uSkyBlue > 0.0) sc.r *= 1.0 - uSkyBlue * smoothstep(0.2, 0.45, (sc.b - sc.r) / max(sc.b, 1e-6));
-    // (a camera renders the blue sky overhead deep and saturated; a warm sky stays nearly as
-    // it is, and so does the low sky: towards the horizon the dusty air turns it pale and
-    // milky, so the boost fades out below ~uSkySatEl.y)
+    // (a camera renders the blue sky overhead deep and saturated, and so does the low sky:
+    // towards the horizon the dusty air turns the blue pale and milky, so its boost fades
+    // out below ~uSkySatEl.y; a warm sky (the afterglow, low over the horizon) gets its own
+    // small boost at every elevation)
     float blue = smoothstep(0.0, 0.25, (sc.b - sc.r) / max(sc.b, 1e-6));
     vec3 dv = normalize(vec3((uv * 2.0 - 1.0) * uProjInv, -1.0));
     float kEl = smoothstep(uSkySatEl.x, uSkySatEl.y, dot(dv, uUpView));
-    sc = max(lum + (sc - lum) * mix(1.0, mix(uSkySat.y, uSkySat.x, blue), kEl), 0.0);
+    sc = max(lum + (sc - lum) * mix(uSkySat.y, mix(1.0, uSkySat.x, kEl), blue), 0.0);
   }
 
   col = agx(col);

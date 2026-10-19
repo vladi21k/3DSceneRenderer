@@ -318,8 +318,10 @@ const vegetation = {
    * its coarsest detail (the level its far trees already show inside the streamed range,
    * so the hand-over matches). {leaf, bark: shared BufferGeometry (never dispose), matrix:
    * world Matrix4, leafTint, barkTint: Color (instance colours), template: id}, or null.
-   * Draw them with farMaterials() {leaf, bark} on InstancedMeshes (instanceMatrix +
-   * instanceColor); about 400-3,800 triangles a tree.
+   * Draw them with farMaterials() {leaf, bark} on BatchedMeshes, the mesh kind vegetation
+   * itself draws these materials with (an InstancedMesh would add two programs and make
+   * three re-evaluate the materials at every switch between the kinds); about 400-3,800
+   * triangles a tree.
    */
   farTree(t) {
     const P = this.plan && this.plan.get(t);

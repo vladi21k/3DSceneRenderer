@@ -54,7 +54,7 @@ class PartBuilder {
    * A strap along a polyline lying on a surface (points pts[i], surface normals nrms[i]): a band of
    * width w(i) with a rounded top t(i) thick (padding) and rounded edges, closed underneath by the body.
    */
-  strap(pts, nrms, w, t, skin, region, flags = FLAG.SOLID) {
+  strap(pts, nrms, w, t, skin, region, flags = FLAG.SOLID, vskin = null) {
     const n = pts.length;
     // cross-section (across, up) and its normals: a soft rounded band
     const PRO = [[-0.5, 0], [-0.5, 0.5], [-0.36, 0.92], [-0.12, 1], [0.12, 1], [0.36, 0.92], [0.5, 0.5], [0.5, 0]];
@@ -71,7 +71,8 @@ class PartBuilder {
       for (let k = 0; k < PRO.length; k++) {
         q.copy(pts[i]).addScaledVector(side, PRO[k][0] * wi).addScaledVector(up, PRO[k][1] * ti);
         nn.copy(side).multiplyScalar(PN[k][0]).addScaledVector(up, PN[k][1]).normalize();
-        row.push(this.vertex(q, nn, k / (PRO.length - 1), i / (n - 1), sk, region, flags, k === 0 || k === PRO.length - 1 ? 0.7 : 1));
+        // (vskin(q, i, sk): the weights of this vertex of the band, e.g. the cloth's right under it)
+        row.push(this.vertex(q, nn, k / (PRO.length - 1), i / (n - 1), vskin ? vskin(q, i, sk) : sk, region, flags, k === 0 || k === PRO.length - 1 ? 0.7 : 1));
       }
       rows.push(row);
     }
@@ -208,10 +209,12 @@ export function torsoSurface(char) {
     if (!used[v]) continue;
     const reg = raw.tex[v * 4 + 2];
     if (reg === REGION.hair || reg === REGION.brows || reg === REGION.lashes || reg === REGION.eyes || reg === REGION.beard) continue;
-    // dominant bone
+    // dominant bone (the shoulder's cap, where the upper arm shares its weight with the clavicle and
+    // the chest, stays: a strap over the shoulder lies on it)
     let bw = -1, bb = 0;
     for (let k = 0; k < 4; k++) if (raw.bw[v * 4 + k] > bw) { bw = raw.bw[v * 4 + k]; bb = raw.bi[v * 4 + k]; }
-    if (ARM_BONES.has(bb) || bb === BONE.head) continue;
+    const cap = (bb === BONE.armL || bb === BONE.armR) && bw < 0.7 * 255;
+    if ((ARM_BONES.has(bb) && !cap) || bb === BONE.head) continue;
     pts.push(raw.pos[v * 3], raw.pos[v * 3 + 1], raw.pos[v * 3 + 2]);
     vid.push(v);
   }
@@ -246,10 +249,10 @@ export function torsoSurface(char) {
   };
   f.pts = P;
   f.slice = (y0, y1) => [lower(y0), lower(y1)];
-  /** Skin weights ([[bone, w], ...]) of the surface point nearest p (within 4 cm of its height). */
-  f.skin = (p) => {
+  /** Skin weights ([[bone, w], ...]) of the surface point nearest p (within `band` of its height). */
+  f.skin = (p, band = 0.04) => {
     let bd = Infinity, bi = -1;
-    for (let i = lower(p.y - 0.04) * 3, e = lower(p.y + 0.04) * 3; i < e; i += 3) {
+    for (let i = lower(p.y - band) * 3, e = lower(p.y + band) * 3; i < e; i += 3) {
       const x = P[i] - p.x, y = P[i + 1] - p.y, z = P[i + 2] - p.z;
       const d = x * x + y * y + z * z;
       if (d < bd) { bd = d; bi = i / 3; }
@@ -301,25 +304,37 @@ function resamplePath(pts, nrms, step) {
  * more than gap(i) off it where it bridged (a strap presses the cloth under it). Its ends stay where they
  * are. Normals are smoothed along the path first (a strap turns gradually over the shoulder).
  */
-function settle(surf, pts, nrms, { off = 0.004, gap = () => 0.008, iters = 6, lam = 0.5 } = {}) {
+function settle(surf, pts, nrms, { off = 0.004, gap = () => 0.008, iters = 6, lam = 0.5, halfW = 0 } = {}) {
   const n = pts.length;
   for (let it = 0; it < 3; it++) {
     const c = nrms.map((v) => v.clone());
     for (let i = 1; i < n - 1; i++) nrms[i].copy(c[i - 1]).add(c[i + 1]).addScaledVector(c[i], 2).normalize();
   }
-  const o = new THREE.Vector3();
+  const o = new THREE.Vector3(), tg = new THREE.Vector3(), sd = new THREE.Vector3(), ps = new THREE.Vector3();
   const c = pts.map((p) => p.clone());
+  // (heights over the cloth along the normal at the strap's middle and, with halfW, at its two edges: a
+  // flat band on a rounded body must clear the cloth at its edges too)
+  const SAMP = halfW > 0 ? [0, -halfW, halfW] : [0];
   for (let it = 0; it < iters; it++) {
     for (let i = 0; i < n; i++) c[i].copy(pts[i]);
     for (let i = 1; i < n - 1; i++) pts[i].copy(c[i - 1]).add(c[i + 1]).multiplyScalar(0.5 * lam).addScaledVector(c[i], 1 - lam);
     for (let i = 1; i < n - 1; i++) {
-      o.copy(pts[i]).addScaledVector(nrms[i], -0.07);
-      const q = surf(o, nrms[i], 0, 0.014, 0, 0.16);
-      if (!q) continue;
-      const h = o.copy(pts[i]).sub(q).dot(nrms[i]);          // height over the cloth along the normal
+      tg.copy(pts[i + 1]).sub(pts[i - 1]);
+      sd.crossVectors(tg, nrms[i]).normalize();
+      let hc = NaN, hmin = Infinity;
+      for (const sw of SAMP) {
+        ps.copy(pts[i]).addScaledVector(sd, sw);
+        o.copy(ps).addScaledVector(nrms[i], -0.07);
+        const q = surf(o, nrms[i], 0, 0.012, 0, 0.16);
+        if (!q) continue;
+        const h = o.copy(ps).sub(q).dot(nrms[i]);
+        if (sw === 0) hc = h;
+        hmin = Math.min(hmin, h);
+      }
+      if (hmin === Infinity) continue;
       const g = Math.max(off, gap(i));
-      if (h < off) pts[i].addScaledVector(nrms[i], off - h);
-      else if (h > g) pts[i].addScaledVector(nrms[i], g - h);
+      if (hmin < off) pts[i].addScaledVector(nrms[i], off - hmin);
+      else if (hc > g) pts[i].addScaledVector(nrms[i], -Math.min(hc - g, hmin - off));
     }
   }
 }
@@ -825,7 +840,7 @@ export function buildParts(char, opts = {}) {
       let [sp, sn] = resamplePath(pts, nr, 0.02 * k);
       const L = arcLengths(sp), Lt = L[L.length - 1];
       // (free of the back only where it leaves the pack)
-      settle(surf, sp, sn, { off: 0.004, gap: (i) => 0.008 + 0.05 * Math.max(0, 1 - L[i] / (0.08 * k)) });
+      settle(surf, sp, sn, { off: 0.004, halfW: 0.02 * k, gap: (i) => 0.008 + 0.05 * Math.max(0, 1 - L[i] / (0.08 * k)) });
       const W = 0.05 * k, T = 0.011 * k;
       const skinP = (p, i) => {
         const s = packAt(p), u = Math.max(0, 1 - L[i] / (0.1 * k));
@@ -834,7 +849,13 @@ export function buildParts(char, opts = {}) {
       const sks = sp.map((p, i) => skinP(p, i));
       // (the padding thins to the strap's ends; the last few cm before the buckle flatten)
       b.strap(sp, sn, (i) => W * (L[i] > Lt - 0.04 * k ? 0.75 : 1),
-        (i) => T * Math.min(1, 0.45 + L[i] / (0.06 * k)) * (L[i] > Lt - 0.05 * k ? 0.6 : 1), (p, i) => sks[i], REGION.strap);
+        (i) => T * Math.min(1, 0.45 + L[i] / (0.06 * k)) * (L[i] > Lt - 0.05 * k ? 0.6 : 1), (p, i) => sks[i], REGION.strap, FLAG.SOLID,
+        (q, i, sk) => {
+          const u = Math.max(0, 1 - L[i] / (0.1 * k));
+          if (u > 0.6) return sk;
+          const s = surf.skin(q, 0.015);
+          return s ? (u > 0 ? mixSkin(s, packSkin, u) : s) : sk;
+        });
       // the buckle at the padded strap's end
       const e = sp[sp.length - 1], en = sn[sn.length - 1];
       const et = e.clone().sub(sp[sp.length - 2]).normalize();
@@ -857,7 +878,7 @@ export function buildParts(char, opts = {}) {
       if (wp.length >= 4) {
         const [wq, wnn] = resamplePath(wp, wn, 0.025 * k);
         const LW = arcLengths(wq), LWt = LW[LW.length - 1];
-        settle(surf, wq, wnn, { off: 0.003, gap: (i) => 0.006 + 0.04 * Math.max(0, 1 - (LWt - LW[i]) / (0.08 * k)) });
+        settle(surf, wq, wnn, { off: 0.003, halfW: 0.01 * k, gap: (i) => 0.006 + 0.04 * Math.max(0, 1 - (LWt - LW[i]) / (0.08 * k)) });
         const wsk = wq.map((p, i) => mixSkin(packAt(p), packSkin, Math.max(0, 1 - (LWt - LW[i]) / (0.12 * k))));
         b.strap(wq, wnn, () => 0.025 * k, () => 0.0022, (p, i) => wsk[i], REGION.strap);
       }
@@ -969,7 +990,7 @@ export function buildParts(char, opts = {}) {
     const [sp, sn] = resamplePath(pts, nr, 0.02 * k);
     const L = arcLengths(sp), Lt = L[L.length - 1];
     const endW = (i) => Math.max(0, 1 - Math.min(L[i], Lt - L[i]) / (0.12 * k));
-    settle(surf, sp, sn, { off: 0.003, gap: (i) => 0.008 + 0.045 * endW(i), iters: 8 });
+    settle(surf, sp, sn, { off: 0.004, halfW: 0.014 * Math.min(1, k * 1.1), gap: (i) => 0.009 + 0.045 * endW(i), iters: 8 });
     // skinning: the cloth's own weights under each point (the shoulder's top moves with the clavicle and
     // the chest with the ribs), blending into the bag's towards its two ends
     const strapSkin = (p) => {
@@ -987,7 +1008,15 @@ export function buildParts(char, opts = {}) {
       return mixSkin(s.length ? s : strapSkin(p), bagSkin, endW(i) ** 0.7);
     });
     const SW = 0.032 * Math.min(1, k * 1.1);
-    b.strap(sp, sn, () => SW, () => 0.003, (p, i) => sks[i], REGION.strap);
+    // (each vertex of the band takes the weights of the cloth right under it: the cloth under a strap's
+    // two edges can move apart, e.g. towards the shoulder with the arm, and the band would cut into it)
+    const vsk = (q, i, sk) => {
+      const w = endW(i);
+      if (w > 0.6) return sk;
+      const s = (surf.skin(q, 0.015) || []).filter(([bn]) => bn !== BONE.thighL && bn !== BONE.thighR);
+      return s.length ? mixSkin(s, bagSkin, w ** 0.7) : sk;
+    };
+    b.strap(sp, sn, () => SW, () => 0.003, (p, i) => sks[i], REGION.strap, FLAG.SOLID, vsk);
     { const [fp, fn] = coarsePath(sp, sn, 3); bf.ribbon(fp, fn, SW, strapSkin, REGION.strap, 0.005); }
     out.shoulder = b.build();
     out.shoulderFar = bf.build();

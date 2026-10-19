@@ -506,10 +506,11 @@ const MAP_WEATHER = /* glsl */ `
     // lines along every bed joint)
     float sfLedge = smoothstep(0.4, 0.85, sfNW.y);
     float sfSoffit = smoothstep(-0.55, -0.9, sfNW.y);
-    // ledge tops collect warm grey dust and soot (darker and duller, patchy)
+    // ledge tops collect warm grey-brown dust and soot (darker and duller, patchy; street
+    // dust is brown, so the dirt stays warm rather than turning blue-grey under the sky)
     float sfLd = sfWeather.x * sfLedge * (0.35 + sfMb) * (0.6 + 0.8 * sfMf);
     float sfLum = dot(sfAlb, vec3(0.2126, 0.7152, 0.0722));
-    sfAlb = mix(sfAlb, vec3(sfLum) * vec3(0.64, 0.6, 0.54), min(2.2 * sfLd, 0.85));
+    sfAlb = mix(sfAlb, vec3(sfLum) * vec3(0.68, 0.6, 0.48), min(2.2 * sfLd, 0.85));
     sfAlb *= 1.0 - sfWeather.w * sfSoffit;
     sfRough = min(sfRough * (1.0 + 0.08 * sfLedge), 1.0);
     float sfVert = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
@@ -559,7 +560,7 @@ const MAP_WEATHER = /* glsl */ `
       float sfWash = texture(sfMacroTex, vec2(sfAl * 0.25, sfY * 0.04) + vec2(0.27, 0.61)).g - 0.5;
       sfAlb *= 1.0 + 0.5 * sfWeather.y * sfWash * sfVert;
       float sfRk = min(0.45, sfWeather.y * sfRun);
-      vec3 sfSoil = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.9, 0.8, 0.66);
+      vec3 sfSoil = vec3(dot(sfAlb, vec3(0.2126, 0.7152, 0.0722))) * vec3(0.98, 0.84, 0.62);
       sfAlb = mix(sfAlb, sfSoil, min(1.0, 1.5 * sfRk)) * (1.0 - sfRk);
     }
   }
@@ -654,11 +655,14 @@ const AO = /* glsl */ `
 `;
 
 // thin translucent surfaces (canopies, awnings) facing down see the ground under them, and
-// that lies in their own shade: the environment's street floor is far brighter than it
+// that lies in their own shade: the environment's street floor is far brighter than it.
+// Only partly: the cloth also passes on some of the skylight falling on its top, which the
+// translucency term (direct lights only) does not carry, so a shaded white canopy seen from
+// below stays a mid grey (about half the open paving's brightness), not charcoal
 const AO_THIN = /* glsl */ `
   {
     float sfDown = smoothstep(0.15, 0.8, - dot(normal, (viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz));
-    reflectedLight.indirectDiffuse *= 1.0 - 0.5 * sfDown;
+    reflectedLight.indirectDiffuse *= 1.0 - 0.3 * sfDown;
   }
 `;
 

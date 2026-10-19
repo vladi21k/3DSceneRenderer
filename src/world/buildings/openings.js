@@ -448,28 +448,37 @@ function voussoirRing(ctx, s, o, T, proj, keystone, bev, seed) {
     return;
   }
   const mb = bev ? Math.max(bev, 0.02) : 0;   // drafted margin of ring stones
+  // (in a rusticated wall the crown ends on a course line, see headInCourses; the ring
+  // keeps its division, and so the keystone span facadePlan publishes)
+  const [Tr, Tk] = headInCourses(ctx, o.y + o.h, T, keystone ? 0.08 : 0);
   for (const [ta, tb, k, isKey] of parts) {
     const h = block(B, seed, 100 + k);
     // keystone: projecting a little further and rising above the ring
-    if (isKey) ringStone(B, s, o, ta, tb, T + 0.08, proj + 0.03, 2, mb);
-    else ringStone(B, s, o, ta, tb, T, proj + (h - 0.5) * 0.005, 2, mb, 'lean');
+    if (isKey) ringStone(B, s, o, ta, tb, Tk, proj + 0.03, 2, mb);
+    else ringStone(B, s, o, ta, tb, Tr, proj + (h - 0.5) * 0.005, 2, mb, 'lean');
   }
   endBlocks(B);
 }
 
 /**
- * Height above the head line yt to which a head stone rises in a rusticated wall: `top`,
- * or kept down to the lower arris of a V joint it would reach into (a stone straddling a
- * joint reads as a displaced block), not below `min`. (Full detail: the joints are cut.)
+ * Height and keystone top [H, K] (above the head line yt: a flat head's, or an arch's
+ * crown) of a head H0 tall (an arch ring: its depth) whose keystone rises `rise` above
+ * it, in a rusticated wall: where a V joint runs through the top of the head (its band
+ * less than 0.14 m below the top, or in the keystone's rise),
+ * the head ends at the joint's lower arris, so the courses meet it on a course line, and
+ * the keystone is flush (a stone straddling a joint, or a keystone poking into the
+ * block above, reads as a displaced block). Never above H0 + rise (facadePlan's
+ * headDressing). Full detail only: the joints are cut there.
  */
-function underJoint(ctx, yt, top, min) {
+function headInCourses(ctx, yt, H0, rise) {
   const r = ctx.rustic;
-  if (!r) return top;
-  for (const j of r.joints) {
-    const a = j - r.c - yt, b = j + r.c - yt;
-    if (a < top && b > min) top = Math.max(min, Math.min(top, a));
+  if (r) {
+    for (const j of r.joints) {
+      const a = j - r.c - yt, b = j + r.c - yt;
+      if (b > H0 - 0.14 && a < H0 + rise && a > 0.24) return [a, a];
+    }
   }
-  return top;
+  return [H0, H0 + rise];
 }
 
 /** Flat (jack) arch: voussoirs fanning from a point below the head, keystone in the middle. */
@@ -478,9 +487,8 @@ function flatArch(ctx, s, o, ext, H, proj, bev, seed) {
   const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext, yt = o.y + o.h;
   const cy = yt - o.w * 1.1; // fan centre
   const parts = flatArchParts(o, ext), n = parts.length;
-  // (in a rusticated wall the voussoirs end at a joint's arris and the keystone rises
-  // above them only as far as the next one)
-  const vH = underJoint(ctx, yt, H, H - 0.1), kH = underJoint(ctx, yt, vH + 0.06, vH);
+  // (in a rusticated wall the head ends on a course line, see headInCourses)
+  const [vH, kH] = headInCourses(ctx, yt, H, 0.06);
   for (const [xa, xb0, k, key] of parts) {
     const top = key ? kH : vH;
     const sc = (yt + top - cy) / (yt - cy);
@@ -495,16 +503,18 @@ function flatArch(ctx, s, o, ext, H, proj, bev, seed) {
 }
 
 /** Plain lintel block across the head, optional raised keystone. */
-function lintel(ctx, s, o, ext, H, proj, bev, keystone, seed) {
+function lintel(ctx, s, o, ext, H0, proj, bev, keystone, seed) {
   const { B } = ctx;
   const u0 = o.uc - o.w / 2 - ext, u1 = o.uc + o.w / 2 + ext, yt = o.y + o.h;
+  // (in a rusticated wall the head ends on a course line, see headInCourses)
+  const [H, K] = headInCourses(ctx, yt, H0, keystone ? 0.05 : 0);
   const flat = !!ctx.q.flat;
   block(B, seed, 300);
   B.bevelBox(s, u0, u1, yt, yt + H, flat ? 0 : -0.01, proj + 0.004, bev, flat ? FACES.FRONT | FACES.BOTTOM : FACES.ALL & ~FACES.BOTTOM);
   block(B, seed, 301);
   if (!flat) B.rectV(s, o.uc - o.w / 2, o.uc + o.w / 2, 0, proj + 0.004, yt, -1);
   if (keystone) {
-    const kw = Math.min(0.32, o.w * 0.22), kt = yt + underJoint(ctx, yt, H + 0.05, H);
+    const kw = Math.min(0.32, o.w * 0.22), kt = yt + K;
     B.prism(s, [o.uc - kw * 0.4, yt - 0.04, o.uc + kw * 0.4, yt - 0.04, o.uc + kw * 0.55, kt, o.uc - kw * 0.55, kt], 0, proj + 0.03, bev, !flat);
   }
   endBlocks(B);

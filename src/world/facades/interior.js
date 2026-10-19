@@ -166,9 +166,9 @@ ${ROOM_LIGHT_GLSL}
 #define SHOP_DAY 0.3
 // daylight ceiling of the interiors: a soft knee at 1/32 of the sunlit stone's luminance
 // (-5 EV) in homes; shops, with their display zone lit by the window and the spots, at
-// 1/3.5 (-1.8 EV), as in a photograph of a sunny street (the goods behind the glass read)
+// 1/4.5 (-2.2 EV), as in a photograph of a sunny street (the goods behind the glass read)
 #define DAY_CAP ( 1.0 / 32.0 )
-#define DAY_CAP_SHOP ( 1.0 / 3.5 )
+#define DAY_CAP_SHOP ( 1.0 / 4.5 )
 // brightness of the shops' lamps themselves by day (discs, panels, pendants), relative to
 // the daylight on the glass: a ceiling panel ~3x the wall around it, a downlight a bright
 // point
@@ -568,7 +568,7 @@ void fFittings( inout Hit h, inout float ao, vec3 ro, vec3 rd, vec3 ird, vec3 p,
         bool door = gDoor > -50.0;
         float dA = door ? cx + gDoor - 0.6 : a1, dB = door ? cx + gDoor + 0.6 : a1;
         bool oak = f2.x < 0.55;
-        vec3 bc = oak ? vec3( 0.36, 0.24, 0.14 ) : vec3( 0.80, 0.78, 0.74 );
+        vec3 bc = oak ? vec3( 0.36, 0.24, 0.14 ) : vec3( 0.64, 0.62, 0.58 );
         vec3 sc = f1.z < 0.4 ? vec3( 0.06 ) : f1.z < 0.7 ? vec3( 0.40, 0.26, 0.15 ) : GOODS[ int( f2.z * 7.99 ) ] * 0.85 + 0.04;
         for ( int k = 0; k < 2; k++ ) {
           float x0 = k == 0 ? a0 : max( a0, dB ), x1 = k == 0 ? min( a1, dA ) : a1;
@@ -1311,9 +1311,11 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     // downlight pools (cos^n lobes scalloping the walls and pooling on the floor and the
     // goods), the inter-reflected fill (falling off up the walls, and towards the back,
     // where less of the shop's light returns) and display spots on the low window zone
-    float fill = 0.24 * mix( 1.0, 0.45, smoothstep( 0.9, S.y, p.y ) ) * mix( 1.0, 0.55, smoothstep( 2.0, S.z, p.z ) )
-               + 2.8 * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
-    Elamp = lampC * I * ( 1.5 * fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
+    // (by day the fill keeps the depth of a lit shop readable, a few stops under the street,
+    // not a black void behind an empty window; the night levels are tuned on their own)
+    float fill = mix( 0.42, 0.24, uNight ) * mix( 1.0, 0.5, smoothstep( 0.9, S.y, p.y ) ) * mix( 1.0, 0.6, smoothstep( 2.0, S.z, p.z ) )
+               + mix( 2.8, 2.3, uNight ) * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
+    Elamp = lampC * I * ( mix( 1.8, 1.5, uNight ) * fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
     // the fittings themselves (downlight discs, lit panels, pendants): bright points by day
     // too, a panel a few times its ceiling
     glowK = mix( SHOP_GLOW_DAY * daylum * rI, uShopNight * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 ), uNight );
@@ -1336,7 +1338,9 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     float xk = dot( col, LW ) / max( Ls * ( shop ? DAY_CAP_SHOP : DAY_CAP ), 1e-12 );
     col *= mix( inversesqrt( 1.0 + xk * xk ), 1.0, smoothstep( 0.25, 0.7, uNight ) );
   }
-  col += h.glow * lampC * glowK;
+  // (a jeweller's lit niches and case tops are what its dark panelled room shows of
+  // itself by day: they keep a few times the day level of the other fittings)
+  col += h.glow * lampC * glowK * ( shop && st > 2.5 && st < 3.5 ? mix( 5.0, 1.0, uNight ) : 1.0 );
 
   // visible lamps: the fabric shade (open cylinder) glows when lit, brighter inside
   if ( !shop && !stair && gDet > 0.0 ) {
