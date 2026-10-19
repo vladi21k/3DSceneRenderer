@@ -11,7 +11,7 @@ import { buildCrossover, crossoverPlan } from './street/crossover.js';
 import { buildCrossStreet, buildCorridorCrossing, sideColumns, sideHeight, sideHeightIO, sideProfile, sideWear, tactileSlab } from './street/crossStreets.js';
 import { createDetailMaterials } from './street/textures.js';
 import { planDetails, planSteps, buildDetails } from './street/details.js';
-import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV } from './street/shading.js';
+import { createMortarMaterial, patchRailSheen, patchCut, patchGrit, RAIL_HEAD_ENV, SHEEN, dustOf } from './street/shading.js';
 
 // Rail steel: every steel face of the profile (polished running band, flange-polished
 // gauge corner, dusty guard lip, oxidised field bevel) is the library rail.head, whose
@@ -48,6 +48,9 @@ const street = {
     const surface = new Surface(app.route, app.layout);
     // tones that follow the setts' albedo (mortar, seals, groove grit, far-rail overlay)
     const tones = pavingTones(M.meta && M.meta['paving.street'] && M.meta['paving.street'].albedo);
+    // the dust film on the rail steel is the setts' own dust (3D rails and far overlay)
+    const dust = dustOf(tones.albedo);
+    SHEEN.uStDust.value.set(dust[0], dust[1], dust[2], SHEEN.uStDust.value.w);
     // (the far rail overlay takes rail.head's zone finishes from the library, so it matches
     // the 3D head at the hand-over distance)
     const zones = M.meta && M.meta['rail.head'] && M.meta['rail.head'].zones;

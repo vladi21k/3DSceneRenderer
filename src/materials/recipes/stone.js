@@ -21,11 +21,11 @@ vec3 limestone(vec2 m, float hc, inout float h) {
   // block-to-block patchwork comes from the runtime cell tints)
   float mot = fbm(m + vec2(hc * 13.7, hc * 5.3), 2.2, 5, 0.55, 14u);   // soft clouds ~0.5 m
   float mot2 = fbm(m + vec2(hc * 2.9, 0.0), 10.0, 3, 0.6, 15u);       // 4-10 cm clouding
-  vec3 c = base * (1.0 + ${(0.07 * cloud).toFixed(4)} * mot + ${(0.12 * cloud).toFixed(4)} * mot2);
-  // slightly warmer (honey) and paler drifts inside one block (a small hue swing: a large
-  // one reads as blue-grey blotches next to the honey)
+  vec3 c = base * (1.0 + ${(0.05 * cloud).toFixed(4)} * mot + ${(0.09 * cloud).toFixed(4)} * mot2);
+  // slightly warmer (honey) and paler drifts inside one block (a hue swing of a few
+  // percent: a larger one reads as round blue-grey blotches next to the honey)
   float w = fbm(m + vec2(hc * 3.1, 0.0), 3.5, 4, 0.55, 16u);
-  c *= mix(vec3(0.99, 0.99, 1.0), vec3(1.03, 0.985, 0.9), smoothstep(-0.45, 0.55, w));
+  c *= mix(vec3(1.0, 0.995, 0.99), vec3(1.025, 0.99, 0.935), smoothstep(-0.45, 0.55, w));
   // pores: tiny dark holes, sparse and uneven (denser in some beds of the stone)
   vec4 pv = voro(m, vec2(140.0), 17u, 1.0);
   float pden = 0.9 - 0.08 * smoothstep(-0.2, 0.5, fbm(m, 2.5, 2, 0.5, 25u));
@@ -299,8 +299,10 @@ void surface(vec2 m, inout Surf s) {
   float crust = smoothstep(0.15, 0.6, fbm2(ms, vec2(6.0, 1.1), 3, 0.55, 35u) + 0.3 * (cellRand(c, 36u) - 0.5)) * smoothstep(0.35, 0.9, cellRand(c, 36u));
   alb = mix(alb, vec3(lum(alb)) * vec3(0.9, 0.83, 0.72), 0.18 * crust) * (1.0 - 0.06 * crust);
   alb *= 1.005;                                  // keeps the mean albedo of the limestone (meta)
-  // lime pointing: light grey-beige, a little paler and greyer than the stone, dirtier in places
-  vec3 mortar = vec3(0.55, 0.505, 0.425) * (1.0 + 0.08 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.14 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)))
+  // lime pointing: light grey-beige, a little greyer than the stone but still warm (a
+  // neutral grey under the blue sky light reads as a white line along every joint), dirtier
+  // in places
+  vec3 mortar = vec3(0.57, 0.5, 0.385) * (1.0 + 0.08 * fbm(m, 45.0, 2, 0.5, 19u)) * (1.0 - 0.14 * (0.5 + 0.5 * fbm(m, 6.0, 2, 0.5, 18u)))
               * (1.0 - 0.16 * smoothstep(0.45, 0.85, mWash));     // dirt held in the washed-out stretches
   s.albedo = mix(mortar, alb, stone);
   s.rough = mix(0.95, mix(0.86 + 0.03 * fbm(m, 9.0, 2, 0.5, 20u), 0.93, max(0.6 * (1.0 - t), broken)), stone);

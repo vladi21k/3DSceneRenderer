@@ -62,7 +62,7 @@ class PartBuilder {
       tg.copy(pts[Math.min(n - 1, i + 1)]).sub(pts[Math.max(0, i - 1)]).normalize();
       side.crossVectors(tg, nrms[i]).normalize();
       up.crossVectors(side, tg).normalize();
-      const sk = typeof skin === 'function' ? skin(pts[i]) : skin;
+      const sk = typeof skin === 'function' ? skin(pts[i], i) : skin;
       const wi = w(i), ti = t(i);
       const row = [];
       for (let k = 0; k < PRO.length; k++) {
@@ -210,7 +210,7 @@ function tension(pts, nrms, iters = 6) {
 export function torsoSurface(char) {
   const raw = char.raw, n = raw.n;
   const L0 = char.lods[0];
-  const pts = [];
+  const pts = [], vid = [];
   const used = new Uint8Array(n);
   for (let i = L0.start; i < L0.start + L0.count; i++) used[raw.index[i]] = 1;
   for (let v = 0; v < n; v++) {
@@ -222,13 +222,20 @@ export function torsoSurface(char) {
     for (let k = 0; k < 4; k++) if (raw.bw[v * 4 + k] > bw) { bw = raw.bw[v * 4 + k]; bb = raw.bi[v * 4 + k]; }
     if (ARM_BONES.has(bb) || bb === BONE.head) continue;
     pts.push(raw.pos[v * 3], raw.pos[v * 3 + 1], raw.pos[v * 3 + 2]);
+    vid.push(v);
   }
   // (sorted by height: a query scans only the points within the height band its ray segment can reach)
   const m = pts.length / 3, order = new Uint32Array(m);
   for (let i = 0; i < m; i++) order[i] = i;
   order.sort((a, b) => pts[a * 3 + 1] - pts[b * 3 + 1]);
   const P = new Float32Array(m * 3);
-  for (let i = 0; i < m; i++) { P[i * 3] = pts[order[i] * 3]; P[i * 3 + 1] = pts[order[i] * 3 + 1]; P[i * 3 + 2] = pts[order[i] * 3 + 2]; }
+  // (each point's skin weights: what lies on the cloth moves with the cloth under it)
+  const SB = new Uint8Array(m * 4), SW = new Uint8Array(m * 4);
+  for (let i = 0; i < m; i++) {
+    P[i * 3] = pts[order[i] * 3]; P[i * 3 + 1] = pts[order[i] * 3 + 1]; P[i * 3 + 2] = pts[order[i] * 3 + 2];
+    const v = vid[order[i]];
+    for (let k = 0; k < 4; k++) { SB[i * 4 + k] = raw.bi[v * 4 + k]; SW[i * 4 + k] = raw.bw[v * 4 + k]; }
+  }
   const lower = (y) => {      // first point with height >= y
     let lo = 0, hi = m;
     while (lo < hi) { const md = (lo + hi) >> 1; if (P[md * 3 + 1] < y) lo = md + 1; else hi = md; }
@@ -248,7 +255,82 @@ export function torsoSurface(char) {
   };
   f.pts = P;
   f.slice = (y0, y1) => [lower(y0), lower(y1)];
+  /** Skin weights ([[bone, w], ...]) of the surface point nearest p (within 4 cm of its height). */
+  f.skin = (p) => {
+    let bd = Infinity, bi = -1;
+    for (let i = lower(p.y - 0.04) * 3, e = lower(p.y + 0.04) * 3; i < e; i += 3) {
+      const x = P[i] - p.x, y = P[i + 1] - p.y, z = P[i + 2] - p.z;
+      const d = x * x + y * y + z * z;
+      if (d < bd) { bd = d; bi = i / 3; }
+    }
+    if (bi < 0) return null;
+    const out = [];
+    for (let k = 0; k < 4; k++) if (SW[bi * 4 + k] > 0) out.push([SB[bi * 4 + k], SW[bi * 4 + k] / 255]);
+    return out.length ? out : null;
+  };
   return f;
+}
+
+/** Blend of two skin weight lists ((1 - t) a + t b), the four largest kept. */
+function mixSkin(a, b, t) {
+  const m = new Map();
+  for (const [bn, w] of a) m.set(bn, (m.get(bn) || 0) + w * (1 - t));
+  for (const [bn, w] of b) m.set(bn, (m.get(bn) || 0) + w * t);
+  return [...m.entries()].filter((e) => e[1] > 1e-3).sort((x, y) => y[1] - x[1]).slice(0, 4);
+}
+
+/** Cumulative arc length along a polyline. */
+function arcLengths(pts) {
+  const s = [0];
+  for (let i = 1; i < pts.length; i++) s.push(s[i - 1] + pts[i].distanceTo(pts[i - 1]));
+  return s;
+}
+
+/** The polyline resampled at about `step` spacing (Catmull-Rom through its points; normals interpolated). */
+function resamplePath(pts, nrms, step) {
+  const s = arcLengths(pts), L = s[s.length - 1];
+  const cnt = Math.max(2, Math.round(L / step));
+  const op = [], on = [];
+  const crv = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+  let j = 0;
+  for (let i = 0; i <= cnt; i++) {
+    const d = (L * i) / cnt;
+    while (j < s.length - 2 && s[j + 1] < d) j++;
+    const f = (d - s[j]) / Math.max(1e-9, s[j + 1] - s[j]);
+    op.push(crv.getPointAt(Math.min(1, d / Math.max(L, 1e-9))));
+    on.push(nrms[j].clone().lerp(nrms[j + 1], f).normalize());
+  }
+  return [op, on];
+}
+
+/**
+ * A strap under tension laid over the clothed body: the path relaxes (every point towards the middle of
+ * its neighbours, so it runs straight across hollows and settles into the valley between the breasts),
+ * then goes back onto the cloth after every pass: out of it where smoothing pulled it in, and in to no
+ * more than gap(i) off it where it bridged (a strap presses the cloth under it). Its ends stay where they
+ * are. Normals are smoothed along the path first (a strap turns gradually over the shoulder).
+ */
+function settle(surf, pts, nrms, { off = 0.004, gap = () => 0.008, iters = 6, lam = 0.5 } = {}) {
+  const n = pts.length;
+  for (let it = 0; it < 3; it++) {
+    const c = nrms.map((v) => v.clone());
+    for (let i = 1; i < n - 1; i++) nrms[i].copy(c[i - 1]).add(c[i + 1]).addScaledVector(c[i], 2).normalize();
+  }
+  const o = new THREE.Vector3();
+  const c = pts.map((p) => p.clone());
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < n; i++) c[i].copy(pts[i]);
+    for (let i = 1; i < n - 1; i++) pts[i].copy(c[i - 1]).add(c[i + 1]).multiplyScalar(0.5 * lam).addScaledVector(c[i], 1 - lam);
+    for (let i = 1; i < n - 1; i++) {
+      o.copy(pts[i]).addScaledVector(nrms[i], -0.07);
+      const q = surf(o, nrms[i], 0, 0.014, 0, 0.16);
+      if (!q) continue;
+      const h = o.copy(pts[i]).sub(q).dot(nrms[i]);          // height over the cloth along the normal
+      const g = Math.max(off, gap(i));
+      if (h < off) pts[i].addScaledVector(nrms[i], off - h);
+      else if (h > g) pts[i].addScaledVector(nrms[i], g - h);
+    }
+  }
 }
 
 /** The torso's axis: z at height y = the middle of the torso points' depth within 2.5 cm of y. */
@@ -407,29 +489,40 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
   const b = new PartBuilder();
   const yTop = waistY - 0.03 * k, yHem = J[BONE.shinL].y - 0.1 * k;
   const az = 0.5 * (J[BONE.thighL].z + J[BONE.thighR].z);
-  const TH = 1.62;
+  const TH = 1.7;                     // (round the front and sides, about +-97 degrees; open at the back)
   const o = new THREE.Vector3(), d = new THREE.Vector3();
   const rayR = (y, th) => {
     o.set(0, y, az); d.set(Math.sin(th), 0, -Math.cos(th));
     const q = surf(o, d, 0, 0.025, 0, 0.45);
     return q ? Math.hypot(q.x, q.z - az) : 0;
   };
-  // per column: the radius falls straight from the widest point above (cloth hangs), a soft flare
-  // and folds towards the hem
+  // folds: six soft vertical folds over the panel, unevenly spaced and of uneven depth (rounded ridges,
+  // the cloth lying flatter between them), deepening from nothing at the waistband to the hem; the hem
+  // waves a little with them
+  const seed = (char.id || '').split('').reduce((s, c) => s + c.charCodeAt(0), 0);
+  const foldPh = (th) => th * 11 + 0.9 * Math.sin(th * 2.6 + seed) + 0.5 * Math.sin(th * 5.3 + 0.7 * seed);
+  const foldH = (th) => {
+    const r = (0.5 + 0.5 * Math.cos(foldPh(th))) ** 1.6;
+    return r * (0.75 + 0.25 * Math.sin(th * 3.7 + 1.3 * seed));
+  };
+  // per column: tight on the waist under the waistband (within a few mm of the shirt), then the cloth
+  // falls straight from the widest point above it (it hangs), with a slight flare and the folds
   const P = [], N = [];
   const cols = [];
   for (let i = 0; i <= NT; i++) {
     const th = -TH + (2 * TH * i) / NT;
     let rMax = 0;
     const col = [];
+    const fh = foldH(th);
+    // (the hem a little longer where the cloth folds out, shorter in the valleys; the side edges turn in)
+    const hemDy = (near ? 0.012 * (fh - 0.5) : 0) * k - 0.02 * k * THREE.MathUtils.smoothstep(Math.abs(th), TH - 0.35, TH);
     for (let j = 0; j <= NY; j++) {
-      const y = yTop + (yHem - yTop) * (j / NY);
+      const u = j / NY;
+      const y = yTop + (yHem + hemDy * u * u - yTop) * u;
       // (sampled between the rows too, so a narrow bulge between them is not missed)
       rMax = Math.max(rMax, rayR(y, th), j > 0 ? rayR(y - (yHem - yTop) / NY * 0.5, th) : 0);
-      const u = j / NY;
-      // (the waistband stands clear of a shirt's hem; folds deepen towards the hem)
-      const r = Math.max(rMax, 0.08 * k) + 0.007 + 0.009 * (1 - THREE.MathUtils.smoothstep(u, 0, 0.25)) + 0.014 * u * u +
-        (near ? 0.0055 * u * Math.sin(th * 11 + 0.7) : 0);
+      const ease = THREE.MathUtils.smoothstep(u, 0, 0.3);
+      const r = Math.max(rMax, 0.08 * k) + 0.004 + 0.012 * u * u + (near ? (0.002 + 0.013 * ease * u) * fh : 0.004 * u * u);
       col.push(new THREE.Vector3(Math.sin(th) * r, y, az - Math.cos(th) * r));
     }
     cols.push(col);
@@ -461,9 +554,9 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
         const q = i * (NY + 1) + j;
         const p = inner ? P[q].clone().addScaledVector(N[q], -0.0015) : P[q];
         const n = inner ? N[q].clone().negate() : N[q];
-        // (folds and the hem's underside a little darker)
-        const fold = 0.5 + 0.5 * Math.sin(th * 11 + 0.7 + 1.2);
-        const ao = inner ? 0.6 : (near ? 0.8 + 0.2 * (1 - (1 - fold) * (j / NY)) : 0.95) * (j === 0 ? 0.8 : 1);
+        // (the folds' valleys and the hem's underside a little darker)
+        const fold = foldH(th);
+        const ao = inner ? 0.6 : (near ? 0.78 + 0.22 * (1 - (1 - fold) * (j / NY)) : 0.95) * (j === 0 ? 0.85 : 1);
         b.vertex(p, n, i / NT, 1 - j / NY, skin(p, th), REGION.socks, inner ? FL | FLAG.BACK : FL, ao);
       }
     }
@@ -508,6 +601,88 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
   return b.build();
 }
 
+// (deterministic value noise for the bags' crumple)
+function hash3(x, y, z) {
+  let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(z | 0, 2147483647);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise3(x, y, z) {
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+  const fx = x - ix, fy = y - iy, fz = z - iz;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy), sz = fz * fz * (3 - 2 * fz);
+  const l = (a, b, t) => a + (b - a) * t;
+  const c = (dx, dy, dz) => hash3(ix + dx, iy + dy, iz + dz);
+  return l(l(l(c(0, 0, 0), c(1, 0, 0), sx), l(c(0, 1, 0), c(1, 1, 0), sx), sy),
+    l(l(c(0, 0, 1), c(1, 0, 1), sx), l(c(0, 1, 1), c(1, 1, 1), sx), sy), sz);
+}
+
+/**
+ * A shopping bag (see buildParts) in the right hand: its top a handle's length below the grip, a little
+ * out from the thigh. The big faces carry a planar uv (the shader prints on them; the narrow sides get
+ * uv 0). Flags: 64 plastic film, 128 paper (mh/shading.js).
+ */
+function shoppingBag(shape, grip, k) {
+  const s = new PartBuilder();
+  const kk = Math.min(1, k);
+  const D = [{ bw: 0.29, bh: 0.34, bd: 0.12, hl: 0.11 }, { bw: 0.32, bh: 0.33, bd: 0.12, hl: 0.10 }, { bw: 0.36, bh: 0.37, bd: 0.05, hl: 0.17 }][shape];
+  const bw = D.bw * kk, bh = D.bh * kk, bd = D.bd * kk, hl = D.hl * k;
+  const flags = FLAG.SOLID | (shape === 0 ? 64 : shape === 1 ? 128 : 0);
+  const cx = grip.x + 0.02 * k + bd * 0.35, cy = grip.y - hl - bh / 2, cz = grip.z;
+  // the body: rounded box; the plastic sack soft and narrowing to its top, crumpled; paper crisp with the
+  // gussets folded in; the tote flat with its load in the bottom
+  const g = shape === 0 ? roundBox(bd, bh, bw, 0.03 * kk, 4, 0.32, 0.3) : shape === 1 ? roundBox(bd, bh, bw, 0.005 * kk, 4, 0.03, 0)
+    : roundBox(bd, bh, bw, 0.02 * kk, 4, 0.25, 0.05);
+  const pos = g.attributes.position, nrm = g.attributes.normal;
+  const uv = new Float32Array(pos.count * 2);
+  const v = new THREE.Vector3(), n = new THREE.Vector3();
+  const amp = [0.007, 0.0018, 0.004][shape] * kk, fq = [26, 14, 18][shape] / kk;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i); n.fromBufferAttribute(nrm, i);
+    const yy = v.y / bh + 0.5;
+    if (shape === 1) {
+      // gussets: the narrow sides fold in along their middle (a V, deepest at the top)
+      const side = THREE.MathUtils.smoothstep(Math.abs(v.z) / (bw / 2), 0.9, 1.0);
+      v.z -= Math.sign(v.z) * side * (1 - Math.abs(v.x) / (bd / 2)) * 0.022 * kk * (0.4 + 0.6 * yy);
+    } else if (shape === 2) {
+      // the load sags into the bottom (fuller low), the top lies flat
+      v.x *= 0.55 + 0.75 * (1 - yy);
+    } else {
+      // the film sags between the handles at the top
+      v.y -= 0.03 * kk * THREE.MathUtils.smoothstep(yy, 0.75, 1.0) * (1 - THREE.MathUtils.smoothstep(Math.abs(v.z) / (bw / 2), 0.2, 0.75));
+    }
+    // crumple: thin film wrinkles in creases a centimetre or two long, cloth in softer dents
+    const c = vnoise3(v.x * fq + 3.1 * shape, v.y * fq * 0.6, v.z * fq) * 0.7 + vnoise3(v.x * fq * 2.7, v.y * fq * 2.1 + 7.7, v.z * fq * 2.7) * 0.3;
+    v.addScaledVector(n, amp * (c - 0.5) * 2);
+    pos.setXYZ(i, v.x, v.y, v.z);
+    const big = Math.abs(n.x) > 0.6;
+    uv[i * 2] = big ? THREE.MathUtils.clamp(v.z / bw + 0.5, 0.001, 0.999) : 0;
+    uv[i * 2 + 1] = big ? THREE.MathUtils.clamp(yy, 0.001, 0.999) : 0;
+  }
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.computeVertexNormals();
+  const hand = rigid(BONE.handR);
+  s.geometry(g, new THREE.Matrix4().makeTranslation(cx, cy, cz), hand, REGION.bag, flags, (p) => 0.75 + 0.25 * THREE.MathUtils.smoothstep(p.y / bh + 0.5, 0.0, 0.25));
+  // handles: one loop from each big face's top edge up into the hand, the two meeting in the fingers
+  const topY = cy + bh / 2 - (shape === 0 ? 0.03 * kk : 0.004);
+  const z0 = bw * (shape === 0 ? 0.36 : shape === 1 ? 0.2 : 0.26);
+  for (const sx of [-1, 1]) {
+    const fx = cx + sx * (bd / 2) * (shape === 2 ? 0.55 : 0.8);
+    const ctrl = [
+      new THREE.Vector3(fx, topY, cz - z0),
+      new THREE.Vector3(0.5 * (fx + grip.x), topY + 0.65 * hl, cz - z0 * 0.45),
+      new THREE.Vector3(grip.x + sx * 0.005, grip.y + 0.006 * k, cz),
+      new THREE.Vector3(0.5 * (fx + grip.x), topY + 0.65 * hl, cz + z0 * 0.45),
+      new THREE.Vector3(fx, topY, cz + z0),
+    ];
+    const crv = new THREE.CatmullRomCurve3(ctrl, false, 'centripetal');
+    const pts = crv.getSpacedPoints(14), nr = pts.map(() => new THREE.Vector3(sx, 0, 0));
+    if (shape === 1) s.strap(pts, nr, () => 0.006 * kk, () => 0.005 * kk, hand, REGION.strap);
+    else s.strap(pts, nr, () => (shape === 0 ? 0.03 : 0.025) * kk, () => (shape === 0 ? 0.0012 : 0.0025), hand, shape === 0 ? REGION.bag : REGION.strap);
+  }
+  return s.build();
+}
+
 /** opts.apron: also a waiter's waist apron (apron, apronFar). */
 export function buildParts(char, opts = {}) {
   const J = char.skeleton.joints.map((j) => new THREE.Vector3(...j));
@@ -539,25 +714,12 @@ export function buildParts(char, opts = {}) {
     c.geometry(cup, Mc2, rigid(BONE.handR), REGION.prop, FLAG.SOLID | FLAG.WHITE);
     c.geometry(bottom, Mc2, rigid(BONE.handR), REGION.prop, FLAG.SOLID | FLAG.WHITE);
     out.cup = c.build();
-    // ---- shopping bag hanging from the right hand (handles in the fingers)
-    const s = new PartBuilder();
+    // ---- shopping bags hanging from the right hand, their handles gathered in the fingers: shape 0 a
+    // thin plastic carrier (a soft sack, crumpled, its handles cut from the same film), 1 a paper carrier
+    // (crisp faces, the side gussets folded in, twisted paper cords), 2 a cloth tote (flat, its load
+    // sagging to the bottom, long webbing handles). The person picks one (appearance bagShape).
     const grip = wrist.clone().addScaledVector(a, 0.085 * k).addScaledVector(pn, 0.02 * k);
-    const bw = 0.30 * Math.min(1, k), bh = 0.33 * Math.min(1, k), bd = 0.11 * Math.min(1, k);
-    const top = grip.clone().add(new THREE.Vector3(0.025 * k, -0.10 * k, 0));
-    const bag = roundBox(bd, bh, bw, 0.012, 3, 0.18, 0.12);
-    s.geometry(bag, new THREE.Matrix4().makeTranslation(top.x + 0.012, top.y - bh / 2, top.z), rigid(BONE.handR), REGION.bag);
-    for (const sz of [-1, 1]) {
-      const pts = [], nr = [];
-      for (let i = 0; i <= 6; i++) {
-        const u = i / 6, ang = Math.PI * u;
-        const pz = top.z + sz * 0.012 + Math.cos(ang) * bw * 0.22;
-        const py = top.y + Math.sin(ang) * (grip.y - top.y);
-        pts.push(new THREE.Vector3(top.x + 0.012 + sz * bd * 0.5, py, pz));
-        nr.push(new THREE.Vector3(sz, 0, 0));
-      }
-      s.ribbon(pts, nr, 0.018, rigid(BONE.handR), REGION.strap, 0.002);
-    }
-    out.shopping = s.build();
+    for (let shape = 0; shape < 3; shape++) out['shopping' + (shape || '')] = shoppingBag(shape, grip, k);
   }
   const surf = torsoSurface(char);
   const hang = char.info.hang;
@@ -641,49 +803,77 @@ export function buildParts(char, opts = {}) {
       b.strap(pts, nr, () => 0.018 * k, () => 0.004, packSkin, REGION.strap);
     }
     bf.geometry(roundBox(pw, ph, pd, 0.05 * k, 1, 0.13, 0.12), M, packSkin, REGION.bag);
-    // shoulder straps: from the pack's top up over the trapezius, over the shoulder, down the front
-    // of the chest (padded), then a webbing strap round the side under the arm to the pack's lower
-    // corner. Each point lies on the torso's surface (rays out from the torso's axis; over the
-    // shoulder, rays up through it: its top).
+    // shoulder straps: padded, from the pack's top up over the trapezius, over the shoulder and down the
+    // front of the chest to the lower ribs, where a buckle takes a thin webbing strap (25 x 2 mm) back
+    // round the side under the arm to the pack's lower corner. The paths start on the torso's surface
+    // (rays out from the torso's axis; over the shoulder, rays down onto its top), then settle on the
+    // cloth under tension (settle). Skin weights: the cloth's under each point, the pack's near it.
+    const packAt = (p) => surf.skin(p) || chestSkin(p);
     for (const sg of [-1, 1]) {
-      const pts = [], nr = [], tk = [];
-      const add = (q, t) => { if (q) { pts.push(q.p); nr.push(q.n); tk.push(t); } };
+      const pts = [], nr = [];
+      const add = (q) => { if (q) { pts.push(q.p); nr.push(q.n); } };
       // up the back from the pack's top edge
-      for (let i = 0; i <= 4; i++) {
+      pts.push(new THREE.Vector3(sg * pw * 0.3, ph * 0.5 - 0.02 * k, -pd * 0.42).applyMatrix4(M));
+      nr.push(new THREE.Vector3(0, 0.4, 1).normalize());
+      for (let i = 1; i <= 4; i++) {
         const u = i / 4;
-        add(around(topY - 0.01 * k + u * (shR.y - 0.04 * k - topY), Math.PI - sg * (0.3 + 0.22 * u), 0.005), 0.008);
+        add(around(topY + u * (shR.y - 0.045 * k - topY), Math.PI - sg * (0.3 + 0.22 * u), 0.005));
       }
       // over the shoulder (back to front)
       for (let i = 0; i <= 4; i++) {
         const u = i / 4;
         const x = sg * (0.095 + 0.012 * u) * k, z = (0.045 - 0.09 * u) * k;
         const q = surf(new THREE.Vector3(x, shR.y - 0.03 * k, z), _up, 0.005, 0.016, 0, 0.11 * k);
-        if (q) add({ p: q, n: new THREE.Vector3(0, 1, 0) }, 0.012);
+        if (q) add({ p: q, n: new THREE.Vector3(0, 1, 0) });
       }
-      // down the front of the chest to the armpit
-      const yA = Math.min(chest[0], shR.y - 0.12 * k);
-      for (let i = 0; i <= 5; i++) {
-        const u = i / 5;
-        add(around(shR.y - 0.05 * k - u * (shR.y - 0.05 * k - yA), sg * (0.58 + 0.12 * u), 0.005), 0.012);
+      // down the front of the chest to the lower ribs
+      const yA = Math.min(chest[0], shR.y - 0.12 * k) - 0.07 * k;
+      for (let i = 0; i <= 6; i++) {
+        const u = i / 6;
+        add(around(shR.y - 0.05 * k - u * (shR.y - 0.05 * k - yA), sg * (0.56 + 0.2 * u), 0.005));
       }
-      // the webbing: back under the arm at the armpit's height first, then down to the pack's lower corner
+      if (pts.length < 8) continue;
+      let [sp, sn] = resamplePath(pts, nr, 0.02 * k);
+      const L = arcLengths(sp), Lt = L[L.length - 1];
+      // (free of the back only where it leaves the pack)
+      settle(surf, sp, sn, { off: 0.004, gap: (i) => 0.008 + 0.05 * Math.max(0, 1 - L[i] / (0.08 * k)) });
+      const W = 0.05 * k, T = 0.011 * k;
+      const skinP = (p, i) => {
+        const s = packAt(p), u = Math.max(0, 1 - L[i] / (0.1 * k));
+        return u > 0 ? mixSkin(s, packSkin, u) : s;
+      };
+      const sks = sp.map((p, i) => skinP(p, i));
+      // (the padding thins to the strap's ends; the last few cm before the buckle flatten)
+      b.strap(sp, sn, (i) => W * (L[i] > Lt - 0.04 * k ? 0.75 : 1),
+        (i) => T * Math.min(1, 0.45 + L[i] / (0.06 * k)) * (L[i] > Lt - 0.05 * k ? 0.6 : 1), (p, i) => sks[i], REGION.strap);
+      // the buckle at the padded strap's end
+      const e = sp[sp.length - 1], en = sn[sn.length - 1];
+      const et = e.clone().sub(sp[sp.length - 2]).normalize();
+      const ex = new THREE.Vector3().crossVectors(et, en).normalize();
+      const MB = new THREE.Matrix4().makeBasis(ex, et, new THREE.Vector3().crossVectors(ex, et).normalize())
+        .setPosition(e.clone().addScaledVector(en, 0.004 * k));
+      b.geometry(roundBox(0.034 * k, 0.022 * k, 0.006 * k, 0.002 * k, 1), MB, sks[sks.length - 1], REGION.strap, FLAG.SOLID, 0.8);
+      // the webbing: from the buckle back round the side, under the arm, to the pack's lower corner
+      const wp = [e.clone()], wn = [en.clone()];
       const yE = cy - ph * 0.36;
+      const th0 = Math.atan2(sg * e.x, -(e.z - axisZ(e.y)));
       for (let i = 1; i <= 7; i++) {
         const u = i / 8;
-        const th = 0.72 + (Math.PI - 0.72 - 0.75) * THREE.MathUtils.smoothstep(u, 0, 0.55);
-        add(around(yA - (yA - yE) * THREE.MathUtils.smoothstep(u, 0.25, 1), sg * th, 0.005), 0.01 - 0.006 * u);
+        const th = th0 + (Math.PI - 0.75 - th0) * THREE.MathUtils.smoothstep(u, 0, 0.8);
+        const q = around(e.y - (e.y - yE) * u, sg * th, 0.003);
+        if (q) { wp.push(q.p); wn.push(q.n); }
       }
       const end = new THREE.Vector3(sg * pw * 0.42, -ph * 0.36, -pd * 0.32).applyMatrix4(M);
-      pts.push(end); nr.push(new THREE.Vector3(sg, 0, 0)); tk.push(0.004);
-      if (pts.length < 6) continue;
-      smoothPath(pts, 2);
-      lift(pts, nr, 0.005);
-      tension(pts, nr);
-      const W = 0.052 * Math.min(1, k * 1.1);
-      const n = pts.length;
-      b.strap(pts, nr, (i) => W * (i > n - 9 ? 0.62 : 1), (i) => tk[i], chestSkin, REGION.strap);
+      wp.push(end); wn.push(new THREE.Vector3(sg, 0, 0));
+      if (wp.length >= 4) {
+        const [wq, wnn] = resamplePath(wp, wn, 0.025 * k);
+        const LW = arcLengths(wq), LWt = LW[LW.length - 1];
+        settle(surf, wq, wnn, { off: 0.003, gap: (i) => 0.006 + 0.04 * Math.max(0, 1 - (LWt - LW[i]) / (0.08 * k)) });
+        const wsk = wq.map((p, i) => mixSkin(packAt(p), packSkin, Math.max(0, 1 - (LWt - LW[i]) / (0.12 * k))));
+        b.strap(wq, wnn, () => 0.025 * k, () => 0.0022, (p, i) => wsk[i], REGION.strap);
+      }
       // (the far stand-in keeps the straps as flat bands: they do not vanish at the LOD switch)
-      const [fp, fn] = coarsePath(pts, nr, 3);
+      const [fp, fn] = coarsePath(sp, sn, 3);
       bf.ribbon(fp, fn, W * 0.9, chestSkin, REGION.strap, 0.006);
     }
     out.backpack = b.build();
@@ -785,10 +975,14 @@ export function buildParts(char, opts = {}) {
       if (q) { pts.push(q.p); nr.push(q.n); }
     }
     pts.push(pB); nr.push(dirP(phc + half, new THREE.Vector3()));
-    smoothPath(pts, 2);
-    lift(pts, nr, 0.005);
-    tension(pts, nr);
-    // skinning: the chest above the waist (the right shoulder's top with its clavicle), the hips at the bag
+    // (resampled every 2 cm, then settled on the cloth under tension: across the chest it runs between
+    // the breasts and lies on the cloth, free of the body only where it rises from the bag)
+    const [sp, sn] = resamplePath(pts, nr, 0.02 * k);
+    const L = arcLengths(sp), Lt = L[L.length - 1];
+    const endW = (i) => Math.max(0, 1 - Math.min(L[i], Lt - L[i]) / (0.12 * k));
+    settle(surf, sp, sn, { off: 0.003, gap: (i) => 0.008 + 0.045 * endW(i), iters: 8 });
+    // skinning: the cloth's own weights under each point (the shoulder's top moves with the clavicle and
+    // the chest with the ribs), blending into the bag's towards its two ends
     const strapSkin = (p) => {
       if (p.y < waist[0]) {
         const u = THREE.MathUtils.clamp((waist[0] - p.y) / Math.max(0.05, waist[0] - (by + bh / 2)), 0, 1);
@@ -798,9 +992,14 @@ export function buildParts(char, opts = {}) {
       if (p.x > 0.04 * k && p.y > shR.y - 0.07 * k) return [[BONE.spine2, 0.72], [BONE.clavR, 0.28]];
       return sk;
     };
-    const SW = 0.034 * Math.min(1, k * 1.1);
-    b.strap(pts, nr, () => SW, () => 0.0035, strapSkin, REGION.strap);
-    { const [fp, fn] = coarsePath(pts, nr, 2); bf.ribbon(fp, fn, SW, strapSkin, REGION.strap, 0.005); }
+    const sks = sp.map((p, i) => {
+      // (no thigh weights: the strap never follows a striding leg)
+      const s = (surf.skin(p) || strapSkin(p)).filter(([bn]) => bn !== BONE.thighL && bn !== BONE.thighR);
+      return mixSkin(s.length ? s : strapSkin(p), bagSkin, endW(i) ** 0.7);
+    });
+    const SW = 0.032 * Math.min(1, k * 1.1);
+    b.strap(sp, sn, () => SW, () => 0.003, (p, i) => sks[i], REGION.strap);
+    { const [fp, fn] = coarsePath(sp, sn, 3); bf.ribbon(fp, fn, SW, strapSkin, REGION.strap, 0.005); }
     out.shoulder = b.build();
     out.shoulderFar = bf.build();
   }

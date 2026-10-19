@@ -226,14 +226,15 @@ const RAIL_FRAG = /* glsl */`
   vec3 dPave = ST_DPAVE;                                                    // brake-dusted setts beside it
   vec3 f04 = vec3( 0.04 );
   float wBev = wCorner + wGauge;
-  lnD = dSeal * wSeal + aBev * ( ( 1.0 - ST_ZB_M ) * wBev ) + aSh * ( ( 1.0 - ST_ZS_M ) * wShoulder ) + aLip * ( ( 1.0 - ST_ZL_M ) * 0.97 * wLip ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
+  // the dust film over the steel, as on the 3D rail (shading.js SHEEN): uStDust.w of the
+  // polished band, uStDustOff of the oxidised steel round it (bevel, shoulders, lip)
+  float dB = uStDust.w, dO = uStDustOff, eO = 1.0 - dO;
+  lnD = dSeal * wSeal + aBev * ( ( 1.0 - ST_ZB_M ) * wBev * eO ) + aSh * ( ( 1.0 - ST_ZS_M ) * wShoulder * eO ) + aLip * ( ( 1.0 - ST_ZL_M ) * 0.97 * wLip * eO ) + dGroove * wGroove + dGrout * wGrout + dPave * wPave;
   vec3 fBev = mix( f04, aBev, ST_ZB_M ), fSh = mix( f04, aSh, ST_ZS_M ), fBand = mix( f04, aBand, ST_ZN_M ), fLip = mix( f04, aLip, ST_ZL_M ) * 0.97;
-  vec3 fSteel = fBev * wBev + fBand * wBand + fSh * wShoulder + fLip * wLip;
-  // the dust film over the steel and the steel's direct-light lobe, as on the 3D rail
-  // (shading.js SHEEN: uStDust, uStDirK)
-  float wSt = wBev + wBand + wShoulder + wLip;
-  lnD += uStDust.rgb * ( uStDust.w * wSt );
-  fSteel = fSteel * ( 1.0 - uStDust.w ) + f04 * ( uStDust.w * wSt );
+  vec3 fSteel = ( fBev * wBev + fSh * wShoulder + fLip * wLip ) * eO + fBand * ( wBand * ( 1.0 - dB ) );
+  float wDust = dO * ( wBev + wShoulder + wLip ) + dB * wBand;
+  lnD += uStDust.rgb * wDust;
+  fSteel += f04 * wDust;
   vec3 fOther = f04 * ( wSeal + wGrout + wPave ) + f04 * ( 0.15 * wGroove );
   lnF = fSteel + fOther;
   lnF90 = 1.0 - 0.85 * wGroove;               // the slot's walls hide its grazing sheen
@@ -247,9 +248,8 @@ const RAIL_FRAG = /* glsl */`
   // specular reflection (a sub-pixel band's sheen keeps its own lobe instead of being
   // smeared by the matt seals and mortar round it, which reflect next to nothing)
   const vec3 LY = vec3( 0.2126, 0.7152, 0.0722 );
-  float d1 = 1.0 - uStDust.w;
-  float lB = dot( fBev, LY ) * d1 * wBev, lS = dot( fSh, LY ) * d1 * wShoulder, lN = dot( fBand, LY ) * d1 * wBand, lL = dot( fLip, LY ) * d1 * wLip;
-  float lD = 0.04 * uStDust.w * wSt, lO = 0.04 * ( wSeal + wGrout + wPave + 0.15 * wGroove );
+  float lB = dot( fBev, LY ) * eO * wBev, lS = dot( fSh, LY ) * eO * wShoulder, lN = dot( fBand, LY ) * ( 1.0 - dB ) * wBand, lL = dot( fLip, LY ) * eO * wLip;
+  float lD = 0.04 * wDust, lO = 0.04 * ( wSeal + wGrout + wPave + 0.15 * wGroove );
   float rNum = lB * ST_ZB_R + lS * ST_ZS_R + lN * rBand + lL * ST_ZL_R + lD * 0.85
              + 0.04 * ( wSeal * 0.85 + wGrout * 0.9 + wPave * 0.7 + 0.15 * wGroove * 0.85 );
   lnRough = rNum / max( lB + lS + lN + lL + lD + lO, 1e-5 );
@@ -727,7 +727,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-13';
+  m.customProgramCacheKey = () => 'street-line-14';
   return patchRailSheen(m, 'line');
 }
 

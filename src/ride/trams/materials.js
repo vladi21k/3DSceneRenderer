@@ -21,8 +21,8 @@ import { U } from '../../core/uniforms.js';
 //  - interior: the modelled saloon (trams/model.js saloon), its light dimmed to what comes in
 //    through the windows, its own lights at dusk.
 //  - front / frontTrail: the cab front glass, uv = (u share of the half width, height in m).
-//    Drawn per pixel: the windscreen in a rounded U (coated laminated glass, F0 ≈ 0.25, so
-//    the street canyon and the sky mirror in it over the cab, which is ray traced behind
+//    Drawn per pixel: the windscreen in a rounded U (coated laminated glass, F0 ≈ 0.1: a
+//    sharp mirror of the street canyon and the sky over the cab, which is ray traced behind
 //    the glass in the body frame: console and binnacle, the driver in the leading cab,
 //    overhead console, walls, side windows onto the street, the saloon door), a thin
 //    silver trim round it, the dark tinted mask (cheeks and the foot where the lamps sit)
@@ -145,6 +145,8 @@ uniform float uTramGround;
 // the glazing's reflection lobe (rad): flat glass is nearly a mirror; what blurs it a little is
 // the panes' unevenness and the film on them, not the lighting model's roughness floor
 #define TRAM_GLASS_CONE 0.0022
+// ... and the roughness its environment lookup keeps (the finest levels of the environment)
+#define TRAM_GLASS_ROUGH 0.03
 // last frame's image at uv, blurred over about 2^l of its pixels (l 0: the image itself, 1-5:
 // post's pyramid of the same frame)
 vec3 tramHistLevel( vec2 uv, float l ) {
@@ -157,6 +159,12 @@ vec3 tramHistLevel( vec2 uv, float l ) {
 }
 // world point P, reflected direction R, the reflection lobe's half width cone (rad): the
 // street seen along R, blurred over the lobe's footprint, and its weight (0 = none).
+// lmax caps the blur level; glass (1): smooth glass mirrors sharply, so its lookup stays on the
+// unblurred image or the finest level (lmax ~1.5), its anti-aliasing blur follows the mean of the
+// two axes of the lookup's footprint (at grazing angles the mirror image is squeezed along the car
+// only: blurring by the longer axis smeared everything upright into a haze), and a misplaced
+// occluder gives way to the environment almost entirely (a sharp mirror would copy it into
+// every pane that looks past it).
 // The proxy is two vertical planes along the unit, on the sidewalks where the people, trees
 // and poles stand (at most the facade lines): those stand upright in last frame's image and
 // a vertical proxy keeps them upright in the mirror (a paving proxy would smear them along
@@ -167,7 +175,7 @@ vec3 tramHistLevel( vec2 uv, float l ) {
 // It gives way to the environment where it is ill-conditioned (neighbouring pixels far apart
 // in the image) and, in part, where last frame saw something much nearer than the proxy point
 // there (somebody or something between the camera and the sidewalk: not on this ray).
-vec3 tramStreetRefl( vec3 P, vec3 R, float cone, out float a ) {
+vec3 tramStreetReflL( vec3 P, vec3 R, float cone, float lmax, float glass, out float a ) {
   float t = 300.0;
   float nr = dot( uTramStreet.xy, R.xz ), np = dot( uTramStreet.xy, P.xz );
   if ( nr > 1e-3 ) t = min( t, ( uTramStreet.z - np ) / nr );
@@ -181,6 +189,7 @@ vec3 tramStreetRefl( vec3 P, vec3 R, float cone, out float a ) {
   vec2 hs = vec2( textureSize( tTramHist, 0 ) );
   vec2 duv = fwidth( uv ) * hs;
   float stretch = min( max( duv.x, duv.y ), 1e3 );
+  float stretchL = mix( stretch, min( sqrt( duv.x * duv.y ), 1e3 ), glass );
   float pyPx = length( vec3( uTramVP[ 0 ][ 1 ], uTramVP[ 1 ][ 1 ], uTramVP[ 2 ][ 1 ] ) ) * 0.5 * hs.y;
   float lobe = cone * t * pyPx / w;
   a = 0.0;
@@ -188,18 +197,25 @@ vec3 tramStreetRefl( vec3 P, vec3 R, float cone, out float a ) {
   vec2 e = min( uv, 1.0 - uv );
   a = smoothstep( 0.0, 0.05, min( e.x, e.y ) ) * smoothstep( uTramGround - 30.0, uTramGround - 10.0, X.y );
   a *= 1.0 - smoothstep( 6.0, 24.0, stretch );
-  float l = clamp( log2( max( max( lobe, 0.6 * stretch ), 1.0 ) ), 0.0, uTramLv );
+  float l = clamp( log2( max( max( lobe, 0.6 * stretchL ), 1.0 ) ), 0.0, min( uTramLv, lmax ) );
   // (only where the reflection is sharp enough to show the misplaced occluder: a blurred one
   // averages it in with its surroundings anyway)
   if ( uTramZOn > 0.5 && X.y > uTramGround + 0.3 && l < 3.0 ) {
     float zh = textureLod( tTramZ, uv, 0.0 ).r;
-    a *= 1.0 - 0.65 * smoothstep( 0.8, 0.55, zh / w ) * ( 1.0 - smoothstep( 1.5, 3.0, l ) );
+    a *= 1.0 - mix( 0.65, 0.92, glass ) * smoothstep( 0.8, 0.55, zh / w ) * ( 1.0 - smoothstep( 1.5, 3.0, l ) );
   }
   if ( a <= 0.0 ) return vec3( 0.0 );
   float l0 = floor( l );
   vec3 h = mix( tramHistLevel( uv, l0 ), tramHistLevel( uv, min( l0 + 1.0, uTramLv ) ), l - l0 );
   return min( h, vec3( 64.0 ) );
 }
+vec3 tramStreetRefl( vec3 P, vec3 R, float cone, out float a ) { return tramStreetReflL( P, R, cone, 8.0, 0.0, a ); }
+vec3 tramGlassRefl( vec3 P, vec3 R, out float a ) { return tramStreetReflL( P, R, TRAM_GLASS_CONE, 1.5, 1.0, a ); }
+// the environment mirrored in smooth glass: as sharp as the glass (rough0), blurred only over the
+// pixel's footprint in reflected direction (a curved pane sweeps the reflection fast across the
+// image: sampled sharp there, the coarse canyon of the environment broke into jagged steps)
+float tramGlassRough( vec3 R, float rough0 ) { return clamp( 0.55 * length( fwidth( R ) ), rough0, 0.5 ); }
+vec3 tramGlassEnv( vec3 R, float rough0 ) { return tramEnvR( R, tramGlassRough( R, rough0 ) ); }
 vec3 tramWorldPos() { return cameraPosition + ( vec4( - vViewPosition, 0.0 ) * viewMatrix ).xyz; }
 // The cab tram itself is never drawn, so neither last frame's image nor the environment holds
 // it: where a reflected ray meets it (three boxes, one per body: x across, y up from the rail,
@@ -721,8 +737,9 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
 	material.specularColor *= 1.4;
 	material.specularColorBlended = material.specularColor;`)
-      // the street, as last frame saw it, mirrored in the panes (the environment elsewhere,
-      // softened: its canyon is a coarse model; the cab tram where it stands beside them). Each
+      // the street, as last frame saw it, mirrored in the panes: smooth glass, a sharp mirror
+      // (the environment elsewhere, as sharp as the pixel footprint allows; the cab tram where it
+      // stands beside them), weak head-on and strong at grazing angles (Fresnel). Each
       // pane sits a little differently in its frame (uv.y: the pane, trams/model.js), so the
       // mirrored lines step at the pillars, and bends very gently along it. The inner face of a
       // pane mirrors the dimmer saloon.
@@ -735,8 +752,8 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, tramNr ), viewMatrix );
 		vec3 tramPw = tramWorldPos();
 		float tramA;
-		vec3 tramH = tramStreetRefl( tramPw, tramR, TRAM_GLASS_CONE, tramA );
-		radiance = mix( tramTone( tramEnvR( tramR, 0.12 ), tramR.y ), tramH, tramA );
+		vec3 tramH = tramGlassRefl( tramPw, tramR, tramA );
+		radiance = mix( tramTone( tramGlassEnv( tramR, TRAM_GLASS_ROUGH ), tramR.y ), tramH, tramA );
 		vec3 tramCabC = tramCabRefl( tramPw, tramR, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
 		radiance = mix( radiance, tramCabC, tramA );
 		if ( ! gl_FrontFacing ) radiance *= 0.3;
@@ -768,7 +785,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
     // (see-through: the transmission goes out as alpha, see the blend factors above)
     if (see) sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', '#include <opaque_fragment>\n\tgl_FragColor.a = tramAlpha;');
   };
-  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v3' : 'trams.glass.v15');
+  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v4' : 'trams.glass.v16');
   return m;
 }
 
@@ -931,7 +948,7 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 	vTramP = transformed;
 	vTramE = ( cameraPosition - modelMatrix[ 3 ].xyz ) * mat3( modelMatrix ) - transformed;`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\n${WS_GLSL}`)
+      .replace('#include <common>', `#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\n#define TRAM_WS_F0 vec3( 0.088, 0.096, 0.108 )\n${WS_GLSL}`)
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}\n${CAB_GLSL}\n${DISP_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	float tramD = tramWsDist( vTramUv );
@@ -947,22 +964,27 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 	roughnessFactor = mix( roughnessFactor, 0.3, tramTrim );`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
 	metalnessFactor = mix( metalnessFactor, 0.7, tramTrim );`)
-      // reflection: the windscreen is coated laminated glass whose faces and solar-control
-      // film reflect about a fifth of the light (a little blue), the mask only with its outer
-      // face (the black backing behind it); the Fresnel rise to grazing stays physical
+      // reflection: the windscreen is laminated glass, two faces and a thin solar-control film
+      // (a little blue): about a tenth of the light head-on, so the dark cab and the driver show
+      // through where it mirrors the street, and the Fresnel rise to grazing (the lighting's
+      // own, physical) brings the mirror up towards the edges; the mask reflects only with its
+      // outer face (the black backing behind it)
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
-	material.specularColor = mix( material.specularColor * mix( 1.2, 1.0, tramTrim ), vec3( 0.24, 0.275, 0.31 ), tramWs );
+	material.specularColor = mix( material.specularColor * mix( 1.2, 1.0, tramTrim ), TRAM_WS_F0, tramWs );
 	material.specularColorBlended = mix( material.specularColor, diffuseColor.rgb, metalnessFactor );`)
       // the street mirrored in the glass: last frame's image where it can, else the
-      // environment with its bare street toned down (softened: its canyon is a coarse model,
-      // which the curved cheeks would otherwise mirror as jagged steps)
+      // environment with its bare street toned down. The windscreen is smooth glass: both sharp
+      // (the unblurred image, the environment blurred only over the pixel footprint where the
+      // screen curves round the corners). The mask and trim stay softened: the coarse canyon of
+      // the environment would show in the curved cheeks as jagged steps.
       .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
 	{
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
 		float tramA;
 		vec3 tramPw = tramWorldPos();
-		vec3 tramH = tramStreetRefl( tramPw, tramR, mix( TRAM_GLASS_CONE, 1.8 * pow2( material.roughness ), tramTrim ), tramA );
-		radiance = mix( tramTone( tramEnvR( tramR, max( material.roughness, 0.16 ) ), tramR.y + 0.05 ), tramH, tramA );
+		vec3 tramH = tramStreetReflL( tramPw, tramR, mix( TRAM_GLASS_CONE, 1.8 * pow2( material.roughness ), tramTrim ), mix( 8.0, 1.5, tramWs ), tramWs, tramA );
+		float tramRe = mix( max( material.roughness, 0.16 ), tramGlassRough( tramR, TRAM_GLASS_ROUGH ), tramWs );
+		radiance = mix( tramTone( tramEnvR( tramR, tramRe ), tramR.y + 0.05 ), tramH, tramA );
 		vec3 tramCabC = tramCabRefl( tramPw, tramR, ( irradiance + iblIrradiance ) * RECIPROCAL_PI, tramA );
 		radiance = mix( radiance, tramCabC, tramA );
 	}`)
@@ -976,7 +998,8 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 		vec3 tramE = ( irradiance + iblIrradiance + 0.25 * tramEdir ) * ( 0.6 * RECIPROCAL_PI ) + vec3( 0.75, 0.85, 1.0 ) * ( uTramNight * uTramGain * 0.00003 );
 		vec3 tramL = tramCab( vTramP, normalize( - vTramE ), tramRdW, tramFoot, tramE );
 		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
-		float tramF = 0.27 + 0.73 * pow( 1.0 - tramNV, 5.0 );
+		float tramF = dot( TRAM_WS_F0, vec3( 0.2126, 0.7152, 0.0722 ) );
+		tramF += ( 1.0 - tramF ) * pow( 1.0 - tramNV, 5.0 );
 		vec3 tramT = vec3( 0.52, 0.69, 0.82 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
 		// the destination display just behind the glass (its LEDs and its black board)
 		float tramDc;
@@ -985,7 +1008,7 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 		totalEmissiveRadiance += tramWs * tramL * tramT * ( 1.0 - tramF );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.front.v8';
+  m.customProgramCacheKey = () => 'trams.front.v9';
   return m;
 }
 

@@ -18,8 +18,15 @@ import { MORTAR_ALBEDO } from './constants.js';
 export const SHEEN = {
   uStSheen: { value: new THREE.Vector2(0.7, 1.45) },
   // The film of dust over the steel (brake dust, grit and paving dust worked into it by
-  // the wheels): rgb = its albedo (linear), w = the share of the steel it covers.
+  // the wheels): rgb = its albedo (linear; street.js sets it from the setts' published
+  // albedo, see dustOf), w = the share of the running band it covers.
   uStDust: { value: new THREE.Vector4(0.15, 0.145, 0.14, 0.3) },
+  // The share of the dust film on the steel the wheels never touch (the oxidised
+  // shoulders, the field bevel and gauge corner, the guard lip): the paving's dust settles
+  // and stays there, so off the polished band the head and lip read as the grey of the
+  // setts round them, as in the photographs (with the bare oxide's warm colour and its
+  // metal sheen, lit by the sun, they read as tan bands either side of the band).
+  uStDustOff: { value: 0.62 },
   // Direct-light specular of the steel relative to an isotropic lobe of the same mean
   // roughness. The lengthwise polish is smooth along the rail and rough across it, so a
   // light source reaches the eye only from near the cone of reflections round the rail
@@ -41,6 +48,17 @@ export const RAIL_HEAD_ENV = 0.55;
  *  0.57 (the bake's mean) x 0.55 = about 0.3. The far-field line overlay (lines.js)
  *  applies the same factor. */
 export const RAIL_BAND_ROUGH = 0.55;
+
+/** The steel's dust film albedo (linear) from the setts' (constants.js pavingTones
+ *  `albedo`): fine granite dust is the stone's grey, half its cool cast, a shade paler
+ *  than the setts' worn faces. */
+export function dustOf(a) {
+  const l = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+  return a.map((x) => 0.97 * (x + 0.55 * (l - x)));
+}
+/** The dust share at rail.head metalness m: uStDust.w on the polished band (metal 1),
+ *  uStDustOff on the oxidised steel round it (metal 0.4-0.6). Mirrors the GLSL below. */
+export const DUST_BAND_M = [0.8, 0.97];
 
 const NOISE = /* glsl */`
 float stHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
@@ -97,15 +115,17 @@ export function patchRailSheen(m, mode = 'uv') {
     sh.uniforms.uStSheen = SHEEN.uStSheen;
     sh.uniforms.uStDust = SHEEN.uStDust;
     sh.uniforms.uStDirK = SHEEN.uStDirK;
+    sh.uniforms.uStDustOff = SHEEN.uStDustOff;
     let along;
     if (mode === 'uv') {
-      // the dust film (see SHEEN.uStDust): a dull dielectric over part of the steel; the
+      // the dust film (see SHEEN.uStDust, uStDustOff): a dull dielectric over part of the
+      // steel, thin on the polished band, heavy on the oxidised steel round it; the
       // steel's direct-light lobe (SHEEN.uStDirK). (The line overlay folds both into its
       // own per-band sums, lines.js.)
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
 {
-  float stDc = uStDust.w * material.metalness;
+  float stDc = mix( uStDustOff, uStDust.w, smoothstep( ${DUST_BAND_M[0].toFixed(2)}, ${DUST_BAND_M[1].toFixed(2)}, material.metalness ) );
   vec3 stDa = uStDust.rgb;
   #if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )
     stDa *= vColor.g;      // cavity AO of the swept profile
@@ -136,10 +156,10 @@ export function patchRailSheen(m, mode = 'uv') {
   float stOk = 1.0;`;
     }
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;\nuniform vec4 uStDust;\nuniform float uStDirK;')
+      .replace('#include <common>', '#include <common>\nuniform vec2 uStSheen;\nuniform vec4 uStDust;\nuniform float uStDustOff;\nuniform float uStDirK;')
       .replace('#include <lights_fragment_maps>', SHEEN_APPLY(along));
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen4-${mode}`; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + `|stSheen5-${mode}`; };
   m.needsUpdate = true;
   return m;
 }

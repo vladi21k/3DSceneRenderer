@@ -15,7 +15,7 @@ export const RAIL_X0 = -HEAD_HALF - SEAL_W;              // -0.040 field-side pa
 export const RAIL_X1 = LIP_OUT + SEAL_W;                 // 0.095 gauge-side paving edge
 export const HEAD_DULL = -0.0270;                        // rusty field-side bevel ends here (< 2 mm)
 export const GROOVE_DEPTH = 0.0365;
-export const GROUT_W = 0.02;                             // narrow mortar strip between the seal and the setts
+export const GROUT_W = 0.014;                            // narrow mortar strip between the seal and the setts
 
 // The four running rails of the two main tracks: centre line d and gauge direction g.
 export const MAIN_RAILS = [];
@@ -95,20 +95,20 @@ export const RAIL_PROFILE = [
 ];
 
 // Effective albedo of the seal and of the mortar bed (linear). In the photographs each
-// rail is flanked by a narrow grey strip a little darker than the paving (an elastomer
-// seal against the steel, then the cement bed), never a black bitumen line or a warm
-// band: the mortar is about 0.8x the setts (paving.street ~0.165) in their own cool grey,
-// half neutralised (under the warm sun a plainly neutral albedo read tan beside the cool
-// granite), before its dirt; the seal is drawn with the mortar material at SEAL_TONE of
-// its colour (~0.11). Together about 32 mm each side of the rail. (Follows the setts'
-// published albedo: see pavingTones.)
-const MORTAR_K = 0.8, MORTAR_GREY = 0.4;
+// rail is flanked by a narrow grey strip close to the paving's tone, a shade darker (an
+// elastomer seal against the steel, then the cement bed), never a black bitumen line or a
+// warm band, and barely set apart from the setts: the mortar is about 0.92x the setts
+// (paving.street ~0.165) in their own cool grey, half neutralised (under the warm sun a
+// plainly neutral albedo read tan beside the cool granite), before its dirt; the seal is
+// drawn with the mortar material at SEAL_TONE of its colour (~0.13). Together about 26 mm
+// each side of the rail. (Follows the setts' published albedo: see pavingTones.)
+const MORTAR_K = 0.92, MORTAR_GREY = 0.4;
 const mortarOf = (a) => {
   const l = 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
   return a.map((x) => MORTAR_K * (x + MORTAR_GREY * (l - x)));
 };
 export const MORTAR_ALBEDO = mortarOf([0.157, 0.168, 0.192]);
-export const SEAL_TONE = 0.8;
+export const SEAL_TONE = 0.9;
 const PAVING_LUM = 0.165;    // mean luminance of the setts the street's own tones were set against
 
 /** The street's own tones that must follow the setts (paving.street's mean linear albedo,
