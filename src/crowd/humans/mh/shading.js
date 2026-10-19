@@ -129,7 +129,12 @@ void hSkin(out vec3 P, out vec3 N) {
   // card (never from the cards' UVs, whose layout is mirrored on one side of the head); beard hairs
   // run down the face, tilting out as they grow
   vStrand = vec3(0.0);
-  if (aTex.z == 1.0 || aTex.z == 11.0) {
+  bool hCardV = aTex.z == 1.0 && (flags & 64) != 0;
+  if (hCardV) {
+    // strand cards (cast feature strandCards): the strand runs along the card's v (the fragment shader
+    // takes it from the uv derivatives); clump noise in card space (across: atlas u, along: v)
+    vHairQ = vec2(uv.x * 0.16 + aTex.y * 0.0137, uv.y * 0.3);
+  } else if (aTex.z == 1.0 || aTex.z == 11.0) {
     vec3 hc = hLook(row, 24).xyz;
     float hk = hLook(row, 17).y / 1.76;
     vec3 dir = aTex.z == 1.0 ? position - (hc + vec3(0.0, 0.06 * hk, 0.012 * hk)) : vec3(0.0, -1.0, 0.0) + normalize(nrm) * shellH * 0.5;
@@ -141,7 +146,7 @@ void hSkin(out vec3 P, out vec3 N) {
     vec3 td = normalize(dir);
     vHairQ = vec2(dot(position, cross(nn, td)), dot(position, td));
   } else vHairQ = vec2(0.0);
-  if (aTex.z == 1.0) {
+  if (aTex.z == 1.0 && !hCardV) {
     // hair cards: each card is flat, so their normals facet the hair into planks; shade them mostly
     // with the head's round normal (from the head centre), on the card's own side
     vec3 rad = normalize(position - hLook(row, 24).xyz);
@@ -236,6 +241,8 @@ uniform float uEmissiveGain;
 uniform float uDecal;
 uniform float uBeardBase;
 uniform float uBrows;        // eyebrows drawn on the skin (look texels 26, 27) instead of the brow cards
+uniform float uTime;
+uniform float uHairDbg;
 varying vec2 vCastUv;
 flat varying vec4 vCastTex;
 flat varying float vRow;
@@ -263,6 +270,8 @@ float hH3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x 
 float hBump = 0.0;
 float hStrand = 1.0;
 float hEyeLid = 1.0;
+bool hCard = false;          // a strand card (hair region, flag 64)
+float hDirAO = 0.3;          // share of the baked occlusion on the direct light
 float hBrimBelow = -1.0;
 float hBrimOver = 0.0;
 // the brim's shadow for a light direction (view space): the brim overhangs this point by hBrimOver
@@ -325,14 +334,20 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   clump = mix(clump, 0.5, hFar * 0.5);
   clump = smoothstep(0.25, 0.75, clump);
   float sh = (j - 0.5) * 0.16;
+  // (strand cards: each card's highlight a little shifted, so the band breaks into locks at any distance)
+  float cardA = hCard ? 0.5 + 0.5 * cos(vDecal * 23.7) : 1.0;
+  if (hCard) sh += (vDecal - 0.5) * 0.22;
   vec3 t1 = normalize(T + N * (0.09 + sh)), t2 = normalize(T - N * (0.14 - sh));
   float th1 = dot(t1, H), th2 = dot(t2, H);
-  float e1 = mix(110.0, 36.0, hFar), e2 = mix(18.0, 8.0, hFar);
+  float e1 = hCard ? mix(180.0, 50.0, hFar) : mix(110.0, 36.0, hFar), e2 = mix(18.0, 8.0, hFar);
   float s1 = pow(sqrt(max(0.0, 1.0 - th1 * th1)), e1);
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.35);
   float br = mix(0.4 + 0.8 * j, 0.8, hFar);
-  return (0.026 * tint * s1 * br * (0.15 + 1.5 * clump) + hHairC * 0.3 * s2 * (0.35 + 0.9 * clump) * (0.7 + 0.5 * j)) * hAO * hStrand;
+  float k1 = hCard ? 0.016 * (0.35 + 0.9 * cardA) : 0.026;
+  // (the tinted lobe a little less saturated than the fibre colour: light leaving the strand is not only absorbed)
+  vec3 c2 = hCard ? mix(vec3(hLum(hHairC)), hHairC, 0.7) * 0.75 : hHairC;
+  return (k1 * tint * s1 * br * (0.15 + 1.5 * clump) + c2 * 0.3 * s2 * (0.35 + 0.9 * clump) * (0.7 + 0.5 * j)) * hAO * hStrand;
 }
 `;
 
@@ -367,7 +382,16 @@ const FRAG_SURFACE = /* glsl */`
     vec4 pa = hLook(row, 16), pb = hLook(row, 17);
     if (pa.w > 0.5 && (hRegion == 5 || pb.z > 0.5)) col = mix(col, pa.rgb * (0.6 + 0.4 * tx.g / max(1e-3, hLum(tx.rgb))), hPattern(pa.w, vRest, pb.x * pb.y / 1.76, pb.w));
   }
-  if (hRegion == 1) {
+  hCard = hRegion == 1 && (hFlags & 64) != 0;
+  if (hCard) {
+    // strand cards: darker at the roots (the volume's shade), the tips a touch lighter; every card its
+    // own shade and warmth (tex.y: a random value per card)
+    float tt = clamp((0.995 - vCastUv.y) / 0.99, 0.0, 1.0);
+    float rnd = vDecal;
+    col *= mix(0.62, 1.0, smoothstep(0.0, 0.3, tt)) * (1.0 + 0.1 * smoothstep(0.55, 1.0, tt));
+    col *= (0.86 + 0.28 * rnd) * mix(vec3(1.0), vec3(1.05, 1.0, 0.93), fract(rnd * 7.31) * 0.7);
+    hDirAO = 0.6;
+  } else if (hRegion == 1) {
     // hair: strand clumps (rest space: ~1 mm across, 3 cm along the strands) vary a little in shade;
     // averaged out where they get near a pixel
     vec2 cp = vHairQ * vec2(900.0, 33.0);
@@ -388,7 +412,7 @@ const FRAG_SURFACE = /* glsl */`
     a = tx.a * (1.0 + max(lod, 0.0) * 0.22);
     // lashes: a soft dark line along the lid, not eyeliner (lighter still for men and children)
     if (hRegion == 3) a *= 0.5 * (1.0 - 0.6 * hLook(row, 3).w);
-    if (hRegion == 1 && uDecal > 0.5 && vDecal < 0.999) {
+    if (hRegion == 1 && uDecal > 0.5 && vDecal < 0.999 && !hCard) {
       // trimmed strand ends: the fade breaks into strands of uneven length (columns across the strands)
       float sn = hH3(vec3(floor(vHairQ.x * 750.0), vCastTex.x, 3.0));
       sn = mix(sn, 0.5, smoothstep(0.5, 1.5, fwidth(vHairQ.x * 750.0)));
@@ -469,10 +493,13 @@ const FRAG_SURFACE = /* glsl */`
       }
     }
     // (a beard's volume and lashes fade out softly: dithered coverage instead of a sharpened edge)
-    bool soft = uDecal > 0.5 && (hRegion == 11 || hRegion == 3);
+    bool soft = uDecal > 0.5 && (hRegion == 11 || hRegion == 3) || hCard;
     if (!soft) a = clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0);
+    // (strand cards: crisp strands up close, their mip-averaged coverage further away, dithered over the
+    // frames so the temporal resolve smooths it)
+    if (hCard) a = mix(clamp((a - 0.5) / max(fwidth(a), 1e-4) + 0.5, 0.0, 1.0), clamp(a, 0.0, 1.0), smoothstep(0.0, 2.0, lod));
     if (uA2C > 0.5) {
-      float dth = soft ? fract(dot(floor(gl_FragCoord.xy), vec2(0.7548777, 0.5698403))) : 0.5;
+      float dth = soft ? fract(dot(floor(gl_FragCoord.xy), vec2(0.7548777, 0.5698403)) + (hCard ? floor(uTime * 60.0) * 0.618034 : 0.0)) : 0.5;
       a = floor(a * uA2C + dth) / uA2C;
       if (a <= 0.0) discard;
     } else {
@@ -645,7 +672,7 @@ const FRAG_SURFACE = /* glsl */`
     hHairM = hRegion == 1 ? 1.0 : 0.6;
     hHairC = diffuseColor.rgb;
     // highlights only on the strands the texture draws (the gaps between them stay dull)
-    hStrand = bBase ? 0.8 : clamp(hLum(tx.rgb) * 1.8, 0.15, 1.0);
+    hStrand = bBase ? 0.8 : hCard ? clamp(hLum(tx.rgb) * 2.0, 0.3, 1.4) : clamp(hLum(tx.rgb) * 1.8, 0.15, 1.0);
     hFar = bBase ? smoothstep(0.3, 2.0, length(fwidth(vRest)) * 1000.0) : smoothstep(0.5, 3.5, lod);
   }
   // cloth sheen: fibres catch light at grazing angles (dark cloth reads as cloth, not plastic); not
@@ -754,6 +781,8 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
     uDecal: { value: v2 ? 1 : 0 },
     uBeardBase: { value: opts.beardBase ? 1 : 0 },
     uBrows: { value: opts.brows ? 1 : 0 },
+    uTime: U.uTime || { value: 0 },
+    uHairDbg: { value: opts.hairDbg || 0 },
     uNight: U.uNight || { value: 0 },
     uEmissiveGain: (materials && materials.uniforms && materials.uniforms.emissiveGain) || { value: 1 },
   };
@@ -777,7 +806,8 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
     fs = fs.replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
       material.specularColor *= hSpec;
       material.specularColorBlended *= hSpec;
-      material.specularF90 = mix(1.0, 0.6, hHairM);
+      // (fibres: no glassy Fresnel sheen at grazing angles; their highlight is the strand lobes)
+      material.specularF90 = hCard ? 0.04 : hRegion == 1 ? 0.2 : mix(1.0, 0.6, hHairM);
       #ifdef USE_SHEEN
         material.sheenColor = hSheen * hSilh * mix(diffuseColor.rgb, vec3(1.0), 0.35) * 0.18;
         material.sheenRoughness = 0.65;
@@ -798,13 +828,17 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
 #if HUMANS_V2
         irradiance *= 1.0 - hBrimShadow( directLight.direction );
 #endif
-        if ( hHairM > 0.0 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;`));
+        if ( hHairM > 0.0 && mod(uHairDbg, 2.0) < 0.5 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;`));
     }
     fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>
       reflectedLight.indirectDiffuse *= hAO;
       // (the eyes' wet surface mirrors the sky even in the lid's shade: the catch light)
       reflectedLight.indirectSpecular *= hRegion == 4 ? mix( 1.0, hAO, 0.25 ) * ( 1.0 - 0.6 * hEyeLid ) : hAO * mix( 1.0, 0.35, hHairM );
-      reflectedLight.directDiffuse *= mix( 1.0, hAO, 0.3 );
+      reflectedLight.directDiffuse *= mix( 1.0, hAO, hDirAO );
+      // (strand cards: the env map's broad sheen on hair reads as plastic; the strands' own sky highlight
+      // below stands in for it)
+      if ( hCard ) reflectedLight.indirectSpecular *= mod(floor(uHairDbg / 4.0), 2.0) > 0.5 ? 0.0 : 0.2;
+      if ( hCard && mod(floor(uHairDbg / 8.0), 2.0) > 0.5 ) { reflectedLight.directDiffuse *= 0.0; reflectedLight.indirectDiffuse *= 0.0; }
       #if HUMANS_V2 && defined( RE_IndirectSpecular )
       if ( hRegion == 4 ) {
         // a catch light: the bright sky above and behind the viewer mirrored in the cornea
@@ -815,15 +849,15 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
       }
       #endif
       #if defined( RE_IndirectSpecular )
-      if ( hHairM > 0.0 ) {
+      if ( hHairM > 0.0 && mod(floor(uHairDbg / 2.0), 2.0) < 0.5 ) {
         // the sky's sheen along the strands: hair in the shade keeps a soft highlight band
         vec3 upS = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
-        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * 0.12;
+        reflectedLight.indirectSpecular += hHairM * hHairSpec( upS, geometryViewDir, geometryNormal, hHairT ) * iblIrradiance * ( hCard ? 0.035 : 0.12 );
       }
       #endif`);
     shader.fragmentShader = fs;
   };
-  mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + 'r3-' + (debugView | 0);
+  mat.customProgramCacheKey = () => 'humans-mh-v' + (v2 ? 2 : 1) + 'r4-' + (debugView | 0);
 
   const depth = new THREE.MeshDepthMaterial();
   depth.name = 'humans.figures.depth';

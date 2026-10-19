@@ -260,6 +260,76 @@ def hair_detail(path, size):
     return np.stack([g, g, g, a2], -1)
 
 
+# strand atlas columns (mh_hair.py LAYERS picks them): 0-1 dense inner locks (an opaque core: no scalp shows
+# through), 2-5 strand clumps (locks that part towards their tips), 6 sparse flyaway wisps, 7 short bristle
+STRAND_KINDS = ['dense', 'dense', 'clump', 'clump', 'clump', 'clump', 'sparse', 'bristle']
+
+
+def strand_layer(size, seed=29):
+    """Strand atlas: STRAND_KINDS columns of size / 8 px, root at row 0 (uv v = 1), tip at the bottom row.
+    Each column is drawn strand by strand (anti-aliased curves 1-2.4 px wide, front to back), every strand
+    with its own start, length, waviness, opacity and shade; strands converge into a few clumps towards
+    their tips and thin out there. Colour = luminance detail around 0.5 (tinted at runtime), alpha = coverage."""
+    rng = np.random.default_rng(seed)
+    ncol = len(STRAND_KINDS)
+    cw = size // ncol
+    H = size
+    lum = np.zeros((H, size), np.float32)
+    alpha = np.zeros((H, size), np.float32)
+    rows = np.arange(H, dtype=np.float32)
+    t = rows / (H - 1)
+    xs = np.arange(cw, dtype=np.float32) + 0.5
+    for c, kind in enumerate(STRAND_KINDS):
+        A = np.zeros((H, cw), np.float32)       # coverage so far (front to back)
+        Cc = np.zeros((H, cw), np.float32)      # premultiplied shade
+        P = dict(dense=(170, 0.30, 5, 0.85, 0.55), clump=(95, 0.22, 3, 0.65, 0.65), sparse=(16, 0.25, 2, 0.5, 0.45),
+                 bristle=(120, 0.3, 6, 0.3, 0.6))[kind]
+        n, sig, nclump, t_lo, conv = P
+        centres = rng.uniform(-0.3, 0.3, nclump)
+        for k in range(n):
+            ci = rng.integers(nclump)
+            x0 = float(np.clip(rng.normal(0, sig), -0.46, 0.46))
+            t0 = rng.uniform(0.0, 0.12 if kind != 'sparse' else 0.2)
+            t1 = rng.uniform(t_lo, 1.0) if kind != 'bristle' else rng.uniform(0.25, 0.6)
+            amp = rng.uniform(0.004, 0.025) * (2.0 if kind == 'sparse' else 1.0)
+            fr = rng.uniform(1.5, 4.5)
+            ph = rng.uniform(0, 1)
+            wpx = rng.uniform(1.0, 2.2)
+            op = rng.uniform(0.55, 1.0) if kind != 'sparse' else rng.uniform(0.5, 0.85)
+            br = float(np.clip(rng.normal(1.0, 0.16), 0.55, 1.5))
+            if rng.random() < 0.06:
+                br *= rng.uniform(1.25, 1.5)       # (a few stray light strands)
+            # centre line (column-width units): converges towards the clump centre near the tip, waves a little
+            cs = np.clip((t - 0.25) / 0.75, 0, 1)
+            xc = x0 + (centres[ci] * (0.8 if kind != 'dense' else 0.5) - x0) * conv * cs * cs * (3 - 2 * cs) + amp * np.sin(2 * np.pi * (t * fr + ph))
+            xc_px = (0.5 + xc) * cw
+            inside = (t >= t0) & (t <= t1)
+            u = np.clip((t - t0) / max(t1 - t0, 1e-3), 0, 1)
+            # (tapers to a point over the last quarter of its length; fades in at its root)
+            taper = np.clip((1 - u) / 0.25, 0, 1) ** 0.7 * np.clip(u / 0.08, 0, 1)
+            hw = 0.5 * wpx * (0.35 + 0.65 * taper)
+            cov = np.clip(hw[:, None] + 0.5 - np.abs(xs[None, :] - xc_px[:, None]), 0, 1) * (op * taper * inside)[:, None]
+            # front to back: what is already there hides the strand behind it
+            vis = cov * (1 - A)
+            Cc += vis * br
+            A += vis
+        if kind == 'dense':
+            # the inner layer's core: an even mat of fibres under the strands (scalp never shows through)
+            prof = np.exp(-((xs - cw / 2) / (cw * 0.3)) ** 2)[None, :]
+            tt = np.clip((t - 0.04) / 0.1, 0, 1) * np.clip((0.92 - t) / 0.25, 0, 1)
+            core = 0.8 * prof * tt[:, None]
+            vis = core * (1 - A)
+            Cc += vis * 0.85
+            A += vis
+        lum[:, c * cw:(c + 1) * cw] = Cc / np.maximum(A, 1e-4)
+        alpha[:, c * cw:(c + 1) * cw] = np.clip(A, 0, 1)
+    detail = np.where(alpha > 1e-3, lum, 1.0)
+    v = np.clip(0.5 * detail, 0, 1)
+    v = push_pull(v[..., None], alpha > 0.05)[..., 0]
+    g = lin_to_srgb(v)
+    return np.stack([g, g, g, alpha], -1)
+
+
 def beard_tile(size, style, seed=11):
     """Beard shell: v = how deep inside the beard (row 0 = v 1). Coverage rises smoothly with v (the
     shader breaks it into strand clumps); the colour carries fine strands along the growth direction."""
@@ -295,6 +365,11 @@ def main():
             idx = z[p['key'] + '_idx']
             reg = z[p['key'] + '_reg']
             uvtris.setdefault(key, []).append((uv[idx], reg[idx[:, 0]]))
+        # strand-card hair (mh_hair.py) and its tails
+        cj = os.path.join(RAW, cid + '.cards.json')
+        if os.path.exists(cj) and not os.environ.get('MH_NO_CARDS'):
+            for p in json.load(open(cj)).get('parts', []):
+                uvtris.setdefault(p['tex'], [])
     keys = sorted(uvtris)
     log('texture keys:', len(keys))
 
@@ -341,6 +416,12 @@ def main():
         img = hair_detail(fs[0], S)
         li, ni = add_layer(img, dict(key=key, kind='hair', type='detail', rough=ROUGH['hair'], alpha=True))
         remap[key] = dict(layer=li, rect=[0, 0, 1, 1], normal=-1, type='detail', alpha=True)
+    # strand atlas for the strand-card hair: columns of strand clumps, root at the top row
+    for key in [k for k in keys if k.startswith('strands:')]:
+        img = strand_layer(S)
+        li, ni = add_layer(img, dict(key=key, kind='hair', type='detail', rough=ROUGH['hair'], alpha=True))
+        remap[key] = dict(layer=li, rect=[0, 0, 1, 1], normal=-1, type='detail', alpha=True)
+        log('strand atlas', key)
     # misc atlas layers: cells of 512 (shoes, hat, beard) and 256 (brows, lashes, eyes)
     # (beard shells, 'beard:shell', are procedural at runtime: uv = (beard length, growth density), no texture)
     for key in [k for k in keys if k == 'beard:shell']:

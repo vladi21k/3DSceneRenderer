@@ -227,7 +227,7 @@ const humans = {
     app.scene.add(this.group);
     const { mat, depth, uniforms } = makeFigureMaterials({ bones: this.boneTex, look: this.lookTex, albedo: cast.albedo, normal: cast.normal },
       cast.layerRough, app.materials, app.params.num('humans_dbg', 0), this.v2,
-      { beardBase: this.beardBase, brows: this.browsOnSkin && cast.chars.some((c) => c.brow) });
+      { beardBase: this.beardBase, brows: this.browsOnSkin && cast.chars.some((c) => c.brow), hairDbg: app.params.num('humans_hdbg', 0) });
     app.materials.register('humans.figures', mat);
     app.materials.track(mat);
     this.uniforms = uniforms;

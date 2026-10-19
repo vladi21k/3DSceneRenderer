@@ -1,5 +1,5 @@
 import { RNG } from '../../core/rng.js';
-import { MAIN_RAILS, BAND_IN, CORRIDOR, GUTTER_W, GUTTER_OUT, GROUT_W, TRACK_OFFSET } from './constants.js';
+import { MAIN_RAILS, BAND_IN, GUTTER_OUT, GROUT_W, TRACK_OFFSET } from './constants.js';
 
 // Wear of the street as it is placed on the paving (planned per chunk with the details,
 // deterministically from the chunk index; the paving recipes carry the stone's own
@@ -53,7 +53,7 @@ export const STEP_NONE = 0, STEP_WALK_U = 1, STEP_WALK_X = 2, STEP_STREET_U = 3;
  * and grates; blocked(s, d, r): the details' free-space test.
  */
 export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
-  const { layout, route, surface } = ctx;
+  const { layout, surface } = ctx;
   const delta = ctx.delta, kP = surface.kP;
   const rng = RNG.from(layout.seed, 'street-wear', ci);
   const inside = (s, r) => s - r > s0 + 0.3 && s + r < s1 - 0.3;
@@ -310,4 +310,3 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
 // cover sizes [across u, across v] (m), as details.js lays them out
 const SIZE = { manhole: [0.8, 0.8], gully: [0.62, 0.31], drain: [1.0, 0.5], plate: [0.6, 0.6], plate2: [1.0, 0.5], valve: [0.32, 0.32] };
 
-export { CORRIDOR, GUTTER_W };

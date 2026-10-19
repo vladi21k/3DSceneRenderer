@@ -50,13 +50,13 @@ HEAD, NECK = 5, 4
 #   thick  hair volume thickness under the envelope's outer surface, width = card width scale
 #   fwd    forward sweep of the front hair (fringe), side = sideways sweep of the front hair
 STYLE = {
-    'short01': dict(flow='crown', crown=(0.01, 0.075, 0.05), grav=0.10, len=(0.045, 0.075), thick=0.022, width=0.85, fwd=0.5, side=0.35),
-    'short02': dict(flow='crown', crown=(-0.01, 0.07, 0.055), grav=0.12, len=(0.05, 0.085), thick=0.024, width=0.9, fwd=0.6, side=-0.3),
-    'short03': dict(flow='crown', crown=(0.0, 0.075, 0.05), grav=0.14, len=(0.06, 0.10), thick=0.028, width=0.95, fwd=0.7, side=0.45),
-    'short04': dict(flow='crown', crown=(0.0, 0.08, 0.045), grav=0.06, len=(0.03, 0.055), thick=0.016, width=0.75, fwd=0.35, side=0.2),
+    'short01': dict(flow='crown', crown=(0.01, 0.075, 0.05), grav=0.10, len=(0.045, 0.075), thick=0.022, width=0.7, fwd=0.15, side=0.5, twist=0.4, brow=0.058),
+    'short02': dict(flow='crown', crown=(-0.01, 0.07, 0.055), grav=0.12, len=(0.05, 0.085), thick=0.024, width=0.72, fwd=0.15, side=-0.6, twist=0.4, brow=0.055),
+    'short03': dict(flow='crown', crown=(0.0, 0.075, 0.05), grav=0.14, len=(0.06, 0.10), thick=0.028, width=0.8, fwd=0.3, side=0.6, twist=0.5, brow=0.05),
+    'short04': dict(flow='crown', crown=(0.0, 0.08, 0.045), grav=0.06, len=(0.03, 0.055), thick=0.016, width=0.65, fwd=0.1, side=0.3, twist=0.3, brow=0.065),
     'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6),
     'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6),
-    'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.0, grav=0.75, len=(0.45, 0.75), thick=0.022, width=1.1, fwd=0.3, side=0.7),
+    'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, width=1.35, fwd=0.0, side=1.0),
     'ponytail01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.24), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'braid01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.26), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'afro01': None,
@@ -64,10 +64,10 @@ STYLE = {
 # layers: depth fraction under the outer surface (1 = the full thickness in, < 0 = outside), Poisson root
 # spacing (m), card width (m), strand-atlas columns, LOD 1 share
 LAYERS = [
-    dict(name='base', depth=0.9, r=0.0085, w=0.026, cols=(0, 1), lod1=1 / 3),
-    dict(name='mid', depth=0.5, r=0.0105, w=0.019, cols=(2, 3, 4, 5), lod1=1 / 3),
-    dict(name='outer', depth=0.12, r=0.0115, w=0.015, cols=(2, 3, 4, 5), lod1=1 / 4),
-    dict(name='fly', depth=-0.12, r=0.026, w=0.009, cols=(6,), lod1=0.0),
+    dict(name='base', depth=0.9, r=0.0125, w=0.026, cols=(0, 1), lod1=0.4),
+    dict(name='mid', depth=0.5, r=0.0155, w=0.02, cols=(2, 3, 4, 5), lod1=0.35),
+    dict(name='outer', depth=0.12, r=0.017, w=0.016, cols=(2, 3, 4, 5), lod1=0.3),
+    dict(name='fly', depth=-0.12, r=0.03, w=0.01, cols=(6,), lod1=0.0),
 ]
 STRAND_COLS = 8          # columns of the strand atlas layer
 CLEAR = 0.0018           # strands stay this far off the skin / cloth (m)
@@ -90,7 +90,11 @@ def parse(argv):
     p.add_argument('--one', default='')
     p.add_argument('--work', default=WORK)
     p.add_argument('--out', default=OUT)
+    p.add_argument('--debug', action='store_true', help='also write <id>.strands.npz (the strand polylines)')
     return p.parse_args(argv)
+
+
+DEBUG = [False]
 
 
 def run_driver(args):
@@ -101,7 +105,7 @@ def run_driver(args):
     chunks = [ids[k::n] for k in range(n)]
     procs = []
     for ch in chunks:
-        cmd = [bpy.app.binary_path, '-b', '-P', os.path.abspath(__file__), '--', '--one', ','.join(ch), '--work', WORK]
+        cmd = [bpy.app.binary_path, '-b', '-P', os.path.abspath(__file__), '--', '--one', ','.join(ch), '--work', WORK] + (['--debug'] if args.debug else [])
         lf = open(os.path.join(RAW, 'hair_%s.log' % ch[0]), 'w')
         procs.append((ch, subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT), lf))
     failed = []
@@ -156,15 +160,22 @@ def groom(cid):
         E = hc + np.array([0, 0.02, -0.07])
 
     # ---------------------------------------------------------------- collision surface: skin, garments, shoes, hat
-    cv, cf, cn = [], [], []
+    cv, cf, cn, chd = [], [], [], []
     off = 0
     for p in meta['parts']:
         if p['kind'] in ('body', 'suit', 'shoes', 'hat', 'eyes'):
             d = part(p)
             cv.append(d['co'].astype(np.float64)); cn.append(d['nr'].astype(np.float64))
             cf.append(d['idx'].astype(np.int64) + off)
+            # (the scalp: there the hair is measured from the skin out to the envelope; ears, face and neck
+            # are not scalp, the hair beside them follows the envelope's sheets)
+            if p['kind'] == 'body' and 'dec' in d:
+                cv_ = np.clip((128.0 - d['dec'].astype(np.float64)) / 127.0, 0, 1)
+                chd.append((d['w'][d['idx'], HEAD].mean(1) > 0.5) & (cv_[d['idx']].max(1) > 0.15))
+            else:
+                chd.append(np.zeros(len(d['idx']), bool))
             off += len(d['co'])
-    CV = np.concatenate(cv); CN = np.concatenate(cn); CF = np.concatenate(cf)
+    CV = np.concatenate(cv); CN = np.concatenate(cn); CF = np.concatenate(cf); CHEAD = np.concatenate(chd)
     col = BVHTree.FromPolygons([Vector(v) for v in CV], CF.tolist(), epsilon=0.0)
     hat = next((part(p) for p in meta['parts'] if p['kind'] == 'hat'), None)
     band = float(np.percentile(hat['co'][:, 1], 8)) - 0.004 if hat is not None else 1e9
@@ -203,14 +214,52 @@ def groom(cid):
         return n / max(1e-9, np.linalg.norm(n))
 
     def ground(p):
-        """Nearest collision point under p: (location, outward normal, height of p above it)."""
+        """Nearest collision point under p: (location, outward normal, height of p above it, on the head)."""
         loc, fn, ti, dist = col.find_nearest(Vector(p), 0.5)
         if loc is None:
             return None
         L = np.array(loc)
         n = smooth_normal(L, ti)
         h = float((np.asarray(p) - L) @ n)
-        return L, n, h
+        return L, n, h, bool(CHEAD[ti])
+
+    HN = hair['nr'].astype(np.float64)
+    # the proxy's own strand direction per envelope triangle: its texture's strands run along v, so dP/dv
+    # (oriented downwards) is how its sheets hang (used for hair below the scalp)
+    HUV = hair['uv'].astype(np.float64)
+    tp = HV[env_tris]
+    tu = HUV[env_tris]
+    e1, e2 = tp[:, 1] - tp[:, 0], tp[:, 2] - tp[:, 0]
+    du1, dv1 = tu[:, 1, 0] - tu[:, 0, 0], tu[:, 1, 1] - tu[:, 0, 1]
+    du2, dv2 = tu[:, 2, 0] - tu[:, 0, 0], tu[:, 2, 1] - tu[:, 0, 1]
+    det = du1 * dv2 - du2 * dv1
+    det = np.where(np.abs(det) < 1e-12, 1e-12, det)
+    BV = (e2 * du1[:, None] - e1 * du2[:, None]) / det[:, None]
+    BV /= np.maximum(1e-9, np.linalg.norm(BV, axis=1, keepdims=True))
+    BV = np.where((BV[:, 1] > 0)[:, None], -BV, BV)
+    ENV_DIR = BV
+
+    LASTENV = [0]
+
+    def envelope(p, reach=0.08):
+        """Nearest envelope point to p and the proxy's interpolated normal there, or None."""
+        loc, fn, ti, dist = env.find_nearest(Vector(p), reach)
+        if loc is None:
+            return None
+        Lq = np.array(loc)
+        LASTENV[0] = ti
+        a, b, c = env_tris[ti]
+        A_, B_, C_ = HV[a], HV[b], HV[c]
+        v0, v1, v2 = B_ - A_, C_ - A_, Lq - A_
+        d00, d01, d11, d20, d21 = v0 @ v0, v0 @ v1, v1 @ v1, v2 @ v0, v2 @ v1
+        den = d00 * d11 - d01 * d01
+        if abs(den) < 1e-18:
+            n = HN[a]
+        else:
+            vv = (d11 * d20 - d01 * d21) / den
+            ww = (d00 * d21 - d01 * d20) / den
+            n = HN[a] * (1 - vv - ww) + HN[b] * vv + HN[c] * ww
+        return Lq, n / max(1e-9, np.linalg.norm(n)), dist
 
     def outer(L, n, reach=0.15):
         """Height of the envelope's outermost surface above L along n, or None."""
@@ -234,7 +283,11 @@ def groom(cid):
     def flow(p, n):
         """Desired strand direction at p over a surface with normal n (unit, tangent to it)."""
         if S['flow'] == 'tie' and tie is not None:
-            v = tie - p
+            # (back over the top of the head to the tie: the front hair aims at the crown first)
+            w = float(np.clip((p[2] - (crown[2] - 0.05 * hk)) / (0.06 * hk), 0, 1))
+            a_ = crown + np.array([0.0, 0.01, 0.0]) * hk - p
+            b_ = tie - p
+            v = a_ / max(1e-6, np.linalg.norm(a_)) * (1 - w) + b_ / max(1e-6, np.linalg.norm(b_)) * w
         elif S['flow'] == 'part':
             lat = p[0] - part_x
             sgn = 1.0 if lat >= 0 else -1.0
@@ -247,7 +300,9 @@ def groom(cid):
         # front hair: swept forward and to the side (a fringe or a quiff lies over the forehead)
         fr = np.clip((front_z + 0.07 * hk - p[2]) / (0.05 * hk), 0.0, 1.0)
         if fr > 0 and S['flow'] != 'tie':
-            v = v + fr * np.array([S.get('side', 0.0), 0.0, -S.get('fwd', 0.0)])
+            # (parted styles sweep to either side of the parting, short ones all to one side)
+            side = S.get('side', 0.0) * (np.sign(p[0] - part_x) or 1.0 if S['flow'] == 'part' else 1.0)
+            v = v + fr * np.array([side, 0.0, -S.get('fwd', 0.0)])
         v = v - n * (v @ n)
         l = np.linalg.norm(v)
         return v / l if l > 1e-6 else np.array([0.0, -1.0, 0.0])
@@ -285,22 +340,40 @@ def groom(cid):
 
     # ---------------------------------------------------------------- growth
     def grow(root, n0, depth, Lmax, rs):
+        brow = (S.get('brow', 0.03) + rs.uniform(-0.004, 0.012)) * hk
         p = root + n0 * CLEAR
         d = flow(p, n0)
         pts = [p.copy()]
         nrm = [n0.copy()]
         hts = [CLEAR]
-        dep = [1.0]
+        dep = [0.02]          # depth under the envelope's outer surface (m)
         L = 0.0
         miss = 0
+        why = 'steps'
+        lastT = None
+        hang = False
         for step in range(400):
             h = 0.003 if L < 0.03 else 0.005 if L < 0.12 else 0.01
             g = ground(p)
             if g is None:
+                why = 'ground'
                 break
-            _, n, _ = g
+            _, n, _, _ = g
             want = flow(p, n)
             down = np.array([0.0, -1.0, 0.0])
+            if hang:
+                # hanging hair: down the envelope's sheet (behind the shoulders, beside the neck)
+                ee = envelope(p)
+                if ee is not None:
+                    w2 = ENV_DIR[LASTENV[0]] * 0.8 + down * 0.2
+                    w2 = w2 - ee[1] * (w2 @ ee[1])
+                    l2 = np.linalg.norm(w2)
+                    if l2 > 1e-6:
+                        want = 0.15 * want + 0.85 * w2 / l2
+            # (a strand that keeps circling in one spot ends there)
+            if len(pts) > 21 and np.linalg.norm(pts[-1] - pts[-21]) < 0.35 * 20 * h:
+                why = 'stall'
+                break
             # stiffness: a strand bends gradually; gravity grows along it (the root stands, the length hangs)
             gw = S['grav'] * min(1.0, L / (0.04 * hk) + 0.15)
             d = d * 0.55 + want * 0.45 + down * gw * 0.5
@@ -308,23 +381,67 @@ def groom(cid):
             q = p + d * h
             g2 = ground(q)
             if g2 is None:
+                why = 'ground'
                 break
-            L2, n2, hq = g2
-            T = outer(L2, n2)
-            if T is None or T < CLEAR:
-                miss += 1
-                if miss > 1 or L > 0.01:
+            L2, n2, hq, onhead = g2
+            # (below the ears the hair hangs: it follows the envelope's sheets from there on)
+            if q[1] < E[1] - 0.035 * hk:
+                onhead = False
+            T = outer(L2, n2) if onhead and not hang else None
+            if T is None and (not onhead or hang or L > 0.02 * hk):
+                # off the scalp: the strand follows the nearest sheet of the envelope at its layer's depth
+                # (under the sheet's outer side), and ends where it has passed the sheet's edge
+                hang = True
+                ee = envelope(q)
+                if ee is None:
+                    why = 'edge'
                     break
-                T = hq
+                qe, ne, de = ee
+                if ne @ n2 < 0:
+                    ne = -ne
+                off_ = q - qe
+                tang = off_ - ne * (off_ @ ne)
+                if np.linalg.norm(tang) > 0.004 * hk or de > 0.04 * hk:
+                    why = 'edge'
+                    break
+                dz = depth * S['thick'] * 0.6 * hk if depth >= 0 else depth * 0.03 * hk
+                tgt = qe - ne * dz
+                q = q + (tgt - q) * 0.35
+                g3 = ground(q)
+                if g3 is not None and g3[2] < CLEAR:
+                    q = q + g3[1] * (CLEAR - g3[2])
+                seg = q - p
+                sl = np.linalg.norm(seg)
+                if sl < 1e-5:
+                    why = 'stall'
+                    break
+                d = seg / sl
+                p = q
+                L += sl
+                pts.append(p.copy()); nrm.append(ne.copy()); hts.append(0.0); dep.append(max(0.0, dz))
+                if L >= Lmax:
+                    why = 'length'
+                    break
+                continue
+            if T is None or T < CLEAR:
+                # (gaps between the proxy's cards: a few steps on at the last height; past its edge, the end)
+                miss += 1
+                if miss > 3 or lastT is None:
+                    why = 'edge'
+                    break
+                T = lastT
             else:
                 miss = 0
+                lastT = T
             thick = min(max(T - CLEAR, 0.0), S['thick'] * hk)
             target = T - depth * thick if depth >= 0 else T - depth * 0.012 * hk
             target = max(CLEAR, target)
             # (the root rises to its layer over the first couple of centimetres)
             k = 0.35 if L > 0.01 else 0.2
-            hn = hq + (target - hq) * k
-            q = L2 + n2 * max(CLEAR, hn)
+            hn = max(CLEAR, hq + (target - hq) * k)
+            # (only the height is corrected, along the normal: the step's travel along the surface stays,
+            # so a strand never stalls in a hollow such as the nape)
+            q = q + n2 * (hn - hq)
             seg = q - p
             sl = np.linalg.norm(seg)
             if sl < 1e-5:
@@ -332,17 +449,30 @@ def groom(cid):
             d = seg / sl
             p = q
             L += sl
-            pts.append(p.copy()); nrm.append(n2.copy()); hts.append(hn); dep.append((T - hn) / max(thick, 0.004))
+            pts.append(p.copy()); nrm.append(n2.copy()); hts.append(hn); dep.append(max(0.0, T - hn))
             if L >= Lmax or p[1] > band:
+                why = 'length' if L >= Lmax else 'hat'
                 break
-            # in front of the eyes and brows: the strand ends above the brows
-            if p[1] < E[1] + 0.03 * hk and abs(p[0] - E[0]) < 0.068 * hk and p[2] < E[2] + 0.025 * hk:
+            # in front of the forehead: the strand ends at the style's fringe line (short cuts high on the
+            # forehead, bobs and long hair just above the brows)
+            if p[1] < E[1] + brow and abs(p[0] - E[0]) < 0.068 * hk and p[2] < E[2] + 0.025 * hk:
+                why = 'face'
                 break
             if tie is not None and np.linalg.norm(p - tie) < 0.012 * hk:
+                why = 'tie'
                 break
+        # (trailing steps past the envelope's edge are dropped)
+        if why == 'edge' and miss > 0:
+            k = len(pts) - miss
+            pts, nrm, hts, dep = pts[:max(2, k)], nrm[:max(2, k)], hts[:max(2, k)], dep[:max(2, k)]
+        WHY[why] = WHY.get(why, 0) + 1
+        LASTWHY[0] = why
         return np.array(pts), np.array(nrm), np.array(dep), L
 
     strands = []          # (layer index, points, normals, depth, length, random)
+    WHY = {}
+    LASTWHY = ['']
+    DBG = []
     for li, Ly in enumerate(LAYERS):
         rs = np.random.default_rng(zlib.crc32(f'{cid}:{Ly["name"]}'.encode()))
         chosen_kd = Grid(Ly['r'] * hk)
@@ -367,6 +497,9 @@ def groom(cid):
             chosen_kd.append(pts[i])
         for i in chosen:
             p = pts[i]
+            # (the dense inner layer stays off the hairline over the forehead: thin hair there)
+            if Ly['name'] == 'base' and p[2] < E[2] + 0.035 * hk and p[1] < E[1] + 0.1 * hk:
+                continue
             g = ground(p)
             if g is None:
                 continue
@@ -375,8 +508,10 @@ def groom(cid):
             if L < 0.012 * hk or len(sp) < 3:
                 continue
             strands.append((li, sp, sn, sd, L, float(rs.random())))
+            DBG.append((li, sp, LASTWHY[0]))
     log(cid, f'{style_name}: scalp {scalp_area * 1e4:.0f} cm2, {len(strands)} strands '
-             f'({", ".join(str(sum(1 for s in strands if s[0] == i)) for i in range(len(LAYERS)))}) in {time.time() - t0:.1f}s')
+             f'({", ".join(str(sum(1 for s in strands if s[0] == i)) for i in range(len(LAYERS)))}) in {time.time() - t0:.1f}s; '
+             f'ends {WHY}; length p50 {np.median([s[4] for s in strands]) * 100:.1f} p90 {np.percentile([s[4] for s in strands], 90) * 100:.1f} cm')
 
     # ---------------------------------------------------------------- cards
     HW = hair['w'].astype(np.float64)
@@ -408,19 +543,22 @@ def groom(cid):
         ts = np.linspace(0, 1, nseg + 1)
         P = np.stack([np.interp(ts * tot, acc, q[:, k]) for k in range(3)], 1)
         N = np.stack([np.interp(ts * tot, acc, sn[:, k]) for k in range(3)], 1)
-        D = np.interp(ts * tot, acc, np.clip(sd, -0.5, 1.5))
+        D = np.interp(ts * tot, acc, np.clip(sd, 0.0, 0.1))
         N /= np.maximum(1e-9, np.linalg.norm(N, axis=1, keepdims=True))
         T = np.gradient(P, axis=0)
         T /= np.maximum(1e-9, np.linalg.norm(T, axis=1, keepdims=True))
         B = np.cross(T, N)
         B /= np.maximum(1e-9, np.linalg.norm(B, axis=1, keepdims=True))
         # a little twist about the strand (cards are not all flat on the volume)
-        tw0, tw1 = rs.normal(0, 0.25), rs.normal(0, 0.35)
+        tw0, tw1 = rs.normal(0, 0.25) * S.get('twist', 1.0), rs.normal(0, 0.35) * S.get('twist', 1.0)
         ang = tw0 + tw1 * ts
         Nc = N * np.cos(ang)[:, None] - B * np.sin(ang)[:, None]
         Bc = np.cross(T, Nc)
         Bc /= np.maximum(1e-9, np.linalg.norm(Bc, axis=1, keepdims=True))
         w = Ly['w'] * hk * S['width'] * rs.uniform(0.8, 1.2) * (1.6 if lod == 1 else 1.0)
+        # (fine locks along the front hairline and the fringe)
+        if sp[0][2] < E[2] + 0.04 * hk:
+            w *= 0.65
         prof = (0.75 + 0.25 * np.sin(np.pi * np.clip(ts * 1.7, 0, 1))) * (1.0 - 0.45 * np.clip((ts - 0.55) / 0.45, 0, 1))
         half = 0.5 * w * prof
         V = np.concatenate([P - Bc * half[:, None], P + Bc * half[:, None]])
@@ -439,7 +577,7 @@ def groom(cid):
         v = 0.995 - 0.99 * ts
         UV = np.concatenate([np.stack([np.full_like(v, u0), v], 1), np.stack([np.full_like(v, u1), v], 1)])
         # occlusion: deeper in the volume and near the roots darker
-        ao_d = 1.0 - 0.55 * np.clip(D, 0, 1)
+        ao_d = 0.3 + 0.7 * np.exp(-D / 0.01)
         ao_r = 0.55 + 0.45 * np.clip(ts / 0.25, 0, 1)
         Wt, AOp = [], []
         for pnt in P:
@@ -505,6 +643,10 @@ def groom(cid):
         out[key + '_idx'] = remap[ti].astype(np.int32)
         out[key + '_reg'] = np.full(len(vs), CASTM.REGIONS['hair'], np.int16)
         parts.append(dict(key=key, kind='hairtail', tex=hair_parts[0]['tex'], verts=int(len(vs)), tris=int(len(ti))))
+    if DEBUG[0]:
+        np.savez_compressed(os.path.join(RAW, cid + '.strands.npz'), pts=np.concatenate([d[1] for d in DBG]),
+                            off=np.cumsum([0] + [len(d[1]) for d in DBG]), layer=np.array([d[0] for d in DBG]),
+                            why=np.array([d[2] for d in DBG]))
     np.savez_compressed(out_npz, **out)
     json.dump(dict(id=cid, style=style_name, cards=True, parts=parts, tie=tie.tolist() if tie is not None else None,
                    strands=len(strands)), open(out_json, 'w'), indent=1)
@@ -543,6 +685,7 @@ def tail_mask(np, HV, HI, hc, hk, head):
 
 if __name__ == '__main__':
     args = parse(script_args())
+    DEBUG[0] = args.debug
     if args.one:
         for cid in args.one.split(','):
             groom(cid)

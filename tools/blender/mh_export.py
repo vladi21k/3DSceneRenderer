@@ -35,7 +35,14 @@ BUDGET = {
     'brows': (None, None, 0, 0),
     'lashes': (None, 0, 0, 0),
     'beard': (None, 200, 70, 0),
+    # strand cards (mh_hair.py): their own sets for LOD 0 and LOD 1; the proxy hair then serves LOD 2 only,
+    # and a ponytail's or braid's tail stays the proxy's geometry at LOD 0-1
+    'cards0': (None, 0, 0, 0),
+    'cards1': (0, None, 0, 0),
+    'hairtail': (None, 900, 0, 0),
 }
+# the proxy hair of a character with strand cards
+HAIR_WITH_CARDS = (0, 0, 380, 0)
 # simplifier options per part kind: lock the open borders (hems, cuffs, the hair's strand tips), keep
 # small pieces (cards)
 LOCK_BORDER = ('suit', 'hat', 'beard')
@@ -54,9 +61,11 @@ SHRINK = (0.0, 0.0015, 0.009, 0.014)
 GROW = (0.0, 0.001, 0.007, 0.011)
 GD_RANGE = 0.045
 # (beards: the runtime grows shells from the base, drawn one-sided)
-DOUBLE = ('hair', 'lashes')
+DOUBLE = ('hair', 'lashes', 'cards0', 'cards1', 'hairtail')
+# (strand cards: the back face keeps the hair volume's normal, the volume is lit the same from either side)
+CARDS = ('cards0', 'cards1')
 SIZE_SCALE = {'toddler': 0.7, 'child': 0.85}
-FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT = 1, 2, 4, 8
+FLAG_ALPHA, FLAG_BACK, FLAG_DETAIL, FLAG_SKIRT, FLAG_CARD = 1, 2, 4, 8, 64
 ATTR_W = [0.35, 0.35, 0.35, 0.3, 0.3]     # simplifier weights: normal xyz, uv
 
 NODE_JS = r"""
@@ -161,11 +170,18 @@ def main():
     tex = json.load(open(TEXJ))
     remap = tex['remap']
     ids = [c for c in CASTM.CAST if os.path.exists(os.path.join(RAW, c + '.json'))]
+    any_cards = any(load_cards(c) for c in ids)
     chars = {}
     jobs = []
     for cid in ids:
         meta = json.load(open(os.path.join(RAW, cid + '.json')))
-        z = np.load(os.path.join(RAW, cid + '.npz'))
+        z = dict(np.load(os.path.join(RAW, cid + '.npz')))
+        # strand-card hair (mh_hair.py), when groomed: its parts join the character's
+        cards = load_cards(cid)
+        if cards:
+            cmeta, cz = cards
+            meta = dict(meta, parts=meta['parts'] + cmeta['parts'])
+            z.update(cz)
         sc = SIZE_SCALE.get(meta['ageClass'], 1.0)
         parts = []
         suit_tris = sum(p['tris'] for p in meta['parts'] if p['kind'] == 'suit')
@@ -191,6 +207,8 @@ def main():
                     d['idx'] = d['idx'][~(near & (tri_ao < 0.04))]
             d.update(p)
             bud = BUDGET[p['kind']]
+            if p['kind'] == 'hair' and cards and any(q['kind'] == 'cards0' for q in cards[0]['parts']):
+                bud = HAIR_WITH_CARDS
             if p['kind'] == 'suit':
                 f = p['tris'] / max(1, suit_tris)
                 bud = tuple(None if b is None else int(b * f) for b in bud)
@@ -215,7 +233,7 @@ def main():
                     f.write(dropv.tobytes())
             jobs.append(dict(id=jid, file=fn, n=int(len(d['co'])), t=int(len(d['idx'])), targets=d['targets'],
                              cards=p['kind'] in ('hair', 'beard', 'lashes', 'brows'), lockBorder=p['kind'] in LOCK_BORDER,
-                             cardError=list(CARD_ERROR) if p['kind'] in ('hair', 'beard') else None,
+                             cardError=list(CARD_ERROR) if p['kind'] in ('hair', 'beard', 'hairtail') else None,
                              loose=p['kind'] in ('shoes', 'eyes'), n1=int(len(idx1)) if idx1 is not None else 0,
                              dropFrom=2 if dropv is not None else 0))
         chars[cid] = (meta, parts)
@@ -281,7 +299,11 @@ def main():
                 # skin: no normal layer; the channel carries the skin decals instead (128 none, above: beard
                 # growth, below: hair-covered scalp)
                 ta[:, 1] = d['dec']
-            if d['kind'] == 'hair' and 'dec' in d:
+            if d['kind'] in CARDS:
+                # strand cards: flag 64; the channel carries a random value per card (shade, highlight)
+                ta[:, 3] |= FLAG_CARD
+                ta[:, 1] = d['dec']
+            elif d['kind'] in ('hair', 'hairtail') and 'dec' in d:
                 # hair: no normal layer; the channel carries the strand fade at cut ends (254 none)
                 ta[:, 1] = d['dec']
             r = res[f'{cid}_{d["key"]}']
@@ -323,7 +345,7 @@ def main():
                     lods[li].append(lodidx[li] + base_nv)
             if d['kind'] in DOUBLE:
                 # back faces: duplicated vertices with flipped normals, reversed winding
-                P.append(d['co']); N.append(-d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao'])
+                P.append(d['co']); N.append(d['nr'] if d['kind'] in CARDS else -d['nr']); UV.append(uv); W.append(d['w']); AO.append(d['ao'])
                 tb = ta.copy()
                 tb[:, 3] |= FLAG_BACK
                 TEXA.append(tb)
@@ -426,7 +448,9 @@ def main():
         # innerHem: flag 2 on a garment region = inner face near an opening; beardShell: beards with volume only;
         # beardBase: the beard part is the base the runtime grows shells from (uv = length, density; one-sided);
         # softCut: hair tex.y fades strand ends along a smooth line; lodClean: far LODs without hidden layers
-        features=['decal', 'innerHem', 'beardShell', 'beardBase', 'softCut', 'lodClean'],
+        # strandCards: hair at LOD 0-1 is layered strand cards (flag 64 on the hair region; tex.y = a random
+        # value per card; uv v = root 1 .. tip 0 inside one column of the strand atlas layer)
+        features=['decal', 'innerHem', 'beardShell', 'beardBase', 'softCut', 'lodClean'] + (['strandCards'] if any_cards else []),
         format=FORMAT_DOC,
         license='Human figures: generated with MPFB2 from MakeHuman system assets, CC0 1.0',
         bones=CASTM_BONES(),
@@ -449,6 +473,17 @@ def main():
 SMOOTH_R = (0.0, 0.018, 0.04, 0.07)
 # and never darker than this (a whole far triangle in a fold's shadow reads as a hole)
 AO_FLOOR = (0.0, 0.2, 0.35, 0.45)
+
+
+def load_cards(cid):
+    """(meta, arrays) of a character's strand-card hair (mh_hair.py), or None."""
+    jp = os.path.join(RAW, cid + '.cards.json')
+    if not os.path.exists(jp) or os.environ.get('MH_NO_CARDS'):
+        return None
+    m = json.load(open(jp))
+    if not m.get('cards') or not m.get('parts'):
+        return None
+    return m, dict(np.load(os.path.join(RAW, cid + '.cards.npz')))
 
 
 def smooth_attrs(co, ao, nr, R):
