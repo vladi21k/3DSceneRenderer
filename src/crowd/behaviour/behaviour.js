@@ -2,7 +2,7 @@ import { TRACK_ZONE_HALF } from '../../core/config.js';
 import { lattice1, LATTICE } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, MOB, settleShape } from './agent.js';
-import { EDGE_LANE, RIDE_D, BAND, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
+import { EDGE_LANE, RIDE_D, BAND, BAND_HI, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
 import { thinkCycle, maybeMount } from './cyclist.js';
 import { serveArrive } from './staff.js';
 import { PAUSE } from './stance.js';
@@ -531,8 +531,12 @@ function follow(c, a, out) {
     // still inside a side street: out through its opening first (not into the corner)
     {
       const as = a.d >= 0 ? 1 : -1, m = c.map.mouthAtA(a);
-      if (m && !a.inDoor && Math.abs(a.d) > c.map.mouthLine(m, as) + 0.15) {
-        const ms = c.unwrap(m.s), half = Math.max(0.3, m.width / 2 - 1.6);
+      // (map.mouthLine and c.unwrap(m.s) worked out in place: nothing boxed per member and frame)
+      if (m && !a.inDoor && Math.abs(a.d) > (as > 0 ? m._crowdLineR : m._crowdLineL) + 0.15) {
+        const L = c.route.length;
+        let mw = m.s % L; if (mw < 0) mw += L;
+        let mdd = mw - c.camW; if (mdd > L / 2) mdd -= L; if (mdd < -L / 2) mdd += L;
+        const ms = c.camU + mdd, half = Math.max(0.3, m.width / 2 - 1.6);
         if (Math.abs(a.s - ms) < m.width / 2) ts = Math.max(ms - half, Math.min(ms + half, ts));
       }
     }
@@ -923,7 +927,7 @@ export function startCross(c, a, sE, after, mouth) {
 function startPlatform(c, a) {
   const st = c.map.stationAt(a.s + a.dir * 25);
   if (!st || c.counts.passenger >= MAX_PASSENGERS) return false;
-  if (a.side > 0 && a.d < RIDE_D + BAND + 0.3) return false;   // not across the ride track
+  if (a.side > 0 && a.d < RIDE_D + BAND) return false;   // not across the ride track
   const pl = st.platforms.find((p) => p.side === a.side);
   const feat = c.population.platformFeature(st, a.side);
   if (!pl || !feat || feat.count >= feat.cap) return false;
@@ -1002,8 +1006,11 @@ function thinkPassenger(c, a) {
 export function board(c, a, doorS) {
   a.task = TASK.BOARD; a.step = 0;
   c.tally('board');
-  goTo(a, doorS + c.rng.range(-0.5, 0.5), (a.side < 0 ? -1 : 1) * (TRACK_ZONE_HALF + 0.3), 0.3);
+  goTo(a, doorS + c.rng.range(-0.5, 0.5), a.side < 0 ? -(TRACK_ZONE_HALF + 0.3) : BOARD_D, 0.3);
 }
+/** Where boarders stand at the right platform's edge: just outside the cab's band (the cab is
+ *  standing, but its band is kept all the same). */
+const BOARD_D = Math.max(TRACK_ZONE_HALF + 0.3, BAND_HI + 0.05);
 
 // ------------------------------------------------------------------ arrival
 
@@ -1088,7 +1095,8 @@ export function arrive(c, a) {
       }
       walk(a);
       // still in the recess (gave up on a blocked goal): the door keeps bounding them until out
-      a.inDoor = Math.abs(a.d) > map.facadeAt(a.s, side) - 0.35;
+      if (a.inDoor && !(Math.abs(a.d) > map.facadeAt(a.s, side) - 0.35)) { a.inDoor = false; a.doorOutT = c.time; }
+      else a.inDoor = Math.abs(a.d) > map.facadeAt(a.s, side) - 0.35;
       if (r.chance(0.25) && startCross(c, a, a.s + a.dir * r.range(2, 6), TASK.NONE, null)) return;
       // out on the street: any lane of this side, the track corridor too (people arriving from
       // the far end walk the corridor as much as those coming up from behind the cab)
@@ -1188,7 +1196,7 @@ export function arrive(c, a) {
       const gs = Math.max(sMin, Math.min(a.s, tram.trainU - 3.5) - r.range(5, 8));
       a.step++;
       if (gs > a.s - 0.6) { stand(a, PI, 0.8); return; }   // end of the platform: wait to be out of sight
-      goTo(a, gs, TRACK_ZONE_HALF + 0.3, 0.35);
+      goTo(a, gs, BOARD_D, 0.35);
       return;
     }
     case TASK.ALIGHT: {

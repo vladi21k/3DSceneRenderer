@@ -1,5 +1,5 @@
 import { TRACK_ZONE_HALF, TRACK_OFFSET, RAIL_CENTER } from '../../core/config.js';
-import { noise1 } from '../../core/rng.js';
+import { lattice1, LATTICE } from '../../core/rng.js';
 import { ST, TASK, LANE, MOB, KIND, settleShape } from './agent.js';
 import { RIDE_D, BAND, AGENT_R, CELL, GRID_D, CYCLE_V, WALKBIKE_V, TRAM_LEN, CYCLE_CLEAR_T, FOOT } from './constants.js';
 import { footBandGap, footInBand, updateFoot, propPointDist2, propMoved } from './footprint.js';
@@ -41,6 +41,15 @@ const cand = new Float32Array(NC), cost = new Float32Array(NC), blk = new Float3
 const tmpBand = settleShape({ lo: 0, hi: 0 });
 const LN = settleShape({ d: 0, lo: 0, hi: 0, narrow: false, uStop: false });
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+// noise1(x, seed) of core/rng.js written out (the same values) wherever a rider needs it per frame:
+// a noise call that is not inlined boxes its argument and its result
+const NQ = new Float64Array(1);
+/** noise1(NQ[0], seed) → NQ[0]. */
+function noiseQ(seed) {
+  const x = NQ[0], i = Math.floor(x), f = x - i;
+  lattice1(i, i + 1, seed);
+  NQ[0] = LATTICE[0] + (LATTICE[1] - LATTICE[0]) * (f * f * (3 - 2 * f));
+}
 
 // The line helpers below run many times per rider and frame (every candidate line of a scan), so
 // their numbers go in and out through LQ rather than as call arguments and results: a double
@@ -152,7 +161,8 @@ export function rideNear(c, a, far = false) {
 function laneLine(c, a) {
   const map = c.map, tram = c.tram;
   if (a.lane === LANE.CORR) {
-    LN.d = a.laneD + 0.14 * noise1(a.s / 16, a.wSeed);
+    NQ[0] = a.s / 16; noiseQ(a.wSeed);
+    LN.d = a.laneD + 0.14 * NQ[0];
     LN.lo = CORR_LO; LN.hi = CORR_HI; LN.narrow = false;
   } else {
     const side = a.side;
@@ -200,7 +210,8 @@ function laneLine(c, a) {
 export function rideTarget(c, a, T) {
   T.alpha = null; T.hard = false; T.ang = 0.42; T.avoid = 0;
   const dt = c.dt;
-  let vT = a.v0 * (1 + 0.05 * noise1(c.time / a.paceT, a.wSeed + 11));
+  NQ[0] = c.time / a.paceT; noiseQ(a.wSeed + 11);
+  let vT = a.v0 * (1 + 0.05 * NQ[0]);
   if (a.state === ST.GOTO) { waypoint(c, a, T, vT); return; }
   laneLine(c, a);
   // between an oncoming unit and the cab tram in the corridor: off the bicycle, out on foot

@@ -15,7 +15,9 @@ import { COLOR_SCALE, GLASS_K, HG_MAX } from './mesh.js';
 // occlusion and patchy soot under the slab, streaks hanging from it, and water, dirt
 // and rust running down narrow strips under the slab and sill ends. Its masks vary
 // along the wall in facade metres, so they cross materials, dressing and zone borders
-// without a seam, and a slab's soot fades out a little beyond its ends. Also a glass
+// without a seam, and a slab's soot fades out a little beyond its ends. Dust settles on
+// the ashlar's worn block arrises (BG_ARRIS, from the library's row layout), so the upper
+// arris of each block does not read as a clean ruled highlight. Also a glass
 // variant for the openings the buildings glaze themselves (party walls, set-back
 // storeys, skyline blocks): curtains, blinds and rooms behind the panes, reflections
 // that see the sky from the upper floors, warm interior light at night (see litGlass).

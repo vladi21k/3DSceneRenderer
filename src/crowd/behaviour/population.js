@@ -118,7 +118,7 @@ export class Population {
     a.isChild = ap ? ap.base === 'child' : false;
     a.height = ap ? ap.height : 1.72;
     a.phase = r.next(); a.pose = 0; a.look = 0; a.lookGoal = 0; a.tramLookT = 0;
-    a.clearing = false; a.noRect = false; a.inDoor = false; a.mouth = null; a.after = 0;
+    a.clearing = false; a.noRect = false; a.inDoor = false; a.doorOutT = -1e9; a.mouth = null; a.after = 0;
     a.feature = null; a.door = null; a.stuckT = 0; a.h = 0; a.timer = 0;
     a.thinkT = r.range(0.2, 1.5); a.simple = false; a.gTol = 0.3;
     // walking pace by age class (the stooped elderly slowest), a little slower with shopping or

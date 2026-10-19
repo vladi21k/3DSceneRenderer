@@ -66,6 +66,20 @@ async function main() {
   // BatchedMesh asks for multi-draw) it waited seconds for every program queued before it.
   for (const name of ['KHR_parallel_shader_compile', 'WEBGL_multi_draw', 'EXT_texture_filter_anisotropic', 'EXT_color_buffer_half_float',
     'EXT_clip_control', 'EXT_texture_norm16', 'WEBGL_clip_cull_distance', 'OES_texture_float_linear']) renderer.extensions.has(name);
+  // In-flight compileAsync calls (modules' own warm-ups, the texture bake): three polls
+  // their programs' completion status, a synchronous call that waits for everything queued
+  // before it, so the start-up lets them finish before it queues the scene's programs.
+  const pendingCompiles = new Set();
+  {
+    const compileAsync = renderer.compileAsync;
+    renderer.compileAsync = function (scene, camera, targetScene) {
+      const p = compileAsync.call(this, scene, camera, targetScene);
+      pendingCompiles.add(p);
+      const done = () => { pendingCompiles.delete(p); };
+      p.then(done, done);
+      return p;
+    };
+  }
   // render lists sorted without garbage (core/rendererPatches.js; glsort=0 for A/B)
   const listSort = params.str('glsort', '1') !== '0' && sortRenderLists(renderer);
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -140,6 +154,8 @@ async function main() {
   const WORLD = new Set(MODULES.filter(([, path]) => path.startsWith('./world/')).map(([name]) => name));
   let split = -1;   // the last module of step 1
   mods.forEach((m, i) => { if (WORLD.has(m.name) || m.name === 'materials' || m.name === 'env' || m.name === 'post') split = i; });
+  // (boot=serial for A/B: every module inits before the prime and the compile)
+  if (params.str('boot', '') === 'serial') split = mods.length - 1;
   const initModule = async (m) => {
     if (!m.init) return;
     const t0 = performance.now();
@@ -175,9 +191,13 @@ async function main() {
   await app.world.prime(s0, primeDist, (f) => setProgress(0.15 + 0.05 * f), null, ready1);
   let primeMs = performance.now() - tq;
 
-  // queue the programs. (Nothing polls them until step 4: a query of a program's completion
-  // status is a synchronous call that waits whenever the GPU process is busy, so polling
-  // while the inits run would take main-thread time from them.)
+  // queue the programs. Nothing may poll programs from then until step 4: a query of a
+  // program's completion status is a synchronous call that waits until the GPU process has
+  // worked through everything queued before it, so the warm-ups still polling (post's and
+  // env's passes, the texture bake) finish first.
+  tq = performance.now();
+  await Promise.race([Promise.all([...pendingCompiles, app.materials.ready]), new Promise((r) => setTimeout(r, 8000))]);
+  P.gpuWait = Math.round(performance.now() - tq);
   const tCompile = performance.now();
   P.compileStart = Math.round(tCompile);
   const progs = renderer.info.programs || [];
@@ -301,9 +321,10 @@ async function main() {
     const cpu = performance.now() - t0;
     mon.st[iRender] = performance.now() - tr;
     mon.end(cpu);
-    // programs created in a frame or compiled in the background: typed setters once linked
+    // programs created in a frame or compiled in the background: typed setters on first use
     const np = renderer.info.programs ? renderer.info.programs.length : 0;
-    if (np !== progN || (app.frame & 31) === 0) { progN = np; touchReadyPrograms(renderer); app.perf.typedUniforms = typedCount; }
+    if (np !== progN) { progN = np; hookNewPrograms(renderer); }
+    if ((app.frame & 31) === 0) app.perf.typedUniforms = typedCount;
     if (app.frame <= 40) (app.perf.startFrames ||= []).push([Math.round(t0), Math.round(cpu), np]);
     if (app.frame === 1) app.perf.init.firstFrame = Math.round(t0 - tFrames);
     fpsAcc += realDt; fpsN++; fpsT += cpu;
@@ -405,18 +426,25 @@ export function touchPrograms(renderer) {
   }
 }
 
-/** The same for programs that are ready, without waiting for any (per frame: programs the
- *  renderer created in a frame, or compiled in the background). */
-function touchReadyPrograms(renderer) {
+/** Programs created after the start-up (in a frame, or compiled in the background): their
+ *  typed setters are applied when their uniforms are first resolved, by whoever asks
+ *  (streaming's touchPrograms or the renderer's first draw). No GL call here: a program's
+ *  status query waits for the GPU process, so a program is never asked whether it is ready. */
+function hookNewPrograms(renderer) {
   const progs = renderer.info.programs;
-  if (!progs) return;
+  if (!progs || !TYPED) return;
   for (let i = 0; i < progs.length; i++) {
     const p = progs[i];
-    if (p.__touched || (p.isReady && !p.isReady())) continue;
-    try {
-      p.getUniforms(); p.getAttributes(); p.__touched = true;
-      if (TYPED) typedCount += typedUniforms(p);
-    } catch (e) { /* not linked yet */ }
+    if (p.__touched || p.__hooked || typeof p.getUniforms !== 'function') continue;
+    p.__hooked = true;
+    const get = p.getUniforms;
+    p.getUniforms = function () {
+      p.getUniforms = get;   // (restored first: typedUniforms asks for them again)
+      const u = get.call(p);
+      p.__touched = true;
+      try { typedCount += typedUniforms(p); } catch (e) { /* keep the renderer's setters */ }
+      return u;
+    };
   }
 }
 

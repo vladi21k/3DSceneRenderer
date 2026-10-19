@@ -527,7 +527,16 @@ class CrowdSim {
       // (seated patrons sit where the layout put the chairs)
       if (a.state !== ST.SEATED && !a.inDoor && !map.mouthAt(a.s, side) && ad > map.wallAt(a.s, side) + 0.02) {
         ck.wall++;
-        if (ck.wallLog.length < 8) ck.wallLog.push({ s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), wall: +map.wallAt(a.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], kind: KIND_NAMES[a.kind], mob: a.mob, src: a.src });
+        if (ck.wallLog.length < 8) {
+          // (what led there: time since spawn and since leaving a doorway, the lateral speed, the
+          // building line here and a metre either way, the nearest pole / board, held by a constraint)
+          const n = map.gatherAt(a, 1.5);
+          let ob = 99;
+          for (let q = 0; q < n; q++) { const i = map.qI[q], ds = map.qDS[q], dd = map.cD[i] - a.d; ob = Math.min(ob, Math.sqrt(ds * ds + dd * dd) - map.cR[i]); }
+          ck.wallLog.push({ t: +this.time.toFixed(1), s: +this.route.wrap(a.s).toFixed(1), d: +a.d.toFixed(2), wall: +map.wallAt(a.s, side).toFixed(2), st: STATE_NAMES[a.state], task: TASK_NAMES[a.task], kind: KIND_NAMES[a.kind], mob: a.mob, src: a.src,
+            age: +(this.time - a.bornT).toFixed(1), out: +(this.time - a.doorOutT).toFixed(1), vd: +a.vd.toFixed(2), vs: +a.vs.toFixed(2), fac: [+map.facadeAt(a.s - 1, side).toFixed(2), +map.facadeAt(a.s, side).toFixed(2), +map.facadeAt(a.s + 1, side).toFixed(2)],
+            obst: +ob.toFixed(2), pinned: a.pinned, lead: !!a.leader, gd: +a.gd.toFixed(2), rel: +(a.s - this.camU).toFixed(1) });
+        }
       }
       if (a.state !== ST.SEATED && a.kind !== KIND.PASSENGER) {
         const n = map.gatherAt(a, 1);

@@ -2,7 +2,7 @@ import { KIND, ST, TASK, MOB, settleShape } from './agent.js';
 import { think, desired, timerDone, arrive } from './behaviour.js';
 import { AGENT_R, CELL, GRID_D, RANGE_BEHIND, SIMPLE_BEYOND, TURN_RATE, WALL_GAP, RIDE_D, BAND, FOOT, CYCLE_FALLBACK } from './constants.js';
 import { updateFoot, footGapQ, FQ, propPointQ, _foot, footBlend, footAt } from './footprint.js';
-import { rideTarget, bikeTurnRate } from './cyclist.js';
+import { rideTarget } from './cyclist.js';
 
 // Local motion: a social-force model with anticipatory sidestepping, on a uniform
 // grid in route coordinates. Neighbours repel (stronger in front), people predict
@@ -38,7 +38,6 @@ function setKm(c, a) {
   const k = 1 + a.kap * a.d;
   a.km = k > 0.5 ? k : 0.5;
 }
-const wrapAngle = (x) => { x = (x + PI) % (2 * PI); if (x < 0) x += 2 * PI; return x - PI; };
 
 export class Steering {
   constructor(c) {
@@ -53,6 +52,7 @@ export class Steering {
     this.maxC = 0.05;          // largest hard correction of this step (m)
     this.sepLim = 0.05;        // ... of the footprint separation (_separate)
     this.cGathered = false; this.cMoved = 0;   // _constrain: obstacle query still valid, and how far it moved since
+    this.cPrevS = 0;           // ... and the agent's s before this step's move
     this.fs = 0; this.fd = 0;  // force of the last _social / _obstacles
     this._s0 = 0;
     this.dtA = 0;              // the step of the agent being moved (s)
@@ -192,7 +192,7 @@ export class Steering {
       this._separate(a);
       const s2 = a.s, d2 = a.d;
       // (numbers handed over in fields: a double argument to a call that is not inlined is boxed)
-      this.cGathered = gathered; this.cMoved = a.s - prevS;
+      this.cGathered = gathered; this.cMoved = a.s - prevS; this.cPrevS = prevS;
       this._constrain(a);
       a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
       // all corrections together stay within a brisk step too
@@ -239,14 +239,16 @@ export class Steering {
       alphaT = a.dir > 0 ? psi : PI - psi;
     }
     alphaT += T.avoid;
-    const err = wrapAngle(alphaT - a.alpha);
+    // (angles wrapped in place, and bikeTurnRate written out: a helper that is not inlined boxes
+    // its number argument and result)
+    let err = (alphaT - a.alpha + PI) % (2 * PI); if (err < 0) err += 2 * PI; err -= PI;
     // turn rate: lateral acceleration ≤ ~1.9 m/s², radius ≥ 2.3 m, and the rate itself changes
     // smoothly; a little tighter (and slower) when turning to cross a rail steeply
-    const wMax = bikeTurnRate(vv, a.rx > 0);
+    const wMax = a.rx > 0 ? Math.min(2.6 / vv, vv / 1.5, 1.4) : Math.min(1.9 / vv, vv / 2.3, 1.3);
     let w = Math.max(-wMax, Math.min(wMax, (a.rx >= 2 ? 4 : 2.4) * err));
     const wAcc = a.rx >= 2 ? 5.0 : 3.0;
     w = a.yawW + Math.max(-wAcc * dt, Math.min(wAcc * dt, w - a.yawW));
-    const na = wrapAngle(a.alpha + w * dt);
+    let na = (a.alpha + w * dt + PI) % (2 * PI); if (na < 0) na += 2 * PI; na -= PI;
     a.tryA = na;
     if (tram.turnBlockedA(a)) w = 0; else a.alpha = na;
     a.yawW = w;
@@ -263,7 +265,7 @@ export class Steering {
     this.sepLim = 0.5 * this.maxC;
     this._separate(a);
     const s2 = a.s, d2 = a.d;
-    this.cGathered = false; this.cMoved = 0;
+    this.cGathered = false; this.cMoved = 0; this.cPrevS = prevS;
     this._constrain(a);
     a.pinned = Math.abs(a.s - s2) + Math.abs(a.d - d2) > 0.004;
     const cs = (a.s - s1) * k, cd = a.d - d1, cl = Math.sqrt(cs * cs + cd * cd);
@@ -536,7 +538,8 @@ export class Steering {
 
   // ---------------------------------------------------------------- hard constraints
   /** this.cGathered: the obstacle query of this step (around the position before the move, which
-   *  was this.cMoved metres ago along s) is still in map.q*. Corrections are rate limited. */
+   *  was this.cMoved metres ago along s) is still in map.q*; this.cPrevS: s before the move.
+   *  Corrections are rate limited. */
   _constrain(a) {
     const c = this.c, map = c.map, maxC = this.maxC, gathered = this.cGathered;
     this._s0 = a.s;
@@ -581,7 +584,7 @@ export class Steering {
       const fac = map.R[0], wall = map.R[1];
       const lim = dr && dr.o ? dr.o.d + dr.depth - 0.1 : fac + 0.25;
       // out of the recess again (people coming out of a door): an ordinary walker
-      if (a.task !== TASK.ENTER && !(a.task === TASK.SERVE && a.step === 3) && Math.abs(a.d) < fac - 0.35) a.inDoor = false;
+      if (a.task !== TASK.ENTER && !(a.task === TASK.SERVE && a.step === 3) && Math.abs(a.d) < fac - 0.35) { a.inDoor = false; a.doorOutT = c.time; }
       else {
         // the facade opens only at the door leaf; inside the recess the jambs bound s
         const ad = Math.abs(a.d);
@@ -617,8 +620,18 @@ export class Steering {
       }
     }
     map.facadeA(a, side);
-    const wall = map.R[1];
-    if (Math.abs(a.d) > wall) { a.d = side * Math.max(wall, Math.abs(a.d) - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
+    const wall = map.R[1], ad = Math.abs(a.d);
+    if (ad > wall) {
+      // the building line steps forward here (the next lot's face, a corner pier): coming along
+      // the street from where it stood further back (out of a recessed shop door, along a recessed
+      // lot), the step's side face bounds s: the walker stays on this side of it until it is out
+      // past the line, rather than being drawn through the corner
+      map.qS = this.cPrevS; map.facadeQS(side);
+      if (map.R[3] === 0 && ad <= map.R[0] - WALL_GAP + 0.02 && this.cPrevS !== a.s) {
+        a.s = this.cPrevS;
+        if (a.vs * (a.s - this._s0) < 0) a.vs = 0;
+      } else { a.d = side * Math.max(wall, ad - Math.max(maxC, 0.06)); if (a.vd * side > 0) a.vd = 0; }
+    }
     // the prop is kept off the facade as well
     if (a.mob && a.fpR > 0) {
       // (at the prop's own s: facades step forward at lot boundaries)
@@ -645,7 +658,11 @@ export class Steering {
       if (a.platformOK && r.kind === 'platform') continue;
       for (let e = 0; e < 2; e++) {
         const ps = a.s + (e ? a.fp1s : a.fp0s), pd = a.d + (e ? a.fp1d : a.fp0d);
-        const ds = map.rectDS(r, ps), ad = pd * side;
+        // (map.rectDS(r, ps): the loop distance worked out in place)
+        const L = map.L;
+        let w = ps % L; if (w < 0) w += L;
+        let ds = w - r.s0; if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
+        const ad = pd * side;
         if (ds < -pr || ds > r.len + pr || ad < r.inner - pr || ad > r.outer + pr) continue;
         const p0 = ds + pr, p1 = r.len + pr - ds, pIn = ad - (r.inner - pr), pOut = r.outer < 90 ? r.outer + pr - ad : 1e9;
         const m = Math.min(p0, p1, pIn, pOut), step = Math.min(maxC, m);

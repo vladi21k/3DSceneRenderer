@@ -28,11 +28,12 @@ import { hash3 } from './shade.js';
 
 const EPS = 1e-4;
 const SLICE = 0.3;   // time slice of a generation step (ms)
-const GROOVE_G = 0.3, GROOVE_A = 0.22;
-const JOINT_BAND = 0.022, BAND_VAR = 0.3;
+const GROOVE_G = 0.3, GROOVE_A = 0.16;
+const JOINT_BAND = 0.025, BAND_VAR = 0.25;
 // soiling of a chamfer (colour factor: base + spread × per-block hash), the upward-facing
-// one dustier; and the grime mask it adds (patchy dirt from the weathering atlas)
-const SOIL_UP = [0.75, 0.08], SOIL_DOWN = [0.79, 0.08], SOIL_GRIME = 0.12;
+// one dustier; the grime mask it adds (patchy dirt from the weathering atlas); the dust's
+// tint (relative rgb)
+const SOIL_UP = [0.75, 0.08], SOIL_DOWN = [0.81, 0.07], SOIL_GRIME = 0.12, SOIL_TINT = [1, 0.95, 0.86];
 const BLOCK_L = 0.8;   // block rhythm along a joint without a fitted texture layout
 
 function uniqSorted(a) {
@@ -192,13 +193,13 @@ export function* wallField(ctx, face, openings) {
   const roughBase = sRough.uvx;
   const stoneShade = (u, v, w, nu, nv, nw, out) => fs.wall(u, v, out);
   const rendShade = rend ? (u, v, w, nu, nv, nw, out) => rend.fs.wall(u, v, out) : null;
-  // a V-joint chamfer: the wall's shading, soiled by the block's factor gk (a little greyer
-  // and darker, and a little grime for the weathering's patchy dirt)
+  // a V-joint chamfer: the wall's shading, soiled by the block's factor gk (darker, and
+  // warmer: brown-grey dust, so the sky-lit chamfer does not read as a cold white band),
+  // and a little grime for the weathering's patchy dirt
   let gk = 1;
   const grooveShade = (u, v, w, nu, nv, nw, out) => {
     fs.wall(u, v, out);
-    const l = (out[0] + out[1] + out[2]) / 3;
-    out[0] = (out[0] + (l - out[0]) * 0.12) * gk; out[1] = (out[1] + (l - out[1]) * 0.12) * gk; out[2] = (out[2] + (l * 0.97 - out[2]) * 0.12) * gk;
+    out[0] *= gk; out[1] *= gk * SOIL_TINT[1]; out[2] *= gk * SOIL_TINT[2];
     out[3] = Math.min(1, out[3] + SOIL_GRIME);
   };
   const gj = rus ? { j: 0, i: 0, c: rus.c, seed: (fs.seed | 0) ^ 0x6a09 } : null;

@@ -52,6 +52,7 @@ export class Agent {
     this.clearing = false; this.clearTo = 0;
     this.noRect = false;      // may enter café / platform footprints (patrons, passengers)
     this.inDoor = false;      // inside a shop doorway recess (no facade clamp)
+    this.doorOutT = -1e9;     // when it last stepped out of a doorway recess (statistics)
     this.doorS0 = 0; this.doorS1 = 0;
     this.mouth = null;        // cross street used by SIDE_OUT / EMERGE
     this.after = 0;           // follow-up task after crossing

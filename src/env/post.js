@@ -75,11 +75,11 @@ const TONE = {
   // stops around `toe[1]`), a camera's long toe (building shade and dark shop glass keep
   // their detail; mid grey and up unchanged); below about `deep[1]` stops the slope rises
   // again by `deep[0]` (by day .. dusk; over `deep[2]` stops), so the deepest shade falls
-  // towards black as in a camera JPEG: by day −1 stop ~77 sRGB, −2 ~44, −2.5 ~30, −3 ~19,
-  // −4 ~6, −5 ~1 (the photographs' darkest 2 % sit at 3-40, median 13); the lamp-lit night
+  // towards black as in a camera JPEG: by day −1 stop ~77 sRGB, −2 ~43, −2.5 ~29, −3 ~17,
+  // −4 ~5, −5 ~1 (the photographs' darkest 2 % sit at 3-40, median 13); the lamp-lit night
   // keeps more of its shadow detail
   toe: [0.22, 0.06, 0.5],
-  deep: [[0.8, 0.3], -1.8, 0.5],
+  deep: [[0.95, 0.3], -1.8, 0.5],
   // local highlight recovery (final pass): where the surfaces around a pixel average more
   // than `knee` stops over mid grey (a low sun's sheen on the paving, looking into it), its
   // bright pixels (ramped in from `px[0]` stops over `px[1]`) come down by `strength` x the

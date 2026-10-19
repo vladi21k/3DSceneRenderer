@@ -383,6 +383,9 @@ const CUBE_DIRS = [
   [0, -1, 0, 0, 0, 1], [0, 0, 1, 0, 1, 0], [0, 0, -1, 0, 1, 0],
 ];
 
+// texels of the irradiance texture as this.irradiance names them (see IRR_FS)
+const IRR_KEYS = ['horizontal', 'horizonMean', 'zenith', 'vertical', 'horizonSun', 'horizonAnti'];
+
 export class Sky {
   constructor(app, atmo, { envSize = 256 } = {}) {
     const { renderer } = app;
@@ -615,11 +618,16 @@ export class Sky {
   }
 
   _decodeIrradiance(buf, half = true) {
-    const h = half ? THREE.DataUtils.fromHalfFloat : (x) => x;
-    const px = (i) => new THREE.Vector3(h(buf[i * 4]), h(buf[i * 4 + 1]), h(buf[i * 4 + 2]));
-    this.irradiance = {
-      horizontal: px(0), horizonMean: px(1), zenith: px(2), vertical: px(3), horizonSun: px(4), horizonAnti: px(5),
-    };
+    // (updated in place: while the time of day changes it is read every other frame)
+    const o = this.irradiance || (this.irradiance = {
+      horizontal: new THREE.Vector3(), horizonMean: new THREE.Vector3(), zenith: new THREE.Vector3(),
+      vertical: new THREE.Vector3(), horizonSun: new THREE.Vector3(), horizonAnti: new THREE.Vector3(),
+    });
+    const K = IRR_KEYS, h = THREE.DataUtils.fromHalfFloat;
+    for (let i = 0; i < K.length; i++) {
+      const v = o[K[i]], j = i * 4;
+      if (half) v.set(h(buf[j]), h(buf[j + 1]), h(buf[j + 2])); else v.set(buf[j], buf[j + 1], buf[j + 2]);
+    }
   }
 
   /**

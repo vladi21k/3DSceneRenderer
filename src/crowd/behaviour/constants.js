@@ -41,7 +41,12 @@ export const WALL_GAP = 0.32;                      // never closer than this to 
 export const RIDE_D = TRACK_OFFSET;
 export const SWEPT_HALF = 1.5;
 export const SWEPT_AHEAD = 8;
-export const BAND = SWEPT_HALF + AGENT_R + 0.03;   // centre must stay outside |d − RIDE_D| < BAND
+// Everything that steers people off the ride track or keeps them off it (the clearing targets, the
+// kerb at the band edge, the step-in block, the driver's obstacle, the final projection) works
+// with the band below, so a body never comes closer than CLEAR_MARGIN to the cab's swept volume:
+// a near miss still leaves a clear foot of air between a person and the passing tram.
+export const CLEAR_MARGIN = 0.33;
+export const BAND = SWEPT_HALF + AGENT_R + CLEAR_MARGIN;   // centre must stay outside |d − RIDE_D| < BAND
 export const BAND_LO = RIDE_D - BAND;              // safe left of the ride track (between tracks)
 export const BAND_HI = RIDE_D + BAND;              // safe right of the ride track (corridor edge)
 export const TRAM_LEN = 34;                        // tram body length behind the cab front

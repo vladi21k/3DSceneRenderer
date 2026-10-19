@@ -67,12 +67,12 @@ const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22 };
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
 // street exposes for the shade and the people, so whites and glints clip and the low
-// sun's backlit street glows. Under the high sun (to t 0.3) the lift is half a stop: the
-// sunlit granite near the cab lands at ~165-180 sRGB with its setts and joints apart
-// (post's meter gives back about a third of any change); more as the sun lowers and
-// the street falls into shade, none once it has set (the dusk caps hold the exposure)
+// sun's backlit street glows. Under the high sun (to t 0.3) the lift is under half a
+// stop: the sunlit granite near the cab lands at ~165-180 sRGB with its setts and joints
+// apart (post's meter gives back about a third of any change); more as the sun lowers
+// and the street falls into shade, none once it has set (the dusk caps hold the exposure)
 const KDAY = 1.3, EH_FULL = 1.9;
-const EXPO_LIFT = [[0.0, 0.48], [0.3, 0.5], [0.45, 0.8], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
+const EXPO_LIFT = [[0.0, 0.4], [0.3, 0.42], [0.45, 0.8], [0.55, 1.2], [0.65, 1.0], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
@@ -307,7 +307,6 @@ const env = {
     this.atmo.updateSky(this.state.sunDir);
     this.sky.updateIrradiance(false);
     this._irrDirty = true;     // read back (asynchronously) on the next update
-    this._irrAge = 1;
     this.sky.requestEnv(true);
   },
 
@@ -362,7 +361,7 @@ const env = {
     this.sky.uniforms.uSunCloud.value.set(SUN_TINT.r * Tc.x * E, SUN_TINT.g * Tc.y * E, SUN_TINT.b * Tc.z * E);
 
     // sky-view LUT and irradiance; the irradiance is read back (asynchronously) by
-    // update() once the time of day has settled, the CPU estimate stands in meanwhile
+    // update(), the calibrated CPU estimate stands in meanwhile
     if (this._gpuReady) {
       this.atmo.updateSky(dir);
       this.sky.updateIrradiance(false);
@@ -370,7 +369,6 @@ const env = {
       this.atmo.uniforms.uSunDirA.value.copy(dir);
     }
     this._irrDirty = true;
-    this._irrAge = 0;
     this._todStamp = (this._todStamp || 0) + 1;
 
     // night: lamps, shop fronts and windows come on around sunset (the street lamps are
@@ -555,27 +553,34 @@ const env = {
 
   update(dt, app) {
     // (wall-clock step; never negative: the first frame after a long load can bring one,
-    // which would hold the irradiance read-back and the environment refresh back)
+    // which would hold the environment refresh back)
     const rd = app.realDt ?? dt, realDt = rd > 0 ? rd : 0;
     const time = app.time;
     if (!this._gpuReady) this._initGPU();
     if (!this._shadowsCompiled && this.batcher) this._precompileShadows();
 
-    // deferred sky-irradiance read-back once the time of day has settled: a pixel-pack
-    // buffer behind a fence whose status is polled here once a frame (a synchronous read,
-    // or a wait on the fence, would stall for the whole frame queue)
+    // sky-irradiance read-back: a pixel-pack buffer behind a fence whose status is polled
+    // here once a frame (a synchronous read, or a wait on the fence, would stall for the
+    // whole frame queue). While the time of day keeps changing (the slider, a sweep) the
+    // reads follow one another, each recalibrating the CPU estimate at the sun elevation
+    // it was taken for, so the exposure tracks the sky within a frame or two instead of
+    // jumping once the change stops
     if (this._irrReading) {
       const st = this.sky.pollIrradiance();
       if (st !== 0) {
         this._irrReading = false;
-        // (a newer time of day was set meanwhile: its own read-back follows)
-        if (st > 0 && this._irrStamp === this._todStamp) {
-          this._irrDirty = false;
+        if (st > 0) {
+          if (this._irrStamp === this._todStamp) this._irrDirty = false;
+          else {
+            const est = skyIrradiance(this._irrElev), H = this.sky.irradiance && this.sky.irradiance.horizontal;
+            if (H && est > 1e-9 && Number.isFinite(H.y)) this._irrCal = lum(H) / est;
+          }
           this._updateExposure();
         }
       }
-    } else if (this._irrDirty && (this._irrAge += realDt) > 0.25) {
+    } else if (this._irrDirty) {
       this._irrStamp = this._todStamp;
+      this._irrElev = this.state.sunElevation;
       this._irrReading = this.sky.beginIrradianceRead();
       // (read synchronously instead: the values are in place)
       if (!this._irrReading) { this._irrDirty = false; this._updateExposure(); }

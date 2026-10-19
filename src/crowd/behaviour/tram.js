@@ -585,8 +585,10 @@ export class TramWatch {
       if (r.chance(0.55)) { a.tramLookS = time + r.range(0, 0.3); a.tramLookT = a.tramLookS + r.range(0.6, 1.4); }
     }
     // bell request: someone on the track who has not noticed the tram, shortly before they must move
+    // (closing(a) written out below: per agent and frame)
+    const vClose = Math.max(0, Math.min(V_MAX, this.v + 2 * this.acc) - a.vs);
     if (a.needsBell && !a.mob && !a.clearing && ahead > 2 && this.v > 0.5 && adl < REQ_HALF && ahead < this.stopDist && a.bellT <= time) {
-      const tta = ahead / Math.max(0.3, this.closing(a));
+      const tta = ahead / Math.max(0.3, vClose);
       // (5 s ahead: the look up and the step off happen while the tram is still well away)
       const lim = Math.max(5, a.clearT + 1);
       if (tta < lim) {
@@ -601,8 +603,9 @@ export class TramWatch {
     const inside = a.mob ? (dl >= 0 ? dl - a.extLo - BAND : -dl - a.extHi - BAND) < 0.02 : adl < BAND + 0.02;
     // somebody who cannot be out of the band before the cab is there any more: its driver brakes
     if (inside && ahead > 0 && this.v > 0.5 && ahead < this.obstacle) {
-      const tta = ahead / Math.max(0.3, this.closing(a));
-      if (tta < CLEAR_DEADLINE - 0.5 && this.exitT(a) + 0.6 > tta) this.obstacle = ahead;
+      const tta = ahead / Math.max(0.3, vClose);
+      const exit = adl >= BAND ? 0 : (BAND + 0.1 - adl + (a.mob ? 0.7 : 0)) / Math.max(1, a.hurry) + 0.5;   // exitT(a)
+      if (tta < CLEAR_DEADLINE - 0.5 && exit + 0.6 > tta) this.obstacle = ahead;
     }
     if (!inside || ahead < -(TRAM_LEN + 7) - a.extS || ahead > front) { a.clearing = false; return; }
     if (a.clearing && a.mob) { this._clearTo(a); return; }
