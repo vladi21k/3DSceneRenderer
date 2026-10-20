@@ -21,8 +21,10 @@ import { SunLightShadow } from 'three/addons/lights/SunLightShadow.js';
 // Every tap compares against the receiver plane at its own offset (depth gradient from
 // screen derivatives), so wide kernels on grazing-lit walls do not streak.
 // A pixel samples at most two cascades (its own and, in the fade band, the next one),
-// through a single call site, so the filter is inlined once per program; the tap loops
-// have runtime bounds (sunShadowZero, never set) so they are not unrolled either.
+// through a single call site, so the filter is inlined once per program. The probe, ring
+// and blocker-search loops have constant bounds: unrolled, their tap offsets stay in
+// registers (with bounds the compiler cannot see, the offset arrays went to local memory
+// and the main pass took ~4 ms longer at the default view, for the same image).
 // A pixel skips the filter (fully lit or dark) only when the widest-penumbra probe and a
 // ring at the narrowest kernel's reach agree.
 //
@@ -606,10 +608,6 @@ export function patchSunShadowChunk(cascades, taps = 8) {
   }
   const wide = Math.max(32, taps);
   const fn = /* glsl */ `
-		// (never set, so 0: the tap loops get bounds the compiler cannot see, so it keeps them
-		// as loops instead of unrolling and inlining every tap, which halves the compile time
-		// of every lit program)
-		uniform int sunShadowZero;
 		float sunShadowTap(
 			#if defined( SHADOWMAP_TYPE_PCF )
 				sampler2DShadow shadowMap,
@@ -639,7 +637,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				vec2 so[ 5 ];
 				so[ 0 ] = vec2( 0.0 );
 				float f0 = 1.0 - texture( shadowMap, coord.xyz );
-				for ( int k = 1; k < 5 + sunShadowZero; k ++ ) {
+				for ( int k = 1; k < 5; k ++ ) {
 					so[ k ] = vogelDiskSample( k - 1, 4, phi ) * maxR * tx;
 					f0 += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) ) );
 				}
@@ -649,7 +647,7 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 				// that skip the filter and those that run it never follows the shadow map's texel
 				// grid (a sawtooth along contact edges, as on an awning's valance)
 				float fi = 0.0;
-				for ( int k = 0; k < 4 + sunShadowZero; k ++ ) {
+				for ( int k = 0; k < 4; k ++ ) {
 					vec2 o = vogelDiskSample( k, 4, phi + 0.785 ) * ( minR * 1.15 ) * tx;
 					fi += 1.0 - texture( shadowMap, vec3( coord.xy + o, coord.z + dot( dz, o ) ) );
 				}
@@ -664,11 +662,11 @@ export function patchSunShadowChunk(cascades, taps = 8) {
 					float D[ 7 ];
 					D[ 0 ] = 0.4; D[ 1 ] = 1.2; D[ 2 ] = 3.0; D[ 3 ] = 7.0; D[ 4 ] = 15.0; D[ 5 ] = 30.0; D[ 6 ] = 60.0;
 					float prev = f0, dPrev = 0.0, dSum = 0.0;
-					for ( int j = 0; j < 7 + sunShadowZero; j ++ ) {
+					for ( int j = 0; j < 7; j ++ ) {
 						if ( prev <= 0.0 ) break;
 						float f = 0.0;
 						float dm = D[ j ] / range;
-						for ( int k = 0; k < 5 + sunShadowZero; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
+						for ( int k = 0; k < 5; k ++ ) f += 1.0 - texture( shadowMap, vec3( coord.xy + so[ k ], coord.z + dot( dz, so[ k ] ) - dm ) );
 						f = min( f * 0.2, prev );
 						dSum += ( prev - f ) * sqrt( max( dPrev, 0.15 ) * D[ j ] );
 						prev = f; dPrev = D[ j ];

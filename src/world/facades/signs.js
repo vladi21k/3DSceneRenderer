@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { U } from '../../core/uniforms.js';
+import { params } from '../../core/params.js';
 import { RNG } from '../../core/rng.js';
 import { Tpl, lin, finiteOutput } from './geo.js';
 import { SHOP_LEVEL } from './interior.js';
@@ -15,14 +16,15 @@ import { SHOP_LEVEL } from './interior.js';
 // a little out of true. Text quads are white glyphs tinted by vertex colour (full-colour
 // cells take white); `aGlow` makes light boxes and neon letters glow at dusk.
 
-const W = 2048, H = 8192;
+const W = 2048, H = 8704;
 const NAMES_Y = 6144, NAME_W = 512, NAME_H = 112;          // shop names: 15 rows of 4
 const LINES_Y = 7824, LINE_W = 256, LINE_H = 60;           // short lines and wall tags: 4 rows of 8
 const ICONS_Y = 8064, ICON = 128;                          // logo marks (white), the last cell solid white
 const CELL_W = 512, CELL_H = 128, TEXT_ROWS = 12;          // text cells: rows 0..11
 const PLAQUE = 128, PLAQUE_Y = TEXT_ROWS * CELL_H;        // 2 rows of 16 number plaques
 const BLADE_W = 256, BLADE_H = 256, BLADE_Y = PLAQUE_Y + 2 * PLAQUE; // 2 rows of 8 blade faces
-const DRESS_Y = BLADE_Y + 2 * BLADE_H;                     // posters 5 rows of 8 (256 px), price cards and stickers a row of 16 (128 px) each, banners 2 rows of 4 (512 x 128)
+const DRESS_Y = BLADE_Y + 2 * BLADE_H;                     // posters 5 rows of 8 (256 px), stickers a row of 16 (128 px), banners 2 rows of 4 (512 x 128)
+const CARDS_Y = 8192;                                      // price cards: 2 rows of 8 (256 px; the pier boards are half a metre high)
 const WORDS2_Y = 4096;                                     // text cells 48..79: 8 more rows of 4
 const BLADE2_Y = WORDS2_Y + 8 * CELL_H;                    // blade faces 16..31: 2 more rows of 8
 const PRINT_Y = BLADE2_Y + 2 * BLADE_H;                    // goods-stand prints: a row of 16 papers (128 x 256), 2 rows of 16 price tags (128 x 128)
@@ -219,19 +221,45 @@ function buildAtlas() {
     paint(() => { g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h, i); g.restore(); });
     prints.tags.push({ u0: (x + 1) / W, v0: 1 - (y + h - 1) / H, u1: (x + w - 1) / W, v1: 1 - (y + 1) / H, aspect: w / h });
   });
-  // window dressing: each draws a card of aspect a (w / h) centred in its cell
+  // window dressing: each draws a card of aspect a (w / h), whole pixels, centred in its
+  // cell. A card is painted in a scratch canvas and copied in; one that fills its rectangle
+  // has its edge texels repeated out across the cell margin, so the filtering and the first
+  // mips at its border see the card's own ground instead of the transparent margin.
   const dress = { posters: [], prices: [], stickers: [], banners: [] };
+  const sc = document.createElement('canvas');
+  sc.width = 512; sc.height = 256;
+  const sg = sc.getContext('2d');
+  const card = (fn, x, y, w, h, b) => {
+    sg.clearRect(0, 0, w, h);
+    sg.save(); sg.beginPath(); sg.rect(0, 0, w, h); sg.clip(); fn(sg, 0, 0, w, h); sg.restore();
+    g.save();
+    g.imageSmoothingEnabled = false;
+    g.drawImage(sc, 0, 0, w, h, x, y, w, h);
+    if (b > 0) {
+      g.drawImage(sc, 0, 0, 1, h, x - b, y, b, h); g.drawImage(sc, w - 1, 0, 1, h, x + w, y, b, h);
+      g.drawImage(sc, 0, 0, w, 1, x, y - b, w, b); g.drawImage(sc, 0, h - 1, w, 1, x, y + h, w, b);
+      g.drawImage(sc, 0, 0, 1, 1, x - b, y - b, b, b); g.drawImage(sc, w - 1, 0, 1, 1, x + w, y - b, b, b);
+      g.drawImage(sc, 0, h - 1, 1, 1, x - b, y + h, b, b); g.drawImage(sc, w - 1, h - 1, 1, 1, x + w, y + h, b, b);
+    }
+    g.restore();
+  };
   let yy = DRESS_Y;
-  for (const [key, list, CW, CH, per] of [['posters', POSTERS, 256, 256, 8], ['prices', PRICES, 128, 128, 16], ['stickers', STICKERS, 128, 128, 16], ['banners', BANNERS, 512, 128, 4]]) {
-    const mg = CH >= 256 ? 6 : 4;
-    list.forEach(([fn, a], i) => {
-      const cx = (i % per) * CW, cy = yy + Math.floor(i / per) * CH;
-      const w = Math.min(CW - 2 * mg, (CH - 2 * mg) * a), h = w / a;
-      const x = cx + (CW - w) / 2, y = cy + (CH - h) / 2;
-      paint(() => { g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); fn(g, x, y, w, h); g.restore(); });
-      dress[key].push({ u0: (x + 1) / W, v0: 1 - (y + h - 1) / H, u1: (x + w - 1) / W, v1: 1 - (y + 1) / H, aspect: w / h });
+  // (price cards at twice the others' texel density, in their own rows: a pier board is
+  // the size of an A2 poster and can be met at arm's length)
+  for (const [key, list, CW, CH, per, mg, y0] of [['posters', POSTERS, 256, 256, 8, 6, null], ['stickers', STICKERS, 128, 128, 16, 4, null],
+    ['banners', BANNERS, 512, 128, 4, 4, null], ['prices', PRICES, 256, 256, 8, 8, CARDS_Y]]) {
+    const ys = y0 ?? yy;
+    list.forEach(([fn, a, shaped], i) => {
+      const cx = (i % per) * CW, cy = ys + Math.floor(i / per) * CH;
+      const w = Math.round(Math.min(CW - 2 * mg, (CH - 2 * mg) * a)), h = Math.min(CH - 2 * mg, Math.round(w / a));
+      const x = cx + Math.floor((CW - w) / 2), y = cy + Math.floor((CH - h) / 2);
+      // (posters and banners always fill their sheet; price cards and stickers cut to a disc,
+      // an oval or a starburst are flagged and keep their transparent margin)
+      const b = (key === 'prices' || key === 'stickers') && shaped === true ? 0 : Math.min(mg, x - cx, y - cy, cx + CW - x - w, cy + CH - y - h);
+      paint(() => card(fn, x, y, w, h, b));
+      dress[key].push({ u0: (x + 0.5) / W, v0: 1 - (y + h - 0.5) / H, u1: (x + w - 0.5) / W, v1: 1 - (y + 0.5) / H, aspect: w / h });
     });
-    yy += Math.ceil(list.length / per) * CH;
+    if (y0 == null) yy += Math.ceil(list.length / per) * CH;
   }
   if (yy > WORDS2_Y) console.warn('[facades] sign atlas overflow', yy);
   // shop names: the Hebrew name on top, its English form below; each line can be used on
@@ -464,28 +492,29 @@ const POSTERS = [
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f7f3ea'); fit(g, 'ברוכים הבאים', x + w / 2, y + h * 0.4, w * 0.8, h * 0.2, '#5a1a1c', 700, SERIF); fit(g, 'WELCOME', x + w / 2, y + h * 0.68, w * 0.4, h * 0.12, '#5a1a1c', 400, SERIF); }, 1.414, 'notice', 'A4'],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#fbfaf6'); fit(g, 'סגירת', x + w / 2, y + h * 0.24, w * 0.7, h * 0.13, '#c8201a', 700, COND); fit(g, 'עסק', x + w / 2, y + h * 0.42, w * 0.6, h * 0.16, '#c8201a', 700, COND); fit(g, 'הכל חייב להימכר', x + w / 2, y + h * 0.66, w * 0.82, h * 0.07, '#111'); }, 0.707, 'notice', 'A3'],
 ];
-// Price cards and boards (fluorescent card, big numerals); 128 px cells.
+// Price cards and boards (fluorescent card, big numerals); 256 px cells.
 const PRICE_DEFS = [
   ['#f6d21c', '69', '#c8201a', 0.8], ['#f6d21c', '29.90', '#111', 1.3], ['#d01e1a', '99', '#fff', 0.8], ['#ff8a1c', '19.90', '#111', 1.3],
   ['#f4f2ec', '10', '#c8201a', 0.8], ['#b8e02a', '49', '#111', 0.8], ['#f6d21c', '5.90', '#1e3f9a', 1.3], ['#ff6fa8', '39.90', '#111', 1.3],
   ['#f4f2ec', '149', '#1e3f9a', 1.0], ['#7fe3f0', '12', '#111', 0.8], ['#f6f04a', '79', '#c8201a', 0.8], ['#ff8a1c', '119', '#fff', 1.0],
   ['#fbfaf6', '14.90', '#c8201a', 1.3], ['#b8e02a', '9.90', '#111', 1.3], ['#d01e1a', '25', '#f6f04a', 0.8], ['#f4f2ec', '59', '#111', 0.8],
 ];
+// [draw, aspect, shaped (a starburst or an oval, not a full sheet)]
 const PRICES = PRICE_DEFS.map(([bg, num, ink, a], i) => [(g, x, y, w, h) => {
   if (i % 5 === 4) { burst(g, x + w / 2, y + h / 2, Math.min(w, h) * 0.38, Math.min(w, h) * 0.5, 12, bg); }
   else if (i % 7 === 3) { g.fillStyle = bg; g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill(); }
   else paper(g, x, y, w, h, bg);
   fit(g, num, x + w / 2, y + h * 0.52, w * (i % 5 === 4 ? 0.62 : 0.86), h * (num.length > 3 ? 0.45 : 0.66), ink);
   if (i % 3 === 0) fit(g, '₪', x + w * 0.86, y + h * 0.2, w * 0.14, h * 0.18, ink);
-}, a]);
-// Door and window stickers; 128 px cells.
+}, a, i % 5 === 4 || i % 7 === 3]);
+// Door and window stickers; 128 px cells: [draw, aspect, shaped (a disc)].
 const STICKERS = [
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#c8201a'); fit(g, 'OPEN', x + w / 2, y + h * 0.52, w * 0.8, h * 0.6, '#fff'); }, 2.2],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'פתוח', x + w / 2, y + h * 0.52, w * 0.7, h * 0.6, '#1e6a2a'); }, 2.2],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'שעות פתיחה', x + w / 2, y + h * 0.14, w * 0.8, h * 0.09, '#111'); lines(g, x + w * 0.15, y + h * 0.3, w * 0.7, 7, 'rgba(20,20,20,0.75)', h * 0.085); }, 0.72],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#1e3f7a'); g.fillStyle = '#f4f2ec'; g.fillRect(x + w * 0.2, y + h * 0.25, w * 0.6, h * 0.36); g.fillStyle = '#1e3f7a'; g.fillRect(x + w * 0.2, y + h * 0.33, w * 0.6, h * 0.07); fit(g, 'CARDS', x + w / 2, y + h * 0.8, w * 0.7, h * 0.16, '#f4f2ec'); }, 1],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'WiFi', x + w / 2, y + h * 0.55, w * 0.7, h * 0.4, '#1e5fa0'); }, 1],
-  [(g, x, y, w, h) => { disc(g, x + w / 2, y + h / 2, w / 2, '#f4d01c'); fit(g, 'SALE', x + w / 2, y + h * 0.52, w * 0.7, h * 0.3, '#c8201a'); }, 1],
+  [(g, x, y, w, h) => { disc(g, x + w / 2, y + h / 2, w / 2, '#f4d01c'); fit(g, 'SALE', x + w / 2, y + h * 0.52, w * 0.7, h * 0.3, '#c8201a'); }, 1, true],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); g.strokeStyle = '#c8201a'; g.lineWidth = w * 0.08; g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w * 0.36, h * 0.36, 0, 0, Math.PI * 2); g.stroke(); g.beginPath(); g.moveTo(x + w * 0.25, y + h * 0.25); g.lineTo(x + w * 0.75, y + h * 0.75); g.stroke(); g.fillStyle = '#111'; g.fillRect(x + w * 0.3, y + h * 0.47, w * 0.4, h * 0.07); }, 1],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#111'); fit(g, 'כניסה', x + w / 2, y + h * 0.52, w * 0.8, h * 0.55, '#f2efe6'); }, 2.2],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); fit(g, 'דחוף', x + w / 2, y + h * 0.52, w * 0.7, h * 0.6, '#111'); }, 2.2],
@@ -495,7 +524,7 @@ const STICKERS = [
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#2e7d32'); fit(g, 'ברוכים הבאים', x + w / 2, y + h * 0.52, w * 0.86, h * 0.36, '#fff'); }, 2.2],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#f4f2ec'); const C = ['#1e3f9a', '#d01e1a', '#f4a01c', '#2e7d32']; for (let i = 0; i < 4; i++) { g.fillStyle = C[i]; g.fillRect(x + w * (0.08 + 0.22 * i), y + h * 0.3, w * 0.18, h * 0.4); } }, 2.2],
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#fbfaf6'); hand(g, 'פתוח', x + w / 2, y + h * 0.5, w * 0.8, h * 0.55, '#c8201a', 77); }, 1.414],
-  [(g, x, y, w, h) => { disc(g, x + w / 2, y + h / 2, w / 2, '#c8201a'); fit(g, '%', x + w / 2, y + h * 0.52, w * 0.6, h * 0.55, '#fff'); }, 1],
+  [(g, x, y, w, h) => { disc(g, x + w / 2, y + h / 2, w / 2, '#c8201a'); fit(g, '%', x + w / 2, y + h * 0.52, w * 0.6, h * 0.55, '#fff'); }, 1, true],
 ];
 // Sale banners run along the top of a display window; 512 x 128 cells.
 const BANNERS = [
@@ -887,6 +916,50 @@ function addGlow(m, key, gain) {
   return m;
 }
 
+/**
+ * Close-up filter for the atlas: where a texel covers more than about a pixel (a card or a
+ * sign met at arm's length, or through the long lens), the map is read with a Catmull-Rom
+ * filter instead of the bilinear one, whose texel grid shows as stair-steps and a wide
+ * colour fringe along every glyph edge. Its ringing is clamped to the 2 × 2 texels around
+ * the sample; farther off the hardware filter (mips, anisotropy) is left as it is.
+ */
+const CLOSE_PARS = /* glsl */`
+vec4 signCubic( sampler2D tex, vec2 uv, vec2 sz ) {
+  vec2 sp = uv * sz, t1 = floor( sp - 0.5 ) + 0.5, f = sp - t1;
+  vec2 w0 = f * ( -0.5 + f * ( 1.0 - 0.5 * f ) ), w1 = 1.0 + f * f * ( -2.5 + 1.5 * f );
+  vec2 w2 = f * ( 0.5 + f * ( 2.0 - 1.5 * f ) ), w3 = f * f * ( -0.5 + 0.5 * f );
+  vec2 w12 = w1 + w2, t0 = ( t1 - 1.0 ) / sz, t3 = ( t1 + 2.0 ) / sz, t12 = ( t1 + w2 / w12 ) / sz;
+  vec4 c = ( textureLod( tex, vec2( t0.x, t0.y ), 0.0 ) * w0.x + textureLod( tex, vec2( t12.x, t0.y ), 0.0 ) * w12.x + textureLod( tex, vec2( t3.x, t0.y ), 0.0 ) * w3.x ) * w0.y
+         + ( textureLod( tex, vec2( t0.x, t12.y ), 0.0 ) * w0.x + textureLod( tex, vec2( t12.x, t12.y ), 0.0 ) * w12.x + textureLod( tex, vec2( t3.x, t12.y ), 0.0 ) * w3.x ) * w12.y
+         + ( textureLod( tex, vec2( t0.x, t3.y ), 0.0 ) * w0.x + textureLod( tex, vec2( t12.x, t3.y ), 0.0 ) * w12.x + textureLod( tex, vec2( t3.x, t3.y ), 0.0 ) * w3.x ) * w3.y;
+  ivec2 p = ivec2( t1 - 0.5 ), mx = textureSize( tex, 0 ) - 1;
+  vec4 a = texelFetch( tex, clamp( p, ivec2( 0 ), mx ), 0 ), b = texelFetch( tex, clamp( p + ivec2( 1, 0 ), ivec2( 0 ), mx ), 0 );
+  vec4 d = texelFetch( tex, clamp( p + ivec2( 0, 1 ), ivec2( 0 ), mx ), 0 ), e = texelFetch( tex, clamp( p + ivec2( 1, 1 ), ivec2( 0 ), mx ), 0 );
+  return clamp( c, min( min( a, b ), min( d, e ) ), max( max( a, b ), max( d, e ) ) );
+}`;
+const CLOSE_MAP = /* glsl */`
+#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  {
+    vec2 mapSz = vec2( textureSize( map, 0 ) ), mapFw = fwidth( vMapUv * mapSz );
+    float kCub = 1.0 - smoothstep( 0.5, 1.0, max( mapFw.x, mapFw.y ) );
+    if ( kCub > 0.0 ) sampledDiffuseColor = mix( sampledDiffuseColor, signCubic( map, vMapUv, mapSz ), kCub );
+  }
+  diffuseColor *= sampledDiffuseColor;
+#endif`;
+function addCloseFilter(m, key) {
+  const prev = m.onBeforeCompile;
+  const prevKey = m.customProgramCacheKey ? m.customProgramCacheKey() : '';
+  m.onBeforeCompile = (shader, r) => {
+    if (prev) prev.call(m, shader, r);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n${CLOSE_PARS}`)
+      .replace('#include <map_fragment>', CLOSE_MAP);
+  };
+  m.customProgramCacheKey = () => prevKey + '|' + key;
+  return m;
+}
+
 export function createSignMaterials(M) {
   if (!atlas) {
     const t0 = performance.now();
@@ -907,6 +980,8 @@ export function createSignMaterials(M) {
   });
   text.name = 'facades.signText';
   addGlow(text, 'facades.signText.v2', gain);
+  // (URL facclose=0: the hardware filter alone, for comparison)
+  if (params.num('facclose', 1) !== 0) addCloseFilter(text, 'closeFilter.v1');
   return { board, text, atlas };
 }
 

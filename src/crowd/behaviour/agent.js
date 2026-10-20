@@ -68,6 +68,7 @@ export class Agent {
     this.crossS = 0;          // s where a crossing reaches the far side
     this.tramLookS = 0;       // window in which the agent looks at the tram
     this.bellT = 0;           // reacting to the bell until this time
+    this.bellS = 0;           // ... having heard it at this time (sound travel and reaction after the ring)
     this.dreamy = false;      // absorbed (phone, conversation): notices the tram late
     this.fresh = false;       // spawned this frame (for the visible-spawn statistics)
     this.src = '';            // where it came from (statistics)

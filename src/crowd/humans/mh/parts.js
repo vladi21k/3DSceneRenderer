@@ -249,13 +249,30 @@ export function torsoSurface(char) {
   };
   f.pts = P;
   f.slice = (y0, y1) => [lower(y0), lower(y1)];
-  /** Skin weights ([[bone, w], ...]) of the surface point nearest p (within `band` of its height). */
+  // (a 2 cm grid of the points for the nearest-point lookups)
+  const CS = 0.02, grid = new Map();
+  const ckey = (ix, iy, iz) => ((ix + 512) * 1024 + (iy + 512)) * 1024 + (iz + 512);
+  for (let i = 0; i < m; i++) {
+    const key = ckey(Math.floor(P[i * 3] / CS), Math.floor(P[i * 3 + 1] / CS), Math.floor(P[i * 3 + 2] / CS));
+    let c = grid.get(key);
+    if (!c) grid.set(key, c = []);
+    c.push(i);
+  }
+  /** Skin weights ([[bone, w], ...]) of the surface point nearest p (within about `band`; null if none). */
   f.skin = (p, band = 0.04) => {
     let bd = Infinity, bi = -1;
-    for (let i = lower(p.y - band) * 3, e = lower(p.y + band) * 3; i < e; i += 3) {
-      const x = P[i] - p.x, y = P[i + 1] - p.y, z = P[i + 2] - p.z;
-      const d = x * x + y * y + z * z;
-      if (d < bd) { bd = d; bi = i / 3; }
+    const r = Math.max(1, Math.ceil(band / CS));
+    const cx = Math.floor(p.x / CS), cy = Math.floor(p.y / CS), cz = Math.floor(p.z / CS);
+    for (let rr = 1; rr <= r && bi < 0; rr++) {
+      for (let ix = cx - rr; ix <= cx + rr; ix++) for (let iy = cy - rr; iy <= cy + rr; iy++) for (let iz = cz - rr; iz <= cz + rr; iz++) {
+        const c = grid.get(ckey(ix, iy, iz));
+        if (!c) continue;
+        for (const j of c) {
+          const x = P[j * 3] - p.x, y = P[j * 3 + 1] - p.y, z = P[j * 3 + 2] - p.z;
+          const d = x * x + y * y + z * z;
+          if (d < bd) { bd = d; bi = j; }
+        }
+      }
     }
     if (bi < 0) return null;
     const out = [];
@@ -314,8 +331,10 @@ function settle(surf, pts, nrms, { off = 0.004, gap = () => 0.008, iters = 6, la
   const c = pts.map((p) => p.clone());
   // (heights over the cloth along the normal at the strap's middle and, with halfW, at its two edges: a
   // flat band on a rounded body must clear the cloth at its edges too)
-  const SAMP = halfW > 0 ? [0, -halfW, halfW] : [0];
+  const SAMP3 = halfW > 0 ? [0, -halfW, halfW] : [0], SAMP1 = [0];
   for (let it = 0; it < iters; it++) {
+    // (the edges only on the last two passes, once the path has found its line)
+    const SAMP = it >= iters - 2 ? SAMP3 : SAMP1;
     for (let i = 0; i < n; i++) c[i].copy(pts[i]);
     for (let i = 1; i < n - 1; i++) pts[i].copy(c[i - 1]).add(c[i + 1]).multiplyScalar(0.5 * lam).addScaledVector(c[i], 1 - lam);
     for (let i = 1; i < n - 1; i++) {
@@ -840,7 +859,7 @@ export function buildParts(char, opts = {}) {
       let [sp, sn] = resamplePath(pts, nr, 0.02 * k);
       const L = arcLengths(sp), Lt = L[L.length - 1];
       // (free of the back only where it leaves the pack)
-      settle(surf, sp, sn, { off: 0.004, halfW: 0.02 * k, gap: (i) => 0.008 + 0.05 * Math.max(0, 1 - L[i] / (0.08 * k)) });
+      settle(surf, sp, sn, { off: 0.0055, halfW: 0.024 * k, gap: (i) => 0.01 + 0.05 * Math.max(0, 1 - L[i] / (0.08 * k)) });
       const W = 0.05 * k, T = 0.011 * k;
       const skinP = (p, i) => {
         const s = packAt(p), u = Math.max(0, 1 - L[i] / (0.1 * k));
@@ -990,7 +1009,7 @@ export function buildParts(char, opts = {}) {
     const [sp, sn] = resamplePath(pts, nr, 0.02 * k);
     const L = arcLengths(sp), Lt = L[L.length - 1];
     const endW = (i) => Math.max(0, 1 - Math.min(L[i], Lt - L[i]) / (0.12 * k));
-    settle(surf, sp, sn, { off: 0.004, halfW: 0.014 * Math.min(1, k * 1.1), gap: (i) => 0.009 + 0.045 * endW(i), iters: 8 });
+    settle(surf, sp, sn, { off: 0.0055, halfW: 0.017 * Math.min(1, k * 1.1), gap: (i) => 0.01 + 0.045 * endW(i), iters: 6 });
     // skinning: the cloth's own weights under each point (the shoulder's top moves with the clavicle and
     // the chest with the ribs), blending into the bag's towards its two ends
     const strapSkin = (p) => {

@@ -8,7 +8,7 @@ import { Steering } from './behaviour/steering.js';
 import { TramWatch } from './behaviour/tram.js';
 import { SideStreets } from './behaviour/sideStreets.js';
 import { KIND, ST, MOB, MOB_POSE, MOB_PROP, STATE_NAMES, TASK_NAMES, KIND_NAMES, MOB_NAMES, settleShape } from './behaviour/agent.js';
-import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D, TRAM_LEN } from './behaviour/constants.js';
+import { MAX_AGENTS, RIDE_D, SWEPT_HALF, SWEPT_AHEAD, AGENT_R, FOOT, CELL, GRID_D, TRAM_LEN, BAND, BELL_HOLD } from './behaviour/constants.js';
 import { footDims } from './behaviour/footprint.js';
 import { stanceOf } from './behaviour/stance.js';
 
@@ -54,6 +54,12 @@ import { stanceOf } from './behaviour/stance.js';
 // check.squeeze counts agent-frames between the tracks while the cab and a unit go by each other;
 // check.wallLog says how a walker came to be past a building line (time since leaving a doorway,
 // the line here and a metre either way), stats().brakeLog whom the cab's driver braked for.
+// How early people leave the cab's track: stats().tram.clearTTA (seconds before the cab arrived at
+// which they were out of its band: n, min, p10, p50 and a log of the late ones), tram.rightForUnit
+// (sent off to the right-hand edge because an oncoming unit holds the left) and tram.unitHold
+// (agent-frames somebody waited on the cab's track for a unit to go by); with crowdCheck=1,
+// check.lateBand / lateMin (on the cab's track with the cab under 3 s away) and check.cabTrackUnit
+// (under 5.5 s away while a unit goes by beside them).
 // People keep their bodies CLEAR_MARGIN (0.33 m) outside the cab's swept volume (constants.js BAND).
 // stats().standing (people standing about within 300 m), sideStreets (people up the side streets).
 // With view= the free camera is an obstacle like a pole: nobody walks through it.
@@ -207,11 +213,16 @@ class CrowdSim {
   onKill(a) { if (this.humans && this.humans.setVisible) this.humans.setVisible(this.base + a.slot, false); }
 
   /** The bell is routine on this street: people on or right beside the ride track look round
-   *  and step clear; on the sidewalks only a few glance up. */
+   *  and step clear; on the sidewalks only a few glance up. Everybody on the cab's track ahead
+   *  within the bell's reach steps off it to the nearer side within a second or so of the ring,
+   *  however far away the cab still is or if it is standing (tram.front widens their zone to the
+   *  bell's reach once they have heard it), and nobody near the track steps onto it there for
+   *  BELL_HOLD seconds. */
   onBell() {
     this.tram.onBell(this.time);
     const r = this.rng, tram = this.tram;
     const reach = Math.max(40, 1.5 * tram.stopDist);
+    tram.bellReach = reach;
     let reacted = 0;
     for (let ii = 0, AG = this.population.agents, nn = AG.length; ii < nn; ii++) {
       const a = AG[ii];
@@ -227,18 +238,24 @@ class CrowdSim {
         reacted++;
         continue;
       }
-      const near = Math.abs(a.d - RIDE_D) < 3.5 && ahead < reach;
-      if (!r.chance(near ? 0.85 : 0.08)) continue;
-      const delay = Math.max(0, ahead) / 340 + r.range(0.2, 1.2); // sound travel + reaction
-      a.tramLookS = this.time + delay;
-      a.tramLookT = a.tramLookS + (near ? r.range(1.2, 2.6) : r.range(0.4, 0.9));
-      a.lookU = -1;
-      reacted++;
-      if (!near) continue;
-      a.bellT = this.time + delay + 5;
-      // beside the track (not in the band): a step back, turning towards the tram
       const dl = a.d - RIDE_D;
-      if (Math.abs(dl) > 1.9 && a.kind !== KIND.SEATED) {
+      const near = Math.abs(dl) < 3.5 && ahead < reach;
+      // in the cab's band ahead (with a stroller's or bicycle's footprint): everybody reacts, and soon
+      const onTrack = near && ahead > 0 && (a.mob ? (dl >= 0 ? dl - a.extLo : -dl - a.extHi) : Math.abs(dl)) < BAND + 0.02;
+      const look = onTrack || r.chance(near ? 0.85 : 0.08);
+      if (!look && !near) continue;
+      // sound travel + reaction
+      const delay = Math.max(0, ahead) / 340 + (onTrack ? r.range(0.15, a.dreamy ? 1.0 : 0.75) : r.range(0.2, 1.2));
+      if (look) {
+        a.tramLookS = this.time + delay;
+        a.tramLookT = a.tramLookS + (near ? r.range(1.2, 2.6) : r.range(0.4, 0.9));
+        a.lookU = -1;
+        reacted++;
+      }
+      if (!near) continue;
+      a.bellS = this.time + delay; a.bellT = a.bellS + BELL_HOLD;
+      // beside the track (not in the band): a step back, turning towards the tram
+      if (look && !onTrack && Math.abs(dl) > 1.9 && a.kind !== KIND.SEATED) {
         a.dodge = Math.sign(dl) * r.range(0.35, 0.7); a.dodgeT = a.tramLookS + 2.2; a.dodgeD0 = a.d;
         if (a.state === ST.STAND || a.state === ST.WAIT || a.state === ST.PLATFORM) a.faceA = this._faceTram(a);
       }

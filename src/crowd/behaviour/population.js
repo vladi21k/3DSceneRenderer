@@ -131,7 +131,7 @@ export class Population {
     a.ownV0 = a.v0;
     a.hurry = HURRY_BY[ageK] || HURRY;
     a.dir = 1; a.side = 1; a.lane = LANE.SIDE; a.laneF = 0.5; a.laneD = 0;
-    a.dreamy = r.chance(0.08); a.bellT = 0; a.tramLookS = 0;
+    a.dreamy = r.chance(0.08); a.bellT = 0; a.bellS = 0; a.tramLookS = 0;
     a.clearT = a.dreamy ? r.range(CLEAR_T_DREAMY[0], CLEAR_T_DREAMY[1]) : r.range(CLEAR_T[0], CLEAR_T[1]);
     if (HURRY_BY[ageK]) a.clearT += 1.5;
     a.needsBell = a.dreamy || r.chance(0.1);

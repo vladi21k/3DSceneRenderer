@@ -181,7 +181,7 @@ const humans = {
     for (let ci = 0; ci < cast.chars.length; ci++) {
       const c = cast.chars[ci];
       let tq = performance.now();
-      const rig = new Rig({ parent: c.skeleton.parent, joints: c.skeleton.joints }, c.info);
+      const rig = new Rig({ parent: c.skeleton.parent, joints: c.skeleton.joints }, c.info, c.raw);
       // (the clips this character can play are baked now, any other on first use)
       const baked = bakeClips(rig, clipsFor(c));
       const walkV = CLIPS.map((cl) => (cl.kind === 'walk' ? rig.walkParams(cl).v : 0));

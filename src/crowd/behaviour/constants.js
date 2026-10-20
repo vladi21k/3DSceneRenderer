@@ -56,6 +56,12 @@ export const PASS_BASE = SWEPT_HALF + AGENT_R + 0.6; // comfortable distance (ce
 export const PASS_PER_V = 0.04;                    // ... plus this per m/s of tram speed
 export const CLEAR_T = [3.5, 6.0];                 // seconds before the tram arrives that people leave its track
 export const CLEAR_T_DREAMY = [2.0, 3.0];          // absorbed people (phone, conversation)
+// The bell: people on the cab's track ahead within its reach step off it whatever the cab's time to
+// arrive (a standing tram about to move off included), out of the band about BELL_OUT seconds after
+// they hear it (a brisk sidestep to the nearer side), and everybody near it keeps off the track
+// within that reach for BELL_HOLD seconds after hearing it.
+export const BELL_OUT = 1.8;
+export const BELL_HOLD = 5.0;
 
 // spatial hash
 export const CELL = 2.0;

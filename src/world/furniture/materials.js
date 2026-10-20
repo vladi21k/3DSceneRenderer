@@ -337,7 +337,7 @@ function patchFabric(m, translucency) {
  * Café umbrella canopies (umbrella.js 'aVal', the instance colour carrying brand and LED
  * flags, see cafe.js):
  *  - valance print: the café's brand from the brand atlas, on each side's valance, printed
- *    into the fabric's albedo (seen mirrored and fainter from inside);
+ *    into the fabric's albedo (seen mirrored and faint from inside);
  *  - valance sun: the cloth hanging under the canopy edge never takes its sun through its
  *    own canopy's shadow map entry (the hem sits right at the canopy's shadow edge, where
  *    the waves beat against the shadow texels into a comb). Its own canopy's occlusion is
@@ -412,7 +412,7 @@ function patchCanopy(m, brandMap, ledLevel) {
             vec3 fBase = diffuseColor.rgb;
           #endif
           float fWeave = clamp( dot( fBase, vec3( 0.3333 ) ) / 0.62, 0.7, 1.25 );
-          diffuseColor.rgb = mix( diffuseColor.rgb, fInk.rgb * fWeave, fInk.a * fIn * ( gl_FrontFacing ? 1.0 : 0.45 ) );
+          diffuseColor.rgb = mix( diffuseColor.rgb, fInk.rgb * fWeave, fInk.a * fIn * ( gl_FrontFacing ? 1.0 : 0.28 ) );
           // valance sun: lit only on a side whose outside faces the sun (see above)
           if ( vVal.x > 0.5 ) fValSun = smoothstep( -0.04, 0.06, dot( vValOut.xz, fSunW.xz ) );
         }
@@ -964,7 +964,7 @@ export function updateLightLevels(F, app, ready = true) {
   F.levels.disp.value = Math.min(0.5, 0.3 / exp);
   F.levels.lamp.value = on * 5 / exp;
   // map boards' light boxes: a little dimmer than the adverts', off by day
-  F.levels.board.value = on * Math.min(0.025, 0.6 / exp);
+  F.levels.board.value = on * Math.min(0.014, 0.35 / exp);
   // café umbrella LEDs come on soon after sunset (switched by the staff, not a photocell)
   const night = U.uNight.value, gain = app.materials?.uniforms?.emissiveGain?.value ?? 1;
   const led = THREE.MathUtils.smoothstep(night, 0.15, 0.45) * gain / exp;

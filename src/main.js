@@ -112,8 +112,9 @@ async function main() {
   // were queued), programsQueued (how many then), initsQueued (init time that ran alongside
   // the compile), compile (until every program was linked), compileWait (the part of it
   // after the last init and build), programs, workersHeld, firstFrame (from then to the
-  // first frame callback), frames (to the view being ready) and firstReady (since
-  // navigation). See docs/ARCHITECTURE.md.
+  // first frame callback), frames (to the view being ready), firstReady (since
+  // navigation) and, when the browser held back the animation frames before the view was
+  // ready, firstFrameStall (see the watchdog below). See docs/ARCHITECTURE.md.
   app.perf.init = { imports: Math.round(performance.now()) };
   const mods = [];
   loaded.forEach((r, i) => {
@@ -382,9 +383,72 @@ async function main() {
       events.emit('ready', {});
       setTimeout(() => { window.__ready = true; }, 300);
     }
-    if (!(recFps > 0 && app.ready)) requestAnimationFrame(frame);
+    if (!(recFps > 0 && app.ready)) nextFrame();
   }
-  requestAnimationFrame(frame);
+
+  // ---- animation-frame watchdog. Now and then the browser holds back the animation frames
+  // after the start-up while the main thread stands idle: mostly for under a second, at
+  // times for seconds (more often with the GPU busy with other work), on rare starts for
+  // over two minutes, all the while showing a frozen loading screen. The loop asks for one
+  // animation frame at a time; when it has not come after STALL_MS (START_STALL_MS before the
+  // view is ready: the stall then holds most start-ups back by 1-3 s) while the page is
+  // visible and the main thread was free, the watchdog runs the frames from a timer (about 30
+  // a second) until the browser delivers animation frames again. perf.init.firstFrameStall
+  // records a stall before the view was ready, perf.rafStalls the later ones (the newest
+  // RAF_STALLS_KEPT; stats().rafStalls counts them all):
+  //   { since: when the frame was asked for (ms since navigation), frame: frames run by then,
+  //     ms: how long the animation frames were held back (so far, while it lasts),
+  //     visibilityState, hasFocus: the page's state when the stall was noticed,
+  //     rafSeen: an animation frame came again, pumped: frames run from the timer,
+  //     pumpMs: the longest of them (CPU ms; seconds mean its GL calls waited for a GPU
+  //     process that was stuck itself), gpuMs: the newest GPU timer result then (0: none
+  //     came back), lagMs: the most the watchdog's timer ran late (the main thread busy) }
+  const STALL_MS = 750, TICK_MS = 250, START_STALL_MS = 400, START_TICK_MS = 100, PUMP_MS = 33, RAF_STALLS_KEPT = 8;
+  let rafPending = false, rafAsked = 0, stall = null, tickDue = 0, stalls = 0;
+  app.perf.rafStalls = [];
+  function nextFrame() {
+    if (rafPending) return;   // (one request at a time: frames run from the timer reuse it)
+    rafPending = true;
+    rafAsked = performance.now();
+    requestAnimationFrame(onAnimationFrame);
+  }
+  function onAnimationFrame(ts) {
+    rafPending = false;
+    if (stall) { stall.ms = Math.round(performance.now() - rafAsked); stall.rafSeen = true; stall = null; }
+    if (recFps > 0 && app.ready) return;   // (offline recording: frames are stepped on demand)
+    frame(ts);
+  }
+  function watchdog() {
+    const now = performance.now();
+    const late = tickDue ? Math.max(0, now - tickDue) : 0;
+    if (stall) stall.lagMs = Math.max(stall.lagMs, Math.round(late));
+    let wait = app.ready ? TICK_MS : START_TICK_MS;
+    // (a late tick means the main thread was busy: the animation frame may be on its way)
+    if (rafPending && now - rafAsked > (app.ready ? STALL_MS : START_STALL_MS) && late < 100 && document.visibilityState === 'visible' && !(recFps > 0 && app.ready)) {
+      if (!stall) {
+        stall = { since: Math.round(rafAsked), frame: app.frame, ms: 0, visibilityState: document.visibilityState, hasFocus: document.hasFocus(),
+          rafSeen: false, pumped: 0, pumpMs: 0, gpuMs: 0, lagMs: 0 };
+        stalls++;
+        if (!app.ready && !P.firstFrameStall) P.firstFrameStall = stall;
+        else { app.perf.rafStalls.push(stall); if (app.perf.rafStalls.length > RAF_STALLS_KEPT) app.perf.rafStalls.shift(); }
+      }
+      const s = stall, t = performance.now();
+      frame(t);   // (asks for no second animation frame: the first is still pending)
+      const ms = performance.now() - t;
+      s.pumped++;
+      s.pumpMs = Math.max(s.pumpMs, Math.round(ms));
+      s.gpuMs = +app.gpuTimer.last.toFixed(2);
+      wait = Math.max(4, PUMP_MS - ms);
+    }
+    if (stall) stall.ms = Math.round(performance.now() - rafAsked);
+    tickDue = performance.now() + wait;
+    setTimeout(watchdog, wait);
+  }
+  // (a hidden page gets no animation frames: the wait counts from when it is shown again)
+  document.addEventListener('visibilitychange', () => { if (rafPending && document.visibilityState === 'visible') rafAsked = performance.now(); });
+  nextFrame();
+  tickDue = performance.now() + START_TICK_MS;
+  setTimeout(watchdog, START_TICK_MS);
   app.recStep = (n = 1) => { for (let i = 0; i < n; i++) frame(performance.now()); return app.frame; };
 
   window.addEventListener('resize', () => {
@@ -400,7 +464,7 @@ async function main() {
     geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs?.length,
     chunks: app.world.chunks.size, queue: app.world.stats.queue, buildMsByModule: app.world.stats.buildMsByModule, rideBuild: app.world.rideBuildStats(),
     s: +(app.cameraS ?? 0).toFixed(1), speedKmh: +((app.train?.speed ?? 0) * 3.6).toFixed(1),
-    frames: mon.frames(), hitches: mon.count,
+    frames: mon.frames(), hitches: mon.count, rafStalls: stalls,
     modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
   });
 }

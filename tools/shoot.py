@@ -810,6 +810,8 @@ def main():
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--eval", default=None, help="JS expression evaluated after the shots; result printed")
     ap.add_argument("--pre", default=None, help="JS evaluated right after ready (before settle)")
+    ap.add_argument("--init", default=None, metavar="JS",
+                    help="JS evaluated in the page before its own scripts (to hook or stub browser APIs for a test)")
     ap.add_argument("--console", action="store_true", help="print all console messages, not only errors/warnings")
     ap.add_argument("--hitches", action="store_true",
                     help="reset the frame statistics after ready and print the frame-time summary and hitch log "
@@ -913,6 +915,8 @@ def run(a, guard):
             ws.call("Profiler.start", session=sess)
         if a.firstdraw:
             ws.call("Page.addScriptToEvaluateOnNewDocument", {"source": FIRSTDRAW_HOOK_JS}, session=sess)
+        if a.init:
+            ws.call("Page.addScriptToEvaluateOnNewDocument", {"source": a.init}, session=sess)
         ws.call("Page.navigate", {"url": url}, session=sess)
 
         logs = []
@@ -941,22 +945,30 @@ def run(a, guard):
         ready = fatal = False
         next_note = 30
         while time.time() - t0 < a.timeout:
-            v = js("window.__ready === true")
-            if v is True:
-                ready = True
-                break
-            err = js("window.__fatal || null")
-            if err:
-                print("FATAL:", err)
-                fatal = True
-                break
-            if time.time() - t0 > next_note:
-                next_note = time.time() - t0 + 30
-                st = js("(() => { const a = window.__app; if (!a) return 'modules loading'; const p = a.perf && a.perf.init || {};"
-                        " return 'init ' + JSON.stringify(p) + (a.world ? ' chunks ' + a.world.chunks.size : ''); })()")
-                print(f"  still loading after {time.time() - t0:.0f}s: {st}", flush=True)
+            try:
+                if js("window.__ready === true") is True:
+                    ready = True
+                    break
+                err = js("window.__fatal || null")
+                if err:
+                    print("FATAL:", err)
+                    fatal = True
+                    break
+                if time.time() - t0 > next_note:
+                    next_note = time.time() - t0 + 30
+                    st = js("(() => { const a = window.__app; if (!a) return 'modules loading'; const p = a.perf && a.perf.init || {};"
+                            " return 'init ' + JSON.stringify(p) + (a.world ? ' chunks ' + a.world.chunks.size : ''); })()")
+                    print(f"  still loading after {time.time() - t0:.0f}s: {st}", flush=True)
+            except TimeoutError:   # (socket.timeout too) the page's main thread did not answer for 2 minutes: wait on
+                print(f"  the page did not answer for 120 s (its main thread busy) at {time.time() - t0:.0f}s", flush=True)
+                continue
             time.sleep(0.25)
         print(f"ready={ready} after {time.time() - t0:.1f}s")
+        if ready:
+            # (main.js: the browser held back the animation frames during the start-up)
+            st = js("JSON.stringify((window.__app && window.__app.perf.init.firstFrameStall) || null)")
+            if st and st != "null":
+                print(f"first frames held back by the browser: {st}", flush=True)
         if a.cpuprof:
             print_cpu_profile(ws.call("Profiler.stop", session=sess)["profile"], a.cpuprof, "navigation to ready")
         if not ready:

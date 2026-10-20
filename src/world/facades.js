@@ -47,7 +47,8 @@ import { BAD_NORMALS, withFiniteOutput } from './facades/geo.js';
 //
 // Debug (URL): facglass=r | t | m | e shows only the glass's reflection, only the room
 // behind it, the glass as a perfect mirror of the street stand-in, or a grey card lit by
-// the glass's ambient light (facades/interior.js).
+// the glass's ambient light (facades/interior.js). facclose=0 reads the sign atlas through
+// the hardware filter alone, without the close-up (Catmull-Rom) filter (facades/signs.js).
 
 // side-street lots starting this far from the main street get the far-range infill
 const SIDE_FAR = 40;

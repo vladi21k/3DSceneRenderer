@@ -107,6 +107,86 @@ function matchFrames(d0, n0, d1, n1) {
   return new THREE.Quaternion().setFromRotationMatrix(M1.multiply(M0.transpose()));
 }
 
+/**
+ * The torso's cross-sections round the body axis in the rest pose, clothing included (a top that hangs
+ * off the body is part of it): per 2 cm (x body scale) height band from the shoulder joints 0.52 m (x
+ * scale) down, and per 15 degrees round, the largest radius of the vertices that move with the trunk;
+ * plus the arms' radii near the elbow (upper arm with its sleeve, forearm). Arms placed by IK keep their
+ * elbows outside it (Rig.torsoRA, Rig._armIK). raw: the cast's vertex views {n, pos, bi, bw, tex}.
+ * Returns null when the mesh gives too few points.
+ */
+export function torsoProfile(raw, joints, H) {
+  const k = H / 1.76;
+  const shY = 0.5 * (joints[B.armL][1] + joints[B.armR][1]);
+  const zc = 0.5 * (joints[B.spine2][2] + joints[B.pelvis][2]);
+  const DY = 0.02 * k, NY = 26, NT = 24, y0 = shY - 0.52 * k;
+  const r = new Float32Array(NY * NT);
+  const { n, pos, bi, bw, tex } = raw;
+  // arm axes (rest): shoulder -> elbow -> wrist, per side
+  const ax = [[B.armL, B.foreL, B.handL], [B.armR, B.foreR, B.handR]].map((bs) => bs.map((b) => joints[b]));
+  const dU = [], dF = [];
+  const segT = (p, a, b) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], L2 = ux * ux + uy * uy + uz * uz;
+    const t = ((p[0] - a[0]) * ux + (p[1] - a[1]) * uy + (p[2] - a[2]) * uz) / L2;
+    const qx = p[0] - a[0] - ux * t, qy = p[1] - a[1] - uy * t, qz = p[2] - a[2] - uz * t;
+    return [t, Math.sqrt(qx * qx + qy * qy + qz * qz)];
+  };
+  const p3 = [0, 0, 0];
+  for (let v = 0; v < n; v++) {
+    const reg = tex[v * 4 + 2];
+    if ((reg >= 1 && reg <= 4) || reg === 11) continue;        // hair, brows, lashes, eyes, beard
+    let trunk = 0, arm = 0, bb = -1, wm = -1;
+    for (let j = 0; j < 4; j++) {
+      const w = bw[v * 4 + j], b = bi[v * 4 + j];
+      if (b >= B.pelvis && b <= B.spine2) trunk += w;
+      else if ((b >= B.armL && b <= B.handL) || (b >= B.armR && b <= B.handR)) arm += w;
+      if (w > wm) { wm = w; bb = b; }
+    }
+    const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2];
+    if (trunk >= 191 && arm < 51) {
+      const iy = Math.floor((y - y0) / DY);
+      if (iy < 0 || iy >= NY) continue;
+      const it = ((Math.round(Math.atan2(x, zc - z) / (2 * Math.PI) * NT) % NT) + NT) % NT;
+      const rr = Math.sqrt(x * x + (z - zc) * (z - zc));
+      if (rr > r[iy * NT + it]) r[iy * NT + it] = rr;
+    } else if (bb === B.armL || bb === B.armR || bb === B.foreL || bb === B.foreR) {
+      const a = ax[bb === B.armL || bb === B.foreL ? 0 : 1];
+      p3[0] = x; p3[1] = y; p3[2] = z;
+      if (bb === B.armL || bb === B.armR) { const [t, d] = segT(p3, a[0], a[1]); if (t > 0.6 && t < 0.95) dU.push(d); }
+      else { const [t, d] = segT(p3, a[1], a[2]); if (t > 0.05 && t < 0.3) dF.push(d); }
+    }
+  }
+  // empty cells: from their neighbours round the ring; rows without enough points from the nearest row
+  const ok = new Uint8Array(NY);
+  for (let iy = 0; iy < NY; iy++) {
+    const row = r.subarray(iy * NT, iy * NT + NT);
+    let cnt = 0;
+    for (let i = 0; i < NT; i++) if (row[i] > 0) cnt++;
+    if (cnt < NT / 3) continue;
+    ok[iy] = 1;
+    for (let i = 0; i < NT; i++) {
+      if (row[i] > 0) continue;
+      let a = 1, b = 1;
+      while (!(row[(i - a + NT) % NT] > 0)) a++;
+      while (!(row[(i + b) % NT] > 0)) b++;
+      row[i] = (row[(i - a + NT) % NT] * b + row[(i + b) % NT] * a) / (a + b);
+    }
+  }
+  let any = false;
+  for (let iy = 0; iy < NY; iy++) any ||= !!ok[iy];
+  if (!any) return null;
+  for (let iy = 0; iy < NY; iy++) {
+    if (ok[iy]) continue;
+    let d = 1;
+    while (!((iy - d >= 0 && ok[iy - d]) || (iy + d < NY && ok[iy + d]))) d++;
+    const src = iy - d >= 0 && ok[iy - d] ? iy - d : iy + d;
+    r.copyWithin(iy * NT, src * NT, src * NT + NT);
+  }
+  // (the median distance from the bone: the arm's own surface, not a jacket's hem or the cloth beside it)
+  const med = (a, def) => { if (a.length < 20) return def; a.sort((u, w) => u - w); return Math.min(1.6 * def, a[a.length >> 1]); };
+  return { y0, dy: DY, ny: NY, nt: NT, zc, r, rU: med(dU, 0.042 * k), rF: med(dF, 0.036 * k) };
+}
+
 /** Two-bone IK: returns the mid joint position bending towards `pole`. */
 function solveIK(root, target, l1, l2, pole, reach = 0.999) {
   const dv = target.clone().sub(root);
@@ -120,15 +200,16 @@ function solveIK(root, target, l1, l2, pole, reach = 0.999) {
 }
 
 export class Rig {
-  constructor(skel, info) {
+  /** raw (optional): the character's vertex views, for the torso's cross-sections (torsoProfile). */
+  constructor(skel, info, raw = null) {
     this.parent = skel.parent;
     this.rest = skel.joints.map((j) => new THREE.Vector3(...j));
     this.info = info;
     const R = this.rest;
     this.H = info.H;
+    this.prof = raw ? torsoProfile(raw, skel.joints, info.H) : null;
+    this.zc = 0.5 * (R[B.spine2].z + R[B.pelvis].z);
     this.kind = info.kind || 'male';
-    // forward extent of the chest (crossed arms rest in front of it)
-    this.chestFront = info.hang ? Math.min(info.hang[0][2], info.hang[1][2]) : -0.12 * (this.H / 1.76);
     this.style = GAIT[this.kind] || GAIT.male;
     this.side = { L: -1, R: 1 };
     this.l1 = R[B.thighR].distanceTo(R[B.shinR]);
@@ -177,6 +258,60 @@ export class Rig {
       const wd = new THREE.Vector3().crossVectors(ha, pn).normalize();   // wrist flexion axis (fingers -> palm)
       this.elbow[s] = { axis, rest: Math.acos(Math.min(1, du.dot(df))) / DEG, du, df, pn, wd };
     }
+    // the arms' thickness near the elbow (with the sleeve), and the elbow's clearance from the torso's
+    // surface (a little less than that: the cloth gives)
+    this.rU = this.prof ? this.prof.rU : 0.042 * k;
+    this.rF = this.prof ? this.prof.rF : 0.036 * k;
+    this.elbowClear = 0.85 * Math.max(this.rU, this.rF);
+  }
+
+  /** Torso radius (rest pose, round the axis x = 0, z = zc) at angle th from the front (+ towards +x,
+   *  the right) and height y: the measured cross-sections, or an estimate from the hang rings. */
+  torsoRA(th, y) {
+    const P = this.prof;
+    if (P) {
+      const fy = Math.min(P.ny - 1, Math.max(0, (y - P.y0) / P.dy - 0.5));
+      const iy = Math.min(P.ny - 2, Math.floor(fy)), ty = fy - iy;
+      let ft = (th / (2 * Math.PI)) * P.nt;
+      ft = ((ft % P.nt) + P.nt) % P.nt;
+      const i0 = Math.floor(ft) % P.nt, i1 = (i0 + 1) % P.nt, tt = ft - Math.floor(ft);
+      const r = P.r, a = iy * P.nt, b = a + P.nt;
+      return (r[a + i0] * (1 - tt) + r[a + i1] * tt) * (1 - ty) + (r[b + i0] * (1 - tt) + r[b + i1] * tt) * ty;
+    }
+    // (no mesh: a rounded box through the chest and waist rings)
+    const h = this.info.hang, k = this.H / 1.76;
+    const r0 = h ? h[0] : [this.rest[B.armR].y - 0.13 * k, 0.15 * k, -0.12 * k, 0.1 * k];
+    const r1 = h ? h[1] : [this.rest[B.spine1].y, 0.14 * k, -0.11 * k, 0.09 * k];
+    const t = Math.min(1, Math.max(0, (y - r0[0]) / (r1[0] - r0[0] || 1)));
+    const hw = r0[1] + (r1[1] - r0[1]) * t;
+    const zF = r0[2] + (r1[2] - r0[2]) * t, zB = r0[3] + (r1[3] - r0[3]) * t;
+    const c = Math.cos(th), sn = Math.abs(Math.sin(th));
+    const bz = c > 0 ? Math.max(0.05 * k, this.zc - zF) : Math.max(0.05 * k, zB - this.zc);
+    const e = 2.5;
+    return Math.pow(Math.pow(sn / hw, e) + Math.pow(Math.abs(c) / bz, e), -1 / e);
+  }
+
+  /** How far the point p (rest thorax frame) lies outside the torso's surface (m; < 0 inside), or
+   *  Infinity outside the measured heights. */
+  torsoClear(p) {
+    const P = this.prof;
+    if (P && (p.y < P.y0 || p.y > P.y0 + P.ny * P.dy)) return Infinity;
+    const dz = p.z - this.zc;
+    return Math.sqrt(p.x * p.x + dz * dz) - this.torsoRA(Math.atan2(p.x, -dz), p.y);
+  }
+
+  /** Folded arms: the elbow of the arm with shoulder S (rest) on side sg, just clear of the torso at
+   *  `deg` degrees from the front, as far down as the upper arm reaches. */
+  foldElbow(S, sg, deg) {
+    const th = sg * deg * DEG, ua = this.ua;
+    let y = S.y - 0.85 * ua, x = 0, z = 0;
+    for (let i = 0; i < 3; i++) {
+      const r = this.torsoRA(th, y) + this.elbowClear;
+      x = r * Math.sin(th); z = this.zc - r * Math.cos(th);
+      const d2 = (x - S.x) * (x - S.x) + (z - S.z) * (z - S.z);
+      y = S.y - Math.sqrt(Math.max(ua * ua - d2, 0.25 * ua * ua));
+    }
+    return new THREE.Vector3(x, y, z);
   }
 
   /** Builds world rotations / positions for one pose description. */
@@ -250,6 +385,9 @@ export class Rig {
     fk(B['arm' + s]);                                  // shoulder joint position
     const sh = p[B['arm' + s]].clone();
     const ik = solveIK(sh, toModel(A.ik.target), this.ua, this.fa, A.ik.pole.clone().applyQuaternion(cq), 0.985);
+    // the elbow never sinks into the torso (the cloth included): turned out round the shoulder-wrist
+    // line as far as it takes (ik.clear: false leaves it, a number asks for that clearance)
+    if (A.ik.clear !== false) this._clearElbow(ik, sh, cq, cp, A.ik.clear);
     const dU = ik.mid.clone().sub(sh), dF = ik.end.clone().sub(ik.mid);
     const nU = new THREE.Vector3().crossVectors(dU, dF).normalize();
     q[B['arm' + s]].copy(matchFrames(E.du, E.axis, dU, nU));
@@ -258,6 +396,27 @@ export class Rig {
     p[B['hand' + s]].copy(ik.end);
     q[B['hand' + s]].copy(q[B['fore' + s]]).multiply(A.handQ || new THREE.Quaternion());
     if (A.ik.flex) q[B['hand' + s]].multiply(qAxis(E.wd, A.ik.flex));
+  }
+
+  /** Moves an IK elbow (ik.mid, model space) that lies inside the torso, or nearer its surface than the
+   *  arm's thickness, round the shoulder-wrist line to the nearest place clear of it. */
+  _clearElbow(ik, sh, cq, cp, want) {
+    const need = typeof want === 'number' ? want : this.elbowClear;
+    const cqi = cq.clone().invert(), S2 = this.rest[B.spine2];
+    const tmp = new THREE.Vector3();
+    const clr = (m) => this.torsoClear(tmp.copy(m).sub(cp).applyQuaternion(cqi).add(S2)) - need;
+    let bestC = clr(ik.mid);
+    if (bestC >= 0) return;
+    const u = ik.end.clone().sub(sh).normalize(), rel = ik.mid.clone().sub(sh);
+    let best = null;
+    for (let a = 5; a <= 75 && bestC < 0; a += 5) {
+      for (const sgn of [1, -1]) {
+        const m = rel.clone().applyAxisAngle(u, sgn * a * DEG).add(sh);
+        const c = clr(m);
+        if (c > bestC) { bestC = c; best = m; }
+      }
+    }
+    if (best) ik.mid.copy(best);
   }
 
   /** Skin matrices (12 floats per bone) for a solved pose. */
@@ -506,17 +665,26 @@ export class Rig {
       // arms folded across the chest: the right forearm in front, its hand tucked under the
       // left upper arm; the left forearm behind it with the hand resting on the right biceps
       // (in front of this body's chest: its forward extent comes from the build's hang rings)
-      // (forearms against the lower chest, the elbows low by the sides, upper arms nearly hanging)
-      const zf = this.chestFront;
+      // The upper arms hang a little forward against the front of the chest's sides: each elbow sits at
+      // the torso's front-side corner, an arm's thickness off its surface (the measured cross-sections,
+      // cloth included), as low as the upper arm reaches. Each forearm runs from its elbow across the
+      // front, resting on the chest at the middle (the left a forearm's thickness above the right), the
+      // wrist past the middle and the hand bent round towards the far upper arm.
+      // (the left elbow a little further forward, so a little higher: its forearm lies above the right
+      // one without climbing to the far shoulder; each wrist rises a little from its elbow)
       const br = 0.004 * Math.sin(T * 5);
-      // (the forearms lie one above the other, a forearm's thickness apart, a little off the chest)
-      // (the hands reach round to the opposite upper arms: the wrists well past the middle, the forearms
-      // resting on each other rather than hovering in front of the chest)
-      P.arm.R.ik = { target: new THREE.Vector3(-shX * 0.56, shY - 0.262 * k + br, zf - 0.046 * k),
-        pole: new THREE.Vector3(0.25, -1, 0.12), palm: new THREE.Vector3(0.1, -0.25, 1), flex: 62 };
-      // (the left forearm lies above it, its hand tucked round the right upper arm)
-      P.arm.L.ik = { target: new THREE.Vector3(shX * 0.6, shY - 0.205 * k + br, zf - 0.037 * k),
-        pole: new THREE.Vector3(-0.25, -1, 0.12), palm: new THREE.Vector3(-0.1, -0.25, 1), flex: 58 };
+      for (const s of ['R', 'L']) {
+        const sg = this.side[s], S = R[B['arm' + s]];
+        const E = this.foldElbow(S, sg, s === 'R' ? 50 : 43);
+        const rise = (s === 'R' ? 0.02 : 0.02 + 1.6 * this.rF / k) * k + br;
+        const yA = E.y + 0.6 * rise;
+        const A = new THREE.Vector3(0, yA, this.zc - this.torsoRA(0, yA) - 0.9 * this.rF);
+        const h = A.sub(E).setY(0).normalize();
+        const W = E.clone().addScaledVector(h, Math.sqrt(this.fa * this.fa - rise * rise)).setY(E.y + rise);
+        // (the right palm against the chest under the left upper arm, the left palm turned onto the right biceps)
+        P.arm[s].ik = { target: W, pole: E.clone().sub(S), flex: s === 'R' ? 55 : 58,
+          palm: s === 'R' ? new THREE.Vector3(0.1, -0.25, 1) : new THREE.Vector3(0.5, -0.2, 0.85) };
+      }
     } else if (variant === 3) {
       // hands in the front pockets: wrists at the pocket openings, elbows out a little (the
       // shader tucks the hands themselves inside the trousers)

@@ -1,6 +1,6 @@
 import {
   RIDE_D, BAND, BAND_LO, BAND_HI, TRAM_LEN, NO_GO_AHEAD, BRAKE_DECEL, SWEPT_HALF, SWEPT_AHEAD, AGENT_R,
-  PASS_BASE, PASS_PER_V, CLEAR_T,
+  PASS_BASE, PASS_PER_V, CLEAR_T, BELL_OUT,
 } from './constants.js';
 import { KIND, ST, TASK, MOB, settleShape } from './agent.js';
 import { MAX_SPEED, TRACK_ZONE_HALF } from '../../core/config.js';
@@ -67,12 +67,14 @@ export class TramWatch {
     this.passD = PASS_BASE;   // comfortable centre distance from the ride track while the tram is near
     this.stoppedAt = null;    // station the tram is standing at
     this.bellAt = -1e9;       // last bell heard
+    this.bellReach = 40;      // ... and how far ahead of the cab it made people step off its track
     this.reqUrgency = 0;
     this.lastReqT = -1e9;
     this.lastReqU = 0;
     // (rightForUnit: people sent off the cab's track to the right because a unit holds the left;
-    // unitHold: agent-frames somebody waited on the cab's track for a unit to go by)
-    this.stats = { violations: 0, rescues: 0, blocked: 0, tramSide: 0, bellRequests: 0, bells: 0, maxUrgency: 0, sidesteps: 0, pairClears: 0, cabBrake: 0, squeeze: 0, rightForUnit: 0, unitHold: 0 };
+    // unitHold: agent-frames somebody waited on the cab's track for a unit to go by; bellClears:
+    // people who started stepping off the cab's track on hearing the bell)
+    this.stats = { violations: 0, rescues: 0, blocked: 0, tramSide: 0, bellRequests: 0, bells: 0, maxUrgency: 0, sidesteps: 0, pairClears: 0, cabBrake: 0, squeeze: 0, rightForUnit: 0, unitHold: 0, bellClears: 0 };
     // seconds the cab was still away when people got out of its band (the last CLR_N, a ring)
     this.clrTTA = new Float32Array(CLR_N); this.clrN = 0; this.clrLog = [];
     this.obstacle = Infinity;  // the nearest person the cab must brake for this frame (m ahead of its front)
@@ -186,7 +188,12 @@ export class TramWatch {
     let f = Math.max(SWEPT_AHEAD + 6, vc * Math.max(a.clearT, CLEAR_DEADLINE + exit) + 4);
     // a tram gathering speed is noticed a little earlier (it will be faster than it looks)
     if (this.acc > 0.2) f = Math.max(f, 12 + vc * 2.4);
-    if (a.bellT > this.c.time) f = Math.max(f, vc * (a.clearT + 2.5) + 10);
+    if (a.bellT > this.c.time) {
+      f = Math.max(f, vc * (a.clearT + 2.5) + 10);
+      // heard it: within the bell's reach people step off the cab's track and keep off it for a
+      // few seconds, however far away the cab still is (a standing one about to move off included)
+      if (this.c.time >= a.bellS) f = Math.max(f, this.bellReach + 8);
+    }
     a.front = f;
   }
 
@@ -210,6 +217,8 @@ export class TramWatch {
     const ahead = s - this.trainU;
     if (ahead < -(TRAM_LEN + 3)) return true;
     if (ahead < NO_GO_AHEAD + 2) return false;
+    // (heard the bell: nobody steps onto the cab's track within its reach for a few seconds)
+    if (a.bellT > this.c.time && this.c.time >= a.bellS && ahead < this.bellReach + 8) return false;
     // where the tram could be by the time they are through, even if it pulls away meanwhile.
     // Parents with a stroller go only when it is clearly safe: a much bigger margin.
     // cyclists cross the ride track only with a wide margin too (they come back across often)
@@ -666,11 +675,15 @@ export class TramWatch {
       a.clearing = true;
       const toHi = BAND_HI - a.d, toLo = a.d - BAND_LO;
       let hi = toHi <= toLo;
+      // heard the bell: a prompt sidestep to the nearer side (BELL_OUT), wherever the cab is
+      const bell = a.bellT > time && time >= a.bellS;
+      if (bell) this.stats.bellClears++;
       // walking along the corridor: over to its left strip and on (rather than off the
       // corridor), when that is not much further
-      if (a.state === ST.WALK && !a.mob && toLo < toHi + 1.2) hi = false;
+      if (a.state === ST.WALK && !a.mob && toLo < toHi + 1.2 && !bell) hi = false;
       // keep going towards the destination when there is time for it
-      const tta = ahead > 0 && this.v > 0.2 ? ahead / this.v : 1e9;
+      let tta = ahead > 0 && this.v > 0.2 ? ahead / this.v : 1e9;
+      if (bell) tta = Math.min(tta, BELL_OUT + 0.7);
       const going = a.state === ST.GOTO;
       if (going && a.gd > RIDE_D + 1 && toHi / a.hurry < tta - 2) hi = true;
       else if (going && a.gd < RIDE_D - 1 && toLo / a.hurry < tta - 2) hi = false;
@@ -819,7 +832,10 @@ export class TramWatch {
     }
     // (a unit's driver brakes for anybody still on its track: out before that)
     if ((a.uClr || a.uOver) && a.uI >= 0) { const T = this.unitById(a.uI); if (T) left = Math.min(left, this.uDeadline(a, T)); }
-    const need = dist / Math.max(0.6, left);
+    let need = dist / Math.max(0.6, left);
+    // (heard the bell: a brisk sidestep, out BELL_OUT seconds after hearing it, not a trot)
+    const time = this.c.time;
+    if (!a.uClr && a.bellT > time && time >= a.bellS) need = Math.max(need, Math.min(H, dist / Math.max(0.8, a.bellS + BELL_OUT - time)));
     // (past the deadline: at a trot, whoever it is)
     const late = !a.uClr && left < CLEAR_DEADLINE - 0.5;
     return Math.min(H * 1.2, Math.max(a.v0 * 0.95, need, late ? H : 0));
