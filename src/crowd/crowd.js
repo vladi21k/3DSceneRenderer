@@ -35,6 +35,15 @@ import { stanceOf } from './behaviour/stance.js';
 // 12 s), the people of their own group included; stats().appearance counts the placements.
 // Café staff are handed to the renderer with set() field outfit: 'waiter' (everybody else '').
 //
+// Company: about half the people on foot walk in pairs and threes, shoulder to shoulder (0.5-0.65 m
+// between body centres), talking in turns with the listeners' heads turned to the one talking;
+// children and some couples walk hand in hand (set() field holdWith: the companion's slot; a child
+// beside a stroller holds on to it); companions follow people out of shop doors a moment later.
+// Café parties of two to four sit down together (the share of tables taken follows the street and
+// the time of day), get up together and walk off as a group; a free table out of view gets a new
+// party now and then, and couples or groups walking by take free tables in view.
+// stats().population counts cafeTurn, partyLeave, groupSit and doorMate.
+//
 // Strollers and bicycles (Mobility extension): a person pushing a stroller is pose 3 /
 // prop 1, a cyclist pose 4 / prop 2, someone walking a bicycle pose 5 / prop 2; propSeed
 // picks the model and colour, `lean` (rad, + leans left, like three.js rotations) is the

@@ -15,7 +15,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { Tpl, TplCache, VS, lin } from './geo.js';
-import { cloth, hangerTpl } from './dressing.js';
+import { cloth, hangerTpl, clothColour, CLOTH_VARIANTS } from './dressing.js';
 import { printCell } from './signs.js';
 import { shopDecision } from './shops.js';
 
@@ -42,8 +42,6 @@ const CITRUS = ['oranges', 'oranges', 'lemons', 'grapefruit', 'pomegranates', 'o
 const NUTS = [[0x7a4a22, 0.011, 1.6], [0xb4a274, 0.012, 1.3], [0x2e2c28, 0.007, 1.8], [0xb08a52, 0.011, 1.5], [0x6a3418, 0.012, 1.1], [0xc8b48a, 0.009, 1.4]];
 const SPICES = [0xa82a14, 0xc8901a, 0x7a5a30, 0x5a6a2e, 0x8a2a1a, 0xb87a2a];
 const FLOWERS = [0xb81c2a, 0xe87aa0, 0xf2eee4, 0xe8c22a, 0xe0662a, 0x6a3a8a, 0xf0d8c8, 0xc83a5a, 0xd8a8d0, 0x3a5aa8];
-const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a, 0x2a5a8a,
-  0xc8231c, 0x1f4fa0, 0xe86a8a, 0x2a9a8a, 0xf2d24a, 0xe0641a];
 const CRATES = [[0x2a5a32, 0.3], [0x1d1d1f, 0.25], [0x1f4a7a, 0.15], [0x8a2a22, 0.08], [0xb8956a, 0.22]];   // plastic greens, blacks, blues, reds; pine
 const BIN_GOODS = {
   toys: [0xc8231c, 0x1f5fa8, 0xe8b820, 0x2a7a3a, 0xe87aa0, 0xf2efe6, 0xe0662a],
@@ -611,15 +609,16 @@ function clothesRail(st, r, q) {
   const kind = r.pick(kinds);
   const run = r.int(2, 4);
   const nG = Math.floor((W - 0.12) / 0.07);
-  let c1 = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
+  let c1 = clothColour(r), c2 = clothColour(r);
   const hc = lin(r.pick([0x141414, 0x141414, 0x5a3a22, 0xd8d8d4]));
   for (let i = 0; i < nG; i++) {
-    if (i % run === 0) { c1 = lin(r.pick(CLOTH)); c2 = lin(r.pick(CLOTH)); }
-    const tp = cloth(i % 5 === 4 ? r.pick(kinds) : kind, 'rail');
+    if (i % run === 0) { c1 = clothColour(r); c2 = clothColour(r); }
+    const tp = cloth(i % 5 === 4 ? r.pick(kinds) : kind, 'rail', r.int(0, CLOTH_VARIANTS - 1));
     const len = tp.len;
-    const x = -W / 2 + 0.07 + i * ((W - 0.14) / Math.max(1, nG - 1));
-    // a hanger's hook over the rail; the garment faces along the rail, swaying a little
-    const m = new THREE.Matrix4().makeTranslation(x, top - 0.035, 0).multiply(_r.makeRotationY((i % 2 ? 1 : -1) * Math.PI / 2 + r.range(-0.12, 0.12)));
+    const x = -W / 2 + 0.07 + i * ((W - 0.14) / Math.max(1, nG - 1)) + r.range(-0.012, 0.012);
+    // a hanger's hook over the rail; the garment faces along the rail, the pieces pressed
+    // together (a little off square, a centimetre or two in front of or behind the rail)
+    const m = new THREE.Matrix4().makeTranslation(x, top - 0.035, r.range(-0.015, 0.015)).multiply(_r.makeRotationY((i % 2 ? 1 : -1) * Math.PI / 2 + r.range(-0.06, 0.06)));
     if (top - 0.035 - len < 0.12) m.multiply(_t.makeScale(1, (top - 0.17) / len, 1));
     const stripe = r.chance(0.2) ? r.range(0.03, 0.07) : 0;
     parts.push(PART('cloth', tp, c1, { aStripe: [c2[0], c2[1], c2[2], stripe], aFlex: (k, v, a, j) => { a[j] = Math.min(1, Math.max(0, -v[k * VS + 1] / len)) * 0.5; } }, m));
@@ -630,7 +629,7 @@ function clothesRail(st, r, q) {
   // along the street
   for (const sx of [-1, 1]) {
     if (!r.chance(0.8)) continue;
-    const tp = cloth(r.pick(kinds), 'rail'), len = tp.len, c = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
+    const tp = cloth(r.pick(kinds), 'rail', r.int(0, CLOTH_VARIANTS - 1)), len = tp.len, c = clothColour(r), c2 = clothColour(r);
     const y = top - 0.06;
     const m = new THREE.Matrix4().makeTranslation(sx * (W / 2 + 0.035), y, 0).multiply(_r.makeRotationY(sx * Math.PI / 2 + r.range(-0.15, 0.15)));
     if (y - len < 0.1) m.multiply(_t.makeScale(1, (y - 0.12) / len, 1));

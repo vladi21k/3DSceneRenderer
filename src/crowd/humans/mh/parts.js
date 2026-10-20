@@ -516,7 +516,7 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
   const b = new PartBuilder();
   const yTop = waistY - 0.03 * k, yHem = J[BONE.shinL].y - 0.1 * k;
   const az = 0.5 * (J[BONE.thighL].z + J[BONE.thighR].z);
-  const TH = 1.7;                     // (round the front and sides, about +-97 degrees; open at the back)
+  const TH = 1.45;                    // (round the front and over the hips, about +-83 degrees: the trousers show at the sides and back)
   const o = new THREE.Vector3(), d = new THREE.Vector3();
   const rayR = (y, th) => {
     o.set(0, y, az); d.set(Math.sin(th), 0, -Math.cos(th));
@@ -542,7 +542,8 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
     const col = [];
     const fh = foldH(th);
     // (the hem a little longer where the cloth folds out, shorter in the valleys; the side edges turn in)
-    const hemDy = (near ? 0.012 * (fh - 0.5) : 0) * k - 0.02 * k * THREE.MathUtils.smoothstep(Math.abs(th), TH - 0.35, TH);
+    // (and the hem is cut a little uneven, and hangs lower in the middle than at the corners)
+    const hemDy = (near ? 0.016 * (fh - 0.5) + 0.006 * Math.sin(th * 7.3 + seed) : 0) * k - 0.025 * k * THREE.MathUtils.smoothstep(Math.abs(th), TH - 0.4, TH);
     for (let j = 0; j <= NY; j++) {
       const u = j / NY;
       const y = yTop + (yHem + hemDy * u * u - yTop) * u;
@@ -551,7 +552,7 @@ function apron(char, J, k, surf, hipY, waistY, NT, NY, near) {
       const ease = THREE.MathUtils.smoothstep(u, 0, 0.3);
       // (clear of the shirt by ~8 mm at the waistband: the shirt moves with the spine, the apron with the
       // pelvis, and the ties cover the edge)
-      const r = Math.max(rMax, 0.08 * k) + 0.008 + 0.012 * u * u + (near ? (0.002 + 0.013 * ease * u) * fh : 0.004 * u * u);
+      const r = Math.max(rMax, 0.08 * k) + 0.008 + 0.01 * u * u + (near ? (0.002 + 0.024 * ease * u) * fh : 0.006 * u * u);
       col.push(new THREE.Vector3(Math.sin(th) * r, y, az - Math.cos(th) * r));
     }
     cols.push(col);
@@ -653,6 +654,24 @@ function vnoise3(x, y, z) {
   const c = (dx, dy, dz) => hash3(ix + dx, iy + dy, iz + dz);
   return l(l(l(c(0, 0, 0), c(1, 0, 0), sx), l(c(0, 1, 0), c(1, 1, 0), sx), sy),
     l(l(c(0, 0, 1), c(1, 0, 1), sx), l(c(0, 1, 1), c(1, 1, 1), sx), sy), sz);
+}
+
+/**
+ * Soft dents and creases in a stuffed fabric or leather bag: the geometry's vertices pushed along their
+ * normals by value noise (a function of the position, so the duplicated edge vertices of the box faces move
+ * together), amplitude amp (m), feature size 1 / fq (m). Normals recomputed.
+ */
+function crumple(g, amp, fq, seed) {
+  const pos = g.attributes.position, nrm = g.attributes.normal;
+  const v = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i); n.fromBufferAttribute(nrm, i);
+    const c = vnoise3(v.x * fq + seed, v.y * fq * 0.8, v.z * fq) * 0.7 + vnoise3(v.x * fq * 2.3, v.y * fq * 2.6 + seed, v.z * fq * 2.3) * 0.3;
+    v.addScaledVector(n, amp * (c - 0.5) * 2);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  return g;
 }
 
 /**
@@ -821,7 +840,7 @@ export function buildParts(char, opts = {}) {
     // (a soft pack: deep corner radii, the load bulging its faces, the top rounded and narrower;
     // the panel against the back and the seams in shade)
     const panelAO = (v) => 0.55 + 0.45 * THREE.MathUtils.smoothstep(v.z, -pd * 0.5, -pd * 0.1);
-    b.geometry(roundBox(pw, ph, pd, 0.05 * k, 5, 0.13, 0.12), M, packSkin, REGION.bag, FLAG.SOLID, panelAO);
+    b.geometry(crumple(roundBox(pw, ph, pd, 0.05 * k, 5, 0.13, 0.12), 0.004 * k, 14 / k, 1.7), M, packSkin, REGION.bag, FLAG.SOLID, panelAO);
     // front pocket: a flatter, soft pouch low on the face
     b.geometry(roundBox(pw * 0.72, ph * 0.38, pd * 0.22, 0.03 * k, 3, 0.18, 0.06), M.clone().multiply(new THREE.Matrix4().makeTranslation(0, -ph * 0.19, pd * 0.5 * 1.1)),
       packSkin, REGION.bag, FLAG.SOLID, (v) => 0.7 + 0.3 * THREE.MathUtils.smoothstep(v.z, -pd * 0.11, pd * 0.04));
@@ -855,8 +874,11 @@ export function buildParts(char, opts = {}) {
       // over the shoulder (back to front)
       for (let i = 0; i <= 4; i++) {
         const u = i / 4;
+        // (on the shoulder's top, never higher than a little above the shoulder joint: on a child the search
+        // found the collar beside the neck and the straps stood up there like posts)
         const x = sg * (0.095 + 0.012 * u) * k, z = (0.045 - 0.09 * u) * k;
         const q = surf(new THREE.Vector3(x, shR.y - 0.03 * k, z), _up, 0.005, 0.016, 0, 0.11 * k);
+        if (q && k < 0.85) q.y = Math.min(q.y, shR.y + 0.03 * k);
         if (q) add({ p: q, n: new THREE.Vector3(0, 1, 0) });
       }
       // down the front of the chest to the lower ribs
@@ -870,7 +892,8 @@ export function buildParts(char, opts = {}) {
       const L = arcLengths(sp), Lt = L[L.length - 1];
       // (free of the back only where it leaves the pack)
       settle(surf, sp, sn, { off: 0.0055, halfW: 0.024 * k, gap: (i) => 0.01 + 0.05 * Math.max(0, 1 - L[i] / (0.08 * k)) });
-      const W = 0.05 * k, T = 0.011 * k;
+      // (a padded band about 5 x 0.75 cm: flat, not a hose)
+      const W = 0.05 * k, T = 0.0075 * k;
       const skinP = (p, i) => {
         const s = packAt(p), u = Math.max(0, 1 - L[i] / (0.1 * k));
         return u > 0 ? mixSkin(s, packSkin, u) : s;
@@ -904,7 +927,8 @@ export function buildParts(char, opts = {}) {
       }
       const end = new THREE.Vector3(sg * pw * 0.42, -ph * 0.36, -pd * 0.32).applyMatrix4(M);
       wp.push(end); wn.push(new THREE.Vector3(sg, 0, 0));
-      if (wp.length >= 4) {
+      // (children's packs: no webbing back under the arm; on a small body it stands off beside the arm)
+      if (wp.length >= 4 && k >= 0.85) {
         const [wq, wnn] = resamplePath(wp, wn, 0.025 * k);
         const LW = arcLengths(wq), LWt = LW[LW.length - 1];
         settle(surf, wq, wnn, { off: 0.003, halfW: 0.01 * k, gap: (i) => 0.006 + 0.04 * Math.max(0, 1 - (LWt - LW[i]) / (0.08 * k)) });
@@ -970,13 +994,13 @@ export function buildParts(char, opts = {}) {
     };
     const bagSkin = [[BONE.pelvis, 0.7], [BONE.spine1, 0.3]];
     const innerAO = (v) => 0.5 + 0.5 * THREE.MathUtils.smoothstep(v.x, -bd * 0.5, bd * 0.15);
-    b.warp(roundBox(bd, bh, bw, 0.022 * k, 4, 0.12, 0.05), wrap, bagSkin, REGION.bag, FLAG.SOLID, innerAO);
+    b.warp(crumple(roundBox(bd, bh, bw, 0.022 * k, 4, 0.12, 0.05), 0.0015 * k, 22 / k, 4.1), wrap, bagSkin, REGION.bag, FLAG.SOLID, innerAO);
     // the flap over the top two thirds of its face
     // (laid on the bag's swollen face: the same bulge as roundBox's pillow)
     b.warp(roundBox(0.005 * k, bh * 0.64, bw * 1.015, 0.002 * k, 3, 0, 0), (v, n) => {
       const yy = v.y + bh * 0.19, a = yy / (bh / 2), c = v.z / (bw / 2);
       const bul = (1 - Math.min(1, a * a)) * (1 - Math.min(1, c * c));
-      v.x += (bd / 2) * (1 + 0.24 * bul) + 0.0025;
+      v.x += (bd / 2) * (1 + 0.24 * bul) + 0.0035;
       v.y = yy;
       wrap(v, n);
     }, bagSkin, REGION.bag, FLAG.SOLID, 0.92);

@@ -182,6 +182,14 @@ void hSkin(out vec3 P, out vec3 N) {
     float ph = 6.2831853 * D0.x;
     pos.z += u * u * v * (0.018 + 0.006 * cos(2.0 * ph));
     pos.x += u * u * v * 0.008 * sin(ph + 0.6);
+    // (and the hem flares out a little with the stride, the side of the leg swinging forward more: the
+    // cloth lags the thigh that pushes it)
+    vec2 rd = vec2(pos.x, pos.z - hLook(row, 18).z);
+    float rl = length(rd);
+    if (rl > 1e-4) {
+      float sw = pos.x < 0.0 ? sin(ph - 0.5) : -sin(ph - 0.5);
+      pos.xz += rd / rl * u * u * min(v, 1.6) * (0.01 + 0.008 * max(sw, 0.0));
+    }
   }
 #endif
   // beard shells: grown out along the skin normal by the beard's length there, the strands curving
@@ -498,7 +506,7 @@ vec3 hHairSpec(vec3 L, vec3 V, vec3 N, vec3 T) {
   float s2 = pow(sqrt(max(0.0, 1.0 - th2 * th2)), e2);
   vec3 tint = mix(vec3(1.0), hHairC / max(hLum(hHairC), 1e-3), 0.35);
   float br = mix(0.4 + 0.8 * j, 0.8, hFar);
-  float k1 = hCard ? 0.03 * (0.45 + 0.8 * cardA) : 0.026;
+  float k1 = hCard ? 0.037 * (0.45 + 0.8 * cardA) : 0.026;
   // (the tinted lobe a little less saturated than the fibre colour: light leaving the strand is not only absorbed)
   vec3 c2 = hCard ? mix(vec3(hLum(hHairC)), hHairC, 0.7) * 0.75 : hHairC;
   return (k1 * tint * s1 * br * (0.15 + 1.5 * clump) + c2 * 0.3 * s2 * (0.35 + 0.9 * clump) * (0.7 + 0.5 * j)) * hAO * hStrand;
@@ -688,7 +696,8 @@ const FRAG_SURFACE = /* glsl */`
     hEyeLid = lid;
     {
       vec4 Fe = hLook(row, 28);
-      if (Fe.w > 0.0) { hFK = 0.85; hFOver = vRest.z - (ec.z - 0.013 * Fe.w); hFBelow = ec.y + 0.013 * Fe.w - vRest.y; hFSoft = 0.003 * Fe.w; }
+      float bz = hLook(row, 27).w;
+      if (Fe.w > 0.0) { hFK = 0.85; hFOver = vRest.z - min(ec.z - 0.02 * Fe.w, bz != 0.0 ? bz : 1.0); hFBelow = ec.y + 0.014 * Fe.w - vRest.y; hFSoft = 0.003 * Fe.w; }
     }
     float er = hLook(row, 25).w;
     if (er > 0.0) {
@@ -843,7 +852,10 @@ const FRAG_SURFACE = /* glsl */`
       // the face's relief against the sun (hFaceShadow): the eye sockets under the brow ridge, the upper
       // lip under the nose, the neck under the jaw
       {
-        float yBr = ec2.y + 0.013 * hk, zBr = ec2.z - 0.013 * hk;
+        // (the brow ridge: the brow line's own depth where the cast has it (look texel 27 w), else ~2 cm in
+        // front of the eye's centre; the supraorbital rim stands about a centimetre ahead of the cornea)
+        float bz = hLook(row, 27).w;
+        float yBr = ec2.y + 0.014 * hk, zBr = min(ec2.z - 0.02 * hk, bz != 0.0 ? bz : 1.0);
         vec2 de = vec2((ax - ec2.x) / (0.024 * hk), (vRest.y - ec2.y + 0.003 * hk) / (0.017 * hk));
         float sock = (1.0 - smoothstep(0.75, 1.15, length(de))) * step(vRest.z, ec2.z + 0.012 * hk) * step(vRest.y, yBr);
         float yNb = F0.y - 0.006 * hk;
@@ -971,13 +983,34 @@ const FRAG_SURFACE = /* glsl */`
     hSpec = film ? 1.0 : 0.4;
   }
   if (uDecal > 0.5 && (hRegion == 14 || hRegion == 15) && !hShop) {
-    // bags and straps: a leather / canvas grain and soft wear up close
+    // bags and straps: what they are made of (bag texel w = -material: 1 nylon, 2 canvas, 3 leather), seams
+    // piped along every panel's edges (the panels' uv run 0..1), webbing straps with stitched edges; a
+    // weave or grain and soft wear up close
+    float bm = -hLook(row, 14).w;
+    if (bm > 2.5) { hRough = 0.5; hSpec = 0.65; }
+    else if (bm > 1.5) { hRough = 0.9; hSpec = 0.3; }
+    else if (bm > 0.5) { hRough = 0.42; hSpec = 0.8; }
+    vec2 fwu = max(fwidth(vCastUv), vec2(1e-4));
+    if (bm < 0.5) {
+      // (a shopping tote: no panels)
+    } else if (hRegion == 14) {
+      vec2 e2 = min(vCastUv, 1.0 - vCastUv) / fwu;
+      float seam = 1.0 - smoothstep(1.0, 3.5, min(e2.x, e2.y));
+      diffuseColor.rgb *= 1.0 - 0.3 * seam;
+      hAO *= 1.0 - 0.25 * seam;
+    } else if (hRegion == 15) {
+      // (a webbing strap: darker edges, a line of stitching just inside each)
+      float u = vCastUv.x;
+      float edge = 1.0 - smoothstep(0.0, 0.18, min(u, 1.0 - u));
+      float st = (1.0 - smoothstep(0.0, 0.04 + fwu.x, abs(min(u, 1.0 - u) - 0.2))) * (1.0 - smoothstep(0.15, 0.45, fwu.x));
+      diffuseColor.rgb *= (1.0 - 0.25 * edge) * (1.0 - 0.18 * st);
+    }
     float fwb = length(fwidth(vRest));
     float nb = 1.0 - smoothstep(0.0015, 0.006, fwb);
     if (nb > 0.0) {
-      float g1 = hVNoise(vRest * 900.0), g2 = hVNoise(vRest * 90.0);
-      hBump = nb * (g1 * 0.00012 + g2 * 0.0003);
-      diffuseColor.rgb *= 1.0 + nb * (g2 - 0.5) * 0.12;
+      float g1 = hVNoise(vRest * (bm > 2.5 ? 900.0 : 1700.0)), g2 = hVNoise(vRest * 90.0);
+      hBump = nb * (g1 * (bm > 2.5 ? 0.00012 : 0.00008) + g2 * 0.0003);
+      diffuseColor.rgb *= 1.0 + nb * (g2 - 0.5) * (bm > 2.5 ? 0.16 : 0.1);
     }
   }
   if ((hFlags & 2) != 0 && (hRegion >= 5 && hRegion <= 10 || hRegion == 14 || hRegion == 15)) {
@@ -1239,7 +1272,7 @@ export function writeLook(data, row, a) {
   // prop texel w: the tone of a glasses frame (0 black .. 1 tortoiseshell); bag texel w: a shopping bag's
   // print (0 none, 1 band, 2 block, 3 round logo; the fraction places it)
   data[o + 48 + 3] = a.frameTone || 0;
-  data[o + 56 + 3] = a.bagPrint || 0;
+  data[o + 56 + 3] = a.bag === 3 ? a.bagPrint || 0 : -(a.bagMat || 0);
   // eyes texel w: how dark the skin is (0 fair .. 1 deep; the white of the eye follows it)
   const anc = a.char.anc || [1, 0, 0], tone = a.char.tone;
   data[o + 16 + 3] = Math.min(1, anc[1] * 0.9 + (tone === 'brown' ? 0.6 : tone === 'tan' ? 0.3 : tone === 'olive' ? 0.15 : 0));

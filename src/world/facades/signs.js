@@ -447,7 +447,7 @@ function burst(g, cx, cy, r0, r1, n, color) {
  * Hand lettering in marker: each glyph (Latin) or word (Hebrew, which the canvas lays out
  * right to left with its numbers) slightly turned and offset, stroked round.
  */
-function hand(g, str, cx, cy, maxW, px, color, seed = 1) {
+function hand(g, str, cx, cy, maxW, px, color, seed = 1, stroke = 0.05) {
   const r = new RNG(seed);
   g.save();
   g.font = `700 ${px}px "DejaVu Sans", "Noto Sans Hebrew", "Liberation Sans", sans-serif`;
@@ -460,13 +460,16 @@ function hand(g, str, cx, cy, maxW, px, color, seed = 1) {
   const tot = ws.reduce((a, b) => a + b, 0) + gap * (units.length - 1);
   const sx = Math.min(1, maxW / Math.max(1, tot));
   g.translate(cx, cy); g.scale(sx, 1); g.rotate(r.range(-0.04, 0.04));
-  g.fillStyle = color; g.strokeStyle = color; g.lineWidth = px * 0.05; g.lineJoin = 'round';
+  g.fillStyle = color; g.strokeStyle = color; g.lineWidth = px * stroke; g.lineJoin = 'round';
   if (rtl) { g.direction = 'rtl'; g.textAlign = 'right'; }
   let x = -tot / 2;
   units.forEach((c, i) => {
     g.save();
     g.translate(x + (rtl ? ws[i] : 0) + r.range(-0.03, 0.03) * px, r.range(-0.05, 0.05) * px);
     g.rotate(r.range(rtl ? -0.04 : -0.07, rtl ? 0.04 : 0.07));
+    // (the marker's pressure: each glyph a little bolder or lighter, a little taller or squatter)
+    g.scale(r.range(0.94, 1.06), r.range(0.92, 1.08));
+    g.lineWidth = px * stroke * r.range(0.7, 1.3);
     g.fillText(c, 0, 0); g.strokeText(c, 0, 0);
     g.restore();
     x += ws[i] + gap;
@@ -563,13 +566,34 @@ const PRICE_DEFS = [
   ['#fbfaf6', '14.90', '#c8201a', 1.3], ['#b8e02a', '9.90', '#111', 1.3], ['#d01e1a', '25', '#f6f04a', 0.8], ['#f4f2ec', '59', '#111', 0.8],
 ];
 // [draw, aspect, shaped (a starburst or an oval, not a full sheet)]
+// (most are fluorescent card lettered by hand in thick marker, torn from a sheet or cut
+// to a starburst; a few printed)
 const PRICES = PRICE_DEFS.map(([bg, num, ink, a], i) => [(g, x, y, w, h) => {
-  if (i % 5 === 4) { burst(g, x + w / 2, y + h / 2, Math.min(w, h) * 0.38, Math.min(w, h) * 0.5, 12, bg); }
+  const burstCut = i % 5 === 4 || i === 1 || i === 13, printed = i === 8 || i === 15;
+  if (burstCut) { burst(g, x + w / 2, y + h / 2, Math.min(w, h) * 0.4 * Math.max(1, a * 0.8), Math.min(w, h) * 0.5 * Math.max(1, a * 0.8), 14, bg); }
   else if (i % 7 === 3) { g.fillStyle = bg; g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill(); }
+  else if (!printed) torn(g, x, y, w, h, bg, 500 + i);
   else paper(g, x, y, w, h, bg);
-  fit(g, num, x + w / 2, y + h * 0.52, w * (i % 5 === 4 ? 0.62 : 0.86), h * (num.length > 3 ? 0.45 : 0.66), ink);
-  if (i % 3 === 0) fit(g, '₪', x + w * 0.86, y + h * 0.2, w * 0.14, h * 0.18, ink);
-}, a, i % 5 === 4 || i % 7 === 3]);
+  const iw = w * (burstCut ? 0.6 : 0.84), ih = h * (num.length > 3 ? 0.46 : 0.62);
+  if (printed) fit(g, num, x + w / 2, y + h * 0.52, iw, ih, ink);
+  else hand(g, num, x + w / 2, y + h * 0.52, iw, ih * 1.05, ink, 700 + i * 13, 0.09);
+  if (i % 3 === 0 && printed) fit(g, '₪', x + w * 0.84, y + h * 0.22, w * 0.14, h * 0.18, ink);
+  else if (i % 3 === 0) hand(g, '₪', x + w * (burstCut ? 0.72 : 0.84), y + h * 0.22, w * 0.14, h * 0.18, ink, 900 + i);
+}, a, true]);
+/** A sheet of card torn from a pad: ragged edges, a corner or two dog-eared. */
+function torn(g, x, y, w, h, bg, seed) {
+  const r = new RNG(seed), pts = [], n = 18;
+  const edge = (ax, ay, bx, by, k) => { for (let j = 0; j < n; j++) { const t = j / n, jit = r.range(-1, 1) * k; pts.push([ax + (bx - ax) * t + (ay === by ? 0 : jit), ay + (by - ay) * t + (ay === by ? jit : 0)]); } };
+  const m = Math.min(w, h) * 0.035, mt = Math.min(w, h) * 0.06;
+  edge(x + m, y + mt, x + w - m, y + mt, mt * 0.6);           // the torn top edge
+  edge(x + w - m, y + mt, x + w - m, y + h - m, m * 0.25);
+  edge(x + w - m, y + h - m, x + m, y + h - m, m * 0.25);
+  edge(x + m, y + h - m, x + m, y + mt, m * 0.25);
+  g.fillStyle = bg; g.beginPath(); pts.forEach(([px, py], k) => (k ? g.lineTo(px, py) : g.moveTo(px, py))); g.closePath(); g.fill();
+  const gr = g.createLinearGradient(x, y, x + w, y + h);
+  gr.addColorStop(0, 'rgba(255,255,255,0.10)'); gr.addColorStop(0.6, 'rgba(255,255,255,0)'); gr.addColorStop(1, 'rgba(0,0,0,0.10)');
+  g.fillStyle = gr; g.fill();
+}
 // Door and window stickers; 128 px cells: [draw, aspect, shaped (a disc)].
 const STICKERS = [
   [(g, x, y, w, h) => { paper(g, x, y, w, h, '#c8201a'); fit(g, 'OPEN', x + w / 2, y + h * 0.52, w * 0.8, h * 0.6, '#fff'); }, 2.2],
@@ -623,7 +647,7 @@ export function cardTpl(t, cell, x, y, h, z) {
  * (rad), its face cockled (a few millimetres out of the plane, the shade varying with the
  * wrinkles); seed varies the wrinkles. Faces +z at depth z.
  */
-export function sheetTpl(t, cell, x, y, h, z, tilt, seed, wrinkle = 1) {
+export function sheetTpl(t, cell, x, y, h, z, tilt, seed, wrinkle = 1, curl = 0) {
   const w = h * cell.aspect, nx = wrinkle > 0 ? 3 : 1, ny = wrinkle > 0 ? 4 : 1;
   const c = Math.cos(tilt), s = Math.sin(tilt);
   const r = new RNG(seed);
@@ -635,8 +659,9 @@ export function sheetTpl(t, cell, x, y, h, z, tilt, seed, wrinkle = 1) {
       const lx = (u - 0.5) * w, ly = (v - 0.5) * h;
       // cockling: low ridges across the sheet, the edges lifting a little off the glass
       const edge = Math.max(Math.abs(u - 0.5), Math.abs(v - 0.5)) * 2;
-      const dz = wrinkle * (0.0012 * Math.sin(ly * 23 + ph[0] + lx * 4) + 0.0008 * Math.sin(lx * 31 + ph[1]) + 0.0015 * edge * edge);
-      const gx = wrinkle * 0.06 * Math.cos(lx * 31 + ph[1]), gy = wrinkle * 0.08 * Math.cos(ly * 23 + ph[0] + lx * 4);
+      // (curl: a card held at its top, its lower part bending away from the board)
+      const dz = wrinkle * (0.0012 * Math.sin(ly * 23 + ph[0] + lx * 4) + 0.0008 * Math.sin(lx * 31 + ph[1]) + 0.0015 * edge * edge) + curl * h * (1 - v) * (1 - v);
+      const gx = wrinkle * 0.06 * Math.cos(lx * 31 + ph[1]), gy = wrinkle * 0.08 * Math.cos(ly * 23 + ph[0] + lx * 4) - 2 * curl * (1 - v);
       const nl = Math.hypot(gx, gy, 1);
       const sh = 1 - wrinkle * (0.035 * (0.5 + 0.5 * Math.sin(ly * 23 + ph[0] + lx * 4 + 0.8)) + 0.02 * edge);
       t.v(x + lx * c - ly * s, y + lx * s + ly * c, z + dz, (-gx * c + gy * s) / nl, (-gx * s - gy * c) / nl, 1 / nl,
@@ -957,7 +982,7 @@ function ring(g, x, y, c) {
 }
 
 /** Glow attribute support: emissive = albedo × aGlow × (day level + night boost × gain). */
-function addGlow(m, key, gain) {
+function addGlow(m, key, gain, box = false) {
   const prev = m.onBeforeCompile;
   const prevKey = m.customProgramCacheKey ? m.customProgramCacheKey() : '';
   m.onBeforeCompile = (shader, r) => {
@@ -966,16 +991,30 @@ function addGlow(m, key, gain) {
     shader.uniforms.uEmGain = gain;
     shader.uniforms.uSignNight = SHOP_LEVEL.uSignNight;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;');
+      .replace('#include <common>', '#include <common>\nattribute float aGlow;\nvarying float vGlow;\nvarying vec2 vGlowUv;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = aGlow;\nvGlowUv = uv;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uNight;\nuniform float uEmGain;\nuniform float uSignNight;\nvarying float vGlow;')
+      .replace('#include <common>', '#include <common>\nuniform float uNight;\nuniform float uEmGain;\nuniform float uSignNight;\nvarying float vGlow;\nvarying vec2 vGlowUv;')
       // (at night the light boxes follow the exposure within a physical range: bright, but
-      // their colour survives instead of burning out to a lemon or white patch)
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vGlow * ( 0.04 * ( 1.0 - uNight ) + uSignNight * uNight * uEmGain );');
+      // their colour survives instead of burning out to a lemon or white patch). A box's
+      // face is lit by fluorescent tubes behind its acrylic: soft horizontal bands (tubes
+      // ~0.32 m apart, ±10 %, the face's own metre coordinates), the diffuser scattering
+      // the brightest light towards white, and saturated faces passing less of the tubes'
+      // light (about half a stop under a white one); its rim stays darker (geometry).
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+{
+  vec3 emC = diffuseColor.rgb;
+  float level = 0.04 * ( 1.0 - uNight ) + uSignNight * uNight * uEmGain;
+  ${box ? `float mx = max( emC.r, max( emC.g, emC.b ) ), mn = min( emC.r, min( emC.g, emC.b ) );
+  float sat = ( mx - mn ) / max( mx, 1e-4 );
+  float tb = cos( vGlowUv.y * 19.63 ), band = 0.9 + 0.1 * tb;
+  float hot = smoothstep( 0.2, 1.0, tb ) * uNight;
+  emC = mix( emC, vec3( mx ), 0.22 * hot * sat ) * mix( 1.0, band, uNight ) * mix( 1.0, 0.7, sat * uNight );` : ''}
+  totalEmissiveRadiance += emC * vGlow * level;
+}`);
     finiteOutput(shader);
   };
-  m.customProgramCacheKey = () => prevKey + '|' + key + '.v4';
+  m.customProgramCacheKey = () => prevKey + '|' + key + '.v5' + (box ? 'b' : '');
   return m;
 }
 
@@ -1036,7 +1075,7 @@ export function createSignMaterials(M) {
   // a private variant of the library panel (keeps its baked surface), plus the glow hook
   const board = M.get('sign.panel', { vertexColors: true, color: new THREE.Color(1, 1, 1), userData: { owner: 'facades.signBoard' } });
   const gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
-  addGlow(board, 'facades.signBoard.v2', gain);
+  addGlow(board, 'facades.signBoard.v2', gain, true);
   const text = new THREE.MeshStandardMaterial({
     map: atlas.tex, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.4, metalness: 0,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
@@ -1221,8 +1260,15 @@ export function fasciaTpls(design, w, h, q, z0 = 0.055, compact = false) {
     }
     zText = z0 + d + 0.002;
   } else if (design.type === 'lightbox') {
-    const d = 0.13;
+    const d = 0.13, b = 0.03;
     tb.box(-w / 2, -h / 2, z0, w / 2, h / 2, z0 + d, 1 | 4 | 8 | 16 | 32, 0.95 * g0, 1);
+    if (q >= 0.5) {
+      // the aluminium frame round the acrylic face (it does not glow as the face does)
+      tb.box(-w / 2, h / 2 - b, z0 + d, w / 2, h / 2, z0 + d + 0.01, 1 | 16 | 32, 0.4, 0.45);
+      tb.box(-w / 2, -h / 2, z0 + d, w / 2, -h / 2 + b, z0 + d + 0.01, 1 | 16 | 32, 0.32, 0.36);
+      tb.box(-w / 2, -h / 2 + b, z0 + d, -w / 2 + b, h / 2 - b, z0 + d + 0.01, 1 | 8, 0.36, 0.4);
+      tb.box(w / 2 - b, -h / 2 + b, z0 + d, w / 2, h / 2 - b, z0 + d + 0.01, 1 | 4, 0.36, 0.4);
+    }
     zText = z0 + d + 0.002;
   } else {
     zText = z0 + 0.02;   // individual letters on stand-off pins

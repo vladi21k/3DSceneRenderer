@@ -939,6 +939,24 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
         vec3 bc = fh1( seed * 3.3 ) < 0.5 ? vec3( 0.52, 0.29, 0.21 ) : vec3( 0.80, 0.78, 0.74 );
         h.alb = mix( bc * ( 0.86 + 0.24 * mix( 0.5, fh2( floor( b ) + seed ), kb ) ), bc * 0.72 + 0.06, mortar * kb + 0.1 * ( 1.0 - kb ) );
       } else if ( fw < 0.36 ) h.alb = fShopWall( st, seed + 0.31 ) * 0.94;
+      // one or two framed prints, posters or a menu board at eye height on the back wall
+      // (two colour fields and a pale band each; their mean once under the pixel)
+      float nPr = fh1( seed * 17.3 + 2.0 );
+      for ( int k = 0; k < 2; k++ ) {
+        if ( nPr > 0.8 || ( k == 1 && nPr > 0.45 ) ) break;
+        vec3 pr = fh3( seed * 29.0 + float( k ) * 7.0 );
+        float pw = 0.45 + 0.5 * pr.x, ph = pw * ( 0.7 + 0.6 * pr.y );
+        float px0 = mix( 0.35, max( 0.35, S.x - 0.35 - pw ), fract( pr.z + float( k ) * 0.5 ) ), py0 = 1.3 + 0.35 * pr.y;
+        float dE = min( min( p.x - px0, px0 + pw - p.x ), min( p.y - py0, py0 + ph - p.y ) );
+        if ( dE < -fpS ) continue;
+        vec3 pc = fh3( seed * 13.0 + float( k ) * 3.1 + 5.0 );
+        float kb = fKeep( fpS, 0.15 ), fy = ( p.y - py0 ) / ph;
+        vec3 art = mix( pc * 0.7 + 0.08, pc.zxy * 0.55 + 0.12, step( 0.45 + 0.2 * pc.y, fy ) );
+        art = mix( art, vec3( 0.82, 0.8, 0.74 ), fEdge( 0.08 - abs( fy - 0.22 ), fpS / ph ) * 0.8 );
+        art = mix( pc * 0.55 + 0.15, art, kb );
+        float fr = 1.0 - fEdge( dE - 0.025, fpS );
+        h.alb = mix( h.alb, mix( art, vec3( 0.07, 0.06, 0.05 ), fr * mix( 1.0, 0.4, 1.0 - kb ) ), fEdge( dE, fpS ) );
+      }
     }
     float dx = mix( 0.3, S.x - 1.2, rnd.y );
     if ( !shop ) h.alb = mix( h.alb, vec3( 0.10, 0.09, 0.08 ), fEdge( p.x - dx, fpS ) * fEdge( dx + 0.9 - p.x, fpS ) * fEdge( 2.1 - p.y, fpS ) ); // doorway
@@ -1031,6 +1049,9 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       float keep = fKeep( fpf, 0.09 );
       h.alb = vec3( 0.34, 0.22, 0.13 ) * ( 0.75 + 0.35 * mix( 0.5, fh2( floor( g ) ), keep ) );
     }
+    // a shop's floor is worn and dulled towards the back and along the walls, where the
+    // light is weaker and the dust collects
+    if ( shop ) h.alb *= mix( 1.0, 0.72, smoothstep( 1.5, S.z, p.z ) ) * mix( 0.86, 1.0, smoothstep( 0.0, 0.8, min( p.x, S.x - p.x ) ) );
   }
   // skirting board and a little unevenness in the paint
   if ( abs( h.n.y ) < 0.5 ) {
@@ -1314,9 +1335,21 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
     // where less of the shop's light returns) and display spots on the low window zone
     // (by day the fill keeps the depth of a lit shop readable, a few stops under the street,
     // not a black void behind an empty window; the night levels are tuned on their own)
-    float fill = mix( 0.42, 0.24, uNight ) * mix( 1.0, 0.5, smoothstep( 0.9, S.y, p.y ) ) * mix( 1.0, 0.6, smoothstep( 2.0, S.z, p.z ) )
-               + mix( 2.8, 2.3, uNight ) * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
-    Elamp = lampC * I * ( mix( 1.8, 1.5, uNight ) * fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
+    // (at night the shop is its lamps' pools: the fill falls off more towards the back and
+    // the side walls, the back half of the room a stop or so under the display zone)
+    float sideD = min( p.x, S.x - p.x );
+    float fill = mix( 0.42, 0.2, uNight ) * mix( 1.0, 0.5, smoothstep( 0.9, S.y, p.y ) ) * mix( 1.0, mix( 0.6, 0.38, uNight ), smoothstep( 1.6, S.z, p.z ) )
+               * mix( 1.0, mix( 0.85, 0.6, uNight ), 1.0 - smoothstep( 0.0, 1.3, sideD ) )
+               + mix( 2.8, 2.1, uNight ) * smoothstep( 2.2, 0.4, p.z ) * ( 1.0 - smoothstep( 1.5, 2.5, p.y ) );
+    Elamp = lampC * I * ( mix( 1.8, 1.9, uNight ) * fDownlights( p, nn, S, cell, ex ) * ( 0.75 + 0.25 * ao ) + fill * ao );
+    if ( abs( nn.y ) < 0.5 && fit < 0.5 ) {
+      // at night the downlights along the walls draw bright scallops down them, the wall
+      // between and under them left dimmer (the cones widen downwards from the ceiling)
+      float along = abs( nn.x ) > 0.5 ? p.z : p.x, cl = abs( nn.x ) > 0.5 ? cell.y : cell.x;
+      float dz = ( fract( along / cl ) - 0.5 ) * cl, hc = S.y - p.y, wc = 0.1 + 0.3 * hc;
+      float sc = exp( -dz * dz / ( wc * wc ) ) * smoothstep( 0.1, 0.5, hc ) * ( 1.0 - smoothstep( 1.6, 2.7, hc ) );
+      Elamp *= mix( 1.0, 0.55 + 1.5 * sc, uNight * ( 1.0 - smoothstep( 1.2, 0.4, p.z ) ) );
+    }
     // the fittings themselves (downlight discs, lit panels, pendants): bright points by day
     // too, a panel a few times its ceiling
     glowK = mix( SHOP_GLOW_DAY * daylum * rI, uShopNight * ( st > 2.5 && st < 3.5 ? 0.75 : 1.0 ), uNight );
@@ -1905,7 +1938,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v11' + dbg;
+  m.customProgramCacheKey = () => 'facades.glassInterior.v12' + dbg;
   return m;
 }
 

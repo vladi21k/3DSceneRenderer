@@ -14,8 +14,8 @@ import { input } from './input.js';
 //    track's tangent under the cab. In a curve the cab still points a little across the
 //    bend (the track sweeps towards the inside of the frame), but no more than the cab
 //    module itself does; the eye sits 1.7 m behind the cab front, 0.5 m ahead of the
-//    leading axle on that line, over the centre of the ride track. The view is fixed to the cab like a
-//    mounted cab camera: it never pans towards the line ahead, so the ride rails stay
+//    leading axle on that line, over the centre of the ride track. The view is fixed to
+//    the cab like a mounted cab camera: it never pans towards the line ahead, so the ride rails stay
 //    locked under the middle of the frame and never slide sideways (a panning view
 //    put the other track in the middle of the frame in tight bends);
 //  - body on its suspension: lateral sway and yaw from track alignment, a broadband body
@@ -176,7 +176,7 @@ const cameraRig = {
   async init(app) {
     this.app = app;
     const T = app.THREE;
-    this._p1 = new T.Vector3(); this._p2 = new T.Vector3(); this._p3 = new T.Vector3();
+    this._p1 = new T.Vector3(); this._p3 = new T.Vector3();
     this._eye = new T.Vector3(); this._axis = new T.Vector3(); this._smp = {};
     this._qBody = new T.Quaternion(); this._qHead = new T.Quaternion(); this._e = new T.Euler(0, 0, 0, 'YXZ');
     this.prevViewProj = new T.Matrix4();

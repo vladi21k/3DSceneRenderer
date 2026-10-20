@@ -264,7 +264,8 @@ function panorama(g, r, warm = false) {
 
 /** Composition 1: a crowd of figures (a market, musicians) before old houses. */
 function crowd(g, r) {
-  backdrop(g, r, TH * 0.4);
+  // (the ground runs on down behind the house fronts: no bare primer between them)
+  backdrop(g, r, TH * 0.62);
   // house fronts behind
   for (let x = -20; x < TW;) {
     const w = r.range(110, 200), h = r.range(TH * 0.3, TH * 0.5), col = r.pick([...PAL.stone, ...PAL.cream, PAL.ochre[2]]);
@@ -295,7 +296,7 @@ function crowd(g, r) {
 
 /** Composition 2: a great tree with birds over a stylised landscape. */
 function tree(g, r) {
-  backdrop(g, r, TH * 0.75);
+  backdrop(g, r, TH * 0.84);
   fillShaded(g, () => { g.beginPath(); g.moveTo(0, TH * 0.8); g.quadraticCurveTo(TW * 0.5, TH * 0.72, TW, TH * 0.8); g.lineTo(TW, TH); g.lineTo(0, TH); g.closePath(); }, r.pick(PAL.ochre), 0, TH * 0.72, 0, TH, 1.1, 0.75);
   // trunk and branches
   const tx = TW * r.range(0.42, 0.58), bark = [96, 74, 56];

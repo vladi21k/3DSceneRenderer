@@ -487,6 +487,7 @@ def build_one(cid, save_blend=False):
     top_suit = spec['top']['suit'] if spec['top'] else None
     jacket = top_suit in ('male_casualsuit05', 'male_elegantsuit01')
     tuck_f = False
+    sewn_f = False
     if tops and not jacket:
         op = tops[0]
         dd = op['d']
@@ -504,6 +505,7 @@ def build_one(cid, save_blend=False):
             ob = bots[0]
             vb = part_verts(ob, lambda r: r == CASTM.REGIONS['bottom'])
             sewn = ob is op and bool((vt & vb).any() or len(set(map(tuple, np.round(dd['co'][vt], 5))) & set(map(tuple, np.round(dd['co'][vb], 5)))))
+            sewn_f = sewn
             if not sewn:
                 skirt_b = spec['bottom']['suit'] == 'female_elegantsuit01'
                 tuck = skirt_b or kind_t in ('blouse', 'dress') or top_suit == 'male_casualsuit01'
@@ -530,8 +532,10 @@ def build_one(cid, save_blend=False):
     cloth_folds(out_parts, body, J, kscale, spec, tuck_f, share, ARM, LEG, cid)
 
     # layered garments: the bottom's waistband under the top's hem sinks a few mm, so the simplified
-    # LODs of the two never cross (the bottom would show through the top in patches)
-    sink_under_tops(out_parts, CASTM.REGIONS, cid)
+    # LODs of the two never cross (the bottom would show through the top in patches); not for a shirt sewn
+    # into its own trousers (tucked in as modelled: a sunk waistband lets the tucked shirt poke out in jags)
+    if not sewn_f:
+        sink_under_tops(out_parts, CASTM.REGIONS, cid)
 
     # skirts: weights blend pelvis -> both thighs (no splitting between the legs)
     for op in out_parts:

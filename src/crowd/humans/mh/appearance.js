@@ -59,6 +59,7 @@ const SHOP_PLASTIC = P([['#efeee9', 10], ['#dcdcd6', 4], ['#a9c6dc', 2], ['#1c1c
 const SHOP_PAPER = P([['#a8845e', 6], ['#f1efe9', 4], ['#18181a', 2], ['#7c2f2c', 1], ['#c8b8a0', 2]]);
 const SHOP_TOTE = P([['#d8ccb0', 6], ['#1c1c1e', 3], ['#273450', 2], ['#5d6449', 1], ['#e9e6dd', 1]]);
 const PRINT = P([['#18181a', 5], ['#c4372f', 3], ['#2d58a8', 3], ['#2f7a45', 2], ['#e08a2a', 1], ['#f2f0ea', 3]]);
+const LEATHER = P([['#1a1615', 8], ['#3a2418', 6], ['#5c3720', 5], ['#7a4a2a', 3], ['#2a1d1a', 3], ['#8c6a4a', 2]]);
 const PHONES = P([['#151517', 10], ['#e9e9e6', 3], ['#3a4a5e', 2], ['#c9b8a8', 2]]);
 // hair shades by family (dark / brown / fair / grey): a person keeps the family of the character's hair
 const HAIR = {
@@ -309,7 +310,17 @@ function finish(seed, r, cast, index, toddler = false) {
   }
   // shopping bags: a shape, its colours and a print (from a stream of their own: the rest of the
   // person is drawn as before)
-  let bagShape = 0, bagPrint = 0;
+  let bagShape = 0, bagPrint = 0, bagMat = 0;
+  if (bag === BAG.BACKPACK || bag === BAG.SHOULDER) {
+    // what the bag is made of (mh/shading.js: 1 nylon, a satin sheen; 2 canvas, matte; 3 leather, a soft
+    // sheen), from a stream of its own; a leather bag in leather's colours
+    const rm = new RNG(hash2(seed >>> 0, 0x3a7e));
+    bagMat = bag === BAG.BACKPACK ? rm.weighted([[1, 70], [2, 30]]) : rm.weighted([[3, 55], [2, 25], [1, 20]]);
+    if (bagMat === 3) {
+      t.bag = rm.weighted(LEATHER).map((x) => x * rm.range(0.9, 1.08));
+      t.strap = t.bag.map((x) => x * 0.85);
+    }
+  }
   if (bag === BAG.SHOPPING) {
     const rb = new RNG((seed >>> 0) ^ 0x2545f491);
     bagShape = rb.weighted([[0, 50], [1, 30], [2, 20]]);
@@ -360,7 +371,7 @@ function finish(seed, r, cast, index, toddler = false) {
     base: child ? 'child' : cls === 'toddler' ? 'toddler' : female ? 'female' : 'male',
     kind: char.kind, scale, height: char.height * scale,
     tints: packTints(t), pattern, patScale, patColor, outfitSig: outfitSignature(char, t),
-    bag, bagShape, bagPrint, carry, walkOld, gait: walkOld ? 2 : old ? 1 : 0,
+    bag, bagShape, bagPrint, bagMat, carry, walkOld, gait: walkOld ? 2 : old ? 1 : 0,
     // forward stoop of the upper back (radians) carried into every pose
     stoop: old ? (walkOld ? r.range(0.10, 0.2) : r.range(0.03, 0.11)) : adult ? r.range(0, 0.03) : 0,
     idle: phoneWalk ? 1 : carry && (idle === 1 || idle === 2 || idle === 4 || idle === 5) ? 0 : idle,
@@ -455,7 +466,8 @@ export function castToddler(seed, cast, lying = false) {
 // café staff (set() field outfit: 'waiter'): a white or light shirt, dark trousers, a long waist apron
 const WAITER_SHIRT = P([['#f4f4f1', 12], ['#ecebe6', 5], ['#e3e8ee', 2], ['#efeadf', 2]]);
 const WAITER_TROUSERS = P([['#141416', 9], ['#1c1e23', 4], ['#232a3a', 2]]);
-const APRON = P([['#121214', 12], ['#2b1f18', 3], ['#1e2a22', 2], ['#3a1a20', 2], ['#e9e6df', 1]]);
+const APRON = P([['#1c1c1f', 8], ['#2a2a2e', 3], ['#3b2a20', 3], ['#23324a', 3], ['#2a3a2c', 2], ['#4a2028', 2], ['#5a6a7c', 1],
+  ['#d9d2c2', 1]]);
 const WAITER_SHOES = P([['#3a3a3c', 3], ['#2a2a2c', 2]]);
 
 /** Can this character be dressed as a waiter (an adult in a shirt, blouse or tee over long trousers)? */

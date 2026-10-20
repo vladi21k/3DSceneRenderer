@@ -60,12 +60,12 @@ const PAVING_CELL = {
   corr: 0.45, corrHue: 0.5, corrFreq: 1 / 6, far: 0.75,
   out: { p: 0.035, fam: [[0.78, 0.78, 0.8], [1.08, 1.0, 0.88], [0.9, 0.95, 1.05]] },
 };
-// Far blend (surface.js): from a pixel footprint of 0.12 of a course (or of a sett's length
-// along it) to 0.5 the maps blend to their mean under the tone drift, and the joints are
+// Far blend (surface.js): from a pixel footprint of 0.08 of a course (or of a sett's length
+// along it) to 0.45 the maps blend to their mean under the tone drift, and the joints are
 // drawn as dust-filled lines 1.25x the stone (in the photographs the corridor at 30-150 m
 // is a smooth grey field with pale dotted joint lines, no stripes or dark specks). At the
-// default 17° lens that is 15-32 m ahead, at 8° 23-46 m.
-const PAVING_FAR = { start: 0.12, end: 0.5, joint: 1.25 };
+// default 17° lens that is about 13-30 m ahead, at 8° 18-44 m.
+const PAVING_FAR = { start: 0.08, end: 0.45, joint: 1.25 };
 // chewing gum: grey to grey-black blotches 0.6-3 cm across, clustered (3-8 m noise) where
 // people stand and wait; on the street hardly any between and over the rails. Aged gum is
 // trodden matt and dirty (a glossier fleck would glint out of the grazing sheen)
@@ -202,7 +202,7 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 16-26 mm running band on the head is the only bright part, and even that is broken up along the rail (polished steel, albedo ~0.45, roughness 0.45-0.9: polished stretches between duller ones, 0.3-2 m stretches under a thin brown film (albedo ~0.3, metal ~0.88), blue-grey skid burns, mid-scale lengthwise streaks, fatigue pits, rust blooms along its ragged edges; never a mirror; metal 1 where polished). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers about v 0.038-0.049. Off the band the head is oxidised: the shoulders either side of the band under a brown-grey oxide (albedo ~(0.2, 0.17, 0.14), roughness ~0.68, metal 0.5), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.17, 0.125, 0.085), roughness ~0.74, metal 0.38; grimier towards the groove), with small rust blooms; the upper gauge face (v ~0.076) lightly polished (roughness ~0.52), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 16-26 mm running band on the head is the only bright part, and even that is broken up along the rail (polished steel, albedo ~0.45, roughness 0.45-0.9: polished stretches between duller ones, 0.3-2 m stretches under a thin brown film (albedo ~0.3, metal ~0.88), blue-grey skid burns, mid-scale lengthwise streaks, fatigue pits, rust blooms along its ragged edges; never a mirror; metal 1 where polished). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers about v 0.038-0.049. Off the band the head is oxidised: the shoulders either side of the band under a brown-grey oxide (albedo ~(0.2, 0.17, 0.14), roughness ~0.68, metal 0.5), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.17, 0.125, 0.085), roughness ~0.74, metal 0.38; grimier towards the groove), with small rust blooms; the upper gauge face (v ~0.076) a dull satin under grime (roughness ~0.6), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
       band: { centres: [0.0435, 0], halfWidth: 0.0105, vPerM: [0.5, 1], gaugeCorner: 0.076, lip: [0.1, 0.13] },
       // mean far-field values per zone, measured from the bake (band: v 0.0373-0.0498,
       // shoulder: the rest of the head top, bevel: field bevel and gauge corner, lip); the

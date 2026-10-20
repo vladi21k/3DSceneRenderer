@@ -701,6 +701,7 @@ const frac = (n, salt) => (hash2(n, salt) & 0xffff) / 65536;
  *  look about on their own. */
 function groupGaze(c, a, r) {
   const L = a.leader || a, F = L.followers, n = 1 + F.length;
+  if (n < 2) return;
   if (a.isChild) { if (r.chance(0.25)) a.lookGoal = r.range(-0.7, 0.7); else if (r.chance(0.3)) a.lookGoal = 0; return; }
   const P = 2.5 + 4 * frac(L.serial, 51), off = P * frac(L.serial, 53);
   const turn = Math.floor((c.time + off) / P);

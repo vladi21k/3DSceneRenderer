@@ -389,7 +389,7 @@ export class Steering {
             // about to touch are eased apart
             const g2 = dist - (a.isChild || b.isChild ? 0.36 : 0.45);
             if (g2 < 0.06) {
-              const f = 1.4 * (0.06 - g2) / 0.06;
+              const f = Math.min(4, 1.4 * (0.06 - g2) / 0.06);
               fs += nx * f; fd += ny * f;
             }
           } else if (gap < 1.64) {

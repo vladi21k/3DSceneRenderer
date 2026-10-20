@@ -52,7 +52,8 @@ import { U } from '../core/uniforms.js';
 // the bind pose; humans_dbg=1|2|3|4|5|6|7|8 shows baked occlusion / albedo / beard edge distance / skin decals /
 // regions and inner faces / no skin / hat brim / hair fade and strand direction; humans_face=<k> scales the per-person
 // face shapes (0: every instance of a character alike); humans_src=<dir> loads another build of the cast; humans_prof=1
-// times the figure draws on the GPU (humans.batch.profile(): ms per frame, view and shadow passes).
+// times the figure draws on the GPU (humans.batch.profile(): ms per frame, view and shadow passes); humans_contact=0
+// leaves out the contact shade on the paving under the feet (humans/mh/contact.js).
 // stats(): sub-draws, figures, posed figures, triangles and LODs of the view, shadow sub-draws, CPU ms,
 // initMs (load: waiting for the cast; bake: rigs, clips and parts; rig, prep, parts, merge, compile and
 // the cast's own download / decode timings, cast.bin / albedo / normal / raw).

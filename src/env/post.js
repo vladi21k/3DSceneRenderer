@@ -117,7 +117,7 @@ const TONE = {
   // It is a vibrance (final pass): the boost goes to the weakly coloured pixels, so stone
   // and lit foliage that carry their own colour are not pushed past it (the photographs'
   // shaded limestone is a pale warm grey, sunlit stone at most ~0.35 HSV saturation)
-  satOut: [[0.3, 1.3], [0.5, 1.3], [0.6, 1.28], [0.85, 1.5], [0.95, 1.35]],
+  satOut: [[0.3, 1.42], [0.5, 1.3], [0.6, 1.28], [0.85, 1.5], [0.95, 1.35]],
   // soft ceiling of the display (HSV) saturation: [start, limit]; the photographs keep
   // under ~2.4 % of their pixels above 0.85 and almost none with a crushed channel
   satCeil: [0.72, 0.92],

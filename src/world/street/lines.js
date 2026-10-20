@@ -469,10 +469,13 @@ const PAINT_FRAG = /* glsl */`
     float keepW = mix( 1.0, keepL, rLg ) * mix( 1.0, keepC, rC ) * mix( 1.0, keepF, rF );
     float bared = 1.0 - ( 1.0 - ( 1.0 - rLg ) * WL ) * ( 1.0 - ( 1.0 - rC ) * WC ) * ( 1.0 - ( 1.0 - rF ) * WF );
     // and the film thinned over the arrises and the proud stones
-    // and where it has worn thin in soft patches a few decimetres across (the paving's
-    // grain and tone show through them: what reads as blotchy grey paint down the street)
+    // and where it has worn thin in soft patches from a few decimetres to a metre across
+    // (the paving's grain and tone show through them: what reads as blotchy grey paint
+    // down the street)
     float mot = lnFbm( wp * 2.3 + 41.0, fpw * 2.3, 3 );
-    float thin = clamp( ( arr + arrMean ) * ( 0.4 + 0.5 * W ) + stoneBare + ( 0.1 + 0.6 * W ) * smoothstep( 0.42, 0.75, mot ), 0.0, 0.8 );
+    float motL = lnFbm( wp * 0.9 + 57.0, fpw * 0.9, 2 );
+    float thin = clamp( ( arr + arrMean ) * ( 0.4 + 0.5 * W ) + stoneBare
+      + ( 0.06 + 0.4 * W ) * ( smoothstep( 0.42, 0.75, mot ) + smoothstep( 0.4, 0.72, motL ) ), 0.0, 0.8 );
     bared = 1.0 - ( 1.0 - bared ) * ( 1.0 - thin );
     // fine texture of the film (small numbers: exact noise)
     vec2 qf = vec2( x, u ) * 150.0 + seed;

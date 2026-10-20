@@ -904,9 +904,10 @@ export class Rig {
     P.headQ = qEuler(-recline * 0.5 + (variant === 2 ? -12 : 1) + down * 0.6 + nod * 0.6, look * 0.6, 0);
     const thighZ = -this.l1 * 0.97;
     // short legs (children on an adult chair) cannot reach the ground: the shins hang from the
-    // knees and the feet dangle
+    // knees and the feet dangle; shorter adults let the thighs slope down off the seat's edge (up to ~20
+    // degrees) and keep their feet on the ground
     const kneeY = hipY - 0.02 * k;
-    const dangle = kneeY - this.l2 * 0.98 > this.ankleY + 0.005;
+    const dangle = kneeY - this.l1 * 0.34 - this.l2 * 0.98 > this.ankleY + 0.005;
     for (const s of ['L', 'R']) {
       const sg = this.side[s];
       const L = P.leg[s];
@@ -921,10 +922,17 @@ export class Rig {
         an.set(sg * (0.085 * k + 0.012), kneeY - this.l2 * 0.96, thighZ + 0.02 + swing * this.l2);
       }
       if ((variant === 1 || variant === 9) && s === 'R' && !dangle) {
-        // right leg crossed over the left knee
-        an.set(-0.02, hipY + 0.06, thighZ - 0.12);
-        L.pole = new THREE.Vector3(0.3, 0.7, -0.6).normalize();
-        L.footQ = qEuler(-20, 25, 0);
+        // right leg crossed over the left knee: the right knee rests on top of the left one (a thigh's
+        // thickness above it, a little towards the left), the shin hangs from it down in front of the left
+        // shin, the foot relaxed (placed by its knee: the leg's two lengths fix the ankle)
+        const hip = this._hipOf(P, 'R');
+        const LL = P.leg.L;
+        const kL = solveIK(this._hipOf(P, 'L'), LL.ankle, this.l1, this.l2, LL.pole).mid;
+        const K = kL.clone().add(new THREE.Vector3(-0.025 * k, 0.115 * k, -0.01 * k)).sub(hip).normalize().multiplyScalar(this.l1 * 0.998).add(hip);
+        const dS = new THREE.Vector3(-0.1, -0.92, -0.32).normalize();
+        an.copy(K).addScaledVector(dS, this.l2 * 0.998);
+        L.pole = K.clone().sub(hip.clone().add(an).multiplyScalar(0.5)).normalize();
+        L.footQ = qEuler(-28, 18, 0);
       } else {
         L.pole = new THREE.Vector3(sg * 0.1, 0.25, -1).normalize();
         L.footQ = qAxis(Y, -sg * 6);

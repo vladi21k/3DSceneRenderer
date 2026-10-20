@@ -12,8 +12,8 @@
 // the gauge corner a rust-brown film (albedo ~(0.17, 0.125, 0.085), roughness ~0.74, metal
 // 0.38), darkened by grime towards the groove, with rust blooms here and there, so the
 // head reads as a narrow broken bright line between dull brown sides, as in the
-// photographs. The upper gauge face (flange contact) is lightly polished; the guard lip
-// past the groove is dull dusty oxide.
+// photographs. The upper gauge face (flange contact) is a dull satin under grime; the guard
+// lip past the groove is dull dusty oxide.
 // The band sits where the street geometry puts the head top (see meta.uv of rail.head):
 //   swept rail     the head top (x -25 .. 21.5 mm) is pinned onto v 0.031-0.0543, i.e. half a
 //                  metre of v per metre of head, centre (x = 0) at v = 0.0435; field-side
@@ -62,9 +62,10 @@ void surface(vec2 m, inout Surf s) {
   bandC = mix(bandC, vec3(0.2, 0.18, 0.16), 0.5 * pit);
   float bandR = clamp(0.5 + 0.02 * streak + 0.1 * streakM + 0.08 * patchy + 0.12 * burn + 0.2 * dullS + 0.2 * filmS + 0.2 * pit, 0.42, 0.92);
   float bandM = 1.0 - 0.12 * filmS;
-  // lightly polished upper gauge face
-  vec3 gaugeC = vec3(0.33, 0.315, 0.3) * (1.0 + 0.05 * streakC);
-  float gaugeR = 0.52 + 0.05 * streakC + 0.05 * burn;
+  // upper gauge face: the flanges only rub it, a dull satin under grime (a bright polished
+  // gauge face read as a second chrome strip beside the band)
+  vec3 gaugeC = vec3(0.27, 0.25, 0.23) * (1.0 + 0.05 * streakC);
+  float gaugeR = 0.6 + 0.05 * streakC + 0.05 * burn;
   // worn steel off the band: crowned shoulders (head top), and under a rust-brown film the
   // field-side bevel and the gauge corner (grimier towards the groove); dark brown oxide
   // only off the head (inlay margins, the groove walls), dusty oxide on the guard lip
@@ -96,7 +97,7 @@ void surface(vec2 m, inout Surf s) {
   dullM = mix(dullM, 0.4, lipZ);
   vec3 polC = mix(gaugeC, bandC, band);
   float polR = mix(gaugeR, bandR, band);
-  float pol = max(band, 0.6 * gauge) * (1.0 - lipZ);
+  float pol = max(band, 0.3 * gauge) * (1.0 - lipZ);
   s.albedo = mix(dull, polC, pol);
   s.rough = clamp(mix(dullR, polR, pol), 0.3, 1.0);
   s.metal = mix(dullM, mix(1.0, bandM, band), pol);

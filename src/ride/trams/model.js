@@ -65,11 +65,11 @@ const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17], door: [5, 0.55, 0.12],
 const FLEET_NO = '07';
 
 // cross-section: band edges and the rows the cab front needs
-// (the skirt comes down to 0.11 m over the rail top, its bottom 0.09 m a black rubber strip)
+// (the silver skirt comes down to 0.11 m over the rail top, a black rubber edge at its foot)
 const Y = {
-  bottom: 0.11, skirt: 0.2, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
+  bottom: 0.11, skirt: 0.13, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
   doorGlass0: 0.8, doorGlass1: 2.1, doorTop: 2.3, doorSeam: 2.33,
-  ws0: 1.18, dispBand: 2.62, shoulder: 2.86, noseSkirt: 0.2,
+  ws0: 1.18, dispBand: 2.62, shoulder: 2.86, noseSkirt: 0.13,
   seatBack: 1.35,              // saloon glazing below this shows seat backs: it does not glow at night
 };
 const SHOULDER_R = 0.33;
@@ -82,9 +82,9 @@ const NOSE = [[0.11, 0.87], [0.18, 0.92], [0.42, 1.08], [0.8, 1.15], [1.18, 1.12
   [2.8, 0.58], [3.0, 0.42], [3.12, 0.26], [3.19, 0.1], [3.22, 0]];
 
 const LOD_ROWS = [
-  { side: [0.2, 0.26, 0.33, 0.42, 0.55, 0.62, 0.68, 0.74, 0.8, 0.95, 0.98, 1.06, 1.18, 1.35, 1.75, 2.1, 2.3, 2.33, 2.42, 2.45, 2.62, 2.75, 2.86],
+  { side: [0.13, 0.2, 0.26, 0.33, 0.42, 0.55, 0.62, 0.68, 0.74, 0.8, 0.95, 0.98, 1.06, 1.18, 1.35, 1.75, 2.1, 2.3, 2.33, 2.42, 2.45, 2.62, 2.75, 2.86],
     arc: [12, 25, 40, 55, 70, 82, 90], roof: [0.6, 0.3, 0] },
-  { side: [0.2, 0.33, 0.42, 0.62, 0.72, 0.95, 1.18, 1.35, 1.75, 2.1, 2.45, 2.62, 2.86], arc: [12, 25, 55, 90], roof: [0.45, 0] },
+  { side: [0.13, 0.2, 0.33, 0.42, 0.62, 0.72, 0.95, 1.18, 1.35, 1.75, 2.1, 2.45, 2.62, 2.86], arc: [12, 25, 55, 90], roof: [0.45, 0] },
   { side: [0.2, 0.42, 0.62, 0.95, 1.18, 2.45, 2.62, 2.86], arc: [12, 25, 60, 90], roof: [0] },
 ];
 
@@ -278,7 +278,7 @@ function cellMaterial(kind, y0, y1) {
   const frit = () => [ym < Y.seatBack ? 'ws' : 'glass', COL.black];
   if (kind === 'fairing') return body(COL.fairing);
   if (kind === 'dseam' || kind === 'dleaf' || kind === 'dglass') {
-    if (ym < Y.floor) return body(COL.skirt);
+    if (ym < Y.floor) return body(ym < Y.skirt ? COL.skirt : COL.silver);
     if (ym > Y.doorSeam) return body(paint);
     if (kind === 'dseam' || ym > Y.doorTop) return body(COL.black);
     if (ym > Y.doorGlass0) {

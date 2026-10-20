@@ -22,11 +22,11 @@ import { U } from '../../core/uniforms.js';
 //     transmittance exp(-density * path), dithered per card into sun flecks.
 // Sky light is occluded the same way: a leaf sees the sky through the crown above it and
 // around it (path to the crown surface straight up and radially out), so the crown core
-// and its underside keep about 30 % of the sky light of the top shell (light also comes
+// and its underside keep about 45 % of the sky light of the top shell (light also comes
 // in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
-// The core of the crown (normalised radius under about 0.3) gets a quarter of what the
-// shell gets of every light that does not come straight from the sun (sky, bounce, sun
+// The core of the crown (normalised radius under about 0.3) gets 40 % of what the shell
+// gets of every light that does not come straight from the sun (sky, bounce, sun
 // passed on by other leaves and through the leaf), rising to the full share at the shell:
 // real crowns are dark, near black inside, under a lit shell of leaves.
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):
@@ -562,7 +562,7 @@ export function createVegMaterials(app, atlas) {
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
     trans: { value: 0.55 },     // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.6, 0.3) },   // sky occlusion by the crown: extinction (1/m), floor
+    sky: { value: new THREE.Vector2(0.6, 0.45) },  // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.7 },       // share of the direct specular kept (waxy sunlit leaves glint)
     a2c: { value: 0 },
     density: { value: 0.8 },    // crown extinction (1/m): exp(-0.8 * 2 m) ~ 0.2 through a young crown
@@ -573,7 +573,7 @@ export function createVegMaterials(app, atlas) {
     // crown core occlusion of the light that does not come straight from the sun (sky,
     // bounce, light passed on by the leaves): x at normalised crown radius <= y, rising to 1
     // at z; w: share of the sunlight stopped by the crown that lights its inner leaves
-    core: { value: new THREE.Vector4(0.25, 0.3, 0.95, 0.12) },
+    core: { value: new THREE.Vector4(0.4, 0.3, 0.95, 0.12) },
     // per-light caps in units of the sky's irradiance: transmission + specular of any
     // light, diffuse of a lamp (see header)
     cap: { value: new THREE.Vector2(LIGHT_CAP, LAMP_CAP) },

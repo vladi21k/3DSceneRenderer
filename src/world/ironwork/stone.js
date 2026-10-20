@@ -282,14 +282,13 @@ function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
     }
     return out;
   };
-  // per edge, its own rings at both ends (shared where the point between is smooth)
-  const first = [], last = [];
+  // per edge, its own rings at both ends (shared where the point between is smooth; the
+  // first point, the soffit-wall corner, is a crease, so the band closes on fresh rings)
   let prevEnd = null;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n, o = eo[i];
     const a = smooth[i] && prevEnd ? prevEnd : ring(i, smooth[i] ? vn[i * 2] : en[i * 2], smooth[i] ? vn[i * 2 + 1] : en[i * 2 + 1], o);
     const b = ring(j, smooth[j] ? vn[j * 2] : en[i * 2], smooth[j] ? vn[j * 2 + 1] : en[i * 2 + 1], o);
-    first.push(a); last.push(b);
     prevEnd = smooth[j] ? b : null;
     // band, then the arris strips of both sides
     const L = K + 1;
@@ -299,7 +298,6 @@ function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
       tri(a[L + k], a[L + k + 1], b[L + k + 1]); tri(a[L + k], b[L + k + 1], b[L + k]);
     }
   }
-  // (the outline closes on itself: the last edge's end ring is the first point's)
   // flanks: the inset outline triangulated
   const contour = [];
   for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(q[i * 2], q[i * 2 + 1]));
@@ -410,8 +408,8 @@ export function balusterGeometry(lod) {
 
 /** Console shadow caster {P, I, n} (local frame as corbelGeometry): the silhouette with
  *  8 segments per right angle, held INSET inside the carved faces (bedded on the
- *  soffit and the wall), so no chord across a cove ever stands proud of the smooth stone
- *  it shades (a chord there drew a dark line along the cove under a low sun). */
+ *  soffit and the wall), so no chord across a cove (sagitta up to ~3 mm) stands proud of
+ *  the smooth stone it shades. */
 const INSET = 0.005;
 function corbelCaster(variant) {
   const { shape } = corbelShape(variant, CORBEL.D, CORBEL.HV[variant]);

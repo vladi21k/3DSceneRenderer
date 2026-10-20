@@ -53,7 +53,7 @@ const SHOPPING_BAG = 3;       // appearance bag: carrier bags in hand (humans/mh
 const SHOP_WISH = 0.06;
 // Somebody stepping out of a door has company following them out this often (the street is mostly
 // pairs and threes: the photographs show about half the passers-by in company).
-const DOOR_MATE = 0.5;
+const DOOR_MATE = 0.42;
 
 /** Order in which a party takes the chairs of a table (indices into seats): the places set
  *  first, the others in a random order; a couple sits face to face across the table. */
@@ -518,7 +518,7 @@ export class Population {
     if (!opts.force && !this._placeOk(a)) { this._unspawn(a); this.stats.spawnFail++; return null; }
     this.mobCount[mob]++;
     // (late in the evening more people out in company)
-    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.42 + 0.1 * this.tod.late);
+    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.4 + 0.1 * this.tod.late);
     // (no group right beside another one on the same strip: two of them would walk on as one row)
     if (r.chance(groupP) && !this._groupNear(a)) { if (mob === MOB.STROLLER) this._makeStrollerGroup(a, opts); else this._makeGroup(a, opts); }
     return a;
@@ -1533,7 +1533,7 @@ export class Population {
       for (const w of b.wards) { w.guardian = a; a.wards.push(w); }
       b.wards.length = 0;
       this.releaseChair(b.feature); b.feature = null;
-      b.kind = KIND.WALKER; b.state = ST.WALK; b.task = TASK.NONE; b.noRect = true; b.partyT = 0;
+      b.kind = KIND.WALKER; b.state = ST.WALK; b.task = TASK.NONE; b.noRect = true; b.partyT = 0; b.handTo = null;
       b.leader = a; a.followers.push(b);
       const k = a.followers.length;
       b.baseF = k === 1 ? r.range(-0.1, 0.1) : -r.range(0.7, 0.95);

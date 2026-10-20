@@ -270,24 +270,35 @@ function vinyl(kit, o, L, m, type, brand, ps, used, yG, y0, zG, far) {
 // local origin, hanging down -y, facing +z.
 const CLOTH = [0x1d2a44, 0xe8e4da, 0x8a8a86, 0x3a2a22, 0xa8231e, 0x2c6a3a, 0xc9b08a, 0x1c1c1e, 0x7fb2d8, 0xd8879a, 0xe2b630, 0x6b3a72, 0xd0672a,
   0xc8231c, 0x1f4fa0, 0xe86a8a, 0x2a9a8a, 0xf2d24a, 0xe0641a, 0x7a3aa8, 0x1e8a8a];
+// dyed cotton, denim, linen and knits as they hang in the shade of a shopfront: muted
+// most of the time (denims, khakis, greys, washed pastels), the strong colours above
+const CLOTH_MUTED = [0x3b4a5c, 0x4a5a72, 0x9c8b72, 0x5a5f66, 0xb7a99a, 0x6e2f3a, 0x2f3b30, 0xd8cfc0, 0x8a6f5a, 0xa3b4c2, 0xc9a7a3, 0x4b3f5e];
+/** A garment colour (linear): about half muted, the rest from the stronger palette, slightly greyed. */
+export function clothColour(r) {
+  if (r.chance(0.52)) return lin(r.pick(CLOTH_MUTED));
+  const c = lin(r.pick(CLOTH)), l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], k = r.range(0.1, 0.3);
+  return [c[0] + (l - c[0]) * k, c[1] + (l - c[1]) * k, c[2] + (l - c[2]) * k];
+}
 const tplCache = new TplCache(64);
 
 // Silhouettes (CCW, metres; the hook at the origin) and how each piece is made up:
 // [outline, half thickness at its middle (m), rim over which it thins (m), folds, len]
 const GARMENTS = {
-  // a tee on a hanger: neck, sloping shoulders, short sleeves, the body to the hem
-  tee: [[[0, -0.045], [0.07, -0.055], [0.19, -0.09], [0.33, -0.2], [0.27, -0.3], [0.2, -0.255], [0.215, -0.69], [-0.215, -0.69], [-0.2, -0.255], [-0.27, -0.3], [-0.33, -0.2], [-0.19, -0.09], [-0.07, -0.055]], 0.011, 0.04, 1, 0.69],
+  // a tee on a hanger: neck, shoulders sloping to sleeves that droop, the body to the hem
+  tee: [[[0, -0.045], [0.07, -0.055], [0.19, -0.095], [0.31, -0.225], [0.245, -0.32], [0.2, -0.27], [0.222, -0.69], [-0.222, -0.69], [-0.2, -0.27], [-0.245, -0.32], [-0.31, -0.225], [-0.19, -0.095], [-0.07, -0.055]], 0.024, 0.06, 1, 0.69],
   // a summer dress: straps over the hanger, bodice, a skirt flaring to the hem
-  dress: [[[0.05, -0.045], [0.13, -0.06], [0.16, -0.24], [0.13, -0.42], [0.34, -1.0], [-0.34, -1.0], [-0.13, -0.42], [-0.16, -0.24], [-0.13, -0.06], [-0.05, -0.045]], 0.01, 0.04, 1.2, 1.0],
+  dress: [[[0.05, -0.045], [0.13, -0.06], [0.16, -0.24], [0.13, -0.42], [0.35, -1.0], [-0.35, -1.0], [-0.13, -0.42], [-0.16, -0.24], [-0.13, -0.06], [-0.05, -0.045]], 0.022, 0.06, 1.25, 1.0],
   // trousers folded at the waist over a clip bar: the legs apart below the fork
-  trousers: [[[0.2, -0.05], [0.215, -0.32], [0.2, -0.97], [0.035, -0.97], [0.0, -0.31], [-0.035, -0.97], [-0.2, -0.97], [-0.215, -0.32], [-0.2, -0.05]], 0.012, 0.03, 0.8, 0.97],
+  trousers: [[[0.2, -0.05], [0.215, -0.32], [0.2, -0.97], [0.035, -0.97], [0.0, -0.31], [-0.035, -0.97], [-0.2, -0.97], [-0.215, -0.32], [-0.2, -0.05]], 0.022, 0.045, 0.8, 0.97],
   // a scarf folded over the bar, its ends hanging (fringed)
-  scarf: [[[0.11, -0.025], [0.125, -1.02], [0.08, -1.08], [0.02, -1.04], [-0.04, -1.09], [-0.125, -1.03], [-0.11, -0.025]], 0.008, 0.02, 1.4, 1.08],
-  // a tote: its body (handles apart), with volume
-  bag: [[[0.18, -0.15], [0.2, -0.5], [-0.2, -0.5], [-0.18, -0.15]], 0.02, 0.035, 0.3, 0.5],
+  scarf: [[[0.11, -0.025], [0.125, -1.02], [0.08, -1.08], [0.02, -1.04], [-0.04, -1.09], [-0.125, -1.03], [-0.11, -0.025]], 0.014, 0.03, 1.4, 1.08],
+  // a tote: its body (handles apart), pillowed, its bottom sagging fuller
+  bag: [[[0.175, -0.15], [0.2, -0.47], [0.185, -0.5], [-0.185, -0.5], [-0.2, -0.47], [-0.175, -0.15]], 0.04, 0.075, 0.35, 0.5],
   // a backpack hung by its grab loop: rounded body
-  pack: [[[0.1, -0.05], [0.15, -0.09], [0.165, -0.42], [0.13, -0.47], [-0.13, -0.47], [-0.165, -0.42], [-0.15, -0.09], [-0.1, -0.05]], 0.075, 0.09, 0.15, 0.47],
+  pack: [[[0.1, -0.05], [0.15, -0.09], [0.165, -0.42], [0.13, -0.47], [-0.13, -0.47], [-0.165, -0.42], [-0.15, -0.09], [-0.1, -0.05]], 0.075, 0.12, 0.45, 0.47],
 };
+/** Fold patterns per garment kind (cached templates). */
+export const CLOTH_VARIANTS = 3;
 
 /** Distance from (x, y) to polygon P's outline, signed (+ inside), and the nearest outline point. */
 function polyDist(P, x, y, out) {
@@ -306,17 +317,25 @@ function polyDist(P, x, y, out) {
 
 /**
  * A garment as a closed soft shell over silhouette P: front and back surfaces that meet at
- * the outline (the cloth's edge), thickness T at the middle thinning over the rim R, soft
- * vertical folds deepening towards the hem, a little fuller where the hanger shapes it.
- * Grid cells of `cell` metres; outline vertices are snapped onto the outline. Normals from
- * the faces; the shade darkens the folds' hollows and the sides turning away.
+ * the outline (the cloth's edge), thickness T at the middle thinning over the rim R, the
+ * body bowed out (two layers of cloth with air between them, fuller towards the hem on
+ * bags: `bulge`), soft vertical folds that deepen and widen towards the hem, a hem that
+ * waves with them, a little fuller where the hanger shapes it. Grid cells of cx × cy
+ * metres (fine across, where the folds run); outline vertices are snapped onto the
+ * outline. Normals from the faces; the shade darkens the folds' hollows and the sides
+ * turning away. seed varies the folds from one piece to the next.
  */
-function shell(t, P, T, R, folds, len, cell, seed, sides = 2) {
+function shell(t, P, T, R, folds, len, cx, cy, seed, sides = 2, bulge = 0) {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (const [x, y] of P) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
-  const nx = Math.max(3, Math.ceil((x1 - x0) / cell)), ny = Math.max(3, Math.ceil((y1 - y0) / cell));
-  const ph = seed * 1.7;
-  const fold = (x, y) => folds * (0.003 + 0.013 * Math.min(1, -y / len)) * (0.62 * Math.sin(x * 27 + 1.3 + ph) + 0.38 * Math.sin(x * 61 + 0.4 + y * 3 + ph));
+  const nx = Math.max(3, Math.ceil((x1 - x0) / cx)), ny = Math.max(3, Math.ceil((y1 - y0) / cy));
+  const ph = seed * 1.7, ph2 = seed * 2.9 + 0.7, hw = Math.max(0.05, (x1 - x0) / 2), xm = (x0 + x1) / 2;
+  // folds: two families of vertical waves, wider and deeper down the piece (a pleat or two
+  // hanging from the hanger's ends), ~3 cm deep at the hem of a dress
+  const fold = (x, y) => {
+    const d = Math.min(1, -y / len);
+    return folds * (0.004 + 0.024 * d * d) * (0.55 * Math.sin(x * (15 + 4 * Math.sin(ph)) + 1.3 + ph) + 0.3 * Math.sin(x * 37 + 0.4 + y * 4 + ph2) + 0.15 * Math.sin(x * 71 + ph * 3));
+  };
   const np = (nx + 1) * (ny + 1);
   const X = new Float32Array(np), Y = new Float32Array(np), D = new Float32Array(np);
   const q = [0, 0];
@@ -334,7 +353,11 @@ function shell(t, P, T, R, folds, len, cell, seed, sides = 2) {
   const base = t.count, pos = [];
   for (let side = 0; side < sides; side++) {
     for (let k = 0; k < np; k++) {
-      const x = X[k], y = Y[k], e = Math.min(1, D[k] / R), prof = T * (1 - (1 - e) * (1 - e));
+      const x = X[k], e = Math.min(1, D[k] / R), d = Math.min(1, -Y[k] / len);
+      // the hem waves with the folds (the lowest few centimetres of the outline)
+      const y = Y[k] + (Y[k] - y0 < 0.06 ? folds * 0.35 * fold(x, Y[k]) : 0);
+      const u = (x - xm) / hw, bow = Math.max(0, 1 - u * u);
+      const prof = T * (1 - (1 - e) * (1 - e)) * (1 + bulge * d * d) * (0.75 + 0.25 * bow);
       const f = fold(x, y) * e;
       const z = side ? -prof * 0.85 + f * 0.6 : prof + f;
       pos.push(x, y, z);
@@ -358,16 +381,37 @@ function shell(t, P, T, R, folds, len, cell, seed, sides = 2) {
     const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
     for (const v of [a, b, c]) { nrm[v] += fx; nrm[v + 1] += fy; nrm[v + 2] += fz; }
   }
+  const fMax = Math.max(1e-4, folds * 0.028);
   for (let k = 0; k < sides * np; k++) {
     const o = k * 3;
     let ax = nrm[o], ay = nrm[o + 1], az = nrm[o + 2];
     const l = Math.hypot(ax, ay, az);
     if (l > 1e-12) { ax /= l; ay /= l; az /= l; } else { ax = 0; ay = 0; az = k < np ? 1 : -1; }
-    const x = pos[o], y = pos[o + 1], hollow = fold(x, y) / 0.016;
-    const sh = (0.78 + 0.22 * Math.abs(az)) * (0.93 + 0.07 * hollow) * (k < np ? 1 : 0.9);
+    const x = pos[o], y = pos[o + 1], hollow = fold(x, y) / fMax;
+    const sh = (0.74 + 0.26 * Math.abs(az)) * (0.9 + 0.1 * hollow) * (k < np ? 1 : 0.9);
     t.v(x, y, pos[o + 2], ax, ay, az, x, y, sh);
   }
   for (let k = 0; k < tris.length; k += 6) t.ix6(base + tris[k], base + tris[k + 1], base + tris[k + 2], base + tris[k + 3], base + tris[k + 4], base + tris[k + 5]);
+}
+
+/** A round tube of radius rr along the polyline pts (x, y, z): bag handles, tassels. */
+function tube(t, pts, rr, n = 5) {
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [ax, ay, az] = pts[i], [bx, by, bz] = pts[i + 1];
+    let dx = bx - ax, dy = by - ay, dz = bz - az;
+    const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
+    // a frame round the segment: u ⟂ d (from the z axis, or x when d is along z), v = d × u
+    let ux = -dy, uy = dx, uz = 0;
+    const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul;
+    if (Math.hypot(dx, dy) < 1e-3) { ux = 1; uy = 0; uz = 0; }
+    const vx = dy * uz - dz * uy, vy = dz * ux - dx * uz, vz = dx * uy - dy * ux;
+    for (let k = 0; k < n; k++) {
+      const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2;
+      const c0 = Math.cos(a0) * rr, s0 = Math.sin(a0) * rr, c1 = Math.cos(a1) * rr, s1 = Math.sin(a1) * rr;
+      t.q4(ax + ux * c0 + vx * s0, ay + uy * c0 + vy * s0, az + uz * c0 + vz * s0, ax + ux * c1 + vx * s1, ay + uy * c1 + vy * s1, az + uz * c1 + vz * s1,
+        bx + ux * c1 + vx * s1, by + uy * c1 + vy * s1, bz + uz * c1 + vz * s1, bx + ux * c0 + vx * s0, by + uy * c0 + vy * s0, bz + uz * c0 + vz * s0, 0.85, 0.85);
+    }
+  }
 }
 
 /** A strap or handle loop: a flat band of width bw along the polyline pts (x, y, z), both faces. */
@@ -387,24 +431,33 @@ function strap(t, pts, bw, th = 0.004) {
  * back never seen), 'rail' (on a stand's rail, seen from both sides but small: a closed
  * shell on a coarser grid), else a closed shell.
  */
-export function cloth(kind, use = 'wall') {
-  return tplCache.get(`${kind}|${use}`, () => {
+export function cloth(kind, use = 'wall', variant = 0) {
+  variant = ((variant % CLOTH_VARIANTS) + CLOTH_VARIANTS) % CLOTH_VARIANTS;
+  return tplCache.get(`${kind}|${use}|${variant}`, () => {
     const t = new Tpl();
     const [P, T, R, folds, len] = GARMENTS[kind] || GARMENTS.bag;
     const vol = kind === 'bag' || kind === 'pack';
-    shell(t, P, T, R, folds, len, vol ? 0.035 : use === 'rail' ? 0.06 : 0.05, kind.length, use === 'wall' && !vol ? 1 : 2);
+    const seed = kind.length + variant * 3.7;
+    shell(t, P, T, R, folds, len, vol ? 0.03 : use === 'rail' ? 0.03 : 0.025, vol ? 0.035 : use === 'rail' ? 0.07 : 0.05, seed, use === 'wall' && !vol ? 1 : 2, kind === 'bag' ? 0.45 : kind === 'pack' ? 0.2 : 0);
     if (kind === 'bag') {
-      for (const s of [-1, 1]) strap(t, [[s * 0.1, -0.15, 0.02 * s], [s * 0.07, -0.07, 0.012 * s], [s * 0.025, -0.015, 0.004 * s], [0, -0.005, 0]], 0.025);
+      // round handles, each a loop from the bag's rim up over the hook
+      for (const s of [-1, 1]) tube(t, [[0.1, -0.16, 0.034 * s], [0.08, -0.08, 0.026 * s], [0.035, -0.02, 0.012 * s], [0, -0.004, 0], [-0.035, -0.02, 0.012 * s], [-0.08, -0.08, 0.026 * s], [-0.1, -0.16, 0.034 * s]], 0.007);
     } else if (kind === 'pack') {
       // front pocket, the grab loop over the hook and the shoulder straps behind
       const pk = new Tpl();
-      shell(pk, [[0.12, -0.24], [0.125, -0.41], [0.1, -0.44], [-0.1, -0.44], [-0.125, -0.41], [-0.12, -0.24]], 0.03, 0.04, 0.1, 0.47, 0.03, 3);
+      shell(pk, [[0.12, -0.24], [0.125, -0.41], [0.1, -0.44], [-0.1, -0.44], [-0.125, -0.41], [-0.12, -0.24]], 0.035, 0.05, 0.2, 0.47, 0.025, 0.03, 3 + variant, 2, 0.2);
       t.appendRotY(pk, 0, 0, 0);
       const V = t.V, n0 = t.count - pk.count;
-      for (let k = n0; k < t.count; k++) V[k * VS + 2] += 0.07;
+      for (let k = n0; k < t.count; k++) V[k * VS + 2] += 0.065;
       pk.free();
       strap(t, [[-0.03, -0.055, 0], [0, -0.005, 0], [0.03, -0.055, 0]], 0.02);
       for (const s of [-1, 1]) strap(t, [[s * 0.08, -0.09, -0.07], [s * 0.11, -0.25, -0.085], [s * 0.12, -0.42, -0.07]], 0.05);
+    } else if (kind === 'scarf' && use !== 'rail') {
+      // a fringe of tassels along the two ends
+      for (let k = 0; k < 9; k++) {
+        const x = -0.115 + k * 0.0285, yb = -1.03 - 0.035 * Math.abs(Math.sin(k * 1.7 + variant));
+        tube(t, [[x, yb + 0.02, 0.004], [x + 0.003, yb - 0.05, 0.006]], 0.0035, 3);
+      }
     }
     // darker towards the hem's shadow side
     t.shadeBy((x, y) => 1 - 0.06 * Math.min(1, -y / len));
@@ -453,8 +506,8 @@ const DENSE = { clothing: 0.42, general: 0.38, shoes: 0.28 };
 
 /** Hang garment `kind` with its hook at world matrix mw (on a wall hook or a rail). */
 function hangItem(kit, kind, mw, r, sway = 0.9) {
-  const tp = cloth(kind), len = tp.len;
-  const c1 = lin(r.pick(CLOTH)), c2 = lin(r.pick(CLOTH));
+  const tp = cloth(kind, 'wall', r.int(0, CLOTH_VARIANTS - 1)), len = tp.len;
+  const c1 = clothColour(r), c2 = clothColour(r);
   const stripe = (kind === 'tee' || kind === 'scarf' || kind === 'dress') && r.chance(0.3) ? r.range(0.03, 0.07) : 0;
   kit.get('awning').add(tp, mw, c1[0], c1[1], c1[2], {
     aStripe: [c2[0], c2[1], c2[2], stripe],
@@ -589,8 +642,9 @@ export function hangGoods(kit, ctx, o, type, al = null, L = null, mOpen = null) 
         tb.box(-w / 2 - 0.02, -h / 2 - 0.02, 0, w / 2 + 0.02, h / 2 + 0.02, 0.018, 1 | 4 | 8 | 16 | 32, 0.85, 0.95);
         const bc = lin(r.pick([0x1d1d1f, 0xe8e4da, 0x6b4a2a, 0xb8261e, 0x1f4fa0]));
         kit.get('board').add(tb.bake(), mb, bc[0], bc[1], bc[2]);
+        // (taped at its top, the card bends away from the board below, a little askew)
         const tt = new Tpl();
-        cardTpl(tt, cell, 0, 0, h, 0.0195);
+        sheetTpl(tt, cell, 0, 0, h, 0.0195, r.range(-0.05, 0.05), r.int(0, 1 << 20), 1, r.range(0.06, 0.16));
         kit.get('signText').add(tt.bake(), mb, 1, 1, 1, GLOW);
         n++;
       }

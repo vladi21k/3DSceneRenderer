@@ -64,7 +64,7 @@ const WEATHER = {
   // (lookSat: post's street saturation boost x this, as a camera renders the flat light of a
   // milky day with a little more colour; the photographs' hazy evening keeps HSV saturation
   // ~0.22 and Hasler colourfulness ~28)
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.0, inscatter: 0.7, dayExt: 1, dayIn: 1, near: 40 }, skySat: 0.5, lookSat: 1.7 },
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.0, inscatter: 0.6, dayExt: 1, dayIn: 1, near: 40 }, skySat: 0.5, lookSat: 2.0 },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
