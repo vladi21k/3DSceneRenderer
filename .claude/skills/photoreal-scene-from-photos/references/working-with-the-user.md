@@ -414,7 +414,11 @@ built from the MakeHuman CC0 system assets; the GPL-3.0 build add-on is a tool o
 of its code ships; the licence note is also stored in the cast's own JSON). Not shipped: fonts (system stack),
 HDRs, sounds (all synthesised). Build-time tools each under their own licence. Reference
 photos: third-party, kept only for comparison, never loaded, not covered by the project's
-licence (the user decided to keep them in the private repo). End the file with a short "Adding
+licence. The user first kept them in the private repo; before making it public they were
+removed from the repo and its whole history (`git filter-branch --index-filter 'git rm -r
+--cached --ignore-unmatch reference'`, a backup bundle first, a force-push after), and
+`reference/` became git-ignored except a `README.md` saying the photos go there. Plan for that
+from the start: keep reference photos git-ignored from the first commit. End the file with a short "Adding
 an asset" rule.
 
 ## 9. What never reached the target

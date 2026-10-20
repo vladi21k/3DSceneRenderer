@@ -41,11 +41,10 @@ file's header or README (for example `libs/draco` and `libs/basis`: Apache-2.0;
 
 ## Reference photographs
 
-`reference/*.jpg` and `reference/*.jpeg` are third-party photographs of a real street,
-kept only as visual reference for judging the result side by side. They are never loaded
-by the app, never used as textures or traced, and are not covered by this project's
-licences: their copyright stays with their photographers and agencies. They must not be
-redistributed with the app.
+Reference photographs of the real street are used only to judge the result side by side.
+They are third-party images and are not in the repository: `reference/` holds only a note
+(`reference/README.md`), and git ignores every other file there, so each user keeps their own
+photos locally. They are never loaded by the app, never used as textures or traced.
 
 ## Adding an asset
 

@@ -31,9 +31,8 @@ These tools are downloaded into local Docker images by `docker/Dockerfile` and
 | Ubuntu 24.04 base image | various open-source licences |
 | Google Chrome or Chromium (headless capture tools) | proprietary / BSD-style; not shipped |
 
-## Not covered by this project's licence
+## Reference photographs (not included)
 
-`reference/*.jpg` and `reference/*.jpeg` are third-party photographs of a real street, kept
-only as visual reference. Their copyright stays with their photographers and agencies; they
-are not licensed under MIT, are never loaded by the app, and must not be redistributed as part
-of it.
+The reference photographs used to judge the renders are third-party images and are not part of
+this repository. The `reference/` folder holds only a note: put your own reference photos there
+(git ignores everything else in it). The app never loads them.

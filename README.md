@@ -651,9 +651,9 @@ It includes or builds on third-party works that keep their own licences, listed 
   synthesised. Apart from the figures' texture strips, no image, HDR, sound or font files are
   shipped; signs use fonts installed on the viewer's system.
 
-**Not covered:** `reference/*.jpg` (and `.jpeg`) are third-party photographs kept only as visual
-reference. They are not licensed under MIT, are never loaded by the app, and their copyright
-stays with their photographers.
+**Reference photographs are not included.** They are third-party images, used only to judge the
+renders side by side. Put your own in `reference/` (see `reference/README.md`); git ignores
+everything there except that note, and the app never loads them.
 
 ## Repository layout
 
@@ -677,7 +677,7 @@ vendor/three/         three.js r186
 tools/                doctor.sh, shoot.py, record.py, dk, checkpoint.sh, mh_fetch.sh, blender/, textures/
 docker/               tools image and human-figure image
 docs/                 ARCHITECTURE.md, ASSETS.md, PLAN.md, screenshots/
-reference/            third-party reference photographs (not part of the app)
+reference/            put your reference photographs here (git-ignored; see reference/README.md)
 ```
 
 `.work/` (git-ignored) holds scratch output from the tools.

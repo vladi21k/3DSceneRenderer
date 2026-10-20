@@ -3,3 +3,6 @@ node_modules/
 *.blend1
 __pycache__/
 docker/mh/*.zip
+# reference photographs stay local (third-party images); only the folder note is tracked
+reference/*
+!reference/README.md
