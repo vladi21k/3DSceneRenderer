@@ -386,23 +386,25 @@ async function main() {
     if (!(recFps > 0 && app.ready)) nextFrame();
   }
 
-  // ---- animation-frame watchdog. Now and then the browser holds back the animation frames
-  // after the start-up while the main thread stands idle: mostly for under a second, at
-  // times for seconds (more often with the GPU busy with other work), on rare starts for
-  // over two minutes, all the while showing a frozen loading screen. The loop asks for one
-  // animation frame at a time; when it has not come after STALL_MS (START_STALL_MS before the
-  // view is ready: the stall then holds most start-ups back by 1-3 s) while the page is
-  // visible and the main thread was free, the watchdog runs the frames from a timer (about 30
-  // a second) until the browser delivers animation frames again. perf.init.firstFrameStall
+  // ---- animation-frame watchdog. The browser holds back the animation frames right after
+  // the start-up compile in most cold starts (a fresh profile, nothing in the shader cache;
+  // none with a warm one), for about 1-3 s before the first frame or after it, while the main
+  // thread stands idle and the GPU process goes on executing the page's commands; on rare
+  // starts for over two minutes, all the while showing a frozen loading screen. The loop asks
+  // for one animation frame at a time; when it has not come after STALL_MS (START_STALL_MS
+  // before the view is ready) while the page is visible and the main thread was free, the
+  // watchdog runs the frames from a timer (about 30 a second) until the browser delivers
+  // animation frames again, so the start-up goes on to ready. perf.init.firstFrameStall
   // records a stall before the view was ready, perf.rafStalls the later ones (the newest
   // RAF_STALLS_KEPT; stats().rafStalls counts them all):
   //   { since: when the frame was asked for (ms since navigation), frame: frames run by then,
   //     ms: how long the animation frames were held back (so far, while it lasts),
   //     visibilityState, hasFocus: the page's state when the stall was noticed,
   //     rafSeen: an animation frame came again, pumped: frames run from the timer,
-  //     pumpMs: the longest of them (CPU ms; seconds mean its GL calls waited for a GPU
-  //     process that was stuck itself), gpuMs: the newest GPU timer result then (0: none
-  //     came back), lagMs: the most the watchdog's timer ran late (the main thread busy) }
+  //     pumpMs: the longest of them (CPU ms; the first frame takes up to 1.6 s, much more
+  //     would mean its GL calls waited for a GPU process that was stuck itself), gpuMs: the
+  //     newest GPU timer result then (0: none came back), lagMs: the most the watchdog's
+  //     timer ran late (the main thread busy) }
   const STALL_MS = 750, TICK_MS = 250, START_STALL_MS = 400, START_TICK_MS = 100, PUMP_MS = 33, RAF_STALLS_KEPT = 8;
   let rafPending = false, rafAsked = 0, stall = null, tickDue = 0, stalls = 0;
   app.perf.rafStalls = [];

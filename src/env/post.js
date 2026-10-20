@@ -101,9 +101,9 @@ const TONE = {
   // excess. Sunlit stone and paving at the usual angles stay below the knee
   local: { knee: 2.5, strength: 1.0, px: [2.0, 1.5] },
   // gamut knee (time of day, [start, ceiling] of the brightest channel for the street, then
-  // for the saturated sky): under the high sun a camera JPEG (the brightest sunlit cream
-  // stone, white shirts and awnings and the blue of the sky slot clip, a few tenths of a
-  // percent to a few percent of the frame, as in the midday photographs); from golden hour
+  // for the saturated sky): under the high sun a camera JPEG (the blue of the sky and the
+  // brightest whites clip, about 1.5-6.5 % of the frame from the telephoto to a 40-degree
+  // lens, as in the midday photographs, 0.05-11.6 %); from golden hour
   // the street's colour eases off a little earlier (golden stone and the backlit glow keep
   // their hue); from sunset on the ceilings come down (amber lamps, afterglow bands keep
   // their hue)
@@ -135,8 +135,8 @@ const TONE = {
   // it starts, where it is full]). By day it starts below the horizon and is full from ~9
   // degrees: the city haze leaves the band just over the far end of the street milky, and
   // the boost keeps the sky slot of the telephoto view, 3-8 degrees up, a camera's pale blue
-  // (HSV saturation ~0.2, blue ~245, its brightest part clipping, as in the photographs)
-  // rather than a near-white. From golden hour none below ~8 degrees, full above ~35 (the
+  // (HSV saturation ~0.2, its blue channel at the clip, as in the photographs) rather than
+  // a near-white. From golden hour none below ~8 degrees, full above ~35 (the
   // low sky towards the sun is pale and warm)
   skySatEl: [[0.45, [-0.06, 0.16]], [0.55, [0.139, 0.574]]],
   // sunset: warm sky hues turned a little towards yellow (the horizon band reads
