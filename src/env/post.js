@@ -90,21 +90,30 @@ const TONE = {
   // deep: [(time of day, slope increase), (time of day, centre in stops), width]. Steeper
   // and a little higher from golden hour to sunset, when the street lies in shade under
   // a bright sky: dark clothes and hair, canopy undersides and doorways fall to 10-30 sRGB
-  // as in the evening photographs instead of hanging in a milky grey
-  deep: [[[0.3, 0.95], [0.5, 1.35], [0.85, 1.35], [1.0, 0.3]], [[0.3, -1.8], [0.5, -1.5], [0.85, -1.5], [1.0, -1.8]], 0.5],
+  // as in the evening photographs instead of hanging in a milky grey. Under the high sun a
+  // little steeper than at t 0.3, so the midday exposure's extra lift (env EXPO_LIFT) keeps
+  // the darkest 2 % of the frame in the photographs' range rather than lifting it to grey
+  deep: [[[0.15, 1.2], [0.3, 1.0], [0.5, 1.35], [0.85, 1.35], [1.0, 0.3]], [[0.3, -1.8], [0.5, -1.5], [0.85, -1.5], [1.0, -1.8]], 0.5],
   // local highlight recovery (final pass): where the surfaces around a pixel average more
   // than `knee` stops over mid grey (a low sun's sheen on the paving, looking into it), its
   // bright pixels (ramped in from `px[0]` stops over `px[1]`) come down by `strength` x the
   // excess. Sunlit stone and paving at the usual angles stay below the knee
   local: { knee: 2.5, strength: 1.0, px: [2.0, 1.5] },
-  // gamut knee: start and ceiling of the brightest channel, street and saturated sky; by
-  // day (camera JPEG: whites, cream stone and the blue near the horizon may clip), and
-  // from sunset on (amber lamps, afterglow bands keep their hue)
-  knee: [[0.78, 1.0, 0.84, 1.0], [0.8, 0.94, 0.72, 0.86]],
-  // saturation of the street's final colour (time of day, saturation): more from golden
-  // hour on, when the low sun, the afterglow and then the lamps carry the colour (a camera
-  // keeps the evening's warm-cool split vivid instead of letting the canyon go grey)
-  satOut: [[0.3, 1.15], [0.5, 1.38], [0.85, 1.58], [0.95, 1.3]],
+  // gamut knee (time of day, [start, ceiling] of the brightest channel for the street, then
+  // for the saturated sky): under the high sun a camera JPEG (the brightest sunlit cream
+  // stone, white shirts and awnings and the blue of the sky slot clip, a few tenths of a
+  // percent to a few percent of the frame, as in the midday photographs); from golden hour
+  // the street's colour eases off a little earlier (golden stone and the backlit glow keep
+  // their hue); from sunset on the ceilings come down (amber lamps, afterglow bands keep
+  // their hue)
+  knee: [[0.45, [0.84, 1.0, 0.84, 1.0]], [0.55, [0.78, 1.0, 0.84, 1.0]], [0.6, [0.78, 1.0, 0.84, 1.0]], [0.75, [0.8, 0.94, 0.72, 0.86]]],
+  // saturation of the street's final colour (time of day, saturation): by day a camera
+  // JPEG's colour (the midday photographs' mean HSV saturation is 0.22-0.5, their Hasler
+  // colourfulness 28-60: warm stone, green crowns, clothes and awnings read clearly against
+  // the grey paving); more from golden hour on, when the low sun, the afterglow and then the
+  // lamps carry the colour (a camera keeps the evening's warm-cool split vivid instead of
+  // letting the canyon go grey)
+  satOut: [[0.3, 1.3], [0.5, 1.38], [0.85, 1.58], [0.95, 1.3]],
   // and in the highlights (time of day, [saturation, from, to] in display-linear luminance):
   // by day it eases off from about +1 stop and is 0.6 by the shoulder, so sunlit limestone
   // rolls off to cream; at golden hour the same, a little stronger (the low sun's stone
@@ -121,9 +130,14 @@ const TONE = {
   // keeps its orange. env.skySatScale scales both boosts (a milky dust-haze day keeps its
   // pale cream sky)
   skyChroma: 0.95, skySat: [1.8, 1.3], skySatWarm: [1.1, 1.25],
-  // the boost depends on the view ray's elevation: none below ~8 degrees (the pale, milky
-  // band down the street), full above ~35 (sin of the elevations)
-  skySatEl: [0.139, 0.574],
+  // the boost depends on the view ray's elevation (time of day, [sin of the elevation where
+  // it starts, where it is full]). By day it starts below the horizon and is full from ~9
+  // degrees: the city haze leaves the band just over the far end of the street milky, and
+  // the boost keeps the sky slot of the telephoto view, 3-8 degrees up, a camera's pale blue
+  // (HSV saturation ~0.2, blue ~245, its brightest part clipping, as in the photographs)
+  // rather than a near-white. From golden hour none below ~8 degrees, full above ~35 (the
+  // low sky towards the sun is pale and warm)
+  skySatEl: [[0.45, [-0.06, 0.16]], [0.55, [0.139, 0.574]]],
   // sunset: warm sky hues turned a little towards yellow (the horizon band reads
   // yellow-orange, hue 30-40 degrees, as cameras render it; pink above it)
   skyTwist: 0.4,
@@ -179,6 +193,16 @@ function table(T, x) {
     }
   }
   return T[T.length - 1][1];
+}
+
+/** Vector table lookup ([[x, [a, b, ...]], ...], x ascending) into `out` (a THREE vector), smooth between points. */
+function vtable(T, x, out) {
+  let i = 0;
+  while (i < T.length - 1 && x > T[i + 1][0]) i++;
+  const a = T[i], b = T[Math.min(i + 1, T.length - 1)];
+  const k = b === a || x <= a[0] ? 0 : THREE.MathUtils.smoothstep(x, a[0], b[0]);
+  for (let j = 0; j < a[1].length; j++) out.setComponent(j, a[1][j] + (b[1][j] - a[1][j]) * k);
+  return out;
 }
 
 // Street-level dust haze: extinction per metre (rgb), nearly grey (coarse dust).
@@ -389,10 +413,10 @@ const post = {
       tGlow: { value: null }, uGlow: { value: 0 },
       uToe: { value: new THREE.Vector3(...TONE.toe) }, uDeep: { value: new THREE.Vector3(table(TONE.deep[0], 0), table(TONE.deep[1], 0), TONE.deep[2]) },
       tLocal: { value: null }, uLocal: { value: new THREE.Vector4(TONE.local.knee, 0, TONE.local.px[0], TONE.local.px[1]) },
-      uKnee: { value: new THREE.Vector4(...TONE.knee[0]) }, uSatOut: { value: table(TONE.satOut, 0) }, uSkyTwist: { value: 0 }, uSkyBlue: { value: 0 },
-      uSatHi: { value: new THREE.Vector3(...TONE.satHi[0][1]) },
+      uKnee: { value: vtable(TONE.knee, 0, new THREE.Vector4()) }, uSatOut: { value: table(TONE.satOut, 0) }, uSkyTwist: { value: 0 }, uSkyBlue: { value: 0 },
+      uSatHi: { value: vtable(TONE.satHi, 0, new THREE.Vector3()) },
       uUpView: { value: new THREE.Vector3(0, 1, 0) }, uProjInv: { value: new THREE.Vector2(1, 1) },
-      uSkySatEl: { value: new THREE.Vector2(...TONE.skySatEl) },
+      uSkySatEl: { value: vtable(TONE.skySatEl, 0, new THREE.Vector2()) },
     });
     // local level of the surfaces for the highlight recovery (1/8 res, then blurred)
     this.localPass = pass(S.LOCAL_FS, { tSrc: { value: null }, tDepth: { value: null }, uSrcSize: { value: new THREE.Vector2() } });
@@ -699,29 +723,18 @@ const post = {
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
     fu.uSatOut.value = table(TONE.satOut, t);
-    {
-      // (vector table: [saturation, from, to])
-      const T = TONE.satHi, h = fu.uSatHi.value;
-      let i = 0;
-      while (i < T.length - 1 && t > T[i + 1][0]) i++;
-      const a = T[i], b = T[Math.min(i + 1, T.length - 1)];
-      const k = b === a || t <= a[0] ? 0 : ss(t, a[0], b[0]);
-      h.set(lerp(a[1][0], b[1][0], k), lerp(a[1][1], b[1][1], k), lerp(a[1][2], b[1][2], k));
-    }
+    vtable(TONE.satHi, t, fu.uSatHi.value);
     // the sky's saturation boost by elevation: world up seen from the camera
     if (camera) {
       const e = camera.matrixWorld.elements, P = camera.projectionMatrix.elements;
       fu.uUpView.value.set(e[1], e[5], e[9]);
       fu.uProjInv.value.set(1 / P[0], 1 / P[5]);
     }
-    fu.uSkySatEl.value.set(TONE.skySatEl[0], TONE.skySatEl[1]);
+    vtable(TONE.skySatEl, t, fu.uSkySatEl.value);
     fu.uSkyTwist.value = TONE.skyTwist * ss(t, 0.6, 0.74) * (1 - ss(t, 0.9, 1.0));
     fu.uSkyBlue.value = table(TONE.skyBlue, t);
     // gamut knee: a camera JPEG by day, hue-keeping from sunset on
-    {
-      const kd = ss(t, 0.6, 0.75), K0 = TONE.knee[0], K1 = TONE.knee[1];
-      fu.uKnee.value.set(lerp(K0[0], K1[0], kd), lerp(K0[1], K1[1], kd), lerp(K0[2], K1[2], kd), lerp(K0[3], K1[3], kd));
-    }
+    vtable(TONE.knee, t, fu.uKnee.value);
     // local highlight recovery while the sun is up (after sunset the bright things are the
     // lamps, small sources whose halos stand for the lens)
     fu.uLocal.value.y = this.localOn && this.localRT ? TONE.local.strength * (1 - ss(t, 0.8, 0.9)) : 0;

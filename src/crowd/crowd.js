@@ -56,8 +56,9 @@ import { stanceOf } from './behaviour/stance.js';
 // the line here and a metre either way), stats().brakeLog whom the cab's driver braked for.
 // How early people leave the cab's track: stats().tram.clearTTA (seconds before the cab arrived at
 // which they were out of its band: n, min, p10, p50 and a log of the late ones), tram.rightForUnit
-// (sent off to the right-hand edge because an oncoming unit holds the left) and tram.unitHold
-// (agent-frames somebody waited on the cab's track for a unit to go by); with crowdCheck=1,
+// (sent off to the right-hand edge because an oncoming unit holds the left), tram.unitHold
+// (agent-frames somebody waited on the cab's track for a unit to go by) and tram.bellClears
+// (people who started stepping off the cab's track on hearing the bell); with crowdCheck=1,
 // check.lateBand / lateMin (on the cab's track with the cab under 3 s away) and check.cabTrackUnit
 // (under 5.5 s away while a unit goes by beside them).
 // People keep their bodies CLEAR_MARGIN (0.33 m) outside the cab's swept volume (constants.js BAND).
@@ -247,13 +248,17 @@ class CrowdSim {
       // sound travel + reaction
       const delay = Math.max(0, ahead) / 340 + (onTrack ? r.range(0.15, a.dreamy ? 1.0 : 0.75) : r.range(0.2, 1.2));
       if (look) {
-        a.tramLookS = this.time + delay;
-        a.tramLookT = a.tramLookS + (near ? r.range(1.2, 2.6) : r.range(0.4, 0.9));
+        // (already looking round at the cab: they keep looking, a little longer)
+        const looking = a.lookU < 0 && a.tramLookS <= this.time && a.tramLookT > this.time;
+        a.tramLookS = looking ? this.time : this.time + delay;
+        a.tramLookT = Math.max(a.tramLookT, this.time + delay + (near ? r.range(1.2, 2.6) : r.range(0.4, 0.9)));
         a.lookU = -1;
         reacted++;
       }
       if (!near) continue;
-      a.bellS = this.time + delay; a.bellT = a.bellS + BELL_HOLD;
+      // (rung again while still reacting to the last ring: they go on with it, a little longer)
+      if (a.bellT > this.time) { a.bellS = Math.min(a.bellS, this.time + delay); a.bellT = Math.max(a.bellT, this.time + delay + BELL_HOLD); }
+      else { a.bellS = this.time + delay; a.bellT = a.bellS + BELL_HOLD; }
       // beside the track (not in the band): a step back, turning towards the tram
       if (look && !onTrack && Math.abs(dl) > 1.9 && a.kind !== KIND.SEATED) {
         a.dodge = Math.sign(dl) * r.range(0.35, 0.7); a.dodgeT = a.tramLookS + 2.2; a.dodgeD0 = a.d;

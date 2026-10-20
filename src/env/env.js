@@ -71,14 +71,16 @@ const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22, lowSun: 0.3 };
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
 // street exposes for the shade and the people, so whites and glints clip and the low
-// sun's backlit street glows. Under the high sun (to t 0.3) the lift is under half a
-// stop: the sunlit granite near the cab lands at ~165-180 sRGB with its setts and joints
-// apart (post's meter gives back about a third of any change); more as the sun lowers
+// sun's backlit street glows. Under the high sun (to t 0.3) the lift is about half a
+// stop: the sunlit granite near the cab lands at ~175-190 sRGB with its setts and joints
+// apart (post's meter gives back about a third of any change), the frame's mean nearer the
+// midday photographs' (sRGB luma ~125-145) and its brightest whites and sky reaching the
+// clip as theirs do (post's deep-shadow term holds the darkest tones); more as the sun lowers
 // and the street falls into shade, none once it has set (the dusk caps hold the exposure).
 // At golden hour the lift stays under a stop: the frame keeps a camera's range, the sky
 // over the shaded street blowing out rather than the shade being lifted to mid grey
 const KDAY = 1.3, EH_FULL = 1.9;
-const EXPO_LIFT = [[0.0, 0.4], [0.3, 0.42], [0.45, 0.8], [0.55, 0.7], [0.65, 0.5], [0.78, 0.0]];
+const EXPO_LIFT = [[0.0, 0.55], [0.3, 0.57], [0.45, 0.8], [0.55, 0.7], [0.65, 0.5], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
