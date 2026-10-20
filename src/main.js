@@ -464,58 +464,35 @@ async function main() {
     geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs?.length,
     chunks: app.world.chunks.size, queue: app.world.stats.queue, buildMsByModule: app.world.stats.buildMsByModule, rideBuild: app.world.rideBuildStats(),
     s: +(app.cameraS ?? 0).toFixed(1), speedKmh: +((app.train?.speed ?? 0) * 3.6).toFixed(1),
-    frames: mon.frames(), hitches: mon.count, rafStalls: stalls, workersKept: workerHold.held.length,
+    frames: mon.frames(), hitches: mon.count, rafStalls: stalls,
     modules: mods.map((m) => m.name + (m.disabled ? '(disabled)' : '')).join(','),
   });
 }
 
 /**
- * Worker teardown holds the page back. During the start-up compile, Chrome's teardown of a
- * terminated worker waits behind every program queued: the main thread stood still for 6-20 s
- * when the figure decoders finished. Once the programs are linked it holds back the browser's
- * frames instead: terminating the 7 start-up workers at the end of the compile held back the
- * first animation frame for 1-3.5 s in most start-ups (twice for over two minutes, as far as
- * the logs tell), and a worker terminated mid-ride held back the frames for up to 0.4 s.
- * So a worker that a module terminates is kept, idle and silent (its handlers dropped), while
- * the page is visible, and terminated once the page is hidden (nobody sees the hold then),
- * except during the start-up compile; a hidden page's workers are terminated at once. At most
- * KEEP_WORKERS are kept (beyond that the oldest is terminated). holdWorkers(true) marks the
- * start-up compile, holdWorkers(false) its end, returning how many workers were terminated
- * during it. URL workers=0 (A/B): workers are kept during the start-up only and terminated at
- * the end of the compile, as before.
+ * Worker teardown waits for the GPU process: Chrome releases a terminated worker's GPU
+ * context (it has one once it used an OffscreenCanvas or an ImageBitmap) with a synchronous
+ * call, and while the start-up programs compile that call waits behind every program
+ * queued: the main thread stood still for 6-20 s when the figure decoders finished. A
+ * worker terminated during the start-up (inits and compile) is terminated once every
+ * start-up program is linked (the GPU process is idle then). holdWorkers(true) starts holding; holdWorkers(false) stops and
+ * terminates the held ones, returning how many.
  */
-const KEEP_WORKERS = 16;
-const workerHold = { startup: false, keep: params.str('workers', '1') !== '0', held: [], terminate: null, total: 0 };
+const workerHold = { on: false, held: [] };
 if (typeof Worker !== 'undefined' && Worker.prototype.terminate) {
-  const terminate = workerHold.terminate = Worker.prototype.terminate;
-  const drop = (e) => { e.stopImmediatePropagation(); if (e.type === 'error') e.preventDefault(); };
+  const terminate = Worker.prototype.terminate;
   Worker.prototype.terminate = function () {
-    const hold = workerHold.startup || workerHold.keep && document.visibilityState !== 'hidden';
-    if (!hold) return terminate.call(this);
-    if (workerHold.held.includes(this)) return;
-    workerHold.held.push(this);
-    workerHold.total++;
-    // (a kept worker delivers nothing more, as a terminated one: its handlers go, and a
-    // capturing listener drops what other listeners would get)
-    this.onmessage = null; this.onmessageerror = null; this.onerror = null;
-    for (const type of ['message', 'messageerror', 'error']) this.addEventListener(type, drop, true);
-    if (workerHold.held.length > KEEP_WORKERS && !workerHold.startup) { try { terminate.call(workerHold.held.shift()); } catch (e) { /* gone */ } }
+    if (!workerHold.on) return terminate.call(this);
+    if (!workerHold.held.includes(this)) workerHold.held.push(this);
+    workerHold.terminate = terminate;
   };
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') releaseWorkers(); });
 }
-/** Terminates the kept workers (not during the start-up compile); returns how many. */
-function releaseWorkers() {
-  if (workerHold.startup || !workerHold.terminate) return 0;
+function holdWorkers(on) {
+  workerHold.on = on;
+  if (on) return 0;
   const held = workerHold.held.splice(0);
   for (const w of held) { try { workerHold.terminate.call(w); } catch (e) { /* gone */ } }
   return held.length;
-}
-function holdWorkers(on) {
-  workerHold.startup = on;
-  if (on) return 0;
-  const n = workerHold.total;
-  if (!workerHold.keep || document.visibilityState === 'hidden') releaseWorkers();
-  return n;
 }
 
 /** Queue the programs of everything in the scene against the HDR scene target (non-blocking:

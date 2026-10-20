@@ -90,10 +90,11 @@ const TONE = {
   // deep: [(time of day, slope increase), (time of day, centre in stops), width]. Steeper
   // and a little higher from golden hour to sunset, when the street lies in shade under
   // a bright sky: dark clothes and hair, canopy undersides and doorways fall to 10-30 sRGB
-  // as in the evening photographs instead of hanging in a milky grey. Under the high sun a
-  // little steeper than at t 0.3, so the midday exposure's extra lift (env EXPO_LIFT) keeps
-  // the darkest 2 % of the frame in the photographs' range rather than lifting it to grey
-  deep: [[[0.15, 1.2], [0.3, 1.0], [0.5, 1.35], [0.85, 1.35], [1.0, 0.3]], [[0.3, -1.8], [0.5, -1.5], [0.85, -1.5], [1.0, -1.8]], 0.5],
+  // as in the evening photographs instead of hanging in a milky grey. Steepest under the
+  // high sun: the hard light's shade under the crowns and awnings, dark clothes and hair
+  // fall to ~15-30 sRGB as in the midday photographs (their darkest 2 % sit at 3-40, median
+  // 13), so the midday exposure's lift (env EXPO_LIFT) brightens the street, not its blacks
+  deep: [[[0.15, 1.6], [0.5, 1.35], [0.85, 1.35], [1.0, 0.3]], [[0.3, -1.8], [0.5, -1.5], [0.85, -1.5], [1.0, -1.8]], 0.5],
   // local highlight recovery (final pass): where the surfaces around a pixel average more
   // than `knee` stops over mid grey (a low sun's sheen on the paving, looking into it), its
   // bright pixels (ramped in from `px[0]` stops over `px[1]`) come down by `strength` x the
