@@ -749,7 +749,8 @@ uniform vec2 uSkySatEl;       // sin(elevation) where the sky's saturation boost
 uniform vec3 uWBSky;          // white balance gains for sky pixels (no shade-neutral, no green lift)
 uniform vec3 uSunView;        // sun direction in view space (the warm sky's boost eases off around it)
 uniform vec2 uSkyWhite;       // a warm sky this far over mid grey (stops: start, full) goes to white
-uniform vec2 uSatCeil;        // soft ceiling of the display saturation: start, limit
+uniform vec3 uSatCeil;        // soft ceiling of the display saturation: start, limit, limit in the deep shadows
+uniform vec2 uVib;            // vibrance: share of a pixel's own saturation that holds its boost back, share of the orange protection
 uniform sampler2D tClouds;    // cloud pass (a = transmittance; > 1.5: no sky)
 uniform int uUseClouds;
 varying vec2 vUv;
@@ -948,11 +949,12 @@ void main() {
       float boost = mix(uSatOut, uSatHi.x, smoothstep(uSatHi.y, uSatHi.z, lt));
       float cx = max(col.r, max(col.g, col.b)), cn = min(col.r, min(col.g, col.b));
       // (saturation as the display values show it: gamma ~2.2; and, as a camera's vibrance
-      // protects skin tones, the orange hues of skin and limestone, 15-50 degrees, get less)
+      // protects skin tones, the orange hues of skin and limestone, 15-50 degrees, get less;
+      // at golden hour, uVib, the boost reaches the mid-saturated colours and orange too)
       float s0 = 1.0 - pow(max(cn, 0.0) / max(cx, 1e-7), 0.4545);
       float hr = (col.g - col.b) / max(col.r - col.b, 1e-7);
       float orange = step(col.b, col.g) * step(col.g, col.r) * smoothstep(0.1, 0.25, hr) * (1.0 - smoothstep(0.8, 0.95, hr));
-      float kv = boost > 1.0 ? 1.0 + (boost - 1.0) * (1.0 - s0) * mix(1.0, 1.0 - s0, orange) : boost;
+      float kv = boost > 1.0 ? 1.0 + (boost - 1.0) * (1.0 - uVib.x * s0) * mix(1.0, 1.0 - s0, orange * uVib.y) : boost;
       col = max(lt + (col - lt) * kv, 0.0);
     }
     float m = max(col.r, max(col.g, col.b));
@@ -975,20 +977,23 @@ void main() {
   // soft ceiling on the display saturation (hue and value kept): above uSatCeil.x it
   // approaches uSatCeil.y, as a camera's colour rendering keeps the most saturated
   // colours (low-sun foliage and stone, a vivid sweater) inside its gamut instead of
-  // crushing a channel to zero
+  // crushing a channel to zero; in the deep shadows (dark crowns and clothes) the limit is
+  // lower, as a camera's chroma noise reduction keeps their colour down
   {
     float cx = max(col.r, max(col.g, col.b)), cn = min(col.r, min(col.g, col.b));
     float s = (cx - cn) / max(cx, 1e-5);
     if (s > uSatCeil.x) {
-      float sr = uSatCeil.y - uSatCeil.x;
+      float sr = max(mix(uSatCeil.z, uSatCeil.y, smoothstep(0.06, 0.3, cx)) - uSatCeil.x, 0.02);
       float st = uSatCeil.x + sr * (1.0 - exp(-(s - uSatCeil.x) / sr));
       col = cx - (cx - col) * (st / s);
     }
   }
-  // fine film grain, strongest in the mid tones, plus dither
+  // fine film grain, strongest in the mid tones, plus dither. The grain is luminance noise
+  // (a camera JPEG's chroma noise is filtered out): it scales the pixel's own colour, so a
+  // dark saturated crown keeps its hue and saturation instead of a channel being pushed to 0
   float g = (hash(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) + hash(gl_FragCoord.xy * 1.37 + fract(uTime * 3.17) * 71.0) - 1.0);
   float lm = dot(col, vec3(0.333));
-  col += g * uGrain * (0.35 + lm * (1.0 - lm) * 2.6);
+  col += g * uGrain * (0.35 + lm * (1.0 - lm) * 2.6) * min(col / max(dot(col, vec3(0.2126, 0.7152, 0.0722)), 1e-4), vec3(3.0));
   col += (hash(gl_FragCoord.xy + 0.5) - 0.5) / 255.0;
   gl_FragColor = vec4(col, 1.0);
 }

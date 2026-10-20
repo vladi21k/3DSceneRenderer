@@ -100,7 +100,7 @@ void surface(vec2 m, inout Surf s) {
   float rh = uTile.y / float(NR), sl = uTile.x / float(NS);
   // depth drifts over 20-40 cm: some areas worked harder
   float dfield = 0.75 + 0.5 * fbm(m, 3.0, 3, 0.55, 341u);
-  float best = 0.0, bestT = 0.5, bestG = 0.0;
+  float best = 0.0, bestT = 0.5, bestG = 0.0, worked = 0.0;
   int j0 = int(floor(m.y / rh));
   for (int dj = -uOne; dj <= uOne; dj++) {
     int j = j0 + dj;
@@ -144,19 +144,19 @@ void surface(vec2 m, inout Surf s) {
       float tn = floor(gy);
       uint ht = sfH2(int(tn) + 64, iw * NR + jw, 349u);
       float t1 = sfHf(ht), t2 = sfHf(sfH(ht + 1u)), t3 = sfHf(sfH(ht + 2u)), t4 = sfHf(sfH(ht + 3u));
-      float tc = 0.5 + 0.2 * (t2 - 0.5), tw = 0.26 + 0.12 * t3;
+      float tc = 0.5 + 0.2 * (t2 - 0.5), tw = 0.3 + 0.1 * t3;
       float q = (gy - tn - tc) / tw;
       float tooth = sat(1.0 - q * q);
-      tooth *= sqrt(tooth);
       float toothK = t1 < 0.09 ? 0.12 : 0.55 + 0.65 * t4;
       float f0 = 0.13 * fract(t2 * 7.31);
       float alo = smoothstep(f0, f0 + 0.07, f) * (1.0 - smoothstep(0.6 + 0.15 * t3, 1.0, f));
       float env = alo * acr;
       float along = 0.7 + 0.6 * (0.5 + 0.5 * noiseM(vec2(f * len + h1, h7), vec2(25.0), 350u));
       // a few strokes only grazed the face
-      float sDep = h1 < 0.2 ? 0.45 : 1.0;
-      float dep = (0.0002 + 0.0003 * h1) * sDep * dfield * pDep * toothK * along * (1.0 - 0.45 * sat(f));
+      float sDep = h1 < 0.15 ? 0.5 : 1.0;
+      float dep = (0.00025 + 0.0003 * h1) * sDep * dfield * pDep * toothK * along * (1.0 - 0.45 * sat(f));
       float hs = -dep * env * tooth;
+      worked = max(worked, dep * env);
       if (hs < best) { best = hs; bestT = h1; bestG = tooth; }
     }
   }
@@ -164,15 +164,17 @@ void surface(vec2 m, inout Surf s) {
   // across (sparse, a few per hand's breadth), and the stone's natural pores, both breaking
   // the grooves; a trace of grain
   vec4 pk = voro(m, vec2(120.0), 352u, 1.0);
-  float pock = smoothstep(0.32, 0.08, pk.x) * step(0.965, pk.z) * (0.6 + 0.4 * fract(pk.z * 31.7));
+  float pock = smoothstep(0.28, 0.06, pk.x) * step(0.98, pk.z) * (0.6 + 0.4 * fract(pk.z * 31.7));
   vec4 v = voro(m, vec2(260.0), 309u, 1.0);
   float pore = smoothstep(0.2, 0.05, v.x) * step(0.93, v.z);
   best *= 1.0 - smoothstep(0.3, 0.12, v.x) * step(0.93, v.z);
-  s.height = min(best, -pock * 0.0007) + fbm(m, 120.0, 3, 0.5, 310u) * 0.00006 - pore * 0.0004;
-  // dust held in the grooves and pocks, and the strokes' own tone (each stroke a touch
-  // paler or darker): the dressing reads in shade too, where the relief alone gives no contrast
-  float dn = sat(-best / 0.0006);
-  float a = 1.06 - 0.28 * dn * bestG + 0.07 * (bestT - 0.5) - 0.2 * pore - 0.14 * pock + 0.03 * (v.z - 0.5);
+  s.height = min(best, -pock * 0.0005) + fbm(m, 120.0, 3, 0.5, 310u) * 0.00006 - pore * 0.0004;
+  // dust held in the grooves and pocks, a little over the whole deep end of a stroke (so a
+  // stroke reads as a dash running out along the working direction), and the strokes' own
+  // tone (each a touch paler or darker): the dressing reads in shade too, where the relief
+  // alone gives no contrast (mean 1.04 as before: the runtime's near-far balance)
+  float dn = sat(-best / 0.0005);
+  float a = 1.107 - 0.32 * dn * bestG - 0.1 * sat(worked / 0.0005) + 0.12 * (bestT - 0.5) - 0.2 * pore - 0.1 * pock + 0.03 * (v.z - 0.5);
   s.ao = sat(0.5 * a);
   s.albedo = vec3(1.0);
   s.rough = 0.8;

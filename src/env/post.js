@@ -118,12 +118,25 @@ const TONE = {
   // and lit foliage that carry their own colour are not pushed past it (the photographs'
   // shaded limestone is a pale warm grey, sunlit stone at most ~0.35 HSV saturation)
   satOut: [[0.3, 1.42], [0.5, 1.3], [0.6, 1.28], [0.85, 1.5], [0.95, 1.35]],
-  // soft ceiling of the display (HSV) saturation: [start, limit]; the photographs keep
-  // under ~2.4 % of their pixels above 0.85 and almost none with a crushed channel
-  satCeil: [0.72, 0.92],
+  // soft ceiling of the display (HSV) saturation: [start, limit, limit in the deep shadows]
+  // (the photographs keep under ~2.4 % of their pixels above 0.85 and almost none with a
+  // crushed channel; a camera's chroma noise reduction holds the darkest colours, dark
+  // crowns and clothes, lower still)
+  satCeil: [0.72, 0.92, 0.8],
+  // golden hour (time of day, weight): the low sun's colour is the picture (golden stone
+  // against the blue-grey shade, green crowns, warm clothes), and nearly the whole frame,
+  // limestone, paving and the pale sky, sits in the orange hues the day's vibrance holds
+  // back: the boost rises by `sat`, reaches the mid-saturated colours too (`vib`: [share of
+  // the pixel's own saturation that holds its boost back, share of the extra orange
+  // protection]; by day [1, 1]) and the soft ceiling starts lower (`ceil`: [start, limit])
+  // so the gamut edge stays guarded. Looking into the low sun (`backlit`) the lens veil and
+  // the glowing air flatten the colour, as in a contre-jour photograph (pale and warm, HSV
+  // saturation ~0.2): there the day's vibrance is kept. Through sunset, when the afterglow
+  // and the first lamps carry the colour, part of it stays; none in the blue hour
+  gold: { w: [[0.38, 0], [0.48, 1], [0.64, 1], [0.76, 0.6], [0.82, 0.6], [0.9, 0]], sat: 0.25, vib: [0.5, 0], ceil: [0.66, 0.86] },
   // a warm sky this many stops over mid grey (start, full) runs to the camera's cream white
-  // (the blown aureole over a backlit golden street)
-  skyWhite: [2.3, 4.3],
+  // (the blown aureole over a backlit golden street); under ~3 stops it keeps its apricot
+  skyWhite: [3.0, 4.6],
   // and in the highlights (time of day, [saturation, from, to] in display-linear luminance):
   // by day it eases off from about +1 stop and is 0.6 by the shoulder, so sunlit limestone
   // rolls off to cream; at golden hour the same, a little stronger (the low sun's stone
@@ -455,7 +468,8 @@ const post = {
       uUpView: { value: new THREE.Vector3(0, 1, 0) }, uProjInv: { value: new THREE.Vector2(1, 1) },
       uSkySatEl: { value: vtable(TONE.skySatEl, 0, new THREE.Vector2()) },
       uWBSky: { value: new THREE.Vector3(1.0, 0.99, 0.965) }, uSunView: { value: new THREE.Vector3(0, 0, 1) },
-      uSkyWhite: { value: new THREE.Vector2(...TONE.skyWhite) }, uSatCeil: { value: new THREE.Vector2(...TONE.satCeil) },
+      uSkyWhite: { value: new THREE.Vector2(...TONE.skyWhite) }, uSatCeil: { value: new THREE.Vector3(...TONE.satCeil) },
+      uVib: { value: new THREE.Vector2(1, 1) },
       tClouds: { value: null }, uUseClouds: { value: 0 },
     });
     // local level of the surfaces for the highlight recovery (1/8 res, then blurred)
@@ -765,8 +779,12 @@ const post = {
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
     // (a dusty day's milky light is rendered with a little more colour, env.lookSat)
     const kLook = env && Number.isFinite(env.lookSat) ? env.lookSat : 1;
-    fu.uSatOut.value = 1 + (table(TONE.satOut, t) - 1) * kLook;
-    fu.uSatCeil.value.set(TONE.satCeil[0], TONE.satCeil[1]);
+    // (the golden-hour look, see TONE.gold; not when looking into the sun)
+    const gw = table(TONE.gold.w, t), gl = gw * (1 - backlit), Gd = TONE.gold;
+    this.goldLook = gl;   // (inspection)
+    fu.uSatOut.value = 1 + (table(TONE.satOut, t) + Gd.sat * gl - 1) * kLook;
+    fu.uVib.value.set(lerp(1, Gd.vib[0], gl), lerp(1, Gd.vib[1], gl));
+    fu.uSatCeil.value.set(lerp(TONE.satCeil[0], Gd.ceil[0], gw), lerp(TONE.satCeil[1], Gd.ceil[1], gw), TONE.satCeil[2]);
     fu.uSkyWhite.value.set(TONE.skyWhite[0], TONE.skyWhite[1]);
     vtable(TONE.satHi, t, fu.uSatHi.value);
     // the sky's saturation boost by elevation: world up seen from the camera
