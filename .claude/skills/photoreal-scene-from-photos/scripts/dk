@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# dk: run one command inside the project's Docker tools image (Blender, Node, Python imaging,
+# ImageMagick, ffmpeg, gltf-transform), with the project mounted, the current directory kept
+# and your own user id, so files it writes belong to you and relative paths just work.
+#
+#   dk blender -b --factory-startup -P tools/blender/make_lamp.py -- --out assets/lamp.glb
+#   dk node tools/check.mjs            dk python3 tools/measure.py shot.png
+#   dk ffmpeg -i in.mp4 ...            dk convert in.png -strip -quality 88 out.jpg
+#   dk gltf-transform inspect assets/x.glb
+#   DK_GPU=1 dk blender -b -P bake.py  (NVIDIA GPU for Cycles baking; needs the NVIDIA Container Toolkit)
+#
+# Environment:
+#   DK_IMAGE       image tag (default scene-tools:latest); built from DK_DOCKERFILE on first use
+#   DK_DOCKERFILE  default: Dockerfile.tools next to this script
+#   DK_ROOT        directory mounted at /work (default: git top level of $PWD, else $PWD);
+#                  $PWD must be inside it
+#   DK_GPU=1       add --gpus all
+#   DK_PORTS       space-separated -p mappings, e.g. "8080:8080"
+#
+# No -t unless both stdin and stdout are terminals: agents run without a TTY, and
+# `docker run -t` then fails with "the input device is not a TTY".
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE="${DK_IMAGE:-scene-tools:latest}"
+ROOT="${DK_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)}"
+ROOT="$(cd "$ROOT" && pwd -P)"
+CWD="$(pwd -P)"
+case "$CWD/" in
+  "$ROOT"/*) REL="${CWD#"$ROOT"}" ;;
+  *) echo "dk: $CWD is outside the mount root $ROOT (set DK_ROOT)" >&2; exit 2 ;;
+esac
+if [ "$#" -eq 0 ]; then
+  echo "usage: dk <command> [args...]   (see the header of $0)" >&2
+  exit 2
+fi
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  DF="${DK_DOCKERFILE:-$HERE/Dockerfile.tools}"
+  echo "dk: building $IMAGE from $DF (first use: downloads Blender and Node, several minutes)" >&2
+  docker build -t "$IMAGE" -f "$DF" "$(dirname "$DF")" >&2
+fi
+ARGS=(--rm -i --init -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$ROOT:/work" -w "/work$REL")
+if [ -t 0 ] && [ -t 1 ]; then ARGS+=(-t); fi
+if [ "${DK_GPU:-0}" = "1" ]; then ARGS+=(--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all); fi
+for p in ${DK_PORTS:-}; do ARGS+=(-p "$p"); done
+exec docker run "${ARGS[@]}" "$IMAGE" "$@"
