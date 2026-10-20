@@ -87,7 +87,8 @@ void surface(vec2 m, inout Surf s) {
 // the tool's corner has knocked out the odd pock, and the stone's pores break the grooves.
 // The depth drifts over 20-40 cm (some areas worked harder). The working direction is along
 // u: the runtime rotates the map per block (one angle per block, 35-100° from horizontal),
-// lays it out in metres (the facade uv is stretched per building) and fades the striation
+// lays it out in the wall's uv (metres, scaled per building by up to about a quarter to fit
+// its coursing, so the tooling scales a little with the stone) and fades the striation
 // inside the drafted margin and with distance. The relief carries the look in the sun; the
 // albedo follows it (dust in the grooves and pocks), so it also reads in shade.
 // Detail map format: surface = (normal.xy, moment, albedo modulation with 0.5 = neutral).
