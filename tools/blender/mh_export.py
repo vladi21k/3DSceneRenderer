@@ -460,7 +460,7 @@ def main():
         # value per card; uv v = root 1 .. tip 0 inside one column of the strand atlas layer)
         features=['decal', 'innerHem', 'beardShell', 'beardBase', 'softCut', 'lodClean'] + (['strandCards'] if any_cards else []),
         format=FORMAT_DOC,
-        license='Human figures: built with MPFB2 from the MakeHuman system assets (CC0 1.0)',
+        license='Human figures: built with MPFB2 from the MakeHuman system assets (CC0 1.0); this build: MIT, see LICENSE',
         bones=CASTM_BONES(),
         regions=CASTM.REGIONS,
         # roughness by region where it should override the layer's (hair, brows, lashes, beard: matte fibres)

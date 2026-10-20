@@ -1,5 +1,8 @@
 # Third-party assets and licences
 
+This project is licensed under the MIT License (`LICENSE`); a summary of the third-party works
+and their licences is in `THIRD_PARTY_NOTICES.md`.
+
 Everything the app draws is made by this repository's own code: geometry is built in
 JavaScript at run time, textures are baked on the GPU at start-up (`src/materials/`) or
 painted into canvases by the modules, and all sound is synthesised with WebAudio
@@ -13,7 +16,7 @@ their files are part of the app.
 |---|---|---|---|
 | three.js r186 (renderer, maths, loaders) | `vendor/three/build/` | three.js release r186, vendored unmodified so the app runs without a build step | MIT, see `vendor/three/LICENSE` (copyright three.js authors) |
 | three.js add-ons used by the app: `geometries/RoundedBoxGeometry.js`, `lights/SunLight.js`, `lights/SunLightShadow.js`, `utils/BufferGeometryUtils.js` | `vendor/three/addons/` | same release | MIT (three.js authors) |
-| Human figures: 49 dressed characters (meshes, skeleton weights, LODs, hair strand cards) and their texture strips, about 33 MB (29.4 MB gzip geometry, 3.9 MB WebP strips) | `assets/humans_mh/` (`cast.json`, `cast.bin.gz`, `tex/*.webp`, the strand atlas in `albedo_5` / `alpha_5`) | Built in this repository by `tools/blender/mh_*.py` with the MPFB2 add-on (MakeHuman for Blender, v2.0.18) from the MakeHuman system assets (`makehuman_system_assets_cc0.zip`); fetched by `tools/mh_fetch.sh`, image `docker/Dockerfile.mh` | CC0 1.0 (public domain dedication of the MakeHuman system assets; the cast built from them is released the same way, recorded in `cast.json` `license`: 'Human figures: built with MPFB2 from the MakeHuman system assets (CC0 1.0)') |
+| Human figures: 49 dressed characters (meshes, skeleton weights, LODs, hair strand cards) and their texture strips, about 33 MB (29.4 MB gzip geometry, 3.9 MB WebP strips) | `assets/humans_mh/` (`cast.json`, `cast.bin.gz`, `tex/*.webp`, the strand atlas in `albedo_5` / `alpha_5`) | Built in this repository by `tools/blender/mh_*.py` with the MPFB2 add-on (MakeHuman for Blender, v2.0.18) from the MakeHuman system assets (`makehuman_system_assets_cc0.zip`); fetched by `tools/mh_fetch.sh`, image `docker/Dockerfile.mh` | The figure files are this project's work under its MIT licence (`LICENSE`); the MakeHuman system assets they are built from are CC0 1.0 (public domain dedication). Recorded in `cast.json` `license` |
 
 The rest of `vendor/three/addons/` is the unmodified add-on tree of the same release. The
 app does not load it. Third-party libraries in it keep their own licences, stated in each

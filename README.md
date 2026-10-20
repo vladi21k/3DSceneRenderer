@@ -627,30 +627,40 @@ Main trade-offs:
   `q=low` uses two 1536-texel cascades and turns off MSAA, SSAO, depth of field and motion
   blur. The pixel ratio is capped at 1.5 (1 on low).
 
-## Assets and licences
+## License
 
-Details in `docs/ASSETS.md`.
+This project is licensed under the [MIT License](LICENSE). That covers all of its own work:
+the code, the documentation, the screenshots and the human-figure files built by its scripts.
+
+It includes or builds on third-party works that keep their own licences, listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) (details in [docs/ASSETS.md](docs/ASSETS.md)):
 
 - **three.js r186** (`vendor/three/`), vendored unmodified: MIT, see `vendor/three/LICENSE`.
   The app uses the build and these add-ons: `geometries/RoundedBoxGeometry.js`,
-  `lights/SunLight.js`, `lights/SunLightShadow.js`, `utils/BufferGeometryUtils.js` (MIT). The
-  rest of the add-on tree is not loaded; third-party libraries in it keep their own licences.
-- **Human figures** (`assets/humans_mh/`): CC0 1.0, built in this repository by
-  `tools/blender/mh_*.py` with the MPFB2 add-on (v2.0.18) from the MakeHuman system assets
-  (CC0 1.0). MPFB2 itself (GPL-3.0) is a build tool only; none of its code is shipped.
-- **Everything else** is procedural and made by this repository's code: geometry built at
-  run time, textures baked on the GPU or painted into canvases, sky and lighting computed,
-  sound synthesised. Apart from the figures' texture strips, no image, HDR, sound or font files
-  are shipped; signs use fonts installed on the viewer's system.
-- Build-time tools (Blender, Node, gltf-transform, Python libraries, ImageMagick, ffmpeg,
-  headless Chrome) run in the tools image or locally and are not shipped.
-- **`reference/*.jpg`** (and `.jpeg`) are third-party photographs kept only as visual reference
-  for judging the result. They are never loaded by the app, never used as textures, and are not
-  covered by any licence of this project; their copyright stays with their photographers.
+  `lights/SunLight.js`, `lights/SunLightShadow.js`, `utils/BufferGeometryUtils.js`. The rest
+  of the add-on tree is not loaded; libraries bundled in it keep their own licences (for
+  example Draco and Basis Universal: Apache-2.0).
+- **MakeHuman system assets**: CC0 1.0. The human figures in `assets/humans_mh/` are built from
+  them by `tools/blender/mh_*.py` with the MPFB2 add-on (v2.0.18). MPFB2 itself (GPL-3.0) is
+  a build tool only; none of its code is in the repository or shipped.
+- **Build-time tools** (Blender, Node, gltf-transform, Python libraries, ImageMagick, ffmpeg,
+  headless Chrome) are downloaded into local Docker images or installed locally, under their
+  own licences; none of them are in the repository.
+- **Everything else** is procedural and made by this project's code: geometry built at run
+  time, textures baked on the GPU or painted into canvases, sky and lighting computed, sound
+  synthesised. Apart from the figures' texture strips, no image, HDR, sound or font files are
+  shipped; signs use fonts installed on the viewer's system.
+
+**Not covered:** `reference/*.jpg` (and `.jpeg`) are third-party photographs kept only as visual
+reference. They are not licensed under MIT, are never loaded by the app, and their copyright
+stays with their photographers.
 
 ## Repository layout
 
 ```
+README.md             this file
+LICENSE               MIT licence of this project
+THIRD_PARTY_NOTICES.md  third-party works and their licences
 index.html            page and import map
 serve.py              static server
 src/
@@ -664,7 +674,7 @@ src/
   ride/               tram dynamics, cab camera, oncoming trams, input, HUD, audio
 assets/humans_mh/     the built human cast
 vendor/three/         three.js r186
-tools/                shoot.py, record.py, dk, checkpoint.sh, mh_fetch.sh, blender/, textures/
+tools/                doctor.sh, shoot.py, record.py, dk, checkpoint.sh, mh_fetch.sh, blender/, textures/
 docker/               tools image and human-figure image
 docs/                 ARCHITECTURE.md, ASSETS.md, PLAN.md, screenshots/
 reference/            third-party reference photographs (not part of the app)
