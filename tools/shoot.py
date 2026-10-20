@@ -597,16 +597,22 @@ def veil_gone(js, label, wait=10.0):
 
 # Per-frame samples after ready (typed arrays, no allocation per frame): frame interval,
 # frame-callback CPU time, GPU time from gpuTimer.of(frame) (results arrive a few frames
-# late), draw calls and triangles; summary() gives their percentiles.
+# late), draw calls and triangles; summary() gives their percentiles. One sample per app
+# frame, taken at the end of the frame callback (the frame monitor's end()), so frames the
+# app's watchdog runs from a timer while the browser holds back animation frames (right
+# after a cold start, for up to a few seconds after ready) are sampled too. (A sampler on
+# its own requestAnimationFrame loop missed them, and its first interval then spanned the
+# whole stall: 0.35-3.6 s where the app's own monitor showed at most 49 ms.) The intervals
+# are the monitor's (frame start to frame start), and reset() starts from the newest frame
+# as resetFrames() does, so frames and intervalMs match stats().frames and the hitch log.
 SAMPLER_JS = r"""(() => {
   const a = window.__app;
   if (!a || !a.monitor || window.__shootSamp) return;
-  const N = 1 << 16, LAG = 24;
+  const N = 1 << 16, LAG = 24, mon = a.monitor;
   const iv = new Float32Array(N), cpu = new Float32Array(N), gpu = new Float32Array(N), calls = new Float32Array(N), tris = new Float32Array(N), fr = new Int32Array(N);
-  const RAF = window.__origRAF || window.requestAnimationFrame.bind(window);
-  let n = 0, lastF = a.frame, lastT = a.monitor.lastT;
+  let n = 0, lastT = mon.lastT;
   const S = window.__shootSamp = {
-    reset() { n = 0; lastF = a.frame; lastT = a.monitor.lastT; },
+    reset() { n = 0; lastT = mon.lastT; },
     summary() {
       for (let i = Math.max(0, n - LAG); i < n; i++) { const g = a.gpuTimer.of(fr[i]); gpu[i] = g === null ? -1 : g; }
       const q = (arr, keep) => {
@@ -622,21 +628,21 @@ SAMPLER_JS = r"""(() => {
       return JSON.stringify({ frames: n, loop: fps, intervalMs: q(iv, all), cpuMs: q(cpu, all), gpuMs: q(gpu, known), calls: q(calls, all), trianglesM: q(tris, all), gpuOver28: g28, cpuOver20: c20 });
     },
   };
-  const tick = () => {
-    if (a.frame !== lastF && n < N) {
-      lastF = a.frame;
-      const i = n++;
-      const t = a.monitor.lastT;
-      iv[i] = t - lastT; lastT = t;
-      cpu[i] = a.monitor.cpu;
-      calls[i] = a.renderer.info.render.calls; tris[i] = a.renderer.info.render.triangles / 1e6;
-      fr[i] = a.frame;
-      const j = i - LAG;
-      if (j >= 0) { const g = a.gpuTimer.of(fr[j]); gpu[j] = g === null ? -1 : g; }
-    }
-    RAF(tick);
+  const end = mon.end;
+  mon.end = function (c) {
+    end.call(this, c);
+    const t = this.lastT;
+    // (no frame had run when the sampler was installed: the first one only starts the clock)
+    if (!lastT) { lastT = t; return; }
+    if (n >= N || t === lastT) return;
+    const i = n++;
+    iv[i] = t - lastT; lastT = t;
+    cpu[i] = c;
+    calls[i] = a.renderer.info.render.calls; tris[i] = a.renderer.info.render.triangles / 1e6;
+    fr[i] = a.frame;
+    const j = i - LAG;
+    if (j >= 0) { const g = a.gpuTimer.of(fr[j]); gpu[j] = g === null ? -1 : g; }
   };
-  RAF(tick);
 })()"""
 
 
@@ -1021,8 +1027,8 @@ def run(a, guard):
             print(f"waiting {a.heapdelay:g}s before sampling (--heapdelay)", flush=True)
             time.sleep(a.heapdelay)
         if a.hitches or (a.heapdelay > 0 and timing):
-            js("window.__app && window.__app.resetFrames && window.__app.resetFrames()")
-            js("window.__shootSamp && window.__shootSamp.reset()")
+            # (one evaluation: no frame runs between the two resets)
+            js("(() => { const a = window.__app; if (a && a.resetFrames) a.resetFrames(); if (window.__shootSamp) window.__shootSamp.reset(); })()")
         heap_t0 = time.time()
         if a.heapprof or a.heaplive:
             # (one sampling session: with --heaplive, objects collected before the end are left out)

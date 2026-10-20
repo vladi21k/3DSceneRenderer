@@ -5,8 +5,8 @@
 // ran in the frame before it: each module's update, world streaming (build, background
 // compile, reveal), render (and the sun's shadow passes inside it), the programs created
 // in that frame (a program created inside render is a synchronous compile), the GPU time
-// of that frame, heap change (a drop of a few MB is a garbage collection), the reveal and
-// proxy-merge state, post's section timers under prof=1, and the browser's
+// of that frame, heap change (a drop of a few MB is a garbage collection), the bytes the
+// streamer revealed and sent ahead, the proxy-merge state, post's section timers under prof=1, and the browser's
 // long-animation-frame script attribution, which also covers work outside the frame
 // callback (timers, promise callbacks). Every time is shown next to its usual value (the
 // median of the last BASE smooth frames), so one module's spike stands out from a frame
@@ -42,7 +42,7 @@ export class FrameMonitor {
     this.cpu = 0; this.shadowMs = 0; this.cascades = -1;
     this.shadowDraw = 0; this.shadowDrawObj = null;   // longest single draw in the shadow passes (ms, object name; main.js)
     this.progUpd = 0; this.progRender = 0; this.progNames = null;
-    this.reveal = 0; this.build = 0; this.queue = 0;
+    this.reveal = 0; this.pre = 0; this.build = 0; this.queue = 0;
     this.heap = 0; this.heapStart = 0; this.calls = 0; this.tris = 0; this.proxy = 0;
     for (const p of app.renderer.info.programs || []) p.__mon = 1;   // start-up programs
     this._prog = this._programs();
@@ -137,6 +137,7 @@ export class FrameMonitor {
     const app = this.app, w = app.world, info = app.renderer.info;
     this.cpu = cpu;
     this.reveal = w?.stats.revealBytes ?? 0;
+    this.pre = w?.stats.preBytes ?? 0;
     this.build = w?.stats.lastBuildMs ?? 0;
     this.queue = w?.stats.queue ?? 0;
     this.calls = info.render.calls; this.tris = info.render.triangles;
@@ -194,7 +195,7 @@ export class FrameMonitor {
       shadowDraw: r1(this.shadowDraw), shadowDrawObj: this.shadowDrawObj,
       programs: this.progUpd + this.progRender, syncCompile: this.progRender,
       newPrograms: this.progNames ? this.progNames.slice(0, 8) : undefined,
-      compiling, reveal: Math.round(this.reveal / 1024), build: r1(this.build), queue: this.queue, proxyMerge: this.proxy,
+      compiling, reveal: Math.round(this.reveal / 1024), pre: Math.round(this.pre / 1024), build: r1(this.build), queue: this.queue, proxyMerge: this.proxy,
       calls: this.calls, tris: this.tris,
       usual: { cpu: r1(this._med(this.base.cpu)), shadowCpu: r1(this._med(this.base.shadow)), gpu: r1(this._med(this.base.gpu)), calls: Math.round(this._med(this.base.calls)) },
       // heap at the start of the frame before the gap minus the heap now (a drop = a GC
@@ -243,7 +244,7 @@ export class FrameMonitor {
       const u = h.usual;
       lines.push(`t=${h.t}s s=${h.s} ${h.kmh}km/h ${h.ms}ms cause=${h.cause}${h.spikes.length ? ' spikes=' + h.spikes.join(',') : ''} cpu=${h.cpu}(${u.cpu}) gap=${h.gap} gpu=${h.gpu ?? '?'}(${u.gpu}) | ${st} ` +
         `shadowCpu=${h.shadowCpu}(${u.shadowCpu})${h.shadowDraw >= 2 ? ` shadowDraw=${h.shadowDraw}(${h.shadowDrawObj})` : ''} calls=${h.calls}(${u.calls}) casc=${h.cascades} prog=${h.programs}/${h.syncCompile} ` +
-        `compiling=${h.compiling} reveal=${h.reveal}KB build=${h.build} proxy=${h.proxyMerge} heapDrop=${h.heapDropMB}MB${h.newPrograms ? ' new=' + h.newPrograms.join(',') : ''}${lo ? ' ' + lo : ''}`);
+        `compiling=${h.compiling} reveal=${h.reveal}KB pre=${h.pre}KB build=${h.build} proxy=${h.proxyMerge} heapDrop=${h.heapDropMB}MB${h.newPrograms ? ' new=' + h.newPrograms.join(',') : ''}${lo ? ' ' + lo : ''}`);
     }
     return lines.join('\n');
   }

@@ -290,6 +290,11 @@ async function main() {
   // stepped on demand by app.recStep(n) (tools/record.py screenshots after each step).
   const recFps = params.num('rec', 0);
   let fpsAcc = 0, fpsN = 0, fpsT = 0, progN = -1;
+  // Before the ride starts the streamer builds the chunks at the detail they will need after
+  // START_AHEAD metres of travel: the default start lies 9 m before a chunk boundary, and the
+  // first lod 0 upgrade (with its 9 MB of facade and shell data) used to come 0.7 s into the
+  // ride. With one chunk of margin the first upgrade comes some 50 m (3-4 s) in, staged.
+  const START_AHEAD = 40;
 
   // The view is ready once the chunks within 160 m of the camera are built and every
   // readiness gate has settled. Gates still open GATE_MS after the world was ready are
@@ -379,7 +384,7 @@ async function main() {
     camera.updateMatrixWorld();
     U.uCameraPos.value.copy(camera.position);
     const tw = performance.now();
-    app.world.update(app.cameraS ?? app.train?.s ?? app.startS);
+    app.world.update(app.cameraS ?? app.train?.s ?? app.startS, app.ready ? 0 : START_AHEAD);
     const tr = performance.now();
     mon.st[iWorld] = tr - tw;
 
@@ -392,6 +397,7 @@ async function main() {
     }
     app.gpuTimer.end();
     mon.renderEnd();
+    app.world.endFrame();
 
     const cpu = performance.now() - t0;
     mon.st[iRender] = performance.now() - tr;

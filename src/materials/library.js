@@ -36,10 +36,11 @@ const STONE_CELL = {
 // (faint: the isotropic macro blotches read as cloud mottling on the walls; stone.dirty keeps more)
 const STONE_MACRO = { f1: 1 / 4, f2: 1 / 17, albedo: 0.04, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
 const STONE_DETAIL = { freq: 2.0, normal: 0.7, albedo: 0.3, rough: 0.05 };
-// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed. Coarse
-// enough to read at 3-8 m (a dressed face, not plaster): the relief carries it in the sun,
-// the albedo (dust in the grooves and pits) in shade
-const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.7, albedo: 0.8, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
+// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed. It reads
+// at 3-8 m as a dressed face, not plaster, without standing out of it (the photographs show
+// the walls as smooth, softly mottled faces): the relief carries it in the sun, the albedo
+// (dust in the grooves and pits) in shade
+const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.2, albedo: 0.75, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
 // rock-faced bosses: fine pitting and small spalls at close range (the large fracture facets
 // are in the rustic map), per block, faded on the drafted margin
 const STONE_PITCH = { tex: 'pitch', tool: 'pitch', freq: 2.0, normal: 0.8, albedo: 0.5, rough: 0.05, share: 1.0, margin: 0.035, farVar: 0.008 };

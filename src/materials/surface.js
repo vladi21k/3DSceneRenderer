@@ -134,6 +134,7 @@ uniform vec4 sfDetail2;  // texels per detail tile, dressing share (0 = off), ma
 uniform sampler2D sfDetailTex;
 uniform sampler2D sfToolTex;
 mat2 sfDR = mat2(1.0);   // detail map rotation (dressing mode)
+vec2 sfMs = vec2(1.0);   // metres per uv unit along u, v (dressing mode)
 `;
 
 const WEATHER_PARS = /* glsl */ `
@@ -438,19 +439,30 @@ const MAP_DRESS = /* glsl */ `
     if (sfDetail2.y > 0.0 && sfLay.y > 0.5) {
       float hd = sfHf(sfH(sfCh + 21u)), ha = sfHf(sfH(sfCh + 22u));
       dTool = hd < sfDetail2.y;
+      // metres per uv unit along u and v: buildings stretch a facade's uv to fit its courses
+      // and block length (u and v by different factors, up to ~1.5:1), so the dressing is
+      // laid out in metres; in the stretched frame the strokes and their bite ends shear
+      // into a lozenge hatch. Exact on planar faces (uv affine per triangle)
+      vec3 sfQx = dFdx(vViewPosition), sfQy = dFdy(vViewPosition);
+      float sfJd = sfGx.x * sfGy.y - sfGy.x * sfGx.y;
+      if (abs(sfJd) > 1e-14) {
+        sfMs = vec2(length(sfQx * sfGy.y - sfQy * sfGx.y), length(sfQy * sfGx.x - sfQx * sfGy.x)) / abs(sfJd);
+        sfMs = clamp(sfMs, vec2(0.4), vec2(2.5));
+        sfMs = max(sfMs, vec2(max(sfMs.x, sfMs.y) * 0.5));
+      }
       // taltish: one working direction per block, 60-75° from horizontal either way, ±25°
       // more at random (a narrower spread lined every block up into one halftone hatch)
       float ang = dTool ? (ha < 0.5 ? 1.0 : -1.0) * (1.047 + 0.262 * fract(ha * 7.31)) + (sfHf(sfH(sfCh + 23u)) - 0.5) * 0.87 : ha * 6.2832;
       float ca = cos(ang), sa = sin(ang);
       sfDR = mat2(ca, sa, -sa, ca);
       float dsc = 0.88 + 0.24 * sfHf(sfH(sfCh + 27u));
-      dq = sfDR * sfCl * (sfDetail.x * dsc) + vec2(sfHf(sfH(sfCh + 24u)), sfHf(sfH(sfCh + 25u)));
-      dgx = sfDR * dgx * dsc; dgy = sfDR * dgy * dsc;
+      dq = sfDR * (sfCl * sfMs) * (sfDetail.x * dsc) + vec2(sfHf(sfH(sfCh + 24u)), sfHf(sfH(sfCh + 25u)));
+      dgx = sfDR * (dgx * sfMs) * dsc; dgy = sfDR * (dgy * sfMs) * dsc;
       bool rubbed = !dTool && hd > sfDetail2.y + (1.0 - sfDetail2.y) * 0.6;
       dAmp = rubbed ? 0.3 : 1.0;
-      // the chisel work reads strongly within a few metres and still as a coarse grain at
-      // 3-8 m; further off it fades to its mean self-shadowing (below)
-      dAmp *= mix(1.0, dTool ? 0.55 : 0.7, smoothstep(3.0, 8.0, length(vViewPosition)));
+      // the chisel work reads within a few metres and still as a fine grain at 3-8 m;
+      // further off it fades to its mean self-shadowing (below)
+      dAmp *= mix(1.0, dTool ? 0.5 : 0.7, smoothstep(2.0, 7.0, length(vViewPosition)));
       dFar = dTool ? 0.985 : (rubbed ? 1.0 : 0.97);   // mean self-shadowing of the tooling
       float e = min(min(sfCl.x, sfCs.x - sfCl.x), min(sfCl.y, sfCs.y - sfCl.y));
       float mg = sfDetail2.z * (0.7 + 0.6 * sfHf(sfH(sfCh + 26u)));
@@ -667,8 +679,11 @@ const METAL = /* glsl */ `
 
 const NORMAL_DETAIL = /* glsl */ `
   if (sfDetail.x > 0.0) {
-    vec2 sfDn = (sfD.rg * 2.0 - 1.0) * sfDR;   // back from the rotated detail frame
+    // back from the rotated detail frame (metres) into the uv frame, whose tangents the
+    // normal frame scales by the relative uv gradients (min / max)
+    vec2 sfDn = (sfD.rg * 2.0 - 1.0) * sfDR;
     float sfDv = sfDw > 0.0 ? max(sfD.b - dot(sfDn, sfDn) - 0.004, 0.0) : 0.0;
+    sfDn *= sfMs / min(sfMs.x, sfMs.y);
     sfVar += (sfDv + (1.0 - sfDw) * sfDetail2.w) * sfDetail.y * sfDetail.y;
     sfN += sfDn * sfDetail.y;
   }
