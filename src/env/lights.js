@@ -110,15 +110,42 @@ export function patchLightLoops() {
   const pars = SC.lights_pars_begin, att = 'float spotAttenuation = getSpotAttenuation( spotLight.coneCos, spotLight.penumbraCos, angleCos );';
   if (pars.split(att).length === 2) {
     const r4 = LANTERN_OMNI_R ** 4;
+    // (a point at the globe's centre has no direction to the light: no light there)
     SC.lights_pars_begin = pars.replace(att, `${att}
 		if ( spotLight.decay < ${((LANTERN_DECAY + 2) / 2).toFixed(6)} ) {
 			float lr2 = dot( lVector, lVector );
-			float lw = saturate( 1.0 - lr2 * lr2 / ${r4.toFixed(1)} );
-			spotAttenuation = max( spotAttenuation, ${LANTERN_OMNI.toFixed(3)} * lw * lw * mix( 1.0, ${LANTERN_CAP.toFixed(3)}, smoothstep( -0.3, -0.85, angleCos ) ) );
-			spotAttenuation *= lr2 / ( lr2 + ${LANTERN_NEAR2.toFixed(3)} );
+			if ( lr2 < 1e-8 ) {
+				light.direction = - spotLight.direction;
+				spotAttenuation = 0.0;
+			} else {
+				float lw = saturate( 1.0 - lr2 * lr2 / ${r4.toFixed(1)} );
+				spotAttenuation = max( spotAttenuation, ${LANTERN_OMNI.toFixed(3)} * lw * lw * mix( 1.0, ${LANTERN_CAP.toFixed(3)}, 1.0 - smoothstep( -0.85, -0.3, angleCos ) ) );
+				spotAttenuation *= lr2 / ( lr2 + ${LANTERN_NEAR2.toFixed(3)} );
+			}
 		}`);
   } else console.warn('[env] spot light layout changed: lanterns light only their cone');
   return spot && sun;
+}
+
+/**
+ * Vertex colours interpolated at the centroid of the covered samples, for every material
+ * built from the shared chunks. With MSAA a pixel only partly covered by a small triangle
+ * is shaded at its centre, outside the triangle, where a colour that changes fast across
+ * it (baked occlusion in a cove, the per-item tints of a fruit heap, a leaf card's or a
+ * bark strip's shading at 60-150 m) is extrapolated: it can go negative, a broken HDR
+ * value (post's debug=1 count) that the scene's lighting turns into a dark speck, or far
+ * above 1, a sparkle. Must run before any lit material compiles. (Materials that declare
+ * their own centroid colour, see ironwork's centroidColor, keep theirs.)
+ */
+export function patchVertexColors() {
+  const SC = THREE.ShaderChunk, decl = 'varying vec4 vColor;';
+  let ok = true;
+  for (const k of ['color_pars_vertex', 'color_pars_fragment']) {
+    if (SC[k].includes('centroid ' + decl)) continue;
+    if (SC[k].split(decl).length === 2) SC[k] = SC[k].replace(decl, 'centroid ' + decl);
+    else ok = false;
+  }
+  return ok;
 }
 
 // ~3300 K blackbody (linear rgb (1, 0.541, 0.216): encoded 1 : 0.76 : 0.50), scaled to the

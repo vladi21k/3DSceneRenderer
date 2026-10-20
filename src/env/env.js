@@ -9,7 +9,7 @@ import { Clouds } from './clouds.js';
 import { StreetSunShadow, patchSunShadowChunk, precompileShadowPrograms, installDepthKinds } from './sunShadow.js';
 import { ShadowBatcher } from './shadowBatch.js';
 import { sunDirection, solarPosition } from './sunPath.js';
-import { StreetLights, patchLightLoops, lampLevel } from './lights.js';
+import { StreetLights, patchLightLoops, patchVertexColors, lampLevel } from './lights.js';
 
 // Environment: physically based sky and sun, cascaded sun shadows, HDR image-based
 // lighting, wind, time of day and the dusk lights. Contract in docs/ARCHITECTURE.md.
@@ -182,6 +182,7 @@ const env = {
     // shadows: built-in sun light with our cascade layout (patch before anything compiles)
     const patched = patchSunShadowChunk(q.cascades, q.taps);
     if (!patchLightLoops()) console.warn('[env] light loop layout changed; dark lights are not skipped');
+    if (!patchVertexColors()) console.warn('[env] vertex colour chunks changed; colours are not centroid-sampled');
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     // one depth material per mesh kind in the shadow passes (no program re-evaluations);

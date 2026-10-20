@@ -6,12 +6,12 @@
 // compile, reveal), render (and the sun's shadow passes inside it), the programs created
 // in that frame (a program created inside render is a synchronous compile), the GPU time
 // of that frame, heap change (a drop of a few MB is a garbage collection), the bytes the
-// streamer revealed and sent ahead, the proxy-merge state, post's section timers under prof=1, and the browser's
-// long-animation-frame script attribution, which also covers work outside the frame
-// callback (timers, promise callbacks). Every time is shown next to its usual value (the
-// median of the last BASE smooth frames), so one module's spike stands out from a frame
-// in which everything ran slower at once (the machine busy with other work: CPU cores or
-// GPU shared with other processes).
+// streamer revealed and sent ahead, the proxy-merge state, post's section timers under
+// prof=1, and the browser's long-animation-frame script attribution, which also covers
+// work outside the frame callback (timers, promise callbacks). Every time is shown next
+// to its usual value (the median of the last BASE smooth frames), so one module's spike
+// stands out from a frame in which everything ran slower at once (the machine busy with
+// other work: CPU cores or GPU shared with other processes).
 //
 // Cost: a performance.now() pair per module per frame and a few typed-array writes;
 // records are only allocated for hitches.

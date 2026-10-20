@@ -78,8 +78,8 @@ void surface(vec2 m, inout Surf s) {
 // side by side across the face, each row a run of strokes end to end along the working
 // direction; every row starts at its own place, so the bite ends of one row never line up
 // with the next (aligned ends read as a second hatch across the first, a basket weave).
-// A row is worked in passes of about three strokes, each pass at its own angle (±3.5°),
-// tooth pitch (2.8-5.2 mm, a worn or a finer tool) and depth; a stroke is 7-10 cm long and
+// A row is worked in passes of two or three strokes, each pass at its own angle (±3.5°),
+// tooth pitch (2.8-5.2 mm, a worn or a finer tool) and depth; a stroke is 10-15 cm long and
 // one chisel wide (4.4-5.9 cm), overlapping its neighbours. It bites in and runs out; the
 // teeth do not bite on one line (the bite end is ragged), their grooves are unevenly spaced
 // and deep (worn teeth shallower, a broken one leaves a ridge), and the depth varies along
@@ -96,7 +96,7 @@ export const tooling = {
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  const int NR = 18, NS = 9;                 // stroke rows across the tile (35.6 mm), strokes per row (71 mm)
+  const int NR = 18, NS = 7;                 // stroke rows across the tile (35.6 mm), strokes per row (91 mm)
   float rh = uTile.y / float(NR), sl = uTile.x / float(NS);
   // depth drifts over 20-40 cm: some areas worked harder
   float dfield = 0.75 + 0.5 * fbm(m, 3.0, 3, 0.55, 341u);
@@ -120,7 +120,7 @@ void surface(vec2 m, inout Surf s) {
       float h4 = sfHf(sfH(h + 3u)), h5 = sfHf(sfH(h + 4u)), h6 = sfHf(sfH(h + 5u));
       float h7 = sfHf(sfH(h + 6u)), h8 = sfHf(sfH(h + 7u));
       if (h8 < 0.09) continue;                                     // a stroke left out
-      // its pass: three strokes along the row, one direction, tooth pitch and depth
+      // its pass: two or three strokes along the row, one direction, tooth pitch and depth
       int pu = sfMod(iw + pOff, NS) / 3;
       uint hp = sfH2(pu, jw, 348u);
       float pAng = (sfHf(hp) - 0.5) * 0.12;                        // ±3.5°
@@ -130,7 +130,7 @@ void surface(vec2 m, inout Surf s) {
       float sa = pAng + (h4 - 0.5) * 0.07;                         // ±2° within the pass
       vec2 dir = vec2(cos(sa), sin(sa));
       // long and wide enough that the strokes overlap and cover the face
-      float len = sl * (1.0 + 0.4 * h5);                           // 7.1-10 cm
+      float len = sl * (1.1 + 0.5 * h5);                           // 10-14.6 cm
       float wid = rh * (1.25 + 0.4 * h6);                          // 4.4-5.9 cm (10-17 teeth)
       vec2 d = m - c0;
       float f = dot(d, dir) / len + 0.5;                           // 0 at the bite, 1 at the run-out
@@ -148,8 +148,8 @@ void surface(vec2 m, inout Surf s) {
       float q = (gy - tn - tc) / tw;
       float tooth = sat(1.0 - q * q);
       float toothK = t1 < 0.09 ? 0.12 : 0.55 + 0.65 * t4;
-      float f0 = 0.13 * fract(t2 * 7.31);
-      float alo = smoothstep(f0, f0 + 0.07, f) * (1.0 - smoothstep(0.6 + 0.15 * t3, 1.0, f));
+      float f0 = 0.24 * fract(t2 * 7.31), f1 = 0.55 + 0.25 * fract(t3 * 5.17);
+      float alo = smoothstep(f0, f0 + 0.1, f) * (1.0 - smoothstep(f1, min(f1 + 0.35, 1.0), f));
       float env = alo * acr;
       float along = 0.7 + 0.6 * (0.5 + 0.5 * noiseM(vec2(f * len + h1, h7), vec2(25.0), 350u));
       // a few strokes only grazed the face
