@@ -185,7 +185,7 @@ Scores drift because each panel is a fresh, often stricter set of judges (people
 - Before resuming, commit the partial state and check the tree is healthy (cold start, 0 console errors, height probe).
 
 ### 4.11 Watchers on the journal
-A small poller tails `<transcriptDir>/journal.jsonl` and prints `FINISHED <label> (result|failed) score=<n>` once per agent (`.work/watch_results.py`); run it under a background monitor so each finished owner wakes the orchestrator. A second watcher greps for the `verify` label to pause the checkpoint loop, and restarts it when that agent's result row appears. Watchers time out (30 min here) and need re-arming; make `pgrep`/`pkill` patterns specific, because a check matched its own command line and reported "still running".
+A small poller tails `<transcriptDir>/journal.jsonl` and prints `FINISHED <label> (result|failed) score=<n>` once per agent (`scripts/watch_results.py`; `--skip-existing` when re-arming); run it under a background monitor so each finished owner wakes the orchestrator. A second watcher greps for the `verify` label to pause the checkpoint loop, and restarts it when that agent's result row appears. Watchers time out (30 min here) and need re-arming; make `pgrep`/`pkill` patterns specific, because a check matched its own command line and reported "still running".
 
 ---
 
@@ -235,6 +235,7 @@ A small poller tails `<transcriptDir>/journal.jsonl` and prints `FINISHED <label
 - **Prompt size:** cap injected context (`JSON.stringify(x).slice(0, 9000 … 40000)`); for big issue lists, write a file and tell the agent where to read its section.
 - **Stop criteria:** a target score (min across lenses) and max rounds in the loop; at the project level, stop when a blind A/B no longer prefers the new build or the user calls it.
 - **Overlap safely:** two workflows may run at once only on disjoint files (M2b beside M3; the people rebuild beside M4 with `holdAlways`).
+- **Match the tool to the task.** Workflows pay off for multi-hour, many-owner or independent-judgement work. For documentation, licence files, a README section or a two-file fix, work inline: a docs agent spent an hour verifying before writing, and the user said "we dont need workflow for this simple task" and later "do it without subagents". Ask yourself whether one careful pass by you, plus one check, would do.
 
 ---
 

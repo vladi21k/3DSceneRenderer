@@ -254,6 +254,16 @@ was a sign of that ceiling.
 - **Clean up.** Capture tools must kill their headless browsers even when they are killed
   themselves. Leftover browsers held the GPU at 97% for an hour and spoiled the timing
   numbers.
+- **Other sessions on the same repo.** The session that hit the usage limit was still open in
+  another window when the work resumed. At start, check for it (`ps` for a second session on
+  the same directory) and ask the user to close it, or two orchestrators will edit one tree.
+  Later that old session committed a skill folder (`.claude/skills/...`, 23 files of
+  orchestration notes) into the project repo, and the next push sent it to GitHub unnoticed.
+  Before every push, read `git log origin/main..main` and `git diff --stat origin/main` for
+  commits you did not make. Keep orchestration material (skills, agent notes, workflow
+  scripts) out of a repo that is judged blind, or ask the user first: a `.claude/` folder or
+  "agent" wording tells a judge how the work was made. (Asked afterwards, this user chose to keep
+  the skill in the repo.)
 
 ## 7. Stopping a round: accept or revert
 
@@ -331,6 +341,32 @@ Plan three passes:
   section, word for word. It writes down every place it had to guess. Fix those, run it
   again, then push.
 
+How the fresh-clone check was done in the end, in about ten minutes:
+- **Before committing**, copy exactly what will be committed (tracked files plus new
+  untracked, non-ignored ones; git-ignored files left out, as a clone would) into an empty
+  folder and work only there:
+  ```sh
+  git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - | tar -x -C <empty-dir>
+  ```
+  Then run the doctor script, start the server exactly as written, `curl` the page, the main
+  module, the renderer and one asset file (all 200), and run one headless capture with
+  `--console` (ready in 16.5 s, 0 errors, 0 warnings, no 404s).
+- **After pushing**, do a real `git clone --depth 1` from the remote into an empty folder and
+  repeat the doctor check and one capture (15 s and 108 MB to clone; ready in 16.8 s).
+- Kill test servers by PID, not with `pkill -f "serve.py 8085"`: the pattern matched the
+  shell running it and killed the command itself (exit 144).
+
+**Don't hand documentation to a slow agent.** The writer agent for the step-by-step section
+spent an hour and 72 tool calls re-running every command it planned to document before writing
+a line. The user asked: "why writing takes so long? ... Is it a long novel with 300 pages?" The
+orchestrator stopped it, kept its finished parts (the doctor script, a script fix), and wrote
+the ~150 lines itself in a few minutes, then ran the one fresh-clone check above. The user also
+said "we dont need workflow for this simple task". Write docs, licences and small edits
+inline; spend agents on work that needs many hours or independent eyes. When the user asks
+"when should we finish?", give a time per remaining step and offer a shorter path with its risk
+(here: skip the from-scratch Docker rebuild and the second re-test; the app itself needs no
+Docker).
+
 ### 8.3 Final screenshots
 - About 10 views covering the brief: default start, midday, golden hour, sunset, dusk, an
   oncoming vehicle, people close, a busy street at a wider lens, a facade close-up, a long lens.
@@ -352,11 +388,30 @@ Plan three passes:
   user asks.
 - The page `<title>` and the visible UI name are invented and neutral ("Tramline — Cab Ride").
 
-### 8.5 Licences (`docs/ASSETS.md`)
+### 8.5 Licences (`LICENSE`, `THIRD_PARTY_NOTICES.md`, `docs/ASSETS.md`)
+At delivery the user asked: "add a license file, our work should be MIT but do reference other
+works we used that have their own license". What shipped:
+- `LICENSE`: the plain MIT text with the copyright holder (the git author) and year, and
+  nothing else, so GitHub recognises it as MIT.
+- `THIRD_PARTY_NOTICES.md`: what the project's own MIT work covers (code, docs, screenshots,
+  files its scripts generate), then the third-party works. Included in the repo: the vendored
+  renderer (MIT; copy the copyright years from its own LICENSE file), libraries bundled in its
+  add-on tree that the app does not load (their own licences, e.g. Apache-2.0 and MIT), and the
+  CC0 source assets of the people cast. Used to build, not included: the build add-on
+  (GPL-3.0; models it produces are not covered), Blender, Node, Python libraries, ImageMagick,
+  ffmpeg, the browser. Not covered: the reference photographs.
+- A README "License" section pointing to both files.
+- "Our work is MIT" changed the cast's label: it had been released as CC0 like its source
+  assets; it became the project's work under MIT, built from CC0 assets (CC0 allows that). The
+  licence note in the cast's JSON and in the exporter that writes it changed with it.
+- Search the sources for copied code first (`copyright`, `licence`, `SPDX`, `ported from`,
+  well-known shader authors); none was found here, so nothing else needed crediting.
+
+The asset record in `docs/ASSETS.md`, which points to both files above:
 Shipped, with path, source and licence: the vendored renderer (MIT, unmodified, its LICENSE
-file kept), the add-ons actually loaded, and the people cast (CC0 1.0, built from the
-MakeHuman CC0 system assets; the GPL-3.0 build add-on is a tool only and none of its code
-ships; the licence is also stored in the cast's own JSON). Not shipped: fonts (system stack),
+file kept), the add-ons actually loaded, and the people cast (the project's work under MIT,
+built from the MakeHuman CC0 system assets; the GPL-3.0 build add-on is a tool only and none
+of its code ships; the licence note is also stored in the cast's own JSON). Not shipped: fonts (system stack),
 HDRs, sounds (all synthesised). Build-time tools each under their own licence. Reference
 photos: third-party, kept only for comparison, never loaded, not covered by the project's
 licence (the user decided to keep them in the private repo). End the file with a short "Adding
@@ -369,11 +424,12 @@ an asset" rule.
 - **Cold start**: ~16.7 s against a 10 s target, set by ~140 shader programs that the browser
   compiles one at a time.
 - **Lens and eye height**: never decided by the user; both left as open decisions.
-- **Delivery tail**: when the user stopped the work, the expanded Commands section of the README
-  was still uncommitted. The step-by-step section, `tools/doctor.sh`, the fresh-clone test and
-  the agreed push (local main 46 commits ahead of the remote) had not happened. All of these
-  were cheap and asked for, and all came too late because the README started at the end. The
-  `PLAN.md` "Remaining work" section is what makes the project resumable anyway.
+- **Delivery tail**: when the user stopped the work, the README was a short summary. The full
+  command reference, the step-by-step section, the doctor script, the fresh-clone check, the
+  licence files and the agreed push (local main 46 commits ahead of the remote) all came in
+  the last hours, one user request at a time, because the README started at the end. They
+  were cheap once done inline. Start the README, `LICENSE` and the fresh-clone check in
+  stage 1; the `PLAN.md` "Remaining work" section is what makes the project resumable.
 
 ## 10. Checklists
 
@@ -383,7 +439,8 @@ an asset" rule.
 - [ ] `PLAN.md` (M0-M6 plus status legend) and `ARCHITECTURE.md` (rules, ownership, budgets) committed
 - [ ] Docker tools wrapper; all work in the repo; scratch in a git-ignored folder
 - [ ] Remote confirmed and push cadence agreed; neutral commit wording from commit one
-- [ ] Living README with a fresh-clone section, tested once
+- [ ] Living README with a fresh-clone section, tested once; `LICENSE` and third-party notices
+- [ ] No other session open on the same repo
 
 **During**
 - [ ] Queued user messages acknowledged and turned into mechanisms or memory notes
@@ -396,4 +453,5 @@ an asset" rule.
 - [ ] Round finished; re-score plus blind A/B with the rule stated first; revert as a new commit if needed
 - [ ] Remaining work written; loops, watchers and browsers stopped; final commit
 - [ ] README verified by export run, command runner and fresh-clone tester; screenshots stripped; scrub clean; licences match the files
-- [ ] Pushed (if agreed), then the user gets the screenshots, the README and a short summary
+- [ ] `git log origin/main..main` holds only commits you made; no orchestration files in a blind-judged repo
+- [ ] Pushed (if agreed), then a real `git clone --depth 1` from the remote starts the app; the user gets the screenshots, the README and a short summary

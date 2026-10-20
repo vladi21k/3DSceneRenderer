@@ -29,6 +29,7 @@ in `scripts/` of this skill: generic, standard-library Python where possible, te
 | `serve.py` | the no-cache static server people use to run the app | Python 3 |
 | `dk` + `Dockerfile.tools` | Blender (headless), Node, gltf-transform, ImageMagick, exiftool, ffmpeg, numpy/scipy in one image | Docker |
 | `checkpoint.sh` | periodic captures + informative git commits during long runs | git, bash 4 |
+| `watch_results.py` | one `FINISHED <label> (result\|failed) score=<n>` line per finished workflow agent, read from the run's `journal.jsonl`; run under a background monitor | Python 3 |
 
 ## 2. Set-up in a new project
 

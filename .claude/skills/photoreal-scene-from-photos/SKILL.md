@@ -85,9 +85,11 @@ Each stage has an exit check. Don't start the next stage until it passes. Most l
 - Accept or revert each round with a **blind A/B** between two commits (`assets/workflows/blind-ab.js`): state the accept rule first, render identical frozen views, shuffle the left/right sides per view (never written to disk), and use three independent judges.
 - Then deliver:
   - a README written for a stranger with a fresh clone: numbered steps from scratch, every command including the Docker image, troubleshooting, how each part was built, performance trade-offs, and asset licences;
+  - a `LICENSE` (plain MIT text, so GitHub recognises it) and a `THIRD_PARTY_NOTICES.md` for the vendored renderer, CC0 source assets, build tools and the reference photos;
   - final screenshots;
   - a metadata scrub;
-  - a "Remaining work" section in PLAN.md.
+  - a "Remaining work" section in PLAN.md;
+  - a fresh-clone check before committing (copy `git ls-files --cached --others --exclude-standard` into an empty folder and run the app from there) and a real `git clone --depth 1` from the remote after pushing.
 - See `references/working-with-the-user.md`.
 
 ## Principles (and why)
@@ -108,7 +110,7 @@ Each stage has an exit check. Don't start the next stage until it passes. Most l
 - **Replace, don't tune, when tuning stops moving the score.** Fix a fundamental the user notices (camera on the rails) or add a lens for a neglected area. Things that never moved across 6+ rounds of tuning: people within 10-15 m, chrome-looking rails, rock-faced stone, shop interiors, the oncoming cab and dusk lamp pools. Plan those as new build work (cloth simulation, strand hair, modelled relief, real interiors) by round 2.
 - **Brief compliance is checked, not assumed.** A critic called the missing cab a flaw, and a fixer built a dashboard the brief forbids. Copy the hard constraints into every critic and fixer prompt, and give each one a QA check.
 - **The camera sells "real footage".** Mount it rigidly on the vehicle body and never pan toward a gaze point. Specify motion in pixels at the default lens: ~1 px RMS running shake and 4-7 px joint knocks. Drive the picture and the sound from one rail-feature table. Verify camera changes with a rail-centring sweep.
-- **Deterministic, procedural, licence-clean.** Use seeded RNG for all content, so A/B builds differ only in rendering. Bake textures on the GPU at start-up. Every asset is CC0 or self-made, with its licence recorded. No AI model or company name may appear anywhere: code, comments, file names, page title, glTF/EXIF/Blender metadata, commit messages and trailers. The work is judged blind.
+- **Deterministic, procedural, licence-clean.** Use seeded RNG for all content, so A/B builds differ only in rendering. Bake textures on the GPU at start-up. Every asset is CC0 or self-made, with its licence recorded; add `LICENSE` and third-party notices in stage 0, not at the end. No AI model or company name may appear anywhere: code, comments, file names, page title, glTF/EXIF/Blender metadata, commit messages and trailers. The work is judged blind.
 - **Keep everything resumable.** Agents die from usage limits, network errors and stalls. Make prompts restart-safe ("read the current code first; an earlier attempt may be in the tree"), commit often, keep PLAN.md current, and run read-only audits after an interruption. A dying agent once built the improved cast into a git-ignored folder and never shipped it.
 
 ## Your job as orchestrator between workflows
@@ -131,6 +133,8 @@ Reporting to the user (refined over the project):
 - Send JPEGs, and keep every file under ~3 MB. For video, render a fixed-step offline recording with `scripts/record.py` and send its 720p copy.
 - Ask each decision once, with options, a recommendation and a default you keep working on. The lens question went unanswered eight times and ended up as an "open decision".
 - Pin down early what "push" means. Don't commit large regenerated binaries after every rebuild: the repo reached ~150 MB.
+- When asked "when do we finish?", give a time per remaining step and offer a shorter path with its risk.
+- Do small work yourself: documentation, licence files and two-file fixes go faster inline than through a workflow (a docs agent spent an hour verifying before writing; the user said "we dont need workflow for this simple task").
 
 ## Top pitfalls (each cost hours in the worked example)
 
@@ -144,6 +148,7 @@ Reporting to the user (refined over the project):
 8. Guessed crowd composition. Prop shares (strollers, bikes) came out 5-20× too high. Count them in the photos.
 9. Timing measurements made while other agents render, and checkpoint screenshots taken mid-edit. Re-render from the current tree before reacting.
 10. Asynchronous visuals without readiness gates (texture bakes, leaf atlases). Captures showed flat stand-ins or leafless trees.
+11. Another session on the same repo. The interrupted session was still open, and later committed its orchestration notes (`.claude/skills/...`) into the delivered repo; the next push sent them out. Check for other sessions at start, read `git log origin/main..main` before every push, and keep orchestration files out of a blind-judged repo unless the user agrees.
 
 ## Bundled resources
 
@@ -153,6 +158,7 @@ Reporting to the user (refined over the project):
 - `scripts/imgstats.py`: luminance percentiles, clip/black %, colourfulness, saturation and region ratios, compared against the reference photos.
 - `scripts/serve.py`, `scripts/dk` and `scripts/Dockerfile.tools`: the static server, the Docker wrapper and the tools image.
 - `scripts/checkpoint.sh`: a periodic capture plus an informative git commit grouped by area, with the stage taken from a note file.
+- `scripts/watch_results.py`: a journal watcher that prints one `FINISHED <label>` line per finished workflow agent, for a background monitor (`--skip-existing` when re-arming).
 - `assets/workflows/`: workflow templates.
   - `parallel-build-critique-fix.js`
   - `photoreal-loop.js`
