@@ -4,15 +4,16 @@ import { lathe, tube, bar, rbox, xf, merge, makeGeo } from './kit.js';
 // Market umbrellas, square (3-5 m) or rectangular (e.g. 3 x 4.5 m): 8 ribs (corners and
 // side middles), fabric panels that sag 2-4 cm between the ribs in a catenary, with
 // tension wrinkles fanning out from the rib-tip pockets, seams over the ribs and a 3 cm
-// double-fabric hem, a soft valance that hangs in shallow waves and bellies a little
-// between the rib tips (rolled hem at the bottom), a cloth vent hood over the top
+// double-fabric hem, a soft valance that bellies a little between the rib tips (rolled hem
+// at the bottom; its folds are laid in the shader, different on every side of every
+// umbrella, see materials.js patchCanopy), a cloth vent hood over the top
 // opening, the pole with hub, runner and stretchers, the bases, LED strips under the
 // ribs (lit after dusk) and the warm pool they throw on the paving.
 // Canopies carry 'aFlex' (0 rigid .. 1 free hem) for the wind flutter, vertex colours for
 // seams, hem piping and grime, and 'aVal' for the fabric shader (materials.js
 // patchCanopy): on the valance [side + 1, metres along the side (+ to the right seen from
-// outside), depth 0..1 down the valance, side length]; on the panels [0, distance to the
-// nearest rib (m), 0 vent .. 1 hem, 0].
+// outside), depth 0..1 down the valance, side length (negative on the coarse levels, which
+// take no folds)]; on the panels [0, distance to the nearest rib (m), 0 vent .. 1 hem, 0].
 // Every canopy is built with its hem at UMB_EDGE_H; an instance sinks by
 // UMB_EDGE_H - hem to its café's hem height (the pole runs on below the paving).
 
@@ -112,18 +113,15 @@ export function canopyGeo(su, sv, detail) {
     const side = sideOf(k), ox = [1, 0, -1, 0][side], oz = [0, 1, 0, -1][side];
     const sideLen = side % 2 ? 2 * a : 2 * b;
     const vb = pos.length / 3;
-    // columns fine enough for the waves (~4.5 cm apart)
+    // columns fine enough for the folds (~4.5 cm apart)
     const nvt = detail === 0 ? Math.max(16, Math.ceil(el / 0.045)) : detail === 1 ? 6 : 2;
-    // soft cloth: shallow waves growing towards the free bottom edge, a slight belly between
-    // the rib tips (the hem sags a centimetre or so), and a rolled hem that curls in
+    // soft cloth: a slight belly between the rib tips (the hem sags a centimetre or so) and
+    // a rolled hem that curls in; the folds come per instance in the shader
     const valPos = (vv, t) => {
       const e = surf(k, 1, t);
-      const along = t * el + k * halfMean;
-      const ends = THREE.MathUtils.smoothstep(t, 0, 0.08) * THREE.MathUtils.smoothstep(1 - t, 0, 0.08); // held at the rib tips
-      const wave = detail ? 0 : (0.009 * Math.sin((along / 0.27) * Math.PI * 2 + 0.6 * k) + 0.004 * Math.sin((along / 0.47) * Math.PI * 2 + 1.3 * k)) * Math.pow(vv, 1.3) * ends;
       const belly = cat(t) * vv;
       const roll = detail ? 0 : THREE.MathUtils.smoothstep(vv, 0.86, 1);
-      const out = 0.016 * vv + wave + 0.01 * belly - 0.009 * roll;
+      const out = 0.016 * vv + 0.01 * belly - 0.009 * roll;
       return [e[0] + ox * out, e[1] - VALANCE_H * vv - 0.012 * belly + 0.004 * roll * roll, e[2] + oz * out];
     };
     const dt = 0.01, dv = 0.02, n = new THREE.Vector3(), tu = new THREE.Vector3(), tv = new THREE.Vector3();
@@ -143,7 +141,7 @@ export function canopyGeo(su, sv, detail) {
         n.lerp(tu.set(ox, 0.07, oz).normalize(), 0.5).normalize();
       }
       const sAlong = P[0] * oz - P[2] * ox;
-      push(P, along, -VALANCE_H * vv, vv > 0.93 ? 0.78 : vv < 0.05 ? 0.9 : 1, Math.min(1, 0.15 + vv), [n.x, n.y, n.z], [side + 1, sAlong, vv, sideLen]);
+      push(P, along, -VALANCE_H * vv, vv > 0.93 ? 0.78 : vv < 0.05 ? 0.9 : 1, Math.min(1, 0.15 + vv), [n.x, n.y, n.z], [side + 1, sAlong, vv, detail ? -sideLen : sideLen]);
     }
     const nc = nvt + 1;
     for (let i = 0; i < rows.length - 1; i++) for (let j = 0; j < nvt; j++) {

@@ -1705,8 +1705,9 @@ def drape_top(d, vtop, arm_w, J, k, kind, axis_y, cid):
     torso = vtop & (arm_w < 0.45) & (co[:, 2] < zA + 0.05)
     if torso.sum() < 20:
         return moved
-    ease0, ease1, taper, strength = dict(tee=(0.003, 0.012, 0.22, 0.9), shirt=(0.004, 0.014, 0.18, 0.9),
-                                         blouse=(0.003, 0.008, 0.35, 0.75), dress=(0.002, 0.004, 0.5, 0.5))[kind]
+    # (a tee or shirt hangs well clear of the waist below the chest, a blouse a little less)
+    ease0, ease1, taper, strength = dict(tee=(0.004, 0.019, 0.15, 0.92), shirt=(0.005, 0.021, 0.13, 0.92),
+                                         blouse=(0.003, 0.013, 0.28, 0.8), dress=(0.002, 0.005, 0.45, 0.55))[kind]
     idx = np.where(torso)[0]
     P = co[idx].astype(np.float64)
     yc = axis_y(P[:, 2])
@@ -1783,7 +1784,8 @@ def drape_top(d, vtop, arm_w, J, k, kind, axis_y, cid):
         out = np.array([1.0 if s == 'l' else -1.0, 0, 0])
         outer = 0.5 + 0.5 * (rad / np.maximum(rl[:, None], 1e-6)) @ (out - u * (u @ out))
         tr = np.clip((t - (t.min() + 0.03)) / max(0.02, t.max() - t.min() - 0.03), 0, 1)
-        push = (0.002 + 0.01 * tr ** 1.5) * (0.35 + 0.65 * outer)
+        # (only a little: a puffed sleeve hem reads as a costume)
+        push = (0.0015 + 0.006 * tr ** 1.5) * (0.35 + 0.65 * outer)
         co[sl] = q + rad / np.maximum(rl[:, None], 1e-6) * push[:, None]
         moved[np.where(sl)[0]] = True
     return moved
@@ -1926,9 +1928,10 @@ def gore_skirt(d, vmask, J, k, length, cid):
     seed = sum(ord(c) for c in cid)
     ph = 9 * th + 0.8 * np.sin(2 * th + seed) + 0.5 * np.sin(5 * th + 0.7 * seed)
     depth = 0.75 + 0.25 * np.sin(4.5 * th + 1.3 * seed) + 0.15 * np.cos(7 * th - seed)
-    amp = (0.011 + 0.017 * min(1.0, max(0.0, length))) * k * u ** 1.25 * depth
+    amp = (0.014 + 0.022 * min(1.0, max(0.0, length))) * k * u ** 1.2 * depth
     f = 0.5 + 0.5 * np.cos(ph)
-    rn = r + amp * (f ** 1.3)
+    # (rounded flutes with broad valleys between them: the cloth swings out in folds, not a corrugation)
+    rn = r + amp * (f ** 1.8)
     co[idx, 0] = dx * rn / np.maximum(r, 1e-6)
     co[idx, 1] = cy + dy * rn / np.maximum(r, 1e-6)
     moved = np.zeros(len(co), bool)

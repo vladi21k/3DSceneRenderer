@@ -114,7 +114,16 @@ const TONE = {
   // the grey paving); more from golden hour on, when the low sun, the afterglow and then the
   // lamps carry the colour (a camera keeps the evening's warm-cool split vivid instead of
   // letting the canyon go grey)
-  satOut: [[0.3, 1.3], [0.5, 1.38], [0.85, 1.58], [0.95, 1.3]],
+  // It is a vibrance (final pass): the boost goes to the weakly coloured pixels, so stone
+  // and lit foliage that carry their own colour are not pushed past it (the photographs'
+  // shaded limestone is a pale warm grey, sunlit stone at most ~0.35 HSV saturation)
+  satOut: [[0.3, 1.3], [0.5, 1.3], [0.6, 1.28], [0.85, 1.4], [0.95, 1.25]],
+  // soft ceiling of the display (HSV) saturation: [start, limit]; the photographs keep
+  // under ~2.4 % of their pixels above 0.85 and almost none with a crushed channel
+  satCeil: [0.72, 0.92],
+  // a warm sky this many stops over mid grey (start, full) runs to the camera's cream white
+  // (the blown aureole over a backlit golden street)
+  skyWhite: [2.3, 4.3],
   // and in the highlights (time of day, [saturation, from, to] in display-linear luminance):
   // by day it eases off from about +1 stop and is 0.6 by the shoulder, so sunlit limestone
   // rolls off to cream; at golden hour the same, a little stronger (the low sun's stone
@@ -153,14 +162,23 @@ const TONE = {
   // (time of day, share), and from golden hour on the weight of the open sky (the shade's
   // light) in the neutral the camera balances on (time of day, weight)
   wbK: [[0.3, 0.3], [0.55, 0.25], [0.62, 0.25], [0.78, 0]],
-  wbShade: [[0.4, 0], [0.55, 1.0], [0.68, 1.0], [0.78, 0]],
+  wbShade: [[0.4, 0], [0.55, 0.9], [0.68, 0.9], [0.78, 0]],
+  // and a warm split-tone in the street's shadows from the low sun to sunset (time of day,
+  // share: R x (1 + k), B x (1 - 1.07 k), luminance kept): the sunlit facades and the
+  // golden air fill the canyon's shade, so shaded grey paving reads a warm neutral (R/B
+  // ~1.06-1.12 in the low-sun photographs) rather than an overcast-day grey
+  shadowWarm: [[0.4, 0], [0.52, 0.07], [0.68, 0.07], [0.8, 0]],
   // and from sunset on a cooler setting (time of day, shift): the blue gain up and the red
   // one down, towards a ~4000 K balance once the lamps carry the street, so the sky-lit
   // paving between the pools reads blue-grey and the pools amber
   wbCool: [[0.82, 0], [1.0, 0.3]],
-  // lanterns' sideways and upward glow, as a share of their downward intensity
-  wash: 0.04,
-  // street dust haze over the day (time of day, scale): extinction and in-scatter
+  // lanterns' sideways and upward glow in screen space, as a share of their downward
+  // intensity (0: the real lights carry it, see env lights.js LANTERN_OMNI)
+  wash: 0,
+  // street dust haze over the day (time of day, scale): extinction and in-scatter. A clear
+  // day scales the daytime part by env.hazeBoost.day (the dry midday air keeps the far
+  // facades crisp, their window openings dark, within 500 m); the evening veil and a
+  // dusty day keep theirs
   hazeExt: [[0.35, 1.0], [0.5, 0.55], [1.0, 0.55]],
   hazeIn: [[0.35, 1.0], [0.5, 0.65], [1.0, 0.65]],
   // green-magenta guard (time of day, value): the neutral's G / mean(R, B) range and the
@@ -171,7 +189,13 @@ const TONE = {
   // the shaded grey paving pink rather than the warm neutral of the photographs
   wbG: {
     lo: [[0.4, 0.97], [0.5, 1.02], [0.6, 1.02], [0.7, 1.0]], hi: [[0.4, 1.0], [0.5, 1.04], [0.6, 1.04], [0.7, 1.02]],
-    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.18], [1.0, 1.12]], lampMax: 1.28,
+    // (lampMax: the ~3300 K pools stay amber, hue ~40, with the green gain up to 1.45x the
+    // red one; it lets the green rise far enough that the twilight-lit paving between the
+    // pools reads blue-grey (hue ~225) and the zone where lamp and sky light mix a neutral
+    // grey, not mauve)
+    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.2], [1.0, 1.2]], lampMax: 1.45,
+    // the sky's own guard (lo, hi, cap: the daylight locus)
+    sky: [0.97, 1.0, 1.03],
   },
   glowThresh: 4, glowKnee: 12, glow: [[0.74, 0], [0.8, 0.2], [0.86, 0.12], [0.95, 0.03], [1.0, 0]], glowScatter: 0.4,
 };
@@ -181,6 +205,10 @@ const TONE = {
 // only needs to break up sub-pixel shading; a full pixel would soften the image like a
 // one-pixel box filter)
 const TAA = { alpha: 0.1, gamma: 1.0, n: 16, jitter: 0.5 };
+// walking people's motion boxes: at most `max` moving people within `range` m; half extents
+// of a walker's box (across, up, along: the swinging arms and the stride), and along a
+// person pushing a stroller or with a bicycle
+const PEOPLE = { max: 384, range: 140, half: [0.42, 1.02, 0.55], halfLenProp: 1.15 };
 const halton = (i, b) => { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
 const JITTER = Array.from({ length: TAA.n }, (_, i) => [halton(i + 1, 2) - 0.5, halton(i + 1, 3) - 0.5]);
 
@@ -208,6 +236,7 @@ function vtable(T, x, out) {
 
 // Street-level dust haze: extinction per metre (rgb), nearly grey (coarse dust).
 const HAZE_EXT = [1.05e-3, 1.12e-3, 1.22e-3];
+const HAZE_NONE = { ext: 1, inscatter: 1, dayExt: 1, dayIn: 1, near: 0 };
 
 // Lens veiling glare around the sun (fractions of the sun's illuminance per steradian):
 // a wide 1/theta^2 skirt (~1.2% of the light) and a tighter halo (~1%).
@@ -222,6 +251,8 @@ const _vx = new THREE.Vector3();
 const _vy = new THREE.Vector3();
 const _vz = new THREE.Vector3();
 const _nI = new THREE.Vector3();
+const _cc = new THREE.Color();
+const _wbS = new THREE.Vector3();
 
 function target(w, h, opts = {}) {
   return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
@@ -331,7 +362,7 @@ const post = {
       uSunGround: env?.sky ? env.sky.uniforms.uSunGround : { value: new THREE.Vector3(3, 3, 3) },
       uHazeAmb: { value: env?.haze ? env.haze.amb : new THREE.Vector3(0.05, 0.06, 0.08) },
       uHazePlane: { value: env?.haze ? env.haze.plane : new THREE.Vector4(0, 0, 0, -1) },
-      uHazeGap: { value: 0 }, uHazeSun: { value: 1.0 },
+      uHazeGap: { value: 0 }, uHazeSun: { value: 1.0 }, uHazeNear: { value: 0 },
       uShimmer: { value: 0 }, uResolution: { value: new THREE.Vector2(1, 1) },
       uDofK: { value: 0 }, uFocus: { value: FOCUS_RIDE[0] }, uCocMax: { value: COC_MAX[0] }, uCocTol: { value: COC_TOL[0] },
       uNightAir: { value: 0 }, uClampHDR: { value: HDR_CLAMP },
@@ -360,8 +391,11 @@ const post = {
       uMoverInv: { value: Array.from({ length: S.NUM_MOVERS }, () => new THREE.Matrix4()) },
       uMoverDisp: { value: Array.from({ length: S.NUM_MOVERS }, () => new THREE.Vector3()) },
       uMovers: { value: 0 },
+      // walking people's motion map (see _people)
+      tPeople: { value: null }, uPeople: { value: 0 },
     };
     this._moverPrev = new Map();
+    this._initPeople();
     this.taa = pass(S.TAA_FS, {
       ...camU, ...this.movers, tCur: { value: null }, tHist: { value: null }, tDepth: { value: null },
       uCamWorld: { value: new THREE.Matrix4() }, uPrevVP: { value: new THREE.Matrix4() },
@@ -418,6 +452,9 @@ const post = {
       uSatHi: { value: vtable(TONE.satHi, 0, new THREE.Vector3()) },
       uUpView: { value: new THREE.Vector3(0, 1, 0) }, uProjInv: { value: new THREE.Vector2(1, 1) },
       uSkySatEl: { value: vtable(TONE.skySatEl, 0, new THREE.Vector2()) },
+      uWBSky: { value: new THREE.Vector3(1.0, 0.99, 0.965) }, uSunView: { value: new THREE.Vector3(0, 0, 1) },
+      uSkyWhite: { value: new THREE.Vector2(...TONE.skyWhite) }, uSatCeil: { value: new THREE.Vector2(...TONE.satCeil) },
+      tClouds: { value: null }, uUseClouds: { value: 0 },
     });
     // local level of the surfaces for the highlight recovery (1/8 res, then blurred)
     this.localPass = pass(S.LOCAL_FS, { tSrc: { value: null }, tDepth: { value: null }, uSrcSize: { value: new THREE.Vector2() } });
@@ -469,7 +506,7 @@ const post = {
    */
   _precompile() {
     const r = this.app.renderer, env = this.app.systems.env;
-    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum, this.glowPass, this.localPass, this.localBlur];
+    const into = [this.depthDown, this.aoPass, this.aoBlur, this.prepass, this.sunVis, this.taa, this.dof, this.blur, this.down, this.up, this.lum, this.glowPass, this.localPass, this.localBlur, this.peopleMesh];
     for (const m of env?.passes?.() || []) into.push(m);
     const prev = r.getRenderTarget();
     const group = (meshes, rt) => {
@@ -503,6 +540,16 @@ const post = {
     const bu = this.blur.material.uniforms;
     bu.tSrc.value = this.hdrRT.texture; bu.tDepth.value = this.sceneRT.depthTexture;
     this._draw(this.blur, this.dofRT);
+    // (the people pass: one box far below the street, which draws nothing)
+    if (this.peopleRT) {
+      const g = this.peopleMesh.geometry;
+      g.attributes.iC.array.set([0, -1e4, 0, 0]); g.attributes.iE.array.set([0.4, 1, 0.5]);
+      g.attributes.iC.needsUpdate = true; g.attributes.iE.needsUpdate = true; g.attributes.iD.needsUpdate = true;
+      g.instanceCount = 1;
+      this.peopleMesh.material.uniforms.tDepth.value = this.sceneRT.depthTexture;
+      this._draw(this.peopleMesh, this.peopleRT);
+      g.instanceCount = 0;
+    }
     if (this.glowDowns && this.glowDowns[0] && this.downs[0]) {
       const gu = this.glowPass.material.uniforms;
       gu.tSrc.value = this.downs[0].texture; gu.tLum.value = this.lumRT[0].texture;
@@ -527,6 +574,9 @@ const post = {
     this.hdrRT = target(W, H);
     // temporal AA: the resolved frame doubles as the next frame's history
     this.taaRT = this.taaOn ? [target(W, H), target(W, H)] : null;
+    // walking people's motion (xyz displacement, w on a figure)
+    this.peopleRT = this.taaOn && this.peopleOn ? target(W, H, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }) : null;
+    if (this.peopleMesh) this.peopleMesh.material.uniforms.uResolution.value.set(W, H);
     this.taaValid = false;
     if (this.debug) this.badRT = target(Math.ceil(W / 8), Math.ceil(H / 8), { type: THREE.FloatType, format: THREE.RedFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     // DOF and motion blur ping-pong between hdrRT and this one
@@ -567,7 +617,7 @@ const post = {
   },
 
   _disposeTargets() {
-    for (const k of ['sceneRT', 'hdrRT', 'dofRT', 'zRT', 'aoRT', 'aoRT2', 'badRT']) {
+    for (const k of ['sceneRT', 'hdrRT', 'dofRT', 'zRT', 'aoRT', 'aoRT2', 'badRT', 'peopleRT']) {
       if (this[k]) { if (this[k].depthTexture) this[k].depthTexture.dispose(); this[k].dispose(); this[k] = null; }
     }
     for (const t of this.taaRT || []) t.dispose();
@@ -604,10 +654,12 @@ const post = {
     // From golden hour on the air clears (the afternoon's dust settles, and the low sun
     // lights only the air above the canyon): a light veil over the far end of the street,
     // the people and trees at 20-80 m keep their dark accents
-    const hz = env && env.hazeBoost ? env.hazeBoost : { ext: 1, inscatter: 1 };
-    const k = table(TONE.hazeExt, t) * hz.ext;
+    const hz = env && env.hazeBoost ? env.hazeBoost : HAZE_NONE;
+    const kDay = 1 - ss(t, 0.3, 0.5);
+    const k = table(TONE.hazeExt, t) * (hz.ext ?? 1) * lerp(1, hz.dayExt ?? 1, kDay);
     pu.uHazeExt.value.set(HAZE_EXT[0] * k, HAZE_EXT[1] * k, HAZE_EXT[2] * k);
-    pu.uHazeInscatter.value = table(TONE.hazeIn, t) * hz.inscatter;
+    pu.uHazeInscatter.value = table(TONE.hazeIn, t) * (hz.inscatter ?? 1) * lerp(1, hz.dayIn ?? 1, kDay);
+    pu.uHazeNear.value = hz.near ?? 0;
     pu.uHazeGap.value = env ? env.haze.gap : 0;
     // aerosol albedo; tree canopies and awnings shade much of the street air. Looking
     // straight into a low sun the forward lobe is held back (the shaded street air between
@@ -652,15 +704,17 @@ const post = {
     // At the blue hour it is set for the ~3000 K lamps: their pools stay warm, everything
     // the sky lights turns blue. Grey stone lit by the open sky stays neutral on the
     // green-magenta axis at every time of day (never mauve, never olive).
-    const wb = fu.uWB.value;
+    const wb = fu.uWB.value, wbS = fu.uWBSky.value;
     if (env) {
       const ill = env.illuminant, sun = env.sunIlluminant;
       const lrAll = Math.log(Math.max(ill.x, 1e-9) / Math.max(ill.z, 1e-9));
       const wSun = sun && sun.x > 1e-6 && sun.z > 1e-6 ? 1 - ss(t, 0.3, 0.6) : 0;
       let lr = wSun > 0 ? THREE.MathUtils.lerp(lrAll, Math.log(sun.x / sun.z), wSun) : lrAll;
+      // (the sky's own balance: the illuminant alone, see below)
+      const lrSky = lr;
       // golden hour: most of the frame lies in the canyon's shade, and a camera balancing the
-      // scene sets its neutral close to the open sky that lights the shade: the shaded paving
-      // reads warm-neutral instead of lavender, the sunlit stone stays golden
+      // scene sets its neutral part-way towards the open sky that lights the shade: the shaded
+      // paving reads warm-neutral instead of lavender, the sunlit stone stays golden
       // (on both axes: the open sky's light, short of green from the ozone in the evening,
       // would otherwise leave the shaded grey paving mauve)
       const sky = env.skyIlluminant;
@@ -668,6 +722,7 @@ const post = {
       if (wShade > 0) lr = THREE.MathUtils.lerp(lr, Math.log(sky.x / sky.z), wShade);
       // the neutral on the green-magenta axis (geometric blend of the two illuminants)
       const nI = _nI.set(Math.max(ill.x, 1e-9), Math.max(ill.y, 1e-9), Math.max(ill.z, 1e-9));
+      const lgSky = Math.log(nI.y / Math.sqrt(nI.x * nI.z));
       if (wShade > 0) nI.set(nI.x ** (1 - wShade) * sky.x ** wShade, nI.y ** (1 - wShade) * sky.y ** wShade, nI.z ** (1 - wShade) * sky.z ** wShade);
       const lg = Math.log(nI.y / Math.sqrt(nI.x * nI.z));
       // warm-cool correction: under a third of the sun's cast by day (the warm sun on
@@ -680,56 +735,42 @@ const post = {
       // (sky-lit grey reads blue with G above R, the ~3000 K pools stay amber, not olive)
       const kt = lerp(1.0, 0.85, ss(t, 0.62, 0.78)) - 0.5 * ss(t, 0.88, 1.0);
       const cool = table(TONE.wbCool, t);
-      const er = THREE.MathUtils.clamp(0.5 * lr * kc, -0.7, 0.7), eg = THREE.MathUtils.clamp(lg * kt, -0.7, 0.7);
-      wb.set(Math.exp(-er) * (1 - 0.5 * cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
-      // from sunset on, a daylight-balanced camera keeps the twilight blue (the warmth
-      // comes from the lamps): the blue gain stays within 5% of the green one
-      const keepBlue = ss(t, 0.66, 0.72);
-      if (keepBlue > 0) wb.z = Math.max(wb.z, lerp(wb.z, 0.9025 * wb.x, keepBlue));
-      // the gains stay on the daylight locus: the green one never more than 1% under the
-      // geometric mean of red and blue and at most 3% over it by day (no green push, so the
-      // sky and the limestone it lights never turn khaki or olive), and a neutral surface
-      // under the illuminant keeps G / mean(R, B) within [gLo, gHi]: [0.97, 1.0] by day,
-      // [1.02, 1.04] at golden hour, [1.0, 1.02] from sunset on (TONE.wbG)
-      // Around sunset and in the blue hour the sky's ozone (Chappuis) absorption leaves the
-      // twilight illuminant some 10-20% short of green against the daylight locus, which
-      // would turn the shaded grey street and the lamp-and-sky mix mauve: the green gain
-      // may then rise to gCap x the geometric mean (the correction kt asks for)
-      const gm = Math.sqrt(wb.x * wb.z);
-      const G = TONE.wbG, gCap = table(G.cap, t), gLo = table(G.lo, t), gHi = table(G.hi, t);
-      wb.y = THREE.MathUtils.clamp(wb.y, 0.99 * gm, Math.max(1.01, gCap - 0.02) * gm);
-      const gr = (nI.y * wb.y) / Math.max(0.5 * (nI.x * wb.x + nI.z * wb.z), 1e-12);
-      if (gr > gHi) wb.y = Math.max(wb.y * gHi / gr, 0.99 * gm);
-      else if (gr < gLo) wb.y = Math.min(wb.y * gLo / gr, gCap * gm);
-      // and once the lamps light the street their pools stay amber, never yellow-green:
-      // the green gain stays within lampMax of the red one
-      const lampW = ss(t, 0.84, 0.95);
-      const gMax = wb.x * (G.lampMax + 2 * (1 - lampW));
-      if (wb.y > gMax) wb.y = gMax;
-      // keep the overall exposure (normalise the gains to unit luminance)
-      const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
-      wb.multiplyScalar(1 / n);
+      const G = TONE.wbG;
+      this._wbGains(wb, lr, lg, nI, kc, kt, cool, t, table(G.lo, t), table(G.hi, t), table(G.cap, t), true);
+      // the sky: balanced on the illuminant alone (no shade neutral), and on the daylight
+      // locus on the green-magenta axis (the street's golden-hour and sunset green lift would
+      // turn the sky facing away from the sun mint or khaki), so it reads blue as the
+      // photographs' evening skies do; in the blue hour without the street's lamp-light green
+      // lift (a deep blue, never teal)
+      _wbS.set(Math.max(ill.x, 1e-9), Math.max(ill.y, 1e-9), Math.max(ill.z, 1e-9));
+      this._wbGains(wbS, lrSky, lgSky, _wbS, kc, kt, cool, t, G.sky[0], G.sky[1], G.sky[2], false);
     } else {
       wb.set(1, 1, 1);
+      wbS.set(1, 1, 1);
     }
     // highlight recovery: none at midday, more as the sun lowers and the sky outshines the street
     fu.uHiComp.value.set(table(TONE.hiKnee, t), this.hiSlopeK > 0 ? this.hiSlopeK : table(TONE.hiSlope, t));
     fu.uCurveSlope.value.x = THREE.MathUtils.lerp(TONE.midday, 1, ss(t, 0.25, 0.5));
     fu.uBlack.value = table(TONE.black, t);
     fu.uDeep.value.set(table(TONE.deep[0], t), table(TONE.deep[1], t), TONE.deep[2]);
-    // the low sun's warmth on the highlights only (the shade keeps its blue)
+    // the low sun's warmth on the highlights, and the canyon's warm fill in the shadows
     const hiW = 0.05 * ss(t, 0.35, 0.55) * (1 - ss(t, 0.72, 0.88));
     fu.uHighTint.value.set(1 + hiW, 1, 1 - hiW);
+    const shW = table(TONE.shadowWarm, t);
+    fu.uShadowTint.value.set(1 + shW, 1, 1 - 1.07 * shW).multiplyScalar(1 / (1 + 0.2126 * shW - 0.0722 * 1.07 * shW));
     // more of the scene's own chroma once the light warms (low sun on stone, lamps)
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
     fu.uSatOut.value = table(TONE.satOut, t);
+    fu.uSatCeil.value.set(TONE.satCeil[0], TONE.satCeil[1]);
+    fu.uSkyWhite.value.set(TONE.skyWhite[0], TONE.skyWhite[1]);
     vtable(TONE.satHi, t, fu.uSatHi.value);
     // the sky's saturation boost by elevation: world up seen from the camera
     if (camera) {
       const e = camera.matrixWorld.elements, P = camera.projectionMatrix.elements;
       fu.uUpView.value.set(e[1], e[5], e[9]);
       fu.uProjInv.value.set(1 / P[0], 1 / P[5]);
+      if (env) fu.uSunView.value.copy(env.state.sunDir).transformDirection(camera.matrixWorldInverse);
     }
     vtable(TONE.skySatEl, t, fu.uSkySatEl.value);
     fu.uSkyTwist.value = TONE.skyTwist * ss(t, 0.6, 0.74) * (1 - ss(t, 0.9, 1.0));
@@ -743,6 +784,46 @@ const post = {
     const kd = ss(t, 0.45, 0.9);
     fu.uSkySat.value.set(this.skySatK * (1 + (lerp(TONE.skySat[0], TONE.skySat[1], kd) - 1) * kSky),
       this.skySatK * (1 + (lerp(TONE.skySatWarm[0], TONE.skySatWarm[1], kd) - 1) * kSky));
+  },
+
+  /**
+   * White balance gains into `wb` (normalised to unit luminance): warm-cool correction `kc`
+   * of the log red/blue cast `lr`, green-magenta correction `kt` of `lg`, the lamp balance
+   * `cool`, then the guards below for the neutral `nI` (lo, hi, cap: TONE.wbG).
+   */
+  _wbGains(wb, lr, lg, nI, kc, kt, cool, t, gLo, gHi, gCap, lamps) {
+    const ss = THREE.MathUtils.smoothstep, lerp = THREE.MathUtils.lerp, clamp = THREE.MathUtils.clamp;
+    const er = clamp(0.5 * lr * kc, -0.7, 0.7), eg = clamp(lg * kt, -0.7, 0.7);
+    wb.set(Math.exp(-er) * (1 - 0.5 * cool), Math.exp(-eg), Math.exp(er) * (1 + cool));
+    // from sunset on, a daylight-balanced camera keeps the twilight blue (the warmth
+    // comes from the lamps): the blue gain stays within 5% of the green one
+    const keepBlue = ss(t, 0.66, 0.72);
+    if (keepBlue > 0) wb.z = Math.max(wb.z, lerp(wb.z, 0.9025 * wb.x, keepBlue));
+    // the gains stay on the daylight locus: the green one never more than 1% under the
+    // geometric mean of red and blue and at most 3% over it by day (no green push, so the
+    // sky and the limestone it lights never turn khaki or olive), and a neutral surface
+    // under the illuminant keeps G / mean(R, B) within [gLo, gHi]: [0.97, 1.0] by day,
+    // a little over 1 at golden hour, at least 1 from sunset on (TONE.wbG)
+    // Around sunset and in the blue hour the sky's ozone (Chappuis) absorption leaves the
+    // twilight illuminant some 10-20% short of green against the daylight locus, which
+    // would turn the shaded grey street and the lamp-and-sky mix mauve: the green gain
+    // may then rise to gCap x the geometric mean (the correction kt asks for)
+    const gm = Math.sqrt(wb.x * wb.z);
+    wb.y = clamp(wb.y, 0.99 * gm, Math.max(1.01, gCap - 0.02) * gm);
+    const gr = (nI.y * wb.y) / Math.max(0.5 * (nI.x * wb.x + nI.z * wb.z), 1e-12);
+    if (gr > gHi) wb.y = Math.max(wb.y * gHi / gr, 0.99 * gm);
+    else if (gr < gLo) wb.y = Math.min(wb.y * gLo / gr, gCap * gm);
+    // and once the lamps light the street their pools stay amber, never yellow-green:
+    // the green gain stays within lampMax of the red one
+    if (lamps) {
+      const lampW = ss(t, 0.84, 0.95);
+      const gMax = wb.x * (TONE.wbG.lampMax + 2 * (1 - lampW));
+      if (wb.y > gMax) wb.y = gMax;
+    }
+    // keep the overall exposure (normalise the gains to unit luminance)
+    const n = 0.2126 * wb.x + 0.7152 * wb.y + 0.0722 * wb.z;
+    wb.multiplyScalar(1 / n);
+    return wb;
   },
 
   /**
@@ -864,6 +945,91 @@ const post = {
     }
     M.uMovers.value = n;
     return dMax;
+  },
+
+  /**
+   * Walking people's motion for the TAA history and the motion blur: one oriented box per
+   * moving person near the camera (instanced), drawn into a full-resolution map that keeps
+   * each box's displacement where the scene point lies inside it (see PEOPLE_FS). Without it
+   * the history of a walker is fetched as if the figure stood still, several pixels behind
+   * it at the telephoto, and the resolve smears faces and clothes.
+   */
+  _initPeople() {
+    const n = PEOPLE.max;
+    const g = new THREE.InstancedBufferGeometry();
+    const box = new THREE.BoxGeometry(2, 2, 2);
+    g.index = box.index;
+    g.setAttribute('position', box.getAttribute('position'));
+    const attr = (k) => new THREE.InstancedBufferAttribute(new Float32Array(n * k), k).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('iC', attr(4));
+    g.setAttribute('iE', attr(3));
+    g.setAttribute('iD', attr(3));
+    g.instanceCount = 0;
+    const u = {
+      ...this.camU, tDepth: { value: null }, uCamWorld: { value: new THREE.Matrix4() },
+      uResolution: { value: new THREE.Vector2(1, 1) }, uJitter: { value: new THREE.Vector2() }, uVPrel: { value: new THREE.Matrix4() },
+    };
+    const m = new THREE.ShaderMaterial({
+      vertexShader: S.PEOPLE_VS, fragmentShader: S.PEOPLE_FS, uniforms: u,
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false, side: THREE.BackSide,
+    });
+    this.peopleMesh = new THREE.Mesh(g, m);
+    this.peopleMesh.frustumCulled = false;
+    this.peopleOn = this.app.params.raw.get('ppl') !== '0';   // (A/B: URL ppl=0)
+    this.peopleN = 0;
+  },
+
+  /** Fill the people boxes for this frame and draw their motion map; returns the box count. */
+  _people(app, camera) {
+    const M = this.movers;
+    M.uPeople.value = 0;
+    const crowd = app.crowd;
+    if (!this.peopleOn || !this.taaOn || !this.peopleRT || !(app.dt > 0) || !crowd || crowd.disabled || typeof crowd.agents !== 'function') return 0;
+    const list = crowd.agents();
+    if (!list || !list.length) return 0;
+    const g = this.peopleMesh.geometry;
+    const C = g.attributes.iC, E = g.attributes.iE, D = g.attributes.iD;
+    const c = C.array, e = E.array, dd = D.array;
+    const cp = _p0.setFromMatrixPosition(camera.matrixWorld);
+    camera.getWorldDirection(_sv);
+    const fx = _sv.x, fz = _sv.z, dt = app.dt, R2 = PEOPLE.range * PEOPLE.range;
+    let n = 0;
+    for (let i = 0, m = list.length; i < m && n < PEOPLE.max; i++) {
+      const a = list[i];
+      const vx = a.wvx, vz = a.wvz;
+      if (!(vx * vx + vz * vz > 0.0025)) continue;          // (standing, seated: nothing to do)
+      const x = a.x - cp.x, z = a.z - cp.z;
+      const d2 = x * x + z * z;
+      if (d2 > R2 || x * fx + z * fz < -2) continue;
+      const big = a.mob > 0;                                   // a stroller or a bicycle with its person
+      // (the box starts just above the paving, which stays put under the feet)
+      c[n * 4] = x; c[n * 4 + 1] = a.y - cp.y + PEOPLE.half[1] + 0.03; c[n * 4 + 2] = z; c[n * 4 + 3] = a.heading;
+      e[n * 3] = PEOPLE.half[0]; e[n * 3 + 1] = PEOPLE.half[1]; e[n * 3 + 2] = big ? PEOPLE.halfLenProp : PEOPLE.half[2];
+      dd[n * 3] = vx * dt; dd[n * 3 + 1] = 0; dd[n * 3 + 2] = vz * dt;
+      n++;
+    }
+    this.peopleN = n;
+    if (n === 0) return 0;
+    C.clearUpdateRanges(); C.addUpdateRange(0, n * 4); C.needsUpdate = true;
+    E.clearUpdateRanges(); E.addUpdateRange(0, n * 3); E.needsUpdate = true;
+    D.clearUpdateRanges(); D.addUpdateRange(0, n * 3); D.needsUpdate = true;
+    g.instanceCount = n;
+    const u = this.peopleMesh.material.uniforms;
+    u.tDepth.value = this.sceneRT.depthTexture;
+    u.uCamWorld.value.copy(camera.matrixWorld);
+    u.uJitter.value.copy(this.jitter);
+    u.uVPrel.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(_m4.makeTranslation(cp.x, cp.y, cp.z));
+    const r = app.renderer;
+    r.getClearColor(_cc);
+    const ca = r.getClearAlpha();
+    r.setRenderTarget(this.peopleRT);
+    r.setClearColor(0x000000, 0);
+    r.clear(true, false, false);
+    r.setClearColor(_cc, ca);
+    r.render(this.peopleMesh, this.cam);
+    M.tPeople.value = this.peopleRT.texture;
+    M.uPeople.value = 1;
+    return n;
   },
 
   /** The oncoming trams' boxes (see _movers); returns the number of slots filled. */
@@ -1041,6 +1207,10 @@ const post = {
     this.camU.uProjXY.value.set(P[0], P[5]);
     this._todParams(env, camera);
 
+    // ---- 1b. walking people's motion (TAA history, motion blur)
+    if (prof) prof.begin('people');
+    this._people(app, camera);
+
     // ---- 2. SSAO (half res)
     if (prof) prof.begin('ao');
     if (this.q.ao) {
@@ -1206,13 +1376,15 @@ const post = {
     fu.tTail.value = tail.texture;
     fu.tLum.value = this.lumRT[this.lumPing].texture;
     fu.tDepth.value = this.sceneRT.depthTexture;
+    fu.tClouds.value = pu.tClouds.value;
+    fu.uUseClouds.value = pu.tClouds.value ? 1 : 0;
     fu.uTime.value = app.time + app.frame * 0.618;
     r.setRenderTarget(null);
     r.render(this.final, this.cam);
     if (prof) {
       prof.end();
       const t = prof.timings;
-      t.post = (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.local || 0) + (t.glow || 0) + (t.final || 0);
+      t.post = (t.people || 0) + (t.ao || 0) + (t.clouds || 0) + (t.prepass || 0) + (t.taa || 0) + (t.dof || 0) + (t.blur || 0) + (t.pyramid || 0) + (t.local || 0) + (t.glow || 0) + (t.final || 0);
       t.total = t.post + (t.scene || 0) + (t.shadow || 0) + (t.main || 0) + (t.envmap || 0);
       app.perf.gpuMs = t.total;
     }

@@ -166,7 +166,7 @@ export function buildCafeProtos(M, F, umbKeys = ['30x30']) {
   P.chair.bistro = F.weave.map((w, i) => proto(`chairBistro${i}`, [{ geo: col(C.bistro, 'frame'), mat: F.rattan }, { geo: col(C.bistro, 'weave'), mat: w }], LOD_CHAIR));
   P.chair.plastic = proto('chairPlastic', [{ geo: col(C.plastic, 'shell'), mat: F.plastic, tint: true }, { geo: col(C.plastic, 'glides'), mat: F.rubber, cast: false }], LOD_CHAIR);
   P.chair.metal = proto('chairMetal', [{ geo: col(C.metal, 'frame'), mat: F.aluminium }], LOD_CHAIR);
-  P.chair.metalPaint = proto('chairMetalPaint', [{ geo: col(C.metal, 'frame'), mat: F.paint, tint: true }], LOD_CHAIR);
+  P.chair.metalPaint = proto('chairMetalPaint', [{ geo: col(C.metal, 'frame'), mat: F.paintFine, tint: true }], LOD_CHAIR);
   P.chair.wicker = proto('chairWicker', [{ geo: col(C.wicker, 'body'), mat: F.wicker, tint: true }, { geo: col(C.wicker, 'legs'), mat: F.rattan },
     { geo: col(C.wicker, 'cushion'), mat: F.cushion, tint: true, tintKey: 'cushion' }], LOD_CHAIR);
   for (const shape of ['round', 'square']) {
@@ -210,7 +210,7 @@ export function buildCafeProtos(M, F, umbKeys = ['30x30']) {
   P.misc.ashtray = proto('ashtray', [{ geo: [ashtray(0), ashtray(1), null], mat: F.steel, cast: false }], [14, 30]);
   P.misc.phone = proto('phone', [{ geo: [merge([xf(rbox(0.072, 0.008, 0.152, 0.003, 1), [0, 0.004, 0])]), null], mat: F.interior, cast: false }], [20]);
   // menu folder lying on the table: leatherette cover in the café's colour
-  P.misc.folder = proto('menuFolder', [{ geo: [merge([xf(rbox(0.235, 0.008, 0.325, 0.003, 1), [0, 0.004, 0])]), null], mat: F.paint, tint: true, cast: false }], [25]);
+  P.misc.folder = proto('menuFolder', [{ geo: [merge([xf(rbox(0.235, 0.008, 0.325, 0.003, 1), [0, 0.004, 0])]), null], mat: F.paintFine, tint: true, cast: false }], [25]);
   for (const v of [0, 1]) {
     const mb = [menuBoard(v, 0), menuBoard(v, 1)];
     P.misc[`menu${v}`] = proto('menuBoard', [{ geo: mb.map((m) => m.wood), mat: F.timber, cast: true }, { geo: mb.map((m) => m.face), mat: F.print, cast: false }], [40]);

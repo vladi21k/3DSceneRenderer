@@ -84,6 +84,59 @@ float catN(vec3 x) {
 }
 `;
 
+// Street wear on the lower shaft and base of a standard (aWear.z < 0 marks them, see
+// poleKit.js), in pole-local metres (vLocal: y up from the paving):
+//  - a dark splash and grime band at the foot (0-0.45 m, ragged upper edge, splash specks);
+//  - horizontal scuffs and scratches through the paint to the grey primer at 0.15-1.1 m
+//    (bags, bicycle pedals, shoes), denser round the base collar;
+//  - sticker and flyer remnants at 0.85-2.2 m: torn paper (bleached white, or a faded
+//    print) and grey glue shadows where stickers were scraped off, on a grid of cells round
+//    the shaft (a whole number of cells, so the cells meet without a seam);
+//  - a faint greasy darkening where hands hold the pole (1.0-1.7 m).
+// Fine detail fades into its mean tone before it would alias.
+const STREET_WEAR = /* glsl */ `
+          if (vWear.z < -0.5 && vLocal.y < 2.4) {
+            float wy = vLocal.y;
+            float wr = max(length(vLocal.xz), 0.03);
+            float wpx = max(fwidth(wy), 1e-5);
+            float wFine = 1.0 - smoothstep(0.0025, 0.008, wpx);
+            float wMid = 1.0 - smoothstep(0.01, 0.03, wpx);
+            // splash and grime band, darker and browner towards the paving
+            float gn = catN(vLocal * vec3(9.0, 3.5, 9.0) + vSeed * 1.3);
+            float band = 1.0 - smoothstep(0.1, 0.45, wy + 0.2 * (gn - 0.5));
+            float speck = smoothstep(0.7, 0.78, catN(vLocal * 70.0 + vSeed)) * (1.0 - smoothstep(0.25, 0.7, wy)) * wFine;
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.105, 0.095, 0.08) * (0.8 + 0.4 * gn), clamp(0.5 * band + 0.35 * speck, 0.0, 0.75));
+            // scuffs and scratches (stretched round the shaft), down to the primer
+            float scrZone = smoothstep(0.1, 0.2, wy) * (1.0 - smoothstep(0.9, 1.25, wy));
+            float sc = catN(vec3(vLocal.x * 13.0, wy * 150.0, vLocal.z * 13.0) + vSeed * 2.1);
+            float scMask = smoothstep(0.35, 0.75, catN(vLocal * vec3(4.0, 2.2, 4.0) + 17.0 + vSeed));
+            float scr = smoothstep(0.84, 0.9, sc) * scMask * scrZone;
+            float kick = smoothstep(0.62, 0.72, catN(vec3(vLocal.x * 18.0, wy * 9.0, vLocal.z * 18.0) + 5.0 + vSeed)) * smoothstep(0.15, 0.25, wy) * (1.0 - smoothstep(0.5, 0.65, wy));
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.3, 0.295, 0.28), scr * wFine * 0.85);
+            diffuseColor.rgb *= 1.0 - 0.06 * scrZone * scMask * (1.0 - wFine);   // (their mean, far away)
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.045, 0.043, 0.04), kick * 0.45 * wMid);
+            // sticker and flyer remnants: cells 9 round the shaft, 8 cm tall
+            float wa = atan(vLocal.z, vLocal.x);
+            vec2 wc = vec2((wa + PI) / PI2 * 9.0, wy / 0.08);
+            vec2 wi = floor(wc), wf = fract(wc);
+            wi.x = mod(wi.x, 9.0);
+            float h1 = catH(vec3(wi, vSeed * 3.7 + 1.3)), h2 = catH(vec3(wi + 7.1, vSeed + 4.9)), h3 = catH(vec3(wi + 3.3, vSeed + 9.7));
+            float zoneS = smoothstep(0.85, 1.05, wy) * (1.0 - smoothstep(1.9, 2.2, wy));
+            vec2 ctr = 0.5 + (vec2(h2, h3) - 0.5) * 0.3, hw = mix(vec2(0.22, 0.2), vec2(0.42, 0.45), vec2(h3, h2));
+            vec2 dq = abs(wf - ctr) - hw;
+            float torn = catN(vec3(wc * 5.0, h1 * 13.0)) * 0.12;
+            float inR = 1.0 - smoothstep(-0.02, 0.02, max(dq.x, dq.y) + torn);
+            float stk = step(h1, 0.3 * zoneS) * inR * wMid;
+            // what is left: bleached paper, a faded print, or the grey glue where it was scraped off
+            float kind = fract(h1 * 7.31 + h2);
+            vec3 hue = kind < 0.5 ? vec3(0.62, 0.6, 0.56) : kind < 0.72 ? mix(vec3(0.55, 0.22, 0.18), vec3(0.2, 0.3, 0.5), step(0.5, h3)) * 1.1 : diffuseColor.rgb * 0.72 + 0.02;
+            float shred = kind < 0.72 ? smoothstep(0.3, 0.55, catN(vec3(wc * 9.0, h2 * 17.0))) : 1.0;
+            diffuseColor.rgb = mix(diffuseColor.rgb, hue * (0.85 + 0.25 * h2), stk * shred * (kind < 0.72 ? 0.9 : 0.6));
+            // greasy hand zone
+            diffuseColor.rgb *= 1.0 - 0.07 * smoothstep(0.95, 1.15, wy) * (1.0 - smoothstep(1.5, 1.75, wy)) * (0.6 + 0.4 * gn);
+          }
+`;
+
 /** Sub-pixel inflation, weathering and lamp glow for the ironwork (geometry must carry
  *  `aTube` and `aWear`). opts.coverage: write coverage to alpha (alpha-to-coverage). */
 export function patchThin(mat, { coverage = false, weather = true } = {}) {
@@ -178,13 +231,14 @@ export function patchThin(mat, { coverage = false, weather = true } = {}) {
           diffuseColor.rgb *= 1.0 - 0.3 * run;
           // on the rusting standards the run-off below collars and ledges is rust-stained
           diffuseColor.rgb = mix(diffuseColor.rgb, rustCol * 1.4, 0.35 * run * rusty);
+          ${STREET_WEAR}
         }` : ''}
         ${coverage ? 'diffuseColor.a = catCoverage(1.0 / vInflate);' : ''}`)
       .replace('#include <normal_fragment_begin>', `roughnessFactor = mix(roughnessFactor, 0.9, catRust);
         #include <normal_fragment_begin>`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
         // hood underside lit by its own lamp at night
-        totalEmissiveRadiance += vWear.z * uLamp * ${HOOD_GLOW.toFixed(3)} * diffuseColor.rgb * ${WARM};`)
+        totalEmissiveRadiance += max(vWear.z, 0.0) * uLamp * ${HOOD_GLOW.toFixed(3)} * diffuseColor.rgb * ${WARM};`)
       .replace('#include <dithering_fragment>', `#include <dithering_fragment>
         gl_FragColor.rgb = max(gl_FragColor.rgb, vec3(0.0));`);
   });

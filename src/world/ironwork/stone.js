@@ -201,21 +201,17 @@ function corbelOutline(shape, perQuarter) {
   return { pts, smooth };
 }
 
-/** Writes the console body (shape extruded Wc wide, flanks at x = ±Wc/2) into W in the
- *  local frame (x along the wall, y = v, z = w). The outline is shaded smooth along its
- *  curves and hard at its creases; every carved arris gets a rounded `bev` margin
- *  (`arr` segments), except where the block meets the soffit and the wall. UVs in metres
- *  that follow the stone without a seam across the faces: on the moulded band u along
- *  the wall and v down the outline's arc length (the band is developable, so the grain
- *  keeps its scale through every curve), on the flanks w and v. */
-function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
-  const { pts, smooth } = corbelOutline(shape, perQuarter), n = pts.length;
+/** Edges and inset of a sampled outline: per edge its outward normal (en, 2 per edge),
+ *  arris offset (eo: `bev`, none against the soffit, v = 0, or the wall, w = 0, where
+ *  the block is bedded) and arc length at its start (sl); per point the smooth normal
+ *  (vn) and the inset point (q): the offset edges' intersection at creases, the offset
+ *  along the smooth normal inside the curves. */
+function outlineInset(pts, smooth, bev) {
+  const n = pts.length;
   // orientation: outward normals on the side away from the interior
   let area = 0;
   for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n]; area += a[0] * b[1] - b[0] * a[1]; }
   const sgn = area > 0 ? 1 : -1;
-  // edges: outward normal, arc length at their start, arris offset (none against the
-  // soffit, v = 0, or the wall, w = 0: the block is bedded there)
   const en = new Float32Array(n * 2), eo = new Float32Array(n), sl = new Float32Array(n + 1);
   for (let i = 0; i < n; i++) {
     const a = pts[i], b = pts[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
@@ -224,12 +220,6 @@ function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
     eo[i] = bed ? 0 : bev;
     sl[i + 1] = sl[i] + l;
   }
-  // arc length measured from the top front corner, so v follows the height down the front
-  let i0 = 0, top = -Infinity;
-  for (let i = 0; i < n; i++) if (Math.abs(pts[i][1]) < 1e-4 && pts[i][0] > top) { top = pts[i][0]; i0 = i; }
-  const sv = (i) => -(((sl[i] - sl[i0]) % sl[n]) + sl[n]) % sl[n];
-  // inset (flank) outline: the offset edges' intersection at creases, the offset along
-  // the smooth normal inside the curves
   const q = new Float32Array(n * 2), vn = new Float32Array(n * 2);
   for (let i = 0; i < n; i++) {
     const j = (i - 1 + n) % n, p = pts[i];
@@ -247,6 +237,23 @@ function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
       q[i * 2 + 1] = p[1] + (-o2 * ax + o1 * bx) / det;
     }
   }
+  return { en, eo, sl, q, vn };
+}
+
+/** Writes the console body (shape extruded Wc wide, flanks at x = ±Wc/2) into W in the
+ *  local frame (x along the wall, y = v, z = w). The outline is shaded smooth along its
+ *  curves and hard at its creases; every carved arris gets a rounded `bev` margin
+ *  (`arr` segments), except where the block meets the soffit and the wall. UVs in metres
+ *  that follow the stone without a seam across the faces: on the moulded band u along
+ *  the wall and v down the outline's arc length (the band is developable, so the grain
+ *  keeps its scale through every curve), on the flanks w and v. */
+function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
+  const { pts, smooth } = corbelOutline(shape, perQuarter), n = pts.length;
+  const { en, eo, sl, q, vn } = outlineInset(pts, smooth, bev);
+  // arc length measured from the top front corner, so v follows the height down the front
+  let i0 = 0, top = -Infinity;
+  for (let i = 0; i < n; i++) if (Math.abs(pts[i][1]) < 1e-4 && pts[i][0] > top) { top = pts[i][0]; i0 = i; }
+  const sv = (i) => -(((sl[i] - sl[i0]) % sl[n]) + sl[n]) % sl[n];
   const tri = (a, b, c) => {
     // wound so its face normal agrees with the vertex normals (the writer's buffers may
     // have grown since the vertices were written)
@@ -286,9 +293,9 @@ function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
     prevEnd = smooth[j] ? b : null;
     // band, then the arris strips of both sides
     const L = K + 1;
-    tri(a[K], a[L + K], b[L + K]); tri(a[K], b[L + K], b[K]);
+    tri(a[0], a[L], b[L]); tri(a[0], b[L], b[0]);
     for (let k = 0; k < K; k++) {
-      tri(a[K - k], a[K - k - 1], b[K - k - 1]); tri(a[K - k], b[K - k - 1], b[K - k]);
+      tri(a[k], a[k + 1], b[k + 1]); tri(a[k], b[k + 1], b[k]);
       tri(a[L + k], a[L + k + 1], b[L + k + 1]); tri(a[L + k], b[L + k + 1], b[L + k]);
     }
   }
@@ -401,18 +408,44 @@ export function balusterGeometry(lod) {
   return shared(g);
 }
 
-/** Shadow casters of the stone parts (welded positions): consoles [variant] and the
- *  baluster, coarse. The console's outline keeps two segments per curve: chords lie
- *  inside the convex roll (lit), outside only the coves underneath, which face away
- *  from the sun and sit in the console's own shade anyway. */
+/** Console shadow caster {P, I, n} (local frame as corbelGeometry): the silhouette with
+ *  8 segments per right angle, held INSET inside the carved faces (bedded on the
+ *  soffit and the wall), so no chord across a cove ever stands proud of the smooth stone
+ *  it shades (a chord there drew a dark line along the cove under a low sun). */
+const INSET = 0.005;
+function corbelCaster(variant) {
+  const { shape } = corbelShape(variant, CORBEL.D, CORBEL.HV[variant]);
+  const { pts, smooth } = corbelOutline(shape, 8), n = pts.length;
+  const { en, q } = outlineInset(pts, smooth, INSET), h = CORBEL.W / 2;
+  const P = new Float32Array(n * 2 * 3), I = [];
+  for (let i = 0; i < n; i++) {
+    P.set([-h, q[i * 2 + 1], q[i * 2]], i * 6);
+    P.set([h, q[i * 2 + 1], q[i * 2]], i * 6 + 3);
+  }
+  // wound to face out: (b - a) x (c - a) along the expected normal
+  const tri = (a, b, c, nx, ny, nz) => {
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2];
+    const vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+    const d = (uy * vz - uz * vy) * nx + (uz * vx - ux * vz) * ny + (ux * vy - uy * vx) * nz;
+    if (d >= 0) I.push(a, b, c); else I.push(a, c, b);
+  };
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n, ny = en[i * 2 + 1], nz = en[i * 2];
+    tri(i * 2, i * 2 + 1, j * 2 + 1, 0, ny, nz); tri(i * 2, j * 2 + 1, j * 2, 0, ny, nz);
+  }
+  const contour = [];
+  for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(q[i * 2], q[i * 2 + 1]));
+  for (const f of THREE.ShapeUtils.triangulateShape(contour, [])) {
+    tri(f[0] * 2, f[1] * 2, f[2] * 2, -1, 0, 0);
+    tri(f[0] * 2 + 1, f[1] * 2 + 1, f[2] * 2 + 1, 1, 0, 0);
+  }
+  return { P, I: new Uint32Array(I), n: n * 2 };
+}
+
+/** Shadow casters of the stone parts (welded positions): consoles [variant] (see
+ *  corbelCaster) and the baluster, coarse. */
 export function shadowTemplates() {
-  const corbel = [0, 1, 2].map((variant) => {
-    const { shape } = corbelShape(variant, CORBEL.D, CORBEL.HV[variant]);
-    const g = new THREE.ExtrudeGeometry(shape, { depth: CORBEL.W, bevelEnabled: false, curveSegments: 2 });
-    g.rotateY(-Math.PI / 2);
-    g.translate(CORBEL.W / 2, 0, 0);
-    return posTemplate(g);
-  });
+  const corbel = [0, 1, 2].map(corbelCaster);
   // baluster: a coarse vase through the drawn profile's waists and bulges (chords inside)
   const h = BALUSTRADE.H - BALUSTRADE.PLINTH - BALUSTRADE.COPING, k = h / 0.56;
   const W = new GeoWriter();
@@ -479,16 +512,31 @@ attribute float aGk;
 varying float vGk;
 varying vec2 vGuv;
 varying vec3 vGl;
+varying vec3 vGw;
+varying vec3 vGnl;
 centroid varying float vGn;
 ${NEGLECT_GLSL}`)
+      .replace('#include <uv_vertex>', `#include <uv_vertex>
+#if defined( USE_INSTANCING ) && defined( USE_MAP )
+	// every console cut from its own part of the stone (one shared mesh, one uv layout)
+	vMapUv += mod( vec2( dot( instanceMatrix[ 3 ].xyz, vec3( 0.37, 0.11, 0.53 ) ), dot( instanceMatrix[ 3 ].xyz, vec3( 0.23, 0.71, 0.19 ) ) ), 16.0 );
+#endif`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
 	vGk = aGk;
 	vGuv = uv;
 	vGl = position;
+	vGnl = normal;
+	vGw = vec3( 0.0 );
 	vGn = 0.0;
 	#ifdef USE_INSTANCING
-		// per console: offset the pattern by the instance position
-		vGl.x += dot( instanceMatrix[ 3 ].xyz, vec3( 0.37, 0.11, 0.53 ) );
+	{
+		// consoles: facade metres (along the wall, height, out of the wall), so their
+		// weathering hangs plumb and differs from console to console
+		vec3 gp = ( modelMatrix * ( instanceMatrix * vec4( position, 1.0 ) ) ).xyz;
+		vec3 ga = mat3( modelMatrix ) * instanceMatrix[ 0 ].xyz;
+		vec2 gu = normalize( ga.xz + vec2( 1e-6, 0.0 ) );
+		vGw = vec3( dot( gp.xz, gu ), gp.y, dot( gp.xz, vec2( -gu.y, gu.x ) ) );
+	}
 	#endif
 	// (slab edges are merged in world space: the railing above stands about 0.5 m higher)
 	if ( aGk > 0.5 && aGk < 1.5 ) vGn = iwNeglect( ( modelMatrix * vec4( position + vec3( 0.0, 0.5, 0.0 ), 1.0 ) ).xyz );`);
@@ -497,6 +545,8 @@ ${NEGLECT_GLSL}`)
 varying float vGk;
 varying vec2 vGuv;
 varying vec3 vGl;
+varying vec3 vGw;
+varying vec3 vGnl;
 centroid varying float vGn;
 ${GRIME_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -533,16 +583,21 @@ ${GRIME_GLSL}`)
 			// soffit: its soot gradient is baked (writeSlab); the library's own soffit
 			// weathering adds the rest evenly
 		} else {
-			// console: streaks down the faces, soot low on the scroll where the rain never
-			// reaches, in patches (corbelTemplate bakes its mean into the far consoles)
-			float fx = fwidth( vGl.x );
-			gDark = gwStreaks( vGl.x + vGl.z * 0.7, -vGl.y, fx ) * 0.26;
-			gDark += 0.16 * ( 1.0 - smoothstep( -0.6, -0.25, vGl.y ) ) * ( 0.6 + 0.4 * gwN( vec2( vGl.x * 4.0, vGl.z * 4.0 + 3.1 ) ) );
+			// console: run-off streaks hanging plumb down the faces the rain wets (in facade
+			// metres: across the wall on the front and the curves, out of it on the flanks,
+			// so they never follow the scroll's sweep), none on the faces turned down; soot
+			// low on the scroll where the rain never reaches, in patches (corbelTemplate
+			// bakes its mean into the far consoles)
+			vec3 gnl = normalize( vGnl );
+			float across = abs( gnl.x ) > 0.7 ? vGw.z + vGw.x : vGw.x;
+			float fx = fwidth( across );
+			gDark = gwStreaks( across, -vGw.y, fx ) * 0.26 * smoothstep( -0.6, -0.15, gnl.y );
+			gDark += 0.16 * ( 1.0 - smoothstep( -0.6, -0.25, vGl.y ) ) * ( 0.6 + 0.4 * gwN( vec2( vGw.x * 4.0, vGw.z * 4.0 + 3.1 ) ) );
 		}
 		diffuseColor.rgb *= gTint * ( 1.0 - gDark );
 	}`);
   };
-  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone3'; };
+  m.customProgramCacheKey = function () { return (prevKey ? prevKey.call(this) : '') + '|ironStone4'; };
   m.needsUpdate = true;
   app.materials.register(m.name, m);
   return m;

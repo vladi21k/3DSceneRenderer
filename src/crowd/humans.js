@@ -5,6 +5,7 @@ import { castAppearance, castToddler, castCharacter, castWaiter, waiterFits, BAG
 import { buildParts } from './humans/mh/parts.js';
 import { makeFigureMaterials, writeLook, BONE_W, BONE_DYN, LOOK_W, FACE } from './humans/mh/shading.js';
 import { FigureBatch } from './humans/mh/batch.js';
+import { ContactShade } from './humans/mh/contact.js';
 import { HumansTest } from './humans/test.js';
 import { Mobility } from './humans/mobility.js';
 import { U } from '../core/uniforms.js';
@@ -245,6 +246,11 @@ const humans = {
     this.batch = new FigureBatch(app, merged.geometry, ranges, mat, depth, uniforms);
     this.batch.mesh.userData.dynamicCaster = true;
     this.group.add(this.batch.mesh);
+    // contact shade on the paving under the feet and the body (mh/contact.js; humans_contact=0: none)
+    if (app.params.num('humans_contact', 1)) {
+      this.contact = new ContactShade(app);
+      this.group.add(this.contact.mesh);
+    }
     // children riding in strollers: a pool of slots for the toddler figures
     this.compFirst = -1;
     if (cast.chars.some((c) => c.ageClass === 'toddler')) {
@@ -473,6 +479,7 @@ const humans = {
     this._n = 0;
     this.babyN = 0;
     this.batch.begin(app.frame, cam);
+    if (this.contact) this.contact.begin();
     // who walks hand in hand with whom this frame (both sides' arms)
     this._holdPrep();
     for (let i = 0; i < this.used; i++) {
@@ -501,6 +508,7 @@ const humans = {
     }
     this._babies();
     this.batch.end();
+    if (this.contact) this.contact.end();
     if (mob) mob.end();
     // only the rows of this frame's figures are uploaded (see dataTexture)
     const n = this._n;
@@ -557,6 +565,7 @@ const humans = {
     const row = this._n++;
     this.rowSlot[row] = i;
     this._pose(row, i, s, a, B, this._bones);
+    if (this.contact && inView && dist < 45 && !s.comp && s.pose !== 4 && s.shade > 0.999 && s.fillR + s.fillG + s.fillB <= 0) this._contact(row, s, B, dist);
     // accessories: the phone or cup in hand, a bag (put down when seated; a shopping bag does not stay
     // in a hand that holds a stroller, a bicycle or a child's hand)
     const P = B.partR;
@@ -580,6 +589,39 @@ const humans = {
     const S = this.batch.sph, c = _sph.center;
     S[bi * 4] = c.x; S[bi * 4 + 1] = c.y; S[bi * 4 + 2] = c.z; S[bi * 4 + 3] = _sph.radius;
     this.batch.depth[bi] = (c.x - this._camPos.x) * _fwd.x + (c.y - this._camPos.y) * _fwd.y + (c.z - this._camPos.z) * _fwd.z;
+  },
+
+  /** Contact shade for figure s (bone row `row` just written): an ellipse under each foot that touches the
+   *  paving, and for people standing, sitting or walking slowly a faint wider patch under the body. */
+  _contact(row, s, B, dist) {
+    const out = this._bones, base = row * BONE_W * 4, R = B.rig, sc = s.sc;
+    const fade = 1 - Math.min(1, Math.max(0, (dist - 25) / 20));
+    if (fade <= 0) return;
+    const C = this.contact;
+    for (let f = 0; f < 2; f++) {
+      const fb = f === 0 ? BONE.footL : BONE.footR, tb = f === 0 ? BONE.toeL : BONE.toeR;
+      const an = R.rest[fb], tip = R.foot[f === 0 ? 'L' : 'R'].tip;
+      // (heel: under the ankle on the sole; tip: the toe's end; both in rest model space)
+      const hx = an.x, hy = 0, hz = R.heelZ;
+      let o = base + fb * 12;
+      const Hx = out[o] * hx + out[o + 1] * hy + out[o + 2] * hz + out[o + 3];
+      const Hy = out[o + 4] * hx + out[o + 5] * hy + out[o + 6] * hz + out[o + 7];
+      const Hz = out[o + 8] * hx + out[o + 9] * hy + out[o + 10] * hz + out[o + 11];
+      o = base + tb * 12;
+      const Tx = out[o] * tip.x + out[o + 1] * tip.y + out[o + 2] * tip.z + out[o + 3];
+      const Ty = out[o + 4] * tip.x + out[o + 5] * tip.y + out[o + 6] * tip.z + out[o + 7];
+      const Tz = out[o + 8] * tip.x + out[o + 9] * tip.y + out[o + 10] * tip.z + out[o + 11];
+      const lift = Math.min(Hy - s.y, Ty - s.y - 0.012 * sc);
+      const touch = 1 - Math.min(1, Math.max(0, (lift - 0.008) / 0.045));
+      if (touch <= 0) continue;
+      const dx = Tx - Hx, dz = Tz - Hz, L = Math.sqrt(dx * dx + dz * dz) || 1e-3;
+      C.add(0.5 * (Hx + Tx), s.y, 0.5 * (Hz + Tz), dx / L, dz / L, 0.5 * L + 0.045 * sc, 0.068 * sc, 0.5 * touch * fade);
+    }
+    // (the body's own occlusion of the sky round the feet: standing and seated people, slow walkers)
+    const still = s.pose === 1 || s.pose === 2 || s.speed < 0.4;
+    const kb = (still ? 0.16 : 0.07) * fade;
+    const hs = Math.sin(s.heading), hc = Math.cos(s.heading);
+    C.add(s.x - hs * (s.pose === 2 ? 0.12 : 0.0) * sc, s.y, s.z - hc * (s.pose === 2 ? 0.12 : 0.0) * sc, hs, hc, 0.36 * sc, 0.3 * sc, kb);
   },
 
   _queueBaby(i, s, st) {

@@ -36,9 +36,10 @@ const STONE_CELL = {
 // (faint: the isotropic macro blotches read as cloud mottling on the walls; stone.dirty keeps more)
 const STONE_MACRO = { f1: 1 / 4, f2: 1 / 17, albedo: 0.04, rough: 0.05, an1: [1, 1], an2: [2.2, 0.3] };
 const STONE_DETAIL = { freq: 2.0, normal: 0.7, albedo: 0.3, rough: 0.05 };
-// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed; the relief
-// carries it, the albedo follows only faintly
-const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.0, albedo: 0.5, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
+// chisel dressing per block: 60 % taltish (tool map), the rest pecked or rubbed. Coarse
+// enough to read at 3-8 m (a dressed face, not plaster): the relief carries it in the sun,
+// the albedo (dust in the grooves and pits) in shade
+const STONE_DRESS = { tex: 'peck', tool: 'tooling', freq: 1 / 0.64, normal: 1.7, albedo: 0.8, rough: 0.5, share: 0.6, margin: 0.025, farVar: 0.025 };
 // rock-faced bosses: fine pitting and small spalls at close range (the large fracture facets
 // are in the rustic map), per block, faded on the drafted margin
 const STONE_PITCH = { tex: 'pitch', tool: 'pitch', freq: 2.0, normal: 0.8, albedo: 0.5, rough: 0.05, share: 1.0, margin: 0.035, farVar: 0.008 };
@@ -52,13 +53,19 @@ const STONE_WEATHER = { ledge: 0.22, streak: 0.4, share: 0.55, soffit: 0.1 };
 // banding per course, 1-4 m mottling and broad wear patches (macro), and ~3.5 % odd setts:
 // darker replacements, warmer beige and cooler blue-grey ones. Per sett the roughness
 // varies only a little (±3 %: single glinting setts read as a barcode at grazing angles),
-// and beyond about 15 m the setts' own tone and the odd setts fade by 45 % (far: the share
+// and from 8 m to 20 m the setts' own tone and the odd setts fade by 75 % (far: the share
 // faded), so mid-distance paving is a field textured by its joints and the broad wear.
 const PAVING_CELL = {
   value: 0.07, hue: 0.65, rough: 0.03, row: 0.25, a: [1.06, 1.0, 0.93], b: [0.95, 0.99, 1.06],
-  corr: 0.45, corrHue: 0.5, corrFreq: 1 / 6, far: 0.45,
+  corr: 0.45, corrHue: 0.5, corrFreq: 1 / 6, far: 0.75,
   out: { p: 0.035, fam: [[0.78, 0.78, 0.8], [1.08, 1.0, 0.88], [0.9, 0.95, 1.05]] },
 };
+// Far blend (surface.js): from a pixel footprint of 0.12 of a course (or of a sett's length
+// along it) to 0.5 the maps blend to their mean under the tone drift, and the joints are
+// drawn as dust-filled lines 1.25x the stone (in the photographs the corridor at 30-150 m
+// is a smooth grey field with pale dotted joint lines, no stripes or dark specks). At the
+// default 17° lens that is 15-32 m ahead, at 8° 23-46 m.
+const PAVING_FAR = { start: 0.12, end: 0.5, joint: 1.25 };
 // chewing gum: grey to grey-black blotches 0.6-3 cm across, clustered (3-8 m noise) where
 // people stand and wait; on the street hardly any between and over the rails. Aged gum is
 // trodden matt and dirty (a glossier fleck would glint out of the grazing sheen)
@@ -130,9 +137,11 @@ export const LIBRARY = {
     props: { roughness: 1, color: PAVING_TINT },
     bake: 'paving',
     surf: {
-      swap: true, cell: PAVING_CELL, macro: { ...PAVING_MACRO, an2: [1.5, 0.12] }, detail: PAVING_DETAIL, mirror: 0.75,
+      // (the broad mottling and the stains drawn out along the street, as traffic leaves them:
+      // isotropic 2 m blotches foreshorten into thin cross-street bands at telephoto range)
+      swap: true, cell: PAVING_CELL, far: PAVING_FAR, macro: { ...PAVING_MACRO, an1: [1, 0.35], an2: [1.5, 0.12] }, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { ...GUM, prob: 0.12, laneClear: 3.0, blot: BLOT },
-      stain: { amount: 0.2, freq: 0.5, threshold: 0.66 },
+      stain: { amount: 0.2, freq: 0.5, threshold: 0.66, stretch: 2.5 },
       // soft grime either side of each rail's mortar strip (brake dust, oil, the dirt the
       // flanges throw out of the grooves), and a slightly darker four-foot (drips; a real
       // track zone is never paler than the paving beside it), a little smoother
@@ -142,7 +151,7 @@ export const LIBRARY = {
     meta: {
       albedo: [0.157, 0.168, 0.192], // mean linear albedo (setts + joints, before vertex tint): cool mid-grey granite
       paver: [0.4, 0.2], rows: 'across',
-      uv: 'u = metres along the street, v = metres across = route offset d (ribbon UVs). Courses run across the street: the continuous, nearly invisible sand-filled bed joints lie across the track and the short dark head joints read as dashes along it. v = d also places the grime along the rails (d = ±1.6 ± 0.7455).',
+      uv: 'u = metres along the street, v = metres across = route offset d (ribbon UVs). Courses run across the street: the continuous, nearly invisible sand-filled bed joints lie across the track and the short head joints read as dashes along it (grey up close, pale dusty lines at telephoto range, where the far blend draws them). v = d also places the grime along the rails (d = ±1.6 ± 0.7455).',
       laneAttr: 'get(\'paving.street\', {vertexColors: true, laneAttr: true}) takes the rail-lane grime position from a float vertex attribute aLaneD (route offset d, m) instead of v, so v can be set out freely (e.g. courses started from the rail mortar strips). One extra program.',
     },
   },
@@ -150,7 +159,7 @@ export const LIBRARY = {
     props: { roughness: 1, color: PAVING_TINT },
     bake: 'paving',
     surf: {
-      scale: 1.25, cell: { ...PAVING_CELL, value: 0.06 }, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
+      scale: 1.25, cell: { ...PAVING_CELL, value: 0.06, far: 0.6 }, far: PAVING_FAR, macro: PAVING_MACRO, detail: PAVING_DETAIL, mirror: 0.75,
       spots: { ...GUM, prob: 0.22, blot: { ...BLOT, prob: 0.06 } },
       stain: { amount: 0.22, freq: 0.5, threshold: 0.64 },
       // v = metres from the gutter: grime along the kerb edge (and ~7 m in, at the building
@@ -193,10 +202,12 @@ export const LIBRARY = {
     bake: 'railhead',
     surf: { macro: { f1: 1 / 5, f2: 1 / 13, albedo: 0.06, rough: 0.2, an1: [0.3, 3], an2: [0.2, 2] } },
     meta: {
-      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 21-29 mm running band on the head is the only bright part (satin steel, albedo ~0.45, roughness 0.5-0.7 with fine lengthwise streaks, 2-10 cm patches, 10-50 cm dull stretches, duller burn patches and fine fatigue pits, never a mirror; metal 1). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers v 0.0373-0.0498. Off the band the head is oxidised: the shoulders either side of the band under a thin brown-grey oxide (albedo ~(0.235, 0.205, 0.175), roughness ~0.66, metal 0.55), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.2, 0.155, 0.11), roughness ~0.72, metal 0.4); the upper gauge face (v ~0.076) lightly polished (roughness ~0.5), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
-      band: { centres: [0.0435, 0], halfWidth: 0.0125, vPerM: [0.5, 1], gaugeCorner: 0.076, lip: [0.1, 0.13] },
-      // mean far-field values per zone (street's line overlay should match them)
-      zones: { band: { albedo: [0.451, 0.446, 0.436], rough: 0.57, metal: 1 }, shoulder: { albedo: [0.254, 0.226, 0.2], rough: 0.64, metal: 0.59 }, bevel: { albedo: [0.204, 0.161, 0.118], rough: 0.72, metal: 0.41 }, lip: { albedo: [0.16, 0.145, 0.125], rough: 0.72, metal: 0.4 } },
+      uv: 'u along the rail (m), v across the head (m), tile 0.25 m across. A 16-26 mm running band on the head is the only bright part, and even that is broken up along the rail (polished steel, albedo ~0.45, roughness 0.45-0.9: polished stretches between duller ones, 0.3-2 m stretches under a thin brown film (albedo ~0.3, metal ~0.88), blue-grey skid burns, mid-scale lengthwise streaks, fatigue pits, rust blooms along its ragged edges; never a mirror; metal 1 where polished). Swept profile: the head top (x -25 .. 21.5 mm) must stay pinned onto v 0.031-0.0543 (half a metre of v per metre of head, centre x = 0 at v = 0.0435), so the band covers about v 0.038-0.049. Off the band the head is oxidised: the shoulders either side of the band under a brown-grey oxide (albedo ~(0.2, 0.17, 0.14), roughness ~0.68, metal 0.5), the field-side bevel (v 0.017-0.031) and the gauge corner (v 0.054-0.071) under a rust-brown film (albedo ~(0.17, 0.125, 0.085), roughness ~0.74, metal 0.38; grimier towards the groove), with small rust blooms; the upper gauge face (v ~0.076) lightly polished (roughness ~0.52), the guard lip (v 0.1-0.13) dull dusty oxide (albedo ~0.15, roughness ~0.72, metal 0.4). Flat inlays: v = rail-local x (1:1), band centred at v = 0, worn steel within |x| < 27 mm. The base values are final: no roughness multiplier is needed. envMapIntensity 0.55.',
+      band: { centres: [0.0435, 0], halfWidth: 0.0105, vPerM: [0.5, 1], gaugeCorner: 0.076, lip: [0.1, 0.13] },
+      // mean far-field values per zone, measured from the bake (band: v 0.0373-0.0498,
+      // shoulder: the rest of the head top, bevel: field bevel and gauge corner, lip); the
+      // street's line overlay matches them
+      zones: { band: { albedo: [0.397, 0.386, 0.372], rough: 0.58, metal: 0.92 }, shoulder: { albedo: [0.2, 0.167, 0.136], rough: 0.686, metal: 0.48 }, bevel: { albedo: [0.164, 0.123, 0.087], rough: 0.74, metal: 0.39 }, lip: { albedo: [0.159, 0.144, 0.123], rough: 0.72, metal: 0.4 } },
     },
   },
   'rail.side': {

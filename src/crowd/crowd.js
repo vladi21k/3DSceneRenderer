@@ -110,7 +110,7 @@ class CrowdSim {
     this.time = 0; this.dt = 0;
     this.camU = null; this.camW = 0;
     // (outfit: 'waiter' for café staff, '' for everybody else)
-    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0, idle: -1, outfit: '', table: true }, new Set(['pose', 'prop', 'propSeed', 'appearance', 'idle']));
+    this.out = settleShape({ x: 0, y: 0, z: 0, heading: 0, speed: 0, phase: 0, pose: 0, look: 0, appearance: 0, visible: true, prop: 0, propSeed: 0, lean: 0, steer: 0, idle: -1, outfit: '', table: true, holdWith: -1 }, new Set(['pose', 'prop', 'propSeed', 'appearance', 'idle', 'holdWith']));
     this.popIn = [0, 0, 0, 0]; this.popSrc = {}; this.featureIn = [0, 0, 0];
     this.events = {};
     this.perf = { avg: [0, 0, 0, 0], acc: [0, 0, 0, 0], max: [0, 0, 0, 0], n: 0, over: 0, ring: new Float32Array(240), ri: 0, rn: 0 };
@@ -433,6 +433,11 @@ class CrowdSim {
       o.steer = shown && a.mob === MOB.CYCLE ? Math.max(-0.5, Math.min(0.5, Math.atan((1.05 * -a.yawW) / Math.max(0.8, a.bikeV)))) : 0;
       o.look = a.look; o.appearance = a.appearance; o.visible = true;
       o.idle = a.idle; o.outfit = a.role === 'staff' ? 'waiter' : '';
+      // hand in hand with a companion of the same group (a child with its adult, a couple; a
+      // child beside a stroller holds on to it): the renderer joins the hands while the two
+      // walk or stand side by side, and lets go when they drift apart
+      const hw = a.handTo, L = a.leader;
+      o.holdWith = hw !== null && hw.active && L !== null && (hw === L || hw.leader === L) && !a.clearing && (a.state === ST.WALK || a.state === ST.STAND || a.state === ST.WAIT) ? this.base + hw.slot : -1;
       // (a bench or a stop's shelter seat: no table in front, the hands rest on the thighs)
       o.table = !(a.state === ST.SEATED && a.feature && a.feature.bench === true);
       H.set(this.base + a.slot, o);

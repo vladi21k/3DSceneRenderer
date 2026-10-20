@@ -15,6 +15,9 @@ import { HASH_GLSL, LAYOUT_GLSL } from './glsl/common.js';
 //      follow a 1-3 m noise sampled at the cell centre, so tones drift in runs), and
 //      per-block mirrored map lookups (u, v or both: four relief variants of every block)
 //   J  grazing-angle joint masking (with L), only below ~10° elevation
+//      Far blend (library `surf.far`, paving): where a pixel spans a fair part of a cell,
+//      the maps blend to their mean under the smooth tone drift, with the joints drawn
+//      analytically as pale dusty lines (no stripes or specks at grazing telephoto views)
 //   P  random irregular spots inside some cells, e.g. chewing gum (with L): lognormal sizes,
 //      ragged soft outlines, occasional smears, clustered by a 3-8 m noise mask and kept
 //      off the track (with K: lane offset |d| below a threshold); and larger soft spill
@@ -76,7 +79,10 @@ uniform vec4 sfSpots;    // peak probability per cell, median radius (m), albedo
 uniform vec4 sfSpots2;   // clusters: noise freq (1/m, 0 = none), mask low, mask high; lane: clear below |d| (0 = off)
 uniform vec4 sfSpots3;   // spill blots: probability per cell, median radius (m), albedo mult, roughness mult
 uniform vec4 sfCell2;    // correlated tone: value amp, hue share, noise freq (1/m, 0 = off); far fade of the cells' own tone (share)
+uniform vec4 sfFar;      // far blend (paving): start, end (pixel footprint / cell size), joint albedo at far, on (> 0)
 float sfCellFar = 1.0;   // the cells' own tone and outliers (1 near; faded with distance by sfCell2.w)
+float sfFF = 0.0;        // far blend: 0 the maps as drawn, 1 their mean under the tone drift
+float sfJc = 0.0;        // far blend: box-filtered joint coverage of the pixel (0..1)
 // per-cell tint; nz = correlated tone noise at the cell centre (0.5 = neutral)
 vec3 sfTintOf(uint h, float amp, float outliers, vec2 nz) {
   float h0 = sfHf(h), h1 = sfHf(sfH(h + 1u)), h2 = sfHf(sfH(h + 2u)), h3 = sfHf(sfH(h + 3u)), h4 = sfHf(sfH(h + 4u));
@@ -335,7 +341,7 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
     uint cs = uint(sfLay2.y) + 501u;
     sfCh = sfH2(rg, gi, cs);
     uint rh = sfH2(rg, 7777, uint(sfLay2.y) + 503u);
-    sfCellFar = 1.0 - sfCell2.w * smoothstep(12.0, 22.0, length(vViewPosition));
+    sfCellFar = 1.0 - sfCell2.w * smoothstep(8.0, 20.0, length(vViewPosition));
     float fRow = 1.0 - smoothstep(0.25, 0.8, sfFoot.y / rowH);
     float fSeg = fRow * (1.0 - smoothstep(0.25, 0.8, sfFoot.x * float(n) * sfTile.x));
     // block tint, box-filtered along u over the pixel footprint: at distance blocks
@@ -344,6 +350,12 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
     float hw = 0.75 * sfFoot.x;
     int jn = hw > 0.02 * (b1 - b0) ? sfOne : 0;   // near: the block itself, far: and its neighbours
     float L = sfTile.z / float(n);
+    // far paving: once a pixel spans a fair part of a course (or of a sett along it), the
+    // setts' own tones, tilts, finishes and flaws no longer resolve; seen at a grazing angle
+    // they only alias into thin stripes (one course a pixel or two high) and dark specks.
+    // The lookup then blends to the maps' mean (setts and joints together) under the smooth
+    // tone drift, and the joints come back analytically below as pale dusty lines
+    if (sfFar.w > 0.0) sfFF = smoothstep(sfFar.x, sfFar.y, max(sfFoot.y / rowH, sfFoot.x / L));
     float x0 = lx - hw, x1 = lx + hw, ws = 0.0;
     vec3 cellT = vec3(0.0);
     for (int j = -jn; j <= jn; j++) {
@@ -355,11 +367,32 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
       ws += wj;
     }
     if (jn > 0) cellT = (cellT + vec3(max(0.0, 2.0 * hw - ws))) / (2.0 * hw);
-    sfTint = mix(vec3(1.0), sfTintOf(rh, sfCell.w, 0.0, vec2(0.5)) * cellT, fRow);
+    vec3 sfTc = sfTintOf(rh, sfCell.w, 0.0, vec2(0.5)) * cellT;
+    sfTint = mix(vec3(1.0), sfTc, fRow);
+    if (sfFar.w > 0.0) {
+      // where the cells no longer resolve, their tones average out to the correlated drift
+      // (quarry batches, dirt), sampled at the pixel itself: smooth, no cell edges
+      vec2 nzP = sfCellNoise(sfUv);
+      float hmP = mix(0.5, clamp(0.5 + (nzP.y - 0.5) * 3.0, 0.0, 1.0), sfCell2.y);
+      vec3 tP = (1.0 + sfCell2.x * (nzP.x * 2.0 - 1.0)) * mix(vec3(1.0), mix(sfCellA, sfCellB, hmP), 0.5 * sfCell.y);
+      sfTint = mix(tP, sfTc, fRow);
+    }
     sfRoughMul = 1.0 + sfCell.z * (sfHf(sfH(sfCh + 5u)) * 2.0 - 1.0) * fSeg;
     vec2 cl = vec2(lx - b0, sfUv.y - rgF * rowH);
     sfCl = cl;
     sfCs = vec2(b1 - b0, rowH);
+    if (sfFF > 0.0) {
+      // the joints at a distance: dust-filled, a little paler than the stone (a line about
+      // three times the joint's own width), box-filtered over the pixel footprint. The
+      // joints across the view (bed joints of the street's courses) hide behind the near
+      // arrises at these grazing angles, so they count a quarter
+      float jw = 1.6 * sfJoint.y;
+      vec2 fp = max(sfFoot, vec2(1e-6));
+      float dU = min(cl.x, sfCs.x - cl.x), dV = min(cl.y, rowH - cl.y);
+      float cU = clamp((min(jw, dU + 0.5 * fp.x) - max(-jw, dU - 0.5 * fp.x)) / fp.x, 0.0, 1.0);
+      float cV = clamp((min(jw, dV + 0.5 * fp.y) - max(-jw, dV - 0.5 * fp.y)) / fp.y, 0.0, 1.0) * sfLay2.w;
+      sfJc = min(cU + 0.25 * cV, 1.0) * sfFF;
+    }
     // mirror the block's lookup in u, v or both: joints and margins map onto themselves,
     // the relief and mottling inside the block read as another block
     uint mh = sfH(sfCh + 41u);
@@ -368,7 +401,8 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
       sfFl = vec2(mk == 1u ? 1.0 : -1.0, mk == 0u ? 1.0 : -1.0);
       sfFo = vec2(sfFl.x < 0.0 ? b0 + b1 - 2.0 * lx : 0.0, sfFl.y < 0.0 ? rowH - 2.0 * cl.y : 0.0);
     }
-${f.joint ? MAP_JOINT : ''}${f.spots ? mapSpots(f) : ''}  }
+${f.joint ? MAP_JOINT : ''}${f.spots ? mapSpots(f) : ''}    sfSpot *= 1.0 - sfFF;
+  }
   vec2 sfT = (sfP + sfFo) * sfTile.xy;
   vec2 sfTx = sfGx * sfFl * sfTile.xy, sfTy = sfGy * sfFl * sfTile.xy;
   vec4 sfA = textureGrad(map, sfT, sfTx, sfTy);
@@ -378,9 +412,22 @@ ${f.joint ? MAP_JOINT : ''}${f.spots ? mapSpots(f) : ''}  }
     sfA = mix(sfA, textureGrad(map, sfT2, sfTx, sfTy), sfHide);
     sfS = mix(sfS, textureGrad(normalMap, sfT2, sfTx, sfTy), sfHide);
   }
-  vec3 sfAlb = sfA.rgb * sfTint;
+  if (sfFF > 0.0) {
+    // the maps' mean (their last mip): albedo, roughness, a flat normal whose lost
+    // variance (the moment) still widens the lobe, mean cavity AO
+    sfA = mix(sfA, textureLod(map, vec2(0.5), 14.0), sfFF);
+    sfS = mix(sfS, textureLod(normalMap, vec2(0.5), 14.0), sfFF);
+  }
+  vec3 sfAlb = sfA.rgb * sfTint * (1.0 + (sfFar.z - 1.0) * sfJc);
   float sfRough = ${f.pom ? '(sfPom.y > 0.0 ? mix(0.97, 0.87, smoothstep(-0.012, -0.005, sfPom.x + sfPom.y * sfA.a)) : sfA.a)' : 'sfA.a'} * sfRoughMul;
-`;
+${f.pom ? `  // relief occlusion of the sky light: the drafted margins and the low shoulders sit in the
+  // hollow between neighbouring bosses and see part of the sky only, the crowns all of it;
+  // in shade (no sun to cast the march's shadows) this is what keeps the bosses' form. The
+  // joints are left to the baked AO. Read from the height map, so it carries on beyond the
+  // parallax range
+  float sfRelH = sfPom.x + sfPom.y * sfA.a;
+  float sfRelAO = sfPom.y > 0.0 ? 1.0 - 0.38 * (1.0 - smoothstep(0.0, 0.055, sfRelH)) * smoothstep(-0.012, -0.004, sfRelH) : 1.0;
+` : ''}`;
 
 // dressing: each block gets its own dressing (taltish striation from the tool map, pecked or
 // rubbed from the detail map), rotated, offset and scaled (±12 %) per block, finer on the
@@ -389,8 +436,9 @@ const MAP_DRESS = /* glsl */ `
     if (sfDetail2.y > 0.0 && sfLay.y > 0.5) {
       float hd = sfHf(sfH(sfCh + 21u)), ha = sfHf(sfH(sfCh + 22u));
       dTool = hd < sfDetail2.y;
-      // taltish: one working direction per block, 60-75° from horizontal either way (±7°)
-      float ang = dTool ? (ha < 0.5 ? 1.0 : -1.0) * (1.047 + 0.262 * fract(ha * 7.31)) + (sfHf(sfH(sfCh + 23u)) - 0.5) * 0.24 : ha * 6.2832;
+      // taltish: one working direction per block, 60-75° from horizontal either way, ±25°
+      // more at random (a narrower spread lined every block up into one halftone hatch)
+      float ang = dTool ? (ha < 0.5 ? 1.0 : -1.0) * (1.047 + 0.262 * fract(ha * 7.31)) + (sfHf(sfH(sfCh + 23u)) - 0.5) * 0.87 : ha * 6.2832;
       float ca = cos(ang), sa = sin(ang);
       sfDR = mat2(ca, sa, -sa, ca);
       float dsc = 0.88 + 0.24 * sfHf(sfH(sfCh + 27u));
@@ -398,9 +446,9 @@ const MAP_DRESS = /* glsl */ `
       dgx = sfDR * dgx * dsc; dgy = sfDR * dgy * dsc;
       bool rubbed = !dTool && hd > sfDetail2.y + (1.0 - sfDetail2.y) * 0.6;
       dAmp = rubbed ? 0.3 : 1.0;
-      // the chisel work reads within a few metres; further off only a trace of it (its
-      // mean self-shadowing stays below)
-      dAmp *= mix(1.0, dTool ? 0.3 : 0.5, smoothstep(2.0, 5.0, length(vViewPosition)));
+      // the chisel work reads strongly within a few metres and still as a coarse grain at
+      // 3-8 m; further off it fades to its mean self-shadowing (below)
+      dAmp *= mix(1.0, dTool ? 0.55 : 0.7, smoothstep(3.0, 8.0, length(vViewPosition)));
       dFar = dTool ? 0.985 : (rubbed ? 1.0 : 0.97);   // mean self-shadowing of the tooling
       float e = min(min(sfCl.x, sfCs.x - sfCl.x), min(sfCl.y, sfCs.y - sfCl.y));
       float mg = sfDetail2.z * (0.7 + 0.6 * sfHf(sfH(sfCh + 26u)));
@@ -488,7 +536,7 @@ const mapLanes = (attr) => /* glsl */ `
 // a little and broken in places; warm grey-brown (dirt and soot carried down by the rain).
 // Its strength drifts along the wall in broad stretches, and the wall's tone varies in tall
 // faint rain-wash bands. Sub-pixel streaks fade to their (small) mean.
-const MAP_WEATHER = /* glsl */ `
+const mapWeather = (f) => /* glsl */ `
   if (sfWeather.x + sfWeather.y + sfWeather.w > 0.0) {
     #ifdef FLAT_SHADED
       vec3 sfVN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
@@ -513,7 +561,16 @@ const MAP_WEATHER = /* glsl */ `
     sfAlb = mix(sfAlb, vec3(sfLum) * vec3(0.68, 0.6, 0.48), min(2.2 * sfLd, 0.85));
     sfAlb *= 1.0 - sfWeather.w * sfSoffit;
     sfRough = min(sfRough * (1.0 + 0.08 * sfLedge), 1.0);
-    float sfVert = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
+${f.layout && !f.pom ? `    {
+      // the worn chamfers of the arrises that face up (the map's normal tilted up the wall:
+      // v runs up a facade) hold dust as well: under a high sun they otherwise pick out
+      // every bed joint as a ruled bright line
+      float sfUpW = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
+      float sfChm = smoothstep(0.1, 0.32, (sfS.g * 2.0 - 1.0) * sfFl.y) * sfUpW * min(1.0, 4.0 * sfWeather.x) * step(0.5, sfLay.y);
+      float sfL2 = dot(sfAlb, vec3(0.2126, 0.7152, 0.0722));
+      sfAlb = mix(sfAlb, vec3(sfL2) * vec3(0.8, 0.72, 0.6), 0.35 * sfChm) * (1.0 - 0.15 * sfChm);
+    }
+` : ''}    float sfVert = 1.0 - smoothstep(0.2, 0.4, abs(sfNW.y));
     vec3 sfTW = normalize(vec3(-sfNW.z, 0.0, sfNW.x) + 1e-5);
     float sfAl = dot(vSfWorld, sfTW), sfY = vSfWorld.y;
     float sfFx = max(fwidth(sfAl), 1e-5), sfFy = max(fwidth(sfY), 1e-5);
@@ -581,7 +638,7 @@ function mapChunk(f) {
   if (f.detail) s += mapDetail(f);
   s += MAP_MACRO;
   if (f.lanes) s += mapLanes(f.laneAttr);
-  if (f.weather) s += MAP_WEATHER;
+  if (f.weather) s += mapWeather(f);
   if (f.spots) s += SPOTS_APPLY;
   return s + MAP_END;
 }
@@ -639,8 +696,8 @@ ${f.detail ? NORMAL_DETAIL : ''}  if (sfFlags.y > 0.5) sfN = sfN.yx;
   roughnessFactor = min(sqrt(sqrt(sfA2 * sfA2 + sfMisc.z * sfVar + sfGv)), 1.0);
 `;
 
-const AO = /* glsl */ `
-  float ambientOcclusion = clamp(mix(1.0, sfS.a, sfMisc.y * sfAOScale), 0.0, 1.0);
+const aoChunk = (f) => /* glsl */ `
+  float ambientOcclusion = clamp(mix(1.0, sfS.a, sfMisc.y * sfAOScale), 0.0, 1.0)${f.pom ? ' * sfRelAO' : ''};
   reflectedLight.indirectDiffuse *= ambientOcclusion;
   #if defined( USE_CLEARCOAT )
     clearcoatSpecularIndirect *= ambientOcclusion;
@@ -723,7 +780,7 @@ function patchFragment(src, f) {
       .replace('#include <roughnessmap_fragment>', ROUGH)
       .replace('#include <metalnessmap_fragment>', METAL)
       .replace('#include <normal_fragment_maps>', normalChunk(f))
-      .replace('#include <aomap_fragment>', AO + (f.trans ? AO_THIN : ''));
+      .replace('#include <aomap_fragment>', aoChunk(f) + (f.trans ? AO_THIN : ''));
   }
   if (f.surf || f.trans) s = s.replace('#include <lights_physical_pars_fragment>', '#include <lights_physical_pars_fragment>\n' + lightPars(f));
   if (f.night) s = s.replace('#include <emissivemap_fragment>', EMISSIVE);
@@ -826,6 +883,7 @@ export function surfaceUniforms(cfg, def, t, shared) {
     sfSpots2: { value: v4([shared.macro ? sp.cluster?.freq ?? 0 : 0, sp.cluster?.lo ?? 0.5, sp.cluster?.hi ?? 0.62, sp.laneClear ?? 0]) },
     sfSpots3: { value: v4([L && shared.macro ? sp.blot?.prob ?? 0 : 0, sp.blot?.radius ?? 0.02, sp.blot?.albedo ?? 0.8, sp.blot?.rough ?? 0.85]) },
     sfCell2: { value: v4([shared.macro ? c.corr ?? 0 : 0, c.corrHue ?? 0, shared.macro ? c.corrFreq ?? 0 : 0, c.far ?? 0]) },
+    sfFar: { value: v4(L && cfg.far ? [cfg.far.start ?? 0.22, cfg.far.end ?? 0.75, cfg.far.joint ?? 1.2, 1] : [0, 1, 1, 0]) },
     sfStain: { value: v4([shared.macro ? st.amount ?? 0 : 0, st.freq ?? 0.3, st.threshold ?? 0.7, (st.matt ? -1 : 1) * (st.stretch ?? 1)]) },
     sfJoint: { value: v4([cfg.jointHide ?? (r?.joint ? 0.4 : 0), (r?.joint ?? 0) * sc, 0, 0]) },
     sfMirror: { value: L ? cfg.mirror ?? 0 : 0 },

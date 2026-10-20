@@ -5,7 +5,7 @@ import { hashStr, RNG } from '../core/rng.js';
 import { SIDE_LOT_START } from './layout.js';
 import { Builder } from './buildings/mesh.js';
 import { lotSteps, coarseLot, DETAIL } from './buildings/shell.js';
-import { grimeStone, litGlass, nightLevels } from './buildings/grime.js';
+import { grimeStone, litGlass, nightLevels, GRIME_DEBUG } from './buildings/grime.js';
 import { rowLayout } from './buildings/coursing.js';
 import { makeSlab, slabSteps } from './buildings/skyline.js';
 import { laneSteps } from './buildings/lane.js';
@@ -60,7 +60,8 @@ const LOOK_FAR = 110;              // far detail is prepared up to this far beyo
 const UPLOAD_BYTES = 640 << 10;    // vertex data uploaded ahead per frame (at least one buffer)
 const ADVERT_EXPOSED = 0.32;       // a floodlit poster's white at night (radiance x exposure)
 
-let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere
+let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere; ?bgdbg=1|2|3 shows the
+                                   // weathering's inputs (height above the paving, trails and grime mask, run-off zones)
 const jobs = new Map();            // jobKey(chunkIndex, lod) -> job
 const swaps = new Map();           // job -> group showing a coarse stand-in until the job ends
 const ends = new Map();            // lotId -> [end0, end1] (lazy)
@@ -89,19 +90,21 @@ const buildings = {
     const lap = (k) => { const t = performance.now(); T[k] = Math.round(t - tl); tl = t; };
     const fl = app.params.str ? app.params.str('blod') : null;
     if (fl === '0' || fl === '1') FORCE_LOD = +fl;
+    // (bgdbg=1|2|3: the weathering's inputs as colours, see grime.js)
+    GRIME_DEBUG.value = app.params.num ? app.params.num('bgdbg', 0) : 0;
     bindLayout(app.layout);   // corner returns follow the real side-street lines
     // weathered stone (drip trails, rain wash, soot crusts where the baked grime mask
     // says so) and the backdrop lots' glass, lit at night
     if (app.materials.register) {
       MATS = {
         // (the ashlar's worn arrises collect dust, see grime.js BG_ARRIS)
-        ashlar: grimeStone(app, 'stone.ashlar', undefined, [1.0, 0.8]),
-        rough: grimeStone(app, 'stone.rough'),
-        smooth: grimeStone(app, 'stone.smooth', [0.45, 0.55, 0.12, 0.35]),
+        ashlar: grimeStone(app, 'stone.ashlar', undefined, [1.0, 0.8], { streak: 0.45 }),
+        rough: grimeStone(app, 'stone.rough', undefined, [0, 0], { streak: 0.45 }),
+        smooth: grimeStone(app, 'stone.smooth', [0.45, 0.55, 0.12, 0.35], [0, 0], { streak: 0.45 }),
         glass: litGlass(app, 'glass.window'),
         // the same shader (one program for all of these): renders, rooftop metal and the
         // dark boxes weather too; tiles carry no grime
-        plaster: grimeStone(app, 'plaster'),
+        plaster: grimeStone(app, 'plaster', undefined, [0, 0], { render: true }),
         tile: grimeStone(app, 'roof.tile', [0.3, 0.4, 0.1, 0.3]),
       };
       MATS.smoothD = MATS.smooth;

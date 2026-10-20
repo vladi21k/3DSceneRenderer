@@ -56,7 +56,8 @@ function armColor(x, y, z, nx, ny, nz) {
   return [ao * (1 + 0.36 * up), ao * (1 + 0.33 * up), ao * (1 + 0.26 * up)];
 }
 
-/** Rust / streak weights on the shaft (pole-local position and normal). */
+/** Rust / streak weights on the shaft (pole-local position and normal); the third weight
+ *  (-1) marks the shaft and base for the street wear (stickers, scuffs, grime; shaders.js). */
 function shaftWear(i, x, y, z, nx, ny) {
   let rust = 0.6 * (1 - smooth(y, 0.02, 0.3));                  // splash zone at the foot
   if (ny < -0.35) rust = Math.max(rust, 0.5);                    // drip edges under mouldings
@@ -64,7 +65,7 @@ function shaftWear(i, x, y, z, nx, ny) {
   for (const c of COLLARS) if (Math.abs(y - c) < 0.07) rust = Math.max(rust, 0.42);
   let streak = 0;
   for (const L of LEDGES) if (y < L && y > L - 0.9) streak = Math.max(streak, 1 - (L - y) / 0.9);
-  return [rust, streak, 0];
+  return [rust, streak, -1];
 }
 
 function baseProfile(far = false) {

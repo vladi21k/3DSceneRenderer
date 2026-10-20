@@ -61,22 +61,24 @@ const COL = {
 };
 
 // lamp brightness relative to the destination display (lamp mesh vertex colours, linear)
-const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17], door: [5, 0.55, 0.12], button: [0.25, 1.5, 0.45] };
+const LAMP = { head: [45, 45, 44], tail: [14, 0.5, 0.17], door: [5, 0.55, 0.12], button: [1.8, 0.16, 0.1] };
 const FLEET_NO = '07';
 
 // cross-section: band edges and the rows the cab front needs
+// (the skirt comes down to 0.11 m over the rail top, its bottom 0.09 m a black rubber strip)
 const Y = {
-  bottom: 0.18, skirt: 0.3, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
+  bottom: 0.11, skirt: 0.2, floor: 0.33, belt: 0.95, winTop: 2.45, frame: 0.03,
   doorGlass0: 0.8, doorGlass1: 2.1, doorTop: 2.3, doorSeam: 2.33,
-  ws0: 1.18, dispBand: 2.62, shoulder: 2.86, noseSkirt: 0.3,
+  ws0: 1.18, dispBand: 2.62, shoulder: 2.86, noseSkirt: 0.2,
   seatBack: 1.35,              // saloon glazing below this shows seat backs: it does not glow at night
 };
 const SHOULDER_R = 0.33;
+const WIN_W = 0.86;            // side window pane width the layout aims at (m)
 const ROOF_CROWN = 0.03;
 const DISP_U = 0.56;           // destination display half width (share)
 const CAP_P = 2.6;             // plan shape of the front (superellipse exponent)
 // centre-line depth of the front cap ahead of the cap base, by height (side view)
-const NOSE = [[0.18, 0.92], [0.42, 1.08], [0.8, 1.15], [1.18, 1.12], [1.8, 0.99], [2.4, 0.8],
+const NOSE = [[0.11, 0.87], [0.18, 0.92], [0.42, 1.08], [0.8, 1.15], [1.18, 1.12], [1.8, 0.99], [2.4, 0.8],
   [2.8, 0.58], [3.0, 0.42], [3.12, 0.26], [3.19, 0.1], [3.22, 0]];
 
 const LOD_ROWS = [
@@ -221,7 +223,7 @@ class Parts {
  */
 function sideLayout(z0, z1, doors, lod, firstWin = null) {
   const cells = [];
-  const PILLAR = 0.14, FR = lod === 0 ? Y.frame : 0;
+  const PILLAR = 0.12, FR = lod === 0 ? Y.frame : 0;
   const id = (z) => Math.round(z * 20) + 1000;
   const wall = (a, b) => { if (b > a + 1e-4) cells.push({ z0: a, z1: b, kind: 'wall' }); };
   // between panes the glazing band carries on as black frit (flush glazing)
@@ -233,7 +235,8 @@ function sideLayout(z0, z1, doors, lod, firstWin = null) {
   };
   const windows = (a, b) => {
     if (b - a < 0.5) { wall(a, b); return; }
-    const n = Math.max(1, Math.round((b - a + PILLAR) / (1.45 + PILLAR)));
+    // narrow panes, a pillar about every metre (as the line's cars have)
+    const n = Math.max(1, Math.round((b - a + PILLAR) / (WIN_W + PILLAR)));
     const w = (b - a - (n - 1) * PILLAR) / n;
     for (let k = 0; k < n; k++) {
       const s = a + k * (w + PILLAR);
@@ -296,19 +299,42 @@ function cellMaterial(kind, y0, y1) {
 }
 
 /** Both side walls (and the roof) of a body from its cell layout. uv = (z + uOff, arc
- *  length); the glass shader tells the centre body (uOff 100) from the cab ends by it. The
- *  glazing's uv.y is its cell's pane number instead (each pane sits a little differently). */
+ *  length) on the roof; on the sides the panels are slightly convex (the body and glass shaders
+ *  tilt the normal along the car across each), so uv.x carries the place across the panel,
+ *  t = −1..1: the paint 500 + t (lower panels from one joint under a pillar to the next, a door
+ *  leaf, the band over the windows; the pillars there flat), the glazing 10 + uOff + t across its
+ *  pane (the glass shader tells the centre body, uOff 100, by it). The glazing's uv.y is its
+ *  cell's pane number (each pane sits a little differently). */
 function sideWalls(P, prof, cells, uOff = 0) {
+  // panes (a window with its frit frame, a pillar, a door leaf) and the panel joints: the
+  // pillar centres and door seams, and the layout's ends
+  const span = new Map(), cuts = [cells[0].z0, cells[cells.length - 1].z1];
+  for (const c of cells) {
+    if (c.pane) { const q = span.get(c.pane); if (q) { q[0] = Math.min(q[0], c.z0); q[1] = Math.max(q[1], c.z1); } else span.set(c.pane, [c.z0, c.z1]); }
+    if (c.kind === 'pillar' || c.kind === 'dseam') cuts.push((c.z0 + c.z1) / 2);
+  }
+  cuts.sort((x, y) => x - y);
+  const across = (z, a, b) => clamp((2 * (z - a)) / Math.max(b - a, 1e-3) - 1, -1, 1);
   for (const cell of cells) {
+    const zm = (cell.z0 + cell.z1) / 2;
+    let ca = cuts[0], cb = cuts[cuts.length - 1];
+    for (let k = 0; k < cuts.length - 1; k++) if (zm >= cuts[k] && zm <= cuts[k + 1]) { ca = cuts[k]; cb = cuts[k + 1]; break; }
+    const straddle = cell.kind === 'pillar' || cell.kind === 'dseam';
+    const ps = cell.pane ? span.get(cell.pane) : null;
     for (let i = 0; i < prof.length - 1; i++) {
       const a = prof[i], b = prof[i + 1];
       // door and window rows only matter on the side; the roof takes the paint
       const [part, col] = cellMaterial(cell.kind, a.y, b.y);
       const glass = part !== 'body';
+      const side = b.y <= Y.shoulder + 0.01;
       // the lower side panels meet under each window pillar: the body shader draws the
       // joint at the cell's centre (uv = (centre + uOff, 50 + arc length) marks it)
       const seam = !glass && cell.kind === 'pillar' && b.y <= Y.belt + 1e-3 && a.y >= Y.skirt - 1e-3;
-      const u0 = seam ? (cell.z0 + cell.z1) / 2 + uOff : cell.z0 + uOff, u1 = seam ? u0 : cell.z1 + uOff;
+      let u0, u1;
+      if (seam) u0 = u1 = zm + uOff;
+      else if (glass) { const [pa, pb] = ps || [cell.z0, cell.z1]; u0 = 10 + uOff + across(cell.z0, pa, pb); u1 = 10 + uOff + across(cell.z1, pa, pb); }
+      else if (side) { u0 = straddle ? 500 : 500 + across(cell.z0, ca, cb); u1 = straddle ? 500 : 500 + across(cell.z1, ca, cb); }
+      else { u0 = cell.z0 + uOff; u1 = cell.z1 + uOff; }
       const va = glass ? cell.pane || 0 : seam ? 50 + a.a : a.a, vb = glass ? cell.pane || 0 : seam ? 50 + b.a : b.a;
       for (const sx of [1, -1]) {
         // (the glazing of each side is a part of its own, see Parts)
@@ -646,8 +672,8 @@ function capLamps(B, cap, prof, lead, atlas) {
 }
 
 /** Door indicator lamps: a small red-orange lens on both sides beside each door (leading
- *  edge, head height), and the passengers' push button on a door leaf (a lit green ring,
- *  LOD 0), lit from the lens atlas. `zs` are door centres (body frame). */
+ *  edge, head height), and the passengers' push button on a door leaf (a lit red ring), lit
+ *  from the lens atlas. `zs` are door centres (body frame). */
 function doorLamps(B, zs, atlas, lod) {
   if (lod > 1) return;
   const L = atlas.lens, seg = 10;
@@ -665,7 +691,7 @@ function doorLamps(B, zs, atlas, lod) {
   for (const c of zs) {
     for (const sx of [1, -1]) {
       disc(sx, 1.95, c - CAR.doorW / 2 - 0.075, 0.03, LAMP.door);
-      if (lod === 0) disc(sx, 1.12, c + sx * 0.055, 0.028, LAMP.button);
+      disc(sx, 1.12, c + sx * 0.06, 0.036, LAMP.button);
     }
   }
 }
@@ -688,24 +714,70 @@ function sideNumber(B, lod) {
 }
 
 // ------------------------------------------------------------------ running gear, pantograph
-function runningGear(B, z0, z1, bogieZ) {
-  // dark underfloor (closes the shell above the bogies)
-  const y = 0.3, x = sideX(Y.bottom) - 0.06;
-  const v = [B.vert(-x, y, z0, 0, -1, 0, COL.under), B.vert(x, y, z0, 0, -1, 0, COL.under), B.vert(x, y, z1, 0, -1, 0, COL.under), B.vert(-x, y, z1, 0, -1, 0, COL.under)];
-  B.quad(v[0], v[1], v[2], v[3]);
-  if (bogieZ == null) return;
-  for (const dz of [-CAR.axleHalf, CAR.axleHalf]) {
-    for (const s of [1, -1]) {
-      const xc = s * RAIL_CENTER;
-      tube(B, [xc - 0.055, CAR.wheelR, bogieZ + dz], [xc + 0.055, CAR.wheelR, bogieZ + dz], CAR.wheelR, 16, COL.wheel, true);
-    }
+/** Outline of the front cap at height y, from the left side round the nose to the right
+ *  (body frame [x, z]), drawn `inset` m inside the shell. */
+function capOutline(y, n, inset = 0) {
+  const out = [];
+  for (let k = 0; k <= n; k++) {
+    const u = -1 + (2 * k) / n;
+    capPoint(u, y, _cp);
+    capNormal(clamp(u, -0.995, 0.995), y, _cn);
+    out.push([_cp.x - _cn.x * inset, _cp.z - _cn.z * inset]);
   }
-  for (const s of [1, -1]) box(B, s * 0.95 - 0.12, s * 0.95 + 0.12, 0.22, 0.5, bogieZ - 1.15, bogieZ + 1.15, COL.under);
+  return out;
+}
+
+/** Horizontal floor (normal down) at height y: the cap outline round the front (cab) or a
+ *  straight edge at z0, back to z1. */
+function floorPan(B, y, z0, z1, col, cab, inset) {
+  const hw = sideX(Y.bottom) - inset;
+  const ring = cab ? capOutline(Math.max(y, Y.bottom), 12, inset) : [[-hw, z0], [hw, z0]];
+  ring.push([hw, z1], [-hw, z1]);
+  const zc = (Math.min(...ring.map((p) => p[1])) + z1) / 2;
+  const c = B.vert(0, y, zc, 0, -1, 0, col);
+  const idx = ring.map(([x, z]) => B.vert(x, y, z, 0, -1, 0, col));
+  for (let k = 0; k < idx.length; k++) B.tri(c, idx[k], idx[(k + 1) % idx.length]);
 }
 
 /**
- * Single-arm pantograph standing on the centre body's roof at z, raised to the
- * contact wire. Insulators go to the body part (paint), the frame to metal.
+ * Under the body, behind the skirt (near-black, road dust): the floor pan under the low
+ * floor, a keel of cable ducts and equipment cases along the middle (so no line of sight
+ * passes under the car to the street beyond), and at a bogie its side frames, bolster,
+ * wheel discs and the magnetic track brakes hanging over the rails. `cab`: the pan follows
+ * the nose. LOD 2 keeps the pan and the keel.
+ */
+function runningGear(B, z0, z1, bogieZ, lod, cab = false) {
+  const yp = 0.28;
+  floorPan(B, yp, cab ? 0.4 : z0, z1, COL.under, cab, 0.06);
+  const keel = (a, b) => { if (b - a > 0.2) box(B, -0.5, 0.5, 0.07, yp, a, b, COL.under); };
+  const k0 = cab ? 0.9 : z0 + 0.15, k1 = z1 - 0.15;
+  if (bogieZ == null) { keel(k0, k1); return; }
+  const bz0 = bogieZ - 1.35, bz1 = bogieZ + 1.35;
+  keel(k0, bz0); keel(bz1, k1);
+  box(B, -0.85, 0.85, 0.15, yp, bogieZ - 0.28, bogieZ + 0.28, COL.under);                  // bolster
+  for (const s of [1, -1]) {
+    box(B, s * 0.97 - 0.09, s * 0.97 + 0.09, 0.15, yp, bz0 + 0.2, bz1 - 0.2, COL.under);     // side frame
+    // magnetic track brake shoe over the rail, between the wheels
+    box(B, s * RAIL_CENTER - 0.05, s * RAIL_CENTER + 0.05, 0.035, 0.13, bogieZ - CAR.axleHalf + CAR.wheelR + 0.04, bogieZ + CAR.axleHalf - CAR.wheelR - 0.04, COL.under);
+  }
+  if (lod > 1) return;
+  const sides = lod === 0 ? 16 : 10;
+  for (const dz of [-CAR.axleHalf, CAR.axleHalf]) {
+    for (const s of [1, -1]) {
+      const xc = s * RAIL_CENTER;
+      tube(B, [xc - 0.055, CAR.wheelR, bogieZ + dz], [xc + 0.055, CAR.wheelR, bogieZ + dz], CAR.wheelR, sides, COL.wheel, true);
+      if (lod === 0) tube(B, [s * 0.86, CAR.wheelR, bogieZ + dz], [s * 1.0, CAR.wheelR, bogieZ + dz], 0.11, 8, COL.under, true);   // axle box
+    }
+  }
+}
+
+/**
+ * Single-arm pantograph standing on the centre body's roof at z, raised to the contact
+ * wire: a base frame on four insulators with the drive's spring box, the lower arm rising
+ * forward from its hinge shaft to the knee joint (a push rod beside it), the upper arm (a
+ * narrow braced A-frame) back up to the head, a guide rod keeping the head level, and the
+ * head: a cross tube, the pan's spring boxes, two carbon strips on their holders and the
+ * horns curving down at the ends. Insulators and strips go to the body part, the frame to metal.
  */
 function pantograph(P, z, lod) {
   const M = P.metal, B = P.body, y0 = CAR.roof;
@@ -718,32 +790,49 @@ function pantograph(P, z, lod) {
       tube(B, [sx * 0.36, y0, z + dz], [sx * 0.36, y0 + 0.2, z + dz], 0.045, sides, COL.insulator, true);
       if (lod === 0) for (const h of [0.06, 0.13]) tube(B, [sx * 0.36, y0 + h, z + dz], [sx * 0.36, y0 + h + 0.02, z + dz], 0.075, sides, COL.insulator, true);
     }
-    tube(M, [sx * 0.36, y0 + 0.22, z - 0.68], [sx * 0.36, y0 + 0.22, z + 0.68], 0.035, sides, col, true);
+    tube(M, [sx * 0.36, y0 + 0.22, z - 0.68], [sx * 0.36, y0 + 0.22, z + 0.68], 0.04, sides, col, true);
   }
-  for (const dz of [-0.55, 0.55]) tube(M, [-0.4, y0 + 0.22, z + dz], [0.4, y0 + 0.22, z + dz], 0.03, sides, col, true);
+  for (const dz of [-0.55, 0.55]) tube(M, [-0.4, y0 + 0.22, z + dz], [0.4, y0 + 0.22, z + dz], 0.035, sides, col, true);
   // arms: lower arm from the base hinge, knee forward (−z), upper frame back up to the head
   const top = CONTACT_WIRE_HEIGHT - 0.012;
-  const H = [0, y0 + 0.3, z + 0.62], Ll = 1.75, Lu = 1.98;
-  const headY = top - 0.12;
+  const H = [0, y0 + 0.32, z + 0.62], Ll = 1.75, Lu = 1.98;
+  const headY = top - 0.16;
   // knee: solve for the head standing above the base centre
   const kz = z - 0.95, ky = H[1] + Math.sqrt(Math.max(0.01, Ll * Ll - (H[2] - kz) ** 2));
   const hz = kz + Math.sqrt(Math.max(0.01, Lu * Lu - (headY - ky) ** 2));
   const K = [0, ky, kz], Hd = [0, headY, hz];
-  tube(M, H, K, 0.05 * thick, sides, col, true, 0.035 * thick);                    // lower arm
-  tube(M, [0, H[1] - 0.12, H[2] + 0.14], [0, K[1] - 0.1, K[2] + 0.05], 0.014 * thick, sides, col, true); // push rod
-  for (const sx of [1, -1]) tube(M, K, [sx * 0.24, Hd[1], Hd[2]], 0.022 * thick, sides, col, true, 0.018 * thick); // upper frame
-  if (lod < 2) tube(M, [-0.06, H[1], H[2]], [0.06, H[1], H[2]], 0.09, sides, col, true);   // hinge / drive
-  // head: two carbon strips on a cross frame, horns at the ends
-  tube(M, [-0.3, Hd[1], Hd[2]], [0.3, Hd[1], Hd[2]], 0.02 * thick, sides, col, true);
+  const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  tube(M, [-0.34, H[1], H[2]], [0.34, H[1], H[2]], 0.04 * Math.min(thick, 1.4), sides, col, true);   // hinge shaft
+  tube(M, H, K, 0.065 * thick, sides, col, true, 0.042 * thick);                    // lower arm
+  tube(M, [0.09, H[1] - 0.1, H[2] + 0.16], [0.09, K[1] - 0.08, K[2] + 0.07], 0.018 * thick, sides, col, true); // push rod
+  if (lod < 2) {
+    tube(M, [-0.08, H[1], H[2]], [0.08, H[1], H[2]], 0.1, sides, col, true);      // hinge drum
+    tube(M, [0, H[1] - 0.04, H[2] - 0.05], [0, y0 + 0.27, z + 0.05], 0.075, sides, col, true);   // drive spring box
+    tube(M, [-0.09, K[1], K[2]], [0.09, K[1], K[2]], 0.05, sides, col, true);     // knee joint
+  }
+  // upper arm: a narrow A-frame from the knee to the head, braced across
+  const UA = [-1, 1].map((sx) => [[sx * 0.05, K[1], K[2]], [sx * 0.26, Hd[1], Hd[2]]]);
+  for (const [a, b] of UA) tube(M, a, b, 0.026 * thick, sides, col, true, 0.019 * thick);
+  if (lod < 2) {
+    for (const t of [0.42, 0.78]) tube(M, lerp(UA[0][0], UA[0][1], t), lerp(UA[1][0], UA[1][1], t), 0.014 * thick, sides, col, true);
+    tube(M, lerp(UA[0][0], UA[0][1], 0.42), lerp(UA[1][0], UA[1][1], 0.78), 0.011 * thick, sides, col, true);
+    // guide rod (keeps the head level): from a lever at the knee to under the head
+    tube(M, [0.12, K[1] - 0.06, K[2] + 0.1], [0.12, Hd[1] - 0.06, Hd[2] - 0.08], 0.011 * thick, sides, col, true);
+  }
+  // head: cross tube, the pan's spring boxes, two strips on holders, horns
+  tube(M, [-0.36, Hd[1], Hd[2]], [0.36, Hd[1], Hd[2]], 0.024 * thick, sides, col, true);
+  for (const sx of [1, -1]) {
+    box(M, sx * 0.3 - 0.035, sx * 0.3 + 0.035, Hd[1] - 0.02, top - 0.075, Hd[2] - 0.2, Hd[2] + 0.2, col);   // spring box
+  }
   for (const dz of [-0.16, 0.16]) {
-    tube(M, [0, Hd[1], Hd[2]], [0, Hd[1] + 0.06, Hd[2] + dz], 0.016 * thick, sides, col);
-    box(B, -0.55, 0.55, top - 0.045, top, Hd[2] + dz - 0.025, Hd[2] + dz + 0.025, COL.black);   // carbon strip
+    box(M, -0.62, 0.62, top - 0.075, top - 0.045, Hd[2] + dz - 0.03, Hd[2] + dz + 0.03, col);   // strip holder
+    box(B, -0.58, 0.58, top - 0.045, top, Hd[2] + dz - 0.025, Hd[2] + dz + 0.025, COL.black);   // carbon strip
     for (const sx of [1, -1]) {
-      const pts = [[sx * 0.55, top - 0.03], [sx * 0.72, top - 0.05], [sx * 0.84, top - 0.12], [sx * 0.88, top - 0.2]];
+      const pts = [[sx * 0.6, top - 0.05], [sx * 0.74, top - 0.07], [sx * 0.86, top - 0.13], [sx * 0.91, top - 0.22]];
       const n = lod === 0 ? 3 : 1;
       for (let k = 0; k < n; k++) {
         const a = pts[lod === 0 ? k : 0], b = pts[lod === 0 ? k + 1 : 3];
-        tube(M, [a[0], a[1], Hd[2] + dz], [b[0], b[1], Hd[2] + dz], 0.016 * thick, sides, col, true);
+        tube(M, [a[0], a[1], Hd[2] + dz], [b[0], b[1], Hd[2] + dz], 0.02 * thick, sides, col, true);
       }
     }
   }
@@ -885,7 +974,7 @@ function saloon(B, cab, z0, z1, lod) {
 /**
  * Geometry of every body type at every LOD:
  *   {cab: [{body, glassR, glassL, front, metal, inner, lampLead, lampTrail}, ...lods],
- *    mid: [{body, glassR, glassL, metal, inner, lampMid}, ...], hull: {cab, mid},
+ *    mid: [{body, glassR, glassL, metal, inner, lampMid}, ...], hull: {cab, mid}, contact: {cab, mid},
  *    spots: {cab, mid} (the passengers' seats and standing spots, body frame)}.
  */
 export function buildModels(atlas) {
@@ -908,8 +997,7 @@ export function buildModels(atlas) {
       fairing(P, 2.4, 5.2);
       fairing(P, 5.5, z1 - 0.45);
       if (lod < 2) saloon(P.inner, true, 0, z1, lod);
-      if (lod === 0) runningGear(P.body, CAR.capBase, z1, CAR.bogies[0]);
-      else if (lod === 1) runningGear(P.body, CAR.capBase, z1, null);
+      runningGear(P.body, CAR.capBase, z1, lod < 2 ? CAR.bogies[0] : null, lod, true);
       const lampLead = new Part(), lampTrail = new Part();
       capLamps(lampLead, cap, prof, true, atlas);
       capLamps(lampTrail, cap, prof, false, atlas);
@@ -931,31 +1019,51 @@ export function buildModels(atlas) {
       fairing(P, pz + 1.35, z1 - 0.25);
       pantograph(P, pz, lod);
       if (lod < 2) saloon(P.inner, false, z0, z1, lod);
-      if (lod === 0) runningGear(P.body, z0, z1, pz);
-      else if (lod === 1) runningGear(P.body, z0, z1, null);
+      runningGear(P.body, z0, z1, lod < 2 ? pz : null, lod);
       const lampMid = new Part();
       doorLamps(lampMid, doors, atlas, lod);
       out.mid.push({ ...P.geometries(), lampMid: lampMid.geometry() });
     }
   }
-  out.hull = { cab: hull(cabLen - gapH, true), mid: hull(midLen - gapH, false) };
+  // (the shells meet at the articulations, over the bellows)
+  out.hull = { cab: hull(0, cabLen, true), mid: hull(0, midLen, false) };
+  out.contact = { cab: contact(0, cabLen, true), mid: contact(0, midLen, false) };
   out.spots = { cab: saloonSpots(true, 0, cabLen - gapH - 0.02), mid: saloonSpots(false, gapH + 0.02, midLen - gapH - 0.02) };
   return out;
 }
 
-/** Coarse closed shell for the sun's depth pass. */
-function hull(z1, cab) {
+/**
+ * Coarse shell for the sun's depth pass (drawn with its back faces, as the depth pass draws
+ * a front-sided material): the far-level body section along the car, the front cap on a cab,
+ * flat ends reaching over the bellows to the articulation, and a floor at 0.3 m facing down.
+ * Every ray from the sun through the car leaves it through a face above the street, so the
+ * paving under the car and beside its shaded side lies in its shadow (an open bottom let the
+ * sun through onto the street under the car), while the shell's own sunlit side never shades
+ * the body. z0 / z1: the shell's ends (body frame).
+ */
+function hull(z0, z1, cab) {
   const P = new Part();
-  const half = [[1.15, 0.2], [1.32, 0.9], [1.22, 2.86], [0.88, 3.19], [0, 3.22]];
-  const prof = half.map(([x, y], i) => {
-    const q = half[Math.max(0, i - 1)], r = half[Math.min(half.length - 1, i + 1)];
-    const tx = r[0] - q[0], ty = r[1] - q[1], l = Math.hypot(tx, ty);
-    return { x, y, nx: ty / l, ny: -tx / l, a: y };
-  });
-  const z0 = cab ? 0.45 : CAR.gap / 2;
-  const fake = { body: P, glassR: P, glassL: P, metal: P };
-  sideWalls(fake, prof, [{ z0, z1, kind: 'wall' }]);
-  endWall(P, prof, z0, -1, COL.silver);
+  const prof = profile(2);
+  const fake = { body: P, glassR: P, glassL: P, front: P, metal: P, inner: P };
+  sideWalls(fake, prof, [{ z0: cab ? CAR.capBase : z0, z1, kind: 'wall' }]);
+  if (cab) capFront(fake, prof, 2);
+  else endWall(P, prof, z0, -1, COL.silver);
   endWall(P, prof, z1, 1, COL.silver);
+  floorPan(P, 0.3, z0, z1, COL.silver, cab, 0.02);
+  return P.geometry();
+}
+
+/**
+ * The contact shade under a body (drawn on the paving, multiplying it: trams/materials.js
+ * makeContactMaterial): a flat quad 12 mm over the rail top covering the body's footprint
+ * and a margin round its free sides, its ends cut square at the articulations so the
+ * neighbouring bodies' quads meet. uv = body-frame (x, z), the centre body's z from 100.
+ */
+function contact(z0, z1, cab) {
+  const P = new Part();
+  const y = 0.012, hw = CAR.halfWidth + 0.35, za = cab ? CAR.capBase - noseDepth(Y.bottom) - 0.35 : z0;
+  const off = cab ? 0 : 100, col = COL.white;
+  const v = [[-hw, za], [hw, za], [hw, z1], [-hw, z1]].map(([x, z]) => P.vert(x, y, z, 0, 1, 0, col, x, z + off));
+  P.quad(v[0], v[1], v[2], v[3]);
   return P.geometry();
 }

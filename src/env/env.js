@@ -45,19 +45,27 @@ const _smpH = {}, _smpE = {};   // route samples (reused per frame)
 // pale and milky (HSV saturation ~0.1-0.15) and brightens towards the vanishing point,
 // while the sky overhead stays blue; haze: street-level dust haze (extinction and
 // in-scatter scale for post's aerial perspective)
+// street dust haze for post's aerial perspective: extinction and in-scatter scales, and the
+// share of them kept by day (to t ~0.3; the evening veil is kept). On a clear day the dry air
+// leaves almost no veil within 500 m: the far facades keep their contrast, their window
+// openings and balcony shadows dark (~0.4e-3 per m)
+const HAZE_CLEAR = { ext: 1, inscatter: 1, dayExt: 0.38, dayIn: 0.42, near: 0 };
 const WEATHER = {
-  streaks: { cover: 0, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, mieLow: [2, 0.5], haze: { ext: 1, inscatter: 1 } },
-  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 32, mieLow: [2, 0.5], haze: { ext: 1, inscatter: 1 } },
+  streaks: { cover: 0, scale: 0.42, top: 650, cirrus: 0.95, altocu: 0.5, mie: 32, mieLow: [2, 0.5], haze: HAZE_CLEAR },
+  cumulus: { cover: 0.6, scale: 0.36, top: 750, cirrus: 0.3, altocu: 0, mie: 32, mieLow: [2, 0.5], haze: HAZE_CLEAR },
   // a pale dust haze: the sky milky and nearly white towards the horizon, far facades
   // losing most of their contrast
   // (bright, nearly non-absorbing dust, a touch warm; its extinction takes about a fifth
   // of the direct sun, and the forward scatter softens the shadow edges)
   // (mineral dust absorbs a little in the blue, so the haze sky is cream rather than pale
   // blue, and post keeps half of its daytime sky saturation boost)
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.4, inscatter: 1.2 }, skySat: 0.5 },
+  // (its street-level dust: the far end of the street milky, but the in-scatter fades in over
+  // the first 40 m, the canyon's shaded air, so the people and paving nearby keep their blacks)
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.0, inscatter: 0.8, dayExt: 1, dayIn: 1, near: 40 }, skySat: 0.5 },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
+const WALL_LUM = 0.2126 * WALL_ALB[0] + 0.7152 * WALL_ALB[1] + 0.0722 * WALL_ALB[2];
 // canyon bounce: the share of the interreflection the environment map's single capture
 // point misses (its canyon model already holds the sunlit facades and floor): the
 // sunlit walls seen from the floor (up), the sunlit floor seen from below (down), and the
@@ -65,8 +73,12 @@ const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street
 // shadow on the sunlit facade itself gets none of its own warm bounce, and glass shows no
 // highlight from it)
 // (open shade on the paving stays sky-blue: the warm wall bounce it gets is small)
-// lowSun: share of the facade bounce dropped once the sun is under ~12 degrees
-const BOUNCE = { up: 0.065, down: 0.12, cross: 0.22, lowSun: 0.3 };
+// lowSun: share of the facade bounce dropped once the sun is under ~12 degrees.
+// The cross bounce is half-way to neutral in colour (crossTint): a sunlit facade's light
+// reaches the one opposite mixed with the paving's and the sky's, so shaded limestone stays
+// a pale warm grey (HSV saturation ~0.2-0.3 in the photographs) rather than glowing ochre;
+// and the floor's bounce is small, so open shade sits ~4:1 under the sun
+const BOUNCE = { up: 0.065, down: 0.08, cross: 0.12, crossTint: 0.5, lowSun: 0.3 };
 // exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
@@ -103,7 +115,9 @@ const DUSK_CEIL = [[0.62, 1e4], [0.72, 1.8], [0.82, 1.8], [0.92, 4.2], [1.0, 4.2
 // low over the horizon towards the sunset, which the real street's bends and its termini
 // hide while the capture's straight canyon lets it in along the axis: the sky light in the
 // canyon falls faster than the open sky's, and the lamps carry the street floor
-const ENV_LEVEL = [[0.86, 1.25], [0.97, 0.8], [1.0, 0.75]];
+// Under the high sun a little less: the photographs' shade under the crowns and awnings is
+// dense (3.5-10:1 under the sun)
+const ENV_LEVEL = [[0.3, 1.12], [0.5, 1.2], [0.86, 1.25], [0.97, 0.8], [1.0, 0.75]];
 
 /** EXPO_LIFT at time of day t (EV, smooth piecewise-linear). */
 function expoLift(t) {
@@ -547,7 +561,7 @@ const env = {
         const Ew = Es[k] * cw * litWall * kLow, Ef = Es[k] * sy * floorLit;
         up[i] = BOUNCE.up * WALL_ALB[i] * Ew;
         dn[i] = BOUNCE.down * GROUND_ALB[i] * Ef;
-        cr[i] = BOUNCE.cross * WALL_ALB[i] * Ew;
+        cr[i] = BOUNCE.cross * (WALL_ALB[i] + (WALL_LUM - WALL_ALB[i]) * BOUNCE.crossTint) * Ew;
       }
       bu.color.setRGB(up[0], up[1], up[2]);
       bu.groundColor.setRGB(dn[0], dn[1], dn[2]);

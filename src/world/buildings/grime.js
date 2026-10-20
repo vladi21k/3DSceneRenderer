@@ -89,19 +89,21 @@ function drips(rng) {
     }
   };
   // broad rain-wash bands (soft, long)
-  for (let k = 0; k < 18; k++) {
-    streak(rng.range(0, SIZE), rng.range(0, SIZE), rng.range(3, 7) * pxV, rng.range(0.1, 0.32) * pxU, rng.range(0.12, 0.28), rng.range(1, 5), 0.6, 0);
+  // (faint: broad soft bands read as airbrushing)
+  for (let k = 0; k < 8; k++) {
+    streak(rng.range(0, SIZE), rng.range(0, SIZE), rng.range(3, 7) * pxV, rng.range(0.1, 0.3) * pxU, rng.range(0.05, 0.12), rng.range(1, 5), 0.6, 0);
   }
-  // drip trails, mostly in clusters (water leaves a ledge at a few points)
-  for (let c = 0; c < 26; c++) {
-    const cx = rng.range(0, SIZE), cy = rng.range(0, SIZE), n = rng.int(2, 8);
+  // drip trails, mostly in clusters (water leaves a ledge at a few points), sparse enough
+  // that clean stone shows between them
+  for (let c = 0; c < 14; c++) {
+    const cx = rng.range(0, SIZE), cy = rng.range(0, SIZE), n = rng.int(2, 6);
     for (let k = 0; k < n; k++) {
-      const w = rng.chance(0.7) ? rng.range(0.01, 0.025) : rng.range(0.03, 0.06);
-      streak(cx + rng.range(-0.25, 0.25) * pxU, cy - rng.range(0, 0.3) * pxV, rng.range(0.6, 3.5) * pxV, w * pxU, rng.range(0.45, 0.95), rng.range(0, 2), 0.9, 0.35);
+      const w = rng.chance(0.7) ? rng.range(0.008, 0.02) : rng.range(0.025, 0.045);
+      streak(cx + rng.range(-0.3, 0.3) * pxU, cy - rng.range(0, 0.4) * pxV, rng.range(0.4, 3.0) * pxV, w * pxU, rng.range(0.55, 1.0), rng.range(0, 2), 0.9, 0.35);
     }
   }
-  for (let k = 0; k < 60; k++) {
-    streak(rng.range(0, SIZE), rng.range(0, SIZE), rng.range(0.3, 2) * pxV, rng.range(0.008, 0.02) * pxU, rng.range(0.3, 0.7), rng.range(0, 1.5), 1, 0.4);
+  for (let k = 0; k < 26; k++) {
+    streak(rng.range(0, SIZE), rng.range(0, SIZE), rng.range(0.3, 2) * pxV, rng.range(0.006, 0.016) * pxU, rng.range(0.4, 0.8), rng.range(0, 1.5), 1, 0.4);
   }
   return out;
 }
@@ -182,11 +184,45 @@ varying float vBgRust;
 uniform sampler2D bgGrimeTex;
 uniform vec4 bgGrimeK;   // darkening, greying, roughness gain, base streak share
 uniform vec2 bgArrisK;   // dust on the block arrises: amount, share on the head joints
+uniform float bgDbg;     // inspection (URL bgdbg=1|2|3, see GRIME_DEBUG)
 float bgDirt = 0.0;
 float bgHash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
 float bgVN(vec2 p) {
   vec2 i = floor(p), t = fract(p); t = t * t * (3.0 - 2.0 * t);
   return mix(mix(bgHash(i), bgHash(i + vec2(1.0, 0.0)), t.x), mix(bgHash(i + vec2(0.0, 1.0)), bgHash(i + vec2(1.0, 1.0)), t.x), t.y);
+}
+// Drip trails off the ends of a ledge (a sill, a balcony slab): water leaves it at its
+// ends, one to three thin sharp trails per end, each with its own offset from the end,
+// width, length (up to lenMax), strength and wander, some ends clean; they widen and fade
+// as they run down, broken in places. ua, ub: in from the left / right end (m); d: below
+// the ledge (m); px: along the wall (facade metres); sg: whether px runs with the ledge's
+// u (see the stone code); fx: metres per pixel along the wall; skip: bit 1 the left end,
+// bit 2 the right end has none (a console takes it). The trails' draws are value noise
+// of the end's position at a high rate, which a millimetre of interpolation error cannot
+// flip.
+float bgTrails(float ua, float ub, float d, float px, float sg, float fx, float seed, float lenMax, float skip) {
+  float tr = 0.0;
+  for (int e = 0; e < 2; e++) {
+    float ue = e == 0 ? ua : ub;
+    if (ue > 0.36 || (e == 0 ? mod(skip, 2.0) > 0.5 : skip > 1.5)) continue;
+    float ep = (px - sg * (e == 0 ? ua : -ub)) * 4.3;
+    for (int k = 0; k < 3; k++) {
+      float h0 = bgVN(vec2(ep + float(k) * 17.0, float(e) * 5.0 + 3.7 + seed * 11.0));
+      if (h0 > (k == 0 ? 0.78 : 0.5)) continue;
+      float h1 = bgVN(vec2(ep * 1.7 + float(k) * 7.0, 9.1)), h2 = bgVN(vec2(ep * 1.3 + 3.3, float(k) * 4.1 + 1.9));
+      float of = -0.02 + 0.22 * h1 * h1;                       // trail centre, in from the end
+      float len = (0.3 + 1.7 * h2 * h2) * lenMax * 0.5;
+      if (d > len) continue;
+      float wd = (0.01 + 0.022 * fract(h1 * 37.1)) * (1.0 + 0.8 * d / len);
+      float x = ue - of - 0.04 * (bgVN(vec2(ep * 0.37 + float(k) * 5.1, d * 1.6)) - 0.5) * min(1.0, d * 2.0);
+      // (a sharp core in a faint halo: the water spreads a little of its dirt sideways)
+      float ac = max(1.0 - smoothstep(0.3 * wd, wd + fx, abs(x)), 0.22 * (1.0 - smoothstep(wd, 4.0 * wd + fx, abs(x))));
+      float al = smoothstep(0.0, 0.03, d) * pow(1.0 - d / len, 1.1);
+      float br = 0.6 + 0.4 * smoothstep(0.3, 0.6, bgVN(vec2(ep * 0.71 + float(k) * 3.3, d * 3.1)));
+      tr = max(tr, ac * al * br * (0.6 + 0.4 * fract(h2 * 53.7)));
+    }
+  }
+  return tr;
 }
 `;
 
@@ -205,6 +241,31 @@ const FRAG_STONE = /* glsl */ `
   // this hue
   const vec3 BG_SOIL = vec3(1.07, 0.98, 0.84);
   float bgTrail = 0.0;                                // sharp drip trails (sills, consoles)
+  float bgCrack = 0.0;                                // hairline cracks in the render
+#ifdef BG_RENDER
+  // colour-washed render: the wash fades unevenly (lighter and greyer in broad patches,
+  // where sun and rain have worn it), and patched repairs 1-4 m across stand out in a
+  // slightly different tone with crisp edges (a cell grid in facade metres, one patch in
+  // about one cell in five)
+  {
+    float bgFd = smoothstep(0.3, 0.8, bgVN(bgP * vec2(0.11, 0.08) + bgDirtB * 3.1)) * (0.7 + 0.3 * bgVN(bgP * vec2(0.5, 0.35) + 7.7));
+    float bgLr = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLr) * 1.05, 0.32 * bgFd) * (1.0 + 0.08 * bgFd);
+    vec2 bgCs = vec2(3.1, 2.3), bgCi = floor(bgP / bgCs + vec2(bgDirtB * 5.0, 0.0));
+    float bgPh = bgHash(bgCi + 17.3);
+    if (bgPh < 0.26) {
+      vec2 bgCo = (bgP / bgCs + vec2(bgDirtB * 5.0, 0.0)) - bgCi;   // 0..1 in the cell
+      float bgA0 = bgHash(bgCi + 3.1), bgA1 = bgHash(bgCi + 5.7), bgA2 = bgHash(bgCi + 8.9), bgA3 = bgHash(bgCi + 11.3);
+      vec2 bgLo = vec2(0.05 + 0.4 * bgA0, 0.05 + 0.4 * bgA1), bgHi = bgLo + vec2(0.3 + 0.5 * bgA2, 0.3 + 0.5 * bgA3);
+      vec2 bgE2 = (fwidth(bgP) / bgCs) + 0.004;
+      vec2 bgIn2 = smoothstep(bgLo - bgE2, bgLo + bgE2, bgCo) * (1.0 - smoothstep(min(bgHi, vec2(0.97)) - bgE2, min(bgHi, vec2(0.97)) + bgE2, bgCo));
+      float bgPk = bgIn2.x * bgIn2.y;
+      float bgTn = bgHash(bgCi + 23.9) < 0.5 ? 0.86 + 0.06 * bgA0 : 1.04 + 0.05 * bgA1;
+      float bgLp = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+      diffuseColor.rgb = mix(diffuseColor.rgb, mix(diffuseColor.rgb, vec3(bgLp), 0.45) * bgTn, bgPk);
+    }
+  }
+#endif
   // large soft patches (stone batches, cleaning, sun bleaching), which also set how
   // dirty the stone is locally
   vec2 bgQ = bgP + bgDirtB * vec2(37.1, 11.3);
@@ -248,18 +309,24 @@ const FRAG_STONE = /* glsl */ `
       float bgRun = bgE * bgS * exp(-bgD / 3.2) * (1.0 - smoothstep(2.8, 3.8, bgD));
       bgSoot = bgSpread * bgPatch * min(1.4, bgDirtB * bgDk) * smoothstep(0.0, 0.2, bgD)
         * (0.3 * exp(-bgD / 0.6) + 0.7 * bgCol * exp(-bgD / bgLen));
-      bgRunM = bgDirtB * 0.95 * bgRun;
+      // water off the slab's ends: drip trails (the console ends have their own streaks),
+      // far away their soft mean
+      float bgNearS = 1.0 - smoothstep(0.015, 0.06, bgFx);
+      float bgCLs = step(1.5, bgCf), bgCRs = step(0.5, bgCf - 2.0 * bgCLs);
+      float bgTrS = bgNearS > 0.0 && bgD < 2.6 ? bgTrails(bgUa, bgUb, bgD, bgP.x, bgSg, bgFx, bgDirtB + 0.37, 2.6, bgCLs + 2.0 * bgCRs) : 0.0;
+      bgTrail = max(bgTrail, min(1.0, 0.3 + 0.5 * bgS) * bgTrS * bgNearS * min(1.3, bgDirtB));
+      bgRunM = bgDirtB * (0.3 + 0.65 * (1.0 - bgNearS)) * bgRun;
       // streaks hanging from the consoles: water runs down the console and off its foot,
       // a dark trail below it that meanders a little, widens as it runs down and fades
-      // over 1-3 m, some consoles far dirtier than others, a third of them clean (the
+      // over 0.5-3 m, some consoles far dirtier than others, about half of them clean (the
       // consoles split the slab into pieces, see shade.js)
       float bgCL = step(1.5, bgCf), bgCR = step(0.5, bgCf - 2.0 * bgCL);
       bool bgOnL = bgCL > 0.5 && (bgCR < 0.5 || bgUa < bgUb);
       float bgOff = bgOnL ? bgUa : (bgCR > 0.5 ? -bgUb : 9.0);   // across from the console (m)
       if (abs(bgOff) < 0.35) {
         float bgCu = bgP.x - bgSg * bgOff;                         // the console along the wall (the same from both pieces)
-        float bgCk = smoothstep(0.3, 0.8, bgVN(vec2(bgCu * 2.3 + bgDirtB * 7.0, 4.1)));
-        float bgCLen = 1.0 + 2.2 * bgVN(vec2(bgCu * 3.1, 8.7));
+        float bgCk = smoothstep(0.42, 0.85, bgVN(vec2(bgCu * 2.3 + bgDirtB * 7.0, 4.1)));
+        float bgCLen = 0.5 + 2.3 * bgVN(vec2(bgCu * 3.1, 8.7));
         float bgCx = bgOff - 0.05 * (bgVN(vec2(bgCu * 5.0, bgD * 1.3)) - 0.5) * min(1.0, bgD);
         float bgCw = 0.045 + 0.05 * min(1.0, bgD / 1.5) + 0.03 * (bgVN(vec2(bgCu * 4.0 + 1.7, bgD * 2.5)) - 0.5);
         bgCst = (1.0 - smoothstep(bgCw * 0.35, bgCw * 1.3, abs(bgCx))) * bgCk * smoothstep(0.3, 0.6, bgD)
@@ -280,42 +347,37 @@ const FRAG_STONE = /* glsl */ `
         bgRunK *= mix(vec3(1.0), vec3(0.6, 0.38, 0.24), 0.5 * vBgRust * min(1.0, bgRs + 0.5 * bgCst));
       }
     } else {
-      // window sill: a short soft shadow of dirt right under it, and water leaving it at its
-      // ends: one to three thin sharp trails per end (each with its own offset from the end,
-      // 1-3 cm width, 0.3-2 m length, strength and wander; some ends clean), which widen
-      // and fade as they run down, broken in places. Far away (trails under a few pixels)
-      // only their soft mean is left.
+      // window sill: a short soft shadow of dirt right under it, and drip trails off its
+      // ends (bgTrails); far away (trails under a few pixels) only their soft mean is left
       float bgIn = clamp(min(bgUa, bgUb) / 0.2, 0.0, 1.0);
       float bgUnder = 0.16 * bgIn * bgPatch * smoothstep(0.0, 0.08, bgD) * exp(-bgD / 0.32);
-      float bgNearT = 1.0 - smoothstep(0.012, 0.05, bgFx);
-      float bgTr = 0.0;
-      if (bgNearT > 0.0 && bgD < 2.2 && min(bgUa, bgUb) < 0.32) {
+      float bgNearT = 1.0 - smoothstep(0.015, 0.06, bgFx);
+      float bgTr = bgNearT > 0.0 && bgD < 2.0 ? bgTrails(bgUa, bgUb, bgD, bgP.x, bgSg, bgFx, bgDirtB, 2.0, 0.0) : 0.0;
+      float bgRun = bgE * bgS * exp(-bgD / 1.6) * (1.0 - smoothstep(1.8, 2.6, bgD));
+      bgRunM = bgDirtB * (bgUnder + 0.25 * bgRun * (1.0 - bgNearT));
+      bgTrail = max(bgTrail, min(1.0, 0.4 + 0.6 * bgS) * bgTr * bgNearT * min(1.3, bgDirtB));
+#ifdef BG_RENDER
+      // render soaks up the dirty water: a broad grey-brown stain under the sill as well,
+      // patchy and fading over a metre or two, which still shows from far away
+      bgRunM += bgDirtB * 0.55 * bgS * bgPatch * smoothstep(0.0, 0.1, bgD) * exp(-bgD / 1.1) * (0.35 + 0.65 * max(bgE, bgIn * 0.5));
+      // render cracks: a hairline from the sill's corner on some windows, running down and
+      // outwards at 55-80 degrees with a little wander (gone once it is far below a pixel)
+      if (bgFx < 0.02 && bgD < 1.4) {
         for (int e = 0; e < 2; e++) {
-          float bgUe = e == 0 ? bgUa : bgUb;                     // in from this end (m)
-          if (bgUe > 0.32) continue;
-          // this end along the wall (the same for every pixel under the sill); its trails'
-          // draws are value noise of it at a high rate, which a millimetre of interpolation
-          // error cannot flip
-          float bgEp = (bgP.x - bgSg * (e == 0 ? bgUa : -bgUb)) * 4.3;
-          for (int k = 0; k < 3; k++) {
-            float bgH0 = bgVN(vec2(bgEp + float(k) * 17.0, float(e) * 5.0 + 3.7 + bgDirtB * 11.0));
-            if (bgH0 > (k == 0 ? 0.72 : 0.5)) continue;             // a share of ends and trails clean
-            float bgH1 = bgVN(vec2(bgEp * 1.7 + float(k) * 7.0, 9.1)), bgH2 = bgVN(vec2(bgEp * 1.3 + 3.3, float(k) * 4.1 + 1.9));
-            float bgOf = -0.02 + 0.2 * bgH1 * bgH1;                  // trail centre, in from the end
-            float bgLen = 0.3 + 1.7 * bgH2 * bgH2;
-            if (bgD > bgLen) continue;
-            float bgWd = (0.006 + 0.012 * fract(bgH1 * 37.1)) * (1.0 + 0.9 * bgD / bgLen);
-            float bgX = bgUe - bgOf - 0.035 * (bgVN(vec2(bgEp * 0.37 + float(k) * 5.1, bgD * 1.6)) - 0.5) * min(1.0, bgD * 2.0);
-            float bgAc = 1.0 - smoothstep(0.35 * bgWd, bgWd + bgFx, abs(bgX));
-            float bgAl = smoothstep(0.0, 0.03, bgD) * pow(1.0 - bgD / bgLen, 1.2);
-            float bgBr = 0.55 + 0.45 * smoothstep(0.3, 0.6, bgVN(vec2(bgEp * 0.71 + float(k) * 3.3, bgD * 3.1)));
-            bgTr = max(bgTr, bgAc * bgAl * bgBr * (0.55 + 0.45 * fract(bgH2 * 53.7)));
-          }
+          float bgUe = e == 0 ? bgUa : bgUb;
+          float bgEc = (bgP.x - bgSg * (e == 0 ? bgUa : -bgUb)) * 3.1;
+          float bgQ0 = bgVN(vec2(bgEc, float(e) * 3.0 + 21.7)), bgQ1 = bgVN(vec2(bgEc * 1.9 + 4.0, 7.3));
+          if (bgQ0 > 0.46) continue;
+          float bgCl = 0.3 + 1.0 * bgQ1;
+          if (bgD > bgCl) continue;
+          float bgTa = 0.18 + 0.5 * fract(bgQ1 * 17.3);                       // run outwards per metre down
+          float bgXc = -bgD * bgTa + 0.03 * (bgVN(vec2(bgEc + bgD * 9.0, 2.2)) - 0.5) + 0.012 * (bgVN(vec2(bgEc - bgD * 31.0, 5.9)) - 0.5);
+          float bgCw = 0.0012 + 0.5 * bgFx;
+          float bgCk = (1.0 - smoothstep(bgCw, bgCw * 2.5, abs(bgUe - bgXc))) * (1.0 - smoothstep(bgCl * 0.6, bgCl, bgD)) * smoothstep(0.0, 0.02, bgD);
+          bgCrack = max(bgCrack, bgCk * (1.0 - smoothstep(0.006, 0.02, bgFx)) * min(1.0, 0.0012 / bgCw + 0.35));
         }
       }
-      float bgRun = bgE * bgS * exp(-bgD / 1.6) * (1.0 - smoothstep(1.8, 2.6, bgD));
-      bgRunM = bgDirtB * (bgUnder + 0.2 * bgRun * (1.0 - bgNearT));
-      bgTrail = max(bgTrail, min(1.0, bgS) * bgTr * bgNearT * min(1.3, bgDirtB));
+#endif
       bgWash = 0.03 * bgRun;
     }
     float bgL0 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
@@ -323,33 +385,36 @@ const FRAG_STONE = /* glsl */ `
   }
 
   // the foot of the wall (vBgHg: height above the paving in front, per vertex): rising
-  // damp up to an irregular tide line 0.3-1.4 m up (higher on dirtier buildings), darker
-  // and a little greener and greyer below it, with a patchy pale salt bloom just above
-  // it; splash dirt in the first 40 cm; and dirt packed into the joints near the ground
+  // damp up to an irregular tide line 0.35-1.2 m up (higher on dirtier buildings), darker
+  // and greyer below it (a little green only in the bottom 15 cm, where the paving keeps
+  // it wet), with a patchy pale salt bloom just above it; splash dirt in the first 40 cm;
+  // and dirt packed into the joints near the ground
   float bgHg = vBgHg;
   if (bgHg < 2.0) {
-    float bgDampK = clamp(bgDirtB * 0.9 - 0.25, 0.1, 1.0);
-    float bgTide = 0.3 + 1.05 * bgDampK * (0.4 + 0.6 * bgVN(vec2(bgP.x * 0.45 + bgDirtB * 13.0, 2.7)))
-      + 0.12 * (bgVN(vec2(bgP.x * 2.9, 5.3)) - 0.5);
+    float bgDampK = clamp(bgDirtB * 0.9 - 0.2, 0.2, 1.0);
+    float bgTide = 0.35 + 0.85 * bgDampK * (0.4 + 0.6 * bgVN(vec2(bgP.x * 0.45 + bgDirtB * 13.0, 2.7)))
+      + 0.1 * (bgVN(vec2(bgP.x * 2.9, 5.3)) - 0.5);
     float bgFw = fwidth(bgHg);
     float bgWet = 1.0 - smoothstep(bgTide - 0.06 - bgFw, bgTide + 0.02 + bgFw, bgHg);
     float bgWetN = 0.7 + 0.6 * bgVN(bgP * vec2(1.6, 2.2) + 3.3);
     float bgL1 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-    diffuseColor.rgb = mix(diffuseColor.rgb, bgL1 * vec3(0.92, 0.97, 0.9), 0.35 * bgWet) * (1.0 - 0.26 * bgWet * bgWetN * bgDampK);
+    diffuseColor.rgb = mix(diffuseColor.rgb, bgL1 * vec3(1.0, 0.97, 0.92), 0.4 * bgWet) * (1.0 - 0.3 * bgWet * bgWetN * bgDampK);
+    float bgGr = (1.0 - smoothstep(0.03, 0.16 + bgFw, bgHg)) * bgDampK * (0.5 + 0.5 * bgWetN);
+    diffuseColor.rgb = mix(diffuseColor.rgb, bgL1 * vec3(0.86, 0.95, 0.84) * 0.85, 0.35 * bgGr);
     float bgSalt = smoothstep(bgTide - 0.03 - bgFw, bgTide + 0.02, bgHg) * (1.0 - smoothstep(bgTide + 0.03, bgTide + 0.15 + bgFw, bgHg))
       * smoothstep(0.3, 0.7, bgVN(vec2(bgP.x * 3.3, bgHg * 7.0)));
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgL1 * 1.1 + 0.025), 0.3 * bgSalt * bgDampK);
-    float bgSp = (1.0 - smoothstep(0.04, 0.42, bgHg)) * smoothstep(0.45, 0.8, texture(bgGrimeTex, bgP * vec2(1.13, 1.71) + 0.5).b);
-    diffuseColor.rgb *= 1.0 - 0.24 * bgSp;
+    float bgSp = (1.0 - smoothstep(0.04, 0.45, bgHg)) * smoothstep(0.4, 0.8, texture(bgGrimeTex, bgP * vec2(1.13, 1.71) + 0.5).b);
+    diffuseColor.rgb *= 1.0 - 0.3 * bgSp;
     // the splash and pedestrian band: rain splash off the paving, scuffing shoes, bags,
     // bicycles and dogs soil the bottom half metre or so evenly, darker and greyer, up to
     // an irregular line (higher and heavier on older, dirtier fronts: bgDirtB is the age)
     float bgAge = clamp(bgDirtB, 0.4, 1.6);
-    float bgBt = 0.4 + 0.2 * bgAge + 0.16 * (bgVN(vec2(bgP.x * 0.7 + bgDirtB * 5.3, 1.9)) - 0.5) + 0.05 * (bgVN(vec2(bgP.x * 5.5, 3.1)) - 0.5);
-    float bgBand = (1.0 - smoothstep(bgBt - 0.14 - bgFw, bgBt + 0.03 + bgFw, bgHg)) * (0.8 + 0.2 * (1.0 - smoothstep(0.0, 0.2, bgHg)));
-    bgBand *= min(1.0, (0.5 + 0.4 * bgAge) * (0.8 + 0.4 * bgVN(bgP * vec2(2.3, 3.1) + 9.1)));
+    float bgBt = 0.55 + 0.3 * bgAge + 0.16 * (bgVN(vec2(bgP.x * 0.7 + bgDirtB * 5.3, 1.9)) - 0.5) + 0.05 * (bgVN(vec2(bgP.x * 5.5, 3.1)) - 0.5);
+    float bgBand = (1.0 - smoothstep(bgBt - 0.25 - bgFw, bgBt + 0.03 + bgFw, bgHg)) * (0.75 + 0.25 * (1.0 - smoothstep(0.0, 0.3, bgHg)));
+    bgBand *= min(1.0, (0.6 + 0.4 * bgAge) * (0.8 + 0.4 * bgVN(bgP * vec2(2.3, 3.1) + 9.1)));
     float bgL3 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-    diffuseColor.rgb = mix(diffuseColor.rgb, bgL3 * vec3(0.96, 0.96, 0.95), 0.5 * bgBand) * (1.0 - 0.2 * bgBand);
+    diffuseColor.rgb = mix(diffuseColor.rgb, bgL3 * vec3(1.02, 0.98, 0.92), 0.55 * bgBand) * (1.0 - 0.28 * bgBand);
 #ifdef BG_JOINTS
     if (sfLay.y > 0.5) {
       vec2 bgJd = min(sfCl, sfCs - sfCl);
@@ -395,21 +460,35 @@ const FRAG_STONE = /* glsl */ `
   float bgDrip = max(bgA.r, bgB.r * 0.85);
   float bgBlot = bgA.g * 0.6 + bgB.g * 0.4;
   float bgM = clamp((vBgGrime + bgRunM) * bgDk, 0.0, 1.0);
-  bgDirt = bgM * (bgGrimeK.w + (1.0 - bgGrimeK.w) * bgDrip) * (0.55 + 0.9 * bgBlot);
+  // an even crust only where the stone is well sheltered (right under the cornice and the
+  // soffits); elsewhere the dirt shows as trails and patches, never as an even airbrushed
+  // film over open walling
+  float bgFilm = mix(bgGrimeK.w * 0.4, 1.0, smoothstep(0.45, 0.9, bgM));
+  bgDirt = bgM * (bgFilm + (1.0 - bgFilm) * bgDrip) * (0.55 + 0.9 * bgBlot);
   bgDirt += smoothstep(0.5, 1.0, bgM) * (bgA.b * 0.6 + 0.2) * 0.6;
   bgDirt = clamp(bgDirt, 0.0, 1.0);
   // soot under a balcony slab: greyer and darker (at most a quarter) than the stone
   bgSoot = clamp(bgSoot * (0.75 + 0.5 * bgBlot), 0.0, 1.0);
   float bgLum = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum) * vec3(0.97, 0.98, 1.0), min(1.0, bgDirt * bgGrimeK.y + bgSoot * 0.35));
+  diffuseColor.rgb = mix(diffuseColor.rgb, bgLum * BG_SOIL, min(1.0, bgDirt * bgGrimeK.y + bgSoot * 0.35));
   diffuseColor.rgb *= (1.0 - bgDirt * bgGrimeK.x) * (1.0 - 0.25 * bgSoot);
-  // console streaks: brown-grey dirt, broken up by the drip trails
-  float bgCt = bgCst * (0.5 + 0.5 * bgDrip);
+  // console streaks and the trails off the sill ends: sharp brown-grey dirt
+  float bgCt = max(bgCst * (0.5 + 0.5 * bgDrip), bgTrail);
   float bgLc = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
-  diffuseColor.rgb = mix(diffuseColor.rgb, bgLc * vec3(0.96, 0.92, 0.85), 0.4 * bgCt) * (1.0 - 0.4 * bgCt);
+  diffuseColor.rgb = mix(diffuseColor.rgb, bgLc * BG_SOIL * 0.9, 0.55 * bgCt) * (1.0 - 0.5 * bgCt);
+  diffuseColor.rgb *= 1.0 - 0.45 * bgCrack;
   bgDirt = max(max(bgDirt, bgSoot), bgCt);
+  if (bgDbg > 0.5) {
+    // 1: height above the paving (red ramp to 2 m, green below 0.6 m); 2: trails (red),
+    // grime mask (green), soot (blue); 3: the run-off zone (red sill, green slab, blue none)
+    diffuseColor.rgb = bgDbg < 1.5 ? vec3(clamp(vBgHg / 2.0, 0.0, 1.0), vBgHg < 0.6 ? 0.8 : 0.0, 0.1)
+      : bgDbg < 2.5 ? vec3(bgCt, bgM, bgSoot)
+      : vec3(vBgRun.w < -0.5 ? 0.8 : 0.0, vBgRun.w > 0.5 ? 0.8 : 0.0, abs(vBgRun.w) < 0.5 ? 0.8 : 0.0);
+  }
 }
 `;
+/** Inspection mode of the weathered materials (URL bgdbg, set by buildings.init). */
+export const GRIME_DEBUG = { value: 0 };
 const FRAG_ROUGH = /* glsl */ `
 roughnessFactor = min(1.0, roughnessFactor * (1.0 + bgGrimeK.z * bgDirt));
 `;
@@ -433,6 +512,13 @@ uniform float bgLevel;
 const FRAG_GLASS_COLOR = /* glsl */ `
 diffuseColor.rgb *= ${GLASS_K.toFixed(4)} * vec3(0.96, 1.0, 0.99) / max(diffuse, vec3(1e-3));
 `;
+// The environment map holds the street canyon seen from the camera (sky, facades,
+// paving); the pane mirrors it in the reflected direction. Below the opposite skyline as
+// seen from the pane's own height (the lower floors) that is the stone across the street,
+// a little warmer and dimmer than the capture's average there; above it the sky. Fresnel
+// (Schlick, F0 0.04) as three applies it, with a floor of 0.06 at normal incidence (a pane
+// reflects its dusty film and the frame's surround too), so a window facing the shade
+// still shows the bright facade across the street instead of a black hole.
 const FRAG_GLASS_REFL = /* glsl */ `
 #if defined( RE_IndirectSpecular )
 {
@@ -441,7 +527,9 @@ const FRAG_GLASS_REFL = /* glsl */ `
   // elevation of the opposite skyline seen from this height (about 17 m tall, 24 m away)
   float bgE0 = clamp((17.0 - vBgH) / 24.0, -0.35, 0.6);
   float bgSky = smoothstep(bgE0 - 0.16, bgE0 + 0.16, bgRw.y);
-  radiance *= mix(vec3(0.52, 0.46, 0.37), vec3(1.0), bgSky) * (1.0 - bgOpen);
+  float bgNv = clamp(dot(geometryNormal, geometryViewDir), 0.0, 1.0);
+  float bgF = 0.04 + 0.96 * pow(1.0 - bgNv, 5.0);
+  radiance *= mix(vec3(0.86, 0.8, 0.7), vec3(1.0), bgSky) * max(1.0, 0.06 / bgF) * (1.0 - bgOpen);
 }
 #endif
 `;
@@ -490,13 +578,22 @@ function chain(m, key, patch) {
  * Weathered stone variant of a library material (vertex colours on). k: darkening,
  * greying, roughness gain, share of the mask that shows without a trail.
  */
-export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0]) {
+export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0], opts = {}) {
   const base = app.materials.get(name, { vertexColors: true });
   const m = base.clone();
   m.name = `buildings:${name}`;
-  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(...arris) } };
-  chain(m, 'bgS7', (shader) => {
+  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(...arris) }, bgDbg: GRIME_DEBUG };
+  // the library's own run-off streaks (a field of them on every wall) are thinned out on
+  // these variants: the buildings' run-off hangs from the sills, consoles and cornices
+  const streakK = opts.streak ?? 1;
+  let weather = null;
+  chain(m, 'bgS8', (shader) => {
     Object.assign(shader.uniforms, uni);
+    const w = shader.uniforms.sfWeather;
+    if (streakK !== 1 && w && w.value && w.value.isVector4) {
+      weather = weather || { value: new THREE.Vector4(w.value.x, w.value.y * streakK, w.value.z * (0.5 + 0.5 * streakK), w.value.w) };
+      shader.uniforms.sfWeather = weather;
+    }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)
       .replace('#include <color_vertex>', '#include <color_vertex>\n' + COLOR_DECODE + 'vBgGrime = bgA;\n')
@@ -506,7 +603,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0])
     const joints = /vec2 sfCl\b/.test(shader.fragmentShader) && /vec2 sfCs\b/.test(shader.fragmentShader) && /uniform vec4 sfJoint;/.test(shader.fragmentShader);
     const arrises = joints && /uint sfCh\b/.test(shader.fragmentShader) && /uniform vec4 sfLay;/.test(shader.fragmentShader);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + FRAG_PARS)
+      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + (opts.render ? '#define BG_RENDER\n' : '') + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_STONE)
       .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>')
       .replace('#include <dithering_fragment>', FRAG_NONNEG);
@@ -538,7 +635,7 @@ const FRAG_PAINT = /* glsl */ `
  */
 export function grimePaint(m, k = [0.45, 0.55, 0.12, 0.3]) {
   m.vertexColors = true;
-  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(0, 0) } };
+  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(0, 0) }, bgDbg: GRIME_DEBUG };
   chain(m, 'bgP1', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader

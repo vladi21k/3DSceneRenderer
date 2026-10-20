@@ -9,8 +9,9 @@ import { goodsAtlas, GOODS_PAD } from './goods.js';
 // glass, fGlassRT: ~8% face-on, ~15% at 60°, ~27% at 70° of incidence; near-mirror
 // roughness with a faint smudge film) whose reflection is traced against a stand-in of the
 // street (fStreet: the opposite facade row with its storeys, shop band, awnings, roofline
-// and sun / shade line, the paving with its track corridor and cast shadows, trees, poles
-// and people), falling back to the sky / environment map above the rooflines, and whose
+// and sun / shade line, the paving with its track corridor and cast shadows, trees and
+// poles), falling back to the sky above the rooflines (looked up along the street, where
+// the environment capture sees it open), and whose
 // transmitted light is a fake room traced per pixel: a box ~4 m deep (homes) or ~7 m
 // (shops) with painted walls, tiled or boarded floors, plaster, grid or dark ceilings,
 // furniture in wood, lacquer, stone or cloth finishes (eased edges, contact shadows),
@@ -1374,9 +1375,16 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
 
   // ---- drapes just behind the glass (translucent: lit from the street side by day, glowing
   // warm from the room's lamp at night)
+  // By day the room behind a home's window is 5-7 stops under the sunlit stone, so what
+  // the street sees of an upper window is its reflection and whatever hangs right behind
+  // the glass: net curtains, curtains, blinds. That layer takes the daylight through the
+  // pane (about the glass's own irradiance: from 5-15 cm behind it the opening fills most
+  // of its hemisphere) and, on a sunny front, the sun through the opening, cut by the
+  // reveal's shadow (the point projected back onto the wall face along the sun).
   float dtype = floor( win.z ), damt = fract( win.z );
   if ( dtype > 0.5 && rd.z > 1e-3 && !shop ) {
-    float zc = 0.12;
+    // nets hang on a wire close to the glass, curtains and blinds a little further in
+    float zc = dtype > 1.5 && dtype < 2.5 ? 0.07 : dtype > 3.5 ? 0.1 : 0.14;
     float tc = ( zc - ro.z ) / rd.z;
     if ( tc > 0.0 && tc < h.t ) {
       vec2 c = ro.xy + rd.xy * tc;
@@ -1385,29 +1393,51 @@ vec3 fRoom( vec3 ro, vec3 rd, vec3 S, vec4 win, vec4 fac, float halfWin, vec3 Ed
       vec3 dc = DRAPES[ int( fh1( seed * 4.1 ) * 5.99 ) ];
       vec3 pc = vec3( c, zc );
       vec3 back = lit > 0.0 ? lampC * lit * Ih * ( fLamp( pc, vec3( 0.0, 0.0, 1.0 ), lp, lk ) + 0.035 ) : vec3( 0.0 );
-      vec3 front = Eday * 0.45;
+      vec3 front = Eday * 0.8;
+      if ( sunR.z < -0.05 ) {
+        float tw = ( zc + fract( fac.y ) ) / -sunR.z;
+        vec2 q = c + sunR.xy * tw;
+        float pen = 0.01 + 0.012 * tw;
+        float sIn = fEdge( halfWin - abs( q.x - S.x * 0.5 ), pen ) * fEdge( q.y - fac.z, pen ) * fEdge( fac.w - q.y, pen );
+        front += sunC * -sunR.z * 0.8 * sIn;
+      }
+      // soft vertical folds of hung cloth: two incommensurate waves and a slow drift in
+      // their depth (faded to their mean once under the pixel)
+      float fw = sin( c.x * 31.0 + seed * 20.0 ) * ( 0.6 + 0.4 * sin( c.x * 7.3 + seed * 9.0 ) ) + 0.45 * sin( c.x * 13.0 + seed * 3.0 );
+      fw *= fKeep( fpc, 0.12 );
       if ( dtype < 1.5 ) {
-        // curtains drawn to the sides
+        // curtains drawn to the sides (dyed cloth: ~0.7 of the colour's albedo)
         float cover = halfWin * ( 1.0 - damt );
-        if ( abs( xr ) > cover ) {
-          float fold = 0.72 + 0.28 * sin( c.x * 38.0 + seed * 20.0 ) * sin( c.x * 11.0 ) * fKeep( fpc, 0.17 );
-          col = dc * fold * ( front + back * 0.35 ) * RECIPROCAL_PI;
-        }
+        float k = fEdge( abs( xr ) - cover, fpc );
+        float fold = 0.78 + 0.2 * fw;
+        col = mix( col, dc * 0.7 * fold * ( front + back * 0.35 ) * RECIPROCAL_PI, k );
       } else if ( dtype < 2.5 ) {
-        // sheers: the room shows through, softened
-        float fold = 0.8 + 0.2 * sin( c.x * 45.0 + seed * 10.0 ) * fKeep( fpc, 0.14 );
-        vec3 sheer = vec3( 0.84, 0.83, 0.78 ) * fold * ( front * 0.7 + back * 0.6 ) * RECIPROCAL_PI;
-        col = mix( col, sheer, 0.5 + 0.25 * damt );
+        // net curtain over the whole window (albedo ~0.4, open weave: 55-80 % cover), its
+        // folds denser where the cloth bunches; a hem band at the bottom, which stops a
+        // little above the sill on some
+        float fold = 0.85 + 0.15 * fw;
+        float hemY = fac.z + ( fh1( seed * 6.7 ) < 0.4 ? 0.12 + 0.2 * fh1( seed * 8.1 ) : 0.0 );
+        float hang = fEdge( c.y - hemY, fpc );
+        float hem = fEdge( c.y - hemY, fpc ) * fEdge( hemY + 0.05 - c.y, fpc );
+        float a = ( 0.55 + 0.25 * damt ) * ( 0.92 + 0.08 * fw ) * hang;
+        vec3 net = mix( vec3( 0.47, 0.465, 0.44 ), vec3( 0.42, 0.40, 0.36 ), step( 0.6, fh1( seed * 5.3 ) ) ) * fold * ( 1.0 + 0.25 * hem );
+        col = mix( col, net * ( front + back * 0.6 ) * RECIPROCAL_PI, min( a + 0.15 * hem, 0.95 ) );
       } else if ( dtype < 3.5 ) {
-        // roller blind
+        // roller blind let down by damt: cloth in a fifth of the colours, else a slatted
+        // roller (PVC or timber laths, 4.5 cm) behind old casements; a darker bottom bar
         float edge = mix( fac.w, fac.z, damt );
-        if ( c.y > edge ) col = dc * ( front * 0.8 + back * 0.35 ) * RECIPROCAL_PI * mix( 1.0, 0.6, fEdge( 0.04 - ( c.y - edge ), fpc ) );
+        float on = fEdge( c.y - edge, fpc );
+        bool laths = fh1( seed * 3.9 ) < 0.45;
+        vec3 bc = laths ? ( fh1( seed * 7.7 ) < 0.5 ? vec3( 0.62, 0.59, 0.52 ) : vec3( 0.40, 0.29, 0.18 ) ) : dc * 0.75;
+        float lath = laths ? 1.0 - 0.25 * fPulse( c.y / 0.045, 0.82, fpc / 0.045 ) : 1.0;
+        float bar = fEdge( edge + 0.035 - c.y, fpc );
+        col = mix( col, bc * lath * mix( 1.0, 0.55, bar ) * ( front * 0.85 + back * 0.35 ) * RECIPROCAL_PI, on );
       } else {
         // venetian blind: 5 cm slats, box filtered
         float edge = mix( fac.w, fac.z, damt );
         if ( c.y > edge ) {
-          float slat = fPulse( c.y / 0.05, 0.35, fpc / 0.05 );
-          vec3 sc = vec3( 0.72, 0.71, 0.67 ) * ( front * 0.7 + back * 0.3 ) * RECIPROCAL_PI * mix( 0.9, 0.8 + 0.2 * fract( c.y / 0.05 ), fKeep( fpc, 0.05 ) );
+          float slat = fPulse( c.y / 0.05, 0.3, fpc / 0.05 );
+          vec3 sc = vec3( 0.66, 0.65, 0.61 ) * ( front * 0.75 + back * 0.3 ) * RECIPROCAL_PI * mix( 0.9, 0.8 + 0.2 * fract( c.y / 0.05 ), fKeep( fpc, 0.05 ) );
           col = mix( col, sc, slat );
         }
       }
@@ -1610,8 +1640,9 @@ vec4 fStreetBg( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float str
 }
 
 // The street with what stands in it between the glass and its far side, nearest first:
-// the tree trunks and poles of both sides and people on the far sidewalk (dark verticals
-// against the paving and the facades; filtered to their mean density once sub-pixel).
+// the tree trunks and poles of both sides (dark verticals against the paving and the
+// facades; filtered to their mean density once sub-pixel) and a faint trace of the far
+// sidewalk's crowd.
 vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float streetW, vec3 Eamb, vec3 sky ) {
   float tHit;
   vec4 bg = fStreetBg( R, N, T, P, px, baseH, streetW, Eamb, sky, tHit );
@@ -1623,9 +1654,11 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
   float hw = streetW * 0.5;
   vec3 acc = vec3( 0.0 );
   float tr = 1.0;
-  // (no people on this side: right in front of the glass they would loom over the real ones)
-  for ( int k = 2; k < 8; k++ ) {
-    float c = k == 2 ? hw - 5.15 : k == 3 ? hw - 3.95 : k == 4 ? hw + 3.95 : k == 5 ? hw + 5.15 : k == 6 ? streetW - 3.9 : streetW - 1.8;
+  // People are left out: a figure in a pane that is not a real one in the street reads as
+  // a cardboard ghost standing in the shop. The far sidewalk's crowd is only a faint, soft
+  // darkening of its lowest two metres (a few per cent: they are there, never a shape).
+  for ( int k = 2; k < 6; k++ ) {
+    float c = k == 2 ? hw - 5.15 : k == 3 ? hw - 3.95 : k == 4 ? hw + 3.95 : hw + 5.15;
     float tc = c / rn;
     if ( tc >= tHit ) break;
     float yc = baseH + R.y * tc;
@@ -1634,34 +1667,7 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
     float fy = max( gPA * ( gTC + tc ), 0.01 + 0.003 * tc ), fx = fy / rn;
     float cover;
     vec3 alb;
-    if ( k > 5 ) {
-      // people 1.5–1.9 m tall in ~1.1 m slots, a third of them taken: legs, torso, head
-      float u = xc / 1.1 + float( k ) * 0.37, cid = floor( u );
-      vec3 hp = fh3( cid * 1.913 + float( k ) * 17.0 );
-      float hgt = 1.5 + 0.4 * hp.y, yr = yc / hgt;
-      float du = abs( u - cid - 0.5 - ( hp.z - 0.5 ) * 0.3 ) * 1.1;
-      // a rounded figure: legs widening to the hips, the torso to the shoulders, which round
-      // off into the neck, an oval head (all edges filtered)
-      float sh = 0.19 + 0.03 * hp.z;
-      float ash = ( yr - 0.8 ) / 0.065;
-      float wh = yr < 0.5 ? mix( 0.10, 0.165, smoothstep( 0.02, 0.5, yr ) ) : yr < 0.8 ? mix( 0.165, sh, smoothstep( 0.5, 0.8, yr ) ) : sh * sqrt( max( 1.0 - ash * ash, 0.0 ) );
-      float fyr = fy / hgt;
-      float body = fEdge( wh - du, fx ) * fEdge( 0.86 - yr, fyr );
-      float dh = length( vec2( du / 0.078, ( yr - 0.935 ) * hgt / 0.115 ) );
-      body = max( body, fEdge( ( 1.0 - dh ) * 0.078, fx ) );
-      body = max( body, fEdge( 0.045 - du, fx ) * fEdge( yr - 0.84, fyr ) * fEdge( 0.9 - yr, fyr ) );
-      body *= step( hp.x, 0.33 );
-      if ( yr < 0.45 ) body *= 1.0 - 0.85 * fEdge( 0.022 - du, fx ) * smoothstep( 0.45, 0.38, yr );
-      float kp = 1.0 - smoothstep( 0.5, 1.5, fx / 1.1 );
-      // (at night the people over there are lit unevenly and barely register in the glass)
-      cover = mix( 0.33 * 0.34 * ( 1.0 - smoothstep( 1.6, 1.8, yc ) ), body, kp ) * ( 1.0 - 0.6 * uNight );
-      vec3 cl = fh3( cid * 7.1 + float( k ) + step( 0.47, yr ) * 3.0 );
-      alb = mix( vec3( dot( cl, vec3( 0.33 ) ) ), cl, 0.45 ) * 0.42 + 0.03;
-      // a face and hair, the body rounded (darker at its sides)
-      if ( yr > 0.87 ) alb = yr > 0.95 ? vec3( 0.05, 0.04, 0.03 ) : mix( vec3( 0.52, 0.36, 0.26 ), vec3( 0.20, 0.13, 0.09 ), hp.x * 3.0 );
-      alb *= 0.6 + 0.4 * ( 1.0 - min( du * du / max( wh * wh, 0.004 ), 1.0 ) );
-      alb = mix( vec3( 0.12, 0.11, 0.1 ), alb, kp );
-    } else if ( k == 2 || k == 5 ) {
+    if ( k == 2 || k == 5 ) {
       cover = fPulse( xc / 10.0 + 0.1, 0.975, fx / 10.0 ) * step( yc, 2.8 );   // tree trunks
       alb = vec3( 0.12, 0.1, 0.08 );
     } else {
@@ -1670,6 +1676,16 @@ vec4 fStreet( vec3 R, vec3 N, vec3 T, vec3 P, float px, float baseH, float stree
     }
     acc += tr * cover * alb * E * RECIPROCAL_PI;
     tr *= 1.0 - cover;
+  }
+  {
+    float tc = ( streetW - 2.8 ) / rn;
+    float yc = baseH + R.y * tc;
+    if ( tc < tHit && yc > 0.0 && yc < 2.0 ) {
+      float xc = px + dot( R, T ) * tc;
+      float cover = 0.06 * smoothstep( 0.0, 0.4, yc ) * ( 1.0 - smoothstep( 1.3, 1.9, yc ) ) * ( 0.5 + 0.5 * vnoise( vec2( xc * 0.45, 0.5 ) ) ) * ( 1.0 - 0.6 * uNight );
+      acc += tr * cover * vec3( 0.2, 0.18, 0.16 ) * E * RECIPROCAL_PI;
+      tr *= 1.0 - cover;
+    }
   }
   float a = 1.0 - tr * ( 1.0 - bg.a );
   return vec4( ( acc + tr * bg.a * bg.rgb ) / max( a, 1e-4 ), a );
@@ -1701,7 +1717,15 @@ if ( fMask < 0.999 ) {
   #endif
   // sky radiance: environment when available, else a simple gradient from the ambient light
   vec3 skyFallback = Eamb * RECIPROCAL_PI * mix( vec3( 1.15, 1.12, 1.08 ), vec3( 0.75, 0.9, 1.25 ), clamp( R.y, 0.0, 1.0 ) ) * 1.4;
-  #if defined( USE_ENVMAP )
+  #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+    // the environment cube is captured in the middle of the street, where a ray rising
+    // across the street at under ~60° meets the canyon model's walls (dark window grids):
+    // the sky the stand-in leaves open above the far roofline is looked up at the same
+    // elevation along the street instead, which the capture sees open to the horizon
+    float rhz = length( R.xz );
+    vec3 Rsk = normalize( T * ( dot( R, T ) < 0.0 ? -rhz : rhz ) + vec3( 0.0, max( R.y, 0.02 ), 0.0 ) );
+    vec3 skyR = textureCubeUV( envMap, envMapRotation * Rsk, material.roughness ).rgb * envMapIntensity;
+  #elif defined( USE_ENVMAP )
     vec3 skyR = radiance;
   #else
     vec3 skyR = skyFallback;
@@ -1881,7 +1905,7 @@ export function createInteriorGlass(M, { far = false } = {}) {
       .replace('#include <lights_fragment_maps>', FRAG_LIGHT)
       .replace('vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;', FRAG_OUT);
   };
-  m.customProgramCacheKey = () => 'facades.glassInterior.v10' + dbg;
+  m.customProgramCacheKey = () => 'facades.glassInterior.v11' + dbg;
   return m;
 }
 

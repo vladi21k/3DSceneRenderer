@@ -396,7 +396,7 @@ function clump(P, rng, col, row, srcCells, count) {
   }
   // lobed soft mask
   const lobes = [[3, rng.range(0, 6.3), 0.14], [5, rng.range(0, 6.3), 0.1], [7, rng.range(0, 6.3), 0.06]];
-  const mask = makeCanvas(Math.ceil(CS), Math.ceil(CS)), mctx = mask.getContext('2d');
+  const mask = makeCanvas(Math.ceil(CS), Math.ceil(CS)), mctx = ctx2d(mask);
   mctx.filter = `blur(${(CS * 0.02).toFixed(1)}px)`;
   mctx.beginPath();
   for (let k = 0; k <= 64; k++) {
@@ -421,7 +421,7 @@ let dome = null;
 function domeImage() {
   if (dome) return dome;
   const n = Math.ceil(CS);
-  const c = makeCanvas(n, n), ctx = c.getContext('2d');
+  const c = makeCanvas(n, n), ctx = ctx2d(c);
   const img = ctx.createImageData(n, n), d = img.data;
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
@@ -513,6 +513,12 @@ function buildMips(img, castano) {
 
 // ------------------------------------------------------------------ atlas
 function makeCanvas(w, h) { return new OffscreenCanvas(w, h); }
+// Every canvas is a CPU (software) canvas: an accelerated one is drawn by the GPU process,
+// and reading it back waits behind whatever that process has queued, which during the
+// start-up is the whole program compile (an atlas due in 0.2 s once arrived after more
+// than a minute on a loaded machine, and the trees stood bare at ready). On the CPU the
+// painting takes about as long and never waits. (__vegGpuCanvas: accelerated, for A/B.)
+function ctx2d(c) { return c.getContext('2d', { willReadFrequently: !globalThis.__vegGpuCanvas }); }
 
 /**
  * Paint one pass of the atlas ('color' or 'normal') and build its mips.
@@ -521,7 +527,7 @@ function makeCanvas(w, h) { return new OffscreenCanvas(w, h); }
 export function paintAtlas(seed, kind) {
   const T0 = performance.now();
   const canvas = makeCanvas(SIZE, SIZE);
-  const ctx = canvas.getContext('2d', { willReadFrequently: !!globalThis.__vegCpuCanvas });
+  const ctx = ctx2d(canvas);
   const P = new Painter(ctx, kind);
   const cell = (i, fn) => {
     const x = (i % ATLAS_GRID) * CS, y = Math.floor(i / ATLAS_GRID) * CS;

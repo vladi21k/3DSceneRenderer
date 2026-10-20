@@ -198,6 +198,10 @@ export class Agent {
     this.rh = 0; this.rhS = 0; this.rhValid = false; // route heading at rhS (refreshed every 0.2 m)
     this.wvx = 0; this.wvz = 0; // world velocity of the figure (m/s, actual displacement)
     this.lnN = 0; this.lnJ = 0; this.fwF = 0; this.fwR = 0; this.fwTT = 0; // slow noise (pace, heading jitter, group slot wander), 4 Hz
+    // company: walking hand in hand with this companion (a child beside its adult, a couple), the
+    // time a café party at one table gets up together, and a glance back at a tram coming up
+    // behind on its track (until when)
+    this.handTo = null; this.partyT = 0; this.glanceT = 0;
     settleAgent(this);
   }
 }

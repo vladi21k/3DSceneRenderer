@@ -96,7 +96,7 @@ export function modillions(B, s, u0, u1, y, H, P, spacing, full = true) {
   for (let i = 0; i <= n; i++) {
     const c = u0 + i * st;
     if (c - w / 2 < u0 - 0.01 || c + w / 2 > u1 + 0.01) continue;
-    B.sweep(s, prof, [[c - w / 2, 0], [c + w / 2, 0]], y, [true, true], 0, full ? CREASE : 0);
+    B.sweep(s, prof, [[c - w / 2, 0], [c + w / 2, 0]], y, [true, true], 0, full ? CREASE : 0, true);
   }
 }
 function modillionSimple(H, P) {

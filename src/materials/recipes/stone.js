@@ -75,17 +75,17 @@ void surface(vec2 m, inout Surf s) {
 
 // Taltish: the face is worked over with a toothed (comb) chisel in passes. Each pass is a
 // group of about eight strokes (a patch of ~13 cm) driven the same way, at its own angle
-// within ±15° of the block's working direction and with its own tooth pitch (3-5.5 mm,
-// a worn or a finer tool); the strokes in it lie side by side and overlap, each 5-9 cm
-// long and one chisel wide (3-4.5 cm), at a few degrees to each other. A stroke bites in
+// within ±8° of the block's working direction and with its own tooth pitch (3-5.5 mm,
+// a worn or a finer tool); the strokes in it lie side by side and overlap, covering the
+// face, each 8-11 cm long and one chisel wide (4-5 cm), at a few degrees to each other. A stroke bites in
 // deepest and runs out; its depth varies along it and from tooth to tooth (worn teeth cut
 // shallower), and the grooves of one stroke do not line up with the next (every re-set of
-// the tool lands differently). One stroke in ten is missing, leaving the smoother face
+// the tool lands differently). One stroke in sixteen is missing, leaving the smoother face
 // between, and the stone's pores break the grooves. The depth drifts over 20-40 cm (some
 // areas worked harder). The working direction is along u: the runtime rotates the map per
-// block (one angle per block, 60-75° from horizontal) and fades the striation inside the
-// drafted margin and with distance. The relief carries the look; the albedo only follows
-// it faintly (dust in the grooves).
+// block (one angle per block, 35-100° from horizontal) and fades the striation inside the
+// drafted margin and with distance. The relief carries the look in the sun; the albedo
+// follows it (dust in the grooves, each stroke's own tone), so it also reads in shade.
 // Detail map format: surface = (normal.xy, moment, albedo modulation with 0.5 = neutral).
 export const tooling = {
   name: 'tooling', flat: [1, 1, 1, 0.8], size: 1024, tile: [0.64, 0.64], ss: 2,
@@ -108,25 +108,27 @@ void surface(vec2 m, inout Surf s) {
       float h1 = sfHf(h), h2 = sfHf(sfH(h + 1u)), h3 = sfHf(sfH(h + 2u));
       float h4 = sfHf(sfH(h + 3u)), h5 = sfHf(sfH(h + 4u)), h6 = sfHf(sfH(h + 5u));
       float h7 = sfHf(sfH(h + 6u)), h8 = sfHf(sfH(h + 7u));
-      if (h8 < 0.1) continue;                                      // a stroke left out
+      if (h8 < 0.06) continue;                                     // a stroke left out
       // its pass: 2 strokes along × 4 rows (staggered per band of rows), one direction,
       // tooth pitch and depth
       int band = jw / 4;
       int pu = sfMod(iw + int(sfHash(ivec2(band, 7), 347u) * 1.99), NS) / 2;
       uint hp = sfH2(pu, band, 348u);
-      float pAng = (sfHf(hp) - 0.5) * 0.52;                        // ±15°
+      float pAng = (sfHf(hp) - 0.5) * 0.28;                        // ±8°
       float pitch = 0.003 + 0.0025 * sfHf(sfH(hp + 1u));           // 3-5.5 mm
       float pDep = 0.7 + 0.5 * sfHf(sfH(hp + 2u));
-      vec2 c0 = vec2((float(i) + 0.5 + 0.35 * (h2 - 0.5)) * sl, (float(j) + 0.5 + 0.3 * (h3 - 0.5)) * rh);
+      vec2 c0 = vec2((float(i) + 0.5 + 0.25 * (h2 - 0.5)) * sl, (float(j) + 0.5 + 0.2 * (h3 - 0.5)) * rh);
       float sa = pAng + (h4 - 0.5) * 0.1;                          // ±3° within the pass
       vec2 dir = vec2(cos(sa), sin(sa));
-      float len = sl * (0.8 + 0.6 * h5);                           // 5-9 cm
-      float wid = rh * (1.0 + 0.4 * h6);                           // 3.2-4.5 cm (8-12 teeth)
+      // long and wide enough that the strokes overlap and cover the face (gaps between
+      // them read as a quilt of hatched patches)
+      float len = sl * (1.2 + 0.5 * h5);                           // 7.7-10.9 cm
+      float wid = rh * (1.3 + 0.35 * h6);                          // 4.2-5.3 cm (10-14 teeth)
       vec2 d = m - c0;
       float f = dot(d, dir) / len + 0.5;                           // 0 at the bite, 1 at the run-out
       float y = dot(d, vec2(-dir.y, dir.x));
-      // soft ends: bites in over the first 8 %, lifts out over the last 40 %
-      float alo = smoothstep(0.0, 0.08, f) * (1.0 - smoothstep(0.6, 1.0, f));
+      // soft ends: bites in over the first 6 %, lifts out over the last 30 %
+      float alo = smoothstep(0.0, 0.06, f) * (1.0 - smoothstep(0.7, 1.0, f));
       float acr = 1.0 - smoothstep(0.5 * wid - 0.004, 0.5 * wid, abs(y));
       float env = alo * acr;
       if (env <= 0.0) continue;
@@ -146,8 +148,10 @@ void surface(vec2 m, inout Surf s) {
   float pore = smoothstep(0.2, 0.05, v.x) * step(0.93, v.z);
   best *= 1.0 - smoothstep(0.3, 0.12, v.x) * step(0.93, v.z);
   s.height = best + fbm(m, 120.0, 3, 0.5, 310u) * 0.00006 - pore * 0.0004;
+  // dust held in the grooves and the strokes' own tone (each stroke a touch paler or
+  // darker): the dressing reads in shade too, where the relief alone gives no contrast
   float dn = sat(-best / 0.0006);
-  float a = 1.01 - 0.035 * dn * bestG + 0.012 * (bestT - 0.5) - 0.18 * pore + 0.02 * (v.z - 0.5);
+  float a = 1.03 - 0.16 * dn * bestG + 0.07 * (bestT - 0.5) - 0.2 * pore + 0.03 * (v.z - 0.5);
   s.ao = sat(0.5 * a);
   s.albedo = vec3(1.0);
   s.rough = 0.8;
@@ -219,14 +223,17 @@ vec4 rawSurface(vec2 m) {
 // Ashlar: courses of 0.35 m, blocks 0.36-1.2 m; 4-8 mm light grey-beige lime pointing,
 // recessed about 1.5 mm behind the arrises; faces slightly proud / sunk / tilted per block.
 // 2 mm/texel, so joints and arrises stay crisp from the sidewalk (about a metre). The arris
-// is crisp along roughly half its length and worn to a small chamfer (1-6 mm) along the
-// rest, so its light catch comes and goes instead of running as a ruled line. About every
-// 0.3-0.6 m a chip has broken out of it: shell-shaped, 5-30 mm along the arris, cut a few
-// millimetres into the face and deepest at the arris, the fracture freshly paler stone
-// with a small shadowed lip at its inner edge. A little dust works a centimetre or two in
-// from the joints, and some blocks carry faint warm-grey weathering in tall streaks (rain
-// runs down a face, it does not leave round clouds). The dressing (taltish, mussamsam,
-// rubbed) is applied at runtime from the detail maps above.
+// is crisp along roughly half its length and worn to a small dusty chamfer (1-4 mm) along
+// the rest, so its light catch comes and goes instead of running as a ruled line. About
+// half the blocks have lost a chip or two from their arrises (about one per metre of arris
+// there): an irregular flake 8-36 mm along the arris, its outline a few straight fracture
+// facets (never a round notch), cut a millimetre or two into the face, deepest at the
+// arris and running out inwards, the fracture a little darker than the face (dust). The
+// faces are hand dressed, so not quite plane: they undulate by a millimetre or so over
+// 5-10 cm. A little dust works a centimetre or two in from the joints, and some blocks
+// carry faint warm-grey weathering in tall streaks (rain runs down a face, it does not
+// leave round clouds). The dressing (taltish, mussamsam, rubbed) is applied at runtime from
+// the detail maps above.
 export const ashlar = {
   name: 'ashlar', flat: [0.6, 0.47, 0.27, 0.86], size: 2048, tile: [4.2, 4.2], ss: 2,
   layout: { rowH: 0.35, rows: 12, seg: [5, 7], jitter: 0.42, seed: 11, shift: true },
@@ -246,34 +253,48 @@ void surface(vec2 m, inout Surf s) {
   // which arris: along a bed joint (horizontal) or a head joint
   bool bed = min(c.ed.z, c.ed.w) < min(c.ed.x, c.ed.y);
   float ta = bed ? m.x : m.y;                    // position along the arris
-  // worn chamfer 1-6 mm along about half of the arris, crisp between
+  // worn chamfer 1-4 mm along about half of the arris, crisp between
   float wear = smoothstep(0.0, 0.45, noiseM(vec2(ta, c.h * 9.0), vec2(9.0), 39u) + 0.35 * (cellRand(c, 3u) - 0.5));
-  float bev = 0.0004 + (0.001 + 0.005 * cellRand(c, 4u)) * wear;
-  // chips: in one 15 cm stretch of arris in three or four (about one every 0.3-0.6 m), a
-  // shell-shaped piece broken out, 5-30 mm along the arris (mostly small), reaching about
-  // as far into the face, 1.5-4.5 mm deep at the arris and shallower inwards, ending in a
-  // small step (the shadowed lip)
-  float seg0 = floor(ta / 0.15);
+  float bev = 0.0004 + (0.0008 + 0.003 * cellRand(c, 4u)) * wear;
+  // chips: on about half the blocks, in a 0.6 m stretch of arris in two (about one per
+  // metre of arris there), a flake broken out 8-36 mm along the arris (mostly small),
+  // reaching 3-12 mm into the face. Its outline is a few straight fracture facets (two
+  // flanks rising from the arris, an inner edge, sometimes a fourth facet across a corner),
+  // a little ragged; it is 0.8-2.2 mm deep at the arris and runs out inwards, with no step
+  // at its inner edge (a shadowed lip there read as a bright half moon in the sun)
   float spall = 0.0, chipIn = 0.0;
-  for (int j = -uOne; j <= uOne; j++) {
-    float seg = seg0 + float(j);
+  if (cellRand(c, 38u) < 0.5) {
+    float seg = floor(ta / 0.6);
     uint sh = sfH2(int(seg), bed ? 1 : 2, c.id + 211u);
-    if (sfHf(sh) > 0.2 + 0.2 * cellRand(c, 38u)) continue;
-    float hl = sfHf(sfH(sh + 1u));
-    float sl = 0.0025 + 0.0125 * hl * hl;           // half length 2.5-15 mm
-    float sc = (seg + 0.5) * 0.15 + (sfHf(sfH(sh + 2u)) - 0.5) * 0.11;
-    float sa = (ta - sc) / sl;
-    if (abs(sa) >= 1.0) continue;
-    float sw = sl * (0.7 + 0.7 * sfHf(sfH(sh + 3u))) * sqrt(1.0 - sa * sa) * (1.0 + 0.12 * noiseM(ms, vec2(60.0), 37u));
-    float x = (e - JW) / max(sw, 1e-4);           // 0 at the arris, 1 at the inner edge
-    float inside = 1.0 - smoothstep(0.82, 1.0, x);
-    float sd = (0.0015 + 0.003 * sfHf(sfH(sh + 4u))) * (0.6 + 0.4 * sqrt(sl / 0.015));
-    spall = max(spall, sd * (1.0 - 0.6 * sat(x)) * inside);
-    chipIn = max(chipIn, inside * step(-0.5, x));
+    if (sfHf(sh) < 0.55) {
+      float hl = sfHf(sfH(sh + 1u));
+      float sl = 0.004 + 0.014 * hl * hl;                         // half length 4-18 mm
+      float sc = (seg + 0.5) * 0.6 + (sfHf(sfH(sh + 2u)) - 0.5) * 0.5;
+      float a = ta - sc;
+      if (abs(a) < 1.3 * sl) {
+        float h3 = sfHf(sfH(sh + 3u)), h4 = sfHf(sfH(sh + 4u)), h5 = sfHf(sfH(sh + 5u)), h6 = sfHf(sfH(sh + 6u));
+        float x = e - JW + 0.0005 * noiseM(ms, vec2(260.0), 37u);  // into the face from the arris (m)
+        float aL = -sl * (0.7 + 0.3 * h3), aR = sl * (0.7 + 0.3 * h4);
+        float kL = 0.6 + 1.9 * h5, kR = 0.6 + 1.9 * fract(h5 * 7.31);
+        float hIn = (0.003 + 0.009 * h6) * (0.5 + 0.5 * sl / 0.018), mI = (fract(h6 * 5.17) - 0.5);
+        float d = min((kL * (a - aL) - x) * inversesqrt(1.0 + kL * kL), (kR * (aR - a) - x) * inversesqrt(1.0 + kR * kR));
+        d = min(d, (hIn + mI * a - x) * inversesqrt(1.0 + mI * mI));
+        if (fract(h3 * 3.71) < 0.5) {
+          float m4 = (fract(h4 * 9.13) < 0.5 ? -1.0 : 1.0) * (0.8 + 0.8 * fract(h4 * 3.3));
+          d = min(d, (0.8 * hIn + abs(m4) * 0.3 * sl + m4 * a - x) * inversesqrt(1.0 + m4 * m4));
+        }
+        float inside = smoothstep(0.0, 0.0007, d) * step(-0.002, x);
+        float sd = (0.0008 + 0.0014 * sfHf(sfH(sh + 7u))) * (0.6 + 0.4 * sqrt(sl / 0.018));
+        spall = sd * (1.0 - 0.75 * sat(x / max(hIn + mI * a, 1e-4))) * inside;
+        chipIn = inside;
+      }
+    }
   }
-  // face: not perfectly flat, block proud / sunk and slightly tilted
+  // face: not perfectly flat, block proud / sunk and slightly tilted, and hand dressed: a
+  // millimetre or so of undulation over 5-10 cm (more on some blocks)
   float face = fbm(m, 3.5, 3, 0.5, 30u) * 0.0012 + (hA - 0.5) * 0.0024;
   face += dot(c.lp - 0.5 * c.size, vec2(cellRand(c, 7u) - 0.5, cellRand(c, 8u) - 0.5)) * 0.008;
+  face += fbm(ms, 14.0, 3, 0.55, 42u) * (0.0005 + 0.001 * cellRand(c, 43u));
   float t = clamp((e - JW) / bev, 0.0, 1.0);
   float hFace = face - bev * 0.38 * pow(1.0 - t, 1.5) * (1.0 + 0.4 * fbm(m, 120.0, 2, 0.5, 31u));
   hFace -= spall * (1.0 + 0.15 * fbm(ms, 150.0, 2, 0.5, 32u));
@@ -287,13 +308,14 @@ void surface(vec2 m, inout Surf s) {
   vec3 alb = limestone(m, c.h, hs);
   s.height = mix(hMortar, max(hFace + hs, hMortar), stone);
   // soiling: a little dust worked a centimetre or two in from the joints (patchy, more on
-  // some blocks), warm grey-brown like the street dust; the worn chamfer a touch dustier
+  // some blocks), warm grey-brown like the street dust; the worn chamfer dustier still (it
+  // holds the dust, so it does not light up as a ruled line along every joint)
   float ej = e - JW;
   float soil = (0.03 + 0.05 * cellRand(c, 33u)) * (0.4 + 1.2 * (0.5 + 0.5 * fbm(ms, 7.0, 3, 0.55, 34u)));
-  float dusty = soil * (1.0 - smoothstep(0.0, 0.025, ej)) + 0.06 * (1.0 - t) * (1.0 - t) * (1.0 - broken);
+  float dusty = soil * (1.0 - smoothstep(0.0, 0.025, ej)) + 0.16 * (1.0 - t) * (1.0 - t) * (1.0 - broken);
   alb = mix(alb, vec3(lum(alb)) * vec3(0.92, 0.84, 0.72), 0.5 * dusty) * (1.0 - 0.6 * dusty);
-  // chips: freshly broken stone, a few percent paler than the weathered face
-  alb *= 1.0 + (0.03 + 0.03 * cellRand(c, 39u)) * broken;
+  // chips: the fracture holds dust and lies in its own shade, a little darker than the face
+  alb *= 1.0 - (0.03 + 0.04 * cellRand(c, 39u)) * broken;
   // weathering: on some blocks faint warm-grey streaks running down the face (tall and
   // narrow, never round clouds)
   float crust = smoothstep(0.15, 0.6, fbm2(ms, vec2(6.0, 1.1), 3, 0.55, 35u) + 0.3 * (cellRand(c, 36u) - 0.5)) * smoothstep(0.35, 0.9, cellRand(c, 36u));

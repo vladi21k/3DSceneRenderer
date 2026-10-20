@@ -52,9 +52,12 @@ export const CLIPS = [
   { name: 'sitTalk', frames: 96, kind: 'sit', variant: 7 },
   // without a table (a bench): the hands rest on the thighs, the legs side by side
   { name: 'sitLap', frames: 48, kind: 'sit', variant: 8 },
+  // on a bench, leaning back: the right leg crossed over the left knee, the hands resting on the thighs and
+  // the crossed knee
+  { name: 'sitBench', frames: 32, kind: 'sit', variant: 9 },
 ];
 // the seated stance of a person on a seat without a table, for each café stance (humans set() field table)
-export const SIT_NO_TABLE = [8, 1, 8, 3, 4, 5, 8, 8, 8];
+export const SIT_NO_TABLE = [8, 9, 8, 3, 4, 5, 8, 8, 8, 9];
 // idle / sit variants that hold the phone or a cup in the right hand
 export const PHONE_IDLE = [1];
 export const PHONE_SIT = [5];
@@ -702,11 +705,23 @@ export class Rig {
         pole: new THREE.Vector3(-1, -0.1, 0.45), palm: new THREE.Vector3(1, -0.15, -0.1), flex: -28 };
       P.spine2Q = qEuler(0.6 * breath - 1, -3, 2.5);
     } else if (variant === 5) {
-      // hands clasped behind the back (the right hand holding the left wrist), chest a little
-      // lifted, the head looking about
-      const yB = this.seat.y + 0.075 * k, zB = this.seat.zb + 0.06 * k;
-      P.arm.L.ik = { target: new THREE.Vector3(0.025 * k, yB, zB), pole: new THREE.Vector3(-0.7, -0.1, 1), palm: new THREE.Vector3(0.3, 0.2, 1) };
-      P.arm.R.ik = { target: new THREE.Vector3(-0.005 * k, yB + 0.02 * k, zB + 0.012 * k), pole: new THREE.Vector3(0.7, -0.1, 1), palm: new THREE.Vector3(-0.5, 0.1, 1) };
+      // hands clasped behind the back on the small of the back (the right hand holding the left wrist),
+      // the elbows bent about 70 degrees and turned out to the sides: from the front the upper arms hang
+      // beside the torso (the shoulders extend only ~25 degrees) and only the forearms pass behind it;
+      // chest a little lifted, the head looking about
+      // (the elbows only need to clear the cloth by a centimetre: they stand out beside the torso, not
+      // turned round behind it)
+      // (the wrists meet on the back's midline, at the height where the shoulder-wrist distance gives the
+      // elbow ~72 degrees of flexion: the small of the back for most, the sacrum for long arms)
+      const zB = Math.max(this.waist.zb, this.seat.zb * 0.85) + 0.05 * k;
+      const dW = Math.sqrt(this.ua * this.ua + this.fa * this.fa + 2 * this.ua * this.fa * Math.cos(72 * DEG));
+      const wy = (tx, tz, Sh) => {
+        const h2 = dW * dW - (tx - Sh.x) * (tx - Sh.x) - (tz - Sh.z) * (tz - Sh.z);
+        return THREE.MathUtils.clamp(Sh.y - Math.sqrt(Math.max(h2, 0.01)), this.seat.y + 0.06 * k, this.waist.y + 0.04 * k);
+      };
+      const yB = 0.5 * (wy(0.02 * k, zB, R[B.armL]) + wy(-0.01 * k, zB, R[B.armR]));
+      P.arm.L.ik = { target: new THREE.Vector3(0.02 * k, yB, zB), pole: new THREE.Vector3(-1, -0.15, 0.15), palm: new THREE.Vector3(0.35, 0.15, 1), clear: 0.012 };
+      P.arm.R.ik = { target: new THREE.Vector3(-0.01 * k, yB + 0.018 * k, zB + 0.014 * k), pole: new THREE.Vector3(1, -0.15, 0.15), palm: new THREE.Vector3(-0.5, 0.1, 1), clear: 0.012 };
       P.spine1Q = qEuler(1.5, -1.5 * Math.sin(T + 1), 1.5 * w);
       P.spine2Q = qEuler(0.6 * breath + 1.5, 0, 1.0 * w);
     } else if (variant === 6) {
@@ -753,6 +768,19 @@ export class Rig {
   _placePelvis(P, local, target) {
     const rel = local.clone().sub(this.rest[B.pelvis]).applyQuaternion(P.pelvisQ);
     P.pelvisOffset.copy(target).sub(rel).sub(this.rest[B.pelvis]);
+  }
+
+  /** For a pose description P: a function taking a model-space point to the rest-pose thorax frame the arm
+   *  IK targets are given in (they follow the posed chest), from the pelvis and spine rotations. */
+  _thoraxOf(P) {
+    const R = this.rest;
+    const p1 = R[B.pelvis].clone().add(P.pelvisOffset);
+    const q1 = P.pelvisQ.clone();
+    const p2 = R[B.spine1].clone().sub(R[B.pelvis]).applyQuaternion(q1).add(p1);
+    const q2 = q1.clone().multiply(P.spine1Q);
+    const p3 = R[B.spine2].clone().sub(R[B.spine1]).applyQuaternion(q2).add(p2);
+    const q3inv = q2.clone().multiply(P.spine2Q).invert();
+    return (m) => m.clone().sub(p3).applyQuaternion(q3inv).add(R[B.spine2]);
   }
 
   /** Hip joint of side s for the pose's pelvis (model space). */
@@ -865,7 +893,7 @@ export class Rig {
     P.pelvisOffset.set(0, hipY - this.hipY, 0.05);
     // + recline leans back, - leans forward over the table
     const talk = variant === 7 ? 0.5 + 0.5 * Math.tanh(3 * Math.sin(T * 2 + 0.4)) : 0;
-    const recline = variant === 1 ? 12 : variant === 2 ? -16 : variant === 5 ? -7 : variant === 7 ? -10 - 6 * talk : variant === 6 ? 4 : 2;
+    const recline = variant === 1 ? 12 : variant === 9 ? 11 : variant === 2 ? -16 : variant === 5 ? -7 : variant === 7 ? -10 - 6 * talk : variant === 6 ? 4 : 2;
     P.pelvisQ = qEuler(8 + recline * 0.4, 0, 0);
     P.spine1Q = qEuler(-4 + recline * 0.3 + 0.5 * breath, 0, 0);
     P.spine2Q = qEuler(-3 + recline * 0.3, 2 * Math.sin(T), 0);
@@ -892,7 +920,7 @@ export class Rig {
         const swing = 0.04 * Math.sin(T * 3 + (s === 'L' ? 0 : 2.1));
         an.set(sg * (0.085 * k + 0.012), kneeY - this.l2 * 0.96, thighZ + 0.02 + swing * this.l2);
       }
-      if (variant === 1 && s === 'R' && !dangle) {
+      if ((variant === 1 || variant === 9) && s === 'R' && !dangle) {
         // right leg crossed over the left knee
         an.set(-0.02, hipY + 0.06, thighZ - 0.12);
         L.pole = new THREE.Vector3(0.3, 0.7, -0.6).normalize();
@@ -904,7 +932,7 @@ export class Rig {
       }
       L.ankle = an;
       const A = P.arm[s];
-      if (variant === 1 || variant === 8) {          // hands in the lap
+      if (variant === 1 || variant === 8 || variant === 9) {          // hands in the lap
         A.flex = 18; A.abd = 6; A.elbow = 62; A.twist = -30;
       } else if (variant === 2 || variant === 7) {   // forearms on the table edge
         A.flex = 48; A.abd = 14; A.elbow = 66; A.twist = -35;
@@ -917,7 +945,22 @@ export class Rig {
     // IK targets follow the chest in rest model space: a height above the street is that plus
     // how far the sitting body sank
     const yOf = (y) => y - P.pelvisOffset.y;
-    if (variant === 8) {
+    if (variant === 9) {
+      // on a bench, leaning back: the hands rest on the thighs (the crossed leg's knee for the right hand),
+      // palms down; placed on the posed thighs and carried into the reclined chest's frame
+      const toTh = this._thoraxOf(P);
+      for (const s of ['L', 'R']) {
+        const sg = this.side[s];
+        const hip = this._hipOf(P, s), L = P.leg[s];
+        const knee = solveIK(hip, L.ankle, this.l1, this.l2, L.pole || new THREE.Vector3(0, 0, -1)).mid;
+        const u = s === 'R' && !dangle ? 0.82 : 0.62;
+        const w = hip.clone().lerp(knee, u);
+        w.y += 0.072 * k + 0.004 * k * Math.sin(T + (s === 'L' ? 0 : 1.3));
+        w.x += sg * 0.012 * k;
+        P.arm[s].ik = { target: toTh(w), pole: new THREE.Vector3(sg * 0.75, -0.1, 0.65).normalize(),
+          palm: new THREE.Vector3(sg * -0.15, -1, -0.1).normalize() };
+      }
+    } else if (variant === 8) {
       // the hands rest on the thighs, palms down, the fingers over the front of the thigh; the elbows
       // out a little and back; a slow breath
       for (const s of ['L', 'R']) {

@@ -193,9 +193,13 @@ function buildWindow(kit, ctx, o) {
   const fc = weather(ctx.frameRGB, r);
   // per-opening offset into the joinery detail bakes (tile 1 m; v kept clear of the putty line)
   const du = r.next(), dv = 0.3 + 0.4 * r.next();
+  // louvred shutters closed against the afternoon sun on the fronts facing it (up to two
+  // in five of the plan's open pairs)
+  const sunny = ctx.sunny || 0;
+  const closed = o.shutters === 'closed' || (o.shutters === 'open' && sunny > 0.25 && RNG.from(o.id, 'sunShut').next() < 0.4 * sunny);
   // summer: some casements stand open, swung into the room
   const ro = r.next();
-  let open = ctx.q >= 0.5 && o.shutters !== 'closed' && canOpen(o, v) && ro < (o.kind === 'balconyDoor' ? 0.12 : 0.08)
+  let open = ctx.q >= 0.5 && !closed && canOpen(o, v) && ro < (o.kind === 'balconyDoor' ? 0.12 : 0.08)
     ? { side: ro < 0.04 ? -1 : 1, angle: Math.round((0.9 + r.next() * 0.7) * 10) / 10 } : null;
   if (open) {
     // the leaf swings into the dark box behind the opening: keep it inside
@@ -212,24 +216,29 @@ function buildWindow(kit, ctx, o) {
   const H = Math.max(2.4, floor.h - 0.3);
   const D = 3.4 + r.next() * 1.8;
   const seed = r.next();
+  // what hangs behind the glass (interior.js): by day it is most of what an upper window
+  // shows besides its reflection. Two windows in three have something: net curtains most
+  // often, curtains drawn to the sides, roller blinds part way down, venetian blinds; on
+  // fronts facing the afternoon sun more of them, and lower
   let drape = 0;
-  const dr = r.next();
-  if (o.curtain) drape = (dr < 0.33 ? 1 : dr < 0.62 ? 2 : dr < 0.84 ? 3 : 4) + 0.1 + r.next() * 0.8;
-  else if (dr < 0.2) drape = 3 + 0.05 + r.next() * 0.35;
+  const dr = r.next(), da = r.next();
+  if (o.curtain) drape = (dr < 0.2 ? 1 + 0.3 + da * 0.6 : dr < 0.62 ? 2 + 0.1 + da * 0.8 : dr < 0.85 ? 3 + 0.15 + da * (0.45 + 0.3 * sunny) : 4 + 0.2 + da * 0.7);
+  else if (dr < 0.3 + 0.25 * sunny) drape = dr < 0.12 ? 2 + 0.1 + da * 0.8 : 3 + 0.08 + da * (0.4 + 0.35 * sunny);
   const ga = glassAttrs(ctx, o, { W, H, D, roomY0, seed, drape, kind: 0 });
   if (!jt) ga.aFrame = [fc[0] * 0.88, fc[1] * 0.88, fc[2] * 0.88, 1]; // far range: procedural casing (× the paint bake's albedo)
   const gt = glassTpl(o, v, ctx.q, open);
   kit.get('glass').add(gt.glass, m, 1, 1, 1, ga);
   if (gt.hole) kit.get('glass').add(gt.hole, m, 1, 1, 1, { ...ga, aWin: [seed, o.lit, drape, winCode(0, true)] }); // no glass: open aperture
-  if (o.shutters !== 'closed') addSpill(kit, ctx, o, m, o.lit, 0, drapeDim(drape));
+  if (!closed) addSpill(kit, ctx, o, m, o.lit, 0, drapeDim(drape));
   // external roller shutters on flat heads (modern and some Mandate facades; nearly every
   // window of a rendered block, whose aluminium joinery comes with them)
   const rollerP = v.type === 'alu' ? (plan.style.finish === 'render' ? 0.9 : 0.75) : plan.style.era === 'mandate' ? 0.18 : 0.04;
   const shut = o.shutters === 'none' ? null : o.shutters;
   if ((shut === 'roller' || (!shut && o.top === 'flat' && o.recess > 0.15 && r.next() < rollerP))) {
-    const rr = r.next();
-    // (a plan's own roller gives the share let down)
-    const down = shut === 'roller' ? Math.min(1, Math.max(0, o.roller ?? 1)) : rr < 0.35 ? 0 : rr < 0.8 ? 0.15 + r.next() * 0.5 : 1;
+    // (a plan's own roller gives the share let down; on fronts facing the afternoon sun
+    // fewer are fully up and more are down, against the heat)
+    const rr = 0.3 * sunny + r.next() * (1 - 0.3 * sunny);
+    const down = shut === 'roller' ? Math.min(1, Math.max(0, o.roller ?? 1)) : rr < 0.3 ? 0 : rr < 0.78 ? 0.15 + r.next() * 0.55 : 1;
     const rc = lin([0xd9d6cc, 0xc9c2b2, 0x9a9a96, 0xe6e3da][Math.floor(r.next() * 4)]);
     kit.get('joinery').add(rollerTpl(o, down, ctx.q), m, rc[0], rc[1], rc[2]);
   }
@@ -238,7 +247,7 @@ function buildWindow(kit, ctx, o) {
     // open leaves lie on the wall face, clear of a projecting stone surround (and of the
     // bosses of a rusticated ground floor)
     const standoff = Math.max(plan.style.surrounds ? 0.055 : 0.012, inRustic(plan, o.y + o.h / 2) ? RUSTIC_RELIEF + 0.01 : 0);
-    const state = o.shutters === 'open' ? fitOpenShutters(ctx, o, standoff) : o.shutters;
+    const state = closed ? 'closed' : o.shutters === 'open' ? fitOpenShutters(ctx, o, standoff) : o.shutters;
     // open leaves are built relative to the wall face (shared by windows of any recess)
     const ms = state === 'open' || state === 'openSpring' ? _ms.copy(m).multiply(_r.makeTranslation(0, 0, o.recess)) : m;
     kit.get('shutter').add(shutterTpl(o, state, ctx.q, standoff), ms, sc[0], sc[1], sc[2], null, du, dv);
@@ -313,7 +322,7 @@ function planSigns(ctx) {
   }
   // under a café awning the cassette takes the fascia band: wall signs there go (the
   // café's name is on the valance). The sign panels in the arch heads become the café's:
-  // one colour, its name on the first only
+  // one colour, its name on the first, its trade word on the others
   const aw = ctx.cafeAwning;
   if (aw) {
     for (let i = wall.length - 1; i >= 0; i--) if (aw.covers(wall[i].s.u0, wall[i].s.u1)) wall.splice(i, 1);
@@ -664,7 +673,8 @@ function* buildShop(kit, ctx, o, signInfo, type) {
     const lumB = bc[0] * 0.3 + bc[1] * 0.6 + bc[2] * 0.1;
     const dsg = { ...design, type: 'letters', board: null, ink: design.board != null ? design.ink : lumB > 0.3 ? 0x1d1d1f : (design.cell % 3 ? 0xe9dfc4 : 0xd8b25a) };
     const mt = new THREE.Matrix4().copy(m).multiply(_r.makeTranslation(0, yc, -0.015 - 0.035 + 0.006));
-    if (!signInfo.noText) addSignText(kit, dsg, mt, wAvail, band, ctx.q, glow, 0.015, band < 0.3);
+    // (the café's further arch panels carry its trade word where the first has its name)
+    addSignText(kit, signInfo.noText ? { ...dsg, name: null } : dsg, mt, wAvail, band, ctx.q, glow, 0.015, band < 0.3);
   }
   // awning
   if (hasAwning(ctx, o)) {

@@ -416,10 +416,20 @@ function glasses(char, J, sun, far = false) {
   }
   if (!(bz < Infinity)) bz = ez - er - 0.006 * hk;
   if (!(tw > 0)) tw = ex + 0.04 * hk;
-  const z0 = Math.min(ez - er - 0.012 * hk, bz - 0.003 * hk);
+  let z0 = Math.min(ez - er - 0.012 * hk, bz - 0.003 * hk);
+  const z0Max = z0 - 0.008 * hk;
   const w = (sun ? 0.051 : 0.048) * hk, h = (sun ? 0.038 : 0.032) * hk;
   const cx = ex + 0.0025 * hk, cy = ey - (sun ? 0.0065 : 0.003) * hk;
   const wrapK = (sun ? 4.5 : 2.2) / hk;
+  // (the rims clear the cheeks and brows under them by 6 mm, with room for a fuller face: the frame sits
+  // on the nose, never in the skin)
+  for (let v = 0; v < raw.n; v++) {
+    if (T[v * 4 + 2] !== 0) continue;
+    const x = Math.abs(P[v * 3]), y = P[v * 3 + 1], z = P[v * 3 + 2];
+    if (x < cx - w * 0.55 || x > cx + w * 0.55 || y < cy - h * 0.6 || y > cy + h * 0.6 || z > ez + 0.01 * hk) continue;
+    z0 = Math.min(z0, z - 0.006 * hk - wrapK * Math.max(0, x - 0.012 * hk) ** 2);
+  }
+  z0 = Math.max(z0, z0Max);
   const zAt = (x) => z0 + wrapK * Math.max(0, Math.abs(x) - 0.012 * hk) ** 2;
   const dzAt = (x) => Math.sign(x) * 2 * wrapK * Math.max(0, Math.abs(x) - 0.012 * hk);
   const rf = (sun ? 0.0021 : 0.0011) * hk;

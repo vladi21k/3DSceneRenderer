@@ -9,10 +9,12 @@ import { input } from './input.js';
 // exposes yaw / pitch (look offsets, radians: + yaw = left, + pitch = up).
 //
 // The camera is mounted on the car body, like a cab-ride camera:
-//  - body frame: the axis through the two bogie pivots of the cab module, so in a curve
-//    the cab points across the bend (the track sweeps towards the inside of the frame
-//    and the outer facades fill it); the eye sits 1.7 m behind the cab front on that
-//    axis, over the centre of the ride track. The view is fixed to the cab like a
+//  - body frame: the cab module rides fixed on its own bogie (a low-floor tram's end
+//    module), so the view axis is that bogie's: the line through its two axles, the
+//    track's tangent under the cab. In a curve the cab still points a little across the
+//    bend (the track sweeps towards the inside of the frame), but no more than the cab
+//    module itself does; the eye sits 1.7 m behind the cab front, 0.5 m ahead of the
+//    leading axle on that line, over the centre of the ride track. The view is fixed to the cab like a
 //    mounted cab camera: it never pans towards the line ahead, so the ride rails stay
 //    locked under the middle of the frame and never slide sideways (a panning view
 //    put the other track in the middle of the frame in tight bends);
@@ -46,8 +48,11 @@ const wrapAngle = (a) => { a = (a + Math.PI) % (2 * Math.PI); if (a < 0) a += 2 
 
 export const RIG = {
   eyeBack: 1.7,             // m, driver's eye behind the cab front
-  pivot1: 3.125,            // m behind the cab front: cab bogie centre (body pivot)
-  pivot2: 14.525,           // second bogie centre (sets the body axis)
+  pivot1: 2.2,              // m behind the cab front: the cab bogie's leading axle (config AXLES)...
+  pivot2: 4.05,             // ...and its trailing axle: they set the body axis
+  // the bogie centres (config AXLES): the track's alignment and level irregularities between
+  // them set the body's yaw and pitch on its secondary suspension (the long base filters them)
+  trackBase: [3.125, 14.525],
   lookAhead: 10,            // m, gaze point along the track (wide angle)
   headTurn: 0,              // share of the angle to that point the view turns (0: fixed to the cab)
   teleLookAhead: 80,        // m, gaze point at the telephoto default...
@@ -56,9 +61,9 @@ export const RIG = {
   basePitch: -0.7 * DEG,    // slight downward gaze (vanishing point a little above centre)
   gazeFreq: 0.55,           // Hz, head-turn spring (critically damped)
   rollPerLat: 0.32 * DEG,   // body roll per m/s² of lateral acceleration (outward)
-  pitchPerAcc: 0.42 * DEG,  // body pitch per m/s² of longitudinal acceleration
+  pitchPerAcc: 0.22 * DEG,  // body pitch per m/s² of longitudinal acceleration (stiff secondary suspension)
   rollArm: 2.0,             // m, eye height above the roll centre
-  stopSpring: 3.4 * DEG,    // pitch-rate kick per m/s² of final braking when the tram comes to rest
+  stopSpring: 1.8 * DEG,    // pitch-rate kick per m/s² of final braking when the tram comes to rest
   vib: { pitch: 0.05 * DEG, yaw: 0.028 * DEG, roll: 0.025 * DEG },   // RMS buzz at 45 km/h
   // body hunting: the car body's yaw / lateral motion on its secondary suspension, excited by
   // the track (grooved rail in the paving: small at street speeds): broadband noise over the
@@ -172,7 +177,7 @@ const cameraRig = {
     this.app = app;
     const T = app.THREE;
     this._p1 = new T.Vector3(); this._p2 = new T.Vector3(); this._p3 = new T.Vector3();
-    this._eye = new T.Vector3(); this._axis = new T.Vector3();
+    this._eye = new T.Vector3(); this._axis = new T.Vector3(); this._smp = {};
     this._qBody = new T.Quaternion(); this._qHead = new T.Quaternion(); this._e = new T.Euler(0, 0, 0, 'YXZ');
     this.prevViewProj = new T.Matrix4();
     this._lookOut = { dx: 0, dy: 0 };
@@ -251,13 +256,17 @@ const cameraRig = {
     const fov0 = camera.fov;
     this.cut = this._prevS === null || Math.abs(route.delta(this._prevS, s)) > 5 || !!app.params.view;
 
-    // ---- body frame: axis through the bogie pivots, eye on its forward extension
-    const p1 = route.toWorld(s - RIG.pivot1, TRACK_OFFSET, 0, this._p1);
-    const p2 = route.toWorld(s - RIG.pivot2, TRACK_OFFSET, 0, this._p2);
-    const ax = this._axis.subVectors(p1, p2).normalize();
-    const bodyH = Math.atan2(-ax.z, ax.x);
-    const bodyP = Math.asin(clamp(ax.y, -1, 1));
-    const eye = this._eye.copy(ax).multiplyScalar(RIG.pivot1 - RIG.eyeBack).add(p1);
+    // ---- body frame: axis through the cab bogie's axles (the track's tangent and grade at the
+    // bogie centre: the route's smooth heading, not a chord of its 0.5 m table, which steps
+    // over so short a base), eye on its forward extension
+    const pc = (RIG.pivot1 + RIG.pivot2) / 2;
+    const smp = route.sample(s - pc, this._smp);
+    const bodyH = smp.heading;
+    const bodyP = Math.atan(smp.grade);
+    const cp = Math.cos(bodyP);
+    const ax = this._axis.set(Math.cos(bodyH) * cp, Math.sin(bodyP), -Math.sin(bodyH) * cp);
+    const p1 = route.toWorld(s - pc, TRACK_OFFSET, 0, this._p1);
+    const eye = this._eye.copy(ax).multiplyScalar(pc - RIG.eyeBack).add(p1);
     app.cameraS = route.wrap(s - RIG.eyeBack);
 
     // ---- head: turns towards the track ahead (from the body axis); a long lens looks far
@@ -301,13 +310,13 @@ const cameraRig = {
 
   _body(dt, t, s, v, acc, tr, route, app) {
     const f = smoothstep(0, 9, v);          // track excitation grows with speed
-    const s1 = s - RIG.pivot1, s2 = s - RIG.pivot2;
+    const b1 = RIG.trackBase[0], b2 = RIG.trackBase[1], s1 = s - b1, s2 = s - b2;
     const aLat = v * v * route.curvature(s - 6);
     const latT = f * alignment(s1);
     // body yaw: alignment difference between the bogies plus a slow hunting of the body
-    const yawT = f * ((alignment(s1) - alignment(s2)) / (RIG.pivot2 - RIG.pivot1) + 0.0011 * noise1(s / 7.3, 13));
+    const yawT = f * ((alignment(s1) - alignment(s2)) / (b2 - b1) + 0.0011 * noise1(s / 7.3, 13));
     const vertT = f * level(s1);
-    let pitchT = RIG.pitchPerAcc * acc + f * (level(s1) - level(s2)) / (RIG.pivot2 - RIG.pivot1);
+    let pitchT = RIG.pitchPerAcc * acc + f * (level(s1) - level(s2)) / (b2 - b1);
     pitchT = Math.sign(pitchT) * Math.min(Math.abs(pitchT), 0.6 * DEG + 0.3 * Math.max(0, Math.abs(pitchT) - 0.6 * DEG));
     const rollT = -RIG.rollPerLat * aLat + f * crossLevel(s1);
 

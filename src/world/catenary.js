@@ -187,7 +187,7 @@ const catenary = {
       aspects: B.add(new CatBatch('catenary:signalAspects', this.aspectMat, [SK.tramGo, SK.tramStop, SK.pedRed, SK.pedGreen], 48)),
       // per-chunk wire ribbons (and their fitting stand-ins) and pole stickers
       wires: B.add(new SlotBatch('catenary:wires', this.wireMat, slotTemplate({ position: 3, aTan: 3, aWire: 2, color: 3 }), 72, 640, 1536)),
-      stickers: B.add(new SlotBatch('catenary:stickers', this.stickerMat, slotTemplate({ position: 3, normal: 3, uv: 2, color: 3 }), 40, 256, 512)),
+      stickers: B.add(new SlotBatch('catenary:stickers', this.stickerMat, slotTemplate({ position: 3, normal: 3, uv: 2, color: 3 }), 40, 1024, 2304)),
     };
     // the batch spans the street, so its sort position means nothing: blended wires (no
     // MSAA) go after the other transparent surfaces

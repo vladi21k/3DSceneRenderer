@@ -539,9 +539,10 @@ function doorHood(ctx, s, o, surround, ring) {
   for (const cu of [ua, ub]) {
     // carved scroll console: the full S profile on the outside, a sunk side panel inside
     // (finely divided and smooth-shaded: a carved scroll, not facets)
-    B.sweep(s, CONSOLE, [[cu, 0], [cu + 0.035, 0]], yt - CONSOLE_H, [true, true], 0, CREASE);
-    B.sweep(s, CONSOLE_IN, [[cu + 0.035, 0], [cu + cw - 0.035, 0]], yt - CONSOLE_H, [false, false], 0, CREASE);
-    B.sweep(s, CONSOLE, [[cu + cw - 0.035, 0], [cu + cw, 0]], yt - CONSOLE_H, [true, true], 0, CREASE);
+    // (box-projected texture: the stone's grain at its true scale on the carved faces)
+    B.sweep(s, CONSOLE, [[cu, 0], [cu + 0.035, 0]], yt - CONSOLE_H, [true, true], 0, CREASE, true);
+    B.sweep(s, CONSOLE_IN, [[cu + 0.035, 0], [cu + cw - 0.035, 0]], yt - CONSOLE_H, [false, false], 0, CREASE, true);
+    B.sweep(s, CONSOLE, [[cu + cw - 0.035, 0], [cu + cw, 0]], yt - CONSOLE_H, [true, true], 0, CREASE, true);
   }
   B.extrudeU(s, DOOR_HOOD, ua - 0.08, ub + cw + 0.08, yt, [true, true], CREASE);
 }

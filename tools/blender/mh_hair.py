@@ -55,13 +55,20 @@ STYLE = {
     'short02': dict(flow='crown', crown=(-0.01, 0.07, 0.055), grav=0.12, len=(0.05, 0.085), thick=0.024, width=0.72, fwd=0.15, side=-0.6, twist=0.4, brow=0.055),
     'short03': dict(flow='crown', crown=(0.0, 0.075, 0.05), grav=0.14, len=(0.06, 0.10), thick=0.028, width=0.8, fwd=0.3, side=0.6, twist=0.5, brow=0.05),
     'short04': dict(flow='crown', crown=(0.0, 0.08, 0.045), grav=0.06, len=(0.03, 0.055), thick=0.016, width=0.65, fwd=0.1, side=0.3, twist=0.3, brow=0.065),
-    'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004)),
-    'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004)),
-    'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, hthick=0.042, width=1.35, fwd=0.0, side=1.0),
+    'bob01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004),
+                  dens=1.7, clump=0.45, fly=1.6),
+    'bob02': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.022, grav=0.55, len=(0.16, 0.26), thick=0.02, width=1.0, fwd=0.6, side=0.6, blunt=True, fringe=True, jit=(-0.002, 0.004),
+                  dens=1.7, clump=0.45, fly=1.6),
+    'long01': dict(flow='part', crown=(0.0, 0.07, 0.06), part=0.004, grav=0.75, len=(0.45, 0.75), thick=0.022, hthick=0.042, width=1.35, fwd=0.0, side=1.0,
+                   dens=2.0, clump=0.5, fly=2.2),
     'ponytail01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.24), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'braid01': dict(flow='tie', crown=(0.0, 0.07, 0.06), grav=0.05, len=(0.10, 0.26), thick=0.012, width=0.9, fwd=0.0, side=0.0),
     'afro01': None,
 }
+# (dens: strand cards per unit of scalp relative to the base spacing, cards narrower in proportion; clump:
+# how far the mid and outer strands converge on their lock's guide strand towards the tips, so locks part
+# with gaps between them instead of lying as one sheet; fly: flyaway density factor. Short cuts default to
+# dens 1, clump 0.35, fly 1.)
 # layers: depth fraction under the outer surface (1 = the full thickness in, < 0 = outside), Poisson root
 # spacing (m), card width (m), strand-atlas columns, LOD 1 share
 LAYERS = [
@@ -488,8 +495,9 @@ def groom(cid):
     DBG = []
     for li, Ly in enumerate(LAYERS):
         rs = np.random.default_rng(zlib.crc32(f'{cid}:{Ly["name"]}'.encode()))
-        chosen_kd = Grid(Ly['r'] * hk)
-        dens = 3.0 / ((Ly['r'] * hk) ** 2)
+        rL = Ly['r'] * hk / math.sqrt(S.get('fly', 1.0) if Ly['name'] == 'fly' else S.get('dens', 1.0))
+        chosen_kd = Grid(rL)
+        dens = 3.0 / (rL ** 2)
         cnt = rs.poisson(area * dens)
         ti = np.repeat(np.arange(len(sel)), cnt)
         u = rs.random((len(ti), 2))
@@ -504,7 +512,7 @@ def groom(cid):
         pts = pts[pts[:, 1] < band]
         chosen = []
         for i in rs.permutation(len(pts)):
-            if kd_find(chosen_kd, pts[i], Ly['r'] * hk):
+            if kd_find(chosen_kd, pts[i], rL):
                 continue
             chosen.append(i)
             chosen_kd.append(pts[i])
@@ -516,12 +524,47 @@ def groom(cid):
             g = ground(p)
             if g is None:
                 continue
-            Lmax = rs.uniform(*S['len']) * hk * (0.6 if Ly['name'] == 'fly' else 1.0)
-            sp, sn, sd, L = grow(g[0], g[1], Ly['depth'], Lmax, rs)
+            Lmax = rs.uniform(*S['len']) * hk * ((0.8 if S.get('fly', 1.0) > 1.0 else 0.6) if Ly['name'] == 'fly' else 1.0)
+            sp, sn, sd, L = grow(g[0], g[1], Ly['depth'] * (1.6 if Ly['name'] == 'fly' and S.get('fly', 1.0) > 1.0 else 1.0), Lmax, rs)
             if L < 0.012 * hk or len(sp) < 3:
                 continue
             strands.append((li, sp, sn, sd, L, float(rs.random())))
             DBG.append((li, sp, LASTWHY[0]))
+    # locks: the mid and outer strands gather round guide strands (every few cm), converging on them towards
+    # their tips, so the hair parts into locks with gaps between them; the guides themselves stay put
+    clumpK = S.get('clump', 0.35)
+    if clumpK > 0:
+        rsC = np.random.default_rng(zlib.crc32(f'{cid}:locks'.encode()))
+        for li in [i for i, Ly in enumerate(LAYERS) if Ly['name'] in ('mid', 'outer')]:
+            ids = [j for j, s_ in enumerate(strands) if s_[0] == li]
+            if len(ids) < 4:
+                continue
+            roots = np.array([strands[j][1][0] for j in ids])
+            rc = (0.022 if S['grav'] < 0.3 else 0.03) * hk
+            guides = []
+            for jj in rsC.permutation(len(ids)):
+                if all(np.sum((roots[jj] - roots[g_]) ** 2) > rc * rc for g_ in guides):
+                    guides.append(jj)
+            G = np.array(guides)
+            for jj in range(len(ids)):
+                if jj in guides:
+                    continue
+                gi = G[np.argmin(np.sum((roots[G] - roots[jj]) ** 2, axis=1))]
+                li_, sp, sn, sd, L, rnd = strands[ids[jj]]
+                gp = strands[ids[gi]][1]
+                if len(gp) < 3:
+                    continue
+                # (the guide's point at the same arc fraction; the pull grows towards the tip)
+                ga = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(gp, axis=0), axis=1))])
+                sa = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(sp, axis=0), axis=1))])
+                f = sa / max(sa[-1], 1e-6)
+                gq = np.stack([np.interp(f * ga[-1], ga, gp[:, c]) for c in range(3)], 1)
+                kk = clumpK * rsC.uniform(0.6, 1.2)
+                wgt = (kk * np.clip(f / 0.85, 0, 1) ** 1.3)[:, None]
+                # (only sideways: the strand keeps its own depth in the volume)
+                dv = (gq - sp) * wgt
+                dv -= sn * np.sum(dv * sn, axis=1, keepdims=True)
+                strands[ids[jj]] = (li_, sp + dv, sn, sd, L, rnd)
     log(cid, f'{style_name}: scalp {scalp_area * 1e4:.0f} cm2, {len(strands)} strands '
              f'({", ".join(str(sum(1 for s in strands if s[0] == i)) for i in range(len(LAYERS)))}) in {time.time() - t0:.1f}s; '
              f'ends {WHY}; length p50 {np.median([s[4] for s in strands]) * 100:.1f} p90 {np.percentile([s[4] for s in strands], 90) * 100:.1f} cm')
@@ -568,7 +611,7 @@ def groom(cid):
         Nc = N * np.cos(ang)[:, None] - B * np.sin(ang)[:, None]
         Bc = np.cross(T, Nc)
         Bc /= np.maximum(1e-9, np.linalg.norm(Bc, axis=1, keepdims=True))
-        w = Ly['w'] * hk * S['width'] * rs.uniform(0.8, 1.2) * (1.6 if lod == 1 else 1.0)
+        w = Ly['w'] * hk * S['width'] * rs.uniform(0.7, 1.25) * (1.6 if lod == 1 else 1.0) / (S.get('dens', 1.0) ** 0.35 if Ly['name'] != 'fly' else 1.0)
         # (fine locks along the front hairline and the fringe)
         if sp[0][2] < E[2] + 0.04 * hk:
             w *= 1.1 if S.get('fringe') else 0.65
@@ -626,7 +669,8 @@ def groom(cid):
         for s in strands:
             Ly = LAYERS[s[0]]
             if lod == 1:
-                if Ly['lod1'] <= 0 or (s[5] * 997.0) % 1.0 > Ly['lod1']:
+                # (denser styles keep LOD 1 at the usual card count)
+                if Ly['lod1'] <= 0 or (s[5] * 997.0) % 1.0 > Ly['lod1'] / S.get('dens', 1.0):
                     continue
             chosen.append(card(s, lod, rs))
         if not chosen:

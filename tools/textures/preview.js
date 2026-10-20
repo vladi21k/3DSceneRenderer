@@ -283,8 +283,49 @@ async function main() {
   window.__app = {
     materials, renderer,
     stats: () => ({ glErrors, fps: +fps.toFixed(1), calls: renderer.info.render.calls, programs: renderer.info.programs?.length, textures: renderer.info.memory.textures, bake: materials.stats }),
+    measure,
   };
   frame();
+}
+/**
+ * Mean of a baked map over a region of its tile (for the published metas), e.g. from
+ * shoot.py --eval "window.__app.measure('railhead', 'albedo', [0, 0.0373, 1, 0.0498])".
+ *   map     'albedo' (linear rgb + alpha: roughness, height or mask) | 'surface'
+ *           (normal xy, moment or mask, ao)
+ *   region  [u0, v0, u1, v1] in metres inside the tile (default: the whole tile)
+ * Returns the mean rgba of the texels in the region (read at full resolution, at most
+ * 1024 samples a side).
+ */
+function measure(recipe, map = 'albedo', region = null) {
+  const t = materials.textures.get(recipe);
+  const tex = t && (map === 'surface' ? t.surface : t.albedo || t.raw);
+  if (!tex) return null;
+  const r = t.recipe, [W, H] = Array.isArray(r.size) ? r.size : [r.size, r.size];
+  const [u0, v0, u1, v1] = region || [0, 0, r.tile[0], r.tile[1]];
+  const w = Math.max(1, Math.min(1024, Math.round((u1 - u0) / r.tile[0] * W)));
+  const h = Math.max(1, Math.min(1024, Math.round((v1 - v0) / r.tile[1] * H)));
+  const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.FloatType, depthBuffer: false });
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { t: { value: tex }, o: { value: new THREE.Vector2(u0 / r.tile[0], v0 / r.tile[1]) }, s: { value: new THREE.Vector2((u1 - u0) / r.tile[0], (v1 - v0) / r.tile[1]) } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy * 2.0, 0.0, 1.0); }',
+    fragmentShader: 'uniform sampler2D t; uniform vec2 o, s; varying vec2 vUv; void main(){ gl_FragColor = textureLod(t, o + vUv * s, 0.0); }',
+    depthTest: false, depthWrite: false,
+  });
+  const sc = new THREE.Scene(), q2 = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+  q2.frustumCulled = false;
+  sc.add(q2);
+  const prev = renderer.getRenderTarget(), tm = renderer.toneMapping;
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.setRenderTarget(rt);
+  renderer.render(sc, camera);
+  const px = new Float32Array(w * h * 4);
+  renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+  renderer.setRenderTarget(prev);
+  renderer.toneMapping = tm;
+  rt.dispose(); mat.dispose(); q2.geometry.dispose();
+  const m = [0, 0, 0, 0];
+  for (let i = 0; i < px.length; i += 4) for (let k = 0; k < 4; k++) m[k] += px[i + k];
+  return m.map((x) => +(x / (w * h)).toFixed(4));
 }
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();

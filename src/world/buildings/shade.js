@@ -68,6 +68,7 @@ export class FaceShade {
     this.dirt = opts.dirt ?? 1;
     this.unc = opts.uncleaned || 0;
     this.damp = opts.damp !== false;   // false: no paving in front (roof-top volumes)
+    this.bleach = opts.bleach || 0;     // a colour wash fading towards the top (render)
     const top = face.cornice ? face.cornice.y : 20;
     this.corniceY = top;
     // 1D AO and grime tables along v (5 cm steps)
@@ -76,20 +77,21 @@ export class FaceShade {
     const ao = new Float32Array(n).fill(1), gm = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const v = vMin + i * step;
-      let a = 1, g = 0.06;
+      let a = 1, g = 0.03;
       const dc = top - v;
       if (dc >= 0) {
         a *= 1 - 0.30 * Math.exp(-dc / 0.45) - 0.06 * Math.exp(-dc / 2.0);
-        // soot crust right under the cornice soffit, rain wash running down from it (the
-        // stone materials draw it as streaks, which reach a few storeys down)
-        g += 0.7 * Math.exp(-dc / 0.7) + 0.32 * Math.exp(-dc / 5);
+        // soot crust right under the cornice soffit, and rain wash running down from it a
+        // storey or so (the stone materials draw it as separate trails; the open walling
+        // below stays mostly clean, as the sun-bleached stone of the street does)
+        g += 0.75 * Math.exp(-dc / 0.5) + 0.14 * Math.exp(-dc / 2.2);
       }
       for (const c of face.courses || []) {
         const d = c.y - v;
-        if (d >= 0 && d < 1.6) { a *= 1 - 0.13 * Math.exp(-d / 0.22); g += 0.38 * Math.exp(-d / 0.5); }
+        if (d >= 0 && d < 1.6) { a *= 1 - 0.13 * Math.exp(-d / 0.22); g += 0.32 * Math.exp(-d / 0.35); }
       }
       // never-cleaned facades: soot heavier towards the top, where rain does not wash
-      if (this.unc) g += this.unc * (0.25 + 0.3 * Math.min(1, Math.max(0, v / top)));
+      if (this.unc) g += this.unc * (0.12 + 0.22 * Math.min(1, Math.max(0, v / top)));
       ao[i] = a; gm[i] = g;
     }
     this.ao = ao; this.gm = gm; this.vMin = vMin; this.step = step; this.n = n;
@@ -204,22 +206,30 @@ export class FaceShade {
     const grey = Math.min(0.7, 0.45 * gz * this.dirt + 0.35 * this.unc);
     const lum = (r + gg + b) / 3;
     r += (lum * 0.9 - r) * grey; gg += (lum * 0.9 - gg) * grey; b += (lum * 0.93 - b) * grey;
+    // a colour wash bleaches towards the top, where the sun and the rain reach it most:
+    // paler and a little lighter (the soot under the cornice still darkens it there)
+    if (this.bleach) {
+      const x = Math.min(1, Math.max(0, (v - 2) / Math.max(3, this.corniceY - 2))), k = this.bleach * x * x * (3 - 2 * x);
+      const l = (r + gg + b) / 3;
+      r += (l * 1.03 - r) * 0.32 * k; gg += (l * 1.01 - gg) * 0.32 * k; b += (l * 0.97 - b) * 0.32 * k;
+      r *= 1 + 0.06 * k; gg *= 1 + 0.06 * k; b *= 1 + 0.06 * k;
+    }
     // never-cleaned stone is darker overall, more so up under the cornice
     const sootK = this.unc ? 1 - this.unc * (0.12 + 0.12 * Math.min(1, Math.max(0, v / this.corniceY))) : 1;
     let dk = a * (1 - 0.18 * gz * this.dirt) * sootK;
-    // beside a shop or door jamb, up to about a metre: handled and brushed against, a
-    // greyer, darker zone that fades out 0.35 m along the pier (the wall field and the
+    // beside a shop or door jamb, up to about 1.5 m: handled and brushed against, a
+    // greyer, darker zone that fades out 0.5 m along the pier (the wall field and the
     // reveals have vertices there, see wall.js and openings.js)
     const J = this.jambs;
-    if (J && hg < 1.35 && hg > -0.5) {
+    if (J && hg < JAMB_H1 + 0.05 && hg > -0.5) {
       let d = 9;
       for (let i = 0; i < J.length; i++) { const x = u - J[i]; const ax = x < 0 ? -x : x; if (ax < d) d = ax; }
       if (d < JAMB_W) {
         const t = 1 - d / JAMB_W, s = hg < JAMB_H0 ? 1 : 1 - (hg - JAMB_H0) / (JAMB_H1 - JAMB_H0);
         const k = t * t * (3 - 2 * t) * Math.max(0, s) * Math.min(1.4, this.dirt);
         const l = (r + gg + b) / 3;
-        r += (l - r) * 0.3 * k; gg += (l - gg) * 0.3 * k; b += (l * 0.98 - b) * 0.3 * k;
-        dk *= 1 - 0.16 * k;
+        r += (l * 1.04 - r) * 0.45 * k; gg += (l - gg) * 0.45 * k; b += (l * 0.88 - b) * 0.45 * k;
+        dk *= 1 - 0.3 * k;
       }
     }
     out[0] = r * dk; out[1] = gg * dk; out[2] = b * dk;
@@ -232,8 +242,9 @@ export class FaceShade {
 // run-off: reach below the sill / slab line; zone margin beyond the occluder ends
 // (the stone shader fades a slab's soot out by 1.05 m beyond its ends: keep BAL_M above that)
 const SILL_RUN = 3.4, BAL_RUN = 3.8, SILL_M = 0.25, BAL_M = 1.1;
-// the soiled zone beside shop and door jambs: reach along the wall, full up to H0, gone by H1
-export const JAMB_W = 0.35, JAMB_H0 = 1.0, JAMB_H1 = 1.3;
+// the soiled zone beside shop and door jambs and on the pier corners: reach along the wall,
+// full up to H0 (hands at 0.8-1.7 m, shoulders, bags), gone by H1
+export const JAMB_W = 0.5, JAMB_H0 = 1.5, JAMB_H1 = 1.85;
 const NO_ZONES = { cuts: [], occ: [null] };
 const sameAt = (it, i) => _zones.cand[i] === it;
 const NO_CONSOLES = [];
@@ -306,14 +317,16 @@ export function runAttr(it, u, v, dirt, out, k) {
  */
 export function trimColor(fs, u, v, nv, out, k = 1.04) {
   fs.wall(u, v, out);
-  const soffit = nv < -0.3 ? 0.78 : 1;
-  let kr = k * soffit, kg = kr, kb = kr;
+  // (smooth in the normal: a carved curve turning from facing up to facing down shades
+  // gradually, with no step at one of its segments)
+  const sf = smooth01((-0.15 - nv) / 0.4), tp = smooth01((nv - 0.3) / 0.4);
+  let kr = k * (1 - 0.22 * sf), kg = kr, kb = kr;
   if (blockH >= 0) {
     // dressed blocks differ in tone from one another (different beds of the quarry)
     const s = 0.93 + 0.13 * blockH, wc = (hash1(blockH * 7919, 5) - 0.5) * 0.04;
     kr *= s * (1 + wc); kg *= s; kb *= s * (1 - wc);
   }
   out[0] *= kr; out[1] *= kg; out[2] *= kb;
-  if (nv < -0.3) out[3] = Math.min(1, out[3] + 0.35);
-  else if (nv > 0.5) out[3] = Math.min(1, out[3] + 0.25);
+  out[3] = Math.min(1, out[3] + 0.35 * sf + 0.25 * tp);
 }
+const smooth01 = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));

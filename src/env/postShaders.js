@@ -1,4 +1,5 @@
 // GLSL for the post-processing chain (see post.js for the pass order).
+import { LAMP_RGB } from './lights.js';
 
 export const QUAD_VS = /* glsl */ `
 varying vec2 vUv;
@@ -34,6 +35,54 @@ vec3 moverDisp(vec3 rel) {
     if (all(lessThanEqual(abs(l), vec3(1.0)))) return uMoverDisp[i];
   }
   return vec3(0.0);
+}
+// walking people (see PEOPLE_FS): a full-resolution map of each moving figure's displacement
+// since the last frame (xyz, camera-relative world metres; w = 1 on a figure). A pixel on a
+// figure takes its figure's motion, anything else the moving boxes' (or none)
+uniform sampler2D tPeople;
+uniform float uPeople;
+vec4 peopleAt(ivec2 p) { return uPeople > 0.0 ? texelFetch(tPeople, p, 0) : vec4(0.0); }
+`;
+
+// ---------------------------------------------------------------- walking people's motion
+// One oriented box per moving person near the camera (instanced; drawn with back faces, no
+// depth test): each fragment reconstructs the scene point from the depth buffer and keeps
+// the box's displacement where that point lies inside the box, so only the figure itself
+// (and whatever it carries) takes the motion, not the street behind it.
+export const PEOPLE_VS = /* glsl */ `
+attribute vec4 iC;           // box centre (camera-relative world, m), heading (yaw, 0 faces -Z)
+attribute vec3 iE;           // half extents: across, up, along (m)
+attribute vec3 iD;           // displacement since the last frame (world, m)
+uniform mat4 uVPrel;         // view-projection taking camera-relative world positions
+flat varying vec4 vC;
+flat varying vec3 vE;
+flat varying vec3 vD;
+void main() {
+  float s = sin(iC.w), c = cos(iC.w);
+  vec3 p = vec3(c, 0.0, -s) * (position.x * iE.x) + vec3(0.0, position.y * iE.y, 0.0) + vec3(-s, 0.0, -c) * (position.z * iE.z);
+  vC = iC; vE = iE; vD = iD;
+  gl_Position = uVPrel * vec4(iC.xyz + p, 1.0);
+}
+`;
+export const PEOPLE_FS = /* glsl */ `
+${CAMERA_GLSL}
+uniform sampler2D tDepth;
+uniform mat4 uCamWorld;
+uniform vec2 uResolution;
+uniform vec2 uJitter;
+flat varying vec4 vC;
+flat varying vec3 vE;
+flat varying vec3 vD;
+void main() {
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  float d = texelFetch(tDepth, px, 0).r;
+  if (d >= 1.0) discard;
+  vec2 uv = gl_FragCoord.xy / uResolution - 0.5 * uJitter;
+  vec3 q = mat3(uCamWorld) * viewPosFrom(uv, linearZ(d)) - vC.xyz;
+  float s = sin(vC.w), c = cos(vC.w);
+  vec3 l = vec3(dot(q, vec3(c, 0.0, -s)), q.y, dot(q, vec3(-s, 0.0, -c)));
+  if (any(greaterThan(abs(l), vE))) discard;
+  gl_FragColor = vec4(vD, 1.0);
 }
 `;
 
@@ -142,6 +191,7 @@ uniform vec3 uHazeAmb;       // ambient in-scatter source (mean radiance seen by
 uniform vec4 uHazePlane;     // air is sunlit where dot(p, xyz) + w > 0 (canyon shadow plane)
 uniform float uHazeGap;      // sunlit share of distant air (cross streets, lower roofs)
 uniform float uHazeSun;      // strength of the forward-scattered sun term
+uniform float uHazeNear;     // in-scatter fades in over this many metres (0: none)
 uniform float uShimmer;
 uniform vec2 uResolution;
 uniform float uDofK, uFocus, uCocMax, uCocTol;
@@ -160,6 +210,7 @@ uniform float uFarI;
 uniform float uFarMin;       // the real lights cover everything nearer than this (m)
 uniform vec2 uLampCos;
 uniform float uWash;         // lanterns' sideways glow, as a share of their downward intensity
+const vec3 LAMP_RGB = vec3(${LAMP_RGB.map((x) => x.toFixed(4)).join(', ')});   // the lanterns' colour (env lights.js)
 uniform sampler2D tSunVis;
 uniform vec3 uGlareE;        // sun illuminance (rgb); 0 disables the glare
 uniform vec4 uGlare;         // veiling glare: k1 / (theta^2 + theta0^2) + k2 exp(-theta / theta1)
@@ -321,7 +372,7 @@ void main() {
       }
       E += Ew * uWash;
     }
-    col += alb * E * vec3(1.0, 0.64, 0.34) / ATM_PI;
+    col += alb * E * LAMP_RGB / ATM_PI;
   }
 
   // aerial perspective: extinction plus in-scatter. The ambient source is the mean
@@ -340,6 +391,10 @@ void main() {
     lit = max(lit, uHazeGap * smoothstep(80.0, 400.0, dist));
     vec3 inscat = uHazeAmb * uHazeInscatter + uSunGround * ph * lit * uHazeSun;
     vec3 T = exp(-uHazeExt * dist);
+    // (on a dusty day the street air nearest the camera lies in the canyon's shade and
+    // under the crowns: its glow fades in over the first uHazeNear metres, so nearby people
+    // and paving keep their blacks)
+    if (uHazeNear > 0.0) inscat *= smoothstep(0.0, uHazeNear, dist);
     col = col * T + inscat * (1.0 - T);
   }
 
@@ -359,7 +414,7 @@ void main() {
     vec3 air = vec3(0.0);
     for (int i = 0; i < NUM_LAMPS; i++) {
       if (uLampI[i] <= 0.0) continue;
-      air += vec3(1.0, 0.64, 0.34) * uLampI[i] * pointAirlight(uCamPos, rd, Tm, uLampPos[i]);
+      air += LAMP_RGB * uLampI[i] * pointAirlight(uCamPos, rd, Tm, uLampPos[i]);
     }
     float hb = 0.0;
     float Th = min(dist, 70.0);
@@ -467,7 +522,8 @@ void main() {
   vec3 vp = viewPosFrom(vUv, linearZ(d));
   // camera-relative world offset keeps the precision of a nearby point
   vec3 rel = mat3(uCamWorld) * vp;
-  vec4 pc = uPrevViewProj * vec4(uCamPos + rel - moverDisp(rel), 1.0);
+  vec4 pv = peopleAt(ivec2(gl_FragCoord.xy));
+  vec4 pc = uPrevViewProj * vec4(uCamPos + rel - (pv.w > 0.5 ? pv.xyz : moverDisp(rel)), 1.0);
   if (pc.w <= 1e-4) { gl_FragColor = c; return; }
   vec2 prevUv = pc.xy / pc.w * 0.5 + 0.5;
   vec2 v = (vUv - prevUv) * uResolution * uShutter;
@@ -690,6 +746,12 @@ uniform vec3 uSatHi;          // street saturation in the highlights: target, st
 uniform vec3 uUpView;         // world up in view space (the sky's elevation per pixel)
 uniform vec2 uProjInv;        // 1 / projectionMatrix[0][0], 1 / projectionMatrix[1][1]
 uniform vec2 uSkySatEl;       // sin(elevation) where the sky's saturation boost starts, and where it is full
+uniform vec3 uWBSky;          // white balance gains for sky pixels (no shade-neutral, no green lift)
+uniform vec3 uSunView;        // sun direction in view space (the warm sky's boost eases off around it)
+uniform vec2 uSkyWhite;       // a warm sky this far over mid grey (stops: start, full) goes to white
+uniform vec2 uSatCeil;        // soft ceiling of the display saturation: start, limit
+uniform sampler2D tClouds;    // cloud pass (a = transmittance; > 1.5: no sky)
+uniform int uUseClouds;
 varying vec2 vUv;
 
 const mat3 PP_REC2020_TO_SRGB = mat3(
@@ -816,8 +878,10 @@ void main() {
   // natural vignetting (cos^4-like falloff)
   col *= mix(1.0, pow(max(1.0 - r2 * 0.55, 0.0), 2.0), uVignette);
   // white balance and split toning in scene-linear (the toning is for the street: the
-  // sky keeps its own colour)
-  col *= uWB;
+  // sky keeps its own colour). The sky has a balance of its own: the street's leans on the
+  // open sky's light in the evening (the shaded paving stays warm-neutral), which would
+  // otherwise turn the blue sky facing away from the sun grey-green
+  col *= skyPx ? uWBSky : uWB;
   float lum = dot(col, LW);
   if (!skyPx) col *= mix(uShadowTint, uHighTint, smoothstep(0.05, 0.6, lum));
   lum = dot(col, LW);
@@ -844,7 +908,12 @@ void main() {
     float blue = smoothstep(0.0, 0.25, (sc.b - sc.r) / max(sc.b, 1e-6));
     vec3 dv = normalize(vec3((uv * 2.0 - 1.0) * uProjInv, -1.0));
     float kEl = smoothstep(uSkySatEl.x, uSkySatEl.y, dot(dv, uUpView));
-    sc = max(lum + (sc - lum) * mix(uSkySat.y, mix(1.0, uSkySat.x, kEl), blue), 0.0);
+    // (the warm aureole round a low sun keeps its own colour: no boost within ~20 degrees)
+    float warmK = mix(uSkySat.y, 1.0, smoothstep(0.85, 0.95, dot(dv, uSunView)));
+    // (clouds keep the scene's own nearly neutral ratios: the boost is for the clear sky)
+    float cOp = 0.0;
+    if (uUseClouds > 0) { float ca = texture2D(tClouds, uv).a; cOp = ca > 1.5 ? 0.0 : 1.0 - clamp(ca, 0.0, 1.0); }
+    sc = max(lum + (sc - lum) * mix(mix(warmK, mix(1.0, uSkySat.x, kEl), blue), 1.0, cOp), 0.0);
   }
 
   col = agx(col);
@@ -860,11 +929,29 @@ void main() {
   {
     float lt = srgbToLinear(cameraCurve(lum));
     float la = dot(col, LW);
-    col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), skyPx ? uSkyChroma : uChroma);
-    // a little more colour on the street (the sky has its own saturation, uSkySat)
+    // a warm sky far over the clip (the aureole over a backlit street) leaves most of the
+    // scene's ratios for the camera's own rendering, which runs to a cream white as a
+    // photograph's blown sky does, instead of holding a flat saturated apricot
+    float chroma = uChroma;
+    if (skyPx) {
+      float warm = smoothstep(0.05, 0.3, (sc.r - sc.b) / max(sc.r, 1e-6));
+      chroma = uSkyChroma * (1.0 - 0.75 * warm * smoothstep(uSkyWhite.x, uSkyWhite.y, log2(max(lum, 1e-8) / 0.18)));
+    }
+    col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), chroma);
+    // a little more colour on the street (the sky has its own saturation, uSkySat), as a
+    // camera's vibrance: the boost goes to the weakly coloured pixels (grey paving, clothes,
+    // crowns in the shade), while stone, awnings and lit foliage that already carry their
+    // colour keep about their own (shaded limestone stays a pale warm grey, not ochre)
     // (eased off in the highlights, as a camera's colour rendering does near white: sunlit
     // limestone rolls off to cream rather than holding an apricot or orange)
-    if (!skyPx) col = max(lt + (col - lt) * mix(uSatOut, uSatHi.x, smoothstep(uSatHi.y, uSatHi.z, lt)), 0.0);
+    if (!skyPx) {
+      float boost = mix(uSatOut, uSatHi.x, smoothstep(uSatHi.y, uSatHi.z, lt));
+      float cx = max(col.r, max(col.g, col.b)), cn = min(col.r, min(col.g, col.b));
+      // (saturation as the display values show it: gamma ~2.2)
+      float s0 = 1.0 - pow(max(cn, 0.0) / max(cx, 1e-7), 0.4545);
+      float kv = boost > 1.0 ? 1.0 + (boost - 1.0) * (1.0 - s0) * (1.0 - s0) : boost;
+      col = max(lt + (col - lt) * kv, 0.0);
+    }
     float m = max(col.r, max(col.g, col.b));
     vec3 kn = col;
     float k0 = uKnee.x, kr = uKnee.y - uKnee.x;
@@ -882,6 +969,19 @@ void main() {
     col = kn;
   }
   col = srgbOETF(clamp(col, 0.0, 1.0));
+  // soft ceiling on the display saturation (hue and value kept): above uSatCeil.x it
+  // approaches uSatCeil.y, as a camera's colour rendering keeps the most saturated
+  // colours (low-sun foliage and stone, a vivid sweater) inside its gamut instead of
+  // crushing a channel to zero
+  {
+    float cx = max(col.r, max(col.g, col.b)), cn = min(col.r, min(col.g, col.b));
+    float s = (cx - cn) / max(cx, 1e-5);
+    if (s > uSatCeil.x) {
+      float sr = uSatCeil.y - uSatCeil.x;
+      float st = uSatCeil.x + sr * (1.0 - exp(-(s - uSatCeil.x) / sr));
+      col = cx - (cx - col) * (st / s);
+    }
+  }
   // fine film grain, strongest in the mid tones, plus dither
   float g = (hash(gl_FragCoord.xy + fract(uTime * 7.31) * 113.0) + hash(gl_FragCoord.xy * 1.37 + fract(uTime * 3.17) * 71.0) - 1.0);
   float lm = dot(col, vec3(0.333));
@@ -956,21 +1056,26 @@ void main() {
     float d = texelFetch(tDepth, q, 0).r;
     if (d < dMin) { dMin = d; pMin = q; }
   }
-  // reproject (camera motion; the sky by rotation only)
+  // reproject (camera motion; the sky by rotation only; a walking figure by its own motion)
   vec2 uvq = (vec2(pMin) + 0.5) / uResolution - 0.5 * uJitter;
   vec4 pc;
+  vec4 pv = peopleAt(pMin);
   if (dMin >= 1.0) pc = uPrevVP * vec4(mat3(uCamWorld) * normalize(viewPosFrom(uvq, 1.0)), 0.0);
   else {
     vec3 rel = mat3(uCamWorld) * viewPosFrom(uvq, linearZ(dMin));
-    pc = uPrevVP * vec4(rel - moverDisp(rel), 1.0);
+    pc = uPrevVP * vec4(rel - (pv.w > 0.5 ? pv.xyz : moverDisp(rel)), 1.0);
   }
   vec2 vel = pc.w > 1e-6 ? uvq - (pc.xy / pc.w * 0.5 + 0.5) : vec2(1e3);
   vec2 huv = vUv - vel;
   if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) { gl_FragColor = c0; return; }
   vec3 h = toYCoCg(tm(sampleCR(tHist, huv)));
-  // clip the history towards the centre of the variance box (within the min/max box)
+  // clip the history towards the centre of the variance box (within the min/max box). On a
+  // walking figure the limbs swing beyond the body's own motion: a tighter box there, and
+  // more of the new frame, so arms and legs do not ghost
+  float onFig = peopleAt(p).w;
+  float gam = mix(uGamma, 0.7, onFig);
   vec3 mean = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mean * mean, 0.0));
-  vec3 bl = max(lo, mean - uGamma * sd), bh = min(hi, mean + uGamma * sd);
+  vec3 bl = max(lo, mean - gam * sd), bh = min(hi, mean + gam * sd);
   vec3 cc = 0.5 * (bh + bl), ext = 0.5 * (bh - bl) + 1e-5;
   vec3 v = h - cc, a = abs(v / ext);
   float am = max(a.x, max(a.y, a.z));
@@ -978,6 +1083,7 @@ void main() {
   // more of the new frame where the image moves fast (less resampling blur)
   float velPx = length(vel * uResolution);
   float w = clamp(uAlpha + velPx * 0.006, uAlpha, 0.3);
+  w = max(w, 0.22 * onFig);
   gl_FragColor = vec4(itm(fromYCoCg(mix(h, cur, w))), c0.a);
 }
 `;

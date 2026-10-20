@@ -24,7 +24,7 @@ import { staffTick } from './staff.js';
 
 const BIN = 10;
 const BENCH_RESERVE = 12;   // seated slots kept for people on benches
-const AVENUE_S = 1500;      // the main avenue: its terraces are the busiest (see _cafeBusy)
+const AVENUE_S = 1500;      // the main avenue: its terraces are the busiest (see _cafeShare)
 // cafés / platforms are filled as their chunk is streamed in (the far edge of the built street)
 const FEATURE_AHEAD = VIEW_AHEAD + 20;
 const BENCH_SEAT_Z = -0.02;  // body origin of a bench sitter along the bench's facing (m, bench local)
@@ -51,6 +51,24 @@ const SHOPPING_BAG = 3;       // appearance bag: carrier bags in hand (humans/mh
 // arriving on the street carries what they bought one time in sixteen, and two in five of those
 // stepping out of a shop do (the photographs show about one passer-by in six with carrier bags).
 const SHOP_WISH = 0.06;
+// Somebody stepping out of a door has company following them out this often (the street is mostly
+// pairs and threes: the photographs show about half the passers-by in company).
+const DOOR_MATE = 0.5;
+
+/** Order in which a party takes the chairs of a table (indices into seats): the places set
+ *  first, the others in a random order; a couple sits face to face across the table. */
+function chairOrder(seats, places, n, r) {
+  const order = seats.map((x, i) => i);
+  for (let i = order.length - 1; i > 0; i--) { const j = r.int(0, i); const tmp = order[i]; order[i] = order[j]; order[j] = tmp; }
+  if (places) order.sort((x, y) => (places.includes(seats[y].ci) ? 1 : 0) - (places.includes(seats[x].ci) ? 1 : 0));
+  if (n === 2 && !(places && places.length >= 2) && order.length > 2) {
+    const a0 = seats[order[0]];
+    let bj = 1, bd = -1;
+    for (let j = 1; j < order.length; j++) { const b = seats[order[j]], q = (b.s - a0.s) ** 2 + (b.d - a0.d) ** 2; if (q > bd) { bd = q; bj = j; } }
+    const tmp = order[1]; order[1] = order[bj]; order[bj] = tmp;
+  }
+  return order;
+}
 
 export class Population {
   constructor(c) {
@@ -67,6 +85,7 @@ export class Population {
     this.stations = new Map();   // station id -> {right, left, served}
     this.queue = [];             // seats / platform spots waiting to be filled (a few per frame)
     this.seatRetry = [];         // café seats dropped for the budget (far terraces), offered again later
+    this.doorMates = [];         // companions about to follow somebody out of a door ({a, serial, dr, side, dIn, t, kid, shop})
     this.featureT = 0;
     this.nBins = Math.ceil((RANGE_AHEAD + RANGE_BEHIND) / BIN);
     this.binCount = new Float32Array(this.nBins);
@@ -74,7 +93,7 @@ export class Population {
     this.walkerTarget = 0;
     this.targetT = 0;
     this.frame = 0;
-    this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, vanishSeen: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
+    this.stats = { spawned: 0, recycled: 0, vanished: 0, spawnFail: 0, farHidden: 0, farForced: 0, seatCap: 0, vanishSeen: 0, cafeTurn: 0, partyLeave: 0, groupSit: 0, doorMate: 0, bySource: { far: 0, behind: 0, near: 0, side: 0, door: 0, alight: 0, init: 0 } };
     this.popOut = [0, 0, 0, 0];  // removals of figures in plain view, by distance
     this.mobCount = [0, 0, 0, 0]; // people with a stroller / riding / walking a bicycle (by MOB)
     this._paceK = 1;             // time of day: walking pace factor (a little slower in the evening)
@@ -151,6 +170,7 @@ export class Population {
     a.uI = -1; a.uSide = 0; a.uClr = false; a.uOver = false; a.ubellT = 0; a.lookU = -1;
     a.wValid = false; a.rhValid = false; a.fwTT = 0; a.lnN = 0; a.lnJ = 0; a.kapS = -1e9; a.km = 1; a.frontN = -1; a.wvx = 0; a.wvz = 0; a.moveDist = 0; a.h = 0; a.hT = 0;
     a.hwT = r.range(0, 0.25); a.hwV = 99; a.ovT = 0; a.ovD = 0; a.freeW = 9; a.platSt = null; a.platSide = 1; a.boardU = -1; a.stnS = null;
+    a.handTo = null; a.partyT = 0; a.glanceT = 0;
     this.stats.spawned++;
     return a;
   }
@@ -348,6 +368,7 @@ export class Population {
     this.stations.clear();
     this.queue.length = 0;
     this.seatRetry.length = 0;
+    this.doorMates.length = 0;
   }
 
   groupOf(a) {
@@ -438,14 +459,18 @@ export class Population {
     this._paceK = 1 - 0.05 * this.tod.late;
   }
 
-  /** How busy a café terrace is (about 0.55-1.1): the main avenue (the first AVENUE_S metres of the
-   *  loop) more than the rest; lunch at midday and the evening more than the afternoon lull
-   *  (t about 0.3) and after dark (`late`). */
-  _cafeBusy(cafe) {
+  /** Share of a terrace's tables taken (about 0.35-0.75): on the main avenue (the first AVENUE_S
+   *  metres of the loop) about two in three by day, about one in two on the rest of the loop;
+   *  lunch at midday, an afternoon lull (t about 0.3), fewer from sunset into the blue hour
+   *  (t 0.6-0.9), and the lit terraces filling up again at dusk. jit: the terrace's own (±). */
+  _cafeShare(cafe, jit = 0) {
     const t = this.tod.t, lull = Math.exp(-(((t - 0.3) / 0.1) ** 2));
+    const sm = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+    const dip = sm((t - 0.6) / 0.08), night = sm((t - 0.88) / 0.08);
     const s = this.c.route.wrap((cafe.s0 + cafe.s1) / 2);
-    const place = s < AVENUE_S ? 1 : 0.8;
-    return place * (1 - 0.2 * lull + 0.1 * this.tod.evening - 0.3 * this.tod.late);
+    const base = s < AVENUE_S ? 0.68 : 0.48;
+    const k = 1 - 0.18 * lull - 0.26 * dip + 0.22 * night;
+    return Math.min(0.85, Math.max(0.2, base * k + jit));
   }
 
   _targets() {
@@ -493,7 +518,7 @@ export class Population {
     if (!opts.force && !this._placeOk(a)) { this._unspawn(a); this.stats.spawnFail++; return null; }
     this.mobCount[mob]++;
     // (late in the evening more people out in company)
-    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.34 + 0.12 * this.tod.late);
+    const groupP = opts.group === 0 ? 0 : mob === MOB.STROLLER ? 0.62 : mob ? 0 : (opts.group ?? 0.42 + 0.1 * this.tod.late);
     // (no group right beside another one on the same strip: two of them would walk on as one row)
     if (r.chance(groupP) && !this._groupNear(a)) { if (mob === MOB.STROLLER) this._makeStrollerGroup(a, opts); else this._makeGroup(a, opts); }
     return a;
@@ -569,6 +594,8 @@ export class Population {
       if (!opts.force && !this._placeOk(f)) { this._unspawn(f); continue; }
       f.leader = a; a.followers.push(f);
       f.state = a.state;
+      // (a child keeps a hand on the stroller, or on the parent's free hand)
+      if (sl.role === 'child') f.handTo = a;
     }
     a.nFollow = a.followers.length;
     // the group walks at its slowest adult's pace
@@ -576,40 +603,49 @@ export class Population {
     for (const f of a.followers) f.v0 = a.v0 * r.range(1.0, 1.06);
   }
 
-  /** Companions for leader a: couples side by side, threes in a loose V / U, fours in pairs,
-   *  sometimes a family with children holding on beside an adult. */
+  /** Companions for leader a: couples side by side (shoulder to shoulder, some hand in hand),
+   *  threes abreast or in a tight V, fours in two pairs, sometimes a family with children
+   *  holding an adult's hand. */
   _makeGroup(a, opts) {
     const c = this.c, r = c.rng;
     // (late in the evening: bigger groups of young people, half as many children)
     const late = this.tod.late;
-    const n = r.weighted([[1, 0.62 - 0.17 * late], [2, 0.28 + 0.07 * late], [3, 0.1 + 0.1 * late]]);
+    const n = r.weighted([[1, 0.7 - 0.15 * late], [2, 0.22 + 0.07 * late], [3, 0.08 + 0.08 * late]]);
     const kids = r.chance(0.2 * (1 - 0.5 * late)) ? (n >= 2 && r.chance(0.4) ? 2 : 1) : 0;
     const young = late > 0.5 && !kids && r.chance(0.6 * late);
     // (each group its own pace: two groups never settle into the same speed side by side)
     const gk = (kids ? 0.82 : 0.9) * r.range(0.94, 1.06);
     a.v0 = Math.max(0.85, a.v0 * gk);
-    const R1 = r.range(0.56, 0.72) * (r.chance(0.5) ? 1 : -1);
+    // shoulder to shoulder: 0.52-0.64 m between the two body centres
+    const R1 = r.range(0.52, 0.64) * (r.chance(0.5) ? 1 : -1);
     let slots;
-    if (n === 1) slots = [[r.range(-0.15, 0.15), R1]];
+    if (n === 1) slots = [[r.range(-0.1, 0.1), R1]];
     else if (n === 2) {
-      // threes: mostly two abreast with the third a step behind, or a V with one ahead; now and
-      // then all three abreast (a staggered group reads as a group, a rank as a parade)
-      const f = r.weighted([[0, 0.55], [1, 0.33], [2, 0.12]]);
-      if (f === 0) slots = [[r.range(-0.12, 0.12), R1], [-r.range(1.1, 1.45), R1 * 0.5 + r.range(-0.1, 0.1)]];
-      else if (f === 1) { const V = -r.range(1.0, 1.3); slots = [[V, R1], [V + r.range(-0.1, 0.1), -R1 * r.range(0.9, 1.1)]]; }
-      else { const V = (r.chance(0.7) ? 1 : -1) * r.range(0.3, 0.5); slots = [[V + r.range(-0.08, 0.08), R1], [V + r.range(-0.08, 0.08), -R1 * r.range(0.9, 1.1)]]; }
-    } else slots = [[r.range(-0.12, 0.12), R1], [-r.range(1.1, 1.4), -R1 * 0.5 + r.range(-0.1, 0.1)], [-r.range(1.1, 1.4), R1 * 0.5 + r.range(-0.1, 0.1)]];
-    // children take the slots right beside the leader (hand-holding distance)
-    const kidR = [-Math.sign(R1) * r.range(0.38, 0.46), Math.sign(R1) * r.range(0.38, 0.46)];
+      // threes: two abreast with the third half a step behind between them, a tight V with one
+      // ahead, or all three abreast (a staggered group reads as a group, a rank as a parade)
+      const f = r.weighted([[0, 0.45], [1, 0.3], [2, 0.25]]);
+      if (f === 0) slots = [[r.range(-0.1, 0.1), R1], [-r.range(0.65, 0.95), R1 * 0.5 + r.range(-0.1, 0.1)]];
+      else if (f === 1) { const V = -r.range(0.55, 0.8); slots = [[V, R1 * 0.9], [V + r.range(-0.1, 0.1), -R1 * r.range(0.85, 1.0)]]; }
+      else { const V = (r.chance(0.7) ? 1 : -1) * r.range(0.15, 0.35); slots = [[V + r.range(-0.08, 0.08), R1], [V + r.range(-0.08, 0.08), -R1 * r.range(0.9, 1.05)]]; }
+    } else { const B = -r.range(0.8, 1.1); slots = [[r.range(-0.1, 0.1), R1], [B, -R1 * 0.45 + r.range(-0.08, 0.08)], [B + r.range(-0.1, 0.1), R1 * 0.55 + r.range(-0.08, 0.08)]]; }
+    // children take the slot right beside the leader on the free side and hold its hand; a
+    // second child holds the hand of the grown-up companion beside the leader
+    const sR = Math.sign(R1);
+    const H = c.humans && c.humans.appearanceOf ? c.humans : null;
+    let adult0 = null;
     for (let k = 0; k < n && this.free.length > 4; k++) {
       const child = k >= n - kids;
       this.placeAt(a.s, a.d, a.vs);
       const f = this.alloc(a.kind, opts.src, child ? 'child' : young ? 'young' : 'any');
       if (!f) break;
       let [F, R] = slots[k];
-      if (child) { F = r.range(-0.05, 0.12); R = kidR[(n - 1 - k) % 2]; }
-      // (adults a little ahead or behind: a loose group, never a rank)
-      else F += r.range(-0.2, 0.2);
+      let hand = null;
+      if (child) {
+        const second = kids === 2 && k === n - 1 && n >= 2;
+        if (second && adult0 && Math.abs(adult0.baseF) < 0.4) { F = adult0.baseF + r.range(-0.05, 0.1); R = adult0.baseR + sR * r.range(0.4, 0.46); hand = adult0; }
+        else if (second && !adult0) { F = r.range(-0.05, 0.12); R = sR * r.range(0.4, 0.46); hand = a; }
+        else { F = r.range(-0.05, 0.12); R = -sR * r.range(0.4, 0.46); hand = a; }
+      } else F += k === 0 ? r.range(-0.06, 0.06) : r.range(-0.12, 0.12);
       f.baseF = F; f.baseR = R;
       const th = a.dir > 0 ? 0 : PI, cf = Math.cos(th), sf = Math.sin(th);
       f.s = a.s + cf * F - sf * R; f.d = a.d + sf * F + cf * R;
@@ -619,8 +655,19 @@ export class Population {
       if (!opts.force && !this._placeOk(f)) { this._unspawn(f); continue; }
       f.leader = a; a.followers.push(f);
       f.state = a.state;
+      f.handTo = hand;
+      if (!child && !adult0) adult0 = f;
     }
     a.nFollow = a.followers.length;
+    // a couple (a man and a woman, or two of the elderly) walks hand in hand now and then: a
+    // little closer, exactly abreast
+    if (n === 1 && !kids && adult0 && H && !a.isChild && !adult0.isChild) {
+      const pa = H.appearanceOf(a.appearance), pf = H.appearanceOf(adult0.appearance);
+      const old = pa.age === 'old' && pf.age === 'old';
+      if (pa.age !== 'teen' && pf.age !== 'teen' && (pa.female !== pf.female || old) && r.chance(old ? 0.4 : 0.3)) {
+        adult0.handTo = a; adult0.baseF = r.range(-0.04, 0.04); adult0.baseR = Math.sign(adult0.baseR) * r.range(0.48, 0.54);
+      }
+    }
     // the group walks at its slowest adult's pace
     for (const f of a.followers) if (!f.isChild && f.ownV0 * gk < a.v0) a.v0 = Math.max(0.85, f.ownV0 * gk);
     for (const f of a.followers) f.v0 = a.v0 * r.range(1.0, 1.06);
@@ -814,8 +861,9 @@ export class Population {
     const c = this.c;
     this.frame++;
     this.featureT -= dt;
-    if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); this._retrySeats(); }
+    if (this.featureT <= 0) { this.featureT = 0.3; this.scanFeatures(); this._retrySeats(); this._cafeTurnover(); }
     this._fillQueue(3);
+    if (this.doorMates.length) this._doorMates();
     this._stationEvents();
     if ((this.frame % 90) === 11) this._platformArrivals();
     if ((this.frame % 45) === 23) staffTick(c);
@@ -1050,7 +1098,7 @@ export class Population {
       if (!c.side.hidden(sp, dp, 0.6)) return null;
       // a stroller / bicycle points out of the side street: its front must be hidden too
       if (mob && !c.side.hidden(sp, dp - side * 1.3, 0.6)) return null;
-      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: 0.3, src: 'side', mob, shop: r.chance(SHOP_WISH) });
+      const a = this.spawnWalker(sp, side, r.chance(0.5) ? 1 : -1, { d: dp, lane: LANE.SIDE, force: true, group: mob ? 0.3 : 0.45, src: 'side', mob, shop: r.chance(SHOP_WISH) });
       if (!a) return null;
       for (const f of [...a.followers]) {
         f.d = dp + side * r.range(0.4, 1.2); f.s = sp + r.range(-0.5, 0.5);
@@ -1127,9 +1175,52 @@ export class Population {
       a.task = TASK.EMERGE; a.state = ST.GOTO;
       a.gs = dr.s + a.dir * r.range(0.3, 1.2); a.gd = side * (map.wallMin(dr.s, side, 2) - r.range(0.6, 1.2)); a.gTol = 0.4;
       a.alpha = side > 0 ? -PI / 2 : PI / 2; a.vs = 0; a.spawnHidden = true;
+      // often somebody follows them out a moment later: a couple or friends leaving together, a
+      // parent's child (see _doorMates)
+      if (r.chance(DOOR_MATE) && this.doorMates.length < 16) this.doorMates.push({ a, serial: a.serial, dr, side, dIn, t: c.time + r.range(0.8, 1.6), kid: r.chance(0.12), shop: o.kind === 'shop' && r.chance(0.3) });
       return a;
     }
     return null;
+  }
+
+  /** Companions coming out of a door a moment after somebody (_spawnFromDoor): once that person
+   *  is out of the recess (and still near it) and the door leaf is out of sight again, the
+   *  companion appears there and joins them as their group. */
+  _doorMates() {
+    const c = this.c, r = c.rng, L = this.doorMates;
+    for (let i = L.length - 1; i >= 0; i--) {
+      const m = L[i], a = m.a, dr = m.dr;
+      if (!a.active || a.serial !== m.serial || a.leader || a.mob || a.followers.length || c.time > m.t + 5) { L.splice(i, 1); continue; }
+      if (c.time < m.t || a.inDoor) continue;
+      if (Math.abs(a.s - dr.s) > 4 || this.free.length < 12) { L.splice(i, 1); continue; }
+      const s = dr.s + r.range(-0.4, 0.4) * (dr.s1 - dr.s);
+      if (!c.vis.bodyHidden(s, m.dIn, m.side, dr.o.d, dr.oS - dr.o.half, dr.oS + dr.o.half)) continue;
+      // (the doorway clear)
+      let busy = false;
+      for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn && !busy; ii++) {
+        const b = AG[ii];
+        if (b.active && b.inDoor && Math.abs(b.s - s) < 0.7 && Math.abs(b.d - m.dIn) < 0.8) busy = true;
+      }
+      if (busy) continue;
+      L.splice(i, 1);
+      this.placeAt(s, m.dIn, a.vs);
+      const f = this.alloc(KIND.WALKER, 'door', m.kid ? 'child' : 'any', m.shop && !m.kid ? { shop: true } : null);
+      if (!f) continue;
+      f.s = s; f.d = m.dIn; f.side = m.side; f.dir = a.dir; f.lane = a.lane; f.laneF = a.laneF; f.laneD = a.laneD;
+      f.inDoor = true; f.door = dr; f.doorS0 = dr.s0; f.doorS1 = dr.s1;
+      f.alpha = m.side > 0 ? -PI / 2 : PI / 2; f.vs = 0; f.spawnHidden = true;
+      f.state = ST.WALK; f.task = TASK.NONE;
+      f.leader = a; a.followers.push(f); a.nFollow = 1;
+      const sR = r.chance(0.5) ? 1 : -1;
+      if (f.isChild) { f.baseF = r.range(-0.05, 0.1); f.baseR = sR * r.range(0.4, 0.46); f.handTo = a; }
+      else { f.baseF = r.range(-0.1, 0.1); f.baseR = sR * r.range(0.52, 0.64); }
+      // the pair walks at the slower one's pace
+      a.v0 = Math.max(0.85, Math.min(a.v0, f.isChild ? a.v0 * 0.85 : f.ownV0) * r.range(0.9, 0.97));
+      f.v0 = a.v0 * r.range(1.0, 1.04);
+      this.stats.bySource.door++;
+      this.stats.doorMate++;
+      return;   // (one a frame)
+    }
   }
 
   /** Far down the street: a figure that steps out from behind another (taller) figure or a kiosk
@@ -1184,6 +1275,20 @@ export class Population {
       else { a.lane = LANE.EDGE; a.laneF = Math.min(1, Math.max(0, (ad - TRACK_ZONE_HALF - 0.55) / 0.4)); }
     }
     a.spawnHidden = true;
+    // company stepping out from behind the same figure / kiosk with them: further back on the
+    // same line of sight (each no taller than a figure in front), then up into their places
+    if (r.chance(0.45) && !this._groupNear(a)) {
+      this._makeGroup(a, { force: true, src: 'behind' });
+      const lim = occ ? 0.03 : Math.max(0.03, w / 2 - 0.26);
+      let back = behind;
+      for (const f of [...a.followers]) {
+        back += r.range(0.6, 0.85);
+        f.s = os + back; f.d = vis.rayBehind(os, od, back);
+        f.lane = a.lane; f.laneF = a.laneF; f.laneD = a.laneD;
+        if ((maxH && f.height > maxH) || vis.rayOffset(f.s, f.d, os, od) > lim || !this._placeOk(f)) this._unspawn(f);
+      }
+      a.nFollow = a.followers.length;
+    }
     return a;
   }
 
@@ -1246,6 +1351,9 @@ export class Population {
         }
         const a = this._seat(q.seat, c.rng, q.role, guardian);
         if (a && q.role === 'adult' && q.table !== undefined) q.seat.feat.adults[q.table] = a;
+        // (a café party gets up together: within a couple of seconds of each other; a party
+        // seated late, after waiting for the budget, still stays a while)
+        if (a && !guardian && q.until !== undefined) { a.partyT = q.until; a.timer = Math.max(25, q.until - c.time) + c.rng.range(0, 2); }
       } else if (q.type === 'passenger') this._placePassenger(q.feat, q.r, q.first);
     }
   }
@@ -1253,52 +1361,57 @@ export class Population {
   _populateCafe(cafe) {
     const c = this.c;
     const r = c.featureRng('cafe', cafe.id);
-    const feat = { type: 'cafe', cafe, occ: new Set(), seats: [], adults: [], staff: null, staffT: 0 };
+    const feat = { type: 'cafe', cafe, occ: new Set(), seats: [], adults: [], staff: null, staffT: 0,
+      share: 0, turnT: 0, byTable: [] };
     this.cafes.set(cafe.id, feat);
-    // patrons sit where the tables are set: a table in use (cups, plates: dressed 2) has its
-    // people at it, one per place set, and somebody on their own there mostly has company (a
-    // friend with no order yet); at a laid table (dressed 1) often a couple or three who have just
-    // sat down, the menu still open, at a bare one (dressed 0) now and then. How busy the
-    // terrace is (_cafeBusy: the avenue more than the rest of the loop, lunch and the evening more
-    // than the afternoon lull or after dark) sets how many tables are taken: on the avenue by day
-    // about two in three, mostly by two to four people (the street photographs).
-    const ev = this.tod.evening, kidK = 1 - 0.5 * this.tod.late;
-    const busy = this._cafeBusy(cafe);
-    const pUse = Math.min(0.97, Math.max(0.6, 0.97 - 0.75 * (1 - busy)));
-    const pLaid = Math.max(0, 0.25 + 0.35 * busy), pBare = Math.max(0, 0.22 * busy - 0.02);
-    const pMate = Math.min(0.8, 0.35 + 0.35 * busy);
+    // How many tables are taken follows the time of day and the street (_cafeShare: on the avenue
+    // by day about two in three). The tables in use (cups, plates: dressed 2) are taken first, then
+    // the laid ones (dressed 1: people who have just sat down, the menu still open), a bare one
+    // now and then. A party is two to four people as a rule (couples facing each other across the
+    // table), somebody on their own now and then; a table in use seats one per place set, often
+    // with a friend who has not ordered yet. A party sits for a while and gets up together.
+    feat.share = this._cafeShare(cafe, r.range(-0.07, 0.07));
+    feat.turnT = c.time + r.range(4, 12);
     cafe.tables.forEach((t, ti) => {
       const dressed = t.dressed ?? 1;
-      const seats = t.chairs.map((ch, ci) => {
+      const list = [];
+      feat.byTable.push(list);
+      t.chairs.forEach((ch, ci) => {
         const key = ti * 8 + ci;
         const s = c.unwrap(ch.s), ts = c.unwrap(t.s);
-        const seat = { type: 'seat', cafe, feat, key, s, d: ch.d, side: cafe.side, faceA: Math.atan2(t.d - ch.d, ts - s), exitD: cafe.side * (cafe._crowdInner - 0.5), dressed, table: ti };
+        const seat = { type: 'seat', cafe, feat, key, s, d: ch.d, side: cafe.side, faceA: Math.atan2(t.d - ch.d, ts - s), exitD: cafe.side * (cafe._crowdInner - 0.5), dressed, table: ti, ci };
         feat.seats.push(seat);
-        return seat;
+        list.push(seat);
       });
-      if (!seats.length) return;
-      let n = 0;
-      if (dressed === 2) {
-        if (!r.chance(pUse)) return;
-        // (the places set: from the furniture when it says, else about two in three chairs, at least one)
-        const places = Array.isArray(t.places) ? t.places.length : Math.max(1, Math.round(seats.length * r.range(0.7, 1.0)));
-        n = places + (r.chance(places === 1 ? pMate : 0.35 + 0.15 * ev) ? 1 : 0);
-      } else {
-        // (a laid or a bare table: people who have just sat down, the waiter not there yet)
-        if (!r.chance(dressed === 1 ? pLaid : pBare)) return;
-        n = r.weighted([[1, 0.15], [2, 0.5], [3, 0.25], [4, 0.1]]);
-      }
-      n = Math.min(n, seats.length);
-      // which chairs: the set places first, the others in a random order
-      const order = seats.map((x, i) => i);
-      for (let i = order.length - 1; i > 0; i--) { const j = r.int(0, i); const tmp = order[i]; order[i] = order[j]; order[j] = tmp; }
-      if (Array.isArray(t.places)) order.sort((x, y) => (t.places.includes(y) ? 1 : 0) - (t.places.includes(x) ? 1 : 0));
-      for (let k = 0; k < n; k++) {
-        // children only at a table where an adult already sits
-        const role = k > 0 && r.chance(0.14 * kidK) ? 'child' : 'adult';
-        this.queue.push({ type: 'seat', seat: seats[order[k]], role, table: ti });
-      }
     });
+    const nT = cafe.tables.length;
+    if (!nT) return;
+    // the tables in order of preference (set ones first, a little shuffled within that)
+    const rank = cafe.tables.map((t, ti) => [(t.dressed ?? 1) + r.range(0, 1.4), ti]).sort((p, q) => q[0] - p[0]);
+    const k = Math.min(nT, Math.max(0, Math.round(feat.share * nT + r.range(-0.45, 0.45))));
+    for (let j = 0; j < k; j++) this._seatParty(feat, rank[j][1], r, c.time + r.range(40, 900));
+  }
+
+  /** A party at table ti of café feature feat (queued: seated over the next frames), getting up
+   *  together at time `until`. r: the random stream to draw from. */
+  _seatParty(feat, ti, r, until) {
+    const t = feat.cafe.tables[ti], seats = feat.byTable[ti];
+    if (!seats || !seats.length) return 0;
+    for (const st of seats) if (feat.occ.has(st.key)) return 0;
+    const dressed = t.dressed ?? 1;
+    const places = Array.isArray(t.places) ? t.places : null;
+    // (at a table in use at least one per place set: the others have not ordered yet)
+    let n = r.weighted([[1, 0.12], [2, 0.5], [3, 0.24], [4, 0.14]]);
+    if (dressed === 2 && places && places.length > n) n = places.length;
+    n = Math.min(n, seats.length);
+    const order = chairOrder(seats, places, n, r);
+    const kidK = 1 - 0.5 * this.tod.late;
+    for (let k = 0; k < n; k++) {
+      // children only at a table where an adult already sits
+      const role = k > 0 && r.chance(0.14 * kidK) ? 'child' : 'adult';
+      this.queue.push({ type: 'seat', seat: seats[order[k]], role, table: ti, until });
+    }
+    return n;
   }
 
   /** Seats dropped for the seating budget (far terraces) are offered again once there is room,
@@ -1377,6 +1490,93 @@ export class Population {
 
   releaseChair(seat) { seat.feat.occ.delete(seat.key); }
 
+  /** Is anybody sitting at (or on the way to) a chair of table ti of café feature feat? */
+  _tableUsed(feat, ti) {
+    const L = feat.byTable[ti];
+    for (let i = 0; i < L.length; i++) if (feat.occ.has(L[i].key)) return true;
+    return false;
+  }
+
+  /** A free table (laid or in use, none of its chairs taken, at least n of them) of café `cafe`
+   *  1-7 m ahead of a walking group's leader a, while the terrace has room for another party
+   *  (its share of tables taken): its chairs are taken for the party and returned in the order
+   *  the members sit down (a couple face to face), or null. */
+  freeTable(cafe, a, n) {
+    const feat = this.cafes.get(cafe.id);
+    if (!feat || !feat.byTable) return null;
+    const nT = feat.byTable.length;
+    let used = 0, best = -1, bd = 7;
+    for (let ti = 0; ti < nT; ti++) {
+      if (this._tableUsed(feat, ti)) { used++; continue; }
+      const L = feat.byTable[ti];
+      if (L.length < n || !L[0].dressed) continue;
+      const ahead = (L[0].s - a.s) * a.dir;
+      if (ahead > 1 && ahead < bd) { bd = ahead; best = ti; }
+    }
+    if (best < 0 || used >= Math.round(feat.share * nT) + 1) return null;
+    const L = feat.byTable[best], t = feat.cafe.tables[best];
+    const order = chairOrder(L, Array.isArray(t.places) ? t.places : null, n, this.c.rng);
+    const out = [];
+    for (let k = 0; k < n; k++) { out.push(L[order[k]]); feat.occ.add(L[order[k]].key); }
+    return out;
+  }
+
+  /** The others of a's party at its café table (adults whose time is up within a few seconds)
+   *  get up with a and walk off as its company; their children come along with a (wards). */
+  leaveWithParty(a, seat) {
+    const r = this.c.rng, feat = seat.feat;
+    for (let ii = 0, AG = this.agents, nn = AG.length; ii < nn; ii++) {
+      const b = AG[ii];
+      if (!b.active || b === a || b.state !== ST.SEATED || b.guardian || b.isChild || !b.feature) continue;
+      if (b.feature.feat !== feat || b.feature.table !== seat.table || b.timer > 8) continue;
+      if (a.followers.length + a.wards.length >= 4) break;
+      for (const w of b.wards) { w.guardian = a; a.wards.push(w); }
+      b.wards.length = 0;
+      this.releaseChair(b.feature); b.feature = null;
+      b.kind = KIND.WALKER; b.state = ST.WALK; b.task = TASK.NONE; b.noRect = true; b.partyT = 0;
+      b.leader = a; a.followers.push(b);
+      const k = a.followers.length;
+      b.baseF = k === 1 ? r.range(-0.1, 0.1) : -r.range(0.7, 0.95);
+      b.baseR = (k % 2 ? 1 : -1) * r.range(0.52, 0.64);
+      b.dir = a.dir; b.side = a.side; b.vs = 0; b.vd = 0;
+    }
+    a.nFollow = a.followers.length;
+    if (!a.nFollow) return;
+    // the group walks at its slowest adult's pace
+    for (const f of a.followers) if (f.ownV0 < a.v0) a.v0 = Math.max(0.85, f.ownV0);
+    for (const f of a.followers) f.v0 = a.v0 * r.range(1.0, 1.04);
+    this.stats.partyLeave++;
+  }
+
+  /** Café turnover: a terrace with fewer tables taken than its share gets a new party now and
+   *  then, at a free table out of the camera's view (in plain view only people walking by sit
+   *  down: behaviour.js startSit, startSitGroup). */
+  _cafeTurnover() {
+    const c = this.c, vis = c.vis, r = c.rng;
+    for (const feat of this.cafes.values()) {
+      if (c.time < feat.turnT || !feat.byTable) continue;
+      const cafe = feat.cafe, rel = c.unwrap((cafe.s0 + cafe.s1) / 2) - c.camU;
+      if (rel < -RANGE_BEHIND || rel > FEATURE_AHEAD) continue;
+      feat.turnT = c.time + r.range(6, 20);
+      const nT = feat.byTable.length;
+      let used = 0;
+      for (let ti = 0; ti < nT; ti++) if (this._tableUsed(feat, ti)) used++;
+      if (used >= Math.round(feat.share * nT)) continue;
+      // a free table nobody sees (a set one first)
+      let best = -1, bs = -1;
+      for (let ti = 0; ti < nT; ti++) {
+        const L = feat.byTable[ti];
+        if (!L.length || this._tableUsed(feat, ti)) continue;
+        let hid = true;
+        for (let i = 0; i < L.length && hid; i++) if (!vis.hidden(L[i].s, L[i].d)) hid = false;
+        if (!hid) continue;
+        const sc = (cafe.tables[ti].dressed ?? 1) + r.range(0, 1.4);
+        if (sc > bs) { bs = sc; best = ti; }
+      }
+      if (best >= 0 && this._seatParty(feat, best, r, c.time + r.range(120, 900))) this.stats.cafeTurn++;
+    }
+  }
+
   /** The children at an adult's table get up with them and walk along at their side. */
   releaseWards(adult) {
     const r = this.c.rng;
@@ -1385,8 +1585,15 @@ export class Population {
       if (w.feature) { this.releaseChair(w.feature); w.feature = null; }
       w.guardian = null;
       w.kind = KIND.WALKER; w.state = ST.WALK; w.task = TASK.NONE; w.noRect = true;
+      // beside the adult on a side no grown-up companion walks on, holding its hand
+      let pos = false, neg = false;
+      for (const f of adult.followers) if (!f.isChild && Math.abs(f.baseF) < 0.5) { if (f.baseR > 0) pos = true; else neg = true; }
+      for (const f of adult.followers) if (f.isChild) { if (f.baseR > 0) pos = true; else neg = true; }
       w.leader = adult; adult.followers.push(w);
-      w.baseF = r.range(-0.05, 0.1); w.baseR = (adult.followers.length % 2 ? 1 : -1) * r.range(0.38, 0.46);
+      const sideR = !pos ? 1 : !neg ? -1 : 0;
+      w.baseF = sideR ? r.range(-0.05, 0.1) : -r.range(0.7, 0.9);
+      w.baseR = sideR ? sideR * r.range(0.4, 0.46) : (r.chance(0.5) ? 1 : -1) * r.range(0.2, 0.35);
+      w.handTo = sideR !== 0 ? adult : null;
       w.dir = adult.dir; w.side = adult.side;
     }
     adult.wards.length = 0;

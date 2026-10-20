@@ -1,17 +1,19 @@
 // Metals, rail steel, paint, plastic and glass recipes.
 
 // Rail head steel. Tile 2 m along the rail (u) × 0.25 m across (v, metres). Only the
-// running band, 21-29 mm wide on the head (drifting a few mm along the rail), is bright
-// steel: satin at roughness 0.5-0.7, never a mirror, with lengthwise wheel streaks
-// (roughness ±0.06 in fine lines), 2-10 cm patches and 10-50 cm dull stretches along the
-// rail, a few duller, darker burn patches where wheels slipped, and fine dark pits of
-// rolling-contact fatigue. Everything off the band is oxidised: the crowned shoulders
-// either side of it carry a thin brown-grey oxide over the steel (albedo ~(0.235, 0.205,
-// 0.175), roughness ~0.66, metal 0.55), the field-side bevel and the gauge corner a
-// rust-brown film (albedo ~(0.2, 0.155, 0.11), roughness ~0.72, metal 0.4), so the head
-// reads as a bright worn band between dull brown sides, as in the photographs. The upper
-// gauge face (flange contact) is lightly polished; the guard lip past the groove is dull
-// dusty oxide.
+// running band, 16-26 mm wide on the head (drifting a few mm along the rail, its edges
+// ragged), is bright steel, and even that is broken up along the rail: polished stretches
+// (roughness ~0.45-0.6) between duller ones (up to ~0.9), 0.3-2 m stretches under a thin
+// brown film where the wheels have not polished it lately (partly dielectric), darker
+// blue-grey skid burns, mid-scale lengthwise streaks (never a fine brushed-metal grain),
+// fatigue pits and small rust blooms along its edges. Everything off the band is
+// oxidised: the crowned shoulders either side of it carry a brown-grey oxide over the
+// steel (albedo ~(0.2, 0.17, 0.14), roughness ~0.68, metal 0.5), the field-side bevel and
+// the gauge corner a rust-brown film (albedo ~(0.17, 0.125, 0.085), roughness ~0.74, metal
+// 0.38), darkened by grime towards the groove, with rust blooms here and there, so the
+// head reads as a narrow broken bright line between dull brown sides, as in the
+// photographs. The upper gauge face (flange contact) is lightly polished; the guard lip
+// past the groove is dull dusty oxide.
 // The band sits where the street geometry puts the head top (see meta.uv of rail.head):
 //   swept rail     the head top (x -25 .. 21.5 mm) is pinned onto v 0.031-0.0543, i.e. half a
 //                  metre of v per metre of head, centre (x = 0) at v = 0.0435; field-side
@@ -26,58 +28,69 @@ export const railhead = {
   pass: { normal: 1.0, ao: 0.0, cavity: 0.0 },
   glsl: /* glsl */ `
 void surface(vec2 m, inout Surf s) {
-  float wander = fbm2(m, vec2(0.6, 1.0), 3, 0.5, 134u) * 0.003;            // band drift on the head (m)
-  float hw = 0.0125 + 0.0018 * fbm2(m, vec2(1.3, 1.0), 2, 0.5, 135u);      // band half width on the head
+  float wander = fbm2(m, vec2(0.6, 1.0), 3, 0.5, 134u) * 0.0035;           // band drift on the head (m)
+  float hw = 0.0105 + 0.0022 * fbm2(m, vec2(1.3, 1.0), 2, 0.5, 135u);      // band half width on the head
   float d1 = (m.y - 0.0435) * 2.0 - wander;                                // swept head (0.5 v per m)
   float d0 = (m.y < 0.5 * uTile.y ? m.y : m.y - uTile.y) - wander;          // inlay strips (1:1)
   bool swept = m.y > 0.026 && m.y < 0.07;
   float dB = swept ? abs(d1) : abs(d0);
-  float band = 1.0 - smoothstep(hw - 0.0018, hw + 0.0018, dB);
+  // ragged band edges: the polish thins out unevenly over a few millimetres
+  float rag = 0.0016 * fbm2(m, vec2(12.0, 1.0), 3, 0.55, 141u) + 0.0008 * fbm2(m, vec2(45.0, 1.0), 2, 0.5, 142u);
+  float band = 1.0 - smoothstep(hw - 0.0022, hw + 0.0012, dB + rag);
   float e = dB - hw;                                                        // outside the band (m on the head)
   float edge = smoothstep(-0.001, 0.001, e) * (1.0 - smoothstep(0.002, 0.0035, e));
   float gauge = (1.0 - smoothstep(0.0025, 0.0045, abs(m.y - 0.076))) * step(0.0543, m.y);
   float lipZ = smoothstep(0.098, 0.104, m.y) * (1.0 - smoothstep(0.13, 0.136, m.y));   // guard lip
-  // lengthwise wheel streaks (fine lines and 2-10 cm patches along the rail), burn patches
+  // along the rail: mid-scale lengthwise streaks (lanes 5-15 mm across), 2-10 cm patches,
+  // 10-50 cm dull stretches, 0.3-2 m filmed stretches, skid burns
   float streak = fbm2(m, vec2(0.5, 300.0), 3, 0.5, 131u);
-  float streakF = fbm2(m, vec2(0.25, 700.0), 2, 0.5, 137u);
+  float streakM = fbm2(m, vec2(0.8, 80.0), 3, 0.55, 143u);
   float patchy = fbm2(m, vec2(12.0, 30.0), 3, 0.5, 138u);
   float streakC = fbm2(m, vec2(1.5, 90.0), 3, 0.5, 132u);
-  float burn = smoothstep(0.38, 0.75, fbm2(m, vec2(2.0, 14.0), 3, 0.5, 136u));
-  float dullS = smoothstep(-0.1, 0.5, fbm2(m, vec2(3.0, 8.0), 3, 0.5, 139u));        // 10-50 cm dull stretches
+  float burn = smoothstep(0.3, 0.7, fbm2(m, vec2(2.0, 14.0), 3, 0.5, 136u));
+  float dullS = smoothstep(-0.15, 0.45, fbm2(m, vec2(3.0, 8.0), 3, 0.5, 139u));       // 10-50 cm dull stretches
+  float filmS = smoothstep(0.05, 0.45, fbm2(m, vec2(0.7, 3.0), 3, 0.5, 144u));        // 0.3-2 m filmed stretches
   vec4 pv = voro(m, vec2(220.0, 260.0), 133u, 1.0);
   float pit = smoothstep(0.3, 0.1, pv.x) * step(0.94, pv.z);                        // fatigue pits ~1-2 mm
-  // running band: satin steel, rough and streaky, burn patches and dull stretches darker
-  vec3 bandC = vec3(0.47, 0.465, 0.455) * (1.0 + 0.06 * streak + 0.04 * streakF + 0.05 * patchy) * (1.0 - 0.1 * dullS);
-  bandC = mix(bandC, vec3(0.3, 0.27, 0.25), 0.55 * burn);
+  // rust blooms: 4-12 mm orange-brown spots, along the band edges and on the oxidised steel
+  vec4 rv = voro(m, vec2(110.0, 600.0), 145u, 1.0);
+  float bloom = smoothstep(0.42, 0.12, rv.x) * step(0.88, rv.z);
+  // running band: polished steel, broken up along the rail
+  vec3 bandC = vec3(0.47, 0.465, 0.455) * (1.0 + 0.02 * streak + 0.07 * streakM + 0.05 * patchy) * (1.0 - 0.14 * dullS);
+  bandC = mix(bandC, vec3(0.3, 0.255, 0.21) * (1.0 + 0.1 * streakM), 0.6 * filmS);
+  bandC = mix(bandC, vec3(0.22, 0.215, 0.225), 0.6 * burn);
   bandC = mix(bandC, vec3(0.2, 0.18, 0.16), 0.5 * pit);
-  float bandR = clamp(0.56 + 0.07 * streak + 0.04 * streakF + 0.06 * patchy + 0.1 * burn + 0.06 * dullS + 0.2 * pit, 0.46, 0.8);
+  float bandR = clamp(0.5 + 0.02 * streak + 0.1 * streakM + 0.08 * patchy + 0.12 * burn + 0.2 * dullS + 0.2 * filmS + 0.2 * pit, 0.42, 0.92);
+  float bandM = 1.0 - 0.12 * filmS;
   // lightly polished upper gauge face
-  vec3 gaugeC = vec3(0.36, 0.35, 0.34) * (1.0 + 0.05 * streakC);
-  float gaugeR = 0.5 + 0.05 * streakC + 0.05 * burn;
-  // worn steel off the band: crowned shoulders (head top), and under a thin light oxide film
-  // the field-side bevel and the gauge corner; dark brown oxide only off the head (inlay
-  // margins, the groove walls), dusty oxide on the guard lip
+  vec3 gaugeC = vec3(0.33, 0.315, 0.3) * (1.0 + 0.05 * streakC);
+  float gaugeR = 0.52 + 0.05 * streakC + 0.05 * burn;
+  // worn steel off the band: crowned shoulders (head top), and under a rust-brown film the
+  // field-side bevel and the gauge corner (grimier towards the groove); dark brown oxide
+  // only off the head (inlay margins, the groove walls), dusty oxide on the guard lip
   float top = smoothstep(0.0295, 0.0315, m.y) * (1.0 - smoothstep(0.0533, 0.0553, m.y));
   float headW = smoothstep(0.015, 0.019, m.y) * (1.0 - smoothstep(0.069, 0.073, m.y));
   float inlayW = 1.0 - smoothstep(0.024, 0.03, abs(d0));
   float steelW = max(headW, inlayW);
   float film = (1.0 - top) * (1.0 - inlayW * (1.0 - smoothstep(0.018, 0.026, abs(d0))));   // bevel / corner film
   float rustP = smoothstep(-0.2, 0.6, fbm2(m, vec2(1.0, 30.0), 3, 0.5, 129u));      // patchy oxide
-  vec3 steelC = vec3(0.235, 0.205, 0.175) * (1.0 + 0.12 * streakC + 0.06 * patchy + 0.03 * streak);
-  steelC = mix(steelC, vec3(0.2, 0.155, 0.11) * (1.0 + 0.12 * streakC), film);
-  steelC = mix(steelC, steelC * vec3(0.85, 0.75, 0.66), 0.5 * rustP);
-  steelC = mix(steelC, vec3(0.2, 0.18, 0.16), 0.3 * burn);
-  float steelR = mix(0.66, 0.72, film) + 0.04 * streakC + 0.03 * patchy + 0.04 * rustP;
-  float steelM = mix(0.55, 0.4, film) * (1.0 - 0.2 * rustP);
-  vec3 oxC = vec3(0.155, 0.118, 0.085) * (1.0 + 0.15 * streakC + 0.08 * patchy);
+  float grime = smoothstep(0.05, 0.072, m.y) * step(m.y, 0.08);                     // gauge corner, towards the groove
+  vec3 steelC = vec3(0.2, 0.17, 0.14) * (1.0 + 0.12 * streakC + 0.06 * patchy + 0.03 * streak);
+  steelC = mix(steelC, vec3(0.17, 0.125, 0.085) * (1.0 + 0.12 * streakC), film);
+  steelC = mix(steelC, steelC * vec3(0.85, 0.74, 0.64), 0.55 * rustP);
+  steelC = mix(steelC, vec3(0.18, 0.165, 0.15), 0.3 * burn);
+  steelC *= 1.0 - 0.25 * grime;
+  float steelR = mix(0.68, 0.74, film) + 0.04 * streakC + 0.03 * patchy + 0.04 * rustP;
+  float steelM = mix(0.5, 0.38, film) * (1.0 - 0.2 * rustP);
+  vec3 oxC = vec3(0.145, 0.108, 0.078) * (1.0 + 0.15 * streakC + 0.08 * patchy);
   vec3 dustC = vec3(0.16, 0.145, 0.125) * (1.0 + 0.12 * streakC) * (1.0 - 0.1 * burn);
-  vec3 edgeC = vec3(0.33, 0.32, 0.31) * (1.0 + 0.04 * streak);                            // 2-3 mm contact edge
+  vec3 edgeC = vec3(0.3, 0.285, 0.27) * (1.0 + 0.04 * streak);                            // 2-3 mm contact edge
   vec3 dull = mix(oxC, steelC, steelW);
-  float dullR = mix(0.7 + 0.04 * streakC, steelR, steelW);
+  float dullR = mix(0.72 + 0.04 * streakC, steelR, steelW);
   float dullM = mix(0.4, steelM, steelW);
-  dull = mix(dull, edgeC, edge * steelW);
-  dullR = mix(dullR, 0.54, edge * steelW);
-  dullM = mix(dullM, 0.8, edge * steelW);
+  dull = mix(dull, edgeC, edge * steelW * (1.0 - 0.6 * filmS));
+  dullR = mix(dullR, 0.56, edge * steelW);
+  dullM = mix(dullM, 0.75, edge * steelW);
   dull = mix(dull, dustC * (1.0 + 0.1 * streak), lipZ);
   dullR = mix(dullR, 0.72 + 0.05 * streakC, lipZ);
   dullM = mix(dullM, 0.4, lipZ);
@@ -86,8 +99,13 @@ void surface(vec2 m, inout Surf s) {
   float pol = max(band, 0.6 * gauge) * (1.0 - lipZ);
   s.albedo = mix(dull, polC, pol);
   s.rough = clamp(mix(dullR, polR, pol), 0.3, 1.0);
-  s.metal = mix(dullM, 1.0, pol);
-  s.height = mix(streakC * 0.0001, (streak + 0.5 * streakF) * 0.00005, pol);
+  s.metal = mix(dullM, mix(1.0, bandM, band), pol);
+  // rust blooms near the band edges and on the oxidised steel (not on the polished band)
+  float bl = bloom * (1.0 - band) * steelW * (1.0 - lipZ) * smoothstep(-0.001, 0.003, e);
+  s.albedo = mix(s.albedo, vec3(0.24, 0.115, 0.055) * (0.85 + 0.3 * fract(rv.z * 13.7)), 0.85 * bl);
+  s.rough = mix(s.rough, 0.88, bl);
+  s.metal = mix(s.metal, 0.25, bl);
+  s.height = mix(streakC * 0.0001, (0.4 * streak + streakM) * 0.00005, pol) + bl * 0.00015;
 }
 `,
 };

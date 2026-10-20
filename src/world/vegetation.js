@@ -18,6 +18,9 @@ import { createGroundShade } from './vegetation/groundShade.js';
 //       It does not wait for the atlas: the leaf materials start on blank stand-ins (no
 //       leaves drawn, same shader programs) and take the atlas when the painting ends,
 //       in the background while the other modules start, long before the first frame.
+//       The painting runs on CPU canvases (atlasPaint.js), so it never waits behind the
+//       start-up compile in the GPU process, and `atlasReady` (settled once the atlas is
+//       on the materials) is one of core's readiness gates: the ride never starts bare.
 //       The drawn size of every tree goes back into layout.trees (_writeBack).
 // build: per chunk, adds one instance per tree and per prop (stakes and ties, planter
 //       boxes, raised tree beds; planters come from layout.furniture entries of type
@@ -343,7 +346,11 @@ const vegetation = {
   update(dt, app) {
     // until ready every pool draws once a frame (see VegetationPools.warmup)
     if (!app.ready) this.pools.warmup(app.camera.position, app.camera.getWorldDirection(_p));
-    else if (this.pools.warm) this.pools.endWarmup();
+    else if (this.pools.warm) {
+      this.pools.endWarmup();
+      // (core's ready waits for atlasReady, up to its gate time-out: say so if it gave up)
+      if (!this.atlas) console.warn('[vegetation] ready before the leaf atlas arrived: crowns are bare until it does');
+    }
     // leaf coverage mode follows the post chain's scene target (its MSAA sample count, 0 = none)
     const post = app.post, rt = post && !post.disabled ? post.sceneRT : null;
     this.mats.params.a2c.value = rt && rt.samples > 0 ? rt.samples : 0;

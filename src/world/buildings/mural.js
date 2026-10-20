@@ -7,11 +7,12 @@ import { grimePaint } from './grime.js';
 
 // Large painted murals on blank gable and party walls (a few of the walls and taller
 // blocks that close the view down the street carry one, as in the photographs). Painted
-// once at start-up on a canvas: a city panorama under a cloudy or an evening sky, a
+// once at start-up on a canvas: a city panorama under an evening sky (warm or dusky rose), a
 // crowd of figures before old houses, a tree with birds; each built from many shaded
-// shapes and brush strokes in the muted, sun-faded palette of outdoor acrylic on render,
-// the skies flat pastel paint with painted clouds (a blurred, saturated sky reads as a
-// glass curtain wall mirroring the real one). Then weathered: bleached towards the top,
+// shapes and brush strokes in the muted, sun-faded palette of outdoor acrylic on render;
+// the panoramas' evening skies flat warm paint with painted clouds, the figures and the
+// tree on a painted ground (a pale blue sky with clouds, seen far down the street, reads
+// as a glass curtain wall mirroring the real one). Then weathered: bleached towards the top,
 // chalky grain, a few peeled and patched spots near the edges, rain streaks, a grimy
 // foot.
 //
@@ -30,8 +31,9 @@ let mats = null;
 
 // Printed vinyl adverts on steel frames (the big exposed side walls that face back down
 // the street carry some, as in the photographs): graphic designs with generic Hebrew
-// headlines (no brands), sun-faded and grimy. Sink key `advert<k>`, uv 0..1 over the
-// panel (portrait, ADVERT_ASPECT = width / height); lit by floodlights at night.
+// headlines (no brands; a sale, a product, flats for sale, faces), sun-faded and grimy.
+// Sink key `advert<k>`, uv 0..1 over the panel (portrait, ADVERT_ASPECT = width / height);
+// lit by floodlights at night.
 export const ADVERTS = 4;
 export const ADVERT_ASPECT = 0.75;
 const AW = 768, AH = 1024;
@@ -140,12 +142,12 @@ function strokes(g, r, x0, y0, x1, y1, col, n, w0 = 4, w1 = 14, a = [0.08, 0.22]
 }
 
 function sky(g, r, y1, warm = false) {
-  // flat pastel paint, paler towards the horizon (sun-faded acrylic, never the deep blue
-  // of the real sky), and painted clouds: flat light shapes over a slightly darker
-  // underside, hard-edged as a brush leaves them (soft, blurred clouds read as the sky
-  // mirrored in glass)
-  const top = warm ? [218, 164, 128] : mix(r.pick(PAL.sky), [226, 228, 218], 0.38);
-  const low = warm ? [244, 212, 160] : mix(top, [242, 232, 208], 0.6);
+  // an evening sky in flat paint (a warm ochre-peach one, or a dusky rose one), paler
+  // towards the horizon, and painted clouds: flat light shapes over a slightly darker
+  // underside, hard-edged as a brush leaves them. Never a pale blue: a big pastel-blue
+  // sky with clouds, seen far down the street, reads as a glass wall mirroring the real one
+  const top = warm ? [218, 164, 128] : mix(r.pick([[190, 150, 168], [204, 156, 150]]), [226, 210, 200], 0.2);
+  const low = warm ? [244, 212, 160] : mix(top, [242, 222, 196], 0.6);
   const gr = g.createLinearGradient(0, 0, 0, y1);
   gr.addColorStop(0, rgb(top));
   gr.addColorStop(1, rgb(low));
@@ -164,7 +166,55 @@ function sky(g, r, y1, warm = false) {
   }
 }
 
-/** Composition 0: a panorama of old houses, domes and towers on hills under a cloudy sky. */
+/**
+ * A painted ground instead of a sky (the figures and the tree compositions): a flat warm
+ * or deep colour, brushed, with a painted motif on it (a sun with rays, a lattice of
+ * tiles, scattered leaves and birds), so the painting reads as paint on a wall.
+ */
+function backdrop(g, r, y1) {
+  const base = r.pick([[176, 98, 68], [194, 146, 76], [74, 112, 104], [152, 86, 72], [204, 170, 106], [98, 92, 132]]);
+  const gr = g.createLinearGradient(0, 0, 0, y1);
+  gr.addColorStop(0, rgb(shade(base, 1.06)));
+  gr.addColorStop(1, rgb(shade(base, 0.92)));
+  g.fillStyle = gr;
+  g.fillRect(0, 0, TW, y1);
+  strokes(g, r, 0, 0, TW, y1, base, 200, 8, 24, [0.05, 0.14]);
+  const lite = mix(base, [240, 226, 196], 0.55), deep = shade(base, 0.72);
+  const motif = r.int(0, 2);
+  if (motif === 0) {
+    // a big sun with rays
+    const cx = r.range(0.25, 0.75) * TW, cy = r.range(0.3, 0.55) * y1, R = r.range(70, 120);
+    g.strokeStyle = rgb(lite, 0.85); g.lineCap = 'round';
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2 + r.range(-0.05, 0.05);
+      g.lineWidth = r.range(8, 16);
+      g.beginPath(); g.moveTo(cx + Math.cos(a) * R * 1.25, cy + Math.sin(a) * R * 1.25); g.lineTo(cx + Math.cos(a) * R * r.range(1.7, 2.3), cy + Math.sin(a) * R * r.range(1.7, 2.3)); g.stroke();
+    }
+    fillShaded(g, () => { g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); }, mix(lite, [246, 206, 110], 0.5), cx - R, cy - R, cx + R, cy + R, 1.08, 0.9);
+  } else if (motif === 1) {
+    // a lattice of painted tiles: diamonds with a dot in each
+    const s = r.range(48, 70);
+    for (let y = s * 0.5; y < y1 - s * 0.3; y += s) for (let x = ((y / s) % 2) * s * 0.5; x < TW + s; x += s) {
+      g.fillStyle = rgb(r.chance(0.5) ? lite : deep, 0.8);
+      g.beginPath(); g.moveTo(x, y - s * 0.4); g.lineTo(x + s * 0.4, y); g.lineTo(x, y + s * 0.4); g.lineTo(x - s * 0.4, y); g.closePath(); g.fill();
+      g.fillStyle = rgb(shade(base, 1.15), 0.9); g.beginPath(); g.arc(x, y, s * 0.09, 0, Math.PI * 2); g.fill();
+    }
+  } else {
+    // scattered leaves and birds
+    for (let i = 0; i < 40; i++) {
+      const x = r.range(0, TW), y = r.range(0.05, 0.95) * y1, l = r.range(16, 34), a = r.range(0, Math.PI);
+      g.fillStyle = rgb(r.chance(0.6) ? lite : deep, 0.85);
+      g.beginPath(); g.ellipse(x, y, l, l * 0.38, a, 0, Math.PI * 2); g.fill();
+    }
+    g.strokeStyle = rgb(deep, 0.9); g.lineWidth = 5;
+    for (let i = 0; i < 10; i++) {
+      const x = r.range(0, TW), y = r.range(0.05, 0.6) * y1, sz = r.range(14, 28);
+      g.beginPath(); g.moveTo(x - sz, y); g.quadraticCurveTo(x - sz / 2, y - sz * 0.5, x, y); g.quadraticCurveTo(x + sz / 2, y - sz * 0.5, x + sz, y); g.stroke();
+    }
+  }
+}
+
+/** Composition 0: a panorama of old houses, domes and towers on hills under an evening sky. */
 function panorama(g, r, warm = false) {
   sky(g, r, TH * 0.55, warm);
   // far hills
@@ -214,7 +264,7 @@ function panorama(g, r, warm = false) {
 
 /** Composition 1: a crowd of figures (a market, musicians) before old houses. */
 function crowd(g, r) {
-  sky(g, r, TH * 0.4);
+  backdrop(g, r, TH * 0.4);
   // house fronts behind
   for (let x = -20; x < TW;) {
     const w = r.range(110, 200), h = r.range(TH * 0.3, TH * 0.5), col = r.pick([...PAL.stone, ...PAL.cream, PAL.ochre[2]]);
@@ -245,7 +295,7 @@ function crowd(g, r) {
 
 /** Composition 2: a great tree with birds over a stylised landscape. */
 function tree(g, r) {
-  sky(g, r, TH * 0.75);
+  backdrop(g, r, TH * 0.75);
   fillShaded(g, () => { g.beginPath(); g.moveTo(0, TH * 0.8); g.quadraticCurveTo(TW * 0.5, TH * 0.72, TW, TH * 0.8); g.lineTo(TW, TH); g.lineTo(0, TH); g.closePath(); }, r.pick(PAL.ochre), 0, TH * 0.72, 0, TH, 1.1, 0.75);
   // trunk and branches
   const tx = TW * r.range(0.42, 0.58), bark = [96, 74, 56];
@@ -473,6 +523,58 @@ function adEstate(g, r) {
   badge(g, r, AW * 0.15, AH * 0.9, 54, col);
 }
 
+/** One painted portrait (head and shoulders) centred at x, face height fh, top of the head at y. */
+function portrait(g, r, x, y, fh) {
+  const skin = r.pick(PAL.skin), hair = r.pick([[34, 26, 22], [58, 40, 28], [96, 64, 40], [24, 22, 24], [150, 116, 72]]);
+  const fw = fh * 0.74, cy = y + fh * 0.5;
+  // shoulders and the neck
+  const coat = r.pick([...PAL.blue, ...PAL.red, PAL.cream[0], PAL.dark[1], ...PAL.teal]);
+  fillShaded(g, () => { g.beginPath(); g.moveTo(x - fw * 1.6, y + fh * 2.2); g.quadraticCurveTo(x - fw * 1.5, y + fh * 1.15, x - fw * 0.35, y + fh * 1.05); g.lineTo(x + fw * 0.35, y + fh * 1.05); g.quadraticCurveTo(x + fw * 1.5, y + fh * 1.15, x + fw * 1.6, y + fh * 2.2); g.closePath(); }, coat, x - fw * 1.6, 0, x + fw * 1.6, 0, 1.2, 0.7);
+  fillShaded(g, () => { g.beginPath(); g.rect(x - fw * 0.26, y + fh * 0.8, fw * 0.52, fh * 0.32); }, shade(skin, 0.85), x - fw * 0.3, 0, x + fw * 0.3, 0, 1.1, 0.7);
+  // hair behind the head (long on some)
+  const long = r.chance(0.5);
+  g.fillStyle = rgb(hair);
+  g.beginPath(); g.ellipse(x, cy - fh * 0.06, fw * 0.6, fh * 0.6, 0, 0, Math.PI * 2); g.fill();
+  if (long) { g.beginPath(); g.rect(x - fw * 0.6, cy, fw * 1.2, fh * 0.75); g.fill(); }
+  // the face, lit from the left
+  fillShaded(g, () => { g.beginPath(); g.ellipse(x, cy + fh * 0.04, fw * 0.5, fh * 0.52, 0, 0, Math.PI * 2); }, skin, x - fw * 0.5, 0, x + fw * 0.5, 0, 1.15, 0.78);
+  // fringe
+  g.fillStyle = rgb(shade(hair, 1.1));
+  g.beginPath(); g.ellipse(x, cy - fh * 0.36, fw * 0.54, fh * 0.2, r.range(-0.15, 0.15), Math.PI, 0); g.closePath(); g.fill();
+  // eyes, brows, nose, mouth
+  for (const sx of [-1, 1]) {
+    const ex = x + sx * fw * 0.2, ey = cy - fh * 0.02;
+    g.fillStyle = 'rgba(244,240,232,0.95)'; g.beginPath(); g.ellipse(ex, ey, fw * 0.1, fh * 0.035, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = rgb(r.pick([[60, 40, 26], [40, 60, 70], [30, 26, 22]])); g.beginPath(); g.arc(ex, ey, fh * 0.03, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = rgb(shade(hair, 0.9), 0.9); g.lineWidth = fh * 0.025; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(ex - fw * 0.11, ey - fh * 0.075); g.quadraticCurveTo(ex, ey - fh * 0.11, ex + fw * 0.11, ey - fh * 0.07); g.stroke();
+  }
+  g.strokeStyle = rgb(shade(skin, 0.7), 0.8); g.lineWidth = fh * 0.02;
+  g.beginPath(); g.moveTo(x + fw * 0.02, cy + fh * 0.02); g.lineTo(x + fw * 0.07, cy + fh * 0.17); g.lineTo(x - fw * 0.03, cy + fh * 0.19); g.stroke();
+  fillShaded(g, () => { g.beginPath(); g.ellipse(x, cy + fh * 0.31, fw * 0.16, fh * 0.045, 0, 0, Math.PI * 2); }, r.pick([[176, 84, 80], [160, 92, 84], [190, 100, 96]]), x, cy + fh * 0.27, x, cy + fh * 0.35, 1.15, 0.75);
+  if (r.chance(0.6)) { g.strokeStyle = 'rgba(250,246,240,0.8)'; g.lineWidth = fh * 0.012; g.beginPath(); g.moveTo(x - fw * 0.12, cy + fh * 0.31); g.lineTo(x + fw * 0.12, cy + fh * 0.31); g.stroke(); }
+}
+
+/** Design 3: faces (one or two people, big), a headline and a brand strip. */
+function adPortrait(g, r) {
+  const col = r.pick(FIELD);
+  const gr = g.createLinearGradient(0, 0, AW, AH);
+  gr.addColorStop(0, rgb(shade(col, 1.2))); gr.addColorStop(1, rgb(shade(col, 0.82)));
+  g.fillStyle = gr; g.fillRect(0, 0, AW, AH);
+  g.fillStyle = 'rgba(255,255,255,0.14)';
+  g.beginPath(); g.arc(AW * 0.32, AH * 0.42, AW * 0.42, 0, Math.PI * 2); g.fill();
+  const two = r.chance(0.5);
+  g.save(); g.beginPath(); g.rect(0, 0, AW, AH * 0.8); g.clip();
+  if (two) { portrait(g, r, AW * 0.22, AH * 0.2, AH * 0.3); portrait(g, r, AW * 0.5, AH * 0.26, AH * 0.28); }
+  else portrait(g, r, AW * 0.34, AH * 0.16, AH * 0.4);
+  g.restore();
+  text(g, r.pick(HEAD), AW * 0.95, AH * 0.13, 92, '#ffffff', 'right', 800, AW * 0.5);
+  text(g, r.pick(SUB), AW * 0.95, AH * 0.22, 50, 'rgba(255,255,255,0.92)', 'right', 400, AW * 0.42);
+  g.fillStyle = '#ffffff'; g.fillRect(0, AH * 0.8, AW, AH * 0.2);
+  text(g, r.pick(ESTATE.concat(HEAD)), AW * 0.94, AH * 0.9, 58, rgb(shade(col, 0.8)), 'right', 700, AW * 0.62);
+  badge(g, r, AW * 0.13, AH * 0.9, 54, col);
+}
+
 function roundRect(g, x, y, w, h, rr) {
   g.beginPath();
   g.moveTo(x + rr, y); g.lineTo(x + w - rr, y); g.quadraticCurveTo(x + w, y, x + w, y + rr); g.lineTo(x + w, y + h - rr);
@@ -501,7 +603,7 @@ function paintAdvert(k) {
   const c = canvas(AW, AH);
   const g = c.getContext('2d');
   const r = RNG.from('buildings', 'advert', k);
-  [adField, adProduct, adEstate, adField][k % 4](g, r);
+  [adField, adProduct, adEstate, adPortrait][k % 4](g, r);
   weatherAdvert(g, r);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;

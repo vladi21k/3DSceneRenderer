@@ -9,7 +9,8 @@ import { uvRect, uvSub } from './prints.js';
 // Everyday street clutter the master plan leaves out, planned once at init (deterministic)
 // and registered as crowd obstacles (layout.addObstacles):
 //   * utility cabinets (signals, power, telecom): powder-coated steel on a concrete plinth,
-//     in the tree line about every 150 m, some with flyers stuck on the doors;
+//     in the tree line about every 150 m, most with flyers stuck on the doors (and, from
+//     the paint, stickers, tags, dust on the cap and run-off below the louvres);
 //   * vendor push-carts, one every 300-400 m just off the tree line: a closed cart under a
 //     white sheet held down by bungee cords, or a glass case of sesame bread rings;
 //   * the occasional plywood hoarding box (a utility dig, a stall in storage), posters on it;
@@ -405,7 +406,7 @@ export function planClutter(app) {
       const s0 = s, side = rng.chance(0.5) ? 1 : -1;
       s += rng.range(110, 190);
       if (layout.isInStation(s0, 10) || layout.isInCrossStreet(s0, side, 5)) continue;
-      const flyers = rng.chance(0.55), along = rng.chance(0.3), turn = rng.chance(0.5) ? 0 : Math.PI, jit = rng.range(-0.04, 0.04);
+      const flyers = rng.chance(0.8), along = rng.chance(0.3), turn = rng.chance(0.5) ? 0 : Math.PI, jit = rng.range(-0.04, 0.04);
       const color = tint(rng, CAB_COL);
       for (const ds of [0, 2.5, -2.5, 5, -5, 7.5, -7.5]) {
         const ss = s0 + ds, d = side * (TREE_D + 0.15);

@@ -238,7 +238,7 @@ export function facadePlan(lot) {
         shutters: rng.chance(0.25) ? (rng.chance(0.5) ? 'open' : 'closed') : null,
         lit: rng.next(), // threshold vs uNight to decide which windows are lit at dusk
         curtain: rng.chance(0.5),
-        ac: rng.chance(modern ? 0.14 : 0.08),   // split AC unit hanging under the window
+        ac: rng.chance(modern ? 0.22 : 0.09),   // split AC unit hanging under the window (about one later window in five)
         flowerBox: rng.chance(0.07),
       };
       if (modern && win.shutters) win.shutters = null;   // (the facades put roller shutters on sliders)
@@ -1174,8 +1174,11 @@ const RENDER_WASH = [
 ];
 // old fronts lime-washed later: cream, off-white, buff, a pale ochre
 const PALE_WASH = [[[1.16, 1.06, 0.86], 0.35], [[1.1, 1.08, 1.02], 0.3], [[1.22, 1.06, 0.82], 0.2], [[1.26, 1.04, 0.66], 0.15]];
-// fronts closing the view: ochre, yellow, orange, rose, a white one now and then
-const WARM_WASH = [[[1.3, 1.0, 0.55], 0.28], [[1.32, 1.12, 0.66], 0.18], [[1.34, 0.82, 0.48], 0.2], [[1.3, 0.86, 0.72], 0.16], [[1.1, 1.08, 1.03], 0.18]];
+// fronts closing the view: ochre, yellow, orange, rose, a white one now and then, each a
+// quarter less saturated than fresh paint (sun-faded washes, never a flat sugared pastel)
+const fadeWash = (c, k) => { const l = (c[0] + c[1] + c[2]) / 3; return c.map((x) => l + (x - l) * (1 - k)); };
+const WARM_WASH = [[[1.3, 1.0, 0.55], 0.28], [[1.32, 1.12, 0.66], 0.18], [[1.34, 0.82, 0.48], 0.2], [[1.3, 0.86, 0.72], 0.16], [[1.1, 1.08, 1.03], 0.18]]
+  .map(([c, w]) => [fadeWash(c, 0.25), w]);
 const PLASTER_ALB = [0.66, 0.62, 0.54];    // the plaster texture's mean albedo (linear)
 const ASHLAR_ALB = [0.59, 0.535, 0.43];    // the ashlar texture's (= CREAM tint)
 
@@ -1213,24 +1216,32 @@ const TOWER_RENDER = [
 
 /**
  * A view-terminating lot becomes a taller block: the street front keeps its storeys and
- * a plain modern block of several more rises set back behind it (plan.upper with
- * tower: true), rendered (ochre, orange, white) or stone-clad, with a window in every
- * bay of its front and sides, some shuttered, and on some a big painted mural covering
- * the side that faces back down the street.
+ * a plain later block of two to four more rises set back behind it (plan.upper with
+ * tower: true), clad in the street's stone (with storey bands) or rendered (ochre,
+ * orange, white; slab edges on some), so the view ends on a 6-9 storey block as in the
+ * photographs, never on a slab towering over the street. Its fronts are lived in: bay
+ * columns of different windows (wide, standard, a narrow one for a bathroom or the
+ * stair), stacked balconies with French windows in some columns, split AC units under
+ * about 30 % of the windows, roller shutters part or all the way down (or louvred
+ * leaves), and on some rendered ones a big painted mural on the side that faces back
+ * down the street (a composition with no sky in it: the figures, the tree).
+ *   plan.upper.bands   floor indices of the volume (k: the line v0 + k floorH) carrying a
+ *                      string course or an exposed slab edge
+ *   plan.upper.bandH, bandP  its height and projection
  */
 function tower(plan, lot) {
   if (plan.cornerU0 || plan.cornerU1 || plan.width < 8 || plan.depth < 12) return;
   const rng = RNG.from(lot.seed, 'tower');
   if (plan.roof.type !== 'flat') plan.roof = { type: 'flat' };
   const nF = plan.floors.length;
-  const floors = Math.max(3, rng.int(9, 12) - nF);
+  const floors = Math.max(2, Math.min(4, rng.int(7, 9) - nF));
   const setback = rng.range(2.4, 4.5);
   const in0 = rng.chance(0.5) ? 0 : rng.range(0.4, 1.2), in1 = rng.chance(0.5) ? 0 : rng.range(0.4, 1.2);
   const width = plan.width - in0 - in1;
   const depth = Math.min(plan.depth - setback - 1.0, rng.range(10, 14));
   if (width < 7 || depth < 6) return;
   const floorH = rng.range(2.95, 3.15);
-  const material = rng.chance(0.7) ? 'plaster' : 'stone';
+  const material = rng.chance(0.5) ? 'plaster' : 'stone';
   const color = material === 'plaster' ? rng.pick(TOWER_RENDER) : [0.93, 0.9, 0.84];
   const v0 = plan.parapet.y;
   const f = lot.frame;
@@ -1238,31 +1249,61 @@ function tower(plan, lot) {
   const matrix = f.matrix.clone().makeBasis(f.uDir, f.up, f.nDir).setPosition(origin);
   const frame = { origin, uDir: f.uDir.clone(), nDir: f.nDir.clone(), up: f.up.clone(), width, ground0: f.floorRef + v0, ground1: f.floorRef + v0, floorRef: f.floorRef, matrix };
   const shutterKind = material === 'plaster' && color[2] < 0.7 ? 'louvre' : 'roller';
-  // a window per bay and storey: some roller shutters part or all the way down, or
-  // louvred leaves (closed, or folded back on the warm-coloured blocks)
-  const row = (len, tag) => {
+  // (the lived-in variety has a stream of its own)
+  const mx = RNG.from(lot.seed, 'towerMix');
+  const solid = mx.chance(0.6);
+  const bands = material === 'stone' ? (mx.chance(0.6) ? Array.from({ length: floors }, (_, k) => k + 1) : [1, floors])
+    : mx.chance(0.5) ? Array.from({ length: floors }, (_, k) => k + 1) : [];
+  const balconies = [];
+  // a column per bay: its window kind, and whether it stacks balconies (front only)
+  const row = (len, tag, front) => {
     const ops = [];
     const nb = Math.max(1, Math.floor((len - 1.2) / rng.range(2.7, 3.2))), bw = (len - 1.2) / nb;
     const ww = Math.min(bw - 0.9, rng.range(1.2, 1.5)), wh = rng.range(1.4, 1.55);
+    const cols = [];
+    for (let b = 0; b < nb; b++) {
+      const t = mx.next();
+      const kind = t < 0.18 ? 'narrow' : t < 0.3 && bw > 2.6 ? 'wide' : 'std';
+      cols.push({ kind, bal: front && kind !== 'narrow' && mx.chance(0.35), bd: mx.range(1.0, 1.35) });
+    }
     for (let k = 0; k < floors; k++) {
       const y = v0 + k * floorH + rng.range(0.85, 0.92);
       for (let b = 0; b < nb; b++) {
         const h = rng.next();
+        const c = cols[b], uc = 0.6 + bw * (b + 0.5);
         const shutters = h < 0.4 ? (shutterKind === 'roller' ? 'roller' : h < 0.15 ? 'closed' : 'open') : 'none';
-        ops.push({ id: `${lot.id}:t${tag}${k}b${b}`, floor: nF + k, bay: b, uc: 0.6 + bw * (b + 0.5), w: ww, y, h: wh, top: 'flat', kind: 'window',
-          recess: rng.range(0.14, 0.2), shutters, roller: rng.range(0.25, 1), lit: rng.next(), curtain: rng.chance(0.5) });
+        const o = { id: `${lot.id}:t${tag}${k}b${b}`, floor: nF + k, bay: b, uc, w: ww, y, h: wh, top: 'flat', kind: 'window',
+          recess: rng.range(0.14, 0.2), shutters, roller: rng.range(0.25, 1), lit: rng.next(), curtain: rng.chance(0.5) };
+        if (c.bal && k >= 1) {
+          // French windows onto a balcony slab on the floor line
+          const fy = v0 + k * floorH + 0.02;
+          o.kind = 'balconyDoor'; o.y = fy + 0.02; o.h = Math.min(2.2, floorH - 0.7); o.w = Math.min(bw - 0.7, Math.max(ww, 1.3));
+          balconies.push({ floor: nF + k, u0: uc - Math.min(bw * 0.45, 1.35), u1: uc + Math.min(bw * 0.45, 1.35), y: fy, depth: c.bd, slabT: 0.15, solid });
+        } else if (c.kind === 'narrow') {
+          o.w = Math.min(ww, mx.range(0.55, 0.75)); o.h = mx.range(0.85, 1.05); o.y = y + wh - o.h;
+        } else if (c.kind === 'wide') {
+          o.w = Math.min(bw - 0.6, ww + mx.range(0.4, 0.8));
+        }
+        if (o.shutters === 'roller' && mx.chance(0.3)) o.roller = 1;
+        // split AC units under about 30 % of the windows (a floor below them to hang on)
+        if (o.kind === 'window' && k >= 1 && c.kind !== 'narrow' && mx.chance(0.32)) o.ac = true;
+        ops.push(o);
       }
     }
     return ops;
   };
-  const openings = row(width, 'f');
+  const openings = row(width, 'f', true);
   // the side facing back down the street (the oncoming tram): u = 0 on the left of the
   // street (side < 0), u = width on the right
   const eFace = lot.side < 0 ? 0 : 1;
+  // (compositions with no sky: a pastel painted sky this size, seen far down the street,
+  // reads as a glass wall mirroring the real one)
+  const NO_SKY = [1, 2, 4, 5];
   const mural = material === 'plaster' && rng.chance(0.55)
-    ? { e: eFace, k: rng.int(0, MURAL_KINDS - 1), u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
+    ? { e: eFace, k: NO_SKY[rng.int(0, MURAL_KINDS - 1) % NO_SKY.length], u0: rng.range(0.6, 1.4), u1: depth - rng.range(0.6, 1.4), v0: v0 + rng.range(0.6, 2.5), v1: v0 + floors * floorH - rng.range(0.6, 1.4) }
     : null;
-  const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`)));
+  if (mural && mural.v1 - mural.v0 < 4) mural.v0 = Math.max(v0 + 0.4, mural.v1 - 4);
+  const sides = [0, 1].map((e) => (mural && mural.e === e ? [] : row(depth, `s${e}`, false)));
   // the painters worked round the windows of a bay column or two on the mural's side, so
   // they break the image, as on the painted gables in the photographs (mural.windows:
   // inside the painted rectangle; buildings draws them, the far field keeps the panel
@@ -1285,6 +1326,7 @@ function tower(plan, lot) {
       }
     }
   }
-  plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind, balconies: [] };
+  plan.upper = { setback, u0: in0, u1: plan.width - in1, width, depth, v0, floorH, floors, material, color, openings, frame, selfDressed: true, addition: true, tower: true, sides, mural, shutterKind, balconies,
+    bands, bandH: material === 'stone' ? 0.24 : 0.2, bandP: material === 'stone' ? 0.055 : 0.04 };
   for (const o of [...openings, ...sides[0], ...sides[1], ...(mural ? mural.windows : [])]) setArch(o);
 }

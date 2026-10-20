@@ -130,6 +130,12 @@ const facades = {
     // template vertices whose normal had to be rebuilt at bake time (geo.js fixNormals):
     // a generator producing zero normals; must stay 0 (checked with debug=1)
     Object.defineProperty(this.stats, 'badNormals', { get: () => BAD_NORMALS.count, enumerable: true });
+    // the afternoon sun's compass bearing, in the frame env orients its sun path by (the
+    // avenue at the default start; the afternoon sun stands ~45° left of the direction of
+    // travel there): fronts facing it keep more blinds, nets and roller shutters down
+    const ref = app.route.sample(app.layout.defaultStartS);
+    const fw = new THREE.Vector3(ref.tan.x, 0, ref.tan.z).normalize(), rt = new THREE.Vector3(ref.right.x, 0, ref.right.z).normalize();
+    this.sunH = fw.multiplyScalar(Math.SQRT1_2).addScaledVector(rt, -Math.SQRT1_2);
     this.prefetchMs = 0.8;          // per-frame budget for prefetching
     this.idle = 0;                  // frames to wait before looking for work again
     this.assets = [1, 0.4].map((q) => ({ lantern: lanternTpls(q), signLamp: signLampTpls(q), intercom: intercomTpl(q) }));
@@ -218,6 +224,8 @@ const facades = {
           plan: fr.plan, frame: fr.frame, lot, q, lod: chunk.lod, assets, app,
           streetW: fr.streetW, cafe: fr.cafe,
           angle: Math.atan2(fr.frame.uDir.z, fr.frame.uDir.x),
+          // 0 (facing away from the afternoon sun) .. 1 (facing it)
+          sunny: fr.frame.nDir ? Math.max(0, fr.frame.nDir.x * this.sunH.x + fr.frame.nDir.z * this.sunH.z) : 0,
         };
         yield* buildFront(kit, ctx);
       }

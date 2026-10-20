@@ -393,8 +393,12 @@ export class Builder {
    * or with `crease` (degrees) smooth shading across the profile's joints that turn by
    * less than that (a carved curve), sharp at the rest (fillets, steps, drips).
    * caps: [startCap, endCap] booleans close the ends with the profile polygon.
+   * box: texture by box projection in facade metres instead of (along the path, along the
+   * profile): each quad takes (u, v), (u, w) or (w, v) by its own face's dominant axis, so
+   * small carved pieces (scroll consoles) show the stone's grain at its true scale and
+   * direction rather than drawn out along a short sweep.
    */
-  sweep(s, profile, path, v0, caps = [false, false], uStart = 0, crease = 0) {
+  sweep(s, profile, path, v0, caps = [false, false], uStart = 0, crease = 0, box = false) {
     const np = path.length, m = profile.length;
     // outward normals per path segment
     const segN = [];
@@ -449,20 +453,34 @@ export class Builder {
         const fx = s1 ? pj[j * 2 + 2] : pe[j][0], fy = s1 ? pj[j * 2 + 3] : pe[j][1];
         const nu = n[0] * ex, nw = n[1] * ex, nv = ey;
         const mu = n[0] * fx, mw = n[1] * fx, mv = fy;
-        const a = this.v(s, A[0] + ma[0] * p0[0], v0 + p0[1], A[1] + ma[1] * p0[0], nu, nv, nw, tuAcc, pv[j]);
-        const b = this.v(s, B[0] + mb[0] * p0[0], v0 + p0[1], B[1] + mb[1] * p0[0], nu, nv, nw, tuAcc + segLen, pv[j]);
-        const c = this.v(s, B[0] + mb[0] * p1[0], v0 + p1[1], B[1] + mb[1] * p1[0], mu, mv, mw, tuAcc + segLen, pv[j + 1]);
-        const d = this.v(s, A[0] + ma[0] * p1[0], v0 + p1[1], A[1] + ma[1] * p1[0], mu, mv, mw, tuAcc, pv[j + 1]);
+        const au = A[0] + ma[0] * p0[0], aw = A[1] + ma[1] * p0[0], bu = B[0] + mb[0] * p0[0], bw = B[1] + mb[1] * p0[0];
+        const cu = B[0] + mb[0] * p1[0], cw = B[1] + mb[1] * p1[0], du = A[0] + ma[0] * p1[0], dw = A[1] + ma[1] * p1[0];
+        const va = v0 + p0[1], vc = v0 + p1[1];
+        if (box) {
+          // the quad's own face normal picks the projection (all four corners alike)
+          const qu = Math.abs(n[0] * pe[j][0]), qw = Math.abs(n[1] * pe[j][0]), qv = Math.abs(pe[j][1]);
+          const k = qv > qu && qv > qw ? 1 : qu > qw ? 2 : 0;
+          const a = this.v(s, au, va, aw, nu, nv, nw, k === 2 ? aw : au, k === 1 ? aw : va);
+          const b = this.v(s, bu, va, bw, nu, nv, nw, k === 2 ? bw : bu, k === 1 ? bw : va);
+          const c = this.v(s, cu, vc, cw, mu, mv, mw, k === 2 ? cw : cu, k === 1 ? cw : vc);
+          const d = this.v(s, du, vc, dw, mu, mv, mw, k === 2 ? dw : du, k === 1 ? dw : vc);
+          this.quadIdx(s, a, b, c, d);
+          continue;
+        }
+        const a = this.v(s, au, va, aw, nu, nv, nw, tuAcc, pv[j]);
+        const b = this.v(s, bu, va, bw, nu, nv, nw, tuAcc + segLen, pv[j]);
+        const c = this.v(s, cu, vc, cw, mu, mv, mw, tuAcc + segLen, pv[j + 1]);
+        const d = this.v(s, du, vc, dw, mu, mv, mw, tuAcc, pv[j + 1]);
         this.quadIdx(s, a, b, c, d);
       }
       tuAcc += segLen;
     }
-    if (caps[0]) this._cap(s, profile, path[0], mit[0], segN[0], v0, -1);
-    if (caps[1]) this._cap(s, profile, path[np - 1], mit[np - 1], segN[np - 2], v0, 1);
+    if (caps[0]) this._cap(s, profile, path[0], mit[0], segN[0], v0, -1, box);
+    if (caps[1]) this._cap(s, profile, path[np - 1], mit[np - 1], segN[np - 2], v0, 1, box);
   }
 
   /** End cap of a sweep: the profile polygon closed against the wall (out = 0). */
-  _cap(s, profile, P, mi, n, v0, dirSign) {
+  _cap(s, profile, P, mi, n, v0, dirSign, box = false) {
     const tris = capTriangles(profile);
     if (!tris.length) return;
     // cap normal = path direction (end) or its opposite (start)
@@ -473,7 +491,10 @@ export class Builder {
     s.reserve(pts.length, tris.length);
     for (let k = 0; k < pts.length; k++) {
       const o = pts[k][0], up = pts[k][1];
-      this.v(s, P[0] + mi[0] * o, v0 + up, P[1] + mi[1] * o, nu, 0, nw, o * dirSign, up);
+      const cu = P[0] + mi[0] * o, cw = P[1] + mi[1] * o;
+      // (box: the cap faces along the path; a path along u gives (w, v), one along w (u, v))
+      if (box) this.v(s, cu, v0 + up, cw, nu, 0, nw, Math.abs(nu) > Math.abs(nw) ? cw : cu, v0 + up);
+      else this.v(s, cu, v0 + up, cw, nu, 0, nw, o * dirSign, up);
     }
     for (let k = 0; k < tris.length; k += 3) {
       // profile-plane CCW faces backwards along the path, so the end cap is flipped

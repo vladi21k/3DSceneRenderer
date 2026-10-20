@@ -44,16 +44,19 @@ void surface(vec2 m, inout Surf s) {
 // from, and its own finish: flamed (paler, matt, micro-rough) or worn smooth by traffic
 // (darker, satin, slightly dished, arrises rounded). Some setts carry a dark xenolith, a
 // pale aplite vein, rust specks or a hairline crack (spill blots, which would repeat
-// with the tile, are drawn at runtime per global sett); corners and
-// arrises are chipped here and there. Dirt is worked into the stone for a centimetre or
-// two along the joints, patchily, darkest at the corners.
+// with the tile, are drawn at runtime per global sett); a corner in ten is spalled and a
+// few arrises chipped, the breaks shallow and close to the sett's tone. Dirt is worked
+// into the stone for about a centimetre along the joints, patchily, a little darker at the
+// corners.
 // Joints: each joint has its own width (head joints 2-6 mm, bed joints 1-3 mm, varying
 // along it), fill depth (sand to the top, a few millimetres down, or washed out) and fill
 // (pale sand, grey dirt, dark grime), looked up by the joint's own id so both setts beside
 // it agree. Bed joints are tight and mostly sand-filled (faint light lines), head joints
-// wider and dirtier (soft grey dashes); from metres away the joints average out towards
-// the sett tone (no cobble outline that would crawl at ride speed). Mid-grey granite with
-// a cool cast (the street is a little darker than the facades).
+// wider, mostly sand or dust and some dirtier (soft grey dashes); from metres away the
+// joints average out towards the sett tone (no cobble outline that would crawl at ride
+// speed), and further off the runtime draws them as pale dusty lines (surface.js far
+// blend). Mid-grey granite with a cool cast (the street is a little darker than the
+// facades).
 export const paving = {
   name: 'paving', flat: [0.16, 0.167, 0.186, 0.6], size: 2048, tile: [3.2, 3.2], ss: 2,
   layout: { rowH: 0.2, rows: 16, seg: [7, 9], jitter: 0.32, seed: 5, shift: true },
@@ -105,18 +108,20 @@ void surface(vec2 m, inout Surf s) {
   float tH = clamp((eH - JH) / CH, 0.0, 1.0);
   float tB = clamp((eB - JB) / CB, 0.0, 1.0);
   float hFace = lip + dish + relief - 0.55 * CH * (1.0 - tH) * (1.0 - tH) - 0.6 * CB * (1.0 - tB) * (1.0 - tB);
-  // corner spalls (one corner in five) and small arris chips; flat broken floors, old ones
-  // dirt-filled, a few fresh and pale
+  // corner spalls (one corner in ten) and a few small arris chips; shallow broken floors,
+  // old ones a little dirtier, a few fresh and pale (kept close to the sett's tone: dark
+  // dirt-filled chips along every bed joint read as a scatter of black dashes once the
+  // courses are foreshortened to a pixel or two)
   vec2 cq = vec2(q.x < 0.0 ? c.ed.x : c.ed.y, q.y < 0.0 ? c.ed.z : c.ed.w);
   uint ck = c.id + (q.x < 0.0 ? 0u : 1u) + (q.y < 0.0 ? 0u : 2u) * 7u;
   float cr = sfHf(sfH(ck + 77u));
-  float spR = 0.008 + 0.02 * sfHf(sfH(ck + 78u));
-  float spall = step(0.8, cr) * (1.0 - smoothstep(spR - 0.0015, spR + 0.0015, cq.x + cq.y + 0.004 * noiseM(ms, vec2(60.0), 106u)));
+  float spR = 0.006 + 0.014 * sfHf(sfH(ck + 78u));
+  float spall = step(0.9, cr) * (1.0 - smoothstep(spR - 0.0015, spR + 0.0015, cq.x + cq.y + 0.004 * noiseM(ms, vec2(60.0), 106u)));
   vec4 cv = voro(ms, vec2(30.0), 94u, 1.0);
-  float chip = smoothstep(0.42, 0.18, cv.x) * step(0.85, cv.z) * (1.0 - smoothstep(0.0, 0.012, min(eH, eB)));
+  float chip = smoothstep(0.42, 0.18, cv.x) * step(0.93, cv.z) * (1.0 - smoothstep(0.0, 0.012, min(eH, eB)));
   float broken = max(spall, chip);
   float fresh = step(0.75, cellRand(c, 13u));
-  hFace -= broken * (0.0025 + 0.001 * noiseM(ms, vec2(90.0), 107u));
+  hFace -= broken * (0.0015 + 0.0008 * noiseM(ms, vec2(90.0), 107u));
   // hairline crack across a few setts
   float crack = 0.0;
   if (cellRand(c, 14u) < 0.07) {
@@ -139,8 +144,8 @@ void surface(vec2 m, inout Surf s) {
   // finish, inclusions
   vec3 g = granite(ms, vec3(0.162, 0.17, 0.19));
   g *= 1.0 + 0.12 * fbm(ms, 28.0, 3, 0.55, 108u) + 0.07 * fbm(ms, 95.0, 2, 0.5, 109u) + 0.06 * noiseM(ms, vec2(230.0), 117u);
-  g *= 1.0 + 0.05 * dot(qn, vec2(cellRand(c, 15u) - 0.5, cellRand(c, 16u) - 0.5));
-  g *= mix(1.025, 0.965, worn);
+  g *= 1.0 + 0.035 * dot(qn, vec2(cellRand(c, 15u) - 0.5, cellRand(c, 16u) - 0.5));
+  g *= mix(1.012, 0.985, worn);
   float xr = cellRand(c, 17u);
   if (xr < 0.035) {                                                // dark xenolith (fine-grained, speckled)
     vec2 xc = (vec2(cellRand(c, 18u), cellRand(c, 19u)) - 0.5) * c.size * 0.6;
@@ -160,15 +165,15 @@ void surface(vec2 m, inout Surf s) {
     g = mix(g, g * vec3(1.18, 0.98, 0.78), 0.45 * halo);
     g = mix(g, vec3(0.13, 0.075, 0.04), 0.8 * rs);
   }
-  // dirt worked into the stone along the joints: a centimetre or two, patchy, darker at
-  // the corners and along the head joints; the chamfers a little grimier still
+  // dirt worked into the stone along the joints: about a centimetre, patchy, a little
+  // darker at the corners and along the head joints; the chamfers a touch grimier
   float ej = min(eH - JH, eB - JB);
-  float dirtA = 0.07 + 0.1 * sfHf(sfH(c.id + 31u));
+  float dirtA = 0.05 + 0.05 * sfHf(sfH(c.id + 31u));
   float patchD = 0.55 + 0.9 * (0.5 + 0.5 * fbm(ms, 9.0, 3, 0.5, 113u));
-  float corner = 1.0 - smoothstep(0.0, 0.04, max(cq.x, cq.y));
-  g *= 1.0 - dirtA * patchD * (1.0 - smoothstep(0.0, 0.012 + 0.012 * sfHf(sfH(c.id + 32u)), ej)) - 0.12 * corner;
-  g *= mix(0.92, 1.0, tH) * mix(0.95, 1.0, tB);
-  g = mix(g, fresh > 0.5 ? g * vec3(1.12, 1.11, 1.1) : g * vec3(0.72, 0.7, 0.68), broken);
+  float corner = 1.0 - smoothstep(0.0, 0.035, max(cq.x, cq.y));
+  g *= 1.0 - dirtA * patchD * (1.0 - smoothstep(0.0, 0.007 + 0.007 * sfHf(sfH(c.id + 32u)), ej)) - 0.05 * corner;
+  g *= mix(0.94, 1.0, tH) * mix(0.96, 1.0, tB);
+  g = mix(g, fresh > 0.5 ? g * vec3(1.08, 1.075, 1.07) : g * vec3(0.87, 0.86, 0.85), broken);
   g *= 1.0 - 0.45 * crack;
   // joint fill: pale sand, grey dirt or dark grime, per joint and along it
   float fsel = head ? h3 : b3;
@@ -176,15 +181,15 @@ void surface(vec2 m, inout Surf s) {
   vec3 sand = vec3(0.205, 0.192, 0.172) * (1.0 + 0.2 * fbm(m, 90.0, 2, 0.5, 98u));
   vec3 dirt = vec3(0.13, 0.124, 0.113) * (1.0 + 0.25 * fbm(m, 60.0, 2, 0.5, 96u));
   vec3 grime = vec3(0.065, 0.061, 0.056);
-  float wDirt = smoothstep(0.25, 0.6, fsel + 0.3 * (fn - 0.5)) * (head ? 1.0 : 0.6);
-  float wGrime = smoothstep(0.7, 0.95, fsel + 0.2 * (fn - 0.5)) + smoothstep(0.003, 0.007, depth);
+  float wDirt = smoothstep(0.3, 0.7, fsel + 0.3 * (fn - 0.5)) * (head ? 0.7 : 0.5);
+  float wGrime = smoothstep(0.8, 0.98, fsel + 0.2 * (fn - 0.5)) + smoothstep(0.004, 0.008, depth);
   vec3 joint = mix(mix(sand, dirt, wDirt), grime, sat(wGrime));
   s.albedo = mix(joint, g, st);
   // flamed tops matt (~0.7), worn ones a soft satin (a broad low-angle sheen towards a low
   // sun or the bright end of the street, never a mirror: the difference between neighbouring
   // setts stays small, or single setts glint out of it at grazing angles); breaks and cracks
   // rough, joints matt
-  float rough = mix(0.7, 0.655, worn) + 0.03 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
+  float rough = mix(0.695, 0.672, worn) + 0.03 * fbm(ms, 6.0, 2, 0.5, 114u) + 0.04 * fbm(ms, 40.0, 2, 0.5, 115u);
   rough = mix(rough, 0.8, max(broken, crack));
   s.rough = mix(head ? 0.95 : 0.92, rough, st);
 }

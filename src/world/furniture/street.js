@@ -260,7 +260,8 @@ function magazineRow(n, x0, x1, rng, pages, covers, lean = 0, { w = 0.21, h = 0.
  *  hatch under its roll-up shutter box, a flip-up counter on brackets, a stocked interior
  *  (magazine shelves, bottles, a drinks cooler), a half-glazed side door, framed posters
  *  on the back, an outside magazine rack, gutters and a downpipe under a zinc hip roof,
- *  and a striped awning. Front = +Z (service hatch). */
+ *  and a striped awning; on the door side a poster, taped flyers, a sticker on the door
+ *  glass and tied bundles of newspapers. Front = +Z (service hatch). */
 function kiosk(detail) {
   const W = 2.6, D = 1.8, Y0 = 0.12, TOP = 2.46;
   if (detail >= 2) {
@@ -382,6 +383,23 @@ function kiosk(detail) {
     fabric.push(makeGeo(P, N, UV, [0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5, 6, 8, 7, 7, 8, 9], { color: { array: col, size: 3 } }));
   }
   for (const sx of [-1, 1]) steel.push(tube([V(sx * 1.24, 2.38, D / 2 + 0.03), V(sx * 1.24, y1 + 0.01, z1 - 0.02)], 0.008, { radial: 6, bend: 0 }));
+  // the door side (+X) is dressed too: a poster on the wall panel, flyers taped on the lower
+  // body and a sticker on the door glass; tied bundles of the day's papers by the door
+  const xo = W / 2 + 0.004;
+  print.push(xf(quad(0.5, 0.72, uvRect('poster2')), [xo, 1.66, 0.53], [0, Math.PI / 2, 0]));
+  print.push(xf(quad(0.2, 0.29, uvRect('small2')), [xo + 0.012, Y0 + 0.5, 0.62], [0, Math.PI / 2, 0.05]));
+  print.push(xf(quad(0.16, 0.23, uvRect('small5')), [xo + 0.012, Y0 + 0.44, -0.68], [0, Math.PI / 2, -0.04]));
+  print.push(xf(quad(0.12, 0.12, uvSub('small4', 0.1, 0.1, 0.9, 0.5)), [W / 2 - 0.036, LB + 0.82, -0.05], [0, Math.PI / 2, 0]));
+  for (const [z, n] of [[0.3, 3], [0.56, 2]]) {
+    let y = 0;
+    for (let i = 0; i < n; i++) {
+      const hgt = rng.range(0.1, 0.14), rot = rng.range(-0.12, 0.12);
+      pages.push(xf(rbox(0.29, hgt, 0.4, 0.01, 1), [W / 2 + 0.17, y + hgt / 2, z], [0, rot, 0]));
+      print.push(xf(quad(0.27, 0.38, uvSub('covers', 0.2 * (i % 5), 0.34, 0.2 * (i % 5) + 0.19, 0.66)), [W / 2 + 0.17, y + hgt + 0.002, z], [-Math.PI / 2, 0, rot]));
+      steel.push(xf(rbox(0.006, hgt + 0.004, 0.41, 0.002, 1), [W / 2 + 0.17, y + hgt / 2, z], [0, rot, 0]));   // twine
+      y += hgt;
+    }
+  }
   return {
     paint: merge(paint), dark: merge(dark), print: merge(print), glass: merge(glass), stone: merge(stone), zinc: merge(zinc), fabric: merge(fabric),
     wood: merge(wood), pages: merge(pages), steel: merge(steel), lit: merge(lit),

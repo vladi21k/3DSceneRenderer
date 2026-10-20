@@ -2,7 +2,7 @@ import { MAIN_RAILS, BAND_IN, GUTTER_OUT, SIDEWALK_RISE, GROUT_W } from './const
 import { RNG } from '../../core/rng.js';
 import { SIDE_LOT_START } from '../layout.js';
 import { sideFrame, sidePlan, buildSideWear, buildSideIron } from './sideAsphalt.js';
-import { SETT_FLAG } from './lines.js';
+import { paintWear } from './lines.js';
 
 // Cross streets: the side street from the main facade line out to depth + 16 m (+30 m
 // run-out): sidewalks, granite kerbs dropped to a ramp at the mouth (the side street is
@@ -331,24 +331,28 @@ export function buildCorridorCrossing(ctx, c, chunk, bufs, lines) {
   for (let k = 0; k <= 8; k++) rowsS.push(sA + (L * k) / 8);
   const rowInfos = rowsS.map((s) => surface.rowInfo(s, {}));
   const wr = RNG.from('corridor-zebra', Math.round(c.s * 10));
-  for (const [a, b] of free) {
+  free.forEach(([a, b], iv) => {
     const span = b - a;
     const n = Math.max(1, Math.round((span + 0.45) / 0.95));
     const w = Math.min(0.55, (span - (n - 1) * 0.45) / n);
     const used = n * w + (n - 1) * 0.45;
-    let d = a + (span - used) / 2 + w / 2;
+    // the outermost bars of an interval between rails lie beside them (lines.js wears and
+    // greys the film along that edge)
+    const margin = (span - used) / 2, nearRail = margin < 0.15;
+    let d = a + margin + w / 2;
     for (let k = 0; k < n; k++, d += w + 0.45) {
       if (w < 0.2) continue;
       const wear = wr.range(0.7, 1.45);       // trodden unevenly
+      const lo = nearRail && k === 0 && iv > 0, hi = nearRail && k === n - 1 && iv < free.length - 1;
       const arr = [];
       for (let i = 0; i < rowsS.length; i++) {
         route.sample(rowsS[i], smp);
         const h = surface.height(rowInfos[i], d) + 0.0015;
         arr.push(smp.pos.x + smp.right.x * d, smp.pos.y + h, smp.pos.z + smp.right.z * d, smp.right.x, smp.right.z, (rowsS[i] - sA) * kP);
       }
-      lines.stripe.add(arr, w / 2, L * kP, wear + SETT_FLAG);
+      lines.stripe.add(arr, w / 2, L * kP, paintWear(wear, true, lo, hi));
     }
-  }
+  });
   // tactile warning strips on both sides, just outside the gutters
   for (const sd of [-1, 1]) {
     const pole = ctx.layout.inChunk('poles', chunk.index).concat(ctx.layout.inChunk('poles', chunk.index + 1), ctx.layout.inChunk('poles', chunk.index - 1))

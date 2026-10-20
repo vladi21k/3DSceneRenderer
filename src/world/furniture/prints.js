@@ -551,32 +551,38 @@ function mapBoard(ctx, [x, y, w, h], seed) {
   });
   ctx.fillStyle = '#e74c3c'; ctx.beginPath(); ctx.arc(mx + mw * 0.5, my + mh * 0.5, 11, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3; ctx.stroke();
+  // legend: the map's own keys, Hebrew over English
   ctx.fillStyle = '#ffffff'; ctx.fillRect(x + 16, y + h - 104, w - 32, 88);
   for (let i = 0; i < 6; i++) {
-    const lx = x + 28 + (i % 3) * ((w - 56) / 3), ly = y + h - 92 + Math.floor(i / 3) * 40;
-    ctx.fillStyle = ['#c0392b', '#9cc3dc', '#b7cf9a', '#e6c9a8', '#23415f', '#e74c3c'][i];
-    ctx.fillRect(lx, ly, 22, 22);
-    smallPrint(ctx, lx + 30, ly + 10, (w - 56) / 3 - 44, 2, 8, '#555555', rng);
+    const lx = x + 28 + (i % 3) * ((w - 56) / 3), ly = y + h - 92 + Math.floor(i / 3) * 40, cw = (w - 56) / 3 - 40;
+    ctx.fillStyle = MAP_KEYS[i][0];
+    if (i === 5) { ctx.beginPath(); ctx.arc(lx + 11, ly + 11, 10, 0, Math.PI * 2); ctx.fill(); } else ctx.fillRect(lx, ly, 22, 22);
+    text(ctx, MAP_KEYS[i][1], lx + 30 + cw, ly + 9, 10, { align: 'right', rtl: true, color: '#333333', maxW: cw, weight: '600' });
+    text(ctx, MAP_KEYS[i][2], lx + 30, ly + 21, 9, { color: '#666666', maxW: cw, weight: '500' });
   }
   ctx.restore();
 }
 
-function scribble(ctx, x, y, w, rng, size) {
-  ctx.beginPath();
-  let cx = x;
-  ctx.moveTo(cx, y);
-  while (cx < x + w) {
-    const n = rng.int(2, 6);
-    for (let i = 0; i < n; i++) {
-      const hh = size * (rng.chance(0.18) ? 1.6 : rng.range(0.6, 1));
-      ctx.bezierCurveTo(cx + size * 0.2, y - hh, cx + size * 0.6, y - hh, cx + size * 0.5, y);
-      ctx.bezierCurveTo(cx + size * 0.45, y + size * 0.15, cx + size * 0.7, y + size * 0.1, cx + size * 0.8, y);
-      cx += size * 0.8;
-    }
-    cx += size * 0.9;
-    ctx.moveTo(cx, y);
-  }
-  ctx.stroke();
+// chalk menus: a few café dishes and drinks, Hebrew (prices on the left, as written in
+// Hebrew) on one board and English on the other, never the same list on both
+const MENU_HE = { title: ['תפריט', 'ארוחת בוקר', 'מומלץ היום'], items: ['שקשוקה', 'חומוס', 'סביח', 'קרואסון', 'סלט ירקות', 'טוסט גבינות', 'בורקס',
+  'קפוצ\'ינו', 'אספרסו', 'תה נענע', 'לימונדה', 'מיץ תפוזים', 'מלבי', 'עוגת גבינה'] };
+const MENU_EN = { title: ['MENU', 'Breakfast', 'Today'], items: ['Shakshuka', 'Hummus', 'Sabich', 'Croissant', 'Greek salad', 'Cheese toast', 'Bourekas',
+  'Cappuccino', 'Espresso', 'Mint tea', 'Lemonade', 'Fresh juice', 'Malabi', 'Cheesecake'] };
+// city map legend keys: colour, Hebrew, English
+const MAP_KEYS = [['#c0392b', 'קו הרכבת הקלה', 'Light rail line'], ['#9cc3dc', 'נחל', 'Stream'], ['#b7cf9a', 'גנים ופארקים', 'Parks'],
+  ['#e6c9a8', 'מוזיאונים', 'Museums'], ['#23415f', 'חניה', 'Parking'], ['#e74c3c', 'אתם נמצאים כאן', 'You are here']];
+
+/** Hand-chalked word: slightly turned and set off its line, a soft halo of chalk dust. */
+function chalkWord(ctx, str, x, y, size, rng, { color = 'rgba(245,242,230,0.88)', align = 'left', rtl = false, weight = '600' } = {}) {
+  ctx.save();
+  ctx.translate(x, y + rng.range(-1.2, 1.2));
+  ctx.rotate(rng.range(-0.025, 0.025));
+  ctx.font = `${weight} ${size}px ${SANS}`;
+  ctx.textAlign = align; ctx.direction = rtl ? 'rtl' : 'ltr';
+  ctx.shadowColor = 'rgba(230,230,220,0.35)'; ctx.shadowBlur = 2.5;
+  ctx.fillStyle = color; ctx.fillText(str, 0, 0);
+  ctx.restore();
 }
 
 function chalkBoard(ctx, [x, y, w, h], seed) {
@@ -588,17 +594,22 @@ function chalkBoard(ctx, [x, y, w, h], seed) {
     ctx.beginPath(); ctx.ellipse(x + rng.next() * w, y + rng.next() * h, rng.range(20, 70), rng.range(6, 20), rng.range(0, 3), 0, Math.PI * 2); ctx.fill();
   }
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.strokeStyle = 'rgba(245,242,230,0.9)'; ctx.lineWidth = 3;
-  scribble(ctx, x + 30, y + 52, w - 60, rng, 22);
+  const heb = seed % 2 === 0, M = heb ? MENU_HE : MENU_EN;
+  chalkWord(ctx, M.title[seed % M.title.length], x + w / 2, y + 56, 30, rng, { align: 'center', rtl: heb, weight: '700' });
   ctx.strokeStyle = 'rgba(240,200,120,0.85)'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(x + 40, y + 70); ctx.quadraticCurveTo(x + w / 2, y + 78, x + w - 40, y + 68); ctx.stroke();
-  ctx.font = `bold 18px ${SANS}`; ctx.textAlign = 'right';
+  // eight items from the list, each once, in an order of this board's own
+  const order = M.items.map((_, i) => i).sort((a, b) => RNG.from('chalkItem', seed, a).next() - RNG.from('chalkItem', seed, b).next());
   for (let i = 0; i < 8; i++) {
-    const ly = y + 110 + i * 30;
-    ctx.strokeStyle = i % 3 === 0 ? 'rgba(170,220,235,0.85)' : 'rgba(245,242,230,0.85)'; ctx.lineWidth = 2;
-    scribble(ctx, x + 18, ly, w * rng.range(0.35, 0.6), rng, 11);
-    ctx.fillStyle = 'rgba(245,242,230,0.85)';
-    ctx.fillText(`${rng.int(8, 46)}`, x + w - 18, ly + 4);
+    const ly = y + 110 + i * 30, item = M.items[order[i]];
+    const col = i % 3 === 0 ? 'rgba(170,220,235,0.88)' : 'rgba(245,242,230,0.88)';
+    if (heb) {
+      chalkWord(ctx, item, x + w - 18, ly, 17, rng, { color: col, align: 'right', rtl: true });
+      chalkWord(ctx, `${rng.int(8, 46)}`, x + 18, ly, 17, rng, { align: 'left', weight: '700' });
+    } else {
+      chalkWord(ctx, item, x + 18, ly, 16, rng, { color: col });
+      chalkWord(ctx, `${rng.int(8, 46)}`, x + w - 18, ly, 17, rng, { align: 'right', weight: '700' });
+    }
   }
   ctx.strokeStyle = 'rgba(245,242,230,0.8)'; ctx.lineWidth = 2.5;
   const cx = x + w * 0.5, cy = y + h - 40;

@@ -14,17 +14,21 @@ import { U } from '../../core/uniforms.js';
 // maps cannot resolve that (they turn every card into a blocker and darken whole tiers),
 // so the two parts are separated:
 //   * external shadow: the leaf's shadow-map lookup point is moved along the ray towards
-//     the sun, half the way to where it leaves the crown (the move is along the shadow
-//     camera's axis, so the lookup stays in the same cascade texel). Buildings, poles and
-//     other trees shadow it, and so do the outer leaves of its own crown for the leaves in
-//     its inner half (dappled shade inside, no darkened tiers on the shell);
+//     the sun, a third of the way to where it leaves the crown (the move is along the
+//     shadow camera's axis, so the lookup stays in the same cascade texel). Buildings, poles
+//     and other trees shadow it, and so do the outer leaves of its own crown for the leaves
+//     in its inner two thirds (dappled shade inside, no darkened tiers on the shell);
 //   * self shadow: the path length through the crown sphere towards the sun, as
 //     transmittance exp(-density * path), dithered per card into sun flecks.
 // Sky light is occluded the same way: a leaf sees the sky through the crown above it and
 // around it (path to the crown surface straight up and radially out), so the crown core
-// and its underside keep about 60 % of the sky light of the top shell (light also comes
+// and its underside keep about 30 % of the sky light of the top shell (light also comes
 // in sideways through the gaps between the leaf clumps). That
 // occlusion darkens every indirect term (sky diffuse, sky sheen, sky through the leaf).
+// The core of the crown (normalised radius under about 0.3) gets a quarter of what the
+// shell gets of every light that does not come straight from the sun (sky, bounce, sun
+// passed on by other leaves and through the leaf), rising to the full share at the shell:
+// real crowns are dark, near black inside, under a lit shell of leaves.
 // Leaves also transmit light, but only light arriving on their far side (backlit cards):
 // a fraction (uLeafTrans, ~0.55) of what the lit face would show, a little more looking
 // into the light and on the thin outer shell (rim-lit edges), and through the crown like
@@ -558,18 +562,18 @@ export function createVegMaterials(app, atlas) {
   // a2c: 1 when the scene renders into a multisampled target (set by vegetation.update)
   const params = {
     trans: { value: 0.55 },     // leaf transmission: share of the lit face's radiance passed through
-    sky: { value: new THREE.Vector2(0.4, 0.58) },  // sky occlusion by the crown: extinction (1/m), floor
+    sky: { value: new THREE.Vector2(0.6, 0.3) },   // sky occlusion by the crown: extinction (1/m), floor
     spec: { value: 0.7 },       // share of the direct specular kept (waxy sunlit leaves glint)
     a2c: { value: 0 },
-    density: { value: 0.46 },   // crown extinction (1/m): exp(-0.46 * 2 m) ~ 0.4 through a young crown
-    shift: { value: 0.5 },      // shadow lookup moved this share of the way out of the crown along the sun
-                                // ray: the inner half of a crown receives its outer leaves' shadow
+    density: { value: 0.8 },    // crown extinction (1/m): exp(-0.8 * 2 m) ~ 0.2 through a young crown
+    shift: { value: 0.35 },     // shadow lookup moved this share of the way out of the crown along the sun
+                                // ray: the inner two thirds of a crown receive its outer leaves' shadow
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
     holes: { value: 0.3 },      // share of the leaf cards that cast no shadow (sun flecks)
     // crown core occlusion of the light that does not come straight from the sun (sky,
     // bounce, light passed on by the leaves): x at normalised crown radius <= y, rising to 1
     // at z; w: share of the sunlight stopped by the crown that lights its inner leaves
-    core: { value: new THREE.Vector4(1.0, 0.35, 0.95, 0.3) },
+    core: { value: new THREE.Vector4(0.25, 0.3, 0.95, 0.12) },
     // per-light caps in units of the sky's irradiance: transmission + specular of any
     // light, diffuse of a lamp (see header)
     cap: { value: new THREE.Vector2(LIGHT_CAP, LAMP_CAP) },

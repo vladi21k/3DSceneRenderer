@@ -147,22 +147,35 @@ function buildAtlas() {
   const g = cv.getContext('2d');
   const jobs = [];
   const paint = (fn) => jobs.push(fn);
+  // Text cells are cropped to their glyphs' measured height (as well as their inked width),
+  // so a sign sizes its lettering by the letters themselves rather than by a cell's empty
+  // margins. vInk: the rows [y0, y1] of a line drawn centred ('middle') at row yc.
+  g.textBaseline = 'middle';
+  const vInk = (m, yc, y0, y1, pad) => {
+    const a = m.actualBoundingBoxAscent, d = m.actualBoundingBoxDescent;
+    if (!(a > 0) || !(d > -a)) return [y0, y1];
+    return [Math.max(y0, Math.floor(yc - a - pad)), Math.min(y1, Math.ceil(yc + d + pad))];
+  };
   const cells = [];
   // text cells: white glyphs on transparent
   WORDS.forEach(([lines], i) => {
     const cx = (i % 4) * CELL_W, cy = i < 48 ? Math.floor(i / 4) * CELL_H : WORDS2_Y + Math.floor((i - 48) / 4) * CELL_H;
     const font = FONTS[i % FONTS.length];
-    let inkW = 0, sx = 1;
+    let inkW = 0, sx = 1, ry0 = cy + 2, ry1 = cy + CELL_H - 2;
     if (lines.length === 1) {
       g.font = font(92);
       const m = g.measureText(lines[0]);
       sx = Math.min(1, (CELL_W - 24) / m.width);
       inkW = m.width * sx;
+      [ry0, ry1] = vInk(m, cy + CELL_H / 2 + 4, ry0, ry1, 4);
     } else {
       g.font = font(56);
       const m0 = g.measureText(lines[0]), m1 = g.measureText(lines[1]);
       sx = Math.min(1, (CELL_W - 24) / Math.max(m0.width, m1.width));
       inkW = Math.max(m0.width, m1.width) * sx;
+      g.font = font(44);
+      ry0 = vInk(m0, cy + CELL_H / 2 - 30, ry0, ry1, 3)[0];
+      ry1 = vInk(g.measureText(lines[1]), cy + CELL_H / 2 + 34, ry0, ry1, 3)[1];
     }
     paint(() => {
       g.save();
@@ -184,7 +197,7 @@ function buildAtlas() {
       }
       g.restore();
     });
-    cells.push({ u0: cx / W, v0: 1 - (cy + CELL_H) / H, u1: (cx + CELL_W) / W, v1: 1 - cy / H, aspect: CELL_W / CELL_H, ink: Math.min(1, (inkW + 30) / CELL_W), lines: lines.length });
+    cells.push({ u0: cx / W, v0: 1 - ry1 / H, u1: (cx + CELL_W) / W, v1: 1 - ry0 / H, aspect: CELL_W / (ry1 - ry0), ink: Math.min(1, (inkW + 30) / CELL_W), lines: lines.length });
   });
   // house number plaques: blue enamel with a white border and number
   const plaques = [];
@@ -274,12 +287,17 @@ function buildAtlas() {
     const [fh, fl, upper, sp] = NAME_STYLES[st];
     const enT = upper ? en.toUpperCase() : en;
     g.font = fh.replace('Hpx', '62px');
-    const wh = g.measureText(he).width, sxH = Math.min(1, (NAME_W - 28) / Math.max(1, wh));
+    g.direction = 'rtl';
+    const mH = g.measureText(he);
+    g.direction = 'ltr';
+    const wh = mH.width, sxH = Math.min(1, (NAME_W - 28) / Math.max(1, wh));
     g.font = fl.replace('Hpx', '31px');
     g.letterSpacing = `${sp}px`;
-    const we = g.measureText(enT).width, sxE = Math.min(1, (NAME_W - 28) / Math.max(1, we));
+    const mE = g.measureText(enT);
+    const we = mE.width, sxE = Math.min(1, (NAME_W - 28) / Math.max(1, we));
     g.letterSpacing = '0px';
     const iH = wh * sxH, iE = we * sxE;
+    const [hy0, hy1] = vInk(mH, y + 38, y + 2, y + 75, 3), [ey0, ey1] = vInk(mE, y + 92, y + 75, y + NAME_H - 2, 2);
     paint(() => {
       g.save();
       g.beginPath(); g.rect(x, y, NAME_W, NAME_H); g.clip();
@@ -288,7 +306,7 @@ function buildAtlas() {
       g.save(); g.font = fl.replace('Hpx', '31px'); g.letterSpacing = `${sp}px`; g.translate(x + NAME_W / 2, y + 92); g.scale(sxE, 1); g.fillText(enT, 0, 0); g.restore();
       g.restore();
     });
-    names.push({ full: cellOf(x, y, y + NAME_H, Math.max(iH, iE), NAME_W), he: cellOf(x, y + 2, y + 75, iH, NAME_W), en: cellOf(x, y + 75, y + NAME_H - 2, iE, NAME_W) });
+    names.push({ full: cellOf(x, hy0, ey1, Math.max(iH, iE), NAME_W), he: cellOf(x, hy0, hy1, iH, NAME_W), en: cellOf(x, ey0, ey1, iE, NAME_W) });
   });
   // short lines (white) and wall tags (full colour)
   const lines = [];
@@ -297,9 +315,10 @@ function buildAtlas() {
     if (i < LINES.length) {
       const str = LINES[i];
       g.font = SANS(34);
-      const wl = g.measureText(str).width, sx = Math.min(1, (LINE_W - 12) / Math.max(1, wl));
+      const ml = g.measureText(str), wl = ml.width, sx = Math.min(1, (LINE_W - 12) / Math.max(1, wl));
       paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); g.fillStyle = '#fff'; g.font = SANS(34); g.textAlign = 'center'; g.textBaseline = 'middle'; g.translate(x + LINE_W / 2, y + LINE_H / 2 + 2); g.scale(sx, 1); g.fillText(str, 0, 0); g.restore(); });
-      lines.push(cellOf(x, y + 6, y + LINE_H - 6, wl * sx, LINE_W));
+      const [ly0, ly1] = vInk(ml, y + LINE_H / 2 + 2, y + 3, y + LINE_H - 3, 2);
+      lines.push(cellOf(x, ly0, ly1, wl * sx, LINE_W));
     } else {
       paint(() => { g.save(); g.beginPath(); g.rect(x, y, LINE_W, LINE_H); g.clip(); wallTag(g, x, y, LINE_W, LINE_H, i); g.restore(); });
       lines.push({ u0: (x + 2) / W, u1: (x + LINE_W - 2) / W, v0: 1 - (y + LINE_H - 2) / H, v1: 1 - (y + 2) / H, aspect: (LINE_W - 4) / (LINE_H - 4) });
@@ -1032,33 +1051,68 @@ export function lineCell(i) { return atlas.lines[i % atlas.lines.length]; }
  * [{cell, x, y, w, h, accent}] (accent: drawn in the accent colour).
  */
 function layoutText(design, Wa, Ha, compact = false) {
+  // (the cells are cropped to their glyphs, so these heights are the letters' own: a
+  // street sign's lettering fills its board, the name 55-70 % of the area's height alone,
+  // ~50 % over a second line of about half its size)
   const out = [];
   if (design.name == null) {
     const cell = inkCell(atlas.cells[design.cell]);
-    const tw = Math.min(Wa, Ha * cell.aspect);
+    const tw = Math.min(Wa, Ha * (cell.lines > 1 ? 0.86 : 0.7) * cell.aspect);
     out.push({ cell, x: 0, y: 0, w: tw, h: tw / cell.aspect });
     return out;
   }
-  const nc = nameCell(design, compact && Ha < 0.3);
-  let wA = Wa, xc = 0;
+  const n = atlas.names[((design.name % N_NAMES) + N_NAMES) % N_NAMES];
+  let wA = Wa, xc = 0, logoSide = 0;
   if (!compact && design.logo >= 0 && Wa / Ha > 2.4) {
-    const s = Ha * 0.9, side = design.logoRight ? 1 : -1;
+    const s = Ha * 0.86, side = design.logoRight ? 1 : -1;
     out.push({ cell: atlas.icons[design.logo], x: side * (Wa / 2 - s / 2), y: 0, w: s, h: s, accent: true });
-    wA = Wa - s * 1.25; xc = -side * s * 0.625;
+    wA = Wa - s * 1.2; xc = -side * s * 0.6; logoSide = side;
   }
-  const sc = compact ? null : subCell(design.sub);
-  if (sc) {
-    let hn = Ha * 0.64, hs = Ha * 0.24;
-    const gap = Ha * 0.08;
-    const wn = Math.min(wA, hn * nc.aspect); hn = wn / nc.aspect;
-    const ws = Math.min(wA * 0.86, hs * sc.aspect); hs = ws / sc.aspect;
-    const top = (hn + gap + hs) / 2;
-    out.push({ cell: nc, x: xc, y: top - hn / 2, w: wn, h: hn });
-    out.push({ cell: sc, x: xc, y: top - hn - gap - hs / 2, w: ws, h: hs, accent: !!design.subAccent });
-  } else {
-    const wn = Math.min(wA, Ha * nc.aspect);
-    out.push({ cell: nc, x: xc, y: 0, w: wn, h: wn / nc.aspect });
+  // a line of cell c, at most h tall and w wide, centred at (x, y)
+  const line = (c, x, y, w, h, accent = false) => {
+    const lw = Math.min(w, h * c.aspect), lh = lw / c.aspect;
+    return { cell: c, x, y, w: lw, h: lh, accent };
+  };
+  if (compact) {
+    // the name alone on one line (valances, vinyl on glass): the Hebrew when the area is low
+    const nc = nameCell(design, Ha < 0.3);
+    out.push(line(nc, xc, 0, wA, Ha * (nc === n.full ? 0.86 : 0.7)));
+    return out;
   }
+  // the name's lines: Hebrew over English (both), or one of them; then the second line
+  // (its trade, a phone number, a tagline). With both name lines the second line goes to
+  // the free end of a long board, or is left off.
+  const both = design.nv === 0;
+  const first = both || design.nv === 1 ? n.he : n.en;
+  const sc = subCell(design.sub);
+  let sub = both ? n.en : sc;
+  let side = null;
+  if (both && sc && wA / Ha > 4.2) side = sc;
+  const accentSub = !both && !!design.subAccent;
+  if (side) {
+    // the side line takes up to a fifth of the width at the end away from the logo
+    const ws = Math.min(wA * 0.22, Ha * 0.22 * side.aspect), sx = logoSide >= 0 ? -1 : 1;
+    const hs = ws / side.aspect;
+    out.push({ cell: side, x: xc + sx * (wA / 2 - ws / 2), y: 0, w: ws, h: hs, accent: !!design.subAccent });
+    wA -= ws + Ha * 0.25; xc -= sx * (ws + Ha * 0.25) / 2;
+  }
+  if (sub) {
+    const a = line(first, xc, 0, wA * 0.96, Ha * 0.56), b = line(sub, xc, 0, wA * 0.8, Math.min(Ha * 0.27, a.h * 0.52), accentSub);
+    if (both && Math.max(a.w, b.w) < wA * 0.5) {
+      // a short name on a long board: the Hebrew and the English side by side on one line
+      // (Hebrew to the right), as tall as the board allows and spread over its width
+      const gapX = Ha * 0.5;
+      let hh = Ha * 0.64, he = n.he, en = n.en;
+      const wOf = (k) => k * he.aspect + k * 0.78 * en.aspect + gapX;
+      if (wOf(hh) > wA * 0.94) hh = (wA * 0.94 - gapX) / (he.aspect + 0.78 * en.aspect);
+      const wH = hh * he.aspect, wE = hh * 0.78 * en.aspect, tot = wH + gapX + wE;
+      out.push({ cell: he, x: xc + tot / 2 - wH / 2, y: 0, w: wH, h: hh }, { cell: en, x: xc - tot / 2 + wE / 2, y: 0, w: wE, h: hh * 0.78 });
+      return out;
+    }
+    const gap = Ha * 0.08, tot = a.h + gap + b.h;
+    a.y = tot / 2 - a.h / 2; b.y = -tot / 2 + b.h / 2;
+    out.push(a, b);
+  } else out.push(line(first, xc, 0, wA * 0.96, Ha * 0.66));
   return out;
 }
 
@@ -1127,7 +1181,7 @@ export function fasciaTpls(design, w, h, q, z0 = 0.055, compact = false) {
   } else {
     zText = z0 + 0.02;   // individual letters on stand-off pins
   }
-  const k = design.type === 'letters' ? 0.95 : 0.78;
+  const k = design.type === 'letters' ? 0.95 : design.type === 'lightbox' ? 0.8 : 0.84;
   const Wa = w * (design.type === 'letters' ? 0.96 : 0.9), Ha = h * k;
   for (const p of layoutText(design, Wa, Ha, compact)) {
     const sb = design.type === 'letters' ? 1 : 1 - (1 - g0) * Math.max(0, (h / 2 - (p.y - p.h / 2)) / h - 0.4);
@@ -1261,11 +1315,11 @@ export function bladeNameTpls(design, w, h, q) {
   let quads;
   const Wf = w * 0.82;
   if (design.logo >= 0) {
-    const s = Math.min(h * 0.42, w * 0.5);
-    const nq = layoutText({ ...design, logo: -1, sub: null }, Wf, h * 0.36);
-    for (const p of nq) p.y += h * 0.27 - h / 2;
+    const s = Math.min(h * 0.48, w * 0.62);
+    const nq = layoutText({ ...design, logo: -1, sub: null }, Wf, h * 0.34);
+    for (const p of nq) p.y += h * 0.25 - h / 2;
     quads = [{ cell: atlas.icons[design.logo], x: 0, y: h * 0.7 - h / 2, w: s, h: s, accent: true }, ...nq];
-  } else quads = layoutText({ ...design, logo: -1 }, Wf, h * 0.66);
+  } else quads = layoutText({ ...design, logo: -1 }, Wf, h * 0.72);
   sideLayout(tt, ta, quads, th / 2 + 0.006, (z0 + z1) / 2, h / 2, q >= 0.5 ? 0.82 : 1, h);
   bladeBracket(tm, h, z0, z1, q);
   return { board: tb.bake(), text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null), metal: tm.bake() };
@@ -1303,10 +1357,11 @@ export function discTpls(faceIndex, D, q, design = null) {
     for (const sx of [-1, 1]) sideQuad(tt, face, sx, th / 2 + 0.002, yc - s / 2, yc + s / 2, zc - s / 2, zc + s / 2, g0 + 0.05);
   } else {
     // a ring painted inside the rim, the logo mark above the middle and the name across it
+    // (a large mark, half the diameter, or the name across most of it)
     const quads = [];
-    if (design.logo >= 0) quads.push({ cell: atlas.icons[design.logo], x: 0, y: D * 0.17, w: D * 0.36, h: D * 0.36, accent: true });
-    const nq = layoutText({ ...design, logo: -1, sub: null }, D * 0.76, D * (design.logo >= 0 ? 0.22 : 0.4));
-    for (const p of nq) p.y += design.logo >= 0 ? -D * 0.17 : 0;
+    if (design.logo >= 0) quads.push({ cell: atlas.icons[design.logo], x: 0, y: D * 0.14, w: D * 0.5, h: D * 0.5, accent: true });
+    const nq = layoutText({ ...design, logo: -1, sub: null }, D * (design.logo >= 0 ? 0.68 : 0.8), D * (design.logo >= 0 ? 0.24 : 0.46));
+    for (const p of nq) p.y += design.logo >= 0 ? -D * 0.24 : 0;
     quads.push(...nq);
     sideLayout(tt, ta, quads, th / 2 + 0.003, zc, yc, q >= 0.5 ? 0.85 : 1, D);
   }

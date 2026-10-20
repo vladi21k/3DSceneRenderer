@@ -338,6 +338,10 @@ function patchFabric(m, translucency) {
  * flags, see cafe.js):
  *  - valance print: the café's brand from the brand atlas, on each side's valance, printed
  *    into the fabric's albedo (seen mirrored and faint from inside);
+ *  - valance folds: the cloth hangs in soft, irregular folds, different on every side of
+ *    every umbrella (three waves of random length and phase, per instance and side, growing
+ *    towards the free hem, held at the rib tips), and sags a little between the tips; the
+ *    fold troughs are a touch darker (occlusion), the crests catch the light;
  *  - valance sun: the cloth hanging under the canopy edge never takes its sun through its
  *    own canopy's shadow map entry (the hem sits right at the canopy's shadow edge, where
  *    the waves beat against the shadow texels into a comb). Its own canopy's occlusion is
@@ -345,9 +349,23 @@ function patchFabric(m, translucency) {
  *    shade, a side facing it is lit (and glows through from inside); the shadow map is
  *    read 0.3 m outside the canopy edge, so buildings, trees and neighbouring canopies
  *    still shade it;
+ *  - valance glow: its inner face looks up into the canopy's underside, which glows with
+ *    the sun and sky passing through the cloth, and the sky reaches it through the cloth
+ *    from its outer face, so a valance in the canopy's shade still reads as lit cloth next
+ *    to the canopy, not as a grey band;
+ *  - light through the cloth: seen from below, the canopy shows the sun its top receives,
+ *    diffused by the weave. The cloth casts into the sun's shadow map itself, and a low sun
+ *    grazes it: compared against its own entry, every texel (stretched into a long strip
+ *    on the cloth) came out lit or dark at random, a staircase of blocks through the cloth.
+ *    So its lookup moves CLOTH_SUN_SHIFT towards the sun first (other canopies, buildings
+ *    and its own far panels still shade it), and the shadow edges on its underside take a
+ *    wide filter (at least FABRIC_MIN_FILTER texels);
  *  - LED glow: after dusk the strips under the ribs light the canopy's underside (and,
  *    through the cloth, its top a little), brightest along the ribs.
  */
+const FABRIC_MIN_FILTER = 4.5;
+const CLOTH_SUN_SHIFT = 0.35;  // m: the cloth's shadow lookup moved towards the sun (see above)
+const VALANCE_GLOW = 0.42;    // view factor of the canopy underside from the valance's inner face
 function patchCanopy(m, brandMap, ledLevel) {
   const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
   const P = BRAND_PRINT;
@@ -361,7 +379,53 @@ function patchCanopy(m, brandMap, ledLevel) {
         attribute vec4 aVal;
         varying vec4 vVal;
         varying vec2 vUmb;
-        varying vec3 vValOut;`)
+        varying vec3 vValOut;
+        varying float vValFold;
+        uniform vec3 fSunW;
+        float fUmbHash( vec2 p ) { return fract( sin( dot( p, vec2( 41.37, 289.11 ) ) ) * 15731.743 ); }
+        // valance folds: outward offset (m) and its slope along the side, per instance and side
+        vec2 fValWave( vec4 v, vec3 ip ) {
+          if ( v.x < 0.5 || v.w <= 0.0 ) return vec2( 0.0 );   // panels; coarse levels (w < 0) keep a plain valance
+          float side = floor( v.x + 0.5 );
+          vec2 h = vec2( dot( ip.xz, vec2( 0.173, 0.291 ) ), side * 7.31 );
+          float a = mix( 0.004, 0.013, fUmbHash( h ) );          // fold depth (m)
+          float hs = 0.5 * v.w;
+          float dt = min( abs( v.y ), max( hs - abs( v.y ), 0.0 ) ); // to the nearest rib tip (corner or middle)
+          float held = smoothstep( 0.0, 0.11, dt );
+          float grow = pow( v.z, 1.25 );
+          float w = 0.0, dw = 0.0;
+          for ( int i = 0; i < 3; i ++ ) {
+            float fi = float( i );
+            float lam = mix( 0.2, 0.55, fUmbHash( h + vec2( fi * 3.1, 1.7 ) ) );
+            float ph = 6.2832 * fUmbHash( h + vec2( 5.3, fi * 2.9 ) );
+            float amp = i == 0 ? 1.0 : i == 1 ? 0.55 : 0.3;
+            float k = 6.2832 / lam;
+            w += amp * sin( v.y * k + ph );
+            dw += amp * k * cos( v.y * k + ph );
+          }
+          return vec2( w, dw ) * ( a * grow * held / 1.85 );
+        }`)
+      .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+        #if defined( USE_BATCHING )
+          vec3 fUmbIp = batchingMatrix[ 3 ].xyz;
+        #elif defined( USE_INSTANCING )
+          vec3 fUmbIp = instanceMatrix[ 3 ].xyz;
+        #else
+          vec3 fUmbIp = modelMatrix[ 3 ].xyz;
+        #endif
+        vec2 fVw = fValWave( aVal, fUmbIp );
+        vec3 fVo = vec3( cos( ( aVal.x - 1.0 ) * 1.5707963 ), 0.0, sin( ( aVal.x - 1.0 ) * 1.5707963 ) );
+        // (metres along the side run along (oz, 0, -ox): the fold slope tilts the normal that way)
+        if ( aVal.x > 0.5 ) objectNormal = normalize( objectNormal - vec3( fVo.z, 0.0, - fVo.x ) * fVw.y );`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        if ( aVal.x > 0.5 ) {
+          // folds out and in; the hem sags a little between the rib tips (more on some)
+          float fHalf = 0.5 * abs( aVal.w );
+          float fU = clamp( min( abs( aVal.y ), max( fHalf - abs( aVal.y ), 0.0 ) ) / max( 0.5 * fHalf, 0.05 ), 0.0, 1.0 );
+          float fSag = ( 1.0 - ( 1.0 - fU ) * ( 1.0 - fU ) ) * aVal.z * mix( 0.002, 0.016, fUmbHash( fUmbIp.xz * 0.37 + aVal.x ) );
+          transformed += fVo * ( fVw.x + 0.4 * fSag ) - vec3( 0.0, fSag, 0.0 );
+          vValFold = fVw.x / 0.013;
+        } else vValFold = 0.0;`)
       .replace('#include <color_vertex>', `#include <color_vertex>
         vUmb = vec2( 0.0 );
         #ifdef USE_BATCHING_COLOR
@@ -384,21 +448,35 @@ function patchCanopy(m, brandMap, ledLevel) {
           vValOut = normalize( mat3( modelMatrix ) * fOut );
           #if defined( USE_SHADOWMAP ) && NUM_SUN_LIGHT_SHADOWS > 0
             if ( aVal.x > 0.5 ) vSunShadowWorldPosition.xyz += vValOut * 0.3 + vec3( 0.0, 0.04 + aVal.z * ${VALANCE_H.toFixed(3)}, 0.0 );
+            // the cloth itself casts: its lookup moves 0.35 m towards the sun (along the shadow
+            // camera's axis, so the same texel), clear of its own entry in the map
+            else vSunShadowWorldPosition.xyz += fSunW * ${CLOTH_SUN_SHIFT.toFixed(3)};
           #endif
         }`);
+    // light through the cloth: the canopy's underside takes its sun with a wide filter (see above)
+    let shPars = THREE.ShaderChunk.shadowmap_pars_fragment;
+    const minR = 'float minR = cascade >= 2 ? 2.2 : 1.5;';
+    if (shPars.includes(minR)) {
+      shPars = shPars.replace(minR, `${minR}\n\t\t\t\tif ( ! gl_FrontFacing ) minR = max( minR, ${FABRIC_MIN_FILTER.toFixed(1)} );`);
+    }
     let f = s.fragmentShader
+      .replace('#include <shadowmap_pars_fragment>', () => shPars)
       .replace('#include <common>', `#include <common>
         varying vec4 vVal;
         varying vec2 vUmb;
         varying vec3 vValOut;
+        varying float vValFold;
         uniform sampler2D fBrandMap;
         uniform vec3 fSunW;
         uniform float fLedLevel;
-        float fValSun = 1.0;`)
+        float fValSun = 1.0;
+        float fIsValance = 0.0;`)
       .replace('#include <alphamap_fragment>', `{
           // valance print: one strip centred on each side (two on sides over 3.6 m)
           float fIsVal = step( 0.5, vVal.x );
-          float fX = vVal.y - ( vVal.w > 3.6 ? sign( vVal.y ) * vVal.w * 0.25 : 0.0 );
+          fIsValance = fIsVal;
+          float fSideL = abs( vVal.w );
+          float fX = vVal.y - ( fSideL > 3.6 ? sign( vVal.y ) * fSideL * 0.25 : 0.0 );
           vec2 fC = vec2( fX / ${P[0].toFixed(3)} + 0.5, ( vVal.z * ${VALANCE_H.toFixed(3)} - 0.03 ) / ${P[1].toFixed(3)} );
           // (the flags are interpolated: a brand of 9 can arrive as 8.9999995, and mod() would
           // then pick the wrong atlas column for that pixel, so they are rounded first)
@@ -413,6 +491,8 @@ function patchCanopy(m, brandMap, ledLevel) {
           #endif
           float fWeave = clamp( dot( fBase, vec3( 0.3333 ) ) / 0.62, 0.7, 1.25 );
           diffuseColor.rgb = mix( diffuseColor.rgb, fInk.rgb * fWeave, fInk.a * fIn * ( gl_FrontFacing ? 1.0 : 0.28 ) );
+          // valance folds: troughs a little darker, crests a little lighter (0.86-1.06)
+          diffuseColor.rgb *= 1.0 + fIsVal * clamp( 0.07 * vValFold - 0.03 * ( 1.0 - vValFold * vValFold ), -0.14, 0.06 );
           // valance sun: lit only on a side whose outside faces the sun (see above)
           if ( vVal.x > 0.5 ) fValSun = smoothstep( -0.04, 0.06, dot( vValOut.xz, fSunW.xz ) );
         }
@@ -423,13 +503,31 @@ function patchCanopy(m, brandMap, ledLevel) {
           float fRib = vVal.x > 0.5 ? 0.15 : exp( - vVal.y / 0.1 ) * smoothstep( 0.06, 0.18, vVal.z ) * ( 1.0 - smoothstep( 0.9, 1.0, vVal.z ) );
           float fUnder = gl_FrontFacing ? ( vVal.x > 0.5 ? 0.2 : 0.1 ) : 1.0;
           totalEmissiveRadiance += diffuseColor.rgb * vec3( 1.0, 0.7, 0.42 ) * fLedLevel * fUnder * ( 0.18 + 1.6 * fRib );
-        }`);
-    // the valance's own-canopy occlusion gates the sun only (the lamps light it as before)
+        }`)
+      .replace('#include <lights_fragment_end>', `if ( fIsValance > 0.5 ) {
+          // valance glow (see above): the sky through the cloth from its other face, and the
+          // canopy underside's glow (sky part; the sun part is added with the sun light)
+          vec3 fUpV = ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz;
+          float fGlowK = ${VALANCE_GLOW.toFixed(3)} * 0.36 * ( gl_FrontFacing ? 0.4 : 1.0 );
+          #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+            iblIrradiance += getIBLIrradiance( - geometryNormal ) * 0.34 + getIBLIrradiance( fUpV ) * fGlowK;
+          #endif
+          irradiance += getAmbientLightIrradiance( ambientLightColor ) * ( 0.34 + fGlowK );
+        }
+        #include <lights_fragment_end>`);
+    // the valance's own-canopy occlusion gates the sun only (the lamps light it as before);
+    // the sunlit canopy top lights the valance's inner face through the cloth
     if (f.includes('#define RE_Direct RE_Direct_Surf')) {
       f = f.replace('#define RE_Direct RE_Direct_Surf', `#define RE_Direct RE_Direct_Surf
         void RE_Direct_Canopy( const in IncidentLight directLight, const in vec3 geometryPosition, const in vec3 geometryNormal, const in vec3 geometryViewDir, const in vec3 geometryClearcoatNormal, const in PhysicalMaterial material, inout ReflectedLight reflectedLight ) {
           IncidentLight fL = directLight;
-          if ( fValSun < 1.0 && dot( fL.direction, normalize( ( viewMatrix * vec4( fSunW, 0.0 ) ).xyz ) ) > 0.999 ) fL.color *= fValSun;
+          bool fSun = dot( fL.direction, normalize( ( viewMatrix * vec4( fSunW, 0.0 ) ).xyz ) ) > 0.999;
+          if ( fIsValance > 0.5 && fSun ) {
+            vec3 fUpV = ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz;
+            float fTop = saturate( dot( fUpV, fL.direction ) * 0.94 + 0.34 * length( fL.direction - fUpV * dot( fUpV, fL.direction ) ) );
+            reflectedLight.directDiffuse += fL.color * fTop * ${VALANCE_GLOW.toFixed(3)} * 0.36 * ( gl_FrontFacing ? 0.4 : 1.0 ) * BRDF_Lambert( material.diffuseColor );
+          }
+          if ( fValSun < 1.0 && fSun ) fL.color *= fValSun;
           RE_Direct_Surf( fL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
         }
         #undef RE_Direct
@@ -437,7 +535,7 @@ function patchCanopy(m, brandMap, ledLevel) {
     }
     s.fragmentShader = f;
   };
-  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-canopy`; };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-canopy2`; };
   m.needsUpdate = true;
   return m;
 }
@@ -510,6 +608,121 @@ function patchGrime(m, { albedo = 0.16, rough = 0.15, ao = 0.45, mottle = 0.05 }
         vec3 totalDiffuse =`);
   };
   m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|furniture-grime`; };
+  m.needsUpdate = true;
+  return m;
+}
+
+/**
+ * Street wear for furniture that stands out in the street all year (object space: the
+ * prototypes have their origin on the paving, +Y up), per instance (its position seeds it):
+ *  - dust: tops (caps, lids, roofs) carry a patchy grey-beige film;
+ *  - edges: small-radius arrises (high curvature: the bevels of boxes, rims, mouldings, not
+ *    the body of a bin) are rubbed lighter and chipped to the grey primer;
+ *  - scuffs: kicks and bag scrapes low down, a darker splash band with specks at the foot;
+ *  - run-off: faint vertical dirt streaks on the sides;
+ *  - stickers (opts.stickers): on most instances, stickers and flyer scraps at 0.5-1.75 m,
+ *    small rectangles of paper (white, yellow, red, blue or black, with print bars or a
+ *    logo disc), some torn, all sun-faded; on about a third, a marker or spray tag on a flat
+ *    face (iso-lines of a noise field: loopy, joined strokes).
+ * Fine detail fades into its mean tone before it would alias.
+ */
+function patchStreetWear(m, { stickers = false, chips = 1, rust = 1, dust = 1 } = {}) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  const key = `furniture-wear${stickers ? 'S' : ''}${chips}${rust}${dust}`;
+  m.onBeforeCompile = function (s, r) {
+    prev && prev.call(this, s, r);
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFwP;\nvarying vec3 vFwN;\nvarying float vFwSeed;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vFwP = position; vFwN = normal;
+        #if defined( USE_BATCHING )
+          vFwSeed = fract( dot( batchingMatrix[ 3 ].xyz, vec3( 0.1731, 0.0, 0.2913 ) ) ) * 61.0;
+        #elif defined( USE_INSTANCING )
+          vFwSeed = fract( dot( instanceMatrix[ 3 ].xyz, vec3( 0.1731, 0.0, 0.2913 ) ) ) * 61.0;
+        #else
+          vFwSeed = 0.0;
+        #endif`);
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vFwP;
+        varying vec3 vFwN;
+        varying float vFwSeed;
+        float fwH(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+        float fwN3(vec3 x) {
+          vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(fwH(i), fwH(i + vec3(1,0,0)), f.x), mix(fwH(i + vec3(0,1,0)), fwH(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(fwH(i + vec3(0,0,1)), fwH(i + vec3(1,0,1)), f.x), mix(fwH(i + vec3(0,1,1)), fwH(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec3 n = normalize(vFwN), p = vFwP;
+          float sd = vFwSeed;
+          float px = max(length(fwidth(p)), 1e-5);              // metres per pixel
+          float fine = 1.0 - smoothstep(0.0025, 0.007, px), mid = 1.0 - smoothstep(0.007, 0.025, px);
+          float curv = length(fwidth(n)) / px;                    // 1/m
+          float vert = 1.0 - smoothstep(0.3, 0.5, abs(n.y));
+          float lum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+          // dust on the tops
+          float dn = fwN3(p * 6.0 + sd) * 0.7 + fwN3(p * 23.0 + sd) * 0.3;
+          float top = smoothstep(0.55, 0.9, n.y);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.3, 0.285, 0.255) * (0.75 + 0.5 * dn), ${(0.5).toFixed(2)} * ${dust.toFixed(2)} * top * smoothstep(0.3, 0.7, dn));
+          // edges: rubbed lighter, chipped to the primer
+          float edge = smoothstep(18.0, 45.0, curv) * mid;
+          float chipN = fwN3(p * 55.0 + sd * 1.7) * 0.65 + fwN3(p * 140.0 + sd) * 0.35;
+          float chip = edge * smoothstep(0.56, 0.64, chipN) * ${chips.toFixed(2)};
+          diffuseColor.rgb *= 1.0 + 0.18 * edge * ${chips.toFixed(2)} * (1.0 - lum);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.3, 0.295, 0.28), chip * 0.85);
+          // foot: splash specks and kicks
+          float foot = 1.0 - smoothstep(0.12, 0.42, p.y + 0.15 * (dn - 0.5));
+          float speck = smoothstep(0.7, 0.78, fwN3(p * 75.0 + sd)) * (1.0 - smoothstep(0.2, 0.55, p.y)) * fine;
+          float kick = smoothstep(0.64, 0.74, fwN3(vec3(p.x * 14.0, p.y * 7.0, p.z * 14.0) + 5.0 + sd)) * smoothstep(0.08, 0.15, p.y) * (1.0 - smoothstep(0.45, 0.6, p.y)) * vert;
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.1, 0.09, 0.075), clamp(0.3 * foot + 0.35 * speck + 0.3 * kick * mid, 0.0, 0.6));
+          // a coordinate across the face (flat faces: along the face; round ones: by quadrant)
+          float u = abs(n.x) > abs(n.z) ? p.z * sign(n.x) : -p.x * sign(n.z);
+          // run-off streaks
+          float st = fwN3(vec3(u * 24.0, p.y * 1.1, sd)) * fwN3(vec3(u * 7.0, p.y * 0.35, sd + 3.0));
+          float run = smoothstep(0.3, 0.55, st) * vert * smoothstep(0.25, 0.7, p.y) * ${rust.toFixed(2)};
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.8, 0.7, 0.58), run * 0.45);
+          ${stickers ? `
+          // stickers and flyer scraps (most instances), cells 13 x 15 cm across the face
+          float iH = fract(sd * 0.6180339 + 0.17);
+          float dens = step(0.2, iH) * mix(0.09, 0.2, fract(sd * 3.7));
+          vec2 c = vec2(u / 0.13, p.y / 0.15), ci = floor(c), cf = fract(c);
+          float side = dot(n, vec3(1.3, 0.0, 2.7));
+          float h1 = fwH(vec3(ci, sd + side)), h2 = fwH(vec3(ci + 7.1, sd + 4.9 + side)), h3 = fwH(vec3(ci + 3.3, sd + 9.7 - side));
+          float zone = smoothstep(0.45, 0.6, p.y) * (1.0 - smoothstep(1.6, 1.8, p.y)) * vert * (1.0 - smoothstep(6.0, 9.0, curv));
+          if (h1 < dens * zone && mid > 0.0) {
+            vec2 ctr = 0.5 + (vec2(h2, h3) - 0.5) * 0.25, hw = mix(vec2(0.2, 0.18), vec2(0.42, 0.44), vec2(h3, h2));
+            vec2 q = (cf - ctr) / hw;                       // -1..1 over the sticker
+            float torn = h2 > 0.7 ? fwN3(vec3(c * 6.0, h1 * 31.0)) * 0.5 : 0.0;
+            float inR = 1.0 - smoothstep(0.92, 1.0, max(abs(q.x), abs(q.y)) + torn);
+            float k = fract(h1 * 13.7 + h3);
+            vec3 paper = k < 0.35 ? vec3(0.78, 0.77, 0.73) : k < 0.5 ? vec3(0.78, 0.66, 0.2) : k < 0.65 ? vec3(0.62, 0.16, 0.13) : k < 0.8 ? vec3(0.16, 0.27, 0.52) : vec3(0.06);
+            vec3 ink = k < 0.5 ? vec3(0.08) : vec3(0.85, 0.84, 0.8);
+            // print: bars of text, or a logo disc over two bars
+            float bars = step(0.5, fract(q.y * 2.6 + 0.3)) * step(abs(q.x), 0.7) * step(0.35, fwH(vec3(floor(q.x * 3.0 + 9.0), floor(q.y * 2.6), h2 * 7.0)));
+            float logo = h3 > 0.6 ? 1.0 - smoothstep(0.4, 0.46, length(q - vec2(0.0, 0.35))) : 0.0;
+            vec3 col = mix(paper, ink, max(bars * (h3 > 0.6 ? step(q.y, -0.1) : 1.0), logo) * 0.8 * fine);
+            col = mix(col, vec3(dot(col, vec3(0.33))), 0.35) * (0.8 + 0.3 * h2);   // sun-faded
+            diffuseColor.rgb = mix(diffuseColor.rgb, col, inR * 0.95);
+          }
+          // a tag on a flat face of about a third of them
+          if (iH < 0.34) {
+            float tu0 = (fract(sd * 1.31) - 0.5) * 0.5, ty0 = mix(0.6, 1.25, fract(sd * 2.17));
+            vec2 tq = vec2((u - tu0) / 0.3, (p.y - ty0) / 0.13);
+            float tbox = (1.0 - smoothstep(0.75, 1.0, abs(tq.x))) * (1.0 - smoothstep(0.6, 1.0, abs(tq.y))) * vert * (1.0 - smoothstep(1.0, 2.0, curv));
+            if (tbox > 0.0) {
+              float tn = fwN3(vec3(tq * vec2(2.6, 1.7), sd * 5.0)) + 0.5 * fwN3(vec3(tq * vec2(6.0, 3.0), sd * 5.0 + 9.0));
+              float tv = fract(tn * 2.4), tw = fwidth(tn * 2.4);
+              float line = 1.0 - smoothstep(0.035, 0.035 + 1.5 * tw, abs(tv - 0.5));
+              float tk = fract(sd * 0.77);
+              vec3 tc = tk < 0.45 ? vec3(0.03) : tk < 0.65 ? vec3(0.55, 0.56, 0.58) : tk < 0.82 ? vec3(0.08, 0.17, 0.45) : vec3(0.5, 0.06, 0.06);
+              diffuseColor.rgb = mix(diffuseColor.rgb, tc, line * tbox * 0.9 * mid);
+            }
+          }` : ''}
+        }`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|${key}`; };
   m.needsUpdate = true;
   return m;
 }
@@ -865,18 +1078,21 @@ export function createMaterials(app) {
   })), 0.15), { albedo: 0.06, rough: 0.1, mottle: 0.02 });
   // painted metal (bins, kiosk, columns, painted chairs), coloured per instance: satin paint
   out.paint = albedoVariant('metal.pole', { userData: { furniture: 'paint' }, roughness: 0.62 }) || reg('paint', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0 }));
-  patchGrime(out.paint, { albedo: 0.2, rough: 0.12, mottle: 0.05 });
-  out.iron = patchGrime(variant('metal.iron'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
+  patchStreetWear(patchGrime(out.paint, { albedo: 0.2, rough: 0.12, mottle: 0.05 }), { stickers: true });
+  // the same paint on café chairs and menu folders: looked after, no street wear
+  out.paintFine = albedoVariant('metal.pole', { userData: { furniture: 'paintFine' }, roughness: 0.62 }) || reg('paintFine', new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0 }));
+  patchGrime(out.paintFine, { albedo: 0.2, rough: 0.12, mottle: 0.05 });
+  out.iron = patchStreetWear(patchGrime(variant('metal.iron'), { albedo: 0.15, rough: 0.1, mottle: 0.04 }), { rust: 1.4 });
   // furniture-owned variants of other library surfaces (patched locally: grime, LOD fade)
   out.rubber = variant('rubber');
-  out.galv = patchGrime(variant('metal.galvanized'), { albedo: 0.12, rough: 0.1, mottle: 0.04 });
+  out.galv = patchStreetWear(patchGrime(variant('metal.galvanized'), { albedo: 0.12, rough: 0.1, mottle: 0.04 }), { chips: 0.4, rust: 0.6 });
   out.steel = variant('metal.steel');
   out.stone = patchGrime(variant('stone.smooth'), { albedo: 0.18, rough: 0.05, ao: 0.5, mottle: 0.06 });
   out.bollardStone = patchBollard(variant('stone.smooth', { userData: { furniture: 'bollard' } }));
   reg('interior', new THREE.MeshStandardMaterial({ color: srgb('#1e1d1b'), roughness: 0.9, metalness: 0 }));
   reg('pages', new THREE.MeshStandardMaterial({ color: srgb('#e4dfd3'), roughness: 0.75, metalness: 0 }));
   out.pole = patchGrime(variant('metal.pole'), { albedo: 0.15, rough: 0.1, mottle: 0.04 });
-  out.concrete = patchGrime(variant('concrete'), { albedo: 0.2, rough: 0.05, ao: 0.55, mottle: 0.06 });
+  out.concrete = patchStreetWear(patchGrime(variant('concrete'), { albedo: 0.2, rough: 0.05, ao: 0.55, mottle: 0.06 }), { chips: 0.6, rust: 0.5 });
   // brushed aluminium (chairs, tables, frames); the env reflection is kept moderate
   const brushed = T('brushed', () => brushedNormal(R));
   patchEnvSpec(patchGrime(reg('aluminium', new THREE.MeshStandardMaterial({ color: srgb('#c9cacb'), roughness: 0.45, metalness: 1, normalMap: brushed, normalScale: new THREE.Vector2(0.25, 0.25), envMapIntensity: 0.75 })), { albedo: 0.12, rough: 0.1, mottle: 0.03 }));

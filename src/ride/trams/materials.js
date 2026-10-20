@@ -143,10 +143,11 @@ uniform float uTramZOn;
 uniform vec4 uTramStreet;
 uniform float uTramGround;
 // the glazing's reflection lobe (rad): flat glass is nearly a mirror; what blurs it a little is
-// the panes' unevenness and the film on them, not the lighting model's roughness floor
-#define TRAM_GLASS_CONE 0.0022
-// ... and the roughness its environment lookup keeps (the finest levels of the environment)
-#define TRAM_GLASS_ROUGH 0.03
+// the panes' unevenness (a fleet car's laminated panes are wavy) and the film on them, not the
+// lighting model's roughness floor
+#define TRAM_GLASS_CONE 0.007
+// ... and the roughness its environment lookup keeps (the finer levels of the environment)
+#define TRAM_GLASS_ROUGH 0.05
 // last frame's image at uv, blurred over about 2^l of its pixels (l 0: the image itself, 1-5:
 // post's pyramid of the same frame)
 vec3 tramHistLevel( vec2 uv, float l ) {
@@ -210,7 +211,7 @@ vec3 tramStreetReflL( vec3 P, vec3 R, float cone, float lmax, float glass, out f
   return min( h, vec3( 64.0 ) );
 }
 vec3 tramStreetRefl( vec3 P, vec3 R, float cone, out float a ) { return tramStreetReflL( P, R, cone, 8.0, 0.0, a ); }
-vec3 tramGlassRefl( vec3 P, vec3 R, out float a ) { return tramStreetReflL( P, R, TRAM_GLASS_CONE, 1.5, 1.0, a ); }
+vec3 tramGlassRefl( vec3 P, vec3 R, out float a ) { return tramStreetReflL( P, R, TRAM_GLASS_CONE, 2.2, 1.0, a ); }
 // the environment mirrored in smooth glass: as sharp as the glass (rough0), blurred only over the
 // pixel's footprint in reflected direction (a curved pane sweeps the reflection fast across the
 // image: sampled sharp there, the coarse canyon of the environment broke into jagged steps)
@@ -506,7 +507,7 @@ vec3 tramSaloon( vec3 ro, vec3 rd, vec3 rdW, float w0, float camD, float body, v
     float dz = abs( p.z - tramDoorZ( p.z, body ) );
     bool door = dz < 0.66 && !( cab && p.z < 3.0 );
     float y0 = door ? 0.8 : 0.98, y1 = door ? 2.1 : 2.38;
-    float pil = door ? smoothstep( 0.02 + w, 0.02 - w, dz ) : smoothstep( 0.07 + w, 0.07 - w, abs( fract( ( p.z + 0.4 ) / 1.59 ) - 0.5 ) * 1.59 );
+    float pil = door ? smoothstep( 0.02 + w, 0.02 - w, dz ) : smoothstep( 0.06 + w, 0.06 - w, abs( fract( ( p.z + 0.4 ) / 0.98 ) - 0.5 ) * 0.98 );
     float pane = tramRect( vec2( 0.0, p.y ), vec2( - 1.0, y0 ), vec2( 1.0, y1 ), w ) * ( 1.0 - pil );
     float band = tramRect( vec2( 0.0, p.y ), vec2( - 1.0, y0 - 0.05 ), vec2( 1.0, y1 + 0.04 ), w );
     // lining panels with their joints, a dark kick strip along the floor
@@ -611,7 +612,7 @@ export function makeBodyMaterial(uni) {
 	vTramN = objectNormal;
 	vTramZ = normalize( ( modelViewMatrix * vec4( 0.0, 0.0, 1.0, 0.0 ) ).xyz );`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;\nvarying vec3 vTramN;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTramP;\nvarying vec3 vTramZ;\nvarying vec2 vTramUv;\nvarying vec3 vTramN;\n#define TRAM_RIB 0.04')
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	// silver paint (bright vertex colours) vs dark trim
@@ -666,6 +667,12 @@ export function makeBodyMaterial(uni) {
 	}`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 	roughnessFactor = mix( 0.5, roughnessFactor + 0.25 * tramGrime, tramPaint );`)
+      // the side panels are slightly convex across the car (trams/model.js sideWalls: uv.x =
+      // 500 + t, t = -1..1 across a panel): light and reflection change across each, so the
+      // side reads as a row of vertical panels
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+	float tramRib = ( vTramUv.x > 400.0 && vTramUv.x < 600.0 ) ? clamp( vTramUv.x - 500.0, - 1.0, 1.0 ) * TRAM_RIB : 0.0;
+	normal = normalize( normal + vTramZ * tramRib );`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
 	metalnessFactor *= tramPaint * ( 1.0 - 1.5 * tramGrime );`)
       // the panels are not perfectly flat: the clear coat's reflection wavers a little along the
@@ -673,7 +680,7 @@ export function makeBodyMaterial(uni) {
       .replace('#include <clearcoat_normal_fragment_maps>', `#include <clearcoat_normal_fragment_maps>
 	{
 		float rip = ( tramNoise( vTramP.z * 0.55 + 3.0 ) - 0.5 ) * 0.006;
-		clearcoatNormal = normalize( clearcoatNormal + vTramZ * rip * ( 1.0 - abs( dot( clearcoatNormal, vTramZ ) ) ) );
+		clearcoatNormal = normalize( clearcoatNormal + vTramZ * ( rip * ( 1.0 - abs( dot( clearcoatNormal, vTramZ ) ) ) + tramRib ) );
 	}`)
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
 	material.clearcoat *= tramPaint * ( 1.0 - 0.5 * tramLowP );
@@ -685,7 +692,7 @@ export function makeBodyMaterial(uni) {
 	{
 		vec3 tramPw = tramWorldPos();
 		float tramA;
-		vec3 tramRb = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryNormal ), viewMatrix );
+		vec3 tramRb = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, normal ), viewMatrix );
 		vec3 tramHb = tramStreetRefl( tramPw, tramRb, 1.8 * pow2( material.roughness ), tramA );
 		radiance = mix( tramTone( radiance, tramRb.y ), tramHb, tramA );
 		vec3 tramRc = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, geometryClearcoatNormal ), viewMatrix );
@@ -695,7 +702,7 @@ export function makeBodyMaterial(uni) {
 		clearcoatRadiance = mix( clearcoatRadiance, tramCabC, tramA );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.body.v8';
+  m.customProgramCacheKey = () => 'trams.body.v9';
   return m;
 }
 
@@ -745,8 +752,11 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
       // pane mirrors the dimmer saloon.
       .replace('#include <lights_fragment_maps>', `#include <lights_fragment_maps>
 	{
-		float tramPid = floor( vTramUv.y + 0.5 ) + 211.0 * step( 50.0, vTramUv.x - vTramP.z ) + 97.0 * step( 0.0, vTramP.x );
-		float tramTz = ( tramHash( vec3( tramPid, uTramSeed, 3.1 ) ) - 0.5 ) * 0.005 + ( tramNoise( vTramP.z * 0.3 + 11.0 ) - 0.5 ) * 0.003;
+		float tramPid = floor( vTramUv.y + 0.5 ) + 211.0 * step( 50.0, vTramUv.x ) + 97.0 * step( 0.0, vTramP.x );
+		// (uv.x = 10 + t (+ 100 on the centre body), t = -1..1 across the pane: the panes bow a
+		// little, so each mirrors the street a little differently across its width)
+		float tramAcross = clamp( vTramUv.x - 10.0 - 100.0 * step( 50.0, vTramUv.x ), - 1.0, 1.0 );
+		float tramTz = ( tramHash( vec3( tramPid, uTramSeed, 3.1 ) ) - 0.5 ) * 0.005 + ( tramNoise( vTramP.z * 0.3 + 11.0 ) - 0.5 ) * 0.003 + 0.022 * tramAcross;
 		float tramTy = ( tramHash( vec3( tramPid, uTramSeed, 5.7 ) ) - 0.5 ) * 0.003;
 		vec3 tramNr = normalize( geometryNormal + ( vTramZ * tramTz + vTramY * tramTy ) * ( 1.0 - abs( dot( geometryNormal, vTramZ ) ) ) );
 		vec3 tramR = transformDirectionByInverseViewMatrix( reflect( - geometryViewDir, tramNr ), viewMatrix );
@@ -766,7 +776,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
 		float tramPane = smoothstep( 0.3, 0.7, vColor.g );
 		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
 		float tramF = 0.06 + 0.94 * pow( 1.0 - tramNV, 5.0 );
-		float tramBody = step( 50.0, vTramUv.x - vTramP.z );
+		float tramBody = step( 50.0, vTramUv.x );
 		${see ? `// see-through: everywhere but the cab's side window (the traced cab stays there)
 		float tramSee = uTramSee * tramPane * ( 1.0 - ( 1.0 - tramBody ) * step( vTramP.z, 2.65 ) );
 		tramAlpha = 1.0 - tramSee * ( 1.0 - tramF ) * ( gl_FrontFacing ? TS_SEE : TS_SEE_FAR );
@@ -785,7 +795,7 @@ export function makeGlassMaterial(name, uni, gain = { value: 1 }, see = null) {
     // (see-through: the transmission goes out as alpha, see the blend factors above)
     if (see) sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', '#include <opaque_fragment>\n\tgl_FragColor.a = tramAlpha;');
   };
-  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v4' : 'trams.glass.v16');
+  m.customProgramCacheKey = () => (see ? 'trams.glass.see.v5' : 'trams.glass.v17');
   return m;
 }
 
@@ -832,7 +842,7 @@ export function makeInteriorMaterial(uni, gain = { value: 1 }, seat = new THREE.
 const CAB_GLSL = /* glsl */ `
 uniform float uTramDriver;
 // light falls in through the windscreen (ahead and above) and the side windows
-float tramShade( vec3 n ) { return 0.3 + 0.7 * max( dot( n, vec3( 0.0, 0.48, - 0.88 ) ), 0.0 ) + 0.2 * abs( n.x ); }
+float tramShade( vec3 n ) { return 0.18 + 0.75 * max( dot( n, vec3( 0.0, 0.48, - 0.88 ) ), 0.0 ) + 0.12 * abs( n.x ); }
 vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
   rd.z = max( rd.z, 1e-3 );
   vec3 ard = max( abs( rd ), vec3( 1e-4 ) );
@@ -893,7 +903,7 @@ vec3 tramCab( vec3 ro, vec3 rd, vec3 rdW, float w, vec3 E ) {
   // screen, lit by the whole street through it
   vec2 po = ( ro + rd * ( ( 0.72 - ro.z ) / rd.z ) ).xy;
   float oc = tramRect( po, vec2( - 0.8, 2.12 ), vec2( 0.8, 2.7 ), w ) * step( ro.z, 0.72 );
-  L = mix( L, vec3( 0.55, 0.55, 0.53 ) * E * mix( 1.0, 1.6, smoothstep( 2.12, 2.5, po.y ) ), oc );
+  L = mix( L, vec3( 0.68, 0.68, 0.66 ) * E * mix( 1.1, 1.9, smoothstep( 2.12, 2.5, po.y ) ), oc );
   // console across the cab, the driver's binnacle in the middle
   vec2 pb = ( ro + rd * ( ( 0.6 - ro.z ) / rd.z ) ).xy;
   L = mix( L, vec3( 0.035 ) * E * 0.8, tramRect( pb, vec2( - 0.5, 0.0 ), vec2( 0.5, 1.5 ), w ) * step( ro.z, 0.6 ) );
@@ -948,7 +958,7 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 	vTramP = transformed;
 	vTramE = ( cameraPosition - modelMatrix[ 3 ].xyz ) * mat3( modelMatrix ) - transformed;`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\n#define TRAM_WS_F0 vec3( 0.088, 0.096, 0.108 )\n${WS_GLSL}`)
+      .replace('#include <common>', `#include <common>\nvarying vec2 vTramUv;\nvarying vec3 vTramP;\nvarying vec3 vTramE;\n#define TRAM_WS_F0 vec3( 0.12, 0.134, 0.15 )\n${WS_GLSL}`)
       .replace('#include <envmap_physical_pars_fragment>', `#include <envmap_physical_pars_fragment>\n${COMMON_GLSL}\n${REFL_GLSL}\n${CAB_GLSL}\n${DISP_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 	float tramD = tramWsDist( vTramUv );
@@ -1000,7 +1010,8 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 		float tramNV = saturate( dot( geometryNormal, geometryViewDir ) );
 		float tramF = dot( TRAM_WS_F0, vec3( 0.2126, 0.7152, 0.0722 ) );
 		tramF += ( 1.0 - tramF ) * pow( 1.0 - tramNV, 5.0 );
-		vec3 tramT = vec3( 0.52, 0.69, 0.82 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
+		// (solar-control laminated glass: a little over half the light through, a cyan cast)
+		vec3 tramT = vec3( 0.4, 0.58, 0.66 ) * mix( 1.0, 0.85, smoothstep( 2.2, 2.6, vTramUv.y ) );
 		// the destination display just behind the glass (its LEDs and its black board)
 		float tramDc;
 		vec3 tramDl = tramDisplay( vTramUv, tramDc );
@@ -1008,8 +1019,46 @@ export function makeFrontMaterial(uni, { driver = true, gain = { value: 1 }, atl
 		totalEmissiveRadiance += tramWs * tramL * tramT * ( 1.0 - tramF );
 	}`);
   };
-  m.customProgramCacheKey = () => 'trams.front.v9';
+  m.customProgramCacheKey = () => 'trams.front.v10';
   return m;
+}
+
+/** Contact shade on the paving under a body (trams/model.js contact: uv = body-frame x, z;
+ *  the centre body's z from 100): it multiplies what the street drew there (blend zero, source
+ *  colour), the light the car's floor and skirt keep from the street under and right beside it,
+ *  that the sun's shadow alone does not take (the sky's light and the bounce): 0.28 under the
+ *  body, rising across the skirt line to nothing about 0.35 m outside it. The footprint is the
+ *  skirt's: its sides at 1.155 m and, on a cab, the superellipse of the nose. */
+export function makeContactMaterial() {
+  return new THREE.ShaderMaterial({
+    name: 'trams.contact',
+    vertexShader: /* glsl */ `
+varying vec2 vTramC;
+void main() {
+  vTramC = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+}`,
+    fragmentShader: /* glsl */ `
+varying vec2 vTramC;
+void main() {
+  bool mid = vTramC.y > 50.0;
+  float z = mid ? vTramC.y - 100.0 : vTramC.y;
+  float ax = abs( vTramC.x );
+  float d = ax - 1.155;
+  if ( ! mid && z < 1.15 ) {
+    // the nose's plan (trams/model.js CAP_P), distance outside it in metres (approximately)
+    vec2 q = max( vec2( ax / 1.155, ( 1.15 - z ) / 0.87 ), vec2( 0.0 ) );
+    float r = pow( pow( q.x, 2.6 ) + pow( q.y, 2.6 ), 1.0 / 2.6 );
+    d = ( r - 1.0 ) * mix( 0.87, 1.155, q.x / max( q.x + q.y, 1e-3 ) );
+  }
+  gl_FragColor = vec4( vec3( mix( 0.28, 1.0, smoothstep( - 0.12, 0.35, d ) ) ), 1.0 );
+}`,
+    transparent: true, depthWrite: false, depthTest: true, fog: false, toneMapped: false,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+    blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor,
+    blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+  });
 }
 
 /** Pantograph frame: dark grey paint (vertex colour). */

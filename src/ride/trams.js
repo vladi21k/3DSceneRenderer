@@ -6,7 +6,7 @@ import { Tram, DRIVE, BESIDE, crowdCorridor } from './train.js';
 import { RNG } from '../core/rng.js';
 import { CAR, SALOON, buildModels } from './trams/model.js';
 import { makeLampAtlas } from './trams/display.js';
-import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeInteriorMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
+import { makeBodyMaterial, makeGlassMaterial, makeFrontMaterial, makeMetalMaterial, makeInteriorMaterial, makeContactMaterial, makeSharedRefl, makeUnitUniforms } from './trams/materials.js';
 
 // Oncoming trams: the other units of the line, on the left track (d = −TRACK_OFFSET),
 // running the loop the other way. The cab tram itself is never rendered.
@@ -126,6 +126,8 @@ const trams = {
     this.gain = (M.uniforms && M.uniforms.emissiveGain) || { value: 1 };
     this.refl = makeSharedRefl();
     this.metal = M.track(makeMetalMaterial());
+    // the contact shade on the paving under each body (near levels; one program for all units)
+    this.contactMat = M.track(makeContactMaterial());
     // lamps: the display and the lamp lenses have their own levels (one program for all units)
     this.lampLv = { value: new THREE.Vector2(1, 1) };
     // see-through side glazing by day (passengers of the humans module behind it), the traced
@@ -297,6 +299,17 @@ const trams = {
           mesh.name = `trams:${kind}:${k}`;
           if (k === 'inner') this._inner.push(mesh);
           lg.add(mesh);
+        }
+        if (lod < 2) {
+          // contact shade on the paving: drawn first among the transparent things (it belongs
+          // to the street under the car)
+          const c = new THREE.Mesh(kind === 'mid' ? models.contact.mid : models.contact.cab, this.contactMat);
+          c.matrixAutoUpdate = false;
+          c.castShadow = false;
+          c.receiveShadow = false;
+          c.renderOrder = -1;
+          c.name = `trams:${kind}:contact`;
+          lg.add(c);
         }
         lg.visible = lod === 2;
         g.add(lg);

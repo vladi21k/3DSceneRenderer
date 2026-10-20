@@ -184,7 +184,7 @@ export function* lotSteps(B, lot, ends, q, metas) {
     const ctx = { B, sinks, q, fs, orn, vBottom: fg - 0.35, vTop, rustic, sillExt, ch: plan.coursing.ch, fit: null, filled: true, uMin: F.main ? uMin : 0, uMax: F.main ? uMax : face.width, uvA, uvR: null, render: null };
     if (rend) {
       // render weathers faster than stone (streaks under the sills, soot under the cornice)
-      const rfs = new FaceShade(face, rcol, lot.seed + 61 + (F.main ? 0 : 977), { dirt: orn.dirt * 1.1, uncleaned: Math.max(uncleaned * 0.6, 0.22), sillExt, sillH: orn.sillH });
+      const rfs = new FaceShade(face, rcol, lot.seed + 61 + (F.main ? 0 : 977), { dirt: orn.dirt * 1.1, uncleaned: Math.max(uncleaned * 0.6, 0.22), sillExt, sillH: orn.sillH, bleach: 0.6 + 0.4 * hash3(lot.seed, 61, 3) });
       ctx.render = { v0: rend.from, sink: sinks.paint, fs: rfs };
       if (F.main) mainRend = rfs;
     }

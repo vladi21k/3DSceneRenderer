@@ -471,6 +471,14 @@ def main():
             crease = push_pull(crease[..., None].astype(np.float32), rm)[..., 0]
             nimg = combine_normals(nimg, rn)
             log('relief', suit, 'from', ','.join(e['cid'] for e in folds[suit][:3]), f'{int(rm.sum())} texels')
+        if nimg is not None:
+            # (flat outside the texels in use, a few texels of bleed kept: the suits' own maps carry marks
+            # and stray detail in their unused areas)
+            used = np.zeros((S, S), bool)
+            for m in masks.values():
+                used |= m
+            keep = ndimage.binary_dilation(used, iterations=4)
+            nimg = np.where(keep[..., None], nimg, np.array([0.5, 0.5, 1.0], np.float32))
         img, info = garment_layer(suit, masks, crease)
         li, ni = add_layer(img, dict(info, key=key, kind='cloth', rough=SUIT_ROUGH.get(suit, ROUGH['cloth'])), nimg)
         remap[key] = dict(layer=li, rect=[0, 0, 1, 1], normal=ni, type=info['type'])

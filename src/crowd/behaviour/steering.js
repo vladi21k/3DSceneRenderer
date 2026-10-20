@@ -384,7 +384,15 @@ export class Steering {
           // strollers and bicycles: the gap between the whole footprints
           if ((a.mob || b.mob) && dist < 3.4) { FQ[0] = dx; FQ[1] = dy; const g = footGapQ(a, b); gap = g.gap; nx = g.ns; ny = g.nd; }
           const mate = (b.leader || b) === L;
-          if (gap < 1.64) {
+          if (mate && !a.mob && !b.mob) {
+            // company walks shoulder to shoulder (their slots keep the spacing): only bodies
+            // about to touch are eased apart
+            const g2 = dist - (a.isChild || b.isChild ? 0.36 : 0.45);
+            if (g2 < 0.06) {
+              const f = 1.4 * (0.06 - g2) / 0.06;
+              fs += nx * f; fd += ny * f;
+            }
+          } else if (gap < 1.64) {
             // body repulsion, anisotropic (people react to what is in front of them). Standing
             // people only make room for real overlaps: the walkers go round them.
             const cosPhi = -(nx * es + ny * ed);

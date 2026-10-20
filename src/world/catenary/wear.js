@@ -3,8 +3,10 @@ import { RNG } from '../../core/rng.js';
 import { shaftRadius } from './poleKit.js';
 
 // Street wear on the lamp standards: stickers, flyer remnants and taped notices at hand
-// height, all around the shaft. Each is a thin curved patch wrapped on the shaft with a
-// print from a small canvas atlas, merged per chunk (full-detail range only).
+// height, all around the shaft (one to ten on every standard, most at 1-2 m). Each is a
+// thin curved patch wrapped on the shaft with a print from a small canvas atlas, merged per
+// chunk (full-detail range only). The scraped-off remnants, scuffs and grime under them
+// are painted by the pole material (shaders.js STREET_WEAR).
 
 const CELLS_X = 4, CELLS_Y = 2;
 
@@ -15,13 +17,13 @@ export function buildStickers(poles, poleMatrix, seed) {
   const v = new THREE.Vector3(), n = new THREE.Vector3();
   for (const p of poles) {
     const rng = RNG.from(seed, 'stickers', Math.round(p.s * 10), p.side);
-    const count = rng.weighted([[0, 0.35], [1, 0.22], [2, 0.18], [3, 0.15], [6, 0.1]]);
+    const count = rng.weighted([[1, 0.12], [2, 0.18], [3, 0.2], [5, 0.22], [7, 0.16], [10, 0.12]]);
     if (!count) continue;
     poleMatrix(p, m);
     nm.getNormalMatrix(m);
     for (let k = 0; k < count; k++) {
-      const y0 = rng.range(1.38, 2.2);
-      const h = rng.range(0.05, 0.19), w = rng.range(0.045, 0.13);
+      const y0 = rng.chance(0.8) ? rng.range(0.95, 1.95) : rng.range(1.95, 2.25);
+      const h = rng.range(0.05, 0.17), w = rng.range(0.045, 0.12);
       const r = shaftRadius(y0) + 0.0012 + k * 0.0004;
       // anywhere around the shaft (passers-by on both sides of the pole line)
       const a0 = rng.range(0, Math.PI * 2);

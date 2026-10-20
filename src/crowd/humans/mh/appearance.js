@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { RNG } from '../../../core/rng.js';
+import { RNG, hash2 } from '../../../core/rng.js';
 
 // "Who is this person": the crowd's integer appearance seed picks one character of the cast
 // (assets/humans_mh) by age class and sex, in street proportions, and varies it: garment colours
@@ -21,19 +21,19 @@ export const REGION_COUNT = 16;
 export const REGION = { skin: 0, hair: 1, brows: 2, lashes: 3, eyes: 4, top: 5, top2: 6, bottom: 7, shoes: 8, socks: 9,
   hat: 10, beard: 11, prop: 12, screen: 13, bag: 14, strap: 15 };
 export const BAG = { NONE: 0, BACKPACK: 1, SHOULDER: 2, SHOPPING: 3 };
-export const PATTERN = { SOLID: 0, STRIPES: 1, CHECK: 2, PRINT: 3, PINSTRIPE: 4 };
+export const PATTERN = { SOLID: 0, STRIPES: 1, CHECK: 2, PRINT: 3, PINSTRIPE: 4, GRAPHIC: 5 };
 
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };   // sRGB hex -> linear
 const P = (list) => list.map((x) => (Array.isArray(x) ? [lin(x[0]), x[1]] : [lin(x), 1]));
 
 const TEE = P([['#f2f1ec', 16], ['#16171a', 12], ['#2a3346', 7], ['#8c9196', 6], ['#b9bcbd', 4], ['#8fb6d9', 6],
-  ['#4f7fb4', 4], ['#3e8a4e', 5], ['#79b83a', 3], ['#c8352b', 4], ['#e9802a', 4], ['#e6c43a', 3],
+  ['#4f7fb4', 4], ['#3e8a4e', 5], ['#8aa53e', 3], ['#c8352b', 4], ['#e9802a', 4], ['#d4b04a', 3],
   ['#6b6f3a', 4], ['#7a2534', 3], ['#2f8c8c', 3], ['#e7a3b8', 3], ['#9b6fb8', 2], ['#d9cdb0', 4]]);
 const SHIRT = P([['#f4f4f1', 14], ['#bcd3ea', 12], ['#9dbbd9', 6], ['#e8e2d4', 5], ['#f2d4d6', 3],
   ['#3d5a80', 3], ['#2e2e33', 3], ['#c9d8c0', 3], ['#e9e3c9', 3]]);
-const BLOUSE = P([['#f6f3ee', 12], ['#121214', 6], ['#e7b9c5', 4], ['#a9c9e4', 6], ['#f2d36b', 3], ['#e7e0cf', 5],
+const BLOUSE = P([['#f6f3ee', 12], ['#121214', 6], ['#e7b9c5', 4], ['#a9c9e4', 6], ['#d9bc66', 3], ['#e7e0cf', 5],
   ['#c94a3a', 3], ['#5fa58f', 3], ['#2c3f6b', 4], ['#d98a3d', 3], ['#b296c9', 2]]);
-const DRESS = P([['#2a4a7a', 5], ['#f1eee6', 5], ['#141416', 6], ['#c23b3b', 3], ['#6aa4c8', 4], ['#e9c94e', 2],
+const DRESS = P([['#2a4a7a', 5], ['#f1eee6', 5], ['#141416', 6], ['#c23b3b', 3], ['#6aa4c8', 4], ['#d4b04a', 2],
   ['#4e7f4a', 3], ['#d7a1b6', 3], ['#e6dcc6', 3], ['#8a3a52', 2], ['#3a8a8a', 2]]);
 const JACKET = P([['#6b6f6a', 4], ['#2b2f38', 4], ['#5b5348', 3], ['#3b4a5c', 3], ['#8a7f6a', 2]]);
 const JEANS = P([['#2f4a6e', 10], ['#3e5f88', 9], ['#5679a3', 6], ['#7f9cbe', 4], ['#1d2737', 6], ['#2b2c30', 3]]);
@@ -45,12 +45,12 @@ const SKIRT = P([['#141416', 8], ['#25324a', 7], ['#5d6066', 4], ['#4a6f96', 4],
   ['#3f5f42', 2], ['#e8e2d4', 2], ['#6f4a6b', 2]]);
 const SKIRT_LONG = P([['#141416', 10], ['#1f2a44', 9], ['#3b3f47', 5], ['#4a6f96', 4], ['#6b5a4a', 3], ['#535a4c', 2]]);
 const LEGGINGS = P([['#121214', 6], ['#2b2c30', 2], ['#25324a', 1]]);
-const KIDS = P([['#f4f2ec', 8], ['#bcd6ee', 5], ['#f6c3cf', 5], ['#f3df8f', 4], ['#c4e2b6', 4], ['#e9813c', 2],
+const KIDS = P([['#f4f2ec', 8], ['#bcd6ee', 5], ['#f6c3cf', 5], ['#ecd994', 4], ['#c4e2b6', 4], ['#e9813c', 2],
   ['#5b8fd0', 3], ['#d8434a', 2], ['#9fd2d0', 2], ['#c5b3dd', 2]]);
-const BAGS = P([['#18181a', 12], ['#3b2a20', 6], ['#5a3b24', 5], ['#5d6b52', 3], ['#2c3e5e', 4], ['#8a8f96', 3],
-  ['#b2342e', 2], ['#d9c8a8', 3], ['#e57b2c', 1]]);
-const PACKS = P([['#18181a', 10], ['#2c3e5e', 5], ['#5d6b52', 3], ['#8a8f96', 3], ['#b2342e', 2], ['#3b4a5c', 3],
-  ['#e9802a', 1], ['#d9c8a8', 2]]);
+const BAGS = P([['#18181a', 12], ['#3b2a20', 6], ['#5a3b24', 5], ['#7a5232', 3], ['#5d6b52', 3], ['#2c3e5e', 4],
+  ['#b2342e', 2], ['#c9b08a', 3], ['#8c2f3a', 2], ['#d1792e', 1]]);
+const PACKS = P([['#18181a', 10], ['#2c3e5e', 5], ['#5d6b52', 3], ['#4a3a2e', 2], ['#b2342e', 2], ['#3b4a5c', 3],
+  ['#d1792e', 1], ['#c9b08a', 2], ['#6b2a3a', 2]]);
 // shopping bags by shape (mh/parts.js shoppingBag): thin plastic carriers (mostly white or pale, a few in a
 // shop's colour), paper carriers (kraft, white, a black boutique bag), cloth totes; and the prints on them
 const SHOPPING = P([['#e87b2a', 3], ['#f4f2ee', 5], ['#3a7bc0', 2], ['#d2302a', 2], ['#3c8a46', 1], ['#c9b48d', 3]]);
@@ -174,9 +174,31 @@ function jitterGarments(t, seed, char) {
     const l = THREE.MathUtils.clamp(_hsl.l * (1 + dv * (1 - _hsl.l)), 0.02, 0.93);
     _jc.setHSL(h, _hsl.s, l, THREE.SRGBColorSpace);
     const m = Math.max(_jc.r, _jc.g, _jc.b), sc = m > 0.86 ? 0.86 / m : 1;
-    t[region] = [_jc.r * sc, _jc.g * sc, _jc.b * sc];
+    t[region] = wornDye([_jc.r * sc, _jc.g * sc, _jc.b * sc], rj);
   }
   if (isDress(char)) t.bottom = t.top.slice();
+}
+
+/**
+ * Dyed cotton as worn: a saturated colour fades with washing (its saturation x0.75-0.95 and its value down
+ * 5-15 %), and no garment colour reaches the edge of the gamut: in linear RGB the smallest channel stays at
+ * 12 % of the largest or more (sRGB saturation about 0.8 at most), the chroma taken out towards the colour's
+ * own luminance. c: linear RGB (changed copy returned); r: the person's colour stream.
+ */
+function wornDye(c, r) {
+  _jc.setRGB(c[0], c[1], c[2]).getHSL(_hsl, THREE.SRGBColorSpace);
+  const fs = r.range(0.75, 0.95), fv = r.range(0.85, 0.95);
+  if (_hsl.s > 0.3) {
+    _jc.setHSL(_hsl.h, _hsl.s * fs, _hsl.l * (1 - (1 - fv) * Math.min(1, (_hsl.s - 0.3) / 0.3)), THREE.SRGBColorSpace);
+    c = [_jc.r, _jc.g, _jc.b];
+  }
+  const mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
+  if (mx > 1e-4 && mn < 0.12 * mx) {
+    const L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    const k = Math.min(1, (0.88 * L) / Math.max(1e-6, 0.12 * (mx - L) + (L - mn)));
+    c = c.map((x) => L + (x - L) * k);
+  }
+  return c;
 }
 
 /** Outfit signature: the garments (top and bottom suits) and their colours in coarse buckets (hue 12ths,
@@ -256,6 +278,18 @@ function finish(seed, r, cast, index, toddler = false) {
       patColor = r.chance(0.6) ? (lum > 0.3 ? [0.02, 0.025, 0.04].map((x) => x * r.range(0.6, 3)) : [0.85, 0.84, 0.8])
         : r.weighted(kind === 'tee' ? TEE : BLOUSE).slice();
     }
+    // a print on the chest of about one plain tee in four (a block with lettering, a round badge, a slogan,
+    // a small logo; mh/shading.js hPattern 5), from a stream of its own
+    const rg = new RNG(hash2(seed >>> 0, 0x9a71));
+    if (kind === 'tee' && pattern === PATTERN.SOLID && rg.chance(cls === 'old' ? 0.12 : 0.3)) {
+      pattern = PATTERN.GRAPHIC;
+      patScale = rg.range(0.85, 1.15);
+      const base = t.top;
+      const lum = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
+      let pc = rg.weighted(PRINT).slice();
+      for (let i = 0; i < 4 && Math.abs(0.2126 * pc[0] + 0.7152 * pc[1] + 0.0722 * pc[2] - lum) < 0.18; i++) pc = rg.weighted(PRINT).slice();
+      patColor = wornDye(pc, rg);
+    }
   }
   t.pattern = patColor;
   // bag
@@ -266,7 +300,13 @@ function finish(seed, r, cast, index, toddler = false) {
         [BAG.SHOPPING, old ? 14 : 6]]);
   }
   t.bag = r.weighted(bag === BAG.SHOPPING ? SHOPPING : bag === BAG.BACKPACK ? PACKS : BAGS).slice();
-  t.strap = bag === BAG.SHOPPING ? t.bag.map((x) => x * 0.8) : t.bag.map((x) => x * 0.55);
+  {
+    // (the bag's colour from a well-mixed stream of its own: neighbouring seeds never share it; the
+    // webbing straps a darker shade of the bag, or black)
+    const rc = new RNG(hash2(seed >>> 0, 0x6ba9));
+    if (bag !== BAG.SHOPPING) t.bag = rc.weighted(bag === BAG.BACKPACK ? PACKS : BAGS).map((x) => x * rc.range(0.9, 1.06));
+    t.strap = bag === BAG.SHOPPING ? t.bag.map((x) => x * 0.8) : rc.chance(0.3) ? [0.012, 0.012, 0.013] : t.bag.map((x) => x * 0.55);
+  }
   // shopping bags: a shape, its colours and a print (from a stream of their own: the rest of the
   // person is drawn as before)
   let bagShape = 0, bagPrint = 0;

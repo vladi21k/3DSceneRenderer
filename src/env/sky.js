@@ -246,6 +246,11 @@ vec3 clouds(vec3 dir, vec3 L) {
     vec2 w = uWindDir, n = vec2(-w.y, w.x);
     vec2 q = vec2(dot(p, n), dot(p, w)) / 60000.0;
     float ci = texture2D(uCloudTex, q).a;
+    // at a long lens (a pixel under ~0.02 degrees) a texel of the streak field spans many
+    // pixels: a finer octave of the same fibres (narrower across the wind than along it)
+    // breaks the soft cores into filaments
+    float kf = 1.0 - smoothstep(3.5e-4, 7.0e-4, uPixelAngle);
+    if (kf > 0.0) ci += (texture2D(uCloudTex, q * vec2(9.0, 3.0) + 0.31).a - 0.5) * 0.3 * kf * smoothstep(0.35, 0.65, ci);
     // where there is cirrus at all: ~20 km patches (two octaves), most of the sky clear
     const mat2 R25 = mat2(0.9063, 0.4226, -0.4226, 0.9063);
     float cr = 0.6 * texture2D(uCloudTex, p / 45000.0 + 0.4).b + 0.4 * texture2D(uCloudTex, R25 * p / 17000.0 + 0.83).b;

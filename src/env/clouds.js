@@ -141,6 +141,14 @@ float cloudDensity(vec3 p, float detail) {
   if (detail > 0.75) {
     float e2 = textureLod(uNoise3D, vec3(q.x, p.y * 1.3, q.y) / 150.0 + vec3(0.71, 0.29, 0.13), 0.0).g;
     ero += (1.0 - e2) * 0.3 * (1.0 - 0.6 * d) * smoothstep(0.0, 0.12, hf);
+#ifdef CLOUD_FINE
+    // at a long lens a third, finer octave (~50 m) frays the rims further, so a cumulus top
+    // seen at the telephoto keeps its crisp cauliflower edge instead of a soft blob
+    if (uFineEro > 0.0) {
+      float e3 = textureLod(uNoise3D, vec3(q.x, p.y * 1.3, q.y) / 48.0 + vec3(0.19, 0.83, 0.47), 0.0).g;
+      ero += (1.0 - e3) * 0.16 * uFineEro * (1.0 - 0.7 * d) * smoothstep(0.0, 0.12, hf);
+    }
+#endif
   }
   return clamp((d - ero) / max(1.0 - ero, 1e-3), 0.0, 1.0);
 }
@@ -225,6 +233,8 @@ vec4 cloudMarch(vec3 ro, vec3 dir, float jit, int nSteps, int lightTaps, float d
 
 const CLOUD_FS = /* glsl */ `
 precision highp sampler3D;
+#define CLOUD_FINE 1
+uniform float uFineEro;       // the finest erosion octave's share (long lenses)
 ${ATMO_GLSL}
 uniform sampler2D uSkyLUT;
 uniform sampler2D uSkyIrr;
@@ -326,7 +336,7 @@ export class Clouds {
       uNoise3D: skyUniforms.uNoise3D || { value: null },
       tDepth: { value: null }, uFullRes: { value: new THREE.Vector2(1, 1) },
       uCamWorld: { value: new THREE.Matrix4() }, uProjXY: { value: new THREE.Vector2(1, 1) },
-      uFrame: { value: 0 },
+      uFrame: { value: 0 }, uFineEro: { value: 0 },
     };
     this.material = new THREE.ShaderMaterial({
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
@@ -385,6 +395,8 @@ export class Clouds {
     u.uCamWorld.value.copy(camera.matrixWorld);
     u.uProjXY.value.set(P[0], P[5]);
     u.uFrame.value = frame % 64;
+    // (the finest erosion octave from a ~30 degree lens down to the telephoto)
+    u.uFineEro.value = camera.isPerspectiveCamera ? 1 - THREE.MathUtils.smoothstep(camera.fov, 18, 30) : 0;
     const r = this.renderer;
     r.setRenderTarget(this.target);
     r.render(this.quad, this.cam);

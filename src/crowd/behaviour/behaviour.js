@@ -1,5 +1,5 @@
 import { TRACK_ZONE_HALF } from '../../core/config.js';
-import { lattice1, LATTICE } from '../../core/rng.js';
+import { lattice1, LATTICE, hash2 } from '../../core/rng.js';
 import { PLATFORM_W } from '../../world/layout.js';
 import { KIND, ST, TASK, LANE, MOB, settleShape } from './agent.js';
 import { EDGE_LANE, RIDE_D, BAND, BAND_HI, STANDER_TARGET, STAND_NEAR, MAX_SEATED, MAX_PASSENGERS, RANGE_AHEAD, AGENT_R, CELL, GRID_D } from './constants.js';
@@ -218,10 +218,12 @@ function followNoise(c, a) {
   const t = c.time, L = LATTICE;
   let x = t / a.wT, i = Math.floor(x), f = x - i;
   lattice1(i, i + 1, a.wSeed + 3);
-  a.fwF = 0.3 * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
+  // (hand in hand: hardly any)
+  const k = a.handTo ? 0.25 : 1;
+  a.fwF = 0.16 * k * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
   x = t / a.wT + 17.3; i = Math.floor(x); f = x - i;
   lattice1(i, i + 1, a.wSeed + 5);
-  a.fwR = 0.15 * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
+  a.fwR = 0.07 * k * (L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f)));
   x = t / a.paceT; i = Math.floor(x); f = x - i;
   lattice1(i, i + 1, a.wSeed + 7);
   a.lnN = L[0] + (L[1] - L[0]) * (f * f * (3 - 2 * f));
@@ -519,14 +521,15 @@ function follow(c, a, out) {
     let F = a.baseF, R = a.baseR;
     const walking = L.state === ST.WALK, n = L.nFollow;
     const W = walking ? Math.min(L.bandW, L.freeW) : 9;
-    const single = walking && W < (n >= 2 ? 1.8 : 1.4);
-    const twoOne = walking && !single && n >= 2 && W < 2.6;
+    // (a pair abreast takes about 1.2 m, three about 1.8 m)
+    const single = walking && W < (n >= 2 ? 1.55 : 1.22);
+    const twoOne = walking && !single && n >= 2 && W < 2.15;
     const rank = Math.max(0, L.followers.indexOf(a));
     if (a.singleT > t || single) {
       F = a.isChild ? -0.55 : -0.85 * (rank + 1); R = 0;
     } else if (twoOne && rank > 0 && !a.isChild) {
-      // two abreast, the others staggered 1.0-1.5 m behind them
-      F = -(1.0 + 0.5 * ((a.wSeed & 15) / 15)) - 0.9 * (rank - 1); R = 0.3 * Math.sign(a.baseR || 1) * ((a.wSeed >> 4 & 1) ? 1 : -0.4);
+      // two abreast, the others staggered 0.7-1.0 m behind them
+      F = -(0.7 + 0.3 * ((a.wSeed & 15) / 15)) - 0.8 * (rank - 1); R = 0.3 * Math.sign(a.baseR || 1) * ((a.wSeed >> 4 & 1) ? 1 : -0.4);
     } else if (!lStop) {
       F += a.fwF;
       R += a.fwR;
@@ -683,17 +686,43 @@ function thinkFar(c, a) {
   if (r.chance(0.35)) startEnter(c, a);
 }
 
-/** Group members chat while walking: heads turn to a neighbour now and then. */
+/** Group members chat while walking (see groupGaze). */
 function thinkFollower(c, a) {
-  const r = c.rng, L = a.leader;
-  if (r.chance(0.22)) {
-    // one of the others (the leader or another follower)
-    const F = L.followers, n = F.length;
-    let k = Math.floor(r.next() * n);
-    const o = k >= n || F[k] === a ? L : F[k];
-    const oR = o === L ? 0 : o.baseR;
-    a.lookGoal = (Math.sign(a.baseR - oR) || 1) * r.range(0.3, 0.8);
-  } else if (r.chance(0.3)) a.lookGoal = 0;
+  groupGaze(c, a, c.rng);
+}
+
+/** Deterministic fraction [0, 1) for n and a salt. */
+const frac = (n, salt) => (hash2(n, salt) & 0xffff) / 65536;
+
+/** Walking together: the group talks in turns of a few seconds (now and then a silence, all
+ *  looking ahead); whoever listens turns the head to the one talking, who glances back at them.
+ *  The head turn follows where the other walks (beside, a little behind or ahead). Children
+ *  look about on their own. */
+function groupGaze(c, a, r) {
+  const L = a.leader || a, F = L.followers, n = 1 + F.length;
+  if (a.isChild) { if (r.chance(0.25)) a.lookGoal = r.range(-0.7, 0.7); else if (r.chance(0.3)) a.lookGoal = 0; return; }
+  const P = 2.5 + 4 * frac(L.serial, 51), off = P * frac(L.serial, 53);
+  const turn = Math.floor((c.time + off) / P);
+  if (frac(L.serial, turn * 7 + 5) > 0.72) { if (r.chance(0.4)) a.lookGoal = r.range(-0.3, 0.3); return; }
+  const me = a === L ? 0 : 1 + F.indexOf(a);
+  let sp = hash2(L.serial, turn + 977) % n;
+  // (a child does not hold the conversation)
+  if (sp > 0 && F[sp - 1].isChild) sp = 0;
+  let o;
+  if (sp === me) {
+    if (!r.chance(0.55)) { a.lookGoal = r.range(-0.2, 0.2); return; }
+    let k = Math.floor(r.next() * (n - 1)); if (k >= me) k++;
+    o = k === 0 ? L : F[k - 1];
+    if (o.isChild && r.chance(0.7)) { a.lookGoal = r.range(-0.2, 0.2); return; }
+  } else {
+    if (r.chance(0.2)) { a.lookGoal = r.range(-0.25, 0.25); return; }
+    o = sp === 0 ? L : F[sp - 1];
+  }
+  const dir = L.dir || 1;
+  const lat = (o.d - a.d) * dir, fwd = (o.s - a.s) * dir;
+  // (the eyes do the rest of the turn)
+  const ang = Math.atan2(lat, Math.max(0.15, fwd + 0.3));
+  a.lookGoal = Math.max(-1.0, Math.min(1.0, -ang * r.range(0.6, 0.8)));
 }
 
 function thinkWalk(c, a) {
@@ -727,6 +756,7 @@ function thinkWalk(c, a) {
       if (mob !== MOB.WALKBIKE && r.chance(0.016 * (1 - 0.4 * ev)) && startBrowse(c, a)) return;
       if (!mob && r.chance(0.006 * (1 - 0.5 * ev)) && startEnter(c, a)) return;
       if (!mob && a.nFollow === 0 && r.chance(0.02) && c.counts.seated < MAX_SEATED - 4 && startSit(c, a)) return;
+      if (!mob && a.nFollow > 0 && r.chance(0.035) && c.counts.seated < MAX_SEATED - 8 && startSitGroup(c, a)) return;
       // drift over to the shop windows for a few steps, without stopping (not with a bicycle)
       if (mob !== MOB.WALKBIKE && r.chance(0.02) && a.driftT < c.time) { a.driftT = c.time + r.range(3, 7); a.driftF = r.range(0.8, 0.97); a.lookGoal = (a.dir * side > 0 ? -1 : 1) * r.range(0.5, 1.0); }
     }
@@ -744,10 +774,8 @@ function thinkWalk(c, a) {
   if (r.chance(0.012)) setLane(c, a, r);
   if (r.chance(0.0003)) { startUturn(c, a); return; }
   if (a.driftT > c.time) return;
-  if (a.nFollow > 0 && r.chance(0.15)) {
-    const f = r.pick(a.followers);
-    a.lookGoal = (Math.sign(-f.baseR) || 1) * r.range(0.3, 0.8);
-  } else if (r.chance(0.12)) a.lookGoal = r.chance(0.5) ? (a.dir * side > 0 ? -1 : 1) * r.range(0.3, 0.9) : r.range(-0.35, 0.35);
+  if (a.nFollow > 0) groupGaze(c, a, r);
+  else if (r.chance(0.12)) a.lookGoal = r.chance(0.5) ? (a.dir * side > 0 ? -1 : 1) * r.range(0.3, 0.9) : r.range(-0.35, 0.35);
   else if (r.chance(0.2)) a.lookGoal = 0;
 }
 
@@ -1011,6 +1039,33 @@ function startSit(c, a) {
   return true;
 }
 
+/** A couple or a small group walking past a terrace takes a free table together: everyone
+ *  walks to a chair of their own (the children stay in their adult's charge), and they get up
+ *  together later. */
+function startSitGroup(c, a) {
+  const n = 1 + a.followers.length;
+  if (n > 4 || a.isChild) return false;
+  const cafe = c.map.cafeAtS(a.s + a.dir * 4, a.side);
+  if (!cafe) return false;
+  const P = c.population;
+  if (P.charNear(a.charI, a.s + a.dir * 4, a.d, 9, a)) return false;
+  const seats = P.freeTable(cafe, a, n);
+  if (!seats) return false;
+  const until = c.time + c.rng.range(90, 700);
+  const members = [a, ...a.followers];
+  a.followers.length = 0; a.nFollow = 0;
+  for (let i = 0; i < n; i++) {
+    const m = members[i], seat = seats[i];
+    m.leader = null; m.handTo = null; m.singleT = 0;
+    if (m !== a && m.isChild) { m.guardian = a; a.wards.push(m); }
+    m.task = TASK.SIT; m.step = 0; m.feature = seat; m.partyT = until;
+    goTo(m, seat.s, a.side * (cafe._crowdInner - 0.35), 0.5);
+  }
+  P.stats.groupSit++;
+  c.tally('groupSits');
+  return true;
+}
+
 function startChat(c, a) {
   const band = c.map.bandOutAt(a.s, a.side) - c.map.bandInAt(a.s, a.side);
   if (band < 2.2 || a.lane !== LANE.SIDE || nearRide(a)) return false;
@@ -1041,7 +1096,9 @@ function leaveSeat(c, a) {
   a.task = TASK.LEAVE_SEAT; a.step = 0; a.noRect = true;
   c.tally('leaveSeat');
   goTo(a, seat.s + c.rng.range(-0.6, 0.6), seat.exitD, 0.4);
-  // children at the table come along
+  // the others of a café party get up with them and walk off together, and the children at the
+  // table come along
+  if (seat.cafe) c.population.leaveWithParty(a, seat);
   c.population.releaseWards(a);
 }
 
@@ -1288,7 +1345,8 @@ export function arrive(c, a) {
       a.vs = 0; a.vd = 0;
       a.seatS = seat.s; a.seatD = seat.d;   // the last few centimetres are eased in by the steering
       a.faceA = seat.faceA;
-      a.timer = r.range(60, 600);
+      // (a child stays with its adult; a party that sat down together gets up together)
+      a.timer = a.guardian ? 1e9 : a.partyT > c.time + 20 ? a.partyT - c.time + r.range(0, 2) : r.range(60, 600);
       return;
     }
     case TASK.SERVE:
@@ -1299,7 +1357,8 @@ export function arrive(c, a) {
       for (const f of a.followers) f.noRect = false;
       walk(a);
       setLane(c, a, r, true);
-      a.dir = r.chance(0.5) ? 1 : -1;
+      // (off either way; the company turns where it stands)
+      if (r.chance(0.5)) flipGroup(a);
       return;
     default:
       walk(a);

@@ -102,10 +102,38 @@ export function patchLightLoops() {
   // highlight in glass or polished stone, only its diffuse irradiance
   guard('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )', 'directionalLight = directionalLights[ i ];', false, true);
   SC.lights_fragment_begin = src;
+  // street lanterns (told apart by their decay, LANTERN_DECAY): the frosted globe glows all
+  // round under its cap, so besides the downward cone the light reaches the crown around it
+  // and the stone behind it (LANTERN_OMNI of the downward intensity sideways, less upwards
+  // under the cap, faded out by LANTERN_OMNI_R), and the globe's size softens the light on
+  // anything right next to it (no point-source hot spot on the leaves around a lantern)
+  const pars = SC.lights_pars_begin, att = 'float spotAttenuation = getSpotAttenuation( spotLight.coneCos, spotLight.penumbraCos, angleCos );';
+  if (pars.split(att).length === 2) {
+    const r4 = LANTERN_OMNI_R ** 4;
+    SC.lights_pars_begin = pars.replace(att, `${att}
+		if ( spotLight.decay < ${((LANTERN_DECAY + 2) / 2).toFixed(6)} ) {
+			float lr2 = dot( lVector, lVector );
+			float lw = saturate( 1.0 - lr2 * lr2 / ${r4.toFixed(1)} );
+			spotAttenuation = max( spotAttenuation, ${LANTERN_OMNI.toFixed(3)} * lw * lw * mix( 1.0, ${LANTERN_CAP.toFixed(3)}, smoothstep( -0.3, -0.85, angleCos ) ) );
+			spotAttenuation *= lr2 / ( lr2 + ${LANTERN_NEAR2.toFixed(3)} );
+		}`);
+  } else console.warn('[env] spot light layout changed: lanterns light only their cone');
   return spot && sun;
 }
 
-const lampColor = new THREE.Color(1.0, 0.64, 0.34);  // ~3300 K, linear
+// ~3300 K blackbody (linear rgb (1, 0.541, 0.216): encoded 1 : 0.76 : 0.50), scaled to the
+// luminance the lanterns had: amber pools under a daylight-balanced camera
+export const LAMP_RGB = [1.13, 0.611, 0.244];
+const lampColor = new THREE.Color(...LAMP_RGB);
+// the lanterns' decay: a numerically negligible change from the physical 2 that tells them
+// apart in the shared light code (their all-round glow, see patchLightLoops)
+export const LANTERN_DECAY = 1.99995;
+// the globe's all-round glow (share of the downward intensity), under the cap (share of
+// that), its reach (m), and the globe's size (m², softens the light right next to it)
+const LANTERN_OMNI = 0.45, LANTERN_CAP = 0.3, LANTERN_OMNI_R = 12, LANTERN_NEAR2 = 0.3;
+// a walk-side lantern inside a tree crown keeps its own light (its glow lights the leaves
+// round it, as in a night photograph) instead of giving its flux to its track-side pair
+const DROP_IN_CROWN = false;
 const headColor = new THREE.Color(1.0, 0.84, 0.68);  // ~4300 K, linear
 const ss = THREE.MathUtils.smoothstep;
 
@@ -255,7 +283,7 @@ export class StreetLights {
     this.count = count;
     this.pool = [];
     for (let i = 0; i < count; i++) {
-      const l = new THREE.SpotLight(lampColor, 0, 24, LAMP_ANGLE, LAMP_PENUMBRA, 2);
+      const l = new THREE.SpotLight(lampColor, 0, 24, LAMP_ANGLE, LAMP_PENUMBRA, LANTERN_DECAY);
       l.castShadow = false;
       l.name = `lampLight${i}`;
       app.scene.add(l, l.target);
@@ -375,7 +403,7 @@ export class StreetLights {
     // lateral offset of each lantern; the outermost one of a pair is on the walk side
     const lat = st.heads.map((v) => (v.x - smp.pos.x) * smp.right.x + (v.z - smp.pos.z) * smp.right.z);
     let drop = -1;
-    if (st.heads.length > 1) {
+    if (st.heads.length > 1 && DROP_IN_CROWN) {
       let walk = 0;
       for (let i = 1; i < lat.length; i++) if (Math.abs(lat[i]) > Math.abs(lat[walk])) walk = i;
       // a tree crown around the walk-side lantern?
