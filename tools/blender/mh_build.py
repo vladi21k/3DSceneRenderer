@@ -20,7 +20,7 @@ Stages
            (layered cards for LOD 0-1; the proxy stays for LOD 2 and the opaque cap for LOD 3).
   tex      mh_tex.py: shared texture arrays (skins, garments, hair, the strand atlas, misc atlas), WebP strips.
   export   mh_export.py: LODs (meshoptimizer), per-vertex AO, quantised geometry -> assets/humans_mh/.
-  preview  mh_preview.py: Cycles lineup render of the exported cast (front / side / back).
+  preview  mh_preview.py: Cycles lineup render of the exported cast (front / side / back) into <work>/preview/.
 
 Everything is deterministic (no random numbers; MPFB runs with fixed inputs).
 """
@@ -142,7 +142,8 @@ def run_driver(args):
     if 'export' in stages:
         subprocess.check_call([py, os.path.join(HERE, 'mh_export.py'), '--work', WORK, '--out', OUT])
     if 'preview' in stages:
-        subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_preview.py'), '--', '--src', OUT])
+        subprocess.check_call([bpy_binary(), '-b', '-P', os.path.join(HERE, 'mh_preview.py'), '--', '--src', OUT,
+                               '--out', os.path.join(WORK, 'preview')])
     log(f'all done in {time.time() - t0:.0f}s')
 
 

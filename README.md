@@ -6,6 +6,8 @@ buildings, shopfronts, balconies, trees, overhead line, café terraces and sever
 people — is generated procedurally from a deterministic plan and rendered with three.js on
 WebGL 2, with no build step.
 
+New here? Follow [From a fresh clone, step by step](#from-a-fresh-clone-step-by-step).
+
 ## Screenshots
 
 | | |
@@ -15,6 +17,131 @@ WebGL 2, with no build step.
 | ![Dusk with lit shops and lanterns](docs/screenshots/05_dusk.jpg)<br>Dusk with lit shops and lanterns | ![An oncoming tram](docs/screenshots/06_oncoming_tram.jpg)<br>An oncoming tram |
 | ![People at the stop (40 degree lens)](docs/screenshots/07_people.jpg)<br>People at the stop (40 degree lens) | ![Café terraces and shopfronts (40 degree lens)](docs/screenshots/08_cafe_street.jpg)<br>Café terraces and shopfronts (40 degree lens) |
 | ![Facade close-up from the sidewalk](docs/screenshots/09_facade_close.jpg)<br>Facade close-up from the sidewalk | ![Further down the line (28 degree lens)](docs/screenshots/10_telephoto.jpg)<br>Further down the line (28 degree lens) |
+
+## From a fresh clone, step by step
+
+Everything the app needs is in the repository: the code, three.js (in `vendor/three/`) and the
+people's figures (`assets/humans_mh/`, about 33 MB). There is no build step and nothing else to
+download or install to run it.
+
+**1. Check what you need.** To run the app: Python 3.8 or newer, a desktop browser with WebGL 2
+(Chrome, Edge or Firefox) and a GPU. It is tuned for an NVIDIA RTX-class card at 1920×1080;
+on weaker or integrated GPUs add `?q=med` or `?q=low` to the URL. It runs on Linux, Windows and
+macOS. The [tools](#commands) additionally use Chrome or Chromium and Docker (see
+[Prerequisites](#prerequisites)). After cloning (step 2), this script checks all of it and says
+what is missing and how to fix it:
+
+```sh
+tools/doctor.sh
+```
+
+It prints `OK`, `MISSING` or `WARN` for each item and ends with
+`The app's requirements are met. Start it with: python3 serve.py` when you are ready to go.
+
+**2. Get the code.**
+
+```sh
+git clone https://github.com/vladi21k/3DSceneRenderer.git
+cd 3DSceneRenderer
+```
+
+`git clone --depth 1 ...` downloads only the latest version, which is much smaller than the full
+history (the figures were rebuilt several times).
+
+**3. Start the server.**
+
+```sh
+python3 serve.py
+```
+
+It prints `Serving on http://localhost:8080/  (Ctrl+C to stop)`. On Windows use `py serve.py`.
+If port 8080 is taken, give another one: `python3 serve.py 9000`.
+
+**4. Open the app.** Go to `http://localhost:8080/` in the browser. A loading screen with a
+progress bar shows for about 16-17 seconds while the shaders compile (longer on a first visit or
+a slower machine), then the button **Click to ride** appears. Do not open `index.html` as a file:
+it must be served over HTTP.
+
+**5. Ride.** Click the button (or press Enter). The tram rings its bell and departs; it drives
+itself, stops at the stations and slows for people on the track.
+- Drag with the mouse to look around; it eases back to the front when you let go.
+- Mouse wheel, or `Z` / `X`, zooms between 12° and 60°.
+- `W` / `S` (or the arrow keys) take over the throttle and brake; `A` hands control back to the
+  automatic driver; `B` or `Space` rings the bell.
+- The slider at the bottom right changes the time of day. `H` hides the interface, `M` mutes, `F` goes
+  full screen. All controls: [Controls](#controls).
+
+**6. Try other places and times.** Add parameters to the URL (all of them:
+[Running it](#running-it)):
+- `http://localhost:8080/?s=1450&tod=0.55` — golden hour at a tram stop
+- `http://localhost:8080/?s=4100&tod=0.97` — dusk with lit shops and lanterns
+- `http://localhost:8080/?fov=30` — a wider lens than the 17° default
+
+**7. Stop.** Press `Ctrl+C` in the terminal that runs `serve.py`.
+
+**8. Optional: the tools.** None of these are needed to run the app.
+
+```sh
+# a) a screenshot from a headless browser (needs Chrome or Chromium); writes .work/shots/x.png
+python3 tools/shoot.py --params "s=1450&tod=0.55" --out .work/shots/x.png
+
+# b) the Docker tools image (Blender, Node, ImageMagick, ffmpeg); about 3 GB, 5-15 minutes the first time
+docker build -t tramline-tools:latest docker/
+tools/dk bash -lc 'blender --version | head -1; node --version'
+
+# c) a 10-second video of the ride (needs Chrome and the tools image); writes .work/movies/midday/
+python3 tools/record.py --name midday --params "s=700&tod=0.1" --seconds 10
+
+# d) rebuilding the people (needs the tools image; downloads about 330 MB, builds a 4.7 GB image);
+#    this trial builds one character into .work/ and leaves the committed figures alone
+tools/mh_fetch.sh
+TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_build.py -- \
+    --stages chars,hair,tex,export --only m01 --work .work/try/mh --out .work/try/out
+```
+
+All tool outputs go to `.work/`, which git ignores. Every command and option is in
+[Commands](#commands).
+
+## Prerequisites
+
+| Needed for | What | Install (Ubuntu) |
+|---|---|---|
+| Running the app | Python 3.8+ | `sudo apt install python3` (preinstalled on most systems; Windows and macOS: python.org) |
+| Running the app | A browser with WebGL 2 on the GPU | Chrome, Edge or Firefox; check `chrome://gpu` says "WebGL2: Hardware accelerated" |
+| Running the app | A GPU with current drivers | NVIDIA: `sudo ubuntu-drivers install` |
+| Screenshots and timing (`tools/shoot.py`), videos (`tools/record.py`) | Google Chrome or Chromium on the `PATH` (`google-chrome` or `chromium`) | `wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt install ./google-chrome-stable_current_amd64.deb` |
+| Videos, checkpoint JPEGs, asset and figure builds | Docker, usable without `sudo` | `curl -fsSL https://get.docker.com \| sh`, then `sudo usermod -aG docker $USER` and log in again |
+| `DK_GPU=1` (GPU inside Docker: Cycles renders) | NVIDIA Container Toolkit | [install guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), then `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker` |
+| Rebuilding the people | Docker image `tramline-mh` and about 8 GB of disk for both images | `tools/mh_fetch.sh` (after building `tramline-tools`) |
+| Committing checkpoints | git | `sudo apt install git` |
+
+The app was tested on Linux with Chrome and an RTX 4060 Ti; the Docker tools were tested on
+Linux. On Windows, the tools can run inside WSL 2 with Docker Desktop.
+
+## Troubleshooting
+
+- **Black page, or "WebGL 2 is not available".** The browser is not using the GPU. Open
+  `chrome://gpu`: it should say "WebGL2: Hardware accelerated". Turn on hardware acceleration
+  in the browser settings and update the GPU driver.
+- **Nothing loads when opening `index.html` directly.** The page loads ES modules, which browsers
+  block from `file://`. Start `python3 serve.py` and use `http://localhost:8080/`.
+- **"Address already in use".** Another program holds port 8080. Use another port:
+  `python3 serve.py 9000`, then `http://localhost:9000/`.
+- **Slow first load, or stutter while riding.** The first load compiles about 140 shaders (about
+  16-17 s on the reference machine, more on slower ones). On integrated or older GPUs use
+  `?q=med` or `?q=low`.
+- **Stuck on the loading screen.** Open the browser's developer console (F12): an error there
+  names the failing module. `python3 tools/shoot.py` prints the same console errors.
+- **`tools/shoot.py`: Chrome not found.** Install Google Chrome or Chromium so that
+  `google-chrome` or `chromium` is on the `PATH`.
+- **Docker: "permission denied" on the socket.** Add yourself to the `docker` group
+  (`sudo usermod -aG docker $USER`) and log in again.
+- **Docker: "could not select device driver" with `DK_GPU=1`.** Install the NVIDIA Container
+  Toolkit (see Prerequisites). Without `DK_GPU=1` everything except GPU rendering still works.
+- **`tools/dk` seems to hang the first time.** It is building the tools image (about 3 GB,
+  5-15 minutes); later runs start in a second.
+- **Where did the output go?** Screenshots, videos and build work files are under `.work/`
+  (`.work/shots/`, `.work/movies/`, `.work/mh/`).
 
 ## Running it
 
@@ -335,7 +462,7 @@ TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_hair
 
 # Cycles lineup render of the exported cast (front / side / back) into .work/mh/preview/
 TRAM_TOOLS_IMAGE=tramline-mh:latest DK_GPU=1 tools/dk blender -b -P tools/blender/mh_preview.py -- \
-    --lod 0 --views front,side,back --samples 64 --debug nonormal
+    --lod 0 --views front,side,back --samples 64
 ```
 
 `tramline-mh:latest` is built on top of `tramline-tools:latest`, so build that first. Run
@@ -355,11 +482,8 @@ disable the MPFB2 add-on. The character list (49 ids such as `m01`, `f02`, `c01`
 Options of `mh_preview.py`: `--lod 0..3` (default 0), `--only <ids>`, `--views` (any of
 `front,side,back,threeq`), `--samples` (default 48), `--res` (image width, default 2400),
 `--rows` (default 3; one image per view and row, `lineup_<view>_lod<L>_row<r>.png`), `--src DIR`
-(default `assets/humans_mh`), `--out DIR` (default `.work/mh/preview`), `--cpu`. It still reads
-the skin parts' decal channel of the current cast format as a normal-map index and stops with
-`KeyError: ('normal', 128)` unless `--debug nonormal` (render without normal maps) is given.
-The `preview` stage of `mh_build.py` passes no such option and fails the same way, so leave it
-out of `--stages`.
+(default `assets/humans_mh`), `--out DIR` (default `.work/mh/preview`), `--cpu`. Images are named
+`lineup_<view>_lod<L>.png`, with `_row<r>` added when the lineup needs more than one row.
 
 ### Screenshots, timing and profiling: `tools/shoot.py`
 

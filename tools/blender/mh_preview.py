@@ -75,6 +75,25 @@ def layer_images(doc, outdir):
     return from_strips
 
 
+def normal_layers(tex):
+    """Per-vertex normal-map layer (255 = none) from the cast's tex channel, by the runtime shader's rule
+    (src/crowd/humans/mh/shading.js). tex.y is a normal-layer index only on garments, shoes, eyes and the
+    other parts. From version 2 (feature 'decal') skin carries its decals there (128 none, above: beard
+    growth, below: hair-covered scalp) and hair the strand fade (strand cards: a random value per card);
+    beards use it for their shells (flag 16 and up). Anything outside the normal array is none as well."""
+    R = DOC['regions']
+    feats = DOC.get('features') or []
+    decal = int(DOC.get('version', 1)) >= 2 and 'decal' in feats
+    n_normal = min(int(DOC['textures'].get('nNormal') or 0), 255)
+    y = tex[:, 1].astype(np.int64)
+    reg = tex[:, 2].astype(np.int64)
+    fl = tex[:, 3].astype(np.int64)
+    ok = (y < n_normal) & ((fl & 16) == 0) & (reg != R.get('beard', -1))
+    if decal:
+        ok &= (reg != R.get('skin', 0)) & (reg != R.get('hair', 1))
+    return np.where(ok, y, 255)
+
+
 def build_char(c, binary, lod, images, layers, name_x):
     n = c['vertexCount']
     pos = np.frombuffer(binary, np.int16, n * 3, c['position']['offset']).reshape(-1, 3).astype(np.float64)
@@ -127,8 +146,9 @@ def build_char(c, binary, lod, images, layers, name_x):
     keys = {}
     mat_idx = np.zeros(len(tri), np.int32)
     t0 = tex[tri[:, 0]]
+    n0 = normal_layers(tex)[tri[:, 0]]
     for k, row in enumerate(t0):
-        key = (int(row[0]), int(row[1]), bool(row[3] & 1))
+        key = (int(row[0]), int(n0[k]), bool(row[3] & 1))
         if key not in keys:
             keys[key] = len(keys)
             me.materials.append(material(key, images, layers))
@@ -266,10 +286,12 @@ def main():
     if a.only:
         want = a.only.split(',')
         chars = [c for c in chars if c['id'] in want]
+        if not chars:
+            raise SystemExit(f'mh_preview: no character in {SRC} matches --only {a.only}')
     order = {'adult': 0, 'old': 1, 'teen': 2, 'child': 3, 'toddler': 4}
     chars = sorted(chars, key=lambda c: (order[c['ageClass']], c['sex'], c['id']))
     sc = scene_setup(a)
-    rows = max(1, a.rows)
+    rows = max(1, min(a.rows, len(chars)))       # (no empty rows for a short --only list)
     per = math.ceil(len(chars) / rows)
     spacing = 0.78
     obs = [build_char(c, binary, a.lod, images, layers, 0) for c in chars]
