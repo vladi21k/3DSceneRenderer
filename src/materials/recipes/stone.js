@@ -151,7 +151,7 @@ void surface(vec2 m, inout Surf s) {
   // dust held in the grooves and the strokes' own tone (each stroke a touch paler or
   // darker): the dressing reads in shade too, where the relief alone gives no contrast
   float dn = sat(-best / 0.0006);
-  float a = 1.03 - 0.16 * dn * bestG + 0.07 * (bestT - 0.5) - 0.2 * pore + 0.03 * (v.z - 0.5);
+  float a = 1.06 - 0.3 * dn * bestG + 0.08 * (bestT - 0.5) - 0.2 * pore + 0.03 * (v.z - 0.5);
   s.ao = sat(0.5 * a);
   s.albedo = vec3(1.0);
   s.rough = 0.8;

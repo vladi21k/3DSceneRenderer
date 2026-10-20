@@ -438,7 +438,7 @@ float hPattern(float code, vec3 r, float sc, float seed, float H) {
       vec2 lq = (q - vec2(0.0, 0.01)) / vec2(0.012, 0.022) + vec2(0.0, 0.5);
       m *= 1.0 - hLetters(lq, seed) * step(abs(lq.y - 0.5), 1.0) * step(abs(q.x), hs.x * 0.8);
     } else if (v < 0.55) {
-      float e = length(q - vec2(0.0, 0.015)) - (0.045 + 0.025 * fract(seed * 3.3));
+      float e = length(q - vec2(0.0, 0.015)) - (0.034 + 0.02 * fract(seed * 3.3));
       m = 1.0 - smoothstep(-aw.x, aw.x, e);
       m *= 1.0 - (1.0 - smoothstep(-aw.x, aw.x, abs(e + 0.01) - 0.003)) * step(0.4, fract(seed * 11.0));
     } else if (v < 0.85) {
@@ -750,8 +750,8 @@ const FRAG_SURFACE = /* glsl */`
       // (forehead and nose about 0.33, the cheekbones 0.42, the rest of the cheeks about 0.58: the sheen of
       // the skin's oil sits on the T-zone and the cheekbones, where a high sun puts a highlight)
       float cb = exp(-pow((ax - 0.045) / 0.016, 2.0) - pow((fd.y + 0.028) / 0.014, 2.0));
-      hRough = mix(0.56, mix(mix(0.6, 0.42, cb), 0.33, tz), face) - 0.07 * dark;
-      hSpec *= (1.0 + 0.25 * dark) * (1.0 + (0.35 * tz + 0.2 * cb) * face);
+      hRough = mix(0.56, mix(mix(0.6, 0.45, cb), 0.36, tz), face) - 0.05 * dark;
+      hSpec *= (1.0 + 0.15 * dark) * (1.0 + (0.25 * tz + 0.12 * cb) * face);
       float dcl = vDecal;
       if (dcl > 0.004) {
         // beard growth: stubble darkens and desaturates the skin towards the hair colour (follicle

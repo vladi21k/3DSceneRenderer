@@ -130,7 +130,7 @@ const lampColor = new THREE.Color(...LAMP_RGB);
 export const LANTERN_DECAY = 1.99995;
 // the globe's all-round glow (share of the downward intensity), under the cap (share of
 // that), its reach (m), and the globe's size (m², softens the light right next to it)
-const LANTERN_OMNI = 0.45, LANTERN_CAP = 0.3, LANTERN_OMNI_R = 12, LANTERN_NEAR2 = 0.3;
+const LANTERN_OMNI = 0.75, LANTERN_CAP = 0.35, LANTERN_OMNI_R = 12, LANTERN_NEAR2 = 0.3;
 // a walk-side lantern inside a tree crown keeps its own light (its glow lights the leaves
 // round it, as in a night photograph) instead of giving its flux to its track-side pair
 const DROP_IN_CROWN = false;

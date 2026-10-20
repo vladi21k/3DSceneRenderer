@@ -192,10 +192,13 @@ export class FaceShade {
   /** Wall field colour at (u, v) into out[0..2], grime mask into out[3], dirtiness into out[4]. */
   wall(u, v, out) {
     const t = this.tint;
-    let i = ((v - this.vMin) / this.step) | 0;
-    if (i < 0) i = 0; else if (i >= this.n) i = this.n - 1;
-    let a = this.ao[i];
-    let g = this.gm[i];
+    // (linear between the table's 5 cm steps: a carved profile has vertices a few
+    // centimetres apart, which nearest steps would shade in bands)
+    let f = (v - this.vMin) / this.step;
+    if (f < 0) f = 0; else if (f > this.n - 1) f = this.n - 1;
+    const i = f | 0, i1 = i + 1 < this.n ? i + 1 : i, fr = f - i;
+    let a = this.ao[i] + (this.ao[i1] - this.ao[i]) * fr;
+    let g = this.gm[i] + (this.gm[i1] - this.gm[i]) * fr;
     let r = t[0], gg = t[1], b = t[2];
     // splash zone near the paving: darker, greyer
     const hg = v - this.groundAt(u);

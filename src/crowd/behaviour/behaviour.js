@@ -56,7 +56,8 @@ export function laneTargetA(c, a) {
 function tramLane(c, a) {
   const tram = c.tram;
   a.laneUrgent = false;
-  if (tram.near(a)) cabLane(c, a);
+  // (walkers who have noticed the cab coming drift off its track a little before they must)
+  if (tram.near(a) || tram.notice(a)) cabLane(c, a);
   if (!tram.units.length) return;
   const U = a.uI >= 0 ? tram.unitById(a.uI) : tram.uZone(a);
   if (!U) return;

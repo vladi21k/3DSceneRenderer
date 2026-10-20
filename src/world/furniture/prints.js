@@ -557,7 +557,7 @@ function mapBoard(ctx, [x, y, w, h], seed) {
     const lx = x + 28 + (i % 3) * ((w - 56) / 3), ly = y + h - 92 + Math.floor(i / 3) * 40, cw = (w - 56) / 3 - 40;
     ctx.fillStyle = MAP_KEYS[i][0];
     if (i === 5) { ctx.beginPath(); ctx.arc(lx + 11, ly + 11, 10, 0, Math.PI * 2); ctx.fill(); } else ctx.fillRect(lx, ly, 22, 22);
-    text(ctx, MAP_KEYS[i][1], lx + 30 + cw, ly + 9, 10, { align: 'right', rtl: true, color: '#333333', maxW: cw, weight: '600' });
+    text(ctx, MAP_KEYS[i][1], lx + 30, ly + 9, 10, { align: 'left', rtl: true, color: '#333333', maxW: cw, weight: '600' });
     text(ctx, MAP_KEYS[i][2], lx + 30, ly + 21, 9, { color: '#666666', maxW: cw, weight: '500' });
   }
   ctx.restore();

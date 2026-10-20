@@ -24,6 +24,7 @@ export const SU = {
   uMinPx: { value: 0.75 },      // minimum on-screen width of thin opaque parts
   uWireMinPx: { value: 1.0 },   // minimum on-screen width of wires
   uLamp: { value: 0 },          // radiance of a lit lantern bowl (scene units)
+  uLampBody: { value: 0 },      // the bowl's body (all but its hot core), held under BODY_MAX of white
   uA2C: { value: 0 },           // MSAA samples of the scene target (0: none), for coverage rounding
 };
 
@@ -41,6 +42,9 @@ float catCoverage( float a ) {
 // the camera's strong highlight compression at dusk: its core clips to a warm white with
 // a bloom skirt (post), the falloff towards the rim keeps it warm.
 export const LAMP_RADIANCE = 0.11;
+// the bowl's body stays under this display value (white = 1, env.exposure) so it keeps its
+// warm colour; only the core round the lamp clips to a hot white-yellow
+const BODY_MAX = 0.55;
 // the hood underside reflects the lamp: a share of the bowl radiance (lower than the
 // bowl itself, which would read as a second light source)
 const HOOD_GLOW = 0.12;
@@ -59,6 +63,8 @@ export function updateScreenUniforms(app, lampRadiance = LAMP_RADIANCE) {
   const on = st && typeof st.lamps === 'number' ? st.lamps
     : Math.max(THREE.MathUtils.smoothstep(st ? st.t : 0, 0.64, 0.72), THREE.MathUtils.smoothstep(U.uNight.value, 0.02, 0.85));
   SU.uLamp.value = lampRadiance * on;
+  const ex = app.env && app.env.exposure > 0 ? app.env.exposure : 1;
+  SU.uLampBody.value = Math.min(SU.uLamp.value, BODY_MAX / ex);
 }
 
 function chain(mat, key, fn) {
@@ -124,14 +130,15 @@ const STREET_WEAR = /* glsl */ `
             float zoneS = smoothstep(0.85, 1.05, wy) * (1.0 - smoothstep(1.9, 2.2, wy));
             vec2 ctr = 0.5 + (vec2(h2, h3) - 0.5) * 0.3, hw = mix(vec2(0.22, 0.2), vec2(0.42, 0.45), vec2(h3, h2));
             vec2 dq = abs(wf - ctr) - hw;
-            float torn = catN(vec3(wc * 5.0, h1 * 13.0)) * 0.12;
-            float inR = 1.0 - smoothstep(-0.02, 0.02, max(dq.x, dq.y) + torn);
-            float stk = step(h1, 0.3 * zoneS) * inR * wMid;
+            float torn = catN(vec3(wc * 4.0, h1 * 13.0)) * 0.1;
+            float inR = 1.0 - smoothstep(-0.015, 0.015, max(dq.x, dq.y) + torn);
+            float stk = step(h1, 0.075 * zoneS) * inR * wMid;
             // what is left: bleached paper, a faded print, or the grey glue where it was scraped off
             float kind = fract(h1 * 7.31 + h2);
-            vec3 hue = kind < 0.5 ? vec3(0.62, 0.6, 0.56) : kind < 0.72 ? mix(vec3(0.55, 0.22, 0.18), vec3(0.2, 0.3, 0.5), step(0.5, h3)) * 1.1 : diffuseColor.rgb * 0.72 + 0.02;
-            float shred = kind < 0.72 ? smoothstep(0.3, 0.55, catN(vec3(wc * 9.0, h2 * 17.0))) : 1.0;
-            diffuseColor.rgb = mix(diffuseColor.rgb, hue * (0.85 + 0.25 * h2), stk * shred * (kind < 0.72 ? 0.9 : 0.6));
+            vec3 hue = kind < 0.35 ? vec3(0.56, 0.55, 0.52) : kind < 0.6 ? mix(vec3(0.5, 0.24, 0.2), vec3(0.22, 0.3, 0.45), step(0.5, h3)) : diffuseColor.rgb * 0.78 + 0.015;
+            // paper torn off in places (holes a centimetre or two across)
+            float shred = kind < 0.6 ? smoothstep(0.22, 0.36, catN(vec3(wc * 2.5, h2 * 17.0))) : 1.0;
+            diffuseColor.rgb = mix(diffuseColor.rgb, hue * (0.88 + 0.2 * h2), stk * shred * (kind < 0.6 ? 0.85 : 0.55));
             // greasy hand zone
             diffuseColor.rgb *= 1.0 - 0.07 * smoothstep(0.95, 1.15, wy) * (1.0 - smoothstep(1.5, 1.75, wy)) * (0.6 + 0.4 * gn);
           }
@@ -322,8 +329,9 @@ export function makeWireMaterial(coverage = false) {
  *  SU.uLamp. Geometry uv = (angle around the bowl axis, height below the hang point). */
 export function makeGlassMaterial(M) {
   const m = M.get('glass.lamp', { catenaryLantern: true, color: [0.56, 0.55, 0.5], roughness: 0.1, emissive: [0, 0, 0], clearcoat: 0 });
-  return chain(m, 'catGlass4', (shader) => {
+  return chain(m, 'catGlass5', (shader) => {
     shader.uniforms.uLamp = SU.uLamp;
+    shader.uniforms.uLampBody = SU.uLampBody;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vGlass;\nvarying vec3 vAxis;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>
@@ -341,6 +349,7 @@ export function makeGlassMaterial(M) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uLamp;
+        uniform float uLampBody;
         varying vec2 vGlass;
         varying vec3 vAxis;`)
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
@@ -358,10 +367,11 @@ export function makeGlassMaterial(M) {
         float gBulb = exp(-pow((gY - 0.36) / 0.16, 2.0)) * gF * gF * gF;
         diffuseColor.rgb *= mix(1.0, 0.32, gF * gF * (1.0 - 0.85 * gY)) + 0.55 * gBulb;`)
       .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-        // lit diffuser: brighter where it faces the eye and round the lamp in the upper
-        // half of the bowl (a hot core under the strong highlight compression of dusk), a
-        // dimmer warm rim
-        totalEmissiveRadiance = uLamp * ${WARM} * (0.72 + 0.38 * gF) * (1.0 + 1.6 * exp(-pow((gY - 0.36) / 0.22, 2.0)) * gF * gF);`);
+        // lit diffuser: a warm (~3000 K) body held under BODY_MAX of white, brighter where it
+        // faces the eye, and a hot core round the lamp in the upper half of the bowl that
+        // clips to white-yellow under the strong highlight compression of dusk
+        float gCore = exp(-pow((gY - 0.36) / 0.11, 2.0)) * pow(gF, 5.0);
+        totalEmissiveRadiance = uLampBody * vec3(1.0, 0.6, 0.3) * (0.6 + 0.4 * gF) + uLamp * ${WARM} * 1.2 * gCore;`);
   });
 }
 

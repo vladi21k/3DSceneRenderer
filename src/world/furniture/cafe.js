@@ -25,7 +25,7 @@ function tableTop(shape, lod) {
   if (shape === 'round') {
     const r = 0.3;
     // planar UVs: grain and speckle run straight across the top, not round it
-    return merge([boxUV(lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 10 : 24))]);
+    return merge([boxUV(lathe([[0, 0.722], [r - 0.006, 0.722], [r, 0.727], [r, 0.745], [r - 0.004, 0.75], [0, 0.75]], lod ? 12 : 56))]);
   }
   return merge([xf(rbox(0.62, 0.028, 0.62, lod ? 0 : 0.006, 1), [0, 0.736, 0])]);
 }
@@ -147,7 +147,7 @@ const SCREEN_COL = ['#2c3a33', '#5a2b2b', '#d8d0bd', '#23324a', '#3a3a38'];
 const srgb = (h) => new THREE.Color().setStyle(h, THREE.SRGBColorSpace);
 
 // switch distances (m) between detail levels; chairs stay crisp to ~35 m at the 17° default lens
-const LOD_CHAIR = [35, 130], LOD_TABLE = [45], LOD_UMB = [55, 170];
+const LOD_CHAIR = [35, 130], LOD_PLASTIC = [9, 35, 130], LOD_TABLE = [45], LOD_UMB = [55, 170];
 
 /** Copy of a swept / lathed frame with its UVs swapped, so the timber grain (texture u)
  *  runs along the poles and ribs instead of round them. */
@@ -164,7 +164,7 @@ export function buildCafeProtos(M, F, umbKeys = ['30x30']) {
   const C = buildChairGeometry();
   const col = (lv, key) => lv.map((g) => g[key] || null);
   P.chair.bistro = F.weave.map((w, i) => proto(`chairBistro${i}`, [{ geo: col(C.bistro, 'frame'), mat: F.rattan }, { geo: col(C.bistro, 'weave'), mat: w }], LOD_CHAIR));
-  P.chair.plastic = proto('chairPlastic', [{ geo: col(C.plastic, 'shell'), mat: F.plastic, tint: true }, { geo: col(C.plastic, 'glides'), mat: F.rubber, cast: false }], LOD_CHAIR);
+  P.chair.plastic = proto('chairPlastic', [{ geo: col(C.plastic, 'shell'), mat: F.plastic, tint: true }, { geo: col(C.plastic, 'glides'), mat: F.rubber, cast: false }], LOD_PLASTIC);
   P.chair.metal = proto('chairMetal', [{ geo: col(C.metal, 'frame'), mat: F.aluminium }], LOD_CHAIR);
   P.chair.metalPaint = proto('chairMetalPaint', [{ geo: col(C.metal, 'frame'), mat: F.paintFine, tint: true }], LOD_CHAIR);
   P.chair.wicker = proto('chairWicker', [{ geo: col(C.wicker, 'body'), mat: F.wicker, tint: true }, { geo: col(C.wicker, 'legs'), mat: F.rattan },

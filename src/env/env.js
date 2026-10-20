@@ -61,7 +61,10 @@ const WEATHER = {
   // blue, and post keeps half of its daytime sky saturation boost)
   // (its street-level dust: the far end of the street milky, but the in-scatter fades in over
   // the first 40 m, the canyon's shaded air, so the people and paving nearby keep their blacks)
-  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.0, inscatter: 0.8, dayExt: 1, dayIn: 1, near: 40 }, skySat: 0.5 },
+  // (lookSat: post's street saturation boost x this, as a camera renders the flat light of a
+  // milky day with a little more colour; the photographs' hazy evening keeps HSV saturation
+  // ~0.22 and Hasler colourfulness ~28)
+  haze: { cover: 0, scale: 1, top: 800, cirrus: 0.3, altocu: 0, mie: 130, mieH: 1.0, mieAlb: [0.985, 0.94, 0.83], penumbra: 1.3, haze: { ext: 1.0, inscatter: 0.7, dayExt: 1, dayIn: 1, near: 40 }, skySat: 0.5, lookSat: 1.7 },
 };
 const WALL_ALB = [0.55, 0.49, 0.40];
 const GROUND_ALB = [0.17, 0.175, 0.185];   // grey granite paving (as the street material)
@@ -78,13 +81,14 @@ const WALL_LUM = 0.2126 * WALL_ALB[0] + 0.7152 * WALL_ALB[1] + 0.0722 * WALL_ALB
 // reaches the one opposite mixed with the paving's and the sky's, so shaded limestone stays
 // a pale warm grey (HSV saturation ~0.2-0.3 in the photographs) rather than glowing ochre;
 // and the floor's bounce is small, so open shade sits ~4:1 under the sun
-const BOUNCE = { up: 0.065, down: 0.08, cross: 0.12, crossTint: 0.5, lowSun: 0.3 };
+const BOUNCE = { up: 0.055, down: 0.08, cross: 0.12, crossTint: 0.5, lowSun: 0.3 };
 // exposure: a 0.18 albedo under the horizontal illuminance Eh is exposed to 0.18 KDAY
 // while Eh is above EH_FULL; below it the camera adapts only partly (dusk stays darker
 // than midday). KDAY rises by EXPO_LIFT (EV, time of day): a photograph of a sunny
 // street exposes for the shade and the people, so whites and glints clip and the low
-// sun's backlit street glows. Under the high sun (to t 0.3) the lift is about half a
-// stop: the sunlit granite near the cab lands at ~175-190 sRGB with its setts and joints
+// sun's backlit street glows. Under the high sun (to t 0.3) the lift is about 0.7 stop
+// (with the image-based light a little under the capture's, ENV_LEVEL, so the shade stays
+// dense): the sunlit granite near the cab lands at ~185-200 sRGB with its setts and joints
 // apart (post's meter gives back about a third of any change), the frame's mean nearer the
 // midday photographs' (sRGB luma ~125-145) and its brightest whites and sky reaching the
 // clip as theirs do (post's deep-shadow term holds the darkest tones); more as the sun lowers
@@ -92,7 +96,7 @@ const BOUNCE = { up: 0.065, down: 0.08, cross: 0.12, crossTint: 0.5, lowSun: 0.3
 // At golden hour the lift stays under a stop: the frame keeps a camera's range, the sky
 // over the shaded street blowing out rather than the shade being lifted to mid grey
 const KDAY = 1.3, EH_FULL = 1.9;
-const EXPO_LIFT = [[0.0, 0.55], [0.3, 0.57], [0.45, 0.8], [0.55, 0.7], [0.65, 0.5], [0.78, 0.0]];
+const EXPO_LIFT = [[0.0, 0.72], [0.3, 0.72], [0.45, 0.85], [0.55, 0.7], [0.65, 0.5], [0.78, 0.0]];
 // exposed value of sun-facing stone that low-sun highlight protection holds: on the
 // tone curve's shoulder (~3 stops over mid grey), as golden stone sits in a photograph
 const LIT_STONE = 1.5;
@@ -117,7 +121,7 @@ const DUSK_CEIL = [[0.62, 1e4], [0.72, 1.8], [0.82, 1.8], [0.92, 4.2], [1.0, 4.2
 // canyon falls faster than the open sky's, and the lamps carry the street floor
 // Under the high sun a little less: the photographs' shade under the crowns and awnings is
 // dense (3.5-10:1 under the sun)
-const ENV_LEVEL = [[0.3, 1.12], [0.5, 1.2], [0.86, 1.25], [0.97, 0.8], [1.0, 0.75]];
+const ENV_LEVEL = [[0.3, 1.05], [0.5, 1.2], [0.86, 1.25], [0.97, 0.8], [1.0, 0.75]];
 
 /** EXPO_LIFT at time of day t (EV, smooth piecewise-linear). */
 function expoLift(t) {
@@ -191,6 +195,7 @@ const env = {
     const w = WEATHER[this.weather];
     this.hazeBoost = w.haze;
     this.skySatScale = w.skySat ?? 1;   // (post: share of the sky saturation boost)
+    this.lookSat = w.lookSat ?? 1;       // (post: scale of the street saturation boost)
     this._hlev = app.params.num('hlev', 1);   // (inspection: horizon hold level scale)
     // a hazy, dusty Mediterranean summer afternoon: ~12x the aerosol of the clean
     // reference atmosphere, 2 km deep (optical depth ~0.1 above the city: a pale blue

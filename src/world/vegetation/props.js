@@ -11,8 +11,13 @@ import { InstancePool } from './pool.js';
 //   * limestone planters (bevelled trough or square box) with soil and a soft contact
 //     shadow on the paving, holding a shrub mound (the foliage itself is instanced in the
 //     leaf pool by vegetation.js);
-//   * raised tree beds round some street trees: a square limestone kerb with a broad
-//     coping people sit on, timber seat slats along one or two sides, soil and mulch.
+//   * raised tree beds round some street trees: a square kerb of weathered grey limestone
+//     blocks with a broad coping people sit on, timber seat slats along one or two sides,
+//     soil and mulch, and low planting at its ends spilling over the coping (the foliage
+//     instanced by vegetation.js from the planter shrubs);
+//   * the stone of planters and beds is worn as street stone is (patchStreetStone): a
+//     darker splash band at the foot, chipped arrises, a darker, smoother patina on the
+//     coping where people sit, lichen-grey blotches and run-off under the coping.
 // Every prop is an instance in a BatchedMesh per material, created at init: a chunk build
 // only adds instances (no geometry is copied), and they follow the chunk's visibility
 // through the vegetation pools. Textures are painted on canvases at init. Stakes and the
@@ -79,6 +84,74 @@ function soilMaterial(rng) {
     ctx.restore();
   }
   return new THREE.MeshStandardMaterial({ name: 'vegetation.soil', map: tex(c, true, true), roughness: 0.95, metalness: 0, vertexColors: true });
+}
+
+/**
+ * Street wear on the planter and bed stone (object space: origin on the paving, +Y up;
+ * the instance position seeds it). Fine detail fades out before it would alias.
+ */
+function patchStreetStone(m) {
+  const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+  m.onBeforeCompile = function (s, r) {
+    if (prev) prev.call(this, s, r);
+    s.vertexShader = s.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBsP;\nvarying vec3 vBsN;\nvarying float vBsSeed;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vBsP = position; vBsN = normal;
+        #if defined( USE_BATCHING )
+          vBsSeed = fract( dot( batchingMatrix[ 3 ].xyz, vec3( 0.1731, 0.0, 0.2913 ) ) ) * 61.0;
+        #else
+          vBsSeed = 0.0;
+        #endif`);
+    s.fragmentShader = s.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vBsP;
+        varying vec3 vBsN;
+        varying float vBsSeed;
+        float bsH(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+        float bsN(vec3 x) {
+          vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(bsH(i), bsH(i + vec3(1,0,0)), f.x), mix(bsH(i + vec3(0,1,0)), bsH(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(bsH(i + vec3(0,0,1)), bsH(i + vec3(1,0,1)), f.x), mix(bsH(i + vec3(0,1,1)), bsH(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }
+        float bsGloss = 0.0;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec3 p = vBsP, n = normalize(vBsN);
+          float sd = vBsSeed;
+          // weathered grey street limestone: most of the cream of fresh stone gone
+          float lumS = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(lumS) * vec3(1.02, 1.0, 0.97), 0.55) * 0.9;
+          float px = max(length(fwidth(p)), 1e-5);
+          float fine = 1.0 - smoothstep(0.003, 0.009, px);
+          float big = bsN(p * 3.0 + sd) * 0.65 + bsN(p * 9.0 + sd * 1.3) * 0.35;
+          // splash band and specks at the foot
+          float foot = 1.0 - smoothstep(0.04, 0.17, p.y + 0.05 * (big - 0.5));
+          float speck = smoothstep(0.68, 0.76, bsN(p * 80.0 + sd)) * (1.0 - smoothstep(0.1, 0.35, p.y)) * fine;
+          diffuseColor.rgb *= mix(vec3(1.0), vec3(0.62, 0.58, 0.52), clamp(foot + 0.5 * speck, 0.0, 1.0));
+          // lichen-grey and soot blotches on the sides, run-off under the coping
+          float side = 1.0 - smoothstep(0.35, 0.6, abs(n.y));
+          float blot = smoothstep(0.55, 0.75, big);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.82, 0.84, 0.8), 0.6 * blot * side);
+          float ang = atan(p.z, p.x);
+          float run = smoothstep(0.35, 0.6, bsN(vec3(p.x * 18.0, p.y * 1.5, p.z * 18.0) + sd)) * side * smoothstep(0.08, 0.3, p.y);
+          diffuseColor.rgb *= 1.0 - 0.14 * run;
+          // the arrises (facets between the top and the faces) chipped, paler where fresh
+          float arris = smoothstep(0.3, 0.45, n.y) * (1.0 - smoothstep(0.8, 0.92, n.y));
+          float chip = arris * smoothstep(0.6, 0.68, bsN(p * 45.0 + sd * 2.1) * 0.7 + bsN(p * 130.0) * 0.3) * fine;
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.18 + 0.02, chip);
+          // the coping: a darker, smoother patina where people sit, in patches
+          float top = smoothstep(0.92, 0.98, n.y) * smoothstep(0.3, 0.38, p.y);
+          float sit = top * smoothstep(0.4, 0.7, bsN(vec3(p.x * 2.2, 3.0, p.z * 2.2) + sd));
+          diffuseColor.rgb *= 1.0 - 0.2 * sit;
+          bsGloss = sit;
+        }`)
+      .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+        roughnessFactor = mix(roughnessFactor, roughnessFactor * 0.7, bsGloss);`);
+  };
+  m.customProgramCacheKey = function () { return `${prevKey ? prevKey.call(this) : ''}|veg-stone-wear`; };
+  m.needsUpdate = true;
+  return m;
 }
 
 // ------------------------------------------------------------------ geometry
@@ -317,9 +390,10 @@ export function createProps(app, pools) {
     stake: M.register('vegetation.stake', stakeMaterial(rng)),
     soil: M.register('vegetation.soil', soilMaterial(rng)),
     contact: M.register('vegetation.contact', decal),
-    // own variant (same program): a material shared between batched and plain meshes makes
-    // three re-evaluate its program at every switch
-    stone: M.get('stone.smooth', { vertexColors: true, userData: { vegetation: 'stone' } }),
+    // own variant: a material shared between batched and plain meshes makes three
+    // re-evaluate its program at every switch. Blocks of soiled limestone (u along the
+    // kerb, v along its profile), toned down towards the paving grey, worn (see above)
+    stone: patchStreetStone(M.get(M.names && M.names().includes('stone.dirty') ? 'stone.dirty' : 'stone.smooth', { vertexColors: true, color: [0.74, 0.73, 0.72], userData: { vegetation: 'stone' } })),
   };
   // shared geometries
   const post = stakeGeometry(1.75, 0.032);
@@ -350,6 +424,7 @@ export function createProps(app, pools) {
   const _qy90 = new THREE.Quaternion().setFromAxisAngle(UP, Math.PI / 2);
   const X1 = new THREE.Vector3(1, 0, 0);
   const local = (treeM, x, y, z, out) => out.set(x, y, z).applyMatrix4(treeM);
+  const _bedPlants = [], _bedPool = [];
 
   return {
     mats, pools: P, bedSize: bedG.w,
@@ -425,7 +500,8 @@ export function createProps(app, pools) {
           return out;
         },
         /** Raised bed round layout tree t (bed: {seats: ['z+' | 'z-'], tint, timber}; local
-         *  +z is the right of travel). */
+         *  +z is the right of travel). Returns the low planting at its ends (on the sides
+         *  without seats): [{pos (world, on the soil), yaw, sx, sz}] (a reused list). */
         bed(t, bed) {
           const yaw = route.heading(t.s);
           const gs = route.groundY(t.s + 0.25, t.d) - route.groundY(t.s - 0.25, t.d);
@@ -436,7 +512,21 @@ export function createProps(app, pools) {
           add(P.stone, 2, _m, bed.tint, 2.2);
           add(P.soil, 3, _m, null, 2);
           add(P.contact, 2, _m, null, 2.2);
-          if (lod) return;
+          // planting at both ends (local x, along the street), off the stem, its outer
+          // leaves spilling over the coping's inner edge
+          const br = RNG.from(app.layout.seed, 'bedPlants', t.id);
+          _bedPlants.length = 0;
+          const edge = bedG.inner / 2;
+          for (const sx of [-1, 1]) {
+            if (!br.chance(0.85)) continue;
+            const pl = _bedPool[_bedPlants.length] || (_bedPool[_bedPlants.length] = { pos: new THREE.Vector3(), yaw: 0, sx: 1, sz: 1 });
+            const lx = sx * (edge - br.range(0.18, 0.26)), lz = br.range(-0.25, 0.25);
+            pl.pos.set(lx, bedG.soilY, lz).applyQuaternion(_q).add(_base);
+            pl.yaw = yaw + br.range(-0.4, 0.4) + (br.chance(0.5) ? Math.PI : 0);
+            pl.sx = br.range(0.75, 1.0); pl.sz = br.range(1.1, 1.45);
+            _bedPlants.push(pl);
+          }
+          if (lod) return _bedPlants;
           // seat slats on the coping: three per seat side (local +z = right of travel)
           const half = bedG.w / 2, len = bedG.w - 0.26;
           for (const sd of bed.seats) {
@@ -452,6 +542,7 @@ export function createProps(app, pools) {
               add(P.stake, 4, _m, bed.timber, 1.6);
             }
           }
+          return _bedPlants;
         },
       };
     },

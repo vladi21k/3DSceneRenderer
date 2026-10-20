@@ -17,7 +17,7 @@ export function buildStickers(poles, poleMatrix, seed) {
   const v = new THREE.Vector3(), n = new THREE.Vector3();
   for (const p of poles) {
     const rng = RNG.from(seed, 'stickers', Math.round(p.s * 10), p.side);
-    const count = rng.weighted([[1, 0.12], [2, 0.18], [3, 0.2], [5, 0.22], [7, 0.16], [10, 0.12]]);
+    const count = rng.weighted([[2, 0.14], [3, 0.18], [5, 0.24], [7, 0.24], [10, 0.2]]);
     if (!count) continue;
     poleMatrix(p, m);
     nm.getNormalMatrix(m);

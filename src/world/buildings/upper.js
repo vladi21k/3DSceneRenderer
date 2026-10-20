@@ -122,6 +122,7 @@ export function* upperVolume(B, sinks, lot, plan, orn, tint, q, dirt) {
  * darker soffit, a lit, dust-catching top).
  */
 function storeyBands(B, s, bands, fs, a0, a1, m) {
+  B.run = null;
   B.shade = (u, v, w, nu, nv, nw, out) => { fs.wall(u, v, out); const c = nv < -0.5 ? 0.68 : nv > 0.5 ? 0.98 : 1.06; out[0] *= c; out[1] *= c; out[2] *= c; if (nv > 0.5) out[3] = Math.min(1.6, out[3] + 0.25); };
   for (const b of bands) {
     let segs = [[a0, a1]];

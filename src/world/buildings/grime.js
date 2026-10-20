@@ -4,23 +4,31 @@ import { U } from '../../core/uniforms.js';
 import { COLOR_SCALE, GLASS_K, HG_MAX } from './mesh.js';
 
 // Weathering for the masonry: buildings-owned variants of the stone materials that
-// darken and grey the albedo where the per-vertex grime mask (colour alpha, baked
-// by FaceShade: under sill ends and balcony slabs, below cornices and string courses,
-// the splash zone, uncleaned facades) is high, with the detail coming from a procedural
-// atlas: thin drip trails, broad rain-wash streaks, blotches and a fine soot crust.
+// soil the albedo (a warm brown-grey, never a cold grey that a low sun turns olive) where
+// the per-vertex grime mask (colour alpha, baked by FaceShade: below cornices and string
+// courses, soffits, the splash zone, uncleaned facades) is high: an even crust only where
+// the stone is well sheltered, elsewhere sparse drip trails and blotches from a procedural
+// atlas, so open walling stays mostly clean, as the street's sun-bleached stone does.
 // The atlas is addressed in facade metres (along the wall from the world position and
 // normal, height = world y), so it needs no extra UV set; two lookups at unrelated
 // periods hide the tiling. Run-off below balcony slabs and window sills is shaded per
 // pixel from the aRun attribute (the occluder above, see shade.runAttr): soffit
-// occlusion and patchy soot under the slab, streaks hanging from it, and water, dirt
-// and rust running down narrow strips under the slab and sill ends. Its masks vary
-// along the wall in facade metres, so they cross materials, dressing and zone borders
-// without a seam, and a slab's soot fades out a little beyond its ends. Dust settles on
+// occlusion and patchy soot under the slab, streaks hanging from its consoles, and sharp
+// drip trails of varied length and spacing off the slab and sill ends (bgTrails), with
+// rust under iron railings. The foot of the wall carries rising damp, splash dirt and a
+// scuffed band up to about 0.7 m; the piers beside doors and shop fronts are handled up
+// to about 1.5 m (FaceShade). Colour-washed render (bgRender) also fades unevenly, shows
+// patched repairs in another tone, broad stains under its sills and hairline cracks from
+// the sill corners. The run-off masks vary along the wall in facade metres, so they cross
+// materials, dressing and zone borders without a seam, and a slab's soot fades out a
+// little beyond its ends. Dust settles on
 // the ashlar's worn block arrises (BG_ARRIS, from the library's row layout), so the upper
 // arris of each block does not read as a clean ruled highlight. Also a glass
 // variant for the openings the buildings glaze themselves (party walls, set-back
 // storeys, skyline blocks): curtains, blinds and rooms behind the panes, reflections
-// that see the sky from the upper floors, warm interior light at night (see litGlass).
+// of the street canyon (the stone across the street from the lower floors, the sky from
+// the upper ones) with a Fresnel floor, warm interior light at night (see litGlass).
+// Inspection: URL bgdbg=1|2|3 (GRIME_DEBUG) shows the weathering's inputs as colours.
 //
 // Every buildings material reads the compact vertex format of buildings/mesh.js: the
 // colour attribute is unorm8 × 4 (rgb = sqrt(colour / 2), a = grime / 2), decoded per
@@ -185,6 +193,7 @@ uniform sampler2D bgGrimeTex;
 uniform vec4 bgGrimeK;   // darkening, greying, roughness gain, base streak share
 uniform vec2 bgArrisK;   // dust on the block arrises: amount, share on the head joints
 uniform float bgDbg;     // inspection (URL bgdbg=1|2|3, see GRIME_DEBUG)
+uniform float bgRender;  // 1: a colour-washed render (plaster shares its program with the tiles)
 float bgDirt = 0.0;
 float bgHash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
 float bgVN(vec2 p) {
@@ -242,7 +251,7 @@ const FRAG_STONE = /* glsl */ `
   const vec3 BG_SOIL = vec3(1.07, 0.98, 0.84);
   float bgTrail = 0.0;                                // sharp drip trails (sills, consoles)
   float bgCrack = 0.0;                                // hairline cracks in the render
-#ifdef BG_RENDER
+  if (bgRender > 0.5) {
   // colour-washed render: the wash fades unevenly (lighter and greyer in broad patches,
   // where sun and rain have worn it), and patched repairs 1-4 m across stand out in a
   // slightly different tone with crisp edges (a cell grid in facade metres, one patch in
@@ -265,7 +274,7 @@ const FRAG_STONE = /* glsl */ `
       diffuseColor.rgb = mix(diffuseColor.rgb, mix(diffuseColor.rgb, vec3(bgLp), 0.45) * bgTn, bgPk);
     }
   }
-#endif
+  }
   // large soft patches (stone batches, cleaning, sun bleaching), which also set how
   // dirty the stone is locally
   vec2 bgQ = bgP + bgDirtB * vec2(37.1, 11.3);
@@ -356,13 +365,12 @@ const FRAG_STONE = /* glsl */ `
       float bgRun = bgE * bgS * exp(-bgD / 1.6) * (1.0 - smoothstep(1.8, 2.6, bgD));
       bgRunM = bgDirtB * (bgUnder + 0.25 * bgRun * (1.0 - bgNearT));
       bgTrail = max(bgTrail, min(1.0, 0.4 + 0.6 * bgS) * bgTr * bgNearT * min(1.3, bgDirtB));
-#ifdef BG_RENDER
       // render soaks up the dirty water: a broad grey-brown stain under the sill as well,
       // patchy and fading over a metre or two, which still shows from far away
-      bgRunM += bgDirtB * 0.55 * bgS * bgPatch * smoothstep(0.0, 0.1, bgD) * exp(-bgD / 1.1) * (0.35 + 0.65 * max(bgE, bgIn * 0.5));
+      bgRunM += bgRender * bgDirtB * 0.8 * min(1.2, bgS) * bgPatch * smoothstep(0.0, 0.1, bgD) * exp(-bgD / 1.4) * (0.35 + 0.65 * max(bgE, bgIn * 0.5));
       // render cracks: a hairline from the sill's corner on some windows, running down and
       // outwards at 55-80 degrees with a little wander (gone once it is far below a pixel)
-      if (bgFx < 0.02 && bgD < 1.4) {
+      if (bgRender > 0.5 && bgFx < 0.02 && bgD < 1.4) {
         for (int e = 0; e < 2; e++) {
           float bgUe = e == 0 ? bgUa : bgUb;
           float bgEc = (bgP.x - bgSg * (e == 0 ? bgUa : -bgUb)) * 3.1;
@@ -377,7 +385,6 @@ const FRAG_STONE = /* glsl */ `
           bgCrack = max(bgCrack, bgCk * (1.0 - smoothstep(0.006, 0.02, bgFx)) * min(1.0, 0.0012 / bgCw + 0.35));
         }
       }
-#endif
       bgWash = 0.03 * bgRun;
     }
     float bgL0 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
@@ -582,7 +589,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0],
   const base = app.materials.get(name, { vertexColors: true });
   const m = base.clone();
   m.name = `buildings:${name}`;
-  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(...arris) }, bgDbg: GRIME_DEBUG };
+  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(...arris) }, bgDbg: GRIME_DEBUG, bgRender: { value: opts.render ? 1 : 0 } };
   // the library's own run-off streaks (a field of them on every wall) are thinned out on
   // these variants: the buildings' run-off hangs from the sills, consoles and cornices
   const streakK = opts.streak ?? 1;
@@ -603,7 +610,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0],
     const joints = /vec2 sfCl\b/.test(shader.fragmentShader) && /vec2 sfCs\b/.test(shader.fragmentShader) && /uniform vec4 sfJoint;/.test(shader.fragmentShader);
     const arrises = joints && /uint sfCh\b/.test(shader.fragmentShader) && /uniform vec4 sfLay;/.test(shader.fragmentShader);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + (opts.render ? '#define BG_RENDER\n' : '') + FRAG_PARS)
+      .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_STONE)
       .replace('#include <lights_physical_fragment>', FRAG_ROUGH + '#include <lights_physical_fragment>')
       .replace('#include <dithering_fragment>', FRAG_NONNEG);
@@ -635,7 +642,7 @@ const FRAG_PAINT = /* glsl */ `
  */
 export function grimePaint(m, k = [0.45, 0.55, 0.12, 0.3]) {
   m.vertexColors = true;
-  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(0, 0) }, bgDbg: GRIME_DEBUG };
+  const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(0, 0) }, bgDbg: GRIME_DEBUG, bgRender: { value: 0 } };
   chain(m, 'bgP1', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader

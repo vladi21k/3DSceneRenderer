@@ -717,7 +717,7 @@ export class Rig {
       const dW = Math.sqrt(this.ua * this.ua + this.fa * this.fa + 2 * this.ua * this.fa * Math.cos(72 * DEG));
       const wy = (tx, tz, Sh) => {
         const h2 = dW * dW - (tx - Sh.x) * (tx - Sh.x) - (tz - Sh.z) * (tz - Sh.z);
-        return THREE.MathUtils.clamp(Sh.y - Math.sqrt(Math.max(h2, 0.01)), this.seat.y + 0.06 * k, this.waist.y + 0.04 * k);
+        return THREE.MathUtils.clamp(Sh.y - Math.sqrt(Math.max(h2, 0.01)), this.seat.y + 0.06 * k, this.waist.y + 0.08 * k);
       };
       const yB = 0.5 * (wy(0.02 * k, zB, R[B.armL]) + wy(-0.01 * k, zB, R[B.armR]));
       P.arm.L.ik = { target: new THREE.Vector3(0.02 * k, yB, zB), pole: new THREE.Vector3(-1, -0.15, 0.15), palm: new THREE.Vector3(0.35, 0.15, 1), clear: 0.012 };

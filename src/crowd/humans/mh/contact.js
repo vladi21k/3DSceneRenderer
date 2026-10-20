@@ -6,25 +6,21 @@ import * as THREE from 'three';
 // ground-aligned soft ellipses drawn after the opaque scene with a multiplying blend (the colour behind is
 // darkened, nothing else changes): one under each foot (about 0.30 x 0.12 m, fading as the foot lifts off
 // the paving: a walking foot's swing leaves no mark) and a wider, fainter patch under the body for people
-// who stand or sit. They fade out from 25 to 45 m (a pixel or two by then). One instanced draw.
+// who stand or sit. They fade out from 25 to 45 m (a pixel or two by then). One draw: the quads are
+// written on the CPU (a few hundred a frame) into one dynamic buffer.
 //
 //   const c = new ContactShade(app); scene.add(c.mesh);
 //   per frame: c.begin(); c.add(x, y, z, dirX, dirZ, halfLen, halfWid, strength) ...; c.end();
 // Strength is the darkening at the centre (0 none .. 1 black). No garbage per frame.
 
 const VERT = /* glsl */`
-attribute vec4 iPos;     // centre x, ground y, z, strength
-attribute vec4 iAxis;    // direction of the long axis (x, z), half length, half width
+attribute vec3 aQ;       // position in the ellipse (-1..1, -1..1), strength
 varying vec2 vQ;
 varying float vK;
 void main() {
-  vec2 d = normalize(iAxis.xy + vec2(1e-6, 0.0));
-  vec2 sd = vec2(-d.y, d.x);
-  vec2 off = d * position.x * iAxis.z + sd * position.y * iAxis.w;
-  vec3 wp = vec3(iPos.x + off.x, iPos.y + 0.004, iPos.z + off.y);
-  vQ = position.xy;
-  vK = iPos.w;
-  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+  vQ = aQ.xy;
+  vK = aQ.z;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
 
 const FRAG = /* glsl */`
@@ -33,23 +29,22 @@ varying float vK;
 void main() {
   float r = length(vQ);
   if (r >= 1.0) discard;
-  // (a dense core under the sole, a soft skirt round it)
-  float f = 1.0 - smoothstep(0.0, 1.0, r);
-  f = f * f * (0.55 + 0.45 * (1.0 - smoothstep(0.35, 0.75, r)));
+  // (full strength under the sole out to its edge, about half the ellipse, then a soft falloff over the
+  // few centimetres round it)
+  float f = 1.0 - smoothstep(0.5, 1.0, r);
+  f *= sqrt(f);
   gl_FragColor = vec4(vec3(1.0 - vK * f), 1.0);
 }`;
+
+const LIFT = 0.006;      // above the figure's ground height (m): the paving under a person is near flat
 
 export class ContactShade {
   constructor(app) {
     this.app = app;
     this.cap = 0;
     this.n = 0;
-    const g = new THREE.InstancedBufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3));
-    g.setIndex([0, 2, 1, 0, 3, 2]);
-    g.instanceCount = 0;
-    this.geo = g;
-    this._grow(512);
+    this.geo = new THREE.BufferGeometry();
+    this._grow(256);
     const mat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG,
       transparent: true, depthWrite: false, depthTest: true,
@@ -60,12 +55,11 @@ export class ContactShade {
       side: THREE.DoubleSide,
     });
     mat.name = 'humans.contact';
-    const mesh = new THREE.Mesh(g, mat);
+    const mesh = new THREE.Mesh(this.geo, mat);
     mesh.name = 'humans.contact';
     mesh.frustumCulled = false;
     mesh.renderOrder = -10;        // first among the transparent draws (before glass, haze cards ...)
     mesh.castShadow = mesh.receiveShadow = false;
-    mesh.matrixAutoUpdate = false;
     mesh.raycast = () => {};
     this.mesh = mesh;
   }
@@ -73,15 +67,20 @@ export class ContactShade {
   _grow(n) {
     if (n <= this.cap) return;
     const cap = Math.max(n, this.cap * 2);
-    const P = new Float32Array(cap * 4), A = new Float32Array(cap * 4);
-    if (this.P) { P.set(this.P); A.set(this.A); }
-    this.P = P; this.A = A;
-    this.aP = new THREE.InstancedBufferAttribute(P, 4);
-    this.aA = new THREE.InstancedBufferAttribute(A, 4);
-    this.aP.setUsage(THREE.DynamicDrawUsage);
-    this.aA.setUsage(THREE.DynamicDrawUsage);
-    this.geo.setAttribute('iPos', this.aP);
-    this.geo.setAttribute('iAxis', this.aA);
+    const P = new Float32Array(cap * 12), Q = new Float32Array(cap * 12);
+    if (this.P) { P.set(this.P); Q.set(this.Q); }
+    const I = new Uint32Array(cap * 6);
+    for (let i = 0; i < cap; i++) {
+      const v = i * 4, o = i * 6;
+      I[o] = v; I[o + 1] = v + 2; I[o + 2] = v + 1; I[o + 3] = v; I[o + 4] = v + 3; I[o + 5] = v + 2;
+    }
+    this.P = P; this.Q = Q;
+    if (this.aP) this.geo.dispose();
+    this.aP = new THREE.BufferAttribute(P, 3).setUsage(THREE.DynamicDrawUsage);
+    this.aQ = new THREE.BufferAttribute(Q, 3).setUsage(THREE.DynamicDrawUsage);
+    this.geo.setAttribute('position', this.aP);
+    this.geo.setAttribute('aQ', this.aQ);
+    this.geo.setIndex(new THREE.BufferAttribute(I, 1));
     this.cap = cap;
   }
 
@@ -90,21 +89,27 @@ export class ContactShade {
   add(x, y, z, dx, dz, hl, hw, k) {
     if (k <= 0.004) return;
     if (this.n >= this.cap) this._grow(this.n + 1);
-    const o = this.n * 4;
-    const P = this.P, A = this.A;
-    P[o] = x; P[o + 1] = y; P[o + 2] = z; P[o + 3] = k;
-    A[o] = dx; A[o + 1] = dz; A[o + 2] = hl; A[o + 3] = hw;
+    const P = this.P, Q = this.Q, o = this.n * 12;
+    const sx = -dz, sz = dx;
+    const yy = y + LIFT;
+    // corners (-1,-1) (1,-1) (1,1) (-1,1) in (along, across)
+    for (let c = 0; c < 4; c++) {
+      const a = c === 1 || c === 2 ? 1 : -1, b = c >= 2 ? 1 : -1;
+      const j = o + c * 3;
+      P[j] = x + dx * a * hl + sx * b * hw; P[j + 1] = yy; P[j + 2] = z + dz * a * hl + sz * b * hw;
+      Q[j] = a; Q[j + 1] = b; Q[j + 2] = k;
+    }
     this.n++;
   }
 
   end() {
     const n = this.n;
-    this.geo.instanceCount = n;
+    this.geo.setDrawRange(0, n * 6);
     this.mesh.visible = n > 0;
     if (n > 0) {
-      this.aP.clearUpdateRanges(); this.aA.clearUpdateRanges();
-      this.aP.addUpdateRange(0, n * 4); this.aA.addUpdateRange(0, n * 4);
-      this.aP.needsUpdate = true; this.aA.needsUpdate = true;
+      this.aP.clearUpdateRanges(); this.aQ.clearUpdateRanges();
+      this.aP.addUpdateRange(0, n * 12); this.aQ.addUpdateRange(0, n * 12);
+      this.aP.needsUpdate = true; this.aQ.needsUpdate = true;
     }
   }
 }

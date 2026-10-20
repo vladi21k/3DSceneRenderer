@@ -349,7 +349,7 @@ const PAINT_FRAG = /* glsl */`
     e1 -= rb * 0.016 * smoothstep( 0.74, 0.95, lnNoise( vec2( u * 33.0, seed + 9.0 ) ) );
     float rM = bar * ( 1.0 - smoothstep( 0.012, 0.035, w ) ) * ( 1.0 - smoothstep( 0.07, 0.15, wu ) );
     float rL = bar * ( 1.0 - smoothstep( 0.03, 0.08, w ) ) * ( 1.0 - smoothstep( 0.25, 0.5, wu ) );
-    float kLo = 1.0 + 1.2 * railLo, kHi = 1.0 + 1.2 * railHi;
+    float kLo = 1.0 + 0.6 * railLo, kHi = 1.0 + 0.6 * railHi;
     e0 += rM * 0.022 * kLo * smoothstep( 0.7, 0.93, lnNoise( vec2( u * 6.5, seed + 12.0 ) ) );
     e1 -= rM * 0.022 * kHi * smoothstep( 0.7, 0.93, lnNoise( vec2( u * 7.1, seed + 17.0 ) ) );
     e0 += rL * 0.026 * kLo * smoothstep( 0.72, 0.92, lnNoise( vec2( u * 1.7, seed + 23.0 ) ) );
@@ -384,7 +384,7 @@ const PAINT_FRAG = /* glsl */`
     // of fine fatigue cracks runs through it. Bared ground mostly shows through (the paving
     // beneath is drawn there: its stone, joints and dirt), the rest tints the film.
     float eX = 1.0 - smoothstep( 0.0, 0.05, pHalf - abs( x ) );
-    float W = clamp( 0.26 * pWear * wl + 0.1 * foot + 0.1 * nearRail + bar * ( 0.05 * eX + 0.05 * ends ), 0.0, 0.85 );
+    float W = clamp( 0.26 * pWear * wl + 0.1 * foot + 0.06 * nearRail + bar * ( 0.05 * eX + 0.05 * ends ), 0.0, 0.85 );
     float fpl = max( w, wu );
     float pv = lnFbm( vec2( x, u ) * 2.6 + seed + 11.0, fpl * 2.6, 3 );
     float big = lnFbm( wp * 0.5 + 17.0 + seed, fpw * 0.5, 2 );
@@ -457,7 +457,7 @@ const PAINT_FRAG = /* glsl */`
     float feL = 0.5 * lnFw( vec2( fLx - fL, fLu - fL ) / FH, lnDx, lnDu ) + 0.002;
     float feC = 0.5 * lnFw( vec2( fCx - fC, fCu - fC ) / FH, lnDx, lnDu ) + 0.002;
     float feF = 0.5 * lnFw( vec2( fFx - fF, fFu - fF ) / FH, lnDx, lnDu ) + 0.002;
-    float WL = clamp( W * ( 0.05 + 0.4 * max( foot * smoothstep( 0.45, 0.75, pv ), nearRail ) ), 0.0, 0.12 );
+    float WL = clamp( W * ( 0.05 + 0.4 * max( foot * smoothstep( 0.45, 0.75, pv ), 0.5 * nearRail ) ), 0.0, 0.12 );
     float WC = 0.5 * Wl, WF = 0.5 * Wl;
     float tL = lnTg( WL ), tC = lnTg( WC ), tF = lnTg( WF );
     float keepL = WL < 0.01 ? 1.0 : smoothstep( tL - feL, tL + feL, fL );

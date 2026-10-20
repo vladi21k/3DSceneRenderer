@@ -370,11 +370,13 @@ ${f.pom ? MAP_POM : ''}  vec2 sfP = sfUv;
     vec3 sfTc = sfTintOf(rh, sfCell.w, 0.0, vec2(0.5)) * cellT;
     sfTint = mix(vec3(1.0), sfTc, fRow);
     if (sfFar.w > 0.0) {
-      // where the cells no longer resolve, their tones average out to the correlated drift
-      // (quarry batches, dirt), sampled at the pixel itself: smooth, no cell edges
-      vec2 nzP = sfCellNoise(sfUv);
-      float hmP = mix(0.5, clamp(0.5 + (nzP.y - 0.5) * 3.0, 0.0, 1.0), sfCell2.y);
-      vec3 tP = (1.0 + sfCell2.x * (nzP.x * 2.0 - 1.0)) * mix(vec3(1.0), mix(sfCellA, sfCellB, hmP), 0.5 * sfCell.y);
+      // where the cells no longer resolve, their tones average out: to a trace of the
+      // correlated drift (quarry batches come in runs of setts, which average out too; at
+      // full strength the smooth noise foreshortens into cross-street bands), sampled at the
+      // pixel itself (filtered: no cell edges, no aliasing at grazing distances)
+      vec2 nzP = sfCell2.z > 0.0 ? texture(sfMacroTex, sfUv * sfCell2.z + vec2(0.37, 0.71)).rg : vec2(0.5);
+      float hmP = mix(0.5, clamp(0.5 + (nzP.y - 0.5) * 3.0, 0.0, 1.0), 0.3 * sfCell2.y);
+      vec3 tP = (1.0 + 0.3 * sfCell2.x * (nzP.x * 2.0 - 1.0)) * mix(vec3(1.0), mix(sfCellA, sfCellB, hmP), 0.5 * sfCell.y);
       sfTint = mix(tP, sfTc, fRow);
     }
     sfRoughMul = 1.0 + sfCell.z * (sfHf(sfH(sfCh + 5u)) * 2.0 - 1.0) * fSeg;
@@ -426,7 +428,7 @@ ${f.pom ? `  // relief occlusion of the sky light: the drafted margins and the l
   // joints are left to the baked AO. Read from the height map, so it carries on beyond the
   // parallax range
   float sfRelH = sfPom.x + sfPom.y * sfA.a;
-  float sfRelAO = sfPom.y > 0.0 ? 1.0 - 0.38 * (1.0 - smoothstep(0.0, 0.055, sfRelH)) * smoothstep(-0.012, -0.004, sfRelH) : 1.0;
+  float sfRelAO = sfPom.y > 0.0 ? 1.0 - 0.42 * (1.0 - smoothstep(0.0, 0.06, sfRelH)) * smoothstep(-0.012, -0.004, sfRelH) : 1.0;
 ` : ''}`;
 
 // dressing: each block gets its own dressing (taltish striation from the tool map, pecked or

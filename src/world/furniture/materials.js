@@ -669,9 +669,9 @@ function patchStreetWear(m, { stickers = false, chips = 1, rust = 1, dust = 1 } 
           // edges: rubbed lighter, chipped to the primer
           float edge = smoothstep(18.0, 45.0, curv) * mid;
           float chipN = fwN3(p * 55.0 + sd * 1.7) * 0.65 + fwN3(p * 140.0 + sd) * 0.35;
-          float chip = edge * smoothstep(0.56, 0.64, chipN) * ${chips.toFixed(2)};
-          diffuseColor.rgb *= 1.0 + 0.18 * edge * ${chips.toFixed(2)} * (1.0 - lum);
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.3, 0.295, 0.28), chip * 0.85);
+          float chip = edge * smoothstep(0.64, 0.7, chipN) * ${chips.toFixed(2)};
+          diffuseColor.rgb *= 1.0 + 0.1 * edge * ${chips.toFixed(2)} * (1.0 - lum);
+          diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(0.26, 0.25, 0.235), vec3(0.2, 0.11, 0.06), step(0.5, fract(chipN * 9.0))), chip * 0.7);
           // foot: splash specks and kicks
           float foot = 1.0 - smoothstep(0.12, 0.42, p.y + 0.15 * (dn - 0.5));
           float speck = smoothstep(0.7, 0.78, fwN3(p * 75.0 + sd)) * (1.0 - smoothstep(0.2, 0.55, p.y)) * fine;
@@ -686,7 +686,9 @@ function patchStreetWear(m, { stickers = false, chips = 1, rust = 1, dust = 1 } 
           ${stickers ? `
           // stickers and flyer scraps (most instances), cells 13 x 15 cm across the face
           float iH = fract(sd * 0.6180339 + 0.17);
-          float dens = step(0.2, iH) * mix(0.09, 0.2, fract(sd * 3.7));
+          // (in a few clusters: where a flyer was pasted, more follow)
+          float clus = smoothstep(0.42, 0.68, fwN3(vec3(u * 1.7, p.y * 1.7, sd * 3.1)));
+          float dens = step(0.2, iH) * mix(0.18, 0.4, fract(sd * 3.7)) * clus;
           vec2 c = vec2(u / 0.13, p.y / 0.15), ci = floor(c), cf = fract(c);
           float side = dot(n, vec3(1.3, 0.0, 2.7));
           float h1 = fwH(vec3(ci, sd + side)), h2 = fwH(vec3(ci + 7.1, sd + 4.9 + side)), h3 = fwH(vec3(ci + 3.3, sd + 9.7 - side));
@@ -699,8 +701,9 @@ function patchStreetWear(m, { stickers = false, chips = 1, rust = 1, dust = 1 } 
             float k = fract(h1 * 13.7 + h3);
             vec3 paper = k < 0.35 ? vec3(0.78, 0.77, 0.73) : k < 0.5 ? vec3(0.78, 0.66, 0.2) : k < 0.65 ? vec3(0.62, 0.16, 0.13) : k < 0.8 ? vec3(0.16, 0.27, 0.52) : vec3(0.06);
             vec3 ink = k < 0.5 ? vec3(0.08) : vec3(0.85, 0.84, 0.8);
-            // print: bars of text, or a logo disc over two bars
-            float bars = step(0.5, fract(q.y * 2.6 + 0.3)) * step(abs(q.x), 0.7) * step(0.35, fwH(vec3(floor(q.x * 3.0 + 9.0), floor(q.y * 2.6), h2 * 7.0)));
+            // print: lines of text (each ending at its own length), or a logo disc over two lines
+            float row = floor(q.y * 2.6 + 0.3);
+            float bars = step(0.5, fract(q.y * 2.6 + 0.3)) * step(-0.72, q.x) * step(q.x, mix(-0.1, 0.72, fwH(vec3(row, h2 * 7.0, 3.0))));
             float logo = h3 > 0.6 ? 1.0 - smoothstep(0.4, 0.46, length(q - vec2(0.0, 0.35))) : 0.0;
             vec3 col = mix(paper, ink, max(bars * (h3 > 0.6 ? step(q.y, -0.1) : 1.0), logo) * 0.8 * fine);
             col = mix(col, vec3(dot(col, vec3(0.33))), 0.35) * (0.8 + 0.3 * h2);   // sun-faded

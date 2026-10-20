@@ -935,7 +935,7 @@ void main() {
     float chroma = uChroma;
     if (skyPx) {
       float warm = smoothstep(0.05, 0.3, (sc.r - sc.b) / max(sc.r, 1e-6));
-      chroma = uSkyChroma * (1.0 - 0.75 * warm * smoothstep(uSkyWhite.x, uSkyWhite.y, log2(max(lum, 1e-8) / 0.18)));
+      chroma = uSkyChroma * (1.0 - 0.65 * warm * smoothstep(uSkyWhite.x, uSkyWhite.y, log2(max(lum, 1e-8) / 0.18)));
     }
     col = mix(col * (lt / max(la, 1e-7)), sc * (lt / max(lum, 1e-8)), chroma);
     // a little more colour on the street (the sky has its own saturation, uSkySat), as a
@@ -947,9 +947,12 @@ void main() {
     if (!skyPx) {
       float boost = mix(uSatOut, uSatHi.x, smoothstep(uSatHi.y, uSatHi.z, lt));
       float cx = max(col.r, max(col.g, col.b)), cn = min(col.r, min(col.g, col.b));
-      // (saturation as the display values show it: gamma ~2.2)
+      // (saturation as the display values show it: gamma ~2.2; and, as a camera's vibrance
+      // protects skin tones, the orange hues of skin and limestone, 15-50 degrees, get less)
       float s0 = 1.0 - pow(max(cn, 0.0) / max(cx, 1e-7), 0.4545);
-      float kv = boost > 1.0 ? 1.0 + (boost - 1.0) * (1.0 - s0) * (1.0 - s0) : boost;
+      float hr = (col.g - col.b) / max(col.r - col.b, 1e-7);
+      float orange = step(col.b, col.g) * step(col.g, col.r) * smoothstep(0.1, 0.25, hr) * (1.0 - smoothstep(0.8, 0.95, hr));
+      float kv = boost > 1.0 ? 1.0 + (boost - 1.0) * (1.0 - s0) * mix(1.0, 1.0 - s0, orange) : boost;
       col = max(lt + (col - lt) * kv, 0.0);
     }
     float m = max(col.r, max(col.g, col.b));

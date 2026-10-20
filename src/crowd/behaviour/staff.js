@@ -103,10 +103,15 @@ export function staffTick(c) {
   let n = 0;
   for (const f of pop.cafes.values()) if (f.staff && f.staff.active && f.staff.role === 'staff' && f.staff.cafeT === f) n++; else f.staff = null;
   if (n >= MAX_STAFF || pop.free.length < 20) return;
+  // (the terraces nearest the camera first: a terrace in use in front of the camera has its waiter)
+  const cand = [];
   for (const f of pop.cafes.values()) {
     if (f.staff || c.time < (f.staffT || 0)) continue;
-    const cafe = f.cafe, mid = c.unwrap((cafe.s0 + cafe.s1) / 2), rel = mid - c.camU;
-    if (rel < RANGE[0] || rel > RANGE[1]) continue;
+    const cafe = f.cafe, rel = c.unwrap((cafe.s0 + cafe.s1) / 2) - c.camU;
+    if (rel >= RANGE[0] && rel <= RANGE[1]) cand.push([rel, f]);
+  }
+  cand.sort((p, q) => p[0] - q[0]);
+  for (const [, f] of cand) {
     let busy = 0;
     for (const seat of f.seats) if (f.occ.has(seat.key)) busy++;
     if (busy < 2) { f.staffT = c.time + 4; continue; }

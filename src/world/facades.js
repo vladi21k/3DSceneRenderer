@@ -174,7 +174,8 @@ const facades = {
       this.jobs.set(key, job);
     };
     for (const s0 of around) {
-      for (let i = Math.floor((s0 - VIEW_BEHIND) / CHUNK_LEN); i <= Math.floor((s0 + VIEW_AHEAD) / CHUNK_LEN); i++) {
+      // (a few metres more behind: the camera rides 1.7 m behind the cab front at startS)
+      for (let i = Math.floor((s0 - VIEW_BEHIND - 4) / CHUNK_LEN); i <= Math.floor((s0 + VIEW_AHEAD) / CHUNK_LEN); i++) {
         const idx = ((i % n) + n) % n;
         const dist = Math.max(0, Math.abs(i * CHUNK_LEN + CHUNK_LEN / 2 - s0) - CHUNK_LEN / 2);
         const lod = dist < LOD0_DIST ? 0 : 1;

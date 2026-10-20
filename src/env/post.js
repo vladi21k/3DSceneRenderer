@@ -117,7 +117,7 @@ const TONE = {
   // It is a vibrance (final pass): the boost goes to the weakly coloured pixels, so stone
   // and lit foliage that carry their own colour are not pushed past it (the photographs'
   // shaded limestone is a pale warm grey, sunlit stone at most ~0.35 HSV saturation)
-  satOut: [[0.3, 1.3], [0.5, 1.3], [0.6, 1.28], [0.85, 1.4], [0.95, 1.25]],
+  satOut: [[0.3, 1.3], [0.5, 1.3], [0.6, 1.28], [0.85, 1.5], [0.95, 1.35]],
   // soft ceiling of the display (HSV) saturation: [start, limit]; the photographs keep
   // under ~2.4 % of their pixels above 0.85 and almost none with a crushed channel
   satCeil: [0.72, 0.92],
@@ -163,11 +163,13 @@ const TONE = {
   // light) in the neutral the camera balances on (time of day, weight)
   wbK: [[0.3, 0.3], [0.55, 0.25], [0.62, 0.25], [0.78, 0]],
   wbShade: [[0.4, 0], [0.55, 0.9], [0.68, 0.9], [0.78, 0]],
-  // and a warm split-tone in the street's shadows from the low sun to sunset (time of day,
-  // share: R x (1 + k), B x (1 - 1.07 k), luminance kept): the sunlit facades and the
-  // golden air fill the canyon's shade, so shaded grey paving reads a warm neutral (R/B
-  // ~1.06-1.12 in the low-sun photographs) rather than an overcast-day grey
-  shadowWarm: [[0.4, 0], [0.52, 0.07], [0.68, 0.07], [0.8, 0]],
+  // and a split-tone in the street's shadows (time of day, share: R x (1 + k), B x
+  // (1 - 1.07 k), luminance kept): under the high sun a touch cool, as a daylight-balanced
+  // camera renders open shade (the midday photographs' shaded paving and stone lean blue-
+  // grey, the sunlit stone carries the warmth); from the low sun to sunset warm, as the sunlit
+  // facades and the golden air fill the canyon's shade (shaded grey paving a warm neutral,
+  // R/B ~1.06-1.12 in the low-sun photographs, rather than an overcast-day grey)
+  shadowWarm: [[0.3, -0.03], [0.42, 0], [0.52, 0.07], [0.68, 0.07], [0.8, 0]],
   // and from sunset on a cooler setting (time of day, shift): the blue gain up and the red
   // one down, towards a ~4000 K balance once the lamps carry the street, so the sky-lit
   // paving between the pools reads blue-grey and the pools amber
@@ -189,11 +191,11 @@ const TONE = {
   // the shaded grey paving pink rather than the warm neutral of the photographs
   wbG: {
     lo: [[0.4, 0.97], [0.5, 1.02], [0.6, 1.02], [0.7, 1.0]], hi: [[0.4, 1.0], [0.5, 1.04], [0.6, 1.04], [0.7, 1.02]],
-    // (lampMax: the ~3300 K pools stay amber, hue ~40, with the green gain up to 1.45x the
+    // (lampMax: the ~3300 K pools stay amber, hue ~35, with the green gain up to 1.38x the
     // red one; it lets the green rise far enough that the twilight-lit paving between the
     // pools reads blue-grey (hue ~225) and the zone where lamp and sky light mix a neutral
     // grey, not mauve)
-    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.2], [1.0, 1.2]], lampMax: 1.45,
+    cap: [[0.4, 1.03], [0.5, 1.06], [0.6, 1.06], [0.72, 1.18], [0.9, 1.2], [1.0, 1.2]], lampMax: 1.38,
     // the sky's own guard (lo, hi, cap: the daylight locus)
     sky: [0.97, 1.0, 1.03],
   },
@@ -761,7 +763,9 @@ const post = {
     // more of the scene's own chroma once the light warms (low sun on stone, lamps)
     fu.uChroma.value = THREE.MathUtils.lerp(TONE.chroma[0], TONE.chroma[1], ss(t, 0.35, 0.6));
     fu.uSat.value = THREE.MathUtils.lerp(TONE.sat[0], TONE.sat[1], ss(t, 0.6, 0.85));
-    fu.uSatOut.value = table(TONE.satOut, t);
+    // (a dusty day's milky light is rendered with a little more colour, env.lookSat)
+    const kLook = env && Number.isFinite(env.lookSat) ? env.lookSat : 1;
+    fu.uSatOut.value = 1 + (table(TONE.satOut, t) - 1) * kLook;
     fu.uSatCeil.value.set(TONE.satCeil[0], TONE.satCeil[1]);
     fu.uSkyWhite.value.set(TONE.skyWhite[0], TONE.skyWhite[1]);
     vtable(TONE.satHi, t, fu.uSatHi.value);

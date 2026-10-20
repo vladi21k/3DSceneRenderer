@@ -615,13 +615,13 @@ const humans = {
       const touch = 1 - Math.min(1, Math.max(0, (lift - 0.008) / 0.045));
       if (touch <= 0) continue;
       const dx = Tx - Hx, dz = Tz - Hz, L = Math.sqrt(dx * dx + dz * dz) || 1e-3;
-      C.add(0.5 * (Hx + Tx), s.y, 0.5 * (Hz + Tz), dx / L, dz / L, 0.5 * L + 0.045 * sc, 0.068 * sc, 0.5 * touch * fade);
+      C.add(0.5 * (Hx + Tx), s.y, 0.5 * (Hz + Tz), dx / L, dz / L, 0.5 * L + 0.07 * sc, 0.105 * sc, 0.72 * touch * fade);
     }
     // (the body's own occlusion of the sky round the feet: standing and seated people, slow walkers)
     const still = s.pose === 1 || s.pose === 2 || s.speed < 0.4;
-    const kb = (still ? 0.16 : 0.07) * fade;
+    const kb = (still ? 0.24 : 0.1) * fade;
     const hs = Math.sin(s.heading), hc = Math.cos(s.heading);
-    C.add(s.x - hs * (s.pose === 2 ? 0.12 : 0.0) * sc, s.y, s.z - hc * (s.pose === 2 ? 0.12 : 0.0) * sc, hs, hc, 0.36 * sc, 0.3 * sc, kb);
+    C.add(s.x - hs * (s.pose === 2 ? 0.12 : 0.0) * sc, s.y, s.z - hc * (s.pose === 2 ? 0.12 : 0.0) * sc, hs, hc, 0.5 * sc, 0.42 * sc, kb);
   },
 
   _queueBaby(i, s, st) {

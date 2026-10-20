@@ -1928,7 +1928,7 @@ def gore_skirt(d, vmask, J, k, length, cid):
     seed = sum(ord(c) for c in cid)
     ph = 9 * th + 0.8 * np.sin(2 * th + seed) + 0.5 * np.sin(5 * th + 0.7 * seed)
     depth = 0.75 + 0.25 * np.sin(4.5 * th + 1.3 * seed) + 0.15 * np.cos(7 * th - seed)
-    amp = (0.014 + 0.022 * min(1.0, max(0.0, length))) * k * u ** 1.2 * depth
+    amp = (0.015 + 0.03 * min(1.0, max(0.0, length))) * k * u ** 1.15 * depth
     f = 0.5 + 0.5 * np.cos(ph)
     # (rounded flutes with broad valleys between them: the cloth swings out in folds, not a corrugation)
     rn = r + amp * (f ** 1.8)

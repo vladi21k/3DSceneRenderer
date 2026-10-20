@@ -396,6 +396,12 @@ function kiosk(detail) {
       const hgt = rng.range(0.1, 0.14), rot = rng.range(-0.12, 0.12);
       pages.push(xf(rbox(0.29, hgt, 0.4, 0.01, 1), [W / 2 + 0.17, y + hgt / 2, z], [0, rot, 0]));
       print.push(xf(quad(0.27, 0.38, uvSub('covers', 0.2 * (i % 5), 0.34, 0.2 * (i % 5) + 0.19, 0.66)), [W / 2 + 0.17, y + hgt + 0.002, z], [-Math.PI / 2, 0, rot]));
+      // folded edges of the papers on the sides (thin bands of print and paper)
+      for (const [ox, oz, ry, w] of [[0.147, 0, Math.PI / 2, 0.39], [-0.147, 0, -Math.PI / 2, 0.39], [0, 0.202, 0, 0.28], [0, -0.202, Math.PI, 0.28]]) {
+        const fu = 0.2 * ((i + 2) % 5);
+        const c = Math.cos(rot), sn = Math.sin(rot);
+        print.push(xf(quad(w, hgt - 0.006, uvSub('covers', fu + 0.01, 0.05 + 0.1 * (i % 3), fu + 0.18, 0.08 + 0.1 * (i % 3))), [W / 2 + 0.17 + ox * c + oz * sn, y + hgt / 2, z - ox * sn + oz * c], [0, rot + ry, 0]));
+      }
       steel.push(xf(rbox(0.006, hgt + 0.004, 0.41, 0.002, 1), [W / 2 + 0.17, y + hgt / 2, z], [0, rot, 0]));   // twine
       y += hgt;
     }

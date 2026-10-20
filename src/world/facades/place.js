@@ -8,7 +8,7 @@ import { Tpl, TplCache, VS, lin } from './geo.js';
 import { joineryStyle, joineryTpl, glassTpl, shutterTpl, rollerTpl, canOpen, openLimit } from './windows.js';
 import { shopDecision, shopTpls, SHOP_FW } from './shops.js';
 import { doorLayout, doorTpls } from './doors.js';
-import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls, bladeNameTpls, letteringTpls, tradeIcon, subWordsOf, wordHebrew, N_NAMES, LINE_KIND, inkOn, lineCell, cellTpl, bladeTrade, isSaleFace } from './signs.js';
+import { signDesign, fasciaTpls, bladeTpls, bladeFace, plaqueTpl, signColor, wordType, wordSub, flagTpls, discTpls, bladeNameTpls, letteringTpls, tradeIcon, subWordsOf, wordHebrew, N_NAMES, LINE_KIND, inkOn, lineCell, cellTpl, bladeTrade, isSaleFace, vbladeTpls, domeTextTpl, hwordCell, UPPER_WORDS, luma } from './signs.js';
 import { winCode, shopTypeIndex } from './interior.js';
 import { spillTpl, spillAttrs, groundGlow, shopSpill } from './spill.js';
 import { dressWindow, hangGoods, dressRequest, allocateBlock } from './dressing.js';
@@ -950,21 +950,19 @@ function buildCafeAwning(kit, ctx, aw) {
  * Hotel-style hoods over upper-floor windows (domes over arched heads, dutch hoods over
  * flat ones), one colour scheme per facade.
  */
-function buildUpperAwning(kit, ctx, o) {
+function buildUpperAwning(kit, ctx, o, up) {
   const r = RNG.from(o.id, 'hood');
-  const col = ctx.hotelColors;
+  const col = up.colors;
   const crown = crownY(o);
   const arched = isArched(o) && o.top !== 'segment';
-  let tpl, y;
-  if (arched) {
-    const R = o.w / 2 + 0.1;
-    tpl = domeAwning(0, R, 0.17, ctx.q);
-    y = crown + 0.1 - R;
-  } else {
-    const R = 0.55;
-    tpl = domeAwning(o.w + 0.2, R, 0.17, ctx.q);
-    y = crown + 0.12 - R;
+  const R = arched ? o.w / 2 + 0.1 : 0.55, W = arched ? 0 : o.w + 0.2;
+  // (none where the balcony above, its slab and consoles, comes down to the hood)
+  for (const b of ctx.plan.balconies || []) {
+    if (b.floor !== o.floor + 1 || b.u1 < o.uc - o.w / 2 - 0.3 || b.u0 > o.uc + o.w / 2 + 0.3) continue;
+    if (b.y - (b.slabT || 0.16) - 0.7 < o.y + crown + 0.16) return;
   }
+  const tpl = domeAwning(W, R, 0.17, ctx.q);
+  const y = arched ? crown + 0.1 - R : crown + 0.12 - R;
   const m = new THREE.Matrix4().copy(openingMatrix(ctx.frame, o, new THREE.Matrix4())).multiply(_r.makeTranslation(0, y, o.recess + 0.02));
   const k = 0.94 + r.next() * 0.1; // uneven fading
   kit.get('awning').add(tpl.canvas, m, col.c1[0] * k, col.c1[1] * k, col.c1[2] * k, {
@@ -972,6 +970,140 @@ function buildUpperAwning(kit, ctx, o) {
     aFlex: (i, sp, a, j) => { a[j] = tpl.canvas.f[i] * 0.6; },
   });
   kit.get('metal').add(tpl.metal, m, 0.06, 0.06, 0.062);
+  // the house's word printed round the front of the hood, as large as it takes
+  {
+    const c = hwordCell(up.hword);
+    const Wd = Math.max(W, 2 * R), total = Math.max(0, Wd - 2 * R) + Math.PI * R;
+    // (from just above the hem up to about a third of the way to the wall)
+    const thB = 1.38, angMax = 0.78;
+    const tw = Math.min(total * 0.66, R * angMax * c.aspect), ang = tw / c.aspect / R;
+    const q = ctx.q >= 0.5 ? 1 : 0.4;
+    const tpl = upperTpl.get(`H|${up.hword}|${Wd.toFixed(2)}|${R.toFixed(2)}|${q}`, () => domeTextTpl(c, Wd, R, tw, thB - ang, thB, q));
+    const lum = (col.c1[0] + col.c2[0]) * 0.15 + (col.c1[1] + col.c2[1]) * 0.3 + (col.c1[2] + col.c2[2]) * 0.05;
+    const ink = lin(lum > 0.22 ? (col.period ? 0x1d1d1f : [0x1d1d1f, 0x1f2b48, 0x5a1a1c][Math.floor(r.next() * 3)]) : 0xf2efe6);
+    kit.get('signText').add(tpl, m, ink[0] * k, ink[1] * k, ink[2] * k, { aGlow: [0] });
+  }
+}
+
+// ------------------------------------------------------------------ upper floors
+// Business above the shops, on about one main-street front in five: hotels and pensions
+// (canvas hoods over the lower upper-floor windows, printed with the house's word, and
+// on most a vertical sign spanning two storeys), an upstairs café, bar or gallery's
+// vertical sign, and painted boards under first-floor windows (an office's or a
+// practice's name and number). All of it keeps clear of the balconies and what hangs off
+// them (consoles, planters, flags), of window surrounds, open shutters and AC units, of
+// the building's flag and of the satellite dish on the top floor.
+const upperCache = new WeakMap();
+/** The upper-floor dressing of a lot's street front (for tools and checks). */
+export function upperDressing(lot) { return upperPlan({ plan: facadePlan(lot), lot }); }
+// stacked word of a hotel's vertical sign for the word on its hoods
+const HOTEL_V = [0, 1, 2, 3, 1, 0];
+function upperPlan(ctx) {
+  const plan = ctx.plan;
+  let up = upperCache.get(plan);
+  if (up) return up;
+  const main = !ctx.lot.sideStreet && !ctx.lot.backdrop && !plan.isReturn;
+  const hr = RNG.from(plan.seed, 'hotel');
+  const hotel = plan.style.era !== 'modern' && !plan.isReturn && hr.chance(main ? 0.11 : 0.06);
+  up = { hotel, colors: hotel ? awningColors(hr) : null, hword: 0, vblade: null, boards: [] };
+  if (hotel) up.hword = UPPER_WORDS.hotelH[hr.int(0, UPPER_WORDS.hotelH.length - 1)];
+  if (main) {
+    const ru = RNG.from(plan.seed, 'upperTrade');
+    if (plan.floors.length >= 4 && plan.bays.length > 1 && ru.chance(hotel ? 0.65 : 0.1)) {
+      up.vblade = fitVBlade(plan, ru, hotel ? HOTEL_V[UPPER_WORDS.hotelH.indexOf(up.hword)] : UPPER_WORDS.otherV[ru.int(0, UPPER_WORDS.otherV.length - 1)], hotel);
+    }
+    if (!hotel && plan.floors.length >= 2 && ru.chance(0.14)) up.boards = fitBoards(ctx, plan, ru);
+  }
+  upperCache.set(plan, up);
+  return up;
+}
+
+/** Height ranges (v) on the wall at u, wanted free of a sign th wide: openings above the shops, balconies, the flag. */
+function upperBlocks(plan, u, th) {
+  const sw = plan.relief && plan.relief.surround ? plan.relief.surround.w : 0;
+  const out = [];
+  for (const o of plan.openings) {
+    if (o.floor < 1) continue;
+    let ext = o.w / 2 + sw + 0.22 + th / 2;
+    if (o.shutters === 'open') ext += o.w / 2 + 0.06;
+    if (o.ac) ext = Math.max(ext, o.w / 2 + 0.55 + th / 2);
+    if (Math.abs(u - o.uc) < ext) out.push([o.y - (o.ac ? 1.25 : 0.45), o.y + o.h + 0.55]);
+  }
+  for (const b of plan.balconies || []) if (u > b.u0 - 1.3 && u < b.u1 + 1.3) out.push([b.y - (b.slabT || 0.16) - 0.8, b.y + 1.35]);
+  for (const fl of plan.flags || []) if (Math.abs(u - fl.u) < 2.0) out.push([fl.y - 2.2, fl.y + 2.6]);
+  return out.sort((a, b) => a[0] - b[0]);
+}
+
+/** A vertical sign on a pier between two bays: the lowest free run of the wall over the shops. */
+function fitVBlade(plan, r, vi, hotel) {
+  const f = plan.floors, nb = plan.bays.length;
+  const top = Math.min(f[f.length - 1].y - 0.15, plan.totalHeight - 1.6);
+  const L = r.range(0.55, 0.72), th = 0.16, hWant = r.range(2.6, 3.8);
+  const k0 = r.int(1, nb - 1);
+  for (let k = 0; k < nb - 1; k++) {
+    const u = plan.bays[1 + ((k0 - 1 + k) % (nb - 1))].u0;
+    if (u < 1.0 || u > plan.width - 1.0) continue;
+    let y = Math.max(f[1].y + 0.3, plan.groundAt(u) + 4.8), run = null;
+    for (const bl of upperBlocks(plan, u, th)) {
+      if (bl[1] <= y) continue;
+      if (bl[0] - y >= 2.3) { run = [y, bl[0]]; break; }
+      y = Math.max(y, bl[1]);
+    }
+    if (!run && top - y >= 2.3) run = [y, top];
+    if (!run) continue;
+    const h = Math.min(hWant, run[1] - run[0] - 0.1);
+    const board = hotel ? r.pick([0x1b2b45, 0x5a1a1c, 0x1d1d1f, 0xf4f1e8, 0x1f3a2c, 0xb8261e]) : r.pick([0xb8261e, 0x1d1d1f, 0x1f3a2c, 0xe0a81c, 0x1f4fa0, 0xf4f1e8]);
+    const ink = luma(board) > 0.55 ? r.pick([0x1d1d1f, 0xb3261e, 0x1b2b45]) : r.pick([0xf4f1e8, 0xf2c230, 0xf4f1e8]);
+    return { u, y: run[0] + 0.05, h, L, th, zw: plan.relief && plan.relief.pier ? plan.relief.pier.p : 0, vi, board, ink, glow: r.chance(hotel ? 0.75 : 0.5) ? 1 : 0, wear: r.range(0.1, 0.8) };
+  }
+  return null;
+}
+
+function buildVBlade(kit, ctx, vb) {
+  const q = ctx.q >= 0.5 ? 1 : 0.4;
+  const tp = upperTpl.get(`V|${vb.vi}|${vb.L.toFixed(2)}|${vb.h.toFixed(2)}|${vb.zw.toFixed(3)}|${q}`, () => vbladeTpls(vb.vi, vb.L, vb.h, vb.th, q, vb.zw));
+  const r = RNG.from(ctx.plan.seed, 'vblade');
+  const m = wallMatrix(ctx.frame, vb.u, vb.y, new THREE.Matrix4());
+  const bc = weather(lin(vb.board), r, vb.wear * 1.2), ic = weather(lin(vb.ink), r, vb.wear * 0.5);
+  kit.get(vb.glow ? 'signBoard' : 'board').add(tp.board, m, bc[0], bc[1], bc[2], { aGlow: [vb.glow] });
+  kit.get('signText').add(tp.text, m, ic[0], ic[1], ic[2], { aGlow: [vb.glow] });
+  kit.get('metal').add(tp.metal, m, ...BLACK_IRON);
+}
+const upperTpl = new TplCache(64);
+
+/** Painted boards under one or two first-floor windows (no balcony, AC unit or sill box there). */
+function fitBoards(ctx, plan, r) {
+  const f1 = plan.floors[1], c0 = (plan.courses || [])[0];
+  const rel = plan.relief || {};
+  const sw = rel.surround ? rel.surround.w : 0, sillH = rel.sill ? rel.sill.h : 0.08;
+  const base = Math.max(f1.y + 0.05, c0 ? c0.y + c0.h + 0.05 : 0);
+  const out = [];
+  const wins = plan.openings.filter((o) => o.floor === 1 && o.kind === 'window' && !o.ac && !o.flowerBox && !o.group);
+  if (!wins.length) return out;
+  const n = Math.min(wins.length, r.chance(0.35) ? 2 : 1), k0 = r.int(0, wins.length - 1);
+  const used = [];
+  for (let k = 0; k < wins.length && out.length < n; k++) {
+    const o = wins[(k0 + k) % wins.length];
+    const u0 = o.uc - o.w / 2 - sw - 0.06, u1 = o.uc + o.w / 2 + sw + 0.06;
+    const yTop = o.y - sillH - 0.06, h = Math.min(r.range(0.42, 0.62), yTop - base);
+    if (h < 0.34 || plan.groundAt(o.uc) + 3.4 > yTop - h) continue;
+    if ((plan.balconies || []).some((b) => b.floor <= 1 && b.u1 > u0 - 0.3 && b.u0 < u1 + 0.3 && b.y > base - 0.9)) continue;
+    if ((plan.signs || []).some((sg) => sg.kind === 'blade' && sg.u > u0 - 0.6 && sg.u < u1 + 0.6)) continue;
+    if ((plan.flags || []).some((fl) => Math.abs(fl.u - o.uc) < 2.2)) continue;
+    if (used.some((x) => Math.abs(x - o.uc) < 0.5)) continue;
+    used.push(o.uc);
+    const design = signDesign(r.int(0, 1 << 30), 'board', 'general');
+    const [a, b] = r.chance(0.7) ? LINE_KIND.phone : LINE_KIND.year;
+    design.name = r.int(0, N_NAMES - 1); design.nv = r.weighted([[0, 0.45], [1, 0.4], [2, 0.15]]);
+    design.sub = { l: r.int(a, b) }; design.logo = -1;
+    out.push({ u: o.uc, y: yTop - h / 2, w: u1 - u0, h, design, wear: r.range(0.2, 1) });
+  }
+  return out;
+}
+
+function buildFloorBoard(kit, ctx, b) {
+  const m = crooked(wallMatrix(ctx.frame, b.u, b.y, new THREE.Matrix4()), RNG.from(ctx.plan.seed, b.u, 'fboard'), 0.008);
+  addSignText(kit, b.design, m, b.w, b.h, ctx.q, 0, 0.03, false, b.wear);
 }
 
 // ------------------------------------------------------------------ doors
@@ -1211,14 +1343,12 @@ export function* buildFront(kit, ctx) {
   const jr = RNG.from(plan.seed, 'joineryColour');
   ctx.frameRGB = swatch(ctx.joinery.type, jr);
   ctx.shutterRGB = swatch('shutter', jr);
-  // a few facades (hotels, pensions) carry canvas hoods over the lower upper-floor windows
-  const hr = RNG.from(plan.seed, 'hotel');
-  const hotel = plan.style.era !== 'modern' && !plan.isReturn && hr.chance(0.08);
-  if (hotel) ctx.hotelColors = awningColors(hr);
+  // business above the shops: hotels' hoods and vertical signs, boards under windows
+  const up = upperPlan(ctx);
   for (const o of plan.openings) {
     if (o.kind === 'window' || o.kind === 'balconyDoor') {
       buildWindow(kit, ctx, o);
-      if (hotel && o.kind === 'window' && !o.shutters && !o.ac && o.floor >= 1 && o.floor <= 2) buildUpperAwning(kit, ctx, o);
+      if (up.hotel && o.kind === 'window' && !o.shutters && !o.ac && o.floor >= 1 && o.floor <= 2) buildUpperAwning(kit, ctx, o, up);
     }
     else if (o.kind === 'shop') yield* buildShop(kit, ctx, o, signs.byOpening.get(o.id), shopTypes.get(o.id));
     else if (o.kind === 'door') buildDoor(kit, ctx, o);
@@ -1228,4 +1358,6 @@ export function* buildFront(kit, ctx) {
   for (const s of plan.signs || []) if (s.kind === 'blade') buildBlade(kit, ctx, s, shopTypes);
   buildProjecting(kit, ctx, signs);
   if (ctx.cafeAwning) buildCafeAwning(kit, ctx, ctx.cafeAwning);
+  if (up.vblade) buildVBlade(kit, ctx, up.vblade);
+  for (const b of up.boards) buildFloorBoard(kit, ctx, b);
 }

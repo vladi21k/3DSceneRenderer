@@ -553,12 +553,12 @@ const CONSOLE_H = 0.7;
 const CONSOLE = (() => {
   const pts = [[0, 0]];
   // lower volute: a roll from the foot round to its neck
-  for (let i = 0; i <= 10; i++) { const a = -Math.PI / 2 + (i / 10) * (Math.PI * 5 / 6); pts.push([0.05 + 0.045 * Math.cos(a), 0.045 + 0.045 * Math.sin(a)]); }
+  for (let i = 0; i <= 20; i++) { const a = -Math.PI / 2 + (i / 20) * (Math.PI * 5 / 6); pts.push([0.05 + 0.045 * Math.cos(a), 0.045 + 0.045 * Math.sin(a)]); }
   pts.push([0.075, 0.13]);
   // cyma body: from the lower volute out to the upper one
-  for (let i = 1; i <= 16; i++) { const t = i / 16; pts.push([0.075 + 0.2 * (t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.8), 0.13 + 0.38 * t]); }
+  for (let i = 1; i <= 32; i++) { const t = i / 32; pts.push([0.075 + 0.2 * (t - Math.sin(t * Math.PI * 2) / (Math.PI * 2) * 0.8), 0.13 + 0.38 * t]); }
   // upper volute rolling out under the hood
-  for (let i = 1; i <= 14; i++) { const a = -Math.PI / 2 + (i / 14) * Math.PI * 0.9; pts.push([0.29 + 0.07 * Math.cos(a), 0.58 + 0.07 * Math.sin(a) + 0.03]); }
+  for (let i = 1; i <= 28; i++) { const a = -Math.PI / 2 + (i / 28) * Math.PI * 0.9; pts.push([0.29 + 0.07 * Math.cos(a), 0.58 + 0.07 * Math.sin(a) + 0.03]); }
   pts.push([0.36, CONSOLE_H - 0.02], [0.35, CONSOLE_H], [0, CONSOLE_H]);
   return pts;
 })();

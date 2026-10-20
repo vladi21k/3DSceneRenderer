@@ -4,7 +4,9 @@ import { lathe, sweep, tube, bar, rbox, extrude, xf, merge, makeGeo, rectProfile
 // Café chairs: woven bistro armchair, one-piece moulded plastic shell chair, aluminium
 // stacking armchair and wicker tub chair. Authoring frame: +Z = the chair's front (it
 // faces its table), y up, origin on the ground. Three detail levels each: 0 close-up,
-// 1 mid range (lighter tessellation, no ornaments), 2 far (a few boxes, right silhouette).
+// 1 mid range (lighter tessellation, no ornaments), 2 far (a few boxes, right silhouette);
+// the moulded chair has a fourth, finer one for the first metres (detail -1: smooth
+// injection-moulded curves on the back's rounded corners, seat and legs).
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 export const SEAT_H = 0.46;
@@ -68,10 +70,14 @@ function loftSlab(prof, hw, shape, { nu = 12, thick = 0.006, rim = 0.0045, lip =
   for (let i = 0; i < nv - 1; i++) loop.push([i, nu]);
   for (let j = nu; j > 0; j--) loop.push([nv - 1, j]);
   for (let i = nv - 1; i > 0; i--) loop.push([i, 0]);
+  // (the end rows' outward direction follows the side profile only: where a rounded corner
+  // is drawn by the half width shrinking over the last rows, the step across would turn
+  // the rim bead sideways into a scalloped edge)
+  const endDir = (a, b) => { const d = new THREE.Vector3().subVectors(a, b); d.x = 0; return d.lengthSq() > 1e-14 ? d.normalize() : d.subVectors(a, b).normalize(); };
   const outDir = (i, j) => {
     const o = new THREE.Vector3();
-    if (i === 0) o.add(new THREE.Vector3().subVectors(P[0][j], P[1][j]).normalize());
-    if (i === nv - 1) o.add(new THREE.Vector3().subVectors(P[nv - 1][j], P[nv - 2][j]).normalize());
+    if (i === 0) o.add(endDir(P[0][j], P[1][j]));
+    if (i === nv - 1) o.add(endDir(P[nv - 1][j], P[nv - 2][j]));
     if (j === 0) o.add(new THREE.Vector3().subVectors(P[i][0], P[i][1]).normalize());
     if (j === nu) o.add(new THREE.Vector3().subVectors(P[i][nu], P[i][nu - 1]).normalize());
     const n = N[i][j];
@@ -97,14 +103,18 @@ function loftSlab(prof, hw, shape, { nu = 12, thick = 0.006, rim = 0.0045, lip =
   const rows = [[1, 0], [0.55, 0.8], [0, 1], [-0.7, 0.75], [-1, 0.45, 1], [-1, -0.6, 1], [-1, -1.33]];
   const rb = pos.length / 3, nl = loop.length;
   const corners = [0, nu, nu + nv - 1, 2 * nu + nv - 1];
+  // arc length round the loop, to fade the lip out over a fixed distance from the corners
+  const arc = [0];
+  for (let m = 1; m <= nl; m++) { const [i, j] = loop[m % nl], [pi, pj] = loop[m - 1]; arc.push(arc[m - 1] + P[i][j].distanceTo(P[pi][pj])); }
+  const per = arc[nl];
   let acc = 0;
   for (let m = 0; m <= nl; m++) {
     const [i, j] = loop[m % nl];
     if (m) { const [pi, pj] = loop[m - 1]; acc += P[i][j].distanceTo(P[pi][pj]); }
     const o = outDir(i, j), n = N[i][j];
     let cd = 9;
-    for (const c of corners) cd = Math.min(cd, Math.abs((m % nl) - c), nl - Math.abs((m % nl) - c));
-    const lk = (lip / h) * Math.min(1, cd / 2.5);
+    for (const c of corners) { const dd = Math.abs(arc[m] - arc[c]); cd = Math.min(cd, dd, per - dd); }
+    const lk = (lip / h) * Math.min(1, cd / 0.045);
     rows.forEach(([kn, ko, isLip], r) => push(P[i][j].clone().addScaledVector(n, (kn - (isLip ? lk : 0)) * h).addScaledVector(o, ko * rim), acc, r * 0.004));
   }
   const nr = rows.length;
@@ -227,7 +237,7 @@ function refineProfile(prof, i0, i1) {
  *  lumbar-curved back with a rolled top edge, open slot between them, flat tapered legs. */
 function plasticChair(detail) {
   if (detail >= 2) return farChair('plastic');
-  const mid = detail === 1;
+  const mid = detail === 1, fine = detail < 0;
   const sub = (a) => (mid ? a.filter((_, i) => i % 2 === 0 || i === a.length - 1) : a);
   const parts = [], glides = [];
   const seatHW = roundedHW(0.234, 0.214, 0.244, -0.187, 0.075, 0.05);
@@ -236,7 +246,8 @@ function plasticChair(detail) {
   // The waterfall (the rows hanging under the front edge) fades out towards the corners:
   // its rows draw up onto the front edge's row (iTop), so the rounded front corners are the
   // plain rolled rim of the slab, as on a moulded shell, not a cut-off box corner.
-  const seatProf = mid ? sub(SEAT_PROF) : refineProfile(SEAT_PROF, 0, SEAT_PROF.length - 1);
+  let seatProf = mid ? sub(SEAT_PROF) : refineProfile(SEAT_PROF, 0, SEAT_PROF.length - 1);
+  if (fine) seatProf = refineProfile(seatProf, 0, seatProf.length - 1);
   let iNose = 0, iTop = 0;
   seatProf.forEach((p, i) => { if (p[0] > seatProf[iNose][0]) iNose = i; if (Math.abs(p[0] - 0.225) < Math.abs(seatProf[iTop][0] - 0.225)) iTop = i; });
   const sHW = (i) => seatHW(i <= iNose ? seatProf[iNose][0] : seatProf[i][0]);
@@ -247,7 +258,7 @@ function plasticChair(detail) {
     if (i >= iTop) return [0, dy];
     const f = 0.8 * sstep(Math.abs(xn), 0.45, 1), [z, y] = seatProf[i], [zt, yt] = seatProf[iTop];
     return [(zt - z) * f, dy + (yt - y) * f, 1 + f * (sHW(iTop) / sHW(i) - 1)];
-  }, { nu: mid ? 6 : 18, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
+  }, { nu: mid ? 6 : fine ? 30 : 18, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
   // back: wider at the top with round corners, wrapped round the sitter in plan, its lower
   // corners rounded (r 2.2 cm)
   const RB = 0.022;
@@ -257,23 +268,30 @@ function plasticChair(detail) {
     const e = Math.max(0, RB - (y - 0.54));
     return w - RB + Math.sqrt(Math.max(0, RB * RB - e * e));
   };
-  const backProf = mid ? sub(BACK_PROF) : [BACK_PROF[0], ...[0.0035, 0.008, 0.015].map((dy) => {
+  let backProf = mid ? sub(BACK_PROF) : [BACK_PROF[0], ...[0.0035, 0.008, 0.015].map((dy) => {
     const [a, b] = BACK_PROF, k = dy / (b[1] - a[1]);
     return [a[0] + (b[0] - a[0]) * k, a[1] + dy];
   }), ...BACK_PROF.slice(1)];
+  if (fine) {
+    // the rounded top corners (r 7.5 cm) are drawn by the rows near the top: rows every
+    // centimetre or so there, every 2-3 cm below
+    backProf = refineProfile(backProf, 3, backProf.length - 1);
+    for (let k = 0; k < 2; k++) backProf = refineProfile(backProf, backProf.findIndex((q) => q[1] > 0.74), backProf.length - 1);
+  }
   parts.push(loftSlab(backProf, backHW, (xn, t) => {
     const x = xn * 0.21;
     return [0.55 * x * x * (0.6 + 0.4 * Math.sin(Math.PI * t)), 0];
-  }, { nu: mid ? 6 : 14, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
-  // flat tapered blade legs, flared where they are moulded into the shell
-  const legP = rectProfile(0.02, 0.045, mid ? 0.004 : 0.006, mid ? 1 : 2);
+  }, { nu: mid ? 6 : fine ? 26 : 14, rim: mid ? 0.003 : 0.0045, lip: mid ? 0.008 : 0.012 }));
+  // flat tapered blade legs, flared where they are moulded into the shell (close up: well
+  // rounded edges)
+  const legP = fine ? rectProfile(0.021, 0.044, 0.0085, 4) : rectProfile(0.02, 0.045, mid ? 0.004 : 0.006, mid ? 1 : 2);
   for (const sx of [-1, 1]) {
     parts.push(sweep([V(sx * 0.222, 0, 0.252), V(sx * 0.21, 0.24, 0.205), V(sx * 0.196, 0.463, 0.16)], legP,
       { bend: mid ? 0 : 0.15, up: [1, 0, 0], scales: (t) => (0.68 + 0.32 * t) * (1 + 0.28 * sstep(t, 0.82, 1)) }));
     // (the rear legs run up behind the back's lower corners and taper into it)
     parts.push(sweep([V(sx * 0.226, 0, -0.312), V(sx * 0.208, 0.25, -0.24), V(sx * 0.198, 0.455, -0.19), V(sx * 0.188, 0.62, -0.208)], legP,
       { bend: mid ? 0 : 0.12, up: [1, 0, 0], scales: (t) => (0.68 + 0.32 * Math.min(1, t * 1.6)) * (1 + 0.22 * Math.exp(-(((t - 0.7) / 0.1) ** 2))) * (1 - 0.6 * sstep(t, 0.84, 1)) }));
-    if (!mid) for (const z of [0.252, -0.312]) glides.push(xf(lathe([[0.0, 0], [0.013, 0], [0.014, 0.004], [0.011, 0.008], [0, 0.008]], 8), [sx * (z > 0 ? 0.222 : 0.226), 0, z]));
+    if (!mid) for (const z of [0.252, -0.312]) glides.push(xf(lathe([[0.0, 0], [0.013, 0], [0.014, 0.004], [0.011, 0.008], [0, 0.008]], fine ? 16 : 8), [sx * (z > 0 ? 0.222 : 0.226), 0, z]));
   }
   return { shell: merge(parts), glides: glides.length ? merge(glides) : null };
 }
@@ -338,8 +356,9 @@ function wickerChair(detail) {
   return { body: merge(parts), legs: merge(wrap), cushion };
 }
 
-/** All chair styles at three detail levels: {style: [level0, level1, level2]}. */
+/** All chair styles at three detail levels: {style: [level0, level1, level2]}; the moulded
+ *  chair at four ([fine, level0, level1, level2], see the header). */
 export function buildChairGeometry() {
-  const lv = (fn) => [0, 1, 2].map((d) => fn(d));
-  return { bistro: lv(bistroChair), plastic: lv(plasticChair), metal: lv(metalChair), wicker: lv(wickerChair) };
+  const lv = (fn, levels = [0, 1, 2]) => levels.map((d) => fn(d));
+  return { bistro: lv(bistroChair), plastic: lv(plasticChair, [-1, 0, 1, 2]), metal: lv(metalChair), wicker: lv(wickerChair) };
 }

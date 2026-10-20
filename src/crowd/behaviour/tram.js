@@ -53,6 +53,8 @@ const PAIR_GAP = 3.0;             // the two trams pass a spot within this many 
 const PAIR_EDGE = TRACK_ZONE_HALF + 0.4;   // ... and the corridor is left to beyond |d| = PAIR_EDGE
 const CENTRE_REFUGE = 0.9;        // the strip |d| < this between the tracks is no refuge with a unit near
 const CLR_N = 256;                // clearing times kept for the statistics (clearStats)
+const NOTICE_T = 2.5;             // walkers on the cab's track drift off it this much earlier (s), with a look back
+const BELL_EARLY = 7.5;           // the absorbed walking ahead of the cab, their back to it, get the bell this many seconds out
 const _iv = settleShape({ lo: 0, hi: 0 });
 const _pw = settleShape({ T: null, tc0: 0, tc1: 0, tu0: 0, tu1: 0 });
 
@@ -202,6 +204,19 @@ export class TramWatch {
     const adl = Math.abs(a.d - RIDE_D);
     if (adl >= BAND) return 0;
     return (BAND + 0.1 - adl + (a.mob ? 0.7 : 0)) / Math.max(1, a.hurry) + 0.5;
+  }
+
+  /** A walker on the cab's track who has noticed it coming (everyone but the absorbed who wait
+   *  for the bell) starts drifting over to the edge of its track a couple of seconds before the
+   *  clearance rules apply (ahead of the cab within its own front plus NOTICE_T seconds at the
+   *  closing speed): the lane target keeps off the berth then, at a walk (behaviour.js tramLane). */
+  notice(a) {
+    if (a.mob === MOB.CYCLE || a.state !== ST.WALK || this.v < 2 || (a.needsBell && !(a.bellT > this.c.time))) return false;
+    this.front(a);
+    const ahead = a.s - this.trainU;
+    if (ahead < 0) return false;
+    const vc = Math.max(0, Math.min(V_MAX, this.v + 2 * this.acc) - a.vs);
+    return ahead < a.front + vc * NOTICE_T;
   }
 
   /** Is the tram close enough at this person for the clearance rules to apply? */
@@ -636,12 +651,14 @@ export class TramWatch {
       if (r.chance(0.55)) { a.tramLookS = time + r.range(0, 0.3); a.tramLookT = a.tramLookS + r.range(0.6, 1.4); }
     }
     // bell request: someone on the track who has not noticed the tram, shortly before they must move
-    // (closing(a) written out below: per agent and frame)
+    // (closing(a) written out below: per agent and frame). Walking ahead of the cab with their back
+    // to it they are rung for earlier, while it is still well away: they cannot see it coming.
     const vClose = Math.max(0, Math.min(V_MAX, this.v + 2 * this.acc) - a.vs);
-    if (a.needsBell && !a.mob && !a.clearing && ahead > 2 && this.v > 0.5 && adl < REQ_HALF && ahead < this.stopDist && a.bellT <= time) {
+    const away = a.vs > 0.3 && a.state === ST.WALK;
+    if (a.needsBell && !a.mob && !a.clearing && ahead > 2 && this.v > 0.5 && adl < REQ_HALF && ahead < (away ? Math.max(this.stopDist, vClose * BELL_EARLY + 4) : this.stopDist) && a.bellT <= time) {
       const tta = ahead / Math.max(0.3, vClose);
       // (5 s ahead: the look up and the step off happen while the tram is still well away)
-      const lim = Math.max(5, a.clearT + 1);
+      const lim = away ? Math.max(BELL_EARLY, a.clearT + 2.5) : Math.max(5, a.clearT + 1);
       if (tta < lim) {
         const inGauge = adl < 0.9 ? 1 : 0.65;
         const u = Math.min(1, Math.max(0, 1.15 - tta / lim)) * inGauge;
@@ -653,6 +670,12 @@ export class TramWatch {
     // (the footprint's gap to the band worked out in place: footBandGap returns a boxed number)
     const gapB = a.mob ? (dl >= 0 ? dl - a.extLo - BAND : -dl - a.extHi - BAND) : adl - BAND;
     const inside = gapB < 0.02;
+    // on its track a little ahead of the clearance zone, having noticed it: a look back over the
+    // shoulder as they start drifting to the edge of the track (tramLane)
+    if (inside && !a.mob && !a.clearing && a.glanceT < time && a.tramLookT < time && ahead > front && this.notice(a)) {
+      a.glanceT = time + 8;
+      if (a.vs > 0.3 || c.rng.chance(0.4)) { a.tramLookS = time + c.rng.range(0, 0.4); a.tramLookT = a.tramLookS + c.rng.range(0.7, 1.3); a.lookU = -1; }
+    }
     // somebody who cannot be out of the band before the cab is there any more: its driver brakes
     // (only for whoever is really in it: a body on its edge is already the margin clear of the cab)
     if (gapB < 0 && ahead > 0 && this.v > 0.5 && ahead < this.obstacle) {

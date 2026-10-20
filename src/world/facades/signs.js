@@ -16,7 +16,7 @@ import { SHOP_LEVEL } from './interior.js';
 // a little out of true. Text quads are white glyphs tinted by vertex colour (full-colour
 // cells take white); `aGlow` makes light boxes and neon letters glow at dusk.
 
-const W = 2048, H = 8704;
+const W = 2048, H = 9216;
 const NAMES_Y = 6144, NAME_W = 512, NAME_H = 112;          // shop names: 15 rows of 4
 const LINES_Y = 7824, LINE_W = 256, LINE_H = 60;           // short lines and wall tags: 4 rows of 8
 const ICONS_Y = 8064, ICON = 128;                          // logo marks (white), the last cell solid white
@@ -28,6 +28,15 @@ const CARDS_Y = 8192;                                      // price cards: 2 row
 const WORDS2_Y = 4096;                                     // text cells 48..79: 8 more rows of 4
 const BLADE2_Y = WORDS2_Y + 8 * CELL_H;                    // blade faces 16..31: 2 more rows of 8
 const PRINT_Y = BLADE2_Y + 2 * BLADE_H;                    // goods-stand prints: a row of 16 papers (128 x 256), 2 rows of 16 price tags (128 x 128)
+const UPPER_Y = 8704;                                      // upper-floor trades: 8 stacked words (128 x 512), 8 words 4 rows of 2 (512 x 128)
+
+// Upper-floor trades (hotels and pensions, an upstairs café or bar, a gallery): the words
+// stacked letter over letter for the vertical signs that span two storeys, and on one line
+// for the hotels' canvas hoods and railing banners.
+const VWORDS = ['HOTEL', 'מלון', 'HOSTEL', 'PENSION', 'CAFE', 'BAR', 'GALLERY', 'קפה'];
+const HWORDS = ['HOTEL', 'מלון', 'HOSTEL', 'PENSION', 'בית הארחה', 'GUEST HOUSE', 'RESTAURANT', 'מסעדה'];
+/** Upper-floor word lists: hotels' (vertical and on one line), and the others' vertical. */
+export const UPPER_WORDS = { hotelV: [0, 1, 2, 3], otherV: [4, 5, 6, 7], hotelH: [0, 1, 2, 3, 4, 5], foodH: [6, 7] };
 
 // Shop words and the interior each one implies (see interior.js SHOP_TYPES).
 const WORDS = [
@@ -332,13 +341,48 @@ function buildAtlas() {
     icons.push(i === ICON_SOLID ? { u0: (x + 32) / W, u1: (x + 96) / W, v0: 1 - (y + 96) / H, v1: 1 - (y + 32) / H, aspect: 1 }
       : { u0: (x + 2) / W, u1: (x + ICON - 2) / W, v0: 1 - (y + ICON - 2) / H, v1: 1 - (y + 2) / H, aspect: 1 });
   }
+  // upper-floor words: stacked letters (each letter centred on the cell's axis; Hebrew
+  // read from the top) and single lines, cropped to their ink
+  const vwords = [], hwords = [];
+  VWORDS.forEach((word, i) => {
+    const x = i * 128, y = UPPER_Y;
+    const letters = [...word], n = letters.length;
+    const px = Math.min(104, Math.floor(480 / (n * 1.08)));
+    const lh = px * 1.08, y0 = y + 256 - (n * lh) / 2;
+    g.font = SANS(px, 800);
+    let mw = 0;
+    for (const ch of letters) mw = Math.max(mw, g.measureText(ch).width);
+    const sx = Math.min(1, 112 / Math.max(1, mw));
+    paint(() => {
+      g.save(); g.beginPath(); g.rect(x, y, 128, 512); g.clip();
+      g.fillStyle = '#fff'; g.font = SANS(px, 800); g.textAlign = 'center'; g.textBaseline = 'middle';
+      letters.forEach((ch, k) => { g.save(); g.translate(x + 64, y0 + lh * (k + 0.5)); g.scale(sx, 1); g.fillText(ch, 0, 0); g.restore(); });
+      g.restore();
+    });
+    const t0 = Math.max(y + 2, Math.floor(y0 - 4)), t1 = Math.min(y + 510, Math.ceil(y0 + n * lh + 4));
+    const iw = Math.min(124, mw * sx + 12);
+    vwords.push({ u0: (x + 64 - iw / 2) / W, u1: (x + 64 + iw / 2) / W, v0: 1 - t1 / H, v1: 1 - t0 / H, aspect: iw / (t1 - t0) });
+  });
+  HWORDS.forEach((word, i) => {
+    const x = 1024 + (i % 2) * 512, y = UPPER_Y + Math.floor(i / 2) * 128;
+    g.font = SANS(88, 800);
+    const m = g.measureText(word), sx = Math.min(1, 488 / Math.max(1, m.width));
+    paint(() => {
+      g.save(); g.beginPath(); g.rect(x, y, 512, 128); g.clip();
+      g.fillStyle = '#fff'; g.font = SANS(88, 800); g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.translate(x + 256, y + 66); g.scale(sx, 1); g.fillText(word, 0, 0);
+      g.restore();
+    });
+    const [r0, r1] = vInk(m, y + 66, y + 2, y + 126, 3);
+    hwords.push(cellOf(x, r0, r1, m.width * sx, 512));
+  });
   // (a plain texture: version 0, not uploaded, until the painting is complete)
   const tex = new THREE.Texture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
-  const out = { tex, cells, plaques, blades, dress, prints, names, lines, icons, done: false, ms: 0 };
+  const out = { tex, cells, plaques, blades, dress, prints, names, lines, icons, vwords, hwords, done: false, ms: 0 };
   /** Paint for up to budget ms; true once the atlas is complete (and queued for upload). */
   out.draw = (budget = Infinity) => {
     if (out.done) return true;
@@ -1041,6 +1085,8 @@ function subCell(sub) {
 }
 /** Logo mark i, solid cell 15. */
 export function iconCell(i) { return atlas.icons[i]; }
+/** Upper-floor trade word i on one line (HWORDS). */
+export function hwordCell(i) { return atlas.hwords[i % atlas.hwords.length]; }
 /** Short-line cell i (phones, years, taglines; 24-31 wall tags). */
 export function lineCell(i) { return atlas.lines[i % atlas.lines.length]; }
 
@@ -1290,6 +1336,77 @@ export function flagTpls(design, L, h, th, q) {
   tm.box(-0.014, h, 0.0, 0.014, h + 0.03, z1 - 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   if (q >= 0.5) tm.box(-0.012, -0.03, 0.0, 0.012, 0.0, z0 + 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
   return { board: tb.bake(), text: tt.bake(), accent: ta.count ? ta.bake() : (ta.free(), null), metal: tm.bake() };
+}
+
+/**
+ * Vertical sign spanning upper storeys (a hotel's, an upstairs café's): a box L out from
+ * the wall (from z0) and h tall, th thick, its word stacked letter over letter on both
+ * faces (upper-floor word vi), held off the wall (plate at zw: a pilaster's face) by three
+ * arms. Origin on the wall face, the box's bottom at y = 0. {board, text, metal}.
+ */
+export function vbladeTpls(vi, L, h, th, q, zw = 0) {
+  const tb = new Tpl(), tt = new Tpl(), tm = new Tpl();
+  const z0 = zw + 0.2, z1 = z0 + L;
+  tb.box(-th / 2, 0, z0, th / 2, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.8, 1);
+  if (q >= 0.5) {
+    // a darker frame round each face and a cap over the top
+    for (const sx of [-1, 1]) {
+      const x0 = sx > 0 ? th / 2 : -th / 2 - 0.008, x1 = x0 + 0.008, b = 0.035;
+      tb.box(x0, 0, z0, x1, b, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.42, 0.5);
+      tb.box(x0, h - b, z0, x1, h, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.55, 0.62);
+      tb.box(x0, b, z0, x1, h - b, z0 + b, 1 | 2 | 4 | 8 | 16 | 32, 0.5, 0.56);
+      tb.box(x0, b, z1 - b, x1, h - b, z1, 1 | 2 | 4 | 8 | 16 | 32, 0.5, 0.56);
+    }
+    tb.box(-th / 2 - 0.02, h, z0 - 0.02, th / 2 + 0.02, h + 0.05, z1 + 0.02, 1 | 2 | 4 | 8 | 16 | 32, 0.6, 0.75);
+  }
+  const c = atlas.vwords[vi % atlas.vwords.length];
+  const tw = Math.min(L * 0.8, h * 0.9 * c.aspect), thh = tw / c.aspect;
+  for (const sx of [-1, 1]) sideQuad(tt, c, sx, th / 2 + 0.004, h / 2 - thh / 2, h / 2 + thh / 2, (z0 + z1) / 2 - tw / 2, (z0 + z1) / 2 + tw / 2, q >= 0.5 ? 0.88 : 1);
+  // wall plates and arms at the top, the middle and the bottom
+  for (const yy of [h - 0.12, h * 0.5, 0.12]) {
+    tm.box(-0.05, yy - 0.09, zw, 0.05, yy + 0.09, zw + 0.02, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+    tm.box(-0.016, yy - 0.02, zw, 0.016, yy + 0.02, z0 + 0.04, 1 | 4 | 8 | 16 | 32, 0.9, 1);
+  }
+  return { board: tb.bake(), text: tt.bake(), metal: tm.bake() };
+}
+
+/**
+ * Lettering printed on a dutch / dome awning (domeAwning(W, R) of awnings.js, its pleats
+ * followed when q ≥ 0.5): cell c centred on the hood's front, tw wide along the rim,
+ * between the hood angles th0 and th1 (0 at the wall, π/2 at the hem), 8 mm proud of the
+ * canvas. Origin as the hood's.
+ */
+export function domeTextTpl(c, W, R, tw, th0, th1, q) {
+  const t = new Tpl();
+  const straight = Math.max(0, W - 2 * R), capLen = (Math.PI / 2) * R, total = straight + 2 * capLen;
+  const ribs = Math.max(4, Math.round(total / 0.42));
+  const plan = (s) => {
+    if (s < capLen) { const a = Math.PI - (s / capLen) * (Math.PI / 2); return [-straight / 2, Math.cos(a), Math.sin(a)]; }
+    if (s < capLen + straight) return [-straight / 2 + (s - capLen), 0, 1];
+    const a = Math.PI / 2 - ((s - capLen - straight) / capLen) * (Math.PI / 2);
+    return [straight / 2, Math.cos(a), Math.sin(a)];
+  };
+  const TH0 = 0.02, nu = q >= 0.5 ? 24 : 6, nv = q >= 0.5 ? 6 : 2;
+  const b = t.count;
+  for (let j = 0; j <= nv; j++) {
+    const th = th1 - (th1 - th0) * (j / nv);   // j = 0 at the bottom of the text (v0)
+    const bb = (th - TH0) / (Math.PI / 2 - TH0);
+    for (let i = 0; i <= nu; i++) {
+      const sA = total / 2 - tw / 2 + tw * (i / nu);
+      const [xa, dx, dz] = plan(sA);
+      const rib = ((sA / total) * ribs) % 1, sg = Math.sin(Math.PI * rib);
+      const pleat = q >= 0.5 ? (0.042 * sg + 0.006 * Math.sin(Math.PI * 4 * rib)) * Math.sin(th) * (0.7 + 0.3 * bb) : 0;
+      const r = R - pleat + 0.008;
+      const nx = dx * Math.sin(th), ny = Math.cos(th), nz = dz * Math.sin(th);
+      t.v(xa + dx * r * Math.sin(th), R * Math.cos(th) - pleat * Math.cos(th) * 0.3 + 0.008 * ny, dz * r * Math.sin(th), nx, ny, nz,
+        c.u0 + (c.u1 - c.u0) * (i / nu), c.v0 + (c.v1 - c.v0) * (j / nv), 1);
+    }
+  }
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+    const a = b + j * (nu + 1) + i, d = a + nu + 1;
+    t.ix6(a, a + 1, d + 1, a, d + 1, d);
+  }
+  return t.bake();
 }
 
 /**

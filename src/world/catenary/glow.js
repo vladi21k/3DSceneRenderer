@@ -7,25 +7,28 @@ import { SU } from './shaders.js';
 // lamp near the camera (one instanced draw, no shadows), added to the HDR scene so the
 // exposure, white balance and post's bloom treat it like the bowl itself.
 //
-// Size: GLOW_R metres round the bowl, but never under GLOW_PX pixels, so a far lamp keeps a
-// skirt of a few pixels; its peak falls with the area, so the scattered light stays about
-// the same however far the lamp. The quad sits PULL m in front of the bowl centre (it
-// overlays the bowl and the brim's lower edge, as glare does) and is depth tested against
-// the scene, so poles, people and leaves in front cover it.
-// Strength: a few per cent of the bowl radiance at the bowl's edge, falling off steeply
-// into a faint tail (no plateau, so it never reads as a disc). Its brightness on screen at
-// the bowl's rim is held under RIM_MAX of white (env.exposure): in the dark the clipped bowl
-// would otherwise drag a bright disc with it. Post's bloom adds the wider lens skirt on top.
+// Size and strength follow a camera's glare, not a fixed size in metres: the skirt falls
+// off over a few pixels outside the bowl's rim (HALO_PX wide, plus a little more round a
+// near bowl), and its brightness follows the light the bowl sends to the camera, its area
+// on screen (relative to a bowl at about 15 m through the default lens, REF_PX), so a near
+// lamp keeps a crisp, hot bowl inside a bright skirt and a far one is a small hot point
+// with a faint halo. The hood shades the skirt above the brim: its dark cone and cap stay
+// readable against the glow (the quad sits PULL m in front of the bowl centre, in front of
+// the brim, so the hood's outline is cut out of it in the shader). The quad is depth
+// tested against the scene, so poles, people and leaves in front cover it.
+// Strength at the bowl's rim: K bowl radiances (uLamp), held under RIM_MAX of white
+// (env.exposure): in the dark the clipped bowl would otherwise drag a bright disc with it.
+// Post's bloom adds the wider lens skirt on top.
 
-const GLOW_R = 0.8;      // m
-const GLOW_PX = 7;       // smallest radius on screen (px)
+const BOWL_R = 0.155;    // m, the bowl's radius
+const HALO_PX = 30;      // px of skirt outside a far bowl's rim
+const REF_PX = 36;       // px, bowl radius of the reference lamp (15 m, 17° lens)
 const PULL = 0.32;       // m towards the camera
-const K = 0.42;          // aureole radiance at its centre, in bowl radiances (uLamp)
-const RIM_G = 0.127;     // profile value at the bowl's rim (r 0.2, see the shader)
+const K = 0.06;          // skirt radiance at the bowl's rim, in bowl radiances (uLamp)
 const RIM_MAX = 0.4;     // highest display value (white = 1) of the aureole at the rim
 const RANGE = [-25, 330];  // m of route round the camera that gets aureoles
 const MAX = 128;
-const WARM = 'vec3(1.0, 0.66, 0.36)';
+const WARM = 'vec3(1.0, 0.62, 0.33)';  // ~3000 K
 
 export function createLampGlow(app, heads) {
   const uGlowA = { value: 0 };   // aureole radiance at its centre (scene units)
@@ -39,34 +42,46 @@ export function createLampGlow(app, heads) {
       .replace('#include <common>', `#include <common>
         uniform float uPxScale;
         varying vec2 vGlowP;
-        varying float vGlowK;`)
+        varying vec3 vGlowK;`)
       .replace('#include <project_vertex>', `
-        // camera-facing quad round the instance origin (the bowl centre)
+        // camera-facing quad round the instance origin (the bowl centre), sized in pixels
         vec4 mvC = modelViewMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
         float gDist = max( -mvC.z, 0.05 );
-        float gR = max( ${GLOW_R.toFixed(3)}, ${GLOW_PX.toFixed(1)} * uPxScale * gDist );
-        vGlowK = ( ${GLOW_R.toFixed(3)} / gR ) * ( ${GLOW_R.toFixed(3)} / gR );
-        mvC.xyz *= max( gDist - ${PULL.toFixed(3)}, 0.02 ) / gDist;
-        vec4 mvPosition = mvC + vec4( position.xy * gR, 0.0, 0.0 );
-        vGlowP = position.xy;
+        float pxM = max( uPxScale * gDist, 1e-6 );          // metres per pixel at the bowl
+        float bowlPx = ${BOWL_R.toFixed(3)} / pxM;
+        float gRpx = ${HALO_PX.toFixed(1)} + 1.6 * bowlPx;
+        float pullK = max( gDist - ${PULL.toFixed(3)}, 0.02 ) / gDist;
+        mvC.xyz *= pullK;
+        vec4 mvPosition = mvC + vec4( position.xy * gRpx * pxM * pullK, 0.0, 0.0 );
+        vGlowP = position.xy * gRpx;                         // pixels from the bowl centre
+        vGlowK = vec3( min( ( bowlPx / ${REF_PX.toFixed(1)} ) * ( bowlPx / ${REF_PX.toFixed(1)} ), 1.6 ), bowlPx, pxM );
         gl_Position = projectionMatrix * mvPosition;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uGlowA;
         varying vec2 vGlowP;
-        varying float vGlowK;`)
+        varying vec3 vGlowK;`)
       .replace('#include <opaque_fragment>', `
         {
-          // radial profile (r = 1 at the quad's edge; the bowl rim lies near r 0.2): a
-          // steep exponential skirt plus a faint inverse-square tail, zero at the edge
-          float r = length( vGlowP );
-          float edge = 1.0 - smoothstep( 0.4, 1.0, r );
-          float g = ( 0.7 * exp( -r / 0.085 ) + 0.3 / ( 1.0 + r * r / 0.01 ) ) * edge * edge;
-          vec3 c = ${WARM} * uGlowA * g * vGlowK * diffuseColor.rgb;
+          // skirt: steep over the first pixels outside the rim, a faint wider tail, zero at
+          // the quad's edge
+          float bowlPx = vGlowK.y;
+          float rpx = length( vGlowP );
+          float e = max( rpx - bowlPx, 0.0 );
+          float g = 0.62 * exp( -e / ( 4.0 + 0.12 * bowlPx ) ) + 0.38 / ( 1.0 + e * e / ( 90.0 + 2.0 * bowlPx * bowlPx ) );
+          g *= 1.0 - smoothstep( 0.6, 1.0, rpx / ( ${HALO_PX.toFixed(1)} + 1.6 * bowlPx ) );
+          // (over the bowl itself the skirt fades out: its body keeps its own warm colour)
+          g *= smoothstep( 0.55 * bowlPx, bowlPx, rpx );
+          // the hood (brim, cone, drum, cap above the bowl centre) cut out of the skirt
+          vec2 m = vGlowP * vGlowK.z;
+          float hr = m.y < 0.13 ? 0.3 : m.y < 0.24 ? mix( 0.3, 0.17, ( m.y - 0.13 ) / 0.11 ) : 0.135;
+          float hood = smoothstep( 0.075, 0.1, m.y ) * ( 1.0 - smoothstep( hr - 0.015, hr + 0.01, abs( m.x ) ) ) * ( 1.0 - smoothstep( 0.42, 0.46, m.y ) );
+          g *= 1.0 - 0.9 * hood;
+          vec3 c = ${WARM} * uGlowA * g * vGlowK.x * diffuseColor.rgb;
           gl_FragColor = vec4( c, 1.0 );
         }`);
   };
-  mat.customProgramCacheKey = () => 'catGlow2';
+  mat.customProgramCacheKey = () => 'catGlow3';
   app.materials.register('catenary.glow', mat);
 
   const mesh = new THREE.InstancedMesh(geo, mat, MAX);
@@ -108,7 +123,7 @@ export function createLampGlow(app, heads) {
         return;
       }
       const ex = app.env && app.env.exposure > 0 ? app.env.exposure : 1;
-      uGlowA.value = Math.min(lampOn * K, RIM_MAX / (RIM_G * ex));
+      uGlowA.value = Math.min(lampOn * K, RIM_MAX / ex);
       // the set only changes with the camera's route position
       if (Math.abs(sCam - lastS) < 0.5 && shown > 0) return;
       lastS = sCam;

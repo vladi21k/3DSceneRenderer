@@ -85,7 +85,7 @@ const vegetation = {
     this.pools = new VegetationPools(app);
     // foliage shadows: the cascade texels hold the leaf clumps of detail level 1 even in the
     // finest cascade (the same dapple, 40 % fewer cards)
-    this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 400,
+    this.leafPool = this.pools.addPool(new InstancePool('vegetation:foliage', this.mats.leaf, this.mats.leafDepth, leafGeoms, 480,
       { preMaterial: this.mats.leafPre, farMaterial: this.mats.leafFar, shadowLevels: [0.012, 0.07] }));
     // bark: twigs and thin branches are sub-texel sooner than leaf clumps
     this.barkPool = this.pools.addPool(new InstancePool('vegetation:bark', this.mats.bark, this.mats.barkDepth, barkGeoms, 300, { shadowLevels: [0.012, 0.03] }));
@@ -292,7 +292,21 @@ const vegetation = {
       this.pools.add(rec, this.barkPool, T.barkIdx[P.mirror], P.matrix, P.barkTint, P.pos, P.size * BARK_LOD_SIZE);
       const bed = this.beds.get(t);
       if (!lod) props.tree(t, T, P.matrix, P.sxz, new RNG(P.seed ^ 0x2545f491), !!bed);
-      if (bed) props.bed(t, bed);
+      if (bed) {
+        // low planting at the bed's ends: square-planter shrubs, flattened along the bed's end
+        const plants = props.bed(t, bed);
+        for (let k = 0; k < plants.length; k++) {
+          const pl = plants[k], r = RNG.from(layout.seed, 'bedShrub', t.id, k);
+          const variants = this.shrubs.filter((sh) => sh.sh.kind === 1);
+          const S = variants[r.int(0, variants.length - 1)];
+          _q.setFromAxisAngle(_yAxis, pl.yaw);
+          _s.set(pl.sx, r.range(0.6, 0.85), pl.sz * (r.chance(0.5) ? -1 : 1));
+          _m.compose(pl.pos, _q, _s);
+          const v = r.range(0.86, 1.06), h = r.range(-0.06, 0.06);
+          _c.setRGB(v * (1 + h), v, v * (1 - 2 * h));
+          this.pools.add(rec, this.leafPool, S.leafIdx, _m, _c, pl.pos, 1.2);
+        }
+      }
     }
 
     for (const f of planters) {

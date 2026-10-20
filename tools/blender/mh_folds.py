@@ -127,6 +127,11 @@ def taper(u, c, L):
     return ss(1.0, 0.4, np.abs(u - c) / np.maximum(L, 1e-6))
 
 
+# depth of the drawn folds against their nominal amplitudes (the normal maps are seen at 3-25 m through
+# the mips and the temporal resolve: shallower folds vanish into a smooth shell)
+RELIEF_GAIN = 1.45
+
+
 class Relief:
     """Accumulates fold heights and crease darkness."""
     def __init__(self, n):
@@ -137,7 +142,7 @@ class Relief:
         """Adds one fold: signed distance d from its crest (m), half width w, amplitude amp (m, array: the
         envelope already applied)."""
         h, c = crest(d, w)
-        self.h += amp * h
+        self.h += RELIEF_GAIN * amp * h
         self.c += c * np.clip(amp / a_ref, 0, 1.4)
 
     def ridged(self, q, amp, seed):
@@ -481,7 +486,7 @@ def _bulge(d, w):
     return np.clip(1.0 - x * x, 0.0, None) ** 1.6
 
 
-DRAPE_GAIN = 1.4
+DRAPE_GAIN = 1.6
 
 
 def drape(P, ctx):
