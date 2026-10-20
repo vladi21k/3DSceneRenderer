@@ -434,18 +434,18 @@ float hPattern(float code, vec3 r, float sc, float seed, float H) {
     // chest; cracked and a little faded from washing
     float k = H / 1.76;
     if (r.z > -0.03 * k) return 0.0;
-    vec2 q = vec2(r.x, r.y - 0.705 * H) / (k * sc);
+    vec2 q = vec2(r.x, r.y - 0.715 * H) / (k * sc);
     vec2 aw = max(fwidth(q), vec2(1e-5)) * 0.8;
     float v = fract(seed * 13.7), m = 0.0;
     float fz = smoothstep(-0.03 * k, -0.06 * k, r.z);
     if (v < 0.32) {
-      vec2 hs = vec2(0.07 + 0.03 * fract(seed * 5.1), 0.045 + 0.03 * fract(seed * 7.3));
+      vec2 hs = vec2(0.055 + 0.025 * fract(seed * 5.1), 0.035 + 0.025 * fract(seed * 7.3));
       vec2 d = abs(q - vec2(0.0, 0.01)) - hs;
       m = 1.0 - smoothstep(-aw.x, aw.x, max(d.x, d.y));
       // (a line or two of lettering knocked out of the block)
       vec2 lq = (q - vec2(0.0, 0.01)) / vec2(0.012, 0.022) + vec2(0.0, 0.5);
       m *= 1.0 - hLetters(lq, seed) * step(abs(lq.y - 0.5), 1.0) * step(abs(q.x), hs.x * 0.8);
-    } else if (v < 0.55) {
+    } else if (v < 0.44) {
       float e = length(q - vec2(0.0, 0.015)) - (0.034 + 0.02 * fract(seed * 3.3));
       m = 1.0 - smoothstep(-aw.x, aw.x, e);
       m *= 1.0 - (1.0 - smoothstep(-aw.x, aw.x, abs(e + 0.01) - 0.003)) * step(0.4, fract(seed * 11.0));
@@ -458,9 +458,10 @@ float hPattern(float code, vec3 r, float sc, float seed, float H) {
       vec2 d = q - vec2(-0.075, 0.06);
       m = 1.0 - smoothstep(-aw.x, aw.x, length(d * vec2(1.0, 1.25)) - 0.017);
     }
-    float cr = hVNoise(vec3(q * 260.0, seed * 9.0));
-    cr = mix(cr, 0.6, smoothstep(0.3, 1.0, length(fwidth(q * 260.0))));
-    return m * fz * smoothstep(0.12, 0.3, cr) * 0.92;
+    // (a few fine cracks through the print, faded out before they could alias)
+    float cr = abs(hVNoise(vec3(q * 150.0, seed * 9.0)) - 0.5);
+    float crk = mix(smoothstep(0.012, 0.035, cr), 1.0, smoothstep(0.3, 0.9, length(fwidth(q * 150.0))));
+    return m * fz * mix(0.55, 1.0, crk) * 0.88;
   }
   if (code < 1.5) return hBand(r.y + 0.3, mix(0.018, 0.045, fract(seed * 7.3)) * sc, 0.42);
   if (code < 2.5) {
@@ -1005,6 +1006,18 @@ const FRAG_SURFACE = /* glsl */`
       float st = (1.0 - smoothstep(0.0, 0.04 + fwu.x, abs(min(u, 1.0 - u) - 0.2))) * (1.0 - smoothstep(0.15, 0.45, fwu.x));
       diffuseColor.rgb *= (1.0 - 0.25 * edge) * (1.0 - 0.18 * st);
     }
+    // (under long hair hanging down the back the strap or the pack's top is covered by it: seen through the
+    // gaps between the strands only, in the hair's shade)
+    float hlow = hLook(row, 15).w;
+    if (hlow > 0.0) {
+      vec4 hcH = hLook(row, 24);
+      float kk = hLook(row, 17).y / 1.76;
+      float cover = smoothstep(hlow, hlow + 0.06 * kk, vRest.y) * smoothstep(hcH.z - 0.02 * kk, hcH.z + 0.04 * kk, vRest.z)
+        * (1.0 - smoothstep(0.08 * kk, 0.12 * kk, abs(vRest.x)));
+      diffuseColor.rgb = mix(diffuseColor.rgb, hLook(row, 1).rgb * 0.45, 0.9 * cover);
+      hAO *= 1.0 - 0.5 * cover;
+      hSpec *= 1.0 - 0.8 * cover;
+    }
     float fwb = length(fwidth(vRest));
     float nb = 1.0 - smoothstep(0.0015, 0.006, fwb);
     if (nb > 0.0) {
@@ -1179,7 +1192,16 @@ export function makeFigureMaterials(textures, layerRough, materials, debugView =
 #if HUMANS_V2
         irradiance *= ( 1.0 - hBrimShadow( directLight.direction ) ) * ( 1.0 - hFaceShadow( directLight.direction ) );
 #endif
-        if ( hHairM > 0.0 ) reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;`));
+        if ( hHairM > 0.0 ) {
+          reflectedLight.directSpecular += hHairM * hHairSpec( directLight.direction, geometryViewDir, geometryNormal, hHairT ) * saturate( dotNLr * 2.0 + 0.3 ) * directLight.color;
+          // light passing through the strands towards the eye (the transmitted lobe): backlit hair glows in its
+          // own colour where it is thin, at the silhouette and in the flyaways (the shadow map keeps it off
+          // the strands the head itself shades)
+          float tt = pow( saturate( - dot( directLight.direction, geometryViewDir ) ), 4.0 ) * pow( 1.0 - saturate( abs( dot( geometryNormal, geometryViewDir ) ) ), 1.5 );
+          // (fair and grey hair a good deal less: their own albedo is already bright, the rim would blow out)
+          float ttk = mix( 1.6, 0.35, smoothstep( 0.04, 0.25, hLum( hHairC ) ) );
+          reflectedLight.directDiffuse += hHairM * ( hCard || hTail ? 1.0 : 0.6 ) * tt * ttk * mix( vec3( hLum( hHairC ) ), hHairC, 1.2 ) * min( hStrand, 1.0 ) * directLight.color;
+        }`));
     }
     fs = fs.replace('#include <aomap_fragment>', `#include <aomap_fragment>
       reflectedLight.indirectDiffuse *= hAO;
@@ -1273,6 +1295,8 @@ export function writeLook(data, row, a) {
   // print (0 none, 1 band, 2 block, 3 round logo; the fraction places it)
   data[o + 48 + 3] = a.frameTone || 0;
   data[o + 56 + 3] = a.bag === 3 ? a.bagPrint || 0 : -(a.bagMat || 0);
+  // strap texel w: how low long hair hangs down the back (rest height; 0 none)
+  data[o + 60 + 3] = a.char.hairLow || 0;
   // eyes texel w: how dark the skin is (0 fair .. 1 deep; the white of the eye follows it)
   const anc = a.char.anc || [1, 0, 0], tone = a.char.tone;
   data[o + 16 + 3] = Math.min(1, anc[1] * 0.9 + (tone === 'brown' ? 0.6 : tone === 'tan' ? 0.3 : tone === 'olive' ? 0.15 : 0));

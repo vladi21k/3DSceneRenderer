@@ -199,6 +199,7 @@ const humans = {
         if (y < Infinity) c.hemY = y; }
       // (casts with skin decals carry beard volume shells of their own)
       hatBrim(c);
+      hairLow(c);
       eyeRadius(c);
       faceMarks(c);
       if (this.browsOnSkin) browLine(c);
@@ -1231,6 +1232,24 @@ function beardShellsFromBase(c) {
  * A hat's band height and brim radius about the head's vertical axis (rest pose), for the shader's
  * brim shadow on the face: c.hat = {band, rb} or null.
  */
+/** Long hair hanging down the back: c.hairLow = the lowest rest height of the LOD 0 hair behind the head
+ *  and within 12 cm of the midline when it reaches below the shoulders (a strap or a backpack's top under
+ *  it is shaded as covered by the hair, mh/shading.js), else 0. */
+function hairLow(c) {
+  const raw = c.raw, T = raw.tex, P = raw.pos;
+  const J = c.skeleton.joints, hc = c.info.headC || J[5];
+  const k = c.info.H / 1.76;
+  let y = Infinity;
+  const L0 = c.lods[0];
+  for (let t = L0.start; t < L0.start + L0.count; t++) {
+    const v = raw.index[t];
+    if (T[v * 4 + 2] !== 1) continue;
+    const x = P[v * 3], z = P[v * 3 + 2];
+    if (z > hc[2] + 0.02 * k && Math.abs(x) < 0.12 * k) y = Math.min(y, P[v * 3 + 1]);
+  }
+  c.hairLow = y < J[11][1] - 0.04 * k ? y : 0;
+}
+
 function hatBrim(c) {
   const raw = c.raw, T = raw.tex, P = raw.pos;
   const hc = c.info.headC || c.skeleton.joints[5];

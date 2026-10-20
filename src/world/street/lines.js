@@ -368,9 +368,9 @@ const PAINT_FRAG = /* glsl */`
     // Wear removes the film in discrete flakes with sharp rims: feet and wheels break it
     // where it bears on the tops of the surface and it lifts in pieces, clustered where
     // soles and tyres bear most (round the middle of a crossing, beside a rail, along a bar
-    // in a wheel path, towards the ends and the long edges). Three sizes: broken-up
-    // stretches a few decimetres across (where the share lost is high they merge into bare
-    // ground), pieces of about 12 cm torn at the 4 cm scale, and pieces of about 4 cm torn
+    // in a wheel path, towards the ends and the long edges). Three sizes: now and then a
+    // broken-up stretch a few decimetres across in the foot path, pieces of about 12 cm torn
+    // at the 4 cm scale, and pieces of about 4 cm torn
     // at the grain of the surface (asphalt aggregate ~1.5 cm, the setts' crystals ~5 mm),
     // each a noise field thresholded at its share of the loss with a rim one pixel wide
     // (from the field's own gradient, so the large stretches stay drawn far down the street,
@@ -457,7 +457,7 @@ const PAINT_FRAG = /* glsl */`
     float feL = 0.5 * lnFw( vec2( fLx - fL, fLu - fL ) / FH, lnDx, lnDu ) + 0.002;
     float feC = 0.5 * lnFw( vec2( fCx - fC, fCu - fC ) / FH, lnDx, lnDu ) + 0.002;
     float feF = 0.5 * lnFw( vec2( fFx - fF, fFu - fF ) / FH, lnDx, lnDu ) + 0.002;
-    float WL = clamp( W * ( 0.05 + 0.4 * max( foot * smoothstep( 0.45, 0.75, pv ), 0.5 * nearRail ) ), 0.0, 0.12 );
+    float WL = clamp( W * 0.3 * foot * smoothstep( 0.5, 0.8, pv ), 0.0, 0.05 );
     float WC = 0.5 * Wl, WF = 0.5 * Wl;
     float tL = lnTg( WL ), tC = lnTg( WC ), tF = lnTg( WF );
     float keepL = WL < 0.01 ? 1.0 : smoothstep( tL - feL, tL + feL, fL );

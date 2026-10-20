@@ -98,6 +98,7 @@ const _p0 = settleShape({ x: 0, y: 0, z: 0 }), _p1 = settleShape({ x: 0, y: 0, z
 const COUNT_INTS = new Set(['seated', 'passenger', 'stand', 'walker', 'stand300', 'walk300', 'side', 'standFar']);
 const MOVERS = 4;              // cyclists handed to post as moving boxes (per-object motion blur)
 const MOVER_RANGE = 70;        // ... within this distance of the camera (m)
+const HOLD_RANGE = 110;        // hands held (set() field holdWith) within this distance of the camera (m)
 
 class CrowdSim {
   constructor(app, opts = {}) {
@@ -444,9 +445,11 @@ class CrowdSim {
       o.idle = a.idle; o.outfit = a.role === 'staff' ? 'waiter' : '';
       // hand in hand with a companion of the same group (a child with its adult, a couple; a
       // child beside a stroller holds on to it): the renderer joins the hands while the two
-      // walk or stand side by side, and lets go when they drift apart
-      const hw = a.handTo, L = a.leader;
-      o.holdWith = hw !== null && hw.active && L !== null && (hw === L || hw.leader === L) && !a.clearing && (a.state === ST.WALK || a.state === ST.STAND || a.state === ST.WAIT) ? this.base + hw.slot : -1;
+      // walk or stand side by side, and lets go when they drift apart (within HOLD_RANGE of the
+      // camera: further away the hands are a few pixels and the hold costs the renderer for nothing)
+      const hw = a.handTo, L = a.leader, rel = a.s - this.camU;
+      o.holdWith = hw !== null && hw.active && L !== null && (hw === L || hw.leader === L) && !a.clearing && rel > -HOLD_RANGE && rel < HOLD_RANGE
+        && (a.state === ST.WALK || a.state === ST.STAND || a.state === ST.WAIT) ? this.base + hw.slot : -1;
       // (a bench or a stop's shelter seat: no table in front, the hands rest on the thighs)
       o.table = !(a.state === ST.SEATED && a.feature && a.feature.bench === true);
       H.set(this.base + a.slot, o);

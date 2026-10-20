@@ -26,6 +26,15 @@ import { archSegments } from '../facadePlan.js';
 //                 precision), a = grime (or lit share) / COLOR_SCALE; decoded per vertex by
 //                 the buildings materials (grime.js)
 //   r  run-off    int16 × 4 (see shade.runAttr)
+//   f  facade u   int16 × 2: x the position along the face in 1/FU_Q m (the face frame's
+//                 u, set by frameFromLot; a face turned towards ±u, a reveal, continues it
+//                 mirrored about its arris; plus a per-face offset), y spare. The stone
+//                 materials address their weathering by it (aFu, grime.js): a coordinate
+//                 along the wall derived in the shader from the world position and the
+//                 vertex normal swings by metres between the vertices of a carved profile
+//                 (a snorm8 normal's horizontal direction is good to a few tenths of a
+//                 degree, a lever of a kilometre of world coordinates), which striped
+//                 every moulding and console
 //   i  index      uint16 when the batch has fewer than 65536 vertices, else uint32
 
 const F_FRONT = 1, F_BACK = 2, F_LEFT = 4, F_RIGHT = 8, F_TOP = 16, F_BOTTOM = 32;
@@ -49,11 +58,13 @@ export const GLASS_K = 0.32;
 /** Vertex colour for the glass sink showing `albedo` behind the pane. */
 export const glassTone = (albedo) => albedo.map((c) => Math.min(COLOR_SCALE, c / GLASS_K));
 const C8 = 255 / COLOR_SCALE, CS = 1 / COLOR_SCALE;
+/** Steps per metre of the facade coordinate (vertex attribute f, int16: ±256 m). */
+export const FU_Q = 128;
 
 function alloc(v, i) {
   return {
     p: new Float32Array(v * 3), n: new Int8Array(v * 4), t: new Float32Array(v * 2),
-    c: new Uint8ClampedArray(v * 4), r: new Int16Array(v * 4), i: new Uint32Array(i),
+    c: new Uint8ClampedArray(v * 4), r: new Int16Array(v * 4), f: new Int16Array(v * 2), i: new Uint32Array(i),
   };
 }
 
@@ -70,8 +81,8 @@ export class Sink {
       const cap = Math.max((this.vc + nv) * 2, 4096), vc = this.vc;
       const b = alloc(cap, 0);
       b.p.set(this.p.subarray(0, vc * 3)); b.n.set(this.n.subarray(0, vc * 4)); b.t.set(this.t.subarray(0, vc * 2));
-      b.c.set(this.c.subarray(0, vc * 4)); b.r.set(this.r.subarray(0, vc * 4));
-      this.p = b.p; this.n = b.n; this.t = b.t; this.c = b.c; this.r = b.r;
+      b.c.set(this.c.subarray(0, vc * 4)); b.r.set(this.r.subarray(0, vc * 4)); b.f.set(this.f.subarray(0, vc * 2));
+      this.p = b.p; this.n = b.n; this.t = b.t; this.c = b.c; this.r = b.r; this.f = b.f;
     }
     if (this.ic + ni > this.i.length) {
       const b = new Uint32Array(Math.max((this.ic + ni) * 2, 8192));
@@ -90,11 +101,11 @@ export class Sink {
     const out = {
       key: this.key, vc, ic,
       p: this.p.subarray(0, vc * 3), n: this.n.subarray(0, vc * 4), t: this.t.subarray(0, vc * 2), c: this.c.subarray(0, vc * 4),
-      r: this.r.subarray(0, vc * 4), i: vc <= 65536 ? new Uint16Array(idx) : idx,
+      r: this.r.subarray(0, vc * 4), f: this.f.subarray(0, vc * 2), i: vc <= 65536 ? new Uint16Array(idx) : idx,
     };
     const h = HINT.get(this.key) || [0, 0];
     HINT.set(this.key, [Math.max(vc, h[0] * 0.9), Math.max(ic, h[1] * 0.9)]);
-    this.p = this.n = this.t = this.c = this.r = this.i = null;
+    this.p = this.n = this.t = this.c = this.r = this.f = this.i = null;
     this.vc = 0; this.ic = 0;
     return out;
   }
@@ -104,7 +115,7 @@ export class Sink {
     if (this.p) return;
     const h = HINT.get(this.key) || [0, 0];
     const b = alloc(Math.max(1024, Math.ceil(h[0] * 1.15)), Math.max(3072, Math.ceil(h[1] * 1.15)));
-    this.p = b.p; this.n = b.n; this.t = b.t; this.c = b.c; this.r = b.r; this.i = b.i;
+    this.p = b.p; this.n = b.n; this.t = b.t; this.c = b.c; this.r = b.r; this.f = b.f; this.i = b.i;
   }
   /** Axis-aligned bounds of the used vertices, merged into box {min, max} (Vector3-like). */
   bounds(box) {
@@ -128,6 +139,7 @@ export class Builder {
     this.sinks = new Map();
     this.frames = [];
     this.setFrame(0, 0, 0, 1, 0, 0, 1);
+    this.setFace(0, 0, 1, 0, 0, 1);
     this.uv = [1, 0, 1, 0];          // tu = u*su + ou, tv = v*sv + ov
     this.shade = null;               // (u, v, w, nu, nv, nw, out[6]) -> void (out[5]: height above the paving)
     this.run = null;                 // run-off occluder above what is emitted (FaceShade.occ item)
@@ -164,6 +176,17 @@ export class Builder {
   }
   frameFromLot(f) {
     this.setFrame(f.origin.x, f.origin.y, f.origin.z, f.uDir.x, f.uDir.z, f.nDir.x, f.nDir.z);
+    this.setFace(f.origin.x, f.origin.z, f.uDir.x, f.uDir.z, f.nDir.x, f.nDir.z);
+  }
+  /**
+   * The face the facade coordinate (vertex attribute f) runs along: origin and axes in
+   * plan; sub-frames (enter) keep it. Each face gets its own offset (from its origin), so
+   * neighbouring buildings do not repeat one another's weathering.
+   */
+  setFace(ox, oz, ux, uz, nx, nz) {
+    this.fox = ox; this.foz = oz; this.fux = ux; this.fuz = uz; this.fnx = nx; this.fnz = nz;
+    const h = Math.sin(ox * 12.9898 + oz * 78.233) * 43758.5453;
+    this.fOff = (h - Math.floor(h)) * 100;
   }
   pushFrame() { this.frames.push([this.ox, this.oy, this.oz, this.ux, this.uz, this.nx, this.nz]); }
   popFrame() { const f = this.frames.pop(); this.setFrame(...f); }
@@ -207,6 +230,15 @@ export class Builder {
     c[i4 + 3] = gr * C8;
     n[i4 + 3] = Math.round((hg < -0.4 ? -0.4 : hg > HG_MAX ? HG_MAX : hg) * HG_Q);
     runAttr(this.run, u, v, this.shade ? col[4] : 1, s.r, i4);
+    // facade coordinate: along the face, a face turned towards ±u continuing it mirrored
+    // about its arris (a reveal reads as the wall folded round the corner)
+    const dx = p[i3] - this.fox, dz = p[i3 + 2] - this.foz;
+    let fu = dx * this.fux + dz * this.fuz;
+    const nuf = nx * this.fux + nz * this.fuz, nwf = nx * this.fnx + nz * this.fnz;
+    if ((nuf < 0 ? -nuf : nuf) > (nwf < 0 ? -nwf : nwf) + 1e-6) fu += (dx * this.fnx + dz * this.fnz) * (nuf > 0 ? 1 : -1);
+    const fq = Math.round((fu + this.fOff) * FU_Q);
+    s.f[k * 2] = fq > 32767 ? 32767 : fq < -32767 ? -32767 : fq;
+    s.f[k * 2 + 1] = 0;
     return k;
   }
   tri(s, a, b, c) { const i = s.i, k = s.ic; i[k] = a; i[k + 1] = b; i[k + 2] = c; s.ic += 3; }

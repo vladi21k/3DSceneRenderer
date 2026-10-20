@@ -438,7 +438,7 @@ export function cloth(kind, use = 'wall', variant = 0) {
     const [P, T, R, folds, len] = GARMENTS[kind] || GARMENTS.bag;
     const vol = kind === 'bag' || kind === 'pack';
     const seed = kind.length + variant * 3.7;
-    shell(t, P, T, R, folds, len, vol ? 0.03 : use === 'rail' ? 0.03 : 0.025, vol ? 0.035 : use === 'rail' ? 0.07 : 0.05, seed, use === 'wall' && !vol ? 1 : 2, kind === 'bag' ? 0.45 : kind === 'pack' ? 0.2 : 0);
+    shell(t, P, T, R, folds, len, vol ? 0.032 : use === 'rail' ? 0.04 : 0.03, vol ? 0.04 : use === 'rail' ? 0.085 : 0.055, seed, use === 'wall' && !vol ? 1 : 2, kind === 'bag' ? 0.45 : kind === 'pack' ? 0.2 : 0);
     if (kind === 'bag') {
       // round handles, each a loop from the bag's rim up over the hook
       for (const s of [-1, 1]) tube(t, [[0.1, -0.16, 0.034 * s], [0.08, -0.08, 0.026 * s], [0.035, -0.02, 0.012 * s], [0, -0.004, 0], [-0.035, -0.02, 0.012 * s], [-0.08, -0.08, 0.026 * s], [-0.1, -0.16, 0.034 * s]], 0.007);

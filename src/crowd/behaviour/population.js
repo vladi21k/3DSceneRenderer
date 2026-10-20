@@ -1286,6 +1286,7 @@ export class Population {
         f.s = os + back; f.d = vis.rayBehind(os, od, back);
         f.lane = a.lane; f.laneF = a.laneF; f.laneD = a.laneD;
         if ((maxH && f.height > maxH) || vis.rayOffset(f.s, f.d, os, od) > lim || !this._placeOk(f)) this._unspawn(f);
+        else f.spawnHidden = true;
       }
       a.nFollow = a.followers.length;
     }

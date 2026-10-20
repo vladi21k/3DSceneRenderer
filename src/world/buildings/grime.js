@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RNG } from '../../core/rng.js';
 import { U } from '../../core/uniforms.js';
-import { COLOR_SCALE, GLASS_K, HG_MAX } from './mesh.js';
+import { COLOR_SCALE, GLASS_K, HG_MAX, FU_Q } from './mesh.js';
 
 // Weathering for the masonry: buildings-owned variants of the stone materials that
 // soil the albedo (a warm brown-grey, never a cold grey that a low sun turns olive) where
@@ -28,7 +28,7 @@ import { COLOR_SCALE, GLASS_K, HG_MAX } from './mesh.js';
 // storeys, skyline blocks): curtains, blinds and rooms behind the panes, reflections
 // of the street canyon (the stone across the street from the lower floors, the sky from
 // the upper ones) with a Fresnel floor, warm interior light at night (see litGlass).
-// Inspection: URL bgdbg=1|2|3 (GRIME_DEBUG) shows the weathering's inputs as colours.
+// Inspection: URL bgdbg=1..5 (GRIME_DEBUG) shows the weathering's inputs as colours.
 //
 // Every buildings material reads the compact vertex format of buildings/mesh.js: the
 // colour attribute is unorm8 × 4 (rgb = sqrt(colour / 2), a = grime / 2), decoded per
@@ -153,6 +153,8 @@ vColor = vec4(vColor.rgb * vColor.rgb * ${CSCALE}, 1.0);
 
 const VERT_PARS = /* glsl */ `
 attribute vec4 aRun;
+attribute vec2 aFu;
+varying float vBgU;
 attribute vec4 aNrmW;
 varying float vBgHg;
 varying float vBgGrime;
@@ -179,10 +181,12 @@ const VERT_MAIN = /* glsl */ `
 }
 vBgPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vBgN = normalize(mat3(modelMatrix) * objectNormal);
+vBgU = aFu.x * ${(1 / FU_Q).toFixed(6)};
 vBgHg = aNrmW.w * ${HG_MAX.toFixed(1)};
 `;
 
 const FRAG_PARS = /* glsl */ `
+varying float vBgU;
 varying float vBgHg;
 varying float vBgGrime;
 varying vec4 vBgRun;
@@ -192,7 +196,7 @@ varying float vBgRust;
 uniform sampler2D bgGrimeTex;
 uniform vec4 bgGrimeK;   // darkening, greying, roughness gain, base streak share
 uniform vec2 bgArrisK;   // dust on the block arrises: amount, share on the head joints
-uniform float bgDbg;     // inspection (URL bgdbg=1|2|3, see GRIME_DEBUG)
+uniform float bgDbg;     // inspection (URL bgdbg=1..5, see GRIME_DEBUG)
 uniform float bgRender;  // 1: a colour-washed render (plaster shares its program with the tiles)
 float bgDirt = 0.0;
 float bgHash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
@@ -235,15 +239,16 @@ float bgTrails(float ua, float ub, float d, float px, float sg, float fx, float 
 }
 `;
 
-// Facade metres: along the wall (from the face normal) and height. aRun.z is the
-// building's dirtiness (also a per-building offset of the patch noise).
+// Facade metres: along the wall (the facade coordinate, vertex attribute aFu) and height;
+// a level face (ledge, soffit) takes plan metres. aRun.z is the building's dirtiness
+// (also a per-building offset of the patch noise).
 const FRAG_STONE = /* glsl */ `
 {
   vec3 bgNrm = normalize(vBgN);
   float bgL = length(bgNrm.xz);
-  // (along the wall from the face's horizontal direction, which a carved profile keeps
-  // while it turns towards the vertical: only a truly level face falls back to plan xz)
-  vec2 bgP = bgL > 0.06 ? vec2(dot(vBgPos.xz, vec2(-bgNrm.z, bgNrm.x) / bgL), vBgPos.y) : vBgPos.xz;
+  // (a carved profile keeps the wall's coordinate while it turns towards the vertical:
+  // only a truly level face falls back to plan xz)
+  vec2 bgP = bgL > 0.06 ? vec2(vBgU, vBgPos.y) : vBgPos.xz;
   float bgDirtB = vBgRun.z;
   // dirt on this stone is warm brown-grey (street dust, soot and rain-carried grime), so
   // a low warm sun never turns it olive: the soiled colour is the albedo's luminance in
@@ -251,6 +256,7 @@ const FRAG_STONE = /* glsl */ `
   const vec3 BG_SOIL = vec3(1.07, 0.98, 0.84);
   float bgTrail = 0.0;                                // sharp drip trails (sills, consoles)
   float bgCrack = 0.0;                                // hairline cracks in the render
+  float bgStain = 0.0;                                // the render's broad stain under a sill
   if (bgRender > 0.5) {
   // colour-washed render: the wash fades unevenly (lighter and greyer in broad patches,
   // where sun and rain have worn it), and patched repairs 1-4 m across stand out in a
@@ -367,7 +373,8 @@ const FRAG_STONE = /* glsl */ `
       bgTrail = max(bgTrail, min(1.0, 0.4 + 0.6 * bgS) * bgTr * bgNearT * min(1.3, bgDirtB));
       // render soaks up the dirty water: a broad grey-brown stain under the sill as well,
       // patchy and fading over a metre or two, which still shows from far away
-      bgRunM += bgRender * bgDirtB * 0.8 * min(1.2, bgS) * bgPatch * smoothstep(0.0, 0.1, bgD) * exp(-bgD / 1.4) * (0.35 + 0.65 * max(bgE, bgIn * 0.5));
+      bgStain = bgRender * min(1.3, bgDirtB) * 0.75 * min(1.2, bgS) * bgPatch * smoothstep(0.0, 0.1, bgD) * exp(-bgD / 1.2) * (0.3 + 0.7 * max(bgE, bgIn * 0.6))
+        * (0.7 + 0.3 * bgVN(vec2(bgP.x * 4.0, bgD * 2.5)));
       // render cracks: a hairline from the sill's corner on some windows, running down and
       // outwards at 55-80 degrees with a little wander (gone once it is far below a pixel)
       if (bgRender > 0.5 && bgFx < 0.02 && bgD < 1.4) {
@@ -484,13 +491,18 @@ const FRAG_STONE = /* glsl */ `
   float bgLc = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
   diffuseColor.rgb = mix(diffuseColor.rgb, bgLc * BG_SOIL * 0.9, 0.55 * bgCt) * (1.0 - 0.5 * bgCt);
   diffuseColor.rgb *= 1.0 - 0.45 * bgCrack;
+  float bgLs = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+  diffuseColor.rgb = mix(diffuseColor.rgb, bgLs * BG_SOIL * 0.88, 0.5 * bgStain) * (1.0 - 0.16 * bgStain);
+  bgDirt = max(bgDirt, 0.6 * bgStain);
   bgDirt = max(max(bgDirt, bgSoot), bgCt);
   if (bgDbg > 0.5) {
     // 1: height above the paving (red ramp to 2 m, green below 0.6 m); 2: trails (red),
-    // grime mask (green), soot (blue); 3: the run-off zone (red sill, green slab, blue none)
+    // grime mask (green), soot (blue); 3: the run-off zone (red sill, green slab, blue none);
+    // 4: the vertex colour alone; 5: the dirt the weathering lays (grey, white = clean)
     diffuseColor.rgb = bgDbg < 1.5 ? vec3(clamp(vBgHg / 2.0, 0.0, 1.0), vBgHg < 0.6 ? 0.8 : 0.0, 0.1)
       : bgDbg < 2.5 ? vec3(bgCt, bgM, bgSoot)
-      : vec3(vBgRun.w < -0.5 ? 0.8 : 0.0, vBgRun.w > 0.5 ? 0.8 : 0.0, abs(vBgRun.w) < 0.5 ? 0.8 : 0.0);
+      : bgDbg < 3.5 ? vec3(vBgRun.w < -0.5 ? 0.8 : 0.0, vBgRun.w > 0.5 ? 0.8 : 0.0, abs(vBgRun.w) < 0.5 ? 0.8 : 0.0)
+      : bgDbg < 4.5 ? vColor.rgb * 0.6 : bgDbg < 5.5 ? vec3(0.7 * (1.0 - bgDirt)) : vec3(vBgGrime, bgRunM, bgDk * 0.5);
   }
 }
 `;
@@ -569,6 +581,9 @@ const VERT_GLASS_PARS = 'varying float vBgGrime;\nvarying float vBgH;\n';
 // channels), which the post pass counts as broken and replaces; clamped where they are made.
 const FRAG_NONNEG = 'gl_FragColor.rgb = max(gl_FragColor.rgb, vec3(0.0));\n#include <dithering_fragment>';
 
+const LIB_ALONG = 'float sfAl = dot(vSfWorld, sfTW), sfY = vSfWorld.y;';
+const LIB_ALONG_FU = 'float sfAl = vBgU, sfY = vSfWorld.y;';
+
 /** Chain a patch after the material's existing onBeforeCompile and extend its cache key. */
 function chain(m, key, patch) {
   const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
@@ -594,7 +609,7 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0],
   // these variants: the buildings' run-off hangs from the sills, consoles and cornices
   const streakK = opts.streak ?? 1;
   let weather = null;
-  chain(m, 'bgS8', (shader) => {
+  chain(m, 'bgS9', (shader) => {
     Object.assign(shader.uniforms, uni);
     const w = shader.uniforms.sfWeather;
     if (streakK !== 1 && w && w.value && w.value.isVector4) {
@@ -609,6 +624,11 @@ export function grimeStone(app, name, k = [0.5, 0.6, 0.15, 0.3], arris = [0, 0],
     // width of the surface patch, where the program has them)
     const joints = /vec2 sfCl\b/.test(shader.fragmentShader) && /vec2 sfCs\b/.test(shader.fragmentShader) && /uniform vec4 sfJoint;/.test(shader.fragmentShader);
     const arrises = joints && /uint sfCh\b/.test(shader.fragmentShader) && /uniform vec4 sfLay;/.test(shader.fragmentShader);
+    // the library's run-off streaks hang along the wall by a coordinate taken from the
+    // world position and the normal, which carved profiles stripe (see mesh.js, vertex
+    // attribute f): these variants give it the facade coordinate (when the library's code
+    // reads as expected; else it is left as it is)
+    shader.fragmentShader = shader.fragmentShader.replace(LIB_ALONG, LIB_ALONG_FU);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\n' + (joints ? '#define BG_JOINTS\n' : '') + (arrises ? '#define BG_ARRIS\n' : '') + FRAG_PARS)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + FRAG_STONE)
@@ -627,7 +647,7 @@ const FRAG_PAINT = /* glsl */ `
 {
   vec3 bgNp = normalize(vBgN);
   float bgLp = length(bgNp.xz);
-  vec2 bgPp = bgLp > 0.35 ? vec2(dot(vBgPos.xz, vec2(-bgNp.z, bgNp.x) / bgLp), vBgPos.y) : vBgPos.xz;
+  vec2 bgPp = bgLp > 0.06 ? vec2(vBgU, vBgPos.y) : vBgPos.xz;
   float bgFp = fwidth(bgPp.x);
   float bgTr = (bgVN(bgPp * 3.3) - 0.5) * 0.1 + (bgVN(bgPp * 12.5 + 4.1) - 0.5) * 0.1 * (1.0 - smoothstep(0.02, 0.08, bgFp));
   diffuseColor.rgb *= 1.0 + bgTr;
@@ -643,7 +663,7 @@ const FRAG_PAINT = /* glsl */ `
 export function grimePaint(m, k = [0.45, 0.55, 0.12, 0.3]) {
   m.vertexColors = true;
   const uni = { bgGrimeTex: { value: grimeAtlas() }, bgGrimeK: { value: new THREE.Vector4(...k) }, bgArrisK: { value: new THREE.Vector2(0, 0) }, bgDbg: GRIME_DEBUG, bgRender: { value: 0 } };
-  chain(m, 'bgP1', (shader) => {
+  chain(m, 'bgP2', (shader) => {
     Object.assign(shader.uniforms, uni);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\n' + VERT_PARS)

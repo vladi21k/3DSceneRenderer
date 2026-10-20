@@ -532,9 +532,9 @@ def build_one(cid, save_blend=False):
     cloth_folds(out_parts, body, J, kscale, spec, tuck_f, share, ARM, LEG, cid)
 
     # layered garments: the bottom's waistband under the top's hem sinks a few mm, so the simplified
-    # LODs of the two never cross (the bottom would show through the top in patches); not for a shirt sewn
-    # into its own trousers (tucked in as modelled: a sunk waistband lets the tucked shirt poke out in jags)
-    if not sewn_f:
+    # LODs of the two never cross (the bottom would show through the top in patches); not where the top is
+    # tucked in (the waistband is the outer layer there: sunk, it lets the tucked shirt poke out in jags)
+    if not sewn_f and not tuck_f:
         sink_under_tops(out_parts, CASTM.REGIONS, cid)
 
     # skirts: weights blend pelvis -> both thighs (no splitting between the legs)
@@ -1934,8 +1934,10 @@ def gore_skirt(d, vmask, J, k, length, cid):
     depth = 0.75 + 0.25 * np.sin(4.5 * th + 1.3 * seed) + 0.15 * np.cos(7 * th - seed)
     amp = (0.015 + 0.03 * min(1.0, max(0.0, length))) * k * u ** 1.15 * depth
     f = 0.5 + 0.5 * np.cos(ph)
-    # (rounded flutes with broad valleys between them: the cloth swings out in folds, not a corrugation)
-    rn = r + amp * (f ** 1.8)
+    # (rounded flutes with broad valleys between them: the cloth swings out in folds, not a corrugation;
+    # the whole skirt flares a little towards its hem, an A-line, never a tube)
+    flare = (0.006 + 0.016 * min(1.0, max(0.0, length))) * k * u ** 1.5
+    rn = r + amp * (f ** 1.8) + flare
     co[idx, 0] = dx * rn / np.maximum(r, 1e-6)
     co[idx, 1] = cy + dy * rn / np.maximum(r, 1e-6)
     moved = np.zeros(len(co), bool)
