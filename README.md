@@ -256,28 +256,217 @@ mesh, brakes and doors, the oncoming trams passing, and street ambience driven b
 crowd (conversations placed at the people talking, footsteps, birds), mixed through cab and
 street reverbs and spatialised.
 
-## Tooling
+## Commands
 
-- **`tools/dk <cmd>`** runs a command in the Docker tools image (`docker/Dockerfile`: Blender
-  4.5 LTS, Node 24, Python with numpy, scipy and Pillow, ImageMagick, ffmpeg, gltf-transform)
-  with the repository mounted at `/work`, building the image on first use. `DK_GPU=1` adds the
-  GPU; `TRAM_TOOLS_IMAGE=tramline-mh:latest` selects the human-figure image, which
-  `tools/mh_fetch.sh` builds after fetching MPFB2 and the MakeHuman assets.
-- **`tools/shoot.py`** drives headless Chrome on the GPU over the DevTools protocol (standard
-  library only). It starts a private `serve.py`, waits for the app to report ready, saves
-  screenshots and prints console errors and frame stats. Options include `--params`,
-  `--shots`/`--interval`, `--settle`, `--eval`, `--fps` (a frame-rate cap, as vsync would
-  give), `--hitches` (frame timing with a per-hitch cause), `--heapprof`, `--cpuprof` and
-  `--firstdraw`. Chrome and the server are killed on every way out. Example:
-  `timeout 600 python3 tools/shoot.py --params "s=420&tod=0.55" --out .work/shots/x.png --timeout 300`.
-- **`tools/record.py`** records fixed-step video: the page runs with `rec=<fps>`, so every
-  frame advances the clock by exactly 1/fps however long it takes to render; frames are grabbed
-  as JPEGs and encoded with ffmpeg in the tools image to `.work/movies/<name>/` (1080p and a
-  small phone copy).
-- **`tools/checkpoint.sh`** is a periodic progress checkpoint: every 20 minutes by default it
-  captures three views, converts them to JPEG and commits the working tree with a message
-  listing the changed areas, files and line counts.
-- `tools/textures/preview.html` shows the baked material maps.
+All commands run from the repository root. The app itself needs only Python 3 (or any static
+server) and a browser. `tools/shoot.py` and `tools/record.py` need Python 3 and Chrome on the
+`PATH` (`google-chrome` or `chromium`); video encoding, the checkpoint JPEGs and the asset tools
+run in the Docker tools image (`DK_GPU=1` also needs the NVIDIA Container Toolkit).
+
+### Run the app
+
+```sh
+python3 serve.py                 # http://localhost:8080/ (listens on every interface)
+python3 serve.py 9000            # another port
+python3 serve.py 8080 127.0.0.1  # this machine only
+python3 -m http.server 8080      # or any static server rooted at the repository
+```
+
+Open `http://localhost:8080/`, wait for "Click to ride" and click. URL parameters go after `?`,
+for example `http://localhost:8080/?s=1450&tod=0.55&fov=28` (see [Running it](#running-it)).
+Ctrl+C stops the server.
+
+To serve it from the tools image instead of the host's Python (port 8080 published on every
+interface; `-p 127.0.0.1:8080:8080` keeps it to this machine; Ctrl+C stops it):
+
+```sh
+docker run --rm -it -p 8080:8080 -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+  tramline-tools:latest python3 serve.py 8080 0.0.0.0
+```
+
+### Docker tools image
+
+`docker/Dockerfile` builds `tramline-tools:latest` (Ubuntu 24.04, Blender 4.5 LTS, Node 24,
+Python 3 with numpy, scipy and Pillow, ImageMagick, ffmpeg, gltf-transform). It is only for
+offline asset work and video encoding; the app does not need it.
+
+```sh
+docker build -t tramline-tools:latest docker/      # build it explicitly (tools/dk also builds it on first use)
+tools/dk <command> [args...]                       # run a command in it, repository mounted at /work, as your user
+tools/dk bash -lc 'blender --version | head -1; node --version; ffmpeg -version | head -1'
+tools/dk blender -b --factory-startup -P tools/blender/<script>.py -- <args>   # headless Blender script
+tools/dk node <file.mjs>                           # plain-JS checks (no three.js import map here)
+tools/dk python3 <script.py>                       # Python with numpy / scipy / Pillow
+tools/dk convert in.png -strip -quality 88 out.jpg # ImageMagick
+tools/dk ffmpeg -i in.mp4 ...                      # ffmpeg
+tools/dk gltf-transform inspect model.glb          # glTF tools
+DK_GPU=1 tools/dk <command>                        # add the NVIDIA GPU (Cycles rendering, baking)
+TRAM_TOOLS_IMAGE=<image> tools/dk <command>        # use another image (e.g. tramline-mh:latest)
+docker run --rm -it -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work tramline-tools:latest bash   # a shell in it
+```
+
+`tools/dk` runs without a terminal (`docker run -i`, no `-t`), so use the last line for an
+interactive shell. If the image it is asked for (`TRAM_TOOLS_IMAGE`, default
+`tramline-tools:latest`) does not exist, it builds `docker/Dockerfile` under that name.
+
+### Human-figure image and cast build
+
+The crowd's figures (`assets/humans_mh/`, committed) are built from the MakeHuman CC0 system
+assets with the MPFB2 add-on in headless Blender. Rebuilding them is optional.
+
+```sh
+tools/mh_fetch.sh          # download MPFB2 and the MakeHuman CC0 assets (about 330 MB) into docker/mh/, build tramline-mh:latest
+
+# full build: characters, strand hair, textures, export to assets/humans_mh/ (work files in .work/mh/)
+TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_build.py -- \
+    --stages chars,hair,tex,export --jobs 8
+
+# only some characters, e.g. rebuild two characters and re-export the whole cast
+# (needs the work files of an earlier full build in .work/mh/, see below)
+TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_build.py -- \
+    --stages chars,hair,tex,export --only m01,f02
+
+# a trial build of one character into scratch folders (about 30 s; assets/ untouched)
+TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_build.py -- \
+    --stages chars,hair,tex,export --only m01 --work .work/try/mh --out .work/try/out
+
+# strand-card hair on its own (then run --stages tex,export to use it)
+TRAM_TOOLS_IMAGE=tramline-mh:latest tools/dk blender -b -P tools/blender/mh_hair.py -- --only m01,f02 --jobs 8
+
+# Cycles lineup render of the exported cast (front / side / back) into .work/mh/preview/
+TRAM_TOOLS_IMAGE=tramline-mh:latest DK_GPU=1 tools/dk blender -b -P tools/blender/mh_preview.py -- \
+    --lod 0 --views front,side,back --samples 64 --debug nonormal
+```
+
+`tramline-mh:latest` is built on top of `tramline-tools:latest`, so build that first. Run
+`tools/mh_fetch.sh` before any `TRAM_TOOLS_IMAGE=tramline-mh:latest` command: `tools/dk` would
+otherwise build the plain tools image, without MPFB2, under that name.
+
+Options of `mh_build.py`: `--stages` (any of `chars,hair,tex,export,preview`; default all five),
+`--only <ids>` (comma-separated), `--jobs N` (parallel Blender processes for `chars` and
+`hair`, default 8), `--blend` (also save `<work>/raw/<id>.blend`), `--work DIR` (default
+`.work/mh`), `--out DIR` (default `assets/humans_mh`). `--only` limits `chars` and `hair`;
+`tex` and `export` always take every character found in `<work>/raw/`, so with an empty work
+folder the exported cast holds only the characters just built: keep `--out` away from
+`assets/humans_mh` for such a build. Do not pass `--factory-startup` with this image: it would
+disable the MPFB2 add-on. The character list (49 ids such as `m01`, `f02`, `c01`) is in
+`tools/blender/mh_cast.py`. `mh_hair.py` takes `--only`, `--jobs` (default 8) and `--work`.
+
+Options of `mh_preview.py`: `--lod 0..3` (default 0), `--only <ids>`, `--views` (any of
+`front,side,back,threeq`), `--samples` (default 48), `--res` (image width, default 2400),
+`--rows` (default 3; one image per view and row, `lineup_<view>_lod<L>_row<r>.png`), `--src DIR`
+(default `assets/humans_mh`), `--out DIR` (default `.work/mh/preview`), `--cpu`. It still reads
+the skin parts' decal channel of the current cast format as a normal-map index and stops with
+`KeyError: ('normal', 128)` unless `--debug nonormal` (render without normal maps) is given.
+The `preview` stage of `mh_build.py` passes no such option and fails the same way, so leave it
+out of `--stages`.
+
+### Screenshots, timing and profiling: `tools/shoot.py`
+
+Starts a private static server (unless `--port` is given) and headless Chrome on the GPU,
+opens the page with `capture=1` added to `--params`, waits for the app to report ready
+(`window.__ready`), then takes screenshots and prints the app's frame stats (the `stats:` line)
+and console errors and warnings. Chrome and the server are always killed at the end, also on
+Ctrl+C, `timeout` or a crash.
+
+```sh
+python3 tools/shoot.py --params "s=420&tod=0.55" --out .work/shots/x.png         # one screenshot
+python3 tools/shoot.py --params "s=700&speed=40" --shots 4 --interval 0.5 --out .work/shots/seq.png   # seq_00.png ... seq_03.png
+python3 tools/shoot.py --params "s=1540&speed=60" --shots 0 --settle 35 --hitches  # 35 s ride timing and hitch log
+python3 tools/shoot.py --params "s=1700&speed=45" --shots 0 --settle 30 --heapprof 30   # allocation profile
+python3 tools/shoot.py --shots 0 --cpuprof 30                                      # start-up CPU profile
+python3 tools/shoot.py --params "s=1540&speed=60" --shots 0 --settle 30 --firstdraw --profile .work/prof   # first-draw audit
+python3 tools/shoot.py --params "speed=0" --shots 0 --eval "JSON.stringify(window.__app.stats())"          # evaluate JS
+python3 tools/shoot.py --page tools/textures/preview.html --params "mode=wall"     # material preview page
+python3 tools/shoot.py --reap                                                      # kill browsers left by crashed runs
+```
+
+| Option | Meaning |
+|---|---|
+| `--params Q` | URL query for the app, without `?` |
+| `--page P` | page to open (default `index.html`) |
+| `--out PATH` | screenshot path (default `.work/shots/shot.png`); with `--shots` above 1 the files are `<name>_00.png`, `<name>_01.png`, … |
+| `--width W`, `--height H` | viewport (default 1920×1080) |
+| `--shots N`, `--interval S` | number of screenshots (default 1; 0: none) and seconds between them (default 1) |
+| `--settle S` | seconds to wait after ready before the first shot (default 1.5; the ride runs during this time) |
+| `--timeout S` | seconds to wait for ready (default 240) |
+| `--force` | take the screenshots even if the app never became ready |
+| `--eval JS` | JS expression evaluated after the shots, result printed (a returned promise is awaited, e.g. `(async () => { ... })()`) |
+| `--pre JS` | the same, right after ready, before `--settle` |
+| `--init JS` | evaluate JS in the page before its own scripts |
+| `--console` | print every console message, not only errors and warnings |
+| `--hitches` | frame-time summary and a log of frames over 50 ms with their cause |
+| `--fps N` | cap the frame rate at N, as vsync would (default 60 with `--hitches`, `--heapprof` or `--heaplive`, otherwise uncapped; 0: uncapped) |
+| `--heapprof N` | top N JS allocation sites (garbage included) from ready to the end |
+| `--heaplive N` | top N allocation sites still alive at the end |
+| `--heapdelay S` | with `--hitches`, `--heapprof` or `--heaplive`: start sampling S seconds after ready |
+| `--snapshot PATH` | collect garbage and save a heap snapshot at the end |
+| `--cpuprof N` | top N source files and functions by self time from navigation to ready |
+| `--firstdraw` | list programs first drawn after ready (each one stalls a riding frame) |
+| `--profile DIR` | keep a Chrome profile (and its shader cache) between runs |
+| `--port N` | use an already running server on this port (also `TRAM_PORT`) |
+| `--max-seconds S` | hard limit for the whole run, then exit 124 (default `--timeout` + `--settle` + `--shots` × (`--interval` + 5) + 900; 0: no limit) |
+| `--keep-open` | keep the browser open until Enter is pressed (no time limit then) |
+| `--reap` | only kill headless browsers and static servers left behind by earlier runs whose tool is gone, then exit (every run does this first) |
+
+Environment: `SHOOT_CHROME_FLAGS` adds Chrome switches, `SHOOT_GPU_FLAGS` replaces the GPU
+switches (default `--enable-gpu --ignore-gpu-blocklist --use-angle=gl`), `SHOOT_STDERR=<file>`
+keeps Chrome's own output. Exit codes: 0 done, 1 the app never became ready (or reported a
+fatal error), 2 Chrome did not start, 3 console errors or exceptions, 124 `--max-seconds`
+passed, 130 Ctrl+C.
+
+### Videos: `tools/record.py`
+
+Renders the ride frame by frame with fixed time steps (`rec=<fps>`), so the video plays
+smoothly however long each frame takes, then encodes it with ffmpeg in the tools image.
+
+```sh
+python3 tools/record.py --name midday --params "s=700&tod=0.1" --seconds 40
+python3 tools/record.py --name dusk --params "s=4000&tod=0.95" --seconds 30 --fps 30
+python3 tools/record.py --name dusk --encode-only     # re-encode frames already recorded
+```
+
+Output, all in `.work/movies/<name>/`: `frames/00000.jpg`, `00001.jpg`, … (cleared at the
+start of each recording under that name), `<name>_1080p.mp4` and `<name>_phone.mp4` (1280×720,
+at most about `--phone-mb`). Options: `--name` (default `ride`), `--params`, `--seconds`
+(default 30), `--fps` (default 30), `--warmup` (frames stepped before recording, default 60),
+`--width`, `--height` (default 1920×1080), `--quality` (JPEG of the frames, default 94),
+`--phone-mb` (size of the small copy, default 3), `--no-encode` (frames only), `--encode-only`,
+`--timeout` (seconds to wait for ready, default 250), `--max-seconds` (limit for the browser
+part, default `--timeout` + 2 s per frame, warm-up included, + 900; 0: no limit). With
+`--encode-only`, pass the recording's `--fps` and `--seconds` as well: the video's frame rate
+and the phone copy's bitrate are computed from them (the defaults are 30 and 30).
+
+### Progress checkpoints: `tools/checkpoint.sh`
+
+```sh
+mkdir -p .work                                                  # git-ignored, so missing in a fresh clone
+nohup tools/checkpoint.sh 1200 >> .work/checkpoint.log 2>&1 &   # every 20 minutes (1200 s is the default)
+echo "what is being worked on" > .work/checkpoint_note.txt      # stage line for the commit messages
+pkill -f tools/checkpoint.sh                                    # stop it
+```
+
+The argument is the interval in seconds; the first run comes one interval after the start.
+Each run takes three screenshots in parallel with `tools/shoot.py` (the default view and two
+views that rotate through route positions and times of day) into `.work/shots/auto/<HHMM>/`,
+converts them to JPEG with `tools/dk convert`, then stages everything with `git add -A`
+(untracked files included; `.work/` is ignored) and commits it with a message listing the
+changed areas, files and line counts and the first line of the note file (default "work in
+progress"). Runs with no changes make no commit. Each run appends one `CHECKPOINT <dir> …` line
+to the log. `pkill` stops the loop; screenshots already started finish on their own (each is
+limited to 400 s).
+
+### Material preview
+
+`tools/textures/preview.html` shows the procedural materials and their baked maps. With the
+app's server running, open `http://localhost:8080/tools/textures/preview.html?mode=grid` and
+drag to orbit (not with `capture=1`). Modes: `grid` (every material, or those whose name
+contains `filter=<text>`), `wall`, `street`, `maps` (the baked maps of `recipe=<bake>`, default
+`ashlar`; `zoom=<k>` magnifies, `panel=0..3` shows one map), `single`, `canopy`, `trunk`. Other
+parameters: `mat=<name>` (also `mat2=<name>` and `r=<r1>,<r2>` in `trunk`), `sun=<elev>,<az>`
+(degrees), `fov=<deg>`, `cam=x,y,z,tx,ty,tz`, `night=0..1`, `exposure=<f>`, `color=r,g,b`
+(linear, `single` mode). `tools/shoot.py --page tools/textures/preview.html --params "mode=wall"`
+takes a screenshot of it.
 
 ## Performance and trade-offs
 
