@@ -77,10 +77,10 @@ void surface(vec2 m, inout Surf s) {
 // group of about eight strokes (a patch of ~13 cm) driven the same way, at its own angle
 // within ±8° of the block's working direction and with its own tooth pitch (3-5.5 mm,
 // a worn or a finer tool); the strokes in it lie side by side and overlap, covering the
-// face, each 8-11 cm long and one chisel wide (4-5 cm), at a few degrees to each other. A stroke bites in
-// deepest and runs out; its depth varies along it and from tooth to tooth (worn teeth cut
-// shallower), and the grooves of one stroke do not line up with the next (every re-set of
-// the tool lands differently). One stroke in sixteen is missing, leaving the smoother face
+// face, each 8-11 cm long and one chisel wide (4-5 cm), at a few degrees to each other.
+// A stroke bites in deepest and runs out; its depth varies along it and from tooth to
+// tooth (worn teeth cut shallower), and the grooves of one stroke do not line up with
+// the next (every re-set of the tool lands differently). One stroke in sixteen is missing, leaving the smoother face
 // between, and the stone's pores break the grooves. The depth drifts over 20-40 cm (some
 // areas worked harder). The working direction is along u: the runtime rotates the map per
 // block (one angle per block, 35-100° from horizontal) and fades the striation inside the

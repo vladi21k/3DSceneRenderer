@@ -14,7 +14,11 @@ the suit's UV layout as
   normal   tangent-space normals (OpenGL, +Y = +v) of the relief, to be combined with the suit's own map
   cavity   0..1 crease darkness (narrow valleys of the folds), multiplied into the garment's detail albedo
 
-Folds are continuous across UV seams (they are a function of the 3D point, not of the UV). Deterministic.
+Every fold is placed on its own (a deterministic draw per garment and feature picks its position, tilt,
+length, width and depth; it tapers out at both ends and creases sharply along its feet), so nothing repeats
+at a fixed period: a jeans hem breaks into two to four Z-tilted folds a few cm apart, a tee falls from the
+armpits in fans of uneven folds, a skirt into flutes of uneven spacing. Folds are continuous across UV seams
+(they are a function of the 3D point, not of the UV). Deterministic.
 """
 import numpy as np
 

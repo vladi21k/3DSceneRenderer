@@ -531,6 +531,13 @@ def build_one(cid, save_blend=False):
     # standing off the thighs); the finer creases are in the normal maps (mh_tex.py)
     cloth_folds(out_parts, body, J, kscale, spec, tuck_f, share, ARM, LEG, cid)
 
+    # a tucked top: whatever of it the stretch and the folds left at or below the bottom's waistband goes back
+    # inside the bottom (no hem poking out through the waistband in jags)
+    if tuck_f and tops and bots:
+        n = tuck_top(tops[0], bots[0], CASTM.REGIONS)
+        if n:
+            log(cid, f'tucked top: {n} vertices pushed inside the waistband')
+
     # layered garments: the bottom's waistband under the top's hem sinks a few mm, so the simplified
     # LODs of the two never cross (the bottom would show through the top in patches); not where the top is
     # tucked in (the waistband is the outer layer there: sunk, it lets the tucked shirt poke out in jags)

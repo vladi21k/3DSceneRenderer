@@ -60,7 +60,7 @@ const LOOK_FAR = 110;              // far detail is prepared up to this far beyo
 const UPLOAD_BYTES = 640 << 10;    // vertex data uploaded ahead per frame (at least one buffer)
 const ADVERT_EXPOSED = 0.32;       // a floodlit poster's white at night (radiance x exposure)
 
-let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere; ?bgdbg=1..5 shows the
+let FORCE_LOD = null;              // debug: ?blod=0|1 forces one detail level everywhere; ?bgdbg=1..6 shows the
                                    // weathering's inputs (height above the paving, trails and grime mask, run-off zones)
 const jobs = new Map();            // jobKey(chunkIndex, lod) -> job
 const swaps = new Map();           // job -> group showing a coarse stand-in until the job ends
@@ -90,7 +90,7 @@ const buildings = {
     const lap = (k) => { const t = performance.now(); T[k] = Math.round(t - tl); tl = t; };
     const fl = app.params.str ? app.params.str('blod') : null;
     if (fl === '0' || fl === '1') FORCE_LOD = +fl;
-    // (bgdbg=1..5: the weathering's inputs as colours, see grime.js)
+    // (bgdbg=1..6: the weathering's inputs as colours, see grime.js)
     GRIME_DEBUG.value = app.params.num ? app.params.num('bgdbg', 0) : 0;
     bindLayout(app.layout);   // corner returns follow the real side-street lines
     // weathered stone (drip trails, rain wash, soot crusts where the baked grime mask
