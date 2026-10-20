@@ -2,7 +2,7 @@
 # Periodic progress checkpoint: capture a few views, convert to JPEG, commit everything with a
 # message that says what changed (areas, files, line counts) and which stage the work is in.
 # The stage comes from .work/checkpoint_note.txt (one line, updated as the work moves on).
-# Prints one "CHECKPOINT <dir>" line per run (consumed as a progress notification).
+# Prints one "CHECKPOINT <dir>" line per run (used for progress reports).
 #   tools/checkpoint.sh [interval_seconds]
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
