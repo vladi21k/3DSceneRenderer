@@ -566,6 +566,35 @@ FPS_CAP_JS = r"""(() => {
   return 'capped';
 })()"""
 
+# The app's loading veil (#loading): main.js removes it at ready in captures. True while
+# any of it would still show in a frame (getComputedStyle brings the style up to date).
+VEIL_SHOWN_JS = r"""(() => {
+  const e = document.getElementById('loading');
+  if (!e || !e.isConnected) return false;
+  const cs = getComputedStyle(e);
+  return cs.display !== 'none' && cs.visibility !== 'hidden' && +cs.opacity > 0;
+})()"""
+
+
+def veil_gone(js, label, wait=10.0):
+    """Wait (up to `wait` s) until the loading veil is gone, before a frame is grabbed. A
+    veil still shown then is reported with a WARNING and hidden, so no grabbed frame shows
+    it; returns False in that case."""
+    t0 = time.time()
+    while True:
+        shown = js(VEIL_SHOWN_JS)
+        if shown is not True:
+            return True
+        if time.time() - t0 > wait:
+            break
+        time.sleep(0.1)
+    msg = f"WARNING: {label}: the loading veil still showed {wait:g} s after ready; hidden for the frames"
+    print(msg, flush=True)
+    print(msg, file=sys.stderr, flush=True)
+    js("(() => { const e = document.getElementById('loading'); if (e) e.style.display = 'none'; return true; })()")
+    return False
+
+
 # Per-frame samples after ready (typed arrays, no allocation per frame): frame interval,
 # frame-callback CPU time, GPU time from gpuTimer.of(frame) (results arrive a few frames
 # late), draw calls and triangles; summary() gives their percentiles.
@@ -1001,6 +1030,8 @@ def run(a, guard):
             ws.call("HeapProfiler.startSampling", {"samplingInterval": 16384, "includeObjectsCollectedByMajorGC": not a.heaplive,
                                                    "includeObjectsCollectedByMinorGC": not a.heaplive}, session=sess)
         time.sleep(a.settle)
+        if ready and a.shots:
+            veil_gone(js, "shoot.py")
         base, ext = os.path.splitext(a.out)
         for i in range(a.shots):
             if i:

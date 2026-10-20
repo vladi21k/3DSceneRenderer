@@ -1,6 +1,4 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { normalizeAttributes } from '../../core/geom.js';
 import { GeoWriter, sweepPath, sweepPathPos, insetPath, capPolygon, sweepBar, box, boxPos, lathe, shared, posTemplate, weldTemplate } from './geo.js';
 import { centroidColor, NEGLECT_GLSL } from './mats.js';
 
@@ -161,24 +159,169 @@ function corbelShape(variant, D, Hc) {
   return { shape: s, roll: null };
 }
 
+/** Shape silhouette sampled for one detail level: points [w, v] in order round the
+ *  outline (closed, no repeated end) and per point whether it is smooth (inside a curve,
+ *  or where two curves meet tangentially) or a crease (the fillets and arrises of the
+ *  carving). Arcs get `perQuarter` segments per right angle (fewer on small radii). */
+function corbelOutline(shape, perQuarter) {
+  const pts = [], smooth = [];
+  const push = (x, y, s) => {
+    const n = pts.length;
+    if (n && Math.abs(pts[n - 1][0] - x) + Math.abs(pts[n - 1][1] - y) < 1e-6) return;
+    pts.push([x, y]); smooth.push(s);
+  };
+  for (const c of shape.curves) {
+    if (c.isEllipseCurve) {
+      // the swept angle as EllipseCurve.getPoint takes it
+      let da = c.aEndAngle - c.aStartAngle;
+      const same = Math.abs(da) < Number.EPSILON;
+      while (da < 0) da += Math.PI * 2;
+      while (da > Math.PI * 2) da -= Math.PI * 2;
+      if (da < Number.EPSILON) da = same ? 0 : Math.PI * 2;
+      if (c.aClockwise && !same) da = da === Math.PI * 2 ? -da : da - Math.PI * 2;
+      const r = Math.max(c.xRadius, c.yRadius);
+      const n = Math.max(2, Math.ceil((Math.abs(da) / (Math.PI / 2)) * perQuarter * Math.min(1, Math.sqrt(r / 0.165))));
+      for (let i = 0; i < n; i++) { const p = c.getPoint(i / n); push(p.x, p.y, i > 0); }
+    } else {
+      const p = c.getPoint(0);
+      push(p.x, p.y, false);
+    }
+  }
+  const n = pts.length;
+  if (Math.abs(pts[0][0] - pts[n - 1][0]) + Math.abs(pts[0][1] - pts[n - 1][1]) < 1e-6) { pts.pop(); smooth.pop(); }
+  // a curve's first point is smooth where the outline runs on without turning (a line
+  // into a tangent arc, the roll into the cove): chords there turn by half a segment
+  const m = pts.length, cosC = Math.cos(0.35);
+  for (let i = 0; i < m; i++) {
+    if (smooth[i]) continue;
+    const a = pts[(i - 1 + m) % m], p = pts[i], b = pts[(i + 1) % m];
+    const ux = p[0] - a[0], uy = p[1] - a[1], vx = b[0] - p[0], vy = b[1] - p[1];
+    smooth[i] = (ux * vx + uy * vy) / ((Math.hypot(ux, uy) * Math.hypot(vx, vy)) || 1) > cosC;
+  }
+  return { pts, smooth };
+}
+
+/** Writes the console body (shape extruded Wc wide, flanks at x = ±Wc/2) into W in the
+ *  local frame (x along the wall, y = v, z = w). The outline is shaded smooth along its
+ *  curves and hard at its creases; every carved arris gets a rounded `bev` margin
+ *  (`arr` segments), except where the block meets the soffit and the wall. UVs in metres
+ *  that follow the stone without a seam across the faces: on the moulded band u along
+ *  the wall and v down the outline's arc length (the band is developable, so the grain
+ *  keeps its scale through every curve), on the flanks w and v. */
+function writeCorbelBody(W, shape, Wc, bev, arr, perQuarter) {
+  const { pts, smooth } = corbelOutline(shape, perQuarter), n = pts.length;
+  // orientation: outward normals on the side away from the interior
+  let area = 0;
+  for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n]; area += a[0] * b[1] - b[0] * a[1]; }
+  const sgn = area > 0 ? 1 : -1;
+  // edges: outward normal, arc length at their start, arris offset (none against the
+  // soffit, v = 0, or the wall, w = 0: the block is bedded there)
+  const en = new Float32Array(n * 2), eo = new Float32Array(n), sl = new Float32Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+    en[i * 2] = (sgn * dy) / l; en[i * 2 + 1] = (-sgn * dx) / l;
+    const bed = (Math.abs(a[0]) < 1e-4 && Math.abs(b[0]) < 1e-4) || (Math.abs(a[1]) < 1e-4 && Math.abs(b[1]) < 1e-4);
+    eo[i] = bed ? 0 : bev;
+    sl[i + 1] = sl[i] + l;
+  }
+  // arc length measured from the top front corner, so v follows the height down the front
+  let i0 = 0, top = -Infinity;
+  for (let i = 0; i < n; i++) if (Math.abs(pts[i][1]) < 1e-4 && pts[i][0] > top) { top = pts[i][0]; i0 = i; }
+  const sv = (i) => -(((sl[i] - sl[i0]) % sl[n]) + sl[n]) % sl[n];
+  // inset (flank) outline: the offset edges' intersection at creases, the offset along
+  // the smooth normal inside the curves
+  const q = new Float32Array(n * 2), vn = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const j = (i - 1 + n) % n, p = pts[i];
+    const ax = en[j * 2], ay = en[j * 2 + 1], bx = en[i * 2], by = en[i * 2 + 1];
+    let mx = ax + bx, my = ay + by;
+    const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
+    vn[i * 2] = mx; vn[i * 2 + 1] = my;
+    const det = ax * by - ay * bx;
+    if (smooth[i] || Math.abs(det) < 0.2) {
+      const o = Math.max(eo[j], eo[i]);
+      q[i * 2] = p[0] - mx * o; q[i * 2 + 1] = p[1] - my * o;
+    } else {
+      const o1 = eo[j], o2 = eo[i];
+      q[i * 2] = p[0] + (-o1 * by + o2 * ay) / det;
+      q[i * 2 + 1] = p[1] + (-o2 * ax + o1 * bx) / det;
+    }
+  }
+  const tri = (a, b, c) => {
+    // wound so its face normal agrees with the vertex normals (the writer's buffers may
+    // have grown since the vertices were written)
+    const P = W.P, N = W.N;
+    const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
+    const ux = P[b * 3] - ax, uy = P[b * 3 + 1] - ay, uz = P[b * 3 + 2] - az;
+    const vx = P[c * 3] - ax, vy = P[c * 3 + 1] - ay, vz = P[c * 3 + 2] - az;
+    const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+    const nx = N[a * 3] + N[b * 3] + N[c * 3], ny = N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1], nz = N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2];
+    if (cx * nx + cy * ny + cz * nz >= 0) W.tri(a, b, c); else W.tri(a, c, b);
+  };
+  // rings round the outline: per point and side of a crease, the band's edge and the
+  // arris down to the flank, both flanks; k = 0 .. arr on each side (k = 0: band edge)
+  const K = bev > 0 ? arr : 0, half = Wc / 2;
+  const ring = (i, nx, ny, o) => {
+    const p = pts[i], dx = q[i * 2] - p[0], dy = q[i * 2 + 1] - p[1], v = sv(i), out = [];
+    for (const side of [-1, 1]) {
+      for (let k = 0; k <= K; k++) {
+        const t = K ? (k / K) * (Math.PI / 2) : 0, c = 1 - Math.cos(t), s = Math.sin(t);
+        const x = side * (half - bev + bev * s);
+        // a bedded edge keeps its face's normal out to the flank
+        const r = o > 0 ? s : 0, f = o > 0 ? Math.cos(t) : 1;
+        const l = Math.hypot(r, f) || 1;
+        out.push(W.v(x, p[1] + dy * c, p[0] + dx * c, (side * r) / l, (ny * f) / l, (nx * f) / l, x, v));
+      }
+    }
+    return out;
+  };
+  // per edge, its own rings at both ends (shared where the point between is smooth)
+  const first = [], last = [];
+  let prevEnd = null;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n, o = eo[i];
+    const a = smooth[i] && prevEnd ? prevEnd : ring(i, smooth[i] ? vn[i * 2] : en[i * 2], smooth[i] ? vn[i * 2 + 1] : en[i * 2 + 1], o);
+    const b = ring(j, smooth[j] ? vn[j * 2] : en[i * 2], smooth[j] ? vn[j * 2 + 1] : en[i * 2 + 1], o);
+    first.push(a); last.push(b);
+    prevEnd = smooth[j] ? b : null;
+    // band, then the arris strips of both sides
+    const L = K + 1;
+    tri(a[K], a[L + K], b[L + K]); tri(a[K], b[L + K], b[K]);
+    for (let k = 0; k < K; k++) {
+      tri(a[K - k], a[K - k - 1], b[K - k - 1]); tri(a[K - k], b[K - k - 1], b[K - k]);
+      tri(a[L + k], a[L + k + 1], b[L + k + 1]); tri(a[L + k], b[L + k + 1], b[L + k]);
+    }
+  }
+  // (the outline closes on itself: the last edge's end ring is the first point's)
+  // flanks: the inset outline triangulated
+  const contour = [];
+  for (let i = 0; i < n; i++) contour.push(new THREE.Vector2(q[i * 2], q[i * 2 + 1]));
+  const faces = THREE.ShapeUtils.triangulateShape(contour, []);
+  for (const side of [-1, 1]) {
+    const base = W.count;
+    for (let i = 0; i < n; i++) W.v(side * half, q[i * 2 + 1], q[i * 2], side, 0, 0, q[i * 2] * side, q[i * 2 + 1]);
+    for (const f of faces) tri(base + f[0], base + f[1], base + f[2]);
+  }
+}
+
 /** Shared console geometry with baked occlusion in vertex colours. Local frame:
  *  x = along the wall (centred), y = down from the soffit (≤ 0), z = out of the wall. */
 export function corbelGeometry(variant, lod) {
   const { D, W: Wc } = CORBEL, Hc = CORBEL.HV[variant];
   const { shape, roll } = corbelShape(variant, D, Hc);
-  // the light level drops the 12 mm bevel (8 mm on the small block) and the carved
-  // volutes (sub-pixel where it is used) but keeps the silhouette: 4 segments per curve
-  // hold the big roll within ~5 mm; the far level (merged into far chunks, 200 m and
-  // more away) has 2, within ~2.5 cm
+  // full level: 24 segments per right angle on the big curves (shaded smooth, so the
+  // roll and the cove read as one carved surface), a rounded 12 mm arris (8 mm on the
+  // small block). The light level drops the arris and the carved volutes (sub-pixel
+  // where it is used) and keeps the silhouette with 8 segments per right angle; the far
+  // level (merged into far chunks, 200 m and more away) has 3, within ~6 mm
   const bev = lod ? 0 : variant === 2 ? 0.008 : 0.012;
-  const ext = new THREE.ExtrudeGeometry(shape, {
-    depth: Wc - 2 * bev, bevelEnabled: !lod, bevelThickness: bev, bevelSize: bev, bevelSegments: 1,
-    curveSegments: lod > 1 ? 2 : lod ? 4 : 6,
-  });
-  let parts = [ext];
+  const W = new GeoWriter(lod ? 256 : 2048);
+  writeCorbelBody(W, shape, Wc, bev, 2, lod > 1 ? 3 : lod ? 8 : 24);
   if (roll && !lod) {
     // volute spirals carved on both flanks of the roll (the block's nose: smaller, and
-    // flattened with it)
+    // flattened with it), drawn in the silhouette's plane (x = w, y = v, z across from
+    // the flank at z = -bev) and turned into the local frame
+    const M = new THREE.Matrix4().set(0, 0, -1, Wc / 2 - bev, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1);
     const [cx, cy, R, ky] = roll, k = Math.max(0.6, R / 0.165);
     const pts = [];
     const turns = 1.55, n = 16;
@@ -187,22 +330,18 @@ export function corbelGeometry(variant, lod) {
       const r = R * 0.86 * Math.pow(0.17, t);
       pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r * ky]);
     }
-    const S = new GeoWriter();
-    sweepBar(S, pts, 0.011 * k, 0.007 * k, { z0: -bev - 0.002 });
-    sweepBar(S, pts, 0.011 * k, 0.007 * k, { z0: Wc - bev + 0.002 });
+    W.setMatrix(M);
+    sweepBar(W, pts, 0.011 * k, 0.007 * k, { z0: -bev - 0.002 });
+    sweepBar(W, pts, 0.011 * k, 0.007 * k, { z0: Wc - bev + 0.002 });
     // domed eye bosses at the spiral centres (lathe axis turned to -z / +z)
     const eye = [[0.03, 0], [0.028, 0.008], [0.014, 0.015], [0.0001, 0.017]].map(([x, y]) => [x * k, y * k]);
     for (const [z, rot] of [[-bev, -Math.PI / 2], [Wc - bev, Math.PI / 2]]) {
-      S.setMatrix(new THREE.Matrix4().makeRotationX(rot).setPosition(cx, cy, z));
-      lathe(S, eye, 8);
+      W.setMatrix(M.clone().multiply(new THREE.Matrix4().makeRotationX(rot).setPosition(cx, cy, z)));
+      lathe(W, eye, 8);
     }
-    parts.push(S.toGeometry({ colors: false }));
+    W.setMatrix(null);
   }
-  parts = normalizeAttributes(parts);
-  let g = parts.length > 1 ? mergeGeometries(parts, false) : parts[0];
-  // shape space (x = w, y = v, z = extrusion) -> local (x = u centred, y = v, z = w)
-  g.rotateY(-Math.PI / 2);
-  g.translate(Wc / 2 - bev, 0, 0);
+  const g = W.toGeometry({ colors: false, copy: true });
   // baked occlusion: the junction under the slab, against the wall, and on the
   // down-facing coves that only see the street below
   const pos = g.attributes.position, nrm = g.attributes.normal, n = pos.count, col = new Float32Array(n * 3);

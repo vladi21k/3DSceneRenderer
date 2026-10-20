@@ -141,20 +141,26 @@ export function* planSteps(ctx, ci) {
   }
 
   yield 'plan';
-  // stains: oil drips along the tracks, dirt and gum on the sidewalks
+  // stains: dirt, gum and the odd oil spot on the sidewalks. (The tracks carry no single
+  // stains away from the stops: their oil and brake dust is the continuous drip band,
+  // street.js buildDripBands; the draws of a track stain are still made, so the sidewalk
+  // stains keep their places.)
   const stains = [];
   const nSt = rng.int(3, 7);
   for (let i = 0; i < nSt; i++) {
     const s = rng.range(s0 + 0.5, s1 - 0.5);
     const kind = rng.weighted([[0, 0.4], [1, 0.25], [2, 0.2], [3, 0.15]]);
     let d;
-    if (kind === 3 || (kind === 1 && rng.chance(0.6))) d = (rng.chance(0.5) ? 1 : -1) * (TRACK_OFFSET + rng.normal(0, 0.15));
+    const track = kind === 3 || (kind === 1 && rng.chance(0.6));
+    if (track) d = (rng.chance(0.5) ? 1 : -1) * (TRACK_OFFSET + rng.normal(0, 0.15));
     else {
       const side = rng.chance(0.5) ? 1 : -1;
       d = side * rng.range(GUTTER_OUT + 0.3, layout.halfWidth(s, side) - 0.4);
     }
     const size = kind === 3 ? rng.range(1.4, 2.6) : kind === 2 ? rng.range(0.8, 1.5) : rng.range(0.6, 1.8);
-    stains.push({ s, d, kind, size, yaw: kind === 3 ? Math.PI / 2 + rng.normal(0, 0.05) : rng.range(0, Math.PI * 2), aspect: kind === 3 ? 0.45 : rng.range(0.7, 1.2), op: 1, warm: kind === 1 ? 0 : 0.15 });
+    const yaw = kind === 3 ? Math.PI / 2 + rng.normal(0, 0.05) : rng.range(0, Math.PI * 2);
+    const aspect = kind === 3 ? 0.45 : rng.range(0.7, 1.2);
+    if (!track) stains.push({ s, d, kind, size, yaw, aspect, op: 1, warm: kind === 1 ? 0 : 0.15 });
   }
 
   // where people linger the paving collects more: gum and dark spots around benches,

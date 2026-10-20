@@ -28,6 +28,10 @@ export const LINE_STYLE = { railFar: 0, railNear: 1, centre: 2, stripe: 3, joint
 // overlaps it), so aLine.y = half width + PATCH_PAD and the points run from -PATCH_PAD to
 // length + PATCH_PAD
 export const PATCH_PAD = 0.06;
+/** Drip band (LINE_STYLE.drip): full within DRIP_CORE of its centre line, gone DRIP_SOFT
+ *  further out; DRIP_ALPHA is its opacity at strength 1 and mean density (the ribbon's
+ *  half width must cover DRIP_CORE * 1.15 + DRIP_SOFT + 0.04 of wander). */
+export const DRIP_CORE = 0.26, DRIP_SOFT = 0.2, DRIP_ALPHA = 0.15;
 /** Repairs whose sides step with the courses (wear.js STEP_WALK_U, STEP_STREET_U) have
  *  ribbons this much wider on both sides; those whose ends step reach this much further
  *  at both ends (the steps reach out up to 0.2 m). */
@@ -597,32 +601,33 @@ const REPAIR_FRAG = /* glsl */`
 `;
 
 // Drip band along the middle of a track on the main street: oil, grease and brake dust
-// dropped by the passing trams, a soft dark band (its nominal half width two thirds of
-// the ribbon's) wandering a little, mottled in patches along the track and, close up,
-// broken into drops and splashes. Strength per point (wear: heavier where the trams stand
-// at the stops). The profile is widened by the pixel footprint with its energy kept, so
-// the band thins into a faint line in the distance instead of breaking up.
+// dropped by the passing trams, one continuous soft strip between the rails (full over
+// the middle DRIP_CORE either side of its centre line, fading out over the next
+// DRIP_SOFT), wandering a few centimetres. Its density varies along the track over 5-20 m
+// (value noise of the along coordinate, so both levels of detail agree and chunks join
+// seamlessly), with a faint mottle a few decimetres across and, close up, drops. The per
+// point strength (wear) is 1 on the open line and heavier where the trams stand at the
+// stops and under their bogies; aLine.w is the track (-1 | 1), which decorrelates the two
+// tracks. The edges widen with the pixel footprint, so the band thins evenly with distance.
 const DRIP_FRAG = /* glsl */`
 {
-  float x = vLine.x, u = vLine.y;
+  float x = vLine.x, u = vLine.y, tk = vLine.z;
   vec2 wp = vLineWorld.xz;
-  float hw = vLineHalf * 0.6667;
-  float c = ( lnNoise( vec2( u * 0.23, 4.3 ) ) - 0.5 ) * 0.45 * hw;
-  float hwl = hw * ( 0.8 + 0.4 * lnNoise( vec2( u * 0.6, 9.7 ) ) );
-  float he = sqrt( hwl * hwl + w * w );
-  float q = ( x - c ) / he;
-  float prof = max( 0.0, 1.0 - q * q );
-  prof *= prof * ( hwl / he );
-  float big = lnFbm( wp * 0.33 + 23.0, fpw * 0.33, 3 );
-  float mid = lnFbm( wp * 2.1 + 7.0, fpw * 2.1, 3 );
+  float c = ( lnNoise( vec2( u * 0.11, 4.3 + 7.0 * tk ) ) - 0.5 ) * 0.08;
+  float e0 = ${f(DRIP_CORE)} * ( 0.85 + 0.3 * lnNoise( vec2( u * 0.37, 9.7 + 5.0 * tk ) ) );
+  float ax = abs( x - c );
+  float prof = 1.0 - smoothstep( e0 - 0.5 * w, e0 + ${f(DRIP_SOFT)} + 0.5 * w, ax );
+  // density along the track: 5-20 m stretches, about +-45 %
+  float nA = 0.62 * lnNoise( vec2( u * 0.075, 1.3 + 3.0 * tk ) ) + 0.38 * lnNoise( vec2( u * 0.19, 6.1 + 3.0 * tk ) );
+  float dens = clamp( 1.0 + 1.6 * ( nA - 0.5 ), 0.4, 1.6 );
+  float mot = lnFbm( wp * 1.4 + 7.0, fpw * 1.4, 3 );
   float fine = lnFbm( wp * 13.0 + 3.0, fpw * 13.0, 2 );
-  float patchy = clamp( 0.45 + 1.5 * ( big - 0.45 ) + 0.8 * ( mid - 0.5 ), 0.0, 1.0 );
-  float drops = mix( smoothstep( 0.5, 0.68, fine ), 0.35, smoothstep( 0.015, 0.05, fpw ) );
-  float a = prof * ( 0.65 * patchy + 0.35 * drops ) * vLineWear * 1.25;
+  float drops = mix( smoothstep( 0.55, 0.7, fine ), 0.3, smoothstep( 0.015, 0.05, fpw ) );
+  float a = prof * dens * ( 0.72 + 0.56 * mot ) * ( 0.8 + 0.4 * drops ) * vLineWear * ${f(DRIP_ALPHA)};
   if ( a < 0.002 ) discard;
-  diffuseColor.rgb = vec3( 0.042, 0.037, 0.031 ) * ( 0.85 + 0.3 * mid );
-  lnRough = 0.62 - 0.12 * drops;
-  diffuseColor.a = min( a, 0.88 );
+  diffuseColor.rgb = vec3( 0.05, 0.046, 0.041 ) * ( 0.9 + 0.2 * mot );
+  lnRough = 0.7 - 0.1 * drops;
+  diffuseColor.a = min( a, 0.7 );
 }
 `;
 
@@ -727,7 +732,7 @@ if ( lnPhys > 0.5 ) {
       .replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>\nreflectedLight.directSpecular *= lnDirK;')
       .replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>\n#if defined( RE_IndirectSpecular )\nradiance *= lnEnvK;\n#endif');
   };
-  m.customProgramCacheKey = () => 'street-line-15';
+  m.customProgramCacheKey = () => 'street-line-16';
   return patchRailSheen(m, 'line');
 }
 

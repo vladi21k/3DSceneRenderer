@@ -3,7 +3,7 @@ import { Surface } from './street/surface.js';
 import { buildPaving, buildSlab, inCrossoverZone, pavingHeight } from './street/paving.js';
 import { railLinePoints } from './street/rails.js';
 import { buildMainRails } from './street/track.js';
-import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE, RELAY_PAD, relayWear } from './street/lines.js';
+import { createLineMaterial, LineBuf, LINE_SHARED, LINE_STYLE, RELAY_PAD, relayWear, DRIP_CORE, DRIP_SOFT } from './street/lines.js';
 import { BufSet } from './street/meshbuf.js';
 import { MAIN_RAILS, pavingTones, TRACK_OFFSET } from './street/constants.js';
 import { CHUNK_LEN, VIEW_AHEAD, VIEW_BEHIND, LOD0_DIST } from '../core/config.js';
@@ -480,17 +480,17 @@ function densify(ctx, chunk, out) {
 }
 
 /** The drip band along the middle of each track (lines.js LINE_STYLE.drip), at both
- *  lods: light and patchy along the line, heavy where the trams stand at the stops and
- *  under their bogies (Surface.stopAt), faded out through crossovers (their diverging
- *  rails cross the four-foot). Points every 2 m (4 m at lod 1) on the built paving. */
-const DRIP_HALF = 0.36;
+ *  lods: one continuous soft strip (the shader varies its density along the track),
+ *  heavier where the trams stand at the stops and heaviest under their bogies
+ *  (Surface.stopAt), faded out through crossovers (their diverging rails cross the
+ *  four-foot). Points every metre (4 m at lod 1) on the built paving. */
+const DRIP_HALF = DRIP_CORE * 1.15 + DRIP_SOFT + 0.06;
 function buildDripBands(ctx, chunk, samples, out) {
   const { route, surface, layout } = ctx;
   const grid = samples.grid, dl = ctx.delta;
-  const step = chunk.lod === 0 ? 2 : 4;
+  const step = chunk.lod === 0 ? 1 : 4;
   const n = Math.max(1, Math.ceil((chunk.s1 - chunk.s0) / step));
   const smp = {}, w = {};
-  const ks = surface.kS;
   for (const t of [-1, 1]) {
     const d = t * TRACK_OFFSET;
     const pts = new Array((n + 1) * 8);
@@ -501,13 +501,12 @@ function buildDripBands(ctx, chunk, samples, out) {
       surface.stopAt(s, w);
       const sp = surface.sp(s);
       const st = t > 0 ? w.stopR : w.stopL, bg = t > 0 ? w.bogR : w.bogL;
-      const nz = surface.fG.sample(sp * ks[0] + 61.3, t * 9.1 + 2.7);
-      let k = 0.5 * (0.5 + 0.9 * Math.max(0, nz + 0.35)) + 0.5 * st + 0.35 * bg;
+      let k = 1 + 1.3 * st + 1.1 * bg;
       for (const c of layout.crossovers) {
         const a = dl(c.s0 - ctx.zonePad - 1, s), b = dl(s, c.s1 + ctx.zonePad + 1);
         if (a > -3 && b > -3) k *= 1 - Math.min(1, Math.min(a + 3, b + 3) / 3);
       }
-      k = Math.max(0, Math.min(1.25, k));
+      k = Math.max(0, k);
       if (k > 0.01) any = true;
       const o = i * 8;
       pts[o] = smp.pos.x + smp.right.x * d;
@@ -515,7 +514,7 @@ function buildDripBands(ctx, chunk, samples, out) {
       pts[o + 2] = smp.pos.z + smp.right.z * d;
       pts[o + 3] = smp.right.x; pts[o + 4] = smp.right.z; pts[o + 5] = sp; pts[o + 6] = 0; pts[o + 7] = k;
     }
-    if (any) out.add(pts, DRIP_HALF, 0, 1, 8);
+    if (any) out.add(pts, DRIP_HALF, t, 1, 8);
   }
 }
 

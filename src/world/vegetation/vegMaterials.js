@@ -52,7 +52,6 @@ import { U } from '../../core/uniforms.js';
 const LIGHT_CAP = 8.0;
 const LAMP_CAP = 14.0;
 const LAMP_TRANS = 0.3;
-const SUN_MULTI = 0.3;   // share of the sunlight stopped by a crown that lights its inner leaves
 
 const WIND_PARS = /* glsl */`
 invariant gl_Position;
@@ -157,7 +156,7 @@ function rep(src, from, to, what) {
 
 /** Leaf material: shared by every tree, shrub and flower card. */
 function patchLeaf(mat, params) {
-  chain(mat, 'veg-leaf-v6', (shader) => {
+  chain(mat, 'veg-leaf-v7', (shader) => {
     windUniforms(shader, params);
     shader.uniforms.uLeafTrans = params.trans;
     shader.uniforms.uLeafSpec = params.spec;
@@ -166,6 +165,7 @@ function patchLeaf(mat, params) {
     shader.uniforms.uVegShift = params.shift;
     shader.uniforms.uVegCap = params.cap;
     shader.uniforms.uVegSky = params.sky;
+    shader.uniforms.uVegCore = params.core;
     shader.uniforms.uSunDirV = U.uSunDir;
     let vs = shader.vertexShader;
     vs = rep(vs, '#include <common>', `#include <common>
@@ -227,8 +227,10 @@ function patchLeaf(mat, params) {
       uniform float uVegA2C;
       uniform vec3 uSunDirV;
       uniform vec2 uVegCap;
+      uniform vec4 uVegCore;
       ${FADE_FN}
       float vegGloss = 0.5;
+      float vegCoreK = 1.0;  // crown core occlusion (set before the lights, see header)
       float vegSkyE = 0.0;  // luminance of the sky irradiance on a level surface (set before the lights)
       // normalize that survives a null vector (a card normal or a normal-map frame that
       // collapses on a degenerate sliver would otherwise write NaN into the frame)
@@ -255,6 +257,9 @@ function patchLeaf(mat, params) {
         diffuseColor.rgb *= vColor.rgb;
       #endif
       if ( vegFadeHidden( false ) ) discard;
+      // the core of the crown: light reaches it only through the leaves around it (sky,
+      // bounce, light passed on by other leaves); the direct sun's own path is vVegSun
+      vegCoreK = mix( uVegCore.x, 1.0, smoothstep( uVegCore.y, uVegCore.z, vVegRim ) );
       #ifdef VEG_PREPASS
         // depth pre-pass: coverage (alpha-to-coverage) and depth only
         gl_FragColor = vec4( 0.0, 0.0, 0.0, diffuseColor.a );
@@ -326,13 +331,13 @@ function patchLeaf(mat, params) {
         // (a high sun reaches the underside through many gaps of the crown: the floor of
         // the light passing through it rises with the sun's elevation)
         float tFloor = mix( 0.12, 0.35, smoothstep( 0.42, 0.62, uSunDirV.y ) );
-        float tThrough = isSun ? mix( tFloor, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
+        float tThrough = isSun ? mix( tFloor * vegCoreK, 1.0, vVegSun ) : ${LAMP_TRANS.toFixed(3)} * vegCapD;
         vec3 tc = material.diffuseColor * vec3( 1.12, 1.08, 0.55 );
         reflectedLight.directDiffuse += directLight.color * tc * ( uLeafTrans * tThrough * vegCapT * back * ( 1.0 + 0.5 * fwd + 0.4 * rim ) * RECIPROCAL_PI );
         // green light inside the crown: the sunlight the outer leaves stop is partly
         // scattered on (reflected and transmitted, about twice the leaf albedo) and lights
         // the leaves within, as a saturated green glow
-        if ( isSun ) reflectedLight.directDiffuse += directLight.color * ( 1.0 - vVegSun ) * vegCapT * ${SUN_MULTI.toFixed(3)} * 2.0 * material.diffuseColor * BRDF_Lambert( material.diffuseColor );
+        if ( isSun ) reflectedLight.directDiffuse += directLight.color * ( 1.0 - vVegSun ) * vegCapT * uVegCore.w * vegCoreK * 2.0 * material.diffuseColor * BRDF_Lambert( material.diffuseColor );
       }
       #undef RE_Direct
       #define RE_Direct RE_Direct_Leaf`, 'leaf lights pars');
@@ -359,7 +364,8 @@ function patchLeaf(mat, params) {
         #endif
         // the sky light the crown hides reaches the leaf partly after scattering in other
         // leaves (reflected and transmitted, about twice the leaf albedo): green, not lost
-        reflectedLight.indirectDiffuse *= vVegAO + ( 1.0 - vVegAO ) * min( vec3( 1.0 ), 1.4 * diffuseColor.rgb );
+        reflectedLight.indirectDiffuse *= ( vVegAO + ( 1.0 - vVegAO ) * min( vec3( 1.0 ), 1.4 * diffuseColor.rgb ) ) * vegCoreK;
+        reflectedLight.indirectSpecular *= vegCoreK * vegCoreK;
         #ifdef VEG_DEBUG
           // debug view (URL vegdbg=1..4): one lighting term only
           vec3 vegDbg = VEG_DEBUG == 1 ? reflectedLight.directDiffuse : VEG_DEBUG == 2 ? reflectedLight.directSpecular
@@ -560,6 +566,10 @@ export function createVegMaterials(app, atlas) {
                                 // ray: the inner half of a crown receives its outer leaves' shadow
     flutter: { value: 0.32 },   // leaf flutter angle per unit wind strength (rad)
     holes: { value: 0.3 },      // share of the leaf cards that cast no shadow (sun flecks)
+    // crown core occlusion of the light that does not come straight from the sun (sky,
+    // bounce, light passed on by the leaves): x at normalised crown radius <= y, rising to 1
+    // at z; w: share of the sunlight stopped by the crown that lights its inner leaves
+    core: { value: new THREE.Vector4(1.0, 0.35, 0.95, 0.3) },
     // per-light caps in units of the sky's irradiance: transmission + specular of any
     // light, diffuse of a lamp (see header)
     cap: { value: new THREE.Vector2(LIGHT_CAP, LAMP_CAP) },

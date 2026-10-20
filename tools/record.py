@@ -19,7 +19,7 @@ watchdog if the tool is killed outright). --max-seconds bounds the browser part 
 import argparse, base64, json, os, random, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from shoot import ROOT, WS, ProcessGuard, chrome_args, chrome_stderr, devtools_ws, free_port, port_open, reap_orphans  # noqa: E402
+from shoot import ROOT, WS, ProcessGuard, chrome_args, chrome_stderr, devtools_ws, free_port, port_open, reap_orphans, veil_gone  # noqa: E402
 
 
 def main():
@@ -119,6 +119,7 @@ def capture(a, guard):
             print("ERROR: app not ready")
             return 1
         print(f"ready after {time.time() - t0:.1f}s")
+        veil_gone(js, "record.py")   # (main.js removes the loading veil at ready under rec=)
         time.sleep(2.0)   # background compiles of the first streamed chunks
         for _ in range(a.warmup):
             js("window.__app.recStep(1)")

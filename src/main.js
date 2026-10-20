@@ -113,8 +113,9 @@ async function main() {
   // the compile), compile (until every program was linked), compileWait (the part of it
   // after the last init and build), programs, workersHeld, firstFrame (from then to the
   // first frame callback), frames (to the view being ready), firstReady (since
-  // navigation) and, when the browser held back the animation frames before the view was
-  // ready, firstFrameStall (see the watchdog below). See docs/ARCHITECTURE.md.
+  // navigation), gates, gateWait and gateTimeout (the readiness gates, see
+  // readinessGates) and, when the browser held back the animation frames before the view
+  // was ready, firstFrameStall (see the watchdog below). See docs/ARCHITECTURE.md.
   app.perf.init = { imports: Math.round(performance.now()) };
   const mods = [];
   loaded.forEach((r, i) => {
@@ -242,6 +243,9 @@ async function main() {
   initMs += performance.now() - tq;
   P.modulesTotal = Math.round(initMs);
   P.initsQueued = tCompile ? Math.round(performance.now() - tCompile) : 0;   // init time that ran alongside the compile
+  // what the modules finish after their init (worker paintings, GPU bakes): the view is
+  // not ready before it is on screen (see readinessGates)
+  const gates = readinessGates(mods, app, P);
 
   // step 4: their chunk parts, the far field (a few ms in all), and their programs; then wait
   // for every program (the loading bar follows them as they finish)
@@ -286,6 +290,37 @@ async function main() {
   // stepped on demand by app.recStep(n) (tools/record.py screenshots after each step).
   const recFps = params.num('rec', 0);
   let fpsAcc = 0, fpsN = 0, fpsT = 0, progN = -1;
+
+  // The view is ready once the chunks within 160 m of the camera are built and every
+  // readiness gate has settled. Gates still open GATE_MS after the world was ready are
+  // given up on (perf.init.gateTimeout names them; perf.init.gateWait is how long the
+  // ready waited for the gates after the world).
+  const GATE_MS = 20000;
+  let gatesOpen = gates.length === 0, gateT0 = 0;
+  const gatesSettled = (now) => {
+    if (gatesOpen) return true;
+    if (!gateT0) gateT0 = now;
+    let open = true;
+    for (let i = 0; i < gates.length; i++) if (!gates[i].done) { open = false; break; }
+    if (!open && now - gateT0 < GATE_MS) return false;
+    if (!open) {
+      P.gateTimeout = gates.filter((g) => !g.done).map((g) => g.name);
+      console.warn(`[main] ready without ${P.gateTimeout.join(', ')} (still pending after ${GATE_MS / 1000} s)`);
+    }
+    P.gateWait = Math.round(now - gateT0);
+    gatesOpen = true;
+    return true;
+  };
+  // The loading veil: in captures and recordings it goes at once (a CSS fade advances on
+  // the browser's frames, which it can hold back for seconds right after the start-up, so
+  // frames grabbed after ready showed the veil half faded); the interactive app fades it
+  // out and then removes it, on a timer, whatever the frames do.
+  const dropLoading = () => {
+    if (!loadingEl) return;
+    if (params.capture || recFps > 0) { loadingEl.style.display = 'none'; return; }
+    loadingEl.classList.add('done');
+    setTimeout(() => { loadingEl.style.display = 'none'; }, 1000);
+  };
   const updaters = mods.filter((m) => m.update && !m.disabled);
   const order = ['train', 'cameraRig'];
   updaters.sort((a, b) => (order.includes(b.name) ? 1 : 0) - (order.includes(a.name) ? 1 : 0) || order.indexOf(a.name) - order.indexOf(b.name));
@@ -374,12 +409,12 @@ async function main() {
     }
     if (app.gpuTimer.ext) app.perf.gpuMs = app.gpuTimer.ms;
 
-    if (!app.ready && app.frame > 3 && app.world.readyAround(app.cameraS ?? s0, 160)) {
+    if (!app.ready && app.frame > 3 && app.world.readyAround(app.cameraS ?? s0, 160) && gatesSettled(performance.now())) {
       app.ready = true;
       app.world.staged = true;   // from now on chunks are compiled in the background and revealed gradually
       app.perf.init.firstReady = Math.round(performance.now());
       app.perf.init.frames = Math.round(performance.now() - tFrames);
-      if (loadingEl) loadingEl.classList.add('done');
+      dropLoading();
       events.emit('ready', {});
       setTimeout(() => { window.__ready = true; }, 300);
     }
@@ -495,6 +530,38 @@ function holdWorkers(on) {
   const held = workerHold.held.splice(0);
   for (const w of held) { try { workerHold.terminate.call(w); } catch (e) { /* gone */ } }
   return held.length;
+}
+
+/**
+ * Readiness gates: work a module finishes after its init (painted in workers, baked on the
+ * GPU) that must be on screen before the view counts as ready, so nothing pops in at the
+ * start of the ride. A module publishes it as `whenReady`, a promise or a function of app
+ * returning one, or as a promise in a field named `ready` or `<thing>Ready` (for example
+ * materials.ready, vegetation.atlasReady); boolean flags and other functions are not gates.
+ * A gate opens when its promise settles either way (the module reports its own failures).
+ * perf.init.gates holds the time each one settled (ms since navigation, or when it was
+ * collected, after the last init, if it had settled before). Returns [{name, done}].
+ */
+const GATE_KEY = /^(?:ready|[a-z]\w*Ready)$/;
+function readinessGates(mods, app, P) {
+  const gates = [];
+  for (const m of mods) {
+    if (m.disabled) continue;
+    for (const key of Object.keys(m)) {
+      if (!GATE_KEY.test(key)) continue;
+      let v = m[key];
+      if (typeof v === 'function') {
+        if (key !== 'whenReady') continue;
+        try { v = v.call(m, app); } catch (e) { console.warn(`[main] ${m.name}.whenReady failed`, e); continue; }
+      }
+      if (!v || typeof v.then !== 'function') continue;
+      const g = { name: `${m.name}.${key}`, done: false };
+      const settle = () => { g.done = true; (P.gates ||= {})[g.name] = Math.round(performance.now()); };
+      Promise.resolve(v).then(settle, settle);
+      gates.push(g);
+    }
+  }
+  return gates;
 }
 
 /** Queue the programs of everything in the scene against the HDR scene target (non-blocking:

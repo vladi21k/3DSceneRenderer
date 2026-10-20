@@ -1,5 +1,5 @@
 import { RNG } from '../../core/rng.js';
-import { MAIN_RAILS, BAND_IN, GUTTER_OUT, GROUT_W, TRACK_OFFSET } from './constants.js';
+import { MAIN_RAILS, BAND_IN, GUTTER_OUT, GROUT_W, TRACK_OFFSET, RAIL_CENTER } from './constants.js';
 
 // Wear of the street as it is placed on the paving (planned per chunk with the details,
 // deterministically from the chunk index; the paving recipes carry the stone's own
@@ -16,8 +16,9 @@ import { MAIN_RAILS, BAND_IN, GUTTER_OUT, GROUT_W, TRACK_OFFSET } from './consta
 //              LINE_STYLE.repair, lines.js);
 //   stains     rust and grime halos round the cast-iron covers (the joint round a frame
 //              collects dirt, rust bleeds out of it), damp streaks along the gutter at
-//              the gullies, oil and grease under the bogies where trams stand at the
-//              stops, and drip trails along the middle of each track;
+//              the gullies, and oil and grease under the bogies where trams stand at
+//              the stops (the drip down the middle of each track is no decal but the
+//              continuous drip band, street.js buildDripBands);
 //   weeds      the odd tuft in a joint at the foot of a facade, along the gutter or at a
 //              tree grate.
 
@@ -218,8 +219,7 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
     }
   }
 
-  // --- oil and grease where the trams stand at the stops: patches under the bogies and
-  // drip trails along the middle of the track under the body
+  // --- oil and grease where the trams stand at the stops: patches under the bogies
   for (const z of surface.stopZones()) {
     if (delta(s0, z.s1) < -1 || delta(s1, z.s0) > 1) continue;
     const dc = z.track * TRACK_OFFSET;
@@ -231,13 +231,17 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
         stains.push({ s, d: dc + zr.normal(0, 0.1), kind: zr.chance(0.6) ? 8 : 1, size: zr.range(0.55, 1.15), aspect: zr.range(0.6, 1.0), yaw: zr.range(0, 6.28), op: zr.range(0.85, 1.25), warm: zr.range(0.05, 0.25) });
       }
     }
+    // (the drips along the middle of the track under the standing body are the drip
+    // band's heavier stretch, street.js buildDripBands: no separate decals; the draws
+    // are kept so the stains that follow keep their places)
     for (let s = z.s0 + zr.range(0, 2); delta(s, z.s1) > 0; s += zr.range(1.6, 3.4)) {
       if (!inside(s, 0.9) || !zr.chance(0.6)) continue;
-      stains.push({ s, d: dc + zr.normal(0, 0.07), kind: 3, size: zr.range(1.0, 1.5), aspect: zr.range(0.6, 1.1), yaw: Math.PI / 2 + zr.normal(0, 0.04), op: zr.range(0.7, 1.0), warm: 0.1 });
+      zr.normal(0, 0.07); zr.range(1.0, 1.5); zr.range(0.6, 1.1); zr.normal(0, 0.04); zr.range(0.7, 1.0);
     }
   }
   // grime blotches a metre or two across: spills and water stains dried into the stone,
-  // trodden-in dirt, darker damp patches in the four-foot
+  // trodden-in dirt (on the sidewalks and across the corridor; the middle of each track
+  // darkens continuously with the drip band instead, so blotches drawn there are dropped)
   const gr = RNG.from(layout.seed, 'street-grime', ci);
   for (let k = gr.int(3, 7); k > 0; k--) {
     const s = gr.range(s0 + 1.0, s1 - 1.0);
@@ -251,15 +255,23 @@ export function planWear(ctx, ci, s0, s1, items, stains, blocked) {
     }
     const size = where === 0 ? gr.range(0.6, 1.1) : gr.range(0.9, 2.4);
     if (!inside(s, where === 0 ? size * 1.1 : size * 0.5) || layout.isInCrossover(s, 2) || nearCross(s, 1.5) || (where === 2 && blocked(s, d, 0.2))) continue;
-    stains.push({ s, d, kind: gr.chance(0.6) ? 0 : 5, size, aspect: where === 0 ? gr.range(1.3, 2.2) : gr.range(0.6, 1.1), yaw: where === 0 ? Math.PI / 2 + gr.normal(0, 0.2) : gr.range(0, 6.28), op: gr.range(0.85, 1.45), warm: gr.range(0.05, 0.3) });
+    const kind = gr.chance(0.6) ? 0 : 5;
+    const aspect = where === 0 ? gr.range(1.3, 2.2) : gr.range(0.6, 1.1);
+    const yaw = where === 0 ? Math.PI / 2 + gr.normal(0, 0.2) : gr.range(0, 6.28);
+    const op = gr.range(0.85, 1.45), warm = gr.range(0.05, 0.3);
+    // (a blotch across the corridor centred in a four-foot is dropped too: fitted between
+    // the rails below, it would be just such a smear)
+    const four = Math.abs(Math.abs(d) - TRACK_OFFSET) < RAIL_CENTER;
+    if (where === 0 || (where === 1 && four)) continue;
+    stains.push({ s, d, kind, size, aspect, yaw, op, warm });
   }
 
-  // drips along the middle of both tracks elsewhere
-  for (const t of [-1, 1]) {
+  // (no single drip stains along the tracks away from the stops: the drip band. The
+  // draws are kept so the weeds that follow keep their places.)
+  for (let t = 0; t < 2; t++) {
     for (let k = rng.int(0, 3); k > 0; k--) {
-      const s = rng.range(s0 + 0.8, s1 - 0.8);
-      if (layout.isInCrossover(s, 2)) continue;
-      stains.push({ s, d: t * TRACK_OFFSET + rng.normal(0, 0.1), kind: 8, size: rng.range(0.35, 0.75), aspect: rng.range(0.6, 1.1), yaw: rng.range(0, 6.28), op: rng.range(0.6, 0.95), warm: 0.12 });
+      if (layout.isInCrossover(rng.range(s0 + 0.8, s1 - 0.8), 2)) continue;
+      rng.normal(0, 0.1); rng.range(0.35, 0.75); rng.range(0.6, 1.1); rng.range(0, 6.28); rng.range(0.6, 0.95);
     }
   }
 

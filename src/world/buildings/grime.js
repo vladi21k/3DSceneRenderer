@@ -196,8 +196,15 @@ const FRAG_STONE = /* glsl */ `
 {
   vec3 bgNrm = normalize(vBgN);
   float bgL = length(bgNrm.xz);
-  vec2 bgP = bgL > 0.35 ? vec2(dot(vBgPos.xz, vec2(-bgNrm.z, bgNrm.x) / bgL), vBgPos.y) : vBgPos.xz;
+  // (along the wall from the face's horizontal direction, which a carved profile keeps
+  // while it turns towards the vertical: only a truly level face falls back to plan xz)
+  vec2 bgP = bgL > 0.06 ? vec2(dot(vBgPos.xz, vec2(-bgNrm.z, bgNrm.x) / bgL), vBgPos.y) : vBgPos.xz;
   float bgDirtB = vBgRun.z;
+  // dirt on this stone is warm brown-grey (street dust, soot and rain-carried grime), so
+  // a low warm sun never turns it olive: the soiled colour is the albedo's luminance in
+  // this hue
+  const vec3 BG_SOIL = vec3(1.07, 0.98, 0.84);
+  float bgTrail = 0.0;                                // sharp drip trails (sills, consoles)
   // large soft patches (stone batches, cleaning, sun bleaching), which also set how
   // dirty the stone is locally
   vec2 bgQ = bgP + bgDirtB * vec2(37.1, 11.3);
@@ -273,14 +280,46 @@ const FRAG_STONE = /* glsl */ `
         bgRunK *= mix(vec3(1.0), vec3(0.6, 0.38, 0.24), 0.5 * vBgRust * min(1.0, bgRs + 0.5 * bgCst));
       }
     } else {
-      // window sill: dirt under the sill (patchy, fading in below it) and down the strips under its ends
+      // window sill: a short soft shadow of dirt right under it, and water leaving it at its
+      // ends: one to three thin sharp trails per end (each with its own offset from the end,
+      // 1-3 cm width, 0.3-2 m length, strength and wander; some ends clean), which widen
+      // and fade as they run down, broken in places. Far away (trails under a few pixels)
+      // only their soft mean is left.
       float bgIn = clamp(min(bgUa, bgUb) / 0.2, 0.0, 1.0);
-      float bgRun = bgE * bgS * exp(-bgD / 2.4) * (1.0 - smoothstep(2.4, 3.4, bgD));
-      bgRunM = bgDirtB * (0.22 * bgIn * bgPatch * smoothstep(0.0, 0.12, bgD) * exp(-bgD / 0.7) + 0.8 * bgRun);
-      bgWash = 0.06 * bgRun;
+      float bgUnder = 0.16 * bgIn * bgPatch * smoothstep(0.0, 0.08, bgD) * exp(-bgD / 0.32);
+      float bgNearT = 1.0 - smoothstep(0.012, 0.05, bgFx);
+      float bgTr = 0.0;
+      if (bgNearT > 0.0 && bgD < 2.2 && min(bgUa, bgUb) < 0.32) {
+        for (int e = 0; e < 2; e++) {
+          float bgUe = e == 0 ? bgUa : bgUb;                     // in from this end (m)
+          if (bgUe > 0.32) continue;
+          // this end along the wall (the same for every pixel under the sill); its trails'
+          // draws are value noise of it at a high rate, which a millimetre of interpolation
+          // error cannot flip
+          float bgEp = (bgP.x - bgSg * (e == 0 ? bgUa : -bgUb)) * 4.3;
+          for (int k = 0; k < 3; k++) {
+            float bgH0 = bgVN(vec2(bgEp + float(k) * 17.0, float(e) * 5.0 + 3.7 + bgDirtB * 11.0));
+            if (bgH0 > (k == 0 ? 0.72 : 0.5)) continue;             // a share of ends and trails clean
+            float bgH1 = bgVN(vec2(bgEp * 1.7 + float(k) * 7.0, 9.1)), bgH2 = bgVN(vec2(bgEp * 1.3 + 3.3, float(k) * 4.1 + 1.9));
+            float bgOf = -0.02 + 0.2 * bgH1 * bgH1;                  // trail centre, in from the end
+            float bgLen = 0.3 + 1.7 * bgH2 * bgH2;
+            if (bgD > bgLen) continue;
+            float bgWd = (0.006 + 0.012 * fract(bgH1 * 37.1)) * (1.0 + 0.9 * bgD / bgLen);
+            float bgX = bgUe - bgOf - 0.035 * (bgVN(vec2(bgEp * 0.37 + float(k) * 5.1, bgD * 1.6)) - 0.5) * min(1.0, bgD * 2.0);
+            float bgAc = 1.0 - smoothstep(0.35 * bgWd, bgWd + bgFx, abs(bgX));
+            float bgAl = smoothstep(0.0, 0.03, bgD) * pow(1.0 - bgD / bgLen, 1.2);
+            float bgBr = 0.55 + 0.45 * smoothstep(0.3, 0.6, bgVN(vec2(bgEp * 0.71 + float(k) * 3.3, bgD * 3.1)));
+            bgTr = max(bgTr, bgAc * bgAl * bgBr * (0.55 + 0.45 * fract(bgH2 * 53.7)));
+          }
+        }
+      }
+      float bgRun = bgE * bgS * exp(-bgD / 1.6) * (1.0 - smoothstep(1.8, 2.6, bgD));
+      bgRunM = bgDirtB * (bgUnder + 0.2 * bgRun * (1.0 - bgNearT));
+      bgTrail = max(bgTrail, min(1.0, bgS) * bgTr * bgNearT * min(1.3, bgDirtB));
+      bgWash = 0.03 * bgRun;
     }
-    float bgL0 = dot(diffuseColor.rgb, vec3(0.333));
-    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgL0 * 0.9), min(0.7, bgWash * 1.4)) * bgRunK * (1.0 - bgWash);
+    float bgL0 = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+    diffuseColor.rgb = mix(diffuseColor.rgb, bgL0 * BG_SOIL * 0.95, min(0.6, bgWash * 1.4)) * bgRunK * (1.0 - bgWash);
   }
 
   // the foot of the wall (vBgHg: height above the paving in front, per vertex): rising
